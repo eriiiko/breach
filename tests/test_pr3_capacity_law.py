@@ -400,13 +400,27 @@ def test_a_non_uniform_plane_is_read_per_tile():
 # ---------------------------------------------------------------------------
 def test_fire_T_ext_is_derived_from_ignition_temp():
     """``fire_T_ext[mat] = ignition_temp[mat] - ignition_to_ext_delta`` — ONE
-    new global, zero new per-material columns. The number that motivated
-    Δ = 100: furniture 280 - 100 = 180, EXACTLY the blessed bench value, so a
-    derived run and the old ``--set fire_T_ext=180`` override agree."""
+    new global, zero new per-material columns. The number that motivated the
+    ORIGINAL delta of 100: furniture 280 - 100 = 180, EXACTLY the blessed
+    bench value, so a derived run and the old ``--set fire_T_ext=180``
+    override agreed.
+
+    Re-derivation note (fire-family triage, 2026-08-30): P-K0 (9016cd7,
+    2026-08-13) promoted ``ignition_to_ext_delta`` from that bench-derived
+    100 to the shipped 200 ("knee geometry — the FOOT", config.toml). The
+    literal 180.0/200.0 pins here were downstream of the OLD delta and would
+    silently re-pin to whatever config.toml ships next time it moves again;
+    read the shipped delta from config instead and derive both expected
+    values from it, the same way the table itself derives fire_T_ext — this
+    test is about the DERIVATION relationship holding, not about pinning any
+    one delta's history."""
     tbl = MaterialTable.from_config()
-    assert float(tbl.ignition_to_ext_delta) == 100.0
-    assert float(tbl.fire_T_ext[MAT_FURNITURE]) == pytest.approx(180.0)
-    assert float(tbl.fire_T_ext[MAT_WOOD]) == pytest.approx(200.0)
+    delta = float(tbl.ignition_to_ext_delta)
+    assert delta == 200.0   # the shipped P-K0 value (9016cd7, 2026-08-13)
+    assert float(tbl.fire_T_ext[MAT_FURNITURE]) == pytest.approx(
+        float(tbl.ignition_temp[MAT_FURNITURE]) - delta)
+    assert float(tbl.fire_T_ext[MAT_WOOD]) == pytest.approx(
+        float(tbl.ignition_temp[MAT_WOOD]) - delta)
     for idx, name in enumerate(tbl.names):
         want = fire_T_ext_from_ignition(tbl.ignition_temp[idx],
                                         tbl.ignition_to_ext_delta)

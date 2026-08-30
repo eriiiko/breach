@@ -50,6 +50,14 @@ from simulation.materials import (  # noqa: E402
 from simulation import fire_fixed  # noqa: E402  S3a: gmap.fire is int32 Q16.16
 from simulation import atmosphere_fixed  # noqa: E402  S2c: atmosphere/wind Q16.16
 from simulation import wall_fixed  # noqa: E402  S3b: wall_hp is int32 Q16.16
+from simulation import gas_fixed  # noqa: E402  the plume rewrite's O2 refill
+from simulation.gases import O2  # noqa: E402  the plume rewrite's O2 refill
+
+# The plume rewrite (below) reuses the P4 module's sealed-room fixture + the
+# game-faithful tick helper, the same precedent test_eos_p5_1_stoich.py sets
+# for sharing this scenario builder across files (one source of truth).
+sys.path.insert(0, str(ROOT / "tests"))
+from test_eos_p4_combustion import _sealed_room, _runner, _ignite, _step_tick  # noqa: E402
 
 # S3a: gmap.fire is int32 Q16.16. Helpers for the Simulation-based tests that
 # seed / read the field at real intensity (the FireSimulation.step stub tests
@@ -154,10 +162,18 @@ def test_fed_fire_grows():
 
 def test_cold_fire_decays_to_zero():
     # No heat (T=0 -> hot=0): grow=0, die = k_die*(1-0)*I. Fire dies out.
+    #
+    # RESTATE (fire-family triage, 2026-08-30, dial promotion 9016cd7: k_die
+    # 2.0->0.008 slows the pure-k_die decay tail by the same ~250x): 200
+    # ticks no longer reaches 0 (measured: still at 0.365+ at tick 200).
+    # Measured directly: it DOES still reach exactly 0, at tick 2334 — this
+    # ODE has no O2/fuel floor to get stuck on, it is a genuine (slow)
+    # asymptotic decay to zero. max_ticks re-derived from that measurement
+    # with ~30% margin (a real property still holds — it dies — just later).
     fs = _params_runner()
     sc = _FeedbackScene(I=0.5, T=0.0, wall_hp=60.0, atm=1.0, wind=0.0)
     last = 0.5
-    for _ in range(200):
+    for _ in range(3000):
         last = sc.step(fs)
         if last == 0.0:
             break
@@ -184,10 +200,15 @@ def test_low_o2_fire_decays_to_zero():
     # v2.4 re-pin (eos-p3fix-thermal-ceiling): P_min moved 0.126 -> 0.01 (the
     # hot-zone-equilibrium rescale, config.toml [physics.fire]); the low-O2
     # seed moves 0.02 -> 0.005 to stay below the gate it exercises.
+    #
+    # RESTATE (fire-family triage, 2026-08-30, dial promotion 9016cd7): same
+    # slow-decay tail as test_cold_fire_decays_to_zero (avail==0 either way,
+    # so it is the same ODE) — measured DIES at tick 2334, just past 200.
+    # max_ticks re-derived with margin.
     fs = _params_runner()
     sc = _FeedbackScene(I=0.5, T=500.0, wall_hp=60.0, atm=1.0, o2=0.005, wind=0.0)
     last = 0.5
-    for _ in range(200):
+    for _ in range(3000):
         last = sc.step(fs)
         if last == 0.0:
             break
@@ -198,12 +219,16 @@ def test_vented_room_extinguishes():
     # A fire fully surrounded by VACUUM (a hull breach drained the room) reads
     # P=0 (no open, non-vacuum neighbour) -> o2=0 -> dies. The
     # decompression-extinguishes-fire loop via a READ, not a kill-threshold.
+    #
+    # RESTATE (fire-family triage, 2026-08-30, dial promotion 9016cd7): same
+    # slow-decay tail as the other avail==0 tests above — measured DIES at
+    # tick 2400, just past 200. max_ticks re-derived with margin.
     fs = _params_runner()
     sc = _FeedbackScene(I=0.6, T=500.0, wall_hp=60.0, atm=1.0, wind=0.0)
     sc.is_vacuum[:] = True
     sc.is_vacuum[1, 1] = False            # the burning solid itself is not vacuum
     last = 0.6
-    for _ in range(200):
+    for _ in range(3000):
         last = sc.step(fs)
         if last == 0.0:
             break
@@ -217,13 +242,21 @@ def test_burnout_when_wall_hp_runs_out():
     # Hot + pressured + a SMALL fuel store. wall_damage drains wall_hp every step;
     # as wall_hp -> 0, F -> 0, the fire starves and dies. (It may also breach the
     # wall at hp<=0 and zero the fire that way — either is a valid burnout.)
+    #
+    # RESTATE (fire-family triage, 2026-08-30, dial promotion 9016cd7): once
+    # F falls low the tail is the same slow k_die-dominated decay as the
+    # other tests above — measured DIES at tick 4920 (later than the pure
+    # avail==0 cases since F takes time to drain and the fire is only fully
+    # starved once it does). max_ticks re-derived with margin; this scene's
+    # step is a bare 3x3 FireSimulation.step call (~0.02s for 5000 ticks),
+    # so the larger budget costs nothing measurable.
     fs = _params_runner()
     sc = _FeedbackScene(I=0.6, T=500.0, wall_hp=3.0, atm=1.0, wind=0.0)
     # Make it a real wall so burn-through can fire if hp hits 0.
     sc.solid[1, 1] = True
     hp0 = float(sc.wall_hp[1, 1])
     last = 0.6
-    for _ in range(500):
+    for _ in range(6000):
         last = sc.step(fs)
         if last == 0.0:
             break
@@ -263,74 +296,110 @@ def test_wind_blows_out_a_small_fire():
     # wind extinguishes it STRICTLY FASTER than calm air does. (A fully-fed big
     # fire under the same wind GROWS — see test_wind_fans_a_big_fire — that is the
     # crossover: big fanned, small snuffed.)
+    #
+    # RESTATE (fire-family triage, 2026-08-30): `k_wind_strip = 0.0` in the
+    # shipped config (P-K0, 9016cd7 — "plume self-blow-out off, 2026-07-23")
+    # — the blow-out TERM this test is named for is switched OFF, full stop,
+    # not merely slow. Measured directly, this is not just "neither dies":
+    # I_cap_per_avail's promotion (2.53->14.0) also means this T=360
+    # "marginal" scene is no longer near death at all — BOTH calm and windy
+    # GROW to a real equilibrium (calm settles ~0.52, windy ~0.64, both
+    # peaking higher along the way), and windy is STRICTLY BIGGER than calm
+    # throughout (k_wind_fan, the surviving wind term, still fans it) — the
+    # exact OPPOSITE of "wind blows it out". Restated to document the
+    # measured fact rather than hide it behind a loosened bound: the
+    # mechanism is dormant BY CONFIG, and with it dormant, wind only fans
+    # here (matching test_wind_fans_a_big_fire's mechanism, just smaller).
+    # FLAGGED FOR ERIK (per the triage brief) — left as a documenting
+    # assertion, not a design call: is k_wind_strip meant to be 0 (the
+    # blow-out crossover intentionally retired), or is this a dial that
+    # should have moved with the rest of the 9016cd7 promotion?
     fs = _params_runner()
-    # Marginal drive: T=360 is barely above fire_T_ext (350); hot ~= 0.067, so the
-    # fire is dying anyway — wind makes it die SOONER (the blow-out).
+    assert float(fs.params.k_wind_strip) == 0.0, (
+        "k_wind_strip is no longer 0 — the blow-out mechanism may be back; "
+        "if so, this test's ORIGINAL crossover claim (windy dies sooner) "
+        "should be re-tested and restored, not left dormant")
     calm = _FeedbackScene(I=0.15, T=360.0, wall_hp=60.0, atm=1.0, wind=0.0)
     windy = _FeedbackScene(I=0.15, T=360.0, wall_hp=60.0, atm=1.0, wind=5.0)
-    t_calm = _ticks_to_die(calm, fs)
-    t_windy = _ticks_to_die(windy, fs)
-    assert t_calm is not None and t_windy is not None, (
-        f"both marginal fires should die (calm={t_calm}, windy={t_windy})")
-    assert t_windy < t_calm, (
-        f"a strong wind should blow out a small fire SOONER "
-        f"(windy {t_windy} ticks vs calm {t_calm} ticks)")
+    for _ in range(1000):
+        i_calm = calm.step(fs)
+        i_windy = windy.step(fs)
+    assert i_windy > i_calm * 1.1, (
+        f"with k_wind_strip dormant, wind should FAN this scene (not blow it "
+        f"out) — expected windy strictly ahead of calm (windy={i_windy:.4f}, "
+        f"calm={i_calm:.4f})")
 
 
 # ---------------------------------------------------------------------------
-# Plume: the own-tile pressure deposit raises the fire's atmosphere so wind
-# (= -grad p) points OUTWARD (smoke pushed away, not pulled in)
+# Plume: a burning tile's heat raises its own temperature and pushes wind
+# (= -grad p) OUTWARD (smoke pushed away, not pulled in)
 # ---------------------------------------------------------------------------
+# REWRITE (fire-family triage, 2026-08-30): the plume->T SHIM this test used
+# to isolate (`fs.step` taking `atmosphere`/`n_o2`/`n_total` directly, no
+# combustion) was deleted at 25a9823 (2026-07-31) — T is owned outright by
+# TemperatureSolver now, and there is no more standalone shim to poke. Ruled
+# out as redundant: tests/_fire_bench.py (energy-conservation harness, not a
+# pytest gate, and not about wind direction) and the P4 e2e tests in
+# tests/test_eos_p4_combustion.py (O2-differentiation payoffs, no wind
+# assertions at all — confirmed by grep) do NOT already cover "a burning
+# tile's own temperature rises and the wind around it points outward", so
+# this is a genuine gap, not a redundant test to delete. Replaced with a
+# PIPELINE-level assertion: a real PhysicsRunner tick loop (not an isolated
+# FireSimulation.step call) on the P4 module's sealed-room fixture.
+#
+# Measured directly, building this replacement: a REAL burning tile draws
+# real local O2, and early on that SUCTION (not the heat push) dominates the
+# wind at its immediate neighbours — inward, the opposite of the old shim's
+# claim, and genuinely so (not a bug: the fire is consuming oxygen faster
+# than it is heating the room). The heat push only visibly wins later, and
+# in a SEALED room never settles (measured: net inward on average over
+# ticks 30-120, oscillating with the room's pressure reflections). Non-
+# limiting O2 (refilled every tick at the fire's 4 neighbours, the same
+# "tank-rupture" idiom test_eos_p4_combustion.py's test_e2e_3 uses) removes
+# the suction competitor exactly as the old shim's signature (`atmosphere`/
+# `n_o2` non-limiting, "unrelated to O2") intended — under that scene,
+# temperature climbs monotonically and wind turns and STAYS outward from
+# ~tick 35 on (measured: positive at every 5-tick sample through tick 80).
 def test_plume_raises_own_atmosphere_wind_points_outward():
-    fs = _params_runner()
-    # 5x5 all-air room with one burning WOOD tile in the centre; uniform 1.0 atm.
-    h = w = 5
-    material = np.full((h, w), MAT_AIR, dtype=np.int8)
-    material[2, 2] = MAT_WOOD
-    flammable = np.ascontiguousarray(_TBL.flammable[material])
-    solid = np.ascontiguousarray(_TBL.permeability[material] <= 0.0)
-    is_vacuum = np.zeros((h, w), dtype=bool)
-    # S3b: all the fire-step fields are int32 Q16.16.
-    atmosphere = np.full((h, w), atmosphere_fixed.quantize_scalar(1.0), dtype=np.int32)
-    # EOS refactor P4: n_o2 is the O2 gate's own input, non-limiting here
-    # (this test is about the plume->T shim, unrelated to O2).
-    n_o2 = np.full((h, w), atmosphere_fixed.quantize_scalar(1.0), dtype=np.int32)
-    # Continuous-O2 law (547fb12): the fraction denominator. Equal to n_o2 here,
-    # i.e. X == 1.0 -> o2f == 1, the same NON-LIMITING gate this test had before
-    # the law change (it is about the plume->T shim, not about O2).
-    n_total = np.full((h, w), atmosphere_fixed.quantize_scalar(1.0), dtype=np.int32)
-    smoke = np.zeros((h, w), dtype=np.int32)
-    wall_hp = np.zeros((h, w), dtype=np.int32)
-    wall_hp[2, 2] = wall_fixed.quantize_scalar(60.0)
-    temperature = np.zeros((h, w), dtype=np.int32)
-    temperature[2, 2] = int(round(500.0 * TEMP_SCALE))
-    fire = np.zeros((h, w), dtype=np.int32)
-    fire[2, 2] = fire_fixed.quantize_scalar(0.8)
-    wind_x = np.zeros((h, w), dtype=np.int32)
-    wind_y = np.zeros((h, w), dtype=np.int32)
+    """A burning tile's own temperature rises over the run, and once its
+    local O2 is not the limiting factor (refilled each tick, matching the
+    old shim's non-limiting-O2 setup), the wind at its 4 immediate
+    neighbours nets OUTWARD (smoke pushed away, not drawn in) over the
+    back half of a 60-tick run — the property test_eos_p3_gate_
+    measurements.md documents as a "clean outward transient" once the
+    combustion-side O2 draw is out of the way."""
+    gmap = _sealed_room(hh=15, wood_at=(7, 7))
+    pr = _runner()
+    cy, cx = 7, 7
+    t_before = float(gmap.temperature[cy, cx])
+    _ignite(gmap, (cy, cx), intensity=0.6, temp_mult=1.5)
 
-    # EOS P3 (design §8 P3 writer row): the plume is a plume->T energy shim
-    # now — the atmosphere (P) is solver-owned, so the fire deposits heat
-    # into `temperature` instead; the EOS turns that into outward pressure.
-    t_before = float(temperature[2, 2])
-    for _ in range(10):
-        fs.step(fire, atmosphere, n_o2, n_total, smoke, wall_hp, temperature,
-                wind_x, wind_y, solid, is_vacuum, flammable, DT)
-    t_after = float(temperature[2, 2])
+    TICKS = 60
+    OUTWARD_FROM = 35   # re-derived: measured outward-and-stable from here
+    out_sums = []
+    for t in range(1, TICKS + 1):
+        # Non-limiting O2 at the 4 immediate neighbours (the tank-rupture
+        # idiom, test_e2e_3) — isolates the heat-push signal from the real
+        # O2-suction transient that otherwise dominates early (see module
+        # note above).
+        for (dy, dx) in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            gmap.gas[O2][cy + dy, cx + dx] = gas_fixed.quantize_scalar(2.0)
+        _step_tick(pr, gmap)
+        if t >= OUTWARD_FROM:
+            out_n = -float(gmap.wind_y[cy - 1, cx])
+            out_s = float(gmap.wind_y[cy + 1, cx])
+            out_w = -float(gmap.wind_x[cy, cx - 1])
+            out_e = float(gmap.wind_x[cy, cx + 1])
+            out_sums.append(out_n + out_s + out_w + out_e)
+
+    t_after = float(gmap.temperature[cy, cx])
     assert t_after > t_before, (
-        f"plume must RAISE the fire's own temperature "
-        f"({t_before} -> {t_after}), so p* rises and smoke is pushed out")
-    # EOS P3: the outward wind is now produced by the SOLVER from the T
-    # spike (T up -> p* = C*N*T_abs up -> the Helmholtz solve -> outward
-    # kick), not by a direct atmosphere bump this fire-only unit test could
-    # observe. The property this test can still pin at this level: the
-    # plume's energy lands on the fire's OWN tile (the p* gradient's source
-    # shape), i.e. T(center) stays the local max over its air neighbours.
-    # The wind direction itself is covered by the solver's hot-cell gate
-    # (docs/eos_p3_gate_measurements.md — clean outward transient).
-    assert temperature[2, 2] > temperature[2, 3], (
-        "the plume deposit must keep the fire tile the local T max "
-        "(the p* source shape that pushes smoke OUTWARD through the solver)")
+        f"a burning tile must raise its own temperature over the run "
+        f"({t_before / 65536.0:.1f} -> {t_after / 65536.0:.1f} game)")
+    assert all(s > 0.0 for s in out_sums), (
+        f"wind at the fire's 4 immediate neighbours should net OUTWARD "
+        f"(away from the fire) for every sampled tick from {OUTWARD_FROM} "
+        f"on, not just on average: {out_sums}")
 
 
 def test_plume_does_not_subtract_atmosphere_near_fire():
