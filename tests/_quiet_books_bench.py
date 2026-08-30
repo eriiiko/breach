@@ -114,31 +114,54 @@ def main() -> None:
             # flooding cell pushes out. Conservative inside the accountable
             # set, so the only term is what left it. Reset per call.
             -int(sim.physics_runner.engine.e_water_evac_export_sum),
+            # P-G5 (design gas_energy_thermostat_ledger_2026-08-30.md): the
+            # SOLID side's own channels — Pass 1/Pass 2 landings on thermal
+            # solids, the thermostat (Pass 3 relax-to-ambient), and
+            # combustion's own object-site solid heat deposit (bypasses
+            # TemperatureSolver's Pass 1 entirely). Accumulating.
+            int(tsolver.e_solid_deposit_sum) + int(tsolver.e_solid_cond_sum)
+            + int(tsolver.e_thermostat_sum) + int(comb.e_comb_solid_heat_sum),
         )
 
+    def solid_books():
+        """(P-G5) Σ thermal_mass_raw·T_raw over thermal_solid cells."""
+        return int(tsolver.solid_energy_books_sum)
+
     e0 = e_acct()
+    solid0 = solid_books()
     prev_e, prev_t = e0, terms()
+    prev_solid = solid0
     bad = worst = worst_tick = 0
+    bad_total = worst_total = worst_total_tick = 0
     # Per-group running totals, so a failure names the group as well as the
     # tick — the four groups are the four places a new writer can appear.
-    total = [0, 0, 0, 0, 0]
+    total = [0, 0, 0, 0, 0, 0]
     for t in range(1, ticks + 1):
         sim.set_paused(False)
         sim.step()
         e_now, cur = e_acct(), terms()
+        solid_now = solid_books()
         d = (cur[0],
              cur[1] - prev_t[1], cur[2] - prev_t[2], cur[3] - prev_t[3],
-             cur[4])
-        for i in range(5):
+             cur[4], cur[5] - prev_t[5])
+        for i in range(6):
             total[i] += d[i]
-        resid = (e_now - prev_e) - sum(d)
+        resid = (e_now - prev_e) - sum(d[:5])
         if resid:
             bad += 1
             if abs(resid) > abs(worst):
                 worst, worst_tick = resid, t
-        prev_e, prev_t = e_now, cur
+        # P-G5: the TOTAL ledger — gas books + solid books — against the same
+        # five gas-side terms PLUS the solid side's own (d[5]).
+        resid_total = ((e_now + solid_now) - (prev_e + prev_solid)) - sum(d)
+        if resid_total:
+            bad_total += 1
+            if abs(resid_total) > abs(worst_total):
+                worst_total, worst_total_tick = resid_total, t
+        prev_e, prev_t, prev_solid = e_now, cur, solid_now
 
     e1 = e_acct()
+    solid1 = solid_books()
     n_acct = int(g._gas_bulk_n_raw()[g._gas_energy_accountable()]
                  .astype(object).sum())
     print(f"QUIET gate — playground, {seconds:.0f} s ({ticks} ticks), "
@@ -150,12 +173,26 @@ def main() -> None:
     print(f"  == counted:  EOS={total[0]}  tail={total[1]}  "
           f"combustion={total[2]}  seams={total[3]}  "
           f"water_evac_export={total[4]}")
-    print(f"     sum      = {sum(total)}   "
-          f"residual = {(e1 - e0) - sum(total)}")
+    print(f"     sum      = {sum(total[:5])}   "
+          f"residual = {(e1 - e0) - sum(total[:5])}")
     if n_acct:
         print(f"  in game-deg over the accountable set: "
               f"{(e1 - e0) / n_acct / Q:+.4f}")
     print(f"  seam channels: {g.gas_energy_books}")
+    # P-G5: the EXTENDED identity — gas books + solid books.
+    print(f"  P-G5 solid books drift  d(solid_energy_books_sum) = "
+          f"{solid1 - solid0}  (solid group={total[5]})")
+    print(f"  P-G5 TOTAL ledger (gas+solid): "
+          f"{'EXACT' if bad_total == 0 else 'BROKEN'} over {ticks} ticks"
+          + ("" if bad_total == 0 else
+             f" ({bad_total} bad, worst {worst_total} @ tick "
+             f"{worst_total_tick})"))
+    assert bad == 0, (
+        f"QUIET gate gas-books identity BROKEN: {bad} bad tick(s), "
+        f"worst {worst} @ tick {worst_tick}")
+    assert bad_total == 0, (
+        f"P-G5 TOTAL ledger BROKEN: {bad_total} bad tick(s), "
+        f"worst {worst_total} @ tick {worst_total_tick}")
 
 
 if __name__ == "__main__":

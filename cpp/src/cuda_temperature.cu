@@ -109,7 +109,11 @@ enum : int {
     C_GAS_DEPOSIT = 7,  // e_gas_deposit_sum  (arc #54, Pass 1 heat->E on gas)
     C_GAS_COND    = 8,  // e_gas_cond_sum     (arc #54, Pass 2 conduction->E)
     C_GAS_RAIL    = 9,  // e_gas_rail_sum     (arc #54, Pass 1's T_MAX_PHYS rail)
-    C_SLOTS      = 10
+    // P-G5 (thermostat ledger, design 2026-08-30): the SOLID side's own books.
+    C_SOLID_DEPOSIT = 10, // e_solid_deposit_sum (Pass 1 landing on ts cells)
+    C_SOLID_COND    = 11, // e_solid_cond_sum    (Pass 2 landing on ts cells)
+    C_THERMOSTAT    = 12, // e_thermostat_sum    (Pass 3, same value as C_COOL)
+    C_SLOTS      = 13
 };
 
 __device__ __forceinline__ void cadd(unsigned long long* c, int slot, int64_t v) {
@@ -201,6 +205,7 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
                                      unsigned long long* __restrict__ hits,
                                      unsigned long long* __restrict__ low_hits,
                                      unsigned long long* __restrict__ cnt,
+                                     const int64_t* __restrict__ cap_real,
                                      int64_t* __restrict__ gas_energy,
                                      int32_t t_amb_q,
                                      int n) {
@@ -214,6 +219,7 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
         if (rad_net != nullptr && thermal_solid[i]) {
             const int32_t rn = rad_net[i];
             if (rn != 0) {
+                const int32_t t_before_rad = temperature[i];  // P-G5
                 int32_t tr = temperature[i];
                 const int32_t dTr = shr_round0(rn, heat_inv_shift[i]);
                 tr = sat_add_q16(tr, dTr);
@@ -224,6 +230,10 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
                 // gate scenario (the budget argument, see the CPU comment).
                 if (tr < 0) { tr = 0; atomicAdd(low_hits, 1ULL); }
                 temperature[i] = tr;
+                // P-G5: the radiation fold's ACTUAL landing, post both rails
+                // — the CPU twin's e_solid_deposit_sum fold.
+                cadd(cnt, C_SOLID_DEPOSIT,
+                     ((int64_t)tr - t_before_rad) * cap_real[i]);
             }
         }
         const int32_t deposit = heat[i];
@@ -233,11 +243,15 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
         // the free per-tile bit-shift (heat >> log2(thermal_mass)); gas takes the
         // N-divided radiative deposit below.
         if (thermal_solid[i]) {
+            const int32_t t_before_dep = t;                  // P-G5
             const int shift = heat_inv_shift[i];             // log2(thermal_mass)
             const int32_t gain = deposit >> shift;           // Q16.16 / 2^shift
             heat_saturating_add_dev(&t, gain);
             if (t > t_max_phys_q) { t = t_max_phys_q; atomicAdd(hits, 1ULL); }
             temperature[i] = t;
+            // P-G5: the heat-deposit's ACTUAL landing, post rail — the CPU
+            // twin's e_solid_deposit_sum fold.
+            cadd(cnt, C_SOLID_DEPOSIT, ((int64_t)t - t_before_dep) * cap_real[i]);
         } else if (!is_vacuum[i]) {
             // v2.4 absorption-proportional radiant deposit (optically-thin form):
             //   E_abs = deposit · min(N, N_AMB)/N_AMB   (N_AMB == FP_ONE)
@@ -368,6 +382,9 @@ __global__ void temp_conduct(const int32_t* __restrict__ temperature,
         const int64_t dT = fixedpoint::floordiv_q(de, cap_i);
         cadd(cnt, C_COND_TRUNC, dT * cap_i - de);
         cadd(cnt, C_COND_CAP,   dT * (cap_real[i] - cap_i));
+        // P-G5: this cell's exact conduction landing at its REAL capacity —
+        // the CPU twin's e_solid_cond_sum fold.
+        if (thermal_solid[i]) cadd(cnt, C_SOLID_COND, dT * cap_real[i]);
         temp_new[i] = (int32_t)(ti + dT);
     }
 }
@@ -445,6 +462,9 @@ __global__ void temp_cool(int32_t* __restrict__ temperature,
         // P-E2a (L3-6): law unchanged; Pass 3 is a SIGNED channel — it relaxes
         // toward 0 from BOTH sides, so on a sub-ambient tile it CREATES.
         cadd(cnt, C_COOL, -(int64_t)loss * cap_real[i]);
+        // P-G5 (thermostat ledger): the SAME quantity, under the closure
+        // identity's canonical name — see the CPU twin's e_thermostat_sum.
+        cadd(cnt, C_THERMOSTAT, -(int64_t)loss * cap_real[i]);
     }
 }
 
@@ -465,11 +485,13 @@ int64_t temperature_step(
     int cool_shift_floor,       // low clamp on the vacuum offset (== SHIFT_MIN)
     int64_t* low_rail_hits_out, // P-F1a: Pass-1 LOW rail count (nullable)
     const int32_t* rad_net,     // P-R4: SIGNED radiation accumulator (nullable)
-    int64_t* energy_counters_out,   // P-E2a/arc #54: TEMPERATURE_ENERGY_SLOTS
-                                     // slots (C_* enum), nullable; accumulated
-                                     // (+=) into the caller's fields
+    int64_t* energy_counters_out,   // P-E2a/arc #54/P-G5: TEMPERATURE_ENERGY_
+                                     // SLOTS slots (C_* enum), nullable;
+                                     // accumulated (+=) into the caller's fields
     int64_t* gas_energy,        // arc #54 §2.7 row 3: the conserved field
-    int32_t t_amb_q) {          // T_AMB_K raw (only read with gas_energy)
+    int32_t t_amb_q,            // T_AMB_K raw (only read with gas_energy)
+    int64_t* solid_books_out) { // P-G5: solid_energy_books_sum SNAPSHOT (=,
+                                 // not +=), nullable
     const int n = h * w;
     if (n <= 0) return 0;
 
@@ -607,7 +629,8 @@ int64_t temperature_step(
                                           d_solid, d_amb,
                                           d_nsrc, d_radnet, recip_cv, n_floor_q,
                                           t_max_phys_q, d_hits, d_low_hits,
-                                          d_cnt, d_gas_energy, t_amb_q, n);
+                                          d_cnt, d_cap_real, d_gas_energy,
+                                          t_amb_q, n);
     cuda_check(cudaGetLastError(), "convert launch");
 
     // Pass 2: conduct (d_temp -> d_temp_new), then copy back (the CPU swap).
@@ -654,6 +677,24 @@ int64_t temperature_step(
     if (gas_energy)
         cuda_check(cudaMemcpy(gas_energy, d_gas_energy, (size_t)n * sizeof(int64_t),
                               cudaMemcpyDeviceToHost), "D2H gas_energy");
+
+    // P-G5: solid_energy_books_sum — a SNAPSHOT, computed on the HOST from the
+    // just-D2H'd `temperature` plus the already-host-resident `thermal_solid`/
+    // `heat_inv_shift` inputs (no extra device round trip needed). Reuses the
+    // SAME `conduction::cell_capacity_q` the device capacity build calls, so
+    // the two backends cannot drift on the pricing.
+    if (solid_books_out) {
+        const bool* ts_h = thermal_solid ? thermal_solid : solid;
+        int64_t sum = 0;
+        for (int i = 0; i < n; ++i) {
+            if (!ts_h[i]) continue;
+            int64_t cu = 0, cr = 0;
+            conduction::cell_capacity_q(true, heat_inv_shift[i], 0, n_floor_q,
+                                        c_v_q, &cu, &cr);
+            sum += cr * (int64_t)temperature[i];
+        }
+        *solid_books_out = sum;
+    }
 
     cudaFree(d_temp);
     cudaFree(d_temp_new);
