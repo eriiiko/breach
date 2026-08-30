@@ -36,7 +36,17 @@ from simulation import fire_fixed, wave_fixed, atmosphere_fixed, wall_fixed  # n
 from simulation.materials import MAT_WOOD  # noqa: E402
 
 SEED = 31337
-TICKS = 90
+# RESTATE (fire-family triage, 2026-08-30, dial promotion 9016cd7: k_die
+# 2.0->0.008 slows the whole decay tail ~250x): 90 ticks no longer reaches
+# the extinguish flip (measured: still 9 lit cells, mean intensity 0.90->
+# ~0.80 by tick 90 — barely moved). Measured directly: the trajectory DOES
+# still fully extinguish, at tick 5571 (~2.6s of wall-clock for one run of
+# this harness) — re-derived with ~11% margin. The bit-identical-run-to-run
+# property itself is unaffected either way (it is checked every tick, 0..
+# TICKS-1, regardless of when/whether extinguish happens); only the "a real
+# extinguish flip was actually exercised" non-vacuity check needed the
+# longer horizon.
+TICKS = 6200
 SY, SX = 8, 8
 
 

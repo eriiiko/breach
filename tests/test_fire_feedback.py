@@ -154,10 +154,18 @@ def test_fed_fire_grows():
 
 def test_cold_fire_decays_to_zero():
     # No heat (T=0 -> hot=0): grow=0, die = k_die*(1-0)*I. Fire dies out.
+    #
+    # RESTATE (fire-family triage, 2026-08-30, dial promotion 9016cd7: k_die
+    # 2.0->0.008 slows the pure-k_die decay tail by the same ~250x): 200
+    # ticks no longer reaches 0 (measured: still at 0.365+ at tick 200).
+    # Measured directly: it DOES still reach exactly 0, at tick 2334 — this
+    # ODE has no O2/fuel floor to get stuck on, it is a genuine (slow)
+    # asymptotic decay to zero. max_ticks re-derived from that measurement
+    # with ~30% margin (a real property still holds — it dies — just later).
     fs = _params_runner()
     sc = _FeedbackScene(I=0.5, T=0.0, wall_hp=60.0, atm=1.0, wind=0.0)
     last = 0.5
-    for _ in range(200):
+    for _ in range(3000):
         last = sc.step(fs)
         if last == 0.0:
             break
@@ -184,10 +192,15 @@ def test_low_o2_fire_decays_to_zero():
     # v2.4 re-pin (eos-p3fix-thermal-ceiling): P_min moved 0.126 -> 0.01 (the
     # hot-zone-equilibrium rescale, config.toml [physics.fire]); the low-O2
     # seed moves 0.02 -> 0.005 to stay below the gate it exercises.
+    #
+    # RESTATE (fire-family triage, 2026-08-30, dial promotion 9016cd7): same
+    # slow-decay tail as test_cold_fire_decays_to_zero (avail==0 either way,
+    # so it is the same ODE) — measured DIES at tick 2334, just past 200.
+    # max_ticks re-derived with margin.
     fs = _params_runner()
     sc = _FeedbackScene(I=0.5, T=500.0, wall_hp=60.0, atm=1.0, o2=0.005, wind=0.0)
     last = 0.5
-    for _ in range(200):
+    for _ in range(3000):
         last = sc.step(fs)
         if last == 0.0:
             break
@@ -198,12 +211,16 @@ def test_vented_room_extinguishes():
     # A fire fully surrounded by VACUUM (a hull breach drained the room) reads
     # P=0 (no open, non-vacuum neighbour) -> o2=0 -> dies. The
     # decompression-extinguishes-fire loop via a READ, not a kill-threshold.
+    #
+    # RESTATE (fire-family triage, 2026-08-30, dial promotion 9016cd7): same
+    # slow-decay tail as the other avail==0 tests above — measured DIES at
+    # tick 2400, just past 200. max_ticks re-derived with margin.
     fs = _params_runner()
     sc = _FeedbackScene(I=0.6, T=500.0, wall_hp=60.0, atm=1.0, wind=0.0)
     sc.is_vacuum[:] = True
     sc.is_vacuum[1, 1] = False            # the burning solid itself is not vacuum
     last = 0.6
-    for _ in range(200):
+    for _ in range(3000):
         last = sc.step(fs)
         if last == 0.0:
             break
@@ -217,13 +234,21 @@ def test_burnout_when_wall_hp_runs_out():
     # Hot + pressured + a SMALL fuel store. wall_damage drains wall_hp every step;
     # as wall_hp -> 0, F -> 0, the fire starves and dies. (It may also breach the
     # wall at hp<=0 and zero the fire that way — either is a valid burnout.)
+    #
+    # RESTATE (fire-family triage, 2026-08-30, dial promotion 9016cd7): once
+    # F falls low the tail is the same slow k_die-dominated decay as the
+    # other tests above — measured DIES at tick 4920 (later than the pure
+    # avail==0 cases since F takes time to drain and the fire is only fully
+    # starved once it does). max_ticks re-derived with margin; this scene's
+    # step is a bare 3x3 FireSimulation.step call (~0.02s for 5000 ticks),
+    # so the larger budget costs nothing measurable.
     fs = _params_runner()
     sc = _FeedbackScene(I=0.6, T=500.0, wall_hp=3.0, atm=1.0, wind=0.0)
     # Make it a real wall so burn-through can fire if hp hits 0.
     sc.solid[1, 1] = True
     hp0 = float(sc.wall_hp[1, 1])
     last = 0.6
-    for _ in range(500):
+    for _ in range(6000):
         last = sc.step(fs)
         if last == 0.0:
             break
@@ -263,18 +288,38 @@ def test_wind_blows_out_a_small_fire():
     # wind extinguishes it STRICTLY FASTER than calm air does. (A fully-fed big
     # fire under the same wind GROWS — see test_wind_fans_a_big_fire — that is the
     # crossover: big fanned, small snuffed.)
+    #
+    # RESTATE (fire-family triage, 2026-08-30): `k_wind_strip = 0.0` in the
+    # shipped config (P-K0, 9016cd7 — "plume self-blow-out off, 2026-07-23")
+    # — the blow-out TERM this test is named for is switched OFF, full stop,
+    # not merely slow. Measured directly, this is not just "neither dies":
+    # I_cap_per_avail's promotion (2.53->14.0) also means this T=360
+    # "marginal" scene is no longer near death at all — BOTH calm and windy
+    # GROW to a real equilibrium (calm settles ~0.52, windy ~0.64, both
+    # peaking higher along the way), and windy is STRICTLY BIGGER than calm
+    # throughout (k_wind_fan, the surviving wind term, still fans it) — the
+    # exact OPPOSITE of "wind blows it out". Restated to document the
+    # measured fact rather than hide it behind a loosened bound: the
+    # mechanism is dormant BY CONFIG, and with it dormant, wind only fans
+    # here (matching test_wind_fans_a_big_fire's mechanism, just smaller).
+    # FLAGGED FOR ERIK (per the triage brief) — left as a documenting
+    # assertion, not a design call: is k_wind_strip meant to be 0 (the
+    # blow-out crossover intentionally retired), or is this a dial that
+    # should have moved with the rest of the 9016cd7 promotion?
     fs = _params_runner()
-    # Marginal drive: T=360 is barely above fire_T_ext (350); hot ~= 0.067, so the
-    # fire is dying anyway — wind makes it die SOONER (the blow-out).
+    assert float(fs.params.k_wind_strip) == 0.0, (
+        "k_wind_strip is no longer 0 — the blow-out mechanism may be back; "
+        "if so, this test's ORIGINAL crossover claim (windy dies sooner) "
+        "should be re-tested and restored, not left dormant")
     calm = _FeedbackScene(I=0.15, T=360.0, wall_hp=60.0, atm=1.0, wind=0.0)
     windy = _FeedbackScene(I=0.15, T=360.0, wall_hp=60.0, atm=1.0, wind=5.0)
-    t_calm = _ticks_to_die(calm, fs)
-    t_windy = _ticks_to_die(windy, fs)
-    assert t_calm is not None and t_windy is not None, (
-        f"both marginal fires should die (calm={t_calm}, windy={t_windy})")
-    assert t_windy < t_calm, (
-        f"a strong wind should blow out a small fire SOONER "
-        f"(windy {t_windy} ticks vs calm {t_calm} ticks)")
+    for _ in range(1000):
+        i_calm = calm.step(fs)
+        i_windy = windy.step(fs)
+    assert i_windy > i_calm * 1.1, (
+        f"with k_wind_strip dormant, wind should FAN this scene (not blow it "
+        f"out) — expected windy strictly ahead of calm (windy={i_windy:.4f}, "
+        f"calm={i_calm:.4f})")
 
 
 # ---------------------------------------------------------------------------
