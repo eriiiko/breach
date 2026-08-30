@@ -666,6 +666,34 @@ opened tile's mirror) − 1 fixed (airlock). STOP `t_max_phys_hits` 564
 unchanged (ruling 1 above). CUDA combustion/temperature kernels do NOT
 carry `gas_energy` yet — the resident tick breaks the identity until P-G2.
 
+## P-G1c result (2026-08-30): STOPPED at gate — ruling (b)'s premise does not bind; the residual is D4
+
+Energy-form conduction pricing changes `e_gas_cond_sum` by **−0.00066%**
+(ΔT_box +5.01 → +5.01). With `c_v = 1`, `cap_gas == N_raw` exactly and
+the shipped flux `de = N·(T_wall − T_mirror) >> s = (N·T_wall_abs − E +
+(E mod N)) >> s` is already N-weighted; the only unweighted residue is
+the mirror's floor read (`E mod N`, one-signed, ≈ 4.5e-5 box-deg over
+18 s). Patch preserved at `C:\tmp\pg1c_energy_form_face.patch` (a
+correct but negligible improvement; lands with P-G1d if its gates pass).
+
+**Diagnosis (measured, 240-tick means, conduction OFF):** every room's
+wall-adjacent gas layer sits **−20 to −23 game-deg below ambient** while
+the interior sits **+25**; forms in ~5 ticks, never relaxes; not a KE
+complement (`k_drag = 0` unchanged); **scales with `k_work = (γ−1)·T_AMB`**
+(γ = 1.01 → dipole 1.95, 1.10 → 17.0, 1.40 → 48.4). The face-flux energy
+step pumps energy out of wall-adjacent cells into interiors because the
+**solve's divergence stencil implies `û_wall = u_i` (mirror_idx) while
+the energy step uses `û_wall = 0`** — exactly D4, which v3 accepted as
+"conservative and redistributive". It is; but conduction against
+ambient-held solids then *rectifies* the redistribution into a global
+source (SB's D4 probe Σ|p·u| = 3.03e12 > the whole conduction source
+1.85e12). No local conduction pricing can remove it — the gas really is
+20° colder than the wall. **Fix = the solve's divergence in face form
+with `û = 0` at solid faces** (consistent with the kick's zero pressure
+gradient at solid faces and with the energy step) — **P-G1d**, CPU +
+CUDA twin, digest-class; likely also removes the 0.4% cross-wall pressure
+contamination (same stencil).
+
 ## P-G2 results (2026-08-30, `gas-energy-arc` fbe2e74..e676e06)
 
 **AB tol 0 PASS** on the live loop: full-`PhysicsRunner` CPU vs CUDA
