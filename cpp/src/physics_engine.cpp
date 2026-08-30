@@ -304,6 +304,7 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // arc #54 P-G2: the CUDA temperature kernel now carries `gas_energy`
         // through the seam (gas_energy.h), same as the CPU branch below.
         int64_t cond_counters[breach_cuda::TEMPERATURE_ENERGY_SLOTS] = {0};
+        int64_t solid_books = 0;   // P-G5: SNAPSHOT out-param (see below)
         this->temperature.t_max_phys_hits += breach_cuda::temperature_step(
             temperature_mut, heat, heat_inv_shift, face_shift,
             solid, is_vacuum, atmosphere, n_bulk_.data(),
@@ -334,7 +335,9 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             cond_counters,
             // arc #54 §2.7 row 3: the conserved gas energy field + its ambient
             // fold — the SAME two args the CPU branch below passes.
-            gas_energy, t_amb_q);
+            gas_energy, t_amb_q,
+            // P-G5: the solid_energy_books_sum snapshot out-param.
+            &solid_books);
         this->temperature.e_cond_trunc_sum   += cond_counters[0];
         this->temperature.e_cond_cap_sum     += cond_counters[1];
         this->temperature.cond_limit_hits    += cond_counters[2];
@@ -345,6 +348,10 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         this->temperature.e_gas_deposit_sum  += cond_counters[7];  // arc #54
         this->temperature.e_gas_cond_sum     += cond_counters[8];  // arc #54
         this->temperature.e_gas_rail_sum     += cond_counters[9];  // arc #54
+        this->temperature.e_solid_deposit_sum += cond_counters[10]; // P-G5
+        this->temperature.e_solid_cond_sum    += cond_counters[11]; // P-G5
+        this->temperature.e_thermostat_sum    += cond_counters[12]; // P-G5
+        this->temperature.solid_energy_books_sum = solid_books;     // P-G5 (=, not +=)
     } else
 #endif
     {

@@ -353,14 +353,16 @@ PYBIND11_MODULE(breach_physics, m) {
               // temperature check, which compare all ten against the CPU
               // solver's own fields.
               int64_t cnt[breach_cuda::TEMPERATURE_ENERGY_SLOTS] = {0};
+              int64_t solid_books = 0;   // P-G5: snapshot out-param
               const int64_t hits = breach_cuda::temperature_step(
                   temp, hp, shift, fs, sol, vac, atm, nb, wx, wy,
                   no_face, cool_shift, cool_shift_vacuum, o2_vacuum_thresh,
                   c_v, n_floor_heat, gas_advection_rate, t_max_phys, h, w, dt,
                   nullptr, tsol, csg, cool_shift_floor, nullptr, nullptr, cnt,
-                  ge, t_amb_q);
+                  ge, t_amb_q, &solid_books);
               return py::make_tuple(hits, cnt[0], cnt[1], cnt[2], cnt[3],
-                                    cnt[4], cnt[5], cnt[6], cnt[7], cnt[8], cnt[9]);
+                                    cnt[4], cnt[5], cnt[6], cnt[7], cnt[8], cnt[9],
+                                    cnt[10], cnt[11], cnt[12], solid_books);
           },
           py::arg("temperature"), py::arg("heat"), py::arg("heat_inv_shift"),
           py::arg("face_shift"), py::arg("solid"), py::arg("is_vacuum"),
@@ -380,8 +382,10 @@ PYBIND11_MODULE(breach_physics, m) {
           "TemperatureSolver.step); returns (t_max_phys_hits, e_cond_trunc_sum, "
           "e_cond_cap_sum, cond_limit_hits, e_cool_sum, e_vac_wipe_sum, "
           "e_ring_pin_sum, e_deposit_drop_sum, e_gas_deposit_sum, "
-          "e_gas_cond_sum, e_gas_rail_sum) for this call (P-E2a + P-E2b + "
-          "arc #54).");
+          "e_gas_cond_sum, e_gas_rail_sum, e_solid_deposit_sum, "
+          "e_solid_cond_sum, e_thermostat_sum, solid_energy_books_sum) for "
+          "this call (P-E2a + P-E2b + arc #54 + P-G5; the last is a SNAPSHOT, "
+          "not a per-call delta).");
 
     // CUDA-S2: the GPU directional raycaster gate. Casts ONE LightSource on the
     // GPU into the (pre-zeroed) output fields, replicating the CPU cast's per-ray
@@ -1920,6 +1924,17 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readonly("e_gas_deposit_sum",  &TemperatureSolver::e_gas_deposit_sum)
         .def_readonly("e_gas_cond_sum",     &TemperatureSolver::e_gas_cond_sum)
         .def_readonly("e_gas_rail_sum",     &TemperatureSolver::e_gas_rail_sum)
+        // --- arc #54 P-G5: the SOLID side's own closure identity -----------
+        //   Δ solid_energy_books_sum == e_solid_deposit_sum + e_solid_cond_sum
+        //                              + e_thermostat_sum
+        // (temperature_solver.h carries the full statement). Same
+        // accumulate-across-step() idiom as the gas-side counters above;
+        // `solid_energy_books_sum` alone is a SNAPSHOT (recomputed, not
+        // accumulated, every step()).
+        .def_readonly("e_solid_deposit_sum",     &TemperatureSolver::e_solid_deposit_sum)
+        .def_readonly("e_solid_cond_sum",        &TemperatureSolver::e_solid_cond_sum)
+        .def_readonly("e_thermostat_sum",        &TemperatureSolver::e_thermostat_sum)
+        .def_readonly("solid_energy_books_sum",  &TemperatureSolver::solid_energy_books_sum)
         // P2: wind_x/wind_y/dt are OPTIONAL (default None/0.0) so the shipped
         // direct-binding call sites (tests/test_temperature_*.py,
         // tests/cuda_s1_check.py — all pre-P2, 7 positional args) keep working
@@ -2773,6 +2788,11 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readonly("e_comb_export_sum",  &CombustionSolver::e_comb_export_sum)
         .def_readonly("e_comb_heat_sum",    &CombustionSolver::e_comb_heat_sum)
         .def_readonly("e_comb_rail_sum",    &CombustionSolver::e_comb_rail_sum)
+        // arc #54 P-G5: the object-site (thermal-solid burn cell) heat
+        // deposit's landing — a THIRD solid-heat channel, outside identities
+        // (A)/(B) above, that closes the SOLID side's own books
+        // (temperature_solver.h's `solid_energy_books_sum` identity).
+        .def_readonly("e_comb_solid_heat_sum", &CombustionSolver::e_comb_solid_heat_sum)
         .def("step", [](const CombustionSolver& self,
                         py::array_t<int32_t> gas,             // (n_gases,h,w) Q16.16
                         int o2_idx, int inert_n2_idx, int black_smoke_idx,

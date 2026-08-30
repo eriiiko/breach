@@ -465,6 +465,23 @@ public:
     mutable int64_t e_comb_heat_sum    = 0;  // the fire heat deposit (into gas E)
     mutable int64_t e_comb_rail_sum    = 0;  // deposit-site T_MAX_PHYS rail (signed)
 
+    // --- arc #54 P-G5 (design gas_energy_thermostat_ledger_2026-08-30.md) --
+    // `e_comb_solid_heat_sum` — the OBJECT-SITE heat deposit's landing on a
+    // THERMAL SOLID burn cell (furniture/fuel: `object_site` above), priced
+    // as the cell's ACTUAL applied ΔT (post its own T_MAX_PHYS rail) × its
+    // real capacity. This write bypasses `heat[]`/TemperatureSolver::step
+    // entirely (`combustion.cpp` writes `temperature[s]` directly — see the
+    // `object_site` branch), so it was invisible to BOTH the gas-side
+    // identity (A) above (object sites carry no `gas_energy`) and
+    // TemperatureSolver's own `e_solid_deposit_sum` (which only sees its own
+    // Pass 1). It is a THIRD, independent solid-heat channel discovered
+    // closing the P-G5 total ledger (Erik's ruling's "book every channel"):
+    // without it, `tests/_sealedbox_bisect_bench.py`'s TOTAL ledger identity
+    // is BROKEN on every tick with live fire. Folds into the SOLID side's
+    // closure identity (temperature_solver.h) alongside `e_solid_deposit_sum`
+    // / `e_solid_cond_sum` / `e_thermostat_sum`.
+    mutable int64_t e_comb_solid_heat_sum = 0;
+
     // gas                : (n_gases, h, w) Q16.16 density planes, mutated
     // o2_idx/inert_n2_idx/black_smoke_idx : gas ids (simulation/gases.py)
     // temperature        : (h, w) Q16.16, mutated (the heat deposit)

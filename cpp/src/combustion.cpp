@@ -2,6 +2,9 @@
 #include "fixed_point.h"
 #include "gas_energy.h"  // arc #54 P-G1b: THE gas energy seam (design §2.7)
 #include "raycaster.h"   // heat_saturating_add (shared Q16.16 domain)
+#include "temperature_solver.h"  // arc #54 P-G5: conduction::cell_capacity_q,
+                                 // reused (not re-derived) to price the
+                                 // object-site solid heat deposit below
 #include <algorithm>
 #include <cstdint>
 #include <stdexcept>
@@ -1036,9 +1039,28 @@ void CombustionSolver::step(
                                            &e_comb_rail_sum, &t_max_phys_hits);
                 e_comb_heat_sum += de;
             } else {
+                // arc #54 P-G5: this write bypasses TemperatureSolver's Pass 1
+                // entirely (temperature is mutated directly), so it needs its
+                // OWN counter for the SOLID side's closure identity — price
+                // the ACTUAL applied ΔT (post the rail right below) at the
+                // cell's real capacity, the same `cell_capacity_q` kit
+                // TemperatureSolver/its CUDA twin use. Only meaningful (and
+                // only nonzero) when this cell is a thermal solid
+                // (`object_site`); a non-accountable OPEN cell (ring/vacuum)
+                // taking this branch has no thermal mass to price against and
+                // is left uncounted here exactly as it always has been (its
+                // gas_energy side is `e_comb_export_sum`, above).
+                const int32_t t_before = temperature[s];
                 heat_saturating_add(&temperature[s], dT);
                 if (temperature[s] > t_max_phys_q) {               // v2.4 rail
                     temperature[s] = t_max_phys_q; ++t_max_phys_hits;
+                }
+                if (object_site) {
+                    int64_t cap_used_s = 0, cap_real_s = 0;
+                    conduction::cell_capacity_q(true, heat_inv_shift[s], 0, 0,
+                                                0, &cap_used_s, &cap_real_s);
+                    e_comb_solid_heat_sum +=
+                        ((int64_t)temperature[s] - t_before) * cap_real_s;
                 }
             }
         }

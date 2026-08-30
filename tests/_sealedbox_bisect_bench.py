@@ -141,6 +141,16 @@ def run_variant(name, overrides, wall_thick=1, ignite=True, no_conduction=False)
         g.seal_tiles(layer, materials.MAT_GLASS)
     open0 = ~g.solid.copy()
     T0 = g.temperature.astype(np.int64)
+    # P-G5: the box's OWN sealed glass ring (footprint minus its accountable
+    # interior), for a BOX-SCOPED reading of the thermostat's contribution —
+    # the GLOBAL `e_thermostat_sum` (below) is dominated by the crate fire's
+    # own immediate walls, nothing to do with this box 20+ tiles away, so it
+    # cannot be the (ii) subtraction term; this ring mask is.
+    box_footprint = np.zeros_like(g.solid)
+    box_footprint[r0:r1 + 1, c0:c1 + 1] = True
+    box_in_mask = np.zeros_like(g.solid)
+    box_in_mask[box_in] = True
+    box_wall_mask = box_footprint & (~box_in_mask) & g.thermal_solid
 
     # ======================================================================
     # arc #54 SB gate instrumentation (design §6 "SB").
@@ -188,8 +198,9 @@ def run_variant(name, overrides, wall_thick=1, ignite=True, no_conduction=False)
 
     def _ident_terms():
         """The four counter groups §2.8's identity is allowed to move the field
-        with. The EOS group RESETS every step (so it is read absolutely); the
-        other three ACCUMULATE (so they are differenced tick to tick)."""
+        with, PLUS (P-G5) the solid side's own three. The EOS and water-evac
+        groups RESET every step (so they are read absolutely); the rest
+        ACCUMULATE (so they are differenced tick to tick)."""
         return (
             # EOS (design §2.8). `e_entry_resync_sum` is RETIRED at P-G1b and
             # structurally 0; it is kept in the sum so this transcription still
@@ -212,7 +223,34 @@ def run_variant(name, overrides, wall_thick=1, ignite=True, no_conduction=False)
             # cell. The move is conservative INSIDE the accountable set, so the
             # only term is what left it. Reset per call, like the EOS group.
             -int(engine.e_water_evac_export_sum),
+            # P-G5 (design gas_energy_thermostat_ledger_2026-08-30.md): the
+            # SOLID side's own channels — Pass 1's landing on thermal solids,
+            # Pass 2's landing on thermal solids, the thermostat (Pass 3
+            # relax-to-ambient), AND combustion's own `e_comb_solid_heat_sum`
+            # (the object-site fuel deposit that bypasses TemperatureSolver's
+            # Pass 1 entirely — combustion.cpp writes `temperature[s]`
+            # directly). Accumulating, like the tail/combustion/seam groups
+            # above.
+            int(tsolver.e_solid_deposit_sum) + int(tsolver.e_solid_cond_sum)
+            + int(tsolver.e_thermostat_sum) + int(comb.e_comb_solid_heat_sum),
         )
+
+    def _solid_books():
+        """(P-G5) Σ thermal_mass_raw·T_raw over thermal_solid cells — the
+        SOLID side's own books, a SNAPSHOT refreshed by every step()."""
+        return int(tsolver.solid_energy_books_sum)
+
+    def _box_wall_solid_sum():
+        """(P-G5) Σ thermal_mass_raw·T_raw over the box's OWN sealed glass
+        ring only — the same currency `solid_energy_books_sum` uses
+        (cap_real = thermal_mass << FP_SHIFT for a thermal solid, T already
+        ambient-relative), computed directly here since there is no per-
+        region C++ counter (and none is needed for a diagnostic print)."""
+        shift = np.minimum(
+            g.heat_inv_shift[box_wall_mask].astype(np.int64), 30)
+        cap_real = np.int64(1) << (shift + 16)
+        t = g.temperature[box_wall_mask].astype(np.int64)
+        return int((cap_real * t).astype(object).sum())
 
     def _box_ET():
         """(Sum_box E, Sum_box N) over the box's ACCOUNTABLE cells."""
@@ -239,6 +277,7 @@ def run_variant(name, overrides, wall_thick=1, ignite=True, no_conduction=False)
         g.face_shift[:] = sim.physics_runner.engine.temperature.no_face
     E0_box, N0_box = _box_ET()
     KE0 = _ke_sum()
+    box_wall_sum0 = _box_wall_solid_sum()   # P-G5: box-scoped solid books, t=0
     P0_aq = float(g.atmosphere[box_in][open0[box_in]].mean()) / 65536.0
     # MASS vs PRESSURE-FIELD (2026-08-29, Erik's question): N inside the box
     # from the two conservative bulk planes — if P rises while N holds, the
@@ -256,10 +295,16 @@ def run_variant(name, overrides, wall_thick=1, ignite=True, no_conduction=False)
         d = (g.temperature.astype(np.int64) - T0)[sl]
         return float(d[open0[sl]].mean()) / 65536.0
 
-    # (i) the ACROSS-TICK closure identity: bracket the WHOLE tick.
+    # (i) the ACROSS-TICK closure identity: bracket the WHOLE tick. P-G5 adds
+    # a SECOND identity alongside it, over gas books + solid books together
+    # (`ident_total`) — the same bracket, the same per-tick loop, extended
+    # with the solid side's own three channels (design gas_energy_thermostat_
+    # ledger_2026-08-30.md).
     acct0 = g._gas_energy_accountable()
     prev_e = _e_sum(acct0)
+    prev_solid = _solid_books()
     prev_terms = _ident_terms()
+    ident_total = {"worst": 0, "ticks": 0, "bad": 0}
     for t in range(1, END_TICK + 1):
         if t == IGNITE_TICK and ignite:
             ignite_ring(g, sim.edit_queue, *CRATE, 2.5, 1.0)
@@ -267,6 +312,7 @@ def run_variant(name, overrides, wall_thick=1, ignite=True, no_conduction=False)
         sim.step()
         acct = g._gas_energy_accountable()
         e_now = _e_sum(acct)
+        solid_now = _solid_books()
         terms = _ident_terms()
         expected = (terms[0]                      # EOS: absolute (reset/step)
                     + (terms[1] - prev_terms[1])  # tail: accumulating
@@ -278,7 +324,15 @@ def run_variant(name, overrides, wall_thick=1, ignite=True, no_conduction=False)
         if resid:
             ident["bad"] += 1
             ident["worst"] = max(ident["worst"], abs(resid))
-        prev_e, prev_terms = e_now, terms
+        # P-G5: the TOTAL ledger — gas books + solid books — against the same
+        # `expected` PLUS the solid side's own accumulating group (terms[5]).
+        expected_total = expected + (terms[5] - prev_terms[5])
+        resid_total = ((e_now + solid_now) - (prev_e + prev_solid)) - expected_total
+        ident_total["ticks"] += 1
+        if resid_total:
+            ident_total["bad"] += 1
+            ident_total["worst"] = max(ident_total["worst"], abs(resid_total))
+        prev_e, prev_solid, prev_terms = e_now, solid_now, terms
 
     P_aq = float(g.atmosphere[box_in][open0[box_in]].mean()) / 65536.0
     # 2026-08-29 LESSON: seal_tiles pushes the ring's gas INTO the box, so the
@@ -301,17 +355,48 @@ def run_variant(name, overrides, wall_thick=1, ignite=True, no_conduction=False)
     t0 = (E0_box / N0_box / q - t_amb_raw / q) if N0_box else 0.0
     t1 = (E1_box / N1_box / q - t_amb_raw / q) if N1_box else 0.0
     ok_i = (ident["bad"] == 0)
-    ok_ii = abs(t1 - t0) <= 2.0
+    ok_i_total = (ident_total["bad"] == 0)
+    # P-G5 (Erik's ruling 2026-08-30): the box's OWN sealed glass ring warming
+    # over the run, in box-deg equivalent — the sealed box's remaining game-deg
+    # above the old +/-2 tolerance is the seal event's cold boundary shell
+    # being warmed back up by ambient-held walls, i.e. the thermostat doing
+    # its job (directly, and via the arena's own walls staying pinned near
+    # ambient and feeding this box's ring through conduction), to be BOOKED
+    # here rather than chased as a leak. BOX-SCOPED, not the GLOBAL
+    # `e_thermostat_sum` printed below — that global sum is dominated by the
+    # crate fire's own immediate walls (a different, much bigger effect with
+    # nothing to do with this box 20+ tiles away), so it is not the right
+    # subtraction term for a box-local headline.
+    box_wall_sum1 = _box_wall_solid_sum()
+    thermostat_box_deg = ((box_wall_sum1 - box_wall_sum0) / N1_box / q
+                          if N1_box else 0.0)
+    dT_box_raw = t1 - t0
+    dT_box_adj = dT_box_raw - thermostat_box_deg
+    ok_ii = abs(dT_box_adj) <= 2.0
     ok_iii = float(u.max()) < 3.0
     detail = "" if ok_i else (f" ({ident['bad']} bad, worst |resid|="
                               f"{ident['worst']})")
+    detail_total = "" if ok_i_total else (
+        f" ({ident_total['bad']} bad, worst |resid|={ident_total['worst']})")
     print(f"{'':>11}  arc#54  (i) closure identity: "
           f"{'EXACT' if ok_i else 'BROKEN'} across {ident['ticks']} TICKS"
           f"{detail}"
-          f"   (ii) dT_box=D(SumE/SumN)={t1 - t0:+7.2f} "
+          f"   (ii) dT_box-thermostat={dT_box_adj:+7.2f} "
           f"{'PASS' if ok_ii else 'FAIL'} (+/-2)"
           f"   (iii) u_max={float(u.max()):5.1f} "
           f"{'PASS' if ok_iii else 'FAIL'} (<3)")
+    # `e_thermostat_sum` printed in box-deg equivalent too (as asked) — but
+    # flagged GLOBAL: it is the whole-map total (dominated by the crate
+    # fire's own nearby walls), not the box-scoped figure used above.
+    global_thermostat_box_deg = (int(tsolver.e_thermostat_sum) / N1_box / q
+                                 if N1_box else 0.0)
+    print(f"{'':>11}  P-G5    (ii) raw dT_box=D(SumE/SumN)={dT_box_raw:+7.2f}  "
+          f"box-wall thermostat contribution={thermostat_box_deg:+7.2f} box-deg"
+          f"   e_thermostat_sum(GLOBAL)={int(tsolver.e_thermostat_sum)} "
+          f"({global_thermostat_box_deg:+7.2f} box-deg eq., whole map)"
+          f"   TOTAL ledger (gas+solid): "
+          f"{'EXACT' if ok_i_total else 'BROKEN'} across "
+          f"{ident_total['ticks']} TICKS{detail_total}")
     print(f"{'':>11}  probes  D4 wall Sum|p.u|={int(eos.e_wall_work_probe_sum)}"
           f"  ts-wall={int(eos.e_ts_work_sum)}"
           f"  Sum N|u|^2 drift={_ke_sum() - KE0}"

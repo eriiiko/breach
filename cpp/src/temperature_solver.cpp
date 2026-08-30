@@ -247,6 +247,11 @@ void TemperatureSolver::step(
             if (rad_net != nullptr && ts[i]) {
                 const int32_t rn = rad_net[i];
                 if (rn != 0) {
+                    // arc #54 P-G5: booked as the cell's ACTUAL applied ΔT
+                    // (post every clamp below) × its real capacity — see the
+                    // header block's rationale for why this needs no separate
+                    // rail counter.
+                    const int32_t t_before_rad = temperature[i];
                     const int32_t dTr = shr_round0(rn, heat_inv_shift[i]);
                     // SYMMETRIC saturating add: raycaster.h's
                     // heat_saturating_add early-returns on delta <= 0 (its
@@ -287,6 +292,10 @@ void TemperatureSolver::step(
                     if (temperature[i] < 0) {
                         temperature[i] = 0; ++t_low_rail_hits;
                     }
+                    // arc #54 P-G5: the radiation fold's ACTUAL landing on
+                    // this thermal solid, post both rails.
+                    e_solid_deposit_sum +=
+                        ((int64_t)temperature[i] - t_before_rad) * cap_real_[i];
                 }
             }
             int32_t deposit = heat[i];
@@ -295,12 +304,16 @@ void TemperatureSolver::step(
             // solid takes the free per-tile bit-shift (heat >> log2(
             // thermal_mass)); gas takes the N-divided radiative deposit below.
             if (ts[i]) {
+                const int32_t t_before_dep = temperature[i];  // arc #54 P-G5
                 int shift = heat_inv_shift[i];    // log2(thermal_mass), >= 0
                 int32_t gain = deposit >> shift;  // Q16.16 / 2^shift, still Q16.16
                 heat_saturating_add(&temperature[i], gain);
                 if (temperature[i] > t_max_phys_q) {
                     temperature[i] = t_max_phys_q; ++t_max_phys_hits;
                 }
+                // arc #54 P-G5: the heat-deposit's ACTUAL landing, post rail.
+                e_solid_deposit_sum +=
+                    ((int64_t)temperature[i] - t_before_dep) * cap_real_[i];
             } else if (!is_vacuum[i]) {
                 // EOS P3 (TODO closed): the divisor is the REAL bulk-species
                 // N_total (O2+N2, passed by the engine) — the P2 atmosphere
@@ -509,6 +522,11 @@ void TemperatureSolver::step(
             //            ΔT·(cap_real − cap_used) that the faces never moved.
             e_cond_trunc_sum += dT * cap_i - de;
             e_cond_cap_sum   += dT * (cap_real_[i] - cap_i);
+            // arc #54 P-G5: this cell's exact conduction landing, priced at
+            // its REAL capacity — dT*cap_real_[i] == de + (this cell's own
+            // trunc+cap contributions above), i.e. the true ΔT·thermal_mass
+            // this tick, whatever endpoint the energy crossed from.
+            if (ts[i]) e_solid_cond_sum += dT * cap_real_[i];
             temp_new[i] = (int32_t)(ti + dT);
         }
     }
@@ -631,11 +649,30 @@ void TemperatureSolver::step(
             // finding — an "ambient cooling" counter that only ever went one
             // way would hide the creator half of the same line of code.
             e_cool_sum -= (int64_t)loss * cap_real_[i];
+            // arc #54 P-G5 (Erik's ruling 2026-08-30): the SAME quantity,
+            // under the closure identity's canonical name — the two-way
+            // "thermostat" (positive == energy entering from it, e.g. a
+            // sub-ambient wall being warmed back toward ambient).
+            e_thermostat_sum -= (int64_t)loss * cap_real_[i];
         }
     }
 
     // DEBUG probe (temporary): T after Pass 3 (ambient cooling).
     if (dbg_probe_idx >= 0 && dbg_probe_idx < n) dbg_T_post_cooling = temperature[dbg_probe_idx];
+
+    // ---- arc #54 P-G5: solid_energy_books_sum SNAPSHOT ---------------------
+    // Σ over thermal_solid cells of cap_real_[i]*temperature[i], as of the end
+    // of this tick's Pass 3 — the solid-side twin of GameMap.gas_energy's own
+    // Σ_accountable read. NOT accumulated: recomputed fresh every call, since
+    // it prices current STATE, not a flow (see temperature_solver.h).
+    {
+        int64_t solid_sum = 0;
+        for (int i = 0; i < n; ++i) {
+            if (!ts[i]) continue;
+            solid_sum += cap_real_[i] * (int64_t)temperature[i];
+        }
+        solid_energy_books_sum = solid_sum;
+    }
 
     // STEP D (unit damage, §4) will add a further pass here, reading the
     // post-cool temperature field.

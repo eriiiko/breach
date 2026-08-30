@@ -474,6 +474,65 @@ public:
     // t_max_phys_hits/t_low_rail_hits idiom of this class (never reset).
     mutable int64_t e_deposit_drop_sum = 0;
 
+    // --- arc #54 P-G5 (design gas_energy_thermostat_ledger_2026-08-30.md):
+    // THE SOLID-SIDE BOOKS. Erik's ruling (2026-08-30): the walls decaying to
+    // ambient (Pass 3, `cool_shift`, solids only — "the ship's heating
+    // system, not simulated further") is a deliberate, TWO-WAY thermostat: a
+    // wall pinned at ambient also warms a sub-ambient gas/wall through
+    // conduction. Counter only — NO PHYSICS CHANGE, every field trajectory
+    // stays byte-identical; these are pure bookkeeping of what Pass 1/2/3
+    // already compute.
+    //
+    // The solid-side closure identity (the SOLIDS' twin of the gas-side one
+    // above), exact in int64 every tick:
+    //
+    //     Δ solid_energy_books_sum  ==  e_solid_deposit_sum
+    //                                 + e_solid_cond_sum
+    //                                 + e_thermostat_sum
+    //
+    // and therefore the TOTAL ledger (gas books + solid books) closes against
+    // every external channel named across both identities (EOS, the thermal
+    // solver's gas side, combustion, the Python seams, water evac, the solid
+    // deposit, the solid conduction landing, and the thermostat).
+    //
+    // `e_solid_deposit_sum` — Pass 1's landing on THERMAL SOLID cells only:
+    // the radiation fold (rad_net, signed) AND the heat->T bit-shift deposit,
+    // each priced as the cell's OWN actual ΔT (post every rail/clamp that
+    // pass applies) × its real capacity (`cap_real_`). Booking the ACTUAL
+    // applied ΔT (rather than re-deriving a pre-rail quantity) means a
+    // T_MAX_PHYS/low-rail engagement on a thermal solid is counted here
+    // automatically — there is no separate solid-rail counter because this
+    // one already prices whatever the rail actually did.
+    mutable int64_t e_solid_deposit_sum = 0;
+    // `e_solid_cond_sum` — Pass 2's landing on THERMAL SOLID cells: the exact
+    // T-form ΔT × cap_real_ for every ts[i] cell taking the endpoint-divide
+    // path (the SAME `dT` already feeding `e_cond_trunc_sum`/`e_cond_cap_sum`
+    // — this is not a new law, just a THIRD, solid-scoped reading of it).
+    // Whether the energy on the other end of a face came from another solid
+    // (nets to ~0 across the whole solid set, up to the already-counted
+    // trunc/cap residuals) or from an accountable gas cell (the real cross-
+    // book transfer) is not distinguished — the total ΔT·cap_real IS exactly
+    // this tick's change to `solid_energy_books_sum` from conduction, by
+    // construction, so no split is needed for the identity to close.
+    mutable int64_t e_solid_cond_sum = 0;
+    // `e_thermostat_sum` — Pass 3's relax-to-ambient on THERMAL SOLID cells,
+    // SIGNED, positive == energy ENTERING the sim from the thermostat (a
+    // sub-ambient wall being warmed back up). Bit-for-bit the same quantity
+    // `e_cool_sum` above already accumulated (same formula, same site) —
+    // `e_cool_sum` is the P-E2a "open channel" name from before the ruling;
+    // `e_thermostat_sum` is the canonical name the P-G5 closure identity and
+    // the benches use. Both are kept (neither is derived from the other) so
+    // no existing reader of `e_cool_sum` moves.
+    mutable int64_t e_thermostat_sum = 0;
+    // `solid_energy_books_sum` — a SNAPSHOT, not an accumulator: Σ over
+    // thermal_solid cells of `cap_real_[i] * temperature[i]` (thermal_mass_
+    // raw × ΔT_raw, ambient-relative — `temperature` already is), as of the
+    // end of the most recently completed step() call. The solid-side twin of
+    // GameMap.gas_energy: callers diff it tick to tick themselves, exactly as
+    // they diff `Σ_accountable gas_energy`. Recomputed fresh every step() —
+    // NOT a running total — because it is capacity-weighted STATE, not flow.
+    mutable int64_t solid_energy_books_sum = 0;
+
     void  set_gas_advection_rate(float v) { gas_advection_rate = v; }
     float get_gas_advection_rate() const { return gas_advection_rate; }
     void  set_c_v(float v) { c_v = v; }

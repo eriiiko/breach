@@ -108,17 +108,21 @@ int64_t temperature_step(
     // add — the exact CPU twin (temperature_solver.cpp Pass 1). nullptr -> no
     // fold, byte-identical to pre-P-R4.
     const int32_t* rad_net = nullptr,
-    // P-E2a/P-E2b/arc #54 (design §2.3/§2.2/§2.7 row 3): out-param for the TEN
-    // energy counters, accumulated (+=) into the caller's TemperatureSolver
-    // fields so telemetry is identical whichever backend ran. Slot order is
-    // PINNED and mirrored by the C_* enum in cuda_temperature.cu and by the
-    // CPU field order:
+    // P-E2a/P-E2b/arc #54/P-G5 (design §2.3/§2.2/§2.7 row 3/thermostat ledger):
+    // out-param for the energy counters, accumulated (+=) into the caller's
+    // TemperatureSolver fields so telemetry is identical whichever backend
+    // ran. Slot order is PINNED and mirrored by the C_* enum in
+    // cuda_temperature.cu and by the CPU field order:
     //   0 e_cond_trunc_sum  1 e_cond_cap_sum  2 cond_limit_hits
     //   3 e_cool_sum        4 e_vac_wipe_sum  5 e_ring_pin_sum
     //   6 e_deposit_drop_sum (P-E2b, Pass-1 attenuation drop, L3-7)
     //   7 e_gas_deposit_sum (arc #54, Pass 1 heat->E on gas, net)
     //   8 e_gas_cond_sum    (arc #54, Pass 2 conduction into gas E, net)
     //   9 e_gas_rail_sum    (arc #54, Pass 1's T_MAX_PHYS rail, signed)
+    //  10 e_solid_deposit_sum (P-G5, Pass 1 landing on thermal solids, signed)
+    //  11 e_solid_cond_sum    (P-G5, Pass 2 landing on thermal solids, signed)
+    //  12 e_thermostat_sum    (P-G5, Pass 3 relax-to-ambient, signed — the
+    //                          canonical name; the same quantity as slot 3)
     // nullptr -> the counters are still computed on-device (they cost one
     // atomicAdd per engaged cell) but discarded, exactly like the rail counts.
     int64_t* energy_counters_out = nullptr,
@@ -129,10 +133,18 @@ int64_t temperature_step(
     // T-form law; nullptr -> the pre-#54 T-form law, bit for bit. `t_amb_q`
     // is T_AMB_K raw, only read when gas_energy is supplied.
     int64_t* gas_energy = nullptr,
-    int32_t t_amb_q = 0);
+    int32_t t_amb_q = 0,
+    // P-G5: out-param for `solid_energy_books_sum` — a SNAPSHOT (ASSIGNED,
+    // not accumulated) of Σ thermal_mass_raw·T_raw over thermal_solid cells,
+    // as of the end of THIS call. Computed on the HOST after the final D2H
+    // temperature copy (cheap — one more pass over already-resident host
+    // arrays), from the same `conduction::cell_capacity_q` kit the device
+    // capacity build uses, so the two backends cannot drift. nullptr ->
+    // skipped.
+    int64_t* solid_books_out = nullptr);
 
 // The number of slots `energy_counters_out` must have room for.
-constexpr int TEMPERATURE_ENERGY_SLOTS = 10;
+constexpr int TEMPERATURE_ENERGY_SLOTS = 13;
 
 // Backend selection (S1 gate + integration). When true, PhysicsEngine::step_tail
 // runs temperature on the GPU instead of the CPU solver. Defaults false so the

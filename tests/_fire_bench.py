@@ -126,20 +126,35 @@ def main() -> None:
             # the water-displacement evacuation's export (R3-#10) -- host-side,
             # before the EOS, reset per call like the EOS group.
             -int(sim.physics_runner.engine.e_water_evac_export_sum),
+            # P-G5 (design gas_energy_thermostat_ledger_2026-08-30.md): the
+            # SOLID side's own channels — Pass 1/Pass 2 landings on thermal
+            # solids, the thermostat (Pass 3 relax-to-ambient), and
+            # combustion's own object-site solid heat deposit (bypasses
+            # TemperatureSolver's Pass 1 entirely — the crate fuel itself).
+            # Accumulating.
+            int(tsolver.e_solid_deposit_sum) + int(tsolver.e_solid_cond_sum)
+            + int(tsolver.e_thermostat_sum) + int(comb.e_comb_solid_heat_sum),
         )
 
     def _e_acct():
         return _sum_obj(g.gas_energy[g._gas_energy_accountable()])
 
+    def _solid_books():
+        """(P-G5) Σ thermal_mass_raw·T_raw over thermal_solid cells."""
+        return int(tsolver.solid_energy_books_sum)
+
     flame_peak = 0.0
     en_peak = 0.0
+    tally_total = dict(ticks=0, bad=0, worst=0)
     prev_e, prev_terms = _e_acct(), _terms()
+    prev_solid = _solid_books()
     for t in range(1, RUN_TICKS + 1):
         if t == IGNITE_TICK:
             ignite_ring(g, sim.edit_queue, *CRATE, 2.5, 1.0)
         sim.set_paused(False)
         sim.step()
         e_now, terms = _e_acct(), _terms()
+        solid_now = _solid_books()
         expected = (terms[0] + (terms[1] - prev_terms[1])
                     + (terms[2] - prev_terms[2]) + (terms[3] - prev_terms[3])
                     + terms[4])
@@ -148,7 +163,14 @@ def main() -> None:
         if resid:
             tally["bad"] += 1
             tally["worst"] = max(tally["worst"], abs(resid))
-        prev_e, prev_terms = e_now, terms
+        # P-G5: the TOTAL ledger — gas books + solid books.
+        expected_total = expected + (terms[5] - prev_terms[5])
+        resid_total = ((e_now + solid_now) - (prev_e + prev_solid)) - expected_total
+        tally_total["ticks"] += 1
+        if resid_total:
+            tally_total["bad"] += 1
+            tally_total["worst"] = max(tally_total["worst"], abs(resid_total))
+        prev_e, prev_terms, prev_solid = e_now, terms, solid_now
         burning = g.fire > 0
         if burning.any():
             tally["soot_note"] += 1     # ticks with live fire (non-vacuity)
@@ -201,6 +223,25 @@ def main() -> None:
           f"p_ceil={int(eos.p_face_ceil_hits)} "
           f"flux_sat={int(eos.flux_sat_hits)} "
           f"t_max={int(eos.t_max_phys_hits)}")
+    # P-G5 (design gas_energy_thermostat_ledger_2026-08-30.md): the EXTENDED
+    # identity — gas books + solid books — over the same run.
+    print(f"  (5) P-G5 TOTAL ledger (gas+solid) across "
+          f"{tally_total['ticks']} TICKS: "
+          f"{'EXACT' if tally_total['bad'] == 0 else 'BROKEN'}"
+          + ("" if tally_total["bad"] == 0 else
+             f" ({tally_total['bad']} bad, worst |resid| "
+             f"{tally_total['worst']})"))
+    print(f"      e_solid_deposit_sum={int(tsolver.e_solid_deposit_sum)} "
+          f"e_solid_cond_sum={int(tsolver.e_solid_cond_sum)} "
+          f"e_thermostat_sum={int(tsolver.e_thermostat_sum)} "
+          f"e_comb_solid_heat_sum={int(comb.e_comb_solid_heat_sum)}")
+
+    assert tally["bad"] == 0, (
+        f"FIRE gate gas-books identity BROKEN: {tally['bad']} bad tick(s), "
+        f"worst |resid| {tally['worst']}")
+    assert tally_total["bad"] == 0, (
+        f"P-G5 TOTAL ledger BROKEN: {tally_total['bad']} bad tick(s), "
+        f"worst |resid| {tally_total['worst']}")
 
 
 if __name__ == "__main__":
