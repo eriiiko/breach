@@ -222,7 +222,23 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # DIGEST_SPEC_VERSION unchanged (v5, set at P-G0) -- values moved; no field
 # added/removed/retyped.
 # (was df1f5153c9ce60a4de8e9c2198ff8eab3eb8d8267cf8be43d3ede03650b236bd)
-GOLDEN_AGGREGATE = "f6daf44f4c2f563fc88bdb4465fb681a776141a9079d0e7c0f62f5c2b7fbb306"
+# G12 GOLDEN REBASE (2026-08-31, fire session #12 Phase 1,
+# docs/fire_g12_one_map_patch_2026-08-31.md -- the written rationale for this
+# re-baseline). Collapses the canonical game-T -> Kelvin map (K = 293 +
+# k_temp_to_kelvin*T_game) onto slope 1 everywhere, dissolving ruling 6's
+# eos_t_amb_k=290 EOS exception (now 293, equal to kelvin_ambient) and
+# re-deriving T_MIN/rad_scale/T_emit_gate to match (dial moves in the doc
+# §1). This IS a physics move, not a schema move (DIGEST_SPEC_VERSION
+# unchanged -- no field added/removed/retyped): the canonical A/B scenario
+# exercises the EOS every tick, and EOS pressure calibration C = 1/eos_t_amb_k
+# moved 1/290 -> 1/293 (~1%), the gas_energy ledger's N*T_abs offset moved
+# +290 -> +293, radiation net-T^4 exchange reshaped per the doc's E'/E table
+# (anchor-preserved at T=300 game via the re-anchored rad_scale), and the T
+# floor moved 3 units (T_MIN -289 -> -292) -- every pressure/thermal-coupled
+# field trajectory the scenario's fire+atmosphere exercise therefore moves.
+# Re-run twice, independently, confirmed stable before committing.
+# (was f6daf44f4c2f563fc88bdb4465fb681a776141a9079d0e7c0f62f5c2b7fbb306)
+GOLDEN_AGGREGATE = "54f21b36cad6d27856f5e1ebf415ff1c063feb6f06ab3a7f66bd684fda324b1d"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs

@@ -101,8 +101,15 @@ from simulation.entities.registry import registry_content_hash  # noqa: E402
 # face-form wall divergence all move the atmosphere/pump trajectory this
 # golden pins. DIGEST_SPEC_VERSION unchanged. (was
 # 4fa67f37383c9c3abeedef73699f480e2d7f30d35d37397b34719ad653778769)
+# G12 GOLDEN REBASE (2026-08-31, fire session #12 Phase 1,
+# docs/fire_g12_one_map_patch_2026-08-31.md). This loop runs LIVE physics
+# (breach_physics) through the atmosphere/EOS solver every tick, so the
+# EOS pressure calibration move (C = 1/eos_t_amb_k, 1/290 -> 1/293) and the
+# T floor move (T_MIN -289 -> -292) move this trajectory too, same as the
+# GOLDEN_AGGREGATE cascade above. Re-run twice, independently: identical.
+# (was 38a47454a12b09b7815c9b95b672e815f9291bb0b3e42c30386fdb2577b3b6b3)
 LOOP_GOLDEN_TRAJ_DIGEST = \
-    "38a47454a12b09b7815c9b95b672e815f9291bb0b3e42c30386fdb2577b3b6b3"
+    "9daac0a7658102e6d2ae1854fe382a43ba48c492ca7816bf776f8f0506c72d12"
 LOOP_GOLDEN_STEPS = 30
 LOOP_GOLDEN_SEED = 1
 

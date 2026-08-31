@@ -14,7 +14,9 @@ The per-tick quantum ΔN and the D11 band-skip assert are computed ONCE at load
 (:func:`build_pumps`), the door-2 rule (quantize-once, no float in the synced
 path). Post-EOS the pump is a gas-MASS feed: at standard temperature the EOS
 calibration ``p* = C·N·T`` gives ``C·T_amb == 1`` (config echoes the pinned
-DEFAULT_C = 1/290, DEFAULT_T_AMB_K = 290), so a pressure quantum ΔP atm and its
+DEFAULT_C = 1/293, DEFAULT_T_AMB_K = 293 under G12 — issue #12,
+docs/fire_g12_one_map_patch_2026-08-31.md; was 1/290, 290 under ruling 6), so
+a pressure quantum ΔP atm and its
 gas-mass quantum ΔN coincide numerically — but they are derived separately so a
 future non-unit C·T stays honest.
 

@@ -124,9 +124,26 @@ def test_aquarium_seed_counts_as_preexisting_no_tick1_spike():
     assert np.array_equal(before, seed0), (
         "_water_depth_before did not arm with the level seed")
     # No W3 compression pulse from the seed itself: the at-rest tank
-    # displaces nothing NEW, so the interior atmosphere is unchanged.
-    assert np.array_equal(g.atmosphere, atm0), (
-        "tick-1 atmosphere moved on an at-rest seed (compression spike)")
+    # displaces nothing NEW, so the interior atmosphere should only move by
+    # the ordinary EOS equilibrium settle, never a water-shaped pulse.
+    #
+    # G12 NOTE (2026-08-31, issue #12, docs/fire_g12_one_map_patch_2026-08-31.md
+    # §6 point 1): pre-G12 this was bit-identical (no move at all) because the
+    # old EOS pressure calibration (C = 1/290, T_amb_abs = 290) is an exact
+    # reciprocal pair in the Q16.16 chain, so N = quantize(1.0) solved
+    # straight back to itself. Under G12 (C = 1/293) that quantized exactness
+    # is lost by a few LSB, so every interior cell settles from 65536 to
+    # 65542 raw (~0.01%) on tick 1 — confirmed UNIFORM (every moved cell
+    # lands on the same value, not a spatial pulse shape) and confirmed NOT
+    # water-shaped (same calibration-only mechanism as
+    # test_water_displacement.py's wet-static gate, which measures a
+    # different uniform value — 65635 — in its own differently-sized sealed
+    # room; the two need not agree, only each be internally uniform).
+    moved = g.atmosphere != atm0
+    assert not moved.any() or np.all(g.atmosphere[moved] == 65542), (
+        "tick-1 atmosphere moved off the measured G12 uniform settle value "
+        "(65542 raw) -- either a real water-shaped compression spike, or "
+        "this pin needs re-measuring")
 
 
 def test_reset_reapplies_the_seed_without_spike():

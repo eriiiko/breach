@@ -41,9 +41,9 @@ _DESIGN_DOC = "docs/temperature_scale_unification_design_2026-08-13.md"
 # points read from (critique F7: Namespace-vs-dict drift).
 DEFAULTS = {
     "kelvin_ambient": 293.0,
-    "k_temp_to_kelvin": 3.0,
-    "phi_exp": 0.3333333333333333,
-    "eos_t_amb_k": 290.0,
+    "k_temp_to_kelvin": 1.0,
+    "phi_exp": 1.0,
+    "eos_t_amb_k": 293.0,
 }
 
 # The stale keys [render.blackbody] must no longer carry (design §2).
@@ -83,8 +83,12 @@ class TemperatureScale(NamedTuple):
 
     @property
     def C(self) -> float:
-        """``1 / eos_t_amb_k`` — the EOS pressure-calibration constant
-        (unchanged 1/290 under ruling 6; NOT derived from kelvin_ambient)."""
+        """``1 / eos_t_amb_k`` — the EOS pressure-calibration constant. G12
+        (docs/fire_g12_one_map_patch_2026-08-31.md) dissolved ruling 6's
+        exception: eos_t_amb_k now EQUALS kelvin_ambient (293), so
+        C = 1/293 (was 1/290). Still authored as its own field, not derived
+        from kelvin_ambient, so a future frame split could reintroduce the
+        exception without touching this property's shape."""
         return 1.0 / self.eos_t_amb_k
 
 

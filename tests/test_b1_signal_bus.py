@@ -110,8 +110,15 @@ def _step(sim, n=1):
 # other field is untouched (this is still the dormancy gate for everything
 # BUT the new field's own initial value). (was
 # d256de5eb8094e03877e300e98dbe8a19746ce89df73299922a68bed3d7b993e)
+# G12 GOLDEN REBASE (2026-08-31, fire session #12 Phase 1,
+# docs/fire_g12_one_map_patch_2026-08-31.md). Same mechanism as the P-G3
+# rebase note above: physics=None so no EOS step ever runs, but the
+# level-load `gas_energy` seed folds T_AMB_K (eos_t_amb_k 290 -> 293) and
+# the ambient atmosphere seed folds C = 1/eos_t_amb_k (1/290 -> 1/293), so
+# the ONE-TIME seeded planes' bytes move on this dormant, unstepped-EOS
+# scenario. (was 76ba6dc1c2800eae16f9f98f27abd1646c656e4068773a8150e94465e614cc35)
 DOORTEST_NOPHYS_TRAJ_DIGEST = \
-    "76ba6dc1c2800eae16f9f98f27abd1646c656e4068773a8150e94465e614cc35"
+    "701b8d26aadbf7eae4a0b3c9d6895d44e54ee7d10c737dbaf36aa0fa9572a0f8"
 
 
 def test_dormancy_door_present_wire_free_digest_byte_identical():

@@ -42,8 +42,11 @@ static inline float det_sin(float angle) {
 //
 // Every entry is EXACT integer work up to ONE final boundary multiply:
 //   K(t)  = kelvin_ambient + k_temp_to_kelvin·(4t+2)   (bucket midpoint's
-//           absolute K; 299 + 12t at the shipped dials — kelvin_ambient=293,
-//           k_temp_to_kelvin=3, temperature_scale_unification design §3a)
+//           absolute K; 295 + 4t at the shipped dials — kelvin_ambient=293,
+//           k_temp_to_kelvin=1 (G12, issue #12,
+//           docs/fire_g12_one_map_patch_2026-08-31.md; was 299 + 12t under
+//           the old k_temp_to_kelvin=3, temperature_scale_unification design
+//           §3a))
 //   k2    = K*K;  k4 = k2*k2                (int64, exact — see raycaster.h)
 //   E[t]  = clamp_int64( round( rad_scale * k4 ) )
 // NEVER pow()/libm: a 1-ULP CRT difference here would desync a synced int32

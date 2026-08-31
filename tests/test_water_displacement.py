@@ -448,9 +448,33 @@ def test_wet_static_pool_atmosphere_bit_identical():
     # A/B: live displacement vs whole-step no-op — bit-identical atmosphere.
     assert np.array_equal(g_a.atmosphere, g_b.atmosphere), (
         "atmosphere diverged between live and no-op water on a SETTLED pool")
-    # And the live tick left atmosphere bit-untouched vs its own pre-tick
-    # copy (ratio == 1 everywhere -> the multiply was exact identity).
-    assert np.array_equal(g_a.atmosphere, pre_a), (
-        "the ratio==1 displacement path modified atmosphere")
+    # And the live tick left atmosphere UNIFORM vs its own pre-tick copy (the
+    # ratio == 1 displacement path is still an exact identity — this is not
+    # a water/displacement effect, see the G12 note below).
+    #
+    # G12 NOTE (2026-08-31, issue #12, docs/fire_g12_one_map_patch_2026-08-31.md
+    # §6 point 1): pre-G12 this was bit-IDENTICAL (65536 -> 65536) because the
+    # old EOS pressure calibration (C = 1/290, T_amb_abs = 290) is an EXACT
+    # reciprocal pair in this quantized chain, so a cell seeded at N =
+    # quantize(1.0) = 65536 solved straight back to itself. Under G12
+    # (C = 1/293, T_amb_abs = 293) the SAME real-valued identity holds
+    # (1/293 * 293 == 1.0), but the Q16.16 rounding of C = 1/293 no longer
+    # lands on an exact reciprocal of 293 in the solver's own chain, so the
+    # EOS's ordinary equilibrium solve now settles to 65635 raw (~0.15% high,
+    # ~1.001 atm) instead of 65536 -- confirmed uniform across every interior
+    # cell (measured 2026-08-31) and confirmed NOT water-related (the
+    # live-vs-no-op-water assertion just above is unaffected). This is the
+    # SAME calibration shift as tests/test_eos_p1_calibration.py's
+    # effective_pin (65536 -> 65632, a related but not identical quantized
+    # chain) and tests/test_air_boundary.py's PIN_DEFAULT, not a new bug.
+    interior_mask = pre_a != 0
+    assert np.array_equal(g_a.atmosphere[interior_mask],
+                          np.full(int(interior_mask.sum()), 65635)), (
+        "the settled-pool interior equilibrium pressure moved off the "
+        "measured G12 value (65635 raw) -- either a real regression or "
+        "this pin needs re-measuring")
+    assert np.array_equal(g_a.atmosphere[~interior_mask],
+                          pre_a[~interior_mask]), (
+        "non-interior (solid/border) cells moved -- unexpected")
     # No seal: a 0.4 m pool leaves 2.1 m of air, far above flood_eps.
     assert float(g_a.dyn_permeability[4, 4]) == 1.0

@@ -7,7 +7,7 @@ Pure-arithmetic + config-plumbing unit tests
   - the standalone entry point (:func:`temperature_scale.from_toml`) parses
     the SAME real config.toml and agrees with the CFG path,
   - ``tools/fire_tune_plot.kelvin_map()`` (the tool-facing wrapper) returns
-    the same (293.0, 3.0) via the real config,
+    the same (293.0, 1.0) via the real config (G12: was (293.0, 3.0)),
   - the phi_exp value-freeze assert lands on exactly 65536 counts,
   - the migration guard hard-errors on a stale ``[render.blackbody]`` key,
     or a stale ``[physics.eos]`` t_amb_k/C key (P-K3).
@@ -35,12 +35,14 @@ import temperature_scale  # noqa: E402
 # ---- CFG-based entry point ----------------------------------------------
 
 def test_load_reads_temperature_scale_section_from_cfg():
+    # G12 (issue #12, docs/fire_g12_one_map_patch_2026-08-31.md): the
+    # collapse to slope 1, ambient 293 everywhere.
     ts = temperature_scale.load()
     assert ts.kelvin_ambient == 293.0
-    assert ts.k_temp_to_kelvin == 3.0
-    assert ts.phi_exp == 1.0 / 3.0
-    assert ts.eos_t_amb_k == 290.0
-    assert ts.to_kelvin(300.0) == pytest.approx(293.0 + 3.0 * 300.0)
+    assert ts.k_temp_to_kelvin == 1.0
+    assert ts.phi_exp == 1.0
+    assert ts.eos_t_amb_k == 293.0
+    assert ts.to_kelvin(300.0) == pytest.approx(293.0 + 1.0 * 300.0)
     assert ts.from_kelvin(ts.to_kelvin(300.0)) == pytest.approx(300.0)
 
 
@@ -64,7 +66,7 @@ def test_from_toml_matches_cfg_on_the_real_config():
 
 def test_fire_tune_plot_kelvin_map_matches_real_config():
     import fire_tune_plot
-    assert fire_tune_plot.kelvin_map() == (293.0, 3.0)
+    assert fire_tune_plot.kelvin_map() == (293.0, 1.0)  # G12: 3.0 -> 1.0
 
 
 # ---- phi_exp value-freeze: quantized EOS slope == 65536 counts -----------

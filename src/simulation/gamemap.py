@@ -1284,7 +1284,9 @@ class GameMap:
           ``FP_ONE`` (65536), and ``pin_q = FP_ONE`` to match.
 
         Note ``n_total_q != pin_q`` in general: on an ambient map the effective
-        pin is ``p*(N)``, 65540 raw at Earth defaults, not 65536. Callers that
+        pin is ``p*(N)``, 65632 raw at Earth defaults (G12, issue #12,
+        docs/fire_g12_one_map_patch_2026-08-31.md; was 65540 pre-G12), not
+        65536. Callers that
         mean *mass* must use ``n_total_q``; callers that mean *displayed
         pressure* must use ``pin_q``. Never assert the two are equal.
 
@@ -1435,8 +1437,10 @@ class GameMap:
         # Atmosphere: interior air + (on ambient maps) the reservoir ring seed
         # to the ambient fill; 0.0 at solid tiles and vacuum. On space maps the
         # fill is FP_ONE and is_ambient is empty, so this is byte-identical to
-        # before. On ambient maps the fill is the effective pin (65540 raw at
-        # defaults — the sim's own p*(N_amb, 0)), so the interior materializes
+        # before. On ambient maps the fill is the effective pin (65632 raw at
+        # defaults under G12, issue #12,
+        # docs/fire_g12_one_map_patch_2026-08-31.md; was 65540 pre-G12 — the
+        # sim's own p*(N_amb, 0)), so the interior materializes
         # flat against the ring pin (spec §1). S2c: int32 Q16.16. _update_caches
         # reassigns the cache fields (the engine re-fetches field pointers each
         # step), and the running atmosphere is snapshotted/restored around this
@@ -2338,8 +2342,10 @@ class GameMap:
             # channel (an RL observation).
             #
             # The value is the map's effective PIN, not n_total_q: p*(N_amb, 0)
-            # is 65540 raw (1.000061 atm) at Earth defaults, not 65536. Do not
-            # assert p* == N — the seed is stated purely in N.
+            # is 65632 raw (1.001465 atm) at Earth defaults under G12 (issue
+            # #12, docs/fire_g12_one_map_patch_2026-08-31.md; was 65540 raw /
+            # 1.000061 atm pre-G12), not 65536. Do not assert p* == N — the
+            # seed is stated purely in N.
             self.atmosphere[fy, fx] = pin_q
             # §3.1 — T := 0 explicitly, on EVERY destroyed tile including a
             # breach. The energy books sum `n_bulk * T_game` over a set that

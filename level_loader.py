@@ -769,7 +769,9 @@ def _parse_ambient(raw: dict, toml_path, boundary: str, tilemap: np.ndarray):
     would reject the gate-calibrated σ — ambient.py); ``sponge_u_damp ∈
     [0, FP_ONE)``. An ambient map with no SPACE-code ring warns (legal but
     ring-dormant). The effective pin is derived N-primary through the sim's own
-    p* chain (65540 raw at defaults) and echoed in the __main__ load summary."""
+    p* chain (65632 raw at defaults under G12 -- issue #12,
+    docs/fire_g12_one_map_patch_2026-08-31.md; was 65540 pre-G12) and echoed
+    in the __main__ load summary."""
     tbl = raw.get("ambient")
     if boundary != BOUNDARY_AMBIENT:
         if tbl is not None:
@@ -1009,8 +1011,10 @@ class LevelData:
     # ---- ambient dials (BC build; boundary_conditions_spec_2026-07-19) ---
     # AmbientConfig on planetside maps (Earth-normal defaults when [ambient]
     # is absent), None on space maps. Carries the derived N-primary split +
-    # the effective pin (65540 raw at defaults) that GameMap seeds and B3
-    # pins. Defaulted tail: synthetic LevelData(...) in tests stays valid.
+    # the effective pin (65632 raw at defaults under G12, issue #12,
+    # docs/fire_g12_one_map_patch_2026-08-31.md; was 65540 pre-G12) that
+    # GameMap seeds and B3 pins. Defaulted tail: synthetic LevelData(...) in
+    # tests stays valid.
     ambient: Optional["object"] = None
     # ---- --res base-resolution recovery (A6, S1 — a6 doors design §3) ----
     # `_upscale_level` (main.py) divides tile_size_m by the factor BEFORE

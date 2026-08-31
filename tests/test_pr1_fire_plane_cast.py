@@ -67,9 +67,10 @@ What is NEW and gated here (ruling A1, gate (e)):
         receives. The painter's air-heating died with the painter.
   (v)   TILE SET / ORDER — as above, against the legacy painter cast.
   (vi)  THE E° BAKE — exact integers, no libm: E[t] == round(rad_scale * K^4)
-        with K = kelvin_ambient + k_temp_to_kelvin*(4t+2) (== 299 + 12t at the
-        canonical [physics.temperature_scale] dials) computed by repeated
-        multiplication.
+        with K = kelvin_ambient + k_temp_to_kelvin*(4t+2) (== 295 + 4t at the
+        canonical [physics.temperature_scale] dials, G12 — issue #12,
+        docs/fire_g12_one_map_patch_2026-08-31.md; was 299 + 12t pre-G12)
+        computed by repeated multiplication.
 
 The CUDA half (CPU vs GPU at tolerance 0) is tests/cuda_pr1_fire_plane_check.py
 (skips cleanly without a CUDA build).
@@ -103,13 +104,25 @@ DIALS = dict(fire_ray_count=8, range_base=2.0, range_per_i=3.0,
              intensity_base=0.3, intensity_per_i=0.7, color=(1.0, 0.6, 0.2))
 
 
-def _make_raycaster(rad_scale=RAD_SCALE, t_emit_gate=180.0):
+def _make_raycaster(rad_scale=RAD_SCALE, t_emit_gate=180.0,
+                    kelvin_ambient=None, k_temp_to_kelvin=None):
+    """``kelvin_ambient``/``k_temp_to_kelvin`` default to None, meaning "leave
+    the Raycaster struct's own compiled default" (293/3.0, unchanged by G12 —
+    C++ struct defaults are comment-only, issue #12,
+    docs/fire_g12_one_map_patch_2026-08-31.md) — every gate in this file below
+    pins RAD_SCALE against THAT default map, deliberately, so most callers
+    never pass these. Only :func:`test_emissive_table_is_the_exact_integer_bake`
+    cross-checks against the LIVE config map and passes them explicitly."""
     rc = bp.Raycaster()
     rc.light_cull = 0.01
     rc.heat_cull = 0.01
     rc.smoke_absorb_scale = 1.4
     rc.rad_scale = rad_scale
     rc.T_emit_gate = t_emit_gate
+    if kelvin_ambient is not None:
+        rc.kelvin_ambient = kelvin_ambient
+    if k_temp_to_kelvin is not None:
+        rc.k_temp_to_kelvin = k_temp_to_kelvin
     # P-F1a / v7 rule 4: emission rays reach RADIATION_RANGE, a stability-class
     # constant >= the grid diagonal of the largest shipping level. Pinned here
     # (rather than left at the default) so these scenes measure the shipped law:
@@ -502,7 +515,8 @@ def test_emissive_table_is_the_exact_integer_bake():
     # verified") — deliberately NOT tied to the shipped RAD_SCALE pin; they
     # exercise the no-saturation property across a range, old and new.
     for scale in (1.0e-5, 3.0e-6):
-        rc = _make_raycaster(rad_scale=scale)
+        rc = _make_raycaster(rad_scale=scale,
+                             kelvin_ambient=amb, k_temp_to_kelvin=slope)
         tab = rc.emissive_table()
         assert tab.shape == (4000,) and tab.dtype == np.int64, (
             f"the E table must be int64 since P-F1a, got {tab.dtype}")

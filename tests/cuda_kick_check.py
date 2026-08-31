@@ -121,11 +121,17 @@ CONSTS = dict(
     # (CONSTS_DRAG) is what exercises the mechanism itself.
     k_drag=0.0,
     # arc #54 §2.1: T_AMB_K — folds the derived k_ke constant (LOAD-BEARING).
-    t_amb_k=290.0,
+    # Explicit test parameter fed to BOTH the CPU and GPU twins (CROSS-ARCH
+    # PARITY is the point here, not matching any one "production" value), so
+    # it need not track EOSSolver::T_AMB_K's compiled-in struct default
+    # (still 290.0f, unchanged — C++ defaults are comment-only under G12,
+    # issue #12, docs/fire_g12_one_map_patch_2026-08-31.md); kept at the
+    # config's live eos_t_amb_k (293.0) for realism.
+    t_amb_k=293.0,
 )
 # the CPU reference's own two D10-layout, functionally-dormant params (never
 # read inside the loop any more — arc #54 moved the T rails to §2.6).
-DORMANT_T_MIN = -289.0
+DORMANT_T_MIN = -292.0  # G12: config's T_MIN, -289 -> -292 (issue #12); dormant here regardless
 DORMANT_T_MAX_PHYS = 16000.0
 
 # A drag-ACTIVE variant: k_drag > 0 (dormancy branch open). `k_drag_heat_frac`
@@ -301,7 +307,7 @@ def _make_random_inputs(rng, h, w, wind_mag, t_lo, t_hi, p_mag, n_scale):
     wy[zero_mask] = 0
 
     t = rng.random(n) * (t_hi - t_lo) + t_lo
-    t[rng.random(n) < 0.08] = -289.0          # at the T_MIN floor
+    t[rng.random(n) < 0.08] = -292.0          # at the T_MIN floor (G12: was -289.0)
     t[rng.random(n) < 0.05] = 15999.0         # a hair under the ceiling
     temperature = _quantize(t).reshape(h, w)
 
@@ -392,7 +398,7 @@ def _make_rail_forcer(h=24, w=24):
     cy2 = 20
     inp["wind_x"][cy2, :cx] = _quantize(-400.0)
     inp["wind_x"][cy2, cx:] = _quantize(400.0)
-    inp["temperature"][cy2, cx] = _quantize(-289.0)
+    inp["temperature"][cy2, cx] = _quantize(-292.0)  # G12: was -289.0
     for k in inp:
         inp[k] = np.ascontiguousarray(inp[k])
     return inp
@@ -678,7 +684,8 @@ def part2_trajectory() -> bool:
     # THE BLAST: a hot core + an O2 overpressure pocket (the P6.2 drivers),
     # plus a NEAR-CEILING pocket (15500 K on a 16000 K rail) so compression
     # pockets push T onto the T_MAX_PHYS rail and c_LOCAL rises past U_MAX
-    # (c_amb*sqrt(15790/290) ~ 2214 m/s) — the counted rails engage in-engine.
+    # (c_amb*sqrt(15793/293) ~ 2203 m/s, G12; was ~2214 m/s at 15790/290) —
+    # the counted rails engage in-engine.
     q = atmosphere_fixed.quantize_scalar
     g.temperature[10:16, 10:16] += q(5000.0)
     g.gas[O2, 11:14, 11:14] += q(4.0)

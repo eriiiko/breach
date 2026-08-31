@@ -113,8 +113,8 @@ def test_cold_tile_has_no_glow():
 
 def test_hot_extreme_saturates_intensity():
     r = BlackbodyRamp()
-    # T_MAX_PHYS = 16000 game units -> kelvin ~= 32293, well past kelvin_ref;
-    # intensity clamps to intensity_max.
+    # T_MAX_PHYS = 16000 game units -> kelvin ~= 16293 (G12: was ~32293 under
+    # the ×3 map), well past kelvin_ref; intensity clamps to intensity_max.
     _rgb, i = r.light_color(16000.0)
     assert np.isclose(i, r.intensity_max)
 
@@ -183,7 +183,7 @@ def test_from_config_missing_section_uses_defaults():
         pass
     r = BlackbodyRamp.from_config(_NS())
     assert r.kelvin_ambient == 293.0
-    assert r.k_temp_to_kelvin == 3.0
+    assert r.k_temp_to_kelvin == 1.0  # G12: 3.0 -> 1.0
     assert r.lut_size == 256
 
 
@@ -211,13 +211,12 @@ def test_pack_cold_is_transparent():
 
 def test_pack_warm_tile_is_warm_and_visible():
     r = BlackbodyRamp()
-    # A hot flame-zone tile (~1500 game units -> ~4793 K under the 293+3*T
-    # map): visible, warm (R >= B), and the peak hue channel saturates to 255
-    # (brightness lives in alpha). Kept comfortably below the ~6600 K point
-    # where the Tanner Helland fit tips blue-white (test_chroma_desaturates_
-    # with_temperature) — 3000 game units crossed that line once
-    # k_temp_to_kelvin moved 2.0 -> 3.0 (temperature_scale_unification_
-    # design_2026-08-13), which isn't what this test is checking.
+    # A hot flame-zone tile (~1500 game units -> ~1793 K under the G12 293+T
+    # map, was ~4793 K under the old 293+3*T map): visible, warm (R >= B), and
+    # the peak hue channel saturates to 255 (brightness lives in alpha). Kept
+    # comfortably below the ~6600 K point where the Tanner Helland fit tips
+    # blue-white (test_chroma_desaturates_with_temperature), which isn't what
+    # this test is checking.
     packed = pack_emissive_rgba(r, _field([[1500]]))
     px = packed[0, 0]
     assert px[3] > 0                        # visible

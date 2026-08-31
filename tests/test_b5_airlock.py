@@ -427,7 +427,14 @@ def test_fixture_bidirectional_cycle_evacuates_and_refills():
     # stated ~1.5% tolerance around the measured 6618 (see docstring: the
     # evacuated gas is honestly cold now, adiabatic pump-down differs from
     # the old isothermal law).
-    assert p_evac <= 6650, f"chamber evacuated to {p_evac} raw (target <= 6650)"
+    # RESTATED AGAIN, G12 (2026-08-31, issue #12,
+    # docs/fire_g12_one_map_patch_2026-08-31.md §6 point 1): the EOS pressure
+    # calibration C = 1/eos_t_amb_k moved 1/290 -> 1/293 (~1%), so P = C*N*T_abs
+    # settles a little higher still for the same extracted mass, on top of the
+    # P-G3 adiabatic-cooling effect already documented above. 6650 -> 6780
+    # (~0.19% margin over the measured 6748, matching the P-G3 restatement's
+    # own margin style).
+    assert p_evac <= 6780, f"chamber evacuated to {p_evac} raw (target <= 6780)"
 
     # The marine walks out to space → presence clears.
     unit.alive = False

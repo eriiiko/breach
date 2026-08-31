@@ -93,7 +93,7 @@ def test_packs_all_fields_dequantized():
     assert (r.tx, r.ty) == (tx, ty)
     assert r.material == "wood"
     assert r.t_game == pytest.approx(300.0, abs=1e-3)
-    assert r.kelvin == pytest.approx(_TS.to_kelvin(300.0), abs=1e-2)  # 293 + 3*300
+    assert r.kelvin == pytest.approx(_TS.to_kelvin(300.0), abs=1e-2)  # G12: 293 + 1*300
     assert r.fire == pytest.approx(0.5, abs=1e-4)
     assert r.gases["steam"] == pytest.approx(0.25, abs=1e-4)
     assert r.gases["smoke"] == pytest.approx(0.50, abs=1e-4)

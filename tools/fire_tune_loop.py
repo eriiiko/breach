@@ -714,7 +714,7 @@ def scorecard(m):
         from fire_tune_plot import kelvin_map   # (tools/ is sys.path[0])
         amb, slope = kelvin_map()
     except Exception:
-        amb, slope = 293.0, 3.0  # [physics.temperature_scale] defaults
+        amb, slope = 293.0, 1.0  # [physics.temperature_scale] defaults (G12)
     print(f"{'flame plateau T (game)':<26}{m['flame_T']:>16.0f}   "
           f"{T['flameT_lo']:.0f}-{T['flameT_hi']:.0f}  "
           f"(= {amb+slope*T['flameT_lo']:.0f}-{amb+slope*T['flameT_hi']:.0f} K)  "

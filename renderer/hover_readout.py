@@ -80,21 +80,18 @@ def pack_hover_readout(gmap, tx: int, ty: int,
 
     material = _material_name(gmap, ty, tx)
     t_game = float(gmap.temperature[ty, tx]) / TEMP_SCALE
-    # Kelvin display, two frames (T_abs arc, design D-7/C12 + HUMAN-TEST
-    # 2026-08-21: Erik read "-574 K" off a 1.1 K cell and rightly asked if
-    # the T_MIN floor had failed). The canonical render map
-    # (kelvin_fn: K = 293 + 3*T_game) matches the visible glow and stays
-    # the display for T >= ambient — but it is INVALID below ambient (goes
-    # negative from T_game < -97.67). Sub-ambient gas therefore displays
-    # the EOS's own absolute frame (K = T_game + 290, [physics.eos]
-    # eos_t_amb_k — always positive, floor exactly 1 K), labeled "K_eos"
-    # so the two frames cannot be confused.
-    if t_game >= 0.0:
-        kelvin = float(kelvin_fn(t_game))
-        kelvin_label = "K"
-    else:
-        kelvin = 290.0 + t_game
-        kelvin_label = "K_eos"
+    # Kelvin display, ONE frame (G12, issue #12,
+    # docs/fire_g12_one_map_patch_2026-08-31.md): the canonical map
+    # (kelvin_fn: K = 293 + T_game) is now the SAME frame the EOS
+    # thermodynamics already uses, and it is valid all the way to the T_MIN
+    # floor (T_game = -292 -> K = 1, never negative) — so there is no longer
+    # a sub-ambient regime to special-case. This dissolves the dual-frame
+    # "K_eos" patch that used to paper over the old ×3 map going unphysical
+    # below T_game ~ -97.67 (the T_abs arc's "-574 K" symptom, design
+    # D-7/C12 + HUMAN-TEST 2026-08-21) — that was a symptom of the ×3 map,
+    # not a real sub-ambient case.
+    kelvin = float(kelvin_fn(t_game))
+    kelvin_label = "K"
     fire = float(gmap.fire[ty, tx]) / _FIRE_FP_ONE_F
     gases = {
         GAS_NAMES[g]: float(gmap.gas[g][ty, tx]) / _GAS_FP_ONE_F

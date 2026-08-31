@@ -545,7 +545,10 @@ def test_upscale_without_air_stays_dormant(tmp_path):
 
 from simulation import ambient as _amb                        # noqa: E402
 
-PIN_DEFAULT = 65540                 # p*(quantize(1.0), ΔT=0) — NOT 65536 (the lattice)
+PIN_DEFAULT = 65632                 # p*(quantize(1.0), ΔT=0) — NOT 65536 (the lattice
+                                     # image of 1/293 under G12, issue #12,
+                                     # docs/fire_g12_one_map_patch_2026-08-31.md; was
+                                     # 65540 under ruling 6's eos_t_amb_k=290)
 
 
 def _ambient_tilemap(n: int = ROOM, interior: int = 0) -> np.ndarray:
@@ -573,7 +576,7 @@ def test_ambient_absent_table_gets_earth_defaults(tmp_path):
     assert a is not None
     assert a.p_amb == 1.0 and a.o2_frac == 0.21
     assert a.sponge_width == _amb.DEFAULT_SPONGE_WIDTH
-    assert a.pin_q == PIN_DEFAULT              # 65540, the lattice image of 1.0 atm
+    assert a.pin_q == PIN_DEFAULT              # 65632, the lattice image of 1.0 atm
     assert a.n_o2_q == 13763 and a.n_n2_q == 51773
     assert a.n_total_q == FP_ONE               # N is primary, sums to quantize(p_amb)
 

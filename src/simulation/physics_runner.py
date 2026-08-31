@@ -452,8 +452,9 @@ class PhysicsRunner:
         self.eos.N_FLOOR_SOLVER = _ep("N_FLOOR_SOLVER", self.eos.N_FLOOR_SOLVER)
         # P-K3: [physics.eos] no longer carries t_amb_k/C — both are read via
         # the canonical accessor (_ts, loaded above for the raycaster's
-        # kelvin map). eos_t_amb_k stays 290 (ruling 6, a deliberate exception
-        # to kelvin_ambient); S_EOS is the phi_exp*k_temp_to_kelvin slope
+        # kelvin map). G12 (issue #12, docs/fire_g12_one_map_patch_2026-08-31.md)
+        # dissolved ruling 6's exception: eos_t_amb_k now equals kelvin_ambient
+        # (293, was 290); S_EOS is the phi_exp*k_temp_to_kelvin slope
         # mechanism, value-frozen to 1.0 exactly this arc (byte-identical).
         self.eos.T_AMB_K        = float(_ts.eos_t_amb_k)
         self.eos.C              = float(_ts.C)
@@ -1735,7 +1736,7 @@ class PhysicsRunner:
         ``EOSSolver::step`` performs every tick (``std::max<q16>(1,
         quantize(T_AMB_K))``), and the SAME value
         :meth:`GameMap._gas_energy_t_amb_raw` derives. Read off the LIVE
-        ``self.eos.T_AMB_K`` (never a hardcoded 290) so a config or test
+        ``self.eos.T_AMB_K`` (never a hardcoded 293, or 290 pre-G12) so a config or test
         override reaches every consumer of the gas-energy seam together.
         """
         from simulation import gas_fixed as _gas_fx

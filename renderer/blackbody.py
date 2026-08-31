@@ -170,7 +170,7 @@ class BlackbodyRamp:
         kelvin_ceil: float = 10000.0,
         lut_size: int = 256,
         kelvin_ambient: float = 293.0,
-        k_temp_to_kelvin: float = 3.0,
+        k_temp_to_kelvin: float = 1.0,
         kelvin_glow_min: float = 800.0,
         kelvin_ref: float = 3000.0,
         intensity_exponent: float = 4.0,
@@ -264,8 +264,9 @@ class BlackbodyRamp:
         optional-section idiom, a level/config without the section still
         gets the design defaults) and the game-T -> Kelvin map itself from
         ``[physics.temperature_scale]`` (the ONE canonical table shared with
-        radiation + the tuning tools — design
-        docs/temperature_scale_unification_design_2026-08-13.md §2/§3d)."""
+        radiation + the tuning tools — G12, issue #12,
+        docs/fire_g12_one_map_patch_2026-08-31.md, superseding
+        temperature_scale_unification_design_2026-08-13 §2/§3d)."""
         render = getattr(cfg, "render", None)
         bb = getattr(render, "blackbody", None)
         g = lambda name, default: float(getattr(bb, name, default))
@@ -277,7 +278,7 @@ class BlackbodyRamp:
             kelvin_ceil=g("kelvin_ceil", 10000.0),
             lut_size=int(getattr(bb, "lut_size", 256)),
             kelvin_ambient=gt("kelvin_ambient", 293.0),
-            k_temp_to_kelvin=gt("k_temp_to_kelvin", 3.0),
+            k_temp_to_kelvin=gt("k_temp_to_kelvin", 1.0),
             kelvin_glow_min=g("kelvin_glow_min", 800.0),
             kelvin_ref=g("kelvin_ref", 3000.0),
             intensity_exponent=g("intensity_exponent", 4.0),

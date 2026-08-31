@@ -396,45 +396,66 @@ wall_damage       = 0.03   # wall HP lost per second per unit intensity (KEPT �
 #   survival  *= (1 - a_r)                                   (AFTER the deposit)
 # with a_x = the material's `heat_atten` (absorptivity == emissivity, Kirchhoff),
 # tau the running material transmittance, w = 1/fire_ray_count, and E° the baked
-# black-body table E°(T) = rad_scale * (293 + 3*T_game)^4 — the canonical
+# black-body table E°(T) = rad_scale * (293 + T_game)^4 — the canonical
 # game-T -> Kelvin map now lives in [physics.temperature_scale]
-# (kelvin_ambient=293, k_temp_to_kelvin=3); this is the SAME map baked into
-# the raycaster's E° table, render blackbody, and the tuning tools (P-K2,
-# docs/temperature_scale_unification_design_2026-08-13.md §2/§3a-b).
+# (kelvin_ambient=293, k_temp_to_kelvin=1 — G12, issue #12,
+# docs/fire_g12_one_map_patch_2026-08-31.md); this is the SAME map baked
+# into the raycaster's E° table, render blackbody, and the tuning tools
+# (formerly ×3, P-K2; the ONE map now, superseding
+# temperature_scale_unification_design_2026-08-13 §2/§3a-b).
 #
 # rad_scale — THE EMISSION CALIBRATION. It folds sigma, the 0.833 m² tile face,
 # the per-tick dt and the game->Kelvin mapping into one number: heat counts per
-# K^4. RE-ANCHORED AT P-K2 for the ×3 map (was 1.0e-5, derived under the old
-# ×2 map 293 + 2*T_game): the value is chosen to PRESERVE EMITTED FLUX at the
-# P-F1b plateau anchor T_a = 300 game, which reads K=893 under the old map and
-# K=1193 under the new one —
-#     rad_scale' = 1.0e-5 * (893/1193)^4 = 1.0e-5 * 0.313938 = 3.1394e-6
+# K^4. RE-ANCHORED AT G12 for the ×1 map (was 3.1394e-6, derived under the
+# old ×3 map 293 + 3*T_game — itself a re-anchor of the original ×2-era
+# 1.0e-5): the value is chosen to PRESERVE EMITTED FLUX at the P-F1b plateau
+# anchor T_a = 300 game, which reads K=1193 under the old (×3) map and K=593
+# under the new (×1) one —
+#     rad_scale' = 3.1394e-6 * (1193/593)^4 = 3.1394e-6 * 16.3811 = 5.1427e-5
+# cross-checked against the original ×2-era literal (the chain must agree
+# through both re-anchors): 1.0e-5 * (893/593)^4 = 5.1426e-5, agrees.
 # (the ONE shipped literal — exactly one so two machines syncing config.toml
-# via git can't diverge). Flux is IDENTICAL at the plateau; E'/E ratio vs. the
-# old map: 0.31 @ T=0, 0.87 @ 200, 1.00 @ 300 (the anchor), 1.09 @ 400,
-# 1.21 @ 600, 1.34 @ 1000, asymptote 1.59 — never exceeds 2x.
+# via git can't diverge). Flux is IDENTICAL at the plateau; E'/E ratio vs.
+# the ×3 map, by stored game-T: 16.38x @ 0 (gated, see below), 3.16x @ 100,
+# 1.52x @ 200, 1.00x @ 300 (the anchor), 0.69x @ 443, 0.54x @ 600,
+# 0.39x @ 1000, asymptote 0.20x. Direction of change: the honest map
+# compresses K's dynamic range, so radiation varies less steeply across
+# game-T — hot flames radiate relatively less than before, warm solids
+# relatively more (intended physics; *sub-T_emit_gate solids don't cast, so
+# the ambient-end blowup is mostly unreachable).
 #
-# The config's own two-tile ignition inequality, RE-DERIVED under the ×3
-# anchors (was: furniture a=0.5, his=3, cool_shift=9, a 443-game emitter
-# K_s=1179, the 280-game ignition point K_r=853, needing rad_scale >= 6.5e-6
-# at two tiles, ×1.54 margin under the shipped 1.0e-5):
+# The config's own two-tile ignition inequality, RE-DERIVED under G12 for the
+# ×1 map with CURRENT dials (per the spec's tripwire: furniture/wood/kindling
+# cool_shift is 13 in this config, not the stale 9 the ×3-era comment used).
+# Old (×3, cool_shift=9): furniture a=0.5, his=3, a 443-game emitter K_s=1622,
+# the 280-game ignition point K_r=1133, needing rad_scale >= 1.73e-6 at two
+# tiles. Scaling that requirement to the ×1 map (K_s=293+443=736,
+# K_r=293+280=573 -> dK^4=1.856e11, down from 5.274e12 under ×3) and to
+# cool_shift 13 (2^(9-13) — the P-K0 promotion already shipped, the old
+# comment just hadn't caught up):
 #     T_r/2^cool_shift = a_s*a_r*(n_rays/8)*rad_scale*(K_s^4 - K_r^4) / 2^his
-# with the SAME furniture a=0.5, his=3, cool_shift=9 but K_s = 293+3*443 =
-# 1622 and K_r = 293+3*280 = 1133, the required rad_scale for ignition at two
-# tiles is ~1.73e-6; the shipped 3.1394e-6 clears it with ×1.82 margin (up
-# from ×1.54 — the steeper ×3 map makes ignition EASIER at a given rad_scale,
-# not harder). RE-TUNE AT P-R5 with cool_shift (the two multiply).
-rad_scale            = 3.1394e-6 # heat counts per K^4 in the baked E° table
+#     rs_req = 1.73e-6 * (5.274e12/1.856e11) * 2^(9-13) = 3.07e-6
+# the shipped 5.1427e-5 clears it with margin ~= 5.1427e-5 / 3.07e-6 ~= ×16.7
+# (comfortable — NOT the ×1.05 knife-edge that would result from omitting
+# the cool_shift correction). RE-TUNE AT P-R5/Phase 3-4 with cool_shift (the
+# two multiply).
+rad_scale            = 5.1427e-5 # heat counts per K^4 in the baked E° table
 # T_emit_gate — who CASTS. Emitters are burning tiles UNION thermal solids at or
 # above this temperature. RECEIVERS ARE FREE: the net form accounts a cold tile
 # fully on the flame's own rays, so a crate never needs to emit to be heated
 # correctly. This gate only decides who can radiatively LOSE heat and warm
-# others. 180 game = 653 K (Erik, 2026-07-31). LOWER = the FEEL lever (warm
-# objects gently toasting their surroundings) and costs emitter count; HIGHER =
-# the COST lever and costs post-fire glow. Ruling A1.8.
-# P-K0: promoted from TUNE (P-F1b 180->310 — at 180 a receiver became an
-# emitter too early and its ceiling collapsed to E_s/15, stalling spread).
-T_emit_gate          = 310.0  # game units; below it a hot solid does not cast
+# others. G12 (2026-08-31): rescaled to preserve the PHYSICAL gate under the
+# ×1 map (bit-identical emitter set before/after at any given state) —
+# old physical gate 293 + 3*310 = 1223 K -> new game value 1223 - 293 = 930.
+# Phase 4 note: Erik's original blessed feel value (2026-07-31) was 653 K,
+# ~= 360 game under the honest map — LOWER = the FEEL lever (warm objects
+# gently toasting their surroundings) and costs emitter count; HIGHER = the
+# COST lever and costs post-fire glow. Ruling A1.8.
+# P-K0: promoted from TUNE (P-F1b 180->310, now 930 under G12's map — at the
+# old 180-game value a receiver became an emitter too early and its ceiling
+# collapsed to E_s/15, stalling spread; re-check this guard-rail before
+# lowering toward the Phase 4 feel value).
+T_emit_gate          = 930.0  # game units; below it a hot solid does not cast
 # --- P-F1a / v7 rule 4: RADIATION_RANGE --------------------------------------
 # The reach of an EMISSION ray, in tiles. A STABILITY-CLASS CONSTANT, NOT A FEEL
 # DIAL — do not tune it for look.
@@ -614,7 +635,7 @@ CFL_ADV = 0.5                         # advection CFL number
 N_FLOOR_SOLVER = 0.001                # solver-internal N floor (gameplay N unfloored)
 adiabatic_index = 1.4                 # ideal-gas adiabatic index (compression work); TUNING DIAL
 absorb_strength = 8.0                 # dyn_wave_absorb scale in the velocity-correction damping
-T_MIN = -289.0                        # floor on the ambient-relative T field (T_abs >= ~1 K)
+T_MIN = -292.0                        # floor on the ambient-relative T field (T_abs >= 1 K; G12: 293-292=1)
 U_MAX = 1000.0                        # v2.4 defense-in-depth velocity rail (m/s): the step-4
                                       # store clamp caps |u| at min(c_LOCAL, U_MAX); counted.
                                       # Far above any legit game wind (ambient c=300); exists
@@ -691,24 +712,31 @@ k_drag2 = 0.0                         # drag-law v2 (design docs/drag_law_v2_des
                                       # both signs), so it cannot rectify
                                       # oscillation or open this window either.
 
-# Canonical game-T -> Kelvin map (temperature_scale_unification_design_
-# 2026-08-13 §2). The ONE place these constants are defined — radiation bake,
+# Canonical game-T -> Kelvin map. G12 (issue #12, ruling 2026-08-31,
+# docs/fire_g12_one_map_patch_2026-08-31.md): ONE affine map everywhere —
+# K = 293 + T_game — collapsing the canonical bake/render/tools map (formerly
+# ×3, temperature_scale_unification_design_2026-08-13 §2) onto the EOS
+# absolute frame the conserved thermodynamics already lives in. Supersedes
+# ruling 6's eos_t_amb_k exception below: there is no longer a second frame
+# to except FROM. The ONE place these constants are defined — radiation bake,
 # render blackbody, and tuning tools all read this section (accessor:
-# src/temperature_scale.py). eos_t_amb_k below (derived C = 1/eos_t_amb_k) is
-# a DELIBERATE exception to kelvin_ambient (ruling 6): T_game is a ΔT, EOS
-# pressure calibration doesn't care what "0" means in Kelvin, and 290 is
-# Q16.16-near-optimal where 293 would add 92 extra quantization counts to
-# every ambient cell. [physics.eos] no longer carries t_amb_k/C — a stale key
-# there hard-errors at load (migration guard, src/temperature_scale.py).
+# src/temperature_scale.py). eos_t_amb_k below (derived C = 1/eos_t_amb_k)
+# now EQUALS kelvin_ambient — 293 is no longer Q16.16-suboptimal to except
+# for, since eos_t_amb_k WAS the target frame all along. [physics.eos] no
+# longer carries t_amb_k/C — a stale key there hard-errors at load
+# (migration guard, src/temperature_scale.py).
 [physics.temperature_scale]
 kelvin_ambient = 293.0                 # absolute K at T_game = 0 (~20 C) — THE map ambient
-k_temp_to_kelvin = 3.0                 # game-dT -> Kelvin slope (Erik's k_calibr, blessed 2026-08-13)
-phi_exp = 0.3333333333333333           # EOS expansion fraction of the Kelvin excess.
+k_temp_to_kelvin = 1.0                 # game-dT -> Kelvin slope. G12 (2026-08-31): 3->1, THE COLLAPSE
+phi_exp = 1.0                          # EOS expansion fraction of the Kelvin excess.
 # VALUE-FROZEN this arc: phi_exp * k_temp_to_kelvin == 1.0 exactly
-# (0.3333333333333333 parses to double(1/3); 3.0*double(1/3) == 1.0, a
-# round-to-even tie landing on 1.0 — verified). Retuning phi_exp is the storm
-# session's ruling, not this one.
-eos_t_amb_k = 290.0                    # EOS absolute-ambient (pressure calibration) — see note above
+# (1.0*1.0 == 1.0 exact — no round-to-even tie to verify, unlike the old
+# 0.3333333333333333*3.0 case). Retuning phi_exp is the storm session's
+# ruling, not this one.
+eos_t_amb_k = 293.0                    # EOS absolute-ambient (pressure calibration). G12: 290->293,
+                                        # now the SAME ambient as kelvin_ambient (ruling 6's exception
+                                        # is dissolved — one frame, one ambient). C = 1/293 (was 1/290,
+                                        # ~1% pressure-calibration shift — golden change, see G12 doc).
 
 # EOS refactor P4 — combustion on real O2 (docs/eos_refactor_design.md §5,
 # decisions log #12). Own pass, once per tick, after the EOS solver
@@ -1292,7 +1320,9 @@ thermal_mass = 8     # softwood (real rho*c ~0.7): heats fast & locally (heat >>
 cool_shift = 13      # ambient decay T -= T>>13 (e-fold 2^13/24 = 341.3 s). P-K0:
                      # promoted from TUNE (P-F1b 9->13, THE SPREAD DIAL; wood
                      # moves with furniture — both cellulosic, both thermal_mass 8)
-ignition_temp = 300.0
+ignition_temp = 300.0  # G12 review (spec §4): reads 593 K under the honest map (was
+                        # 1193 K under ×3) — realistic for wood (real ignition ~573-673
+                        # K). Reviewed, kept.
 wave_absorb = 0.4
 blast_resist = 0.0
 burst_threshold = 2.0
@@ -1366,7 +1396,9 @@ cool_shift = 13      # THE dial for a crate: conductivity = 0 means the ambient
                      # design §2.2), so this alone sets how long a burning crate
                      # stays hot. e-fold 2^13/24 = 341.3 s. P-K0: promoted from
                      # TUNE (P-F1b 9->13, THE SPREAD DIAL).
-ignition_temp = 280.0   # wood-like; slightly easier to light than a solid wood wall (300)
+ignition_temp = 280.0   # wood-like; slightly easier to light than a solid wood wall (300).
+                         # G12 review (spec §4): reads 573 K under the honest map (was
+                         # 1133 K under ×3) — realistic for cellulosic fuel. Reviewed, kept.
 wave_absorb = 0.5    # soft stuff soaks blasts
 blast_resist = 0.0
 burst_threshold = 2.0   # overpressure can topple/burst furniture (door-equal; TUNING DIAL)
@@ -1426,6 +1458,8 @@ cool_shift = 13        # P-K0: promoted from TUNE (P-F1b 9->13, matches
                        # together). e-fold 2^13/24 = 341.3 s.
 ignition_temp = 280.0  # spec value: furniture's, PER THE ROW CONVENTIONS —
                        # do NOT import literature values (~250 C) raw here.
+                       # G12 review (spec §4): reads 573 K under the honest map
+                       # (== furniture's). Reviewed, kept.
 wave_absorb = 0.5      # copied from furniture
 blast_resist = 0.0     # copied from furniture
 burst_threshold = 2.0  # copied from furniture

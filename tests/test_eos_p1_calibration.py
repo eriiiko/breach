@@ -12,15 +12,17 @@ P-K3 (temperature_scale_unification_design_2026-08-13.md §2/§3c, ruling 6):
 ``[physics.temperature_scale]`` (``eos_t_amb_k`` / the derived ``C``
 property), read here via the canonical accessor
 (:mod:`temperature_scale`), NOT via bare ``CFG.physics.eos`` attribute
-access (that would now hard-red — the keys are gone). EOS ambient stays 290
-K exactly (a deliberate exception to the unified kelvin_ambient map — T_game
-is a ΔT, not an absolute temperature), so every numeric assertion below is
-unchanged from pre-P-K3. This file additionally pins the QUANTIZED sim
-chain (:func:`ambient.effective_pin`), not just the real-number identity —
-the point of the P-K3 rewrite (design §3c): the real-valued
+access (that would now hard-red — the keys are gone). G12 (issue #12,
+docs/fire_g12_one_map_patch_2026-08-31.md) DISSOLVED ruling 6's exception:
+eos_t_amb_k now equals kelvin_ambient (293 K, was 290 K) — there is no
+longer a second frame to except FROM, so every numeric assertion below
+moved to the new pinned value. This file additionally pins the QUANTIZED
+sim chain (:func:`ambient.effective_pin`), not just the real-number identity
+— the point of the P-K3 rewrite (design §3c): the real-valued
 ``C * N_amb * T_amb_k == 1.0`` identity is IEEE-exact, but what the EOS
 actually materializes each tick is the truncating Q16.16 chain, whose
-result (65540, not 65536) is the number that matters operationally.
+result (65632 under G12, was 65540 under ruling 6's 290) is the number that
+matters operationally.
 
 Run:
     conda run -n data python -m pytest tests/test_eos_p1_calibration.py -q
@@ -43,13 +45,14 @@ def _load_ts():
     return temperature_scale.load()
 
 
-def test_eos_t_amb_k_stays_290_under_ruling_6():
-    """EOS ambient is a DELIBERATE exception to the unified kelvin_ambient
-    map (ruling 6): T_game is a ΔT, and 290 is Q16.16-near-optimal (ambient
-    pin 65540, +4 counts) where 293 would be near-worst-case (+96 counts).
-    Byte-identity for this whole arc depends on this NOT having moved."""
+def test_eos_t_amb_k_is_293_under_g12():
+    """G12 (issue #12, docs/fire_g12_one_map_patch_2026-08-31.md) dissolved
+    ruling 6's exception: eos_t_amb_k now equals kelvin_ambient (293), the
+    ONE ambient the whole map shares. (Was 290 under ruling 6, chosen then
+    for a tighter Q16.16 ambient pin — +4 counts vs +96 — a consideration
+    G12's ruling deliberately overrides in favour of one frame.)"""
     ts = _load_ts()
-    assert ts.eos_t_amb_k == 290.0
+    assert ts.eos_t_amb_k == 293.0
 
 
 def test_eos_C_calibration_reproduces_ambient_one_atm():
@@ -85,19 +88,21 @@ def test_eos_C_is_reciprocal_of_ambient_temperature():
     assert abs(C - 1.0 / t_amb_k) < 1e-12
 
 
-def test_eos_effective_pin_is_65540_not_65536():
+def test_eos_effective_pin_is_65632_not_65536():
     """The QUANTIZED sim chain, not just the real-number identity (design
     §3c's point). ``ambient.effective_pin`` replays the EOS's own truncating
     Q16.16 chain (``p* = C * N_total * T_abs``, ΔT=0) — at Earth-normal
-    ambient (N_total == quantize(1.0) == 65536) this lands on 65540 raw
-    (1.000061 atm), NOT 65536: the 4-count offset is the quantization
-    lattice image of 1/290, not an error (ambient.py's module docstring;
-    tests/test_air_boundary.py:548 pins the same constant independently)."""
+    ambient (N_total == quantize(1.0) == 65536) this lands on 65632 raw
+    (1.001465 atm) under G12's eos_t_amb_k=293, NOT 65536 and NOT the
+    pre-G12 65540 (the quantization lattice image of 1/290): the 96-count
+    offset is the lattice image of 1/293 instead (ambient.py's module
+    docstring; tests/test_air_boundary.py:548 pins the same constant
+    independently — updated alongside this one, see spec §5.6)."""
     ts = _load_ts()
     n_total_q = gas_fixed.quantize_scalar(1.0)
     assert n_total_q == 65536
     pin = ambient.effective_pin(n_total_q, c=ts.C, t_amb_k=ts.eos_t_amb_k)
-    assert pin == 65540
+    assert pin == 65632
 
 
 def test_ambient_default_C_and_T_AMB_K_match_the_accessor():
@@ -143,10 +148,10 @@ def test_o2_tank_spike_fits_q16_16_with_headroom():
 
 
 if __name__ == "__main__":
-    test_eos_t_amb_k_stays_290_under_ruling_6()
+    test_eos_t_amb_k_is_293_under_g12()
     test_eos_C_calibration_reproduces_ambient_one_atm()
     test_eos_C_is_reciprocal_of_ambient_temperature()
-    test_eos_effective_pin_is_65540_not_65536()
+    test_eos_effective_pin_is_65632_not_65536()
     test_ambient_default_C_and_T_AMB_K_match_the_accessor()
     test_ambient_o2_plus_n2_equals_legacy_atmosphere_scale()
     test_o2_tank_spike_fits_q16_16_with_headroom()

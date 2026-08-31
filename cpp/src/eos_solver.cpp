@@ -439,8 +439,10 @@ void EOSSolver::step(
     // (bindings.cpp:2134), so `solver.T_AMB_K = 0` was a reachable integer
     // divide-by-zero. Every other divide in this file is already floored; this
     // one was the exception. Same std::max idiom as dx_d below. The floor never
-    // binds at the shipped 290 -> behaviour-preserving. Mirrored in
-    // cuda_eos_step.cu (which also feeds the resident path's pre.t_amb_q).
+    // binds at the shipped 293 (G12, issue #12,
+    // docs/fire_g12_one_map_patch_2026-08-31.md; was 290 pre-G12) ->
+    // behaviour-preserving. Mirrored in cuda_eos_step.cu (which also feeds
+    // the resident path's pre.t_amb_q).
     const q16 t_amb_q    = std::max<q16>(1, quantize((double)T_AMB_K));
     // s_eos_q: fold of S_EOS (phi_exp*k_temp_to_kelvin, value-frozen to 1.0
     // exactly this arc — P-K3). At s_eos_q == 65536 the product below has zero

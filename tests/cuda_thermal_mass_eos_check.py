@@ -193,12 +193,16 @@ def part1_isolated() -> bool:
             ref_args = dict(dt=1.0 / 24.0, cap2_plane=cap2,
                              c_max=300.0, dx=1.0 / 3.0, adiabatic_index=1.4,
                              absorb_strength=8.0, n_floor_solver=1e-3,
-                             t_min=-289.0, t_max_phys=16000.0, u_max=1000.0,
-                             t_amb_k=290.0)
+                             # G12 (issue #12): config's T_MIN/eos_t_amb_k,
+                             # -289/290 -> -292/293. Explicit CPU/GPU parity
+                             # params, not tied to the (unchanged) C++ struct
+                             # defaults.
+                             t_min=-292.0, t_max_phys=16000.0, u_max=1000.0,
+                             t_amb_k=293.0)
             gpu_args = dict(dt=1.0 / 24.0, cap2_plane=cap2,
                              c_max=300.0, dx=1.0 / 3.0, adiabatic_index=1.4,
                              absorb_strength=8.0, n_floor_solver=1e-3,
-                             u_max=1000.0, t_amb_k=290.0)
+                             u_max=1000.0, t_amb_k=293.0)
             n_cfg += 1
             ge0 = _c((_q(rng.uniform(200.0, 400.0, size=(h, w))).astype(np.int64)) << 16)
             A = (wx.copy(), wy.copy(), t.copy(), ge0.copy())
