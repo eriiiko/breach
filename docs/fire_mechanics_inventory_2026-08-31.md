@@ -81,8 +81,20 @@ Sources: this session's sync, issue #12 + comments, July tuning memories.
   are chosen by physical reasoning in Kelvin — which is why the map (§1.4) is
   load-bearing, not cosmetic.
 - **G11 — Ember question, WIDENED to the whole die mechanic.** Does the
-  ember state survive as a mechanic? Natural burnout can't reach it today
-  (fuel bed settles ~15.5 game << ignition 300). Erik 2026-08-31: "perhaps
+  ember state survive as a mechanic? A normal fire's own burnout can't
+  reach it today (fuel bed settles ~15.5 game << ignition 300) — Erik's
+  correction 2026-08-31: not *structurally* unreachable, just unreachable
+  from those initial conditions; an externally-kept-hot tile still
+  qualifies, which is fine. **And re-justify smolder from first principles
+  before keeping it** (Erik doesn't fully buy the why): the RECORDED
+  rationale (test file's design story, test_eos_p5_1_stoich.py:22-47) is
+  (a) suffocation ≠ extinguishment — O2-starving a fire is reversible
+  suppression, O2 return REIGNITES (this is G7 seen from the O2 side);
+  (b) the sealed-smolder regime — a starved ember keeps drawing trickle O2
+  and draining fuel over thousands of ticks (`fuel_per_o2` = THE
+  ember-lifetime dial); (c) char-out completion — fuel is genuinely
+  consumed to the floor without visible flame. NOT about temperature
+  persistence (that's cool_shift's job). Erik 2026-08-31: "perhaps
   we need to look again at what mechanic drops fire intensity — I am not
   sure the mechanic is well thought out." So Phase 3c reviews the FULL
   death-side design (`die = k_die·(1−avail·hot)·I + strip term`, the
@@ -196,8 +208,9 @@ destruction path (`fire_simulation.cpp:305-322`; hp ≤ 0 → destroy_wall).
 combustion) or destroyed (flame-scale only).
 
 **Ember is emergent, not a state machine**: ember ≡ `fire==0 ∧ T ≥
-ignition_temp ∧ wall_hp > FUEL_FLOOR`. Root cause of unreachability
-confirmed at `combustion.cpp:511`: with the painter retired, the H_bed
+ignition_temp ∧ wall_hp > FUEL_FLOOR`. Why a normal burnout can't reach it
+(Erik's correction: unreachable from these initial conditions, not
+structurally) — confirmed at `combustion.cpp:511`: with the painter retired, the H_bed
 fuel-bed deposit (`H_BED_M 18125, H_BED_SHIFT 4` → H_bed ≈ 2.9e5) holds the
 burning tile's own T at ~15.5 game — so at flame snap-out the not-alight
 gate (`Tsnap < 300`) instantly excludes it. G11's sustain-floor hysteresis
