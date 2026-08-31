@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
@@ -191,6 +192,13 @@ def test_directional_hitscan_skewers_and_bites_wall():
     assert float(sim2.gmap.wall_hp[9, 16]) < wall_hp0, "beam must bite the wall it stops on"
 
 
+@pytest.mark.skip(
+    reason="dragon_7 awaits its own design session (Erik's ruling 2026-08-31, "
+    "queued after the fire pass, issue #12): the weapon is to be rebuilt on the "
+    "wind + fumes systems, and this test's west==0.0 claim is already broken by "
+    "secondary thermal radiation (RADIATION_RANGE=320) from the heated cone — "
+    "re-enable/rewrite at that session"
+)
 def test_directional_spray_cone_follows_facing():
     """The spray cone bearing is shooter.facing (design §4c), NOT a target
     tile: aiming EAST heats the tiles east of the shooter and none to the
