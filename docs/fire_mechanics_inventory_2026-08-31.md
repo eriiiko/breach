@@ -25,18 +25,32 @@ Sources: this session's sync, issue #12 + comments, July tuning memories.
 - **G2 — Slow ramp.** Ignition at low intensity → full intensity in
   ~30–120 s. (Q16.16 growth-quantum caveat: a genuinely slow ramp sits near
   1 LSB/tick — may need a residual accumulator, see fire-bootstrap-relations.)
-- **G3 — Finite life.** Self-limiting burnout in ~5–10 min for a
-  crate-scale fire (July's 14 min was accepted once; 5–10 is the target).
-- **G4 — Low nominal intensity with headroom.** Nominal I well below 1
-  (0.2–0.4, exact value = Phase 4) so oxygen enrichment has room to flare.
-  I and T* are linearly coupled through gain (T* = gain·I), so a low nominal
-  I does NOT preclude G1 — it prices gain.
+- **G3 — Finite life, fuel-governed.** Self-limiting burnout in ~5–10 min
+  for a crate-scale fire (July's 14 min was accepted once; 5–10 is the
+  target). Erik (first read, 2026-08-31): fuel exhaustion should be what
+  puts a fire out; intensity ∝ remaining-health is his instinct — which the
+  F = wall_hp/hp_mat availability factor already implements in shape. The
+  open problem is BALANCE: July measured self-extinction with ~76% fuel
+  unburned (heat/O2-governed, not fuel-governed). Whether the die-term
+  design itself needs rework → 3c (see G11 note); dials → 3a/4.
+- **G4 — Low nominal intensity with headroom.** Nominal I ≈ 0.2 preferred
+  (Erik 2026-08-31; anchors, not exact targets) so oxygen enrichment has
+  room to flare. I and T* are linearly coupled through gain (T* = gain·I),
+  so a low nominal I does NOT preclude G1 — it prices gain.
 
 ### 1.2 Fire as a citizen of the atmosphere
 
 - **G5 — O2 makes fire live and die.** Sealed room → self-starves; breach →
   vented O2 kills it faster; inert flood smothers; O2 tank release → every
   fire in the room flares (the payoff mechanic; keep as a hard requirement).
+  **AMENDMENT (Erik 2026-08-31): mole fraction alone is not enough** — the
+  o2f law must also account for ABSOLUTE density (vacuum / very low
+  pressure): today a near-vacuum cell with 3 O2 of 4 total particles reads
+  X = 0.75 and burns. This is the known "vacuum fires" item handed forward
+  by the T_abs arc; fix direction = augment o2f with a total-N (or O2-N)
+  factor, suitably scaled. Erik also flags this MAY have fed past
+  instability (unprovable now — the engine had unrelated errors then).
+  → the O2-law redesign feeds 3c/4.
 - **G6 — Wind interacts honestly.** Wind fans a robust fire (O2 supply,
   already emergent) but can strip a *marginal* one below its sustain floor
   (the k_wind_strip term, currently dormant at 0.0 — parked in July
@@ -54,17 +68,30 @@ Sources: this session's sync, issue #12 + comments, July tuning memories.
 ### 1.3 Fire touching solids
 
 - **G9 — Radiation with a purpose.** Fires radiate to line-of-sight targets
-  and can ignite air-separated fuel. Open look-over (Phase 3d): who should
-  emit (fires only? all hot solids? hot gas/air?), what range/falloff — Erik:
-  if air radiates, long range is fine. RADIATION_RANGE=320 currently makes
-  any heated tile warm the whole map's LOS set within ticks.
+  and can ignite air-separated fuel. CURRENT FACT (§2B): emitters are fires
+  ∪ hot solids (≥180 game); air/gas is structurally transparent
+  (heat_atten[air]=0) — it neither emits nor absorbs, by construction not
+  by dial. OPEN DECISION (Phase 3d): should hot gas and smoke radiate?
+  Blackbody radiation from smoke (and hot air) has been considered before;
+  Erik 2026-08-31: unsure it's worth it — investigate properly and make a
+  FINAL decision. If gas does radiate, long range is fine (Erik). Note
+  RADIATION_RANGE=320 is a stability constant; the feel question is the
+  falloff/ray-count law and T_emit_gate, not the range cap.
 - **G10 — Materials react in Kelvin.** Ignition temps and material responses
   are chosen by physical reasoning in Kelvin — which is why the map (§1.4) is
   load-bearing, not cosmetic.
-- **G11 — Ember question.** Does the scripted ember state (P5.1) survive as
-  a mechanic? Natural burnout can't reach it today (fuel bed settles ~15.5
-  game << ignition 300). Fold into the Phase 3c hysteresis design: a
-  sustain/ember floor below ignition_temp is the same lever G7 needs.
+- **G11 — Ember question, WIDENED to the whole die mechanic.** Does the
+  ember state survive as a mechanic? Natural burnout can't reach it today
+  (fuel bed settles ~15.5 game << ignition 300). Erik 2026-08-31: "perhaps
+  we need to look again at what mechanic drops fire intensity — I am not
+  sure the mechanic is well thought out." So Phase 3c reviews the FULL
+  death-side design (`die = k_die·(1−avail·hot)·I + strip term`, the
+  snap-out floor I_min, the claim-gate exclusion) — not just bolt on a
+  sustain floor. Related ruling to revisit there: combustion's
+  never-destroys invariant (1-LSB char floor) — Erik is open to combustion
+  destroying tiles too if the invariant isn't earning its simplicity; also
+  the fuel tile's own coldness (H_bed ~15.5 game while alight) is part of
+  why "fuel in a very hot fire can't burn to the ground" post-flame.
 
 ### 1.4 One temperature map (Phase 1 — first patch of this arc)
 
@@ -140,7 +167,9 @@ flammable=false by legacy hardcode (config.toml:1301-1307).
 
 **Intensity ODE** (`fire_simulation.cpp:161-286`, Q16 pinned-order):
 `hot = clamp01((T − T_ext)/fire_T_span)`; `o2f = clamp01((X − 0.13)/(1.0 −
-0.13))` (linear in mole fraction, Peatross & Beyler 1997); `avail = F·o2f`,
+0.13))` (linear in mole fraction, Peatross & Beyler 1997 — MOLE FRACTION
+ONLY, no absolute-density factor: the G5 vacuum-fires amendment applies
+here and at the ignition/claim-gate reads of the same law); `avail = F·o2f`,
 `F = clamp01(wall_hp/hp_mat)`; capacity law (P-R3)
 `gap = avail·hot − I/I_cap_per_avail`;
 `grow = k_grow·I·gap·(1 + k_wind_fan·W)`;
@@ -180,8 +209,11 @@ over ≤ draw_r=2 hops; contested cells split exactly (proportional int split,
 into soot (`soot_yield 0.5` → `smoke` gas) + `inert_n2`. **There is no
 "fumes" gas** — gas table: steam, smoke, poison, teargas, fuel_gas, o2,
 inert_n2. `fuel_gas` is a separate flammable trace-gas species (relevant to
-the future dragon_7 session, NOT a combustion product). Since #54,
-every combustion transaction also moves the int64 `gas_energy` ledger.
+the future dragon_7 session, NOT a combustion product). Erik's design
+intent for it (2026-08-31, on record): a flammable gas that is NOT always
+burning — it can fill a room inert and ignite later, or burn as it flows.
+Since #54, every combustion transaction also moves the int64 `gas_energy`
+ledger.
 
 **Wind coupling (combustion side):** `combustion.cpp` never reads wind.
 Coupling is exactly three things: (a) `k_wind_fan 0.5` — LIVE growth term;
@@ -278,13 +310,13 @@ dimension itself remains absent (§2A).
 | G2 ramp 30–120 s | `k_grow 0.5` tempo dial (P-R3 capacity law); I-ODE has NO residual accumulator | Slow ramps sit at ~1 LSB/tick — accumulator likely needed → 3a measures, 4 decides |
 | G3 burnout 5–10 min | Two drain channels; `wall_damage 0.03` tuned for "8 min kindling / 24 min furniture"; `k_die 0.008` e-fold ~3000 ticks (restated e2e tests document no full extinction in 400-tick windows) | Pure dial question once 3a establishes the energy balance → 4 |
 | G4 nominal I + O2 headroom | Capacity law `I_cap_per_avail 14`; `o2f` linear up to pure O2 (o2_frac_full=1.0) — flare headroom structurally present | None structural; pick nominal in 4 |
-| G5 O2 makes fire live/die | Continuous-O2 law shipped (draw_r 2, D1 accumulator, exact contested splits); sealed/vent/flood orderings verified by restated tests | Decay *timescales* only → 4 |
+| G5 O2 makes fire live/die | Continuous-O2 law shipped (draw_r 2, D1 accumulator, exact contested splits); sealed/vent/flood orderings verified by restated tests; o2f is MOLE FRACTION ONLY | Vacuum-fires amendment: add absolute-density factor to o2f (3c/4); decay timescales → 4 |
 | G6 wind strips marginal fires | `k_wind_strip 0.0` (live code, config-zeroed); `k_wind_fan 0.5` LIVE; no other direct wind→fuel term | Revive + retune; ⚠ forbidden band `wave_absorb ∈ (0,0.02)` while strip > 0 → 3c |
 | G7 blown-out hot fuel auto-reignites | Edge-triggered arm REQUIRES cooling below threshold before re-arming — a still-hot stripped tile CANNOT reignite today | Real gap, same hysteresis design as G11 → 3c |
 | G8 blast discrimination | Compression work heats gas (#54 flux-form); same-tick conduction into walls exists but doubly damped (LIM_SHIFT + 32× capacity); no dwell law anywhere | Exposure-integral ignition; measure transient magnitudes → 3c (3a bench) |
 | G9 radiation with purpose | Full P-F1a chain, books close exactly; emitters = fires ∪ solids ≥ 180 game; air structurally transparent (heat_atten 0); range 320 = stability constant, not feel | Look-over: should air/gas emit? falloff/ray-count law? T_emit_gate value? → 3d |
 | G10 materials react in Kelvin | Blocked by the three-frame map; e.g. wood ignition 300 game is 1193 K or 593 K depending on frame | Unblocked by G12 → 1, reviewed in 4 |
-| G11 ember | Emergent condition, structurally unreachable (H_bed holds fuel at ~15.5 game vs ignition 300; claim gate `combustion.cpp:511`) | Sustain-floor hysteresis on the non-alight gate → 3c |
+| G11 ember + die mechanic | Emergent condition, structurally unreachable (H_bed holds fuel at ~15.5 game vs ignition 300; claim gate `combustion.cpp:511`) | FULL death-side review (die term, I_min snap, claim gate, never-destroys invariant, cold fuel bed), not just a sustain floor → 3c |
 | G12 one map | Three frames (§2B) | THE Phase 1 patch |
 
 Minor inconsistencies (fix opportunistically): charred 1-LSB tile can
