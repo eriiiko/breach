@@ -58,6 +58,23 @@ lands at X ≈ 0.131 under this scaling — the config comment's own claim
   measured plateau to 3 decimals (the config's formulas are TRUE again).
 - Suite 2330 green CPU-only (`-k "not cuda"`), 3 known reds only.
 
+## (pending) R3 — hot-burns-faster (next sitting's design item)
+
+Erik's saturation catch: `hot` clamps at 1 above ~573 K, so extra heat
+buys zero extra burn rate today. Design inputs on record (2026-09-02):
+- It IS a positive feedback (hot → burns faster → more deposit → hotter)
+  and **Erik wants the cap to be O2 deprivation, structurally** — sealed:
+  reservoir caps then kills it; open: supply RATE caps it
+  (ventilation-limited burning, the real-fire regime).
+- Implementation sketch to evaluate first: put the T-factor on the
+  **DEMAND side** (O2 drawn ∝ I·o2f·f(T)), not on the deposit — deposit
+  is already ∝ O2 claimed, so the feedback must pass through the O2
+  supply to express itself: Erik's cap falls out structurally, and
+  contested-split handles neighbouring fires competing for air. A
+  per-tick numeric ceiling on f(T) still needed for Q16/dt stability.
+- Interacts with G3: faster burn when hot ⇒ faster fuel drain ⇒
+  fuel-governed death gets closer on its own.
+
 ## Session protocol (Erik, 2026-09-01): CPU-ONLY until session close
 
 GPU is running Erik's civulator RL training — no CUDA builds, no
