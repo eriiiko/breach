@@ -1449,7 +1449,11 @@ class GameRenderer:
         if rl.is_key_pressed(rl.KeyboardKey.KEY_H):
             self.normal_y_flipped = not self.normal_y_flipped
             self.lighting.set_normal_y_sign(-1.0 if self.normal_y_flipped else 1.0)
-        if rl.is_key_pressed(rl.KeyboardKey.KEY_G):
+        # F10 (was G — #59: G is ORDER_GRENADE in input_handler, and this
+        # debug block runs unconditionally, so every grenade selection also
+        # flipped gamma decode; B/bilinear has the same latent collision with
+        # ORDER_EXPLOSIVE — resolved wholesale at the #53 controls review).
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_F10):
             self.srgb_decode = not self.srgb_decode
             self.lighting.set_srgb_decode(self.srgb_decode)
         # Adjust light Z (vertical incidence) live: [ = lower (grazing),
