@@ -316,7 +316,7 @@ class GameRenderer:
         self.show_normal_map = True
         self.normal_y_flipped = False
         self.srgb_decode = True
-        self.show_debug_coords = False
+        self.show_debug_coords = True   # tile-inspector HUD on by default (Erik 2026-09-01, #53); F6 hides
         # Pressure colormap — default from [render] pressure_overlay_on (Fire &
         # Heat Beauty B1, Erik 2026-07-21: OFF by default so it doesn't wash out
         # the fire/heat view; still one keypress away). Toggle with F7.
