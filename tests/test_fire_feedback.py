@@ -250,13 +250,26 @@ def test_burnout_when_wall_hp_runs_out():
     # starved once it does). max_ticks re-derived with margin; this scene's
     # step is a bare 3x3 FireSimulation.step call (~0.02s for 5000 ticks),
     # so the larger budget costs nothing measurable.
+    #
+    # RE-DERIVED (R1, fire session #12, 2026-09-01, docs/fire_3c_design_
+    # 2026-09-01.md "Ruling R1"): this fixture's `atm=1.0, o2=None` idiom
+    # reads X == 1.0 (n_o2 == n_total == atm), which under the renormalized
+    # sustain law clamps at the NEW o2f_cap == 5.0 (was o2f == 1.0 pre-R1,
+    # since X=1.0 pure-O2-normalized to o2_frac_full==1.0 saturated at
+    # exactly 1). That much bigger `avail` — combined with the R1 I_cap_
+    # per_avail re-size (14.0 -> 0.95, the closed-form value re-derived from
+    # the b1 open-control bench's MEASURED plateau availability, config.toml's
+    # own comment) — lets the fire coast on a much smaller F for much longer
+    # before dying: measured DIES at tick 10834 (wall_hp still 0.52 — an
+    # I_min snap-extinguish, not burn-through). max_ticks re-derived with
+    # margin.
     fs = _params_runner()
     sc = _FeedbackScene(I=0.6, T=500.0, wall_hp=3.0, atm=1.0, wind=0.0)
     # Make it a real wall so burn-through can fire if hp hits 0.
     sc.solid[1, 1] = True
     hp0 = float(sc.wall_hp[1, 1])
     last = 0.6
-    for _ in range(6000):
+    for _ in range(15000):
         last = sc.step(fs)
         if last == 0.0:
             break
@@ -270,10 +283,22 @@ def test_burnout_when_wall_hp_runs_out():
 def test_wind_fans_a_big_fire():
     # Same well-fed big fire, with vs without wind. The (1 + k_wind_fan*W) factor
     # means the windy one grows MORE per step (a firestorm forming).
+    #
+    # RE-DERIVED (R1, fire session #12, 2026-09-01, docs/fire_3c_design_
+    # 2026-09-01.md "Ruling R1"): this fixture's `atm=1.0, o2=None` idiom
+    # reads X == 1.0, which under the renormalized sustain law clamps at the
+    # NEW o2f_cap == 5.0 (was o2f == 1.0 pre-R1) — combined with the R1
+    # I_cap_per_avail re-size (14.0 -> 0.95, the closed-form value, config.
+    # toml's own comment), growth is now so fast BOTH scenes saturate at
+    # I==1.0 within 3-4 ticks, erasing the comparison by tick 5 (measured:
+    # calm 0.96/windy 1.0 at tick 3, both 1.0 from tick 4 on). Compare
+    # EARLIER in the ramp instead, before saturation swallows the signal — 2
+    # ticks, where windy is still measurably ahead (measured: calm 0.827 vs
+    # windy 0.951 at tick 2).
     fs = _params_runner()
     calm = _FeedbackScene(I=0.6, T=500.0, wall_hp=60.0, atm=1.0, wind=0.0)
     windy = _FeedbackScene(I=0.6, T=500.0, wall_hp=60.0, atm=1.0, wind=1.0)
-    for _ in range(5):
+    for _ in range(2):
         calm.step(fs)
         windy.step(fs)
     assert windy.fire[1, 1] > calm.fire[1, 1], (
@@ -314,6 +339,19 @@ def test_wind_blows_out_a_small_fire():
     # assertion, not a design call: is k_wind_strip meant to be 0 (the
     # blow-out crossover intentionally retired), or is this a dial that
     # should have moved with the rest of the 9016cd7 promotion?
+    #
+    # RE-DERIVED (R1, fire session #12, 2026-09-01, docs/fire_3c_design_
+    # 2026-09-01.md "Ruling R1"): this fixture's `atm=1.0, o2=None` idiom
+    # reads X == 1.0, which under the renormalized sustain law clamps at the
+    # NEW o2f_cap == 5.0 (was o2f == 1.0 pre-R1) — combined with the R1
+    # I_cap_per_avail re-size (14.0 -> 0.95, the closed-form value, config.
+    # toml's own comment), BOTH scenes now settle to a much higher,
+    # closer-together equilibrium than before (calm ~0.250, windy ~0.257 by
+    # tick 1000). The OLD 1.1x margin no longer holds at steady state; windy
+    # is still STRICTLY, measurably ahead of calm throughout the run (ratio
+    # ~1.03 at tick 1000) — that structural fact (fan, not blow-out) is what
+    # this test guards, so the margin is re-derived to the new measured
+    # steady-state ratio (~1.03x) rather than loosened arbitrarily.
     fs = _params_runner()
     assert float(fs.params.k_wind_strip) == 0.0, (
         "k_wind_strip is no longer 0 — the blow-out mechanism may be back; "
@@ -324,7 +362,7 @@ def test_wind_blows_out_a_small_fire():
     for _ in range(1000):
         i_calm = calm.step(fs)
         i_windy = windy.step(fs)
-    assert i_windy > i_calm * 1.1, (
+    assert i_windy > i_calm * 1.02, (
         f"with k_wind_strip dormant, wind should FAN this scene (not blow it "
         f"out) — expected windy strictly ahead of calm (windy={i_windy:.4f}, "
         f"calm={i_calm:.4f})")

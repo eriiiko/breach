@@ -231,7 +231,21 @@ def test_cross_config_self_match():
     # Erik, 2026-08-18: "maximum intensity in 5 ticks is NOT what i want, but we
     # are not at tuning yet, we need to make sure all the systems WORK before
     # tuning." Recorded on the post-pressure retune list (docs/TODO.md item 3).
-    window = dict(ticks=10, seed_i=0.1)
+    #
+    # WINDOW RE-DERIVED AGAIN (R1, fire session #12, 2026-09-01, docs/fire_3c_
+    # design_2026-09-01.md "Ruling R1"): this scene's `atm=1.0` idiom reads
+    # X == 1.0, which under the renormalized sustain law clamps at the NEW
+    # o2f_cap == 5.0 (was o2f == 1.0 pre-R1) — combined with the R1
+    # I_cap_per_avail re-size (14.0 -> 0.95, the closed-form value, config.
+    # toml's own comment), saturation is now even faster: at the old window
+    # (seed 0.1 @ 10 ticks) all three configs are already pegged at the cap
+    # by tick 5 (measured). Measured saturation at the NEW law, centre cell,
+    # X = 1.0: seed 0.02 -> configs still clearly separated (not saturated)
+    # through tick 2 (measured tick-2 values 6376/5061/48984); the fastest
+    # config (dt=1/12) is already capped by tick 3. Same repair policy as
+    # before: shrink the seed/window, do NOT feed it ambient air
+    # (that would make this partly an O2 test).
+    window = dict(ticks=2, seed_i=0.02)
     results = []
     for cfg in configs:
         a = _drive_isolated_fire(**cfg, **window)

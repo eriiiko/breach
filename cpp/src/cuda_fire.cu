@@ -105,6 +105,14 @@ __device__ __forceinline__ q16 clamp01_q_dev(q16 v) {
     return v;
 }
 
+// Integer clamp to [0, cap] (R1 renormalized o2f — VERBATIM device port of the
+// CPU clamp0cap_q, fire_simulation.cpp).
+__device__ __forceinline__ q16 clamp0cap_q_dev(q16 v, q16 cap) {
+    if (v < 0) return 0;
+    if (v > cap) return cap;
+    return v;
+}
+
 // Hermite smoothstep on [edge0, edge1] -> [0, FP_ONE], clamped outside, in Q16.16.
 // VERBATIM device port of the CPU smoothstep_q (fire_simulation.cpp:35-42): the
 // PINNED multiply tree t = clamp01((x-edge0)*recip_span); t2=t*t;
@@ -147,7 +155,8 @@ __global__ void fire_logistic(int32_t* __restrict__ fire,
                               int32_t X_N_FLOOR, int32_t I_min_q, int32_t INV_C,
                               bool temp_is_identity, int64_t recip_temp_scale,
                               int64_t recip_fuel_ref, int64_t recip_T_span,
-                              int64_t recip_x_span, bool x_degenerate) {
+                              int64_t recip_x_span, bool x_degenerate,
+                              int32_t o2f_cap_q) {                    // R1
     const int n = h * w;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
@@ -194,17 +203,18 @@ __global__ void fire_logistic(int32_t* __restrict__ fire,
                           + mul_wide(wind_y[i], wind_y[i]);
         const q16 W = sqrt_q16_dev(rad);
 
-        // Gates. o2f is LINEAR in X (the continuous-O2 law), clamped [0,1]:
-        // X <= X_ext -> 0 (extinction), X >= X_full -> 1 (pure O2; ambient air
-        // lands at 0.092). The degenerate span falls back to a step at X_ext.
-        // `hot` reads THIS TILE'S OWN extinction temperature (ruling A3
+        // Gates. `hot` reads THIS TILE'S OWN extinction temperature (ruling A3
         // ride-along) from the nullable `fire_T_ext_plane`, else the scalar
         // fallback — VERBATIM the CPU branch (fire_simulation.cpp).
         const q16 T_ext_i = fire_T_ext_plane ? fire_T_ext_plane[i] : fire_T_ext_q;
         const q16 hot = clamp01_q_dev(recip_mul_dev(T - T_ext_i, recip_T_span));
+        // o2f is LINEAR in X (the continuous-O2 law), R1 RENORMALIZED (VERBATIM
+        // the CPU branch): X <= X_ext -> 0 (extinction), X == X_amb -> 1
+        // (ambient, by construction), clamped at o2f_cap_q (not FP_ONE). The
+        // degenerate span falls back to a step at X_ext (0 or the cap).
         const q16 o2f = x_degenerate
-            ? ((X < x_ext_q) ? (q16)0 : (q16)FP_ONE)
-            : clamp01_q_dev(recip_mul_dev(X - x_ext_q, recip_x_span));
+            ? ((X < x_ext_q) ? (q16)0 : o2f_cap_q)
+            : clamp0cap_q_dev(recip_mul_dev(X - x_ext_q, recip_x_span), o2f_cap_q);
         const q16 avail = mul_q16(F, o2f);
 
         // THE CAPACITY LAW (P-R3, ruling A3) — VERBATIM the CPU sequence
@@ -223,8 +233,13 @@ __global__ void fire_logistic(int32_t* __restrict__ fire,
         grow = mul_q16(grow, gap);
         grow = mul_q16(grow, wind_fan);
 
-        // die = k_die*(1 - avail*hot)*I + k_wind_strip*W*(1 - I)*I (UNCHANGED).
-        const q16 one_minus_ah = (q16)FP_ONE - avail_hot;   // (1 - avail*hot)
+        // die = k_die*max(0, 1-avail*hot)*I + k_wind_strip*W*(1-I)*I. R1 DIE-TERM
+        // SIGN FIX (VERBATIM the CPU branch): avail*hot can now exceed 1 (O2
+        // enrichment above ambient), which would flip (1-avail*hot) NEGATIVE —
+        // an ANTI-DEATH term. max(0,.) floors it: enrichment only helps via
+        // grow/I_cap, never subtracts from die.
+        const q16 one_minus_ah_raw = (q16)FP_ONE - avail_hot;      // (1 - avail*hot), SIGNED
+        const q16 one_minus_ah = max((q16)0, one_minus_ah_raw);    // R1: floored at 0
         q16 die_a = k_die_q;
         die_a = mul_q16(die_a, one_minus_ah);
         die_a = mul_q16(die_a, I);
@@ -307,6 +322,8 @@ std::vector<std::pair<int, int>> fire_step(
     float k_wind_fan, float k_wind_strip,
     float wall_damage,
     float temp_scale, float I_cap_per_avail,
+    float o2_frac_amb, float o2f_cap,    // R1 (see header): sustain span upper ref
+                                          // + the new enrichment-ceiling dial
     const int64_t* fuel_recip,           // FUEL-FRACTION AXIS (nullable, see header)
     const int32_t* fire_T_ext_plane) {   // PER-MATERIAL T_ext (nullable, see header)
     (void)atmosphere;   // EOS P4: vestigial — the CPU step keeps it in its
@@ -347,16 +364,20 @@ std::vector<std::pair<int, int>> fire_step(
 
     const int64_t recip_fuel_ref  = make_recip((double)fuel_ref);
     const int64_t recip_T_span    = make_recip((double)fire_T_span);
-    // Continuous-O2 law span (VERBATIM of fire_simulation.cpp's x_ext_q/x_span/
-    // x_degenerate/recip_x_span/X_N_FLOOR block): o2f = clamp01((X - X_ext) /
-    // (X_full - X_ext)). X_ext = 0 gives span == X_full (pure proportional);
-    // X_full <= X_ext (misconfig) -> a step at X_ext. FULL-RESPONSE REFERENCE
-    // SPLIT (2026-07-30): the upper end is the PURE-O2 reference o2_frac_full,
-    // NOT o2_frac_amb (which made ambient the ceiling).
+    // Continuous-O2 law span, R1 RENORMALIZATION (VERBATIM of fire_simulation.cpp's
+    // x_ext_q/x_span/x_degenerate/recip_x_span/o2f_cap_q block, docs/fire_3c_
+    // design_2026-09-01.md "Ruling R1"): o2f = clamp((X - X_ext) / (X_amb - X_ext),
+    // 0, o2f_cap). X_ext = 0 gives span == X_amb (pure proportional); X_amb <=
+    // X_ext (misconfig) -> a step at X_ext. The upper end is now the AMBIENT
+    // reference o2_frac_amb, NOT the pure-O2 reference o2_frac_full (R1 supersedes
+    // the 2026-07-30 FULL-RESPONSE REFERENCE SPLIT for the SUSTAIN law only —
+    // o2_frac_full stays live on the DEMAND side, cuda_combustion.cu, unchanged);
+    // the clamp's upper edge is the NEW o2f_cap dial (not FP_ONE).
     const q16 x_ext_q              = quantize((double)o2_frac_ext);
-    const double  x_span           = (double)o2_frac_full - (double)o2_frac_ext;
+    const double  x_span           = (double)o2_frac_amb - (double)o2_frac_ext;
     const bool    x_degenerate     = (x_span <= 0.0);
     const int64_t recip_x_span     = x_degenerate ? 0 : make_recip(x_span);
+    const q16 o2f_cap_q            = quantize((double)o2f_cap);
     const q16 X_N_FLOOR             = quantize(0.01);   // 655 counts, SAME as CPU
 
     // ---- Device buffers (the 4 mutated fields + read-only fields/masks + the
@@ -427,7 +448,7 @@ std::vector<std::pair<int, int>> fire_step(
         d_flam, d_fuel_recip, d_T_ext_plane, h, w,
         dt_q, k_grow_q, k_die_q, k_wind_fan_q, k_wind_strip_q, fire_T_ext_q,
         x_ext_q, X_N_FLOOR, I_min_q, INV_C, temp_is_identity, recip_temp_scale,
-        recip_fuel_ref, recip_T_span, recip_x_span, x_degenerate);
+        recip_fuel_ref, recip_T_span, recip_x_span, x_degenerate, o2f_cap_q);
     cuda_check(cudaGetLastError(), "logistic launch");
 
     // P4 smoke emission scatter DELETED (P-S1) — see the file header.

@@ -324,10 +324,16 @@ _FP_FAST_RE = re.compile(r"fp:fast")
 # P-S1 touches carries a `float` token), so it is intentionally NOT tightened
 # here to avoid mis-attributing someone else's earlier decrease to this one.
 # `fp:fast` unchanged (0).
+# R1 (fire session #12, 2026-09-01, docs/fire_3c_design_2026-09-01.md "Ruling
+# R1"): fire_simulation.cpp `double` 16 -> 17. ONE new load-time boundary cast,
+# `const q16 o2f_cap_q = fp::quantize((double)p.o2f_cap);` — the SAME documented
+# exception category as every other config-constant precompute in this block
+# (`x_ext_q`, `recip_x_span`, etc.): a load-time double-then-quantize scalar,
+# NOT per-cell arithmetic. `float`/`fp:fast` unchanged.
 BASELINE = {
     "atmosphere_solver.cpp":  {"float": 32, "double": 32, "fp:fast": 1},
     "smoke_dynamics.cpp":     {"float": 24, "double": 13, "fp:fast": 0},
-    "fire_simulation.cpp":    {"float": 6,  "double": 16, "fp:fast": 0},
+    "fire_simulation.cpp":    {"float": 6,  "double": 17, "fp:fast": 0},
     "water_solver.cpp":       {"float": 32, "double": 22, "fp:fast": 1},
     "temperature_solver.cpp": {"float": 4,  "double": 6,  "fp:fast": 0},
     "physics_engine.cpp":     {"float": 68, "double": 28, "fp:fast": 1},

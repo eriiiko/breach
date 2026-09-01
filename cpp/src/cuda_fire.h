@@ -110,6 +110,13 @@ std::vector<std::pair<int, int>> fire_step(
     // VERBATIM as the CPU load-time block does; `<= 0` means the ceiling is OFF
     // (INV_C = 0). See FireParams::I_cap_per_avail.
     float I_cap_per_avail,
+    // R1 O2f-RENORMALIZATION (fire session #12, docs/fire_3c_design_2026-09-01
+    // .md "Ruling R1"): the SUSTAIN span's upper reference is now o2_frac_amb
+    // (ambient), NOT o2_frac_full (pure O2, above — which stays live on the
+    // DEMAND side, cuda_combustion.cu, unchanged). o2f_cap is the NEW clamp
+    // ceiling (o2f is no longer bounded to [0,1] — enrichment above ambient can
+    // register, up to this cap). See FireParams::o2_frac_amb / o2f_cap.
+    float o2_frac_amb, float o2f_cap,
     // FUEL-FRACTION AXIS (2026-07-30) — OPTIONAL read-only int64 (h,w) plane:
     // per tile, the make_recip reciprocal of that tile's MATERIAL's full-health
     // hp (GameMap.fuel_recip). The fuel term becomes

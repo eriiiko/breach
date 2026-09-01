@@ -147,6 +147,7 @@ _FIRE_DEFAULTS = {
     "k_die": 0.035,
     "o2_frac_ext": 0.13,
     "o2_frac_full": 1.0,
+    "o2_frac_amb": 0.21,       # R1: now read by the seed check's h_min (sustain o2f)
     "ignition_seed": 0.12,
 }
 
@@ -660,16 +661,26 @@ class MaterialTable:
         A tile is born at ``I = ignition_seed`` and immediately starts feeding
         its own `hot` gate: the fire's heat sets the tile's equilibrium
         temperature ``T*(I) = gain * I``, and the logistic only sustains while
-        ``a = F*o2f*hot`` clears ``r/(1+r)``. Chain those and the seed has a
-        FLOOR — the intensity below which the fire cannot warm itself enough to
-        stay lit, at any speed::
+        ``a = F*o2f_sustain*hot`` clears ``r/(1+r)``. Chain those and the seed
+        has a FLOOR — the intensity below which the fire cannot warm itself
+        enough to stay lit, at any speed::
 
-            r         = k_die / k_grow
-            o2f_amb   = (0.21 - o2_frac_ext) / (o2_frac_full - o2_frac_ext)
-            h_min     = [r/(1+r)] / o2f_amb          # the `hot` the fire needs
-            gain[mat] = H_bed * burn_rate * dt * o2f_amb * claim_faces
+            r              = k_die / k_grow
+            o2f_sustain_amb = (0.21 - o2_frac_ext) / (o2_frac_amb - o2_frac_ext)
+            h_min          = [r/(1+r)] / o2f_sustain_amb   # the `hot` the fire needs
+            o2f_demand_amb = (0.21 - o2_frac_ext) / (o2_frac_full - o2_frac_ext)
+            gain[mat] = H_bed * burn_rate * dt * o2f_demand_amb * claim_faces
                               * 2^(cool_shift[mat] - log2(thermal_mass[mat]))
             I_sustain[mat] = (fire_T_ext[mat] + fire_T_span*h_min) / gain[mat]
+
+        R1 (fire session #12, 2026-09-01, docs/fire_3c_design_2026-09-01.md
+        "Ruling R1") SPLIT the two O2 roles: ``h_min`` chains through the
+        SUSTAIN law (renormalized to ``o2_frac_amb``, so ``o2f_sustain_amb``
+        is IDENTICALLY 1.0 at this check's nominal ambient — the whole point
+        of the renormalization is that ambient always reads o2f==1), while
+        ``gain`` chains through the unchanged DEMAND law (``o2f_j``, still
+        anchored on ``o2_frac_full``, pure O2). Pre-R1 both used the same
+        pure-O2-anchored ratio; they are genuinely different numbers now.
 
         P-R4 (ruling A1): the ``gain`` line changed. It used to be
         ``k_fire_heat * 2^(cool_shift - heat_inv_shift)`` — the painter's
@@ -708,6 +719,7 @@ class MaterialTable:
         try:
             k_grow, k_die = _f("k_grow"), _f("k_die")
             x_ext, x_full = _f("o2_frac_ext"), _f("o2_frac_full")
+            x_amb = _f("o2_frac_amb")
             span = _f("fire_T_span")
             seed = _f("ignition_seed")
             # P-R4: the plateau's source is the fuel-bed deposit, not the
@@ -716,16 +728,24 @@ class MaterialTable:
             burn_rate = float(_c("burn_rate"))
         except Exception:              # a config shape we do not recognise
             return                     # -> silently skip; this is a courtesy check
-        if k_grow <= 0.0 or x_full <= x_ext:
+        if k_grow <= 0.0 or x_full <= x_ext or x_amb <= x_ext:
             return
-        o2f_amb = (_X_AMBIENT - x_ext) / (x_full - x_ext)
-        if o2f_amb <= 0.0:
+        # R1: the SUSTAIN law's o2f at ambient — renormalized to o2_frac_amb,
+        # so this is IDENTICALLY 1.0 whenever this check's nominal ambient
+        # (_X_AMBIENT) matches the config's o2_frac_amb (the common/default
+        # case); computed explicitly (not hardcoded to 1.0) so a config that
+        # deliberately mismatches the two still gets an honest ratio.
+        o2f_sustain_amb = (_X_AMBIENT - x_ext) / (x_amb - x_ext)
+        if o2f_sustain_amb <= 0.0:
             return
+        # The DEMAND law's o2f_j at ambient — UNCHANGED by R1, still anchored
+        # on o2_frac_full (pure O2). Feeds the H_bed deposit gain below, not h_min.
+        o2f_demand_amb = (_X_AMBIENT - x_ext) / (x_full - x_ext)
         r = k_die / k_grow
-        h_min = (r / (1.0 + r)) / o2f_amb
+        h_min = (r / (1.0 + r)) / o2f_sustain_amb
         # The per-unit-I combustion deposit at ambient O2, before the material's
-        # own mass/loss shifts: H_bed * (burn_rate*dt*o2f) * claim_faces.
-        bed_per_I = (h_bed * burn_rate * _SEED_CHECK_DT * o2f_amb
+        # own mass/loss shifts: H_bed * (burn_rate*dt*o2f_j) * claim_faces.
+        bed_per_I = (h_bed * burn_rate * _SEED_CHECK_DT * o2f_demand_amb
                      * _SEED_CHECK_CLAIM_FACES)
 
         for idx, name in enumerate(self.names):

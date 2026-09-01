@@ -872,6 +872,7 @@ PYBIND11_MODULE(breach_physics, m) {
              float fire_T_span, float fuel_ref, float o2_frac_ext, float o2_frac_full,
              float I_min, float k_wind_fan, float k_wind_strip,
              float wall_damage, float temp_scale, float I_cap_per_avail,
+             float o2_frac_amb, float o2f_cap,   // R1 (see cuda_fire.h)
              py::object fuel_recip,                  // FUEL-FRACTION AXIS
              py::object fire_T_ext_plane) -> py::list {  // PER-MATERIAL T_ext
               auto [f, h, w]     = get_2d(fire);
@@ -911,6 +912,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   k_grow, k_die, fire_T_ext, fire_T_span, fuel_ref, o2_frac_ext,
                   o2_frac_full, I_min, k_wind_fan, k_wind_strip,
                   wall_damage, temp_scale, I_cap_per_avail,
+                  o2_frac_amb, o2f_cap,
                   fr, tep);
               py::list result;
               for (const auto& [dy, dx] : destroyed) {
@@ -930,6 +932,10 @@ PYBIND11_MODULE(breach_physics, m) {
           // CAPACITY LAW (P-R3, ruling A3): `c`. Defaulted to the FireParams
           // default so every existing direct caller keeps a valid law.
           py::arg("I_cap_per_avail") = 2.53f,
+          // R1 (docs/fire_3c_design_2026-09-01.md): sustain span upper
+          // reference + enrichment cap. Defaulted to the FireParams defaults.
+          py::arg("o2_frac_amb") = 0.21f,
+          py::arg("o2f_cap") = 5.0f,
           py::arg("fuel_recip") = py::none(),        // fuel-fraction axis (optional)
           py::arg("fire_T_ext_plane") = py::none(),  // per-material T_ext (optional)
           "P6.8 isolated: run ONE GPU fire step (re-derived — continuous-O2 "
@@ -1758,11 +1764,12 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("fire_T_span",    &FireParams::fire_T_span)
         .def_readwrite("fuel_ref",       &FireParams::fuel_ref)
         .def_readwrite("o2_frac_ext",    &FireParams::o2_frac_ext)
-        // FULL-RESPONSE REFERENCE SPLIT: o2_frac_full is the span's upper end
-        // (pure O2, 1.0, NOT map-overridden); o2_frac_amb is the ambient record
-        // and is no longer read by the availability law.
+        // R1 (fire session #12): o2_frac_amb is now LIVE — the sustain law's
+        // span upper reference. o2_frac_full is RETIRED from sustain (kept
+        // only for combustion.cpp's DEMAND-side o2f_j, unchanged).
         .def_readwrite("o2_frac_full",   &FireParams::o2_frac_full)
         .def_readwrite("o2_frac_amb",    &FireParams::o2_frac_amb)
+        .def_readwrite("o2f_cap",        &FireParams::o2f_cap)
         .def_readwrite("P_min",          &FireParams::P_min)
         .def_readwrite("P_full",         &FireParams::P_full)
         .def_readwrite("I_min",          &FireParams::I_min)

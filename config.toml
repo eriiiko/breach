@@ -212,29 +212,32 @@ o2_threshold  = 0.01  # RETIRED — see o2_frac_ext (fire feedback block below)
 # --- Signed-logistic fire FEEDBACK (fire_design_proposal §2/§3/§5) ------------
 # Cellular spread is DELETED: spread is now radiation -> heat -> temperature ->
 # ignition (apply_temperature_ignition above). The fire step is purely the
-# life/death of an already-lit tile. Per burning tile of intensity I in [0,1]:
+# life/death of an already-lit tile. Per burning tile of intensity I in [0,1]
+# (R1 RENORMALIZATION, fire session #12, docs/fire_3c_design_2026-09-01.md
+# "Ruling R1" -- see the o2_frac_ext/amb/o2f_cap block below for the full
+# derivation):
 #   T     = temperature[i] / TEMP_SCALE              (game units; ignition_temp=300 wood)
 #   F     = clamp01(wall_hp[i] / hp_of_THIS_tile)    (fuel fraction remaining, per
 #           MATERIAL — the [materials.*] hp column, via GameMap.fuel_recip; see the
 #           fuel_ref tombstone below)
-#   O2    = mean REAL gas[o2] over open (non-solid,non-vacuum) 4-neighbours
-#           (EOS refactor P4 — was the atmosphere/P proxy; design §6, item 3)
+#   X     = Σn_o2/Σn_total over open (non-solid,non-vacuum) 4-neighbours (the local
+#           O2 MOLE FRACTION -- EOS refactor P4 + the continuous-O2 law, design §6/§2.1)
 #   W     = |wind| from the SHARED wind field (= -grad p, incl. shockwaves)
 #   hot   = clamp01((T - fire_T_ext) / fire_T_span)
-#   o2    = smoothstep(P_min, P_full, O2)            (the REAL local O2 gate)
-#   avail = F * o2
-#   grow  = k_grow * avail * hot * I*(1-I) * (1 + k_wind_fan*W)   (logistic, wind-fanned)
-#   die   = k_die*(1 - avail*hot)*I + k_wind_strip*W*(1-I)*I      (decay + wind blow-out)
+#   o2f   = clamp((X - o2_frac_ext) / (o2_frac_amb - o2_frac_ext), 0, o2f_cap)
+#           (R1: renormalized to AMBIENT, not pure O2 -- ambient air reads o2f==1)
+#   avail = F * o2f                                  (can exceed 1 under O2 enrichment)
+#   gap   = avail*hot - I/I_cap_per_avail             (SIGNED capacity law, P-R3)
+#   grow  = k_grow * I * gap * (1 + k_wind_fan*W)
+#   die   = k_die * max(0, 1 - avail*hot) * I  +  k_wind_strip*W*(1-I)*I
+#           (R1 DIE-TERM SIGN FIX: avail*hot can now exceed 1, so the max(0,.)
+#           floor keeps enrichment from going ANTI-DEATH)
 #   I    += dt*(grow - die);  clamp01;  if I < I_min -> 0 (snap-extinguish)
-# Plume: temperature[i] += the plume->T shim deposit (fire_pressure_gain-scaled,
-#   self-limiting on `atmosphere[i]/p_expand_ref` — unchanged by P4, still reads
-#   REAL pressure, not O2) -> p* rises -> wind points OUTWARD -> smoke pushed away.
-# A sealed-room fire over-pressurises -> may pop a weak wall (find_burst_walls) -> vents
-# -> P falls -> starves; ALSO now (P4) the room's REAL O2 depletes as it burns ->
-# o2 -> 0 -> starves even in a wall that never bursts. Both emergent. Erik tunes
-# all of these live.
+# Plume: DELETED (P-R2) -- see p_expand_ref's tombstone below. A sealed-room
+# fire's REAL O2 depletes as it burns -> o2f -> 0 -> starves near o2_frac_ext.
+# Erik tunes all of these live.
 k_grow            = 0.5    # logistic growth gain (1/s) — TEMPO only since P-R3. P-K0: promoted from TUNE (P-F1b 4.0->2.0, Erik 2026-08-13 2.0->0.5, slower ramp)
-k_die             = 0.008  # decay rate when starved/cold (1/s). P-K0: promoted from TUNE (P-F1b 2.0->0.008 — the death wall; puts extinction at X=0.1335, just above o2_frac_ext=0.13, so the oxygen limit is binding)
+k_die             = 0.008  # decay rate when starved/cold (1/s). P-K0: promoted from TUNE (P-F1b 2.0->0.008 — the death wall). R1 RE-DERIVATION (2026-09-01): under the renormalized o2f span (o2_frac_amb-anchored, not pure-O2), the logistic wall now sits at X ≈ 0.131 — the comment's "just above o2_frac_ext=0.13" claim, which was DEAD (the old pure-O2 normalization put the wall at X=0.1944, per fire_simulation.h's history) is now TRUE.
 # THE CAPACITY LAW (P-R3, 2026-07-31 — docs/radiation_raycaster_extinction_
 # ruling_2026-07-31.md A3, on Erik's ruling R-b). The growth term's carrying
 # capacity used to be the hardwired constant 1 (the `(1-I)` factor); it is now
@@ -250,7 +253,37 @@ k_die             = 0.008  # decay rate when starved/cold (1/s). P-K0: promoted 
 # because the logistic wall bit first at X = 0.1944. Now each dial has one job:
 # `I_cap_per_avail` = SIZE, `k_grow` = TEMPO, `k_die` = where the death wall
 # sits. `<= 0` legally means "capacity ceiling OFF" (unbounded growth).
-I_cap_per_avail   = 14.0   # capacity per unit availability: I_cap = c·a — the SIZE dial; ruling 2026-07-31 A3. P-K0: promoted from TUNE (P-F1b 2.53->14.0, SIZE)
+# R1 RE-SIZE (fire session #12, 2026-09-01, docs/fire_3c_design_2026-09-01.md
+# "Ruling R1" item 4): `a = avail*hot` moved from `~= 0.092` at ambient (the
+# old pure-O2-normalized o2f) to `~= 1.0` at ambient (o2f renormalized to
+# o2_frac_amb) — roughly a 10.9x jump in the raw operating point of
+# `I_eq ~= c*a`, though the die-term sign fix (item 3) also moves the
+# fixed-point algebra, so the two effects are not cleanly separable. 14.0 was
+# tuned to the OLD ~0.092-scale plateau; left unchanged it would badly
+# saturate I at the new ~1.0 scale. The sizing criterion (locked): hold the
+# open-control ambient plateau where 3a/prebench measured it (I≈0.75, T≈460
+# game — docs/fire_3c_prebench_2026-09-01.md).
+#
+# FIRST PASS (14.0 -> 0.75) assumed the ambient-plateau `a ~= 1.0` (the
+# text-book value AT X = o2_frac_amb exactly). Re-running the b1 open-control
+# bench post-patch measured the ACTUAL plateau at X_plateau = 0.1935, not
+# 0.2100 — the fire's own O2 draw (real consumption, not the idealized
+# textbook point) holds local O2 a hair below ambient even in the open,
+# sky-fed scenario. That gives a MEASURED `a`, not the assumed one:
+#     a = (X_plateau - o2_frac_ext) / (o2_frac_amb - o2_frac_ext)
+#       = (0.1935 - 0.13) / (0.21 - 0.13) = 0.0635 / 0.08 = 0.7935
+# (Erik's own note: "my 0.75 assumed a≈1 at plateau"; this run corrects it
+# with the measured a=0.79.) Plugging the MEASURED a into the exact fixed
+# point (not the `I_eq ~= c*a` approximation) with r = k_die/k_grow = 0.016:
+#     I_eq = c*(a - r*(1-a)) = c*(0.7935 - 0.016*0.2065) = c*0.7902
+# Solving I_eq = 0.75 (the locked criterion) for c:
+#     c = 0.75 / 0.7902 = 0.9492  ~=  0.95
+# CLOSED-FORM RE-SIZE (0.75 -> 0.95): re-ran the b1 open-control bench a THIRD
+# time at c=0.95 to confirm (raw artifacts: tests/_phase3a_artifacts/
+# b1_open_inf_fuel_summary.json, untracked/reproducible per that file's own
+# appendix). Phase 4 owns any further taste re-pass on top of this mechanical
+# fix.
+I_cap_per_avail   = 0.95   # capacity per unit availability: I_cap = c·a — the SIZE dial; ruling 2026-07-31 A3. R1 re-size 2026-09-01: 14.0->0.75 (first pass, assumed a~=1)->0.95 (closed-form, measured a=0.79 at the real open-control plateau — see the derivation above). P-K0: promoted from TUNE (P-F1b 2.53->14.0, SIZE)
 # fire_T_ext: SUPERSEDED as the extinction floor (P-R3, ruling A3 ride-along).
 # It is a PER-MATERIAL quantity — it sits on the same physical axis as the
 # per-material `ignition_temp` — and this global, at 350, exceeded BOTH shipped
@@ -260,7 +293,7 @@ I_cap_per_avail   = 14.0   # capacity per unit availability: I_cap = c·a — th
 # (furniture 280-100 = 180, wood 300-100 = 200), baked into
 # GameMap.fire_T_ext_plane, which makes `fire_T_ext < ignition_temp` STRUCTURAL
 # instead of a rule a config author has to remember. KEPT (like fuel_ref /
-# o2_frac_amb below) because the solver still uses it as the FALLBACK when a
+# o2_frac_full below) because the solver still uses it as the FALLBACK when a
 # caller supplies no per-tile plane; the live engine always supplies one, so
 # this value no longer affects the game. Editing it will NOT move the fire —
 # edit the material's `ignition_temp`, or the Δ below.
@@ -278,7 +311,7 @@ fire_T_span       = 180.0  # width of the `hot` ramp above fire_T_ext (STAYS glo
 # still died). Lowering this global is NOT the fix — at 30, wood (hp 60) would sit
 # clamped at F = 1 until it had already lost half its mass, destroying its
 # burn-down curve. The divisor is now baked per material from [materials.*].hp
-# into GameMap.fuel_recip. KEPT (like o2_frac_amb / o2_threshold above) because
+# into GameMap.fuel_recip. KEPT (like o2_frac_full / o2_threshold above) because
 # the solver still uses it as the FALLBACK divisor when a caller supplies no
 # per-tile plane; the live engine always supplies one, so this value no longer
 # affects the game. Editing it will NOT move the fire — edit the material's hp.
@@ -309,31 +342,46 @@ fuel_ref          = 60.0   # FALLBACK wall_hp normaliser (inert in the live engi
 # Ordering preserved, still bit-stable under the 1e-5 dial perturbation gate
 # (test_payoff_orderings_perturbation_robust).
 # Continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md): the O2 sustain
-# factor is now LINEAR in the local O2 MOLE FRACTION X = Σn_o2/Σn_total over open
-# neighbours, with an extinction limit — o2f = clamp01((X - X_ext)/(X_amb - X_ext)).
-# This REPLACES the smoothstep(P_min, P_full) on ABSOLUTE n_o2 below. The fraction
-# is invariant under thermal expansion, so the v2.4 hot-zone-equilibrium rescale
-# saga (the whole P_min/P_full recalibration note above) is CLOSED — only true
-# vitiation (products displacing O2), not hot thin gas, starves a fire.
-#   o2_frac_ext  = X_ext  (flame-extinction limit; 0 => Erik's pure X/X_full proportional)
-#   o2_frac_full = X_full (the FULL-RESPONSE reference: the O2 mole fraction at which
-#                          o2f reaches 1. This is NOT the ambient atmosphere.)
-#   o2_frac_amb  = X_amb  (what the ambient atmosphere IS; per-map, reads the level's
-#                          [ambient] o2_frac. NO LONGER read by the fire/combustion laws.)
-# FULL-RESPONSE REFERENCE SPLIT (2026-07-30): the denominator used to be X_amb, so
-# ambient air always gave o2f = 1 and the clamp01 made AMBIENT the ceiling — every
-# enrichment route (O2 reservoirs, leaks, wind delivery) was invisible BY CONSTRUCTION
-# (at X = 0.30 the raw ratio 2.125 clamped straight back to 1.0). Normalizing by PURE
-# O2 makes o2f a true physical fraction — "O2 above extinction, normalized to pure
-# oxygen" — the clamp effectively never binds, and headroom always exists. Ambient air
-# now lands at (0.21 - 0.13)/(1 - 0.13) = 0.092. This is a NORMALIZATION FIX, not a new
-# feature: setting o2_frac_full = o2_frac_amb reproduces the pre-split law exactly.
-# RE-TUNE PENDING (design §5): X_ext is a feel dial re-fit jointly with k_grow/k_die/
-# wall_damage/burn_rate AFTER this + the sky-exchange build merge. The split rescales
-# the whole avail axis by ~10x, so k_die/k_grow moves with it — Erik's loop, not here.
+# factor is LINEAR in the local O2 MOLE FRACTION X = Σn_o2/Σn_total over open
+# neighbours, with an extinction limit. This REPLACES the smoothstep(P_min,
+# P_full) on ABSOLUTE n_o2 below. The fraction is invariant under thermal
+# expansion, so the v2.4 hot-zone-equilibrium rescale saga (the whole
+# P_min/P_full recalibration note above) is CLOSED — only true vitiation
+# (products displacing O2), not hot thin gas, starves a fire.
+# R1 O2f-RENORMALIZATION (fire session #12, 2026-09-01, docs/fire_3c_design_
+# 2026-09-01.md "Ruling R1" — SUPERSEDES the 2026-07-30 FULL-RESPONSE REFERENCE
+# SPLIT below, SUSTAIN side only):
+#   o2f = clamp((X - o2_frac_ext) / (o2_frac_amb - o2_frac_ext), 0, o2f_cap)
+#   o2_frac_ext  = X_ext  (flame-extinction limit; UNCHANGED — 0 => pure X/X_amb
+#                          proportional)
+#   o2_frac_amb  = X_amb  (what the ambient atmosphere IS; per-map, reads the
+#                          level's [ambient] o2_frac. R1: NOW LIVE as the
+#                          SUSTAIN span's upper reference — ambient air reads
+#                          o2f == 1.0 by construction.)
+#   o2f_cap      = the enrichment-flare ceiling (NEW dial, R1). o2f is no
+#                          longer clamped to [0,1] — a raw pure-O2 tile would
+#                          reach (1-0.13)/(0.21-0.13) = 10.875, capped at 5.0
+#                          (Erik's choice).
+# WHY (the pre-bench diagnosis, docs/fire_3c_prebench_2026-09-01.md): under the
+# OLD pure-O2 normalization, ambient air read o2f == 0.092 (every other dial —
+# I_cap_per_avail, k_die — was secretly compensating for that near-zero
+# baseline), so a mild local O2 dip (0.21->0.165) HALVED an already-tiny o2f,
+# collapsing heat deposit and killing fires by COLD (T-gate) with 35% O2
+# headroom still left before o2_frac_ext — measured X_death 0.176, rising, far
+# from the physical 0.13 limit. Renormalizing to ambient keeps o2f ~= 1 at
+# modest depletion, so heat deposit holds T up and fires die NEAR the O2 gate
+# instead. `o2_frac_full` below is RETIRED from THIS (sustain) law — it stays
+# live only on the DEMAND side (combustion.cpp's o2f_j, unchanged by R1).
 o2_frac_ext       = 0.13   # X_ext — physical flame-extinction O2 mole fraction (~13%)
-o2_frac_full      = 1.0    # X_full — o2f reaches 1 at PURE O2. NOT ambient, NOT per-map.
-o2_frac_amb       = 0.21   # X_amb — what the ambient atmosphere IS (overridden per-map by [ambient] o2_frac)
+o2f_cap           = 5.0    # NEW (R1): enrichment ceiling on the renormalized o2f ratio
+# o2_frac_full: RETIRED from the SUSTAIN law by R1 (2026-09-01) — was the
+# 2026-07-30 FULL-RESPONSE REFERENCE SPLIT's pure-O2 upper reference. Kept
+# because combustion.cpp's DEMAND-side o2f_j (unchanged by R1, "how fast it
+# drinks") still reads it, and old configs/bindings that still set it should
+# not hard-error. Editing it moves the DEMAND law, NOT the sustain law above
+# (which now reads o2_frac_amb).
+o2_frac_full      = 1.0    # X_full — DEMAND-side (combustion.cpp) pure-O2 reference only.
+o2_frac_amb       = 0.21   # X_amb — what the ambient atmosphere IS (overridden per-map by [ambient] o2_frac). R1: NOW LIVE — the sustain law's span upper reference.
 P_min             = 0.01   # RETIRED (see o2_frac_ext/amb above) — smoothstep low edge on absolute n_o2
 P_full            = 0.03   # RETIRED — smoothstep full edge on absolute n_o2
 I_min             = 0.02   # snap-to-zero extinguish floor
@@ -752,9 +800,15 @@ eos_t_amb_k = 293.0                    # EOS absolute-ambient (pressure calibrat
 # Sane defaults; feel-tuned at P5 like every other fire/thermal dial.
 [physics.combustion]
 # Continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md §2.3): the O2
-# demand is now PROPORTIONAL — demand = burn_rate * I * o2f * dt (per claimant),
-# where o2f is LINEAR in the air cell's O2 mole fraction (the SAME o2_frac_ext/
-# o2_frac_full law the fire logistic uses, bound from [physics.fire]). burn_rate
+# demand is now PROPORTIONAL — demand = burn_rate * I * o2f_j * dt (per claimant),
+# where o2f_j is LINEAR in the air cell's O2 mole fraction, span o2_frac_ext/
+# o2_frac_full (bound from [physics.fire]). R1 (2026-09-01, docs/fire_3c_
+# design_2026-09-01.md "Ruling R1"): this DEMAND-side o2f_j is deliberately
+# UNCHANGED and no longer the SAME law the fire logistic (sustain) uses — the
+# sustain law's span was renormalized to o2_frac_ext/o2_frac_amb (+ the o2f_cap
+# ceiling); this one still reads o2_frac_ext/o2_frac_full (pure O2), "how fast
+# it drinks" vs "how well it thrives" (two roles, two shapes, by ruling).
+# burn_rate
 # drops from the retired uniform-gated 1.0 to the ceiling_h-anchored physical
 # value ~1/50: at ceiling_h=2.5 m the per-unit-O2 heat/fuel budget that keeps a
 # room-scale flame bounded and Q16.16-safe lands here (Huggett 1980 oxygen-

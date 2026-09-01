@@ -187,6 +187,9 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             // CAPACITY LAW (P-R3): `c`, the size dial. The host precompute
             // bakes INV_C = quantize(1/c) exactly as the CPU load-time block.
             this->fire.params.I_cap_per_avail,
+            // R1 (docs/fire_3c_design_2026-09-01.md): the sustain span's
+            // upper reference (ambient, not pure-O2) + the new enrichment cap.
+            this->fire.params.o2_frac_amb, this->fire.params.o2f_cap,
             // FUEL-FRACTION AXIS: the per-tile 1/hp plane. The GPU kernel takes
             // it as an extra read-only plane and falls back to the fuel_ref
             // scalar above on nullptr, exactly like the CPU branch — the two

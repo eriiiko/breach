@@ -15,18 +15,48 @@ controls: the next-tick intensity.
 FULL-RESPONSE REFERENCE SPLIT (2026-07-30). The denominator's upper end used to
 be ``o2_frac_amb`` — the AMBIENT dial — so ambient air always yielded o2f == 1
 and the clamp01 made ambient the ceiling: locally elevated O2 (reservoirs,
-leaks, wind delivery) was invisible BY CONSTRUCTION. The span's top is now the
-separate ``o2_frac_full`` (pure O2, 1.0, NOT map-overridden), so o2f is a true
+leaks, wind delivery) was invisible BY CONSTRUCTION. The span's top became the
+separate ``o2_frac_full`` (pure O2, 1.0, NOT map-overridden), so o2f was a true
 physical fraction — "O2 above extinction, normalized to pure oxygen":
 
     X = 0.13 -> 0.000   X = 0.21 (ambient) -> 0.092
     X = 0.25 -> 0.138   X = 0.30           -> 0.195   X = 1.00 -> 1.000
 
-Design gate a: X = X_full -> o2f = 1; X <= X_ext -> 0; midpoint linearity;
-X_ext = 0 degenerates to X/X_full; the clamp guards both ends; a level's
-[ambient] o2_frac no longer changes o2f's SHAPE; plus the headline property the
-law exists for — INVARIANCE under thermal expansion (same composition, different
-density -> same burn), the "density trap" fix.
+R1 O2f-RENORMALIZATION (fire session #12, 2026-09-01, docs/fire_3c_design_
+2026-09-01.md "Ruling R1") SPLITS THE TWO LAWS' SPANS APART, superseding the
+above for the SUSTAIN side only:
+
+  * COMBUSTION (`combustion.cpp`'s DEMAND-side o2f_j, "how fast it drinks") is
+    UNCHANGED by R1 — still the table above, still ``o2_frac_full``-anchored.
+    Everything below this point in the module that reads ``_o2f_combustion_q``
+    still tests exactly that law, untouched.
+  * FIRE (`FireSimulation::step`'s SUSTAIN-side o2f, "how well it thrives",
+    read here via ``_step_once`` / ``_o2f_fire_q``) is RENORMALIZED to
+    ``o2_frac_amb`` (0.21) instead of ``o2_frac_full`` (1.0), and the clamp's
+    upper edge is the NEW ``o2f_cap`` (5.0, struct default) instead of 1.0:
+
+        o2f_sustain = clamp((X - o2_frac_ext) / (o2_frac_amb - o2_frac_ext),
+                             0, o2f_cap)
+        X = 0.13 -> 0.000   X = 0.21 (ambient) -> 1.000 (exactly, by
+        construction)   X = 1.00 (pure O2) -> 5.000 (capped; raw ratio 10.875)
+
+    So ambient air, which used to read the fire's sustain o2f at 0.092, now
+    reads it at 1.0 — the whole point of the renormalization (see the ruling
+    doc's diagnosis). The two laws are now DELIBERATELY DIFFERENT SHAPES —
+    "two roles, two shapes" — not bit-identical twins; where a test below used
+    to prove they matched to the LSB, it now proves they differ by design
+    (test_two_o2_laws_are_now_deliberately_different), with a companion check
+    that they DO still coincide when a scene sets o2_frac_amb == o2_frac_full
+    explicitly (the backward-compatible degenerate case).
+
+Design gate a: X = X_full -> combustion's o2f_j = 1; X = X_amb -> fire's
+sustain o2f = 1 (R1); X <= X_ext -> both 0; midpoint linearity (each against
+its OWN span); X_ext = 0 degenerates to X/(each law's own upper reference);
+the clamp guards both ends of each law; a level's [ambient] o2_frac no longer
+changes combustion's o2f_j SHAPE but (R1) DOES move fire's sustain o2f SHAPE;
+plus the headline property the law exists for — INVARIANCE under thermal
+expansion (same composition, different density -> same burn), the "density
+trap" fix.
 
 Run:
     C:/Users/steen/miniconda3/envs/data/python.exe -m pytest tests/test_continuous_o2_law.py -q
@@ -51,15 +81,26 @@ ONE_F = fire_fixed.FP_ONE_F
 
 # Law dials used by the tests (the shipped continuous-O2 defaults).
 X_EXT = 0.13
-X_AMB = 0.21     # what the ambient atmosphere IS — NOT the law's reference
-X_FULL = 1.0     # the FULL-RESPONSE reference (pure O2) — the law's reference
-# The span midpoint under the new normalization (o2f == 0.5 there).
+# COMBUSTION (demand-side, unchanged by R1): what the ambient atmosphere IS,
+# and the law's reference respectively.
+X_AMB = 0.21     # what the ambient atmosphere IS
+X_FULL = 1.0     # the FULL-RESPONSE reference (pure O2) — combustion's law reference
+O2F_CAP = 5.0    # NEW (R1): the fire sustain law's enrichment ceiling (struct default)
+# The combustion span midpoint (X_ext..X_full) — o2f_j == 0.5 there.
 X_MID = X_EXT + 0.5 * (X_FULL - X_EXT)     # 0.565
+# R1: the FIRE sustain span midpoint (X_ext..X_amb, NOT X_full) — o2f == 0.5 there.
+X_MID_SUSTAIN = X_EXT + 0.5 * (X_AMB - X_EXT)     # 0.17
 
 
 def _expected_o2f(X, x_ext=X_EXT, x_full=X_FULL):
     """The law in plain floating point, for the assertions to compare against."""
     return min(1.0, max(0.0, (X - x_ext) / (x_full - x_ext)))
+
+
+def _expected_o2f_sustain(X, x_ext=X_EXT, x_amb=X_AMB, cap=O2F_CAP):
+    """R1: the FIRE sustain law in plain floating point — anchored on x_amb, not
+    x_full, and capped at o2f_cap (not 1.0)."""
+    return min(cap, max(0.0, (X - x_ext) / (x_amb - x_ext)))
 
 
 def _make_sim(o2_frac_ext=X_EXT, o2_frac_full=X_FULL, o2_frac_amb=X_AMB):
@@ -131,10 +172,14 @@ def test_o2f_zero_below_ext_decays():
 
 
 def test_o2f_half_at_midpoint_is_equilibrium():
-    """At the span midpoint o2f == 0.5; with I0 == 0.5 that is the logistic
-    equilibrium (grow == die), so the intensity barely moves — a direct read
-    of the LINEAR law's half value. The midpoint is now 0.565, not 0.17."""
-    assert abs(_step_once(_make_sim(), X=X_MID, I0=0.5) - 0.5) < 0.02
+    """At the FIRE sustain span's midpoint o2f == 0.5; with I0 == 0.5 that is
+    (near) the logistic equilibrium, so the intensity barely moves — a direct
+    read of the LINEAR law's half value.
+
+    R1 (fire session #12, docs/fire_3c_design_2026-09-01.md "Ruling R1"): the
+    fire sustain law's span is now X_ext..X_amb (0.13..0.21), NOT X_ext..X_full
+    (0.13..1.0) — the midpoint moved from 0.565 back down to 0.17."""
+    assert abs(_step_once(_make_sim(), X=X_MID_SUSTAIN, I0=0.5) - 0.5) < 0.02
 
 
 def test_monotone_increasing_in_X():
@@ -147,11 +192,14 @@ def test_monotone_increasing_in_X():
 
 
 def test_ext_zero_degenerates_to_proportional():
-    """o2_frac_ext == 0 -> o2f == X / X_full (Erik's pure proportional). At
-    X == X_full/2 that is 0.5 -> equilibrium at I0 == 0.5."""
+    """o2_frac_ext == 0 -> o2f == X / (the law's own upper reference) (Erik's
+    pure proportional). For the FIRE sustain law that reference is now
+    o2_frac_amb, not o2_frac_full (R1, fire session #12, docs/fire_3c_design_
+    2026-09-01.md "Ruling R1") — at X == X_amb/2 that is 0.5 -> equilibrium at
+    I0 == 0.5."""
     sim0 = _make_sim(o2_frac_ext=0.0)
-    assert abs(_step_once(sim0, X=X_FULL / 2.0, I0=0.5) - 0.5) < 0.02
-    assert _step_once(sim0, X=X_FULL, I0=0.5) > 0.5    # full fraction still grows
+    assert abs(_step_once(sim0, X=X_AMB / 2.0, I0=0.5) - 0.5) < 0.02
+    assert _step_once(sim0, X=X_FULL, I0=0.5) > 0.5    # pure O2 still grows (past the cap)
 
 
 # --- the headline property: density invariance (the trap fix) -------------
@@ -182,12 +230,19 @@ def test_thin_hot_gas_at_ambient_composition_burns_the_same():
 def test_vitiation_starves_at_constant_density():
     """The complement: at FIXED density, replacing O2 with inert product
     (dropping the fraction from ambient to below the extinction limit) DOES
-    starve the fire harder — only true vitiation, not low density, kills it."""
+    starve the fire harder — only true vitiation, not low density, kills it.
+
+    R1 (fire session #12, docs/fire_3c_design_2026-09-01.md "Ruling R1"): the
+    fire sustain law now reads ambient air as o2f == 1.0 (by construction, not
+    the old 0.092), so "fresh" ambient air GROWS a mid-intensity fire instead
+    of merely failing to sustain it — the contrast with vitiated air is even
+    starker under the new law: fresh GROWS, vitiated DECAYS, split cleanly by
+    0.5 rather than both landing on the same side of it."""
     fresh = _step_once(_make_sim(), X=X_AMB, density=1.0, I0=0.5)
     vitiated = _step_once(_make_sim(), X=0.10, density=1.0, I0=0.5)
-    assert vitiated < fresh < 0.5      # ambient alone no longer sustains I=0.5
-    # ...and pure O2 at the same density does sustain growth.
-    assert _step_once(_make_sim(), X=X_FULL, density=1.0, I0=0.5) > 0.5
+    assert vitiated < 0.5 < fresh      # ambient sustains/grows; vitiated decays
+    # ...and pure O2 at the same density grows even harder (past the cap).
+    assert _step_once(_make_sim(), X=X_FULL, density=1.0, I0=0.5) > fresh
 
 
 def test_fully_enclosed_reads_zero_and_decays():
@@ -366,15 +421,34 @@ def test_o2f_clamp_guards_both_ends():
     assert _o2f_combustion_q(1.0) >= ONE_F - 2
 
 
-def test_ambient_override_does_not_change_o2f_shape():
+def test_ambient_override_does_not_change_combustion_o2f_shape():
     """A level's ``[ambient] o2_frac`` writes o2_frac_amb (physics_runner
-    _ambient_args). Since the split that dial is NOT the law's reference, so it
-    cannot move o2f by a single count — the whole point of the change."""
+    _ambient_args). COMBUSTION's DEMAND-side o2f_j is UNCHANGED by R1 (fire
+    session #12, docs/fire_3c_design_2026-09-01.md "Ruling R1") — that dial is
+    still not its reference, so it still cannot move o2f_j by a single count."""
     for X in (0.15, X_AMB, 0.30, 0.60):
         base = _o2f_combustion_q(X, x_amb=X_AMB)
         for amb in (0.10, 0.15, 0.21, 0.35, 1.0):
             assert _o2f_combustion_q(X, x_amb=amb) == base
-            assert _o2f_fire_q(X, x_amb=amb) == _o2f_fire_q(X, x_amb=X_AMB)
+
+
+def test_ambient_override_DOES_change_fire_sustain_o2f_shape():
+    """R1's complement of the test above: the FIRE SUSTAIN law is exactly the
+    opposite now — o2_frac_amb IS its live span reference (fire session #12,
+    docs/fire_3c_design_2026-09-01.md "Ruling R1"), so moving it DOES move
+    sustain o2f, monotonically (a bigger o2_frac_amb widens the span, pulling
+    the ratio at any fixed X > o2_frac_ext DOWN)."""
+    # X = 0.30; `amb` sampled only from values that keep the ratio <= 0.5 (the
+    # documented exactness range of `_o2f_fire_q` — above that I_next
+    # saturates at 1.0 and the read stops moving with o2f, which would look
+    # like "not monotonic" for a reason unrelated to the law itself: the probe,
+    # not the law). (0.30-0.13)/(amb-0.13) <= 0.5 <=> amb >= 0.47.
+    X = 0.30
+    vals = [_o2f_fire_q(X, x_amb=amb) for amb in (0.50, 0.60, 0.75, 1.0)]
+    assert all(a > b for a, b in zip(vals, vals[1:])), (
+        f"sustain o2f did not move monotonically with o2_frac_amb: {vals}")
+    # And a level with a lower ambient differs from a higher one.
+    assert _o2f_fire_q(X, x_amb=0.50) != _o2f_fire_q(X, x_amb=1.0)
 
 
 def test_full_reference_is_the_dial_that_moves_o2f():
@@ -390,12 +464,42 @@ def test_full_reference_is_the_dial_that_moves_o2f():
     assert _o2f_combustion_q(X_AMB, x_full=X_FULL) < ONE_F // 5
 
 
-def test_two_o2_laws_are_bit_identical():
-    """The fire logistic and the combustion draw must read the SAME law to the
-    LSB (they are deliberately bit-identical twins). Same mole-fraction inputs,
-    same o2f counts."""
+def test_two_o2_laws_are_now_deliberately_different():
+    """SUPERSEDED (R1, fire session #12, 2026-09-01, docs/fire_3c_design_
+    2026-09-01.md "Ruling R1"): the fire logistic's SUSTAIN o2f and the
+    combustion draw's DEMAND o2f_j used to be bit-identical twins, same
+    mole-fraction inputs, same law. R1 deliberately SPLITS them — "how well it
+    thrives" (sustain, now o2_frac_amb-anchored) vs "how fast it drinks"
+    (demand, still o2_frac_full-anchored) — so under the SHIPPED dials
+    (o2_frac_amb=0.21 != o2_frac_full=1.0) they now read DIFFERENT counts at
+    every X in the shared linear band, by design.
+
+    This test proves both halves of that: (a) under the shipped dials the two
+    laws genuinely differ (the split is live, not a no-op), and (b) the two
+    laws STILL degenerate back to bit-identical twins when a scene explicitly
+    sets o2_frac_amb == o2_frac_full — the backward-compatible special case
+    (mirrors config.toml's own "setting o2_frac_full = o2_frac_amb reproduces
+    the pre-split law" note for the EARLIER 2026-07-30 split; R1 preserves
+    that escape hatch, just with the roles of amb/full swapped)."""
+    # (a) shipped dials -> genuinely different, at every sampled X STRICTLY
+    # above o2_frac_ext (AT or below it both laws structurally read 0 —
+    # extinction is a shared, unsplit gate — so X_EXT itself is excluded).
     for X in _LOW_XS:
-        assert _o2f_fire_q(X) == _o2f_combustion_q(X), f"laws differ at X={X}"
+        if X <= X_EXT:
+            assert _o2f_fire_q(X) == _o2f_combustion_q(X) == 0, (
+                f"at/below o2_frac_ext (X={X}) both laws must read 0")
+            continue
+        assert _o2f_fire_q(X) != _o2f_combustion_q(X), (
+            f"laws unexpectedly match at X={X} under the SHIPPED (differing) "
+            f"o2_frac_amb/o2_frac_full dials — the R1 split is not live")
+    # (b) o2_frac_amb == o2_frac_full (== X_FULL here) -> bit-identical again,
+    # in the shared unclamped band (_LOW_XS tops out at 0.55, well inside both
+    # laws' linear region against a 1.0 upper reference).
+    for X in _LOW_XS:
+        assert (_o2f_fire_q(X, x_amb=X_FULL)
+                == _o2f_combustion_q(X, x_full=X_FULL)), (
+            f"laws differ at X={X} even with o2_frac_amb == o2_frac_full — "
+            f"the degenerate backward-compatible case is broken")
 
 
 def test_o2f_is_linear_between_the_endpoints():

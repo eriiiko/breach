@@ -426,6 +426,13 @@ def _run_infinite_fuel(level, crate_xy, material_id, ignition_temp, max_seconds,
     had_fire = False
     death_tick = None
     rec_t, rec_I, rec_T, rec_X, rec_hot, rec_hp = [], [], [], [], [], []
+    # N_total per sample (R1 verification bench, fire session #12, 2026-09-01):
+    # the same Sigma(O2+INERT_N2) over the open neighbours used for X_local's
+    # denominator, logged as its own raw-count column -- cheap (already
+    # computed as tot_loc below), and lets a reader see whether the O2 gate's
+    # denominator itself is moving (thermal expansion/contraction) independent
+    # of the numerator, without re-deriving it from X_local*something.
+    rec_ntotal = []
     checkpoints = []
     next_ckpt = checkpoint_every_s
     for k in range(1, n_max + 1):
@@ -443,16 +450,18 @@ def _run_infinite_fuel(level, crate_xy, material_id, ignition_temp, max_seconds,
                                 for (ny, nx) in nbrs))
             X = o2_loc / max(1.0, tot_loc)
         else:
+            tot_loc = float("nan")
             X = float("nan")
         hot = _hot_gate(Tg, fire_t_ext, fire_t_span)
         rec_t.append(t); rec_I.append(I); rec_T.append(Tg); rec_X.append(X)
-        rec_hot.append(hot); rec_hp.append(hp)
+        rec_hot.append(hot); rec_hp.append(hp); rec_ntotal.append(tot_loc)
         if I > 0.05:
             had_fire = True
         if had_fire and I == 0.0 and death_tick is None:
             death_tick = k
         if t >= next_ckpt:
-            checkpoints.append(dict(t_s=t, I=I, T_game=Tg, T_kelvin=kelvin(Tg), X_local=X, hot=hot))
+            checkpoints.append(dict(t_s=t, I=I, T_game=Tg, T_kelvin=kelvin(Tg), X_local=X, hot=hot,
+                                    N_total=tot_loc))
             next_ckpt += checkpoint_every_s
         if death_tick is not None and t > death_tick * dt + 15.0:
             break
@@ -460,16 +469,18 @@ def _run_infinite_fuel(level, crate_xy, material_id, ignition_temp, max_seconds,
     import csv
     with open(ART / f"b1_{tag}.csv", "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["t_s", "I", "T_game", "T_kelvin", "X_local", "hot", "wall_hp"])
+        w.writerow(["t_s", "I", "T_game", "T_kelvin", "X_local", "hot", "wall_hp",
+                    "N_total"])
         for i in range(len(rec_t)):
             w.writerow([f"{rec_t[i]:.4f}", f"{rec_I[i]:.6f}", f"{rec_T[i]:.3f}",
                         f"{kelvin(rec_T[i]):.3f}", f"{rec_X[i]:.6f}", f"{rec_hot[i]:.4f}",
-                        f"{rec_hp[i]:.6f}"])
+                        f"{rec_hp[i]:.6f}", f"{rec_ntotal[i]:.6f}"])
 
     death_time = death_tick * dt if death_tick is not None else float("nan")
     X_at_death = rec_X[death_tick - 1] if death_tick is not None else float("nan")
     hot_at_death = rec_hot[death_tick - 1] if death_tick is not None else float("nan")
     T_at_death = rec_T[death_tick - 1] if death_tick is not None else float("nan")
+    Ntotal_at_death = rec_ntotal[death_tick - 1] if death_tick is not None else float("nan")
     # Plateau window: last quasi-steady stretch before death (or before the cap
     # if it never dies) -- last 20% of the run, mirroring 3a's near-peak-window
     # convention but adapted for a run that may never decay.
@@ -478,6 +489,8 @@ def _run_infinite_fuel(level, crate_xy, material_id, ignition_temp, max_seconds,
     I_plateau = float(np.median(rec_I[start_i:end_i])) if end_i > start_i else float("nan")
     X_plateau = float(np.nanmedian(rec_X[start_i:end_i])) if end_i > start_i else float("nan")
     T_plateau = float(np.median(rec_T[start_i:end_i])) if end_i > start_i else float("nan")
+    Ntotal_plateau = (float(np.nanmedian(rec_ntotal[start_i:end_i]))
+                      if end_i > start_i else float("nan"))
     # X trajectory shape: slope over the last checkpoint_every_s window (game
     # seconds) -- near-zero => flat/asymptote, still-negative => linear burn-down.
     tail_n = max(2, int(checkpoint_every_s * tps))
@@ -497,9 +510,11 @@ def _run_infinite_fuel(level, crate_xy, material_id, ignition_temp, max_seconds,
         tag=tag, hp0=hp0, had_fire=had_fire, death_time_s=death_time,
         cause_of_death=cause, X_at_death=X_at_death, hot_at_death=hot_at_death,
         T_at_death_game=T_at_death, T_at_death_kelvin=kelvin(T_at_death) if not np.isnan(T_at_death) else float("nan"),
+        Ntotal_at_death=Ntotal_at_death,
         o2_frac_ext=o2_frac_ext,
         I_plateau=I_plateau, X_plateau=X_plateau, T_plateau_game=T_plateau,
         T_plateau_kelvin=kelvin(T_plateau) if not np.isnan(T_plateau) else float("nan"),
+        Ntotal_plateau=Ntotal_plateau,
         X_final=rec_X[-1] if rec_X else float("nan"),
         X_tail_slope_per_min=X_tail_slope_per_min,
         peak_I=float(max(rec_I)) if rec_I else float("nan"),

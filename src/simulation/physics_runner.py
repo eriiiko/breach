@@ -86,12 +86,15 @@ FIRE_FUEL_REF       = 60.0   # fallback wall_hp normaliser (superseded, see abov
 # Continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md): o2f is LINEAR
 # in the local O2 mole fraction X = Σn_o2/Σn_total, with an extinction limit.
 FIRE_O2_FRAC_EXT    = 0.13   # X_ext: flame-extinction O2 mole fraction (0 = pure proportional)
-# FULL-RESPONSE REFERENCE SPLIT (2026-07-30): the law's denominator used to be
-# X_amb, so ambient always gave o2f = 1 and the clamp made AMBIENT the ceiling —
-# local O2 enrichment could never register. X_full is the separate reference at
-# which o2f reaches 1 (pure O2); ambient air lands at (0.21-0.13)/(1-0.13)=0.092.
-FIRE_O2_FRAC_FULL   = 1.0    # X_full: full-response reference — NOT ambient, NOT per-map
-FIRE_O2_FRAC_AMB    = 0.21   # X_amb: what the ambient atmosphere IS (per-map: reads [ambient] o2_frac)
+# R1 O2f-RENORMALIZATION (fire session #12, 2026-09-01, docs/fire_3c_design_
+# 2026-09-01.md "Ruling R1"): the SUSTAIN law's span upper reference is now
+# o2_frac_amb (ambient), NOT o2_frac_full (pure O2, the 2026-07-30
+# FULL-RESPONSE REFERENCE SPLIT this superseded on the sustain side only) — so
+# ambient air reads o2f == 1.0 by construction, not the old 0.092. o2_frac_full
+# stays live only on the DEMAND side (combustion.cpp's o2f_j, unchanged).
+FIRE_O2_FRAC_FULL   = 1.0    # X_full: DEMAND-side (combustion.cpp) pure-O2 reference only
+FIRE_O2_FRAC_AMB    = 0.21   # X_amb: what the ambient atmosphere IS (per-map: reads [ambient] o2_frac). R1: NOW LIVE — the sustain law's span upper reference.
+FIRE_O2F_CAP        = 5.0    # NEW (R1): enrichment ceiling on the renormalized sustain o2f ratio
 FIRE_P_MIN          = 0.60   # RETIRED (see o2_frac_ext/amb) — was the smoothstep low edge
 FIRE_P_FULL         = 1.00   # RETIRED — was the smoothstep full edge
 FIRE_I_MIN          = 0.02   # snap-to-zero extinguish floor
@@ -243,17 +246,20 @@ class PhysicsRunner:
         self.fire.params.fire_T_ext     = _fp("fire_T_ext", FIRE_T_EXT)
         self.fire.params.fire_T_span    = _fp("fire_T_span", FIRE_T_SPAN)
         self.fire.params.fuel_ref       = _fp("fuel_ref", FIRE_FUEL_REF)
-        # Continuous-O2 law dials. o2_frac_full is the FULL-RESPONSE reference —
-        # the mole fraction at which o2f reaches 1 (pure O2) — and is deliberately
-        # NOT per-map: it is a physical reference, not an atmosphere. o2_frac_amb
-        # IS a per-MAP value (the level's authored [ambient] o2_frac); bound to the
-        # 0.21 fallback here and refreshed per-map in _ambient_args when an ambient
-        # config is present. Since the split, o2_frac_amb is no longer read by
-        # either O2 law (fire logistic / combustion) — it stays as the ambient
-        # record other systems and levels rely on.
+        # Continuous-O2 law dials. o2_frac_full is the DEMAND-side (combustion.py
+        # o2f_j) pure-O2 reference — and is deliberately NOT per-map: it is a
+        # physical reference, not an atmosphere. o2_frac_amb IS a per-MAP value
+        # (the level's authored [ambient] o2_frac); bound to the 0.21 fallback
+        # here and refreshed per-map in _ambient_args when an ambient config is
+        # present. R1 (fire session #12, docs/fire_3c_design_2026-09-01.md
+        # "Ruling R1"): o2_frac_amb is now LIVE on the SUSTAIN law (the fire
+        # logistic's span upper reference) — it is no longer merely the ambient
+        # record; o2f_cap is the NEW enrichment-ceiling dial that replaces the
+        # old [0,1] clamp on that renormalized sustain o2f.
         self.fire.params.o2_frac_ext    = _fp("o2_frac_ext", FIRE_O2_FRAC_EXT)
         self.fire.params.o2_frac_full   = _fp("o2_frac_full", FIRE_O2_FRAC_FULL)
         self.fire.params.o2_frac_amb    = _fp("o2_frac_amb", FIRE_O2_FRAC_AMB)
+        self.fire.params.o2f_cap        = _fp("o2f_cap", FIRE_O2F_CAP)
         # P_min/P_full RETIRED from the sustain law (continuous-O2 law); left
         # wired so old configs/bindings that still set them do not hard-error.
         self.fire.params.P_min          = _fp("P_min", FIRE_P_MIN)
@@ -1389,12 +1395,14 @@ class PhysicsRunner:
         # X_amb is this map's authored ambient O2 fraction — one source of truth
         # with the BC. Refresh both solvers each tick; o2_frac is static per map,
         # so this is a cheap idempotent set.
-        # NOTE (full-response reference split, 2026-07-30): X_amb is NO LONGER the
-        # mole fraction at which o2f saturates — that is o2_frac_full (pure O2),
-        # which is deliberately NOT map-overridden. These two writes now only keep
-        # the solvers' record of "what the ambient atmosphere is" current; neither
-        # O2 law reads it. Enriching a map's [ambient] o2_frac therefore RAISES
-        # o2f (more O2 in the air) instead of silently rescaling the law.
+        # R1 UPDATE (fire session #12, 2026-09-01, docs/fire_3c_design_2026-09-01
+        # .md "Ruling R1"): fire.params.o2_frac_amb is NOW LIVE on the SUSTAIN
+        # law (the fire logistic's span upper reference — ambient air reads
+        # o2f == 1.0 by construction), so a map authoring a non-default
+        # [ambient] o2_frac genuinely rescales the sustain span, not merely a
+        # bookkeeping record. combustion.o2_frac_amb stays the OLD role — the
+        # DEMAND-side o2f_j is unchanged by R1 and still reads o2_frac_full
+        # (pure O2), so this write there is still just the ambient record.
         self.fire.params.o2_frac_amb = float(amb.o2_frac)
         self.combustion.o2_frac_amb = float(amb.o2_frac)
         n_gases = gmap.gas.shape[0]
