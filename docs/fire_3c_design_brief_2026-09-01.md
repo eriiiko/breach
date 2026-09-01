@@ -59,23 +59,39 @@ never by O2 (X at death 0.184–0.203, gate is 0.13). Sealed rooms only
    absolute-density factor (Erik's amendment on record) so fires cannot
    burn in near-vacuum. Also revisit the 0.13 gate vs 3a's finding that
    fires die of heat long before X reaches it.
-6. **Config algebra rewrite (small, rides along)**: the T* equilibrium
-   comment (config.toml ~:855) overshoots reality 105× (constant-I
-   assumption never holds) — rewrite as an explicit transient-regime
-   note so nobody tunes against it again.
+6. **Config algebra RE-DERIVATION (upgraded from "rewrite" — pre-bench
+   finding)**: the T* equilibrium comment (config.toml ~:855) overshoots
+   reality ~105–110× — and the pre-bench (`docs/fire_3c_prebench_2026-09-01.md`)
+   REFUTED 3a's "constant-I assumption never holds" explanation: the
+   infinite-fuel open control sat at a genuine flat plateau (I≈0.751,
+   T≈460.5 game) for a full hour and the formula still missed by ~110×.
+   The formula itself omits a dominant loss term. Hypothesis to check
+   first: it balances H_bed deposit against cool_shift decay ONLY, but a
+   burning tile is also a radiation EMITTER (net-T⁴ against sky +
+   neighbours, and furniture has no conduction faces so radiation is its
+   ONLY other loss) — at plateau T the radiative loss plausibly dominates.
+   Re-derive T* including radiative loss; verify against the measured
+   plateau, then rewrite the config comment against the corrected algebra.
 
-## 3. Benches to add/run during 3c (design informs, then verifies)
+## 3. Benches — the first two RAN 2026-09-01 (results in
+`docs/fire_3c_prebench_2026-09-01.md`; read it with the 3a memo)
 
-- **Infinite-fuel variant (Erik's M7 suggestion)**: pin `wall_hp` (debug
-  write each tick, or a huge-hp material row in the harness) so the O2
-  reservoir effect is isolated from fuel erosion → does a sealed infinite-
-  fuel fire ACTUALLY hit the 0.13 O2 wall? This cleanly separates item 1's
-  two death channels.
-- **Cluster coupling**: 1 crate vs the 2×2 bonfire stage
-  (levels/fire_tuning station 1) — measure the mutual radiation feeding
-  (burning tiles are pairwise net-T⁴ emitters; a cluster should hold
-  `hot`=1 collectively). Baseline exists: M1 single-crate curves in
-  `tests/_phase3a_artifacts/` (untracked, Home Desktop) + the memo.
+- **Infinite-fuel variant — DONE. Headline: the O2 wall DOES NOT EXIST
+  under current dials.** Sealed + infinite fuel still dies by T-gate at
+  29.5 min with X at death 0.176 (35% above the 0.13 gate; X is
+  non-monotonic and recovering at death). The open control never dies —
+  first true plateau of the arc (I≈0.751, T≈753.5 K, flat for an hour).
+  Design consequence for items 1+5: if sealed rooms should starve fires
+  (G5), the O2 law needs to actually bind — gate level, o2f shape, or
+  draw-vs-reservoir scaling.
+- **Cluster coupling — DONE. Real and substantial, mostly a SUSTAIN
+  effect**: at the single crate's death instant (1645 s) the 2×2 block is
+  still burning at 7.7× the single's I and +246 game hotter; plateau T
+  +20.5% for 2×2 (+5.4% for 1×2) vs peak T only +6.2%; both clusters
+  outlived the 1800 s cap (censored). Per-tile peak I FALLS with cluster
+  size (−27.6% at 2×2) — shared local O2 pool — while radiation mutual
+  heating extends life. Erik's "fires feed each other" is confirmed and
+  quantified.
 - Reuse `tools/fire_timing_harness.py` + `tests/_phase3a_driver.py` —
   extend the driver, never a parallel bench.
 - M7's material confound (wood conductivity 0.15 vs furniture 0) — keep
