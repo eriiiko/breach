@@ -111,6 +111,7 @@ One line per system built for reuse. Long form + entry points:
 | Blackbody | `renderer/blackbody.py` | The single ΔT→colour map |
 | Frame lights | `renderer/frame_lights.py` | The only per-frame light-list assembly |
 | Dequantize convention | per-field `*_fixed.dequantize_f32` at `upload_state` | Fresh float copies at the render read, never written back, never `/65536` inline |
+| Tile inspector | `renderer/hover_readout.py::pack_hover_readout` | THE per-tile debug readout (F6 hides) — tools/HUD read it, never roll a parallel field probe; future resident gather swaps inside this seam |
 | 3D units | `renderer/unit_model_renderer.py` + `marine_shader.py` | No model/anim state ever lands on `Unit` (digest!) |
 | UI split | `ui/model.py` (pure) / `ui/draw.py` (dumb) | Decisions in model as data; draw decides nothing |
 

@@ -41,11 +41,14 @@ hover_readout = _load("hover_readout")
 pack_hover_readout = hover_readout.pack_hover_readout
 TEMP_SCALE = hover_readout.TEMP_SCALE
 
-from simulation.gases import (FUEL_GAS, N_GASES, O2, POISON, SMOKE,  # noqa: E402
-                              STEAM, TEARGAS)
-from simulation.materials import MAT_WOOD  # noqa: E402
+from simulation.gases import (FUEL_GAS, INERT_N2, N_GASES, O2, POISON,  # noqa: E402
+                              SMOKE, STEAM, TEARGAS)
+from simulation.materials import MAT_AIR, MAT_WOOD, MATERIAL_NAMES  # noqa: E402
 from simulation.fire_fixed import FP_ONE_F as FIRE_FP_ONE_F  # noqa: E402
 from simulation.gas_fixed import FP_ONE_F as GAS_FP_ONE_F  # noqa: E402
+from simulation.atmosphere_fixed import FP_ONE_F as ATMO_FP_ONE_F  # noqa: E402
+from simulation.water_fixed import FP_ONE_F as WATER_FP_ONE_F  # noqa: E402
+from simulation.wall_fixed import FP_ONE_F as WALL_FP_ONE_F  # noqa: E402
 from temperature_scale import load as _load_temperature_scale  # noqa: E402
 
 H, W = 4, 5
@@ -57,6 +60,15 @@ _TS = _load_temperature_scale()
 KELVIN_FN = _TS.to_kelvin
 
 
+# Stub per-material hp table (materials.py's `table.hp[material_id]`, the
+# fuel-fraction denominator) — real config values for the two ids the tests
+# touch (air 0, wood 60); the rest are unused padding.
+_N_MATERIALS = max(MATERIAL_NAMES) + 1
+_STUB_HP = np.zeros(_N_MATERIALS, dtype=np.float32)
+_STUB_HP[MAT_AIR] = 0.0                                  # air: massless (hp 0)
+_STUB_HP[MAT_WOOD] = 60.0
+
+
 def _stub_gmap():
     """A minimal gmap: the fields hover_readout reads, all zero to start."""
     return SimpleNamespace(
@@ -65,6 +77,13 @@ def _stub_gmap():
         temperature=np.zeros((H, W), dtype=np.int32),
         fire=np.zeros((H, W), dtype=np.int32),
         gas=np.zeros((N_GASES, H, W), dtype=np.int32),
+        atmosphere=np.zeros((H, W), dtype=np.int32),
+        wind_x=np.zeros((H, W), dtype=np.int32),
+        wind_y=np.zeros((H, W), dtype=np.int32),
+        water_depth=np.zeros((H, W), dtype=np.int32),
+        wall_hp=np.zeros((H, W), dtype=np.int32),
+        gas_energy=np.zeros((H, W), dtype=np.int64),
+        materials=SimpleNamespace(hp=_STUB_HP),
     )
 
 
@@ -87,6 +106,13 @@ def test_packs_all_fields_dequantized():
     g.gas[TEARGAS, ty, tx] = int(round(0.05 * GAS_FP_ONE_F))
     g.gas[FUEL_GAS, ty, tx] = int(round(0.15 * GAS_FP_ONE_F))
     g.gas[O2, ty, tx] = int(round(0.21 * GAS_FP_ONE_F))
+    g.gas[INERT_N2, ty, tx] = int(round(0.70 * GAS_FP_ONE_F))
+    g.atmosphere[ty, tx] = int(round(1.05 * ATMO_FP_ONE_F))
+    g.wind_x[ty, tx] = int(round(2.5 * ATMO_FP_ONE_F))
+    g.wind_y[ty, tx] = int(round(-1.25 * ATMO_FP_ONE_F))
+    g.water_depth[ty, tx] = int(round(0.4 * WATER_FP_ONE_F))
+    g.wall_hp[ty, tx] = int(round(30.0 * WALL_FP_ONE_F))    # wood, half hp
+    g.gas_energy[ty, tx] = int(123456789)
 
     r = pack_hover_readout(g, tx, ty, KELVIN_FN)
     assert r is not None
@@ -103,9 +129,23 @@ def test_packs_all_fields_dequantized():
     assert r.gases["o2"] == pytest.approx(0.21, abs=1e-4)
     # inert_n2 is invisible bulk air — deliberately NOT in the readout.
     assert "inert_n2" not in r.gases
+
+    # Phase-2 fields: pressure/wind/bulk-N via atmosphere_fixed/gas_fixed,
+    # water via water_fixed, wall_hp/fuel-fraction via wall_fixed + the
+    # material's own hp (wood 60 -> half-hp wall_hp 30 -> F == 0.5), and
+    # gas_energy as raw/FP_ONE_F**2.
+    assert r.pressure == pytest.approx(1.05, abs=1e-4)
+    assert r.bulk_n == pytest.approx(0.21 + 0.70, abs=1e-4)
+    assert r.wind_vx == pytest.approx(2.5, abs=1e-4)
+    assert r.wind_vy == pytest.approx(-1.25, abs=1e-4)
+    assert r.water_depth == pytest.approx(0.4, abs=1e-4)
+    assert r.wall_hp == pytest.approx(30.0, abs=1e-3)
+    assert r.fuel_frac == pytest.approx(0.5, abs=1e-4)
+    assert r.gas_energy == pytest.approx(123456789 / (GAS_FP_ONE_F ** 2), rel=1e-9)
+
     # Panel-ready lines carry the tile + a couple of the numbers.
     assert r.lines[0] == "tile (2, 1)  wood"
-    assert len(r.lines) == 6
+    assert len(r.lines) == 11
 
 
 def test_vacuum_tile_labelled_vacuum():
@@ -122,6 +162,13 @@ def test_cold_empty_tile_reads_zero():
     assert r.kelvin == pytest.approx(_TS.kelvin_ambient)  # ambient at T_game 0
     assert all(v == 0.0 for v in r.gases.values())
     assert r.material == "air"                  # MAT_AIR == 0
+    # Phase-2 fields all read zero on a cold, empty, air tile; air's hp is 0
+    # so fuel_frac takes the guarded "no substance here" zero, not a div/0.
+    assert r.pressure == 0.0 and r.bulk_n == 0.0
+    assert r.wind_vx == 0.0 and r.wind_vy == 0.0
+    assert r.water_depth == 0.0
+    assert r.wall_hp == 0.0 and r.fuel_frac == 0.0
+    assert r.gas_energy == 0.0
 
 
 if __name__ == "__main__":
@@ -129,4 +176,5 @@ if __name__ == "__main__":
     test_packs_all_fields_dequantized()
     test_vacuum_tile_labelled_vacuum()
     test_cold_empty_tile_reads_zero()
-    print("OK — hover_readout packs T/Kelvin/fire/material/gases/O2 headless")
+    print("OK — hover_readout packs T/Kelvin/fire/material/gases/O2/pressure/"
+          "wind/water/fuel/gas_energy headless")
