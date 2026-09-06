@@ -110,6 +110,7 @@ Legend: ✅ implemented · ⚠️ partial (foundation built, advanced parts desi
 | Chapter | Status |
 |---------|--------|
 | [Water rendering](graphics/water_rendering.md) | 📝 (in progress — Fresnel reflect/refract surface pass; research landed) |
+| [Props & vegetation (3D)](graphics/props_and_vegetation.md) | 🧪 (arc #60 — procedural trees/palms + prop entities + lit3d seam; spike blessed, P1 extraction first) |
 | Smoke & gas optics · Lighting mood & post · Surface materials · Decals & particles | (planned — migrated/written as each look-pass is done) |
 
 ### ML
