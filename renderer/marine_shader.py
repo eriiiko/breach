@@ -20,10 +20,12 @@ STATIC 6.0.1.0):
     skinned (positions/normals already posed), so a bone uniform would double-
     transform it.
 
-Shared GLSL (srgb decode/encode, ACES) is factored into ``_COMMON_GLSL`` and
-concatenated into the fragment source — NOT copied verbatim from the golden-
-gated ship shader ``shaders/lighting.fs`` (which keeps its own inline copies;
-we do not touch it). Kept numerically identical so tone/colour match the ship.
+Shared GLSL (srgb decode/encode, ACES) lives in ``renderer/lit3d.py``'s
+``_COMMON_GLSL`` (the shared lit-3D-in-world-RT seam, extracted 2026-09 for
+the props & vegetation arc #60 P1) and is concatenated into the fragment
+source here — NOT copied verbatim from the golden-gated ship shader
+``shaders/lighting.fs`` (which keeps its own inline copies; we do not touch
+it). Kept numerically identical so tone/colour match the ship.
 """
 from __future__ import annotations
 
@@ -31,6 +33,8 @@ from dataclasses import dataclass
 from typing import Dict
 
 import pyray as rl
+
+from .lit3d import _COMMON_GLSL
 
 # --- Marine-specific tunables (feel knobs; the whole arc is HUMAN-TEST gated) -
 # The marine gets its OWN, more grazing key than the ship (ship default 0.5).
@@ -55,25 +59,6 @@ MARINE_NORMAL_STRENGTH = 1.0
 MARINE_USE_NORMAL_DEFAULT = False
 # Filename of the placeholder normal map, resolved next to the model asset.
 MARINE_NORMAL_MAP_FILENAME = "marine_normal_PLACEHOLDER.png"
-
-# Shared helpers — string-concatenated into the fragment shader below. Kept
-# numerically identical to shaders/lighting.fs so the marine tone-maps and
-# gamma-matches the ship exactly, without forking the golden-gated file.
-_COMMON_GLSL = """
-// Cheap sRGB <-> linear (gamma 2.2), matching shaders/lighting.fs.
-vec3 srgb_to_linear(vec3 c) { return pow(c, vec3(2.2)); }
-vec3 linear_to_srgb(vec3 c) { return pow(c, vec3(1.0 / 2.2)); }
-
-// ACES filmic tone-map (Narkowicz), identical to shaders/lighting.fs.
-vec3 aces_tonemap(vec3 x) {
-    const float a = 2.51;
-    const float b = 0.03;
-    const float c = 2.43;
-    const float d = 0.59;
-    const float e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-}
-"""
 
 MARINE_VS = """#version 330
 // Lit-marine vertex shader. The mesh is CPU-skinned upstream
