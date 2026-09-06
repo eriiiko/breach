@@ -415,9 +415,18 @@ class GameRenderer:
         #                 handshake between them).
         #   _prop_clock_s = the SIM clock in seconds — never wall time, so a
         #                 replay renders the same motion (gas_detail precedent).
+        #   _prop_gas_bulk_fn / _prop_n_ambient_q = P4r2 density-flux inputs
+        #                 (Erik's vented-room ruling, 2026-09-07): a bound
+        #                 GameMap.gas_bulk_n_at accessor + that map's ambient
+        #                 reference (GameMap.ambient_seed()[0]), refreshed in
+        #                 upload_state alongside _prop_wind — never a full-
+        #                 grid density copy, since draw_props samples them
+        #                 per prop (~12 tiles, not the whole grid).
         self._prop_wind = None
         self._props_seen = False
         self._prop_clock_s = 0.0
+        self._prop_gas_bulk_fn = None
+        self._prop_n_ambient_q = 1.0
 
     # ---- per-frame physics->GPU upload ---------------------------------
 
@@ -523,6 +532,15 @@ class GameRenderer:
         if self._props_seen and self.prop_renderer.ready:
             self._prop_wind = tame_wind(gmap.wind_x, gmap.wind_y)
             self._prop_clock_s = float(sim_tick) * self._sim_dt
+            # P4r2 (Erik's vented-room ruling 2026-09-07): sway is a momentum
+            # flux, not a velocity — an evacuated room's fast residual gas
+            # must not read as a storm. `gas_bulk_n_at` is the single-tile
+            # bulk-N accessor (O2 + inert-N2 books) and `ambient_seed()[0]`
+            # is the map's own ambient reference (space or planetside alike);
+            # both are cheap scalar reads, refreshed here so draw_props always
+            # samples the CURRENT tick's gas state, never a stale snapshot.
+            self._prop_gas_bulk_fn = gmap.gas_bulk_n_at
+            self._prop_n_ambient_q = float(gmap.ambient_seed()[0])
 
         # Fire still gets the vacuum mask: combustion requires oxygen, so
         # fire physically cannot exist in vacuum. Keep this until the fire
@@ -898,7 +916,9 @@ class GameRenderer:
                     self.prop_renderer.draw_props(
                         props, self._world_cam3d, ctx=light_ctx,
                         open_mode_3d=False, time_s=self._prop_clock_s,
-                        wind_field=self._prop_wind)
+                        wind_field=self._prop_wind,
+                        gas_bulk_fn=self._prop_gas_bulk_fn,
+                        n_ambient_q=self._prop_n_ambient_q)
             finally:
                 rl.end_mode_3d()
             if draw_units_3d:

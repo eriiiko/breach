@@ -67,8 +67,51 @@ vent). The floor dial survives for experiments; nothing in the shipped path
 adds a decorative breeze — the demo's own ``demo_breeze`` was DELETED at P4r
 for exactly that reason.
 
-Props & vegetation arc #60 P2 (+ P4 sway). See
-``docs/architecture/graphics/props_and_vegetation.md`` §2 / §4.3 / §7.
+SWAY SCALES WITH GAS DENSITY — MOMENTUM FLUX, NOT VELOCITY (P4r2, Erik's
+vented-room ruling 2026-09-07)
+-------------------------------------------------------------------------
+HUMAN-TEST FINDING: Erik vented a room to near-vacuum; the TAMED wind speed
+there stayed large (the few remaining gas particles are fast/turbulent), so
+the canopy kept blowing "a storm" in an almost-empty room. RULING: force on
+foliage is a MOMENTUM FLUX (roughly density x velocity), not velocity alone —
+an evacuated room must read as still no matter how fast its residual gas
+moves, and overpressure should push harder than 1 atm does.
+
+The fix lives entirely at the PROP CONSUMER (:func:`apply_gas_density`,
+called from :meth:`StaticPropRenderer.model_wind`), never inside
+``gas_detail.tame_wind`` — smoke advects with the gas at its velocity
+regardless of density, and ``pack_dynamics`` consumes the same ``tame_wind``
+for the smoke detail pass, so corrupting the shared seam with a density
+scaling would silently wrong-foot smoke too. Props sample an independent
+density signal instead: the BULK GAS N at the prop's own tile (the
+conservative O2 + inert-N2 books, ``GameMap.gas_bulk_n_at``), normalized by
+the map's ambient reference (``GameMap.ambient_seed()[0]``, the single source
+of truth for "what one cell of this map's air is" on both space and
+planetside boundaries). This is deliberately NOT the pressure overlay's
+``atmosphere + wave_p`` sum — issue #62 flags ``wave_p`` as carrying a ~1 atm
+DC offset that makes that sum untrustworthy as a density proxy.
+
+Law (``[render.props]`` ``density_exponent`` / ``density_max``):
+``effective_wind = wind * clamp(frac, 0, density_max) ** density_exponent``,
+applied to the SAMPLED tamed-wind vector before it is turned into a model-
+space displacement. At ``frac == 1`` (ambient) and the shipped
+``density_exponent = 1.0`` the factor is exactly 1.0, so a room at ambient
+density reproduces P4's behaviour bit-for-bit — this patch retunes nothing
+that was already tuned. ``density_max`` defaults to 2.0 (overpressure can
+push sway up to 2x; the shipped ceiling is a taming choice like ``wind_ref``,
+not a claim about real gas dynamics) and a vacuum tile (``frac == 0``) always
+zeroes the factor, regardless of the exponent dial — a room with no particles
+must not blow a storm.
+
+Cost: one extra scalar lookup per prop per frame (``GameMap.gas_bulk_n_at``
+reads two int32 array cells), never a full-grid dequantize — there are only
+ever a handful of props in a room, so ``game_renderer.py`` passes a bound
+accessor method down rather than precomputing a density field nobody else
+needs (mirroring how ``wind_field`` is a real full-grid array only because
+the smoke detail pass ALSO needs it every tile).
+
+Props & vegetation arc #60 P2 (+ P4 sway, P4r2 density). See
+``docs/architecture/graphics/props_and_vegetation.md`` §2 / §4.3 / §6.1 / §7.
 """
 from __future__ import annotations
 
@@ -139,6 +182,15 @@ class SwaySettings:
     * ``wind_ref`` — the tamed speed (tiles/tick) that counts as FULL sway;
       defaults to gas_detail's own saturation ceiling, which is the largest
       value ``tame_wind`` can ever return.
+    * ``density_exponent`` / ``density_max`` — P4r2's MOMENTUM-FLUX law
+      (Erik's vented-room ruling, 2026-09-07): the sampled wind is scaled by
+      ``clamp(frac, 0, density_max) ** density_exponent`` before it becomes a
+      displacement, where ``frac`` is the prop's tile's bulk gas N over the
+      map's ambient reference. ``density_exponent = 1.0`` (linear momentum
+      flux) and ``density_max = 2.0`` (overpressure caps sway at 2x) both
+      reproduce today's behaviour exactly at ``frac == 1`` (ambient); a
+      vacuum tile (``frac == 0``) always zeroes the factor. See the module
+      docstring's "SWAY SCALES WITH GAS DENSITY" section.
     """
     strength: float = 0.06
     flutter: float = 0.38
@@ -147,6 +199,8 @@ class SwaySettings:
     flutter_speed: float = 1.0
     idle_wind: float = 0.0
     wind_ref: float = WIND_V_REF
+    density_exponent: float = 1.0
+    density_max: float = 2.0
 
     @classmethod
     def from_config(cls, cfg) -> "SwaySettings":
@@ -164,7 +218,36 @@ class SwaySettings:
             flutter_speed=g("flutter_speed", 1.0),
             idle_wind=g("idle_wind", 0.0),
             wind_ref=g("wind_ref", WIND_V_REF),
+            density_exponent=g("density_exponent", 1.0),
+            density_max=g("density_max", 2.0),
         )
+
+
+def apply_gas_density(wind_x: float, wind_z: float, frac: float,
+                      density_exponent: float, density_max: float
+                      ) -> Tuple[float, float]:
+    """P4r2 — THE momentum-flux law (Erik's vented-room ruling, 2026-09-07).
+
+    Scales a sampled TAMED-WIND vector by ``clamp(frac, 0, density_max) **
+    density_exponent``, where *frac* is the prop's tile's bulk gas N divided
+    by the map's ambient reference (both raw Q16.16 counts, so the ratio is
+    exact regardless of scale — see :meth:`StaticPropRenderer.sample_gas_frac`
+    for how the caller derives it). This is the ONE place density enters the
+    sway math — never inside ``gas_detail.tame_wind``, which stays a pure
+    velocity taming shared with smoke advection.
+
+    At ``frac == 1`` (ambient) and the shipped ``density_exponent == 1.0`` the
+    factor is exactly ``1.0 ** 1.0 == 1.0``, so this reproduces the pre-P4r2
+    wind bit-for-bit — no existing tuning is disturbed.
+
+    A non-positive *frac* (vacuum, or a degenerate tile read) ALWAYS zeroes
+    the result, even under a pathological ``density_exponent == 0`` dial
+    (which would otherwise make ``0 ** 0 == 1``): "a room with no particles
+    must not blow a storm" holds regardless of how the exponent is tuned.
+    """
+    f = min(max(float(frac), 0.0), max(float(density_max), 0.0))
+    factor = (f ** float(density_exponent)) if f > 0.0 else 0.0
+    return (float(wind_x) * factor, float(wind_z) * factor)
 
 
 PROP_VS = """#version 330
@@ -643,15 +726,47 @@ class StaticPropRenderer:
         ty = min(max(int(y_wpx / wpt), 0), h - 1)
         return (float(wind_field[ty, tx, 0]), float(wind_field[ty, tx, 1]))
 
+    def sample_gas_frac(self, gas_bulk_fn: Optional[object],
+                        n_ambient_q: float, x_wpx: float, y_wpx: float,
+                        h: int, w: int) -> float:
+        """P4r2: the SAME nearest-tile clamp as :meth:`sample_wind`, but for
+        the density signal instead of the wind — the prop's own tile's bulk
+        gas N (``GameMap.gas_bulk_n_at``, raw Q16.16) over the map's ambient
+        reference (``GameMap.ambient_seed()[0]``, same raw units — the ratio
+        is exact and needs no explicit /65536, since it cancels).
+
+        *gas_bulk_fn* is a bound accessor ``(tile_row, tile_col) -> int``,
+        never a full-grid array — a room holds a handful of props, so
+        ``game_renderer.py`` hands down a callable rather than dequantizing
+        the whole gas grid every frame for this. ``None`` (no density data
+        wired — a test, a tool, or a caller that predates P4r2) reads as
+        AMBIENT (``frac = 1``, i.e. no change from pre-P4r2 behaviour).
+        """
+        if gas_bulk_fn is None:
+            return 1.0
+        wpt = max(self.world_px_per_tile, 1e-6)
+        tx = min(max(int(x_wpx / wpt), 0), w - 1)
+        ty = min(max(int(y_wpx / wpt), 0), h - 1)
+        n_raw = float(gas_bulk_fn(ty, tx))
+        return n_raw / max(float(n_ambient_q), 1e-9)
+
     def model_wind(self, p: PropPlacement, native_height: float,
-                   wind_field: Optional[np.ndarray]) -> Tuple[float, float]:
+                   wind_field: Optional[np.ndarray],
+                   gas_bulk_fn: Optional[object] = None,
+                   n_ambient_q: float = 1.0) -> Tuple[float, float]:
         """Turn the tamed wind at *p*'s tile into the shader's ``u_wind``
         (MODEL-space X,Z crown displacement, in mesh units).
 
-        Three steps, all of them dial-driven:
-          1. sample + normalize the tamed speed against ``wind_ref`` (which IS
-             ``tame_wind``'s saturation ceiling, so the fraction is 0..1) and
-             apply the ``idle_wind`` floor (0 by ruling — calm air, no motion);
+        Four steps, all of them dial-driven:
+          0. (P4r2) scale the SAMPLED wind by the tile's gas-density factor
+             (:func:`apply_gas_density` — momentum flux, not velocity; Erik's
+             vented-room ruling) BEFORE anything below normalizes it, so a
+             vacuum tile's wind is already zero by the time ``wind_ref``
+             would otherwise have read a fast residual gust as "full sway";
+          1. normalize the (now density-scaled) speed against ``wind_ref``
+             (which IS ``tame_wind``'s saturation ceiling, so the fraction is
+             0..1) and apply the ``idle_wind`` floor (0 by ruling — calm air,
+             no motion);
           2. scale by ``strength × the mesh's own height`` — so sway is a
              FRACTION OF THE PROP, and a shrub and a palm lean by the same
              visual proportion;
@@ -661,6 +776,14 @@ class StaticPropRenderer:
         """
         s = self.sway
         wx, wy = self.sample_wind(wind_field, p.x_wpx, p.y_wpx)
+        if wind_field is not None:
+            h, w = wind_field.shape[0], wind_field.shape[1]
+            gas_frac = self.sample_gas_frac(gas_bulk_fn, n_ambient_q,
+                                            p.x_wpx, p.y_wpx, h, w)
+        else:
+            gas_frac = 1.0
+        wx, wy = apply_gas_density(wx, wy, gas_frac,
+                                   s.density_exponent, s.density_max)
         mag = math.hypot(wx, wy)
         if mag > 1e-12:
             dx, dz = wx / mag, wy / mag
@@ -690,7 +813,9 @@ class StaticPropRenderer:
                    ctx: Optional[LightFieldCtx] = None,
                    open_mode_3d: bool = True,
                    time_s: float = 0.0,
-                   wind_field: Optional[np.ndarray] = None) -> None:
+                   wind_field: Optional[np.ndarray] = None,
+                   gas_bulk_fn: Optional[object] = None,
+                   n_ambient_q: float = 1.0) -> None:
         """Draw every placement inside the ALREADY-OPEN world RT.
 
         Mirrors ``UnitModelRenderer.draw_units``: nests ``begin_mode_3d``
@@ -708,6 +833,13 @@ class StaticPropRenderer:
         ``(h, w, 2)`` TAMED wind from ``gas_detail.tame_wind``; ``None`` means
         dead calm — and at the shipped ``idle_wind = 0`` dead calm means the
         props draw rigid (Erik's spaceship-stillness ruling).
+
+        P4r2 density: *gas_bulk_fn* is a bound ``GameMap.gas_bulk_n_at``
+        accessor (``(tile_row, tile_col) -> raw Q16.16 bulk gas N``) and
+        *n_ambient_q* is that same map's ``GameMap.ambient_seed()[0]`` — the
+        ambient reference the per-prop fraction is normalized against.
+        ``None`` means no density data wired (reads as ambient, i.e. the
+        pre-P4r2 behaviour) — see :meth:`model_wind`.
 
         No-op when the shader failed to compile or no light field is given —
         the ship draws exactly as it does today.
@@ -744,21 +876,24 @@ class StaticPropRenderer:
         try:
             for p in props:
                 self._draw_one(p, ctx, wind_field if sway_on else None,
-                               sway_on)
+                               sway_on, gas_bulk_fn, n_ambient_q)
         finally:
             if open_mode_3d:
                 rl.end_mode_3d()
 
     def _draw_one(self, p: PropPlacement, ctx: LightFieldCtx,
                   wind_field: Optional[np.ndarray] = None,
-                  sway_on: bool = False) -> None:
+                  sway_on: bool = False,
+                  gas_bulk_fn: Optional[object] = None,
+                  n_ambient_q: float = 1.0) -> None:
         entry = self.get_model(p)
         if entry is None:
             return
         # Sway: one wind lookup per prop per frame, in the prop's own frame.
         # u_sway 0 (dial off, or a rigid pack model) draws exactly the P2 mesh.
         if sway_on and p.sway > 0.0:
-            wx, wz = self.model_wind(p, entry.native_height, wind_field)
+            wx, wz = self.model_wind(p, entry.native_height, wind_field,
+                                     gas_bulk_fn, n_ambient_q)
             rl.set_shader_value(self._shader, self._locs["u_wind"],
                                 rl.ffi.new("float[3]", [wx, 0.0, wz]),
                                 rl.ShaderUniformDataType.SHADER_UNIFORM_VEC3)
@@ -793,5 +928,5 @@ class StaticPropRenderer:
 
 
 __all__ = ["StaticPropRenderer", "PropPlacement", "SwaySettings",
-           "build_model", "placements_from_entities",
+           "build_model", "placements_from_entities", "apply_gas_density",
            "PROP_VS", "PROP_FS", "HEIGHT_BUCKET_M", "make_camera"]

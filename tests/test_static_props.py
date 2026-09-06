@@ -201,6 +201,121 @@ def test_wind_is_rotated_into_the_props_own_frame():
     assert turned[0] == pytest.approx(0.0, abs=1e-9)
 
 
+# ---------------------------------------------------------------------------
+# P4r2 — sway scales with gas density (momentum flux, not velocity)
+# Erik's vented-room HUMAN-TEST finding, 2026-09-07: a room vented to near-
+# vacuum kept blowing "a storm" because the tamed WIND VELOCITY of its few
+# remaining particles stayed large. Force on foliage is a momentum flux
+# (density x velocity); an evacuated room must be still regardless of speed.
+# ---------------------------------------------------------------------------
+
+def test_gas_density_at_ambient_reproduces_wind_exactly():
+    """frac == 1 (ambient) at the shipped dials is a no-op — P4r2 must not
+    retune anything P4r already tuned (design constraint 3)."""
+    assert sp.apply_gas_density(0.37, -0.21, 1.0,
+                                density_exponent=1.0, density_max=2.0) == \
+        (0.37, -0.21)
+
+
+def test_gas_density_vacuum_zeroes_the_wind_even_at_huge_magnitude():
+    """A vacuum tile (frac == 0) kills sway no matter how large the tamed
+    wind vector is."""
+    assert sp.apply_gas_density(1e6, -1e6, 0.0,
+                                density_exponent=1.0, density_max=2.0) == \
+        (0.0, 0.0)
+    # Even a pathological exponent == 0 dial must not let 0**0 == 1 sneak a
+    # nonzero factor back in — "a room with no particles must not blow a
+    # storm" holds regardless of how the exponent is tuned.
+    assert sp.apply_gas_density(1e6, -1e6, 0.0,
+                                density_exponent=0.0, density_max=2.0) == \
+        (0.0, 0.0)
+
+
+def test_gas_density_clamps_overpressure_at_density_max():
+    wx, _ = sp.apply_gas_density(1.0, 0.0, 5.0,
+                                 density_exponent=1.0, density_max=2.0)
+    assert wx == pytest.approx(2.0)             # clamped, not 5x
+    wx, _ = sp.apply_gas_density(1.0, 0.0, 2.0,
+                                 density_exponent=1.0, density_max=2.0)
+    assert wx == pytest.approx(2.0)             # exactly at the ceiling
+
+
+def test_gas_density_exponent_dial_is_respected():
+    wx, _ = sp.apply_gas_density(1.0, 0.0, 0.25,
+                                 density_exponent=2.0, density_max=2.0)
+    assert wx == pytest.approx(0.0625)          # 0.25 ** 2
+    wx, _ = sp.apply_gas_density(1.0, 0.0, 0.25,
+                                 density_exponent=0.5, density_max=2.0)
+    assert wx == pytest.approx(0.5)             # 0.25 ** 0.5
+
+
+def test_sample_gas_frac_is_the_ratio_of_bulk_n_to_ambient():
+    r = sp.StaticPropRenderer(48.0, 0.333)
+    frac = r.sample_gas_frac(lambda ty, tx: 32768, 65536.0,
+                             3 * 48.0, 2 * 48.0, h=4, w=5)
+    assert frac == pytest.approx(0.5)
+    # None (no density data wired) reads as ambient — the pre-P4r2 default.
+    assert r.sample_gas_frac(None, 65536.0, 0.0, 0.0, 4, 5) == 1.0
+
+
+def test_model_wind_at_ambient_density_matches_pre_p4r2_behaviour():
+    """Wiring a gas_bulk_fn that reports EXACTLY the ambient reference at the
+    prop's tile reproduces the same effective wind as no density data at all
+    — the regression pin (design constraint 3)."""
+    import numpy as np
+    r = sp.StaticPropRenderer(48.0, 0.333)
+    r.sway = sp.SwaySettings(strength=0.1, idle_wind=0.0)
+    field = np.zeros((2, 2, 2), dtype=np.float32)
+    field[0, 0] = (r.sway.wind_ref * 0.6, 0.02)
+    baseline = r.model_wind(_p(seed=1), 2.0, field)
+    at_ambient = r.model_wind(_p(seed=1), 2.0, field,
+                              gas_bulk_fn=lambda ty, tx: 65536,
+                              n_ambient_q=65536.0)
+    assert at_ambient == pytest.approx(baseline)
+    assert baseline[0] > 0.0, "sanity: the baseline wind actually moves the prop"
+
+
+def test_model_wind_vacuum_tile_is_still_even_with_huge_tamed_wind():
+    """Erik's HUMAN-TEST finding: a room vented to near-vacuum must not blow
+    a storm, however fast the residual gas moves."""
+    import numpy as np
+    r = sp.StaticPropRenderer(48.0, 0.333)
+    r.sway = sp.SwaySettings(strength=0.1, idle_wind=0.0)
+    field = np.zeros((2, 2, 2), dtype=np.float32)
+    field[0, 0] = (r.sway.wind_ref * 50.0, 0.0)   # huge, turbulent residual
+    vacuum = r.model_wind(_p(seed=1), 2.0, field,
+                          gas_bulk_fn=lambda ty, tx: 0,
+                          n_ambient_q=65536.0)
+    assert vacuum == pytest.approx((0.0, 0.0))
+
+
+def test_model_wind_overpressure_clamps_at_density_max():
+    import numpy as np
+    r = sp.StaticPropRenderer(48.0, 0.333)
+    r.sway = sp.SwaySettings(strength=0.1, idle_wind=0.0,
+                             density_exponent=1.0, density_max=2.0)
+    field = np.zeros((2, 2, 2), dtype=np.float32)
+    field[0, 0] = (r.sway.wind_ref, 0.0)
+    at_2x = r.model_wind(_p(seed=1), 2.0, field,
+                         gas_bulk_fn=lambda ty, tx: 2 * 65536,
+                         n_ambient_q=65536.0)
+    at_10x = r.model_wind(_p(seed=1), 2.0, field,
+                          gas_bulk_fn=lambda ty, tx: 10 * 65536,
+                          n_ambient_q=65536.0)
+    assert at_2x == pytest.approx(at_10x)         # both clamp at density_max
+
+
+def test_config_ships_density_dials_with_documented_ruling():
+    """The shipped config carries P4r2's dials: density_exponent 1.0 (an
+    identity at frac == 1) and density_max 2.0 (the overpressure ceiling)."""
+    from config import CFG
+    s = sp.SwaySettings.from_config(CFG)
+    assert s.density_exponent == pytest.approx(1.0)
+    assert s.density_max == pytest.approx(2.0)
+    assert float(CFG.render.props.density_exponent) == pytest.approx(1.0)
+    assert float(CFG.render.props.density_max) == pytest.approx(2.0)
+
+
 def test_prop_phase_desyncs_neighbours_and_is_deterministic():
     a = sp.PropPlacement(x_wpx=100.0, y_wpx=200.0, seed=1)
     b = sp.PropPlacement(x_wpx=148.0, y_wpx=200.0, seed=2)

@@ -1188,6 +1188,23 @@ wind_ref = 0.08          # tamed speed (tiles/tick) that counts as FULL sway;
                          # = gas_detail's saturation ceiling (its largest
                          # possible output), so the fraction lands in 0..1
 
+# P4r2 — SWAY SCALES WITH GAS DENSITY (Erik's vented-room ruling, 2026-09-07):
+# "he vented a room to near-vacuum; the tamed wind velocity stayed large (the
+# few remaining particles are fast/turbulent) so the trees kept blowing 'a
+# storm' in an almost-empty room. Force on foliage is momentum flux (density x
+# velocity), not velocity — an evacuated room must be still no matter how fast
+# its residual gas moves; overpressure pushes harder." The sampled wind is
+# scaled by clamp(frac, 0, density_max) ** density_exponent, where frac = the
+# prop's own tile's bulk gas N over the map's ambient reference (never the
+# pressure overlay's atmosphere+wave_p sum — issue #62: wave_p carries a ~1
+# atm DC offset that makes that sum untrustworthy as a density proxy).
+density_exponent = 1.0  # 1.0 = linear momentum-flux scaling. At frac == 1
+                         # (ambient) this reproduces pre-P4r2 sway exactly
+                         # (1.0 ** 1.0 == 1.0) — no existing tuning moves.
+density_max = 2.0        # clamp ceiling on frac: overpressure can push sway
+                         # up to 2x; vacuum (frac == 0) always zeroes it
+                         # regardless of this dial or the exponent above.
+
 [render.speckle]
 mode = "soot"               # "off" | "noise" | "soot"  (A/B in studio)
 amp = 0.25
