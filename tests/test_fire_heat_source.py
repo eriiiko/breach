@@ -332,6 +332,17 @@ def test_heat_lands_on_solid_not_lost_in_air_conversion():
     g.material[50, 15] = MAT_WOOD          # adjacent solid
     g._update_caches()
     sim.set_paused(False)
+    # R3 hot-burns-faster (fire session #12, docs/fire_3c_design_2026-09-01.md
+    # "Ruling R3"): combustion's demand now rides hotf = clamp((T-fire_T_ext)/
+    # fire_T_span, 0, hotf_cap), read from the SOURCE's OWN temperature — a
+    # tile directly seeded at fire>0 with no temperature (the ambient-cold
+    # synthetic scenes this module used to exploit) now draws ZERO oxygen (T <
+    # fire_T_ext -> hotf == 0), matching what a real ignition never produces:
+    # apply_temperature_ignition only ever seeds fire once T >= ignition_temp,
+    # which sits comfortably above fire_T_ext for every shipped flammable
+    # material. Set the source's temperature to wood's ignition_temp (300) to
+    # replicate that precondition, same as the real ignition path would leave it.
+    g.temperature[50, 14] = FIRE_Q(300.0)
     g.fire[50, 14] = FIRE_Q(0.8)
     sim.step()
     # Solid neighbour heated. EOS P2 (design §4): the air tile next to the fire
@@ -516,6 +527,12 @@ def test_determinism_bit_identical_temperature():
         sim.set_paused(False)
         for _ in range(8):
             g.fire[50, 14] = FIRE_Q(0.8)   # hold a steady source
+            # R3 hot-burns-faster (docs/fire_3c_design_2026-09-01.md "Ruling
+            # R3"): demand needs T >= fire_T_ext (hotf > 0) to draw any O2 at
+            # all — hold the source's own temperature at wood's ignition_temp
+            # too, matching what a real ignition always leaves it at (see
+            # test_heat_lands_on_solid_not_lost_in_air_conversion's comment).
+            g.temperature[50, 14] = FIRE_Q(300.0)
             sim.step()
         return g.temperature.copy()
 
@@ -594,11 +611,29 @@ def test_fire_heat_is_wired_into_simulation_step():
     g._update_caches()
     sim.set_paused(False)
     assert int(g.temperature.max()) == 0
+    # R3 hot-burns-faster (docs/fire_3c_design_2026-09-01.md "Ruling R3"):
+    # demand needs T >= fire_T_ext (hotf > 0) to draw any O2 at all — a real
+    # ignition always leaves the tile at >= ignition_temp (300 for wood, well
+    # above fire_T_ext=100), so replicate that precondition here rather than
+    # seeding fire on an ambient-cold tile (see test_heat_lands_on_solid_
+    # not_lost_in_air_conversion's comment for the full rationale).
+    #
+    # A single tick's NET temperature move is no longer a robust observable
+    # for "did the fire pass run" once a genuinely nonzero starting T is
+    # required: a lone emitter in open space radiates to the T=0 sky
+    # unconditionally (fire>0 tiles always emit, regardless of T_emit_gate),
+    # and at T=300 that one-tick loss can outweigh the modest H_bed deposit
+    # dt still has to build up over many ticks (the design's measured ~80s
+    # ramp) — so this smoke test instead checks wall_hp, which ONLY drops
+    # when the destruction term (wall_damage*dt*I*hotf) is genuinely nonzero,
+    # i.e. exactly when the fire/temperature/combustion passes actually ran.
+    g.temperature[50, 14] = FIRE_Q(300.0)
+    wall_hp_before = int(g.wall_hp[50, 14])
     g.fire[50, 14] = FIRE_Q(0.8)
     sim.step()
-    # A single plain step() raised temperature on the burning tile -> the fire
-    # heat pass ran inside the tick, before the TemperatureSolver. (heat itself
-    # is cleared at end of tick; temperature persists.)
-    assert int(g.temperature[50, 14]) > 0, (
-        "Simulation.step did not run the fire heat pass (temperature stayed 0)")
+    # A single plain step() burned fuel on the source tile -> the fire pass
+    # (combustion's destruction term) ran inside the tick. (heat itself is
+    # cleared at end of tick; wall_hp persists.)
+    assert int(g.wall_hp[50, 14]) < wall_hp_before, (
+        "Simulation.step did not run the fire pass (wall_hp did not drop)")
     assert int(g.heat.max()) == 0, "heat was not cleared at end of tick"

@@ -43,6 +43,26 @@
 //                                                   since a raw pure-O2 tile
 //                                                   would otherwise reach
 //                                                   10.875)
+//   hotf  = clamp((T - T_ext[i])/T_span, 0, hotf_cap)  (R3 "hot-burns-faster",
+//                                                   fire session #12, docs/
+//                                                   fire_3c_design_2026-09-01.md
+//                                                   "Ruling R3": the SAME ramp
+//                                                   as `hot` above, SAME T_ext/
+//                                                   T_span, but the ceiling is
+//                                                   `hotf_cap` (10.0) instead of
+//                                                   1 — `hot` itself STAYS
+//                                                   clamped at 1 and keeps
+//                                                   gating the I-ODE sustain
+//                                                   term below UNCHANGED. hotf
+//                                                   is read ONLY by the two
+//                                                   RATE sites it was built
+//                                                   for: combustion.cpp's
+//                                                   demand and the wall-burn
+//                                                   term below — a saturated
+//                                                   fire draws O2 and destroys
+//                                                   its fuel bed faster, not
+//                                                   just "burns" in the I-ODE
+//                                                   sense)
 //   avail = F * o2f                                 (can now exceed 1 — O2
 //                                                   enrichment above ambient)
 //   gap   = avail*hot - I / I_cap_per_avail          (SIGNED — negative when the
@@ -177,6 +197,22 @@ struct FireParams {
     // "enrichment flare" ceiling) so a locally O2-flooded tile can burn hotter
     // than ambient without an unbounded runaway.
     float o2f_cap         = 5.0f;  // NEW (R1): upper clamp on the renormalized o2f
+    // hotf_cap (R3, fire session #12, docs/fire_3c_design_2026-09-01.md "Ruling
+    // R3" — Erik's "hot-burns-faster" catch: `hot` clamps at 1, so above ~T_ext
+    // + T_span extra heat bought ZERO extra rate). `hotf` is the SAME (T-T_ext)/
+    // T_span ramp as `hot`, but its ceiling is THIS dial instead of 1, and it is
+    // read only at the two RATE sites (combustion.cpp's demand, and this file's
+    // wall-burn term below) — `hot` itself is UNTOUCHED and keeps gating the
+    // I-ODE sustain term at its usual [0,1]. WHY LINEAR, NOT ARRHENIUS (the
+    // load-bearing argument, R2's finding): losses are dominated by T^4
+    // radiation (~99.6% at the measured plateau), so a LINEAR hotf can never
+    // outrun them — an equilibrium always exists by construction, and Erik's O2
+    // cap (o2f_cap above) is a second, independent ceiling on an already-stable
+    // system. An exponential (Arrhenius) hotf eventually beats T^4, making
+    // stability depend on O2 running out first — fragile exactly where oxygen
+    // is generous (breach airflow, enriched rooms). 10.0 pairs with o2f_cap's
+    // 5.0 as the OTHER enrichment/overheat ceiling in the system.
+    float hotf_cap        = 10.0f; // NEW (R3): ceiling on the uncapped-at-1 hotf ramp
     // o2_frac_full: RETIRED from the SUSTAIN law by R1 (was the FULL-RESPONSE
     // REFERENCE SPLIT's pure-O2 upper reference, 2026-07-30). Kept, like
     // o2_frac_amb was before it, ONLY because combustion.cpp's DEMAND-side o2f_j
@@ -224,8 +260,20 @@ struct FireParams {
     // (src/simulation/physics_runner.py) rather than silently doing
     // nothing, so nobody tunes a dial that no longer has a mechanism behind
     // it. See docs/smoke_single_source_asbuilt_2026-08-15.md.
+    // R3 (fire session #12, docs/fire_3c_design_2026-09-01.md "Ruling R3"):
+    // the destruction term is now `wall_damage*dt*I*hotf` (step() below), not
+    // `wall_damage*dt*I` — a saturated fire (hotf > 1) destroys its own fuel
+    // bed FASTER, not just draws O2 faster (combustion.cpp's demand-side
+    // twin). NEUTRAL-LANDING RE-SIZE (same ruling, both dials by the SAME
+    // factor f_ref = 2.0717, derived from the post-R1 open-control plateau
+    // T=452.9 game and furniture's fire_T_ext=80/fire_T_span=180 ->
+    // hotf(452.9) = (452.9-80)/180 = 2.0717): 0.03 -> 0.03/2.0717 = 0.01448,
+    // so destruction at the REFERENCE plateau is unchanged and only moves
+    // above/below it (config.toml carries the shipped value + full
+    // derivation).
     float wall_damage    = 0.4f;   // wall HP lost per second per unit intensity
                                    //  (burn-through IS the fuel-consumption brake)
+                                   //  TIMES hotf since R3 (see above)
 
     // Q16.16 scale of the `temperature` field (== HEAT_SCALE / TEMP_SCALE). Fixed
     // at construction; exposed so Python/config and C++ never disagree.

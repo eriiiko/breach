@@ -330,10 +330,17 @@ _FP_FAST_RE = re.compile(r"fp:fast")
 # exception category as every other config-constant precompute in this block
 # (`x_ext_q`, `recip_x_span`, etc.): a load-time double-then-quantize scalar,
 # NOT per-cell arithmetic. `float`/`fp:fast` unchanged.
+# R3 (fire session #12, 2026-09-06, docs/fire_3c_design_2026-09-01.md "Ruling
+# R3"): fire_simulation.cpp `double` 17 -> 18. ONE new load-time boundary cast,
+# `const q16 hotf_cap_q = fp::quantize((double)p.hotf_cap);` — the SAME
+# documented exception category (a load-time double-then-quantize config
+# scalar, not per-cell arithmetic); the destruction-loop's hotf recompute
+# (T_i/T_ext_i/clamp0cap_q) reuses already-quantized q16/recip values and adds
+# no new `(double)`/`float` token. `float`/`fp:fast` unchanged.
 BASELINE = {
     "atmosphere_solver.cpp":  {"float": 32, "double": 32, "fp:fast": 1},
     "smoke_dynamics.cpp":     {"float": 24, "double": 13, "fp:fast": 0},
-    "fire_simulation.cpp":    {"float": 6,  "double": 17, "fp:fast": 0},
+    "fire_simulation.cpp":    {"float": 6,  "double": 18, "fp:fast": 0},
     "water_solver.cpp":       {"float": 32, "double": 22, "fp:fast": 1},
     "temperature_solver.cpp": {"float": 4,  "double": 6,  "fp:fast": 0},
     "physics_engine.cpp":     {"float": 68, "double": 28, "fp:fast": 1},

@@ -114,14 +114,28 @@ static inline q16 clamp01_q(q16 v) {
     return v;
 }
 
+// Integer clamp to [0, cap] (R3 hotf) — mirrors fire_simulation.cpp's
+// clamp0cap_q so the demand-side hotf and the sustain/destruction-side hotf
+// are bit-identical.
+static inline q16 clamp0cap_q(q16 v, q16 cap) {
+    if (v < 0) return 0;
+    if (v > cap) return cap;
+    return v;
+}
+
 // P-O2b — apply the Q16.16 DRAW WEIGHT to the wide (scale-2^32) demand product.
 //
 // Returns EXACTLY floor((P * wq) / 2^16) for P >= 0, computed without 128-bit
 // arithmetic by splitting P at 16 bits:
 //     P*wq/2^16 = hi*wq + (lo*wq)/2^16      (P = hi*2^16 + lo)
-// and hi*wq is already an integer, so the floor distributes. Bounds: P <= 2^48
-// and wq <= FP_ONE give hi*wq <= 2^48 and lo*wq <= 2^32 — no int64 overflow,
-// and no precision is thrown away at all.
+// and hi*wq is already an integer, so the floor distributes. Bounds (R3,
+// docs/fire_3c_design_2026-09-01.md "Ruling R3": P0 widened from a 3-factor
+// burn_cap_q*I_k*o2f_j product to burn_cap_q*I_k*o2f_hotf, with o2f_hotf =
+// mul_q16(o2f_j, hotf_i) pre-narrowed to <= hotf_cap*FP_ONE — see the call
+// site's own comment): P <= hotf_cap*2^48 (~2^51.3 at the shipped hotf_cap =
+// 10.0, was 2^48 pre-R3) and wq <= FP_ONE give hi*wq <= hotf_cap*2^48 and
+// lo*wq <= 2^32 — both comfortably inside int64 (2^63), no overflow, and no
+// precision is thrown away at all.
 //
 // THE POINT: at wq == FP_ONE this is the EXACT IDENTITY (hi<<16 | lo == P), bit
 // for bit — which is why DRAW_R == 1, where every reachable cell has d == 1 and
@@ -157,7 +171,8 @@ void CombustionSolver::step(
         int max_claimants,
         int64_t* gas_energy,          // arc #54 P-G1b: the conserved gas energy
         const bool* is_ambient,       // ring mask (accountable-set input)
-        int32_t t_amb_q) const {      // T_AMB_K raw (born-at-ambient rule)
+        int32_t t_amb_q,              // T_AMB_K raw (born-at-ambient rule)
+        const int32_t* fire_T_ext_plane) const {  // R3: PER-MATERIAL T_ext (nullable)
 
     if (h <= 0 || w <= 0 || dt <= 0.0f) return;
     if (o2_idx < 0 || o2_idx >= n_gases) return;
@@ -205,6 +220,16 @@ void CombustionSolver::step(
     const bool   x_degenerate  = (x_span <= 0.0);
     const int64_t recip_x_span = x_degenerate ? 0 : make_recip(x_span);
     const q16 X_N_FLOOR        = quantize(0.01);   // 655 counts (see fire_simulation.cpp)
+
+    // R3 hot-burns-faster (fire session #12, docs/fire_3c_design_2026-09-01.md
+    // "Ruling R3"): the demand-side hotf load-time bake, VERBATIM the shape of
+    // fire_simulation.cpp's hot/hotf bake — fire_T_ext_q is the FALLBACK when
+    // no per-tile fire_T_ext_plane is supplied; recip_T_span is the load-time
+    // reciprocal of the (GLOBAL) ramp width; hotf_cap_q is the ceiling (NOT
+    // FP_ONE — hotf is a rate factor here, unbounded-at-1 by design).
+    const q16 fire_T_ext_q     = quantize((double)fire_T_ext);
+    const int64_t recip_T_span = make_recip((double)fire_T_span);
+    const q16 hotf_cap_q       = quantize((double)hotf_cap);
 
     if (burn_cap_q <= 0) return;   // nothing burns this tick (dt~0 or burn_rate 0)
 
@@ -436,8 +461,8 @@ void CombustionSolver::step(
             }
 
             // Gather the flammable claimant sources + each one's per-claimant
-            // DEMAND (design §2.3, generalized by v5.2):
-            //     demand_k = burn_cap * I_k * o2f_j * W_hop[d_k] * w_path_k
+            // DEMAND (design §2.3, generalized by v5.2, R3 hot-burns-faster):
+            //     demand_k = burn_cap * I_k * o2f_j * hotf_k * W_hop[d_k] * w_path_k
             // (PINNED left-fold mul_q16, truncating — a conservative request
             // that never over-draws). I_k = fire[i] is READ (the old pass
             // dropped it as an outcome-neutral prefilter; the continuous law
@@ -519,6 +544,34 @@ void CombustionSolver::step(
                     if (dem_acc) dem_acc[slot] = 0;
                     continue;
                 }
+                // ---- R3 hot-burns-faster (docs/fire_3c_design_2026-09-01.md
+                // "Ruling R3"): hotf_i = clamp((Tsnap[i]-T_ext_i)/T_span, 0,
+                // hotf_cap) — THIS CLAIMANT's own ramp (per-source, like I_k),
+                // read from the SAME per-material fire_T_ext_plane the sustain
+                // law's `hot` uses, T source = Tsnap (the SAME pass-entry
+                // snapshot the ignition gate above just read — a source can't
+                // heat AND accelerate a neighbour's demand the same tick).
+                // Folded into o2f_j via ONE mul_q16 (a narrowing multiply)
+                // BEFORE the wide product forms below: o2f_j <= FP_ONE and
+                // hotf_i <= hotf_cap*FP_ONE, so o2f_hotf <= hotf_cap*FP_ONE
+                // (~2^19.3 at the shipped cap=10) — narrowed back to a single
+                // q16 the SAME way the rest of this file's constant-like
+                // factors chain (truncating, not rounded; only the FINAL I_k
+                // multiply below is the wide-then-round deposit). This keeps
+                // the D1 wide product P0 = burn_cap_q*I_k*o2f_hotf a THREE-
+                // term product bounded by FP_ONE*FP_ONE*(hotf_cap*FP_ONE) =
+                // hotf_cap*2^48 (~2^51.3 at cap=10) — see apply_draw_weight's
+                // own comment for why that headroom is what THAT step needs.
+                // (Folding hotf in as a naive FOURTH raw factor of the wide
+                // product instead — burn_cap_q*I_k*o2f_j*hotf_i, no pre-
+                // narrow — would bound at hotf_cap*FP_ONE^4 = hotf_cap*2^64,
+                // overflowing int64; the one extra mul_q16 truncation this
+                // avoids costs at most 1 LSB of o2f_hotf, i.e. <2^-16 of a
+                // quantity already itself a lossy per-tick sensor read.)
+                const q16 T_ext_i = fire_T_ext_plane ? fire_T_ext_plane[i] : fire_T_ext_q;
+                const q16 hotf_i = clamp0cap_q(
+                    recip_mul(Tsnap[i] - T_ext_i, recip_T_span), hotf_cap_q);
+                const q16 o2f_hotf = mul_q16(o2f_j, hotf_i);
                 // ---- P-O2b: the DRAW WEIGHT for this (source, cell) pair ----
                 //     wq = W_hop[d] * w_path
                 // At draw_r == 1: d == 1 so W_hop[1] == FP_ONE, and the path is
@@ -533,7 +586,8 @@ void CombustionSolver::step(
                     // is carried in this slot and whole counts fall out as the
                     // debt accrues. Exact in expectation, unbiased, order-free
                     // (single writer per air cell), Huggett anchor untouched.
-                    //   P    = burn_cap_q * I_q * o2f_q   (<= 2^48, scale 2^32)
+                    //   P    = burn_cap_q * I_q * o2f_hotf_q   (R3: <= hotf_cap*
+                    //          2^48, scale 2^32 — see the hotf_i comment above)
                     //   wide = acc + (P >> 1)             (scale 2^31 per count)
                     //   draw = wide >> 31                 (whole counts)
                     //   acc  = wide - (draw << 31)        ([0, 2^31) -> int32)
@@ -542,7 +596,7 @@ void CombustionSolver::step(
                     // the remainder live in a plain non-negative int32 (a
                     // scale-2^32 remainder would need 33 bits).
                     const int64_t P0 = (int64_t)burn_cap_q
-                                     * (int64_t)fire[i] * (int64_t)o2f_j;
+                                     * (int64_t)fire[i] * (int64_t)o2f_hotf;
                     // P-O2b: fold the draw weight into the WIDE product, before
                     // the accumulator sees it, so the sub-count error feedback
                     // is carried on the weighted demand (a hop-2 claimant with
@@ -559,7 +613,7 @@ void CombustionSolver::step(
                     // truncation, kept so direct-binding callers are unmoved.
                     // The weight joins the same PINNED left fold, and
                     // mul_q16(x, FP_ONE) == x, so draw_r == 1 is unmoved too.
-                    di = mul_q16(mul_q16(mul_q16(burn_cap_q, fire[i]), o2f_j), wq);
+                    di = mul_q16(mul_q16(mul_q16(burn_cap_q, fire[i]), o2f_hotf), wq);
                 }
                 cl_slot[n_cl] = sl;
                 cl_src[n_cl] = i;

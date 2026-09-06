@@ -110,7 +110,19 @@ void combustion_step(
     // the shipped 4-face draw on both backends. See combustion.h.
     int draw_r = 1,
     const float* dyn_permeability = nullptr,
-    int max_claimants = 4);
+    int max_claimants = 4,
+    // R3 hot-burns-faster (fire session #12, docs/fire_3c_design_2026-09-01
+    // .md "Ruling R3"): the demand-side hotf ramp, VERBATIM the CPU law
+    // (combustion.cpp) — fire_T_ext is the FALLBACK scalar, fire_T_span the
+    // GLOBAL ramp width (both mirror FireParams' own fields, one config
+    // source of truth), hotf_cap the ceiling (uncapped-at-1, unlike `hot`).
+    // fire_T_ext_plane is the SAME nullable per-material T_ext plane
+    // FireSimulation/cuda_fire.cu read (GameMap.fire_T_ext_plane); nullptr ->
+    // the fire_T_ext scalar fallback, i.e. the pre-R3-plane law bit-for-bit.
+    float fire_T_ext = 350.0f,
+    float fire_T_span = 180.0f,
+    float hotf_cap = 10.0f,
+    const int32_t* fire_T_ext_plane = nullptr);
 
 // Backend flag: when ON, PhysicsRunner's combustion pass dispatches to
 // combustion_step on the GPU instead of the CPU CombustionSolver::step.

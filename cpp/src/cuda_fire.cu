@@ -266,22 +266,44 @@ __global__ void fire_logistic(int32_t* __restrict__ fire,
 // not renumbered — see the file header.
 
 // ---- P5: wall burn-through + destroyed collection (fire_simulation.cpp ~245-256)
-// wall_hp[i] -= round_nearest(wall_damage*dt*fire[i]); if (wall_hp<=0 && flammable
-// && is_wall) collect (via atomicAdd counter -> packed index array) and fire[i]=0.
-// Reads the P2-updated fire (frozen since P2; P4 already read it before this
-// kernel zeroes it). Own-cell wall_hp/fire writes; the destroyed slot is the only
-// scatter (a counter atomicAdd, order arbitrary -> the gate checks SET equality).
+// wall_hp[i] -= round_nearest(wall_damage*dt*fire[i]*hotf[i]); if (wall_hp<=0 &&
+// flammable && is_wall) collect (via atomicAdd counter -> packed index array) and
+// fire[i]=0. Reads the P2-updated fire (frozen since P2). Own-cell wall_hp/fire
+// writes; the destroyed slot is the only scatter (a counter atomicAdd, order
+// arbitrary -> the gate checks SET equality... actually LIST equality, see the
+// host-side sort below).
+//
+// R3 hot-burns-faster (VERBATIM device port of the CPU destruction-loop patch,
+// fire_simulation.cpp): hotf is recomputed HERE (not threaded from P2) because
+// this kernel runs on every fire[i] > 0 tile, not just flammable ones — a
+// non-flammable "ghost" fire already pays wall_damage*dt*I unconditionally
+// (tests/_xarch_perfield_digest.py's P-R4 lineage note); hotf rides along on
+// that same unconditional term. Reuses P2's temperature/fire_T_ext_plane
+// device buffers and host-precomputed scalars — no new allocation.
 __global__ void fire_burn(int32_t* __restrict__ fire,
                           int32_t* __restrict__ wall_hp,
+                          const int32_t* __restrict__ temperature,
+                          const int32_t* __restrict__ fire_T_ext_plane,
                           const bool* __restrict__ is_wall,
                           const bool* __restrict__ flammable,
                           int* __restrict__ d_counter,
                           int* __restrict__ d_destroyed_idx,
-                          int32_t wall_damage_q, int32_t dt_q, int n) {
+                          int32_t wall_damage_q, int32_t dt_q,
+                          int32_t fire_T_ext_q, int64_t recip_T_span,
+                          int32_t hotf_cap_q,
+                          bool temp_is_identity, int64_t recip_temp_scale,
+                          int n) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         if (fire[i] > 0) {
-            const q16 wd = mul_q16(wall_damage_q, dt_q);    // wall_damage*dt
+            const q16 T_ext_i = fire_T_ext_plane ? fire_T_ext_plane[i] : fire_T_ext_q;
+            const q16 T_i = temp_is_identity
+                ? temperature[i]
+                : recip_mul_dev(temperature[i], recip_temp_scale);
+            const q16 hotf = clamp0cap_q_dev(
+                recip_mul_dev(T_i - T_ext_i, recip_T_span), hotf_cap_q);
+            const q16 wd = mul_q16(mul_q16(wall_damage_q, dt_q), hotf);
+                                                             // wall_damage*dt*hotf
             const int64_t wide = mul_wide(wd, fire[i]);     // * I (wide for round)
             const q16 dmg = narrow_round(wide);             // >= 0 (positive depletion)
             wall_hp[i] -= dmg;
@@ -324,6 +346,7 @@ std::vector<std::pair<int, int>> fire_step(
     float temp_scale, float I_cap_per_avail,
     float o2_frac_amb, float o2f_cap,    // R1 (see header): sustain span upper ref
                                           // + the new enrichment-ceiling dial
+    float hotf_cap,                      // R3 (see header): the hotf ramp's ceiling
     const int64_t* fuel_recip,           // FUEL-FRACTION AXIS (nullable, see header)
     const int32_t* fire_T_ext_plane) {   // PER-MATERIAL T_ext (nullable, see header)
     (void)atmosphere;   // EOS P4: vestigial — the CPU step keeps it in its
@@ -378,6 +401,9 @@ std::vector<std::pair<int, int>> fire_step(
     const bool    x_degenerate     = (x_span <= 0.0);
     const int64_t recip_x_span     = x_degenerate ? 0 : make_recip(x_span);
     const q16 o2f_cap_q            = quantize((double)o2f_cap);
+    // R3 (docs/fire_3c_design_2026-09-01.md "Ruling R3"): the hotf ramp's
+    // ceiling, VERBATIM the CPU's hotf_cap_q load-time bake.
+    const q16 hotf_cap_q           = quantize((double)hotf_cap);
     const q16 X_N_FLOOR             = quantize(0.01);   // 655 counts, SAME as CPU
 
     // ---- Device buffers (the 4 mutated fields + read-only fields/masks + the
@@ -454,9 +480,15 @@ std::vector<std::pair<int, int>> fire_step(
     // P4 smoke emission scatter DELETED (P-S1) — see the file header.
 
     // P5 wall burn-through (in-place on d_whp; zeroes d_fire on destroyed AFTER
-    // P2 read it; collects the destroyed indices via the device counter).
-    fire_burn<<<grid, block>>>(d_fire, d_whp, d_wall, d_flam, d_counter,
-                               d_destroyed_idx, wall_damage_q, dt_q, n);
+    // P2 read it; collects the destroyed indices via the device counter). R3:
+    // reuses P2's d_temp/d_T_ext_plane device buffers + host-precomputed
+    // fire_T_ext_q/recip_T_span/temp_is_identity/recip_temp_scale — no new
+    // allocation for the hotf recompute.
+    fire_burn<<<grid, block>>>(d_fire, d_whp, d_temp, d_T_ext_plane, d_wall,
+                               d_flam, d_counter, d_destroyed_idx,
+                               wall_damage_q, dt_q,
+                               fire_T_ext_q, recip_T_span, hotf_cap_q,
+                               temp_is_identity, recip_temp_scale, n);
     cuda_check(cudaGetLastError(), "burn launch");
 
     // P6 final clamp (in-place on d_fire / d_smoke).

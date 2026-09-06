@@ -161,8 +161,10 @@
 // also what makes W_hop[1] * w_path == 1 exactly at R = 1.)
 //
 // THE DEMAND, per (burning tile i, reachable cell j):
-//     dem = burn_cap_q * I_i * o2f_j * W_hop[d(j)] * w_path
-// with W_hop a BAKED integer table, shipped as quantize(1/(1+d)) NORMALIZED so
+//     dem = burn_cap_q * I_i * o2f_j * hotf_i * W_hop[d(j)] * w_path
+// (hotf_i is R3's hot-burns-faster factor, added after this design landed —
+// see the R3 block further below for its law) with W_hop a BAKED integer
+// table, shipped as quantize(1/(1+d)) NORMALIZED so
 // that W_hop[1] == FP_ONE:  W_hop[d] = quantize(2/(1+d)) = 1, 2/3, 1/2. At
 // R = 1 every reachable cell has d == 1 and w_path == 1, so the weight is
 // exactly FP_ONE and the demand is BIT-IDENTICAL to the shipped law.
@@ -182,6 +184,22 @@
 // (fire_simulation.cpp) still reads the burning tile's own 4-neighbour ring.
 // 2b raises DELIVERY (fuel throughput, HRR); it does NOT widen the local
 // sensor, so knee / extinction / smother semantics keep their meaning.
+//
+// R3 hot-burns-faster (fire session #12, docs/fire_3c_design_2026-09-01.md
+// "Ruling R3"): the DEMAND becomes
+//     demand_k = burn_cap * I_k * o2f_j * hotf_k * W_hop[d_k] * w_path_k
+// hotf_k = clamp((Tsnap[k] - T_ext_k)/fire_T_span, 0, hotf_cap) — the SAME
+// ramp fire_simulation.cpp's `hot` uses, read from the SAME per-material
+// `fire_T_ext_plane` (nullable, falls back to the scalar `fire_T_ext` below),
+// but UNCAPPED AT 1 (ceiling `hotf_cap` instead) since it is a RATE factor
+// here, not the sustain gate. T source is Tsnap — the SAME pass-entry
+// snapshot the claim gate above reads, preserving "a source can't heat AND
+// ignite/accelerate a neighbour's demand the same tick". hotf_k joins the
+// PINNED left-fold immediately after o2f_j (folded together via one mul_q16
+// into `o2f_hotf` before the wide product forms — see combustion.cpp for the
+// overflow bound this keeps). Fuel DRAIN needs no separate term:
+// `fuel_cost ∝ O2 drawn` already, so a hotter fire that draws more O2 already
+// pays proportionally more fuel — verified, not re-derived, in combustion.cpp.
 
 #include <cstdint>
 
@@ -352,6 +370,23 @@ public:
                                       // awaiting oxygen; larger -> they char
                                       // out fast. Quantized once per step like
                                       // every other per-step scalar.
+
+    // --- R3 hot-burns-faster (fire session #12, docs/fire_3c_design_2026-09-
+    // 01.md "Ruling R3") — the DEMAND-side twin of FireParams::hotf_cap/
+    // fire_T_ext/fire_T_span. See the header block above for the law; see
+    // combustion.cpp for the per-claimant computation. fire_T_ext/fire_T_span
+    // MIRROR FireParams' own fields of the same name (physics_runner.py binds
+    // both solvers from the SAME [physics.fire] keys, one source of truth) —
+    // fire_T_ext is the FALLBACK only (the live per-material read is the
+    // `fire_T_ext_plane` step() parameter below; a uniform plane holding
+    // quantize(fire_T_ext) is byte-identical to passing no plane at all,
+    // same nullable-plane idiom as fuel_recip/fire_T_ext_plane elsewhere).
+    float fire_T_ext       = 350.0f; // FALLBACK extinction temperature (no plane)
+    float fire_T_span      = 180.0f; // width of the hotf ramp above T_ext (GLOBAL)
+    // hotf_cap: the SAME dial value as FireParams::hotf_cap (one enrichment/
+    // overheat ceiling, bound to both solvers from ONE config key) — the
+    // ceiling on hotf, which is NOT capped at 1 the way `hot` is.
+    float hotf_cap         = 10.0f;  // NEW (R3): ceiling on the demand-side hotf ramp
 
     // ---- P-R4: H_bed — the FUEL-BED deposit ------------------------------
     // (docs/radiation_raycaster_extinction_ruling_2026-07-31.md A1, "Where the
@@ -627,6 +662,14 @@ public:
         //               transport uses for a non-participating donor).
         int64_t* gas_energy = nullptr,
         const bool* is_ambient = nullptr,
-        int32_t t_amb_q = 0
+        int32_t t_amb_q = 0,
+        // R3 hot-burns-faster (see the header block + fire_T_ext/fire_T_span/
+        // hotf_cap above): PER-MATERIAL EXTINCTION TEMPERATURE, int32 (h,w)
+        // Q16.16, OPTIONAL — the SAME plane FireSimulation::step reads
+        // (GameMap.fire_T_ext_plane: ignition_temp[mat] - ignition_to_ext_
+        // delta, baked once at load). nullptr -> the scalar `fire_T_ext`
+        // fallback above, i.e. the pre-R3-plane law bit-for-bit (every
+        // legacy/direct-binding caller that does not pass one is unmoved).
+        const int32_t* fire_T_ext_plane = nullptr
     ) const;
 };

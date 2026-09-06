@@ -95,6 +95,16 @@ FIRE_O2_FRAC_EXT    = 0.13   # X_ext: flame-extinction O2 mole fraction (0 = pur
 FIRE_O2_FRAC_FULL   = 1.0    # X_full: DEMAND-side (combustion.cpp) pure-O2 reference only
 FIRE_O2_FRAC_AMB    = 0.21   # X_amb: what the ambient atmosphere IS (per-map: reads [ambient] o2_frac). R1: NOW LIVE — the sustain law's span upper reference.
 FIRE_O2F_CAP        = 5.0    # NEW (R1): enrichment ceiling on the renormalized sustain o2f ratio
+# R3 hot-burns-faster (fire session #12, 2026-09-06, docs/fire_3c_design_2026-
+# 09-01.md "Ruling R3"): hotf = clamp((T-fire_T_ext)/fire_T_span, 0, hotf_cap)
+# — the SAME ramp as `hot` above, but its ceiling is hotf_cap (10.0) instead
+# of 1, and it is read only by the two RATE sites (combustion.cpp's demand,
+# fire_simulation.cpp's wall-burn) — `hot` itself stays capped at 1 for the
+# sustain gate. Pairs with FIRE_O2F_CAP as the system's other enrichment/
+# overheat ceiling; bound onto BOTH the fire logistic and the combustion
+# solver from this ONE [physics.fire] key (one source of truth, like
+# o2_frac_ext/o2_frac_full/o2_frac_amb above).
+FIRE_HOTF_CAP       = 10.0   # NEW (R3): ceiling on the uncapped-at-1 hotf ramp
 FIRE_P_MIN          = 0.60   # RETIRED (see o2_frac_ext/amb) — was the smoothstep low edge
 FIRE_P_FULL         = 1.00   # RETIRED — was the smoothstep full edge
 FIRE_I_MIN          = 0.02   # snap-to-zero extinguish floor
@@ -260,6 +270,11 @@ class PhysicsRunner:
         self.fire.params.o2_frac_full   = _fp("o2_frac_full", FIRE_O2_FRAC_FULL)
         self.fire.params.o2_frac_amb    = _fp("o2_frac_amb", FIRE_O2_FRAC_AMB)
         self.fire.params.o2f_cap        = _fp("o2f_cap", FIRE_O2F_CAP)
+        # R3 (docs/fire_3c_design_2026-09-01.md "Ruling R3"): the hotf ramp's
+        # ceiling — read by the wall-burn destruction term below and by
+        # combustion.py's demand (bound onto self.combustion further down,
+        # from this SAME [physics.fire] key).
+        self.fire.params.hotf_cap       = _fp("hotf_cap", FIRE_HOTF_CAP)
         # P_min/P_full RETIRED from the sustain law (continuous-O2 law); left
         # wired so old configs/bindings that still set them do not hard-error.
         self.fire.params.P_min          = _fp("P_min", FIRE_P_MIN)
@@ -599,6 +614,17 @@ class PhysicsRunner:
             getattr(fire_cfg_c, "o2_frac_amb", FIRE_O2_FRAC_AMB))
         self.combustion.o2_thresh_burn = _cp(
             "o2_thresh_burn", self.combustion.o2_thresh_burn)
+        # R3 hot-burns-faster (fire session #12, docs/fire_3c_design_2026-09-
+        # 01.md "Ruling R3"): the demand-side hotf ramp's dials — the SAME
+        # [physics.fire] keys self.fire.params.fire_T_ext/fire_T_span/hotf_cap
+        # bind above (one source of truth, the o2_frac_ext/full/amb precedent
+        # just above this block).
+        self.combustion.fire_T_ext = float(
+            getattr(fire_cfg_c, "fire_T_ext", FIRE_T_EXT))
+        self.combustion.fire_T_span = float(
+            getattr(fire_cfg_c, "fire_T_span", FIRE_T_SPAN))
+        self.combustion.hotf_cap = float(
+            getattr(fire_cfg_c, "hotf_cap", FIRE_HOTF_CAP))
         # --- o2_potency: THE SIZING RULING's preserved option ----------------
         # Erik's sizing ruling (2026-08-02) shipped PACKAGE A — draw_r = 2, NO
         # potency now — but ruled potency PRESERVED as an explicit option rather
@@ -1023,6 +1049,12 @@ class PhysicsRunner:
                 self._draw_r,
                 gmap.dyn_permeability,
                 int(gmap.dem_acc.shape[0]),
+                # R3 hot-burns-faster (docs/fire_3c_design_2026-09-01.md
+                # "Ruling R3"): the demand-side hotf ramp's dials + the SAME
+                # per-material T_ext plane the fire logistic reads.
+                self.combustion.fire_T_ext, self.combustion.fire_T_span,
+                self.combustion.hotf_cap,
+                gmap.fire_T_ext_plane,
             )
         else:
             self.combustion.step(
@@ -1083,6 +1115,12 @@ class PhysicsRunner:
                 gmap.gas_energy,
                 gmap.is_ambient,
                 self._eos_t_amb_raw(),
+                # R3 hot-burns-faster (docs/fire_3c_design_2026-09-01.md
+                # "Ruling R3"): the SAME per-material T_ext plane the fire
+                # logistic reads (self.combustion.fire_T_ext/fire_T_span/
+                # hotf_cap are already bound onto the solver instance at
+                # init, read internally by CombustionSolver::step).
+                gmap.fire_T_ext_plane,
             )
 
     # ------------------------------------------------------------------

@@ -132,6 +132,11 @@ std::vector<std::pair<int, int>> FireSimulation::step(
     const q16 INV_C = (p.I_cap_per_avail > 0.0f)
         ? fp::quantize(1.0 / (double)p.I_cap_per_avail) : (q16)0;
     const q16 wall_damage_q = fp::quantize((double)p.wall_damage);
+    // R3 (fire session #12, docs/fire_3c_design_2026-09-01.md "Ruling R3"):
+    // the ceiling on the destruction/demand-side hotf ramp (see the wall-burn
+    // site below and combustion.cpp's demand site). Same load-time idiom as
+    // o2f_cap_q above.
+    const q16 hotf_cap_q    = fp::quantize((double)p.hotf_cap);
 
     // Load-time reciprocals for the config-constant divides (make_recip/recip_mul).
     // FUEL-FRACTION AXIS (2026-07-30): the FALLBACK fuel normaliser, used only
@@ -331,7 +336,27 @@ std::vector<std::pair<int, int>> FireSimulation::step(
     std::vector<std::pair<int, int>> destroyed;
     for (int i = 0; i < n; ++i) {
         if (fire[i] > 0) {
-            const q16 wd = fp::mul_q16(wall_damage_q, dt_q);    // wall_damage*dt
+            // R3 hot-burns-faster (fire session #12, docs/fire_3c_design_2026-
+            // 09-01.md "Ruling R3"): destruction now rides `hotf` — the SAME
+            // (T - T_ext)/T_span ramp as `hot` above, but capped at hotf_cap
+            // instead of 1, so a saturated fire destroys its own fuel bed
+            // FASTER, not just draws O2 faster (combustion.cpp's demand-side
+            // twin reads the identical law). Recomputed HERE rather than
+            // threaded from the sustain loop above, because THIS loop is not
+            // flammable-gated — it runs on every fire[i] > 0 tile, including a
+            // non-flammable "ghost" fire (tests/_xarch_perfield_digest.py's
+            // P-R4 lineage note), which already pays wall_damage*dt*I
+            // unconditionally today; hotf simply rides along on the same
+            // unconditional term. `hot`'s clamp01_q gate above is UNCHANGED —
+            // this is a separate, uncapped-at-1 read of the identical ramp.
+            const q16 T_ext_i = fire_T_ext_plane ? fire_T_ext_plane[i] : fire_T_ext_q;
+            const q16 T_i = temp_is_identity
+                ? temperature[i]
+                : fp::recip_mul(temperature[i], recip_temp_scale);
+            const q16 hotf = clamp0cap_q(fp::recip_mul(T_i - T_ext_i, recip_T_span),
+                                         hotf_cap_q);
+            const q16 wd = fp::mul_q16(fp::mul_q16(wall_damage_q, dt_q), hotf);
+                                                                 // wall_damage*dt*hotf
             const int64_t wide = fp::mul_wide(wd, fire[i]);     // * I (wide for round)
             const q16 dmg = fp::narrow_round(wide);             // >= 0 (positive depletion)
             wall_hp[i] -= dmg;

@@ -116,7 +116,19 @@ def _read_o2f_exact(o2_q, n2_q, x_ext=0.13, x_full=1.0):
     EXACTLY o2f_q (mul_q16(FP_ONE, mul_q16(FP_ONE, o2f_q)) == o2f_q, no
     rounding in between) — the same identity test_continuous_o2_law.py's
     gate (a) already relies on. One isolated open neighbour, no contention,
-    so `drawn == o2f_q` as long as the read is uncontested (checked below)."""
+    so `drawn == o2f_q` as long as the read is uncontested (checked below).
+
+    R3 hot-burns-faster (fire session #12, docs/fire_3c_design_2026-09-01.md
+    "Ruling R3") NEUTRALIZED: demand is now burn_cap*I*o2f_j*hotf_i, so this
+    probe's OWN internal scene (temperature == 0, well below any material's
+    fire_T_ext) would otherwise read hotf_i == 0 and always return 0
+    regardless of o2f_j. Pin fire_T_ext deeply negative so (T-fire_T_ext)/
+    fire_T_span is far past hotf_cap and clamp0cap_q saturates EXACTLY at
+    the cap (an integer, so mul_q16 by it is an exact scale — the SAME
+    technique test_continuous_o2_law.py's own R3 fix uses), then divide the
+    raw draw by hotf_cap to recover o2f_j alone. The donor's O2/N2 are
+    scaled up together (density headroom, mole fraction untouched) so the
+    ~10x-larger demand still stays in the uncontested branch."""
     h = w = 5
     gas = np.zeros((7, h, w), dtype=np.int32)
     solid = np.zeros((h, w), dtype=bool)
@@ -133,8 +145,9 @@ def _read_o2f_exact(o2_q, n2_q, x_ext=0.13, x_full=1.0):
     ign[cy, cx] = 1              # irrelevant: fire==FP_ONE => alight, bypasses it
     fire[cy, cx] = FP_ONE
     ny, nx = cy - 1, cx
-    gas[O2][ny, nx] = o2_q
-    gas[INERT_N2][ny, nx] = n2_q
+    HEADROOM = 20
+    gas[O2][ny, nx] = o2_q * HEADROOM
+    gas[INERT_N2][ny, nx] = n2_q * HEADROOM
 
     c = bp.CombustionSolver()
     c.burn_rate = 1.0
@@ -144,6 +157,8 @@ def _read_o2f_exact(o2_q, n2_q, x_ext=0.13, x_full=1.0):
     c.fuel_per_o2 = 0.0
     c.o2_frac_ext = x_ext
     c.o2_frac_full = x_full
+    c.fire_T_ext = -20000.0      # R3: neutralize hotf to an EXACT hotf_cap
+    c.fire_T_span = 1.0          # multiplier (see docstring)
 
     before = int(gas[O2][ny, nx])
     c.step(gas, O2, INERT_N2, SMOKE, temperature, wall_hp, fire, flammable,
@@ -152,6 +167,72 @@ def _read_o2f_exact(o2_q, n2_q, x_ext=0.13, x_full=1.0):
     assert not (drawn == before and before > 0), (
         f"o2f probe contested at o2_q={o2_q}, n2_q={n2_q} — the read is not "
         "valid here (raise the probe's O2 count)")
+    assert drawn % int(c.hotf_cap) == 0, (
+        f"R3 hotf did not saturate to an exact integer cap: drawn={drawn}, "
+        f"hotf_cap={c.hotf_cap}")
+    return drawn // int(c.hotf_cap)
+
+
+def _read_hotf_exact(temperature_q, fire_T_ext=350.0, fire_T_span=180.0,
+                      hotf_cap=10.0):
+    """R3 hot-burns-faster (fire session #12, docs/fire_3c_design_2026-09-01
+    .md "Ruling R3") twin of _read_o2f_exact above: read hotf_i EXACTLY (to
+    the LSB) for a given source temperature, by probing the REAL
+    CombustionSolver rather than re-implementing recip_mul's reciprocal in
+    Python. The donor's O2 is set so o2f_j SATURATES EXACTLY to FP_ONE (X far
+    past x_full, an exact clamp — no rounding risk, the same clamp-not-divide
+    idiom _o2f_combustion_q's own R3 fix uses in test_continuous_o2_law.py),
+    so demand collapses to EXACTLY hotf_i
+    (mul_q16(FP_ONE, mul_q16(FP_ONE, mul_q16(FP_ONE, hotf_i))) == hotf_i).
+    The donor's absolute O2/N2 is scaled well past hotf_cap*FP_ONE so the
+    read stays in the uncontested branch even at the shipped hotf_cap."""
+    h = w = 5
+    gas = np.zeros((7, h, w), dtype=np.int32)
+    solid = np.zeros((h, w), dtype=bool)
+    is_vacuum = np.zeros((h, w), dtype=bool)
+    flammable = np.zeros((h, w), dtype=bool)
+    wall_hp = np.zeros((h, w), dtype=np.int32)
+    fire = np.zeros((h, w), dtype=np.int32)
+    ign = np.zeros((h, w), dtype=np.int32)
+    temperature = np.zeros((h, w), dtype=np.int32)
+    cy, cx = 2, 2
+    solid[cy, cx] = True
+    flammable[cy, cx] = True
+    wall_hp[cy, cx] = fire_fixed.quantize_scalar(1000.0)   # never floors
+    ign[cy, cx] = 1
+    fire[cy, cx] = FP_ONE
+    temperature[cy, cx] = int(temperature_q)
+    ny, nx = cy - 1, cx
+    # Ample, uncontested O2 supply — comfortably below the int32 Q16.16
+    # game-unit ceiling (~32767) but far more than any hotf_cap*FP_ONE demand
+    # this module probes (density headroom, not a fraction change: o2_frac_
+    # full=0.01 above already saturates o2f_j to FP_ONE via the clamp).
+    gas[O2][ny, nx] = fire_fixed.quantize_scalar(20000.0)
+    gas[INERT_N2][ny, nx] = 0
+
+    c = bp.CombustionSolver()
+    c.burn_rate = 1.0
+    c.o2_thresh_burn = 0.0
+    c.H_fuel = 0.0
+    c.soot_yield = 0.0
+    c.fuel_per_o2 = 0.0
+    # x_ext=0, x_full tiny -> the donor's X=1.0 mole fraction is ~100x past
+    # x_full, so the raw ratio clamps to EXACTLY FP_ONE regardless of any
+    # reciprocal_q16 rounding noise near the boundary (a robust saturation,
+    # not a hopeful exact-divide).
+    c.o2_frac_ext = 0.0
+    c.o2_frac_full = 0.01
+    c.fire_T_ext = float(fire_T_ext)
+    c.fire_T_span = float(fire_T_span)
+    c.hotf_cap = float(hotf_cap)
+
+    before = int(gas[O2][ny, nx])
+    c.step(gas, O2, INERT_N2, SMOKE, temperature, wall_hp, fire, flammable,
+           solid, is_vacuum, ign, 1.0, 1.0, 0.05)
+    drawn = before - int(gas[O2][ny, nx])
+    assert not (drawn == before and before > 0), (
+        f"hotf probe contested at T={temperature_q} — the read is not valid "
+        "here (raise the probe's O2 count)")
     return drawn
 
 
@@ -246,10 +327,22 @@ def test_fuel_decrement_exact_and_deterministic():
 
     n_o2 = (0.21, 0.05, 0.035, 0.02)   # N, S, W, E — see docstring re: who burns
     scene = _solver_scene(n_o2=n_o2)
-    wall_hp, fire = scene[4], scene[5]
+    wall_hp, fire, temperature = scene[4], scene[5], scene[7]
     cy, cx = scene[8]
     hp0 = int(wall_hp[cy, cx])
     fire_i_q = int(fire[cy, cx])
+
+    # R3 hot-burns-faster (fire session #12, docs/fire_3c_design_2026-09-01.md
+    # "Ruling R3"): demand_j is now burn_cap*fire[i]*o2f_j*hotf_i (this test
+    # supplies no fire_T_ext_plane, so hotf_i reads `comb`'s own SCALAR
+    # fire_T_ext/fire_T_span/hotf_cap fallbacks — untouched here, so the
+    # struct defaults 350.0/180.0/10.0). hotf_i is per-CLAIMANT (the source
+    # tile i, not the donor j), so it is hoisted ONCE, same footing as t1.
+    # Read exactly via _read_hotf_exact (the same known-answer probe
+    # technique _read_o2f_exact already uses), not hand-derived, for the
+    # same reciprocal_q16-rounding reason.
+    hotf_q = _read_hotf_exact(int(temperature[cy, cx]),
+                              comb.fire_T_ext, comb.fire_T_span, comb.hotf_cap)
 
     # Python-int replication of the C++ arithmetic (fixed_point.h twins).
     cap_q = _q(1.0 * dt)
@@ -263,7 +356,8 @@ def test_fuel_decrement_exact_and_deterministic():
         if o2q <= thresh_q:
             continue
         o2f_q = _read_o2f_exact(o2q, n2_q)
-        dem = _mul_q16(t1, o2f_q)
+        o2f_hotf_q = _mul_q16(o2f_q, hotf_q)   # R3: folded in BEFORE t1, verbatim combustion.cpp
+        dem = _mul_q16(t1, o2f_hotf_q)
         burn_total += min(dem, o2q)
     expected = max(hp0 - _narrow_round(fuel_q * burn_total), FUEL_FLOOR)
     _step(comb, scene, dt)

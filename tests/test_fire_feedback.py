@@ -263,13 +263,27 @@ def test_burnout_when_wall_hp_runs_out():
     # before dying: measured DIES at tick 10834 (wall_hp still 0.52 — an
     # I_min snap-extinguish, not burn-through). max_ticks re-derived with
     # margin.
+    #
+    # RE-DERIVED AGAIN (R3, fire session #12, 2026-09-06, docs/fire_3c_design_
+    # 2026-09-01.md "Ruling R3"): destruction is now wall_damage*dt*I*hotf, and
+    # this scene supplies NO per-tile fire_T_ext_plane (a bare FireSimulation.
+    # step call), so hotf falls back to the FALLBACK SCALAR fire_T_ext (350,
+    # config default) rather than wood's own per-material plane value (100).
+    # At T=500, fire_T_span=180: hotf = (500-350)/180 = 0.833 — combined with
+    # the wall_damage re-size (0.03 -> 0.01448, f_ref=2.0717), the effective
+    # destruction rate is ~0.4x of pre-R3's, so burnout takes ~2.5x longer:
+    # measured DIES at tick 27591 (wall_hp still deep in fractional-LSB
+    # territory — again an I_min snap-extinguish, not burn-through). max_ticks
+    # re-derived with margin; this scene's step is still a bare 3x3
+    # FireSimulation.step call (cheap), so the larger budget costs nothing
+    # measurable.
     fs = _params_runner()
     sc = _FeedbackScene(I=0.6, T=500.0, wall_hp=3.0, atm=1.0, wind=0.0)
     # Make it a real wall so burn-through can fire if hp hits 0.
     sc.solid[1, 1] = True
     hp0 = float(sc.wall_hp[1, 1])
     last = 0.6
-    for _ in range(15000):
+    for _ in range(35000):
         last = sc.step(fs)
         if last == 0.0:
             break

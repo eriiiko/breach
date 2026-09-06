@@ -117,6 +117,12 @@ std::vector<std::pair<int, int>> fire_step(
     // ceiling (o2f is no longer bounded to [0,1] — enrichment above ambient can
     // register, up to this cap). See FireParams::o2_frac_amb / o2f_cap.
     float o2_frac_amb, float o2f_cap,
+    // R3 hot-burns-faster (fire session #12, docs/fire_3c_design_2026-09-01
+    // .md "Ruling R3"): hotf_cap is the ceiling on the UNCAPPED-AT-1 hotf ramp
+    // (the SAME (T-T_ext)/T_span ramp as `hot`, but read only by the wall-burn
+    // term below — `hot` itself is unchanged and stays capped at 1 for the
+    // sustain gate). See FireParams::hotf_cap / fire_simulation.cpp.
+    float hotf_cap,
     // FUEL-FRACTION AXIS (2026-07-30) — OPTIONAL read-only int64 (h,w) plane:
     // per tile, the make_recip reciprocal of that tile's MATERIAL's full-health
     // hp (GameMap.fuel_recip). The fuel term becomes

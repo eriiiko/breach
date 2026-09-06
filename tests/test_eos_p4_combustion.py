@@ -342,10 +342,25 @@ def test_thermal_spike_is_pre_existing_not_a_p4_regression():
         f"{peak_disabled} game >= {SPIKE_CEILING}). P-R4 removed its driver by "
         f"retiring the painter's air deposit — a peak this high means something "
         f"is feeding one-way energy into air cells again")
-    assert peak_default < SPIKE_CEILING, (
+    # R3 hot-burns-faster (fire session #12, docs/fire_3c_design_2026-09-01.md
+    # "Ruling R3") RE-ANCHOR: this scene's own `temp_mult=3.0` ignition (an
+    # already-extreme torture value, on top of this test's own burn_rate=1.0
+    # override — deliberately NOT the shipped 0.00965) now also rides hotf,
+    # which at the seeded T (900 game, ignition_temp*3) reads ~4.44 off wood's
+    # own fire_T_ext_plane value (100) — a real, LEGITIMATE amplification of
+    # this already-torture scenario's demand, not a reopened one-way-energy
+    # loop: measured peak_default 7803.6 game, occurring at tick 3 and NEVER
+    # rising further through tick 600 (re-checked) — a bounded transient
+    # spike, comfortably under T_MAX_PHYS (16000) and the format ceiling, that
+    # then decays to a ~413-415 game equilibrium. SPIKE_CEILING_HOT carries
+    # margin above the measured value while staying far below any genuine
+    # runaway signature (which would keep climbing, not plateau at tick 3).
+    SPIKE_CEILING_HOT = 9000.0
+    assert peak_default < SPIKE_CEILING_HOT, (
         f"the P3 thermal runaway is BACK with combustion enabled "
-        f"(peak={peak_default} game). Combustion's gas-side H_fuel deposit is a "
-        f"BURN-SITE term, not a room-wide paint — it must not reopen the loop")
+        f"(peak={peak_default} game >= {SPIKE_CEILING_HOT}). Combustion's "
+        f"gas-side H_fuel deposit is a BURN-SITE term, not a room-wide paint "
+        f"— it must not reopen the loop")
     # eos-p3fix-thermal-ceiling: no wraparound garbage (the fixed half of
     # the bug). T_MIN is -289 (EOSSolver default); a generous floor below
     # that (any legitimate T_MIN-floored cooling stays well above -1000)
@@ -425,7 +440,23 @@ def test_e2e_1_sealed_room_fire_self_starves():
     in-budget). The post-flame ember-signature assertions are DROPPED: they
     describe a phase (flame actually dead) this horizon no longer reaches;
     the full flame->ember->re-ignite->char-out->quiet lifecycle stays gated
-    in tests/test_eos_p5_1_stoich.py, which owns that story now."""
+    in tests/test_eos_p5_1_stoich.py, which owns that story now.
+
+    R3 RE-MEASURE (fire session #12, 2026-09-06, docs/fire_3c_design_2026-
+    09-01.md "Ruling R3"): hot-burns-faster draws harder as the flame heats,
+    which measurably speeds up BOTH the growth and the eventual starve —
+    peak moved 0.713 -> 0.883 (t~=558 -> t~=184), and the decline this time
+    reaches FULL EXTINCTION well inside the 2000-tick budget (fire_hist[-1]
+    == 0.0, a >=15% decline holds trivially now) — the phase the pre-R3
+    note above says "this horizon no longer reaches" is reachable again.
+    The assertions below are left permissive (>=15%, not ==100%) so a
+    Phase-4 taste pass moving the dials further doesn't need to touch this
+    test; only the pressure threshold below needed re-deriving; peak
+    pressure moved 2.52% -> 0.66% above ambient (R3's burn_rate/wall_damage
+    re-size trades off against hotf's boost at these particular dials/seed —
+    net LOWER heat output before the faster starve caps it), so the old 2%
+    floor no longer clears — re-derived to 0.3%, comfortably below the
+    measured 0.66%."""
     gmap = _sealed_room(hh=15, wood_at=(7, 7))
     pr = _runner()
     # smoke_emission zeroing REMOVED at P-S1 — the field/mechanism it
@@ -480,10 +511,12 @@ def test_e2e_1_sealed_room_fire_self_starves():
         f"O2+N2 exceeded its starting total "
         f"(max {max(mass_hist)} > start {total0}) — mass fabricated")
     # A real, reproducible pressure rise above ambient during the burn
-    # (threshold re-derived: see docstring — the old 5% needs ~5000+ ticks
-    # to clear at the shipped k_die, well past this test's budget).
+    # (threshold re-derived: see docstring — R3 (fire session #12, docs/
+    # fire_3c_design_2026-09-01.md "Ruling R3") moved the measured peak to
+    # 0.66% above ambient, so the prior 2% floor no longer clears; 0.3%
+    # carries margin below that).
     p_peak = max(p_hist)
-    assert p_peak > ambient_p * 1.02, (
+    assert p_peak > ambient_p * 1.003, (
         f"no visible pressure rise during the burn (peak {p_peak:.3f} vs "
         f"ambient {ambient_p:.3f})")
 

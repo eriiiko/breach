@@ -292,8 +292,15 @@ def test_deterministic_repeat():
 
 _LOW_XS = (X_EXT, X_AMB, 0.25, 0.30, 0.45, 0.55)   # the o2f <= 0.5 band
 
+# R3 hot-burns-faster (fire session #12, docs/fire_3c_design_2026-09-01.md
+# "Ruling R3"): shared headroom multiplier both o2f probes below can opt into
+# so their absolute O2/N2 counts (and so the mole-fraction rounding) stay
+# BIT-IDENTICAL when a test wants to compare them directly — see
+# _o2f_combustion_q's docstring for why demand-side headroom is needed at all.
+_HOTF_HEADROOM = 20.0
 
-def _o2f_fire_q(X, x_ext=X_EXT, x_full=X_FULL, x_amb=X_AMB):
+
+def _o2f_fire_q(X, x_ext=X_EXT, x_full=X_FULL, x_amb=X_AMB, density=1.0):
     """o2f in RAW Q16.16 counts, read out of FireSimulation::step. Exact for
     o2f <= 0.5 (above that I_next saturates at 1.0 and the read saturates).
 
@@ -344,8 +351,8 @@ def _o2f_fire_q(X, x_ext=X_EXT, x_full=X_FULL, x_amb=X_AMB):
     is_wall = np.ones((h, w), dtype=bool)
     is_wall[1, 2] = False
     flammable = np.zeros((h, w), dtype=bool); flammable[1, 1] = True
-    n_o2[1, 2] = Q(float(X))
-    n_total[1, 2] = Q(1.0)
+    n_o2[1, 2] = Q(float(X) * float(density))
+    n_total[1, 2] = Q(float(density))
 
     sim.step(fire=fire, atmosphere=z(), n_o2=n_o2, n_total=n_total, smoke=z(),
              wall_hp=wall_hp, temperature=temperature, wind_x=z(), wind_y=z(),
@@ -361,7 +368,16 @@ def _o2f_combustion_q(X, x_ext=X_EXT, x_full=X_FULL, x_amb=X_AMB, density=1.0):
     ``density`` scales the ABSOLUTE gas the air cell holds without changing its
     mole fraction — needed wherever o2f approaches 1, because the read is only
     valid on the UNCONTESTED branch (demand <= O2[j]); the assert below refuses
-    to return a contested (fully-drained) reading."""
+    to return a contested (fully-drained) reading.
+
+    R3 hot-burns-faster (fire session #12, docs/fire_3c_design_2026-09-01.md
+    "Ruling R3") NEUTRALIZED: the demand is now burn_cap*I*o2f_j*hotf*wq, so
+    this probe's raw draw is o2f_j*hotf, not o2f_j alone. hotf is pinned to
+    EXACTLY hotf_cap (an integer, so mul_q16 by it is an EXACT scale, no
+    rounding) by setting fire_T_ext deeply negative — (T - fire_T_ext)/
+    fire_T_span is then far past the cap and clamp0cap_q saturates it at the
+    literal cap value, not an approximation. Dividing the raw draw by
+    hotf_cap then recovers o2f_j exactly, unaffected by R3."""
     from simulation.gases import O2, INERT_N2, SMOKE, N_GASES
 
     c = bp.CombustionSolver()
@@ -373,6 +389,24 @@ def _o2f_combustion_q(X, x_ext=X_EXT, x_full=X_FULL, x_amb=X_AMB, density=1.0):
     c.o2_frac_ext = float(x_ext)
     c.o2_frac_full = float(x_full)
     c.o2_frac_amb = float(x_amb)
+    # R3: neutralize hotf to an EXACT hotf_cap multiplier (see docstring).
+    # -20000 (not something astronomically large) so the Q16.16 quantize of
+    # fire_T_ext itself does not overflow int32 (the format's game-unit range
+    # is roughly +/-32767) while still landing (T - fire_T_ext)/fire_T_span
+    # far past hotf_cap for any temperature this module probes.
+    c.fire_T_ext = -20000.0
+    c.fire_T_span = 1.0
+    # The hotf_cap multiplier raises demand by ~10x, so the single donor cell's
+    # ABSOLUTE O2 needs matching headroom to stay in the UNCONTESTED branch (the
+    # branch this probe's exactness relies on) — scale the donor's gas amounts
+    # (O2 AND N2 together, so the MOLE FRACTION X and thus o2f_j is untouched)
+    # by extra headroom on top of whatever `density` the caller already asked
+    # for. `drawn` itself does not depend on density (o2f_j/hotf are density-
+    # independent), only on staying uncontested. A test that wants an EXACT
+    # match against _o2f_fire_q's own mole-fraction rounding passes THAT probe
+    # density=_HOTF_HEADROOM explicitly (this function's own `density` stays
+    # at its caller-facing default of 1.0, so 1.0*_HOTF_HEADROOM lines up).
+    density = float(density) * _HOTF_HEADROOM
 
     h = w = 3
     gas = np.zeros((N_GASES, h, w), dtype=np.int32)
@@ -393,7 +427,11 @@ def _o2f_combustion_q(X, x_ext=X_EXT, x_full=X_FULL, x_amb=X_AMB, density=1.0):
     assert not (drawn > 0 and drawn == before and before < ONE_F), (
         f"contested read at X={X} density={density}: the cell fully drained, so "
         f"{drawn} is O2[j], not o2f — raise `density`")
-    return drawn
+    # R3: drawn == o2f_j_raw * hotf_cap EXACTLY (see docstring) — recover o2f_j.
+    assert drawn % int(c.hotf_cap) == 0, (
+        f"R3 hotf did not saturate to an exact integer cap at X={X}: "
+        f"drawn={drawn}, hotf_cap={c.hotf_cap}")
+    return drawn // int(c.hotf_cap)
 
 
 def test_o2f_table_matches_the_new_normalization():
@@ -494,9 +532,14 @@ def test_two_o2_laws_are_now_deliberately_different():
             f"o2_frac_amb/o2_frac_full dials — the R1 split is not live")
     # (b) o2_frac_amb == o2_frac_full (== X_FULL here) -> bit-identical again,
     # in the shared unclamped band (_LOW_XS tops out at 0.55, well inside both
-    # laws' linear region against a 1.0 upper reference).
+    # laws' linear region against a 1.0 upper reference). R3: pass matching
+    # density (_HOTF_HEADROOM) to BOTH probes so their absolute O2/N2 counts —
+    # and so the mole-fraction rounding — are bit-identical (_o2f_combustion_q's
+    # own `density` defaults to 1.0 and multiplies internally by _HOTF_HEADROOM
+    # for its OWN uncontested-read headroom; passing the same value to
+    # _o2f_fire_q here lines the two up exactly).
     for X in _LOW_XS:
-        assert (_o2f_fire_q(X, x_amb=X_FULL)
+        assert (_o2f_fire_q(X, x_amb=X_FULL, density=_HOTF_HEADROOM)
                 == _o2f_combustion_q(X, x_full=X_FULL)), (
             f"laws differ at X={X} even with o2_frac_amb == o2_frac_full — "
             f"the degenerate backward-compatible case is broken")

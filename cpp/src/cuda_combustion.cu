@@ -95,6 +95,15 @@ __device__ __forceinline__ q16 clamp01_q_dev(q16 v) {
     return v;
 }
 
+// Integer clamp to [0, cap] (R3 hotf) — VERBATIM device port of
+// combustion.cpp's file-local clamp0cap_q (mirrors cuda_fire.cu's
+// clamp0cap_q_dev).
+__device__ __forceinline__ q16 clamp0cap_q_dev(q16 v, q16 cap) {
+    if (v < 0) return 0;
+    if (v > cap) return cap;
+    return v;
+}
+
 // P-R4: SATURATING integer atomic add — the device twin of raycaster.h's
 // `heat_saturating_add` (and a verbatim copy of cuda_raycaster.cu's
 // heat_atomic_sat_add). Needed here because several AIR cells can feed the same
@@ -142,7 +151,11 @@ __global__ void combustion_pass_a(
         // D1: the error-feedback demand accumulator, (max_claimants, h, w).
         // Single writer per air cell (this thread owns ALL of ITS slots), so no
         // atomics and no order dependence — see combustion.h.
-        int32_t* __restrict__ dem_acc) {
+        int32_t* __restrict__ dem_acc,
+        // R3 hot-burns-faster (docs/fire_3c_design_2026-09-01.md "Ruling R3"):
+        // the demand-side hotf ramp — VERBATIM the CPU combustion.cpp bake.
+        const int32_t* __restrict__ fire_T_ext_plane,
+        int32_t fire_T_ext_q, int64_t recip_T_span, int32_t hotf_cap_q) {
     constexpr int NSLOT = 2 * R * (R + 1);         // 4, 12, 24
     constexpr int NBALL = 2 * (R - 1) * R + 1;     // 1, 5, 13
     const int n = h * w;
@@ -274,6 +287,17 @@ __global__ void combustion_pass_a(
                 if (dem_acc) dem_acc[slot] = 0;
                 continue;
             }
+            // R3 hot-burns-faster (docs/fire_3c_design_2026-09-01.md "Ruling
+            // R3") — VERBATIM the CPU combustion.cpp per-claimant computation:
+            // hotf_i is THIS claimant's own ramp, T source = tsnap[i] (the
+            // SAME snapshot the ignition gate above just read). Folded into
+            // o2f_j via ONE narrowing mul_q16 BEFORE the wide product forms
+            // below — see the CPU site's comment for the overflow bound this
+            // keeps (o2f_hotf <= hotf_cap*FP_ONE, so P0 <= hotf_cap*2^48).
+            const q16 T_ext_i = fire_T_ext_plane ? fire_T_ext_plane[i] : fire_T_ext_q;
+            const q16 hotf_i = clamp0cap_q_dev(
+                recip_mul_dev(tsnap[i] - T_ext_i, recip_T_span), hotf_cap_q);
+            const q16 o2f_hotf = mul_q16(o2f_j, hotf_i);
             // P-O2b: the draw weight wq = W_hop[d] * w_path for this pair.
             // FP_ONE at R == 1 (d == 1, empty path) -> every use is identity.
             const q16 wq = mul_q16(c_w_hop[(int)sd[sl]], sw[sl]);
@@ -285,14 +309,14 @@ __global__ void combustion_pass_a(
                 // accumulator sees it (so a weighted claimant still draws its
                 // exact share in expectation instead of being truncated away).
                 const long long P0 = (long long)burn_cap_q
-                                   * (long long)fire[i] * (long long)o2f_j;
+                                   * (long long)fire[i] * (long long)o2f_hotf;
                 const long long P = apply_draw_weight_dev(P0, wq);
                 const long long wide = (long long)dem_acc[slot] + (P >> 1);
                 const long long draw = wide >> 31;
                 dem_acc[slot] = (int32_t)(wide - (draw << 31));
                 di = (q16)draw;
             } else {
-                di = mul_q16(mul_q16(mul_q16(burn_cap_q, fire[i]), o2f_j), wq);
+                di = mul_q16(mul_q16(mul_q16(burn_cap_q, fire[i]), o2f_hotf), wq);
             }
             cl_slot[n_cl] = sl;
             cl_src[n_cl] = i;
@@ -546,7 +570,9 @@ void combustion_step(
         const bool* thermal_solid, const int32_t* heat_inv_shift,
         int32_t* heat, float H_BED_M, int H_BED_SHIFT,
         int32_t* dem_acc,
-        int draw_r, const float* dyn_permeability, int max_claimants) {
+        int draw_r, const float* dyn_permeability, int max_claimants,
+        float fire_T_ext, float fire_T_span, float hotf_cap,
+        const int32_t* fire_T_ext_plane) {
 
     // --- Guards + load-time scalar precompute (VERBATIM of combustion.cpp:65-91,
     //     in double). A guarded early-return leaves ALL fields untouched (no
@@ -580,6 +606,11 @@ void combustion_step(
     // fixedpoint::quantize the CPU solver uses (the load-time boundary idiom).
     const q16 H_bed_m_q        = quantize((double)H_BED_M);
     const int H_bed_shift      = (H_BED_SHIFT > 0) ? H_BED_SHIFT : 0;
+    // R3 hot-burns-faster (docs/fire_3c_design_2026-09-01.md "Ruling R3"):
+    // the demand-side hotf load-time bake, VERBATIM the CPU combustion.cpp.
+    const q16 fire_T_ext_q     = quantize((double)fire_T_ext);
+    const int64_t recip_T_span = make_recip((double)fire_T_span);
+    const q16 hotf_cap_q       = quantize((double)hotf_cap);
 
     if (burn_cap_q <= 0) return;   // nothing burns this tick (fields untouched)
 
@@ -678,6 +709,16 @@ void combustion_step(
         cuda_check(cudaMalloc(&d_heat, nb), "malloc heat");
         cuda_check(cudaMemcpy(d_heat, heat, nb, cudaMemcpyHostToDevice), "H2D heat");
     }
+    // R3 hot-burns-faster: the PER-MATERIAL T_ext plane, the same nullable
+    // idiom as the thermal-mass pair above — allocated + uploaded only when
+    // the caller supplies one; nullptr -> the kernel takes the fire_T_ext_q
+    // scalar fallback (byte-identical to the pre-R3-plane law).
+    int32_t* d_T_ext_plane = nullptr;
+    if (fire_T_ext_plane) {
+        cuda_check(cudaMalloc(&d_T_ext_plane, nb), "malloc fire_T_ext_plane");
+        cuda_check(cudaMemcpy(d_T_ext_plane, fire_T_ext_plane, nb,
+                              cudaMemcpyHostToDevice), "H2D fire_T_ext_plane");
+    }
     // D1: the (max_claimants, h, w) demand accumulator — SYNCED state, IN/OUT.
     // P-O2b: the plane's DECLARED depth is max_claimants; only the first
     // n_slots rows are live (a deeper plane simply carries unused rows).
@@ -756,7 +797,8 @@ void combustion_step(
             d_flam, d_solid, d_vac, d_ign, d_alloc, d_perm,                    \
             h, w, burn_cap_q, o2_thresh_q,                                     \
             x_ext_q, recip_x_span, x_degenerate, X_N_FLOOR,                    \
-            d_heat, H_bed_m_q, H_bed_shift, d_dem_acc);                        \
+            d_heat, H_bed_m_q, H_bed_shift, d_dem_acc,                         \
+            d_T_ext_plane, fire_T_ext_q, recip_T_span, hotf_cap_q);            \
         cuda_check(cudaGetLastError(), "pass_a launch");                       \
         combustion_pass_b<RVAL><<<grid, block>>>(                              \
             d_whp, d_flam, d_solid, d_vac, d_alloc, d_dep, h, w, fuel_per_o2_q); \
@@ -825,6 +867,7 @@ void combustion_step(
     if (d_dem_acc) cudaFree(d_dem_acc);
     if (d_dep)   cudaFree(d_dep);
     if (d_perm)  cudaFree(d_perm);
+    if (d_T_ext_plane) cudaFree(d_T_ext_plane);
 }
 
 namespace {

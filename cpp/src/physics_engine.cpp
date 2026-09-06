@@ -190,6 +190,10 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             // R1 (docs/fire_3c_design_2026-09-01.md): the sustain span's
             // upper reference (ambient, not pure-O2) + the new enrichment cap.
             this->fire.params.o2_frac_amb, this->fire.params.o2f_cap,
+            // R3 (docs/fire_3c_design_2026-09-01.md "Ruling R3"): the hotf
+            // ramp's ceiling — read only by the GPU wall-burn kernel (P5),
+            // the sustain-side `hot` gate above is unaffected.
+            this->fire.params.hotf_cap,
             // FUEL-FRACTION AXIS: the per-tile 1/hp plane. The GPU kernel takes
             // it as an extra read-only plane and falls back to the fuel_ref
             // scalar above on nullptr, exactly like the CPU branch — the two
