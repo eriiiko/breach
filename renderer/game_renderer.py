@@ -35,6 +35,7 @@ from .gas_medium import GasMediumOverlay
 from .hover_readout import pack_hover_readout
 from .lighting import LightingPass
 from .speckle import SpeckleField
+from .static_props import DEFAULT_TILE_SIZE_M, StaticPropRenderer
 from .overlays import (
     FieldOverlay, FireOverlay, GlowOverlay, HeatFieldOverlay,
     WaterFieldOverlay,
@@ -385,11 +386,24 @@ class GameRenderer:
         # top-down Camera3D is framed to the world RT once. Per-unit animation
         # state lives inside UnitModelRenderer (keyed by unit.id) — never on Unit.
         self.unit_models = UnitModelRenderer()
-        self._unit_cam3d = None
+        # Props & vegetation arc #60 P3 (design §4.3 F2): the top-down
+        # Camera3D is built UNCONDITIONALLY now — it is the ONE camera every
+        # 3D-in-world-RT consumer shares (marines when toggled on, props
+        # whenever a level has any), no longer gated on use_3d_units. Only
+        # the (expensive) rigged-model LOAD stays behind the toggle.
+        self._world_cam3d = UnitModelRenderer.make_camera(
+            self.world.world_px_w, self.world.world_px_h)
         if self.cfg.use_3d_units:
             self.unit_models.load()
-            self._unit_cam3d = UnitModelRenderer.make_camera(
-                self.world.world_px_w, self.world.world_px_h)
+
+        # StaticPropRenderer (P2): model cache + prop shader + the shared
+        # 3D draw. Loaded unconditionally (cheap: one shader compile) —
+        # draw_props is a no-op with no props placed, so a prop-free level
+        # pays no per-frame cost (design §4.3: "zero cost otherwise").
+        self.prop_renderer = StaticPropRenderer(
+            cfg.world_px_per_tile, float(getattr(level_data, "tile_size_m",
+                                                 DEFAULT_TILE_SIZE_M)))
+        self.prop_renderer.load()
 
     # ---- per-frame physics->GPU upload ---------------------------------
 
@@ -583,6 +597,7 @@ class GameRenderer:
                       orders_phase2: Optional[dict] = None,
                       current_phase: int = 0,
                       doors: Sequence = (),
+                      props: Sequence = (),
                       overlay_fn=None) -> None:
         """Draw every world-space layer into the world RT.
 
@@ -599,6 +614,13 @@ class GameRenderer:
         ``orders_phase1`` / ``orders_phase2`` are ``{unit_id: [(x, y), ...]}``
         waypoint polylines per phase. ``current_phase`` (0 or 1) controls
         which is drawn brighter; the other is dimmed.
+
+        ``props`` (props & vegetation arc #60 P3, design §4.3) is a sequence
+        of :class:`renderer.static_props.PropPlacement` — build it from the
+        sim's loaded prop entities via
+        ``renderer.static_props.placements_from_entities(sim.entities, ...)``.
+        Drawn in the SAME shared 3D pass as the units (one batch flush, one
+        depth buffer); zero cost when empty.
         """
         self.world.begin(clear_color=(0, 0, 0, 0))
 
@@ -697,7 +719,7 @@ class GameRenderer:
         # 3. Units, waypoints, projectiles, effects, grid — drawn in world-pixel space
         if orders_phase1 or orders_phase2:
             self._draw_orders_world(orders_phase1, orders_phase2, current_phase)
-        self._draw_units_world(units_marines, units_zombies)
+        self._draw_units_world(units_marines, units_zombies, props)
         if projectiles:
             self._draw_projectiles_world(projectiles)
         # Visual effects (tracers, explosions, hit splats) — driven by
@@ -750,7 +772,8 @@ class GameRenderer:
                            float(self.world.world_px_h))
         rl.draw_texture_pro(field_tex, src, dst, rl.Vector2(0, 0), 0.0, rl.WHITE)
 
-    def _draw_units_world(self, marines: Sequence, zombies: Sequence) -> None:
+    def _draw_units_world(self, marines: Sequence, zombies: Sequence,
+                          props: Sequence = ()) -> None:
         wpt = self.world.world_px_per_tile
         lmap = self.lighting.light_map
         H, W = lmap.shape
@@ -797,16 +820,24 @@ class GameRenderer:
         # If the model failed to load, draw_units no-ops and we fall through to
         # the unchanged sprite path below. This branch is the ONLY change to the
         # unit-draw slot; with use_3d_units False it is never entered.
-        if self.cfg.use_3d_units and self.unit_models.ready \
-                and self._unit_cam3d is not None:
+        draw_units_3d = (self.cfg.use_3d_units and self.unit_models.ready
+                         and self._world_cam3d is not None)
+        # Props & vegetation arc #60 P3 (design §4.3 F23/F25): props join
+        # this SAME 3D pass — one shared begin_mode_3d, one batch flush, one
+        # depth buffer, so canopy/unit occlusion is consistent. Independent
+        # of draw_units_3d: a sprite-only session (use_3d_units False) still
+        # draws its props in 3D. Zero cost when the level has none.
+        draw_props_3d = bool(props) and self.prop_renderer.ready
+        if draw_units_3d or draw_props_3d:
             clock = time.perf_counter() - self._anim_t0
-            # P1: hand the marine shader the SAME baked light field the ship is
+            # P1: hand both consumers the SAME baked light field the ship is
             # lit by (light_tex_a/b) + world dims + the ship's ambient/gain/
-            # normal-y-sign (single source of truth = self.lighting), so the
-            # marine samples the field per-fragment and matches the ship beside
-            # it. light_rgb_fn stays as the flat CPU fallback (shader off / not
-            # compiled). normal_y_sign follows the ship's H-toggle.
-            from renderer.unit_model_renderer import LightFieldCtx
+            # normal-y-sign (single source of truth = self.lighting), so a
+            # marine or a prop samples the field per-fragment and matches
+            # the ship beside it. light_rgb_fn stays as the flat CPU
+            # fallback for marines (shader off / not compiled). normal_y_sign
+            # follows the ship's H-toggle.
+            from renderer.lit3d import LightFieldCtx
             light_ctx = LightFieldCtx(
                 tex_a=self.lighting.light_tex_a,
                 tex_b=self.lighting.light_tex_b,
@@ -816,15 +847,25 @@ class GameRenderer:
                 light_gain=self.lighting.light_gain,
                 normal_y_sign=(-1.0 if self.normal_y_flipped else 1.0),
             )
-            self.unit_models.draw_units(
-                marines, wpt, clock, self._unit_cam3d,
-                base_tint=(90, 200, 90, 255), light_rgb_fn=light_rgb_at,
-                light_ctx=light_ctx)
-            self.unit_models.draw_units(
-                zombies, wpt, clock, self._unit_cam3d,
-                base_tint=(210, 70, 70, 255), light_rgb_fn=light_rgb_at,
-                light_ctx=light_ctx)
-            return
+            rl.begin_mode_3d(self._world_cam3d)
+            try:
+                if draw_units_3d:
+                    self.unit_models.draw_units(
+                        marines, wpt, clock, self._world_cam3d,
+                        base_tint=(90, 200, 90, 255), light_rgb_fn=light_rgb_at,
+                        light_ctx=light_ctx, open_mode_3d=False)
+                    self.unit_models.draw_units(
+                        zombies, wpt, clock, self._world_cam3d,
+                        base_tint=(210, 70, 70, 255), light_rgb_fn=light_rgb_at,
+                        light_ctx=light_ctx, open_mode_3d=False)
+                if draw_props_3d:
+                    self.prop_renderer.draw_props(
+                        props, self._world_cam3d, ctx=light_ctx,
+                        open_mode_3d=False)
+            finally:
+                rl.end_mode_3d()
+            if draw_units_3d:
+                return
 
         for m in marines:
             if not getattr(m, "alive", True):
@@ -1435,15 +1476,15 @@ class GameRenderer:
         if rl.is_key_pressed(rl.KeyboardKey.KEY_V):
             self.show_water = not self.show_water
         # J: flip the Phase-0 3D marines live (render-only, feel gate). Lazy-load
-        # the rigged model + build the top-down camera the first time it turns
-        # on, so a sprite-only session never pays the load cost. If the model
-        # fails to load, draw_units no-ops and the sprite path stays in effect.
+        # the rigged model the first time it turns on, so a sprite-only session
+        # never pays the load cost. If the model fails to load, draw_units
+        # no-ops and the sprite path stays in effect. The shared top-down
+        # camera (self._world_cam3d) is built unconditionally at construction
+        # (props & vegetation #60 P3, design §4.3 F2) — nothing to build here.
         if rl.is_key_pressed(rl.KeyboardKey.KEY_M):
             self.cfg.use_3d_units = not self.cfg.use_3d_units
             if self.cfg.use_3d_units and not self.unit_models.ready:
                 self.unit_models.load()
-                self._unit_cam3d = UnitModelRenderer.make_camera(
-                    self.world.world_px_w, self.world.world_px_h)
         if rl.is_key_pressed(rl.KeyboardKey.KEY_B):
             self.lighting.toggle_bilinear()
         if rl.is_key_pressed(rl.KeyboardKey.KEY_H):
@@ -1583,6 +1624,7 @@ class GameRenderer:
     def shutdown(self) -> None:
         self.sprites.unload()
         self.unit_models.unload()
+        self.prop_renderer.unload()
         self.textures.unload_all()
         rl.unload_shader(self.lighting.shader)
         rl.unload_texture(self.lighting.light_tex_a)

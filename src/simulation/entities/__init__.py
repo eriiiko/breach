@@ -43,3 +43,4 @@ from simulation.entities import sensors as _sensors  # noqa: F401  (registers th
 from simulation.entities import actuators as _actuators  # noqa: F401  (registers the airlock_controller, B5)
 from simulation.entities import cover as _cover  # noqa: F401  (registers the cover class — onephase_wego §7)
 from simulation.entities import vents as _vents  # noqa: F401  (registers duct/vent, vent-system patch 1, issue #48)
+from simulation.entities import prop as _prop    # noqa: F401  (registers the prop class, props & vegetation arc #60 P3)

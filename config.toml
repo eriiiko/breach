@@ -1431,6 +1431,35 @@ blast_resist = 0.0     # copied from furniture
 burst_threshold = 2.0  # copied from furniture
 cover_exposure = 0.55  # copied from furniture
 
+# Props & vegetation arc #60 P3 (docs/architecture/graphics/props_and_
+# vegetation.md §4.1/§6.1.2, Erik's ruling 2026-09-07): the prop entity's
+# ONE material row. APPENDED — must stay the LAST material id (ids are
+# positional/contiguous; MaterialTable asserts it, and
+# tests/test_prop_entity.py pins MAT_FOLIAGE's actual id).
+#
+# Spec: fully walkable (no movement/wind/vision interaction beyond
+# burning), flammable, fuel/hp ~= 2x furniture's ACTUAL hp (furniture = 30
+# -> foliage = 60, the clean 2x Erik's "~60-70" range asked for).
+[materials.foliage]
+hp = 60               # == 2 * furniture.hp (30) — the P3 spec number
+flammable = true
+mobility = 1000       # fully walkable — no movement penalty (unlike furniture's 400)
+permeability = 1.0    # explicit: no wind interaction (a walk-through canopy)
+light_atten = [0.0, 0.0, 0.0]   # explicit: no vision interaction (see straight through)
+heat_atten = 0.0      # no interaction beyond burning
+conductivity = 0.0    # kappa 0 = no conduction face (like furniture/kindling);
+                       # fire eats it via flammability instead
+thermal_mass = 8       # wood-like (cellulosic), heats fast & locally (heat >> 3)
+cool_shift = 13        # THE dial: conductivity = 0 means the ambient decay is
+                       # foliage's ONE loss channel, same as furniture/wood/
+                       # kindling (all cellulosic materials move together).
+                       # e-fold 2^13/24 = 341.3 s.
+ignition_temp = 280.0  # wood-like, matches furniture/kindling
+wave_absorb = 0.0      # no interaction beyond burning (not a blast damper)
+blast_resist = 0.0
+burst_threshold = 0.0  # not a wall — no over-pressure relief relevance
+cover_exposure = 1.0   # no vision interaction -> no concealment, never a roll
+
 # =============================================================================
 # Weapons framework (mechanics/03 §4) — three data tables loaded by
 # simulation.weapons: [weapons.*] the delivery instrument, [ammo.*] the round,

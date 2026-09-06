@@ -277,13 +277,20 @@ class UnitModelRenderer:
                    camera3d: rl.Camera3D,
                    base_tint=(255, 255, 255, 255),
                    light_rgb_fn: Optional[Callable[[object], tuple]] = None,
-                   light_ctx: Optional[LightFieldCtx] = None) -> None:
+                   light_ctx: Optional[LightFieldCtx] = None,
+                   open_mode_3d: bool = True) -> None:
         """Draw every alive unit as an animated 3D body inside the world RT.
 
         Nests ``begin_mode_3d`` in the already-open world RT. Per unit: infer
         motion from the (x, y) delta / move_path, pick + advance its clip
         (CPU skin), draw a blob shadow then the model at the unit's world-px
         centre with yaw = facing and a footprint-matched scale.
+
+        ``open_mode_3d=False`` skips the ``begin_mode_3d``/``end_mode_3d``
+        pair (props & vegetation arc #60 P3, design §4.3 F23/F25): the
+        caller has already opened ONE shared 3D pass for units + props (one
+        batch flush, one shared depth buffer) — see
+        ``GameRenderer._draw_units_world``.
 
         ``clock`` is the renderer's wall-clock (self._anim_t0-relative is fine);
         the per-unit phase advances by the real delta so it animates through
@@ -334,7 +341,8 @@ class UnitModelRenderer:
                 normal_y_sign=light_ctx.normal_y_sign,
                 view_dir=(0.0, 1.0, 0.0))
 
-        rl.begin_mode_3d(camera3d)
+        if open_mode_3d:
+            rl.begin_mode_3d(camera3d)
         try:
             for u in units:
                 if not getattr(u, "alive", True):
@@ -342,7 +350,8 @@ class UnitModelRenderer:
                 self._draw_one(u, wpt, dt, clock, scale, shadow_r,
                                base_tint, light_rgb_fn)
         finally:
-            rl.end_mode_3d()
+            if open_mode_3d:
+                rl.end_mode_3d()
 
         self._prune(clock)
 
