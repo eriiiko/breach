@@ -417,24 +417,22 @@ p_expand_ref      = 1.30   # self-limiting plume saturation ceiling (atm + therm
 # ([physics.combustion] soot_yield) is now the ONE fire-smoke source. Unlike
 # the other TOMBSTONEs on this page, leaving this key set is a LOUD load-time
 # error (src/simulation/physics_runner.py), not a silent no-op.
-# R3 NEUTRAL-LANDING RE-SIZE (fire session #12, 2026-09-06, docs/fire_3c_design_
-# 2026-09-01.md "Ruling R3"): destruction becomes wall_damage*dt*I*hotf (see
-# hotf/hotf_cap above), and "neutral" means neutral AT A REFERENCE TEMPERATURE,
-# not byte-identical everywhere -- that is the whole point of the patch: below the
-# reference fires destroy SLOWER than today, above it FASTER. Reference = the
-# MEASURED post-R1 open-control plateau T = 452.9 game (docs/fire_3c_design_2026-
-# 09-01.md "AS LANDED"); furniture's OWN fire_T_ext_plane value is
-# ignition_temp[furniture](280) - ignition_to_ext_delta(200) = 80, fire_T_span =
-# 180 ->
-#     f_ref = (452.9 - 80) / 180 = 2.0717
-# Both R3 dials (this one + [physics.combustion].burn_rate) re-size by the SAME
-# f_ref, so destruction AND demand are both neutral at the identical reference:
-#     wall_damage  0.03  -> 0.03  / 2.0717 = 0.01448
-# (combustion's burn_rate carries the matching derivation, same f_ref, in
-# [physics.combustion].) Below f_ref's hotf value, burn is SLOWER than pre-R3;
-# above it, FASTER — verify with tests/_phase3a_driver.py, do not re-tune to
-# hit a feel target here (that is Phase 4's job).
-wall_damage       = 0.01448  # wall HP lost per second per unit intensity, TIMES hotf since R3 (KEPT — the burn-out brake). P-K0: promoted from TUNE (P-F1b 0.4->0.03); R3 re-size 0.03->0.01448 (f_ref=2.0717, see derivation above)
+# R3 re-size HISTORY: the first landing anchored "neutral" at the MEASURED
+# post-R1 plateau (f_ref = (452.9-80)/180 = 2.0717 -> 0.01448). MEASURED WRONG
+# (docs/fire_3c_r3_report_2026-09-06.md §4-5): fires are born at IGNITION
+# (hotf = Δ/span = 1.1111 there, for EVERY material — the Δ cancels), so the
+# plateau anchor starved young fires (54% O2 draw) and produced bright-but-cold.
+# R4+DURATION LANDING (Erik's rulings 2026-09-06, fire tuning lab session,
+# tools/fire_tuning_lab.py): this dial is now sized by the DURATION TARGET, not
+# by neutrality — Erik: the smallest fuel unit (a 30-hp furniture crate) burns
+# out in ~3 minutes and FUEL is the killer (hp -> 0 -> destroyed; the true
+# burn-away ending). Measured in the lab at H_bed x8 + burn_rate 0.018:
+#     wall_damage 0.36 -> FUEL burnout at 180-182 s, robust to ignition
+#     strength (margins 10-100) and to k_grow 0.382-0.5.
+# The fuel-vs-T-gate RACE needs the H_bed x8 deposit (H_BED_SHIFT 7): weaker
+# deposits heat-collapse with 20-50% char before hp can reach 0 (I_cap ∝ F, so
+# the drain fades with the fuel — measured across x1/x2/x4).
+wall_damage       = 0.36   # wall HP lost per second per unit intensity, TIMES hotf since R3 (the burn-out brake -> now the DURATION dial). History: 0.4 -> 0.03 (P-F1b) -> 0.01448 (R3, bad anchor) -> 0.36 (Erik's 3-min fuel-out ruling 2026-09-06, derivation above)
 
 # --- K2: fire as a sim-side heat ray source (proposal §1, fire_design_notes) --
 # Each burning tile (fire > 0) becomes a short-range heat `LightSource` cast IN
@@ -854,17 +852,18 @@ eos_t_amb_k = 293.0                    # EOS absolute-ambient (pressure calibrat
 # of k_grow/k_die/wall_damage/X_ext vs this rate happens AFTER this + the sky-
 # exchange build both merge (design §5) — burn_rate is FIXED at 0.02 for that
 # re-tune and "never touched again without a real reason" (Erik).
-# R3 NEUTRAL-LANDING RE-SIZE (fire session #12, 2026-09-06, docs/fire_3c_design_
-# 2026-09-01.md "Ruling R3"): demand becomes burn_cap*I*o2f_j*hotf*W_hop*w_path
-# (see [physics.fire]'s hotf/hotf_cap block — the SAME dial value, one enrichment/
-# overheat ceiling shared by both solvers). SAME f_ref as [physics.fire]'s
-# wall_damage re-size (the derivation lives there): f_ref = 2.0717 ->
-#     burn_rate  0.02  -> 0.02  / 2.0717 = 0.00965
-# "Neutral" means neutral AT THE REFERENCE TEMPERATURE (the post-R1 open-control
-# plateau, T=452.9 game) — below it, demand is SLOWER than pre-R3; above it,
-# FASTER. Verify with tests/_phase3a_driver.py; Phase 4 owns any further taste
-# pass, not this mechanical re-size.
-burn_rate         = 0.00965  # N_O2 per second per burn site AT I=1, o2f=1, hotf=1 (was 1.0, then 0.02; R3 re-size 0.02->0.00965, f_ref=2.0717)
+# R3 RE-ANCHOR (fire session #12, 2026-09-06, docs/fire_3c_r3_report_2026-09-06
+# .md §6.1, Erik-blessed): demand is burn_rate*I*o2f_j*hotf*W_hop*w_path (see
+# [physics.fire]'s hotf/hotf_cap block). The first landing divided by f_ref =
+# 2.0717 (hotf at the measured PLATEAU) — measured wrong: fires are BORN at
+# ignition, where hotf = Δ/span = 200/180 = 1.1111 for EVERY material (the
+# per-material Δ cancels: hotf(ign[mat]) = (ign - (ign - Δ))/span = Δ/span).
+# Anchoring there makes the bootstrap exactly pre-R3-neutral — no starved young
+# fire — while everything hotter burns faster (the whole point of R3):
+#     f_ref = Δ/span = 1.1111  ->  burn_rate 0.02 / 1.1111 = 0.018
+# If ignition_to_ext_delta or fire_T_span move, this dial re-sizes with them
+# (burn_rate = 0.02·span/Δ) or the anchor bug returns.
+burn_rate         = 0.018  # N_O2 per second per burn site AT I=1, o2f=1, hotf=1 (was 1.0 -> 0.02 -> 0.00965 (R3, bad plateau anchor) -> 0.018 (ignition re-anchor, f_ref=1.1111))
 o2_thresh_burn    = 0.03   # RETIRED as the burn gate (the o2f law is the throttle);
                             # kept ONLY as an epsilon skip-floor (O2 <= this -> the
                             # air cell is treated as fully starved and skipped)
@@ -976,8 +975,18 @@ max_claimants     = 12
 # but NOT Huggett-VALUED: thermal_mass = 8 already lumps the ~130x surface-layer
 # factor, so no J/mol anchor survives the conversion. Do not read it as an
 # enthalpy. RE-TUNE AT P-R5 alongside cool_shift.
+# H_BED x8 (Erik's fuel-out ruling 2026-09-06, fire tuning lab session — SHIFT
+# 4 -> 7, docs/fire_3c_r3_report_2026-09-06.md continues into the lab logs on
+# issue #12): the R2 fourth-root law said G1 needs deposit x~9, and the lab
+# measured the OTHER reason: fuel-governed death (hp -> 0 before the T-gate)
+# is only reachable at x8 — weaker deposits heat-collapse leaving 20-50% char
+# because I_cap ∝ F makes the drain fade with the fuel. x8 + burn_rate 0.018 +
+# wall_damage 0.36 = FUEL burnout at ~181 s for the 30-hp crate (Erik's ~3-min
+# target). Plateau at slow-burn dials measured 917 K (still short of G1's
+# 1300 K — Phase 4 continues; the shift ladder was measured x1/x2/x4/x8 =
+# 296(dead)/683/769/917 K, the fourth-root law visible end to end).
 H_BED_M           = 18125.0  # mantissa (< 32768, the Q16.16 range). P-K0: promoted from TUNE (P-F1b 25290->18125)
-H_BED_SHIFT       = 4        # H_bed = H_BED_M * 2^H_BED_SHIFT = 2.900e5. P-K0: promoted from TUNE (P-F1b 3->4)
+H_BED_SHIFT       = 7        # H_bed = H_BED_M * 2^H_BED_SHIFT = 2.320e6. History: 3 -> 4 (P-K0) -> 7 (x8, Erik's fuel-out + G1 ruling 2026-09-06, see block above)
 # Unit-side suffocation mechanics (LATER arc, design §5): defined here so the
 # constant lives at the right layer; nothing reads it yet.
 o2_thresh_breathe = 0.08   # min local N_O2 a unit needs to breathe (NOT wired yet)
