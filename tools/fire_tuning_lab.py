@@ -241,7 +241,7 @@ def _summary(m):
             cause = f"HEAT-COLLAPSE (T fell through T_ext={m['t_ext']:.0f}, fuel left {F_d*100:.0f}%)"
         else:
             cause = f"O2/other (F={F_d:.2f}, T={T_d:.0f} at death)"
-        death = f"DIED at {t[i_d]:.0f} s — {cause}"
+        death = f"DIED at {t[i_d]:.0f} s -- {cause}"
     else:
         death = f"alive at end of run ({t[-1]:.0f} s)"
     lines = [
