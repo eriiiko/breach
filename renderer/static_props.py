@@ -36,16 +36,33 @@ shared shader exactly once.
 VERTEX-COLOR ALPHA IS DATA, NOT OPACITY
 ---------------------------------------
 ``propgen`` bakes the wind-flutter weight (0 = rigid trunk … 1 = leaf tuft)
-into vertex-color alpha for the P4 sway shader. The fragment shader here
-therefore uses only ``.rgb`` and forces ``finalColor.a = 1.0`` — the world RT
-is blitted premultiplied, so a translucent prop would bleed the background
-through.
+into vertex-color alpha for the P4 sway shader. The VERTEX shader reads it as
+the flutter weight; the FRAGMENT shader uses only ``.rgb`` and forces
+``finalColor.a = 1.0`` — the world RT is blitted premultiplied, so a
+translucent prop would bleed the background through.
 
-Props & vegetation arc #60 P2. See
+WIND SWAY RIDES THE TAMED WIND (P4, design §4.3 F3)
+---------------------------------------------------
+``gmap.wind_x`` / ``wind_y`` are raw Q16.16 ``-grad(P)``: fire-spiked by orders
+of magnitude and NOT a velocity. Props never touch them. The wind a prop sways
+by is the product of ``renderer/gas_detail.py::tame_wind`` — THE render-side
+wind seam (smooth → direction → saturating speed in tiles/tick), the same
+tamed field the smoke-detail pass advects its noise with, so smoke and foliage
+in one room always agree about which way the air moves. This module only
+SAMPLES that array (one nearest-tile lookup per prop per frame) and turns it
+into a model-space displacement vector; it never smooths, never limits, never
+re-derives — a parallel taming here would be the bug.
+
+Everything is render-read-only: the tamed array is float (the dequantize-at-
+the-render-read convention), nothing is written back, and the sim never learns
+that a tree leaned.
+
+Props & vegetation arc #60 P2 (+ P4 sway). See
 ``docs/architecture/graphics/props_and_vegetation.md`` §2 / §4.3 / §7.
 """
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 from typing import Dict, Optional, Sequence, Tuple
@@ -53,6 +70,7 @@ from typing import Dict, Optional, Sequence, Tuple
 import numpy as np
 import pyray as rl
 
+from .gas_detail import WIND_V_REF
 from .lit3d import _COMMON_GLSL, _FIELD_SAMPLE_GLSL, LightFieldCtx, make_camera
 from .propgen import GENERATORS
 
@@ -79,11 +97,67 @@ HEIGHT_BUCKET_M = 0.05
 # know their level pass its real ``tile_size_m``.
 DEFAULT_TILE_SIZE_M = 0.333
 
+# Direction the idle breeze blows when the room's tamed wind is (near) zero — a
+# sealed quiet room has no gradient at all, and perfectly frozen foliage reads
+# as a bug. UNIT vector in (world X, world Z) = (tile col, tile row) — it must
+# be exactly unit length, or the idle_wind dial would not mean what it says.
+_IDLE_WIND_DIR = (math.cos(math.radians(20.0)), math.sin(math.radians(20.0)))
+
+
+@dataclass(frozen=True)
+class SwaySettings:
+    """The P4 sway dials — ``[render.props]`` in config.toml, re-read every
+    frame so Ctrl+R (config hot-reload) retunes the motion live.
+
+    Erik owes this patch a TUNING PASS ("how much does the tree move"), so
+    every number that shapes the motion is here; none is baked into the GLSL.
+
+    * ``strength`` — master amplitude, as a FRACTION OF PROP HEIGHT: the crown
+      of a full-wind tree offsets by ``strength × height``. 0 disables sway
+      entirely (props draw rigid, and the per-prop wind lookup is skipped).
+    * ``flutter`` — leaf-tuft jitter amplitude as a fraction of the bend
+      displacement, weighted per-vertex by the baked flutter alpha.
+    * ``gust_speed`` / ``gust_depth`` — the slow envelope (rad/s, and how deep
+      it dips: ``(1-depth) … (1+depth)``).
+    * ``flutter_speed`` — rate multiplier on the high-frequency leaf jitter.
+    * ``idle_wind`` — floor on the wind fraction (0..1) so still air still
+      breathes. 0 = purely sim-driven (dead calm = motionless).
+    * ``wind_ref`` — the tamed speed (tiles/tick) that counts as FULL sway;
+      defaults to gas_detail's own saturation ceiling, which is the largest
+      value ``tame_wind`` can ever return.
+    """
+    strength: float = 0.06
+    flutter: float = 0.38
+    gust_speed: float = 1.15
+    gust_depth: float = 0.38
+    flutter_speed: float = 1.0
+    idle_wind: float = 0.15
+    wind_ref: float = WIND_V_REF
+
+    @classmethod
+    def from_config(cls, cfg) -> "SwaySettings":
+        """Build from ``[render.props]`` (getattr-guarded honest defaults, the
+        ``GasDetailPass.from_config`` precedent — a config file without the
+        section still gets the shipped feel)."""
+        render = getattr(cfg, "render", None)
+        pr = getattr(render, "props", None)
+        g = lambda name, default: float(getattr(pr, name, default))
+        return cls(
+            strength=g("sway_strength", 0.06),
+            flutter=g("flutter_strength", 0.38),
+            gust_speed=g("gust_speed", 1.15),
+            gust_depth=g("gust_depth", 0.38),
+            flutter_speed=g("flutter_speed", 1.0),
+            idle_wind=g("idle_wind", 0.15),
+            wind_ref=g("wind_ref", WIND_V_REF),
+        )
+
 
 PROP_VS = """#version 330
-// Static-prop vertex shader. No skinning, no sway (P4 adds the sway terms
-// here); we only lift the vertex to world space for the fragment's field
-// lookup and pass the baked vertex colour through.
+// Static-prop vertex shader. No skinning; the ONE animation is P4's WIND SWAY,
+// a pure vertex displacement in MODEL space (so it rides the placement's yaw +
+// scale like the rest of the mesh). We then lift the SWAYED vertex to world
+// space for the fragment's field lookup and pass the baked vertex colour on.
 in vec3 vertexPosition;
 in vec3 vertexNormal;
 in vec4 vertexColor;
@@ -92,16 +166,52 @@ uniform mat4 mvp;
 uniform mat4 matModel;    // auto-uploaded by DrawMesh (loc auto-populated)
 uniform mat4 matNormal;   // = transpose(inverse(matModel)), world-space normals
 
+// ---- P4 sway (design §4.3 "Sway (P4)"; ported from prototypes/prop_spike) --
+uniform float u_time;      // seconds on the SIM clock (replay-identical)
+uniform vec3  u_wind;      // MODEL-space crown displacement (mesh units)
+uniform float u_phase;     // per-prop desync so neighbours never move in step
+uniform float u_sway;      // 0 = rigid (pack models / dial off), 1 = sway
+uniform float u_height;    // mesh height in model units, for bend normalizing
+uniform float u_flutter;   // leaf-flutter amplitude (fraction of |u_wind|)
+uniform float u_gust_speed;  // rad/s of the slow gust envelope
+uniform float u_gust_depth;  // gust envelope depth (0 = steady, 1 = 0..2x)
+uniform float u_flutter_speed;  // rate multiplier for the high-frequency jitter
+
 out vec3 fragWorldPos;
 out vec3 fragWorldNormal;
 out vec4 fragColor;
 
 void main() {
-    fragWorldPos = (matModel * vec4(vertexPosition, 1.0)).xyz;
+    // Bend by height SQUARED: the trunk base is rigid, the crown carries the
+    // motion. Clamped a little above 1 so a canopy that overshoots the nominal
+    // height still bends smoothly instead of running away.
+    float hn = clamp(vertexPosition.y / max(u_height, 1e-4), 0.0, 1.3);
+    float bend = hn * hn;
+    float gust = (1.0 - u_gust_depth) + u_gust_depth * sin(u_time * u_gust_speed
+                                                           + u_phase);
+    vec3 disp = u_wind * (bend * gust);
+
+    // Leaf flutter: vertexColor.a is the baked flutter WEIGHT (0 rigid trunk ..
+    // 1 leaf tuft), scaled by how hard the wind blows, at a higher frequency.
+    float fl = vertexColor.a * length(u_wind);
+    float ft = u_time * u_flutter_speed;
+    disp += fl * u_flutter * vec3(
+        sin(ft * 6.1 + u_phase + vertexPosition.x * 3.1),
+        0.35 * sin(ft * 5.3 + vertexPosition.z * 2.7),
+        cos(ft * 5.6 + u_phase + vertexPosition.y * 2.9));
+
+    vec3 pos = vertexPosition + disp * u_sway;
+
+    // The light-field lookup follows the SWAYED position (a leaning crown reads
+    // the light where it actually is). Normals are NOT re-derived from the
+    // displacement — the bend is a few percent of the prop's height and the
+    // fragment shading is half-Lambert, so a re-derived normal would cost more
+    // than it shows.
+    fragWorldPos = (matModel * vec4(pos, 1.0)).xyz;
     fragWorldNormal = normalize((matNormal * vec4(vertexNormal, 0.0)).xyz);
-    // .a is the wind-flutter WEIGHT (P4 sway input), never opacity.
+    // .a is the wind-flutter WEIGHT (consumed above), never opacity.
     fragColor = vertexColor;
-    gl_Position = mvp * vec4(vertexPosition, 1.0);
+    gl_Position = mvp * vec4(pos, 1.0);
 }
 """
 
@@ -179,8 +289,13 @@ class PropPlacement:
     see ``lit3d.make_camera``). The remaining fields are exactly the generator
     parameters plus ``height_m``, and together they form the model cache key.
 
-    ``yaw_deg`` and ``tint`` are per-PLACEMENT (they cost no cache entry): two
-    props with the same look but different yaw share one model.
+    ``yaw_deg``, ``tint`` and ``sway`` are per-PLACEMENT (they cost no cache
+    entry): two props with the same look but different yaw share one model.
+
+    ``sway`` is the per-prop sway ENABLE (design §4.3: "Pack models draw with
+    ``u_sway = 0``") — 1.0 for generated vegetation, 0.0 for a rigid ``kind ==
+    "model"`` pack asset, whose geometry carries no flutter weights and whose
+    trunk is not authored at the origin.
     """
     x_wpx: float
     y_wpx: float
@@ -193,6 +308,7 @@ class PropPlacement:
     decor_density: float = 1.0
     yaw_deg: float = 0.0
     tint: Tuple[int, int, int, int] = (255, 255, 255, 255)
+    sway: float = 1.0
 
     def cache_key(self) -> tuple:
         """The look identity — everything the generator consumes, height
@@ -242,6 +358,10 @@ def placements_from_entities(entities, world_px_per_tile: float
             height_m=float(f.get("height_m", 2.2)),
             style=str(f.get("style", "smooth")),
             decor=str(f.get("decor", "")),
+            # Sway is for the GENERATED vegetation (its flutter weights are
+            # baked in vertex alpha); a `kind == "model"` pack asset draws
+            # rigid — design §4.3, "Pack models draw with u_sway = 0".
+            sway=0.0 if str(f.get("kind", "generated")) == "model" else 1.0,
         ))
     return out
 
@@ -314,6 +434,10 @@ class StaticPropRenderer:
         self.px_per_m = self.world_px_per_tile / max(self.tile_size_m, 1e-6)
 
         self._cache: Dict[tuple, _CachedModel] = {}
+        # P4 sway dials. Plain attribute (the GasDetailPass precedent): the
+        # caller re-assigns it from CFG every frame, which is what makes
+        # Ctrl+R a live tuning session.
+        self.sway = SwaySettings()
         self._shader = None
         self._locs: Dict[str, int] = {}
         self._default_shader_id = 0
@@ -341,7 +465,11 @@ class StaticPropRenderer:
                 return
             names = ["u_ambient", "u_light_gain", "u_light_z", "u_world_px",
                      "u_view_dir", "u_rim_strength", "u_rim_power",
-                     "u_srgb_decode"]
+                     "u_srgb_decode",
+                     # P4 sway
+                     "u_time", "u_wind", "u_phase", "u_sway", "u_height",
+                     "u_flutter", "u_gust_speed", "u_gust_depth",
+                     "u_flutter_speed"]
             self._locs = {n: rl.get_shader_location(shader, n) for n in names}
             self._shader = shader
             # Constant-per-run uniforms, set once.
@@ -480,10 +608,75 @@ class StaticPropRenderer:
                                     float(view_dir[2])]),
             rl.ShaderUniformDataType.SHADER_UNIFORM_VEC3)
 
+    # ------------------------------------------------------------------
+    # P4 sway: the tamed wind -> one model-space displacement per prop
+    # ------------------------------------------------------------------
+
+    def sample_wind(self, wind_field: Optional[np.ndarray],
+                    x_wpx: float, y_wpx: float) -> Tuple[float, float]:
+        """The ONE lookup: nearest tile of the TAMED wind array, clamped.
+
+        *wind_field* is ``(h, w, 2)`` tiles/tick from
+        ``renderer.gas_detail.tame_wind`` — never the raw ``gmap.wind_*``
+        planes. ``None`` (no sim wind available) reads as dead calm, which the
+        ``idle_wind`` dial then lifts off zero.
+        """
+        if wind_field is None:
+            return (0.0, 0.0)
+        h, w = wind_field.shape[0], wind_field.shape[1]
+        wpt = max(self.world_px_per_tile, 1e-6)
+        tx = min(max(int(x_wpx / wpt), 0), w - 1)
+        ty = min(max(int(y_wpx / wpt), 0), h - 1)
+        return (float(wind_field[ty, tx, 0]), float(wind_field[ty, tx, 1]))
+
+    def model_wind(self, p: PropPlacement, native_height: float,
+                   wind_field: Optional[np.ndarray]) -> Tuple[float, float]:
+        """Turn the tamed wind at *p*'s tile into the shader's ``u_wind``
+        (MODEL-space X,Z crown displacement, in mesh units).
+
+        Three steps, all of them dial-driven:
+          1. sample + normalize the tamed speed against ``wind_ref`` (which IS
+             ``tame_wind``'s saturation ceiling, so the fraction is 0..1) and
+             apply the ``idle_wind`` floor;
+          2. scale by ``strength × the mesh's own height`` — so sway is a
+             FRACTION OF THE PROP, and a shrub and a palm lean by the same
+             visual proportion;
+          3. rotate by ``-yaw_deg``: the displacement is applied before the
+             model matrix, so the wind must be expressed in the prop's own
+             frame or a yawed tree would bend the wrong way.
+        """
+        s = self.sway
+        wx, wy = self.sample_wind(wind_field, p.x_wpx, p.y_wpx)
+        mag = math.hypot(wx, wy)
+        if mag > 1e-12:
+            dx, dz = wx / mag, wy / mag
+        else:
+            dx, dz = _IDLE_WIND_DIR
+        frac = mag / max(s.wind_ref, 1e-9)
+        frac = min(max(frac, max(s.idle_wind, 0.0)), 1.5)
+        amp = s.strength * float(native_height) * frac
+        wx_w, wz_w = dx * amp, dz * amp
+        if p.yaw_deg:
+            a = math.radians(float(p.yaw_deg))
+            ca, sa = math.cos(a), math.sin(a)
+            # inverse of raylib's Y-rotation (x,z) -> (c*x - s*z, s*x + c*z)
+            return (ca * wx_w + sa * wz_w, -sa * wx_w + ca * wz_w)
+        return (wx_w, wz_w)
+
+    @staticmethod
+    def prop_phase(p: PropPlacement) -> float:
+        """Per-prop gust phase (radians) — deterministic in the placement, so
+        neighbours desync but a prop's motion is reproducible frame to frame
+        and run to run (no RNG, no per-prop state anywhere)."""
+        v = p.x_wpx * 0.0173 + p.y_wpx * 0.0291 + int(p.seed) * 1.7
+        return float(v % (2.0 * math.pi))
+
     def draw_props(self, props: Sequence[PropPlacement],
                    camera3d: rl.Camera3D,
                    ctx: Optional[LightFieldCtx] = None,
-                   open_mode_3d: bool = True) -> None:
+                   open_mode_3d: bool = True,
+                   time_s: float = 0.0,
+                   wind_field: Optional[np.ndarray] = None) -> None:
         """Draw every placement inside the ALREADY-OPEN world RT.
 
         Mirrors ``UnitModelRenderer.draw_units``: nests ``begin_mode_3d``
@@ -494,6 +687,12 @@ class StaticPropRenderer:
         ``open_mode_3d=False`` skips the ``begin_mode_3d`` / ``end_mode_3d``
         pair so P3 can draw props inside the UNITS' 3D pass (design §4.3
         F23/F25: one 3D pass, one batch flush, one shared depth buffer).
+
+        P4 sway: *time_s* is the animation clock — pass the SIM clock
+        (``sim_tick × sim_dt``), never wall time, so a replay renders the same
+        motion (the ``gas_detail`` crossfade precedent). *wind_field* is the
+        ``(h, w, 2)`` TAMED wind from ``gas_detail.tame_wind``; ``None`` means
+        dead calm (the ``idle_wind`` dial still breathes).
 
         No-op when the shader failed to compile or no light field is given —
         the ship draws exactly as it does today.
@@ -513,19 +712,46 @@ class StaticPropRenderer:
                 mat.maps[MM.MATERIAL_MAP_NORMAL].texture = ctx.tex_b
         self.set_frame_uniforms(ctx)
 
+        # Sway uniforms that are the same for every prop this frame (the dials
+        # + the clock); the per-prop ones (wind, phase, height, enable) are set
+        # in _draw_one. DrawMesh issues its own draw call per model, so a
+        # uniform changed between draws never leaks into the previous one.
+        s = self.sway
+        self._set_f("u_time", time_s)
+        self._set_f("u_flutter", s.flutter)
+        self._set_f("u_gust_speed", s.gust_speed)
+        self._set_f("u_gust_depth", s.gust_depth)
+        self._set_f("u_flutter_speed", s.flutter_speed)
+        sway_on = s.strength > 0.0
+
         if open_mode_3d:
             rl.begin_mode_3d(camera3d)
         try:
             for p in props:
-                self._draw_one(p, ctx)
+                self._draw_one(p, ctx, wind_field if sway_on else None,
+                               sway_on)
         finally:
             if open_mode_3d:
                 rl.end_mode_3d()
 
-    def _draw_one(self, p: PropPlacement, ctx: LightFieldCtx) -> None:
+    def _draw_one(self, p: PropPlacement, ctx: LightFieldCtx,
+                  wind_field: Optional[np.ndarray] = None,
+                  sway_on: bool = False) -> None:
         entry = self.get_model(p)
         if entry is None:
             return
+        # Sway: one wind lookup per prop per frame, in the prop's own frame.
+        # u_sway 0 (dial off, or a rigid pack model) draws exactly the P2 mesh.
+        if sway_on and p.sway > 0.0:
+            wx, wz = self.model_wind(p, entry.native_height, wind_field)
+            rl.set_shader_value(self._shader, self._locs["u_wind"],
+                                rl.ffi.new("float[3]", [wx, 0.0, wz]),
+                                rl.ShaderUniformDataType.SHADER_UNIFORM_VEC3)
+            self._set_f("u_phase", self.prop_phase(p))
+            self._set_f("u_height", entry.native_height)
+            self._set_f("u_sway", float(p.sway))
+        else:
+            self._set_f("u_sway", 0.0)
         # Scale contract: the mesh's TRUE bbox height becomes height_m metres
         # of world pixels. (The generator's `height` is a nominal authored
         # size — a canopy overshoots it — so normalizing on the measured bbox
@@ -551,6 +777,6 @@ class StaticPropRenderer:
                             rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
 
 
-__all__ = ["StaticPropRenderer", "PropPlacement", "build_model",
-           "placements_from_entities",
+__all__ = ["StaticPropRenderer", "PropPlacement", "SwaySettings",
+           "build_model", "placements_from_entities",
            "PROP_VS", "PROP_FS", "HEIGHT_BUCKET_M", "make_camera"]

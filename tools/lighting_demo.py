@@ -56,12 +56,19 @@ Props (props & vegetation arc #60 P2 — the HUMAN-TEST vehicle):
                      live with the 3 key. Hardcoded placements are fine HERE
                      (this is a bench instrument, not engine code); the real
                      loader→sim→renderer plumbing is arc #60 P3.
+    --no-demo-wind  P4: drop the DEMO-ONLY room breeze and sway the garden on
+                     the sim's own tamed wind alone (which in a sealed quiet
+                     room is ~0, i.e. only the idle_wind floor). Sway dials
+                     live in config.toml [render.props]; Ctrl+R retunes live.
 
 Headless flags (no human at the keyboard):
     --auto          render 120 frames then exit 0 (boot smoke test)
     --shot [PATH]   with --auto: save a screenshot of the last frame
                      (default lighting_demo_shot.png) — the way a headless
                      look-check is captured
+    --shot-frames N render N frames instead of 120 before the shot — two runs
+                     at different N capture two different sway phases, which is
+                     how the P4 motion is checked headlessly
     --perf [N]      B2 P5 perf pass: ignite the crate cluster, let the fire
                      develop, then measure N (default 300) rendered frames of
                      the NEW gas-medium path and again with legacy_smoke_on,
@@ -69,6 +76,7 @@ Headless flags (no human at the keyboard):
 """
 from __future__ import annotations
 
+import math
 import sys
 import time
 import tomllib
@@ -102,8 +110,10 @@ from renderer.fire_lights import FireLightSelector
 from renderer.frame_lights import (build_frame_light_sources,
                                     build_static_light_sources)
 from renderer.hover_readout import pack_hover_readout
+from renderer.gas_detail import WIND_V_REF, tame_wind
 from renderer.lit3d import LightFieldCtx, make_camera
-from renderer.static_props import PropPlacement, StaticPropRenderer
+from renderer.static_props import (PropPlacement, StaticPropRenderer,
+                                   SwaySettings)
 
 # ---------------------------------------------------------------------------
 # Preset file location
@@ -589,6 +599,43 @@ def build_demo_garden(level, gmap, world_px_per_tile: float
     return out, (ax, ay)
 
 
+def demo_breeze(t_s: float) -> tuple[float, float]:
+    """A DEMO-ONLY room breeze, in the TAMED wind's own units (tiles/tick).
+
+    NOT A SIM PRODUCT — nothing in the game reads this. The demo garden stands
+    in a quiet sealed room, where the real tamed wind is ~0 and the sway would
+    only show the ``idle_wind`` floor; this breeze gusts and slowly SWINGS ITS
+    DIRECTION so the P4 HUMAN-TEST can actually judge the motion (magnitude,
+    gust rhythm, does the canopy read as leaves or as jelly).
+
+    The real path (``main.py`` -> ``GameRenderer.compose_world``) samples the
+    sim's tamed wind and adds nothing. ``--no-demo-wind`` turns this off here
+    too, leaving the demo on the honest sim wind.
+
+    Bounded by ``WIND_V_REF`` — the same ceiling ``tame_wind`` saturates at —
+    so "full breeze" here means exactly "full sway" in the dials.
+    """
+    mag = WIND_V_REF * (0.50 + 0.35 * math.sin(t_s * 0.42)
+                        + 0.15 * math.sin(t_s * 1.31))
+    ang = 0.19 * t_s
+    return (mag * math.cos(ang), mag * math.sin(ang))
+
+
+def _parse_shot_frames(default: int) -> int:
+    """``--shot-frames N`` — how many frames ``--auto``/``--shot`` renders
+    before the screenshot. Two runs with different N give two frames at
+    different sway phases, which is how the P4 motion is verified headlessly."""
+    if "--shot-frames" not in sys.argv:
+        return default
+    i = sys.argv.index("--shot-frames")
+    if i + 1 < len(sys.argv):
+        try:
+            return max(1, int(sys.argv[i + 1]))
+        except ValueError:
+            pass
+    return default
+
+
 def _parse_shot_path() -> Optional[str]:
     """``--shot [PATH]`` — with --auto, screenshot the last rendered frame."""
     if "--shot" not in sys.argv:
@@ -974,6 +1021,10 @@ def main() -> None:
                                                  cfg.world_px_per_tile)
     prop_cam3d = make_camera(renderer.world.world_px_w,
                              renderer.world.world_px_h)
+    # P4: the demo's sway wind = the real tamed sim wind + a DEMO-ONLY breeze
+    # (see demo_breeze). --no-demo-wind drops the breeze and leaves the garden
+    # on the honest sim wind alone.
+    demo_wind_on = "--no-demo-wind" not in sys.argv
     if "--props" in sys.argv:
         # Park the 2D camera on the garden so it is on screen at frame 1
         # (this is the HUMAN-TEST vehicle; hunting for the trees is not part
@@ -996,6 +1047,12 @@ def main() -> None:
               f"cache warm in {(time.perf_counter() - t_gen):.2f} s "
               f"(anchor tile {garden_tile}, "
               f"{cfg.world_px_per_tile / level.tile_size_m:.1f} px/m)")
+        _sw = SwaySettings.from_config(CFG)
+        print(f"[lighting_demo] prop sway: strength={_sw.strength} "
+              f"flutter={_sw.flutter} idle_wind={_sw.idle_wind} "
+              f"(tune [render.props] + Ctrl+R); wind = tamed sim wind"
+              + (" + DEMO-ONLY breeze" if demo_wind_on
+                 else " only (--no-demo-wind)"))
 
     # ---- 4. Panel state ----
     state = PanelState()
@@ -1118,7 +1175,7 @@ def main() -> None:
     # injection). Mirrors test_main_smoke / align_level_art's --auto tails.
     shot_path = _parse_shot_path()
     auto = "--auto" in sys.argv or shot_path is not None
-    AUTO_FRAMES = 120
+    AUTO_FRAMES = _parse_shot_frames(120)
     frames = 0
 
     # Under --auto there is no cursor/keyboard to pour water, so seed a small
@@ -1472,9 +1529,22 @@ def main() -> None:
             # HUMAN-TEST condition. (P3 gives compose_world a real `props=`
             # keyword; this tool needs no engine change to exercise P2.)
             def _draw_props(_wpt: float) -> None:
+                # P4 sway. The wind is the TAMED product (gas_detail.tame_wind)
+                # — the same seam the real path uses, computed here from the
+                # demo's own live sim — plus, unless --no-demo-wind, the
+                # DEMO-ONLY room breeze so the garden actually moves in a
+                # sealed quiet room. Dials are re-read from CFG every frame:
+                # edit [render.props] and hit Ctrl+R to retune live.
+                t_sway = float(total_tick) * sim_time_per_tick
+                wind = tame_wind(sim.gmap.wind_x, sim.gmap.wind_y)
+                if demo_wind_on:
+                    bx, by = demo_breeze(t_sway)
+                    wind = wind + np.array([bx, by], dtype=np.float32)
+                prop_renderer.sway = SwaySettings.from_config(CFG)
                 prop_renderer.draw_props(
                     demo_garden, prop_cam3d,
-                    LightFieldCtx(
+                    time_s=t_sway, wind_field=wind,
+                    ctx=LightFieldCtx(
                         tex_a=renderer.lighting.light_tex_a,
                         tex_b=renderer.lighting.light_tex_b,
                         world_px_w=float(renderer.world.world_px_w),

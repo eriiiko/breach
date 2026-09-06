@@ -1159,6 +1159,30 @@ erode_strength = 0.6        # low-density erosion depth
 warp_px = 3.0               # sampling-UV domain warp
 dither_on = true
 
+[render.props]
+# 3D props & vegetation — WIND SWAY (arc #60 P4, design §4.3 "Sway (P4)").
+# Read EVERY FRAME by renderer/static_props.py (via SwaySettings.from_config),
+# so Ctrl+R retunes the motion live: this section is the whole tuning surface
+# for "how much does the tree move". Render-only; no sim, no digest, no golden.
+#
+# The wind a prop sways by is the TAMED wind (renderer/gas_detail.py::tame_wind,
+# the same product the smoke detail pass advects with) — never the raw fire-
+# spiked -grad(P) planes.
+sway_strength = 0.06     # MASTER. Crown offset at full wind, as a fraction of
+                         # the prop's height (0.06 = a 2.4 m tree's crown leans
+                         # ~14 cm). 0 = sway off entirely (props draw rigid).
+flutter_strength = 0.38  # leaf-tuft jitter, as a fraction of the bend
+                         # displacement, weighted by the baked flutter alpha
+                         # (0 = the canopy bends as one solid mass)
+gust_speed = 1.15        # rad/s of the slow gust envelope (~0.18 Hz)
+gust_depth = 0.38        # envelope depth: bend scales (1-d)..(1+d) over a gust
+flutter_speed = 1.0      # rate multiplier on the high-frequency leaf jitter
+idle_wind = 0.15         # floor on the wind fraction (0..1) so a dead-calm
+                         # sealed room still breathes. 0 = purely sim-driven.
+wind_ref = 0.08          # tamed speed (tiles/tick) that counts as FULL sway;
+                         # = gas_detail's saturation ceiling (its largest
+                         # possible output), so the fraction lands in 0..1
+
 [render.speckle]
 mode = "soot"               # "off" | "noise" | "soot"  (A/B in studio)
 amp = 0.25
