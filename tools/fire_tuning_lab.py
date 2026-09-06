@@ -59,6 +59,13 @@ RUN_TAG = "fire_lab"           # output filename stem (tests/_fire_lab/<tag>.png
 # material/map finding, not a lab artifact; needs its own ruling.
 IGNITE_TILES = [(46, 8)]
 
+# Extra heat above the material's ignition point at seed time (game units).
+# 0.0 = the engine-faithful bootstrap: the exact state a tile has the tick
+# its temperature crosses ignition_temp (T = ignition, I = ignition_seed).
+# Raise it to ask "what if ignition delivered more of a heat punch?" — e.g.
+# 100-200 to ride out the young fire's cold-start sag.
+IGNITE_T_MARGIN = 0.0
+
 DIALS = {
     # --- intensity ODE (the I ramp: TEMPO / SIZE / death wall) -------------
     "physics.fire.k_grow":            0.5,      # TEMPO — logistic growth gain (1/s)
@@ -154,7 +161,8 @@ def _run_inner(sim_seconds):
     # mirror rule concerns GAS cells; these are wood).
     for (ix, iy) in IGNITE_TILES:
         t_ext_i = int(gmap.fire_T_ext_plane[iy, ix]) / FP_ONE
-        gmap.temperature[iy, ix] = fire_fixed.quantize_scalar(t_ext_i + delta)
+        gmap.temperature[iy, ix] = fire_fixed.quantize_scalar(
+            t_ext_i + delta + IGNITE_T_MARGIN)
         gmap.fire[iy, ix] = fire_fixed.quantize_scalar(seed_i)
 
     t_ext_probe = int(gmap.fire_T_ext_plane[py, px]) / FP_ONE
@@ -283,7 +291,7 @@ def plot(m):
     # 4 — oxygen
     ax = axes[3]
     ax.plot(x, rec["x_local"], color="tab:green", lw=1.5, label="X local (flame)")
-    ax.plot(x, rec["x_room"], color="tab:olive", lw=1.2, label="X̄ room")
+    ax.plot(x, rec["x_room"], color="tab:olive", lw=1.2, label="X room mean")
     ax.axhline(m["x_ext"], color="tab:red", lw=0.8, ls="--", alpha=0.7)
     ax.axhline(m["x_amb"], color="tab:gray", lw=0.8, ls="--", alpha=0.7)
     ax.set_ylabel("O2 mole fraction")
@@ -294,8 +302,9 @@ def plot(m):
     items = [f"{k.split('.')[-1]}={v}" for k, v in DIALS.items()]
     dial_txt = "\n".join("   ".join(items[i:i + 5])
                          for i in range(0, len(items), 5))
-    fig.suptitle(f"fire_tuning_lab — level={LEVEL}, probe {IGNITE_TILES[0]}, "
-                 f"{t[-1]:.0f} s\n{dial_txt}", fontsize=8)
+    margin = f", ignite +{IGNITE_T_MARGIN:g}" if IGNITE_T_MARGIN else ""
+    fig.suptitle(f"fire_tuning_lab — level={LEVEL}, probe {IGNITE_TILES[0]}"
+                 f"{margin}, {t[-1]:.0f} s\n{dial_txt}", fontsize=8)
     return fig
 
 
