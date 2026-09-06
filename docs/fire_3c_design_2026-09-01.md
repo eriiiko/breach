@@ -58,22 +58,69 @@ lands at X ≈ 0.131 under this scaling — the config comment's own claim
   measured plateau to 3 decimals (the config's formulas are TRUE again).
 - Suite 2330 green CPU-only (`-k "not cuda"`), 3 known reds only.
 
-## (pending) R3 — hot-burns-faster (next sitting's design item)
+## Ruling R3 (Erik, 2026-09-06): hot-burns-faster — LOCKED
 
-Erik's saturation catch: `hot` clamps at 1 above ~573 K, so extra heat
-buys zero extra burn rate today. Design inputs on record (2026-09-02):
-- It IS a positive feedback (hot → burns faster → more deposit → hotter)
-  and **Erik wants the cap to be O2 deprivation, structurally** — sealed:
-  reservoir caps then kills it; open: supply RATE caps it
-  (ventilation-limited burning, the real-fire regime).
-- Implementation sketch to evaluate first: put the T-factor on the
-  **DEMAND side** (O2 drawn ∝ I·o2f·f(T)), not on the deposit — deposit
-  is already ∝ O2 claimed, so the feedback must pass through the O2
-  supply to express itself: Erik's cap falls out structurally, and
-  contested-split handles neighbouring fires competing for air. A
-  per-tick numeric ceiling on f(T) still needed for Q16/dt stability.
-- Interacts with G3: faster burn when hot ⇒ faster fuel drain ⇒
-  fuel-governed death gets closer on its own.
+Erik's saturation catch: `hot` clamps at 1, so above ~T_ext+span extra
+heat buys ZERO extra burn rate today. R3 makes burn rate temperature-
+dependent, with **O2 deprivation as the structural cap** (Erik): sealed →
+the reservoir caps then kills it; open → the supply RATE caps it
+(ventilation-limited burning, the real-fire regime).
+
+**The law (shape B — "extended hot", Erik's ruling):**
+```
+hotf(T) = clamp( (T − fire_T_ext[mat]) / fire_T_span , 0 , hotf_cap )
+hotf_cap = 10.0                      (NEW dial, pairs with R1's o2f_cap)
+```
+`hot` (clamped at 1) STAYS the sustain gate in the I-ODE; `hotf` is the
+same ramp allowed to keep climbing, read only by the two rate sites below.
+
+**WHY the linear shape, not Arrhenius** (the load-bearing argument): R2
+established losses ∝ T⁴ (radiation 99.6%). A LINEAR hotf can never
+outrun T⁴, so an equilibrium always exists — the system is self-limiting
+BY CONSTRUCTION and Erik's O2 cap is a second, gameplay-flavoured ceiling
+on an already-stable system. An exponential (Arrhenius) hotf eventually
+beats T⁴, making stability depend on O2 running out first — fragile
+exactly where oxygen is generous (breach airflow, enriched rooms).
+Arrhenius is the more "correct" chemistry; it is the wrong numerics here.
+
+**Two application sites (both, per Erik's ruling 3):**
+1. **Demand** (`combustion.cpp`): `demand_k = burn_cap·I_k·o2f_j·hotf_k·
+   W_hop·w_path` — in the PINNED left-fold order, Q16, overflow-checked
+   (the fold gains a factor ≤ 10). T source = `Tsnap` (pass-entry
+   snapshot — preserves "a source can't heat AND ignite the same tick").
+   Fuel DRAIN needs no separate term: `fuel_cost ∝ O2 drawn` already.
+2. **Destruction** (`fire_simulation.cpp`): `wall_damage·dt·I` becomes
+   `wall_damage·dt·I·hotf`. (The never-destroys invariant is unaffected —
+   it governs the combustion drain path, which still floors at
+   FUEL_FLOOR; destruction remains this one site.)
+
+**Neutral landing (Erik's ruling 1) — BOTH dials re-size, same factor.**
+Reference = the measured post-R1 open-control plateau T = 452.9 game;
+furniture `fire_T_ext` = 280−200 = 80, `fire_T_span` = 180 →
+`f_ref = (452.9−80)/180 = 2.0717`. Therefore:
+```
+burn_rate    0.02  → 0.00965      (0.02  / 2.0717)
+wall_damage  0.03  → 0.01448      (0.03  / 2.0717)
+```
+⚠ **"Neutral" means neutral AT THE REFERENCE TEMPERATURE, not
+byte-identical everywhere** — that is the whole point of the patch:
+below the reference fires burn SLOWER than today, above it FASTER. Two
+predicted side effects to MEASURE, not assume:
+- **G2 ramp may lengthen** (the ramp phase runs cooler than the reference
+  → hotf < f_ref → less deposit early). 3a measured 80.3 s; if it leaves
+  the 30–120 s window, that is a Phase-4 dial matter, not a design fault.
+- Burnout time at reference ≈ unchanged; hotter fires burn out faster
+  (G3's direction — with hotf_cap=10 a saturated fire destroys ~4.8×
+  faster than today).
+
+**Verification bench (the gate)**: rerun `_phase3a_driver.py --b1` both
+legs + the M1 reference. Expect (a) open-control plateau ≈ preserved
+(the re-size's job — fourth-root fixed point is self-consistent since
+deposit at T_ref is unchanged); (b) **sealed infinite-fuel X_death moves
+DOWN from 0.166 toward 0.13** — the feedback now fights the cold-collapse
+by drawing harder as it heats, which is exactly the mechanism that should
+finally make the O2 wall the proximate death cause; (c) report M1 ramp +
+burnout deltas for the G2/G3 record.
 
 ## Session protocol (Erik, 2026-09-01): CPU-ONLY until session close
 
