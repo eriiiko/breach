@@ -206,6 +206,46 @@ def _bucket_height(height_m: float) -> float:
     return round(round(float(height_m) / HEIGHT_BUCKET_M) * HEIGHT_BUCKET_M, 4)
 
 
+def placements_from_entities(entities, world_px_per_tile: float
+                             ) -> list:
+    """Build one :class:`PropPlacement` per ``class_name == "prop"`` entity —
+    the loader->sim->renderer hand-off (props & vegetation design §4.3).
+
+    Reads entities DUCK-TYPED (``class_name``/``fields``) rather than
+    importing ``simulation.entities.prop`` — this module stays renderer-only
+    (no ``simulation`` import), matching ``propgen.py``'s contract. Footprint
+    fields (``x``/``y``/``stamp_tiles``) are synced entity state; the look
+    fields (``generator``/``seed``/``palette``/``height_m``/``style``/
+    ``decor``) are the render-only art the prop's digest never sees (F10).
+    ``x``/``y`` are the trunk-tile anchor; the placement centres on the
+    footprint (``x + stamp_tiles/2``, ``y + stamp_tiles/2`` — v1
+    ``stamp_tiles == 1`` so this is just the trunk tile's centre).
+    """
+    out = []
+    for e in entities:
+        if getattr(e, "class_name", None) != "prop":
+            continue
+        f = e.fields
+        n = int(f.get("stamp_tiles", 1))
+        cx = float(f["x"]) + n / 2.0
+        cy = float(f["y"]) + n / 2.0
+        try:
+            seed = int(f.get("seed", "0"))
+        except (TypeError, ValueError):
+            seed = 0
+        out.append(PropPlacement(
+            x_wpx=cx * float(world_px_per_tile),
+            y_wpx=cy * float(world_px_per_tile),
+            generator=str(f.get("generator", "tree")),
+            seed=seed,
+            palette=str(f.get("palette", "green")),
+            height_m=float(f.get("height_m", 2.2)),
+            style=str(f.get("style", "smooth")),
+            decor=str(f.get("decor", "")),
+        ))
+    return out
+
+
 @dataclass
 class _CachedModel:
     """A cached uploaded model + the numbers the budget report needs."""
@@ -512,4 +552,5 @@ class StaticPropRenderer:
 
 
 __all__ = ["StaticPropRenderer", "PropPlacement", "build_model",
+           "placements_from_entities",
            "PROP_VS", "PROP_FS", "HEIGHT_BUCKET_M", "make_camera"]

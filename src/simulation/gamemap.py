@@ -710,6 +710,17 @@ class GameMap:
             stamp_door_tiles(self.material, self.is_vacuum, level_data,
                              is_ambient=self.is_ambient)
 
+        # --- prop-entity load stamp (props & vegetation design §4.2) ------
+        # SAME slot, AFTER doors (props may not overlap a door span). Props
+        # never tick (zero per-tick logic) — this is the entire sim-side
+        # coupling: a load-time material stamp, then field seeding below
+        # runs against the post-stamp grid exactly like the door case.
+        if any(e.class_name == "prop"
+               for e in (getattr(level_data, "entities", None) or [])):
+            from simulation.prop_system import stamp_prop_tiles
+            stamp_prop_tiles(self.material, self.is_vacuum, level_data,
+                             is_ambient=self.is_ambient)
+
         self._update_caches()
 
         # --- ambient sponge grid (BC build, boundary_conditions_spec §3) ---

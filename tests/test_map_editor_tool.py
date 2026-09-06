@@ -46,8 +46,9 @@ import level_loader  # noqa: E402
 from level_loader import (SPACE_CODE, SpawnEntry,  # noqa: E402
                           materials_from_tilemap)
 from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_DOOR_CLOSED,  # noqa: E402
-                                  MAT_FURNITURE, MAT_GLASS, MAT_HULL,
-                                  MAT_KINDLING, MAT_STEEL, MAT_WOOD, MATERIAL_NAMES)
+                                  MAT_FOLIAGE, MAT_FURNITURE, MAT_GLASS,
+                                  MAT_HULL, MAT_KINDLING, MAT_STEEL, MAT_WOOD,
+                                  MATERIAL_NAMES)
 from make_tileset import build_tileset  # noqa: E402
 from bake_level_art import (bake_full, bake_region,  # noqa: E402
                             load_tileset)
@@ -89,6 +90,15 @@ def test_build_palette_matches_material_table():
     pal = build_palette()
     assert set(pal) == set(MATERIAL_NAMES) | {SPACE_CODE}
     for mid, name in MATERIAL_NAMES.items():
+        if mid == SPACE_CODE:
+            # Props & vegetation arc #60 P3: MAT_FOLIAGE (id 9) shares its
+            # numeric slot with SPACE_CODE (see test_level_format_v2.py's
+            # test_version_gate_and_space_code) -- a materials-table/CSV-
+            # vocabulary coincidence, not a bug. SPACE always wins the paint
+            # palette's slot 9 (asserted right below): foliage is
+            # deliberately unpaintable via CSV -- it is placed only via the
+            # entity stamp (props_and_vegetation.md §4.2 F6).
+            continue
         assert pal[mid][0] == name.upper()
     assert pal[SPACE_CODE][0] == "SPACE"
     # AIR is the absence of an overlay; everything else has an RGB fill.
@@ -396,8 +406,13 @@ def test_wall_family_codes_from_manifest(ts16):
     # (P-F4a — no curated tileset recipe yet, bench-only material) falls
     # into the SAME "new material, no recipe yet" fallback make_tileset.py
     # documents (its own singleton wall-mode group + a hash-derived colour) —
-    # exactly the door_closed precedent, not a new special case.
-    assert wall_family_codes(ts16) == WALL_CODES | {MAT_DOOR_CLOSED, MAT_KINDLING}
+    # exactly the door_closed precedent, not a new special case. foliage
+    # (props & vegetation arc #60 P3 — walkable, never CSV-painted, design
+    # §4.2 F6) has no curated recipe either and joins the same fallback; the
+    # dev-tileset's "wall" placeholder for it is cosmetic only (a prop's
+    # actual look comes from renderer/static_props.py, never this tileset).
+    assert wall_family_codes(ts16) == (
+        WALL_CODES | {MAT_DOOR_CLOSED, MAT_KINDLING, MAT_FOLIAGE})
 
 
 # ---------------------------------------------------------------------------

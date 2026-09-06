@@ -49,7 +49,19 @@ from migrate_tilemap_v2 import V1_TO_V2, migrate_grid, migrate_level  # noqa: E4
 def test_version_gate_and_space_code():
     assert SUPPORTED_VERSIONS == {"1", "2"}
     assert SPACE_CODE == 9                      # Erik, 2026-06-10
-    assert SPACE_CODE not in MATERIAL_NAMES     # reserved NON-material code
+    # Props & vegetation arc #60 P3: material ids are append-only/contiguous,
+    # and MAT_FOLIAGE is the table's 10th row -- id 9, the SAME integer as
+    # SPACE_CODE. Pure LABEL coincidence, never a behavior change:
+    # materials_from_tilemap intercepts SPACE_CODE as vacuum+air BEFORE any
+    # material lookup (see test_v2_literal_mapping_and_space below), so a v2
+    # CSV painting "9" is unconditionally space either way -- a foliage prop
+    # is placed only via the entity stamp, never via CSV
+    # (props_and_vegetation.md §4.2 F6), so it never reaches this code path.
+    # The old "SPACE_CODE reserved OUT of MATERIAL_NAMES" invariant held only
+    # because the table had not yet grown to fill its last legal slot; that
+    # headroom is now used up -- a hypothetical 11th material would need a
+    # SPACE_CODE migration (out of scope for #60; flagged to Erik).
+    assert MATERIAL_NAMES[SPACE_CODE] == "foliage"
 
 
 def test_v1_mapping_unchanged():
