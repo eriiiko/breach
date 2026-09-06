@@ -16,10 +16,15 @@
 
 ## 1. Branch state (facts)
 
-Branch `fire-12`. Pushed through `1ea4431` (the R3 ruling text).
-**`2b9f7f3` (the R3 implementation) is COMMITTED LOCALLY AND NOT PUSHED**
-— deliberately, pending the anchor decision in §6. Nothing else is
-uncommitted.
+Branch `fire-12`, fully pushed through `05719c7` (this report). Nothing
+uncommitted, nothing local-only.
+
+**`2b9f7f3` (the R3 implementation) IS on the branch and IS pushed — but
+it is UNDER REVIEW, not blessed**: §4/§5 show its calibration anchor is
+wrong. It was held back from push deliberately and then carried up by this
+report's push (it is an ancestor). Nothing merges to `main` from here
+without Erik's ruling on §6.1. Treat the branch tip as "R3 landed with a
+known-bad anchor, fix pending", not as a shipped state.
 
 Session sequence, all on `fire-12`:
 
