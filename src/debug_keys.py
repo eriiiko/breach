@@ -22,10 +22,19 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import pyray as rl
 
 from config import CFG
 from simulation.gases import GAS_NAMES, N_GASES
+
+
+# How far above a material's own ignition point the `I` key heats its patch
+# (game units == kelvin since G12). A DECISIVE igniter: measured survival is
+# marginal within ~+25 of ignition and reliable above it (fire session #12
+# lab sweeps, 2026-09-06) — a graze is what the future exposure-integral
+# ignition (G8) will model, not this dev key.
+DEBUG_IGNITE_MARGIN = 55.0
 
 
 class DebugKeyState:
@@ -92,10 +101,25 @@ def handle_debug_keys(sim, renderer, state, selected_unit_id=None) -> None:
 
 
 def debug_ignite(sim, renderer) -> None:
-    """Ignite a small patch at the tile under the cursor.
+    """Ignite a small patch at the tile under the cursor — as an IGNITER does.
 
-    Forces the patch flammable and sets ``fire`` directly so a fire starts
-    anywhere (no need for a wood wall) and lands immediately even while paused.
+    Forces the patch flammable so a fire starts anywhere (no need for a wood
+    wall), and lands immediately even while paused.
+
+    DELIVERS HEAT, not just a fire value (fire session #12, 2026-09-06): since
+    R3 the O2 demand rides ``hotf = (T - fire_T_ext)/fire_T_span``, so a tile
+    seeded at AMBIENT draws no oxygen, deposits no heat, and fades without ever
+    burning its fuel (measured: I -> 0 in 60 s, wall_hp untouched). That is the
+    physics — combustion needs the fuel bed at pyrolysis temperature — and the
+    in-engine ignition path already respects it (it only ever fires on a tile
+    whose temperature crossed its own ``ignition_temp``). This key predates R3
+    and was the last cold-start bootstrap left; it now heats the patch the way
+    the match/flamethrower that "pressed" it would, and seeds at
+    ``ignition_seed`` so the in-game curve is the one the tuning lab plots
+    (tools/fire_tuning_lab.py).
+
+    The temperature write is SOLID-TILES-ONLY: a gas cell's ``temperature`` is
+    the energy field's mirror and is never written directly (CLAUDE.md).
     """
     tile = renderer.mouse_to_tile()
     if tile is None:
@@ -109,7 +133,23 @@ def debug_ignite(sim, renderer) -> None:
     x0, x1 = max(0, fx - 1), min(w, fx + 2)
     gmap.flammable[y0:y1, x0:x1] = True
     from simulation import fire_fixed
-    gmap.fire[y0:y1, x0:x1] = fire_fixed.quantize_scalar(1.0)
+    seed_i = float(getattr(CFG.physics.fire, "ignition_seed", 0.12))
+    gmap.fire[y0:y1, x0:x1] = fire_fixed.quantize_scalar(seed_i)
+
+    # Heat the SOLID tiles of the patch to their own ignition point plus a
+    # margin that reliably takes (a decisive igniter, not a graze). Each
+    # material's ignition point is `fire_T_ext_plane + ignition_to_ext_delta`
+    # — the plane the solver itself subtracts, so this is per-material exact.
+    delta = float(getattr(CFG.physics.fire, "ignition_to_ext_delta", 200.0))
+    # `thermal_solid`, not `solid`: furniture is climbable/permeable (solid ==
+    # False) yet is a thermal solid whose temperature the solver owns — and
+    # thermal_solid is exactly the "not a gas cell" test the mirror rule wants.
+    solid = gmap.thermal_solid[y0:y1, x0:x1]
+    patch = gmap.temperature[y0:y1, x0:x1]
+    t_ext = fire_fixed.dequantize(gmap.fire_T_ext_plane[y0:y1, x0:x1])
+    hot_q = fire_fixed.quantize(t_ext + delta + DEBUG_IGNITE_MARGIN)
+    gmap.temperature[y0:y1, x0:x1] = np.where(solid & (hot_q > patch),
+                                              hot_q, patch).astype(patch.dtype)
 
 
 def debug_spawn_gas(sim, renderer, gas_id: int) -> None:
