@@ -35,10 +35,32 @@ seam (§4.3), so walls later extend a real seam, not a metaphor.
   (15–20 serrated fronds), decor (`flowers` / `fruit`), palettes
   `green`/`autumn`/`exotic`. Seeded → deterministic. Sway prototyped
   (vertex-shader bend-by-height² + alpha-weighted flutter).
-- **Tri budget honesty (critique F26):** at height 2.2 a tree is ~8–22k tris
-  non-indexed (~1–2.6 MB); generation is a Python loop, not yet measured.
-  MEASURE at P2; if it bites, index the mesh / instance the tufts. The doc's
-  earlier "2–8k" claim was optimistic.
+- **Tri budget — MEASURED at P2 (2026-09-07, this box, 16 seeds per row;
+  supersedes the F26 estimate):**
+
+  | generator (h) | tris (min–max, median) | VRAM/model | gen time (median) |
+  |---|---|---|---|
+  | `tree` smooth, no decor (2.2 m) | 6.4k–15.5k, **11.6k** | ~950 KiB | **314 ms** |
+  | `tree` smooth + flowers (2.2 m) | 6.6k–15.8k, 11.8k | ~970 KiB | 330 ms |
+  | `tree` smooth + fruit (2.2 m) | 6.5k–16.9k, 12.6k | ~1.04 MB | 358 ms |
+  | `tree` faceted (2.2 m) | 1.0k–2.3k, 1.7k | ~140 KiB | 61 ms |
+  | `palm` (2.8 m) | 0.6k–0.8k, 0.7k | ~55 KiB | **9 ms** |
+
+  VRAM is exact, not estimated: non-indexed position+normal+colour =
+  **84 bytes per triangle** (3 × (12 + 12 + 4)). The 12-look demo garden in
+  `tools/lighting_demo.py` totals **114k tris / 9.1 MB / 3.2 s** to generate —
+  i.e. a room's worth of distinct looks costs a **~3 s one-off load hitch**,
+  which is why `StaticPropRenderer`'s cache is warmed up front, not on first
+  draw. P2 already took the cheap 40% (hand-rolled `_cross3`/`_norm3` instead
+  of `np.cross`/`np.linalg.norm` in the per-tuft hot loop) and cut fruit to a
+  20-face primitive. If it still bites the ladder is unchanged: index the
+  mesh, instance the tufts, or cache generated arrays to disk.
+- **Crown size correction (P2):** at the shipped 48 world-px/tile and
+  0.333 m/tile (**144 px/m**), a 2.4 m tree is **~7 tiles tall with a ~5-tile
+  crown** — NOT the "~3×3 crown" §4.1 assumed (that would be a ~1 m shrub).
+  Nothing in the design breaks (the stamp is 1×1 and the crown is visual
+  only), but placement doctrine (#50) and the P5 dressed garden should plan
+  around ~8-tile spacing, which is what the demo garden uses.
 - **P0 top-down truth (critique F20/21 — the game camera is straight-down
   ORTHO, `unit_model_renderer.py:21-32`, with ACES and NO MSAA):** re-rendered
   through that geometry + tone-map in the spike. Result: Kenney trees read as
@@ -46,6 +68,12 @@ seam (§4.3), so walls later extend a real seam, not a metaphor.
   volumetric read; palms excel; a 20° mesh tilt adds a trunk hint (optional
   dial); decor reads as confetti from above (cluster larger before P2's feel
   gate). **Erik's verdict on the top-down look = the P0 gate.**
+  *Decor confetti FIXED at P2:* `_emit_decor` now places 0–2 CLUSTERS per
+  canopy blob (a tree has 8–27 blobs, so most carry none) of 3–7 elements
+  each, ~2× the old element size, blossoms hugging the surface and fruit
+  sitting proud of it at 1.12× the blob radius with a relaxed upward bias —
+  a strictly lower-biased fruit tree read *bare* from straight above.
+  Verified by re-rendering top-down and in perspective.
 - **Kenney Nature Kit** (CC0) at `assets/models/props/kenney_nature_kit/`
   (license file included) stays useful for NON-vegetation props. GOTCHA:
   raylib 5.5 cgltf rejects its 2020-era GLBs — use `OBJ format/` variants.
@@ -151,6 +179,11 @@ model         KIND_STR relative path under assets/models/props/ ;
   (string-equality test) + existing renderer tests. The top-down ortho camera
   moves here and is built UNCONDITIONALLY (F2) — no longer gated on
   `use_3d_units`.
+  **P2 addition:** the light-field SAMPLE/UNPACK block (world UV → `tex_a` /
+  `tex_b` → `incoming_rgb`, `light_dir_2d`, `L`, `N`) also moved into lit3d as
+  `_FIELD_SAMPLE_GLSL`, the prop shader being its second consumer. Same
+  discipline: the block is the marine's own text, placeholder-substituted, so
+  `MARINE_FS` stays byte-identical and the P1 gate still holds.
 - `renderer/propgen.py` — the promoted generator. **Public signature frozen at
   promotion (F27)**: generators normalized to height 1.0 with draw-time
   uniform scaling **if** tuft counts can be made scale-stable, else `height`
@@ -220,10 +253,10 @@ material table (one appended `foliage` row — never per-prop ifs), the
 
 **New systems (draft rules → project CLAUDE.md at implementation):**
 
-- *Lit-3D seam* — `renderer/lit3d.py`: THE shared light-field GLSL,
-  `LightFieldCtx`, and top-down `Camera3D` for everything 3D drawn in the
-  world RT (marines, props, future walls); a second copy of any of the three
-  is the bug.
+- *Lit-3D seam* — `renderer/lit3d.py`: THE shared light-field GLSL
+  (`_COMMON_GLSL` + `_FIELD_SAMPLE_GLSL`), `LightFieldCtx`, and top-down
+  `Camera3D` for everything 3D drawn in the world RT (marines, props, future
+  walls); a second copy of any of them is the bug.
 - *Prop generator* — `renderer/propgen.py`: THE procedural prop/vegetation
   geometry source. Pure numpy in, triangle arrays out; imports nothing from
   `simulation` and is never imported by it; seeded, render-only (Q16.16

@@ -63,6 +63,40 @@ vec3 aces_tonemap(vec3 x) {
 """
 
 
+# The light-field SAMPLE + unpack block, shared verbatim by every 3D consumer's
+# fragment shader (marine, props, future walls). It reads ``fragWorldPos`` /
+# ``fragWorldNormal`` and the uniforms ``u_world_px`` / ``u_light_z`` /
+# ``texture1`` (light_tex_a) / ``texture2`` (light_tex_b), and defines
+# ``world_uv``, ``tex_a``, ``tex_b``, ``incoming_rgb``, ``light_dir_2d``, the
+# 3D light direction ``L`` and the shading normal ``N`` — the contract every
+# consumer's main() continues from.
+#
+# The wording is the FIRST consumer's (the marine), preserved BYTE-FOR-BYTE:
+# ``tests/test_lit3d_extraction.py`` gates ``MARINE_FS`` against a pre-
+# refactor oracle, so this block may not be re-worded without re-baselining
+# that oracle. It applies verbatim to any Y-up mesh drawn in the world RT —
+# read "the marine" as "this mesh".
+_FIELD_SAMPLE_GLSL = """\
+    // Foot-plane world UV: sample the baked field at the marine's XZ ground
+    // position (height Y ignored). worldPos.x -> grid X, worldPos.z -> grid Y
+    // (y-down). NO v-flip: the marine reads the same texture the ship reads
+    // with the same world->grid mapping (numpy row 0 = grid y 0 = texture v 0
+    // = screen top under both the RT quad and the top-down 3D camera), so the
+    // marine's lighting is glued to the same tiles as the ship beside it.
+    vec2 world_uv = fragWorldPos.xz / u_world_px;
+
+    vec4 tex_a = texture(texture1, world_uv);
+    vec4 tex_b = texture(texture2, world_uv);
+    vec3 incoming_rgb = tex_a.rgb;              // total light colour at this tile
+    vec2 light_dir_2d = vec2(tex_a.a, tex_b.a); // signed, already unit-length
+
+    // 2D baked direction -> 3D in the marine's Y-up world frame: dir.x -> X,
+    // u_light_z -> Y (up), dir.y -> Z. Same vector the ship builds as
+    // vec3(dir, light_z), reordered because the ship's tangent frame is Z-up.
+    vec3 L = normalize(vec3(light_dir_2d.x, u_light_z, light_dir_2d.y));
+    vec3 N = normalize(fragWorldNormal);"""
+
+
 @dataclass
 class LightFieldCtx:
     """The ship's baked light field + scalars, handed to a 3D draw call so its
@@ -110,4 +144,5 @@ def make_camera(world_px_w: int, world_px_h: int) -> rl.Camera3D:
     return cam
 
 
-__all__ = ["LightFieldCtx", "make_camera", "_COMMON_GLSL", "_CAM_HEIGHT"]
+__all__ = ["LightFieldCtx", "make_camera", "_COMMON_GLSL",
+           "_FIELD_SAMPLE_GLSL", "_CAM_HEIGHT"]
