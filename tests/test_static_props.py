@@ -96,7 +96,10 @@ def test_sway_settings_defaults_are_a_gentle_visible_motion():
     # of percent reads as rubber. Guard the range Erik tunes inside.
     assert 0.0 < s.strength <= 0.15
     assert 0.0 <= s.flutter <= 1.0
-    assert 0.0 <= s.idle_wind <= 0.5
+    # P4r — ERIK'S SPACESHIP-STILLNESS RULING (2026-09-07): the shipped idle
+    # floor is EXACTLY 0. Sway must be a signal that the air is really moving;
+    # a decorative breeze in a sealed hull is the bug this ruling removed.
+    assert s.idle_wind == 0.0
     # wind_ref IS gas_detail's saturation ceiling: the largest value tame_wind
     # can return maps to full sway, so the normalized fraction lands in 0..1.
     from renderer.gas_detail import WIND_V_REF
@@ -111,6 +114,10 @@ def test_sway_settings_from_config_reads_the_render_props_section():
         float(CFG.render.props.sway_strength))
     assert s.flutter == pytest.approx(
         float(CFG.render.props.flutter_strength))
+    # The shipped config carries the ruling too — a config that dialled a
+    # breeze back in would make foliage lie about the atmosphere.
+    assert s.idle_wind == 0.0
+    assert float(CFG.render.props.idle_wind) == 0.0
     # A config with no [render.props] at all still yields the shipped feel.
     fallback = sp.SwaySettings.from_config(object())
     assert fallback == sp.SwaySettings()
@@ -155,13 +162,27 @@ def test_sway_amplitude_is_a_fraction_of_the_props_own_height():
     assert small[1] == pytest.approx(0.0)
 
 
-def test_idle_wind_keeps_still_air_breathing_and_zero_turns_it_off():
+def test_calm_air_is_dead_still_at_the_shipped_defaults():
+    """P4r: with the SHIPPED dials, a prop in dead-calm air does not move at
+    all — no breeze floor, no residual displacement (Erik's ruling)."""
+    import numpy as np
+    r = sp.StaticPropRenderer(48.0, 0.333)
+    r.sway = sp.SwaySettings()                     # shipped defaults
+    assert r.model_wind(_p(seed=1), 2.0, None) == pytest.approx((0.0, 0.0))
+    calm = np.zeros((2, 2, 2), dtype=np.float32)   # a real, all-zero wind field
+    assert r.model_wind(_p(seed=1), 2.0, calm) == pytest.approx((0.0, 0.0))
+    # ... and a real gust still moves it (sway is a signal, not a mute).
+    calm[0, 0] = (r.sway.wind_ref, 0.0)
+    assert r.model_wind(_p(seed=1), 2.0, calm)[0] > 0.0
+
+
+def test_idle_wind_dial_still_works_for_experiments():
+    """The floor dial survives the ruling (a planetside scene / debug look) —
+    it is only the SHIPPED DEFAULT that is 0."""
     r = sp.StaticPropRenderer(48.0, 0.333)
     r.sway = sp.SwaySettings(strength=0.06, idle_wind=0.2)
     wx, wz = r.model_wind(_p(seed=1), 2.0, None)   # dead calm
     assert (wx * wx + wz * wz) ** 0.5 == pytest.approx(0.06 * 2.0 * 0.2)
-    r.sway = sp.SwaySettings(strength=0.06, idle_wind=0.0)
-    assert r.model_wind(_p(seed=1), 2.0, None) == pytest.approx((0.0, 0.0))
 
 
 def test_wind_is_rotated_into_the_props_own_frame():

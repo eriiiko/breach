@@ -1177,8 +1177,13 @@ flutter_strength = 0.38  # leaf-tuft jitter, as a fraction of the bend
 gust_speed = 1.15        # rad/s of the slow gust envelope (~0.18 Hz)
 gust_depth = 0.38        # envelope depth: bend scales (1-d)..(1+d) over a gust
 flutter_speed = 1.0      # rate multiplier on the high-frequency leaf jitter
-idle_wind = 0.15         # floor on the wind fraction (0..1) so a dead-calm
-                         # sealed room still breathes. 0 = purely sim-driven.
+idle_wind = 0.0          # floor on the wind fraction (0..1). ERIK'S RULING
+                         # (2026-09-07): "we're in a spaceship — leaves should
+                         # be TOTALLY STILL unless there is actual wind", so the
+                         # shipped floor is 0 and sway is a SIGNAL of real
+                         # atmosphere motion (blast front, breach, vent), never
+                         # ambient decoration. The dial stays for experiments
+                         # (a planetside scene); >0 makes calm air breathe.
 wind_ref = 0.08          # tamed speed (tiles/tick) that counts as FULL sway;
                          # = gas_detail's saturation ceiling (its largest
                          # possible output), so the fraction lands in 0..1

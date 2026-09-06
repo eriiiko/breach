@@ -206,6 +206,15 @@ model         KIND_STR relative path under assets/models/props/ ;
   (F3) — `gas_detail.py::pack_dynamics`' smoothed/gain-limited product (reuse
   the helper or the texture), NEVER raw `gmap.wind_x/wind_y` (fire-spiked
   `-grad(P)`, unusable as velocity). Pack models draw with `u_sway = 0`.
+  **P4r (Erik's ruling 6.1/5, 2026-09-07): REAL WIND ONLY.** `idle_wind`
+  defaults to **0**, so calm air draws the rigid P2 mesh and any motion the
+  player sees is a true statement about the atmosphere. `lighting_demo`'s
+  `demo_breeze` (+ its `--no-demo-wind` opt-out) is deleted; the tool makes
+  wind the way the game does — a detonation (R + left click, or the headless
+  `--detonate-at-tick X,Y,F`), routed through the canonical payload executor
+  (`simulation.payloads.execute_payload` with `grenade_frag` →
+  `[payloads.frag_standard]`, writing through the sim's `edit_queue`), whose
+  pressure spike tames into a wind gust that bends the canopy and decays.
 - Aliasing risk (F21): no MSAA in the world RT; tuft crawl under camera motion
   is checked at P2's HUMAN-TEST; mitigation ladder if it bites: fewer/larger
   tufts at authored density → tuft fan geometry → (last) RT supersampling.
@@ -239,6 +248,17 @@ multi-tile entity machinery) · wind sway IN (§4.3) · 2.5D smoke unconstrained
    grayscale trunk, no leaves).
 4. **Stamp 1×1** (trunk tile, the only flammable); ~3×3 crown is visual only;
    `stamp_tiles` keeps 2×2+ a value change later.
+5. **Sway is a SIGNAL, never decoration** (2026-09-07, after the P4 HUMAN-TEST
+   — supersedes P4's "a sealed room should still breathe" choice): *"We're in
+   a spaceship — leaves should be TOTALLY STILL unless there is actual wind."*
+   Shipped `[render.props] idle_wind = 0` (the dial survives for planetside /
+   debug experiments); `lighting_demo.demo_breeze` and `--no-demo-wind`
+   deleted. Moving foliage now means the air is genuinely moving there — a
+   blast front, a hull breach, a running vent — which makes the canopy a free
+   *readout* of the atmosphere solver rather than ambient noise. Verified
+   headlessly at P4r: two frames of a calm garden are pixel-identical in the
+   canopy, and frames straddling a scripted detonation show the crowns
+   displace and then settle back.
 
 ## 7. Systems
 

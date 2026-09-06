@@ -57,6 +57,16 @@ Everything is render-read-only: the tamed array is float (the dequantize-at-
 the-render-read convention), nothing is written back, and the sim never learns
 that a tree leaned.
 
+SWAY IS A SIGNAL, NOT DECORATION (P4r, Erik's ruling 2026-09-07)
+---------------------------------------------------------------
+"We're in a spaceship — leaves should be TOTALLY STILL unless there is actual
+wind." The shipped ``idle_wind`` floor is therefore **0**: in calm air a prop
+draws exactly its rigid P2 mesh, and any motion the player sees means the
+atmosphere is really moving there (a blast front, a hull breach, a running
+vent). The floor dial survives for experiments; nothing in the shipped path
+adds a decorative breeze — the demo's own ``demo_breeze`` was DELETED at P4r
+for exactly that reason.
+
 Props & vegetation arc #60 P2 (+ P4 sway). See
 ``docs/architecture/graphics/props_and_vegetation.md`` §2 / §4.3 / §7.
 """
@@ -97,9 +107,11 @@ HEIGHT_BUCKET_M = 0.05
 # know their level pass its real ``tile_size_m``.
 DEFAULT_TILE_SIZE_M = 0.333
 
-# Direction the idle breeze blows when the room's tamed wind is (near) zero — a
-# sealed quiet room has no gradient at all, and perfectly frozen foliage reads
-# as a bug. UNIT vector in (world X, world Z) = (tile col, tile row) — it must
+# Direction the idle breeze blows when the room's tamed wind is (near) zero.
+# ERIK'S RULING (2026-09-07, P4r): the SHIPPED idle floor is 0 — "we're in a
+# spaceship, leaves should be TOTALLY STILL unless there is actual wind" — so
+# this direction is dormant unless someone dials `idle_wind` up for an
+# experiment. UNIT vector in (world X, world Z) = (tile col, tile row); it must
 # be exactly unit length, or the idle_wind dial would not mean what it says.
 _IDLE_WIND_DIR = (math.cos(math.radians(20.0)), math.sin(math.radians(20.0)))
 
@@ -120,8 +132,10 @@ class SwaySettings:
     * ``gust_speed`` / ``gust_depth`` — the slow envelope (rad/s, and how deep
       it dips: ``(1-depth) … (1+depth)``).
     * ``flutter_speed`` — rate multiplier on the high-frequency leaf jitter.
-    * ``idle_wind`` — floor on the wind fraction (0..1) so still air still
-      breathes. 0 = purely sim-driven (dead calm = motionless).
+    * ``idle_wind`` — floor on the wind fraction (0..1). **DEFAULT 0 (Erik's
+      spaceship-stillness ruling, 2026-09-07)**: sway is a signal that the air
+      is actually moving, never ambient decoration, so dead calm is dead still.
+      The dial is kept for experiments (a planetside scene, a debug look).
     * ``wind_ref`` — the tamed speed (tiles/tick) that counts as FULL sway;
       defaults to gas_detail's own saturation ceiling, which is the largest
       value ``tame_wind`` can ever return.
@@ -131,7 +145,7 @@ class SwaySettings:
     gust_speed: float = 1.15
     gust_depth: float = 0.38
     flutter_speed: float = 1.0
-    idle_wind: float = 0.15
+    idle_wind: float = 0.0
     wind_ref: float = WIND_V_REF
 
     @classmethod
@@ -148,7 +162,7 @@ class SwaySettings:
             gust_speed=g("gust_speed", 1.15),
             gust_depth=g("gust_depth", 0.38),
             flutter_speed=g("flutter_speed", 1.0),
-            idle_wind=g("idle_wind", 0.15),
+            idle_wind=g("idle_wind", 0.0),
             wind_ref=g("wind_ref", WIND_V_REF),
         )
 
@@ -618,8 +632,8 @@ class StaticPropRenderer:
 
         *wind_field* is ``(h, w, 2)`` tiles/tick from
         ``renderer.gas_detail.tame_wind`` — never the raw ``gmap.wind_*``
-        planes. ``None`` (no sim wind available) reads as dead calm, which the
-        ``idle_wind`` dial then lifts off zero.
+        planes. ``None`` (no sim wind available) reads as dead calm, which at
+        the shipped ``idle_wind = 0`` means NO sway at all.
         """
         if wind_field is None:
             return (0.0, 0.0)
@@ -637,7 +651,7 @@ class StaticPropRenderer:
         Three steps, all of them dial-driven:
           1. sample + normalize the tamed speed against ``wind_ref`` (which IS
              ``tame_wind``'s saturation ceiling, so the fraction is 0..1) and
-             apply the ``idle_wind`` floor;
+             apply the ``idle_wind`` floor (0 by ruling — calm air, no motion);
           2. scale by ``strength × the mesh's own height`` — so sway is a
              FRACTION OF THE PROP, and a shrub and a palm lean by the same
              visual proportion;
@@ -692,7 +706,8 @@ class StaticPropRenderer:
         (``sim_tick × sim_dt``), never wall time, so a replay renders the same
         motion (the ``gas_detail`` crossfade precedent). *wind_field* is the
         ``(h, w, 2)`` TAMED wind from ``gas_detail.tame_wind``; ``None`` means
-        dead calm (the ``idle_wind`` dial still breathes).
+        dead calm — and at the shipped ``idle_wind = 0`` dead calm means the
+        props draw rigid (Erik's spaceship-stillness ruling).
 
         No-op when the shader failed to compile or no light field is given —
         the ship draws exactly as it does today.

@@ -15,8 +15,8 @@ printed at startup / drawn in the panel, tools/lighting_demo.py §keybinds):
     WASD / arrows  — pan camera
     Q / E / wheel  — zoom
     Space          — pause / resume sim
-    R              — toggle grenade-spawn mode (click to detonate)
-    Left click     — spawn grenade (when in spawn mode)
+    R              — arm DETONATE mode (then left-click detonates at cursor)
+    Left click     — detonate a frag grenade at the cursor tile (armed only)
     N / Shift+N    — explosion smoke noise down / up (live cloud-texture dial)
     U              — pour water under cursor (0.2 m per press)
     F / Shift+F    — flood the whole interior to ~0.6 m / drain all water
@@ -56,10 +56,15 @@ Props (props & vegetation arc #60 P2 — the HUMAN-TEST vehicle):
                      live with the 3 key. Hardcoded placements are fine HERE
                      (this is a bench instrument, not engine code); the real
                      loader→sim→renderer plumbing is arc #60 P3.
-    --no-demo-wind  P4: drop the DEMO-ONLY room breeze and sway the garden on
-                     the sim's own tamed wind alone (which in a sealed quiet
-                     room is ~0, i.e. only the idle_wind floor). Sway dials
-                     live in config.toml [render.props]; Ctrl+R retunes live.
+
+P4r sway (Erik's ruling 2026-09-07): the garden sways ONLY on the sim's own
+tamed wind. "We're in a spaceship — leaves should be TOTALLY STILL unless
+there is actual wind", so the DEMO-ONLY room breeze (``demo_breeze``, and its
+``--no-demo-wind`` opt-out) is DELETED and ``[render.props] idle_wind``
+defaults to 0. In a quiet sealed room the trees stand dead still; detonate a
+grenade next to them (R + left click) and the blast's pressure gradient bends
+them, then they settle back to stillness. Dials stay in config.toml
+[render.props]; Ctrl+R retunes live.
 
 Headless flags (no human at the keyboard):
     --auto          render 120 frames then exit 0 (boot smoke test)
@@ -69,6 +74,12 @@ Headless flags (no human at the keyboard):
     --shot-frames N render N frames instead of 120 before the shot — two runs
                      at different N capture two different sway phases, which is
                      how the P4 motion is checked headlessly
+    --detonate-at-tick X,Y,F
+                    DEMO-ONLY scripted detonation for headless verification
+                     (P4r): detonate the frag grenade at tile (X, Y) once, just
+                     before rendered frame F. X/Y may be RELATIVE to the garden
+                     anchor when written with a sign (e.g. "+2,-6,60"). Same
+                     canonical code path as the mouse click.
     --perf [N]      B2 P5 perf pass: ignite the crate cluster, let the fire
                      develop, then measure N (default 300) rendered frames of
                      the NEW gas-medium path and again with legacy_smoke_on,
@@ -76,7 +87,6 @@ Headless flags (no human at the keyboard):
 """
 from __future__ import annotations
 
-import math
 import sys
 import time
 import tomllib
@@ -100,17 +110,17 @@ from renderer import core as rcore
 from renderer.camera import Camera2D
 from renderer.game_renderer import RenderConfig, render_state_lines
 from simulation import Simulation
-from simulation import gas_fixed
 from simulation import atmosphere_fixed
 from simulation.unit import Unit
-from simulation.physics import apply_explosion, add_explosion_smoke
+from simulation.payloads import execute_payload
+from simulation.weapons import PayloadDef
 from simulation.gases import STEAM, SMOKE
 from level_lights import monotonic_total_tick
 from renderer.fire_lights import FireLightSelector
 from renderer.frame_lights import (build_frame_light_sources,
                                     build_static_light_sources)
 from renderer.hover_readout import pack_hover_readout
-from renderer.gas_detail import WIND_V_REF, tame_wind
+from renderer.gas_detail import tame_wind
 from renderer.lit3d import LightFieldCtx, make_camera
 from renderer.static_props import (PropPlacement, StaticPropRenderer,
                                    SwaySettings)
@@ -183,7 +193,16 @@ DEFAULTS = {
     "wall_damage": 200.0,
     "unit_damage": 60.0,
     "fuse_seconds": 0.0,
-    "smoke_amount": 0.3,  # default tuning baseline; 1.0 fills 2 rooms per nade
+    # smoke_amount: RETIRED as a live dial at P4r (2026-09-07) and its slider
+    # removed, but KEPT in the state dict + preset (de)serialisation so every
+    # saved lighting_presets.toml still round-trips. It drove a
+    # deposit-then-rescale block that had been DEAD since add_explosion_smoke
+    # moved onto the EditQueue: the block measured `gmap.smoke` before/after
+    # the call, but the call only ENQUEUES (the deposit lands at the flush),
+    # so the delta was always zero and the multiplier scaled nothing. The
+    # blast's cloud is now the frag_standard row's own deposit; its per-tile
+    # contrast is still live on `explosion_smoke_noise` below.
+    "smoke_amount": 0.3,
     # Per-tile contrast of the explosion smoke deposit (ch.05 §4). Drawn uniform
     # in [1 - noise, 1.0]: 0 = flat blob, 0.6 = old look, 0.85 = ragged holes
     # (config default), 1.0 = maximal contrast. Live dial Erik can nudge by eye
@@ -599,26 +618,12 @@ def build_demo_garden(level, gmap, world_px_per_tile: float
     return out, (ax, ay)
 
 
-def demo_breeze(t_s: float) -> tuple[float, float]:
-    """A DEMO-ONLY room breeze, in the TAMED wind's own units (tiles/tick).
-
-    NOT A SIM PRODUCT — nothing in the game reads this. The demo garden stands
-    in a quiet sealed room, where the real tamed wind is ~0 and the sway would
-    only show the ``idle_wind`` floor; this breeze gusts and slowly SWINGS ITS
-    DIRECTION so the P4 HUMAN-TEST can actually judge the motion (magnitude,
-    gust rhythm, does the canopy read as leaves or as jelly).
-
-    The real path (``main.py`` -> ``GameRenderer.compose_world``) samples the
-    sim's tamed wind and adds nothing. ``--no-demo-wind`` turns this off here
-    too, leaving the demo on the honest sim wind.
-
-    Bounded by ``WIND_V_REF`` — the same ceiling ``tame_wind`` saturates at —
-    so "full breeze" here means exactly "full sway" in the dials.
-    """
-    mag = WIND_V_REF * (0.50 + 0.35 * math.sin(t_s * 0.42)
-                        + 0.15 * math.sin(t_s * 1.31))
-    ang = 0.19 * t_s
-    return (mag * math.cos(ang), mag * math.sin(ang))
+# (P4r, 2026-09-07: ``demo_breeze`` DELETED. It faked a room breeze so the P4
+#  HUMAN-TEST had motion to judge in a sealed quiet room. Erik's ruling makes
+#  that exactly the wrong instrument: "we're in a spaceship — leaves should be
+#  TOTALLY STILL unless there is actual wind". The garden now sways on the
+#  sim's tamed wind alone, and the thing that MAKES wind in this tool is a
+#  detonation — see `detonate` below.)
 
 
 def _parse_shot_frames(default: int) -> int:
@@ -644,6 +649,114 @@ def _parse_shot_path() -> Optional[str]:
     if i + 1 < len(sys.argv) and not sys.argv[i + 1].startswith("--"):
         return sys.argv[i + 1]
     return "lighting_demo_shot.png"
+
+
+# ---------------------------------------------------------------------------
+# Detonation — the CANONICAL path (arc #60 P4r)
+# ---------------------------------------------------------------------------
+# R arms detonate-mode; a left click then detonates a frag grenade at the
+# cursor tile. The blast is what MAKES wind in this tool now that the fake
+# demo breeze is gone: apply_explosion's wave/atmosphere edits spike the
+# pressure gradient, gas_detail.tame_wind turns that spike into the tamed
+# velocity field, and the garden bends on it (then settles back to stillness).
+#
+# CANONICAL PATH (CLAUDE.md: "payloads.py + physics.py::apply_explosion is the
+# one entry for gameplay events perturbing fields"). Pre-P4r this tool
+# hand-sequenced `apply_explosion` from panel sliders, bypassing the payload
+# executor — so the blast carried no unit damage, no ignite/gas columns, and
+# its ExplosionEvent was a hand-rolled renderer dict. It now runs
+# `execute_payload` with the FRAG GRENADE ROW resolved exactly as the sim's own
+# fuse-out site resolves it (Simulation._update_projectiles:
+# `weapons_tables.payload_for_ammo(proj.ammo_name)` -> grenade_frag ->
+# [payloads.frag_standard]), writing through `sim.edit_queue` / `sim.units` /
+# `sim.rng` — the FieldEdit seam, not the fields.
+DEMO_GRENADE_AMMO = "grenade_frag"      # -> [payloads.frag_standard]
+
+
+def demo_payload(sim, state):
+    """The row the demo detonates: the canonical frag-grenade payload, with
+    the panel's blast sliders applied as TOOL-SIDE OVERRIDES.
+
+    The numbers come FROM the table (`[payloads.frag_standard]` — the sliders
+    are initialised from it at startup, see main()), so nothing here invents a
+    blast; the overrides exist because this is Erik's blast-tuning instrument
+    and radius/pressure/wall-damage are exactly what he drags. Every other
+    column (gas, ignite, heat, the two smoke booleans) is passed through
+    untouched, so a future column added to the row reaches the demo for free.
+    """
+    base = sim.weapons_tables.payload_for_ammo(DEMO_GRENADE_AMMO)
+    return PayloadDef(
+        name=f"{base.name}@demo",
+        radius=int(max(1, state.get("blast_radius"))),
+        pressure=float(state.get("blast_pressure")),
+        wall_damage=int(state.get("wall_damage")),
+        unit_damage=int(state.get("unit_damage")),
+        gas_species=base.gas_species, gas_amount=base.gas_amount,
+        gas_radius=base.gas_radius,
+        ignite_radius=base.ignite_radius,
+        ignite_intensity=base.ignite_intensity,
+        clear_smoke=base.clear_smoke,
+        emit_blast_smoke=base.emit_blast_smoke,
+        heat_amount=base.heat_amount, heat_radius=base.heat_radius,
+    )
+
+
+def detonate(sim, renderer, state, tile) -> bool:
+    """Detonate the demo grenade at *tile* through the payload executor.
+
+    Returns True when a detonation was issued. All field effects ride
+    ``sim.edit_queue`` (engine/13), so they LAND ON THE NEXT UNPAUSED TICK —
+    unlike the pre-P4r direct write, a detonation while the demo is paused
+    waits for Space. The ExplosionEvent the executor emits is fed straight to
+    ``renderer.consume_events`` (a LOCAL list, never ``sim.tick_events``:
+    that one is only cleared by ``sim.step()``, so a paused demo would
+    re-consume the same event every frame and stack rings forever).
+    """
+    if tile is None:
+        return False
+    tx, ty = tile
+    H, W = sim.gmap.material.shape
+    if not (0 <= tx < W and 0 <= ty < H):
+        return False
+    # The explosion-smoke NOISE dial: add_explosion_smoke documents a caller
+    # override on its `noise=` argument, but the executor (rightly) does not
+    # forward tool knobs — so the demo pushes the slider into the config key
+    # the function falls back to. Same tool-side live-tuning carve-out as the
+    # soot_yield write-back below (tools may write live tunables; the renderer
+    # never does); config.toml itself is untouched.
+    CFG.physics.explosion_smoke_noise = float(
+        state.get("explosion_smoke_noise"))
+    events: list = []
+    execute_payload(sim.gmap, sim.edit_queue, sim.units, ty, tx,
+                    demo_payload(sim, state), sim.rng, events=events,
+                    kind="grenade")
+    renderer.consume_events(events)
+    return True
+
+
+def _parse_detonate_at() -> Optional[tuple[int, int, int, bool, bool]]:
+    """``--detonate-at-tick X,Y,F`` — DEMO-ONLY scripted detonation (P4r).
+
+    Headless verification needs a blast at a known frame with no mouse: this
+    fires ONE detonation at tile (X, Y) just before rendered frame F, through
+    the same :func:`detonate` call the click uses. A signed X or Y (``+2``,
+    ``-6``) is read as an offset from the garden anchor, so the same command
+    line works on any level.
+
+    Returns ``(x, y, frame, x_is_relative, y_is_relative)`` or None.
+    """
+    if "--detonate-at-tick" not in sys.argv:
+        return None
+    i = sys.argv.index("--detonate-at-tick")
+    try:
+        raw = sys.argv[i + 1]
+        sx, sy, sf = raw.split(",")
+    except (IndexError, ValueError):
+        raise SystemExit("--detonate-at-tick wants X,Y,FRAME (e.g. "
+                         "'40,30,60' or '+2,-6,60' relative to the garden)")
+    rel_x = sx.strip()[0] in "+-"
+    rel_y = sy.strip()[0] in "+-"
+    return (int(sx), int(sy), max(0, int(sf)), rel_x, rel_y)
 
 
 # ---------------------------------------------------------------------------
@@ -994,8 +1107,9 @@ def main() -> None:
     print("[lighting_demo]   I=ignite  J=puff smoke  K=puff steam  "
           "C=toggle door  1=lamps  2=beacon  3=props (#60 P2)")
     print("[lighting_demo] KEYS -- demo-local (Space/R/N/U/F/P):")
-    print("[lighting_demo]   Space=pause/resume  R=grenade-spawn mode "
-          "(click=throw)  N/Shift+N=explosion-smoke noise")
+    print("[lighting_demo]   Space=pause/resume  R=DETONATE mode "
+          "(left click = frag grenade at cursor)  "
+          "N/Shift+N=explosion-smoke noise")
     print("[lighting_demo]   U=pour water  F/Shift+F=flood/drain interior  "
           "P/Shift+P=tilt ship +/-2 deg")
     print("[lighting_demo] KEYS -- shared render toggles (poll_toggles, "
@@ -1021,10 +1135,6 @@ def main() -> None:
                                                  cfg.world_px_per_tile)
     prop_cam3d = make_camera(renderer.world.world_px_w,
                              renderer.world.world_px_h)
-    # P4: the demo's sway wind = the real tamed sim wind + a DEMO-ONLY breeze
-    # (see demo_breeze). --no-demo-wind drops the breeze and leaves the garden
-    # on the honest sim wind alone.
-    demo_wind_on = "--no-demo-wind" not in sys.argv
     if "--props" in sys.argv:
         # Park the 2D camera on the garden so it is on screen at frame 1
         # (this is the HUMAN-TEST vehicle; hunting for the trees is not part
@@ -1050,9 +1160,9 @@ def main() -> None:
         _sw = SwaySettings.from_config(CFG)
         print(f"[lighting_demo] prop sway: strength={_sw.strength} "
               f"flutter={_sw.flutter} idle_wind={_sw.idle_wind} "
-              f"(tune [render.props] + Ctrl+R); wind = tamed sim wind"
-              + (" + DEMO-ONLY breeze" if demo_wind_on
-                 else " only (--no-demo-wind)"))
+              f"(tune [render.props] + Ctrl+R); wind = the TAMED SIM WIND "
+              f"ONLY (P4r ruling: still air = still leaves — detonate with "
+              f"R + left click to make wind)")
 
     # ---- 4. Panel state ----
     state = PanelState()
@@ -1159,6 +1269,25 @@ def main() -> None:
     _comb = getattr(getattr(CFG, "physics", None), "combustion", None)
     if _comb is not None:
         state.set("soot_yield", float(getattr(_comb, "soot_yield", 0.3)))
+    # Blast sliders open ON the canonical grenade row (P4r) — exactly the
+    # pattern the water / gas-medium / soot_yield mirrors above follow: the
+    # panel opens where the CONFIG sits, so the demo tunes AROUND
+    # [payloads.frag_standard] instead of inventing a blast. Like those
+    # mirrors, this runs after the preset load and therefore wins over a saved
+    # preset's stale copy (the shipped table is the truth; a number Erik likes
+    # becomes its own deliberate config commit, same as soot_yield).
+    # Pre-P4r the panel's own default radius was 6 vs the row's 5 — the demo's
+    # "grenade" was quietly NOT the game's grenade.
+    _frag = sim.weapons_tables.payload_for_ammo(DEMO_GRENADE_AMMO)
+    state.set("blast_radius", float(_frag.radius))
+    state.set("blast_pressure", float(_frag.pressure))
+    state.set("wall_damage", float(_frag.wall_damage))
+    state.set("unit_damage", float(_frag.unit_damage))
+    print(f"[lighting_demo] detonation: payload {_frag.name!r} "
+          f"(ammo {DEMO_GRENADE_AMMO!r}) via simulation.payloads."
+          f"execute_payload -- radius={_frag.radius} "
+          f"pressure={_frag.pressure} wall={_frag.wall_damage} "
+          f"unit={_frag.unit_damage}")
     # smoke_emission mirror REMOVED at P-S1 — [physics.fire] no longer
     # carries the key (a stale config now loud-errors at load instead).
 
@@ -1177,6 +1306,32 @@ def main() -> None:
     auto = "--auto" in sys.argv or shot_path is not None
     AUTO_FRAMES = _parse_shot_frames(120)
     frames = 0
+
+    # HEADLESS cursor (P4r): a fixed tile standing in for the mouse under
+    # --auto — the viewport centre, so the flashlight lands in shot and the
+    # hover readout prints the same text every run. None = use the real mouse.
+    auto_cursor = None
+    if auto:
+        auto_cursor = (
+            renderer.camera.pos_tile_x
+            + (map_px_w / renderer.camera.zoom_px_per_tile) / 2.0,
+            renderer.camera.pos_tile_y
+            + (map_px_h / renderer.camera.zoom_px_per_tile) / 2.0,
+        )
+
+    # --detonate-at-tick X,Y,F (P4r): one scripted blast for headless
+    # verification, resolved here so a signed X/Y reads as an offset from the
+    # garden anchor. Consumed (set to None) when it fires.
+    _det = _parse_detonate_at()
+    det_script = None
+    if _det is not None:
+        dx, dy, dframe, rel_x, rel_y = _det
+        det_script = (garden_tile[0] + dx if rel_x else dx,
+                      garden_tile[1] + dy if rel_y else dy,
+                      dframe)
+        print(f"[lighting_demo] --detonate-at-tick: {DEMO_GRENADE_AMMO} at "
+              f"tile ({det_script[0]}, {det_script[1]}) before frame "
+              f"{det_script[2]}")
 
     # Under --auto there is no cursor/keyboard to pour water, so seed a small
     # puddle directly: this drives the water pass OFF its dormant early-out so
@@ -1214,7 +1369,7 @@ def main() -> None:
             K = rl.KeyboardKey
             if rl.is_key_pressed(K.KEY_SPACE):
                 state.paused = not state.paused
-            # R = toggle grenade-spawn mode. (G is taken by sRGB decode in
+            # R = arm/disarm DETONATE mode. (G is taken by sRGB decode in
             # poll_toggles; B2 P5 moved this OFF T — poll_toggles ALSO checks
             # KEY_T every frame for the temperature-overlay toggle, shared
             # with main.py, and is_key_pressed() fires for both checks on the
@@ -1304,71 +1459,49 @@ def main() -> None:
                 if sim.is_paused():
                     sim.set_paused(False)
 
-                tick_accum += dt
-                steps = 0
-                while tick_accum >= sim_dt and steps < max_catch_up:
+                if auto:
+                    # HEADLESS (--auto/--shot): EXACTLY ONE tick per rendered
+                    # frame, never the wall-clock accumulator. Frame N is then
+                    # always sim tick N, so two runs at the same --shot-frames
+                    # are comparable pixel-for-pixel — which is the whole basis
+                    # of the P4r stillness/blast verification (and of any
+                    # future headless look-check). The --perf pass already
+                    # steps this way for the same reason.
                     sim.step()
-                    tick_accum -= sim_dt
-                    steps += 1
+                else:
+                    tick_accum += dt
+                    steps = 0
+                    while tick_accum >= sim_dt and steps < max_catch_up:
+                        sim.step()
+                        tick_accum -= sim_dt
+                        steps += 1
 
-            # ---- Grenade spawn (left click when in spawn mode) ----
+            # ---- Detonate (left click while R-armed) ----
+            # ONE call into the canonical payload executor (see `detonate`):
+            # frag_standard through sim.edit_queue, blast damage on sim.units,
+            # and the executor's own ExplosionEvent driving the render ring.
+            # (P4r replaced the hand-sequenced apply_explosion + the dead
+            # smoke_amount rescale that stood here — see `detonate` and the
+            # smoke_amount note in DEFAULTS.)
             left_down = rl.is_mouse_button_down(rl.MouseButton.MOUSE_BUTTON_LEFT)
             if state.spawn_mode and left_down and not last_click_handled:
-                tile = renderer.mouse_to_tile()
-                if tile is not None:
-                    tx, ty = tile
-                    H, W = sim.gmap.material.shape
-                    if 0 <= tx < W and 0 <= ty < H:
-                        r = max(1, int(state.get("blast_radius")))
-                        apply_explosion(
-                            sim.gmap, sim.edit_queue, ty, tx, r,
-                            state.get("blast_pressure"),
-                            state.get("wall_damage"),
-                        )
-                        # smoke_amount scales the deposit
-                        smoke_mult = state.get("smoke_amount")
-                        if smoke_mult > 0:
-                            _tmp_rng = np.random.default_rng(None)
-                            # Deposit smoke: call add_explosion_smoke then scale
-                            # We don't have a scale param — deposit first, measure
-                            # delta, scale the delta. Simpler: just call N times or
-                            # clamp. Spec says "multiplier on add_explosion_smoke
-                            # deposit" — we interpret that as calling once and
-                            # scaling the newly deposited values.
-                            before = sim.gmap.smoke.copy()
-                            add_explosion_smoke(
-                                sim.gmap, sim.edit_queue, ty, tx, r,
-                                noise=state.get("explosion_smoke_noise"))
-                            delta = sim.gmap.smoke - before
-                            # Rescale: new = before + delta * mult (clamped to 1.0).
-                            # smoke is int32 Q16.16 (S2b) — rescale in REAL units
-                            # then requantize (round-half-away-from-zero, matching
-                            # the C++ boundary), so the float `smoke_mult` scaling
-                            # stays correct.
-                            # IN-PLACE write: the C++ atmosphere / raycaster
-                            # solvers hold a pointer to this specific numpy
-                            # array. Replacing the array via `gmap.smoke = ...`
-                            # leaves C++ pointing at the old memory and the
-                            # raycaster ends up sampling garbage on subsequent
-                            # frames — which manifests visually as the ship
-                            # going transparent after the first grenade.
-                            new_real = np.clip(
-                                gas_fixed.dequantize(before)
-                                + gas_fixed.dequantize(delta) * smoke_mult,
-                                0.0, 1.0)
-                            np.copyto(sim.gmap.smoke,
-                                      gas_fixed.quantize(new_real))
-                        # Queue a visual flash so the renderer draws the ring.
-                        renderer._effects.append({
-                            "kind": "explosion",
-                            "pos": (tx, ty),
-                            "radius": r,
-                            "t": 0.0,
-                            "life": 0.6,
-                        })
+                _det_tile = renderer.mouse_to_tile()
+                if detonate(sim, renderer, state, _det_tile):
+                    print(f"[demo] detonate {DEMO_GRENADE_AMMO} at tile "
+                          f"{_det_tile}"
+                          + ("  (PAUSED — lands on the next tick)"
+                             if state.paused else ""))
                 last_click_handled = True
             elif not left_down:
                 last_click_handled = False
+
+            # ---- Scripted detonation (--detonate-at-tick, headless) ----
+            if det_script is not None and frames == det_script[2]:
+                detonate(sim, renderer, state, (det_script[0], det_script[1]))
+                print(f"[demo] --detonate-at-tick: {DEMO_GRENADE_AMMO} at "
+                      f"tile ({det_script[0]}, {det_script[1]}) before frame "
+                      f"{frames}")
+                det_script = None
 
             # ---- Sync smoke overlay params (legacy A/B path) ----
             renderer.smoke_overlay.tint_r = int(state.get("smoke_tint_r"))
@@ -1491,7 +1624,13 @@ def main() -> None:
                                           fire_selector.max_lights)
 
             # ---- Mouse flashlight (caller-side, slider-driven) ----
-            mouse_f = renderer.mouse_to_tile_float()
+            # HEADLESS: there is no human aiming it, and the OS cursor's
+            # position INSIDE the window varies with where the window opened —
+            # which made two --shot runs of the same frame differ everywhere
+            # (the flashlight relights the whole room). Under --auto the
+            # "cursor" is therefore PINNED to the viewport centre, which is what
+            # makes headless shots comparable run to run.
+            mouse_f = auto_cursor if auto else renderer.mouse_to_tile_float()
             if mouse_f is not None:
                 src = bp.LightSource()
                 src.x = float(mouse_f[0])
@@ -1529,17 +1668,15 @@ def main() -> None:
             # HUMAN-TEST condition. (P3 gives compose_world a real `props=`
             # keyword; this tool needs no engine change to exercise P2.)
             def _draw_props(_wpt: float) -> None:
-                # P4 sway. The wind is the TAMED product (gas_detail.tame_wind)
-                # — the same seam the real path uses, computed here from the
-                # demo's own live sim — plus, unless --no-demo-wind, the
-                # DEMO-ONLY room breeze so the garden actually moves in a
-                # sealed quiet room. Dials are re-read from CFG every frame:
-                # edit [render.props] and hit Ctrl+R to retune live.
+                # P4r sway. The wind is the TAMED product
+                # (gas_detail.tame_wind) and NOTHING ELSE — the same seam the
+                # real path uses, computed here from the demo's own live sim.
+                # No demo breeze, no floor: still air, still leaves (Erik's
+                # spaceship ruling). Detonate (R + click) to make wind. Dials
+                # are re-read from CFG every frame: edit [render.props] and hit
+                # Ctrl+R to retune live.
                 t_sway = float(total_tick) * sim_time_per_tick
                 wind = tame_wind(sim.gmap.wind_x, sim.gmap.wind_y)
-                if demo_wind_on:
-                    bx, by = demo_breeze(t_sway)
-                    wind = wind + np.array([bx, by], dtype=np.float32)
                 prop_renderer.sway = SwaySettings.from_config(CFG)
                 prop_renderer.draw_props(
                     demo_garden, prop_cam3d,
@@ -1568,7 +1705,7 @@ def main() -> None:
             renderer.blit_world_to_screen()
 
             # ---- HUD ----
-            _draw_hud(renderer, sim.gmap, state, now)
+            _draw_hud(renderer, sim.gmap, state, now, cursor=auto_cursor)
 
             # ---- raygui panel ----
             _draw_panel(state, renderer, now)
@@ -1607,7 +1744,7 @@ def main() -> None:
 # ---------------------------------------------------------------------------
 
 def _draw_hud(renderer: GameRenderer, gmap, state: PanelState,
-              now: float) -> None:
+              now: float, cursor: Optional[tuple] = None) -> None:
     """Header + the hover-tile "microscope" readout (B2 P1), top-left.
 
     The readout — T in game units AND pseudo-Kelvin, fire intensity, material
@@ -1618,7 +1755,7 @@ def _draw_hud(renderer: GameRenderer, gmap, state: PanelState,
     [physics.temperature_scale]), so the readout and the emissive overlay
     agree.
     """
-    spawn_tag = " [SPAWN — click to detonate]" if state.spawn_mode else ""
+    spawn_tag = " [DETONATE ARMED — click a tile]" if state.spawn_mode else ""
     pause_tag = " [PAUSED]" if state.paused else ""
     lamp_tag = "" if state.lamps_on else "  lamps:OFF"
     beacon_tag = "" if state.beacon_on else "  beacon:OFF"
@@ -1626,7 +1763,9 @@ def _draw_hud(renderer: GameRenderer, gmap, state: PanelState,
     header = (f"BREACH Lighting Demo{spawn_tag}{pause_tag}{lamp_tag}"
               f"{beacon_tag}{prop_tag}")
 
-    mouse_f = renderer.mouse_to_tile_float()
+    # `cursor` overrides the real mouse (headless: the pinned viewport centre,
+    # so the readout text is identical run to run — see the flashlight block).
+    mouse_f = cursor if cursor is not None else renderer.mouse_to_tile_float()
     if mouse_f is None:
         lines = [header, "tile (-, -) — outside map"]
     else:
@@ -1793,14 +1932,17 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     y = _checkbox(state, "show_pressure", "Show pressure", x, y)
     y = _slider(state, "pressure_scale", "P scale", 0.5, 10.0, x, y)
 
-    # -- §4.6 Grenade tuning --
-    y = _section_header("Grenade [R=spawn mode]", x, y)
+    # -- §4.6 Grenade tuning (overrides on [payloads.frag_standard]) --
+    y = _section_header("Grenade [R=arm, click=det]", x, y)
     y = _slider(state, "blast_radius", "Radius", 1.0, 15.0, x, y)
     y = _slider(state, "blast_pressure", "Pressure", 1.0, 30.0, x, y)
     y = _slider(state, "wall_damage", "Wall dmg", 0.0, 1000.0, x, y)
-    # unit_damage stored but not applied in direct-spawn (no apply_blast_damage call)
+    # unit_damage IS applied as of P4r — the executor runs apply_blast_damage
+    # (the wave_p blast coupling row) like every other detonation site.
+    y = _slider(state, "unit_damage", "Unit dmg", 0.0, 200.0, x, y)
     y = _slider(state, "fuse_seconds", "Fuse (s)", 0.0, 5.0, x, y)
-    y = _slider(state, "smoke_amount", "Smoke mult", 0.0, 2.0, x, y)
+    # ("Smoke mult" slider removed at P4r — the dial was inert; see the
+    #  smoke_amount note in DEFAULTS. The cloud rides the payload row.)
     # Per-tile contrast of the deposited cloud (ch.05 §4). 0 = flat blob,
     # 0.85 = ragged holes (default), 1.0 = max. Also N / Shift+N keys.
     y = _slider(state, "explosion_smoke_noise", "Noise", 0.0, 1.0, x, y)
@@ -1858,7 +2000,7 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     rl.draw_text("I=ignite  J=smoke  K=steam  C=door  1=lamps  2=beacon",
                  x, y, 10, rl.Color(150, 205, 150, 255))
     y += 12
-    rl.draw_text("Space=pause R=spawn U=water F=flood P=tilt N=nz L=firelights",
+    rl.draw_text("Space=pause R=DETONATE U=water F=flood P=tilt N=nz L=lights",
                  x, y, 10, rl.Color(120, 120, 140, 255))
     y += 12
     rl.draw_text("WASD=pan Q/E=zoom G=sRGB V=water F9=legacy F10=speckle",
