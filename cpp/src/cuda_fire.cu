@@ -274,12 +274,12 @@ __global__ void fire_logistic(int32_t* __restrict__ fire,
 // host-side sort below).
 //
 // R3 hot-burns-faster (VERBATIM device port of the CPU destruction-loop patch,
-// fire_simulation.cpp): hotf is recomputed HERE (not threaded from P2) because
-// this kernel runs on every fire[i] > 0 tile, not just flammable ones — a
-// non-flammable "ghost" fire already pays wall_damage*dt*I unconditionally
-// (tests/_xarch_perfield_digest.py's P-R4 lineage note); hotf rides along on
-// that same unconditional term. Reuses P2's temperature/fire_T_ext_plane
-// device buffers and host-precomputed scalars — no new allocation.
+// fire_simulation.cpp): hotf is recomputed HERE (not threaded from P2) for
+// locality — the kernel reads the same planes anyway. Reuses P2's
+// temperature/fire_T_ext_plane device buffers and host-precomputed scalars —
+// no new allocation.
+// R4 (Erik's ruling 2026-09-06, VERBATIM twin of the CPU gate): depletion is
+// flammable-gated — fire may not destroy (or drain) non-flammable tiles.
 __global__ void fire_burn(int32_t* __restrict__ fire,
                           int32_t* __restrict__ wall_hp,
                           const int32_t* __restrict__ temperature,
@@ -295,7 +295,7 @@ __global__ void fire_burn(int32_t* __restrict__ fire,
                           int n) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
-        if (fire[i] > 0) {
+        if (fire[i] > 0 && flammable[i]) {
             const q16 T_ext_i = fire_T_ext_plane ? fire_T_ext_plane[i] : fire_T_ext_q;
             const q16 T_i = temp_is_identity
                 ? temperature[i]
@@ -307,7 +307,7 @@ __global__ void fire_burn(int32_t* __restrict__ fire,
             const int64_t wide = mul_wide(wd, fire[i]);     // * I (wide for round)
             const q16 dmg = narrow_round(wide);             // >= 0 (positive depletion)
             wall_hp[i] -= dmg;
-            if (wall_hp[i] <= 0 && flammable[i] && is_wall[i]) {
+            if (wall_hp[i] <= 0 && is_wall[i]) {   // flammable holds (loop gate)
                 const int slot = atomicAdd(d_counter, 1);   // grab a unique slot
                 d_destroyed_idx[slot] = i;                  // packed linear index
                 fire[i] = 0;

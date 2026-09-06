@@ -333,22 +333,24 @@ std::vector<std::pair<int, int>> FireSimulation::step(
     // wall_hp -= wall_damage * dt * fire[i] (all positive Q16.16). The depletion is
     // fractional (< 1 HP/tick) so wall_hp NEEDS the Q16.16 fraction. ROUND-TO-NEAREST
     // the depletion (an unbiased sink off the fuel store). wall_hp <= 0 -> destroyed.
+    //
+    // R4 (Erik's ruling 2026-09-06, docs/fire_3c_r3_report_2026-09-06.md §6.2):
+    // fire may not destroy non-flammable tiles — the DEPLETION is now flammable-
+    // gated like the destroy decision below it always was. Before R4 a
+    // non-flammable tile (incl. the canonical A/B scenario's air-tile "ghost"
+    // fire) quietly paid wall_damage*dt*I into hp it could never lose.
     std::vector<std::pair<int, int>> destroyed;
     for (int i = 0; i < n; ++i) {
-        if (fire[i] > 0) {
+        if (fire[i] > 0 && flammable[i]) {
             // R3 hot-burns-faster (fire session #12, docs/fire_3c_design_2026-
             // 09-01.md "Ruling R3"): destruction now rides `hotf` — the SAME
             // (T - T_ext)/T_span ramp as `hot` above, but capped at hotf_cap
             // instead of 1, so a saturated fire destroys its own fuel bed
             // FASTER, not just draws O2 faster (combustion.cpp's demand-side
             // twin reads the identical law). Recomputed HERE rather than
-            // threaded from the sustain loop above, because THIS loop is not
-            // flammable-gated — it runs on every fire[i] > 0 tile, including a
-            // non-flammable "ghost" fire (tests/_xarch_perfield_digest.py's
-            // P-R4 lineage note), which already pays wall_damage*dt*I
-            // unconditionally today; hotf simply rides along on the same
-            // unconditional term. `hot`'s clamp01_q gate above is UNCHANGED —
-            // this is a separate, uncapped-at-1 read of the identical ramp.
+            // threaded from the sustain loop above (locality — this loop reads
+            // the same planes anyway). `hot`'s clamp01_q gate above is
+            // UNCHANGED — this is a separate, uncapped-at-1 read of the ramp.
             const q16 T_ext_i = fire_T_ext_plane ? fire_T_ext_plane[i] : fire_T_ext_q;
             const q16 T_i = temp_is_identity
                 ? temperature[i]
@@ -360,7 +362,7 @@ std::vector<std::pair<int, int>> FireSimulation::step(
             const int64_t wide = fp::mul_wide(wd, fire[i]);     // * I (wide for round)
             const q16 dmg = fp::narrow_round(wide);             // >= 0 (positive depletion)
             wall_hp[i] -= dmg;
-            if (wall_hp[i] <= 0 && flammable[i] && is_wall[i]) {
+            if (wall_hp[i] <= 0 && is_wall[i]) {     // flammable[i] holds (loop gate)
                 destroyed.push_back({i / w, i % w});
                 fire[i] = 0;
             }
