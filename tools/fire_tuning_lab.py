@@ -39,7 +39,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "tools",
 # landing), so an untouched panel reproduces the shipped behaviour.
 
 LEVEL = "fire_tuning"
-SIM_SECONDS = 120.0            # 60-120 for growth-phase tuning; 1800 for the full arc
+SIM_SECONDS = 2400.0            # 60-120 for growth-phase tuning; 1800 for the full arc
 RUN_TAG = "fire_lab"           # output filename stem (tests/_fire_lab/<tag>.png/.csv)
 
 # What burns ((x, y) tiles; the FIRST tile is the PROBE the plots follow).
@@ -64,21 +64,27 @@ IGNITE_TILES = [(46, 8)]
 # its temperature crosses ignition_temp (T = ignition, I = ignition_seed).
 # Raise it to ask "what if ignition delivered more of a heat punch?" — e.g.
 # 100-200 to ride out the young fire's cold-start sag.
-IGNITE_T_MARGIN = 0.0
+IGNITE_T_MARGIN = 55.0
 
 DIALS = {
     # --- intensity ODE (the I ramp: TEMPO / SIZE / death wall) -------------
-    "physics.fire.k_grow":            0.5,      # TEMPO — logistic growth gain (1/s)
-    "physics.fire.k_die":             0.008,    # death wall when starved/cold (1/s)
+    "physics.fire.k_grow":            0.382,      # TEMPO — logistic growth gain (1/s)
+    "physics.fire.k_die":             0.007,    # death wall when starved/cold (1/s)
     "physics.fire.I_cap_per_avail":   0.95,     # SIZE — I_cap = c * avail * hot
 
     # --- hot-burns-faster, R3 (the hotf ramp + the two rate dials) ---------
     "physics.fire.hotf_cap":          10.0,     # ceiling on the uncapped hotf ramp
-    "physics.fire.wall_damage":       0.01448,  # fuel/hp drain rate  (R3 landing; re-anchor -> 0.027)
-    "physics.combustion.burn_rate":   0.00965,  # O2 demand rate      (R3 landing; re-anchor -> 0.018)
+    # NOTE these two rates re-size WITH delta (neutral-at-ignition anchor):
+    #   burn_rate = 0.02 * span/delta      wall_damage = 0.03 * span/delta
+    #   delta 200 -> 0.018 / 0.027    delta 150 -> 0.024 / 0.036
+    #   delta 120 -> 0.030 / 0.045    delta 100 -> 0.036 / 0.054
+    # If you move delta, move BOTH of these too, or young fires get a
+    # silently biased O2 draw (the exact R3 anchor bug in miniature).
+    "physics.fire.wall_damage":       0.045,    # fuel/hp drain rate  (re-anchored, delta 120)
+    "physics.combustion.burn_rate":   0.030,    # O2 demand rate      (re-anchored, delta 120)
 
     # --- knee geometry (shared by hot AND hotf; per-material foot) ---------
-    "physics.fire.ignition_to_ext_delta": 200.0,  # fire_T_ext[mat] = ignition[mat] - Δ
+    "physics.fire.ignition_to_ext_delta": 120.0,  # fire_T_ext[mat] = ignition[mat] - Δ — THE survival-edge dial (smaller Δ = death line closer to ignition = grazing ignitions die); co-move burn_rate/wall_damage above!
     "physics.fire.fire_T_span":           180.0,  # ramp width above the foot
 
     # --- oxygen gates (R1-renormalized sustain law) -------------------------
@@ -215,14 +221,31 @@ def _run_inner(sim_seconds):
 # ---------------------------------------------------------------------------
 # Plot + CSV
 # ---------------------------------------------------------------------------
-def _summary(rec):
+def _summary(m):
+    rec = m["rec"]
     I, t, T = rec["I_max"], rec["t"], rec["T"]
     peak_I = float(I.max())
     peak_t = float(t[int(np.argmax(I))])
     hit = np.nonzero(I >= 0.9 * peak_I)[0]
     t90 = float(t[hit[0]]) if hit.size else float("nan")
     half = T[len(T) // 2:]
+    # Death detection + CAUSE (so a heat-collapse is never misread as a
+    # fuel burnout): fire is dead when I has dropped to ~0 after burning.
+    on = np.nonzero(I > 0.05)[0]
+    if on.size and on[-1] < len(t) - 1:
+        i_d = int(on[-1])
+        F_d, T_d = float(rec["F"][i_d]), float(T[i_d])
+        if F_d <= 0.02:
+            cause = "FUEL burnout (hp -> 0)"
+        elif T_d <= m["t_ext"] + 5:
+            cause = f"HEAT-COLLAPSE (T fell through T_ext={m['t_ext']:.0f}, fuel left {F_d*100:.0f}%)"
+        else:
+            cause = f"O2/other (F={F_d:.2f}, T={T_d:.0f} at death)"
+        death = f"DIED at {t[i_d]:.0f} s — {cause}"
+    else:
+        death = f"alive at end of run ({t[-1]:.0f} s)"
     lines = [
+        death,
         f"peak I (cluster max) = {peak_I:.3f} @ {peak_t:.1f} s   "
         f"(90% of peak at {t90:.1f} s)",
         f"probe T end = {T[-1]:.1f} game = {TS.to_kelvin(T[-1]):.0f} K; "
@@ -320,7 +343,7 @@ def write_csv(m, path):
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     m = run()
-    for line in _summary(m["rec"]):
+    for line in _summary(m):
         print("  " + line)
     fig = plot(m)
     png = OUT / f"{RUN_TAG}.png"
