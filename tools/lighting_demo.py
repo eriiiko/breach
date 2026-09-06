@@ -33,6 +33,7 @@ printed at startup / drawn in the panel, tools/lighting_demo.py §keybinds):
     C              — toggle the door under the cursor (DoorRuntime, not paint)
     1              — toggle the static lamp group (demo-side)
     2              — toggle the rotating beacon on / off (demo-side)
+    3              — toggle the 3D PROP GARDEN (arc #60 P2; --props starts it on)
 
 (B2 P5: grenade-spawn mode moved T -> R — T is the shared poll_toggles
 temperature-overlay key too, main.py/game_renderer.py; the two collided —
@@ -46,8 +47,21 @@ The top-left readout is the hover-tile "microscope" (T + pseudo-Kelvin, fire,
 material, the five trace gases + O2). Save/Load presets to/from
 tools/lighting_presets.toml.
 
+Props (props & vegetation arc #60 P2 — the HUMAN-TEST vehicle):
+    --props         build + draw a hardcoded garden of ~12 generated props
+                     (trees / palms, three palettes, flower + fruit decor)
+                     anchored at the level's first spawn, drawn through
+                     renderer.static_props with the REAL LightingPass light
+                     field, the real tone-map and the real world RT. Toggle
+                     live with the 3 key. Hardcoded placements are fine HERE
+                     (this is a bench instrument, not engine code); the real
+                     loader→sim→renderer plumbing is arc #60 P3.
+
 Headless flags (no human at the keyboard):
     --auto          render 120 frames then exit 0 (boot smoke test)
+    --shot [PATH]   with --auto: save a screenshot of the last frame
+                     (default lighting_demo_shot.png) — the way a headless
+                     look-check is captured
     --perf [N]      B2 P5 perf pass: ignite the crate cluster, let the fire
                      develop, then measure N (default 300) rendered frames of
                      the NEW gas-medium path and again with legacy_smoke_on,
@@ -88,6 +102,8 @@ from renderer.fire_lights import FireLightSelector
 from renderer.frame_lights import (build_frame_light_sources,
                                     build_static_light_sources)
 from renderer.hover_readout import pack_hover_readout
+from renderer.lit3d import LightFieldCtx, make_camera
+from renderer.static_props import PropPlacement, StaticPropRenderer
 
 # ---------------------------------------------------------------------------
 # Preset file location
@@ -395,6 +411,10 @@ class PanelState:
         self.lamps_on = True
         self.beacon_on = True
 
+        # Props & vegetation (arc #60 P2): the demo garden. Off unless --props;
+        # the 3 key toggles it live.
+        self.props_on = False
+
         # Preset name for save/load (16 char buffer)
         self.preset_name = "default"
 
@@ -490,6 +510,93 @@ def _parse_level_arg() -> Optional[str]:
     if name.startswith("--"):
         raise SystemExit(f"--level requires a level folder name, got {name!r}")
     return name
+
+
+# ---------------------------------------------------------------------------
+# Props & vegetation (arc #60 P2) — the hardcoded demo garden
+# ---------------------------------------------------------------------------
+# 12 mixed props: green / autumn / exotic trees with and without decor, one
+# faceted, plus two palms. Offsets are TILES from the garden anchor (the
+# level's first spawn, else the map centre); heights are metres. This is a
+# bench instrument, so hardcoding is fine — the real prop entity + level
+# plumbing is P3.
+
+DEMO_GARDEN = (
+    # (dx, dy, generator, seed, palette, height_m, style, decor)
+    # Spacing 8 tiles: at the default 0.333 m/tile a 2.4 m tree is ~7 tiles
+    # tall with a ~5-tile crown, so anything tighter is one continuous canopy
+    # and Erik cannot judge a single prop.
+    (-12, -8, "tree",   1, "green",  2.4, "smooth",  "flowers"),
+    (-4, -8, "tree",    2, "green",  2.0, "smooth",  "fruit"),
+    (+4, -8, "tree",    3, "green",  2.8, "smooth",  ""),
+    (+12, -8, "tree",   4, "autumn", 2.2, "smooth",  "flowers"),
+    (-12, 0, "tree",    5, "autumn", 2.6, "smooth",  "fruit"),
+    (-4, 0, "tree",     6, "green",  1.8, "faceted", ""),
+    (+4, 0, "palm",    11, "green",  3.2, "smooth",  ""),
+    (+12, 0, "tree",  101, "exotic", 2.4, "smooth",  "flowers"),
+    (-12, +8, "tree", 102, "exotic", 2.1, "smooth",  "fruit"),
+    (-4, +8, "tree",  103, "exotic", 2.9, "smooth",  ""),
+    (+4, +8, "palm",  112, "exotic", 2.6, "smooth",  ""),
+    (+12, +8, "tree", 104, "green",  2.3, "smooth",  "fruit"),
+)
+
+
+GARDEN_SPAN_TILES = 27     # DEMO_GARDEN spans -12..+12 tiles, plus margin
+
+
+def garden_anchor(gmap) -> tuple[int, int]:
+    """Centre tile of the most OPEN GARDEN_SPAN_TILES-square window on the map.
+
+    A hardcoded tile would drop the garden into a wall on any other level, so
+    the anchor is found: score every window by how many of its tiles are open
+    floor (non-solid, non-vacuum) and take the best, ties broken toward the map
+    centre. Cheap (one summed-area table) and level-agnostic.
+    """
+    open_t = (~gmap.solid) & (~gmap.is_vacuum)
+    h, w = open_t.shape
+    k = min(GARDEN_SPAN_TILES, h, w)
+    sat = np.zeros((h + 1, w + 1), dtype=np.int32)
+    sat[1:, 1:] = np.cumsum(np.cumsum(open_t.astype(np.int32), axis=0), axis=1)
+    counts = (sat[k:, k:] - sat[:-k, k:] - sat[k:, :-k] + sat[:-k, :-k])
+    # Tie-break toward the centre: subtract a tiny distance penalty.
+    yy, xx = np.mgrid[0:counts.shape[0], 0:counts.shape[1]]
+    dist = np.abs(yy + k / 2 - h / 2) + np.abs(xx + k / 2 - w / 2)
+    score = counts.astype(np.float64) - 1e-3 * dist
+    iy, ix = np.unravel_index(int(np.argmax(score)), score.shape)
+    return int(ix + k // 2), int(iy + k // 2)
+
+
+def build_demo_garden(level, gmap, world_px_per_tile: float
+                      ) -> tuple[list[PropPlacement], tuple[int, int]]:
+    """Turn :data:`DEMO_GARDEN` into world-pixel placements around the anchor.
+
+    Returns ``(placements, anchor_tile)`` — the anchor is also where the demo
+    parks its camera under ``--props``, so the garden is on screen at frame 1.
+    """
+    ax, ay = garden_anchor(gmap)
+    out: list[PropPlacement] = []
+    for dx, dy, gen, seed, pal, h_m, style, decor in DEMO_GARDEN:
+        tx = min(max(ax + dx, 0), level.width - 1)
+        ty = min(max(ay + dy, 0), level.height - 1)
+        out.append(PropPlacement(
+            x_wpx=(tx + 0.5) * world_px_per_tile,
+            y_wpx=(ty + 0.5) * world_px_per_tile,
+            generator=gen, seed=seed, palette=pal, height_m=h_m,
+            style=style, decor=decor,
+            # Per-placement yaw costs no cache entry — same model, new look.
+            yaw_deg=(seed * 47) % 360,
+        ))
+    return out, (ax, ay)
+
+
+def _parse_shot_path() -> Optional[str]:
+    """``--shot [PATH]`` — with --auto, screenshot the last rendered frame."""
+    if "--shot" not in sys.argv:
+        return None
+    i = sys.argv.index("--shot")
+    if i + 1 < len(sys.argv) and not sys.argv[i + 1].startswith("--"):
+        return sys.argv[i + 1]
+    return "lighting_demo_shot.png"
 
 
 # ---------------------------------------------------------------------------
@@ -838,7 +945,7 @@ def main() -> None:
     # R — see the module docstring).
     print("[lighting_demo] KEYS -- studio injection (tool writes at cursor):")
     print("[lighting_demo]   I=ignite  J=puff smoke  K=puff steam  "
-          "C=toggle door  1=lamps  2=beacon")
+          "C=toggle door  1=lamps  2=beacon  3=props (#60 P2)")
     print("[lighting_demo] KEYS -- demo-local (Space/R/N/U/F/P):")
     print("[lighting_demo]   Space=pause/resume  R=grenade-spawn mode "
           "(click=throw)  N/Shift+N=explosion-smoke noise")
@@ -855,8 +962,44 @@ def main() -> None:
     print("[lighting_demo]   WASD/arrows=pan  Q/E/wheel=zoom  "
           "(O intentionally unused)")
 
+    # ---- 3b. Props & vegetation (arc #60 P2) ----
+    # StaticPropRenderer owns the model cache + the prop shader; the garden is
+    # a hardcoded placement list (P3 brings the real prop entity + loader
+    # plumbing). Built here, AFTER the GL context exists and after the --perf
+    # early-return so the perf pass is unaffected.
+    prop_renderer = StaticPropRenderer(cfg.world_px_per_tile,
+                                       level.tile_size_m)
+    prop_renderer.load()
+    demo_garden, garden_tile = build_demo_garden(level, sim.gmap,
+                                                 cfg.world_px_per_tile)
+    prop_cam3d = make_camera(renderer.world.world_px_w,
+                             renderer.world.world_px_h)
+    if "--props" in sys.argv:
+        # Park the 2D camera on the garden so it is on screen at frame 1
+        # (this is the HUMAN-TEST vehicle; hunting for the trees is not part
+        # of the test).
+        renderer.camera.pos_tile_x = float(garden_tile[0]) - \
+            (map_px_w / renderer.camera.zoom_px_per_tile) / 2.0
+        renderer.camera.pos_tile_y = float(garden_tile[1]) - \
+            (map_px_h / renderer.camera.zoom_px_per_tile) / 2.0
+        renderer.camera.clamp_to_world()
+    if prop_renderer.ready:
+        # Warm the cache up front: generation is a Python loop (~0.1-0.3 s per
+        # distinct look), so building on first draw would hitch the frame the
+        # garden is switched on. Prints the MEASURED tri / VRAM / gen-time
+        # budget (design §2).
+        t_gen = time.perf_counter()
+        for _p in demo_garden:
+            prop_renderer.get_model(_p)
+        print(prop_renderer.budget_report())
+        print(f"[lighting_demo] props: {len(demo_garden)} placed, "
+              f"cache warm in {(time.perf_counter() - t_gen):.2f} s "
+              f"(anchor tile {garden_tile}, "
+              f"{cfg.world_px_per_tile / level.tile_size_m:.1f} px/m)")
+
     # ---- 4. Panel state ----
     state = PanelState()
+    state.props_on = "--props" in sys.argv
 
     # Apply default preset from file if it exists
     saved = load_preset("default")
@@ -973,7 +1116,8 @@ def main() -> None:
 
     # --auto: render a fixed number of frames then exit 0 (smoke test; no input
     # injection). Mirrors test_main_smoke / align_level_art's --auto tails.
-    auto = "--auto" in sys.argv
+    shot_path = _parse_shot_path()
+    auto = "--auto" in sys.argv or shot_path is not None
     AUTO_FRAMES = 120
     frames = 0
 
@@ -1091,6 +1235,9 @@ def main() -> None:
             if rl.is_key_pressed(K.KEY_TWO):      # toggle the rotating beacon
                 state.beacon_on = not state.beacon_on
                 print(f"[demo] beacon {'ON' if state.beacon_on else 'OFF'}")
+            if rl.is_key_pressed(K.KEY_THREE):    # toggle the prop garden
+                state.props_on = not state.props_on
+                print(f"[demo] props {'ON' if state.props_on else 'OFF'}")
 
             # ---- Sim tick ----
             if not state.paused:
@@ -1318,11 +1465,33 @@ def main() -> None:
             )
 
             # ---- Draw ----
+            # Props ride compose_world's world-space overlay hook: the callback
+            # runs INSIDE the open world RT, so the props are drawn into the
+            # same target, at the same world-pixel coordinates, through the
+            # same tone-map as everything else — which is exactly the honest
+            # HUMAN-TEST condition. (P3 gives compose_world a real `props=`
+            # keyword; this tool needs no engine change to exercise P2.)
+            def _draw_props(_wpt: float) -> None:
+                prop_renderer.draw_props(
+                    demo_garden, prop_cam3d,
+                    LightFieldCtx(
+                        tex_a=renderer.lighting.light_tex_a,
+                        tex_b=renderer.lighting.light_tex_b,
+                        world_px_w=float(renderer.world.world_px_w),
+                        world_px_h=float(renderer.world.world_px_h),
+                        ambient=renderer.lighting.ambient,
+                        light_gain=renderer.lighting.light_gain,
+                        normal_y_sign=(-1.0 if renderer.normal_y_flipped
+                                       else 1.0),
+                    ))
+
             renderer.begin_frame()
             renderer.compose_world(
                 units_marines=sim.marines(),
                 units_zombies=sim.zombies(),
                 projectiles=sim.projectiles,
+                overlay_fn=(_draw_props if (state.props_on
+                                            and prop_renderer.ready) else None),
             )
 
             renderer.draw_background_to_screen()
@@ -1347,10 +1516,16 @@ def main() -> None:
 
             frames += 1
             if auto and frames >= AUTO_FRAMES:
+                # --shot: capture the final composed frame (headless look-check
+                # for the props HUMAN-TEST prep / boot smoke test evidence).
+                if shot_path:
+                    rl.take_screenshot(shot_path)
                 # Pour a little water under the auto path so the water pass +
                 # its live setters are actually exercised (not just dormant).
                 break
     finally:
+        # GL resources must go while the context is still alive.
+        prop_renderer.unload()
         renderer.shutdown()
 
     if auto:
@@ -1377,7 +1552,9 @@ def _draw_hud(renderer: GameRenderer, gmap, state: PanelState,
     pause_tag = " [PAUSED]" if state.paused else ""
     lamp_tag = "" if state.lamps_on else "  lamps:OFF"
     beacon_tag = "" if state.beacon_on else "  beacon:OFF"
-    header = f"BREACH Lighting Demo{spawn_tag}{pause_tag}{lamp_tag}{beacon_tag}"
+    prop_tag = "  props:ON" if state.props_on else ""
+    header = (f"BREACH Lighting Demo{spawn_tag}{pause_tag}{lamp_tag}"
+              f"{beacon_tag}{prop_tag}")
 
     mouse_f = renderer.mouse_to_tile_float()
     if mouse_f is None:
