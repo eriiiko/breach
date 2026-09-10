@@ -120,12 +120,15 @@ just demonstrated how much creature tuning wants live dials.
 `out = f_key(counter)`. Integer-only (32×32→64 via `__umulhi` on device —
 the `mul128_shr_signed` portability trick).
 
-- **Key (2×32)** = `(match_seed_lo, match_seed_hi ^ unit_id)` — the match
-  seed (the same seed material `sim.rng` is built from; match-setup
-  material) enters every stream (critique B1). Same seed + same id ⇒ same
-  stream; new match ⇒ new behavior.
-- **Counter (4×32)** = `(tick, draw_index, stream_salt, 0)` — the salt
-  names the purpose (tumble / turn / eat / spawn).
+- **Key (2×32)** = `(match_seed_lo, match_seed_hi)` — the match seed and
+  nothing else (the same seed material `sim.rng` is built from; match-setup
+  material). *Corrected 2026-09-10 by the philox32 review: the earlier
+  `seed_hi ^ unit_id` form collapsed seed×unit sweeps — seed 1/unit 2 drew
+  the same bits as seed 2/unit 1.*
+- **Counter (4×32)** = `(tick, draw_index, stream_salt, unit_id)` — the
+  salt names the purpose (tumble / turn / eat / spawn) and is kept in ONE
+  enum in breach; the unit id lives in the counter, per Random123's own
+  guidance (per-element indices belong in the counter).
 - **`draw_index` is never stored**: it is local to `(unit, salt, tick)`,
   restarts at 0 each tick, and is assigned by static code position. A unit
   consuming a variable number of draws per tick is therefore safe by
@@ -134,8 +137,11 @@ the `mul128_shr_signed` portability trick).
 - Output mapping: uniform Q16.16 by integer shift of the 32-bit word; the
   turn-angle draw multiplies by a checked-in 2π Q16 constant (the door-2
   idiom). Never through float.
-- Home: **`cpp/src/philox_q16.h`**, `FP_HD`, included by both twins
-  (`fixed_point.h` stays the arithmetic kit). This is an **amendment to
+- Home: the shared **philox32** package (github.com/eriiiko/philox32, MIT)
+  vendored as `cpp/src/philox32.h` + `src/simulation/philox32.py`, pinned
+  by version hash in the header; `fixed_point.h` stays the arithmetic kit.
+  `philox32_below(w, n)` (Lemire multiply-shift) is the integer-in-[0,n)
+  door — never `w % n`, never through float. This is an **amendment to
   chapter 14's door 4**: Philox joins `sim.rng`'s PCG64 as the second
   sanctioned raw-draw source, with its own case-log entry. Sequenced
   independently of `sim.rng` — device draws never desync host draw counts.
@@ -419,8 +425,9 @@ coupling table (new larva row) · species-table pattern · hover readout seam
 - *Swarm store* — SoA `(N, max_units)` + species table + kernel/twin
   pair; a species is a table row + kernel, never a class; stable slots, no
   compaction, no atomic-ticket spawns; digested extent `[0, high_water)`.
-- *Philox device RNG kit* (`philox_q16.h`) — THE deterministic per-agent
-  RNG; key carries the match seed; draw_index never stored; second
+- *Philox device RNG kit* (vendored `philox32.h`/`.py`) — THE deterministic
+  per-agent RNG; key = match seed, counter = (tick, draw, salt, unit_id);
+  draw_index never stored; second
   sanctioned door-4 source (14 amended); all future device randomness and
   the owed spawn-stat sampler use it.
 - *SWARM digest section* — presence-gated, section-versioned; per-unit
