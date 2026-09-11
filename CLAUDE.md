@@ -109,13 +109,14 @@ One line per system built for reuse. Long form + entry points:
 | GameRenderer + WorldComposite | `renderer/game_renderer.py`, `world_composite.py` | The only renderer; world drawing inside `compose_world()` into the one world RT |
 | LightingPass | `renderer/lighting.py` | New lit passes sample `light_tex_a/b` — never a second raycast |
 | Gas medium | `renderer/gas_medium.py` (+ detail/noise/shader) | The only smoke/gas look |
+| Tamed wind (render) | `renderer/gas_detail.py::tame_wind` | THE render-side wind seam: dequantize + 3x3-smooth + gain-limit the raw `-grad(P)` planes into a usable velocity. Smoke (`pack_dynamics`) and prop sway consume the SAME product — never read `gmap.wind_x/wind_y` raw (fire-spiked, unusable as a velocity), never re-derive the taming (arc #60 P4) |
 | Blackbody | `renderer/blackbody.py` | The single ΔT→colour map |
 | Frame lights | `renderer/frame_lights.py` | The only per-frame light-list assembly |
 | Dequantize convention | per-field `*_fixed.dequantize_f32` at `upload_state` | Fresh float copies at the render read, never written back, never `/65536` inline |
 | 3D units | `renderer/unit_model_renderer.py` + `marine_shader.py` | No model/anim state ever lands on `Unit` (digest!) |
 | Lit-3D seam | `renderer/lit3d.py` | THE shared light-field GLSL, `LightFieldCtx`, and top-down `Camera3D` for everything 3D drawn in the world RT (marines, props, future 3D walls) — a second copy of any of the three is the bug; the marine byte-identity test (`test_lit3d_extraction.py`) gates it (arc #60) |
 | Prop generator | `renderer/propgen.py` | THE procedural prop/vegetation geometry source (pure numpy, seeded, render-only float — never imports/reaches sim); new flora = a generator fn + `PALETTES` row here, never inline mesh code elsewhere (arc #60) |
-| Static props | `renderer/static_props.py` | The ONLY path drawing placed 3D props: owned-memory model cache + `draw_props` in the units' shared `begin_mode_3d` pass; no prop render state ever lands on a sim entity (digest!). Prop assets live `assets/models/props/<pack>/` with a license file per pack; OBJ preferred (raylib 5.5 cgltf rejects 2020-era GLBs) (arc #60) |
+| Static props | `renderer/static_props.py` | The ONLY path drawing placed 3D props: owned-memory model cache + `draw_props` in the units' shared `begin_mode_3d` pass; no prop render state ever lands on a sim entity (digest!). Sway = tamed wind scaled by the tile's gas DENSITY (momentum flux, not velocity — Erik's vented-room ruling); calm or evacuated air means motionless props. Prop assets live `assets/models/props/<pack>/` with a license file per pack; OBJ preferred (raylib 5.5 cgltf rejects 2020-era GLBs) (arc #60) |
 | UI split | `ui/model.py` (pure) / `ui/draw.py` (dumb) | Decisions in model as data; draw decides nothing |
 
 ### Gameplay
