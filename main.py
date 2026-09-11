@@ -71,6 +71,7 @@ from renderer import GameRenderer
 from renderer.fire_lights import FireLightSelector
 from renderer.frame_lights import build_frame_light_sources, build_light_source
 from renderer.game_renderer import RenderConfig
+from renderer.static_props import placements_from_entities
 from simulation import Simulation
 from simulation.unit import Unit
 from control_source import create_control_source
@@ -616,6 +617,11 @@ def main():
                 orders_phase2=None if onephase else sim.orders_for_phase(1),
                 current_phase=control_source.planning_phase,
                 doors=sim._doors,   # A6 dev door draw (render-read only)
+                # Props & vegetation arc #60 P3: loaded prop entities flow
+                # loader -> sim -> renderer as placement records; zero cost
+                # when the level has none (design §4.3).
+                props=placements_from_entities(sim.entities,
+                                               renderer.cfg.world_px_per_tile),
                 overlay_fn=(_onephase_world_overlay(
                     sim, control_source, renderer.mouse_to_tile())
                     if onephase else None),

@@ -52,6 +52,15 @@ def test_palette_is_canon_v2_vocabulary():
     id + SPACE_CODE, nothing else; names come from MATERIAL_NAMES."""
     assert set(PALETTE) == set(MATERIAL_NAMES) | {SPACE_CODE}
     for mid, name in MATERIAL_NAMES.items():
+        if mid == SPACE_CODE:
+            # Props & vegetation arc #60 P3: MAT_FOLIAGE (id 9) shares its
+            # numeric slot with SPACE_CODE -- a materials-table/CSV-vocabulary
+            # coincidence (test_level_format_v2.py's
+            # test_version_gate_and_space_code), not a bug. SPACE always wins
+            # the palette's slot 9 (asserted right below): foliage is placed
+            # only via the entity stamp, never paintable via CSV
+            # (props_and_vegetation.md §4.2 F6).
+            continue
         assert PALETTE[mid][0] == name.upper()
     assert PALETTE[SPACE_CODE][0] == "SPACE"
     # AIR is the absence of an overlay; everything else has an RGB fill.

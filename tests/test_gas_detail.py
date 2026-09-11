@@ -27,7 +27,7 @@ import pytest
 from renderer.advected_noise import (
     bake_fbm_rgba, bake_jitter_rgba, advection_phase, layer_ages_weight,
 )
-from renderer.gas_detail import GasDetailPass
+from renderer.gas_detail import GasDetailPass, WIND_V_REF, tame_wind
 from simulation.atmosphere_fixed import quantize as wind_quantize
 
 TPS = 24.0
@@ -120,6 +120,71 @@ def test_zero_wind_gives_zero_advection():
     assert np.all(dyn[..., 0] == 0.0) and np.all(dyn[..., 1] == 0.0)
     # density still carried (the layer breathes via the crossfade, not wind).
     assert np.allclose(dyn[..., 2].astype(np.float32), 0.5, atol=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# tame_wind — THE render-side wind seam (props & vegetation arc #60 P4 made it
+# public: prop sway is its second consumer, design §4.3 F3). Same math as
+# before, now assertable on its own and re-usable without a GL context.
+# ---------------------------------------------------------------------------
+def test_tame_wind_shape_and_units():
+    wx = np.full((4, 7), int(wind_quantize(0.3)), dtype=np.int32)
+    wy = np.zeros((4, 7), dtype=np.int32)
+    tamed = tame_wind(wx, wy)
+    assert tamed.shape == (4, 7, 2) and tamed.dtype == np.float32
+    assert float(tamed[2, 3, 0]) == pytest.approx(_tamed_speed(0.3), abs=2e-3)
+
+
+def test_tame_wind_smooths_a_spike_into_its_neighbourhood():
+    """A single fire-spiked cell is the failure mode the smoothing exists for:
+    after taming, the spike's own cell is far below its raw share and its
+    NEIGHBOURS have picked up flow — a coherent direction, not a delta."""
+    wx = np.zeros((9, 9), dtype=np.int32)
+    wy = np.zeros((9, 9), dtype=np.int32)
+    wx[4, 4] = int(wind_quantize(500.0))       # a plume cell's raw -grad(P)
+    tamed = tame_wind(wx, wy)
+    peak = float(tamed[4, 4, 0])
+    # Gain-limited: never above the saturation ceiling, spike or no spike.
+    assert np.abs(tamed).max() <= WIND_V_REF + 1e-6
+    # Smoothed: the untouched neighbours now carry a real share of the flow.
+    assert float(tamed[4, 5, 0]) > 0.25 * peak
+    assert float(tamed[3, 3, 0]) > 0.0
+    # ...and it stays local — two box passes reach 2 cells, not the whole map.
+    assert float(tamed[0, 0, 0]) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_tame_wind_is_monotone_and_bounded_over_five_decades():
+    prev = -1.0
+    for dq in (0.001, 0.01, 0.1, 1.0, 10.0, 1000.0):
+        tamed = tame_wind(np.full((5, 5), int(wind_quantize(dq)), np.int32),
+                          np.zeros((5, 5), np.int32))
+        v = float(tamed[2, 2, 0])
+        assert 0.0 <= v <= WIND_V_REF + 1e-9
+        assert v >= prev - 1e-9
+        prev = v
+    assert prev == pytest.approx(WIND_V_REF, rel=2e-2)
+
+
+def test_tame_wind_preserves_direction():
+    wx = np.full((6, 6), int(wind_quantize(-0.3)), dtype=np.int32)
+    wy = np.full((6, 6), int(wind_quantize(0.5)), dtype=np.int32)
+    tamed = tame_wind(wx, wy)
+    assert float(tamed[3, 3, 0]) < 0.0 < float(tamed[3, 3, 1])
+    assert float(tamed[3, 3, 1]) / float(tamed[3, 3, 0]) == \
+        pytest.approx(0.5 / -0.3, rel=1e-2)
+
+
+def test_pack_dynamics_consumes_tame_wind_rather_than_forking_it():
+    """The detail pass and prop sway must never disagree about which way the
+    air moves in a room: pack_dynamics' RG IS tame_wind's output."""
+    rng = np.random.default_rng(7)
+    wx = rng.integers(-3 << 16, 3 << 16, size=(8, 6)).astype(np.int32)
+    wy = rng.integers(-3 << 16, 3 << 16, size=(8, 6)).astype(np.int32)
+    dyn = GasDetailPass.pack_dynamics(wx, wy, np.zeros((8, 6), np.float32))
+    tamed = tame_wind(wx, wy)
+    # float16 round-trip is the only difference.
+    assert np.allclose(dyn[..., 0].astype(np.float32), tamed[..., 0], atol=1e-3)
+    assert np.allclose(dyn[..., 1].astype(np.float32), tamed[..., 1], atol=1e-3)
 
 
 # ---------------------------------------------------------------------------

@@ -20,10 +20,15 @@ STATIC 6.0.1.0):
     skinned (positions/normals already posed), so a bone uniform would double-
     transform it.
 
-Shared GLSL (srgb decode/encode, ACES) is factored into ``_COMMON_GLSL`` and
-concatenated into the fragment source — NOT copied verbatim from the golden-
-gated ship shader ``shaders/lighting.fs`` (which keeps its own inline copies;
-we do not touch it). Kept numerically identical so tone/colour match the ship.
+Shared GLSL lives in ``renderer/lit3d.py`` (the shared lit-3D-in-world-RT
+seam, extracted 2026-09 for the props & vegetation arc #60): ``_COMMON_GLSL``
+(srgb decode/encode, ACES) at P1, and ``_FIELD_SAMPLE_GLSL`` (the light-field
+sample/unpack + L/N setup) at P2 when ``static_props.py`` became the second
+consumer. Both are concatenated into the fragment source here — the composed
+``MARINE_FS`` stays byte-identical (``tests/test_lit3d_extraction.py``) and is
+NOT copied verbatim from the golden-gated ship shader
+``shaders/lighting.fs`` (which keeps its own inline copies; we do not touch
+it). Kept numerically identical so tone/colour match the ship.
 """
 from __future__ import annotations
 
@@ -31,6 +36,8 @@ from dataclasses import dataclass
 from typing import Dict
 
 import pyray as rl
+
+from .lit3d import _COMMON_GLSL, _FIELD_SAMPLE_GLSL
 
 # --- Marine-specific tunables (feel knobs; the whole arc is HUMAN-TEST gated) -
 # The marine gets its OWN, more grazing key than the ship (ship default 0.5).
@@ -55,25 +62,6 @@ MARINE_NORMAL_STRENGTH = 1.0
 MARINE_USE_NORMAL_DEFAULT = False
 # Filename of the placeholder normal map, resolved next to the model asset.
 MARINE_NORMAL_MAP_FILENAME = "marine_normal_PLACEHOLDER.png"
-
-# Shared helpers — string-concatenated into the fragment shader below. Kept
-# numerically identical to shaders/lighting.fs so the marine tone-maps and
-# gamma-matches the ship exactly, without forking the golden-gated file.
-_COMMON_GLSL = """
-// Cheap sRGB <-> linear (gamma 2.2), matching shaders/lighting.fs.
-vec3 srgb_to_linear(vec3 c) { return pow(c, vec3(2.2)); }
-vec3 linear_to_srgb(vec3 c) { return pow(c, vec3(1.0 / 2.2)); }
-
-// ACES filmic tone-map (Narkowicz), identical to shaders/lighting.fs.
-vec3 aces_tonemap(vec3 x) {
-    const float a = 2.51;
-    const float b = 0.03;
-    const float c = 2.43;
-    const float d = 0.59;
-    const float e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-}
-"""
 
 MARINE_VS = """#version 330
 // Lit-marine vertex shader. The mesh is CPU-skinned upstream
@@ -154,24 +142,7 @@ mat3 cotangent_frame(vec3 N, vec3 p, vec2 uv) {
 }
 
 void main() {
-    // Foot-plane world UV: sample the baked field at the marine's XZ ground
-    // position (height Y ignored). worldPos.x -> grid X, worldPos.z -> grid Y
-    // (y-down). NO v-flip: the marine reads the same texture the ship reads
-    // with the same world->grid mapping (numpy row 0 = grid y 0 = texture v 0
-    // = screen top under both the RT quad and the top-down 3D camera), so the
-    // marine's lighting is glued to the same tiles as the ship beside it.
-    vec2 world_uv = fragWorldPos.xz / u_world_px;
-
-    vec4 tex_a = texture(texture1, world_uv);
-    vec4 tex_b = texture(texture2, world_uv);
-    vec3 incoming_rgb = tex_a.rgb;              // total light colour at this tile
-    vec2 light_dir_2d = vec2(tex_a.a, tex_b.a); // signed, already unit-length
-
-    // 2D baked direction -> 3D in the marine's Y-up world frame: dir.x -> X,
-    // u_light_z -> Y (up), dir.y -> Z. Same vector the ship builds as
-    // vec3(dir, light_z), reordered because the ship's tangent frame is Z-up.
-    vec3 L = normalize(vec3(light_dir_2d.x, u_light_z, light_dir_2d.y));
-    vec3 N = normalize(fragWorldNormal);
+// <FIELD_SAMPLE>
 
     // P2 normal map (guarded — zero cost when off). Reconstruct a tangent frame
     // from screen-space derivatives, sample the map as LINEAR data (never sRGB-
@@ -213,7 +184,9 @@ void main() {
 }
 """
 
-MARINE_FS = _MARINE_FS_BODY.replace("// <COMMON>", _COMMON_GLSL)
+MARINE_FS = (_MARINE_FS_BODY
+             .replace("// <COMMON>", _COMMON_GLSL)
+             .replace("// <FIELD_SAMPLE>", _FIELD_SAMPLE_GLSL))
 
 
 @dataclass

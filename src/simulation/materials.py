@@ -49,6 +49,13 @@ MAT_DOOR_CLOSED = 7
 # any shipped level — see [materials.kindling] in config.toml for the row
 # and its per-column deviations from furniture.
 MAT_KINDLING = 8
+# Props & vegetation arc #60 P3 (docs/architecture/graphics/props_and_
+# vegetation.md §4.1, Erik's ruling 2026-09-07 §6.1.2): the prop entity's
+# ONE material row — "fully walkable, no wind/vision/movement interaction,
+# flammable, fuel ~= 2x furniture". APPENDED (ids are positional and
+# contiguous — this must always be the LAST id, or every level
+# re-materializes).
+MAT_FOLIAGE = 9
 
 # Config-key <-> id mapping. The key is the ``[materials.<name>]`` table name.
 # Listed in id order; ``MaterialTable`` validates contiguity.
@@ -62,6 +69,7 @@ MATERIAL_NAMES = {
     MAT_FURNITURE: "furniture",
     MAT_DOOR_CLOSED: "door_closed",
     MAT_KINDLING: "kindling",
+    MAT_FOLIAGE: "foliage",
 }
 
 # Scalar columns: name -> numpy dtype. ``light_atten`` is handled separately

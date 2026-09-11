@@ -58,6 +58,10 @@ Legend: ✅ built · ⚠️ partial · 🧪 prototype · 📝 design-only
   pass** (Schlick Fresnel on the perturbed ripple normal · GGX specular glints of the light sources ·
   normal-driven refraction × depth · Beer–Lambert depth-tint · phase-2 light-modulated caustics).
   Research + citations: `docs/water_rendering_research.md` (2026-06-12). **First inhabitant.**
+- [Props & vegetation (3D)](props_and_vegetation.md) — 🧪 *(arc #60 in flight)* — procedural
+  stylized trees/palms (seeded numpy → lit 3D in the world RT), prop entities with a 1×1 flammable
+  `foliage` stamp, wind sway off the tamed wind field; carries the shared `lit3d` seam (light-field
+  GLSL + top-down camera) that marines and future 3D walls consume.
 - *(planned)* **Smoke & gas optics** — migrate from `engine/05` §6.1: per-channel Beer–Lambert
   absorption + additive scatter, per-gas colour, normal-mapped volumetric look, black-body emission.
 - *(planned)* **Lighting mood & post** — god-rays, ACES tone-map, bloom — the visual-tuning side of

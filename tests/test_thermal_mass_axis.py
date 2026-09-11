@@ -103,16 +103,19 @@ def test_thermal_solid_is_derived_from_thermal_mass_not_permeability():
     kindling (a real material row, cellulosic-copied from furniture per its
     own locked spec) shares the SAME shape by construction: permeability 0.5
     (flow-open) + thermal_mass 8 (a thermal solid) — a second, expected
-    member of this set, not a regression.
+    member of this set, not a regression. Props & vegetation arc #60 P3's
+    ``foliage`` (permeability 1.0 — fully open, no wind interaction —
+    + thermal_mass 8, since it still has a real thermal identity that
+    burns) is a third, same-shape member.
     """
     tbl = MaterialTable.from_config(CFG)
     thermal = tbl.thermal_solid
     flow = tbl.permeability <= 0.0
     divergent = [name for name, a, b in zip(tbl.names, flow.tolist(),
                                             thermal.tolist()) if a != b]
-    assert divergent == ["furniture", "kindling"], (
-        "furniture + kindling must be the ONLY permeable thermal solids — "
-        f"the byte-identity gate rests on this set; got {divergent}")
+    assert divergent == ["furniture", "kindling", "foliage"], (
+        "furniture + kindling + foliage must be the ONLY permeable thermal "
+        f"solids — the byte-identity gate rests on this set; got {divergent}")
     assert bool(thermal[MAT_FURNITURE]) is True
     assert bool(flow[MAT_FURNITURE]) is False
 

@@ -18,15 +18,11 @@ ceiling ~20 animated units in CPython. The GPU-skinning upgrade (compute bone
 matrices + a skinning vertex shader) is a self-contained change INSIDE this
 module — ``_draw_one`` is the swap seam — so nothing outside changes.
 
-Coordinate mapping (calibrated in prototypes/scratchpad):
-  * The world render target is ``world_px_w × world_px_h`` world-pixels, drawn
-    top-left origin, y-down. A top-down ORTHOGRAPHIC ``Camera3D`` measured in
-    world-pixels maps 3D X = x_wpx, 3D Z = y_wpx, 3D Y = height-up, with
-    ``fovy = world_px_h`` and camera up = (0, 0, -1). Verified: 3D primitives
-    land exactly on the same-coordinate 2D draws (calib_camera.py).
-  * The RT's own depth buffer occludes correctly (verified: a near model drawn
-    FIRST fully occludes a far model drawn SECOND), so NO world-Y painter's
-    fallback is needed.
+Coordinate mapping: the top-down camera + world-px mapping now live in
+``renderer/lit3d.py`` (the shared lit-3D-in-world-RT seam, extracted 2026-09
+for the props & vegetation arc #60 P1) — see its module docstring for the
+full calibration note (``make_camera``, ``_CAM_HEIGHT``, world-px axes,
+up=(0,0,-1), depth-buffer occlusion). Unchanged here:
   * Facing→yaw: the model's forward at yaw 0 points +Z; the sim facing is
     ``(cosθ, -sinθ)`` in world (x, y-down), i.e. (X, Z), giving
     ``yaw_deg = degrees(facing) + 90`` (``_YAW_OFFSET_DEG``).
@@ -40,6 +36,7 @@ from typing import Callable, Dict, Optional, Sequence
 
 import pyray as rl
 
+from .lit3d import LightFieldCtx, make_camera
 from .marine_shader import MARINE_NORMAL_MAP_FILENAME, load_marine_shader
 
 # ---------------------------------------------------------------------------
@@ -78,29 +75,8 @@ _SHADOW_RADIUS_FRAC = 0.32       # of footprint side, in world px
 _SHADOW_COLOR = (0, 0, 0, 90)
 # Prune a unit's anim state once it has gone unseen this many seconds.
 _STALE_SECONDS = 1.0
-# Top-down camera height above the floor, in world px. Ortho => this does NOT
-# affect on-screen size, only near/far framing. It MUST stay below raylib's
-# orthographic far-clip (empirically < ~5000 in this build), so it CANNOT scale
-# with world size: a tall level (RT up to 5760 px) pushed the old
-# max(w,h)*2 height past the far plane and culled every model (the "press M and
-# everything vanishes" bug). 500 clears the tallest model (~3*wpt) with margin
-# and is safely inside the far plane at every level size (verified 2400x5760).
-_CAM_HEIGHT = 500.0
-
-
-@dataclass
-class LightFieldCtx:
-    """The ship's baked light field + scalars, handed to draw_units so the P1
-    marine shader samples EXACTLY what the ship samples. Built by game_renderer
-    from its LightingPass + WorldComposite (single source of truth). ``tex_a`` /
-    ``tex_b`` are the ``light_tex_a`` / ``light_tex_b`` RGBA16F textures."""
-    tex_a: object
-    tex_b: object
-    world_px_w: float
-    world_px_h: float
-    ambient: tuple
-    light_gain: float
-    normal_y_sign: float = 1.0
+# _CAM_HEIGHT and LightFieldCtx moved to renderer/lit3d.py (P1 extraction,
+# #60); imported above and re-exported here for import-compat.
 
 
 @dataclass
@@ -270,31 +246,10 @@ class UnitModelRenderer:
     def ready(self) -> bool:
         return self._loaded
 
-    # ------------------------------------------------------------------
-    # Camera (owned here so the top-down mapping math lives in one place)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def make_camera(world_px_w: int, world_px_h: int) -> rl.Camera3D:
-        """Top-down orthographic Camera3D framed to the world RT in world-px.
-
-        3D X = x_wpx, 3D Z = y_wpx, 3D Y = up. ``fovy = world_px_h`` makes the
-        ortho view span exactly the RT (aspect = w/h fills the width), so 3D
-        world-px coords land on the same texels as the 2D world-px draws.
-        Camera up = (0,0,-1) so world +Z (screen-down, i.e. y-down) reads down.
-        """
-        cam = rl.Camera3D()
-        cx, cy = world_px_w / 2.0, world_px_h / 2.0
-        # Fixed height (NOT world-size-scaled): ortho => distance doesn't change
-        # on-screen size, only near/far framing, and it must stay under raylib's
-        # ortho far-clip. See _CAM_HEIGHT (the old max(w,h)*2 culled everything on
-        # tall levels).
-        cam.position = rl.Vector3(cx, _CAM_HEIGHT, cy)
-        cam.target = rl.Vector3(cx, 0.0, cy)
-        cam.up = rl.Vector3(0.0, 0.0, -1.0)
-        cam.fovy = float(world_px_h)
-        cam.projection = rl.CameraProjection.CAMERA_ORTHOGRAPHIC
-        return cam
+    # Camera: moved to renderer/lit3d.py::make_camera (P1 extraction, #60) —
+    # bound here as a staticmethod so `UnitModelRenderer.make_camera(...)`
+    # keeps working unmodified for every existing caller.
+    make_camera = staticmethod(make_camera)
 
     # ------------------------------------------------------------------
     # Clip selection  (data-driven; the extension point)
@@ -322,13 +277,20 @@ class UnitModelRenderer:
                    camera3d: rl.Camera3D,
                    base_tint=(255, 255, 255, 255),
                    light_rgb_fn: Optional[Callable[[object], tuple]] = None,
-                   light_ctx: Optional[LightFieldCtx] = None) -> None:
+                   light_ctx: Optional[LightFieldCtx] = None,
+                   open_mode_3d: bool = True) -> None:
         """Draw every alive unit as an animated 3D body inside the world RT.
 
         Nests ``begin_mode_3d`` in the already-open world RT. Per unit: infer
         motion from the (x, y) delta / move_path, pick + advance its clip
         (CPU skin), draw a blob shadow then the model at the unit's world-px
         centre with yaw = facing and a footprint-matched scale.
+
+        ``open_mode_3d=False`` skips the ``begin_mode_3d``/``end_mode_3d``
+        pair (props & vegetation arc #60 P3, design §4.3 F23/F25): the
+        caller has already opened ONE shared 3D pass for units + props (one
+        batch flush, one shared depth buffer) — see
+        ``GameRenderer._draw_units_world``.
 
         ``clock`` is the renderer's wall-clock (self._anim_t0-relative is fine);
         the per-unit phase advances by the real delta so it animates through
@@ -379,7 +341,8 @@ class UnitModelRenderer:
                 normal_y_sign=light_ctx.normal_y_sign,
                 view_dir=(0.0, 1.0, 0.0))
 
-        rl.begin_mode_3d(camera3d)
+        if open_mode_3d:
+            rl.begin_mode_3d(camera3d)
         try:
             for u in units:
                 if not getattr(u, "alive", True):
@@ -387,7 +350,8 @@ class UnitModelRenderer:
                 self._draw_one(u, wpt, dt, clock, scale, shadow_r,
                                base_tint, light_rgb_fn)
         finally:
-            rl.end_mode_3d()
+            if open_mode_3d:
+                rl.end_mode_3d()
 
         self._prune(clock)
 

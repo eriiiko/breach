@@ -41,6 +41,12 @@ studio. This is a render-side CALIBRATION (P3's mandate), flagged for the
 human-test. See docs/fire_b2_smoke_honesty_design_2026-07-21.md §4 + the P3
 build notes.
 
+The taming lives in the module-level :func:`tame_wind` — THE render-side wind
+seam, usable without a GL context and without this pass being enabled. Its
+second consumer is prop sway (`renderer/static_props.py`, props & vegetation
+arc #60 P4, design §4.3 F3). Anything that needs "the wind" as a velocity calls
+it; a parallel smoothing/limiting implementation is the bug.
+
 Design: docs/fire_b2_smoke_honesty_design_2026-07-21.md §4. Credit for the
 technique lives in shaders/gas_medium.fs + renderer/advected_noise.py headers.
 """
@@ -75,7 +81,63 @@ _WIND_VREF = 0.08                 # saturating max drift speed, tiles/tick
 _WIND_VSENS = 0.5                 # dequant |wind| for ~63% of v_ref
 _WIND_SMOOTH_PASSES = 2           # 3x3 box passes -> coherent flow direction
 
+# PUBLIC aliases of the taming calibration. A second consumer of the tamed wind
+# (props & vegetation arc #60 P4: `renderer/static_props.py`'s sway) normalizes
+# against the SAME saturation ceiling, so "full sway" means "the wind the smoke
+# already treats as full drift". Import these — never re-type 0.08.
+WIND_V_REF = _WIND_VREF
+WIND_V_SENS = _WIND_VSENS
+WIND_SMOOTH_PASSES = _WIND_SMOOTH_PASSES
+
 SHADERS_DIR = Path(__file__).resolve().parent.parent / "shaders"
+
+
+# ---------------------------------------------------------------------------
+# THE wind-taming seam (module-level so it is usable WITHOUT a GL context and
+# without the detail pass being enabled — props & vegetation arc #60 P4).
+# ---------------------------------------------------------------------------
+
+def _box3(a: np.ndarray) -> np.ndarray:
+    """One separable 3x3 box-blur pass with edge replication (pyray-free)."""
+    p = np.pad(a, 1, mode="edge")                     # (h+2, w+2)
+    hz = (p[:, :-2] + p[:, 1:-1] + p[:, 2:]) / 3.0    # (h+2, w)
+    return (hz[:-2, :] + hz[1:-1, :] + hz[2:, :]) / 3.0  # (h, w)
+
+
+def tame_wind(wind_x: np.ndarray, wind_y: np.ndarray, *,
+              v_ref: float = _WIND_VREF, v_sens: float = _WIND_VSENS,
+              smooth_passes: int = _WIND_SMOOTH_PASSES) -> np.ndarray:
+    """Turn the Q16.16 raw ``-grad(P)`` planes into a USABLE visual velocity.
+
+    THE canonical wind-taming helper (module header): dequantize (÷2^16),
+    box-smooth (``smooth_passes`` 3x3 passes → a coherent flow DIRECTION out of
+    a fire-spiked gradient field), keep that direction, and give it a small
+    SATURATING speed ``v = v_ref * (1 - exp(-|w| / v_sens))``.
+
+    Returns ``(h, w, 2)`` float32 in TILES/TICK, ``[..., 0] = x``,
+    ``[..., 1] = y`` — bounded by ``v_ref`` everywhere, by construction.
+
+    Every render consumer of "the wind" calls THIS (``pack_dynamics`` for the
+    smoke detail pass; ``StaticPropRenderer`` for prop sway). A second smoothing
+    /limiting implementation elsewhere is the bug: the raw planes are not a
+    velocity and each ad-hoc taming would disagree about which way the air is
+    moving in the same room.
+
+    RENDER-ONLY: reads sim planes, writes nothing (the dequantize-at-the-render-
+    read convention — the float result never goes back into sim state).
+    """
+    wx = wind_x.astype(np.float64) / _FP_ONE_F
+    wy = wind_y.astype(np.float64) / _FP_ONE_F
+    for _ in range(int(smooth_passes)):
+        wx = _box3(wx)
+        wy = _box3(wy)
+    speed = np.hypot(wx, wy)
+    vmag = float(v_ref) * (1.0 - np.exp(-speed / max(float(v_sens), 1e-6)))
+    inv = np.where(speed > 1e-9, vmag / np.maximum(speed, 1e-30), 0.0)
+    out = np.empty(wx.shape + (2,), dtype=np.float32)
+    out[..., 0] = (wx * inv).astype(np.float32)
+    out[..., 1] = (wy * inv).astype(np.float32)
+    return out
 
 
 class GasDetailPass:
@@ -213,12 +275,9 @@ class GasDetailPass:
 
     # ---- per-frame upload ----------------------------------------------
 
-    @staticmethod
-    def _box3(a: np.ndarray) -> np.ndarray:
-        """One separable 3x3 box-blur pass with edge replication (pyray-free)."""
-        p = np.pad(a, 1, mode="edge")               # (h+2, w+2)
-        hz = (p[:, :-2] + p[:, 1:-1] + p[:, 2:]) / 3.0    # (h+2, w)
-        return (hz[:-2, :] + hz[1:-1, :] + hz[2:, :]) / 3.0  # (h, w)
+    _box3 = staticmethod(_box3)     # module-level; kept as an attribute so the
+                                    # historical GasDetailPass._box3 call site
+                                    # (and its tests) still resolve.
 
     @classmethod
     def pack_dynamics(cls, wind_x: np.ndarray, wind_y: np.ndarray,
@@ -228,27 +287,19 @@ class GasDetailPass:
         """(pyray-free) pack the RGBA16F dynamics array from the Q16.16 wind
         planes + the density solidity.
 
-        R,G = the TAMED wind velocity in TILES/TICK: dequantize the raw
-              ``-grad(P)`` (÷2^16), smooth it (coherent flow direction), keep the
-              DIRECTION, and give it a small SATURATING speed
-              ``v = v_ref * (1 - exp(-|w| / v_sens))``. The raw field is fire-
-              spiked and NOT a usable velocity (module header), so this bounds it
-              to a gentle drift; ``adv_gain`` in the shader scales it further.
+        R,G = the TAMED wind velocity in TILES/TICK — :func:`tame_wind`, the ONE
+              taming helper (this method is a consumer of it, not a second copy
+              of the math). The raw field is fire-spiked and NOT a usable
+              velocity (module header), so taming bounds it to a gentle drift;
+              ``adv_gain`` in the shader scales it further.
         B   = density_proxy (saturate of the pre-curve optical depth), the
               erosion weight. A = 0.
         """
         h, w = density_proxy.shape
-        wx = wind_x.astype(np.float64) / _FP_ONE_F
-        wy = wind_y.astype(np.float64) / _FP_ONE_F
-        for _ in range(_WIND_SMOOTH_PASSES):
-            wx = cls._box3(wx)
-            wy = cls._box3(wy)
-        speed = np.hypot(wx, wy)
-        vmag = float(v_ref) * (1.0 - np.exp(-speed / max(float(v_sens), 1e-6)))
-        inv = np.where(speed > 1e-9, vmag / np.maximum(speed, 1e-30), 0.0)
+        tamed = tame_wind(wind_x, wind_y, v_ref=v_ref, v_sens=v_sens)
         out = np.empty((h, w, 4), dtype=np.float16)
-        out[..., 0] = (wx * inv).astype(np.float16)          # tiles/tick
-        out[..., 1] = (wy * inv).astype(np.float16)
+        out[..., 0] = tamed[..., 0].astype(np.float16)       # tiles/tick
+        out[..., 1] = tamed[..., 1].astype(np.float16)
         out[..., 2] = density_proxy.astype(np.float16)
         out[..., 3] = np.float16(0.0)
         return out
@@ -325,4 +376,5 @@ class GasDetailPass:
         rl.unload_texture(self.jitter_tex)
 
 
-__all__ = ["GasDetailPass"]
+__all__ = ["GasDetailPass", "tame_wind", "WIND_V_REF", "WIND_V_SENS",
+           "WIND_SMOOTH_PASSES"]
