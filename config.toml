@@ -1159,6 +1159,52 @@ erode_strength = 0.6        # low-density erosion depth
 warp_px = 3.0               # sampling-UV domain warp
 dither_on = true
 
+[render.props]
+# 3D props & vegetation — WIND SWAY (arc #60 P4, design §4.3 "Sway (P4)").
+# Read EVERY FRAME by renderer/static_props.py (via SwaySettings.from_config),
+# so Ctrl+R retunes the motion live: this section is the whole tuning surface
+# for "how much does the tree move". Render-only; no sim, no digest, no golden.
+#
+# The wind a prop sways by is the TAMED wind (renderer/gas_detail.py::tame_wind,
+# the same product the smoke detail pass advects with) — never the raw fire-
+# spiked -grad(P) planes.
+sway_strength = 0.06     # MASTER. Crown offset at full wind, as a fraction of
+                         # the prop's height (0.06 = a 2.4 m tree's crown leans
+                         # ~14 cm). 0 = sway off entirely (props draw rigid).
+flutter_strength = 0.38  # leaf-tuft jitter, as a fraction of the bend
+                         # displacement, weighted by the baked flutter alpha
+                         # (0 = the canopy bends as one solid mass)
+gust_speed = 1.15        # rad/s of the slow gust envelope (~0.18 Hz)
+gust_depth = 0.38        # envelope depth: bend scales (1-d)..(1+d) over a gust
+flutter_speed = 1.0      # rate multiplier on the high-frequency leaf jitter
+idle_wind = 0.0          # floor on the wind fraction (0..1). ERIK'S RULING
+                         # (2026-09-07): "we're in a spaceship — leaves should
+                         # be TOTALLY STILL unless there is actual wind", so the
+                         # shipped floor is 0 and sway is a SIGNAL of real
+                         # atmosphere motion (blast front, breach, vent), never
+                         # ambient decoration. The dial stays for experiments
+                         # (a planetside scene); >0 makes calm air breathe.
+wind_ref = 0.08          # tamed speed (tiles/tick) that counts as FULL sway;
+                         # = gas_detail's saturation ceiling (its largest
+                         # possible output), so the fraction lands in 0..1
+
+# P4r2 — SWAY SCALES WITH GAS DENSITY (Erik's vented-room ruling, 2026-09-07):
+# "he vented a room to near-vacuum; the tamed wind velocity stayed large (the
+# few remaining particles are fast/turbulent) so the trees kept blowing 'a
+# storm' in an almost-empty room. Force on foliage is momentum flux (density x
+# velocity), not velocity — an evacuated room must be still no matter how fast
+# its residual gas moves; overpressure pushes harder." The sampled wind is
+# scaled by clamp(frac, 0, density_max) ** density_exponent, where frac = the
+# prop's own tile's bulk gas N over the map's ambient reference (never the
+# pressure overlay's atmosphere+wave_p sum — issue #62: wave_p carries a ~1
+# atm DC offset that makes that sum untrustworthy as a density proxy).
+density_exponent = 1.0  # 1.0 = linear momentum-flux scaling. At frac == 1
+                         # (ambient) this reproduces pre-P4r2 sway exactly
+                         # (1.0 ** 1.0 == 1.0) — no existing tuning moves.
+density_max = 2.0        # clamp ceiling on frac: overpressure can push sway
+                         # up to 2x; vacuum (frac == 0) always zeroes it
+                         # regardless of this dial or the exponent above.
+
 [render.speckle]
 mode = "soot"               # "off" | "noise" | "soot"  (A/B in studio)
 amp = 0.25

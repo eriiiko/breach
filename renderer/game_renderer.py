@@ -30,12 +30,13 @@ from . import core
 from .blackbody import BlackbodyRamp
 from .camera import Camera2D
 from .cold_overlay import ColdFieldOverlay
-from .gas_detail import GasDetailPass
+from .gas_detail import GasDetailPass, tame_wind
 from .gas_medium import GasMediumOverlay
 from .hover_readout import pack_hover_readout
 from .lighting import LightingPass
 from .speckle import SpeckleField
-from .static_props import DEFAULT_TILE_SIZE_M, StaticPropRenderer
+from .static_props import (DEFAULT_TILE_SIZE_M, StaticPropRenderer,
+                           SwaySettings)
 from .overlays import (
     FieldOverlay, FireOverlay, GlowOverlay, HeatFieldOverlay,
     WaterFieldOverlay,
@@ -404,6 +405,28 @@ class GameRenderer:
             cfg.world_px_per_tile, float(getattr(level_data, "tile_size_m",
                                                  DEFAULT_TILE_SIZE_M)))
         self.prop_renderer.load()
+        # P4 wind sway state (render-read only, zero per-tick sim cost):
+        #   _prop_wind  = the (h, w, 2) TAMED wind from gas_detail.tame_wind,
+        #                 refreshed in upload_state — and ONLY when a level
+        #                 actually has props, so a prop-free ship pays nothing.
+        #   _props_seen = latched by compose_world the first frame a non-empty
+        #                 props list arrives (compose_world has the props,
+        #                 upload_state has the gmap; this is the one-frame
+        #                 handshake between them).
+        #   _prop_clock_s = the SIM clock in seconds — never wall time, so a
+        #                 replay renders the same motion (gas_detail precedent).
+        #   _prop_gas_bulk_fn / _prop_n_ambient_q = P4r2 density-flux inputs
+        #                 (Erik's vented-room ruling, 2026-09-07): a bound
+        #                 GameMap.gas_bulk_n_at accessor + that map's ambient
+        #                 reference (GameMap.ambient_seed()[0]), refreshed in
+        #                 upload_state alongside _prop_wind — never a full-
+        #                 grid density copy, since draw_props samples them
+        #                 per prop (~12 tiles, not the whole grid).
+        self._prop_wind = None
+        self._props_seen = False
+        self._prop_clock_s = 0.0
+        self._prop_gas_bulk_fn = None
+        self._prop_n_ambient_q = 1.0
 
     # ---- per-frame physics->GPU upload ---------------------------------
 
@@ -497,6 +520,28 @@ class GameRenderer:
                     self.gas_detail.update(
                         self.gas_medium.density_proxy, gmap.wind_x, gmap.wind_y,
                         sim_tick=int(sim_tick), sim_dt=self._sim_dt)
+        # Props & vegetation arc #60 P4 — WIND SWAY input. The TAMED wind
+        # (gas_detail.tame_wind: smooth -> direction -> saturating speed) is
+        # the ONE render-side wind product; props sample it per prop at draw
+        # time. Raw gmap.wind_x/y is fire-spiked -grad(P) and never reaches a
+        # prop. Computed here because upload_state is where the renderer reads
+        # the sim (dequantize-at-the-render-read; nothing is written back), and
+        # ONLY when the level actually placed props — the smoke path keeps its
+        # own call inside GasDetailPass.update, so a prop-free ship is exactly
+        # as expensive as it was before this patch.
+        if self._props_seen and self.prop_renderer.ready:
+            self._prop_wind = tame_wind(gmap.wind_x, gmap.wind_y)
+            self._prop_clock_s = float(sim_tick) * self._sim_dt
+            # P4r2 (Erik's vented-room ruling 2026-09-07): sway is a momentum
+            # flux, not a velocity — an evacuated room's fast residual gas
+            # must not read as a storm. `gas_bulk_n_at` is the single-tile
+            # bulk-N accessor (O2 + inert-N2 books) and `ambient_seed()[0]`
+            # is the map's own ambient reference (space or planetside alike);
+            # both are cheap scalar reads, refreshed here so draw_props always
+            # samples the CURRENT tick's gas state, never a stale snapshot.
+            self._prop_gas_bulk_fn = gmap.gas_bulk_n_at
+            self._prop_n_ambient_q = float(gmap.ambient_seed()[0])
+
         # Fire still gets the vacuum mask: combustion requires oxygen, so
         # fire physically cannot exist in vacuum. Keep this until the fire
         # sim is taught to extinguish at vacuum tiles directly.
@@ -828,6 +873,13 @@ class GameRenderer:
         # of draw_units_3d: a sprite-only session (use_3d_units False) still
         # draws its props in 3D. Zero cost when the level has none.
         draw_props_3d = bool(props) and self.prop_renderer.ready
+        if props:
+            # Latch: tells upload_state to refresh the tamed wind from next
+            # frame on (see __init__). Also re-read the [render.props] sway
+            # dials from the LIVE config every frame, so Ctrl+R is a tuning
+            # session (the whole of "how much does the tree move" is config).
+            self._props_seen = True
+            self.prop_renderer.sway = SwaySettings.from_config(CFG)
         if draw_units_3d or draw_props_3d:
             clock = time.perf_counter() - self._anim_t0
             # P1: hand both consumers the SAME baked light field the ship is
@@ -859,9 +911,14 @@ class GameRenderer:
                         base_tint=(210, 70, 70, 255), light_rgb_fn=light_rgb_at,
                         light_ctx=light_ctx, open_mode_3d=False)
                 if draw_props_3d:
+                    # P4: sway on the SIM clock + the tamed wind sampled per
+                    # prop inside draw_props (one lookup each, no sim cost).
                     self.prop_renderer.draw_props(
                         props, self._world_cam3d, ctx=light_ctx,
-                        open_mode_3d=False)
+                        open_mode_3d=False, time_s=self._prop_clock_s,
+                        wind_field=self._prop_wind,
+                        gas_bulk_fn=self._prop_gas_bulk_fn,
+                        n_ambient_q=self._prop_n_ambient_q)
             finally:
                 rl.end_mode_3d()
             if draw_units_3d:
