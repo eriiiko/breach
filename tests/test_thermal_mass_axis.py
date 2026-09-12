@@ -807,9 +807,25 @@ def test_combustion_deposit_converts_via_heat_inv_shift_on_a_thermal_solid():
     fire = _q32(np.where(flam, int(0.8 * FP_ONE), 0))
     wall_hp = _q32(np.where(flam, 30 * FP_ONE, 0))
     ign = _q32(np.where(flam, 280 * FP_ONE, 0))
-    T0 = _q32(np.full((h, w), 400 * FP_ONE))
-
     solver = bp.CombustionSolver()
+    # R3 HEADROOM (2026-09-12, fire session #12 sweep). This fixture predates
+    # ruling R3 by five weeks. R3 scaled the O2 demand by
+    #     hotf = clamp((T - fire_T_ext) / fire_T_span, 0, hotf_cap)
+    # and this is an ISOLATED solver call — no fire_T_ext_plane, no dial
+    # override — so the C++ scalar fallback applies (350 / 180). The original
+    # T0 of 400 therefore gives hotf = 0.278: still nonzero, so the `burn > 0`
+    # guard below has been holding, but on a thin margin that nothing tests.
+    # The object-vs-gas `!=` comparison would go vacuous outright if hotf
+    # dropped much further.
+    #
+    # Seed at hotf == 1 instead, read off the solver so this tracks the C++
+    # defaults rather than restating them. The conversion-path property under
+    # test is unchanged; it simply now has real headroom.
+    t_hotf1 = float(solver.fire_T_ext) + float(solver.fire_T_span)
+    assert t_hotf1 > 280.0, (
+        f"hotf==1 seed ({t_hotf1}) fell below this fixture's ignition "
+        f"temperature (280) — the burn sites would change regime")
+    T0 = _q32(np.full((h, w), int(t_hotf1 * FP_ONE)))
     out = {}
     for tag, mask in (("object", tsol), ("gas", None)):
         gas = np.ascontiguousarray(gas0.copy())

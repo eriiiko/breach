@@ -37,6 +37,7 @@ import pytest
 import breach_physics as bp
 from level_loader import LevelData
 from simulation import Simulation
+from simulation import fire_fixed, gas_fixed, water_fixed, wave_fixed
 from simulation.unit import Unit
 
 from field_ab_harness import SIM_FIELDS, diff_trajectories
@@ -66,12 +67,18 @@ def _make_sim() -> Simulation:
                      enable_recorder=False)
     g = sim.gmap
     interior = (~g.solid) & (~g.is_vacuum)
-    g.smoke[interior] = 0.6
-    g.fire[10, 10] = 0.8
-    g.fire[10, 11] = 0.5
-    g.water_depth[12, 12] = 0.3
-    g.water_depth[12, 13] = 0.3
-    g.wave_source[5, 5] = 8.0
+    # These fields are all int32 Q16.16, so a bare float assignment TRUNCATES
+    # to 0 — every seed here was silently landing on an empty map (found in the
+    # 2026-09-12 fixture sweep; unrelated to R3, just the same class of fixture
+    # that quietly stopped meaning what it said). The A/B property under test is
+    # unit stamping, which these fields only decorate, so the comparison stayed
+    # valid — but it was comparing two blank scenes. Quantize properly.
+    g.smoke[interior] = gas_fixed.quantize_scalar(0.6)
+    g.fire[10, 10] = fire_fixed.quantize_scalar(0.8)
+    g.fire[10, 11] = fire_fixed.quantize_scalar(0.5)
+    g.water_depth[12, 12] = water_fixed.quantize_scalar(0.3)
+    g.water_depth[12, 13] = water_fixed.quantize_scalar(0.3)
+    g.wave_source[5, 5] = wave_fixed.quantize_scalar(8.0)
     sim.add_unit(Unit("M1", x=4, y=4, team=0))
     sim.add_unit(Unit("M2", x=14, y=14, team=0))
     g.destroy_wall(10, 0)            # hull breach -> vacuum (venting)
