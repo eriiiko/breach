@@ -588,14 +588,46 @@ def test_lone_fire_does_not_firestorm_in_a_couple_ticks():
     sim.set_paused(False)
     g.fire[y0, x0] = FIRE_Q(0.8)
     counts = []
-    for _ in range(3):
+    # R3 + HORIZON REPAIR (2026-09-12, fire session #12 sweep). This test was
+    # INERT and had been since R3 landed. Two independent faults:
+    #
+    #  1. It held `fire` lit but never wrote `temperature`, and since R3 tied
+    #     the O2 demand to `hotf = clamp((T - fire_T_ext)/fire_T_span, ...)`
+    #     a fire on an ambient tile draws nothing and deposits nothing. Wood's
+    #     fire_T_ext is 100, the tile sat at 0, so hotf was 0. MEASURED before
+    #     this fix: peak temperature anywhere on the map was 0.0 — the fire
+    #     moved literally nothing.
+    #  2. Three ticks is 0.125 s. Even a HEALTHY fire lights only its own tile
+    #     in that time (measured), so the horizon could not tell "gentle" from
+    #     "dead" even if fault 1 were fixed.
+    #
+    # A negative assertion ("does not firestorm") over an inert fixture is
+    # unfalsifiable: it passes precisely because nothing happens. It could
+    # never have caught the 14-tile radiative flashover found on 2026-09-06,
+    # which is exactly the class of defect it exists to catch.
+    #
+    # Repaired: hold the seed HOT as well as lit, run to 200 ticks (~8 s, the
+    # timescale the measured flashover actually occupied), and pair the
+    # negative bound with a POSITIVE one so the test can fail in both
+    # directions. Measured at the shipped config: 4 of 28 tiles alight, peak
+    # temperature ~1198, stable out to 600 ticks.
+    for _ in range(200):
         g.fire[y0, x0] = max(int(g.fire[y0, x0]), FIRE_Q(0.8))
+        g.temperature[y0, x0] = max(int(g.temperature[y0, x0]), FIRE_Q(300.0))
         sim.step()
         counts.append(int((g.fire > FIRE_001_Q).sum()))
-    # After a couple of ticks only a tiny fraction of the wall is alight — NOT a
-    # map-wide firestorm. (Far below half the structure.)
+    # NON-VACUOUSNESS: the fire must actually have burned. Without this the
+    # bound below passes on a dead fixture, which is the whole defect above.
+    assert int(g.temperature.max()) > FIRE_Q(100.0), (
+        "the seeded fire never heated anything — this fixture is inert and the "
+        "no-firestorm bound below would pass vacuously (check the temperature "
+        "seed against R3's hotf ramp)")
+    # PROPERTY: radiative spread is gentle — a lone fire does not engulf the
+    # structure. WHAT MUST BREAK IT: any change that lets one burning tile
+    # carry enough heat far enough to ignite most of a room.
     assert max(counts) < n_wood // 2, (
-        f"a lone fire firestormed the structure too fast: {counts} of {n_wood}")
+        f"a lone fire firestormed the structure: {max(counts)} of {n_wood} "
+        f"alight (counts over 200 ticks: {counts[::20]})")
 
 
 # ---------------------------------------------------------------------------

@@ -595,10 +595,31 @@ def test_conservative_default_does_not_firestorm_wood_room():
     assert n_wood >= 20
     sim.set_paused(False)
     counts = []
-    for _ in range(5):
-        # hold the seed lit (S3a: integer max on the Q16.16 field)
+    # R3 + HORIZON REPAIR (2026-09-12, fire session #12 sweep) — the twin of
+    # test_fire_heat_source.py::test_lone_fire_does_not_firestorm_in_a_couple_
+    # ticks, same room, same fault, see that test for the full account.
+    #
+    # In short: holding `fire` lit without writing `temperature` produces an
+    # INERT fire after R3 (demand rides `hotf`; wood's fire_T_ext is 100 and
+    # the tile sat at ambient 0). Measured before this fix: peak temperature
+    # anywhere on the map was 0.0. And five ticks is 0.2 s, far too short to
+    # distinguish a gentle fire from a dead one. A negative assertion over an
+    # inert fixture cannot fail, so this could never have caught the 14-tile
+    # flashover of 2026-09-06 — the very thing it exists to catch.
+    for _ in range(200):
+        # hold the seed lit (S3a: integer max on the Q16.16 field) AND hot
         g.fire[y0, x0] = max(int(g.fire[y0, x0]), FIRE_Q(0.8))
+        g.temperature[y0, x0] = max(int(g.temperature[y0, x0]), FIRE_Q(300.0))
         sim.step()
         counts.append(int((g.fire > FIRE_001_Q).sum()))
+    # NON-VACUOUSNESS: the fire must actually have burned.
+    assert int(g.temperature.max()) > FIRE_Q(100.0), (
+        "the seeded fire never heated anything — this fixture is inert and the "
+        "no-firestorm bound below would pass vacuously (check the temperature "
+        "seed against R3's hotf ramp)")
+    # PROPERTY: the SHIPPED [physics.fire] defaults are conservative — one lit
+    # tile does not engulf a wood room. WHAT MUST BREAK IT: a dial or law
+    # change that extends radiative reach far enough to ignite most of a room.
     assert max(counts) < n_wood // 2, (
-        f"a lone fire firestormed the wood room too fast: {counts} of {n_wood}")
+        f"a lone fire firestormed the wood room: {max(counts)} of {n_wood} "
+        f"alight (counts over 200 ticks: {counts[::20]})")
