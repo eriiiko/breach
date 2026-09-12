@@ -64,6 +64,18 @@ H_BED_SHIFT = 3
 IGN_Q = int(round(500.0 * FP_ONE))
 DT = 1.0 / 24.0
 
+# The temperature at which R3's demand factor `hotf` is exactly 1, i.e. the
+# seed at which this fixture draws the oxygen it was written to draw. Read off
+# the solver so it tracks the C++ fallback defaults (combustion.h: 350 + 180)
+# instead of restating them. See build_state's temperature seed for the full
+# story, and PART 4's guard for what now stops this going quiet again.
+_HOTF_REF = bp.CombustionSolver()
+HOTF1_Q = int(round(
+    (float(_HOTF_REF.fire_T_ext) + float(_HOTF_REF.fire_T_span)) * FP_ONE))
+assert HOTF1_Q > IGN_Q, (
+    "hotf==1 seed fell below the fixture's synthetic ignition point — the "
+    "claim gate's not-yet-alight branch would change what this gate exercises")
+
 # The planes the pass mutates — every one is compared at tol 0.
 MUTATED = ("gas", "temperature", "wall_hp", "heat", "dem_acc")
 
@@ -130,7 +142,29 @@ def build_state(h=24, w=28, draw_r=2, seed=7):
     fire[1, 3] = int(0.9 * FP_ONE)
 
     temperature = np.zeros((h, w), dtype=np.int32)
-    temperature[flammable] = IGN_Q + 1000
+    # R3 (fire session #12, docs/fire_3c_design_2026-09-01.md "Ruling R3") made
+    # the O2 DEMAND temperature-dependent:
+    #     hotf = clamp((T - fire_T_ext) / fire_T_span, 0, hotf_cap)
+    # so how hot this fixture runs now sets how hard every claimant draws.
+    #
+    # This file drives CombustionSolver/cuda_combustion_step in ISOLATION — no
+    # fire_T_ext_plane, no dial overrides — so the C++ SCALAR FALLBACK applies
+    # (combustion.h: fire_T_ext 350, fire_T_span 180).
+    #
+    # The old seed was `IGN_Q + 1000`, and that +1000 is RAW Q16.16 COUNTS, not
+    # game units: it lands at 500.0153 game units, i.e. 0.015 above the
+    # fixture's own synthetic ignition point. Harmless before R3, when
+    # temperature did not touch demand; after R3 it computes to hotf = 0.833,
+    # so every branch this gate exercises (contested, full-drain, permeable
+    # attenuation, vacuum termination, edge slots) was running at ~83% of the
+    # intended scale — and nothing here would have noticed, because every
+    # assertion is either a CPU==GPU equality or a one-sided "no mass created"
+    # bound, all of which pass just as happily when NOTHING burns at all.
+    #
+    # Seed at hotf == 1 instead, read off the solver so this tracks the C++
+    # defaults rather than restating them. See the non-vacuousness guard in
+    # PART 4 for the assertion that now keeps it honest.
+    temperature[flammable] = HOTF1_Q
     wall_hp = np.zeros((h, w), dtype=np.int32)
     wall_hp[flammable] = 60 * FP_ONE
     ign = np.zeros((h, w), dtype=np.int32)
@@ -237,6 +271,18 @@ def part2_cpu_gpu(draw_r) -> bool:
             break
     drawn = int(s0["gas"][O2].astype(np.int64).sum()
                 - cpu["gas"][O2].astype(np.int64).sum())
+    # NON-VACUOUSNESS GUARD (2026-09-12, fire session #12 sweep). This leg is a
+    # pure CPU==GPU equality, so it passes just as happily when the pass does
+    # NOTHING — two identical no-ops are bit-identical. `drawn` was already
+    # computed and PRINTED here, but never asserted, so a fixture that stopped
+    # burning would have reported a cheerful "OK" with `drawn = 0`. R3 made
+    # that reachable (demand now rides `hotf`), so enforce what was only ever
+    # displayed.
+    if ok and drawn <= 0:
+        print("  VACUOUS: the run drew ZERO oxygen — a CPU==GPU equality over "
+              "two no-ops proves nothing. Check the fixture's temperature seed "
+              "against R3's hotf ramp (HOTF1_Q).")
+        ok = False
     print(f"  {'OK' if ok else 'FAIL'}: 30 ticks bit-identical "
           f"(incl. dem_acc, depth {cpu['dem_acc'].shape[0]}); "
           f"O2 drawn over the run = {drawn} counts")
@@ -266,10 +312,12 @@ def part4_no_oxygen_created(draw_r=2) -> bool:
     s0 = build_state(draw_r=draw_r)
     s = _copy(s0)
     ok = True
+    total_drawn = 0
     for tick in range(30):
         before = s["gas"][O2].copy()
         _cpu_step(s, draw_r)
         after = s["gas"][O2]
+        total_drawn += int(np.clip(before - after, 0, None).sum())
         if (after > before).any():
             n = int((after > before).sum())
             print(f"  tick {tick}: {n} cell(s) GAINED O2 in the combustion pass")
@@ -279,8 +327,22 @@ def part4_no_oxygen_created(draw_r=2) -> bool:
             print(f"  tick {tick}: negative O2 after the draw")
             ok = False
             break
+    # NON-VACUOUSNESS GUARD (added 2026-09-12, fire session #12 sweep). Every
+    # bound in this file is ONE-SIDED — "no cell gains O2", "no cell goes
+    # negative", and PARTS 1-3's CPU==GPU equalities — so ALL of them pass
+    # perfectly when the draw does NOTHING AT ALL. That is not hypothetical:
+    # R3 tied demand to `hotf`, and this fixture's temperature seed silently
+    # put it at hotf = 0.83 for eleven days without a single assertion
+    # noticing. A seed that drifted to hotf = 0 would have been invisible.
+    # Require that the pass actually moved oxygen.
+    if ok and total_drawn <= 0:
+        print("  VACUOUS: 30 ticks drew ZERO oxygen — every bound below is "
+              "one-sided and passes trivially when nothing burns. Check the "
+              "fixture's temperature seed against R3's hotf ramp (HOTF1_Q).")
+        ok = False
     print(f"  {'OK' if ok else 'FAIL'}: no cell ever gains O2 in the pass and "
-          f"no cell goes negative (30 ticks)")
+          f"no cell goes negative (30 ticks); {total_drawn} raw O2 counts "
+          f"actually drawn")
     return ok
 
 
