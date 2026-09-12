@@ -438,12 +438,112 @@ The raylib Python binding exposes `rlLoadComputeShaderProgram`,
 OpenGL 3.3 / GLSL 3.30** (`rl_get_version()` → `RL_OPENGL_33`) on an RTX 3070
 whose driver offers 4.6. The limit is the shipped raylib build, not the hardware.
 
-Compute shaders need a GL 4.3 build, i.e. a custom raylib/pyray build on all
-four machines. **Recommendation: do not.** Radiance cascades are naturally a
-sequence of texture passes merged coarse-to-fine, which is exactly what
-multi-pass fragment shaders on ping-ponged render textures do, and that works on
-GL 3.3 today with no toolchain change. Revisit compute only if profiling demands
-it.
+**Fact checked 2026-09-12:** the installed raylib is a **prebuilt PyPI wheel**
+(`raylib 5.5.0.4`, `cp311-cp311-win_amd64`). We have never built it ourselves,
+so a source build would be a new step, not a repeat of one already done.
+
+**RULING R-S (Erik, 2026-09-12): build our own raylib at GL 4.3 — but buy the
+decision with a measurement, not a guess.** Write the cascade as multi-pass
+fragment shaders on GL 3.3 first (the reference implementation we want anyway,
+and what a compute version would be checked against), measure it on a real map
+at the resolution whose look Erik approves, and then the build decision is
+arithmetic rather than judgement.
+
+Erik's reasoning, which corrected mine: a broken build announces itself the
+moment you run the game, unlike a stale doc that lies quietly for months; the
+C++ toolchain already exists on every machine, so this is the same class of
+chore, not a new one; and 2× is not a micro-optimisation when it buys a
+resolution tier.
+
+**It is really a resolution decision.** Extrapolated from the published
+benchmark:
+
+| Map / light resolution | Cells | Compute | Fragment |
+|---|---|---|---|
+| Largest today, tile res | 33 k | 0.2 ms | 0.5 ms |
+| Largest today, 2× sub-tile | 131 k | 1.0 ms | 1.9 ms |
+| Full-size map, tile res | 131 k | 1.0 ms | 1.9 ms |
+| **Full-size map, 2× sub-tile** | **524 k** | **3.8 ms** | **7.7 ms** |
+| Full-size map, 4× sub-tile | 2.1 M | 15 ms | 30 ms |
+
+Row four is where we will want to live. At 60 fps (16.7 ms) the fragment version
+takes 46% of the frame; compute takes 23%. That tier is what the custom build
+buys.
+
+**Erik's structural point, recorded because it shapes the whole budget:** RL
+training is headless and renders nothing, so the render budget competes with
+nothing. When we *do* draw, the optimisation work already done leaves room to
+spend generously on the look.
+
+**Two things to know before buying resolution.**
+1. **Cascades give SOFT penumbrae by design** — sharp shadows are their known
+   weakness. The crisp prototype look (#64) comes from a steep **transfer curve
+   at display time**, not from field resolution. Resolution buys accuracy of
+   *where* the edge sits (a thresholded coarse field is blobby and swims under
+   motion), not crispness itself.
+2. The checkerboard artifact for lights smaller than ~8× base probe spacing gets
+   **less** likely at higher resolution, so a small source like a flashlight is
+   another argument for resolution.
+
+**The one real risk and its kill:** a `pip install --upgrade`, or a freshly
+created env, silently restores the stock wheel and the compute path vanishes.
+Mitigations, all cheap: assert the context is ≥ 4.3 at startup when the cascade
+path is enabled so a reverted wheel **fails loudly** instead of degrading
+silently; pin the package; add the build to the `new-machine-setup` skill.
+Machine drift matters little here — this is render-only, so a stock-wheel
+machine looks different and runs slower but **desyncs nothing**.
+
+## 10. What gates implementation (2026-09-12)
+
+### 10.1 Hard gates, in order
+
+1. **`fire-12` must be green.** A new system cannot be gated against a red
+   suite — new breakage is indistinguishable from old. Four reds beyond the
+   three pre-existing parked ones, three of them already blessed for fixing:
+   re-baseline `GOLDEN_AGGREGATE` (which also clears the 12 CUDA tests, since
+   they share that hash); rewrite `test_foliage_tile_burns` to seed heat
+   (R-G); and rewrite `test_e2e_1_sealed_room_fire_self_starves`, whose
+   "fuel barely touched" expectation is stale now that `wall_damage = 0.36` is
+   blessed (R-E). **This is the immediate next work.**
+2. **A real design document plus the adversarial critique pass.** This survey
+   carries a blessed *shape*; implementation needs the mathematics — sweep
+   formulation, angular discretisation, the exact-integer conservation scheme,
+   cascade pass structure, calibration procedure.
+3. **Two genuinely unsolved technical designs** (see §10.2). Attack early.
+
+### 10.2 The named risks
+
+- **The exact-integer conservative sweep.** Discrete ordinates conserves in real
+  arithmetic; conserving *exactly in int64*, the way `face_flux` does for gas
+  energy, is a different problem and is not solved by citing the literature.
+  **This is the piece most likely to force a redesign** — do it first, not last.
+- **The calibration.** Something replaces `rad_scale` such that ignition lands
+  at ~3 tiles for a crate and ~8 for a room fire. §9.3 means this can be
+  *derived* rather than fitted, which is new — but the derivation is not done.
+- **The old raycaster's other customers.** Unit heat damage reads `rad_flux`,
+  weapons share the DDA primitive, the renderer's light path hangs off it. A
+  replacement either keeps them working or migrates them, and that must be
+  decided before the first patch, not during the last.
+
+### 10.3 Explicitly NOT gating
+
+- **Philox / ingress door 4.** Verified 2026-09-12: `63-swarm-units` is
+  **docs-only** (14 files, zero code); the chapter's `cpp/src/philox32.h` +
+  `src/simulation/philox32.py` do not exist yet. And the ray engine will never
+  want it — both candidate algorithms are fully deterministic with no
+  stochastic sampling, so they touch door 4 not at all. Philox stays a
+  swarm-units prerequisite only.
+- **The raylib / OpenGL build** (R-S: measure first).
+- **Light resolution** (the same measurement answers it).
+- **Solids heating gas** (R-O, its own session).
+- **The fire model rework** (after transport; better for waiting).
+
+### 10.4 Open parameter never yet discussed
+
+**How many directions the sweep carries.** Eight was too few, and that is the
+entire content of the ray-effect artifact. 16 / 32 / 64 are all plausible; cost
+is linear in it and artifact level inverse. It wants a measurement, and it
+belongs in the design document as an explicit parameter with a stated basis.
 
 ## Systems
 
