@@ -2,56 +2,77 @@
 
 > Erik asked: *"is it possible to test the alternatives in a simple python
 > render, only rendering one frame, to see how the different methods compare to
-> each other?"* This is the answer. `scheme_study.py`, one frame, numpy only,
-> ~80 s. Figures: `scheme_fields.png`, `scheme_profiles.png`.
->
-> It was run to check a claim I made in
-> `docs/ray_engine_v2_design_2026-09-12.md` §2.4 and did not believe: that step
-> differencing's numerical diffusion is "comfortably below the tile
-> quantisation we already accept". **It is not.** The claim is withdrawn.
+> each other?"* This is the answer. `scheme_study.py` (isotropy, conservation)
+> and `aperture_study.py` (shadow fidelity), one frame each, numpy only.
+> Figures: `scheme_fields.png`, `scheme_profiles.png`, `aperture_fidelity.png`.
+
+## ⚠ Correction to the first pass — read this first
+
+The first version of this report led with **"step differencing does not merely
+soften shadows, it removes them — 11 tiles of penumbra"**. **That conclusion is
+WITHDRAWN. It was my measuring stick failing, not the scheme.**
+
+I had measured a 90 %→10 % *edge width*. The characteristic schemes at S16 do
+not produce soft-edged plateaus through an aperture — they produce **pencil
+beams**, two narrow spikes where an ordinate happens to line up with the gap and
+nothing in between. An edge-width metric crosses both thresholds inside one tile
+of a spike and reports `0.00`, which I read as "perfect shadow". It was the
+opposite: the worst failure in the study.
+
+Looking at the plotted profile is what caught it. The corrected measurement asks
+the question that actually matters — *does the scheme reproduce the lit region* —
+and the ranking changes substantially. Lesson worth keeping: a scalar summary of
+a shape needs the shape looked at once before it is trusted.
 
 ## The setup
 
-All schemes share the S16 angular quadrature, a 49×49 grid and the 0.333 m
-tile. The comparison is built so the two error sources separate:
+All schemes share the S16 quadrature, a 49×49 grid, the 0.333 m tile. Built so
+the two error sources separate:
 
 | | angular error | spatial error | conservative |
 |---|---|---|---|
 | **exact** — analytic `E/(2πr)` with Bresenham visibility | none | none | n/a (yardstick) |
 | **long characteristics** — back-integrate each ordinate to the grid edge | yes | ~none | no |
 | **step** — first-order upwind finite volume (what §2.4 specifies) | yes | yes | yes |
-| **shear** — advance one cell on the major axis, interpolate the transverse fraction | yes | yes | **not as implemented** |
+| **shear** — advance one cell on the major axis, interpolate transversally | yes | yes | **not as implemented** |
 
-A normalisation check runs first, because the first version of this study was
-wrong and the check is what caught it: every scheme must land on the analytic
-`E/(2π) = 0.1592` for `mean ring fluence × r`, and must be flat in `r`. All
+A normalisation check runs first, because the *first* version of this study was
+wrong and the check is what caught that one: every scheme must land on the
+analytic `E/(2π) = 0.1592` for `mean ring fluence × r` and be flat in `r`. All
 four now do, to three digits.
 
-## Result 1 — step differencing does not merely soften shadows, it removes them
+## Result 1 — aperture fidelity: no grid scheme is good, and rotation is what matters
 
-90 % → 10 % edge width of a shadow cast by a wall with a 7-tile gap, measured
-12 tiles downstream:
+A 7-tile gap in a wall, cut 12 tiles downstream. `fill` is the mean fluence
+inside the true lit band relative to exact (1.0 ideal), `spill` the mean outside
+it (0.0 ideal), `RMS err` the normalised error against the analytic profile.
 
-| scheme | edge width (tiles) | (metres) |
-|---|---|---|
-| exact | 0.00 | 0.00 |
-| long characteristics S16 | 0.00 | 0.00 |
-| **step S16** | **11.00** | **3.66** |
-| **shear S16** | **0.00** | **0.00** |
+| scheme | fill | spill | RMS err |
+|---|---|---|---|
+| *ideal* | 1.00 | 0.00 | 0.000 |
+| **long char S16 + rotation** | **1.01** | **0.00** | **0.102** |
+| shear S16 + rotation | 0.92 | 0.06 | 0.201 |
+| step S16 + rotation | 0.92 | 0.10 | 0.228 |
+| step S16 | 0.97 | 0.09 | 0.244 |
+| shear S16 | 1.03 | 0.02 | 0.313 |
+| **long char S16 (no rotation)** | 1.17 | 0.00 | **1.627** |
 
-Eleven tiles of penumbra from a seven-tile aperture is not a soft shadow, it is
-the absence of one. My own `sqrt(distance)` estimate had predicted ~1.7 tiles
-and was optimistic by more than 6×. A doorway would cast essentially no heat
-shadow.
+Read `aperture_fidelity.png` alongside it. Unrotated long characteristics spikes
+to **8.6× the correct peak** at two angles and sits at zero everywhere else —
+the fill of 1.17 is an average over a profile that is nowhere near right, which
+is why RMS is the honest column. Rotation collapses that to a near-perfect
+match.
 
-This is the study's headline, and it is a *different* finding from critique 1's
-§6, which measured shadows through **solid walls** (2.8 % leak — genuinely
-fine) and characterised apertures as "soft but not wrong". Through an aperture,
-at gameplay distances, it is wrong.
+**Rotation is the single most important variable here**, worth more than the
+choice of spatial scheme: it takes long characteristics from the worst result in
+the study to the best by a factor of two.
 
-## Result 2 — the near field is anisotropic, and rotation makes it worse
+Both grid schemes land around RMS 0.2, under-filling the aperture and bleeding
+~10 % outside it. Not catastrophic, not good.
 
-Ring ripple (peak-to-peak as a percentage of the mean; 0 % is isotropic):
+## Result 2 — point-source isotropy, where rotation does the opposite
+
+Ring ripple, peak-to-peak as a percentage of the mean (0 % is isotropic):
 
 | scheme | r = 3 | r = 8 |
 |---|---|---|
@@ -60,26 +81,24 @@ Ring ripple (peak-to-peak as a percentage of the mean; 0 % is isotropic):
 | **long char S16 + rotation** | **8.3 %** | **13.2 %** |
 | step S16 | 85.8 % | 45.0 % |
 | step S16 + rotation | 101.3 % | 107.5 % |
-| **shear S16** | **50.7 %** | **33.7 %** |
+| shear S16 | 50.7 % | 33.7 % |
 | shear S16 + rotation | 69.9 % | 90.8 % |
 
-Two things here, and the second contradicts the design.
+**Rotation helps long characteristics enormously and hurts both grid schemes.**
+The mechanism is visible in the numbers: with the half-offset quadrature no
+ordinate sits exactly on an axis, and an axis-aligned ordinate in a grid scheme
+is a pencil that never spreads. Rotation sweeps the quadrature *through* the
+axis-aligned case and samples the pathology. Critique 1 found the same thing
+from the other direction — its best near-field row is "S16, half-offset (no
+ordinate on an axis or a 45°)".
 
-**Rotation helps long characteristics enormously (129 % → 8.3 %) and hurts both
-grid schemes.** The reason is visible in the numbers: with the half-offset
-quadrature no ordinate sits exactly on an axis, and an axis-aligned ordinate in
-a grid scheme is a pencil beam that never spreads. Rotation sweeps the
-quadrature *through* the axis-aligned case and samples the pathology. Critique 1
-found the same thing from the other side — its best near-field row is "S16,
-half-offset (no ordinate on an axis or a 45°)".
+So rotation is **good for apertures and bad for point sources** in a grid
+scheme, and the design cannot have both from one lever. Critique 1's independent
+S64 measurement (near-field 1.96× versus S16's 2.13×, essentially unmoved)
+says the near-field error is a *stencil* artifact that no angular remedy
+touches.
 
-**So §2.5's per-tick quadrature rotation is wrong for the scheme §2.4 picks.**
-Rotation is a remedy for the ray effect, which is an *angular* artifact; the
-near-field error here is a *stencil* artifact and rotation cannot touch it.
-Critique 1 reached the same conclusion independently by measuring S64 (1.96×
-axis/diagonal at r = 1, versus S16's 2.13× — essentially unmoved).
-
-## Result 3 — conservation, and the honest problem with the candidate
+## Result 3 — conservation, and the honest problem with the sharp schemes
 
 | scheme | emitted | absorbed + escaped | residual |
 |---|---|---|---|
@@ -87,66 +106,65 @@ axis/diagonal at r = 1, versus S16's 2.13× — essentially unmoved).
 | shear S16 | 1.00000 | 0.73796 | **+26.2 %** |
 
 Step differencing is exactly conservative, as designed and as critique 1 also
-measured. **My shear implementation is not**, and 26 % is far too large to
-dismiss as bookkeeping noise.
+measured. **My shear implementation is not.**
 
-The transport operator itself is fine — the interpolation weights are
-non-negative and sum to one, so a column's total stream is preserved. The leak
-is in the *energy* accounting: absorption is charged as `κ·I·w` using the
-cell-centre intensity, while the intensity is actually advanced along a path of
-length `1/|major|` that varies with direction, so what is charged and what is
-removed from the stream disagree. Critique 1 reports an integer shear variant
-with an exactly-zero residual, using a remainder-based split; reconciling the
-two is the open engineering question, not a settled win.
+The transport operator is fine — interpolation weights are non-negative and sum
+to one, so a column's total stream is preserved. The leak is in the *energy*
+accounting: absorption is charged as `κ·I·w` from the cell-centre intensity,
+while the intensity is advanced along a path of length `1/|major|` that varies
+with direction, so what is charged and what is removed disagree. Critique 1
+reports an integer shear variant at exactly zero residual using a
+remainder-based split; reconciling the two is open work, not a settled win.
 
-**Stated plainly: the sharp scheme is not yet known to be conservative in our
-hands, and exact conservation is a hard requirement. That is the gap.**
+Long characteristics is not conservative either, and its unrotated drift is
+visible in the normalisation check (`0.1704 / 0.1495 / 0.1293` against a flat
+`0.1592`).
 
-## Result 4 — more ordinates make the sharp scheme worse
+**Stated plainly: the two schemes that win on accuracy are the two that are not
+yet known to conserve in our hands, and exact conservation is a hard
+requirement.**
 
-| quadrature | ripple r = 3 | ripple r = 8 | shadow edge (tiles) |
-|---|---|---|---|
-| shear S16 | 50.7 % | 33.7 % | **0.00** |
-| shear S32 | 65.4 % | 70.5 % | 11.00 |
-| shear S64 | 68.7 % | 84.7 % | 10.00 |
-| step S16 (reference) | 85.8 % | 45.0 % | 11.00 |
+## Result 4 — more ordinates make the shear scheme worse
 
-Counter-intuitive and worth understanding before anyone "improves" the design by
+| quadrature | ripple r = 3 | ripple r = 8 |
+|---|---|---|
+| shear S16 | 50.7 % | 33.7 % |
+| shear S32 | 65.4 % | 70.5 % |
+| shear S64 | 68.7 % | 84.7 % |
+
+Counter-intuitive, and worth knowing before anyone "improves" the design by
 raising the ordinate count. A shear step is *exact* when the transverse fraction
-is 0 (axis) or 1 (45°) — no interpolation happens at all. Angles in between
-interpolate, and interpolation is what diffuses. S16's sixteen directions happen
-to sit close to the exact cases; S32 and S64 add intermediate angles whose
-fractions sit near 0.5, where transverse diffusion is maximal.
+is 0 (axis-aligned) or 1 (45°) — no interpolation at all. Angles in between
+interpolate, and interpolation is what diffuses. S16's directions sit close to
+the exact cases; S32 and S64 add intermediate angles whose fractions cluster
+near 0.5, where transverse diffusion peaks.
 
-So for this scheme the ordinate count is **not** a quality dial, and §12 Q2
-("ordinate count", pencilled for measurement in P2) partly dissolves: S16 is not
-a budget compromise, it is near a sweet spot.
+So for this scheme the ordinate count is **not** a quality dial. S16 is near a
+sweet spot rather than a budget compromise.
 
 ## What this changes in the design
 
-1. **§2.4's diffusivity claim is withdrawn.** Step differencing costs the
-   shadows, and heat shadows through doorways are gameplay.
-2. **§2.5's per-tick quadrature rotation should not ship with a grid scheme.**
-   It is a ray-effect remedy applied to a stencil artifact, and measured, it
-   makes both grid schemes worse. Keep the half-offset quadrature instead, so no
-   ordinate is ever axis-aligned.
-3. **The spatial scheme is now the arc's central open problem**, not a detail
-   inside P1. We need one that is simultaneously sharp and exactly conservative.
-   Candidates, in order of promise: the integer shear variant critique 1
-   measured at zero residual (reconcile against this study's 26 %); the lumped
-   Linear Characteristic family, which satisfies corner balance and so is
-   conservative and low-diffusion by construction, at the cost of carrying
-   moments per cell.
-4. **S16 stands**, for a better reason than budget.
+1. **§2.4's step-differencing choice is not refuted.** My first pass claimed it
+   was; that claim is withdrawn. Step is the only candidate measured to conserve
+   exactly, and its aperture error (RMS 0.244) is comparable to shear's.
+2. **§2.5's per-tick rotation is now a genuine trade, not a free win.** It
+   improves apertures for every scheme and degrades point-source isotropy for
+   grid schemes. The design asserts it as an unambiguous good; it is not.
+3. **The spatial scheme remains the arc's central open problem.** We want sharp,
+   isotropic *and* exactly conservative, and nothing measured here is all three.
+   Candidates: reconcile critique 1's zero-residual integer shear against this
+   study's 26 %; or the lumped Linear Characteristic family, which satisfies
+   corner balance and so is conservative and low-diffusion by construction, at
+   the cost of moments per cell.
+4. **S16 stands**, for a better reason than budget (Result 4).
 
 ## Caveats
 
-- Everything here is float, not the integer scheme. It measures the *scheme's*
-  behaviour, not the quantisation. Critique 1 covers the integer side.
-- A single-cell emitter is the harshest possible isotropy test. A real fire is a
-  cluster, which averages several sources and will look better than these
-  numbers.
-- The `exact` shadow is hard-edged because the source is one cell. A physical
-  extended source has a real penumbra, so "0.00 tiles" is the right answer *for
-  this scene*, not a universal target.
+- Everything here is float, not the integer scheme. It measures the *scheme*,
+  not the quantisation. Critique 1 covers the integer side.
+- A single-cell emitter is the harshest possible isotropy test; a real fire is a
+  cluster of sources and will average better than these numbers.
 - Conservation is measured on the shadow scene only.
+- `fill` is a poor statistic for a spiky profile (it flatters unrotated long
+  characteristics at 1.17). RMS and the plotted profile are the honest columns —
+  which is the same lesson as the correction at the top.
