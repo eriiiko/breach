@@ -168,3 +168,81 @@ sweet spot rather than a budget compromise.
 - `fill` is a poor statistic for a spiky profile (it flatters unrotated long
   characteristics at 1.17). RMS and the plotted profile are the honest columns —
   which is the same lesson as the correction at the top.
+
+---
+
+# Renders (2026-09-13) — "a picture of the actual light rendering"
+
+Erik asked to see it rather than read percentages. `room_render.py` and
+`cascade_render.py` put one fire in a 64×64 ship deck — two doorways, a
+corridor, a partition gap, an inside corner — and tone-map the field the way a
+frame would be shown. Figures: `room_render.png`, `room_doorway.png`,
+`cascade_render.png`.
+
+## What the heat schemes look like
+
+`room_render.png`. The artifacts that the ripple percentages describe are
+immediately visible, and they are worse to the eye than the numbers suggest:
+
+- **step S16** paints a hard four-pointed **cross** on every source. Those are
+  the axis-aligned ordinates, which in a grid scheme are pencils that never
+  spread. Rotation does not remove it and slightly sharpens it.
+- **shear S16** paints a sixteen-pointed **star** with dark gaps between the
+  spokes. Rotation folds it into a cleaner eight-pointed star. Still obvious.
+- **exact** is a smooth round glow with a crisp wedge through the partition gap.
+
+Through the corridor into the far room, which only one opening feeds:
+
+| scheme | far-room mean vs exact |
+|---|---|
+| exact | 1.00 |
+| shear S16 | 0.90 |
+| shear S16 + rotation | 0.89 |
+| step S16 | 0.52 |
+| step S16 + rotation | 0.49 |
+
+**Step loses half the energy that should reach the next room.** Its diffusion
+spreads the beam into the walls on the way down the corridor, where it is
+absorbed. For a game whose fire is supposed to travel through a ship, that is a
+gameplay-relevant error, not a cosmetic one — and it is the strongest argument
+found so far against step differencing.
+
+## What the light solver looks like
+
+`cascade_render.png`. This is a working 2D radiance-cascades prototype — five
+cascades, branching factor 4, the real interval-merge identity — so the design's
+claim that cascades do not carry these artifacts can be looked at rather than
+trusted.
+
+| scheme | ripple r = 3 | ripple r = 8 |
+|---|---|---|
+| exact | 2.4 % | 0.5 % |
+| **radiance cascades (16 base dirs)** | **15.3 %** | **19.8 %** |
+| cascades, 8 base dirs | 19.1 % | 24.4 % |
+| cascades, 4 base dirs | 76.0 % | 15.1 % |
+| step S16 sweep | 85.8 % | 45.0 % |
+
+**No spokes, at any setting.** The failure mode is completely different: where
+the grid sweep produces directional striping, cascades produce a smooth glow
+whose error shows up as blotchiness and as **light leaking through walls** into
+rooms that should be dark. That leak is the known "bilinear leak" of radiance
+cascades, named in the literature with published fixes, and it is the thing to
+watch when the GLSL version is built — a game about darkness cannot have light
+in sealed rooms.
+
+Base direction count matters a lot at the low end (4 → 8 is the big jump) and
+saturates after that.
+
+## What the renders change
+
+1. **Step differencing's real cost is corridor throughput, not shadow softness.**
+   Losing 48 % of the energy reaching the next room is a bigger problem than
+   anything in the earlier profile measurements, and it is the clearest
+   argument yet for a sharper transport step.
+2. **The cascade half of the design is de-risked.** It renders cleanly, the
+   merge identity works as written, and the artifact to plan for is leakage
+   rather than striping.
+3. **Two solvers with two different failure modes is a feature**, not a
+   redundancy: the sweep's striping is invisible in a heat field that is
+   integrated over time and thermal mass, and the cascade's leak is harmless to
+   heat because heat does not use cascades.
