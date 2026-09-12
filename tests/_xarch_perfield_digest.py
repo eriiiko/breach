@@ -238,7 +238,38 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # field trajectory the scenario's fire+atmosphere exercise therefore moves.
 # Re-run twice, independently, confirmed stable before committing.
 # (was f6daf44f4c2f563fc88bdb4465fb681a776141a9079d0e7c0f62f5c2b7fbb306)
-GOLDEN_AGGREGATE = "54f21b36cad6d27856f5e1ebf415ff1c063feb6f06ab3a7f66bd684fda324b1d"
+# R4 GOLDEN REBASE (2026-09-12, fire session #12, Erik's ruling of 2026-09-06
+# and his re-baseline approval of 2026-09-12; written rationale =
+# docs/fire_3c_r4_tuning_and_radiation_2026-09-06.md §3.2 + §5).
+#
+# CAUSE, and it is a SINGLE one: ruling R4 -- "fire may not destroy
+# non-flammable tiles". The DESTROY decision was already flammable-gated; the
+# wall_hp DEPLETION was not, so fire sitting on a non-flammable tile chewed
+# that tile's hp every tick. The canonical scenario seeds its (ghost) fire at
+# (8,8)/(8,9), which ARE non-flammable, so those two tiles' wall_hp
+# trajectories -- and everything downstream of them -- moved the moment the
+# depletion was gated. Landed in both twins at `bdee4e9`.
+#
+# VERIFIED SOLE CAUSE, not assumed: re-running with the R4 code but the
+# PRE-TUNING config reproduced this exact hash, so none of the session's dial
+# moves (burn_rate 0.018, wall_damage 0.36, H_BED_SHIFT 7) contribute. A
+# pleasant consequence worth recording: the canonical golden is now
+# INDEPENDENT of the fire dials, so Phase-4 feel tuning can proceed without
+# touching it again.
+#
+# NOT A SCHEMA MOVE: DIGEST_SPEC_VERSION unchanged (v5) -- no field added,
+# removed or retyped; values only.
+#
+# WHY NOW: the value was deliberately left stale from 2026-09-06 to 2026-09-12
+# as the "not landed" marker while the R3 re-anchor was under review (Erik:
+# "way too early to produce new goldens"). R4 itself was blessed on the day it
+# landed; the dials it travelled with are now blessed too (Erik 2026-09-12:
+# H_BED_SHIFT 7 and wall_damage 0.36 stay), so the marker has done its job and
+# the branch is being brought green ahead of the ray-engine v2 arc, which
+# cannot be gated against a red suite
+# (docs/ray_engine_v2_survey_2026-09-12.md §10.1).
+# (was 54f21b36cad6d27856f5e1ebf415ff1c063feb6f06ab3a7f66bd684fda324b1d)
+GOLDEN_AGGREGATE = "167b96bddfe37c0d256afed4d3b9271371fcaf3edd7557e02cf685a17208953f"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs

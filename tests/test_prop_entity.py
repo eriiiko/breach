@@ -327,7 +327,31 @@ def test_foliage_tile_burns():
     hp0 = int(gmap.wall_hp[y, x])
     assert hp0 > 0, "foliage stamped with no fuel/HP"
 
-    gmap.fire[y, x] = 40000            # ignite directly (raw Q16.16 ~ 0.61)
+    # DELIVER HEAT, not just a fire value (fire session #12 ruling R3,
+    # docs/fire_3c_r4_tuning_and_radiation_2026-09-06.md §7). Since R3 the O2
+    # demand rides `hotf = (T - fire_T_ext)/fire_T_span`, so a tile seeded at
+    # AMBIENT draws no oxygen, deposits no heat and fades without ever burning
+    # its fuel. That is the physics -- combustion needs the fuel bed at
+    # pyrolysis temperature -- and it is the same correction the dev key `I`
+    # needed (src/debug_keys.py::debug_ignite). This test predates R3.
+    #
+    # PROPERTY PROTECTED: a foliage tile that is genuinely alight consumes its
+    # own wall_hp, i.e. a tree is real fuel and not merely flammable-flagged.
+    # WHAT MUST BREAK IT: MAT_FOLIAGE losing `flammable`, its wall_hp ceasing
+    # to be the fuel store, or the destruction path skipping foliage.
+    from config import CFG
+    from simulation import fire_fixed
+    # Each material's ignition point is `fire_T_ext_plane + ignition_to_ext_delta`
+    # -- the plane the solver itself subtracts, so this is per-material exact.
+    # The margin matches the dev key's decisive-igniter value.
+    delta = float(getattr(CFG.physics.fire, "ignition_to_ext_delta", 200.0))
+    t_ext = float(fire_fixed.dequantize(int(gmap.fire_T_ext_plane[y, x])))
+    # thermal_solid-only write: a gas cell's `temperature` is the energy
+    # field's mirror and is never written directly (CLAUDE.md).
+    assert bool(gmap.thermal_solid[y, x]), "foliage should be a thermal solid"
+    gmap.temperature[y, x] = fire_fixed.quantize_scalar(t_ext + delta + 55.0)
+    seed_i = float(getattr(CFG.physics.fire, "ignition_seed", 0.12))
+    gmap.fire[y, x] = fire_fixed.quantize_scalar(seed_i)
     sim.set_paused(False)
     for _ in range(400):
         sim.step()

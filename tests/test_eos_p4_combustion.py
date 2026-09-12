@@ -432,8 +432,10 @@ def test_e2e_1_sealed_room_fire_self_starves():
     monotonic decline, not noise or a plateau), the decline is SUBSTANTIAL
     (>=15% off peak by t=2000 — comfortably below the measured 23.2%, so
     immune to small dial drift, while still requiring more than a rounding-
-    level wobble), fuel is barely touched (self-STARVING, not burn-through —
-    kept from the old bound), mass is never fabricated (kept, a hard
+    level wobble), FUEL STILL REMAINS (self-STARVING, not burn-through — bound
+    re-derived 2026-09-12 from "barely touched" >90% to ">20% left", because
+    `wall_damage` 0.36 is now a blessed dial and burn duration is a live feel
+    axis; see the assertion's own note), mass is never fabricated (kept, a hard
     integer invariant regardless of dials), and pressure shows a real,
     reproducible rise above ambient (threshold re-derived to 2%, comfortably
     below the measured 2.52%, in place of the old 5% that no longer clears
@@ -498,11 +500,32 @@ def test_e2e_1_sealed_room_fire_self_starves():
     assert decline >= 0.15, (
         f"self-starve decline too small ({decline:.1%} off peak {peak:.3f}) "
         f"— expected >=15% by tick {TICKS} (measured 23.2% at these dials)")
-    # ... with fuel barely touched (self-STARVING, not burn-through).
+    # ... with FUEL STILL REMAINING (self-STARVING, not burn-through).
+    #
+    # PROPERTY PROTECTED: the fire's decline is caused by its LOCAL O2 running
+    # out, not by its fuel running out -- so there must still be fuel in the
+    # tile when the flame has demonstrably starved.
+    # WHAT MUST BREAK IT: a fire that consumes its tile to zero hp within the
+    # horizon (burn-through), which would make the decline above a fuel-
+    # exhaustion signature instead of an oxygen one.
+    #
+    # RE-DERIVED 2026-09-12 (fire session #12). The old bound was
+    # `> 0.9 * wall_hp0` -- "fuel barely touched" -- which pinned a quantity
+    # the session deliberately moved: `wall_damage` 0.027 -> 0.36 is now a
+    # BLESSED dial (Erik 2026-09-12, ruling R-E in
+    # docs/ray_engine_v2_survey_2026-09-12.md), and burn duration is a live
+    # feel axis that Phase 4 will move again. Pinning 90% made this test a
+    # brake on an intended design change rather than a guard on the mechanism,
+    # which is exactly what CLAUDE.md's property-not-snapshot rule forbids.
+    # Measured at the blessed dials: 60.00 -> 25.83, i.e. 43.0% remaining.
+    # The bound is set at 20% -- comfortably below the measurement so ordinary
+    # dial drift cannot trip it, and far enough above zero that a genuine
+    # burn-through still fails loudly.
     wall_hp_final = float(gmap.wall_hp[7, 7]) / 65536.0
-    assert wall_hp_final > 0.9 * wall_hp0, (
+    assert wall_hp_final > 0.20 * wall_hp0, (
         f"the wall burned through instead of starving "
-        f"(wall_hp {wall_hp0:.2f} -> {wall_hp_final:.2f})")
+        f"(wall_hp {wall_hp0:.2f} -> {wall_hp_final:.2f}, "
+        f"{wall_hp_final / wall_hp0:.1%} left; expected >20%)")
     # No mass fabrication: the bulk O2+N2 pair never exceeds its start.
     # P-T0 (design §2.6) deleted the decay->inert_N2 credit (decisions #12
     # v2.1, now retired doctrine) — combustion can now only ever REMOVE mass
