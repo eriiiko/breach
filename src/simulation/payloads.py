@@ -88,9 +88,29 @@ def emit_gas(gmap, queue, fy, fx, gas_species, gas_amount, gas_radius):
     ))
 
 
-def ignite_ring(gmap, queue, fy, fx, ignite_radius, ignite_intensity):
+# THE HEAT AN IGNITER DELIVERS (fire session #12, 2026-09-12, issue #65).
+#
+# Sized so a flammable tile reaches its own ignition point FROM AMBIENT. Every
+# shipped flammable (wood, furniture, kindling, foliage, doors) carries
+# `thermal_mass = 8`, so `heat_inv_shift` is 3 and the temperature solver
+# converts `ΔT = heat >> 3`, i.e. heat/8. Wood has the highest ignition point at
+# 300, and the dev key's decisive-igniter margin is 55 (src/debug_keys.py:
+# DEBUG_IGNITE_MARGIN — measured: survival is marginal within ~+25 of ignition
+# and reliable above it). So:
+#
+#     (300 + 55) * 2**3 = 2840
+#
+# Independent cross-check: the flamethrower's own tuned `heat_deposit` is 2400
+# == 300 * 2**3, i.e. exactly "enough to light wood from ambient", arrived at
+# from the other direction entirely (config.toml [ammo.fuel_standard]).
+IGNITE_HEAT = 2840.0
+
+
+def ignite_ring(gmap, queue, fy, fx, ignite_radius, ignite_intensity,
+                ignite_heat=IGNITE_HEAT):
     """Enqueue an incendiary ignition disc: ``fire = max(fire, seed)`` over
-    the ring (mechanics/03 §4 ignite columns).
+    the ring, **plus the heat that lighting implies** (mechanics/03 §4 ignite
+    columns; heat added 2026-09-12, issue #65).
 
     ONE DISC **MAX** FieldEdit with LINEAR falloff: per flammable tile,
     ``fire = max(fire, ignite_intensity × (1 − dist/ignite_radius))`` — the
@@ -100,6 +120,35 @@ def ignite_ring(gmap, queue, fy, fx, ignite_radius, ignite_intensity):
     dequantized Q16.16 values re-quantizes to the exact larger int, so the
     FieldEdit combine IS an integer max). The fire policy supplies the
     non-flammable skip-mask and the [0, 1] clamp. No RNG.
+
+    **THE HEAT IS NOT OPTIONAL, and that is the whole point of this function.**
+    Ruling R3 (2026-09-01) tied the O2 demand and the fuel destruction to
+    ``hotf = clamp((T - fire_T_ext)/fire_T_span, 0, hotf_cap)``, so a fire
+    seeded on an AMBIENT tile draws no oxygen, burns no fuel and deposits no
+    heat. Seeding ``fire`` alone therefore stopped meaning "light a fire here"
+    the day R3 landed: it produced a flame that consumed nothing, spread
+    nothing, and — because ``k_die``'s e-fold is 125 s — did not even go out.
+    Measured on a kindling tile over 400 ticks: 0.0% of fuel consumed, versus
+    110.8% once the tile is heated. Both incendiary ammo rows carry
+    ``damage = 0``, so that flame WAS the entire weapon.
+
+    Physically this is just the truth the rest of the engine already respects:
+    combustion needs the fuel bed at pyrolysis temperature, and the in-engine
+    ignition path only ever fires on a tile whose temperature crossed its own
+    ``ignition_temp``. The flamethrower was never affected precisely because it
+    delivers ``heat_deposit`` and lets ignition happen; the dev key ``I`` had to
+    learn the same lesson (``debug_keys.debug_ignite``).
+
+    The heat rides the **`heat` plane**, not a direct `temperature` write: that
+    is the canonical deposit channel, the temperature solver owns the
+    solid-vs-gas conversion, and it keeps the gas-mirror rule intact (nothing
+    writes a gas cell's ``temperature`` directly). It uses **FLAT** falloff
+    while the flame uses LINEAR — deliberately: a linearly-faded heat edge would
+    light the rim of the disc with too little heat to sustain it, recreating the
+    exact inert-flame bug at the ring's edge.
+
+    ``ignite_heat`` defaults to :data:`IGNITE_HEAT`; pass 0.0 only for a
+    deliberately heatless flame (nothing shipped wants one).
     """
     queue.enqueue(FieldEdit(
         field="fire", region=Region.DISC, coords=(fy, fx, float(ignite_radius)),
@@ -107,6 +156,14 @@ def ignite_ring(gmap, queue, fy, fx, ignite_radius, ignite_intensity):
         falloff=Falloff.LINEAR, clamp=(0.0, 1.0),
         source_id=_SRC_PAYLOAD_IGNITE,
     ))
+    if ignite_heat > 0.0:
+        queue.enqueue(FieldEdit(
+            field="heat", region=Region.DISC,
+            coords=(fy, fx, float(ignite_radius)),
+            amount=float(ignite_heat), mode=EditMode.ADD,
+            falloff=Falloff.FLAT,
+            source_id=_SRC_PAYLOAD_IGNITE,
+        ))
 
 
 def deposit_heat(gmap, queue, fy, fx, heat_amount, heat_radius):

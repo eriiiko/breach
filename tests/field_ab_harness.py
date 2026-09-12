@@ -508,7 +508,12 @@ if __name__ == "__main__":
     # Q16.48-style multiply chain), and flips wall_hp to int32 Q16.16 too. Assert the
     # dtype + bit-identity run-to-run (np.array_equal is exact on int32). This is the
     # S3b P1 gate; the discrete extinguish-flip + burn-through determinism is in
-    # tests/test_s3b_fire_determinism.py, the logistic feel-A/B in _s3b_firestorm_feel.py.
+    # tests/test_s3b_fire_determinism.py. (The logistic feel-A/B harnesses
+    # _s3_firestorm_feelcheck.py / _s3b_firestorm_feel.py and their float
+    # goldens were RETIRED 2026-09-12: untouched since 2026-06-27, they
+    # predated the Q16.16 migration, the EOS refactor, arc #54 and R1-R4,
+    # and their fixtures seeded fire on ambient wood so post-R3 they ran
+    # inert. Erik's ruling: retire rather than recapture.)
     assert a[-1]["fire"].dtype == np.int32, \
         f"fire should be int32 Q16.16 (S3b), got {a[-1]['fire'].dtype}"
     assert a[-1]["wall_hp"].dtype == np.int32, \
