@@ -28,6 +28,16 @@
 | R-F | **Golden may be re-baselined to the current value** `167b96bd…` (R4 the sole cause). | 2026-09-12 | See §6.3 for what the golden does and does not prove. |
 | R-G | **`test_foliage_tile_burns` to be rewritten to seed heat**, not bare `fire`. | 2026-09-12 | Its premise predates R3. |
 | R-H | **24 Hz is the sim rate.** 12 Hz was too little; 24 Hz reads well for smoke. Intermediate rates untested. | 2026-09-12 | Budget consequence in §5.4. |
+| R-I | **Radiation becomes a field solve.** Emitters no longer cast rays; every cell emits and absorbs. | 2026-09-12 | Erik: *"yes I am happy with this."* Makes radiation consistent with pressure and conduction, which are already field solves. |
+| R-J | **The temperature map IS the emission map.** No emitter list, no gate. `T_emit_gate` is deleted. | 2026-09-12 | Erik's own formulation. Free under R-I, catastrophic without it. |
+| R-K | **Every cell radiates by its own temperature** (Q4 answered: yes, because it is free). | 2026-09-12 | This is the actual fix for unbounded reach — see §9.2. |
+| R-L | **Clear air does NOT absorb heat.** | 2026-09-12 | Erik, and the physics agrees: clear air is nearly transparent to thermal radiation, and an absorbing atmosphere would heat rooms unrealistically fast. |
+| R-M | **Smoke absorbs heat strongly.** | 2026-09-12 | Erik: *"100% in the spirit of what breach is and wants to be."* One per-gas coefficient; gives a radiant-shield mechanic nearly free. |
+| R-N | **No short-range flame-contact channel.** Radiation remains the only spread mechanism. | 2026-09-12 | Unnecessary once geometry is honest: flux at one tile exceeds the ignition threshold by an order of magnitude. |
+| R-O | **Solids heat adjacent gas.** Direction set; mechanism deferred to its own session. | 2026-09-12 | Erik: *"burning solid will then heat the air around it … it would also cause smoke to travel more realistically."* Resolution for the ignition-drain tension is one-way coupling and/or honest per-medium heat capacity (Erik's proposal). |
+| R-P | **Split implementation: heat in C++ with a CUDA twin; light in GLSL, render-only.** One shared directional structure and one shared transmittance definition. | 2026-09-12 | Erik: *"I bless ur recommendations whole heartly."* |
+| R-Q | **A coarse integer light payload rides the sim sweep**, for stealth and RL observation. | 2026-09-12 | Recovers the RL shadow-exploitation Erik thought he was giving up; already specified in `ml/01_ml_and_training.md`. |
+| R-R | **Light will not fall off faster than 1/r** (Erik's preference; revisit at feel-tuning time). | 2026-09-12 | |
 
 ---
 
@@ -320,6 +330,120 @@ Sequenced by what gates what. Q1–Q4 gate everything below them.
 | Q14 | **Tick budget**: confirm 41.67 ms at 24 Hz, and restate the per-system p99 gate. | Every perf doc still says 83 ms. Atmosphere alone already takes 18.97 ms at a comparable grid. |
 
 ---
+
+## 9. The model as blessed (design session, 2026-09-12)
+
+### 9.1 Shape
+
+Radiation is a **field solve**. Every cell carries an emission source term set by
+its own temperature (Stefan–Boltzmann, so T⁴ survives — not because it is holy
+but because "the temperature map is the emission map" requires emission to be a
+function of temperature). Every cell absorbs what arrives. There is no emitter
+list, no gate, and no per-emitter ray budget. Cost is set by the grid, so
+**reach is free** and the number of hot things does not matter.
+
+Of the not-holy list (R-B), all four are gone: the 8-ray fan, the emitter gate,
+pairwise antisymmetric bookkeeping, and density-as-falloff.
+
+### 9.2 Why reach stops being a problem — the actual mechanism
+
+Not the exponent. **Radiating receivers.**
+
+The flashover happened because a receiver below the gate had no radiative loss
+at all, so any trickle of flux accumulated without limit. Once every cell
+radiates, a receiver settles where absorbed equals emitted, and because emission
+goes as T⁴ the equilibrium temperature is extremely insensitive to flux: cut the
+arriving flux tenfold and equilibrium falls only to 56%.
+
+Calibrated so a crate ignites wood at ~3 tiles:
+
+| Falloff | Flux at 20 tiles | Equilibrium there |
+|---|---|---|
+| 1/r | 15% of ignition flux | ≈373 K |
+| 1/r² | 2% of ignition flux | ≈232 K |
+
+Both far below ignition. So the natural 2D 1/r is sufficient, and the swappable
+distance function (§7.3) demotes from structural requirement to feel dial.
+
+### 9.3 The reach curve, derived rather than fitted
+
+From view factor and the real ignition threshold for wood (10–12 kW/m²), using
+the measured 1556 K and 0.333 m tiles:
+
+| Fire | Radiated power | Ignition radius | In tiles |
+|---|---|---|---|
+| One burning crate | ~150 kW | 1.1 m | ~3 |
+| Fully involved room | ~1 MW | 2.8 m | ~8 |
+
+At one tile the flux exceeds the threshold by roughly tenfold, which is why R-N
+needs no separate contact channel. This matches Erik's approved straw man almost
+exactly — the design instinct and the physics agree, so the curve can be derived
+instead of tuned.
+
+### 9.4 Two phenomena, deliberately separated
+
+| Phenomenon | Mechanism | Timescale |
+|---|---|---|
+| Direct radiant ignition | Radiation, view-factor limited, ~3 tiles from a crate | Seconds |
+| **Flashover** | Solids heat the gas (R-O); gas circulates and accumulates; the hot layer brings every surface to ignition together | **Minutes** |
+
+Erik's correction, which drives this: *"flashovers doesn't happen fast in real
+life, it happens after a room has been burning quite much for quite some time,
+the mean temp gradually increases until it reaches ignition level."* Flashover is
+compartment-scale thermal accumulation, **not** radiation reaching further.
+Trying to get flashover out of the radiation law is precisely what the ×8 H_bed
+tuning was doing wrong.
+
+### 9.5 The 1/r² near, 1/r far geometry (retained as a feel dial, not a necessity)
+
+Our sim is a horizontal slice of a slab with a floor and a ceiling. Within about
+a ceiling height, radiation still spreads in three dimensions and falls as 1/r².
+Beyond it, the up/down directions are exhausted and only in-plane directions
+remain, giving 1/r. Crossover ≈ ceiling height ≈ 7 tiles at 2.5 m decks. Open
+sky has no ceiling, so energy keeps leaving and the falloff stays steep. One
+per-cell coefficient expresses all of it, and per R-R light stays at 1/r.
+
+### 9.6 Implementation split
+
+| Half | Where | Numbers | Clock | Why |
+|---|---|---|---|---|
+| **Heat** | C++ `PhysicsEngine` + CUDA twin, like the other seven solvers | integer, conservative | 24 Hz sim | Must be bit-identical cross-machine and must close the arc-#54 books. A 16-direction sweep over 32,768 cells is ~0.5 M cell-updates: ordinary CPU work. |
+| **Light, for the eye** | **GLSL**, render-only, never digested | float | render rate | If you are drawing at all you already have a GPU and a shader pipeline. No CUDA dependency, no NVIDIA lock-in, does not touch the `--cuda` opt-in. Headless training already skips RGB lighting by design. |
+| **Light, for the rules** | A payload on the **same sim sweep as heat** | integer, coarse (tile res) | 24 Hz sim | Stealth + RL observation. Already specified by name in `ml/01_ml_and_training.md` §2.2: *"a scalar light-intensity field for stealth and line-of-sight."* |
+
+**This is not a parallel system.** The rules-side light is one extra payload on a
+sweep that is already visiting every cell in every direction, not a second
+traversal. The eye-side and rules-side computations read the **same** material
+and gas coefficients and the **same** geometry, so they cannot disagree
+structurally — only in resolution and precision.
+
+**The risk to manage:** what looks dark to the player must be dark to the rules.
+Shared inputs make that a calibration problem rather than a correctness one, but
+it needs a gate (a test asserting the two agree within tolerance on a scenario).
+
+### 9.7 Light keeps direction, and gains range
+
+Cascades store radiance **per direction** at every probe, which is strictly more
+than today's single dominant-direction vector that the normal-mapping pass
+consumes. A flashlight is an emitter with a restricted angular range — natural
+in a directional solve.
+
+The hard `max_range` cutoff (18–25 tiles) disappears; a beam falls as 1/r and
+runs until something blocks it. Per R-R Erik wants to keep that.
+
+### 9.8 OpenGL target (measured on Home Desktop, 2026-09-12)
+
+The raylib Python binding exposes `rlLoadComputeShaderProgram`,
+`rlComputeShaderDispatch` and `RL_COMPUTE_SHADER`, but the **runtime context is
+OpenGL 3.3 / GLSL 3.30** (`rl_get_version()` → `RL_OPENGL_33`) on an RTX 3070
+whose driver offers 4.6. The limit is the shipped raylib build, not the hardware.
+
+Compute shaders need a GL 4.3 build, i.e. a custom raylib/pyray build on all
+four machines. **Recommendation: do not.** Radiance cascades are naturally a
+sequence of texture passes merged coarse-to-fine, which is exactly what
+multi-pass fragment shaders on ping-ponged render textures do, and that works on
+GL 3.3 today with no toolchain change. Revisit compute only if profiling demands
+it.
 
 ## Systems
 
