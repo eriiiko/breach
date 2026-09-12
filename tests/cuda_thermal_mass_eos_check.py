@@ -274,7 +274,26 @@ def part1_isolated() -> bool:
             wall_hp = _c(_q(np.where(flam, 30.0, 0.0)))
             fire = _c(_q(np.where(flam, 0.7, 0.0)))
             ign = _c(_q(np.where(flam, 280.0, 0.0)))
-            t0 = _q(np.full((h, w), 400.0))     # everything above ignition
+            # R3 (fire session #12, docs/fire_3c_design_2026-09-01.md "Ruling
+            # R3"): "above ignition" is NO LONGER ENOUGH to make a fire do
+            # anything. The demand is scaled by
+            #     hotf = clamp((T - fire_T_ext) / fire_T_span, 0, hotf_cap)
+            # and the original 400.0 gives hotf = (400-350)/180 = 0.28, which
+            # shrank the deposit until it truncated away entirely. MEASURED
+            # 2026-09-12: at 400.0, ZERO cells moved temperature in EITHER
+            # path, so the two paths agreed trivially and this control went
+            # VACUOUS — it proved nothing. (It was invisible until the R4
+            # golden re-baseline stopped failing the whole gate first.)
+            #
+            # Seed at hotf == 1 instead, read off the solver so this tracks the
+            # C++ defaults rather than restating them. Measured at that seed:
+            # 48 cells differ between the object path and the gas fallback, so
+            # the control has teeth again.
+            t_hotf1 = float(solver.fire_T_ext) + float(solver.fire_T_span)
+            assert t_hotf1 > 280.0, (
+                f"hotf==1 seed ({t_hotf1}) fell below the fixture's ignition "
+                f"temperature (280) — the burn sites would change regime")
+            t0 = _q(np.full((h, w), t_hotf1))
             shift = np.where(tsol, 3, 0).astype(np.int32)
             n_cfg += 1
             outs = {}

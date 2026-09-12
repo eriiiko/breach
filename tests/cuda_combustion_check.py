@@ -91,6 +91,46 @@ N_FLOOR_HEAT = 0.05
 # CPU and GPU read the SAME array; the exact value is not load-bearing).
 IGN_Q = int(round(500.0 * FP_ONE))
 
+# R3 (fire session #12, 2026-09-01, docs/fire_3c_design_2026-09-01.md
+# "Ruling R3") inserted a temperature factor into the DEMAND:
+#     hotf = clamp((T - fire_T_ext) / fire_T_span, 0, hotf_cap)
+# so a source's temperature is no longer a free choice — it sets how hard that
+# source draws. Every PART-1 edge expectation in this file is built on
+# "demand_k == burn_cap_q EXACTLY" (see _add_source's docstring), and that
+# premise now additionally requires hotf == 1.
+#
+# The fixtures predate R3 and seeded IGN_Q*2 (1000 game units), which at the
+# shipped fallback dials gives hotf = (1000-350)/180 = 3.61 — so the sources
+# drew ~3.6x burn_cap and the exact-arithmetic edge checks stopped holding.
+# CPU and GPU never disagreed; only the fixture's premise died. (Found
+# 2026-09-12, when the R4 golden re-baseline stopped masking it.)
+#
+# Seed at T_ext + span, READ OFF THE SOLVER so this tracks the C++ defaults
+# rather than restating them — if those defaults move, this moves with them.
+_HOTF_REF = bp.CombustionSolver()
+HOTF1_T = float(_HOTF_REF.fire_T_ext) + float(_HOTF_REF.fire_T_span)
+# ...plus ONE RAW COUNT. `hotf` is computed as
+#     mul_q16(T_q - fire_T_ext_q, recip_T_span)
+# with `recip_T_span` a LOAD-TIME reciprocal and the multiply TRUNCATING TOWARD
+# ZERO (the fixed-point kit's pinned direction). At the nominal temperature the
+# true ratio is exactly 1.0, so truncation lands the product on FP_ONE - 1 and
+# an uncontested source draws burn_cap - 1 — measured, not guessed. One raw
+# count of temperature (1/65536 of a game unit) lifts it onto exactly FP_ONE.
+# This is the minimal exact lift, and it is stable as long as the kit's
+# truncation direction stays pinned.
+#
+# IF A DIAL MOVES AND THIS BREAKS: the offset is re-derivable by scanning raw
+# counts upward from `quantize(fire_T_ext + fire_T_span)` for the first value
+# at which the PART-1 uncontested case draws exactly burn_cap.
+HOTF1_TRUNCATION_LIFT = 1
+HOTF1_Q = int(round(HOTF1_T * FP_ONE)) + HOTF1_TRUNCATION_LIFT
+# Sources must also stay at/above their own ignition temperature, or the claim
+# gate's not-yet-alight hysteresis branch would change what these edge cases
+# exercise. Assert rather than assume.
+assert HOTF1_Q > IGN_Q, (
+    f"hotf==1 temperature ({HOTF1_T}) fell below the fixture ignition point "
+    f"({IGN_Q / FP_ONE}) — the edge fixtures would change regime")
+
 
 def _quantize(x):
     x = np.asarray(x, dtype=np.float64)
@@ -190,15 +230,22 @@ def _add_source(st, y, x, hp=60.0, temp_q=None, fire_i=1.0):
     fixture that expects to actually burn must seed `fire` at the source.
     `fire_i` defaults to FULL intensity (I=1.0 exactly): with o2f_j also
     clamped to exactly 1.0 (the fixtures below keep the local O2 mole
-    fraction comfortably above the span top), demand_k == burn_cap_q exactly
-    (mul_q16(x, FP_ONE) == x, no rounding) — i.e. the OLD uniform-demand
-    arithmetic these fixtures were built against is reproduced bit-for-bit.
+    fraction comfortably above the span top), AND hotf == 1.0 (the default
+    temperature is HOTF1_Q — see its derivation above), demand_k == burn_cap_q
+    exactly (mul_q16(x, FP_ONE) == x, no rounding) — i.e. the OLD
+    uniform-demand arithmetic these fixtures were built against is reproduced
+    bit-for-bit.
+
+    R3 (2026-09-12): the hotf == 1 seed is what keeps that last sentence true.
+    Before R3 the temperature was free and these fixtures used IGN_Q*2; that
+    value now means hotf = 3.61 and the exact-demand premise fails. Pass
+    `temp_q` explicitly to exercise a different hotf on purpose.
     """
     st["solid"][y, x] = True
     st["flammable"][y, x] = True
     st["wall_hp"][y, x] = int(round(hp * FP_ONE))
     st["ignition_temp_q16"][y, x] = IGN_Q
-    st["temperature"][y, x] = IGN_Q * 2 if temp_q is None else temp_q
+    st["temperature"][y, x] = HOTF1_Q if temp_q is None else temp_q
     st["fire"][y, x] = _quantize(fire_i)[()]
 
 
