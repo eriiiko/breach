@@ -1,7 +1,7 @@
 """Why does cascade_render.png's middle panel look bad? (2026-09-13)
 
 Erik: "the middle plot in cascade_render.png looks really bad ... is it because something
-is wrong here?  Or because point lights are hard?  because in heatmap_light_render.png it
+is wrong here?  Or because point lights are hard?  because in real_scene_light_cascades.png it
 looks awesome, and this is also cascade right?"
 
 Two candidate explanations, and they make DIFFERENT predictions, so the experiment

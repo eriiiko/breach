@@ -15,7 +15,7 @@
 > `sweep_ref.py` (a faithful float reference of design §2.3 with critique 1's
 > fixes 3/4/5 applied, plus the leak channel and both transport steps) ·
 > `reach_and_leak_study.py` (reproduces every table in §§1-5 in one run) ·
-> `flashover_study.py` (Task 2) · `heatmap_render.py` + `heatmap_light_render.py`
+> `flashover_study.py` (Task 2) · `real_scene_heat_sweeps.py` + `real_scene_light_cascades.py`
 > (Task 1) · `heatmap_<level>.npz` (real fields dumped from the real Simulation).
 >
 > Every number here was measured, and the instrument is calibrated against
@@ -386,7 +386,7 @@ confirmed**: a clustered fire averages the striping down. A single-cell emitter
 really is the harshest case.
 
 But on the *rendered* field over a real map, shear is visibly worse: it paints a
-16-spoke star while step is smooth (see `heatmap_render.png`). That is Davis's
+16-spoke star while step is smooth (see `real_scene_heat_sweeps.png`). That is Davis's
 trade, and it is why the two schemes keep swapping places depending on which
 statistic is quoted. Since heat is not rendered, the footprint column is the one
 that decides — but the margin is modest, and **the leak does more for both than
@@ -498,12 +498,12 @@ T ≳ 1800 game stands as they measured it.)
 
 ## 7. Task 1 — the solvers on a real heatmap
 
-`heatmap_render.py`, `heatmap_light_render.py`, inputs dumped by driving the real
+`real_scene_heat_sweeps.py`, `real_scene_light_cascades.py`, inputs dumped by driving the real
 `Simulation` on `levels/playground`: four ignition sites, 60 s of real fire,
 **117 burning tiles, 521 tiles above 100 game, peak 977 game (1270 K)**. No
 synthetic point source anywhere.
 
-**`heatmap_render.png` — the heat solvers.** Columns: analytic yardstick, step
+**`real_scene_heat_sweeps.png` — the heat solvers.** Columns: analytic yardstick, step
 S16, shear S16, shear + leak 0.10. The yardstick had to be rebuilt once: under
 R-K *every* cell with `a > 0` radiates, so a yardstick containing only the fires
 is not solving the same problem — with all 783 emitters plus the ambient sky
@@ -515,7 +515,7 @@ field; step is smooth; **and the leak column is the one that looks like fire** �
 discrete local glows instead of a whole-deck wash. The leak changes the picture
 more than the scheme does.
 
-**`heatmap_light_render.png` — the light solver, with flashlights.** Same scene,
+**`real_scene_light_cascades.png` — the light solver, with flashlights.** Same scene,
 radiance cascades, flashlights as cone emitters. Three panels: fires only,
 fires + flashlights, and the same field at a steeper transfer curve.
 

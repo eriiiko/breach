@@ -16,7 +16,7 @@ WHAT THE COLUMNS ARE
     + leak      the same, with the derived out-of-plane leak k = 0.10 for a 2.5 m deck
 
 Run:
-    C:/Users/steen/anaconda3/python.exe docs/ray_engine_v2_scheme_study_2026-09-13/heatmap_render.py
+    C:/Users/steen/anaconda3/python.exe docs/ray_engine_v2_scheme_study_2026-09-13/real_scene_heat_sweeps.py
 """
 from __future__ import annotations
 import math, sys
@@ -171,8 +171,8 @@ def main():
         f"117 burning tiles, peak {K_AMB+T.max():.0f} K. Each panel normalised on its own "
         f"99.5th percentile: this is about SHAPE, not scale.", fontsize=13)
     fig.tight_layout()
-    fig.savefig(HERE / "heatmap_render.png", dpi=110)
-    print("wrote", HERE / "heatmap_render.png")
+    fig.savefig(HERE / "real_scene_heat_sweeps.png", dpi=110)
+    print("wrote", HERE / "real_scene_heat_sweeps.png")
     # Agreement with the yardstick, for the two schemes solving the SAME problem.
     # The leak column deliberately solves a different one (it exports out of plane),
     # so scoring it against a no-leak yardstick would be a category error.

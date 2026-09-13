@@ -3,7 +3,7 @@
 Erik: "Also have some flashlights perhaps." and "I could accept the artifacts, but I would
 like to see them with more light sources first."
 
-Same real scene as heatmap_render.py (levels/playground after 60 s of real fires), lit by
+Same real scene as real_scene_heat_sweeps.py (levels/playground after 60 s of real fires), lit by
 every burning tile PLUS three flashlights.  A flashlight is a CONE emitter: it radiates
 only into directions within its beam, which is natural in a directional solve and is what
 design section 4.2 specifies.
@@ -18,7 +18,7 @@ These are the ones that do something:
                   crisp two-state look of issue #64.
 
 Run:
-    C:/Users/steen/anaconda3/python.exe docs/ray_engine_v2_scheme_study_2026-09-13/heatmap_light_render.py
+    C:/Users/steen/anaconda3/python.exe docs/ray_engine_v2_scheme_study_2026-09-13/real_scene_light_cascades.py
 """
 from __future__ import annotations
 import math
@@ -230,8 +230,8 @@ def main():
         "No spokes at any setting.  Middle vs right is the TRANSFER CURVE alone -- "
         "same field, same resolution.", fontsize=12)
     fig.tight_layout()
-    fig.savefig(HERE / "heatmap_light_render.png", dpi=115)
-    print("wrote", HERE / "heatmap_light_render.png")
+    fig.savefig(HERE / "real_scene_light_cascades.png", dpi=115)
+    print("wrote", HERE / "real_scene_light_cascades.png")
 
     # how much light lands in sealed rooms that should be dark?  (the bilinear leak)
     lab, n = _label(~opaque)
