@@ -104,7 +104,8 @@ Per ordinate `m`, in upwind order, for cell `i`:
 ```
     i_in       =  Σ upwind face fluxes
     leaked     =  (i_in * k_leak_i) >> 16            // out-of-plane, if enabled (§5)
-    ret        =  (E°[0] * w_m * k_leak_i) >> 16     // the ceiling radiates back
+    amb_m      =  (E°[0] * w_m) >> 16                // ONE Q16 factor per shift —
+    ret        =  (amb_m * k_leak_i) >> 16           //   the same fix as `emitted`
     stream     =  i_in − leaked + ret
     absorbed   =  (stream * a_i) >> 16
     src_i,m    =  (E°[T_i] * w_m) >> 16              // ONE Q16 factor, ONE shift
@@ -145,8 +146,12 @@ overflows if omitted (critique 1, required changes 3–5):
   nothing validates `heat_atten` today. It becomes an ingress check with a test,
   and every dynamic stamp (§4) is a **MAX**, never a sum.
 - **`E°` and the stream widen to int64.** Measured magnitudes already reach 1.9e7
-  on a small scene. This is a Recorder DTYPE-class contract extension with its own
-  ring branch, not a cast.
+  on a small scene. **Correction (critique 2):** this is *not* a Recorder contract
+  extension — `rad_net` and `rad_flux` are not in `DEFAULT_FIELDS` and the Recorder
+  never records them (`src/simulation/recorder.py:81-94`). What it actually touches
+  is the field-digest spec and the C++/Python plane dtypes, which is a smaller
+  change but a different one, and the digest membership/dtype rule applies:
+  version bump plus regenerated goldens in the same commit.
 
 ### 2.4 The transport step: one parameter, two settings
 
@@ -490,11 +495,23 @@ glows, smoke a metre away is cool and dark.
 **What it costs is bookkeeping, not emission.** Since arc #54, `gas_energy` (int64)
 is the conserved truth and a gas cell's `temperature` is only its mirror — nothing
 writes gas temperature directly. Today `rad_net` is folded into **solids only**
-(*"Gas never receives ray radiation"*). So letting radiation warm gas makes the
-sweep a **booked writer on the gas energy seam**, needing its own counter and a
-term in one of the four existing closure groups — the thermal-solver gas side,
-which already routes through the seam. A designed-for extension, but a deliberate
-one. **Hence its own patch.**
+(*"Gas never receives ray radiation"*).
+
+**Correction (critique 2): the sweep must NOT become a seam writer, and the path
+already exists.** The sweep keeps writing `rad_net`; the only thing blocking gas
+today is the `ts[i]` thermal-solid mask on the Pass-1 fold
+(`cpp/src/temperature_solver.cpp:247`). Its gas branch already deposits through
+`gas_energy::deposit_railed` and books `e_gas_deposit_sum`
+(`:373-388`). So this patch relaxes a mask and reuses a booked channel, rather
+than inventing a writer.
+
+Note also that "the four existing closure groups", inherited from the survey and
+from CLAUDE.md, is **stale**: the shipped identity has **six** terms — EOS,
+thermal-solver gas, combustion, the seam net, the water-evac export, and the P-G5
+solid group (`tests/test_thermostat_books.py:70-92`). That rule wants amending in
+CLAUDE.md itself.
+
+**Hence its own patch.**
 
 **And this is where the stability problem is worst.** A solid's heat capacity is its
 `thermal_mass`; a gas cell's is its particle count. The clamp is the protection that
@@ -694,8 +711,7 @@ consumers unchanged, weapon beams never migrated.
 (`cpp/src/raycaster.*` + `cuda_raycaster.cu`) — the replacement lands *here*, never
 beside it · the temperature solver's Pass-1 fold, the only place radiation becomes
 temperature · the gas energy seam, mandatory for P7 · the energy closure identity —
-a new channel needs a counter and a term in one of the four groups, there is no
-fifth · the face-flux energy step, the conservative pattern copied in §2.3 · the
+a new channel needs a counter and a term in one of the EXISTING groups · the face-flux energy step, the conservative pattern copied in §2.3 · the
 material table, where every new optical column is a row · the Q16 boundary modules ·
 the Recorder's DTYPE-class contract for the int64 widening · `pack_hover_readout`,
 the one tile-probe seam · `tools/fire_tuning_lab.py`, the instrument ·
