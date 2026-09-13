@@ -1539,6 +1539,17 @@ cover_exposure = 1.0   # solid pane: stops the march physically (until it shatte
 
 # Furniture: crates/shelving/bunks (editor proposal Q2 — dedicated material
 # row: lower hp, partial permeability so smoke drifts past crates, flammable).
+#
+# THIS ROW IS A PLACEHOLDER TEST CRATE, NOT "ALL FURNITURE" (Erik, 2026-09-13).
+# It is the fixture the fire-tuning sessions burn in isolation, and several of
+# its numbers are chosen to make THAT measurement clean rather than to describe
+# a class of objects — `conductivity = 0.0` most of all, which exists so a lone
+# crate's heat stays on the crate while its burn curve is being read.
+# Real objects get their own rows and their own conduction as they are authored,
+# and so does each tree species; do NOT generalise from this row, and do not
+# design a physics law around its quirks. (The radiation arc did exactly that
+# once: "furniture has no conduction, so radiation must be its only loss
+# channel" is an argument about this fixture, not about furniture.)
 [materials.furniture]
 hp = 30              # burns out / breaks fast; fuel for fire = wall_hp
 flammable = true
