@@ -257,8 +257,36 @@ end-of-step values and solve; emission is simply scaled by
     f_i = 1 / (1 + α · 4 · loss_per_tick_i / T_absolute_i)       α = 0.5
 ```
 
-`α ≥ 0.5` is what buys unconditional stability; smaller α damps less and is more
-accurate, so 0.5 is the choice. **The denominator is the ABSOLUTE temperature**
+**α follows Fleck's own condition, and it is not a constant.** Wollaber's review
+gives only the lower bound (`α ≥ 0.5` for unconditional stability). The original
+paper gives the other half, which matters to us: *"for large values of βcΔtσ, α
+must be set equal to 1 or else the coefficient of `u_r^n` … will be negative,
+tending to cause oscillations in the solution from cycle to cycle."* That
+coefficient is `[1 − (1−α)g]/[1 + αg]` with `g` the dimensionless group, so it
+turns negative once `g > 1/(1−α)` — i.e. **α = 0.5 admits an oscillatory mode
+above `g = 2`**.
+
+Our `g = 4·loss/T_absolute`, by temperature: 0.04 at ignition, 0.33 at 900, 0.74
+at the measured crate plateau, 1.80 at 1800 game — and then 4.27 at 2500, 29 at
+5000, 848 at `T_MAX_PHYS`. **So a fixed α = 0.5 is safe through the entire fire
+range and admits oscillation in exactly the plasma range this scheme exists to
+survive.** Hence:
+
+```
+    α_i = max(0.5, 1 − 1/g_i)
+```
+
+which is *identically* 0.5 wherever `g ≤ 2` — measured, the fire-range results are
+unchanged to five figures — and rises smoothly toward 1 precisely where Fleck says
+it must. Free insurance: a fixed α = 1 would cost +6.0% accuracy at 1263 game,
+and the adaptive rule costs +0.2%, the same as α = 0.5.
+
+(Measured honestly: with the clamp in place I could not actually *provoke* an
+oscillation at any temperature or starting point tried, including starting a cell
+at 20000 game under a 16000-game source. The clamp is suppressing a mode the
+scheme admits. Relying on that is fragile when removing the mode is free.)
+
+**The denominator is the ABSOLUTE temperature**
 (`T_game + 293`), because `β = 4aT³/c_v` is defined on Kelvin. Ours is a delta
 above ambient, and using it directly makes the group diverge as `T → 0` and drives
 `f` toward zero *at ambient*, damping the whole map.
@@ -284,6 +312,15 @@ most serious deficiency of the IMC equations"*.
 Real IMC avoids it by scaling absorption by `f` too and making the remainder
 **effective scattering**. We cannot copy that: scattering couples the ordinates
 and costs a second sweep per tick.
+
+**And the obvious alternative is worse — Fleck measured it in 1971.** Solving the
+local nonlinear material equation directly instead (set `f = 1`, evaluate the
+opacity at the end-of-step temperature, iterate) is the scheme he calls
+"semi-implicit", and of it he says: *"This method … **does not conserve energy, and
+energy checks in typical problems may run as high as 20%**. By employing effective
+scattering, one has the double advantage of both exact energy conservation and
+what appears to be unconditional stability."* That closes off the local-Newton
+route I had considered, on the one criterion this project will not trade.
 
 **So pair it with a maximum-principle clamp.** A body cannot be hotter than a
 black body in equilibrium with the radiation it is absorbing:

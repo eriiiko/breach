@@ -223,3 +223,29 @@ conductivity as a material-specific term on top" is this formulation.
 
 **Still not obtained:** Fleck & Cummings 1971 itself (JCP 8(3), paywalled). The
 Wollaber review rederives it in full, so nothing is missing.
+
+### 15. Fleck & Cummings 1971 — the original
+`fleck_cummings1971_implicit_monte_carlo.pdf` · J. Comput. Phys. **8**, 313–342 ·
+30 pp · *(obtained by Erik, 2026-09-13 — it is paywalled at Elsevier)*
+
+**Read in full, and it corrected the design twice over the review that rederives
+it.** Two things are in the original and not in Wollaber:
+
+- **The upper half of the α rule.** The review gives only `α ≥ 0.5`. Fleck gives
+  the other side (p. 317): *"for large values of βcΔtσ, α must be set equal to 1 or
+  else the coefficient of `u_r^n` … will be negative, tending to cause oscillations
+  in the solution from cycle to cycle."* Our group reaches 848 at `T_MAX_PHYS`, so
+  a fixed α = 0.5 admits that mode exactly where the scheme exists to survive.
+  Design v2 §2.8 now uses `α = max(0.5, 1 − 1/g)`.
+- **A measured verdict on the alternative we were weighing.** Of the "semi-implicit"
+  route — solve the local nonlinear material equation directly — he reports it
+  *"does not conserve energy, and energy checks in typical problems may run as high
+  as 20%"*, against effective scattering's *"double advantage of both exact energy
+  conservation and what appears to be unconditional stability."*
+
+Also worth keeping: his motivation for effective scattering is partly that photons
+are re-emitted *from where they were absorbed*, rather than uniformly over the cell
+— i.e. it is a cure for teleportation error as well as for stiffness. And his
+standard for energy conservation is machine precision (*"of the order of 1e-12. For
+larger values than this one should suspect programming errors"*), which our int64
+formulation beats by being exact.
