@@ -139,3 +139,72 @@ introduction, method framing and the conservation statement. **The full read is
 the next session's first job**, per Erik's instruction. Highest value per page,
 in order: (1) the merge and the bilinear fix sections; (4) the whole paper,
 against our rotation measurement; (6) the interpolation and stability choices.
+
+---
+
+## Added 2026-09-13 (the stability and coupling pass)
+
+Downloaded, verified, and **read in full** before the design pass, at Erik's
+instruction. All extract cleanly with `pdftotext`.
+
+### 9. Wollaber 2016 — Four Decades of Implicit Monte Carlo
+`wollaber2016_four_decades_of_implicit_monte_carlo.pdf` · LA-UR-15-23553 · 54 pp
+
+**The authority for the stability scheme, and reading it in full changed the
+design.** Derives the Fleck factor from scratch (eqs. 17–21): time-average the
+emission across the step as a blend of its start- and end-of-step values, solve,
+and emission is simply scaled by `f = 1/(1 + α·β·σ·c·Δt)`, `β = 4aT³/c_v`.
+`α ≥ 0.5` is what buys unconditional stability; `α = 1` suppresses oscillation.
+
+Two sections that cost us a redesign and are worth re-reading before any change
+to the material update:
+
+- **§4.2.2 Maximum principle violations** — *"arguably the most serious
+  deficiency of the IMC equations"*. Damping the loss but not the gain moves
+  equilibrium, and it is why emission-only Fleck damping needed the clamp.
+- **§5.2 Teleportation error** — names our through-wall radiative transport:
+  absorption scored uniformly over a zone whose absorption depth is far smaller
+  than the zone, re-emitted next step from the far side. A histogram temperature
+  field like ours is documented as inadequate against it.
+
+### 10. Roth & Kasen 2015 — Monte Carlo Radiation Hydrodynamics with Implicit Methods
+`roth_kasen2015_monte_carlo_radhydro_implicit.pdf` · arXiv 1404.4652 · 22 pp
+
+The practical companion. Confirms the failure mode we measured (*"the code
+generates negative temperatures and crashes after the first step"*), states the
+α range, and reports that **heating tracks the analytic solution to 1e-4 while
+cooling is artificially slow** — the asymmetry our clamp exists to correct. Also:
+*"one should strive for the smallest value of α that still maintains stability"*,
+which our own measurement independently reproduced.
+
+### 11. He, Wibking & Krumholz 2024 — Asymptotically-Correct IMEX for RHD
+`skinner2024_asymptotically_correct_imex_radhydro.pdf` · arXiv 2404.08247 · 14 pp
+
+**The architectural sanction for the whole split.** *"the transport terms are
+handled explicitly, while the matter-radiation interacting part is treated
+implicitly and locally, eliminating the need for non-local implicit terms in
+iteration."* That is our design: one explicit sweep, and a per-cell implicit
+coupling with no iteration across cells. Read for the regime analysis when the
+gas-side coupling is built.
+
+### 12. Southworth et al. 2024 — One-sweep moment-based semi-implicit-explicit gray TRT
+`onesweep_moment_semi_implicit_gray_trt_2024.pdf` · arXiv 2401.04285 · 33 pp
+
+Deterministic S_N, and **one sweep per time step** for the first-order method —
+our exact budget, shown to be a respectable target rather than a corner cut.
+Their HOLO machinery is more than we need; the transferable result is that
+absorption–reemission can be treated explicitly *"and although stiff, is
+sufficiently damped"* when the coupling is handled per-cell.
+
+### 13 & 14. Combined conduction–radiation
+`koutsoheras2018_coupled_radiation_conduction_bilayer.pdf` · arXiv 1808.06597 ·
+`porous_polymer_thermal_conductivity_rosseland_2021.pdf` · arXiv 2108.02445
+
+The sanction for running conduction and radiation together and **adding** them.
+In optically thick media radiation becomes a diffusion with an effective
+conductivity `k_rad = 16σT³/(3β)`, summed with the molecular one:
+`k_total = k_cond + k_rad`. Erik's "radiation as the base neighbour transport,
+conductivity as a material-specific term on top" is this formulation.
+
+**Still not obtained:** Fleck & Cummings 1971 itself (JCP 8(3), paywalled). The
+Wollaber review rederives it in full, so nothing is missing.
