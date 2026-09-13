@@ -51,7 +51,7 @@ OUT = Path(__file__).resolve().parent
 # ===========================================================================
 
 # --- quality -------------------------------------------------------------
-BASE_DIRS = 16      # directions in cascade 0. THE quality knob. Measured ring
+BASE_DIRS = 8      # directions in cascade 0. THE quality knob. Measured ring
                     # ripple at r=3: 4 dirs -> 76%, 8 -> 19%, 16 -> 15%.
                     # 4->8 is the big jump; after 16 it barely moves.
                     # Cost is linear in this, at every cascade.
@@ -62,7 +62,7 @@ N_CASCADES = 5      # how many levels. Each covers 4x the distance of the one
 BASE_LEN = 1.0      # length of cascade 0's radial interval, in tiles. Smaller
                     # = finer near-field detail and more cascades needed to
                     # cover the map. This is the penumbra-hypothesis dial.
-MARCH = 0.25        # sub-tile step when tracing an interval. Smaller is more
+MARCH = 0.25/2        # sub-tile step when tracing an interval. Smaller is more
                     # accurate and slower; 0.25 is well past the point of
                     # visible change.
 
