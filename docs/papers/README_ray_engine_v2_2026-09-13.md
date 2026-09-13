@@ -132,13 +132,28 @@ carries an author + paper citation in its header; archive the paper under
 `docs/papers/`."* When the sweep and the cascade passes get written, their
 headers cite (1), (2), (4) and (6) by name.
 
-## Still unread in full
+## Read status (updated 2026-09-13)
 
-Downloaded and verified, but only (1) has been read closely so far, and only its
-introduction, method framing and the conservation statement. **The full read is
-the next session's first job**, per Erik's instruction. Highest value per page,
-in order: (1) the merge and the bilinear fix sections; (4) the whole paper,
-against our rotation measurement; (6) the interpolation and stability choices.
+**Read in full:** (1) Osborne & Sannikov, (4) Camminady, (6) Davis, and (9)–(14)
+below. Between them they changed three design decisions — see
+`docs/ray_engine_v2_reach_and_papers_2026-09-13.md` §4 and the design doc's §0.
+
+The headline from each:
+
+- **(1)** supplied the bilinear fix, and the diagnosis that a light leak means the
+  penumbra criterion is violated — which our one-tile walls do by construction.
+  Its §3.1 inclined-ray treatment is also what let the out-of-plane leak be
+  derived rather than fitted.
+- **(4)** *retired* per-tick rotation for us. rSN interpolates a **carried**
+  angular flux, which is where its angular diffusion comes from; we carry none,
+  and the paper's own §7 says it "is not directly compatible with sweeping".
+- **(6)** named the sharp-versus-diffuse trade as fundamental and validated the
+  shear scheme's major-axis sweep ordering as the standard handling of shallow
+  rays.
+
+**Still only skimmed:** (2) Sannikov's deck, (3) Yates, (5) random source
+iteration, (7) PLUTO, (8) Osborne 2025. None of them gates anything currently
+designed; (3) and (8) become relevant only if cascades are ever built.
 
 ---
 
