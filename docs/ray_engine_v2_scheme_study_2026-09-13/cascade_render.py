@@ -45,10 +45,44 @@ from scheme_study import solve_exact, solve_step            # noqa: E402
 
 OUT = Path(__file__).resolve().parent
 
-N_CASCADES = 5
-BASE_DIRS = 16          # directions in cascade 0
-BASE_LEN = 1.0         # length of cascade 0's interval, in tiles
-MARCH = 0.25           # sub-tile march step
+# ===========================================================================
+#  DIALS — the whole tuning surface. Edit, re-run, look. ~3 s per run.
+#  (Same panel-at-the-top idea as tools/fire_tuning_lab.py.)
+# ===========================================================================
+
+# --- quality -------------------------------------------------------------
+BASE_DIRS = 16      # directions in cascade 0. THE quality knob. Measured ring
+                    # ripple at r=3: 4 dirs -> 76%, 8 -> 19%, 16 -> 15%.
+                    # 4->8 is the big jump; after 16 it barely moves.
+                    # Cost is linear in this, at every cascade.
+N_CASCADES = 5      # how many levels. Each covers 4x the distance of the one
+                    # below, so 5 reaches 341 tiles — more than the map. Drop
+                    # to 4 and the far field goes dark; raise it and nothing
+                    # changes except wasted work.
+BASE_LEN = 1.0      # length of cascade 0's radial interval, in tiles. Smaller
+                    # = finer near-field detail and more cascades needed to
+                    # cover the map. This is the penumbra-hypothesis dial.
+MARCH = 0.25        # sub-tile step when tracing an interval. Smaller is more
+                    # accurate and slower; 0.25 is well past the point of
+                    # visible change.
+
+# --- look ----------------------------------------------------------------
+GAMMA = 0.42        # tone-map curve. LOWER lifts the dark end (more of the
+                    # room becomes visible, flatter); HIGHER crushes it (more
+                    # contrast, deeper blacks). 0.42 is roughly sRGB-ish.
+                    # Try 0.30 to see what is hiding in the shadows, 0.6 for
+                    # the high-contrast prototype look Erik liked (issue #64).
+CLIP_PCT = 99.5     # what counts as "full brightness". Lower = more blown-out
+                    # highlights; raise toward 100 to keep the fire's core from
+                    # clipping.
+PALETTE = ["#05050c", "#2a1146", "#7b1d3f", "#d2492a", "#f4a93a", "#fff3c4"]
+WALL_COLOUR = "#3a3f4a"
+
+# --- what to compare -----------------------------------------------------
+SHOW_STEP = True    # include the S16 heat sweep as a contrast column
+LOG_FLOOR = -4.5    # bottom of the log10 row. Raise toward -3 to zoom in on
+                    # the bright half; drop to -6 to see the faintest leakage.
+# ===========================================================================
 
 
 def trace(px, py, ang, r0, r1, emission, kappa):
@@ -155,30 +189,30 @@ def main():
     print("step S16 (the heat sweep, for contrast) ...")
     f_step, _, _ = solve_step(kappa, source)
 
-    fire = LinearSegmentedColormap.from_list(
-        "fire", ["#05050c", "#2a1146", "#7b1d3f", "#d2492a",
-                 "#f4a93a", "#fff3c4"])
-    fire.set_bad("#3a3f4a")
+    fire = LinearSegmentedColormap.from_list("fire", PALETTE)
+    fire.set_bad(WALL_COLOUR)
 
     # normalise each field on its own 99.5th percentile: this is a question
     # about SHAPE and artifacts, not about absolute scale
     fields = [("exact (ground truth)", f_exact),
-              ("radiance cascades (the LIGHT solver)", f_casc),
-              ("step S16 sweep (the HEAT solver)", f_step)]
+              (f"radiance cascades ({BASE_DIRS} base dirs)", f_casc)]
+    if SHOW_STEP:
+        fields.append(("step S16 sweep (the HEAT solver)", f_step))
 
-    fig, axes = plt.subplots(2, 3, figsize=(15.5, 9.2))
+    fig, axes = plt.subplots(2, len(fields),
+                             figsize=(5.2 * len(fields), 9.2))
     for col, (name, f) in enumerate(fields):
-        hi = np.percentile(f[~opaque], 99.5)
-        axes[0, col].imshow(tonemap(f, opaque, hi=hi), cmap=fire, vmin=0, vmax=1,
+        hi = np.percentile(f[~opaque], CLIP_PCT)
+        axes[0, col].imshow(tonemap(f, opaque, gamma=GAMMA, hi=hi), cmap=fire, vmin=0, vmax=1,
                             interpolation="nearest")
         axes[0, col].set_title(name, fontsize=11)
         axes[0, col].set_xticks([]); axes[0, col].set_yticks([])
         lg = np.where(opaque, np.nan, np.log10(np.maximum(f / max(hi, 1e-12),
                                                           1e-6)))
-        im = axes[1, col].imshow(lg, cmap="magma", vmin=-4.5, vmax=0,
+        im = axes[1, col].imshow(lg, cmap="magma", vmin=LOG_FLOOR, vmax=0,
                                  interpolation="nearest")
         axes[1, col].set_xticks([]); axes[1, col].set_yticks([])
-        if col == 2:
+        if col == len(fields) - 1:
             fig.colorbar(im, ax=axes[1, col], fraction=0.046,
                          label="log10 (normalised)")
     axes[0, 0].set_ylabel("tone-mapped", fontsize=10)
