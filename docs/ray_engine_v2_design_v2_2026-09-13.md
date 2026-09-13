@@ -589,10 +589,26 @@ That is a different question from brightness and should stay a separate primitiv
 | *(cascades, if ever built)* | *~55× a sweep pass in the same prototype* | *grid* |
 
 Nothing on this table scales with the number of burning tiles or light sources.
-Against a 41.67 ms tick at 24 Hz — and the tick budget is still stated at 12 Hz in
-every perf doc, with the atmosphere group already measuring 18.97 ms at a
-comparable grid. **That restatement is still owed** (survey Q14) and it decides how
-much of this we can afford at once.
+
+**The budget, stated correctly** — an earlier draft of this section, and the survey
+it inherited from, both got this wrong. The sim runs at **24 Hz, so the tick is
+41.67 ms**; that was ruled (R-H) and is not in question. What is stale is only the
+*per-system gate*, which older perf documents still express as "25% of 83 ms",
+i.e. against a 12 Hz tick we no longer use.
+
+And the 18.97 ms figure was mischaracterised twice over. It is not the atmosphere
+group — it is `tests/_eos_p3_bench.py` measuring the **whole `Simulation.step()`**,
+every system running, end to end from Python with the physics in C++, under a
+deliberately hostile load (five explosions, a hull breach to vacuum, a flood). And
+160×160 is not "a comparable grid": it is 25 600 cells against `unhcr_vessel`'s
+6 000, more than four times the shipped ship scale. At shipped scale the same
+bench reports **p50 1.6 ms, p99 9.78 ms** — roughly a quarter of the 41.67 ms tick,
+not half of it.
+
+So the headroom is far better than the survey implied: about **32 ms spare per tick
+at shipped scale today**. The honest open item is therefore small — restate the
+per-system p99 gate against 41.67 ms instead of 83 ms, which is documentation work
+rather than a decision (survey Q14).
 
 ---
 
@@ -621,7 +637,9 @@ consumers unchanged, weapon beams never migrated.
 
 ## 10. Still open
 
-1. **The tick budget** (survey Q14) — unrestated for 24 Hz.
+1. **The per-system perf gate** (survey Q14) — still written against 83 ms /
+   12 Hz in the older perf docs. Documentation, not a ruling: 24 Hz is settled and
+   the measured headroom is comfortable (§8).
 2. **The out-of-plane leak** — derived, measured, and *not ruled*. Erik set the
    reach question aside; the coefficient defaults to 0 and the sweep is correct
    either way. `reach_and_leak_study.py` has the numbers when it is wanted.
