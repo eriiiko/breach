@@ -15,7 +15,7 @@ WHAT TRANSCRIBES WHAT
   e_inv_q            <- design v3 section 2.6 ("E°⁻¹"), both edge cases of row 31
   shr_round0         <- cpp/src/fixed_point.h:410 (the int64 twin P1 owes)
   floordiv_q         <- cpp/src/fixed_point.h:562
-  fleck_f_solid_q    <- design v3 section 2.8 (the excess form, row 22)
+  fleck_f_solid_q    <- design v3 section 2.8 (the excess form, row 22; Q24, row 32)
   sweep_q            <- design v3 section 2.3 (gather form; body re-emission, row 25)
   fold_pass1_solid   <- cpp/src/temperature_solver.cpp:247-299 + the clamp of
                         section 2.8 in its corrected form (row 21)
@@ -33,6 +33,15 @@ unbounded number.
 Erik's ruling of 2026-09-15 (design row 25) is implemented as `body_mode="reemit"`:
 a body re-emits at the ambient level. `body_mode="sink"` is the pre-ruling variant,
 kept ONLY so the gate that says the ruling was necessary cannot pass vacuously.
+
+THE FLECK FACTOR IS Q24 (design row 32, P0b). `f_q` is `floordiv_q(T_abs << 24, D)`
+and the damped source is `amb_m + ((ex_m * f_q24) >> 24)`; in Q16 that source was
+not monotone in T above the fire range (P0 section 0.4, gate 12). Two knobs exist
+so the gates can MEASURE the alternatives this file does not implement:
+`fleck_f_q(shift=16)` is the rejected Q16 form (gate 12's non-vacuity), and
+`alpha_floor="zero"` is design section 12 item 4's undamped-fire variant, an open
+question for Erik and NOT the default -- everything here runs the ruled floor of
+one half unless a caller says otherwise (`p0b_alpha_floor.py` is the measurement).
 """
 from __future__ import annotations
 
@@ -44,6 +53,10 @@ from dataclasses import dataclass, field
 # config.toml so this file cannot silently drift from the engine.
 # --------------------------------------------------------------------------- #
 ONE = 65536                      # Q16.16 unit
+F_SHIFT = 24                     # the Fleck factor's fixed point (design row 32)
+F_ONE = 1 << F_SHIFT             # f == F_ONE exactly when L_q == 0
+ALPHA_FLOOR_HALF = "half"        # alpha = max(1/2, 1 - 1/g) -- Fleck's bound, RULED
+ALPHA_FLOOR_ZERO = "zero"        # alpha = max(0,   1 - 1/g) -- design section 12 item 4
 RAD_SCALE = 5.1427e-5            # config.toml:526   [physics.fire] rad_scale
 K_AMB = 293                      # config.toml:813   kelvin_ambient (integer-valued)
 K_SLOPE = 1                      # config.toml:814   k_temp_to_kelvin (G12: the x1 map)
@@ -85,6 +98,39 @@ def config_dials_match(config_path=None):
     return (not bad), (bad if bad else got)
 
 
+def shipped_absorbing_rows(config_path=None):
+    """Every SHIPPED material row that absorbs radiation, read from config.toml.
+
+    Returns [(name, a_q, his, heat_atten, thermal_mass), ...] for the rows with
+    `heat_atten > 0`; rows with `heat_atten == 0` (air, foliage) never emit or
+    absorb and are skipped. `his = log2(thermal_mass)` is the engine's own
+    `heat_inv_shift` (src/simulation/materials.py:343-357), so `thermal_mass`
+    must be a power of two -- the same contract, asserted here.
+
+    Read rather than hardcoded on purpose: gate 12's property is about the rows
+    the game SHIPS, so a new material row must be able to fail it.
+    """
+    import pathlib
+    import tomllib
+    if config_path is None:
+        config_path = pathlib.Path(__file__).resolve().parents[2] / "config.toml"
+    with open(config_path, "rb") as fh:
+        cfg = tomllib.load(fh)
+    out = []
+    for name, row in cfg["materials"].items():
+        atten = float(row.get("heat_atten", 0.0))
+        if atten <= 0.0:
+            continue
+        tm = int(round(float(row.get("thermal_mass", 0))))
+        if tm <= 0 or (tm & (tm - 1)) != 0:
+            raise ValueError(
+                f"materials.{name}: heat_atten = {atten} with thermal_mass = {tm}; "
+                f"an absorbing material must carry a power-of-two thermal mass "
+                f"(it sits on the heat->temperature divide)")
+        out.append((name, quant(atten), tm.bit_length() - 1, atten, tm))
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # The kit: the exact integer primitives, one transcription each.
 # --------------------------------------------------------------------------- #
@@ -102,6 +148,12 @@ def floordiv_q(n: int, d: int) -> int:
 def quant(x: float) -> int:
     """The Q16 ingress door (round-half-away-from-zero), for scene setup only."""
     s = x * ONE
+    return int(s + 0.5) if s >= 0 else int(s - 0.5)
+
+
+def quant_f(x: float) -> int:
+    """The same door in the Fleck factor's Q24, for a gate that FORCES an f."""
+    s = x * F_ONE
     return int(s + 0.5) if s >= 0 else int(s - 0.5)
 
 
@@ -198,34 +250,79 @@ def fleck_L_solid_q(T_q: int, a_q: int, his: int, table=E, e_ref: int = None) ->
     return shr_round0((a_q * ex) >> 16, his)
 
 
-def fleck_f_q(T_q: int, L_q: int) -> int:
-    """f_q = floordiv_q((T_abs_q << 16), max(T_abs_q + 2L, 4L)), design 2.8.
+def fleck_D_q(T_abs_q: int, L_q: int, alpha_floor: str = ALPHA_FLOOR_HALF) -> int:
+    """The Fleck denominator `T_abs * (1 + alpha*g)`, exactly, in shifts alone.
+
+    Substituting g = 4L/T_abs, both floors collapse to one max() of two shifts:
+
+        alpha = max(1/2, 1 - 1/g)  ->  D = max(T_abs + 2L, 4L)   (RULED, section 2.8)
+        alpha = max(0,   1 - 1/g)  ->  D = max(T_abs,      4L)   (section 12 item 4)
+
+    Below the branch point alpha is its floor (1 + g/2, or 1); above it alpha is
+    1 - 1/g and 1 + alpha*g == g on both, which is the shared `4L` arm.
+    """
+    if alpha_floor == ALPHA_FLOOR_HALF:
+        return max(T_abs_q + 2 * L_q, 4 * L_q)
+    if alpha_floor == ALPHA_FLOOR_ZERO:
+        return max(T_abs_q, 4 * L_q)
+    raise ValueError(f"unknown alpha_floor {alpha_floor!r} (want 'half' or 'zero')")
+
+
+def fleck_f_q(T_q: int, L_q: int, *, shift: int = F_SHIFT,
+              alpha_floor: str = ALPHA_FLOOR_HALF) -> int:
+    """f_q = floordiv_q((T_abs_q << 24), max(T_abs_q + 2L, 4L)), design 2.8 + row 32.
 
     `alpha = max(1/2, 1 - 1/g)` is never computed: 1 + alpha*g == max(1 + g/2, g).
     T_abs_q > 0 always (T_MIN = -292 game keeps T_abs >= 1), D >= T_abs_q, so
-    0 < f_q <= ONE and f_q == ONE exactly when L_q == 0.
+    0 < f_q <= (1 << shift) and f_q == (1 << shift) exactly when L_q == 0.
+
+    `shift` is Q24 (row 32) and exists as a knob ONLY so the gates can measure the
+    Q16 form the design rejected; `alpha_floor` likewise exists only for the
+    measurement design section 12 item 4 asks for. Neither is a scheme choice.
     """
     T_abs_q = T_q + (K_AMB << 16)
     assert T_abs_q > 0, "T_abs must be positive (T_MIN = -292 game guarantees it)"
-    D = max(T_abs_q + 2 * L_q, 4 * L_q)
-    return floordiv_q(T_abs_q << 16, D)
+    D = fleck_D_q(T_abs_q, L_q, alpha_floor)
+    return floordiv_q(T_abs_q << shift, D)
 
 
-def fleck_f_solid_q(T_q: int, a_q: int, his: int, table=E, e_ref: int = None):
+def fleck_f_solid_q(T_q: int, a_q: int, his: int, table=E, e_ref: int = None, *,
+                    shift: int = F_SHIFT, alpha_floor: str = ALPHA_FLOOR_HALF):
     """Convenience: returns (f_q, L_q) for a solid cell."""
     L = fleck_L_solid_q(T_q, a_q, his, table, e_ref)
-    return fleck_f_q(T_q, L), L
+    return fleck_f_q(T_q, L, shift=shift, alpha_floor=alpha_floor), L
 
 
-def fleck_f_float(T_game: float, L_game: float) -> float:
+def fleck_f_float(T_game: float, L_game: float,
+                  alpha_floor: str = ALPHA_FLOOR_HALF) -> float:
     """The float form this is checked against: 1/(1 + alpha*g),
-    g = 4*L/T_abs, alpha = max(1/2, 1 - 1/g)."""
+    g = 4*L/T_abs, alpha = max(floor, 1 - 1/g)."""
     T_abs = T_game + K_AMB
     g = 4.0 * L_game / T_abs
     if g <= 0.0:
         return 1.0
-    alpha = max(0.5, 1.0 - 1.0 / g)
+    if alpha_floor not in (ALPHA_FLOOR_HALF, ALPHA_FLOOR_ZERO):
+        raise ValueError(f"unknown alpha_floor {alpha_floor!r}")
+    floor = 0.5 if alpha_floor == ALPHA_FLOOR_HALF else 0.0
+    alpha = max(floor, 1.0 - 1.0 / g)
     return 1.0 / (1.0 + alpha * g)
+
+
+def damped_source_q(T_q: int, a_q: int, his: int, table=E, e_ref: int = None, *,
+                    shift: int = F_SHIFT, alpha_floor: str = ALPHA_FLOOR_HALF) -> int:
+    """What a solid cell EMITS per ordinate-weight-1 this tick, exactly as the
+    sweep forms it:  E_ref + ((E°[T] - E_ref) * f_q >> shift).
+
+    This is the quantity design row 32 requires to be monotone in T (gate 12) and
+    the quantity section 12 item 4 compares against the black body.
+    """
+    ref = table[0] if e_ref is None else e_ref
+    ex = table[e_bucket_of(T_q)] - ref
+    if ex < 0:
+        ex = 0
+    f_q = fleck_f_solid_q(T_q, a_q, his, table, e_ref,
+                          shift=shift, alpha_floor=alpha_floor)[0]
+    return ref + ((ex * f_q) >> shift)
 
 
 # --------------------------------------------------------------------------- #
@@ -266,6 +363,7 @@ class SweepResult:
     max_fluence: int = 0          # max rad_fluence[i]
     max_product: int = 0          # the largest intermediate product (headroom)
     min_stream: int = 0           # positivity: must never be negative
+    max_fleck_product: int = 0    # max (ex_m * f_q24), the widest Q24 product (G11)
 
     def sums(self):
         return (plane_sum(self.rad_net), plane_sum(self.rad_flux),
@@ -315,7 +413,7 @@ def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
 
     a, d, k : Q16 planes (material extinction, stamped extinction, leak)
     T       : Q16.16 temperature plane
-    f_plane : the Fleck pre-pass output (Q16); None means f == ONE everywhere
+    f_plane : the Fleck pre-pass output (Q24, row 32); None means f == F_ONE
     w_m     : the ordinate weight; default ONE // n_ord (4096 at S16)
     e_ref   : the ambient reference level. The design fixes it at E°[0]; 0
               reproduces the float scheme study's zero-sky configuration
@@ -336,7 +434,7 @@ def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
     ref = table[0] if e_ref is None else e_ref
     amb_m = (ref * w_m) >> 16
     if f_plane is None:
-        f_plane = plane(h, w, ONE)
+        f_plane = plane(h, w, F_ONE)
 
     res = SweepResult(plane(h, w), plane(h, w), plane(h, w), plane(h, w))
     rad_net, rad_flux, rad_amb, rad_flu = (res.rad_net, res.rad_flux,
@@ -351,6 +449,7 @@ def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
     max_stream = 0
     min_stream = None
     max_product = 0
+    max_fleck_product = 0
     for (mu, eta) in ordinates(n_ord, half_offset):
         x_major, s_m, sx, sy = ordinate_constants(mu, eta, transport)
         store = [[None] * w for _ in range(h)]
@@ -398,7 +497,8 @@ def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
             abs_mat = (stream * ai) >> 16
             abs_body = (stream * bi) >> 16
             ex_m = (ex_cell[y][x] * w_m) >> 16
-            src = amb_m + ((ex_m * f_plane[y][x]) >> 16)
+            fleck_product = ex_m * f_plane[y][x]          # the widest Q24 product
+            src = amb_m + (fleck_product >> F_SHIFT)
             emitted = (src * ai) >> 16
             emit_body = ((amb_m * bi) >> 16) if body_mode == "reemit" else 0
             i_out = stream - abs_mat - abs_body + emitted + emit_body
@@ -432,31 +532,36 @@ def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
             if min_stream is None or stream < min_stream:
                 min_stream = stream
             p = max(stream * ai, stream * bi, ex_cell[y][x] * w_m,
-                    ex_m * f_plane[y][x], src * ai)
+                    fleck_product, src * ai)
             if p > max_product:
                 max_product = p
+            if fleck_product > max_fleck_product:
+                max_fleck_product = fleck_product
 
     res.max_stream = max_stream
     res.min_stream = 0 if min_stream is None else min_stream
     res.max_abs_net = plane_max_abs(rad_net)
     res.max_fluence = max(v for row in rad_flu for v in row)
     res.max_product = max_product
+    res.max_fleck_product = max_fleck_product
     return res
 
 
-def fleck_prepass(T, a, his, *, table=E, e_ref: int = None, enabled: bool = True):
-    """The pre-sweep Fleck pass for SOLIDS (design section 2.8).
+def fleck_prepass(T, a, his, *, table=E, e_ref: int = None, enabled: bool = True,
+                  alpha_floor: str = ALPHA_FLOOR_HALF):
+    """The pre-sweep Fleck pass for SOLIDS (design section 2.8). Q24 (row 32).
 
     `his` may be an int (uniform) or a plane. Returns the f_plane.
     """
     h, w = len(T), len(T[0])
     if not enabled:
-        return plane(h, w, ONE)
-    out = plane(h, w, ONE)
+        return plane(h, w, F_ONE)
+    out = plane(h, w, F_ONE)
     for y in range(h):
         for x in range(w):
             s = his if isinstance(his, int) else his[y][x]
-            out[y][x] = fleck_f_solid_q(T[y][x], a[y][x], s, table, e_ref)[0]
+            out[y][x] = fleck_f_solid_q(T[y][x], a[y][x], s, table, e_ref,
+                                        alpha_floor=alpha_floor)[0]
     return out
 
 
@@ -545,6 +650,7 @@ class Scene:
     body_mode: str = "reemit"
     e_ref: int = None
     fleck: bool = True
+    alpha_floor: str = ALPHA_FLOOR_HALF
     counters: FoldCounters = field(default_factory=FoldCounters)
 
     def __post_init__(self):
@@ -555,7 +661,7 @@ class Scene:
 
     def tick(self, *, clamp_enabled=True, rails_enabled=True, int32_sat=True):
         f = fleck_prepass(self.T, self.a, self.his, e_ref=self.e_ref,
-                          enabled=self.fleck)
+                          enabled=self.fleck, alpha_floor=self.alpha_floor)
         res = sweep_q(self.a, self.d, self.k, self.T, n_ord=self.n_ord,
                       transport=self.transport, f_plane=f, e_ref=self.e_ref,
                       body_mode=self.body_mode)
@@ -578,11 +684,12 @@ class Scene:
 # (stability_study.py's scenario, in the new forms).
 # --------------------------------------------------------------------------- #
 def cell_rad_net_q(T_q: int, phi: int, a_q: int, his: int, *, table=E,
-                   e_ref: int = None, fleck: bool = True) -> int:
+                   e_ref: int = None, fleck: bool = True,
+                   alpha_floor: str = ALPHA_FLOOR_HALF) -> int:
     """rad_net for one cell under a held total fluence Phi, in the excess form:
 
         rad_net = ((Phi*a) >> 16) - ((src*a) >> 16),
-        src     = e_ref + ((ex * f) >> 16),  ex = E°[T] - e_ref
+        src     = e_ref + ((ex * f) >> 24),  ex = E°[T] - e_ref
 
     This is section 2.3's per-ordinate pair summed over the ordinates with the
     per-ordinate truncations folded into one; it differs from a full sweep by at
@@ -593,15 +700,17 @@ def cell_rad_net_q(T_q: int, phi: int, a_q: int, his: int, *, table=E,
     ex = table[e_bucket_of(T_q)] - ref
     if ex < 0:
         ex = 0
-    f_q = ONE
+    f_q = F_ONE
     if fleck:
-        f_q = fleck_f_q(T_q, shr_round0((a_q * ex) >> 16, his))
-    src = ref + ((ex * f_q) >> 16)
+        f_q = fleck_f_q(T_q, shr_round0((a_q * ex) >> 16, his),
+                        alpha_floor=alpha_floor)
+    src = ref + ((ex * f_q) >> F_SHIFT)
     return ((phi * a_q) >> 16) - ((src * a_q) >> 16)
 
 
 def cell_march(T0_q: int, phi: int, a_q: int, his: int, ticks: int, *,
                table=E, e_ref: int = None, fleck: bool = True,
+               alpha_floor: str = ALPHA_FLOOR_HALF,
                clamp_enabled: bool = True, rails_enabled: bool = True,
                int32_sat: bool = True, trace: bool = False):
     """March one cell `ticks` ticks under a held fluence. Returns (T_q, counters)
@@ -612,7 +721,7 @@ def cell_march(T0_q: int, phi: int, a_q: int, his: int, ticks: int, *,
     out = [T0_q]
     for _ in range(ticks):
         rn = cell_rad_net_q(T[0][0], phi, a_q, his, table=table, e_ref=e_ref,
-                            fleck=fleck)
+                            fleck=fleck, alpha_floor=alpha_floor)
         fold_pass1_solid(T, [[rn]], [[phi]], his, ts, counters,
                          clamp_enabled=clamp_enabled, rails_enabled=rails_enabled,
                          int32_sat=int32_sat, table=table)
@@ -689,7 +798,7 @@ def sweep_push_float(a, d, k, T, *, n_ord=16, transport="shear", f_plane=None,
     dE = [[0.0] * w for _ in range(h)]
     Ecell = [[float(table[e_bucket_of(T[y][x])]) for x in range(w)] for y in range(h)]
     if f_plane is None:
-        f_plane = plane(h, w, ONE)
+        f_plane = plane(h, w, F_ONE)
     for (mu, eta) in ordinates(n_ord):
         am, ae = abs(mu), abs(eta)
         sx = 1 if mu > 0 else -1
@@ -738,7 +847,7 @@ def sweep_push_float(a, d, k, T, *, n_ord=16, transport="shear", f_plane=None,
             bi = (d[y][x] - a[y][x]) / ONE
             absorbed = stream * ai
             body = stream * bi
-            ex = (Ecell[y][x] - ref) * (f_plane[y][x] / ONE)
+            ex = (Ecell[y][x] - ref) * (f_plane[y][x] / F_ONE)
             emitted = (ref + ex) * wt * ai
             emit_body = (ref * wt * bi) if body_mode == "reemit" else 0.0
             i_out = stream - absorbed - body + emitted + emit_body

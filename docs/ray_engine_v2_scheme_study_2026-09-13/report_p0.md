@@ -1,5 +1,12 @@
 # P0 — the integer reference, and what it measures (2026-09-15)
 
+> **P0b, the same night** (branch `12-p0b-reference-q24-and-csv-eol`): the Fleck
+> factor moved from Q16 to **Q24** (design row 32), which is what §0.4 asked for;
+> the new **gate 12** holds the property §0.4 found broken; **§0.8** is the α-floor
+> measurement design §12 item 4 asks Erik for — a *measurement*, nothing changed,
+> the floor stays ½; and a repo-root `.gitattributes` closes the CRLF trap. Every
+> number Q24 moved is restated in place and marked **(P0b)**. Still no engine code.
+>
 > **Patch:** P0 of the ray-engine-v2 arc (`docs/ray_engine_v2_design_v3_2026-09-15.md`
 > §11), issue #12, branch `12-p0-integer-reference-sweep`.
 > **Nothing in the engine changed.** This patch is a measuring instrument, its
@@ -16,10 +23,12 @@
 > | `sweep_ref_q.py` | THE integer reference: §2.3 in gather form, both transports, the leak, the virtual ambient ring, the body share **with ambient re-emission** (row 25), the excess-form Fleck factor, the E° bake + `E°⁻¹`, and a model of the Pass-1 solid fold with the corrected clamp and both rails |
 > | `sweep_ref_q_gates.py` | the twelve gate groups below; prints measured numbers, exits non-zero on any failure. `--fast` shrinks grids and tick counts, never coverage |
 > | `p0_figures.py` | the two figures and the characterisation tables quoted here |
-> | `tests/test_ray_engine_v2_integer_reference.py` | the gates as pytest, 13 tests, 1.5 s |
+> | `p0b_alpha_floor.py` | **(P0b)** §0.8's three tables and `p0b_alpha_floor.png` — the α-floor measurement for Erik |
+> | `tests/test_ray_engine_v2_integer_reference.py` | the gates as pytest, **14 tests, 1.5 s** (P0b: +G12) |
+> | `.gitattributes` | **(P0b)** `*.csv` / `*.toml` `text eol=lf`, so a fresh clone or worktree on Windows does not check the committed LF out as CRLF — see §8 note 7 |
 >
 > Re-run: `C:/Users/steen/anaconda3/python.exe sweep_ref_q_gates.py` (about 80 s) and
-> the same interpreter on `p0_figures.py`.
+> the same interpreter on `p0_figures.py` and `p0b_alpha_floor.py`.
 
 ---
 
@@ -38,8 +47,8 @@ under its own alpha the Fleck-only equilibrium is **twice as far out**:
 | source | design v3 quotes | **measured, v3's own alpha** |
 |---|---|---|
 | 1263 game | 845 | **844** |
-| 5000 game | 18 982 | **38 310** |
-| 16 000 game | 1 727 794 | **3 454 227** |
+| 5000 game | 18 982 | **38 310** (38 259 in Q24, P0b) |
+| 16 000 game | 1 727 794 | **3 454 227** (3 454 182 in Q24, P0b) |
 
 The algebra is the same `f = T_abs / max(T_abs + 2L, 4L)` that critique 3 and this
 reference both confirm; it is the *comparison column* in the design that is stale.
@@ -81,6 +90,24 @@ table should say which configuration produced it.
 
 ### 0.4 The damped source is NOT monotone in temperature above the fire range
 
+> **RESOLVED IN P0b (2026-09-15), by the Q24 alternative this section's own last
+> paragraph names.** With `f` in Q24 (design row 32) **every shipped material row
+> is exactly monotone over the whole table — 0 backward steps, where Q16 had 453
+> to 540 of them.** The property is now **gate 12**, which reads the material rows
+> out of `config.toml` (so a new row can fail it) and measures the rejected Q16
+> form on the same probe so it cannot pass vacuously. The proposed ingress rule
+> `heat_atten > 0 ⇒ thermal_mass >= 8` is therefore **optional, not required**: at
+> `thermal_mass = 1` the wobble is 0.047 % in Q24 against 19.89 % in Q16. The table
+> below is the Q16 measurement, kept as the record of what was wrong.
+>
+> | material row | a | log2(tm) | `f_q` Q16 @ top | backward steps Q16 | worst Q16 | `f_q24` @ top | backward steps Q24 |
+> |---|---|---|---|---|---|---|---|
+> | wood / door / door_closed | 1.00 | 3 | 38 | 453 | **2.47 %** | 9 888 | **0** |
+> | hull / steel | 1.00 | 5 | 154 | 540 | 0.55 % | 39 555 | **0** |
+> | furniture / kindling | 0.50 | 3 | 77 | 507 | 1.18 % | 19 777 | **0** |
+> | glass | 0.30 | 4 | 257 | 533 | 0.29 % | 65 924 | **0** |
+> | *(no material ships this)* | 1.00 | **0** | 4 | 288 | **19.89 %** | 1 236 | 100, worst **0.047 %** |
+
 `f * (E°[T] - E°[0])` — what a cell actually radiates — rises strictly through the
 whole fire range and then **wobbles**: 453 backward steps for wood, worst 2.47 % in
 power (0.61 % in a receiver's equilibrium temperature). The mechanism is `f_q`'s
@@ -109,11 +136,12 @@ wanted.)
 ### 0.5 The runaway the clamp prevents is not representable in the engine's temperature field
 
 `temperature` is int32 Q16.16, so its ceiling is **32 768 game**. The Fleck-only
-equilibrium of 3 454 227 game exists only in unbounded arithmetic:
+equilibrium of 3 454 227 game (3 454 182 in Q24, P0b) exists only in unbounded
+arithmetic:
 
 | arithmetic | equilibrium |
 |---|---|
-| unbounded ints (the study's number) | 3 454 227 game |
+| unbounded ints (the study's number) | 3 454 227 game (Q24: 3 454 182) |
 | int32 Q16.16 with `sat_add_q16` | 32 768 game (pinned at INT32_MAX) |
 | + the `T_MAX_PHYS` rail | 16 000 game, `t_max_phys_hits` firing **every tick** |
 
@@ -125,7 +153,9 @@ must expect it rather than assert it stays zero.
 ### 0.6 In the 2-D sweep the clamp buys far less than the 0-D table suggests
 
 A cold crate one tile from a held 16 000-game source settles at **1 104 game**
-clamped and **1 212 game** unclamped — 10 %, not x150. Two measured reasons:
+clamped and **1 212 game** unclamped — 10 %, not x150. (**P0b: 1 108 and 1 220**
+once `f` is Q24 — the Q16 floor-division was throwing away a little of the
+source's own emission; the 10 % conclusion is unchanged.) Two measured reasons:
 
 - The sweep's own geometric factor at that distance is **0.09**, not the 0.25 the
   0-D tables assume. Measured `G = (Phi - E°[0]) / E°[T_src]`:
@@ -137,8 +167,9 @@ clamped and **1 212 game** unclamped — 10 %, not x150. Two measured reasons:
 
   So "G = 0.25 is roughly an adjacent tile" is right for step and x1.8 optimistic
   for shear.
-- The Fleck factor damps a table-top source's emission by **x851**, so a plasma
-  tile delivers 0.117 % of its black-body power to its neighbours.
+- The Fleck factor damps a table-top source's emission by **x851** (**x848** in
+  Q24, P0b), so a plasma tile delivers 0.117 % (0.118 %) of its black-body power
+  to its neighbours.
 
 The clamp still fires (17 hits in 24 ticks on that scene) so gate 4 is not vacuous,
 and the 0-D equilibrium table is still the right statement of the *scheme's* bias.
@@ -164,27 +195,143 @@ is physical: **a cell fully ringed by 1263-game walls receives G = 0.9987 and
   shift truncation" — identically, to three decimals in both mean radius and
   spread, for both transports (§6).
 
+### 0.8 P0b: the alpha floor, measured for Erik
+
+Design §12 item 4 asks a question and parks it: the Fleck factor's `alpha` has a
+**floor**, ruled at ½, and the alternative floor 0 changes what a *burning* tile
+radiates. **Nothing here changed** — the reference's default is and stays
+`alpha = max(1/2, 1 - 1/g)` (design §2.8), and P1 builds that unless Erik says
+otherwise. This section is the measurement, run at both floors by
+`p0b_alpha_floor.py`; the figure is `p0b_alpha_floor.png`.
+
+**Three words this section needs, one sentence each.**
+
+- A **driven source** is a cell whose temperature is held up by something *other
+  than radiation* — a burning tile refilled by combustion every tick — so it never
+  actually does the cooling the Fleck factor damps it in anticipation of.
+- **Free cooling** is the opposite case: nothing holds the cell, it starts hot and
+  radiates its way down, and the Fleck factor is what stops the explicit update
+  from overshooting on the way.
+- The **stability multiplier** is the factor by which one tick's temperature error
+  is multiplied by the next tick (`x = g(1 + alpha·g/4)/(1 + alpha·g)²`), and the
+  update is monotone and non-oscillatory exactly while it stays in `(0, 1]` — which
+  §12 item 4 shows floor 0 satisfies for every `g`, and which is the only reason
+  floor 0 is on the table at all.
+
+Both floors are the same one exact division, `f = T_abs / D`; only `D` differs:
+
+| floor | `alpha` | `D` |
+|---|---|---|
+| **½ (RULED)** | `max(1/2, 1 - 1/g)` | `max(T_abs + 2L, 4L)` |
+| 0 | `max(0, 1 - 1/g)` | `max(T_abs, 4L)` |
+
+**(a) What a DRIVEN cell radiates**, as a fraction of its black-body excess (that
+fraction *is* `f`). Two rows: furniture/kindling (`a = 0.5`) and wood/door
+(`a = 1`), both `thermal_mass = 8`.
+
+| T game | `g` (furn.) | f, floor ½ | f, floor 0 | `g` (wood) | f, floor ½ | f, floor 0 |
+|---|---|---|---|---|---|---|
+| 300 | 0.039 | 0.9809 | **1.0000** | 0.078 | 0.9625 | **1.0000** |
+| 600 | 0.139 | 0.9349 | **1.0000** | 0.279 | 0.8777 | **1.0000** |
+| 900 | 0.334 | 0.8569 | **1.0000** | 0.668 | 0.7496 | **1.0000** |
+| **1263** (the crate plateau) | 0.736 | **0.7309** | **1.0000** | 1.472 | **0.5760** | **0.6792** |
+| 1800 | 1.805 | 0.5256 | 0.5541 | 3.610 | 0.2770 | 0.2770 |
+| 2500 | 4.286 | 0.2333 | 0.2333 | 8.572 | 0.1167 | 0.1167 |
+| 5000 | 29.14 | 0.0343 | 0.0343 | 58.27 | 0.0172 | 0.0172 |
+| 16 000 (table top) | 848.1 | 0.00118 | 0.00118 | 1696 | 0.00059 | 0.00059 |
+
+**§12 item 4's prose needs one correction.** It says floor 0 "leaves the whole fire
+range **undamped**". That is true for kindling-class fuel and false for wood-class:
+floor 0 is `f = 1` only below `g = 1`, and `g = 1` falls at
+
+| row | `a` | `thermal_mass` | floor 0 is undamped up to |
+|---|---|---|---|
+| wood / door / door_closed | 1.0 | 8 | **1068 game** |
+| furniture / kindling | 0.5 | 8 | 1424 game |
+| hull / steel | 1.0 | 32 | 1872 game |
+| glass | 0.3 | 16 | 2272 game |
+
+so a wood crate sitting at the measured 1263-game plateau still radiates **68 %**
+of black body under floor 0, not 100 %. Floor 0 buys the fire range a factor of
+**1.37** (furniture) or **1.18** (wood) at 1263 game, not a factor of 1/0.73.
+Above ~1800 game the two floors are **bit-identical** — `alpha = 1 - 1/g` on both.
+
+**(b) What free cooling costs** — 1263 game for 0.5 s, `a = 0.5`,
+`thermal_mass = 8`, against the exact solution of `dT/dt = -c[(T+K)⁴ - K⁴]`:
+
+| law | T after 0.5 s | error |
+|---|---|---|
+| explicit (no Fleck) | 470.3 | **-5.70 %** |
+| Fleck, floor ½ (RULED) | 499.9 | **+0.23 %** |
+| Fleck, floor 0 | 470.3 | **-5.70 %** |
+| analytic | 498.8 | — |
+
+§12 item 4's "-5.7 % against +0.23 %" is exactly right, and the reason is sharper
+than "close to explicit": at this start `g = 0.74 < 1`, so floor 0 sets `alpha = 0`
+and `f = 1` **identically**, and the trajectory is the explicit update to the last
+count. Below `g = 1` floor 0 *is* forward Euler; the damping only switches on when
+the cell is already stiff.
+
+**(c) Is floor 0 safe?** Yes, on every test the reference has.
+
+- Monotone, positive and finite from **every** start temperature in 0…15 996 game
+  over 48 ticks (the same sweep gate 10 runs) — clean at both floors, no low-rail
+  hit at either.
+- The 0-D equilibrium table under a held `Phi = 0.25 · E°[T_src]`, 9600 ticks:
+
+| source | true (`E°⁻¹`) | true (continuous) | Fleck only, ½ | +clamp | Fleck only, 0 | +clamp |
+|---|---|---|---|---|---|---|
+| 1263 game | 804 | 806.6 | 843.9 | **804.0** | **807.8** | **804.0** |
+| 5000 game | 3448 | 3451.1 | 38 258.7 | **3448.0** | 38 258.7 | **3448.0** |
+| 16 000 game | 11 224 | 11 226.5 | 3 454 182.4 | **11 224.0** | 3 454 182.4 | **11 224.0** |
+
+That last table carries the one result §12 item 4 did not anticipate, and it
+favours floor 0: **in the fire range floor 0's own bias is nearly gone.** At a
+1263-game source the un-clamped equilibrium is 807.8 against the true 806.6 — 0.15 %
+— where floor ½ sits at 843.9, +4.6 %. Above the fire range the two are identical
+and both need the clamp exactly as much. So floor 0 does not weaken the clamp's
+case anywhere; it removes the maximum-principle violation in the one regime where
+the scheme is not already relying on the clamp.
+
+**(d) The figure**, `p0b_alpha_floor.png`: left, the emitted-excess/black-body
+fraction against temperature for both floors and both material rows, with the fire
+range shaded — the whole difference lives inside it; right, the four cooling curves
+from 1263 game, with floor 0 drawn on top of the explicit curve it coincides with.
+
+**The state of the question.** Unchanged and Erik's: floor ½ is what §2.8 rules and
+what P1 builds. What the measurement adds is that floor 0's cost is confined to
+free cooling (and there it is exactly forward Euler's cost), its benefit is
+confined to the fire range (1.18-1.37x more radiated power from a burning tile, not
+more), and its 0-D bias at a fire-range source is six times smaller. Not measured
+here, because §12 item 4 did not ask: what floor 0 does to the **2-D sweep's**
+reach — §0.6's crate scene would have to be re-run at floor 0, and that is P2's
+calibration question rather than P0's.
+
+---
+
 ---
 
 ## 1. The gate table
 
-`C:/Users/steen/anaconda3/python.exe sweep_ref_q_gates.py` — **all pass**. Grids
-are small on purpose; every configuration listed is run.
+`C:/Users/steen/anaconda3/python.exe sweep_ref_q_gates.py` — **all twelve pass**
+(P0b added G12 and widened G8 and G11). Grids are small on purpose; every
+configuration listed is run.
 
 | gate | what it asserts | measured | verdict |
 |---|---|---|---|
-| **G1** conservation | `sum(rad_net) + sum(rad_flux) + sum(rad_amb) == 0` exactly, int64, random `a`/`d>=a`/`k`/`T`/`f`, both transports, S16+S12, leak on+off, bodies present; each sum individually non-zero | `identity = 0` in all **8** configurations; e.g. shear k=0 S16 `net = -4 994 924 047 174`, `flux = +3 275 754 000 553`, `amb = +1 719 170 046 621` | PASS |
+| **G1** conservation | `sum(rad_net) + sum(rad_flux) + sum(rad_amb) == 0` exactly, int64, random `a`/`d>=a`/`k`/`T`/`f`, both transports, S16+S12, leak on+off, bodies present; each sum individually non-zero | `identity = 0` in all **8** configurations; e.g. shear k=0 S16 `net = -4 994 909 672 638`, `flux = +3 275 748 534 805`, `amb = +1 719 161 137 833` (P0b/Q24; the three terms move with the truncation, the identity does not) | PASS |
 | **G2a** uniform ambient | every cell of all three planes exactly 0, bodies present, leak on, non-dyadic `a`, S16+S12, both transports | `0` non-zero cells in all 4 runs (43 body cells). Non-vacuous: the pure-sink body gives **186** non-zero cells (min `rad_net` -199 179); the v2 whole-emission Fleck gives **111** counts per ordinate | PASS |
 | **G2b** isothermal box | inner wall layer exactly 0 with `f = 0.3` forced, S16+S12, both transports; outer layer legitimately negative | inner `max abs(rad_net) = 0` and interior air `= 0` in all 4 runs; outer minimum **-54 809 448** (shear S16) down to **-45 042 138** (step S12) | PASS |
 | **G3** positivity + ingress | no negative stream; `a > d`, `d > ONE`, `k > ONE` raise | `min stream = 24 342` (= `amb_m`) against `max stream = 187 714 378 332`, so the scenes are not empty; all three illegal planes raise, the legal one is accepted | PASS |
-| **G4** counters, per counter | marine beside an ambient wall: low rail, clamp and `T_MAX_PHYS` all zero over 24 ticks; over-driven scene: clamp non-zero | re-emitting body: `low_rail = 0`, `clamp = 0`, `t_max = 0`, wall `rad_net = [0,0,0,0,0,0,0]`. **Non-vacuous**: the pure-sink body gives `low_rail = 168` (7 wall cells x 24 ticks), wall `rad_net = [-4893, -9182, -37 992, -49 638, -37 992, -9182, -4893]` — critique 3 §4f reproduced exactly. Positive: a body one tile from a 1263-game fire books `rad_flux = 28 221 926`. Over-driven: `clamp = 17`, `t_max = 0`, `low_rail = 0` | PASS |
-| **G5** maximum principle | `T_new <= max(T_before, E°⁻¹(Phi))` per cell on the radiative sub-step | worst excess **0 counts** over 24 ticks, 17 clamp engagements. Non-vacuous: clamp off gives crate 1211.7 vs 1104.0 game (cap 8724); the 0-D G=0.25 model runs to **3 454 227** game; a burning crate at 1263 game with `E°⁻¹(Phi) = 0` is **not** clamped (0 hits, cools 1263 to 1053.7) where the bare v2 form would have set it to 0 in one tick | PASS |
+| **G4** counters, per counter | marine beside an ambient wall: low rail, clamp and `T_MAX_PHYS` all zero over 24 ticks; over-driven scene: clamp non-zero | re-emitting body: `low_rail = 0`, `clamp = 0`, `t_max = 0`, wall `rad_net = [0,0,0,0,0,0,0]`. **Non-vacuous**: the pure-sink body gives `low_rail = 168` (7 wall cells x 24 ticks), wall `rad_net = [-4893, -9182, -37 992, -49 638, -37 992, -9182, -4893]` — critique 3 §4f reproduced exactly. Positive: a body one tile from a 1263-game fire books `rad_flux = 28 221 926`. Over-driven: `clamp = 17`, `t_max = 0`, `low_rail = 0`, crate 1108.0 game (P0b; 1104.0 in Q16) | PASS |
+| **G5** maximum principle | `T_new <= max(T_before, E°⁻¹(Phi))` per cell on the radiative sub-step | worst excess **0 counts** over 24 ticks, 17 clamp engagements. Non-vacuous: clamp off gives crate 1219.8 vs 1108.0 game (cap 8724, P0b; 1211.7 / 1104.0 in Q16); the 0-D G=0.25 model runs to **3 454 182** game; a burning crate at 1263 game with `E°⁻¹(Phi) = 0` is **not** clamped (0 hits, cools 1263 to 1053.7) where the bare v2 form would have set it to 0 in one tick | PASS |
 | **G6** isotropy | ring MAX/MIN + the 64-direction footprint, shear vs step, 1-tile / 3x3 / 5x5, leak 0.10 | §6's table; shear rounder at 1 tile (1.459 < 1.627) and 5x5 (1.123 < 1.248); **not** at 3x3 (§0.3). Integer vs float footprint identical: `r = 4.583 spread = 1.369` (shear), `r = 5.215 spread = 1.635` (step) | PASS |
 | **G7** float agreement | integer gather vs the float push reference | vs `sweep_ref.py` itself (no bodies): ratio **9.79e-07** (shear), **7.92e-07** (step). vs the push port with bodies: **1.13e-06** / **1.66e-07**. Bound asserted: < 1e-4 | PASS |
-| **G8** Fleck integer form | within one count of `1/(1+alpha*g)`, `alpha = max(0.5, 1-1/g)`, over the whole table; `f_q == ONE` iff `L_q == 0` | worst `abs(f_q/ONE - f_float)` = **1.53e-05** = exactly one count, over **4000 buckets x 5** `(a, his)` pairs; the iff holds | PASS |
+| **G8** Fleck integer form **(Q24, P0b)** | within one **Q24** count of `1/(1+alpha*g)`, `alpha = max(0.5, 1-1/g)`, over the whole table and the five `(a, his)` pairs; `f_q24 == 2^24` iff `L_q == 0` | worst `abs(f_q24/2^24 - f_float)` = **5.960e-08** = exactly one Q24 count, over **4000 buckets x 5** pairs; the iff holds. Paired: the rejected Q16 form on the same probe is **1.525e-05**, 256x worse | PASS |
 | **G9** `E°⁻¹` | idempotent, both edge cases | `E°[E°⁻¹(Phi)] <= Phi` on 8 boundary probes including `E°[3999]` and `3*E°[3999]`; `E°⁻¹(E°[0]-1) = 0`; `E°⁻¹(3*E°[3999]) = 15 996` game < `T_MAX_PHYS`; `E°⁻¹(E°[b]) == 4b` for **every** bucket | PASS |
-| **G10** stability + equilibrium | the tables on the new forms | §7; Fleck +0.23 % vs explicit -5.70 %; monotone, positive, finite from every start to the table top; the clamp reproduces `E°⁻¹(Phi)` exactly at all three sources | PASS |
-| **G11** headroom | per-cell sums < 2^46, no product near 2^63 | table-top scene, `a = 1`: max stream 2^37.6, `max abs(rad_net)` 2^41.1, max fluence 2^41.6, max product 2^53.7. Transparent room with table-top emitters: `max abs(rad_net)` 2^41.7 | PASS |
+| **G10** stability + equilibrium | the tables on the new forms | §7; Fleck +0.23 % vs explicit -5.70 %; monotone, positive, finite from every start to the table top; the clamp reproduces `E°⁻¹(Phi)` exactly at all three sources. (P0b moved the damped source's *shape* check out to G12; what stays here is the rate cost, x848) | PASS |
+| **G11** headroom **(+ the Q24 product, P0b)** | per-cell sums < 2^46, no product near 2^63 — including `ex_m * f_q24`, now the widest, at **S16 and S12** | table-top scene, `a = 1`, `f` undamped (the worst case): max stream 2^37.6 (S16) / 2^38.0 (S12), `max abs(rad_net)` 2^41.1, max fluence 2^41.6, **max `ex_m * f_q24` = 2^61.72 (S16), 2^62.13 (S12)**. Transparent room with table-top emitters: `max abs(rad_net)` 2^41.7 | PASS |
+| **G12** the damped source is monotone **(NEW, P0b)** | `E°[0] + f*(E°[T] - E°[0])` is non-decreasing in `T` over the whole 4000-bucket table, for every absorbing material row read out of `config.toml`; §0.4's property | **0 backward steps** on all four shipped `(a, his)` pairs, positive and `<= E°[T]` everywhere. **Non-vacuous**: the same probe on the rejected Q16 form finds **2033** backward steps (worst 2.47 %). Mechanism: at `thermal_mass = 1`, which no material ships, 100 steps of `<= 0.047 %` survive (19.89 % in Q16); asserted bound 0.5 % for any row | PASS |
 
 Also gated: **the config dials have not drifted** — `rad_scale = 5.1427e-05`,
 `kelvin_ambient = 293`, `k_temp_to_kelvin = 1`, `T_MAX_PHYS = 16000` are read from
@@ -204,13 +351,18 @@ each:
 | `e_bucket_of` | `cpp/src/raycaster.h:203-213` |
 | `e_inv_q` | design §2.6 — a **fixed 12-trip binary lifting** (2048, 1024, ... 1), branch-uniform for host and device in the `sqrt_q16_dev` idiom, returning the bucket's **low edge**; `Phi < E°[0]` gives 0; saturation at 15 996 game |
 | `shr_round0`, `floordiv_q`, `sat_add_q16` | `fixed_point.h:410`, `:562`, `:400` |
-| `fleck_f_solid_q` | design §2.8, the **excess** form |
+| `fleck_f_solid_q` | design §2.8, the **excess** form, **in Q24** (row 32, P0b) |
+| `damped_source_q` | **(P0b)** what a cell emits, `E_ref + ((E°[T] - E_ref) * f_q >> 24)`, formed exactly as `sweep_q` forms it — the one place gates 10 and 12 and §0.8 read it from |
 | `sweep_q` | design §2.3 in gather form, including `emit_body` (row 25) |
 | `fold_pass1_solid` | `temperature_solver.cpp:247-299` + the clamp in its corrected form (row 21), with `t_max_phys_hits` / `t_low_rail_hits` / `rad_clamp_hits` |
 
-Three knobs exist only so the gates cannot pass vacuously, and each is named in the
-file: `body_mode="sink"` (the pre-ruling pure-sink body), `clamp_enabled=False`
-(P1's binding keyword), and `e_ref=0` (the float study's zero-sky configuration).
+Five knobs exist only so the gates cannot pass vacuously or so an alternative can
+be MEASURED, and each is named in the file: `body_mode="sink"` (the pre-ruling
+pure-sink body), `clamp_enabled=False` (P1's binding keyword), `e_ref=0` (the float
+study's zero-sky configuration), and — **P0b** — `shift=16` (the rejected Q16 Fleck
+factor, gate 12's non-vacuity) and `alpha_floor="zero"` (design §12 item 4's
+variant, measured in §0.8). The last two are **not scheme choices**: the reference
+runs Q24 and the ruled floor of ½ unless a caller says otherwise.
 
 `E°[0] = 389 475`, `E°[3999] = 3 622 281 227 645 = 2^41.7`, `amb_m(S16) = 24 342`.
 
@@ -345,9 +497,12 @@ under the new forms.
 
 | source | true (`E°⁻¹`, bucket low edge) | true (continuous) | Fleck alone | Fleck + clamp | clamp hits |
 |---|---|---|---|---|---|
-| 1263 game | 804 | 806.6 | 843.8 | **804.0** | 9583 |
-| 5000 game | 3448 | 3451.1 | 38 310.1 | **3448.0** | 9600 |
-| 16 000 game | 11 224 | 11 226.5 | 3 454 226.7 | **11 224.0** | 9600 |
+| 1263 game | 804 | 806.6 | 843.9 | **804.0** | 9583 |
+| 5000 game | 3448 | 3451.1 | 38 258.7 | **3448.0** | 9600 |
+| 16 000 game | 11 224 | 11 226.5 | 3 454 182.4 | **11 224.0** | 9600 |
+
+(**P0b**: the Fleck-only column is quoted at Q24; in Q16 it read 843.8 / 38 310.1 /
+3 454 226.7. The `true` and `Fleck + clamp` columns did not move a count.)
 
 The clamp reproduces `E°⁻¹(Phi)` exactly, because the clamp *is* that statement.
 The integer answer sits one bucket (at most 4 game) below the continuous one by
@@ -357,7 +512,8 @@ idempotent — which is why the design's 807 / 3450 / 11 228 read as 804 / 3448 
 
 **What the stability fix costs** (figure, right panel): the damped source
 `E°[0] + f*(E°[T] - E°[0])` tracks the black body through the fire range and then
-flattens to linear in `T_abs`, ending **x851 below** `E°` at the table top
+flattens to linear in `T_abs`, ending **x848 below** `E°` at the table top (x851
+in Q16, P0b)
 (4 256 304 156 against 3 622 281 227 645 counts). This is a **rate** cost, not an
 energy leak: the cell keeps what it does not radiate and cools more slowly. It is
 also the reason §0.6's sweep numbers are so much milder than the 0-D table, and it
@@ -373,12 +529,31 @@ is the thing P2's derived calibration must account for.
 2. **`E°⁻¹` as written here** — fixed 12-trip binary lifting, low bucket edge, 0
    below `E°[0]`, saturating at 15 996 — is directly portable to `emissive_table.h`
    as one `FP_HD` function.
-3. **Add the ingress rule `heat_atten > 0` implies `thermal_mass >= 8`** (§0.4), or
-   compute `f` in Q24.
+3. ~~**Add the ingress rule `heat_atten > 0` implies `thermal_mass >= 8`** (§0.4), or
+   compute `f` in Q24.~~ **DONE in P0b: `f` is Q24** and gate 12 holds the property.
+   The ingress rule is now optional; if it is added anyway it is belt-and-braces,
+   not a fix.
 4. **Expect `t_max_phys_hits` in gate 5's `clamp_enabled=False` run** (§0.5).
 5. **Re-label design §2.8's "Fleck alone" column** (§0.1) and drop the +2.2 % claim
    (§0.2); state which configuration the isotropy table came from (§0.3).
 6. **P2 calibrates against the damped emission**, not against `E°[T]` (§0.6).
+7. **The CRLF trap (P0b).** Git for Windows sets `core.autocrlf=true` system-wide on
+   this machine, and every tracked text file in this repo is LF in the index, so a
+   fresh clone or `git worktree add` checks LF out as CRLF — and
+   `test_fire_tuning_level.py::test_generator_is_byte_deterministic` compares the
+   committed bytes against a fresh generator run. P0 hit it in its own worktree.
+   A repo-root `.gitattributes` (`*.csv` and `*.toml` `text eol=lf`) closes it.
+   Fixing the checkout then exposed that `tools/gen_fire_studio.py` wrote its
+   tilemap and `level.toml` in **text mode** — CRLF on Windows, LF elsewhere — so
+   that generator was only ever byte-deterministic *per platform*; both writes now
+   pin LF. **Still open**: that tool hand-rolls its tilemap write with `np.savetxt`
+   instead of `level_lib.write_tilemap_csv`, which `CLAUDE.md`'s "Level data layer"
+   row makes the one writer ever, and `level_lib.write_tilemap_csv` itself copies
+   whatever newline the existing file has rather than always writing LF. Both are
+   pre-existing; neither is P0b's to decide.
+8. **Erik's call, deliberately not taken (P0b)**: `.gitattributes` is scoped to
+   `*.csv` / `*.toml`, not repo-wide `* text=auto eol=lf`, because
+   `cpp/build_cuda*.bat` is run by `cmd.exe`, which wants CRLF.
 
 ---
 
@@ -400,3 +575,13 @@ The rule is a draft until P1 lands; at P1 it belongs in the project `CLAUDE.md`
 beside the `radiation_sweep` row, because a second, divergent integer model of the
 same arithmetic is exactly the parallel-implementation failure the inventory exists
 to prevent.
+
+**P0b adds two files and touches one tool.** `p0b_alpha_floor.py` is a measurement
+script under the same rule as the other instruments (reuse it before writing a new
+alpha probe). `.gitattributes` is repo infrastructure, not a system. The one line
+of tool code P0b changed — `tools/gen_fire_studio.py`'s two writes — is a *bug fix
+under an existing rule*, not a new system: `CLAUDE.md`'s **Level data layer** row
+already says `level_lib.py` is the one writer ever, and that tool does not use it.
+Routing it through `level_lib.write_tilemap_csv` (and deciding whether that writer
+should stop inheriting the existing file's newline style) is left open on purpose —
+it is a level-tooling call, not a ray-engine one. See §8 note 7.

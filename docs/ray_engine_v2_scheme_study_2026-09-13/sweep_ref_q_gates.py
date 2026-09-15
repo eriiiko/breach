@@ -1,6 +1,6 @@
-"""P0 GATES for the integer reference (`sweep_ref_q.py`), 2026-09-15.
+"""P0 GATES for the integer reference (`sweep_ref_q.py`), 2026-09-15 (+ P0b).
 
-Runs the eleven gates of `docs/ray_engine_v2_design_v3_2026-09-15.md` sections
+Runs the twelve gates of `docs/ray_engine_v2_design_v3_2026-09-15.md` sections
 2.8-2.9 and of critique 3 sections 1-4, prints the MEASURED numbers (never a bare
 boolean), and exits non-zero if any fails.
 
@@ -25,7 +25,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sweep_ref_q as R  # noqa: E402
 
 ONE = R.ONE
+F_ONE = R.F_ONE
 Q = R.quant
+QF = R.quant_f            # the Q24 door, for an f a gate FORCES
 
 # the scene constants the whole arc uses
 T_SRC_GAME = 1263          # the measured crate plateau (K = 1556)
@@ -34,12 +36,28 @@ A_FURNITURE = Q(0.5)       # furniture-class absorptivity
 HIS_FURNITURE = 3          # log2(thermal_mass)
 K_LEAK = Q(0.10)           # the derived 2.5 m deck leak (dormant in the engine)
 
-# every (heat_atten, log2(thermal_mass)) pair the shipped material table carries
-# (config.toml [materials.*]; air and foliage have heat_atten = 0 and never emit)
-SHIPPED_ROWS = ((ONE, 3, "wood / door"),
-                (ONE, 5, "hull / steel"),
-                (Q(0.5), 3, "furniture / kindling"),
-                (Q(0.3), 4, "glass"))
+
+def _shipped_pairs():
+    """Every DISTINCT (heat_atten, log2(thermal_mass)) pair the shipped material
+    table carries, READ FROM config.toml (rows with heat_atten == 0 -- air,
+    foliage -- never emit or absorb and are skipped). Several materials share one
+    pair, so the names are joined; the arithmetic only ever sees the pair.
+
+    Read, not hardcoded: gate 12's property is about the rows the game SHIPS, so
+    a new material row must be able to fail it.
+    """
+    by_pair = {}
+    for name, a_q, his, _atten, _tm in R.shipped_absorbing_rows():
+        by_pair.setdefault((a_q, his), []).append(name)
+    return tuple((a_q, his, " / ".join(names)) for (a_q, his), names in by_pair.items())
+
+
+SHIPPED_ROWS = _shipped_pairs()
+# The corner NO material ships: thermal_mass = 1 (his = 0) with full absorptivity.
+# It is the mechanism gate 12 names -- the wobble is f_q's own resolution, so it
+# grows as the thermal mass falls -- and it is why P0's proposed ingress rule
+# (heat_atten > 0 => thermal_mass >= 8) became optional once f went to Q24.
+PATHOLOGICAL_ROW = (ONE, 0, "a = 1, thermal_mass = 1 (no material ships this)")
 
 
 def _rand_scene(rng, h, w, *, bodies=True, hot=True):
@@ -52,7 +70,7 @@ def _rand_scene(rng, h, w, *, bodies=True, hot=True):
         d = [row[:] for row in a]
     T = [[rng.choice([0, 0, 300 << 16, T_SRC_GAME << 16, 5000 << 16, 15999 << 16]
                      if hot else [0]) for _ in range(w)] for _ in range(h)]
-    f = [[rng.choice([ONE, Q(0.7), Q(0.05)]) for _ in range(w)] for _ in range(h)]
+    f = [[rng.choice([F_ONE, QF(0.7), QF(0.05)]) for _ in range(w)] for _ in range(h)]
     return a, d, T, f
 
 
@@ -106,7 +124,7 @@ def gate2a_uniform_ambient(fast=False):
     n_bodies = sum(1 for y in range(h) for x in range(w) if d[y][x] > a[y][x])
     k = R.plane(h, w, K_LEAK)
     T = R.plane(h, w, 0)
-    f = R.plane(h, w, Q(0.3))
+    f = R.plane(h, w, QF(0.3))
     for transport in ("shear", "step"):
         for n_ord in (16, 12):
             res = R.sweep_q(a, d, k, T, n_ord=n_ord, transport=transport, f_plane=f)
@@ -126,7 +144,7 @@ def gate2a_uniform_ambient(fast=False):
                  f"{min(v for row in res.rad_net for v in row)}")
     # NON-VACUITY (b): the v2 whole-emission Fleck form breaks it too (row 22).
     amb_m = (R.E0 * (ONE // 16)) >> 16
-    src_v2 = (amb_m * Q(0.995)) >> 16
+    src_v2 = (amb_m * QF(0.995)) >> R.F_SHIFT
     net_v2 = ((amb_m * Q(0.91)) >> 16) - ((src_v2 * Q(0.91)) >> 16)
     ok &= (net_v2 != 0)
     lines.append(f"  non-vacuity: v2 whole-emission Fleck (f=0.995, a=0.91) gives "
@@ -157,7 +175,7 @@ def gate2b_isothermal_box(fast=False):
                 a[y][x] = ONE
                 d[y][x] = ONE
                 T[y][x] = T_SRC_GAME << 16
-    f = R.plane(n, n, Q(0.3))
+    f = R.plane(n, n, QF(0.3))
     for transport in ("shear", "step"):
         for n_ord in (16, 12):
             res = R.sweep_q(a, d, k, T, n_ord=n_ord, transport=transport, f_plane=f)
@@ -547,18 +565,24 @@ def gate7_float_agreement(fast=False):
 
 
 def gate8_fleck_form(fast=False):
-    """G8. f_q = floordiv((T_abs<<16), max(T_abs+2L, 4L)) equals the float
-    1/(1 + alpha*g) with alpha = max(1/2, 1 - 1/g) to within one count over the
-    WHOLE table, and f_q == ONE exactly when L_q == 0.
+    """G8. f_q24 = floordiv((T_abs<<24), max(T_abs+2L, 4L)) equals the float
+    1/(1 + alpha*g) with alpha = max(1/2, 1 - 1/g) to within one Q24 count over
+    the WHOLE table, and f_q24 == 2^24 exactly when L_q == 0.
+
+    Q24, not Q16 (design row 32, P0b): the damped source `f*(E°[T] - E°[0])` is not
+    monotone in T when f carries only 38 counts at the table top -- gate 12 is that
+    property, and this gate is its accuracy half. The Q16 form is measured below
+    beside the Q24 one, so "one count" cannot silently mean the wider one.
 
     Breaks if: alpha's max() is re-expanded wrongly, the denominator moves off the
-    ABSOLUTE temperature, or the division stops being the kit's exact floordiv.
+    ABSOLUTE temperature, the division stops being the kit's exact floordiv, or f
+    goes back to Q16 (the per-count error grows 256x and blows the bound).
     """
     lines, ok = [], True
     worst = 0.0
     worst_at = None
     stride = 1          # the whole table either way: 20 000 probes is free
-    pairs = [(a, h) for a, h, _ in SHIPPED_ROWS] + [(ONE, 0)]  # + the his=0 corner
+    pairs = [(a, h) for a, h, _ in SHIPPED_ROWS] + [PATHOLOGICAL_ROW[:2]]
     iff_ok = True
     for a_q, his in pairs:
         for b in range(0, R.E_TABLE_SIZE, stride):
@@ -566,24 +590,34 @@ def gate8_fleck_form(fast=False):
             T_q = T_game << 16
             f_q, L_q = R.fleck_f_solid_q(T_q, a_q, his)
             f_f = R.fleck_f_float(float(T_game), L_q / 65536.0)
-            err = abs(f_q / ONE - f_f)
+            err = abs(f_q / F_ONE - f_f)
             if err > worst:
                 worst, worst_at = err, (T_game, a_q, his)
-            if not (0 < f_q <= ONE):
+            if not (0 < f_q <= F_ONE):
                 ok = False
-            iff_ok &= ((f_q == ONE) == (L_q == 0))
-    ok &= (worst <= 1.0 / ONE) and iff_ok
-    lines.append(f"  worst |f_q/ONE - f_float| over {R.E_TABLE_SIZE // stride} buckets "
-                 f"x {len(pairs)} (a, his) pairs = {worst:.2e}  (one count = {1/ONE:.2e}) at "
-                 f"T={worst_at[0]} a={worst_at[1]} his={worst_at[2]}  "
-                 f"{'OK' if worst <= 1/ONE else 'FAIL'}")
-    lines.append(f"  f_q == ONE iff L_q == 0: {iff_ok}")
+            iff_ok &= ((f_q == F_ONE) == (L_q == 0))
+    ok &= (worst <= 1.0 / F_ONE) and iff_ok
+    lines.append(f"  worst |f_q24/2^24 - f_float| over {R.E_TABLE_SIZE // stride} "
+                 f"buckets x {len(pairs)} (a, his) pairs = {worst:.3e}  (one Q24 count "
+                 f"= {1/F_ONE:.3e}) at T={worst_at[0]} a={worst_at[1]} his={worst_at[2]}  "
+                 f"{'OK' if worst <= 1/F_ONE else 'FAIL'}")
+    lines.append(f"  f_q24 == 2^24 iff L_q == 0: {iff_ok}")
+    # the SAME measurement on the rejected Q16 form, so the bound above is not a
+    # bound on nothing: one Q16 count is 256x coarser and the same probe says so.
+    worst16 = max(abs(R.fleck_f_solid_q((4 * b) << 16, a_q, his, shift=16)[0] / ONE
+                      - R.fleck_f_float(float(4 * b),
+                                        R.fleck_f_solid_q((4 * b) << 16, a_q, his)[1] / 65536.0))
+                  for a_q, his in pairs for b in range(0, R.E_TABLE_SIZE, 8))
+    ok &= (worst16 > worst)
+    lines.append(f"  the rejected Q16 form on the same probe: worst = {worst16:.3e} "
+                 f"(one Q16 count = {1/ONE:.3e}) -- {worst16/max(worst, 1e-18):.0f}x this "
+                 f"gate's Q24 error, which is what row 32 bought")
     for T_game in (0, 280, 1263, 1800, 15996):
         f_q, L_q = R.fleck_f_solid_q(T_game << 16, Q(0.5), 3)
         g = 4.0 * (L_q / 65536.0) / (T_game + R.K_AMB)
         lines.append(f"    T={T_game:6d} a=0.5 his=3: L_q={L_q / 65536:12.2f} game  "
-                     f"g={g:10.3f}  f_q={f_q:6d} ({f_q / ONE:.5f})  "
-                     f"float={R.fleck_f_float(float(T_game), L_q / 65536.0):.5f}")
+                     f"g={g:10.3f}  f_q24={f_q:9d} ({f_q / F_ONE:.7f})  "
+                     f"float={R.fleck_f_float(float(T_game), L_q / 65536.0):.7f}")
     return ok, lines
 
 
@@ -683,55 +717,16 @@ def gate10_stability(fast=False):
     lines.append(f"  monotone + positive + finite from every start in "
                  f"0..{R.T_TABLE_TOP_GAME} game (stride {4*stride}), 48 ticks: "
                  f"{'all clean' if not bad else 'VIOLATIONS at ' + str(bad)}")
-    # --- the damped source: what a cell actually radiates after the Fleck factor.
-    # It is NOT globally monotone -- the integer floor-divisions wobble above the
-    # fire range -- so the gate asserts what is true: positive, never above the
-    # black body, strictly rising through the fire range, and the wobble bounded.
+    # --- what the damped source COSTS. Its shape (monotone in T) is gate 12's
+    # property since P0b; here only the rate cost at the table top is quoted,
+    # because that is the number the cooling story above is paid in.
     top = R.E[R.E_TABLE_SIZE - 1]
-    worst_shipped = 0.0
-    for a_q, his, nm in SHIPPED_ROWS:
-        def src_of(Tg, a_q=a_q, his=his):
-            ex = R.E[R.e_bucket_of(Tg << 16)] - R.E0
-            return R.E0 + ((ex * R.fleck_f_solid_q(Tg << 16, a_q, his)[0]) >> 16)
-        vals = [(4 * b, src_of(4 * b)) for b in range(R.E_TABLE_SIZE)]
-        sane = all(0 < v <= R.E[R.e_bucket_of(t << 16)] for t, v in vals)
-        drops = [(vals[i][0], (vals[i][1] - vals[i + 1][1]) / vals[i][1])
-                 for i in range(len(vals) - 1) if vals[i + 1][1] < vals[i][1]]
-        first = drops[0][0] if drops else None
-        worst = max((d[1] for d in drops), default=0.0)
-        worst_shipped = max(worst_shipped, worst)
-        fire_mono = (first is None) or (first > 2500)
-        good = sane and fire_mono and worst < 0.05
-        ok &= good
-        f_top = R.fleck_f_solid_q(R.T_TABLE_TOP_GAME << 16, a_q, his)[0]
-        lines.append(f"  damped source, {nm:22s} (a={a_q / ONE:.2f} his={his}): positive "
-                     f"and <= E°[T] everywhere: {sane}; strictly rising to "
-                     f"{'the table top' if first is None else str(first) + ' game'}; "
-                     f"above that {len(drops)} backward steps of <= {worst * 100:5.2f}% "
-                     f"in power (= {(1 + worst) ** 0.25 * 100 - 100:4.2f}% in a receiver's "
-                     f"equilibrium T), f_q at the top = {f_top}  "
-                     f"{'OK' if good else 'FAIL'}")
-    # NON-VACUITY + the mechanism: the wobble IS f_q's resolution, so it grows as
-    # the thermal mass falls. thermal_mass = 1 ships on no material today.
-    corner_vals = [R.E0 + (((R.E[R.e_bucket_of((4 * b) << 16)] - R.E0)
-                            * R.fleck_f_solid_q((4 * b) << 16, ONE, 0)[0]) >> 16)
-                   for b in range(R.E_TABLE_SIZE)]
-    corner_worst = max(((corner_vals[i] - corner_vals[i + 1]) / corner_vals[i]
-                        for i in range(len(corner_vals) - 1)
-                        if corner_vals[i + 1] < corner_vals[i]), default=0.0)
-    ok &= (corner_worst > worst_shipped)
-    lines.append(f"  the wobble is f_q's own Q16 resolution: at a=1 thermal_mass=1 "
-                 f"(his=0, which NO material ships) f_q at the table top is only "
-                 f"{R.fleck_f_solid_q(R.T_TABLE_TOP_GAME << 16, ONE, 0)[0]} counts and "
-                 f"the wobble reaches {corner_worst * 100:.2f}% -- worse than every "
-                 f"shipped row ({worst_shipped * 100:.2f}%), which is the mechanism, "
-                 f"not noise. P1 should carry the ingress rule heat_atten > 0 => "
-                 f"thermal_mass >= 8")
-    lines.append(f"  at the table top the damped source is "
-                 f"{R.E0 + (((top - R.E0) * R.fleck_f_solid_q(R.T_TABLE_TOP_GAME << 16, A, HIS)[0]) >> 16):,} "
-                 f"vs the undamped {top:,} counts (x851 less) -- the RATE cost of the "
-                 f"stability fix, paid by a cell that keeps the energy and cools "
-                 f"slower, not by energy going missing")
+    damped_top = R.damped_source_q(R.T_TABLE_TOP_GAME << 16, A, HIS)
+    lines.append(f"  at the table top the damped source is {damped_top:,} vs the "
+                 f"undamped {top:,} counts (x{top / damped_top:.0f} less) -- the RATE "
+                 f"cost of the stability fix, paid by a cell that keeps the energy and "
+                 f"cools slower, not by energy going missing (its MONOTONICITY in T is "
+                 f"gate 12)")
     # --- the equilibrium table (the 0-D model stability_study.py section 7 used)
     iters = (40 if fast else 400) * 24
     lines.append(f"  equilibrium under a held fluence Phi = G x E°[T_src], G = 0.25 "
@@ -756,10 +751,12 @@ def gate10_stability(fast=False):
 def gate11_headroom(fast=False):
     """G11. Max stream and max |rad_net| on a scene seeded at the table top stay
     below 2^46 (the design's per-cell bound), and no intermediate product
-    approaches 2^63.
+    approaches 2^63 -- INCLUDING the Q24 Fleck product `ex_m * f_q24`, which is
+    the widest one now that f is Q24 (design row 32, P0b): it is measured at both
+    S16 and S12, because the ordinate weight (and so `ex_m`) grows as S falls.
 
-    Breaks if: the ordinate weight, the table's top or the number of ordinates
-    grows enough to need a wider accumulator than int64.
+    Breaks if: the ordinate weight, the table's top, the number of ordinates or
+    the Fleck factor's fixed point grows enough to need more than int64.
     """
     lines, ok = [], True
     h, w = (7, 8) if fast else (9, 11)
@@ -768,17 +765,21 @@ def gate11_headroom(fast=False):
     k = R.plane(h, w, K_LEAK)
     T = R.plane(h, w, R.T_TABLE_TOP_GAME << 16)
     for transport in ("shear", "step"):
-        res = R.sweep_q(a, d, k, T, transport=transport)
-        lg = lambda v: math.log2(max(abs(v), 1))  # noqa: E731
-        good = (res.max_abs_net < 2 ** 46 and res.max_fluence < 2 ** 46
-                and res.max_product < 2 ** 62)
-        ok &= good
-        lines.append(f"  {transport:5s} at the table top ({R.T_TABLE_TOP_GAME} game, "
-                     f"a = 1): max stream = 2^{lg(res.max_stream):.1f}, max|rad_net| = "
-                     f"2^{lg(res.max_abs_net):.1f}, max fluence = "
-                     f"2^{lg(res.max_fluence):.1f}, max product = "
-                     f"2^{lg(res.max_product):.1f}  (bounds: sums < 2^46, products "
-                     f"< 2^63)  {'OK' if good else 'FAIL'}")
+        for n_ord in (16, 12):
+            res = R.sweep_q(a, d, k, T, transport=transport, n_ord=n_ord)
+            lg = lambda v: math.log2(max(abs(v), 1))  # noqa: E731
+            good = (res.max_abs_net < 2 ** 46 and res.max_fluence < 2 ** 46
+                    and res.max_product < 2 ** 63
+                    and res.max_fleck_product < 2 ** 63)
+            ok &= good
+            lines.append(f"  {transport:5s} S{n_ord:2d} at the table top "
+                         f"({R.T_TABLE_TOP_GAME} game, a = 1, f = 2^24 undamped -- the "
+                         f"worst case): max stream = 2^{lg(res.max_stream):.1f}, "
+                         f"max|rad_net| = 2^{lg(res.max_abs_net):.1f}, max fluence = "
+                         f"2^{lg(res.max_fluence):.1f}, max product = "
+                         f"2^{lg(res.max_product):.1f}, max (ex_m * f_q24) = "
+                         f"2^{lg(res.max_fleck_product):.2f}  (bounds: sums < 2^46, "
+                         f"products < 2^63)  {'OK' if good else 'FAIL'}")
     # the case where the stream TRAVELS: a transparent room with table-top emitters
     a2 = R.plane(h, w, 0)
     d2 = R.plane(h, w, 0)
@@ -803,6 +804,89 @@ def gate11_headroom(fast=False):
     return ok, lines
 
 
+def _backward_steps(a_q, his, shift):
+    """The damped source E°[0] + f*(E°[T] - E°[0]) over the WHOLE table, at the
+    bucket LOW EDGE (T_q = (4b) << 16, so e_bucket_of returns exactly b), and the
+    places where it FALLS as T rises.
+
+    Returns (n_backward, worst_fraction, first_T_game, all_positive_and_sane).
+    """
+    vals = [R.damped_source_q((4 * b) << 16, a_q, his, shift=shift)
+            for b in range(R.E_TABLE_SIZE)]
+    sane = all(0 < v <= R.E[b] for b, v in enumerate(vals))
+    drops = [(4 * i, (vals[i] - vals[i + 1]) / vals[i])
+             for i in range(len(vals) - 1) if vals[i + 1] < vals[i]]
+    worst = max((d[1] for d in drops), default=0.0)
+    return len(drops), worst, (drops[0][0] if drops else None), sane
+
+
+# The bound gate 12 asserts on the pathological row. Measured 0.047 % in Q24
+# against 19.89 % in Q16, so this is ~10x headroom on the measurement and ~400x
+# below the form the design rejected: a regression to Q16 cannot slip through.
+PATHOLOGICAL_WOBBLE_BOUND = 0.005          # 0.5 % in power
+
+
+def gate12_damped_source_is_monotone(fast=False):
+    """G12 (P0b, design row 32). What a cell EMITS -- E°[0] + f*(E°[T] - E°[0]),
+    formed exactly as the sweep forms it -- is NON-DECREASING in T over the whole
+    4000-bucket table, for every absorbing material row config.toml ships.
+
+    A hotter body must not radiate less. In Q16 that failed above the fire range
+    (P0 section 0.4): f_q carried only 38 counts at the table top for wood, so one
+    count was 2.6 % of it and the emission stepped backwards by up to 2.47 %. In
+    Q24 every shipped row is exactly monotone.
+
+    Breaks if: f returns to Q16 (measured below, on the same probe, and it is not
+    monotone); the E° bake or rad_scale is retuned so far that a bucket's rise no
+    longer clears one count of f; or a NEW material ships `heat_atten > 0` with a
+    thermal mass small enough to quantize its own plasma emission -- which is
+    P0's proposed ingress rule (`heat_atten > 0` => `thermal_mass >= 8`) and is
+    exactly the failure this gate should raise rather than hide.
+    """
+    lines, ok = [], True
+    lines.append(f"  the damped source at every bucket's LOW EDGE, T = 0..{4 * (R.E_TABLE_SIZE - 1)} "
+                 f"game, {len(SHIPPED_ROWS)} distinct shipped (a, his) pairs read from "
+                 f"config.toml + the pathological corner")
+    lines.append(f"    {'row':>34}{'Q16 steps':>11}{'Q16 worst':>11}"
+                 f"{'Q24 steps':>11}{'Q24 worst':>11}{'f_q24 @ top':>13}")
+    q16_nonmono = 0
+    for a_q, his, nm in SHIPPED_ROWS:
+        n16, w16, _f16, _s16 = _backward_steps(a_q, his, 16)
+        n24, w24, first24, sane24 = _backward_steps(a_q, his, R.F_SHIFT)
+        q16_nonmono += n16
+        good = (n24 == 0) and sane24
+        ok &= good
+        f_top = R.fleck_f_solid_q(R.T_TABLE_TOP_GAME << 16, a_q, his)[0]
+        lines.append(f"    {nm:>34}{n16:>11}{w16 * 100:>10.3f}%{n24:>11}"
+                     f"{w24 * 100:>10.3f}%{f_top:>13}  "
+                     + ("OK (monotone; positive and <= E°[T] everywhere)" if good
+                        else f"FAIL (first backward step at {first24} game, "
+                             f"sane={sane24})"))
+    # NON-VACUITY: the same probe on the form the design rejected is NOT monotone,
+    # so "0 backward steps" above is a property of Q24 and not of the measurement.
+    ok &= (q16_nonmono > 0)
+    lines.append(f"  non-vacuity: the rejected Q16 form has {q16_nonmono} backward steps "
+                 f"over the same rows (the Q16 columns above) -- the probe detects "
+                 f"non-monotonicity when it is there")
+    # THE MECHANISM: the wobble is f_q's own resolution, so it grows as the thermal
+    # mass falls. No material ships thermal_mass = 1; if one ever does, the row
+    # above fails and P1 owes the ingress rule rather than a wider f.
+    a_p, his_p, nm_p = PATHOLOGICAL_ROW
+    n16p, w16p, _, _ = _backward_steps(a_p, his_p, 16)
+    n24p, w24p, first_p, sane_p = _backward_steps(a_p, his_p, R.F_SHIFT)
+    bounded = (w24p < PATHOLOGICAL_WOBBLE_BOUND) and sane_p and (w24p < w16p)
+    ok &= bounded
+    lines.append(f"  the mechanism -- {nm_p}: f_q24 at the table top is only "
+                 f"{R.fleck_f_solid_q(R.T_TABLE_TOP_GAME << 16, a_p, his_p)[0]} counts, so "
+                 f"{n24p} backward steps survive, worst {w24p * 100:.3f}% in power "
+                 f"(= {(1 + w24p) ** 0.25 * 100 - 100:.3f}% in a receiver's equilibrium T), "
+                 f"first at {first_p} game; in Q16 the same row gave {n16p} steps of "
+                 f"{w16p * 100:.2f}%. Asserted bound: no backward step above "
+                 f"{PATHOLOGICAL_WOBBLE_BOUND * 100:.1f}% for ANY row, shipped or not  "
+                 f"{'OK' if bounded else 'FAIL'}")
+    return ok, lines
+
+
 GATES = [
     ("G1  conservation", gate1_conservation),
     ("G2a uniform ambient fixed point", gate2a_uniform_ambient),
@@ -816,6 +900,7 @@ GATES = [
     ("G9  E_inv", gate9_e_inv),
     ("G10 stability and equilibrium on the new forms", gate10_stability),
     ("G11 headroom", gate11_headroom),
+    ("G12 the damped source is monotone in T", gate12_damped_source_is_monotone),
 ]
 
 

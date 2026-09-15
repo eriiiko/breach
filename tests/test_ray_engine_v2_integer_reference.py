@@ -10,7 +10,7 @@ folder that is not a package; it is confined to this file.
 
 Every test runs its gate in FAST mode (smaller grids and tick counts, the SAME
 coverage: both transports, S16 and S12, leak on and off, bodies present, the whole
-4000-bucket table). The whole file is about two seconds.
+4000-bucket table). The whole file is a few seconds.
 
 Each gate's own docstring in `sweep_ref_q_gates.py` names the property it protects
 and the change that must break it; the one-line summary is repeated here.
@@ -130,11 +130,12 @@ def test_integer_gather_agrees_with_the_float_push_reference():
 
 
 def test_fleck_integer_form_matches_the_float_within_one_count():
-    """G8: f_q = floordiv((T_abs<<16), max(T_abs+2L, 4L)) is within one count of
-    1/(1 + alpha*g) over the whole table, and f_q == ONE iff L_q == 0.
+    """G8: f_q24 = floordiv((T_abs<<24), max(T_abs+2L, 4L)) is within ONE Q24 COUNT
+    of 1/(1 + alpha*g) over the whole table, and f_q24 == 2^24 iff L_q == 0.
 
     Breaks if: alpha's max() is re-expanded wrongly, the denominator moves off the
-    ABSOLUTE temperature, or the division stops being the kit's exact floordiv.
+    ABSOLUTE temperature, the division stops being the kit's exact floordiv, or f
+    goes back to Q16 -- one Q16 count is 256x this bound, measured beside it.
     """
     print(_run(G.gate8_fleck_form))
 
@@ -161,14 +162,30 @@ def test_stability_and_equilibrium_on_the_new_forms():
 
 
 def test_headroom_stays_inside_int64():
-    """G11: per-cell sums below 2^46 and no product above 2^62 on a scene seeded at
-    the table top.
+    """G11: per-cell sums below 2^46 and no product above 2^63 on a scene seeded at
+    the table top -- including the Q24 Fleck product `ex_m * f_q24`, the widest one,
+    at S16 AND S12.
 
-    Breaks if: the ordinate count, the ordinate weight or the table top grows
-    enough to need more than int64 -- the one arithmetic assumption the whole
-    scheme rests on.
+    Breaks if: the ordinate count, the ordinate weight, the table top or the Fleck
+    factor's fixed point grows enough to need more than int64 -- the one arithmetic
+    assumption the whole scheme rests on.
     """
     print(_run(G.gate11_headroom))
+
+
+def test_damped_source_is_monotone_in_temperature():
+    """G12: what a cell EMITS -- E°[0] + f*(E°[T] - E°[0]) -- never falls as T
+    rises, over the whole 4000-bucket table, for every absorbing material row
+    config.toml ships. A hotter body must not radiate less.
+
+    Breaks if: f returns to Q16 (the gate measures that form on the same probe and
+    it is NOT monotone -- 2033 backward steps, worst 2.47 %); the E° bake or
+    rad_scale is retuned until a bucket's rise no longer clears one count of f; or
+    a NEW material row ships `heat_atten > 0` with a thermal mass small enough to
+    quantize its own emission -- which is P0 section 0.4's proposed ingress rule
+    and is a failure this gate should raise, not hide.
+    """
+    print(_run(G.gate12_damped_source_is_monotone))
 
 
 if __name__ == "__main__":       # pragma: no cover
