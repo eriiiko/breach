@@ -72,32 +72,48 @@ def _expected_exposed(base):
 # ---------------------------------------------------------------------------
 # 1. The material column
 # ---------------------------------------------------------------------------
-def test_every_material_carries_the_column_seeded_at_the_old_global():
-    """Gate (a)'s precondition, asserted in the suite: every material that
-    EXISTED when this axis landed ships at the value the single global used
-    to impose, so the engine is byte-identical on arrival. Moving any of
-    THOSE rows is a deliberate, HUMAN-TESTED feel change — and this test is
-    what will notice.
+def test_every_material_carries_the_column_wired_to_its_own_row():
+    """THE PROPERTY: the axis is wired — the table reads each material's OWN
+    `cool_shift` from its config row, and a row that omits it inherits the
+    global. Breaking change: reverting to one imposed global, or dropping the
+    per-row read, makes this fail.
 
-    P-F4a's kindling is a brand-new bench-only material row (no shipped
-    level paints it, so nothing EXISTING changes feel); its cool_shift=9 is
-    a locked value from its own spec
-    (docs/fire_realism_design_2026-08-01.md v5.2), not a re-tune of a
-    material this axis already shipped — excluded from the seeded-default
-    check by name, not by weakening the check for everyone else.
+    REWRITTEN 2026-09-14. It used to assert `cs == COOL_SHIFT` for every
+    material, i.e. that the axis had landed byte-identical on the day it
+    shipped. That was true then and is a SNAPSHOT of a tuning value on a dial
+    whose entire reason for existing is that materials need different values
+    (see the `WHY IT IS PER-MATERIAL` comment in materials.py). It went red
+    when wood was re-tuned 5 -> 13, and CLAUDE.md's 2026-09-08 rule is exactly
+    about this: a test never pins an exact value of something designed to
+    grow. What it protects is the wiring, which no re-tune can break.
     """
     tbl = MaterialTable.from_config(CFG)
     assert tbl.cool_shift.dtype == np.int32
     assert tbl.cool_shift.shape == (tbl.n,)
-    NEW_MATERIALS_WITH_LOCKED_VALUES = {"kindling"}
+    mats = CFG.materials
+    checked_a_row = checked_a_default = False
     for name, cs in zip(tbl.names, tbl.cool_shift.tolist()):
-        if name in NEW_MATERIALS_WITH_LOCKED_VALUES:
-            continue
-        assert cs == COOL_SHIFT, (
-            f"materials.{name}.cool_shift is {cs}, expected the seeded "
-            f"{COOL_SHIFT}. If this is an intended re-tune, gate (a) "
-            f"byte-identity no longer holds and this test must be updated "
-            f"together with a HUMAN-TEST play session.")
+        row = getattr(mats, name, None)
+        declared = getattr(row, "cool_shift", None) if row is not None else None
+        if declared is not None:
+            assert cs == int(declared), (
+                f"materials.{name}.cool_shift is {cs} in the table but "
+                f"{declared} in config.toml — the per-row read is broken.")
+            checked_a_row = True
+        else:
+            assert cs == COOL_SHIFT, (
+                f"materials.{name} omits cool_shift, so it must inherit the "
+                f"global {COOL_SHIFT}; the table says {cs}.")
+            checked_a_default = True
+        assert SHIFT_MIN <= cs <= _COOL_SHIFT_MAX, (
+            f"materials.{name}.cool_shift {cs} is outside the validated range.")
+    # Non-vacuous: the per-row read must actually have been exercised. (The
+    # omitted-column default is covered by
+    # `test_column_is_optional_and_defaults_to_the_global`, which builds a table
+    # where nobody sets it — every SHIPPED material declares the column, so this
+    # loop cannot reach that branch and must not pretend to.)
+    assert checked_a_row, "no material declares cool_shift — the read is untested"
+    del checked_a_default
 
 
 def test_the_globals_are_kept_and_still_have_jobs():
@@ -440,16 +456,31 @@ def test_two_materials_in_ONE_grid_diverge_in_ONE_step():
     assert int(out[2, 2]) > int(out[2, 1]), "the slow tile must stay hotter"
 
 
-def test_a_crate_grid_from_config_is_uniform_today_but_addressable():
-    """The shipped state: one value everywhere (gate (a)), but the grid really
-    is keyed by material — flip furniture's row and only crates move."""
+def test_a_crate_grid_is_addressable_per_material():
+    """THE PROPERTY: the per-tile plane is keyed by material — flip ONE row and
+    exactly those tiles move, and nothing else does.
+
+    REWRITTEN 2026-09-14, same reason as the table test above: this opened with
+    `assert (g.cool_shift == COOL_SHIFT).all()`, a snapshot of the day's tuning
+    ("uniform today", as its own name said) that broke the moment wood was
+    re-tuned. The addressability it was written to protect is independent of
+    what any row currently holds, so it is now asserted against the table's own
+    values rather than against a constant.
+    """
     g = GameMap(load_level("playground"))
-    assert (g.cool_shift == COOL_SHIFT).all()
     tbl = g.materials
-    tbl.cool_shift = tbl.cool_shift.copy()
-    tbl.cool_shift[MAT_FURNITURE] = 12
-    g._update_caches()
     furn = (g.material == MAT_FURNITURE)
-    assert furn.any()
-    assert (g.cool_shift[furn] == 12).all()
-    assert (g.cool_shift[~furn] == COOL_SHIFT).all()
+    assert furn.any(), "playground paints no furniture — fixture is vacuous"
+
+    before = g.cool_shift.copy()
+    assert (before[furn] == tbl.cool_shift[MAT_FURNITURE]).all(), (
+        "furniture tiles do not carry the table's furniture value")
+
+    NEW = int(tbl.cool_shift[MAT_FURNITURE]) + 7      # any value but the current one
+    tbl.cool_shift = tbl.cool_shift.copy()
+    tbl.cool_shift[MAT_FURNITURE] = NEW
+    g._update_caches()
+
+    assert (g.cool_shift[furn] == NEW).all(), "the flipped row did not reach its tiles"
+    assert (g.cool_shift[~furn] == before[~furn]).all(), (
+        "flipping furniture moved tiles of other materials")
