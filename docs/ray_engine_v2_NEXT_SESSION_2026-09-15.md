@@ -64,6 +64,14 @@ sweep), `reach_and_leak_study.py`, `flashover_study.py`, `contact_faces_study.py
   interface must be per-unit absorbed flux so adding it later is additive.
 - **Smoke absorbs heat in its own patch**, and glowing smoke then falls out free —
   the temperature map is the emission map.
+- **Gas stiffness is bounded and modest, and density cancels.** `g ~ soot fraction
+  × E°/T_abs`, so a decompressing room does not get stiffer as it empties; even a
+  cell of pure soot reaches only g = 4.2, against a solid's 848 at `T_MAX_PHYS`.
+  Fleck + clamp are still required on gas, but they are not holding back a runaway.
+  **Gas absorption and emission must ride the existing `N_EPS_RAW` floor**
+  (`gas_energy.h` — "ONE value, every file"), because a sub-`N_EPS` cell is
+  *defined* to read ambient and must not emit at some other temperature.
+  See `smoke_heat_capacity_study.py` §4, which corrects §§1–2 of that same file.
 - **Ambient light becomes a directional boundary condition**, not a flat shader
   constant.
 - **The rules-side light field is computed but not digested** until a rule reads it.
