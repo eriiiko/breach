@@ -35,7 +35,10 @@ asked for; rows 22 and 23 changed the arithmetic and were marked derived, not
 measured — **critique 3 then measured them with its own integer probe and they
 hold** (`ray_engine_v2_critique_3_determinism_cuda_2026-09-15.md`, "What I
 could not break"). Rows 25–31 are the fold of critique 3 and Erik's three
-rulings on it, the same evening.
+rulings on it, the same evening. Rows 32–34 are P0's findings, the same night
+(`report_p0.md`, merged at `40f2479`): the integer reference is built and every
+gate passes, and it corrected three of this document's numbers and one of its
+number types.
 
 | # | v2 said | v3 says | why |
 |---|---|---|---|
@@ -70,6 +73,9 @@ rulings on it, the same evening.
 | 29 | "Ordinates may run sequentially or concurrently"; scratch `(N, h, w)`; launches uncounted | **Ordinates run concurrently**, scratch `(N, 16, h, w)`, one launch per wavefront *index* covering all 16 ordinates; per-cell sums by the tree's int64 atomic idiom; **launch counts in §10** (256 shear / 383 step per tick at 128×256) | critique 3 §2b–2d |
 | 30 | `E°` bake "verbatim into a header"; `s_m` "quantized at load"; `L°` from the blackbody ramp | The bake body lives in `emissive_table.cpp` on the `/fp:strict` list (a header-inline bake would compile under `bindings.cpp`'s `/fp:fast` and could FMA-contract `k4·scale + 0.5`); `s_m` are **checked-in integer literals** with a recompute test, never `std::cos` at load; `L°` at P6 by the `E°` algebraic pattern or checked-in constants, never `np.power`/`np.log` | critique 3 §5a–5c |
 | 31 | Gate 2 "with `f < 1` forced on"; gate 4 one scenario; gate 5 "compiled out"; `E°⁻¹` undefined below `E°[0]`, saturation "owned by the rail" | Gate 2 = (a) uniform ambient by construction + (b) the **enclosed isothermal box**; gate 4 **per counter**; gate 5 via a `clamp_enabled` binding keyword; `E°⁻¹(Φ < E°[0]) = 0`; the table top is **15 996**, below `T_MAX_PHYS`, so the clamp binds first on the radiative sub-step and the rail is reachable only through the `heat` branch | critique 3 §4b, §4c, §4e |
+| 32 | `f_q` in Q16 | **`f` in Q24**: `f_q24 = floordiv_q(T_abs_q << 24, D)`, `src = amb_m + mul128_shr(ex_m, f_q24, 24)`. In Q16 the damped source `f·(E°[T] − E°[0])` is **not monotone in T** above the fire range — `f_q` has only 38 counts at the table top for wood, so one count is 2.6 % and the emission wobbles backwards by up to 2.47 % (wood), 19.9 % at `thermal_mass = 1`; in Q24 the wobble is 256× smaller and no extra ingress rule is needed | P0 §0.4 (orchestrator's call: arithmetic detail, no physics change; P0b re-measures) |
+| 33 | §2.8's "Fleck alone" column 845 / 18 982 / 1 727 794; "+2.2 % above the analytic cooling curve"; the isotropy table quoted without its configuration | The Fleck-alone column at v3's **own** α is **844 / 38 310 / 3 454 227** (the old numbers were `stability_study.py`'s fixed α = ½; the clamp buys ×300, not ×150); the Fleck cooling error is **+0.23 %** (the 2.2 % existed only in the study's docstring; its own §5 prints +0.2 %); the isotropy table was the float study's no-inflow configuration — with the ambient ring on, P0 measures shear 1.46 / 1.28 / 1.12 vs step 1.63 / 1.26 / 1.25, so the 3×3 ordering flips and the 1-tile and 5×5 cases decide. **Shear stays** | P0 §0.1–0.3 |
+| 34 | The 0-D equilibrium table read as a sweep prediction | In the 2-D sweep a cold crate one tile from a held 16 000-game source settles at **1104** clamped vs **1212** unclamped: the geometric factor at one tile is 0.14 (shear) / 0.25 (step), and the Fleck factor damps a table-top source **×851**. The 0-D table is the *scheme's bias*, correct as such. Two consequences: **P2 calibrates against the damped emission**, and the damping's effect on a *driven* source (a burning tile held at 1263 game emits 73 % of black body under α = ½) is an **open question for Erik** (§12 item 4) | P0 §0.6; §9; §12 |
 
 **Not changed, on purpose:** the leak channel stays designed, dormant (`k = 0`)
 and unruled — Erik set the reach question aside (handoff §0). Everything in the
@@ -163,7 +169,7 @@ that means for the CUDA twin.
     abs_mat   =  (stream * a_i) >> 16                // the material's share
     abs_body  =  (stream * b_i) >> 16                // the body's share
     ex_m      =  ((E°[T_i] − E°[0]) * w_m) >> 16     // the EXCESS emission over ambient, ≥ 0
-    src       =  amb_m + ((ex_m * f_i) >> 16)        // Fleck damps the excess only (row 22)
+    src       =  amb_m + mul128_shr(ex_m, f_i, 24)   // Fleck damps the excess only (row 22); f_i is Q24 (row 32)
     emitted   =  (src * a_i) >> 16                   // the SAME arithmetic as abs_mat
     emit_body =  (amb_m * b_i) >> 16                 // the body re-emits AMBIENT (row 25) — no excess, no Fleck
     i_out     =  stream − abs_mat − abs_body + emitted + emit_body
@@ -261,7 +267,13 @@ effects"*.
 **Heat takes shear. Light takes step.** Heat is judged by the ignition
 footprint: measured spread (max ÷ min radius over 64 directions, leak on) shear
 1.37 / 1.22 / 1.17 for a 1-tile, 3×3 and 5×5 fire, against step's 1.64 / 1.32 /
-1.25. Light is judged by eye, and Erik chose step on the real-scene renders.
+1.25 — **in the float study's configuration, no ambient inflow** (row 33). With
+v3's own ambient ring on, P0's integer reference measures shear **1.46 / 1.28 /
+1.12** against step **1.63 / 1.26 / 1.25**: the 3×3 ordering flips (the ambient
+floor moves the ignition crossing outward into a ring where shear's 16 lobes are
+stronger), the 1-tile and 5×5 cases decide, and the picture (`p0_isotropy.png`)
+shows step's single-tile spikes are *longer* on the same waist. Light is judged
+by eye, and Erik chose step on the real-scene renders.
 
 Both are exactly conservative in the paired form, both hold the uniform-ambient
 fixed point, both are positive. The scheme study's 26 % shear leak was two
@@ -417,11 +429,19 @@ tick**, door 1:
                        chain converts the P5 radiative gas deposit itself (magnitude, then sign)
     T_abs_q =  temperature[i] + t_amb_q            // 293 game units in Q16.16 (slope 1 since G12)
     D       =  max(T_abs_q + 2·L_q,  4·L_q)         // shifts, exact
-    f_q     =  floordiv_q((int64)T_abs_q << 16, D)  // fixed_point.h:562 — exact, identical on every backend
+    f_q24   =  floordiv_q((int64)T_abs_q << 24, D)  // fixed_point.h:562 — exact, identical on every backend; Q24 (row 32)
 ```
 
 `T_abs_q > 0` always (`T_MIN = −292` game keeps `T_abs ≥ 1`), `D ≥ T_abs_q`, so
-`0 < f_q ≤ ONE`, and `f_q == ONE` exactly when `L_q == 0`. The denominator is on
+`0 < f_q24 ≤ 2²⁴`, and `f_q24 == 2²⁴` exactly when `L_q == 0`. **Q24, not Q16**
+(row 32): at the table top `f` is ≈ 1/851, which in Q16 is 38 counts for wood
+(77 for furniture, 4 at `thermal_mass = 1`), so the damped source
+`f·(E°[T] − E°[0])` steps backwards by up to 2.47 % as `T` rises — bounded, never
+inverting the cooling map, but a real artefact P0 measured across every shipped
+material row. Q24 divides it by 256. `T_abs_q << 24 < 2⁵⁴` and the product
+`ex_m · f_q24 < 2⁶²` at S12 (2^61.7 at S16); the engine uses the kit's
+`mul128_shr(ex_m, f_q24, 24)` so no headroom argument is load-bearing, and the
+reference asserts the bound anyway. The denominator is on
 the **absolute** temperature because `β = 4aT³/c_v` is defined on Kelvin; a
 delta-above-ambient denominator diverges at ambient. Applied **before the
 sweep**, so conservation is untouched and the books need no counter — a smaller
@@ -437,16 +457,19 @@ at ambient at the shipped scale, so an ambient cell in an ambient field gains
 0.5 % of its exchange every tick and drifts ≈0.4 game units — sub-bucket, so the
 clamp cannot see it, and gate 2's exact per-cell zero is unattainable. Damping
 only `E°[T] − E°[0]` makes the ambient fixed point exact for any `a`, any `w` and
-any `f`, and is the correct linearisation. The stability tables must be re-run
-in P0 on this form; the damped term is the unstable term, so the measured
-behaviour (stable, monotone, positive to the table top; 2.2 % above the
-analytic cooling curve where explicit is 5.8 % below) is expected to hold.
+any `f`, and is the correct linearisation. **P0 measured it on this form** (`report_p0.md` §7): stable, monotone, positive
+and finite from every start to the table top; a 1263-game cell cooling for
+0.5 s lands **+0.23 %** above the analytic solution of `dT/dt = −c[(T+K)⁴ − K⁴]`
+where explicit lands −5.70 % below and rails to zero from 2500 game up. (v2's
+"+2.2 %" was never reproducible — it lived only in `stability_study.py`'s
+docstring; that file's own §5 prints +0.2 %.)
 
 **But emission-only damping is not enough.** Damping the loss but not the gain
 moves equilibrium from `Φ = E°(T)` to `Φ = E°(0) + f·(E°(T) − E°(0))`, and since
 `f` falls as `T⁻³` the equilibrium goes linearly in `Φ` instead of as its fourth
-root: measured, a cell one tile from a 16 000-game source settles at **1.73
-million** game units instead of 11 228 — the maximum-principle violation
+root: measured in the 0-D model under a held fluence `Φ = 0.25·E°[T_src]`, a
+cell settles at **3.45 million** game units at v3's own α (1.73 million at a
+fixed α = ½, the number v2 quoted) instead of 11 224 — the maximum-principle violation
 Wollaber calls *"arguably the most serious deficiency of the IMC equations"*.
 Real IMC scales absorption by `f` too and makes the remainder effective
 scattering; we cannot (scattering couples the ordinates). Fleck's other route —
@@ -470,11 +493,26 @@ already above it (a fire) keeps `T_before` as its ceiling and may only cool; a
 cooling step is never clipped. On the study's scenario (radiation the only
 heater, `T_before ≤ T_cap` always) this reduces to the measured form:
 
-| source | true equilibrium | Fleck alone | Fleck + clamp |
-|---|---|---|---|
-| 1263 game | 807 | 845 | **807** |
-| 5000 game | 3450 | 18 982 | **3450** |
-| 16 000 game | 11 228 | 1 727 794 | **11 228** |
+| source | true (`E°⁻¹`, bucket low edge) | true (continuous) | Fleck alone, v3's α | Fleck + clamp |
+|---|---|---|---|---|
+| 1263 game | 804 | 806.6 | 844 | **804** |
+| 5000 game | 3448 | 3451.1 | 38 310 | **3448** |
+| 16 000 game | 11 224 | 11 226.5 | 3 454 227 | **11 224** |
+
+(P0 §7, 9600 ticks, `G = 0.25`. v2's 845 / 18 982 / 1 727 794 were at a fixed
+α = ½; under the adaptive α the runaway is twice as far. The integer answer sits
+one bucket below the continuous one by construction, because `E°⁻¹` returns the
+bucket's low edge so that re-applying it is idempotent.)
+
+**The 0-D table is the scheme's bias, not a sweep prediction** (row 34). In the
+2-D sweep the same 16 000-game source one tile from a cold crate gives **1104**
+game clamped against **1212** unclamped — 10 %, not ×300 — because the sweep's
+geometric factor at one tile is 0.14 (shear) / 0.25 (step) and the source's own
+emission is damped ×851 by its Fleck factor. The clamp still engages (17 hits in
+24 ticks), so the gate is not vacuous. And the best single argument that the
+scheme is physical: a cell fully ringed by 1263-game walls receives `G = 0.9987`
+and `E°⁻¹(Φ) = 1256` game — a cavity reaches its wall temperature to within one
+bucket.
 
 **Its home** (critique BLOCKING 2): **inside the temperature solver's Pass-1
 radiation fold**, `cpp/src/temperature_solver.cpp:247-299`, never in the sweep.
@@ -511,6 +549,13 @@ the `n_bulk`/`c_v` chain). It is never stored across ticks.
 Every gate names the property and the change that breaks it (CLAUDE.md
 2026-09-08 rule); no gate may pass vacuously.
 
+0. **The reference is the spec** (from P1 on): the engine reproduces
+   `docs/ray_engine_v2_scheme_study_2026-09-13/sweep_ref_q.py` **bit for bit** —
+   all four planes, the Fleck pre-pass and the fold's clamp — on randomised
+   grids, both transports, leak on and off, bodies present, S16 and S12. Any
+   change to the arithmetic is made in the reference first, its gates re-run,
+   and the C++ written against it (P0's draft rule, Systems). This is the
+   oracle that makes P1 an oracle-gated patch.
 1. **Conservation**: `Σ rad_net + Σ rad_flux + Σ rad_amb ≡ 0`, exactly in int64,
    on randomised grids with randomised `a`, `d ≥ a`, `k`, `T`, every tick, both
    transport steps, leak on and off. **Non-vacuous**: the test seeds `d > a` on
@@ -549,7 +594,11 @@ Every gate names the property and the change that breaks it (CLAUDE.md
    same test with `clamp_enabled=False`, a keyword on the `TemperatureSolver.step`
    binding in the `rad_net = py::none()` idiom (`bindings.cpp:2081`) — never a
    global static a test flips, which is hidden state that forks a digest —
-   reproduces the 1.73-million-unit equilibrium; and a burning-crate scenario
+   reproduces the unclamped runaway — in the engine's int32 Q16.16 field that
+   is not 3.45 million game but `sat_add_q16`'s ceiling of 32 768 and then the
+   `T_MAX_PHYS` rail at 16 000 with `t_max_phys_hits` firing every tick (P0
+   §0.5): the clamp-off run **expects that counter**, it does not assert it
+   zero; and a burning-crate scenario
    asserts the clamp does **not** bind on a cell whose `T_before > T_cap`.
 6. **Isotropy**: ring MAX/MIN and the 64-direction ignition footprint, in P1.
 7. **CPU↔GPU bit-identity**, tol 0 (P4), through `tests/cuda_harness.py`, on
@@ -1112,6 +1161,12 @@ That is a change of what "calibration" means. Today `rad_scale`
    then wood, doors, and later the tree rows. #61 ("wood cannot sustain fire") is
    read as a heat-capacity problem, as Erik said, and is fixed as a property.
 
+**Calibrate against the damped emission, not against `E°[T]`** (row 34, P0
+§0.6). What a cell radiates is `E°[0] + f·(E°[T] − E°[0])`; at the 1263-game
+plateau `f = 0.73` under α = ½, at the table top `f ≈ 1/851`. The reach curve
+that "falls out" is the one the damped law produces, and §12 item 4 asks Erik
+whether the fire range should be damped at all.
+
 The old `k_fire_heat`-style constants and the survey's "calibration risk" are
 therefore closed by derivation. The HUMAN-TEST on P3 confirms feel; it is not
 where the numbers come from.
@@ -1159,8 +1214,9 @@ finally lets the old raycaster be archived; then the rules-side payload.
 
 | # | patch | gate | risk | human |
 |---|---|---|---|---|
-| **P0** | **The integer reference**, `docs/ray_engine_v2_scheme_study_2026-09-13/sweep_ref_q.py`: a numpy int64 transcription of §2.3 in **gather form**, both transport steps, leak, virtual ambient ring, body share, the excess-form Fleck factor and the corrected clamp (rows 21–23). Re-runs the stability and equilibrium tables on the excess form | gates 1–5 in the reference; agreement with the float push reference (`sweep_ref.py`) to the shift truncation; the stability tables reproduced | the arc's design risk, retired first | — |
-| **P1** | **The sweep, CPU, heat, in shadow.** `radiation_sweep.{h,cpp}` (step 2b of `PhysicsEngine::step`, `/fp:strict`, ratchet 0/0/0) · `emissive_table.h` with `E°⁻¹` · `optics_fixed.py` + `heat_atten_q` + `dyn_heat_atten_q` (the `stamp_units` signature grows by one input, one output, one row array; `tests/test_stamp_units_cpp_ab.py` extended) · `rad_fluence` + the three int64 widenings · the kit's int64 `shr_round0` and wide deposit twin · the Fleck pre-pass · the clamp code in Pass 1 (solids), **dormant on the live path** (`rad_fluence == nullptr` → no clamp) and exercised by direct-binding tests · `pack_hover_readout` rows for Φ, `a`/`d`, `f`, `E°⁻¹(Φ)` (critique 1j) · a timing bench. **Not wired**: the old cast still feeds the live planes; the sweep writes the shadow planes `rad_net_sweep` / `rad_flux_sweep` / `rad_amb_sweep` + `rad_fluence` (§3). **Also in P1** (critique 3): the complete int64 inventory of §3 in one commit, the two surviving bindings without `forcecast`, the CUDA temperature twin's pointer/malloc/memcpy widened, the `FP_HD` int64 `shr_round0`, all four rad planes into `_RESIDENT_SYNCED`, the `emissive_table.cpp` strict TU, the `s_m` literals + recompute test, the re-disposition of `test_pf1a_radiation_books.py:322-340`'s wrap-contract scene, the one-time `max\|rad_net\| < 2³¹` assertion on the A/B scenario, `_stamp_units_python` grown with the C++ stamp | gates 1–6 and 9 (goldens unmoved, asserted under §3's four conditions); the eight new property gates written here are the ones P3 keeps; the CUDA temperature gates stay green (the widening is complete) | the whole design | — |
+| **P0** — **DONE**, merged `40f2479` (2026-09-15 night; 13 tests, 1.4 s; `report_p0.md`) | **The integer reference**, `docs/ray_engine_v2_scheme_study_2026-09-13/sweep_ref_q.py`: a numpy int64 transcription of §2.3 in **gather form**, both transport steps, leak, virtual ambient ring, body share, the excess-form Fleck factor and the corrected clamp (rows 21–23). Re-runs the stability and equilibrium tables on the excess form | gates 1–5 in the reference; agreement with the float push reference (`sweep_ref.py`) to the shift truncation; the stability tables reproduced | the arc's design risk, retired first | — |
+| **P0b** | **The reference goes to Q24 `f`** (row 32) with a new gate G12: the damped source is monotone in `T` over the whole table for every shipped material row; the driven-source table for both α floors (§12 item 4), a measurement for Erik, not a change; the `.gitattributes` `*.csv text eol=lf` fix so a fresh worktree does not rewrite `levels/fire_tuning/tilemap.csv` to CRLF and fail `test_fire_tuning_level.py::test_generator_is_byte_deterministic` (P0 found it; every worktree agent on this machine hits it); `report_p0.md` and the pytest wrapper updated | all P0 gates re-run green; G12; the byte-determinism test green in a fresh worktree | small | — |
+| **P1** | **The sweep, CPU, heat, in shadow.** `radiation_sweep.{h,cpp}` (step 2b of `PhysicsEngine::step`, `/fp:strict`, ratchet 0/0/0) · `emissive_table.h` with `E°⁻¹` · `optics_fixed.py` + `heat_atten_q` + `dyn_heat_atten_q` (the `stamp_units` signature grows by one input, one output, one row array; `tests/test_stamp_units_cpp_ab.py` extended) · `rad_fluence` + the three int64 widenings · the kit's int64 `shr_round0` and wide deposit twin · the Fleck pre-pass · the clamp code in Pass 1 (solids), **dormant on the live path** (`rad_fluence == nullptr` → no clamp) and exercised by direct-binding tests · `pack_hover_readout` rows for Φ, `a`/`d`, `f`, `E°⁻¹(Φ)` (critique 1j) · a timing bench. **Not wired**: the old cast still feeds the live planes; the sweep writes the shadow planes `rad_net_sweep` / `rad_flux_sweep` / `rad_amb_sweep` + `rad_fluence` (§3). **Also in P1** (critique 3): the complete int64 inventory of §3 in one commit, the two surviving bindings without `forcecast`, the CUDA temperature twin's pointer/malloc/memcpy widened, the `FP_HD` int64 `shr_round0`, all four rad planes into `_RESIDENT_SYNCED`, the `emissive_table.cpp` strict TU, the `s_m` literals + recompute test, the re-disposition of `test_pf1a_radiation_books.py:322-340`'s wrap-contract scene, the one-time `max\|rad_net\| < 2³¹` assertion on the A/B scenario, `_stamp_units_python` grown with the C++ stamp | **gate 0** (bit for bit against `sweep_ref_q.py`, the executable spec — this makes P1 oracle-gated) and gates 1–6 and 9 (goldens unmoved, asserted under §3's four conditions); the eight new property gates written here are the ones P3 keeps; the CUDA temperature gates stay green (the widening is complete) | the whole design | — |
 | **P2** | **Calibration by derivation** (§9): the currency, the derived `rad_scale`, emissivities, the multi-probe reach bench in `fire_tuning_lab.py`, run against the shadow sweep in a lab config | the survey §9.3 curve, stated against the engine's own temperature-ignition criterion; goldens unmoved | medium | — |
 | **P3** | **The flip.** The fold reads the sweep's `rad_net`; units absorb (§6.2: per-unit `heat_atten`, the body share live, `exchange.py` dials re-derived, `max()` kept); **delete** `cast_fire_heat` (both call sites `physics_runner.py:819`, `:1207`), `cast_from_fire_plane` and its CUDA twin + bindings, `T_emit_gate`, `RADIATION_RANGE`, `fire_ray_count`, `range_base`/`range_per_intensity`, `RAD_LIM_SHIFT`, the pair budget, `set_raycaster_backend`; `rad_scale` re-homed on the engine; `HEAT_SCALE` & co. to `fixed_point.h`. **The clamp's GPU twin lands here** (Erik: inside P3, not P4-before-P3): in `cuda_temperature.cu::temp_convert_unified` (`:194-240`) — `rad_fluence` H2D, the `E°` table H2D, the `FP_HD` `E°⁻¹`, a third hit counter beside `hits`/`low_hits` (`:226`, `:231`), the `TEMPERATURE_ENERGY_SLOTS` enum (`cuda_temperature.h:147`, 13 today) extended with pinned slots — so the temperature backend's existing tol-0 gates stay green on the day the clamp goes live. **`DIGEST_SPEC_VERSION` v6** with `dyn_heat_atten_q` in the same commit as the re-baseline (row 28). **Test surface**: the 46 old-law tests in four files are **deleted with rationale** (table below) — their properties no longer exist and their replacements shipped in P1. **Tools**: dispositions below | full suite; A/B lockstep harness; **one deliberate golden re-baseline** with written rationale (the first golden move of the arc) | HUMAN-TEST | **yes** — fire spread and marine burn |
 | **P4** | **CUDA twin** `cuda_radiation_sweep.{cu,h}`, `(N,h,w)`-shaped, wavefront gather; `set_radiation_backend`; `tests/cuda_radiation_sweep_check.py` + `test_cuda_radiation_sweep.py` through `cuda_harness`; delete `cuda_raycaster.{cu,h}` (heat side; the render march never had a GPU path), `cuda_pr1_fire_plane_check.py`, `cuda_s2_check.py`, `cuda_s2b_raycaster_live_check.py`, `bench_s8c_fire_heat_check.py` + `test_s8c_fire_heat_bench.py`; the backend-flag one-liners in the other CUDA checks and `run_on_cuda.py`. The wavefront mechanics of §8.2 (concurrent ordinates, `(N, 16, h, w)` scratch, one launch per wavefront index, the unsigned-long-long atomic idiom); the `*_step` wrapper + `*_launch_resident` core split of `cuda_resident.h` | tol-0 lockstep on every plane **and every counter**, by a check script that calls the engine directly and reads the planes before the wipe (gate 7); the §10 launch and copy costs measured | mechanical, pattern known | — |
@@ -1237,6 +1293,7 @@ document's complexity warrants more.
 | patch | systems touched | agent | mechanical sub-tasks for Sonnet, split out |
 |---|---|---|---|
 | P0 | one study script | **Opus** (the arithmetic must be exactly right, but it is one file against a float reference) | — |
+| P0b | the reference, one test file, `.gitattributes` | **Opus** | — |
 | P1 | the sweep TU, the emissive table, `optics_fixed.py`, `stamp_units` (C++ and Python), `GameMap` planes and residency sets, the Pass-1 clamp, the kit twins, four bindings, the CUDA temperature twin's widening, `pack_hover_readout`, the build and ratchet lists | **Fable** | — (the widening inventory is one commit and must be done by the hand that understands `forcecast`) |
 | P2 | the calibration derivation, `fire_tuning_lab.py`, config | **Opus** | — |
 | P3 | the fold, units, `exchange.py`, the CUDA temperature twin's clamp, deletions across runner/bindings/config, the digest spec bump, the golden re-baseline | **Fable** | the 46 test deletions with rationale; the five tool edits; the `HEAT_SCALE` move; the golden regeneration run |
@@ -1254,6 +1311,25 @@ document's complexity warrants more.
    if adopted, whether `k` is per level or per cell from the outset.
 3. **`unit_absorption × (1 − reflectivity)` folded into one per-unit
    `heat_atten`** (§6.2) — a naming call that lasts.
+4. **The Fleck α floor for DRIVEN sources** (P0 §0.6; the orchestrator's
+   finding, 2026-09-15 night). The Fleck factor assumes the cell will cool
+   during the tick, so a cell *held* at its temperature by a deposit — a burning
+   tile, fed by combustion every tick — emits `f·(E°[T] − E°[0])`: **73 % of
+   black body at the 1263-game plateau** under the ruled `α = max(½, 1 − 1/g)`,
+   0.12 % at the table top. The Fleck bound `α ≥ ½` is IMC's (for its own
+   linearised equations with effective scattering); for *our* material update
+   the monotone-stability condition is that the fixed-point multiplier
+   `x = g·(1 + αg/4)/(1 + αg)²` stays in `(0, 1]`, and `α = max(0, 1 − 1/g)`
+   satisfies it for every `g` (`x = g` below `g = 1`, `x = (g + 3)/4g ≤ 1`
+   above). That choice leaves the whole fire range **undamped** — a burning
+   tile radiates physically, which is what Erik asked for in row 3 — and caps the
+   per-tick loss at `T_abs/4` above `g = 1` exactly where the explicit scheme
+   fails. Its cost is on *free* cooling: −5.7 % against the analytic curve where
+   `α = ½` gives +0.23 %. It is one line in the reference and the engine
+   (`D = max(T_abs_q, 4·L_q)`). **P0b measures both floors on driven and
+   free-cooling cells; P1 builds `α = ½` as ruled unless Erik says otherwise.**
+   The orchestrator's recommendation is the α = 0 floor: fires are the case
+   that matters, and the loss of accuracy is on the cool-down after they die.
 
 **Ruled by Erik on 2026-09-15, after v3 was written:**
 
@@ -1338,6 +1414,14 @@ code exists (scoped per critique 1i):
   floor is a separate, smaller dial and never a substitute.
 - *The producer contract* (§4). Any future light producer (cascades) satisfies
   §4.1–4.3 or it is not a producer.
+- *The integer reference* (`docs/ray_engine_v2_scheme_study_2026-09-13/sweep_ref_q.py`
+  + `sweep_ref_q_gates.py`, guarded by `tests/test_ray_engine_v2_integer_reference.py`;
+  **exists since P0, `40f2479`**). THE executable specification of the sweep's
+  integer arithmetic. Any change to the sweep, the Fleck factor, `E°⁻¹` or the
+  radiative fold is made here first, its gates re-run, and the C++ written
+  against it — never the other way round. Not engine code; nothing in `src/` or
+  `cpp/` may import it. Goes into the project CLAUDE.md beside the
+  `radiation_sweep` row at P1.
 
 ---
 
