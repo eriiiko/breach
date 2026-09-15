@@ -136,3 +136,48 @@ print("   solid it came off.  Physically that is right -- soot in a flame reache
 print("   temperature almost at once, which is why flames are yellow -- and visually it")
 print("   is what you want: smoke that lights up and dims with the fire rather than")
 print("   lagging a second behind it.")
+
+
+# ---------------------------------------------------------------------------
+# 4. CORRECTION (2026-09-15), prompted by Erik asking whether cutting absorption
+#    on low-N gas cells would help the stiffness.
+#
+# Section 1 above varies `capacity` while holding `a` FIXED. That is the slice
+# "the soot stays, the air leaves", and it is not what happens: a decompressing
+# room loses every species together. Redo it physically -- a and capacity fall
+# together -- and the density CANCELS:
+#
+#       g  ~  (n_soot / N_total) * E_deg(T) / T_abs  =  phi * E_deg / T_abs
+#
+# so the stiffness depends only on the soot FRACTION, not on how much gas is in
+# the cell. Measured at the equilibrium a smoke cell reaches one tile from a
+# 1263-game fire:
+#
+#       density 1.000, a 0.600  ->  g = 2.5
+#       density 0.300, a 0.180  ->  g = 2.5
+#       density 0.050, a 0.030  ->  g = 2.5
+#       density 0.002, a 0.001  ->  g = 2.5
+#
+# Three consequences, and the first one is a correction to what section 2 claims:
+#
+#   1. A decompressing room does NOT get stiffer as it empties. Section 2's
+#      "peak g 50.2 / 250.8 / 1254.2" rows are the unphysical slice and should
+#      not be quoted as a hull-breach result.
+#   2. Gas stiffness is BOUNDED and modest. Even at a soot fraction of 1.0 --
+#      a cell of pure soot, which cannot happen -- g is 4.2, against 848 for a
+#      solid at T_MAX_PHYS. Gas is the milder half, not the harder one.
+#      It is still above 1, so Fleck + clamp are still required on gas; they are
+#      just not holding back a runaway.
+#   3. Erik's low-N cutoff is therefore NOT a stability lever -- it would remove
+#      cells that were never the problem.
+#
+# But the suggestion lands somewhere better. The engine ALREADY has this floor:
+# `gas_energy.h` sets `N_EPS_RAW = 1`, "the one bulk floor, shared verbatim with
+# eos_solver.cpp's recovery and bulk_transport.cpp's divide policy (design 2.6:
+# ONE value, every file)", below which the mirror reads ambient rather than
+# dividing and the recovery wipes the cell. So a sub-N_EPS cell is DEFINED to be
+# at ambient -- and a cell defined to be at ambient must not be emitting at some
+# other temperature. Gas absorption and emission should ride that existing floor
+# for consistency, not a new threshold of their own. Not an approximation: the
+# removal of an inconsistency, using the canonical value.
+# ---------------------------------------------------------------------------
