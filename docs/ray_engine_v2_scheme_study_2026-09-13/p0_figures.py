@@ -180,10 +180,12 @@ def figure_stability():
     # ---- panel C: what the Fleck factor costs in emission ------------------ #
     ax = axes[2]
     _style(ax)
-    temps = [4 * b for b in range(0, R.E_TABLE_SIZE, 8)]
+    # the last sample IS the table top, so the "xN at the table top" annotation
+    # quotes the same number the gates and report_p0.md do (P0b)
+    temps = sorted({4 * b for b in range(0, R.E_TABLE_SIZE, 8)}
+                   | {R.T_TABLE_TOP_GAME})
     undamped = [R.E[R.e_bucket_of(t << 16)] for t in temps]
-    damped = [R.E0 + (((R.E[R.e_bucket_of(t << 16)] - R.E0)
-                       * R.fleck_f_solid_q(t << 16, A, HIS)[0]) >> 16) for t in temps]
+    damped = [R.damped_source_q(t << 16, A, HIS) for t in temps]
     ax.plot(temps, undamped, color=ORANGE, linewidth=2.0, label="E°[T] (black body)")
     ax.plot(temps, damped, color=BLUE, linewidth=2.0,
             label="E°[0] + f·(E°[T] − E°[0]) (what the cell emits)")
@@ -199,9 +201,9 @@ def figure_stability():
     print("\n=== figure 2C: the damped source (a = 0.5, his = 3) ===")
     for t in (280, 1263, 1800, 5000, 15996):
         u = R.E[R.e_bucket_of(t << 16)]
-        d = R.E0 + (((u - R.E0) * R.fleck_f_solid_q(t << 16, A, HIS)[0]) >> 16)
+        d = R.damped_source_q(t << 16, A, HIS)
         print(f"  T={t:6d}: E°={u:>16,}  damped={d:>16,}  ratio x{u / d:8.1f}  "
-              f"f={R.fleck_f_solid_q(t << 16, A, HIS)[0] / 65536:.5f}")
+              f"f={R.fleck_f_solid_q(t << 16, A, HIS)[0] / R.F_ONE:.7f}")
 
     fig.suptitle("Stability on the NEW forms: the excess-form Fleck factor and the "
                  "corrected clamp (P0, integer reference)", color=INK, fontsize=12)

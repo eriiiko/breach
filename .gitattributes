@@ -1,0 +1,16 @@
+# Generated level data is compared BYTE FOR BYTE against a fresh generator run
+# (tests/test_fire_tuning_level.py and tests/test_fire_studio_level.py,
+# ::test_generator_is_byte_deterministic), and level_lib writes LF. Git for
+# Windows installs core.autocrlf=true SYSTEM-WIDE on this machine, so without
+# these lines a fresh clone or `git worktree add` checks the committed LF out as
+# CRLF and both tests fail on arrival (2026-09-15, P0b; P0 hit it in its own
+# worktree, and the .csv half alone is not enough -- level.toml fails the same
+# assertion one file later).
+#
+# Every tracked text file in this repo is already LF in the index (verified
+# `git ls-files --eol`: no i/crlf anywhere, and every .png/.npy is -text), so
+# these lines only stop the checkout from rewriting what is already correct.
+# Deliberately NOT repo-wide (`* text=auto eol=lf`): cpp/build_cuda*.bat is run
+# by cmd.exe, which wants CRLF. Widening this is Erik's call, not a side effect.
+*.csv  text eol=lf
+*.toml text eol=lf

@@ -292,7 +292,17 @@ def main(out_dir=OUT_DIR) -> None:
     tm = build_tilemap()
 
     csv_path = out_dir / "tilemap.csv"
-    np.savetxt(csv_path, tm, fmt="%d", delimiter=",")
+    # newline="\n" explicitly (P0b, 2026-09-15): np.savetxt opens in TEXT mode, so
+    # on Windows this emitted CRLF while the committed tilemap is LF in the index.
+    # It passed only while the checkout was ALSO CRLF (core.autocrlf), and the
+    # .gitattributes added in the same patch makes the checkout LF -- at which
+    # point a generator whose bytes depend on the host OS is not byte-deterministic
+    # at all, which is exactly what this level's test is named for.
+    # NOTE (finding, not fixed here): this tool hand-rolls its tilemap write instead
+    # of calling level_lib.write_tilemap_csv, which CLAUDE.md's "Level data layer"
+    # row makes the one writer ever; make_fire_tuning_level.py does it that way.
+    with open(csv_path, "w", newline="\n") as fh:
+        np.savetxt(fh, tm, fmt="%d", delimiter=",")
 
     water_path = out_dir / "water_init.npy"
     np.save(water_path, build_water())
@@ -301,7 +311,11 @@ def main(out_dir=OUT_DIR) -> None:
     build_diffuse(tm).save(png_path)
 
     toml_path = out_dir / "level.toml"
-    toml_path.write_text(LEVEL_TOML, encoding="utf-8")
+    # write_bytes, not write_text: same reason as the tilemap above -- text mode
+    # emits CRLF on Windows and LF elsewhere, so the generator's own bytes would
+    # depend on the host OS. make_fire_tuning_level.py writes its header the same
+    # way (`.write_bytes(... .encode("utf-8"))`).
+    toml_path.write_bytes(LEVEL_TOML.encode("utf-8"))
 
     codes = sorted(np.unique(tm).tolist())
     print(f"wrote {csv_path}  ({W}x{H} tiles, codes {codes})")
