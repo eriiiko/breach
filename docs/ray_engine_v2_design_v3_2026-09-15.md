@@ -1,9 +1,13 @@
 # Ray engine v2 — design v3 (2026-09-15)
 
-> **Status:** design, ready for critique 3 (determinism and CUDA). Nothing built.
+> **Status:** design, critiqued three times (physics, engine integration,
+> determinism/CUDA). **Critique 3 is folded in** (2026-09-15 evening; every
+> change is in §0 rows 25–31 and Appendix C, and the affected sections are
+> edited in place). Nothing built. **Next: P0.**
 > This supersedes `ray_engine_v2_design_v2_2026-09-13.md` wherever they disagree;
 > §0 lists every disagreement and its reason. Every file:line below was verified
-> against the tree at `fire-12` `5a252f5` on 2026-09-15.
+> against the tree at `fire-12` `5a252f5` on 2026-09-15; critique 3 re-verified
+> them at `968f62a`.
 >
 > **Depends on:** `ray_engine_v2_survey_2026-09-12.md` (rulings R-A..R-S) ·
 > `ray_engine_v2_critique_1_physics_2026-09-12.md` (12 changes, resolved in v2,
@@ -27,8 +31,11 @@
 
 Rows 1–6 are Erik's rulings of 2026-09-15. Rows 7–20 resolve critique 2. Rows
 21–24 are corrections I found while doing the code archaeology the critique
-asked for; two of them (22, 23) change the arithmetic and are marked **derived,
-not yet measured** — P0's integer reference must confirm them before P1.
+asked for; rows 22 and 23 changed the arithmetic and were marked derived, not
+measured — **critique 3 then measured them with its own integer probe and they
+hold** (`ray_engine_v2_critique_3_determinism_cuda_2026-09-15.md`, "What I
+could not break"). Rows 25–31 are the fold of critique 3 and Erik's three
+rulings on it, the same evening.
 
 | # | v2 said | v3 says | why |
 |---|---|---|---|
@@ -56,6 +63,13 @@ not yet measured** — P0's integer reference must confirm them before P1.
 | 22 | Fleck factor multiplies the whole emission `E°[T]` | **It multiplies the excess `E°[T] − E°[0]`.** With `f < 1` at ambient (it is 0.995 at the shipped scale) a cell at ambient in an ambient field gains 0.5 % of its exchange every tick and gate 2's *exact* per-cell fixed point is impossible. Damping the excess restores it exactly — `x·f + x·(ONE−f)` is not needed; the ambient part is simply not damped — and it is the correct linearisation: the Fleck derivation damps `∂E°/∂T·ΔT`, and a constant has no derivative | **derived, not yet measured** — P0 confirms; §2.6, §2.8 |
 | 23 | Push form (each cell writes two downwind faces) | **Gather form**: each cell reads its upwind neighbours' stored outflow and recomputes the split from the same integers; out-of-grid reads return the ambient outflow constant. Algebraically identical to `sweep_ref.py`'s push, and it makes the CUDA twin's bit-identity *structural* — one formulation, two backends, no atomics inside an ordinate | §2.3, §8.2 — **derived**; P0 cross-checks against the float push reference |
 | 24 | P3 = flip + all deletions; P5 = units absorb | **Units absorb at the flip.** `rad_flux` has one consumer (marine burn damage) and its only writer dies with the old law; a flip without the body share leaves marines un-burnable. Render deletions move to P6; the old-law test surface (46 tests, four files) is *deleted* at P3, because its replacement gates are written at P1 against the shadow sweep | critique items 21, 22, 30; §11 |
+| 25 | The body share "absorbs into `rad_flux`, never emits" | **A body re-emits at the ambient level**, with the material's own arithmetic: `emitted_body = (amb_m · b_i) >> 16`; `rad_flux` books the **net**, `abs_body − emitted_body`, and is signed | **Erik, 2026-09-15 evening**, on critique 3's probe: a pure sink shadows the *sky*, so a marine standing beside an ambient wall cooled the wall by 775 counts a tick and tripped the low rail (critique 3 §4f). With ambient re-emission the ambient fixed point is exact with bodies present and a body shadows only the excess above ambient — the fire, not the room |
+| 26 | §3's widening list: two bindings and one CUDA header "die at P3" | **Five more 32-bit readers of `rad_net` survive P3** — the temperature solver's signature, `step_tail`, two bindings, and the CUDA *temperature* twin — and pybind's default `forcecast` makes a missed one silent (a truncated int32 copy, no error). All widened at P1, the two surviving bindings without forcecast so a stale caller fails loudly | critique 3 BLOCKING §6a |
+| 27 | The clamp in Pass 1; P4 ports only the sweep | **The clamp's GPU twin lands in the same patch that makes it live**: solids at P3, gas at P5, inside `cuda_temperature.cu`, with `rad_fluence` and the `E°` table uploaded, an `FP_HD` inverse, a third hit counter and pinned energy slots | critique 3 BLOCKING §7b; **Erik**: twin inside P3, not P4 before P3 — a solver and its twin change together |
+| 28 | `dyn_heat_atten_q` not digested ("a pure function of digested state") | **Enters `DIGEST_FIELDS` at P3**, spec v6, in the same commit as P3's re-baseline (zero marginal cost then); `heat_atten_q` stays out on the static-projection precedent | **Erik**; the "pure function" rule is not the spec's rule — `obstacles` is a digested stamp output (critique 3 §6b) |
+| 29 | "Ordinates may run sequentially or concurrently"; scratch `(N, h, w)`; launches uncounted | **Ordinates run concurrently**, scratch `(N, 16, h, w)`, one launch per wavefront *index* covering all 16 ordinates; per-cell sums by the tree's int64 atomic idiom; **launch counts in §10** (256 shear / 383 step per tick at 128×256) | critique 3 §2b–2d |
+| 30 | `E°` bake "verbatim into a header"; `s_m` "quantized at load"; `L°` from the blackbody ramp | The bake body lives in `emissive_table.cpp` on the `/fp:strict` list (a header-inline bake would compile under `bindings.cpp`'s `/fp:fast` and could FMA-contract `k4·scale + 0.5`); `s_m` are **checked-in integer literals** with a recompute test, never `std::cos` at load; `L°` at P6 by the `E°` algebraic pattern or checked-in constants, never `np.power`/`np.log` | critique 3 §5a–5c |
+| 31 | Gate 2 "with `f < 1` forced on"; gate 4 one scenario; gate 5 "compiled out"; `E°⁻¹` undefined below `E°[0]`, saturation "owned by the rail" | Gate 2 = (a) uniform ambient by construction + (b) the **enclosed isothermal box**; gate 4 **per counter**; gate 5 via a `clamp_enabled` binding keyword; `E°⁻¹(Φ < E°[0]) = 0`; the table top is **15 996**, below `T_MAX_PHYS`, so the clamp binds first on the radiative sub-step and the rail is reachable only through the `heat` branch | critique 3 §4b, §4c, §4e |
 
 **Not changed, on purpose:** the leak channel stays designed, dormant (`k = 0`)
 and unruled — Erik set the reach question aside (handoff §0). Everything in the
@@ -123,7 +137,7 @@ that means for the CUDA twin.
 |---|---|---|
 | `a_i` | `heat_atten_q` (static) or the smoke term (§6.3) | the **material** extinction: absorbs *and emits* (Kirchhoff) |
 | `d_i` | `dyn_heat_atten_q` | the **stamped** extinction, `d_i ≥ a_i`: the material plus any body standing on the cell |
-| `b_i = d_i − a_i` | derived | the **body** share: absorbs into `rad_flux`, never emits |
+| `b_i = d_i − a_i` | derived | the **body** share: absorbs the stream and **re-emits the ambient level** (a grey body at room temperature; Erik's ruling, row 25); its net, the excess above ambient, lands in `rad_flux` |
 | `k_i` | `[physics.radiation] k_leak`, uniform today | the out-of-plane leak coefficient, `0` until ruled |
 | `T_i` | `temperature` | the cell's temperature, both media |
 | `f_i` | computed pre-sweep, §2.8 | the Fleck factor |
@@ -151,9 +165,10 @@ that means for the CUDA twin.
     ex_m      =  ((E°[T_i] − E°[0]) * w_m) >> 16     // the EXCESS emission over ambient, ≥ 0
     src       =  amb_m + ((ex_m * f_i) >> 16)        // Fleck damps the excess only (row 22)
     emitted   =  (src * a_i) >> 16                   // the SAME arithmetic as abs_mat
-    i_out     =  stream − abs_mat − abs_body + emitted
+    emit_body =  (amb_m * b_i) >> 16                 // the body re-emits AMBIENT (row 25) — no excess, no Fleck
+    i_out     =  stream − abs_mat − abs_body + emitted + emit_body
     rad_net[i]     +=  abs_mat − emitted             // the material ledger, signed
-    rad_flux[i]    +=  abs_body                      // the body sensor, ≥ 0
+    rad_flux[i]    +=  abs_body − emit_body          // the body sensor: NET above ambient, signed
     rad_amb[i]     +=  leaked − ret                  // the ambient ledger's ceiling part
     rad_fluence[i] +=  stream                        // Φ, for the clamp
     store i_out for the next wavefront's gather
@@ -164,8 +179,18 @@ of its `i_out` that leaves the grid and `−` every `fa`/`fb` it gathered from a
 virtual cell. So `rad_amb` is **net ambient exchange per cell**: sky out minus
 sky in at boundary cells, ceiling out minus ceiling return everywhere.
 
+**Why the body emits ambient** (row 25). At exact ambient `abs_body ==
+emit_body` by the same integers, so a body disturbs nothing in an ambient room
+and the per-cell fixed point (gate 2) holds with bodies present; in a hot stream
+the body passes `amb_m` on, so it shadows the fire and not the sky. `rad_flux`
+is therefore **signed** — negative only in another body's shadow — and its one
+consumer, `exchange.py:299-340`, takes `max(heat, rad_flux)` with `heat ≥ 0`,
+which floors it at zero. Critique 3's probe (§4f there) measured the pure-sink
+alternative: a marine beside an ambient wall drained the wall by 775 counts per
+tick and tripped `t_low_rail_hits` every tick.
+
 **Conservation is structural.** For every cell, `i_in − i_out = (leaked − ret) +
-abs_mat + abs_body − emitted`, i.e. the sum of what that cell booked. Summing
+abs_mat + abs_body − emitted − emit_body`, i.e. the sum of what that cell booked. Summing
 over the grid, every interior gather is some other cell's stored outflow, so the
 interior telescopes and only the virtual-ring terms remain — which the boundary
 cells booked. Hence
@@ -269,24 +294,41 @@ returns `amb_m`.
 No emitter list, no `T_emit_gate`. Every cell contributes `a_i · [E°[0] + f_i ·
 (E°[T_i] − E°[0])]`, per ordinate `w_m` of it.
 
-**The `E°` table moves to `cpp/src/emissive_table.h`** — the bake verbatim from
+**The `E°` table moves to `cpp/src/emissive_table.{h,cpp}`** — the bake from
 `raycaster.cpp:62-97` (int64, 4000 buckets of 4 game units, `K⁴` by repeated
 integer multiplication, the integer-valued Kelvin-map precondition), the lookup
-`e_bucket_of` from `raycaster.h:203-213`, and the new inverse. One instance,
-owned by `PhysicsEngine`, passed by pointer to the sweep *and* to the
-temperature solver's Pass 1 (the clamp needs it). `rad_scale` stays the bake's
-input through P1–P2 and becomes a derived constant at P2 (§9).
+`e_bucket_of` from `raycaster.h:203-213`, and the new inverse. **The bake's body
+is out of line in `emissive_table.cpp`, which joins the `/fp:strict` list**
+(row 30): the chain `(double)k4 · scale + 0.5` is a multiply feeding an add
+that MSVC may contract into a fused multiply-add under `/fp:fast`, and a
+header-inline bake would be compiled by `bindings.cpp`, which is deliberately
+`/fp:fast` (`CMakeLists.txt:23-25`). The header carries only the integer
+lookups (`e_bucket_of`, `E°⁻¹`, both `FP_HD`, the inverse a **fixed 12-trip**
+loop in the `sqrt_q16_dev` idiom so host and device are one function) and the
+table pointer. One instance, owned by `PhysicsEngine`, passed to the sweep *and*
+to the temperature solver's Pass 1 (the clamp needs it) and its CUDA twin
+(uploaded as `cuda_raycaster.cu` uploads it today). `rad_scale` stays the
+bake's input through P1–P2 and becomes a derived constant at P2 (§9).
 
 **`E°⁻¹` and saturation** (critique item 28). The table is strictly increasing
 in `T` (K⁴ is), so `E°⁻¹(Φ)` is a binary search: the largest bucket `b` with
 `E°[b] ≤ Φ`, mapped to the bucket's **low edge**, `T = 4b` game units, so that
-re-applying the clamp is idempotent (`E°[E°⁻¹(Φ)] ≤ Φ`). Twelve compares, pure
-integer, identical on every backend. The table spans `T ∈ [0, 16000)` and
-saturates on the last bucket (`e_bucket_of`), and `T_MAX_PHYS = 16000`
-(`config.toml:186`, `temperature_solver.h:394`): for `Φ ≥ E°[3999]` the inverse
-returns the table top, which the existing `T_MAX_PHYS` rail then owns. The
-60 000-game rows in v2's §2.8 table describe states the engine clamps away and
-are struck; the 16 000 row is the top of the defined range.
+re-applying the clamp is idempotent (`E°[E°⁻¹(Φ)] ≤ Φ`; critique 3 probe [7]).
+Twelve compares, pure integer, identical on every backend. Two edge cases,
+both defined (row 31):
+
+- **`Φ < E°[0]`** has no bucket. It is reachable (a cell in another body's
+  shadow, or any cell while the leak is on and `ret` is truncated). `E°⁻¹` returns
+  `T_cap = 0`: no radiative warming above the ambient floor, which is consistent
+  because such a cell's `rad_net ≤ 0` anyway.
+- **Saturation is at 15 996, not 16 000.** The last bucket's low edge is
+  `4 · 3999`, so for `Φ ≥ E°[3999]` the clamp returns 15 996 game and binds
+  *below* `T_MAX_PHYS = 16000` (`config.toml:186`, `temperature_solver.h:394`).
+  On the radiative sub-step the clamp therefore always engages first and the
+  `T_MAX_PHYS` rail never does; the rail stays reachable through the `heat`
+  deposit branch only, which is why gate 4 is stated per counter (§2.9). The
+  60 000-game rows in v2's §2.8 table describe states the engine clamps away
+  and are struck.
 
 **The sub-ambient floor** is inherited, not new: `e_bucket_of(T ≤ 0) = 0`, so a
 cell below ambient emits at the ambient level. Its excess is zero, so it neither
@@ -366,7 +408,13 @@ tick**, door 1:
 ```
     L_q     =  the cell's free excess-emission loss this tick, in Q16.16 temperature:
                solid:  shr_round0( (a_i · (E°[T_i] − E°[0])) >> 16,  heat_inv_shift[i] )
-               gas:    the Pass-1 gas chain on the same excess (§6.3)
+               gas:    the STAGED wide chain on the same excess (row 30, critique 3 §1c):
+                       mul128_shr( mul128_shr(e64, recip_N, FP_SHIFT), recip_cv, RECIP_SHIFT )
+                       — two narrows, because the existing deposit_dT_wide_q16 forms its first
+                       product as a plain int64 (sound for an int32 deposit, 2^64–2^72 for E° at
+                       the table top); ≤ 1 LSB from the heat deposit's one-narrow chain, a
+                       DIFFERENT rounding, declared; FP_HD mul128_shr on both backends; the same
+                       chain converts the P5 radiative gas deposit itself (magnitude, then sign)
     T_abs_q =  temperature[i] + t_amb_q            // 293 game units in Q16.16 (slope 1 since G12)
     D       =  max(T_abs_q + 2·L_q,  4·L_q)         // shifts, exact
     f_q     =  floordiv_q((int64)T_abs_q << 16, D)  // fixed_point.h:562 — exact, identical on every backend
@@ -440,8 +488,10 @@ radiation fold**, `cpp/src/temperature_solver.cpp:247-299`, never in the sweep.
 - **Gas** (from the patch that opens the mask, §6.3). Never `temperature[i] =` —
   the "Gas temperature is a mirror" rule records that failure as *silent*
   ("a bare `temperature[...] =` now moves no books at all … it goes VACUOUS").
-  The radiative `ΔE` is computed, the clamp is applied to the **deposit** (reduce
-  `ΔE` so the mirror lands at `min(T_after, max(T_before, T_cap))`), and the
+  The radiative `ΔE` is computed, the clamp is applied to the **deposit**: the
+  mirror is a floor-division of `E` by `N`, so the target is hit exactly by
+  `ΔE_new = N · (T_target + t_amb_q) − E` with `T_target = min(T_after,
+  max(T_before, T_cap))` — never a scaled `ΔE` (critique 3 §4d) — and the
   reduced `ΔE` goes through `gas_energy::deposit_railed` (`gas_energy.h:98`) with
   `e_gas_deposit_sum += nb·dT` as the existing group-1 branch does
   (`temperature_solver.cpp:373-388`). The reduction is a counted drop,
@@ -466,16 +516,29 @@ Every gate names the property and the change that breaks it (CLAUDE.md
    transport steps, leak on and off. **Non-vacuous**: the test seeds `d > a` on
    some cells (a body) so the `rad_flux` term is exercised at P1 (BLOCKING 6),
    and asserts each of the three sums is individually non-zero.
-2. **Second law**: a uniform field at ambient is a **per-cell exact** fixed
-   point — every `rad_net[i] == 0`, `rad_flux[i] == 0`, `rad_amb[i] == 0` — with
-   non-dyadic `a`, at S16 *and* S12, with `f < 1` forced on (a hot-table probe),
-   over a transparent-interior sealed room and a mixed-material scene.
+2. **Second law**, two halves (row 31). **(a)** A uniform field at ambient is a
+   **per-cell exact** fixed point — every `rad_net[i] == 0`, `rad_flux[i] == 0`,
+   `rad_amb[i] == 0` — with non-dyadic `a`, bodies present, the leak on, at S16
+   *and* S12, over a transparent-interior sealed room and a mixed-material
+   scene. This holds for any `f` **by construction** (the excess is zero at
+   ambient), so forcing `f < 1` here exercises nothing and is not claimed.
+   **(b)** The **enclosed isothermal box**: opaque walls two cells thick at
+   `T0 > 0`, transparent interior; the inner wall layer is a per-cell exact
+   zero **with `f < 1` forced on**, S16 and S12, because every gather it
+   receives is another `T0` cell's `src` split and re-summed under the same
+   shift. The outer layer legitimately cools to the sky. This is the successor
+   of `test_pf1a_radiation_books.py:399-443`'s isothermal-lattice property;
+   critique 3 probe [4] measured it at `T0 = 1263`, `f = 0.3`.
 3. **Positivity**: no negative stream anywhere, with `d ≤ ONE` enforced; and the
    ingress checks reject `a > d`, `d > ONE`, `k > ONE`, and `heat_atten > 0` with
    `thermal_mass = 0`.
-4. **Stability**: `t_low_rail_hits`, `t_max_phys_hits` and `rad_clamp_hits` are
-   zero in the normal gate scenarios and **non-zero in a deliberately
-   over-driven one** (a 16 000-game source one tile from a cold crate).
+4. **Stability, per counter** (row 31): `t_low_rail_hits` and `rad_clamp_hits`
+   are zero in every normal scenario — including a marine beside an ambient
+   wall, the scene that fails under a pure-sink body — and `rad_clamp_hits` is
+   **non-zero in a deliberately over-driven one** (a 16 000-game source one tile
+   from a cold crate). `t_max_phys_hits` is not reachable through the radiative
+   sub-step (the clamp saturates at 15 996 first, §2.6); it is asserted non-zero
+   only in the `heat`-branch over-drive that already exists for it.
 5. **Maximum principle** (BLOCKING 4). **Evaluation point:** immediately after
    the Pass-1 radiative sub-step, on that sub-step alone — `T_new ≤ max(T_before,
    E°⁻¹(Φ))` for every cell, asserted from a direct-binding call of
@@ -483,13 +546,24 @@ Every gate names the property and the change that breaks it (CLAUDE.md
    precedent) with `rad_net`/`rad_fluence` planes the test constructs. Measured at
    end of tick it would be falsely red (conduction, the thermostat and
    combustion's direct write all legitimately run after). **Non-vacuous:** the
-   same test with the clamp compiled out (a test-only flag on the binding)
+   same test with `clamp_enabled=False`, a keyword on the `TemperatureSolver.step`
+   binding in the `rad_net = py::none()` idiom (`bindings.cpp:2081`) — never a
+   global static a test flips, which is hidden state that forks a digest —
    reproduces the 1.73-million-unit equilibrium; and a burning-crate scenario
    asserts the clamp does **not** bind on a cell whose `T_before > T_cap`.
 6. **Isotropy**: ring MAX/MIN and the 64-direction ignition footprint, in P1.
-7. **CPU↔GPU bit-identity**, tol 0 (P4), through `tests/cuda_harness.py`.
+7. **CPU↔GPU bit-identity**, tol 0 (P4), through `tests/cuda_harness.py`, on
+   every plane **and every counter**. The check script calls the engine
+   directly and reads the planes **before the conductor's wipe** — the
+   `cuda_pr1_fire_plane_check.py` shape — because an A/B snapshot and the digest
+   are both taken after `simulation.py:1603-1616` and see the four per-tick
+   planes as zero. Gates 1–3 run against a direct call for the same reason.
 8. **The A/B lockstep harness** (`tests/field_ab_harness.py`) at every wiring
-   patch (P3, P6): never prove a refactor with whole-grid means.
+   patch (P3, P6): never prove a refactor with whole-grid means. Stated
+   honestly (critique 3 §7a): across a *law change* the harness proves
+   run-to-run determinism of one build and **localises** the expected
+   before/after difference to the fields the law touches; it is not a 0-ULP
+   gate across P3. The 0-ULP gate is the twin's, gate 7.
 9. **Goldens unmoved at P1** (asserted, since P1 is a shadow computation, §11)
    and **one deliberate re-baseline at P3** with written rationale.
 
@@ -499,31 +573,59 @@ Every gate names the property and the change that breaks it (CLAUDE.md
 
 | plane | dtype | lifetime | allocation | `DIGEST_FIELDS` | `SIM_FIELDS` (A/B) | resident |
 |---|---|---|---|---|---|---|
-| `heat_atten_q` | int32 Q16 (h,w) | static; rebuilt in `_update_caches`, patched in `on_tile_changed` — the `heat_atten` seam (`gamemap.py:1356`, `:1578`) | quantized through **`src/simulation/optics_fixed.py`** (new; reuse-or-new: none of the seven `*_fixed.py` modules is about optics, and the light RGB planes join it at P6) | no — a pure function of `material`, already digested | yes | static mask, one upload at `enable_residency` |
-| `dyn_heat_atten_q` | int32 Q16 (h,w) | per tick, from `stamp_units` | fourth dynamic output of `PhysicsEngine::stamp_units` (`physics_engine.cpp:937`, header `:496`): copy of `heat_atten_q`, then per-unit **MAX** from a new per-row `heat_q` value; Python wrapper `gamemap.py:1749-1826` gains one row array; unit attribute `heat_atten` (default `1.0`, opaque body), quantized at the unit boundary | no — a pure function of digested state (unit positions, material) | yes, beside `dyn_light_atten` | always-upload set, `gamemap.py:137` |
-| `rad_net` | **int64** (was int32) (h,w) | per tick, wiped at `simulation.py:1603` | same site | no (wiped at every snapshot, `field_digest.py:50-52`) | no | born through residency; downloaded only where the fold runs on host |
-| `rad_amb` | **int64** (was int32) (h,w) | per tick, wiped at `:1610` | same | no | no | same |
-| `rad_flux` | **int64** (was int32) (h,w) | per tick, wiped at `:1616` | same | no | no | same |
-| `rad_fluence` (Φ) | **int64**, new (h,w) | per tick; written by the sweep, read by Pass 1, **wiped beside the other three** — one `fill(0)` line, the conductor's only change | next to `rad_net` (`gamemap.py:479`); **allocated through the residency path from day one** (RL-batch habits §A rule 3: no mirror-only fields) | no — same argument as `rad_net` | no | same |
-| sweep scratch (per-ordinate stored outflow) | int64 (h,w) | inside one sweep call | owned by `RadiationSweep`, keyed `(N, h, w)` (§A rule 5) | — | — | device scratch |
+| `heat_atten_q` | int32 Q16 (h,w) | static; rebuilt in `_update_caches`, patched in `on_tile_changed` — the `heat_atten` seam (`gamemap.py:1356`, `:1578`) | quantized through **`src/simulation/optics_fixed.py`** (new; reuse-or-new: none of the seven `*_fixed.py` modules is about optics, and the light RGB planes join it at P6) | no — the static-projection precedent: `heat_inv_shift`, `face_shift`, `thermal_solid`, `cool_shift`, `heat_atten` are none of them digested | yes | static mask, one upload at `enable_residency` |
+| `dyn_heat_atten_q` | int32 Q16 (h,w) | per tick, from `stamp_units` | fourth dynamic output of `PhysicsEngine::stamp_units` (`physics_engine.cpp:937`, header `:496`): copy of `heat_atten_q`, then per-unit **MAX** from a new per-row `heat_q` value; Python wrapper `gamemap.py:1749-1826` gains one row array, and **`_stamp_units_python` (`gamemap.py:1839`) grows identically** because `tests/test_stamp_units_cpp_ab.py` compares the two; unit attribute `heat_atten` (default `1.0`, opaque body), quantized by `optics_fixed.quantize_scalar` in `_stamp_units_cpp` (`:1785-1805`), the boundary | **yes, at P3** (Erik, row 28): `DIGEST_SPEC_VERSION` v6 in P3's own re-baseline commit, so a stamp desync is named one tick before it surfaces as `temperature`; the precedent is `obstacles`, a digested stamp output (`field_digest.py:75-78`) | yes, beside `dyn_light_atten` | always-upload set, `gamemap.py:137` |
+| `rad_net` | **int64** (was int32) (h,w) | per tick, wiped at `simulation.py:1603` | same site | no (wiped at every snapshot, `field_digest.py:50-52`) | no | **joins `_RESIDENT_SYNCED` at P1** (int64 precedent `gas_energy`, `gamemap.py:130`). None of the three existing planes is resident today: the old cast fills them on the host mirror (`physics_runner.py:1207`) and `step_tail` reads the mirror (`:1356-1372`) — the design must not imply otherwise |
+| `rad_amb` | **int64** (was int32) (h,w) | per tick, wiped at `:1610` | same | no | no | same, at P1 |
+| `rad_flux` | **int64** (was int32) (h,w), **signed** (row 25) | per tick, wiped at `:1616` | same | no | no | same, at P1 |
+| `rad_fluence` (Φ) | **int64**, new (h,w) | per tick; written by the sweep, read by Pass 1, wiped beside the other three | next to `rad_net` (`gamemap.py:479`); **allocated through the residency path from day one** (RL-batch habits §A rule 3: no mirror-only fields) | no — same argument as `rad_net` | no | same, at P1 |
+| **P1 shadow planes** `rad_net_sweep`, `rad_flux_sweep`, `rad_amb_sweep` | int64 (h,w) | P1–P2 only: the shadow sweep's outputs while the old cast still fills the live three; wiped beside them (four `fill(0)` lines at P1, three fewer at P3 when the old writer dies and the sweep writes the live planes) | next to the live planes | no | no | resident, as the live ones |
+| sweep scratch (stored outflow) | int64 **(N, 16, h, w)** — one plane per ordinate, ≈4 MB at 128×256 | inside one sweep call | owned by `RadiationSweep`; the ordinate axis exists because the ordinates run **concurrently** (§8.2, row 29) | — | — | device scratch |
 
-**What the int64 widening actually touches** (critique item 18, replacing the
-false Recorder claim): the four `GameMap` dtypes (`gamemap.py:479`, `:499`,
-`:514`, plus the new plane); the pybind signatures that take `rad_net`/
-`rad_amb`/`rad_flux` (`cpp/src/bindings.cpp:609-611`, `:2276-2278` — both die
-with the old cast at P3, so at P1 only the *new* binding carries int64); the
-CUDA header (`cpp/src/cuda_raycaster.h:108ff`, dies at P4); the fold's
-`shr_round0(rn, his)` (`temperature_solver.cpp:255`), which takes a `q16` and
-needs an int64 twin in the kit; the gas chain's `deposit_dT_wide_q16`
-(`fixed_point.h:307`), whose first operand is int32 and needs a wide first
-operand for the radiative deposit (`mul128_shr`, `:187`, is the primitive); and
-every test harness that allocates `np.int32` planes
-(`tests/test_pf1a_radiation_books.py:100-102`,
-`tests/test_pr1_fire_plane_cast.py:146-148`,
-`tests/test_fire_heat_source.py:85-89`, `tests/cuda_pr1_fire_plane_check.py:76`
-— all deleted at P3/P4 anyway). The Recorder's `_INT64_FIELDS` rule
-(`recorder.py:94`) applies only if a future session records these planes; none
-is in `DEFAULT_FIELDS` and nothing passes them in `fields=`.
+**What the int64 widening actually touches — the full inventory** (critique 2
+item 18 corrected the Recorder claim; critique 3 §6a found the list still
+incomplete, row 26). Every site that types the three planes as 32-bit, from a
+`grep` over `src tests tools renderer cpp/src`, and when it dies:
+
+| site | dies at | action |
+|---|---|---|
+| `gamemap.py:479`, `:499`, `:514` allocations | — | widen at P1 |
+| `temperature_solver.h:646` `const int32_t* rad_net` (the solver's own signature); `.cpp:248` the read, `:255` `shr_round0` | **never** | widen at P1; the kit gains an `FP_HD` int64 `shr_round0` (the operand is *signed*, so a plain `>>` is not the same function) — one function in `fixed_point.h`, never re-derived in the `.cu` |
+| `physics_engine.cpp:77` `step_tail(... const int32_t* rad_net ...)` | never | widen at P1 |
+| `bindings.cpp:2062-2081` the `TemperatureSolver.step` direct binding (gate 5's entry) | never | widen at P1, **`py::array_t<int64_t, py::array::c_style>` without `forcecast`** |
+| `bindings.cpp:3176-3281` the `step_tail` binding | never | same |
+| `cuda_temperature.h:110`; `cuda_temperature.cu:202`, `:220`, `:487`, `:568` (`cudaMalloc nb`), `:583-585` (`cudaMemcpy nb = n·4` bytes) | never | widen pointer, malloc size and memcpy size at P1 |
+| `bindings.cpp:609-611` (CUDA cast), `:2276-2278` (CPU cast) | P3 | die |
+| `cuda_raycaster.h:115-121`, `.cu:193`, `:376`, `:402-404`, `:420-424` | P4 | die |
+| `tests/test_pf1a_radiation_books.py:100-102`, `test_pr1_fire_plane_cast.py:146-148`, `test_fire_heat_source.py:85-89`, `cuda_pr1_fire_plane_check.py:76` (`np.int32` harness planes) | P3/P4 | die |
+| the gas chain's `deposit_dT_wide_q16` (`fixed_point.h:307`), int32 first operand | — | the staged wide chain of §2.8, both backends |
+
+**Why the omissions were silent.** pybind11's `py::array_t<T>` carries
+`forcecast` by default, so an int64 array handed to an int32 parameter (by
+value at `:609`, `:2276`, or through `.cast<py::array_t<int32_t>>()` at
+`:2068`, `:3241`) is converted into a *temporary truncated copy* with no error;
+an un-widened reader folds wrapped garbage, an un-widened *output* parameter
+writes into the temporary and is discarded, and the CUDA temperature twin
+copies half the plane. The CPU goldens would still pass at P1 (the old cast's
+values are in int32 range, so a truncated copy is exact) while
+`tests/cuda_thermal_mass_check.py` and its siblings go red — which is exactly
+the class of failure the two surviving bindings are made **loud** against by
+dropping `forcecast`. All of the "never" rows are one P1 commit.
+
+**Goldens unmoved at P1** holds under four conditions, each asserted rather
+than believed (critique 3 §6c): (i) the old cast's arithmetic is unchanged —
+but its documented out-of-band *wrap* contract (`raycaster.h rad_signed_add`;
+`tests/test_pf1a_radiation_books.py:322-340`, a firestorm at "96 % of
+`INT32_MAX`") changes meaning the day the accumulator is int64, so that test
+is **re-dispositioned at P1**, not P3 (an int64 accumulator makes the scene
+exact and the assertion says so), and the A/B default scenario is asserted
+wrap-free once (`max|rad_net| < 2³¹`); (ii) the fourth `stamp_units` output
+leaves the three existing outputs' bytes unchanged; (iii) the clamp is
+dormant with `rad_fluence == nullptr` and the int64 `shr_round0` equals the
+`q16` one on int32-range input, asserted in the kit's test; (iv) step 2b
+writes only the four wiped planes. The Recorder's `_INT64_FIELDS` rule
+(`recorder.py:94`) applies only if a future session records these planes;
+none is in `DEFAULT_FIELDS` and nothing passes them in `fields=`.
 
 **Headroom.** `E°[3999] ≈ 3.6·10¹²`; a cell can gather at most 16 ordinates' worth
 of a full-power neighbour plus the ambient inflow, so `|rad_net| < 2⁵⁰` by a wide
@@ -557,7 +659,7 @@ or any future producer can satisfy it.
 | output | meaning | consumer |
 |---|---|---|
 | `rad_net` | signed material ledger, heat counts | Pass-1 fold |
-| `rad_flux` | body sensor, ≥ 0, heat counts | `exchange.py` unit heat damage |
+| `rad_flux` | body sensor, **signed**: net absorbed above ambient, heat counts (negative only in another body's shadow; the consumer floors it at 0) | `exchange.py` unit heat damage |
 | `rad_amb` | net ambient ledger | the conservation gate; diagnostics |
 | `rad_fluence` | Φ per cell | the Pass-1 clamp; `pack_hover_readout` |
 | `light_q` (h,w,3) | integer RGB irradiance per cell | the rules (stealth), RL observation — P7 |
@@ -657,9 +759,12 @@ its absorbed integer needs a home: `rad_flux`, whose one consumer is
 
 **The mechanism is the body share** (§2.3): the unit's `heat_atten` (default 1.0)
 is MAX-stamped into `dyn_heat_atten_q`; the material keeps `a_i` of the stream
-and the body takes `d_i − a_i`. A marine on a crate: the crate absorbs 0.5, the
-marine the other 0.5 (stamped to 1.0). A marine on air: the marine takes it all,
-and the stream behind it is zero — a real shadow. Ordering needs no change:
+and the body takes `d_i − a_i`, **and re-emits the ambient level** (row 25). A
+marine on a crate: the crate absorbs 0.5, the marine the other 0.5 (stamped to
+1.0). A marine on air in a fire's stream: the marine keeps the excess above
+ambient and passes ambient on, so what stands behind it is in the fire's shadow
+but not the room's — a wall behind a marine is neither warmed by the fire nor
+drained by the marine. Ordering needs no change:
 units move at slot 3, obstacles re-stamp at slot 6 (`simulation.py:1392`),
 physics at slot 7 (`:1405`). **The stamp is frozen before the sweep touches it**
 (critique 4a, verified).
@@ -746,8 +851,12 @@ signed `dT` through the same wide chain the deposit uses (magnitude then sign,
 the `shr_round0` symmetry idiom; the int32-first-operand limit is lifted, §3),
 apply the clamp to the deposit (§2.8), then `deposit_railed` + the group-1
 counter. Cooling below ambient rides the once-per-tick recovery rails
-(`eos_solver.cpp` step 7), which run before the fold; radiation alone cannot
-drive a gas cell below ambient because its excess emission is zero there.
+(`eos_solver.cpp` step 7), which run before the fold. Radiation alone cannot
+drive a gas cell below ambient: every stream is at least `amb_m` (the sky
+supplies it, a cell at or above ambient passes at least it on, and — since row
+25 — a body re-emits it), so a cell at ambient absorbs at least what it emits.
+Critique 3 §4f showed this was *false* under the pure-sink body: shadowed smoke
+cooled below ambient. Erik's ruling restored it.
 
 **Gas stiffness is bounded and modest, and density cancels**
 (`smoke_heat_capacity_study.py` §4, correcting §§1–2): `g ~ φ_soot · E°/T_abs`.
@@ -847,20 +956,40 @@ sweep.
 
 ### 8.1 Number ingress — doors 1 and 2 only, and this time it is true
 
-Integer sweep; `E°`, `L°`, `w_m`, `s_m`, `amb_m`, the extinction planes and the
-gas coefficients quantized once at load or at the table boundary (door 2); the
-Fleck factor by the kit's exact `floordiv_q` (door 1); `E°⁻¹` by integer binary
-search. **No `exp`, no `pow`, no float divide, no RNG** — door 3 is not opened
-and door 4 is untouched (Philox stays a swarm-units concern).
+Integer sweep. `E°` is baked once at load in a strict TU (§2.6; the one double
+multiply is pre-existing and audited). `w_m` and `amb_m` are integer, door 1.
+**`s_m` are checked-in integer literals** for S16 and S12 with a test that
+recomputes them within one count (row 30): the obvious route, `cos((m + ½)·2π/16)`
+at load, is a libm transcendental and therefore engine/14's case 3, not door 2
+— door 2 is a config constant snapped once — and `std::cos` in a sim TU is the
+banned list in spirit even where the ratchet cannot see it. The extinction
+planes and the gas coefficients are quantized at the table boundary (door 2;
+`heat_absorb_q16` in the `beam_absorb_q16` idiom is one float divide then
+`quantize_scalar`, door 3 then 2, as that idiom already is). The Fleck factor
+by the kit's exact `floordiv_q` (door 1); `E°⁻¹` by a fixed-trip integer binary
+search. **`L°` at P6** is baked by the `E°` algebraic pattern (integer `K⁴`, one
+strict double multiply, round) or checked in as 4000 constants with a
+regeneration script under `tools/` — never from `renderer/blackbody.py`'s
+`np.power`/`np.log` at load, which would be a determinism hole the day P7 puts
+`light_q` in the digest. **No `exp`, no `pow`, no float divide, no RNG** — door
+3 is not opened and door 4 is untouched (Philox stays a swarm-units concern).
 
 The three guards, extended at P1 (critique items 10, 5b), as P1 deliverables:
 
-- `cpp/src/radiation_sweep.cpp` joins the `/fp:strict` list at
-  `cpp/CMakeLists.txt:177-189` (iron rule).
-- It joins `tests/test_no_float_in_sim_tu.py:49-56` `SIM_TUS` with a `BASELINE`
-  of `{0, 0, 0}`, and that file's stale comment (`:47-48`, "raycaster.cpp is
-  render-only") is corrected — it has written the synced `rad_net` since P-R4.
-- The ingress lint is a Python AST scan and cannot see C++; the extinction
+- `cpp/src/radiation_sweep.cpp` **and `emissive_table.cpp`** join the
+  `/fp:strict` list at `cpp/CMakeLists.txt:177-189` (iron rule).
+- Both join `tests/test_no_float_in_sim_tu.py:49-56` `SIM_TUS` with a
+  `BASELINE` of `{0, 0, 0}` for the sweep, and that file's stale comment
+  (`:47-48`, "raycaster.cpp is render-only") is corrected — it has written the
+  synced `rad_net` since P-R4. Two honest limits of that ratchet: it scans
+  `.cpp` files only, never headers, so 0/0/0 is a statement about the sweep TU
+  and not about `emissive_table.h`; and it counts *lines containing the word*
+  `float`/`double`, comments included, so the baseline forbids the word in
+  comments too. Pre-existing and not v3's: `eos_solver.cpp`, `combustion.cpp`,
+  `bulk_transport.cpp`, `sky_exchange.cpp` are on the strict list but not on
+  `SIM_TUS`, so "every sim TU" is already false there.
+- The ingress lint is a Python AST scan over `src/simulation/**` and cannot see
+  C++; `optics_fixed.py` is covered automatically, and the extinction
   invariants (§2.3) are asserted where the lint *does* look, in `materials.py`
   and `optics_fixed.py`.
 
@@ -875,25 +1004,46 @@ inside physics slot 7; `Simulation.step` gains one `fill(0)`.
   every thread reads two stored int64 outflows and recomputes `fa`/`fb` with the
   same shift. **No atomics, no ordering inside an ordinate**, so the integers are
   the CPU's by construction.
-- **Across ordinates**: the per-cell sums into `rad_net`, `rad_flux`, `rad_amb`,
-  `rad_fluence` are integer adds. Ordinates may run sequentially (a fixed loop,
-  as on the CPU) or concurrently with int64 `atomicAdd` — integer addition is
-  associative and commutative, so the result is order-free **provided nothing
-  wraps**, and the headroom argument (§3) is what guarantees that. "Wrapping" is
-  not relied on (critique 5d): the design's claim is exactness, not defined
-  overflow.
+- **Across ordinates — the chosen mechanics** (row 29): the 16 ordinates run
+  **concurrently**, each with its own stored-outflow plane (scratch
+  `(N, 16, h, w)`), and one launch per wavefront *index* covers all 16
+  (`blockIdx.y = m`; x-major ordinates take the column index, y-major the row
+  index, so the index runs to `max(h, w)`). The per-cell sums into `rad_net`,
+  `rad_flux`, `rad_amb`, `rad_fluence` are then integer atomics in this tree's
+  idiom — CUDA has no signed 64-bit `atomicAdd`, so it is
+  `atomicAdd((unsigned long long*)p, (unsigned long long)v)` as at
+  `cuda_temperature.cu:120`, `cuda_bulk_transport.cu:313`,
+  `cuda_eos_resident.cu:940`; unsigned wrap *is* the two's-complement signed
+  add, so the reinterpreted int64 is exact while the true sum is in range, and
+  the headroom argument (§3; critique 3 measured `< 2⁴⁶` per cell, no product
+  above `2⁵⁸`) guarantees that. The claim is exactness, not defined overflow.
+  **Launch count** at 128×256: shear 256 launches per tick, step 383 (the
+  anti-diagonals, `h + w − 1`); at 3–10 µs each on Windows WDDM that is 1–4 ms
+  and it is in §10. The route that removes it while keeping the gather
+  argument intact — a cooperative persistent kernel with `grid.sync()` per
+  wavefront, or a captured CUDA graph — is the S8 residency direction, not P4.
+  Sequential ordinates with `(N, h, w)` scratch and no atomics at all is the
+  other consistent choice; it costs 16× the launches and is not taken.
 - **The one division** is an int64 `/`, exactly specified on every backend.
-- **Residency** (RL-batch habits §A, critique item 12): the twin is a
-  `radiation_sweep_launch_resident` born `(N, h, w)` (N = 1 today); no host-side
-  tick logic — the sweep is inside `PhysicsEngine::step`, which is bracketed on
-  the mirror on the resident path today exactly as fire and temperature are
-  (`physics_runner.py:1356`), so the resident path gains no new host code;
-  `rad_fluence` is allocated through the residency path; the leak/backend
-  decisions are per-env masks, not host early-outs; scratch keyed `(N, h, w)`.
-- **Dormancy** without host gating: the old cast early-outs on the host when no
-  emitter exists (`physics_runner.py:1557-1560`). The sweep's output on a
-  uniform-ambient, body-free, smoke-free map is identically zero by gate 2, so a
-  *device-side* all-ambient flag may skip the launch; it changes no integer.
+- **Residency** (RL-batch habits §A, critique item 12): the twin follows the
+  `cuda_resident.h` precedent — a `radiation_sweep_launch_resident(...)` core
+  born `(N, h, w)` (N = 1 today) that takes device pointers and only launches,
+  wrapped by a per-call `*_step` that mallocs, copies in, launches, syncs,
+  copies out and frees, which is what `step_tail` dispatches for temperature
+  today (`cuda_temperature.cu:535-595`). At P4 the sweep is dispatched that way
+  from step 2b on the host mirror on both paths, so per tick it pays H2D of
+  `temperature`, the two extinction planes (and the gas planes at P5) and D2H
+  of four int64 planes — about 2 MB at 128×256, the same tax the temperature
+  twin pays, in §10. No host-side tick logic: the sweep is inside
+  `PhysicsEngine::step_tail`, which the resident path already brackets on the
+  mirror (`physics_runner.py:1356`). All four rad planes join
+  `_RESIDENT_SYNCED` at P1 (§3). Scratch keyed `(N, 16, h, w)`.
+- **No dormancy skip.** The old cast early-outs on the host when no emitter
+  exists (`physics_runner.py:1557-1560`). The sweep has no such skip: a
+  uniform-ambient cell costs the same as any other and computes exact zeros
+  (gate 2a), and a "device-side flag" could only skip a *host* launch after a
+  readback and a sync, which is host gating with a stall — the thing §A rule 4
+  forbids. Cost is set by the grid; that is the thesis.
 
 ### 8.3 What enters the digest (critique items 6b, 6e)
 
@@ -976,6 +1126,8 @@ where the numbers come from.
 | Heat sweep, 256×512, S16 | 2.1 M cell-updates | grid × ordinates |
 | Light on the same traversal | + 3 channels + 2 vector components per cell-update | grid × ordinates |
 | Fleck pre-pass + clamp | 1 division + 1 binary search per cell | grid |
+| CUDA twin: launches per tick (§8.2) | shear 256, step 383 at 128×256 (one per wavefront index, all 16 ordinates per launch); ≈1–4 ms at 3–10 µs per launch on Windows WDDM | max(h, w) or h + w |
+| CUDA twin: host↔device copies per tick (P4, pre-residency) | H2D `temperature` + two extinction planes (+ gas at P5), D2H four int64 planes: ≈2 MB at 128×256 | grid |
 | Per frame (renderer) | two RGBA16F uploads per tick; sampling per pixel as today | — |
 
 Nothing scales with the number of burning tiles or light sources. **The budget
@@ -1008,12 +1160,12 @@ finally lets the old raycaster be archived; then the rules-side payload.
 | # | patch | gate | risk | human |
 |---|---|---|---|---|
 | **P0** | **The integer reference**, `docs/ray_engine_v2_scheme_study_2026-09-13/sweep_ref_q.py`: a numpy int64 transcription of §2.3 in **gather form**, both transport steps, leak, virtual ambient ring, body share, the excess-form Fleck factor and the corrected clamp (rows 21–23). Re-runs the stability and equilibrium tables on the excess form | gates 1–5 in the reference; agreement with the float push reference (`sweep_ref.py`) to the shift truncation; the stability tables reproduced | the arc's design risk, retired first | — |
-| **P1** | **The sweep, CPU, heat, in shadow.** `radiation_sweep.{h,cpp}` (step 2b of `PhysicsEngine::step`, `/fp:strict`, ratchet 0/0/0) · `emissive_table.h` with `E°⁻¹` · `optics_fixed.py` + `heat_atten_q` + `dyn_heat_atten_q` (the `stamp_units` signature grows by one input, one output, one row array; `tests/test_stamp_units_cpp_ab.py` extended) · `rad_fluence` + the three int64 widenings · the kit's int64 `shr_round0` and wide deposit twin · the Fleck pre-pass · the clamp code in Pass 1 (solids), **dormant on the live path** (`rad_fluence == nullptr` → no clamp) and exercised by direct-binding tests · `pack_hover_readout` rows for Φ, `a`/`d`, `f`, `E°⁻¹(Φ)` (critique 1j) · a timing bench. **Not wired**: the old cast still feeds the fold; the sweep writes shadow planes | gates 1–6 and 9 (goldens unmoved, asserted); the eight new property gates written here are the ones P3 keeps | the whole design | — |
+| **P1** | **The sweep, CPU, heat, in shadow.** `radiation_sweep.{h,cpp}` (step 2b of `PhysicsEngine::step`, `/fp:strict`, ratchet 0/0/0) · `emissive_table.h` with `E°⁻¹` · `optics_fixed.py` + `heat_atten_q` + `dyn_heat_atten_q` (the `stamp_units` signature grows by one input, one output, one row array; `tests/test_stamp_units_cpp_ab.py` extended) · `rad_fluence` + the three int64 widenings · the kit's int64 `shr_round0` and wide deposit twin · the Fleck pre-pass · the clamp code in Pass 1 (solids), **dormant on the live path** (`rad_fluence == nullptr` → no clamp) and exercised by direct-binding tests · `pack_hover_readout` rows for Φ, `a`/`d`, `f`, `E°⁻¹(Φ)` (critique 1j) · a timing bench. **Not wired**: the old cast still feeds the live planes; the sweep writes the shadow planes `rad_net_sweep` / `rad_flux_sweep` / `rad_amb_sweep` + `rad_fluence` (§3). **Also in P1** (critique 3): the complete int64 inventory of §3 in one commit, the two surviving bindings without `forcecast`, the CUDA temperature twin's pointer/malloc/memcpy widened, the `FP_HD` int64 `shr_round0`, all four rad planes into `_RESIDENT_SYNCED`, the `emissive_table.cpp` strict TU, the `s_m` literals + recompute test, the re-disposition of `test_pf1a_radiation_books.py:322-340`'s wrap-contract scene, the one-time `max\|rad_net\| < 2³¹` assertion on the A/B scenario, `_stamp_units_python` grown with the C++ stamp | gates 1–6 and 9 (goldens unmoved, asserted under §3's four conditions); the eight new property gates written here are the ones P3 keeps; the CUDA temperature gates stay green (the widening is complete) | the whole design | — |
 | **P2** | **Calibration by derivation** (§9): the currency, the derived `rad_scale`, emissivities, the multi-probe reach bench in `fire_tuning_lab.py`, run against the shadow sweep in a lab config | the survey §9.3 curve, stated against the engine's own temperature-ignition criterion; goldens unmoved | medium | — |
-| **P3** | **The flip.** The fold reads the sweep's `rad_net`; units absorb (§6.2: per-unit `heat_atten`, the body share live, `exchange.py` dials re-derived, `max()` kept); **delete** `cast_fire_heat` (both call sites `physics_runner.py:819`, `:1207`), `cast_from_fire_plane` and its CUDA twin + bindings, `T_emit_gate`, `RADIATION_RANGE`, `fire_ray_count`, `range_base`/`range_per_intensity`, `RAD_LIM_SHIFT`, the pair budget, `set_raycaster_backend`; `rad_scale` re-homed on the engine; `HEAT_SCALE` & co. to `fixed_point.h`. **Test surface**: the 46 old-law tests in four files are **deleted with rationale** (table below) — their properties no longer exist and their replacements shipped in P1. **Tools**: dispositions below | full suite; A/B lockstep harness; **one deliberate golden re-baseline** with written rationale (the first golden move of the arc) | HUMAN-TEST | **yes** — fire spread and marine burn |
-| **P4** | **CUDA twin** `cuda_radiation_sweep.{cu,h}`, `(N,h,w)`-shaped, wavefront gather; `set_radiation_backend`; `tests/cuda_radiation_sweep_check.py` + `test_cuda_radiation_sweep.py` through `cuda_harness`; delete `cuda_raycaster.{cu,h}` (heat side; the render march never had a GPU path), `cuda_pr1_fire_plane_check.py`, `cuda_s2_check.py`, `cuda_s2b_raycaster_live_check.py`, `bench_s8c_fire_heat_check.py` + `test_s8c_fire_heat_bench.py`; the backend-flag one-liners in the other CUDA checks and `run_on_cuda.py` | tol-0 lockstep on every plane and counter | mechanical, pattern known | — |
-| **P5** | **Smoke absorbs heat** (§6.3): `[gases.*] heat_absorb`, the smoke term in `a_i`, the Pass-1 gas radiation branch with the clamp on gas, `rad_clamp_hits` / `e_rad_clamp_drop_sum` | the #54 closure identity still closes with six groups (`test_thermostat_books.py`, the §6 benches); the sweep→fold boundary bound (§8.4); a smoke-shielding bench | **books** | — |
-| **P6** | **Light on the sweep** (§7): RGB + flux vector + glow channels, `L°[T]`, cone emitters, the directional sky BC, `light_atten_q`/`dyn_light_atten_q` (the float `dyn_light_atten` leaves `EXCLUDED_FLOAT_FIELDS`), `light_field.py`, `LightingPass` as a consumer; **archive `raycaster.{h,cpp}`** (git history + `docs/archive/` pointer + banner on engine/08); delete `fire_lights.py` + its 15 tests + `[render.fire_lights]`, `light_cull`/`heat_cull`, `intensity_base`/`per_intensity`, the smoke dials off the `Raycaster`; `light_map` derived then deleted. **Render-side test surface** disposed (table below) | timing on a real map; the look; the A/B harness; §8.5's monotone gate | HUMAN-TEST | **yes** — the look |
+| **P3** | **The flip.** The fold reads the sweep's `rad_net`; units absorb (§6.2: per-unit `heat_atten`, the body share live, `exchange.py` dials re-derived, `max()` kept); **delete** `cast_fire_heat` (both call sites `physics_runner.py:819`, `:1207`), `cast_from_fire_plane` and its CUDA twin + bindings, `T_emit_gate`, `RADIATION_RANGE`, `fire_ray_count`, `range_base`/`range_per_intensity`, `RAD_LIM_SHIFT`, the pair budget, `set_raycaster_backend`; `rad_scale` re-homed on the engine; `HEAT_SCALE` & co. to `fixed_point.h`. **The clamp's GPU twin lands here** (Erik: inside P3, not P4-before-P3): in `cuda_temperature.cu::temp_convert_unified` (`:194-240`) — `rad_fluence` H2D, the `E°` table H2D, the `FP_HD` `E°⁻¹`, a third hit counter beside `hits`/`low_hits` (`:226`, `:231`), the `TEMPERATURE_ENERGY_SLOTS` enum (`cuda_temperature.h:147`, 13 today) extended with pinned slots — so the temperature backend's existing tol-0 gates stay green on the day the clamp goes live. **`DIGEST_SPEC_VERSION` v6** with `dyn_heat_atten_q` in the same commit as the re-baseline (row 28). **Test surface**: the 46 old-law tests in four files are **deleted with rationale** (table below) — their properties no longer exist and their replacements shipped in P1. **Tools**: dispositions below | full suite; A/B lockstep harness; **one deliberate golden re-baseline** with written rationale (the first golden move of the arc) | HUMAN-TEST | **yes** — fire spread and marine burn |
+| **P4** | **CUDA twin** `cuda_radiation_sweep.{cu,h}`, `(N,h,w)`-shaped, wavefront gather; `set_radiation_backend`; `tests/cuda_radiation_sweep_check.py` + `test_cuda_radiation_sweep.py` through `cuda_harness`; delete `cuda_raycaster.{cu,h}` (heat side; the render march never had a GPU path), `cuda_pr1_fire_plane_check.py`, `cuda_s2_check.py`, `cuda_s2b_raycaster_live_check.py`, `bench_s8c_fire_heat_check.py` + `test_s8c_fire_heat_bench.py`; the backend-flag one-liners in the other CUDA checks and `run_on_cuda.py`. The wavefront mechanics of §8.2 (concurrent ordinates, `(N, 16, h, w)` scratch, one launch per wavefront index, the unsigned-long-long atomic idiom); the `*_step` wrapper + `*_launch_resident` core split of `cuda_resident.h` | tol-0 lockstep on every plane **and every counter**, by a check script that calls the engine directly and reads the planes before the wipe (gate 7); the §10 launch and copy costs measured | mechanical, pattern known | — |
+| **P5** | **Smoke absorbs heat** (§6.3): `[gases.*] heat_absorb`, the smoke term in `a_i`, the Pass-1 gas radiation branch with the clamp on gas (`ΔE_new = N·T_target_abs − E`, §2.8), the staged wide chain (§2.8), `rad_clamp_hits` / `e_rad_clamp_drop_sum`; **the gas clamp in `cuda_temperature.cu` in the same patch**, with the drop counter in a pinned `TEMPERATURE_ENERGY_SLOTS` slot | the #54 closure identity still closes with six groups (`test_thermostat_books.py`, the §6 benches); the sweep→fold boundary bound (§8.4); a smoke-shielding bench | **books** | — |
+| **P6** | **Light on the sweep** (§7): RGB + flux vector + glow channels, `L°[T]` (baked by the `E°` algebraic pattern or checked in as constants — never from `np.power`/`np.log` at load, §8.1), cone emitters, the directional sky BC, `light_atten_q`/`dyn_light_atten_q` (the float `dyn_light_atten` leaves `EXCLUDED_FLOAT_FIELDS`), `light_field.py`, `LightingPass` as a consumer; **archive `raycaster.{h,cpp}`** (git history + `docs/archive/` pointer + banner on engine/08); delete `fire_lights.py` + its 15 tests + `[render.fire_lights]`, `light_cull`/`heat_cull`, `intensity_base`/`per_intensity`, the smoke dials off the `Raycaster`; `light_map` derived then deleted. **Render-side test surface** disposed (table below) | timing on a real map; the look; the A/B harness; §8.5's monotone gate | HUMAN-TEST | **yes** — the look |
 | **P7** | **`light_q` for the rules**: the stealth query, the RL observation hook, `DIGEST_SPEC_VERSION` bump + all goldens regenerated | agreement on a real scene; the spec bump procedure | design-complete | — |
 
 **Is P1 wired?** No (critique item 30). The shadow sweep is computed every tick
@@ -1074,6 +1226,27 @@ canonical row replaced by the rows in the Systems section below.
 
 ---
 
+### 11.5 Implementation agents, per patch
+
+Erik's rule (2026-09-15): a core patch that touches three or more systems at
+once warrants a **Fable** implementer; a normal patch is **Opus**; purely
+mechanical work is **Sonnet**. One implementation agent at a time, in its own
+worktree, per the master rules; critics one at a time, Opus unless the
+document's complexity warrants more.
+
+| patch | systems touched | agent | mechanical sub-tasks for Sonnet, split out |
+|---|---|---|---|
+| P0 | one study script | **Opus** (the arithmetic must be exactly right, but it is one file against a float reference) | — |
+| P1 | the sweep TU, the emissive table, `optics_fixed.py`, `stamp_units` (C++ and Python), `GameMap` planes and residency sets, the Pass-1 clamp, the kit twins, four bindings, the CUDA temperature twin's widening, `pack_hover_readout`, the build and ratchet lists | **Fable** | — (the widening inventory is one commit and must be done by the hand that understands `forcecast`) |
+| P2 | the calibration derivation, `fire_tuning_lab.py`, config | **Opus** | — |
+| P3 | the fold, units, `exchange.py`, the CUDA temperature twin's clamp, deletions across runner/bindings/config, the digest spec bump, the golden re-baseline | **Fable** | the 46 test deletions with rationale; the five tool edits; the `HEAT_SCALE` move; the golden regeneration run |
+| P4 | one new `.cu` + header, the backend flag, one check script | **Opus** (the pattern is known; the wavefront shape is the only new thing) | the backend-flag renames in six CUDA checks and `run_on_cuda.py`; deleting the three old check scripts |
+| P5 | the gas table column, the sweep's smoke term, the Pass-1 gas branch, its CUDA twin, the closure books | **Fable** | — |
+| P6 | the light channels, `L°`, the accessor, `LightingPass`, `frame_lights`/`level_lights` row types, the integer light planes and digest exclusions, the raycaster archive, `fire_lights` deletion | **Fable** | the archive step (file removals, `docs/archive/` pointer, the engine/08 banner); the render-side test deletions with rationale |
+| P7 | `light_q`, the stealth query, the RL hook, the spec bump | **Opus** | the golden regeneration run |
+
+---
+
 ## 12. Still open — Erik's
 
 1. **`max(heat, rad_flux)`** kept, both now energy-per-tick (§6.2).
@@ -1091,6 +1264,15 @@ canonical row replaced by the rows in the Systems section below.
   CUDA–GL interop end state is recorded in §7.1.
 - **The density law's site** (§6.3): in the extinction coefficient, no second
   discount in the fold. Erik: *"yes I agree with that."*
+
+**Ruled by Erik on 2026-09-15, after critique 3:**
+
+- **A body radiates.** The body share re-emits at the ambient level; `rad_flux`
+  is the signed net above ambient (row 25).
+- **`dyn_heat_atten_q` enters the digest at P3**, spec v6, with the re-baseline
+  (row 28).
+- **The clamp's GPU twin lands inside P3** (and P5 for gas), not P4 before P3
+  (row 27).
 
 Closed since v2: the tick budget (24 Hz / 41.67 ms; only stale perf docs to
 restate), the `cool_shift` reds (rewritten to assert the property, `82b11a5`),
@@ -1127,9 +1309,11 @@ code exists (scoped per critique 1i):
   never a second traversal; the transport step is a per-channel parameter
   (shear for heat, step for light), never a fork. Written in gather form; the
   CPU and CUDA twins are one formulation.
-- *The emissive table* (`cpp/src/emissive_table.h`). THE `E°(T)` map, its inverse
-  and its bake; one instance owned by `PhysicsEngine`, read by the sweep and by
-  Pass 1; `L°(T)` for light lives beside it. Never a second table, never `pow`.
+- *The emissive table* (`cpp/src/emissive_table.{h,cpp}`, the `.cpp` on the
+  `/fp:strict` list, the header lookups only). THE `E°(T)` map, its inverse and
+  its bake; one instance owned by `PhysicsEngine`, read by the sweep, by Pass 1
+  and by Pass 1's CUDA twin; `L°(T)` for light lives beside it, baked the same
+  algebraic way. Never a second table, never `pow`, never a bake in a header.
 - *The exact-integer conservation idiom for transport.* An integer leaving the
   stream is added to a ledger as the same integer; the downwind split carries the
   remainder, never a second shift; the only escapes are booked planes
@@ -1201,3 +1385,33 @@ code exists (scoped per critique 1i):
   critique's own later figure was 2 failed / 2451 passed, both in
   `test_cool_shift_axis.py`, since rewritten to assert the property (`82b11a5`,
   2453 passed).
+
+## Appendix C — where each critique-3 entry is resolved
+
+`ray_engine_v2_critique_3_determinism_cuda_2026-09-15.md`: 3 BLOCKING, 12
+REQUIRED, 10 NOTE; its integer probe confirmed conservation, the excess-form
+fixed point, the virtual ring, the Fleck integer form, `E°⁻¹` idempotence and
+the headroom. Its REQUIRED CHANGES list, entry by entry:
+
+| entry | where |
+|---|---|
+| 1 the int64 inventory (BLOCKING) | §3 inventory table + forcecast; §11 P1 |
+| 2 the clamp's GPU twin (BLOCKING) | §11 P3 (solids), P5 (gas); §0 row 27 — Erik: inside P3 |
+| 3 the body share's ambient emission (BLOCKING) | §2.3 listing, §6.2, §6.3; §0 row 25 — Erik: the body radiates |
+| 4 the P1 shadow planes | §3 table |
+| 5 the gas `L_q` / deposit chain | §2.8 integer form (staged `mul128_shr`) |
+| 6 the `E°` bake in a strict TU; the ratchet's limits | §2.6, §8.1 |
+| 7 `s_m` as integer literals | §8.1 |
+| 8 wavefront mechanics, scratch shape, launch count | §8.2, §10, §3 |
+| 9 `E°⁻¹` below `E°[0]`; gate 4 per counter | §2.6, §2.9 gate 4 |
+| 10 gate 2 restated | §2.9 gate 2 (a)/(b) |
+| 11 `dyn_heat_atten_q` in the digest | §3; §0 row 28 — Erik: yes, at P3 |
+| 12 the wrap-contract scene at P1; the A/B scenario wrap-free | §3 "goldens unmoved" conditions; §11 P1 |
+| 13 all four rad planes resident at P1 | §3, §8.2 |
+| 14 the P4 check script before the wipe; the A/B harness's role at P3 | §2.9 gates 7–8; §11 P4 |
+| 15 `L°` by algebraic bake or constants | §8.1, §11 P6 |
+| 16 the gas clamp's exact `ΔE`; the `clamp_enabled` keyword; `_stamp_units_python`; the dormancy flag deleted | §2.8, §2.9 gate 5, §3, §8.2 |
+
+Its three open questions were all ruled by Erik the same evening (§12). Its
+"checked and FALSE" table is absorbed: the two widening claims by §3, the
+saturation claim by §2.6, the gas-below-ambient claim by §6.3 under row 25.

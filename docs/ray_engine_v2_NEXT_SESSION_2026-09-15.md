@@ -1,5 +1,18 @@
 # Ray engine v2 — handoff (2026-09-15)
 
+> **STATUS UPDATE, 2026-09-15 evening — §3 and §4 below are DONE.**
+> Design v3 is `docs/ray_engine_v2_design_v3_2026-09-15.md` (committed
+> `968f62a`, then amended in place). Critique 3 (determinism + CUDA, Fable) is
+> `docs/ray_engine_v2_critique_3_determinism_cuda_2026-09-15.md`: 3 blocking,
+> 12 required, 10 notes, and its integer probe confirmed the sweep's core. All
+> of it is folded into v3 (its §0 rows 25–31, Appendix C), and Erik ruled the
+> three open questions the same evening (a body radiates at ambient;
+> `dyn_heat_atten_q` enters the digest at P3; the clamp's GPU twin lands inside
+> P3). Erik's five answers to §5 below are in v3 §0 rows 1–6.
+> **The next task is P0**, the integer reference sweep (v3 §11), on Opus, in
+> its own worktree; then P1 on Fable. The agent plan per patch is v3 §11.5.
+> Start at v3 §0, then §11.
+
 > **This file IS the prompt.** Point a new session at it and it has everything:
 > what to read, what is settled, what is open, and what to do first.
 >
