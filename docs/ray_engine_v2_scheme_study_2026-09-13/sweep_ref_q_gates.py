@@ -276,7 +276,10 @@ def gate4_counters(fast=False):
     (E_inv saturates at 15996, below the rail).
 
     Breaks if: the body stops re-emitting at ambient (the pure-sink variant, run
-    below, trips the low rail every tick on every wall cell).
+    below, trips the low rail every tick on every wall cell), or the clamp stops
+    engaging on an over-driven scene (its tick count is set from the MEASURED
+    first-hit tick, see the comment there -- this gate must never report a silent
+    clamp as a pass).
     """
     lines, ok = [], True
     ticks = 8 if fast else 24
@@ -312,14 +315,22 @@ def gate4_counters(fast=False):
     ok &= (flux > 0)
     lines.append(f"  positive: a re-emitting body one tile from a {T_SRC_GAME}-game "
                  f"fire books rad_flux = {flux} counts (> 0, so the sensor lives)")
-    # over-driven: the clamp must engage, the T_MAX_PHYS rail must not
+    # Over-driven: the clamp must engage, the T_MAX_PHYS rail must not. The crate
+    # starts cold and CLIMBS to its cap, so this sub-check needs its own tick
+    # count: at alpha floor 0 (P2a, row 39) the crate's own emission is undamped
+    # below g = 1, so it climbs more slowly and the first clamp hit falls at tick
+    # 11, where the superseded floor of one half had it at tick 8. The fast mode's
+    # 8 ticks would therefore pass VACUOUSLY (clamp = 0, crate at 1074.6 game) --
+    # measured, and the reason for the separate number below. 24 ticks: 14 hits at
+    # floor 0, 17 at floor 1/2; the CLAMPED answer is 1108.0 game at both.
+    o_ticks = 12 if fast else 24
     sc_o, crate = _overdriven_scene()
-    sc_o.run(ticks)
+    sc_o.run(o_ticks)
     co = sc_o.counters
     good = co.rad_clamp_hits > 0 and co.t_max_phys_hits == 0 and co.t_low_rail_hits == 0
     ok &= good
     lines.append(f"  over-driven (16000-game source one tile from a cold crate), "
-                 f"{ticks} ticks: clamp={co.rad_clamp_hits} t_max={co.t_max_phys_hits} "
+                 f"{o_ticks} ticks: clamp={co.rad_clamp_hits} t_max={co.t_max_phys_hits} "
                  f"low_rail={co.t_low_rail_hits}, crate T = "
                  f"{sc_o.T[crate[0]][crate[1]] / 65536:.1f} game  "
                  f"{'OK' if good else 'FAIL'}")
@@ -565,16 +576,26 @@ def gate7_float_agreement(fast=False):
 
 
 def gate8_fleck_form(fast=False):
-    """G8. f_q24 = floordiv((T_abs<<24), max(T_abs+2L, 4L)) equals the float
-    1/(1 + alpha*g) with alpha = max(1/2, 1 - 1/g) to within one Q24 count over
-    the WHOLE table, and f_q24 == 2^24 exactly when L_q == 0.
+    """G8. f_q24 = floordiv((T_abs<<24), max(T_abs, 4L)) equals the float
+    1/(1 + alpha*g) with alpha = max(0, 1 - 1/g) to within one Q24 count over
+    the WHOLE table, and f_q24 == 2^24 EXACTLY whenever 4*L_q <= T_abs_q.
+
+    ALPHA FLOOR 0 (design row 39, RULED 2026-09-16; P2a). The iff is the whole
+    content of the ruling: wherever the explicit material update is provably
+    monotone (g <= 1, i.e. 4L <= T_abs) the emission is UNDAMPED, exactly, so a
+    burning tile held at its plateau by combustion radiates full black body
+    there. The undamped ceiling per shipped row is printed below (1068 game for
+    wood, 1424 for the a = 0.5 rows -- P0b, report_p0.md section 0.8a). Above
+    the branch both floors are the SAME arm (1 + alpha*g == g) and bit-identical.
 
     Q24, not Q16 (design row 32, P0b): the damped source `f*(E°[T] - E°[0])` is not
     monotone in T when f carries only 38 counts at the table top -- gate 12 is that
     property, and this gate is its accuracy half. The Q16 form is measured below
     beside the Q24 one, so "one count" cannot silently mean the wider one.
 
-    Breaks if: alpha's max() is re-expanded wrongly, the denominator moves off the
+    Breaks if: alpha's max() is re-expanded wrongly (the superseded floor of one
+    half puts `T_abs + 2L` in the denominator and makes f < 2^24 at EVERY L > 0 --
+    measured below, so the iff is not vacuous), the denominator moves off the
     ABSOLUTE temperature, the division stops being the kit's exact floordiv, or f
     goes back to Q16 (the per-count error grows 256x and blows the bound).
     """
@@ -584,6 +605,7 @@ def gate8_fleck_form(fast=False):
     stride = 1          # the whole table either way: 20 000 probes is free
     pairs = [(a, h) for a, h, _ in SHIPPED_ROWS] + [PATHOLOGICAL_ROW[:2]]
     iff_ok = True
+    n_undamped = n_damped = 0
     for a_q, his in pairs:
         for b in range(0, R.E_TABLE_SIZE, stride):
             T_game = 4 * b
@@ -595,13 +617,34 @@ def gate8_fleck_form(fast=False):
                 worst, worst_at = err, (T_game, a_q, his)
             if not (0 < f_q <= F_ONE):
                 ok = False
-            iff_ok &= ((f_q == F_ONE) == (L_q == 0))
+            # the RULED floor's iff: undamped exactly on the stable side of g = 1
+            stable = (4 * L_q <= T_q + (R.K_AMB << 16))
+            iff_ok &= ((f_q == F_ONE) == stable)
+            n_undamped += int(stable)
+            n_damped += int(not stable)
     ok &= (worst <= 1.0 / F_ONE) and iff_ok
+    # non-vacuity of the iff: the probe must contain BOTH sides of g = 1, and the
+    # superseded floor must disagree on the undamped side (it damps everywhere).
+    half_damps_stable = all(
+        R.fleck_f_q((4 * b) << 16, R.fleck_f_solid_q((4 * b) << 16, a_q, his)[1],
+                    alpha_floor=R.ALPHA_FLOOR_HALF) < F_ONE
+        for a_q, his in pairs for b in range(1, R.E_TABLE_SIZE, 97)
+        if R.fleck_f_solid_q((4 * b) << 16, a_q, his)[1] > 0)
+    ok &= (n_undamped > 0) and (n_damped > 0) and half_damps_stable
     lines.append(f"  worst |f_q24/2^24 - f_float| over {R.E_TABLE_SIZE // stride} "
                  f"buckets x {len(pairs)} (a, his) pairs = {worst:.3e}  (one Q24 count "
                  f"= {1/F_ONE:.3e}) at T={worst_at[0]} a={worst_at[1]} his={worst_at[2]}  "
                  f"{'OK' if worst <= 1/F_ONE else 'FAIL'}")
-    lines.append(f"  f_q24 == 2^24 iff L_q == 0: {iff_ok}")
+    lines.append(f"  f_q24 == 2^24 iff 4L <= T_abs (RULED floor 0, row 39): {iff_ok} "
+                 f"-- {n_undamped} undamped and {n_damped} damped probes, both sides "
+                 f"present; the superseded floor of one half damps every L > 0 probe "
+                 f"on the same rows: {half_damps_stable}")
+    # where each shipped row stops being undamped -- g = 1, the row-39 number
+    for a_q, his, nm in SHIPPED_ROWS:
+        top = max((4 * b for b in range(R.E_TABLE_SIZE)
+                   if R.fleck_f_solid_q((4 * b) << 16, a_q, his)[0] == F_ONE),
+                  default=None)
+        lines.append(f"    undamped (f == 2^24) up to {top:>6} game: {nm}")
     # the SAME measurement on the rejected Q16 form, so the bound above is not a
     # bound on nothing: one Q16 count is 256x coarser and the same probe says so.
     worst16 = max(abs(R.fleck_f_solid_q((4 * b) << 16, a_q, his, shift=16)[0] / ONE
@@ -659,16 +702,31 @@ def gate9_e_inv(fast=False):
 
 def gate10_stability(fast=False):
     """G10. The stability and equilibrium tables re-run on the NEW forms (the
-    excess-form Fleck factor and the corrected clamp).
+    excess-form Fleck factor and the corrected clamp) at the RULED alpha floor 0.
 
-    Breaks if: the Fleck factor stops damping (explicit overshoots and the low
-    rail fires), or alpha's branch changes (the Fleck-only equilibrium moves).
+    THE PROPERTY, in two halves (design row 39, P2a):
+      (a) BELOW g = 1 the damping is OFF -- the trajectory from 1263 game is the
+          explicit one to the LAST COUNT, and its cost is plain forward Euler's
+          -5.7 % against the analytic bath solution (P0b, report_p0.md 0.8b).
+          The superseded floor of one half is measured on the same march (+0.23 %)
+          so "equals explicit" is a statement about the floor, not about a probe
+          that cannot tell two laws apart.
+      (b) ABOVE it the damping still does its whole job: from 2500 and 16 000 game
+          the explicit update rails to zero and the damped one does not, and the
+          clamp still pins every equilibrium to E°inv(Phi) exactly.
+
+    Breaks if: the Fleck factor stops damping above g = 1 (explicit overshoots and
+    the low rail fires), or alpha's floor moves back off 0 (the fire-range
+    trajectory stops matching explicit and the un-clamped 1263-game equilibrium
+    jumps from +0.15 % to +4.6 %).
     """
     lines, ok = [], True
     A, HIS = A_FURNITURE, HIS_FURNITURE
     phi_amb = R.E0
     n = int(0.5 * R.TICK_HZ)
-    # --- cooling, the OLD law (zero sky, whole emission) as an instrument check
+    # --- cooling, the OLD law (zero sky, whole emission) as an instrument check.
+    # At floor 0 this start is still below g = 1 (the ambient part of the emission
+    # moves g by 0.13 %), so the two columns coincide here too.
     e_old, _ = R.cell_march(T_SRC_GAME << 16, 0, A, HIS, n, e_ref=0, fleck=False,
                             clamp_enabled=False)
     f_old, _ = R.cell_march(T_SRC_GAME << 16, 0, A, HIS, n, e_ref=0, fleck=True,
@@ -679,19 +737,29 @@ def gate10_stability(fast=False):
                  f"({(e_old / 65536 - x_old) / x_old * 100:+5.2f}%)  Fleck "
                  f"{f_old / 65536:7.1f} ({(f_old / 65536 - x_old) / x_old * 100:+5.2f}%)"
                  f"  analytic {x_old:7.1f}")
-    # --- cooling, the NEW law (ambient bath, excess form)
+    # --- cooling, the NEW law (ambient bath, excess form), floor 0 vs the
+    # superseded floor of one half.
     e_new, ce = R.cell_march(T_SRC_GAME << 16, phi_amb, A, HIS, n, fleck=False,
                              clamp_enabled=False)
     f_new, cf = R.cell_march(T_SRC_GAME << 16, phi_amb, A, HIS, n, fleck=True,
                              clamp_enabled=False)
+    h_new, _ch = R.cell_march(T_SRC_GAME << 16, phi_amb, A, HIS, n, fleck=True,
+                              clamp_enabled=False, alpha_floor=R.ALPHA_FLOOR_HALF)
     x_new = R.cool_exact_bath(float(T_SRC_GAME), 0.5, 0.5, HIS)
     err_e = (e_new / 65536 - x_new) / x_new * 100
     err_f = (f_new / 65536 - x_new) / x_new * 100
-    ok &= abs(err_f) < abs(err_e)
+    err_h = (h_new / 65536 - x_new) / x_new * 100
+    is_euler = (f_new == e_new)
+    half_differs = (h_new != e_new)
+    ok &= is_euler and half_differs
     lines.append(f"  cooling 1263 game for 0.5 s, NEW law (ambient bath, excess form): "
-                 f"explicit {e_new / 65536:7.1f} ({err_e:+5.2f}%)  Fleck "
+                 f"explicit {e_new / 65536:7.1f} ({err_e:+5.2f}%)  Fleck@floor0 "
                  f"{f_new / 65536:7.1f} ({err_f:+5.2f}%)  analytic {x_new:7.1f}   "
-                 f"{'OK (Fleck is closer)' if abs(err_f) < abs(err_e) else 'FAIL'}")
+                 f"{'OK (g = 0.74 < 1: floor 0 IS forward Euler, count for count)' if is_euler else 'FAIL (floor 0 must not damp below g = 1)'}")
+    lines.append(f"    the superseded floor of one half on the SAME march: "
+                 f"{h_new / 65536:7.1f} ({err_h:+5.2f}%) -- different from explicit: "
+                 f"{half_differs}; that difference IS what floor 0 gives up on free "
+                 f"cooling, and what it buys a DRIVEN source is gate 8's iff")
     # --- explicit really is unstable above ~1800 game, and Fleck really is not
     starts = (2500, 16000) if fast else (1800, 2500, 5000, 16000)
     for T0 in starts:
@@ -730,21 +798,40 @@ def gate10_stability(fast=False):
     # --- the equilibrium table (the 0-D model stability_study.py section 7 used)
     iters = (40 if fast else 400) * 24
     lines.append(f"  equilibrium under a held fluence Phi = G x E°[T_src], G = 0.25 "
-                 f"({iters} ticks):")
+                 f"({iters} ticks). The un-clamped column is the SCHEME'S BIAS, not a "
+                 f"sweep prediction (design row 34):")
     lines.append(f"    {'T_src':>8}{'true (E_inv)':>14}{'true (float)':>14}"
-                 f"{'Fleck only':>16}{'Fleck+clamp':>13}{'clamp hits':>12}")
+                 f"{'Fleck only, 0':>16}{'Fleck only, 1/2':>17}"
+                 f"{'Fleck+clamp':>13}{'clamp hits':>12}")
+    bias_0 = bias_h = None
     for T_src in (1263, 5000, 16000):
         phi = int(0.25 * R.E[R.e_bucket_of(T_src << 16)])
         t_true = R.e_inv_q(phi) >> 16
         t_true_f = R.e_inv_float(phi)
         t_f, _ = R.cell_march(0, phi, A, HIS, iters, clamp_enabled=False,
                               rails_enabled=False, int32_sat=False)
+        t_h, _ = R.cell_march(0, phi, A, HIS, iters, clamp_enabled=False,
+                              rails_enabled=False, int32_sat=False,
+                              alpha_floor=R.ALPHA_FLOOR_HALF)
         t_c, cc = R.cell_march(0, phi, A, HIS, iters, clamp_enabled=True)
         good = (t_c >> 16) == t_true
         ok &= good
+        if T_src == T_SRC_GAME:
+            bias_0 = (t_f / 65536 - t_true_f) / t_true_f * 100
+            bias_h = (t_h / 65536 - t_true_f) / t_true_f * 100
         lines.append(f"    {T_src:>8}{t_true:>14}{t_true_f:>14.1f}"
-                     f"{t_f / 65536:>16,.1f}{t_c / 65536:>13.1f}{cc.rad_clamp_hits:>12}"
+                     f"{t_f / 65536:>16,.1f}{t_h / 65536:>17,.1f}"
+                     f"{t_c / 65536:>13.1f}{cc.rad_clamp_hits:>12}"
                      f"  {'OK' if good else 'FAIL'}")
+    # The result row 39 leans on: in the FIRE RANGE floor 0's own un-clamped bias
+    # is nearly gone, where the superseded floor sits ~30x further out. Above the
+    # fire range the two floors are bit-identical and both need the clamp equally,
+    # so floor 0 weakens the clamp's case nowhere.
+    fire_range_better = (abs(bias_0) < 1.0) and (abs(bias_h) > 4.0)
+    ok &= fire_range_better
+    lines.append(f"  un-clamped bias at the 1263-game source: floor 0 {bias_0:+.2f} % vs "
+                 f"floor 1/2 {bias_h:+.2f} % of the continuous truth  "
+                 f"{'OK (floor 0 removes the maximum-principle violation in the one regime the clamp was not already carrying)' if fire_range_better else 'FAIL'}")
     return ok, lines
 
 
@@ -836,6 +923,12 @@ def gate12_damped_source_is_monotone(fast=False):
     count was 2.6 % of it and the emission stepped backwards by up to 2.47 %. In
     Q24 every shipped row is exactly monotone.
 
+    RE-CHECKED AT ALPHA FLOOR 0 (P2a, design row 39) and unchanged: below g = 1
+    the source is the undamped E°[T] itself, which is monotone by the bake, and
+    above it both floors take the same `4L` arm -- so the row-by-row counts below
+    are bit-identical to P0b's. The floor is not free of this property, though:
+    it is measured here, not assumed.
+
     Breaks if: f returns to Q16 (measured below, on the same probe, and it is not
     monotone); the E° bake or rad_scale is retuned so far that a bucket's rise no
     longer clears one count of f; or a NEW material ships `heat_atten > 0` with a
@@ -846,7 +939,8 @@ def gate12_damped_source_is_monotone(fast=False):
     lines, ok = [], True
     lines.append(f"  the damped source at every bucket's LOW EDGE, T = 0..{4 * (R.E_TABLE_SIZE - 1)} "
                  f"game, {len(SHIPPED_ROWS)} distinct shipped (a, his) pairs read from "
-                 f"config.toml + the pathological corner")
+                 f"config.toml + the pathological corner, at the RULED alpha floor "
+                 f"{R.ALPHA_FLOOR_DEFAULT!r} (row 39)")
     lines.append(f"    {'row':>34}{'Q16 steps':>11}{'Q16 worst':>11}"
                  f"{'Q24 steps':>11}{'Q24 worst':>11}{'f_q24 @ top':>13}")
     q16_nonmono = 0

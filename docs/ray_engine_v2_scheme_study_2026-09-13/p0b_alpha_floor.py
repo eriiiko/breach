@@ -2,13 +2,15 @@
 
     C:/Users/steen/anaconda3/python.exe p0b_alpha_floor.py
 
-A MEASUREMENT, NOT A CHANGE. The reference's default is, and stays, the ruled
-floor `alpha = max(1/2, 1 - 1/g)`. This file runs the same integer reference at
-both floors side by side and writes `p0b_alpha_floor.png`, so Erik can settle
-section 12 item 4 on numbers instead of on the algebra.
+A MEASUREMENT, NOT A CHANGE. It runs the same integer reference at both floors
+side by side and writes `p0b_alpha_floor.png`, so Erik could settle section 12
+item 4 on numbers instead of on the algebra. **He did, on 2026-09-16: FLOOR 0**
+(design row 39), and P2a made it the reference's default -- this file names both
+floors explicitly on every call, so it is unaffected by that default and still
+prints the same comparison.
 
-    floor 1/2 (RULED)  D = max(T_abs + 2L, 4L)   Fleck's unconditional bound
-    floor 0            D = max(T_abs,      4L)   alpha = max(0, 1 - 1/g)
+    floor 0 (RULED, row 39)  D = max(T_abs,      4L)   alpha = max(0, 1 - 1/g)
+    floor 1/2 (superseded)   D = max(T_abs + 2L, 4L)   Fleck's own IMC bound
 
 WHAT THE THREE MEASUREMENTS MEAN
 
@@ -48,8 +50,8 @@ import sweep_ref_q as R                  # noqa: E402
 BLUE, ORANGE, GREY = "#0072B2", "#D55E00", "#6E7781"
 INK, MUTED = "#24292f", "#57606a"
 
-FLOORS = ((R.ALPHA_FLOOR_HALF, "alpha floor 1/2 (RULED)", BLUE),
-          (R.ALPHA_FLOOR_ZERO, "alpha floor 0 (section 12 item 4)", ORANGE))
+FLOORS = ((R.ALPHA_FLOOR_HALF, "alpha floor 1/2 (superseded)", BLUE),
+          (R.ALPHA_FLOOR_ZERO, "alpha floor 0 (RULED, row 39)", ORANGE))
 
 # the two rows section 12 item 4 argues over: a burning crate and bare wood
 ROWS = (("furniture / kindling", R.quant(0.5), 3),
