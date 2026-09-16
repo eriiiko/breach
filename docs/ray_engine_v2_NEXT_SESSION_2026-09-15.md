@@ -28,8 +28,18 @@
 > killed agent except once for its report, merge `--no-ff` on green, rebuild
 > BOTH `cpp/build` and `cpp/build_cuda` in main after any binding change, run
 > the full suite in main, checkpoint memory at every boundary, HUMAN-TEST
-> gates (P3b, P6b) are built + gated + pushed and NOT merged. P2a is the
-> step in flight or next; P2b follows; then P3a.
+> gates (P3b, P6b) are built + gated + pushed and NOT merged. **P2a is MERGED
+> (`69a1f2d`): floor 0 is live in the reference and the engine, the sweep
+> zeroes its own outputs, the tile inspector reads Φ.** The next step is
+> **P2b** — calibration by derivation (v3 §9, §11's P2b row): the currency
+> pinned on the furniture row's real heat capacity with stated assumptions;
+> the derived scale as `[physics.radiation] rad_scale_derived`, fed to the
+> SWEEP's emissive table only (the old cast keeps its fitted `rad_scale` until
+> P3c, so the live game and the goldens do not move); per-row emissivities
+> PROPOSED in the report, not applied (the rows are Erik's); the reach bench
+> on the shadow planes (`E°⁻¹(Φ)` crossing `ignition_temp`, per source size,
+> fitted vs derived, plotted and looked at) extending `tools/fire_tuning_lab.py`;
+> `report_p2.md` written incrementally. Then P3a. Every step small, Opus.
 
 > **This file IS the prompt.** Point a new session at it and it has everything:
 > what to read, what is settled, what is open, and what to do first.
