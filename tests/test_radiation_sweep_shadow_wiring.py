@@ -52,6 +52,7 @@ from simulation import Simulation, fire_fixed  # noqa: E402
 from simulation.materials import MAT_WOOD  # noqa: E402
 
 INT32_LIMIT = 2 ** 31
+INT32_MAX = 2 ** 31 - 1
 _SWEEP_PLANES = ("rad_net_sweep", "rad_flux_sweep", "rad_amb_sweep", "rad_fluence")
 
 
@@ -435,6 +436,52 @@ def test_the_casts_and_the_fold_all_refuse_a_narrow_live_plane():
         # NON-VACUITY is the CPU cast's above: this binding shares the arg
         # spec, and actually RUNNING it would need a device. The refusal here
         # is host-side overload resolution -- it never reaches the GPU.
+
+
+def test_the_flux_sensor_ceiling_did_not_move_with_the_width():
+    """PROPERTY (ray-engine-v2 P3a-1): widening `rad_flux` to int64 did NOT
+    lift its saturation ceiling. It stays at INT32_MAX
+    (`raycaster.h::RAD_FLUX_CEILING`), because that number is not an overflow
+    guard -- it is a CAP ON UNIT HEAT DAMAGE, and it BINDS IN ORDINARY PLAY.
+
+    Measured at P3a-1 on this very scene under the full conductor: the cap
+    engages from tick 12 (with the level only at 2740 game), on 38 of 120
+    ticks and as many as 249 cells at once; un-capped the peak reaches 459 %
+    of it. So lifting it makes fires meaningfully more lethal in hot rooms --
+    a FEEL change (CLAUDE.md: feel-adjacent changes never auto-merge), and
+    P3a-1 is a behaviour-neutral widening.
+
+    This test is the tripwire that makes lifting it DELIBERATE. If a later
+    patch decides the cap should go (report_p3a1.md section 6, finding 3, is
+    the open question), it changes RAD_FLUX_CEILING *and this test*, with
+    Erik in the loop -- rather than discovering months later that unit burn
+    damage moved because a storage width did.
+
+    BREAKS IF: RAD_FLUX_CEILING is raised (intended -> re-rule this test), or
+    the sensor stops saturating at all.
+    """
+    sim, (y, x) = _playground_with_a_hot_wood_tile()
+    g = sim.gmap
+    g.stamp_units(sim.units)
+    sim.paused = False
+    assert g.rad_flux.dtype == np.int64, "the plane is wide"
+
+    seen_cap = 0
+    for tick in range(24):
+        sim.physics_runner.step(g, 1.0 / 24.0, tick=tick)
+        peak = int(g.rad_flux.max())
+        # NEVER above the ceiling, however hot the scene gets ...
+        assert peak <= INT32_MAX, (tick, peak)
+        seen_cap += int((g.rad_flux == INT32_MAX).sum())
+        g.rad_flux.fill(0)          # the conductor's end-of-tick wipe
+
+    # ... and NON-VACUOUSLY so: this scene actually reaches it, so the
+    # assertion above is testing the clamp and not an absence of flux.
+    assert seen_cap > 0, (
+        "the cap never engaged -- this scene no longer proves the ceiling "
+        "holds; find a hotter one before trusting this test")
+    print(f"\nrad_flux ceiling held: {seen_cap} capped cell-ticks over 24 ticks "
+          f"at INT32_MAX ({INT32_MAX / 65536:.0f} game)")
 
 
 if __name__ == "__main__":

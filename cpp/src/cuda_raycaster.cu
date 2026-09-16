@@ -69,11 +69,16 @@ __device__ __forceinline__ void rad_atomic_signed_add(int64_t* addr, int64_t del
 }
 
 // SATURATING ADD (rad_flux, the D3 sensor -- `heat[]`'s positive-only contract
-// one width up). CAS loop clamping at INT64_MAX, the int64 twin of
-// heat_atomic_sat_add above; order-free for non-negative deltas because
-// saturation composes with a monotone non-negative stream in any order. The
-// delta stays int32: it is still produced by rad_quantize_signed, which P3a-1
-// deliberately does not touch.
+// one width up). CAS loop, the int64 twin of heat_atomic_sat_add above;
+// order-free for non-negative deltas because saturation composes with a
+// monotone non-negative stream in any order. The delta stays int32: it is
+// still produced by rad_quantize_signed, which P3a-1 does not touch.
+//
+// IT CLAMPS AT raycaster.h's RAD_FLUX_CEILING, *not* at INT64_MAX -- that
+// ceiling is a unit-heat-damage cap that binds in ordinary play, so it is
+// BEHAVIOUR and does not move in a behaviour-neutral widening. Read the block
+// on rad_flux_saturating_add in raycaster.h before changing this; the two are
+// the one contract, and the tol-0 CPU/CUDA gate holds them together.
 __device__ __forceinline__ void rad_flux_atomic_sat_add(int64_t* addr, int32_t delta) {
     if (delta <= 0) return;
     unsigned long long* uaddr = (unsigned long long*)addr;
@@ -81,8 +86,8 @@ __device__ __forceinline__ void rad_flux_atomic_sat_add(int64_t* addr, int32_t d
     do {
         assumed = old;
         const int64_t cur = (int64_t)assumed;
-        const int64_t sum = (cur > INT64_MAX - (int64_t)delta) ? INT64_MAX
-                                                               : (cur + (int64_t)delta);
+        const int64_t sum = (cur > RAD_FLUX_CEILING - (int64_t)delta)
+                                ? RAD_FLUX_CEILING : (cur + (int64_t)delta);
         old = atomicCAS(uaddr, assumed, (unsigned long long)sum);
     } while (assumed != old);
 }

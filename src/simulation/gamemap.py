@@ -556,9 +556,12 @@ class GameMap:
         # Written along the rays at air cells as ``τ·w·a_s·E°[T_s]`` — same
         # occlusion, same 1/r ray-density falloff the painter had — with
         # POSITIVE-SATURATING adds, i.e. ``heat``'s order-free contract (it can
-        # never go negative, unlike ``rad_net``). int64 since P3a-1, so the
-        # saturation ceiling is INT64_MAX; the per-term quantize is unchanged
-        # and still int32-bounded. Same per-tick lifetime as
+        # never go negative, unlike ``rad_net``). int64 since P3a-1 — but its
+        # SATURATION CEILING DELIBERATELY DID NOT MOVE with the width: it stays
+        # at INT32_MAX (``raycaster.h::RAD_FLUX_CEILING``) because it is a cap
+        # on UNIT HEAT DAMAGE that binds in ordinary play, i.e. feel, not
+        # storage. Lifting it is a separate feel-gated decision. Same per-tick
+        # lifetime as
         # ``heat``/``rad_net``: cleared together at the end of Simulation.step.
         self.rad_flux = np.zeros((h, w), dtype=np.int64)
         # ---- ray-engine-v2 P1 (design v3 §3, §11; critique 3 §6d): THE SHADOW

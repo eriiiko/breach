@@ -327,14 +327,33 @@ inline void rad_signed_add(int64_t* cell, int64_t delta) {
 // ---- the SENSOR's accumulation (D3) ---------------------------------------
 // `rad_flux` is positive-only and keeps `heat[]`'s ORDER-FREE saturating
 // contract (saturation composes with a monotone non-negative stream in any
-// order). P3a-1 widens the accumulator to int64; the DELTA stays int32,
+// order). P3a-1 widens the ACCUMULATOR to int64; the DELTA stays int32,
 // because it is still produced by `rad_quantize_signed` — that per-term
-// rounding boundary is not storage and is deliberately unchanged here. The
-// ceiling therefore moves from INT32_MAX to INT64_MAX and nothing else does.
+// rounding boundary is not storage and is deliberately unchanged here.
+//
+// *** THE CEILING IS BEHAVIOUR, NOT STORAGE — AND IT DOES NOT MOVE AT P3a-1.
+//
+// `rad_flux` is a DAMAGE SENSOR. Its one consumer is unit heat damage
+// (simulation/exchange.apply_environmental_damage), which reads the per-tile
+// peak as `phi = raw / HEAT_SCALE`. So INT32_MAX is not an overflow guard: it
+// is a CAP ON HOW HARD A FIRE CAN BURN A MARINE — 32768 game units of
+// incident flux — and it BINDS IN ORDINARY PLAY. Measured at P3a-1 on the
+// shipped playground level under the full conductor, one wood tile lit the
+// canonical way: the cap engaged on 38 of 120 ticks, on as many as 249 cells
+// at once, from tick 12 onward with the level only at 2740 game; without it
+// the peak reaches 459 % of the ceiling. Lifting it would make fires
+// meaningfully more lethal in hot rooms.
+//
+// That is a FEEL change (CLAUDE.md: feel-adjacent changes never auto-merge),
+// and P3a-1 is a behaviour-neutral widening. So the ceiling stays exactly
+// where the int32 plane put it, now as an explicit named constant instead of
+// an accident of the storage width. Raising it is a separate, feel-gated
+// decision with Erik in the loop — see report_p3a1.md §6 finding 3.
+static constexpr int64_t RAD_FLUX_CEILING = (int64_t)INT32_MAX;
 inline void rad_flux_saturating_add(int64_t* cell, int32_t delta) {
     if (delta <= 0) return;
-    if (*cell > INT64_MAX - (int64_t)delta) {
-        *cell = INT64_MAX;
+    if (*cell > RAD_FLUX_CEILING - (int64_t)delta) {
+        *cell = RAD_FLUX_CEILING;
     } else {
         *cell += (int64_t)delta;
     }
