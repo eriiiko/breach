@@ -82,11 +82,11 @@ class _FireScene:
         # two outputs. `temperature` is now an INPUT — the exchange's magnitude
         # comes from the emitters' own temperature, not from a payload dial.
         self.temperature = np.zeros((h, w), dtype=np.int32)
-        self.rad_net = np.zeros((h, w), dtype=np.int32)    # SIGNED energy ledger
+        self.rad_net = np.zeros((h, w), dtype=np.int64)    # SIGNED energy ledger (int64: P3a-1)
         # P-F1a (v6.1 rule 4): the per-tile SKY ledger — the ONLY entry that
         # leaves the tile books. `rad_net.sum() + rad_amb.sum() == 0` exactly.
-        self.rad_amb = np.zeros((h, w), dtype=np.int32)
-        self.rad_flux = np.zeros((h, w), dtype=np.int32)   # D3 damage sensor
+        self.rad_amb = np.zeros((h, w), dtype=np.int64)
+        self.rad_flux = np.zeros((h, w), dtype=np.int64)   # D3 damage sensor
         self._h, self._w = h, w
         # Multi-gas march inputs (engine/05 §6.2): an empty gas field + the canon
         # per-gas tables. Gases do not attenuate heat, so this is inert here.

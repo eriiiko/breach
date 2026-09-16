@@ -539,10 +539,12 @@ int Raycaster::march_ray_radiation(
             const int64_t capk = rad_pair_budget(aTs, rr->his_s);
             if (sky >  capk) sky =  capk;
             if (sky < -capk) sky = -capk;
-            const int32_t s32 = (int32_t)sky;
-            rad_signed_add(&rad->rad_net[rr->src_idx], -s32);
+            // P3a-1: no narrowing — the planes are int64 and `sky` is
+            // already clamped to the shared budget, which is the same integer
+            // the (total) int32 narrow used to produce.
+            rad_signed_add(&rad->rad_net[rr->src_idx], -sky);
             if (rad->rad_amb != nullptr)
-                rad_signed_add(&rad->rad_amb[rr->src_idx], s32);
+                rad_signed_add(&rad->rad_amb[rr->src_idx], sky);
             break;
         }
 
@@ -613,9 +615,11 @@ int Raycaster::march_ray_radiation(
                 // Antisymmetric apply: the SAME integer, + to the receiver and
                 // − to the emitter. Plain signed (wrapping) adds — order-free,
                 // which is what the CPU↔CUDA tol-0 gate rests on.
-                const int32_t x32 = (int32_t)x_term;
-                rad_signed_add(&rad->rad_net[idx], x32);
-                rad_signed_add(&rad->rad_net[rr->src_idx], -x32);
+                // P3a-1: no narrowing (see the sky term above and
+                // rad_quantize_signed64's bound) — the clamped term goes in
+                // as it stands.
+                rad_signed_add(&rad->rad_net[idx], x_term);
+                rad_signed_add(&rad->rad_net[rr->src_idx], -x_term);
             } else if (rad->rad_flux != nullptr && distance <= rr->damage_range) {
                 // ---- D3: the RADIANT-FLUX SENSOR at AIR cells -------------
                 // *** NOT PART OF THE ENERGY LEDGER. ***  No energy moves,
@@ -636,12 +640,14 @@ int Raycaster::march_ray_radiation(
                 // <= max_range, which is precisely `distance <= damage_range`.
                 float ff = rr->coef;          // a_s · w
                 ff *= heat_survival;          // · τ
-                // int32 quantize (not the int64 twin): rad_flux is a
-                // positive-saturating int32 plane and keeps `heat[]`'s
-                // order-free contract, so saturation at INT32_MAX is its
-                // documented behaviour, not an overflow.
+                // int32 quantize (not the int64 twin) — UNCHANGED at P3a-1:
+                // the per-term rounding boundary is not storage, and moving it
+                // would be a behaviour change in a place this patch does not
+                // touch. Only the ACCUMULATOR widened: rad_flux is a
+                // positive-saturating int64 plane now, keeping `heat[]`'s
+                // order-free contract with its ceiling at INT64_MAX.
                 const int32_t q = rad_quantize_signed((double)ff * (double)rr->E_s);
-                if (q > 0) heat_saturating_add(&rad->rad_flux[idx], q);
+                if (q > 0) rad_flux_saturating_add(&rad->rad_flux[idx], q);
             }
         }
 
@@ -986,9 +992,9 @@ int64_t Raycaster::cast_from_fire_plane(
     const int32_t* temperature,
     const int32_t* heat_inv_shift,
     const bool* thermal_solid,
-    int32_t* rad_net,
-    int32_t* rad_amb,
-    int32_t* rad_flux,
+    int64_t* rad_net,
+    int64_t* rad_amb,
+    int64_t* rad_flux,
     int tick,
     double jitter
 ) const {

@@ -97,9 +97,11 @@ class Scene:
         self.heat_atten = np.zeros((h, w), np.float32)
         self.heat_inv_shift = np.zeros((h, w), np.int32)
         self.thermal_solid = np.zeros((h, w), bool)
-        self.rad_net = np.zeros((h, w), np.int32)
-        self.rad_amb = np.zeros((h, w), np.int32)     # rule 4: the SKY ledger
-        self.rad_flux = np.zeros((h, w), np.int32)
+        # int64 since P3a-1 (the widening) -- the bindings are noconvert /
+        # dtype-checked, so a narrow plane here would raise, not truncate.
+        self.rad_net = np.zeros((h, w), np.int64)
+        self.rad_amb = np.zeros((h, w), np.int64)     # rule 4: the SKY ledger
+        self.rad_flux = np.zeros((h, w), np.int64)
         self.light_atten = np.zeros((h, w, 3), np.float32)
         self.gas = np.zeros((n_gases, h, w), np.float32)
         self.gas_abs = np.zeros((n_gases, 3), np.float32)

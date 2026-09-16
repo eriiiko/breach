@@ -163,7 +163,7 @@ public:
         // of the tick. step_tail hands it straight through to the temperature
         // pass, which folds it (BEFORE the heat deposit) through each tile's own
         // heat_inv_shift. nullptr -> no fold, byte-identical to pre-P-R4.
-        const int32_t* rad_net = nullptr,
+        const int64_t* rad_net = nullptr,   // P3a-1: int64 (design v3 row 26/35)
         // arc #54 P-G1b (design §2.7 row 3): the CONSERVED gas energy field,
         // handed straight through to TemperatureSolver::step so its Pass-1
         // deposit and Pass-2 conduction land in the books instead of in the

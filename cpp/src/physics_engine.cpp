@@ -74,7 +74,7 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         const int32_t* gas, const bool* gas_conservative, int n_gases, int o2_idx,
         int h, int w, float sim_time,
         const bool* is_ambient,           // BC: ambient ring for the T pre-pass
-        const int32_t* rad_net,           // P-R4: SIGNED radiation accumulator
+        const int64_t* rad_net,           // P-R4: SIGNED radiation accumulator (int64, P3a-1)
         int64_t* gas_energy,              // arc #54 P-G1b: the conserved field
         int32_t t_amb_q,                  // T_AMB_K raw (the seam's offset)
         // ray-engine-v2 P1: the shadow sweep's inputs and outputs (see header)

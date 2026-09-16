@@ -263,12 +263,16 @@ RC_HD inline int32_t rad_quantize_signed(double v) {
 // Quantizing to int64 and clamping in int64 makes the bound structural instead
 // of incidental, and it is the form the tol-0 CPU/CUDA contract is written on.
 //
-// THE NARROWING IS SAFE (re-derived at P-F1a): after the clamp,
+// THE NARROWING IS GONE (P3a-1) — and the bound it rested on is now the PROOF
+// THAT REMOVING IT CHANGED NOTHING. The planes are int64 since the widening,
+// so the clamped term is stored as it stands with no cast at all. It never
+// truncated, because after the clamp
 //   |x| <= (|ΔT| << his) >> RAD_LIM_SHIFT
 //       <= (T_MAX_PHYS·65536 << 5) >> 4          (his <= 5 for steel)
-//        = 16000·65536·2 = 2.097e9 < 2^31 − 1 = 2.147e9.
-// So every clamped term — and the halved rule-2 term, which is smaller still —
-// fits int32 exactly. The narrow is therefore total, not a truncation.
+//        = 16000·65536·2 = 2.097e9 < 2^31 − 1 = 2.147e9,
+// so every clamped term — and the halved rule-2 term, which is smaller still —
+// already fitted int32 exactly: the narrow was total, not a truncation, and
+// deleting a total narrow is a no-op on every value the march can produce.
 RC_HD inline int64_t rad_quantize_signed64(double v) {
     if (v >=  9.2233720368547748e18) return INT64_MAX;
     if (v <= -9.2233720368547748e18) return INT64_MIN;
@@ -306,8 +310,53 @@ RC_HD inline int64_t rad_quantize_signed64(double v) {
 //   one cell) the accumulation WRAPS, deterministically and identically on both
 //   backends — that is the documented, out-of-band contract of this function,
 //   not UB, and it is exactly what the device's atomicAdd(int*) does.
-inline void rad_signed_add(int32_t* cell, int32_t delta) {
-    *cell = (int32_t)((uint32_t)*cell + (uint32_t)delta);
+// P3a-1: the plane is int64 (design v3 §3, row 35). The function is the SAME
+// function one width up — modular addition on the unsigned twin, which IS
+// two's-complement signed addition, associative and commutative and therefore
+// order-free at 64 bits exactly as it was at 32. The per-term bound below is
+// unchanged (each clamped term still fits int32; see rad_quantize_signed64),
+// so what widening buys is the PER-CELL sum: the wrap regime described below
+// now begins at 2^63 instead of 2^31, four billion times further out than the
+// firestorm that motivated the paragraph. The device twin is
+// atomicAdd((unsigned long long*)cell, (unsigned long long)delta), which is
+// this same modular add — see cuda_raycaster.cu.
+inline void rad_signed_add(int64_t* cell, int64_t delta) {
+    *cell = (int64_t)((uint64_t)*cell + (uint64_t)delta);
+}
+
+// ---- the SENSOR's accumulation (D3) ---------------------------------------
+// `rad_flux` is positive-only and keeps `heat[]`'s ORDER-FREE saturating
+// contract (saturation composes with a monotone non-negative stream in any
+// order). P3a-1 widens the ACCUMULATOR to int64; the DELTA stays int32,
+// because it is still produced by `rad_quantize_signed` — that per-term
+// rounding boundary is not storage and is deliberately unchanged here.
+//
+// *** THE CEILING IS BEHAVIOUR, NOT STORAGE — AND IT DOES NOT MOVE AT P3a-1.
+//
+// `rad_flux` is a DAMAGE SENSOR. Its one consumer is unit heat damage
+// (simulation/exchange.apply_environmental_damage), which reads the per-tile
+// peak as `phi = raw / HEAT_SCALE`. So INT32_MAX is not an overflow guard: it
+// is a CAP ON HOW HARD A FIRE CAN BURN A MARINE — 32768 game units of
+// incident flux — and it BINDS IN ORDINARY PLAY. Measured at P3a-1 on the
+// shipped playground level under the full conductor, one wood tile lit the
+// canonical way: the cap engaged on 38 of 120 ticks, on as many as 249 cells
+// at once, from tick 12 onward with the level only at 2740 game; without it
+// the peak reaches 459 % of the ceiling. Lifting it would make fires
+// meaningfully more lethal in hot rooms.
+//
+// That is a FEEL change (CLAUDE.md: feel-adjacent changes never auto-merge),
+// and P3a-1 is a behaviour-neutral widening. So the ceiling stays exactly
+// where the int32 plane put it, now as an explicit named constant instead of
+// an accident of the storage width. Raising it is a separate, feel-gated
+// decision with Erik in the loop — see report_p3a1.md §6 finding 3.
+static constexpr int64_t RAD_FLUX_CEILING = (int64_t)INT32_MAX;
+inline void rad_flux_saturating_add(int64_t* cell, int32_t delta) {
+    if (delta <= 0) return;
+    if (*cell > RAD_FLUX_CEILING - (int64_t)delta) {
+        *cell = RAD_FLUX_CEILING;
+    } else {
+        *cell += (int64_t)delta;
+    }
 }
 
 struct LightSource {
@@ -379,16 +428,16 @@ struct RadCtx {
     // bytes rather than each re-evaluating a predicate against a float dial.
     // 1 == emitter, 0 == not.
     const uint8_t* emit_mask      = nullptr;   // (h,w)
-    int32_t*       rad_net        = nullptr;   // Q16.16 (h,w) signed accumulator
+    int64_t*       rad_net        = nullptr;   // Q16.16 (h,w) signed accumulator
     // ---- rule 4: THE AMBIENT (SKY) LEDGER ---------------------------------
-    // The ONLY place energy leaves the tile books. Per-tile int32 plane with
+    // The ONLY place energy leaves the tile books. Per-tile int64 plane with
     // PLAIN adds, keyed by the EMITTER's cell index — deliberately NOT a single
     // global atomic: a per-tile plane keeps the accumulation order-free and
     // contention-free on the device, and the host reduces it to a uint64 total
     // once per tick. Gate (ii) checks Σ rad_net + Σ rad_amb == 0 PRE-FOLD.
     // Entries are non-negative (E°[T_s] >= E°[0] for every bucket), so the
     // host-side reduction into uint64 is exact.
-    int32_t*       rad_amb        = nullptr;   // (h,w) sky ledger
+    int64_t*       rad_amb        = nullptr;   // (h,w) sky ledger
     // ---- D3: the RADIANT-FLUX SENSOR plane (amendment 5, Erik's ruling) ----
     // *** THIS IS NOT PART OF THE ENERGY LEDGER. ***  Read that again before
     // touching it: `rad_flux` is a DAMAGE SENSOR, not a transport term. It is
@@ -404,7 +453,7 @@ struct RadCtx {
     // incident flux — and because it is positive-only it keeps `heat[]`'s
     // ORDER-FREE saturating-add contract (unlike rad_net, which must be signed
     // and therefore plain).
-    int32_t*       rad_flux       = nullptr;   // Q16.16 (h,w) positive-only
+    int64_t*       rad_flux       = nullptr;   // Q16.16 (h,w) positive-only
     bool active() const { return rad_net != nullptr && e_table != nullptr
                               && temperature != nullptr && heat_inv_shift != nullptr
                               && emit_mask != nullptr; }
@@ -709,9 +758,9 @@ public:
         const int32_t* temperature,     // Q16.16 (h,w) — both ends' E° source
         const int32_t* heat_inv_shift,  // (h,w) — the limiter's per-end budget
         const bool* thermal_solid,      // (h,w) — the warm-emitter mask
-        int32_t* rad_net,               // Q16.16 (h,w) — SIGNED accumulator
-        int32_t* rad_amb,               // (h,w) — the SKY ledger (rule 4)
-        int32_t* rad_flux,              // D3: (h,w) positive-only damage sensor
+        int64_t* rad_net,               // Q16.16 (h,w) — SIGNED accumulator
+        int64_t* rad_amb,               // (h,w) — the SKY ledger (rule 4)
+        int64_t* rad_flux,              // D3: (h,w) positive-only damage sensor
         // D4 (amendment 5): the SIM TICK, as a plain integer. The per-source
         // fan phase rotates with it, so the discrete view factor time-averages
         // and no tile pair is permanently disconnected (see build_fire_sources).

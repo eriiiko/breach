@@ -103,11 +103,14 @@ int64_t temperature_step(
     // is a counted diagnostic that must be INERT in every gate scenario.
     int64_t* low_rail_hits_out = nullptr,
     // P-R4 (ruling A1.7): the SIGNED radiation accumulator the raycaster's
-    // net-T⁴ exchange fills. Folded in Pass 1 BEFORE the heat deposit, through
-    // `shr_round0(rad_net[i], heat_inv_shift[i])` and a SYMMETRIC saturating
-    // add — the exact CPU twin (temperature_solver.cpp Pass 1). nullptr -> no
-    // fold, byte-identical to pre-P-R4.
-    const int32_t* rad_net = nullptr,
+    // net-T⁴ exchange fills. **int64** since ray-engine-v2 P3a-1 (design v3
+    // §3, rows 26/35). Folded in Pass 1 BEFORE the heat deposit, through
+    // `shr_round0_i64(rad_net[i], heat_inv_shift[i])` and `sat_add_q16_i64`
+    // — the exact CPU twin (temperature_solver.cpp Pass 1), and the int64
+    // twins agree with the narrow forms on every int32-range value, which is
+    // what makes the widening byte-identical. nullptr -> no fold,
+    // byte-identical to pre-P-R4.
+    const int64_t* rad_net = nullptr,
     // P-E2a/P-E2b/arc #54/P-G5 (design §2.3/§2.2/§2.7 row 3/thermostat ledger):
     // out-param for the energy counters, accumulated (+=) into the caller's
     // TemperatureSolver fields so telemetry is identical whichever backend

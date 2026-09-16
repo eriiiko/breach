@@ -97,12 +97,17 @@ class Scene:
         self.fire[y, x] = int(np.floor(v + 0.5))   # round-half-away-from-zero
 
     def _bufs(self):
+        # rad / amb / flux are int64 since P3a-1 (the widening). Both casts
+        # take them .noconvert(), so a narrow buffer here RAISES -- which is
+        # the point: before P3a-1 this script would have been handed silently
+        # truncated int32 copies of whatever it passed, and this whole
+        # lockstep gate would have compared two temporaries and passed.
         return (np.zeros((self.h, self.w, 3), np.float32),
                 np.zeros((self.h, self.w), np.float32),
                 np.zeros((self.h, self.w), np.float32),
-                np.zeros((self.h, self.w), np.int32),
-                np.zeros((self.h, self.w), np.int32),
-                np.zeros((self.h, self.w), np.int32))
+                np.zeros((self.h, self.w), np.int64),
+                np.zeros((self.h, self.w), np.int64),
+                np.zeros((self.h, self.w), np.int64))
 
     def cast_cpu(self, rc, tick=0, light=False):
         rgb, dx, dy, rad, amb, flux = self._bufs()
@@ -139,7 +144,8 @@ def _compare(tag, cpu_t, cuda_t) -> bool:
     to nobody (the corridor leak v7 rule 4 closes). The conserving quantity is
     now `rad_net.sum() + rad_amb.sum()`, and the SKY LEDGER is a third synced
     plane that must itself be bit-identical across backends -- it is written by
-    a plain int32 atomicAdd on the device and a plain signed add on the CPU,
+    a plain int64 atomicAdd on the device (the unsigned-long-long idiom, P3a-1)
+    and a plain signed add on the CPU,
     order-free on both.
     """
     cpu, cpu_amb, cpu_flux = cpu_t
@@ -301,8 +307,11 @@ def part5_live_burn(rc) -> bool:
         # The Pass-1 fold, per backend, on its OWN plane — so a divergence
         # would propagate rather than be washed out by a shared state.
         for sc, rad in ((a, cpu[0]), (b, cuda[0])):
+            # shr_round0 on the int64 plane (the engine's shr_round0_i64);
+            # the sum below is already taken in int64 and clipped into the
+            # int32 temperature range, so no intermediate narrow is needed.
             fold = np.where(rad >= 0, rad >> sc.heat_inv_shift,
-                            -((-rad) >> sc.heat_inv_shift)).astype(np.int32)
+                            -((-rad) >> sc.heat_inv_shift))
             sc.temperature = np.clip(
                 sc.temperature.astype(np.int64) + fold, 0,
                 16000 * FP_ONE).astype(np.int32)

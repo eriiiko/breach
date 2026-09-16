@@ -62,8 +62,14 @@ struct RayHD {
 // nullptr (the default) == exchange OFF, i.e. every legacy caller
 // (cuda_raycaster_cast / _cast_batch) marches exactly as before. When supplied,
 // each absorbing marched cell runs the antisymmetric pair update into
-// `rad_net` — plain SIGNED int32 atomicAdd, order-free and exact, both ends
-// getting the SAME integer. `e_table` is the E_TABLE_SIZE-entry black-body bake
+// `rad_net` — order-free and exact, both ends getting the SAME integer. Since
+// P3a-1 the plane is int64 and CUDA has no signed 64-bit atomicAdd, so it is
+// the tree's standard idiom `atomicAdd((unsigned long long*)p, (unsigned long
+// long)v)` (design v3 §8.2; cuda_bulk_transport.cu:313, cuda_combustion.cu,
+// cuda_eos_resident.cu:940): unsigned wrap modulo 2^64 IS two's-complement
+// signed 64-bit addition, so the reinterpreted int64 is exactly the CPU's
+// `rad_signed_add`, and modular addition is associative + commutative, so the
+// accumulation is order-free at 64 bits exactly as it was at 32. `e_table` is the E_TABLE_SIZE-entry black-body bake
 // (uploaded with the rest of the per-call input set — see the .cu).
 //
 // P-F1a: the radiation arguments are GONE from this entry point. The exchange
@@ -96,8 +102,8 @@ void raycaster_cast_directional(
 //
 // `emit_mask` is the once-per-tick emitter plane (v7.1 item 13) — rule 2 keys
 // on it, so both backends read the SAME bytes. `rad_amb` is the per-tile sky
-// ledger: PLAIN int32 atomicAdd, deliberately not one global counter, so the
-// accumulation is order-free and contention-free; the host reduces it.
+// ledger: the same PLAIN int64 atomic, deliberately not one global counter, so
+// the accumulation is order-free and contention-free; the host reduces it.
 //
 // RETURNS: the number of rays that terminated on a CONTACT FACE (rule 3) —
 // the same diagnostic Raycaster::cast_from_fire_plane returns, so the
@@ -112,13 +118,13 @@ int64_t raycaster_cast_radiation(
     const int32_t* temperature,              // Q16.16 (h,w)
     const int32_t* heat_inv_shift,           // (h,w)
     const uint8_t* emit_mask,                // (h,w) 1 == emitter
-    int32_t* rad_net,                        // Q16.16 (h,w) signed accumulator
-    int32_t* rad_amb,                        // (h,w) sky ledger (rule 4)
+    int64_t* rad_net,                        // Q16.16 (h,w) signed accumulator
+    int64_t* rad_amb,                        // (h,w) sky ledger (rule 4)
     // D3: the RADIANT-FLUX SENSOR plane — positive-only, AIR cells only, NOT
     // part of the energy ledger (no temperature effect, nothing debited); its
     // only consumer is unit heat damage. Saturating atomic == the old heat
     // contract, so it is order-free. See raycaster.h RadCtx::rad_flux.
-    int32_t* rad_flux = nullptr);
+    int64_t* rad_flux = nullptr);
 
 // Backend flag (mirrors the S1 temperature backend switch).
 bool raycaster_backend_is_cuda();

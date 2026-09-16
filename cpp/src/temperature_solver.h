@@ -645,8 +645,14 @@ public:
         const int32_t* cool_shift_grid = nullptr,
         // ---- P-R4 RADIATION (docs/radiation_raycaster_extinction_ruling_
         // 2026-07-31.md A1.7): the SIGNED per-tick radiation accumulator the
-        // raycaster's net-T⁴ exchange writes. int32 Q16.16 heat counts, its own
-        // plane (NOT `heat[]`) for one structural reason: `heat[]`'s adds are
+        // raycaster's net-T⁴ exchange writes. **int64** Q16.16 heat counts
+        // since ray-engine-v2 P3a-1 (design v3 §3, rows 26/35 — the plane and
+        // every surface on its path widened in one commit so pybind11's
+        // forcecast could not hand a stale caller a truncated copy); the fold
+        // below therefore shifts it with `shr_round0_i64` and lands it with
+        // `sat_add_q16_i64`, both of which agree with the narrow forms on
+        // every int32-range value. Its own plane (NOT `heat[]`) for one
+        // structural reason: `heat[]`'s adds are
         // POSITIVE-SATURATING, which is order-free only because positives are
         // monotone under a clamp; a SIGNED net under saturation is order-
         // DEPENDENT. `rad_net[]` therefore takes plain (wrapping) signed adds,
@@ -655,7 +661,7 @@ public:
         // radiative LOSS would silently never convert and fire could never cool
         // by radiating. Default nullptr -> no fold (every legacy caller and
         // every direct-binding test path stays byte-identical).
-        const int32_t* rad_net = nullptr,
+        const int64_t* rad_net = nullptr,
         // ---- arc #54 P-G1b (design §2.7 row 3): THE GAS SIDE IS ENERGY -----
         // `gas_energy` — the CONSERVED gas energy field, (h, w) int64, MUTATED
         // on ACCOUNTABLE gas cells (Pass 1's deposit and Pass 2's conduction

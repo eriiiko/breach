@@ -610,9 +610,14 @@ PYBIND11_MODULE(breach_physics, m) {
              py::array_t<int32_t> temperature,
              py::array_t<int32_t> heat_inv_shift,
              py::array_t<bool> thermal_solid,
-             py::array_t<int32_t> rad_net,
-             py::array_t<int32_t> rad_amb,
-             py::array_t<int32_t> rad_flux,
+             // P3a-1: the three LIVE radiation planes are int64 and
+             // NOCONVERT. Without noconvert a stale int32 caller would be
+             // handed a silently widened TEMPORARY -- the cast would write
+             // into the copy and the caller's plane would stay zero, with no
+             // error anywhere (design v3 rows 26/36).
+             py::array_t<int64_t, py::array::c_style> rad_net,
+             py::array_t<int64_t, py::array::c_style> rad_amb,
+             py::array_t<int64_t, py::array::c_style> rad_flux,
              int tick,
              py::object smoke_glow,
              double jitter) {
@@ -701,8 +706,10 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("gas"), py::arg("gas_absorption"), py::arg("gas_scatter"),
           py::arg("light_atten"), py::arg("heat_atten"),
           py::arg("temperature"), py::arg("heat_inv_shift"),
-          py::arg("thermal_solid"), py::arg("rad_net"),
-          py::arg("rad_amb"), py::arg("rad_flux"), py::arg("tick"),
+          py::arg("thermal_solid"),
+          py::arg("rad_net").noconvert(),          // P3a-1: int64, loud
+          py::arg("rad_amb").noconvert(),
+          py::arg("rad_flux").noconvert(), py::arg("tick"),
           py::arg("smoke_glow") = py::none(),
           py::arg("jitter") = 0.0,
           "P-F1a: CUDA twin of cast_from_fire_plane — builds the emitter list "
@@ -2095,10 +2102,26 @@ PYBIND11_MODULE(breach_physics, m) {
             // P-R4 (ruling A1.7): `rad_net` is OPTIONAL by the SAME idiom —
             // None -> nullptr and Pass 1 does no radiation fold, i.e. exactly
             // the pre-P-R4 behaviour every shipped direct caller relies on.
-            const int32_t* rnet = nullptr;
-            py::array_t<int32_t> rnet_arr;
+            //
+            // P3a-1: the plane is int64, and THE DTYPE IS CHECKED, NOT
+            // CONVERTED. `.noconvert()` on this py::arg would be INERT: the
+            // argument is a `py::object` (it has to be, for the None idiom),
+            // so there is no overload pass to annotate and `.cast<>()` runs
+            // py::array_t's default forcecast directly. An int32 caller would
+            // get a silently widened temporary with no diagnostic at all --
+            // exactly the trap design row 26 names. The explicit isinstance +
+            // type_error below is the only loud form for this idiom, and it is
+            // the house pattern (`rad_fluence`, a few lines down, P1).
+            const int64_t* rnet = nullptr;
+            py::array_t<int64_t, py::array::c_style> rnet_arr;
             if (!rad_net_obj.is_none()) {
-                rnet_arr = rad_net_obj.cast<py::array_t<int32_t>>();
+                if (!py::isinstance<py::array_t<int64_t>>(rad_net_obj)) {
+                    throw py::type_error(
+                        "TemperatureSolver.step: rad_net must be an int64 numpy "
+                        "array (the radiation accumulator widened at P3a-1), "
+                        "not a narrower dtype");
+                }
+                rnet_arr = rad_net_obj.cast<py::array_t<int64_t, py::array::c_style>>();
                 auto [rnp, hr, wr] = get_2d_const(rnet_arr);
                 rnet = rnp;
             }
@@ -2466,9 +2489,10 @@ PYBIND11_MODULE(breach_physics, m) {
                 py::array_t<int32_t> temperature,
                 py::array_t<int32_t> heat_inv_shift,
                 py::array_t<bool> thermal_solid,
-                py::array_t<int32_t> rad_net,
-                py::array_t<int32_t> rad_amb,
-                py::array_t<int32_t> rad_flux,
+                // P3a-1: int64 + noconvert, the CUDA twin above.
+                py::array_t<int64_t, py::array::c_style> rad_net,
+                py::array_t<int64_t, py::array::c_style> rad_amb,
+                py::array_t<int64_t, py::array::c_style> rad_flux,
                 int tick,
                 py::object smoke_glow,
                 double jitter) {
@@ -2532,8 +2556,10 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("gas"), py::arg("gas_absorption"), py::arg("gas_scatter"),
            py::arg("light_atten"), py::arg("heat_atten"),
            py::arg("temperature"), py::arg("heat_inv_shift"),
-           py::arg("thermal_solid"), py::arg("rad_net"),
-           py::arg("rad_amb"), py::arg("rad_flux"), py::arg("tick"),
+           py::arg("thermal_solid"),
+           py::arg("rad_net").noconvert(),         // P3a-1: int64, loud
+           py::arg("rad_amb").noconvert(),
+           py::arg("rad_flux").noconvert(), py::arg("tick"),
            py::arg("smoke_glow") = py::none(),
            py::arg("jitter") = 0.0,
            "P-F1a: enumerate the emitter set (burning tiles + thermal solids at "
@@ -3450,10 +3476,20 @@ PYBIND11_MODULE(breach_physics, m) {
 
             // P-R4: the nullable SIGNED radiation accumulator (None -> nullptr,
             // i.e. no fold — the same idiom as is_ambient above).
-            const int32_t* rnet = nullptr;
-            py::array_t<int32_t> rnet_arr;
+            //
+            // P3a-1: int64, dtype CHECKED not converted -- see the identical
+            // note on TemperatureSolver.step. `.noconvert()` cannot make a
+            // `py::object` argument loud; this can.
+            const int64_t* rnet = nullptr;
+            py::array_t<int64_t, py::array::c_style> rnet_arr;
             if (!rad_net.is_none()) {
-                rnet_arr = rad_net.cast<py::array_t<int32_t>>();
+                if (!py::isinstance<py::array_t<int64_t>>(rad_net)) {
+                    throw py::type_error(
+                        "PhysicsEngine.step_tail: rad_net must be an int64 numpy "
+                        "array (the radiation accumulator widened at P3a-1), "
+                        "not a narrower dtype");
+                }
+                rnet_arr = rad_net.cast<py::array_t<int64_t, py::array::c_style>>();
                 auto ra = rnet_arr.unchecked<2>();
                 rnet = ra.data(0, 0);
             }
