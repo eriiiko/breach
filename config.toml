@@ -580,6 +580,22 @@ intensity_per_intensity = 0.7
 color                = [1.0, 0.45, 0.12]   # warm orange (render-only; heat is colourless)
 # coarse_cluster TOMBSTONE (P-R1, 2026-07-31): dead key — Raycaster::coarse_cluster and the orphaned update_from_fire path it only ever fed (no production caller) were both deleted when the fire source build moved into C++ (cast_from_fire_plane); see docs/radiation_raycaster_extinction_ruling_2026-07-31.md A4.2.
 
+# Ray-engine-v2 (docs/ray_engine_v2_design_v3_2026-09-15.md) — THE RADIATION
+# SWEEP, P1: the directional-sweep radiation solver (cpp/src/radiation_sweep.*)
+# runs every tick as step 2b of the physics tail into the SHADOW planes
+# rad_net_sweep / rad_flux_sweep / rad_amb_sweep / rad_fluence; the fire-plane
+# cast above still feeds the live fold until P3 flips it. The E° bake it shares
+# with the cast reads `rad_scale` and [physics.temperature_scale] as before.
+[physics.radiation]
+# k_leak — the UNIFORM out-of-plane leak coefficient (design §2.3, §2.7): the
+# fraction of each ordinate's stream that leaves the deck plane per cell (the
+# floor and ceiling at ambient), booked into rad_amb with the ceiling's ambient
+# return so its fixed point is exact. Derived for a 2.5 m deck at ~0.10
+# (docs/ray_engine_v2_reach_and_papers_2026-09-13.md §2) and DORMANT at 0.0
+# until the reach question is ruled. Range [0, 1]; quantized once at load
+# (Q16) by PhysicsRunner through simulation/optics_fixed.py.
+k_leak = 0.0
+
 # Water pipe model (engine/07 §2, water plan W2). The C++ WaterSolver advances
 # gmap.water_depth (metres of standing water) each tick: damped velocity kick +
 # donor-cell upwind flux + per-cell outflow limiter. All keys are RESTART-BOUND

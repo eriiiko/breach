@@ -76,7 +76,12 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         const bool* is_ambient,           // BC: ambient ring for the T pre-pass
         const int32_t* rad_net,           // P-R4: SIGNED radiation accumulator
         int64_t* gas_energy,              // arc #54 P-G1b: the conserved field
-        int32_t t_amb_q) const {          // T_AMB_K raw (the seam's offset)
+        int32_t t_amb_q,                  // T_AMB_K raw (the seam's offset)
+        // ray-engine-v2 P1: the shadow sweep's inputs and outputs (see header)
+        const int32_t* heat_atten_q, const int32_t* dyn_heat_atten_q,
+        int64_t* rad_net_sweep, int64_t* rad_flux_sweep,
+        int64_t* rad_amb_sweep, int64_t* rad_fluence,
+        int32_t k_leak_q) const {
 
     using namespace fixedpoint;
 
@@ -212,6 +217,30 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             h, w, sim_time,
             fuel_recip,          // FUEL-FRACTION AXIS: per-tile 1/hp (see header)
             fire_T_ext_plane);   // PER-MATERIAL T_ext (see header)
+    }
+
+    // --- 2b. Radiation sweep (SHADOW, ray-engine-v2 P1) --------------------
+    // Design v3 §11 P1 / row 35: the directional sweep runs EVERY tick, after
+    // the fire step and before the temperature pass, on the SAME temperature
+    // the pass is about to fold and the two Q16 extinction planes, into the
+    // four int64 SHADOW planes — which nothing consumes until P3 flips the
+    // fold onto them. Shear transport, S16 (heat takes shear, §2.4). The
+    // fire step above does not write `temperature`, so the sweep and the old
+    // cast (which ran at the top of the tick) see the same field. No dormancy
+    // skip (§8.2): a uniform-ambient cell costs the same and computes exact
+    // zeros; cost is set by the grid, which is the thesis. All six planes
+    // must be supplied (the binding makes them required); a C++ caller that
+    // omits them gets the pre-P1 tail byte for byte.
+    if (heat_atten_q != nullptr && dyn_heat_atten_q != nullptr &&
+        rad_net_sweep != nullptr && rad_flux_sweep != nullptr &&
+        rad_amb_sweep != nullptr && rad_fluence != nullptr) {
+        this->radiation.run(
+            temperature, heat_atten_q, dyn_heat_atten_q,
+            heat_inv_shift, thermal_solid,
+            this->emissive.table(),          // lazy re-bake on a dial change
+            t_amb_q, k_leak_q,
+            RadiationSweep::TRANSPORT_SHEAR, 16, h, w,
+            rad_net_sweep, rad_flux_sweep, rad_amb_sweep, rad_fluence);
     }
 
     // --- 3. Temperature pass (PhysicsRunner: self.temperature.step) ------
@@ -389,7 +418,12 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             // gas cell's Pass-1 deposit and Pass-2 conduction sum go through
             // the gas-energy seam and the endpoint divide is gone; the solids
             // side is untouched (D2).
-            gas_energy, t_amb_q);
+            gas_energy, t_amb_q,
+            // ray-engine-v2 P1: the maximum-principle clamp stays DORMANT on
+            // the live path — the fold still reads the OLD cast's rad_net,
+            // which is not the sweep's Φ. P3 passes rad_fluence and
+            // this->emissive.table() here when it flips the fold.
+            nullptr, nullptr);
     }
 
     return destroyed;
@@ -942,6 +976,8 @@ void PhysicsEngine::stamp_units(
         const int32_t* ys, const int32_t* xs,
         const float* perm, const float* wabsorb,
         const float* atten_r, const float* atten_g, const float* atten_b,
+        const int32_t* heat_atten_q, int32_t* dyn_heat_atten_q,
+        const int32_t* heat_q,
         int n_stamp, int h, int w) const {
 
     const int n = h * w;
@@ -951,10 +987,13 @@ void PhysicsEngine::stamp_units(
     // obstacles — they are soft bodies, gamemap.py:532). dyn_* are in-place
     // copies of the static material baselines (gamemap.py:536/540/544). Done in
     // one pass over the (h,w) fields; light_atten is interleaved (h,w,3).
+    // Ray-engine-v2 P1: the Q16 heat-extinction plane joins the reset, an
+    // integer copy of the static material plane.
     for (int i = 0; i < n; ++i) {
         obstacles[i]        = (permeability[i] <= 0.0f);   // walls only
         dyn_permeability[i] = permeability[i];             // copy
         dyn_wave_absorb[i]  = wave_absorb[i];              // copy
+        dyn_heat_atten_q[i] = heat_atten_q[i];             // copy (Q16)
     }
     for (int i = 0; i < n * 3; ++i) {
         dyn_light_atten[i]  = light_atten[i];              // copy (RGB)
@@ -985,5 +1024,11 @@ void PhysicsEngine::stamp_units(
         cell[0] = (cell[0] >= ar) ? cell[0] : ar;
         cell[1] = (cell[1] >= ag) ? cell[1] : ag;
         cell[2] = (cell[2] >= ab) ? cell[2] : ab;
+        // Ray-engine-v2 P1: heat extinction is a MAX too — a body can only
+        // ADD extinction, never remove a wall's (design §2.3: every dynamic
+        // stamp is a MAX, so a <= d <= ONE holds by construction).
+        const int32_t hc = dyn_heat_atten_q[idx];
+        const int32_t hq = heat_q[r];
+        dyn_heat_atten_q[idx] = (hc >= hq) ? hc : hq;
     }
 }

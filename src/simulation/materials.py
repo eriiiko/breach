@@ -369,6 +369,40 @@ class MaterialTable:
         # ``GameMap.thermal_solid``.
         self.thermal_solid = np.array([t > 0 for t in tm_ints], dtype=bool)
 
+        # ---- ray-engine-v2 P1 (design v3 §2.3): the HEAT-EXTINCTION INGRESS
+        # INVARIANTS, checked at the material door, each a named rejection:
+        #   * 0 <= heat_atten <= 1 — the sweep's positivity rests on
+        #     0 <= a <= d <= ONE (truncation only decreases, and a + b <= ONE
+        #     bounds what a cell can absorb by what it received). The filter
+        #     table's [0, 1] rule is the precedent.
+        #   * heat_atten > 0 => thermal_mass > 0 — an absorbing cell the fold
+        #     ignores (a gas-regime cell that took radiation) would be an
+        #     UNCOUNTED sink: today every absorbing material is a thermal solid
+        #     (temperature_solver.cpp says so, belt and braces); this makes it
+        #     loud. `heat_atten == 0` with any thermal mass is fine (foliage:
+        #     radiation-transparent until its rows are authored, design row 6).
+        # The per-id Q16 column below is quantized ONCE here (door 2), through
+        # the optics boundary module, and projected per tile by GameMap
+        # (`heat_atten_q`) exactly as `fire_T_ext_q16` is — never an inline
+        # `* 65536`.
+        from simulation import optics_fixed as _optics_fx
+        for name, atten, tm_int in zip(self.names, self.heat_atten.tolist(), tm_ints):
+            atten_f = float(atten)
+            if not (0.0 <= atten_f <= 1.0):
+                raise ValueError(
+                    f"materials.{name}.heat_atten must lie in [0, 1] (it is a "
+                    f"Q16 extinction coefficient on the radiation sweep's planes; "
+                    f"design v3 section 2.3: 0 <= a <= d <= ONE); got {atten!r}"
+                )
+            if atten_f > 0.0 and tm_int <= 0:
+                raise ValueError(
+                    f"materials.{name}: heat_atten = {atten!r} > 0 requires "
+                    f"thermal_mass > 0 — an absorbing material in the gas thermal "
+                    f"regime would take radiation the Pass-1 fold never converts "
+                    f"(an uncounted sink; design v3 section 2.3)"
+                )
+        self.heat_atten_q16 = _optics_fx.quantize(self.heat_atten)
+
         # cool_shift: the per-id AMBIENT-DECAY shift — the LOSS-side twin of
         # `thermal_mass` (engine/06 §3; cool-shift axis 2026-07-30). The
         # cooling pass on a THERMAL-SOLID tile is

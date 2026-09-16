@@ -402,6 +402,18 @@ public:
     // block in temperature_solver.cpp Pass 1 for the full argument and for why
     // P-R4's "no low rail is needed" antisymmetry reasoning is void.
     mutable int64_t t_low_rail_hits = 0;   // Pass-1 LOW rail engagements
+    // Ray-engine-v2 P1 (design v3 §2.8, gate 4): the Pass-1 MAXIMUM-PRINCIPLE
+    // clamp's engagement counter, the t_max_phys_hits idiom. The clamp bounds
+    // the radiative sub-step alone — T <- min(T_after, max(T_before,
+    // E°⁻¹(Φ))) — so a cell cannot be carried BY RADIATION above the black
+    // body in equilibrium with the fluence it absorbs (Fleck & Cummings 1971's
+    // "arguably the most serious deficiency of the IMC equations", closed by
+    // this clamp rather than by effective scattering). It engages ONLY when
+    // `rad_fluence` and `e_table` are both supplied to step(); at P1 the live
+    // path passes neither (dormant; the flip is P3) and direct-binding tests
+    // exercise it. Zero in every normal scenario; non-zero on a deliberately
+    // over-driven one (tests/test_radiation_sweep_gates.py).
+    mutable int64_t rad_clamp_hits = 0;
 
     // --- P-E2a ENERGY BOOKS (design §2.3, §5, §7) --------------------------
     // Every counter here is an int64 sum in RAW ENERGY counts (Q16.16 capacity
@@ -657,7 +669,21 @@ public:
         // The engine folds it from the SAME temperature_scale accessor
         // EOSSolver's own fold reads, so the two cannot drift.
         int64_t* gas_energy = nullptr,
-        int32_t t_amb_q = 0
+        int32_t t_amb_q = 0,
+        // ---- ray-engine-v2 P1 (design v3 §2.8): THE MAXIMUM-PRINCIPLE CLAMP,
+        // dormant. `rad_fluence` — the sweep's Φ plane, (h, w) int64, the
+        // total stream each cell absorbed from this tick; `e_table` — the E°
+        // table (E_TABLE_SIZE int64 entries, EmissiveTable::table()). With BOTH
+        // supplied, the Pass-1 radiation fold clips each thermal solid's
+        // radiative sub-step at max(T_before, E°⁻¹(Φ)) between the saturating
+        // add and the rails, counted in `rad_clamp_hits`, and the applied-ΔT
+        // booking below it sees the clipped value (so the P-G5 solid ledger
+        // keeps closing with no extra counter). EITHER nullptr -> no clamp,
+        // byte-identical to today: what the live step_tail passes at P1 (the
+        // old cast's rad_net is not the sweep's Φ) and what every existing
+        // direct caller gets. The CUDA twin gets the same clamp at P3.
+        const int64_t* rad_fluence = nullptr,
+        const int64_t* e_table = nullptr
     ) const;
 
     // --- DEBUG probe (temporary instrumentation, eos-p3fix-thermal-ceiling

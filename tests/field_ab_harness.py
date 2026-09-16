@@ -85,6 +85,11 @@ SIM_FIELDS = (
     "gas", "fire", "water_depth", "flow_vx", "flow_vy",
     "heat", "temperature", "ripple", "ripple_v",
     "dyn_permeability", "dyn_wave_absorb", "obstacles", "dyn_light_atten",
+    # Ray-engine-v2 P1 (design v3 §3, §8.3): the two Q16 extinction planes the
+    # radiation sweep reads — `heat_atten_q` (static projection) and
+    # `dyn_heat_atten_q` (the fourth stamp_units output). SIM_FIELDS only:
+    # `dyn_heat_atten_q` enters DIGEST_FIELDS at P3 (row 28), never before.
+    "heat_atten_q", "dyn_heat_atten_q",
     "wall_hp", "material", "is_vacuum", "ignition_armed",
     # P-R4 D1 (digest spec v3): the combustion demand accumulator —
     # persistent synced state (see tests/field_digest.py).

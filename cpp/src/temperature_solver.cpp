@@ -6,6 +6,7 @@
 #include "raycaster.h"     // HEAT_SCALE, heat_saturating_add (shared Q16.16 domain)
 #include "fixed_point.h"   // S3c: quantize() for the o2_vacuum_thresh integer compare
 #include "gas_energy.h"    // arc #54 P-G1b: THE gas energy seam (design §2.7)
+#include "emissive_table.h" // ray-engine-v2 P1: e_inv_q for the Pass-1 clamp
 #include <algorithm>        // P-E2b: std::clamp on the wide deposit-divide result
 
 // Direction order for the per-tile face_shift cache (MUST match the Python
@@ -58,7 +59,9 @@ void TemperatureSolver::step(
                                      // shift (nullptr -> the `cool_shift` scalar)
     const int32_t* rad_net,         // P-R4: SIGNED radiation accumulator
     int64_t* gas_energy,            // arc #54 P-G1b: the conserved gas energy
-    int32_t t_amb_q                 // T_AMB_K raw (only read with gas_energy)
+    int32_t t_amb_q,                // T_AMB_K raw (only read with gas_energy)
+    const int64_t* rad_fluence,     // ray-engine-v2 P1: the sweep's Φ (clamp)
+    const int64_t* e_table          // ray-engine-v2 P1: E° (clamp); both null = no clamp
 ) const {
     const int n = h * w;
     const bool ambient_mode = (is_ambient != nullptr);   // BC: dormancy by branch
@@ -260,6 +263,28 @@ void TemperatureSolver::step(
                     // deliver. sat_add_q16 is the kit's signed twin, built for
                     // temperature for precisely this reason (fixed_point.h).
                     temperature[i] = sat_add_q16(temperature[i], dTr);
+                    // ---- THE MAXIMUM-PRINCIPLE CLAMP (ray-engine-v2 P1,
+                    // design v3 §2.8, in its CORRECT form, row 21) ------------
+                    //   T_new = min(T_after, max(T_before, E°⁻¹(Φ)))
+                    // It binds only when radiation would RAISE the cell above
+                    // the black body in equilibrium with the fluence it
+                    // absorbed; a cell already above that (a burning crate,
+                    // heated by combustion) keeps T_before as its ceiling and
+                    // may only cool; a cooling step is never clipped. Its home
+                    // is HERE — between the saturating add and the rails and
+                    // BEFORE the applied-ΔT booking — so the P-G5 solid ledger
+                    // books the clipped landing with no extra counter. Dormant
+                    // unless both planes are supplied (see the header); the
+                    // engagement count is `rad_clamp_hits`. This is the
+                    // transcription of sweep_ref_q.py::fold_pass1_solid.
+                    if (rad_fluence != nullptr && e_table != nullptr) {
+                        const int32_t t_cap = e_inv_q(e_table, rad_fluence[i]);
+                        const int32_t ceiling =
+                            (t_cap > t_before_rad) ? t_cap : t_before_rad;
+                        if (temperature[i] > ceiling) {
+                            temperature[i] = ceiling; ++rad_clamp_hits;
+                        }
+                    }
                     if (temperature[i] > t_max_phys_q) {
                         temperature[i] = t_max_phys_q; ++t_max_phys_hits;
                     }

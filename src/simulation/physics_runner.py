@@ -408,6 +408,30 @@ class PhysicsRunner:
                 f"Raise the key; it is not a feel dial.")
         self.raycaster.radiation_range = _rad_range
         self.raycaster.bake_emissive_table()
+        # Ray-engine-v2 P1 (design v3 §2.6): the E° table's NEW owner, the
+        # engine's `emissive`, baked from the SAME three dials just set on the
+        # raycaster (one bake implementation, two owners until P3 retires the
+        # raycaster's copy; tests/test_emissive_table.py asserts the two tables
+        # are identical). The lazy re-bake-on-dial-change contract is kept on
+        # both.
+        self.engine.emissive.rad_scale = self.raycaster.rad_scale
+        self.engine.emissive.kelvin_ambient = self.raycaster.kelvin_ambient
+        self.engine.emissive.k_temp_to_kelvin = self.raycaster.k_temp_to_kelvin
+        self.engine.emissive.bake()
+        # [physics.radiation] k_leak (design v3 §2.3, §2.7): the sweep's
+        # UNIFORM out-of-plane leak coefficient — dormant at 0.0 until ruled
+        # (the derived 2.5 m deck value is ~0.10; Erik set the reach question
+        # aside). Range-checked [0, 1] and quantized ONCE here, door 2, through
+        # the optics boundary module; the engine takes the Q16 value.
+        rad_cfg = getattr(CFG.physics, "radiation", None)
+        _k_leak = float(getattr(rad_cfg, "k_leak", 0.0))
+        if not (0.0 <= _k_leak <= 1.0):
+            raise ValueError(
+                f"[physics.radiation] k_leak = {_k_leak} is outside [0, 1]: it is "
+                f"the fraction of each ordinate's stream that leaves the plane "
+                f"per cell (design v3 section 2.3's `0 <= k <= ONE` invariant)")
+        from simulation import optics_fixed as _optics_fx
+        self.k_leak_q = int(_optics_fx.quantize_scalar(_k_leak))
         self.fire_ray_count = int(getattr(fire_cfg, "fire_ray_count", 8))
         self.fire_range_base = float(getattr(fire_cfg, "range_base", 2.0))
         self.fire_range_per_i = float(getattr(fire_cfg, "range_per_intensity", 3.0))
@@ -965,6 +989,19 @@ class PhysicsRunner:
             gmap.fire_T_ext_plane,
             gmap.gas, gmap.gases.conservative, self._o2_idx,
             sim_time,
+            # Ray-engine-v2 P1 (design v3 §11): the SHADOW sweep — step 2b of
+            # the tail runs the directional sweep on the two Q16 extinction
+            # planes into the four int64 shadow planes, which nothing consumes
+            # yet (the old cast above still feeds `rad_net`; P3 flips it).
+            # Required, not defaulted, so the live engine can never silently
+            # skip the sweep.
+            heat_atten_q=gmap.heat_atten_q,
+            dyn_heat_atten_q=gmap.dyn_heat_atten_q,
+            rad_net_sweep=gmap.rad_net_sweep,
+            rad_flux_sweep=gmap.rad_flux_sweep,
+            rad_amb_sweep=gmap.rad_amb_sweep,
+            rad_fluence=gmap.rad_fluence,
+            k_leak_q=self.k_leak_q,
             # BC: the ambient ring is wiped to ΔT=0 in the temperature pre-pass
             # (the vacuum-breach idiom); None on space maps = byte-identical.
             is_ambient=amb[0],
@@ -1366,6 +1403,17 @@ class PhysicsRunner:
             gmap.fire_T_ext_plane,       # per-material T_ext (host mirror)
             gmap.gas, gmap.gases.conservative, self._o2_idx,
             sim_time,
+            # Ray-engine-v2 P1: the shadow sweep rides the SAME host-mirror
+            # bracket (design §8.2: no host-side tick logic — the sweep is
+            # inside step_tail); its planes are resident-allocated but no
+            # device kernel touches them until P4.
+            heat_atten_q=gmap.heat_atten_q,
+            dyn_heat_atten_q=gmap.dyn_heat_atten_q,
+            rad_net_sweep=gmap.rad_net_sweep,
+            rad_flux_sweep=gmap.rad_flux_sweep,
+            rad_amb_sweep=gmap.rad_amb_sweep,
+            rad_fluence=gmap.rad_fluence,
+            k_leak_q=self.k_leak_q,
             is_ambient=amb[0],
             # P-R4: the radiation accumulator rides the SAME host mirror the
             # rest of this bracket reads (the cast at step 1 filled it there).

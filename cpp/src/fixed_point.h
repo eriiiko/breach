@@ -337,6 +337,32 @@ FP_HD inline int64_t deposit_dT_wide_q16(int32_t deposit_q, int32_t recip_n_q,
 }
 #endif
 
+// ---- the STAGED wide deposit chain, int64 first operand ----------------------
+// (ray-engine-v2 P1, design v3 §2.8; critique 3 §1c.) deposit_dT_wide_q16
+// above forms its first product `deposit * recip_n` as a PLAIN int64 — sound
+// for an int32 deposit (|a*b| < 2^62), unsound for a wide one: the radiative
+// excess E°[T] - E°[0] reaches 2^41.7 at the table top and its product with a
+// small-N reciprocal (2^22..2^30) overflows int64 (measured 2^64.4 .. 2^72.1).
+// This twin takes the wide deposit and narrows TWICE, each stage through the
+// FP_HD 128-bit primitive:
+//     mul128_shr( mul128_shr(deposit, recip_n_q, FP_SHIFT), recip_cv, RECIP_SHIFT )
+// ROUNDING (declared, load-bearing): each stage floors (an arithmetic shift of
+// the exact 128-bit product, i.e. round toward -inf; for the non-negative
+// operands of every caller that is plain truncation). Two floors instead of the
+// one-narrow chain's single floor at 48 bits — a DIFFERENT rounding, which
+// differs from deposit_dT_wide_q16 by AT MOST ONE LSB on every int32-range
+// deposit (gated by tests/test_fixed_point_i64_twins.py) and is finite, with no
+// intermediate overflow, at deposit = E°[3999]. This is the chain the P5
+// radiative gas deposit and the gas branch of the Fleck pre-pass convert
+// through (magnitude first, then sign, as the caller declares); it is NOT
+// swapped in for the live heat deposit, whose one-narrow rounding is pinned by
+// the goldens. Same primitive on both backends (mul128_shr is FP_HD).
+FP_HD inline int64_t deposit_dT_wide_i64(int64_t deposit, int32_t recip_n_q,
+                                          int64_t recip_cv) {
+    const int64_t stage1 = mul128_shr(deposit, (int64_t)recip_n_q, FP_SHIFT);
+    return mul128_shr(stage1, recip_cv, RECIP_SHIFT);
+}
+
 // ---- wide DRAG deposit divide: ΔE_cell*heat_frac/c_v, no premature narrow --
 // (P-E3, energy-books arc, design §2.8) — the SAME overflow-narrowing hazard
 // class deposit_dT_wide_q16 exists for (P-E2b), specialized to the interior-
@@ -408,6 +434,19 @@ FP_HD inline int32_t sat_add_q16(int32_t a, int32_t b) {
 // (so +x and -x lose magnitude equally) use this (temperature_solver's cooling
 // idiom). Deterministic, identical cross-machine.
 FP_HD inline q16 shr_round0(q16 x, int s) {
+    return (x < 0) ? -((-x) >> s) : (x >> s);
+}
+
+// The int64 twin (ray-engine-v2 P1, design v3 §3 / critique 3 §1b). The SAME
+// symmetric round-toward-0 shift on a 64-bit operand: +x and -x lose equal
+// magnitude. Needed because the radiation sweep's planes are int64 and the
+// Pass-1 fold's `shr_round0(rad_net, his)` operand is SIGNED, so a plain `>>`
+// (round toward -inf) is not the same function. On every int32-range input
+// this returns exactly what shr_round0() returns — gated by
+// tests/test_fixed_point_i64_twins.py — which is what keeps the fold
+// byte-identical on the day its plane widens (P3). One FP_HD definition
+// here; the CUDA twin never re-derives it.
+FP_HD inline int64_t shr_round0_i64(int64_t x, int s) {
     return (x < 0) ? -((-x) >> s) : (x >> s);
 }
 
