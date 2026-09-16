@@ -151,15 +151,19 @@ narrow form on the whole int32 range:
 |---|---|---|
 | `rad_signed_add(int32_t*)`, plain wrapping | `rad_signed_add(int64_t*)`, same modular add on `uint64` | the per-cell SUM crosses 2^31 — the ceiling this patch exists to remove; P1 measured the live max at 7 % of it |
 | `shr_round0(q16)` + `sat_add_q16` in the fold | `shr_round0_i64` + `sat_add_q16_i64` | `rad_net` leaves int32 range. **`shr_round0_i64` is P1's, added for exactly this day** ("what keeps the fold byte-identical on the day its plane widens (P3)"), and `tests/test_fixed_point_i64_twins.py` gates the agreement |
-| `heat_saturating_add`, ceiling `INT32_MAX` | `rad_flux_saturating_add`, ceiling `INT64_MAX` | the sensor's per-cell sum crosses 2^31 |
+| `heat_saturating_add(int32_t*)`, ceiling `INT32_MAX` | `rad_flux_saturating_add(int64_t*)`, **ceiling still `INT32_MAX`** (`RAD_FLUX_CEILING`) | **never** — the accumulator widened, the ceiling deliberately did not, because that ceiling is a unit-damage cap that binds in ordinary play (§6 finding 3) |
 
 Two deliberate NON-changes belong here too, because each was a place the patch
 could have quietly grown:
 
 * **`rad_quantize_signed` is untouched.** `rad_flux`'s per-term quantize still
   saturates at `INT32_MAX`. That is a *rounding boundary*, not storage; moving
-  it would be a behaviour change in a place this patch does not own. Only the
-  accumulator widened.
+  it would be a behaviour change in a place this patch does not own.
+* **`rad_flux`'s saturation CEILING is untouched too**, and that one took a
+  measurement to notice rather than a reading. It is now the explicit constant
+  `RAD_FLUX_CEILING == INT32_MAX` instead of an accident of the storage width.
+  §6 finding 3 is the whole story; it is the most important thing in this
+  report.
 * **The fold still reads the old cast's plane.** Not one line of the flip is
   here. `rad_fluence`, the clamp, `dyn_heat_atten_q`, the digest spec and every
   `[materials.*]` key are exactly as P2b left them.
@@ -206,7 +210,9 @@ happens *past* 2^31, which is the point.
 The D3 sensor's atomic is the other half. It is **saturating**, not plain —
 order-free for non-negative deltas because saturation composes with a monotone
 non-negative stream in any order. Its int64 twin is a CAS loop on
-`unsigned long long` clamping at `INT64_MAX`, keeping that argument intact:
+`unsigned long long`, keeping that argument intact. Note where it clamps:
+**`RAD_FLUX_CEILING`, i.e. still `INT32_MAX`**, not the width's natural
+`INT64_MAX` — see §6 finding 3 for why that is the whole point:
 
 ```cuda
 __device__ __forceinline__ void rad_flux_atomic_sat_add(int64_t* addr, int32_t delta) {
@@ -216,8 +222,8 @@ __device__ __forceinline__ void rad_flux_atomic_sat_add(int64_t* addr, int32_t d
     do {
         assumed = old;
         const int64_t cur = (int64_t)assumed;
-        const int64_t sum = (cur > INT64_MAX - (int64_t)delta) ? INT64_MAX
-                                                               : (cur + (int64_t)delta);
+        const int64_t sum = (cur > RAD_FLUX_CEILING - (int64_t)delta)
+                                ? RAD_FLUX_CEILING : (cur + (int64_t)delta);
         old = atomicCAS(uaddr, assumed, (unsigned long long)sum);
     } while (assumed != old);
 }
