@@ -355,5 +355,359 @@ def main():
     plt.show()
 
 
+# ===========================================================================
+# ===============   THE REACH BENCH  (`--reach`; P2b, issue #12)  ===========
+# ===========================================================================
+# "How far does this fire reach?", measured on the radiation SWEEP's shadow
+# planes and judged by the engine's OWN temperature-ignition criterion.
+#
+# WHAT IT MEASURES. `combat.py::apply_temperature_ignition` lights a flammable
+# tile when `temperature >= ignition_temp`. A receiver heated by radiation alone
+# settles where what it absorbs equals what it emits, i.e. at `E°⁻¹(Φ)` — the
+# inverse of the emissive table applied to the sweep's own fluence plane
+# `rad_fluence`. So the reach of a fire is the distance at which `E°⁻¹(Φ)`
+# falls through the receiving material's `ignition_temp`. That is exactly the
+# convention the P1/P2a isotropy gate already uses ("the E°[280] ignition
+# crossing"), read here as a radial profile instead of a radius.
+#
+# It is an UPPER BOUND on reach, deliberately and by construction: it is the
+# radiative equilibrium, with no `cool_shift` ambient decay and no conduction
+# competing for the tile. Section 5/10 of report_p2b.md quantifies how much the
+# cool_shift channel takes back.
+#
+# WHY A FREE-FIELD SCENE for the curve. Probes are AIR (`a = 0`): they neither
+# absorb nor shadow, so Φ at a probe is the fluence a receiver placed there
+# would see before it starts shielding the cells behind it. A real level's
+# walls would fold geometry into a number that is meant to be about the law.
+# The real level IS measured, as the end-to-end cross-check below, which reads
+# `gmap.rad_fluence` after a whole `Simulation.step` and so also proves the
+# live P2b binding (`[physics.radiation] rad_scale_derived` -> the engine's
+# emissive table) is what the sweep actually ran on.
+#
+# THE TWO SCALES. `emissive.rad_scale` is settable from Python, so fitted vs
+# derived is two bakes, not two builds.
+#
+# Run:  C:/Users/steen/anaconda3/python.exe tools/fire_tuning_lab.py --reach
+# Out:  tests/_fire_lab/reach.png + reach.csv (untracked). Deterministic: the
+#       sweep is pure integer and the scene is built, not sampled.
+
+REACH_TAG = "reach"
+REACH_GRID = 145            # odd: the source patch is centred; nothing clips
+REACH_MAX_D = 56            # probe distance in tiles
+REACH_T_SRC = 1263.0        # game — the measured crate plateau (survey 9.3's 1556 K)
+# TWO source rows on purpose. `furniture` is the row Erik asked to tune first
+# (design row 6). `wood` is the row where the two SCALES actually differ: at the
+# fitted scale its Fleck factor is 0.679 at the plateau (undamped only through
+# 1068 game, P0b 0.8a), at the derived scale it is 1.000 (undamped over the
+# whole table, report_p2b 4). Measuring only furniture would hide that.
+REACH_SRC_MATS = ("furniture", "wood")
+REACH_RECV_MATS = ("furniture", "wood")   # whose ignition_temp the reach is judged against
+REACH_SIZES = (1, 2, 4)     # source patch edge in tiles (1, 2x2, 4x4)
+REACH_TRANSPORT = "shear"   # the ruled heat transport (design 2.4)
+REACH_N_ORD = 16            # S16
+REACH_SIGMA = 5.670374419e-8   # W/m2/K4 — for the physical-irradiance column only
+
+# Applied through the harness's own seam, like DIALS above. Empty by default so
+# an untouched panel measures config.toml. The interesting entries are the two
+# emission scales and the per-row heat capacities -- which is the whole point of
+# P2b: `thermal_mass` is the tuning lever and it now has units (J/K).
+REACH_DIALS: dict = {
+    # "materials.furniture.thermal_mass": 8,
+    # "physics.radiation.rad_scale_derived": 2.125632e-08,
+}
+
+
+def _reach_scene(n, size, T_src_game, a_src_q, his_src):
+    """A free field of air with an `size x size` patch of the source material at
+    its centre, held at `T_src_game`. Returns the int32/bool planes the sweep's
+    `.noconvert()` binding requires."""
+    T = np.zeros((n, n), dtype=np.int32)
+    a = np.zeros((n, n), dtype=np.int32)
+    his = np.zeros((n, n), dtype=np.int32)
+    ts = np.zeros((n, n), dtype=bool)
+    c = n // 2
+    lo, hi = c, c + size                      # patch grows +x/+y from the centre
+    T[lo:hi, lo:hi] = int(round(T_src_game)) << 16
+    a[lo:hi, lo:hi] = a_src_q
+    his[lo:hi, lo:hi] = his_src
+    ts[lo:hi, lo:hi] = True
+    d = a.copy()                              # no stamped bodies: d == a
+    return T, a, d, his, ts, c, hi
+
+
+def _reach_sweep(T, a, d, his, ts, table, k_leak):
+    """One sweep on the scene. Returns (rad_fluence, fleck_plane)."""
+    n = T.shape[0]
+    out = [np.zeros((n, n), dtype=np.int64) for _ in range(4)]
+    sweep = bp.RadiationSweep()
+    k_q = int(round(k_leak * FP_ONE))
+    sweep.run(np.ascontiguousarray(T), np.ascontiguousarray(a),
+              np.ascontiguousarray(d), np.ascontiguousarray(his),
+              np.ascontiguousarray(ts), table,
+              int(TS.kelvin_ambient) << 16, k_q,
+              getattr(bp.RadiationSweep, REACH_TRANSPORT.upper()),
+              REACH_N_ORD, *out, fleck_enabled=True)
+    return out[3], np.asarray(sweep.fleck_plane(), dtype=np.int64)
+
+
+def _baked_table(scale):
+    tbl = bp.EmissiveTable()
+    tbl.rad_scale = float(scale)
+    tbl.kelvin_ambient = float(TS.kelvin_ambient)
+    tbl.k_temp_to_kelvin = float(TS.k_temp_to_kelvin)
+    tbl.bake()
+    return tbl
+
+
+def _mat(name):
+    """(heat_atten, thermal_mass, ignition_temp) for a material row, read from
+    CFG so a REACH_DIALS override lands."""
+    row = getattr(CFG.materials, name)
+    return (float(row.heat_atten), int(row.thermal_mass),
+            float(getattr(row, "ignition_temp", 0.0)))
+
+
+def reach_run():
+    restore = apply_overrides(REACH_DIALS)
+    try:
+        return _reach_run_inner()
+    finally:
+        restore_overrides(restore)
+
+
+def _reach_run_inner():
+    scales = {"fitted": float(CFG.physics.fire.rad_scale),
+              "derived": float(CFG.physics.radiation.rad_scale_derived)}
+    dist = np.arange(1, REACH_MAX_D + 1)
+    curves, meta, src_rows = {}, {}, {}
+
+    for mat in REACH_SRC_MATS:
+        ha, tm, _ = _mat(mat)
+        src_rows[mat] = (ha, tm)
+        a_src_q = int(round(ha * FP_ONE))
+        his_src = int(tm).bit_length() - 1      # log2(thermal_mass), the engine's own
+        for sname, scale in scales.items():
+            tbl = _baked_table(scale)
+            e0 = int(np.asarray(tbl.table())[0])
+            for size in REACH_SIZES:
+                T, a, d, his, ts, c, hi = _reach_scene(
+                    REACH_GRID, size, REACH_T_SRC, a_src_q, his_src)
+                for k_leak in ((0.0, 0.10) if size == 1 else (0.0,)):
+                    phi, fpl = _reach_sweep(T, a, d, his, ts, tbl, k_leak)
+                    # probe along +x from the patch's far edge, on its first row
+                    cols = hi - 1 + dist
+                    p = phi[c, cols].astype(np.int64)
+                    t_cap = np.array([tbl.e_inv_q(int(v)) for v in p],
+                                     dtype=np.int64) / FP_ONE
+                    # The PHYSICAL irradiance the scheme is delivering. Because
+                    # rad_scale = sigma*A_rad*dt / J_per_count by construction,
+                    # counts -> W/m2 is q = sigma * Phi / rad_scale, and the
+                    # rad_scale in it CANCELS: the irradiance a receiver sees is
+                    # independent of the calibration (only the Fleck factor
+                    # carries a scale dependence). Reported so that claim can be
+                    # read off the CSV instead of taken on trust.
+                    q = REACH_SIGMA * (p - e0) / scale        # W/m2, excess over ambient
+                    key = (mat, sname, size, k_leak)
+                    curves[key] = dict(phi=p, t_cap=t_cap, q=q)
+                    meta[key] = dict(
+                        f_src=float(fpl[c, c]) / float(bp.RadiationSweep.F_ONE),
+                        e0=e0, phi_src=int(phi[c, c]), scale=scale,
+                        a=ha, tm=tm)
+
+    ign = {m: _mat(m)[2] for m in REACH_RECV_MATS}
+    return dict(dist=dist, curves=curves, meta=meta, ign=ign, scales=scales,
+                src_rows=src_rows)
+
+
+def reach_crossings(m):
+    """For each curve, the last distance at which E°⁻¹(Φ) is still at or above
+    each receiver's ignition_temp (0 = never reaches)."""
+    out = {}
+    for key, cur in m["curves"].items():
+        out[key] = {}
+        for name, thr in m["ign"].items():
+            ok = np.nonzero(cur["t_cap"] >= thr)[0]
+            out[key][name] = int(m["dist"][ok[-1]]) if ok.size else 0
+    return out
+
+
+def reach_plot(m, live=None):
+    dist = m["dist"]
+    cross = reach_crossings(m)
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.subplots_adjust(hspace=0.26, wspace=0.16, top=0.87, bottom=0.07)
+    styles = {"fitted": dict(ls="--", lw=2.4, alpha=0.55),
+              "derived": dict(ls="-", lw=1.4)}
+    colours = {1: "tab:red", 2: "tab:orange", 4: "tab:purple"}
+
+    # (a), (b) — the profile per source material, both scales over each other.
+    for ax, mat in zip(axes[0], REACH_SRC_MATS):
+        for sname in m["scales"]:
+            for size in REACH_SIZES:
+                cur = m["curves"][(mat, sname, size, 0.0)]
+                ax.plot(dist, cur["t_cap"], color=colours[size], **styles[sname],
+                        label=f"{size}x{size}, {sname}")
+        cur = m["curves"].get((mat, "derived", 1, 0.10))
+        if cur is not None:
+            ax.plot(dist, cur["t_cap"], color="tab:blue", ls=":", lw=1.6,
+                    label="1 tile, k_leak = 0.10 (dormant)")
+        for name, thr in m["ign"].items():
+            ax.axhline(thr, color="tab:green", lw=0.8, ls="-.", alpha=0.7)
+            ax.text(dist[-1], thr, f"{name} ignites ({thr:.0f}) ", color="tab:green",
+                    fontsize=7, va="bottom", ha="right")
+        ha, tm = m["src_rows"][mat]
+        ff = m["meta"][(mat, "fitted", 1, 0.0)]["f_src"]
+        fd = m["meta"][(mat, "derived", 1, 0.0)]["f_src"]
+        ax.set_title(f"source = {mat}  (a={ha}, thermal_mass={tm})\n"
+                     f"Fleck f at the source: fitted {ff:.4f}   derived {fd:.4f}",
+                     fontsize=9)
+        ax.set_xlabel("distance from the source edge [tiles]")
+        ax.set_ylabel("E$^{-1}$($\\Phi$) — radiative equilibrium T [game = K above 293]")
+        ax.set_xlim(0, dist[-1])
+        ax.set_ylim(0, None)
+        ax.grid(alpha=0.25)
+        ax.legend(loc="upper right", fontsize=7, ncol=2)
+
+    # (c) — where the two scales differ at all. Flat 1.0 == they do not.
+    # Plotted in ABSOLUTE temperature (game + 293). In game units the same ratio
+    # blows up in the tail, where both curves approach 0 game but the physics is
+    # approaching the ambient BATH, not zero: the interesting quantity is the
+    # absolute-T ratio, whose ceiling is exactly (1/f)^(1/4) (T_abs^4 is linear
+    # in the fluence, and the Fleck factor is the only scale-dependent term).
+    ax = axes[1][0]
+    K = float(TS.kelvin_ambient)
+    for mat in REACH_SRC_MATS:
+        for size in REACH_SIZES:
+            f = m["curves"][(mat, "fitted", size, 0.0)]["t_cap"] + K
+            d_ = m["curves"][(mat, "derived", size, 0.0)]["t_cap"] + K
+            ax.plot(dist, d_ / f, color=colours[size], lw=1.7,
+                    ls="-" if mat == "wood" else "--",
+                    label=f"{mat} {size}x{size}")
+    ax.axhline(1.0, color="k", lw=0.9, alpha=0.6)
+    f_w = m["meta"][("wood", "fitted", 1, 0.0)]["f_src"]
+    ax.axhline(f_w ** -0.25, color="tab:brown", lw=0.9, ls=":",
+               label=f"$(1/f)^{{1/4}}$ = {f_w ** -0.25:.4f} (wood's ceiling)")
+    ax.set_title("derived / fitted, same scene, in ABSOLUTE T\n"
+                 "1.0 = the calibration does not move the reach at all", fontsize=9)
+    ax.set_xlabel("distance from the source edge [tiles]")
+    ax.set_ylabel("$T_{abs}$ ratio (derived / fitted)")
+    ax.set_xlim(0, dist[-1])
+    ax.grid(alpha=0.25)
+    ax.legend(loc="best", fontsize=7, ncol=2)
+
+    # (d) — the live level's own shadow plane against the free field.
+    ax = axes[1][1]
+    fff = m["curves"][("furniture", "derived", 1, 0.0)]
+    ax.plot(dist, fff["t_cap"], color="tab:red", lw=2.6, alpha=0.5,
+            label="free field, 1 tile furniture, derived")
+    if live is not None:
+        ax.plot(live["dist"], live["t_cap"], color="k", lw=1.2, marker="o", ms=3,
+                label=f"LIVE {LEVEL}: gmap.rad_fluence after Simulation.step")
+        eq = int(np.sum(live["t_cap"] ==
+                        fff["t_cap"][:len(live["t_cap"])]))
+        ax.set_title(f"end-to-end: the engine's own shadow plane\n"
+                     f"{eq}/{len(live['t_cap'])} probes EQUAL the free field, "
+                     f"integer for integer", fontsize=9)
+    for name, thr in m["ign"].items():
+        ax.axhline(thr, color="tab:green", lw=0.8, ls="-.", alpha=0.7)
+    ax.set_xlabel("distance from the source [tiles]")
+    ax.set_ylabel("E$^{-1}$($\\Phi$) [game]")
+    ax.set_xlim(0, 31)
+    ax.set_ylim(0, None)
+    ax.grid(alpha=0.25)
+    ax.legend(loc="upper right", fontsize=7)
+
+    txt = " | ".join(
+        f"{mat[:4]} {s[:4]} " + "/".join(str(cross[(mat, s, sz, 0.0)]["furniture"])
+                                         for sz in REACH_SIZES)
+        for mat in REACH_SRC_MATS for s in m["scales"])
+    fig.suptitle(
+        f"fire_tuning_lab --reach (P2b, issue #12) — free field {REACH_GRID}², "
+        f"{REACH_TRANSPORT} S{REACH_N_ORD}, k_leak = 0, source held at "
+        f"{REACH_T_SRC:.0f} game = {TS.to_kelvin(REACH_T_SRC):.0f} K\n"
+        f"reach to furniture ignition, tiles, 1x1/2x2/4x4:   {txt}", fontsize=9)
+    return fig
+
+
+def reach_real_level(scale_name="derived"):
+    """END-TO-END: the same measurement on a real level, read off the LIVE
+    shadow plane `gmap.rad_fluence` after a whole `Simulation.step`.
+
+    This is the half that proves the P2b binding: the number the engine's own
+    conductor produced, on the table PhysicsRunner baked from
+    `[physics.radiation] rad_scale_derived`, not on a table this bench baked.
+    """
+    level = load_level(LEVEL)
+    sim = Simulation(level, seed=12345, breach_physics=bp, enable_recorder=False)
+    g = sim.gmap
+    sx, sy = 46, 8                                # station 3 furniture sample
+    # CLAUDE.md "Starting a fire": deliver HEAT as well as lighting the tile.
+    g.temperature[sy, sx] = fire_fixed.quantize_scalar(REACH_T_SRC)
+    g.fire[sy, sx] = fire_fixed.quantize_scalar(0.8)
+    sim.set_paused(False)
+    sim.step()
+    eng = sim.physics_runner.engine
+    tbl = eng.emissive
+    phi = np.asarray(g.rad_fluence)
+    ys = np.arange(sy + 1, sy + 1 + 30)            # straight down the open hall
+    p = phi[ys, sx].astype(np.int64)
+    t_cap = np.array([tbl.e_inv_q(int(v)) for v in p], dtype=np.int64) / FP_ONE
+    return dict(dist=ys - sy, phi=p, t_cap=t_cap,
+                scale=float(tbl.rad_scale),
+                T_src=int(g.temperature[sy, sx]) / FP_ONE,
+                e0=int(np.asarray(tbl.table())[0]))
+
+
+def reach_main():
+    OUT.mkdir(parents=True, exist_ok=True)
+    m = reach_run()
+    cross = reach_crossings(m)
+    keys = sorted(m["curves"])
+    print(f"\n  source held at {REACH_T_SRC:.0f} game = {TS.to_kelvin(REACH_T_SRC):.0f} K, "
+          f"{REACH_TRANSPORT} S{REACH_N_ORD}, free field {REACH_GRID}x{REACH_GRID}")
+    print(f"  {'src':<10}{'scale':<9}{'size':<6}{'k_leak':<8}{'rad_scale':<12}"
+          f"{'f_src':<10}{'E0':>10}  {'reach (last tile >= ignition)':<34}"
+          "q at d=1,2,3 [kW/m2]")
+    for key in keys:
+        mat, sname, size, k = key
+        md, c, cur = m["meta"][key], cross[key], m["curves"][key]
+        q = "  ".join(f"{cur['q'][i] / 1e3:7.2f}" for i in (0, 1, 2))
+        print(f"  {mat:<10}{sname:<9}{size}x{size:<4}{k:<8.2f}{md['scale']:<12.4e}"
+              f"{md['f_src']:<10.6f}{md['e0']:>10}  " +
+              "  ".join(f"{n} {v:>2}t" for n, v in c.items()).ljust(34) + q)
+    r = reach_real_level()
+    ff = m["curves"][("furniture", "derived", 1, 0.0)]
+    n_eq = int(np.sum(r["t_cap"] == ff["t_cap"][:len(r["t_cap"])]))
+    print(f"\n  LIVE {LEVEL} — gmap.rad_fluence after a whole Simulation.step, on the "
+          f"table PhysicsRunner baked ({r['scale']:.4e}):")
+    print(f"    the source tile reads {r['T_src']:.1f} game AFTER the tick (the sweep is "
+          f"step 2b, before the fold, so it saw {REACH_T_SRC:.0f})")
+    for i in (0, 1, 2, 4, 9, 19, 29):
+        print(f"    d={r['dist'][i]:>3}  Phi={r['phi'][i]:>14d}  "
+              f"E_inv(Phi)={r['t_cap'][i]:8.1f} game   free field "
+              f"{ff['t_cap'][i]:8.1f}")
+    print(f"    -> {n_eq}/{len(r['t_cap'])} probes EQUAL the free field, integer for integer")
+
+    fig = reach_plot(m, live=r)
+    png = OUT / f"{REACH_TAG}.png"
+    fig.savefig(png, dpi=130)
+    header = ["distance_tiles"]
+    cols = [m["dist"].astype(np.float64)]
+    for key in keys:
+        mat, sname, size, k = key
+        stem = f"{mat}_{sname}_{size}x{size}_kleak{k:g}"
+        header += [f"{stem}_phi", f"{stem}_t_cap", f"{stem}_q_Wm2"]
+        cols += [m["curves"][key]["phi"].astype(np.float64),
+                 m["curves"][key]["t_cap"], m["curves"][key]["q"]]
+    csv = OUT / f"{REACH_TAG}.csv"
+    np.savetxt(csv, np.column_stack(cols), delimiter=",",
+               header=",".join(header), comments="", fmt="%.6g")
+    print(f"\n  wrote {png}\n  wrote {csv}")
+    plt.show()
+
+
 if __name__ == "__main__":
-    main()
+    if "--reach" in sys.argv:
+        reach_main()
+    else:
+        main()
