@@ -408,13 +408,45 @@ class PhysicsRunner:
                 f"Raise the key; it is not a feel dial.")
         self.raycaster.radiation_range = _rad_range
         self.raycaster.bake_emissive_table()
+        rad_cfg = getattr(CFG.physics, "radiation", None)
         # Ray-engine-v2 P1 (design v3 §2.6): the E° table's NEW owner, the
-        # engine's `emissive`, baked from the SAME three dials just set on the
-        # raycaster (one bake implementation, two owners until P3 retires the
-        # raycaster's copy; tests/test_emissive_table.py asserts the two tables
-        # are identical). The lazy re-bake-on-dial-change contract is kept on
+        # engine's `emissive` — ONE bake implementation
+        # (cpp/src/emissive_table.cpp), TWO owners until P3c retires the
+        # raycaster's copy. The lazy re-bake-on-dial-change contract is kept on
         # both.
-        self.engine.emissive.rad_scale = self.raycaster.rad_scale
+        #
+        # P2b (design v3 §9): THE TWO OWNERS NO LONGER SHARE A SCALE, by design.
+        # The game↔Kelvin map is one map and stays shared (canon, G12); the
+        # emission CALIBRATION is now two keys with two owners:
+        #
+        #   the old cast  <- [physics.fire] rad_scale        5.1427e-5   FITTED
+        #   the sweep     <- [physics.radiation] rad_scale_derived
+        #                                                    2.125632e-8 DERIVED
+        #
+        # WHY the split rather than one moved key: the old cast still feeds the
+        # live temperature fold until P3c, and it is what every golden and all
+        # of the live game's fire behaviour is baked against. Moving IT to the
+        # derived number would move a golden and change feel inside a patch
+        # whose whole point is that nothing live moves. So the derived scale
+        # goes to the SHADOW sweep only, where it can be measured (the reach
+        # bench, `tools/fire_tuning_lab.py --reach`) before P3 flips the fold
+        # onto it. At P3c `[physics.fire] rad_scale` dies with the cast and
+        # this is one key again.
+        #
+        # The derived value is σ·A_rad·Δt / J_per_count with the currency pinned
+        # on the furniture row's real heat capacity; the derivation, its two
+        # stated assumptions and their sensitivities are in the config comment
+        # and in docs/ray_engine_v2_scheme_study_2026-09-13/report_p2b.md.
+        _rad_scale_derived = float(getattr(rad_cfg, "rad_scale_derived",
+                                           2.125632e-08))
+        if not (_rad_scale_derived > 0.0):
+            raise ValueError(
+                f"[physics.radiation] rad_scale_derived = {_rad_scale_derived} "
+                f"must be strictly positive: it is the SWEEP's E° bake scale, "
+                f"and a non-positive one bakes a table that is not increasing "
+                f"in T, which is the precondition E°⁻¹'s binary lifting needs "
+                f"(design v3 §2.6).")
+        self.engine.emissive.rad_scale = _rad_scale_derived
         self.engine.emissive.kelvin_ambient = self.raycaster.kelvin_ambient
         self.engine.emissive.k_temp_to_kelvin = self.raycaster.k_temp_to_kelvin
         self.engine.emissive.bake()
@@ -423,7 +455,6 @@ class PhysicsRunner:
         # (the derived 2.5 m deck value is ~0.10; Erik set the reach question
         # aside). Range-checked [0, 1] and quantized ONCE here, door 2, through
         # the optics boundary module; the engine takes the Q16 value.
-        rad_cfg = getattr(CFG.physics, "radiation", None)
         _k_leak = float(getattr(rad_cfg, "k_leak", 0.0))
         if not (0.0 <= _k_leak <= 1.0):
             raise ValueError(

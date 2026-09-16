@@ -596,6 +596,55 @@ color                = [1.0, 0.45, 0.12]   # warm orange (render-only; heat is c
 # (Q16) by PhysicsRunner through simulation/optics_fixed.py.
 k_leak = 0.0
 
+# rad_scale_derived — THE SWEEP'S EMISSION CALIBRATION, DERIVED (P2b, design
+# v3 §9; full derivation + sensitivities in
+# docs/ray_engine_v2_scheme_study_2026-09-13/report_p2b.md).
+#
+# The twin of [physics.fire] rad_scale above, which is a FITTED dial and stays
+# fitted until P3c deletes the old cast with it. Two owners, two keys, on
+# purpose: the sweep's E° table bakes from THIS key, the old cast's from that
+# one, so the live fold and every golden are bit-unchanged while the sweep runs
+# on physics in the shadow. PhysicsRunner binds them separately
+# (src/simulation/physics_runner.py); tests/test_emissive_table.py asserts each
+# owner bakes ITS OWN configured scale through the ONE bake implementation.
+#
+#   rad_scale_derived = sigma * A_rad * dt / J_per_count            [counts/K^4]
+#
+#   sigma       = 5.670374419e-8 W/m^2/K^4        (Stefan-Boltzmann, CODATA 2018)
+#   A_rad       = 4 * 0.333 * 2.5 = 3.33 m^2      the cell column's FOUR lateral
+#                 faces. E° is the cell's TOTAL emission per tick (§2.3: the
+#                 ordinate weights sum to ONE), so A_rad is the whole in-plane
+#                 radiating surface, not one face. The floor/ceiling faces are
+#                 the SEPARATE out-of-plane channel `k_leak` above — folding
+#                 them in here would double-count it. tile_size_m 0.333 is the
+#                 shipped-level value (levels/*/level.toml); deck height 2.5 m
+#                 is [physics.water] ceiling_h.
+#   dt          = 1/24 s                          ([clock] ticks_per_second)
+#   J_per_count = rho_c * V_tile / (8 * 65536) = 0.37013197 J
+#                 THE CURRENCY PIN. One heat count raises a thermal_mass = 1
+#                 tile by 1/65536 K (temperature_solver.cpp:332, `gain =
+#                 deposit >> log2(thermal_mass)`; kelvin_ambient 293 and
+#                 k_temp_to_kelvin 1 make one game degree one kelvin). Pinned on
+#                 the furniture row (thermal_mass = 8) with rho_c = 0.7 MJ/m^3/K
+#                 — the value that row's own comment already names for wood —
+#                 and V_tile = 0.333^2 * 2.5 = 0.277223 m^3, the FULL solid
+#                 column: the same filled block that radiates from 4*s*H must
+#                 store in s^2*H. C_tile = 194.06 kJ/K (~139 kg of wood).
+#
+# ASSUMPTIONS, both multiplicative, both reported in the report's §3:
+#   * one face instead of four          -> 5.3141e-9  (x1/4)
+#   * a fill fraction phi < 1 in V_tile -> scale / phi (phi = 0.216 for a column
+#     of stacked 12 mm plywood crates -> 9.84e-8)
+#   * rho_c across the wood literature band 0.52..0.90 -> 2.86e-8 .. 1.65e-8
+#
+# CONSEQUENCE worth knowing before reading a sweep plane: at this scale the
+# Fleck damping NEVER engages (f == 2^24 on all 4000 buckets for every shipped
+# row; the worst case is wood at the table top, g = 0.70 <= 1). A physically
+# heavy tile cannot radiate an appreciable share of its own heat in 1/24 s. The
+# fitted key above is 2419x larger, i.e. it behaves as if a furniture tile held
+# 80 J/K — 65 grams of wood — instead of 194 kJ/K.
+rad_scale_derived = 2.125632e-08 # heat counts per K^4 in the SWEEP's E° table
+
 # Water pipe model (engine/07 §2, water plan W2). The C++ WaterSolver advances
 # gmap.water_depth (metres of standing water) each tick: damped velocity kick +
 # donor-cell upwind flux + per-cell outflow limiter. All keys are RESTART-BOUND
