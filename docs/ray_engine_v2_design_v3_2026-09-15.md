@@ -1434,16 +1434,45 @@ original tiers are kept in the rows' history.
    never assumed (`config.toml:600-604`). If this matters, `A_rad` should derive
    from the level's `tile_size_m` and `ceiling_h` at bind time. Recorded, not
    acted on.
-10. **`heat_atten` does two jobs at once** (P2b §13.5–6): emissivity/absorptivity
-   (Kirchhoff) and geometric opacity, which are not the same number for a partly
-   filled tile (`furniture = 0.5` is plainly an opacity — its comment says so) or
-   for a spectrally selective one. `glass` is where the grey assumption breaks
-   outright: a pane absorbs ~0.4 of a 1556 K flame (it passes half the flame's
-   power as near-IR) but emits at 0.85–0.95 at its own far-IR temperature, so the
-   shipped `heat_atten = 0.3` is about right as a *shield* and ~3× too low as an
-   *emitter*, and no single row value fixes both. Separating them — or splitting
-   emit from absorb — is a **scheme** change, not a row change, and wants ruling
-   **before P3b makes units absorb**.
+10. **~~`heat_atten` does two jobs at once~~ — WITHDRAWN, 2026-09-16 (Erik).**
+   The orchestrator relayed P2b §13.5–6 as a scheme question: that `heat_atten`
+   conflates emissivity with opacity and cannot be one number. **That is wrong,
+   and the correction is worth recording because the arc nearly acted on it.**
+   The sim carries **one thermal band**; `heat_atten` is that band's
+   absorptivity, and the sweep uses the *same integer* for absorbing and
+   emitting (`abs_mat = (stream·a_i)>>16`, `emitted = (src·a_i)>>16`), so
+   **Kirchhoff holds by construction, as an identity of the code, not an
+   approximation**. A real material whose absorptivity and emissivity differ
+   does so *across wavelengths*; a one-band model chooses one number and accepts
+   the compromise, which is a fidelity limit shared with every grey-body engine,
+   not an inconsistency. Nor is opacity a third quantity here: there is **no
+   reflection channel** — un-absorbed stream is *transmitted* — so incoming =
+   absorbed + transmitted is a complete accounting, and every opaque row is at
+   `heat_atten = 1.0` anyway. And for a geometrically partly-filled tile a single
+   number is *exactly* right: such a tile absorbs the fill fraction of the
+   crossing stream and emits the same fraction of black body — **Kirchhoff
+   survives geometric dilution**. Erik, 2026-09-16: *"heat is carrying every
+   energy that we model, for all materials… this doesn't break Kirchhoff at
+   all."* Closed; do not reopen. What *does* survive from P2b §13.5–6 is a **row**
+   observation, not a scheme one, and it moves to item 11.
+11. **The `furniture` row does not line up with itself** (P2b §13.6, and the
+   thermal-solid prep doc §6). It carries `heat_atten = 0.5` beside
+   `light_atten = 0.55` (*"partial occlusion: a crate stack leaks some light"*)
+   and `permeability = 0.5` (*"smoke/air drift past crates"*) — three columns
+   describing a **half-empty** tile — and `thermal_mass = 8`, which is **solid
+   wood's**, with a comment reading *"wood-like (real rho·c ~0.7)"*. A tile smoke
+   drifts through is not 139 kg of solid wood. Either `heat_atten = 0.5` is a
+   geometric fill fraction (and `thermal_mass` is ≈2× too high) or it is an
+   emissivity (wrong for wood at ε ≈ 0.9, *and* inconsistent with the other two
+   columns). The same ambiguity is P2b's `V_tile` pin, so the two should be
+   settled together — **in the two-node session, issue #68**.
+12. **Conduction across a material boundary is correct as built** — recorded so
+   it is not re-examined. The face rate is the **harmonic mean** of the two
+   conductivities (`materials.py::_build_conduction_tables`), which is the
+   correct series-resistance combination, and `face_energy_q` is antisymmetric
+   through `min(cap_i, cap_j)`: one integer, both signs, exact conservation
+   across any boundary. Radiation and conduction are separate passes, each booked
+   into the arc #54 ledger, and they do not interfere.
 
 **Ruled by Erik on 2026-09-15, after v3 was written:**
 
