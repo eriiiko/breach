@@ -30,6 +30,14 @@ heat capacity the game currently behaves as if a furniture tile has: **80 J/K,
 about 65 grams of wood**, where the pinned physical crate is **194 kJ/K, about
 139 kg**. Section 6.
 
+**The second headline, which reframes what the calibration is for**:
+`rad_scale` **cancels out of the reach**. The irradiance a receiver sees, and
+therefore `E°^-1(Phi)`, do not depend on the calibration at all (section 5.1).
+What the calibration sets is the *rate* — degrees per tick for a given heat
+capacity. So P3's flip will change how fast things heat, not how far fire
+reaches. **Section 14 is the list of what did not hold**; read it before the
+detail.
+
 ## 1. The currency - one heat count, verified against the code
 
 The design states the currency and P2b checks it against the code before using
@@ -756,3 +764,59 @@ Nothing below was decided here.
 8. **Design section 12 item 4 (the driven-source damping question) is moot at
    the derived scale** — `f == 1` everywhere on the table, for every shipped row
    (section 4). Worth knowing, because it was ruled on twice.
+
+## 14. What did not hold, in one list
+
+Following `report_p0.md` section 0 and `report_p2a.md` section 5.
+
+1. **`rad_scale` is not the reach dial.** Design section 9 reads as though
+   deriving `rad_scale` is what fixes the reach curve ("the reach curve then
+   falls out"). It is not: the irradiance a receiver sees is
+   `sigma * Phi / rad_scale`, and `E°^-1` inverts the same table `Phi` is written
+   in, so **the calibration cancels out of both** (section 5.1) — measured, and
+   visible as two indistinguishable curves in panel (a) of the figure. What
+   `rad_scale` sets is the **rate**: degrees per tick for a given heat capacity.
+   The reach falls out of the *geometry* (the sweep's `G(d)`, and `k_leak`), and
+   it was already correct before P2b. This reframes what P3's flip will change:
+   not how far fire reaches, but how fast things heat.
+2. **The Fleck damping vanishes at the derived scale** (section 4) — `f == 2^24`
+   on all 4000 buckets for all eight shipped absorbing rows, worst case
+   `g = 0.70` (wood at the table top). Two design items are consequences:
+   **row 34's "calibrate against the damped emission" is vacuous here**, and
+   **section 12 item 4's driven-source question is moot**. Both were written
+   against a 2419x-oversized emission.
+3. **Row 34 never bit for the row it was written for.** Even at the *fitted*
+   scale, floor 0 leaves `furniture` undamped through 1424 game, so a furniture
+   crate at the 1263 plateau has `f = 1.000000` there too. The damping the row
+   warns about only ever applied to the `a = 1` rows (wood/door, undamped only
+   through 1068), and that is exactly where the bench measures the two scales
+   diverging — by `(1/0.6792)^(1/4) = 1.1016` in absolute temperature, 1-3 tiles
+   of reach.
+4. **The derived calibration reproduces survey section 9.3 to a fraction of a
+   tile** (section 5.2): 3.15 vs "~3" for one crate, 7.43 vs "~8" for a 2x2. The
+   survey computed it from view factors and 10-12 kW/m2 with no reference to any
+   of this machinery. That is the strongest single piece of evidence that the
+   scheme is physical, and it is a genuine prediction, not a fit.
+5. **`cool_shift` eats the whole reach** (section 9). The reach curve is a
+   radiative-equilibrium upper bound; with the shipped `cool_shift = 13` a
+   furniture tile one tile from a plateau fire settles at **67 game** and
+   radiative ignition happens at no distance at all. The reach P2b was asked to
+   calibrate is not, today, the reach the game would exhibit.
+6. **I got glass backwards on the first pass**, and the band arithmetic caught
+   it (section 8). I wrote that soda-lime glass is nearly black to fire heat;
+   the blackbody fractions say 52 % of a 1556 K flame's power is below 2.7 um,
+   where glass transmits. The corrected finding is more interesting than the
+   wrong one: glass is ~0.4 absorptive to a flame and ~0.9 emissive at its own
+   temperature, which no grey `a_i` can express. **Check the number before
+   writing the sentence** — this is the third wrong headline this arc has nearly
+   published, and the second one a computed check caught.
+7. **The live level reproduces the free field integer for integer** (section
+   10.2), all 30 probes. Not "close" — equal. Air really is radiatively inert at
+   `a = 0`, so an open hall *is* a free field, and the P2b binding is proven
+   end to end by the same comparison.
+8. **The material table is better than it looks.** Pinned, every solid row's
+   implied `rho*c` lands within 1.5x of literature and every one of them errs the
+   same way (light by 0-30 %) — the signature of the power-of-two quantization,
+   not of bad numbers. A single change of pin value (0.7 -> 0.9) lands the whole
+   table inside 15 % (section 7). I expected this check to find a mess and it
+   found a structure.
