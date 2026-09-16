@@ -22,6 +22,13 @@ believed, plus the proof that the sweep is live:
     zeroes its own outputs instead, so the render-time tile inspector reads
     real numbers; the second tick must therefore OVERWRITE, not accumulate.
 
+Since P3a-1 it also owns the LOUDNESS gate for the three LIVE planes
+(`rad_net` / `rad_amb` / `rad_flux`), which widened to int64 with the whole
+path in one commit. A widening that misses one binding is worse than no
+widening: pybind11 would hand that binding a truncated int32 copy and the
+cast's heat would vanish with no error anywhere. The two tests at the bottom
+of this file make every one of the four bindings refuse a narrow plane.
+
 Run:
     C:/Users/steen/anaconda3/python.exe -m pytest tests/test_radiation_sweep_shadow_wiring.py -q
 """
@@ -313,6 +320,121 @@ def test_stale_caller_cannot_hand_step_tail_a_narrow_plane():
                       rad_net_sweep=narrow, rad_flux_sweep=g.rad_flux_sweep,
                       rad_amb_sweep=g.rad_amb_sweep, rad_fluence=g.rad_fluence,
                       k_leak_q=0)
+
+
+def test_the_three_live_planes_are_int64_and_the_engine_refuses_a_narrow_one():
+    """PROPERTY (ray-engine-v2 P3a-1, design rows 26/35/36): the three LIVE
+    radiation planes are int64, and `PhysicsEngine.step_tail` REFUSES an int32
+    `rad_net` with a TypeError rather than folding a silently widened
+    temporary.
+
+    WHY THIS ONE NEEDS ITS OWN TEST rather than riding the shadow-plane test
+    above: `step_tail` takes `rad_net` as a NULLABLE `py::object` (None -> no
+    fold), and `.noconvert()` on a `py::object` argument is INERT -- there is
+    no overload pass to annotate, and the lambda's `.cast<py::array_t<...>>()`
+    runs py::array_t's default forcecast directly. The loudness here is an
+    explicit dtype check in the binding, not an arg annotation, so a test that
+    only covered the noconvert'd shadow planes would not have covered it.
+
+    BREAKS IF: any of the three planes is allocated narrow again, or the
+    binding's isinstance check is dropped (whereupon a stale int32 caller goes
+    back to writing into a discarded copy -- silently).
+    """
+    sim = default_scenario_sim()
+    g = sim.gmap
+    for name in ("rad_net", "rad_amb", "rad_flux"):
+        assert getattr(g, name).dtype == np.int64, name
+
+    eng = sim.physics_runner.engine
+    common = dict(ripple=g.ripple, ripple_v=g.ripple_v, water_depth=g.water_depth,
+                  wave_p=g.wave_p, solid=g.solid, fire=g.fire, atmosphere=g.atmosphere,
+                  smoke=g.smoke, wall_hp=g.wall_hp, temperature=g.temperature,
+                  wind_x=g.wind_x, wind_y=g.wind_y, is_vacuum=g.is_vacuum,
+                  flammable=g.flammable, heat=g.heat, heat_inv_shift=g.heat_inv_shift,
+                  face_shift=g.face_shift, thermal_solid=g.thermal_solid,
+                  cool_shift_grid=g.cool_shift, fuel_recip=g.fuel_recip,
+                  fire_T_ext_plane=g.fire_T_ext_plane, gas=g.gas,
+                  gas_conservative=g.gases.conservative,
+                  o2_idx=int(g.gases.name_to_id["o2"]), sim_time=1.0 / 24.0,
+                  heat_atten_q=g.heat_atten_q, dyn_heat_atten_q=g.dyn_heat_atten_q,
+                  rad_net_sweep=g.rad_net_sweep, rad_flux_sweep=g.rad_flux_sweep,
+                  rad_amb_sweep=g.rad_amb_sweep, rad_fluence=g.rad_fluence,
+                  k_leak_q=0)
+    narrow = np.zeros(g.temperature.shape, dtype=np.int32)
+    with pytest.raises(TypeError):
+        eng.step_tail(**common, rad_net=narrow)
+    # NON-VACUITY: the identical call with the int64 plane must NOT raise, or
+    # the refusal above would be passing for some unrelated reason.
+    eng.step_tail(**common, rad_net=g.rad_net)
+
+
+def test_the_casts_and_the_fold_all_refuse_a_narrow_live_plane():
+    """PROPERTY (P3a-1, the OTHER three bindings on the widened path): the CPU
+    emission cast (`Raycaster.cast_from_fire_plane`), its CUDA twin
+    (`cuda_raycaster_cast_from_fire_plane`) and the direct fold binding
+    (`TemperatureSolver.step`) each refuse an int32 plane where an int64 one
+    is expected. Together with the test above that is ALL FOUR bindings that
+    touch these planes -- which is the point: one missed surface and
+    pybind11's forcecast makes the truncation invisible.
+
+    The two by-value casts are made loud by `.noconvert()`; note that dropping
+    `forcecast` alone would NOT be loud, because pybind11's second (convert)
+    overload pass still performs the safe int32 -> int64 cast into a discarded
+    temporary (design row 36). `TemperatureSolver.step` is the py::object
+    idiom again and is loud by an explicit dtype check.
+
+    BREAKS IF: any of those three bindings loses its noconvert / dtype check,
+    or a plane argument is widened back down.
+    """
+    sim = default_scenario_sim()
+    g = sim.gmap
+    narrow = np.zeros(g.temperature.shape, dtype=np.int32)
+
+    # --- the fold's direct binding -------------------------------------
+    solver = bp.TemperatureSolver()
+    wide = np.zeros(g.temperature.shape, dtype=np.int64)
+    with pytest.raises(TypeError):
+        solver.step(g.temperature.copy(), g.heat, g.heat_inv_shift, g.face_shift,
+                    g.solid, g.is_vacuum, g.atmosphere,
+                    thermal_solid=g.thermal_solid, rad_net=narrow)
+    solver.step(g.temperature.copy(), g.heat, g.heat_inv_shift, g.face_shift,
+                g.solid, g.is_vacuum, g.atmosphere,
+                thermal_solid=g.thermal_solid, rad_net=wide)   # NON-VACUITY
+
+    # --- the CPU emission cast ------------------------------------------
+    ray = sim.physics_runner.raycaster
+    cast_args = dict(
+        fire=np.zeros(g.temperature.shape, dtype=np.int32),
+        fire_ray_count=8, range_base=1.0, range_per_intensity=1.0,
+        intensity_base=1.0, intensity_per_intensity=1.0, color=[1.0, 1.0, 1.0],
+        light_rgb=None, light_dx=None, light_dy=None,
+        gas=np.zeros((1,) + g.temperature.shape, dtype=np.float32),
+        gas_absorption=np.zeros((1, 3), dtype=np.float32),
+        gas_scatter=np.zeros((1, 3), dtype=np.float32),
+        light_atten=np.zeros(g.temperature.shape + (3,), dtype=np.float32),
+        heat_atten=np.zeros(g.temperature.shape, dtype=np.float32),
+        temperature=g.temperature, heat_inv_shift=g.heat_inv_shift,
+        thermal_solid=g.thermal_solid, tick=0)
+    for narrowed in ("rad_net", "rad_amb", "rad_flux"):
+        planes = {n: (narrow if n == narrowed else getattr(g, n))
+                  for n in ("rad_net", "rad_amb", "rad_flux")}
+        with pytest.raises(TypeError):
+            ray.cast_from_fire_plane(**cast_args, **planes)
+    # NON-VACUITY: all three wide -> the overload resolves and the cast runs.
+    ray.cast_from_fire_plane(**cast_args, rad_net=g.rad_net, rad_amb=g.rad_amb,
+                             rad_flux=g.rad_flux)
+
+    # --- the CUDA twin's binding (a HOST-side dtype refusal: the overload
+    # never resolves, so no device is touched and this runs on any box) ---
+    if hasattr(bp, "cuda_raycaster_cast_from_fire_plane"):
+        for narrowed in ("rad_net", "rad_amb", "rad_flux"):
+            planes = {n: (narrow if n == narrowed else getattr(g, n))
+                      for n in ("rad_net", "rad_amb", "rad_flux")}
+            with pytest.raises(TypeError):
+                bp.cuda_raycaster_cast_from_fire_plane(raycaster=ray, **cast_args, **planes)
+        # NON-VACUITY is the CPU cast's above: this binding shares the arg
+        # spec, and actually RUNNING it would need a device. The refusal here
+        # is host-side overload resolution -- it never reaches the GPU.
 
 
 if __name__ == "__main__":
