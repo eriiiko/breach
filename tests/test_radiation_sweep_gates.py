@@ -9,11 +9,12 @@ is NON-VACUOUS the same way; where the reference models the fold, the C++
 fold's trajectory and counters are ALSO compared to the reference's, tick for
 tick, so gate 0's bit-for-bit claim extends across the clamp.
 
-Gate 4 and 5 note (orchestrator override, design row 35): the fold's
-`rad_net` parameter is still int32 at P1, so the sweep's int64 rad_net is
-narrowed for the fold after the HELD source cell is zeroed (the reference's
-`held` mask: a source pinned by another heater takes no radiative update) and
-the narrowing is asserted exact.
+Gate 4 and 5 note: the fold's `rad_net` parameter is int64 since P3a-1 (the
+widening, design rows 26/35), so the sweep's int64 rad_net goes to the fold AS
+IT STANDS after the HELD source cell is zeroed (the reference's `held` mask: a
+source pinned by another heater takes no radiative update). The P1 narrowing is
+gone; the assertion that it WOULD have been exact stays, because it is the
+proof that removing it moved no number in these gates.
 
 Run:
     C:/Users/steen/anaconda3/python.exe -m pytest tests/test_radiation_sweep_gates.py -q
@@ -225,12 +226,16 @@ class _FoldScene:
         rn = rn.copy()
         rn[self.held] = 0                          # a pinned source takes no update
         self.max_abs_rad_net = max(self.max_abs_rad_net, int(np.abs(rn).max()))
-        assert int(np.abs(rn).max()) <= INT32_MAX, "the int32 narrowing would wrap"
-        rn32 = np.ascontiguousarray(rn.astype(np.int32))
+        # P3a-1: the fold takes int64 now, so `rn` goes in as it stands. The
+        # assertion stays as the PROOF that the widening changed nothing here:
+        # the P1 narrowing it guarded was exact, so removing it is a no-op on
+        # every value these gates produce.
+        assert int(np.abs(rn).max()) <= INT32_MAX, "the P1 int32 narrowing would have wrapped"
+        rn64 = np.ascontiguousarray(rn)
         self.last_rn, self.last_rl = rn, rl
         before = self.T.copy()
         self.solver.step(self.T, self.heat, self.his, self.face, self.solid, self.vac,
-                         self.atm, thermal_solid=self.ts, rad_net=rn32,
+                         self.atm, thermal_solid=self.ts, rad_net=rn64,
                          rad_fluence=np.ascontiguousarray(rl), e_table=self.table,
                          clamp_enabled=clamp_enabled)
         self.T[self.held] = before[self.held]      # belt and braces: held cells never move
@@ -356,11 +361,12 @@ def test_g5_clamp_disabled_climbs_past_the_clamped_value_tick_for_tick_with_the_
     RULED alpha floor 0 (P2a; it was 1108 vs 1219.8, 10 %, at the superseded
     floor of ½, which is the pair P0 §0.6 and design row 34 quote) — it does
     NOT run to the T_MAX_PHYS rail. The 0-D runaway that rails the
-    int32 field (P0 §0.5) is driven by a held fluence whose rad_net is far
-    outside int32, which the P1 fold cannot receive while `rad_net` stays
-    int32 (orchestrator override, design row 35); the rail's reachability on
-    the radiative branch is proved separately below. Both counters are
-    printed.
+    field (P0 §0.5) is driven by a held fluence whose rad_net is far outside
+    int32 — which the P1 fold could not even receive while `rad_net` was int32
+    (design row 35); the plane is int64 since P3a-1 but THE FOLD STILL READS
+    THE OLD CAST'S PLANE, not the sweep's, so this scene is unchanged (the
+    flip is P3a-2). The rail's reachability on the radiative branch is proved
+    separately below. Both counters are printed.
 
     BREAKS IF: the binding keyword stops switching the clamp off, or the
     un-clamped fold drifts from the reference's.
@@ -381,8 +387,9 @@ def test_g5_clamp_disabled_climbs_past_the_clamped_value_tick_for_tick_with_the_
 
 def test_g5_t_max_phys_rail_is_reachable_on_the_radiative_branch_with_the_clamp_off():
     """G5 non-vacuity (a), the counter the design's gate 5 expects, where the P1
-    fold CAN reach it: the largest radiative deposit an int32 `rad_net` can
-    carry (INT32_MAX, 4096 game per tick through a wood tile's >> 3) on a cold
+    fold CAN reach it: an INT32_MAX deposit (4096 game per tick through a wood
+    tile's >> 3 — the largest the plane could carry before P3a-1 widened it,
+    kept at that VALUE so the trajectory this gate pins does not move) on a cold
     crate with the clamp OFF rails the field at T_MAX_PHYS within four ticks and
     t_max_phys_hits counts every tick after; the SAME deposit with the clamp ON
     and a modest Φ (E°[100] = 400 game) is clipped at E°⁻¹(Φ) every tick,
@@ -406,7 +413,7 @@ def test_g5_t_max_phys_rail_is_reachable_on_the_radiative_branch_with_the_clamp_
         ts = np.ones((h, w), dtype=bool)
         vac = np.zeros((h, w), dtype=bool)
         atm = np.full((h, w), 1 << 16, dtype=np.int32)
-        rn = np.full((h, w), INT32_MAX, dtype=np.int32)
+        rn = np.full((h, w), INT32_MAX, dtype=np.int64)   # P3a-1: same value, wider box
         rl = np.full((h, w), phi, dtype=np.int64)
         T_ref = [[0] * w for _ in range(h)]
         counters = R.FoldCounters()

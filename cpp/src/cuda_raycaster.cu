@@ -51,6 +51,42 @@ __device__ __forceinline__ void heat_atomic_sat_add(int32_t* addr, int32_t delta
     } while (assumed != old);
 }
 
+// ---- P3a-1: THE INT64 ATOMICS FOR THE WIDENED RADIATION PLANES ------------
+//
+// PLAIN SIGNED ADD (rad_net, rad_amb). CUDA has no signed 64-bit atomicAdd, so
+// this is the tree's standard idiom (design v3 8.2; cuda_bulk_transport.cu,
+// cuda_combustion.cu, cuda_eos_resident.cu): reinterpret the address and the
+// delta as `unsigned long long` and add. THIS IS NOT A REINTERPRETATION TRICK
+// THAT NEEDS A CAVEAT -- unsigned addition modulo 2^64 IS two's-complement
+// signed 64-bit addition on the same bits, so the value read back as int64 is
+// exactly what the CPU's `rad_signed_add` (written through uint64 for the
+// identical reason) computes, in range AND in the documented out-of-band wrap
+// regime. Modular addition is associative and commutative, so the result does
+// not depend on the order the hardware interleaves the atomics: order-free at
+// 64 bits by exactly the argument that held at 32.
+__device__ __forceinline__ void rad_atomic_signed_add(int64_t* addr, int64_t delta) {
+    atomicAdd((unsigned long long*)addr, (unsigned long long)delta);
+}
+
+// SATURATING ADD (rad_flux, the D3 sensor -- `heat[]`'s positive-only contract
+// one width up). CAS loop clamping at INT64_MAX, the int64 twin of
+// heat_atomic_sat_add above; order-free for non-negative deltas because
+// saturation composes with a monotone non-negative stream in any order. The
+// delta stays int32: it is still produced by rad_quantize_signed, which P3a-1
+// deliberately does not touch.
+__device__ __forceinline__ void rad_flux_atomic_sat_add(int64_t* addr, int32_t delta) {
+    if (delta <= 0) return;
+    unsigned long long* uaddr = (unsigned long long*)addr;
+    unsigned long long old = *uaddr, assumed;
+    do {
+        assumed = old;
+        const int64_t cur = (int64_t)assumed;
+        const int64_t sum = (cur > INT64_MAX - (int64_t)delta) ? INT64_MAX
+                                                               : (cur + (int64_t)delta);
+        old = atomicCAS(uaddr, assumed, (unsigned long long)sum);
+    } while (assumed != old);
+}
+
 // One thread per ray. Replicates march_ray_directional tile-for-tile.
 //
 // P-F1a: the radiation block is GONE from this kernel — it moved, whole, into
@@ -170,8 +206,10 @@ __global__ void march_rays_kernel(
 //     CRC 2016) — the net-exchange formulation and the discrete view factor.
 //   * Levermore & Pomraning, ApJ 248:321 (1981) — the flux limiter.
 //
-// The exchange is scattered with a PLAIN signed atomicAdd(int*) — integer
-// addition is associative + commutative and CUDA's int atomicAdd wraps on
+// The exchange is scattered with a PLAIN signed add - since P3a-1 through
+// `rad_atomic_signed_add` (the unsigned-long-long idiom above, the planes now
+// being int64). Integer
+// addition is associative + commutative and the unsigned atomic wraps on
 // overflow exactly as the CPU's `rad_signed_add` does, so the accumulation is
 // ORDER-FREE and bit-identical to the CPU reference even in the (documented,
 // out-of-band) overflow regime. A SATURATING signed atomic would NOT be
@@ -190,7 +228,7 @@ __global__ void march_radiation_kernel(
     const int32_t* __restrict__ temperature,
     const int32_t* __restrict__ heat_inv_shift,
     const uint8_t* __restrict__ emit_mask,
-    int32_t* rad_net, int32_t* rad_amb, int32_t* rad_flux,
+    int64_t* rad_net, int64_t* rad_amb, int64_t* rad_flux,
     unsigned long long* __restrict__ contact_hits) {
     const int64_t E_amb = e_table[0];   // E°[0] — literally e_table[0]
     for (int r = blockIdx.x * blockDim.x + threadIdx.x; r < n_rays;
@@ -225,9 +263,11 @@ __global__ void march_radiation_kernel(
                 const long long capk = rad_pair_budget(aTs, ray.rad_his_s);
                 if (sky >  capk) sky =  capk;
                 if (sky < -capk) sky = -capk;
-                const int32_t s32 = (int32_t)sky;
-                atomicAdd(&rad_net[ray.rad_src_idx], -s32);
-                if (rad_amb != nullptr) atomicAdd(&rad_amb[ray.rad_src_idx], s32);
+                // P3a-1: no narrowing (the planes are int64 and `sky` is
+                // already clamped to the shared budget) -- the CPU twin.
+                rad_atomic_signed_add(&rad_net[ray.rad_src_idx], -(int64_t)sky);
+                if (rad_amb != nullptr)
+                    rad_atomic_signed_add(&rad_amb[ray.rad_src_idx], (int64_t)sky);
                 break;
             }
 
@@ -272,16 +312,17 @@ __global__ void march_radiation_kernel(
                     if (x_term >  cap) x_term =  cap;
                     if (x_term < -cap) x_term = -cap;
 
-                    const int32_t x32 = (int32_t)x_term;
-                    atomicAdd(&rad_net[idx], x32);                 // receiver gains
-                    atomicAdd(&rad_net[ray.rad_src_idx], -x32);    // emitter loses
+                    // P3a-1: no narrowing -- the clamped term goes in as it
+                    // stands, the same integer to both ends.
+                    rad_atomic_signed_add(&rad_net[idx], (int64_t)x_term);
+                    rad_atomic_signed_add(&rad_net[ray.rad_src_idx], -(int64_t)x_term);
                 } else if (rad_flux != nullptr && distance <= ray.rad_damage_range) {
                     // D3: the sensor, at its LEGACY reach (v7.1 item 4).
                     float ff = ray.rad_coef;   // a_s · w
                     ff *= heat_survival;       // · τ
                     const int32_t q =
                         rad_quantize_signed((double)ff * (double)ray.rad_E_s);
-                    if (q > 0) heat_atomic_sat_add(&rad_flux[idx], q);
+                    if (q > 0) rad_flux_atomic_sat_add(&rad_flux[idx], q);
                 }
             }
 
@@ -373,7 +414,7 @@ int64_t raycaster_cast_radiation(
     int h, int w,
     const int64_t* e_table, const int32_t* temperature,
     const int32_t* heat_inv_shift, const uint8_t* emit_mask,
-    int32_t* rad_net, int32_t* rad_amb, int32_t* rad_flux) {
+    int64_t* rad_net, int64_t* rad_amb, int64_t* rad_flux) {
     const size_t n = (size_t)h * (size_t)w;
     if (n == 0 || n_rays <= 0) return 0;
     if (heat_atten == nullptr || e_table == nullptr || temperature == nullptr ||
@@ -399,9 +440,9 @@ int64_t raycaster_cast_radiation(
     // rad_net / rad_amb / rad_flux are IN/OUT: uploaded (the caller's
     // pre-existing accumulation) so the atomics start from the same baseline
     // the CPU cast would.
-    int32_t* d_radnet  = upload_opt(rad_net, n, "malloc rad_net");
-    int32_t* d_radamb  = upload_opt(rad_amb, n, "malloc rad_amb");
-    int32_t* d_radflux = upload_opt(rad_flux, n, "malloc rad_flux");
+    int64_t* d_radnet  = upload_opt(rad_net, n, "malloc rad_net");
+    int64_t* d_radamb  = upload_opt(rad_amb, n, "malloc rad_amb");
+    int64_t* d_radflux = upload_opt(rad_flux, n, "malloc rad_flux");
     unsigned long long* d_contact = nullptr;
     cuda_check(cudaMalloc(&d_contact, sizeof(unsigned long long)),
                "malloc contact_hits");
@@ -417,11 +458,11 @@ int64_t raycaster_cast_radiation(
     cuda_check(cudaGetLastError(), "kernel launch");
     cuda_check(cudaDeviceSynchronize(), "sync");
 
-    cuda_check(cudaMemcpy(rad_net, d_radnet, n * sizeof(int32_t),
+    cuda_check(cudaMemcpy(rad_net, d_radnet, n * sizeof(int64_t),
                           cudaMemcpyDeviceToHost), "D2H rad_net");
-    if (rad_amb)  cuda_check(cudaMemcpy(rad_amb, d_radamb, n * sizeof(int32_t),
+    if (rad_amb)  cuda_check(cudaMemcpy(rad_amb, d_radamb, n * sizeof(int64_t),
                                         cudaMemcpyDeviceToHost), "D2H rad_amb");
-    if (rad_flux) cuda_check(cudaMemcpy(rad_flux, d_radflux, n * sizeof(int32_t),
+    if (rad_flux) cuda_check(cudaMemcpy(rad_flux, d_radflux, n * sizeof(int64_t),
                                         cudaMemcpyDeviceToHost), "D2H rad_flux");
 
     cudaFree(d_rays);

@@ -143,9 +143,10 @@ class _Scene:
         self.heat_atten = np.zeros((h, w), np.float32)
         self.heat_inv_shift = np.zeros((h, w), np.int32)
         self.thermal_solid = np.zeros((h, w), bool)
-        self.rad_net = np.zeros((h, w), np.int32)
-        self.rad_amb = np.zeros((h, w), np.int32)    # rule 4: the SKY ledger
-        self.rad_flux = np.zeros((h, w), np.int32)   # D3 damage sensor
+        # int64 since P3a-1 (the widening).
+        self.rad_net = np.zeros((h, w), np.int64)
+        self.rad_amb = np.zeros((h, w), np.int64)    # rule 4: the SKY ledger
+        self.rad_flux = np.zeros((h, w), np.int64)   # D3 damage sensor
         self.light_atten = np.zeros((h, w, 3), np.float32)
         self.gas = np.zeros((n_gases, h, w), np.float32)
         self.gas_abs = np.zeros((n_gases, 3), np.float32)

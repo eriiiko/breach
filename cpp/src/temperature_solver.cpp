@@ -57,7 +57,7 @@ void TemperatureSolver::step(
     const bool* thermal_solid,   // thermal-mass axis: medium mask (nullptr -> solid)
     const int32_t* cool_shift_grid, // cool-shift axis: per-tile ambient-decay
                                      // shift (nullptr -> the `cool_shift` scalar)
-    const int32_t* rad_net,         // P-R4: SIGNED radiation accumulator
+    const int64_t* rad_net,         // P-R4: SIGNED radiation accumulator (int64 since P3a-1)
     int64_t* gas_energy,            // arc #54 P-G1b: the conserved gas energy
     int32_t t_amb_q,                // T_AMB_K raw (only read with gas_energy)
     const int64_t* rad_fluence,     // ray-engine-v2 P1: the sweep's Φ (clamp)
@@ -248,21 +248,27 @@ void TemperatureSolver::step(
             // the mask test is belt-and-braces so a hypothetical absorbing gas
             // cell can never take the solid bit-shift path.
             if (rad_net != nullptr && ts[i]) {
-                const int32_t rn = rad_net[i];
+                const int64_t rn = rad_net[i];
                 if (rn != 0) {
                     // arc #54 P-G5: booked as the cell's ACTUAL applied ΔT
                     // (post every clamp below) × its real capacity — see the
                     // header block's rationale for why this needs no separate
                     // rail counter.
                     const int32_t t_before_rad = temperature[i];
-                    const int32_t dTr = shr_round0(rn, heat_inv_shift[i]);
+                    // P3a-1: the int64 twins of the SAME two functions. On
+                    // every int32-range `rn` they return exactly what
+                    // shr_round0/sat_add_q16 returned (gated by
+                    // tests/test_fixed_point_i64_twins.py), which is what makes
+                    // the widening byte-identical; beyond it they are correct
+                    // where the narrow forms could not be.
+                    const int64_t dTr = shr_round0_i64(rn, heat_inv_shift[i]);
                     // SYMMETRIC saturating add: raycaster.h's
                     // heat_saturating_add early-returns on delta <= 0 (its
                     // accumulator is contractually non-negative), which would
                     // drop exactly the radiative losses this fold exists to
                     // deliver. sat_add_q16 is the kit's signed twin, built for
                     // temperature for precisely this reason (fixed_point.h).
-                    temperature[i] = sat_add_q16(temperature[i], dTr);
+                    temperature[i] = sat_add_q16_i64(temperature[i], dTr);
                     // ---- THE MAXIMUM-PRINCIPLE CLAMP (ray-engine-v2 P1,
                     // design v3 §2.8, in its CORRECT form, row 21) ------------
                     //   T_new = min(T_after, max(T_before, E°⁻¹(Φ)))

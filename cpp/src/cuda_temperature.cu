@@ -199,7 +199,7 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
                                      const bool* __restrict__ solid,
                                      const bool* __restrict__ is_ambient,
                                      const int32_t* __restrict__ n_src,
-                                     const int32_t* __restrict__ rad_net,
+                                     const int64_t* __restrict__ rad_net,
                                      int64_t recip_cv, int32_t n_floor_q,
                                      int32_t t_max_phys_q,
                                      unsigned long long* __restrict__ hits,
@@ -213,16 +213,19 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
          i += gridDim.x * blockDim.x) {
         // ---- P-R4 SIGNED radiation fold — the CPU block verbatim ----------
         // FIRST, and NOT gated by the `deposit <= 0` skip below (that skip
-        // would swallow every radiative loss). shr_round0 = symmetric
-        // round-toward-0; sat_add_q16 = the SIGNED saturating add (a positive-
-        // only add would drop the losses). Order pinned: radiation, then heat.
+        // would swallow every radiative loss). shr_round0_i64 = symmetric
+        // round-toward-0 on the int64 plane; sat_add_q16_i64 = the SIGNED
+        // saturating add with a wide delta (a positive-only add would drop the
+        // losses). Order pinned: radiation, then heat.
         if (rad_net != nullptr && thermal_solid[i]) {
-            const int32_t rn = rad_net[i];
+            const int64_t rn = rad_net[i];
             if (rn != 0) {
                 const int32_t t_before_rad = temperature[i];  // P-G5
                 int32_t tr = temperature[i];
-                const int32_t dTr = shr_round0(rn, heat_inv_shift[i]);
-                tr = sat_add_q16(tr, dTr);
+                // P3a-1: the int64 twins of the SAME two kit functions, the
+                // one FP_HD definition the CPU fold also calls.
+                const int64_t dTr = shr_round0_i64(rn, heat_inv_shift[i]);
+                tr = sat_add_q16_i64(tr, dTr);
                 if (tr > t_max_phys_q) { tr = t_max_phys_q; atomicAdd(hits, 1ULL); }
                 // P-F1a (v7.2): the LOW rail — the CPU block verbatim. The
                 // radiation fold is the only SIGNED path into `temperature`;
@@ -484,7 +487,7 @@ int64_t temperature_step(
                                       // (nullptr -> the cool_shift scalar)
     int cool_shift_floor,       // low clamp on the vacuum offset (== SHIFT_MIN)
     int64_t* low_rail_hits_out, // P-F1a: Pass-1 LOW rail count (nullable)
-    const int32_t* rad_net,     // P-R4: SIGNED radiation accumulator (nullable)
+    const int64_t* rad_net,     // P-R4: SIGNED radiation accumulator (int64, nullable)
     int64_t* energy_counters_out,   // P-E2a/arc #54/P-G5: TEMPERATURE_ENERGY_
                                      // SLOTS slots (C_* enum), nullable;
                                      // accumulated (+=) into the caller's fields
@@ -564,8 +567,11 @@ int64_t temperature_step(
     if (cool_shift_grid) cuda_check(cudaMalloc(&d_csg, nb), "malloc cool_shift_grid");
     // P-R4: same nullable-plane idiom — with nullptr the kernel is handed a
     // null pointer and skips the fold, the exact CPU twin.
-    int32_t* d_radnet = nullptr;
-    if (rad_net) cuda_check(cudaMalloc(&d_radnet, nb), "malloc rad_net");
+    // P3a-1: rad_net is int64 now, so it gets its OWN byte count -- `nb` is
+    // n * sizeof(int32_t) and every other plane here is still int32.
+    const size_t nb64 = (size_t)n * sizeof(int64_t);
+    int64_t* d_radnet = nullptr;
+    if (rad_net) cuda_check(cudaMalloc(&d_radnet, nb64), "malloc rad_net");
 
     cuda_check(cudaMemcpy(d_temp, temperature, nb, cudaMemcpyHostToDevice), "H2D temp");
     cuda_check(cudaMemcpy(d_heat, heat, nb, cudaMemcpyHostToDevice), "H2D heat");
@@ -581,7 +587,7 @@ int64_t temperature_step(
         cuda_check(cudaMemcpy(d_csg, cool_shift_grid, nb, cudaMemcpyHostToDevice),
                    "H2D cool_shift_grid");
     if (rad_net)
-        cuda_check(cudaMemcpy(d_radnet, rad_net, nb, cudaMemcpyHostToDevice),
+        cuda_check(cudaMemcpy(d_radnet, rad_net, nb64, cudaMemcpyHostToDevice),
                    "H2D rad_net");
     // BC: optional ambient ring mask for the Pass-0 wipe (nullptr on space maps).
     bool* d_amb = nullptr;

@@ -429,6 +429,25 @@ FP_HD inline int32_t sat_add_q16(int32_t a, int32_t b) {
     return a + b;
 }
 
+// The WIDE-DELTA twin (ray-engine-v2 P3a-1). Same function, same saturation
+// window [INT32_MIN, INT32_MAX] on a Q16.16 accumulator, but the DELTA is
+// int64 — which is what the Pass-1 radiation fold hands it once `rad_net` is
+// an int64 plane and `shr_round0_i64` is what shifts it. The sum cannot
+// overflow (int32 + int64 in int64 arithmetic is at most 2^63 - 2^31), so the
+// clamp is a plain compare rather than sat_add_q16's subtraction dance.
+//
+// On every int32-range `b` this returns exactly what sat_add_q16 returns —
+// gated by tests/test_fixed_point_i64_twins.py — which is what keeps the fold
+// byte-identical on the day its plane widens. Beyond that range it saturates
+// where the narrow form would have had to guess. ONE FP_HD definition here;
+// the CUDA fold never re-derives it.
+FP_HD inline int32_t sat_add_q16_i64(int32_t a, int64_t b) {
+    const int64_t s = (int64_t)a + b;
+    if (s > (int64_t)INT32_MAX) return INT32_MAX;
+    if (s < (int64_t)INT32_MIN) return INT32_MIN;
+    return (int32_t)s;
+}
+
 // ---- symmetric round-toward-0 shift ---------------------------------------
 // `x >> s` rounds toward -inf for negative x. For a symmetric divide-by-2^s
 // (so +x and -x lose magnitude equally) use this (temperature_solver's cooling

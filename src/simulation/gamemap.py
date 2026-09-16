@@ -140,8 +140,9 @@ class GameMap:
         # by the conductor), so the resident tick's explicit `to_host` lists
         # never name them (a defaulted `to_host()` would carry stale device
         # zeros over the mirror, which the resident tick forbids anyway). NOTE: the three LIVE planes rad_net/rad_amb/rad_flux are NOT
-        # resident today and stay int32 through P2 (orchestrator override,
-        # design row 35) — the old cast fills them on the mirror.
+        # resident today; they are int64 since P3a-1 (the widening, design
+        # rows 26/35) but the old cast still fills them on the mirror — the
+        # FOLD flips to the sweep's planes at P3a-2, not here.
         "rad_net_sweep", "rad_flux_sweep", "rad_amb_sweep", "rad_fluence",
     )
     _RESIDENT_MASKS = (
@@ -514,7 +515,14 @@ class GameMap:
         # Same Q16.16 scale and the SAME per-tick lifetime as ``heat`` (cleared
         # together at the very end of Simulation.step, after every consumer).
         # Written IN-PLACE (never reassigned) so any C++ view stays valid.
-        self.rad_net = np.zeros((h, w), dtype=np.int32)
+        #
+        # **int64 since ray-engine-v2 P3a-1** (design v3 §3, rows 26/35). The
+        # widening is BEHAVIOUR-NEUTRAL: every term the old cast writes is
+        # clamped by the flux limiter to < 2^31 (raycaster.h), and P1 measured
+        # max|rad_net| == 150,148,108 on the playground — 7 % of 2^31 — so
+        # nothing truncated. What the width buys is the ability to carry the
+        # SWEEP's values when the fold flips to them at P3a-2.
+        self.rad_net = np.zeros((h, w), dtype=np.int64)
         # P-F1a (design v6.1 rule 4 / v7.1 items 8-9) — THE AMBIENT (SKY) LEDGER.
         # The ONLY place energy leaves the tile books. When an emission ray
         # LEAVES THE GRID the emitter is charged the escaping residual
@@ -526,15 +534,16 @@ class GameMap:
         #
         # WHY A PLANE AND NOT A SCALAR: a single global counter would be a
         # contended atomic on the device and — worse — an ORDER-DEPENDENT one if
-        # it ever saturated. A per-tile int32 with PLAIN adds is order-free by
-        # the same argument ``rad_net`` uses, and the host reduces it to a
+        # it ever saturated. A per-tile plane with PLAIN adds is order-free by
+        # the same argument ``rad_net`` uses (int64 since P3a-1, with the same
+        # plain wrapping add one width up), and the host reduces it to a
         # uint64 total once per tick (entries are non-negative, since
         # ``E[T_s] >= E[0]`` for every bucket, so the reduction is exact).
         #
         # Same Q16.16 scale and the SAME per-tick lifetime as ``heat`` /
         # ``rad_net``: cleared together at the very end of Simulation.step.
         # Written IN-PLACE (never reassigned) so any C++ view stays valid.
-        self.rad_amb = np.zeros((h, w), dtype=np.int32)
+        self.rad_amb = np.zeros((h, w), dtype=np.int64)
         # D3 (ruling amendment 5) — the RADIANT-FLUX SENSOR plane.
         # *** NOT part of the energy ledger. ***  It moves no energy, changes no
         # temperature, and nothing is debited to pay for it; no solver reads it.
@@ -547,9 +556,11 @@ class GameMap:
         # Written along the rays at air cells as ``τ·w·a_s·E°[T_s]`` — same
         # occlusion, same 1/r ray-density falloff the painter had — with
         # POSITIVE-SATURATING adds, i.e. ``heat``'s order-free contract (it can
-        # never go negative, unlike ``rad_net``). Same per-tick lifetime as
+        # never go negative, unlike ``rad_net``). int64 since P3a-1, so the
+        # saturation ceiling is INT64_MAX; the per-term quantize is unchanged
+        # and still int32-bounded. Same per-tick lifetime as
         # ``heat``/``rad_net``: cleared together at the end of Simulation.step.
-        self.rad_flux = np.zeros((h, w), dtype=np.int32)
+        self.rad_flux = np.zeros((h, w), dtype=np.int64)
         # ---- ray-engine-v2 P1 (design v3 §3, §11; critique 3 §6d): THE SHADOW
         # SWEEP'S PLANES. The radiation sweep (PhysicsEngine::step_tail step 2b,
         # cpp/src/radiation_sweep.*) writes these four every tick while the OLD
