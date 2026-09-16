@@ -44,8 +44,15 @@ ROOT = Path(__file__).resolve().parent.parent
 CPP_SRC = ROOT / "cpp" / "src"
 
 # The simulation solver translation units the migration must drive to integer.
-# (Render-only TUs like raycaster.cpp and the pure-glue bindings.cpp are NOT in
-# scope — they are not part of the synced lockstep state.)
+# (The pure-glue bindings.cpp is NOT in scope — it is not part of the synced
+# lockstep state. raycaster.cpp is NOT render-only any more: it has written the
+# synced `rad_net` since P-R4 (2026-08-01) and sits on the /fp:strict list;
+# it is still not on this ratchet — a pre-existing gap, listed honestly rather
+# than closed here, alongside eos_solver.cpp / combustion.cpp /
+# bulk_transport.cpp / sky_exchange.cpp, which are strict but unscanned. So
+# "every sim TU" is not what SIM_TUS covers; each entry is a statement about
+# that TU alone. Ray-engine-v2 P1 adds radiation_sweep.cpp at a HARD 0/0/0 and
+# emissive_table.cpp at its documented floor.)
 SIM_TUS = (
     "atmosphere_solver.cpp",
     "smoke_dynamics.cpp",
@@ -53,6 +60,8 @@ SIM_TUS = (
     "water_solver.cpp",
     "temperature_solver.cpp",
     "physics_engine.cpp",
+    "radiation_sweep.cpp",
+    "emissive_table.cpp",
 )
 
 # Whole-word ``float`` / ``double`` (so "floating" / "doubled" in prose don't
@@ -337,6 +346,15 @@ _FP_FAST_RE = re.compile(r"fp:fast")
 # scalar, not per-cell arithmetic); the destruction-loop's hotf recompute
 # (T_i/T_ext_i/clamp0cap_q) reuses already-quantized q16/recip values and adds
 # no new `(double)`/`float` token. `float`/`fp:fast` unchanged.
+# Ray-engine-v2 P1 (2026-09-16, docs/ray_engine_v2_design_v3_2026-09-15.md
+# §8.1): radiation_sweep.cpp is PURE INTEGER and pinned at 0/0/0 — a HARD gate
+# from birth. This ratchet counts LINES CONTAINING THE WORD, comments included,
+# so 0/0/0 forbids the two type names even in prose there. emissive_table.cpp
+# holds the E° bake moved out of raycaster.cpp: the ONE place the E° map
+# touches a real number (the load-time `(double)k4 * rad_scale` boundary
+# multiply, door 2, the pre-existing audited chain) — its `double` lines are
+# that bake's declarations, the dial-integrality check and the comment lines
+# that explain them, recorded at their actual count. `float` 0, `fp:fast` 0.
 BASELINE = {
     "atmosphere_solver.cpp":  {"float": 32, "double": 32, "fp:fast": 1},
     "smoke_dynamics.cpp":     {"float": 24, "double": 13, "fp:fast": 0},
@@ -344,6 +362,8 @@ BASELINE = {
     "water_solver.cpp":       {"float": 32, "double": 22, "fp:fast": 1},
     "temperature_solver.cpp": {"float": 4,  "double": 6,  "fp:fast": 0},
     "physics_engine.cpp":     {"float": 68, "double": 28, "fp:fast": 1},
+    "radiation_sweep.cpp":    {"float": 0,  "double": 0,  "fp:fast": 0},
+    "emissive_table.cpp":     {"float": 0,  "double": 8,  "fp:fast": 0},
 }
 
 # The TUs that have been MIGRATED to integer end-to-end (S3c). For these, the
