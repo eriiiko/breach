@@ -276,7 +276,7 @@ tile held at the 1263-game plateau (1556 K), shear S16, `k_leak = 0`:
 A *wood* source (`a = 1.0` rather than furniture's 0.5) is exactly double:
 46.9 / 31.1 / 22.8 kW/m2, which reproduces P0 section 0.6's geometric factors
 (`G = 0.1414 / 0.0939 / 0.0687` shear, times `sigma * 1556^4 = 332.4 kW/m2`) to
-three digits — the bench and P0's independent probe agree.
+**0.3 %** — the bench and P0's independent probe agree.
 
 ### 5.2 The survey's reach curve, hit on both of its points
 
@@ -353,9 +353,10 @@ so fast: the radiation is not too strong, the **objects are effectively
 weightless**.
 
 Read the other way round — holding the fitted dial and asking what tile it
-describes — a `thermal_mass = 8` tile at 80.2 J/K is a 12 mm plywood sheet of
-about 0.09 m2. So the current dial is, unintentionally, a *very thin surface
-layer* calibration (section 9 takes that seriously).
+describes — 80.2 J/K is a square of 12 mm plywood about **10 cm on a side**
+(0.0096 m2). So the current dial is, unintentionally, a *very thin and very
+small surface* calibration, more extreme even than the surface-layer reading
+section 9 takes seriously (which would be 6.1 kJ/K, 75x heavier than this).
 
 Nothing is changed by this: `[physics.fire] rad_scale` keeps its fitted value
 until P3c. The ratio is what P3 has to absorb, and it is the size of the feel
@@ -660,10 +661,12 @@ decision.
 ## 12. The gate
 
     C:/Users/steen/anaconda3/python.exe -m pytest tests -q
-    2529 passed, 29 skipped, 4 xfailed, 3 warnings in 123.15 s
+    2529 passed, 29 skipped, 4 xfailed, 3 warnings in 116.08 s      (0 failed)
 
-Identical counts to P2a's gate run. The 29 skips are the CUDA gates (no
-`cpp/build_cuda` in this worktree, by instruction — no CUDA source changed).
+**Identical counts to P2a's gate run** (2529 / 29 / 4), which is the check that
+P2b added no test and removed none: `test_live_runner_owns_one_bake_for_both_owners`
+was rewritten in place, one test for one test. The 29 skips are the CUDA gates
+(no `cpp/build_cuda` in this worktree, by instruction — no CUDA source changed).
 
 **Gate 0** (`tests/test_radiation_sweep_reference.py`, the sweep held bit for
 bit against `sweep_ref_q.py`): **34 passed**, unmoved — as it must be. P2b
