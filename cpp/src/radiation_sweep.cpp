@@ -215,6 +215,24 @@ void RadiationSweep::run(const int32_t* temperature,
         f_q24_[i] = fleck_enabled ? fleck_f_q24(T_abs, L) : F_ONE;
     }
 
+    // ---- OVERWRITE, not accumulate: run() clears its own four outputs -----
+    // The per-ordinate books below are `+=`, so the first ordinate needs clean
+    // planes. P1 got them from the conductor's end-of-tick wipe, which also
+    // BLINDED the tile inspector: `rad_fluence` was zero again by the time the
+    // renderer read it (design v3 row 38). The wipe lives here from P2a and the
+    // four `fill(0)` lines are gone from Simulation.step, so the planes hold
+    // THIS run's values until the next run overwrites them — which is what the
+    // render-time readout needs and what the digest does not care about (none
+    // of the four is in DIGEST_FIELDS or SIM_FIELDS). Cleared AFTER the
+    // pre-pass's ingress check, so a REJECTED scene leaves the caller's planes
+    // exactly as it found them.
+    for (int i = 0; i < n; ++i) {
+        rad_net[i] = 0;
+        rad_flux[i] = 0;
+        rad_amb[i] = 0;
+        rad_fluence[i] = 0;
+    }
+
     // ---- the sweep, one ordinate after another (CPU) ----------------------
     int64_t min_s = 0, max_s = 0;
     bool first = true;

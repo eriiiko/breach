@@ -12,6 +12,7 @@ Run:
 from __future__ import annotations
 
 import importlib.util
+import math
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -200,6 +201,60 @@ def test_sweep_rows_come_from_the_engine_when_one_is_bound():
     assert 0.0 < r_hot.fleck_f < 1.0
     assert r_hot.t_cap == pytest.approx(4 * b, abs=1e-9)
     assert r_hot.phi == pytest.approx(table[b] / TEMP_SCALE, rel=1e-12)
+
+
+def test_sweep_rows_are_still_readable_after_a_whole_simulation_step():
+    """PROPERTY (ray-engine-v2 P2a, design row 38 — the WHOLE POINT of moving
+    the wipe): after a complete ``Simulation.step`` on a level with a burning,
+    1263-game wood tile, the readout at a NEIGHBOURING cell still reports a
+    positive Phi and a finite E_inv(Phi). While the four shadow planes were
+    wiped by the conductor at end of tick, a render-time read saw Phi = 0 and
+    E_inv(0) = 0 on every tile and the three sweep rows were decoration.
+
+    This is the end-user-visible half of the patch, so it is asserted on the
+    REAL engine through the real conductor, not on a stub.
+
+    BREAKS IF: a ``fill(0)`` for the sweep's planes returns to Simulation.step,
+    or ``RadiationSweep::run`` stops zeroing and writing them itself.
+    """
+    sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
+    import breach_physics as bp
+    from level_loader import load as load_level
+    from simulation import Simulation, fire_fixed
+    from simulation.materials import MAT_WOOD
+
+    sim = Simulation(load_level("playground"), seed=1, breach_physics=bp,
+                     enable_recorder=False)
+    g = sim.gmap
+    ys, xs = np.where((g.material == MAT_WOOD) & g.thermal_solid)
+    pick = None
+    for y, x in zip(ys, xs):
+        if 0 < y < g.material.shape[0] - 1 and 0 < x < g.material.shape[1] - 1:
+            if not g.thermal_solid[y, x + 1]:
+                pick = (int(y), int(x))
+                break
+    assert pick is not None, "the level carries no wood tile with an air neighbour"
+    y, x = pick
+    # A fire is started by DELIVERING HEAT (CLAUDE.md "Starting a fire"): the
+    # tile is both hot and lit, or it would radiate nothing at all.
+    g.temperature[y, x] = 1263 << 16
+    g.fire[y, x] = fire_fixed.quantize_scalar(0.8)
+    sim.set_paused(False)
+    sim.step()                                   # a WHOLE tick, wipe included
+
+    r = pack_hover_readout(g, x + 1, y, KELVIN_FN)   # the air tile beside the fire
+    assert r is not None
+    assert r.phi > 0.0, "Phi is zero after the tick — the readout is blind again"
+    assert math.isfinite(r.t_cap) and r.t_cap >= 0.0
+    assert math.isfinite(r.fleck_f) and 0.0 < r.fleck_f <= 1.0
+    # non-vacuous: the neighbour of a 1263-game fire sees MORE than the bare
+    # ambient ring every cell gets, so this is the fire's own radiation.
+    e0 = int(np.asarray(sim.physics_runner.engine.emissive.table())[0])
+    ambient_phi = 16 * ((e0 * 4096) >> 16) / TEMP_SCALE
+    assert r.phi > ambient_phi, (r.phi, ambient_phi)
+    print(f"\nafter one Simulation.step: neighbour of the fire reads Phi = {r.phi:.1f} u/t "
+          f"(ambient ring alone would be {ambient_phi:.1f}), E_inv(Phi) = {r.t_cap:.1f} u, "
+          f"f = {r.fleck_f:.6f}")
 
 
 def test_vacuum_tile_labelled_vacuum():

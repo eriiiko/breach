@@ -222,3 +222,100 @@ stable fact about the transports at all - it moves with the alpha floor. The
 "heat takes shear" ruling rests on the undamped configuration, which is exactly
 where the gate asserts it, and on the mean radius, where shear leads in every
 row. The stale numbers in the gate's docstring are corrected.
+
+---
+
+## 3. T3 - the sweep zeroes its own outputs
+
+`RadiationSweep::run` books `+=` over the ordinates, so P1's four planes were
+only clean because the CONDUCTOR wiped them at the end of the previous tick -
+which also meant they were zero again by the time the renderer read them, and
+the tile inspector's Phi / f / E_inv(Phi) rows were decoration (design row 38).
+
+* `run()` now zeroes the four planes itself, right before the first ordinate and
+  AFTER the pre-pass's ingress check - so an ingress-rejected scene leaves the
+  caller's planes exactly as it found them.
+* The four `fill(0)` lines are gone from `Simulation.step`. The THREE old planes
+  (`rad_net`, `rad_amb`, `rad_flux`) keep theirs: their writer, the old cast,
+  does not clear its own outputs.
+* Documented in `radiation_sweep.h` ("run() OVERWRITES the four planes; they
+  hold the last run's values until the next run"), in the binding's docstring,
+  in `gamemap.py`'s shadow-plane block, in `hover_readout.py`'s NOTE (which
+  said the opposite), and in the CLAUDE.md sweep row.
+
+Nothing digested changes: none of the four is in `DIGEST_FIELDS` or
+`SIM_FIELDS`, and the recorder never carried them.
+
+### 3.1 The tests that assumed the wipe
+
+`test_shadow_planes_are_wiped_by_the_conductor_after_every_tick` asserted the
+opposite of the new contract and is replaced by two tests:
+
+* **`test_shadow_planes_survive_the_tick_and_hold_the_sweep_s_own_values`** -
+  the planes are snapshotted MID-tick (right after `PhysicsRunner.step`) and
+  asserted EQUAL to what `Simulation.step` leaves behind, so "still there" means
+  the sweep's own integers, not merely non-zero.
+* **`test_a_second_tick_overwrites_the_planes_and_does_not_accumulate`** - the
+  non-vacuous half. Two ticks on a burning-tile scene, then each plane is
+  compared against ONE direct `RadiationSweep.run` on that tick's captured
+  inputs (dials read off the runner, never hardcoded), and against
+  `tick1 + tick2`, which it must NOT equal. That comparison is exactly the bug
+  the patch would have caused had `run()` kept accumulating.
+
+Measured on the playground level, hot wood at (4, 61):
+
+```
+playground: rad_net_sweep = -203,948,000 on the fire tile, max absorber 28,881,688
+after Simulation.step: Phi min = 389,472 (the ambient ring), max = 29,271,160
+tick 2: Phi max = 32,510,587 == a single direct run on the same inputs
+```
+
+### 3.2 The readout, end to end
+
+`tests/test_hover_readout.py` gains
+**`test_sweep_rows_are_still_readable_after_a_whole_simulation_step`** - the
+end-user-visible half of the patch, asserted on the REAL engine through the real
+conductor: after a whole tick with a burning 1263-game wood tile, the readout at
+the neighbouring air tile reports
+
+```
+Phi = 446.6 u/t   (the ambient ring alone would be 5.9)
+E_inv(Phi) = 572.0 u        f = 1.000000  (air: a = 0, so L = 0)
+```
+
+Phi is asserted **above the bare ambient ring**, so the test cannot pass on the
+ring that lights every cell - it is the fire's own radiation being read at
+render time. Before this patch the same read returned Phi = 0 and E_inv(0) = 0.
+
+---
+
+## 4. T4 - the suite
+
+    C:/Users/steen/anaconda3/python.exe -m pytest tests -q
+    2529 passed, 29 skipped, 4 xfailed, 3 warnings in 122.14 s
+
+The 29 skips are the CUDA gates (no `cpp/build_cuda` in this worktree, by
+instruction - no CUDA source changed). **Every golden is untouched**: no golden
+file appears in the branch diff at all (`GOLDEN_AGGREGATE` still
+`167b96bd...`), which is what "nothing the live game computes changed" means -
+the fold still reads the OLD cast's `rad_net`, and the old cast has no Fleck
+factor and no sweep planes.
+
+## 5. What did not hold, in one list
+
+1. **Gate 4's fast mode went vacuous at floor 0** (section 1.4) - the clamp's
+   first hit moved from tick 8 to tick 11 and the 8-tick fast run reported
+   `clamp = 0` as a PASS. Fixed by measuring the first-hit tick and giving that
+   sub-check its own count.
+2. **Design row 37's isotropy finding is floor-dependent** (section 2.3) - the
+   1-tile flip it records is gone at floor 0 and the 5x5 case flips instead.
+   The ruling is unaffected (the gate asserts the undamped configuration) but
+   the row should be amended at arc close.
+3. **Design row 34 / P0 section 0.6's "10 %, not x300"** becomes **0.5 %** at
+   floor 0 (1108.0 clamped vs 1113.6 un-clamped, section 2.2). The clamp is
+   still necessary and still fires; it simply is no longer what holds the
+   fire-range answer down.
+4. Two stale floor-1/2 numbers were quoted in `test_radiation_sweep_gates.py`'s
+   docstrings and one stale label pair in `p0b_alpha_floor.py`; both corrected.
+5. `hover_readout.py` carried a NOTE stating that a render-time read sees Phi = 0
+   - true before this patch, and the exact blindness row 38 names.

@@ -187,10 +187,10 @@ def pack_hover_readout(gmap, tx: int, ty: int,
     # on the engine's EmissiveTable, EmissiveTable.e_inv_q) so there is ONE
     # implementation of each in the tree — the reference, the sweep and this
     # readout cannot drift apart. With no engine bound (a bare GameMap, a
-    # stub) both show nan. NOTE: rad_fluence is a per-tick plane wiped at the
-    # end of Simulation.step, so a render-time read sees this tick's value
-    # only if the readout is packed before that wipe; at end of tick Phi is 0
-    # and E_inv(0) is 0.
+    # stub) both show nan. NOTE: rad_fluence is per-tick in meaning but the
+    # SWEEP overwrites it at its own start (P2a, design row 38), so a
+    # render-time read after the tick has ended sees the last tick's real
+    # value — which is the whole reason the conductor's wipe was removed.
     phi_raw = int(gmap.rad_fluence[ty, tx])
     phi = phi_raw / TEMP_SCALE
     atten_a = _optics_fx.dequantize(gmap.heat_atten_q[ty, tx]).item()

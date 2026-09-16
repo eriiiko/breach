@@ -91,8 +91,13 @@ public:
     // is not one of {12, 16} x {step, shear}.
     static const OrdinateConst* ordinate_table(int n_ordinates, int transport);
 
-    // One tick of the sweep over all ordinates, ACCUMULATING into the four
-    // planes (the caller wipes them per tick, as the conductor does).
+    // One tick of the sweep over all ordinates. run() OVERWRITES the four
+    // output planes: it zeroes them itself before the first ordinate (the
+    // per-ordinate books are `+=`), so they hold the LAST run's values until
+    // the next run — the tile inspector reads them at render time, after the
+    // tick has ended (design v3 row 38; the conductor's four `fill(0)` lines
+    // died at P2a). A caller needs no wipe, and an ingress-rejected scene
+    // leaves the planes untouched.
     //   temperature      : int32 Q16.16 (h, w)
     //   heat_atten_q     : int32 Q16 (h, w) — a_i, the material extinction
     //   dyn_heat_atten_q : int32 Q16 (h, w) — d_i >= a_i, material + stamped bodies
@@ -103,7 +108,8 @@ public:
     //   k_leak_q         : the uniform out-of-plane leak coefficient, Q16 in [0, ONE]
     //   transport        : TRANSPORT_STEP or TRANSPORT_SHEAR
     //   n_ordinates      : 16 (S16) or 12 (S12)
-    //   rad_net / rad_flux / rad_amb / rad_fluence : int64 (h, w), accumulated
+    //   rad_net / rad_flux / rad_amb / rad_fluence : int64 (h, w), OVERWRITTEN
+    //                      (zeroed here, then accumulated over the ordinates)
     //   fleck_enabled    : true on the live path (the engine ALWAYS damps);
     //                      false sets f = 2^24 on every cell — the reference's
     //                      `f_plane=None` configuration, which its isotropy and
