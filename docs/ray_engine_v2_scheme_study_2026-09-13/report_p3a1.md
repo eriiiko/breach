@@ -32,8 +32,8 @@ a stale caller raises `TypeError` instead.
 - [x] Surface inventory verified against the tree (section 2).
 - [x] D1 — the widening (section 3).
 - [x] D2 — the loudness test (section 4).
-- [ ] Gate: CPU build + suite (section 5).
-- [ ] Gate: CUDA build + suite (section 5).
+- [x] Gate: CPU build + suite (section 5).
+- [x] Gate: CUDA build + suite (section 5).
 - [x] Findings (section 6).
 
 ## 2. The inventory — every 32-bit surface on the live planes
@@ -277,7 +277,56 @@ would have succeeded, writing nothing the caller could see (design row 36).
 
 ## 5. The gate
 
-(filled with the measured counts.)
+Both builds rebuilt from this branch on DESKTOP-0E98HUV (RTX 3070, sm_86,
+CUDA 12.4): `cpp\build_cpu_home.bat` then `cpp\build_cuda.bat`, both
+`BUILD_EXIT=0`, no narrowing warnings.
+
+| Gate | Result |
+|---|---|
+| **Goldens unmoved** | **Yes.** No golden, no spec toml, no `DIGEST_SPEC_VERSION`, nothing in `tests/field_digest.py` or `tests/_xarch_perfield_digest.py` is touched on this branch — `git diff --stat <base>..HEAD` over those paths is empty. `GOLDEN_AGGREGATE` and every digest test pass unchanged. **Nothing was re-baselined.** |
+| **Full suite, CPU build** | `2532 passed, 29 skipped, 4 xfailed, 0 failed` (1 m 57 s) |
+| **Full suite, CUDA build present** | `2557 passed, 4 skipped, 4 xfailed, 0 failed` (3 m 24 s) — the 25 CUDA gates that skip on a CPU-only box all run and all pass |
+| Float ratchet (`test_no_float_in_sim_tu.py`) | green; counts only went down (it reports pre-existing slack in five TUs I did not create and did not tighten) |
+| Ingress lint (`test_ingress_lint.py`) | green |
+| `git status` | clean; every commit staged by explicit path, never `git add -A` |
+
+### The CUDA lockstep gate is the real proof of the device widening
+
+`test_cuda_pr1_fire_plane.py` holds the emission cast CPU↔CUDA at **tol 0** on
+all three planes. Fully exercised on this branch:
+
+* 600-emitter synthetic firestorm — bit-identical, tol 0;
+* equal-T lattices at 180 / 443 / 1000 / 2500 game — bit-identical, tol 0;
+* the hot/cold pair with the **flux limiter engaged** (raw per-ray net
+  2 934 280 704 against a per-pair budget of 98 304 000) — bit-identical, tol 0;
+* a **12-tick live evolving burn**, where a single divergent count would
+  compound into a different emitter set the next tick — bit-identical on all
+  three planes every tick, `rad_net + rad_amb` summing to **exactly 0**, and
+  temperature bit-identical across the whole trajectory;
+* the 600-emitter cost budget: 1.994 ms against a 3.0 ms budget (unchanged).
+
+`PR4_RADIATION_RESULT: PASS`.
+
+Two of those scenarios report `flux max = 2147483647` — `RAD_FLUX_CEILING`
+engaging, with the CPU saturating add and the CUDA CAS loop agreeing on it to
+the count. That is the preserved ceiling (§6 finding 3) proving itself on both
+backends at once.
+
+And gate 4/5 in `test_radiation_sweep_gates.py` compare the **widened C++ fold**
+to the integer reference tick for tick and still match, which is the fold's own
+byte-identity check.
+
+### What this patch did NOT do
+
+The fold still reads the old cast's plane; the flip is P3a-2. Untouched: the
+maximum-principle clamp, `rad_fluence`, `dyn_heat_atten_q`, the digest spec,
+every golden, `[materials.*]`, `cool_shift`, `thermal_mass`, every calibration
+key, and the old cast and all its dials (P3c). Nothing was merged, pushed, or
+deleted.
+
+**Note for the orchestrator**: `fire-12` has advanced to `9b65b29` since this
+branch was cut at `34634b7`. I did not rebase or merge — the branch is exactly
+its eight commits on the original base.
 
 ## 6. Findings
 
