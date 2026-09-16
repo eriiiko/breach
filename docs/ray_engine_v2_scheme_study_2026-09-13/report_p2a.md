@@ -154,3 +154,71 @@ call, so the new default does not change what it measures.
 
 **T1 result: all 13 reference gates PASS in full mode; the pytest wrapper
 `tests/test_ray_engine_v2_integer_reference.py` is 14 passed in 1.6 s.**
+
+---
+
+## 2. T2 - floor 0 in the engine, gate 0 re-run
+
+One line of arithmetic, in `cpp/src/radiation_sweep.h`'s `fleck_f_q24` (the
+FP_HD pre-pass primitive the sweep, the binding and the tile inspector all
+share - there is only ever one of it):
+
+    const int64_t d1 = T_abs_q + (L_q << 1);           // GONE
+    const int64_t d2 = L_q << 2;                       // 4*L_q
+    const int64_t D  = (T_abs_q > d2) ? T_abs_q : d2;  // floor 0 (design row 39)
+
+plus the credits block (which quotes Fleck's alpha and now says why our floor
+is 0 and not his 1/2), the `.cpp` scheme comment, and the CLAUDE.md sweep row -
+which did not carry the formula at all before and now does.
+
+### 2.1 Gate 0 - still bit for bit
+
+`tests/test_radiation_sweep_reference.py`: **34 passed** (0.4 s). All 32
+randomised configurations - 4 scenes x {S16, S12} x {k = 0, k = 0.10} x {shear,
+step} - plus the per-bucket pre-pass comparison on every shipped `(a, his)` pair
+and the door-rejection test. **Every plane and the Fleck plane EQUAL, integer
+for integer**, after both sides moved to floor 0. This is the whole point of the
+reference-first rule: the two implementations changed in lockstep and the oracle
+proved it.
+
+### 2.2 Gates 1-6 on the engine - 24 passed
+
+Numbers that MOVED at floor 0 (all previously floor-1/2 measurements):
+
+| measurement | floor 1/2 (P1) | floor 0 (P2a) |
+|---|---|---|
+| over-driven crate, clamp hits in 24 ticks | 17 | **14** |
+| over-driven crate, clamped | 1108.0 game | **1108.0 game** |
+| over-driven crate, un-clamped (96 ticks) | 1219.8 game | **1113.6 game** |
+| burning crate (G5b), 1263 game after 24 ticks | (not quoted) | 976.6 game |
+
+The clamp's own gates are unaffected in kind: it still fires, the rails stay
+silent on the 2-D scene, and the separately-proved `INT32_MAX`-deposit scene
+still lights `t_max_phys_hits` 15 times with the clamp off.
+
+### 2.3 Isotropy with the engine's own Fleck factor ON - REPORTED, not asserted
+
+81x81, a 1263-game source, `k = 0.10`, ambient ring on. Spread = max/min radius
+at the `E[280]` ignition crossing (lower is rounder).
+
+| source | shear, Fleck OFF | step, Fleck OFF | shear, Fleck ON | step, Fleck ON |
+|---|---|---|---|---|
+| 1 tile | 1.459 | 1.627 | **1.520** | **1.762** |
+| 3x3 | 1.277 | 1.262 | **1.215** | **1.289** |
+| 5x5 | 1.123 | 1.248 | **1.261** | **1.249** |
+
+Mean ignition radius, Fleck ON: shear 3.76 / 9.50 / 13.10 tiles, step 4.39 /
+8.47 / 11.33 (Fleck OFF: shear 4.93 / 11.55 / 15.33, step 5.27 / 10.18 / 12.93).
+
+The Fleck-OFF half is the reference's configuration and is **unchanged**, as it
+must be (f = 2^24 either way), and still equals the reference's own planes cell
+for cell on the full 81x81 grid.
+
+**FINDING - design row 37 needs amending.** P1 reported that with damping on the
+**1-tile** ordering flips (1.716 shear vs 1.688 step). At floor 0 **that flip is
+gone** (1.520 vs 1.762, shear clearly rounder) and the **5x5** case flips
+instead, marginally (1.261 vs 1.249, about 1 %). So the damped ordering is not a
+stable fact about the transports at all - it moves with the alpha floor. The
+"heat takes shear" ruling rests on the undamped configuration, which is exactly
+where the gate asserts it, and on the mean radius, where shear leads in every
+row. The stale numbers in the gate's docstring are corrected.

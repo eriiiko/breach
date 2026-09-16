@@ -16,6 +16,8 @@
 //   abs_mat = (stream * a) >> 16 ;  abs_body = (stream * b) >> 16      (b = d - a)
 //   ex_m    = (ex_cell * w_m) >> 16                                    (>= 0)
 //   src     = amb_m + mul128_shr(ex_m, f_q24, 24)   // Fleck damps the EXCESS only
+//             f_q24 = T_abs / max(T_abs, 4L)       // ALPHA FLOOR 0 (row 39):
+//                                                  // f == 2^24 where g <= 1
 //   emitted = (src * a) >> 16 ;   emit_body = (amb_m * b) >> 16
 //   i_out   = stream - abs_mat - abs_body + emitted + emit_body
 //   rad_net[i]     += abs_mat - emitted          // the material ledger, signed
