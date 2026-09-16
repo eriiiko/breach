@@ -34,7 +34,7 @@ a stale caller raises `TypeError` instead.
 - [x] D2 — the loudness test (section 4).
 - [ ] Gate: CPU build + suite (section 5).
 - [ ] Gate: CUDA build + suite (section 5).
-- [ ] Findings (section 6).
+- [x] Findings (section 6).
 
 ## 2. The inventory — every 32-bit surface on the live planes
 
@@ -281,4 +281,116 @@ would have succeeded, writing nothing the caller could see (design row 36).
 
 ## 6. Findings
 
-(filled as they are found.)
+### Finding 1 — there are FOUR bindings on this path, and two of them cannot be made loud with `.noconvert()`
+
+The brief named three bindings. There are four:
+`cuda_raycaster_cast_from_fire_plane`, `Raycaster.cast_from_fire_plane`,
+`TemperatureSolver.step` and `PhysicsEngine.step_tail`.
+
+The two the brief did not name are the two that matter, because they take
+`rad_net` as a **nullable `py::object`** (the `None` → no-fold idiom) and do
+`obj.cast<py::array_t<int32_t>>()` inside the lambda. `py::array_t<T>`'s default
+`ExtraFlags` is `forcecast`, and `.cast<>()` on a `py::object` runs that caster
+**directly** — there is no overload pass, so `.noconvert()` on the `py::arg` is
+silently inert. Had I applied the brief's recipe mechanically, those two would
+have looked hardened and been exactly as silent as before.
+
+The loud form for this idiom is an explicit
+`py::isinstance<py::array_t<int64_t>>` check raising `py::type_error`, which is
+already the house pattern — P1 used it for `rad_fluence` eighteen lines below
+one of the two sites. Both now use it, and D2 has a test per binding.
+
+**The general shape**: "drop forcecast / add noconvert" is advice about *typed*
+arguments. Any argument that must be nullable in this codebase is a
+`py::object`, and every one of those is a forcecast hole that no annotation can
+close.
+
+### Finding 2 — `rad_net` and `rad_amb` never approach their ceiling in real play; the widening is pure headroom
+
+Measured on the shipped playground under the **full conductor**, one wood tile
+lit the canonical way (heat + fire), 120 ticks:
+
+| plane | peak | of its old ceiling | ticks over it |
+|---|---|---|---|
+| `rad_net` | 556 375 847 | **25.9 %** of 2³¹ | **0 / 120** |
+| `rad_amb` | 0 (nothing escapes this enclosed level) | — | 0 / 120 |
+
+Tick 0 reproduces P1's number exactly (`max|rad_net| = 150 148 108`), which is a
+useful check that the harness measures the same thing P1 did.
+
+So for these two the widening changes no number on any reachable trajectory; it
+buys the room the sweep's values will need at P3a-2. (Driven as a *bare*
+`PhysicsRunner.step` loop with no conductor the scene runs away to the
+T_MAX_PHYS rail and `rad_net` does cross 2³¹ by tick 12 — but that is an
+un-conducted runaway, not a trajectory the game can produce, and under the old
+code it was the documented out-of-band wrap regime.)
+
+### Finding 3 — THE ONE THAT MATTERS: `rad_flux`'s ceiling is a unit-damage cap, it binds in ordinary play, and I did NOT lift it
+
+**This is the finding to take to Erik.**
+
+My first cut of the widening did the obvious thing: the accumulator goes int64,
+so its saturating add now clamps at `INT64_MAX` instead of `INT32_MAX`. Every
+golden stayed put and the whole suite was green, which is precisely why it is
+worth stating how nearly that shipped.
+
+Then I measured it. Same scene, same 120 conducted ticks:
+
+| | |
+|---|---|
+| ticks where `rad_flux` exceeded `INT32_MAX` | **38 of 120** |
+| most cells over it in a single tick | **249** |
+| first tick over it | **12** — with the level only at **2740 game** |
+| peak, un-capped | 9 861 538 651 = **459 %** of the old ceiling |
+| the ceiling, in game units | 32 768 |
+
+`INT32_MAX` on this plane was **never an overflow guard**. `rad_flux` is the D3
+radiant-flux SENSOR: it is outside the energy ledger, no solver reads it, and
+its one consumer is **unit heat damage** —
+`exchange.apply_environmental_damage` takes the per-tile peak as
+`phi = raw / HEAT_SCALE`. So that number is a cap on **how hard a fire can burn
+a marine**, and it engages in ordinary play from an ordinary fire — not in some
+pathological regime.
+
+Widening it would therefore have made fires meaningfully more lethal in hot
+rooms. That is a **feel change** (CLAUDE.md: *feel-adjacent changes never
+auto-merge*, HUMAN-TEST gate) smuggled inside a patch whose defining property is
+behaviour-neutrality — and no golden would ever have caught it, because
+`rad_flux` is deliberately in neither `DIGEST_FIELDS` nor `SIM_FIELDS`.
+
+**So the ceiling stays exactly where the int32 plane put it**, now as an
+explicit named constant (`raycaster.h::RAD_FLUX_CEILING`) read by both the CPU
+add and the CUDA CAS loop, with the measurement written where the next reader
+will meet it. P3a-1 is thereby behaviour-neutral on every trajectory I can
+measure, not merely on every gated one.
+
+`tests/test_radiation_sweep_shadow_wiring.py::test_the_flux_sensor_ceiling_did_not_move_with_the_width`
+is the tripwire, and it is non-vacuous — the scene reaches the cap (157 capped
+cell-ticks in 24 ticks), so the test exercises the clamp rather than an absence
+of flux.
+
+**THE OPEN QUESTION, for Erik, not for this patch**: *should* that cap exist?
+It is an artefact of a storage width nobody chose for this purpose, it is
+currently invisible to every gate, and the plane it lives on can now carry
+4.5 billion times more. Lifting it is a one-constant change with a HUMAN-TEST
+gate. Leaving it is also defensible — it has been the shipped feel throughout
+the fire-tuning arc, and #12's calibration was measured with it in place. What
+is not defensible is letting a widening decide it.
+
+### Finding 4 — `report_p1.md` does not exist
+
+The brief says to read `docs/ray_engine_v2_scheme_study_2026-09-13/report_p1.md`
+and follow its pattern. There is no such file; the study directory has
+`report.md`, `report_p0.md`, `report_p2a.md`, `report_p2b.md`. P1's findings
+were folded straight into design v3 (rows 36–38, commit `13bdbb7`) instead of
+getting a report of their own. I reconstructed the pattern from the design rows
+and from P1's own commits (`b22182a`, `d5ec711`) plus the shadow-plane binding
+and its wiring test, which carry it in the code. Worth correcting in whatever
+index the orchestrator is working from.
+
+### Finding 5 — three small things the patch had to get right that the list did not mention
+
+* **`cuda_temperature.cu`'s `nb`.** One shared `const size_t nb = n * sizeof(int32_t)` serves nine planes there. `rad_net` needed its own `nb64`; reusing `nb` is not a compile error, it copies half a plane.
+* **The two `(int32_t)` narrowing casts** in each march (CPU and CUDA). Deleting them is what makes the widening real, and `raycaster.h` already carried the proof they never truncated — so the deletion is provably value-preserving, not merely believed to be.
+* **`shr_round0_i64` was already there, waiting.** P1 added it with the comment "what keeps the fold byte-identical on the day its plane widens (P3)", and `tests/test_fixed_point_i64_twins.py` already gated its agreement with the narrow form. Its sibling for the landing (`sat_add_q16_i64`) did not exist; I added it beside `sat_add_q16` as one `FP_HD` definition, so the CPU and CUDA folds cannot drift.
+
