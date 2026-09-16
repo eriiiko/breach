@@ -1473,6 +1473,40 @@ original tiers are kept in the rows' history.
    through `min(cap_i, cap_j)`: one integer, both signs, exact conservation
    across any boundary. Radiation and conduction are separate passes, each booked
    into the arc #54 ledger, and they do not interfere.
+13. **Should `rad_flux` have a damage ceiling at all?** (P3a-1 finding 3,
+   `report_p3a1.md` §6.) `rad_flux` saturated at `INT32_MAX`, and widening the
+   plane to int64 made it obvious that **this number was never an overflow
+   guard**: `rad_flux` is the D3 *sensor*, outside the energy ledger, read by no
+   solver, and consumed by exactly one thing — **unit heat damage**
+   (`exchange.py:325-340`, `max(heat, rad_flux)` → `phi` → the burn band). So
+   `INT32_MAX` is a cap on **how hard a fire can burn a marine**, and it **binds
+   in ordinary play**: on the shipped playground under the full conductor it
+   engages from tick **12** (with the level only at 2740 game), on **38 of 120**
+   ticks, on as many as **249 cells at once**, and the un-capped peak reaches
+   **459 %** of it. The orchestrator's own run of the tripwire sees 157 capped
+   cell-ticks in 24 ticks. **P3a-1 therefore did NOT lift it** — saturating at
+   `INT64_MAX` "because the plane is wide now" would have been a silent feel
+   change, and **no golden could ever catch it** (`rad_flux` is deliberately in
+   neither `DIGEST_FIELDS` nor `SIM_FIELDS`). It is now the explicit
+   `raycaster.h::RAD_FLUX_CEILING`, read by both backends, with the measurement
+   beside it and a non-vacuous tripwire
+   (`test_the_flux_sensor_ceiling_did_not_move_with_the_width`) so that lifting
+   it must be deliberate. **The question for Erik**: nobody appears to have
+   chosen 32 768 game as a burn-damage cap — it is the width of an int32 doing
+   gameplay design, and it is limiting fire lethality in the game as it ships
+   today. Keep it (and re-home it as a named `[combat]` dial with a rationale),
+   raise it, or delete it? **Due before P3b**, which is where units start
+   absorbing from the sweep's body share and `rad_flux` gets its new writer.
+14. **`.noconvert()` is inert on every nullable argument in this codebase**
+   (P3a-1 finding 1) — recorded as a standing trap, not a question. A plane that
+   is optional must be a `py::object` for the `None` idiom, so there is no
+   overload pass to annotate and `.cast<>()` runs `py::array_t`'s default
+   forcecast *directly*; the annotation compiles, reads as hardening, and does
+   nothing. The only loud form is explicit `py::isinstance` + `py::type_error`
+   (the house pattern, `rad_fluence`, P1). **Row 36's wording is therefore
+   incomplete**: `.noconvert()` is what makes a *by-value* argument loud, and
+   nothing makes a nullable one loud except the explicit check. This applies
+   again at P3a-2 and P5.
 
 **Ruled by Erik on 2026-09-15, after v3 was written:**
 
