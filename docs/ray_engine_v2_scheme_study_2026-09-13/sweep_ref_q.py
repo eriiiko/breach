@@ -36,12 +36,19 @@ kept ONLY so the gate that says the ruling was necessary cannot pass vacuously.
 
 THE FLECK FACTOR IS Q24 (design row 32, P0b). `f_q` is `floordiv_q(T_abs << 24, D)`
 and the damped source is `amb_m + ((ex_m * f_q24) >> 24)`; in Q16 that source was
-not monotone in T above the fire range (P0 section 0.4, gate 12). Two knobs exist
-so the gates can MEASURE the alternatives this file does not implement:
+not monotone in T above the fire range (P0 section 0.4, gate 12).
+
+THE ALPHA FLOOR IS 0 (design row 39, RULED by Erik 2026-09-16; P2a). `alpha =
+max(0, 1 - 1/g)`, so `D = max(T_abs, 4L)` and `f == 1` exactly wherever the
+explicit material update is provably monotone (`g <= 1`: 1068 game for wood,
+1424 for the a = 0.5 rows). Below that branch the reference IS forward Euler, to
+the last count; above ~1800 game the two floors are bit-identical. Two knobs
+exist so the gates can MEASURE the forms this file does not ship:
 `fleck_f_q(shift=16)` is the rejected Q16 form (gate 12's non-vacuity), and
-`alpha_floor="zero"` is design section 12 item 4's undamped-fire variant, an open
-question for Erik and NOT the default -- everything here runs the ruled floor of
-one half unless a caller says otherwise (`p0b_alpha_floor.py` is the measurement).
+`alpha_floor="half"` is the superseded floor of one half (Fleck's own IMC bound),
+which gates 8 and 10 measure beside the default so "equals explicit" and "within
+one count" cannot pass vacuously (`p0b_alpha_floor.py` is P0b's measurement of
+both, and it names its floors explicitly, so it is unaffected by the default).
 """
 from __future__ import annotations
 
@@ -55,8 +62,9 @@ from dataclasses import dataclass, field
 ONE = 65536                      # Q16.16 unit
 F_SHIFT = 24                     # the Fleck factor's fixed point (design row 32)
 F_ONE = 1 << F_SHIFT             # f == F_ONE exactly when L_q == 0
-ALPHA_FLOOR_HALF = "half"        # alpha = max(1/2, 1 - 1/g) -- Fleck's bound, RULED
-ALPHA_FLOOR_ZERO = "zero"        # alpha = max(0,   1 - 1/g) -- design section 12 item 4
+ALPHA_FLOOR_HALF = "half"        # alpha = max(1/2, 1 - 1/g) -- Fleck's IMC bound
+ALPHA_FLOOR_ZERO = "zero"        # alpha = max(0,   1 - 1/g) -- RULED (row 39), the default
+ALPHA_FLOOR_DEFAULT = ALPHA_FLOOR_ZERO   # Erik, 2026-09-16: "Let's go floor 0 then."
 RAD_SCALE = 5.1427e-5            # config.toml:526   [physics.fire] rad_scale
 K_AMB = 293                      # config.toml:813   kelvin_ambient (integer-valued)
 K_SLOPE = 1                      # config.toml:814   k_temp_to_kelvin (G12: the x1 map)
@@ -250,16 +258,18 @@ def fleck_L_solid_q(T_q: int, a_q: int, his: int, table=E, e_ref: int = None) ->
     return shr_round0((a_q * ex) >> 16, his)
 
 
-def fleck_D_q(T_abs_q: int, L_q: int, alpha_floor: str = ALPHA_FLOOR_HALF) -> int:
+def fleck_D_q(T_abs_q: int, L_q: int, alpha_floor: str = ALPHA_FLOOR_DEFAULT) -> int:
     """The Fleck denominator `T_abs * (1 + alpha*g)`, exactly, in shifts alone.
 
     Substituting g = 4L/T_abs, both floors collapse to one max() of two shifts:
 
-        alpha = max(1/2, 1 - 1/g)  ->  D = max(T_abs + 2L, 4L)   (RULED, section 2.8)
-        alpha = max(0,   1 - 1/g)  ->  D = max(T_abs,      4L)   (section 12 item 4)
+        alpha = max(0,   1 - 1/g)  ->  D = max(T_abs,      4L)   (RULED row 39, DEFAULT)
+        alpha = max(1/2, 1 - 1/g)  ->  D = max(T_abs + 2L, 4L)   (superseded; measured)
 
-    Below the branch point alpha is its floor (1 + g/2, or 1); above it alpha is
-    1 - 1/g and 1 + alpha*g == g on both, which is the shared `4L` arm.
+    Below the branch point alpha is its floor (1, or 1 + g/2); above it alpha is
+    1 - 1/g and 1 + alpha*g == g on both, which is the shared `4L` arm. On the
+    ruled floor the first arm is `T_abs` itself, so `f == 1` exactly whenever
+    `4L <= T_abs` -- the whole explicitly-stable range is undamped (row 39).
     """
     if alpha_floor == ALPHA_FLOOR_HALF:
         return max(T_abs_q + 2 * L_q, 4 * L_q)
@@ -269,16 +279,17 @@ def fleck_D_q(T_abs_q: int, L_q: int, alpha_floor: str = ALPHA_FLOOR_HALF) -> in
 
 
 def fleck_f_q(T_q: int, L_q: int, *, shift: int = F_SHIFT,
-              alpha_floor: str = ALPHA_FLOOR_HALF) -> int:
-    """f_q = floordiv_q((T_abs_q << 24), max(T_abs_q + 2L, 4L)), design 2.8 + row 32.
+              alpha_floor: str = ALPHA_FLOOR_DEFAULT) -> int:
+    """f_q = floordiv_q((T_abs_q << 24), max(T_abs_q, 4L)), design 2.8 + rows 32, 39.
 
-    `alpha = max(1/2, 1 - 1/g)` is never computed: 1 + alpha*g == max(1 + g/2, g).
+    `alpha = max(0, 1 - 1/g)` is never computed: 1 + alpha*g == max(1, g).
     T_abs_q > 0 always (T_MIN = -292 game keeps T_abs >= 1), D >= T_abs_q, so
-    0 < f_q <= (1 << shift) and f_q == (1 << shift) exactly when L_q == 0.
+    0 < f_q <= (1 << shift) and, on the RULED floor, f_q == (1 << shift) exactly
+    when 4*L_q <= T_abs_q (on the superseded floor of one half, only when L_q == 0).
 
     `shift` is Q24 (row 32) and exists as a knob ONLY so the gates can measure the
-    Q16 form the design rejected; `alpha_floor` likewise exists only for the
-    measurement design section 12 item 4 asks for. Neither is a scheme choice.
+    Q16 form the design rejected; `alpha_floor` likewise exists only so they can
+    measure the superseded floor of one half. Neither is a scheme choice.
     """
     T_abs_q = T_q + (K_AMB << 16)
     assert T_abs_q > 0, "T_abs must be positive (T_MIN = -292 game guarantees it)"
@@ -287,14 +298,14 @@ def fleck_f_q(T_q: int, L_q: int, *, shift: int = F_SHIFT,
 
 
 def fleck_f_solid_q(T_q: int, a_q: int, his: int, table=E, e_ref: int = None, *,
-                    shift: int = F_SHIFT, alpha_floor: str = ALPHA_FLOOR_HALF):
+                    shift: int = F_SHIFT, alpha_floor: str = ALPHA_FLOOR_DEFAULT):
     """Convenience: returns (f_q, L_q) for a solid cell."""
     L = fleck_L_solid_q(T_q, a_q, his, table, e_ref)
     return fleck_f_q(T_q, L, shift=shift, alpha_floor=alpha_floor), L
 
 
 def fleck_f_float(T_game: float, L_game: float,
-                  alpha_floor: str = ALPHA_FLOOR_HALF) -> float:
+                  alpha_floor: str = ALPHA_FLOOR_DEFAULT) -> float:
     """The float form this is checked against: 1/(1 + alpha*g),
     g = 4*L/T_abs, alpha = max(floor, 1 - 1/g)."""
     T_abs = T_game + K_AMB
@@ -309,7 +320,7 @@ def fleck_f_float(T_game: float, L_game: float,
 
 
 def damped_source_q(T_q: int, a_q: int, his: int, table=E, e_ref: int = None, *,
-                    shift: int = F_SHIFT, alpha_floor: str = ALPHA_FLOOR_HALF) -> int:
+                    shift: int = F_SHIFT, alpha_floor: str = ALPHA_FLOOR_DEFAULT) -> int:
     """What a solid cell EMITS per ordinate-weight-1 this tick, exactly as the
     sweep forms it:  E_ref + ((E°[T] - E_ref) * f_q >> shift).
 
@@ -548,7 +559,7 @@ def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
 
 
 def fleck_prepass(T, a, his, *, table=E, e_ref: int = None, enabled: bool = True,
-                  alpha_floor: str = ALPHA_FLOOR_HALF):
+                  alpha_floor: str = ALPHA_FLOOR_DEFAULT):
     """The pre-sweep Fleck pass for SOLIDS (design section 2.8). Q24 (row 32).
 
     `his` may be an int (uniform) or a plane. Returns the f_plane.
@@ -650,7 +661,7 @@ class Scene:
     body_mode: str = "reemit"
     e_ref: int = None
     fleck: bool = True
-    alpha_floor: str = ALPHA_FLOOR_HALF
+    alpha_floor: str = ALPHA_FLOOR_DEFAULT
     counters: FoldCounters = field(default_factory=FoldCounters)
 
     def __post_init__(self):
@@ -685,7 +696,7 @@ class Scene:
 # --------------------------------------------------------------------------- #
 def cell_rad_net_q(T_q: int, phi: int, a_q: int, his: int, *, table=E,
                    e_ref: int = None, fleck: bool = True,
-                   alpha_floor: str = ALPHA_FLOOR_HALF) -> int:
+                   alpha_floor: str = ALPHA_FLOOR_DEFAULT) -> int:
     """rad_net for one cell under a held total fluence Phi, in the excess form:
 
         rad_net = ((Phi*a) >> 16) - ((src*a) >> 16),
@@ -710,7 +721,7 @@ def cell_rad_net_q(T_q: int, phi: int, a_q: int, his: int, *, table=E,
 
 def cell_march(T0_q: int, phi: int, a_q: int, his: int, ticks: int, *,
                table=E, e_ref: int = None, fleck: bool = True,
-               alpha_floor: str = ALPHA_FLOOR_HALF,
+               alpha_floor: str = ALPHA_FLOOR_DEFAULT,
                clamp_enabled: bool = True, rails_enabled: bool = True,
                int32_sat: bool = True, trace: bool = False):
     """March one cell `ticks` ticks under a held fluence. Returns (T_q, counters)

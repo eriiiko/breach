@@ -352,8 +352,10 @@ def test_g5_clamp_disabled_climbs_past_the_clamped_value_tick_for_tick_with_the_
     equals the reference's tick for tick over 96 ticks.
 
     FINDING, stated rather than hidden: in the 2-D sweep the un-clamped crate
-    SETTLES about 10 % above the clamped one (P0 §0.6: 1108 vs 1220 game) —
-    it does NOT run to the T_MAX_PHYS rail. The 0-D runaway that rails the
+    SETTLES just above the clamped one — 1108.0 vs 1113.6 game, 0.5 %, at the
+    RULED alpha floor 0 (P2a; it was 1108 vs 1219.8, 10 %, at the superseded
+    floor of ½, which is the pair P0 §0.6 and design row 34 quote) — it does
+    NOT run to the T_MAX_PHYS rail. The 0-D runaway that rails the
     int32 field (P0 §0.5) is driven by a held fluence whose rad_net is far
     outside int32, which the P1 fold cannot receive while `rad_net` stays
     int32 (orchestrator override, design row 35); the rail's reachability on
@@ -492,10 +494,12 @@ def test_g6_isotropy_shear_rounder_than_step_at_one_tile_and_five_by_five():
     3x3 ordering flips under the ambient ring).
 
     The SAME table with the engine's own Fleck factor ON is printed beside it
-    and its ordering is NOT asserted — a FINDING for the design: with a
-    damped 1263-game single tile the 1-tile ordering flips (measured 1.716
-    shear vs 1.688 step), so the "heat takes shear" table rests on the
-    undamped configuration.
+    and its ordering is NOT asserted — a FINDING for the design: the damped
+    ordering is not stable under the alpha floor. At the superseded floor of ½
+    (P1) the 1-tile case flipped, 1.716 shear vs 1.688 step; at the RULED floor
+    0 (P2a) that flip is GONE (1.520 vs 1.762) and the 5x5 case flips instead
+    (1.261 vs 1.249, ~1 %). So the "heat takes shear" table rests on the
+    undamped configuration either way, which is where this gate asserts.
 
     BREAKS IF: the transport constants change, or the half-offset ordinate set
     is replaced by one with an ordinate on an axis.

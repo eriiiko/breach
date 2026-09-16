@@ -21,8 +21,15 @@
 //     calculating time and frequency dependent nonlinear radiation transport",
 //     J. Comput. Phys. 8 (1971) 313–342 — the emission damping factor
 //     f = 1/(1 + α·g), here in its exact-integer excess form (§2.8), with
-//     α = max(½, 1 − 1/g) collapsed into ONE kit floor-division:
-//     f = T_abs / max(T_abs + 2L, 4L)  (Q24).
+//     α = max(0, 1 − 1/g) collapsed into ONE kit floor-division:
+//     f = T_abs / max(T_abs, 4L)  (Q24). The FLOOR IS 0, not Fleck's own ½
+//     (design v3 row 39, RULED by Erik 2026-09-16, §2.8's RULED paragraph):
+//     Fleck's α ≥ ½ is the bound for IMC's linearised equations with
+//     effective scattering, while for OUR material update the monotone
+//     condition is that x = g(1 + αg/4)/(1 + αg)² stays in (0, 1], which
+//     α = max(0, 1 − 1/g) satisfies for every g. So nothing is damped where
+//     the explicit update is provably stable (g ≤ 1) and a burning tile held
+//     at its plateau by combustion radiates full black body there.
 //   * A.D. Davis et al., "Discrete ordinates transport on structured grids",
 //     2012 — the shear-vs-step transport trade (design §2.4). The discrete
 //     ordinates (S_N) method itself: Chandrasekhar, "Radiative Transfer", 1950.
@@ -60,15 +67,16 @@ FP_HD inline int64_t fleck_L_solid_q(int64_t ex, int32_t a_q, int his) {
     return fixedpoint::shr_round0_i64(((int64_t)a_q * ex) >> fixedpoint::FP_SHIFT, his);
 }
 
-// f_q24 = floordiv_q(T_abs_q << 24, max(T_abs_q + 2·L_q, 4·L_q)) — design
-// §2.8 + row 32. α = max(½, 1 − 1/g) is never computed: 1 + α·g ==
-// max(1 + g/2, g). T_abs_q > 0 and D >= T_abs_q, so 0 < f <= 2^24, and
-// f == 2^24 exactly when L_q == 0. ONE exact kit division per cell per tick,
-// door 1, identical on every backend.
+// f_q24 = floordiv_q(T_abs_q << 24, max(T_abs_q, 4·L_q)) — design §2.8 +
+// rows 32 and 39. α = max(0, 1 − 1/g) is never computed: 1 + α·g ==
+// max(1, g). T_abs_q > 0 and D >= T_abs_q, so 0 < f <= 2^24, and f == 2^24
+// EXACTLY when 4·L_q <= T_abs_q — the whole explicitly-stable range g <= 1
+// is undamped (row 39; the superseded floor of ½ put T_abs + 2L in the
+// denominator and damped at every L > 0). ONE exact kit division per cell
+// per tick, door 1, identical on every backend.
 FP_HD inline int32_t fleck_f_q24(int64_t T_abs_q, int64_t L_q) {
-    const int64_t d1 = T_abs_q + (L_q << 1);
-    const int64_t d2 = L_q << 2;
-    const int64_t D  = (d1 > d2) ? d1 : d2;
+    const int64_t d2 = L_q << 2;                      // 4·L_q
+    const int64_t D  = (T_abs_q > d2) ? T_abs_q : d2;  // floor 0 (design row 39)
     return (int32_t)fixedpoint::floordiv_q(T_abs_q << 24, D);
 }
 
@@ -83,8 +91,13 @@ public:
     // is not one of {12, 16} x {step, shear}.
     static const OrdinateConst* ordinate_table(int n_ordinates, int transport);
 
-    // One tick of the sweep over all ordinates, ACCUMULATING into the four
-    // planes (the caller wipes them per tick, as the conductor does).
+    // One tick of the sweep over all ordinates. run() OVERWRITES the four
+    // output planes: it zeroes them itself before the first ordinate (the
+    // per-ordinate books are `+=`), so they hold the LAST run's values until
+    // the next run — the tile inspector reads them at render time, after the
+    // tick has ended (design v3 row 38; the conductor's four `fill(0)` lines
+    // died at P2a). A caller needs no wipe, and an ingress-rejected scene
+    // leaves the planes untouched.
     //   temperature      : int32 Q16.16 (h, w)
     //   heat_atten_q     : int32 Q16 (h, w) — a_i, the material extinction
     //   dyn_heat_atten_q : int32 Q16 (h, w) — d_i >= a_i, material + stamped bodies
@@ -95,7 +108,8 @@ public:
     //   k_leak_q         : the uniform out-of-plane leak coefficient, Q16 in [0, ONE]
     //   transport        : TRANSPORT_STEP or TRANSPORT_SHEAR
     //   n_ordinates      : 16 (S16) or 12 (S12)
-    //   rad_net / rad_flux / rad_amb / rad_fluence : int64 (h, w), accumulated
+    //   rad_net / rad_flux / rad_amb / rad_fluence : int64 (h, w), OVERWRITTEN
+    //                      (zeroed here, then accumulated over the ordinates)
     //   fleck_enabled    : true on the live path (the engine ALWAYS damps);
     //                      false sets f = 2^24 on every cell — the reference's
     //                      `f_plane=None` configuration, which its isotropy and

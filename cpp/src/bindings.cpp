@@ -2265,8 +2265,11 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("rad_net").noconvert(), py::arg("rad_flux").noconvert(),
            py::arg("rad_amb").noconvert(), py::arg("rad_fluence").noconvert(),
            py::arg("fleck_enabled") = true,
-           "One tick of the sweep over all ordinates, ACCUMULATING into the four "
-           "int64 planes (the caller wipes them). transport: RadiationSweep.STEP "
+           "One tick of the sweep over all ordinates. It OVERWRITES the four "
+           "int64 planes — zeroed here before the first ordinate, so they hold "
+           "the last run's values until the next run and the tile inspector can "
+           "read them at render time (design row 38); no caller wipe needed. "
+           "transport: RadiationSweep.STEP "
            "or .SHEAR; n_ordinates: 16 or 12. fleck_enabled=False is the "
            "reference's undamped (f_plane=None) configuration, for the gates.");
 

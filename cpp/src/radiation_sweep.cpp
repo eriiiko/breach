@@ -16,6 +16,8 @@
 //   abs_mat = (stream * a) >> 16 ;  abs_body = (stream * b) >> 16      (b = d - a)
 //   ex_m    = (ex_cell * w_m) >> 16                                    (>= 0)
 //   src     = amb_m + mul128_shr(ex_m, f_q24, 24)   // Fleck damps the EXCESS only
+//             f_q24 = T_abs / max(T_abs, 4L)       // ALPHA FLOOR 0 (row 39):
+//                                                  // f == 2^24 where g <= 1
 //   emitted = (src * a) >> 16 ;   emit_body = (amb_m * b) >> 16
 //   i_out   = stream - abs_mat - abs_body + emitted + emit_body
 //   rad_net[i]     += abs_mat - emitted          // the material ledger, signed
@@ -211,6 +213,24 @@ void RadiationSweep::run(const int32_t* temperature,
         // fleck_enabled == false is the reference's `f_plane=None` (undamped)
         // configuration, for the gates measured in it; the engine passes true.
         f_q24_[i] = fleck_enabled ? fleck_f_q24(T_abs, L) : F_ONE;
+    }
+
+    // ---- OVERWRITE, not accumulate: run() clears its own four outputs -----
+    // The per-ordinate books below are `+=`, so the first ordinate needs clean
+    // planes. P1 got them from the conductor's end-of-tick wipe, which also
+    // BLINDED the tile inspector: `rad_fluence` was zero again by the time the
+    // renderer read it (design v3 row 38). The wipe lives here from P2a and the
+    // four `fill(0)` lines are gone from Simulation.step, so the planes hold
+    // THIS run's values until the next run overwrites them — which is what the
+    // render-time readout needs and what the digest does not care about (none
+    // of the four is in DIGEST_FIELDS or SIM_FIELDS). Cleared AFTER the
+    // pre-pass's ingress check, so a REJECTED scene leaves the caller's planes
+    // exactly as it found them.
+    for (int i = 0; i < n; ++i) {
+        rad_net[i] = 0;
+        rad_flux[i] = 0;
+        rad_amb[i] = 0;
+        rad_fluence[i] = 0;
     }
 
     // ---- the sweep, one ordinate after another (CPU) ----------------------

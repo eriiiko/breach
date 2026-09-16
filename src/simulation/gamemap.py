@@ -136,10 +136,10 @@ class GameMap:
         # no mirror-only fields) — a device buffer each at `enable_residency`,
         # written on the HOST MIRROR by step 2b of the bracketed `step_tail`
         # (no device kernel touches them until P4). They are per-tick planes
-        # wiped at the end of Simulation.step, so the resident tick's explicit
-        # `to_host` lists never name them (a defaulted `to_host()` would carry
-        # stale device zeros over the mirror, which the resident tick forbids
-        # anyway). NOTE: the three LIVE planes rad_net/rad_amb/rad_flux are NOT
+        # OVERWRITTEN by the sweep's own start (P2a, design row 38 — not wiped
+        # by the conductor), so the resident tick's explicit `to_host` lists
+        # never name them (a defaulted `to_host()` would carry stale device
+        # zeros over the mirror, which the resident tick forbids anyway). NOTE: the three LIVE planes rad_net/rad_amb/rad_flux are NOT
         # resident today and stay int32 through P2 (orchestrator override,
         # design row 35) — the old cast fills them on the mirror.
         "rad_net_sweep", "rad_flux_sweep", "rad_amb_sweep", "rad_fluence",
@@ -565,10 +565,16 @@ class GameMap:
         #   rad_fluence    — Φ, the total stream each cell absorbed FROM, for
         #                    the Pass-1 maximum-principle clamp (dormant at P1)
         # Σ rad_net_sweep + Σ rad_flux_sweep + Σ rad_amb_sweep == 0 exactly, in
-        # int64, every tick (gate 1). Same per-tick lifetime as the three
-        # above: wiped together at the end of Simulation.step. Written IN
-        # PLACE (never reassigned) so the C++ view stays valid; resident
-        # (`_RESIDENT_SYNCED`) from day one.
+        # int64, every tick (gate 1). PER-TICK IN MEANING, BUT NOT WIPED BY THE
+        # CONDUCTOR (P2a, design v3 row 38): `RadiationSweep::run` OVERWRITES
+        # all four — it zeroes them before its first ordinate — so they hold
+        # the LAST tick's values between runs instead of a wiped zero, which is
+        # what lets the render-time tile inspector show Φ, `f` and E°⁻¹(Φ).
+        # Nothing digested changes: none of the four is in DIGEST_FIELDS or
+        # SIM_FIELDS. (The three LIVE planes above ARE still wiped at the end of
+        # Simulation.step — the old cast does not clear its own outputs.)
+        # Written IN PLACE (never reassigned) so the C++ view stays valid;
+        # resident (`_RESIDENT_SYNCED`) from day one.
         self.rad_net_sweep  = np.zeros((h, w), dtype=np.int64)
         self.rad_flux_sweep = np.zeros((h, w), dtype=np.int64)
         self.rad_amb_sweep  = np.zeros((h, w), dtype=np.int64)

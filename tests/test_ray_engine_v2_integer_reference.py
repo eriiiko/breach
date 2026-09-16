@@ -130,12 +130,15 @@ def test_integer_gather_agrees_with_the_float_push_reference():
 
 
 def test_fleck_integer_form_matches_the_float_within_one_count():
-    """G8: f_q24 = floordiv((T_abs<<24), max(T_abs+2L, 4L)) is within ONE Q24 COUNT
-    of 1/(1 + alpha*g) over the whole table, and f_q24 == 2^24 iff L_q == 0.
+    """G8: f_q24 = floordiv((T_abs<<24), max(T_abs, 4L)) is within ONE Q24 COUNT of
+    1/(1 + alpha*g), alpha = max(0, 1 - 1/g), over the whole table, and
+    f_q24 == 2^24 EXACTLY whenever 4L <= T_abs (alpha floor 0, design row 39).
 
-    Breaks if: alpha's max() is re-expanded wrongly, the denominator moves off the
-    ABSOLUTE temperature, the division stops being the kit's exact floordiv, or f
-    goes back to Q16 -- one Q16 count is 256x this bound, measured beside it.
+    Breaks if: alpha's max() is re-expanded wrongly -- notably a return to the
+    superseded floor of one half, which damps at EVERY L > 0 and is measured on
+    the same probe; the denominator moves off the ABSOLUTE temperature; the
+    division stops being the kit's exact floordiv; or f goes back to Q16 -- one
+    Q16 count is 256x this bound, measured beside it.
     """
     print(_run(G.gate8_fleck_form))
 
@@ -151,12 +154,18 @@ def test_e_inv_is_idempotent_and_saturates_below_the_rail():
 
 
 def test_stability_and_equilibrium_on_the_new_forms():
-    """G10: the Fleck factor beats explicit against the analytic cooling curve, is
-    monotone and positive from every start up to the table top, and the clamp
-    reproduces the exact equilibrium where Fleck alone runs to millions.
+    """G10: at alpha floor 0 (design row 39) the damping is OFF below g = 1 -- the
+    1263-game cooling march equals the explicit one count for count, which costs
+    forward Euler's -5.7 % and is measured against the superseded floor's +0.23 %
+    on the same march -- while above g = 1 the damping still stops the explicit
+    rail-to-zero, the march stays monotone and positive from every start up to the
+    table top, and the clamp reproduces the exact equilibrium where Fleck alone
+    runs to millions.
 
-    Breaks if: the excess form is replaced, alpha's branch changes, or the clamp
-    is dropped from the fold.
+    Breaks if: the excess form is replaced; alpha's floor moves back off 0 (the
+    fire-range march stops matching explicit and the un-clamped 1263-game
+    equilibrium jumps from +0.16 % to +4.6 %); or the clamp is dropped from the
+    fold.
     """
     print(_run(G.gate10_stability))
 
@@ -177,6 +186,9 @@ def test_damped_source_is_monotone_in_temperature():
     """G12: what a cell EMITS -- E°[0] + f*(E°[T] - E°[0]) -- never falls as T
     rises, over the whole 4000-bucket table, for every absorbing material row
     config.toml ships. A hotter body must not radiate less.
+
+    Re-checked at alpha floor 0 (P2a, design row 39): unchanged, 0 backward steps
+    on every shipped row.
 
     Breaks if: f returns to Q16 (the gate measures that form on the same probe and
     it is NOT monotone -- 2033 backward steps, worst 2.47 %); the E° bake or

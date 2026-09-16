@@ -16,9 +16,11 @@ believed, plus the proof that the sweep is live:
     shipped level with a real hot tile is the non-vacuous one;
   * the shadow sweep's three-term identity holds on the live engine EVERY
     tick and its Φ plane is non-zero on every cell (the ambient ring lights
-    the grid even when nothing radiates) — read BEFORE the conductor's
-    end-of-tick wipe, because an A/B snapshot and the digest both see the
-    per-tick planes as zero.
+    the grid even when nothing radiates);
+  * and, since P2a (design row 38), the four planes SURVIVE the tick — the
+    conductor's four `fill(0)` lines are gone and `RadiationSweep::run`
+    zeroes its own outputs instead, so the render-time tile inspector reads
+    real numbers; the second tick must therefore OVERWRITE, not accumulate.
 
 Run:
     C:/Users/steen/anaconda3/python.exe -m pytest tests/test_radiation_sweep_shadow_wiring.py -q
@@ -43,6 +45,15 @@ from simulation import Simulation, fire_fixed  # noqa: E402
 from simulation.materials import MAT_WOOD  # noqa: E402
 
 INT32_LIMIT = 2 ** 31
+_SWEEP_PLANES = ("rad_net_sweep", "rad_flux_sweep", "rad_amb_sweep", "rad_fluence")
+
+
+def _sweep_dials(sim):
+    """(t_amb_q, k_leak_q) exactly as PhysicsRunner hands them to step 2b — read
+    off the runner, never hardcoded, so a dial change cannot make the direct-run
+    comparison below silently compare two different laws."""
+    runner = sim.physics_runner
+    return int(runner._eos_t_amb_raw()), int(runner.k_leak_q)
 
 
 def _watch_physics(sim):
@@ -173,24 +184,100 @@ def test_sweep_on_a_real_level_is_non_trivial_after_one_tick():
           f"{int(np.abs(old_rn).max())}, old-law identity exact")
 
 
-def test_shadow_planes_are_wiped_by_the_conductor_after_every_tick():
-    """PROPERTY (design §3, god-file policy): after Simulation.step returns, all
-    four shadow planes are zero — per-tick planes with rad_net's lifetime, so a
-    snapshot/digest taken there sees zeros — while the wrapped read saw Φ
-    non-zero on every cell mid-tick.
+def test_shadow_planes_survive_the_tick_and_hold_the_sweep_s_own_values():
+    """PROPERTY (P2a, design row 38): after Simulation.step RETURNS, the four
+    shadow planes still hold THIS tick's sweep output — the conductor no longer
+    wipes them, because the sweep zeroes them itself at its own start. That is
+    what lets the renderer's tile inspector show Φ, `f` and E°⁻¹(Φ) at render
+    time; while the wipe lived in the conductor, Φ was 0 by then and the rows
+    were dead. Nothing digested changes: none of the four is in DIGEST_FIELDS
+    or SIM_FIELDS.
 
-    BREAKS IF: one of the four fill(0) lines is dropped from the conductor.
+    Asserted against the values read MID-tick (right after PhysicsRunner.step),
+    so "still there" means equal to what the sweep actually wrote, not merely
+    non-zero.
+
+    BREAKS IF: a `fill(0)` for these planes comes back into Simulation.step, or
+    run() stops writing them.
     """
     sim, _ = _playground_with_a_hot_wood_tile()
-    seen = _watch_physics(sim)
+    g = sim.gmap
+    mid = {}
+
+    runner = sim.physics_runner
+    orig = runner.step
+
+    def wrapped(gmap, sim_time, tick=0):
+        out = orig(gmap, sim_time, tick=tick)
+        for name in _SWEEP_PLANES:
+            mid[name] = getattr(gmap, name).copy()
+        return out
+
+    runner.step = wrapped
     sim.set_paused(False)
     sim.step()
-    assert seen["ticks"] == 1 and seen["fluence_min"] > 0 and seen["sweep_nonzero_ticks"] == 1
-    g = sim.gmap
-    for name in ("rad_net_sweep", "rad_flux_sweep", "rad_amb_sweep", "rad_fluence"):
+    assert mid, "the physics tail did not run"
+    assert int(mid["rad_fluence"].min()) > 0 and np.any(mid["rad_net_sweep"] != 0)
+    for name in _SWEEP_PLANES:
         plane = getattr(g, name)
         assert plane.dtype == np.int64 and plane.shape == g.temperature.shape
-        assert not np.any(plane), f"{name} not wiped at end of tick"
+        assert np.array_equal(plane, mid[name]), (
+            f"{name} was altered between the physics tail and the end of the tick "
+            f"(the conductor must NOT wipe it any more)")
+    print(f"\nafter Simulation.step: Phi min = {int(g.rad_fluence.min())}, "
+          f"max = {int(g.rad_fluence.max())}; rad_net_sweep extremes "
+          f"{int(g.rad_net_sweep.min())} / {int(g.rad_net_sweep.max())} — all still "
+          f"readable at render time")
+
+
+def test_a_second_tick_overwrites_the_planes_and_does_not_accumulate():
+    """PROPERTY (P2a, the non-vacuous half): because nothing wipes the planes
+    between ticks any more, the sweep MUST overwrite them. After two ticks each
+    plane equals what ONE direct RadiationSweep.run on that tick's own inputs
+    produces — not twice it. This is the exact bug the patch would have caused
+    had run() kept accumulating into whatever the caller left behind.
+
+    BREAKS IF: run()'s own zeroing is dropped (every plane would then be the sum
+    of two ticks, which the `2 *` comparison below detects), or the sweep starts
+    reading state that survives a tick.
+    """
+    sim, (y, x) = _playground_with_a_hot_wood_tile()
+    g = sim.gmap
+    sim.set_paused(False)
+    sim.step()
+    after_one = {n: getattr(g, n).copy() for n in _SWEEP_PLANES}
+    # tick 2: snapshot the sweep's INPUTS as the physics tail sees them, then
+    # let the tick finish and compare against a single direct run on them.
+    grabbed = {}
+    runner = sim.physics_runner
+    orig = runner.step
+
+    def wrapped(gmap, sim_time, tick=0):
+        grabbed["inputs"] = (gmap.temperature.copy(), gmap.heat_atten_q.copy(),
+                             gmap.dyn_heat_atten_q.copy(), gmap.heat_inv_shift.copy(),
+                             gmap.thermal_solid.copy())
+        return orig(gmap, sim_time, tick=tick)
+
+    runner.step = wrapped
+    sim.step()
+    assert "inputs" in grabbed
+    T, a_q, d_q, his, ts = grabbed["inputs"]
+    eng = sim.physics_runner.engine
+    h, w = T.shape
+    one = [np.zeros((h, w), dtype=np.int64) for _ in range(4)]
+    t_amb_q, k_leak_q = _sweep_dials(sim)
+    sweep = bp.RadiationSweep()
+    sweep.run(T, a_q, d_q, his, ts, eng.emissive, t_amb_q, k_leak_q,
+              bp.RadiationSweep.SHEAR, 16, *one)
+    for name, expect in zip(_SWEEP_PLANES, one):
+        got = getattr(g, name)
+        assert np.array_equal(got, expect), (
+            f"{name} after tick 2 is not one tick's worth of sweep")
+        if np.any(after_one[name] != 0):
+            assert not np.array_equal(got, after_one[name] + expect), (
+                f"{name} accumulated across ticks (run() lost its own zeroing)")
+    print(f"\ntick 2 overwrites: Phi max = {int(g.rad_fluence.max())} equals a single "
+          f"direct run on the same inputs; tick-1 values were not added to")
 
 
 def test_stale_caller_cannot_hand_step_tail_a_narrow_plane():
