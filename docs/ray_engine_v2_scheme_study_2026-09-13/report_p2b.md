@@ -235,23 +235,281 @@ Three things follow:
 
 ## 5. Sanity checks against reality
 
-*(pending)*
+### 5.1 The irradiance the scheme delivers, and the one thing rad_scale cannot move
+
+The check design section 9 asks for: what irradiance does a tile one, two and
+three tiles from a plateau fire actually receive, against the 10-12 kW/m2
+piloted-ignition flux for wood?
+
+Converting the sweep's fluence to W/m2 is exact and uses no new assumption,
+because `rad_scale = sigma * A_rad * dt / J_per_count` *is* the conversion:
+
+    q [W/m2]  =  Phi [counts] * J_per_count / (A_rad * dt)  =  sigma * Phi / rad_scale
+
+**`rad_scale` cancels.** That is worth stating loudly, because it is the single
+most useful structural fact in P2b: *the irradiance a receiver sees, and
+therefore its radiative-equilibrium temperature `E°^-1(Phi)`, do not depend on
+the calibration at all* — except through the Fleck factor, which is the only
+scale-dependent term in the scheme. `E°^-1` inverts the same table `Phi` was
+written in, so the `rad_scale` in the numerator and the denominator are the
+same number. What the calibration sets is the **rate**: how many degrees per
+tick that flux buys, given the tile's heat capacity.
+
+Measured (section 10's bench, `tests/_fire_lab/reach.csv`), a single furniture
+tile held at the 1263-game plateau (1556 K), shear S16, `k_leak = 0`:
+
+| distance | `Phi` (derived) | **q, excess** | `E°^-1(Phi)` | vs 10-12 kW/m2 |
+|---|---|---|---|---|
+| 1 tile | 8 946 | **23.4 kW/m2** | 508 game (801 K) | 2.1x the threshold |
+| 2 tiles | 5 990 | **15.6 kW/m2** | 432 game (725 K) | 1.4x |
+| 3 tiles | 4 430 | **11.4 kW/m2** | 380 game (673 K) | **1.04x — the crossing** |
+| 5 tiles | 2 746 | 6.9 kW/m2 | 304 game (597 K) | 0.6x |
+
+A *wood* source (`a = 1.0` rather than furniture's 0.5) is exactly double:
+46.9 / 31.1 / 22.8 kW/m2, which reproduces P0 section 0.6's geometric factors
+(`G = 0.1414 / 0.0939 / 0.0687` shear, times `sigma * 1556^4 = 332.4 kW/m2`) to
+three digits — the bench and P0's independent probe agree.
+
+### 5.2 The survey's reach curve, hit on both of its points
+
+Survey section 9.3 derived, from view factors and 10-12 kW/m2 and with no
+reference to any of this machinery, **~3 tiles for one burning crate and ~8 for
+a fully involved room**. Interpolating the bench's own `q` column for the
+11 kW/m2 crossing:
+
+| source | survey 9.3 | **bench, derived scale** |
+|---|---|---|
+| one furniture tile | ~3 tiles | **3.15 tiles** |
+| 2x2 furniture patch | (~8 for a "room") | **7.43 tiles** |
+| 4x4 furniture patch | — | 16.5 tiles |
+
+That is a hit on both points, and it is not a fit: the survey computed it from
+Stefan-Boltzmann and a view factor, and the bench measured it through the
+integer sweep at a calibration derived from a heat capacity. **The design
+instinct and the physics agree**, which is what section 9 hoped for.
+
+Two caveats, both structural and both already named in the design:
+
+- The engine's **own** ignition criterion is more permissive than 11 kW/m2. It
+  is `temperature >= ignition_temp` (`combat.py::apply_temperature_ignition`),
+  and 280 game is the radiative equilibrium of only
+  `sigma * (573^4 - 293^4) = 5.69 kW/m2`. So judged the engine's way the same
+  crate reaches **5.75** tiles, not 3.15. The two criteria differ by 2x in flux
+  and therefore by ~1.8x in distance (2-D `1/r`).
+- The sweep has no out-of-plane loss while `k_leak = 0`, so it is `1/r`
+  everywhere, where the survey's view factor is a 3-D `1/r^2` inside a ceiling
+  height (survey section 9.5). **Turning the dormant `k_leak = 0.10` on moves
+  the engine-criterion reach from 5.75 tiles to 3.92** and the 11 kW/m2
+  crossing from 3.15 to 2.37 — i.e. the derived leak coefficient lands the
+  engine's own criterion almost exactly on the survey's view-factor number.
+  That is a real argument for ruling `k_leak` on (section 13).
+
+### 5.3 Literature values used, with sources
+
+| quantity | value used | source |
+|---|---|---|
+| `sigma` | 5.670374419e-8 W/m2/K4 | CODATA 2018 |
+| wood `rho*c` | **0.7 MJ/m3/K** (band 0.43-0.90) | *Wood Handbook* FPL-GTR-190 ch. 4: `c_p,dry = 0.1031 + 0.003867*T` kJ/kg/K = 1.236 at 293 K; softwood `rho` 350-550 oven-dry; at 12 % MC `c_p ~ 1.7`, `rho ~ 510` -> 0.87 |
+| wood thermal diffusivity | 1.5e-7 m2/s | `k ~ 0.12 W/m/K` / `rho*c ~ 0.8 MJ/m3/K` (same source) |
+| piloted ignition of wood | 10-13 kW/m2 critical flux; 30-70 s at 20-25 kW/m2 | Drysdale, *An Introduction to Fire Dynamics* 3rd ed. ch. 6; Babrauskas, *Ignition Handbook* (2003) |
+| mild steel `rho*c` | 3.40-3.85 MJ/m3/K | Incropera & DeWitt Table A.1 (AISI 1010, 300 K: 7832 x 434 = 3.40); mild steel `c ~ 490` -> 3.85 |
+| soda-lime glass `rho*c` | 1.88-2.10 MJ/m3/K | Incropera & DeWitt Table A.3 (plate glass 2500 x 750 = 1.88) |
+| emissivities | section 8 | Incropera & DeWitt Table A.11 (total hemispherical, ~300 K); Siegel, Howell & Menguc, *Thermal Radiation Heat Transfer* |
 
 ## 6. The fitted/derived ratio, and what it means
 
-*(pending)*
+    rad_scale_fitted  = 5.1427e-5      ([physics.fire], P-F1b then re-anchored at G12)
+    rad_scale_derived = 2.125632e-8    (this patch)
+
+    rad_scale_fitted / rad_scale_derived = 2419.4        (3.38 orders of magnitude)
+
+**The orchestrator's back-of-envelope — "some three to four orders of magnitude
+above physics" — is confirmed, at 3.4.** I re-derived it independently rather
+than checking it, and the two agree.
+
+**What the ratio IS, exactly.** `rad_scale = sigma * A_rad * dt / J_per_count`,
+and `sigma`, `A_rad` and `dt` are not negotiable at the 2000x level (the widest
+honest `A_rad` ambiguity is the 4x of section 3.1). So a fitted scale 2419x too
+large is, term for term, a `J_per_count` 2419x too small — i.e. **the live game
+behaves as if a furniture tile had**
+
+    C_eff = 194 056 J/K / 2419.4  =  80.2 J/K
+
+    at c_p = 1236 J/kg/K:   64.9 grams of wood
+    at rho*c = 0.7 MJ/m3/K: 115 cm3 — a fill fraction of 4.1e-4 of the tile
+
+**Sixty-five grams.** A fistful of kindling, in a tile that is nominally a
+0.333 m x 0.333 m x 2.5 m crate column of 139 kg. That is the honest reading of
+the shipped dial, and it is exactly why fire in the current build heats things
+so fast: the radiation is not too strong, the **objects are effectively
+weightless**.
+
+Read the other way round — holding the fitted dial and asking what tile it
+describes — a `thermal_mass = 8` tile at 80.2 J/K is a 12 mm plywood sheet of
+about 0.09 m2. So the current dial is, unintentionally, a *very thin surface
+layer* calibration (section 9 takes that seriously).
+
+Nothing is changed by this: `[physics.fire] rad_scale` keeps its fitted value
+until P3c. The ratio is what P3 has to absorb, and it is the size of the feel
+change the HUMAN-TEST there will be judging.
 
 ## 7. The implied rho*c of every material row
 
-*(pending)*
+Once the currency is pinned, **every `thermal_mass` is a heat capacity by
+definition** — no further assumption:
+
+    C_row = thermal_mass * 65536 * J_per_count      [J/K]
+    rho*c = C_row / V_tile                          [J/m3/K]
+
+Equivalently `rho*c = thermal_mass / 8 * 0.7 MJ/m3/K`, since the pin is on
+`thermal_mass = 8` at 0.7. Every shipped row, against literature:
+
+| row | `thermal_mass` | `C_tile` | **implied rho*c** | literature | ratio | verdict |
+|---|---|---|---|---|---|---|
+| air | 0 | — | (gas branch) | 0.0012 | — | **correct**: a solid row for air would be 600x too heavy; `thermal_mass = 0` routes it to the gas branch, which is right |
+| wood | 8 | 194.1 kJ/K | 0.70 | 0.43-0.90 | 0.78-1.63 | **good** (the pin) |
+| door / door_closed | 8 | 194.1 kJ/K | 0.70 | 0.43-0.90 | 0.78-1.63 | **good** |
+| furniture | 8 | 194.1 kJ/K | 0.70 | 0.43-0.90 | 0.78-1.63 | **good** (the pin row) |
+| kindling | 8 | 194.1 kJ/K | 0.70 | 0.43-0.90 | 0.78-1.63 | **good** as a material; see below as an *object* |
+| glass | 16 | 388.1 kJ/K | 1.40 | 1.88-2.10 | 0.67-0.74 | **light by ~30 %** |
+| hull / steel | 32 | 776.2 kJ/K | 2.80 | 3.40-3.85 | 0.73-0.82 | **light by ~20-27 %** |
+| foliage | 8 | 194.1 kJ/K | 0.70 | 0.02-0.14 (a canopy *tile*, 1-5 % fill of leaf tissue at 1.5-2.7) | 5-35x | **wrong by an order of magnitude** — out of scope by design row 6, recorded |
+
+**The headline is a good one: the material table's structure is sound.** Every
+solid family lands inside a factor of 1.5 of literature, and — the telling part
+— *all of them err in the same direction*, light by 0-30 %. That is the
+signature of the power-of-two quantization, not of bad judgement: the table is
+right and the pin is one notch low.
+
+**And the pin has a better value available.** Repinning on 12 %-moisture-content
+wood (`rho*c = 0.9 MJ/m3/K`, which is what furniture aboard a ship actually is,
+not oven-dry stock) lands *every* row inside 15 % of literature:
+
+| row | implied rho*c at a 0.9 pin | literature | ratio |
+|---|---|---|---|
+| wood / furniture / door / kindling | 0.90 | 0.43-0.90 | 1.00-2.09 |
+| glass | 1.80 | 1.88-2.10 | 0.86-0.96 |
+| hull / steel | 3.60 | 3.40-3.85 | 0.94-1.06 |
+
+`rad_scale_derived` would then be **1.6533e-8** (ratio 3111). This is a real
+open question for Erik (section 13), not a change made here: the shipped value
+uses the 0.7 the config row itself names.
+
+**Two rows carry an object-vs-material confusion that the pin makes visible**,
+and neither is mine to fix:
+
+- `kindling` and `furniture` have identical `thermal_mass`. As *materials* both
+  are wood and that is right. As *objects* kindling is sticks with a huge
+  surface-to-volume ratio and a crate is a box, and those should not heat at
+  the same rate. Section 9 is the general form of this.
+- `foliage` inherits wood's `thermal_mass` while being ~97 % air. It is also
+  the one row with `heat_atten = 0` (design row 6), so it is radiatively inert
+  and the error is currently unreachable — but the day trees are authored, the
+  first thing to fix is the heat capacity, not the extinction.
 
 ## 8. Emissivities proposed per row (NOT applied)
 
-*(pending)*
+Design section 9 item 3 wants `a_i` to be emissivities from the literature.
+**Nothing here is applied** — the material rows are Erik's (D6). This is the
+proposal, with its sources and, more importantly, with the reason it is not a
+straight table lookup.
 
-## 9. The lumped-capacity caveat
+**The complication that has to be stated first.** In the sweep `a_i` does two
+jobs at once. By Kirchhoff it is the cell's **emissivity** (the fraction of
+black body it radiates) and, in the same multiply, it is the cell's
+**extinction** — the fraction of a passing stream it absorbs, i.e. its
+*geometric opacity*. For a solid slab filling the tile those coincide and the
+literature emissivity is the right number. For a *partly filled* tile they do
+not: a crate stack is ~90 % emissive on the wood it has, and maybe 50 % opaque
+across the tile. The shipped `furniture = 0.5` is visibly an **opacity** number
+— the config comment says so in as many words ("partial: smoke/air drift past
+crates") — not an emissivity.
 
-*(pending)*
+| row | shipped `heat_atten` | literature emissivity | source | proposal |
+|---|---|---|---|---|
+| wood | 1.0 | 0.82-0.92 (planed oak, pine, beech) | Incropera Table A.11 | **0.90** |
+| door / door_closed | 1.0 | 0.82-0.92 (as wood); painted 0.90-0.96 | ibid. | **0.90** |
+| furniture | 0.5 | wood 0.90, but the tile is partly filled | — | **leave 0.5 as an OPACITY**, and see section 13: the two jobs want separating |
+| kindling | 0.5 | as furniture | — | **leave 0.5**, same reason (sticks are even less opaque) |
+| hull / steel | 1.0 | oxidized mild steel 0.78-0.82; painted 0.90-0.96; polished stainless 0.17 | Incropera Table A.11 | **0.85** (a painted/oxidized hull); a *polished* interior would be 0.2 and would change shielding a lot |
+| glass | 0.3 | **0.90-0.95** | Incropera Table A.11; Siegel & Howell ch. 5 | **0.92 — the shipped 0.3 is physically wrong** |
+| air | 0.0 | ~0 for N2/O2 (homonuclear diatomics do not absorb in the IR) | Siegel & Howell ch. 10 | **0.0, correct** — and note it is CO2, H2O and soot that make real smoke absorb, which is P5's `heat_absorb` |
+| foliage | 0.0 | green leaves 0.94-0.98 | Incropera Table A.11 | **out of scope** (design row 6); a canopy tile's opacity is the honest number, not the leaf's emissivity |
+
+**The one row that is a genuine physical error is `glass`.** Its
+`heat_atten = 0.3` is a *visible-light* intuition. Soda-lime glass is close to
+opaque beyond about 4.5 um, and a 1556 K flame has ~80 % of its power above that
+wavelength, so a window is nearly a black body to fire heat while being clear to
+the eye. This matters in gameplay: today a glass pane lets 70 % of a fire's heat
+through to whatever is behind it, and physically it would stop almost all of it
+and re-radiate as a hot pane. It is also exactly the kind of case the new engine
+handles naturally, since light and heat are separate channels on the same sweep
+(`light_atten` stays 0.1, `heat_atten` goes to 0.92).
+
+## 9. The lumped-capacity caveat — and whether `thermal_mass` is the right lever
+
+**State it plainly.** The model has ONE temperature per tile. There is no
+surface-versus-bulk gradient, so a tile heats as a lump: all 139 kg of the
+pinned crate must come up together. Real piloted ignition is the opposite — only
+a thin surface layer has to reach the ignition temperature, and the bulk behind
+it is still cold.
+
+**Quantified on the bench's own numbers.** A furniture tile one tile from a
+plateau crate absorbs `a * q * A_rad = 0.5 * 23.4 kW/m2 * 3.33 m2 = 39.0 kW`.
+Against `C_tile = 194 kJ/K` that is **0.201 K/s**, so from ambient to the
+280-game ignition point takes **23 minutes** — and that is *ignoring* every loss.
+Real wood under 23 kW/m2 ignites (piloted) in **30-70 s**. The lumped model is
+**20-45x slow**.
+
+**And the loss channel is not ignorable — it is decisive.** `furniture` has
+`conductivity = 0.0`, so `cool_shift = 13` (e-fold 341 s) is its only other
+channel. Solving `a*(Phi - E°[T])/M == T >> cool_shift` exactly, at the derived
+scale:
+
+| distance | `E°^-1(Phi)`, radiation alone | **T\* with `cool_shift = 13`** |
+|---|---|---|
+| 1 tile | 508 game | **67 game** (360 K, 87 C) |
+| 2 tiles | 432 game | 45 game |
+| 3 tiles | 380 game | 33 game |
+| 5 tiles | 304 game | 20 game |
+
+**At the derived scale, with the shipped `cool_shift`, radiative ignition does
+not happen at any distance.** The reach curve of section 10 is a genuine upper
+bound and the ambient decay takes essentially all of it back. To get the 1-tile
+receiver to 280 game the row would need `cool_shift >= 16` (e-fold 2731 s, 8x
+today's):
+
+    cool_shift 13 -> 67 game    14 -> 129    15 -> 230    16 -> 343 (ignites)
+
+**So is `thermal_mass` the right lever?** Two readings, and the difference is a
+factor of ~32:
+
+1. **`thermal_mass` = bulk heat capacity** (what P2b pinned). Then it is the
+   right lever for *thermal inertia* — how long a thing stays hot, how slowly it
+   cools — and it is straightforwardly interpretable per row (section 7). But it
+   is then far too large for ignition timing, and ignition has to come from
+   somewhere else (a longer `cool_shift`, a bigger fire, or a surface model).
+2. **`thermal_mass` = effective surface-layer heat capacity.** The layer that
+   must reach ignition temperature in a 45 s piloted exposure is the thermal
+   penetration depth `sqrt(alpha * t)` = **2.6 mm** of wood; over the cell's four
+   faces that is 8.65 litres, **6.06 kJ/K** — `C_bulk / 32`. Pinning the currency
+   there instead gives `rad_scale_derived = 6.81e-7` and a fitted/derived ratio
+   of **75**, and it is equivalent to `thermal_mass = 0.25` on the furniture row,
+   **which the table cannot express**: `thermal_mass` must be a power of two, and
+   0 is taken (it means "gas branch").
+
+Reading 2 is very close to the `phi = 0.029` row of section 3.2's sensitivity
+table (one 12 mm plywood crate alone in a 2.5 m column, 5.59 kJ/K, ratio 70) —
+two independent routes to the same order. **The physically defensible span for
+`J_per_count` is therefore about 35x, bulk to surface layer, and the fitted dial
+sits 70x above even the most permissive end of it.**
+
+**This is a finding, not a change** (D6). What it tells P3 and Erik: the honest
+long-run fix is a two-node surface/bulk model for thermal solids (a thin
+skin that ignites plus a bulk that stores) — which is a real design addition, not
+a dial — and until then whichever reading is adopted must be adopted
+*consistently*, because the same `thermal_mass` currently sets both ignition
+timing and cool-down inertia and they want opposite values.
 
 ## 10. The reach bench
 
