@@ -12,6 +12,24 @@
 > **The next task is P0**, the integer reference sweep (v3 §11), on Opus, in
 > its own worktree; then P1 on Fable. The agent plan per patch is v3 §11.5.
 > Start at v3 §0, then §11.
+>
+> **STATUS UPDATE, 2026-09-16 evening — P0, P0b and P1 are MERGED; the
+> orchestrator moves to an Opus session.** `fire-12` is green on both builds
+> (2552 passed / 0 failed). The sweep runs every tick in shadow and holds the
+> integer reference bit for bit (gate 0). Erik ruled the Fleck floor 0 (v3
+> row 39) and cut every remaining patch into small Opus steps (v3 §11.5, row
+> 40) after two Fable kills by the session rate limit (issue #66 — the token
+> analysis has its own day; do not re-litigate it). **If you are the Opus
+> session: you are the orchestrator now.** Read v3 §0 rows 32–40, §11 and
+> §11.5, then the memory file `project_ray_engine_v2_arc`. Rules of the road:
+> one implementer at a time in its own worktree off `fire-12`, branch
+> `12-<step>-<slug>`, briefs SMALL (one system, a handful of files, one gate),
+> every implementer writes its `report_pX.md` incrementally, never resume a
+> killed agent except once for its report, merge `--no-ff` on green, rebuild
+> BOTH `cpp/build` and `cpp/build_cuda` in main after any binding change, run
+> the full suite in main, checkpoint memory at every boundary, HUMAN-TEST
+> gates (P3b, P6b) are built + gated + pushed and NOT merged. P2a is the
+> step in flight or next; P2b follows; then P3a.
 
 > **This file IS the prompt.** Point a new session at it and it has everything:
 > what to read, what is settled, what is open, and what to do first.
