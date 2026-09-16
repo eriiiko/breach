@@ -513,16 +513,225 @@ timing and cool-down inertia and they want opposite values.
 
 ## 10. The reach bench
 
-*(pending)*
+`tools/fire_tuning_lab.py --reach`. Outputs (untracked, regenerable):
+**`tests/_fire_lab/reach.png`** and **`tests/_fire_lab/reach.csv`**.
+
+### 10.1 What it measures, and why that is the engine's own criterion
+
+`combat.py::apply_temperature_ignition` lights a flammable tile when
+`temperature >= ignition_temp`. A tile heated by radiation alone settles where
+absorbed equals emitted, which for the material share `a_i` (it both absorbs and
+emits, Kirchhoff) is `E°[T] == Phi` — i.e. at `E°^-1(Phi)`, the inverse of the
+emissive table applied to the sweep's own `rad_fluence` plane. **So the reach of
+a fire is the distance at which `E°^-1(Phi)` falls through the receiver's
+`ignition_temp`**, which is the same convention the P1/P2a isotropy gate already
+uses ("the `E°[280]` ignition crossing") read as a profile instead of a radius.
+
+Probes are AIR (`a = 0`): they neither absorb nor shadow, so `Phi` at a probe is
+what a receiver placed there would see before it starts shielding the cells
+behind it. Free field 145x145, shear S16, source held at 1263 game.
+
+It is an **upper bound by construction** — radiative equilibrium with no
+`cool_shift` and no conduction. Section 9 measures how much that costs.
+
+### 10.2 What the curves actually do (I read the figure before writing this)
+
+Four panels. **(a) furniture source, (b) wood source**, each with the derived
+(thin solid) and fitted (thick dashed) curve for 1x1 / 2x2 / 4x4 sources plus
+the dormant `k_leak = 0.10` on the 1-tile case; **(c)** the derived/fitted ratio
+in absolute temperature; **(d)** the live level against the free field.
+
+- **In panel (a) the two scales' curves are not distinguishable** — the derived
+  curve lies exactly under the fitted one over the whole 56-tile profile. That
+  is the section 5.1 result made visual: `rad_scale` cancels out of
+  `E°^-1(Phi)`, and a *furniture* source at 1263 game is undamped at BOTH scales
+  (floor 0 leaves `a = 0.5, thermal_mass = 8` undamped through 1424 game, so
+  `f = 1.000000` fitted as well as derived).
+- **In panel (b) they separate**, cleanly and by a constant factor near the
+  source. A *wood* source (`a = 1.0`) is undamped only through 1068 game at the
+  fitted scale, so at the plateau its `f` is **0.6792** fitted against
+  **1.000000** derived. Panel (c) shows the ratio starting at exactly
+  `(1/f)^(1/4) = 1.1016` — which is the analytic ceiling, since `T_abs^4` is
+  linear in the fluence and `f` is the only scale-dependent term — and decaying
+  toward 1 far out as the ambient bath comes to dominate `Phi`. **This is the
+  only place in the whole patch where the calibration changes what the sweep
+  delivers**, and it is a 10 % temperature effect, worth 1-3 tiles of reach.
+- Every profile is a smooth monotone decay with no ray-effect scalloping at
+  these distances, and the curves nest correctly by source size.
+- **`k_leak = 0.10` is by far the biggest lever on the picture** — much bigger
+  than the calibration. It pulls the 1-tile furniture curve down steeply and
+  moves the ignition crossing from 5.75 tiles to 3.92.
+- **Panel (d) is the end-to-end proof.** The live `gmap.rad_fluence`, read off a
+  real level (`fire_tuning`, station-3 furniture sample at (46, 8), probed 30
+  tiles down the open hall) after a whole `Simulation.step`, is **equal to the
+  free-field bench at all 30 probes, integer for integer** — `Phi = 8946, 5990,
+  4430, ... 166`. Two things fall out of that: air really is radiatively inert
+  (`a = 0`, so a real hall reproduces a free field exactly), and **the D3
+  binding works**: the engine baked its table at 2.1256e-8, on the conductor's
+  own path, with no help from the bench.
+
+### 10.3 The numbers
+
+Reach = the last tile whose `E°^-1(Phi)` is at or above the threshold.
+"q at 11 kW/m2" is the interpolated crossing of the piloted-ignition flux.
+
+| source | scale | `f` at source | 1x1 | 2x2 | 4x4 |
+|---|---|---|---|---|---|
+| furniture | fitted | 1.000000 | 5 t | 11 t | 22 t |
+| furniture | **derived** | 1.000000 | **5 t** | **11 t** | **22 t** |
+| wood | fitted | 0.679156 | 7 t | 11 t | 20 t |
+| wood | **derived** | 1.000000 | **8 t** | **13 t** | **23 t** |
+
+(threshold: furniture's `ignition_temp = 280`; the wood receiver at 300 is one
+tile shorter in each case, in the CSV.)
+
+`k_leak = 0.10`, 1 tile: furniture **5 -> 3 t**, wood **8 -> 6 t**.
+
+Interpolated crossings, derived scale, furniture source:
+
+| | 11 kW/m2 (piloted) | 5.69 kW/m2 (== the engine's 280-game criterion) |
+|---|---|---|
+| 1x1 | 3.15 t | 5.85 t |
+| 2x2 | 7.43 t | 11.38 t |
+| 4x4 | 16.46 t | 22.68 t |
+| 1x1, `k_leak = 0.10` | 2.37 t | 4.04 t |
+
+The flux crossing at 5.69 kW/m2 and the `E°^-1(Phi) >= 280` crossing agree to
+0.1-0.2 tiles, which is an internal consistency check on the whole conversion
+chain: they are computed by different routes (a physical flux threshold vs the
+integer table inverse) and they land on the same tile.
+
+### 10.4 How it is built
+
+- Sweeps source **material** (`furniture`, `wood` — the second included
+  precisely because it is where the two scales differ), source **size**
+  (1, 2x2, 4x4), **scale** (fitted, derived) and `k_leak` (0, 0.10 on the 1-tile
+  case). 16 sweeps, ~20 s total.
+- Both scales are two bakes of `EmissiveTable`, not two builds
+  (`emissive.rad_scale` is settable from Python).
+- Dials go through `fire_timing_harness.apply_overrides` / `restore_overrides`,
+  the canonical bench seam, via a `REACH_DIALS` panel (empty by default, so an
+  untouched panel measures `config.toml`). The interesting overrides are the two
+  emission scales and `materials.*.thermal_mass`.
+- The CSV carries `phi`, `t_cap` (`E°^-1(Phi)` in game units) and
+  **`q_Wm2`** — the physical irradiance — per curve, so section 5's claim that
+  `rad_scale` cancels can be read off the file rather than taken on trust.
+- Deterministic: the sweep is pure integer and the scene is built, not sampled.
 
 ## 11. What changed in the tree
 
-*(pending)*
+| file | change |
+|---|---|
+| `config.toml` | **NEW** `[physics.radiation] rad_scale_derived = 2.125632e-08`, with the full derivation, both stated assumptions and their sensitivities in the comment. `[physics.fire] rad_scale` UNTOUCHED |
+| `src/simulation/physics_runner.py` | the engine's `emissive` now binds from `rad_scale_derived`; `self.raycaster.rad_scale` still binds from `[physics.fire] rad_scale`. The Kelvin map stays ONE map, shared. A positivity check on the new key (a non-positive scale bakes a non-increasing table, which breaks `E°^-1`'s binary lifting). The `rad_cfg` read moved 15 lines up so both `rad_scale_derived` and `k_leak` use it |
+| `tests/test_emissive_table.py` | `test_live_runner_owns_one_bake_for_both_owners` -> `test_live_runner_bakes_each_owner_at_its_own_configured_scale` (D4, section 12.1) |
+| `tools/fire_tuning_lab.py` | **NEW** `--reach` mode: the reach bench (section 10). The existing burn-curve mode is untouched; `main()` dispatches on the flag |
+| this report | new |
+
+**Not touched, on purpose (D6):** no `[materials.*]` row, no `[physics.fire]
+rad_scale`, no `thermal_mass`, no `cool_shift`, no C++, no golden, no design
+decision.
 
 ## 12. The gate
 
-*(pending)*
+    C:/Users/steen/anaconda3/python.exe -m pytest tests -q
+    2529 passed, 29 skipped, 4 xfailed, 3 warnings in 123.15 s
+
+Identical counts to P2a's gate run. The 29 skips are the CUDA gates (no
+`cpp/build_cuda` in this worktree, by instruction — no CUDA source changed).
+
+**Gate 0** (`tests/test_radiation_sweep_reference.py`, the sweep held bit for
+bit against `sweep_ref_q.py`): **34 passed**, unmoved — as it must be. P2b
+changes no arithmetic: the reference drives its own `R.RAD_SCALE` and the gate
+harness bakes at it explicitly (`tests/_radiation_sweep_harness.py:47`), so the
+oracle is untouched by a runner-binding change. `config_dials_match()` still
+passes because `[physics.fire] rad_scale` is exactly where it was.
+
+**Goldens**: no golden file appears in the branch diff. Nothing the live fold
+computes changed — the fold still reads the OLD cast's `rad_net`, and the old
+cast still bakes at 5.1427e-5.
+
+**The two scale-sensitive live tests were checked and are scale-relative by
+construction**, which is why they did not move:
+`tests/test_hover_readout.py:252` and
+`tests/test_radiation_sweep_shadow_wiring.py:91` both derive their ambient-ring
+baseline from the *live* table (`emissive.table()[0]`) rather than hardcoding a
+count, so they compare `Phi` against the ring at whatever scale the runner bound.
+That is the right way to have written them and it paid off here.
+
+### 12.1 The one test rewritten, and why
+
+`test_live_runner_owns_one_bake_for_both_owners` asserted
+`eng.emissive.rad_scale == eng.raycaster.rad_scale` on the live runner. P2b makes
+that **false by design**: two owners, two config keys, until P3c deletes the old
+cast. It is replaced by
+`test_live_runner_bakes_each_owner_at_its_own_configured_scale`, which asserts
+the property that survives — *one bake implementation, each owner equal to the
+reference bake at its own configured scale*:
+
+- `raycaster.rad_scale == CFG.physics.fire.rad_scale` and
+  `emissive.rad_scale == CFG.physics.radiation.rad_scale_derived`;
+- both owners carry the one canonical Kelvin map;
+- each table equals `sweep_ref_q.bake_e_table(rad_scale=<that owner's key>)`
+  entry for entry — which keeps the original test's real property (an owner the
+  runner forgot falls back to `EmissiveTable`'s header default 1.0e-5, which
+  equals neither key and fails here);
+- **non-vacuity**: the two tables must DIFFER, so nothing above can be satisfied
+  by a runner that bound one key to both owners, and the two keys are asserted
+  distinct up front so the test cannot silently go blind if they ever converge.
+
+Per CLAUDE.md the docstring names the property and every change that must break
+it. It is not weakened to a tautology and it is not deleted; it collapses back to
+a single key at P3c, which the docstring says.
 
 ## 13. Open questions for Erik
 
-*(pending)*
+Nothing below was decided here.
+
+1. **The pin value: 0.7 or 0.9 MJ/m3/K?** The shipped derivation uses 0.7,
+   which is the number the furniture row's own comment names. But 0.9 (wood at
+   12 % moisture content, which is what furniture aboard a ship is) lands
+   **every** material row inside 15 % of literature instead of 20-30 % light
+   (section 7), and it costs one character in `config.toml`:
+   `rad_scale_derived` would be **1.6533e-8**. This is a one-line ruling and it
+   improves the whole table at once.
+2. **`k_leak` — rule it.** It is dormant at 0, derived at ~0.10 for a 2.5 m
+   deck, and section 10 measures it as **the largest single lever on reach**,
+   far larger than the calibration: 1-tile furniture reach 5.75 -> 3.92 tiles,
+   and the 11 kW/m2 crossing 3.15 -> 2.37. With `k_leak = 0.10` the engine's own
+   ignition criterion lands almost exactly on survey 9.3's independently derived
+   view-factor number. Erik set the reach question aside before P1; P2b's
+   recommendation is that it should now be reopened, because reach is exactly
+   what P2b was asked to calibrate and `k_leak` moves it more than anything P2b
+   changed.
+3. **`cool_shift` vs radiative ignition.** At the derived scale, with the shipped
+   `cool_shift = 13`, a furniture tile one tile from a plateau fire settles at
+   **67 game** and never ignites at any distance (section 9). The reach curve is
+   real but unreachable. Something has to give: `cool_shift >= 16` on the
+   furniture row, or a smaller effective heat capacity, or a surface model
+   (item 4). This is the first thing P3's HUMAN-TEST will run into.
+4. **Is `thermal_mass` bulk or surface-layer capacity?** They differ by ~32x
+   (section 9), they want opposite values, and the same key currently sets both
+   ignition timing and cool-down inertia. The surface-layer reading needs
+   `thermal_mass = 0.25` on furniture, which the power-of-two table **cannot
+   express** (and 0 means "gas branch"). The honest long-run answer is a two-node
+   surface/bulk model for thermal solids — a design addition, not a dial.
+5. **`glass` `heat_atten = 0.3` is physically wrong** for thermal IR (section 8):
+   soda-lime glass is ~0.92 emissive/absorptive above 4.5 um, where most of a
+   1556 K flame's power is. Today a window passes 70 % of a fire's heat. One row
+   value, Erik's to change.
+6. **`heat_atten` does two jobs** — emissivity (Kirchhoff) and geometric opacity
+   — and the shipped `furniture = 0.5` is clearly the second (the config comment
+   says so). For a filled tile they coincide; for a partly filled one they do
+   not. Separating them is a scheme change, not a row change, and it would want
+   ruling before P3b makes units absorb.
+7. **`A_rad` assumes a 2.5 m deck and a 0.333 m tile.** Two shipped levels do
+   not: `levels/airlock_demo` at `tile_size_m = 1.0` and `levels/bench_two_room`
+   at 0.5. The derived scale is a single global constant, so on those levels the
+   emission is off by `(tile_size/0.333)`. If that matters, `rad_scale_derived`
+   wants to become a per-level derived quantity (`A_rad` from `tile_size_m` and
+   `ceiling_h`, exactly as the water solver already takes its `dx` from the
+   level) rather than a config literal. Recorded, not acted on.
+8. **Design section 12 item 4 (the driven-source damping question) is moot at
+   the derived scale** — `f == 1` everywhere on the table, for every shipped row
+   (section 4). Worth knowing, because it was ruled on twice.
