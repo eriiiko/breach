@@ -1614,6 +1614,14 @@ class Simulation:
             # in this clear: it is PERSISTENT synced state whose whole job is
             # to carry a sub-count oxygen debt ACROSS ticks.)
             self.gmap.rad_flux.fill(0)
+            # Ray-engine-v2 P1 (design v3 §3): the shadow sweep's four planes
+            # share the same per-tick lifetime — filled by step 2b of the
+            # physics tail, wiped here (three fewer lines at P3 when the old
+            # writer dies and the sweep writes the live planes).
+            self.gmap.rad_net_sweep.fill(0)
+            self.gmap.rad_flux_sweep.fill(0)
+            self.gmap.rad_amb_sweep.fill(0)
+            self.gmap.rad_fluence.fill(0)
 
         # Expire visual shot tracers (legacy fade-out behaviour).
         if self.shots:

@@ -79,8 +79,15 @@ def _make_sim() -> Simulation:
     g.water_depth[12, 12] = water_fixed.quantize_scalar(0.3)
     g.water_depth[12, 13] = water_fixed.quantize_scalar(0.3)
     g.wave_source[5, 5] = wave_fixed.quantize_scalar(8.0)
-    sim.add_unit(Unit("M1", x=4, y=4, team=0))
-    sim.add_unit(Unit("M2", x=14, y=14, team=0))
+    m1 = Unit("M1", x=4, y=4, team=0)
+    m2 = Unit("M2", x=14, y=14, team=0)
+    # Ray-engine-v2 P1: one marine keeps the default heat extinction (1.0, an
+    # opaque body), the other declares a partial one — so the fourth stamp
+    # output exercises BOTH the quantize-at-the-boundary and the MAX (a 0.5
+    # body over air stamps 32768; over a wall it must not lower the wall's ONE).
+    m2.heat_atten = 0.5
+    sim.add_unit(m1)
+    sim.add_unit(m2)
     g.destroy_wall(10, 0)            # hull breach -> vacuum (venting)
     sim.set_paused(False)
     return sim
@@ -149,6 +156,20 @@ def test_stamp_changes_tick_to_tick():
     assert not np.array_equal(traj[2]["dyn_light_atten"],
                               traj[18]["dyn_light_atten"]), \
         "dyn_light_atten never changed — stamp is trivial"
+    # Ray-engine-v2 P1: the fourth output, the Q16 heat-extinction plane, must
+    # vary too, carry BOTH unit values (M1's opaque 65536 and M2's partial
+    # 32768 over air), and never fall below the static material plane (MAX).
+    assert not np.array_equal(traj[2]["dyn_heat_atten_q"],
+                              traj[18]["dyn_heat_atten_q"]), \
+        "dyn_heat_atten_q never changed — the heat stamp is trivial"
+    early = traj[2]["dyn_heat_atten_q"]
+    static = traj[2]["heat_atten_q"]
+    assert np.any(early == 32768) and np.any(early == 65536)
+    assert np.all(early >= static), "a body lowered a material's extinction"
+    assert np.all(early <= 65536)
+    # after M2 dies (tick 20) no 32768 stamp remains
+    late = traj[30]["dyn_heat_atten_q"]
+    assert not np.any(late == 32768)
 
 
 if __name__ == "__main__":

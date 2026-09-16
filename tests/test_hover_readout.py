@@ -84,6 +84,11 @@ def _stub_gmap():
         wall_hp=np.zeros((H, W), dtype=np.int32),
         gas_energy=np.zeros((H, W), dtype=np.int64),
         materials=SimpleNamespace(hp=_STUB_HP),
+        # Ray-engine-v2 P1: the shadow sweep's planes the readout reads.
+        rad_fluence=np.zeros((H, W), dtype=np.int64),
+        heat_atten_q=np.zeros((H, W), dtype=np.int32),
+        dyn_heat_atten_q=np.zeros((H, W), dtype=np.int32),
+        heat_inv_shift=np.zeros((H, W), dtype=np.int32),
     )
 
 
@@ -143,9 +148,58 @@ def test_packs_all_fields_dequantized():
     assert r.fuel_frac == pytest.approx(0.5, abs=1e-4)
     assert r.gas_energy == pytest.approx(123456789 / (GAS_FP_ONE_F ** 2), rel=1e-9)
 
+    # Ray-engine-v2 P1: Phi / a / d dequantized through the temperature and
+    # optics scales; f and E_inv(Phi) are nan on a stub with no engine bound.
+    g.rad_fluence[ty, tx] = int(round(12.5 * TEMP_SCALE))
+    g.heat_atten_q[ty, tx] = 65536
+    g.dyn_heat_atten_q[ty, tx] = 65536
+    r = pack_hover_readout(g, tx, ty, KELVIN_FN)
+    assert r.phi == pytest.approx(12.5, abs=1e-6)
+    assert r.atten_a == 1.0 and r.atten_d == 1.0
+    assert np.isnan(r.fleck_f) and np.isnan(r.t_cap)
+
     # Panel-ready lines carry the tile + a couple of the numbers.
     assert r.lines[0] == "tile (2, 1)  wood"
-    assert len(r.lines) == 11
+    assert len(r.lines) == 13
+    assert r.lines[11].startswith("Phi:") and r.lines[12].startswith("f:")
+
+
+def test_sweep_rows_come_from_the_engine_when_one_is_bound():
+    """PROPERTY: with a PhysicsEngine bound (as Simulation binds it), the f row
+    is the engine's own Fleck factor — exactly 1.0 at ambient, below 1.0 on a
+    hot opaque wood tile — and E_inv(Phi) inverts the engine's E° table (Phi =
+    E°[b] -> 4b game), so the readout and the sweep share ONE implementation.
+
+    BREAKS IF: the readout re-derives f or E_inv locally (a third copy that
+    can drift), or reads them off the wrong engine member.
+    """
+    sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
+    import breach_physics as bp
+    from config import CFG
+    eng = bp.PhysicsEngine()
+    eng.emissive.rad_scale = float(CFG.physics.fire.rad_scale)
+    eng.emissive.kelvin_ambient = float(_TS.kelvin_ambient)
+    eng.emissive.k_temp_to_kelvin = float(_TS.k_temp_to_kelvin)
+    eng.emissive.bake()
+    table = np.asarray(eng.emissive.table(), dtype=np.int64)
+    g = _stub_gmap()
+    g._physics_engine = eng
+    g._gas_energy_t_amb_raw = lambda: int(round(_TS.kelvin_ambient * TEMP_SCALE))
+    tx, ty = 1, 2
+    g.material[ty, tx] = MAT_WOOD
+    g.heat_atten_q[ty, tx] = 65536
+    g.dyn_heat_atten_q[ty, tx] = 65536
+    g.heat_inv_shift[ty, tx] = 3
+    r_amb = pack_hover_readout(g, tx, ty, KELVIN_FN)
+    assert r_amb.fleck_f == 1.0
+    assert r_amb.t_cap == 0.0                      # Phi = 0 < E°[0] -> E_inv = 0
+    g.temperature[ty, tx] = int(round(1263.0 * TEMP_SCALE))
+    b = 700
+    g.rad_fluence[ty, tx] = int(table[b])
+    r_hot = pack_hover_readout(g, tx, ty, KELVIN_FN)
+    assert 0.0 < r_hot.fleck_f < 1.0
+    assert r_hot.t_cap == pytest.approx(4 * b, abs=1e-9)
+    assert r_hot.phi == pytest.approx(table[b] / TEMP_SCALE, rel=1e-12)
 
 
 def test_vacuum_tile_labelled_vacuum():

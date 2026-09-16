@@ -200,19 +200,14 @@ inline void heat_saturating_add(int32_t* cell, int32_t delta) {
   #define RC_HD
 #endif
 
-static constexpr int E_TABLE_SIZE   = 4000;   // T_game ∈ [0, 16000)
-static constexpr int E_BUCKET_SHIFT = 2;      // 4 game units per bucket
-// Total right shift from a Q16.16 temperature to a bucket index: 16 + 2.
-static constexpr int E_INDEX_SHIFT  = 16 + E_BUCKET_SHIFT;
-
-// Q16.16 temperature -> E° bucket index. NEGATIVE T indexes bucket 0 (a tile
-// below ambient does not emit less than the ambient floor in this model); T at
-// or above the table top saturates on the last bucket. Pure integer.
-RC_HD inline int e_bucket_of(int32_t T_q) {
-    if (T_q <= 0) return 0;
-    const int b = (int)(T_q >> E_INDEX_SHIFT);
-    return (b >= E_TABLE_SIZE) ? (E_TABLE_SIZE - 1) : b;
-}
+// Ray-engine-v2 P1 (design v3 §2.6): E_TABLE_SIZE / E_BUCKET_SHIFT /
+// E_INDEX_SHIFT, the bucket lookup `e_bucket_of` and the new inverse `e_inv_q`
+// now live in emissive_table.h — ONE definition shared by this march, the
+// radiation sweep, the Pass-1 clamp and the CUDA twins (all FP_HD). Included
+// here so every existing user that reached them through raycaster.h (the
+// bindings, cuda_raycaster.cu) keeps resolving unchanged. The bake body moved
+// to emissive_table.cpp; Raycaster::bake_emissive_table() calls it.
+#include "emissive_table.h"
 
 // ---- the flux limiter (ruling A1.6; Levermore & Pomraning 1981) ------------
 // Per pair, per ray, per tick, |net| may not exceed the heat that would close

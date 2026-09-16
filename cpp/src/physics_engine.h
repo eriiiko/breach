@@ -28,6 +28,8 @@
 #include "bulk_transport.h"   // EOS refactor P1: bulk O2/N2 donor-cell flux
 #include "eos_solver.h"       // EOS refactor P3: the compressible Kwatra solver
 #include "combustion.h"       // EOS refactor P4: combustion on real O2
+#include "emissive_table.h"   // ray-engine-v2 P1: THE E° table, one owner
+#include "radiation_sweep.h"  // ray-engine-v2 P1: the radiation sweep (shadow)
 
 class PhysicsEngine {
 public:
@@ -45,6 +47,12 @@ public:
     WaterSolver       water;
     EOSSolver         eos;   // EOS refactor P3
     CombustionSolver  combustion;   // EOS refactor P4
+    // Ray-engine-v2 P1 (design v3 §2.6, §11): THE E° table's one owner (the
+    // old `raycaster` above keeps its own copy of the SAME bake until P3
+    // retires it — never two bakes), and the radiation sweep that runs as
+    // step 2b of step_tail into the shadow planes.
+    EmissiveTable     emissive;
+    RadiationSweep    radiation;
 
     // (wave_p_f_ / atm_f_ DELETED — audit Patch A / A9, 2026-08-04. Both float
     // scratch buffers were DECLARED HERE AND NEVER USED: repo-wide grep found
@@ -163,7 +171,31 @@ public:
         // `t_amb_q` is T_AMB_K in raw Q16.16 counts — the SAME fold EOSSolver
         // does, passed in rather than re-derived so the two cannot drift.
         int64_t* gas_energy = nullptr,
-        int32_t t_amb_q = 0) const;
+        int32_t t_amb_q = 0,
+        // ---- ray-engine-v2 P1 (design v3 §11, orchestrator override row 35):
+        // THE SHADOW SWEEP. Step "2b" — between the fire step and the
+        // temperature pass — runs RadiationSweep::run (shear, S16) on the live
+        // temperature / extinction / capacity planes into the four int64
+        // SHADOW planes, which nothing consumes yet; the old cast still fills
+        // the live rad_net/rad_amb/rad_flux and the fold still reads those.
+        //   heat_atten_q / dyn_heat_atten_q : int32 Q16 (h, w), the extinction
+        //                                     planes (GameMap, optics_fixed.py)
+        //   rad_net_sweep / rad_flux_sweep / rad_amb_sweep / rad_fluence :
+        //                                     int64 (h, w), accumulated (the
+        //                                     conductor wipes them per tick)
+        //   k_leak_q                        : [physics.radiation] k_leak, Q16
+        // ALL SIX PLANES must be non-null for the sweep to run (dormancy by
+        // branch, the tree's idiom); the pybind binding makes them REQUIRED
+        // and noconvert, so the live runner cannot omit them. The temperature
+        // pass receives rad_fluence = nullptr / e_table = nullptr (the clamp
+        // stays DORMANT until P3 flips the fold onto the sweep's planes).
+        const int32_t* heat_atten_q = nullptr,
+        const int32_t* dyn_heat_atten_q = nullptr,
+        int64_t* rad_net_sweep = nullptr,
+        int64_t* rad_flux_sweep = nullptr,
+        int64_t* rad_amb_sweep = nullptr,
+        int64_t* rad_fluence = nullptr,
+        int32_t k_leak_q = 0) const;
 
     // --- Patch 1 S4b: the IMEX atmosphere/smoke substep loop -------------
     // Moves the per-tick IMEX substep block out of PhysicsRunner.step (Python)
@@ -490,6 +522,16 @@ public:
     //   ys, xs                    : int32 (n_stamp,) — footprint tile (row, col)
     //   perm, wabsorb             : float (n_stamp,) — per-row unit values
     //   atten_r, atten_g, atten_b : float (n_stamp,) — per-row unit opacity (RGB)
+    // Ray-engine-v2 P1 (design v3 §3, §6.2): the FOURTH dynamic output, the
+    // integer heat-extinction plane the radiation sweep reads —
+    //        dyn_heat_atten_q[i]   = heat_atten_q[i]                  // copy (Q16)
+    //        dyn_heat_atten_q[idx] = max(., heat_q[r])                // MAX
+    // every dynamic stamp is a MAX, never a sum (a <= d <= ONE, §2.3):
+    //   heat_atten_q              : int32 Q16 (h, w) — static material extinction (read)
+    //   dyn_heat_atten_q          : int32 Q16 (h, w) — dynamic target (write)
+    //   heat_q                    : int32 Q16 (n_stamp,) — per-row unit extinction
+    //                               (unit.heat_atten, default 1.0 = an opaque body,
+    //                               quantized Python-side by optics_fixed)
     void stamp_units(
         const float* permeability, const float* wave_absorb,
         const float* light_atten,
@@ -498,5 +540,7 @@ public:
         const int32_t* ys, const int32_t* xs,
         const float* perm, const float* wabsorb,
         const float* atten_r, const float* atten_g, const float* atten_b,
+        const int32_t* heat_atten_q, int32_t* dyn_heat_atten_q,
+        const int32_t* heat_q,
         int n_stamp, int h, int w) const;
 };

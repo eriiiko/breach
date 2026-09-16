@@ -84,6 +84,8 @@ set(BREACH_SOURCES
     src/sky_exchange.cpp
     src/eos_solver.cpp
     src/combustion.cpp
+    src/emissive_table.cpp   # ray-engine-v2 P1: the E° bake, out of line (strict)
+    src/radiation_sweep.cpp  # ray-engine-v2 P1: the radiation sweep (integer)
     src/physics_engine.cpp
     src/bindings.cpp
 )
@@ -185,6 +187,13 @@ set_source_files_properties(
     src/temperature_solver.cpp
     src/physics_engine.cpp
     src/raycaster.cpp
+    # Ray-engine-v2 P1 (design v3 §8.1): the sweep TU (pure integer, pinned
+    # 0/0/0 on the ratchet) and the E° bake TU — the bake's `k4 * scale + 0.5`
+    # is a multiply feeding an add that /fp:fast may contract (critique 3
+    # §5a); a header-inline bake would have compiled under bindings.cpp's
+    # /fp:fast, so the body is out of line here on the floor.
+    src/emissive_table.cpp
+    src/radiation_sweep.cpp
     PROPERTIES COMPILE_OPTIONS "${BREACH_FP_STRICT}")
 
 target_include_directories(breach_physics PRIVATE src)
