@@ -432,19 +432,36 @@ crates") — not an emissivity.
 | furniture | 0.5 | wood 0.90, but the tile is partly filled | — | **leave 0.5 as an OPACITY**, and see section 13: the two jobs want separating |
 | kindling | 0.5 | as furniture | — | **leave 0.5**, same reason (sticks are even less opaque) |
 | hull / steel | 1.0 | oxidized mild steel 0.78-0.82; painted 0.90-0.96; polished stainless 0.17 | Incropera Table A.11 | **0.85** (a painted/oxidized hull); a *polished* interior would be 0.2 and would change shielding a lot |
-| glass | 0.3 | **0.90-0.95** | Incropera Table A.11; Siegel & Howell ch. 5 | **0.92 — the shipped 0.3 is physically wrong** |
+| glass | 0.3 | emissivity at its own temperature **0.85-0.95**; absorptivity for a 1556 K flame **~0.4** | Incropera Table A.11; Siegel & Howell ch. 5; band arithmetic below | **the row where GREY hurts most** — see below; ~0.6 as a grey compromise, or leave 0.3 and accept a pane that will not radiate its own heat |
 | air | 0.0 | ~0 for N2/O2 (homonuclear diatomics do not absorb in the IR) | Siegel & Howell ch. 10 | **0.0, correct** — and note it is CO2, H2O and soot that make real smoke absorb, which is P5's `heat_absorb` |
-| foliage | 0.0 | green leaves 0.94-0.98 | Incropera Table A.11 | **out of scope** (design row 6); a canopy tile's opacity is the honest number, not the leaf's emissivity |
+| foliage | 0.0 | green leaves / vegetation 0.92-0.98 | Incropera Table A.11 | **out of scope** (design row 6); a canopy tile's opacity is the honest number, not the leaf's emissivity |
 
-**The one row that is a genuine physical error is `glass`.** Its
-`heat_atten = 0.3` is a *visible-light* intuition. Soda-lime glass is close to
-opaque beyond about 4.5 um, and a 1556 K flame has ~80 % of its power above that
-wavelength, so a window is nearly a black body to fire heat while being clear to
-the eye. This matters in gameplay: today a glass pane lets 70 % of a fire's heat
-through to whatever is behind it, and physically it would stop almost all of it
-and re-radiate as a hot pane. It is also exactly the kind of case the new engine
-handles naturally, since light and heat are separate channels on the same sweep
-(`light_atten` stays 0.1, `heat_atten` goes to 0.92).
+**`glass` is the row where the grey-body assumption actually bites, and it is
+worth spelling out** — my first pass got this backwards and the arithmetic is
+what corrected it. Soda-lime glass transmits well to ~2.5 um, absorbs
+increasingly from ~2.7 um and is effectively opaque beyond ~4.5 um. Where a
+black body puts its power, by band:
+
+| source | < 2.7 um (glass transmits) | 2.7-4.5 um (partial) | > 4.5 um (opaque) |
+|---|---|---|---|
+| **flame, 1556 K** | **51.6 %** | 29.2 % | 19.2 % |
+| hot pane, 800 K | 9.4 % | 31.0 % | 59.6 % |
+| ignition point, 573 K | 1.6 % | 16.3 % | 82.2 % |
+| ambient, 293 K | 0.0 % | 0.5 % | **99.5 %** |
+
+So a glass pane is **two different numbers at once**: its *absorptivity for a
+fire* is only about **0.4** (half the flame's power is in the near-IR it passes),
+while its *emissivity at its own temperature* is **0.85-0.95** (nearly all of its
+own radiation is in the far-IR it is opaque to). That is the greenhouse effect,
+and it is a textbook failure of the grey assumption — which the scheme makes
+structurally, since Kirchhoff is enforced by using one `a_i` for both directions.
+
+The practical consequence, which is the useful half: **the shipped 0.3 is
+roughly right as a shield and about 3x too low as an emitter.** A hot pane in
+the current model radiates less than a third of what it should, so it stays hot
+too long and warms its surroundings too little. There is no row value that fixes
+both; ~0.6 splits the difference, and doing it properly means a per-row
+emit/absorb split, which is a scheme change (section 13 item 6), not a row edit.
 
 ## 9. The lumped-capacity caveat — and whether `thermal_mass` is the right lever
 
@@ -716,14 +733,18 @@ Nothing below was decided here.
    `thermal_mass = 0.25` on furniture, which the power-of-two table **cannot
    express** (and 0 means "gas branch"). The honest long-run answer is a two-node
    surface/bulk model for thermal solids — a design addition, not a dial.
-5. **`glass` `heat_atten = 0.3` is physically wrong** for thermal IR (section 8):
-   soda-lime glass is ~0.92 emissive/absorptive above 4.5 um, where most of a
-   1556 K flame's power is. Today a window passes 70 % of a fire's heat. One row
-   value, Erik's to change.
-6. **`heat_atten` does two jobs** — emissivity (Kirchhoff) and geometric opacity
-   — and the shipped `furniture = 0.5` is clearly the second (the config comment
-   says so). For a filled tile they coincide; for a partly filled one they do
-   not. Separating them is a scheme change, not a row change, and it would want
+5. **`glass` is the row where the grey assumption fails** (section 8). A pane's
+   absorptivity for a 1556 K flame is ~0.4 (it passes half the flame's power as
+   near-IR) but its emissivity at its own temperature is 0.85-0.95 (its own
+   radiation is far-IR, which it is opaque to). The shipped `heat_atten = 0.3`
+   is therefore about right as a *shield* and ~3x too low as an *emitter*: a hot
+   pane in the current model will not radiate its own heat away. No single row
+   value fixes both.
+6. **`heat_atten` does two jobs at once** — emissivity/absorptivity (Kirchhoff)
+   and geometric opacity — and they are not the same number for a partly filled
+   tile (`furniture = 0.5` is clearly an opacity; the config comment says so) or
+   for a spectrally selective material (item 5). Separating them, or splitting
+   emit from absorb, is a **scheme** change, not a row change, and would want
    ruling before P3b makes units absorb.
 7. **`A_rad` assumes a 2.5 m deck and a 0.333 m tile.** Two shipped levels do
    not: `levels/airlock_demo` at `tile_size_m = 1.0` and `levels/bench_two_room`
