@@ -110,6 +110,42 @@ Lighting / visual tuning tool: `C:/Users/steen/anaconda3/python.exe tools/lighti
 
 ---
 
+## Type checking and code intelligence (optional, recommended)
+
+pyright checks the Python side, clangd the C++ and the `.cu` kernels. Both are what Claude Code's
+`pyright-lsp` / `clangd-lsp` plugins and VS Code talk to; the machine-side install (binaries, PATH,
+plugins) is described in the ClaudeSync `environment.md`. Repo-side:
+
+```bash
+pyright          # whole Python tree; config in pyrightconfig.json
+```
+
+clangd needs `compile_commands.json`, which the Visual Studio generator never writes, so configure
+once more with Ninja from a shell that has run `vcvars64.bat`:
+
+```bash
+cmake -S cpp -B cpp/build-clangd -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON       -DCMAKE_BUILD_TYPE=Release -DPYTHON_EXECUTABLE=<data-env>/python.exe       -Dpybind11_DIR=<data-env>/Lib/site-packages/pybind11/share/cmake/pybind11
+```
+
+`cpp/.clangd` points clangd at that folder (gitignored). It is a real build dir, not just a database,
+so `cmake --build cpp/build-clangd` produces a `breach_physics` .pyd without touching `cpp/build`.
+CUDA `.cu` files need this compile database and no additional tool.
+
+### The `breach_physics` stub
+
+`stubs/breach_physics.pyi` is what lets pyright see into the pybind11 module. It is GENERATED —
+regenerate it after any change to `cpp/src/bindings.cpp`, never hand-edit:
+
+```bash
+pip install pybind11-stubgen                      # once, into the data env
+PYTHONPATH=cpp/build-clangd python -m pybind11_stubgen breach_physics -o stubs
+```
+
+**Known gap:** the stub is generated from the CPU build, but roughly 170 symbols
+(the `set_*_backend` family) live behind `#ifdef BREACH_HAS_CUDA` in `bindings.cpp` and exist only in
+the CUDA build. pyright therefore reports them as unknown attributes in the 28 `tests/cuda_*.py`
+lockstep harnesses. Regenerating the stub from a CUDA build (`cpp/build_cuda`) closes this.
+
 ## Troubleshooting
 
 ### CMake can't find compiler
