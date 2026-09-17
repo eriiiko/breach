@@ -20,6 +20,7 @@ __pycache__/
 cpp/build/
 cpp/build_cuda/
 cpp/build_vs2022/
+cpp/build-clangd/
 prototypes/raylib_cpp/build/
 *.exe
 *.obj

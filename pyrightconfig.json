@@ -1,0 +1,28 @@
+{
+  "include": [
+    "src",
+    "tests",
+    "tools",
+    "ui",
+    "renderer",
+    "main.py",
+    "config.py",
+    "level_lib.py",
+    "level_loader.py",
+    "pathfinding.py"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    "prototypes",
+    "scratchpad",
+    "out",
+    "cpp",
+    "assets",
+    "art"
+  ],
+  "extraPaths": [".", "src", "tests", "tools"],
+  "stubPath": "stubs",
+  "typeCheckingMode": "standard",
+  "pythonVersion": "3.12",
+  "reportMissingModuleSource": "none"
+}
