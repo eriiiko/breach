@@ -367,9 +367,11 @@ Three kinds of evidence, none of them "the suite was green".
    `step_tail` → `RadiationSweep::{derive_ambient,run}`; grep finds no other
    consumer. The sweep's four outputs are the shadow planes, and the only live
    reader of any of them — the Pass-1 clamp's `rad_fluence` in
-   `temperature_solver.cpp:286` — is behind `rad_fluence != nullptr &&
-   e_table != nullptr` and is not handed either on the live path. The sweep is
-   still genuinely in shadow, so `k_leak` going live moves nothing until T5.
+   `temperature_solver.cpp:286`, behind `rad_fluence != nullptr && e_table !=
+   nullptr` — is handed **`nullptr, nullptr`** by the conductor at
+   `physics_engine.cpp:433` (read, not assumed; the comment above it says P3 is
+   where they arrive). The sweep is still genuinely in shadow, so `k_leak` going
+   live moves nothing until T5.
 3. **The suite agrees** — §5.6, which collects every golden test there is.
 
 ### 5.6 Full suite
