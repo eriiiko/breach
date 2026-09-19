@@ -20,10 +20,10 @@
 - [x] §3 D1 — the engine check (the measurement, not the paper)
 - [x] §4 D2 — where `c_v` belongs: the representation or the seam
 - [x] §5 D2 — the #54 closure identity under the recommendation
-- [ ] §6 D3 — the blast radius, by file and line
-- [ ] §7 `n_floor_heat` under a rescaled `c_v`
-- [ ] §8 Open questions for Erik
-- [ ] §9 What did not hold
+- [x] §6 D3 — the blast radius, by file and line
+- [x] §7 `n_floor_heat` under a rescaled `c_v`
+- [x] §8 Open questions for Erik
+- [x] §9 What did not hold
 
 
 ---
@@ -449,3 +449,170 @@ Cost: one `cuda_conduction_check` re-run at tol 0, plus
 `tests/cuda_conduction_check.py`'s own `DIALS["c_v"] = 1.0` (`:57`) to move to
 the shipped value so the gate exercises what ships. **No CUDA hardware on this
 machine — the twin is written and reviewed here, gated on Erik's CUDA box.**
+
+---
+
+## 6. D3 — the blast radius, by file and line
+
+T5 executes from this list, so it is exhaustive by construction: it is the
+result of sweeping every `c_v` occurrence in `cpp/`, `src/`, `tools/`, `tests/`
+and `docs/`, every `gas_energy` writer on both sides of the binding, and every
+consumer of the two ledgers. **A row marked "verify only" still needs opening —
+it is on the list because a reader must confirm it, not because it changes.**
+
+### 6.1 MUST CHANGE — the behaviour
+
+| # | site | what |
+|---|---|---|
+| 1 | `config.toml:154-156` | `c_v = 1.0` → **`0.0076849`**. Replace the "1.0 = neutral scale … no real-gas anchor yet (P3 territory)" comment with §2.1's derivation (`ρc_v,air / (R13 pin ÷ 8)`, the three routes, the molar-mass independence) |
+| 2 | `cpp/src/temperature_solver.cpp:531-539` | **THE ONE STRUCTURAL SITE.** Replace `de_books = de` + the `cap_real/cap_used` branch with §4.5's form. Bit-identical at `c_v = 1` |
+| 3 | `cpp/src/temperature_solver.cpp:500-530` | The comment block above it — *"`de` is already in the books' currency … the books' capacity IS N"* — is the false claim that produced the bug. Rewrite it as the conversion it now is |
+| 4 | `cpp/src/cuda_temperature.cu:375-381` | The identical twin, same expression |
+| 5 | `cpp/src/cuda_temperature.cu:323-334` + `:643` | `temp_conduct` needs **three new arguments** — `recip_cv`, `n_floor_q`, `n_src` — and the launch updated. (`recip_cv`/`c_v_q`/`n_floor_q` already exist in the host function at `:506-512`; `d_nsrc` is already allocated and passed to two other kernels) |
+| 6 | `cpp/src/temperature_solver.h:437-470` | The gas-side identity's doc block — same false currency claim; and `:476`'s *"priced at the cell's REAL capacity … the same currency as the ledger's Σ N·T_abs estimator"*, which is true only at `c_v = 1` |
+| 7 | `tests/test_thermostat_books.py:103` (+ `_terms`, + the monotone-decay assertion at `:129-145`) | **The ONE place the engine adds the two currencies into one number** (`_gas_books(g) + solid_energy_books_sum`). At `c_v ≠ 1` the sum is a mixed unit. Weight the gas half by `c_v` so the total is real joules — that also turns the monotone-decay assertion into a physical statement instead of an arithmetic accident |
+| 8 | `tests/cuda_conduction_check.py:57` and `tests/cuda_thermal_mass_check.py:61` | `DIALS["c_v"] = 1.0` hardcoded — move to the shipped value so the CUDA gates exercise what ships (both also carry `n_floor_heat = 0.05`, stale since the 2026-08-17 ruling; T5's call whether to fix that too) |
+| 9 | `tests/test_fixed_point_i64_twins.py:109-147` | `_shipped_recips()` sweeps `c_v ∈ [1, 100]`, and its docstring says the one-LSB claim **presumes `c_v ≥ 1`**. The shipped value leaves the tested range. Add `make_recip(0.0076849)` and re-derive (or honestly widen) the bound for `c_v < 1` |
+| 10 | goldens | The dial moves every field downstream of gas temperature. **Rides T5's single arc re-baseline**, with the rationale naming this report. No `DIGEST_SPEC_VERSION` bump is owed *from this axis* (no membership or dtype change) — T5 bumps to v6 for `dyn_heat_atten_q` regardless |
+
+### 6.2 VERIFY ONLY — read, confirm, do not edit
+
+| # | site | why it is on the list |
+|---|---|---|
+| 11 | `cpp/src/temperature_solver.cpp:400-415` | Pass-1 gas deposit: `dT = E_abs/(max(N,floor)·c_v)`, books `N·dT`. Correct at any `c_v` — M3 measures the `1/c_v` scaling exactly, including below the floor |
+| 12 | `cpp/src/combustion.cpp:1040-1095` + `cpp/src/cuda_combustion.cu:538-593` | Same form, same `recip_cv`. Correct at any `c_v` |
+| 13 | `cpp/src/gas_energy.h` (all of it) | Pure `N·T`. **No change** |
+| 14 | `src/simulation/gamemap.py:943-967, 1003-1160, 1189-1210` | `refresh_gas_energy`, `reseed_gas_energy`, the five seam primitives, `gas_energy_seam_net()`. Pure `N·T`. **No change** |
+| 15 | `src/simulation/field_edit.py:655-700` | The four gas-energy FieldEdit paths (`wave`→`N·ΔT`, `gas_energy`→raw, `atmosphere`→`ΔN·T`). **No change** |
+| 16 | `cpp/src/eos_solver.cpp` steps 6–7, `:496-512`, `:727-735` | Face flux, recovery, `k_ke`, `k_work`. Scale-free or already physical. **No change** |
+| 17 | `cpp/src/temperature_solver.cpp:672-688` | Pass 3 is `if (!ts[i]) continue;` — solids only, so the thermostat never prices gas. **No change** |
+| 18 | `cpp/src/temperature_solver.h:220-249` (`cell_capacity_q`) | Unchanged code, new value. Two numbers to check: `cap_used` at the floor becomes `(655·504)>>16 = 5` raw (the `cu < 1` guard still never binds, but see §7), and `CAP_SHIFT_MAX` is now even further from binding |
+| 19 | `tools/e2b_floor_reciprocal_probe.py:119` | The probe that justified `deposit_dT_wide_q16` hardcodes `c_v = 1.0`. **Re-run at the shipped value** — the wide chain's operands grow 130× |
+| 20 | `tests/test_eos_p2_sealed_room_energy.py:134-147, 202, 226` | Its own `_capacity_real(..., c_v=1.0)` helper and the docstring claim *"the SAME values config.toml now ships"* — which stops being true. Direct-binding, so it will not go red; it will go **stale** |
+| 21 | `tests/_sealedbox_bisect_bench.py:408-423` | Prints `e_gas_cond_sum / N / q` as "cond in box-deg". Becomes *correct* automatically once the counter is the true `N·ΔT`. Its documented wall→gas leak ("the walls top the gas up forever") shrinks ~130× — a likely side benefit worth measuring, not a required edit |
+| 22 | `tools/storm_ledger.py:27, 33` | `eth_gas = Σ N·T_abs, c_v=1` and `t_obj = Σ T` are printed side by side; the ledger's own note says `c_v=1`. Diagnostic only; update the note |
+
+### 6.3 DOCUMENTATION DEBT — flagged, owner named
+
+| # | site | what |
+|---|---|---|
+| 23 | `config.toml:658-662` | *"THE CURRENCY PIN … the furniture row (thermal_mass = 8) with rho_c = 0.7 MJ/m^3/K"* — **R13 moved the pin to 0.9.** T3/T5 own it; listed here so it cannot be missed |
+| 24 | `config.toml:170-172` | The `n_floor_heat >= heat_tick_max/(T_MAX_PHYS*c_v)` criterion, already marked STALE. At the new `c_v` it would argue for a **130× larger** floor. Keep it retired — say so, with the number (§7) |
+| 25 | `docs/architecture/engine/06_temperature_and_fire.md:104, 114, 164` | *"gas `N·c_v ≈ 1`"* and the `cap_used`/`cap_real` prose. Canon-fold is DEFERRED by ruling, so this is not blocking — **T7's row** |
+| 26 | `docs/thermal_model_v2_design_2026-09-19.md` §3.2 | `0.0098` / `101.56×` are the 0.7-pin figures (§2.3). Restate at R13's 0.9 pin: **`0.0076849` / `130.13×`** |
+| 27 | `cpp/src/eos_solver.h:244` + `bindings.cpp:2665` + `physics_runner.py:604` | `EOSSolver::c_v` is **dead surface** — `eos_solver.cpp:2267` is `(void)c_v;` since arc #54 D5 retired `k_drag_heat_frac`. Leaving it bound is harmless but it carries a stale story (`eos_solver.h:216-217`, *"air's heat capacity ~700× below physical, c_v=1 by convention"* — a different, specific-per-kg unit, not this report's). **Retire it at T6** |
+| 28 | project `CLAUDE.md`, "Gas energy field" row | Calls `gas_energy` "THE conserved truth for gas thermal energy". Precisely, it is `U / c_v_phys` — the ideal-gas `N·T`. Sharpen at **T7**, and add design v2 §7.2's currency draft rule with the gas half named (below) |
+
+**Draft rule for the CLAUDE.md inventory** (design v2 §7.2's "heat-count
+currency", gas half): *`gas_energy` is `N·T`, not joules; `c_v` is the ONE
+exchange rate between it and the heat-count currency, applied at every crossing
+and nowhere else. A channel that moves gas N or gas T without crossing into
+heat counts never sees `c_v`; a channel that crosses applies it exactly once.*
+
+---
+
+## 7. `n_floor_heat` under a rescaled `c_v`
+
+**`n_floor_heat` itself does not rescale.** The floor is on **N**
+(`temperature_solver.cpp:393`, `cell_capacity_q`'s `nu = max(nr, n_floor_q)`),
+not on the capacity, and `c_v` does not change what N means. Its stated job —
+"below this bulk N a cell has no thermodynamic capacity to divide by" — is
+unchanged.
+
+What *does* change is the consequence of the floor binding. Measured (M3,
+direct binding, one tick, deposit = 1.0 count, `n_floor_heat = 0.01`):
+
+| N | `dT` at `c_v = 1` | `dT` at `c_v = 0.0076849` | ratio |
+|---|---|---|---|
+| 1.0 | 1.000000 K | 130.125824 K | ×130.13 |
+| 0.05 | 0.999985 K | 130.125717 K | ×130.13 |
+| 0.01 (at the floor) | 1.000000 K | 130.126175 K | ×130.13 |
+| 0.002 (below it) | 0.199997 K | 26.025223 K | ×130.13 |
+
+Exactly `1/c_v` everywhere, floor bound or not — which is the *correct* answer
+(air really is 130× easier to heat than the placeholder said). Three
+consequences for T5:
+
+1. **`T_MAX_PHYS` engages 130× sooner on thin gas.** Rail hits were 0 in every
+   M3 row, but M3 deposits one count; a real fire deposits hundreds into a cell
+   the plume has evacuated. The rail is counted (`t_max_phys_hits`,
+   `e_gas_rail_sum`), so this is a *watch the counter* item, not a defect —
+   but T5 should report those two counters on a fire bench before and after.
+2. **The config's v1 floor criterion stays retired.** `n_floor_heat ≥
+   heat_tick_max/(T_MAX_PHYS·c_v)` would now argue for a **130× larger** floor
+   (0.01 → ~1.3, i.e. flooring every cell at ambient). Erik's 2026-08-17 ruling
+   already retired it; the new number is the reason it must *stay* retired
+   rather than be quietly resurrected when the rail counter ticks.
+3. **Re-run `tools/e2b_floor_reciprocal_probe.py`** (item 19). The wide chain's
+   operands grow 130×; the clamp to `[0, INT32_MAX]` before the narrow
+   therefore binds 130× sooner. It is counted and railed downstream, but the
+   probe is the instrument that established the bound and it should be re-read
+   at the shipped dial rather than assumed.
+
+A fourth, smaller one: at the floor, `cap_used = (655 · 504) >> 16 = 5` raw —
+positive (so `cell_capacity_q`'s `cu < 1` guard still never binds) but only
+~0.4 % accurate, against 0.016 % at ambient N. Harmless at a diagnostic floor;
+worth a line in the config comment.
+
+---
+
+## 8. Open questions for Erik
+
+1. **The pin restatement.** Design v2 §3.2's `0.0098 / 101.56×` are the *0.7*
+   figures. R13 ruled 0.9. I have used 0.9 throughout, because R13 is the
+   ruling and the brief says "in the currency R13 pins". **Confirm** that §3.2
+   should be corrected to `0.0076849 / 130.13×` rather than R13 being revisited.
+2. **`c_v` is `c_v`, not `c_p`.** I used the constant-*volume* capacity because
+   the EOS does compression work as its own channel (`k_work`), so the stored
+   quantity is internal energy. Using `c_p` (1006 vs 718 J/(kg·K)) would
+   double-count the expansion work and give `c_v = 0.01076`. Stated so the
+   choice is visible; I do not think it is genuinely open.
+3. **Does conduction survive R10 × this correction?** Two independent factors
+   shrink the solid's conduction landing: `cmin` drops 130× (this report) and
+   R10's real rates raise the shifts a lot. Measured here: the solid-endpoint
+   truncation already grows from 0.56 % to 15.57 % of the conducted energy
+   (§3.3), and a steel cell's one-tick landing is 13 raw counts. Their product
+   can floor it to **exactly zero**. R10 accepts "negligible"; "identically
+   zero" is a different claim and should be *chosen*. **T3/T5 measure it; Erik
+   rules if it lands at zero.**
+4. **Should `gas_energy`'s name change?** It is `N·T` — `U/c_v_phys` — not an
+   energy, and every reader who has assumed otherwise has been right only
+   because `c_v = 1`. Renaming is a large mechanical diff and squarely Erik's
+   call. A cheaper alternative: keep the name, add the CLAUDE.md draft rule in
+   §6.3 item 28 so the next reader is told once.
+
+---
+
+## 9. What did not hold
+
+The arc's convention: the things I expected, published or inherited that the
+measurement contradicted.
+
+1. **"The gap is 101.56×."** It is **130.13×** in the currency R13 pins. Both
+   numbers come from the same derivation; the design's is quoted at the
+   superseded 0.7 pin and was not restated when R13 moved it (§2.3).
+2. **"`c_v` is a one-character edit blocked by the `gas_energy` representation."**
+   The brief's framing, and my own first read. Wrong in both directions:
+   `gas_energy` needs **no** change at all, and the edit is **not** one
+   character — one site bakes `c_v = 1` into an arithmetic shortcut, and editing
+   only `config.toml` would leave the conduction path at the old convention
+   while the deposit path moved (§4.2). Half-corrected is worse than either end.
+3. **"The #54 closure identity is the hard constraint that decides this."**
+   Measured: the identity closes **exactly, 0/40 ticks, at both `c_v` values**,
+   including the one that destroys 99.23 % of every conducted joule (§5.1). It
+   could not have decided anything. The constraint that actually decides is the
+   EOS's own `k_work`/`k_ke` derivations, which already carry the *physical*
+   `c_v` and therefore fix which side of the seam the dial belongs on (§1.3).
+4. **"Air's conductivity is 0, so gas conduction is dormant."** I assumed this
+   from `test_temperature_conduction.py`'s "AIR tiles stay BIT-EXACTLY 0"
+   docstring. Air's conductivity is **0.024** (`config.toml:1516`) — the
+   solid↔gas faces are live in the shipped game, which is what makes this a real
+   bug rather than a latent one.
+5. **A harness artefact I nearly published as an engine finding.** The P-G5
+   total ledger showed `1/40` bad ticks with a residual of `1.759e15`. That is
+   exactly `16 cells × (32<<16) × (800<<16)` — my own scenario writing
+   `temperature` on the steel block outside every counter, landing in the first
+   `solid_energy_books_sum` snapshot with no term to match it. Identified
+   because the residual was *identical at both `c_v` values*, which no
+   `c_v`-caused defect could be. Tick 1 is excluded, with the reason in the
+   instrument.
