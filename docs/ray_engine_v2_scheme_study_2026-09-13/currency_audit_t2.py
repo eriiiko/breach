@@ -7,16 +7,21 @@ folder's other `*_study.py` files. It CHANGES NOTHING: it runs the shipped
 `Simulation` with the shipped dials, and the only thing it varies is the
 `[physics.thermal] c_v` member on the live solver, which it restores.
 
-What it measures, per `c_v`:
+What it measures, at `c_v = 1` (shipped) and `c_v = 0.0076849` (physical):
 
   M1  the two conduction ledgers across solid<->gas faces, converted to joules
-      through §1.2's bridge (`gas_energy` raw = (2^16 / c_v) * E_raw).
+      through report §1.2's bridge (`gas_energy` raw = (2^16 / c_v) * E_raw).
       If one gas joule is one solid joule, the gas's gain must equal the
-      solid's loss.
-  M2  the gas's temperature rise per unit conducted energy, against the
-      prediction from its REAL heat capacity `N*c_v` — design v2 §6 item 5.
-  M3  the arc #54 closure identity, every tick, in int64. It is asserted here
-      so the report can say whether the identity NOTICES the M1 gap.
+      solid's loss. It also runs BOTH closure identities every tick (arc #54's
+      gas-only one and P-G5's gas+solid total), so the report can say whether
+      they NOTICE the gap. They do not.
+  M2  the same thing per cell, through the DIRECT binding — where `gas_energy`
+      is absent and the pre-#54 T-form law runs, which is the law whose
+      prediction design v2 §6 item 5 asks for.
+  M3  the `n_floor_heat` x `c_v` interaction, on Pass 1's deposit.
+  M4  design v2 §6 item 5 in its most literal form on the LIVE engine: a known
+      energy into `gmap.heat`, one `Simulation.step()`, read the gas books.
+      The CONTROL for M1 — the deposit path is the one that is already right.
 
 Run:
     C:/Users/steen/anaconda3/python.exe docs/ray_engine_v2_scheme_study_2026-09-13/currency_audit_t2.py
@@ -349,7 +354,7 @@ if __name__ == "__main__":
               f" ; gas dT / (c_v=1 case) = {dg/base if base else float('nan'):.6f}")
     print("  (the CORRECT law's gas dT is c_v-INDEPENDENT: 130x less energy")
     print("   crosses the face, into a 130x lighter cell. The engine's live")
-    print("   path scales it BY c_v instead — see M1.)")
+    print("   path scales it BY c_v instead - see M1.)")
 
     print("\n=== M3: n_floor_heat x c_v (direct binding, Pass 1 deposit) ===")
     print("    one tick, deposit = 1.0 count (65536 raw), n_floor_heat = 0.01")
@@ -363,7 +368,7 @@ if __name__ == "__main__":
               f"(rail {row[0][1]}) ;  dT(phys) = {row[1][0]:>12.6f} K "
               f"(rail {row[1][1]}) ;  x{ratio:.2f}")
     print("  (the floor is on N, not on the capacity, so n_floor_heat itself")
-    print("   does NOT rescale — but a floored cell's dT does, by 1/c_v.)")
+    print("   does NOT rescale - but a floored cell's dT does, by 1/c_v.)")
 
     print("\n=== M4: a known energy into a gas cell, on the LIVE engine ===")
     print("    deposit = 65536 raw into gmap.heat, one Simulation.step()")
@@ -372,5 +377,5 @@ if __name__ == "__main__":
         print(f"  c_v = {c_v:.8f}: N_raw = {n_raw} ; d(e_gas_deposit_sum) = "
               f"{got:>18d} ; predicted from N*c_v = {pred:>20.1f} ; "
               f"got/pred = {got/pred:.8f}")
-    print("  (Pass 1 already carries 1/c_v correctly — this leg is the")
-    print("   CONTROL for M1, which is the leg that does not.)")
+    print("  (Pass 1 already carries 1/c_v correctly - this leg is the")
+    print("   CONTROL for M1, the leg that does not.)")

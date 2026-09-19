@@ -13,7 +13,21 @@
 
 ---
 
-## 0. Status
+## 0. Status — and the gate
+
+**Gate, run on this branch at `f3fadf3`:**
+
+- suite: **`2622 passed, 29 skipped, 4 xfailed`, 0 failed** (125.7 s,
+  `C:/Users/steen/anaconda3/python.exe -m pytest tests -q`)
+- goldens: **unmoved** — nothing was applied. `git diff --name-status
+  fire-12...HEAD` is two ADDED files, both under
+  `docs/ray_engine_v2_scheme_study_2026-09-13/`. No engine file, no config, no
+  material or gas row, no golden, no `DIGEST_SPEC_VERSION`.
+- `git status`: clean.
+- no CUDA on this machine; the CUDA twin is specified (§5.3, §6.1 items 4–5)
+  and gated on Erik's CUDA box.
+
+
 
 - [x] §1 What the currency is, on both sides, read off the code
 - [x] §2 D1 — what `c_v` must be (the arithmetic)
