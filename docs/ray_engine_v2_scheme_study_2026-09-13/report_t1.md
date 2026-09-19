@@ -10,14 +10,17 @@
 | step | state |
 |---|---|
 | D1 reference (`sweep_ref_q.py`) | **done** |
-| D1 reference gates G1-G12 (+2 new blocks) | **ALL GATES PASS** |
+| D1 reference gates G1-G12 (+2 new blocks) | **done** — ALL GATES PASS, re-run at the tail (§5.1) |
 | D2 engine (`radiation_sweep.{h,cpp}` + binding + runner) | **done** |
-| D3 gate 0 bit-for-bit | **92 radiation tests pass** |
-| D3 goldens unmoved | pending |
-| D4 item 2 (uniform == scalar era) | pending |
-| D4 item 3 (non-uniform genuinely varies) | pending |
-| D4 item 4 (conservation with per-cell ambient AND k_leak > 0) | pending |
-| full suite | pending |
+| D3 gate 0 bit-for-bit | **done** — 162 radiation tests pass (§5.2) |
+| D3 goldens unmoved | **done** — nothing that could move one was touched (§5.5) |
+| D4 item 2 (uniform == scalar era) | **done** — pinned on the ENGINE, against the pre-patch reference (§5.3) |
+| D4 item 3 (non-uniform genuinely varies) | **done** — and unpassable by a hoist; validated by breaking it (§5.4) |
+| D4 item 4 (conservation with per-cell ambient AND k_leak > 0) | **done** — identity exactly 0, 12 configurations (§5.3) |
+| full suite | **done** — 2622 passed, 0 failed (§5.6) |
+
+> **The patch is complete.** §5 is the evidence; §6.4–§6.7 are what the tail
+> found that §1–§4 could not have known.
 
 ## 1. The scalar that was named wrong, and the one that is right
 
@@ -208,7 +211,162 @@ ships), `tools/bench_radiation_sweep.py`, `tools/fire_tuning_lab.py`.
 
 ## 5. Gate results (D3, D4)
 
-*(filled at the end)*
+Every number below was re-measured at the tail, not carried over.
+Python: `C:/Users/steen/anaconda3/python.exe` (there is no conda `data` env on
+this machine). CPU build only; no CUDA in this patch.
+
+### 5.1 The reference's own gates
+
+`docs/ray_engine_v2_scheme_study_2026-09-13/sweep_ref_q_gates.py` →
+**ALL GATES PASS** (G1–G12). The two blocks §3 added are green and non-trivial:
+
+    shear k= 6554 S16 COLD-SKY PATCH: net=  -9770926588038 flux=  3249619431691 amb=  6521307156347 identity=0  each-nonzero=True  OK
+    shear k= 6554 S12 COLD-SKY PATCH: net= -10690861153394 flux=  3857242593855 amb=  6833618559539 identity=0  each-nonzero=True  OK
+    step  k= 6554 S16 COLD-SKY PATCH: net= -11486377086464 flux=  6350301022008 amb=  5136076064456 identity=0  each-nonzero=True  OK
+    step  k= 6554 S12 COLD-SKY PATCH: net=  -9004114471019 flux=  2453889927360 amb=  6550224543659 identity=0  each-nonzero=True  OK
+    non-vacuity: a cold-sky patch (ambient level 0 on x < 3, every T still at
+    ambient) -> 113 nonzero cells, min rad_net = -103542 (a 293 K wall facing
+    0 K radiates; a HOISTED amb_m gives 0 everywhere)
+
+### 5.2 Gate 0 — bit for bit, across the ambient axis
+
+    pytest tests/test_radiation_sweep_reference.py tests/test_radiation_sweep_gates.py \
+           tests/test_radiation_sweep_constants.py tests/test_radiation_sweep_shadow_wiring.py \
+           tests/test_radiation_sweep_ambient_plane.py -q
+    -> 162 passed in 4.23s
+
+136 of those are the four pre-existing files (the count the orchestrator verified
+before committing §4.5's work); **26 are the new ambient-plane file**. Gate 0 now
+runs its 32-configuration matrix over three ambients — `uniform`, `cold-half`,
+`random` — so the C++ is held to the reference on a *non-uniform* plane as well,
+which is what makes it able to see a PARTIAL hoist (one of the four
+ambient-derived sites left reading a global moves no integer under a uniform
+ambient).
+
+### 5.3 The three properties — `tests/test_radiation_sweep_ambient_plane.py`
+
+The file the harness already named in §4.5. 26 tests.
+
+**Item 2 — the uniform case is unchanged, integer for integer.** A sha256 over
+gate 0's whole 32-configuration matrix (the four output planes + the Fleck plane
++ the stream telemetry, serialisation spelled out in `_scalar_era_digest`):
+
+    SCALAR_ERA_DIGEST = 6a28a3fba102cf63fe51a0aab7880ae8e411ef5995a41c5bb49cd56798655f00
+
+Three independent computations agree on it:
+
+| what | why it is the scalar era |
+|---|---|
+| the **pre-patch reference**, `git show b3488fc:.../sweep_ref_q.py` | the spec the pre-patch engine was held to bit for bit by gate 0 — this is what the sweep produced BEFORE `amb_m` went per-cell |
+| the **current reference**, `amb=None` | §3's claim, re-measured |
+| the **current C++ engine**, `amb=None` | the claim design v2 item 2 actually makes, which §3's reference-side digest did not reach |
+
+The constant is therefore a **historical** fact, not a snapshot of current
+behaviour: it cannot be satisfied by "whatever the code does today", and it is
+re-derivable at any time from the git object. It moves only when the uniform path
+is deliberately changed, with written rationale — the golden discipline.
+(§3's `c965d265…` was a reference-side number under an uncommitted
+serialisation; `6a28a3fb…` is the same *fact* under a serialisation that is now
+checked in and applied to the engine as well. No number moved.)
+
+A second leg pins the **three doors**: `amb=None`, `amb=E°[0]` broadcast, and
+`derive_ambient(is_vacuum, vac_level=-1)` give the same integers on every plane
+over a *non-trivial* `is_vacuum` mask — which is why today's live path (R4) is
+still bit-identical to the scalar era.
+
+**Item 3 — the non-uniform half.** §5.4.
+
+**Item 4 — conservation with both changes live at once.**
+`Σ rad_net + Σ rad_flux + Σ rad_amb == 0` **exactly**, in int64, no tolerance,
+with `k_leak = 0.10` live and a non-uniform ambient, over 12 configurations
+(3 ambient shapes × 2 transports × S16/S12) — each of the three sums individually
+non-zero in all twelve. The three shapes are a breach cold patch, **the R3
+derivation driven off a real `is_vacuum` mask** (the shipped path), and a
+per-cell random level over the whole legal range `[0, E°[0]]`. Representative:
+
+    shear S16 cold-patch : net=      -84322105836 flux=     39258368540 amb=     45063737296 ident=0
+    shear S16 derived    : net=      -51827794106 flux=     20414507957 amb=     31413286149 ident=0
+    step  S12 random     : net=     -106832418092 flux=     56173329591 amb=     50659088501 ident=0
+
+### 5.4 Item 3, and the proof that it cannot pass with a hoist
+
+This is the test the patch exists for, so it is written as an argument rather
+than as an assertion, and every step of the argument is **measured**.
+
+**The scene.** Two identical compartments, mirror images about the vertical
+midline: `out out | WALL | in in in in | WALL | out out`. Every plane the sweep
+reads — `a`, `d`, `T`, `heat_inv_shift`, `thermal_solid` — is exactly
+mirror-symmetric, and every cell sits at ambient. The **only** asymmetric input
+in the whole scene is `is_vacuum`: the port side is open to space, the starboard
+side is not. Two structurally identical hull walls, one facing vacuum and one
+facing interior air.
+
+**The argument.**
+
+1. the **control** leg runs the same scene at `vac_level = -1` (R4) and measures
+   that all four output planes come back *exactly* mirror-symmetric — the sweep
+   commutes with the mirror — and that the scene is the exact G2a fixed point
+   (zero non-zero cells across all three ledger planes);
+2. the **hoist** leg re-measures that symmetry at every level the derived plane
+   actually contains (0 and `E°[0]`);
+3. therefore any implementation that collapses the ambient to one scalar —
+   whatever value, from whichever cell — yields a mirror-**symmetric** output on
+   this scene;
+4. the **claim** leg asserts the output is **not** mirror-symmetric, and that the
+   port wall loses strictly more than its twin at *every* row.
+
+A v1-style patch (`t_amb_q` made per-tile, `amb_m` left hoisted) lands in (3) and
+fails (4). Measured, shear/S16: port wall `rad_net = -115604`, starboard
+`-2750` — **42×**, from one cold sky. `L < R < 0` holds at all 7 rows × 2
+transports × S16/S12.
+
+Two further legs: **localisation** (one vacuum cell; `rad_amb`'s *strict*
+maximum is the cell the mask names) and **the derivation itself**
+(`derive_ambient` keyed on `is_vacuum` alone, the R4 sentinel, the
+`0 ≤ amb ≤ E°[0]` door raising).
+
+**Validated by breaking it** (`feedback_review_the_first_instance`: a gate that
+cannot fail is not a gate). Four perturbations were injected and each test re-run:
+
+| injected bug | item 2 digest | item 3 hull | item 3 localisation | item 4 |
+|---|---|---|---|---|
+| `amb_m` hoisted at `E°[0]` — **the v1 bug** | pass | **FAIL** | **FAIL** | pass |
+| the plane read once, at cell `[0][0]` | pass | **FAIL** | **FAIL** | pass |
+| the plane read once, at the last cell | pass | **FAIL** | **FAIL** | pass |
+| a mis-indexed per-cell read (roll by one column) | pass | pass | **FAIL** | pass |
+
+Gate 0 was put through the same roll: `amb=uniform` passes it, `amb=cold-half`
+and `amb=random` **fail** it (`rad_net differs at 44 cells`). See §6.4 for what
+that table means.
+
+### 5.5 Goldens unmoved
+
+Three kinds of evidence, none of them "the suite was green".
+
+1. **Nothing that could move one was touched.** Over the whole patch
+   (`git diff --name-only b3488fc..HEAD`) no golden artifact, no digest spec, no
+   baked-art PNG, and no file holding a golden constant appears — 16 files, all
+   of them the sweep, its reference, its tests, its two tools, and
+   `config.toml`. `tests/_xarch_perfield_digest.py` (GOLDEN_AGGREGATE) and
+   `tests/field_digest_spec.toml` are untouched; `DIGEST_SPEC_VERSION` is
+   unchanged.
+2. **Both new dials terminate at the sweep.** `k_leak_q` and
+   `rad_amb_vacuum_q` are read in `physics_runner.py` and handed to
+   `step_tail` → `RadiationSweep::{derive_ambient,run}`; grep finds no other
+   consumer. The sweep's four outputs are the shadow planes, and the only live
+   reader of any of them — the Pass-1 clamp's `rad_fluence` in
+   `temperature_solver.cpp:286` — is behind `rad_fluence != nullptr &&
+   e_table != nullptr` and is not handed either on the live path. The sweep is
+   still genuinely in shadow, so `k_leak` going live moves nothing until T5.
+3. **The suite agrees** — §5.6, which collects every golden test there is.
+
+### 5.6 Full suite
+
+    C:/Users/steen/anaconda3/python.exe -m pytest tests -q
+    2622 passed, 29 skipped, 4 xfailed, 3 warnings in 121.12s (0:02:01)
+
+**0 failed.** No pre-existing failure to report. The 29 skips and 4 xfails are the
+tree's standing ones (CUDA-gated and marked), unchanged by this patch.
 
 ## 6. Findings, surprises, and what T5 inherits
 
@@ -221,9 +379,96 @@ ships), `tools/bench_radiation_sweep.py`, `tools/fire_tuning_lab.py`.
    not confined to the sweep loop. Under a uniform ambient it is bit-identical.
 3. **T5 inherits the Pass-1 clamp ceiling** — §2.3.
 
+*(4–7 added at the tail, from the gate work itself.)*
+
+### 6.4 Design v2 §6 item 2's stated break condition is wrong
+
+Item 2 reads *"the uniform case is unchanged … **Breaks if `amb_m` is
+mis-indexed**."* It does not, and cannot. A uniform ambient plane holds the same
+integer in every cell, so any read that lands **inside** the plane returns the
+right value whatever index it uses: a uniform-ambient test is *structurally
+blind* to an in-plane mis-index. Measured — a roll-by-one-column perturbation
+passes the item 2 digest untouched (§5.4 table, last row). Item 2 catches only a
+read that leaves the plane (a wrong stride, scratch read past its fill), and its
+real content is the one it does deliver: **the uniform path did not move.**
+
+The mis-index property is owned by **gate 0's non-uniform ambient axis**, which
+§4.5's work added and which was measured to fail under exactly that roll. A
+localisation leg was added to item 3 as well, so the property is also asserted
+where a reader of the ambient-plane file will look for it. Three gates, three
+distinct properties:
+
+| property | owner |
+|---|---|
+| the uniform path did not move | item 2 (the scalar-era digest) |
+| the ambient is read at the RIGHT cell | gate 0's `cold-half` / `random` axes; item 3's localisation leg |
+| the ambient is read PER cell at all | item 3 |
+
+### 6.5 Item 2 and item 4 are both blind to the hoist — item 3 carries R3 alone
+
+The §5.4 table's most important column is the one that is all `pass`. The v1 bug
+— `t_amb_q` made per-tile, `amb_m` left hoisted — sails through the scalar-era
+digest (a hoist *is* the scalar era), through conservation (the identity is
+structural and holds for any ambient, uniform included), and through gate 0's
+uniform axis. **Only item 3 sees it.** That is worth stating plainly because it
+is the shape of the original failure: a patch can be green on every gate the
+design lists except one and still deliver nothing at all. Item 3 is not a
+nice-to-have leg of T1; it is the only thing standing between R3 and a no-op.
+
+### 6.6 The live calibration resolves the ambient axis to ELEVEN levels — T5 inherits this
+
+The gates run on `reference_table()`, baked at `[physics.fire] rad_scale =
+5.1427e-5`, where `E°[0] = 389475`. The **shipped** sweep bakes at
+`[physics.radiation] rad_scale_derived = 2.125632e-08` (P2b's derived
+calibration), where **`E°[0] = 161`** — 2419× smaller. Since
+`amb_m = (amb · w_m) >> 16` and `w_m = ONE/16`, the per-tile ambient the live
+path can express spans `amb_m ∈ {0 … 10}`: **eleven distinct levels** between
+"0 K outside the hull" and "room temperature outside".
+
+That is not a defect — it is `T⁴` being honest. A 293 K surface radiates 161
+counts a tick where a 1263-game fire radiates 124282 (772×, against the exact
+`(1556/293)⁴ = 794`). But it has a consequence T5 must re-measure rather than
+assume. The same hull scene at the live calibration:
+
+| calibration | `E°[0]` | port wall `rad_net` | starboard wall `rad_net` |
+|---|---|---|---|
+| reference (`rad_scale`) | 389475 | −115604 | −2750 |
+| **live (`rad_scale_derived`)** | **161** | **−50** | **0** |
+
+The first-order effect survives quantisation; the **second-order** one — the
+cold side chilling the rest of the compartment — quantises to **exactly zero**.
+So at T5's flip: a hull wall facing a 0 K sky does cool, and nothing behind it
+feels the sky at all until it is warmer than ambient. Whether that is acceptable
+is a T5/T3 calibration question (ledger items 2 and 3, the 0.7-vs-0.9 pin), not
+a T1 one. **Consequence for the gates, written into the test file**: the item 3
+scene must stay on `reference_table()` — moved to the live table, half its
+assertions go vacuous while the file still reports green.
+
+### 6.7 The sweep commutes with the mirror, exactly
+
+Measured, not assumed, and it is the lever §5.4's whole argument rests on: on a
+mirror-symmetric scene with a uniform ambient, all four output planes come back
+**exactly** mirror-symmetric — all four (transport × ordinate count)
+combinations. Nothing in the remainder split, the gather offsets, the
+per-ordinate constants or the traversal order introduces a handedness. Two uses
+beyond T1:
+
+* it is a free, strong, *snapshot-less* property gate for the sweep, available to
+  any future patch that needs a non-vacuous invariant (P4's CUDA twin should
+  preserve it, ordinate table and all);
+* it is the reason a hoist is *provably* undetectable-free here rather than
+  merely unlikely to hide.
+
 ## 7. Commits
+
+Branch `12-t1-ambient-plane-leak-live`, off `fire-12` at `b3488fc`.
 
 | hash | what |
 |---|---|
-| `f4a7775` | report skeleton |
-| `99e0167` | D1 — the reference takes a per-cell ambient level |
+| `f4a7775` | report skeleton, written incrementally from there |
+| `99e0167` | **D1** — the reference takes a per-cell ambient LEVEL; ring, ceiling return and body all read the cell's own |
+| `0031662` | **D2** — the engine's `amb_m` goes per-cell, derived from `is_vacuum`; `k_leak` goes live at 0.10 |
+| `4fe6379` | gate 0 and the harness take the per-cell ambient *(committed by the orchestrator after the first implementer died mid-patch; its work, verified before committing)* |
+| `588bbaf` | **D4** — the three properties (design v2 §6 items 2, 3, 4), 26 tests, validated by breaking them |
+| `fd12caa` | the calibration trap named in the item 3 scene (§6.6) |
+| *(this commit)* | **D3** — §0, §5, §6.4–§6.7, §7 |
