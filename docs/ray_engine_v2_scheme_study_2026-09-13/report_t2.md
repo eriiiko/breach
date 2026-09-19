@@ -17,7 +17,7 @@
 
 - [x] §1 What the currency is, on both sides, read off the code
 - [x] §2 D1 — what `c_v` must be (the arithmetic)
-- [ ] §3 D1 — the engine check (the measurement, not the paper)
+- [x] §3 D1 — the engine check (the measurement, not the paper)
 - [ ] §4 D2 — where `c_v` belongs: the representation or the seam
 - [ ] §5 D2 — the #54 closure identity under the recommendation
 - [ ] §6 D3 — the blast radius, by file and line
@@ -163,3 +163,82 @@ shift), so no further quantization is owed. At the `n_floor_heat` floor
 `cap_used` becomes `(655 · 504) >> 16 = 5` raw — still positive, so
 `cell_capacity_q`'s divide-by-zero guard never binds, but only ~0.4 % accurate
 there. See §7.
+
+---
+
+## 3. D1 — the engine check, and what it found
+
+Instrument: `docs/ray_engine_v2_scheme_study_2026-09-13/currency_audit_t2.py`.
+It runs the shipped `Simulation` on a sealed 12×12 room (HULL ring, air
+interior, a centred 4×4 **STEEL** block at 800 game-K). Steel's conductivity is
+45 and **air's is 0.024 — not zero** — so every block face is a live solid↔gas
+conduction face. The only thing varied is `temperature.c_v` on the live solver.
+Nothing is edited; nothing is applied.
+
+### 3.1 M1 — the energy balance across a solid↔gas face
+
+> **The question in its most direct form: does the gas gain the joules the
+> solid loses?**
+
+40 ticks, converted to joules through §1.2's bridge:
+
+| | `c_v = 1` (shipped) | `c_v = 0.0076849` (physical) |
+|---|---|---|
+| solids LOST | 6 374 688 counts = 3 033 612 J | 59 392 counts = 28 264 J |
+| …of which counted `e_cond_trunc_sum` | 35 931 counts (**0.56 %**) | 9 246 counts (**15.57 %**) |
+| delivered to the gas by the faces | 6 338 757 counts = 3 016 513 J | 50 146 counts = 23 864 J |
+| **gas RECEIVED** | 6 338 757 counts = 3 016 513 J | **385 counts = 183 J** |
+| **received / delivered** | **1.00000000** | **0.00768487** |
+| arc #54 closure identity | **0 / 40 ticks bad** | **0 / 40 ticks bad** |
+
+> ### The ratio is `c_v`, to eight figures, at both values.
+>
+> At the shipped `c_v = 1` the two currencies agree **exactly** — a true null
+> result, and the reason nobody has noticed. At the physical value the gas
+> receives **0.77 %** of the energy the solid gave up: **99.23 % of every joule
+> conducted into air is destroyed at the face.**
+>
+> **And the arc #54 closure identity closes exactly — 0 bad ticks — in both
+> cases.** It does not see this. §5 says why, and why that is not a defect in
+> the identity.
+
+### 3.2 M2 — the same thing per cell, against the real heat capacity
+
+Design v2 §6 item 5 asks for the per-cell form: *a known energy across a
+solid–gas face raises the gas by its real heat capacity's prediction.*
+
+`TemperatureSolver.step`'s pybind signature takes **no `gas_energy`**
+(`bindings.cpp:2023-2027`), so the direct binding is always the **pre-#54
+T-form law**, `ΔT_i = floordiv(Σ_faces ΔE, cap_i)`. That law is the one whose
+prediction we want. One tick on `STEEL@800 | AIR | AIR`, cooling off:
+
+| | `cap_gas` | gas ΔT | solid ΔT |
+|---|---|---|---|
+| `c_v = 1` | 65 536 raw | **+0.78125000 K** | −0.02441406 K |
+| `c_v = 0.0076849` | 504 raw | **+0.78125000 K** | −0.00019836 K |
+
+The T-form gas ΔT is **c_v-independent, bit for bit**, and that is exactly
+right: the face moves `ΔE = (g · min(cap)) >> s` with `cap_gas` the minimum, so
+`ΔT_gas = ΔE / cap_gas = g >> s` whatever `cap_gas` is. 130× less energy
+crosses, into a 130× lighter cell. Meanwhile the **solid**'s ΔT falls 123× —
+which is the *physics the correction buys*: a 240 J/K air tile can no longer
+cool a 31 kJ/K steel tile as if it were another lump of steel.
+
+The live engine gives `ΔT_gas = ΔE / N_raw` instead (§4.2), i.e. `c_v ×` the
+T-form answer — the M1 ratio, seen per cell.
+
+### 3.3 A second, independent finding: the endpoint truncation grows
+
+M1's `e_cond_trunc_sum` row is not decoration. The **solid** endpoint divide
+`floordiv(de, cap_solid)` destroys, counted:
+
+    c_v = 1          ->   0.56 % of the conducted energy
+    c_v = 0.0076849  ->  15.57 %
+
+because `de` shrinks 130× while `cap_solid` does not. In M2 the steel cell's
+one-tick landing is −13 raw counts — coarse, but non-zero. Under **R10**
+conduction shifts get much larger (steel `α·Δt/Δx² = 4.4e-6`), and the product
+of the two effects can floor a solid's conduction landing to **exactly zero**.
+R10 already accepts that conduction is negligible; "negligible" and "identically
+zero" are different claims, and the second one should be *chosen*, not
+discovered. Flagged for T3/T5 (§8, open question 3), not a blocker for T2.
