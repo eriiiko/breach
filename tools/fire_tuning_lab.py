@@ -412,7 +412,8 @@ REACH_SIGMA = 5.670374419e-8   # W/m2/K4 — for the physical-irradiance column 
 # emission scales and the per-row heat capacities -- which is the whole point of
 # P2b: `thermal_mass` is the tuning lever and it now has units (J/K).
 REACH_DIALS: dict = {
-    # "materials.furniture.thermal_mass": 8,
+    # "materials.furniture.density": 555.0,      # thermal_mass is DERIVED (R14)
+    # "materials.furniture.specific_heat": 1620.0,
     # "physics.radiation.rad_scale_derived": 2.125632e-08,
 }
 
@@ -460,11 +461,18 @@ def _baked_table(scale):
 
 
 def _mat(name):
-    """(heat_atten, thermal_mass, ignition_temp) for a material row, read from
-    CFG so a REACH_DIALS override lands."""
-    row = getattr(CFG.materials, name)
-    return (float(row.heat_atten), int(row.thermal_mass),
-            float(getattr(row, "ignition_temp", 0.0)))
+    """(heat_atten, thermal_mass, ignition_temp) for a material row.
+
+    Read from a freshly built MaterialTable, not from the raw CFG row, because
+    since R14 `thermal_mass` is DERIVED from `density * specific_heat` and no
+    longer exists as a config key (design v2 2026-09-19). The table is rebuilt
+    per call so a REACH_DIALS override on any of the three still lands.
+    """
+    from simulation.materials import MaterialTable, MATERIAL_NAMES
+    tbl = MaterialTable.from_config(CFG)
+    i = [k for k, v in MATERIAL_NAMES.items() if v == name][0]
+    return (float(tbl.heat_atten[i]), int(tbl.thermal_mass[i]),
+            float(tbl.ignition_temp[i]))
 
 
 def reach_run():

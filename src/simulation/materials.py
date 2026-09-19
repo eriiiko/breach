@@ -86,7 +86,22 @@ _SCALAR_COLUMNS = {
     # the runtime cost expression is pure integer arithmetic (§3).
     "mobility": np.int64,
     "conductivity": np.float32,
-    "thermal_mass": np.float32,
+    # R14 (thermal model v2 design 2026-09-19): a row states its REAL physical
+    # capacity as two authored numbers -- `density` kg/m3 and `specific_heat`
+    # J/(kg.K) -- and `thermal_mass` is DERIVED from their product (see
+    # `derive_thermal_mass` below). Authored SEPARATELY rather than as one
+    # `rho_c` column because they are two independent measured facts with
+    # separate literature sources, because the `c_p` drift is its own ACCEPTED
+    # GAP in the design, and above all because T5's fuel-mass derivation needs
+    # the MASS (`density * V_tile`) on its own -- a lumped `rho_c` could not be
+    # re-split into one.
+    # float64, not float32 like the legacy columns: these are AUTHORING inputs
+    # to a load-time derivation, never projected per tile and never in a
+    # digest, so there is no reason to round them at the door -- and the R14
+    # property gate then compares the derivation against the stored columns
+    # exactly.
+    "density": np.float64,
+    "specific_heat": np.float64,
     "ignition_temp": np.float32,
     "heat_atten": np.float32,
     "wave_absorb": np.float32,
@@ -271,6 +286,105 @@ def fuel_recip_from_hp(hp) -> int:
     return int((float(1 << _FUEL_RECIP_SHIFT) / hp_f) + 0.5)
 
 
+# ---------------------------------------------------------------------------
+# R14 — MATERIALS ARE AUTHORED BY DENSITY (thermal model v2 design 2026-09-19,
+# ruling R14; row-by-row derivation in report_t3.md D1 and report_t3b.md).
+#
+# A `[materials.*]` row states its real `density` and `specific_heat`;
+# `thermal_mass` is DERIVED from their product, snapped to a power of two (R5,
+# because the column sits on a bit-shift). No row authors `thermal_mass` any
+# more -- with ONE exception, the literal 0 that DECLARES the gas thermal
+# regime, which was never a capacity value in the first place (see the column
+# docs on `[materials.air]`).
+#
+# THE UNIT IS A RATIO OF TWO CAPACITIES, NOT A JOULE COUNT. This is what makes
+# the derivation resolution-independent, so state it exactly. R13 pins the heat
+# currency by naming a MATERIAL and a COLUMN VALUE -- "wood at ~12 % moisture
+# content, rho*c = 0.9 MJ/(m3.K), is thermal_mass 8" -- so for any row
+#
+#     thermal_mass = C_row / C_pin  * THERMAL_MASS_PIN
+#                  = (rho_c_row * V_tile) / (RHO_C_PIN * V_tile) * 8
+#                  = rho_c_row / (RHO_C_PIN / 8)
+#
+# and V_tile CANCELS IDENTICALLY -- both capacities are measured on the SAME
+# tile, whatever size that tile is. So the derivation needs no tile geometry
+# and the table stays global, at every spatial resolution, by construction
+# rather than by luck. (report_t3b.md section 1 carries the full argument and
+# the per-level table.)
+#
+# What does NOT cancel, and is therefore still resolution-dependent, is the
+# ABSOLUTE worth of one heat count, `J_per_count = RHO_C_PIN * V_tile /
+# (8 * 65536)`: it scales with the tile volume. That number lives on the SOURCE
+# side (`rad_scale`, the combustion deposit), it is a single scalar rather than
+# ten table rows, and making it per-level is report_p2b.md section 13 item 7 --
+# T5's business, deliberately not T3b's.
+RHO_C_PIN = 0.9e6          # J/(m3.K) -- R13's pin: wood at ~12 % MC
+THERMAL_MASS_PIN = 8       # the column value that pin carries
+# One `thermal_mass` unit, in volumetric heat capacity: 112 500 J/(m3.K).
+THERMAL_MASS_UNIT = RHO_C_PIN / THERMAL_MASS_PIN
+
+# The geometric midpoint factor for the power-of-two snap. `math.sqrt` is the
+# ONE transcendental-looking call the ingress rule allows (door 3: IEEE-754
+# requires it correctly rounded, so it is bit-identical cross-machine).
+_SQRT2 = math.sqrt(2.0)
+
+
+def pow2_snap(x, _what="value") -> int:
+    """Nearest power of two to ``x`` **in log space**, as an integer >= 1.
+
+    R5 keeps `thermal_mass` a power of two because it rides a bit-shift; the
+    snap is geometric (a capacity is a multiplicative quantity, and report_t3.md
+    section 2.1 costs the snap in log space: at worst +41.4 % / -29.3 %).
+
+    Computed WITHOUT a logarithm. The geometric midpoint between ``2**k`` and
+    ``2**(k+1)`` is ``2**k * sqrt(2)``, so the snap is a bracket-and-compare:
+    exact binary scaling by 2 (never inexact) plus one correctly-rounded
+    ``sqrt``. That keeps it inside the number-ingress doors with no exemption --
+    unlike ``_build_conduction_tables``, whose ``math.log2`` carries one.
+
+    Ties (an ``x`` landing exactly on ``2**k * sqrt(2)``, which no real rho*c
+    does) round UP, deterministically.
+    """
+    if not (x > 0.0):
+        raise ValueError(f"{_what}: cannot snap a non-positive value {x!r} "
+                         f"to a power of two")
+    k = 0
+    lo = 1.0
+    while lo * 2.0 <= x:        # exact: multiplying a binary float by 2
+        lo *= 2.0
+        k += 1
+    while lo > x:               # exact: halving is exact too
+        lo *= 0.5
+        k -= 1
+    exp = k + 1 if x >= lo * _SQRT2 else k
+    if exp < 0:
+        raise ValueError(
+            f"{_what}: rho*c / {THERMAL_MASS_UNIT:.0f} = {x!r} snaps BELOW 1, "
+            f"and the thermal_mass column's floor is 1 -- it must be a power of "
+            f"two >= 1 (0 is taken: it declares the GAS thermal regime). A "
+            f"material this light thermally is not expressible; report it "
+            f"rather than inflating the row (design v2 R14, report_t3.md D1)")
+    return 1 << exp
+
+
+def derive_thermal_mass(density, specific_heat, _what="material") -> int:
+    """R14: ``thermal_mass`` from a row's real ``rho`` and ``c``.
+
+    ``pow2_snap(rho * c / THERMAL_MASS_UNIT)``. THE ONE PLACE this is computed
+    -- `MaterialTable` calls it, the property gate calls it, and nothing else
+    may re-derive it (the failure mode R14's implementation had to avoid is two
+    sites computing `heat_inv_shift`).
+    """
+    rho = float(density)
+    c = float(specific_heat)
+    if not (rho > 0.0) or not (c > 0.0):
+        raise ValueError(
+            f"{_what}: density and specific_heat must both be > 0 -- "
+            f"`thermal_mass` is DERIVED from their product (design v2 R14); "
+            f"got density={density!r}, specific_heat={specific_heat!r}")
+    return pow2_snap(rho * c / THERMAL_MASS_UNIT, _what)
+
+
 class MaterialTable:
     """Per-material property table, indexed by material id.
 
@@ -323,6 +437,41 @@ class MaterialTable:
                       for row, name in zip(rows, self.names)]
             setattr(self, col, np.array(values, dtype=dtype))
 
+        # thermal_mass: DERIVED, never authored (R14 — thermal model v2 design
+        # 2026-09-19). Each row states its real `density` and `specific_heat`;
+        # the column is `pow2_snap(rho * c / THERMAL_MASS_UNIT)`, computed in
+        # the ONE place that computes it (`derive_thermal_mass`).
+        #
+        # THE ONE LEGAL AUTHORED VALUE IS 0 — the GAS-THERMAL-REGIME
+        # DECLARATION (air). It is not a capacity and never was: air's real
+        # rho*c_v is 864.5 J/(m3.K), which is 0.0077 column units — SEVEN
+        # doublings below the column's floor of 1. A gas tile's capacity is not
+        # a smaller number in this column, it is a DIFFERENT REPRESENTATION
+        # (`N * c_v` on the gas field), so the row declares the regime instead
+        # of pretending to a capacity. Any other authored `thermal_mass` is
+        # rejected by name: it would be a second source of truth for
+        # `heat_inv_shift`, which is exactly what R14 exists to remove.
+        thermal_mass = []
+        for row, name in zip(rows, self.names):
+            declared = self._get_field_opt(row, "thermal_mass")
+            if declared is not None:
+                if float(declared) != 0.0:
+                    raise ValueError(
+                        f"materials.{name}.thermal_mass is DERIVED from "
+                        f"`density * specific_heat` (design v2 R14) and must "
+                        f"not be authored; the only legal authored value is 0, "
+                        f"which DECLARES the gas thermal regime. Got "
+                        f"{declared!r} — author `density` / `specific_heat` "
+                        f"instead and let the snap land the column"
+                    )
+                thermal_mass.append(0.0)
+                continue
+            thermal_mass.append(float(derive_thermal_mass(
+                self._get_field(row, name, "density"),
+                self._get_field(row, name, "specific_heat"),
+                f"materials.{name}")))
+        self.thermal_mass = np.array(thermal_mass, dtype=np.float32)
+
         # heat_inv_shift: per-id log2(thermal_mass) (engine/06 §1.2). The
         # heat -> temperature conversion is `temperature += heat >> shift`, a
         # pure arithmetic right shift (no divide, bit-identical cross-machine),
@@ -338,6 +487,11 @@ class MaterialTable:
         # (below) routes those tiles away from the shift path entirely, so the
         # stored shift is a never-read placeholder. Everything >= 1 keeps
         # today's power-of-two contract exactly.
+        #
+        # Since R14 the column is DERIVED (above), so the power-of-two rejection
+        # below is a SELF-CHECK on `pow2_snap` rather than an author-facing
+        # door — kept because it is free and because it is the invariant the
+        # whole heat->T convert rests on.
         shifts = []
         tm_ints = []
         for tm, name in zip(self.thermal_mass.tolist(), self.names):
@@ -350,7 +504,9 @@ class MaterialTable:
                 raise ValueError(
                     f"materials.{name}.thermal_mass must be 0 (the gas thermal "
                     f"regime) or a power of two >= 1 (it sits on the "
-                    f"heat->temperature divide); got {tm!r}"
+                    f"heat->temperature divide); got {tm!r} — since R14 the "
+                    f"column is derived, so this is a `pow2_snap` bug, not a "
+                    f"config error"
                 )
             tm_ints.append(tm_int)
             shifts.append(tm_int.bit_length() - 1)   # log2 of a power of two
