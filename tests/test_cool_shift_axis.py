@@ -49,7 +49,7 @@ from level_loader import load as load_level  # noqa: E402
 from simulation.gamemap import GameMap  # noqa: E402
 from simulation.materials import (  # noqa: E402
     MAT_AIR, MAT_FURNITURE, MAT_HULL, MAT_WOOD, MATERIAL_NAMES, MaterialTable,
-    _COOL_SHIFT_MAX,
+    THERMAL_MASS_UNIT, _COOL_SHIFT_MAX,
 )
 
 FP_ONE = 1 << 16
@@ -135,8 +135,12 @@ def test_efold_seconds_are_the_documented_powers_of_two():
 # 2. Loader validation
 # ---------------------------------------------------------------------------
 def _row(**over):
+    # R14: thermal_mass is DERIVED from density * specific_heat, so a synthetic
+    # row states a rho*c instead. 1.0 kg/m3 x 8 units of 112 500 J/(m3.K) lands
+    # thermal_mass exactly 8 -- the value this fixture used to author.
     base = dict(hp=10.0, flammable=False, mobility=1000, conductivity=1.0,
-                thermal_mass=8, ignition_temp=0.0, heat_atten=0.0,
+                density=1.0, specific_heat=8.0 * THERMAL_MASS_UNIT,
+                ignition_temp=0.0, heat_atten=0.0,
                 wave_absorb=0.0, blast_resist=0.0,
                 light_atten=[0.0, 0.0, 0.0])
     base.update(over)

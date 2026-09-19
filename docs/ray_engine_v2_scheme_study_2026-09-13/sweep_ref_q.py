@@ -112,8 +112,17 @@ def shipped_absorbing_rows(config_path=None):
     Returns [(name, a_q, his, heat_atten, thermal_mass), ...] for the rows with
     `heat_atten > 0`; rows with `heat_atten == 0` (air, foliage) never emit or
     absorb and are skipped. `his = log2(thermal_mass)` is the engine's own
-    `heat_inv_shift` (src/simulation/materials.py:343-357), so `thermal_mass`
-    must be a power of two -- the same contract, asserted here.
+    `heat_inv_shift`, so `thermal_mass` must be a power of two -- the same
+    contract, asserted here.
+
+    R14 (thermal model v2 design 2026-09-19): `thermal_mass` is no longer an
+    authored key. A row states its real `density` and `specific_heat` and the
+    column is DERIVED, so this reader derives it too -- `_thermal_mass_ref`
+    below is the reference's transcription of
+    `simulation.materials.derive_thermal_mass`, the same way every kit
+    primitive in this file is a transcription. `tests/test_thermal_mass_axis.py`
+    holds the two equal on every shipped row, so the transcription cannot
+    silently drift.
 
     Read rather than hardcoded on purpose: gate 12's property is about the rows
     the game SHIPS, so a new material row must be able to fail it.
@@ -129,7 +138,7 @@ def shipped_absorbing_rows(config_path=None):
         atten = float(row.get("heat_atten", 0.0))
         if atten <= 0.0:
             continue
-        tm = int(round(float(row.get("thermal_mass", 0))))
+        tm = _thermal_mass_ref(name, row)
         if tm <= 0 or (tm & (tm - 1)) != 0:
             raise ValueError(
                 f"materials.{name}: heat_atten = {atten} with thermal_mass = {tm}; "
@@ -137,6 +146,48 @@ def shipped_absorbing_rows(config_path=None):
                 f"(it sits on the heat->temperature divide)")
         out.append((name, quant(atten), tm.bit_length() - 1, atten, tm))
     return out
+
+
+# R14's unit: R13's currency pin (wood at ~12 % MC, rho*c = 0.9 MJ/(m3.K))
+# divided by the column value that pin carries (8). The tile volume cancels --
+# `thermal_mass` is a RATIO of two capacities on the same tile -- which is why
+# there is no tile geometry in this derivation.
+THERMAL_MASS_UNIT_REF = 0.9e6 / 8       # = 112 500 J/(m3.K)
+_SQRT2_REF = math.sqrt(2.0)
+
+
+def _thermal_mass_ref(name, row):
+    """The reference's transcription of `materials.derive_thermal_mass` (R14).
+
+    `pow2_snap(density * specific_heat / 112500)`, the snap taken in LOG space
+    but computed WITHOUT a logarithm: the geometric midpoint between 2**k and
+    2**(k+1) is 2**k * sqrt(2), so it is a bracket-and-compare over exact binary
+    scalings plus one correctly-rounded sqrt.
+
+    An authored `thermal_mass` is legal only as the literal 0 that DECLARES the
+    gas thermal regime (air) -- it is not a capacity.
+    """
+    declared = row.get("thermal_mass")
+    if declared is not None:
+        if float(declared) != 0.0:
+            raise ValueError(
+                f"materials.{name}.thermal_mass is DERIVED from "
+                f"density * specific_heat (R14); the only legal authored value "
+                f"is 0, the gas-regime declaration. Got {declared!r}")
+        return 0
+    x = float(row["density"]) * float(row["specific_heat"]) / THERMAL_MASS_UNIT_REF
+    k, lo = 0, 1.0
+    while lo * 2.0 <= x:
+        lo *= 2.0
+        k += 1
+    while lo > x:
+        lo *= 0.5
+        k -= 1
+    exp = k + 1 if x >= lo * _SQRT2_REF else k
+    if exp < 0:
+        raise ValueError(
+            f"materials.{name}: rho*c snaps below the thermal_mass floor of 1")
+    return 1 << exp
 
 
 # --------------------------------------------------------------------------- #

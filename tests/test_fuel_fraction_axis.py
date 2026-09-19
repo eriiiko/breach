@@ -166,40 +166,48 @@ def _recip_mul(x_q16, recip):
     return prod >> 32 if prod >= 0 else -((-prod + (1 << 32) - 1) >> 32)
 
 
+def _rows_from_table():
+    """Rebuild dict-format config rows from the live table.
+
+    R14 (design v2 2026-09-19): `thermal_mass` is DERIVED from
+    `density * specific_heat`, so a reconstructed row carries those two and
+    lets the table re-derive it. The GAS row additionally carries the literal
+    `thermal_mass = 0` — that one IS authored: it declares the gas thermal
+    regime rather than stating a capacity, and air's real rho*c_v is seven
+    doublings below the column's floor of 1.
+    """
+    rows = {}
+    for mid, name in sorted(MATERIAL_NAMES.items()):
+        row = dict(hp=float(_TBL.hp[mid]),
+                   flammable=bool(_TBL.flammable[mid]),
+                   mobility=int(_TBL.mobility[mid]),
+                   conductivity=float(_TBL.conductivity[mid]),
+                   density=float(_TBL.density[mid]),
+                   specific_heat=float(_TBL.specific_heat[mid]),
+                   ignition_temp=float(_TBL.ignition_temp[mid]),
+                   heat_atten=float(_TBL.heat_atten[mid]),
+                   wave_absorb=float(_TBL.wave_absorb[mid]),
+                   blast_resist=float(_TBL.blast_resist[mid]),
+                   permeability=float(_TBL.permeability[mid]),
+                   light_atten=list(_TBL.light_atten[mid]))
+        if not bool(_TBL.thermal_solid[mid]):
+            row["thermal_mass"] = 0.0
+        rows[name] = row
+    return rows
+
+
 def test_column_is_derived_from_hp_not_a_config_key():
     """There is deliberately NO ``fuel_recip`` config column: it is a pure
     function of ``hp``, so the fuel fraction and the health bar cannot drift
     apart. A dict-built table (the tests' path) proves it needs no new key."""
-    rows = {name: dict(hp=float(_TBL.hp[mid]),
-                       flammable=bool(_TBL.flammable[mid]),
-                       mobility=int(_TBL.mobility[mid]),
-                       conductivity=float(_TBL.conductivity[mid]),
-                       thermal_mass=float(_TBL.thermal_mass[mid]),
-                       ignition_temp=float(_TBL.ignition_temp[mid]),
-                       heat_atten=float(_TBL.heat_atten[mid]),
-                       wave_absorb=float(_TBL.wave_absorb[mid]),
-                       blast_resist=float(_TBL.blast_resist[mid]),
-                       permeability=float(_TBL.permeability[mid]),
-                       light_atten=list(_TBL.light_atten[mid]))
-            for mid, name in sorted(MATERIAL_NAMES.items())}
+    rows = _rows_from_table()
     tbl = MaterialTable(rows)
     assert np.array_equal(tbl.fuel_recip, _TBL.fuel_recip)
 
 
 def test_changing_hp_moves_the_reciprocal_with_it():
     """The single-source-of-truth claim: edit ``hp``, the normaliser follows."""
-    rows = {name: dict(hp=float(_TBL.hp[mid]),
-                       flammable=bool(_TBL.flammable[mid]),
-                       mobility=int(_TBL.mobility[mid]),
-                       conductivity=float(_TBL.conductivity[mid]),
-                       thermal_mass=float(_TBL.thermal_mass[mid]),
-                       ignition_temp=float(_TBL.ignition_temp[mid]),
-                       heat_atten=float(_TBL.heat_atten[mid]),
-                       wave_absorb=float(_TBL.wave_absorb[mid]),
-                       blast_resist=float(_TBL.blast_resist[mid]),
-                       permeability=float(_TBL.permeability[mid]),
-                       light_atten=list(_TBL.light_atten[mid]))
-            for mid, name in sorted(MATERIAL_NAMES.items())}
+    rows = _rows_from_table()
     rows["furniture"]["hp"] = 45.0
     tbl = MaterialTable(rows)
     assert int(tbl.fuel_recip[MAT_FURNITURE]) == bp.fp_make_recip(45.0)
