@@ -795,9 +795,91 @@ CUDA lockstep tol-0 on every plane and every surviving counter.
 
 ---
 
-## 8. Step 8 — `k_leak` live at 0.10
+## 8. Step 8 — `k_leak` live at 0.10, and §6's properties pinned
 
-PENDING
+### 8.1 `k_leak` needed no edit — step 6 made it live
+
+`[physics.radiation] k_leak = 0.10` has been in `config.toml` since T1, bound in
+`PhysicsRunner` (`self.k_leak_q`) and passed into the sweep on both the normal
+and the resident tick. What T1 could not do was make it *matter*: the sweep was
+in shadow, so the leak only moved planes nothing consumed. **The flip is what
+put it live.** D6 §7.5 records it as `already live — T1's — KEEP`, and that is
+what step 8 confirms rather than changes.
+
+Measured on the canonical sealed box with its walls seeded to 600 game, 60
+ticks:
+
+| | `\|Σ rad_amb\|` | solid books, Δ over the run |
+|---|---|---|
+| `k_leak = 0.10` (shipped) | **340 568** | −1 378 009 219 072 |
+| `k_leak = 0` | 226 512 | −936 051 212 288 |
+
+so the out-of-plane path adds **50 %** to the room's radiative export, and the
+room ends measurably colder for it. At `k_leak = 0` the box is not *fully*
+adiabatic — this harness scenario has vacuum beyond its hull, and a cell facing
+vacuum exports to `rad_amb` regardless — which is why the gate is stated as a
+ratio against the no-leak control rather than as "0 vs non-zero".
+
+### 8.2 The §6 properties, and where each one lives
+
+`tests/test_thermal_v2_properties.py` is new and carries four of them; the rest
+had homes already and the module's docstring names each.
+
+| item | property | home |
+|---|---|---|
+| 1 | a flammable thermal solid has a loss channel | `test_optics_ingress.py` (step 2) |
+| **5b** | **a face loses exactly what the gas gains** | **new, §8.3** |
+| **5c** | **a gas cell never ends hotter than the solid heating it** | **new** |
+| **6** | **a sealed room is no longer adiabatic** | **new, §8.1** |
+| **7** | **nothing relaxes to ambient** | **new** |
+| 8 | conduction is physical, no stability anchor | `test_temperature_conduction.py` (step 3) |
+| 9 | the books close with the thermostat term gone | `test_thermostat_books.py` (step 7) |
+| 10 | a marine burns, a zombie takes 4× | `test_unit_heat_damage.py` (band re-derived at step 6) |
+| **11** | **contents burn, structure resists** | **NOT PINNED — see §8.4** |
+
+### 8.3 Item 5b, as an exact cross-ledger identity
+
+The two ledgers are denominated differently — the solid side books HEAT COUNTS
+(`ΔT · thermal_mass`), the gas side books `N · T_abs` — and `c_v` is the one
+exchange rate between them. So Erik's assertion becomes:
+
+    e_solid_cond_sum + c_v · e_gas_cond_sum  ==  e_cond_trunc_sum + e_cond_cap_sum
+
+Measured on the sealed box, gas seeded +300 game, 60 ticks:
+
+| term | value |
+|---|---|
+| `e_solid_cond_sum` (the walls' gain, counts) | **+28 185 722 880** |
+| `e_gas_cond_sum` (the gas's loss, `N·T`) | −4 155 610 637 752 |
+| …× `c_v`, i.e. in counts | **−31 935 452 190** |
+| sum | **−3 749 729 310** |
+| `e_cond_trunc_sum + e_cond_cap_sum` | **−3 742 108 620** |
+
+**Unexplained: 0.2 % of the gas side**, which is the float `c_v` in the test's
+own conversion, not the engine's. The gate asserts < 0.5 %, plus that the two
+sides are each an order of magnitude larger than what is left over — so it is a
+real cancellation, not two small numbers.
+
+### 8.4 Item 11 is deliberately NOT pinned
+
+*"A furniture tile beside a plateau fire ignites within the bench window; a wood
+wall does not."* The property is real and wanted. It cannot be stated honestly
+today: after the flip a burning tile ratchets to the `T_MAX_PHYS` rail (§6.3),
+so "does this ignite within the window" answers yes for anything hot enough to
+be in the scene, and a version that passed would pin the runaway rather than the
+property. It is owed the moment Erik rules on §6.3.
+
+### 8.5 Validated by breaking it
+
+| control | what was broken | result |
+|---|---|---|
+| A | the gas currency conversion reverted to booking `de` unconverted — the exact pre-T5a bug | RED — **`test_5b` alone**, by 4.2e+12 counts |
+| B | a `cool_shift` remnant re-introduced (`T -= T >> 5` on every thermal solid, after Pass 2) | RED — **`test_7` by name**, plus `test_thermostat_books`'s closure identity and both `test_eos_p2_sealed_room_energy` scenarios |
+
+Control B is the one worth reading twice: an unbooked relaxation added anywhere
+in the pass is now caught by **four** independent gates, one of which (the
+closure identity) does not mention cooling at all. That is what "the term is
+removed, not zeroed" buys.
 
 ---
 
