@@ -385,7 +385,7 @@ Three kinds of evidence, none of them "the suite was green".
 ### 5.6 Full suite
 
     C:/Users/steen/anaconda3/python.exe -m pytest tests -q
-    2622 passed, 29 skipped, 4 xfailed, 3 warnings in 121.12s (0:02:01)
+    2622 passed, 29 skipped, 4 xfailed, 3 warnings in 119.47s (0:01:59)
 
 **0 failed.** No pre-existing failure to report. The 29 skips and 4 xfails are the
 tree's standing ones (CUDA-gated and marked), unchanged by this patch.
@@ -520,4 +520,18 @@ Branch `12-t1-ambient-plane-leak-live`, off `fire-12` at `b3488fc`.
 | `107a9d1` | **D3** — §0 closed, §5 gate results, findings §6.4–§6.7, §7 |
 | `65f30b3` | item 4's non-vacuity guard on its ambient axis (§5.3) |
 | `3f08ae3` | §5.3's item 4 numbers, re-measured through the committed test |
-| *(this commit)* | §7 completed, §6.7 wording |
+| `bba3392` | §7 completed; §6.7 wording |
+| `22efec7` | §5.5 cites the conductor's `nullptr, nullptr` — read, not assumed |
+| `42b834f` | §6.6 re-measured against **R13**, which landed on `fire-12` mid-patch |
+| `21401db` | §5.4's perturbation table re-run after the guard; §6.5 rewritten |
+| *(this commit)* | §7 final; §5.6 re-confirmed on the finished tree |
+
+Three code/test commits (`99e0167`, `0031662`, `588bbaf` + `65f30b3`), one
+inherited (`4fe6379`), the rest report. The branch is **13 commits** ahead of
+`b3488fc`; `fire-12` itself moved one commit ahead in the same window (`5d87b99`,
+R13 — docs only, no conflict with anything here).
+
+**Not done, deliberately** (D5): `t_amb_q`'s meaning, `cool_shift`, the
+temperature solver, conduction, any `[materials.*]` row, the fold flip, any
+golden, `DIGEST_SPEC_VERSION`, and R13's `rad_scale_derived` value. Nothing was
+pushed, merged, or rebased; the worktree is intact.
