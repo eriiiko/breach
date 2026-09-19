@@ -253,11 +253,124 @@ Predicted gate: **2631 − 102 + 4 = 2533 passed**, **29 − 1 = 28 skipped**,
 
 ---
 
-## 2. D2 — the four new tests (filled in as they land)
+## 2. D2 — the four new tests
 
-## 3. D3 — the R11 sustain check (filled in when it lands)
+`tests/test_sweep_heat_law_properties.py`, 4 tests, 0.2 s. They re-home the six
+properties §11.1 marks "rewrite"; two of the six needed no new test, because the
+property already has a home that survives the flip (§1.1 A3).
 
-## 4. The gate (filled in at the end)
+Every one is written against the **shadow** sweep, because that is what exists
+today: the fold still reads the old cast, so nothing here can assert HP or
+ignition through `Simulation.step()`. Each therefore asserts the property one
+seam earlier — on the planes the flip's fold will read, in the units the flip's
+consumers use. At the flip they become the natural end-to-end assertions without
+changing what they claim. Every optical and thermal constant is read from the
+**shipped material table**, so a re-tune moves them with the game instead of
+stranding them.
+
+**1 · `test_radiation_crosses_an_air_gap_and_clears_wood_s_own_ignition_temperature`**
+— re-homes `test_full_chain_heat_ignites_air_separated_wood`. A fire-plateau
+emitter (`G.T_SRC_GAME`, 1263 game) three air cells from a wood tile: `E°⁻¹(Φ)`
+at the target reads **388 game**, against wood's own `ignition_temp` of **300**.
+An opaque hull column across the line drives Φ to **exactly** the value an
+ambient source leaves (389 472 both), and `rad_net` at the target to 0. The
+ambient control is asserted to be *below* ignition, so the headline assertion
+cannot be satisfied by an all-hot scene.
+*Breaks if* air stops being transparent, occlusion stops applying, `E°⁻¹` stops
+inverting the E table, or `rad_scale_derived` collapses far enough that a fire
+no longer reaches the next room's woodwork.
+
+**2 · `test_a_body_in_a_clear_line_absorbs_into_rad_flux_and_a_wall_shuts_it_off`**
+— re-homes the radiation half of
+`test_unit_next_to_fire_loses_hp_and_zombie_takes_4x`. A stamped body on air
+(`d > a`, §6.2) in a clear line books `rad_flux` = 10 808 022; behind an opaque
+wall, exactly 0; with no body stamped, exactly 0. The three legs are each
+other's non-vacuity.
+*Breaks if* the body share stops absorbing, bodies stop being occluded, or
+`rad_flux` stops being the body channel.
+The **4× zombie multiplier is deliberately not re-homed** — it already lives,
+mechanism-independent, in `tests/test_unit_heat_damage.py::test_zombie_takes_fire_multiplier_more`
+and `tests/test_damage_pipeline.py:312`, both of which inject into `gmap.heat`
+directly and survive the flip untouched.
+
+**3 · `test_downrange_fluence_orders_air_above_glass_above_wall`** — rewrites
+`test_heat_ordering_air_glass_wall` as a scene on the extinction planes.
+Downrange Φ: air 11 197 494 > glass 7 955 054 > wall 389 472, and the wall end
+is at or below the ambient-source control. The premise (`air < glass < hull` in
+the shipped `heat_atten` column) is asserted first and named a FINDING rather
+than a failure if it ever stops holding.
+*Breaks if* transmission stops being monotone in `a`, a plane is read at the
+wrong cell, or `a` and `d` are swapped.
+
+**4 · `test_the_sweep_s_extinction_is_heat_atten_alone_and_light_cannot_reach_it`**
+— rewrites `test_heat_transparent_light_opaque_tile` and its converse as one
+property, in three legs: (a) the two columns are genuinely different numbers on
+shipped rows (glass 0.3 / 0.1, furniture 0.5 / 0.55), so a mis-wire would move
+real values; (b) `GameMap.heat_atten_q` is the `heat_atten_q16` projection cell
+for cell on a map containing those rows, and is asserted *not* equal to the
+light column; (c) on the sweep, a thermal solid with `heat_atten == 0` — the
+shipped `foliage` case, and the old march's "light-opaque, heat-clear" tile —
+leaves **all four output planes bit-identical** to no obstacle at all, while the
+same column at `heat_atten == 1` does not.
+*Breaks if* anyone feeds `light_atten` into the sweep's extinction, or
+`heat_atten_q` stops being the per-material projection.
+
+## 3. D3 — the R11 sustain check
+
+Removed `MaterialTable._check_ignition_seed` and its call site, plus everything
+that died with it: `_COMB_DEFAULTS`, `_SEED_CHECK_DT`,
+`_SEED_CHECK_CLAIM_FACES`, `_X_AMBIENT`, `_SEED_WARNED`, the seven seed-only
+rows of `_FIRE_DEFAULTS` (`fire_T_span`, `k_grow`, `k_die`, the three O2
+fractions, `ignition_seed`), and the module's `import sys` — the check's
+`file=sys.stderr` was its only reader. 182 lines out, 19 in (the replacement
+comments). `config.toml` is untouched: combustion still reads every one of those
+dials; only the material table's fallback *copies* are gone.
+
+No test died with it and the suite did not move: 2533 before, 2533 after. That
+is the expected result for a warning-only load-time check, and it is also the
+proof that nothing was gated on it.
+
+Kept deliberately: §5.3.
+
+## 4. The gate
+
+| | before | after | delta |
+|---|---|---|---|
+| passed | 2631 | **2533** | −98 |
+| skipped | 29 | **28** | −1 |
+| xfailed | 4 | 4 | 0 |
+| **failed** | **0** | **0** | — |
+| wall clock | 127 s | 113 s | |
+
+**Reconciliation.** 103 collected tests were removed and 4 added, so the
+collected total falls by 99. Of the 103, exactly one — `test_cuda_cool_shift.py`
+— was *skipped* on this box (no CUDA build in a fresh worktree), which is where
+the −1 in the skip column comes from. The other 102 were passing. So
+2631 − 102 + 4 = **2533**, and 29 − 1 = **28**. Both match to the test; the
+prediction in §1.5 was written before the first deletion and did not move.
+
+Per-batch, each gated on a full suite run before the next began:
+
+| commit | what | passed |
+|---|---|---|
+| `bdbb829` | D1, the inventory, before any deletion | 2631 |
+| `989845e` | A1 + A2 — the old cast's two books modules | 2609 (−22) |
+| `85d6b0b` | B1 + B2 + B3 — the `cool_shift` surface | 2553 (−56, skip −1) |
+| `f4d32a8` | A3 + A4 deleted, the 4 new tests added | 2533 (−24 +4) |
+| `c4ea2f4` | D3 — R11's load-time check | 2533 (−0) |
+
+**Goldens unmoved**: `git diff 29f7f49..HEAD` touches 11 files — the report, one
+new test file, seven deleted test files, one deleted check script and
+`src/simulation/materials.py`. `tests/_xarch_perfield_digest.py`,
+`tests/field_digest.py`, the spec toml and `config.toml` are byte-identical to
+the base, so `GOLDEN_AGGREGATE` and `DIGEST_SPEC_VERSION` cannot have moved.
+Nothing in `cpp/` was touched at all.
+
+`git status` is clean apart from the worktree's pre-existing untracked files
+(art, prototypes, scratch benches — the tree carries those on purpose;
+CLAUDE.md forbids `git add -A`, and every stage here was an explicit path).
+
+Not done, by instruction: no merge, no push, no branch deletion.
 
 ## 5. Findings
 
@@ -284,3 +397,76 @@ exact silent-failure mode this patch exists to avoid:
 Despite its name it is the shared before/after capture harness for three arcs.
 Left alone. If the flip wants the name cleaned up, the move is a **rename** with
 the two importers updated, never a delete.
+
+### 5.2 Two of §11.1's four "rewrites" needed no rewrite
+
+`test_determinism_bit_identical_temperature` and
+`test_fire_heat_is_wired_into_simulation_step` are marked "rewrite" in §11.1,
+but both properties already have homes that survive the flip and are stronger
+than the tests being deleted:
+
+- determinism — `tests/test_w6_armory.py:583` asserts
+  `trajectory_digest(traj) == GOLDEN_AGGREGATE` over a whole trajectory of
+  every digested field, which subsumes "the same scene gives a bit-identical
+  `temperature` after N ticks"; gate 0 adds 34 bit-for-bit configurations of
+  the sweep itself;
+- wiring — `tests/test_radiation_sweep_shadow_wiring.py` already asserts the
+  sweep runs every tick and is non-trivial on a real level, which is exactly
+  "it is step 2b".
+
+Writing a third copy of either would have been a parallel gate, which CLAUDE.md
+forbids for systems and which is no better for tests. Recorded here so the flip
+does not read "4 rewrites" and go looking for two files that do not exist.
+
+### 5.3 What R11 left behind on purpose
+
+- **The `comb_cfg` constructor parameter** is now accepted and unused.
+  Removing it would change `MaterialTable.__init__`'s published signature, and
+  two live callers pass it positionally (`from_config`,
+  `tests/test_optics_ingress.py:38/50`) — an API edit outside this patch's
+  remit, and a combustion-derived material column is a live prospect on this
+  arc. Documented in the docstring. **One line for T6** if it should go.
+- **`config.toml` is untouched.** `fire_T_span`, `k_grow`, `k_die`,
+  `o2_frac_ext/full/amb` and `ignition_seed` are live combustion dials; only the
+  material table's fallback *copies* of them were removed.
+- **`_fire_get` / `_FIRE_DEFAULTS` stay**, now with one key
+  (`ignition_to_ext_delta`), which the `fire_T_ext` derivation still reads.
+
+### 5.4 Stale comments the flip will want to sweep
+
+Deleting the files left prose references behind. None is an import — verified by
+`git grep` after each batch — so none can break, but each is a dangling name:
+
+| file | line | names |
+|---|---|---|
+| `cpp/src/bindings.cpp` | 356 | `tests/cuda_cool_shift_check.py` |
+| `tests/cuda_conduction_check.py` | 129 | `cuda_cool_shift_check.py` |
+| `tests/test_eos_p2_sealed_room_energy.py` | 20, 38, 176 | `test_temperature_cooling.py`'s vacuum-exposure convention |
+| `tests/test_temperature_conduction.py` | 101 | `test_temperature_cooling.py` |
+| `tests/test_temperature_convert.py` | 91 | `test_temperature_cooling.py` |
+| `tests/test_fire_feedback.py` | 4, 488, 512, 599 | `test_fire_heat_source.py` |
+| `config.toml` | 2632 | `test_fire_heat_source` |
+| `tools/fire_smother_curve_sweep.py` | 25, 151, 153 | `materials.py:_check_ignition_seed`, `I_sustain` |
+| `tools/fire_tune_loop.py` | 138–499 | the `I_sustain` derivation trail (43 `cool_shift` refs overall) |
+
+They are the flip's and T6's to clean — every one of those files is already on
+the flip's edit list for `cool_shift` or on §11.3's tool list. Listed here so
+nobody has to re-derive the set.
+
+### 5.5 §11.1's dispositions held up
+
+No disposition in §11.1 looked wrong on inspection, and none was silently
+overridden. The two places where this patch departs from a literal reading are
+both recorded above and both *narrow* the change rather than widen it: §5.2 (two
+rewrites already had homes) and §5.1 (one file L3 listed is load-bearing for two
+other arcs). Every other deletion follows the table exactly.
+
+The one honest limitation, stated plainly: the properties this patch deletes
+that R1 removes **by ruling** — the ambient decay's shape, the pair law, the
+emit gate, the fan, the range — have no replacement test and cannot have one,
+because the thing they describe is being deleted on purpose. For those the
+report names the *channel that takes over the job* (the sweep's `rad_amb` plus
+per-tile `k_leak`, both gated today) rather than a like-for-like successor. The
+post-flip assertions that the old behaviour is really gone — verification items
+6, 7 and 8 of `docs/thermal_model_v1_design_2026-09-19.md` §6 — belong to the
+flip, which is the patch that can make them true.
