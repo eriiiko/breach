@@ -432,6 +432,20 @@ def test_item4_conservation_is_exact_with_a_per_cell_ambient_and_the_leak_live(
     assert sn + sf + sa == 0, (sn, sf, sa)
     assert sn != 0 and sf != 0 and sa != 0, "a term is vacuous"
 
+    # NON-VACUITY OF THE AMBIENT AXIS. The identity is structural — it closes for
+    # a uniform ambient too — so on this hot scene the three ambient shapes move
+    # the sums by only ~5e-6 of their magnitude, and a run that silently stopped
+    # threading the plane through would still show ident == 0. Assert the ambient
+    # reached the arithmetic at all, so this test cannot become a conservation
+    # gate that has quietly lost its "with a per-cell ambient" half.
+    u_rn, _urf, _ura, _url, _ufl, _usw = cpp_sweep(a, d, K_LEAK, T, his, ts,
+                                                   transport=transport, n_ord=n_ord,
+                                                   table=tbl, sweep=sweep, amb=None)
+    assert not np.array_equal(np.asarray(rn, dtype=np.int64),
+                              np.asarray(u_rn, dtype=np.int64)), (
+        "the non-uniform ambient produced the uniform answer — the plane is not "
+        "reaching the sweep, so this is no longer item 4's scene")
+
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
