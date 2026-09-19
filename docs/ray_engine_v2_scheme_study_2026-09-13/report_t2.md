@@ -24,6 +24,7 @@
 - [x] §7 `n_floor_heat` under a rescaled `c_v`
 - [x] §8 Open questions for Erik
 - [x] §9 What did not hold
+- [x] §10 Late findings — M4, and `c_v`'s two integer representations
 
 
 ---
@@ -41,9 +42,9 @@ the code, not assumed:
 | quantity | raw unit | where |
 |---|---|---|
 | `temperature[i]` | `T_raw = T_game · 2^16` (Q16.16 game degrees = kelvin above 293 K) | `[physics.temperature_scale]`, P2b §1 |
-| `heat[i]` | `E_raw` — a **heat count**, no extra shift: the solid branch is `temperature += heat >> heat_inv_shift` | `temperature_solver.cpp:337-340` |
-| `cap_q` (`cell_capacity_q`) | `C · 2^16`, so `E_raw = (cap_q · T_raw) >> 16` | `temperature_solver.h:209-249` |
-| `de` (a conduction face sum) | `E_raw · 2^16` — `face_energy_q` computes `g · cmin` with `g` a `T_raw` and `cmin` a `cap_q` | `temperature_solver.h:257-268` |
+| `heat[i]` | `E_raw` — a **heat count**, no extra shift: the solid branch is `temperature += heat >> heat_inv_shift` | `temperature_solver.cpp:338-341` |
+| `cap_q` (`cell_capacity_q`) | `C · 2^16`, so `E_raw = (cap_q · T_raw) >> 16` | `temperature_solver.h:220-249` |
+| `de` (a conduction face sum) | `E_raw · 2^16` — `face_energy_q` computes `g · cmin` with `g` a `T_raw` and `cmin` a `cap_q` | `temperature_solver.h:257-269` |
 | `gas_energy[i]` | `N_raw · T_abs_raw` — the exact unshifted int64 product | `gamemap.py:943-967`, `gas_energy.h` |
 
 `cell_capacity_q` gives `C = thermal_mass` for a solid and `C = N · c_v` for
@@ -150,7 +151,7 @@ R13 actually pins, the figures are `0.0076849` and `130.13×`.** Both are right
 in their own unit. T5 must apply the **0.9-pin** value; design v2 §3.2 wants
 correcting to match R13 (§8, open question 1).
 
-### 2.4 Quantization
+### 2.4 Quantization  *(amended by §10.2 — there are TWO representations, not one)*
 
 `c_v` enters as `quantize(c_v)` (Q16.16) in two places — the capacity build
 (`temperature_solver.cpp:117-119`) and `make_recip(c_v)` for the deposit divide.
@@ -271,7 +272,7 @@ if (e_on && acct(i)) {
     e_gas_cond_sum += de_books;
 ```
 
-and its own comment says exactly why, at `temperature_solver.cpp:507-510`:
+and its own comment says exactly why, at `temperature_solver.cpp:506-510`:
 
 > *"an accountable gas cell's four-face sum IS its energy change — `de` is
 > already in the books' currency (a face quantum is `|ΔT|·C` with `C = N·c_v`,
@@ -299,8 +300,8 @@ Every other crossing already divides by `c_v` and books `N·ΔT`:
 
 | channel | where | form | verdict |
 |---|---|---|---|
-| Pass-1 gas radiation/heat deposit | `temperature_solver.cpp:400-415` | `dT = E_abs/(max(N,floor)·c_v)`, books `N·dT` | **correct at any `c_v`** — §3's M3 measures the `1/c_v` scaling exactly |
-| combustion's aggregate gas deposit | `combustion.cpp:1044-1095` | same form, same `recip_cv` | **correct at any `c_v`** |
+| Pass-1 gas radiation/heat deposit | `temperature_solver.cpp:348-424` | `dT = E_abs/(max(N,floor)·c_v)`, books `N·dT` | **correct at any `c_v`** — §3's M3 measures the `1/c_v` scaling exactly |
+| combustion's aggregate gas deposit | `combustion.cpp:1041-1095` | same form, same `recip_cv` | **correct at any `c_v`** |
 | EOS compression work | `eos_solver.cpp:727-735` | `k_work = (γ−1)·T_AMB_K`, i.e. `1/c_v_phys` **derived** | correct, and already *physical* |
 | EOS drag heat | `eos_solver.cpp:496-512` | `k_ke = γ(γ−1)T_AMB/(2c_max²)`, **derived** | correct, already physical |
 | EOS face flux, transport, recovery | `eos_solver.cpp` steps 6–7 | pure `N·T` | **scale-free** — `c_v` cancels |
@@ -308,7 +309,7 @@ Every other crossing already divides by `c_v` and books `N·ΔT`:
 | `refresh_gas_energy` / `reseed_gas_energy` | `gamemap.py:943-967, 1189` | `N_raw·T_abs_raw` | **unchanged** |
 | FieldEdit's four gas-energy paths | `field_edit.py:655-700` | `N·ΔT` / `ΔN·T` / raw | **unchanged** |
 | water evacuation export | `physics_engine` `e_water_evac_export_sum` | bulk shares, `N·T` | **unchanged** |
-| Pass 3 thermostat | `temperature_solver.cpp:672-688` | `if (!ts[i]) continue;` — **solids only** | gas never reaches it |
+| Pass 3 thermostat | `temperature_solver.cpp:644` (the guard), `:680-688` | `if (!ts[i]) continue;` — **solids only** | gas never reaches it |
 
 So the seam option touches **one expression on each backend**. That is the
 whole argument.
@@ -348,20 +349,25 @@ item 11 by weighting the gas half where the sum is taken.
 ### 4.5 The exact form to write, and why T5 can land it before the dial moves
 
 The shortcut and the capacity-floor shrink collapse into **one** correct
-expression. Today's floor shrink divides by *capacity*; the floor is on **N**,
-so write it on N:
+expression. `de` was built as `ΔT · cap`, so the conversion to `N·ΔT` is
+"divide by the SAME `cap`, multiply by `N`" — self-inverting to the LSB, and
+`c_v` never appears in it (§10.2 is why that is the point):
 
 ```cpp
-// `de` is a face sum in HEAT COUNTS (x2^16); the books are N*T. One
-// conversion, then the floor's shrink, in the quantity the floor is on.
-const int64_t de_full  = <de / c_v, through the load-time recip_cv>;
-const int64_t nb       = n_books(i);                       // real N, unfloored
-const int64_t nu       = (nb < (int64_t)n_floor_q) ? (int64_t)n_floor_q : nb;
-const int64_t de_books = fixedpoint::floordiv_q(de_full * nb, nu);
-e_cond_cap_sum += de_full - de_books;
+// `de` is a face sum in HEAT COUNTS (x2^16); the books are N*T.
+const int64_t nb       = n_books(i);                  // real N, unfloored
+const int64_t de_books = fixedpoint::floordiv_q(de * nb, cap_i);   // cap_USED
+const int64_t de_full  = (cap_real_[i] > 0)                        // cap_REAL
+                       ? fixedpoint::floordiv_q(de * nb, cap_real_[i])
+                       : <de / c_v via recip_cv>;     // the N == 0 corner ONLY
+e_cond_cap_sum += de_full - de_books;   // the floor's fiction, in books units
 de_gas_[i]      = de_books;
 e_gas_cond_sum += de_books;
 ```
+
+`de_books` divides by `cap_used` and `de_full` by `cap_real`, so their
+difference is exactly the capacity floor's contribution — the same thing
+`e_cond_cap_sum` names today, now in the books' own currency.
 
 > **At `c_v == 1` this is bit-identical to the shipped code — verified over
 > 300 000 randomized `(de, N, n_floor)` triples spanning both branches and the
@@ -375,14 +381,16 @@ hide inside the retune.
 Two things T5 must write down rather than inherit:
 
 - **the int64 bound.** Today's comment justifies `de * cap_real` by "the floor
-  binds". The new product is `de_full * nb`; with `|de| ≤ 4·2^31·cmin` and
+  binds". The new product is `de * nb`; with `|de| ≤ 4·2^31·cmin` and
   `cmin = cap_gas`, at the physical `c_v` `cap_gas ≈ 504·N`, so `|de| ≲ 2^42`
-  and `|de_full·nb| ≲ 2^60` — inside int64, but *by argument*, and the argument
-  has to be in the file. Use the 128-bit kit if the bound is uncomfortable.
-- **the conversion's own truncation.** `de/c_v` floors; at `c_v < 1` that
-  discards under one raw count per cell-tick. R3 says every residual is counted
-  — give it `e_cond_trunc_sum` or a named channel of its own. It does **not**
-  threaten the closure identity (§5), only the arc's honesty rule.
+  and `|de·nb| ≲ 2^60` — inside int64, but *by argument*, and the argument has
+  to be in the file. Use the 128-bit kit if the bound is uncomfortable.
+- **the division's own truncation.** Both `floordiv_q`s floor; at `c_v < 1` the
+  quotient is ~130× larger than `de`, so the residual is still under one raw
+  count per cell-tick but it is now a residual on a **bigger** number. R3 says
+  every residual is counted — `e_cond_cap_sum` absorbs the floor's part by
+  construction; the rest belongs in `e_cond_trunc_sum` or a named channel. It
+  does **not** threaten the closure identity (§5), only the arc's honesty rule.
 
 ---
 
@@ -466,10 +474,11 @@ it is on the list because a reader must confirm it, not because it changes.**
 |---|---|---|
 | 1 | `config.toml:154-156` | `c_v = 1.0` → **`0.0076849`**. Replace the "1.0 = neutral scale … no real-gas anchor yet (P3 territory)" comment with §2.1's derivation (`ρc_v,air / (R13 pin ÷ 8)`, the three routes, the molar-mass independence) |
 | 2 | `cpp/src/temperature_solver.cpp:531-539` | **THE ONE STRUCTURAL SITE.** Replace `de_books = de` + the `cap_real/cap_used` branch with §4.5's form. Bit-identical at `c_v = 1` |
-| 3 | `cpp/src/temperature_solver.cpp:500-530` | The comment block above it — *"`de` is already in the books' currency … the books' capacity IS N"* — is the false claim that produced the bug. Rewrite it as the conversion it now is |
+| 3 | `cpp/src/temperature_solver.cpp:498-530` | The comment block above it — *"`de` is already in the books' currency … the books' capacity IS N"* — is the false claim that produced the bug. Rewrite it as the conversion it now is |
+| 3b | `cpp/src/temperature_solver.cpp:116-119` + `:219`, and `cpp/src/cuda_temperature.cu:506` + `:512` | **`c_v` has TWO integer representations** (§10.2): `make_recip(c_v)` at Q.32 for the deposit divide and `quantize(c_v)` at Q16.16 for the capacity, disagreeing by **0.0724 %** at the new value and exactly at `c_v = 1`. Make them one: `make_recip((double)c_v_q / 65536.0)`. Bit-identical at `c_v = 1`; one line on each backend |
 | 4 | `cpp/src/cuda_temperature.cu:375-381` | The identical twin, same expression |
 | 5 | `cpp/src/cuda_temperature.cu:323-334` + `:643` | `temp_conduct` needs **three new arguments** — `recip_cv`, `n_floor_q`, `n_src` — and the launch updated. (`recip_cv`/`c_v_q`/`n_floor_q` already exist in the host function at `:506-512`; `d_nsrc` is already allocated and passed to two other kernels) |
-| 6 | `cpp/src/temperature_solver.h:437-470` | The gas-side identity's doc block — same false currency claim; and `:476`'s *"priced at the cell's REAL capacity … the same currency as the ledger's Σ N·T_abs estimator"*, which is true only at `c_v = 1` |
+| 6 | `cpp/src/temperature_solver.h:438-469` | The gas-side identity's doc block — same false currency claim; and `:475-476`'s *"priced at the cell's REAL capacity … the same currency as the ledger's Σ N·T_abs estimator"*, which is true only at `c_v = 1` |
 | 7 | `tests/test_thermostat_books.py:103` (+ `_terms`, + the monotone-decay assertion at `:129-145`) | **The ONE place the engine adds the two currencies into one number** (`_gas_books(g) + solid_energy_books_sum`). At `c_v ≠ 1` the sum is a mixed unit. Weight the gas half by `c_v` so the total is real joules — that also turns the monotone-decay assertion into a physical statement instead of an arithmetic accident |
 | 8 | `tests/cuda_conduction_check.py:57` and `tests/cuda_thermal_mass_check.py:61` | `DIALS["c_v"] = 1.0` hardcoded — move to the shipped value so the CUDA gates exercise what ships (both also carry `n_floor_heat = 0.05`, stale since the 2026-08-17 ruling; T5's call whether to fix that too) |
 | 9 | `tests/test_fixed_point_i64_twins.py:109-147` | `_shipped_recips()` sweeps `c_v ∈ [1, 100]`, and its docstring says the one-LSB claim **presumes `c_v ≥ 1`**. The shipped value leaves the tested range. Add `make_recip(0.0076849)` and re-derive (or honestly widen) the bound for `c_v < 1` |
@@ -479,13 +488,13 @@ it is on the list because a reader must confirm it, not because it changes.**
 
 | # | site | why it is on the list |
 |---|---|---|
-| 11 | `cpp/src/temperature_solver.cpp:400-415` | Pass-1 gas deposit: `dT = E_abs/(max(N,floor)·c_v)`, books `N·dT`. Correct at any `c_v` — M3 measures the `1/c_v` scaling exactly, including below the floor |
-| 12 | `cpp/src/combustion.cpp:1040-1095` + `cpp/src/cuda_combustion.cu:538-593` | Same form, same `recip_cv`. Correct at any `c_v` |
+| 11 | `cpp/src/temperature_solver.cpp:348-424` | Pass-1 gas deposit: `dT = E_abs/(max(N,floor)·c_v)`, books `N·dT`. Correct at any `c_v` — M3 measures the `1/c_v` scaling exactly, including below the floor |
+| 12 | `cpp/src/combustion.cpp:1041-1095` + `cpp/src/cuda_combustion.cu:538-593` | Same form, same `recip_cv`. Correct at any `c_v` |
 | 13 | `cpp/src/gas_energy.h` (all of it) | Pure `N·T`. **No change** |
 | 14 | `src/simulation/gamemap.py:943-967, 1003-1160, 1189-1210` | `refresh_gas_energy`, `reseed_gas_energy`, the five seam primitives, `gas_energy_seam_net()`. Pure `N·T`. **No change** |
 | 15 | `src/simulation/field_edit.py:655-700` | The four gas-energy FieldEdit paths (`wave`→`N·ΔT`, `gas_energy`→raw, `atmosphere`→`ΔN·T`). **No change** |
 | 16 | `cpp/src/eos_solver.cpp` steps 6–7, `:496-512`, `:727-735` | Face flux, recovery, `k_ke`, `k_work`. Scale-free or already physical. **No change** |
-| 17 | `cpp/src/temperature_solver.cpp:672-688` | Pass 3 is `if (!ts[i]) continue;` — solids only, so the thermostat never prices gas. **No change** |
+| 17 | `cpp/src/temperature_solver.cpp:644, :680-688` | Pass 3 is `if (!ts[i]) continue;` — solids only, so the thermostat never prices gas. **No change** |
 | 18 | `cpp/src/temperature_solver.h:220-249` (`cell_capacity_q`) | Unchanged code, new value. Two numbers to check: `cap_used` at the floor becomes `(655·504)>>16 = 5` raw (the `cu < 1` guard still never binds, but see §7), and `CAP_SHIFT_MAX` is now even further from binding |
 | 19 | `tools/e2b_floor_reciprocal_probe.py:119` | The probe that justified `deposit_dT_wide_q16` hardcodes `c_v = 1.0`. **Re-run at the shipped value** — the wide chain's operands grow 130× |
 | 20 | `tests/test_eos_p2_sealed_room_energy.py:134-147, 202, 226` | Its own `_capacity_real(..., c_v=1.0)` helper and the docstring claim *"the SAME values config.toml now ships"* — which stops being true. Direct-binding, so it will not go red; it will go **stale** |
@@ -514,7 +523,7 @@ heat counts never sees `c_v`; a channel that crosses applies it exactly once.*
 ## 7. `n_floor_heat` under a rescaled `c_v`
 
 **`n_floor_heat` itself does not rescale.** The floor is on **N**
-(`temperature_solver.cpp:393`, `cell_capacity_q`'s `nu = max(nr, n_floor_q)`),
+(`temperature_solver.cpp:388`, `cell_capacity_q`'s `nu = max(nr, n_floor_q)`),
 not on the capacity, and `c_v` does not change what N means. Its stated job —
 "below this bulk N a cell has no thermodynamic capacity to divide by" — is
 unchanged.
@@ -608,7 +617,15 @@ measurement contradicted.
    docstring. Air's conductivity is **0.024** (`config.toml:1516`) — the
    solid↔gas faces are live in the shipped game, which is what makes this a real
    bug rather than a latent one.
-5. **A harness artefact I nearly published as an engine finding.** The P-G5
+5. **"`c_v` is quantized once, to Q16.16."** §2.4, written from the capacity
+   build alone. There are **two** quantizations of it — Q.32 through
+   `make_recip` for the deposit divide, Q16.16 through `quantize` for the
+   capacity — and they disagree by 0.0724 % at the physical value while
+   agreeing exactly at 1.0. Caught only because M4's measured ratio came back
+   `0.99999993` where the Q16.16 route predicts `0.99928` (§10.2). It changed
+   the recommended rewrite: the conversion must invert the capacity it was
+   built from, not re-divide by a second copy of `c_v`.
+6. **A harness artefact I nearly published as an engine finding.** The P-G5
    total ledger showed `1/40` bad ticks with a residual of `1.759e15`. That is
    exactly `16 cells × (32<<16) × (800<<16)` — my own scenario writing
    `temperature` on the steel block outside every counter, landing in the first
@@ -616,3 +633,72 @@ measurement contradicted.
    because the residual was *identical at both `c_v` values*, which no
    `c_v`-caused defect could be. Tick 1 is excluded, with the reason in the
    instrument.
+
+---
+
+## 10. Late findings — M4, and `c_v`'s TWO integer representations
+
+Added after §§1–9 were written, because the last measurement contradicted §2.4.
+
+### 10.1 M4 — a known energy into a gas cell, on the live engine
+
+Design v2 §6 item 5's most literal form, and the **control** for §3.1: put a
+known energy into `gmap.heat` on an accountable gas cell immediately before
+`Simulation.step()` (`heat` is a per-tick buffer wiped at *end* of tick —
+`simulation.py:1596` — so a pre-step write lands in Pass 1), then read what the
+gas books recorded. Prediction from the cell's REAL heat capacity `N·c_v`:
+`ΔE_books = N_raw · deposit/(N·c_v) = 2^16 · deposit / c_v`.
+
+| `c_v` | `N_raw` | `Δ e_gas_deposit_sum` | predicted from `N·c_v` | got / predicted |
+|---|---|---|---|---|
+| 1.0 | 65 536 | 4 294 967 296 | 4 294 967 296.0 | **1.00000000** |
+| 0.0076849 | 65 536 | 558 886 158 336 | 558 886 195 882.2 | **0.99999993** |
+
+So the **deposit** path already raises a gas cell by exactly its real heat
+capacity's prediction, at any `c_v`. Together with §3.1 that isolates the
+defect completely: *the deposit path is right, the conduction path is not.*
+
+### 10.2 The finding M4 forced: `c_v` has two integer representations
+
+§2.4 said `c_v` is quantized once, to Q16.16. **That is wrong, and M4 is how it
+was caught** — the ratio should have been `0.99928` (the Q16.16 error) and it
+came back `0.99999993`.
+
+`c_v` enters the engine through **two different quantizations**:
+
+| use | call | value at `c_v = 0.0076848692` | relative error |
+|---|---|---|---|
+| the deposit divide (Pass 1, combustion) | `make_recip(c_v)` — **Q.32** | 0.0076848691695130 | **2.9e-13** |
+| the capacity (`cell_capacity_q`, so `cmin` and every conduction face) | `quantize(c_v)` — **Q16.16** → 504 | 0.0076904296875 | **+7.24e-4** |
+
+**They disagree by 0.0724 %.** At `c_v = 1` both are exact (`65536` and `2^32`),
+which is why one constant with two truths has never been visible.
+
+Consequences, in order of weight:
+
+1. **The §4.5 rewrite must invert the capacity it was built from, not a second
+   representation of `c_v`.** `de` is `ΔT · cap` with `cap` from the Q16.16
+   route; converting it with the Q.32 `recip_cv` would be 0.0724 % off from an
+   exact inverse, forever, in one direction. Write the conversion as
+   `de_books = floordiv_q(de · N_raw, cap_used)` and
+   `de_full = floordiv_q(de · N_raw, cap_real)` — **the same `cap` arrays the
+   face quantum used**, so the round trip is exact to the LSB and `c_v` appears
+   nowhere in the expression. That is the form the 300 000-case bit-identity
+   check in §4.5 actually validated, and it needs no reciprocal at all.
+   *(The one corner: `cap_real == 0`, i.e. `N == 0`. There the correct books
+   delta is 0 and the whole of `de` is the capacity floor's fiction — book it,
+   converted once through `recip_cv`, exactly as the shipped code books `de`
+   today.)*
+2. **T5 should make the two agree.** One line: derive the reciprocal from the
+   quantized value, `make_recip((double)c_v_q / 65536.0)`, so the deposit divide
+   and the capacity are exact inverses of each other. Bit-identical at
+   `c_v = 1`; at the physical value it moves the deposit by 0.0724 %, which is
+   inside the ±6–10 % `thermal_mass` snap R5 already accepts. Without it, the
+   engine holds two values of one derived constant — precisely what design v2 §1
+   calls a defect rather than a tuning opportunity.
+3. §2.4's quantization paragraph stands for the **capacity** route only. The
+   +0.072 % figure it quotes is the capacity's error; the deposit's is 2.9e-13.
+
+This is also the answer to a question §2.4 did not think to ask: *does `c_v`
+need to be a power of two, like `thermal_mass`?* No — it rides a multiply, not
+a shift, in both routes. But it does need to be **one** number.

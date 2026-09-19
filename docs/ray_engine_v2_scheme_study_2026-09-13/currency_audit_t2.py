@@ -262,6 +262,37 @@ def m2_tform(c_v, t_hot_game=800.0, ticks=1):
     return dT_gas, dT_sol, cap_gas
 
 
+def m4_live_deposit(c_v, deposit_raw=1 << 16, interior=8):
+    """M4 — design v2 §6 item 5 in its most literal form, on the LIVE engine.
+
+    Put a known energy into `gmap.heat` on an accountable gas cell right before
+    `Simulation.step()` (`heat` is a per-tick buffer wiped at END of tick —
+    `simulation.py:1596` — so a pre-step write lands in Pass 1), then read what
+    the gas books actually recorded.
+
+    Prediction, from the cell's REAL heat capacity `N*c_v`:
+        dT       = deposit / (N * c_v)                    [raw]
+        dE_books = N_raw * dT = 2^16 * deposit / c_v      [raw]
+    """
+    level, _ = build_room(interior, block=0)
+    sim = Simulation(level, seed=7, breach_physics=bp, enable_recorder=False)
+    runner = sim.physics_runner
+    runner.temperature.c_v = float(c_v)
+    runner.eos.c_v = float(c_v)
+    g = sim.gmap
+    tsol = runner.engine.temperature
+    cell = (interior // 2, interior // 2)
+    assert g.gas_is_accountable(*cell)
+    n_raw = int(g._gas_bulk_n_raw()[cell])
+    before = int(tsol.e_gas_deposit_sum)
+    g.heat[cell] = int(deposit_raw)
+    sim.set_paused(False)
+    sim.step()
+    got = int(tsol.e_gas_deposit_sum) - before
+    predicted = (FP_ONE * deposit_raw) / c_v          # exact, pre-quantization
+    return n_raw, got, predicted
+
+
 def m3_floor(c_v, n_real, deposit_counts, t_max_phys=16000.0):
     """M3 — the `n_floor_heat` interaction, through the direct binding.
 
@@ -333,3 +364,13 @@ if __name__ == "__main__":
               f"(rail {row[1][1]}) ;  x{ratio:.2f}")
     print("  (the floor is on N, not on the capacity, so n_floor_heat itself")
     print("   does NOT rescale — but a floored cell's dT does, by 1/c_v.)")
+
+    print("\n=== M4: a known energy into a gas cell, on the LIVE engine ===")
+    print("    deposit = 65536 raw into gmap.heat, one Simulation.step()")
+    for c_v in (1.0, C_V_PHYS):
+        n_raw, got, pred = m4_live_deposit(c_v)
+        print(f"  c_v = {c_v:.8f}: N_raw = {n_raw} ; d(e_gas_deposit_sum) = "
+              f"{got:>18d} ; predicted from N*c_v = {pred:>20.1f} ; "
+              f"got/pred = {got/pred:.8f}")
+    print("  (Pass 1 already carries 1/c_v correctly — this leg is the")
+    print("   CONTROL for M1, which is the leg that does not.)")
