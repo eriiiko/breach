@@ -17,7 +17,6 @@ into the ray/wave passes in later chapters.
 from __future__ import annotations
 
 import math
-import sys
 
 import numpy as np
 
@@ -156,57 +155,23 @@ _FUEL_RECIP_SHIFT = 32
 # --- PER-MATERIAL EXTINCTION TEMPERATURE (P-R3, 2026-07-31 — docs/radiation_
 # raycaster_extinction_ruling_2026-07-31.md A3 ride-along) ------------------
 #
-# `[physics.fire]` defaults consumed by the `fire_T_ext` derivation and by the
-# `ignition_seed` load-time check below. Mirrors config.toml; the live values
-# are threaded in via :meth:`from_config` so the table tracks config edits, the
-# same contract `_THERMAL_DEFAULTS` has. Kept here so a dict-built table (tests)
-# and any config-less build still produce a valid `fire_T_ext_q16` column.
+# `[physics.fire]` defaults consumed by the `fire_T_ext` derivation. Mirrors
+# config.toml; the live values are threaded in via :meth:`from_config` so the
+# table tracks config edits, the same contract `_THERMAL_DEFAULTS` has. Kept
+# here so a dict-built table (tests) and any config-less build still produce a
+# valid `fire_T_ext_q16` column.
+#
+# Until R11 (thermal model v1, 2026-09-19) this dict also carried the seven
+# dials the load-time ignition-seed sustain check read (`fire_T_span`,
+# `k_grow`, `k_die`, the three O2 fractions, `ignition_seed`). That check is
+# deleted with `cool_shift` — its gain was `bed_per_I * 2^(cool_shift -
+# heat_inv_shift)`, and R1 removes the loss channel it was denominated in —
+# so those rows are gone. The dials themselves are untouched in config.toml;
+# combustion still reads them.
 _FIRE_DEFAULTS = {
     # THE Δ: fire_T_ext[mat] = ignition_temp[mat] - ignition_to_ext_delta.
     "ignition_to_ext_delta": 100.0,
-    # The rest are read ONLY by the ignition_seed sanity check (no behaviour).
-    "fire_T_span": 40.0,
-    "k_grow": 3.5,
-    "k_die": 0.035,
-    "o2_frac_ext": 0.13,
-    "o2_frac_full": 1.0,
-    "o2_frac_amb": 0.21,       # R1: now read by the seed check's h_min (sustain o2f)
-    "ignition_seed": 0.12,
 }
-
-# P-R4 (docs/radiation_raycaster_extinction_ruling_2026-07-31.md A1): the seed
-# check's T*/I gain used to be `k_fire_heat * 2^(cool_shift - heat_inv_shift)`.
-# The painter is gone, so the plateau is now owned by combustion's FUEL-BED
-# deposit and the gain chain runs through [physics.combustion] instead. These
-# are the fallbacks for a dict-built / config-less table (same contract as
-# _FIRE_DEFAULTS above); nothing in the sim path reads any of this.
-_COMB_DEFAULTS = {
-    "H_BED_M": 26875.0,
-    "H_BED_SHIFT": 2,
-    "burn_rate": 0.02,
-}
-
-# The seed check's two REFERENCE constants, named rather than buried:
-#   * the nominal tick length the plateau algebra is evaluated at (the engine
-#     ticks at 24 tps; dt is not a material-table input, and this check is
-#     load-time arithmetic over dials, not a simulation);
-#   * the CLAIM STRUCTURE — how many open air faces file a full demand share
-#     against one burning tile. A crate in open air has four. This is exactly
-#     the factor the ruling's own H_bed estimate assumed was 1 and told us to
-#     measure (§A1, "claim-structure factor ~= 1 for the lone crate; measure,
-#     don't trust"); measured, it is 4.
-_SEED_CHECK_DT = 1.0 / 24.0
-_SEED_CHECK_CLAIM_FACES = 4.0
-
-# The ambient O2 mole fraction the sustain arithmetic is evaluated AT. Not a
-# dial: the check answers "can a seed survive in ORDINARY air?", so it is
-# deliberately the physical 21%, not a per-map [ambient] override.
-_X_AMBIENT = 0.21
-
-# Warn-once ledger for the seed check (see `_check_ignition_seed`). A process
-# that builds two hundred MaterialTables (the test suite does) must print each
-# distinct complaint ONCE, not two hundred times.
-_SEED_WARNED = set()
 
 
 def quantize_q16(v) -> int:
@@ -418,10 +383,12 @@ class MaterialTable:
         for the same reason ``thermal_cfg`` has defaults.
 
         ``comb_cfg`` is the optional ``[physics.combustion]`` namespace (or
-        dict). P-R4 moved the ignition-seed check's ``T*/I`` gain off the
-        retired ``k_fire_heat`` and onto the fuel-bed deposit that now owns the
-        plateau, so the check reads ``H_BED_M``/``H_BED_SHIFT``/``burn_rate``
-        from here. Defaults: :data:`_COMB_DEFAULTS`.
+        dict). It is ACCEPTED AND UNUSED since R11 (thermal model v1,
+        2026-09-19) deleted the load-time ignition-seed sustain check, its only
+        reader. The parameter stays because it is part of this constructor's
+        published signature and callers pass it positionally
+        (:meth:`from_config`, ``tests/test_optics_ingress.py``), and because a
+        combustion-derived material column is a live prospect on this arc.
         """
         ids = sorted(MATERIAL_NAMES)
         # Contiguity: ids must be 0..N-1 so an array indexed by id has no gaps.
@@ -686,13 +653,6 @@ class MaterialTable:
         self.fire_T_ext_q16 = np.array(
             [quantize_q16(v) for v in self.fire_T_ext.tolist()], dtype=np.int32)
 
-        # IGNITION-SEED SANITY (P-R3 Task C, ruling A3: "`ignition_seed` stays
-        # an explicit dial but gains a load-time check per flammable material").
-        # Pure load-time arithmetic + a console warning — NOTHING in the sim
-        # path changes, and a failing check never blocks a load. Full
-        # auto-derivation of the seed is deliberately deferred (audit §1.4).
-        self._check_ignition_seed(fire_cfg, thermal_cfg, comb_cfg)
-
         # --- Conduction face-shift tables (engine/06 §2.4–§2.5) ---------------
         # All log2 / harmonic-mean / division happens HERE, at LOAD, in float;
         # the runtime conduction pass is a pure signed-add + arithmetic shift.
@@ -850,130 +810,6 @@ class MaterialTable:
                 # self_shift above (see TODO there).
                 face[a, b] = _clamp_shift(-math.log2(hm / kappa_ref))
         self.face_shift_table = face
-
-    # -- ignition-seed sanity (P-R3 Task C; ruling A3) --------------------
-    def _check_ignition_seed(self, fire_cfg, thermal_cfg, comb_cfg=None):
-        """Warn (console only, once) if ``ignition_seed`` cannot bootstrap a
-        flammable material's fire.
-
-        A tile is born at ``I = ignition_seed`` and immediately starts feeding
-        its own `hot` gate: the fire's heat sets the tile's equilibrium
-        temperature ``T*(I) = gain * I``, and the logistic only sustains while
-        ``a = F*o2f_sustain*hot`` clears ``r/(1+r)``. Chain those and the seed
-        has a FLOOR — the intensity below which the fire cannot warm itself
-        enough to stay lit, at any speed::
-
-            r              = k_die / k_grow
-            o2f_sustain_amb = (0.21 - o2_frac_ext) / (o2_frac_amb - o2_frac_ext)
-            h_min          = [r/(1+r)] / o2f_sustain_amb   # the `hot` the fire needs
-            o2f_demand_amb = (0.21 - o2_frac_ext) / (o2_frac_full - o2_frac_ext)
-            gain[mat] = H_bed * burn_rate * dt * o2f_demand_amb * claim_faces
-                              * 2^(cool_shift[mat] - log2(thermal_mass[mat]))
-            I_sustain[mat] = (fire_T_ext[mat] + fire_T_span*h_min) / gain[mat]
-
-        R1 (fire session #12, 2026-09-01, docs/fire_3c_design_2026-09-01.md
-        "Ruling R1") SPLIT the two O2 roles: ``h_min`` chains through the
-        SUSTAIN law (renormalized to ``o2_frac_amb``, so ``o2f_sustain_amb``
-        is IDENTICALLY 1.0 at this check's nominal ambient — the whole point
-        of the renormalization is that ambient always reads o2f==1), while
-        ``gain`` chains through the unchanged DEMAND law (``o2f_j``, still
-        anchored on ``o2_frac_full``, pure O2). Pre-R1 both used the same
-        pure-O2-anchored ratio; they are genuinely different numbers now.
-
-        P-R4 (ruling A1): the ``gain`` line changed. It used to be
-        ``k_fire_heat * 2^(cool_shift - heat_inv_shift)`` — the painter's
-        one-way per-tile payload. The painter is retired, so the plateau is now
-        set by combustion's FUEL-BED deposit: each of the tile's open air faces
-        files a demand share ``burn_rate*dt*I*o2f`` and pays back
-        ``H_bed * (the O2 it got)`` into ``heat[]``, which converts through the
-        tile's own ``heat_inv_shift`` and is shed at ``cool_shift``. Setting
-        in == out gives the gain above. Two REFERENCE constants make it
-        evaluable at load time (see :data:`_SEED_CHECK_DT` /
-        :data:`_SEED_CHECK_CLAIM_FACES`): the nominal 24 tps tick and the
-        four-open-faces claim structure of a crate in open air.
-
-        The 15% margin (``seed >= 1.15 * I_sustain``) is the ruling's C2
-        constraint: born exactly AT the floor, a fire coasts on a knife edge and
-        the first O2 dip kills it. Three tuning passes died on this in 2026-07
-        before the relation was written down — hence a check rather than a
-        comment.
-
-        WARNING ONLY, BY DESIGN. This is derived arithmetic over dials Erik is
-        actively tuning; a hard error would make the tune loop unusable, and the
-        seed's full auto-derivation is explicitly deferred (audit §1.4). It is
-        also purely LOAD-TIME — nothing in the sim path reads any of it.
-        """
-        def _f(name):
-            return float(self._fire_get(fire_cfg, name))
-
-        def _c(name):
-            """One ``[physics.combustion]`` constant, defaulted (P-R4)."""
-            if comb_cfg is None:
-                return _COMB_DEFAULTS[name]
-            if isinstance(comb_cfg, dict):
-                return comb_cfg.get(name, _COMB_DEFAULTS[name])
-            return getattr(comb_cfg, name, _COMB_DEFAULTS[name])
-
-        try:
-            k_grow, k_die = _f("k_grow"), _f("k_die")
-            x_ext, x_full = _f("o2_frac_ext"), _f("o2_frac_full")
-            x_amb = _f("o2_frac_amb")
-            span = _f("fire_T_span")
-            seed = _f("ignition_seed")
-            # P-R4: the plateau's source is the fuel-bed deposit, not the
-            # retired painter. H_bed is ONE constant split mantissa/shift.
-            h_bed = float(_c("H_BED_M")) * (2.0 ** int(_c("H_BED_SHIFT")))
-            burn_rate = float(_c("burn_rate"))
-        except Exception:              # a config shape we do not recognise
-            return                     # -> silently skip; this is a courtesy check
-        if k_grow <= 0.0 or x_full <= x_ext or x_amb <= x_ext:
-            return
-        # R1: the SUSTAIN law's o2f at ambient — renormalized to o2_frac_amb,
-        # so this is IDENTICALLY 1.0 whenever this check's nominal ambient
-        # (_X_AMBIENT) matches the config's o2_frac_amb (the common/default
-        # case); computed explicitly (not hardcoded to 1.0) so a config that
-        # deliberately mismatches the two still gets an honest ratio.
-        o2f_sustain_amb = (_X_AMBIENT - x_ext) / (x_amb - x_ext)
-        if o2f_sustain_amb <= 0.0:
-            return
-        # The DEMAND law's o2f_j at ambient — UNCHANGED by R1, still anchored
-        # on o2_frac_full (pure O2). Feeds the H_bed deposit gain below, not h_min.
-        o2f_demand_amb = (_X_AMBIENT - x_ext) / (x_full - x_ext)
-        r = k_die / k_grow
-        h_min = (r / (1.0 + r)) / o2f_sustain_amb
-        # The per-unit-I combustion deposit at ambient O2, before the material's
-        # own mass/loss shifts: H_bed * (burn_rate*dt*o2f_j) * claim_faces.
-        bed_per_I = (h_bed * burn_rate * _SEED_CHECK_DT * o2f_demand_amb
-                     * _SEED_CHECK_CLAIM_FACES)
-
-        for idx, name in enumerate(self.names):
-            if not bool(self.flammable[idx]):
-                continue
-            # P-R4 gain = bed_per_I * 2^(cool_shift - heat_inv_shift); the
-            # shift pair IS log2(thermal_mass) and the ambient-decay shift,
-            # already validated integers on this table.
-            if not bool(self.thermal_solid[idx]):
-                continue               # gas-regime fuel: no T* equilibrium to chain
-            exp = int(self.cool_shift[idx]) - int(self.heat_inv_shift[idx])
-            gain = bed_per_I * (2.0 ** exp)
-            if gain <= 0.0:
-                continue
-            i_sustain = (float(self.fire_T_ext[idx]) + span * h_min) / gain
-            if seed >= 1.15 * i_sustain:
-                continue
-            key = (name, round(seed, 6), round(i_sustain, 6))
-            if key in _SEED_WARNED:
-                continue
-            _SEED_WARNED.add(key)
-            print(
-                f"[fire] WARNING materials.{name}: ignition_seed = {seed:.4f} "
-                f"is below the 15% bootstrap margin over I_sustain = "
-                f"{i_sustain:.4f} (need >= {1.15 * i_sustain:.4f}). A tile "
-                f"seeded there cannot warm itself past its own `hot` floor and "
-                f"will snap out. [P-R3 load-time check, ruling A3; P-R4 gain "
-                f"chain: H_bed fuel-bed deposit, not the retired k_fire_heat]",
-                file=sys.stderr,
-            )
 
     # -- accessors -------------------------------------------------------
     @staticmethod
