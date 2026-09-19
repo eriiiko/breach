@@ -176,11 +176,25 @@ already green.
    refuses `flammable && thermal_solid && heat_atten == 0`. *Breaks if* a row is
    authored that could ratchet to `T_MAX_PHYS`. (T1/T5)
 2. **The uniform case is unchanged.** With ambient uniform, the sweep reproduces
-   the scalar-era output integer for integer. *Breaks if* `amb_m` is mis-indexed.
-   (T1)
+   the scalar-era output integer for integer. *Breaks if* the uniform path moves
+   **at all**. (T1 — **CORRECTED**: this row first read *"breaks if `amb_m` is
+   mis-indexed"*, which T1 measured to be FALSE. A uniform-ambient test is
+   **structurally blind** to an in-plane mis-index — every cell holds the same
+   level, so reading the wrong cell changes nothing. T1 proved it by injecting
+   four bugs including v1's exact hoist: **item 2 passes all four.** Mis-indexing
+   is caught by gate 0's non-uniform axis and item 3's localisation leg.)
 3. **Per-tile ambient actually varies.** A vacuum-ring cell and an interior cell
    radiate against different ambients. *Breaks if* `amb_m` is hoisted out of the
    cell loop — **which is exactly the bug v1 would have shipped**. (T1)
+   **This is the ONLY test standing between R3 and a silent no-op.** Item 2 is
+   blind to a hoist by construction, and **so is item 4** — a conservation
+   identity is *structural*, so it holds just as exactly for a sweep doing the
+   wrong thing. T1 built item 3 to PROVE hoist-impossibility rather than assert
+   it: two mirror-image compartments with `is_vacuum` as the ONE asymmetry, so
+   collapsing the ambient to any scalar forces a symmetric output while the real
+   per-cell run is not (the port wall loses 42× its starboard twin). Validated
+   against four injected bugs; item 3 catches all four. **Any future patch on
+   this axis keeps item 3 or replaces it with something equally adversarial.**
 4. **Conservation survives.** `Σ rad_net + Σ rad_flux + Σ rad_amb ≡ 0` in int64
    with non-uniform ambient and `k_leak > 0`. (T1)
 5. **One gas joule is one solid joule.** A known energy across a solid–gas face
