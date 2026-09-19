@@ -106,7 +106,13 @@ def run(c_v, ticks=40, interior=10, block=4, t_hot_game=800.0):
             -int(runner.engine.e_water_evac_export_sum),
         )
 
+    def solid_terms():
+        return (int(tsol.e_solid_deposit_sum) + int(tsol.e_solid_cond_sum)
+                + int(tsol.e_thermostat_sum))
+
     prev_e, prev_t = e_acct(), terms()
+    prev_total = prev_e + int(tsol.solid_energy_books_sum)
+    prev_st = solid_terms()
     prev = dict(gas_cond=int(tsol.e_gas_cond_sum),
                 solid_cond=int(tsol.e_solid_cond_sum),
                 solid_books=int(tsol.solid_energy_books_sum),
@@ -115,7 +121,9 @@ def run(c_v, ticks=40, interior=10, block=4, t_hot_game=800.0):
 
     out = dict(c_v=c_v, bad=0, worst=0, ticks=0,
                gas_cond=0, solid_cond=0, cond_cap=0, trunc=0,
-               d_solid_books=0, d_gas_books=0)
+               d_solid_books=0, d_gas_books=0,
+               tot_bad=0, tot_worst=0,
+               rail_hits0=int(tsol.t_max_phys_hits))
     # a gas cell on the block's face, watched for its own temperature history
     probe = (b0 - 1, b0 + block // 2)
     out["probe_T"] = [int(gmap.temperature[probe])]
@@ -134,6 +142,22 @@ def run(c_v, ticks=40, interior=10, block=4, t_hot_game=800.0):
         if resid:
             out["bad"] += 1
             out["worst"] = max(out["worst"], abs(resid))
+        # P-G5's TOTAL ledger: gas books + solid books, in ONE number
+        # (tests/test_thermostat_books.py:103 — the one place the engine adds
+        # the two currencies together).
+        st_now = solid_terms()
+        total_now = e_now + int(tsol.solid_energy_books_sum)
+        tresid = (total_now - prev_total) - (expected + (st_now - prev_st))
+        # TICK 1 IS EXCLUDED, and not for a c_v reason: this scenario seeds the
+        # block by writing `temperature` directly, outside every counter, and
+        # `solid_energy_books_sum` is a SNAPSHOT refreshed only at the end of a
+        # step — so the seed lands in the first snapshot with no term to match
+        # it (measured: exactly 16 cells x 32<<16 x 800<<16 = 1.759e15, the
+        # same at BOTH c_v values, which is how it was identified).
+        if tresid and out["ticks"] > 1:
+            out["tot_bad"] += 1
+            out["tot_worst"] = max(out["tot_worst"], abs(tresid))
+        prev_total, prev_st = total_now, st_now
         prev_e, prev_t = e_now, t_now
 
         out["gas_cond"] += int(tsol.e_gas_cond_sum) - prev["gas_cond"]
@@ -177,6 +201,8 @@ def report(r):
               f"   (want 1.0; == c_v = {c_v:.8f})")
     print(f"  arc #54 closure identity: {r['bad']}/{r['ticks']} ticks bad, "
           f"worst |residual| {r['worst']}")
+    print(f"  P-G5 TOTAL ledger (gas+solid): {r['tot_bad']}/{r['ticks']} bad, "
+          f"worst |residual| {r['tot_worst']}")
     dT = (r["probe_T"][-1] - r["probe_T"][0]) / FP_ONE
     n = r["probe_N"][-1] / FP_ONE
     print(f"  probe gas cell: dT = {dT:+.6f} game-K over the run; N = {n:.4f}; "
@@ -236,6 +262,43 @@ def m2_tform(c_v, t_hot_game=800.0, ticks=1):
     return dT_gas, dT_sol, cap_gas
 
 
+def m3_floor(c_v, n_real, deposit_counts, t_max_phys=16000.0):
+    """M3 — the `n_floor_heat` interaction, through the direct binding.
+
+    Pass 1's gas deposit is `dT = E_abs / (max(N, n_floor_heat) * c_v)`. The
+    floor is on **N**, not on the capacity, so rescaling `c_v` does not change
+    what the floor MEANS — but it does multiply the dT a floored (near-vacuum)
+    cell receives by `1/c_v`. Returns (dT, rail_hits).
+    """
+    from simulation.materials import MaterialTable
+    tbl = MaterialTable.from_config()
+    no_face = int(tbl.no_face)
+    m = np.array([[AIR, AIR, AIR]], dtype=np.int8)
+    h, w = m.shape
+    shift = np.ascontiguousarray(tbl.heat_inv_shift[m].astype(np.int32))
+    solid = np.ascontiguousarray(tbl.permeability[m] <= 0.0)
+    tsol = np.ascontiguousarray(tbl.thermal_solid[m].astype(bool))
+    face = np.ascontiguousarray(np.full((h, w, 4), no_face, dtype=np.int32))
+
+    s = bp.TemperatureSolver()
+    s.no_face = no_face
+    s.cool_shift = s.cool_shift_vacuum = 31
+    s.c_v = float(c_v)
+    s.n_floor_heat = 0.01
+    s.T_MAX_PHYS = float(t_max_phys)
+
+    temp = np.zeros((h, w), dtype=np.int32)
+    heat = np.zeros((h, w), dtype=np.int32)
+    heat[0, 1] = int(deposit_counts)
+    is_vac = np.zeros((h, w), dtype=bool)
+    atm = np.full((h, w), int(round(n_real * FP_ONE)), dtype=np.int32)
+    nb = np.ascontiguousarray(atm.copy())
+    before = int(s.t_max_phys_hits)
+    s.step(temp, heat, shift, face, solid, is_vac, atm,
+           None, None, 0.0, nb, tsol, None, None, None, None, False)
+    return int(temp[0, 1]) / FP_ONE, int(s.t_max_phys_hits) - before
+
+
 if __name__ == "__main__":
     print(f"J_per_count (R13 0.9 pin) = {J_PER_COUNT:.8f} J")
     print(f"rho*c_v air = {RHO_C_AIR:.4f} J/(m3 K);  c_v_phys = {C_V_PHYS:.8f};"
@@ -256,3 +319,17 @@ if __name__ == "__main__":
     print("  (the CORRECT law's gas dT is c_v-INDEPENDENT: 130x less energy")
     print("   crosses the face, into a 130x lighter cell. The engine's live")
     print("   path scales it BY c_v instead — see M1.)")
+
+    print("\n=== M3: n_floor_heat x c_v (direct binding, Pass 1 deposit) ===")
+    print("    one tick, deposit = 1.0 count (65536 raw), n_floor_heat = 0.01")
+    for n_real in (1.0, 0.05, 0.01, 0.002):
+        row = []
+        for c_v in (1.0, C_V_PHYS):
+            dT, hits = m3_floor(c_v, n_real, FP_ONE)
+            row.append((dT, hits))
+        ratio = row[1][0] / row[0][0] if row[0][0] else float("nan")
+        print(f"  N = {n_real:<6}: dT(c_v=1) = {row[0][0]:>12.6f} K "
+              f"(rail {row[0][1]}) ;  dT(phys) = {row[1][0]:>12.6f} K "
+              f"(rail {row[1][1]}) ;  x{ratio:.2f}")
+    print("  (the floor is on N, not on the capacity, so n_floor_heat itself")
+    print("   does NOT rescale — but a floored cell's dT does, by 1/c_v.)")

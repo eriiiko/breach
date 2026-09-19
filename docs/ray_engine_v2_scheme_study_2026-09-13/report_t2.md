@@ -18,8 +18,8 @@
 - [x] §1 What the currency is, on both sides, read off the code
 - [x] §2 D1 — what `c_v` must be (the arithmetic)
 - [x] §3 D1 — the engine check (the measurement, not the paper)
-- [ ] §4 D2 — where `c_v` belongs: the representation or the seam
-- [ ] §5 D2 — the #54 closure identity under the recommendation
+- [x] §4 D2 — where `c_v` belongs: the representation or the seam
+- [x] §5 D2 — the #54 closure identity under the recommendation
 - [ ] §6 D3 — the blast radius, by file and line
 - [ ] §7 `n_floor_heat` under a rescaled `c_v`
 - [ ] §8 Open questions for Erik
@@ -242,3 +242,210 @@ of the two effects can floor a solid's conduction landing to **exactly zero**.
 R10 already accepts that conduction is negligible; "negligible" and "identically
 zero" are different claims, and the second one should be *chosen*, not
 discovered. Flagged for T3/T5 (§8, open question 3), not a blocker for T2.
+
+---
+
+## 4. D2 — where `c_v` belongs
+
+### 4.1 Recommendation
+
+> ### `c_v` belongs at the **conversion seam**. `gas_energy` stays the exact integer product `N_raw · T_abs_raw` and is not redefined.
+>
+> It is *already* a seam constant everywhere but **one site**, and that one site
+> is a shortcut taken because `c_v == 1` made it invisible. Fixing it is a
+> ~6-line change on each of the two backends, and it can be landed **bit-identical
+> at `c_v = 1`** — i.e. proven safe by the goldens *before* the dial moves.
+
+### 4.2 The one site that bakes `c_v = 1` in
+
+`temperature_solver.cpp:531-539`, the accountable-gas branch of Pass 2:
+
+```cpp
+if (e_on && acct(i)) {
+    int64_t de_books = de;                                  // <-- HERE
+    if (cap_real_[i] != cap_i && cap_i > 0) {
+        de_books = fixedpoint::floordiv_q(de * cap_real_[i], cap_i);
+        e_cond_cap_sum += de - de_books;
+    }
+    de_gas_[i] = de_books;
+    e_gas_cond_sum += de_books;
+```
+
+and its own comment says exactly why, at `temperature_solver.cpp:507-510`:
+
+> *"an accountable gas cell's four-face sum IS its energy change — `de` is
+> already in the books' currency (a face quantum is `|ΔT|·C` with `C = N·c_v`,
+> and the books' capacity IS N)"*
+
+The books' capacity is `N`; the face quantum's capacity is `N·c_v`. Those are
+the same thing **only at `c_v = 1`**, which is what §1.2 states and §3.1
+measures: `de = c_v · Δgas_energy_correct`, so booking `de` directly deposits
+`c_v ×` the energy the face moved. The CUDA twin is identical
+(`cuda_temperature.cu:375-381`).
+
+Two consequences of the *shortcut*, not of the dial:
+
+1. `Δ gas_energy` from conduction is `c_v ×` too small — the 99.23 % loss of §3.1.
+2. **Turning the dial alone does nothing to the conduction path.** Its gas ΔT is
+   `de/N_raw`, which has no `c_v` in it. Changing `c_v` changes `de` (through
+   `cmin`) and nothing else, so the gas cell's response stays pinned to the
+   `c_v = 1` answer. *A T5 that only edits `config.toml` ships a half-corrected
+   engine that is worse than either endpoint* — the deposit path at the real
+   capacity, the conduction path still at the convention.
+
+### 4.3 The sites that are already correct — verified, not assumed
+
+Every other crossing already divides by `c_v` and books `N·ΔT`:
+
+| channel | where | form | verdict |
+|---|---|---|---|
+| Pass-1 gas radiation/heat deposit | `temperature_solver.cpp:400-415` | `dT = E_abs/(max(N,floor)·c_v)`, books `N·dT` | **correct at any `c_v`** — §3's M3 measures the `1/c_v` scaling exactly |
+| combustion's aggregate gas deposit | `combustion.cpp:1044-1095` | same form, same `recip_cv` | **correct at any `c_v`** |
+| EOS compression work | `eos_solver.cpp:727-735` | `k_work = (γ−1)·T_AMB_K`, i.e. `1/c_v_phys` **derived** | correct, and already *physical* |
+| EOS drag heat | `eos_solver.cpp:496-512` | `k_ke = γ(γ−1)T_AMB/(2c_max²)`, **derived** | correct, already physical |
+| EOS face flux, transport, recovery | `eos_solver.cpp` steps 6–7 | pure `N·T` | **scale-free** — `c_v` cancels |
+| the seam (`move`/`deposit`/`mint`/`retire`/`born_at_ambient`) | `gas_energy.h`, `gamemap.py:1066-1160` | pure `N·T` | **scale-free** |
+| `refresh_gas_energy` / `reseed_gas_energy` | `gamemap.py:943-967, 1189` | `N_raw·T_abs_raw` | **unchanged** |
+| FieldEdit's four gas-energy paths | `field_edit.py:655-700` | `N·ΔT` / `ΔN·T` / raw | **unchanged** |
+| water evacuation export | `physics_engine` `e_water_evac_export_sum` | bulk shares, `N·T` | **unchanged** |
+| Pass 3 thermostat | `temperature_solver.cpp:672-688` | `if (!ts[i]) continue;` — **solids only** | gas never reaches it |
+
+So the seam option touches **one expression on each backend**. That is the
+whole argument.
+
+### 4.4 Why NOT put `c_v` in the field
+
+Redefining `gas_energy := N·c_v·T_abs` was the other candidate. It is wrong
+for five independent reasons, any one of which is sufficient:
+
+1. **`gas_energy` is not an energy — it is the EOS's `N·T`.** It feeds the
+   pressure (`p* = C·E`). Multiplying it by `c_v` forces a compensating `1/c_v`
+   back out inside the pressure law, and `k_work` / `k_ke` — which are *already*
+   at the physical `c_v` — would each need a second compensating factor. Two
+   wrongs arranged to cancel.
+2. **Exactness dies.** `N_raw·T_abs_raw` is an exact unshifted int64 product;
+   that is the arc's whole foundation. `c_v` is a Q16.16 multiplier, not a power
+   of two, so `N·c_v·T_abs` needs a shift-and-round **per write**. Every
+   `parcel`, `minted`, `deposit` and rail write-back would round, and
+   `Σ_region ΔE ≡ 0` — exact today — would hold only to a per-face residual.
+3. **The mirror stops being a clean divide.** `mirror_q` is
+   `floordiv(E, N) − t_amb`; it would become `floordiv(E, N·c_v)`, putting a
+   second quantized quantity inside the once-per-tick recovery's rails, and the
+   one sanctioned write-back (`E = N·(T+t_amb)`, `gas_energy.h:104`) would gain
+   a rounding step in the exact place the arc forbids one.
+4. **`refresh_gas_energy` / `reseed_gas_energy` would have to change**, and both
+   are LEVEL-LOAD initialisers whose whole contract is "reproduce the stored
+   truth exactly from `(N, T)`".
+5. **CUDA cost.** The seam option is one expression in `cuda_temperature.cu`;
+   the field option touches every `.cu` that reads or writes `gas_energy`
+   (`cuda_eos_step`, `cuda_eos_resident`, `cuda_bulk_transport`,
+   `cuda_combustion`, `cuda_temperature`) plus their lockstep checks.
+
+The one thing the field option would buy — a `gas_energy` denominated in real
+joules, so P-G5's total ledger is a genuine sum — is bought more cheaply in §6
+item 11 by weighting the gas half where the sum is taken.
+
+### 4.5 The exact form to write, and why T5 can land it before the dial moves
+
+The shortcut and the capacity-floor shrink collapse into **one** correct
+expression. Today's floor shrink divides by *capacity*; the floor is on **N**,
+so write it on N:
+
+```cpp
+// `de` is a face sum in HEAT COUNTS (x2^16); the books are N*T. One
+// conversion, then the floor's shrink, in the quantity the floor is on.
+const int64_t de_full  = <de / c_v, through the load-time recip_cv>;
+const int64_t nb       = n_books(i);                       // real N, unfloored
+const int64_t nu       = (nb < (int64_t)n_floor_q) ? (int64_t)n_floor_q : nb;
+const int64_t de_books = fixedpoint::floordiv_q(de_full * nb, nu);
+e_cond_cap_sum += de_full - de_books;
+de_gas_[i]      = de_books;
+e_gas_cond_sum += de_books;
+```
+
+> **At `c_v == 1` this is bit-identical to the shipped code — verified over
+> 300 000 randomized `(de, N, n_floor)` triples spanning both branches and the
+> `N == 0` corner: 0 mismatches in `de_books` AND 0 in `e_cond_cap_sum`.**
+
+That matters for the patch plan: **T5 can land the structural fix and the dial
+as two commits**, the first gated by "goldens unmoved" (it is a pure refactor),
+the second carrying the arc's one re-baseline. A bug in the rewrite cannot then
+hide inside the retune.
+
+Two things T5 must write down rather than inherit:
+
+- **the int64 bound.** Today's comment justifies `de * cap_real` by "the floor
+  binds". The new product is `de_full * nb`; with `|de| ≤ 4·2^31·cmin` and
+  `cmin = cap_gas`, at the physical `c_v` `cap_gas ≈ 504·N`, so `|de| ≲ 2^42`
+  and `|de_full·nb| ≲ 2^60` — inside int64, but *by argument*, and the argument
+  has to be in the file. Use the 128-bit kit if the bound is uncomfortable.
+- **the conversion's own truncation.** `de/c_v` floors; at `c_v < 1` that
+  discards under one raw count per cell-tick. R3 says every residual is counted
+  — give it `e_cond_trunc_sum` or a named channel of its own. It does **not**
+  threaten the closure identity (§5), only the arc's honesty rule.
+
+---
+
+## 5. D2 — the arc #54 closure identity under the recommendation
+
+### 5.1 It survives — and it survives the *broken* version too
+
+**Measured** (§3.1, `currency_audit_t2.py`): at both `c_v = 1` and
+`c_v = 0.0076849`, over 40 ticks of a live `Simulation`,
+
+    d(Sum_accountable gas_energy) == EOS + thermal-gas + combustion + seams + water
+
+closes **0 / 40 ticks bad, worst |residual| 0**, and so does the P-G5 **total**
+ledger (gas books + solid books), 0 / 40 bad.
+
+The reason is structural and worth stating plainly, because it decides how much
+weight the identity can carry as a gate:
+
+> Every gas-side counter books **what the seam actually deposited**, not a
+> re-derivation of what it should have deposited. `e_gas_cond_sum += de_books`
+> is, by construction, the number that was added to `gas_energy`. So the
+> identity closes for **any** `c_v` — including one that destroys 99 % of the
+> energy crossing every solid–gas face.
+
+This is design v2 §6 item 3's lesson in a second place: *a conservation identity
+is structural, so it holds just as exactly for an engine doing the wrong thing.*
+It is not a defect in the identity — the identity's job is "nothing changes
+`gas_energy` except a named channel", and it does that job perfectly. It simply
+cannot answer the currency question, and **must not be cited as evidence that
+the currency is sound.**
+
+### 5.2 Which of the closure groups change
+
+None of the four gas groups is added to or removed from. Within them:
+
+| group | change |
+|---|---|
+| EOS (7 terms) | **none** — all `N·T`, `c_v` cancels or is already physical |
+| thermal solver, gas (`e_gas_deposit_sum`, `e_gas_cond_sum`, `e_gas_rail_sum`) | `e_gas_cond_sum`'s **value** changes (it is now the true `N·ΔT`); no term added, no term removed |
+| combustion (4 terms) | **none** |
+| Python seams (`gas_energy_seam_net()`) | **none** — still exact in int64 |
+| P-G5 solid side (3 terms + snapshot) | **none** in form; `e_solid_cond_sum` changes value because `cmin` shrinks |
+
+`gas_energy_seam_net()` still closes in int64: it never sees `c_v`.
+`refresh_gas_energy` / `reseed_gas_energy` are **untouched**.
+**"Gas temperature is a mirror" still holds exactly** — the mirror is still
+`floordiv(E, N) − t_amb`, refreshed by the same seam, and `c_v` appears nowhere
+in the recovery or in `mirror_q`.
+
+### 5.3 What it costs the CUDA twin
+
+One kernel, one signature. `cuda_temperature.cu:375-381` carries the identical
+shortcut, and `temp_conduct` (`:323-334`) does **not** currently receive
+`recip_cv`, `n_floor_q` or the N source — the CPU's Pass 2 has all three in
+scope already (`:116-118`, the `n_books` lambda). So T5 threads **three extra
+arguments** into `temp_conduct` and writes the same expression. `temp_apply_gas_cond`
+(`:400-412`) is unchanged — it deposits whatever was parked.
+
+Nothing else on the device changes: `gas_energy.h` is shared `FP_HD` code and
+is untouched, and the device capacity build (`:126-141`, `:690-700`) already
+takes `c_v_q` and just carries the new value.
+
+Cost: one `cuda_conduction_check` re-run at tol 0, plus
+`tests/cuda_conduction_check.py`'s own `DIALS["c_v"] = 1.0` (`:57`) to move to
+the shipped value so the gate exercises what ships. **No CUDA hardware on this
+machine — the twin is written and reviewed here, gated on Erik's CUDA box.**
