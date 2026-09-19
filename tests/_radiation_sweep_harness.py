@@ -51,6 +51,36 @@ def reference_table():
     return tbl
 
 
+def random_scene(rng, h, w):
+    """THE randomised scene vocabulary the sweep gates share (gate 0's matrix,
+    and the ambient-plane gates that must be measured on the SAME scenes).
+
+    * `ts` — a random thermal-solid mask (about half the cells).
+    * `a`  — random material extinction in (0, 1] Q16 on thermal solids
+             (sometimes 0 there too, so the mask and `a > 0` are not the same
+             set), 0 elsewhere (the materials ingress rule).
+    * `d`  — `a` plus a body share on a handful of cells (on solids AND on air:
+             a marine stands on air), capped at ONE.
+    * `T`  — sub-ambient, ambient, the fire range, the plasma range, the table
+             top and ABOVE it (e_bucket_of saturates), mixed per cell.
+    * `his`— a per-cell log2(thermal_mass) plane in {3, 4, 5}.
+
+    The rng call ORDER is part of the contract: the scalar-era digest in
+    tests/test_radiation_sweep_ambient_plane.py was captured through it.
+    """
+    Q = R.quant
+    ts = [[1 if rng.random() < 0.5 else 0 for _ in range(w)] for _ in range(h)]
+    a = [[(rng.choice([0, Q(0.3), Q(0.37), Q(0.5), Q(0.91), ONE]) if ts[y][x] else 0)
+          for x in range(w)] for y in range(h)]
+    d = [[min(ONE, a[y][x] + rng.choice([0, 0, 0, Q(0.5), ONE - a[y][x]]))
+          for x in range(w)] for y in range(h)]
+    T = [[rng.choice([-(200 << 16), 0, 0, 300 << 16, 1263 << 16, 5000 << 16,
+                      15999 << 16, 16000 << 16, 20000 << 16, (32767 << 16) + 65535])
+          for _ in range(w)] for _ in range(h)]
+    his = [[rng.choice([3, 4, 5]) for _ in range(w)] for _ in range(h)]
+    return a, d, T, his, ts
+
+
 def as_i32(plane):
     return np.ascontiguousarray(np.asarray(plane, dtype=np.int64).astype(np.int32))
 

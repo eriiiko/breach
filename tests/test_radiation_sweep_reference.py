@@ -25,42 +25,36 @@ if str(ROOT / "tests") not in sys.path:
     sys.path.insert(0, str(ROOT / "tests"))
 
 from _radiation_sweep_harness import (  # noqa: E402
-    F_ONE, ONE, R, cpp_sweep, ref_sweep, reference_table, ts_from_a)
+    F_ONE, ONE, R, cpp_sweep, random_scene, ref_sweep, reference_table, ts_from_a)
 
 Q = R.quant
 K_LEAK = Q(0.10)
 
+# The AMBIENT axis (thermal model v2 R3). `None` is the door's uniform E°[0] —
+# the only ambient the scalar era could express. The other two are non-uniform,
+# and they are what makes gate 0 able to catch a PARTIAL hoist: one site left
+# reading a global while the others went per-cell moves no integer on a uniform
+# ambient, so without these the bit-for-bit gate would be blind to it.
+AMBIENTS = ("uniform", "cold-half", "random")
 
-def _scene(rng: random.Random, h: int, w: int):
-    """A randomised scene in the reference's vocabulary.
 
-    * `ts` — a random thermal-solid mask (about half the cells).
-    * `a`  — random material extinction in (0, 1] Q16 on thermal solids
-             (sometimes 0 there too, so the mask and `a > 0` are not the same
-             set), 0 elsewhere (the materials ingress rule).
-    * `d`  — `a` plus a body share on a handful of cells (on solids AND on air:
-             a marine stands on air), capped at ONE.
-    * `T`  — sub-ambient, ambient, the fire range, the plasma range, the table
-             top and ABOVE it (e_bucket_of saturates), mixed per cell.
-    * `his`— a per-cell log2(thermal_mass) plane in {3, 4, 5}.
-    """
-    ts = [[1 if rng.random() < 0.5 else 0 for _ in range(w)] for _ in range(h)]
-    a = [[(rng.choice([0, Q(0.3), Q(0.37), Q(0.5), Q(0.91), ONE]) if ts[y][x] else 0)
-          for x in range(w)] for y in range(h)]
-    d = [[min(ONE, a[y][x] + rng.choice([0, 0, 0, Q(0.5), ONE - a[y][x]]))
-          for x in range(w)] for y in range(h)]
-    T = [[rng.choice([-(200 << 16), 0, 0, 300 << 16, 1263 << 16, 5000 << 16,
-                      15999 << 16, 16000 << 16, 20000 << 16, (32767 << 16) + 65535])
-          for _ in range(w)] for _ in range(h)]
-    his = [[rng.choice([3, 4, 5]) for _ in range(w)] for _ in range(h)]
-    return a, d, T, his, ts
+def _ambient(kind, rng, h, w):
+    if kind == "uniform":
+        return None
+    e0 = R.E0
+    if kind == "cold-half":
+        return [[0 if x < w // 2 else e0 for x in range(w)] for _ in range(h)]
+    return [[rng.choice([0, 1, e0 // 4, e0 // 2, e0 - 1, e0]) for _ in range(w)]
+            for _ in range(h)]
 
 
 @pytest.mark.parametrize("seed,h,w", [(1, 7, 9), (2, 9, 11), (3, 12, 8), (4, 5, 5)])
 @pytest.mark.parametrize("n_ord", [16, 12])
 @pytest.mark.parametrize("k_q", [0, K_LEAK])
 @pytest.mark.parametrize("transport", ["shear", "step"])
-def test_cpp_sweep_reproduces_the_reference_bit_for_bit(seed, h, w, n_ord, k_q, transport):
+@pytest.mark.parametrize("ambient", AMBIENTS)
+def test_cpp_sweep_reproduces_the_reference_bit_for_bit(seed, h, w, n_ord, k_q,
+                                                        transport, ambient):
     """PROPERTY: rad_net, rad_flux, rad_amb, rad_fluence and the Fleck plane from
     the C++ sweep are EQUAL, integer for integer, to sweep_ref_q on the same
     scene — and the scene is non-trivial (every plane is non-zero somewhere,
@@ -70,11 +64,15 @@ def test_cpp_sweep_reproduces_the_reference_bit_for_bit(seed, h, w, n_ord, k_q, 
     remainder split, the gather offsets, the ring's two books, the body's
     ambient re-emission, the Q24 Fleck product, the pre-pass's L_q chain, the
     per-ordinate constants, or the traversal order failing to be topological.
+    With the ambient axis, ALSO: any one of the four ambient-derived sites (the
+    cell's emission floor, its ceiling return `ret`, its body's re-emission, the
+    virtual ring) reading a different cell's ambient than the reference does.
     """
     rng = random.Random(20260916 + seed)
-    a, d, T, his, ts = _scene(rng, h, w)
-    got = cpp_sweep(a, d, k_q, T, his, ts, transport=transport, n_ord=n_ord)
-    exp = ref_sweep(a, d, k_q, T, his, transport=transport, n_ord=n_ord)
+    a, d, T, his, ts = random_scene(rng, h, w)
+    amb = _ambient(ambient, rng, h, w)
+    got = cpp_sweep(a, d, k_q, T, his, ts, transport=transport, n_ord=n_ord, amb=amb)
+    exp = ref_sweep(a, d, k_q, T, his, transport=transport, n_ord=n_ord, amb=amb)
     names = ("rad_net", "rad_flux", "rad_amb", "rad_fluence", "fleck")
     for name, g, e in zip(names, got[:5], exp[:5]):
         g64 = np.asarray(g, dtype=np.int64)
@@ -82,8 +80,9 @@ def test_cpp_sweep_reproduces_the_reference_bit_for_bit(seed, h, w, n_ord, k_q, 
         if not np.array_equal(g64, e):
             bad = np.argwhere(g64 != e)
             y, x = bad[0]
-            pytest.fail(f"{transport} S{n_ord} k={k_q} seed={seed}: {name} differs at "
-                        f"{len(bad)} cells; first ({y},{x}) cpp={g64[y, x]} ref={e[y, x]}")
+            pytest.fail(f"{transport} S{n_ord} k={k_q} seed={seed} amb={ambient}: "
+                        f"{name} differs at {len(bad)} cells; first ({y},{x}) "
+                        f"cpp={g64[y, x]} ref={e[y, x]}")
     rn, rf, ra, rl, fl = (np.asarray(p, dtype=np.int64) for p in got[:5])
     assert np.any(rn != 0) and np.any(rf != 0) and np.any(ra != 0) and np.any(rl != 0)
     assert np.any(fl < F_ONE) and np.any(fl == F_ONE)
@@ -147,6 +146,13 @@ def test_illegal_scenes_are_rejected_at_the_engine_door_too():
         cpp_sweep(a, d, -1, T, his, ts)                             # k < 0
     with pytest.raises(ValueError):
         cpp_sweep(a, d, 0, T, his, ts, n_ord=8)                     # not S16/S12
+    # the ambient invariant (thermal v2 R3), at the same door
+    cpp_sweep(a, d, 0, T, his, ts, amb=R.E0)                        # legal: no raise
+    cpp_sweep(a, d, 0, T, his, ts, amb=0)                           # legal: cold sky
+    with pytest.raises(ValueError):
+        cpp_sweep(a, d, 0, T, his, ts, amb=R.E0 + 1)                # hotter than ambient
+    with pytest.raises(ValueError):
+        cpp_sweep(a, d, 0, T, his, ts, amb=-1)                      # negative level
     # a stale int32 output plane is a TypeError, not a silently discarded copy
     sweep = bp.RadiationSweep()
     tbl = reference_table()
