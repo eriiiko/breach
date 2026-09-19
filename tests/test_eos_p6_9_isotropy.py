@@ -140,7 +140,7 @@ def _comb():
     c = bp.CombustionSolver()
     c.burn_rate = 4.0        # re-derived (see docstring) — was 1.0
     c.o2_thresh_burn = 0.03
-    c.H_fuel = 4.0
+    c.H_FUEL_M = 4.0
     c.soot_yield = 0.3
     c.fuel_per_o2 = 0.7
     return c

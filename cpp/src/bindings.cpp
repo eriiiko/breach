@@ -990,7 +990,9 @@ PYBIND11_MODULE(breach_physics, m) {
              py::array_t<bool> is_vacuum,
              py::array_t<int32_t> ignition_temp_q16,  // Q16.16, read-only
              float dt, float c_v, float n_floor_heat,
-             float burn_rate, float o2_thresh_burn, float H_fuel,
+             float burn_rate, float o2_thresh_burn,
+             // T5a: the gas-side yield, SPLIT (H_fuel = M * 2^SHIFT).
+             float H_FUEL_M, int H_FUEL_SHIFT,
              float soot_yield, float fuel_per_o2, float o2_frac_ext,
              float o2_frac_full, float T_MAX_PHYS,
              // THERMAL-MASS AXIS, P-EOS (ruling §2 site 3): the OBJECT-deposit
@@ -1071,7 +1073,8 @@ PYBIND11_MODULE(breach_physics, m) {
               breach_cuda::combustion_step(
                   gas_ptr, n_gases, o2_idx, inert_n2_idx, black_smoke_idx,
                   temp, whp, f, fl, sol, vac, ign, h, w, dt, c_v, n_floor_heat,
-                  burn_rate, o2_thresh_burn, H_fuel, soot_yield, fuel_per_o2,
+                  burn_rate, o2_thresh_burn, H_FUEL_M, H_FUEL_SHIFT,
+                  soot_yield, fuel_per_o2,
                   o2_frac_ext, o2_frac_full,
                   T_MAX_PHYS, &heat_floor_hits, &t_max_phys_hits,
                   &e_deposit_drop_sum,
@@ -1087,7 +1090,8 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("flammable"), py::arg("solid"), py::arg("is_vacuum"),
           py::arg("ignition_temp_q16"), py::arg("dt"), py::arg("c_v"),
           py::arg("n_floor_heat"), py::arg("burn_rate"), py::arg("o2_thresh_burn"),
-          py::arg("H_fuel"), py::arg("soot_yield"), py::arg("fuel_per_o2"),
+          py::arg("H_FUEL_M"), py::arg("H_FUEL_SHIFT"),
+          py::arg("soot_yield"), py::arg("fuel_per_o2"),
           py::arg("o2_frac_ext"), py::arg("o2_frac_full"),
           py::arg("T_MAX_PHYS"),
           py::arg("thermal_solid") = py::none(),
@@ -3057,7 +3061,10 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("o2_frac_full",      &CombustionSolver::o2_frac_full)
         .def_readwrite("o2_frac_amb",       &CombustionSolver::o2_frac_amb)
         .def_readwrite("o2_thresh_burn",    &CombustionSolver::o2_thresh_burn)
-        .def_readwrite("H_fuel",            &CombustionSolver::H_fuel)
+        // T5a: the GAS-side yield, SPLIT the same way H_BED_M is below
+        // (H_fuel = H_FUEL_M * 2^H_FUEL_SHIFT).
+        .def_readwrite("H_FUEL_M",          &CombustionSolver::H_FUEL_M)
+        .def_readwrite("H_FUEL_SHIFT",      &CombustionSolver::H_FUEL_SHIFT)
         .def_readwrite("soot_yield",        &CombustionSolver::soot_yield)
         .def_readwrite("fuel_per_o2",       &CombustionSolver::fuel_per_o2)   // v2.5 P5.1
         // R3 hot-burns-faster (fire session #12, docs/fire_3c_design_2026-09-

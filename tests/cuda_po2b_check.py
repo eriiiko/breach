@@ -54,7 +54,8 @@ from simulation.gases import O2, INERT_N2, SMOKE, N_GASES
 
 FP_ONE = 65536
 
-DIALS = dict(burn_rate=1.0, o2_thresh_burn=0.03, H_fuel=4.0, soot_yield=0.3,
+DIALS = dict(burn_rate=1.0, o2_thresh_burn=0.03, H_FUEL_M=4.0, H_FUEL_SHIFT=0,
+             soot_yield=0.3,
              fuel_per_o2=0.7, o2_frac_ext=0.13, o2_frac_full=0.21,
              o2_frac_amb=0.21, T_MAX_PHYS=16000.0)
 C_V = 1.0
@@ -214,8 +215,8 @@ def _gpu_step(s, draw_r):
         s["gas"], O2, INERT_N2, SMOKE, s["temperature"], s["wall_hp"], s["fire"],
         s["flammable"], s["solid"], s["is_vacuum"], s["ignition_temp_q16"],
         DT, C_V, N_FLOOR_HEAT,
-        DIALS["burn_rate"], DIALS["o2_thresh_burn"], DIALS["H_fuel"],
-        DIALS["soot_yield"], DIALS["fuel_per_o2"], DIALS["o2_frac_ext"],
+        DIALS["burn_rate"], DIALS["o2_thresh_burn"], DIALS["H_FUEL_M"],
+        int(DIALS["H_FUEL_SHIFT"]), DIALS["soot_yield"], DIALS["fuel_per_o2"], DIALS["o2_frac_ext"],
         DIALS["o2_frac_full"], DIALS["T_MAX_PHYS"],
         s["thermal_solid"], s["heat_inv_shift"], s["heat"], H_BED_M, H_BED_SHIFT,
         s["dem_acc"], draw_r, s["dyn_permeability"], int(s["dem_acc"].shape[0]))

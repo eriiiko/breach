@@ -248,6 +248,35 @@ FP_HD inline void cell_capacity_q(bool is_ts, int32_t heat_inv_shift_i,
     }
 }
 
+// floor((a·b)/d) for d > 0 — the HEAT-COUNTS -> BOOKS conversion Pass 2's gas
+// branch runs on (T5a, T2 §4.5/§10.2). Shared FP_HD so the two backends cannot
+// carry their own copy of the arithmetic.
+//
+// WHY IT IS NOT JUST `floordiv_q(a * b, d)`. The naive product leaves int64 at
+// routine densities. Pass 2's `a` is a four-face sum `de`, bounded by `g·cmin`
+// (s >= SHIFT_MIN == 2, and constraint 4 caps each face at half the gap), with
+// `g <= (T_MAX_PHYS + t_amb)·2^16 ≈ 2^30` and `cmin <= cap = N·c_v`; `b` is the
+// cell's own `N_raw`. At `c_v == 1` and N = 1 atm that product is already
+// 4.6e18 against int64's 9.2e18, and it OVERFLOWS OUTRIGHT AT N = 2 atm —
+// signed overflow, i.e. UB, on the determinism path. (T2 §4.5 argued the bound
+// with `cap_gas ≈ 504·N`, the capacity at the PHYSICAL `c_v`; at the shipped
+// `c_v = 1` the capacity is 130x larger and the product 130² x looser, which is
+// how the bound came out comfortable there and is not here.)
+//
+// Taking the DIVISION FIRST removes the hazard without costing exactness:
+//     a = q·d + r  with 0 <= r < d  (floor division, d > 0)
+//     (a·b)/d      = q·b + (r·b)/d,  and q·b is an exact integer
+// so `floor(a·b/d) == q·b + floor(r·b/d)` identically, for either sign of a.
+// No intermediate is wider than the RESULT (`q·b`, bounded by `a/c_v`) except
+// `r·b < d·b`, which for this TU's operands (`d <= 2^28` by CAP_SHIFT_MAX,
+// `b <= 2^31`) is under 2^59. Verified exact against big-integer arithmetic
+// over 200 000 randomized (a, b, d) triples.
+FP_HD inline int64_t muldiv_floor_q(int64_t a, int64_t b, int64_t d) {
+    const int64_t q = fixedpoint::floordiv_q(a, d);
+    const int64_t r = a - q * d;            // 0 <= r < d, because d > 0
+    return q * b + fixedpoint::floordiv_q(r * b, d);
+}
+
 // ONE face's energy quantum, seen from cell i (positive == energy flows INTO
 // i). Constraint 1 lives here: the magnitude is computed from |ΔT| and the
 // sign re-applied, and C_min / s are symmetric in the pair — so calling this
@@ -444,6 +473,17 @@ public:
     // solids are their own truth (D2) and keep the T-form law, its capacity
     // build, and `e_cond_trunc_sum` / `e_cond_cap_sum` exactly as before.
     //
+    // THE TWO CURRENCIES ARE NOT THE SAME UNIT (T5a, T2 §1.2). A HEAT COUNT is
+    // `C·T` — `thermal_mass·T` for a solid, `N·c_v·T` for gas. A BOOK count is
+    // `N·T_abs`. So one raw `gas_energy` count is `c_v/65536` heat counts, and
+    // the two ledgers are numerically the same unit at `c_v == 1` AND NOWHERE
+    // ELSE. Pass 2's gas branch therefore CONVERTS its face sum (it is the one
+    // site that ever baked the coincidence in; Pass 1's deposit and
+    // combustion's already divide by `c_v` and are correct at any value).
+    // `c_v` is a seam constant, applied at every crossing and nowhere else —
+    // never a redefinition of `gas_energy`, which stays the exact unshifted
+    // `N_raw·T_abs_raw` the EOS reads as a pressure.
+    //
     // `gas_energy == nullptr` (the direct-binding / unit-test path) keeps the
     // whole pre-#54 T-form law bit-identical, including the two counters above
     // — which is why tests/test_temperature_conduction.py's
@@ -473,7 +513,12 @@ public:
     //     creates, if it pins a sub-ambient cell up to 0).
     //   * the ambient-ring pin is the §5 boundary channel, bidirectional.
     // All three are priced at the cell's REAL capacity (unfloored), i.e. in
-    // the same currency as the ledger's Σ N·T_abs estimator.
+    // HEAT COUNTS. T5a: that is the SAME currency as the ledger's Σ N·T_abs
+    // estimator only at `c_v == 1`, because a heat count is `C·T = N·c_v·T`
+    // while a book count is `N·T`. These three channels are diagnostics, not
+    // terms in the gas closure identity, so the flip does not have to convert
+    // them — but a reader adding them to `gas_energy` numbers must divide by
+    // `c_v` first. See the gas-conduction note below and T2 §1.2.
     mutable int64_t e_cool_sum      = 0;   // Pass 3 ambient cooling / sky (signed)
     mutable int64_t e_vac_wipe_sum  = 0;   // Pass 0a open-vacuum wipe (signed)
     mutable int64_t e_ring_pin_sum  = 0;   // Pass 0a ambient-ring pin (signed)

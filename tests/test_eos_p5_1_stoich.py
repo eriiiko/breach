@@ -152,7 +152,7 @@ def _read_o2f_exact(o2_q, n2_q, x_ext=0.13, x_full=1.0):
     c = bp.CombustionSolver()
     c.burn_rate = 1.0
     c.o2_thresh_burn = 0.0       # the probe wants the RAW o2f, no skip-floor
-    c.H_fuel = 0.0
+    c.H_FUEL_M = 0.0
     c.soot_yield = 0.0
     c.fuel_per_o2 = 0.0
     c.o2_frac_ext = x_ext
@@ -213,7 +213,7 @@ def _read_hotf_exact(temperature_q, fire_T_ext=350.0, fire_T_span=180.0,
     c = bp.CombustionSolver()
     c.burn_rate = 1.0
     c.o2_thresh_burn = 0.0
-    c.H_fuel = 0.0
+    c.H_FUEL_M = 0.0
     c.soot_yield = 0.0
     c.fuel_per_o2 = 0.0
     # x_ext=0, x_full tiny -> the donor's X=1.0 mole fraction is ~100x past

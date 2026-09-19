@@ -672,7 +672,7 @@ def cmd_compose(args):
         ("k_push + knockdown thresholds", "[exchange] k_push=400.0", "unit shockwave impulse, vs the new transient grad(P) scale"),
         ("k_p (water head)", "[physics.water] k_p=0.5", "water pressure-head coefficient, recalibrated for integer P"),
         ("air conductivity", "[materials.air] conductivity", "small-but-nonzero: big enough the solid<->gas interface sink fires, small enough air doesn't become the heat-advecting field"),
-        ("combustion constants", "[physics.combustion]", "burn_rate=1.0, H_fuel=4.0, soot_yield=0.3, o2_thresh_burn=0.03, o2_thresh_breathe=0.08 (unwired)"),
+        ("combustion constants", "[physics.combustion]", "burn_rate=1.0, H_FUEL_M=4.0, H_FUEL_SHIFT=0, soot_yield=0.3, o2_thresh_burn=0.03, o2_thresh_breathe=0.08 (unwired)"),
         ("cool_shift_vacuum", "[physics.thermal] COOL_SHIFT_VACUUM=3", "hull radiate-to-space rate under the real energy path"),
         ("CFL_ADV / N_SUB_MAX", "[physics.eos]", "CFL_ADV=0.5 (pinned constraint), N_SUB_MAX=8 (re-pinned from 16 at the P3 gate)"),
         ("dyn_wave_absorb / absorb_strength", "[physics.eos] absorb_strength=8.0", "unit/material shockwave absorption; now also locally damps smoke-carrying wind near units (named P5 feel item)"),

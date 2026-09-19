@@ -189,11 +189,31 @@ def report(r):
     Units (report §1.1/§1.2):
       e_solid_cond_sum / e_cond_trunc_sum are E_raw * 2^16  -> counts = /2^16
       e_gas_cond_sum   is a gas-books raw                   -> counts = *c_v/2^16
+
+    AMENDED AT T5a — this measurement had a trap in it, and the trap only
+    springs once T2's own recommendation lands.
+
+    `delivered` used to read `e_gas_cond_sum / 2^16`, i.e. the SAME counter
+    `received` reads. That was correct while the engine booked the face sum
+    unconverted (pre-T5a, `e_gas_cond_sum == de`, a heat count), and the ratio
+    it printed was a real cross-ledger measurement of the defect. After T5a the
+    counter holds the CONVERTED books delta, so both lines come from one number
+    and `received / delivered` is identically `c_v` BY CONSTRUCTION — a
+    tautology that would go on printing "0.0076849" forever and read as though
+    the fix had never landed.
+
+    `delivered` is now taken from the SOLID side instead: the solids' own net
+    energy change minus what their endpoint divide destroyed. Every solid<->
+    solid face is internal to `e_solid_cond_sum` and cancels there, so on this
+    scenario `lost - trunc` IS what crossed into gas. At c_v = 1 the two
+    definitions agree to the last digit (6338756.886 either way), so no T2
+    number moves; at the physical c_v they are a genuine comparison of two
+    independently-counted ledgers, which is what M1 always claimed to be.
     """
     c_v = r["c_v"]
     lost = -r["solid_cond"] / FP_ONE               # what the solids gave up
     trunc = -r["trunc"] / FP_ONE                   # counted, destroyed by floordiv
-    delivered = r["gas_cond"] / FP_ONE             # what the faces handed the gas
+    delivered = lost - trunc                       # what the faces handed the gas
     received = r["gas_cond"] * c_v / FP_ONE        # what the gas books recorded
     print(f"\n=== c_v = {c_v:.8f}  ({r['ticks']} ticks) ===")
     print(f"  e_solid_cond_sum {r['solid_cond']:>22d}   e_gas_cond_sum {r['gas_cond']:>22d}")

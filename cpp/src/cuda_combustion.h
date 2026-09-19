@@ -71,7 +71,10 @@ void combustion_step(
     const bool* flammable, const bool* solid, const bool* is_vacuum,
     const int32_t* ignition_temp_q16,
     int h, int w, float dt, float c_v, float n_floor_heat,
-    float burn_rate, float o2_thresh_burn, float H_fuel, float soot_yield,
+    float burn_rate, float o2_thresh_burn,
+    // T5a: the gas-side yield is SPLIT (H_fuel = H_FUEL_M * 2^H_FUEL_SHIFT),
+    // the shape H_BED_M/H_BED_SHIFT below already has.
+    float H_FUEL_M, int H_FUEL_SHIFT, float soot_yield,
     float fuel_per_o2, float o2_frac_ext, float o2_frac_full, float T_MAX_PHYS,
     int64_t* heat_floor_hits, int64_t* t_max_phys_hits,
     // P-E2b (energy-books arc, design §2.2/§2.5): the energy-sum twin of

@@ -330,8 +330,14 @@ __global__ void temp_conduct(const int32_t* __restrict__ temperature,
                              const bool* __restrict__ is_vacuum,
                              const bool* __restrict__ is_ambient,
                              int64_t* __restrict__ de_gas,   // nullable output
+                             // T5a: the books' N and the Q16.16 `c_v` the
+                             // capacity planes were built from — the gas
+                             // branch's heat-counts -> N·T conversion needs
+                             // both (CPU twin: `n_books` + `c_v_q`, both
+                             // already in Pass 2's scope there).
+                             const int32_t* __restrict__ n_src,
                              unsigned long long* __restrict__ cnt,
-                             int no_face, int h, int w) {
+                             int32_t c_v_q, int no_face, int h, int w) {
     const int n = h * w;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
@@ -363,20 +369,32 @@ __global__ void temp_conduct(const int32_t* __restrict__ temperature,
             temp_new[i] = (int32_t)ti;
             continue;
         }
-        // arc #54 P-G1b (design §2.7 row 3): an ACCOUNTABLE gas cell's
-        // four-face sum IS its energy change — no endpoint Q16 divide, no
-        // truncation residual. The capacity-floor shrink still applies (it
-        // is what keeps this pass a convex combination — see the CPU
-        // comment, temperature_solver.cpp Pass 2).
+        // arc #54 P-G1b (design §2.7 row 3): an ACCOUNTABLE gas cell takes no
+        // endpoint Q16 divide and leaves no truncation residual. The
+        // capacity-floor shrink still applies (it is what keeps this pass a
+        // convex combination — see the CPU comment, temperature_solver.cpp
+        // Pass 2).
+        //
+        // T5a: `de` is in HEAT COUNTS (priced at `C = N·c_v`) and the books are
+        // `N·T`, so it is CONVERTED here — by inverting the very capacity the
+        // face quantum was built from, never by a second representation of
+        // `c_v`. The full argument, the measurement that found it and the
+        // int64 bound are all on the CPU twin; this is that body, transcribed.
         const bool acct_i = de_gas != nullptr
             && !solid[i] && !thermal_solid[i] && !is_vacuum[i]
             && !(is_ambient != nullptr && is_ambient[i]);
         if (acct_i) {
-            int64_t de_books = de;
-            if (cap_real[i] != cap_i && cap_i > 0) {
-                de_books = fixedpoint::floordiv_q(de * cap_real[i], cap_i);
-                cadd(cnt, C_COND_CAP, de - de_books);
-            }
+            const int64_t nb = (n_src != nullptr && n_src[i] > 0)
+                             ? (int64_t)n_src[i] : (int64_t)0;
+            const int64_t de_books =
+                conduction::muldiv_floor_q(de, nb, cap_i);          // cap_USED
+            const int64_t de_full = (cap_real[i] > 0)
+                ? conduction::muldiv_floor_q(de, nb, cap_real[i])
+                : conduction::muldiv_floor_q(
+                      de, (int64_t)fixedpoint::FP_ONE,
+                      (c_v_q > 0) ? (int64_t)c_v_q
+                                  : (int64_t)fixedpoint::FP_ONE);
+            cadd(cnt, C_COND_CAP, de_full - de_books);
             de_gas[i] = de_books;
             cadd(cnt, C_GAS_COND, de_books);
             temp_new[i] = (int32_t)ti;   // mirror refreshed post-swap
@@ -642,7 +660,8 @@ int64_t temperature_step(
     // Pass 2: conduct (d_temp -> d_temp_new), then copy back (the CPU swap).
     temp_conduct<<<grid, block>>>(d_temp, d_temp_new, d_fs, d_cap_used,
                                   d_cap_real, d_solid, d_ts, d_vac, d_amb,
-                                  d_de_gas, d_cnt, no_face, h, w);
+                                  d_de_gas, d_nsrc, d_cnt, c_v_q,
+                                  no_face, h, w);
     cuda_check(cudaGetLastError(), "conduct launch");
     cuda_check(cudaMemcpy(d_temp, d_temp_new, nb, cudaMemcpyDeviceToDevice), "D2D swap");
     // arc #54 P-G1b: apply Pass 2's parked gas-side face sums NOW, once the

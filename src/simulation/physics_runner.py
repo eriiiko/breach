@@ -734,7 +734,16 @@ class PhysicsRunner:
                 f"[physics.combustion] o2_potency = {self._o2_potency} must be "
                 f"> 0 (it multiplies the heat-per-O2 constants; zero or negative "
                 f"would mean a fire that consumes oxygen and yields no heat).")
-        self.combustion.H_fuel = _cp("H_fuel", self.combustion.H_fuel) * self._o2_potency
+        # T5a: H_fuel is a SPLIT constant now (H_FUEL_M * 2^H_FUEL_SHIFT), the
+        # same shape H_BED_M/H_BED_SHIFT has — its derived value (7.6e6) does
+        # not fit the Q16.16 mantissa a bare `H_fuel` was quantized into.
+        # o2_potency lands on the MANTISSA, exactly as it does for H_bed below
+        # (the shift is a pure power of two and stays put), so potency 1.0 is
+        # again an exact IEEE identity and bakes bit-identical constants.
+        self.combustion.H_FUEL_M = (
+            _cp("H_FUEL_M", self.combustion.H_FUEL_M) * self._o2_potency)
+        self.combustion.H_FUEL_SHIFT = int(
+            getattr(comb_cfg, "H_FUEL_SHIFT", self.combustion.H_FUEL_SHIFT))
         self.combustion.soot_yield = _cp("soot_yield", self.combustion.soot_yield)
         # v2.5 (P5.1 stoichiometric fuel consumption, design §5 v2.5 /
         # decisions #17): wall_hp consumed per unit N_O2 burned — THE
@@ -1129,7 +1138,8 @@ class PhysicsRunner:
                 ignition_temp_q16,
                 sim_time, self.temperature.c_v, self.temperature.n_floor_heat,
                 self.combustion.burn_rate, self.combustion.o2_thresh_burn,
-                self.combustion.H_fuel, self.combustion.soot_yield,
+                self.combustion.H_FUEL_M, self.combustion.H_FUEL_SHIFT,
+                self.combustion.soot_yield,
                 self.combustion.fuel_per_o2,
                 self.combustion.o2_frac_ext, self.combustion.o2_frac_full,
                 self.combustion.T_MAX_PHYS,

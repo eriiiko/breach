@@ -496,15 +496,40 @@ void TemperatureSolver::step(
                 continue;
             }
             // ---- arc #54 P-G1b (design §2.7 row 3): THE ENDPOINT DIVIDE IS
-            // DELETED FOR GAS. An accountable gas cell's four-face sum IS its
-            // energy change — `de` is already in the books' currency (a face
-            // quantum is |ΔT|·C with C = N·c_v, and the books' capacity IS N)
-            // — so it goes to the seam with no Q16 truncation of ΔT, which is
-            // what the deleted divide cost. This also retires this cell's
-            // `e_cond_trunc_sum` contribution: with no divide there is no
-            // truncation residual to count. The SOLIDS side (and any
-            // non-accountable gas cell — ring, vacuum) keeps the T-form law
-            // below, unchanged (D2).
+            // DELETED FOR GAS. An accountable gas cell's four-face sum goes to
+            // the seam with no Q16 truncation of ΔT, which is what the deleted
+            // divide cost. This also retires this cell's `e_cond_trunc_sum`
+            // contribution: with no divide there is no truncation residual to
+            // count. The SOLIDS side (and any non-accountable gas cell — ring,
+            // vacuum) keeps the T-form law below, unchanged (D2).
+            //
+            // ---- T5a: `de` IS NOT ALREADY IN THE BOOKS' CURRENCY -----------
+            // What stood here until 2026-09-19 claimed it was: *"`de` is
+            // already in the books' currency (a face quantum is |ΔT|·C with
+            // C = N·c_v, and the books' capacity IS N)"*. Read it twice — it
+            // names the two capacities in one breath and then equates them.
+            // A face quantum is priced at `C = N·c_v`; the books' capacity is
+            // `N`. They differ by exactly `c_v`, so booking `de` unconverted
+            // gave the gas `c_v ×` the energy the faces moved.
+            //
+            // At the shipped `c_v = 1` the two coincide BY ACCIDENT, which is
+            // why this survived arc #54, its closure identity and every golden.
+            // T2 §3.1 measured the ratio on a live sim as `c_v` to eight
+            // figures: at the derived physical `c_v = 0.0076849`, **99.23 % of
+            // every joule conducted into air is destroyed at the face**. The
+            // #54 closure identity closes 0/40 ticks bad in BOTH cases (T2
+            // §5.1) — it books what was deposited, not what should have been,
+            // so it is structurally blind to this and must never be cited as
+            // evidence that the currency is sound.
+            //
+            // Two consequences worth keeping in the file, because they decide
+            // the shape of the flip: (1) turning `c_v` alone would NOT fix the
+            // conduction path — its gas ΔT was `de/N`, which has no `c_v` in
+            // it — so a config-only flip ships an engine half-corrected in the
+            // worst way, deposit path at the real capacity and conduction path
+            // still at the convention; (2) the conversion below is provably
+            // bit-identical at `c_v = 1`, which is why it lands as its own
+            // patch, gated by unmoved goldens, BEFORE the dial moves.
             //
             // THE CAPACITY FLOOR STILL APPLIES, and it is load-bearing.
             // `cap_used` is `max(N, n_floor_heat)·c_v`; where that floor binds
@@ -523,17 +548,46 @@ void TemperatureSolver::step(
             // (`e_cond_cap_sum`: "the cell moved ΔT through cap_used while
             // really owning cap_real").
             //
-            // The multiply is int64-safe BECAUSE the floor binds: when it
-            // does, `cap_used == n_floor·c_v` (~655 raw at the shipped dial)
-            // bounds every face's `cmin`, so `|de| <= 4·2^31·655 < 2^43` and
-            // `|de·cap_real| < 2^53`. In the common case the branch is not
-            // taken at all and `de` passes through untouched.
+            // The product is int64-safe because `muldiv_floor_q` divides
+            // FIRST — see its header. The shipped form's `de·cap_real` was
+            // safe only because it ran ONLY when the floor bound; the
+            // conversion below runs on every accountable gas cell, and the
+            // naive `de·N` leaves int64 at N = 2 atm.
             if (e_on && acct(i)) {
-                int64_t de_books = de;
-                if (cap_real_[i] != cap_i && cap_i > 0) {
-                    de_books = fixedpoint::floordiv_q(de * cap_real_[i], cap_i);
-                    e_cond_cap_sum += de - de_books;
-                }
+                // T5a (T2 §4.5, §10.2): the conversion from HEAT COUNTS to the
+                // books' N·T currency, written as the EXACT INVERSE OF THE
+                // CAPACITY THE FACE QUANTUM WAS BUILT FROM. `de` is `ΔT·cap`,
+                // so `N·ΔT` is "divide by the SAME cap, multiply by N" —
+                // self-inverting to the LSB, and `c_v` never appears in it.
+                // That last part is the point: `c_v` has TWO integer
+                // representations in this TU (`c_v_q`, Q16.16, which built the
+                // capacity; `recip_cv`, Q.32, which Pass 1 divides by) and they
+                // agree ONLY at `c_v == 1`. Re-dividing here by the second one
+                // would be permanently off by their disagreement; inverting
+                // `cap` cannot be.
+                const int64_t nb = n_books(i);           // real N, unfloored
+                const int64_t de_books =
+                    conduction::muldiv_floor_q(de, nb, cap_i);        // cap_USED
+                // What this cell WOULD have booked at its real (unfloored,
+                // unclamped) capacity. Their difference is exactly the capacity
+                // floor's — or the ceiling's — contribution, which is what
+                // `e_cond_cap_sum` has always named; it is now denominated in
+                // the BOOKS' currency rather than in heat counts, so it keeps
+                // meaning the same thing once `c_v` stops being 1.
+                //
+                // THE `cap_real == 0` CORNER is `N == 0`: the real books delta
+                // is 0 and the WHOLE of `de` is the floor's fiction. Convert it
+                // through the only capacity left — `c_v` itself, in the SAME
+                // Q16.16 representation the `cap` planes were built from, never
+                // through `recip_cv` (§10.2 again; `recip_mul` would also
+                // narrow `de` to int32 on the way in).
+                const int64_t de_full = (cap_real_[i] > 0)
+                    ? conduction::muldiv_floor_q(de, nb, cap_real_[i])
+                    : conduction::muldiv_floor_q(
+                          de, (int64_t)fixedpoint::FP_ONE,
+                          (c_v_q > 0) ? (int64_t)c_v_q
+                                      : (int64_t)fixedpoint::FP_ONE);
+                e_cond_cap_sum += de_full - de_books;
                 de_gas_[i] = de_books;
                 e_gas_cond_sum += de_books;
                 temp_new[i] = (int32_t)ti;           // mirror refreshed post-swap

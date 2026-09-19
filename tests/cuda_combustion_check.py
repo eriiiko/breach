@@ -81,7 +81,8 @@ FUEL_FLOOR = 1
 # exactly; the shipped 1.0 default is swept separately (see the module docstring).
 # o2_frac_amb is carried only to be SET on the CPU solver: the law no longer
 # reads it, and it is not passed to the GPU at all.
-DIALS = dict(burn_rate=1.0, o2_thresh_burn=0.03, H_fuel=4.0, soot_yield=0.3,
+DIALS = dict(burn_rate=1.0, o2_thresh_burn=0.03, H_FUEL_M=4.0, H_FUEL_SHIFT=0,
+             soot_yield=0.3,
              fuel_per_o2=0.7, o2_frac_ext=0.13, o2_frac_full=0.21,
              o2_frac_amb=0.21, T_MAX_PHYS=16000.0)
 C_V = 1.0
@@ -144,7 +145,8 @@ def _mk_solver(**over):
     d.update(over)
     c.burn_rate = d["burn_rate"]
     c.o2_thresh_burn = d["o2_thresh_burn"]
-    c.H_fuel = d["H_fuel"]
+    c.H_FUEL_M = d["H_FUEL_M"]
+    c.H_FUEL_SHIFT = int(d["H_FUEL_SHIFT"])
     c.soot_yield = d["soot_yield"]
     c.fuel_per_o2 = d["fuel_per_o2"]
     c.o2_frac_ext = d["o2_frac_ext"]
@@ -179,7 +181,8 @@ def run_pair(state, dt, dials_over=None, c_v=C_V, n_floor_heat=N_FLOOR_HEAT):
         g["gas"], O2, INERT_N2, SMOKE, g["temperature"], g["wall_hp"], g["fire"],
         g["flammable"], g["solid"], g["is_vacuum"], g["ignition_temp_q16"],
         dt, c_v, n_floor_heat,
-        d["burn_rate"], d["o2_thresh_burn"], d["H_fuel"], d["soot_yield"],
+        d["burn_rate"], d["o2_thresh_burn"], d["H_FUEL_M"],
+        int(d["H_FUEL_SHIFT"]), d["soot_yield"],
         d["fuel_per_o2"], d["o2_frac_ext"], d["o2_frac_full"], d["T_MAX_PHYS"])
     gpu_rails = (int(hf), int(tm), int(dd))
     return c, cpu_rails, g, gpu_rails
@@ -390,7 +393,8 @@ def part1_isolated() -> bool:
     st["gas"][O2][2, 3] = _quantize(1.2)
     st["temperature"][2, 3] = _quantize(90.0)      # already near the low ceiling
     st = _contig(st)
-    c, cr, g, gr = run_pair(st, dt, dials_over=dict(T_MAX_PHYS=100.0, H_fuel=4000.0))
+    c, cr, g, gr = run_pair(st, dt,
+                            dials_over=dict(T_MAX_PHYS=100.0, H_FUEL_M=4000.0))
     ok &= compare("T_MAX_PHYS rail", c, cr, g, gr)
     if cr[1] == 0:
         ok = False
@@ -540,7 +544,8 @@ def part2_trajectory(x_full=None, burn_rate=None) -> bool:
             gpu["gas"], O2, INERT_N2, SMOKE, gpu["temperature"],
             gpu["wall_hp"], gpu["fire"], gpu["flammable"], gpu["solid"],
             gpu["is_vacuum"], gpu["ignition_temp_q16"], dt, C_V, N_FLOOR_HEAT,
-            d["burn_rate"], d["o2_thresh_burn"], d["H_fuel"], d["soot_yield"],
+            d["burn_rate"], d["o2_thresh_burn"], d["H_FUEL_M"],
+            int(d["H_FUEL_SHIFT"]), d["soot_yield"],
             d["fuel_per_o2"], d["o2_frac_ext"], d["o2_frac_full"], d["T_MAX_PHYS"])
         gpu_rails = (int(hf), int(tm), int(dd))
 

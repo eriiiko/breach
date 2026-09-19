@@ -192,7 +192,14 @@ void CombustionSolver::step(
     const q16 burn_cap_q   = quantize((double)burn_rate * (double)dt);
     const q16 o2_thresh_q  = quantize((double)o2_thresh_burn);
     const q16 soot_yield_q = quantize((double)soot_yield);
-    const q16 H_fuel_q     = quantize((double)H_fuel);
+    // T5a: the GAS-side yield is a SPLIT constant now (H_FUEL_M * 2^H_FUEL_SHIFT),
+    // the same shape H_BED_M/H_BED_SHIFT has carried since P-R4. The mantissa is
+    // quantized once per step like every other per-step scalar; the shift is
+    // applied per-deposit in int64 (see the deposit site in Pass A) so a large
+    // yield cannot overflow the narrow. At the shipped M = 4.0, SHIFT = 0 this
+    // is the identical int32 `quantize(4.0)` it has always been.
+    const q16 H_fuel_m_q   = quantize((double)H_FUEL_M);
+    const int H_fuel_shift = (H_FUEL_SHIFT > 0) ? H_FUEL_SHIFT : 0;
     // v2.5 (P5.1): wall_hp consumed per unit N_O2 burned — the ember-scale
     // stoichiometric fuel cost (design §5 v2.5 amendment, decisions #17).
     const q16 fuel_per_o2_q = quantize((double)fuel_per_o2);
@@ -1001,7 +1008,19 @@ void CombustionSolver::step(
             // deposit; a per-source replay would reintroduce an order-dependent
             // denominator and defeat isotropy. Rail counters are PER-CELL
             // (design §3): no test may assert their absolute value.
-            const q16 deposit = mul_q16((q16)burn_dep, H_fuel_q);   // burn*H_fuel
+            // burn*H_fuel, with H_fuel = H_FUEL_M * 2^H_FUEL_SHIFT (T5a).
+            // The shift is taken in int64 and clamped before the narrow —
+            // the H_bed site's idiom exactly. At SHIFT == 0 the shift and the
+            // clamp are both no-ops and this is the shipped `mul_q16` result,
+            // bit for bit (the widen takes the ALREADY-narrowed int32, so even
+            // a hypothetical mul_q16 wrap is reproduced rather than papered
+            // over). The clamp is what makes the derived value landable at all
+            // — and at that value it is NOT decorative: see report_t5a.md §2.3,
+            // where it starts binding around burn_dep = 282 raw counts.
+            int64_t dep_wide = (int64_t)mul_q16((q16)burn_dep, H_fuel_m_q);
+            dep_wide <<= H_fuel_shift;
+            if (dep_wide > (int64_t)INT32_MAX) dep_wide = (int64_t)INT32_MAX;
+            const q16 deposit = (q16)dep_wide;
             q16 dT;
             // THERMAL-MASS AXIS, P-EOS (ruling §2 site 3): the MEDIUM branch on
             // the deposit's CONVERSION. A furniture tile is an open, gas-holding

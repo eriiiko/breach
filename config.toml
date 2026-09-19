@@ -971,7 +971,30 @@ burn_rate         = 0.018  # N_O2 per second per burn site AT I=1, o2f=1, hotf=1
 o2_thresh_burn    = 0.03   # RETIRED as the burn gate (the o2f law is the throttle);
                             # kept ONLY as an epsilon skip-floor (O2 <= this -> the
                             # air cell is treated as fully starved and skipped)
-H_fuel            = 4.0    # heat yield (T-scale ΔT) per unit N_O2 burned
+# --- H_fuel — THE GAS-SIDE HEAT YIELD, per unit N_O2 burned -------------------
+# ONE LOGICAL CONSTANT, SPLIT (T5a, 2026-09-19): H_fuel = H_FUEL_M · 2^H_FUEL_SHIFT,
+# exactly the shape H_BED_M/H_BED_SHIFT below has carried since P-R4.
+#
+# WHY THE SPLIT EXISTS. It used to be a bare `H_fuel = 4.0`, quantized into a
+# Q16.16 int32 — so its ceiling is 32 768. T3 §6.3 derives the plume's share of
+# Huggett 1980's 4.831 MJ per unit N_O2 (a 25/75 flame-to-surface feedback split,
+# Drysdale ch. 5) at 7.614e+06 counts, two and a half orders of magnitude past
+# what the format can hold. The derived value was not blocked by a tuning
+# decision; it was unrepresentable. T5a landed the schema carrying EXACTLY
+# today's number so the goldens could gate it as a pure refactor.
+#
+# THE DERIVED VALUE IS NOT APPLIED YET: H_FUEL_M = 14870, H_FUEL_SHIFT = 9
+# (14870 · 512 = 7.613e+06) is a ~1.9-million-fold increase in the heat
+# combustion puts into the air — today the fuel bed gets 580 000x more heat than
+# the flame gas, i.e. combustion puts 0.0002 % of a fire's heat into the plume —
+# so it is squarely a HUMAN-TEST feel change and belongs to the flip.
+#
+# Keep the mantissa as large as the format allows (|H_FUEL_M| < 32768) and take
+# the rest in the shift: a claimant's per-tick burn is only a few raw Q16.16
+# counts, so mul_q16's truncation is coarse unless the mantissa carries the
+# magnitude.
+H_FUEL_M          = 4.0    # mantissa (< 32768, the Q16.16 range)
+H_FUEL_SHIFT      = 0      # H_fuel = H_FUEL_M * 2^H_FUEL_SHIFT = 4.0 (unchanged)
 # --- o2_potency — THE SIZING RULING's preserved option (Erik, 2026-08-02) -----
 # A LOAD-TIME MULTIPLIER on the baked heat-per-O2 constants (the H_fuel /
 # H_BED_M chain above and below). Erik's sizing ruling shipped PACKAGE A —

@@ -224,7 +224,7 @@ def test_combustion_pass_conserves_o2_n2_soot_exactly():
     comb = bp.CombustionSolver()
     comb.burn_rate = 2.0
     comb.o2_thresh_burn = 0.02
-    comb.H_fuel = 4.0
+    comb.H_FUEL_M = 4.0
     comb.soot_yield = 0.3
 
     total0 = (int(gas[O2].astype(np.int64).sum())
@@ -308,9 +308,9 @@ def test_thermal_spike_is_pre_existing_not_a_p4_regression():
     reaches the format ceiling in this extreme scenario), so this test
     intentionally does NOT assert a tight peak bound — only that reaching
     the ceiling now SATURATES instead of wrapping through it."""
-    def _run(H_fuel, burn_rate):
+    def _run(H_FUEL_M, burn_rate):
         gmap = _sealed_room(hh=9, wood_at=(4, 4))
-        pr = _runner(H_fuel=H_fuel, burn_rate=burn_rate)
+        pr = _runner(H_FUEL_M=H_FUEL_M, burn_rate=burn_rate)
         _ignite(gmap, (4, 4), intensity=0.8, temp_mult=3.0)
         peak = 0.0
         trough = 0.0
