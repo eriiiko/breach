@@ -2233,6 +2233,24 @@ PYBIND11_MODULE(breach_physics, m) {
                 py::arg("t_amb_q"),
              "The solid-branch Fleck factor (Q24) for one cell, exactly as the "
              "sweep's pre-pass forms it — the tile inspector's `f` row.")
+        .def("derive_ambient", [](const RadiationSweep& self,
+                                  py::array_t<bool, py::array::c_style> is_vacuum,
+                                  const EmissiveTable& e_table,
+                                  int64_t vac_level) {
+                 auto [iv, h, w] = get_2d_const(is_vacuum);
+                 const int64_t* p = self.derive_ambient(iv, e_table.table(),
+                                                        vac_level, h * w);
+                 py::array_t<int64_t> out({h, w});
+                 auto o = out.mutable_unchecked<2>();
+                 for (int y = 0; y < h; ++y)
+                     for (int x = 0; x < w; ++x) o(y, x) = p[(size_t)y * w + x];
+                 return out;
+             }, py::arg("is_vacuum").noconvert(), py::arg("e_table"),
+                py::arg("vac_level"),
+             "A COPY of the per-cell ambient LEVEL plane derived from "
+             "vacuum/interior state (thermal model v2 R3): a vacuum cell takes "
+             "vac_level, every other cell E°[0]. vac_level < 0 means E°[0] "
+             "(R4, the shipped uniform answer); above E°[0] raises.")
         .def("fleck_plane", [](const RadiationSweep& self) {
                  const auto& f = self.fleck_plane();
                  py::array_t<int32_t> out({self.last_h(), self.last_w()});
@@ -2257,6 +2275,7 @@ PYBIND11_MODULE(breach_physics, m) {
                        py::array_t<int32_t, py::array::c_style> heat_inv_shift,
                        py::array_t<bool,    py::array::c_style> thermal_solid,
                        const EmissiveTable& e_table,
+                       py::object amb_level,
                        int32_t t_amb_q, int32_t k_leak_q,
                        int transport, int n_ordinates,
                        py::array_t<int64_t, py::array::c_style> rad_net,
@@ -2278,11 +2297,33 @@ PYBIND11_MODULE(breach_physics, m) {
                 h8 != h || w8 != w || h9 != h || w9 != w) {
                 throw py::value_error("RadiationSweep.run: every plane must be (h, w)");
             }
-            self.run(T, aq, dq, his, ts, e_table.table(), t_amb_q, k_leak_q,
+            // amb_level: the per-cell ambient LEVEL plane (thermal v2 R3). None
+            // is the reference's `e_ref=None` door — E°[0] everywhere, the
+            // uniform R4 configuration — broadcast HERE, at the door, so the
+            // sweep below it reads a plane and nothing else. An int64 (h, w)
+            // array is taken as given; it must be int64 (noconvert), because a
+            // silently widened int32 copy is exactly the bug the four output
+            // planes already guard against (critique 3 §6a).
+            std::vector<int64_t> amb_uniform;
+            const int64_t* amb = nullptr;
+            if (amb_level.is_none()) {
+                amb_uniform.assign((size_t)h * (size_t)w, e_table.table()[0]);
+                amb = amb_uniform.data();
+            } else {
+                auto arr = amb_level.cast<py::array_t<int64_t, py::array::c_style>>();
+                auto [ap, ha, wa] = get_2d_const(arr);
+                if (ha != h || wa != w) {
+                    throw py::value_error(
+                        "RadiationSweep.run: amb_level must be (h, w)");
+                }
+                amb = ap;
+            }
+            self.run(T, aq, dq, his, ts, e_table.table(), amb, t_amb_q, k_leak_q,
                      transport, n_ordinates, h, w, rn, rf, ra, rl, fleck_enabled);
         }, py::arg("temperature").noconvert(), py::arg("heat_atten_q").noconvert(),
            py::arg("dyn_heat_atten_q").noconvert(), py::arg("heat_inv_shift").noconvert(),
            py::arg("thermal_solid").noconvert(), py::arg("e_table"),
+           py::arg("amb_level"),
            py::arg("t_amb_q"), py::arg("k_leak_q"),
            py::arg("transport"), py::arg("n_ordinates"),
            py::arg("rad_net").noconvert(), py::arg("rad_flux").noconvert(),
@@ -2294,7 +2335,10 @@ PYBIND11_MODULE(breach_physics, m) {
            "read them at render time (design row 38); no caller wipe needed. "
            "transport: RadiationSweep.STEP "
            "or .SHEAR; n_ordinates: 16 or 12. fleck_enabled=False is the "
-           "reference's undamped (f_plane=None) configuration, for the gates.");
+           "reference's undamped (f_plane=None) configuration, for the gates. "
+           "amb_level is the PER-CELL ambient LEVEL plane (int64 (h, w), "
+           "0 <= amb <= e_table[0]) the sweep radiates against — None means "
+           "E°[0] everywhere, the uniform thermal-v2-R4 configuration.");
 
     // --- Raycaster ---
     py::class_<LightSource>(m, "LightSource")
@@ -3412,7 +3456,7 @@ PYBIND11_MODULE(breach_physics, m) {
                              py::array_t<int64_t, py::array::c_style> rad_flux_sweep,
                              py::array_t<int64_t, py::array::c_style> rad_amb_sweep,
                              py::array_t<int64_t, py::array::c_style> rad_fluence,
-                             int32_t k_leak_q,
+                             int32_t k_leak_q, int64_t rad_amb_vacuum_q,
                              py::object is_ambient,                 // BC
                              py::object rad_net,                    // P-R4
                              // arc #54 P-G1b (design §2.7 row 3): the
@@ -3523,7 +3567,7 @@ PYBIND11_MODULE(breach_physics, m) {
                 temp, hp, shift, fs, tsol, csg, fr, tep,
                 gas_ptr, gcons, n_gases, o2_idx,
                 h, w, sim_time, amb, rnet, gen, t_amb_q,
-                haq, dhq, rns, rfs, ras, rfl, k_leak_q);
+                haq, dhq, rns, rfs, ras, rfl, k_leak_q, rad_amb_vacuum_q);
             py::list result;
             for (const auto& [dy, dx] : destroyed) {
                 result.append(py::make_tuple(dy, dx));
@@ -3549,7 +3593,7 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("rad_flux_sweep").noconvert(),
            py::arg("rad_amb_sweep").noconvert(),
            py::arg("rad_fluence").noconvert(),
-           py::arg("k_leak_q"),
+           py::arg("k_leak_q"), py::arg("rad_amb_vacuum_q") = (int64_t)-1,
            py::arg("is_ambient") = py::none(),   // BC (default None = space map)
            py::arg("rad_net") = py::none(),      // P-R4 (default None = no fold)
            py::arg("gas_energy") = py::none(),   // arc #54 (None = T-form tail)

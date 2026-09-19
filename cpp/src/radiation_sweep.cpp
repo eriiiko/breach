@@ -8,17 +8,22 @@
 // THE SCHEME (design v3 §2.3, gather form). Per ordinate m, in wavefront
 // order, for cell i (int64 throughout; ONE = 65536):
 //
+//   amb_m   = (amb_level[i] * w_m) >> 16    // THIS CELL'S ambient stream, NOT
+//                                           // a hoisted global (thermal v2 R3)
 //   fa      = (io_a * s_m) >> 16            // the straight upwind share
 //   fb      = io_b - ((io_b * s_m) >> 16)   // the REMAINDER, never a second shift
-//   i_in    = fa + fb                       // an out-of-grid upwind read is amb_m
-//   leaked  = (i_in * k) >> 16 ;  ret = (amb_m * k) >> 16
+//   i_in    = fa + fb                       // an out-of-grid upwind read is THIS
+//                                           // cell's amb_m (the virtual ring)
+//   leaked  = (i_in * k) >> 16 ;  ret = (amb_m * k) >> 16      // its own ceiling
 //   stream  = i_in - leaked + ret
 //   abs_mat = (stream * a) >> 16 ;  abs_body = (stream * b) >> 16      (b = d - a)
-//   ex_m    = (ex_cell * w_m) >> 16                                    (>= 0)
+//   ex_m    = (ex_cell * w_m) >> 16      (>= 0; the excess over THIS cell's own
+//                                         ambient, so amb_m + ex sums back to
+//                                         E°[T_i] * w_m)
 //   src     = amb_m + mul128_shr(ex_m, f_q24, 24)   // Fleck damps the EXCESS only
 //             f_q24 = T_abs / max(T_abs, 4L)       // ALPHA FLOOR 0 (row 39):
 //                                                  // f == 2^24 where g <= 1
-//   emitted = (src * a) >> 16 ;   emit_body = (amb_m * b) >> 16
+//   emitted = (src * a) >> 16 ;   emit_body = (amb_m * b) >> 16   // its own
 //   i_out   = stream - abs_mat - abs_body + emitted + emit_body
 //   rad_net[i]     += abs_mat - emitted          // the material ledger, signed
 //   rad_flux[i]    += abs_body - emit_body       // the body sensor, net above ambient
@@ -32,7 +37,12 @@
 // the ring's two books close the boundary, so
 //     sum(rad_net) + sum(rad_flux) + sum(rad_amb) == 0   exactly, in int64
 // (the eos_solver face_flux idiom: one integer, applied twice with opposite
-// signs). Gate 1 in tests/test_radiation_sweep_gates.py.
+// signs). Gate 1 in tests/test_radiation_sweep_gates.py. A PER-CELL ambient
+// does not touch that argument: every ambient-derived integer is still booked
+// once with each sign, and whatever the ring hands a boundary cell is booked
+// as it arrives — which is why WHICH cell's ambient the ring returns is a PIN
+// (the reading cell's own; see sweep_ref_q.py::sweep_q and report_t1.md §2.1)
+// rather than a correctness question.
 //
 // HEADROOM (critique 3 §2e, P0b G11): E°[3999] ~ 2^41.7; a stream never
 // exceeds the largest upstream source by more than one count per cell, so
@@ -140,10 +150,27 @@ const OrdinateConst* RadiationSweep::ordinate_table(int n_ordinates, int transpo
     return nullptr;
 }
 
+const int64_t* RadiationSweep::derive_ambient(const bool* is_vacuum,
+                                             const int64_t* e_table,
+                                             int64_t vac_level, int n) const {
+    const int64_t e0 = e_table[0];
+    if (vac_level > e0) {
+        throw std::invalid_argument(
+            "RadiationSweep::derive_ambient: the vacuum ambient level exceeds "
+            "E°[0]; the per-cell ambient invariant is 0 <= amb <= E°[0], which "
+            "is what keeps every cell's emission excess non-negative");
+    }
+    const int64_t vac = (vac_level < 0) ? e0 : vac_level;   // R4: space is room temp
+    amb_derived_.resize((size_t)n);
+    for (int i = 0; i < n; ++i) amb_derived_[i] = is_vacuum[i] ? vac : e0;
+    return amb_derived_.data();
+}
+
 void RadiationSweep::run(const int32_t* temperature,
                          const int32_t* heat_atten_q, const int32_t* dyn_heat_atten_q,
                          const int32_t* heat_inv_shift, const bool* thermal_solid,
-                         const int64_t* e_table, int32_t t_amb_q, int32_t k_leak_q,
+                         const int64_t* e_table, const int64_t* amb_level,
+                         int32_t t_amb_q, int32_t k_leak_q,
                          int transport, int n_ordinates, int h, int w,
                          int64_t* rad_net, int64_t* rad_flux, int64_t* rad_amb,
                          int64_t* rad_fluence, bool fleck_enabled) const {
@@ -161,21 +188,29 @@ void RadiationSweep::run(const int32_t* temperature,
         throw std::invalid_argument(
             "RadiationSweep::run: k_leak_q outside [0, ONE] (design §2.3 invariant)");
     }
+    if (amb_level == nullptr) {
+        throw std::invalid_argument(
+            "RadiationSweep::run: amb_level is null — every caller states the "
+            "ambient it radiates against (thermal v2 R3); derive_ambient() "
+            "builds the uniform R4 plane for a caller that has no opinion");
+    }
     const int n = h * w;
     if (h_ != h || w_ != w || n_ord_ != n_ordinates) {
         outflow_.assign((size_t)n_ordinates * (size_t)n, 0);
         ex_cell_.assign((size_t)n, 0);
+        amb_m_.assign((size_t)n, 0);
         f_q24_.assign((size_t)n, F_ONE);
         h_ = h; w_ = w; n_ord_ = n_ordinates;
     }
 
     // ---- the per-ordinate constants (door 1) ------------------------------
+    // `amb_m` and `ret` were hoisted here while the ambient was one global
+    // number. They are PER-CELL now (thermal v2 R3), computed in the pre-pass
+    // below into amb_m_ and read inside the cell loop: a hoist is exactly the
+    // bug thermal v2 §6 item 3 exists to make impossible.
     const int64_t e0    = e_table[0];
     const int64_t w_m   = (int64_t)FP_ONE / n_ordinates;   // 4096 at S16, 5461 at S12
-    const int64_t amb_m = (e0 * w_m) >> FP_SHIFT;           // the SAME integer seeds the
-                                                             // ring and every cell's ambient
     const int64_t k     = k_leak_q;
-    const int64_t ret   = (amb_m * k) >> FP_SHIFT;           // the ceiling radiates back
     const int64_t t_amb = t_amb_q;
 
     // ---- the pre-pass: the excess emission and the Fleck factor (§2.8) -----
@@ -190,8 +225,19 @@ void RadiationSweep::run(const int32_t* temperature,
                 "RadiationSweep::run: extinction planes violate 0 <= a <= d <= ONE "
                 "(heat_atten_q / dyn_heat_atten_q ingress invariant, design §2.3)");
         }
-        int64_t ex = e_table[e_bucket_of(temperature[i])] - e0;
-        if (ex < 0) ex = 0;                 // E°[T] >= E°[0] by the bake; belt and braces
+        // The ambient invariant (thermal v2 R3). The upper bound is what makes
+        // every cell's excess non-negative: e_bucket_of floors at bucket 0, so
+        // E°[T] >= E°[0] >= amb_level[i] for EVERY temperature. The excess-form
+        // Fleck factor and the sweep's positivity both rest on that.
+        const int64_t amb_i = amb_level[i];
+        if (amb_i < 0 || amb_i > e0) {
+            throw std::invalid_argument(
+                "RadiationSweep::run: amb_level outside [0, E°[0]] (the per-cell "
+                "ambient invariant, thermal model v2 R3)");
+        }
+        amb_m_[i] = (amb_i * w_m) >> FP_SHIFT;
+        int64_t ex = e_table[e_bucket_of(temperature[i])] - amb_i;
+        if (ex < 0) ex = 0;                 // dead under the invariant above; belt and braces
         ex_cell_[i] = ex;
         int64_t L = 0;
         if (thermal_solid[i]) {
@@ -264,6 +310,11 @@ void RadiationSweep::run(const int32_t* temperature,
             const int uby = y + bdy, ubx = x + bdx;
             const bool in_a = (uay >= 0 && uay < h && uax >= 0 && uax < w);
             const bool in_b = (uby >= 0 && uby < h && ubx >= 0 && ubx < w);
+            // THIS cell's ambient stream. The virtual ring returns the READING
+            // cell's own value: the ring cell is outside the grid and has none
+            // of its own, and this is the only choice that keeps a boundary
+            // cell at its own ambient an exact fixed point (report_t1.md §2.1).
+            const int64_t amb_m = amb_m_[i];
             const int64_t io_a = in_a ? store[uay * w + uax] : amb_m;   // the virtual ring
             const int64_t io_b = in_b ? store[uby * w + ubx] : amb_m;
             // The split, recomputed from the stored outflow with the SAME shift
@@ -275,6 +326,7 @@ void RadiationSweep::run(const int32_t* temperature,
             if (!in_b) rad_amb[i] -= fb;
 
             const int64_t leaked = (i_in * k) >> FP_SHIFT;
+            const int64_t ret    = (amb_m * k) >> FP_SHIFT;   // ITS OWN ceiling
             const int64_t stream = i_in - leaked + ret;
             const int64_t a = heat_atten_q[i];
             const int64_t b = (int64_t)dyn_heat_atten_q[i] - a;   // the body share

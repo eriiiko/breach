@@ -11,8 +11,8 @@
 |---|---|
 | D1 reference (`sweep_ref_q.py`) | **done** |
 | D1 reference gates G1-G12 (+2 new blocks) | **ALL GATES PASS** |
-| D2 engine (`radiation_sweep.{h,cpp}` + binding + runner) | pending |
-| D3 gate 0 bit-for-bit | pending |
+| D2 engine (`radiation_sweep.{h,cpp}` + binding + runner) | **done** |
+| D3 gate 0 bit-for-bit | **92 radiation tests pass** |
 | D3 goldens unmoved | pending |
 | D4 item 2 (uniform == scalar era) | pending |
 | D4 item 3 (non-uniform genuinely varies) | pending |
@@ -141,7 +141,70 @@ identical before and after:
 
 ## 4. The engine change (D2)
 
-*(filled at D2)*
+### 4.1 `cpp/src/radiation_sweep.{h,cpp}`
+
+- `run()` takes **`const int64_t* amb_level`** (the per-cell ambient LEVEL,
+  right after `e_table`), required and non-null. `amb_m` and `ret` leave the
+  hoist block at the top of `run()`; `amb_m_` is computed per cell in the
+  pre-pass (it needs `w_m`, so it cannot be computed earlier than the pre-pass
+  anyway) and `ret` is formed inside the cell loop from it.
+- The pre-pass gains the **ambient ingress re-check** `0 <= amb_level[i] <= E°[0]`
+  beside the existing `0 <= a <= d <= ONE`, and `ex_cell_[i]` becomes
+  `E°[T_i] - amb_level[i]`.
+- **new `derive_ambient(is_vacuum, e_table, vac_level, n)`** — THE derivation
+  (thermal v2 R3). A vacuum cell takes `vac_level`; every other cell takes
+  `E°[0]` — interior air, solids, **and the ambient ring**, which *is*
+  room-temperature air by definition, so only `is_vacuum` keys the select.
+  `vac_level < 0` means `E°[0]` (R4, uniform, the scalar era). Above `E°[0]`
+  raises. Fills the sweep's own scratch; nothing is authored and no new plane
+  crosses the binding on the live path.
+
+### 4.2 `physics_engine.{h,cpp}` — step 2b
+
+`step_tail` gains **`int64_t rad_amb_vacuum_q = -1`** and calls
+`derive_ambient` on the `is_vacuum` plane **already in its parameter list**,
+then hands the result to `run()`. No new plane argument, no new allocation on
+the caller's side, no level data.
+
+### 4.3 `bindings.cpp`
+
+- `RadiationSweep.run` gains `amb_level` as a keyword argument: an int64
+  `(h, w)` array, or **`None`** — which broadcasts `E°[0]` at the door, exactly
+  as the reference's `ambient_plane(None)` does, so the binding and the spec
+  have the same door and the sweep below both has one path.
+- `RadiationSweep.derive_ambient` is exposed so the derivation itself is
+  gateable from Python (item 3 drives it directly).
+- `PhysicsEngine.step_tail` gains `rad_amb_vacuum_q` (default `-1`).
+
+### 4.4 `config.toml` + `physics_runner.py` — the two dials
+
+- **`[physics.radiation] k_leak = 0.10`** — was `0.0`. Live at the derived
+  value (thermal v2 R2): the fit of the exact slab law `S(r) = a/sqrt(a²+r²)`
+  for a 2.5 m deck, max 8.2 % over r = 1..12 tiles. Quantizes to
+  `k_leak_q = 6554` (0.1000061). The sweep is still in shadow, so this moves no
+  golden; **T5's flip is where it starts cooling rooms.**
+- **`[physics.radiation] vacuum_ambient_K = 295.0`** (new) — the temperature of
+  space. The runner bakes it through the **same exact chain** the E° table uses
+  (`K⁴` by repeated integer multiplication, one `rad_scale_derived` boundary
+  multiply, round half up) into `self.rad_amb_vacuum_q`, and validates
+  integer-valued Kelvin and `level <= E°[0]`. The default, `kelvin_ambient +
+  2·k_temp_to_kelvin`, is bucket 0's own midpoint, so it bakes to **exactly
+  `E°[0] = 161`** — verified live, not assumed — which is R4 and keeps the
+  derived plane uniform. `vacuum_ambient_K = 0.0` is Erik's cold sky.
+
+Measured on the default scenario after the change: `E°[0] = 161`,
+`rad_amb_vacuum_q = 161` (equal), `k_leak_q = 6554`, the derived plane uniform
+at 161, and one tick's shadow planes still `net = flux = amb = 0` — i.e. an
+all-ambient scene is an exact fixed point **with the leak live**, which is
+design §2.7's claim about `leaked == ret`, now on the live path.
+
+### 4.5 Callers updated
+
+`tests/_radiation_sweep_harness.py` (both drivers take `amb`, one shared
+`amb_plane` door), `tests/test_radiation_sweep_reference.py`,
+`tests/test_radiation_sweep_shadow_wiring.py` (it now reproduces the
+conductor's *derivation*, not a `None`, so it cannot go vacuous when a cold sky
+ships), `tools/bench_radiation_sweep.py`, `tools/fire_tuning_lab.py`.
 
 ## 5. Gate results (D3, D4)
 
@@ -163,3 +226,4 @@ identical before and after:
 | hash | what |
 |---|---|
 | `f4a7775` | report skeleton |
+| `99e0167` | D1 — the reference takes a per-cell ambient level |

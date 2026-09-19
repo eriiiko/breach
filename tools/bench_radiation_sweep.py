@@ -80,14 +80,14 @@ def main(argv=None):
             sweep = bp.RadiationSweep()
             planes = [np.zeros((h, w), dtype=np.int64) for _ in range(4)]
             # warm-up (scratch allocation) outside the timed loop
-            sweep.run(T, a, d, his, ts, tbl, t_amb_q, 0, transport, 16, *planes)
+            sweep.run(T, a, d, his, ts, tbl, None, t_amb_q, 0, transport, 16, *planes)
             best = None
             for _ in range(3):
                 for p in planes:
                     p.fill(0)
                 t0 = time.perf_counter()
                 for _ in range(args.iters):
-                    sweep.run(T, a, d, his, ts, tbl, t_amb_q, 0, transport, 16, *planes)
+                    sweep.run(T, a, d, his, ts, tbl, None, t_amb_q, 0, transport, 16, *planes)
                 dt = (time.perf_counter() - t0) / args.iters
                 best = dt if best is None else min(best, dt)
             ident = int(planes[0].sum()) + int(planes[1].sum()) + int(planes[2].sum())

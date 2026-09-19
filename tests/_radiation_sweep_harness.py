@@ -68,10 +68,12 @@ def ts_from_a(a):
 
 
 def cpp_sweep(a, d, k_q, T, his, ts, *, transport="shear", n_ord=16,
-              table=None, sweep=None, fleck=True):
+              table=None, sweep=None, fleck=True, amb=None):
     """Run the C++ sweep on a reference-format scene. `k_q` is the UNIFORM leak
     (an int, Q16). `fleck=False` is the reference's `f_plane=None` (undamped)
-    configuration. Returns (rad_net, rad_flux, rad_amb, rad_fluence, fleck,
+    configuration. `amb` is the ambient LEVEL the same way the reference takes
+    it (thermal v2 R3): None -> E°[0] everywhere, an int -> broadcast, a plane
+    -> as given. Returns (rad_net, rad_flux, rad_amb, rad_fluence, fleck,
     sweep) as int64/int32 numpy arrays plus the sweep object (its min_stream /
     max_stream telemetry)."""
     h, w = len(a), len(a[0])
@@ -86,20 +88,32 @@ def cpp_sweep(a, d, k_q, T, his, ts, *, transport="shear", n_ord=16,
     rf = np.zeros((h, w), dtype=np.int64)
     ra = np.zeros((h, w), dtype=np.int64)
     rl = np.zeros((h, w), dtype=np.int64)
-    sweep.run(T_a, a_a, d_a, his_a, ts_a, table, int(T_AMB_Q), int(k_q),
+    amb_a = None if amb is None else np.ascontiguousarray(
+        np.asarray(amb_plane(amb, h, w), dtype=np.int64))
+    sweep.run(T_a, a_a, d_a, his_a, ts_a, table, amb_a, int(T_AMB_Q), int(k_q),
               TRANSPORTS[transport], int(n_ord), rn, rf, ra, rl,
               fleck_enabled=bool(fleck))
     return rn, rf, ra, rl, sweep.fleck_plane(), sweep
 
 
-def ref_sweep(a, d, k_q, T, his, *, transport="shear", n_ord=16):
+def amb_plane(amb, h, w):
+    """The ambient LEVEL as a plane: an int broadcasts, a plane passes through.
+    The SAME door sweep_ref_q.ambient_plane() is, so a scene written once drives
+    both sides of gate 0."""
+    if isinstance(amb, int):
+        return [[amb] * w for _ in range(h)]
+    return amb
+
+
+def ref_sweep(a, d, k_q, T, his, *, transport="shear", n_ord=16, amb=None):
     """The reference on the SAME scene: its Fleck pre-pass then its sweep.
     Returns (rad_net, rad_flux, rad_amb, rad_fluence, f_plane) as int64 arrays
     (the reference computes in Python ints; every value fits int64 by G11)."""
     h, w = len(a), len(a[0])
-    f = R.fleck_prepass(T, a, his_plane(his, h, w))
+    f = R.fleck_prepass(T, a, his_plane(his, h, w), e_ref=amb)
     k = R.plane(h, w, int(k_q))
-    res = R.sweep_q(a, d, k, T, n_ord=n_ord, transport=transport, f_plane=f)
+    res = R.sweep_q(a, d, k, T, n_ord=n_ord, transport=transport, f_plane=f,
+                    e_ref=amb)
     to64 = lambda p: np.asarray(p, dtype=np.int64)   # noqa: E731
     return (to64(res.rad_net), to64(res.rad_flux), to64(res.rad_amb),
             to64(res.rad_fluence), np.asarray(f, dtype=np.int64), res)

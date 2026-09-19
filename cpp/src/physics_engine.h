@@ -184,6 +184,17 @@ public:
         //                                     int64 (h, w), accumulated (the
         //                                     conductor wipes them per tick)
         //   k_leak_q                        : [physics.radiation] k_leak, Q16
+        //   rad_amb_vacuum_q                : the EMISSIVE LEVEL a VACUUM cell
+        //        radiates against (thermal model v2 R3), in the E° table's own
+        //        units. Every other cell — interior air, solids, and the
+        //        ambient ring, which IS room-temperature air — takes E°[0]; the
+        //        select happens in RadiationSweep::derive_ambient from the
+        //        `is_vacuum` plane already in scope, so nothing is authored and
+        //        no material column or level-data field is added.
+        //        NEGATIVE means E°[0], i.e. space at room temperature — thermal
+        //        v2 R4, the shipped v1 answer, which makes the plane UNIFORM
+        //        and the sweep bit-identical to the scalar era. Bound by
+        //        PhysicsRunner from [physics.radiation] vacuum_ambient_K.
         // ALL SIX PLANES must be non-null for the sweep to run (dormancy by
         // branch, the tree's idiom); the pybind binding makes them REQUIRED
         // and noconvert, so the live runner cannot omit them. The temperature
@@ -195,7 +206,8 @@ public:
         int64_t* rad_flux_sweep = nullptr,
         int64_t* rad_amb_sweep = nullptr,
         int64_t* rad_fluence = nullptr,
-        int32_t k_leak_q = 0) const;
+        int32_t k_leak_q = 0,
+        int64_t rad_amb_vacuum_q = -1) const;
 
     // --- Patch 1 S4b: the IMEX atmosphere/smoke substep loop -------------
     // Moves the per-tick IMEX substep block out of PhysicsRunner.step (Python)

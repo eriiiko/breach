@@ -154,7 +154,7 @@ def test_illegal_scenes_are_rejected_at_the_engine_door_too():
     z64 = np.zeros((h, w), dtype=np.int64)
     with pytest.raises(TypeError):
         sweep.run(z32, z32, np.full((h, w), ONE, dtype=np.int32), np.full((h, w), 3, np.int32),
-                  np.ones((h, w), dtype=bool), tbl, 293 << 16, 0,
+                  np.ones((h, w), dtype=bool), tbl, None, 293 << 16, 0,
                   bp.RadiationSweep.SHEAR, 16, z32, z64, z64, z64)
 
 

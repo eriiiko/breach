@@ -590,11 +590,45 @@ color                = [1.0, 0.45, 0.12]   # warm orange (render-only; heat is c
 # k_leak — the UNIFORM out-of-plane leak coefficient (design §2.3, §2.7): the
 # fraction of each ordinate's stream that leaves the deck plane per cell (the
 # floor and ceiling at ambient), booked into rad_amb with the ceiling's ambient
-# return so its fixed point is exact. Derived for a 2.5 m deck at ~0.10
-# (docs/ray_engine_v2_reach_and_papers_2026-09-13.md §2) and DORMANT at 0.0
-# until the reach question is ruled. Range [0, 1]; quantized once at load
+# return so its fixed point is exact. Range [0, 1]; quantized once at load
 # (Q16) by PhysicsRunner through simulation/optics_fixed.py.
-k_leak = 0.0
+#
+# LIVE at the DERIVED value since T1 (thermal model v2 R2, 2026-09-19). It was
+# dormant at 0.0 through P1-P2. Erik's ruling: with `cool_shift` deleted (R1)
+# the out-of-plane path is load-bearing — at k_leak = 0 a sealed interior room
+# is radiatively ADIABATIC, because every ordinate that leaves a cell arrives
+# at another cell in the same plane. 0.10 is the fit of the exact slab law
+# S(r) = a/sqrt(a² + r²) for a 2.5 m deck, max 8.2 % error over r = 1..12 tiles
+# (docs/ray_engine_v2_reach_and_papers_2026-09-13.md §2, table at :135).
+# UNIFORM by ruling: a per-tile authored leak (a floor grate, open sky) needs
+# level data and editor support and is a named extension point, not v1.
+# The sweep is still in SHADOW at T1, so this moves no golden; T5's flip is
+# where it starts cooling rooms.
+k_leak = 0.10
+
+# vacuum_ambient_K — the temperature of SPACE, in Kelvin, for the PER-TILE
+# ambient the sweep radiates against (thermal model v2 R3, 2026-09-19).
+#
+# The sweep's ambient is an EMISSIVE LEVEL, not a temperature: E°'s domain
+# starts AT ambient (e_bucket_of floors at bucket 0), so no temperature the
+# table can be asked about maps below E°[0], and "0 K outside the hull" is
+# exactly such an ambient. PhysicsRunner therefore bakes this Kelvin value
+# through the SAME exact chain the E° table uses — K⁴ by repeated int64
+# multiplication, one rad_scale_derived boundary multiply, round half up — and
+# hands the engine the resulting LEVEL. The engine selects it per cell from the
+# `is_vacuum` plane it already has (RadiationSweep::derive_ambient); no
+# material column, no level-data field, nothing authored per tile.
+#
+# The DEFAULT 295 is bucket 0's own midpoint, kelvin_ambient + 2·k_temp_to_kelvin
+# — i.e. exactly E°[0], space at room temperature. That is thermal v2 R4
+# ("most of the playing will take place inside the space ships"), it makes the
+# derived plane UNIFORM, and it keeps the sweep bit-identical to the scalar era.
+# Set it to 0.0 for Erik's cold sky: a hull cell then radiates into 0 K and a
+# breach genuinely chills the tiles that see it.
+# Must be integer-valued (the exact-bake precondition) and must not bake ABOVE
+# E°[0] — a hotter-than-room ambient would make a cell's emission excess
+# negative, which the excess-form Fleck factor rests on being non-negative.
+vacuum_ambient_K = 295.0
 
 # rad_scale_derived — THE SWEEP'S EMISSION CALIBRATION, DERIVED (P2b, design
 # v3 §9; full derivation + sensitivities in
