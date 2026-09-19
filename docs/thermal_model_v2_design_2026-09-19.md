@@ -37,7 +37,7 @@ That is the standard every decision below is held to. Concretely it means:
 
 ## 2. Rulings
 
-R1–R9 are carried from v1 unchanged. R10–R12 are new.
+R1–R9 are carried from v1 unchanged. R10–R13 are new (Erik, 2026-09-19).
 
 | # | Ruling | Reason |
 |---|---|---|
@@ -45,7 +45,7 @@ R1–R9 are carried from v1 unchanged. R10–R12 are new.
 | R2 | **`k_leak` goes live.** **v2: UNIFORM, not per-tile.** | R1 makes the out-of-plane path load-bearing — with `k_leak = 0` a sealed interior room is radiatively adiabatic. Per-tile authored leak needs level data and editor support (L3-B3); it is deferred to the extension points (§7). Uniform at the derived value delivers R1's substance now. |
 | R3 | **Ambient becomes per-tile, DERIVED from state the engine already has** (vacuum ring vs interior), not authored. | Erik wants *"room temp in ship, 0 K outside"* expressible. The engine already knows which cells are vacuum/ambient-ring; deriving from that needs no new level data. |
 | R4 | **Space is at room temperature for v1.** | *"Most of the playing will take place inside the space ships."* |
-| R5 | **`thermal_mass` stays a power of two**, real `ρc` snapped. | It rides a bit-shift. Cost is 6–10 % **at the 0.9 pin** (−26 %/+40 % at 0.7 — L1-R2c), which is an argument for 0.9. |
+| R5 | **`thermal_mass` stays a power of two**, real `ρc` snapped. | It rides a bit-shift. Cost is 6–10 % at the ruled 0.9 pin (R13); it would have been −26 %/+40 % at 0.7 (L1-R2c). |
 | R6 | **No two-node solid.** Walls honest, furniture tailored. | *"I don't want to increase the complexity in the model before we have a working simulation."* Deferred: #68. |
 | R7 | **Real numbers throughout; nothing tuned to produce flashover.** | Retune after the engine works. |
 | R8 | **Dirichlet tiles: SOLIDS ONLY**, not built in v1. | A fixed-temperature gas tile is an infinite source/sink inside the EOS. |
@@ -53,6 +53,7 @@ R1–R9 are carried from v1 unchanged. R10–R12 are new.
 | **R10** | **Conduction runs at REAL physical rates.** The absolute rate stops being a CFL stability anchor and becomes `α·Δt/Δx²` per material. | Erik, 2026-09-19: *"Let's stick with trying to stay close to physics… wood may be fully insulating, it's OK — we WILL have lots of other means for temp to travel. 36 h across a tile of wood, I don't mind if you set it to 0."* Resolves L1-B2. **Consequence, accepted**: conduction becomes a slow background process (steel 4.4e-6 per tick, wood 8.1e-8, glass 1.9e-7), and fire spread is carried by radiation and hot gas — which is what actually carries it in a real compartment fire. **Very likely closes #61**: the ~3 s e-fold draining wood's ignition heat *is* the ~43 000× overspeed. |
 | **R11** | **The load-time fire-seed sustain check (`materials.py:796-805`) is deleted**, and a sweep for tests of its kind follows as its own patch. | Erik: *"doesn't that also ask an ill-posed question? … it's kind of obvious that if the material is hot enough it will sustain, but otherwise it won't — this type of test is exactly the ones I think we ought to look for and remove."* Resolves L3-B2 by deletion rather than by re-derivation. It is a **load-time** check whose gain is literally `bed_per_I · 2^(cool_shift − heat_inv_shift)`, so R1 guts it anyway. |
 | **R12** | **`foliage` gets its real emissivity** (`heat_atten ≈ 0.9`, cellulosic), superseding design v3 row 6. | L1-B1: with `heat_atten = 0.0` **and** `conductivity = 0.0`, and `cool_shift` gone, a flammable foliage tile is **strictly adiabatic** — combustion writes into it and nothing can remove the energy, so it ratchets to `T_MAX_PHYS` and re-ignites neighbours forever, silently. Under R10 a small conductivity would **not** save it (real conduction is negligible), so the fix must be radiative. Row 6's `0.0` was an acceptance of a gap, not a physical claim, and R7 supersedes it: 0.9 is the real number. **This does not author tree behaviour** — it stops foliage being radiatively invisible. |
+| **R13** | **The currency pin is 0.9 MJ/(m³·K)** — wood at ~12 % moisture content. `J_per_count = 0.4759 J`; `rad_scale_derived` becomes **1.6533e-08**. | **Erik, 2026-09-19: *"0.9 it is."*** The pin is a UNIT DEFINITION, not a measurement: it fixes what one heat count is worth, and therefore what every other row's `thermal_mass` must be (its real `ρc` ÷ the unit, snapped to a power of two). The criterion is which unit makes the whole table land kindly. At **0.9**: steel 33.8→32 (−5.3 %), glass 17.8→16 (−10.0 %), wood **8.0→8, exact** — and all three reproduce the SHIPPED values, so the table has been encoding this pin all along. At 0.7 every row is 22–26 % light AND glass would have to double to 32. 0.7 is roughly oven-dry wood; timber indoors equilibrates near 12 % MC, and ship furniture is not oven-dry. Nothing live reads `rad_scale_derived` yet, so the change is free. |
 
 ### ACCEPTED GAPs
 
@@ -134,8 +135,8 @@ contradiction with the gas-energy seam's born-at-ambient rule (L3).
 | # | Phenomenon | Settled by |
 |---|---|---|
 | 1 | Radiation transport | **Done** — gate 0 |
-| 2 | Radiative emission scale | **Done** — P2b; but **downstream of item 3's pin** (L1-R2c): 2.1256e-08 at 0.7, 1.6533e-08 at 0.9 |
-| 3 | Solid heat capacity | Derivation + **the 0.7-vs-0.9 pin, the one ruling still open**; an input to T3 |
+| 2 | Radiative emission scale | **Done and now determined** — P2b's derivation at R13's pin: **`rad_scale_derived = 1.6533e-08`** (was 2.1256e-08 at the provisional 0.7). Applied to the sweep's table at T3/T5 |
+| 3 | Solid heat capacity | **Derivation, pin RULED (R13 = 0.9)**. T3 derives every row against it: one `thermal_mass` unit = 0.1125 MJ/(m³·K) |
 | 4 | Gas heat capacity (`c_v`) | **Test** — §3.2, T2 |
 | 5 | Energy → temperature | Derivation — verified; it is the definition of heat capacity |
 | 6 | Conduction solid↔solid | **RULED (R10)** — real `α·Δt/Δx²`; derivation only, no stability anchor |
