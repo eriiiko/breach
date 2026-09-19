@@ -468,8 +468,9 @@ beyond T1:
 * it is a free, strong, *snapshot-less* property gate for the sweep, available to
   any future patch that needs a non-vacuous invariant (P4's CUDA twin should
   preserve it, ordinate table and all);
-* it is the reason a hoist is *provably* undetectable-free here rather than
-  merely unlikely to hide.
+* it is the reason a hoist is *provably* visible here rather than merely likely
+  to be caught — §5.4 step (3) is a consequence of this symmetry, not a hope
+  about how the numbers happen to fall.
 
 ## 7. Commits
 
@@ -483,4 +484,7 @@ Branch `12-t1-ambient-plane-leak-live`, off `fire-12` at `b3488fc`.
 | `4fe6379` | gate 0 and the harness take the per-cell ambient *(committed by the orchestrator after the first implementer died mid-patch; its work, verified before committing)* |
 | `588bbaf` | **D4** — the three properties (design v2 §6 items 2, 3, 4), 26 tests, validated by breaking them |
 | `fd12caa` | the calibration trap named in the item 3 scene (§6.6) |
-| *(this commit)* | **D3** — §0, §5, §6.4–§6.7, §7 |
+| `107a9d1` | **D3** — §0 closed, §5 gate results, findings §6.4–§6.7, §7 |
+| `65f30b3` | item 4's non-vacuity guard on its ambient axis (§5.3) |
+| `3f08ae3` | §5.3's item 4 numbers, re-measured through the committed test |
+| *(this commit)* | §7 completed, §6.7 wording |
