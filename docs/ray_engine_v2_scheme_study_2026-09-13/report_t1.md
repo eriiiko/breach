@@ -524,11 +524,12 @@ Branch `12-t1-ambient-plane-leak-live`, off `fire-12` at `b3488fc`.
 | `22efec7` | §5.5 cites the conductor's `nullptr, nullptr` — read, not assumed |
 | `42b834f` | §6.6 re-measured against **R13**, which landed on `fire-12` mid-patch |
 | `21401db` | §5.4's perturbation table re-run after the guard; §6.5 rewritten |
-| *(this commit)* | §7 final; §5.6 re-confirmed on the finished tree |
+| `ee623b7` | §7 final; §5.6 re-confirmed on the finished tree |
+| *(this commit)* | the commit count above, which could not name itself |
 
-Three code/test commits (`99e0167`, `0031662`, `588bbaf` + `65f30b3`), one
-inherited (`4fe6379`), the rest report. The branch is **13 commits** ahead of
-`b3488fc`; `fire-12` itself moved one commit ahead in the same window (`5d87b99`,
+Four code/test commits (`99e0167`, `0031662`, `588bbaf`, `65f30b3`), one
+inherited (`4fe6379`), the rest report — `git log --oneline b3488fc..HEAD` is the
+authority. `fire-12` itself moved one commit ahead in the same window (`5d87b99`,
 R13 — docs only, no conflict with anything here).
 
 **Not done, deliberately** (D5): `t_amb_q`'s meaning, `cool_shift`, the
