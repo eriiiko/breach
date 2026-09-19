@@ -90,7 +90,11 @@ is a per-material claim, not a global one**:
    it also requires `heat_atten > 0` to reach a given cell's stored energy.
 3. **Conduction into adjacent gas**, then advection — requires
    `conductivity > 0`, and under R10 is *negligible in magnitude* even when
-   present.
+   present. **T2 sharpened this**: under R10 combined with the `c_v` correction
+   this channel may land at **identically zero** in integers, i.e. structurally
+   absent rather than merely small — see §4 item 7 and T2's §8. If so, radiation
+   (routes 1 and 2) is the ONLY loss path a solid has, and gas is heated only by
+   combustion until P5 gives it radiative absorption.
 
 > **Therefore: for a flammable thermal solid, radiation is the only meaningful
 > loss channel, and `heat_atten > 0` is an INVARIANT, not a preference.**
@@ -111,8 +115,14 @@ corroboration (L1) and is struck.
 which is why conduction can take `min(cap_i, cap_j)` across a solid–gas face.
 Solid capacity is `thermal_mass`; gas is `N · c_v`. But **`c_v = 1.0` is a
 placeholder** by its own config comment, so an ambient air tile behaves as
-`thermal_mass = 1.0` where real air is **0.0098**: air is **101.56× too heavy
-thermally** (L1 verified the figure exactly). Where `c_v` belongs — the
+`thermal_mass = 1.0` where real air is **0.0076849**: air is **130.13× too heavy
+thermally**. **CORRECTED by T2**: the 0.0098 / 101.56× pair in this row was computed
+at the superseded **0.7** pin; at R13's ruled **0.9** it is 0.0076849 / 130.13×. T2
+also derived `ρc_v` better than this document did — not from tabulated air, but from
+the engine's OWN EOS constants, `ρc_v = p/((γ−1)T) = 864.548 J/(m³·K)`, the residue of
+`eos_solver.cpp`'s `k_work` derivation (it agrees with the tabulated value to 0.34 %).
+`V_tile` cancels, so unlike `rad_scale` this number is free of P2b's two ambiguous
+factors and of tile size, and it is independent of molar mass. Where `c_v` belongs — the
 `gas_energy = N·T_abs` representation or the conversion seam — is T2's
 measurement.
 
