@@ -999,7 +999,8 @@ def test_combustion_deposit_converts_via_heat_inv_shift_on_a_thermal_solid():
     burn = int(gas0[o2][4, 4]) - int(out["object"][1][o2][4, 4])
     assert burn > 0, "the crate tile must actually burn (vacuous otherwise)"
     # OBJECT path: dT == (burn*H_fuel) >> shift, exactly.
-    h_fuel_q = int(round(float(solver.H_fuel) * FP_ONE))
+    h_fuel_q = int(round(float(solver.H_FUEL_M) * FP_ONE)) << int(
+        solver.H_FUEL_SHIFT)
     deposit = (burn * h_fuel_q) >> 16                    # mul_q16, truncating
     expect = int(T0[4, 4]) + (deposit >> 3)
     assert int(out["object"][0][4, 4]) == expect, (

@@ -480,7 +480,9 @@ __global__ void combustion_pass_c(
         const int32_t* __restrict__ dep_site,
         int* __restrict__ d_heat_floor_hits, int* __restrict__ d_t_max_phys_hits,
         unsigned long long* __restrict__ d_dep_drop,
-        int h, int w, int32_t soot_yield_q, int32_t H_fuel_q, int64_t recip_cv,
+        int h, int w, int32_t soot_yield_q,
+        int32_t H_fuel_m_q, int H_fuel_shift,   // T5a: the SPLIT gas-side yield
+        int64_t recip_cv,
         int32_t n_floor_q, int32_t t_max_phys_q,
         const bool* __restrict__ thermal_solid,
         const int32_t* __restrict__ heat_inv_shift) {
@@ -503,7 +505,12 @@ __global__ void combustion_pass_c(
         N2[s]   += (q16)(burn_dep - (int64_t)soot);
 
         // ONE aggregate heat deposit against the POST-burn N_total (delta delta).
-        const q16 deposit = mul_q16((q16)burn_dep, H_fuel_q);   // burn*H_fuel
+        // burn*H_fuel with H_fuel = H_FUEL_M * 2^H_FUEL_SHIFT (T5a) — the CPU
+        // twin's body, and the H_bed site's int64-shift-then-clamp idiom.
+        long long dep_wide = (long long)mul_q16((q16)burn_dep, H_fuel_m_q);
+        dep_wide <<= H_fuel_shift;
+        if (dep_wide > (long long)INT32_MAX) dep_wide = (long long)INT32_MAX;
+        const q16 deposit = (q16)dep_wide;
         q16 dT;
         // THERMAL-MASS AXIS, P-EOS (ruling §2 site 3) — the CPU branch verbatim:
         // an OBJECT burn site (furniture: open + gas-holding, but thermally
@@ -563,7 +570,8 @@ void combustion_step(
         const bool* flammable, const bool* solid, const bool* is_vacuum,
         const int32_t* ignition_temp_q16,
         int h, int w, float dt, float c_v, float n_floor_heat,
-        float burn_rate, float o2_thresh_burn, float H_fuel, float soot_yield,
+        float burn_rate, float o2_thresh_burn,
+        float H_FUEL_M, int H_FUEL_SHIFT, float soot_yield,
         float fuel_per_o2, float o2_frac_ext, float o2_frac_full, float T_MAX_PHYS,
         int64_t* heat_floor_hits, int64_t* t_max_phys_hits,
         int64_t* e_deposit_drop_sum,
@@ -587,7 +595,11 @@ void combustion_step(
     const q16 burn_cap_q    = quantize((double)burn_rate * (double)dt);
     const q16 o2_thresh_q   = quantize((double)o2_thresh_burn);
     const q16 soot_yield_q  = quantize((double)soot_yield);
-    const q16 H_fuel_q      = quantize((double)H_fuel);
+    // T5a: the gas-side yield's mantissa, quantized on the HOST with the
+    // identical fixedpoint::quantize the CPU solver uses (the load-time
+    // boundary idiom); the shift rides into the kernel as an int.
+    const q16 H_fuel_m_q    = quantize((double)H_FUEL_M);
+    const int H_fuel_shift  = (H_FUEL_SHIFT > 0) ? H_FUEL_SHIFT : 0;
     const q16 fuel_per_o2_q = quantize((double)fuel_per_o2);
     const double c_v_safe   = (c_v > 0.0f) ? (double)c_v : 1.0;
     const int64_t recip_cv  = make_recip(c_v_safe);
@@ -821,7 +833,8 @@ void combustion_step(
     combustion_pass_c<<<grid, block>>>(
         d_O2, d_N2, d_SOOT, d_temp, d_solid, d_vac, d_dep,
         d_counters + 0, d_counters + 1, d_dep_drop,
-        h, w, soot_yield_q, H_fuel_q, recip_cv, n_floor_q, t_max_phys_q,
+        h, w, soot_yield_q, H_fuel_m_q, H_fuel_shift, recip_cv,
+        n_floor_q, t_max_phys_q,
         d_tsol, d_shift);
     cuda_check(cudaGetLastError(), "pass_c launch");
 

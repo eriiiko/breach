@@ -383,7 +383,7 @@ def _o2f_combustion_q(X, x_ext=X_EXT, x_full=X_FULL, x_amb=X_AMB, density=1.0):
     c = bp.CombustionSolver()
     c.burn_rate = 1.0            # burn_cap_q == FP_ONE at dt = 1.0
     c.o2_thresh_burn = 0.0
-    c.H_fuel = 0.0               # no heat deposit needed for this read
+    c.H_FUEL_M = 0.0             # no heat deposit needed for this read
     c.soot_yield = 0.0
     c.fuel_per_o2 = 0.0          # do not deplete the source's fuel
     c.o2_frac_ext = float(x_ext)

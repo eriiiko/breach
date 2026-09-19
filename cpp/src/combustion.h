@@ -49,6 +49,9 @@
 //       ONE aggregate deposit T[j] += burn_j*H_fuel/(c_v*max(N_total[j],
 //       n_floor_heat)) against the POST-burn N_total (delta delta), T_MAX_PHYS
 //       clamp + PER-CELL counter. Each alloc_i is filed on a per-face buffer.
+//       (`H_fuel` is the LOGICAL constant `H_FUEL_M * 2^H_FUEL_SHIFT` since
+//       T5a — see the field declarations; every formula in this file names
+//       the logical value, never the mantissa.)
 //
 //   Pass B — for each flammable source i (single writer of wall_hp[i]): sum the
 //     <=4 incoming face allocations burn_i, pay wall_hp[i] -= round(fuel_per_o2
@@ -359,7 +362,29 @@ public:
                                       //  skip-floor — an air cell with O2 <= this
                                       //  is treated as fully starved and skipped
                                       //  (a cheap early-out, no behavioral gate)
-    float H_fuel           = 4.0f;   // heat yield (T-scale) per unit N_O2 burned
+    // The GAS-side heat yield per unit N_O2 burned — SPLIT into mantissa and
+    // shift at T5a, exactly as `H_BED_M`/`H_BED_SHIFT` below already are, and
+    // for the same reason: `H_fuel = H_FUEL_M · 2^H_FUEL_SHIFT`.
+    //
+    // WHY THE SPLIT, BEFORE THE VALUE NEEDS IT. This entered the solver as a
+    // plain `quantize((double)H_fuel)`, i.e. a Q16.16 int32, so its ceiling is
+    // **32 768**. T3 §6.3 derives the plume's share of Huggett's 4.831 MJ per
+    // unit N_O2 at a 25/75 surface-feedback split and gets **7.614e+06** — two
+    // and a half orders of magnitude past what the format can hold. What was
+    // blocked was never a value edit; it was a schema.
+    //
+    // T5a lands the schema carrying EXACTLY today's number (`M = 4.0`,
+    // `SHIFT = 0`) and nothing moves. The derived value (`H_FUEL_M = 14870`,
+    // `H_FUEL_SHIFT = 9` -> 7.613e+06) is a 1.9-million-fold increase in the
+    // heat combustion puts into the air and is squarely a HUMAN-TEST feel
+    // change — it belongs to the flip, not here.
+    //
+    // Keep the mantissa as large as the format allows (|H_FUEL_M| < 32768) and
+    // take the rest in the shift: a claimant's per-tick burn is only a few raw
+    // Q16.16 counts, so `mul_q16`'s truncation is relatively coarse unless the
+    // mantissa carries most of the magnitude (the `H_BED_M` argument, verbatim).
+    float H_FUEL_M         = 4.0f;   // mantissa (real units), quantized per step
+    int   H_FUEL_SHIFT     = 0;      // H_fuel = H_FUEL_M * 2^H_FUEL_SHIFT = 4.0
     float soot_yield       = 0.3f;   // fraction of consumed O2 -> black_smoke
                                       // (remainder -> inert_N2, decisions #12)
     float fuel_per_o2      = 0.7f;   // v2.5 (P5.1): wall_hp consumed per unit
