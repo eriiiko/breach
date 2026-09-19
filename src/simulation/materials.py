@@ -113,12 +113,44 @@ _SCALAR_COLUMNS = {
 # CFG and threaded in via :meth:`from_config` so the table tracks config edits.
 # Kept here so a dict-built table (tests) and any config-less build still produce
 # a valid face table.
+class _ThermalOverride:
+    """A read-only view of a ``[physics.thermal]`` namespace (or dict) with a
+    few keys replaced. Used by :meth:`MaterialTable.from_config` to inject the
+    tick length from ``[clock]`` without giving the thermal block a second,
+    drift-prone copy of it. Accepts and presents the same duck type
+    :meth:`MaterialTable._thermal_get` reads."""
+
+    __slots__ = ("_base", "_over")
+
+    def __init__(self, base, over):
+        self._base, self._over = base, dict(over)
+
+    def __getattr__(self, name):
+        if name in self._over:
+            return self._over[name]
+        base = self._base
+        if base is None:
+            raise AttributeError(name)
+        if isinstance(base, dict):
+            if name not in base:
+                raise AttributeError(name)
+            return base[name]
+        return getattr(base, name)
+
+
 _THERMAL_DEFAULTS = {
     "TEMP_SCALE": 65536,  # Q16.16, == HEAT_SCALE (shared temperature/heat domain)
-    "SHIFT_AT_REF": 2,    # metal self-rate = 1/4 (fastest stable on 4-nbr)
     "SHIFT_MIN": 2,       # rate floor / stability bound (4 * 1/4 <= 1)
-    "KAPPA_REF": 50.0,    # reference conductivity (hull) for the log bucket
     "NO_FACE": 63,        # sentinel: kappa==0 face / grid edge -> zero conduction
+    # T5b / R10: the CFL stability anchor (SHIFT_AT_REF / KAPPA_REF) is RETIRED.
+    # The three constants below are what sets the absolute rate now, and they
+    # are physics, not dials. See _build_conduction_tables.
+    "h_conv": 6.0,             # W/(m2.K) -- natural-convection coefficient at a
+                               # solid|gas boundary (Churchill & Chu 1975)
+    "tile_size_ref_m": 0.333,  # the reference dx the table is built at
+    "TICK_DT_S": 1.0 / 24.0,   # fallback dt; from_config overrides from [clock]
+    "c_v": 0.0076849,          # air's rho*c_v in thermal_mass column units --
+                               # the gas side's capacity in the face derivation
     # COOL-SHIFT AXIS (2026-07-30): the global that seeds the per-material
     # `cool_shift` column when a row omits it. Kept a live job so the axis is
     # additive — see the `cool_shift` block in __init__.
@@ -371,10 +403,11 @@ class MaterialTable:
         named columns. A plain dict-of-dicts is also accepted (for tests).
 
         ``thermal_cfg`` is the optional ``[physics.thermal]`` namespace (or dict)
-        carrying the conduction log-bucket constants (``SHIFT_AT_REF``,
-        ``SHIFT_MIN``, ``KAPPA_REF``, ``NO_FACE``). When omitted the
-        :data:`_THERMAL_DEFAULTS` are used so a dict-built table (tests) still
-        produces a valid face-shift table.
+        carrying the conduction constants (``SHIFT_MIN``, ``NO_FACE``,
+        ``h_conv``, ``tile_size_ref_m``, ``TICK_DT_S``, ``c_v``). When omitted
+        the :data:`_THERMAL_DEFAULTS` are used so a dict-built table (tests)
+        still produces a valid face-shift table. ``SHIFT_AT_REF`` /
+        ``KAPPA_REF`` are GONE -- T5b / R10 retired the CFL stability anchor.
 
         ``fire_cfg`` is the optional ``[physics.fire]`` namespace (or dict). It
         supplies ``ignition_to_ext_delta`` for the per-material ``fire_T_ext``
@@ -759,41 +792,101 @@ class MaterialTable:
 
     # -- conduction face-shift tables (engine/06 §2.4–§2.5) --------------
     def _build_conduction_tables(self, thermal_cfg):
-        """Build ``self_shift[N]`` and ``face_shift_table[N][N]`` from the
-        per-material ``conductivity`` column (engine/06 §2.4–§2.5, proposal §2).
+        """Build ``face_shift_table[N][N]`` (and ``self_shift[N]``, its
+        diagonal) at REAL PHYSICAL RATES -- thermal model v2 **R10**, derived in
+        ``report_t3.md`` D2/D3.
 
-        These are the LOAD-TIME float computations (base-2 log buckets + the
-        harmonic-mean face resolve). The runtime conduction pass only ever
-        indexes ``face_shift_table[mat_a][mat_b]`` and shifts — no float, no
-        division — so the whole spread is division-free and bit-identical
-        cross-machine (proposal §2.7).
+        **WHAT R10 CHANGED.** The old table was a log bucket anchored on
+        ``SHIFT_AT_REF = 2`` at ``KAPPA_REF = 50``: "hull conducts a quarter of
+        the gap per tick", which is the fastest rate an explicit 4-neighbour
+        stencil is stable at. That is a CFL bound wearing a physics hat -- it
+        has no capacity, no tile size and no timestep in it, so it could not
+        have been right by construction, and it ran solid-solid conduction
+        65 000-130 000x too fast (T3 D2 section 3.2). Both constants are
+        retired. The rate is now
 
-        ``self_shift[a]`` — the material's own log-bucket shift (§2.4):
+            2^-s  =  the real per-tick fraction of the gap this face moves
 
-            shift = clamp(SHIFT_MIN,
-                          round(SHIFT_AT_REF - log2(kappa / KAPPA_REF)),
-                          NO_FACE)            # NO_FACE if kappa == 0
+        and ``s`` is derived per PAIR from matter and geometry alone.
 
-        ``face_shift_table[a][b]`` — the shift for a face BETWEEN materials a, b,
-        from the HARMONIC MEAN of their conductivities (§2.5), so two resistances
-        in series add (a wood/metal face conducts at ~the wood, slow, rate; an
-        arithmetic mean would leak heat into insulators too fast):
+        **TWO LAWS, because a solid|gas interface is not conduction.**
 
-            hm = 2*ka*kb / (ka + kb)
-            face = clamp(SHIFT_MIN, round(-log2(hm / KAPPA_REF)), NO_FACE)
-                   NO_FACE if either kappa == 0
+        *Solid|solid and gas|gas* -- Fourier conduction through two half-cells
+        in series, which is exactly what the harmonic mean of the two
+        conductivities already expressed::
 
-        Symmetric N×N. NO_FACE on every face a kappa==0 material touches makes
-        the air no-op STRUCTURAL (not a runtime value-branch) — see §2.6.
+            hm = 2*ka*kb / (ka + kb)                      [W/(m.K)]
+            s  = round(log2( rho_c_min * dx^2 / (hm * dt) ))
+
+        *Solid|gas* -- CONVECTION through a sub-tile boundary layer, not a
+        half-tile of still air. ``h`` is a measured quantity with standard
+        correlations (Churchill & Chu 1975; Incropera eq. 9.26), so this sits
+        inside R7: pure conduction is simply the WRONG LAW at a wall, and using
+        it would have made this face 64x too weak. The conductance is the
+        boundary layer ALONE -- a convecting gas cell is well-mixed, which is
+        what ``h`` already describes, and the solid's own half-cell resistance
+        is not added (T3 section 8 q5's second option, "use h alone")::
+
+            s  = round(log2( rho_c_min * dx / (h_conv * dt) ))
+
+        Note ``dx``, not ``dx^2``: ``h`` is a conductance per unit area,
+        ``kappa`` is not. At the shipped numbers this lands on **shift 10 for
+        every solid|gas pair, which is exactly what the retired anchor happened
+        to ship** -- T3 measured the live face and found it already implements
+        ``h = 6.75 W/(m2.K)`` against the derived 6.0, inside the shift
+        quantisation. So nothing moves at the wall; what changes is that the
+        rate is derived instead of accidental.
+
+        ``rho_c_min`` is the SMALLER-capacity side of the pair --
+        ``thermal_mass * THERMAL_MASS_UNIT`` for a thermal solid, ``c_v *
+        THERMAL_MASS_UNIT`` (air's real rho*c_v, 864.5 J/(m3.K)) for a gas cell
+        at N = 1. It is the side that responds fastest, and it is the capacity
+        the solver's own ``min(cap_i, cap_j)`` prices the face quantum at.
+
+        **``kappa == 0`` still means NO FACE, on both laws.** It is the
+        structural no-conduction declaration (``furniture`` / ``kindling`` /
+        ``foliage``: a crate burns, it does not conduct), and T3 section 8 q3
+        leaves opening those rows' convection face to Erik. A row that wants a
+        face states a conductivity.
+
+        **THE TABLE IS NOW TILE-SIZE DEPENDENT** (T3 section 3.5) -- the solid
+        face goes as ``1/dx^2``, the gas face as ``1/dx`` -- and this table is
+        GLOBAL while ``tile_size_m`` is per level. It is built at
+        ``tile_size_ref_m`` (0.333, the shipped-level value), exactly as
+        ``rad_scale_derived`` already is. On a 1.0 m level every solid face is
+        then 3 shifts too fast and every gas face 2. Deriving per level is
+        T3 section 8 q9, Erik's open question; this is the same position
+        ``report_p2b.md`` section 13 item 7 records for the emission scale,
+        deliberately not decided here.
+
+        Everything below is a LOAD-TIME float computation; the runtime pass only
+        indexes ``face_shift_table[mat_a][mat_b]`` and shifts -- no float, no
+        division, bit-identical cross-machine (proposal section 2.7).
         """
-        shift_at_ref = float(self._thermal_get(thermal_cfg, "SHIFT_AT_REF"))
         shift_min = int(self._thermal_get(thermal_cfg, "SHIFT_MIN"))
-        kappa_ref = float(self._thermal_get(thermal_cfg, "KAPPA_REF"))
         no_face = int(self._thermal_get(thermal_cfg, "NO_FACE"))
+        h_conv = float(self._thermal_get(thermal_cfg, "h_conv"))
+        dx = float(self._thermal_get(thermal_cfg, "tile_size_ref_m"))
+        dt = float(self._thermal_get(thermal_cfg, "TICK_DT_S"))
+        c_v = float(self._thermal_get(thermal_cfg, "c_v"))
         self.no_face = no_face
+        if not (h_conv > 0.0 and dx > 0.0 and dt > 0.0 and c_v > 0.0):
+            raise ValueError(
+                f"[physics.thermal]: the conduction table needs h_conv > 0, "
+                f"tile_size_ref_m > 0, c_v > 0 and a positive tick dt; got "
+                f"h_conv={h_conv!r}, tile_size_ref_m={dx!r}, c_v={c_v!r}, "
+                f"dt={dt!r}")
 
         kappa = self.conductivity.astype(np.float64)
         n = self.n
+
+        # rho*c per material in SI, from the SAME columns `thermal_mass` itself
+        # derives from -- never a second source of truth (R14). A gas row
+        # (`thermal_mass == 0`) is priced at `c_v` column units, which IS air's
+        # real rho*c_v: 0.0076849 * 112500 = 864.5 J/(m3.K).
+        rho_c = np.where(self.thermal_solid,
+                         self.thermal_mass.astype(np.float64) * THERMAL_MASS_UNIT,
+                         c_v * THERMAL_MASS_UNIT)
 
         def _clamp_shift(s):
             s = int(round(s))
@@ -803,24 +896,7 @@ class MaterialTable:
                 s = no_face
             return s
 
-        # self_shift[a] — per-material log-bucket self-rate (§2.4).
-        self_shift = np.empty(n, dtype=np.int32)
-        for a in range(n):
-            ka = kappa[a]
-            if ka <= 0.0:
-                self_shift[a] = no_face
-            else:
-                self_shift[a] = _clamp_shift(
-                    # ingress-exempt: config-time table build; log2 is exact on
-                    # the power-of-two kappa ratios in config, and the rounded
-                    # INTEGER shift is empirically cross-machine stable (Ada
-                    # 2026-07 per-field run). TODO(stats-redesign): replace
-                    # with an integer log2 (bit_length) to close the door.
-                    shift_at_ref - math.log2(ka / kappa_ref)
-                )
-        self.self_shift = self_shift
-
-        # face_shift_table[a][b] — harmonic-mean face resolve (§2.5), symmetric.
+        # face_shift_table[a][b] -- symmetric NxN, one of the two laws per pair.
         face = np.full((n, n), no_face, dtype=np.int32)
         for a in range(n):
             ka = kappa[a]
@@ -829,11 +905,30 @@ class MaterialTable:
                 if ka <= 0.0 or kb <= 0.0:
                     face[a, b] = no_face        # kappa==0 either side -> no face
                     continue
-                hm = 2.0 * ka * kb / (ka + kb)  # harmonic mean (one float div)
-                # ingress-exempt: same config-time integer-shift build as
-                # self_shift above (see TODO there).
-                face[a, b] = _clamp_shift(-math.log2(hm / kappa_ref))
+                rc_min = min(float(rho_c[a]), float(rho_c[b]))
+                if bool(self.thermal_solid[a]) != bool(self.thermal_solid[b]):
+                    # solid|gas -- convection through the boundary layer alone.
+                    gap_frac = (h_conv * dt) / (rc_min * dx)
+                else:
+                    # solid|solid or gas|gas -- Fourier, two half-cells in series.
+                    hm = 2.0 * ka * kb / (ka + kb)
+                    gap_frac = (hm * dt) / (rc_min * dx * dx)
+                # ingress-exempt: config-time table build. log2 of a positive
+                # double, rounded to an INTEGER shift -- the rounded integer is
+                # empirically cross-machine stable (Ada 2026-07 per-field run),
+                # and the derived shifts sit far from a .5 boundary (the closest
+                # is air|air at 16.45). TODO(stats-redesign): replace with an
+                # integer log2 (bit_length) to close the door.
+                face[a, b] = _clamp_shift(-math.log2(gap_frac))
         self.face_shift_table = face
+
+        # self_shift[a] -- a material's face with ITSELF. It used to be an
+        # independently-computed log bucket (`SHIFT_AT_REF - log2(kappa/
+        # KAPPA_REF)`), i.e. a second source of truth for the same physical
+        # rate; it is now simply the table's diagonal, so the two cannot
+        # disagree. Nothing in the engine reads it -- it is a reporting and
+        # test-facing column.
+        self.self_shift = np.array([face[a, a] for a in range(n)], dtype=np.int32)
 
     # -- accessors -------------------------------------------------------
     @staticmethod
@@ -904,6 +999,14 @@ class MaterialTable:
             from config import CFG
             cfg = CFG
         thermal_cfg = getattr(getattr(cfg, "physics", None), "thermal", None)
+        # T5b / R10: the conduction table is `2^-s = rate * dt`, so it needs the
+        # TICK, and the tick has exactly one source of truth -- [clock]
+        # ticks_per_second. It is injected here rather than duplicated as a
+        # [physics.thermal] key, so the table can never disagree with the clock
+        # the engine actually runs at.
+        tps = float(getattr(getattr(cfg, "clock", None), "ticks_per_second", 0.0))
+        if tps > 0.0:
+            thermal_cfg = _ThermalOverride(thermal_cfg, {"TICK_DT_S": 1.0 / tps})
         fire_cfg = getattr(getattr(cfg, "physics", None), "fire", None)
         # P-R4: the seed check's gain chain now runs through the combustion
         # fuel-bed deposit (k_fire_heat is retired), so [physics.combustion]

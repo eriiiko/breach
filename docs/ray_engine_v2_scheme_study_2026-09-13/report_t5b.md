@@ -240,7 +240,119 @@ the 14 goldens plus the two deferred table pins.
 
 ## 3. Step 3 — R10, real conduction rates, solid–solid faces only
 
-PENDING
+### 3.1 The law, and why there are two of them
+
+`SHIFT_AT_REF = 2` at `KAPPA_REF = 50` is retired from `config.toml` and from
+`_THERMAL_DEFAULTS`. It was a CFL bound wearing a physics hat — "hull conducts a
+quarter of the gap per tick", with no capacity, no tile size and no timestep in
+it — and it ran solid–solid conduction 65 000–130 000× too fast.
+
+    solid|solid, gas|gas:   s = round(log2( rho_c_min · dx² / (kappa_hm · dt) ))
+    solid|gas:              s = round(log2( rho_c_min · dx  / (h_conv   · dt) ))
+
+`rho_c_min` is the smaller-capacity side — `thermal_mass · THERMAL_MASS_UNIT`
+for a solid, `c_v · THERMAL_MASS_UNIT` (= air's real 864.5 J/(m³·K)) for a gas
+cell at N = 1 — taken from the same two columns `thermal_mass` itself derives
+from, so there is no second source of truth.
+
+**The solid|gas branch is the whole of "do not apply R10 at the wall".** A
+solid–gas interface is *convection through a sub-tile boundary layer*, not a
+half-tile of still air; `h` is a measured quantity (Churchill & Chu 1975), and
+the conductance is the boundary layer **alone** — a convecting cell is
+well-mixed, which is what `h` already describes, so the solid's own half-cell is
+not put in series with it (T3 §8 q5's second option). Note `dx` rather than
+`dx²`: `h` is a conductance per unit area and `kappa` is not.
+
+### 3.2 The derived table, which reproduces T3 §3.2 to the digit
+
+| face | derived here | T3 §3.2 predicted | shipped before |
+|---|---|---|---|
+| `hull`\|`hull`, `steel`\|`steel`, `hull`\|`steel` | **18** | 18 | 2 |
+| `glass`\|`glass` | **22** | 22 | 6 |
+| `wood`\|`wood` and every cellulosic pair | **24** | 24 | 8 |
+| `hull`\|`wood`, `steel`\|`wood`, `*`\|`door_closed` | **23** | 23 | 6–7 |
+| `hull`\|`glass`, `steel`\|`glass` | **21** | 21 | 5 |
+| `wood`\|`glass`, `door`\|`glass` | **23** | 23 | 7–8 |
+| `air`\|`air` | **16** | 16 | 11 |
+| **`air`\|every solid** | **10** | 10 | **10 — unchanged** |
+| `furniture` / `kindling` / `foliage`, any face | NO_FACE | — | NO_FACE |
+
+`kappa == 0` still means NO_FACE on both laws, so the three fixture rows keep
+having no conduction face at all: opening their convection face is T3 §8 q3,
+Erik's.
+
+`self_shift` stops being an independently-computed log bucket — a second source
+of truth for the same rate — and becomes the table's own diagonal. Nothing in
+the engine reads it.
+
+### 3.3 The tick and the tile size
+
+- **`dt`** is injected by `MaterialTable.from_config` from `[clock]
+  ticks_per_second`, through a small read-only override view, rather than being
+  copied into `[physics.thermal]`. The table can therefore never disagree with
+  the clock the engine actually runs at.
+- **`dx`** is a new `[physics.thermal] tile_size_ref_m = 0.333`. **This is the
+  one design call step 3 had to make and it is deliberately the conservative
+  one.** Under R10 the table IS tile-size dependent (solid faces as `1/dx²`, gas
+  faces as `1/dx`) while the material table is global and `tile_size_m` is per
+  level. T3 §8 q9 asks Erik to choose between deriving per level and keeping one
+  global table; a global reference keeps today's architecture, is the same
+  position `rad_scale_derived` already occupies, and leaves the question
+  genuinely open instead of answering it silently. On a 1.0 m level
+  (`airlock_demo`) every solid face is 3 shifts too fast and every gas face 2.
+  **Open question 3, §12.**
+
+### 3.4 The tests, and breaking them
+
+`test_face_table_anchor_values` is **replaced**, not repaired. It pinned
+`hull|hull == 2` and `wood|wood == 8` — which *are* `SHIFT_AT_REF` at
+`KAPPA_REF`, so it asserted the constant back to itself and would have passed
+for any physics whatsoever. Its replacements:
+
+| test | property |
+|---|---|
+| `test_face_table_is_the_material_s_own_diffusivity_not_a_stability_anchor` | every solid pair's shift recomputed from the row's own `conductivity` and the `thermal_mass` currency |
+| `test_a_solid_gas_face_is_convection_and_did_not_move_under_r10` | every solid\|gas pair is the derived convection shift 10, **and** that pure conduction there would be ≥ 6 shifts weaker — so "completing" R10 at the wall is caught by name |
+
+`test_eos_p2_sealed_room_energy.py`'s redundant `2`/`8` pins move to `18`/`24`.
+
+**Validated by breaking it:**
+
+| control | what was broken | result |
+|---|---|---|
+| A | the solid\|gas branch put on Fourier (the naive-R10 error the design warns about) | RED — `test_a_solid_gas_face_is_convection_and_did_not_move_under_r10` by name |
+| B | the capacity dropped out of the solid rate (back to a κ-only bucket) | RED — `test_face_table_is_the_material_s_own_diffusivity…` and two in `test_eos_p2_sealed_room_energy` |
+
+### 3.5 Two pre-existing tests whose premise R10 changed — findings, not repairs
+
+**(a) A corner hull tile no longer warms.**
+`test_sealed_room_energy_conserved_and_walls_warm` asserted `np.all(temperature[hull_mask] > 0)` —
+the *whole* ring. That held only because solid–solid conduction ran 65 000× too
+fast and carried heat round the corners; a corner tile's four orthogonal
+neighbours are all hull, so it touches no gas. The assertion is now split into
+the real property — **every gas-facing wall tile warms, and the corners stay at
+ambient** — which makes a returning stability anchor visible as a corner that
+mysteriously warmed. Control B fires on it.
+
+**(b) The sub-dead-band drain is bigger than "negligible" suggested.**
+`test_sealed_room_with_one_hull_face_exposed_drains_monotonically` required the
+space-facing channels to beat conduction's counted truncation by **10×**.
+Measured after R10: `e_space = 2.70e+10`, `e_trunc = 1.10e+10` — a ratio of 2.5.
+
+The cause is T3 §3.4's dead band. Below `2^s/65536` K (4 K for steel, 256 K for
+wood) a face moves **nothing** to its neighbour while the hot cell still loses
+one raw count to the floor division — a one-way sink with no counterparty. T3
+called it "1.3 K/hour, 0.04 K over a crate burn, negligible in play", which is
+true in real units; over 400 ticks against a *small* radiative drain it is 40 %
+of the total. The assertion is restated as the property that survives (the
+exposed face is the dominant channel, and every count is attributed), and
+whether a sub-dead-band face should instead be a no-op is **T3 §8 q4, Erik's —
+open question 4, §12**. Nothing here bends the law to the test.
+
+### 3.6 The gate at step 3
+
+**`2547 passed, 14 failed`** — back to exactly the golden-bound set from step 1.
+The two tests step 2 deferred are green.
 
 ---
 

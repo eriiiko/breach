@@ -42,6 +42,7 @@ Run:
 """
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -54,8 +55,9 @@ sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 
 import breach_physics as bp
 
+from config import CFG
 from simulation.materials import (
-    MAT_AIR, MAT_HULL, MAT_WOOD,
+    MAT_AIR, MAT_GLASS, MAT_HULL, MAT_WOOD,
     MaterialTable,
 )
 
@@ -243,16 +245,86 @@ SHIFT_HULL = int(_TBL.face_shift_table[MAT_HULL, MAT_HULL])   # 2
 SHIFT_WOOD_HULL = int(_TBL.face_shift_table[MAT_WOOD, MAT_HULL])
 
 
-def test_face_table_anchor_values():
-    # Guard the load-time table STEP B is anchored to (engine/06 §2.4–§2.5).
-    assert SHIFT_HULL == 2, f"hull-hull face should be shift 2, got {SHIFT_HULL}"
-    assert SHIFT_WOOD == 8, f"wood-wood face should be shift 8, got {SHIFT_WOOD}"
+def test_face_table_is_the_material_s_own_diffusivity_not_a_stability_anchor():
+    """PROPERTY (thermal model v2 R10): every solid|solid face shift is the
+    material pair's REAL `alpha*dt/dx^2`, recomputed here from the row's own
+    `conductivity` and the `thermal_mass` currency -- never a CFL bucket.
+
+    This REPLACES `test_face_table_anchor_values`, which pinned `hull|hull == 2`
+    and `wood|wood == 8`. Those were the log bucket's own anchor (`SHIFT_AT_REF`
+    at `KAPPA_REF`), i.e. the test asserted the constant back to itself and
+    would have passed for any physics whatsoever.
+
+    BREAKS IF: a stability anchor returns, the harmonic mean is replaced by an
+    arithmetic one, the capacity drops out of the rate, or the table stops being
+    symmetric.
+    """
+    from simulation.materials import THERMAL_MASS_UNIT
+    dx = float(getattr(CFG.physics.thermal, "tile_size_ref_m"))
+    dt = 1.0 / float(CFG.clock.ticks_per_second)
+
+    def predicted(a, b):
+        ka, kb = float(_TBL.conductivity[a]), float(_TBL.conductivity[b])
+        hm = 2.0 * ka * kb / (ka + kb)
+        rc = min(float(_TBL.thermal_mass[a]), float(_TBL.thermal_mass[b])) \
+            * THERMAL_MASS_UNIT
+        return int(round(-math.log2((hm * dt) / (rc * dx * dx))))
+
+    for a, b in ((MAT_HULL, MAT_HULL), (MAT_WOOD, MAT_WOOD),
+                 (MAT_WOOD, MAT_HULL), (MAT_GLASS, MAT_GLASS),
+                 (MAT_GLASS, MAT_HULL)):
+        assert int(_TBL.face_shift_table[a, b]) == predicted(a, b), (
+            f"face[{_TBL.names[a]}][{_TBL.names[b]}] = "
+            f"{int(_TBL.face_shift_table[a, b])}, physics says {predicted(a, b)}")
+
+    # The numbers that derivation produces, stated so a reader sees the scale
+    # R10 actually chose: steel 18 (a 3.0 h e-fold), glass 22, wood 24 (194 h).
+    assert SHIFT_HULL == 18 and SHIFT_WOOD == 24
     # Wood<->metal conducts at ~the WOOD (slow) rate, NOT the metal rate
     # (harmonic mean): its shift sits near wood, far from hull.
     assert SHIFT_WOOD_HULL >= SHIFT_WOOD - 1, "wood<->hull must be ~wood-slow"
     assert SHIFT_WOOD_HULL > SHIFT_HULL + 2, "wood<->hull must NOT be metal-fast"
     # Symmetric table -> symmetric flux.
     assert (_TBL.face_shift_table == _TBL.face_shift_table.T).all()
+
+
+def test_a_solid_gas_face_is_convection_and_did_not_move_under_r10():
+    """PROPERTY (T3 D3 / ledger 7a): a solid|gas face is governed by the
+    CONVECTION coefficient `h_conv`, not by conduction -- and at the derived
+    h = 6.0 that reproduces shift 10, which is what the retired anchor already
+    shipped.
+
+    This is R10's sharpest edge: applying pure conduction at a wall (what the
+    ruling says literally) would have taken those faces from accidentally
+    correct to 64x too weak. Every solid|gas pair is ONE shift, because `h`
+    describes the boundary layer and the solid's half-cell is not in series
+    with it.
+
+    BREAKS IF: someone "completes" R10 by putting kappa back at the wall, or
+    adds the solid half-cell resistance back into the series.
+    """
+    dx = float(getattr(CFG.physics.thermal, "tile_size_ref_m"))
+    dt = 1.0 / float(CFG.clock.ticks_per_second)
+    h = float(getattr(CFG.physics.thermal, "h_conv"))
+    from simulation.materials import THERMAL_MASS_UNIT
+    rc_gas = float(getattr(CFG.physics.thermal, "c_v")) * THERMAL_MASS_UNIT
+    expect = int(round(-math.log2((h * dt) / (rc_gas * dx))))
+    assert expect == 10, f"the derived solid|gas shift moved off 10: {expect}"
+    solids = [i for i in range(_TBL.n)
+              if _TBL.thermal_solid[i] and float(_TBL.conductivity[i]) > 0.0]
+    assert len(solids) >= 4
+    for i in solids:
+        assert int(_TBL.face_shift_table[MAT_AIR, i]) == expect, (
+            f"air|{_TBL.names[i]} is {int(_TBL.face_shift_table[MAT_AIR, i])}, "
+            f"not the derived convection shift {expect}")
+    # ...and it is NOT what pure conduction would have given: air|wood under
+    # the Fourier law is shift 16-17, i.e. 64-128x weaker.
+    ka, kb = float(_TBL.conductivity[MAT_AIR]), float(_TBL.conductivity[MAT_WOOD])
+    hm = 2.0 * ka * kb / (ka + kb)
+    fourier = int(round(-math.log2((hm * dt) / (rc_gas * dx * dx))))
+    assert fourier >= expect + 6, (
+        f"the two laws stopped differing (convection {expect}, Fourier "
+        f"{fourier}) -- this test's premise is gone")
 
 
 def test_hot_tile_spreads_to_neighbours():

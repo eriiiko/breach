@@ -120,10 +120,37 @@ physics_substeps = 8              # 8 * 1ms = 8ms physics per game tick
 # divide) -> deterministic / bit-identical cross-machine.
 [physics.thermal]
 TEMP_SCALE   = 65536    # Q16.16, = HEAT_SCALE (shared temperature/heat domain)
-SHIFT_AT_REF = 2        # metal self-rate = 1/4 (fastest stable on a 4-nbr grid)
 SHIFT_MIN    = 2        # rate floor / stability bound: 4 faces * 1/4 = 1 (convex)
-KAPPA_REF    = 50.0     # reference conductivity (hull) for the log bucket
 NO_FACE      = 63       # sentinel: kappa==0 face / grid edge -> zero conduction
+# SHIFT_AT_REF = 2 and KAPPA_REF = 50.0 stood here until T5b. They were the CFL
+# STABILITY ANCHOR -- "hull conducts a quarter of the gap per tick", the fastest
+# an explicit 4-neighbour stencil is stable at -- and R10 (thermal model v2,
+# Erik 2026-09-19) RETIRED them: a rate anchor with no capacity, no tile size
+# and no timestep in it could not have been right by construction, and it ran
+# solid-solid conduction 65 000-130 000x too fast. The three constants below
+# set the absolute rate now, and they are physics rather than dials.
+# See simulation/materials.py::_build_conduction_tables and report_t3.md D2/D3.
+#
+# h_conv -- the SOLID|GAS boundary, which is CONVECTION, not conduction. A
+# sub-tile boundary layer, not a half-tile of still air. Churchill & Chu (1975),
+# "Correlating equations for laminar and turbulent free convection from a
+# vertical plate", Int. J. Heat Mass Transfer 18, 1323-1329; Incropera & DeWitt
+# eq. 9.26, air properties at the film temperature from Table A.4, L = 2.5 m
+# deck height. h is nearly FLAT over the fire-relevant band -- 5.68 at dT = 100 K,
+# 7.23 at 700 K, 6.93 at 1300 K, +/-12 % about 6.4 -- and every value in
+# [4.8, 9.6] rounds to the same shift, so ONE number is honest here.
+# ACCEPTED GAP: this is NATURAL convection. A fire plume moving past a surface
+# gives h = 10-100 (forced), and the face law has no velocity term.
+h_conv = 6.0
+#
+# tile_size_ref_m -- the dx the conduction table is built at. Under R10 the
+# table IS tile-size dependent (solid faces go as 1/dx^2, gas faces as 1/dx)
+# while the material table is GLOBAL and tile_size_m is per level. 0.333 is the
+# shipped-level value, the same reference rad_scale_derived is calibrated at.
+# On a 1.0 m level (airlock_demo) every solid face is 3 shifts too fast and
+# every gas face 2. Deriving the table per level instead is T3 section 8 q9 --
+# Erik's open question, deliberately not answered here.
+tile_size_ref_m = 0.333
 # Ambient cooling (engine/06 §3, proposal §3.3). Newtonian decay toward ambient
 # (T_ambient == 0, since temperature stores ΔT above a reference): T -= T >> shift.
 # Interior tiles use COOL_SHIFT; a tile whose 4-neighbourhood touches vacuum (or
