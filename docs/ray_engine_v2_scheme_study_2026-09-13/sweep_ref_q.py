@@ -396,13 +396,55 @@ def plane_max_abs(p):
     return max(abs(v) for row in p for v in row)
 
 
-def validate_planes(a, d, k):
+def ambient_plane(e_ref, h, w, table=E):
+    """Normalise the AMBIENT LEVEL argument to a per-cell plane (thermal v2 R3).
+
+    The ambient the sweep radiates at is an EMISSIVE LEVEL, in the E° table's own
+    units -- NOT a temperature, and this is forced, not a taste. The table's
+    domain starts AT ambient (`e_bucket_of` returns bucket 0 for every T_q <= 0),
+    so E°[T] >= E°[0] for every temperature there is: no temperature can
+    express an ambient BELOW E°[0], and "0 K outside the hull" -- the thing
+    R3 exists to make expressible -- is exactly such an ambient.
+
+    `e_ref` accepts
+      * None    -> E°[0] everywhere: the interior ambient, and the only value
+                   the scalar era could express (thermal v2 R4 ships it
+                   everywhere for now).
+      * an int  -> that level everywhere. The scalar door, kept because a
+                   uniform ambient is one number and a plane for it is noise;
+                   0 is the scheme study's zero-sky configuration.
+      * a plane -> used as given. In the engine this is DERIVED per cell from
+                   vacuum/interior state (thermal v2 R3), never authored.
+    There is ONE code path below this: the scalar is broadcast HERE, at the
+    door, and the sweep reads a plane and nothing else.
+    """
+    if e_ref is None:
+        e_ref = table[0]
+    if isinstance(e_ref, int):
+        return plane(h, w, e_ref)
+    if len(e_ref) != h or len(e_ref[0]) != w:
+        raise ValueError(f"ambient plane is {len(e_ref)}x{len(e_ref[0])}, "
+                         f"scene is {h}x{w}")
+    return e_ref
+
+
+def validate_planes(a, d, k, amb=None, table=E):
     """The ingress invariants of design section 2.3, as raises (gate 3).
 
     The engine's site is src/simulation/materials.py; here they are the
     reference's contract, so a scene that violates one cannot be measured.
+
+    `amb` (thermal v2 R3) is the per-cell ambient LEVEL plane, whose invariant
+    is `0 <= amb[i] <= E°[0]`. The upper bound is what makes the per-cell
+    excess `E°[T_i] - amb[i]` non-negative for EVERY temperature, since
+    `e_bucket_of` floors at bucket 0. The excess form of the Fleck factor
+    (design 2.8, row 22) and the sweep's positivity both rest on that
+    non-negativity, so a hotter-than-room ambient is REFUSED here rather than
+    clamped somewhere downstream -- a deck above at furnace temperature is
+    design 7.4 territory and owes its own argument.
     """
     h, w = len(a), len(a[0])
+    e0 = table[0]
     for y in range(h):
         for x in range(w):
             ai, di, ki = a[y][x], d[y][x], k[y][x]
@@ -414,6 +456,12 @@ def validate_planes(a, d, k):
                 raise ValueError(f"d > ONE at ({y},{x}): {di}")
             if ki < 0 or ki > ONE:
                 raise ValueError(f"k outside [0, ONE] at ({y},{x}): {ki}")
+            if amb is not None:
+                mi = amb[y][x]
+                if mi < 0 or mi > e0:
+                    raise ValueError(
+                        f"ambient level outside [0, E°[0]={e0}] at "
+                        f"({y},{x}): {mi}")
 
 
 def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
@@ -426,36 +474,81 @@ def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
     T       : Q16.16 temperature plane
     f_plane : the Fleck pre-pass output (Q24, row 32); None means f == F_ONE
     w_m     : the ordinate weight; default ONE // n_ord (4096 at S16)
-    e_ref   : the ambient reference level. The design fixes it at E°[0]; 0
-              reproduces the float scheme study's zero-sky configuration
-              (the virtual ring then returns 0 and the whole emission is excess).
+    e_ref   : the ambient LEVEL -- a scalar (broadcast at the door) or a
+              per-cell plane (thermal v2 R3). None is E°[0], the design's
+              original single value; 0 reproduces the float scheme study's
+              zero-sky configuration (the virtual ring then returns 0 and the
+              whole emission is excess). See ambient_plane() for the
+              denomination argument and validate_planes() for the invariant.
+
+    WHICH CELL'S AMBIENT, AT EACH OF THE FOUR SITES -- the pin design v3 2.7
+    owed and critique L2-B1 point 4 asked for. All four are cell i's OWN
+    ambient, and the reason is the same every time: the per-cell fixed point of
+    design 2.3 ("at exact ambient a body disturbs nothing") survives per-cell
+    ambients only if every ambient-derived term at cell i is the SAME integer.
+      * the cell's own emission floor, `src = amb_m_i + f*ex_m`: its excess is
+        measured over ITS OWN ambient, so the two halves sum back to
+        E°[T_i]*w_m. `ex_cell` is therefore per-cell-ref, and so is the Fleck
+        pre-pass's L (fleck_prepass takes the same argument).
+      * `ret`, the ceiling's ambient return: the ceiling above cell i is cell
+        i's own out-of-plane boundary -- the same boundary `leaked` left
+        through. At `i_in == amb_m_i`, `leaked == ret` as the same integer, so
+        a cell at its own ambient stays an exact fixed point.
+      * `emit_body`, the body standing on cell i: a grey body at the ambient of
+        the cell it stands in (design row 25), so `abs_body == emit_body` by
+        the same integers when the stream is at that cell's ambient.
+        GAP, named: a marine on a vacuum tile then radiates at the vacuum's
+        ambient, not at 310 K. Under thermal v2 R4 (space is at room
+        temperature in v1) no shipped scene has a cold ambient anywhere, so
+        this is a mechanism choice with no live consequence today; a body with
+        an emission temperature of its own is a T5-or-later question.
+      * the VIRTUAL AMBIENT RING (2.7): an out-of-grid upwind read returns the
+        READING cell's own amb_m_i. The ring cell is outside the grid and has
+        no cell of its own, and conservation survives any choice (whatever
+        integer arrives is booked as -fa/-fb into the reading cell's rad_amb),
+        so this is a PIN, not a correctness accident. Pinned this way because
+        (a) it is the only choice that keeps a boundary cell at its own ambient
+        an exact fixed point, (b) it needs no new global and no second ingress
+        door, (c) it reduces to the scalar era exactly when the ambient is
+        uniform, and (d) the CUDA twin (P4) reads a register it already holds
+        instead of a neighbour outside the grid.
     body_mode : "reemit"  -> Erik's ruling (design row 25), emit_body = (amb_m*b)>>16
                 "sink"    -> the pre-ruling variant, kept only so the gate that
                              says the ruling was needed cannot pass vacuously.
 
     Out-of-grid upwind reads return `amb_m` (the virtual ambient ring, 2.7).
     """
-    if validate:
-        validate_planes(a, d, k)
     if body_mode not in ("reemit", "sink"):
         raise ValueError(f"unknown body_mode {body_mode!r}")
     h, w = len(a), len(a[0])
     if w_m is None:
         w_m = ONE // n_ord
-    ref = table[0] if e_ref is None else e_ref
-    amb_m = (ref * w_m) >> 16
+    amb_lvl = ambient_plane(e_ref, h, w, table)
+    if validate:
+        validate_planes(a, d, k, amb_lvl, table)
+    # The per-cell ambient stream. NOT hoisted out of the cell loop -- that
+    # hoist is precisely what thermal v2 section 6 item 3 exists to make
+    # impossible, and it is what the first draft of this patch would have
+    # shipped while passing every other gate.
+    amb_m_cell = [[(amb_lvl[y][x] * w_m) >> 16 for x in range(w)]
+                  for y in range(h)]
     if f_plane is None:
         f_plane = plane(h, w, F_ONE)
 
     res = SweepResult(plane(h, w), plane(h, w), plane(h, w), plane(h, w))
     rad_net, rad_flux, rad_amb, rad_flu = (res.rad_net, res.rad_flux,
                                            res.rad_amb, res.rad_fluence)
-    # the per-cell excess emission, independent of ordinate
-    ex_cell = [[table[e_bucket_of(T[y][x])] - ref for x in range(w)] for y in range(h)]
+    # The per-cell excess emission over THAT CELL'S OWN ambient, independent of
+    # ordinate. Non-negative by validate_planes' `amb <= E°[0]` invariant, so
+    # the check below is provably dead on a validated scene and is kept as belt
+    # and braces for a caller that passed validate=False.
+    ex_cell = [[table[e_bucket_of(T[y][x])] - amb_lvl[y][x] for x in range(w)]
+               for y in range(h)]
     for row in ex_cell:
         for v in row:
             if v < 0:
-                raise ValueError("E°[T] < e_ref: the excess must be >= 0")
+                raise ValueError("E°[T] < the cell's own ambient level: "
+                                 "the excess must be >= 0")
 
     max_stream = 0
     min_stream = None
@@ -484,7 +577,8 @@ def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
                 ua, ub = (y, x - sx), (y - sy, x)
             in_a = 0 <= ua[0] < h and 0 <= ua[1] < w
             in_b = 0 <= ub[0] < h and 0 <= ub[1] < w
-            io_a = store[ua[0]][ua[1]] if in_a else amb_m
+            amb_m = amb_m_cell[y][x]          # THIS cell's ambient stream
+            io_a = store[ua[0]][ua[1]] if in_a else amb_m   # ring: cell i's own
             io_b = store[ub[0]][ub[1]] if in_b else amb_m
             if in_a:
                 assert io_a is not None, "upwind not yet computed: wavefront order broken"
@@ -501,7 +595,7 @@ def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
 
             ki = k[y][x]
             leaked = (i_in * ki) >> 16
-            ret = (amb_m * ki) >> 16
+            ret = (amb_m * ki) >> 16          # cell i's own ceiling
             stream = i_in - leaked + ret
             ai = a[y][x]
             bi = d[y][x] - ai
@@ -558,20 +652,26 @@ def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
     return res
 
 
-def fleck_prepass(T, a, his, *, table=E, e_ref: int = None, enabled: bool = True,
+def fleck_prepass(T, a, his, *, table=E, e_ref=None, enabled: bool = True,
                   alpha_floor: str = ALPHA_FLOOR_DEFAULT):
     """The pre-sweep Fleck pass for SOLIDS (design section 2.8). Q24 (row 32).
 
-    `his` may be an int (uniform) or a plane. Returns the f_plane.
+    `his` may be an int (uniform) or a plane. `e_ref` is the ambient LEVEL, the
+    same scalar-or-plane the sweep takes (ambient_plane): L_q is the cell's free
+    EXCESS emission, and the excess is over THAT CELL'S OWN ambient -- a cell
+    facing a cold sky has more excess to shed and is damped accordingly.
+    Returns the f_plane.
     """
     h, w = len(T), len(T[0])
     if not enabled:
         return plane(h, w, F_ONE)
+    amb_lvl = ambient_plane(e_ref, h, w, table)
     out = plane(h, w, F_ONE)
     for y in range(h):
         for x in range(w):
             s = his if isinstance(his, int) else his[y][x]
-            out[y][x] = fleck_f_solid_q(T[y][x], a[y][x], s, table, e_ref,
+            out[y][x] = fleck_f_solid_q(T[y][x], a[y][x], s, table,
+                                        amb_lvl[y][x],
                                         alpha_floor=alpha_floor)[0]
     return out
 

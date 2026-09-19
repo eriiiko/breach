@@ -102,6 +102,28 @@ def gate1_conservation(fast=False):
                     f"net={sn:>16d} flux={sf:>15d} amb={sa:>15d} "
                     f"identity={ident}  each-nonzero={nonzero}  "
                     f"{'OK' if good else 'FAIL'}")
+    # PER-CELL AMBIENT (thermal v2 R3). The identity is structural -- every
+    # integer that leaves the stream is booked once with each sign -- so it must
+    # survive an ambient that varies cell to cell, WITH the leak live. A cold
+    # patch (a hull breach: ambient level 0) beside a room-temperature interior.
+    for transport in ("shear", "step"):
+        for n_ord in (16, 12):
+            a, d, T, f = _rand_scene(rng, h, w)
+            k = R.plane(h, w, K_LEAK)
+            amb = [[0 if (x < w // 3) else R.E0 for x in range(w)]
+                   for _ in range(h)]
+            res = R.sweep_q(a, d, k, T, n_ord=n_ord, transport=transport,
+                            f_plane=f, e_ref=amb)
+            sn, sf, sa = res.sums()
+            ident = sn + sf + sa
+            nonzero = (sn != 0) and (sf != 0) and (sa != 0)
+            good = (ident == 0) and nonzero
+            ok &= good
+            lines.append(
+                f"  {transport:5s} k={K_LEAK:5d} S{n_ord:2d} COLD-SKY PATCH: "
+                f"net={sn:>16d} flux={sf:>15d} amb={sa:>15d} "
+                f"identity={ident}  each-nonzero={nonzero}  "
+                f"{'OK' if good else 'FAIL'}")
     return ok, lines
 
 
@@ -150,6 +172,22 @@ def gate2a_uniform_ambient(fast=False):
     lines.append(f"  non-vacuity: v2 whole-emission Fleck (f=0.995, a=0.91) gives "
                  f"rad_net = {net_v2} counts per ordinate on an ambient cell "
                  f"(the excess form gives 0)")
+    # NON-VACUITY (c), thermal v2 R3: the fixed point above is a fixed point OF
+    # THE UNIFORM AMBIENT. Give a third of the grid a cold sky (ambient level 0,
+    # every temperature left at ambient) and the SAME scene must stop being a
+    # fixed point -- a 293 K wall facing 0 K genuinely radiates. A hoisted
+    # `amb_m` reproduces the uniform answer here (zeros everywhere), which is
+    # the bug this gate exists to make visible.
+    amb_cold = [[0 if (x < w // 3) else R.E0 for x in range(w)] for _ in range(h)]
+    res_c = R.sweep_q(a, d, k, T, transport="shear", f_plane=f, e_ref=amb_cold)
+    nz_cold = sum(1 for p in (res_c.rad_net, res_c.rad_flux, res_c.rad_amb)
+                  for row in p for v in row if v != 0)
+    cold_net = min(v for row in res_c.rad_net for v in row)
+    ok &= (nz_cold > 0 and cold_net < 0)
+    lines.append(f"  non-vacuity: a cold-sky patch (ambient level 0 on x < {w // 3}, "
+                 f"every T still at ambient) -> {nz_cold} nonzero cells, "
+                 f"min rad_net = {cold_net} (a 293 K wall facing 0 K radiates; "
+                 f"a HOISTED amb_m gives 0 everywhere)")
     return ok, lines
 
 
