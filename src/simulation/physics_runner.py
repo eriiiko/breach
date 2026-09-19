@@ -451,10 +451,10 @@ class PhysicsRunner:
         self.engine.emissive.k_temp_to_kelvin = self.raycaster.k_temp_to_kelvin
         self.engine.emissive.bake()
         # [physics.radiation] k_leak (design v3 §2.3, §2.7): the sweep's
-        # UNIFORM out-of-plane leak coefficient — dormant at 0.0 until ruled
-        # (the derived 2.5 m deck value is ~0.10; Erik set the reach question
-        # aside). Range-checked [0, 1] and quantized ONCE here, door 2, through
-        # the optics boundary module; the engine takes the Q16 value.
+        # UNIFORM out-of-plane leak coefficient — LIVE at the derived 2.5 m
+        # deck value since T1 (thermal model v2 R2). Range-checked [0, 1] and
+        # quantized ONCE here, door 2, through the optics boundary module; the
+        # engine takes the Q16 value.
         _k_leak = float(getattr(rad_cfg, "k_leak", 0.0))
         if not (0.0 <= _k_leak <= 1.0):
             raise ValueError(
@@ -463,6 +463,36 @@ class PhysicsRunner:
                 f"per cell (design v3 section 2.3's `0 <= k <= ONE` invariant)")
         from simulation import optics_fixed as _optics_fx
         self.k_leak_q = int(_optics_fx.quantize_scalar(_k_leak))
+        # [physics.radiation] vacuum_ambient_K (thermal model v2 R3): the
+        # temperature of SPACE, baked into the EMISSIVE LEVEL a vacuum cell
+        # radiates against. Door 2 — one load-time conversion, here, through
+        # the SAME exact chain emissive_table.cpp's bake uses (K⁴ by repeated
+        # integer multiplication, ONE rad_scale boundary multiply, round half
+        # up), so the default lands on e_table[0] integer for integer instead
+        # of near it. The engine does the per-cell select from `is_vacuum`;
+        # this is a global physical constant, not a per-tile authored field.
+        _vac_k = float(getattr(rad_cfg, "vacuum_ambient_K",
+                               float(self.raycaster.kelvin_ambient)
+                               + 2.0 * float(self.raycaster.k_temp_to_kelvin)))
+        if _vac_k < 0.0 or _vac_k != float(int(_vac_k)):
+            raise ValueError(
+                f"[physics.radiation] vacuum_ambient_K = {_vac_k} must be a "
+                f"non-negative WHOLE number of Kelvin: it is baked through the "
+                f"exact int64 E° chain, whose precondition is integer-valued "
+                f"Kelvin dials (emissive_table.cpp:42-48)")
+        _k_i = int(_vac_k)
+        _v = float(_k_i * _k_i * _k_i * _k_i) * _rad_scale_derived
+        self.rad_amb_vacuum_q = int(_v + 0.5) if _v > 0.0 else 0
+        _e0 = int(self.engine.emissive.table()[0])
+        if self.rad_amb_vacuum_q > _e0:
+            raise ValueError(
+                f"[physics.radiation] vacuum_ambient_K = {_vac_k} bakes to "
+                f"level {self.rad_amb_vacuum_q}, above E°[0] = {_e0}: the "
+                f"per-cell ambient invariant is 0 <= amb <= E°[0], which is "
+                f"what keeps every cell's emission excess non-negative "
+                f"(design v3 §2.8's excess form rests on it). A deck above at "
+                f"furnace temperature is a design §7.4 extension point, not a "
+                f"dial")
         self.fire_ray_count = int(getattr(fire_cfg, "fire_ray_count", 8))
         self.fire_range_base = float(getattr(fire_cfg, "range_base", 2.0))
         self.fire_range_per_i = float(getattr(fire_cfg, "range_per_intensity", 3.0))
@@ -1033,6 +1063,9 @@ class PhysicsRunner:
             rad_amb_sweep=gmap.rad_amb_sweep,
             rad_fluence=gmap.rad_fluence,
             k_leak_q=self.k_leak_q,
+            # thermal v2 R3: the level a VACUUM cell radiates against; the
+            # engine selects it per cell from `is_vacuum` (derive_ambient).
+            rad_amb_vacuum_q=self.rad_amb_vacuum_q,
             # BC: the ambient ring is wiped to ΔT=0 in the temperature pre-pass
             # (the vacuum-breach idiom); None on space maps = byte-identical.
             is_ambient=amb[0],
@@ -1445,6 +1478,7 @@ class PhysicsRunner:
             rad_amb_sweep=gmap.rad_amb_sweep,
             rad_fluence=gmap.rad_fluence,
             k_leak_q=self.k_leak_q,
+            rad_amb_vacuum_q=self.rad_amb_vacuum_q,   # thermal v2 R3
             is_ambient=amb[0],
             # P-R4: the radiation accumulator rides the SAME host mirror the
             # rest of this bracket reads (the cast at step 1 filled it there).

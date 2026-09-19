@@ -275,7 +275,13 @@ def test_a_second_tick_overwrites_the_planes_and_does_not_accumulate():
     one = [np.zeros((h, w), dtype=np.int64) for _ in range(4)]
     t_amb_q, k_leak_q = _sweep_dials(sim)
     sweep = bp.RadiationSweep()
-    sweep.run(T, a_q, d_q, his, ts, eng.emissive, t_amb_q, k_leak_q,
+    # thermal v2 R3: reproduce the conductor's own derivation — the per-cell
+    # ambient it hands the sweep, from the SAME is_vacuum plane and the SAME
+    # runner dial. `None` here would pass only while the dial is at its R4
+    # default, so the test would go silently vacuous the day a cold sky ships.
+    amb_lvl = sweep.derive_ambient(g.is_vacuum, eng.emissive,
+                                   int(runner.rad_amb_vacuum_q))
+    sweep.run(T, a_q, d_q, his, ts, eng.emissive, amb_lvl, t_amb_q, k_leak_q,
               bp.RadiationSweep.SHEAR, 16, *one)
     for name, expect in zip(_SWEEP_PLANES, one):
         got = getattr(g, name)

@@ -81,7 +81,8 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         const int32_t* heat_atten_q, const int32_t* dyn_heat_atten_q,
         int64_t* rad_net_sweep, int64_t* rad_flux_sweep,
         int64_t* rad_amb_sweep, int64_t* rad_fluence,
-        int32_t k_leak_q) const {
+        int32_t k_leak_q,
+        int64_t rad_amb_vacuum_q) const {
 
     using namespace fixedpoint;
 
@@ -234,10 +235,16 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     if (heat_atten_q != nullptr && dyn_heat_atten_q != nullptr &&
         rad_net_sweep != nullptr && rad_flux_sweep != nullptr &&
         rad_amb_sweep != nullptr && rad_fluence != nullptr) {
+        const int64_t* e_tbl = this->emissive.table();   // lazy re-bake on a dial change
+        // THE PER-CELL AMBIENT (thermal model v2 R3), derived from the
+        // vacuum/interior state already in scope — never authored, and no new
+        // plane crosses the binding. Uniform at the shipped dial (R4).
+        const int64_t* amb_level = this->radiation.derive_ambient(
+            is_vacuum, e_tbl, rad_amb_vacuum_q, h * w);
         this->radiation.run(
             temperature, heat_atten_q, dyn_heat_atten_q,
             heat_inv_shift, thermal_solid,
-            this->emissive.table(),          // lazy re-bake on a dial change
+            e_tbl, amb_level,
             t_amb_q, k_leak_q,
             RadiationSweep::TRANSPORT_SHEAR, 16, h, w,
             rad_net_sweep, rad_flux_sweep, rad_amb_sweep, rad_fluence);

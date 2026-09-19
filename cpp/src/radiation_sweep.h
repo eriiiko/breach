@@ -104,7 +104,23 @@ public:
     //   heat_inv_shift   : int32 (h, w) — log2(thermal_mass), the solid capacity
     //   thermal_solid    : bool (h, w) — which cells take the solid Fleck branch
     //   e_table          : the E° table (E_TABLE_SIZE int64 entries)
+    //   amb_level        : int64 (h, w) — THE PER-CELL AMBIENT LEVEL (thermal
+    //                      model v2 R3), an EMISSIVE level in e_table's own
+    //                      units, invariant 0 <= amb_level[i] <= e_table[0].
+    //                      This is what the sweep RADIATES at, and the four
+    //                      ambient-derived terms at cell i (its emission floor,
+    //                      its ceiling's return `ret`, its body's re-emission,
+    //                      and the virtual ring it reads) all take THIS cell's
+    //                      value. Derived, never authored: derive_ambient()
+    //                      below builds it from vacuum/interior state.
+    //                      NOT a temperature — e_bucket_of floors at bucket 0,
+    //                      so no temperature can express an ambient below
+    //                      E°[0], and "0 K outside the hull" is exactly that.
     //   t_amb_q          : the absolute-temperature offset, Q16.16 (293 game)
+    //                      — the SCALE's zero point, feeding only the Fleck
+    //                      denominator. A global scalar, shared with the arc
+    //                      #54 seam, and NOT the ambient the sweep radiates at
+    //                      (thermal v2 §3.3 / critique L2-B1).
     //   k_leak_q         : the uniform out-of-plane leak coefficient, Q16 in [0, ONE]
     //   transport        : TRANSPORT_STEP or TRANSPORT_SHEAR
     //   n_ordinates      : 16 (S16) or 12 (S12)
@@ -116,16 +132,37 @@ public:
     //                      float-agreement gates are measured in. A per-call
     //                      knob for the gates, never hidden state.
     // Throws std::invalid_argument on an unsupported (n_ordinates, transport),
-    // a k_leak_q outside [0, ONE], or a cell violating 0 <= a <= d <= ONE (the
-    // ingress invariant the materials door enforces; re-checked here so a
-    // direct caller cannot measure an illegal scene).
+    // a k_leak_q outside [0, ONE], a null amb_level or one outside
+    // [0, e_table[0]], or a cell violating 0 <= a <= d <= ONE (the ingress
+    // invariants the materials door enforces; re-checked here so a direct
+    // caller cannot measure an illegal scene).
     void run(const int32_t* temperature,
              const int32_t* heat_atten_q, const int32_t* dyn_heat_atten_q,
              const int32_t* heat_inv_shift, const bool* thermal_solid,
-             const int64_t* e_table, int32_t t_amb_q, int32_t k_leak_q,
+             const int64_t* e_table, const int64_t* amb_level,
+             int32_t t_amb_q, int32_t k_leak_q,
              int transport, int n_ordinates, int h, int w,
              int64_t* rad_net, int64_t* rad_flux, int64_t* rad_amb,
              int64_t* rad_fluence, bool fleck_enabled = true) const;
+
+    // THE DERIVATION (thermal model v2 R3): the per-cell ambient level from
+    // state the engine already has. A vacuum cell radiates against
+    // `vac_level`; every other cell — interior air, solids, and the ambient
+    // ring, which IS room-temperature air by definition — against e_table[0].
+    // Nothing is authored: no material column, no level-data field. Fills and
+    // returns the sweep's own scratch, valid until the next call.
+    //   vac_level < 0  -> e_table[0], i.e. space at room temperature. That is
+    //                     thermal v2 R4, what v1 ships, and it makes the plane
+    //                     UNIFORM and the whole sweep bit-identical to the
+    //                     scalar era.
+    //   vac_level > e_table[0] -> std::invalid_argument (the ambient invariant;
+    //                     a hotter-than-room ambient would make a cell's
+    //                     excess negative, which the excess-form Fleck factor
+    //                     and positivity both rest on being >= 0).
+    // P4's CUDA twin does the same select per cell from the resident
+    // `is_vacuum` plane and two scalars — no plane is uploaded.
+    const int64_t* derive_ambient(const bool* is_vacuum, const int64_t* e_table,
+                                  int64_t vac_level, int n) const;
 
     // The Fleck plane (Q24, (h, w)) computed by the last run() — observable so
     // gate 0 can compare the pre-pass, and the tile inspector can show it.
@@ -144,7 +181,9 @@ private:
     // twin needs (design §8.2, row 29) — even though the CPU runs them one
     // after another.
     mutable std::vector<int64_t> outflow_;   // (n_ordinates, h, w)
-    mutable std::vector<int64_t> ex_cell_;   // (h, w): E°[T_i] − E°[0]
+    mutable std::vector<int64_t> ex_cell_;   // (h, w): E°[T_i] − amb_level[i]
+    mutable std::vector<int64_t> amb_m_;     // (h, w): (amb_level[i] · w_m) >> 16
+    mutable std::vector<int64_t> amb_derived_;  // (h, w): derive_ambient()'s output
     mutable std::vector<int32_t> f_q24_;     // (h, w): the Fleck factor, Q24
     mutable int h_ = 0, w_ = 0, n_ord_ = 0;
 };

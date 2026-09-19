@@ -443,7 +443,7 @@ def _reach_sweep(T, a, d, his, ts, table, k_leak):
     k_q = int(round(k_leak * FP_ONE))
     sweep.run(np.ascontiguousarray(T), np.ascontiguousarray(a),
               np.ascontiguousarray(d), np.ascontiguousarray(his),
-              np.ascontiguousarray(ts), table,
+              np.ascontiguousarray(ts), table, None,
               int(TS.kelvin_ambient) << 16, k_q,
               getattr(bp.RadiationSweep, REACH_TRANSPORT.upper()),
               REACH_N_ORD, *out, fleck_enabled=True)
