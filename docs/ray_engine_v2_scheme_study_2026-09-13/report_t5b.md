@@ -1,7 +1,12 @@
 # T5b — THE FLIP (issue #12)
 
-> **Status**: IN PROGRESS. Written incrementally, one section per step, committed
-> as each step lands. A section still reading `PENDING` has not landed.
+> **Status**: COMPLETE — all nine steps landed, written incrementally, one
+> section per step, committed as each landed.
+>
+> **The gate is NOT fully met, deliberately.** Seven tests are red and they are
+> all the same finding: §6.3, the 65 536x combustion imbalance the flip
+> exposes. They are the runaway guards themselves, and bending them is the one
+> thing this arc forbids. §12 q7 is the ruling that clears them.
 >
 > **Branch** `12-t5b-the-flip` off `fire-12`, worktree
 > `C:\Users\steen\projects\breach-t5b`. HUMAN-TEST: built, gated, **not merged**.
@@ -17,8 +22,17 @@
 
 The moment the thermal model changes. Nine ordered steps, each its own commit,
 each landing a value or a structure the arc already derived and verified
-elsewhere. Nothing here is chosen; what is decided here is only *how* the
-settled numbers are wired, and every such call is named in its section.
+elsewhere. Almost nothing here is chosen; what is decided is *how* the settled
+numbers are wired, and every such call is named in its section.
+
+**The headline is not in the plan.** The flip does what it was designed to do —
+the fold reads the sweep, the clamp is live on both backends, units absorb, the
+thermostat is gone, conduction is physical — and in doing so it **exposes that
+combustion's fuel-bed deposit is 65 536× the physical heat of combustion**,
+which the old raycaster's 2 419×-too-strong emission had been quietly balancing.
+Section 6.3 measures it two ways and the arithmetic is exact. Seven tests are
+red because of it, all of them the runaway guards, and none of them were bent.
+**Section 12 q7 is the ruling that clears them, and it is Erik's.**
 
 **Goldens go red at step 1 and stay red until step 9.** That is the plan, not a
 regression: `GOLDEN_AGGREGATE`, `test_b6_logic_golden` and `test_w6_armory` are
@@ -961,22 +975,208 @@ so the spec bump does not leave the suite without a valid golden in the interim.
 
 ## 10. The gates, and how each was validated by breaking it
 
-PENDING
+### 10.1 The gate, at the end
+
+| # | gate | result |
+|---|---|---|
+| 1 | full suite green, 0 failed, both builds | **NOT MET: 2563 passed, 7 failed.** All seven are §6.3's runaway, and they are the runaway guards themselves — bending them is the one thing this arc forbids. §12 q7 is the ruling that clears them |
+| 2 | the #54 closure identity still closes, thermostat term GONE, `rad_amb` grown | **MET.** `test_thermostat_books` closes on `e_solid_deposit_sum + e_solid_cond_sum` alone and asserts the two deleted counters are gone from the surface; `\|Σ rad_amb\|` grows 50 % with `k_leak` live (§8.1) |
+| 3 | §6's properties 5b, 5c, 6, 7, 9, 10, 11 pinned | **6 of 7.** 5b/5c/6/7 are new in `test_thermal_v2_properties.py`; 9 is `test_thermostat_books`; 10 is `test_unit_heat_damage` with its band re-derived. **11 is deliberately not pinned** — §8.4 |
+| 4 | CUDA lockstep tol-0 on every plane and counter | **MET. 24/24 CUDA gates pass**, with the slot renumber and the new clamp twin in place |
+| 5 | `git status` clean, never `git add -A` | **MET.** Every path staged explicitly; the stale tracked `tests/_xarch_perfield_DESKTOP-0E98HUV.txt` restored after every harness run |
+| 6 | commit form | **MET.** Ten commits, `feat(#12): T5b …` / `docs(#12): T5b …`, each co-authored |
+| 7 | do not merge, do not push | **MET.** Branch `12-t5b-the-flip`, local only |
+
+### 10.2 Every gate that was validated by breaking it
+
+The arc's standing rule: a green suite is not evidence on its own. Nine controls,
+each one a deliberate injection followed by "which gate said so, by name".
+
+| step | control | result |
+|---|---|---|
+| 1 | the old (last-tick) form of `test_air_boundary`'s inflow rail vs the new (running-minimum) one | each is the other's negative control: +46 vs a required < −1e6 |
+| 2 | `foliage.heat_atten` reverted to 0.0 | RED — the shipped config becomes a LOAD FAILURE; 4 of 7 tests in `test_optics_ingress`, including both new ones by name |
+| 3 | the solid\|gas branch put on Fourier (the naive-R10 error) | RED — `test_a_solid_gas_face_is_convection_and_did_not_move_under_r10` |
+| 3 | the capacity dropped from the solid rate (a κ-only bucket) | RED — `test_face_table_is_the_material_s_own_diffusivity…` + two in `test_eos_p2_sealed_room_energy` |
+| 4 | the vacuum mask forced to `false` | RED — `test_a_vacuum_cell_owns_no_conduction_face` |
+| 4 | the mask's `!ts[i]` guard dropped | RED — `test_an_intact_hull_tile_still_conducts_even_though_it_is_is_vacuum`. **Nothing else in the suite noticed**, which is why that test exists |
+| 5 | the CPU solver's fuel-plane lookup forced to the scalar | RED — `test_the_solver_actually_charges_the_plane_s_rate_not_the_scalar`, **and nothing else** |
+| 5 | `fuel_per_o2` derived as a flat 0.7 again | RED — both R14 property tests by name |
+| 6 | the fold's source reverted to the old cast's `rad_net` | the §6.3 isolation: the same fixture plateaus at 8 300 instead of railing at 15 998 |
+| 8 | the gas currency conversion reverted to the pre-T5a bug | RED — `test_5b` **alone**, by 4.2e+12 counts |
+| 8 | a `cool_shift` remnant re-introduced (`T -= T >> 5`) | RED — `test_7` by name, **plus three more gates**, one of which does not mention cooling at all |
+
+Two of these matter more than the rest. **Step 4's second control** — dropping
+the `!ts[i]` guard severs every space-facing bulkhead from the hull behind it,
+and no other gate in 2563 tests notices. **Step 5's first** — a solver that
+simply ignored the new fuel-plane argument would pass the derived column's
+tests, the projected plane's tests, AND the CPU-vs-GPU comparison, because both
+backends would agree with each other on the wrong law.
 
 ---
 
 ## 11. What Erik should expect to see when he plays it
 
-PENDING
+**Read §12 q7 first.** The engine has a live runaway, it is measured and
+understood, and it colours everything below. Play it anyway — the point is to
+feel whether the *shape* of the new model is right, not its calibration.
+
+### 11.1 Fire, and the thing that is wrong
+
+- **A burning tile goes white-hot and stays there.** A crate on the fire bench
+  peaks at **15 194 game** (was 1 730) and the room's far-field settles around
+  **11 247 game** (was 525). Expect the blackbody render to be at its ceiling
+  wherever anything burns, and the whole room to glow.
+- **Fires burn out faster**: a crate reaches 1.7 % of its hp in **31 s**, down
+  from 105 s, because `wall_damage` scales with intensity and intensity is
+  pinned high.
+- **That is §6.3, not a tuning miss.** Combustion's fuel-bed deposit is 65 536×
+  the physical heat of combustion; the old raycaster's fitted emission was
+  2 419× too strong and had been holding it down. The flip removed one half of
+  the pair.
+
+### 11.2 Fire spread — the biggest *intended* change, and it is dramatic
+
+- **Radiation barely spreads fire between massive tiles any more.** A 443-game
+  wall radiating across one air cell now warms the tile opposite it by **0.1
+  game** over 120 ticks. It used to be 183.
+- That is real physics, not a bug: 12 kW into a 154 kg block with a 249.5 kJ/K
+  heat capacity is 0.05 K/s. Real fire spread to heavy timber takes minutes at
+  10–20 kW/m². It is R6's accepted gap — *"thick structure barely
+  auto-ignites"* — arriving as a number.
+- **Expect fires to stay where they start** unless something delivers heat
+  directly (a flamethrower, a payload, a hot gas plume). The old gap-leaping
+  behaviour is gone twice over.
+
+### 11.3 Heat now moves the way the design says
+
+- **Nothing cools to ambient.** A hot wall stays hot until it radiates the heat
+  away or conducts it somewhere. There is no more invisible "the ship's heating
+  system" pulling everything back to room temperature. Rooms should hold their
+  heat far longer.
+- **Conduction through structure is essentially gone.** Steel's e-fold across a
+  tile is **3.0 hours**, wood's is **194 hours**. A room's corner wall tiles —
+  the ones that touch no air — now stay stone cold while the gas-facing walls
+  warm. Heat travels by radiation and by air, which is what carries it in a real
+  compartment fire.
+- **A vacuum cell conducts nothing.** A breached tile no longer drains its
+  neighbours through an invented medium.
+
+### 11.4 What a marine feels
+
+- The burn band is derived now, anchored on 2.5 kW/m² (the standard human pain
+  threshold) at the edge of the survivable band: **5 kW/m² ≈ 3 HP/s, 10 ≈ 7,
+  20 ≈ 15, 50 ≈ 39**. A marine in a real flame dies in ~3 s; standing in a warm
+  room does nothing at all.
+- **In the current runaway state a marine near any fire will die very fast**,
+  because the fire is at the physical temperature ceiling. That is q7 again, not
+  the band.
+
+### 11.5 Two smaller things you may notice
+
+- **A bulkhead is no longer perfectly opaque to heat.** `heat_atten` is both the
+  emissivity and the extinction coefficient, and hull/steel now carry their real
+  0.85, so a single hull cell **transmits 15 %** of the stream crossing it.
+  Measured: a wood tile three cells past one bulkhead sees an equivalent
+  148 game (was 0) — below its 300-game ignition point, so a bulkhead still
+  stops a fire lighting the woodwork behind it, but the far side warms. §12 q1.
+- **Foliage burns and radiates now.** It had `heat_atten = 0`, which after R1
+  would have made a burning tree a silent energy ratchet. It carries 0.90.
+- **The tile inspector (F6) is worth using.** The sweep's Φ, its Fleck factor
+  `f` and `E°⁻¹(Φ)` survive to render time, and they are now the numbers driving
+  the game rather than shadow values.
 
 ---
 
 ## 12. Open questions for Erik
 
-PENDING
+Ordered by how much they block.
+
+### q7 — THE BLOCKING ONE: combustion's deposit is 65 536× the physics
+§6.3 has the arithmetic. The choice is not "pick a number" — it is which model
+the tile is:
+
+| option | what it means | consequence |
+|---|---|---|
+| **A** keep the shipped `H_bed` | the tile is a thin skin heated as if it were the bulk | today's runaway; the emission scale has to go back to fitted |
+| **B** take the derived `H_bed = 38.73` (and `H_fuel = 116.2`) | the tile is a 154 kg block and a 17.7 kW fire heats it 0.07 K/s | fires go out; physically exact |
+| **C** B **plus issue #68** (two-node skin/core) | a fire heats a thin surface layer to flame temperature; the bulk lags | the real answer, and R6 deferred it |
+
+I did not choose. A and B are both red, in different places, and C is a design
+patch. **Eight tests are red pending this**, listed in §10.1.
+
+### q1 — should an opaque structural row carry extinction 1.0 while emitting 0.85?
+`heat_atten` does double duty, and the model has no reflect channel, so
+`1 − a` *transmits* where physics would *reflect*. T3 D6 §7.3 records the same
+tension for glass and leaves it to you; the flip makes it live for hull and
+steel. Numbers in §2.3.
+
+### q2 — are `furniture` / `kindling` / `foliage` objects or blocks of material?
+T3 §8 q1/q2/q7. Under R14 every flammable row is authored at ρ = 555, so every
+flammable tile is the same 154 kg block with the same 414 units of O₂ — the
+*fuel store* distinction between a crate, a stick pile and a canopy collapses
+(their *behaviour* still differs, through `hp` and `wall_damage`). Restoring it
+means authoring those rows' real bulk densities (~120 kg/m³ for a crate stack),
+which also moves `thermal_mass`.
+
+### q3 — derive the conduction table per level, or keep one global? (T3 §8 q9)
+Under R10 the table is tile-size dependent. It is built at
+`[physics.thermal] tile_size_ref_m = 0.333`, the shipped-level value, exactly as
+`rad_scale_derived` is. On `airlock_demo` (1.0 m) every solid face is 3 shifts
+too fast and every gas face 2.
+
+### q4 — should a sub-dead-band conduction face be a no-op? (T3 §8 q4)
+Below `2^s/65536` K a face moves nothing to its neighbour while the hot cell
+still loses one raw count to the floor division — a one-way sink with no
+counterparty, 1.3 K/hour per cell-face. Counted, legal, and now 40 % of the
+drain in a slow scenario (§3.5b).
+
+### q5 — `wall_hp` is still doing three jobs
+R14 separated *fuel* from *structure*, but `FireSimulation`'s `wall_damage =
+0.36` — your own 3-minute fuel-out ruling — still empties the same bar on a
+timer, and dominates the combustion cost ~10:1 (§5.2). Making the store
+physical needs `wall_damage` and the fuel store to stop sharing a field.
+
+### q6 — `H_fuel` and the gas's missing loss channel
+The plume's 75 % share stays unmodelled because a gas cell has no radiative loss
+at all before P5 (§5.3). Worth knowing that the corrected `c_v` gave this dial
+the automated gate T5a found missing (§5.4).
+
+### q8 — the brief's material list omitted `wood`'s conductivity
+T3 D6 §7.2 carries `wood` 0.15 → 0.12 with the same citation the two `door`
+rows get; the brief's abbreviated list did not. I applied it (§2.1) — flagged
+because it is a deliberate deviation from the brief.
 
 ---
 
 ## 13. Findings
 
-PENDING
+1. **Combustion's fuel-bed deposit is 65 536× the physical heat of
+   combustion**, balanced until now by an emission scale 2 419× too strong.
+   Exact, measured two independent ways. §6.3.
+2. **T3's `H_bed` and `H_fuel` derivations are right and their transcription
+   into the dials is off by 2¹⁶** — counts *per unit of N_O2* vs the engine's
+   *per raw Q16.16 burn count*. The derived values in the engine's own
+   expression are **38.73** and **116.2**, not 2.538e+06 and 7.613e+06. §6.3.
+3. **T5a's finding 3 is obsolete**: the `c_v` correction created the automated
+   backstop it reported missing. A 2× `H_fuel` now trips `test_e1_hot_rail`. §5.4.
+4. **R14's fuel separation is nearly inert on feel** — a 9.66× change in the
+   fuel rate moves a crate's burn from 105.9 s to 105.4 s — because
+   `wall_damage` owns the bar. §5.2.
+5. **`test_air_boundary` gate 2 asserted the sign of settled noise**: a per-tick
+   rail read once after 80 ticks, in a scenario whose 80-tick net is the
+   *opposite* of what it claimed. §1.4.
+6. **`test_face_table_anchor_values` asserted a constant back to itself**:
+   `hull|hull == 2` and `wood|wood == 8` ARE `SHIFT_AT_REF` at `KAPPA_REF`, so
+   it would have passed for any physics whatsoever. §3.4.
+7. **R10 changes conduction from a drift into a threshold process**, and the
+   sub-dead-band one-way drain is not as negligible as "1.3 K/hour" suggests in
+   a slow scenario — 40 % of the drain over 400 ticks. §3.5.
+8. **A hull bulkhead now transmits 15 % of incident heat radiation**, because
+   the model has no reflect channel and `heat_atten` does double duty. §2.3.
+9. **The vacuum mask's `!ts[i]` guard is invisible to the whole suite** except
+   the one test written for it: without it, every space-facing bulkhead is
+   severed from the hull behind it. §4.1.
+10. **A solver that ignored the new fuel-plane argument would pass every other
+    gate on that axis**, including the CPU-vs-GPU comparison — both backends
+    agreeing with each other on the wrong law. §5.5.
