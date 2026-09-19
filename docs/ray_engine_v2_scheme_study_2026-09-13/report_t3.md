@@ -22,7 +22,7 @@
 - [x] §3 **D2** — `κ` per row at real rates (R10)
 - [x] §4 **D3** — the solid–gas convection coefficient `h`
 - [x] §5 **D4** — the vacuum mask threshold
-- [ ] §6 **D5** — emissivities, ignition temperatures, combustion
+- [x] §6 **D5** — emissivities, ignition temperatures, combustion
 - [ ] §7 **D6** — the summary table T5 executes from
 - [ ] §8 Open questions for Erik
 - [ ] §9 What did not hold
@@ -567,7 +567,209 @@ agreeing (a room venting through a breach), not a hedge.
 
 ## 6. D5 — emissivities, ignition temperatures, combustion (ledger 9, 10, 12)
 
-*(pending)*
+### 6.1 Emissivity (`heat_atten`) — ledger 9, R12
+
+P2b §8 stated the complication and it still holds: in the sweep `a_i` does **two
+jobs at once** — by Kirchhoff it is the cell's *emissivity*, and in the same
+multiply it is the cell's *extinction*, i.e. its geometric opacity. For a solid
+slab filling the tile they coincide; for a partly-filled tile they do not. This
+section gives both numbers wherever they differ and says which the row is
+currently encoding.
+
+| row | ships | literature **emissivity** | literature **opacity** | source | proposal |
+|---|---|---|---|---|---|
+| `wood` | 1.0 | **0.82–0.92** (planed oak, pine, beech) | 1.0 (fills the tile) | Incropera & DeWitt Table A.11 | **0.90** |
+| `door` / `door_closed` | 1.0 | 0.82–0.92 bare; **0.90–0.96** painted | 1.0 | ibid. | **0.90** |
+| `hull` / `steel` | 1.0 | oxidised mild steel **0.78–0.82**; heavily oxidised 0.88; **painted 0.90–0.96**; *polished stainless 0.17* | 1.0 | ibid. | **0.85** (a painted / oxidised hull) |
+| `glass` | 0.3 | **0.90–0.95** at its own temperature | *absorptivity for a 1556 K flame* **~0.4** | Incropera A.11; Siegel, Howell & Mengüç ch. 5; P2b §8's band arithmetic | **no single value is right** — see below |
+| `air` | 0.0 | ~0 (N₂/O₂ are homonuclear: no IR-active dipole) | 0 | Siegel & Howell ch. 10 | **0.0, correct** |
+| `furniture` | 0.5 | wood, 0.90 | a crate stack, ~0.5 | config's own comment says "partial: smoke/air drift past crates" | **leave 0.5 — it is an OPACITY** |
+| `kindling` | 0.5 | wood, 0.90 | sticks, ≤0.5 | ibid. | **leave 0.5** |
+| **`foliage`** | **0.0** | green leaf **0.94–0.99** | canopy tile **0.39–0.78** | Monteith & Unsworth *Principles of Environmental Physics* 4th ed. Table A.3 + ch. 4 (Beer–Lambert `tau = exp(−k·LAI)`, `k ≈ 0.5`, LAI 1–3 in a 0.333 m path); Jones *Plants and Microclimate* ch. 2; Campbell & Norman ch. 15 | **R12's 0.9 is supported** |
+
+**On R12 specifically.** `foliage = 0.0` makes a flammable thermal solid strictly
+adiabatic once `cool_shift` dies (design §3.1), and under R10 a small
+`conductivity` provably cannot save it — §3.4 just measured that a cellulosic
+conduction face is **identically zero below a 256 K gap**, so the conduction
+rescue would not even engage. The fix has to be radiative, which is R12.
+
+The literature splits the way it does for every partly-filled row: the **leaf**
+is 0.94–0.99, the **canopy tile** is 0.39–0.78. R12's 0.9 sits between them,
+biased toward the emissivity reading. **Any value above ~0.4 closes the
+ratchet** — it is a rate question, not a yes/no — so 0.9 is safe, defensible as
+the emissivity, and the number R12 ruled. **Recommend 0.9 as ruled.**
+
+One inconsistency to name, not to fix: `foliage` also carries
+`light_atten = [0, 0, 0]` ("explicit: no vision interaction"). At
+`heat_atten = 0.9` the row becomes a tile that is transparent to visible light
+and nearly black in the infrared. No real material does that. It is a
+deliberate gameplay choice (a walk-through, see-through canopy) and it is
+outside T3's scope — recorded so it is deliberate (§8, question 6).
+
+**`glass` is still the row grey-body breaks on**, and P2b §13 item 5 has it
+right: a pane's absorptivity for a 1556 K flame is ~0.4 (it passes ~52 % of the
+flame's power as near-IR) while its emissivity at its own temperature is
+0.90–0.95 (its own radiation is far-IR, which it is opaque to). The shipped 0.3
+is about right as a *shield* and ~3× too low as an *emitter*. **No row value
+fixes both**; splitting emit from absorb is a scheme change, not a row edit.
+T3's recommendation is to leave 0.3 and record it, because moving it to 0.6
+makes the shield wrong to fix the emitter, and T5 is not the patch to change the
+scheme in.
+
+### 6.2 Ignition temperature — ledger 10
+
+The engine's scale: `temperature` is game degrees above `kelvin_ambient = 293`
+with `k_temp_to_kelvin = 1`, so **game + 293 = kelvin** and `280 game = 573 K =
+300 °C`, `300 game = 593 K = 320 °C`.
+
+| quantity | literature | in game degrees | source |
+|---|---|---|---|
+| **piloted** ignition of wood, surface T | **300–365 °C** (commonly quoted 350) | **280–345** | Drysdale, *An Introduction to Fire Dynamics* 3rd ed. §6.3; Babrauskas, *Ignition Handbook* (2003) §7.6 |
+| **auto**-ignition of wood, surface T | 500–600 °C | 480–580 | Babrauskas §7.6 |
+| fine dead wildland fuels, piloted | 320–350 °C | 300–330 | Babrauskas §14 |
+
+| row | ships | °C it reads | verdict | proposal |
+|---|---|---|---|---|
+| `wood` | 300 | 320 | inside the piloted band, slightly below its 332 °C midpoint | **300 — keep** |
+| `furniture` | 280 | 300 | at the bottom edge of the band; thermally-thin crate stock ignites there | **280 — keep** |
+| `kindling` | 280 | 300 | fine fuel, bottom of the band | **280 — keep** |
+| `foliage` | 280 | 300 | fine dead fuel wants 300–330 | **280–300**; keep 280 |
+| `door` / `door_closed` | 280 | 300 | it is wood, and `wood` is 300 | **300** — the only row that arguably moves |
+| `hull` / `steel` / `glass` / `air` | 0 | — | non-flammable | **0 — correct** |
+
+> **D5's ignition headline: the column is already right.** Every flammable row
+> is inside the literature's piloted-ignition band. The only candidate edit is
+> `door`/`door_closed` 280 → 300 for consistency with `wood`, and it is **not
+> free**: `fire_T_ext[mat] = ignition_temp[mat] − ignition_to_ext_delta`
+> (`= −200`), so it moves the `hotf` ramp's foot on those rows too.
+
+**The caveat that matters more than the numbers.** Every literature value above
+is a **surface** temperature. `combat.py::apply_temperature_ignition` compares
+them against the tile's **bulk** temperature, and the tile is one node (R6). So
+the model asks all 139 kg of the pinned column to reach 300 °C where reality asks
+a 2.6 mm skin to. P2b §9 measured the cost: **20–45× slow to ignition.** R7
+forbids correcting that in this column, and it should not be corrected here —
+lowering `ignition_temp` to compensate would be tuning a *measured* quantity to
+paper over a *modelling* choice. The honest fix is issue #68's two-node solid.
+
+### 6.3 Combustion — ledger 12
+
+#### The heat of combustion, per unit O₂
+
+The engine's combustion is **O₂-driven**, so the right constant is the one
+oxygen-consumption calorimetry is built on, and `combustion.cpp`'s own header
+already cites it:
+
+> **Huggett's constant: 13.1 ± 0.7 MJ per kg of O₂ consumed**, near-universal
+> across organic fuels (±5 %).
+> *Huggett, C. (1980), "Estimation of rate of heat release by means of oxygen
+> consumption measurements", Fire and Materials 4, 61–65* — archived under
+> `docs/papers/`.
+
+Converting to the engine's `N_O2` unit (`N = 1.0` is 1 atm of gas in one tile):
+
+    n_tile = P·V/(R·T) = 101325 · 0.277223 / (8.3145 · 293.15) = 11.525 mol
+    1 unit of N_O2     = 11.525 mol O2 = 0.36878 kg O2
+    x 13.1 MJ/kg-O2    = **4.8310 MJ per unit of N_O2**
+
+Per unit **fuel** mass, for the cross-check: wood's gross heat of combustion is
+**18–20 MJ/kg** and its *effective* (cone-calorimeter) heat of combustion is
+**12–14 MJ/kg**, the difference being char that does not participate in flaming
+combustion (Drysdale ch. 1 Table 1.13; Babrauskas, *Heat Release in Fires*).
+
+#### What the engine actually pays — measured
+
+| path | config | per unit `N_O2` | |
+|---|---|---|---|
+| fuel-bed deposit | `H_BED_M · 2^H_BED_SHIFT = 18125 · 128` | 2.320e+06 counts = **1.1040 MJ** | |
+| flame / gas deposit | `H_fuel = 4.0` | 4.0 counts = **1.90 J** | |
+| **total** | | **1.1040 MJ** | **22.9 % of Huggett** |
+
+Cross-checked on the engine (`scratchpad/m_heat_per_o2.py`, a single crate on
+the canonical `fire_timing_harness` bench): over a full burn
+`Δ e_solid_deposit_sum = 8.0575e+12` raw = 1.2295e+08 counts = **58.51 MJ**,
+against `Δhp = 29.5` i.e. `29.5 / 0.7 = 42.14` units of `N_O2` — so
+**2.917e+06 counts = 1.388 MJ per `N_O2`**, which is `H_bed` plus 26 % of
+re-absorbed radiation. The paper value is confirmed against the ledger.
+
+> ### **The combustion headline: the fuel bed gets 580 000× more heat than the flame gas.**
+> `H_BED / H_fuel = 2.32e6 / 4.0`. That ratio is two config dials and depends on
+> none of the unit reasoning above. **Combustion puts 0.0002 % of a fire's heat
+> into the air.**
+
+That matters to this arc specifically. Design §3.1 says gas is heated by
+combustion until P5 gives it radiative absorption — and measured, that channel
+is **six orders of magnitude** below the fuel-bed one. With `cool_shift` gone
+(R1) and conduction at R10 rates, a fire's plume carries essentially no energy.
+
+#### What the derivation says the two should be
+
+A burning solid's flame returns only part of its heat to the fuel surface; the
+rest goes up in the plume. Flame-to-surface feedback for a burning solid or pool
+is **~20–40 %** of the total heat release (Drysdale ch. 5's burning-rate balance
+`ṁ" = (Q̇"_F + Q̇"_E − Q̇"_L)/L_v`; typical surface feedback 20–30 kW/m² against
+100–300 kW/m² released). Splitting Huggett's 4.831 MJ at 25 / 75:
+
+| dial | derived | as config | change |
+|---|---|---|---|
+| `H_bed` (fuel-bed feedback, 25 %) | 1.208 MJ = 2.538e+06 counts | **`H_BED_M = 19827`, `H_BED_SHIFT = 7`** | **+9.4 %** |
+| `H_fuel` (plume, 75 %) | 3.623 MJ = 7.614e+06 counts | **cannot be expressed** | see below |
+
+> **`H_BED` is right.** At the 25 % feedback reading the shipped value needs
+> **+9.4 %** — one mantissa digit — which is far inside every other error in
+> this report. The dial that P-K0 tuned by feel landed on the physics.
+
+> **`H_fuel` cannot hold its derived value.** It enters as
+> `quantize((double)H_fuel)`, a plain Q16.16 int32, so its ceiling is **32 768**
+> and the derived value is 7.6e+06. T5 needs the same mantissa-plus-shift split
+> `H_BED` already has: **`H_FUEL_M = 14872`, `H_FUEL_SHIFT = 9`**
+> (`14872 · 512 = 7.614e+06`). That is a config schema change plus a
+> `combustion.cpp` / `cuda_combustion.cu` pair, not a value edit — flagged as
+> the single largest implementation item D5 produces.
+
+#### Burn duration for a known fuel mass
+
+Fuel is still hp-coupled: Pass B pays `wall_hp -= fuel_per_o2 · burn`
+(`combustion.cpp:805`), so a row's O₂ budget is `hp / fuel_per_o2`.
+
+| | `furniture` (hp 30) | `kindling` (hp 8) | `foliage` / `wood` (hp 60) |
+|---|---|---|---|
+| O₂ budget, units of `N_O2` | 42.86 | 11.43 | 85.71 |
+| O₂ mass | 15.81 kg | 4.21 kg | 31.61 kg |
+| **energy at Huggett** | **207.1 MJ** | 55.2 MJ | 414.1 MJ |
+| wood burned (at 13 MJ/kg effective) | **15.9 kg** | 4.2 kg | 31.9 kg |
+| energy the engine pays today | 47.3 MJ | 12.6 MJ | 94.6 MJ |
+
+**Measured burn duration** (`fire_timing_harness.run_one`, one crate, 16×12
+room, natural wind, shipped dials): a `furniture` tile burns **98.7 % of its
+fuel in 142.5 s**; a second run to the `hp <= 0.5` cut took **108.3 s**. So:
+
+| | engine today | at the derived heat of combustion |
+|---|---|---|
+| total energy released | 46.5 MJ | **203.6 MJ** |
+| **mean heat-release rate over 108 s** | **430 kW** | **1.88 MW** |
+
+Reality check, and it is a good one: NIST / Babrauskas furniture-calorimeter
+data put a single wood pallet at 100–300 kW, a small wood crib at 200–500 kW and
+an upholstered chair at 150–800 kW; a 1.5 m pallet **stack** is 3–4 MW
+(Babrauskas, *Heat Release in Fires*; SFPE Handbook ch. 3-1).
+**430 kW is a very plausible single crate. 1.88 MW is a small stack.**
+
+#### The finding this exposes: `hp` and `thermal_mass` describe different objects
+
+At Huggett, a `furniture` tile's fuel store is **15.9 kg of wood**. Its
+`thermal_mass = 8` says the tile *is* **139 kg** of wood (P2b §2). So the row
+stores 11.4 % of its own mass as fuel, and for the whole tile to be fuel `hp`
+would have to be **262**, not 30 — **8.7×**.
+
+Neither number is wrong on its own. A 0.333 m × 2.5 m column packed with 12 mm
+plywood crates really does hold about 15–30 kg of wood, so **`hp = 30` at
+`fuel_per_o2 = 0.7` describes a real crate stack almost exactly** — while
+`thermal_mass = 8` describes a *solid wood column*. This is P2b §9's
+object-vs-material split showing up between two columns of the **same row**, and
+it is the third independent place this arc has met it (P2b §7 on `kindling` /
+`foliage`, P2b §9 on the surface layer, here on `hp`). **Erik's, not mine**
+(§8, question 7).
 
 ## 7. D6 — the summary table T5 executes from
 
