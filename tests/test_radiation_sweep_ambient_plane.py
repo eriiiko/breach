@@ -176,6 +176,16 @@ def test_item2_the_three_uniform_doors_are_the_same_integers(transport, n_ord):
 # starboard side is not. Two structurally identical hull walls, one facing
 # vacuum and one facing interior air — design v2 §6 item 3's "a vacuum-ring cell
 # versus an interior cell", built so the difference has exactly one cause.
+#
+# CALIBRATION, and it is load-bearing: like every sweep gate this one runs on
+# `reference_table()` — the E° table baked at `[physics.fire] rad_scale`, which
+# is what gate 0 and the integer reference measure. Do NOT "fix" it to the live
+# `[physics.radiation] rad_scale_derived` table: there E°[0] = 161 (against the
+# reference's 389475), the whole ambient axis is 11 distinct `amb_m` values wide,
+# and the starboard wall's second-order loss quantises to EXACTLY ZERO — the
+# assertions below would go half-vacuous while still reporting green. What this
+# file gates is the ARITHMETIC of the per-cell ambient; what the live
+# calibration can RESOLVE is T5's measurement (report_t1.md §6.6).
 H_HULL, W_HULL = 7, 10
 WALL_PORT, WALL_STBD = 2, W_HULL - 3
 A_WALL = Q(0.91)
