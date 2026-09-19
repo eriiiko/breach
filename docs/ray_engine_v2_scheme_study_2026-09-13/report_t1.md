@@ -453,10 +453,26 @@ The first-order effect survives quantisation; the **second-order** one — the
 cold side chilling the rest of the compartment — quantises to **exactly zero**.
 So at T5's flip: a hull wall facing a 0 K sky does cool, and nothing behind it
 feels the sky at all until it is warmer than ambient. Whether that is acceptable
-is a T5/T3 calibration question (ledger items 2 and 3, the 0.7-vs-0.9 pin), not
-a T1 one. **Consequence for the gates, written into the test file**: the item 3
-scene must stay on `reference_table()` — moved to the live table, half its
-assertions go vacuous while the file still reports green.
+is a T5/T3 calibration question, not a T1 one. **Consequence for the gates,
+written into the test file**: the item 3 scene must stay on `reference_table()` —
+moved to the live table, half its assertions go vacuous while the file still
+reports green.
+
+**And it is about to tighten, not loosen.** `fire-12` gained **R13** while T1 was
+in flight (`5d87b99`, Erik: the currency pin is 0.9 MJ/(m³·K)), which replaces
+`rad_scale_derived = 2.125632e-08` with **1.6533e-08**. Measured through the same
+bake:
+
+| calibration | `E°[0]` | `amb_m` at S16 | distinct `amb_m` levels |
+|---|---|---|---|
+| reference (`[physics.fire] rad_scale`) | 389475 | 24342 | 24343 |
+| live today (`rad_scale_derived`, the 0.7 provisional) | 161 | 10 | **11** |
+| **after R13** (`rad_scale_derived`, 0.9) | **125** | **7** | **8** |
+
+So whoever applies R13's number should expect the per-tile ambient axis to be
+**eight** levels wide, not eleven. T1 deliberately does **not** apply it:
+`config.toml` still carries 2.125632e-08, and §5 T3/T5 own `rad_scale_derived`.
+A measurement handed forward, not a change.
 
 ### 6.7 The sweep commutes with the mirror, exactly
 
