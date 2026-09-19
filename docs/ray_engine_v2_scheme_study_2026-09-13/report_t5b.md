@@ -358,7 +358,54 @@ The two tests step 2 deferred are green.
 
 ## 4. Step 4 — the vacuum mask
 
-PENDING
+    no_cond[i] = !ts[i] && ( is_vacuum[i] || cap_real_[i] == 0 )
+
+Every face such a cell owns becomes NO_FACE, applied per **cell** from both
+ends so it is symmetric by construction and cannot produce a one-sided face.
+Landed on both backends: a `no_cond_` plane built beside the capacities on the
+CPU (same frozen inputs, so it is as pass-invariant as they are), and the same
+predicate inline in `cuda_temperature.cu`'s `temp_conduct` (all three terms are
+already kernel arguments).
+
+**No threshold needed, and none should ever be added.** `kappa` is
+density-independent (kinetic theory: `n` and the mean free path cancel) until
+the gas goes free-molecular, which for a 0.333 m tile is 0.0207 Pa. `n_bulk` is
+Q16.16 at 1.0 = 1 atm, so one raw count is **1.546 Pa** — the Knudsen threshold
+is **0.013 of a single LSB**. `N_raw == 0` is the only free-molecular state the
+field can represent (T3 D4 §5.2).
+
+One CUDA-only detail: the CPU's masked early-out relies on `de_gas_.assign(n, 0)`
+having already zeroed the parked gas sums, while the CUDA kernel writes
+`de_gas[i]` per cell — so the device's masked branch writes the zero explicitly.
+A masked cell that is *also* accountable (`cap_real == 0`, not vacuum, not
+solid) is reachable, so this is not theoretical.
+
+### 4.1 Validated by breaking it
+
+| control | what was broken | result |
+|---|---|---|
+| A | the mask forced to `false` (i.e. deleted) | RED — `test_a_vacuum_cell_owns_no_conduction_face` |
+| B | the `!ts[i]` guard dropped — the mask written as `is_vacuum \|\| cap_real == 0` | RED — `test_an_intact_hull_tile_still_conducts_even_though_it_is_is_vacuum` |
+
+Control B is the one that matters: an intact hull tile *is*
+`is_vacuum && solid && thermal_solid` (Pass 0 says so), so without the guard
+the mask would have silently severed every space-facing bulkhead from the hull
+behind it — and nothing else in the suite noticed. The test exists because that
+failure has no other symptom.
+
+The first test covers both disjuncts separately (`is_vacuum` = a real breach;
+`cap_real == 0` = a decompressed interior, which `is_vacuum` does not mark) and
+asserts the hot wall keeps **exactly** what it had — no one-count-per-tick
+dribble either.
+
+### 4.2 The gate at step 4
+
+- **`2547 passed, 14 failed`** — still only the golden-bound set.
+- **CUDA lockstep tol-0**: P66 PART 1 all 121 configs, PART 2 120 ticks, PART 3
+  30-tick engine A/B, all bit-identical CPU vs GPU. The counters *moved* between
+  steps 3 and 4 (`e_cond_cap_sum` 1 768 198 585 225 → 1 746 660 702 135,
+  `e_cond_trunc_sum` 1 416 647 458 → 1 416 716 699), so the mask is doing
+  something, and both backends do the same something.
 
 ---
 

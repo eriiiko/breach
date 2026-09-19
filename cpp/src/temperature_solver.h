@@ -762,6 +762,39 @@ private:
     // Transient scratch, never synced, never digested (R4).
     mutable std::vector<int64_t> cap_used_;
     mutable std::vector<int64_t> cap_real_;
+
+    // ---- T5b / ledger 7b: THE VACUUM CONDUCTION MASK ----------------------
+    // `no_cond_[i] = !ts[i] && (is_vacuum[i] || cap_real_[i] == 0)` — every
+    // face such a cell owns is NO_FACE, from BOTH ends.
+    //
+    // WHY IT IS A MASK AND NOT A DENSITY LAW FOR kappa. Kinetic theory:
+    // kappa = (1/3)·n·<v>·lambda·c_v,molecule with lambda ∝ 1/n, so n·lambda is
+    // constant and kappa is DENSITY-INDEPENDENT — right down to the pressure at
+    // which the mean free path reaches the gap and the gas goes free-molecular
+    // (Kennard 1938 ch. 8). For a 0.333 m tile that is 0.0207 Pa = 2.04e-07 atm.
+    // The engine's `n_bulk` is Q16.16 with 1.0 = 1 atm, so ONE RAW COUNT is
+    // 1.546 Pa — the Knudsen threshold is 0.013 of a single LSB. Every density
+    // this engine can represent above zero is still a continuum conductor and
+    // SHOULD conduct at the full rate; the only free-molecular state `n_bulk`
+    // can hold is exactly zero. So the physics chooses the mask for us and
+    // there is no threshold to pick (report_t3.md D4 §5.2).
+    //
+    // What it fixes: `n_floor_heat = 0.01` is 1013 Pa, four and a half orders
+    // ABOVE the Knudsen pressure, so the capacity floor invented a conducting
+    // medium in hard vacuum. Measured (T3 §5.3): a vacuum cell heated at
+    // +0.78 K/tick — exactly as fast as an ambient-air one — because the T-form
+    // divided by the same floored `cap_used` the face multiplied by. Pass 0
+    // wiped it every tick so it never accumulated, but it IS the temperature
+    // the sweep, the fold and the tile inspector saw WITHIN the tick, and the
+    // wall paid 44.6 W per face for it.
+    //
+    // Each term earns its place: `!ts[i]` keeps an INTACT HULL TILE conducting
+    // (it is `is_vacuum && solid && thermal_solid` — a wall, not a breach);
+    // `is_vacuum[i]` is the structural statement (a cell whose T and
+    // gas_energy Pass 0 zeroes every tick is not a thermal medium at all);
+    // `cap_real_[i] == 0` is the dynamic one, and catches a decompressed
+    // INTERIOR room, which `is_vacuum` does not mark.
+    mutable std::vector<uint8_t> no_cond_;
     // arc #54 P-G1b: Pass 2's parked per-cell face sum for ACCOUNTABLE gas
     // cells. It exists because the seam refreshes the mirror, and the pass's
     // determinism rests on every cell reading the frozen pre-conduction field

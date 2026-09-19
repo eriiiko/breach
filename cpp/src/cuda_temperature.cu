@@ -339,10 +339,29 @@ __global__ void temp_conduct(const int32_t* __restrict__ temperature,
                              unsigned long long* __restrict__ cnt,
                              int32_t c_v_q, int no_face, int h, int w) {
     const int n = h * w;
+    // T5b / ledger 7b: the VACUUM CONDUCTION MASK, the identical twin of the
+    // CPU's `no_cond_` plane (temperature_solver.h documents why it is a mask
+    // and not a density law for kappa). Computed inline rather than staged in
+    // a device plane: all three terms are already kernel arguments, and the
+    // predicate is two loads and two compares.
+    auto no_cond = [&](int k) -> bool {
+        return !thermal_solid[k] && (is_vacuum[k] || cap_real[k] == 0);
+    };
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         const int y = i / w;
         const int x = i % w;
+        // Applied per CELL, from both ends, so the mask is symmetric by
+        // construction and can never produce a one-sided face. NOTE the two
+        // side effects the CPU's early-out also skips are preserved by order:
+        // `de_gas[i] = 0` is written below only on the unmasked path, and a
+        // masked cell books nothing anywhere -- which is right, because it
+        // moved nothing.
+        if (no_cond(i)) {
+            temp_new[i] = temperature[i];
+            if (de_gas) de_gas[i] = 0;
+            continue;
+        }
         const int32_t* fs = &face_shift[i * 4];
         const int64_t ti = (int64_t)temperature[i];
         const int64_t cap_i = cap_used[i];
@@ -355,6 +374,7 @@ __global__ void temp_conduct(const int32_t* __restrict__ temperature,
             const int nx = x + dx_of(d);
             if (ny < 0 || ny >= h || nx < 0 || nx >= w) continue;
             const int j = ny * w + nx;
+            if (no_cond(j)) continue;   // the other end of the mask
             // The neighbour's facing entry — the face is skipped and rated
             // identically from both ends BY CONSTRUCTION (CPU comment).
             const int s_j = face_shift[j * 4 + conduction::opposite_dir(d)];

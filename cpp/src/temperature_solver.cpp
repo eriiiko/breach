@@ -117,12 +117,20 @@ void TemperatureSolver::step(
         (c_v > 0.0f) ? (double)c_v : 1.0);
     cap_used_.resize(n);
     cap_real_.resize(n);
+    no_cond_.resize(n);
     for (int i = 0; i < n; ++i) {
         // The SAME N source Pass 1's deposit divides by: the real bulk sum when
         // the engine supplies it, else the P2 atmosphere density proxy.
         const int32_t n_raw = (n_bulk != nullptr) ? n_bulk[i] : atmosphere[i];
         conduction::cell_capacity_q(ts[i], heat_inv_shift[i], n_raw, n_floor_q,
                                     c_v_q, &cap_used_[i], &cap_real_[i]);
+        // T5b / ledger 7b: the VACUUM CONDUCTION MASK. A cell with no gas in
+        // it is not a thermal medium and owns no conduction face — full
+        // rationale (and why it is a mask, not a density law for kappa) in the
+        // header at `no_cond_`. Built here because it reads `cap_real_`, which
+        // this loop has just produced; all three terms are frozen inputs, so
+        // the mask is as pass-invariant as the capacities are.
+        no_cond_[i] = (uint8_t)(!ts[i] && (is_vacuum[i] || cap_real_[i] == 0));
     }
 
     // ---- Pass 0: gas-T zero-at-vacuum + semi-Lagrangian advection (P2, §4) ----
@@ -478,6 +486,14 @@ void TemperatureSolver::step(
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             const int i = y * w + x;
+            // T5b / ledger 7b: a vacuum cell owns no face at all (header:
+            // `no_cond_`). Applied per CELL rather than per face, from both
+            // ends, so it is symmetric by construction and can never produce a
+            // one-sided face.
+            if (no_cond_[i]) {
+                temp_new[i] = temperature[i];
+                continue;
+            }
             const int32_t* fs = &face_shift[i * 4];  // [N,S,E,W] for this tile
             const int64_t ti = (int64_t)temperature[i];
             const int64_t cap_i = cap_used_[i];
@@ -491,6 +507,7 @@ void TemperatureSolver::step(
                 // guard anyway for robustness against a mis-baked cache.
                 if (ny < 0 || ny >= h || nx < 0 || nx >= w) continue;
                 const int j = ny * w + nx;
+                if (no_cond_[j]) continue;           // the other end of the mask
                 // The NEIGHBOUR's facing entry, read so the face is skipped and
                 // rated identically from both ends BY CONSTRUCTION. The shipped
                 // harmonic-mean table is symmetric, so `max` picks the common

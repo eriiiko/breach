@@ -327,6 +327,92 @@ def test_a_solid_gas_face_is_convection_and_did_not_move_under_r10():
         f"{fourier}) -- this test's premise is gone")
 
 
+def test_a_vacuum_cell_owns_no_conduction_face():
+    """PROPERTY (thermal model v2 ledger 7b, report_t3.md D4): a NON-thermal-solid
+    cell with no gas in it conducts NOTHING -- it neither warms nor cools its
+    solid neighbour -- while the SAME scene with gas in that cell does exchange.
+
+    WHY THIS EXISTS. `kappa` is density-INDEPENDENT (kinetic theory: n and the
+    mean free path cancel) until the gas goes free-molecular, which for a
+    0.333 m tile is 0.0207 Pa. `n_floor_heat = 0.01` is 1013 Pa -- four and a
+    half orders above it -- so the capacity floor was inventing a conducting
+    medium in hard vacuum: T3 measured a vacuum cell heating at +0.78 K/tick,
+    exactly as fast as ambient air, with the wall paying 44.6 W per face for it.
+    Pass 0 wiped that every tick so it never accumulated, but it was the
+    temperature the sweep, the fold and the tile inspector saw WITHIN the tick.
+
+    There is no threshold here to pick and none should ever be added: the
+    Knudsen pressure is 0.013 of ONE Q16.16 LSB, so `N_raw == 0` is the only
+    representable free-molecular state.
+
+    BREAKS IF: the mask is dropped, applied from only one end (it must be per
+    CELL, so it cannot produce a one-sided face), or turned into a density
+    threshold.
+    """
+    # [ hull | air | hull ] -- the middle cell is the one we empty.
+    mats = np.array([[MAT_HULL, MAT_AIR, MAT_HULL]], dtype=np.int8)
+    shift, face, solid = _build_caches(mats)
+    HOT = 1 << 24
+
+    def run(n_middle_raw, vac_middle):
+        temp = np.zeros((1, 3), dtype=np.int32)
+        temp[0, 0] = HOT
+        is_vacuum = np.ascontiguousarray(
+            np.array([[False, bool(vac_middle), False]], dtype=bool))
+        atmosphere = np.ascontiguousarray(
+            np.array([[1 << 16, int(n_middle_raw), 1 << 16]], dtype=np.int32))
+        solver = _solver()
+        for _ in range(4):
+            solver.step(temp, _zero_heat(temp.shape), shift, face, solid,
+                        is_vacuum, atmosphere)
+        return temp.copy(), int(solver.e_cond_trunc_sum)
+
+    gas, _ = run(1 << 16, False)          # ambient air in the middle
+    hard, _ = run(0, True)                # a real breach: is_vacuum AND N == 0
+    empty, _ = run(0, False)              # a decompressed INTERIOR: N == 0 only
+
+    # Non-vacuity: with gas there, the face is live in both directions.
+    assert gas[0, 1] > 0, "the control scene did not conduct at all"
+    assert gas[0, 0] < HOT, "the hot wall did not lose anything to the air"
+
+    # The mask: neither term lets anything across, and the hot wall keeps
+    # EXACTLY what it had -- no 1-count-per-tick dribble either.
+    for label, got in (("is_vacuum", hard), ("cap_real == 0", empty)):
+        assert int(got[0, 1]) == 0, (
+            f"{label}: a cell with no gas in it took conduction heat "
+            f"({int(got[0, 1])} counts)")
+        assert int(got[0, 0]) == HOT, (
+            f"{label}: the hot wall lost {HOT - int(got[0, 0])} counts into a "
+            f"cell that is not a thermal medium")
+        assert int(got[0, 2]) == 0, f"{label}: heat crossed the empty cell"
+
+
+def test_an_intact_hull_tile_still_conducts_even_though_it_is_is_vacuum():
+    """PROPERTY: the `!ts[i]` term of the vacuum mask is LOAD-BEARING. An intact
+    hull tile is `is_vacuum && solid && thermal_solid` (Pass 0 says so) -- it is
+    a WALL, not a breach -- and it must keep conducting to its solid neighbours.
+
+    BREAKS IF: the mask is written as `is_vacuum[i] || cap_real_[i] == 0`
+    without the thermal-solid guard, which would silently sever every
+    space-facing bulkhead from the hull behind it.
+    """
+    mats = np.array([[MAT_HULL, MAT_HULL, MAT_HULL]], dtype=np.int8)
+    shift, face, solid = _build_caches(mats)
+    temp = np.zeros((1, 3), dtype=np.int32)
+    temp[0, 0] = 1 << 28
+    # Every tile marked vacuum-exposed, exactly as an outer hull row is.
+    is_vacuum = np.ascontiguousarray(np.ones((1, 3), dtype=bool))
+    atmosphere = np.ascontiguousarray(np.zeros((1, 3), dtype=np.int32))
+    solver = _solver()
+    before = int(temp[0, 1])
+    for _ in range(8):
+        solver.step(temp, _zero_heat(temp.shape), shift, face, solid,
+                    is_vacuum, atmosphere)
+    assert int(temp[0, 1]) > before, (
+        "an intact hull tile stopped conducting because it is is_vacuum -- the "
+        "mask's !thermal_solid guard is gone")
+
+
 def test_hot_tile_spreads_to_neighbours():
     # A 1x5 hull strip, hot in the centre. Conduction must warm the immediate
     # neighbours over a few ticks while the hot centre cools toward them.
