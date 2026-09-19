@@ -282,11 +282,23 @@ with `k_leak = 0.10` live and a non-uniform ambient, over 12 configurations
 (3 ambient shapes × 2 transports × S16/S12) — each of the three sums individually
 non-zero in all twelve. The three shapes are a breach cold patch, **the R3
 derivation driven off a real `is_vacuum` mask** (the shipped path), and a
-per-cell random level over the whole legal range `[0, E°[0]]`. Representative:
+per-cell random level over the whole legal range `[0, E°[0]]`. As the committed
+test builds them:
 
-    shear S16 cold-patch : net=      -84322105836 flux=     39258368540 amb=     45063737296 ident=0
-    shear S16 derived    : net=      -51827794106 flux=     20414507957 amb=     31413286149 ident=0
-    step  S12 random     : net=     -106832418092 flux=     56173329591 amb=     50659088501 ident=0
+    shear S16 cold-patch : net=     -127714529845 flux=     57140162244 amb=     70574367601 ident=0
+    shear S16 derived    : net=     -127714807589 flux=     57139811512 amb=     70574996077 ident=0
+    shear S16 random     : net=     -127714287435 flux=     57140320911 amb=     70573966524 ident=0
+    step  S12 derived    : net=      -68029704458 flux=     32101950353 amb=     35927754105 ident=0
+
+**Item 4 needed a non-vacuity guard, and it is worth saying why.** Look at the
+first three lines: the three ambient shapes move the sums by about **5 parts in a
+million**. The identity is *structural* — it closes for a uniform ambient just as
+exactly — and this scene's totals are dominated by cells up to 32767 game, beside
+which the ambient is a rounding detail. So `ident == 0` would still hold if the
+ambient plane silently stopped reaching the sweep, and item 4 would have become a
+conservation gate that had quietly lost its "**with a per-cell ambient**" half.
+The test therefore also runs the same scene at `amb=None` and asserts the two
+`rad_net` planes differ.
 
 ### 5.4 Item 3, and the proof that it cannot pass with a hoist
 
