@@ -52,8 +52,59 @@ def test_shipped_config_passes_both_invariants_and_carries_a_q16_column():
     assert np.all((tbl.heat_atten == 0.0) | tbl.thermal_solid)
     assert tbl.heat_atten_q16.dtype == np.int32
     assert np.array_equal(tbl.heat_atten_q16, optics_fixed.quantize(tbl.heat_atten))
-    assert tbl.heat_atten_q16.max() == optics_fixed.FP_ONE     # a wall is opaque
     assert tbl.heat_atten_q16.min() == 0                        # air is transparent
+    # T5b: the column's max used to be pinned at FP_ONE ("a wall is opaque").
+    # That was true only while every structural row carried the placeholder 1.0.
+    # `heat_atten` is an EMISSIVITY, and no real surface is a perfect black
+    # body: steel is 0.85 (Incropera A.11), wood 0.90. The property that
+    # survives is that it is a real emissivity -- strictly inside (0, 1) on
+    # every absorbing row.
+    absorbing = tbl.heat_atten > 0.0
+    assert absorbing.any()
+    assert np.all(tbl.heat_atten[absorbing] < 1.0), (
+        "a heat_atten of exactly 1.0 is a perfect black body -- if a row really "
+        "wants that, say why in its comment")
+
+
+def test_flammable_thermal_solid_without_a_loss_channel_is_rejected_by_name():
+    """PROPERTY (thermal model v2 §6 item 1, R12): the material door REFUSES
+    ``flammable && thermal_solid && heat_atten == 0``.
+
+    WHY IT IS A DOOR AND NOT A WARNING: after R1 deletes `cool_shift` and R10
+    puts conduction at real physical rates, in-plane radiation is the ONLY
+    meaningful loss channel a solid has. Such a row is an ENERGY RATCHET --
+    combustion heats it, nothing cools it, it climbs to T_MAX_PHYS and re-lights
+    its neighbours forever, with every channel involved correctly booked, so
+    nothing else in the engine can notice.
+
+    BREAKS IF: a row is authored that could ratchet (design v2 §6 item 1).
+    """
+    with pytest.raises(ValueError, match=r"materials\.foliage.*FLAMMABLE"):
+        _table_with("foliage", heat_atten=0.0)
+    with pytest.raises(ValueError, match=r"materials\.furniture.*FLAMMABLE"):
+        _table_with("furniture", heat_atten=0.0)
+    # ...and the three legs of the conjunction each disarm it on their own, so
+    # the door is not a blanket "heat_atten must be positive":
+    assert _table_with("glass", heat_atten=0.0) is not None      # not flammable
+    assert _table_with("air", heat_atten=0.0) is not None        # not a solid
+    assert _table_with("foliage", heat_atten=0.01) is not None   # has a channel
+
+
+def test_the_shipped_table_has_no_energy_ratchet():
+    """PROPERTY: EVERY shipped flammable thermal solid has a positive
+    heat_atten -- the invariant above, asserted on what actually ships rather
+    than on a synthetic row.
+
+    BREAKS IF: R12's foliage change is reverted (it was the only violator).
+    """
+    mats, thermal, fire, comb = _cfg_dicts()
+    tbl = MaterialTable(mats, thermal, fire, comb)
+    ratchets = [n for n, f, ts, a in zip(tbl.names, tbl.flammable,
+                                         tbl.thermal_solid, tbl.heat_atten)
+                if f and ts and a <= 0.0]
+    assert not ratchets, f"flammable thermal solids with no loss channel: {ratchets}"
+    # non-vacuous: there ARE flammable thermal solids to check
+    assert sum(1 for f, ts in zip(tbl.flammable, tbl.thermal_solid) if f and ts) >= 3
 
 
 @pytest.mark.parametrize("bad", [1.5, -0.1])

@@ -142,10 +142,19 @@ def test_foliage_row_values_match_the_ruling():
     # Fully walkable: mobility 1000 (== air/door's no-penalty convention),
     # NOT furniture's 400 (a movement penalty).
     assert int(tbl.mobility[MAT_FOLIAGE]) == 1000
-    # No wind/vision interaction: permeability 1.0, zero light/heat atten.
+    # No wind/vision interaction: permeability 1.0, zero LIGHT atten.
     assert float(tbl.permeability[MAT_FOLIAGE]) == 1.0
     assert tuple(tbl.light_atten[MAT_FOLIAGE].tolist()) == (0.0, 0.0, 0.0)
-    assert float(tbl.heat_atten[MAT_FOLIAGE]) == 0.0
+    # T5b / R12 (thermal model v2, superseding design v3 row 6): `heat_atten`
+    # is NOT part of the walk-through/see-through ruling. It is an EMISSIVITY,
+    # and at 0 a flammable thermal solid has no loss channel at all once
+    # cool_shift is gone -- combustion heats it, nothing cools it, and it
+    # ratchets to T_MAX_PHYS. Foliage now carries its real value (leaf
+    # emissivity 0.94-0.99, canopy-tile opacity 0.39-0.78). The gameplay
+    # consequence Erik ruled on -- you can walk through it and see through it --
+    # is `mobility`, `permeability`, `light_atten` and `cover_exposure`, all
+    # still asserted above and below.
+    assert float(tbl.heat_atten[MAT_FOLIAGE]) == pytest.approx(0.90, abs=1e-6)
     assert float(tbl.ignition_temp[MAT_FOLIAGE]) > 0.0
     # No vision interaction -> no concealment (never a cover roll).
     assert float(tbl.cover_exposure[MAT_FOLIAGE]) == 1.0

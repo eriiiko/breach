@@ -126,7 +126,115 @@ of them is measuring the refill.
 
 ## 2. Step 2 — the material rows (T3 D6)
 
-PENDING
+T3's D6 is the execution table; every row below carries its citation in
+`config.toml` itself. **`ignition_temp` moved on nothing**, per the brief (D6
+§7.4 marks the two `door` rows "Optional" and the brief declines them).
+
+### 2.1 What landed
+
+| row | column | was | now | source |
+|---|---|---|---|---|
+| `hull`, `steel` | `heat_atten` | 1.0 | **0.85** | Incropera A.11, painted/oxidised mild steel 0.78–0.96 |
+| `wood`, `door`, `door_closed` | `heat_atten` | 1.0 | **0.90** | Incropera A.11, planed wood 0.82–0.92 |
+| **`foliage`** | `heat_atten` | **0.0** | **0.90** | **R12** — the loss-channel invariant, §2.2 |
+| `air` | `conductivity` | 0.024 | **0.0257** | Incropera A.4 at 293 K. The 0.024 was reverse-engineered to make the old log-bucket land on `face[air][air] == 11`; its own comment said so |
+| `steel` | `conductivity` | 45.0 | **50.0** | Incropera A.1, band 45–64 — and `hull`, the same steel, already said 50 |
+| `wood` | `conductivity` | 0.15 | **0.12** | FPL-GTR-190 ch. 4, transverse at 12 % MC |
+| `door`, `door_closed` | `conductivity` | 0.30 | **0.12** | it is wood; 0.30 had no source |
+| `glass` | `conductivity` | 1.0 | **1.40** | Incropera A.3, plate glass at 300 K |
+
+**The brief's abbreviated list omits `wood` 0.15 → 0.12.** D6 §7.2 carries it
+(−20 %, with the same FPL citation the two `door` rows get), D6 is declared
+exhaustive — *"a row missing here is a T5 bug"* — and leaving `wood` at 0.15
+while moving `door` to 0.12 would put two rows of the same material on different
+conductivities, which is the exact defect the `steel`-vs-`hull` row fixes. So it
+is applied, and flagged here as a deliberate deviation from the brief's list.
+
+Also landed, both from D6 §7.5 / T2 D3 site 23, neither a material row:
+
+- `rad_scale_derived` was **already** at R13's `1.6533e-08` (T1 landed it); what
+  had *not* moved was the `J_per_count` derivation in the comment above it,
+  still reading `0.37013197 J` / `rho_c = 0.7 MJ/(m³·K)` / `194.06 kJ/K` /
+  `~139 kg`. Restated at R13's pin: **0.4759 J / 0.9 / 249.5 kJ/K / ~154 kg**,
+  and cross-checked against the `[materials.wood]` row's own authored `density`
+  × `specific_heat` = 0.899.
+
+### 2.2 R12 became a DOOR, not a value
+
+`MaterialTable.__init__` now **refuses** `flammable && thermal_solid &&
+heat_atten == 0` by name, alongside the two existing heat-extinction ingress
+invariants. The reason it is a door: such a row is an energy ratchet whose every
+channel is correctly booked, so no ledger, digest or conservation identity can
+see it — combustion heats the tile, nothing cools it, it climbs to `T_MAX_PHYS`
+and re-lights its neighbours forever. Under R10 a small `conductivity` would not
+save it either.
+
+Three new tests in `tests/test_optics_ingress.py`:
+`test_flammable_thermal_solid_without_a_loss_channel_is_rejected_by_name`
+(the door, plus each leg of the conjunction disarming it on its own, so it is
+not a blanket "heat_atten must be positive"), and
+`test_the_shipped_table_has_no_energy_ratchet` (the invariant asserted on what
+actually ships, with a non-vacuity floor of ≥ 3 flammable thermal solids).
+
+**Validated by breaking it**: reverting `foliage.heat_atten` to 0.0 turns the
+shipped config into a *load failure* — 4 of the 7 tests in that module go red,
+including the two new ones by name.
+
+### 2.3 FINDING — a hull bulkhead is no longer opaque to heat
+
+The single most feel-relevant consequence of step 2, and it needs Erik's eye.
+
+`heat_atten` does **double duty** on the sweep's extinction plane: it is the
+cell's emissivity (what it radiates, design v3 row 25) **and** its extinction
+coefficient (what it stops), because the model has an absorb channel and a
+transmit channel but **no reflect channel**. While every structural row carried
+the placeholder 1.0 the two readings coincided and a wall was perfectly opaque.
+At the real emissivity 0.85, **a hull cell transmits 15 % of the stream crossing
+it.** Physically an opaque steel plate transmits nothing; the 15 % is the
+reflected share, which this model has nowhere to put.
+
+Measured on the sweep's own scene (fire-plateau source, `E°⁻¹(Φ)` at a wood
+target three cells downrange):
+
+| between source and target | Φ | `E°⁻¹(Φ)` | lights the wood? |
+|---|---|---|---|
+| clear line | 11 197 494 | **388 game** | yes (ignition 300) |
+| **one hull cell** | 2 010 608 | **148 game** | **no** |
+| two hull cells | 632 630 | 36 game | no |
+| a fully opaque column (`a = ONE`) | 389 472 | 0 game | no — the ambient floor, bit for bit |
+
+So **the gameplay property survives**: a bulkhead still stops a fire lighting
+the woodwork on the other side. What changes is that the far side of a single
+bulkhead now warms measurably. T3 D6 §7.3 records the same tension for `glass`
+("0.3 is right as a shield and ~3× low as an emitter; no row value serves
+both") and leaves it to Erik — step 2 makes it live for `hull` and `steel` too.
+**Open question 1, §12.**
+
+The three affected tests in `tests/test_sweep_heat_law_properties.py` were split
+rather than loosened: the **gameplay** claim (a hull wall drops the target below
+wood's own `ignition_temp`; a body behind one absorbs < ¼ of the clear-line
+flux) is asserted of `A_WALL`, and the **optical** claim (nothing at all gets
+through, bit for bit against the ambient floor) is asserted at `a = ONE`, which
+is the only value that actually means it. Both are real, and neither could have
+been stated by the merged form.
+
+### 2.4 Two tests left red on purpose, until step 3
+
+`test_temperature_conduction.py::test_face_table_anchor_values` and
+`test_eos_p2_sealed_room_energy.py::test_solid_solid_face_shift_unaffected_by_air_conductivity`
+pin anchor values of the conduction table under the **old** log-bucket law
+(`wood|wood == 8`; the new κ makes it 9). Step 3 replaces that law outright, so
+rewriting them here against an intermediate table and again at step 3 would be
+churn. They are fixed in step 3, against the derived law.
+
+### 2.5 The gate at step 2
+
+`2539 passed, 21 failed`: the 14 golden-bound from step 1, plus the 2 above,
+plus 5 that this step fixed and are now green
+(`test_prop_entity::test_foliage_row_values_match_the_ruling`,
+`test_radiation_sweep_shadow_wiring`, three in
+`test_sweep_heat_law_properties`). Re-run after the fixes: **16 failed**, i.e.
+the 14 goldens plus the two deferred table pins.
 
 ---
 

@@ -502,14 +502,27 @@ class MaterialTable:
         #     ignores (a gas-regime cell that took radiation) would be an
         #     UNCOUNTED sink: today every absorbing material is a thermal solid
         #     (temperature_solver.cpp says so, belt and braces); this makes it
-        #     loud. `heat_atten == 0` with any thermal mass is fine (foliage:
-        #     radiation-transparent until its rows are authored, design row 6).
+        #     loud. `heat_atten == 0` on a NON-FLAMMABLE thermal solid is fine.
+        #   * THE LOSS-CHANNEL INVARIANT (thermal model v2 §3.1 / §6 item 1,
+        #     R12) — `flammable && thermal_solid` REQUIRES `heat_atten > 0`.
+        #     With `cool_shift` deleted (R1) and conduction at real physical
+        #     rates (R10), IN-PLANE RADIATION IS THE ONLY MEANINGFUL LOSS
+        #     CHANNEL a solid has. A flammable thermal solid at heat_atten = 0
+        #     is therefore an ENERGY RATCHET: combustion writes heat into it and
+        #     nothing can take the energy out, so it climbs to T_MAX_PHYS and
+        #     re-ignites its neighbours forever — silently, because every
+        #     channel involved is correctly booked. A small `conductivity` would
+        #     NOT save it (under R10 a cellulosic solid-solid face is exactly
+        #     zero below a 256 K gap), which is why the fix has to be radiative
+        #     and why this is a DOOR rather than a warning. This is design v3
+        #     row 6's "foliage stays heat_atten = 0.0" being superseded by R12.
         # The per-id Q16 column below is quantized ONCE here (door 2), through
         # the optics boundary module, and projected per tile by GameMap
         # (`heat_atten_q`) exactly as `fire_T_ext_q16` is — never an inline
         # `* 65536`.
         from simulation import optics_fixed as _optics_fx
-        for name, atten, tm_int in zip(self.names, self.heat_atten.tolist(), tm_ints):
+        for name, atten, tm_int, flam in zip(self.names, self.heat_atten.tolist(),
+                                             tm_ints, self.flammable.tolist()):
             atten_f = float(atten)
             if not (0.0 <= atten_f <= 1.0):
                 raise ValueError(
@@ -523,6 +536,17 @@ class MaterialTable:
                     f"thermal_mass > 0 — an absorbing material in the gas thermal "
                     f"regime would take radiation the Pass-1 fold never converts "
                     f"(an uncounted sink; design v3 section 2.3)"
+                )
+            if bool(flam) and tm_int > 0 and atten_f <= 0.0:
+                raise ValueError(
+                    f"materials.{name}: a FLAMMABLE THERMAL SOLID must have "
+                    f"heat_atten > 0 (got {atten!r}) — radiation is its only "
+                    f"meaningful loss channel once cool_shift is gone (thermal "
+                    f"model v2 R1) and conduction runs at real rates (R10), so "
+                    f"at 0 it is an energy ratchet: combustion heats it and "
+                    f"nothing can cool it, and it climbs to T_MAX_PHYS and "
+                    f"re-ignites its neighbours forever. Give the row its real "
+                    f"emissivity (R12 did this for foliage: 0.90)"
                 )
         self.heat_atten_q16 = _optics_fx.quantize(self.heat_atten)
 
