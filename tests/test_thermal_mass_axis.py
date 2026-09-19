@@ -51,7 +51,7 @@ from simulation.materials import (  # noqa: E402
 FP_ONE = 1 << 16
 _TBL = MaterialTable.from_config()
 NO_FACE = int(_TBL.no_face)
-COOL_SHIFT = int(getattr(CFG.physics.thermal, "COOL_SHIFT", 5))
+# T5b step 7 / R1: COOL_SHIFT is deleted; Pass 3 no longer exists.
 
 
 # ---------------------------------------------------------------------------
@@ -408,9 +408,7 @@ def test_furniture_bearing_level_differs_exactly_on_furniture():
 def _solver():
     s = bp.TemperatureSolver()
     s.no_face = NO_FACE
-    s.cool_shift = COOL_SHIFT
-    s.cool_shift_vacuum = int(getattr(CFG.physics.thermal,
-                                      "COOL_SHIFT_VACUUM", 3))
+    # T5b step 7 / R1: Pass 3 is deleted, so there is no cooling to disable.
     s.o2_vacuum_thresh = float(getattr(CFG.physics.thermal,
                                        "o2_vacuum_thresh", 0.3))
     s.c_v = float(getattr(CFG.physics.thermal, "c_v", 1.0))
@@ -462,9 +460,11 @@ def test_permeable_thermal_solid_takes_the_SHIFT_convert_not_the_gas_deposit():
                gr["atmosphere"], **kw)
         got = int(gr["temperature"][2, 2])
         if use_mask:
-            # solid regime: heat >> 3, then COOL_SHIFT ambient decay.
+            # solid regime: heat >> 3. (T5b step 7: the COOL_SHIFT ambient
+            # decay that used to follow it is deleted with Pass 3, so the
+            # deposit lands whole.)
             gain = deposit >> 3
-            assert got == gain - (gain >> COOL_SHIFT)
+            assert got == gain
         else:
             # gas regime: full deposit / (N * c_v), NO ambient decay.
             c_v_q = int(round(s.c_v * FP_ONE))

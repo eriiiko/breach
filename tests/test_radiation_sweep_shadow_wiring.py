@@ -321,7 +321,7 @@ def test_stale_caller_cannot_hand_step_tail_a_narrow_plane():
                   wind_x=g.wind_x, wind_y=g.wind_y, is_vacuum=g.is_vacuum,
                   flammable=g.flammable, heat=g.heat, heat_inv_shift=g.heat_inv_shift,
                   face_shift=g.face_shift, thermal_solid=g.thermal_solid,
-                  cool_shift_grid=g.cool_shift, fuel_recip=g.fuel_recip,
+                  fuel_recip=g.fuel_recip,
                   fire_T_ext_plane=g.fire_T_ext_plane, gas=g.gas,
                   gas_conservative=g.gases.conservative,
                   o2_idx=int(g.gases.name_to_id["o2"]), sim_time=1.0 / 24.0)
@@ -366,7 +366,7 @@ def test_the_three_live_planes_are_int64_and_the_engine_refuses_a_narrow_one():
                   wind_x=g.wind_x, wind_y=g.wind_y, is_vacuum=g.is_vacuum,
                   flammable=g.flammable, heat=g.heat, heat_inv_shift=g.heat_inv_shift,
                   face_shift=g.face_shift, thermal_solid=g.thermal_solid,
-                  cool_shift_grid=g.cool_shift, fuel_recip=g.fuel_recip,
+                  fuel_recip=g.fuel_recip,
                   fire_T_ext_plane=g.fire_T_ext_plane, gas=g.gas,
                   gas_conservative=g.gases.conservative,
                   o2_idx=int(g.gases.name_to_id["o2"]), sim_time=1.0 / 24.0,

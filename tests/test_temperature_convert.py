@@ -91,8 +91,7 @@ def _solver():
     its own module (test_temperature_cooling.py)."""
     s = bp.TemperatureSolver()
     s.no_face = NO_FACE
-    s.cool_shift = 31           # T >> 31 == 0 for all in-range values -> no cooling
-    s.cool_shift_vacuum = 31
+    # T5b step 7 / R1: Pass 3 is deleted, so there is no cooling to disable.
     return s
 
 

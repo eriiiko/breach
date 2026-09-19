@@ -154,28 +154,11 @@ _THERMAL_DEFAULTS = {
     "ceiling_h": 2.5,          # m of deck height; from_config injects the real
                                # one from [physics.water], the ONE source
     # COOL-SHIFT AXIS (2026-07-30): the global that seeds the per-material
-    # `cool_shift` column when a row omits it. Kept a live job so the axis is
-    # additive — see the `cool_shift` block in __init__.
-    "COOL_SHIFT": 5,
+    # T5b step 7 / R1: "COOL_SHIFT" (the per-row default) stood here.
 }
 
-# COOL-SHIFT AXIS — validation bounds for the per-material `cool_shift` column
-# (the per-tick ambient decay `T -= T >> cool_shift`, engine/06 §3).
-#
-# FLOOR: ``SHIFT_MIN`` (2), the table's existing "rate floor / stability bound"
-# convention, reused here for the same reason it exists on the conduction side —
-# it caps the per-tick fraction a single cell may shed at 1/4. The floor is
-# LOAD-BEARING at the bottom end: shift 0 means ``T -= T``, an instant total
-# wipe of the field every tick (no thermal state can exist at all), and shift 1
-# halves every solid's temperature 24x a second. Neither is a dial, they are
-# bugs; the loader rejects them by name.
-#
-# CEILING: at Q16.16 the whole physical temperature range tops out near
-# ``T_MAX_PHYS * 65536 ~ 2^30``, so a shift past ~30 sheds literally 0 counts
-# per tick, and 20 is already an e-fold of 2^20/24 == 12 hours of game time —
-# indistinguishable from "never cools" and far likelier to be a typo (a decimal
-# slip, a Kelvin value pasted into the wrong column) than an intent.
-_COOL_SHIFT_MAX = 20
+# T5b step 7 / R1: `_COOL_SHIFT_MAX` and the column's validation bounds
+# stood here, with their rationale. Deleted with Pass 3.
 
 # FUEL-FRACTION AXIS (2026-07-30) — the reciprocal shift `fixedpoint::make_recip`
 # uses (``fixed_point.h``: ``constexpr int RECIP_SHIFT = 32``). The fire logistic
@@ -557,7 +540,7 @@ class MaterialTable:
 
         # thermal_solid: the per-id THERMAL-MEDIUM axis (thermal-mass design
         # §2.1/§2.2). `thermal_mass > 0` -> this material takes the SOLID
-        # thermal regime (bit-shift heat->T convert, conduction, COOL_SHIFT
+        # thermal regime (bit-shift heat->T convert, conduction
         # ambient decay); `== 0` -> the GAS regime (advection + the N-divided
         # radiative deposit, no ambient decay). It is derived from the SAME
         # rounded integers the shifts are, so the mask and the divisor can
@@ -626,76 +609,23 @@ class MaterialTable:
                 )
         self.heat_atten_q16 = _optics_fx.quantize(self.heat_atten)
 
-        # cool_shift: the per-id AMBIENT-DECAY shift — the LOSS-side twin of
-        # `thermal_mass` (engine/06 §3; cool-shift axis 2026-07-30). The
-        # cooling pass on a THERMAL-SOLID tile is
-        #     T -= T >> cool_shift          (T is ΔT above ambient)
-        # so at the 24 Hz tick the e-fold time is 2^cool_shift / 24 s.
+        # ---- T5b step 7 / thermal model v2 R1: `cool_shift` IS DELETED ----
+        # The per-material AMBIENT-DECAY column built here (`T -= T >>
+        # cool_shift`, the LOSS-side twin of `thermal_mass`) is gone, with its
+        # validation, its `COOL_SHIFT` default and its per-tile projection.
+        # Pass 3 is deleted on both backends: the radiation sweep computes the
+        # real loss now, and a hand-rolled Newtonian relaxation beside it
+        # counted the same physics twice.
         #
-        # WHY IT IS PER-MATERIAL: it was one global ([physics.thermal]
-        # COOL_SHIFT) until the thermal-mass arc routed furniture into the
-        # solid thermal regime. furniture carries conductivity = 0 (NO_FACE
-        # both ways), so this decay is a crate's ONE loss channel — and a shift
-        # fast enough for thin hull plate (5 == 1.3 s) is absurd for a wooden
-        # crate, while a shift slow enough for wood (12 == 171 s) is absurd for
-        # plate. One number cannot serve both; the gain side already won this
-        # argument with `thermal_mass`.
+        # The DOOR that replaces it is the loss-channel invariant above: a
+        # flammable thermal solid must have `heat_atten > 0`. That is the same
+        # guarantee this column used to provide (furniture's conductivity is 0,
+        # so the decay was its ONLY loss channel) -- stated as a physical
+        # requirement instead of a dial.
         #
-        # OPTIONAL COLUMN: a row that omits it inherits the global COOL_SHIFT,
-        # which is exactly the pre-axis behaviour — so every dict-built table
-        # (tests) and any config predating the column stays valid, and the
-        # global keeps a live job instead of becoming dead weight.
-        #
-        # INTEGER ONLY: it is a shift count consumed by a C++ arithmetic right
-        # shift, never a float — a fractional value here would be a silent
-        # truncation, so it is rejected. Bounds + rationale: `_COOL_SHIFT_MAX`
-        # and SHIFT_MIN above.
-        #
-        # The VACUUM-exposed rate is NOT a second column (that would put two
-        # dials on one material and let them drift apart). It is the same
-        # per-material shift with the GLOBAL OFFSET applied at the cooling site:
-        #     exposed -> max(SHIFT_MIN, cool_shift - (COOL_SHIFT - COOL_SHIFT_VACUUM))
-        # i.e. "vacuum sheds two shifts (4x) faster" is one rule for every
-        # material. With every row seeded at COOL_SHIFT == 5 this reproduces the
-        # old 5/3 pair exactly. The per-tile projection is `GameMap.cool_shift`.
-        shift_min = int(self._thermal_get(thermal_cfg, "SHIFT_MIN"))
-        cool_default = int(self._thermal_get(thermal_cfg, "COOL_SHIFT"))
-        cool_shifts = []
-        for row, name in zip(rows, self.names):
-            raw = self._get_field_opt(row, "cool_shift")
-            if raw is None:
-                cool_shifts.append(cool_default)
-                continue
-            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-                raise ValueError(
-                    f"materials.{name}.cool_shift must be an INTEGER shift "
-                    f"count (it drives the arithmetic right shift "
-                    f"`T -= T >> cool_shift`); got {raw!r}"
-                )
-            cs = int(raw)
-            if cs != raw:
-                raise ValueError(
-                    f"materials.{name}.cool_shift must be an INTEGER shift "
-                    f"count (it drives the arithmetic right shift "
-                    f"`T -= T >> cool_shift`); got {raw!r}"
-                )
-            if cs < shift_min:
-                raise ValueError(
-                    f"materials.{name}.cool_shift must be >= SHIFT_MIN "
-                    f"({shift_min}) — the per-tick decay fraction is 1/2^shift, "
-                    f"so 0 means `T -= T` (an instant total wipe of the "
-                    f"temperature field) and 1 halves it every tick; got {cs}"
-                )
-            if cs > _COOL_SHIFT_MAX:
-                raise ValueError(
-                    f"materials.{name}.cool_shift must be <= "
-                    f"{_COOL_SHIFT_MAX} — beyond that the e-fold time "
-                    f"(2^shift / 24 s) exceeds 12 hours of game time, which is "
-                    f"indistinguishable from 'never cools' at Q16.16 and is "
-                    f"almost certainly a typo; got {cs}"
-                )
-            cool_shifts.append(cs)
-        self.cool_shift = np.array(cool_shifts, dtype=np.int32)
+        # A row may still CARRY a `cool_shift` key; it is ignored rather than
+        # rejected, so a level or config that has not been swept still loads.
+        # config.toml's own rows are struck in the same commit.
 
         # fuel_recip: the per-id FUEL-FRACTION NORMALISER — the reciprocal of
         # this material's OWN full-health `hp`, baked once at LOAD in the exact

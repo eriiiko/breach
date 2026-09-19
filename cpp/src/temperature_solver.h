@@ -145,33 +145,15 @@
 //   buffer), still float-free at runtime, still bit-identical cross-machine —
 //   the one new operation is an int64 divide per active cell per tick.
 //
-//   Ambient cooling (§3, gather over the geometric 4-neighbours) — since the
-//   COOL-SHIFT AXIS (2026-07-30) the base shift is PER TILE, not one global:
-//       base  = cool_shift_grid ? cool_shift_grid[i] : cool_shift
-//       shift = exposed ? max(cool_shift_floor, base - (cool_shift - cool_shift_vacuum))
-//                       : base
-//       T    -= (T < 0) ? -((-T) >> shift) : (T >> shift)
-//   With cool_shift_grid null (or uniformly == cool_shift, the seeded config)
-//   this is bit-exactly the old `exposed ? cool_shift_vacuum : cool_shift`.
-//   Temperature stores ΔT above ambient, so T_ambient == 0 and cooling relaxes
-//   toward 0 with NO subtraction (`T -= T >> shift`). `exposed` is true when ANY
-//   in-bounds 4-neighbour is vacuum (is_vacuum) OR has atmosphere < a quantized
-//   threshold — read from the SAME atmosphere/vacuum fields the rest of the
-//   physics uses (no new field/buffer), so a freshly-breached, now-space-facing
-//   wall sheds 4× faster through the existing seam. S3c: `atmosphere` is now the
-//   int32 Q16.16 field (the LAST float input to this TU is gone — it is fully
-//   integer, matching its already-integer heat/temperature fields). The exposure
-//   test `atmosphere[n] < o2_vacuum_thresh` is a Q16.16 integer compare against
-//   `quantize(o2_vacuum_thresh)` (computed ONCE per step, the load/boundary cast).
-//   Runs on SOLID tiles only
-//   (air is already 0, so it is skipped and stays bit-exactly 0). The signed
-//   arithmetic right shift is pinned to round toward 0 symmetrically
-//   (`x<0 ? -((-x)>>s) : x>>s`) — deterministic, identical cross-machine. The
-//   residual DEAD-BAND is intentional: the last `(1<<shift)-1` counts above
-//   ambient shift to 0 and never decay, giving an exact, jitter-free resting
-//   state at ambient (NO "+1 if nonzero" nudge — that would break the fixed
-//   point). The cooled magnitude is always ≤ |T|, so a single isolated tile
-//   relaxes toward 0 and never crosses below ambient.
+//   Ambient cooling — DELETED at T5b step 7 (thermal model v2 R1). It was
+//   `T -= T >> cool_shift` with a 4x-faster vacuum-exposed variant, i.e. a
+//   hand-rolled radiative loss; the sweep computes the real one and keeping
+//   both counted the same physics twice. The paragraph that stood here
+//   described the per-material axis, its vacuum offset and its dead band.
+//   NOTHING RELAXES TO AMBIENT NOW: a solid's temperature moves only
+//   through the Pass-1 radiation fold, the Pass-1 heat deposit, Pass-2
+//   conduction, and combustion's object-site write.
+//   (The paragraph about the dead band and the signed shift went with it.)
 
 #include <cstdint>
 #include <vector>
@@ -316,48 +298,17 @@ public:
     void set_no_face(int v) { no_face = v; }
     int  get_no_face() const { return no_face; }
 
-    // Ambient cooling shifts (§3.3), bound from config [physics.thermal].
-    //   cool_shift        — interior Newtonian decay (T -= T >> cool_shift).
-    //   cool_shift_vacuum — space-exposed decay (smaller shift -> faster).
+    // T5b step 7 / thermal model v2 R1: `cool_shift`, `cool_shift_vacuum`
+    // and `cool_shift_floor` stood here, with a long block explaining the
+    // per-material axis and its vacuum offset. Pass 3 is DELETED and they go
+    // with it -- the sweep computes the real radiative loss now, and keeping
+    // a hand-rolled Newtonian relaxation beside it would count the same
+    // physics twice (see the Pass-3 tombstone in the .cpp).
     //
-    // COOL-SHIFT AXIS (2026-07-30): these two scalars are no longer the whole
-    // story — the decay shift is a PER-MATERIAL column projected to the
-    // per-tile `cool_shift_grid` argument of step() below. They keep TWO live
-    // jobs, both of which make the axis additive rather than a replacement:
-    //   1. FALLBACK: `cool_shift` is the shift used when `cool_shift_grid` is
-    //      null (the documented back-compat path, like `solid` is for
-    //      `thermal_solid`) — so an un-plumbed caller behaves exactly as before.
-    //   2. VACUUM OFFSET: the PAIR defines the space-exposure discount as a
-    //      DIFFERENCE, not an absolute: a vacuum-exposed tile cools at
-    //          max(cool_shift_floor, cool_shift_grid[i] - (cool_shift - cool_shift_vacuum))
-    //      With the shipped 5/3 that is "two shifts == 4x faster", applied
-    //      uniformly to every material, so each material still carries exactly
-    //      ONE dial. At the seeded config (every material 5) it reproduces the
-    //      old interior-5 / exposed-3 pair bit-exactly.
-    // cool_shift_floor — the low clamp on that subtraction (bound from config
-    //   [physics.thermal] SHIFT_MIN, the same "rate floor" the conduction
-    //   buckets use, and the same floor materials.py validates the column
-    //   against). Load-bearing: without it a material legally sitting AT the
-    //   floor would derive a vacuum shift of 0 == `T -= T`, an instant total
-    //   wipe. It never binds at the seeded values (5 - 2 == 3 > 2).
-    // o2_vacuum_thresh — atmosphere value below which a neighbour counts as
-    //   vacuum for the exposure test (in the same REAL units as gmap.atmosphere,
-    //   i.e. the pre-quantize pressure). It is a config dial (bound from Python as
-    //   a real value); S3c quantizes it ONCE per step to a Q16.16 count and the
-    //   exposure test is then a pure integer compare on the int32 atmosphere field.
-    //   Kept as a float member because it is a config/boundary value, not synced
-    //   per-cell state (the documented boundary exception, like fire's `dt`).
-    int   cool_shift = 5;
-    int   cool_shift_vacuum = 3;
-    int   cool_shift_floor = 2;      // == config SHIFT_MIN
+    // o2_vacuum_thresh SURVIVES: Pass 0's open-vacuum wipe is a different
+    // question (is this cell a thermal medium at all) and still asks it.
     float o2_vacuum_thresh = 0.3f;
 
-    void  set_cool_shift(int v) { cool_shift = v; }
-    int   get_cool_shift() const { return cool_shift; }
-    void  set_cool_shift_vacuum(int v) { cool_shift_vacuum = v; }
-    int   get_cool_shift_vacuum() const { return cool_shift_vacuum; }
-    void  set_cool_shift_floor(int v) { cool_shift_floor = v; }
-    int   get_cool_shift_floor() const { return cool_shift_floor; }
     void  set_o2_vacuum_thresh(float v) { o2_vacuum_thresh = v; }
     float get_o2_vacuum_thresh() const { return o2_vacuum_thresh; }
 
@@ -519,7 +470,10 @@ public:
     // terms in the gas closure identity, so the flip does not have to convert
     // them — but a reader adding them to `gas_energy` numbers must divide by
     // `c_v` first. See the gas-conduction note below and T2 §1.2.
-    mutable int64_t e_cool_sum      = 0;   // Pass 3 ambient cooling / sky (signed)
+    // T5b step 7: `e_cool_sum` stood here -- Pass 3's counter. The pass is
+    // gone, so the channel does not exist and the counter is not zeroed but
+    // DELETED (design v2 section 7.3: the identity must close with the term
+    // REMOVED).
     mutable int64_t e_vac_wipe_sum  = 0;   // Pass 0a open-vacuum wipe (signed)
     mutable int64_t e_ring_pin_sum  = 0;   // Pass 0a ambient-ring pin (signed)
     // P-E2b (energy-books arc, design §2.2/§2.5, round-1 finding L3-7): the
@@ -533,19 +487,23 @@ public:
 
     // --- arc #54 P-G5 (design gas_energy_thermostat_ledger_2026-08-30.md):
     // THE SOLID-SIDE BOOKS. Erik's ruling (2026-08-30): the walls decaying to
-    // ambient (Pass 3, `cool_shift`, solids only — "the ship's heating
-    // system, not simulated further") is a deliberate, TWO-WAY thermostat: a
-    // wall pinned at ambient also warms a sub-ambient gas/wall through
-    // conduction. Counter only — NO PHYSICS CHANGE, every field trajectory
-    // stays byte-identical; these are pure bookkeeping of what Pass 1/2/3
-    // already compute.
+    // ambient (Pass 3, `cool_shift`, solids only) was a deliberate, TWO-WAY
+    // thermostat, counted by name. T5b step 7 DELETED that pass (R1), so
+    // the thermostat is gone and so is its term; the two counters that
+    // remain here book what Pass 1 and Pass 2 already compute.
     //
     // The solid-side closure identity (the SOLIDS' twin of the gas-side one
     // above), exact in int64 every tick:
     //
     //     Δ solid_energy_books_sum  ==  e_solid_deposit_sum
     //                                 + e_solid_cond_sum
-    //                                 + e_thermostat_sum
+    //
+    // T5b step 7: the `+ e_thermostat_sum` term is REMOVED, not zeroed.
+    // Pass 3 is deleted (R1), so a solid has no relax-to-ambient channel at
+    // all: its temperature changes only through the Pass-1 radiation fold,
+    // the Pass-1 heat deposit, Pass-2 conduction, and combustion's own
+    // object-site write. That is design v2 section 6 item 7 -- "nothing
+    // relaxes to ambient" -- as an arithmetic identity rather than a hope.
     //
     // and therefore the TOTAL ledger (gas books + solid books) closes against
     // every external channel named across both identities (EOS, the thermal
@@ -572,15 +530,6 @@ public:
     // this tick's change to `solid_energy_books_sum` from conduction, by
     // construction, so no split is needed for the identity to close.
     mutable int64_t e_solid_cond_sum = 0;
-    // `e_thermostat_sum` — Pass 3's relax-to-ambient on THERMAL SOLID cells,
-    // SIGNED, positive == energy ENTERING the sim from the thermostat (a
-    // sub-ambient wall being warmed back up). Bit-for-bit the same quantity
-    // `e_cool_sum` above already accumulated (same formula, same site) —
-    // `e_cool_sum` is the P-E2a "open channel" name from before the ruling;
-    // `e_thermostat_sum` is the canonical name the P-G5 closure identity and
-    // the benches use. Both are kept (neither is derived from the other) so
-    // no existing reader of `e_cool_sum` moves.
-    mutable int64_t e_thermostat_sum = 0;
     // `solid_energy_books_sum` — a SNAPSHOT, not an accumulator: Σ over
     // thermal_solid cells of `cap_real_[i] * temperature[i]` (thermal_mass_
     // raw × ΔT_raw, ambient-relative — `temperature` already is), as of the
@@ -633,17 +582,17 @@ public:
     //                 keys on `thermal_solid` instead.
     //   thermal_solid : bool, (h, w). The per-medium THERMAL mask
     //                 (`thermal_mass > 0`; GameMap.thermal_solid). Conversion
-    //                 and cooling run on THERMAL solids only; the P2 gas rules
+    //                 runs on THERMAL solids only; the P2 gas rules
     //                 run on the complementary open-air mask
     //                 (!thermal_solid && !is_vacuum). Nullable -> `solid`.
-    //   is_vacuum   : bool, (h, w). The physics vacuum mask. A solid tile cools
-    //                 at cool_shift_vacuum if ANY in-bounds 4-neighbour is vacuum
-    //                 (§3.3). Same field the atmosphere/smoke solvers read. P2:
+    //   is_vacuum   : bool, (h, w). The physics vacuum mask. Same field the
+    //                 atmosphere/smoke solvers read. (T5b step 7: the
+    //                 'a solid tile cools at cool_shift_vacuum' clause went
+    //                 with Pass 3.) P2:
     //                 also zeroes gas-T at vacuum cells (Pass 0) and excludes
     //                 them from the open-air mask everywhere else.
     //   atmosphere  : int32 Q16.16, (h, w). The atmosphere field (S2c). A neighbour
-    //                 with atmosphere < quantize(o2_vacuum_thresh) also counts as
-    //                 vacuum-exposed — a pure integer compare (S3c: no float). P2:
+    //                 P2:
     //                 ALSO read as the density proxy N for the gas radiation
     //                 deposit (Pass 1) — // P3: swap this read for the real
     //                 bulk-species N_total once P1/P3 land.
@@ -678,16 +627,11 @@ public:
         // `solid`, the pre-patch behaviour (the documented back-compat idiom
         // this signature already uses for wind/n_bulk/is_ambient).
         const bool* thermal_solid = nullptr,
-        // COOL-SHIFT AXIS (2026-07-30): int32, (h, w). The per-tile AMBIENT
-        // DECAY shift (`GameMap.cool_shift`, the per-material `cool_shift`
-        // column projected by the material grid) — the LOSS-side twin of
-        // `heat_inv_shift`. Pass 3 does `T -= T >> cool_shift_grid[i]`.
-        // Default nullptr -> the scalar `cool_shift` member for every tile,
-        // i.e. exactly the pre-axis single-global behaviour (the same
-        // back-compat idiom as `thermal_solid` above). The vacuum-exposed
-        // shift is derived from this same per-tile value by the global offset
-        // documented at `cool_shift` — there is deliberately no second grid.
-        const int32_t* cool_shift_grid = nullptr,
+        // T5b step 7 / R1: `const int32_t* cool_shift_grid` stood here.
+        // Pass 3 is deleted, so the plane has no reader. Removing it is a
+        // SIGNATURE change on a defaulted trailing parameter, so every
+        // caller that passed one must be edited -- they are, and the
+        // compiler catches any that are not.
         // ---- P-R4 RADIATION (docs/radiation_raycaster_extinction_ruling_
         // 2026-07-31.md A1.7): the SIGNED per-tick radiation accumulator the
         // raycaster's net-T⁴ exchange writes. **int64** Q16.16 heat counts

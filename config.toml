@@ -151,25 +151,16 @@ h_conv = 6.0
 # every gas face 2. Deriving the table per level instead is T3 section 8 q9 --
 # Erik's open question, deliberately not answered here.
 tile_size_ref_m = 0.333
-# Ambient cooling (engine/06 §3, proposal §3.3). Newtonian decay toward ambient
-# (T_ambient == 0, since temperature stores ΔT above a reference): T -= T >> shift.
-# Interior tiles use COOL_SHIFT; a tile whose 4-neighbourhood touches vacuum (or
-# atmosphere < o2_vacuum_thresh) sheds via the smaller COOL_SHIFT_VACUUM, so a
-# space-facing breached wall cools 4× faster. Pure signed-add + arithmetic right
-# shift -> deterministic. These are the burn-out tuning dials.
-#
-# COOL-SHIFT AXIS (2026-07-30): the decay shift is now a PER-MATERIAL column
-# (`cool_shift` on every [materials.*] row) — one global number cannot serve a
-# thin hull plate and a wooden crate at once. These two globals are KEPT and
-# still do two jobs:
-#   * COOL_SHIFT is the DEFAULT for a material row that omits `cool_shift`
-#     (and the solver's own fallback when no per-tile grid is supplied);
-#   * the PAIR defines the VACUUM OFFSET: a vacuum-exposed tile cools at
-#     max(SHIFT_MIN, cool_shift[tile] - (COOL_SHIFT - COOL_SHIFT_VACUUM)),
-#     i.e. "two shifts faster == 4x" stays one rule for every material. With
-#     every row seeded at 5 that reproduces 5/3 exactly.
-COOL_SHIFT        = 5    # interior decay: T -= T >> 5 (~1/32 per tick, ~32-tick e-fold)
-COOL_SHIFT_VACUUM = 3    # space-exposed decay: T -= T >> 3 (~1/8 per tick, 4× faster)
+# T5b step 7 / thermal model v2 R1: COOL_SHIFT = 5 and COOL_SHIFT_VACUUM = 3
+# stood here, with the block explaining the per-material axis and its vacuum
+# offset. They are DELETED with the temperature solver's Pass 3 -- the
+# radiation sweep computes the real radiative loss now, and keeping a
+# hand-rolled `T -= T >> cool_shift` beside it counted the same physics twice.
+# NOTHING RELAXES TO AMBIENT ANY MORE: a solid's temperature changes only
+# through a booked channel (the Pass-1 radiation fold, the Pass-1 heat deposit,
+# Pass-2 conduction, combustion's object-site write).
+# o2_vacuum_thresh SURVIVES -- Pass 0's open-vacuum wipe still asks whether a
+# cell is a thermal medium at all, which is a different question.
 o2_vacuum_thresh  = 0.3  # atmosphere below which a 4-neighbour counts as vacuum-exposed
 
 # EOS refactor P2 — unified temperature, gas-T dials (docs/eos_refactor_design.md
@@ -1695,22 +1686,10 @@ thermal_mass = 0       # THE ONE LEGAL AUTHORED `thermal_mass` (R14): a GAS-
                        # The derived `thermal_solid` mask (thermal_mass > 0) IS
                        # the guard: air never reaches the >>shift convert path
                        # at all (thermal-mass axis design §2.1).
-# COOL-SHIFT AXIS (2026-07-30) — the LOSS-side twin of `thermal_mass`. The
-# per-tick Newtonian decay toward ambient on a THERMAL-SOLID tile:
-#       T -= T >> cool_shift          (T is ΔT above ambient, so T_amb == 0)
-# At the 24 Hz tick the e-fold time is 2^cool_shift / 24 seconds:
-#       5 -> 1.3 s     8 -> 10.7 s    10 -> 43 s    12 -> 171 s   14 -> 11 min
-# It was ONE global ([physics.thermal] COOL_SHIFT) until the thermal-mass arc
-# made furniture a thermal solid whose ONLY loss channel is this dial
-# (conductivity = 0 -> NO_FACE both ways -> no conduction face). A number fast
-# enough for thin hull plate is absurd for a wooden crate and vice versa, so it
-# is now a PER-MATERIAL FEEL DIAL — the same argument the gain side won with
-# `thermal_mass`. Legal range [SHIFT_MIN=2, 20]; 0 would mean `T -= T`, an
-# instant total wipe, and is rejected by the loader. A vacuum-exposed tile
-# takes the offset form documented at [physics.thermal] COOL_SHIFT above.
-# EVERY ROW IS SEEDED AT THE OLD GLOBAL (5) — this column is byte-identical on
-# arrival; moving a row is a deliberate, HUMAN-TESTED feel change.
-cool_shift = 5       # air: unused (the cooling pass is thermal-solid only), sane value
+# T5b step 7 / R1: the COOL-SHIFT AXIS block stood here -- the per-material
+# ambient-decay column, its vacuum offset and its bounds. Deleted with the
+# temperature solver's Pass 3; see [physics.thermal] above.
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 0.0
 # FORBIDDEN BAND (storm audit 2026-08-14 §5, row d/d', §5B; energy-books
 # design §2.8): wave_absorb in the OPEN interval (0, 0.02) WHILE
@@ -1740,8 +1719,7 @@ specific_heat = 460.0  # J/(kg.K) -- mild/structural steel near 300 K (Incropera
                        # structural-steel handbooks quote 460-490).
                        # rho*c = 3.611 MJ/(m3.K); thermal_mass DERIVED =
                        # pow2_snap(32.10) = 32 (heat >> 5).
-cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
-                     # THE OLD GLOBAL — see the axis note on [materials.air]
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 0.0
 wave_absorb = 0.1
 blast_resist = 0.0
@@ -1766,9 +1744,7 @@ specific_heat = 1620.0 # J/(kg.K) -- Wood Handbook FPL-GTR-190 ch.4, the moist-
                        # rho*c = 0.899 MJ/(m3.K) == R13's ruled pin (0.90) to
                        # 0.1 %, from two independently cited numbers.
                        # thermal_mass DERIVED = pow2_snap(7.992) = 8.
-cool_shift = 13      # ambient decay T -= T>>13 (e-fold 2^13/24 = 341.3 s). P-K0:
-                     # promoted from TUNE (P-F1b 9->13, THE SPREAD DIAL; wood
-                     # moves with furniture — both cellulosic, both thermal_mass 8)
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 300.0  # G12 review (spec §4): reads 593 K under the honest map (was
                         # 1193 K under ×3) — realistic for wood (real ignition ~573-673
                         # K). Reviewed, kept.
@@ -1800,8 +1776,7 @@ specific_heat = 1620.0 # J/(kg.K) -- Wood Handbook FPL-GTR-190 ch.4, the moist-
                        # 0.1 %, from two independently cited numbers.
                        # thermal_mass DERIVED = pow2_snap(7.992) = 8.
                        # A wooden door: the [materials.wood] numbers.
-cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
-                     # THE OLD GLOBAL — see the axis note on [materials.air]
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 280.0
 wave_absorb = 0.4
 blast_resist = 0.0
@@ -1822,8 +1797,7 @@ specific_heat = 460.0  # J/(kg.K) -- mild/structural steel near 300 K (Incropera
                        # structural-steel handbooks quote 460-490).
                        # rho*c = 3.611 MJ/(m3.K); thermal_mass DERIVED =
                        # pow2_snap(32.10) = 32 (heat >> 5).
-cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
-                     # THE OLD GLOBAL — see the axis note on [materials.air]
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 0.0
 wave_absorb = 0.1
 blast_resist = 0.8
@@ -1843,8 +1817,7 @@ specific_heat = 750.0  # J/(kg.K) -- same Incropera Table A.3 entry.
                        # rho*c = 1.875 MJ/(m3.K); thermal_mass DERIVED =
                        # pow2_snap(16.67) = 16 (heat >> 4). The -4.0 % snap is
                        # the table's worst, well inside R5's accepted band.
-cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
-                     # THE OLD GLOBAL — see the axis note on [materials.air]
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 0.0
 wave_absorb = 0.1
 blast_resist = 0.0
@@ -1885,11 +1858,7 @@ specific_heat = 1620.0 # J/(kg.K) -- Wood Handbook FPL-GTR-190 ch.4, the moist-
                        # thermal_mass DERIVED = pow2_snap(7.992) = 8.
                        # A crate is solid cellulosic stock -- R14: base rows
                        # are MASSIVE; a hollow crate is its own row later.
-cool_shift = 13      # THE dial for a crate: conductivity = 0 means the ambient
-                     # decay above is furniture's ONE loss channel (thermal-mass
-                     # design §2.2), so this alone sets how long a burning crate
-                     # stays hot. e-fold 2^13/24 = 341.3 s. P-K0: promoted from
-                     # TUNE (P-F1b 9->13, THE SPREAD DIAL).
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 280.0   # wood-like; slightly easier to light than a solid wood wall (300).
                          # G12 review (spec §4): reads 573 K under the honest map (was
                          # 1133 K under ×3) — realistic for cellulosic fuel. Reviewed, kept.
@@ -1925,8 +1894,7 @@ specific_heat = 1620.0 # J/(kg.K) -- Wood Handbook FPL-GTR-190 ch.4, the moist-
                        # 0.1 %, from two independently cited numbers.
                        # thermal_mass DERIVED = pow2_snap(7.992) = 8.
                        # A wooden door: the [materials.wood] numbers.
-cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
-                     # THE OLD GLOBAL — see the axis note on [materials.air]
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 280.0
 wave_absorb = 0.4
 blast_resist = 0.0
@@ -1969,9 +1937,7 @@ specific_heat = 1620.0 # J/(kg.K) -- Wood Handbook FPL-GTR-190 ch.4, the moist-
                        # 0.1 %, from two independently cited numbers.
                        # thermal_mass DERIVED = pow2_snap(7.992) = 8, == furniture's
                        # (the locked P-F4a spec value), now by derivation.
-cool_shift = 13        # P-K0: promoted from TUNE (P-F1b 9->13, matches
-                       # furniture/wood — all three cellulosic materials moved
-                       # together). e-fold 2^13/24 = 341.3 s.
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 280.0  # spec value: furniture's, PER THE ROW CONVENTIONS —
                        # do NOT import literature values (~250 C) raw here.
                        # G12 review (spec §4): reads 573 K under the honest map
@@ -2015,10 +1981,7 @@ specific_heat = 1620.0 # J/(kg.K) -- Wood Handbook FPL-GTR-190 ch.4, the moist-
                        # canopy's bulk rho*c wants 0.5, which the power-of-two
                        # column cannot express (its floor is 1). Erik's call,
                        # open question 2 there; NOT decided at T3b.
-cool_shift = 13        # THE dial: conductivity = 0 means the ambient decay is
-                       # foliage's ONE loss channel, same as furniture/wood/
-                       # kindling (all cellulosic materials move together).
-                       # e-fold 2^13/24 = 341.3 s.
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 280.0  # wood-like, matches furniture/kindling
 wave_absorb = 0.0      # no interaction beyond burning (not a blast damper)
 blast_resist = 0.0

@@ -103,8 +103,7 @@ def _solver():
     # (test_temperature_cooling.py).
     s = bp.TemperatureSolver()
     s.no_face = NO_FACE
-    s.cool_shift = 31
-    s.cool_shift_vacuum = 31
+    # T5b step 7 / R1: Pass 3 is deleted, so there is no cooling to disable.
     return s
 
 
@@ -658,7 +657,6 @@ def test_conduction_energy_books_close():
     assert prev[0] < 0, "no truncation at all (vacuous gate)"
     # Pass 3 and the Pass-0 wipes are inert in this scenario (cooling disabled,
     # no vacuum, no ring), so their SIGNED channels must read exactly 0.
-    assert int(solver.e_cool_sum) == 0
     assert int(solver.e_vac_wipe_sum) == 0
     assert int(solver.e_ring_pin_sum) == 0
 

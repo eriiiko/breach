@@ -723,7 +723,75 @@ kW/m²), `test_fire_feedback` (§6.4), and the three sweep tests from step 2.
 
 ## 7. Step 7 — `cool_shift` deleted
 
-PENDING
+R1: *"`cool_shift` is deleted. A hand-rolled radiative loss
+(`temperature_solver.cpp:136` says so). The sweep computes the real one;
+keeping both counts it twice."*
+
+### 7.1 What went
+
+| surface | what |
+|---|---|
+| `temperature_solver.cpp` | **Pass 3** — the whole `T -= T >> cool_shift` relaxation, its vacuum-exposure gather and its two counter writes |
+| `temperature_solver.h` | the three dials + their eight accessors, the `cool_shift_grid` parameter, `e_cool_sum`, `e_thermostat_sum`, and the identity's `+ e_thermostat_sum` TERM |
+| `cuda_temperature.cu` | the **`temp_cool` kernel**, its launch, the `d_csg` device plane, the `vac_offset` host precompute, and slots `C_COOL` / `C_THERMOSTAT` |
+| `cuda_temperature.h` | the four parameters, and `TEMPERATURE_ENERGY_SLOTS` **14 → 12** |
+| `physics_engine.{h,cpp}` | the REQUIRED `cool_shift_grid` argument on `step_tail`, both `temperature.step` call sites, and the by-index counter fold |
+| `bindings.cpp` | the three `def_property` dials, the two `def_readonly` counters, and the `cool_shift_grid` / `cool_shift_floor` arguments on three entry points |
+| `materials.py` | the per-material `cool_shift` column, its validation, `_COOL_SHIFT_MAX`, and the `COOL_SHIFT` default |
+| `gamemap.py` | the `cool_shift` plane, its build, its `on_tile_changed` patch, and its `_RESIDENT_SYNCED` membership |
+| `physics_runner.py` | the three config binds and both `step_tail` arguments |
+| `config.toml` | `COOL_SHIFT`, `COOL_SHIFT_VACUUM`, the axis block, and **all ten per-row `cool_shift` columns** |
+| tests + tools | 14 modules: solver-fixture assignments, counter reads, dials dicts, CUDA-check counter lists, `storm_probe`'s three overrides, `eos_p5_bake`'s dial row, `storm_ledger`'s counter list |
+
+`o2_vacuum_thresh` **survives**: Pass 0's open-vacuum wipe asks a different
+question — is this cell a thermal medium at all — and still asks it.
+
+### 7.2 The two pinned positional slots, handled explicitly
+
+The brief flags this and it is the one place a silent bug was available.
+`cuda_temperature.cu`'s `C_*` enum is **pinned positional**: `physics_engine.cpp`
+folds the counter block into the solver's fields **by index**. Removing two
+entries renumbers every survivor below them:
+
+| counter | was | now |
+|---|---|---|
+| `e_cool_sum` | 3 | **deleted** |
+| `e_vac_wipe_sum` … `e_solid_cond_sum` | 4…11 | **3…10** |
+| `e_thermostat_sum` | 12 | **deleted** |
+| `rad_clamp_hits` | 13 | **11** |
+
+The enum, the by-index fold, the binding's `make_tuple`, and both CUDA checks'
+counter lists are edited in this one commit. **The gate that proves it**: the
+CUDA conduction lockstep compares every counter CPU-vs-GPU by NAME, and it is
+still tol-0 across 121 configs, a 120-tick trajectory and the 30-tick engine
+A/B — a renumbering slip would have shown up there as a counter mismatch, not
+as a silent zero.
+
+### 7.3 The #54 identity closes with the term REMOVED
+
+`test_thermostat_books.py` was the gate for Erik's 2026-08-30 thermostat ruling.
+Its identity loses a term rather than gaining a zero:
+
+    Δ solid_energy_books_sum == e_solid_deposit_sum + e_solid_cond_sum
+
+and its leg (b) is INVERTED: it used to assert `e_thermostat_sum < 0` and a
+monotone decay toward ambient, on the reasoning that *"the thermostat is the
+only channel with anywhere to put net energy"*. It now asserts that neither
+counter exists at all, plus a non-vacuity check that the books did move. That
+is design v2 §6 item 7 — **nothing relaxes to ambient** — as an arithmetic
+identity: if a fifth solid channel ever appears, leg (a) goes red.
+
+`test_eos_p2_sealed_room_energy.py`'s exposed-bulkhead scenario is re-anchored
+the same way. It asserted that the space-facing channels DOMINATE the drain;
+this module drives the direct binding, which runs no sweep, so a vacuum-facing
+hull tile now loses **exactly nothing** at that seam — asserted as `e_space == 0`,
+with a non-vacuity floor on the conduction truncation. That is §6 item 7 pinned
+at the one place it used to be false.
+
+### 7.4 The gate at step 7
+
+**`2545 passed, 21 failed`** — the 14 golden-bound plus §6.3's 7 runaway tests.
+CUDA lockstep tol-0 on every plane and every surviving counter.
 
 ---
 

@@ -508,11 +508,9 @@ def test_spread_is_radiation_only_no_cellular_stencil():
     #     exchange radiates against the emitter's OWN temperature, so a
     #     synthetically-lit ice-cold tile emits E[0] and correctly heats nothing.
     #     In play a burning tile sits at the ~440 game plateau (P-R4 gate f).
-    #  2. the pair runs at the arc's blessed cool_shift 9 rather than the shipped
-    #     5 — see the same note in tests/test_fire_heat_source.py. P-R5 owns that
-    #     dial; this test owns the spread PATH.
-    g.cool_shift[50, 14] = 9
-    g.cool_shift[50, 16] = 9
+    #  2. T5b step 7: the pair used to run at the arc's blessed cool_shift 9
+    #     rather than the shipped 5. Pass 3 is DELETED (R1), so there is no
+    #     ambient decay to set -- the target's only loss is the sweep itself.
     sim.set_paused(False)
 
     near_peak = 0

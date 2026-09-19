@@ -273,15 +273,14 @@ PYBIND11_MODULE(breach_physics, m) {
              py::array_t<int32_t> heat_inv_shift, py::array_t<int32_t> face_shift,
              py::array_t<bool> solid, py::array_t<bool> is_vacuum,
              py::array_t<int32_t> atmosphere,
-             int no_face, int cool_shift, int cool_shift_vacuum,
+             int no_face,
              float o2_vacuum_thresh, float c_v, float n_floor_heat,
              float gas_advection_rate, float t_max_phys,
              py::object n_bulk_obj, py::object wind_x_obj, py::object wind_y_obj,
              float dt, py::object thermal_solid_obj,
-             py::object cool_shift_grid_obj, int cool_shift_floor,
              // arc #54 §2.7 row 3: the conserved gas energy field, OPTIONAL —
              // None -> nullptr -> the pre-#54 T-form law (the CPU `e_on` gate,
-             // same idiom as thermal_solid/cool_shift_grid above).
+             // same idiom as thermal_solid above).
              py::object gas_energy_obj, float t_amb_k) -> py::tuple {
               auto [temp, h, w]    = get_2d(temperature);
               auto [hp, h2, w2]    = get_2d_const(heat);
@@ -323,17 +322,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   auto [tsp, ht, wt] = get_2d_const(tsol_arr);
                   tsol = tsp;
               }
-              // COOL-SHIFT AXIS: the per-tile decay shift, OPTIONAL by the
-              // same idiom — None -> nullptr -> the kernel uses the
-              // `cool_shift` scalar for every tile (the pre-axis behaviour),
-              // so every existing direct caller keeps its exact meaning.
-              const int32_t* csg = nullptr;
-              py::array_t<int32_t> csg_arr;
-              if (!cool_shift_grid_obj.is_none()) {
-                  csg_arr = cool_shift_grid_obj.cast<py::array_t<int32_t>>();
-                  auto [csp, hc, wc] = get_2d_const(csg_arr);
-                  csg = csp;
-              }
+              // T5b step 7 / R1: the `cool_shift_grid` cast stood here.
               // arc #54 §2.7 row 3: gas_energy, OPTIONAL — None -> nullptr ->
               // the pre-#54 T-form law. Kept alive in this scope (mutable,
               // in/out — the same `get_2d` idiom the required arrays use).
@@ -353,32 +342,32 @@ PYBIND11_MODULE(breach_physics, m) {
               // (P-E2a), the Pass-1 attenuation drop (P-E2b) and the gas-
               // energy seam (arc #54 P-G2) must be gated on. Callers:
               // tests/cuda_conduction_check.py, tests/cuda_thermal_mass_check.py,
-              // tests/cuda_cool_shift_check.py and the arc #54 gas-energy
+              // and the arc #54 gas-energy
               // temperature check, which compare all ten against the CPU
               // solver's own fields.
               int64_t cnt[breach_cuda::TEMPERATURE_ENERGY_SLOTS] = {0};
               int64_t solid_books = 0;   // P-G5: snapshot out-param
               const int64_t hits = breach_cuda::temperature_step(
                   temp, hp, shift, fs, sol, vac, atm, nb, wx, wy,
-                  no_face, cool_shift, cool_shift_vacuum, o2_vacuum_thresh,
+                  no_face, o2_vacuum_thresh,
                   c_v, n_floor_heat, gas_advection_rate, t_max_phys, h, w, dt,
-                  nullptr, tsol, csg, cool_shift_floor, nullptr, nullptr, cnt,
+                  nullptr, tsol, nullptr, nullptr, cnt,
                   ge, t_amb_q, &solid_books);
+              // T5b step 7: 13 counters -> 11 (C_COOL and C_THERMOSTAT are
+              // deleted with Pass 3 and the survivors renumbered).
               return py::make_tuple(hits, cnt[0], cnt[1], cnt[2], cnt[3],
-                                    cnt[4], cnt[5], cnt[6], cnt[7], cnt[8], cnt[9],
-                                    cnt[10], cnt[11], cnt[12], solid_books);
+                                    cnt[4], cnt[5], cnt[6], cnt[7], cnt[8],
+                                    cnt[9], cnt[10], cnt[11], solid_books);
           },
           py::arg("temperature"), py::arg("heat"), py::arg("heat_inv_shift"),
           py::arg("face_shift"), py::arg("solid"), py::arg("is_vacuum"),
           py::arg("atmosphere"),
-          py::arg("no_face"), py::arg("cool_shift"), py::arg("cool_shift_vacuum"),
+          py::arg("no_face"),
           py::arg("o2_vacuum_thresh"), py::arg("c_v"), py::arg("n_floor_heat"),
           py::arg("gas_advection_rate"), py::arg("t_max_phys"),
           py::arg("n_bulk") = py::none(), py::arg("wind_x") = py::none(),
           py::arg("wind_y") = py::none(), py::arg("dt") = 0.0f,
           py::arg("thermal_solid") = py::none(),   // thermal-mass axis (optional)
-          py::arg("cool_shift_grid") = py::none(), // cool-shift axis (optional)
-          py::arg("cool_shift_floor") = 2,         // == config SHIFT_MIN
           py::arg("gas_energy") = py::none(),      // arc #54 §2.2 (optional)
           py::arg("t_amb_k") = 290.0f,
           "P6.6/P-G2 isolated: run the GPU unified temperature solver in place "
@@ -1950,20 +1939,8 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_property("no_face",
             &TemperatureSolver::get_no_face,
             &TemperatureSolver::set_no_face)
-        // Ambient cooling dials (§3.3), bound from config [physics.thermal].
-        .def_property("cool_shift",
-            &TemperatureSolver::get_cool_shift,
-            &TemperatureSolver::set_cool_shift)
-        .def_property("cool_shift_vacuum",
-            &TemperatureSolver::get_cool_shift_vacuum,
-            &TemperatureSolver::set_cool_shift_vacuum)
-        // COOL-SHIFT AXIS (2026-07-30): the low clamp applied when the global
-        // vacuum offset (cool_shift - cool_shift_vacuum) is subtracted from a
-        // tile's per-material shift. Bound from config [physics.thermal]
-        // SHIFT_MIN — the same floor materials.py validates the column against.
-        .def_property("cool_shift_floor",
-            &TemperatureSolver::get_cool_shift_floor,
-            &TemperatureSolver::set_cool_shift_floor)
+        // T5b step 7 / R1: the three `cool_shift*` properties stood here.
+        // Pass 3 is deleted, so the dials do not exist.
         .def_property("o2_vacuum_thresh",
             &TemperatureSolver::get_o2_vacuum_thresh,
             &TemperatureSolver::set_o2_vacuum_thresh)
@@ -1994,7 +1971,7 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readonly("e_cond_trunc_sum",   &TemperatureSolver::e_cond_trunc_sum)
         .def_readonly("e_cond_cap_sum",     &TemperatureSolver::e_cond_cap_sum)
         .def_readonly("cond_limit_hits",    &TemperatureSolver::cond_limit_hits)
-        .def_readonly("e_cool_sum",         &TemperatureSolver::e_cool_sum)
+        // T5b step 7: `e_cool_sum` was bound here; Pass 3 is gone.
         .def_readonly("e_vac_wipe_sum",     &TemperatureSolver::e_vac_wipe_sum)
         .def_readonly("e_ring_pin_sum",     &TemperatureSolver::e_ring_pin_sum)
         // P-E2b (design §2.2/§2.5, L3-7): the Pass-1 attenuation-drop energy
@@ -2010,14 +1987,14 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readonly("e_gas_rail_sum",     &TemperatureSolver::e_gas_rail_sum)
         // --- arc #54 P-G5: the SOLID side's own closure identity -----------
         //   Δ solid_energy_books_sum == e_solid_deposit_sum + e_solid_cond_sum
-        //                              + e_thermostat_sum
         // (temperature_solver.h carries the full statement). Same
         // accumulate-across-step() idiom as the gas-side counters above;
         // `solid_energy_books_sum` alone is a SNAPSHOT (recomputed, not
         // accumulated, every step()).
         .def_readonly("e_solid_deposit_sum",     &TemperatureSolver::e_solid_deposit_sum)
         .def_readonly("e_solid_cond_sum",        &TemperatureSolver::e_solid_cond_sum)
-        .def_readonly("e_thermostat_sum",        &TemperatureSolver::e_thermostat_sum)
+        // T5b step 7: `e_thermostat_sum` was bound here; the thermostat is
+        // a TERM REMOVED from the identity, not a zeroed one.
         .def_readonly("solid_energy_books_sum",  &TemperatureSolver::solid_energy_books_sum)
         // Ray-engine-v2 P1: the Pass-1 maximum-principle clamp's counter.
         .def_readonly("rad_clamp_hits",          &TemperatureSolver::rad_clamp_hits)
@@ -2046,7 +2023,6 @@ PYBIND11_MODULE(breach_physics, m) {
                         float dt,
                         py::object n_bulk_obj,
                         py::object thermal_solid_obj,
-                        py::object cool_shift_grid_obj,
                         py::object rad_net_obj,
                         py::object rad_fluence_obj,
                         py::object e_table_obj,
@@ -2101,18 +2077,7 @@ PYBIND11_MODULE(breach_physics, m) {
                 auto [tsp, ht, wt] = get_2d_const(tsol_arr);
                 tsol = tsp;
             }
-            // COOL-SHIFT AXIS (2026-07-30): `cool_shift_grid` is OPTIONAL by the
-            // same idiom — None -> nullptr, and Pass 3 uses the solver's scalar
-            // `cool_shift` for every tile, i.e. the exact pre-axis single-global
-            // behaviour every shipped direct caller (tests/test_temperature_*)
-            // relies on. The engine's step_tail always passes GameMap.cool_shift.
-            const int32_t* csg = nullptr;
-            py::array_t<int32_t> csg_arr;
-            if (!cool_shift_grid_obj.is_none()) {
-                csg_arr = cool_shift_grid_obj.cast<py::array_t<int32_t>>();
-                auto [csp, hc, wc] = get_2d_const(csg_arr);
-                csg = csp;
-            }
+            // T5b step 7 / R1: the `cool_shift_grid` cast stood here.
             // P-R4 (ruling A1.7): `rad_net` is OPTIONAL by the SAME idiom —
             // None -> nullptr and Pass 1 does no radiation fold, i.e. exactly
             // the pre-P-R4 behaviour every shipped direct caller relies on.
@@ -2165,14 +2130,13 @@ PYBIND11_MODULE(breach_physics, m) {
                 etab = e_table_obj.cast<const EmissiveTable&>().table();
             }
             self.step(temp, hp, shift, fs, sol, vac, atm, nb, wx, wy, h, w, dt,
-                      nullptr, tsol, csg, rnet, nullptr, 0, rflu, etab);
+                      nullptr, tsol, rnet, nullptr, 0, rflu, etab);
         }, py::arg("temperature"), py::arg("heat"),
            py::arg("heat_inv_shift"), py::arg("face_shift"),
            py::arg("solid"), py::arg("is_vacuum"), py::arg("atmosphere"),
            py::arg("wind_x") = py::none(), py::arg("wind_y") = py::none(),
            py::arg("dt") = 0.0f, py::arg("n_bulk") = py::none(),
            py::arg("thermal_solid") = py::none(),
-           py::arg("cool_shift_grid") = py::none(),
            py::arg("rad_net") = py::none(),
            py::arg("rad_fluence") = py::none(),     // ray-engine-v2 P1: the clamp's Φ
            py::arg("e_table") = py::none(),         // ray-engine-v2 P1: an EmissiveTable
@@ -3446,16 +3410,12 @@ PYBIND11_MODULE(breach_physics, m) {
                              // nullable here, so a caller can never silently
                              // fall the engine back to the flow mask `solid`.
                              py::array_t<bool> thermal_solid,
-                             // COOL-SHIFT AXIS: the per-tile ambient-decay
-                             // shift (GameMap.cool_shift) — REQUIRED for the
-                             // same reason as thermal_solid above: the live
-                             // engine must never silently fall back to the
-                             // single global COOL_SHIFT.
-                             py::array_t<int32_t> cool_shift_grid,
+                             // T5b step 7 / R1: `cool_shift_grid` was a
+                             // REQUIRED argument here; Pass 3 is deleted.
                              // FUEL-FRACTION AXIS: the per-tile 1/hp plane
                              // (GameMap.fuel_recip) the fire logistic's fuel
                              // term reads — REQUIRED for the same reason
-                             // thermal_solid/cool_shift_grid are: the live
+                             // thermal_solid is: the live
                              // engine must never silently fall back to the
                              // single global [physics.fire] fuel_ref.
                              py::array_t<int64_t> fuel_recip,
@@ -3523,7 +3483,6 @@ PYBIND11_MODULE(breach_physics, m) {
             // THERMAL-MASS AXIS: the per-medium thermal mask.
             auto [tsol, h17, w17] = get_2d_const(thermal_solid);
             // COOL-SHIFT AXIS: the per-tile ambient-decay shift.
-            auto [csg, h18, w18] = get_2d_const(cool_shift_grid);
             // FUEL-FRACTION AXIS: the per-tile 1/hp plane (int64 — a
             // RECIP_SHIFT=32 reciprocal does not fit int32).
             auto fr_v = fuel_recip.unchecked<2>();
@@ -3593,7 +3552,7 @@ PYBIND11_MODULE(breach_physics, m) {
             auto destroyed = self.step_tail(
                 rip, ripv, wd, wp, sol,
                 f, atm, sm, whp, temp, wx, wy, vac, fl,
-                temp, hp, shift, fs, tsol, csg, fr, tep,
+                temp, hp, shift, fs, tsol, fr, tep,
                 gas_ptr, gcons, n_gases, o2_idx,
                 h, w, sim_time, amb, rnet, gen, t_amb_q,
                 haq, dhq, rns, rfs, ras, rfl, k_leak_q, rad_amb_vacuum_q);
@@ -3610,7 +3569,6 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("is_vacuum"), py::arg("flammable"),
            py::arg("heat"), py::arg("heat_inv_shift"), py::arg("face_shift"),
            py::arg("thermal_solid"),             // thermal-mass axis (required)
-           py::arg("cool_shift_grid"),           // cool-shift axis (required)
            py::arg("fuel_recip"),                // fuel-fraction axis (required)
            py::arg("fire_T_ext_plane"),          // per-material T_ext (required)
            py::arg("gas"), py::arg("gas_conservative"), py::arg("o2_idx"),

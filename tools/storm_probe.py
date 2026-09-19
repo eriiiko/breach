@@ -66,9 +66,7 @@ PF1B = {
     "T_emit_gate": "310.0",
     "physics.combustion.H_BED_M": "18125.0",
     "physics.combustion.H_BED_SHIFT": "4",
-    "materials.furniture.cool_shift": "13",
-    "materials.wood.cool_shift": "13",
-    "materials.kindling.cool_shift": "13",
+    # T5b step 7 / R1: the three cool_shift overrides are deleted with Pass 3.
 }
 
 

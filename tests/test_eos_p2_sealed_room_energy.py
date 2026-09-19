@@ -68,10 +68,10 @@ THE METRIC IS THEREFORE Σ_cells C_i · T_i — object C = thermal_mass, gas
 C = N·c_v — and the drift is no longer bounded, it is COUNTED: the solver
 exports `e_cond_trunc_sum` (the endpoint floor-division residual, one-way
 negative) and `e_cond_cap_sum` (the capacity floor/ceiling term), plus the
-three SIGNED boundary channels `e_cool_sum` / `e_vac_wipe_sum` /
+two SIGNED boundary channels `e_vac_wipe_sum` /
 `e_ring_pin_sum`. So this module asserts an IDENTITY, not a tolerance:
 
-    Δ(Σ C·T)  ==  e_cond_trunc_sum + e_cond_cap_sum + e_cool_sum
+    Δ(Σ C·T)  ==  e_cond_trunc_sum + e_cond_cap_sum
                   + e_vac_wipe_sum + e_ring_pin_sum
 
 which is a strictly stronger gate than the epsilon bound it replaces.
@@ -158,7 +158,7 @@ def _capacity_real(mats, shift, solid, n_raw, n_floor_heat=0.05, c_v=1.0):
 def _books(solver):
     """The five P-E2a energy counters, as one signed total (raw energy)."""
     return (int(solver.e_cond_trunc_sum) + int(solver.e_cond_cap_sum)
-            + int(solver.e_cool_sum) + int(solver.e_vac_wipe_sum)
+            + int(solver.e_vac_wipe_sum)
             + int(solver.e_ring_pin_sum))
 
 
@@ -202,7 +202,13 @@ def _zero_wind(shape):
 
 
 def _solver(cool_shift_vacuum=3):
-    """cool_shift PINNED huge (interior decay disabled — see module
+    """T5b step 7: `cool_shift`/`cool_shift_vacuum` are DELETED (R1, Pass 3).
+    The parameter survives as an ignored fixture knob so the two scenarios below
+    keep their names; what USED to be "interior decay disabled, space decay
+    fast" is now simply "there is no ambient decay at all", which is a stronger
+    isolation of the conduction pass this module gates.
+
+    (historical) cool_shift PINNED huge (interior decay disabled — see module
     docstring); cool_shift_vacuum left at a real, fast value (the shipped
     default 3) so scenario (b)'s one exposed tile actually radiates. gas_*
     dials are left at their shipped C++ defaults (gas_advection_rate=900,
@@ -211,8 +217,6 @@ def _solver(cool_shift_vacuum=3):
     direct binding with its own dials throughout)."""
     s = bp.TemperatureSolver()
     s.no_face = NO_FACE
-    s.cool_shift = 31
-    s.cool_shift_vacuum = cool_shift_vacuum
     return s
 
 
@@ -288,7 +292,8 @@ def test_sealed_room_energy_conserved_and_walls_warm():
 
     assert int(solver.e_cond_cap_sum) == 0, (
         "the capacity floor engaged in a room that is everywhere at ambient N")
-    assert int(solver.e_cool_sum) == 0, "cooling was supposed to be disabled"
+    # T5b step 7: `e_cool_sum` is deleted -- there is no cooling pass to
+    # disable, which is the stronger form of what this line asserted.
     assert int(solver.e_vac_wipe_sum) == 0 and int(solver.e_ring_pin_sum) == 0
     # The drift IS the counted endpoint truncation, exactly.
     assert total0 - prev_total == -(int(solver.e_cond_trunc_sum) - trunc0)
@@ -327,8 +332,21 @@ def test_sealed_room_energy_conserved_and_walls_warm():
 
 def test_sealed_room_with_one_hull_face_exposed_drains_monotonically():
     """Scenario (b): one hull tile (row 7, col 3) additionally exposed to a
-    real vacuum neighbour cell (row 8, col 3) — the hull radiates to space
-    (cool_shift_vacuum) and total energy must monotonically drain."""
+    real vacuum neighbour cell (row 8, col 3).
+
+    T5b step 7 RE-ANCHORS THIS TEST, and the re-anchor is the point. It used to
+    assert that the hull "radiates to space (cool_shift_vacuum)" and that those
+    space-facing channels DOMINATE the drain. R1 deletes Pass 3: a hull tile's
+    radiative loss is the SWEEP's job now, and this module drives
+    `TemperatureSolver.step` through the DIRECT BINDING, which runs no sweep at
+    all. So at this seam a vacuum-facing bulkhead loses exactly NOTHING -- which
+    is design v2 section 6 item 7 ("nothing relaxes to ambient") asserted at the
+    one place it used to be false.
+
+    What survives, and is asserted: every count is ATTRIBUTED (the identity in
+    the loop), total energy is NON-INCREASING (conduction alone is one-way),
+    and the vacuum cell never accumulates across ticks.
+    """
     mats, shift, face, solid, is_vacuum, atmosphere = _room_9x8_one_face_exposed()
     h, w = mats.shape
     temperature = np.zeros((h, w), dtype=np.int32)
@@ -352,7 +370,7 @@ def test_sealed_room_with_one_hull_face_exposed_drains_monotonically():
     prev_total = total0
     # Baseline the counters at total0 — the seeding step's own residual is not
     # part of this run's drain.
-    base = dict(cool=int(solver.e_cool_sum), vac=int(solver.e_vac_wipe_sum),
+    base = dict(vac=int(solver.e_vac_wipe_sum),
                 trunc=int(solver.e_cond_trunc_sum),
                 cap=int(solver.e_cond_cap_sum))
     prev_books = _books(solver)
@@ -375,27 +393,30 @@ def test_sealed_room_with_one_hull_face_exposed_drains_monotonically():
     # ATTRIBUTED: the two space-facing channels (the exposed tile's
     # cool_shift_vacuum decay and the breach cell's Pass-0 wipe) must dominate
     # the counted conduction truncation, not merely exceed it.
-    e_space = -((int(solver.e_cool_sum) - base["cool"])
-                + (int(solver.e_vac_wipe_sum) - base["vac"]))
+    # T5b step 7: the "space-facing channels" are now the Pass-0 wipe ALONE --
+    # `cool_shift_vacuum`, the other half, is deleted with Pass 3. The
+    # bulkhead radiates through the SWEEP now, which this direct-binding
+    # fixture does not drive at all.
+    e_space = -(int(solver.e_vac_wipe_sum) - base["vac"])
     e_trunc = -(int(solver.e_cond_trunc_sum) - base["trunc"])
     e_cap = int(solver.e_cond_cap_sum) - base["cap"]
-    # T5b / R10 FINDING, and it is worth knowing before reading this number.
-    # The bound here used to be `> 10x`. Under real conduction rates a
-    # solid-solid face below its DEAD BAND (2^s/65536 K: 4 K for steel, 256 K
-    # for wood -- report_t3.md D2 section 3.4) moves NOTHING to its neighbour
-    # while the hot cell still loses one raw count to the floor division. So
-    # `e_cond_trunc_sum` is now a small, permanent, ONE-WAY drain with no
-    # counterparty, and over this fixture's 400 ticks it grows to ~40 % of the
-    # space-facing channels instead of < 10 %. Measured: e_space 2.70e+10,
-    # e_trunc 1.10e+10. It is legal (counted), it is 1.3 K/hour per cell-face
-    # in real units, and whether a sub-dead-band face should instead be a no-op
-    # is T3 section 8 q4 -- Erik's open question, not answered here. The
-    # property this test protects is that the exposed face is the DOMINANT
-    # channel and that every count is attributed, both still true.
-    assert e_space > e_trunc, (
-        f"the space-facing channels ({e_space}) are no longer the dominant "
-        f"drain against conduction's counted truncation ({e_trunc}) — the "
-        f"exposed face does not radiate")
+    # T5b step 7: at THIS seam the exposed bulkhead loses nothing at all, and
+    # that is the assertion now. `e_vac_wipe_sum` books only the open-vacuum
+    # CELL's wipe, which in this fixture never fires (the breach cell holds no
+    # gas-T to wipe), so the whole drain is conduction's counted truncation.
+    #
+    # That truncation is itself R10's dead band showing up (report_t3.md D2
+    # §3.4): below `2^s/65536` K a solid-solid face moves NOTHING to its
+    # neighbour while the hot cell still loses one raw count to the floor
+    # division -- a one-way sink with no counterparty, worth 1.3 K/hour per
+    # cell-face. Whether a sub-dead-band face should instead be a no-op is
+    # T3 §8 q4, Erik's open question, not answered here.
+    assert e_space == 0, (
+        f"the temperature solver still has a space-facing loss channel "
+        f"({e_space}) -- R1 deletes the last one, and a vacuum-facing hull "
+        f"tile must now lose heat only through the sweep")
+    assert e_trunc > 0, (
+        "the run drained nothing at all -- this gate would be vacuous")
     assert drop == e_space + e_trunc - e_cap, (
         "the run's total drain is not fully attributed to named channels")
     # The vacuum cell NEVER ACCUMULATES T across ticks (Pass 0 zeroes it at the
@@ -437,8 +458,6 @@ def test_solid_and_vacuum_hull_tile_is_not_wiped_by_pass0():
 
     solver = bp.TemperatureSolver()
     solver.no_face = NO_FACE
-    solver.cool_shift = 31             # isolate: disable cooling entirely here
-    solver.cool_shift_vacuum = 31
 
     solver.step(temperature, heat, shift, face, solid, is_vacuum, atmosphere,
                 wind_x, wind_y, 1.0 / 24.0)

@@ -8,7 +8,7 @@ form and ``_build_ship`` fallback from the legacy implementation are gone
 
 Owns the cached arrays the physics systems read and write:
 
-    material, wall_hp, fuel_recip, solid, thermal_solid, cool_shift,
+    material, wall_hp, fuel_recip, solid, thermal_solid,
     is_vacuum, flammable,
     atmosphere, wave_p, wave_v, wave_source, wind_x, wind_y,
     smoke, fire, obstacles, light_map, heat, smoke_glow
@@ -181,34 +181,17 @@ class GameMap:
         # (`step_tail` on the mirror), and the per-call CUDA temperature kernel
         # does its own H2D from `GameMap.thermal_solid`.
         "thermal_solid",
-        # COOL-SHIFT AXIS (2026-07-30): the per-tile ambient-decay shift the
-        # temperature pass's Pass-3 reads (`T -= T >> cool_shift[i]`). Joins the
-        # resident set for the same three reasons `thermal_solid` did: a device
-        # buffer + ONE upload at :meth:`enable_residency`, the __setattr__
-        # stale-pointer guard (it is REASSIGNED by `_update_caches` and patched
-        # IN PLACE by `on_tile_changed`, exactly like `heat_inv_shift`), and
-        # `device_ptrs()["cool_shift"]` as the pointer a future resident
-        # temperature kernel takes.
-        # SAME CAVEAT AS `thermal_solid`, recorded so it is not re-learned: this
-        # grid is NOT static — `on_tile_changed` patches it whenever a tile's
-        # material changes — so the moment a DEVICE kernel reads the resident
-        # pointer it MUST join the per-tick `from_host` list in
-        # `physics_runner._step_resident` beside `solid`/`is_vacuum`/
-        # `is_ambient`/`thermal_solid`. No device kernel reads it today: the
-        # resident tick's temperature pass is a host bracket (`step_tail` on the
-        # mirror) and the per-call CUDA temperature kernel does its own H2D from
-        # `GameMap.cool_shift`. The EOS (the one resident consumer of
-        # `thermal_solid`) does not read this grid at all.
-        "cool_shift",
+        # T5b step 7 / R1: "cool_shift" was a resident-synced plane here;
+        # Pass 3 is deleted and the plane has no reader.
         # FUEL-FRACTION AXIS (2026-07-30): the per-tile `make_recip` reciprocal
         # of the material's own full-health hp, which the fire logistic's fuel
         # term reads (`F = clamp01(wall_hp[i] * fuel_recip[i])`). Joins the
-        # resident set for the same three reasons `cool_shift` did: a device
+        # resident set for the same three reasons `thermal_solid` did: a device
         # buffer + ONE upload at :meth:`enable_residency`, the __setattr__
         # stale-pointer guard (it is REASSIGNED by `_update_caches` and patched
         # IN PLACE by `on_tile_changed`), and `device_ptrs()["fuel_recip"]` as
         # the pointer a future resident fire kernel takes.
-        # SAME CAVEAT AS `thermal_solid`/`cool_shift`: NOT static —
+        # SAME CAVEAT AS `thermal_solid`: NOT static —
         # `on_tile_changed` patches it whenever a tile's material changes (a
         # crate burning out is exactly that), so the moment a DEVICE kernel
         # reads the resident pointer it MUST join the per-tick `from_host` list
@@ -1472,21 +1455,8 @@ class GameMap:
         # thermal_mass > 0, so on a furniture-free map `thermal_solid == solid`
         # elementwise and every thermal path is byte-identical (addendum D4).
         self.thermal_solid = tbl.thermal_solid[m].copy()
-        # COOL-SHIFT AXIS (2026-07-30) — the per-tile AMBIENT-DECAY shift, the
-        # LOSS-side twin of `heat_inv_shift`. The cooling pass on a thermal-solid
-        # tile is `T -= T >> cool_shift[i]` (engine/06 §3), e-fold 2^shift/24 s.
-        # Built HERE, in the SAME ONE function as `heat_inv_shift` /
-        # `thermal_solid`, and patched at the SAME single site in
-        # `on_tile_changed` — the addendum's D3 rule: one seam, so the future
-        # movable-furniture version has one place to become dynamic.
-        # WHY it is per-tile at all: furniture's conductivity is 0, so with the
-        # thermal-mass arc routing a crate into the solid thermal regime this
-        # decay is its ONE loss channel, and the old single global could not be
-        # right for both a thin hull plate and a wooden crate.
-        # The VACUUM-exposed rate is derived from this SAME number by the global
-        # offset (COOL_SHIFT - COOL_SHIFT_VACUUM) at the cooling site — ONE dial
-        # per material, no second grid. See materials.py's `cool_shift` block.
-        self.cool_shift = tbl.cool_shift[m].astype(np.int32, copy=True)
+        # T5b step 7 / R1: `self.cool_shift` was built here from the
+        # per-material column. Pass 3 is deleted; nothing reads it.
         # FUEL-FRACTION AXIS (2026-07-30) — the per-tile FUEL NORMALISER: the
         # `make_recip` reciprocal of THIS tile's material's full-health hp, so
         # the fire logistic's fuel term
@@ -1498,7 +1468,7 @@ class GameMap:
         # sustain ceiling at ambient O2 at any intensity or temperature.
         # DERIVED FROM `hp`, not a new dial — see materials.py's `fuel_recip`.
         # Built HERE, in the SAME ONE function as `heat_inv_shift` /
-        # `thermal_solid` / `cool_shift`, and patched at the SAME single site in
+        # `thermal_solid`, and patched at the SAME single site in
         # `on_tile_changed` — the thermal-mass addendum's D3 rule: one seam, so
         # the future movable-furniture version has one place to become dynamic.
         # int64 because a Q16.16 reciprocal at RECIP_SHIFT = 32 does not fit
@@ -1516,7 +1486,7 @@ class GameMap:
         # global (the ramp's WIDTH is not a per-material quantity).
         # DERIVED FROM `ignition_temp`, not a new dial — see materials.py's
         # `fire_T_ext_from_ignition`. Built HERE, in the SAME ONE function as
-        # `heat_inv_shift` / `thermal_solid` / `cool_shift` / `fuel_recip`, and
+        # `heat_inv_shift` / `thermal_solid` / `fuel_recip`, and
         # patched at the SAME single site in `on_tile_changed` (the
         # thermal-mass addendum's D3 rule: one seam).
         self.fire_T_ext_plane = tbl.fire_T_ext_q16[m].astype(np.int32, copy=True)
@@ -1707,7 +1677,6 @@ class GameMap:
         # so a burnt-out crate stops cooling like wood the instant it turns to
         # air (a moot value there — the cooling pass is thermal-solid only — but
         # the cache must not go stale).
-        self.cool_shift[fy, fx] = int(tbl.cool_shift[mat_id])
         # Fuel-fraction normaliser cache — patched through the SAME seam as
         # wall_hp above (they are the numerator and the denominator of ONE
         # quantity, F = wall_hp/hp, and must never come from different
@@ -1716,7 +1685,7 @@ class GameMap:
         # `wall_hp` this seam just wrote.
         self.fuel_recip[fy, fx] = int(tbl.fuel_recip[mat_id])
         # Per-material extinction-temperature cache (P-R3) — patched through
-        # the SAME seam as fuel_recip/cool_shift above (D3: ONE build + ONE
+        # the SAME seam as fuel_recip above (D3: ONE build + ONE
         # patch site), so a burnt-out crate stops carrying furniture's `hot`
         # floor the instant its material becomes air (a moot value there — the
         # logistic is flammable-only — but the cache must not go stale).
