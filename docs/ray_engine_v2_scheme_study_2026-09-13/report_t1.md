@@ -340,12 +340,20 @@ maximum is the cell the mask names) and **the derivation itself**
 **Validated by breaking it** (`feedback_review_the_first_instance`: a gate that
 cannot fail is not a gate). Four perturbations were injected and each test re-run:
 
-| injected bug | item 2 digest | item 3 hull | item 3 localisation | item 4 |
+| injected bug | item 2 digest | item 3 hull | item 3 localisation | item 4 + its guard |
 |---|---|---|---|---|
-| `amb_m` hoisted at `E°[0]` — **the v1 bug** | pass | **FAIL** | **FAIL** | pass |
+| `amb_m` hoisted at `E°[0]` — **the v1 bug** | pass | **FAIL** | **FAIL** | **FAIL** |
 | the plane read once, at cell `[0][0]` | pass | **FAIL** | **FAIL** | pass |
-| the plane read once, at the last cell | pass | **FAIL** | **FAIL** | pass |
+| the plane read once, at the last cell | pass | **FAIL** | **FAIL** | **FAIL** |
 | a mis-indexed per-cell read (roll by one column) | pass | pass | **FAIL** | pass |
+
+**Item 3 is the only column that is `FAIL` on every hoist.** Item 4's two failures
+are its *non-vacuity guard* firing, not conservation: both of those hoists happen
+to collapse the ambient to `E°[0]`, which is the uniform run the guard compares
+against. The `[0][0]` hoist collapses it to 0 instead — a different uniform
+ambient — and item 4 sails through. The guard asks "did the plane reach the
+arithmetic", never "is it read per cell"; the identity itself (§6.5) is blind to
+all four.
 
 Gate 0 was put through the same roll: `amb=uniform` passes it, `amb=cold-half`
 and `amb=random` **fail** it (`rad_net differs at 44 cells`). See §6.4 for what
@@ -418,18 +426,25 @@ distinct properties:
 | the ambient is read at the RIGHT cell | gate 0's `cold-half` / `random` axes; item 3's localisation leg |
 | the ambient is read PER cell at all | item 3 |
 
-### 6.5 Item 2 and item 4 are both blind to the hoist — item 3 carries R3 alone
+### 6.5 As the design specifies them, items 2 and 4 are both blind to the hoist
 
-The §5.4 table's most important column is the one that is all `pass`. The v1 bug
-— `t_amb_q` made per-tile, `amb_m` left hoisted — sails through the scalar-era
-digest (a hoist *is* the scalar era), through conservation (the identity is
-structural and holds for any ambient, uniform included), and through gate 0's
-uniform axis. **Only item 3 sees it.** That is worth stating plainly because it
-is the shape of the original failure: a patch can be green on every gate the
-design lists except one and still deliver nothing at all. Item 3 is not a
-nice-to-have leg of T1; it is the only thing standing between R3 and a no-op.
+Item 3 is the only column of §5.4's table that fails on every hoist. The v1 bug —
+`t_amb_q` made per-tile, `amb_m` left hoisted — sails through the scalar-era
+digest (a hoist *is* the scalar era), through gate 0's uniform axis, and through
+**conservation**: the identity is structural and closes exactly for any ambient,
+uniform included, so item 4 *as design v2 states it* cannot see a hoist at all.
+The two `FAIL`s in its column are the non-vacuity guard §5.3 describes, and they
+are opportunistic — they catch the hoists that happen to land on `E°[0]`, and
+miss the one that lands on 0.
 
-### 6.6 The live calibration resolves the ambient axis to ELEVEN levels — T5 inherits this
+Stated plainly because it is the shape of the original failure: **a patch can be
+green on every gate the design lists except one and still deliver nothing at
+all.** Item 3 is not a nice-to-have leg of T1; it is the only thing standing
+between R3 and a no-op. Anything that weakens it — a scene that stops being
+mirror-symmetric, a move to the live calibration (§6.6) — takes the whole patch's
+verification with it.
+
+### 6.6 The live calibration resolves the ambient axis to a HANDFUL of levels — T5 inherits this
 
 The gates run on `reference_table()`, baked at `[physics.fire] rad_scale =
 5.1427e-5`, where `E°[0] = 389475`. The **shipped** sweep bakes at
