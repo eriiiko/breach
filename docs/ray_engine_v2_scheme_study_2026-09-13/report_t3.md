@@ -23,9 +23,9 @@
 - [x] §4 **D3** — the solid–gas convection coefficient `h`
 - [x] §5 **D4** — the vacuum mask threshold
 - [x] §6 **D5** — emissivities, ignition temperatures, combustion
-- [ ] §7 **D6** — the summary table T5 executes from
-- [ ] §8 Open questions for Erik
-- [ ] §9 What did not hold
+- [x] §7 **D6** — the summary table T5 executes from
+- [x] §8 Open questions for Erik
+- [x] §9 What did not hold
 - [ ] §10 The gate
 
 ---
@@ -773,15 +773,222 @@ it is the third independent place this arc has met it (P2b §7 on `kindling` /
 
 ## 7. D6 — the summary table T5 executes from
 
-*(pending)*
+Exhaustive by construction: every `[materials.*]` row x every column T3 owns,
+then every non-material dial, then the two code changes. **A row missing here is
+a T5 bug.** `%` is (derived − current)/current. Rows marked **KEEP** need no
+edit and are listed so T5 can confirm rather than infer.
+
+### 7.1 `[materials.*]` — `thermal_mass` (D1)
+
+| row | current | derived | % | citation |
+|---|---|---|---|---|
+| `air` | 0 | **0** | — | gas branch; `thermal_mass = 0` is correct (P2b §7) — **KEEP** |
+| `hull` | 32 | **32** | 0 % | Incropera A.1 (3.40–3.85 MJ/m³K) → 32.0 exact — **KEEP** |
+| `steel` | 32 | **32** | 0 % | ibid. — **KEEP** |
+| `wood` | 8 | **8** | 0 % | FPL-GTR-190 ch. 4 + R13 pin (0.90) → 8.0 exact — **KEEP** |
+| `door` | 8 | **8** | 0 % | as wood — **KEEP** |
+| `door_closed` | 8 | **8** | 0 % | as wood — **KEEP** |
+| `furniture` | 8 | **8** | 0 % | **THE PIN ROW** (R13) — **KEEP** |
+| `glass` | 16 | **16** | 0 % | Incropera A.3 (1.88–2.10) → 17.33, snaps to 16 (−7.7 %) — **KEEP** |
+| `kindling` | 8 | **8** | 0 % | wood as a MATERIAL — **KEEP**. *Object reading wants 2; §8 q1* |
+| `foliage` | 8 | **8** | 0 % | wood as a MATERIAL — **KEEP**. *Object reading wants 0.5, inexpressible; §8 q2* |
+
+### 7.2 `[materials.*]` — `conductivity` (D2 / R10)
+
+| row | current | derived | % | citation |
+|---|---|---|---|---|
+| `air` | 0.024 | **0.0257** | **+7.1 %** | Incropera A.4 interpolated to 293 K. **Moves the air\|air face 17 → 16** — `κ` sits on a shift boundary |
+| `hull` | 50.0 | **50.0** | 0 % | Incropera A.1, ship-plate mild/HSLA — **KEEP** |
+| `steel` | 45.0 | **50.0** | **+11.1 %** | ibid.; 45 is below the 45–64 band's centre. Face shift unchanged (18) |
+| `wood` | 0.15 | **0.12** | **−20.0 %** | FPL-GTR-190 ch. 4, transverse at 12 % MC. Face shift unchanged (24) |
+| `door` | 0.30 | **0.12** | **−60.0 %** | it is wood; 0.30 has no source |
+| `door_closed` | 0.30 | **0.12** | **−60.0 %** | ibid. |
+| `glass` | 1.0 | **1.40** | **+40.0 %** | Incropera A.3, plate glass at 300 K. Face shift unchanged (22) |
+| `furniture` | 0.0 | **0.0** (fixture) *or* 0.12 | — | `config.toml`'s own note: a deliberate fixture choice, Erik's. **Under R10 the solid faces it would open are dead anyway (§3.4), but a nonzero `κ` also opens its solid–gas CONVECTION face — §8 q3** |
+| `kindling` | 0.0 | **0.0** (fixture) *or* 0.12 | — | ibid. |
+| `foliage` | 0.0 | **0.0** (fixture) *or* 0.12 | — | ibid. |
+
+### 7.3 `[materials.*]` — `heat_atten` (D5 / ledger 9 / R12)
+
+| row | current | derived | % | citation |
+|---|---|---|---|---|
+| `air` | 0.0 | **0.0** | 0 % | homonuclear diatomics, Siegel & Howell ch. 10 — **KEEP** |
+| `hull` | 1.0 | **0.85** | **−15 %** | Incropera A.11, painted/oxidised mild steel 0.78–0.96 |
+| `steel` | 1.0 | **0.85** | **−15 %** | ibid. |
+| `wood` | 1.0 | **0.90** | **−10 %** | Incropera A.11, planed wood 0.82–0.92 |
+| `door` | 1.0 | **0.90** | **−10 %** | ibid. (painted wood 0.90–0.96) |
+| `door_closed` | 1.0 | **0.90** | **−10 %** | ibid. |
+| `glass` | 0.3 | **0.3** | 0 % | **RECORDED, NOT FIXED** — 0.3 is right as a shield (α ≈ 0.4 for a 1556 K flame) and ~3× low as an emitter (ε ≈ 0.90). No row value serves both; P2b §13 q5 — **KEEP** |
+| `furniture` | 0.5 | **0.5** | 0 % | an OPACITY, not an emissivity (the config comment says so) — **KEEP** |
+| `kindling` | 0.5 | **0.5** | 0 % | ibid. — **KEEP** |
+| **`foliage`** | **0.0** | **0.90** | **the one required change** | **R12.** Leaf ε 0.94–0.99 (Monteith & Unsworth Table A.3); canopy-tile opacity 0.39–0.78 (Beer–Lambert, `k ≈ 0.5`, LAI 1–3). Closes the §6.1 loss-channel invariant |
+
+### 7.4 `[materials.*]` — `ignition_temp` (D5 / ledger 10)
+
+| row | current | derived | % | citation |
+|---|---|---|---|---|
+| `air` / `hull` / `steel` / `glass` | 0 | **0** | — | non-flammable — **KEEP** |
+| `wood` | 300 | **300** | 0 % | Drysdale §6.3 / Babrauskas §7.6: piloted 300–365 °C = 280–345 game — **KEEP** |
+| `furniture` | 280 | **280** | 0 % | bottom of the piloted band, thermally-thin stock — **KEEP** |
+| `kindling` | 280 | **280** | 0 % | fine fuel — **KEEP** |
+| `foliage` | 280 | **280** | 0 % | fine dead fuel 320–350 °C wants 300; 280 is inside the wider band — **KEEP** |
+| `door` | 280 | **300** | **+7.1 %** | it is wood, and `wood` is 300. **Optional** — it also moves `fire_T_ext` (= ign − 200) on that row |
+| `door_closed` | 280 | **300** | **+7.1 %** | ibid. **Optional** |
+
+### 7.5 Non-material dials
+
+| key | current | derived | % | note |
+|---|---|---|---|---|
+| `[physics.thermal] h_conv` | **does not exist** | **6.0** W/(m²·K) | NEW | D3. Churchill & Chu (1975) / Incropera eq. 9.26. One global, no per-material column |
+| `[physics.thermal] KAPPA_REF` | 50.0 | **RETIRED** | — | R10 / design §7.3. Replaced by the per-pair `rho_c_min·dx²/dt` (§3.2) |
+| `[physics.thermal] SHIFT_AT_REF` | 2 | **RETIRED** | — | ibid. — it was the CFL anchor |
+| `[physics.thermal] SHIFT_MIN` | 2 | **2** | 0 % | still the stability bound; nothing derived reaches it any more — **KEEP** |
+| `[physics.thermal] NO_FACE` | 63 | **63** | 0 % | the derived shifts reach 24, so the sentinel is still clear — **KEEP** |
+| `[physics.thermal] n_floor_heat` | 0.01 | **0.01** | 0 % | T2 §7: the floor is on N and keeps its job. The D4 mask handles the `N == 0` case the floor never covered — **KEEP** |
+| `[physics.thermal] c_v` | 1.0 | **0.0076849** | −99.2 % | **T2's, not T3's** — listed so D6 is complete |
+| `[physics.radiation] rad_scale_derived` | **2.125632e-08** | **1.6533e-08** | **−22.2 %** | **STILL AT THE 0.7 PIN.** R13 ruled 0.9 and this key was not restated (`config.toml:680`). Nothing live reads it yet, so the change is free — but it must not be missed |
+| `[physics.radiation] k_leak` | 0.10 | 0.10 | 0 % | already live — T1's — **KEEP** |
+| `[physics.combustion] H_BED_M` | 18125.0 | **19827** | **+9.4 %** | D5: Huggett 1980 x a 25 % flame-to-surface feedback share. `H_BED_SHIFT` stays 7 |
+| `[physics.combustion] H_BED_SHIFT` | 7 | **7** | 0 % | — **KEEP** |
+| `[physics.combustion] H_fuel` | 4.0 | **7.614e+06** | **+1.9e+08 %** | **CANNOT BE EXPRESSED** — a plain Q16.16 int32 caps at 32 768. Needs a mantissa+shift split: **`H_FUEL_M = 14872`, `H_FUEL_SHIFT = 9`** — a config schema change plus `combustion.cpp` + `cuda_combustion.cu`. See §8 q8 |
+| `[physics.combustion] fuel_per_o2` | 0.7 | **0.7** | 0 % | not a T3 quantity (it is the hp↔O₂ exchange rate, and `hp` is Erik's) — **KEEP** |
+
+### 7.6 Code changes T3 specifies (no config key)
+
+| # | where | what |
+|---|---|---|
+| 1 | `src/simulation/materials.py::_build_conduction_tables` | Replace the `KAPPA_REF`/`SHIFT_AT_REF` log bucket with §3.2's `round(log2(rho_c_min·dx²/(kappa_hm·dt)))`. Needs `thermal_mass` (already on the table), `rho*c_v` (from `c_v`) and the level's `tile_size_m` (§3.5) |
+| 2 | `src/simulation/materials.py::_build_conduction_tables` | One branch: when exactly one side is a `thermal_solid`, `U = 1/((dx/2)/kappa_solid + 1/h_conv)` instead of the harmonic mean (§4.4). Keyed on the existing derived `thermal_solid` column |
+| 3 | `cpp/src/temperature_solver.cpp` Pass 2 | The D4 mask: `!ts[i] && (is_vacuum[i] \|\| cap_real_[i] == 0)` ⇒ every face this cell owns is skipped. All three terms are already in scope (§5.4) |
+| 4 | `cpp/src/cuda_temperature.cu` | The identical twin of (3). **No CUDA on this machine** — specified here, gated on Erik's CUDA box |
+| 5 | `cpp/src/combustion.cpp` + `cpp/src/cuda_combustion.cu` | `H_fuel` gains its shift companion (§7.5) — only if Erik takes q8 |
+| 6 | goldens | Every change above moves fields downstream of temperature. **Rides T5's single arc re-baseline.** No `DIGEST_SPEC_VERSION` bump is owed *from T3's axis* (no membership or dtype change) |
 
 ## 8. Open questions for Erik
 
-*(pending)*
+Nothing below was decided here. Each is a row the physics cannot settle on its
+own, with the derived numbers attached so the ruling is cheap.
+
+1. **`kindling` — material or object?** As a material it is wood,
+   `thermal_mass = 8`. As an object it is a stick pile at 15–25 % bulk density,
+   which wants **2** (−75 %). The config says kindling copies furniture "PER THE
+   ROW CONVENTIONS — do NOT import literature values raw here", so the shipped 8
+   may be deliberate. (§2)
+2. **`foliage` — same question, and the table cannot answer it.** A canopy tile
+   at 2–5 % leaf fill wants `thermal_mass = 0.5`, which is **not expressible**:
+   the column is a power of two with `heat_inv_shift >= 0`, and `0` means "gas
+   branch". The floor is **1** — 8× lighter than shipped and still ~2× heavy.
+   Combined with R12's `heat_atten = 0.9` this makes foliage a fast-heating,
+   fast-radiating fine fuel, which is what vegetation is. **Take 1, or keep 8?**
+   (§2)
+3. **Do `furniture` / `kindling` / `foliage` get a real `conductivity`?**
+   `0.0` is Erik's fixture choice and `config.toml` says in as many words not to
+   generalise from that row. Under R10 the **solid–solid** faces it would open
+   are dead anyway (§3.4: a cellulosic face is exactly zero below a 256 K gap).
+   But it also opens the **solid–gas convection** face at shift 13, which is a
+   real channel worth a 341 s e-fold — and today those three rows **cannot heat
+   the air at all**. With `cool_shift` gone (R1) that leaves radiation as a
+   burning crate's only loss. **Physics says 0.12; the fixture says 0.0.** (§7.2)
+4. **Conduction below the dead-band: destroy, or not?** §3.4 measured that at
+   R10's shifts the hot cell loses 1 raw count per tick while the cold cell gains
+   nothing — a booked sink worth 1.3 K/hour, 0.04 K over a crate burn. T2 §8 q3
+   asked for this to be *chosen*. It is legal (counted in `e_cond_trunc_sum`)
+   and negligible, but it is a one-way drain with no counterparty. **Leave it, or
+   make a sub-dead-band face a no-op?**
+5. **The wood solid–gas face is limited by the tile, not by the air.** §4.2: a
+   wood tile's own half-cell resistance is 8.3× the boundary layer's, so a wood
+   wall heats its air 8× slower than a steel one at the same temperature. That is
+   an honest consequence of the one-node solid (R6), not of `h` — a real wall's
+   *surface* is at flame temperature and ours is not. **Accept it (and let #68
+   fix it), or drop the solid half-cell and use `h` alone (shift 10 for every
+   solid)?** The derivation prefers the series form; the *feel* consequence
+   belongs to Erik.
+6. **`foliage` would be transparent to light and near-black to IR.** R12 puts
+   `heat_atten` at 0.9 while `light_atten` stays `[0, 0, 0]`. No real material
+   does that; it is a deliberate gameplay choice (walk-through, see-through
+   canopy). Recorded so it is deliberate, not drifted into.
+7. **`hp` and `thermal_mass` describe different objects on the same row.** §6.3:
+   `furniture`'s fuel store is 15.9 kg of wood; its `thermal_mass` says the tile
+   *is* 139 kg. For the whole tile to be fuel, `hp` would be **262, not 30**.
+   Both numbers are individually right — `hp = 30` is a real crate stack,
+   `thermal_mass = 8` is a solid column — which is the third place this arc has
+   met the object-vs-material split. **Is a tile an object or a block of
+   material?** This is the question behind questions 1, 2 and P2b §9.
+8. **`H_fuel` needs a schema change or it cannot be derived at all.** The
+   derived plume share is 7.6e+06 and the dial is a plain Q16.16 int32 capped at
+   32 768. Giving it `H_FUEL_M`/`H_FUEL_SHIFT` is a small, mechanical change on
+   both backends — but it is a **1.9-million-fold** increase in the heat
+   combustion puts into the air, which is squarely a HUMAN-TEST feel change.
+   **Does T5 take it, or does it become its own patch?**
+9. **The conduction table becomes tile-size dependent** (§3.5). At 1.0 m tiles
+   every solid face is 3 shifts slower and every gas face 2. `tile_size_m` is
+   known at load, exactly as the water solver's `dx` is. **Derive per level, or
+   keep one global table and accept that `airlock_demo` and `bench_two_room`
+   conduct at the wrong rate?** (P2b §13 q7 asked the same of `rad_scale`.)
 
 ## 9. What did not hold
 
-*(pending)*
+The arc's convention: things expected, published or inherited that the
+measurement contradicted.
+
+1. **The two published slab numbers are in different conventions.** The brief
+   asks for "wood ~36 h, steel ~2.6 h" across one 0.333 m tile. Reproduced
+   exactly — but **steel's 2.6 h is `dx²/alpha` and wood's 36 h is
+   `dx²/(4·alpha)`**, and both use the superseded 0.7 pin. In one convention at
+   R13's pin the pair is **steel 2.2 h / wood 231 h**: wood is 105× steel, not
+   14×. Neither published figure is wrong; the pair cannot both be right at
+   once. (§3.3)
+2. **"We are 28–139× too weak" is true of the LAW and false of the shipped
+   RATE.** Design §4 item 7a reasons from `kappa_air/dx = 0.072 W/(m²·K)`. But
+   the shipped shift is *not* derived from that law — the log bucket has no
+   capacity in it at all — and at T2's corrected `c_v` the shipped `air|metal`
+   shift of 10 implements **6.75 W/(m²·K)**, i.e. **12 % above** the derived
+   `h = 6`. Measured on the engine, both ways (§4.2). The law still has to
+   change; the metal rows' *numbers* do not. (And the "pure conduction" baseline
+   is 0.144, not 0.072 — the harmonic mean already gives the metal half-cell
+   away for free.)
+3. **D1 found nothing to change.** I expected a table of moves and every single
+   `thermal_mass` came out equal to what ships, worst snap 7.7 %. P2b §7
+   predicted it at the 0.9 pin and R13 asserted it; this is the row-by-row
+   confirmation, and it means the largest-looking deliverable in the brief is a
+   no-op.
+4. **"Negligible" conduction is identically zero, and it is not inert.**
+   §3.4: exactly zero transfer below `2^s/65536` K (256 K for wood, bisected on
+   the engine, prediction hit to the digit) — *and* below that band the hot cell
+   still loses 1 raw count per tick to nobody. "Negligible" and "a one-way sink"
+   are different claims and I nearly reported only the first.
+5. **The vacuum leak is energetically negligible.** The design's framing —
+   "the floor invents a conducting medium… a breached cell keeps conducting" —
+   is exactly right, and I expected the magnitude to matter. Measured: **44.6 W
+   per face at a 800 K excess, 0.017 % of the same tile's radiative loss**, and
+   it is already counted (`e_cond_cap_sum`, `e_vac_wipe_sum`). Worth fixing
+   because it is a fiction, not because it is a hole. Reporting it as a hole
+   would have been this arc's next wrong headline.
+6. **There is no vacuum threshold to pick.** I expected to recommend a number.
+   The Knudsen pressure is **0.013 of one Q16.16 LSB** of `n_bulk`, so every
+   representable nonzero density is still a continuum conductor and the only
+   free-molecular state the field can hold is exactly zero. The physics deleted
+   the dial. (§5.2)
+7. **`H_fuel` cannot be given its derived value.** I expected a value edit and
+   found a representation ceiling: 32 768 against a derived 7.6e+06. The
+   engine's flame-to-gas heat term is **six orders of magnitude** below its
+   fuel-bed term (`H_BED/H_fuel = 580 000`) — a ratio of two config dials, so it
+   depends on none of this report's unit reasoning. (§6.3)
+8. **`config.toml` still carries the 0.7-pin `rad_scale_derived`.** Found while
+   assembling D6: `config.toml:680` is `2.125632e-08`, and R13's ruled value is
+   **1.6533e-08** (−22.2 %). Nothing live reads it yet, so it is free — and easy
+   to miss, since neither P2b nor T2 owned it after the ruling. (§7.5)
+9. **My first form of the solid–gas face was wrong.** I wrote `h` alone before
+   checking, which gives shift 10 for *every* solid. The series form — the same
+   two-half-cell resistance the harmonic mean already encodes — moves wood,
+   door and the cellulosic rows to **13**, three shift steps and 8× slower. The
+   arithmetic corrected the instinct; the choice is now §8 q5 rather than a
+   silent default.
+10. **`air`'s `κ` sits exactly on a shift boundary.** 0.024 → 17, 0.0257 → 16,
+    and both are inside the literature band (0.0223 at 250 K, 0.0263 at 300 K).
+    The `air|air` face is therefore a coin-flip on a table lookup; 293 K
+    interpolation gives 0.0257 and settles it, but it is worth knowing that the
+    row is not robust.
 
 ## 10. The gate
 
