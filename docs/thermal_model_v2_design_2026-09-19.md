@@ -69,6 +69,13 @@ them as findings.
 - `ACCEPTED GAP:` `thermal_mass` quantisation, 6–10 % at the 0.9 pin (R5).
 - `ACCEPTED GAP:` `c_p` constant per material (~30 % drift for wood over our
   range).
+- **CLOSED, not a gap:** `c_v` vs `c_p` for gas. Erik, 2026-09-19: heating air makes
+  it expand, which takes the temperature back down. That is right, and the engine
+  already charges it — `eos_solver.cpp`'s `k_work = (γ−1)·T_AMB_K` removes book energy
+  in proportion to `div u`. So `c_v` is the correct constant for the FIELD
+  (constant-volume internal energy, `N·T_abs`) and the expansion is charged SEPARATELY
+  as work; using `c_p` in the capacity would double-count the same physics. Locally the
+  spike evens out, globally the room keeps the energy and warms at `c_v`.
 - `ACCEPTED GAP:` **Conduction is negligible at tile scale** (R10). Heat moves by
   radiation and gas advection. A material wanting fast conduction (a composite,
   a heat pipe) is authored as its own row later, with its `κ` chosen rather than
@@ -150,7 +157,7 @@ contradiction with the gas-energy seam's born-at-ambient rule (L3).
 | 4 | Gas heat capacity (`c_v`) | **Test** — §3.2, T2 |
 | 5 | Energy → temperature | Derivation — verified; it is the definition of heat capacity |
 | 6 | Conduction solid↔solid | **RULED (R10)** — real `α·Δt/Δx²`; derivation only, no stability anchor |
-| 7 | Conduction solid↔gas | Same law, same ruling |
+| 7 | Conduction solid↔gas | **Same law, same ruling — plus TWO corrections found 2026-09-19 with Erik.** **(a) The law is wrong at a wall.** Our face uses pure conduction, `κ/dx = 0.072 W/(m²·K)`; the real process is CONVECTION through a sub-tile boundary layer, `h ≈ 2–10` natural and `10–100` in a fire plume — we are **28–139× too weak**. Using `h` is not a fudge: pure conduction is the WRONG LAW for a solid–gas interface and `h` is a measured quantity, so this sits inside R7. **T3 derives it, T5 applies it.** **(b) Vacuum must not conduct.** Kinetic theory: `κ` is density-INDEPENDENT (`n` and `λ` cancel) until `λ` reaches the gap, which for a 0.333 m tile is **0.02 Pa = 2×10⁻⁷ atm**. But `n_floor_heat = 0.01` is 1013 Pa — **five orders above that** — so the floor invents a conducting medium in vacuum and a breached cell keeps conducting at a floored capacity. The fix is a **MASK** (a vacuum cell does not conduct), never a density law for `κ`. **T3 states the threshold, T5 applies the mask.** |
 | 8 | Out-of-plane loss (`k_leak`) | Derivation from the exact slab law (~0.10) |
 | 9 | Emissivity | Derivation from literature; includes R12's foliage |
 | 10 | Ignition temperature | Literature |
@@ -171,7 +178,7 @@ already green.
 |---|---|---|---|---|---|
 | **T1** | **Per-tile `amb_m` (derived from vacuum/interior state) + uniform `k_leak` live in the sweep.** Reference first (`sweep_ref_q.py`), then the engine. Still shadow | subagent, worktree | **Sonnet 5** | **gate 0** bit-for-bit; the uniform-ambient case reproduces today's output exactly; goldens unmoved | — |
 | **T2** | **The currency audit** (ledger 4). What `c_v` must be, and where it belongs given `gas_energy = N·T_abs`. Report + proposed value; **applied at T5** | subagent, worktree | **Opus 5** | #54 identity still closes; goldens unmoved | — |
-| **T3** | **Derive the real material table** (ledger 3, 6, 9, 10, 12): `thermal_mass` snapped, `κ` at **real rates (R10)**, emissivities **including foliage (R12)**, ignition temps, heat of combustion. **A report, not an edit** | subagent, worktree | **Opus 5** | every number carries a citation; the 0.7-vs-0.9 pin recommended with its table | **review** |
+| **T3** | **Derive the real material table** (ledger 3, 6, 9, 10, 12): `thermal_mass` snapped, `κ` at **real rates (R10)**, emissivities **including foliage (R12)**, ignition temps, heat of combustion, **the solid–gas convection coefficient `h` and the vacuum-mask threshold** (ledger 7a, 7b). **A report, not an edit** | subagent, worktree | **Opus 5** | every number carries a citation; the 0.7-vs-0.9 pin recommended with its table | **review** |
 | **T4** | **Retire the dead test surface, before it can go red.** The 46 old-law tests (design v3 §11.1), `test_cool_shift_axis.py` (25), `test_temperature_cooling.py` (9), the CUDA check pair, the gate-A capture, `test_thermal_mass_axis.py`'s exact-value pin (rewritten to a property), and the R11 sustain check. Each deletion names the property that replaces it | subagent, worktree | **Haiku 4.5** | **suite green** — the old law is still live, so this only removes tests whose replacements already pass | — |
 | **T5** | **THE FLIP — atomic.** Fold reads the sweep; clamp live on CPU **and** the CUDA temperature twin; units absorb (body share); `cool_shift` deleted across all 43 files **including the CUDA Pass 3 and the two pinned positional enum slots** (L2 — removing entries renumbers survivors silently); `k_leak` live; the real material table applied; `c_v` corrected; **`dyn_heat_atten_q` into the digest, spec v6, and the arc's ONE golden re-baseline, in this commit** (L2-B2) | subagent, worktree | **Opus 5** | full suite; #54 identity closes with the thermostat *term* removed; CUDA tol-0 | **HUMAN-TEST** — built, gated, pushed, **NOT merged** |
 | **T6** | **Delete the old-law code**: `cast_fire_heat` + both call sites, the dead dials, `RAD_LIM_SHIFT`, the pair budget, the CUDA cast bindings, the five tool edits | subagent, worktree | **Haiku 4.5** | suite-gated, mechanical | — |
@@ -209,6 +216,16 @@ already green.
    with non-uniform ambient and `k_leak > 0`. (T1)
 5. **One gas joule is one solid joule.** A known energy across a solid–gas face
    raises the gas by its real heat capacity's prediction. (T2/T5)
+5b. **A face loses exactly what the gas gains.** Erik's own assertion, 2026-09-19,
+   and it is **not currently tested**: the solid's loss and the gas's gain must be the
+   SAME integer across a solid–gas face. It holds today only because `c_v = 1` makes
+   it hold by accident — T2 measured received/delivered `= c_v`. *Breaks if* the
+   energy→temperature conversion on the gas side and the face flux disagree about the
+   capacity. (T5)
+5c. **A gas cell never ends hotter than the solid heating it.** The maximum principle,
+   also Erik's. Structurally guaranteed today by `min(cap_i, cap_j)` — `full` is
+   exactly the energy that brings the smaller-capacity side to the other's temperature
+   — and the `c_v` fix must preserve it. (T5)
 6. **A sealed room is no longer adiabatic.** With `k_leak > 0` a hot interior
    room's total energy falls; at 0 it does not. (T5)
 7. **Nothing relaxes to ambient.** No solid's temperature changes except through
