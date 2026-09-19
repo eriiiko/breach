@@ -26,7 +26,7 @@
 - [x] §7 **D6** — the summary table T5 executes from
 - [x] §8 Open questions for Erik
 - [x] §9 What did not hold
-- [ ] §10 The gate
+- [x] §10 The gate
 
 ---
 
@@ -722,8 +722,8 @@ is **~20–40 %** of the total heat release (Drysdale ch. 5's burning-rate balan
 > **`H_fuel` cannot hold its derived value.** It enters as
 > `quantize((double)H_fuel)`, a plain Q16.16 int32, so its ceiling is **32 768**
 > and the derived value is 7.6e+06. T5 needs the same mantissa-plus-shift split
-> `H_BED` already has: **`H_FUEL_M = 14872`, `H_FUEL_SHIFT = 9`**
-> (`14872 · 512 = 7.614e+06`). That is a config schema change plus a
+> `H_BED` already has: **`H_FUEL_M = 14870`, `H_FUEL_SHIFT = 9`**
+> (`14870 · 512 = 7.613e+06`). That is a config schema change plus a
 > `combustion.cpp` / `cuda_combustion.cu` pair, not a value edit — flagged as
 > the single largest implementation item D5 produces.
 
@@ -760,7 +760,7 @@ an upholstered chair at 150–800 kW; a 1.5 m pallet **stack** is 3–4 MW
 At Huggett, a `furniture` tile's fuel store is **15.9 kg of wood**. Its
 `thermal_mass = 8` says the tile *is* **139 kg** of wood (P2b §2). So the row
 stores 11.4 % of its own mass as fuel, and for the whole tile to be fuel `hp`
-would have to be **262**, not 30 — **8.7×**.
+would have to be **266**, not 30 — **8.9×**.
 
 Neither number is wrong on its own. A 0.333 m × 2.5 m column packed with 12 mm
 plywood crates really does hold about 15–30 kg of wood, so **`hp = 30` at
@@ -850,7 +850,7 @@ edit and are listed so T5 can confirm rather than infer.
 | `[physics.radiation] k_leak` | 0.10 | 0.10 | 0 % | already live — T1's — **KEEP** |
 | `[physics.combustion] H_BED_M` | 18125.0 | **19827** | **+9.4 %** | D5: Huggett 1980 x a 25 % flame-to-surface feedback share. `H_BED_SHIFT` stays 7 |
 | `[physics.combustion] H_BED_SHIFT` | 7 | **7** | 0 % | — **KEEP** |
-| `[physics.combustion] H_fuel` | 4.0 | **7.614e+06** | **+1.9e+08 %** | **CANNOT BE EXPRESSED** — a plain Q16.16 int32 caps at 32 768. Needs a mantissa+shift split: **`H_FUEL_M = 14872`, `H_FUEL_SHIFT = 9`** — a config schema change plus `combustion.cpp` + `cuda_combustion.cu`. See §8 q8 |
+| `[physics.combustion] H_fuel` | 4.0 | **7.614e+06** | **+1.9e+08 %** | **CANNOT BE EXPRESSED** — a plain Q16.16 int32 caps at 32 768. Needs a mantissa+shift split: **`H_FUEL_M = 14870`, `H_FUEL_SHIFT = 9`** — a config schema change plus `combustion.cpp` + `cuda_combustion.cu`. See §8 q8 |
 | `[physics.combustion] fuel_per_o2` | 0.7 | **0.7** | 0 % | not a T3 quantity (it is the hp↔O₂ exchange rate, and `hp` is Erik's) — **KEEP** |
 
 ### 7.6 Code changes T3 specifies (no config key)
@@ -909,7 +909,7 @@ own, with the derived numbers attached so the ruling is cheap.
    canopy). Recorded so it is deliberate, not drifted into.
 7. **`hp` and `thermal_mass` describe different objects on the same row.** §6.3:
    `furniture`'s fuel store is 15.9 kg of wood; its `thermal_mass` says the tile
-   *is* 139 kg. For the whole tile to be fuel, `hp` would be **262, not 30**.
+   *is* 139 kg. For the whole tile to be fuel, `hp` would be **266, not 30**.
    Both numbers are individually right — `hp = 30` is a real crate stack,
    `thermal_mass = 8` is a solid column — which is the third place this arc has
    met the object-vs-material split. **Is a tile an object or a block of
@@ -992,4 +992,55 @@ measurement contradicted.
 
 ## 10. The gate
 
-*(pending)*
+**Run on this branch, with the CPU extension built from it**
+(`cpp/build_cpu_home.bat` → `cpp/build/Release`; **no CUDA on this machine**):
+
+    C:/Users/steen/anaconda3/python.exe -m pytest tests -q
+    2622 passed, 29 skipped, 4 xfailed, 3 warnings in 122.68 s        (0 failed)
+
+**Identical counts to T2's gate** (2622 / 29 / 4), which is the check that T3
+added no test and removed none. The 29 skips are the CUDA gates (no
+`cpp/build_cuda` in this worktree, by instruction — no CUDA source changed).
+
+**Goldens: unmoved.** `git diff --name-status fire-12...HEAD` is **two ADDED
+files**, both under `docs/ray_engine_v2_scheme_study_2026-09-13/`:
+
+| status | path |
+|---|---|
+| A | `docs/ray_engine_v2_scheme_study_2026-09-13/report_t3.md` |
+| A | `docs/ray_engine_v2_scheme_study_2026-09-13/material_numbers_t3.py` |
+
+No engine file, no `config.toml`, no material row, no golden, no
+`DIGEST_SPEC_VERSION`. **Nothing was applied** — that is the patch's contract
+(D7), and the diff is the proof.
+
+`git status`: clean. Nothing was merged, pushed or deleted.
+
+### 10.1 The instrument
+
+`material_numbers_t3.py` is the sibling of T2's `currency_audit_t2.py`: it
+measures and prints, asserts nothing, edits nothing, and is imported by nothing
+in `src/` or `cpp/`. Every engine number in this report comes out of it, so a
+reader re-runs it rather than trusting the prose:
+
+    C:/Users/steen/anaconda3/python.exe \
+        docs/ray_engine_v2_scheme_study_2026-09-13/material_numbers_t3.py
+
+It carries M1–M6 (the six measurements, §§1.1, 3.4, 4.2, 5.3, 5.4) and the
+paper derivation (Churchill–Chu `h`, the face table, the Knudsen arithmetic,
+Huggett). It is **not** a bench and **not** a gate; the reach bench
+(`tools/fire_tuning_lab.py --reach`) and the burn bench
+(`tools/fire_timing_harness.run_one`) are the canonical instruments and §6.3's
+burn duration was measured on the latter, reused rather than rebuilt.
+
+### 10.2 What T5 inherits, in one paragraph
+
+**D1 is a no-op** — every `thermal_mass` already equals its derived value at the
+R13 pin. **D5's only required material edit is `foliage.heat_atten 0.0 → 0.90`**
+(R12). Everything else is a choice Erik owns (§8) or a mechanism change:
+§3.2's per-pair conduction anchor replacing `KAPPA_REF`/`SHIFT_AT_REF`, §4.4's
+one-branch convection face with `h_conv = 6.0`, §5.4's three-term vacuum mask,
+and — the largest single item — §6.3's finding that `H_fuel` **cannot hold its
+derived value** without the mantissa+shift split `H_BED` already has. And
+`config.toml:680` still carries the superseded 0.7-pin `rad_scale_derived`
+(§7.5), which nothing live reads yet and nothing else in this arc owns.
