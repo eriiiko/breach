@@ -31,6 +31,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -89,6 +90,26 @@ def _inject(stub, unit, phi):
         stub.heat[ty, tx] = raw
 
 
+# T5b step 6: PHI NOW HAS A PHYSICAL MEANING, so this module's fixtures state
+# irradiance in kW/m2 instead of bare `phi` numbers.
+#
+# `phi` is the body's absorbed energy per tick in heat counts, so
+#     irradiance = phi * 65536 * J_per_count * ticks_per_second / A_rad
+#                = phi * 224.8 kW/m2
+# with J_per_count = 0.4759 J (R13's pin) and A_rad = 4*0.333*2.5 = 3.33 m2.
+# Before the flip `phi` came off the retired cast's FITTED emission scale
+# (2419x the derived one), so the fixture values below meant nothing physical
+# and "phi ~ 1 is a faint warmth" was simply the old scale's arithmetic.
+# Under the derived currency phi = 1 is 225 kW/m2 -- five times the flux inside
+# a compartment fire -- which is why the old `warm room` fixture now cooks.
+KW_M2_PER_PHI = 224.775
+
+
+def phi_of(kw_m2):
+    """Irradiance in kW/m2 -> the `phi` this module injects."""
+    return float(kw_m2) / KW_M2_PER_PHI
+
+
 # ---------------------------------------------------------------------------
 # Consumer tests (heat injected directly)
 # ---------------------------------------------------------------------------
@@ -120,17 +141,46 @@ def test_cold_tile_zero_damage():
 
 
 def test_warm_room_survivable():
-    """A faint warmth (within the tolerance band) does no damage."""
+    """PROPERTY (T5b step 6): the burn band is anchored on the LITERATURE.
+    2.5 kW/m2 -- the standard human pain / firefighter-exposure threshold --
+    sits exactly at the edge of the survivable band, so 1 kW/m2 (bright
+    sunshine) does nothing and 5 kW/m2 (blistering in ~30 s) hurts.
+
+    This REPLACES "phi ~ 1 is a faint warmth", which was the retired cast's
+    FITTED scale talking: under the derived currency phi = 1 is 225 kW/m2.
+    `heat_flux_to_temp` is derived from this anchor (config.toml [combat]), so
+    the test and the dial cannot drift apart -- and stating the fixture in
+    kW/m2 means a future re-derivation moves the dial, not this file.
+
+    BREAKS IF: the anchor moves, or `heat_flux_to_temp` stops being derived
+    from it.
+    """
     stub = _HeatStub(40, 40)
     m = _place(Unit("M1", x=10, y=10, team=0), 10, 10)
     m.current_hp = 100.0
-    # Phi ~1: T_felt ~26 < temperature_max (60) -> over <= 0.
-    _inject(stub, m, 1.0)
+    _inject(stub, m, phi_of(1.0))       # 1 kW/m2 -- bright sunshine
 
     apply_environmental_damage([m], stub, ticks_per_second=24)
 
-    assert _expected_marine_dmg(1.0, 24) == 0.0
+    assert _expected_marine_dmg(phi_of(1.0), 24) == 0.0
     assert m.current_hp == 100.0
+    # The anchor itself: 2.5 kW/m2 is the band EDGE, so the marine takes the
+    # BASE rate there and nothing more -- `over` is 0, so the ramp contributes
+    # nothing and the damage is exactly `environmental_damage_rate`, 1 HP/s,
+    # i.e. 100 s to incapacitate. That is the right shape for a threshold the
+    # literature describes as "pain in ~10 s, injury over tens of seconds".
+    assert _expected_marine_dmg(phi_of(2.5), 24) * 24 == pytest.approx(1.0, abs=0.01)
+    # Just below it, nothing at all -- the edge is real, not a region.
+    assert _expected_marine_dmg(phi_of(2.4), 24) == 0.0
+    # The literature band, stated so a reader sees what the dial buys:
+    #   5 kW/m2 blistering in ~30 s, 10 severe pain / 2nd-degree in ~10 s,
+    #   20 untenable. Damage must be monotone and reach lethal rates.
+    d5 = _expected_marine_dmg(phi_of(5.0), 24) * 24
+    d10 = _expected_marine_dmg(phi_of(10.0), 24) * 24
+    d20 = _expected_marine_dmg(phi_of(20.0), 24) * 24
+    assert 0.0 < d5 < d10 < d20
+    assert d10 > 5.0, f"10 kW/m2 should be clearly lethal over ~15 s, got {d10} HP/s"
+    assert d5 < 5.0, f"5 kW/m2 should be survivable for tens of seconds, got {d5} HP/s"
 
 
 def test_zombie_takes_fire_multiplier_more():

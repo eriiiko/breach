@@ -526,9 +526,22 @@ def test_spread_is_radiation_only_no_cellular_stencil():
     assert near_peak > 0, (
         "the near air-separated target never warmed - radiation is not "
         "spreading heat at all")
-    assert near_peak / 65536.0 > 100.0, (
-        f"the near target only reached {near_peak / 65536.0:.1f} game - far "
-        f"below the ~183 the frozen dials deliver")
+    # T5b step 6 (THE FLIP): the `> 100 game` anchor is RETIRED with the law it
+    # measured. It came from P-F1a's frozen dials on the old cast, whose
+    # emission scale was FITTED and is 2419x the derived one (report_p2b.md).
+    # On the sweep, at the derived scale, this scene's near target reaches
+    # 0.1 game -- and that is the PHYSICS, not a regression: a 443-game (736 K)
+    # surface radiating across one air cell delivers ~12 kW to a 154 kg block
+    # of wood with a 249.5 kJ/K heat capacity, i.e. 0.05 K/s. Real fire spread
+    # to heavy timber takes minutes of 10-20 kW/m2, which is design v2 R6's
+    # accepted gap ("thick structure barely auto-ignites") arriving as a number.
+    # What this test protects -- radiation is the ONLY spread path and it does
+    # not leap gaps -- is the near/far CONTRAST, and that is asserted instead.
+    assert near_peak > 4 * int(g.temperature[50, 40]) + 1, (
+        f"the near (air-separated) target, at {near_peak / 65536.0:.3f} game, "
+        f"is not clearly warmer than the far one at "
+        f"{int(g.temperature[50, 40]) / 65536.0:.3f} -- radiation is not "
+        f"reaching across the gap at all")
     # The far tile, with no heat reaching it, stayed cold and unlit -> the old
     # gap-leaping cellular stencil is gone, and the >= grid-diagonal emission
     # rays (v7 rule 4) have NOT quietly become a new one.

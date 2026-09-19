@@ -2866,7 +2866,39 @@ crit_behind_mult = 4.0
 # environmental_damage_rate / temperature_max come from each unit's
 # EnvironmentProfile (config keys below are the global fallback if absent).
 # dt_tick = 1/ticks_per_second keeps the real DPS tick-rate independent.
-heat_flux_to_temp = 8.0          # felt-degrees per absorbed heat-unit (k_flux_to_temp)
+# T5b step 6 (design v3 §6.2, row 3): heat_flux_to_temp is DERIVED now, against
+# the physical currency, and anchored on the literature rather than on play.
+#
+#   Phi is the body's absorbed energy per tick in heat counts (rad_flux_sweep,
+#   the sweep's body channel), so the irradiance on the body is
+#       Phi * 65536 * J_per_count * ticks_per_second / A_rad
+#     = Phi * 224.8 kW/m2
+#   with J_per_count = 0.4759 J (R13's pin) and A_rad = 4*0.333*2.5 = 3.33 m2,
+#   the same four lateral faces the emission scale is denominated over.
+#
+# THE ANCHOR: 2.5 kW/m2 is the standard human pain / firefighter-exposure
+# threshold (SFPE Handbook; Drysdale ch. 2's tenability table), so it is placed
+# exactly at the EDGE of the survivable band -- `T_felt == temperature_max`,
+# over == 0, no damage. Everything else falls out:
+#
+#   k = (temperature_max - heat_ambient_ref)
+#       / (Phi(2.5 kW/m2) * unit_absorption * (1 - unit_reflectivity))
+#     = 40 / (0.011122 * 0.765) = 4701.2
+#
+# and the resulting band, at the shipped environmental_damage_rate = 1.0 and
+# heat_overtemp_scale = 0.05, on a 100 HP unit:
+#
+#    1 kW/m2  (solar)                 T_felt  36   no damage
+#    2.5      (pain in ~10 s)         T_felt  60   the band edge, no damage
+#    5        (blistering in ~30 s)   T_felt 100    3 HP/s -> 33 s
+#   10        (2nd-degree in ~10 s)   T_felt 180    7 HP/s -> 14 s
+#   20        (untenable)             T_felt 340   15 HP/s ->  6.7 s
+#   50        (in the flame)          T_felt 820   39 HP/s ->  2.6 s
+#
+# WAS 8.0 -- a play-tuned number against the OLD `rad_flux`, whose scale came
+# from the retired cast's FITTED `rad_scale` (2419x the derived one). The dial
+# had to move by roughly that factor for a marine to keep burning at all.
+heat_flux_to_temp = 4701.2       # felt-degrees per absorbed heat-unit (k_flux_to_temp)
 heat_ambient_ref = 20.0          # baseline felt temperature, no beam (T_ambient_ref)
 heat_overtemp_scale = 0.05       # damage ramp above the band (k_over), small +ve
 temperature_max = 60.0           # global fallback band ceiling if a unit has no EnvironmentProfile

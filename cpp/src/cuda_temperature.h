@@ -144,10 +144,28 @@ int64_t temperature_step(
     // arrays), from the same `conduction::cell_capacity_q` kit the device
     // capacity build uses, so the two backends cannot drift. nullptr ->
     // skipped.
-    int64_t* solid_books_out = nullptr);
+    int64_t* solid_books_out = nullptr,
+    // ---- ray-engine-v2, THE FLIP (T5b step 6; design v3 P3) --------------
+    // The MAXIMUM-PRINCIPLE CLAMP's two planes, the GPU twin of the CPU
+    // solver's `rad_fluence` / `e_table` pair:
+    //     T_new = min(T_after, max(T_before, E^-1(Phi)))
+    // `rad_fluence` is the sweep's own Phi at the cell (int64 (h,w), H2D'd
+    // here); `e_table` is the E° table (int64, EMISSIVE_TABLE_N entries) whose
+    // inverse `e_inv_q` is FP_HD and therefore the SAME function the CPU calls.
+    // BOTH null -> no clamp, byte-identical to the pre-flip kernel, which is
+    // what every direct-binding caller and every pre-flip test still gets.
+    // The engagement count comes back in slot 13 (see below).
+    const int64_t* rad_fluence = nullptr,
+    const int64_t* e_table = nullptr,
+    int e_table_n = 0);
 
 // The number of slots `energy_counters_out` must have room for.
-constexpr int TEMPERATURE_ENERGY_SLOTS = 13;
+// T5b step 6: 13 -> 14. Slot 13 is `rad_clamp_hits`, the clamp's engagement
+// count -- a COUNT, not an energy, riding this array because it is the only
+// per-cell atomic channel the kernel already has. Appended at the END so no
+// existing slot index moves (design v3 / L2: removing or reordering entries
+// renumbers survivors silently).
+constexpr int TEMPERATURE_ENERGY_SLOTS = 14;
 
 // Backend selection (S1 gate + integration). When true, PhysicsEngine::step_tail
 // runs temperature on the GPU instead of the CPU solver. Defaults false so the

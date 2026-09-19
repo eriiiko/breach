@@ -370,8 +370,10 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             // same solver-side field the CPU path increments — one counter for
             // the diagnostic regardless of backend.
             &this->temperature.t_low_rail_hits,
-            // P-R4: the SIGNED radiation fold, on the GPU twin too.
-            rad_net,
+            // THE FLIP (T5b step 6): the GPU twin folds the SWEEP's plane too
+            // -- one source of radiative truth, whichever temperature backend
+            // is selected. See the CPU branch below for what changed.
+            rad_net_sweep,
             // P-E2a/arc #54: the ten energy counters, folded into the SAME
             // solver fields the CPU path increments — one set of books
             // regardless of backend. Slot order is pinned by cuda_temperature.h.
@@ -380,7 +382,12 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             // fold — the SAME two args the CPU branch below passes.
             gas_energy, t_amb_q,
             // P-G5: the solid_energy_books_sum snapshot out-param.
-            &solid_books);
+            &solid_books,
+            // ...and the clamp's two planes, live on this backend as well
+            // (design v3 P3: "the clamp's GPU twin lands here"). Slot 13 of
+            // `cond_counters` brings its engagement count home.
+            rad_fluence, this->emissive.table(),
+            E_TABLE_SIZE);
         this->temperature.e_cond_trunc_sum   += cond_counters[0];
         this->temperature.e_cond_cap_sum     += cond_counters[1];
         this->temperature.cond_limit_hits    += cond_counters[2];
@@ -395,6 +402,7 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         this->temperature.e_solid_cond_sum    += cond_counters[11]; // P-G5
         this->temperature.e_thermostat_sum    += cond_counters[12]; // P-G5
         this->temperature.solid_energy_books_sum = solid_books;     // P-G5 (=, not +=)
+        this->temperature.rad_clamp_hits      += cond_counters[13]; // T5b: the clamp
     } else
 #endif
     {
@@ -416,21 +424,33 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             // `cool_shift`/`cool_shift_vacuum`/`cool_shift_floor` members still
             // supply the vacuum OFFSET and its clamp.
             cool_shift_grid,
-            // P-R4: the SIGNED radiation accumulator (ruling A1.7). Folded in
-            // Pass 1 BEFORE the heat deposit, through each tile's own
-            // heat_inv_shift, with shr_round0 + a symmetric saturating add.
-            rad_net,
+            // THE FLIP (T5b step 6, design v3 P3). The SIGNED radiation
+            // accumulator the fold converts, and it is now the SWEEP's
+            // `rad_net_sweep` -- written at step 2b above, this tick, on the
+            // same `temperature` this pass is about to read -- not the old
+            // cast's `rad_net`. The old cast still runs and still fills its
+            // planes; nothing reads them any more, and T6 deletes it.
+            //
+            // WHAT CHANGES, in one line: the fan of 8 rays per fire tile with
+            // a fitted emission scale becomes ONE exact-integer traversal per
+            // ordinate over the whole grid, conservative to the count
+            // (Sum rad_net + Sum rad_flux + Sum rad_amb == 0 in int64), with
+            // every emission derived from E°(T) at the R13 currency pin.
+            rad_net_sweep,
             // arc #54 P-G1b (design §2.7 row 3): the conserved gas energy
             // field + the T_AMB_K fold. With these supplied, an accountable
             // gas cell's Pass-1 deposit and Pass-2 conduction sum go through
             // the gas-energy seam and the endpoint divide is gone; the solids
             // side is untouched (D2).
             gas_energy, t_amb_q,
-            // ray-engine-v2 P1: the maximum-principle clamp stays DORMANT on
-            // the live path — the fold still reads the OLD cast's rad_net,
-            // which is not the sweep's Φ. P3 passes rad_fluence and
-            // this->emissive.table() here when it flips the fold.
-            nullptr, nullptr);
+            // ray-engine-v2, THE FLIP (T5b step 6): the maximum-principle
+            // clamp is LIVE. It can be, and must be, because the fold now
+            // reads the SWEEP's `rad_net_sweep` (see the argument above) and
+            // `rad_fluence` is that same sweep's own Φ at the same cell, from
+            // the same traversal, this same tick. Clamping against a Φ from a
+            // different law would have been meaningless, which is why P1 left
+            // it dormant.
+            rad_fluence, this->emissive.table());
     }
 
     return destroyed;

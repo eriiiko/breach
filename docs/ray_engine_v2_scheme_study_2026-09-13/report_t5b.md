@@ -563,7 +563,161 @@ have been entirely ungated.
 
 ## 6. Step 6 — THE FLIP
 
-PENDING
+### 6.1 What landed
+
+| # | site | what |
+|---|---|---|
+| 1 | `physics_engine.cpp`, CPU branch | the temperature fold's radiation source is `rad_net_sweep`, the sweep's own plane, written at step 2b of the same `step_tail`, on the same `temperature` the pass is about to read |
+| 2 | `physics_engine.cpp`, CUDA branch | the same — one source of radiative truth whichever temperature backend is selected |
+| 3 | `temperature_solver.cpp` Pass 1 | the maximum-principle clamp goes LIVE: `rad_fluence` and `emissive.table()` are passed instead of `nullptr, nullptr`. It could not have been live before — clamping against a Φ from a different law is meaningless |
+| 4 | `cuda_temperature.{h,cu}` | **the clamp's GPU twin**, in the same position (between the saturating add and the rails, before the applied-ΔT booking), through the same `FP_HD e_inv_q`. `rad_fluence` + the `E°` table are H2D'd; `TEMPERATURE_ENERGY_SLOTS` 13 → **14**, with `C_RAD_CLAMP = 13` **appended** so no pinned index moves |
+| 5 | `exchange.py` | units absorb from **`rad_flux_sweep`** — a ledger EXIT in the fold's own currency — instead of the retired cast's undebited incident estimate. The body share is `d − a` on `dyn_heat_atten_q`; a unit MAX-stamps `heat_atten = 1.0`, so a marine on air absorbs the whole stream crossing its cell and passes ambient on |
+| 6 | `config.toml [combat]` | `heat_flux_to_temp` 8.0 → **4701.2**, DERIVED (§6.2) |
+
+### 6.2 The unit burn band, derived from the literature
+
+With a physical currency, a body's absorbed counts convert to irradiance:
+
+    kW/m² = phi · 65536 · J_per_count · ticks_per_second / A_rad = phi · 224.8
+
+(`J_per_count` = 0.4759 J at R13's pin; `A_rad` = 4·0.333·2.5 = 3.33 m², the
+same four lateral faces the emission scale is denominated over).
+
+**The anchor is 2.5 kW/m²** — the standard human pain / firefighter-exposure
+threshold (SFPE Handbook; Drysdale ch. 2's tenability table) — placed exactly at
+the edge of the survivable band, `T_felt == temperature_max`. Everything else
+falls out:
+
+| irradiance | what it is | `T_felt` | marine |
+|---|---|---|---|
+| 1 kW/m² | bright sunshine | 36 | no damage |
+| **2.5** | **pain in ~10 s** | **60** | **the band edge — the base 1 HP/s, 100 s to incapacitate** |
+| 5 | blistering in ~30 s | 100 | 3 HP/s → 33 s |
+| 10 | 2nd-degree in ~10 s | 180 | 7 HP/s → 14 s |
+| 20 | untenable | 340 | 15 HP/s → 6.7 s |
+| 50 | inside the flame | 820 | 39 HP/s → 2.6 s |
+
+`tests/test_unit_heat_damage.py` now states its fixtures in **kW/m²** rather
+than bare `phi` numbers, and asserts that band. The old fixture read
+*"phi ~ 1: a faint warmth"* — which was the retired cast's fitted scale
+talking; under the derived currency `phi = 1` is **225 kW/m²**.
+
+---
+
+### 6.3 THE FINDING — the flip exposes a 65 536x error in combustion's fuel-bed deposit
+
+**This is the most important thing in the patch, it is exact rather than
+estimated, and it is Erik's to rule on. Open question 7, section 12.**
+
+#### What happens
+
+After the flip, a burning crate does not plateau — it ratchets to the
+`T_MAX_PHYS` rail, and the room follows it. Measured on the canonical
+single-crate bench at the SHIPPED dials:
+
+| | before the flip | after |
+|---|---|---|
+| crate peak temperature | 1 730 game | **15 194 game** |
+| room steady-state (far field) | 525 game | **11 247 game** |
+| burn to 1.7 % hp | 105 s | 31 s |
+
+Four pre-existing runaway guards say so by name, and they are the right gates:
+`test_eos_p4_combustion::test_thermal_spike_is_pre_existing_not_a_p4_regression`
+(peak 15 998 against a 9 000 limit), `test_e2e_1_sealed_room_fire_self_starves`,
+`test_e2e_2_breach_vents_o2_and_kills_fire`,
+`test_payoff_orderings_perturbation_robust`, plus
+`test_ps1_smoke_roundtrip` (bulk gas mass minted at extreme T) and the three
+unit-digest scenarios.
+
+#### Why — isolated, then measured exactly
+
+**Isolated first.** Reverting ONLY the fold's source (`rad_net_sweep` back to the
+old cast's `rad_net`, clamp still live) makes the same fixture plateau at 8 300
+game instead of railing at 15 998. So the trigger is the emission scale, not the
+clamp and not the material rows.
+
+**Then measured.** Driving `CombustionSolver::step` directly with one source and
+one O₂ cell, `H_BED_M = 1.0, H_BED_SHIFT = 0`:
+
+    burn drawn        = 16 384 raw  = 0.25 atm-tile of O2 = 2.881 mol = 0.0922 kg
+    heat deposited    = 16 384 raw                  (so deposit_raw == burn_raw · H_bed)
+    PHYSICAL release  = 0.0922 kg · 13.1 MJ/kg-O2   = 1.208 MJ   (Huggett 1980)
+    ENGINE deposit    = 16 384 · 0.4759 J           = 7 797 J
+
+So at `H_bed = 1` the engine pays 7 797 J where the physics says 1.208 MJ (or
+302 kJ for the 25 % fuel-surface share). The fuel-bed multiplier that pays the
+derived share is therefore
+
+> ### `H_bed = 302 000 / 7 797 = 38.73`
+> and the shipped `H_BED_M · 2^H_BED_SHIFT = 19 827 · 128 = 2.538e+06` is
+> **65 536x** that — exactly `2^16`, to the last digit.
+
+The same factor resolves step 5's puzzle: T3's derived `H_fuel = 7.613e+06` is
+**116.2** in the engine's own expression, and the shipped 4.0 is 29x too small
+rather than 1.9 million times. T3 derived counts *per unit of N_O2*; the engine
+multiplies a **raw Q16.16 burn count** by the constant, so the two differ by
+2^16. The derivation was right and its transcription into the dial was not.
+
+#### What it means
+
+**The engine's fire has been running on a compensating pair of errors.** The
+fuel-bed deposit is 65 536x the physical heat of combustion; `report_p2b.md`
+measured the old cast's fitted `rad_scale` at **2 419x** the derived one. A
+hugely over-strong source against a hugely over-strong sink produced a
+plausible-looking 1 730-game crate. The flip removes one half of the pair and
+the other half is left standing on its own.
+
+**And correcting it alone does not fix the game either** — which is why this is
+a ruling and not a patch. At the honest `H_bed = 38.73` a burning crate receives
+~17.7 kW into a tile whose heat capacity is **249.5 kJ/K** (R14: a tile is a
+filled 154 kg block of wood), i.e. **0.07 K/s**. It would warm by about 2 K over
+its whole burn, never reach its own `hot` gate, and go out. That is physically
+correct and gameplay-fatal, and the missing piece is named in the design
+already: a real fire heats a thin surface layer, not the bulk. **That is the
+two-node skin/core solid — issue #68, deferred by R6** (*"I don't want to
+increase the complexity in the model before we have a working simulation"*).
+
+So the three states are:
+
+| state | `H_bed` | a burning crate |
+|---|---|---|
+| shipped (this branch) | 2.538e+06 | ratchets to the `T_MAX_PHYS` rail |
+| the honest derivation | 38.73 | warms ~2 K and goes out |
+| honest + #68 | 38.73 | a thin skin reaches flame temperature; the bulk does not |
+
+**Nothing was tuned to get out of this.** Fitting a value between the two would
+be exactly the failure mode design §1 names (*"a channel is computed and booked,
+or it does not exist"*), and it would re-create the compensating pair in a new
+place.
+
+### 6.4 The same finding, one layer down: radiative spread is real physics and it is slow
+
+`test_fire_feedback::test_spread_is_radiation_only_no_cellular_stencil`
+asserted the near (air-separated) target reaches `> 100 game`. That anchor came
+from P-F1a's frozen dials on the old cast. On the sweep it reaches **0.1 game**,
+and that number is right: a 443-game (736 K) surface radiating across one air
+cell delivers ~12 kW to a 154 kg block with a 249.5 kJ/K capacity, i.e. 0.05 K/s.
+Real fire spread to heavy timber takes minutes at 10–20 kW/m².
+
+This is design v2 R6's accepted gap — *"thick structure barely auto-ignites"* —
+arriving as a measurement. The test now asserts the near/far CONTRAST, which is
+the property it was written to protect, with the anchor removed and the number
+recorded.
+
+### 6.5 The gate at step 6
+
+**`2544 passed, 22 failed`** — the 14 golden-bound, plus **8 that are the
+runaway in section 6.3** and are deliberately NOT bent:
+
+- `test_eos_p4_combustion` ×4 — the runaway guards, doing their job
+- `test_ps1_smoke_roundtrip` — bulk gas mass minted at the rail
+- `test_unit_state_digest` ×2, `test_s3c_unit_state_digest` ×1 — their fire
+  scenarios no longer play out the same way
+
+Three that DID move legitimately were restated rather than left red, each
+because its anchor belonged to the law being deleted:
+`test_unit_heat_damage::test_warm_room_survivable` (fixtures re-expressed in
+kW/m²), `test_fire_feedback` (§6.4), and the three sweep tests from step 2.
 
 ---
 

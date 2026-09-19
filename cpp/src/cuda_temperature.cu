@@ -54,6 +54,7 @@
                                        // face_energy_q / opposite_dir) — one
                                        // transcription, both backends.
 #include "fixed_point.h"              // quantize/make_recip/mul_q16/mul_wide/narrow
+#include "emissive_table.h"           // T5b step 6: e_inv_q for the Pass-1 clamp
 #include "cuda_fixedpoint_device.cuh" // heat_saturating_add_dev, reciprocal_q16_dev,
                                        // recip_mul_dev
 #include "gas_energy.h"               // arc #54 P-G1b/P-G2: THE gas energy seam
@@ -113,6 +114,11 @@ enum : int {
     C_SOLID_DEPOSIT = 10, // e_solid_deposit_sum (Pass 1 landing on ts cells)
     C_SOLID_COND    = 11, // e_solid_cond_sum    (Pass 2 landing on ts cells)
     C_THERMOSTAT    = 12, // e_thermostat_sum    (Pass 3, same value as C_COOL)
+    // T5b step 6 (the flip): the maximum-principle clamp's engagement COUNT,
+    // the twin of TemperatureSolver::rad_clamp_hits. APPENDED at the end --
+    // these slots are PINNED POSITIONAL and removing or reordering one
+    // silently renumbers the survivors (design v3 / L2).
+    C_RAD_CLAMP     = 13, // rad_clamp_hits      (a count, not an energy)
     C_SLOTS      = 13
 };
 
@@ -200,6 +206,9 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
                                      const bool* __restrict__ is_ambient,
                                      const int32_t* __restrict__ n_src,
                                      const int64_t* __restrict__ rad_net,
+                                     // T5b step 6: the clamp's two planes.
+                                     const int64_t* __restrict__ rad_fluence,
+                                     const int64_t* __restrict__ e_table,
                                      int64_t recip_cv, int32_t n_floor_q,
                                      int32_t t_max_phys_q,
                                      unsigned long long* __restrict__ hits,
@@ -226,6 +235,20 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
                 // one FP_HD definition the CPU fold also calls.
                 const int64_t dTr = shr_round0_i64(rn, heat_inv_shift[i]);
                 tr = sat_add_q16_i64(tr, dTr);
+                // ---- THE MAXIMUM-PRINCIPLE CLAMP (T5b step 6) -------------
+                //   T_new = min(T_after, max(T_before, E^-1(Phi)))
+                // The CPU twin verbatim (temperature_solver.cpp Pass 1), in
+                // the SAME position -- between the saturating add and the
+                // rails, and BEFORE the applied-delta-T booking, so the P-G5
+                // solid ledger books the clipped landing with no extra
+                // counter. `e_inv_q` is FP_HD: one implementation, both
+                // backends. Dormant unless both planes are supplied.
+                if (rad_fluence != nullptr && e_table != nullptr) {
+                    const int32_t t_cap = e_inv_q(e_table, rad_fluence[i]);
+                    const int32_t ceiling =
+                        (t_cap > t_before_rad) ? t_cap : t_before_rad;
+                    if (tr > ceiling) { tr = ceiling; cadd(cnt, C_RAD_CLAMP, 1); }
+                }
                 if (tr > t_max_phys_q) { tr = t_max_phys_q; atomicAdd(hits, 1ULL); }
                 // P-F1a (v7.2): the LOW rail — the CPU block verbatim. The
                 // radiation fold is the only SIGNED path into `temperature`;
@@ -531,8 +554,11 @@ int64_t temperature_step(
                                      // accumulated (+=) into the caller's fields
     int64_t* gas_energy,        // arc #54 §2.7 row 3: the conserved field
     int32_t t_amb_q,            // T_AMB_K raw (only read with gas_energy)
-    int64_t* solid_books_out) { // P-G5: solid_energy_books_sum SNAPSHOT (=,
+    int64_t* solid_books_out,   // P-G5: solid_energy_books_sum SNAPSHOT (=,
                                  // not +=), nullable
+    const int64_t* rad_fluence, // T5b step 6: the clamp's Phi plane (nullable)
+    const int64_t* e_table,     // T5b step 6: the E° table (nullable)
+    int e_table_n) {            // its length, in entries
     const int n = h * w;
     if (n <= 0) return 0;
 
@@ -630,6 +656,22 @@ int64_t temperature_step(
     if (rad_net)
         cuda_check(cudaMemcpy(d_radnet, rad_net, nb64, cudaMemcpyHostToDevice),
                    "H2D rad_net");
+    // T5b step 6: the maximum-principle clamp's two inputs. BOTH must be
+    // supplied or the kernel takes its dormant branch -- a half-supplied pair
+    // would silently clamp against a table that is not the sweep's.
+    int64_t* d_fluence = nullptr;
+    int64_t* d_etable = nullptr;
+    const bool clamp_on = (rad_fluence != nullptr && e_table != nullptr
+                           && e_table_n > 0);
+    if (clamp_on) {
+        cuda_check(cudaMalloc(&d_fluence, nb64), "malloc rad_fluence");
+        cuda_check(cudaMemcpy(d_fluence, rad_fluence, nb64,
+                              cudaMemcpyHostToDevice), "H2D rad_fluence");
+        const size_t etb = (size_t)e_table_n * sizeof(int64_t);
+        cuda_check(cudaMalloc(&d_etable, etb), "malloc e_table");
+        cuda_check(cudaMemcpy(d_etable, e_table, etb,
+                              cudaMemcpyHostToDevice), "H2D e_table");
+    }
     // BC: optional ambient ring mask for the Pass-0 wipe (nullptr on space maps).
     bool* d_amb = nullptr;
     if (is_ambient) {
@@ -674,7 +716,9 @@ int64_t temperature_step(
     // deposit -> d_gas_energy + d_cnt[C_GAS_DEPOSIT/C_GAS_RAIL]).
     temp_convert_unified<<<grid, block>>>(d_temp, d_heat, d_his, d_ts, d_vac,
                                           d_solid, d_amb,
-                                          d_nsrc, d_radnet, recip_cv, n_floor_q,
+                                          d_nsrc, d_radnet,
+                                          d_fluence, d_etable,
+                                          recip_cv, n_floor_q,
                                           t_max_phys_q, d_hits, d_low_hits,
                                           d_cnt, d_cap_real, d_gas_energy,
                                           t_amb_q, n);
@@ -762,6 +806,8 @@ int64_t temperature_step(
     if (d_tsol) cudaFree(d_tsol);
     if (d_csg) cudaFree(d_csg);
     if (d_radnet) cudaFree(d_radnet);
+    if (d_fluence) cudaFree(d_fluence);
+    if (d_etable) cudaFree(d_etable);
     if (d_gas_energy) cudaFree(d_gas_energy);
     if (d_de_gas) cudaFree(d_de_gas);
 
