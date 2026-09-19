@@ -108,8 +108,15 @@ from simulation.entities.registry import registry_content_hash  # noqa: E402
 # T floor move (T_MIN -289 -> -292) move this trajectory too, same as the
 # GOLDEN_AGGREGATE cascade above. Re-run twice, independently: identical.
 # (was 38a47454a12b09b7815c9b95b672e815f9291bb0b3e42c30386fdb2577b3b6b3)
+# T5b RE-BASELINE (2026-09-20, issue #12, THE FLIP): the same ten changes
+# that move GOLDEN_AGGREGATE move this trajectory, and the v5 -> v6 spec
+# bump (+dyn_heat_atten_q) moves every per-field hash on its own. The full
+# enumeration lives beside GOLDEN_AGGREGATE in tests/_xarch_perfield_digest
+# .py -- one rationale, one commit, per CLAUDE.md's same-commit rule.
+# Re-run twice, independently: identical.
+# (was 9daac0a7658102e6d2ae1854fe382a43ba48c492ca7816bf776f8f0506c72d12)
 LOOP_GOLDEN_TRAJ_DIGEST = \
-    "9daac0a7658102e6d2ae1854fe382a43ba48c492ca7816bf776f8f0506c72d12"
+    "5de6f98b2d08bd8d1cbb54bec3e6ab343f3b412de7b7c979c469d56d47d8de17"
 LOOP_GOLDEN_STEPS = 30
 LOOP_GOLDEN_SEED = 1
 

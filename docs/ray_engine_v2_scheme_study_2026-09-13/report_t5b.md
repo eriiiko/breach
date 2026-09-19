@@ -885,7 +885,77 @@ removed, not zeroed" buys.
 
 ## 9. Step 9 — digest spec v6 and the ONE golden re-baseline
 
-PENDING
+One commit, per CLAUDE.md's same-commit rule: the membership change and every
+golden that moves because of it land together, because the bump would otherwise
+leave a window in which no committed golden is valid.
+
+### 9.1 `dyn_heat_atten_q` joins the digest — and its static twin does not
+
+`DIGEST_SPEC_VERSION` **5 → 6**, `tests/field_digest.py` and
+`tests/field_digest_spec.toml` in step. The plane is int32 Q16,
+`max(heat_atten_q[material], each living unit's own heat_atten)`, stamped by
+`stamp_units`.
+
+**Why it is synced state NOW and was not before.** The radiation sweep reads it,
+and step 6 made the sweep feed the temperature fold. A desync on this plane
+therefore forks the temperature stream and everything downstream. Before the
+flip the sweep was in shadow and the plane moved nothing — which is exactly why
+design v3 row 28 scheduled the bump for P3 rather than P1.
+
+**The STATIC twin `heat_atten_q` is deliberately NOT added.** It is a pure
+projection of `material` through the material table, and `material` is already
+in the digest, so it carries no state of its own. `dyn_heat_atten_q` does: it
+carries *where the units are*.
+
+### 9.2 The re-baseline, and what moved
+
+Four committed goldens move. Each carries the rationale inline; the full
+enumeration lives once, beside `GOLDEN_AGGREGATE`.
+
+| golden | was | now |
+|---|---|---|
+| `GOLDEN_AGGREGATE` (`_xarch_perfield_digest.py`) | `167b96bd…` | **`e369b616bb251e19a2053ef744125e8568d933f9b8d4b6d0445b256676106d45`** |
+| `LOOP_GOLDEN_TRAJ_DIGEST` (`test_b6_logic_golden.py`) | `9daac0a7…` | **`5de6f98b2d08bd8d1cbb54bec3e6ab343f3b412de7b7c979c469d56d47d8de17`** |
+| `DOORTEST_NOPHYS_TRAJ_DIGEST` (`test_b1_signal_bus.py`, `test_b2_nodes.py`) | `701b8d26…` | **`08c962ec444e301cc86a1c8a28ded651a9db2f41172dcdfb5d0d69c1637f331f`** |
+
+The third is a **pure schema move** and is labelled as such: that scenario runs
+`physics=None`, so no solver ever executes and not one of the ten behavioural
+changes can reach it — what moves its bytes is the version string being hashed
+into every per-field digest, plus the new plane being present at load. Same
+mechanism the P-G3 and G12 notes above it describe.
+
+**Both live goldens were reproduced twice, independently, on this build.**
+
+### 9.3 The rationale — every contributing change
+
+Written into `_xarch_perfield_digest.py` beside the constant. In the order they
+landed:
+
+1. `c_v` 1.0 → 0.0076849 (step 1) — air stops being 130.13× too heavy thermally.
+2. `c_v` gets ONE integer representation engine-wide (0.0724 % apart at this value).
+3. The material rows (step 2): emissivities 1.0 → 0.85/0.90, foliage 0.0 → 0.90; conductivities air, steel, wood, door, glass.
+4. R10 (step 3): the CFL anchor retired; solid\|solid faces move +16/+17 shift steps, air\|air 11 → 16, solid\|gas held at 10 by the convection branch.
+5. The vacuum conduction mask (step 4).
+6. R14's fuel half (step 5): `fuel_per_o2` becomes a derived per-material plane.
+7. `H_BED_M` 18125 → 19827 (step 5).
+8. **THE FLIP** (step 6): the fold reads the sweep, the clamp goes live on both backends, units absorb from `rad_flux_sweep`. The largest single contributor — the radiative source changes law, geometry and calibration at once.
+9. `heat_flux_to_temp` 8.0 → 4701.2 (step 6).
+10. `cool_shift` deleted (step 7): no solid relaxes toward ambient any more.
+
+And the rationale says plainly that **this value will move again**: §6.3's
+runaway is unresolved, eight tests are red on it and were not bent, and
+re-baselining after Erik's ruling is the expected second move. This one exists
+so the spec bump does not leave the suite without a valid golden in the interim.
+
+### 9.4 The gate at step 9
+
+| | |
+|---|---|
+| suite | **2563 passed, 7 failed** — and **all seven are §6.3's runaway**. Every golden-bound failure is green |
+| CUDA | **24/24 gates pass**, including all eleven lockstep checks whose PART 3 golden leg was red for six steps |
+| `DIGEST_SPEC_VERSION` | 6, in the same commit as every golden it moves |
+| reproducibility | both live goldens computed twice, identical |
+| `git status` | clean; every path staged explicitly, never `git add -A`; `tests/_xarch_perfield_DESKTOP-0E98HUV.txt` restored after every harness run |
 
 ---
 

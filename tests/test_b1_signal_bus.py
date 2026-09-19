@@ -117,8 +117,16 @@ def _step(sim, n=1):
 # the ambient atmosphere seed folds C = 1/eos_t_amb_k (1/290 -> 1/293), so
 # the ONE-TIME seeded planes' bytes move on this dormant, unstepped-EOS
 # scenario. (was 76ba6dc1c2800eae16f9f98f27abd1646c656e4068773a8150e94465e614cc35)
+# T5b RE-BASELINE (2026-09-20, issue #12, THE FLIP): a PURE SCHEMA move on this
+# scenario. physics=None here, so no solver ever runs and not one of the ten
+# behavioural changes in the T5b re-baseline can reach it -- what moves the
+# bytes is DIGEST_SPEC_VERSION 5 -> 6 alone (+dyn_heat_atten_q, design v3 row
+# 28): the version string is hashed into every per-field digest, and the new
+# plane is present at load. That is the same mechanism the P-G3 and G12 notes
+# above describe. Full enumeration beside GOLDEN_AGGREGATE in
+# tests/_xarch_perfield_digest.py. (was 08c962ec444e301cc86a1c8a28ded651a9db2f41172dcdfb5d0d69c1637f331f)
 DOORTEST_NOPHYS_TRAJ_DIGEST = \
-    "701b8d26aadbf7eae4a0b3c9d6895d44e54ee7d10c737dbaf36aa0fa9572a0f8"
+    "08c962ec444e301cc86a1c8a28ded651a9db2f41172dcdfb5d0d69c1637f331f"
 
 
 def test_dormancy_door_present_wire_free_digest_byte_identical():

@@ -269,7 +269,61 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # cannot be gated against a red suite
 # (docs/ray_engine_v2_survey_2026-09-12.md §10.1).
 # (was 54f21b36cad6d27856f5e1ebf415ff1c063feb6f06ab3a7f66bd684fda324b1d)
-GOLDEN_AGGREGATE = "167b96bddfe37c0d256afed4d3b9271371fcaf3edd7557e02cf685a17208953f"
+# ===========================================================================
+# T5b RE-BASELINE (2026-09-20, issue #12, THE FLIP) -- the arc's ONE golden
+# move, and the ONLY one design v3 sanctions before P4.
+#
+# SCHEMA MOVE *AND* VALUE MOVE, together, by CLAUDE.md's same-commit rule:
+# DIGEST_SPEC_VERSION 5 -> 6 (+dyn_heat_atten_q, int32 -- design v3 row 28),
+# so every per-field hash moves on the spec string alone, AND the trajectory
+# itself moves for the ten reasons below. They land in one commit because the
+# spec bump would otherwise leave a window in which no golden is valid.
+#
+# EVERY CONTRIBUTING CHANGE, in the order it landed:
+#
+#  1. `c_v` 1.0 -> 0.0076849 (step 1, ledger item 4 / R13). Air stops being
+#     130.13x too heavy thermally. Moves every gas temperature and, through
+#     the EOS, every pressure and wind field downstream of it.
+#  2. `c_v` gets ONE integer representation engine-wide -- every deposit
+#     reciprocal is `1/quantize(c_v)`, not `make_recip(c_v)` (0.0724 % apart
+#     at this value). Moves the Pass-1 and combustion gas deposits.
+#  3. The material rows (step 2, T3 D6): emissivities hull/steel 1.0 -> 0.85,
+#     wood/door/door_closed 1.0 -> 0.90, foliage 0.0 -> 0.90 (R12);
+#     conductivities air 0.024 -> 0.0257, steel 45 -> 50, wood 0.15 -> 0.12,
+#     door/door_closed 0.30 -> 0.12, glass 1.0 -> 1.40.
+#  4. R10 (step 3): the CFL stability anchor is retired and every conduction
+#     face shift is derived -- solid|solid moves +16/+17 steps (steel 2 -> 18,
+#     wood 8 -> 24, glass 6 -> 22), air|air 11 -> 16, and the solid|gas faces
+#     stay at 10 through the new convection branch.
+#  5. The vacuum conduction mask (step 4): a non-thermal-solid cell with no gas
+#     owns no face, so a breached cell stops conducting at a floored capacity.
+#  6. R14's fuel half (step 5): `fuel_per_o2` becomes a derived per-material
+#     plane (wood/foliage 0.1449, furniture 0.0725, kindling 0.0193 against the
+#     retired global 0.7), so `wall_hp` depletes differently at every burn site.
+#  7. `H_BED_M` 18125 -> 19827 (step 5): the fuel-surface 25 % share of
+#     Huggett's 4.831 MJ per unit N_O2.
+#  8. THE FLIP (step 6): the temperature fold reads the SWEEP's
+#     `rad_net_sweep` instead of the old cast's `rad_net`, the Pass-1
+#     maximum-principle clamp goes live on both backends, and units absorb from
+#     `rad_flux_sweep`. This is the largest single contributor: the radiative
+#     source changes law, geometry and calibration at once.
+#  9. `heat_flux_to_temp` 8.0 -> 4701.2 (step 6): the unit burn band re-derived
+#     against the physical currency, anchored on 2.5 kW/m2.
+# 10. `cool_shift` DELETED (step 7, R1): Pass 3 and its CUDA twin are gone, so
+#     no solid relaxes toward ambient any more. Every solid temperature
+#     trajectory in the scenario moves.
+#
+# NOT YET SETTLED, AND IT WILL MOVE THIS VALUE AGAIN. report_t5b.md section 6.3:
+# the flip exposes that combustion's fuel-bed deposit is 65 536x the physical
+# heat of combustion, which the old cast's 2419x-too-strong emission had been
+# balancing. Eight tests are RED on that runaway and were deliberately not
+# bent. Erik's ruling on it is owed, and re-baselining afterwards is the
+# expected second move -- this one exists so the spec bump does not leave the
+# suite without a valid golden in the meantime.
+#
+# REPRODUCED: the harness was run twice on this build, identical both times.
+# (was 167b96bddfe37c0d256afed4d3b9271371fcaf3edd7557e02cf685a17208953f)
+GOLDEN_AGGREGATE = "e369b616bb251e19a2053ef744125e8568d933f9b8d4b6d0445b256676106d45"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs
