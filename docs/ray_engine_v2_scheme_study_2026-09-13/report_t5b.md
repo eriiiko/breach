@@ -411,7 +411,153 @@ dribble either.
 
 ## 5. Step 5 — `hp`/fuel separation (R14) and `H_fuel`'s value
 
-PENDING
+The step with the most in it, and the one where two of the arc's settled numbers
+turned out not to be shippable. Both are reported with the measurement that
+blocked them; neither was quietly dropped.
+
+### 5.1 R14's fuel half — landed
+
+`fuel_per_o2` stops being one global 0.7 and becomes a **derived per-material
+column** projected to a per-tile plane, on the same single seam `fuel_recip` and
+`fire_T_ext_plane` already use:
+
+    fuel_per_o2[mat] = hp[mat] * KG_FUEL_PER_N_O2 / (density[mat] * V_tile)
+
+so that spending the whole `wall_hp` bar consumes exactly the tile's real
+combustible mass, while `hp` keeps its structural meaning — which is R14's own
+wording, *"fuel separates from hp; hp stays structural"*. No `hp` value moved.
+
+`KG_FUEL_PER_N_O2 = 0.37162 kg` is three cited constants and nothing fitted:
+one unit of `N_O2` is 0.36878 kg of O2 (`pV/RT` at the engine's own ambient),
+times Huggett's 13.1 MJ/kg-O2 = 4.831 MJ, divided by wood's *effective* heat of
+combustion 13 MJ/kg (Drysdale Table 1.13; Babrauskas).
+
+| row | was | now | store |
+|---|---|---|---|
+| `wood`, `foliage` | 0.7 | **0.14492** | 414.0 units of N_O2 |
+| `furniture` | 0.7 | **0.07246** | 414.0 |
+| `kindling` | 0.7 | **0.01932** | 414.0 |
+
+Surface: a derived column + `fuel_per_o2_q16` in `materials.py`;
+`GameMap.fuel_per_o2_plane` built and patched on the one seam; a nullable
+trailing `fuel_per_o2_plane` argument through `CombustionSolver::step`,
+`cuda_combustion.cu`, both bindings and `physics_runner`. `nullptr` keeps every
+direct-binding caller pre-R14 bit-for-bit.
+
+### 5.2 FINDING — R14's separation is real but very nearly inert, because a THIRD consumer owns `wall_hp`
+
+**Measured, and this is the number that matters for the human test.** Same
+bench, same crate, only the fuel exchange rate changed:
+
+| fuel rate | hp to 50 % | to 10 % | to 1.7 % | peak I |
+|---|---|---|---|---|
+| the retired 0.7 | 12.8 s | 53.8 s | **105.9 s** | 0.535 |
+| **T5b's derived 0.0725** (9.66x cheaper) | 12.8 s | 53.8 s | **105.4 s** | 0.536 |
+
+A 9.66x change in the fuel exchange rate moves the burn duration by **0.5 %**.
+
+The reason is that `wall_hp` has a **third** consumer that R14 does not name:
+`FireSimulation`'s structural `wall_damage = 0.36` hp/s/intensity, which
+`config.toml` itself calls *"the burn-out brake -> now the DURATION dial"* and
+which is **Erik's own 3-minute fuel-out ruling of 2026-09-06**. That dial empties
+the bar on a timer, regardless of how much wood is in the tile, and it dominates
+the combustion-side cost by roughly 10:1.
+
+So after step 5, `hp` is still doing three jobs, not two: structural integrity,
+combustion fuel, and a feel-tuned burn-down timer. R14 made the *combustion*
+share physical; making the STORE physical needs `wall_damage` and the fuel store
+to stop sharing a field. **Open question 5, section 12.**
+
+Two consequences worth being explicit about: (a) burn durations are essentially
+unchanged, so Erik is not chasing a moving target when he plays this; (b) the
+fuel distinction between `wood`, `furniture`, `kindling` and `foliage` now
+collapses in the *store* — every flammable row is authored at rho = 555, so
+under R14 every flammable tile is the same 154 kg block and holds the same 414
+units — but not in *behaviour*, because `wall_damage` and `hp` still separate
+them. Restoring a real store distinction means authoring those three OBJECT
+rows' bulk densities (a crate stack is ~120 kg/m3, not 555), which is T3 q1/q2
+and also moves `thermal_mass`. **Open question 2, section 12.** Erik's
+2026-09-07 foliage ruling (*"fuel ~= 2x furniture"*) survives in `hp`, which is
+what the engine actually burns down.
+
+### 5.3 FINDING — `H_fuel`'s derived value is unshippable, and the reason is a missing channel
+
+T3 derives `H_FUEL_M = 14870, H_FUEL_SHIFT = 9` — 7.613e+06 counts = 3.62 MJ,
+the 75 % plume share of Huggett. **Applied, it makes the gas run away, and three
+pre-existing gates say so by name:**
+
+| gate | what it reported |
+|---|---|
+| `test_e1_hot_rail::test_no_rail_hits` | `T_MAX_PHYS` engaged **17 206x** against a budget of 8 |
+| `test_eos_p4_combustion::test_thermal_spike_is_pre_existing_not_a_p4_regression` | peak **15 992 game** — the gas pinned at `T_MAX_PHYS` — against a limit of 9000 |
+| `test_ps1_smoke_roundtrip::..._never_exceed_start` | **bulk gas mass minted**, +34 counts at tick 2 |
+
+Bisected on this branch (`H_FUEL_M = 4.0`, shift swept):
+
+| `H_fuel` | 4.0 | 8.0 | 16 | 1024 | 4096 and above |
+|---|---|---|---|---|---|
+| gates failing | **0** | 1 | 1 | 2 | **3** |
+
+**The shipped 4.0 is already at the ceiling.** The derived value is 1.9 million
+times what the gas side can absorb.
+
+**The reason is structural, and the design states it itself.** Design v2 section
+3.1: *"gas is heated only by combustion until P5 gives it radiative
+absorption"*. A gas cell has **no radiative loss channel at all** in this model —
+it can be heated, advected and expanded, and that is the whole list. Handing a
+medium with no loss channel 75 % of a real fire's heat release is exactly the
+defect R12 fixed for foliage, one field over: an energy ratchet. The missing
+physics is the same too — a real plume sheds its heat by radiating and by
+entraining ~30 tile-volumes of cold air per second, while our deposit lands in
+one cell and its open faces.
+
+So **`H_fuel` stays at 4.0** and the plume share is left unmodelled until P5.
+Raising it now would be tuning a dial to paper over a missing channel, which is
+the failure mode this arc exists to stop (design section 1: *"a channel is
+computed and booked, or it does not exist"*). **Open question 6, section 12.**
+
+`H_BED_M` **does** move, 18125 -> **19827** (+9.4 %): the fuel-surface 25 %
+share of the same Huggett split, which lands in the SOLID, and solids do have a
+radiative loss channel now. That the dial P-K0 found by feel was 9 % from the
+physics is the strongest agreement between the feel pass and the derivation
+anywhere in this arc.
+
+### 5.4 T5a's finding 3 is now obsolete — the currency fix created the missing backstop
+
+T5a section 6.4 established that **nothing** gated the gas-side combustion
+yield: doubling `H_fuel` through `H_FUEL_SHIFT` left all 2557 tests green, and
+it concluded that T5b's `H_fuel` move *"rests entirely on Erik playing it"*.
+
+That is no longer true, and step 1 is why. At the corrected `c_v` the gas is
+130x lighter, so the same deposit makes 130x the temperature — and a 2x
+`H_fuel` now trips `test_e1_hot_rail` (see the bisect above). **The currency fix
+gave the gas-side yield the automated gate it was missing.** It is also what
+turned an unbacked feel judgement into the measurement in 5.3.
+
+### 5.5 Validated by breaking it
+
+| control | what was broken | result |
+|---|---|---|
+| A | the CPU solver's plane lookup forced to the scalar fallback | RED — `test_the_solver_actually_charges_the_plane_s_rate_not_the_scalar`, **and nothing else in the suite** |
+| B | `fuel_per_o2` derived as the flat 0.7 again (the retired global's shape) | RED — the two R14 property tests by name |
+| C (semantic) | run the engine at a `KG_FUEL_PER_N_O2` that reproduces the old 0.7 rate | the 5.2 measurement — the burn moves 0.5 %, which is the finding |
+
+Control A is the one that had to exist. Every other gate on this axis is either
+Python-side (the derived column, the projected plane) or a CPU-vs-GPU
+comparison, and a solver that simply ignored the new argument would pass all of
+them — the column still derived, the plane still projected, and both backends
+still agreeing *with each other, on the wrong law*.
+
+The CUDA check gained the matching leg: `cuda_combustion_check.py` (k3) runs the
+same 15 fuzz states with a **non-uniform** plane (a checkerboard of the derived
+`wood` and `kindling` rates, so a hoisted load is caught) and carries its own
+non-vacuity control. Result: **15 configs bit-identical CPU vs GPU, 15/15 of
+which moved `wall_hp` against the scalar.** Without it the device path would
+have been entirely ungated.
+
+### 5.6 The gate at step 5
+
+**`2552 passed, 14 failed`** — still only the golden-bound set.
 
 ---
 

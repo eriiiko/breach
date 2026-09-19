@@ -1012,7 +1012,8 @@ PYBIND11_MODULE(breach_physics, m) {
              // "Ruling R3"): the demand-side hotf ramp's dials + the SAME
              // nullable per-material T_ext plane FireSimulation reads.
              float fire_T_ext, float fire_T_span, float hotf_cap,
-             py::object fire_T_ext_plane) -> py::tuple {
+             py::object fire_T_ext_plane,
+             py::object fuel_per_o2_plane) -> py::tuple {
               auto gv = gas.mutable_unchecked<3>();
               int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
               const int n_gases = static_cast<int>(gv.shape(0));
@@ -1068,6 +1069,14 @@ PYBIND11_MODULE(breach_physics, m) {
                   auto tv = tep_arr.unchecked<2>();
                   tep = tv.data(0, 0);
               }
+              // R14 (T5b): the same nullable-plane idiom again.
+              const int32_t* fpo = nullptr;
+              py::array_t<int32_t> fpo_arr;
+              if (!fuel_per_o2_plane.is_none()) {
+                  fpo_arr = fuel_per_o2_plane.cast<py::array_t<int32_t>>();
+                  auto fv = fpo_arr.unchecked<2>();
+                  fpo = fv.data(0, 0);
+              }
               int64_t heat_floor_hits = 0, t_max_phys_hits = 0;
               int64_t e_deposit_drop_sum = 0;   // P-E2b
               breach_cuda::combustion_step(
@@ -1080,7 +1089,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   &e_deposit_drop_sum,
                   tsol, hshift, heat_ptr, H_BED_M, H_BED_SHIFT, dacc_ptr,
                   draw_r, perm_ptr, max_claimants,
-                  fire_T_ext, fire_T_span, hotf_cap, tep);
+                  fire_T_ext, fire_T_span, hotf_cap, tep, fpo);
               return py::make_tuple(heat_floor_hits, t_max_phys_hits,
                                     e_deposit_drop_sum);
           },
@@ -1109,6 +1118,7 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("fire_T_span") = 180.0f,
           py::arg("hotf_cap") = 10.0f,
           py::arg("fire_T_ext_plane") = py::none(),
+          py::arg("fuel_per_o2_plane") = py::none(),   // R14 per-material fuel
           "P6.9b isolated: run ONE GPU combustion step (the two-gather "
           "reformulation, continuous-O2 proportional demand) in place on the "
           "three gas planes + temperature + wall_hp (bit-identical to "
@@ -3155,7 +3165,11 @@ PYBIND11_MODULE(breach_physics, m) {
                         // .md "Ruling R3"): the SAME nullable per-material
                         // T_ext plane FireSimulation.step reads. OPTIONAL —
                         // None -> nullptr -> the scalar `fire_T_ext` fallback.
-                        py::object fire_T_ext_plane) {
+                        py::object fire_T_ext_plane,
+                        // R14's fuel half (T5b): the SAME nullable-plane idiom
+                        // again -- GameMap.fuel_per_o2_plane. None -> nullptr
+                        // -> the scalar `fuel_per_o2` fallback.
+                        py::object fuel_per_o2_plane) {
             auto gv = gas.mutable_unchecked<3>();
             int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
             const int n_gases = static_cast<int>(gv.shape(0));
@@ -3227,11 +3241,18 @@ PYBIND11_MODULE(breach_physics, m) {
                 auto tv = tep_arr.unchecked<2>();
                 tep = tv.data(0, 0);
             }
+            const int32_t* fpo = nullptr;
+            py::array_t<int32_t> fpo_arr;
+            if (!fuel_per_o2_plane.is_none()) {
+                fpo_arr = fuel_per_o2_plane.cast<py::array_t<int32_t>>();
+                auto fv = fpo_arr.unchecked<2>();
+                fpo = fv.data(0, 0);
+            }
             self.step(gas_ptr, n_gases, o2_idx, inert_n2_idx, black_smoke_idx,
                      temp, whp, f, fl, sol, vac, ign, h, w, dt, c_v, n_floor_heat,
                      tsol, hshift, heat_ptr, dacc_ptr,
                      draw_r, perm_ptr, max_claimants,
-                     gen_ptr, amb_ptr, t_amb_q, tep);
+                     gen_ptr, amb_ptr, t_amb_q, tep, fpo);
         }, py::arg("gas"), py::arg("o2_idx"), py::arg("inert_n2_idx"),
            py::arg("black_smoke_idx"), py::arg("temperature"), py::arg("wall_hp"),
            py::arg("fire"), py::arg("flammable"), py::arg("solid"),
@@ -3247,7 +3268,8 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("gas_energy") = py::none(),   // arc #54 (None = pre-#54)
            py::arg("is_ambient") = py::none(),   // arc #54 accountable set
            py::arg("t_amb_q") = 0,               // arc #54 T_AMB_K raw
-           py::arg("fire_T_ext_plane") = py::none());  // R3 per-material T_ext
+           py::arg("fire_T_ext_plane") = py::none(),   // R3 per-material T_ext
+           py::arg("fuel_per_o2_plane") = py::none()); // R14 per-material fuel
 
     // --- WaterSolver (pipe model: damped velocity + donor-cell upwind flux;
     //     engine/07 §2, water_implementation_plan Step W1) ---

@@ -1049,18 +1049,50 @@ o2_thresh_burn    = 0.03   # RETIRED as the burn gate (the o2f law is the thrott
 # decision; it was unrepresentable. T5a landed the schema carrying EXACTLY
 # today's number so the goldens could gate it as a pure refactor.
 #
-# THE DERIVED VALUE IS NOT APPLIED YET: H_FUEL_M = 14870, H_FUEL_SHIFT = 9
-# (14870 · 512 = 7.613e+06) is a ~1.9-million-fold increase in the heat
-# combustion puts into the air — today the fuel bed gets 580 000x more heat than
-# the flame gas, i.e. combustion puts 0.0002 % of a fire's heat into the plume —
-# so it is squarely a HUMAN-TEST feel change and belongs to the flip.
+# THE DERIVED VALUE IS *NOT* APPLIED, AND T5b MEASURED WHY.
+# T3 derives H_FUEL_M = 14870, H_FUEL_SHIFT = 9 (14870 · 512 = 7.613e+06
+# counts = 3.62 MJ), the 75 % PLUME share of Huggett's 4.831 MJ per unit N_O2.
+# Applying it makes the gas run away and THREE pre-existing gates say so:
+#
+#   test_e1_hot_rail::test_no_rail_hits            T_MAX_PHYS engaged 17 206x
+#                                                  against a budget of 8
+#   test_eos_p4_combustion::test_thermal_spike_..  peak 15 992 game, i.e. the
+#                                                  gas pinned at T_MAX_PHYS
+#   test_ps1_smoke_roundtrip::..never_exceed_start bulk gas mass MINTED
+#
+# and they are not loose: bisected on this branch, even a 2x H_fuel (8.0)
+# trips the first of them. The shipped 4.0 is already AT the ceiling, so the
+# derived value is 1.9 MILLION times what the gas side can absorb.
+#
+# THE REASON IS STRUCTURAL, NOT NUMERIC. Design v2 §3.1 states it itself:
+# "gas is heated only by combustion until P5 gives it radiative absorption".
+# A gas cell has NO radiative loss channel at all in this model -- it can be
+# heated, advected and expanded, and that is the whole list. Handing a medium
+# with no loss channel 75 % of a real fire's heat release is the same defect
+# R12 fixed for foliage (an energy ratchet), and the missing physics is the
+# same too: a real plume dumps its heat by RADIATING and by ENTRAINING ~30
+# tile-volumes of cold air per second, while our deposit lands in one cell and
+# its open faces.
+#
+# So the plume share stays UNMODELLED until P5, and the engine releases only
+# H_bed's 25 % fuel-surface share (1.208 MJ per unit N_O2, derived below).
+# Raising H_fuel before P5 would be tuning a dial to paper over a missing
+# channel, which is what this whole arc exists to stop doing.
+# See report_t5b.md §5 for the measurement and the open question.
 #
 # Keep the mantissa as large as the format allows (|H_FUEL_M| < 32768) and take
 # the rest in the shift: a claimant's per-tick burn is only a few raw Q16.16
 # counts, so mul_q16's truncation is coarse unless the mantissa carries the
 # magnitude.
 H_FUEL_M          = 4.0    # mantissa (< 32768, the Q16.16 range)
-H_FUEL_SHIFT      = 0      # H_fuel = H_FUEL_M * 2^H_FUEL_SHIFT = 4.0 (unchanged)
+H_FUEL_SHIFT      = 0      # H_fuel = H_FUEL_M * 2^H_FUEL_SHIFT = 4.0
+# UNCHANGED at T5b -- see the block above for the measurement that blocked the
+# derived value, and report_t5b.md §5 for the open question it leaves Erik.
+# One thing that DID change: this dial now HAS an automated backstop. T5a §6.4
+# found that doubling it left all 2557 tests green; at the corrected `c_v` the
+# gas is 130x lighter, so the same deposit makes 130x the temperature, and a
+# 2x move now trips test_e1_hot_rail. The currency fix gave the gas-side yield
+# the gate it was missing.
 # --- o2_potency — THE SIZING RULING's preserved option (Erik, 2026-08-02) -----
 # A LOAD-TIME MULTIPLIER on the baked heat-per-O2 constants (the H_fuel /
 # H_BED_M chain above and below). Erik's sizing ruling shipped PACKAGE A —
@@ -1094,6 +1126,16 @@ soot_yield        = 0.5    # fraction of consumed O2 -> smoke (rest -> inert_N2)
 # default, but in play THE ember-lifetime dial: smaller -> embers glow for
 # minutes awaiting oxygen; larger -> they char out fast.
 fuel_per_o2       = 0.7
+# T5b / R14: THIS SCALAR IS NOW ONLY THE FALLBACK. The live engine passes a
+# per-tile `GameMap.fuel_per_o2_plane` derived from each material's own
+# combustible mass (`hp[mat] * KG_FUEL_PER_N_O2 / (density[mat] * V_tile)`,
+# simulation/materials.py), because a single global made a tile's FUEL STORE
+# `hp / fuel_per_o2` -- proportional to its structural integrity rather than to
+# how much wood is in it. A massive wood tile is 154 kg; 0.7 implied 31.9 kg.
+# The derived rates are wood/foliage 0.1449, furniture 0.0725, kindling 0.0193,
+# i.e. tiles burn 4.8x / 9.7x / 36x longer than at this scalar. The scalar
+# survives for direct-binding callers (the `fuel_ref` / `o2_frac_amb` tombstone
+# precedent) and moving it no longer affects the game.
 # --- P-O2b: THE EXTENDED OXYGEN DRAW (Erik's Option 2b) ----------------------
 # docs/fire_realism_design_2026-08-01.md v5.2 "F-O2b" + the v4 ruling batch
 # item (1). A burning tile no longer draws oxygen only from its four open
@@ -1178,7 +1220,19 @@ max_claimants     = 12
 # target). Plateau at slow-burn dials measured 917 K (still short of G1's
 # 1300 K — Phase 4 continues; the shift ladder was measured x1/x2/x4/x8 =
 # 296(dead)/683/769/917 K, the fourth-root law visible end to end).
-H_BED_M           = 18125.0  # mantissa (< 32768, the Q16.16 range). P-K0: promoted from TUNE (P-F1b 25290->18125)
+H_BED_M           = 19827.0  # mantissa (< 32768, the Q16.16 range).
+# T5b: +9.4 % from 18125, and it is DERIVED rather than tuned. It is the
+# FUEL-SURFACE share of Huggett's 4.831 MJ per unit N_O2 -- 25 %, from Drysdale
+# ch. 5's burning-rate balance (flame-to-surface feedback is 20-40 % of total
+# heat release; 20-30 kW/m2 against 100-300 kW/m2 released). 19827 * 2^7 =
+# 2.538e+06 counts = 1.208 MJ. History: P-F1b 25290 -> P-K0 18125 (tuned by
+# FEEL) -> T5b 19827 (derived) -- the dial P-K0 found by feel was 9 % off the
+# physics, far inside every other error in report_t3.md, which is the strongest
+# evidence in this arc that the feel pass and the derivation agree.
+# NOTE the other 75 %, the plume share, is NOT released: H_fuel above stays at
+# 4.0 because a gas cell has no loss channel before P5. So a fire currently
+# releases 25 % of its real heat, all of it into the fuel bed, and the split is
+# a derivation with one half deliberately dormant -- not half a split.
 H_BED_SHIFT       = 7        # H_bed = H_BED_M * 2^H_BED_SHIFT = 2.320e6. History: 3 -> 4 (P-K0) -> 7 (x8, Erik's fuel-out + G1 ruling 2026-09-06, see block above)
 # Unit-side suffocation mechanics (LATER arc, design §5): defined here so the
 # constant lives at the right layer; nothing reads it yet.

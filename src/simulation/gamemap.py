@@ -1520,6 +1520,19 @@ class GameMap:
         # patched at the SAME single site in `on_tile_changed` (the
         # thermal-mass addendum's D3 rule: one seam).
         self.fire_T_ext_plane = tbl.fire_T_ext_q16[m].astype(np.int32, copy=True)
+        # R14's fuel half (T5b): the per-tile EXCHANGE RATE combustion pays out
+        # of `wall_hp` per unit of O2 its fire consumes, Q16.16 —
+        #     wall_hp[i] -= round(fuel_per_o2_plane[i] * burn_i)
+        # It was one global ([physics.combustion] fuel_per_o2 = 0.7), which made
+        # a tile's FUEL STORE proportional to its `hp`, i.e. structural rather
+        # than physical. Now derived per material from the row's own mass
+        # (`density * V_tile`) and Huggett's constant, so spending the whole bar
+        # consumes exactly the tile's real combustible mass while `hp` keeps its
+        # structural meaning. DERIVED FROM `density` and `hp`, not a new dial —
+        # see materials.py's KG_FUEL_PER_N_O2 block. Built HERE, in the SAME ONE
+        # function as `fuel_recip` / `fire_T_ext_plane`, and patched at the SAME
+        # single site in `on_tile_changed`.
+        self.fuel_per_o2_plane = tbl.fuel_per_o2_q16[m].astype(np.int32, copy=True)
         # Per-tile conduction face-shift cache (engine/06 §2.5): baked from the
         # material grid via the harmonic-mean face table. NO_FACE at grid edges
         # and on any kappa==0 (air) face -> structural air no-op (built IN-PLACE
@@ -1708,6 +1721,10 @@ class GameMap:
         # floor the instant its material becomes air (a moot value there — the
         # logistic is flammable-only — but the cache must not go stale).
         self.fire_T_ext_plane[fy, fx] = int(tbl.fire_T_ext_q16[mat_id])
+        # R14's fuel half (T5b) — the same seam again: a burnt-out crate that
+        # becomes air must stop carrying furniture's fuel exchange rate the
+        # instant its material changes, exactly as `fuel_recip` does.
+        self.fuel_per_o2_plane[fy, fx] = int(tbl.fuel_per_o2_q16[mat_id])
         # Conduction face-shift cache — patch this tile's 4 faces AND the facing
         # entry of each neighbour (a shared face), so a breached wall's thermal
         # coupling to its neighbours updates the instant it changes.

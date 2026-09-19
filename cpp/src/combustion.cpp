@@ -172,7 +172,8 @@ void CombustionSolver::step(
         int64_t* gas_energy,          // arc #54 P-G1b: the conserved gas energy
         const bool* is_ambient,       // ring mask (accountable-set input)
         int32_t t_amb_q,              // T_AMB_K raw (born-at-ambient rule)
-        const int32_t* fire_T_ext_plane) const {  // R3: PER-MATERIAL T_ext (nullable)
+        const int32_t* fire_T_ext_plane,          // R3: PER-MATERIAL T_ext (nullable)
+        const int32_t* fuel_per_o2_plane) const { // R14: PER-MATERIAL fuel rate
 
     if (h <= 0 || w <= 0 || dt <= 0.0f) return;
     if (o2_idx < 0 || o2_idx >= n_gases) return;
@@ -817,7 +818,13 @@ void CombustionSolver::step(
             // round-to-nearest — the same unbiased-sink idiom fire_simulation's
             // wall_damage depletion uses. UNCHANGED by P-O2b: the source still
             // pays for exactly the O2 it consumed, wherever that O2 came from.
-            const q16 fuel_cost = narrow_round(mul_wide(fuel_per_o2_q, (q16)burn_i));
+            // R14 (T5b): the exchange rate is PER MATERIAL, read from the same
+            // nullable-plane idiom `fire_T_ext_plane` uses. The plane is
+            // derived from the row's own mass, so spending the whole `wall_hp`
+            // bar consumes exactly the tile's real combustible mass.
+            const q16 fpo_i = fuel_per_o2_plane ? fuel_per_o2_plane[i]
+                                                : fuel_per_o2_q;
+            const q16 fuel_cost = narrow_round(mul_wide(fpo_i, (q16)burn_i));
             wall_hp[i] -= fuel_cost;
             if (wall_hp[i] < FUEL_FLOOR) wall_hp[i] = FUEL_FLOOR;
 

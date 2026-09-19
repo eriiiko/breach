@@ -1166,6 +1166,11 @@ class PhysicsRunner:
                 self.combustion.fire_T_ext, self.combustion.fire_T_span,
                 self.combustion.hotf_cap,
                 gmap.fire_T_ext_plane,
+                # R14's fuel half (thermal model v2, T5b): the per-material
+                # fuel exchange rate, derived from each row's own combustible
+                # mass. The scalar `self.combustion.fuel_per_o2` above is now
+                # only the fallback for a caller with no plane.
+                gmap.fuel_per_o2_plane,
             )
         else:
             self.combustion.step(
@@ -1232,6 +1237,9 @@ class PhysicsRunner:
                 # hotf_cap are already bound onto the solver instance at
                 # init, read internally by CombustionSolver::step).
                 gmap.fire_T_ext_plane,
+                # R14's fuel half (thermal model v2, T5b) — the CPU twin of the
+                # CUDA call above.
+                gmap.fuel_per_o2_plane,
             )
 
     # ------------------------------------------------------------------

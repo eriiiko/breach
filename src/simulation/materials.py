@@ -151,6 +151,8 @@ _THERMAL_DEFAULTS = {
     "TICK_DT_S": 1.0 / 24.0,   # fallback dt; from_config overrides from [clock]
     "c_v": 0.0076849,          # air's rho*c_v in thermal_mass column units --
                                # the gas side's capacity in the face derivation
+    "ceiling_h": 2.5,          # m of deck height; from_config injects the real
+                               # one from [physics.water], the ONE source
     # COOL-SHIFT AXIS (2026-07-30): the global that seeds the per-material
     # `cool_shift` column when a row omits it. Kept a live job so the axis is
     # additive — see the `cool_shift` block in __init__.
@@ -315,6 +317,47 @@ def fuel_recip_from_hp(hp) -> int:
 # side (`rad_scale`, the combustion deposit), it is a single scalar rather than
 # ten table rows, and making it per-level is report_p2b.md section 13 item 7 --
 # T5's business, deliberately not T3b's.
+# ---------------------------------------------------------------------------
+# R14, THE FUEL HALF (thermal model v2, Erik 2026-09-19; report_t3.md D5 §6.3).
+#
+# `hp` was doing two unrelated jobs -- STRUCTURAL INTEGRITY (what combat
+# damages, what the health bar shows) and FUEL STORE (how much O2 a tile's
+# combustion can consume before it is spent) -- and they want different
+# numbers. A massive wood tile is 154 kg; `hp = 60` at the shipped global
+# `fuel_per_o2 = 0.7` implies 31.9 kg of fuel, 4.8x short. Furniture is 9.7x
+# short. Erik: *"i think u may change the hp to make it consistent."*
+#
+# THE SEPARATION. `hp` keeps its meaning untouched. What derives from mass is
+# the EXCHANGE RATE `fuel_per_o2[mat]` -- the hp a tile pays per unit of O2 its
+# fire consumes -- chosen so that spending the whole bar consumes exactly the
+# tile's real combustible mass:
+#
+#     fuel_per_o2[mat] = hp[mat] / O2_UNITS_PER_TILE[mat]
+#     O2_UNITS_PER_TILE[mat] = density[mat] * V_tile / KG_FUEL_PER_N_O2
+#
+# so the fuel STORE is physics and the hp BAR stays a gameplay quantity. It was
+# a single global 0.7 before, which made the store proportional to `hp` and
+# therefore structural rather than physical.
+#
+# KG_FUEL_PER_N_O2 -- the fuel mass a unit of N_O2 burns, from two cited
+# constants and nothing fitted:
+#   * one unit of N_O2 is one atmosphere of O2 in one tile = 11.525 mol =
+#     0.36878 kg (p*V/(R*T) at the engine's own ambient);
+#   * Huggett's constant, 13.1 +/- 0.7 MJ per kg of O2 consumed, near-universal
+#     across organic fuels (Huggett 1980, archived under docs/papers/), so one
+#     unit of N_O2 releases 4.831 MJ;
+#   * wood's EFFECTIVE (cone-calorimeter) heat of combustion is 13 MJ/kg -- the
+#     gross 18-20 MJ/kg less the char that never flames (Drysdale ch. 1
+#     Table 1.13; Babrauskas, *Heat Release in Fires*).
+#   => 4.831 / 13 = 0.3716 kg of wood per unit of N_O2.
+#
+# TILE GEOMETRY. `V_tile = tile_size_ref_m^2 * ceiling_h`. Unlike
+# `thermal_mass` (where the tile volume cancels -- report_t3b.md §1.1), the fuel
+# MASS is an absolute quantity and does not cancel, so this column is
+# tile-size dependent for the same reason the conduction table and
+# `rad_scale_derived` are. Same reference, same open question (T3 §8 q9).
+KG_FUEL_PER_N_O2 = 0.3716181984470593   # kg of cellulosic fuel per N_O2 unit
+
 RHO_C_PIN = 0.9e6          # J/(m3.K) -- R13's pin: wood at ~12 % MC
 THERMAL_MASS_PIN = 8       # the column value that pin carries
 # One `thermal_mass` unit, in volumetric heat capacity: 112 500 J/(m3.K).
@@ -680,6 +723,51 @@ class MaterialTable:
         self.fuel_recip = np.array(
             [fuel_recip_from_hp(v) for v in self.hp.tolist()], dtype=np.int64)
 
+        # ---- R14's FUEL HALF: `fuel_per_o2`, DERIVED per material (T5b) ----
+        # The hp a tile pays per unit of O2 its own fire consumes, set so that
+        # spending the whole bar consumes exactly the tile's real combustible
+        # mass (the module-level KG_FUEL_PER_N_O2 block carries the derivation
+        # and its three citations):
+        #
+        #     fuel_per_o2[mat] = hp[mat] * KG_FUEL_PER_N_O2 / (density * V_tile)
+        #
+        # DERIVED, NOT A DIAL, and for the same reason `fuel_recip` is: a second
+        # authored number here could disagree with the row's own mass, which is
+        # precisely the inconsistency R14 exists to remove. The global
+        # `[physics.combustion] fuel_per_o2` survives ONLY as the solver's
+        # fallback when a caller supplies no per-tile plane (the `fuel_ref` /
+        # `o2_frac_amb` tombstone precedent); the live engine always supplies
+        # one.
+        #
+        # CONSEQUENCE, and it is Erik's to rule on (report_t5b.md §12 q2):
+        # every flammable row is authored at the SAME density (555, softwood at
+        # 12 % MC), so under R14 every flammable tile is the same 154 kg block
+        # and therefore holds the SAME 414 units of O2. The fuel distinction
+        # between `wood`, `furniture`, `kindling` and `foliage` COLLAPSES -- it
+        # used to ride on `hp`, which is structural. Restoring it means giving
+        # those three OBJECT rows their real bulk densities (a crate stack is
+        # ~120 kg/m3, not 555), which is T3 §8 q1/q2 and also moves
+        # `thermal_mass`. Not decided here.
+        v_tile = (float(self._thermal_get(thermal_cfg, "tile_size_ref_m")) ** 2
+                  * float(self._thermal_get(thermal_cfg, "ceiling_h")))
+        fpo = []
+        for name, hp_v, rho in zip(self.names, self.hp.tolist(),
+                                   self.density.tolist()):
+            mass_kg = float(rho) * v_tile
+            o2_units = mass_kg / KG_FUEL_PER_N_O2
+            fpo.append(float(hp_v) / o2_units if o2_units > 0.0 else 0.0)
+        self.fuel_per_o2 = np.array(fpo, dtype=np.float64)
+        self.fuel_per_o2_q16 = np.array([quantize_q16(v) for v in fpo],
+                                        dtype=np.int32)
+        for name, hp_v, q in zip(self.names, self.hp.tolist(),
+                                 self.fuel_per_o2_q16.tolist()):
+            if bool(self.flammable[list(self.names).index(name)]) and q <= 0:
+                raise ValueError(
+                    f"materials.{name}: a FLAMMABLE row derived "
+                    f"fuel_per_o2 = 0 (hp={hp_v}) -- it would burn for ever, "
+                    f"since its hp bar never empties. Give it a positive `hp` "
+                    f"or make it non-flammable (design v2 R14)")
+
         # fire_T_ext / fire_T_ext_q16: the per-id EXTINCTION TEMPERATURE — the
         # foot of the fire logistic's `hot` ramp, `hot = clamp01((T -
         # fire_T_ext[mat]) / fire_T_span)` (P-R3, ruling A3 ride-along
@@ -1004,9 +1092,19 @@ class MaterialTable:
         # ticks_per_second. It is injected here rather than duplicated as a
         # [physics.thermal] key, so the table can never disagree with the clock
         # the engine actually runs at.
+        # ...and `ceiling_h`, R14's fuel-mass derivation's other geometric
+        # input, whose one source of truth is [physics.water] (the water
+        # solver's own air column). Same reason: no second copy to drift.
+        over = {}
         tps = float(getattr(getattr(cfg, "clock", None), "ticks_per_second", 0.0))
         if tps > 0.0:
-            thermal_cfg = _ThermalOverride(thermal_cfg, {"TICK_DT_S": 1.0 / tps})
+            over["TICK_DT_S"] = 1.0 / tps
+        ch = getattr(getattr(getattr(cfg, "physics", None), "water", None),
+                     "ceiling_h", None)
+        if ch is not None and float(ch) > 0.0:
+            over["ceiling_h"] = float(ch)
+        if over:
+            thermal_cfg = _ThermalOverride(thermal_cfg, over)
         fire_cfg = getattr(getattr(cfg, "physics", None), "fire", None)
         # P-R4: the seed check's gain chain now runs through the combustion
         # fuel-bed deposit (k_fire_heat is retired), so [physics.combustion]

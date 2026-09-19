@@ -695,6 +695,20 @@ public:
         // delta, baked once at load). nullptr -> the scalar `fire_T_ext`
         // fallback above, i.e. the pre-R3-plane law bit-for-bit (every
         // legacy/direct-binding caller that does not pass one is unmoved).
-        const int32_t* fire_T_ext_plane = nullptr
+        const int32_t* fire_T_ext_plane = nullptr,
+        // R14's FUEL HALF (thermal model v2, T5b): PER-MATERIAL FUEL EXCHANGE
+        // RATE, int32 (h,w) Q16.16, OPTIONAL -- `GameMap.fuel_per_o2_plane`,
+        // `hp[mat] * KG_FUEL_PER_N_O2 / (density[mat] * V_tile)`, baked once at
+        // load. nullptr -> the scalar `fuel_per_o2` fallback above, i.e. the
+        // pre-R14 law bit-for-bit for every direct-binding caller.
+        //
+        // WHY IT IS PER-MATERIAL. The scalar made a tile's FUEL STORE
+        // `hp / fuel_per_o2`, i.e. proportional to structural integrity. A
+        // massive wood tile is 154 kg but `hp = 60` at 0.7 implies 31.9 kg of
+        // fuel (4.8x short); furniture is 9.7x short. Deriving the rate from
+        // the row's own mass makes the store physical while leaving `hp` alone
+        // -- which is exactly R14's "fuel separates from hp; hp stays
+        // structural".
+        const int32_t* fuel_per_o2_plane = nullptr
     ) const;
 };

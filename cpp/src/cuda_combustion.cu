@@ -409,7 +409,10 @@ __global__ void combustion_pass_b(
         const bool* __restrict__ solid, const bool* __restrict__ is_vacuum,
         const int32_t* __restrict__ alloc_slot,
         int32_t* __restrict__ dep_site,
-        int h, int w, int32_t fuel_per_o2_q) {
+        int h, int w, int32_t fuel_per_o2_q,
+        // R14 (T5b): the nullable per-material fuel exchange rate, the CPU
+        // twin's `fuel_per_o2_plane`.
+        const int32_t* __restrict__ fuel_per_o2_plane) {
     constexpr int NSLOT = 2 * R * (R + 1);
     const int n = h * w;
     const int32_t FUEL_FLOOR = CombustionSolver::FUEL_FLOOR;
@@ -431,7 +434,9 @@ __global__ void combustion_pass_b(
             if (s < 4) direct[D4_OPP[s]] = a;
         }
         if (burn_i == 0) continue;   // this source drew no O2 this tick
-        const q16 fuel_cost = narrow_round(mul_wide(fuel_per_o2_q, (q16)burn_i));
+        const q16 fpo_i = fuel_per_o2_plane ? fuel_per_o2_plane[i]
+                                            : fuel_per_o2_q;
+        const q16 fuel_cost = narrow_round(mul_wide(fpo_i, (q16)burn_i));
         wall_hp[i] -= fuel_cost;
         if (wall_hp[i] < FUEL_FLOOR) wall_hp[i] = FUEL_FLOOR;
 
@@ -580,7 +585,8 @@ void combustion_step(
         int32_t* dem_acc,
         int draw_r, const float* dyn_permeability, int max_claimants,
         float fire_T_ext, float fire_T_span, float hotf_cap,
-        const int32_t* fire_T_ext_plane) {
+        const int32_t* fire_T_ext_plane,
+        const int32_t* fuel_per_o2_plane) {
 
     // --- Guards + load-time scalar precompute (VERBATIM of combustion.cpp:65-91,
     //     in double). A guarded early-return leaves ALL fields untouched (no
@@ -734,6 +740,14 @@ void combustion_step(
         cuda_check(cudaMemcpy(d_T_ext_plane, fire_T_ext_plane, nb,
                               cudaMemcpyHostToDevice), "H2D fire_T_ext_plane");
     }
+    // R14's fuel half (T5b): the PER-MATERIAL fuel exchange-rate plane, the
+    // same nullable idiom again.
+    int32_t* d_fpo_plane = nullptr;
+    if (fuel_per_o2_plane) {
+        cuda_check(cudaMalloc(&d_fpo_plane, nb), "malloc fuel_per_o2_plane");
+        cuda_check(cudaMemcpy(d_fpo_plane, fuel_per_o2_plane, nb,
+                              cudaMemcpyHostToDevice), "H2D fuel_per_o2_plane");
+    }
     // D1: the (max_claimants, h, w) demand accumulator — SYNCED state, IN/OUT.
     // P-O2b: the plane's DECLARED depth is max_claimants; only the first
     // n_slots rows are live (a deeper plane simply carries unused rows).
@@ -816,7 +830,8 @@ void combustion_step(
             d_T_ext_plane, fire_T_ext_q, recip_T_span, hotf_cap_q);            \
         cuda_check(cudaGetLastError(), "pass_a launch");                       \
         combustion_pass_b<RVAL><<<grid, block>>>(                              \
-            d_whp, d_flam, d_solid, d_vac, d_alloc, d_dep, h, w, fuel_per_o2_q); \
+            d_whp, d_flam, d_solid, d_vac, d_alloc, d_dep, h, w,                \
+            fuel_per_o2_q, d_fpo_plane);                                        \
         cuda_check(cudaGetLastError(), "pass_b launch")
 
     // K1: Pass A (barriers after K0's D2D — d_tsnap is settled before any read).
@@ -884,6 +899,7 @@ void combustion_step(
     if (d_dep)   cudaFree(d_dep);
     if (d_perm)  cudaFree(d_perm);
     if (d_T_ext_plane) cudaFree(d_T_ext_plane);
+    if (d_fpo_plane) cudaFree(d_fpo_plane);
 }
 
 namespace {
