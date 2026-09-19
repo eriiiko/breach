@@ -677,7 +677,12 @@ vacuum_ambient_K = 295.0
 # heavy tile cannot radiate an appreciable share of its own heat in 1/24 s. The
 # fitted key above is 2419x larger, i.e. it behaves as if a furniture tile held
 # 80 J/K — 65 grams of wood — instead of 194 kJ/K.
-rad_scale_derived = 2.125632e-08 # heat counts per K^4 in the SWEEP's E° table
+rad_scale_derived = 1.6533e-08  # heat counts per K^4 in the SWEEP's E° table
+                                # R13 [Erik, 2026-09-19]: the currency pin is
+                                # 0.9 MJ/(m^3 K), wood at ~12% MC, so
+                                # J_per_count = 0.4759 J. The 2.125632e-08 that
+                                # stood here was the provisional 0.7 pin, -22.2%.
+                                # Caught by T3; nothing live reads this key yet.
 
 # Water pipe model (engine/07 §2, water plan W2). The C++ WaterSolver advances
 # gmap.water_depth (metres of standing water) each tick: damped velocity kick +
