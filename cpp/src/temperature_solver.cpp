@@ -215,8 +215,19 @@ void TemperatureSolver::step(
     // irrelevant there — Pass 0 already zeroed their T).
     {
         using namespace fixedpoint;
-        const double c_v_safe = (c_v > 0.0f) ? (double)c_v : 1.0;
-        const int64_t recip_cv = make_recip(c_v_safe);            // 1/c_v, once per step
+        // T5b / report_t2.md §10.2: `c_v` has exactly ONE integer representation
+        // in this engine -- `c_v_q`, the Q16.16 MULTIPLIER the conduction
+        // capacity is built from (hoisted to the top of step(), where the
+        // `c_v <= 0` guard already lives). This deposit's divisor is its EXACT
+        // inverse, NOT a second quantization of the same config scalar:
+        // `make_recip(c_v)` and `1/quantize(c_v)` agree only at c_v == 1 and
+        // differ by 0.0724 % at the shipped 0.0076849, which would make a gas
+        // cell's deposit and its conduction face disagree about what one heat
+        // count is worth. Bit-identical at c_v == 1 (65536/65536 is the very
+        // same value), so the change was free at the old dial.
+        // The local `c_v_safe` this line used to read is DELETED with it -- the
+        // guard is `c_v_q`'s now, and one guard is the point.
+        const int64_t recip_cv = make_recip((double)c_v_q / 65536.0);  // 1/c_v_q
         // (`n_floor_q` — the §4.3 deposit floor — is hoisted to the top of
         //  step() at P-E2a and shared with the conduction capacity build.)
         // v2.4 T_MAX_PHYS rail (temperature_solver.h; full rationale in

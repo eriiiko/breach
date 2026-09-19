@@ -54,7 +54,13 @@ FP_ONE = 65536
 # with the same constants.
 DIALS = dict(
     no_face=63, cool_shift=5, cool_shift_vacuum=3, o2_vacuum_thresh=0.3,
-    c_v=1.0, n_floor_heat=0.05, gas_advection_rate=900.0, t_max_phys=16000.0,
+    # T5b (report_t2.md D3 site 8): `c_v` is the SHIPPED derived value, not the
+    # 1.0 placeholder these checks froze in 2026-07 -- a CPU/GPU parity gate
+    # that runs at a dial the engine no longer ships proves parity of a code
+    # path nobody executes. `n_floor_heat` stays 0.05 deliberately: it is a
+    # STRESS value (5x the shipped 0.01) that makes the capacity floor bind in
+    # the sweep, which is exactly the branch a parity gate wants to exercise.
+    c_v=0.0076849, n_floor_heat=0.05, gas_advection_rate=900.0, t_max_phys=16000.0,
 )
 
 

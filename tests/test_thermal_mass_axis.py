@@ -441,6 +441,13 @@ def test_permeable_thermal_solid_takes_the_SHIFT_convert_not_the_gas_deposit():
     with the mask omitted (the nullptr fallback == pre-patch behaviour) the SAME
     tile takes the gas branch (``deposit / (N*c_v)``, N == 1 here). One deposit,
     two regimes — the whole defect in one assertion.
+
+    T5b: the gas leg used to read ``got == deposit``, which is the gas law only
+    at ``c_v == 1`` — an ACCIDENTAL identity that quietly stopped testing the
+    division the moment the currency became real. It now asserts the law itself,
+    through the engine's own integer chain and the engine's own ONE ``c_v``
+    representation (``1/quantize(c_v)``, not ``make_recip(c_v)``), so the leg
+    breaks if either the divide or the representation drifts.
     """
     s = _solver()
     deposit = 8 * FP_ONE            # 8.0 game units of heat energy
@@ -460,7 +467,15 @@ def test_permeable_thermal_solid_takes_the_SHIFT_convert_not_the_gas_deposit():
             assert got == gain - (gain >> COOL_SHIFT)
         else:
             # gas regime: full deposit / (N * c_v), NO ambient decay.
-            assert got == deposit
+            c_v_q = int(round(s.c_v * FP_ONE))
+            recip_n = bp.fp_reciprocal_q16(FP_ONE)          # N == 1.0
+            recip_cv = bp.fp_make_recip(c_v_q / FP_ONE)
+            assert got == bp.fp_deposit_dT_wide_q16(deposit, recip_n, recip_cv)
+            # ... and the law is NOT the identity it used to look like:
+            assert got > 100 * deposit, (
+                "the gas branch must divide by c_v; at the shipped 0.0076849 "
+                "that is a 130x rise, so `got == deposit` would mean the "
+                "divide vanished")
 
 
 def test_temperature_solver_gas_T_advection_is_retired():

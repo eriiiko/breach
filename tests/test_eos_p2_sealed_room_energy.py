@@ -136,6 +136,13 @@ def _capacity_real(mats, shift, solid, n_raw, n_floor_heat=0.05, c_v=1.0):
     energy books are denominated in. These callers pass no `thermal_solid`, so
     the solver's medium mask falls back to `solid`.
 
+    T5b: the `c_v=1.0` default here is this module's OWN dial, not the shipped
+    one (which is now 0.0076849). Every caller in this file drives the DIRECT
+    binding with its own explicit dials rather than `config.toml`, so the
+    default is a fixture value and stays — but it is no longer "the same values
+    config.toml now ships", and the docstrings below that said so have been
+    corrected.
+
     Object: C = thermal_mass = 2^heat_inv_shift.  Gas: C = N·c_v (UNfloored —
     the n_floor_heat floor is what `e_cond_cap_sum` counts)."""
     c_v_q = int(math.floor(c_v * FP_ONE + 0.5))
@@ -199,7 +206,9 @@ def _solver(cool_shift_vacuum=3):
     docstring); cool_shift_vacuum left at a real, fast value (the shipped
     default 3) so scenario (b)'s one exposed tile actually radiates. gas_*
     dials are left at their shipped C++ defaults (gas_advection_rate=900,
-    c_v=1.0, n_floor_heat=0.05 — the SAME values config.toml now ships)."""
+    c_v=1.0, n_floor_heat=0.05 — FIXTURE values, NOT what config.toml ships
+    since T5b moved `c_v` to the derived 0.0076849; this module drives the
+    direct binding with its own dials throughout)."""
     s = bp.TemperatureSolver()
     s.no_face = NO_FACE
     s.cool_shift = 31

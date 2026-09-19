@@ -151,9 +151,40 @@ gas_advection_rate = 900.0  # gas-T wind->displacement scale; SAME convention/va
                              # as [physics].advection_rate (smoke) — hot air rides the
                              # wind at smoke's visual rate until P3 makes `wind` a real
                              # velocity, at which point this dial goes away.
-c_v               = 1.0     # gas heat capacity for the radiation deposit
-                             # ΔT = ΔE/(N·c_v) (§4.3). 1.0 = neutral scale (ΔT≈ΔE at
-                             # ambient N=1.0); no real-gas anchor yet (P3 territory).
+c_v         = 0.0076849     # THE GAS HALF OF THE HEAT-COUNT CURRENCY — derived, not
+                             # dialled (thermal model v2 ledger item 4, R13;
+                             # report_t2.md §2.1-2.2). It is the ONE exchange rate
+                             # between `gas_energy = N·T_abs` and the heat-count
+                             # currency every SOLID capacity is denominated in; it is
+                             # applied at every crossing and nowhere else.
+                             #
+                             # DERIVATION. `cell_capacity_q` prices a gas tile at
+                             # `N·c_v` in the SAME unit `thermal_mass` is in, so c_v
+                             # is simply air's ρc_v expressed in that unit:
+                             #     c_v = ρc_v(air) / THERMAL_MASS_UNIT
+                             #         = 864.548 / 112500 = 0.0076849
+                             # THERMAL_MASS_UNIT = 112500 J/(m³·K) is R13's pin (wood
+                             # at 12 % MC, 0.9 MJ/(m³·K), IS thermal_mass 8).
+                             # ρc_v comes from the engine's OWN EOS constants, not a
+                             # table: it is the residue of eos_solver's k_work
+                             # derivation, ρc_v = p/((γ−1)·T) = 101325/(0.4·293) =
+                             # 864.548 J/(m³·K) — which agrees with tabulated air
+                             # (1.2047 · 717.6, the [materials.air] row) to 0.004 %.
+                             # V_tile cancels out of the ratio, so unlike rad_scale
+                             # this number carries NO tile-size and no molar-mass
+                             # dependence.
+                             #
+                             # WAS 1.0 — a placeholder its own comment called "no
+                             # real-gas anchor yet". It made an ambient air tile
+                             # 130.13× too heavy thermally (c_v=1 at N=1 IS
+                             # thermal_mass 1.0, i.e. a solid), so a wall bled 130×
+                             # the energy it should into the air beside it.
+                             #
+                             # ONE REPRESENTATION. `c_v_q = quantize(c_v)` (Q16.16)
+                             # is the only integer form; every deposit reciprocal is
+                             # `make_recip(c_v_q/65536)`, its EXACT inverse — never
+                             # `make_recip(c_v)`, which differs by 0.0724 % here
+                             # (report_t2.md §10.2, report_t5a.md §6.6).
 n_floor_heat      = 0.01    # floor on the per-tile N divisor (the real bulk N_total
                              # since P3) for the SAME deposit divide, SHARED by BOTH
                              # deposit sites — this Pass-1 gas branch AND combustion's

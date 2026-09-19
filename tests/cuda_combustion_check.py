@@ -85,7 +85,7 @@ DIALS = dict(burn_rate=1.0, o2_thresh_burn=0.03, H_FUEL_M=4.0, H_FUEL_SHIFT=0,
              soot_yield=0.3,
              fuel_per_o2=0.7, o2_frac_ext=0.13, o2_frac_full=0.21,
              o2_frac_amb=0.21, T_MAX_PHYS=16000.0)
-C_V = 1.0
+C_V = 0.0076849   # T5b: the shipped derived gas heat capacity (report_t2.md §2.2)
 N_FLOOR_HEAT = 0.05
 
 # The material ignition threshold used throughout (any positive Q16.16 works —

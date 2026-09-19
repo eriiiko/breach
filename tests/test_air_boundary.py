@@ -843,24 +843,55 @@ def test_ambient_gate2_rush_in_recovers_and_rails_bounded():
     N_WATCH = 5
     hit_deltas, rail_at_tick = [], []
     prev_hits = 0
+    # T5b: `boundary_flux()` is a PER-TICK rail -- `eos_solver.cpp:348-352`
+    # zeroes it at every step() entry -- so the inflow has to be watched as a
+    # RUNNING TOTAL. Reading it once after the loop reads the LAST tick alone.
+    rail_cum = np.zeros(int(g.gas.shape[0]), dtype=np.int64)
+    rail_min = np.zeros(int(g.gas.shape[0]), dtype=np.int64)
+
+    def _accumulate():
+        rail_cum[:] += np.asarray(runner.eos.boundary_flux(), dtype=np.int64)
+        np.minimum(rail_min, rail_cum, out=rail_min)
+
     for _ in range(N_WATCH):
         runner.step(g, DT_TICK)
+        _accumulate()
         hits = runner.eos.t_max_phys_hits
         hit_deltas.append(hits - prev_hits)
         rail_at_tick.append(runner.eos.e_rail_sum)
         prev_hits = hits
     for _ in range(80 - N_WATCH):
         runner.step(g, DT_TICK)
+        _accumulate()
 
     recovered = float(g.atmosphere[interior].mean())
     # Air rushed IN: the interior recovered most of the way to P_amb.
     assert recovered > 0.9 * pin, (
         f"interior only recovered to {recovered:.0f} / {pin} "
         f"(started {start:.0f})")
-    # The rail recorded the boundary exchange, negative for a net inflow.
+    # The rail recorded the boundary exchange, negative for a net inflow --
+    # measured at the DEEPEST POINT of the running total, which is where the
+    # rush-in is (tick 2).
+    #
+    # T5b FINDING, and it is a gate that was blind to its own name. This line
+    # used to read `runner.eos.boundary_flux()` ONCE after 80 ticks and assert
+    # it negative. That is a PER-TICK rail on a room that finished refilling by
+    # tick 3, so it was asserting the sign of settled ±noise: measured -1678 at
+    # the old `c_v` and +46 at the new one, a flip produced by a 0.1 % change in
+    # a trajectory that is otherwise identical. Worse, the property it claimed
+    # to measure is FALSE as a total: the interior ends up ~5000 game-K hot, so
+    # it vents back out and the 80-tick NET is a small OUTFLOW (+139 846 at the
+    # old `c_v`, +138 922 at the new -- the old assertion would have been wrong
+    # on the total in both cases). What is real, and identical at both values,
+    # is the refill itself: the running total bottoms out at -1 594 720 on tick
+    # 2, three orders of magnitude clear of the sign boundary. Cross-checked to
+    # the last count against the interior's own species mass: the cumulative
+    # rail is exactly minus the interior mass delta at every tick.
     rail = runner.eos.boundary_flux()
     assert len(rail) == g.gas.shape[0]
-    assert rail[o2] < 0 and rail[n2] < 0, f"expected inflow rail, got {rail}"
+    assert rail_min[o2] < -1e6 and rail_min[n2] < -1e6, (
+        f"expected a substantial inflow during the refill, got peak running "
+        f"total {list(rail_min)} (last tick alone: {list(rail)})")
     # The ring stayed pinned throughout.
     assert np.all(g.atmosphere[g.is_ambient] == pin)
 

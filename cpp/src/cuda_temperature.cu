@@ -521,13 +521,16 @@ int64_t temperature_step(
     // here so the device code is float-free.
     const int32_t thresh_q = quantize((double)o2_vacuum_thresh);
     const double c_v_safe = (c_v > 0.0f) ? (double)c_v : 1.0;
-    const int64_t recip_cv = make_recip(c_v_safe);
-    const int32_t n_floor_q = quantize((double)n_floor_heat);
-    const int32_t t_max_phys_q = quantize((double)t_max_phys);
     // P-E2a: c_v as a Q16.16 MULTIPLIER for the conduction capacity (Pass 1
     // needs its reciprocal; the capacity needs the value). Same dial, same
     // once-per-step boundary cast the CPU does.
+    // T5b: hoisted ABOVE `recip_cv`, because `recip_cv` is now derived FROM it
+    // -- `c_v` has exactly ONE integer representation in this engine (CPU twin
+    // says the same). report_t2.md §10.2.
     const int32_t c_v_q = quantize(c_v_safe);
+    const int64_t recip_cv = make_recip((double)c_v_q / 65536.0);  // 1/c_v_q
+    const int32_t n_floor_q = quantize((double)n_floor_heat);
+    const int32_t t_max_phys_q = quantize((double)t_max_phys);
     // P-E1: Pass 0b (gas-T SL advection) is RETIRED — `wind_x`/`wind_y`/`dt`
     // and `gas_advection_rate` survive only as inert back-compat surface, and
     // nothing on this backend reads them any more (CPU twin identical).

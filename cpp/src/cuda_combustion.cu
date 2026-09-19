@@ -602,7 +602,10 @@ void combustion_step(
     const int H_fuel_shift  = (H_FUEL_SHIFT > 0) ? H_FUEL_SHIFT : 0;
     const q16 fuel_per_o2_q = quantize((double)fuel_per_o2);
     const double c_v_safe   = (c_v > 0.0f) ? (double)c_v : 1.0;
-    const int64_t recip_cv  = make_recip(c_v_safe);
+    // T5b: the identical twin of combustion.cpp -- ONE integer representation
+    // of `c_v` (`c_v_q`, Q16.16), and this is its exact inverse.
+    const q16 c_v_q         = quantize(c_v_safe);
+    const int64_t recip_cv  = make_recip((double)c_v_q / 65536.0);
     const q16 n_floor_q     = quantize((double)n_floor_heat);
     const q16 t_max_phys_q  = quantize((double)T_MAX_PHYS);
     // Continuous-O2 law (design §2.3): o2f_j span, SAME hoisted constants as

@@ -107,16 +107,66 @@ def test_shr_round0_i64_is_symmetric_past_int32():
             assert bp.fp_shr_round0_i64(-x, s) == -(x >> s)
 
 
+# T5b: the SHIPPED gas heat capacity, which is BELOW 1 (report_t2.md §2.2).
+# This module's one-LSB claim was written when `c_v = 1.0` shipped and its own
+# docstring flagged that it presumes `c_v >= 1`; the shipped value has since
+# left that range, so the sub-unit regime gets its own test with its own
+# DERIVED bound rather than a widened blanket one.
+SHIPPED_C_V = 0.0076849
+
+
 def _shipped_recips():
     """(recip_n_q, recip_cv) pairs in the ranges the fold actually uses: N from
     the shipped n_floor_heat (0.01) up to a full cell (~1.0) through the kit's
     own reciprocal_q16, and c_v reciprocals from make_recip over [1, 100]
     (the one-LSB claim presumes c_v >= 1: for c_v < 1 the second floor can
-    drop a further 1/c_v, which the test below states rather than hides)."""
+    drop a further 1/c_v, which
+    :func:`test_staged_wide_chain_sub_unit_c_v_obeys_the_derived_bound`
+    states rather than hides)."""
     recip_ns = [bp.fp_reciprocal_q16(int(n * 65536)) for n in
                 (0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0)]
     recip_cvs = [bp.fp_make_recip(cv) for cv in (1.0, 1.5, 2.0, 4.0, 10.0, 100.0)]
     return recip_ns, recip_cvs
+
+
+def test_staged_wide_chain_sub_unit_c_v_obeys_the_derived_bound():
+    """PROPERTY: at the SHIPPED sub-unit `c_v` the two chains separate by at
+    most `(recip_cv >> 32) + 1`, which is the exact consequence of flooring
+    twice — and they DO separate by more than one LSB, so the `<= 1` claim of
+    the test above is genuinely a `c_v >= 1` claim and not a universal one.
+
+    DERIVATION (the bound is not fitted). With `A = deposit * recip_n >= 0`:
+        stage1 = floor(A / 2^16),  so  A / 2^16 = stage1 + f,  0 <= f < 1
+        staged = floor(stage1 * recip_cv / 2^32)
+        narrow = floor((stage1 + f) * recip_cv / 2^32)
+        => 0 <= narrow - staged <= floor(f * recip_cv / 2^32) + 1
+                                <= (recip_cv >> 32) + 1
+    At `c_v >= 1`, `recip_cv >> 32 <= 1`; at the shipped 0.0076849 it is 130,
+    so the honest bound is 131 LSB of gas temperature, not 1.
+
+    BREAKS IF: a stage narrows more than once, the floor becomes a round, or
+    someone "fixes" the sub-unit case by clamping instead of by widening.
+    """
+    rng = random.Random(20260920)
+    recip_ns, _ = _shipped_recips()
+    recip_cv = bp.fp_make_recip(SHIPPED_C_V)
+    bound = (recip_cv >> 32) + 1
+    assert bound > 1, "the shipped c_v is not sub-unit any more -- re-read this test"
+    deposits = [0, 1, 65536, 12345678, INT32_MAX, 2 ** 30, 999, 1 << 20]
+    deposits += [rng.randint(0, INT32_MAX) for _ in range(200)]
+    worst = 0
+    for dep in deposits:
+        for rn in recip_ns:
+            staged = bp.fp_deposit_dT_wide_i64(dep, rn, recip_cv)
+            narrow = bp.fp_deposit_dT_wide_q16(dep, rn, recip_cv)
+            assert staged == _py_staged(dep, rn, recip_cv), (dep, rn)
+            assert narrow == _py_one_narrow(dep, rn, recip_cv), (dep, rn)
+            diff = narrow - staged
+            assert 0 <= diff <= bound, (dep, rn, staged, narrow, bound)
+            worst = max(worst, diff)
+    assert worst > 1, (
+        f"the sub-unit regime never exceeded one LSB (worst={worst}): either "
+        f"this test stopped covering it, or the chains stopped flooring twice")
 
 
 def test_staged_wide_chain_within_one_lsb_of_the_one_narrow_chain():

@@ -210,7 +210,15 @@ void CombustionSolver::step(
     const q16 H_bed_m_q     = quantize((double)H_BED_M);
     const int H_bed_shift   = (H_BED_SHIFT > 0) ? H_BED_SHIFT : 0;
     const double c_v_safe  = (c_v > 0.0f) ? (double)c_v : 1.0;
-    const int64_t recip_cv = make_recip(c_v_safe);              // 1/c_v, once per step
+    // T5b: the gas-side deposit divides by the SAME `c_v` the temperature
+    // solver's conduction capacity is built from -- ONE integer representation
+    // of the dial in the engine (`c_v_q`, Q16.16), and this is its exact
+    // inverse. `make_recip(c_v)` and `1/quantize(c_v)` agree only at c_v == 1;
+    // at the shipped 0.0076849 they differ by 0.0724 %, which would make two
+    // deposits into the same air cell disagree about what a heat count is
+    // worth. report_t2.md §10.2. Bit-identical at c_v == 1.
+    const q16 c_v_q        = quantize(c_v_safe);
+    const int64_t recip_cv = make_recip((double)c_v_q / 65536.0); // 1/c_v_q, once per step
     const q16 n_floor_q    = quantize((double)n_floor_heat);
     // v2.4 T_MAX_PHYS rail (combustion.h; full rationale in eos_solver.h).
     const q16 t_max_phys_q = quantize((double)T_MAX_PHYS);
