@@ -192,6 +192,12 @@ def _rows_from_table():
                    light_atten=list(_TBL.light_atten[mid]))
         if not bool(_TBL.thermal_solid[mid]):
             row["thermal_mass"] = 0.0
+        # M2: `thickness_m` is AUTHORED geometry, so a rebuilt row must carry
+        # it -- a flammable row without one is refused by the lumped-validity
+        # door, and a solid row without one fills its tile (which is what
+        # `thickness_m == 0.0` means in the column).
+        if float(_TBL.thickness_m[mid]) > 0.0:
+            row["thickness_m"] = float(_TBL.thickness_m[mid])
         rows[name] = row
     return rows
 
@@ -376,16 +382,26 @@ def test_fuel_store_is_the_tile_s_real_combustible_mass():
     consume before the bar empties equals its own combustible mass divided by
     the mass one unit of N_O2 burns:
 
-        hp[mat] / fuel_per_o2[mat]  ==  density[mat] * V_tile / KG_FUEL_PER_N_O2
+        hp[mat] / fuel_per_o2[mat]
+            ==  density[mat] * fill_fraction[mat] * V_tile / KG_FUEL_PER_N_O2
 
     i.e. the FUEL STORE is physics while `hp` stays a gameplay quantity. Before
     T5b `fuel_per_o2` was ONE GLOBAL 0.7, which made the store proportional to
     structural integrity: a 154 kg wood tile carried 31.9 kg of fuel, 4.8x
     short, and furniture 9.7x short.
 
+    M2 (design §8): the mass is the row's DERIVED `mass_kg` -- its real
+    combustible mass after GEOMETRY -- not `density * V_tile`, which assumed
+    every row filled its tile. The property is the same sentence it always was
+    ("the store is the tile's real combustible mass"); what changed is that the
+    tile's real combustible mass is now 2.3 kg of wood panel and not a 154 kg
+    block. That one substitution is what makes the fuel store BIND instead of
+    the burn-down timer: the same 60 hp bar is now spent over 6.2 units of O2
+    instead of 414, a 67x stronger physical channel, with no new mechanism.
+
     BREAKS IF: `fuel_per_o2` goes back to a global, a row's rate is authored
     instead of derived, or the mass and the rate stop coming from the same
-    `density` column.
+    `density` and `fill_fraction` columns.
     """
     from simulation.materials import KG_FUEL_PER_N_O2
     tbl = MaterialTable.from_config()
@@ -395,10 +411,12 @@ def test_fuel_store_is_the_tile_s_real_combustible_mass():
     assert len(flammable) >= 3, "sanity: the table must have flammable rows"
     for i in flammable:
         store = float(tbl.hp[i]) / float(tbl.fuel_per_o2[i])
-        mass = float(tbl.density[i]) * v_tile
+        # re-derived here from the AUTHORED columns, not read off `mass_kg`
+        mass = float(tbl.density[i]) * float(tbl.fill_fraction[i]) * v_tile
+        assert mass == pytest.approx(float(tbl.mass_kg[i]), rel=1e-12)
         assert store == pytest.approx(mass / KG_FUEL_PER_N_O2, rel=1e-9), (
             f"{tbl.names[i]}: fuel store {store:.2f} N_O2 units against a real "
-            f"{mass:.1f} kg / {KG_FUEL_PER_N_O2} = "
+            f"{mass:.2f} kg / {KG_FUEL_PER_N_O2} = "
             f"{mass / KG_FUEL_PER_N_O2:.2f}")
     # ...and it is NOT what the retired global gave: at 0.7 the stores differed
     # by up to 7.5x across these rows, because they rode `hp`.

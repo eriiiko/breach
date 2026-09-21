@@ -101,10 +101,36 @@ def _step(solver, temp, heat, shift, face_shift, solid, is_vacuum, atmosphere):
     solver.step(temp, heat, shift, face_shift, solid, is_vacuum, atmosphere)
 
 
+def _convert(heat, shift):
+    """The heat -> temperature convert, for a SIGNED exponent (M1/M2).
+
+    `heat >> s` is only the law for `s >= 0`; a thin row's exponent is NEGATIVE
+    and the engine MULTIPLIES by `2**-s` there (`shr_round0_signed_i64`). This
+    helper is the test's own transcription of that, so the assertions below
+    stay statements about the LAW rather than about one sign of it.
+    """
+    return heat >> shift if shift >= 0 else heat * (1 << -shift)
+
+
 def test_shipped_shifts():
-    # Guard the table values STEP A is anchored to: wood >>3, hull >>5.
-    assert SHIFT_WOOD == 3, f"wood thermal_mass should be 8 (>>3), got >>{SHIFT_WOOD}"
+    """PROPERTY: the two anchor rows this module's STEP A uses sit in DIFFERENT
+    capacity regimes -- `wood` is a thin panel (sub-unit capacity, NEGATIVE
+    exponent) and `hull` is solid steel (32 units, +5).
+
+    It pinned `wood == 3` and `hull == 5` as literals. M2 re-authors `wood` as a
+    0.5 cm panel, so the literal is spent; the reason it existed -- "these two
+    rows must keep straddling the regime boundary, or the conversion tests below
+    stop exercising anything" -- is what is asserted now, and it survives a
+    future re-authoring of either row.
+
+    BREAKS IF: `wood` goes back to a full-fill structural block, or the two
+    anchors collapse onto the same capacity and the contrast below goes vacuous.
+    """
+    assert SHIFT_WOOD < 0, (
+        f"wood should be a THIN panel with a sub-unit capacity, got "
+        f">>{SHIFT_WOOD} (a full-fill block again?)")
     assert SHIFT_HULL == 5, f"hull thermal_mass should be 32 (>>5), got >>{SHIFT_HULL}"
+    assert SHIFT_WOOD != SHIFT_HULL
 
 
 def test_solid_conversion_equals_heat_shifted():
@@ -115,8 +141,10 @@ def test_solid_conversion_equals_heat_shifted():
     heat[0, 1] = 800 * HEAT_SCALE     # same deposit on the hull tile
     solver = _solver()
     _step(solver, temp, heat, shift, face_shift, solid, vac, atm)
-    assert temp[0, 0] == heat[0, 0] >> SHIFT_WOOD, "wood: temp != heat >> 3"
-    assert temp[0, 1] == heat[0, 1] >> SHIFT_HULL, "hull: temp != heat >> 5"
+    assert temp[0, 0] == _convert(heat[0, 0], SHIFT_WOOD), (
+        f"wood: temp != heat scaled by 2**-{SHIFT_WOOD}")
+    assert temp[0, 1] == _convert(heat[0, 1], SHIFT_HULL), (
+        f"hull: temp != heat scaled by 2**-{SHIFT_HULL}")
     # Sanity: metal soaks more energy/degree -> lower temperature for equal heat.
     assert temp[0, 1] < temp[0, 0]
 
@@ -141,7 +169,7 @@ def test_accumulates_over_two_ticks():
     temp, heat, shift, face_shift, solid, vac, atm = _grid([MAT_WOOD])
     heat[0, 0] = 100 * HEAT_SCALE
     solver = _solver()
-    per_tick = heat[0, 0] >> SHIFT_WOOD
+    per_tick = _convert(heat[0, 0], SHIFT_WOOD)
     _step(solver, temp, heat, shift, face_shift, solid, vac, atm)   # tick 1 (heat NOT cleared)
     assert temp[0, 0] == per_tick
     _step(solver, temp, heat, shift, face_shift, solid, vac, atm)   # tick 2: same deposit

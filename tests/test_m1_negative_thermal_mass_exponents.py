@@ -393,26 +393,22 @@ def test_the_radiation_fold_takes_a_negative_exponent_too():
 # ===========================================================================
 # 5. Neutrality of the whole change, stated where a reader will look for it
 # ===========================================================================
-def test_the_shipped_material_table_is_unmoved_by_M1():
-    """PROPERTY: M1 changes no material row. Every shipped row still carries a
-    NON-NEGATIVE exponent and the same capacity it carried before.
-
-    This is the sentence the golden non-movement rests on, asserted directly so
-    it cannot be true only by accident of which levels the goldens cover.
-
-    BREAKS IF: a row is edited into M1 (the rows belong to M2), or the snap's
-    rounding moves.
-    """
-    from config import CFG
-    from simulation.materials import MaterialTable
-    tbl = MaterialTable.from_config(CFG)
-    for name, tm, his, ts in zip(tbl.names, tbl.thermal_mass.tolist(),
-                                 tbl.heat_inv_shift.tolist(),
-                                 tbl.thermal_solid.tolist()):
-        if not ts:
-            assert tm == 0.0, name
-            continue
-        assert his >= 0, (
-            f"{name} carries a negative exponent — M1 authors no rows; "
-            f"the thin rows land in M2")
-        assert tm == float(2 ** his), name
+# DELETED BY M2, DELIBERATELY AND ON SCHEDULE:
+# `test_the_shipped_material_table_is_unmoved_by_M1`.
+#
+# It asserted that every shipped row still carried a NON-NEGATIVE exponent,
+# which was M1's neutrality claim -- the sentence its "no golden moved" evidence
+# rested on. M1's own report names this test as the one M2 must delete "in the
+# same commit that lands the rows", because the rows are the whole point of M2
+# and the claim is therefore SPENT, not broken. Recorded here rather than simply
+# removed, so a reader who goes looking for M1's neutrality evidence finds out
+# what happened to it instead of finding nothing.
+#
+# The property that REPLACES it, and which grows correctly, is
+# `tests/test_thermal_mass_axis.py::
+#  test_a_flammable_row_is_thin_and_a_structural_row_is_solid`.
+#
+# Everything else in this file still gates M1 and is untouched: the signed
+# shift's two branches, the capacity round trip, the int32 overflow site, the
+# gas sentinel, and the four extra consumer sites in the sibling file. Those are
+# now exercised by SHIPPED rows for the first time, which is a strengthening.
