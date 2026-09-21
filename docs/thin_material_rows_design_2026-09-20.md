@@ -324,11 +324,78 @@ The whole bar is still consumed exactly when all the fuel is burned — but over
 relative to the timer. Erik's ruling: **the fuel store should bind, not the
 timer.**
 
-What remains to derive at M3 (this is **q5**, now tractable rather than
-theoretical): which channel actually binds at the measured burn rate, and
-therefore what `wall_damage` should become — plausibly 0, leaving structural
-destruction to the weapons path where it belongs. The 3-minute ruling is then
-re-derived against a real store instead of set as a dial.
+### RULED (Erik, 2026-09-21): Option 1 — keep the bar, delete the timer
+
+`wall_hp` has **three** consumers, not the two R14 names:
+
+| # | channel | law | where |
+|---|---|---|---|
+| 1 | structural / combat | `wall_hp -= ammo.wall_damage` | `combat.py::chew_wall` |
+| 2 | **chemistry** | `wall_hp -= fuel_per_o2 * burn_i` (O2 actually drawn) | `combustion.cpp:813` |
+| 3 | **the timer** | `wall_hp -= wall_damage * dt * hotf * I` | `fire_simulation.cpp:360` |
+
+Channel 3 depends on **time, temperature and intensity — never on oxygen consumed
+or on how much mass is in the tile**. A tile burns down in a fixed time whether it
+is a matchstick or a tree trunk. It dominates channel 2 ~10:1, which is why a
+9.66x change to the fuel rate moved burn duration 0.5 % (report_t5b §5.2).
+
+**The ruling**: `wall_damage` goes to **0**; `hp` stays feel-authored and the
+derived `fuel_per_o2` exchange rate makes spending the whole bar equal burning the
+tile's real combustible mass — which is what R14 built and never got to use.
+**Zero new synced state.** Burn duration becomes fuel / burn rate: physics, with
+no dial.
+
+**Option 2 is the recorded upgrade path**, not a rejected alternative: a separate
+`fuel_remaining` plane, depleted only by combustion, with `wall_hp` purely
+structural. It costs one synced int32 plane (digest, residency, Recorder, CUDA
+twin) and buys independent control — "tough to shoot but burns fast", and shot-up
+debris that is still flammable. Take it if the human test shows Option 1's
+coupling wart biting; M2's derived store is what makes it cheap.
+
+**This is not "removing a dial."** Channel 3 is load-bearing today — its own
+comment calls it *"the fuel-consumption brake"*, and with a fictional 154 kg store
+it was the only thing that ever ended a fire. M3 **swaps which channel ends a
+fire, from a clock to stoichiometry**, and must verify that fires still go out.
+
+Two things survive the swap (verified, not assumed):
+
+- **R3's "hot burns faster" is not lost** — `hotf` also drives the O2 demand in
+  channel 2, so a hotter fire consumes fuel faster through the physical path.
+- **Starvation still works** — `combustion.cpp:511` kills the ember at
+  `wall_hp <= FUEL_FLOOR`, independently of the timer.
+
+### FINDING — only the timer can DESTROY a tile
+
+The two channels end differently: chemistry **floors** at `FUEL_FLOOR = 1` raw and
+never goes below it, while the timer **destroys** at `wall_hp <= 0 && is_wall`.
+
+So deleting channel 3 as-is leaves a burnt-out crate **standing** — intact,
+inert, having consumed all its wood, and nothing ever burns *through*.
+
+**M3 must move the destruction decision to the chemistry channel**: a flammable
+wall tile that exhausts its fuel is destroyed. One condition in the right place,
+not a new field. Option 1 turns out to need the same burnt-out-falls-apart
+coupling that was described under Option 2.
+
+### What M3 still owes as a MEASUREMENT
+
+The burn rate once the timer is gone, and therefore the real durations. The
+first-order estimate at the bench's ~71 kW total fire power:
+
+| row | kg | O2 units | chemical MJ | burn time |
+|---|---:|---:|---:|---:|
+| `wood` (0.5 cm panel) | 2.3 | 6.2 | 29.9 | ~7.0 min |
+| `kindling` | 2.0 | 5.4 | 26.0 | ~6.1 min |
+| `foliage` | 2.0 | 5.4 | 26.0 | ~6.1 min |
+| `furniture` | 5.0 | 13.5 | 65.0 | ~15.3 min |
+| *the old 154 kg crate, for scale* | 153.9 | 414.1 | 2 000.7 | *~7.9 h* |
+
+**Erik's 3-minute fuel-out ruling (2026-09-06) was set against a store that
+physically held 471 minutes — a 157x discrepancy.** It was a patch over a
+fictional store, and with a real store it is **re-derived, not carried forward**.
+Wanting ~3 minutes after seeing 7 and 15 is a legitimate game-design choice
+against a physical baseline; it is simply not the same decision. M3 brings the
+measured numbers back to Erik before anything is locked.
 
 ---
 
@@ -358,7 +425,7 @@ holds.
 |---|---|---|---|
 | **M1** | **negative exponents** | the four §5 sites + the CUDA twin; `pow2_snap` returns a signed exponent | digest bump + goldens; CPU/CUDA bit-identity; a perturbation test that the int32 deposit really would have overflowed |
 | **M2** | **dimensions + the rows** | the `thickness_m` column, the load-time derivation of `mass`/`fill_fraction`/`thermal_mass` from the **level's** geometry (the seam q3 also needs, §4), the four rows of §6, the pin decoupling (§7.1), the validators (§11) | property gates on the derived masses, the lumped criterion, and **tile-size invariance** (§11.3b); every row's ignition time measured on the bench against §6 |
-| **M3** | **derived `H_bed`/`H_fuel` + fuel store** | 38.73 / 116.2; the q5 measurement and whatever `wall_damage` becomes | **the 8 red tests go green**; the arc #54 closure identity still closes in int64 |
+| **M3** | **derived `H_bed`/`H_fuel` + fuel store** | 38.73 / 116.2; `wall_damage` -> 0 (§8, RULED); **move the destroy decision to the chemistry channel** (§8 FINDING); measure the real burn durations and bring them to Erik | **the 8 red tests go green** *without being bent*; **fires still go out, and burnt-out tiles are still destroyed** — the two properties the timer used to own; arc #54's closure identity still closes in int64 |
 | **M4** | **the system** | `tools/derive_material_row.py`, the `adding-a-material` skill, the CLAUDE.md rows | the tool reproduces §6's table exactly |
 | | **HUMAN TEST** | Erik plays it | this is the P3 feel gate the design always had |
 
