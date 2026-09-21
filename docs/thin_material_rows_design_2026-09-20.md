@@ -158,6 +158,42 @@ tile size. Recorded as an approximation in the same spirit as `furniture`'s
 10.8 mm exemption, to be replaced by an explicit `form` discriminator when a
 level with a different tile size actually ships.
 
+### Tile size varies TWO ways, and they want opposite authoring
+
+Investigated 2026-09-21, before M2 was briefed. Tile size is not merely a
+per-level constant:
+
+1. **Levels genuinely differ** — `airlock_demo` 1.0 m, `bench_two_room` 0.5 m,
+   every other shipped level 0.333 m.
+2. **`--res N` is a RUNTIME flag** that replicates each base tile into an `N x N`
+   block and divides `tile_size_m`. Tile size therefore changes *for the same
+   level*, at launch (`res_factor`, `tile_size_m_base`).
+
+The two cases pull in opposite directions:
+
+| authoring | across levels (0.333 vs 1.0 m) | under `--res N` |
+|---|---|---|
+| `fill_fraction` | **wrong** — mass ∝ `tile_w^2`, so the 1.0 m row is a 3x thicker panel | **right** — total mass invariant |
+| `thickness_m` | **right** — mass ∝ `tile_w`, the panel stays 5 mm | **wrong** — a wall becomes `N` tiles deep, total mass ∝ `N` |
+
+Neither is invariant alone. **The codebase already has the doctrine**:
+`tile_size_m_base` + `res_factor`, with the rule *"quantize at BASE resolution,
+replicate by `res_factor`"* (`door_system.py:60`, `cover_system.py:157`).
+
+**RULE for M2**: derive the row's mass at the **base** tile size, then divide it
+across the `N^2` runtime tiles. Total combustible mass is then invariant under
+`--res` **and** correct across levels. Erik's dimensions ruling stands — it is
+simply evaluated at base resolution, following the existing precedent rather than
+inventing a second convention.
+
+**ACCEPTED GAP** — at higher `--res` a wall is several tiles deep, so its front
+layer is thinner and ignites faster. That is physically correct (it is the
+two-node skin effect emerging from resolution) but it means fire behaviour is not
+fully `--res`-invariant. Recorded, not fixed.
+
+**Property to pin**: total combustible mass in a wall is identical at `--res 1`
+and `--res 2`. See §11.
+
 ### This converges with q3
 
 The conduction table has the **identical defect**: under R10 it is tile-size
@@ -479,6 +515,14 @@ A green suite is not evidence.
 3b. **Tile-size invariance**: a panel row's derived `dT/dt` under a fixed incident
    flux is identical at `tile_size_m` of 0.333 and 1.0 (§4). This is the property
    that authoring dimensions buys, so it is the property that gates it.
+3c. **`--res` mass invariance**: the total combustible mass in a wall is identical
+   at `--res 1` and `--res 2` (§4). This is what pins "derive at BASE resolution";
+   it breaks the moment someone derives at the live tile size instead.
+7. **Fires still go out, and burnt-out tiles are still destroyed** (M3). These are
+   the two properties the deleted timer used to own, and they must be pinned by
+   name **before** it is removed, or its removal is unfalsifiable. Note the
+   asymmetry that makes this necessary: chemistry floors at `FUEL_FLOOR`, so
+   nothing reaches the `<= 0` the destroy decision tests (§8 FINDING).
 4. **The pin is not read off a row** — a test asserting `THERMAL_MASS_UNIT`
    against the named reference-substance constants, whose stated property is
    *"the unit scale is a definition; moving it silently re-scales every material
