@@ -86,10 +86,9 @@ nothing tuned.
 
 - **`fire-12`** — green at `a704954`. The integration line. Nothing is authored
   here.
-- **`12-t5b-the-flip`** — pushed, **unmerged**, **8 red on purpose** (the
+- **`12-t5b-the-flip`** — pushed, **unmerged**, **7 red on purpose** (the
   runaway). M3 is what makes them green. The design doc lives here.
-- **`12-m1-negative-exponents`** — M1 in flight, worktree
-  `C:/Users/steen/projects/breach-m1`.
+- **M1 is MERGED** into the flip (`1feea98`); its branch and worktree are gone.
 
 **Nothing merges to `fire-12` until the whole M-stack is green.**
 
@@ -99,7 +98,7 @@ nothing tuned.
 
 | | patch | tier | state |
 |---|---|---|---|
-| **M1** | negative `thermal_mass` exponents (the sign lift) | Opus | **in flight** |
+| **M1** | negative `thermal_mass` exponents (the sign lift) | Opus | **MERGED** `1feea98` |
 | **M2** | dimensions + the four rows, derived at base resolution; re-anchor the bench on a thin row | Opus | next |
 | **M3** | derived `H_bed`/`H_fuel`; delete the timer; move the destroy decision; **measure** the real burn durations | Opus | |
 | **M4** | `tools/derive_material_row.py` + an `adding-a-material` skill + the CLAUDE.md rules | Sonnet 5 | |
@@ -114,10 +113,13 @@ half-solve it — see the recorded reversal in the design doc §4), q4.
 
 ## 5. The lesson this arc keeps teaching
 
-**Four times** a check proved blind to the very thing it was named after: T1's
+**Five times** a check proved blind to the very thing it was named after: T1's
 uniform-ambient test, T1's structural conservation identity, T2 (the #54 ledger
-stayed balanced while 99.23 % of conducted energy vanished), and T5a (T2's own
-instrument would have gone tautological the moment T2's fix landed).
+stayed balanced while 99.23 % of conducted energy vanished), T5a (T2's own
+instrument would have gone tautological the moment T2's fix landed), and M1 (three
+live consumers of a negative exponent, all invisible to the whole suite because
+the shipped table reaches no negative exponent — the first one caught BEFORE it
+shipped).
 
 Every one was caught by **deliberately breaking the code**, never by running the
 gate. **A green suite is not evidence.** Every patch validates its gates by
@@ -125,8 +127,14 @@ perturbation and names which gate caught what.
 
 Two traps live on this stack specifically:
 
-- **M1 re-baselines goldens**, so a golden records whatever the code does. A
-  re-baselined golden is not evidence — name the independent oracle.
+- **M1 did NOT re-baseline goldens, and that was right** — `heat_inv_shift` is
+  not a digest field, and since M1 moves no authored value the goldens STAYING
+  PUT is the neutrality proof. The general rule stands for M2, which *will*
+  move values: a re-baselined golden records whatever the code does, so name
+  the independent oracle.
+- **A design that enumerates sites must say whether the list is exhaustive.**
+  M1's brief named four consumers of `heat_inv_shift`; there are SEVEN, and
+  breaking the three missed ones left the whole suite green.
 - **M3 deletes the channel that currently ends fires.** "Fires still go out" and
   "burnt-out tiles are still destroyed" must be pinned by name *before* the timer
   is removed, or its removal is unfalsifiable. Note the asymmetry that makes this

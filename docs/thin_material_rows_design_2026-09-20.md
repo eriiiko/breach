@@ -506,7 +506,7 @@ was done under a different premise and should be re-read, not re-derived.
 
 ## 10. Patch plan
 
-These land **on top of `12-t5b-the-flip`**, which stays unmerged. Its 8 red
+These land **on top of `12-t5b-the-flip`**, which stays unmerged. Its 7 red
 tests are the runaway from the uncorrected `H_bed`; M3 is what makes them green.
 Nothing merges to `fire-12` until the whole stack is green — the branch rule
 holds.
@@ -515,7 +515,7 @@ holds.
 |---|---|---|---|
 | **M1** | **negative exponents** | the four §5 sites + the CUDA twin; `pow2_snap` returns a signed exponent | digest bump + goldens; CPU/CUDA bit-identity; a perturbation test that the int32 deposit really would have overflowed |
 | **M2** | **dimensions + the rows** | the `thickness_m` column; derive `mass`/`fill_fraction`/`thermal_mass` at the **base** tile size (§4) — the NARROW seam, **not** q3's general one (§4, reversal); the four rows of §6; re-anchor the fire bench on a THIN row (§8); the pin decoupling (§7.1); the validators (§11) | property gates on the derived masses, the lumped criterion, and **tile-size invariance** (§11.3b); every row's ignition time measured on the bench against §6 |
-| **M3** | **derived `H_bed`/`H_fuel` + fuel store** | 38.73 / 116.2; `wall_damage` -> 0 (§8, RULED); **move the destroy decision to the chemistry channel** (§8 FINDING); measure the real burn durations and bring them to Erik | **the 8 red tests go green** *without being bent*; **fires still go out, and burnt-out tiles are still destroyed** — the two properties the timer used to own; arc #54's closure identity still closes in int64 |
+| **M3** | **derived `H_bed`/`H_fuel` + fuel store** | 38.73 / 116.2; `wall_damage` -> 0 (§8, RULED); **move the destroy decision to the chemistry channel** (§8 FINDING); measure the real burn durations and bring them to Erik | **the 7 red tests go green** *without being bent*; **fires still go out, and burnt-out tiles are still destroyed** — the two properties the timer used to own; arc #54's closure identity still closes in int64 |
 | **M4** | **the system** | `tools/derive_material_row.py`, the `adding-a-material` skill, the CLAUDE.md rows | the tool reproduces §6's table exactly |
 | | **HUMAN TEST** | Erik plays it | this is the P3 feel gate the design always had |
 
@@ -525,7 +525,7 @@ holds.
 |---|---|---|---|
 | **M1** | subagent, own worktree | **Opus**, high | Its oracle is weaker than it looks: the goldens are **re-baselined** by this very patch, so a golden records whatever the code does. That is precisely the blind-gate pattern this arc hit four times. It is also the foundational representation change — everything downstream inherits its errors. |
 | **M2** | subagent, own worktree | **Opus**, high | Composes the material table, level loading and the q3 tile-geometry seam. The derived numbers have no oracle but §6's table, which this patch is supposed to reproduce *from first principles*, not copy. |
-| **M3** | subagent, own worktree | **Opus**, high | Physics judgement (what `wall_damage` becomes), and it must turn 8 red tests green **without bending any of them** — the failure mode the skill's rule 5 names. |
+| **M3** | subagent, own worktree | **Opus**, high | Physics judgement (what `wall_damage` becomes), and it must turn 7 red tests green **without bending any of them** — the failure mode the skill's rule 5 names. |
 | **M4** | subagent | **Sonnet 5** | Genuinely oracle-gated: the tool must reproduce §6's table exactly. Mechanical once the numbers are settled. |
 
 **Fable is not used on this stack** — no patch composes three or more canonical
