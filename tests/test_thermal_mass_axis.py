@@ -26,6 +26,7 @@ Run:
 """
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -75,11 +76,17 @@ def test_air_is_thermal_mass_zero_and_the_only_gas_row():
 
 
 def test_thermal_mass_is_derived_from_the_rows_real_rho_c():
-    """PROPERTY (R14): **every** material's ``thermal_mass`` is its OWN real
-    ``rho * c``, in units of the R13 pin, snapped to a power of two.
+    """PROPERTY (R14 + M2): **every** material's ``thermal_mass`` is its OWN
+    real ``rho * c``, times the share of the tile its matter actually occupies,
+    in units of the R13 pin, snapped to a power of two.
 
-        thermal_mass == pow2_snap(density * specific_heat / THERMAL_MASS_UNIT)
+        thermal_mass == pow2_snap(density * specific_heat * fill_fraction
+                                  / THERMAL_MASS_UNIT)
         THERMAL_MASS_UNIT == RHO_C_PIN / THERMAL_MASS_PIN == 112 500 J/(m3.K)
+
+    M2 added the ``fill_fraction`` term and it is DIMENSIONLESS, so R14's
+    cancellation argument survives verbatim: the column is still a ratio of two
+    capacities on the same tile and no absolute tile volume enters it.
 
     This REPLACES a snapshot (``hull/steel 32, glass 16, wood 8`` as literals),
     which pinned the answers without pinning the reason and would have survived
@@ -98,58 +105,84 @@ def test_thermal_mass_is_derived_from_the_rows_real_rho_c():
         (the loader rejects it, and the arithmetic below would disagree);
       * the snap stops being the nearest power of two IN LOG SPACE (R5);
       * the R13 pin moves without the rows moving with it;
-      * someone re-introduces a tile-geometry factor, which would make the
-        column per-level and break the bit-identity this patch rests on.
+      * someone re-introduces an ABSOLUTE tile-geometry factor (a volume, not a
+        ratio), which would make the column per-level;
+      * the derived ``fill_fraction`` stops reaching the derivation, which would
+        silently restore every thin row to a full 154 kg block.
     """
     tbl = MaterialTable.from_config(CFG)
     assert THERMAL_MASS_UNIT == RHO_C_PIN / THERMAL_MASS_PIN
     checked = 0
-    for name, rho, c, tm, solid in zip(tbl.names,
-                                       tbl.density.tolist(),
-                                       tbl.specific_heat.tolist(),
-                                       tbl.thermal_mass.tolist(),
-                                       tbl.thermal_solid.tolist()):
+    for name, rho, c, fill, tm, solid in zip(tbl.names,
+                                             tbl.density.tolist(),
+                                             tbl.specific_heat.tolist(),
+                                             tbl.fill_fraction.tolist(),
+                                             tbl.thermal_mass.tolist(),
+                                             tbl.thermal_solid.tolist()):
         assert rho > 0.0 and c > 0.0, f"{name}: rho and c must be real"
         if not solid:
             # The GAS regime declaration: not a capacity at all. Air's real
             # rho*c_v is seven doublings below the column's floor of 1.
-            assert int(round(float(tm))) == 0, name
-            assert rho * c / THERMAL_MASS_UNIT < 1.0, (
+            assert float(tm) == 0.0, name
+            assert rho * c * fill / THERMAL_MASS_UNIT < 1.0, (
                 f"{name} declares the gas regime but its rho*c would fit the "
                 f"column -- that is a finding, not a config edit")
             continue
-        want = derive_thermal_mass(rho, c, f"materials.{name}")
-        assert int(round(float(tm))) == want, (
+        want = derive_thermal_mass(rho, c, fill, f"materials.{name}")
+        # float32 exactly, both sides: a power of two, either sign (M1/M2).
+        assert float(tm) == want, (
             f"{name}: thermal_mass {tm} != derived {want} "
-            f"(rho*c = {rho * c:.1f} J/(m3.K) = "
-            f"{rho * c / THERMAL_MASS_UNIT:.4f} column units)")
+            f"(rho*c = {rho * c:.1f} J/(m3.K), fill = {fill:.5f}, so "
+            f"{rho * c * fill / THERMAL_MASS_UNIT:.5f} column units)")
         checked += 1
     assert checked == len(MATERIAL_NAMES) - 1, (
         "every row but the gas row must carry a derived capacity")
 
 
-def test_the_derivation_reproduces_every_shipped_column_value():
-    """PROPERTY: the R14 derivation lands EXACTLY the values the table shipped
-    with before it existed -- hull/steel 32, glass 16, the six cellulosic rows
-    8, air the gas regime.
+def test_a_flammable_row_is_thin_and_a_structural_row_is_solid():
+    """PROPERTY (M2, design §3/§6 -- Erik's ruling): **no massive object ever
+    burns**. Every ``flammable`` row states a thickness and is a THIN lump
+    (sub-unit capacity); every non-flammable thermal solid FILLS its tile.
 
-    This is the snapshot's real content, kept as what it always was: a
-    BIT-IDENTITY claim about one patch, not a statement about the model. It is
-    the T3b gate in test form.
+    This REPLACES ``test_the_derivation_reproduces_every_shipped_column_value``,
+    a hardcoded dict of the ten shipped column values. That was a deliberate
+    BIT-IDENTITY claim about the T3b patch, and M2 is exactly the deliberate,
+    feel-affecting re-authoring its own docstring named as the thing that would
+    break it -- so the claim is now spent. It was also a pinned exact SET of a
+    table designed to grow: a new material row failed it on the day it was
+    added, whatever its value.
 
-    BREAKS IF: a row is re-authored to a rho*c outside the band that snaps to
-    its shipped power of two -- which is a deliberate, feel-affecting change
-    (T5's business) and must not happen by accident.
+    What survives is the content that was never about one patch: a row's
+    capacity is a consequence of its matter and its geometry, and the two
+    regimes are separated by whether the object is meant to burn. A solid
+    timber wall, a heavy door and a beam are permanently fire-resistant --
+    physically true, and accepted as a game-design constraint.
+
+    BREAKS IF: a flammable row is authored at full fill again (the 154 kg block
+    a 17.7 kW fire warms at 0.07 K/s, which is what R14 shipped), or a
+    structural row silently acquires a thickness and stops being solid.
     """
     tbl = MaterialTable.from_config(CFG)
-    shipped = {"air": 0, "hull": 32, "wood": 8, "door": 8, "steel": 32,
-               "glass": 16, "furniture": 8, "door_closed": 8, "kindling": 8,
-               "foliage": 8}
-    got = {name: int(round(float(v)))
-           for name, v in zip(tbl.names, tbl.thermal_mass.tolist())}
-    assert got == shipped, (
-        f"the R14 derivation no longer reproduces the shipped column: "
-        f"expected {shipped}, got {got}")
+    thin, solid_rows = [], []
+    for name, flam, fill, tm, ts in zip(tbl.names, tbl.flammable.tolist(),
+                                        tbl.fill_fraction.tolist(),
+                                        tbl.thermal_mass.tolist(),
+                                        tbl.thermal_solid.tolist()):
+        if bool(flam):
+            assert fill < 1.0, (
+                f"{name} is flammable at FULL FILL -- a solid tile of matter. "
+                f"Erik's ruling: no massive object ever burns (design §3)")
+            assert float(tm) < 1.0, (
+                f"{name} is flammable but carries a whole thermal_mass unit "
+                f"({tm}); a lump a fire can actually heat is sub-unit")
+            thin.append(name)
+        elif ts:
+            assert fill == 1.0, (
+                f"{name} is a non-flammable thermal solid that does NOT fill "
+                f"its tile ({fill}) -- structural rows are solid matter")
+            solid_rows.append(name)
+    assert thin, "the table must ship at least one flammable row"
+    assert solid_rows, "the table must ship at least one structural solid row"
 
 
 def test_the_integer_reference_derives_the_same_column():
@@ -171,7 +204,10 @@ def test_the_integer_reference_derives_the_same_column():
     assert rows, "the reference found no absorbing rows"
     for name, _a_q, his, _atten, tm in rows:
         mid = list(tbl.names).index(name)
-        assert int(round(float(tbl.thermal_mass[mid]))) == tm, name
+        # float equality, not int(round(...)): the column is a power of two of
+        # EITHER sign since M1/M2, and rounding 0.125 lands 0 -- the gas-regime
+        # sentinel (M1's report, the hazard that shape had to be removed from).
+        assert float(tbl.thermal_mass[mid]) == tm, name
         assert int(tbl.heat_inv_shift[mid]) == his, name
     assert R.THERMAL_MASS_UNIT_REF == THERMAL_MASS_UNIT
 
@@ -202,17 +238,27 @@ def test_thermal_solid_is_derived_from_thermal_mass_not_permeability():
 
 
 def test_per_tile_shift_matches_log2_thermal_mass():
+    """PROPERTY: ``thermal_mass`` and ``heat_inv_shift`` are the same number in
+    two forms, for a SIGNED exponent -- ``thermal_mass == 2**shift``.
+
+    ``math.ldexp``/float equality, not ``1 << shift`` against a rounded int: a
+    thin row's exponent is negative and ``1 << -3`` is not an expression at all,
+    while ``int(round(0.125))`` is 0, the GAS-REGIME sentinel. Both of those
+    shapes would have quietly reclassified every M2 row.
+
+    BREAKS IF: the two columns are ever computed from separate derivations, or
+    the shift is recovered from the value by a log/bit_length again.
+    """
     tbl = MaterialTable.from_config(CFG)
     for name, tm, shift, ts in zip(tbl.names, tbl.thermal_mass.tolist(),
                                    tbl.heat_inv_shift.tolist(),
                                    tbl.thermal_solid.tolist()):
-        tm_int = int(round(float(tm)))
-        if tm_int == 0:
+        if float(tm) == 0.0:
             # A never-read placeholder: the mask routes gas tiles away from the
             # shift path entirely.
             assert shift == 0 and ts is False, name
         else:
-            assert (1 << shift) == tm_int, name
+            assert math.ldexp(1.0, int(shift)) == float(tm), name
             assert ts is True, name
 
 

@@ -502,8 +502,11 @@ def test_solid_solid_face_shift_unaffected_by_air_conductivity():
 
     for a in SOLID_MATS:
         for b in SOLID_MATS:
-            ka = float(_TBL.conductivity[a])
-            kb = float(_TBL.conductivity[b])
+            # M2: the conductance is TILE-AVERAGED by the row's fill_fraction,
+            # the same factor `thermal_mass` already carries -- both sides of
+            # the rate, or neither (materials.py `_build_conduction_tables`).
+            ka = float(_TBL.conductivity[a]) * float(_TBL.fill_fraction[a])
+            kb = float(_TBL.conductivity[b]) * float(_TBL.fill_fraction[b])
             expected = independent_face_shift(
                 ka, kb, float(_TBL.thermal_mass[a]), float(_TBL.thermal_mass[b]))
             actual = int(_TBL.face_shift_table[a, b])

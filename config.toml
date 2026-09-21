@@ -1736,14 +1736,34 @@ conductivity = 0.12  # W/(m.K) -- Wood Handbook FPL-GTR-190 ch.4, TRANSVERSE\n  
 density = 555.0        # kg/m3 -- softwood construction lumber at 12 % MC.
                        # Wood Handbook FPL-GTR-190 Table 5-3 specific gravities
                        # (Douglas-fir coast 0.48 -> 538, loblolly pine 0.51 ->
-                       # 571, both at 12 % MC); 555 is mid-band.
+                       # 571, both at 12 % MC); 555 is mid-band. THE MATERIAL's
+                       # real density -- M2 states how much of it is there with
+                       # `thickness_m`, never by smearing this number.
 specific_heat = 1620.0 # J/(kg.K) -- Wood Handbook FPL-GTR-190 ch.4, the moist-
                        # wood formula evaluated at 12 % MC and 293 K:
                        # c_dry = 0.1031 + 0.003867*T = 1236 J/(kg.K), then the
                        # MC mix + A_c correction -> 1620.
                        # rho*c = 0.899 MJ/(m3.K) == R13's ruled pin (0.90) to
                        # 0.1 %, from two independently cited numbers.
-                       # thermal_mass DERIVED = pow2_snap(7.992) = 8.
+# M2 (docs/thin_material_rows_design_2026-09-20.md §6, Erik's number): this row
+# is A 0.5 CM PANEL -- a plywood/board partition -- not the massive structural
+# wall R14 made it. THE NAME IS KEPT: "wood" claims a MATERIAL, not a thickness,
+# and a 5 mm plywood partition is wood; renaming would churn the config key, the
+# editor palette, the benches and the docs, and would orphan the row's git
+# history, which IS its calibration record (R13's pin, T3 D6's Wood Handbook
+# citations). The id stays 2 either way -- levels store numeric codes.
+#   DERIVED at tile_size_ref_m = 0.333, ceiling_h = 2.5 (V_tile = 0.2772 m3):
+#     fill_fraction = 0.005 / 0.333          = 0.01502   (1.50 % of the tile)
+#     mass          = 555 * 0.005 * 0.333*2.5 = 2.31 kg  (was 153.9 kg)
+#     thermal_mass  = pow2_snap(899100 * 0.01502 / 112500)
+#                   = pow2_snap(0.1200)      = 2^-3 = 0.125  (+4.2 % snap cost)
+#     capacity      = 0.125 * 112500 * 0.2772 = 3.90 kJ/K
+#   => ~66 s to a 300 K rise at the fuel-bed self-heat, inside the 30-70 s
+#      literature band for piloted ignition of wood, with nothing tuned.
+# WHY THIS ROW EXISTS AT ALL: it has ALWAYS declared `flammable = true,
+# ignition_temp = 300` while being a block a 17.7 kW fire warms at 0.07 K/s. It
+# was declaring itself fuel and unable to deliver.
+thickness_m = 0.005
 # T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 300.0  # G12 review (spec §4): reads 593 K under the honest map (was
                         # 1193 K under ×3) — realistic for wood (real ignition ~573-673
@@ -1855,9 +1875,26 @@ specific_heat = 1620.0 # J/(kg.K) -- Wood Handbook FPL-GTR-190 ch.4, the moist-
                        # MC mix + A_c correction -> 1620.
                        # rho*c = 0.899 MJ/(m3.K) == R13's ruled pin (0.90) to
                        # 0.1 %, from two independently cited numbers.
-                       # thermal_mass DERIVED = pow2_snap(7.992) = 8.
-                       # A crate is solid cellulosic stock -- R14: base rows
-                       # are MASSIVE; a hollow crate is its own row later.
+                       # THE MATERIAL's real density: a crate is made of solid
+                       # cellulosic stock. How much of it is in the tile is
+                       # `thickness_m`, below -- M2 reverses R14's "base rows
+                       # are MASSIVE" rather than faking a bulk density.
+# M2 (design section 6): ~5 kg, roughly a few crates' worth of 1 cm board.
+#   DERIVED at tile_size_ref_m = 0.333, ceiling_h = 2.5:
+#     fill_fraction = 0.0108 / 0.333          = 0.03243  (3.24 % of the tile)
+#     mass          = 555 * 0.0108 * 0.333*2.5 = 4.99 kg (was 153.9 kg)
+#     thermal_mass  = pow2_snap(899100 * 0.03243 / 112500)
+#                   = pow2_snap(0.2596)       = 2^-2 = 0.25  (-3.7 % snap cost)
+#     capacity      = 0.25 * 112500 * 0.2772  = 7.80 kJ/K   => ~132 s to +300 K
+# lumped-exempt: AT 10.8 MM THIS ROW IS OUTSIDE THE SECTION 3 LUMPED CRITERION
+# (THIN_LIMIT_M = 6 mm) and is carried as a named exemption in
+# `simulation.materials.LUMPED_CRITERION_EXEMPT`. ACCEPTED GAP, Erik's ruling
+# 2026-09-21, with its reason: the error is CONSERVATIVE (a too-thick lump
+# spreads incident heat through more mass than really participates, so it
+# ignites SLOWER than reality, never faster), it is the heaviest row still
+# defensible as one node, and cover the player hides behind should not catch as
+# eagerly as a thin panel. Do NOT thin this row to close the gap.
+thickness_m = 0.0108
 # T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 280.0   # wood-like; slightly easier to light than a solid wood wall (300).
                          # G12 review (spec §4): reads 573 K under the honest map (was
@@ -1935,8 +1972,23 @@ specific_heat = 1620.0 # J/(kg.K) -- Wood Handbook FPL-GTR-190 ch.4, the moist-
                        # MC mix + A_c correction -> 1620.
                        # rho*c = 0.899 MJ/(m3.K) == R13's ruled pin (0.90) to
                        # 0.1 %, from two independently cited numbers.
-                       # thermal_mass DERIVED = pow2_snap(7.992) = 8, == furniture's
-                       # (the locked P-F4a spec value), now by derivation.
+                       # THE MATERIAL's real density; the OBJECT's size is
+                       # `thickness_m`, below.
+# M2 (design section 6): kindling is RESTORED TO ITS OWN DECLARED INTENT. This
+# row's header has always read "the CAMPFIRE REFERENCE OBJECT -- a 1-3 kg
+# effective-class fuel row"; R14's uniform rho = 555 at full fill flattened that
+# to 153.9 kg and left the intent alive only in `hp = 8`. A separate
+# `10_kg_bonfire` row was considered and DROPPED: the material id budget is full
+# (ids 0-9, MAT_FOLIAGE must stay last, id 9 numerically equals the CSV
+# SPACE_CODE) and no new id is needed -- kindling already IS that row.
+#   DERIVED at tile_size_ref_m = 0.333, ceiling_h = 2.5:
+#     fill_fraction = 0.0043 / 0.333          = 0.01291  (1.29 % of the tile)
+#     mass          = 555 * 0.0043 * 0.333*2.5 = 1.99 kg
+#     thermal_mass  = pow2_snap(899100 * 0.01291 / 112500)
+#                   = pow2_snap(0.1032)       = 2^-3 = 0.125  (+21 % snap cost)
+#     capacity      = 0.125 * 112500 * 0.2772 = 3.90 kJ/K    => ~66 s to +300 K
+# Inside THIN_LIMIT_M = 6 mm: a genuine small-Biot lump, no exemption needed.
+thickness_m = 0.0043
 # T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 280.0  # spec value: furniture's, PER THE ROW CONVENTIONS —
                        # do NOT import literature values (~250 C) raw here.
@@ -1975,12 +2027,21 @@ specific_heat = 1620.0 # J/(kg.K) -- Wood Handbook FPL-GTR-190 ch.4, the moist-
                        # MC mix + A_c correction -> 1620.
                        # rho*c = 0.899 MJ/(m3.K) == R13's ruled pin (0.90) to
                        # 0.1 %, from two independently cited numbers.
-                       # thermal_mass DERIVED = pow2_snap(7.992) = 8.
-                       # MATERIAL reading (solid cellulose), not the OBJECT
-                       # reading of a canopy -- report_t3.md D1 flags that a
-                       # canopy's bulk rho*c wants 0.5, which the power-of-two
-                       # column cannot express (its floor is 1). Erik's call,
-                       # open question 2 there; NOT decided at T3b.
+                       # THE MATERIAL reading (solid cellulose) is the right
+                       # one and it STAYS: report_t3.md D1's open question 2 --
+                       # "a canopy's bulk rho*c wants 0.5, which the column
+                       # cannot express" -- is answered by M2, and not by a fake
+                       # density. The canopy is mostly AIR, so it is the
+                       # GEOMETRY that is thin, and M1 made the column able to
+                       # hold the result.
+# M2 (design section 6): a canopy is mostly air; follows kindling.
+#   DERIVED at tile_size_ref_m = 0.333, ceiling_h = 2.5:
+#     fill_fraction = 0.0043 / 0.333          = 0.01291  (1.29 % of the tile)
+#     mass          = 555 * 0.0043 * 0.333*2.5 = 1.99 kg
+#     thermal_mass  = pow2_snap(0.1032)        = 2^-3 = 0.125
+#     capacity      = 0.125 * 112500 * 0.2772 = 3.90 kJ/K   => ~66 s to +300 K
+# Inside THIN_LIMIT_M = 6 mm: a genuine small-Biot lump, no exemption needed.
+thickness_m = 0.0043
 # T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 280.0  # wood-like, matches furniture/kindling
 wave_absorb = 0.0      # no interaction beyond burning (not a blast damper)

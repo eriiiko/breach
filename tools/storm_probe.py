@@ -109,8 +109,11 @@ def build_tworoom(interior_w, interior_h, tile_size_m, door_h=1, crate_xy=None):
 
 def build_arena(interior_w, interior_h, tile_size_m, crate_xy):
     from fire_timing_harness import build_level
+    # FURN explicitly (M2): the storm battery's arena is calibrated on the
+    # crate row; `build_level`'s default moved to kindling (design section 8).
+    from fire_timing_harness import FURN
     return build_level(interior_w, interior_h, crate_xy, tile_size_m,
-                       sky_tau_s=60.0, sponge_width=8)
+                       sky_tau_s=60.0, sponge_width=8, fuel_mat=FURN)
 
 
 def stamp_air_damping(gmap, value):

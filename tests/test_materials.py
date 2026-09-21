@@ -26,7 +26,7 @@ from level_loader import load as load_level
 from simulation.gamemap import GameMap
 from simulation.materials import (
     MAT_AIR, MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_STEEL, MAT_GLASS,
-    MAT_FURNITURE, MATERIAL_NAMES, MaterialTable,
+    MAT_FURNITURE, MATERIAL_NAMES, MaterialTable, derive_thermal_mass_exp,
 )
 
 
@@ -189,7 +189,16 @@ def test_furniture_row_values():
     assert np.all(tbl.light_atten[MAT_FURNITURE] == np.float32(0.55))
     assert tbl.heat_atten[MAT_FURNITURE] == np.float32(0.5)
     assert tbl.conductivity[MAT_FURNITURE] == 0.0
-    assert tbl.heat_inv_shift[MAT_FURNITURE] == 3       # thermal_mass 8 = 2**3
+    # M2: a crate is ~5 kg of board, not a 154 kg solid block, so its capacity
+    # is SUB-UNIT and its exponent is NEGATIVE. Asserted as the derivation's own
+    # answer rather than a literal, so the row's authored geometry is what the
+    # test is really pinning -- and asserted to be < 0, which is the design
+    # property (a flammable row is a thin lump a fire can actually heat).
+    assert int(tbl.heat_inv_shift[MAT_FURNITURE]) < 0
+    assert int(tbl.heat_inv_shift[MAT_FURNITURE]) == derive_thermal_mass_exp(
+        float(tbl.density[MAT_FURNITURE]),
+        float(tbl.specific_heat[MAT_FURNITURE]),
+        float(tbl.fill_fraction[MAT_FURNITURE]))
     assert tbl.wave_absorb[MAT_FURNITURE] == np.float32(0.5)
     assert tbl.blast_resist[MAT_FURNITURE] == 0.0
     assert tbl.burst_threshold[MAT_FURNITURE] == np.float32(2.0)

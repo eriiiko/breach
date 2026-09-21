@@ -258,16 +258,25 @@ def test_face_table_is_the_material_s_own_diffusivity_not_a_stability_anchor():
     at `KAPPA_REF`), i.e. the test asserted the constant back to itself and
     would have passed for any physics whatsoever.
 
+    M2: the recompute below carries each row's `fill_fraction` on BOTH sides,
+    because the law does. A tile holding a 5 mm panel has 67x less capacity AND
+    67x less cross-section for heat to travel along, so the fill cancels and
+    in-plane diffusivity stays a property of the MATTER; scaling only the
+    capacity would say heat spreads along a thin wooden wall 64x faster than
+    wood does.
+
     BREAKS IF: a stability anchor returns, the harmonic mean is replaced by an
-    arithmetic one, the capacity drops out of the rate, or the table stops being
-    symmetric.
+    arithmetic one, the capacity drops out of the rate, the table stops being
+    symmetric, or the tile-averaging is applied to the capacity WITHOUT the
+    conductance.
     """
     from simulation.materials import THERMAL_MASS_UNIT
     dx = float(getattr(CFG.physics.thermal, "tile_size_ref_m"))
     dt = 1.0 / float(CFG.clock.ticks_per_second)
 
     def predicted(a, b):
-        ka, kb = float(_TBL.conductivity[a]), float(_TBL.conductivity[b])
+        ka = float(_TBL.conductivity[a]) * float(_TBL.fill_fraction[a])
+        kb = float(_TBL.conductivity[b]) * float(_TBL.fill_fraction[b])
         hm = 2.0 * ka * kb / (ka + kb)
         rc = min(float(_TBL.thermal_mass[a]), float(_TBL.thermal_mass[b])) \
             * THERMAL_MASS_UNIT

@@ -256,7 +256,11 @@ class GameMap:
         # constant. Derived caches below are projections of this table indexed
         # by the ``material`` grid. Rebuilt on config hot-reload via
         # :meth:`reload_material_table`.
-        self.materials = MaterialTable.from_config(CFG)
+        #
+        # M2: the LEVEL is threaded in for its `res_factor` alone, so a --res N
+        # run divides each row's derived mass across the N**2 runtime tiles its
+        # base tile became (design §4; the door/cover `res_factor` doctrine).
+        self.materials = MaterialTable.from_config(CFG, level_data)
 
         # Gas-property table (engine/05 §6.2, M1): the multi-gas analogue of the
         # material table — one row per gas (steam / smoke / poison /
@@ -1746,7 +1750,7 @@ class GameMap:
         grids; only table-derived caches change. (A GPU material-mirror re-sync
         wires in here when CUDA lands — ch.02 §14.)
         """
-        self.materials = MaterialTable.from_config(CFG)
+        self.materials = MaterialTable.from_config(CFG, self.level)
         # Gas table is data-only (no per-tile cache projection in M1), so rebuild
         # it straight from config — the per-gas transport loop reads the fresh
         # diffusion/decay/flags next tick. Does NOT touch the ``gas`` array.

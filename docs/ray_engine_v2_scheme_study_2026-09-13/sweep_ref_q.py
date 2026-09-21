@@ -135,12 +135,14 @@ def shipped_absorbing_rows(config_path=None):
         config_path = pathlib.Path(__file__).resolve().parents[2] / "config.toml"
     with open(config_path, "rb") as fh:
         cfg = tomllib.load(fh)
+    tile_w = float(cfg.get("physics", {}).get("thermal", {})
+                   .get("tile_size_ref_m", TILE_SIZE_REF_M_REF))
     out = []
     for name, row in cfg["materials"].items():
         atten = float(row.get("heat_atten", 0.0))
         if atten <= 0.0:
             continue
-        his = _thermal_mass_exp_ref(name, row)
+        his = _thermal_mass_exp_ref(name, row, tile_w)
         if his is None:
             raise ValueError(
                 f"materials.{name}: heat_atten = {atten} on a GAS-regime row; "
@@ -154,9 +156,17 @@ def shipped_absorbing_rows(config_path=None):
 # R14's unit: R13's currency pin (wood at ~12 % MC, rho*c = 0.9 MJ/(m3.K))
 # divided by the column value that pin carries (8). The tile volume cancels --
 # `thermal_mass` is a RATIO of two capacities on the same tile -- which is why
-# there is no tile geometry in this derivation.
+# no ABSOLUTE tile volume enters this derivation. M2 does add a DIMENSIONLESS
+# `fill_fraction` (the share of the tile the object's matter actually occupies),
+# which is a ratio too and therefore leaves that cancellation intact.
 THERMAL_MASS_UNIT_REF = 0.9e6 / 8       # = 112 500 J/(m3.K)
 _SQRT2_REF = math.sqrt(2.0)
+
+# M2 (docs/thin_material_rows_design_2026-09-20.md section 4): the tile WIDTH
+# the material table's geometry is derived at. Mirrors `[physics.thermal]
+# tile_size_ref_m` -- read from config.toml above when present, this literal
+# only as the fallback for a config that omits the block.
+TILE_SIZE_REF_M_REF = 0.333
 
 
 # M1: the representation floor of `heat_inv_shift`, as an exponent. 2**-16 is
@@ -166,7 +176,36 @@ _SQRT2_REF = math.sqrt(2.0)
 THERMAL_MASS_EXP_MIN_REF = -16
 
 
-def _thermal_mass_exp_ref(name, row):
+def _fill_fraction_ref(name, row, tile_w):
+    """The reference's transcription of `materials.derive_fill_fraction` (M2).
+
+    A row that authors `thickness_m` is a PANEL: its matter spans the tile and
+    the full deck height but is only `thickness_m` deep, so the share of the
+    tile it occupies is `thickness_m / tile_w` -- the ceiling height and one
+    factor of the tile width cancel between the object volume and the tile
+    volume, which is why this is a pure length ratio.
+
+    A row with NO `thickness_m` is SOLID: it fills its tile, fill = 1.0. That
+    is the pre-M2 behaviour of every row, and it is the one fill value that is
+    scale-free (a bulkhead is solid steel however big the tile is), so stating
+    it by omission bakes in no reference tile size.
+    """
+    t = row.get("thickness_m")
+    if t is None:
+        return 1.0
+    t = float(t)
+    if not (t > 0.0):
+        raise ValueError(f"materials.{name}.thickness_m must be > 0, got {t!r}")
+    f = t / float(tile_w)
+    if not (0.0 < f <= 1.0):
+        raise ValueError(
+            f"materials.{name}: thickness_m {t!r} at tile width {tile_w!r} "
+            f"derives fill_fraction {f!r}, outside (0, 1] -- the object does "
+            f"not fit in its tile")
+    return f
+
+
+def _thermal_mass_exp_ref(name, row, tile_w=TILE_SIZE_REF_M_REF):
     """The reference's transcription of `materials.pow2_snap`/`derive_thermal_mass`.
 
     Returns the SIGNED exponent `s` with `thermal_mass == 2**s` -- which is the
@@ -174,6 +213,11 @@ def _thermal_mass_exp_ref(name, row):
     in LOG space but computed WITHOUT a logarithm: the geometric midpoint
     between 2**k and 2**(k+1) is 2**k * sqrt(2), so it is a bracket-and-compare
     over exact binary scalings plus one correctly-rounded sqrt.
+
+    M2: the row's capacity is `rho * c * fill_fraction`, the DERIVED fill from
+    its authored geometry -- a 5 mm wood panel is 0.015 of a 0.333 m tile, so
+    it carries 0.015 of a solid tile's capacity. A row with no `thickness_m`
+    fills its tile and this is exactly the pre-M2 expression.
 
     An authored `thermal_mass` is legal only as the literal 0 that DECLARES the
     gas thermal regime (air) -- it is not a capacity, and it has no exponent;
@@ -187,7 +231,8 @@ def _thermal_mass_exp_ref(name, row):
                 f"density * specific_heat (R14); the only legal authored value "
                 f"is 0, the gas-regime declaration. Got {declared!r}")
         return None
-    x = float(row["density"]) * float(row["specific_heat"]) / THERMAL_MASS_UNIT_REF
+    x = (float(row["density"]) * float(row["specific_heat"])
+         * _fill_fraction_ref(name, row, tile_w) / THERMAL_MASS_UNIT_REF)
     k, lo = 0, 1.0
     while lo * 2.0 <= x:
         lo *= 2.0
@@ -826,7 +871,24 @@ def fold_pass1_solid(T, rad_net, rad_fluence, his, ts, counters: FoldCounters, *
                     t_new = 0
                     counters.t_low_rail_hits += 1
             T[y][x] = t_new
-            cap = 1 << s if cap_real is None else cap_real[y][x]
+            # The books' capacity, in the ENGINE's own normalisation:
+            # `conduction::cell_capacity_q` builds `1 << (s + FP_SHIFT)`, a
+            # Q16.16 capacity, and books `dT_q16 * cap_real`.
+            #
+            # M2 FOUND THIS: it was `1 << s`, which is `cap_real >> 16` -- a
+            # different normalisation from the engine's AND, more urgently, an
+            # expression that does not exist for `s < 0`. Python raises
+            # "negative shift count" there, so the first thin row to reach this
+            # line took the reference down. M1 signed the three shifts on this
+            # path and missed the CAPACITY beside them: "already wide" and
+            # "already signed" are not the same property, and neither is
+            # "already routed through the kit".
+            #
+            # `s` is floored at the representation floor exactly as
+            # `cell_capacity_q` floors it, so `cap >= 1` (one raw count) and is
+            # never zero.
+            s_cap = s if s > THERMAL_MASS_EXP_MIN_REF else THERMAL_MASS_EXP_MIN_REF
+            cap = (1 << (s_cap + 16)) if cap_real is None else cap_real[y][x]
             counters.e_solid_deposit_sum += (t_new - t_before) * cap
 
 
