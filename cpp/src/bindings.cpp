@@ -1664,6 +1664,13 @@ PYBIND11_MODULE(breach_physics, m) {
           "fixed_point.h shr_round0_signed_i64: divide by 2^s for a SIGNED s. "
           "s >= 0 is shr_round0_i64 exactly; s < 0 MULTIPLIES by 2^-s, which "
           "is exact (a left shift loses nothing).");
+    m.def("rad_pair_budget_s",
+          [](int64_t abs_dT_q, int his, int shift) {
+              return rad_pair_budget_s(abs_dT_q, his, shift);
+          },
+          py::arg("abs_dT_q"), py::arg("his"), py::arg("shift"),
+          "raycaster.h rad_pair_budget_s: the flux limiter's per-end budget, "
+          "floor(x * 2^his / 2^shift). SIGNED in `his` since M1.");
     m.def("conduction_cell_capacity_q",
           [](bool is_ts, int32_t heat_inv_shift, int32_t n_raw,
              int32_t n_floor_q, int32_t c_v_q) {
