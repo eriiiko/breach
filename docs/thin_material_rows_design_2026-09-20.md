@@ -216,15 +216,29 @@ layer is thinner and ignites faster. That is physically correct (it is the
 two-node skin effect emerging from resolution) but it means fire behaviour is not
 fully `--res`-invariant. Recorded, not fixed, and not gated.
 
-### This converges with q3
+### q3 has the same disease — and M2 deliberately does NOT cure it
 
 The conduction table has the **identical defect**: under R10 it is tile-size
 dependent and is built at `tile_size_ref_m`, so on `airlock_demo` (1.0 m) every
-solid face is 3 shifts too fast and every gas face 2. Both problems are "a
-global material table pinned to a reference tile size that the level need not
-share," and both are fixed by the same move — **derive the tile-dependent
-quantities at load from the level's real geometry**. M2 should build the seam
-that serves both, even if q3's own numbers land later.
+solid face is 3 shifts too fast and every gas face 2. Both problems are "a global
+material table pinned to a reference tile size that the level need not share."
+
+**An earlier draft of this design had M2 build one general seam serving both, and
+Erik agreed to that scope growth. It is hereby REVERSED — narrowed, with his
+agreement (2026-09-21).**
+
+The reason is his own resolution ruling, which landed after that agreement: a
+general per-level seam is only worth building if levels at different tile sizes
+must be simultaneously correct, and he has said they need not be — the levels are
+test levels and one resolution gets chosen at the end. Building the general seam
+now would half-solve q3 against a requirement that does not exist yet, and leave
+a half-solved q3 harder to finish than an untouched one.
+
+**M2 builds the NARROW thing**: derive material geometry at the base tile size,
+for the material table only. q3 stays exactly where it was, whole and unstarted.
+
+*Recorded as a reversal rather than edited away, because the wider version was
+explicitly agreed to and silently shrinking it would hide the change.*
 
 ---
 
@@ -500,7 +514,7 @@ holds.
 | | patch | what it does | gate |
 |---|---|---|---|
 | **M1** | **negative exponents** | the four §5 sites + the CUDA twin; `pow2_snap` returns a signed exponent | digest bump + goldens; CPU/CUDA bit-identity; a perturbation test that the int32 deposit really would have overflowed |
-| **M2** | **dimensions + the rows** | the `thickness_m` column, the load-time derivation of `mass`/`fill_fraction`/`thermal_mass` from the **level's** geometry (the seam q3 also needs, §4), the four rows of §6, the pin decoupling (§7.1), the validators (§11) | property gates on the derived masses, the lumped criterion, and **tile-size invariance** (§11.3b); every row's ignition time measured on the bench against §6 |
+| **M2** | **dimensions + the rows** | the `thickness_m` column; derive `mass`/`fill_fraction`/`thermal_mass` at the **base** tile size (§4) — the NARROW seam, **not** q3's general one (§4, reversal); the four rows of §6; re-anchor the fire bench on a THIN row (§8); the pin decoupling (§7.1); the validators (§11) | property gates on the derived masses, the lumped criterion, and **tile-size invariance** (§11.3b); every row's ignition time measured on the bench against §6 |
 | **M3** | **derived `H_bed`/`H_fuel` + fuel store** | 38.73 / 116.2; `wall_damage` -> 0 (§8, RULED); **move the destroy decision to the chemistry channel** (§8 FINDING); measure the real burn durations and bring them to Erik | **the 8 red tests go green** *without being bent*; **fires still go out, and burnt-out tiles are still destroyed** — the two properties the timer used to own; arc #54's closure identity still closes in int64 |
 | **M4** | **the system** | `tools/derive_material_row.py`, the `adding-a-material` skill, the CLAUDE.md rows | the tool reproduces §6's table exactly |
 | | **HUMAN TEST** | Erik plays it | this is the P3 feel gate the design always had |
