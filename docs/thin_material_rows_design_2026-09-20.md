@@ -186,13 +186,35 @@ across the `N^2` runtime tiles. Total combustible mass is then invariant under
 simply evaluated at base resolution, following the existing precedent rather than
 inventing a second convention.
 
+### Erik's ruling on resolution (2026-09-21) — what this is really for
+
+> *"the rescale resolution, it's nothing I intended to be a setting — but
+> something I'll need for development... I'll choose one resolution at the end,
+> but perhaps I'll branch out this project into one breach, one fantasy rpg etc,
+> and they might want different resolutions."*
+>
+> *"keeping the levels correct is not the main priority just now — we only have
+> test levels."*
+
+This re-ranks the two justifications:
+
+- **PRIMARY — cross-project correctness.** A future fork at a different tile size
+  must get correct physics without re-authoring every material row. Authoring by
+  **dimensions** is what buys that, and it is the reason the ruling matters.
+- **SECONDARY — `--res` invariance.** `--res` is a DEV TOOL, not a shipped
+  setting, so this is not a foundational invariant. It is taken because it is
+  nearly free, and for one practical reason: deriving at the LIVE tile size puts
+  **2x the wood** in a wall at `--res 2`, so fire would behave visibly differently
+  at the very resolutions Erik uses while developing. A dev tool that distorts the
+  thing under development is worse than useless.
+
+Nothing in this design locks a resolution. Level correctness is explicitly NOT a
+priority while the levels are test levels.
+
 **ACCEPTED GAP** — at higher `--res` a wall is several tiles deep, so its front
 layer is thinner and ignites faster. That is physically correct (it is the
 two-node skin effect emerging from resolution) but it means fire behaviour is not
-fully `--res`-invariant. Recorded, not fixed.
-
-**Property to pin**: total combustible mass in a wall is identical at `--res 1`
-and `--res 2`. See §11.
+fully `--res`-invariant. Recorded, not fixed, and not gated.
 
 ### This converges with q3
 
@@ -428,10 +450,28 @@ first-order estimate at the bench's ~71 kW total fire power:
 
 **Erik's 3-minute fuel-out ruling (2026-09-06) was set against a store that
 physically held 471 minutes — a 157x discrepancy.** It was a patch over a
-fictional store, and with a real store it is **re-derived, not carried forward**.
-Wanting ~3 minutes after seeing 7 and 15 is a legitimate game-design choice
-against a physical baseline; it is simply not the same decision. M3 brings the
-measured numbers back to Erik before anything is locked.
+fictional store.
+
+> **RETIRED by Erik, 2026-09-21**: *"Let's undo that 3 min ruling and replace it
+> with more accurate physics modelling."*
+
+M3 therefore **reports what the physics gives** and does not steer toward any
+target duration. There is no burn-duration dial to restore.
+
+### The measurement fixture CHANGES — Erik's ruling, 2026-09-21
+
+> *"this is a problem with the massive fire at such a big tile, we solve it with
+> more materials such as thin walls etc — special made materials. We should
+> measure on the thin wall instead. Or the bonfire or whatever it's called."*
+
+The canonical fire bench measures a `furniture` crate, and every fire number in
+this arc — the 17.7 kW self-heat, the 12 kW cross-gap flux, the burn durations —
+is quoted against a 154 kg block that **this design deletes**.
+
+**M2 and M3 re-anchor the bench on a THIN row** (`wood` at 0.5 cm, or `kindling`)
+and re-quote the reference numbers there. A 154 kg-equivalent object must stop
+being the thing fire behaviour is judged against — it is precisely the object the
+arc concluded cannot burn.
 
 ---
 
@@ -516,8 +556,11 @@ A green suite is not evidence.
    flux is identical at `tile_size_m` of 0.333 and 1.0 (§4). This is the property
    that authoring dimensions buys, so it is the property that gates it.
 3c. **`--res` mass invariance**: the total combustible mass in a wall is identical
-   at `--res 1` and `--res 2` (§4). This is what pins "derive at BASE resolution";
-   it breaks the moment someone derives at the live tile size instead.
+   at `--res 1` and `--res 2` (§4). This pins "derive at BASE resolution" and
+   breaks the moment someone derives at the live tile size instead. Per Erik's
+   2026-09-21 ruling this is a **convenience property, not a foundational
+   invariant** — `--res` is a dev tool. Pin it because it is cheap; do not
+   contort the design to preserve it.
 7. **Fires still go out, and burnt-out tiles are still destroyed** (M3). These are
    the two properties the deleted timer used to own, and they must be pinned by
    name **before** it is removed, or its removal is unfalsifiable. Note the
