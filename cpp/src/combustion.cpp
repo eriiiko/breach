@@ -1070,8 +1070,19 @@ void CombustionSolver::step(
                 }
             }
             if (object_site) {
-                const int shift = heat_inv_shift[s];   // log2(thermal_mass), >= 0
-                dT = deposit >> shift;
+                // M1: WIDE and SIGNED, the temperature solver's Pass-1
+                // deposit line for line. `heat_inv_shift` may be NEGATIVE now
+                // (a row lighter than one thermal_mass unit) — a negative `>>`
+                // is UB and the multiply it stands for leaves int32. Clamp
+                // exactly as the gas branch below does, so an honestly-huge
+                // deposit still meets the T_MAX_PHYS rail through a value that
+                // was never corrupted on the way there. `deposit >= 0`, so on
+                // every non-negative exponent this is the shipped
+                // `deposit >> shift`, bit for bit.
+                const int shift = heat_inv_shift[s];   // log2(thermal_mass)
+                const int64_t dT_obj =
+                    shr_round0_signed_i64((int64_t)deposit, shift);
+                dT = (q16)std::clamp<int64_t>(dT_obj, 0, INT32_MAX);
             } else {
                 const q16 n_real_s = (q16)((int64_t)O2[s] + (int64_t)N2[s]);
                 q16 n_total_s = n_real_s;

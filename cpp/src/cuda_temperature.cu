@@ -228,7 +228,9 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
                 int32_t tr = temperature[i];
                 // P3a-1: the int64 twins of the SAME two kit functions, the
                 // one FP_HD definition the CPU fold also calls.
-                const int64_t dTr = shr_round0_i64(rn, heat_inv_shift[i]);
+                // M1: SIGNED in the exponent, the CPU twin's line for line.
+                const int64_t dTr =
+                    shr_round0_signed_i64(rn, heat_inv_shift[i]);
                 tr = sat_add_q16_i64(tr, dTr);
                 // ---- THE MAXIMUM-PRINCIPLE CLAMP (T5b step 6) -------------
                 //   T_new = min(T_after, max(T_before, E^-1(Phi)))
@@ -265,9 +267,13 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
         // N-divided radiative deposit below.
         if (thermal_solid[i]) {
             const int32_t t_before_dep = t;                  // P-G5
+            // M1: WIDE and SIGNED — the CPU twin's line for line
+            // (temperature_solver.cpp Pass 1). A negative exponent turns this
+            // divide into a multiply and `deposit << 4` leaves int32.
             const int shift = heat_inv_shift[i];             // log2(thermal_mass)
-            const int32_t gain = deposit >> shift;           // Q16.16 / 2^shift
-            heat_saturating_add_dev(&t, gain);
+            const int64_t gain =
+                shr_round0_signed_i64((int64_t)deposit, shift);
+            t = sat_add_q16_i64(t, (gain > 0) ? gain : 0);
             if (t > t_max_phys_q) { t = t_max_phys_q; atomicAdd(hits, 1ULL); }
             temperature[i] = t;
             // P-G5: the heat-deposit's ACTUAL landing, post rail — the CPU

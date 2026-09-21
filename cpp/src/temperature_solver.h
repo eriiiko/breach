@@ -183,6 +183,21 @@ namespace conduction {
 // lands in `e_cond_cap_sum` exactly like the n_floor_heat floor's does).
 constexpr int CAP_SHIFT_MAX = 12;
 
+// Capacity FLOOR, as a shift: C >= 2^CAP_SHIFT_MIN (M1,
+// docs/thin_material_rows_design_2026-09-20.md section 5). `cell_capacity_q`
+// builds `1 << (s + FP_SHIFT)`, so s = -16 lands cap_used == 1 -- ONE Q16.16
+// raw count of capacity, the smallest nonzero the representation has. It is the
+// exact twin of the `cu < 1` divide-by-zero guard on the gas branch below.
+//
+// WHY IT REPLACES `if (s < 0) s = 0`. That line was a GUARD against an exponent
+// the material table could not produce, not an arithmetic limit: a thermal_mass
+// below one unit has always been representable here (s = -2 gives 1 << 14 ==
+// 16384 == 0.25 exactly). M1 lifts the guard so the thin flammable rows of the
+// design's section 6 (0.10-0.26 units) become expressible. The shipped table
+// carries no negative exponent, so every value this function returns today is
+// bit-identical to what it returned before.
+constexpr int CAP_SHIFT_MIN = -static_cast<int>(fixedpoint::FP_SHIFT);
+
 // Constraint 4's fraction, as a shift. 1 == "at most HALF the gap closed
 // through the smaller endpoint capacity" — the design's pinned ≤ ½, the safe
 // side of the f = 2 line.
@@ -205,7 +220,8 @@ FP_HD inline void cell_capacity_q(bool is_ts, int32_t heat_inv_shift_i,
                                   int64_t* cap_used, int64_t* cap_real) {
     if (is_ts) {
         int s = (int)heat_inv_shift_i;
-        if (s < 0) s = 0;
+        if (s < CAP_SHIFT_MIN) s = CAP_SHIFT_MIN;   // M1: the REPRESENTATION
+                                                    // floor, not a sign guard
         int s_used = (s > CAP_SHIFT_MAX) ? CAP_SHIFT_MAX : s;
         int s_real = (s > 30) ? 30 : s;          // int64 hygiene on cap_real too
         *cap_used = (int64_t)1 << (s_used + fixedpoint::FP_SHIFT);

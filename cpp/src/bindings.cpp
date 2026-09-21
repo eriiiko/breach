@@ -281,7 +281,12 @@ PYBIND11_MODULE(breach_physics, m) {
              // arc #54 §2.7 row 3: the conserved gas energy field, OPTIONAL —
              // None -> nullptr -> the pre-#54 T-form law (the CPU `e_on` gate,
              // same idiom as thermal_solid above).
-             py::object gas_energy_obj, float t_amb_k) -> py::tuple {
+             py::object gas_energy_obj, float t_amb_k,
+             // M1: the SIGNED radiation accumulator, OPTIONAL. Exposed so the
+             // CPU/GPU parity gate can drive Pass 1's radiation fold at a
+             // NEGATIVE `heat_inv_shift` — the fold was already int64 but it
+             // was not SIGNED, and "already wide" is not "already signed".
+             py::object rad_net_obj) -> py::tuple {
               auto [temp, h, w]    = get_2d(temperature);
               auto [hp, h2, w2]    = get_2d_const(heat);
               auto [shift, h3, w3] = get_2d_const(heat_inv_shift);
@@ -333,6 +338,18 @@ PYBIND11_MODULE(breach_physics, m) {
                   auto [gep, hg, wg] = get_2d(ge_arr);
                   ge = gep;
               }
+              const int64_t* rnet = nullptr;
+              py::array_t<int64_t, py::array::c_style> rnet_arr;
+              if (!rad_net_obj.is_none()) {
+                  if (!py::isinstance<py::array_t<int64_t>>(rad_net_obj)) {
+                      throw std::runtime_error(
+                          "cuda_temperature_step: rad_net must be an int64 "
+                          "numpy array (the sweep's plane), not a narrower dtype");
+                  }
+                  rnet_arr = rad_net_obj.cast<py::array_t<int64_t, py::array::c_style>>();
+                  auto rn = rnet_arr.unchecked<2>();
+                  rnet = rn.data(0, 0);
+              }
               const int32_t t_amb_q = fixedpoint::quantize((double)t_amb_k);
               // P-E2a/P-E2b/arc #54: the isolated GPU entry now returns
               // (t_max_phys_hits, e_cond_trunc_sum, e_cond_cap_sum,
@@ -351,7 +368,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   temp, hp, shift, fs, sol, vac, atm, nb, wx, wy,
                   no_face, o2_vacuum_thresh,
                   c_v, n_floor_heat, gas_advection_rate, t_max_phys, h, w, dt,
-                  nullptr, tsol, nullptr, nullptr, cnt,
+                  nullptr, tsol, nullptr, rnet, cnt,
                   ge, t_amb_q, &solid_books);
               // T5b step 7: 13 counters -> 11 (C_COOL and C_THERMOSTAT are
               // deleted with Pass 3 and the survivors renumbered).
@@ -370,6 +387,7 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("thermal_solid") = py::none(),   // thermal-mass axis (optional)
           py::arg("gas_energy") = py::none(),      // arc #54 §2.2 (optional)
           py::arg("t_amb_k") = 290.0f,
+          py::arg("rad_net") = py::none(),         // M1: int64, loud (optional)
           "P6.6/P-G2 isolated: run the GPU unified temperature solver in place "
           "on `temperature` (+ `gas_energy` when supplied — bit-identical to "
           "TemperatureSolver.step); returns (t_max_phys_hits, e_cond_trunc_sum, "
@@ -1631,6 +1649,44 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("x"), py::arg("s"),
           "fixed_point.h shr_round0_i64: the int64 twin of shr_round0 (same "
           "symmetric round-toward-0 shift, 64-bit operand).");
+    // M1 (docs/thin_material_rows_design_2026-09-20.md section 5): the
+    // SIGNED-EXPONENT twin and the capacity kit it serves, exposed so
+    // tests/test_m1_negative_thermal_mass_exponents.py can gate the exact
+    // integer identities rather than re-derive them in Python. `pow2_snap`
+    // returning a negative exponent is meaningless unless BOTH of these hold
+    // it, and they are the only two places a negative `heat_inv_shift` becomes
+    // a number.
+    m.def("fp_shr_round0_signed_i64",
+          [](int64_t x, int s) {
+              return fixedpoint::shr_round0_signed_i64(x, s);
+          },
+          py::arg("x"), py::arg("s"),
+          "fixed_point.h shr_round0_signed_i64: divide by 2^s for a SIGNED s. "
+          "s >= 0 is shr_round0_i64 exactly; s < 0 MULTIPLIES by 2^-s, which "
+          "is exact (a left shift loses nothing).");
+    m.def("rad_pair_budget_s",
+          [](int64_t abs_dT_q, int his, int shift) {
+              return rad_pair_budget_s(abs_dT_q, his, shift);
+          },
+          py::arg("abs_dT_q"), py::arg("his"), py::arg("shift"),
+          "raycaster.h rad_pair_budget_s: the flux limiter's per-end budget, "
+          "floor(x * 2^his / 2^shift). SIGNED in `his` since M1.");
+    m.def("conduction_cell_capacity_q",
+          [](bool is_ts, int32_t heat_inv_shift, int32_t n_raw,
+             int32_t n_floor_q, int32_t c_v_q) {
+              int64_t cap_used = 0, cap_real = 0;
+              conduction::cell_capacity_q(is_ts, heat_inv_shift, n_raw,
+                                          n_floor_q, c_v_q,
+                                          &cap_used, &cap_real);
+              return py::make_tuple(cap_used, cap_real);
+          },
+          py::arg("is_ts"), py::arg("heat_inv_shift"), py::arg("n_raw"),
+          py::arg("n_floor_q"), py::arg("c_v_q"),
+          "temperature_solver.h conduction::cell_capacity_q -> "
+          "(cap_used, cap_real). THE one capacity law both backends call.");
+    m.attr("CAP_SHIFT_MIN") = conduction::CAP_SHIFT_MIN;
+    m.attr("CAP_SHIFT_MAX") = conduction::CAP_SHIFT_MAX;
+
     m.def("fp_deposit_dT_wide_i64",
           [](int64_t deposit, int32_t recip_n_q, int64_t recip_cv) {
               return fixedpoint::deposit_dT_wide_i64(deposit, recip_n_q,
