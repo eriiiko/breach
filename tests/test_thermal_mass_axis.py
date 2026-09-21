@@ -315,21 +315,48 @@ def test_the_snap_is_log_space_nearest_not_linear(factor, expect):
     assert int(round(float(tbl.thermal_mass[MAT_WOOD]))) == expect
 
 
-def test_a_row_lighter_than_the_column_floor_is_a_named_refusal():
-    """PROPERTY: a rho*c that snaps below 1 RAISES, naming the row -- it is not
-    silently clamped to 1 and not silently turned into the gas regime.
+def test_a_row_below_the_REPRESENTATION_floor_is_a_named_refusal():
+    """PROPERTY: a rho*c that snaps below ``2**-16`` RAISES, naming the row --
+    it is not silently clamped and not silently turned into the gas regime.
 
-    This is T3 D1's open question in enforceable form: a canopy's OBJECT rho*c
-    wants thermal_mass 0.5, which this column cannot express. The honest engine
-    behaviour is to refuse and make a human rule, not to round it away.
+    The floor MOVED at M1 (docs/thin_material_rows_design_2026-09-20.md
+    section 5). It used to be 1, which was a GUARD against rows the table could
+    not yet author; it is now ``2**THERMAL_MASS_EXP_MIN``, which is the
+    REPRESENTATION floor -- ``conduction::cell_capacity_q`` builds
+    ``1 << (s + 16)``, so ``s = -16`` is one raw count of capacity and anything
+    below it would be zero. What did NOT change is the shape of the answer: the
+    model refuses a row it cannot hold rather than rounding it away (design
+    section 11 property 3, "a load-time error, not a clamp").
 
-    BREAKS IF: the floor starts clamping.
+    T3 D1's canopy at ``thermal_mass = 0.5`` is now EXPRESSIBLE, which is the
+    point of M1, so this test can no longer use it as its example.
+
+    BREAKS IF: the floor starts clamping, or it is moved off the capacity
+    representation (a floor of 0 would make `cell_capacity_q` return 0 and the
+    conduction endpoint divide would fault).
     """
+    # Comfortably below 2**-16 column units.
     cfg = {name: _row() for name in MATERIAL_NAMES.values()}
     cfg["air"]["thermal_mass"] = 0
-    cfg["wood"]["specific_heat"] = _rho_c(0.4)
+    cfg["wood"]["specific_heat"] = _rho_c(2.0 ** -20)
     with pytest.raises(ValueError, match=r"materials\.wood"):
         MaterialTable(cfg)
+
+
+def test_a_row_at_the_representation_floor_is_accepted_not_refused():
+    """PROPERTY: the floor is INCLUSIVE -- ``2**-16`` column units is a legal
+    row and lands ``heat_inv_shift == -16``, the smallest nonzero capacity.
+
+    Pinned separately from the refusal above because an off-by-one in the
+    comparison would leave the refusal test green while making the floor itself
+    unreachable, and the floor is the value the whole M1 change is denominated
+    against.
+
+    BREAKS IF: the guard becomes ``<=`` instead of ``<``, or the floor moves.
+    """
+    tbl = _table({"wood": 2.0 ** -16})
+    assert int(tbl.heat_inv_shift[MAT_WOOD]) == -16
+    assert bool(tbl.thermal_solid[MAT_WOOD]) is True
 
 
 # ---------------------------------------------------------------------------

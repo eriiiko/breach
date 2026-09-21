@@ -281,7 +281,14 @@ void TemperatureSolver::step(
                     // tests/test_fixed_point_i64_twins.py), which is what makes
                     // the widening byte-identical; beyond it they are correct
                     // where the narrow forms could not be.
-                    const int64_t dTr = shr_round0_i64(rn, heat_inv_shift[i]);
+                    // M1: SIGNED in the exponent. `heat_inv_shift` may be
+                    // NEGATIVE (a row lighter than one thermal_mass unit), and
+                    // a negative `>>` is UB. On every non-negative exponent
+                    // this returns exactly what shr_round0_i64 returned, so no
+                    // shipped row moves; the negative branch is EXACT (a left
+                    // shift loses nothing where the right shift truncates).
+                    const int64_t dTr =
+                        shr_round0_signed_i64(rn, heat_inv_shift[i]);
                     // SYMMETRIC saturating add: raycaster.h's
                     // heat_saturating_add early-returns on delta <= 0 (its
                     // accumulator is contractually non-negative), which would
@@ -356,9 +363,21 @@ void TemperatureSolver::step(
             // thermal_mass)); gas takes the N-divided radiative deposit below.
             if (ts[i]) {
                 const int32_t t_before_dep = temperature[i];  // arc #54 P-G5
-                int shift = heat_inv_shift[i];    // log2(thermal_mass), >= 0
-                int32_t gain = deposit >> shift;  // Q16.16 / 2^shift, still Q16.16
-                heat_saturating_add(&temperature[i], gain);
+                // M1: WIDE and SIGNED. `heat_inv_shift` may be NEGATIVE now
+                // (a row lighter than one thermal_mass unit), and that turns
+                // this divide into a MULTIPLY -- which is the one real
+                // overflow risk of the whole change: `deposit << 4` leaves
+                // int32 above 2^27, and `deposit` is a Q16.16 heat
+                // accumulator that routinely carries far more than that.
+                // Route through int64 and let the kit's saturating adder be
+                // the only narrowing, exactly as the radiation fold above
+                // does. `deposit > 0` here, so the round-toward-zero branch is
+                // a plain `>>` and every non-negative exponent is bit-identical
+                // to the shipped `deposit >> shift`.
+                const int shift = heat_inv_shift[i];   // log2(thermal_mass)
+                const int64_t gain =
+                    shr_round0_signed_i64((int64_t)deposit, shift);
+                temperature[i] = sat_add_q16_i64(temperature[i], (gain > 0) ? gain : 0);
                 if (temperature[i] > t_max_phys_q) {
                     temperature[i] = t_max_phys_q; ++t_max_phys_hits;
                 }

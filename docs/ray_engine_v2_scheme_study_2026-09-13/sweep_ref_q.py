@@ -14,6 +14,8 @@ WHAT TRANSCRIBES WHAT
   e_bucket_of        <- cpp/src/raycaster.h:203-213
   e_inv_q            <- design v3 section 2.6 ("E°⁻¹"), both edge cases of row 31
   shr_round0         <- cpp/src/fixed_point.h:410 (the int64 twin P1 owes)
+  shr_round0_signed  <- cpp/src/fixed_point.h, shr_round0_signed_i64 (M1's
+                        signed-exponent twin: a thermal_mass below 1 unit)
   floordiv_q         <- cpp/src/fixed_point.h:562
   fleck_f_solid_q    <- design v3 section 2.8 (the excess form, row 22; Q24, row 32)
   sweep_q            <- design v3 section 2.3 (gather form; body re-emission, row 25)
@@ -112,12 +114,12 @@ def shipped_absorbing_rows(config_path=None):
     Returns [(name, a_q, his, heat_atten, thermal_mass), ...] for the rows with
     `heat_atten > 0`; rows with `heat_atten == 0` (air, foliage) never emit or
     absorb and are skipped. `his = log2(thermal_mass)` is the engine's own
-    `heat_inv_shift`, so `thermal_mass` must be a power of two -- the same
-    contract, asserted here.
+    `heat_inv_shift` -- a SIGNED exponent since M1, so the derivation returns it
+    directly rather than round-tripping through a power-of-two integer.
 
     R14 (thermal model v2 design 2026-09-19): `thermal_mass` is no longer an
     authored key. A row states its real `density` and `specific_heat` and the
-    column is DERIVED, so this reader derives it too -- `_thermal_mass_ref`
+    column is DERIVED, so this reader derives it too -- `_thermal_mass_exp_ref`
     below is the reference's transcription of
     `simulation.materials.derive_thermal_mass`, the same way every kit
     primitive in this file is a transcription. `tests/test_thermal_mass_axis.py`
@@ -138,13 +140,14 @@ def shipped_absorbing_rows(config_path=None):
         atten = float(row.get("heat_atten", 0.0))
         if atten <= 0.0:
             continue
-        tm = _thermal_mass_ref(name, row)
-        if tm <= 0 or (tm & (tm - 1)) != 0:
+        his = _thermal_mass_exp_ref(name, row)
+        if his is None:
             raise ValueError(
-                f"materials.{name}: heat_atten = {atten} with thermal_mass = {tm}; "
-                f"an absorbing material must carry a power-of-two thermal mass "
-                f"(it sits on the heat->temperature divide)")
-        out.append((name, quant(atten), tm.bit_length() - 1, atten, tm))
+                f"materials.{name}: heat_atten = {atten} on a GAS-regime row; "
+                f"an absorbing material must carry a thermal mass (it sits on "
+                f"the heat->temperature divide)")
+        tm = 2.0 ** his          # exactly representable: a power of two
+        out.append((name, quant(atten), his, atten, tm))
     return out
 
 
@@ -156,16 +159,25 @@ THERMAL_MASS_UNIT_REF = 0.9e6 / 8       # = 112 500 J/(m3.K)
 _SQRT2_REF = math.sqrt(2.0)
 
 
-def _thermal_mass_ref(name, row):
-    """The reference's transcription of `materials.derive_thermal_mass` (R14).
+# M1: the representation floor of `heat_inv_shift`, as an exponent. 2**-16 is
+# ONE Q16.16 count of capacity -- `cell_capacity_q` builds `1 << (s + 16)`, so
+# s = -16 lands cap_used == 1 and anything below it would be zero capacity.
+# Mirrors `simulation.materials.THERMAL_MASS_EXP_MIN`.
+THERMAL_MASS_EXP_MIN_REF = -16
 
-    `pow2_snap(density * specific_heat / 112500)`, the snap taken in LOG space
-    but computed WITHOUT a logarithm: the geometric midpoint between 2**k and
-    2**(k+1) is 2**k * sqrt(2), so it is a bracket-and-compare over exact binary
-    scalings plus one correctly-rounded sqrt.
+
+def _thermal_mass_exp_ref(name, row):
+    """The reference's transcription of `materials.pow2_snap`/`derive_thermal_mass`.
+
+    Returns the SIGNED exponent `s` with `thermal_mass == 2**s` -- which is the
+    engine's `heat_inv_shift` directly, for either sign (M1). The snap is taken
+    in LOG space but computed WITHOUT a logarithm: the geometric midpoint
+    between 2**k and 2**(k+1) is 2**k * sqrt(2), so it is a bracket-and-compare
+    over exact binary scalings plus one correctly-rounded sqrt.
 
     An authored `thermal_mass` is legal only as the literal 0 that DECLARES the
-    gas thermal regime (air) -- it is not a capacity.
+    gas thermal regime (air) -- it is not a capacity, and it has no exponent;
+    callers must test the regime before asking for one.
     """
     declared = row.get("thermal_mass")
     if declared is not None:
@@ -174,7 +186,7 @@ def _thermal_mass_ref(name, row):
                 f"materials.{name}.thermal_mass is DERIVED from "
                 f"density * specific_heat (R14); the only legal authored value "
                 f"is 0, the gas-regime declaration. Got {declared!r}")
-        return 0
+        return None
     x = float(row["density"]) * float(row["specific_heat"]) / THERMAL_MASS_UNIT_REF
     k, lo = 0, 1.0
     while lo * 2.0 <= x:
@@ -184,10 +196,11 @@ def _thermal_mass_ref(name, row):
         lo *= 0.5
         k -= 1
     exp = k + 1 if x >= lo * _SQRT2_REF else k
-    if exp < 0:
+    if exp < THERMAL_MASS_EXP_MIN_REF:
         raise ValueError(
-            f"materials.{name}: rho*c snaps below the thermal_mass floor of 1")
-    return 1 << exp
+            f"materials.{name}: rho*c snaps below 2**{THERMAL_MASS_EXP_MIN_REF}, "
+            f"the thermal_mass representation floor")
+    return exp
 
 
 # --------------------------------------------------------------------------- #
@@ -196,6 +209,24 @@ def _thermal_mass_ref(name, row):
 def shr_round0(x: int, s: int) -> int:
     """fixed_point.h:410, symmetric round-toward-zero shift (the int64 twin)."""
     return -((-x) >> s) if x < 0 else (x >> s)
+
+
+def shr_round0_signed(x: int, s: int) -> int:
+    """fixed_point.h, `shr_round0_signed_i64` -- the SIGNED-EXPONENT twin (M1).
+
+    Divides by ``2**s`` where `s` MAY BE NEGATIVE, which is what a material
+    lighter than one `thermal_mass` unit means (`heat_inv_shift = -2` is a
+    capacity of 0.25 units). For ``s >= 0`` this IS :func:`shr_round0`, value
+    for value -- that identity is what keeps every shipped row bit-identical
+    across M1, which changes no row.
+
+    For ``s < 0`` it MULTIPLIES by ``2**(-s)``, and that branch is EXACT: a
+    left shift loses nothing, where the right shift truncates. (The engine's
+    twin saturates at the int64 rails; a Python int cannot overflow, so the
+    reference states the mathematical value and the C++ gate pins the
+    saturation.)
+    """
+    return shr_round0(x, s) if s >= 0 else x << (-s)
 
 
 def floordiv_q(n: int, d: int) -> int:
@@ -301,12 +332,17 @@ def e_inv_q(phi: int, table=E) -> int:
 # --------------------------------------------------------------------------- #
 def fleck_L_solid_q(T_q: int, a_q: int, his: int, table=E, e_ref: int = None) -> int:
     """The solid branch of L_q: the cell's FREE excess-emission loss this tick,
-    in Q16.16 temperature.  L_q = shr_round0((a*(E°[T] - E°[0])) >> 16, his)."""
+    in Q16.16 temperature.  L_q = shr_round0_signed((a*(E°[T] - E°[0])) >> 16, his).
+
+    SIGNED in `his` since M1: a row lighter than one thermal_mass unit carries a
+    negative exponent, and a thin panel's free emission is correspondingly
+    LARGER in temperature units. Identical to the old `shr_round0` form on every
+    non-negative `his`."""
     ref = table[0] if e_ref is None else e_ref
     ex = table[e_bucket_of(T_q)] - ref
     if ex < 0:
         ex = 0
-    return shr_round0((a_q * ex) >> 16, his)
+    return shr_round0_signed((a_q * ex) >> 16, his)
 
 
 def fleck_D_q(T_abs_q: int, L_q: int, alpha_floor: str = ALPHA_FLOOR_DEFAULT) -> int:
@@ -749,7 +785,7 @@ def fold_pass1_solid(T, rad_net, rad_fluence, his, ts, counters: FoldCounters, *
     """The radiative sub-step of Pass 1, for thermal solids, IN ORDER.
 
         t_before = T[i]
-        dTr      = shr_round0(rad_net[i], heat_inv_shift[i])
+        dTr      = shr_round0_signed(rad_net[i], heat_inv_shift[i])
         T[i]     = sat_add_q16(T[i], dTr)                      # T_after
         T[i]     = min(T_after, max(t_before, E°⁻¹(Phi)))       # the clamp (row 21)
         rails: T_MAX_PHYS, then the low rail at 0
@@ -772,7 +808,7 @@ def fold_pass1_solid(T, rad_net, rad_fluence, his, ts, counters: FoldCounters, *
                 continue
             s = his if isinstance(his, int) else his[y][x]
             t_before = T[y][x]
-            dTr = shr_round0(rn, s)
+            dTr = shr_round0_signed(rn, s)
             t_after = sat_add_q16(t_before, dTr) if int32_sat else t_before + dTr
             t_new = t_after
             if clamp_enabled:
@@ -864,7 +900,7 @@ def cell_rad_net_q(T_q: int, phi: int, a_q: int, his: int, *, table=E,
         ex = 0
     f_q = F_ONE
     if fleck:
-        f_q = fleck_f_q(T_q, shr_round0((a_q * ex) >> 16, his),
+        f_q = fleck_f_q(T_q, shr_round0_signed((a_q * ex) >> 16, his),
                         alpha_floor=alpha_floor)
     src = ref + ((ex * f_q) >> F_SHIFT)
     return ((phi * a_q) >> 16) - ((src * a_q) >> 16)

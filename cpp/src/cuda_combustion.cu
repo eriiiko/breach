@@ -526,8 +526,12 @@ __global__ void combustion_pass_c(
                               && (heat_inv_shift != nullptr)
                               && thermal_solid[s];
         if (object_site) {
-            const int shift = heat_inv_shift[s];   // log2(thermal_mass), >= 0
-            dT = deposit >> shift;
+            // M1: WIDE and SIGNED — the CPU twin's line for line.
+            const int shift = heat_inv_shift[s];   // log2(thermal_mass)
+            int64_t dT_obj = shr_round0_signed_i64((int64_t)deposit, shift);
+            if (dT_obj < 0) dT_obj = 0;
+            if (dT_obj > (int64_t)INT32_MAX) dT_obj = (int64_t)INT32_MAX;
+            dT = (q16)dT_obj;
         } else {
             const q16 n_real_s = (q16)((int64_t)O2[s] + (int64_t)N2[s]);
             q16 n_total_s = n_real_s;

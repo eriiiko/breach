@@ -140,7 +140,8 @@ def _run(temp, shift, face, solid, n_ticks, heat=None):
 # one's per-face ΔE array sums to exactly 0, constraint 1 holds.
 # ---------------------------------------------------------------------------
 FP_ONE = 65536
-CAP_SHIFT_MAX = 12      # conduction::CAP_SHIFT_MAX
+CAP_SHIFT_MAX = 12
+CAP_SHIFT_MIN = -16   # M1: temperature_solver.h conduction::CAP_SHIFT_MIN      # conduction::CAP_SHIFT_MAX
 LIM_SHIFT = 1           # conduction::LIM_SHIFT
 _OPP = (1, 0, 3, 2)     # N<->S, E<->W
 
@@ -154,15 +155,18 @@ def _capacities(ts, heat_inv_shift, n_raw, n_floor_heat=0.05, c_v=1.0):
     """conduction::cell_capacity_q, vectorized. Returns (cap_used, cap_real)."""
     n_floor_q = _quantize(n_floor_heat)
     c_v_q = _quantize(c_v)
-    his = np.maximum(heat_inv_shift.astype(np.int64), 0)
+    # M1: the floor is the REPRESENTATION floor (-16), not 0 -- a row lighter
+    # than one thermal_mass unit carries a negative exponent and the Q16.16
+    # capacity `1 << (s + 16)` holds it exactly (s = -2 is 16384 == 0.25).
+    his = np.maximum(heat_inv_shift.astype(np.int64), CAP_SHIFT_MIN)
     ceiling = np.int64(1) << (CAP_SHIFT_MAX + 16)
 
     used = np.zeros(ts.shape, dtype=np.int64)
     real = np.zeros(ts.shape, dtype=np.int64)
-    used[ts] = np.int64(1) << np.minimum(his[ts], CAP_SHIFT_MAX)
-    used[ts] <<= 16
-    real[ts] = np.int64(1) << np.minimum(his[ts], 30)
-    real[ts] <<= 16
+    # `s + 16` is non-negative by the floor, so the shift is built in ONE step
+    # rather than shifting a value that could not be represented on its own.
+    used[ts] = np.int64(1) << (np.minimum(his[ts], CAP_SHIFT_MAX) + 16)
+    real[ts] = np.int64(1) << (np.minimum(his[ts], 30) + 16)
 
     nr = np.maximum(n_raw.astype(np.int64), 0)
     nu = np.maximum(nr, np.int64(n_floor_q))

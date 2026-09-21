@@ -352,8 +352,25 @@ THERMAL_MASS_UNIT = RHO_C_PIN / THERMAL_MASS_PIN
 _SQRT2 = math.sqrt(2.0)
 
 
+# The SIGNED exponent floor of `thermal_mass` (M1,
+# docs/thin_material_rows_design_2026-09-20.md section 5). `thermal_mass ==
+# 2**s` and the engine stores `s` as `heat_inv_shift` (int32 — always signed);
+# `conduction::cell_capacity_q` builds a Q16.16 capacity `1 << (s + 16)` from
+# it, so `s = -16` is ONE raw count of capacity and anything below it would be
+# zero. THE REPRESENTATION FLOOR, not a policy: the old floor of 1 was a guard
+# against rows that could not yet be authored, and M1 lifts it.
+THERMAL_MASS_EXP_MIN = -16
+
+
 def pow2_snap(x, _what="value") -> int:
-    """Nearest power of two to ``x`` **in log space**, as an integer >= 1.
+    """The SIGNED exponent of the nearest power of two to ``x`` **in log space**.
+
+    Returns ``s`` such that the snapped value is ``2**s``, with
+    ``s >= THERMAL_MASS_EXP_MIN``. It returned ``1 << s`` and REFUSED ``s < 0``
+    before M1; the refusal was a guard against an inexpressible row, and the
+    design's thin flammable rows (0.10-0.26 units) are exactly the rows it was
+    waiting for. Nothing about the arithmetic changed -- `heat_inv_shift` has
+    always been signed and the capacity has always been Q16.16.
 
     R5 keeps `thermal_mass` a power of two because it rides a bit-shift; the
     snap is geometric (a capacity is a multiplicative quantity, and report_t3.md
@@ -367,6 +384,10 @@ def pow2_snap(x, _what="value") -> int:
 
     Ties (an ``x`` landing exactly on ``2**k * sqrt(2)``, which no real rho*c
     does) round UP, deterministically.
+
+    BELOW ``2**THERMAL_MASS_EXP_MIN`` it still REFUSES, by name -- a row the
+    representation cannot hold is reported, never silently clamped (design v2
+    section 11 property 3: a load-time error, not a clamp).
     """
     if not (x > 0.0):
         raise ValueError(f"{_what}: cannot snap a non-positive value {x!r} "
@@ -380,23 +401,31 @@ def pow2_snap(x, _what="value") -> int:
         lo *= 0.5
         k -= 1
     exp = k + 1 if x >= lo * _SQRT2 else k
-    if exp < 0:
+    if exp < THERMAL_MASS_EXP_MIN:
         raise ValueError(
-            f"{_what}: rho*c / {THERMAL_MASS_UNIT:.0f} = {x!r} snaps BELOW 1, "
-            f"and the thermal_mass column's floor is 1 -- it must be a power of "
-            f"two >= 1 (0 is taken: it declares the GAS thermal regime). A "
-            f"material this light thermally is not expressible; report it "
-            f"rather than inflating the row (design v2 R14, report_t3.md D1)")
-    return 1 << exp
+            f"{_what}: rho*c / {THERMAL_MASS_UNIT:.0f} = {x!r} snaps below "
+            f"2**{THERMAL_MASS_EXP_MIN}, the thermal_mass REPRESENTATION floor "
+            f"(`cell_capacity_q` builds `1 << (s + 16)`, so a smaller exponent "
+            f"is zero capacity). A material this light thermally is not "
+            f"expressible; report it rather than inflating the row "
+            f"(design v2 R14, report_t3.md D1, thin-rows design section 5)")
+    return exp
 
 
-def derive_thermal_mass(density, specific_heat, _what="material") -> int:
-    """R14: ``thermal_mass`` from a row's real ``rho`` and ``c``.
+def derive_thermal_mass_exp(density, specific_heat, _what="material") -> int:
+    """R14: the ``thermal_mass`` EXPONENT from a row's real ``rho`` and ``c``.
 
-    ``pow2_snap(rho * c / THERMAL_MASS_UNIT)``. THE ONE PLACE this is computed
-    -- `MaterialTable` calls it, the property gate calls it, and nothing else
-    may re-derive it (the failure mode R14's implementation had to avoid is two
-    sites computing `heat_inv_shift`).
+    ``pow2_snap(rho * c / THERMAL_MASS_UNIT)``, i.e. the signed ``s`` with
+    ``thermal_mass == 2**s``. THE ONE PLACE this is computed -- `MaterialTable`
+    calls it, the property gate calls it, and nothing else may re-derive it (the
+    failure mode R14's implementation had to avoid is two sites computing
+    `heat_inv_shift`).
+
+    The EXPONENT is the primitive since M1, not the value: it IS
+    `heat_inv_shift`, so the table reads one number instead of deriving a value
+    and then recovering its log -- and a fractional value (2**-3 == 0.125) has
+    no `bit_length` to recover it from. :func:`derive_thermal_mass` is the thin
+    wrapper that states the same answer as a capacity.
     """
     rho = float(density)
     c = float(specific_heat)
@@ -406,6 +435,16 @@ def derive_thermal_mass(density, specific_heat, _what="material") -> int:
             f"`thermal_mass` is DERIVED from their product (design v2 R14); "
             f"got density={density!r}, specific_heat={specific_heat!r}")
     return pow2_snap(rho * c / THERMAL_MASS_UNIT, _what)
+
+
+def derive_thermal_mass(density, specific_heat, _what="material") -> float:
+    """R14's ``thermal_mass`` VALUE: ``2.0 ** derive_thermal_mass_exp(...)``.
+
+    A float since M1, because the column can now be below 1 (a 5 mm wood panel
+    is 0.125 units). `math.ldexp` rather than `2.0 ** s`: an exact binary
+    scaling with no pow, so it stays inside the number-ingress doors.
+    """
+    return math.ldexp(1.0, derive_thermal_mass_exp(density, specific_heat, _what))
 
 
 class MaterialTable:
@@ -477,7 +516,15 @@ class MaterialTable:
         # of pretending to a capacity. Any other authored `thermal_mass` is
         # rejected by name: it would be a second source of truth for
         # `heat_inv_shift`, which is exactly what R14 exists to remove.
+        #
+        # M1: THE SNAP RETURNS THE EXPONENT, and `heat_inv_shift` is that
+        # exponent verbatim. ONE derivation per row feeds BOTH columns, so the
+        # divisor and the capacity cannot disagree; the old shape (derive a
+        # value, then recover its log with `bit_length`) could not express a
+        # capacity below 1 at all, and would have rounded 0.125 to zero -- i.e.
+        # silently into the GAS regime.
         thermal_mass = []
+        exps = []                  # None == the gas-regime declaration
         for row, name in zip(rows, self.names):
             declared = self._get_field_opt(row, "thermal_mass")
             if declared is not None:
@@ -491,11 +538,14 @@ class MaterialTable:
                         f"instead and let the snap land the column"
                     )
                 thermal_mass.append(0.0)
+                exps.append(None)
                 continue
-            thermal_mass.append(float(derive_thermal_mass(
+            e = derive_thermal_mass_exp(
                 self._get_field(row, name, "density"),
                 self._get_field(row, name, "specific_heat"),
-                f"materials.{name}")))
+                f"materials.{name}")
+            exps.append(e)
+            thermal_mass.append(math.ldexp(1.0, e))
         self.thermal_mass = np.array(thermal_mass, dtype=np.float32)
 
         # heat_inv_shift: per-id log2(thermal_mass) (engine/06 §1.2). The
@@ -508,48 +558,48 @@ class MaterialTable:
         # THERMAL-MASS AXIS (docs/thermal_mass_axis_design_2026-07-25.md §2.1;
         # build addendum 2026-07-30 D2): `thermal_mass == 0` is LEGAL and means
         # "this material lives in the GAS thermal regime" — air, and any future
-        # gas-like row. It is the ONLY non-power-of-two value accepted, because
-        # it is not a divisor at all: the derived ``thermal_solid`` mask
+        # gas-like row. It is the ONLY value here that is not a power of two,
+        # because it is not a divisor at all: the derived ``thermal_solid`` mask
         # (below) routes those tiles away from the shift path entirely, so the
-        # stored shift is a never-read placeholder. Everything >= 1 keeps
-        # today's power-of-two contract exactly.
+        # stored shift is a never-read placeholder.
         #
-        # Since R14 the column is DERIVED (above), so the power-of-two rejection
-        # below is a SELF-CHECK on `pow2_snap` rather than an author-facing
-        # door — kept because it is free and because it is the invariant the
-        # whole heat->T convert rests on.
+        # M1: the shift is the snap's OWN answer (`exps`), not a log recovered
+        # from the value — so a NEGATIVE exponent survives the trip. The
+        # self-check below is on that round trip instead: `2**s` must be exactly
+        # what the column carries. It is what the whole heat->T convert rests
+        # on and it is free to assert.
         shifts = []
-        tm_ints = []
-        for tm, name in zip(self.thermal_mass.tolist(), self.names):
-            tm_int = int(round(tm))
-            if tm_int == 0:
-                tm_ints.append(0)
+        for tm, e, name in zip(self.thermal_mass.tolist(), exps, self.names):
+            if e is None:
                 shifts.append(0)             # placeholder: never read (gas regime)
                 continue
-            if tm_int < 0 or (tm_int & (tm_int - 1)) != 0:
+            if math.ldexp(1.0, e) != float(tm):
                 raise ValueError(
-                    f"materials.{name}.thermal_mass must be 0 (the gas thermal "
-                    f"regime) or a power of two >= 1 (it sits on the "
-                    f"heat->temperature divide); got {tm!r} — since R14 the "
-                    f"column is derived, so this is a `pow2_snap` bug, not a "
-                    f"config error"
+                    f"materials.{name}.thermal_mass {tm!r} is not 2**{e} — the "
+                    f"column and `heat_inv_shift` must be the same number in "
+                    f"two forms (it sits on the heat->temperature divide); "
+                    f"since R14 the column is derived, so this is a "
+                    f"`pow2_snap` bug, not a config error"
                 )
-            tm_ints.append(tm_int)
-            shifts.append(tm_int.bit_length() - 1)   # log2 of a power of two
+            shifts.append(e)
         self.heat_inv_shift = np.array(shifts, dtype=np.int32)
 
         # thermal_solid: the per-id THERMAL-MEDIUM axis (thermal-mass design
         # §2.1/§2.2). `thermal_mass > 0` -> this material takes the SOLID
         # thermal regime (bit-shift heat->T convert, conduction
         # ambient decay); `== 0` -> the GAS regime (advection + the N-divided
-        # radiative deposit, no ambient decay). It is derived from the SAME
-        # rounded integers the shifts are, so the mask and the divisor can
-        # never disagree. This is deliberately NOT `permeability <= 0`: flow
+        # radiative deposit, no ambient decay). M1: derived from the FLOAT
+        # column, which IS the definition (`thermal_mass > 0`) rather than a
+        # proxy for it — the old `int(round(tm)) > 0` would have called a
+        # 0.125-unit panel a GAS, silently, the day M2 authors one. The gas
+        # sentinel does not collide: 0.125 > 0 holds and 0.0 does not. This is deliberately NOT `permeability <= 0`: flow
         # (`solid`) and thermal identity are separate axes — furniture is
         # permeable (gas seeps past a crate) AND a thermal solid (a crate has
         # an object temperature). The per-tile projection is
         # ``GameMap.thermal_solid``.
-        self.thermal_solid = np.array([t > 0 for t in tm_ints], dtype=bool)
+        self.thermal_solid = np.array(
+            [float(t) > 0.0 for t in self.thermal_mass.tolist()], dtype=bool)
+        _is_ts = self.thermal_solid.tolist()
 
         # ---- ray-engine-v2 P1 (design v3 §2.3): the HEAT-EXTINCTION INGRESS
         # INVARIANTS, checked at the material door, each a named rejection:
@@ -580,8 +630,8 @@ class MaterialTable:
         # (`heat_atten_q`) exactly as `fire_T_ext_q16` is — never an inline
         # `* 65536`.
         from simulation import optics_fixed as _optics_fx
-        for name, atten, tm_int, flam in zip(self.names, self.heat_atten.tolist(),
-                                             tm_ints, self.flammable.tolist()):
+        for name, atten, is_ts, flam in zip(self.names, self.heat_atten.tolist(),
+                                            _is_ts, self.flammable.tolist()):
             atten_f = float(atten)
             if not (0.0 <= atten_f <= 1.0):
                 raise ValueError(
@@ -589,14 +639,14 @@ class MaterialTable:
                     f"Q16 extinction coefficient on the radiation sweep's planes; "
                     f"design v3 section 2.3: 0 <= a <= d <= ONE); got {atten!r}"
                 )
-            if atten_f > 0.0 and tm_int <= 0:
+            if atten_f > 0.0 and not is_ts:
                 raise ValueError(
                     f"materials.{name}: heat_atten = {atten!r} > 0 requires "
                     f"thermal_mass > 0 — an absorbing material in the gas thermal "
                     f"regime would take radiation the Pass-1 fold never converts "
                     f"(an uncounted sink; design v3 section 2.3)"
                 )
-            if bool(flam) and tm_int > 0 and atten_f <= 0.0:
+            if bool(flam) and is_ts and atten_f <= 0.0:
                 raise ValueError(
                     f"materials.{name}: a FLAMMABLE THERMAL SOLID must have "
                     f"heat_atten > 0 (got {atten!r}) — radiation is its only "
