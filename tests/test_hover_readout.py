@@ -176,9 +176,26 @@ def test_sweep_rows_come_from_the_engine_when_one_is_bound():
     """
     sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
     import breach_physics as bp
-    from config import CFG
     eng = bp.PhysicsEngine()
-    eng.emissive.rad_scale = float(CFG.physics.fire.rad_scale)
+    # T6 (issue #12): this used to read [physics.fire] rad_scale (the old
+    # cast's fitted key, deleted with it). [physics.radiation]
+    # rad_scale_derived is the key that actually feeds PhysicsEngine.emissive
+    # in production, but it does NOT serve this test's purpose: at the
+    # DERIVED (physically real) scale the Fleck damping this test exercises
+    # NEVER engages for any shipped row (config.toml's own documented
+    # consequence -- a physically heavy tile cannot radiate an appreciable
+    # share of its own heat in 1/24 s), so `r_hot.fleck_f` would sit at 1.0
+    # and the `0.0 < fleck_f < 1.0` assertion below would fail non-vacuously
+    # -- as it did in the first cut of this fix. The property under test is
+    # "the readout matches whatever the ENGINE independently computes", not
+    # "matches production's specific scale", so a big-enough LITERAL scale
+    # that reliably exercises the damping branch is the right fixture value
+    # here, same as tests/test_emissive_table.py's own R.RAD_SCALE constant
+    # (also no longer tied to any config key). Numerically the old fitted
+    # 5.1427e-5, kept as a bare constant so this test does not silently go
+    # vacuous again if a future patch changes either config key's value.
+    RAD_SCALE_FOR_DAMPING_TEST = 5.1427e-5
+    eng.emissive.rad_scale = RAD_SCALE_FOR_DAMPING_TEST
     eng.emissive.kelvin_ambient = float(_TS.kelvin_ambient)
     eng.emissive.k_temp_to_kelvin = float(_TS.k_temp_to_kelvin)
     eng.emissive.bake()

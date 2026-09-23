@@ -159,16 +159,9 @@ class PhysicsRunner:
         bp = breach_physics
         self.bp = bp
 
-        # CUDA-S2 LIVE: the fire->heat ray cast (cast_fire_heat) can run on the GPU
-        # when the raycaster backend flag is on (set via bp.set_raycaster_backend,
-        # flipped by tools/run_on_cuda). The flag only EXISTS on the CUDA build —
-        # the CPU build's bindings define no backend setters/getters — so cache a
-        # query that is a constant False on the CPU build. cast_fire_heat reads
-        # this per tick to pick the GPU `cuda_raycaster_cast` per-source path (heat
-        # bit-identical to the CPU cast) vs the default CPU cast_source_directional.
-        _get_ray_backend = getattr(bp, "get_raycaster_backend", None)
-        self._raycaster_on_cuda = (
-            _get_ray_backend if callable(_get_ray_backend) else (lambda: False))
+        # T6 (issue #12): `self._raycaster_on_cuda` — a cached
+        # `bp.get_raycaster_backend` query used only by `cast_fire_heat` to
+        # pick its CPU/GPU dispatch — is deleted with that method.
 
         # EOS P6.9b: the combustion pass can run on the GPU when the combustion
         # backend flag is on (bp.set_combustion_backend). Same idiom as the
@@ -332,41 +325,23 @@ class PhysicsRunner:
         self._t_max_phys = float(getattr(thermal, "T_MAX_PHYS", 16000.0))
         self.temperature.T_MAX_PHYS = self._t_max_phys
 
-        # --- K2: sim-side fire heat ray source (proposal §1) ------------------
-        # Fire is a DETERMINISTIC heat source cast IN THE SIM (not the renderer).
-        # Each burning tile becomes a short-range heat `LightSource`; we cast the
-        # whole fire source list with the C++ raycaster into `gmap.heat` at the
-        # START of step(), BEFORE the TemperatureSolver, so this tick's fire heat
-        # converts to temperature this same tick. Heat-only: we pass scratch light
-        # buffers (the render glow is a separate later step) and `heat_atten` so
-        # the deposit is occluded per K1 (a wall blocks the fire's heat beyond it).
-        #
-        # Own Raycaster instance (headless — the renderer owns a separate one for
-        # the light pass; this one only ever fills `heat`). Determinism: fixed
-        # ray count, fixed angles (no jitter / RNG), fixed row-major source
-        # order, integer saturating-add. P-R1 (2026-07-31): the per-tile source
-        # build that used to run here in Python now lives in C++
-        # (Raycaster.cast_from_fire_plane / cuda_raycaster_cast_from_fire_plane,
-        # see cast_fire_heat below) — coarse_cluster died with the orphaned
-        # update_from_fire path it only ever fed (no production caller).
+        # T6 (issue #12): the fire-plane heat cast (proposal §1's K2) that used
+        # to run through this Raycaster instance is deleted (cast_fire_heat
+        # and cast_from_fire_plane/cuda_raycaster_cast_from_fire_plane — see
+        # cpp/src/raycaster.h). `self.raycaster` stays: `kelvin_ambient`/
+        # `k_temp_to_kelvin` below still feed `self.engine.emissive`'s copy of
+        # the canonical game-T -> Kelvin map (and the `vacuum_ambient_K`
+        # default further down), and `rad_scale`/`bake_emissive_table`/
+        # `emissive_table` stay live as the bake-identity test's other owner
+        # (tests/test_emissive_table.py) — this Raycaster still bakes its own
+        # E° table from `[physics.fire]`'s absence-fallback 1.0e-5, it is just
+        # never marched against any more.
         self.raycaster = self.engine.raycaster
         fire_cfg = getattr(CFG.physics, "fire", None)
         # k_fire_heat TOMBSTONE (P-R4, 2026-08-01 — ruling A1): the painter is
-        # dead. There is no per-tile one-way heat payload any more; a fire's
-        # radiant transport is the antisymmetric net-T⁴ exchange below, whose
-        # magnitude is set by `rad_scale` (the E° bake) and by the emitters'
-        # own temperatures. Nothing reads the config key; it survives only as a
-        # config comment so an old config does not hard-error.
+        # dead. Nothing reads the config key; it survives only as a config
+        # comment so an old config does not hard-error.
         #
-        # P-R4 dials (ruling A1.3 / A1.8), both LIVE on the raycaster:
-        #   rad_scale   — the E° bake's emission calibration (heat counts per
-        #                 K⁴, with σ / the 0.833 m² face / dt / the game↔Kelvin
-        #                 mapping folded in). Setting it re-bakes the table.
-        #   T_emit_gate — the temperature at which a NON-burning thermal solid
-        #                 also starts CASTING (i.e. can radiatively lose heat).
-        #                 Receivers are free: a cold crate is heated correctly
-        #                 on the flame's rays whatever this is.
-        self.raycaster.rad_scale = float(getattr(fire_cfg, "rad_scale", 1.0e-5))
         # P-K2: the canonical game-T -> Kelvin map (design §2/§3a), read via
         # the accessor rather than CFG directly so the phi_exp/eos_slope
         # load-time assert (temperature_scale._assert_invariants) always
@@ -374,50 +349,20 @@ class PhysicsRunner:
         _ts = temperature_scale.load(CFG)
         self.raycaster.kelvin_ambient = float(_ts.kelvin_ambient)
         self.raycaster.k_temp_to_kelvin = float(_ts.k_temp_to_kelvin)
-        self.raycaster.T_emit_gate = float(getattr(fire_cfg, "T_emit_gate", 180.0))
-        # P-F1a / v7 rule 4: RADIATION_RANGE — the emission ray's reach. A
-        # STABILITY-CLASS constant, not a feel dial: at or above the grid
-        # diagonal, reach-termination can never precede the world edge, so
-        # "genuinely escapes" == "left the world" and the corridor leak is
-        # structurally impossible. Below the floor the books stop closing, so
-        # this is a HARD ERROR rather than a clamp — a silently-corrected
-        # stability constant is exactly the kind of thing that gets shipped.
-        _rad_range = float(getattr(fire_cfg, "RADIATION_RANGE", 320.0))
-        _rad_floor = float(self.raycaster.RADIATION_RANGE_MIN)
-        if _rad_range < _rad_floor:
-            raise ValueError(
-                f"[physics.fire] RADIATION_RANGE = {_rad_range} is below the "
-                f"floor {_rad_floor} (the grid diagonal of the largest shipping "
-                f"level, 128x256 -> 286.22). An emission ray that expires before "
-                f"the world edge charges its residual to nobody, which reopens "
-                f"the corridor leak the v7 rule-4 range floor exists to close. "
-                f"Raise the key; it is not a feel dial.")
-        self.raycaster.radiation_range = _rad_range
-        self.raycaster.bake_emissive_table()
         rad_cfg = getattr(CFG.physics, "radiation", None)
         # Ray-engine-v2 P1 (design v3 §2.6): the E° table's NEW owner, the
         # engine's `emissive` — ONE bake implementation
-        # (cpp/src/emissive_table.cpp), TWO owners until P3c retires the
-        # raycaster's copy. The lazy re-bake-on-dial-change contract is kept on
-        # both.
+        # (cpp/src/emissive_table.cpp). TWO owners (this Raycaster and
+        # `emissive`) share it; the raycaster's copy is now vestigial (T6 —
+        # see the note above) but the shared bake is still asserted identical
+        # by tests/test_emissive_table.py, so it is not deleted.
         #
-        # P2b (design v3 §9): THE TWO OWNERS NO LONGER SHARE A SCALE, by design.
-        # The game↔Kelvin map is one map and stays shared (canon, G12); the
-        # emission CALIBRATION is now two keys with two owners:
-        #
-        #   the old cast  <- [physics.fire] rad_scale        5.1427e-5   FITTED
-        #   the sweep     <- [physics.radiation] rad_scale_derived
-        #                                                    2.125632e-8 DERIVED
-        #
-        # WHY the split rather than one moved key: the old cast still feeds the
-        # live temperature fold until P3c, and it is what every golden and all
-        # of the live game's fire behaviour is baked against. Moving IT to the
-        # derived number would move a golden and change feel inside a patch
-        # whose whole point is that nothing live moves. So the derived scale
-        # goes to the SHADOW sweep only, where it can be measured (the reach
-        # bench, `tools/fire_tuning_lab.py --reach`) before P3 flips the fold
-        # onto it. At P3c `[physics.fire] rad_scale` dies with the cast and
-        # this is one key again.
+        # P2b (design v3 §9) / T6 (issue #12): the two owners used to carry
+        # DIFFERENT scales on purpose — the old cast fed the live fold from
+        # the FITTED `[physics.fire] rad_scale` (so no golden moved while the
+        # sweep ran in shadow on the DERIVED `[physics.radiation]
+        # rad_scale_derived`); T5b's flip repointed the fold at the sweep, and
+        # T6 deletes the old cast and its config key with it — one key again.
         #
         # The derived value is σ·A_rad·Δt / J_per_count with the currency pinned
         # on the furniture row's real heat capacity; the derivation, its two
@@ -479,26 +424,11 @@ class PhysicsRunner:
                 f"(design v3 §2.8's excess form rests on it). A deck above at "
                 f"furnace temperature is a design §7.4 extension point, not a "
                 f"dial")
-        self.fire_ray_count = int(getattr(fire_cfg, "fire_ray_count", 8))
-        self.fire_range_base = float(getattr(fire_cfg, "range_base", 2.0))
-        self.fire_range_per_i = float(getattr(fire_cfg, "range_per_intensity", 3.0))
-        self.fire_intensity_base = float(getattr(fire_cfg, "intensity_base", 0.3))
-        self.fire_intensity_per_i = float(
-            getattr(fire_cfg, "intensity_per_intensity", 0.7))
-        col = getattr(fire_cfg, "color", [1.0, 0.45, 0.12])
-        self.fire_color = (float(col[0]), float(col[1]), float(col[2]))
-        # Throwaway light buffers for the heat-only cast. The march REQUIRES
-        # light_rgb / light_dx / light_dy (it writes the RGB/direction channels
-        # unconditionally), but fire's visual glow is a later step, so we discard
-        # them. Allocated lazily on first cast (we don't know the grid size here)
-        # and zeroed each pass so the discarded float accumulators can't grow
-        # unbounded over a long session. `smoke_glow` is passed as None (skip).
-        self._fire_scratch_rgb = None
-        self._fire_scratch_dx = None
-        self._fire_scratch_dy = None
-        # S2b: dequantized-gas float scratch for the fire-light heat cast (the
-        # raycaster's gas optics are float; gmap.gas is int32 Q16.16). Lazy alloc.
-        self._fire_gas_f = None
+        # T6 (issue #12): `fire_ray_count`/`fire_range_base`/`fire_range_per_i`/
+        # `fire_intensity_base`/`fire_intensity_per_i`/`fire_color` (the old
+        # cast's per-source dial bindings) and the `_fire_scratch_*`/
+        # `_fire_gas_f` throwaway-cast buffers are deleted with cast_fire_heat,
+        # their one consumer.
 
         # EOSSolver (EOS refactor P3, docs/eos_refactor_design.md §3): the
         # compressible Kwatra pressure-evolution solver. REPLACES the
@@ -793,8 +723,9 @@ class PhysicsRunner:
         # outs and the tick is bit-identical to before water existed.
         self.water = self.engine.water
         self._bind_water_params()
-        # Previous-tick water-depth snapshot (lazy alloc, the _fire_scratch_*
-        # pattern). Semantics (plan W2 numerics-review fix): the depth at the
+        # Previous-tick water-depth snapshot (lazy alloc: None until the first
+        # tick that needs it, since the grid size isn't known here).
+        # Semantics (plan W2 numerics-review fix): the depth at the
         # END of the previous tick's water accounting — NOT a copy taken this
         # tick — so FieldEdit dumps (flushed before physics) and source holds
         # are each counted EXACTLY ONCE by the W3 displacement accounting.
@@ -884,19 +815,11 @@ class PhysicsRunner:
         if _RESIDENCY_ENABLED and getattr(self.bp, "HAS_CUDA", False):
             return self._step_resident(gmap, sim_time, tick=tick)
 
-        # K2: cast the fire heat pass FIRST — at the very START of the physics
-        # step, BEFORE the atmosphere/smoke loop and BEFORE the TemperatureSolver
-        # below. Each burning tile deposits HEAT into `gmap.heat` (Q16.16,
-        # saturating-add, occluded by `heat_atten`); the TemperatureSolver then
-        # converts THIS tick's fire heat to temperature, conducts and cools it,
-        # and the downstream consumers (ignition, unit damage in Simulation.step)
-        # read the resulting temperature/heat. Per-tick order becomes:
-        #   fire heat pass -> heat buffer -> temperature convert -> conduction
-        #   -> cooling -> {ignition, unit-damage} -> ... -> clear heat.
-        # ADDITIVE / de-risked: the render-side ray pass (cold sources -> ~0 heat)
-        # is untouched, so there is no double-count; the cellular fire spread
-        # (self.fire.step below) keeps running unchanged.
-        self.cast_fire_heat(gmap, tick=tick)
+        # T6 (issue #12): the K2 fire-heat cast (cast_fire_heat) that used to
+        # run here, FIRST, before the atmosphere/smoke loop and the
+        # TemperatureSolver, is deleted — since the flip (T5b step 6) fire's
+        # radiant heat is the radiation sweep, step 2b of step_tail (PhysicsEngine::
+        # step_tail / radiation_sweep.h), not a separate Python-side pass.
 
         # Water layer (engine/07 §2, water plan W2/W3): pour / flow / settle
         # the standing-water field ONCE per tick, before the atmosphere loop —
@@ -1301,9 +1224,10 @@ class PhysicsRunner:
         if not gmap.residency_on():
             gmap.enable_residency()
 
-        # -- 1. host pre-physics (on the mirror): fire heat cast, water pre-step,
-        #       lazy binds, ambient args (identical to the normal step) ----------
-        self.cast_fire_heat(gmap, tick=tick)
+        # -- 1. host pre-physics (on the mirror): water pre-step, lazy binds,
+        #       ambient args (identical to the normal step) ---------------------
+        # T6 (issue #12): the fire heat cast (cast_fire_heat) this list used to
+        # open with is deleted — see the normal step's matching note.
         self.eos.dx = float(gmap.tile_size_m)
         if self._o2_idx is None:
             self._o2_idx = int(gmap.gases.name_to_id["o2"])
@@ -1608,177 +1532,6 @@ class PhysicsRunner:
             gas_energy=gmap.gas_energy,
             t_amb_raw=self._eos_t_amb_raw(),
         ))
-
-    # ------------------------------------------------------------------
-    # K2: sim-side fire heat ray pass
-    # ------------------------------------------------------------------
-    def cast_fire_heat(self, gmap, tick=0):
-        """Deposit fire's radiant heat into ``gmap.heat`` (proposal §1).
-
-        Enumerate every burning tile (``fire > 0``) in fixed ROW-MAJOR order,
-        turn each into a short-range heat source, and cast the whole list with
-        the C++ raycaster into ``gmap.heat`` — Q16.16, saturating-add, occluded
-        per tile by ``gmap.heat_atten`` (K1). HEAT-ONLY: the render light
-        buffers are throwaway scratch (fire's visual glow is a separate later
-        step) and ``smoke_glow`` is skipped (None).
-
-        P-R1 (docs/radiation_raycaster_extinction_ruling_2026-07-31.md A4.1):
-        the source build — enumerating ``fire > 0`` and turning each tile into
-        a per-source ``(x, y, max_range, angle_center, intensity, heat)``
-        tuple — now runs INSIDE the C++ raycaster
-        (:meth:`Raycaster.cast_from_fire_plane` /
-        ``cuda_raycaster_cast_from_fire_plane``), ONE call per tick, instead of
-        a Python loop building one ``bp.LightSource()`` per burning tile
-        (~10 pybind attribute writes each, ~6000/tick at 600 fires). The
-        per-source parameters and the march itself are UNCHANGED — this is a
-        mechanical relocation, gated byte-identical on ``heat`` against the
-        pre-patch Python loop.
-
-        Determinism (must hold — ``heat`` is sim-affecting and feeds ignition /
-        unit damage downstream):
-
-        - **Fixed ray count, fixed angles, NO RNG.** Each source uses exactly
-          ``fire_ray_count`` (8) rays with ``jitter == 0``. The 8 rays are evenly
-          spaced over the full circle by the C++ march; a fixed per-source phase
-          (``angle_center``) derived from the tile coords rotates the fan so
-          neighbouring fires don't all fire the same 8 directions — but it is a
-          pure function of (row, col), never random. No ``sim.rng`` is touched.
-        - **Fixed source order.** Row-major enumeration of the burning tiles
-          (the C++ enumeration walks the fire plane in the same row-major order
-          ``np.nonzero`` used to yield).
-        - **Integer saturating-add deposit.** Order-independent -> bit-identical
-          across machines / runs (the property that lets ``heat`` be a CUDA
-          atomicAdd).
-
-        Called at the START of :meth:`step`, BEFORE the TemperatureSolver.
-        """
-        # S3a: gmap.fire is int32 Q16.16. The `> 0` burning mask is exact on the
-        # integer field (0 counts == unlit). The per-tile INTENSITY that feeds
-        # the heat-ray range/intensity params is now dequantized INSIDE the C++
-        # source build (P-R1) — this Python-side check only decides whether
-        # there is anything to cast at all.
-        fire = gmap.fire
-        # Fast out: no EMITTERS -> nothing to exchange (rad_net stays whatever
-        # it was; the sim clears it at end of tick). P-R4 (ruling A1.8) widened
-        # the emitter set from `burning` to `burning ∪ (thermal_solid && T >=
-        # T_emit_gate)`, so the dormancy test widens with it. The temperature
-        # leg is a plain MAX reduction (no temporaries, no mask allocation): it
-        # is a NECESSARY condition — if no tile anywhere is at the gate then no
-        # warm emitter exists — and the C++ builder applies the exact per-tile
-        # predicate. Dormant maps still cost two cheap reductions per tick.
-        t_emit_q = int(round(float(self.raycaster.T_emit_gate) * 65536.0))
-        if not bool((fire > 0).any()) and int(gmap.temperature.max()) < t_emit_q:
-            return
-
-        h, w = fire.shape
-        # P-F1a: THE THROWAWAY LIGHT BUFFERS ARE GONE FROM THIS CALL.
-        #
-        # Until now the fire cast wrote RGB + direction into scratch planes that
-        # this method then THREW AWAY — fire's visible glow is drawn by the
-        # renderer's own blackbody selector (renderer/fire_lights.py), which
-        # never read them. That was merely wasteful while light and radiation
-        # shared ONE march. It stopped being merely wasteful when v7 rule 4 split
-        # them: the EMISSION cast (long rays, pure-radiation fast path) and the
-        # VISIBLE-LIGHT cast (short rays, legacy machinery) are two separate
-        # marches now, and on CUDA two separate DEVICE ROUND-TRIPS — upload the
-        # plane set, launch, download, twice over. Measured on this box that
-        # second round-trip costs ~2.1 ms, which DWARFS the +0.095 ms the
-        # >= grid-diagonal rays themselves add.
-        #
-        # So the runner passes None and the light cast is skipped entirely, on
-        # both backends. BEHAVIOURALLY NEUTRAL — the buffers were discarded — and
-        # it is exactly why the C++/binding API keeps the light cast as an
-        # OPTION rather than deleting it: any caller that genuinely wants fire's
-        # light still gets bit-for-bit what it always got.
-        #
-        # `_fire_scratch_rgb`/`_dx`/`_dy` stay declared (and permanently None) so
-        # a stale external reference fails loudly rather than silently reading a
-        # buffer nothing writes any more.
-
-        # S2b: gmap.gas is int32 Q16.16. The C++ raycaster's gas optics are float,
-        # so DEQUANTIZE the (N,h,w) planes to a reused float32 scratch for this
-        # heat-only cast. Gases never attenuate the heat channel (only material
-        # heat_atten does), so the dequantized gas does not change the heat deposit
-        # — the only output that survives this cast — but the buffer must be float
-        # for the raycaster to read it correctly (render-irrelevant FLOAT BRIDGE).
-        from simulation import gas_fixed
-        if (self._fire_gas_f is None
-                or self._fire_gas_f.shape != gmap.gas.shape):
-            self._fire_gas_f = np.empty(gmap.gas.shape, dtype=np.float32)
-        np.multiply(gmap.gas, 1.0 / gas_fixed.FP_ONE_F,
-                    out=self._fire_gas_f, casting="unsafe")
-
-        bp = self.bp
-        # CUDA-S2 LIVE: pick the per-tick cast backend ONCE (a pure flag read;
-        # constant False on the CPU build). P-R1: BOTH entry points enumerate
-        # the SAME fire plane in the SAME C++ row-major order and build
-        # byte-identical per-source params (Raycaster::build_fire_sources'
-        # float-parity contract) — they differ only in which EXISTING march
-        # machinery consumes the resulting source list: the CPU cast runs
-        # cast_source_directional per source in place
-        # (Raycaster::cast_from_fire_plane), the CUDA cast concatenates every
-        # source's build_ray_list into ONE device march
-        # (cuda_raycaster_cast_from_fire_plane, S8c's batched path) — so `heat`
-        # is byte-for-byte the same either way (the S2/S8c gates proved the
-        # march + batching; P-R1 only relocated the source build). The
-        # light_rgb/dir buffers also round-trip to the host on the CUDA call
-        # (render-only / deterministic-exempt).
-        use_cuda_ray = bool(self._raycaster_on_cuda())
-        if use_cuda_ray:
-            bp.cuda_raycaster_cast_from_fire_plane(
-                self.raycaster,
-                fire,
-                self.fire_ray_count,
-                self.fire_range_base, self.fire_range_per_i,
-                self.fire_intensity_base, self.fire_intensity_per_i,
-                self.fire_color,
-                None,                 # light_rgb: discarded -> skip the light cast
-                None,                 # light_dx
-                None,                 # light_dy
-                self._fire_gas_f,
-                gmap.gases.absorption,
-                gmap.gases.scatter_albedo,
-                gmap.dyn_light_atten,
-                gmap.heat_atten,      # a_x: absorptivity == emissivity (Kirchhoff)
-                gmap.temperature,     # both ends' E° lookup
-                gmap.heat_inv_shift,  # the limiter's per-end budget
-                gmap.thermal_solid,   # the warm-emitter mask
-                gmap.rad_net,         # <- the SIGNED tile ledger
-                gmap.rad_amb,         # <- rule 4: the per-tile SKY ledger
-                gmap.rad_flux,        # <- D3: the damage SENSOR (not the ledger)
-                int(tick),            # <- D4: the fan's per-tick phase rotation
-                None,                 # smoke_glow: skipped (render-only, later)
-            )
-        else:
-            self.raycaster.cast_from_fire_plane(
-                fire,
-                self.fire_ray_count,
-                self.fire_range_base, self.fire_range_per_i,
-                self.fire_intensity_base, self.fire_intensity_per_i,
-                self.fire_color,
-                None,                 # light_rgb: discarded -> skip the light cast
-                None,                 # light_dx
-                None,                 # light_dy
-                # Multi-gas march (engine/05 §6.2): pass the full gas array +
-                # per-gas tables. Gases NEVER attenuate the heat channel (only
-                # material heat_atten does), so the radiation exchange — the
-                # only output that survives this cast (smoke_glow=None) — is
-                # bit-identical to the pre-multigas single-smoke call. S2b:
-                # dequantized float bridge.
-                self._fire_gas_f,
-                gmap.gases.absorption,
-                gmap.gases.scatter_albedo,
-                gmap.dyn_light_atten,
-                gmap.heat_atten,      # a_x: absorptivity == emissivity (Kirchhoff)
-                gmap.temperature,     # both ends' E° lookup
-                gmap.heat_inv_shift,  # the limiter's per-end budget
-                gmap.thermal_solid,   # the warm-emitter mask
-                gmap.rad_net,         # <- the SIGNED tile ledger
-                gmap.rad_amb,         # <- rule 4: the per-tile SKY ledger
-                gmap.rad_flux,        # <- D3: the damage SENSOR (not the ledger)
-                int(tick),            # <- D4: the fan's per-tick phase rotation
-                None,                 # smoke_glow: skipped (render-only, later)
-            )
 
     # ------------------------------------------------------------------
     # Water layer (engine/07 §2, water plan W2)

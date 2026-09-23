@@ -63,10 +63,10 @@ PF1B = {
     "ignition_to_ext_delta": "200.0",
     "fire_T_span": "180.0",
     "wall_damage": "0.03",
-    "T_emit_gate": "310.0",
     "physics.combustion.H_BED_M": "18125.0",
     "physics.combustion.H_BED_SHIFT": "4",
     # T5b step 7 / R1: the three cool_shift overrides are deleted with Pass 3.
+    # T6 (issue #12): the "T_emit_gate" override is deleted with the old cast.
 }
 
 

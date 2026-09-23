@@ -36,9 +36,16 @@ import sweep_ref_q as R  # noqa: E402
 
 
 def _dials():
-    """The three dials exactly as PhysicsRunner assigns them."""
+    """The three dials exactly as PhysicsRunner assigns them.
+
+    T6 (issue #12): rebased on `[physics.radiation] rad_scale_derived` --
+    the sweep's emission calibration is now the only one there is.
+    `[physics.fire] rad_scale` (the old cast's FITTED key) is deleted with
+    the cast; this test's own property (the E° tables are identical to each
+    other and to the reference bake) survives unchanged at the new key.
+    """
     ts = temperature_scale.load(CFG)
-    return (float(getattr(CFG.physics.fire, "rad_scale", 1.0e-5)),
+    return (float(getattr(CFG.physics.radiation, "rad_scale_derived", 1.0e-5)),
             float(ts.kelvin_ambient), float(ts.k_temp_to_kelvin))
 
 
@@ -60,6 +67,16 @@ def test_raycaster_and_engine_tables_are_identical_and_equal_the_reference_bake(
     """PROPERTY: Raycaster's E° table == PhysicsEngine.emissive's table, entry
     for entry, == sweep_ref_q.bake_e_table() at the config dials.
 
+    T6 (issue #12): `ref` now bakes at `_dials()`'s OWN scale explicitly,
+    rather than at `R.bake_e_table()`'s no-arg default (`R.RAD_SCALE`, a
+    fixed "resolving" literal unrelated to any config key -- report_m3.md
+    §6 -- which only equalled `_dials()`'s old `[physics.fire] rad_scale`
+    read by historical coincidence: both were 5.1427e-5). Rebasing `_dials()`
+    onto `[physics.radiation] rad_scale_derived` broke that coincidence; this
+    keeps the actual property (two owners agree with EACH OTHER and with the
+    reference, at whatever scale config configures) rather than pinning to
+    the reference's unrelated default.
+
     BREAKS IF: a second bake appears (one owner drifts), the bake stops being
     the exact int64 K⁴ chain with one boundary multiply, or config.toml's dials
     move under the reference (the reference test guards that separately).
@@ -67,9 +84,10 @@ def test_raycaster_and_engine_tables_are_identical_and_equal_the_reference_bake(
     ok, detail = R.config_dials_match()
     assert ok, f"config.toml dials drifted under the reference: {detail}"
     eng = _engine_with_dials()
+    scale, _amb, _slope = _dials()
     ray = np.asarray(eng.raycaster.emissive_table(), dtype=np.int64)
     own = np.asarray(eng.emissive.table(), dtype=np.int64)
-    ref = np.asarray(R.bake_e_table(), dtype=np.int64)
+    ref = np.asarray(R.bake_e_table(rad_scale=scale), dtype=np.int64)
     assert ray.shape == own.shape == ref.shape == (bp.E_TABLE_SIZE,)
     assert np.array_equal(ray, own), "Raycaster and engine tables differ"
     assert np.array_equal(own, ref), "engine table differs from the reference bake"
@@ -77,61 +95,19 @@ def test_raycaster_and_engine_tables_are_identical_and_equal_the_reference_bake(
     assert np.all(np.diff(own) > 0) and own[0] > 0 and own[-1] > own[0] * 10 ** 6
 
 
-def test_live_runner_bakes_each_owner_at_its_own_configured_scale():
-    """PROPERTY: on a live Simulation there is ONE bake implementation and TWO
-    owners, and each owner's table is the reference bake at *its own* config
-    key — the old cast at `[physics.fire] rad_scale` (fitted), the sweep at
-    `[physics.radiation] rad_scale_derived` (derived; P2b, design v3 §9). The
-    game↔Kelvin map is NOT split: both owners carry the one canonical map.
-
-    This replaces `test_live_runner_owns_one_bake_for_both_owners`, which
-    asserted `emissive.rad_scale == raycaster.rad_scale`. That held while the
-    two owners shared the single fitted key; P2b makes it false BY DESIGN,
-    because the shadow sweep must run on derived physics while the live fold
-    still runs on the fitted dial every golden is baked against. The split dies
-    at P3c with the old cast, and this test then collapses back to one key.
-
-    BREAKS IF:
-      * physics_runner stops assigning a scale to either owner — the unassigned
-        one falls back to `EmissiveTable`'s header default 1.0e-5, which equals
-        neither config key, so the reference-bake comparison fails (this is the
-        original test's property, kept);
-      * either owner is bound to the OTHER's key — the two tables become equal
-        and the non-vacuity assertion fires;
-      * a second bake implementation appears and an owner drifts in anything but
-        the scale — each table is compared entry for entry against the one
-        reference bake, so a changed K⁴ chain fails here too;
-      * the two Kelvin dials are ever split — they must not be; there is ONE map.
-    """
-    from field_ab_harness import default_scenario_sim
-    sim = default_scenario_sim()
-    eng = sim.physics_runner.engine
-
-    fitted = float(CFG.physics.fire.rad_scale)
-    derived = float(CFG.physics.radiation.rad_scale_derived)
-    assert fitted != derived, (
-        "the two keys carry the same number — this test could not tell the two "
-        "owners apart, and neither could a mis-binding")
-
-    # Each owner carries ITS OWN key...
-    assert eng.raycaster.rad_scale == fitted
-    assert eng.emissive.rad_scale == derived
-    # ...and the ONE canonical Kelvin map, shared.
-    ts = temperature_scale.load(CFG)
-    for owner in (eng.raycaster, eng.emissive):
-        assert owner.kelvin_ambient == float(ts.kelvin_ambient)
-        assert owner.k_temp_to_kelvin == float(ts.k_temp_to_kelvin)
-
-    # ...and each table IS the one reference bake at that owner's own scale.
-    ray = np.asarray(eng.raycaster.emissive_table(), dtype=np.int64)
-    own = np.asarray(eng.emissive.table(), dtype=np.int64)
-    assert np.array_equal(ray, np.asarray(R.bake_e_table(rad_scale=fitted),
-                                          dtype=np.int64))
-    assert np.array_equal(own, np.asarray(R.bake_e_table(rad_scale=derived),
-                                          dtype=np.int64))
-    # Non-vacuity: the two tables genuinely differ, so nothing above could be
-    # satisfied by a runner that bound one key to both owners.
-    assert not np.array_equal(ray, own)
+# T6 (issue #12) deletes test_live_runner_bakes_each_owner_at_its_own_
+# configured_scale. Property it protected: during the P2b-P3c transition
+# window the two E table owners were DELIBERATELY bound to two DIFFERENT
+# config keys (the old cast's fitted [physics.fire] rad_scale, the sweep's
+# derived [physics.radiation] rad_scale_derived), so the live game and every
+# golden stayed put while the sweep ran shadow physics. That property no
+# longer exists to protect: the old cast and its config key are deleted, so
+# PhysicsRunner now binds ONE key to both owners and the "each owner its own
+# key, and they must differ" assertions this test made would themselves be
+# wrong going forward. The surviving property -- one bake implementation,
+# two owners producing IDENTICAL tables -- is
+# test_raycaster_and_engine_tables_are_identical_and_equal_the_reference_bake
+# above, now exercised at the one remaining key via the rebased _dials().
 
 
 def test_lazy_rebake_on_a_dial_change():

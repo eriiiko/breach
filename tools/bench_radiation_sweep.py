@@ -39,7 +39,10 @@ SIZES = ((72, 46), (128, 256), (256, 512))
 def _table():
     ts = temperature_scale.load(CFG)
     tbl = bp.EmissiveTable()
-    tbl.rad_scale = float(CFG.physics.fire.rad_scale)
+    # T6 (issue #12): [physics.fire] rad_scale (the old cast's fitted key) is
+    # deleted; [physics.radiation] rad_scale_derived is the sweep's own live
+    # scale, and this bench is timing the sweep, so it is the right key too.
+    tbl.rad_scale = float(CFG.physics.radiation.rad_scale_derived)
     tbl.kelvin_ambient = float(ts.kelvin_ambient)
     tbl.k_temp_to_kelvin = float(ts.k_temp_to_kelvin)
     tbl.bake()
