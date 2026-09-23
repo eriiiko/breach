@@ -6,7 +6,7 @@ import collections.abc
 import numpy
 import numpy.typing
 import typing
-__all__: list[str] = ['ATMOSPHERE_FIXEDPOINT', 'ATMOSPHERE_FP_ONE', 'ATMOSPHERE_FP_SHIFT', 'AtmosphereSolver', 'CAP_SHIFT_MAX', 'CAP_SHIFT_MIN', 'CombustionSolver', 'EOSSolver', 'E_INV_TOP_GAME', 'E_TABLE_SIZE', 'EmissiveTable', 'FireParams', 'FireSimulation', 'HAS_CUDA', 'LightSource', 'PhysicsEngine', 'RadiationSweep', 'Raycaster', 'SmokeDynamics', 'TemperatureSolver', 'WATER_FIXEDPOINT', 'WATER_FP_ONE', 'WATER_FP_SHIFT', 'WAVE_FIXEDPOINT', 'WAVE_FP_ONE', 'WAVE_FP_SHIFT', 'WIND_FIXEDPOINT', 'WIND_FP_ONE', 'WIND_FP_SHIFT', 'WaterSolver', 'atan2_q16', 'bulk_flux_transport', 'conduction_cell_capacity_q', 'cos_q16', 'cuda_available', 'cuda_bulk_flux_transport', 'cuda_combustion_step', 'cuda_device_info', 'cuda_eos_energy_flux', 'cuda_eos_kick_compression', 'cuda_eos_mg_solve', 'cuda_eos_sl_advect', 'cuda_fire_step', 'cuda_map_mul_q16', 'cuda_raycaster_cast', 'cuda_raycaster_cast_batch', 'cuda_smoke_step', 'cuda_spike_add1', 'cuda_temperature_step', 'cuda_water_step', 'eos_energy_books_sum', 'eos_kick_compression_ref', 'eos_mg_build_parity', 'eos_mg_solve_ref', 'eos_resident_calls', 'eos_sl_advect_ref', 'eos_step_cuda_calls', 'fp_deposit_dT_wide_i64', 'fp_deposit_dT_wide_q16', 'fp_make_recip', 'fp_quantize', 'fp_recip_mul', 'fp_reciprocal_q16', 'fp_shr_round0', 'fp_shr_round0_i64', 'fp_shr_round0_signed_i64', 'get_bulk_flux_backend', 'get_combustion_backend', 'get_eos_step_backend', 'get_fire_backend', 'get_kick_compression_backend', 'get_mg_solve_backend', 'get_raycaster_backend', 'get_sl_advection_backend', 'get_smoke_backend', 'get_temperature_backend', 'get_water_backend', 'rad_pair_budget_s', 'set_bulk_flux_backend', 'set_combustion_backend', 'set_fire_backend', 'set_kick_compression_backend', 'set_mg_solve_backend', 'set_raycaster_backend', 'set_sl_advection_backend', 'set_smoke_backend', 'set_temperature_backend', 'set_water_backend', 'sin_q16', 'sky_exchange_step', 'smoke_cliff_count', 'trace_smoke_resident', 'water_substeps_resident']
+__all__: list[str] = ['ATMOSPHERE_FIXEDPOINT', 'ATMOSPHERE_FP_ONE', 'ATMOSPHERE_FP_SHIFT', 'AtmosphereSolver', 'CAP_SHIFT_MAX', 'CAP_SHIFT_MIN', 'CombustionSolver', 'EOSSolver', 'E_INV_TOP_GAME', 'E_TABLE_SIZE', 'EmissiveTable', 'FireParams', 'FireSimulation', 'HAS_CUDA', 'LightSource', 'PhysicsEngine', 'RADIATION_SWEEP_CNT_SLOTS', 'RS_SLOT_BAD_AMBIENT', 'RS_SLOT_BAD_EXTINCTION', 'RS_SLOT_BAD_SCALARS', 'RS_SLOT_MAX_STREAM', 'RS_SLOT_MIN_STREAM', 'RadiationSweep', 'Raycaster', 'SmokeDynamics', 'TemperatureSolver', 'WATER_FIXEDPOINT', 'WATER_FP_ONE', 'WATER_FP_SHIFT', 'WAVE_FIXEDPOINT', 'WAVE_FP_ONE', 'WAVE_FP_SHIFT', 'WIND_FIXEDPOINT', 'WIND_FP_ONE', 'WIND_FP_SHIFT', 'WaterSolver', 'atan2_q16', 'bulk_flux_transport', 'conduction_cell_capacity_q', 'cos_q16', 'cuda_available', 'cuda_bulk_flux_transport', 'cuda_combustion_step', 'cuda_device_info', 'cuda_eos_energy_flux', 'cuda_eos_kick_compression', 'cuda_eos_mg_solve', 'cuda_eos_sl_advect', 'cuda_fire_step', 'cuda_map_mul_q16', 'cuda_radiation_sweep_launch_count', 'cuda_radiation_sweep_resident', 'cuda_radiation_sweep_run', 'cuda_smoke_step', 'cuda_spike_add1', 'cuda_temperature_step', 'cuda_water_step', 'eos_energy_books_sum', 'eos_kick_compression_ref', 'eos_mg_build_parity', 'eos_mg_solve_ref', 'eos_resident_calls', 'eos_sl_advect_ref', 'eos_step_cuda_calls', 'fp_deposit_dT_wide_i64', 'fp_deposit_dT_wide_q16', 'fp_make_recip', 'fp_quantize', 'fp_recip_mul', 'fp_reciprocal_q16', 'fp_shr_round0', 'fp_shr_round0_i64', 'fp_shr_round0_signed_i64', 'get_bulk_flux_backend', 'get_combustion_backend', 'get_eos_step_backend', 'get_fire_backend', 'get_kick_compression_backend', 'get_mg_solve_backend', 'get_radiation_backend', 'get_sl_advection_backend', 'get_smoke_backend', 'get_temperature_backend', 'get_water_backend', 'radiation_sweep_cuda_calls', 'set_bulk_flux_backend', 'set_combustion_backend', 'set_fire_backend', 'set_kick_compression_backend', 'set_mg_solve_backend', 'set_radiation_backend', 'set_sl_advection_backend', 'set_smoke_backend', 'set_temperature_backend', 'set_water_backend', 'sin_q16', 'sky_exchange_step', 'smoke_cliff_count', 'trace_smoke_resident', 'water_substeps_resident']
 class AtmosphereSolver:
     def __init__(self) -> None:
         ...
@@ -1134,13 +1134,17 @@ def cuda_map_mul_q16(in_: collections.abc.Sequence[typing.SupportsInt | typing.S
     """
     S0 hello-world: out[i] = mul_q16(in[i], factor_q16) computed on the GPU via the shared toolkit; bit-identical to the CPU mul_q16.
     """
-def cuda_raycaster_cast(raycaster: Raycaster, source: LightSource, light_rgb: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], light_dx: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], light_dy: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], gas: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], gas_absorption: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], gas_scatter: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], light_atten: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], heat: typing.Any = None, smoke_glow: typing.Any = None, heat_atten: typing.Any = None) -> None:
+def cuda_radiation_sweep_launch_count(transport: typing.SupportsInt | typing.SupportsIndex, n_ordinates: typing.SupportsInt | typing.SupportsIndex, h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex) -> int:
     """
-    S2 isolated: cast one LightSource on the GPU into the pre-zeroed output fields; `heat` is bit-identical to Raycaster.cast_source_directional.
+    Kernel launches one sweep of this shape issues (3 bookkeeping + one per wavefront index; design v3 section 10). -1 if unsupported.
     """
-def cuda_raycaster_cast_batch(raycaster: Raycaster, sources: collections.abc.Sequence[LightSource], light_rgb: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], light_dx: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], light_dy: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], gas: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], gas_absorption: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], gas_scatter: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], light_atten: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], heat: typing.Any = None, smoke_glow: typing.Any = None, heat_atten: typing.Any = None) -> None:
+def cuda_radiation_sweep_resident(n_env: typing.SupportsInt | typing.SupportsIndex, h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex, d_temperature: typing.SupportsInt | typing.SupportsIndex, d_heat_atten_q: typing.SupportsInt | typing.SupportsIndex, d_dyn_heat_atten_q: typing.SupportsInt | typing.SupportsIndex, d_heat_inv_shift: typing.SupportsInt | typing.SupportsIndex, d_thermal_solid: typing.SupportsInt | typing.SupportsIndex, d_amb_level: typing.SupportsInt | typing.SupportsIndex, d_is_vacuum: typing.SupportsInt | typing.SupportsIndex, d_e_table: typing.SupportsInt | typing.SupportsIndex, d_vac_level: typing.SupportsInt | typing.SupportsIndex, d_k_leak_q: typing.SupportsInt | typing.SupportsIndex, d_t_amb_q: typing.SupportsInt | typing.SupportsIndex, transport: typing.SupportsInt | typing.SupportsIndex, n_ordinates: typing.SupportsInt | typing.SupportsIndex, fleck_enabled: bool, d_outflow: typing.SupportsInt | typing.SupportsIndex, d_amb_m: typing.SupportsInt | typing.SupportsIndex, d_ex_cell: typing.SupportsInt | typing.SupportsIndex, d_f_q24: typing.SupportsInt | typing.SupportsIndex, d_rad_net: typing.SupportsInt | typing.SupportsIndex, d_rad_flux: typing.SupportsInt | typing.SupportsIndex, d_rad_amb: typing.SupportsInt | typing.SupportsIndex, d_rad_fluence: typing.SupportsInt | typing.SupportsIndex, d_cnt: typing.SupportsInt | typing.SupportsIndex) -> int:
     """
-    S8c: cast a SEQUENCE of LightSources in ONE device march (the fire-FPS fix). `heat` is bit-identical to a per-source cuda_raycaster_cast loop (order-free saturating add). Render channels differ in float-atomic order from the per-source path and are only valid for callers that discard rgb/dir/glow (cast_fire_heat).
+    P4 (TEST/BENCH): the sweep's LAUNCH CORE on raw device pointers (CuPy .data.ptr uintptr_t; 0 == nullptr for d_amb_level/d_is_vacuum), (N, h, w)-shaped. Launch only: no malloc, no transfer, no sync — the caller synchronizes and reads the (N, 5) counter block. Returns the launch count.
+    """
+def cuda_radiation_sweep_run(temperature: numpy.typing.NDArray[numpy.int32], heat_atten_q: numpy.typing.NDArray[numpy.int32], dyn_heat_atten_q: numpy.typing.NDArray[numpy.int32], heat_inv_shift: numpy.typing.NDArray[numpy.int32], thermal_solid: numpy.typing.NDArray[numpy.bool], e_table: EmissiveTable, amb_level: typing.Any, t_amb_q: typing.SupportsInt | typing.SupportsIndex, k_leak_q: typing.SupportsInt | typing.SupportsIndex, transport: typing.SupportsInt | typing.SupportsIndex, n_ordinates: typing.SupportsInt | typing.SupportsIndex, rad_net: numpy.typing.NDArray[numpy.int64], rad_flux: numpy.typing.NDArray[numpy.int64], rad_amb: numpy.typing.NDArray[numpy.int64], rad_fluence: numpy.typing.NDArray[numpy.int64], fleck_enabled: bool = True, is_vacuum: typing.Any = None, vac_level: typing.SupportsInt | typing.SupportsIndex = -1, fleck_out: typing.Any = None) -> tuple:
+    """
+    P4 isolated: ONE radiation sweep on the GPU (the per-call path PhysicsEngine.step_tail dispatches), bit-identical to RadiationSweep.run on the same arguments. amb_level None + is_vacuum None is the uniform E0 door; amb_level None + is_vacuum given DERIVES the ambient on the device (derive_ambient's twin). Overwrites the four int64 planes (untouched on an ingress rejection, which raises ValueError). Returns (min_stream, max_stream, launches).
     """
 def cuda_smoke_step(smoke: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wind_x: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wind_y: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], obstacles: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], is_wall: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], is_vacuum: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], permeability: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], dt: typing.SupportsFloat | typing.SupportsIndex, d_smoke: typing.SupportsFloat | typing.SupportsIndex, wind_diffusion_scale: typing.SupportsFloat | typing.SupportsIndex, advection_rate: typing.SupportsFloat | typing.SupportsIndex) -> None:
     """
@@ -1246,9 +1250,9 @@ def get_mg_solve_backend() -> bool:
     """
     True if the EOS multigrid pressure solve is flagged for the GPU.
     """
-def get_raycaster_backend() -> bool:
+def get_radiation_backend() -> bool:
     """
-    Vestigial since T6 (issue #12) -- see set_raycaster_backend.
+    True if the radiation sweep currently runs on the GPU.
     """
 def get_sl_advection_backend() -> bool:
     """
@@ -1266,9 +1270,9 @@ def get_water_backend() -> bool:
     """
     True if the water pass currently runs on the GPU.
     """
-def rad_pair_budget_s(abs_dT_q: typing.SupportsInt | typing.SupportsIndex, his: typing.SupportsInt | typing.SupportsIndex, shift: typing.SupportsInt | typing.SupportsIndex) -> int:
+def radiation_sweep_cuda_calls() -> int:
     """
-    raycaster.h rad_pair_budget_s: the flux limiter's per-end budget, floor(x * 2^his / 2^shift). SIGNED in `his` since M1.
+    How many GPU sweeps (radiation_sweep_step) have completed in this process — the P4 gate's dispatch-fired telemetry.
     """
 def set_bulk_flux_backend(use_cuda: bool) -> None:
     """
@@ -1290,9 +1294,9 @@ def set_mg_solve_backend(use_cuda: bool) -> None:
     """
     Switch the EOS multigrid pressure solve to the GPU (True) or CPU (False). No dispatch site consumes this until P6.5 wires eos.step's GPU path.
     """
-def set_raycaster_backend(use_cuda: bool) -> None:
+def set_radiation_backend(use_cuda: bool) -> None:
     """
-    Vestigial since T6 (issue #12): used to switch PhysicsRunner.cast_fire_heat's fire->heat ray cast between GPU and CPU; that method is deleted, so this now sets state nothing reads. Kept because several CUDA check scripts call it unconditionally.
+    Switch PhysicsEngine's radiation sweep (step 2b of step_tail) to the GPU twin (True) or RadiationSweep.run (False).
     """
 def set_sl_advection_backend(use_cuda: bool) -> None:
     """
@@ -1338,6 +1342,12 @@ CAP_SHIFT_MIN: int = -16
 E_INV_TOP_GAME: int = 15996
 E_TABLE_SIZE: int = 4000
 HAS_CUDA: bool = True
+RADIATION_SWEEP_CNT_SLOTS: int = 5
+RS_SLOT_BAD_AMBIENT: int = 1
+RS_SLOT_BAD_EXTINCTION: int = 0
+RS_SLOT_BAD_SCALARS: int = 2
+RS_SLOT_MAX_STREAM: int = 4
+RS_SLOT_MIN_STREAM: int = 3
 WATER_FIXEDPOINT: bool = True
 WATER_FP_ONE: int = 65536
 WATER_FP_SHIFT: int = 16
