@@ -1,17 +1,38 @@
 # Breach — Developer Setup Guide
 
 *Everything needed to build and run Breach on a fresh Windows machine.*
-*Repeat these steps on each dev PC (Home Desktop, Work Desktop, Work Laptop).*
+*Repeat these steps on each dev PC (Home Desktop, Work Desktop, Lenovo laptop).*
 
-*Last updated: 2026-06-06*
+*Last updated: 2026-09-23*
 
 ---
 
 ## Prerequisites
 
-- **Python 3.11** via Anaconda or Miniconda (already installed on all machines)
+- **Python** via Anaconda or Miniconda (already installed on all machines) — which interpreter
+  each machine uses is in the next section
 - **Git** + Git Bash (already installed)
 - **VSCode** (already installed)
+
+---
+
+## Which Python each machine uses
+
+Breach runs on a different interpreter on each machine. Call it by full path: bare `python` may be
+another install, and it fails breach imports with a misleading ModuleNotFoundError. Below,
+`<breach-py>` is this machine's interpreter and `<breach-py-dir>` the folder that holds it. Machine
+specs and tool installs live in the ClaudeSync `environment.md`.
+
+| Machine | `<breach-py>` | Build scripts (`cpp\`) |
+|---|---|---|
+| Home Desktop (`DESKTOP-0E98HUV`) | `C:/Users/steen/anaconda3/python.exe` — anaconda **base**, 3.11. This machine has **no `data` env** | CPU `build_cpu_home.bat`; CUDA `build_cuda.bat` |
+| Work Desktop | `C:/Users/steen/anaconda3/envs/data/python.exe` — the `data` env, 3.12 | CPU: Step 6; CUDA `build_cuda.bat` (its paths are this machine's) |
+| Lenovo laptop (`ERIK_LENOVO`) | `C:/Users/steen/miniconda3/envs/data/python.exe` — the miniconda `data` env, 3.12 | CPU `build_cpu_data.bat`; CUDA `build_cuda_lenovo.bat` |
+
+The CUDA `.pyd` is importable only by the interpreter its build script pins — `<cuda-py>` below:
+`C:/Users/steen/anaconda3/python.exe` (base, 3.11) on both desktops, `<breach-py>` on the Lenovo.
+`tests/cuda_harness.py` runs it in a subprocess under that interpreter; `BREACH_CUDA_PYTHON`
+overrides it.
 
 ---
 
@@ -37,12 +58,12 @@ This is the compiler only — NOT the full Visual Studio IDE. ~3-4 GB.
 ## Step 2: Install CMake
 
 ```bash
-C:/Users/steen/anaconda3/python.exe -m pip install cmake
+<breach-py> -m pip install cmake
 ```
 
 Verify:
 ```bash
-C:/Users/steen/anaconda3/Scripts/cmake.exe --version
+<breach-py-dir>/Scripts/cmake.exe --version
 # Should print "cmake version 3.x.x"
 ```
 
@@ -51,12 +72,12 @@ C:/Users/steen/anaconda3/Scripts/cmake.exe --version
 ## Step 3: Install pybind11
 
 ```bash
-C:/Users/steen/anaconda3/python.exe -m pip install pybind11
+<breach-py> -m pip install pybind11
 ```
 
 Verify:
 ```bash
-C:/Users/steen/anaconda3/python.exe -c "import pybind11; print(pybind11.get_cmake_dir())"
+<breach-py> -c "import pybind11; print(pybind11.get_cmake_dir())"
 ```
 
 ---
@@ -73,7 +94,7 @@ Install these from the Extensions panel (Ctrl+Shift+X):
 ## Step 5: Install Python dependencies
 
 ```bash
-C:/Users/steen/anaconda3/python.exe -m pip install raylib pytest
+<breach-py> -m pip install raylib pytest
 ```
 
 - **raylib** provides the `pyray` module — the renderer (replaces the old pygame prototype).
@@ -89,7 +110,8 @@ cmake -B build
 cmake --build build --config Release
 ```
 
-This produces `breach_physics.pyd` in `cpp/build/Release/`.
+This produces `breach_physics.pyd` in `cpp/build/Release/`. Where the table above names a CPU build
+script for this machine, use it instead — it pins the right interpreter and toolchain.
 
 ---
 
@@ -97,16 +119,16 @@ This produces `breach_physics.pyd` in `cpp/build/Release/`.
 
 ```bash
 cd C:/Users/steen/projects/breach
-C:/Users/steen/anaconda3/python.exe main.py
+<breach-py> main.py
 ```
 
 Run the tests (scope to `tests/` — a bare `pytest` tries to collect the vendored third-party
 `tools/` and fails on import):
 ```bash
-C:/Users/steen/anaconda3/python.exe -m pytest tests/ -q
+<breach-py> -m pytest tests/ -q
 ```
 
-Lighting / visual tuning tool: `C:/Users/steen/anaconda3/python.exe tools/lighting_demo.py`
+Lighting / visual tuning tool: `<breach-py> tools/lighting_demo.py`
 
 ---
 
@@ -124,7 +146,7 @@ clangd needs `compile_commands.json`, which the Visual Studio generator never wr
 once more with Ninja from a shell that has run `vcvars64.bat`:
 
 ```bash
-cmake -S cpp -B cpp/build-clangd -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON       -DCMAKE_BUILD_TYPE=Release -DPYTHON_EXECUTABLE=<data-env>/python.exe       -Dpybind11_DIR=<data-env>/Lib/site-packages/pybind11/share/cmake/pybind11
+cmake -S cpp -B cpp/build-clangd -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON       -DCMAKE_BUILD_TYPE=Release -DPYTHON_EXECUTABLE=<breach-py>       -Dpybind11_DIR=<breach-py-dir>/Lib/site-packages/pybind11/share/cmake/pybind11
 ```
 
 `cpp/.clangd` points clangd at that folder (gitignored). It is a real build dir, not just a database,
@@ -134,17 +156,26 @@ CUDA `.cu` files need this compile database and no additional tool.
 ### The `breach_physics` stub
 
 `stubs/breach_physics.pyi` is what lets pyright see into the pybind11 module. It is GENERATED —
-regenerate it after any change to `cpp/src/bindings.cpp`, never hand-edit:
+regenerate it after any change to `cpp/src/bindings.cpp`, never hand-edit. Generate it from the
+**CUDA build** (`cpp/build_cuda`): that module is the CPU one plus the `#ifdef BREACH_HAS_CUDA` block
+(the `set_*_backend` family and the `cuda_*` entry points), so the `tests/cuda_*.py` harnesses
+type-check too. Importing it needs the CUDA runtime's DLL folder registered first (Python ≥ 3.8
+ignores PATH for an extension's DLLs — `tests/cuda_harness.py` does the same), under the interpreter
+the CUDA build was made for (`<cuda-py>`, defined under the table at the top). From the repo root:
 
 ```bash
-pip install pybind11-stubgen                      # once, into the data env
-PYTHONPATH=cpp/build-clangd python -m pybind11_stubgen breach_physics -o stubs
+<cuda-py> -m pip install pybind11-stubgen          # once
+<cuda-py> -c "import os, sys; os.add_dll_directory(os.path.join(os.environ['CUDA_PATH'], 'bin')); sys.path.insert(0, 'cpp/build_cuda'); import pybind11_stubgen; pybind11_stubgen.main(['breach_physics', '-o', 'stubs'])"
 ```
 
-**Known gap:** the stub is generated from the CPU build, but roughly 170 symbols
-(the `set_*_backend` family) live behind `#ifdef BREACH_HAS_CUDA` in `bindings.cpp` and exist only in
-the CUDA build. pyright therefore reports them as unknown attributes in the 28 `tests/cuda_*.py`
-lockstep harnesses. Regenerating the stub from a CUDA build (`cpp/build_cuda`) closes this.
+On a machine with no CUDA build, `PYTHONPATH=cpp/build/Release <breach-py> -m pybind11_stubgen
+breach_physics -o stubs` writes the CPU subset instead, and pyright then reports every CUDA-only
+symbol as an unknown attribute (144 errors on 2026-09-23, when this recipe replaced that one).
+
+Two things in the output are expected: `HAS_CUDA: bool = True` (pyright uses the declared `bool`,
+not the CUDA build's value), and three signatures — `WaterSolver.step`, `WaterSolver.step_ripple`,
+`cuda_water_step` — with a defaulted parameter before required ones, which is the order those
+bindings declare. Neither is a stub bug to hand-fix.
 
 ## Troubleshooting
 
@@ -157,12 +188,11 @@ Ensure pybind11 is installed in the same Python environment CMake uses.
 The CMakeLists.txt uses `find_package(pybind11)` which checks the active Python.
 
 ### Wrong Python / missing modules (raylib, breach_physics)
-Use Anaconda's Python 3.11 — that's where `raylib` and the compiled `breach_physics` module live —
-not a bare system Python.
-On Home/Work Desktop: `C:/Users/steen/anaconda3/python.exe`
-On Laptop: `C:/Users/steen/miniconda3/python.exe`
+Use this machine's `<breach-py>` from the table at the top — that's where `raylib` and the compiled
+`breach_physics` module live — not a bare system Python. A `breach_physics` AttributeError right
+after a pull usually means a stale `.pyd`: rebuild before judging the suite.
 
 ### pytest errors on collection
-Always scope to the project tests: `python -m pytest tests/`. A bare `pytest` from the repo root
+Always scope to the project tests: `<breach-py> -m pytest tests/`. A bare `pytest` from the repo root
 tries to import the vendored third-party `tools/` (ControlAR, IP-Adapter, …) and fails before it
 reaches the real tests.
