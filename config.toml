@@ -1211,20 +1211,32 @@ max_claimants     = 12
 # target). Plateau at slow-burn dials measured 917 K (still short of G1's
 # 1300 K — Phase 4 continues; the shift ladder was measured x1/x2/x4/x8 =
 # 296(dead)/683/769/917 K, the fourth-root law visible end to end).
-H_BED_M           = 19827.0  # mantissa (< 32768, the Q16.16 range).
-# T5b: +9.4 % from 18125, and it is DERIVED rather than tuned. It is the
-# FUEL-SURFACE share of Huggett's 4.831 MJ per unit N_O2 -- 25 %, from Drysdale
-# ch. 5's burning-rate balance (flame-to-surface feedback is 20-40 % of total
-# heat release; 20-30 kW/m2 against 100-300 kW/m2 released). 19827 * 2^7 =
-# 2.538e+06 counts = 1.208 MJ. History: P-F1b 25290 -> P-K0 18125 (tuned by
-# FEEL) -> T5b 19827 (derived) -- the dial P-K0 found by feel was 9 % off the
-# physics, far inside every other error in report_t3.md, which is the strongest
-# evidence in this arc that the feel pass and the derivation agree.
+H_BED_M           = 38.73    # mantissa (< 32768, the Q16.16 range). M3: the DERIVED value, see below.
+# M3 (2026-09-23, report_m3.md) -- THE TRANSCRIPTION FIXED. T5b derived the
+# right number and wrote it into the dial in the wrong unit (report_t5b.md
+# §6.3). The engine pays `mul_q16(burn_raw, H_BED_M) << H_BED_SHIFT` heat counts
+# for a claimant's RAW Q16.16 burn count, so H_bed is heat counts per RAW count
+# of N_O2. 19827 * 2^7 = 2.538e+06 was the value per UNIT of N_O2 -- exactly
+# 2^16 too big -- and the fitted old-cast emission scale (3110x the derived one)
+# had been balancing it until the flip removed that half of the pair. Per raw
+# count, from cited constants only:
+#   0.25            fuel-surface share (Drysdale ch.5 burning-rate balance:
+#                   flame-to-surface feedback is 20-40 % of total release)
+#   * 13.1 MJ/kg    Huggett 1980, per kg of O2 consumed (+/- 5 %)
+#   * 0.36878 kg    one atmosphere of O2 in one tile (p*V/(R*T) at ambient),
+#     / 65536       ... per raw count
+#   / 0.4759 J      J_per_count, R13's currency pin (materials.py)
+#   = 38.73 heat counts   (V_tile cancels; 38.72-38.74 across 293-293.15 K)
+# i.e. 16384 raw burned (0.0922 kg O2) pays 302 kJ into the fuel bed, not 19.8
+# GJ. o2_potency (below, 1.0) folds into this mantissa at load, so 38.73 IS the
+# solver's value: tests/test_m3_derived_h_bed.py measures it on the solver.
+# History: P-F1b 25290*2^3 -> P-K0 18125*2^4 (tuned by FEEL) -> x8 (fuel-out
+# ruling 2026-09-06) -> T5b 19827*2^7 (derived, mis-transcribed) -> M3 38.73.
 # NOTE the other 75 %, the plume share, is NOT released: H_fuel above stays at
 # 4.0 because a gas cell has no loss channel before P5. So a fire currently
 # releases 25 % of its real heat, all of it into the fuel bed, and the split is
 # a derivation with one half deliberately dormant -- not half a split.
-H_BED_SHIFT       = 7        # H_bed = H_BED_M * 2^H_BED_SHIFT = 2.320e6. History: 3 -> 4 (P-K0) -> 7 (x8, Erik's fuel-out + G1 ruling 2026-09-06, see block above)
+H_BED_SHIFT       = 0        # H_bed = H_BED_M * 2^H_BED_SHIFT = 38.73 (M3: the derived value fits the mantissa). History: 3 -> 4 (P-K0) -> 7 (x8, Erik's fuel-out + G1 ruling 2026-09-06) -> 0 (M3)
 # Unit-side suffocation mechanics (LATER arc, design §5): defined here so the
 # constant lives at the right layer; nothing reads it yet.
 o2_thresh_breathe = 0.08   # min local N_O2 a unit needs to breathe (NOT wired yet)

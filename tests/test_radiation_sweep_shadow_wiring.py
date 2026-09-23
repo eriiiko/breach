@@ -451,6 +451,11 @@ def test_the_casts_and_the_fold_all_refuse_a_narrow_live_plane():
         # is host-side overload resolution -- it never reaches the GPU.
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "the OLD cast's flux-sensor ceiling: dead since the flip (units read "
+    "rad_flux_sweep); its scene reached the cap only via the 2^16 H_bed "
+    "deposit, gone at M3 (report_m3.md finding 6). T6 deletes the cast and "
+    "this test with it."))
 def test_the_flux_sensor_ceiling_did_not_move_with_the_width():
     """PROPERTY (ray-engine-v2 P3a-1): widening `rad_flux` to int64 did NOT
     lift its saturation ceiling. It stays at INT32_MAX

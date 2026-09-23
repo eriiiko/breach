@@ -2,8 +2,13 @@
 
 > **This file IS the prompt.** Point a session at it and it has everything.
 >
-> **UPDATED 2026-09-23 — THE PLAN WAS NARROWED. Start at
-> `docs/ray_engine_v2_m3_brief_2026-09-22.md`**, then §4 below. Erik blessed a
+> **UPDATED 2026-09-23 (night) — M3 LANDED, ERIK PLAYED IT ("everything looks
+> great"), THE FLIP MERGES INTO `fire-12`. Next is T6 — see §4.** Three tests
+> are strict-xfail by name: two vented-room tests point at #7 (vacuum fires, its
+> own patch, slotted after T7 and before P4), one old-cast test dies with T6.
+>
+> (Earlier 2026-09-23: THE PLAN WAS NARROWED. See
+> `docs/ray_engine_v2_m3_brief_2026-09-22.md`, then §4 below.) Erik blessed a
 > re-assessment (built on Fable's of 2026-09-22): M3 is only the flip's
 > blocker (`H_bed` ÷ 2¹⁶ + the reference at the derived scale); **Erik plays the
 > flip before it merges into `fire-12`**; M4 is cut; T8 goes to an issue; the
@@ -107,11 +112,13 @@ nothing tuned.
 |---|---|---|---|
 | **M1** | negative `thermal_mass` exponents (the sign lift) | Opus | **MERGED** `1feea98` |
 | **M2** | dimensions + the four rows, derived at base resolution; re-anchor the bench on a thin row | Opus | **MERGED** `9cc1879` (+ M2b probe `b85c32c`) |
-| **M3** | **NARROWED 2026-09-23**: derived `H_bed` + the reference at the derived scale; the flip goes green. Brief: `ray_engine_v2_m3_brief_2026-09-22.md` | Opus | **next** — worktree `breach-m3` cut |
+| **M3** | **NARROWED 2026-09-23**: derived `H_bed` + the reference at the derived scale; the flip goes green. Brief: `ray_engine_v2_m3_brief_2026-09-22.md`, report `report_m3.md` | Opus | **DONE** 2026-09-23 |
 | ~~**M4**~~ | cut 2026-09-23 | | |
-| | **HUMAN TEST — Erik plays the flip branch, BEFORE the merge** | | |
-| | merge the flip into `fire-12` (`--no-ff`) | | |
-| **T6/T7** | old-law deletion (NOT the timer: it stays live) · CLAUDE.md walkthrough | | |
+| | **HUMAN TEST — Erik played it 2026-09-23: "everything looks great"** | | **PASSED** |
+| | merge the flip into `fire-12` (`--no-ff`) | | 2026-09-23 |
+| **T6** | old-law deletion (NOT the timer: it stays live); retires the xfailed flux-sensor-ceiling test with the cast; `test_emissive_table::_dials()` reads the key T6 deletes (report_m3 finding 11) | Haiku | **next** |
+| **T7** | CLAUDE.md walkthrough (thermostat row, "1068 game for wood", …) + regenerate `stubs/breach_physics.pyi` (stale since the flip's bindings) | Opus, inline with Erik | |
+| **#7** | **vacuum kills fire** — fire sustain needs enough molar O2, not just the O2 fraction (root cause + fix shape on issue #7 since 2026-08-21). Removes the two strict-xfails; `_scenario_all_systems_bench.py` P4b flips to PASS. Its own patch: a short design check with Erik on the law's form, then CPU + CUDA twin, HUMAN-TEST (breach a burning room) | Opus | slotted 2026-09-23: after T7, **before P4** — breach-kills-fire is Breach's signature mechanic, and P5 rebalances the gas side, so it must not measure fires that burn in vacuum |
 | **P4–P7** | CUDA twin · smoke & gas (closes q6) · light (**P6b = 2nd human test**) · stealth + RL light | | |
 | *after P7* | the fire arc: the timer change (q5 rulings 9–11), burn durations, ignition/spread · T8's ill-posed-test sweep (an issue) · Erik's material design session | | |
 
