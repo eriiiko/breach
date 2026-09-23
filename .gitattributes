@@ -1,0 +1,8 @@
+# arc #63 P1: the vendored philox32 files are pinned byte-for-byte to a
+# specific upstream commit (see each file's own header comment) and gated by
+# a SHA-256 drift check (tests/test_philox32.py::test_vendored_body_matches_
+# its_recorded_hash). Force LF regardless of any machine's core.autocrlf so a
+# checkout never silently rewrites the vendored bytes and trips that check.
+cpp/src/philox32.h text eol=lf
+src/simulation/philox32.py text eol=lf
+tests/data/philox4x32_10_kat.txt text eol=lf

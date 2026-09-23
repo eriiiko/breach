@@ -6,7 +6,7 @@ import collections.abc
 import numpy
 import numpy.typing
 import typing
-__all__: list[str] = ['ATMOSPHERE_FIXEDPOINT', 'ATMOSPHERE_FP_ONE', 'ATMOSPHERE_FP_SHIFT', 'AtmosphereSolver', 'CombustionSolver', 'EOSSolver', 'FireParams', 'FireSimulation', 'HAS_CUDA', 'LightSource', 'PhysicsEngine', 'Raycaster', 'SmokeDynamics', 'TemperatureSolver', 'WATER_FIXEDPOINT', 'WATER_FP_ONE', 'WATER_FP_SHIFT', 'WAVE_FIXEDPOINT', 'WAVE_FP_ONE', 'WAVE_FP_SHIFT', 'WIND_FIXEDPOINT', 'WIND_FP_ONE', 'WIND_FP_SHIFT', 'WaterSolver', 'atan2_q16', 'bulk_flux_transport', 'cos_q16', 'eos_energy_books_sum', 'eos_kick_compression_ref', 'eos_mg_solve_ref', 'eos_sl_advect_ref', 'fp_deposit_dT_wide_q16', 'fp_make_recip', 'fp_quantize', 'fp_recip_mul', 'fp_reciprocal_q16', 'sin_q16', 'sky_exchange_step', 'smoke_cliff_count']
+__all__: list[str] = ['ATMOSPHERE_FIXEDPOINT', 'ATMOSPHERE_FP_ONE', 'ATMOSPHERE_FP_SHIFT', 'AtmosphereSolver', 'CombustionSolver', 'EOSSolver', 'FireParams', 'FireSimulation', 'HAS_CUDA', 'LightSource', 'PHILOX32_TWO_PI_Q16', 'PhysicsEngine', 'Raycaster', 'SmokeDynamics', 'TemperatureSolver', 'WATER_FIXEDPOINT', 'WATER_FP_ONE', 'WATER_FP_SHIFT', 'WAVE_FIXEDPOINT', 'WAVE_FP_ONE', 'WAVE_FP_SHIFT', 'WIND_FIXEDPOINT', 'WIND_FP_ONE', 'WIND_FP_SHIFT', 'WaterSolver', 'atan2_q16', 'bulk_flux_transport', 'cos_q16', 'eos_energy_books_sum', 'eos_kick_compression_ref', 'eos_mg_solve_ref', 'eos_sl_advect_ref', 'fp_deposit_dT_wide_q16', 'fp_make_recip', 'fp_quantize', 'fp_recip_mul', 'fp_reciprocal_q16', 'philox32_4x32_10', 'philox32_4x32_10_np', 'philox32_angle_q16', 'philox32_below', 'philox32_uniform_q16', 'sin_q16', 'sky_exchange_step', 'smoke_cliff_count']
 class AtmosphereSolver:
     def __init__(self) -> None:
         ...
@@ -1050,6 +1050,26 @@ def fp_reciprocal_q16(denom_q: typing.SupportsInt | typing.SupportsIndex) -> int
     """
     fixed_point.h reciprocal_q16: per-cell Newton reciprocal, Q16.16 in -> Q16.16 out (int64 internally, ~1 ULP accurate; self-guards denom_q <= 0 -> 0 and floors {1,2} to 3).
     """
+def philox32_4x32_10(ctr0: typing.SupportsInt | typing.SupportsIndex, ctr1: typing.SupportsInt | typing.SupportsIndex, ctr2: typing.SupportsInt | typing.SupportsIndex, ctr3: typing.SupportsInt | typing.SupportsIndex, key0: typing.SupportsInt | typing.SupportsIndex, key1: typing.SupportsInt | typing.SupportsIndex) -> tuple[int, int, int, int]:
+    """
+    philox32 (arc #63 P1): the vendored Philox-4x32-10 block function -- out = F(ctr[4], key[2]), 10 rounds, integer-only (cpp/src/philox32.h).
+    """
+def philox32_4x32_10_np(ctr: typing.Annotated[numpy.typing.ArrayLike, numpy.uint32], key: typing.Annotated[numpy.typing.ArrayLike, numpy.uint32]) -> numpy.typing.NDArray[numpy.uint32]:
+    """
+    philox32 (arc #63 P1): vectorised philox32_4x32_10 over (n,4) ctr / (n,2) key uint32 arrays -> (n,4) uint32 out. Bulk-sweep path only, same block function as philox32_4x32_10.
+    """
+def philox32_angle_q16(w: typing.SupportsInt | typing.SupportsIndex) -> int:
+    """
+    philox32 (arc #63 P1): (w * TWO_PI_Q16) >> 32 -- Q16.16 angle in [0, 2*pi).
+    """
+def philox32_below(w: typing.SupportsInt | typing.SupportsIndex, n: typing.SupportsInt | typing.SupportsIndex) -> int:
+    """
+    philox32 (arc #63 P1): (w * n) >> 32 -- Lemire multiply-shift integer in [0, n), never % or float.
+    """
+def philox32_uniform_q16(w: typing.SupportsInt | typing.SupportsIndex) -> int:
+    """
+    philox32 (arc #63 P1): w >> 16 -- Q16.16 uniform in [0, 1).
+    """
 def sin_q16(a: typing.SupportsInt | typing.SupportsIndex) -> int:
     """
     Q2-LIFT: pure-integer sin on Q16.16 radians (output Q16.16 in [-65536, 65536]; accuracy pinned for |a| <= 4*pi, any int32 defined).
@@ -1066,6 +1086,7 @@ ATMOSPHERE_FIXEDPOINT: bool = True
 ATMOSPHERE_FP_ONE: int = 65536
 ATMOSPHERE_FP_SHIFT: int = 16
 HAS_CUDA: bool = False
+PHILOX32_TWO_PI_Q16: int = 411775
 WATER_FIXEDPOINT: bool = True
 WATER_FP_ONE: int = 65536
 WATER_FP_SHIFT: int = 16
