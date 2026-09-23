@@ -127,6 +127,29 @@ deterministic), correlation via a Cholesky factor computed in pure-Python
 constants, output snapped to Q16.16. That is the spec for the units-redesign
 deterministic stat sampler.
 
+**Amendment (arc #63 P1, 2026-09-24): a second raw-draw source, Philox.**
+`sim.rng`'s PCG64 is a *stream* — sequential, one shared cursor. Per-unit /
+per-tick GPU-resident draws (swarm units, [engine/17](17_swarm_units.md) §3)
+need the opposite shape: a *keyed, stateless* draw any thread computes from
+its own coordinates, with no cursor to share or desync across host and
+device. **Philox-4x32-10** (Salmon, Moraes, Dror, Shaw, SC'11), vendored
+verbatim as `cpp/src/philox32.h` + `src/simulation/philox32.py` (pinned by
+commit hash in each file's header comment — never hand-edited, only
+re-vendored), is that source: sanctioned beside PCG64 and **sequenced
+independently of it** — a tick's Philox draws never advance or desync
+`sim.rng`'s draw count, and vice versa. The layout is a fixed wire format:
+key = `(match_seed_lo, match_seed_hi)` — the match seed and nothing else;
+counter = `(tick, draw_index, stream_salt, unit_id)`, where `stream_salt`
+names the purpose (one enum per consumer, so two consumers can never collide
+on a stream) and `draw_index` restarts at 0 every tick, assigned by static
+code position, never stored. The output mappings are the same shift/multiply
+idiom as doors 1–3 (uniform Q16.16 via `w >> 16`, angle via a checked-in 2π
+Q16 constant), and **`philox32_below(w, n)` (Lemire multiply-shift) is the
+integer-in-`[0, n)` door for Philox draws — never `w % n`, never through
+float** — the same reason `.integers()` is PCG64's door: a modulo or a float
+pass would reintroduce exactly the implementation-defined step this chapter
+exists to close.
+
 ## 4. The banned list
 
 Banned **in `src/simulation/`**, enforced by the lint (§6). Each entry names
@@ -232,6 +255,17 @@ implemented.**
    currently exact on power-of-two inputs, but rule-violating in principle.
    Exempted with written rationale + TODO. *Lesson → the pragma protocol:
    exemptions exist, but they are loud, justified, and tracked.*
+4. **Philox-4x32-10 vendored as door 4's second source (arc #63 P1,
+   2026-09-24).** Not an incident — recorded because door 4 named only
+   PCG64 until now. Swarm units (engine/17) need per-unit/per-tick draws a
+   single shared-cursor stream can't give without host↔device cursor
+   bookkeeping every tick; vendoring an already KAT- and cuRAND-oracle-proven
+   counter-based RNG (github.com/eriiiko/philox32) let P1 gain a second
+   stream *shape* without building and re-proving an implementation from
+   scratch, and without touching PCG64 or any existing draw site. *Lesson →
+   door 4 can hold more than one stream shape, as long as each is fully
+   specified (key/counter layout) and its draws are sequenced independently
+   of every other source.*
 
 The meta-lesson, twice over: **the culprit was never where the first
 hypothesis pointed** (case 1's prime suspect was the raycaster's cos/sin —
@@ -253,5 +287,6 @@ the hunch.
 | L3 digest + cross-machine attestation | ✅ operational — **`cuda-breached` tag: Ampere ↔ Ada bit-identical, golden `ae1164ca…`** |
 | L2 for unit attributes (int-backed hp/pos, snap-or-raise properties) | 📝 owed to the units/stats redesign |
 | Deterministic stat sampler (door-4 spec, §3) | 📝 owed to the stats redesign |
+| Philox-4x32-10, door 4's second source (§3 amendment) | ✅ vendored + KAT/cross-language-proven (arc #63 P1); no sim call site yet |
 | Kit exp/log | 📝 when chemistry/EOS needs them |
 | materials integer log2 | 📝 TODO noted in the exemption |
