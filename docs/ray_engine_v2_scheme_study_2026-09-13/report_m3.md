@@ -113,3 +113,12 @@ bench seeds at ignition (t = 0), so "ignition" is the flame establishing.
 3. **Three reds left by name**: `e2e_2` + payoff orderings (a vacuum-breached fire keeps full intensity — the sustain law reads mole fraction, not density) and the old cast's flux-sensor ceiling (re-scene it, or retire it with the cast at T6).
 4. **The reference's default table** stays a resolving scale; moving it as the brief says costs re-plumbing every arithmetic gate (§1). Yes or no?
 5. **The §4 criterion** is "fuel spent while self-held ≥ ignition", not "a quarter before out" — the latter cannot fail (§3). Veto if you disagree.
+
+## 7. Orchestrator addendum (2026-09-23, after Erik's play test)
+
+Verified independently: 3420 passed / 3 failed, the three named. Erik played
+it on `playground` ("everything looks great"). Then: payoff orderings' dead
+`gmap.cool_shift` write removed (T5b's missed consumer); the three reds marked
+`xfail(strict=True)` by name — the two vented-room tests on #7 (its own patch,
+after T7, before P4), the old-cast flux ceiling on T6. Rulings: the reference
+default stays a resolving scale (§1); the §4 self-held criterion accepted.

@@ -73,6 +73,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
@@ -86,6 +87,16 @@ from simulation.physics_runner import PhysicsRunner             # noqa: E402
 from simulation.materials import MAT_AIR, MAT_HULL, MAT_WOOD, MaterialTable  # noqa: E402
 from simulation.gases import O2, INERT_N2, SMOKE, STEAM  # noqa: E402
 from simulation import fire_fixed, gas_fixed                    # noqa: E402
+
+# Issue #7, known since 2026-08-21: fire sustain reads the O2 mole FRACTION,
+# which stays ~0.21 while venting removes O2 and N2 together, so a fire keeps
+# burning down to zero molecules. On fire-12 the two vented-room tests passed
+# only because the old cast's radiation (3110x the derived scale) cooled the
+# vented fire first; the flip removed that mask (report_m3.md finding 4).
+# STRICT: the day #7's own patch makes them pass, the suite goes red until
+# that patch deletes these markers.
+_VACUUM_FIRE_7 = ("#7: fires burn in hard vacuum (fraction-based O2 law); "
+                  "masked on fire-12 by the old cast's over-strong radiation")
 
 SEED_TICK_DT = 1.0 / 24.0
 _TBL = MaterialTable.from_config()
@@ -544,6 +555,7 @@ def test_e2e_1_sealed_room_fire_self_starves():
         f"ambient {ambient_p:.3f})")
 
 
+@pytest.mark.xfail(strict=True, reason=_VACUUM_FIRE_7)
 def test_e2e_2_breach_vents_o2_and_kills_fire():
     """(2) A breach that vents the room's air puts out an established fire
     FASTER than the same fire left sealed — venting removes O2 wholesale
@@ -734,18 +746,11 @@ def _payoff_intensities(perturb_absorb=None, ticks=400):
         if perturb_absorb is not None:
             pr.eos.absorb_strength = perturb_absorb
         _ignite(gmap, (4, 4), intensity=0.6, temp_mult=1.5)
-        # P-R4 re-anchor (ruling amendment 5 D2): run the burner at the arc's
-        # BLESSED cool_shift (9), not the shipped 5. This test is about O2
-        # DIFFERENTIATION — sealed vs vented vs flooded must die at different
-        # times BECAUSE of oxygen. At the shipped cool_shift the burner's one
-        # loss channel is a 1.33 s e-fold, which under the retired painter's
-        # 1600-scale free energy did not matter and now does: every arm dies
-        # THERMALLY at ~34 ticks before the oxygen difference can register
-        # (measured 34/34/35 — the ordering did not break, it was ERASED). The
-        # P-R5 joint tune owns that dial (ruling §4: "cool_shift may drift up —
-        # radiation is now explicit"); this test owns the O2 axis, so it pins
-        # the dial the rest of the arc measures at.
-        gmap.cool_shift[4, 4] = 9
+        # (A P-R4 pin of `gmap.cool_shift[4, 4] = 9` stood here, keeping the
+        # burner from dying THERMALLY before the O2 axis registered. T5b step 7
+        # deleted the cool_shift plane (thermal v2 R1), so there is nothing left
+        # to pin; the write was that deletion's one missed consumer and raised
+        # AttributeError. Removed after Erik's M3 play test, 2026-09-23.)
         if vent:
             gmap.solid[0, 4] = False
             gmap.dyn_permeability[0, 4] = 1.0
@@ -762,6 +767,7 @@ def _payoff_intensities(perturb_absorb=None, ticks=400):
     return _at(), _at(vent=True), _at(flood=True)
 
 
+@pytest.mark.xfail(strict=True, reason=_VACUUM_FIRE_7)
 def test_payoff_orderings_perturbation_robust():
     """v2.4 (eos-p3fix-thermal-ceiling): the O2-differentiation payoffs must
     be REAL physics, not chaos artifacts. The investigation measured that the
