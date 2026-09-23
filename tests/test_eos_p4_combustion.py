@@ -88,15 +88,26 @@ from simulation.materials import MAT_AIR, MAT_HULL, MAT_WOOD, MaterialTable  # n
 from simulation.gases import O2, INERT_N2, SMOKE, STEAM  # noqa: E402
 from simulation import fire_fixed, gas_fixed                    # noqa: E402
 
-# Issue #7, known since 2026-08-21: fire sustain reads the O2 mole FRACTION,
-# which stays ~0.21 while venting removes O2 and N2 together, so a fire keeps
-# burning down to zero molecules. On fire-12 the two vented-room tests passed
-# only because the old cast's radiation (3110x the derived scale) cooled the
-# vented fire first; the flip removed that mask (report_m3.md finding 4).
-# STRICT: the day #7's own patch makes them pass, the suite goes red until
-# that patch deletes these markers.
-_VACUUM_FIRE_7 = ("#7: fires burn in hard vacuum (fraction-based O2 law); "
-                  "masked on fire-12 by the old cast's over-strong radiation")
+# Issue #7 (fixed 2026-09-23, branch 7-vacuum-kills-fire): the O2 fraction law
+# is now multiplied by a PRESSURE factor (0 below 0.1 atm, 1 above 0.5 atm),
+# so a vented room's fire dies. `test_e2e_2_breach_vents_o2_and_kills_fire`
+# passes for its stated reason and its strict #7 marker is gone.
+#
+# `test_payoff_orderings_perturbation_robust` does NOT pass, and no longer for
+# #7's reason — it fails on its own ordering premise. In this 7x7 room the
+# breach takes the whole room below 0.1 atm on tick 1, so the vented arm loses
+# all O2 availability on tick 1 exactly as the flooded arm does (X = 0 there);
+# once availability is zero the intensity ODE carries no memory of WHY, and
+# the two arms are bit-identical every tick (0.0870 at t = 400, measured).
+# `flooded < vented` (strict) is then false by construction. Whether the
+# ordering becomes `flooded <= vented`, or the vented arm gets a room/hole in
+# which venting is genuinely slower than a flood, is Erik's ruling — the
+# assertion is left untouched. STRICT: a ruling that makes it pass turns the
+# suite red until this marker goes.
+_PAYOFF_PREMISE_7 = ("#7 follow-up: under the pressure factor the vented arm "
+                     "loses all O2 availability on tick 1 like the flooded "
+                     "arm, so the two are bit-identical and the strict "
+                     "flooded < vented ordering cannot hold (Erik's ruling)")
 
 SEED_TICK_DT = 1.0 / 24.0
 _TBL = MaterialTable.from_config()
@@ -555,7 +566,6 @@ def test_e2e_1_sealed_room_fire_self_starves():
         f"ambient {ambient_p:.3f})")
 
 
-@pytest.mark.xfail(strict=True, reason=_VACUUM_FIRE_7)
 def test_e2e_2_breach_vents_o2_and_kills_fire():
     """(2) A breach that vents the room's air puts out an established fire
     FASTER than the same fire left sealed — venting removes O2 wholesale
@@ -767,7 +777,7 @@ def _payoff_intensities(perturb_absorb=None, ticks=400):
     return _at(), _at(vent=True), _at(flood=True)
 
 
-@pytest.mark.xfail(strict=True, reason=_VACUUM_FIRE_7)
+@pytest.mark.xfail(strict=True, reason=_PAYOFF_PREMISE_7)
 def test_payoff_orderings_perturbation_robust():
     """v2.4 (eos-p3fix-thermal-ceiling): the O2-differentiation payoffs must
     be REAL physics, not chaos artifacts. The investigation measured that the
