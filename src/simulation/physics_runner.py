@@ -25,6 +25,7 @@ import numpy as np
 
 import temperature_scale        # P-K2: canonical game-T -> Kelvin map accessor
 from config import CFG
+from simulation import atmosphere_fixed   # #7: the pressure field's Q16 door (atm)
 from simulation import water_fixed   # S1: water_depth Q16.16 quantize helpers
 
 
@@ -105,6 +106,15 @@ FIRE_O2F_CAP        = 5.0    # NEW (R1): enrichment ceiling on the renormalized 
 # solver from this ONE [physics.fire] key (one source of truth, like
 # o2_frac_ext/o2_frac_full/o2_frac_amb above).
 FIRE_HOTF_CAP       = 10.0   # NEW (R3): ceiling on the uncapped-at-1 hotf ramp
+# THE PRESSURE FACTOR (issue #7, Erik's ruling 2026-09-23 — docs/fire_vacuum_
+# pressure_factor_brief_2026-09-23.md): the O2 fraction law is multiplied, at
+# BOTH of its reads, by g = clamp01((p - p_ext)/(p_full - p_ext)) of the
+# materialized pressure `atmosphere`. The two edges are authored in atm
+# ([physics.fire] p_ext_atm / p_full_atm, literature cited there) and quantized
+# ONCE here, at load, through the pressure field's own Q16 door
+# (atmosphere_fixed) onto BOTH solvers — one source of truth, like hotf_cap.
+FIRE_P_EXT_ATM      = 0.1    # no fire at or below this pressure (atm)
+FIRE_P_FULL_ATM     = 0.5    # no pressure effect at or above this pressure (atm)
 FIRE_P_MIN          = 0.60   # RETIRED (see o2_frac_ext/amb) — was the smoothstep low edge
 FIRE_P_FULL         = 1.00   # RETIRED — was the smoothstep full edge
 FIRE_I_MIN          = 0.02   # snap-to-zero extinguish floor
@@ -268,6 +278,25 @@ class PhysicsRunner:
         # combustion.py's demand (bound onto self.combustion further down,
         # from this SAME [physics.fire] key).
         self.fire.params.hotf_cap       = _fp("hotf_cap", FIRE_HOTF_CAP)
+        # THE PRESSURE FACTOR's edges (issue #7). Authored in atm, validated,
+        # then quantized ONCE through the pressure field's own Q16 door so they
+        # land in exactly the unit of the `atmosphere` plane they are compared
+        # against (door 2). Bound onto the fire logistic here and onto the
+        # combustion claim gate further down — the SAME two integers.
+        p_ext_atm = _fp("p_ext_atm", FIRE_P_EXT_ATM)
+        p_full_atm = _fp("p_full_atm", FIRE_P_FULL_ATM)
+        if not (0.0 <= p_ext_atm < p_full_atm):
+            raise ValueError(
+                f"[physics.fire] p_ext_atm = {p_ext_atm}, p_full_atm = "
+                f"{p_full_atm}: the O2 law's pressure factor needs "
+                f"0 <= p_ext_atm < p_full_atm (a fire cannot live at or below "
+                f"p_ext_atm and is unaffected at or above p_full_atm; an empty "
+                f"span would silently turn the linear ramp into a step). See "
+                f"docs/fire_vacuum_pressure_factor_brief_2026-09-23.md.")
+        self._p_ext_q = int(atmosphere_fixed.quantize_scalar(p_ext_atm))
+        self._p_full_q = int(atmosphere_fixed.quantize_scalar(p_full_atm))
+        self.fire.params.p_ext_q        = self._p_ext_q
+        self.fire.params.p_full_q       = self._p_full_q
         # P_min/P_full RETIRED from the sustain law (continuous-O2 law); left
         # wired so old configs/bindings that still set them do not hard-error.
         self.fire.params.P_min          = _fp("P_min", FIRE_P_MIN)
@@ -626,6 +655,11 @@ class PhysicsRunner:
             getattr(fire_cfg_c, "fire_T_span", FIRE_T_SPAN))
         self.combustion.hotf_cap = float(
             getattr(fire_cfg_c, "hotf_cap", FIRE_HOTF_CAP))
+        # THE PRESSURE FACTOR (issue #7): the claim gate's edges are the SAME two
+        # integers the fire logistic got above (validated + quantized once
+        # there) — one law, two reads, one source of truth.
+        self.combustion.p_ext_q = self._p_ext_q
+        self.combustion.p_full_q = self._p_full_q
         # --- o2_potency: THE SIZING RULING's preserved option ----------------
         # Erik's sizing ruling (2026-08-02) shipped PACKAGE A — draw_r = 2, NO
         # potency now — but ruled potency PRESERVED as an explicit option rather
@@ -1073,6 +1107,12 @@ class PhysicsRunner:
                 # mass. The scalar `self.combustion.fuel_per_o2` above is now
                 # only the fallback for a caller with no plane.
                 gmap.fuel_per_o2_plane,
+                # THE PRESSURE FACTOR (issue #7): the materialized pressure the
+                # EOS just wrote (the same `atmosphere` the CPU branch reads) +
+                # the edges, passed explicitly to the free function.
+                atmosphere=gmap.atmosphere,
+                p_ext_q=self.combustion.p_ext_q,
+                p_full_q=self.combustion.p_full_q,
             )
         else:
             self.combustion.step(
@@ -1142,6 +1182,12 @@ class PhysicsRunner:
                 # R14's fuel half (thermal model v2, T5b) — the CPU twin of the
                 # CUDA call above.
                 gmap.fuel_per_o2_plane,
+                # THE PRESSURE FACTOR (issue #7): the claim gate reads the
+                # materialized pressure P that the EOS wrote this tick (combustion
+                # runs after run_substeps, in both the normal and the resident
+                # tick — the resident path D2H's `atmosphere` first). The edges
+                # are the solver's own p_ext_q / p_full_q, bound at init.
+                gmap.atmosphere,
             )
 
     # ------------------------------------------------------------------

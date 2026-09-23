@@ -170,8 +170,9 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // EOS P6.8: the re-derived GPU fire kernel (cuda_fire.cu) — O2 gate on
         // the real `n_o2` plane, bit-identical to the CPU FireSimulation::step
         // (tol 0 on fire/smoke/wall_hp/temperature; set-equal destroyed).
-        // `atmosphere` is passed for signature parity but is vestigial
-        // (unread); `temperature_mut` is passed through READ ONLY as of P-R2
+        // `atmosphere` is read since issue #7 (the pressure factor's input —
+        // it was vestigial from EOS P4 until then); `temperature_mut` is passed
+        // through READ ONLY as of P-R2
         // (the plume->T shim that used to write it here is deleted — docs/
         // radiation_raycaster_extinction_ruling_2026-07-31.md A2); the
         // FireParams dials are passed explicitly since fire_step is a free
@@ -207,7 +208,12 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             fuel_recip,
             // PER-MATERIAL T_ext (P-R3 ride-along): the same nullable-plane
             // idiom, one plane over.
-            fire_T_ext_plane);
+            fire_T_ext_plane,
+            // THE PRESSURE FACTOR's edges (issue #7): `atmosphere` above is
+            // read again as its input; the edges ride explicitly because
+            // fire_step is a free function (the CPU branch reads them off
+            // this->fire.params itself).
+            this->fire.params.p_ext_q, this->fire.params.p_full_q);
     } else
 #endif
     {

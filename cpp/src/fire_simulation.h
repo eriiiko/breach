@@ -63,7 +63,20 @@
 //                                                   its fuel bed faster, not
 //                                                   just "burns" in the I-ODE
 //                                                   sense)
-//   avail = F * o2f                                 (can now exceed 1 — O2
+//   g     = clamp01((p - p_ext) / (p_full - p_ext))  (issue #7, Erik's ruling
+//                                                   2026-09-23 — THE PRESSURE
+//                                                   FACTOR: p is the mean of the
+//                                                   materialized pressure
+//                                                   `atmosphere` over the SAME
+//                                                   open 4-neighbours X pools;
+//                                                   p_ext 0.1 atm, p_full 0.5
+//                                                   atm. PRESSURE, not density:
+//                                                   hot thin air at ambient
+//                                                   pressure keeps g == 1, a
+//                                                   vented room drops to 0.
+//                                                   The law lives once, FP_HD,
+//                                                   in o2_pressure_factor.h)
+//   avail = F * o2f * g                             (can now exceed 1 — O2
 //                                                   enrichment above ambient)
 //   gap   = avail*hot - I / I_cap_per_avail          (SIGNED — negative when the
 //                                                     fire sits ABOVE its own,
@@ -226,6 +239,18 @@ struct FireParams {
                                    //  fallback — one source of truth with the BC).
                                    //  R1: NOW LIVE in step() below — the sustain
                                    //  availability law's span upper reference.
+    // --- THE PRESSURE FACTOR (issue #7, Erik's ruling 2026-09-23) ------------
+    // g = clamp01((p - p_ext) / (p_full - p_ext)) multiplies o2f (see the header
+    // block and o2_pressure_factor.h). The two edges are Q16.16 ATM — the unit
+    // of the `atmosphere` field they are compared against — quantized ONCE at
+    // load by PhysicsRunner from [physics.fire] p_ext_atm / p_full_atm through
+    // atmosphere_fixed (door 2). The span reciprocal is baked per step with the
+    // kit's integer reciprocal_q16. DEFAULT 0 / 0 == DORMANT (g == FP_ONE for
+    // every pressure): a direct-binding caller that does not set them runs the
+    // pre-#7 law bit for bit. The combustion claim gate reads the SAME two
+    // values off CombustionSolver (bound from the same keys).
+    int32_t p_ext_q      = 0;      // extinction pressure, Q16.16 atm (0 = dormant)
+    int32_t p_full_q     = 0;      // full-effect pressure, Q16.16 atm (0 = dormant)
     float P_min          = 0.60f;  // RETIRED (see o2_frac_ext/amb above) — was the
                                    //  smoothstep low edge on absolute n_o2
     float P_full         = 1.00f;  // RETIRED — was the smoothstep full edge
@@ -288,10 +313,12 @@ public:
     // Python must call destroy_wall() for each of these.
     //
     //   fire        : int32 (h, w) Q16.16 intensity in [0,1], mutated in place (S3b).
-    //   atmosphere  : int32 (h, w) Q16.16 (S2c) == P (EOS P3), READ-ONLY (the
-    //                 plume's own-tile saturation gate ONLY, since EOS P4 —
-    //                 see `n_o2` below for the O2 gate). The plume no longer
-    //                 writes it — see `temperature` below.
+    //   atmosphere  : int32 (h, w) Q16.16 atm (S2c) == P, the engine's one
+    //                 materialized pressure (EOS step 5), READ-ONLY. Since
+    //                 issue #7 it is the PRESSURE FACTOR's input: g reads the
+    //                 mean P over the same open 4-neighbours X pools
+    //                 (fixedpoint::mean_round). nullptr -> g == FP_ONE (the
+    //                 pre-#7 law). Nothing in this step writes it.
     //   n_o2        : int32 (h, w) Q16.16 (EOS refactor P4, design §6): the
     //                 REAL bulk O2 density plane (gmap.gas[O2]), READ-ONLY —
     //                 the neighbour-mean O2 gate's input, REPLACING the old
@@ -339,7 +366,8 @@ public:
     //                 passing no plane at all.
     std::vector<std::pair<int, int>> step(
         int32_t* fire,             // S3b: Q16.16 (was float)
-        const int32_t* atmosphere, // S2c: Q16.16 == P (EOS P3: READ-ONLY, plume only)
+        const int32_t* atmosphere, // Q16.16 atm == P, READ-ONLY: the #7 pressure
+                                   //  factor's input (open-neighbour mean)
         const int32_t* n_o2,       // EOS P4: Q16.16 real O2 density (mole-fraction numerator)
         const int32_t* n_total,    // continuous-O2 law: Q16.16 real N_total (Σ conservative
                                    //  bulk planes = O2+N2), READ-ONLY — the mole-fraction

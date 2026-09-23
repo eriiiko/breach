@@ -732,7 +732,7 @@ PYBIND11_MODULE(breach_physics, m) {
           "True if the fire pass currently runs on the GPU.");
     m.def("cuda_fire_step",
           [](py::array_t<int32_t> fire,         // Q16.16 int32 (intensity)
-             py::array_t<int32_t> atmosphere,   // Q16.16 int32 (read-only, vestigial)
+             py::array_t<int32_t> atmosphere,   // Q16.16 atm (read-only, #7 pressure factor)
              py::array_t<int32_t> n_o2,         // Q16.16 int32 (read-only, O2 gate numerator)
              py::array_t<int32_t> n_total,      // Q16.16 int32 (read-only, O2 gate denominator)
              py::array_t<int32_t> smoke,        // Q16.16 int32 (emission scatter)
@@ -752,7 +752,8 @@ PYBIND11_MODULE(breach_physics, m) {
              float o2_frac_amb, float o2f_cap,   // R1 (see cuda_fire.h)
              float hotf_cap,                     // R3 (see cuda_fire.h)
              py::object fuel_recip,                  // FUEL-FRACTION AXIS
-             py::object fire_T_ext_plane) -> py::list {  // PER-MATERIAL T_ext
+             py::object fire_T_ext_plane,            // PER-MATERIAL T_ext
+             int32_t p_ext_q, int32_t p_full_q) -> py::list {  // #7 PRESSURE FACTOR
               auto [f, h, w]     = get_2d(fire);
               auto [atm, h2, w2] = get_2d_const(atmosphere);
               auto [o2, h2b, w2b] = get_2d_const(n_o2);
@@ -791,7 +792,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   o2_frac_full, I_min, k_wind_fan, k_wind_strip,
                   wall_damage, temp_scale, I_cap_per_avail,
                   o2_frac_amb, o2f_cap, hotf_cap,
-                  fr, tep);
+                  fr, tep, p_ext_q, p_full_q);
               py::list result;
               for (const auto& [dy, dx] : destroyed) {
                   result.append(py::make_tuple(dy, dx));
@@ -819,6 +820,10 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("hotf_cap") = 10.0f,
           py::arg("fuel_recip") = py::none(),        // fuel-fraction axis (optional)
           py::arg("fire_T_ext_plane") = py::none(),  // per-material T_ext (optional)
+          // #7 THE PRESSURE FACTOR's edges, Q16.16 atm. Defaulted to the
+          // FireParams defaults (0 / 0 == dormant, g == FP_ONE).
+          py::arg("p_ext_q") = 0,
+          py::arg("p_full_q") = 0,
           "P6.8 isolated: run ONE GPU fire step (re-derived — continuous-O2 "
           "mole-fraction gate) in place on fire/smoke/wall_hp (bit-identical to "
           "FireSimulation.step) and return the destroyed-walls list of (y,x) "
@@ -879,7 +884,11 @@ PYBIND11_MODULE(breach_physics, m) {
              // nullable per-material T_ext plane FireSimulation reads.
              float fire_T_ext, float fire_T_span, float hotf_cap,
              py::object fire_T_ext_plane,
-             py::object fuel_per_o2_plane) -> py::tuple {
+             py::object fuel_per_o2_plane,
+             // #7 THE PRESSURE FACTOR: the materialized pressure plane (None ->
+             // g == FP_ONE) + its two edges (Q16.16 atm; 0 / 0 == dormant).
+             py::object atmosphere,
+             int32_t p_ext_q, int32_t p_full_q) -> py::tuple {
               auto gv = gas.mutable_unchecked<3>();
               int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
               const int n_gases = static_cast<int>(gv.shape(0));
@@ -943,6 +952,14 @@ PYBIND11_MODULE(breach_physics, m) {
                   auto fv = fpo_arr.unchecked<2>();
                   fpo = fv.data(0, 0);
               }
+              // #7: the pressure factor's input plane, the same nullable idiom.
+              const int32_t* atm_ptr = nullptr;
+              py::array_t<int32_t> atm_arr;
+              if (!atmosphere.is_none()) {
+                  atm_arr = atmosphere.cast<py::array_t<int32_t>>();
+                  auto av = atm_arr.unchecked<2>();
+                  atm_ptr = av.data(0, 0);
+              }
               int64_t heat_floor_hits = 0, t_max_phys_hits = 0;
               int64_t e_deposit_drop_sum = 0;   // P-E2b
               breach_cuda::combustion_step(
@@ -955,7 +972,8 @@ PYBIND11_MODULE(breach_physics, m) {
                   &e_deposit_drop_sum,
                   tsol, hshift, heat_ptr, H_BED_M, H_BED_SHIFT, dacc_ptr,
                   draw_r, perm_ptr, max_claimants,
-                  fire_T_ext, fire_T_span, hotf_cap, tep, fpo);
+                  fire_T_ext, fire_T_span, hotf_cap, tep, fpo,
+                  atm_ptr, p_ext_q, p_full_q);
               return py::make_tuple(heat_floor_hits, t_max_phys_hits,
                                     e_deposit_drop_sum);
           },
@@ -985,6 +1003,11 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("hotf_cap") = 10.0f,
           py::arg("fire_T_ext_plane") = py::none(),
           py::arg("fuel_per_o2_plane") = py::none(),   // R14 per-material fuel
+          // #7 THE PRESSURE FACTOR: input plane + edges (None / 0 / 0 ==
+          // dormant, g == FP_ONE — the CombustionSolver defaults).
+          py::arg("atmosphere") = py::none(),
+          py::arg("p_ext_q") = 0,
+          py::arg("p_full_q") = 0,
           "P6.9b isolated: run ONE GPU combustion step (the two-gather "
           "reformulation, continuous-O2 proportional demand) in place on the "
           "three gas planes + temperature + wall_hp (bit-identical to "
@@ -1747,6 +1770,11 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("o2_frac_full",   &FireParams::o2_frac_full)
         .def_readwrite("o2_frac_amb",    &FireParams::o2_frac_amb)
         .def_readwrite("o2f_cap",        &FireParams::o2f_cap)
+        // #7 THE PRESSURE FACTOR's edges — Q16.16 atm, quantized by
+        // PhysicsRunner from [physics.fire] p_ext_atm / p_full_atm. 0 / 0 (the
+        // default) == dormant, g == FP_ONE (see fire_simulation.h).
+        .def_readwrite("p_ext_q",        &FireParams::p_ext_q)
+        .def_readwrite("p_full_q",       &FireParams::p_full_q)
         // R3 (fire session #12): hotf_cap — the ceiling on the UNCAPPED-AT-1
         // hotf ramp read by the demand/destruction rate sites. `hot` itself
         // (the sustain gate) is unaffected and stays capped at 1.
@@ -2852,6 +2880,10 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("fire_T_ext",        &CombustionSolver::fire_T_ext)
         .def_readwrite("fire_T_span",       &CombustionSolver::fire_T_span)
         .def_readwrite("hotf_cap",          &CombustionSolver::hotf_cap)
+        // #7 THE PRESSURE FACTOR's edges — the SAME Q16.16 atm values as
+        // FireParams::p_ext_q / p_full_q (one law, two reads). 0 / 0 == dormant.
+        .def_readwrite("p_ext_q",           &CombustionSolver::p_ext_q)
+        .def_readwrite("p_full_q",          &CombustionSolver::p_full_q)
         // P-R4: the FUEL-BED deposit's split constant (H_bed = M * 2^SHIFT).
         .def_readwrite("H_BED_M",           &CombustionSolver::H_BED_M)
         .def_readwrite("H_BED_SHIFT",       &CombustionSolver::H_BED_SHIFT)
@@ -2937,7 +2969,12 @@ PYBIND11_MODULE(breach_physics, m) {
                         // R14's fuel half (T5b): the SAME nullable-plane idiom
                         // again -- GameMap.fuel_per_o2_plane. None -> nullptr
                         // -> the scalar `fuel_per_o2` fallback.
-                        py::object fuel_per_o2_plane) {
+                        py::object fuel_per_o2_plane,
+                        // #7 THE PRESSURE FACTOR's input: the materialized
+                        // pressure plane `atmosphere` (Q16.16 atm). OPTIONAL —
+                        // None -> nullptr -> g == FP_ONE, the pre-#7 law (the
+                        // edges are the solver's own p_ext_q / p_full_q).
+                        py::object atmosphere) {
             auto gv = gas.mutable_unchecked<3>();
             int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
             const int n_gases = static_cast<int>(gv.shape(0));
@@ -3016,11 +3053,19 @@ PYBIND11_MODULE(breach_physics, m) {
                 auto fv = fpo_arr.unchecked<2>();
                 fpo = fv.data(0, 0);
             }
+            // #7: the pressure factor's input, the same nullable-plane idiom.
+            const int32_t* atm_ptr = nullptr;
+            py::array_t<int32_t> atm_arr;
+            if (!atmosphere.is_none()) {
+                atm_arr = atmosphere.cast<py::array_t<int32_t>>();
+                auto av = atm_arr.unchecked<2>();
+                atm_ptr = av.data(0, 0);
+            }
             self.step(gas_ptr, n_gases, o2_idx, inert_n2_idx, black_smoke_idx,
                      temp, whp, f, fl, sol, vac, ign, h, w, dt, c_v, n_floor_heat,
                      tsol, hshift, heat_ptr, dacc_ptr,
                      draw_r, perm_ptr, max_claimants,
-                     gen_ptr, amb_ptr, t_amb_q, tep, fpo);
+                     gen_ptr, amb_ptr, t_amb_q, tep, fpo, atm_ptr);
         }, py::arg("gas"), py::arg("o2_idx"), py::arg("inert_n2_idx"),
            py::arg("black_smoke_idx"), py::arg("temperature"), py::arg("wall_hp"),
            py::arg("fire"), py::arg("flammable"), py::arg("solid"),
@@ -3037,7 +3082,8 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("is_ambient") = py::none(),   // arc #54 accountable set
            py::arg("t_amb_q") = 0,               // arc #54 T_AMB_K raw
            py::arg("fire_T_ext_plane") = py::none(),   // R3 per-material T_ext
-           py::arg("fuel_per_o2_plane") = py::none()); // R14 per-material fuel
+           py::arg("fuel_per_o2_plane") = py::none(),  // R14 per-material fuel
+           py::arg("atmosphere") = py::none());        // #7 pressure factor input
 
     // --- WaterSolver (pipe model: damped velocity + donor-cell upwind flux;
     //     engine/07 §2, water_implementation_plan Step W1) ---

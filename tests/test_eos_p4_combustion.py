@@ -73,7 +73,6 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
@@ -88,15 +87,12 @@ from simulation.materials import MAT_AIR, MAT_HULL, MAT_WOOD, MaterialTable  # n
 from simulation.gases import O2, INERT_N2, SMOKE, STEAM  # noqa: E402
 from simulation import fire_fixed, gas_fixed                    # noqa: E402
 
-# Issue #7, known since 2026-08-21: fire sustain reads the O2 mole FRACTION,
-# which stays ~0.21 while venting removes O2 and N2 together, so a fire keeps
-# burning down to zero molecules. On fire-12 the two vented-room tests passed
-# only because the old cast's radiation (3110x the derived scale) cooled the
-# vented fire first; the flip removed that mask (report_m3.md finding 4).
-# STRICT: the day #7's own patch makes them pass, the suite goes red until
-# that patch deletes these markers.
-_VACUUM_FIRE_7 = ("#7: fires burn in hard vacuum (fraction-based O2 law); "
-                  "masked on fire-12 by the old cast's over-strong radiation")
+# Issue #7 (fixed 2026-09-23, branch 7-vacuum-kills-fire): the O2 fraction law
+# is now multiplied by a PRESSURE factor (0 below 0.1 atm, 1 above 0.5 atm),
+# so a vented room's fire dies. `test_e2e_2_breach_vents_o2_and_kills_fire`
+# passes for its stated reason and its strict #7 marker is gone.
+# `test_payoff_orderings_perturbation_robust` is restated to
+# `flooded <= vented < sealed` by Erik's ruling (see its docstring).
 
 SEED_TICK_DT = 1.0 / 24.0
 _TBL = MaterialTable.from_config()
@@ -555,7 +551,6 @@ def test_e2e_1_sealed_room_fire_self_starves():
         f"ambient {ambient_p:.3f})")
 
 
-@pytest.mark.xfail(strict=True, reason=_VACUUM_FIRE_7)
 def test_e2e_2_breach_vents_o2_and_kills_fire():
     """(2) A breach that vents the room's air puts out an established fire
     FASTER than the same fire left sealed — venting removes O2 wholesale
@@ -767,7 +762,6 @@ def _payoff_intensities(perturb_absorb=None, ticks=400):
     return _at(), _at(vent=True), _at(flood=True)
 
 
-@pytest.mark.xfail(strict=True, reason=_VACUUM_FIRE_7)
 def test_payoff_orderings_perturbation_robust():
     """v2.4 (eos-p3fix-thermal-ceiling): the O2-differentiation payoffs must
     be REAL physics, not chaos artifacts. The investigation measured that the
@@ -793,14 +787,23 @@ def test_payoff_orderings_perturbation_robust():
     (5% relative) is a comfortably-loose gate on top of that measurement,
     not a re-derivation of a real bound — it exists so a REAL regression back
     toward chaos still trips the test, not to pin the current bit-exactness
-    (which the underlying physics doesn't promise, only delivers here)."""
+    (which the underlying physics doesn't promise, only delivers here).
+
+    RESTATE (#7, Erik's ruling 2026-09-24): `flooded <= vented < sealed`.
+    Under #7's pressure factor this 7x7 room's breach takes it below 0.1 atm on
+    tick 1, so the vented arm loses all O2 availability as instantly as the
+    flooded one (whose neighbours are set to O2 = 0) and the two arms are
+    bit-identical (0.0870 at t = 400). Venting never suffocates FASTER than a
+    flood and always beats a sealed room — that is the property; "venting is
+    gradual" was an assumption of the pre-#7 law. Breaks if a vented room
+    out-suffocates a flood, or if venting stops starving the fire."""
     base = _payoff_intensities()
     pert = _payoff_intensities(perturb_absorb=8.0 * (1.0 + 1e-5))
 
     for name, (s, v, f) in (("baseline", base), ("perturbed", pert)):
-        assert f < v < s, (
+        assert f <= v < s, (
             f"{name}: payoff ordering broken (flooded={f:.4f}, vented="
-            f"{v:.4f}, sealed={s:.4f}) — expected flooded < vented < sealed")
+            f"{v:.4f}, sealed={s:.4f}) — expected flooded <= vented < sealed")
     for arm, b, p in zip(("sealed", "vented", "flooded"), base, pert):
         window = max(0.005, 0.05 * b)   # 5% relative (min 0.005) — see
                                          # docstring: measured 0.0 diff

@@ -331,6 +331,9 @@ public:
     //   demand_i = burn_rate * I_i * o2f_j * dt      (was: burn_rate * dt, gated)
     // where o2f_j is LINEAR in the air cell's O2 MOLE FRACTION X = O2/(O2+N2):
     //   o2f = clamp01((X - o2_frac_ext) / (o2_frac_full - o2_frac_ext))
+    // times, since issue #7, the PRESSURE FACTOR g(p_j) at the same cell (see
+    // p_ext_q / p_full_q below and o2_pressure_factor.h): a vented cell below
+    // p_ext offers no O2 to any claimant, whatever its mole fraction.
     // burn_rate drops to the ceiling_h-anchored physical value (~1/50). A choked
     // (low-o2f) or low-intensity fire draws less O2 -> less heat -> "a choked
     // fire is a cool fire". o2_thresh_burn is RETIRED as a gate (below).
@@ -412,6 +415,18 @@ public:
     // overheat ceiling, bound to both solvers from ONE config key) — the
     // ceiling on hotf, which is NOT capped at 1 the way `hot` is.
     float hotf_cap         = 10.0f;  // NEW (R3): ceiling on the demand-side hotf ramp
+
+    // --- THE PRESSURE FACTOR (issue #7, Erik's ruling 2026-09-23) --------
+    // The claim gate's o2f_j is multiplied by g(p_j) = clamp01((p_j - p_ext) /
+    // (p_full - p_ext)), p_j the materialized pressure `atmosphere` at the SAME
+    // air cell j whose mole fraction X_j it reads (o2_pressure_factor.h — the
+    // one FP_HD law both sites and both backends call). The SAME two values as
+    // FireParams::p_ext_q / p_full_q (Q16.16 atm), bound by physics_runner.py
+    // from the SAME [physics.fire] keys — one law, two reads. DEFAULT 0 / 0 ==
+    // DORMANT (g == FP_ONE), and a step() without an `atmosphere` plane is
+    // dormant too, so every direct-binding caller keeps the pre-#7 law.
+    int32_t p_ext_q        = 0;      // extinction pressure, Q16.16 atm (0 = dormant)
+    int32_t p_full_q       = 0;      // full-effect pressure, Q16.16 atm (0 = dormant)
 
     // ---- P-R4: H_bed — the FUEL-BED deposit ------------------------------
     // (docs/radiation_raycaster_extinction_ruling_2026-07-31.md A1, "Where the
@@ -710,6 +725,12 @@ public:
         // the row's own mass makes the store physical while leaving `hp` alone
         // -- which is exactly R14's "fuel separates from hp; hp stays
         // structural".
-        const int32_t* fuel_per_o2_plane = nullptr
+        const int32_t* fuel_per_o2_plane = nullptr,
+        // THE PRESSURE FACTOR's input (issue #7): int32 (h,w) Q16.16 atm, READ
+        // — `atmosphere`, the engine's one materialized pressure P (EOS step 5,
+        // which runs before this pass). The claim gate reads it at the SAME air
+        // cell j as X_j. OPTIONAL: nullptr -> g == FP_ONE, i.e. the pre-#7 law
+        // bit for bit for every direct-binding caller.
+        const int32_t* atmosphere = nullptr
     ) const;
 };

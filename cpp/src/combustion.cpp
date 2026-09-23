@@ -1,6 +1,7 @@
 #include "combustion.h"
 #include "fixed_point.h"
 #include "gas_energy.h"  // arc #54 P-G1b: THE gas energy seam (design §2.7)
+#include "o2_pressure_factor.h"  // issue #7: the O2 law's pressure factor g(p)
 #include "raycaster.h"   // heat_saturating_add (shared Q16.16 domain)
 #include "temperature_solver.h"  // arc #54 P-G5: conduction::cell_capacity_q,
                                  // reused (not re-derived) to price the
@@ -173,7 +174,8 @@ void CombustionSolver::step(
         const bool* is_ambient,       // ring mask (accountable-set input)
         int32_t t_amb_q,              // T_AMB_K raw (born-at-ambient rule)
         const int32_t* fire_T_ext_plane,          // R3: PER-MATERIAL T_ext (nullable)
-        const int32_t* fuel_per_o2_plane) const { // R14: PER-MATERIAL fuel rate
+        const int32_t* fuel_per_o2_plane,         // R14: PER-MATERIAL fuel rate
+        const int32_t* atmosphere) const {        // #7: the pressure factor's input (nullable)
 
     if (h <= 0 || w <= 0 || dt <= 0.0f) return;
     if (o2_idx < 0 || o2_idx >= n_gases) return;
@@ -236,6 +238,10 @@ void CombustionSolver::step(
     const bool   x_degenerate  = (x_span <= 0.0);
     const int64_t recip_x_span = x_degenerate ? 0 : make_recip(x_span);
     const q16 X_N_FLOOR        = quantize(0.01);   // 655 counts (see fire_simulation.cpp)
+    // THE PRESSURE FACTOR (issue #7, o2_pressure_factor.h): the SAME edges and
+    // the SAME host-side span bake as fire_simulation.cpp — one law, two reads.
+    // No `atmosphere` plane, or the 0 / 0 default edges -> g == FP_ONE.
+    const o2_pressure::Factor pf = o2_pressure::bake(p_ext_q, p_full_q);
 
     // R3 hot-burns-faster (fire session #12, docs/fire_3c_design_2026-09-01.md
     // "Ruling R3"): the demand-side hotf load-time bake, VERBATIM the shape of
@@ -388,9 +394,16 @@ void CombustionSolver::step(
             const int64_t n_tot_j = (int64_t)o2j + (int64_t)N2[j];
             const q16 den_j = (n_tot_j < (int64_t)X_N_FLOOR) ? X_N_FLOOR : (q16)n_tot_j;
             const q16 Xj = mul_q16(o2j, reciprocal_q16(den_j));
-            const q16 o2f_j = x_degenerate
+            const q16 o2f_x_j = x_degenerate
                 ? ((Xj < x_ext_q) ? (q16)0 : (q16)FP_ONE)
                 : clamp01_q(recip_mul(Xj - x_ext_q, recip_x_span));
+            // THE PRESSURE FACTOR (issue #7): g of the materialized pressure at
+            // THIS air cell — the same cell X_j reads — folded into o2f_j by ONE
+            // mul_q16. At p_j >= p_full, g == FP_ONE and o2f_j is the pre-#7
+            // value bit for bit; below p_ext it is 0 and no claimant draws here.
+            const q16 g_j = (atmosphere != nullptr)
+                ? o2_pressure::factor(pf, atmosphere[j]) : (q16)FP_ONE;
+            const q16 o2f_j = mul_q16(o2f_x_j, g_j);
 
             // ---- P-O2b STEP 1: THE REVERSE RELAXATION -----------------------
             // Which burning tiles can reach THIS cell in <= draw_r hops? The

@@ -25,6 +25,7 @@
 #include "combustion.h"    // CombustionSolver::FUEL_FLOOR (the compile-time 1-LSB floor)
 #include "fixed_point.h"   // q16, quantize, mul_q16, mul_wide, narrow_round, make_recip
 #include "cuda_fixedpoint_device.cuh"  // reciprocal_q16_dev, recip_mul_dev, heat_saturating_add_dev
+#include "o2_pressure_factor.h"        // issue #7: the SAME FP_HD g(p) the CPU pass calls
 
 #include <cuda_runtime.h>
 
@@ -155,7 +156,9 @@ __global__ void combustion_pass_a(
         // R3 hot-burns-faster (docs/fire_3c_design_2026-09-01.md "Ruling R3"):
         // the demand-side hotf ramp — VERBATIM the CPU combustion.cpp bake.
         const int32_t* __restrict__ fire_T_ext_plane,
-        int32_t fire_T_ext_q, int64_t recip_T_span, int32_t hotf_cap_q) {
+        int32_t fire_T_ext_q, int64_t recip_T_span, int32_t hotf_cap_q,
+        // issue #7: the pressure factor's input plane (nullable) + its edges.
+        const int32_t* __restrict__ atmosphere, o2_pressure::Factor pf) {
     constexpr int NSLOT = 2 * R * (R + 1);         // 4, 12, 24
     constexpr int NBALL = 2 * (R - 1) * R + 1;     // 1, 5, 13
     const int n = h * w;
@@ -175,9 +178,15 @@ __global__ void combustion_pass_a(
         const int64_t n_tot_j = (int64_t)o2j + (int64_t)N2[j];
         const q16 den_j = (n_tot_j < (int64_t)X_N_FLOOR) ? X_N_FLOOR : (q16)n_tot_j;
         const q16 Xj = mul_q16(o2j, reciprocal_q16_dev(den_j));
-        const q16 o2f_j = x_degenerate
+        const q16 o2f_x_j = x_degenerate
             ? ((Xj < x_ext_q) ? (q16)0 : (q16)FP_ONE)
             : clamp01_q_dev(recip_mul_dev(Xj - x_ext_q, recip_x_span));
+        // THE PRESSURE FACTOR (issue #7) — VERBATIM the CPU pass: g of the
+        // materialized pressure at THIS air cell, through the SAME FP_HD
+        // o2_pressure::factor, folded into o2f_j by ONE mul_q16.
+        const q16 g_j = (atmosphere != nullptr)
+            ? o2_pressure::factor(pf, atmosphere[j]) : (q16)FP_ONE;
+        const q16 o2f_j = mul_q16(o2f_x_j, g_j);
 
         // ---- P-O2b STEP 1: THE REVERSE RELAXATION — the CPU block verbatim.
         // Expand outward from j through OPEN CELLS ONLY over the baked BALL
@@ -590,7 +599,9 @@ void combustion_step(
         int draw_r, const float* dyn_permeability, int max_claimants,
         float fire_T_ext, float fire_T_span, float hotf_cap,
         const int32_t* fire_T_ext_plane,
-        const int32_t* fuel_per_o2_plane) {
+        const int32_t* fuel_per_o2_plane,
+        const int32_t* atmosphere,              // #7: pressure factor input (nullable)
+        int32_t p_ext_q, int32_t p_full_q) {    // #7: its edges, Q16.16 atm
 
     // --- Guards + load-time scalar precompute (VERBATIM of combustion.cpp:65-91,
     //     in double). A guarded early-return leaves ALL fields untouched (no
@@ -627,6 +638,9 @@ void combustion_step(
     const bool   x_degenerate  = (x_span <= 0.0);
     const int64_t recip_x_span = x_degenerate ? 0 : make_recip(x_span);
     const q16 X_N_FLOOR        = quantize(0.01);   // 655 counts (see fire_simulation.cpp)
+    // THE PRESSURE FACTOR (issue #7): the span reciprocal baked on the HOST by
+    // the SAME o2_pressure::bake the CPU pass calls (integer reciprocal_q16).
+    const o2_pressure::Factor pf = o2_pressure::bake(p_ext_q, p_full_q);
     // P-R4: the fuel-bed mantissa, quantized on the HOST with the identical
     // fixedpoint::quantize the CPU solver uses (the load-time boundary idiom).
     const q16 H_bed_m_q        = quantize((double)H_BED_M);
@@ -752,6 +766,14 @@ void combustion_step(
         cuda_check(cudaMemcpy(d_fpo_plane, fuel_per_o2_plane, nb,
                               cudaMemcpyHostToDevice), "H2D fuel_per_o2_plane");
     }
+    // Issue #7: the pressure factor's input plane, the same nullable idiom
+    // (nullptr -> the kernel takes g == FP_ONE, the pre-#7 law).
+    int32_t* d_atm = nullptr;
+    if (atmosphere) {
+        cuda_check(cudaMalloc(&d_atm, nb), "malloc atmosphere");
+        cuda_check(cudaMemcpy(d_atm, atmosphere, nb,
+                              cudaMemcpyHostToDevice), "H2D atmosphere");
+    }
     // D1: the (max_claimants, h, w) demand accumulator — SYNCED state, IN/OUT.
     // P-O2b: the plane's DECLARED depth is max_claimants; only the first
     // n_slots rows are live (a deeper plane simply carries unused rows).
@@ -831,7 +853,8 @@ void combustion_step(
             h, w, burn_cap_q, o2_thresh_q,                                     \
             x_ext_q, recip_x_span, x_degenerate, X_N_FLOOR,                    \
             d_heat, H_bed_m_q, H_bed_shift, d_dem_acc,                         \
-            d_T_ext_plane, fire_T_ext_q, recip_T_span, hotf_cap_q);            \
+            d_T_ext_plane, fire_T_ext_q, recip_T_span, hotf_cap_q,             \
+            d_atm, pf);                                                        \
         cuda_check(cudaGetLastError(), "pass_a launch");                       \
         combustion_pass_b<RVAL><<<grid, block>>>(                              \
             d_whp, d_flam, d_solid, d_vac, d_alloc, d_dep, h, w,                \
@@ -904,6 +927,7 @@ void combustion_step(
     if (d_perm)  cudaFree(d_perm);
     if (d_T_ext_plane) cudaFree(d_T_ext_plane);
     if (d_fpo_plane) cudaFree(d_fpo_plane);
+    if (d_atm) cudaFree(d_atm);
 }
 
 namespace {
