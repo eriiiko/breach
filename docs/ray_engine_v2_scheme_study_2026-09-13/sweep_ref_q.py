@@ -59,7 +59,9 @@ from dataclasses import dataclass, field
 
 # --------------------------------------------------------------------------- #
 # Dials. The shipped values; `config_dials_match()` checks them against
-# config.toml so this file cannot silently drift from the engine.
+# config.toml so this file cannot silently drift from the engine. The one
+# exception is RAD_SCALE, the default table's scale, which is a RESOLVING scale
+# chosen for the gates and read from nowhere (M3, below).
 # --------------------------------------------------------------------------- #
 ONE = 65536                      # Q16.16 unit
 F_SHIFT = 24                     # the Fleck factor's fixed point (design row 32)
@@ -67,7 +69,25 @@ F_ONE = 1 << F_SHIFT             # f == F_ONE exactly when L_q == 0
 ALPHA_FLOOR_HALF = "half"        # alpha = max(1/2, 1 - 1/g) -- Fleck's IMC bound
 ALPHA_FLOOR_ZERO = "zero"        # alpha = max(0,   1 - 1/g) -- RULED (row 39), the default
 ALPHA_FLOOR_DEFAULT = ALPHA_FLOOR_ZERO   # Erik, 2026-09-16: "Let's go floor 0 then."
-RAD_SCALE = 5.1427e-5            # config.toml:526   [physics.fire] rad_scale
+# THE DEFAULT TABLE'S SCALE -- a RESOLVING scale, NOT the live calibration (M3,
+# 2026-09-23). Every function below defaults to the table baked here, and the
+# twelve gates, gate 0 and the harness family (tests/_radiation_sweep_harness.py)
+# measure the sweep's ARITHMETIC on it: at this scale the Fleck damping, the
+# maximum-principle clamp and the equilibria that their paired non-vacuity
+# checks need all ENGAGE inside the gates' scenes and tick windows. It is the
+# retired cast's fitted `[physics.fire] rad_scale` by history only; nothing
+# reads it from config, and nothing about the shipped game is measured on it.
+# M3 measured what moving the DEFAULT to the live scale costs: 115 tests go red
+# and every one is a non-vacuity pair (gate 0 x96 finds no f < 2^24; G4/G5 never
+# see the clamp bind; G10's equilibria do not converge in 9600 ticks; the frozen
+# scalar-era digest) -- none is an arithmetic disagreement. report_m3.md §5.
+RAD_SCALE = 5.1427e-5
+# THE LIVE CALIBRATION: the sweep's own key, config.toml [physics.radiation]
+# rad_scale_derived. `config_dials_match()` guards THIS scale, and a statement
+# about what the SHIPPED game emits (G12's rows) is measured on `E_LIVE`. A
+# number read off this file without `table=E_LIVE` is on the resolving scale --
+# which is how M2 quoted f = 0.013 from a table the game never runs (M2b).
+RAD_SCALE_LIVE = 1.6533e-08
 K_AMB = 293                      # config.toml:813   kelvin_ambient (integer-valued)
 K_SLOPE = 1                      # config.toml:814   k_temp_to_kelvin (G12: the x1 map)
 E_TABLE_SIZE = 4000              # raycaster.h:203   T_game in [0, 16000)
@@ -85,6 +105,12 @@ def config_dials_match(config_path=None):
 
     A drift here silently invalidates every number this file prints, so the gate
     runner calls it and reports the result.
+
+    `rad_scale` is RAD_SCALE_LIVE against the SWEEP's key, `[physics.radiation]
+    rad_scale_derived` (M3). Until M3 it compared the default table's scale with
+    `[physics.fire] rad_scale`, the retired cast's fitted key -- so a drift in the
+    scale the live sweep actually bakes at was invisible to the one check that
+    exists to catch it.
     """
     import pathlib
     import tomllib
@@ -93,13 +119,13 @@ def config_dials_match(config_path=None):
     with open(config_path, "rb") as fh:
         cfg = tomllib.load(fh)
     got = {
-        "rad_scale": cfg["physics"]["fire"]["rad_scale"],
+        "rad_scale": cfg["physics"]["radiation"]["rad_scale_derived"],
         "kelvin_ambient": cfg["physics"]["temperature_scale"]["kelvin_ambient"],
         "k_temp_to_kelvin": cfg["physics"]["temperature_scale"]["k_temp_to_kelvin"],
         "T_MAX_PHYS": cfg["physics"]["thermal"]["T_MAX_PHYS"],
     }
     want = {
-        "rad_scale": RAD_SCALE,
+        "rad_scale": RAD_SCALE_LIVE,
         "kelvin_ambient": float(K_AMB),
         "k_temp_to_kelvin": float(K_SLOPE),
         "T_MAX_PHYS": float(T_MAX_PHYS_Q >> 16),
@@ -327,8 +353,9 @@ def bake_e_table(rad_scale: float = RAD_SCALE, kelvin_ambient: int = K_AMB,
     return tbl
 
 
-E = bake_e_table()
+E = bake_e_table()                           # the RESOLVING table (the default)
 E0 = E[0]
+E_LIVE = bake_e_table(rad_scale=RAD_SCALE_LIVE)  # the sweep's live table (M3)
 
 
 def e_bucket_of(T_q: int) -> int:
