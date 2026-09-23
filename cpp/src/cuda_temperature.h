@@ -142,7 +142,7 @@ int64_t temperature_step(
     // inverse `e_inv_q` is FP_HD and therefore the SAME function the CPU calls.
     // BOTH null -> no clamp, byte-identical to the pre-flip kernel, which is
     // what every direct-binding caller and every pre-flip test still gets.
-    // The engagement count comes back in slot 13 (see below).
+    // The engagement count comes back in slot 11 (see below).
     const int64_t* rad_fluence = nullptr,
     const int64_t* e_table = nullptr,
     int e_table_n = 0);

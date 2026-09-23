@@ -962,12 +962,12 @@ class PhysicsRunner:
             gmap.fire_T_ext_plane,
             gmap.gas, gmap.gases.conservative, self._o2_idx,
             sim_time,
-            # Ray-engine-v2 P1 (design v3 §11): the SHADOW sweep — step 2b of
+            # Ray-engine-v2 (design v3 §11): the radiation sweep — step 2b of
             # the tail runs the directional sweep on the two Q16 extinction
-            # planes into the four int64 shadow planes, which nothing consumes
-            # yet (the old cast above still feeds `rad_net`; P3 flips it).
-            # Required, not defaulted, so the live engine can never silently
-            # skip the sweep.
+            # planes into the four int64 sweep planes. LIVE since T5b: the
+            # temperature pass's fold reads `rad_net_sweep` below, not the old
+            # cast's `rad_net` (T6 deletes the cast). Required, not defaulted,
+            # so the live engine can never silently skip the sweep.
             heat_atten_q=gmap.heat_atten_q,
             dyn_heat_atten_q=gmap.dyn_heat_atten_q,
             rad_net_sweep=gmap.rad_net_sweep,
@@ -981,12 +981,11 @@ class PhysicsRunner:
             # BC: the ambient ring is wiped to ΔT=0 in the temperature pre-pass
             # (the vacuum-breach idiom); None on space maps = byte-identical.
             is_ambient=amb[0],
-            # P-R4 (ruling A1.7): the SIGNED radiation accumulator the
-            # fire-plane cast filled at the TOP of this same tick. The
-            # temperature pass folds it FIRST in Pass 1 (before the heat
-            # deposit), through each tile's own heat_inv_shift — so a tile's
-            # radiative GAIN and its emitter's matching LOSS both convert this
-            # tick, on one scale, with no painter in sight.
+            # T6 (issue #12): the fire-plane cast that used to fill `rad_net`
+            # here is deleted, and the fold no longer reads this argument — it
+            # reads the sweep's own `rad_net_sweep` above instead. `rad_net`
+            # is passed on anyway (cpp/src/physics_engine.h defaults it to
+            # nullptr): a recorded dead argument, not a load-bearing one.
             rad_net=gmap.rad_net,
             # gas-energy conservation arc #54 P-G1b (design §2.7 row 3): the
             # CONSERVED energy field. With it supplied, the temperature pass's
@@ -1389,10 +1388,10 @@ class PhysicsRunner:
             gmap.fire_T_ext_plane,       # per-material T_ext (host mirror)
             gmap.gas, gmap.gases.conservative, self._o2_idx,
             sim_time,
-            # Ray-engine-v2 P1: the shadow sweep rides the SAME host-mirror
-            # bracket (design §8.2: no host-side tick logic — the sweep is
-            # inside step_tail); its planes are resident-allocated but no
-            # device kernel touches them until P4.
+            # Ray-engine-v2: the sweep (LIVE since T5b) rides the SAME
+            # host-mirror bracket (design §8.2: no host-side tick logic — the
+            # sweep is inside step_tail); its planes are resident-allocated
+            # but no device kernel touches them until P4.
             heat_atten_q=gmap.heat_atten_q,
             dyn_heat_atten_q=gmap.dyn_heat_atten_q,
             rad_net_sweep=gmap.rad_net_sweep,
@@ -1402,8 +1401,10 @@ class PhysicsRunner:
             k_leak_q=self.k_leak_q,
             rad_amb_vacuum_q=self.rad_amb_vacuum_q,   # thermal v2 R3
             is_ambient=amb[0],
-            # P-R4: the radiation accumulator rides the SAME host mirror the
-            # rest of this bracket reads (the cast at step 1 filled it there).
+            # T6 (issue #12): the fire-plane cast that used to fill `rad_net`
+            # at step 1 is deleted; nothing fills it on this path either. Kept
+            # as a dead argument for the same reason the normal step keeps it
+            # (see PhysicsRunner.step's matching note / physics_engine.h).
             rad_net=gmap.rad_net,
             # gas-energy conservation arc #54 P-G1b (design §2.7 row 3): the
             # CONSERVED energy field. With it supplied, the temperature pass's

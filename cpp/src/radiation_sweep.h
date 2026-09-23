@@ -35,10 +35,11 @@
 //     ordinates (S_N) method itself: Chandrasekhar, "Radiative Transfer", 1950.
 //   Papers under docs/papers/ (README_ray_engine_v2_2026-09-13.md).
 //
-// AT P1 THIS IS A SHADOW COMPUTATION: PhysicsEngine::step_tail runs it every
-// tick (step 2b) into the four int64 shadow planes rad_net_sweep /
-// rad_flux_sweep / rad_amb_sweep / rad_fluence, which nothing consumes yet;
-// the old ray cast keeps feeding the fold until P3 flips it.
+// LIVE SINCE T5b: PhysicsEngine::step_tail runs it every tick (step 2b) into
+// the four int64 planes rad_net_sweep / rad_flux_sweep / rad_amb_sweep /
+// rad_fluence. The temperature fold reads rad_net_sweep, the Pass-1
+// maximum-principle clamp reads rad_fluence, and units absorb from
+// rad_flux_sweep. Host-side on both backends until P4 adds its CUDA twin.
 
 #include <cstdint>
 #include <vector>

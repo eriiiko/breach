@@ -28,8 +28,8 @@
 #include "bulk_transport.h"   // EOS refactor P1: bulk O2/N2 donor-cell flux
 #include "eos_solver.h"       // EOS refactor P3: the compressible Kwatra solver
 #include "combustion.h"       // EOS refactor P4: combustion on real O2
-#include "emissive_table.h"   // ray-engine-v2 P1: THE E° table, one owner
-#include "radiation_sweep.h"  // ray-engine-v2 P1: the radiation sweep (shadow)
+#include "emissive_table.h"   // ray-engine-v2: THE E° table, one owner
+#include "radiation_sweep.h"  // ray-engine-v2: the radiation sweep (LIVE since T5b)
 
 class PhysicsEngine {
 public:
@@ -47,10 +47,10 @@ public:
     WaterSolver       water;
     EOSSolver         eos;   // EOS refactor P3
     CombustionSolver  combustion;   // EOS refactor P4
-    // Ray-engine-v2 P1 (design v3 §2.6, §11): THE E° table's one owner (the
-    // old `raycaster` above keeps its own copy of the SAME bake until P3
-    // retires it — never two bakes), and the radiation sweep that runs as
-    // step 2b of step_tail into the shadow planes.
+    // Ray-engine-v2 (design v3 §2.6, §11): THE E° table's one owner (the old
+    // `raycaster` above keeps a vestigial copy of the SAME bake since T6 —
+    // never two bakes), and the radiation sweep that runs as step 2b of
+    // step_tail, LIVE since T5b.
     EmissiveTable     emissive;
     RadiationSweep    radiation;
 
@@ -170,17 +170,20 @@ public:
         // does, passed in rather than re-derived so the two cannot drift.
         int64_t* gas_energy = nullptr,
         int32_t t_amb_q = 0,
-        // ---- ray-engine-v2 P1 (design v3 §11, orchestrator override row 35):
-        // THE SHADOW SWEEP. Step "2b" — between the fire step and the
-        // temperature pass — runs RadiationSweep::run (shear, S16) on the live
-        // temperature / extinction / capacity planes into the four int64
-        // SHADOW planes, which nothing consumes yet; the old cast still fills
-        // the live rad_net/rad_amb/rad_flux and the fold still reads those.
+        // ---- ray-engine-v2 (design v3 §11, orchestrator override row 35):
+        // THE SWEEP, LIVE since T5b. Step "2b" — between the fire step and
+        // the temperature pass — runs RadiationSweep::run (shear, S16) on the
+        // live temperature / extinction / capacity planes into the four
+        // int64 planes below, which the temperature fold, the Pass-1 clamp
+        // and unit heat damage now read (the old cast that used to fill a
+        // separate set of planes is deleted, T6).
         //   heat_atten_q / dyn_heat_atten_q : int32 Q16 (h, w), the extinction
         //                                     planes (GameMap, optics_fixed.py)
         //   rad_net_sweep / rad_flux_sweep / rad_amb_sweep / rad_fluence :
         //                                     int64 (h, w), accumulated (the
-        //                                     conductor wipes them per tick)
+        //                                     sweep's own run() zeroes them
+        //                                     each tick before its first
+        //                                     ordinate — not the conductor)
         //   k_leak_q                        : [physics.radiation] k_leak, Q16
         //   rad_amb_vacuum_q                : the EMISSIVE LEVEL a VACUUM cell
         //        radiates against (thermal model v2 R3), in the E° table's own
@@ -196,8 +199,9 @@ public:
         // ALL SIX PLANES must be non-null for the sweep to run (dormancy by
         // branch, the tree's idiom); the pybind binding makes them REQUIRED
         // and noconvert, so the live runner cannot omit them. The temperature
-        // pass receives rad_fluence = nullptr / e_table = nullptr (the clamp
-        // stays DORMANT until P3 flips the fold onto the sweep's planes).
+        // pass always receives rad_fluence / e_table too, so the maximum-
+        // principle clamp is LIVE on the same call (design v3 P3) — only a
+        // direct caller that omits them gets the pre-flip no-clamp path.
         const int32_t* heat_atten_q = nullptr,
         const int32_t* dyn_heat_atten_q = nullptr,
         int64_t* rad_net_sweep = nullptr,

@@ -539,7 +539,8 @@ public:
     // without it, `tests/_sealedbox_bisect_bench.py`'s TOTAL ledger identity
     // is BROKEN on every tick with live fire. Folds into the SOLID side's
     // closure identity (temperature_solver.h) alongside `e_solid_deposit_sum`
-    // / `e_solid_cond_sum` / `e_thermostat_sum`.
+    // / `e_solid_cond_sum` (T5b step 7 deletes the identity's third term,
+    // `e_thermostat_sum`, with Pass 3 -- REMOVED, not folded in here).
     mutable int64_t e_comb_solid_heat_sum = 0;
 
     // gas                : (n_gases, h, w) Q16.16 density planes, mutated

@@ -64,8 +64,10 @@
 //     face_shift-keyed pass (no solid/air branch) does air<->air AND the
 //     solid<->air interface exchange for free (the primary sealed-room energy
 //     sink; decisions.md item 7).
-//   * Pass 3 (cooling): UNCHANGED — solid-only already (gas cells are
+//   * Pass 3 (cooling): UNCHANGED here — solid-only already (gas cells are
 //     structurally excluded: no decay-to-ambient for gas, per design §4).
+//     Pass 3 itself is later DELETED outright by T5b step 7 (R1) — see the
+//     ambient-cooling section below.
 //
 // NON-GOALS here (P3+): no compression-work term (needs the new solver's
 // div u), no P/pressure changes, no O2/N2 species (P1, parallel worktree).
@@ -524,7 +526,8 @@ public:
     // and therefore the TOTAL ledger (gas books + solid books) closes against
     // every external channel named across both identities (EOS, the thermal
     // solver's gas side, combustion, the Python seams, water evac, the solid
-    // deposit, the solid conduction landing, and the thermostat).
+    // deposit, and the solid conduction landing — the thermostat is not in
+    // this list any more; it is the one channel that was REMOVED, not moved).
     //
     // `e_solid_deposit_sum` — Pass 1's landing on THERMAL SOLID cells only:
     // the radiation fold (rad_net, signed) AND the heat->T bit-shift deposit,
@@ -574,8 +577,10 @@ public:
     //            solid<->air both ride the same face-antisymmetric ΔE with the
     //            per-face limiter; each endpoint converts through its own
     //            capacity.
-    //   Pass 3 — ambient cooling (§3), solids only, vacuum-exposure 1-bit.
-    //            UNCHANGED: gas cells are structurally excluded (no decay).
+    //   Pass 3 — DELETED (T5b step 7, thermal model v2 R1). Was ambient
+    //            cooling (§3), solids only, vacuum-exposure 1-bit; the
+    //            radiation sweep computes the real radiative loss now, so
+    //            nothing relaxes to ambient any more (see the .cpp).
     //
     //   temperature : Q16.16 int32, (h, w). Persistent field (ΔT above ambient;
     //                 T_ambient == 0, proposal §3.1). AMBIENT-RELATIVE for BOTH
@@ -648,16 +653,20 @@ public:
         // SIGNATURE change on a defaulted trailing parameter, so every
         // caller that passed one must be edited -- they are, and the
         // compiler catches any that are not.
-        // ---- P-R4 RADIATION (docs/radiation_raycaster_extinction_ruling_
-        // 2026-07-31.md A1.7): the SIGNED per-tick radiation accumulator the
-        // raycaster's net-T⁴ exchange writes. **int64** Q16.16 heat counts
-        // since ray-engine-v2 P3a-1 (design v3 §3, rows 26/35 — the plane and
-        // every surface on its path widened in one commit so pybind11's
-        // forcecast could not hand a stale caller a truncated copy); the fold
-        // below therefore shifts it with `shr_round0_i64` and lands it with
-        // `sat_add_q16_i64`, both of which agree with the narrow forms on
-        // every int32-range value. Its own plane (NOT `heat[]`) for one
-        // structural reason: `heat[]`'s adds are
+        // ---- RADIATION FOLD (docs/radiation_raycaster_extinction_ruling_
+        // 2026-07-31.md A1.7): the SIGNED per-tick radiation accumulator this
+        // pass folds into `temperature`. THE FLIP (T5b step 6): the live
+        // engine now feeds this parameter the sweep's `rad_net_sweep`
+        // (radiation_sweep.h), not the old raycaster's net-T⁴ exchange plane
+        // — the parameter is still generically named `rad_net` and its
+        // contract below is unchanged; only its live source moved. **int64**
+        // Q16.16 heat counts since ray-engine-v2 P3a-1 (design v3 §3, rows
+        // 26/35 — the plane and every surface on its path widened in one
+        // commit so pybind11's forcecast could not hand a stale caller a
+        // truncated copy); the fold below therefore shifts it with
+        // `shr_round0_i64` and lands it with `sat_add_q16_i64`, both of which
+        // agree with the narrow forms on every int32-range value. Its own
+        // plane (NOT `heat[]`) for one structural reason: `heat[]`'s adds are
         // POSITIVE-SATURATING, which is order-free only because positives are
         // monotone under a clamp; a SIGNED net under saturation is order-
         // DEPENDENT. `rad_net[]` therefore takes plain (wrapping) signed adds,
@@ -681,18 +690,18 @@ public:
         // EOSSolver's own fold reads, so the two cannot drift.
         int64_t* gas_energy = nullptr,
         int32_t t_amb_q = 0,
-        // ---- ray-engine-v2 P1 (design v3 §2.8): THE MAXIMUM-PRINCIPLE CLAMP,
-        // dormant. `rad_fluence` — the sweep's Φ plane, (h, w) int64, the
-        // total stream each cell absorbed from this tick; `e_table` — the E°
-        // table (E_TABLE_SIZE int64 entries, EmissiveTable::table()). With BOTH
-        // supplied, the Pass-1 radiation fold clips each thermal solid's
+        // ---- ray-engine-v2 (design v3 §2.8): THE MAXIMUM-PRINCIPLE CLAMP,
+        // LIVE since T5b. `rad_fluence` — the sweep's Φ plane, (h, w) int64,
+        // the total stream each cell absorbed from this tick; `e_table` — the
+        // E° table (E_TABLE_SIZE int64 entries, EmissiveTable::table()). With
+        // BOTH supplied, the Pass-1 radiation fold clips each thermal solid's
         // radiative sub-step at max(T_before, E°⁻¹(Φ)) between the saturating
         // add and the rails, counted in `rad_clamp_hits`, and the applied-ΔT
         // booking below it sees the clipped value (so the P-G5 solid ledger
-        // keeps closing with no extra counter). EITHER nullptr -> no clamp,
-        // byte-identical to today: what the live step_tail passes at P1 (the
-        // old cast's rad_net is not the sweep's Φ) and what every existing
-        // direct caller gets. The CUDA twin gets the same clamp at P3.
+        // keeps closing with no extra counter). EITHER nullptr -> no clamp —
+        // the live step_tail always supplies both, so only a direct caller
+        // that omits them still gets the byte-identical pre-flip path. The
+        // CUDA twin has the same clamp too (cuda_temperature.cu, C_RAD_CLAMP).
         const int64_t* rad_fluence = nullptr,
         const int64_t* e_table = nullptr
     ) const;
