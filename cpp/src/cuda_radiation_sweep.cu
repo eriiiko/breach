@@ -425,6 +425,14 @@ int radiation_sweep_launch_resident(
             "TRANSPORT_STEP (0) or TRANSPORT_SHEAR (1)");
     }
     if (n_env <= 0 || h <= 0 || w <= 0) return 0;
+    if (n_env > 65535) {
+        // The wavefront grid carries the env on blockIdx.z (hardware limit
+        // 65535); a bigger batch needs the env folded into x, not a silent
+        // launch failure.
+        throw std::invalid_argument(
+            "radiation_sweep_launch_resident: n_env exceeds 65535, the "
+            "wavefront grid's z extent");
+    }
     SweepOrdinates ords{};
     for (int m = 0; m < n_ordinates; ++m) ords.oc[m] = tbl[m];
     const bool shear = (transport == RadiationSweep::TRANSPORT_SHEAR);

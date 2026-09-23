@@ -99,10 +99,6 @@ class Scene:
         self.ts = np.ascontiguousarray(np.asarray(ts) != 0)
         self.h, self.w = self.a.shape
 
-    @classmethod
-    def from_lists(cls, a, d, T, his, ts):
-        return cls(a, d, T, his, ts)
-
 
 def cpu_run(sc, table, *, transport="shear", n_ord=16, k_q=0, t_amb=int(T_AMB_Q),
             amb=None, is_vacuum=None, vac_level=-1, fleck=True):

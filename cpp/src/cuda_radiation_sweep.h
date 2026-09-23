@@ -44,9 +44,13 @@
 //   * The wavefront parallelisation of a discrete-ordinates sweep:
 //     K.R. Koch, R.S. Baker, R.E. Alcouffe, "Solution of the first-order form
 //     of the 3-D discrete ordinates equation on a massively parallel
-//     processor", Trans. Am. Nucl. Soc. 65 (1992) 198-199 — the "KBA"
-//     algorithm, whose 2-D form is the diagonal wavefront the step transport
-//     launches here. Citation in docs/papers/README_ray_engine_v2_2026-09-13.md.
+//     processor", Trans. Am. Nucl. Soc. 65 (1992) 198-199 (LA-UR-91-4157) —
+//     the "KBA" sweep: a wavefront's cells depend only on the previous
+//     wavefront, so they run concurrently, with the ordinates pipelined
+//     through the same steps. KBA decomposed a 3-D grid over processors; this
+//     is the single-device 2-D case (the design's "KBA skew" is the step
+//     transport's anti-diagonal). No full text exists to archive (OSTI holds
+//     none); the entry is docs/papers/README_ray_engine_v2_2026-09-13.md #16.
 //
 // Plain C++ declaration header (no CUDA types in the signatures) so the .cpp
 // TUs (physics_engine.cpp, bindings.cpp — cl.exe even in the CUDA build) can

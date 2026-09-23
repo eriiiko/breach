@@ -260,7 +260,8 @@ constexpr int RS_BAD_VAC_LEVEL = 2;
 //   d_f_q24         : (N, h, w) int32 — the Fleck plane (observable)
 //   d_rad_*         : (N, h, w) int64 — OVERWRITTEN (zeroed here first)
 //   d_cnt           : (N, RADIATION_SWEEP_CNT_SLOTS) int64
-// Throws std::invalid_argument on an unsupported (n_ordinates, transport) —
+// Throws std::invalid_argument on an unsupported (n_ordinates, transport) or
+// an n_env above 65535 (the wavefront grid's blockIdx.z carries the env) —
 // host control flow, checked before any launch. Returns the launch count.
 int radiation_sweep_launch_resident(
     int n_env, int h, int w,
