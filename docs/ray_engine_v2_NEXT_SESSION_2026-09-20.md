@@ -2,9 +2,16 @@
 
 > **This file IS the prompt.** Point a session at it and it has everything.
 >
-> **UPDATED 2026-09-21 — q7 IS RULED. The arc is no longer blocked.**
-> Supersedes the 2026-09-20 edition, which said "blocked on Erik (q7)".
-> That is history; do not act on it.
+> **UPDATED 2026-09-23 — THE PLAN WAS NARROWED. Start at
+> `docs/ray_engine_v2_m3_brief_2026-09-22.md`**, then §4 below. Erik blessed a
+> re-assessment (built on Fable's of 2026-09-22): M3 is only the flip's
+> blocker (`H_bed` ÷ 2¹⁶ + the reference at the derived scale); **Erik plays the
+> flip before it merges into `fire-12`**; M4 is cut; T8 goes to an issue; the
+> timer change is deferred to a fire arc after P7; the material table is
+> placeholders and the thin-rows doc's material rulings are provisional. New
+> standing rule: *one system at a time* (`autonomous-patch-workflow`).
+>
+> (2026-09-21: q7 was ruled; the earlier "blocked on Erik (q7)" is history.)
 
 ---
 
@@ -99,12 +106,14 @@ nothing tuned.
 | | patch | tier | state |
 |---|---|---|---|
 | **M1** | negative `thermal_mass` exponents (the sign lift) | Opus | **MERGED** `1feea98` |
-| **M2** | dimensions + the four rows, derived at base resolution; re-anchor the bench on a thin row | Opus | next |
-| **M3** | derived `H_bed`/`H_fuel`; delete the timer; move the destroy decision; **measure** the real burn durations | Opus | |
-| **M4** | `tools/derive_material_row.py` + an `adding-a-material` skill + the CLAUDE.md rules | Sonnet 5 | |
-| | **HUMAN TEST — Erik plays it** | | |
-| **T6/T7/T8** | old-law deletion · CLAUDE.md walkthrough · ill-posed-test sweep | | |
+| **M2** | dimensions + the four rows, derived at base resolution; re-anchor the bench on a thin row | Opus | **MERGED** `9cc1879` (+ M2b probe `b85c32c`) |
+| **M3** | **NARROWED 2026-09-23**: derived `H_bed` + the reference at the derived scale; the flip goes green. Brief: `ray_engine_v2_m3_brief_2026-09-22.md` | Opus | **next** — worktree `breach-m3` cut |
+| ~~**M4**~~ | cut 2026-09-23 | | |
+| | **HUMAN TEST — Erik plays the flip branch, BEFORE the merge** | | |
+| | merge the flip into `fire-12` (`--no-ff`) | | |
+| **T6/T7** | old-law deletion (NOT the timer: it stays live) · CLAUDE.md walkthrough | | |
 | **P4–P7** | CUDA twin · smoke & gas (closes q6) · light (**P6b = 2nd human test**) · stealth + RL light | | |
+| *after P7* | the fire arc: the timer change (q5 rulings 9–11), burn durations, ignition/spread · T8's ill-posed-test sweep (an issue) · Erik's material design session | | |
 
 Still open, unscheduled, **none blocking**: q1, q3 (M2 deliberately does NOT
 half-solve it — see the recorded reversal in the design doc §4), q4.
