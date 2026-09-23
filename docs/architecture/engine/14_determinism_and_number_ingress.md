@@ -140,8 +140,10 @@ independently of it** — a tick's Philox draws never advance or desync
 `sim.rng`'s draw count, and vice versa. The layout is a fixed wire format:
 key = `(match_seed_lo, match_seed_hi)` — the match seed and nothing else;
 counter = `(tick, draw_index, stream_salt, unit_id)`, where `stream_salt`
-names the purpose (one enum per consumer, so two consumers can never collide
-on a stream) and `draw_index` restarts at 0 every tick, assigned by static
+names the purpose and lives in ONE enum across all of breach — never one enum
+per consumer: consumers with different id spaces (CPU units, swarm units)
+share the key, so two consumers reusing a salt value would draw identical bits
+for equal ids — and `draw_index` restarts at 0 every tick, assigned by static
 code position, never stored. The output mappings are the same shift/multiply
 idiom as doors 1–3 (uniform Q16.16 via `w >> 16`, angle via a checked-in 2π
 Q16 constant), and **`philox32_below(w, n)` (Lemire multiply-shift) is the
