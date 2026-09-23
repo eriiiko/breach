@@ -82,7 +82,6 @@ ARENA = np.s_[3:67, 3:58]
 VARIANTS = [
     ("baseline",  {}),
     ("drag",      {"k_drag": 0.0}),
-    ("comp_work", {"adiabatic_index": 1.0}),
     ("flat_gs",   {"use_multigrid": False}),
     ("no_vrail",  {"U_MAX": 1e9}),
     # MG thin-wall probe (2026-08-29): same box, 2- and 3-tile glass walls.
@@ -110,10 +109,11 @@ VARIANTS = [
 #   flat_S512_clamp0                           with #54's driver off", which
 #   wall2_clamp0                               is now the ONLY way it runs
 #   nofire_clamp0
-# `comp_work` (adiabatic_index = 1.0) SURVIVES but has changed meaning: it no
-# longer zeroes a compression term, it zeroes k_work = (gamma-1)*T_AMB_K, i.e.
-# the flux constant -- while ALSO stiffening the kick by 1.4x (K = c_max^2/
-# gamma). Still confounded, still useful as a control.
+# `comp_work` (adiabatic_index = 1.0) survived P-G1a with a changed meaning (it
+# zeroed k_work = (gamma-1)*T_AMB_K, the flux constant) but is RETIRED too
+# (2026-09-23, T7): the later bind-time range guard on `k_flux_q`
+# (gas_energy_conservation_design_2026-08-29.md §2.4) rejects gamma = 1, so the
+# variant raised before its first tick.
 
 
 def run_variant(name, overrides, wall_thick=1, ignite=True, no_conduction=False):
@@ -225,14 +225,15 @@ def run_variant(name, overrides, wall_thick=1, ignite=True, no_conduction=False)
             -int(engine.e_water_evac_export_sum),
             # P-G5 (design gas_energy_thermostat_ledger_2026-08-30.md): the
             # SOLID side's own channels — Pass 1's landing on thermal solids,
-            # Pass 2's landing on thermal solids, the thermostat (Pass 3
-            # relax-to-ambient), AND combustion's own `e_comb_solid_heat_sum`
-            # (the object-site fuel deposit that bypasses TemperatureSolver's
-            # Pass 1 entirely — combustion.cpp writes `temperature[s]`
-            # directly). Accumulating, like the tail/combustion/seam groups
-            # above.
+            # Pass 2's landing on thermal solids, AND combustion's own
+            # `e_comb_solid_heat_sum` (the object-site fuel deposit that
+            # bypasses TemperatureSolver's Pass 1 entirely — combustion.cpp
+            # writes `temperature[s]` directly). Accumulating, like the
+            # tail/combustion/seam groups above. (The thermostat term went with
+            # Pass 3: T5b step 7 deleted it, and the identity closes with the
+            # term REMOVED, not zeroed — report_t5b.md §7.3.)
             int(tsolver.e_solid_deposit_sum) + int(tsolver.e_solid_cond_sum)
-            + int(tsolver.e_thermostat_sum) + int(comb.e_comb_solid_heat_sum),
+            + int(comb.e_comb_solid_heat_sum),
         )
 
     def _solid_books():
@@ -385,15 +386,11 @@ def run_variant(name, overrides, wall_thick=1, ignite=True, no_conduction=False)
           f"{'PASS' if ok_ii else 'FAIL'} (+/-2)"
           f"   (iii) u_max={float(u.max()):5.1f} "
           f"{'PASS' if ok_iii else 'FAIL'} (<3)")
-    # `e_thermostat_sum` printed in box-deg equivalent too (as asked) — but
-    # flagged GLOBAL: it is the whole-map total (dominated by the crate
-    # fire's own nearby walls), not the box-scoped figure used above.
-    global_thermostat_box_deg = (int(tsolver.e_thermostat_sum) / N1_box / q
-                                 if N1_box else 0.0)
+    # (The GLOBAL `e_thermostat_sum` print that stood here went with Pass 3:
+    # T5b step 7 deleted the thermostat. `thermostat_box_deg` above is kept as
+    # the box walls' own energy change; its name is historical.)
     print(f"{'':>11}  P-G5    (ii) raw dT_box=D(SumE/SumN)={dT_box_raw:+7.2f}  "
-          f"box-wall thermostat contribution={thermostat_box_deg:+7.2f} box-deg"
-          f"   e_thermostat_sum(GLOBAL)={int(tsolver.e_thermostat_sum)} "
-          f"({global_thermostat_box_deg:+7.2f} box-deg eq., whole map)"
+          f"box-wall energy change={thermostat_box_deg:+7.2f} box-deg"
           f"   TOTAL ledger (gas+solid): "
           f"{'EXACT' if ok_i_total else 'BROKEN'} across "
           f"{ident_total['ticks']} TICKS{detail_total}")
