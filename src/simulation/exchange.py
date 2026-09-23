@@ -296,9 +296,25 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
     # ``heat`` is still read alongside it (max of the two) so the OTHER
     # writers of that plane — weapons/payload deposits, combustion at a burn
     # site — keep burning units exactly as before.
+    #
+    # T5b step 6, THE FLIP: the sensor is now `rad_flux_sweep`, the radiation
+    # SWEEP's own body channel, not the retired cast's `rad_flux`. Three things
+    # change with it, and all three are improvements:
+    #   * it is a LEDGER EXIT, debited from the stream (the sweep's identity
+    #     `sum rad_net + sum rad_flux + sum rad_amb == 0` holds in int64), where
+    #     the old plane was an undebited incident ESTIMATE;
+    #   * it is the absorbed energy per tick in the FOLD'S OWN CURRENCY, the
+    #     same currency as `heat` -- so `max(heat, rad_flux)` below is now two
+    #     exposures in one unit rather than two different kinds of number;
+    #   * it is SIGNED (a body cooler than its surroundings books a negative
+    #     net), which the `max` handles for free: `heat` is non-negative.
+    # The body's share is `d - a` on `dyn_heat_atten_q` -- a unit MAX-stamps its
+    # own `heat_atten` (default 1.0, an opaque body), so a marine on an air tile
+    # absorbs the whole stream crossing its cell and re-emits ambient onward
+    # (design v3 §6.2, row 25).
     h, w = gmap.heat.shape
     heat = gmap.heat
-    rad_flux = getattr(gmap, "rad_flux", None)
+    rad_flux = getattr(gmap, "rad_flux_sweep", None)
     cmb = CFG.combat
 
     absorption   = float(cmb.unit_absorption)

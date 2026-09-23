@@ -214,7 +214,7 @@ def counters(runner):
              # P-E2b adds e_deposit_drop_sum: the Pass-1 attenuation-drop
              # energy sum (L3-7) — same accumulate idiom as the P-E2a six.
              ("e_cond_trunc_sum", "e_cond_cap_sum", "cond_limit_hits",
-              "e_cool_sum", "e_vac_wipe_sum", "e_ring_pin_sum",
+              "e_vac_wipe_sum", "e_ring_pin_sum",   # T5b: e_cool_sum deleted
               "t_max_phys_hits", "t_low_rail_hits", "e_deposit_drop_sum")),
     ):
         for nm in names:

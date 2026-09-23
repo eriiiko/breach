@@ -124,19 +124,17 @@ public:
         // six medium tests key on, instead of the FLOW mask `solid` above.
         // GameMap.thermal_solid; equals `solid` on any furniture-free map.
         const bool* thermal_solid,
-        // COOL-SHIFT AXIS (2026-07-30): the per-tile ambient-decay shift
-        // (GameMap.cool_shift) the temperature pass's Pass 3 reads instead of
-        // the single global COOL_SHIFT. REQUIRED here (not defaulted) for the
-        // same reason `thermal_solid` is: the live engine must never silently
-        // fall back to the global. Uniform == the old global on the shipped
-        // config, so this is byte-identical on arrival.
-        const int32_t* cool_shift_grid,
+        // T5b step 7 / thermal model v2 R1: `const int32_t* cool_shift_grid`
+        // was a REQUIRED parameter here. Pass 3 is deleted on both backends,
+        // so the plane has no reader and the parameter is gone. Removing a
+        // required positional argument is a hard compile error at every call
+        // site, which is the point: nothing can silently keep passing it.
         // FUEL-FRACTION AXIS (2026-07-30): the per-tile `make_recip` reciprocal
         // of each tile's material's full-health hp (GameMap.fuel_recip), which
         // the fire logistic's fuel term F = clamp01(wall_hp/hp_full) reads
         // instead of the single global [physics.fire] fuel_ref (== WOOD's hp).
-        // REQUIRED here (not defaulted) for the same reason `thermal_solid` and
-        // `cool_shift_grid` are: the live engine must never silently fall back
+        // REQUIRED here (not defaulted) for the same reason `thermal_solid`
+        // is: the live engine must never silently fall back
         // to the global. A uniform plane == the old global, so this is
         // byte-identical on arrival for any map whose fuel is wood.
         const int64_t* fuel_recip,

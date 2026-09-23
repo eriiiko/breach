@@ -540,8 +540,11 @@ def run_b1(sealed_max_seconds=4200.0, open_max_seconds=3600.0):
                                      sealed_max_seconds, "sealed_inf_fuel")
 
     print("[B1] open M1-control leg (infinite fuel) ...")
+    # MAT_FURNITURE explicitly (M2): this leg drives the crate row below, so
+    # the painted tile must be the same row `_run_infinite_fuel` is told about.
     lvl_open = build_level(COMMON["interior_w"], COMMON["interior_h"], COMMON["crate_xy"],
-                           COMMON["tile_size_m"], sky_tau_s=60.0, sponge_width=8)
+                           COMMON["tile_size_m"], sky_tau_s=60.0, sponge_width=8,
+                           fuel_mat=MAT_FURNITURE)
     summ_open = _run_infinite_fuel(lvl_open, COMMON["crate_xy"], MAT_FURNITURE, 280.0,
                                    open_max_seconds, "open_inf_fuel")
     return summ_sealed, summ_open

@@ -66,9 +66,7 @@ PF1B = {
     "T_emit_gate": "310.0",
     "physics.combustion.H_BED_M": "18125.0",
     "physics.combustion.H_BED_SHIFT": "4",
-    "materials.furniture.cool_shift": "13",
-    "materials.wood.cool_shift": "13",
-    "materials.kindling.cool_shift": "13",
+    # T5b step 7 / R1: the three cool_shift overrides are deleted with Pass 3.
 }
 
 
@@ -111,8 +109,11 @@ def build_tworoom(interior_w, interior_h, tile_size_m, door_h=1, crate_xy=None):
 
 def build_arena(interior_w, interior_h, tile_size_m, crate_xy):
     from fire_timing_harness import build_level
+    # FURN explicitly (M2): the storm battery's arena is calibrated on the
+    # crate row; `build_level`'s default moved to kindling (design section 8).
+    from fire_timing_harness import FURN
     return build_level(interior_w, interior_h, crate_xy, tile_size_m,
-                       sky_tau_s=60.0, sponge_width=8)
+                       sky_tau_s=60.0, sponge_width=8, fuel_mat=FURN)
 
 
 def stamp_air_damping(gmap, value):

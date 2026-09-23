@@ -29,7 +29,6 @@
 //   3/6 gas_wall_at (ray-walk occluder)        (CPU gas_wall_at)
 //   4/6 the bilinear gather's sealed corner    (CPU gas_backtrace_sample_q)
 //   5/6 temp_convert_unified's medium branch   (CPU Pass 1)
-//   6/6 temp_cool's COOL_SHIFT decay guard     (CPU Pass 3)
 // `solid` is NOT otherwise read by this TU any more: it survives only as the
 // documented nullptr fallback for `thermal_solid`. Conduction (temp_conduct) is
 // κ-keyed via face_shift and is deliberately NOT one of the six (design §2.2),
@@ -38,15 +37,14 @@
 // byte-identical there (addendum D4) — the patch's gate (a).
 //
 // COOL-SHIFT AXIS (2026-07-30): the LOSS-side twin of thermal_mass. MEDIUM-TEST
-// SITE 6/6 (temp_cool) additionally takes a per-tile decay shift
-// (`cool_shift_grid`, GameMap.cool_shift) instead of the single global
-// COOL_SHIFT, because the thermal-mass arc made furniture a thermal solid whose
-// ONLY loss channel is that decay — and 2^5/24 == 1.3 s is right for thin hull
-// plate and absurd for a wooden crate. The vacuum-exposed rate stays ONE global
-// rule applied as an OFFSET (cool_shift - cool_shift_vacuum, floored at
-// cool_shift_floor == SHIFT_MIN), so each material keeps exactly one dial. With
-// every material seeded at the old global this is bit-identical to the pre-axis
-// kernel; the CPU twin is temperature_solver.cpp Pass 3, line for line.
+// T5b step 7 / thermal model v2 R1: SITE 6/6 was `temp_cool`, the CPU's
+// Pass 3. Both are DELETED -- the sweep computes the real radiative loss,
+// so a hand-rolled Newtonian relaxation beside it counted the same physics
+// twice. `cool_shift`, `cool_shift_vacuum`, `cool_shift_floor` and the
+// per-tile `cool_shift_grid` go with it, as do slots C_COOL and
+// C_THERMOSTAT (see the enum -- their removal RENUMBERS the survivors, and
+// that renumbering is explicit here and mirrored in physics_engine.cpp).
+
 // ============================================================================
 #include "cuda_temperature.h"
 #include "temperature_solver.h"       // P-E2a: the SHARED conduction energy kit
@@ -54,6 +52,7 @@
                                        // face_energy_q / opposite_dir) — one
                                        // transcription, both backends.
 #include "fixed_point.h"              // quantize/make_recip/mul_q16/mul_wide/narrow
+#include "emissive_table.h"           // T5b step 6: e_inv_q for the Pass-1 clamp
 #include "cuda_fixedpoint_device.cuh" // heat_saturating_add_dev, reciprocal_q16_dev,
                                        // recip_mul_dev
 #include "gas_energy.h"               // arc #54 P-G1b/P-G2: THE gas energy seam
@@ -98,22 +97,24 @@ __device__ __forceinline__ int dx_of(int d) {
 // P-E2b: slot 6 added — e_deposit_drop_sum, the Pass-1 attenuation-drop
 // energy sum (design §2.2/§2.5, L3-7). The block grew from 6 to 7 slots;
 // TEMPERATURE_ENERGY_SLOTS (cuda_temperature.h) is the pinned mirror.
+// T5b step 7: C_COOL (was 3) and C_THERMOSTAT (was 12) are DELETED with Pass 3,
+// and every survivor below them is RENUMBERED. These slots are PINNED
+// POSITIONAL -- `physics_engine.cpp` folds them into the solver's fields BY
+// INDEX -- so the renumbering is stated here and applied there in the same
+// commit. TEMPERATURE_ENERGY_SLOTS drops 14 -> 12.
 enum : int {
-    C_COND_TRUNC = 0,   // e_cond_trunc_sum   (endpoint floordiv residual, ≤ 0)
+    C_COND_TRUNC = 0,   // e_cond_trunc_sum   (endpoint floordiv residual, <= 0)
     C_COND_CAP   = 1,   // e_cond_cap_sum     (capacity floor/ceiling, signed)
-    C_LIMIT_HITS = 2,   // cond_limit_hits    (constraint-4 engagements)
-    C_COOL       = 3,   // e_cool_sum         (Pass 3 / sky, SIGNED)
-    C_VAC_WIPE   = 4,   // e_vac_wipe_sum     (Pass 0a breach wipe, SIGNED)
-    C_RING_PIN   = 5,   // e_ring_pin_sum     (Pass 0a ring pin, SIGNED)
-    C_DEP_DROP   = 6,   // e_deposit_drop_sum (Pass 1 attenuation drop, P-E2b)
-    C_GAS_DEPOSIT = 7,  // e_gas_deposit_sum  (arc #54, Pass 1 heat->E on gas)
-    C_GAS_COND    = 8,  // e_gas_cond_sum     (arc #54, Pass 2 conduction->E)
-    C_GAS_RAIL    = 9,  // e_gas_rail_sum     (arc #54, Pass 1's T_MAX_PHYS rail)
-    // P-G5 (thermostat ledger, design 2026-08-30): the SOLID side's own books.
-    C_SOLID_DEPOSIT = 10, // e_solid_deposit_sum (Pass 1 landing on ts cells)
-    C_SOLID_COND    = 11, // e_solid_cond_sum    (Pass 2 landing on ts cells)
-    C_THERMOSTAT    = 12, // e_thermostat_sum    (Pass 3, same value as C_COOL)
-    C_SLOTS      = 13
+    C_LIMIT_HITS = 2,   // cond_limit_hits    (a COUNT, not an energy)
+    C_VAC_WIPE      = 3,  // e_vac_wipe_sum      (Pass 0a open-vacuum wipe)
+    C_RING_PIN      = 4,  // e_ring_pin_sum      (Pass 0a ambient-ring pin)
+    C_DEP_DROP      = 5,  // e_deposit_drop_sum  (Pass-1 attenuation drop)
+    C_GAS_DEPOSIT   = 6,  // e_gas_deposit_sum   (arc #54, Pass 1 heat->E)
+    C_GAS_COND      = 7,  // e_gas_cond_sum      (arc #54, Pass 2 into gas E)
+    C_GAS_RAIL      = 8,  // e_gas_rail_sum      (arc #54, Pass 1 T_MAX rail)
+    C_SOLID_DEPOSIT = 9,  // e_solid_deposit_sum (P-G5, Pass 1 on ts cells)
+    C_SOLID_COND    = 10, // e_solid_cond_sum    (P-G5, Pass 2 on ts cells)
+    C_RAD_CLAMP     = 11, // rad_clamp_hits      (a count, not an energy)
 };
 
 __device__ __forceinline__ void cadd(unsigned long long* c, int slot, int64_t v) {
@@ -200,6 +201,9 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
                                      const bool* __restrict__ is_ambient,
                                      const int32_t* __restrict__ n_src,
                                      const int64_t* __restrict__ rad_net,
+                                     // T5b step 6: the clamp's two planes.
+                                     const int64_t* __restrict__ rad_fluence,
+                                     const int64_t* __restrict__ e_table,
                                      int64_t recip_cv, int32_t n_floor_q,
                                      int32_t t_max_phys_q,
                                      unsigned long long* __restrict__ hits,
@@ -224,8 +228,24 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
                 int32_t tr = temperature[i];
                 // P3a-1: the int64 twins of the SAME two kit functions, the
                 // one FP_HD definition the CPU fold also calls.
-                const int64_t dTr = shr_round0_i64(rn, heat_inv_shift[i]);
+                // M1: SIGNED in the exponent, the CPU twin's line for line.
+                const int64_t dTr =
+                    shr_round0_signed_i64(rn, heat_inv_shift[i]);
                 tr = sat_add_q16_i64(tr, dTr);
+                // ---- THE MAXIMUM-PRINCIPLE CLAMP (T5b step 6) -------------
+                //   T_new = min(T_after, max(T_before, E^-1(Phi)))
+                // The CPU twin verbatim (temperature_solver.cpp Pass 1), in
+                // the SAME position -- between the saturating add and the
+                // rails, and BEFORE the applied-delta-T booking, so the P-G5
+                // solid ledger books the clipped landing with no extra
+                // counter. `e_inv_q` is FP_HD: one implementation, both
+                // backends. Dormant unless both planes are supplied.
+                if (rad_fluence != nullptr && e_table != nullptr) {
+                    const int32_t t_cap = e_inv_q(e_table, rad_fluence[i]);
+                    const int32_t ceiling =
+                        (t_cap > t_before_rad) ? t_cap : t_before_rad;
+                    if (tr > ceiling) { tr = ceiling; cadd(cnt, C_RAD_CLAMP, 1); }
+                }
                 if (tr > t_max_phys_q) { tr = t_max_phys_q; atomicAdd(hits, 1ULL); }
                 // P-F1a (v7.2): the LOW rail — the CPU block verbatim. The
                 // radiation fold is the only SIGNED path into `temperature`;
@@ -247,9 +267,13 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
         // N-divided radiative deposit below.
         if (thermal_solid[i]) {
             const int32_t t_before_dep = t;                  // P-G5
+            // M1: WIDE and SIGNED — the CPU twin's line for line
+            // (temperature_solver.cpp Pass 1). A negative exponent turns this
+            // divide into a multiply and `deposit << 4` leaves int32.
             const int shift = heat_inv_shift[i];             // log2(thermal_mass)
-            const int32_t gain = deposit >> shift;           // Q16.16 / 2^shift
-            heat_saturating_add_dev(&t, gain);
+            const int64_t gain =
+                shr_round0_signed_i64((int64_t)deposit, shift);
+            t = sat_add_q16_i64(t, (gain > 0) ? gain : 0);
             if (t > t_max_phys_q) { t = t_max_phys_q; atomicAdd(hits, 1ULL); }
             temperature[i] = t;
             // P-G5: the heat-deposit's ACTUAL landing, post rail — the CPU
@@ -339,10 +363,29 @@ __global__ void temp_conduct(const int32_t* __restrict__ temperature,
                              unsigned long long* __restrict__ cnt,
                              int32_t c_v_q, int no_face, int h, int w) {
     const int n = h * w;
+    // T5b / ledger 7b: the VACUUM CONDUCTION MASK, the identical twin of the
+    // CPU's `no_cond_` plane (temperature_solver.h documents why it is a mask
+    // and not a density law for kappa). Computed inline rather than staged in
+    // a device plane: all three terms are already kernel arguments, and the
+    // predicate is two loads and two compares.
+    auto no_cond = [&](int k) -> bool {
+        return !thermal_solid[k] && (is_vacuum[k] || cap_real[k] == 0);
+    };
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         const int y = i / w;
         const int x = i % w;
+        // Applied per CELL, from both ends, so the mask is symmetric by
+        // construction and can never produce a one-sided face. NOTE the two
+        // side effects the CPU's early-out also skips are preserved by order:
+        // `de_gas[i] = 0` is written below only on the unmasked path, and a
+        // masked cell books nothing anywhere -- which is right, because it
+        // moved nothing.
+        if (no_cond(i)) {
+            temp_new[i] = temperature[i];
+            if (de_gas) de_gas[i] = 0;
+            continue;
+        }
         const int32_t* fs = &face_shift[i * 4];
         const int64_t ti = (int64_t)temperature[i];
         const int64_t cap_i = cap_used[i];
@@ -355,6 +398,7 @@ __global__ void temp_conduct(const int32_t* __restrict__ temperature,
             const int nx = x + dx_of(d);
             if (ny < 0 || ny >= h || nx < 0 || nx >= w) continue;
             const int j = ny * w + nx;
+            if (no_cond(j)) continue;   // the other end of the mask
             // The neighbour's facing entry — the face is skipped and rated
             // identically from both ends BY CONSTRUCTION (CPU comment).
             const int s_j = face_shift[j * 4 + conduction::opposite_dir(d)];
@@ -429,65 +473,9 @@ __global__ void temp_apply_gas_cond(int64_t* __restrict__ gas_energy,
     }
 }
 
-// ---- Pass 3: ambient cooling (§3, thermal solids only, vacuum-exposed 4x) ---
-// In-place on temperature[i]; reads own cell + neighbours' is_vacuum/atmosphere
-// (frozen -> safe). Symmetric round-toward-0 shift; the dead-band is preserved.
-// COOL-SHIFT AXIS (2026-07-30) — the exact device twin of the CPU Pass 3. The
-// base decay shift is now PER TILE (`cool_shift_grid`, null -> the `cool_shift`
-// scalar) and the vacuum-exposed shift is that base minus the ONE global
-// offset (cool_shift - cool_shift_vacuum, computed on the host and passed in as
-// `vac_offset`), clamped at `cool_shift_floor`. Rationale for the offset form
-// (one dial per material; the 4x space discount is a property of the boundary,
-// not of the material) lives at the CPU site — temperature_solver.cpp Pass 3.
-__global__ void temp_cool(int32_t* __restrict__ temperature,
-                          const bool* __restrict__ thermal_solid,
-                          const bool* __restrict__ is_vacuum,
-                          const int32_t* __restrict__ atmosphere,
-                          const int32_t* __restrict__ cool_shift_grid,
-                          const int64_t* __restrict__ cap_real,
-                          unsigned long long* __restrict__ cnt,
-                          int cool_shift, int vac_offset, int cool_shift_floor,
-                          int32_t thresh_q, int h, int w) {
-    const int n = h * w;
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
-         i += gridDim.x * blockDim.x) {
-        // MEDIUM-TEST SITE 6/6: COOL_SHIFT ambient decay is the SOLID thermal
-        // regime's loss channel. furniture's conductivity is 0 (NO_FACE both
-        // ways -> no conduction in or out), so with the crate now inside this
-        // pass COOL_SHIFT is its ONE loss channel — one clean dial (§2.2).
-        if (!thermal_solid[i]) continue;
-        const int32_t t = temperature[i];
-        if (t == 0) continue;
-        const int y = i / w;
-        const int x = i % w;
-        bool exposed = false;
-        for (int d = 0; d < 4; ++d) {
-            const int ny = y + dy_of(d);
-            const int nx = x + dx_of(d);
-            if (ny < 0 || ny >= h || nx < 0 || nx >= w) continue;
-            const int ni = ny * w + nx;
-            if (is_vacuum[ni] || atmosphere[ni] < thresh_q) {
-                exposed = true;
-                break;
-            }
-        }
-        const int base_shift =
-            (cool_shift_grid != nullptr) ? (int)cool_shift_grid[i] : cool_shift;
-        int shift = base_shift;
-        if (exposed) {
-            shift = base_shift - vac_offset;
-            if (shift < cool_shift_floor) shift = cool_shift_floor;
-        }
-        const int32_t loss = (t < 0) ? -((-t) >> shift) : (t >> shift);
-        temperature[i] = t - loss;
-        // P-E2a (L3-6): law unchanged; Pass 3 is a SIGNED channel — it relaxes
-        // toward 0 from BOTH sides, so on a sub-ambient tile it CREATES.
-        cadd(cnt, C_COOL, -(int64_t)loss * cap_real[i]);
-        // P-G5 (thermostat ledger): the SAME quantity, under the closure
-        // identity's canonical name — see the CPU twin's e_thermostat_sum.
-        cadd(cnt, C_THERMOSTAT, -(int64_t)loss * cap_real[i]);
-    }
-}
+// T5b step 7 / R1: the `temp_cool` kernel stood here -- the GPU twin of
+// the CPU's Pass 3. Deleted with it.
+
 
 }  // namespace
 
@@ -496,14 +484,12 @@ int64_t temperature_step(
     const int32_t* face_shift, const bool* solid, const bool* is_vacuum,
     const int32_t* atmosphere, const int32_t* n_bulk,
     const int32_t* wind_x, const int32_t* wind_y,
-    int no_face, int cool_shift, int cool_shift_vacuum, float o2_vacuum_thresh,
+    int no_face, float o2_vacuum_thresh,
     float c_v, float n_floor_heat, float gas_advection_rate, float t_max_phys,
     int h, int w, float dt,
     const bool* is_ambient,     // BC: ring wiped to ΔT=0 in Pass 0 (nullptr=space)
     const bool* thermal_solid,  // thermal-mass axis: medium mask (nullptr -> solid)
-    const int32_t* cool_shift_grid,  // cool-shift axis: per-tile decay shift
-                                      // (nullptr -> the cool_shift scalar)
-    int cool_shift_floor,       // low clamp on the vacuum offset (== SHIFT_MIN)
+    // T5b step 7: `cool_shift_grid` and `cool_shift_floor` stood here.
     int64_t* low_rail_hits_out, // P-F1a: Pass-1 LOW rail count (nullable)
     const int64_t* rad_net,     // P-R4: SIGNED radiation accumulator (int64, nullable)
     int64_t* energy_counters_out,   // P-E2a/arc #54/P-G5: TEMPERATURE_ENERGY_
@@ -511,8 +497,11 @@ int64_t temperature_step(
                                      // accumulated (+=) into the caller's fields
     int64_t* gas_energy,        // arc #54 §2.7 row 3: the conserved field
     int32_t t_amb_q,            // T_AMB_K raw (only read with gas_energy)
-    int64_t* solid_books_out) { // P-G5: solid_energy_books_sum SNAPSHOT (=,
+    int64_t* solid_books_out,   // P-G5: solid_energy_books_sum SNAPSHOT (=,
                                  // not +=), nullable
+    const int64_t* rad_fluence, // T5b step 6: the clamp's Phi plane (nullable)
+    const int64_t* e_table,     // T5b step 6: the E° table (nullable)
+    int e_table_n) {            // its length, in entries
     const int n = h * w;
     if (n <= 0) return 0;
 
@@ -521,32 +510,31 @@ int64_t temperature_step(
     // here so the device code is float-free.
     const int32_t thresh_q = quantize((double)o2_vacuum_thresh);
     const double c_v_safe = (c_v > 0.0f) ? (double)c_v : 1.0;
-    const int64_t recip_cv = make_recip(c_v_safe);
-    const int32_t n_floor_q = quantize((double)n_floor_heat);
-    const int32_t t_max_phys_q = quantize((double)t_max_phys);
     // P-E2a: c_v as a Q16.16 MULTIPLIER for the conduction capacity (Pass 1
     // needs its reciprocal; the capacity needs the value). Same dial, same
     // once-per-step boundary cast the CPU does.
+    // T5b: hoisted ABOVE `recip_cv`, because `recip_cv` is now derived FROM it
+    // -- `c_v` has exactly ONE integer representation in this engine (CPU twin
+    // says the same). report_t2.md §10.2.
     const int32_t c_v_q = quantize(c_v_safe);
+    const int64_t recip_cv = make_recip((double)c_v_q / 65536.0);  // 1/c_v_q
+    const int32_t n_floor_q = quantize((double)n_floor_heat);
+    const int32_t t_max_phys_q = quantize((double)t_max_phys);
     // P-E1: Pass 0b (gas-T SL advection) is RETIRED — `wind_x`/`wind_y`/`dt`
     // and `gas_advection_rate` survive only as inert back-compat surface, and
     // nothing on this backend reads them any more (CPU twin identical).
     (void)wind_x; (void)wind_y; (void)gas_advection_rate;
-    // COOL-SHIFT AXIS: the vacuum discount as a DIFFERENCE, computed ONCE on
-    // the host exactly as the CPU solver's Pass 3 does (`const int vac_offset =
-    // cool_shift - cool_shift_vacuum;`). Pure integer, no boundary cast.
-    const int vac_offset = cool_shift - cool_shift_vacuum;
+
 
     const size_t nb = (size_t)n * sizeof(int32_t);
     const size_t nbool = (size_t)n * sizeof(bool);
     int32_t *d_temp = nullptr, *d_temp_new = nullptr, *d_heat = nullptr,
             *d_his = nullptr, *d_fs = nullptr, *d_atm = nullptr,
-            *d_nbulk = nullptr,
-            *d_csg = nullptr;
+            *d_nbulk = nullptr;
     bool *d_solid = nullptr, *d_vac = nullptr, *d_tsol = nullptr;
     unsigned long long* d_hits = nullptr;
     unsigned long long* d_low_hits = nullptr;   // P-F1a: LOW rail count
-    // P-E2a: the two capacity planes + the C_SLOTS-slot energy counter block.
+    // P-E2a: the two capacity planes + the TEMPERATURE_ENERGY_SLOTS-slot energy counter block.
     int64_t *d_cap_used = nullptr, *d_cap_real = nullptr;
     unsigned long long* d_cnt = nullptr;
     // arc #54 §2.7 row 3: the conserved gas energy field's device buffer +
@@ -565,7 +553,7 @@ int64_t temperature_step(
     cuda_check(cudaMalloc(&d_low_hits, sizeof(unsigned long long)), "malloc low_hits");
     cuda_check(cudaMalloc(&d_cap_used, (size_t)n * sizeof(int64_t)), "malloc cap_used");
     cuda_check(cudaMalloc(&d_cap_real, (size_t)n * sizeof(int64_t)), "malloc cap_real");
-    cuda_check(cudaMalloc(&d_cnt, C_SLOTS * sizeof(unsigned long long)), "malloc cnt");
+    cuda_check(cudaMalloc(&d_cnt, TEMPERATURE_ENERGY_SLOTS * sizeof(unsigned long long)), "malloc cnt");
     if (n_bulk) cuda_check(cudaMalloc(&d_nbulk, nb), "malloc n_bulk");
     // arc #54: gas_energy is nullable — nullptr on the pre-#54 T-form path
     // (the direct-binding/unit-test callers), matching the CPU's `e_on` gate.
@@ -579,10 +567,7 @@ int64_t temperature_step(
     // — so the fallback allocates and copies nothing (and is not a second code
     // path). `solid` itself keeps its unconditional upload: it IS that fallback.
     if (thermal_solid) cuda_check(cudaMalloc(&d_tsol, nbool), "malloc thermal_solid");
-    // COOL-SHIFT AXIS: same nullable-plane idiom — with nullptr the kernel is
-    // handed a null pointer and falls back to the `cool_shift` scalar per cell,
-    // the exact CPU twin, so the fallback allocates and copies nothing.
-    if (cool_shift_grid) cuda_check(cudaMalloc(&d_csg, nb), "malloc cool_shift_grid");
+
     // P-R4: same nullable-plane idiom — with nullptr the kernel is handed a
     // null pointer and skips the fold, the exact CPU twin.
     // P3a-1: rad_net is int64 now, so it gets its OWN byte count -- `nb` is
@@ -601,12 +586,25 @@ int64_t temperature_step(
     if (thermal_solid)
         cuda_check(cudaMemcpy(d_tsol, thermal_solid, nbool, cudaMemcpyHostToDevice),
                    "H2D thermal_solid");
-    if (cool_shift_grid)
-        cuda_check(cudaMemcpy(d_csg, cool_shift_grid, nb, cudaMemcpyHostToDevice),
-                   "H2D cool_shift_grid");
     if (rad_net)
         cuda_check(cudaMemcpy(d_radnet, rad_net, nb64, cudaMemcpyHostToDevice),
                    "H2D rad_net");
+    // T5b step 6: the maximum-principle clamp's two inputs. BOTH must be
+    // supplied or the kernel takes its dormant branch -- a half-supplied pair
+    // would silently clamp against a table that is not the sweep's.
+    int64_t* d_fluence = nullptr;
+    int64_t* d_etable = nullptr;
+    const bool clamp_on = (rad_fluence != nullptr && e_table != nullptr
+                           && e_table_n > 0);
+    if (clamp_on) {
+        cuda_check(cudaMalloc(&d_fluence, nb64), "malloc rad_fluence");
+        cuda_check(cudaMemcpy(d_fluence, rad_fluence, nb64,
+                              cudaMemcpyHostToDevice), "H2D rad_fluence");
+        const size_t etb = (size_t)e_table_n * sizeof(int64_t);
+        cuda_check(cudaMalloc(&d_etable, etb), "malloc e_table");
+        cuda_check(cudaMemcpy(d_etable, e_table, etb,
+                              cudaMemcpyHostToDevice), "H2D e_table");
+    }
     // BC: optional ambient ring mask for the Pass-0 wipe (nullptr on space maps).
     bool* d_amb = nullptr;
     if (is_ambient) {
@@ -619,7 +617,7 @@ int64_t temperature_step(
                               cudaMemcpyHostToDevice), "H2D gas_energy");
     cuda_check(cudaMemset(d_hits, 0, sizeof(unsigned long long)), "memset hits");
     cuda_check(cudaMemset(d_low_hits, 0, sizeof(unsigned long long)), "memset low_hits");
-    cuda_check(cudaMemset(d_cnt, 0, C_SLOTS * sizeof(unsigned long long)), "memset cnt");
+    cuda_check(cudaMemset(d_cnt, 0, TEMPERATURE_ENERGY_SLOTS * sizeof(unsigned long long)), "memset cnt");
 
     // The N divisor source Pass 1 reads: n_bulk when supplied, else the atmosphere
     // density proxy — EXACTLY the CPU's `n_bulk ? n_bulk[i] : atmosphere[i]`.
@@ -651,7 +649,9 @@ int64_t temperature_step(
     // deposit -> d_gas_energy + d_cnt[C_GAS_DEPOSIT/C_GAS_RAIL]).
     temp_convert_unified<<<grid, block>>>(d_temp, d_heat, d_his, d_ts, d_vac,
                                           d_solid, d_amb,
-                                          d_nsrc, d_radnet, recip_cv, n_floor_q,
+                                          d_nsrc, d_radnet,
+                                          d_fluence, d_etable,
+                                          recip_cv, n_floor_q,
                                           t_max_phys_q, d_hits, d_low_hits,
                                           d_cnt, d_cap_real, d_gas_energy,
                                           t_amb_q, n);
@@ -673,11 +673,7 @@ int64_t temperature_step(
     }
 
     // Pass 3: cool (in-place on d_temp).
-    temp_cool<<<grid, block>>>(d_temp, d_ts, d_vac, d_atm, d_csg,
-                               d_cap_real, d_cnt,
-                               cool_shift, vac_offset, cool_shift_floor,
-                               thresh_q, h, w);
-    cuda_check(cudaGetLastError(), "cool launch");
+    // T5b step 7: the Pass-3 `temp_cool` launch stood here.
     cuda_check(cudaDeviceSynchronize(), "sync");
 
     unsigned long long hits = 0, low_hits = 0;
@@ -686,15 +682,15 @@ int64_t temperature_step(
     cuda_check(cudaMemcpy(&low_hits, d_low_hits, sizeof(unsigned long long),
                           cudaMemcpyDeviceToHost), "D2H low_hits");
     if (low_rail_hits_out) *low_rail_hits_out += (int64_t)low_hits;
-    // P-E2a/arc #54: fold the C_SLOTS-slot energy block into the caller's
+    // P-E2a/arc #54: fold the TEMPERATURE_ENERGY_SLOTS-slot energy block into the caller's
     // accumulators. Two's-complement round-trip through unsigned long long
     // is exact.
     {
-        unsigned long long cnt_h[C_SLOTS] = {0};
-        cuda_check(cudaMemcpy(cnt_h, d_cnt, C_SLOTS * sizeof(unsigned long long),
+        unsigned long long cnt_h[TEMPERATURE_ENERGY_SLOTS] = {0};
+        cuda_check(cudaMemcpy(cnt_h, d_cnt, TEMPERATURE_ENERGY_SLOTS * sizeof(unsigned long long),
                               cudaMemcpyDeviceToHost), "D2H cnt");
         if (energy_counters_out) {
-            for (int k = 0; k < C_SLOTS; ++k)
+            for (int k = 0; k < TEMPERATURE_ENERGY_SLOTS; ++k)
                 energy_counters_out[k] += (int64_t)cnt_h[k];
         }
     }
@@ -737,8 +733,10 @@ int64_t temperature_step(
     if (d_nbulk) cudaFree(d_nbulk);
     if (d_amb) cudaFree(d_amb);
     if (d_tsol) cudaFree(d_tsol);
-    if (d_csg) cudaFree(d_csg);
+
     if (d_radnet) cudaFree(d_radnet);
+    if (d_fluence) cudaFree(d_fluence);
+    if (d_etable) cudaFree(d_etable);
     if (d_gas_energy) cudaFree(d_gas_energy);
     if (d_de_gas) cudaFree(d_de_gas);
 

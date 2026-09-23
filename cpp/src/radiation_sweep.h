@@ -63,8 +63,15 @@ struct OrdinateConst {
 // L_q for a THERMAL SOLID: the cell's free excess-emission loss this tick in
 // Q16.16 temperature, shr_round0((a·(E°[T] − E°[0])) >> 16, heat_inv_shift).
 // `ex` is the int64 excess E°[T] − E°[0] (>= 0), `a_q` the material extinction.
+// M1: SIGNED in `his`. A row lighter than one thermal_mass unit carries a
+// NEGATIVE `heat_inv_shift`, and a negative `>>` is UB — so this goes through
+// the kit's signed-exponent twin, which is the SAME function on every
+// non-negative exponent (no shipped row moves). Physically the negative branch
+// is the right answer too: a thin panel's free emission is a LARGER swing in
+// temperature units because there is less mass behind it.
 FP_HD inline int64_t fleck_L_solid_q(int64_t ex, int32_t a_q, int his) {
-    return fixedpoint::shr_round0_i64(((int64_t)a_q * ex) >> fixedpoint::FP_SHIFT, his);
+    return fixedpoint::shr_round0_signed_i64(
+        ((int64_t)a_q * ex) >> fixedpoint::FP_SHIFT, his);
 }
 
 // f_q24 = floordiv_q(T_abs_q << 24, max(T_abs_q, 4·L_q)) — design §2.8 +

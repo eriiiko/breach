@@ -14,6 +14,8 @@ WHAT TRANSCRIBES WHAT
   e_bucket_of        <- cpp/src/raycaster.h:203-213
   e_inv_q            <- design v3 section 2.6 ("E°⁻¹"), both edge cases of row 31
   shr_round0         <- cpp/src/fixed_point.h:410 (the int64 twin P1 owes)
+  shr_round0_signed  <- cpp/src/fixed_point.h, shr_round0_signed_i64 (M1's
+                        signed-exponent twin: a thermal_mass below 1 unit)
   floordiv_q         <- cpp/src/fixed_point.h:562
   fleck_f_solid_q    <- design v3 section 2.8 (the excess form, row 22; Q24, row 32)
   sweep_q            <- design v3 section 2.3 (gather form; body re-emission, row 25)
@@ -57,7 +59,9 @@ from dataclasses import dataclass, field
 
 # --------------------------------------------------------------------------- #
 # Dials. The shipped values; `config_dials_match()` checks them against
-# config.toml so this file cannot silently drift from the engine.
+# config.toml so this file cannot silently drift from the engine. The one
+# exception is RAD_SCALE, the default table's scale, which is a RESOLVING scale
+# chosen for the gates and read from nowhere (M3, below).
 # --------------------------------------------------------------------------- #
 ONE = 65536                      # Q16.16 unit
 F_SHIFT = 24                     # the Fleck factor's fixed point (design row 32)
@@ -65,7 +69,25 @@ F_ONE = 1 << F_SHIFT             # f == F_ONE exactly when L_q == 0
 ALPHA_FLOOR_HALF = "half"        # alpha = max(1/2, 1 - 1/g) -- Fleck's IMC bound
 ALPHA_FLOOR_ZERO = "zero"        # alpha = max(0,   1 - 1/g) -- RULED (row 39), the default
 ALPHA_FLOOR_DEFAULT = ALPHA_FLOOR_ZERO   # Erik, 2026-09-16: "Let's go floor 0 then."
-RAD_SCALE = 5.1427e-5            # config.toml:526   [physics.fire] rad_scale
+# THE DEFAULT TABLE'S SCALE -- a RESOLVING scale, NOT the live calibration (M3,
+# 2026-09-23). Every function below defaults to the table baked here, and the
+# twelve gates, gate 0 and the harness family (tests/_radiation_sweep_harness.py)
+# measure the sweep's ARITHMETIC on it: at this scale the Fleck damping, the
+# maximum-principle clamp and the equilibria that their paired non-vacuity
+# checks need all ENGAGE inside the gates' scenes and tick windows. It is the
+# retired cast's fitted `[physics.fire] rad_scale` by history only; nothing
+# reads it from config, and nothing about the shipped game is measured on it.
+# M3 measured what moving the DEFAULT to the live scale costs: 115 tests go red
+# and every one is a non-vacuity pair (gate 0 x96 finds no f < 2^24; G4/G5 never
+# see the clamp bind; G10's equilibria do not converge in 9600 ticks; the frozen
+# scalar-era digest) -- none is an arithmetic disagreement. report_m3.md §5.
+RAD_SCALE = 5.1427e-5
+# THE LIVE CALIBRATION: the sweep's own key, config.toml [physics.radiation]
+# rad_scale_derived. `config_dials_match()` guards THIS scale, and a statement
+# about what the SHIPPED game emits (G12's rows) is measured on `E_LIVE`. A
+# number read off this file without `table=E_LIVE` is on the resolving scale --
+# which is how M2 quoted f = 0.013 from a table the game never runs (M2b).
+RAD_SCALE_LIVE = 1.6533e-08
 K_AMB = 293                      # config.toml:813   kelvin_ambient (integer-valued)
 K_SLOPE = 1                      # config.toml:814   k_temp_to_kelvin (G12: the x1 map)
 E_TABLE_SIZE = 4000              # raycaster.h:203   T_game in [0, 16000)
@@ -83,6 +105,12 @@ def config_dials_match(config_path=None):
 
     A drift here silently invalidates every number this file prints, so the gate
     runner calls it and reports the result.
+
+    `rad_scale` is RAD_SCALE_LIVE against the SWEEP's key, `[physics.radiation]
+    rad_scale_derived` (M3). Until M3 it compared the default table's scale with
+    `[physics.fire] rad_scale`, the retired cast's fitted key -- so a drift in the
+    scale the live sweep actually bakes at was invisible to the one check that
+    exists to catch it.
     """
     import pathlib
     import tomllib
@@ -91,13 +119,13 @@ def config_dials_match(config_path=None):
     with open(config_path, "rb") as fh:
         cfg = tomllib.load(fh)
     got = {
-        "rad_scale": cfg["physics"]["fire"]["rad_scale"],
+        "rad_scale": cfg["physics"]["radiation"]["rad_scale_derived"],
         "kelvin_ambient": cfg["physics"]["temperature_scale"]["kelvin_ambient"],
         "k_temp_to_kelvin": cfg["physics"]["temperature_scale"]["k_temp_to_kelvin"],
         "T_MAX_PHYS": cfg["physics"]["thermal"]["T_MAX_PHYS"],
     }
     want = {
-        "rad_scale": RAD_SCALE,
+        "rad_scale": RAD_SCALE_LIVE,
         "kelvin_ambient": float(K_AMB),
         "k_temp_to_kelvin": float(K_SLOPE),
         "T_MAX_PHYS": float(T_MAX_PHYS_Q >> 16),
@@ -112,12 +140,12 @@ def shipped_absorbing_rows(config_path=None):
     Returns [(name, a_q, his, heat_atten, thermal_mass), ...] for the rows with
     `heat_atten > 0`; rows with `heat_atten == 0` (air, foliage) never emit or
     absorb and are skipped. `his = log2(thermal_mass)` is the engine's own
-    `heat_inv_shift`, so `thermal_mass` must be a power of two -- the same
-    contract, asserted here.
+    `heat_inv_shift` -- a SIGNED exponent since M1, so the derivation returns it
+    directly rather than round-tripping through a power-of-two integer.
 
     R14 (thermal model v2 design 2026-09-19): `thermal_mass` is no longer an
     authored key. A row states its real `density` and `specific_heat` and the
-    column is DERIVED, so this reader derives it too -- `_thermal_mass_ref`
+    column is DERIVED, so this reader derives it too -- `_thermal_mass_exp_ref`
     below is the reference's transcription of
     `simulation.materials.derive_thermal_mass`, the same way every kit
     primitive in this file is a transcription. `tests/test_thermal_mass_axis.py`
@@ -133,39 +161,93 @@ def shipped_absorbing_rows(config_path=None):
         config_path = pathlib.Path(__file__).resolve().parents[2] / "config.toml"
     with open(config_path, "rb") as fh:
         cfg = tomllib.load(fh)
+    tile_w = float(cfg.get("physics", {}).get("thermal", {})
+                   .get("tile_size_ref_m", TILE_SIZE_REF_M_REF))
     out = []
     for name, row in cfg["materials"].items():
         atten = float(row.get("heat_atten", 0.0))
         if atten <= 0.0:
             continue
-        tm = _thermal_mass_ref(name, row)
-        if tm <= 0 or (tm & (tm - 1)) != 0:
+        his = _thermal_mass_exp_ref(name, row, tile_w)
+        if his is None:
             raise ValueError(
-                f"materials.{name}: heat_atten = {atten} with thermal_mass = {tm}; "
-                f"an absorbing material must carry a power-of-two thermal mass "
-                f"(it sits on the heat->temperature divide)")
-        out.append((name, quant(atten), tm.bit_length() - 1, atten, tm))
+                f"materials.{name}: heat_atten = {atten} on a GAS-regime row; "
+                f"an absorbing material must carry a thermal mass (it sits on "
+                f"the heat->temperature divide)")
+        tm = 2.0 ** his          # exactly representable: a power of two
+        out.append((name, quant(atten), his, atten, tm))
     return out
 
 
 # R14's unit: R13's currency pin (wood at ~12 % MC, rho*c = 0.9 MJ/(m3.K))
 # divided by the column value that pin carries (8). The tile volume cancels --
 # `thermal_mass` is a RATIO of two capacities on the same tile -- which is why
-# there is no tile geometry in this derivation.
+# no ABSOLUTE tile volume enters this derivation. M2 does add a DIMENSIONLESS
+# `fill_fraction` (the share of the tile the object's matter actually occupies),
+# which is a ratio too and therefore leaves that cancellation intact.
 THERMAL_MASS_UNIT_REF = 0.9e6 / 8       # = 112 500 J/(m3.K)
 _SQRT2_REF = math.sqrt(2.0)
 
+# M2 (docs/thin_material_rows_design_2026-09-20.md section 4): the tile WIDTH
+# the material table's geometry is derived at. Mirrors `[physics.thermal]
+# tile_size_ref_m` -- read from config.toml above when present, this literal
+# only as the fallback for a config that omits the block.
+TILE_SIZE_REF_M_REF = 0.333
 
-def _thermal_mass_ref(name, row):
-    """The reference's transcription of `materials.derive_thermal_mass` (R14).
 
-    `pow2_snap(density * specific_heat / 112500)`, the snap taken in LOG space
-    but computed WITHOUT a logarithm: the geometric midpoint between 2**k and
-    2**(k+1) is 2**k * sqrt(2), so it is a bracket-and-compare over exact binary
-    scalings plus one correctly-rounded sqrt.
+# M1: the representation floor of `heat_inv_shift`, as an exponent. 2**-16 is
+# ONE Q16.16 count of capacity -- `cell_capacity_q` builds `1 << (s + 16)`, so
+# s = -16 lands cap_used == 1 and anything below it would be zero capacity.
+# Mirrors `simulation.materials.THERMAL_MASS_EXP_MIN`.
+THERMAL_MASS_EXP_MIN_REF = -16
+
+
+def _fill_fraction_ref(name, row, tile_w):
+    """The reference's transcription of `materials.derive_fill_fraction` (M2).
+
+    A row that authors `thickness_m` is a PANEL: its matter spans the tile and
+    the full deck height but is only `thickness_m` deep, so the share of the
+    tile it occupies is `thickness_m / tile_w` -- the ceiling height and one
+    factor of the tile width cancel between the object volume and the tile
+    volume, which is why this is a pure length ratio.
+
+    A row with NO `thickness_m` is SOLID: it fills its tile, fill = 1.0. That
+    is the pre-M2 behaviour of every row, and it is the one fill value that is
+    scale-free (a bulkhead is solid steel however big the tile is), so stating
+    it by omission bakes in no reference tile size.
+    """
+    t = row.get("thickness_m")
+    if t is None:
+        return 1.0
+    t = float(t)
+    if not (t > 0.0):
+        raise ValueError(f"materials.{name}.thickness_m must be > 0, got {t!r}")
+    f = t / float(tile_w)
+    if not (0.0 < f <= 1.0):
+        raise ValueError(
+            f"materials.{name}: thickness_m {t!r} at tile width {tile_w!r} "
+            f"derives fill_fraction {f!r}, outside (0, 1] -- the object does "
+            f"not fit in its tile")
+    return f
+
+
+def _thermal_mass_exp_ref(name, row, tile_w=TILE_SIZE_REF_M_REF):
+    """The reference's transcription of `materials.pow2_snap`/`derive_thermal_mass`.
+
+    Returns the SIGNED exponent `s` with `thermal_mass == 2**s` -- which is the
+    engine's `heat_inv_shift` directly, for either sign (M1). The snap is taken
+    in LOG space but computed WITHOUT a logarithm: the geometric midpoint
+    between 2**k and 2**(k+1) is 2**k * sqrt(2), so it is a bracket-and-compare
+    over exact binary scalings plus one correctly-rounded sqrt.
+
+    M2: the row's capacity is `rho * c * fill_fraction`, the DERIVED fill from
+    its authored geometry -- a 5 mm wood panel is 0.015 of a 0.333 m tile, so
+    it carries 0.015 of a solid tile's capacity. A row with no `thickness_m`
+    fills its tile and this is exactly the pre-M2 expression.
 
     An authored `thermal_mass` is legal only as the literal 0 that DECLARES the
-    gas thermal regime (air) -- it is not a capacity.
+    gas thermal regime (air) -- it is not a capacity, and it has no exponent;
+    callers must test the regime before asking for one.
     """
     declared = row.get("thermal_mass")
     if declared is not None:
@@ -174,8 +256,9 @@ def _thermal_mass_ref(name, row):
                 f"materials.{name}.thermal_mass is DERIVED from "
                 f"density * specific_heat (R14); the only legal authored value "
                 f"is 0, the gas-regime declaration. Got {declared!r}")
-        return 0
-    x = float(row["density"]) * float(row["specific_heat"]) / THERMAL_MASS_UNIT_REF
+        return None
+    x = (float(row["density"]) * float(row["specific_heat"])
+         * _fill_fraction_ref(name, row, tile_w) / THERMAL_MASS_UNIT_REF)
     k, lo = 0, 1.0
     while lo * 2.0 <= x:
         lo *= 2.0
@@ -184,10 +267,11 @@ def _thermal_mass_ref(name, row):
         lo *= 0.5
         k -= 1
     exp = k + 1 if x >= lo * _SQRT2_REF else k
-    if exp < 0:
+    if exp < THERMAL_MASS_EXP_MIN_REF:
         raise ValueError(
-            f"materials.{name}: rho*c snaps below the thermal_mass floor of 1")
-    return 1 << exp
+            f"materials.{name}: rho*c snaps below 2**{THERMAL_MASS_EXP_MIN_REF}, "
+            f"the thermal_mass representation floor")
+    return exp
 
 
 # --------------------------------------------------------------------------- #
@@ -196,6 +280,24 @@ def _thermal_mass_ref(name, row):
 def shr_round0(x: int, s: int) -> int:
     """fixed_point.h:410, symmetric round-toward-zero shift (the int64 twin)."""
     return -((-x) >> s) if x < 0 else (x >> s)
+
+
+def shr_round0_signed(x: int, s: int) -> int:
+    """fixed_point.h, `shr_round0_signed_i64` -- the SIGNED-EXPONENT twin (M1).
+
+    Divides by ``2**s`` where `s` MAY BE NEGATIVE, which is what a material
+    lighter than one `thermal_mass` unit means (`heat_inv_shift = -2` is a
+    capacity of 0.25 units). For ``s >= 0`` this IS :func:`shr_round0`, value
+    for value -- that identity is what keeps every shipped row bit-identical
+    across M1, which changes no row.
+
+    For ``s < 0`` it MULTIPLIES by ``2**(-s)``, and that branch is EXACT: a
+    left shift loses nothing, where the right shift truncates. (The engine's
+    twin saturates at the int64 rails; a Python int cannot overflow, so the
+    reference states the mathematical value and the C++ gate pins the
+    saturation.)
+    """
+    return shr_round0(x, s) if s >= 0 else x << (-s)
 
 
 def floordiv_q(n: int, d: int) -> int:
@@ -251,8 +353,9 @@ def bake_e_table(rad_scale: float = RAD_SCALE, kelvin_ambient: int = K_AMB,
     return tbl
 
 
-E = bake_e_table()
+E = bake_e_table()                           # the RESOLVING table (the default)
 E0 = E[0]
+E_LIVE = bake_e_table(rad_scale=RAD_SCALE_LIVE)  # the sweep's live table (M3)
 
 
 def e_bucket_of(T_q: int) -> int:
@@ -301,12 +404,17 @@ def e_inv_q(phi: int, table=E) -> int:
 # --------------------------------------------------------------------------- #
 def fleck_L_solid_q(T_q: int, a_q: int, his: int, table=E, e_ref: int = None) -> int:
     """The solid branch of L_q: the cell's FREE excess-emission loss this tick,
-    in Q16.16 temperature.  L_q = shr_round0((a*(E°[T] - E°[0])) >> 16, his)."""
+    in Q16.16 temperature.  L_q = shr_round0_signed((a*(E°[T] - E°[0])) >> 16, his).
+
+    SIGNED in `his` since M1: a row lighter than one thermal_mass unit carries a
+    negative exponent, and a thin panel's free emission is correspondingly
+    LARGER in temperature units. Identical to the old `shr_round0` form on every
+    non-negative `his`."""
     ref = table[0] if e_ref is None else e_ref
     ex = table[e_bucket_of(T_q)] - ref
     if ex < 0:
         ex = 0
-    return shr_round0((a_q * ex) >> 16, his)
+    return shr_round0_signed((a_q * ex) >> 16, his)
 
 
 def fleck_D_q(T_abs_q: int, L_q: int, alpha_floor: str = ALPHA_FLOOR_DEFAULT) -> int:
@@ -749,7 +857,7 @@ def fold_pass1_solid(T, rad_net, rad_fluence, his, ts, counters: FoldCounters, *
     """The radiative sub-step of Pass 1, for thermal solids, IN ORDER.
 
         t_before = T[i]
-        dTr      = shr_round0(rad_net[i], heat_inv_shift[i])
+        dTr      = shr_round0_signed(rad_net[i], heat_inv_shift[i])
         T[i]     = sat_add_q16(T[i], dTr)                      # T_after
         T[i]     = min(T_after, max(t_before, E°⁻¹(Phi)))       # the clamp (row 21)
         rails: T_MAX_PHYS, then the low rail at 0
@@ -772,7 +880,7 @@ def fold_pass1_solid(T, rad_net, rad_fluence, his, ts, counters: FoldCounters, *
                 continue
             s = his if isinstance(his, int) else his[y][x]
             t_before = T[y][x]
-            dTr = shr_round0(rn, s)
+            dTr = shr_round0_signed(rn, s)
             t_after = sat_add_q16(t_before, dTr) if int32_sat else t_before + dTr
             t_new = t_after
             if clamp_enabled:
@@ -790,7 +898,24 @@ def fold_pass1_solid(T, rad_net, rad_fluence, his, ts, counters: FoldCounters, *
                     t_new = 0
                     counters.t_low_rail_hits += 1
             T[y][x] = t_new
-            cap = 1 << s if cap_real is None else cap_real[y][x]
+            # The books' capacity, in the ENGINE's own normalisation:
+            # `conduction::cell_capacity_q` builds `1 << (s + FP_SHIFT)`, a
+            # Q16.16 capacity, and books `dT_q16 * cap_real`.
+            #
+            # M2 FOUND THIS: it was `1 << s`, which is `cap_real >> 16` -- a
+            # different normalisation from the engine's AND, more urgently, an
+            # expression that does not exist for `s < 0`. Python raises
+            # "negative shift count" there, so the first thin row to reach this
+            # line took the reference down. M1 signed the three shifts on this
+            # path and missed the CAPACITY beside them: "already wide" and
+            # "already signed" are not the same property, and neither is
+            # "already routed through the kit".
+            #
+            # `s` is floored at the representation floor exactly as
+            # `cell_capacity_q` floors it, so `cap >= 1` (one raw count) and is
+            # never zero.
+            s_cap = s if s > THERMAL_MASS_EXP_MIN_REF else THERMAL_MASS_EXP_MIN_REF
+            cap = (1 << (s_cap + 16)) if cap_real is None else cap_real[y][x]
             counters.e_solid_deposit_sum += (t_new - t_before) * cap
 
 
@@ -864,7 +989,7 @@ def cell_rad_net_q(T_q: int, phi: int, a_q: int, his: int, *, table=E,
         ex = 0
     f_q = F_ONE
     if fleck:
-        f_q = fleck_f_q(T_q, shr_round0((a_q * ex) >> 16, his),
+        f_q = fleck_f_q(T_q, shr_round0_signed((a_q * ex) >> 16, his),
                         alpha_floor=alpha_floor)
     src = ref + ((ex * f_q) >> F_SHIFT)
     return ((phi * a_q) >> 16) - ((src * a_q) >> 16)

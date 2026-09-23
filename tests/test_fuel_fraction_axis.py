@@ -192,6 +192,12 @@ def _rows_from_table():
                    light_atten=list(_TBL.light_atten[mid]))
         if not bool(_TBL.thermal_solid[mid]):
             row["thermal_mass"] = 0.0
+        # M2: `thickness_m` is AUTHORED geometry, so a rebuilt row must carry
+        # it -- a flammable row without one is refused by the lumped-validity
+        # door, and a solid row without one fills its tile (which is what
+        # `thickness_m == 0.0` means in the column).
+        if float(_TBL.thickness_m[mid]) > 0.0:
+            row["thickness_m"] = float(_TBL.thickness_m[mid])
         rows[name] = row
     return rows
 
@@ -364,3 +370,151 @@ def test_step_tail_requires_the_plane():
     assert "fuel_recip" in doc, (
         "step_tail's signature must name fuel_recip; got:\n" + doc)
     assert "fuel_recip: numpy.ndarray" in doc.replace("  ", " ") or "fuel_recip" in doc
+
+
+# ---------------------------------------------------------------------------
+# R14's FUEL HALF (thermal model v2, T5b): the fuel STORE is the tile's real
+# combustible mass; `hp` stays structural.
+# ---------------------------------------------------------------------------
+
+def test_fuel_store_is_the_tile_s_real_combustible_mass():
+    """PROPERTY (R14): for every flammable row, the O2 the tile's fire can
+    consume before the bar empties equals its own combustible mass divided by
+    the mass one unit of N_O2 burns:
+
+        hp[mat] / fuel_per_o2[mat]
+            ==  density[mat] * fill_fraction[mat] * V_tile / KG_FUEL_PER_N_O2
+
+    i.e. the FUEL STORE is physics while `hp` stays a gameplay quantity. Before
+    T5b `fuel_per_o2` was ONE GLOBAL 0.7, which made the store proportional to
+    structural integrity: a 154 kg wood tile carried 31.9 kg of fuel, 4.8x
+    short, and furniture 9.7x short.
+
+    M2 (design §8): the mass is the row's DERIVED `mass_kg` -- its real
+    combustible mass after GEOMETRY -- not `density * V_tile`, which assumed
+    every row filled its tile. The property is the same sentence it always was
+    ("the store is the tile's real combustible mass"); what changed is that the
+    tile's real combustible mass is now 2.3 kg of wood panel and not a 154 kg
+    block. That one substitution is what makes the fuel store BIND instead of
+    the burn-down timer: the same 60 hp bar is now spent over 6.2 units of O2
+    instead of 414, a 67x stronger physical channel, with no new mechanism.
+
+    BREAKS IF: `fuel_per_o2` goes back to a global, a row's rate is authored
+    instead of derived, or the mass and the rate stop coming from the same
+    `density` and `fill_fraction` columns.
+    """
+    from simulation.materials import KG_FUEL_PER_N_O2
+    tbl = MaterialTable.from_config()
+    dx = float(getattr(CFG.physics.thermal, "tile_size_ref_m"))
+    v_tile = dx * dx * float(CFG.physics.water.ceiling_h)
+    flammable = [i for i in range(tbl.n) if bool(tbl.flammable[i])]
+    assert len(flammable) >= 3, "sanity: the table must have flammable rows"
+    for i in flammable:
+        store = float(tbl.hp[i]) / float(tbl.fuel_per_o2[i])
+        # re-derived here from the AUTHORED columns, not read off `mass_kg`
+        mass = float(tbl.density[i]) * float(tbl.fill_fraction[i]) * v_tile
+        assert mass == pytest.approx(float(tbl.mass_kg[i]), rel=1e-12)
+        assert store == pytest.approx(mass / KG_FUEL_PER_N_O2, rel=1e-9), (
+            f"{tbl.names[i]}: fuel store {store:.2f} N_O2 units against a real "
+            f"{mass:.2f} kg / {KG_FUEL_PER_N_O2} = "
+            f"{mass / KG_FUEL_PER_N_O2:.2f}")
+    # ...and it is NOT what the retired global gave: at 0.7 the stores differed
+    # by up to 7.5x across these rows, because they rode `hp`.
+    old = [float(tbl.hp[i]) / 0.7 for i in flammable]
+    assert max(old) / min(old) > 5.0, (
+        "the shipped hp values no longer spread enough for this contrast to "
+        "mean anything -- re-read this test")
+
+
+def test_the_engine_reads_the_per_tile_fuel_rate_not_the_global():
+    """PROPERTY: `GameMap.fuel_per_o2_plane` is projected from the material
+    table on the SAME seam as `fuel_recip`, and `on_tile_changed` patches it --
+    so a burnt-out crate that becomes air stops carrying furniture's rate.
+
+    BREAKS IF: the plane is built once and never patched (the stale-cache bug
+    the fuel-fraction axis found for `fuel_recip`), or the engine stops passing
+    it and silently falls back to the scalar.
+    """
+    from level_loader import load as _load_level
+    g = GameMap(_load_level("playground"))
+    tbl = MaterialTable.from_config()
+    assert g.fuel_per_o2_plane.dtype == np.int32
+    assert g.fuel_per_o2_plane.shape == g.material.shape
+    assert np.array_equal(g.fuel_per_o2_plane,
+                          tbl.fuel_per_o2_q16[g.material])
+    # non-vacuous: the shipped level carries at least two distinct rates
+    assert len(np.unique(g.fuel_per_o2_plane)) >= 2
+    ys, xs = np.where(g.material == MAT_FURNITURE)
+    assert len(ys), "playground is expected to carry furniture"
+    y, x = int(ys[0]), int(xs[0])
+    assert int(g.fuel_per_o2_plane[y, x]) == int(tbl.fuel_per_o2_q16[MAT_FURNITURE])
+    g.material[y, x] = MAT_AIR
+    g.on_tile_changed(y, x)
+    assert int(g.fuel_per_o2_plane[y, x]) == int(tbl.fuel_per_o2_q16[MAT_AIR]), (
+        "the fuel-rate plane went stale when the tile changed material")
+
+
+def test_the_solver_actually_charges_the_plane_s_rate_not_the_scalar():
+    """PROPERTY: `CombustionSolver.step` reads `fuel_per_o2_plane` AT THE
+    BURNING CELL. The wall_hp a source pays for a given burn scales exactly
+    with its OWN entry in the plane, and differs from the scalar fallback.
+
+    WHY IT EXISTS. Every other gate on this axis lives on the Python side (the
+    derived column, the projected plane) or compares CPU against GPU. A C++
+    solver that ignored the new argument and kept using the scalar would pass
+    all of them: the column would still be derived, the plane still projected,
+    and both backends would still agree -- with each other, on the wrong law.
+    Verified by breaking it: forcing the CPU solver's ternary to the scalar
+    fallback fails THIS test and nothing else in the suite.
+
+    BREAKS IF: the plane argument is dropped, hoisted out of the cell loop, or
+    read at the wrong index (the last leg puts a DIFFERENT value in every other
+    cell, so a hoist of cell 0 is caught).
+    """
+    import cuda_combustion_check as H   # the scene vocabulary, not the GPU legs
+
+    RATE_A, RATE_B = 9497, 1266         # the derived wood / kindling Q16.16 rates
+    dt = 0.25
+    st = H._blank(5, 5)
+    H._add_source(st, 2, 2, hp=60.0)
+    st["gas"][H.O2][2, 3] = H._quantize(1.0)
+    st = H._contig(st)
+    hp0 = float(st["wall_hp"][2, 2])
+
+    def paid(fpo_plane):
+        comb, _d = H._mk_solver()
+        c = {k: (v.copy() if isinstance(v, np.ndarray) else v)
+             for k, v in st.items()}
+        comb.step(c["gas"], H.O2, H.INERT_N2, H.SMOKE, c["temperature"],
+                  c["wall_hp"], c["fire"], c["flammable"], c["solid"],
+                  c["is_vacuum"], c["ignition_temp_q16"], dt, H.C_V,
+                  H.N_FLOOR_HEAT, fuel_per_o2_plane=fpo_plane)
+        # the O2 the source actually drew, so the comparison is per unit burn
+        drawn = int(st["gas"][H.O2][2, 3]) - int(c["gas"][H.O2][2, 3])
+        return hp0 - float(c["wall_hp"][2, 2]), drawn
+
+    uni_a = np.full((5, 5), RATE_A, dtype=np.int32)
+    uni_b = np.full((5, 5), RATE_B, dtype=np.int32)
+    pa, da = paid(uni_a)
+    pb, db = paid(uni_b)
+    ps, ds = paid(None)
+    assert da == db == ds > 0, (
+        f"the fuel rate changed how much O2 was drawn ({da}, {db}, {ds}) -- it "
+        f"must only change what the source PAYS, or this comparison is not "
+        f"per unit burn")
+    assert pa > 0 and pb > 0, "the source did not burn -- vacuous"
+    assert pa / pb == pytest.approx(RATE_A / RATE_B, rel=0.01), (
+        f"paid {pa} at rate {RATE_A} and {pb} at rate {RATE_B}: the cost does "
+        f"not scale with the plane")
+    assert ps not in (pa, pb), (
+        "the plane changed nothing -- the solver is still charging the global "
+        "fuel_per_o2")
+
+    # PER-CELL, not hoisted: the burning cell alone carries RATE_A; every other
+    # cell carries RATE_B. The cost must be RATE_A's.
+    spotted = np.full((5, 5), RATE_B, dtype=np.int32)
+    spotted[2, 2] = RATE_A
+    pc, _ = paid(spotted)
+    assert pc == pa, (
+        f"paid {pc} with only the burning cell at rate {RATE_A} (uniform-{RATE_A} "
+        f"costs {pa}) -- the plane is being read at the wrong cell")

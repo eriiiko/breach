@@ -68,7 +68,22 @@ import numpy as np
 # AND dtype both change (a NEW int64 field, not a reshape/retype of an
 # existing one), so this is a version bump per this file's own change
 # procedure.
-DIGEST_SPEC_VERSION = 5
+# v6 (2026-09-20, T5b step 9, ray-engine-v2's flip / design v3 row 28):
+# + dyn_heat_atten_q -- the per-tile DYNAMIC heat-extinction plane, int32 Q16,
+# `max(heat_atten_q[material], each living unit's own heat_atten)` stamped by
+# `stamp_units`. It became SYNCED STATE at the flip: the radiation sweep reads
+# it, the sweep now feeds the temperature fold, so a desync on this plane forks
+# the temperature stream and everything downstream of it. Before the flip the
+# sweep was in shadow and the plane moved nothing, which is exactly why it was
+# not in the digest. Membership changes (a NEW field), so this is a version
+# bump per this file's own change procedure, and every committed golden is
+# regenerated in the SAME commit.
+#
+# The STATIC twin `heat_atten_q` is deliberately NOT added: it is a pure
+# projection of `material` through the material table, and `material` is
+# already in the digest, so it carries no state of its own. `dyn_heat_atten_q`
+# does -- it carries where the UNITS are.
+DIGEST_SPEC_VERSION = 6
 
 # The frozen (name, dtype-string) contract — the integer/bool SYNCED fields, in a
 # fixed order. `gas` is the 3D (5,h,w) multi-gas stack (covers `smoke`, a view).
@@ -97,6 +112,7 @@ DIGEST_FIELDS = (
     ("ignition_armed", "bool"),
     ("dem_acc",        "int32"),
     ("gas_energy",     "int64"),
+    ("dyn_heat_atten_q", "int32"),   # v6 (T5b step 9)
 )
 
 # Float sim fields deliberately NOT in the cross-GPU integer digest (documented).

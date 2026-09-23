@@ -929,16 +929,16 @@ def gate11_headroom(fast=False):
     return ok, lines
 
 
-def _backward_steps(a_q, his, shift):
-    """The damped source E°[0] + f*(E°[T] - E°[0]) over the WHOLE table, at the
+def _backward_steps(a_q, his, shift, table):
+    """The damped source E°[0] + f*(E°[T] - E°[0]) over the WHOLE `table`, at the
     bucket LOW EDGE (T_q = (4b) << 16, so e_bucket_of returns exactly b), and the
     places where it FALLS as T rises.
 
     Returns (n_backward, worst_fraction, first_T_game, all_positive_and_sane).
     """
-    vals = [R.damped_source_q((4 * b) << 16, a_q, his, shift=shift)
+    vals = [R.damped_source_q((4 * b) << 16, a_q, his, table, shift=shift)
             for b in range(R.E_TABLE_SIZE)]
-    sane = all(0 < v <= R.E[b] for b, v in enumerate(vals))
+    sane = all(0 < v <= table[b] for b, v in enumerate(vals))
     drops = [(4 * i, (vals[i] - vals[i + 1]) / vals[i])
              for i in range(len(vals) - 1) if vals[i + 1] < vals[i]]
     worst = max((d[1] for d in drops), default=0.0)
@@ -973,22 +973,37 @@ def gate12_damped_source_is_monotone(fast=False):
     thermal mass small enough to quantize its own plasma emission -- which is
     P0's proposed ingress rule (`heat_atten > 0` => `thermal_mass >= 8`) and is
     exactly the failure this gate should raise rather than hide.
+
+    WHICH TABLE (M3, 2026-09-23). The property is about the rows the game SHIPS
+    at the scale the game RUNS, so the shipped rows -- and the Q16 control that
+    proves the probe can see a backward step on that same table -- are measured
+    on `R.E_LIVE`, the sweep's own `rad_scale_derived`. Until M3 they ran on the
+    reference's default table, the retired cast's fitted scale 3110x above it,
+    and the three thin rows M2 authored failed there (542 / 365 / 517 steps) on
+    a combination of rows and scale the game never runs (M2b). The pathological
+    corner stays on the default RESOLVING table, where P0b designed it: it shows
+    the MECHANISM (f's own resolution), which needs a table on which that corner
+    damps hard -- on the live table a = 1, thermal_mass = 1 damps so little
+    that neither Q16 nor Q24 steps backward and its `Q24 < Q16` control is 0 < 0.
     """
     lines, ok = [], True
+    live, res = R.E_LIVE, R.E
     lines.append(f"  the damped source at every bucket's LOW EDGE, T = 0..{4 * (R.E_TABLE_SIZE - 1)} "
                  f"game, {len(SHIPPED_ROWS)} distinct shipped (a, his) pairs read from "
-                 f"config.toml + the pathological corner, at the RULED alpha floor "
-                 f"{R.ALPHA_FLOOR_DEFAULT!r} (row 39)")
+                 f"config.toml on the LIVE table (rad_scale_derived = "
+                 f"{R.RAD_SCALE_LIVE:g}, E°[3999] = {live[-1]}) + the pathological "
+                 f"corner on the RESOLVING table (rad_scale = {R.RAD_SCALE:g}), at "
+                 f"the RULED alpha floor {R.ALPHA_FLOOR_DEFAULT!r} (row 39)")
     lines.append(f"    {'row':>34}{'Q16 steps':>11}{'Q16 worst':>11}"
                  f"{'Q24 steps':>11}{'Q24 worst':>11}{'f_q24 @ top':>13}")
     q16_nonmono = 0
     for a_q, his, nm in SHIPPED_ROWS:
-        n16, w16, _f16, _s16 = _backward_steps(a_q, his, 16)
-        n24, w24, first24, sane24 = _backward_steps(a_q, his, R.F_SHIFT)
+        n16, w16, _f16, _s16 = _backward_steps(a_q, his, 16, live)
+        n24, w24, first24, sane24 = _backward_steps(a_q, his, R.F_SHIFT, live)
         q16_nonmono += n16
         good = (n24 == 0) and sane24
         ok &= good
-        f_top = R.fleck_f_solid_q(R.T_TABLE_TOP_GAME << 16, a_q, his)[0]
+        f_top = R.fleck_f_solid_q(R.T_TABLE_TOP_GAME << 16, a_q, his, live)[0]
         lines.append(f"    {nm:>34}{n16:>11}{w16 * 100:>10.3f}%{n24:>11}"
                      f"{w24 * 100:>10.3f}%{f_top:>13}  "
                      + ("OK (monotone; positive and <= E°[T] everywhere)" if good
@@ -998,18 +1013,18 @@ def gate12_damped_source_is_monotone(fast=False):
     # so "0 backward steps" above is a property of Q24 and not of the measurement.
     ok &= (q16_nonmono > 0)
     lines.append(f"  non-vacuity: the rejected Q16 form has {q16_nonmono} backward steps "
-                 f"over the same rows (the Q16 columns above) -- the probe detects "
-                 f"non-monotonicity when it is there")
+                 f"over the same rows ON THE SAME LIVE TABLE (the Q16 columns above) -- "
+                 f"the probe detects non-monotonicity when it is there")
     # THE MECHANISM: the wobble is f_q's own resolution, so it grows as the thermal
     # mass falls. No material ships thermal_mass = 1; if one ever does, the row
     # above fails and P1 owes the ingress rule rather than a wider f.
     a_p, his_p, nm_p = PATHOLOGICAL_ROW
-    n16p, w16p, _, _ = _backward_steps(a_p, his_p, 16)
-    n24p, w24p, first_p, sane_p = _backward_steps(a_p, his_p, R.F_SHIFT)
+    n16p, w16p, _, _ = _backward_steps(a_p, his_p, 16, res)
+    n24p, w24p, first_p, sane_p = _backward_steps(a_p, his_p, R.F_SHIFT, res)
     bounded = (w24p < PATHOLOGICAL_WOBBLE_BOUND) and sane_p and (w24p < w16p)
     ok &= bounded
-    lines.append(f"  the mechanism -- {nm_p}: f_q24 at the table top is only "
-                 f"{R.fleck_f_solid_q(R.T_TABLE_TOP_GAME << 16, a_p, his_p)[0]} counts, so "
+    lines.append(f"  the mechanism (RESOLVING table) -- {nm_p}: f_q24 at the table top is only "
+                 f"{R.fleck_f_solid_q(R.T_TABLE_TOP_GAME << 16, a_p, his_p, res)[0]} counts, so "
                  f"{n24p} backward steps survive, worst {w24p * 100:.3f}% in power "
                  f"(= {(1 + w24p) ** 0.25 * 100 - 100:.3f}% in a receiver's equilibrium T), "
                  f"first at {first_p} game; in Q16 the same row gave {n16p} steps of "
@@ -1044,6 +1059,9 @@ def main(argv):
     print(f"E°[0] = {R.E0}   E°[3999] = {R.E[3999]}   "
           f"amb_m(S16) = {(R.E0 * (ONE // 16)) >> 16}   "
           f"mode: {'fast' if fast else 'full'}")
+    print(f"  (the RESOLVING default table, rad_scale = {R.RAD_SCALE:g}; the LIVE "
+          f"table, rad_scale_derived = {R.RAD_SCALE_LIVE:g}: E°[0] = {R.E_LIVE[0]}, "
+          f"E°[3999] = {R.E_LIVE[3999]} -- G12's shipped rows are measured on it)")
     all_ok = ok_cfg
     for name, fn in GATES:
         if only and not any(name.lower().startswith(o.lower()) for o in only):

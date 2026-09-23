@@ -106,8 +106,17 @@ def _drive(sim: Simulation):
     # HP is re-scaled to keep the kill in the same PLACE in the trajectory. The
     # absolute damage number is P-R5 feel-tuning territory (the [combat]
     # heat_flux_to_temp / environmental_damage_rate dials), not this test's job.
+    # M3 RE-ANCHOR (2026-09-23, Erik's q7 ruling: combustion's fuel-bed deposit
+    # at its DERIVED value, report_m3.md). At the flip's tip the patch railed at
+    # T_MAX_PHYS on the 2^16-too-big deposit and the marine died in ONE tick
+    # (HP -6361 at tick 0, so "HP visibly decreasing before death" was never
+    # exercised). Under the derived H_bed the held 443-game patch radiates its
+    # honest flux: measured 0.114 HP/tick (2.74 HP/s), read off the sweep's
+    # body channel `rad_flux_sweep` = 1363 raw = 4.7 kW/m2 on T5b §6.2's burn
+    # band, and 22 HP would outlive the run by ~150 ticks. HP is re-scaled
+    # again, the P-R4 way: 2.0 HP puts the kill ~17 ticks in.
     for u in sim.units:
-        u.current_hp = 22.0
+        u.current_hp = 2.0
 
     traj = []
     from field_ab_harness import _snapshot, _capture_unit_state, SIM_FIELDS

@@ -57,8 +57,14 @@ FP_ONE = 65536
 # backends run with (the CPU solver carries them as members, the GPU free
 # function takes them explicitly). Same set cuda_conduction_check uses.
 DIALS = dict(
-    no_face=63, cool_shift=5, cool_shift_vacuum=3, o2_vacuum_thresh=0.3,
-    c_v=1.0, n_floor_heat=0.05, gas_advection_rate=900.0, t_max_phys=16000.0,
+    no_face=63, o2_vacuum_thresh=0.3,
+    # T5b (report_t2.md D3 site 8): `c_v` is the SHIPPED derived value, not the
+    # 1.0 placeholder these checks froze in 2026-07 -- a CPU/GPU parity gate
+    # that runs at a dial the engine no longer ships proves parity of a code
+    # path nobody executes. `n_floor_heat` stays 0.05 deliberately: it is a
+    # STRESS value (5x the shipped 0.01) that makes the capacity floor bind in
+    # the sweep, which is exactly the branch a parity gate wants to exercise.
+    c_v=0.0076849, n_floor_heat=0.05, gas_advection_rate=900.0, t_max_phys=16000.0,
 )
 
 
@@ -75,8 +81,7 @@ def _q(x):
 def _make_solver():
     s = bp.TemperatureSolver()
     s.no_face = DIALS["no_face"]
-    s.cool_shift = DIALS["cool_shift"]
-    s.cool_shift_vacuum = DIALS["cool_shift_vacuum"]
+    # T5b step 7 / R1: the cool_shift dials are deleted with Pass 3.
     s.o2_vacuum_thresh = DIALS["o2_vacuum_thresh"]
     s.c_v = DIALS["c_v"]
     s.n_floor_heat = DIALS["n_floor_heat"]
@@ -199,7 +204,7 @@ def _synth_fields(h, w, rng, solid, is_vacuum, thin=False, wind=False):
 # rewrite's books (P-E2a) and the Pass-1 attenuation drop (P-E2b) must agree
 # bit-for-bit across the backends here as well.
 E_COUNTERS = ("e_cond_trunc_sum", "e_cond_cap_sum", "cond_limit_hits",
-              "e_cool_sum", "e_vac_wipe_sum", "e_ring_pin_sum",
+              "e_vac_wipe_sum", "e_ring_pin_sum",
               "e_deposit_drop_sum")
 
 
@@ -622,8 +627,6 @@ def part2_step_path() -> bool:
         thermal = CFG.physics.thermal
         dials = dict(
             no_face=int(getattr(thermal, "NO_FACE", 63)),
-            cool_shift=int(getattr(thermal, "COOL_SHIFT", 5)),
-            cool_shift_vacuum=int(getattr(thermal, "COOL_SHIFT_VACUUM", 3)),
             o2_vacuum_thresh=float(getattr(thermal, "o2_vacuum_thresh", 0.3)),
             c_v=float(getattr(thermal, "c_v", 1.0)),
             n_floor_heat=float(getattr(thermal, "n_floor_heat", 0.05)),

@@ -61,14 +61,10 @@ int64_t temperature_step(
     const int32_t* wind_x,          // Q16.16 (h,w) wind; null -> Pass 0 advect skip
     const int32_t* wind_y,          // Q16.16 (h,w) wind; null -> Pass 0 advect skip
     int no_face,                    // sentinel: face_shift==no_face -> skip
-    int cool_shift,                 // interior cooling shift — since the
-                                    // cool-shift axis this is (a) the fallback
-                                    // when cool_shift_grid is null and (b) the
-                                    // reference for the vacuum OFFSET below
-    int cool_shift_vacuum,          // space-exposed cooling shift (faster); with
-                                    // cool_shift it defines the offset
-                                    // (cool_shift - cool_shift_vacuum) applied
-                                    // to the per-tile shift on exposed tiles
+    // T5b step 7 / R1: `cool_shift` and `cool_shift_vacuum` stood here.
+    // Pass 3 is deleted on both backends -- the sweep computes the real
+    // radiative loss, so a hand-rolled Newtonian relaxation beside it
+    // counted the same physics twice.
     float o2_vacuum_thresh,         // config dial (quantized on host)
     float c_v,                      // gas heat capacity (deposit divide)
     float n_floor_heat,             // per-tile N divisor floor (deposit)
@@ -84,19 +80,8 @@ int64_t temperature_step(
     // `solid` elementwise on any furniture-free map (addendum D4), so the
     // fallback is not a second code path in practice.
     const bool* thermal_solid = nullptr,
-    // COOL-SHIFT AXIS (2026-07-30): int32 (h,w) — the per-tile AMBIENT-DECAY
-    // shift (`GameMap.cool_shift`, the per-material `cool_shift` column
-    // projected by the material grid), the LOSS-side twin of `heat_inv_shift`.
-    // Pass 3 does `T -= T >> cool_shift_grid[i]`; a vacuum-exposed tile takes
-    // `max(cool_shift_floor, cool_shift_grid[i] - (cool_shift -
-    // cool_shift_vacuum))` — ONE dial per material, the space discount stays a
-    // single global rule. Default nullptr -> the `cool_shift` scalar for every
-    // tile (the pre-axis behaviour; same back-compat idiom as `thermal_solid`).
-    const int32_t* cool_shift_grid = nullptr,
-    // Low clamp on that subtraction, == config [physics.thermal] SHIFT_MIN.
-    // Load-bearing: a material legally sitting AT the floor would otherwise
-    // derive an exposed shift of 0 == `T -= T` (an instant total wipe).
-    int cool_shift_floor = 2,
+    // T5b step 7: `cool_shift_grid` and `cool_shift_floor` stood here, and
+    // are deleted with Pass 3.
     // P-F1a (v7.2): out-param for the Pass-1 LOW rail's engagement count (the
     // return value stays the T_MAX_PHYS count, so no existing caller moves).
     // The radiation fold is the only SIGNED path into `temperature`; the rail
@@ -117,15 +102,18 @@ int64_t temperature_step(
     // ran. Slot order is PINNED and mirrored by the C_* enum in
     // cuda_temperature.cu and by the CPU field order:
     //   0 e_cond_trunc_sum  1 e_cond_cap_sum  2 cond_limit_hits
-    //   3 e_cool_sum        4 e_vac_wipe_sum  5 e_ring_pin_sum
-    //   6 e_deposit_drop_sum (P-E2b, Pass-1 attenuation drop, L3-7)
-    //   7 e_gas_deposit_sum (arc #54, Pass 1 heat->E on gas, net)
-    //   8 e_gas_cond_sum    (arc #54, Pass 2 conduction into gas E, net)
-    //   9 e_gas_rail_sum    (arc #54, Pass 1's T_MAX_PHYS rail, signed)
-    //  10 e_solid_deposit_sum (P-G5, Pass 1 landing on thermal solids, signed)
-    //  11 e_solid_cond_sum    (P-G5, Pass 2 landing on thermal solids, signed)
-    //  12 e_thermostat_sum    (P-G5, Pass 3 relax-to-ambient, signed — the
-    //                          canonical name; the same quantity as slot 3)
+    //   3 e_vac_wipe_sum    4 e_ring_pin_sum
+    //   5 e_deposit_drop_sum (P-E2b, Pass-1 attenuation drop, L3-7)
+    //   6 e_gas_deposit_sum (arc #54, Pass 1 heat->E on gas, net)
+    //   7 e_gas_cond_sum    (arc #54, Pass 2 conduction into gas E, net)
+    //   8 e_gas_rail_sum    (arc #54, Pass 1's T_MAX_PHYS rail, signed)
+    //   9 e_solid_deposit_sum (P-G5, Pass 1 landing on thermal solids, signed)
+    //  10 e_solid_cond_sum    (P-G5, Pass 2 landing on thermal solids, signed)
+    //  11 rad_clamp_hits      (T5b, the Pass-1 clamp's engagement COUNT)
+    // T5b step 7: slots 3 (e_cool_sum) and 12 (e_thermostat_sum) are
+    // DELETED with Pass 3, and every survivor below them RENUMBERED. The
+    // indices are pinned positional and physics_engine.cpp folds them by
+    // index, so the two move together, in this commit.
     // nullptr -> the counters are still computed on-device (they cost one
     // atomicAdd per engaged cell) but discarded, exactly like the rail counts.
     int64_t* energy_counters_out = nullptr,
@@ -144,10 +132,28 @@ int64_t temperature_step(
     // arrays), from the same `conduction::cell_capacity_q` kit the device
     // capacity build uses, so the two backends cannot drift. nullptr ->
     // skipped.
-    int64_t* solid_books_out = nullptr);
+    int64_t* solid_books_out = nullptr,
+    // ---- ray-engine-v2, THE FLIP (T5b step 6; design v3 P3) --------------
+    // The MAXIMUM-PRINCIPLE CLAMP's two planes, the GPU twin of the CPU
+    // solver's `rad_fluence` / `e_table` pair:
+    //     T_new = min(T_after, max(T_before, E^-1(Phi)))
+    // `rad_fluence` is the sweep's own Phi at the cell (int64 (h,w), H2D'd
+    // here); `e_table` is the E° table (int64, EMISSIVE_TABLE_N entries) whose
+    // inverse `e_inv_q` is FP_HD and therefore the SAME function the CPU calls.
+    // BOTH null -> no clamp, byte-identical to the pre-flip kernel, which is
+    // what every direct-binding caller and every pre-flip test still gets.
+    // The engagement count comes back in slot 13 (see below).
+    const int64_t* rad_fluence = nullptr,
+    const int64_t* e_table = nullptr,
+    int e_table_n = 0);
 
 // The number of slots `energy_counters_out` must have room for.
-constexpr int TEMPERATURE_ENERGY_SLOTS = 13;
+// T5b step 6: 13 -> 14 (slot 13 = `rad_clamp_hits`, the clamp's engagement
+// COUNT, appended at the END). T5b step 7: 14 -> 12, because C_COOL and
+// C_THERMOSTAT are DELETED with Pass 3 -- a REMOVAL, which renumbers the
+// survivors (design v3 / L2 names this exact hazard), so the enum in the
+// .cu and the by-index fold in physics_engine.cpp are edited with it.
+constexpr int TEMPERATURE_ENERGY_SLOTS = 12;
 
 // Backend selection (S1 gate + integration). When true, PhysicsEngine::step_tail
 // runs temperature on the GPU instead of the CPU solver. Defaults false so the

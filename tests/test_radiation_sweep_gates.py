@@ -185,8 +185,7 @@ def _solver():
     tbl = MaterialTable.from_config()
     s = bp.TemperatureSolver()
     s.no_face = int(tbl.no_face)
-    s.cool_shift = 31
-    s.cool_shift_vacuum = 31
+    # T5b step 7 / R1: Pass 3 is deleted, so there is no cooling to disable.
     return s, int(tbl.no_face)
 
 

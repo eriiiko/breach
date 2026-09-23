@@ -85,7 +85,7 @@ DIALS = dict(burn_rate=1.0, o2_thresh_burn=0.03, H_FUEL_M=4.0, H_FUEL_SHIFT=0,
              soot_yield=0.3,
              fuel_per_o2=0.7, o2_frac_ext=0.13, o2_frac_full=0.21,
              o2_frac_amb=0.21, T_MAX_PHYS=16000.0)
-C_V = 1.0
+C_V = 0.0076849   # T5b: the shipped derived gas heat capacity (report_t2.md §2.2)
 N_FLOOR_HEAT = 0.05
 
 # The material ignition threshold used throughout (any positive Q16.16 works —
@@ -161,18 +161,28 @@ def _contig(state):
             for k, v in state.items()}
 
 
-def run_pair(state, dt, dials_over=None, c_v=C_V, n_floor_heat=N_FLOOR_HEAT):
+def run_pair(state, dt, dials_over=None, c_v=C_V, n_floor_heat=N_FLOOR_HEAT,
+             fuel_per_o2_plane=None):
     """Run CPU CombustionSolver.step + GPU cuda_combustion_step on identical
-    copies of `state`. Returns (cpu_dict, cpu_rails, gpu_dict, gpu_rails)."""
+    copies of `state`. Returns (cpu_dict, cpu_rails, gpu_dict, gpu_rails).
+
+    T5b / R14: `fuel_per_o2_plane` is the per-material fuel exchange rate the
+    live engine always supplies. None exercises the scalar fallback (what every
+    pre-T5b case here did); an array exercises the plane on BOTH backends, and
+    the two must agree bit for bit.
+    """
     dials_over = dials_over or {}
     comb, d = _mk_solver(**dials_over)
+    fpo = (np.ascontiguousarray(fuel_per_o2_plane, dtype=np.int32)
+           if fuel_per_o2_plane is not None else None)
 
     c = {k: (v.copy() if isinstance(v, np.ndarray) else v) for k, v in state.items()}
     # CPU: fresh solver has zeroed rail counters -> post-step members == this
     # step's per-cell counts.
     comb.step(c["gas"], O2, INERT_N2, SMOKE, c["temperature"], c["wall_hp"],
               c["fire"], c["flammable"], c["solid"], c["is_vacuum"],
-              c["ignition_temp_q16"], dt, c_v, n_floor_heat)
+              c["ignition_temp_q16"], dt, c_v, n_floor_heat,
+              fuel_per_o2_plane=fpo)
     cpu_rails = (int(comb.heat_floor_hits), int(comb.t_max_phys_hits),
                  int(comb.e_deposit_drop_sum))
 
@@ -183,7 +193,8 @@ def run_pair(state, dt, dials_over=None, c_v=C_V, n_floor_heat=N_FLOOR_HEAT):
         dt, c_v, n_floor_heat,
         d["burn_rate"], d["o2_thresh_burn"], d["H_FUEL_M"],
         int(d["H_FUEL_SHIFT"]), d["soot_yield"],
-        d["fuel_per_o2"], d["o2_frac_ext"], d["o2_frac_full"], d["T_MAX_PHYS"])
+        d["fuel_per_o2"], d["o2_frac_ext"], d["o2_frac_full"], d["T_MAX_PHYS"],
+        fuel_per_o2_plane=fpo)
     gpu_rails = (int(hf), int(tm), int(dd))
     return c, cpu_rails, g, gpu_rails
 
@@ -462,6 +473,38 @@ def part1_isolated() -> bool:
             ok &= compare(f"fuzz(X_full=1.0) {h}x{w} dt={dtt:.3f}", c, cr, g, gr)
             if not np.array_equal(c0["gas"], c["gas"]):
                 n_moved += 1
+
+    # (k3) T5b / R14: THE PER-MATERIAL FUEL-RATE PLANE, the path the live engine
+    #      always takes. Every case above passes `fuel_per_o2_plane = None`, i.e.
+    #      the scalar fallback — so without this block the plane's device code
+    #      would be entirely ungated, which is exactly the shape of blind gate
+    #      this arc keeps finding. Same fuzz states, a NON-UNIFORM plane, and a
+    #      NON-VACUOUSNESS control: the plane result must differ from the scalar
+    #      one, or "CPU == GPU" would be proving nothing about the new argument.
+    n_cfg3 = 0
+    n_moved3 = 0
+    for (h, w) in ((16, 16), (24, 32), (31, 17), (40, 40), (8, 8)):
+        for dtt in (0.25, 1.0 / 24.0, 0.6):
+            n_cfg3 += 1
+            st = _random_state(rng, h, w)
+            # A deliberately non-uniform plane: a checkerboard of the derived
+            # `wood` and `kindling` rates (Q16.16 9497 / 1266), so a kernel that
+            # read cell 0's value, or hoisted the load, is caught.
+            yy, xx = np.indices((h, w))
+            plane = np.where(((yy + xx) & 1) == 0, 9497, 1266).astype(np.int32)
+            c0, _, _, _ = run_pair(st, dtt)                       # scalar fallback
+            c, cr, g, gr = run_pair(st, dtt, fuel_per_o2_plane=plane)
+            ok &= compare(f"fuel-plane {h}x{w} dt={dtt:.3f}", c, cr, g, gr)
+            if not np.array_equal(c0["wall_hp"], c["wall_hp"]):
+                n_moved3 += 1
+    if n_moved3 == 0:
+        ok = False
+        print("  VACUOUS: the fuel_per_o2 plane changed no wall_hp on any fuzz "
+              "state — the argument is inert and the CPU==GPU check proves "
+              "nothing about it")
+    else:
+        print(f"  fuel-rate plane: {n_cfg3} configs bit-identical CPU vs GPU, "
+              f"{n_moved3}/{n_cfg3} of which moved wall_hp vs the scalar")
     if n_moved == 0:
         ok = False
         print("  VACUOUS: o2_frac_full made no difference on any fuzz state — "

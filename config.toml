@@ -120,29 +120,47 @@ physics_substeps = 8              # 8 * 1ms = 8ms physics per game tick
 # divide) -> deterministic / bit-identical cross-machine.
 [physics.thermal]
 TEMP_SCALE   = 65536    # Q16.16, = HEAT_SCALE (shared temperature/heat domain)
-SHIFT_AT_REF = 2        # metal self-rate = 1/4 (fastest stable on a 4-nbr grid)
 SHIFT_MIN    = 2        # rate floor / stability bound: 4 faces * 1/4 = 1 (convex)
-KAPPA_REF    = 50.0     # reference conductivity (hull) for the log bucket
 NO_FACE      = 63       # sentinel: kappa==0 face / grid edge -> zero conduction
-# Ambient cooling (engine/06 §3, proposal §3.3). Newtonian decay toward ambient
-# (T_ambient == 0, since temperature stores ΔT above a reference): T -= T >> shift.
-# Interior tiles use COOL_SHIFT; a tile whose 4-neighbourhood touches vacuum (or
-# atmosphere < o2_vacuum_thresh) sheds via the smaller COOL_SHIFT_VACUUM, so a
-# space-facing breached wall cools 4× faster. Pure signed-add + arithmetic right
-# shift -> deterministic. These are the burn-out tuning dials.
+# SHIFT_AT_REF = 2 and KAPPA_REF = 50.0 stood here until T5b. They were the CFL
+# STABILITY ANCHOR -- "hull conducts a quarter of the gap per tick", the fastest
+# an explicit 4-neighbour stencil is stable at -- and R10 (thermal model v2,
+# Erik 2026-09-19) RETIRED them: a rate anchor with no capacity, no tile size
+# and no timestep in it could not have been right by construction, and it ran
+# solid-solid conduction 65 000-130 000x too fast. The three constants below
+# set the absolute rate now, and they are physics rather than dials.
+# See simulation/materials.py::_build_conduction_tables and report_t3.md D2/D3.
 #
-# COOL-SHIFT AXIS (2026-07-30): the decay shift is now a PER-MATERIAL column
-# (`cool_shift` on every [materials.*] row) — one global number cannot serve a
-# thin hull plate and a wooden crate at once. These two globals are KEPT and
-# still do two jobs:
-#   * COOL_SHIFT is the DEFAULT for a material row that omits `cool_shift`
-#     (and the solver's own fallback when no per-tile grid is supplied);
-#   * the PAIR defines the VACUUM OFFSET: a vacuum-exposed tile cools at
-#     max(SHIFT_MIN, cool_shift[tile] - (COOL_SHIFT - COOL_SHIFT_VACUUM)),
-#     i.e. "two shifts faster == 4x" stays one rule for every material. With
-#     every row seeded at 5 that reproduces 5/3 exactly.
-COOL_SHIFT        = 5    # interior decay: T -= T >> 5 (~1/32 per tick, ~32-tick e-fold)
-COOL_SHIFT_VACUUM = 3    # space-exposed decay: T -= T >> 3 (~1/8 per tick, 4× faster)
+# h_conv -- the SOLID|GAS boundary, which is CONVECTION, not conduction. A
+# sub-tile boundary layer, not a half-tile of still air. Churchill & Chu (1975),
+# "Correlating equations for laminar and turbulent free convection from a
+# vertical plate", Int. J. Heat Mass Transfer 18, 1323-1329; Incropera & DeWitt
+# eq. 9.26, air properties at the film temperature from Table A.4, L = 2.5 m
+# deck height. h is nearly FLAT over the fire-relevant band -- 5.68 at dT = 100 K,
+# 7.23 at 700 K, 6.93 at 1300 K, +/-12 % about 6.4 -- and every value in
+# [4.8, 9.6] rounds to the same shift, so ONE number is honest here.
+# ACCEPTED GAP: this is NATURAL convection. A fire plume moving past a surface
+# gives h = 10-100 (forced), and the face law has no velocity term.
+h_conv = 6.0
+#
+# tile_size_ref_m -- the dx the conduction table is built at. Under R10 the
+# table IS tile-size dependent (solid faces go as 1/dx^2, gas faces as 1/dx)
+# while the material table is GLOBAL and tile_size_m is per level. 0.333 is the
+# shipped-level value, the same reference rad_scale_derived is calibrated at.
+# On a 1.0 m level (airlock_demo) every solid face is 3 shifts too fast and
+# every gas face 2. Deriving the table per level instead is T3 section 8 q9 --
+# Erik's open question, deliberately not answered here.
+tile_size_ref_m = 0.333
+# T5b step 7 / thermal model v2 R1: COOL_SHIFT = 5 and COOL_SHIFT_VACUUM = 3
+# stood here, with the block explaining the per-material axis and its vacuum
+# offset. They are DELETED with the temperature solver's Pass 3 -- the
+# radiation sweep computes the real radiative loss now, and keeping a
+# hand-rolled `T -= T >> cool_shift` beside it counted the same physics twice.
+# NOTHING RELAXES TO AMBIENT ANY MORE: a solid's temperature changes only
+# through a booked channel (the Pass-1 radiation fold, the Pass-1 heat deposit,
+# Pass-2 conduction, combustion's object-site write).
+# o2_vacuum_thresh SURVIVES -- Pass 0's open-vacuum wipe still asks whether a
+# cell is a thermal medium at all, which is a different question.
 o2_vacuum_thresh  = 0.3  # atmosphere below which a 4-neighbour counts as vacuum-exposed
 
 # EOS refactor P2 — unified temperature, gas-T dials (docs/eos_refactor_design.md
@@ -151,9 +169,40 @@ gas_advection_rate = 900.0  # gas-T wind->displacement scale; SAME convention/va
                              # as [physics].advection_rate (smoke) — hot air rides the
                              # wind at smoke's visual rate until P3 makes `wind` a real
                              # velocity, at which point this dial goes away.
-c_v               = 1.0     # gas heat capacity for the radiation deposit
-                             # ΔT = ΔE/(N·c_v) (§4.3). 1.0 = neutral scale (ΔT≈ΔE at
-                             # ambient N=1.0); no real-gas anchor yet (P3 territory).
+c_v         = 0.0076849     # THE GAS HALF OF THE HEAT-COUNT CURRENCY — derived, not
+                             # dialled (thermal model v2 ledger item 4, R13;
+                             # report_t2.md §2.1-2.2). It is the ONE exchange rate
+                             # between `gas_energy = N·T_abs` and the heat-count
+                             # currency every SOLID capacity is denominated in; it is
+                             # applied at every crossing and nowhere else.
+                             #
+                             # DERIVATION. `cell_capacity_q` prices a gas tile at
+                             # `N·c_v` in the SAME unit `thermal_mass` is in, so c_v
+                             # is simply air's ρc_v expressed in that unit:
+                             #     c_v = ρc_v(air) / THERMAL_MASS_UNIT
+                             #         = 864.548 / 112500 = 0.0076849
+                             # THERMAL_MASS_UNIT = 112500 J/(m³·K) is R13's pin (wood
+                             # at 12 % MC, 0.9 MJ/(m³·K), IS thermal_mass 8).
+                             # ρc_v comes from the engine's OWN EOS constants, not a
+                             # table: it is the residue of eos_solver's k_work
+                             # derivation, ρc_v = p/((γ−1)·T) = 101325/(0.4·293) =
+                             # 864.548 J/(m³·K) — which agrees with tabulated air
+                             # (1.2047 · 717.6, the [materials.air] row) to 0.004 %.
+                             # V_tile cancels out of the ratio, so unlike rad_scale
+                             # this number carries NO tile-size and no molar-mass
+                             # dependence.
+                             #
+                             # WAS 1.0 — a placeholder its own comment called "no
+                             # real-gas anchor yet". It made an ambient air tile
+                             # 130.13× too heavy thermally (c_v=1 at N=1 IS
+                             # thermal_mass 1.0, i.e. a solid), so a wall bled 130×
+                             # the energy it should into the air beside it.
+                             #
+                             # ONE REPRESENTATION. `c_v_q = quantize(c_v)` (Q16.16)
+                             # is the only integer form; every deposit reciprocal is
+                             # `make_recip(c_v_q/65536)`, its EXACT inverse — never
+                             # `make_recip(c_v)`, which differs by 0.0724 % here
+                             # (report_t2.md §10.2, report_t5a.md §6.6).
 n_floor_heat      = 0.01    # floor on the per-tile N divisor (the real bulk N_total
                              # since P3) for the SAME deposit divide, SHARED by BOTH
                              # deposit sites — this Pass-1 gas branch AND combustion's
@@ -654,16 +703,24 @@ vacuum_ambient_K = 295.0
 #                 shipped-level value (levels/*/level.toml); deck height 2.5 m
 #                 is [physics.water] ceiling_h.
 #   dt          = 1/24 s                          ([clock] ticks_per_second)
-#   J_per_count = rho_c * V_tile / (8 * 65536) = 0.37013197 J
-#                 THE CURRENCY PIN. One heat count raises a thermal_mass = 1
-#                 tile by 1/65536 K (temperature_solver.cpp:332, `gain =
-#                 deposit >> log2(thermal_mass)`; kelvin_ambient 293 and
-#                 k_temp_to_kelvin 1 make one game degree one kelvin). Pinned on
-#                 the furniture row (thermal_mass = 8) with rho_c = 0.7 MJ/m^3/K
-#                 — the value that row's own comment already names for wood —
-#                 and V_tile = 0.333^2 * 2.5 = 0.277223 m^3, the FULL solid
-#                 column: the same filled block that radiates from 4*s*H must
-#                 store in s^2*H. C_tile = 194.06 kJ/K (~139 kg of wood).
+#   J_per_count = rho_c * V_tile / (8 * 65536) = 0.4759 J
+#                 THE CURRENCY PIN, at R13's ruled value (Erik, 2026-09-19:
+#                 "0.9 it is"). One heat count raises a thermal_mass = 1 tile by
+#                 1/65536 K (temperature_solver.cpp, `gain = deposit >>
+#                 log2(thermal_mass)`; kelvin_ambient 293 and k_temp_to_kelvin 1
+#                 make one game degree one kelvin). Pinned on the furniture row
+#                 (thermal_mass = 8) with rho_c = 0.9 MJ/(m^3 K) -- wood at
+#                 ~12 % moisture content, which is what the [materials.wood]
+#                 row's own authored density (555) and specific_heat (1620)
+#                 multiply to, 0.899 -- and V_tile = 0.333^2 * 2.5 = 0.277223
+#                 m^3, the FULL solid column: the same filled block that
+#                 radiates from 4*s*H must store in s^2*H. C_tile = 249.5 kJ/K
+#                 (~154 kg of wood).
+#                 T5b: this block used to read 0.37013197 J / 0.7 MJ/(m^3 K) /
+#                 194.06 kJ/K / ~139 kg -- the PROVISIONAL pin that R13
+#                 superseded. The key's own value below was already moved to
+#                 R13's; the derivation above it had not been (report_t2.md D3
+#                 site 23).
 #
 # ASSUMPTIONS, both multiplicative, both reported in the report's §3:
 #   * one face instead of four          -> 5.3141e-9  (x1/4)
@@ -983,18 +1040,50 @@ o2_thresh_burn    = 0.03   # RETIRED as the burn gate (the o2f law is the thrott
 # decision; it was unrepresentable. T5a landed the schema carrying EXACTLY
 # today's number so the goldens could gate it as a pure refactor.
 #
-# THE DERIVED VALUE IS NOT APPLIED YET: H_FUEL_M = 14870, H_FUEL_SHIFT = 9
-# (14870 · 512 = 7.613e+06) is a ~1.9-million-fold increase in the heat
-# combustion puts into the air — today the fuel bed gets 580 000x more heat than
-# the flame gas, i.e. combustion puts 0.0002 % of a fire's heat into the plume —
-# so it is squarely a HUMAN-TEST feel change and belongs to the flip.
+# THE DERIVED VALUE IS *NOT* APPLIED, AND T5b MEASURED WHY.
+# T3 derives H_FUEL_M = 14870, H_FUEL_SHIFT = 9 (14870 · 512 = 7.613e+06
+# counts = 3.62 MJ), the 75 % PLUME share of Huggett's 4.831 MJ per unit N_O2.
+# Applying it makes the gas run away and THREE pre-existing gates say so:
+#
+#   test_e1_hot_rail::test_no_rail_hits            T_MAX_PHYS engaged 17 206x
+#                                                  against a budget of 8
+#   test_eos_p4_combustion::test_thermal_spike_..  peak 15 992 game, i.e. the
+#                                                  gas pinned at T_MAX_PHYS
+#   test_ps1_smoke_roundtrip::..never_exceed_start bulk gas mass MINTED
+#
+# and they are not loose: bisected on this branch, even a 2x H_fuel (8.0)
+# trips the first of them. The shipped 4.0 is already AT the ceiling, so the
+# derived value is 1.9 MILLION times what the gas side can absorb.
+#
+# THE REASON IS STRUCTURAL, NOT NUMERIC. Design v2 §3.1 states it itself:
+# "gas is heated only by combustion until P5 gives it radiative absorption".
+# A gas cell has NO radiative loss channel at all in this model -- it can be
+# heated, advected and expanded, and that is the whole list. Handing a medium
+# with no loss channel 75 % of a real fire's heat release is the same defect
+# R12 fixed for foliage (an energy ratchet), and the missing physics is the
+# same too: a real plume dumps its heat by RADIATING and by ENTRAINING ~30
+# tile-volumes of cold air per second, while our deposit lands in one cell and
+# its open faces.
+#
+# So the plume share stays UNMODELLED until P5, and the engine releases only
+# H_bed's 25 % fuel-surface share (1.208 MJ per unit N_O2, derived below).
+# Raising H_fuel before P5 would be tuning a dial to paper over a missing
+# channel, which is what this whole arc exists to stop doing.
+# See report_t5b.md §5 for the measurement and the open question.
 #
 # Keep the mantissa as large as the format allows (|H_FUEL_M| < 32768) and take
 # the rest in the shift: a claimant's per-tick burn is only a few raw Q16.16
 # counts, so mul_q16's truncation is coarse unless the mantissa carries the
 # magnitude.
 H_FUEL_M          = 4.0    # mantissa (< 32768, the Q16.16 range)
-H_FUEL_SHIFT      = 0      # H_fuel = H_FUEL_M * 2^H_FUEL_SHIFT = 4.0 (unchanged)
+H_FUEL_SHIFT      = 0      # H_fuel = H_FUEL_M * 2^H_FUEL_SHIFT = 4.0
+# UNCHANGED at T5b -- see the block above for the measurement that blocked the
+# derived value, and report_t5b.md §5 for the open question it leaves Erik.
+# One thing that DID change: this dial now HAS an automated backstop. T5a §6.4
+# found that doubling it left all 2557 tests green; at the corrected `c_v` the
+# gas is 130x lighter, so the same deposit makes 130x the temperature, and a
+# 2x move now trips test_e1_hot_rail. The currency fix gave the gas-side yield
+# the gate it was missing.
 # --- o2_potency — THE SIZING RULING's preserved option (Erik, 2026-08-02) -----
 # A LOAD-TIME MULTIPLIER on the baked heat-per-O2 constants (the H_fuel /
 # H_BED_M chain above and below). Erik's sizing ruling shipped PACKAGE A —
@@ -1028,6 +1117,16 @@ soot_yield        = 0.5    # fraction of consumed O2 -> smoke (rest -> inert_N2)
 # default, but in play THE ember-lifetime dial: smaller -> embers glow for
 # minutes awaiting oxygen; larger -> they char out fast.
 fuel_per_o2       = 0.7
+# T5b / R14: THIS SCALAR IS NOW ONLY THE FALLBACK. The live engine passes a
+# per-tile `GameMap.fuel_per_o2_plane` derived from each material's own
+# combustible mass (`hp[mat] * KG_FUEL_PER_N_O2 / (density[mat] * V_tile)`,
+# simulation/materials.py), because a single global made a tile's FUEL STORE
+# `hp / fuel_per_o2` -- proportional to its structural integrity rather than to
+# how much wood is in it. A massive wood tile is 154 kg; 0.7 implied 31.9 kg.
+# The derived rates are wood/foliage 0.1449, furniture 0.0725, kindling 0.0193,
+# i.e. tiles burn 4.8x / 9.7x / 36x longer than at this scalar. The scalar
+# survives for direct-binding callers (the `fuel_ref` / `o2_frac_amb` tombstone
+# precedent) and moving it no longer affects the game.
 # --- P-O2b: THE EXTENDED OXYGEN DRAW (Erik's Option 2b) ----------------------
 # docs/fire_realism_design_2026-08-01.md v5.2 "F-O2b" + the v4 ruling batch
 # item (1). A burning tile no longer draws oxygen only from its four open
@@ -1112,8 +1211,32 @@ max_claimants     = 12
 # target). Plateau at slow-burn dials measured 917 K (still short of G1's
 # 1300 K — Phase 4 continues; the shift ladder was measured x1/x2/x4/x8 =
 # 296(dead)/683/769/917 K, the fourth-root law visible end to end).
-H_BED_M           = 18125.0  # mantissa (< 32768, the Q16.16 range). P-K0: promoted from TUNE (P-F1b 25290->18125)
-H_BED_SHIFT       = 7        # H_bed = H_BED_M * 2^H_BED_SHIFT = 2.320e6. History: 3 -> 4 (P-K0) -> 7 (x8, Erik's fuel-out + G1 ruling 2026-09-06, see block above)
+H_BED_M           = 38.73    # mantissa (< 32768, the Q16.16 range). M3: the DERIVED value, see below.
+# M3 (2026-09-23, report_m3.md) -- THE TRANSCRIPTION FIXED. T5b derived the
+# right number and wrote it into the dial in the wrong unit (report_t5b.md
+# §6.3). The engine pays `mul_q16(burn_raw, H_BED_M) << H_BED_SHIFT` heat counts
+# for a claimant's RAW Q16.16 burn count, so H_bed is heat counts per RAW count
+# of N_O2. 19827 * 2^7 = 2.538e+06 was the value per UNIT of N_O2 -- exactly
+# 2^16 too big -- and the fitted old-cast emission scale (3110x the derived one)
+# had been balancing it until the flip removed that half of the pair. Per raw
+# count, from cited constants only:
+#   0.25            fuel-surface share (Drysdale ch.5 burning-rate balance:
+#                   flame-to-surface feedback is 20-40 % of total release)
+#   * 13.1 MJ/kg    Huggett 1980, per kg of O2 consumed (+/- 5 %)
+#   * 0.36878 kg    one atmosphere of O2 in one tile (p*V/(R*T) at ambient),
+#     / 65536       ... per raw count
+#   / 0.4759 J      J_per_count, R13's currency pin (materials.py)
+#   = 38.73 heat counts   (V_tile cancels; 38.72-38.74 across 293-293.15 K)
+# i.e. 16384 raw burned (0.0922 kg O2) pays 302 kJ into the fuel bed, not 19.8
+# GJ. o2_potency (below, 1.0) folds into this mantissa at load, so 38.73 IS the
+# solver's value: tests/test_m3_derived_h_bed.py measures it on the solver.
+# History: P-F1b 25290*2^3 -> P-K0 18125*2^4 (tuned by FEEL) -> x8 (fuel-out
+# ruling 2026-09-06) -> T5b 19827*2^7 (derived, mis-transcribed) -> M3 38.73.
+# NOTE the other 75 %, the plume share, is NOT released: H_fuel above stays at
+# 4.0 because a gas cell has no loss channel before P5. So a fire currently
+# releases 25 % of its real heat, all of it into the fuel bed, and the split is
+# a derivation with one half deliberately dormant -- not half a split.
+H_BED_SHIFT       = 0        # H_bed = H_BED_M * 2^H_BED_SHIFT = 38.73 (M3: the derived value fits the mantissa). History: 3 -> 4 (P-K0) -> 7 (x8, Erik's fuel-out + G1 ruling 2026-09-06) -> 0 (M3)
 # Unit-side suffocation mechanics (LATER arc, design §5): defined here so the
 # constant lives at the right layer; nothing reads it yet.
 o2_thresh_breathe = 0.08   # min local N_O2 a unit needs to breathe (NOT wired yet)
@@ -1545,23 +1668,17 @@ flammable = false
 mobility = 1000
 light_atten = [0.0, 0.0, 0.0]
 heat_atten = 0.0
-# EOS refactor P2 (docs/eos_refactor_design.md §4, §8 patch P2): air gets a
-# small NONZERO conductivity so the EXISTING whole-grid conduction pass
-# (temperature_solver.cpp, no solid/air branch) does air<->air AND the
-# solid<->air interface exchange for free — the sealed-room energy sink.
-# Chosen so the derived face_shift_table[air][air] == 11: THREE steps
-# slower than wood's face_shift_table[wood][wood] == 8 (the §9 "2-4 steps
-# slower than wood" bound), comfortably inside [SHIFT_MIN=2, NO_FACE=63].
-# Derivation (materials.py._build_conduction_tables, harmonic-mean face,
-# shift = round(-log2(hm/KAPPA_REF)), KAPPA_REF=50):
-#   face[air,air] = round(-log2(0.024/50)) = round(11.02) = 11
-# The air<->solid interface shifts (harmonic mean, dominated by the more
-# resistive material = air) land at ~10 for every solid — a hair FASTER
-# than air-air (11) but far slower than any solid-solid face (hull/steel
-# self-face == 2, wood-wood == 8): the physically-expected "air is the
-# bottleneck resistor" ordering. furniture keeps conductivity=0.0
-# (unaffected — NO_FACE either side, unchanged).
-conductivity = 0.024
+# T5b (T3 D6 §7.2, ledger 6): the REAL thermal conductivity of air, Incropera
+# & DeWitt Table A.4 interpolated to 293 K. WAS 0.024, a value REVERSE-ENGINEERED
+# at EOS refactor P2 to make the old log-bucket land on face[air][air] == 11
+# ("chosen so the derived face_shift_table[air][air] == 11" — the old note,
+# struck). Under R10 no face shift is chosen any more: they are all
+# round(log2(rho_c_min * dx^2 / (kappa_hm * dt))), so this column states matter
+# and the table follows. `air` is the ONE row whose conductivity still builds a
+# real face both ways — air|air (molecular conduction between two gas cells) and,
+# via the solid-gas branch, nothing at all: a solid|gas face is governed by the
+# CONVECTION coefficient h_conv, not by kappa_air (T3 D3 / ledger 7a).
+conductivity = 0.0257
 density = 1.2047       # kg/m3 -- dry air at the engine's own ambient, p/(R*T)
                        # with p = 101325 Pa, R_specific = 287.05 J/(kg.K),
                        # T = 293 K (the gas-energy seam's T_AMB).
@@ -1581,22 +1698,10 @@ thermal_mass = 0       # THE ONE LEGAL AUTHORED `thermal_mass` (R14): a GAS-
                        # The derived `thermal_solid` mask (thermal_mass > 0) IS
                        # the guard: air never reaches the >>shift convert path
                        # at all (thermal-mass axis design §2.1).
-# COOL-SHIFT AXIS (2026-07-30) — the LOSS-side twin of `thermal_mass`. The
-# per-tick Newtonian decay toward ambient on a THERMAL-SOLID tile:
-#       T -= T >> cool_shift          (T is ΔT above ambient, so T_amb == 0)
-# At the 24 Hz tick the e-fold time is 2^cool_shift / 24 seconds:
-#       5 -> 1.3 s     8 -> 10.7 s    10 -> 43 s    12 -> 171 s   14 -> 11 min
-# It was ONE global ([physics.thermal] COOL_SHIFT) until the thermal-mass arc
-# made furniture a thermal solid whose ONLY loss channel is this dial
-# (conductivity = 0 -> NO_FACE both ways -> no conduction face). A number fast
-# enough for thin hull plate is absurd for a wooden crate and vice versa, so it
-# is now a PER-MATERIAL FEEL DIAL — the same argument the gain side won with
-# `thermal_mass`. Legal range [SHIFT_MIN=2, 20]; 0 would mean `T -= T`, an
-# instant total wipe, and is rejected by the loader. A vacuum-exposed tile
-# takes the offset form documented at [physics.thermal] COOL_SHIFT above.
-# EVERY ROW IS SEEDED AT THE OLD GLOBAL (5) — this column is byte-identical on
-# arrival; moving a row is a deliberate, HUMAN-TESTED feel change.
-cool_shift = 5       # air: unused (the cooling pass is thermal-solid only), sane value
+# T5b step 7 / R1: the COOL-SHIFT AXIS block stood here -- the per-material
+# ambient-decay column, its vacuum offset and its bounds. Deleted with the
+# temperature solver's Pass 3; see [physics.thermal] above.
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 0.0
 # FORBIDDEN BAND (storm audit 2026-08-14 §5, row d/d', §5B; energy-books
 # design §2.8): wave_absorb in the OPEN interval (0, 0.02) WHILE
@@ -1617,7 +1722,7 @@ hp = 300
 flammable = false
 mobility = 0
 light_atten = [1.0, 1.0, 1.0]
-heat_atten = 1.0
+heat_atten = 0.85   # EMISSIVITY (T3 D6 §7.3 / ledger 9): Incropera & DeWitt\n                    # Table A.11, painted / lightly-oxidised mild steel, 0.78-0.96.\n                    # WAS 1.0 -- a perfect black body, which no real surface is.
 conductivity = 50.0
 density = 7850.0       # kg/m3 -- structural steel (EN 1993-1-1 3.2.6; Incropera
                        # & DeWitt Table A.1 gives 7832 for AISI 1010).
@@ -1626,8 +1731,7 @@ specific_heat = 460.0  # J/(kg.K) -- mild/structural steel near 300 K (Incropera
                        # structural-steel handbooks quote 460-490).
                        # rho*c = 3.611 MJ/(m3.K); thermal_mass DERIVED =
                        # pow2_snap(32.10) = 32 (heat >> 5).
-cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
-                     # THE OLD GLOBAL — see the axis note on [materials.air]
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 0.0
 wave_absorb = 0.1
 blast_resist = 0.0
@@ -1639,22 +1743,40 @@ hp = 60
 flammable = true
 mobility = 0
 light_atten = [1.0, 1.0, 1.0]
-heat_atten = 1.0
-conductivity = 0.15
+heat_atten = 0.90   # EMISSIVITY (T3 D6 §7.3 / ledger 9): Incropera & DeWitt\n                    # Table A.11, planed wood 0.82-0.92. WAS 1.0.
+conductivity = 0.12  # W/(m.K) -- Wood Handbook FPL-GTR-190 ch.4, TRANSVERSE\n                     # at 12 % MC (k = G(B + C*M) + A, G = 0.51); band 0.10-0.16.\n                     # WAS 0.15. Face shift unchanged (24) (T3 D6 §7.2).
 density = 555.0        # kg/m3 -- softwood construction lumber at 12 % MC.
                        # Wood Handbook FPL-GTR-190 Table 5-3 specific gravities
                        # (Douglas-fir coast 0.48 -> 538, loblolly pine 0.51 ->
-                       # 571, both at 12 % MC); 555 is mid-band.
+                       # 571, both at 12 % MC); 555 is mid-band. THE MATERIAL's
+                       # real density -- M2 states how much of it is there with
+                       # `thickness_m`, never by smearing this number.
 specific_heat = 1620.0 # J/(kg.K) -- Wood Handbook FPL-GTR-190 ch.4, the moist-
                        # wood formula evaluated at 12 % MC and 293 K:
                        # c_dry = 0.1031 + 0.003867*T = 1236 J/(kg.K), then the
                        # MC mix + A_c correction -> 1620.
                        # rho*c = 0.899 MJ/(m3.K) == R13's ruled pin (0.90) to
                        # 0.1 %, from two independently cited numbers.
-                       # thermal_mass DERIVED = pow2_snap(7.992) = 8.
-cool_shift = 13      # ambient decay T -= T>>13 (e-fold 2^13/24 = 341.3 s). P-K0:
-                     # promoted from TUNE (P-F1b 9->13, THE SPREAD DIAL; wood
-                     # moves with furniture — both cellulosic, both thermal_mass 8)
+# M2 (docs/thin_material_rows_design_2026-09-20.md §6, Erik's number): this row
+# is A 0.5 CM PANEL -- a plywood/board partition -- not the massive structural
+# wall R14 made it. THE NAME IS KEPT: "wood" claims a MATERIAL, not a thickness,
+# and a 5 mm plywood partition is wood; renaming would churn the config key, the
+# editor palette, the benches and the docs, and would orphan the row's git
+# history, which IS its calibration record (R13's pin, T3 D6's Wood Handbook
+# citations). The id stays 2 either way -- levels store numeric codes.
+#   DERIVED at tile_size_ref_m = 0.333, ceiling_h = 2.5 (V_tile = 0.2772 m3):
+#     fill_fraction = 0.005 / 0.333          = 0.01502   (1.50 % of the tile)
+#     mass          = 555 * 0.005 * 0.333*2.5 = 2.31 kg  (was 153.9 kg)
+#     thermal_mass  = pow2_snap(899100 * 0.01502 / 112500)
+#                   = pow2_snap(0.1200)      = 2^-3 = 0.125  (+4.2 % snap cost)
+#     capacity      = 0.125 * 112500 * 0.2772 = 3.90 kJ/K
+#   => ~66 s to a 300 K rise at the fuel-bed self-heat, inside the 30-70 s
+#      literature band for piloted ignition of wood, with nothing tuned.
+# WHY THIS ROW EXISTS AT ALL: it has ALWAYS declared `flammable = true,
+# ignition_temp = 300` while being a block a 17.7 kW fire warms at 0.07 K/s. It
+# was declaring itself fuel and unable to deliver.
+thickness_m = 0.005
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 300.0  # G12 review (spec §4): reads 593 K under the honest map (was
                         # 1193 K under ×3) — realistic for wood (real ignition ~573-673
                         # K). Reviewed, kept.
@@ -1672,8 +1794,8 @@ hp = 40
 flammable = false
 mobility = 1000
 light_atten = [1.0, 1.0, 1.0]
-heat_atten = 1.0
-conductivity = 0.3
+heat_atten = 0.90   # it is wood -- Incropera A.11 (painted wood 0.90-0.96).
+conductivity = 0.12  # it is wood -- FPL-GTR-190 ch.4, transverse at 12 % MC.\n                     # WAS 0.30, which had no source at all (T3 D6 §7.2).
 density = 555.0        # kg/m3 -- softwood construction lumber at 12 % MC.
                        # Wood Handbook FPL-GTR-190 Table 5-3 specific gravities
                        # (Douglas-fir coast 0.48 -> 538, loblolly pine 0.51 ->
@@ -1686,8 +1808,7 @@ specific_heat = 1620.0 # J/(kg.K) -- Wood Handbook FPL-GTR-190 ch.4, the moist-
                        # 0.1 %, from two independently cited numbers.
                        # thermal_mass DERIVED = pow2_snap(7.992) = 8.
                        # A wooden door: the [materials.wood] numbers.
-cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
-                     # THE OLD GLOBAL — see the axis note on [materials.air]
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 280.0
 wave_absorb = 0.4
 blast_resist = 0.0
@@ -1699,8 +1820,8 @@ hp = 200
 flammable = false
 mobility = 0
 light_atten = [1.0, 1.0, 1.0]
-heat_atten = 1.0
-conductivity = 45.0
+heat_atten = 0.85   # as hull -- Incropera & DeWitt Table A.11 (T3 D6 §7.3).
+conductivity = 50.0  # W/(m.K) -- Incropera & DeWitt Table A.1, ship-plate\n                     # mild / HSLA steel, band 45-64. WAS 45.0, below the band's\n                     # centre and inconsistent with the identical `hull` row.\n                     # The face shift is unchanged (18) -- this is a table-\n                     # consistency fix, not a rate change (T3 D6 §7.2).
 density = 7850.0       # kg/m3 -- structural steel (EN 1993-1-1 3.2.6; Incropera
                        # & DeWitt Table A.1 gives 7832 for AISI 1010).
 specific_heat = 460.0  # J/(kg.K) -- mild/structural steel near 300 K (Incropera
@@ -1708,8 +1829,7 @@ specific_heat = 460.0  # J/(kg.K) -- mild/structural steel near 300 K (Incropera
                        # structural-steel handbooks quote 460-490).
                        # rho*c = 3.611 MJ/(m3.K); thermal_mass DERIVED =
                        # pow2_snap(32.10) = 32 (heat >> 5).
-cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
-                     # THE OLD GLOBAL — see the axis note on [materials.air]
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 0.0
 wave_absorb = 0.1
 blast_resist = 0.8
@@ -1722,15 +1842,14 @@ flammable = false
 mobility = 0
 light_atten = [0.1, 0.1, 0.1]
 heat_atten = 0.3
-conductivity = 1.0
+conductivity = 1.40  # W/(m.K) -- Incropera & DeWitt Table A.3, soda-lime\n                     # plate glass at 300 K; band 1.0-1.4. WAS 1.0, the bottom\n                     # of the band. Face shift unchanged (22) (T3 D6 §7.2).
 density = 2500.0       # kg/m3 -- soda-lime plate glass (Incropera & DeWitt
                        # Table A.3, "Glass, plate (soda lime)" at 300 K).
 specific_heat = 750.0  # J/(kg.K) -- same Incropera Table A.3 entry.
                        # rho*c = 1.875 MJ/(m3.K); thermal_mass DERIVED =
                        # pow2_snap(16.67) = 16 (heat >> 4). The -4.0 % snap is
                        # the table's worst, well inside R5's accepted band.
-cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
-                     # THE OLD GLOBAL — see the axis note on [materials.air]
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 0.0
 wave_absorb = 0.1
 blast_resist = 0.0
@@ -1768,14 +1887,27 @@ specific_heat = 1620.0 # J/(kg.K) -- Wood Handbook FPL-GTR-190 ch.4, the moist-
                        # MC mix + A_c correction -> 1620.
                        # rho*c = 0.899 MJ/(m3.K) == R13's ruled pin (0.90) to
                        # 0.1 %, from two independently cited numbers.
-                       # thermal_mass DERIVED = pow2_snap(7.992) = 8.
-                       # A crate is solid cellulosic stock -- R14: base rows
-                       # are MASSIVE; a hollow crate is its own row later.
-cool_shift = 13      # THE dial for a crate: conductivity = 0 means the ambient
-                     # decay above is furniture's ONE loss channel (thermal-mass
-                     # design §2.2), so this alone sets how long a burning crate
-                     # stays hot. e-fold 2^13/24 = 341.3 s. P-K0: promoted from
-                     # TUNE (P-F1b 9->13, THE SPREAD DIAL).
+                       # THE MATERIAL's real density: a crate is made of solid
+                       # cellulosic stock. How much of it is in the tile is
+                       # `thickness_m`, below -- M2 reverses R14's "base rows
+                       # are MASSIVE" rather than faking a bulk density.
+# M2 (design section 6): ~5 kg, roughly a few crates' worth of 1 cm board.
+#   DERIVED at tile_size_ref_m = 0.333, ceiling_h = 2.5:
+#     fill_fraction = 0.0108 / 0.333          = 0.03243  (3.24 % of the tile)
+#     mass          = 555 * 0.0108 * 0.333*2.5 = 4.99 kg (was 153.9 kg)
+#     thermal_mass  = pow2_snap(899100 * 0.03243 / 112500)
+#                   = pow2_snap(0.2596)       = 2^-2 = 0.25  (-3.7 % snap cost)
+#     capacity      = 0.25 * 112500 * 0.2772  = 7.80 kJ/K   => ~132 s to +300 K
+# lumped-exempt: AT 10.8 MM THIS ROW IS OUTSIDE THE SECTION 3 LUMPED CRITERION
+# (THIN_LIMIT_M = 6 mm) and is carried as a named exemption in
+# `simulation.materials.LUMPED_CRITERION_EXEMPT`. ACCEPTED GAP, Erik's ruling
+# 2026-09-21, with its reason: the error is CONSERVATIVE (a too-thick lump
+# spreads incident heat through more mass than really participates, so it
+# ignites SLOWER than reality, never faster), it is the heaviest row still
+# defensible as one node, and cover the player hides behind should not catch as
+# eagerly as a thin panel. Do NOT thin this row to close the gap.
+thickness_m = 0.0108
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 280.0   # wood-like; slightly easier to light than a solid wood wall (300).
                          # G12 review (spec §4): reads 573 K under the honest map (was
                          # 1133 K under ×3) — realistic for cellulosic fuel. Reviewed, kept.
@@ -1797,8 +1929,8 @@ hp = 40
 flammable = false
 mobility = 0
 light_atten = [1.0, 1.0, 1.0]
-heat_atten = 1.0
-conductivity = 0.3
+heat_atten = 0.90   # it is wood -- Incropera A.11 (painted wood 0.90-0.96).
+conductivity = 0.12  # it is wood -- FPL-GTR-190 ch.4. WAS 0.30, unsourced.
 density = 555.0        # kg/m3 -- softwood construction lumber at 12 % MC.
                        # Wood Handbook FPL-GTR-190 Table 5-3 specific gravities
                        # (Douglas-fir coast 0.48 -> 538, loblolly pine 0.51 ->
@@ -1811,8 +1943,7 @@ specific_heat = 1620.0 # J/(kg.K) -- Wood Handbook FPL-GTR-190 ch.4, the moist-
                        # 0.1 %, from two independently cited numbers.
                        # thermal_mass DERIVED = pow2_snap(7.992) = 8.
                        # A wooden door: the [materials.wood] numbers.
-cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
-                     # THE OLD GLOBAL — see the axis note on [materials.air]
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 280.0
 wave_absorb = 0.4
 blast_resist = 0.0
@@ -1853,11 +1984,24 @@ specific_heat = 1620.0 # J/(kg.K) -- Wood Handbook FPL-GTR-190 ch.4, the moist-
                        # MC mix + A_c correction -> 1620.
                        # rho*c = 0.899 MJ/(m3.K) == R13's ruled pin (0.90) to
                        # 0.1 %, from two independently cited numbers.
-                       # thermal_mass DERIVED = pow2_snap(7.992) = 8, == furniture's
-                       # (the locked P-F4a spec value), now by derivation.
-cool_shift = 13        # P-K0: promoted from TUNE (P-F1b 9->13, matches
-                       # furniture/wood — all three cellulosic materials moved
-                       # together). e-fold 2^13/24 = 341.3 s.
+                       # THE MATERIAL's real density; the OBJECT's size is
+                       # `thickness_m`, below.
+# M2 (design section 6): kindling is RESTORED TO ITS OWN DECLARED INTENT. This
+# row's header has always read "the CAMPFIRE REFERENCE OBJECT -- a 1-3 kg
+# effective-class fuel row"; R14's uniform rho = 555 at full fill flattened that
+# to 153.9 kg and left the intent alive only in `hp = 8`. A separate
+# `10_kg_bonfire` row was considered and DROPPED: the material id budget is full
+# (ids 0-9, MAT_FOLIAGE must stay last, id 9 numerically equals the CSV
+# SPACE_CODE) and no new id is needed -- kindling already IS that row.
+#   DERIVED at tile_size_ref_m = 0.333, ceiling_h = 2.5:
+#     fill_fraction = 0.0043 / 0.333          = 0.01291  (1.29 % of the tile)
+#     mass          = 555 * 0.0043 * 0.333*2.5 = 1.99 kg
+#     thermal_mass  = pow2_snap(899100 * 0.01291 / 112500)
+#                   = pow2_snap(0.1032)       = 2^-3 = 0.125  (+21 % snap cost)
+#     capacity      = 0.125 * 112500 * 0.2772 = 3.90 kJ/K    => ~66 s to +300 K
+# Inside THIN_LIMIT_M = 6 mm: a genuine small-Biot lump, no exemption needed.
+thickness_m = 0.0043
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 280.0  # spec value: furniture's, PER THE ROW CONVENTIONS —
                        # do NOT import literature values (~250 C) raw here.
                        # G12 review (spec §4): reads 573 K under the honest map
@@ -1882,7 +2026,7 @@ flammable = true
 mobility = 1000       # fully walkable — no movement penalty (unlike furniture's 400)
 permeability = 1.0    # explicit: no wind interaction (a walk-through canopy)
 light_atten = [0.0, 0.0, 0.0]   # explicit: no vision interaction (see straight through)
-heat_atten = 0.0      # no interaction beyond burning
+heat_atten = 0.90   # R12 (thermal model v2), superseding design v3 row 6's 0.0.\n                    # THE LOSS-CHANNEL INVARIANT: with cool_shift deleted and\n                    # conduction at real rates, IN-PLANE RADIATION IS THE ONLY\n                    # WAY A FLAMMABLE THERMAL SOLID CAN LOSE HEAT. At 0.0 a\n                    # burning foliage tile was strictly adiabatic -- combustion\n                    # wrote into it and nothing could take the energy out, so it\n                    # ratcheted to T_MAX_PHYS and re-lit its neighbours forever.\n                    # 0.90 is also simply the real number: leaf emissivity is\n                    # 0.94-0.99 (Monteith & Unsworth Table A.3) and a canopy\n                    # tile's Beer-Lambert opacity is 0.39-0.78 at LAI 1-3.\n                    # This does NOT author tree behaviour; it stops foliage\n                    # being radiatively invisible. The materials door now\n                    # REFUSES flammable && thermal_solid && heat_atten == 0.
 conductivity = 0.0    # kappa 0 = no conduction face (like furniture/kindling);
                        # fire eats it via flammability instead
 density = 555.0        # kg/m3 -- softwood construction lumber at 12 % MC.
@@ -1895,16 +2039,22 @@ specific_heat = 1620.0 # J/(kg.K) -- Wood Handbook FPL-GTR-190 ch.4, the moist-
                        # MC mix + A_c correction -> 1620.
                        # rho*c = 0.899 MJ/(m3.K) == R13's ruled pin (0.90) to
                        # 0.1 %, from two independently cited numbers.
-                       # thermal_mass DERIVED = pow2_snap(7.992) = 8.
-                       # MATERIAL reading (solid cellulose), not the OBJECT
-                       # reading of a canopy -- report_t3.md D1 flags that a
-                       # canopy's bulk rho*c wants 0.5, which the power-of-two
-                       # column cannot express (its floor is 1). Erik's call,
-                       # open question 2 there; NOT decided at T3b.
-cool_shift = 13        # THE dial: conductivity = 0 means the ambient decay is
-                       # foliage's ONE loss channel, same as furniture/wood/
-                       # kindling (all cellulosic materials move together).
-                       # e-fold 2^13/24 = 341.3 s.
+                       # THE MATERIAL reading (solid cellulose) is the right
+                       # one and it STAYS: report_t3.md D1's open question 2 --
+                       # "a canopy's bulk rho*c wants 0.5, which the column
+                       # cannot express" -- is answered by M2, and not by a fake
+                       # density. The canopy is mostly AIR, so it is the
+                       # GEOMETRY that is thin, and M1 made the column able to
+                       # hold the result.
+# M2 (design section 6): a canopy is mostly air; follows kindling.
+#   DERIVED at tile_size_ref_m = 0.333, ceiling_h = 2.5:
+#     fill_fraction = 0.0043 / 0.333          = 0.01291  (1.29 % of the tile)
+#     mass          = 555 * 0.0043 * 0.333*2.5 = 1.99 kg
+#     thermal_mass  = pow2_snap(0.1032)        = 2^-3 = 0.125
+#     capacity      = 0.125 * 112500 * 0.2772 = 3.90 kJ/K   => ~66 s to +300 K
+# Inside THIN_LIMIT_M = 6 mm: a genuine small-Biot lump, no exemption needed.
+thickness_m = 0.0043
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 280.0  # wood-like, matches furniture/kindling
 wave_absorb = 0.0      # no interaction beyond burning (not a blast damper)
 blast_resist = 0.0
@@ -2752,7 +2902,39 @@ crit_behind_mult = 4.0
 # environmental_damage_rate / temperature_max come from each unit's
 # EnvironmentProfile (config keys below are the global fallback if absent).
 # dt_tick = 1/ticks_per_second keeps the real DPS tick-rate independent.
-heat_flux_to_temp = 8.0          # felt-degrees per absorbed heat-unit (k_flux_to_temp)
+# T5b step 6 (design v3 §6.2, row 3): heat_flux_to_temp is DERIVED now, against
+# the physical currency, and anchored on the literature rather than on play.
+#
+#   Phi is the body's absorbed energy per tick in heat counts (rad_flux_sweep,
+#   the sweep's body channel), so the irradiance on the body is
+#       Phi * 65536 * J_per_count * ticks_per_second / A_rad
+#     = Phi * 224.8 kW/m2
+#   with J_per_count = 0.4759 J (R13's pin) and A_rad = 4*0.333*2.5 = 3.33 m2,
+#   the same four lateral faces the emission scale is denominated over.
+#
+# THE ANCHOR: 2.5 kW/m2 is the standard human pain / firefighter-exposure
+# threshold (SFPE Handbook; Drysdale ch. 2's tenability table), so it is placed
+# exactly at the EDGE of the survivable band -- `T_felt == temperature_max`,
+# over == 0, no damage. Everything else falls out:
+#
+#   k = (temperature_max - heat_ambient_ref)
+#       / (Phi(2.5 kW/m2) * unit_absorption * (1 - unit_reflectivity))
+#     = 40 / (0.011122 * 0.765) = 4701.2
+#
+# and the resulting band, at the shipped environmental_damage_rate = 1.0 and
+# heat_overtemp_scale = 0.05, on a 100 HP unit:
+#
+#    1 kW/m2  (solar)                 T_felt  36   no damage
+#    2.5      (pain in ~10 s)         T_felt  60   the band edge, no damage
+#    5        (blistering in ~30 s)   T_felt 100    3 HP/s -> 33 s
+#   10        (2nd-degree in ~10 s)   T_felt 180    7 HP/s -> 14 s
+#   20        (untenable)             T_felt 340   15 HP/s ->  6.7 s
+#   50        (in the flame)          T_felt 820   39 HP/s ->  2.6 s
+#
+# WAS 8.0 -- a play-tuned number against the OLD `rad_flux`, whose scale came
+# from the retired cast's FITTED `rad_scale` (2419x the derived one). The dial
+# had to move by roughly that factor for a marine to keep burning at all.
+heat_flux_to_temp = 4701.2       # felt-degrees per absorbed heat-unit (k_flux_to_temp)
 heat_ambient_ref = 20.0          # baseline felt temperature, no beam (T_ambient_ref)
 heat_overtemp_scale = 0.05       # damage ramp above the band (k_over), small +ve
 temperature_max = 60.0           # global fallback band ceiling if a unit has no EnvironmentProfile

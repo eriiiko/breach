@@ -51,7 +51,31 @@ _TBL = MaterialTable.from_config()
 
 A_AIR = int(_TBL.heat_atten_q16[MAT_AIR])        # 0     — transparent
 A_GLASS = int(_TBL.heat_atten_q16[MAT_GLASS])    # 0.3
-A_WALL = int(_TBL.heat_atten_q16[MAT_HULL])      # 1.0   — opaque
+A_WALL = int(_TBL.heat_atten_q16[MAT_HULL])      # 0.85  — T5b: a real emissivity
+A_OPAQUE = ONE                                   # 1.0   — the optical limit
+#
+# T5b, and it matters for every "shadow" claim below. `heat_atten` does DOUBLE
+# DUTY on this plane: it is the cell's EMISSIVITY (what it radiates) and its
+# EXTINCTION coefficient (what it stops), because the model has an absorb
+# channel and a transmit channel but no REFLECT channel. Until T5b every
+# structural row carried the placeholder 1.0, so the two readings coincided and
+# a wall was perfectly opaque. T3 D6 §7.3 gives hull/steel their real
+# emissivity, 0.85 (Incropera A.11), and the arithmetic consequence is that a
+# single hull cell now TRANSMITS 15 % of the stream crossing it.
+#
+# Measured on this scene, fire-plateau source, `E°⁻¹(Φ)` at the target:
+#     clear line       388 game   (ignites wood, ign 300)
+#     one hull cell    148 game   (does NOT ignite)
+#     two hull cells    36 game
+#     a = ONE            0 game   (the ambient floor, bit for bit)
+#
+# So the GAMEPLAY property — a bulkhead stops a fire lighting the woodwork on
+# the other side — survives, and is what the tests below assert of a hull wall.
+# The OPTICAL property — a perfectly opaque column passes nothing at all — is
+# asserted separately at `a = ONE`, which is the only value that actually means
+# it. Whether an opaque STRUCTURAL row should carry 1.0 for extinction while
+# emitting at 0.85 is Erik's (report_t5b.md §12, and T3 D6 §7.3 records the
+# same tension for glass).
 A_WOOD = int(_TBL.heat_atten_q16[MAT_WOOD])
 HIS_WOOD = int(_TBL.heat_inv_shift[MAT_WOOD])
 IGN_WOOD_Q16 = int(_TBL.ignition_temp_q16[MAT_WOOD])
@@ -124,13 +148,14 @@ def test_radiation_crosses_an_air_gap_and_clears_wood_s_own_ignition_temperature
         d[MID_Y][TGT_X] = A_WOOD
         ts[MID_Y][TGT_X] = 1
         his[MID_Y][TGT_X] = HIS_WOOD
-        if wall:
-            _column(a, d, ts, OBST_X, A_WALL)
+        if wall is not None:
+            _column(a, d, ts, OBST_X, wall)
         return _sweep(a, d, T, his, ts, table=table)
 
-    rn_clear, _rfc, _rac, rl_clear = scene(wall=False, src_q=T_FIRE_Q)
-    rn_wall, _rfw, _raw, rl_wall = scene(wall=True, src_q=T_FIRE_Q)
-    _rnc, _rfk, _rak, rl_cold = scene(wall=False, src_q=T_AMBIENT_Q)
+    rn_clear, _rfc, _rac, rl_clear = scene(wall=None, src_q=T_FIRE_Q)
+    rn_wall, _rfw, _raw, rl_wall = scene(wall=A_WALL, src_q=T_FIRE_Q)
+    rn_op, _rfo, _rao, rl_op = scene(wall=A_OPAQUE, src_q=T_FIRE_Q)
+    _rnc, _rfk, _rak, rl_cold = scene(wall=None, src_q=T_AMBIENT_Q)
 
     reached_q = int(table.e_inv_q(int(rl_clear[MID_Y, TGT_X])))
     assert reached_q >= IGN_WOOD_Q16, (
@@ -140,13 +165,23 @@ def test_radiation_crosses_an_air_gap_and_clears_wood_s_own_ignition_temperature
         f"to light anything")
     assert int(rn_clear[MID_Y, TGT_X]) > 0, "the target did not gain energy"
 
-    # The wall control: occlusion drives the target to the SAME floor an
-    # ambient source leaves it at — bit for bit, not merely 'less'.
-    assert int(rl_wall[MID_Y, TGT_X]) == int(rl_cold[MID_Y, TGT_X]), (
-        "an opaque wall did not fully shadow the source")
-    assert int(rn_wall[MID_Y, TGT_X]) == 0
+    # THE GAMEPLAY CONTROL — a HULL bulkhead stops the fire lighting the
+    # woodwork on the other side. At the real emissivity 0.85 it transmits 15 %
+    # per cell, so this is a threshold claim, not a zero claim (measured: 388
+    # game clear, 148 behind one hull cell, ignition at 300).
+    wall_q = int(table.e_inv_q(int(rl_wall[MID_Y, TGT_X])))
+    assert wall_q < IGN_WOOD_Q16, (
+        f"a hull bulkhead let through enough to light the wood behind it: "
+        f"{wall_q / 65536.0:.1f} game vs ignition {IGN_WOOD_Q16 / 65536.0:.1f}")
+    assert wall_q < reached_q, "the bulkhead attenuated nothing"
+
+    # THE OPTICAL CONTROL — at `a = ONE`, and ONLY there, occlusion drives the
+    # target to the SAME floor an ambient source leaves it at, bit for bit.
+    assert int(rl_op[MID_Y, TGT_X]) == int(rl_cold[MID_Y, TGT_X]), (
+        "a fully opaque column did not fully shadow the source")
+    assert int(rn_op[MID_Y, TGT_X]) == 0
     # Non-vacuity: the ambient-source control is genuinely below ignition, so
-    # the assertion above could not be satisfied by an all-hot scene.
+    # the assertions above could not be satisfied by an all-hot scene.
     assert int(table.e_inv_q(int(rl_cold[MID_Y, TGT_X]))) < IGN_WOOD_Q16
 
 
@@ -179,18 +214,26 @@ def test_a_body_in_a_clear_line_absorbs_into_rad_flux_and_a_wall_shuts_it_off():
         _emitter(a, d, T, ts, SRC_X, T_FIRE_Q)
         if body:
             d[MID_Y][TGT_X] = ONE          # a marine stands on air: a stays 0
-        if wall:
-            _column(a, d, ts, OBST_X, A_WALL)
+        if wall is not None:
+            _column(a, d, ts, OBST_X, wall)
         return _sweep(a, d, T, his, ts, table=table)
 
-    rf_clear = scene(body=True, wall=False)[1]
-    rf_wall = scene(body=True, wall=True)[1]
-    rf_none = scene(body=False, wall=False)[1]
+    rf_clear = scene(body=True, wall=None)[1]
+    rf_wall = scene(body=True, wall=A_WALL)[1]
+    rf_opaque = scene(body=True, wall=A_OPAQUE)[1]
+    rf_none = scene(body=False, wall=None)[1]
 
     assert int(rf_clear[MID_Y, TGT_X]) > 0, (
         "a body in a clear line to a fire absorbed nothing")
-    assert int(rf_wall[MID_Y, TGT_X]) == 0, (
-        "a body behind an opaque wall still absorbed the fire's radiation")
+    # A HULL bulkhead at its real emissivity 0.85 transmits 15 % per cell, so
+    # what it buys a marine is a large attenuation, not immunity. Measured on
+    # this scene it is ~7.7x less flux; assert an order-of-magnitude floor so
+    # the claim tracks the table instead of pinning today's ratio.
+    assert 0 < int(rf_wall[MID_Y, TGT_X]) < int(rf_clear[MID_Y, TGT_X]) // 4, (
+        "a hull bulkhead barely shielded the body behind it")
+    # Only a FULLY OPAQUE column shuts the channel off entirely.
+    assert int(rf_opaque[MID_Y, TGT_X]) == 0, (
+        "a body behind a fully opaque wall still absorbed the fire's radiation")
     assert int(rf_none[MID_Y, TGT_X]) == 0, (
         "an air cell with no body stamped on it booked flux — rad_flux is no "
         "longer the body channel")
@@ -229,8 +272,15 @@ def test_downrange_fluence_orders_air_above_glass_above_wall():
     assert p_air > p_glass > p_wall, (
         f"downrange fluence is not ordered by heat_atten: air {p_air}, "
         f"glass {p_glass}, wall {p_wall}")
-    assert p_wall <= phi(A_WALL, src_q=T_AMBIENT_Q), (
-        "an opaque column let the source through")
+    # The ordering continues past the shipped table to the optical limit, and
+    # THERE it meets the ambient floor. (T5b: hull is 0.85 now, not 1.0, so the
+    # floor claim belongs at `a = ONE` -- see the A_OPAQUE note at the top.)
+    p_opaque = phi(A_OPAQUE)
+    assert p_wall > p_opaque, (
+        f"a 0.85 bulkhead did not transmit more than a perfect absorber: "
+        f"{p_wall} vs {p_opaque}")
+    assert p_opaque <= phi(A_OPAQUE, src_q=T_AMBIENT_Q), (
+        "a fully opaque column let the source through")
 
 
 # --------------------------------------------------------------------------- #

@@ -49,7 +49,7 @@ import breach_physics as bp  # noqa: E402
 from field_ab_harness import default_scenario_sim  # noqa: E402
 from level_loader import load as load_level  # noqa: E402
 from simulation import Simulation, fire_fixed  # noqa: E402
-from simulation.materials import MAT_WOOD  # noqa: E402
+from simulation.materials import MAT_WOOD, MaterialTable  # noqa: E402
 
 INT32_LIMIT = 2 ** 31
 INT32_MAX = 2 ** 31 - 1
@@ -171,10 +171,17 @@ def test_sweep_on_a_real_level_is_non_trivial_after_one_tick():
     # no bodies), so the invariant 0 <= a <= d holds for a direct physics call
     # even before the conductor's first stamp; the stamp is still run here to
     # mirror the conductor's slot order.
-    assert g.heat_atten_q[y, x] == 65536 and g.dyn_heat_atten_q[y, x] == 65536
+    # T5b: wood's `heat_atten` is its real emissivity now (0.90, Incropera
+    # A.11), not the placeholder 1.0, so the pin is "the tile's static and
+    # dynamic planes agree and both carry the SHIPPED wood value" -- the
+    # property the test needs (extinction projected from the material table)
+    # rather than the number the table happened to hold.
+    a_wood_q = int(MaterialTable.from_config().heat_atten_q16[MAT_WOOD])
+    assert a_wood_q > 0, "wood must absorb something or this scene is vacuous"
+    assert g.heat_atten_q[y, x] == a_wood_q and g.dyn_heat_atten_q[y, x] == a_wood_q
     assert np.all(g.dyn_heat_atten_q >= g.heat_atten_q)
     g.stamp_units(sim.units)
-    assert g.dyn_heat_atten_q[y, x] == 65536
+    assert g.dyn_heat_atten_q[y, x] == a_wood_q
     sim.physics_runner.step(g, 1.0 / 24.0, tick=0)
     rn, rf, ra = g.rad_net_sweep, g.rad_flux_sweep, g.rad_amb_sweep
     amb = _ambient_fluence_s16(sim)
@@ -314,7 +321,7 @@ def test_stale_caller_cannot_hand_step_tail_a_narrow_plane():
                   wind_x=g.wind_x, wind_y=g.wind_y, is_vacuum=g.is_vacuum,
                   flammable=g.flammable, heat=g.heat, heat_inv_shift=g.heat_inv_shift,
                   face_shift=g.face_shift, thermal_solid=g.thermal_solid,
-                  cool_shift_grid=g.cool_shift, fuel_recip=g.fuel_recip,
+                  fuel_recip=g.fuel_recip,
                   fire_T_ext_plane=g.fire_T_ext_plane, gas=g.gas,
                   gas_conservative=g.gases.conservative,
                   o2_idx=int(g.gases.name_to_id["o2"]), sim_time=1.0 / 24.0)
@@ -359,7 +366,7 @@ def test_the_three_live_planes_are_int64_and_the_engine_refuses_a_narrow_one():
                   wind_x=g.wind_x, wind_y=g.wind_y, is_vacuum=g.is_vacuum,
                   flammable=g.flammable, heat=g.heat, heat_inv_shift=g.heat_inv_shift,
                   face_shift=g.face_shift, thermal_solid=g.thermal_solid,
-                  cool_shift_grid=g.cool_shift, fuel_recip=g.fuel_recip,
+                  fuel_recip=g.fuel_recip,
                   fire_T_ext_plane=g.fire_T_ext_plane, gas=g.gas,
                   gas_conservative=g.gases.conservative,
                   o2_idx=int(g.gases.name_to_id["o2"]), sim_time=1.0 / 24.0,
@@ -444,6 +451,11 @@ def test_the_casts_and_the_fold_all_refuse_a_narrow_live_plane():
         # is host-side overload resolution -- it never reaches the GPU.
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "the OLD cast's flux-sensor ceiling: dead since the flip (units read "
+    "rad_flux_sweep); its scene reached the cap only via the 2^16 H_bed "
+    "deposit, gone at M3 (report_m3.md finding 6). T6 deletes the cast and "
+    "this test with it."))
 def test_the_flux_sensor_ceiling_did_not_move_with_the_width():
     """PROPERTY (ray-engine-v2 P3a-1): widening `rad_flux` to int64 did NOT
     lift its saturation ceiling. It stays at INT32_MAX

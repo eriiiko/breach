@@ -230,8 +230,16 @@ static constexpr int RAD_LIM_SHIFT = 4;
 // what keeps the rail TRUE BY CONSTRUCTION when BOTH ends cast: the pair's two
 // half-casts can together move at most 2 × (gap/2^(LIM+1)) == gap/2^LIM, i.e.
 // exactly the single-caster rail, never more.
+// M1: `his` may be NEGATIVE (a material lighter than one thermal_mass unit),
+// and `abs_dT_q << his` would then be UB. The two shifts collapse into one
+// signed exponent — for abs_dT_q >= 0 (which it is, by name and by every call
+// site: the callers pass |T_s - T_r|),
+//     (x << his) >> shift == floor(x * 2^his / 2^shift) == x >> (shift - his)
+// when shift >= his, and == x << (his - shift) otherwise — so the kit's
+// signed-exponent twin is this expression exactly, for either sign, with no
+// intermediate that can overflow where the original did not.
 RC_HD inline int64_t rad_pair_budget_s(int64_t abs_dT_q, int his, int shift) {
-    return (abs_dT_q << his) >> shift;
+    return fixedpoint::shr_round0_signed_i64(abs_dT_q, shift - his);
 }
 // The shared symmetric budget (rule 1 / the sky term).
 RC_HD inline int64_t rad_pair_budget(int64_t abs_dT_q, int his) {

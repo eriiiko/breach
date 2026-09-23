@@ -534,8 +534,16 @@ def test_b1_dormancy_still_byte_identical():
     # cause: T_AMB_K 290->293 folded into the one-time gas_energy/atmosphere
     # seed) as test_b1_signal_bus.py's own copy; keep the two in sync. (was
     # 76ba6dc1c2800eae16f9f98f27abd1646c656e4068773a8150e94465e614cc35)
+    # T5b RE-BASELINE (2026-09-20, issue #12, THE FLIP): a PURE SCHEMA move on this
+    # scenario. physics=None here, so no solver ever runs and not one of the ten
+    # behavioural changes in the T5b re-baseline can reach it -- what moves the
+    # bytes is DIGEST_SPEC_VERSION 5 -> 6 alone (+dyn_heat_atten_q, design v3 row
+    # 28): the version string is hashed into every per-field digest, and the new
+    # plane is present at load. That is the same mechanism the P-G3 and G12 notes
+    # above describe. Full enumeration beside GOLDEN_AGGREGATE in
+    # tests/_xarch_perfield_digest.py. (was 08c962ec444e301cc86a1c8a28ded651a9db2f41172dcdfb5d0d69c1637f331f)
     DOORTEST_NOPHYS_TRAJ_DIGEST = \
-        "701b8d26aadbf7eae4a0b3c9d6895d44e54ee7d10c737dbaf36aa0fa9572a0f8"
+        "08c962ec444e301cc86a1c8a28ded651a9db2f41172dcdfb5d0d69c1637f331f"
 
     lvl = level_loader.load("door_test", levels_dir=str(ROOT / "levels"))
     sim = Simulation(lvl, seed=42, breach_physics=None, enable_recorder=False)

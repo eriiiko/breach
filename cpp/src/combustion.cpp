@@ -172,7 +172,8 @@ void CombustionSolver::step(
         int64_t* gas_energy,          // arc #54 P-G1b: the conserved gas energy
         const bool* is_ambient,       // ring mask (accountable-set input)
         int32_t t_amb_q,              // T_AMB_K raw (born-at-ambient rule)
-        const int32_t* fire_T_ext_plane) const {  // R3: PER-MATERIAL T_ext (nullable)
+        const int32_t* fire_T_ext_plane,          // R3: PER-MATERIAL T_ext (nullable)
+        const int32_t* fuel_per_o2_plane) const { // R14: PER-MATERIAL fuel rate
 
     if (h <= 0 || w <= 0 || dt <= 0.0f) return;
     if (o2_idx < 0 || o2_idx >= n_gases) return;
@@ -210,7 +211,15 @@ void CombustionSolver::step(
     const q16 H_bed_m_q     = quantize((double)H_BED_M);
     const int H_bed_shift   = (H_BED_SHIFT > 0) ? H_BED_SHIFT : 0;
     const double c_v_safe  = (c_v > 0.0f) ? (double)c_v : 1.0;
-    const int64_t recip_cv = make_recip(c_v_safe);              // 1/c_v, once per step
+    // T5b: the gas-side deposit divides by the SAME `c_v` the temperature
+    // solver's conduction capacity is built from -- ONE integer representation
+    // of the dial in the engine (`c_v_q`, Q16.16), and this is its exact
+    // inverse. `make_recip(c_v)` and `1/quantize(c_v)` agree only at c_v == 1;
+    // at the shipped 0.0076849 they differ by 0.0724 %, which would make two
+    // deposits into the same air cell disagree about what a heat count is
+    // worth. report_t2.md §10.2. Bit-identical at c_v == 1.
+    const q16 c_v_q        = quantize(c_v_safe);
+    const int64_t recip_cv = make_recip((double)c_v_q / 65536.0); // 1/c_v_q, once per step
     const q16 n_floor_q    = quantize((double)n_floor_heat);
     // v2.4 T_MAX_PHYS rail (combustion.h; full rationale in eos_solver.h).
     const q16 t_max_phys_q = quantize((double)T_MAX_PHYS);
@@ -809,7 +818,13 @@ void CombustionSolver::step(
             // round-to-nearest — the same unbiased-sink idiom fire_simulation's
             // wall_damage depletion uses. UNCHANGED by P-O2b: the source still
             // pays for exactly the O2 it consumed, wherever that O2 came from.
-            const q16 fuel_cost = narrow_round(mul_wide(fuel_per_o2_q, (q16)burn_i));
+            // R14 (T5b): the exchange rate is PER MATERIAL, read from the same
+            // nullable-plane idiom `fire_T_ext_plane` uses. The plane is
+            // derived from the row's own mass, so spending the whole `wall_hp`
+            // bar consumes exactly the tile's real combustible mass.
+            const q16 fpo_i = fuel_per_o2_plane ? fuel_per_o2_plane[i]
+                                                : fuel_per_o2_q;
+            const q16 fuel_cost = narrow_round(mul_wide(fpo_i, (q16)burn_i));
             wall_hp[i] -= fuel_cost;
             if (wall_hp[i] < FUEL_FLOOR) wall_hp[i] = FUEL_FLOOR;
 
@@ -1055,8 +1070,19 @@ void CombustionSolver::step(
                 }
             }
             if (object_site) {
-                const int shift = heat_inv_shift[s];   // log2(thermal_mass), >= 0
-                dT = deposit >> shift;
+                // M1: WIDE and SIGNED, the temperature solver's Pass-1
+                // deposit line for line. `heat_inv_shift` may be NEGATIVE now
+                // (a row lighter than one thermal_mass unit) — a negative `>>`
+                // is UB and the multiply it stands for leaves int32. Clamp
+                // exactly as the gas branch below does, so an honestly-huge
+                // deposit still meets the T_MAX_PHYS rail through a value that
+                // was never corrupted on the way there. `deposit >= 0`, so on
+                // every non-negative exponent this is the shipped
+                // `deposit >> shift`, bit for bit.
+                const int shift = heat_inv_shift[s];   // log2(thermal_mass)
+                const int64_t dT_obj =
+                    shr_round0_signed_i64((int64_t)deposit, shift);
+                dT = (q16)std::clamp<int64_t>(dT_obj, 0, INT32_MAX);
             } else {
                 const q16 n_real_s = (q16)((int64_t)O2[s] + (int64_t)N2[s]);
                 q16 n_total_s = n_real_s;

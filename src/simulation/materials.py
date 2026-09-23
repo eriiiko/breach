@@ -113,35 +113,52 @@ _SCALAR_COLUMNS = {
 # CFG and threaded in via :meth:`from_config` so the table tracks config edits.
 # Kept here so a dict-built table (tests) and any config-less build still produce
 # a valid face table.
+class _ThermalOverride:
+    """A read-only view of a ``[physics.thermal]`` namespace (or dict) with a
+    few keys replaced. Used by :meth:`MaterialTable.from_config` to inject the
+    tick length from ``[clock]`` without giving the thermal block a second,
+    drift-prone copy of it. Accepts and presents the same duck type
+    :meth:`MaterialTable._thermal_get` reads."""
+
+    __slots__ = ("_base", "_over")
+
+    def __init__(self, base, over):
+        self._base, self._over = base, dict(over)
+
+    def __getattr__(self, name):
+        if name in self._over:
+            return self._over[name]
+        base = self._base
+        if base is None:
+            raise AttributeError(name)
+        if isinstance(base, dict):
+            if name not in base:
+                raise AttributeError(name)
+            return base[name]
+        return getattr(base, name)
+
+
 _THERMAL_DEFAULTS = {
     "TEMP_SCALE": 65536,  # Q16.16, == HEAT_SCALE (shared temperature/heat domain)
-    "SHIFT_AT_REF": 2,    # metal self-rate = 1/4 (fastest stable on 4-nbr)
     "SHIFT_MIN": 2,       # rate floor / stability bound (4 * 1/4 <= 1)
-    "KAPPA_REF": 50.0,    # reference conductivity (hull) for the log bucket
     "NO_FACE": 63,        # sentinel: kappa==0 face / grid edge -> zero conduction
+    # T5b / R10: the CFL stability anchor (SHIFT_AT_REF / KAPPA_REF) is RETIRED.
+    # The three constants below are what sets the absolute rate now, and they
+    # are physics, not dials. See _build_conduction_tables.
+    "h_conv": 6.0,             # W/(m2.K) -- natural-convection coefficient at a
+                               # solid|gas boundary (Churchill & Chu 1975)
+    "tile_size_ref_m": 0.333,  # the reference dx the table is built at
+    "TICK_DT_S": 1.0 / 24.0,   # fallback dt; from_config overrides from [clock]
+    "c_v": 0.0076849,          # air's rho*c_v in thermal_mass column units --
+                               # the gas side's capacity in the face derivation
+    "ceiling_h": 2.5,          # m of deck height; from_config injects the real
+                               # one from [physics.water], the ONE source
     # COOL-SHIFT AXIS (2026-07-30): the global that seeds the per-material
-    # `cool_shift` column when a row omits it. Kept a live job so the axis is
-    # additive — see the `cool_shift` block in __init__.
-    "COOL_SHIFT": 5,
+    # T5b step 7 / R1: "COOL_SHIFT" (the per-row default) stood here.
 }
 
-# COOL-SHIFT AXIS — validation bounds for the per-material `cool_shift` column
-# (the per-tick ambient decay `T -= T >> cool_shift`, engine/06 §3).
-#
-# FLOOR: ``SHIFT_MIN`` (2), the table's existing "rate floor / stability bound"
-# convention, reused here for the same reason it exists on the conduction side —
-# it caps the per-tick fraction a single cell may shed at 1/4. The floor is
-# LOAD-BEARING at the bottom end: shift 0 means ``T -= T``, an instant total
-# wipe of the field every tick (no thermal state can exist at all), and shift 1
-# halves every solid's temperature 24x a second. Neither is a dial, they are
-# bugs; the loader rejects them by name.
-#
-# CEILING: at Q16.16 the whole physical temperature range tops out near
-# ``T_MAX_PHYS * 65536 ~ 2^30``, so a shift past ~30 sheds literally 0 counts
-# per tick, and 20 is already an e-fold of 2^20/24 == 12 hours of game time —
-# indistinguishable from "never cools" and far likelier to be a typo (a decimal
-# slip, a Kelvin value pasted into the wrong column) than an intent.
-_COOL_SHIFT_MAX = 20
+# T5b step 7 / R1: `_COOL_SHIFT_MAX` and the column's validation bounds
+# stood here, with their rationale. Deleted with Pass 3.
 
 # FUEL-FRACTION AXIS (2026-07-30) — the reciprocal shift `fixedpoint::make_recip`
 # uses (``fixed_point.h``: ``constexpr int RECIP_SHIFT = 32``). The fire logistic
@@ -283,10 +300,169 @@ def fuel_recip_from_hp(hp) -> int:
 # side (`rad_scale`, the combustion deposit), it is a single scalar rather than
 # ten table rows, and making it per-level is report_p2b.md section 13 item 7 --
 # T5's business, deliberately not T3b's.
-RHO_C_PIN = 0.9e6          # J/(m3.K) -- R13's pin: wood at ~12 % MC
+# ---------------------------------------------------------------------------
+# R14, THE FUEL HALF (thermal model v2, Erik 2026-09-19; report_t3.md D5 §6.3).
+#
+# `hp` was doing two unrelated jobs -- STRUCTURAL INTEGRITY (what combat
+# damages, what the health bar shows) and FUEL STORE (how much O2 a tile's
+# combustion can consume before it is spent) -- and they want different
+# numbers. A massive wood tile is 154 kg; `hp = 60` at the shipped global
+# `fuel_per_o2 = 0.7` implies 31.9 kg of fuel, 4.8x short. Furniture is 9.7x
+# short. Erik: *"i think u may change the hp to make it consistent."*
+#
+# THE SEPARATION. `hp` keeps its meaning untouched. What derives from mass is
+# the EXCHANGE RATE `fuel_per_o2[mat]` -- the hp a tile pays per unit of O2 its
+# fire consumes -- chosen so that spending the whole bar consumes exactly the
+# tile's real combustible mass:
+#
+#     fuel_per_o2[mat] = hp[mat] / O2_UNITS_PER_TILE[mat]
+#     O2_UNITS_PER_TILE[mat] = density[mat] * V_tile / KG_FUEL_PER_N_O2
+#
+# so the fuel STORE is physics and the hp BAR stays a gameplay quantity. It was
+# a single global 0.7 before, which made the store proportional to `hp` and
+# therefore structural rather than physical.
+#
+# KG_FUEL_PER_N_O2 -- the fuel mass a unit of N_O2 burns, from two cited
+# constants and nothing fitted:
+#   * one unit of N_O2 is one atmosphere of O2 in one tile = 11.525 mol =
+#     0.36878 kg (p*V/(R*T) at the engine's own ambient);
+#   * Huggett's constant, 13.1 +/- 0.7 MJ per kg of O2 consumed, near-universal
+#     across organic fuels (Huggett 1980, archived under docs/papers/), so one
+#     unit of N_O2 releases 4.831 MJ;
+#   * wood's EFFECTIVE (cone-calorimeter) heat of combustion is 13 MJ/kg -- the
+#     gross 18-20 MJ/kg less the char that never flames (Drysdale ch. 1
+#     Table 1.13; Babrauskas, *Heat Release in Fires*).
+#   => 4.831 / 13 = 0.3716 kg of wood per unit of N_O2.
+#
+# TILE GEOMETRY. `V_tile = tile_size_ref_m^2 * ceiling_h`. Unlike
+# `thermal_mass` (where the tile volume cancels -- report_t3b.md §1.1), the fuel
+# MASS is an absolute quantity and does not cancel, so this column is
+# tile-size dependent for the same reason the conduction table and
+# `rad_scale_derived` are. Same reference, same open question (T3 §8 q9).
+KG_FUEL_PER_N_O2 = 0.3716181984470593   # kg of cellulosic fuel per N_O2 unit
+
+# ---------------------------------------------------------------------------
+# THE REFERENCE SUBSTANCE — the metre-stick of the whole thermal model
+# (M2, docs/thin_material_rows_design_2026-09-20.md §7).
+#
+# `THERMAL_MASS_UNIT` is a DEFINITION, not a measurement. Every physical
+# quantity in the thermal model is denominated against it: `J_per_count`, the
+# arc #54 energy ledger, `c_v`, the marine burn band in kW/m2. Move it and
+# EVERY material in the game silently re-scales, with nothing failing, because
+# everything is *relative* to it.
+#
+# R13 chose the value by READING IT OFF A ROW -- `wood` was a solid tile, its
+# rho*c was 0.899 MJ/(m3.K), and it carried `thermal_mass = 8`. After M2 NO ROW
+# IS AUTHORED AT FULL FILL, so that visible anchor disappears while the value
+# stays exactly correct (a definition does not expire because nothing is
+# currently one metre long).
+#
+# THE HAZARD this block exists to close: a future reader opens `wood`, sees
+# `thickness_m = 0.005` / `fill_fraction = 0.015`, concludes the pin is stale,
+# and "fixes" it -- re-scaling every material and every derived physical number
+# at once. That is the same shape as the 2^16 transcription error this arc
+# spent a whole patch finding (report_t5b.md §6.3).
+#
+# THE RULE: *the thermal_mass unit scale is a definition anchored on a named
+# REFERENCE SUBSTANCE, and is never read off, nor re-derived from, a material
+# row.* The constants below name that substance, so "no row is currently this
+# substance at full fill" reads as obviously fine rather than obviously broken.
+# `tests/test_m2_reference_substance_pin.py` gates it.
+REFERENCE_SUBSTANCE = "solid softwood construction lumber at 12 % moisture content"
+REFERENCE_DENSITY = 555.0        # kg/m3   -- Wood Handbook FPL-GTR-190 Table 5-3
+REFERENCE_SPECIFIC_HEAT = 1620.0  # J/(kg.K) -- FPL-GTR-190 ch.4 at 12 % MC, 293 K
+# The reference substance's volumetric heat capacity, 899 100 J/(m3.K). R13's
+# pin is this number ROUNDED to two significant figures, which is the ruled
+# value and the one the whole engine is denominated against -- so the pin is
+# stated as the literal it is, and the anchor is asserted, never recomputed.
+REFERENCE_RHO_C = REFERENCE_DENSITY * REFERENCE_SPECIFIC_HEAT
+RHO_C_PIN = 0.9e6          # J/(m3.K) -- R13's pin: the reference substance, rounded
 THERMAL_MASS_PIN = 8       # the column value that pin carries
+# How far the ruled pin may sit from the reference substance it names. 0.9e6 vs
+# 899 100 is 0.10 %; anything beyond this band means the pin and its stated
+# anchor have come apart and one of them is wrong.
+PIN_ANCHOR_TOLERANCE = 0.005
 # One `thermal_mass` unit, in volumetric heat capacity: 112 500 J/(m3.K).
 THERMAL_MASS_UNIT = RHO_C_PIN / THERMAL_MASS_PIN
+
+
+# ---------------------------------------------------------------------------
+# M2 — AUTHOR DIMENSIONS, DERIVE FILL (design §4, Erik's ruling 2026-09-20)
+#
+# A row keeps its REAL, CITED `density` and `specific_heat` and states the
+# object's physical GEOMETRY as `thickness_m`. `fill_fraction`, `mass` and
+# `thermal_mass` are all DERIVED from those plus the tile geometry; none of
+# the three may be authored.
+#
+# WHY A THICKNESS AND NOT A FILL FRACTION. The material table is GLOBAL while
+# `tile_size_m` is PER LEVEL (config.toml says so in as many words), and the
+# table's geometry is built at `tile_size_ref_m`. An authored fill fraction
+# would therefore bake the REFERENCE tile size into the row's physical meaning:
+# on a 1.0 m level the "same" row would silently become a 1.5 cm slab instead
+# of a 0.5 cm one. An authored THICKNESS states a fact about the object that no
+# tile size can falsify -- the same lesson R14 already learned one level down
+# (author by `density` so `V_tile` cancels), applied to geometry.
+#
+# THE STRUCTURAL PAYOFF: ignition time becomes tile-size invariant. For a panel
+# the capacity `C = rho*c*thickness*tile_w*ceiling_h` scales as `tile_w`, and
+# the incident power arrives on an exposed face of area `tile_w*ceiling_h` so
+# it scales as `tile_w` too -- `dT/dt = P/C` is therefore INDEPENDENT of tile
+# size. With an authored fill fraction it is not. Gated by
+# `tests/test_m2_dimensions_and_thin_rows.py`.
+#
+# WHY NOT FOLDED INTO `density` OR `heat_atten`: `density = 8.33` would be a
+# lie about wood, where `density = 555, thickness_m = 0.005` is two true
+# statements each independently citable; and 5 mm of wood is still optically
+# OPAQUE, so `heat_atten` stays 0.90 (emissivity, only -- forever) while the
+# mass drops 67x. A single smeared density cannot express that.
+#
+# ACCEPTED GAP (design §4, Erik's ruling 2026-09-21): rows that STAND ON THE
+# FLOOR rather than span the tile (`furniture`, `kindling`, `foliage`) are
+# authored as an EQUIVALENT SLAB THICKNESS, which is the right single parameter
+# for a lump but scales as `tile_w` where a floor-standing object's mass really
+# scales as `tile_w^2`. A `form` discriminator is added when a level at a
+# different tile size actually ships. Recorded, not fixed.
+# ---------------------------------------------------------------------------
+
+# THE LUMPED-VALIDITY CRITERION (design §3). Heat entering a surface penetrates
+# roughly `d = sqrt(alpha*t)`; with `alpha ~ 1.5e-7 m2/s` for wood a 60 s
+# ignition exposure reaches 3.0 mm. A lumped SINGLE-TEMPERATURE node is a
+# faithful model of an object thin compared to that depth -- the textbook
+# small-Biot regime -- and 6 mm is the ruled edge of it.
+#
+# The failure mode beyond the limit is GRACEFUL AND ONE-DIRECTIONAL: a too-thick
+# lump spreads incident heat through more mass than really participates, so it
+# ignites SLOWER than reality, never faster. There is no blow-up, only a growing
+# conservative error. That is why an exemption can be carried at all -- and why
+# nothing near a full 154 kg tile can be.
+THIN_LIMIT_M = 0.006
+
+# The ONE recorded exemption from the lumped criterion, carried explicitly with
+# its reason in the style of the `ingress-exempt:` convention (design §6/§11.2).
+# An exemption is a DECISION with a stated price, never a silent pass: a row not
+# in this dict that breaks the criterion is REFUSED BY NAME at the door.
+LUMPED_CRITERION_EXEMPT = {
+    # lumped-exempt: 5 kg of crate stock is ~10.8 mm equivalent slab, outside
+    # the 6 mm criterion. Accepted as a STATED APPROXIMATION (design §6): the
+    # error is conservative (it under-predicts ignition speed), it is the
+    # heaviest row still defensible as one node, and cover the player hides
+    # behind should not catch as eagerly as a thin panel. Erik's ruling
+    # 2026-09-21; do NOT "fix" this by thinning the row.
+    "furniture": "ACCEPTED GAP (design §6): ~10.8 mm equivalent slab, outside "
+                 "the 6 mm lumped criterion. The error is conservative (slower "
+                 "ignition than reality) and the row is deliberately the "
+                 "heaviest one-node fuel in the game.",
+}
+
+# Columns that are DERIVED at this door and must never appear in a row. Each
+# maps to the authored inputs it comes from, so the refusal says what to author
+# instead. (`thermal_mass` has its own, older refusal with the gas-regime
+# exception, so it is not listed here.)
+_DERIVED_NEVER_AUTHORED = {
+    "fill_fraction": "`density`, `specific_heat` and `thickness_m`",
+    "mass": "`density`, `specific_heat` and `thickness_m`",
+    "mass_kg": "`density`, `specific_heat` and `thickness_m`",
+}
 
 # The geometric midpoint factor for the power-of-two snap. `math.sqrt` is the
 # ONE transcendental-looking call the ingress rule allows (door 3: IEEE-754
@@ -294,8 +470,25 @@ THERMAL_MASS_UNIT = RHO_C_PIN / THERMAL_MASS_PIN
 _SQRT2 = math.sqrt(2.0)
 
 
+# The SIGNED exponent floor of `thermal_mass` (M1,
+# docs/thin_material_rows_design_2026-09-20.md section 5). `thermal_mass ==
+# 2**s` and the engine stores `s` as `heat_inv_shift` (int32 — always signed);
+# `conduction::cell_capacity_q` builds a Q16.16 capacity `1 << (s + 16)` from
+# it, so `s = -16` is ONE raw count of capacity and anything below it would be
+# zero. THE REPRESENTATION FLOOR, not a policy: the old floor of 1 was a guard
+# against rows that could not yet be authored, and M1 lifts it.
+THERMAL_MASS_EXP_MIN = -16
+
+
 def pow2_snap(x, _what="value") -> int:
-    """Nearest power of two to ``x`` **in log space**, as an integer >= 1.
+    """The SIGNED exponent of the nearest power of two to ``x`` **in log space**.
+
+    Returns ``s`` such that the snapped value is ``2**s``, with
+    ``s >= THERMAL_MASS_EXP_MIN``. It returned ``1 << s`` and REFUSED ``s < 0``
+    before M1; the refusal was a guard against an inexpressible row, and the
+    design's thin flammable rows (0.10-0.26 units) are exactly the rows it was
+    waiting for. Nothing about the arithmetic changed -- `heat_inv_shift` has
+    always been signed and the capacity has always been Q16.16.
 
     R5 keeps `thermal_mass` a power of two because it rides a bit-shift; the
     snap is geometric (a capacity is a multiplicative quantity, and report_t3.md
@@ -309,6 +502,10 @@ def pow2_snap(x, _what="value") -> int:
 
     Ties (an ``x`` landing exactly on ``2**k * sqrt(2)``, which no real rho*c
     does) round UP, deterministically.
+
+    BELOW ``2**THERMAL_MASS_EXP_MIN`` it still REFUSES, by name -- a row the
+    representation cannot hold is reported, never silently clamped (design v2
+    section 11 property 3: a load-time error, not a clamp).
     """
     if not (x > 0.0):
         raise ValueError(f"{_what}: cannot snap a non-positive value {x!r} "
@@ -322,23 +519,90 @@ def pow2_snap(x, _what="value") -> int:
         lo *= 0.5
         k -= 1
     exp = k + 1 if x >= lo * _SQRT2 else k
-    if exp < 0:
+    if exp < THERMAL_MASS_EXP_MIN:
         raise ValueError(
-            f"{_what}: rho*c / {THERMAL_MASS_UNIT:.0f} = {x!r} snaps BELOW 1, "
-            f"and the thermal_mass column's floor is 1 -- it must be a power of "
-            f"two >= 1 (0 is taken: it declares the GAS thermal regime). A "
-            f"material this light thermally is not expressible; report it "
-            f"rather than inflating the row (design v2 R14, report_t3.md D1)")
-    return 1 << exp
+            f"{_what}: rho*c / {THERMAL_MASS_UNIT:.0f} = {x!r} snaps below "
+            f"2**{THERMAL_MASS_EXP_MIN}, the thermal_mass REPRESENTATION floor "
+            f"(`cell_capacity_q` builds `1 << (s + 16)`, so a smaller exponent "
+            f"is zero capacity). A material this light thermally is not "
+            f"expressible; report it rather than inflating the row "
+            f"(design v2 R14, report_t3.md D1, thin-rows design section 5)")
+    return exp
 
 
-def derive_thermal_mass(density, specific_heat, _what="material") -> int:
-    """R14: ``thermal_mass`` from a row's real ``rho`` and ``c``.
+def derive_fill_fraction(thickness_m, tile_size_m, _what="material") -> float:
+    """M2: the share of its tile a row's matter occupies, from its GEOMETRY.
 
-    ``pow2_snap(rho * c / THERMAL_MASS_UNIT)``. THE ONE PLACE this is computed
-    -- `MaterialTable` calls it, the property gate calls it, and nothing else
-    may re-derive it (the failure mode R14's implementation had to avoid is two
-    sites computing `heat_inv_shift`).
+    THE ONE PLACE this is computed. ``thickness_m is None`` means the row is
+    **SOLID** — it fills its tile — and returns ``1.0``. That is every row's
+    pre-M2 behaviour, and it is the one fill value that is genuinely scale-free
+    (a bulkhead is solid steel however big the tile is), so stating it by
+    omission bakes in no reference tile size.
+
+    Otherwise the row is a **PANEL**: its matter spans the tile width and the
+    full deck height but is only ``thickness_m`` deep, so
+
+        fill = (thickness_m * tile_w * ceiling_h) / (tile_w^2 * ceiling_h)
+             = thickness_m / tile_w
+
+    — the ceiling height and one factor of the tile width cancel, which is why
+    this is a pure LENGTH RATIO and needs no ``ceiling_h`` at all. It is also
+    what makes ``dT/dt`` tile-size invariant: ``fill ∝ 1/tile_w`` exactly
+    cancels the ``tile_w^2`` of the tile volume, leaving a capacity linear in
+    ``tile_w`` — the same power the incident face area carries.
+
+    REFUSES, never clamps (design §11.3): a non-positive thickness, or one that
+    derives a fill outside ``(0, 1]``, is a LOAD-TIME ERROR. A row that
+    overflows its tile at some tile size is an authoring bug that must be
+    reported, not silently squeezed in.
+    """
+    if thickness_m is None:
+        return 1.0
+    t = float(thickness_m)
+    if not (t > 0.0):
+        raise ValueError(
+            f"{_what}: thickness_m must be > 0 — it is the object's PHYSICAL "
+            f"depth, the number the lumped-validity criterion is tested on "
+            f"(design §11.3). Omit the key entirely for a SOLID row that fills "
+            f"its tile; got {thickness_m!r}")
+    tw = float(tile_size_m)
+    if not (tw > 0.0):
+        raise ValueError(
+            f"{_what}: tile_size_m must be > 0 to derive a fill fraction, got "
+            f"{tile_size_m!r}")
+    f = t / tw
+    if not (0.0 < f <= 1.0):
+        raise ValueError(
+            f"{_what}: thickness_m = {t!r} at tile width {tw!r} derives "
+            f"fill_fraction = {f!r}, outside (0, 1] — the object does not fit "
+            f"in its own tile. This is a LOAD-TIME ERROR, not a clamp (design "
+            f"§11.3): either the thickness or the tile size is wrong")
+    return f
+
+
+def derive_thermal_mass_exp(density, specific_heat, fill_fraction=1.0,
+                            _what="material") -> int:
+    """R14: the ``thermal_mass`` EXPONENT from a row's real ``rho`` and ``c``.
+
+    ``pow2_snap(rho * c * fill / THERMAL_MASS_UNIT)``, i.e. the signed ``s`` with
+    ``thermal_mass == 2**s``. THE ONE PLACE this is computed -- `MaterialTable`
+    calls it, the property gate calls it, and nothing else may re-derive it (the
+    failure mode R14's implementation had to avoid is two sites computing
+    `heat_inv_shift`).
+
+    The EXPONENT is the primitive since M1, not the value: it IS
+    `heat_inv_shift`, so the table reads one number instead of deriving a value
+    and then recovering its log -- and a fractional value (2**-3 == 0.125) has
+    no `bit_length` to recover it from. :func:`derive_thermal_mass` is the thin
+    wrapper that states the same answer as a capacity.
+
+    M2: ``fill_fraction`` is the THIRD physical input — the share of the tile
+    the object's matter occupies, DERIVED from its authored geometry by
+    :func:`derive_fill_fraction`. It is DIMENSIONLESS, so R14's cancellation
+    argument survives intact: `thermal_mass` is still a ratio of two capacities
+    measured on the same tile, and no absolute tile volume enters here. A
+    `fill_fraction` of 1.0 (a SOLID row, the default) is exactly the pre-M2
+    expression, value for value.
     """
     rho = float(density)
     c = float(specific_heat)
@@ -347,7 +611,25 @@ def derive_thermal_mass(density, specific_heat, _what="material") -> int:
             f"{_what}: density and specific_heat must both be > 0 -- "
             f"`thermal_mass` is DERIVED from their product (design v2 R14); "
             f"got density={density!r}, specific_heat={specific_heat!r}")
-    return pow2_snap(rho * c / THERMAL_MASS_UNIT, _what)
+    fill = float(fill_fraction)
+    if not (0.0 < fill <= 1.0):
+        raise ValueError(
+            f"{_what}: fill_fraction must lie in (0, 1] -- it is the share of "
+            f"the tile this row's matter occupies, DERIVED from its authored "
+            f"`thickness_m` (M2, design §4); got {fill_fraction!r}")
+    return pow2_snap(rho * c * fill / THERMAL_MASS_UNIT, _what)
+
+
+def derive_thermal_mass(density, specific_heat, fill_fraction=1.0,
+                        _what="material") -> float:
+    """R14's ``thermal_mass`` VALUE: ``2.0 ** derive_thermal_mass_exp(...)``.
+
+    A float since M1, because the column can now be below 1 (a 5 mm wood panel
+    is 0.125 units). `math.ldexp` rather than `2.0 ** s`: an exact binary
+    scaling with no pow, so it stays inside the number-ingress doors.
+    """
+    return math.ldexp(1.0, derive_thermal_mass_exp(
+        density, specific_heat, fill_fraction, _what))
 
 
 class MaterialTable:
@@ -363,7 +645,7 @@ class MaterialTable:
     """
 
     def __init__(self, materials_cfg, thermal_cfg=None, fire_cfg=None,
-                 comb_cfg=None):
+                 comb_cfg=None, res_factor=1):
         """Build from the ``CFG.materials`` namespace (or any equivalent).
 
         ``materials_cfg`` is the :class:`config.Namespace` for ``[materials]``;
@@ -371,10 +653,11 @@ class MaterialTable:
         named columns. A plain dict-of-dicts is also accepted (for tests).
 
         ``thermal_cfg`` is the optional ``[physics.thermal]`` namespace (or dict)
-        carrying the conduction log-bucket constants (``SHIFT_AT_REF``,
-        ``SHIFT_MIN``, ``KAPPA_REF``, ``NO_FACE``). When omitted the
-        :data:`_THERMAL_DEFAULTS` are used so a dict-built table (tests) still
-        produces a valid face-shift table.
+        carrying the conduction constants (``SHIFT_MIN``, ``NO_FACE``,
+        ``h_conv``, ``tile_size_ref_m``, ``TICK_DT_S``, ``c_v``). When omitted
+        the :data:`_THERMAL_DEFAULTS` are used so a dict-built table (tests)
+        still produces a valid face-shift table. ``SHIFT_AT_REF`` /
+        ``KAPPA_REF`` are GONE -- T5b / R10 retired the CFL stability anchor.
 
         ``fire_cfg`` is the optional ``[physics.fire]`` namespace (or dict). It
         supplies ``ignition_to_ext_delta`` for the per-material ``fire_T_ext``
@@ -389,6 +672,18 @@ class MaterialTable:
         published signature and callers pass it positionally
         (:meth:`from_config`, ``tests/test_optics_ingress.py``), and because a
         combustion-derived material column is a live prospect on this arc.
+
+        ``res_factor`` is the level's ``--res`` replication factor (M2, design
+        §4). The row's geometry is derived at the BASE tile size and its MASS is
+        then divided across the ``res_factor**2`` runtime tiles each base tile
+        became, so the total combustible mass in a wall is invariant under
+        ``--res`` — following the existing ``tile_size_m_base``/``res_factor``
+        doctrine (``door_system.py``, ``cover_system.py``: *quantize at BASE
+        resolution, replicate by res_factor*) rather than inventing a second
+        convention. Deriving at the LIVE tile size instead would put ``N`` times
+        the wood in a wall at ``--res N``, i.e. a dev tool that distorts the very
+        thing under development. Defaults to 1, so every caller that builds a
+        table without a level gets the unscaled base numbers.
         """
         ids = sorted(MATERIAL_NAMES)
         # Contiguity: ids must be 0..N-1 so an array indexed by id has no gaps.
@@ -404,6 +699,104 @@ class MaterialTable:
                       for row, name in zip(rows, self.names)]
             setattr(self, col, np.array(values, dtype=dtype))
 
+        # ---- M2: GEOMETRY IN, FILL/MASS OUT (design §4, §11) ---------------
+        # The tile geometry the table's material rows are derived at. This is
+        # `tile_size_ref_m` — THE reference the whole thermal denomination
+        # already shares (the conduction table, `rad_scale`, `J_per_count`) —
+        # NOT the live level's tile size. Making only this column per-level
+        # while the SOURCE side stays pinned at the reference would put the two
+        # halves of the same physics on different rulers; per-level thermal
+        # geometry is report_p2b.md §13 item 7 / q3, deliberately unstarted
+        # (design §4's recorded narrowing).
+        rf = int(res_factor)
+        if rf < 1:
+            raise ValueError(
+                f"MaterialTable: res_factor must be >= 1 (it is the --res "
+                f"replication factor a base tile was split by), got "
+                f"{res_factor!r}")
+        self.res_factor = rf
+        self.tile_size_base_m = float(
+            self._thermal_get(thermal_cfg, "tile_size_ref_m"))
+        self.ceiling_h = float(self._thermal_get(thermal_cfg, "ceiling_h"))
+        # V_tile at the BASE resolution; the runtime tile is this over rf**2.
+        v_tile_base = self.tile_size_base_m ** 2 * self.ceiling_h
+
+        # thickness_m: the ONE AUTHORED geometry column. Absent == SOLID (the
+        # row fills its tile) — see `derive_fill_fraction`. Stored as 0.0 for
+        # a solid row so the column is a plain float array; `fill_fraction`,
+        # not this, is what every derivation reads.
+        thickness = []
+        fill = []
+        for row, name in zip(rows, self.names):
+            what = f"materials.{name}"
+            # The derived columns may never be authored (design §11.1). Same
+            # shape as R14's `thermal_mass` refusal: a second source of truth
+            # for a derived number is exactly what this design exists to remove.
+            for col, inputs in _DERIVED_NEVER_AUTHORED.items():
+                if self._get_field_opt(row, col) is not None:
+                    raise ValueError(
+                        f"{what}.{col} is DERIVED at load from {inputs} plus "
+                        f"the tile geometry (M2, design §4/§11.1) and must not "
+                        f"be authored. Author the row's real dimensions instead "
+                        f"and let the door derive this")
+            t = self._get_field_opt(row, "thickness_m")
+            f = derive_fill_fraction(t, self.tile_size_base_m, what)
+            thickness.append(0.0 if t is None else float(t))
+            fill.append(f)
+        self.thickness_m = np.array(thickness, dtype=np.float64)
+        self.fill_fraction = np.array(fill, dtype=np.float64)
+
+        # THE LUMPED-VALIDITY DOOR (design §3/§11.2). A `flammable` row is a
+        # row the fire model will carry as a SINGLE TEMPERATURE NODE, and that
+        # is only honest for an object thin compared to the ~3 mm a 60 s
+        # exposure penetrates. So a flammable row must STATE its thickness and
+        # that thickness must be inside the criterion — the model REFUSES BY
+        # NAME a row it cannot model, rather than modelling it badly.
+        #
+        # This is the door that makes Erik's ruling structural: NO MASSIVE
+        # OBJECT EVER BURNS. A solid timber wall, a heavy door and a beam are
+        # permanently fire-resistant, which is physically true and is accepted
+        # as a game-design constraint. The old table said the opposite in four
+        # places and could not deliver it: `wood` has declared itself
+        # `flammable = true, ignition_temp = 300` while being a 154 kg block
+        # that a 17.7 kW fire warms 0.07 K/s.
+        for row, name, flam, t, f in zip(rows, self.names,
+                                         self.flammable.tolist(),
+                                         thickness, fill):
+            if not bool(flam):
+                continue
+            if self._get_field_opt(row, "thickness_m") is None:
+                raise ValueError(
+                    f"materials.{name}: a FLAMMABLE row must author "
+                    f"`thickness_m` (M2, design §11.2). The fire model carries "
+                    f"a burning tile as ONE lumped temperature node, which is "
+                    f"only faithful for an object thinner than the ~3 mm heat "
+                    f"penetrates in a 60 s exposure — so the row must state the "
+                    f"thickness the criterion is tested on. A row with no "
+                    f"thickness FILLS ITS TILE ({f * 100:.0f} % fill, "
+                    f"{self.density[self.names.index(name)] * v_tile_base:.0f} "
+                    f"kg), and a block that heavy genuinely does not ignite: "
+                    f"author it non-flammable, or give it its real dimensions")
+            if t > THIN_LIMIT_M and name not in LUMPED_CRITERION_EXEMPT:
+                raise ValueError(
+                    f"materials.{name}: thickness_m = {t!r} exceeds "
+                    f"THIN_LIMIT_M = {THIN_LIMIT_M} (design §3, the small-Biot "
+                    f"lumped-validity criterion), so a single-temperature node "
+                    f"is not a faithful model of it. REFUSED rather than "
+                    f"modelled badly. Either thin the row, make it "
+                    f"non-flammable, or — if the approximation is deliberate — "
+                    f"record it in `LUMPED_CRITERION_EXEMPT` with its reason, "
+                    f"the way `furniture` is")
+
+        # mass_kg: the DERIVED combustible/thermal mass of ONE RUNTIME TILE of
+        # this material. `rho * fill * V_tile_base` is the mass of a BASE tile;
+        # `--res N` split that base tile into N**2 runtime tiles, so each holds
+        # 1/N**2 of it and the wall's TOTAL mass is invariant (design §11.3c).
+        self.mass_kg = np.array(
+            [float(rho) * float(f) * v_tile_base / float(rf * rf)
+             for rho, f in zip(self.density.tolist(), fill)],
+            dtype=np.float64)
+
         # thermal_mass: DERIVED, never authored (R14 — thermal model v2 design
         # 2026-09-19). Each row states its real `density` and `specific_heat`;
         # the column is `pow2_snap(rho * c / THERMAL_MASS_UNIT)`, computed in
@@ -418,8 +811,22 @@ class MaterialTable:
         # of pretending to a capacity. Any other authored `thermal_mass` is
         # rejected by name: it would be a second source of truth for
         # `heat_inv_shift`, which is exactly what R14 exists to remove.
+        #
+        # M1: THE SNAP RETURNS THE EXPONENT, and `heat_inv_shift` is that
+        # exponent verbatim. ONE derivation per row feeds BOTH columns, so the
+        # divisor and the capacity cannot disagree; the old shape (derive a
+        # value, then recover its log with `bit_length`) could not express a
+        # capacity below 1 at all, and would have rounded 0.125 to zero -- i.e.
+        # silently into the GAS regime.
+        #
+        # M2: the row's capacity is `rho * c * fill_fraction`. `fill_fraction`
+        # is DIMENSIONLESS, so R14's cancellation argument is untouched — the
+        # column is still a ratio of two capacities on the SAME tile — but a
+        # 5 mm wood panel now carries 0.015 of a solid tile's capacity instead
+        # of all of it, which is the whole of this patch.
         thermal_mass = []
-        for row, name in zip(rows, self.names):
+        exps = []                  # None == the gas-regime declaration
+        for row, name, f in zip(rows, self.names, fill):
             declared = self._get_field_opt(row, "thermal_mass")
             if declared is not None:
                 if float(declared) != 0.0:
@@ -432,11 +839,15 @@ class MaterialTable:
                         f"instead and let the snap land the column"
                     )
                 thermal_mass.append(0.0)
+                exps.append(None)
                 continue
-            thermal_mass.append(float(derive_thermal_mass(
+            e = derive_thermal_mass_exp(
                 self._get_field(row, name, "density"),
                 self._get_field(row, name, "specific_heat"),
-                f"materials.{name}")))
+                f,
+                f"materials.{name}")
+            exps.append(e)
+            thermal_mass.append(math.ldexp(1.0, e))
         self.thermal_mass = np.array(thermal_mass, dtype=np.float32)
 
         # heat_inv_shift: per-id log2(thermal_mass) (engine/06 §1.2). The
@@ -449,48 +860,48 @@ class MaterialTable:
         # THERMAL-MASS AXIS (docs/thermal_mass_axis_design_2026-07-25.md §2.1;
         # build addendum 2026-07-30 D2): `thermal_mass == 0` is LEGAL and means
         # "this material lives in the GAS thermal regime" — air, and any future
-        # gas-like row. It is the ONLY non-power-of-two value accepted, because
-        # it is not a divisor at all: the derived ``thermal_solid`` mask
+        # gas-like row. It is the ONLY value here that is not a power of two,
+        # because it is not a divisor at all: the derived ``thermal_solid`` mask
         # (below) routes those tiles away from the shift path entirely, so the
-        # stored shift is a never-read placeholder. Everything >= 1 keeps
-        # today's power-of-two contract exactly.
+        # stored shift is a never-read placeholder.
         #
-        # Since R14 the column is DERIVED (above), so the power-of-two rejection
-        # below is a SELF-CHECK on `pow2_snap` rather than an author-facing
-        # door — kept because it is free and because it is the invariant the
-        # whole heat->T convert rests on.
+        # M1: the shift is the snap's OWN answer (`exps`), not a log recovered
+        # from the value — so a NEGATIVE exponent survives the trip. The
+        # self-check below is on that round trip instead: `2**s` must be exactly
+        # what the column carries. It is what the whole heat->T convert rests
+        # on and it is free to assert.
         shifts = []
-        tm_ints = []
-        for tm, name in zip(self.thermal_mass.tolist(), self.names):
-            tm_int = int(round(tm))
-            if tm_int == 0:
-                tm_ints.append(0)
+        for tm, e, name in zip(self.thermal_mass.tolist(), exps, self.names):
+            if e is None:
                 shifts.append(0)             # placeholder: never read (gas regime)
                 continue
-            if tm_int < 0 or (tm_int & (tm_int - 1)) != 0:
+            if math.ldexp(1.0, e) != float(tm):
                 raise ValueError(
-                    f"materials.{name}.thermal_mass must be 0 (the gas thermal "
-                    f"regime) or a power of two >= 1 (it sits on the "
-                    f"heat->temperature divide); got {tm!r} — since R14 the "
-                    f"column is derived, so this is a `pow2_snap` bug, not a "
-                    f"config error"
+                    f"materials.{name}.thermal_mass {tm!r} is not 2**{e} — the "
+                    f"column and `heat_inv_shift` must be the same number in "
+                    f"two forms (it sits on the heat->temperature divide); "
+                    f"since R14 the column is derived, so this is a "
+                    f"`pow2_snap` bug, not a config error"
                 )
-            tm_ints.append(tm_int)
-            shifts.append(tm_int.bit_length() - 1)   # log2 of a power of two
+            shifts.append(e)
         self.heat_inv_shift = np.array(shifts, dtype=np.int32)
 
         # thermal_solid: the per-id THERMAL-MEDIUM axis (thermal-mass design
         # §2.1/§2.2). `thermal_mass > 0` -> this material takes the SOLID
-        # thermal regime (bit-shift heat->T convert, conduction, COOL_SHIFT
+        # thermal regime (bit-shift heat->T convert, conduction
         # ambient decay); `== 0` -> the GAS regime (advection + the N-divided
-        # radiative deposit, no ambient decay). It is derived from the SAME
-        # rounded integers the shifts are, so the mask and the divisor can
-        # never disagree. This is deliberately NOT `permeability <= 0`: flow
+        # radiative deposit, no ambient decay). M1: derived from the FLOAT
+        # column, which IS the definition (`thermal_mass > 0`) rather than a
+        # proxy for it — the old `int(round(tm)) > 0` would have called a
+        # 0.125-unit panel a GAS, silently, the day M2 authors one. The gas
+        # sentinel does not collide: 0.125 > 0 holds and 0.0 does not. This is deliberately NOT `permeability <= 0`: flow
         # (`solid`) and thermal identity are separate axes — furniture is
         # permeable (gas seeps past a crate) AND a thermal solid (a crate has
         # an object temperature). The per-tile projection is
         # ``GameMap.thermal_solid``.
-        self.thermal_solid = np.array([t > 0 for t in tm_ints], dtype=bool)
+        self.thermal_solid = np.array(
+            [float(t) > 0.0 for t in self.thermal_mass.tolist()], dtype=bool)
+        _is_ts = self.thermal_solid.tolist()
 
         # ---- ray-engine-v2 P1 (design v3 §2.3): the HEAT-EXTINCTION INGRESS
         # INVARIANTS, checked at the material door, each a named rejection:
@@ -502,14 +913,27 @@ class MaterialTable:
         #     ignores (a gas-regime cell that took radiation) would be an
         #     UNCOUNTED sink: today every absorbing material is a thermal solid
         #     (temperature_solver.cpp says so, belt and braces); this makes it
-        #     loud. `heat_atten == 0` with any thermal mass is fine (foliage:
-        #     radiation-transparent until its rows are authored, design row 6).
+        #     loud. `heat_atten == 0` on a NON-FLAMMABLE thermal solid is fine.
+        #   * THE LOSS-CHANNEL INVARIANT (thermal model v2 §3.1 / §6 item 1,
+        #     R12) — `flammable && thermal_solid` REQUIRES `heat_atten > 0`.
+        #     With `cool_shift` deleted (R1) and conduction at real physical
+        #     rates (R10), IN-PLANE RADIATION IS THE ONLY MEANINGFUL LOSS
+        #     CHANNEL a solid has. A flammable thermal solid at heat_atten = 0
+        #     is therefore an ENERGY RATCHET: combustion writes heat into it and
+        #     nothing can take the energy out, so it climbs to T_MAX_PHYS and
+        #     re-ignites its neighbours forever — silently, because every
+        #     channel involved is correctly booked. A small `conductivity` would
+        #     NOT save it (under R10 a cellulosic solid-solid face is exactly
+        #     zero below a 256 K gap), which is why the fix has to be radiative
+        #     and why this is a DOOR rather than a warning. This is design v3
+        #     row 6's "foliage stays heat_atten = 0.0" being superseded by R12.
         # The per-id Q16 column below is quantized ONCE here (door 2), through
         # the optics boundary module, and projected per tile by GameMap
         # (`heat_atten_q`) exactly as `fire_T_ext_q16` is — never an inline
         # `* 65536`.
         from simulation import optics_fixed as _optics_fx
-        for name, atten, tm_int in zip(self.names, self.heat_atten.tolist(), tm_ints):
+        for name, atten, is_ts, flam in zip(self.names, self.heat_atten.tolist(),
+                                            _is_ts, self.flammable.tolist()):
             atten_f = float(atten)
             if not (0.0 <= atten_f <= 1.0):
                 raise ValueError(
@@ -517,85 +941,43 @@ class MaterialTable:
                     f"Q16 extinction coefficient on the radiation sweep's planes; "
                     f"design v3 section 2.3: 0 <= a <= d <= ONE); got {atten!r}"
                 )
-            if atten_f > 0.0 and tm_int <= 0:
+            if atten_f > 0.0 and not is_ts:
                 raise ValueError(
                     f"materials.{name}: heat_atten = {atten!r} > 0 requires "
                     f"thermal_mass > 0 — an absorbing material in the gas thermal "
                     f"regime would take radiation the Pass-1 fold never converts "
                     f"(an uncounted sink; design v3 section 2.3)"
                 )
+            if bool(flam) and is_ts and atten_f <= 0.0:
+                raise ValueError(
+                    f"materials.{name}: a FLAMMABLE THERMAL SOLID must have "
+                    f"heat_atten > 0 (got {atten!r}) — radiation is its only "
+                    f"meaningful loss channel once cool_shift is gone (thermal "
+                    f"model v2 R1) and conduction runs at real rates (R10), so "
+                    f"at 0 it is an energy ratchet: combustion heats it and "
+                    f"nothing can cool it, and it climbs to T_MAX_PHYS and "
+                    f"re-ignites its neighbours forever. Give the row its real "
+                    f"emissivity (R12 did this for foliage: 0.90)"
+                )
         self.heat_atten_q16 = _optics_fx.quantize(self.heat_atten)
 
-        # cool_shift: the per-id AMBIENT-DECAY shift — the LOSS-side twin of
-        # `thermal_mass` (engine/06 §3; cool-shift axis 2026-07-30). The
-        # cooling pass on a THERMAL-SOLID tile is
-        #     T -= T >> cool_shift          (T is ΔT above ambient)
-        # so at the 24 Hz tick the e-fold time is 2^cool_shift / 24 s.
+        # ---- T5b step 7 / thermal model v2 R1: `cool_shift` IS DELETED ----
+        # The per-material AMBIENT-DECAY column built here (`T -= T >>
+        # cool_shift`, the LOSS-side twin of `thermal_mass`) is gone, with its
+        # validation, its `COOL_SHIFT` default and its per-tile projection.
+        # Pass 3 is deleted on both backends: the radiation sweep computes the
+        # real loss now, and a hand-rolled Newtonian relaxation beside it
+        # counted the same physics twice.
         #
-        # WHY IT IS PER-MATERIAL: it was one global ([physics.thermal]
-        # COOL_SHIFT) until the thermal-mass arc routed furniture into the
-        # solid thermal regime. furniture carries conductivity = 0 (NO_FACE
-        # both ways), so this decay is a crate's ONE loss channel — and a shift
-        # fast enough for thin hull plate (5 == 1.3 s) is absurd for a wooden
-        # crate, while a shift slow enough for wood (12 == 171 s) is absurd for
-        # plate. One number cannot serve both; the gain side already won this
-        # argument with `thermal_mass`.
+        # The DOOR that replaces it is the loss-channel invariant above: a
+        # flammable thermal solid must have `heat_atten > 0`. That is the same
+        # guarantee this column used to provide (furniture's conductivity is 0,
+        # so the decay was its ONLY loss channel) -- stated as a physical
+        # requirement instead of a dial.
         #
-        # OPTIONAL COLUMN: a row that omits it inherits the global COOL_SHIFT,
-        # which is exactly the pre-axis behaviour — so every dict-built table
-        # (tests) and any config predating the column stays valid, and the
-        # global keeps a live job instead of becoming dead weight.
-        #
-        # INTEGER ONLY: it is a shift count consumed by a C++ arithmetic right
-        # shift, never a float — a fractional value here would be a silent
-        # truncation, so it is rejected. Bounds + rationale: `_COOL_SHIFT_MAX`
-        # and SHIFT_MIN above.
-        #
-        # The VACUUM-exposed rate is NOT a second column (that would put two
-        # dials on one material and let them drift apart). It is the same
-        # per-material shift with the GLOBAL OFFSET applied at the cooling site:
-        #     exposed -> max(SHIFT_MIN, cool_shift - (COOL_SHIFT - COOL_SHIFT_VACUUM))
-        # i.e. "vacuum sheds two shifts (4x) faster" is one rule for every
-        # material. With every row seeded at COOL_SHIFT == 5 this reproduces the
-        # old 5/3 pair exactly. The per-tile projection is `GameMap.cool_shift`.
-        shift_min = int(self._thermal_get(thermal_cfg, "SHIFT_MIN"))
-        cool_default = int(self._thermal_get(thermal_cfg, "COOL_SHIFT"))
-        cool_shifts = []
-        for row, name in zip(rows, self.names):
-            raw = self._get_field_opt(row, "cool_shift")
-            if raw is None:
-                cool_shifts.append(cool_default)
-                continue
-            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-                raise ValueError(
-                    f"materials.{name}.cool_shift must be an INTEGER shift "
-                    f"count (it drives the arithmetic right shift "
-                    f"`T -= T >> cool_shift`); got {raw!r}"
-                )
-            cs = int(raw)
-            if cs != raw:
-                raise ValueError(
-                    f"materials.{name}.cool_shift must be an INTEGER shift "
-                    f"count (it drives the arithmetic right shift "
-                    f"`T -= T >> cool_shift`); got {raw!r}"
-                )
-            if cs < shift_min:
-                raise ValueError(
-                    f"materials.{name}.cool_shift must be >= SHIFT_MIN "
-                    f"({shift_min}) — the per-tick decay fraction is 1/2^shift, "
-                    f"so 0 means `T -= T` (an instant total wipe of the "
-                    f"temperature field) and 1 halves it every tick; got {cs}"
-                )
-            if cs > _COOL_SHIFT_MAX:
-                raise ValueError(
-                    f"materials.{name}.cool_shift must be <= "
-                    f"{_COOL_SHIFT_MAX} — beyond that the e-fold time "
-                    f"(2^shift / 24 s) exceeds 12 hours of game time, which is "
-                    f"indistinguishable from 'never cools' at Q16.16 and is "
-                    f"almost certainly a typo; got {cs}"
-                )
-            cool_shifts.append(cs)
-        self.cool_shift = np.array(cool_shifts, dtype=np.int32)
+        # A row may still CARRY a `cool_shift` key; it is ignored rather than
+        # rejected, so a level or config that has not been swept still loads.
+        # config.toml's own rows are struck in the same commit.
 
         # fuel_recip: the per-id FUEL-FRACTION NORMALISER — the reciprocal of
         # this material's OWN full-health `hp`, baked once at LOAD in the exact
@@ -622,6 +1004,56 @@ class MaterialTable:
         # so the fuel fraction and the health bar can never disagree.
         self.fuel_recip = np.array(
             [fuel_recip_from_hp(v) for v in self.hp.tolist()], dtype=np.int64)
+
+        # ---- R14's FUEL HALF: `fuel_per_o2`, DERIVED per material (T5b) ----
+        # The hp a tile pays per unit of O2 its own fire consumes, set so that
+        # spending the whole bar consumes exactly the tile's real combustible
+        # mass (the module-level KG_FUEL_PER_N_O2 block carries the derivation
+        # and its three citations):
+        #
+        #     fuel_per_o2[mat] = hp[mat] * KG_FUEL_PER_N_O2 / (density * V_tile)
+        #
+        # DERIVED, NOT A DIAL, and for the same reason `fuel_recip` is: a second
+        # authored number here could disagree with the row's own mass, which is
+        # precisely the inconsistency R14 exists to remove. The global
+        # `[physics.combustion] fuel_per_o2` survives ONLY as the solver's
+        # fallback when a caller supplies no per-tile plane (the `fuel_ref` /
+        # `o2_frac_amb` tombstone precedent); the live engine always supplies
+        # one.
+        #
+        # THE CONSEQUENCE R14 FLAGGED IS CLOSED BY M2 (report_t5b.md §12 q2,
+        # ruled by Erik 2026-09-20/21). Under R14 every flammable row shared one
+        # density (555) and therefore one 154 kg block and one 414-unit O2
+        # store: the fuel distinction between `wood`, `furniture`, `kindling`
+        # and `foliage` had COLLAPSED. The fix is NOT fake bulk densities -- it
+        # is GEOMETRY. Each row keeps the real cited density of the matter it is
+        # made of and states how much of that matter is actually there, so the
+        # four rows now hold 2.3 / 5.0 / 2.0 / 2.0 kg and differ honestly.
+        #
+        # M2 (design §8): the mass is now the row's DERIVED `mass_kg` — its
+        # real combustible mass after geometry, per RUNTIME tile — instead of
+        # `density * V_tile`, which assumed every row filled its tile. That
+        # single substitution is what makes "the fuel store binds, not the
+        # timer" fall out for free: `wood` holds 6.2 units of O2 instead of
+        # 414, so the same 60 hp bar is spent over a 67x stronger physical
+        # channel. No new mechanism, and the whole bar is still consumed
+        # exactly when all the fuel is burned.
+        fpo = []
+        for name, hp_v, mass_kg in zip(self.names, self.hp.tolist(),
+                                       self.mass_kg.tolist()):
+            o2_units = float(mass_kg) / KG_FUEL_PER_N_O2
+            fpo.append(float(hp_v) / o2_units if o2_units > 0.0 else 0.0)
+        self.fuel_per_o2 = np.array(fpo, dtype=np.float64)
+        self.fuel_per_o2_q16 = np.array([quantize_q16(v) for v in fpo],
+                                        dtype=np.int32)
+        for name, hp_v, q in zip(self.names, self.hp.tolist(),
+                                 self.fuel_per_o2_q16.tolist()):
+            if bool(self.flammable[list(self.names).index(name)]) and q <= 0:
+                raise ValueError(
+                    f"materials.{name}: a FLAMMABLE row derived "
+                    f"fuel_per_o2 = 0 (hp={hp_v}) -- it would burn for ever, "
+                    f"since its hp bar never empties. Give it a positive `hp` "
+                    f"or make it non-flammable (design v2 R14)")
 
         # fire_T_ext / fire_T_ext_q16: the per-id EXTINCTION TEMPERATURE — the
         # foot of the fire logistic's `hot` ramp, `hot = clamp01((T -
@@ -735,41 +1167,127 @@ class MaterialTable:
 
     # -- conduction face-shift tables (engine/06 §2.4–§2.5) --------------
     def _build_conduction_tables(self, thermal_cfg):
-        """Build ``self_shift[N]`` and ``face_shift_table[N][N]`` from the
-        per-material ``conductivity`` column (engine/06 §2.4–§2.5, proposal §2).
+        """Build ``face_shift_table[N][N]`` (and ``self_shift[N]``, its
+        diagonal) at REAL PHYSICAL RATES -- thermal model v2 **R10**, derived in
+        ``report_t3.md`` D2/D3.
 
-        These are the LOAD-TIME float computations (base-2 log buckets + the
-        harmonic-mean face resolve). The runtime conduction pass only ever
-        indexes ``face_shift_table[mat_a][mat_b]`` and shifts — no float, no
-        division — so the whole spread is division-free and bit-identical
-        cross-machine (proposal §2.7).
+        **WHAT R10 CHANGED.** The old table was a log bucket anchored on
+        ``SHIFT_AT_REF = 2`` at ``KAPPA_REF = 50``: "hull conducts a quarter of
+        the gap per tick", which is the fastest rate an explicit 4-neighbour
+        stencil is stable at. That is a CFL bound wearing a physics hat -- it
+        has no capacity, no tile size and no timestep in it, so it could not
+        have been right by construction, and it ran solid-solid conduction
+        65 000-130 000x too fast (T3 D2 section 3.2). Both constants are
+        retired. The rate is now
 
-        ``self_shift[a]`` — the material's own log-bucket shift (§2.4):
+            2^-s  =  the real per-tick fraction of the gap this face moves
 
-            shift = clamp(SHIFT_MIN,
-                          round(SHIFT_AT_REF - log2(kappa / KAPPA_REF)),
-                          NO_FACE)            # NO_FACE if kappa == 0
+        and ``s`` is derived per PAIR from matter and geometry alone.
 
-        ``face_shift_table[a][b]`` — the shift for a face BETWEEN materials a, b,
-        from the HARMONIC MEAN of their conductivities (§2.5), so two resistances
-        in series add (a wood/metal face conducts at ~the wood, slow, rate; an
-        arithmetic mean would leak heat into insulators too fast):
+        **TWO LAWS, because a solid|gas interface is not conduction.**
 
-            hm = 2*ka*kb / (ka + kb)
-            face = clamp(SHIFT_MIN, round(-log2(hm / KAPPA_REF)), NO_FACE)
-                   NO_FACE if either kappa == 0
+        *Solid|solid and gas|gas* -- Fourier conduction through two half-cells
+        in series, which is exactly what the harmonic mean of the two
+        conductivities already expressed::
 
-        Symmetric N×N. NO_FACE on every face a kappa==0 material touches makes
-        the air no-op STRUCTURAL (not a runtime value-branch) — see §2.6.
+            hm = 2*ka*kb / (ka + kb)                      [W/(m.K)]
+            s  = round(log2( rho_c_min * dx^2 / (hm * dt) ))
+
+        *Solid|gas* -- CONVECTION through a sub-tile boundary layer, not a
+        half-tile of still air. ``h`` is a measured quantity with standard
+        correlations (Churchill & Chu 1975; Incropera eq. 9.26), so this sits
+        inside R7: pure conduction is simply the WRONG LAW at a wall, and using
+        it would have made this face 64x too weak. The conductance is the
+        boundary layer ALONE -- a convecting gas cell is well-mixed, which is
+        what ``h`` already describes, and the solid's own half-cell resistance
+        is not added (T3 section 8 q5's second option, "use h alone")::
+
+            s  = round(log2( rho_c_min * dx / (h_conv * dt) ))
+
+        Note ``dx``, not ``dx^2``: ``h`` is a conductance per unit area,
+        ``kappa`` is not. At the shipped numbers this lands on **shift 10 for
+        every solid|gas pair, which is exactly what the retired anchor happened
+        to ship** -- T3 measured the live face and found it already implements
+        ``h = 6.75 W/(m2.K)`` against the derived 6.0, inside the shift
+        quantisation. So nothing moves at the wall; what changes is that the
+        rate is derived instead of accidental.
+
+        ``rho_c_min`` is the SMALLER-capacity side of the pair --
+        ``thermal_mass * THERMAL_MASS_UNIT`` for a thermal solid, ``c_v *
+        THERMAL_MASS_UNIT`` (air's real rho*c_v, 864.5 J/(m3.K)) for a gas cell
+        at N = 1. It is the side that responds fastest, and it is the capacity
+        the solver's own ``min(cap_i, cap_j)`` prices the face quantum at.
+
+        **``kappa == 0`` still means NO FACE, on both laws.** It is the
+        structural no-conduction declaration (``furniture`` / ``kindling`` /
+        ``foliage``: a crate burns, it does not conduct), and T3 section 8 q3
+        leaves opening those rows' convection face to Erik. A row that wants a
+        face states a conductivity.
+
+        **THE TABLE IS NOW TILE-SIZE DEPENDENT** (T3 section 3.5) -- the solid
+        face goes as ``1/dx^2``, the gas face as ``1/dx`` -- and this table is
+        GLOBAL while ``tile_size_m`` is per level. It is built at
+        ``tile_size_ref_m`` (0.333, the shipped-level value), exactly as
+        ``rad_scale_derived`` already is. On a 1.0 m level every solid face is
+        then 3 shifts too fast and every gas face 2. Deriving per level is
+        T3 section 8 q9, Erik's open question; this is the same position
+        ``report_p2b.md`` section 13 item 7 records for the emission scale,
+        deliberately not decided here.
+
+        Everything below is a LOAD-TIME float computation; the runtime pass only
+        indexes ``face_shift_table[mat_a][mat_b]`` and shifts -- no float, no
+        division, bit-identical cross-machine (proposal section 2.7).
         """
-        shift_at_ref = float(self._thermal_get(thermal_cfg, "SHIFT_AT_REF"))
         shift_min = int(self._thermal_get(thermal_cfg, "SHIFT_MIN"))
-        kappa_ref = float(self._thermal_get(thermal_cfg, "KAPPA_REF"))
         no_face = int(self._thermal_get(thermal_cfg, "NO_FACE"))
+        h_conv = float(self._thermal_get(thermal_cfg, "h_conv"))
+        dx = float(self._thermal_get(thermal_cfg, "tile_size_ref_m"))
+        dt = float(self._thermal_get(thermal_cfg, "TICK_DT_S"))
+        c_v = float(self._thermal_get(thermal_cfg, "c_v"))
         self.no_face = no_face
+        if not (h_conv > 0.0 and dx > 0.0 and dt > 0.0 and c_v > 0.0):
+            raise ValueError(
+                f"[physics.thermal]: the conduction table needs h_conv > 0, "
+                f"tile_size_ref_m > 0, c_v > 0 and a positive tick dt; got "
+                f"h_conv={h_conv!r}, tile_size_ref_m={dx!r}, c_v={c_v!r}, "
+                f"dt={dt!r}")
 
-        kappa = self.conductivity.astype(np.float64)
+        # BOTH SIDES OF THE RATE ARE TILE-AVERAGED, OR NEITHER IS (M2).
+        #
+        # `rho_c` below is the TILE-AVERAGED capacity: since M2 it carries the
+        # row's `fill_fraction`, because `thermal_mass` does. The conductance
+        # must carry the SAME factor or the pair is inconsistent -- and the
+        # inconsistency is not small. A tile holding a 5 mm wood panel has 67x
+        # less matter in it, so it has 67x less capacity AND 67x less
+        # cross-section for heat to travel along:
+        #
+        #     conductance per tile pair = kappa * (thickness * ceiling_h) / dx
+        #     tile capacity             = rho*c * (thickness * ceiling_h * dx)
+        #     => dT/dt = kappa * dT / (rho*c * dx^2)     -- the fill CANCELS
+        #
+        # which is just the statement that in-plane thermal DIFFUSIVITY
+        # `alpha = kappa/(rho*c)` is a property of the MATTER: making a wall
+        # thinner does not make heat travel along it faster. Scaling only the
+        # capacity would have made `wood`'s solid|solid face shift 24 -> 18,
+        # i.e. heat spreading along a wooden wall 64x faster than wood does,
+        # with nothing in the design asking for it.
+        #
+        # FOUND BY LOOKING, not by a gate: the design's own consumer list does
+        # not name the conduction table (M1's finding, made standing guidance).
+        # `tests/test_m2_dimensions_and_thin_rows.py` now pins the property.
+        fill = self.fill_fraction.astype(np.float64)
+        kappa = self.conductivity.astype(np.float64) * fill
         n = self.n
+
+        # rho*c per material in SI, from the SAME columns `thermal_mass` itself
+        # derives from -- never a second source of truth (R14). A gas row
+        # (`thermal_mass == 0`) is priced at `c_v` column units, which IS air's
+        # real rho*c_v: 0.0076849 * 112500 = 864.5 J/(m3.K). (A gas row's fill
+        # is 1.0 -- a tile of air is full of air -- so the gas branch is
+        # untouched by the tile-averaging above.)
+        rho_c = np.where(self.thermal_solid,
+                         self.thermal_mass.astype(np.float64) * THERMAL_MASS_UNIT,
+                         c_v * THERMAL_MASS_UNIT)
 
         def _clamp_shift(s):
             s = int(round(s))
@@ -779,24 +1297,7 @@ class MaterialTable:
                 s = no_face
             return s
 
-        # self_shift[a] — per-material log-bucket self-rate (§2.4).
-        self_shift = np.empty(n, dtype=np.int32)
-        for a in range(n):
-            ka = kappa[a]
-            if ka <= 0.0:
-                self_shift[a] = no_face
-            else:
-                self_shift[a] = _clamp_shift(
-                    # ingress-exempt: config-time table build; log2 is exact on
-                    # the power-of-two kappa ratios in config, and the rounded
-                    # INTEGER shift is empirically cross-machine stable (Ada
-                    # 2026-07 per-field run). TODO(stats-redesign): replace
-                    # with an integer log2 (bit_length) to close the door.
-                    shift_at_ref - math.log2(ka / kappa_ref)
-                )
-        self.self_shift = self_shift
-
-        # face_shift_table[a][b] — harmonic-mean face resolve (§2.5), symmetric.
+        # face_shift_table[a][b] -- symmetric NxN, one of the two laws per pair.
         face = np.full((n, n), no_face, dtype=np.int32)
         for a in range(n):
             ka = kappa[a]
@@ -805,11 +1306,30 @@ class MaterialTable:
                 if ka <= 0.0 or kb <= 0.0:
                     face[a, b] = no_face        # kappa==0 either side -> no face
                     continue
-                hm = 2.0 * ka * kb / (ka + kb)  # harmonic mean (one float div)
-                # ingress-exempt: same config-time integer-shift build as
-                # self_shift above (see TODO there).
-                face[a, b] = _clamp_shift(-math.log2(hm / kappa_ref))
+                rc_min = min(float(rho_c[a]), float(rho_c[b]))
+                if bool(self.thermal_solid[a]) != bool(self.thermal_solid[b]):
+                    # solid|gas -- convection through the boundary layer alone.
+                    gap_frac = (h_conv * dt) / (rc_min * dx)
+                else:
+                    # solid|solid or gas|gas -- Fourier, two half-cells in series.
+                    hm = 2.0 * ka * kb / (ka + kb)
+                    gap_frac = (hm * dt) / (rc_min * dx * dx)
+                # ingress-exempt: config-time table build. log2 of a positive
+                # double, rounded to an INTEGER shift -- the rounded integer is
+                # empirically cross-machine stable (Ada 2026-07 per-field run),
+                # and the derived shifts sit far from a .5 boundary (the closest
+                # is air|air at 16.45). TODO(stats-redesign): replace with an
+                # integer log2 (bit_length) to close the door.
+                face[a, b] = _clamp_shift(-math.log2(gap_frac))
         self.face_shift_table = face
+
+        # self_shift[a] -- a material's face with ITSELF. It used to be an
+        # independently-computed log bucket (`SHIFT_AT_REF - log2(kappa/
+        # KAPPA_REF)`), i.e. a second source of truth for the same physical
+        # rate; it is now simply the table's diagonal, so the two cannot
+        # disagree. Nothing in the engine reads it -- it is a reporting and
+        # test-facing column.
+        self.self_shift = np.array([face[a, a] for a in range(n)], dtype=np.int32)
 
     # -- accessors -------------------------------------------------------
     @staticmethod
@@ -866,7 +1386,7 @@ class MaterialTable:
         return getattr(row, col, None)
 
     @classmethod
-    def from_config(cls, cfg=None):
+    def from_config(cls, cfg=None, level_data=None):
         """Build from the global :data:`config.CFG` (or a provided config).
 
         Threads the ``[physics.thermal]`` namespace (conduction log-bucket
@@ -875,17 +1395,50 @@ class MaterialTable:
         plus the dials the ignition-seed check reads) into the table so both
         track config edits. Tolerates a config without either block (falls back
         to defaults).
+
+        ``level_data`` is optional and supplies ONE thing (M2, design §4): the
+        level's ``res_factor``, so a ``--res N`` run divides each row's derived
+        mass across the ``N**2`` runtime tiles its base tile became. Omitted (a
+        tool, a bench, a unit test) the table is built at ``res_factor = 1``,
+        i.e. the unscaled base numbers. NOTE this is deliberately NOT the
+        level's tile SIZE: the material table's geometry stays pinned to
+        ``tile_size_ref_m``, the same reference the conduction table and
+        ``rad_scale`` are built at, because making one half of the thermal model
+        per-level while the other half stays pinned would put them on different
+        rulers (q3; design §4's recorded narrowing).
         """
         if cfg is None:
             from config import CFG
             cfg = CFG
         thermal_cfg = getattr(getattr(cfg, "physics", None), "thermal", None)
+        # T5b / R10: the conduction table is `2^-s = rate * dt`, so it needs the
+        # TICK, and the tick has exactly one source of truth -- [clock]
+        # ticks_per_second. It is injected here rather than duplicated as a
+        # [physics.thermal] key, so the table can never disagree with the clock
+        # the engine actually runs at.
+        # ...and `ceiling_h`, R14's fuel-mass derivation's other geometric
+        # input, whose one source of truth is [physics.water] (the water
+        # solver's own air column). Same reason: no second copy to drift.
+        over = {}
+        tps = float(getattr(getattr(cfg, "clock", None), "ticks_per_second", 0.0))
+        if tps > 0.0:
+            over["TICK_DT_S"] = 1.0 / tps
+        ch = getattr(getattr(getattr(cfg, "physics", None), "water", None),
+                     "ceiling_h", None)
+        if ch is not None and float(ch) > 0.0:
+            over["ceiling_h"] = float(ch)
+        if over:
+            thermal_cfg = _ThermalOverride(thermal_cfg, over)
         fire_cfg = getattr(getattr(cfg, "physics", None), "fire", None)
         # P-R4: the seed check's gain chain now runs through the combustion
         # fuel-bed deposit (k_fire_heat is retired), so [physics.combustion]
         # rides along too.
         comb_cfg = getattr(getattr(cfg, "physics", None), "combustion", None)
-        return cls(cfg.materials, thermal_cfg, fire_cfg, comb_cfg)
+        # The --res replication factor, read the way every other consumer of it
+        # reads it (gamemap.py, pump_system.py, vent_system.py): absent or 0
+        # means 1.
+        rf = int(getattr(level_data, "res_factor", 1) or 1) if level_data is not None else 1
+        return cls(cfg.materials, thermal_cfg, fire_cfg, comb_cfg, res_factor=rf)
 
     def occludes(self, material_grid):
         """Static occlusion mask: a tile occludes if it attenuates any channel.

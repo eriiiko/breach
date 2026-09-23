@@ -57,6 +57,14 @@ RUN_TAG = "fire_lab"           # output filename stem (tests/_fire_lab/<tag>.png
 # conduction face") drains the ignition heat into the surroundings with a
 # ~3 s e-fold, `hot` hits 0 by t≈5 s and the fire starves cold. A real
 # material/map finding, not a lab artifact; needs its own ruling.
+#   STALE SINCE M2 (2026-09-21, thin_material_rows_design section 6): `wood` is
+#   now a 0.5 cm panel with 1/64 of that tile's capacity, so the same
+#   conduction drain is 64x smaller relative to the heat arriving. The finding
+#   was measured against a 153.9 kg block and has NOT been re-measured; do not
+#   act on it without re-running. Note also that the canonical bench
+#   (tools/fire_timing_harness) has been re-anchored on `kindling` per Erik's
+#   ruling, so this lab's furniture default is no longer the same reference
+#   object the arc's numbers are quoted against.
 IGNITE_TILES = [(46, 8)]
 
 # Extra heat above the material's ignition point at seed time (game units).

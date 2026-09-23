@@ -125,7 +125,12 @@ void combustion_step(
     float fire_T_ext = 350.0f,
     float fire_T_span = 180.0f,
     float hotf_cap = 10.0f,
-    const int32_t* fire_T_ext_plane = nullptr);
+    const int32_t* fire_T_ext_plane = nullptr,
+    // R14's FUEL HALF (thermal model v2, T5b): the nullable per-material fuel
+    // EXCHANGE RATE plane, `GameMap.fuel_per_o2_plane` -- the twin of
+    // combustion.h's parameter of the same name, which carries the rationale.
+    // nullptr -> the `fuel_per_o2` scalar fallback, pre-R14 bit-for-bit.
+    const int32_t* fuel_per_o2_plane = nullptr);
 
 // Backend flag: when ON, PhysicsRunner's combustion pass dispatches to
 // combustion_step on the GPU instead of the CPU CombustionSolver::step.

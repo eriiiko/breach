@@ -68,10 +68,10 @@ THE METRIC IS THEREFORE Σ_cells C_i · T_i — object C = thermal_mass, gas
 C = N·c_v — and the drift is no longer bounded, it is COUNTED: the solver
 exports `e_cond_trunc_sum` (the endpoint floor-division residual, one-way
 negative) and `e_cond_cap_sum` (the capacity floor/ceiling term), plus the
-three SIGNED boundary channels `e_cool_sum` / `e_vac_wipe_sum` /
+two SIGNED boundary channels `e_vac_wipe_sum` /
 `e_ring_pin_sum`. So this module asserts an IDENTITY, not a tolerance:
 
-    Δ(Σ C·T)  ==  e_cond_trunc_sum + e_cond_cap_sum + e_cool_sum
+    Δ(Σ C·T)  ==  e_cond_trunc_sum + e_cond_cap_sum
                   + e_vac_wipe_sum + e_ring_pin_sum
 
 which is a strictly stronger gate than the epsilon bound it replaces.
@@ -136,6 +136,13 @@ def _capacity_real(mats, shift, solid, n_raw, n_floor_heat=0.05, c_v=1.0):
     energy books are denominated in. These callers pass no `thermal_solid`, so
     the solver's medium mask falls back to `solid`.
 
+    T5b: the `c_v=1.0` default here is this module's OWN dial, not the shipped
+    one (which is now 0.0076849). Every caller in this file drives the DIRECT
+    binding with its own explicit dials rather than `config.toml`, so the
+    default is a fixture value and stays — but it is no longer "the same values
+    config.toml now ships", and the docstrings below that said so have been
+    corrected.
+
     Object: C = thermal_mass = 2^heat_inv_shift.  Gas: C = N·c_v (UNfloored —
     the n_floor_heat floor is what `e_cond_cap_sum` counts)."""
     c_v_q = int(math.floor(c_v * FP_ONE + 0.5))
@@ -151,7 +158,7 @@ def _capacity_real(mats, shift, solid, n_raw, n_floor_heat=0.05, c_v=1.0):
 def _books(solver):
     """The five P-E2a energy counters, as one signed total (raw energy)."""
     return (int(solver.e_cond_trunc_sum) + int(solver.e_cond_cap_sum)
-            + int(solver.e_cool_sum) + int(solver.e_vac_wipe_sum)
+            + int(solver.e_vac_wipe_sum)
             + int(solver.e_ring_pin_sum))
 
 
@@ -195,15 +202,21 @@ def _zero_wind(shape):
 
 
 def _solver(cool_shift_vacuum=3):
-    """cool_shift PINNED huge (interior decay disabled — see module
+    """T5b step 7: `cool_shift`/`cool_shift_vacuum` are DELETED (R1, Pass 3).
+    The parameter survives as an ignored fixture knob so the two scenarios below
+    keep their names; what USED to be "interior decay disabled, space decay
+    fast" is now simply "there is no ambient decay at all", which is a stronger
+    isolation of the conduction pass this module gates.
+
+    (historical) cool_shift PINNED huge (interior decay disabled — see module
     docstring); cool_shift_vacuum left at a real, fast value (the shipped
     default 3) so scenario (b)'s one exposed tile actually radiates. gas_*
     dials are left at their shipped C++ defaults (gas_advection_rate=900,
-    c_v=1.0, n_floor_heat=0.05 — the SAME values config.toml now ships)."""
+    c_v=1.0, n_floor_heat=0.05 — FIXTURE values, NOT what config.toml ships
+    since T5b moved `c_v` to the derived 0.0076849; this module drives the
+    direct binding with its own dials throughout)."""
     s = bp.TemperatureSolver()
     s.no_face = NO_FACE
-    s.cool_shift = 31
-    s.cool_shift_vacuum = cool_shift_vacuum
     return s
 
 
@@ -279,24 +292,61 @@ def test_sealed_room_energy_conserved_and_walls_warm():
 
     assert int(solver.e_cond_cap_sum) == 0, (
         "the capacity floor engaged in a room that is everywhere at ambient N")
-    assert int(solver.e_cool_sum) == 0, "cooling was supposed to be disabled"
+    # T5b step 7: `e_cool_sum` is deleted -- there is no cooling pass to
+    # disable, which is the stronger form of what this line asserted.
     assert int(solver.e_vac_wipe_sum) == 0 and int(solver.e_ring_pin_sum) == 0
     # The drift IS the counted endpoint truncation, exactly.
     assert total0 - prev_total == -(int(solver.e_cond_trunc_sum) - trunc0)
     assert int(solver.e_cond_trunc_sum) <= 0, "truncation CREATED energy"
 
-    # Heat visibly flowed gas -> walls: every wall tile borders a hot interior
-    # cell in this room, so the WHOLE hull ring must have warmed from 0.
+    # Heat visibly flowed gas -> walls. T5b / R10 SHARPENS this: it used to
+    # read "the WHOLE hull ring must have warmed", which was true only because
+    # solid-solid conduction ran 65 000x too fast and carried heat round the
+    # corners. At real rates a CORNER tile -- whose four orthogonal neighbours
+    # are all hull, so it touches no gas at all -- warms by nothing measurable,
+    # and that is R10's accepted consequence, not a regression. What must still
+    # be true, and is the actual property, is that every wall tile ADJACENT TO
+    # THE GAS warmed.
     hull_mask = (mats == MAT_HULL)
-    assert np.all(temperature[hull_mask] > 0), "hull ring did not warm from the hot gas pocket"
+    gas_mask = (mats == MAT_AIR) & ~is_vacuum
+    touches_gas = np.zeros_like(hull_mask)
+    touches_gas[1:, :] |= gas_mask[:-1, :]
+    touches_gas[:-1, :] |= gas_mask[1:, :]
+    touches_gas[:, 1:] |= gas_mask[:, :-1]
+    touches_gas[:, :-1] |= gas_mask[:, 1:]
+    warm = hull_mask & touches_gas
+    assert warm.sum() >= 8, "sanity: this room must have gas-facing wall tiles"
+    assert np.all(temperature[warm] > 0), (
+        "a gas-facing hull tile did not warm from the hot gas pocket")
+    # ...and the corners, which touch no gas, stayed at ambient: R10 asserted,
+    # so a stability anchor sneaking back in would show up HERE as a corner
+    # that mysteriously warmed.
+    corners = hull_mask & ~touches_gas
+    assert corners.sum() >= 4, "sanity: this room must have corner wall tiles"
+    assert np.all(temperature[corners] == 0), (
+        "a hull tile with no gas neighbour warmed anyway -- solid-solid "
+        "conduction is running far above its real rate again")
     # And a specific, named tile (top wall, middle) for a concrete assertion.
     assert temperature[0, 3] > 0, "top-wall tile did not warm"
 
 
 def test_sealed_room_with_one_hull_face_exposed_drains_monotonically():
     """Scenario (b): one hull tile (row 7, col 3) additionally exposed to a
-    real vacuum neighbour cell (row 8, col 3) — the hull radiates to space
-    (cool_shift_vacuum) and total energy must monotonically drain."""
+    real vacuum neighbour cell (row 8, col 3).
+
+    T5b step 7 RE-ANCHORS THIS TEST, and the re-anchor is the point. It used to
+    assert that the hull "radiates to space (cool_shift_vacuum)" and that those
+    space-facing channels DOMINATE the drain. R1 deletes Pass 3: a hull tile's
+    radiative loss is the SWEEP's job now, and this module drives
+    `TemperatureSolver.step` through the DIRECT BINDING, which runs no sweep at
+    all. So at this seam a vacuum-facing bulkhead loses exactly NOTHING -- which
+    is design v2 section 6 item 7 ("nothing relaxes to ambient") asserted at the
+    one place it used to be false.
+
+    What survives, and is asserted: every count is ATTRIBUTED (the identity in
+    the loop), total energy is NON-INCREASING (conduction alone is one-way),
+    and the vacuum cell never accumulates across ticks.
+    """
     mats, shift, face, solid, is_vacuum, atmosphere = _room_9x8_one_face_exposed()
     h, w = mats.shape
     temperature = np.zeros((h, w), dtype=np.int32)
@@ -320,7 +370,7 @@ def test_sealed_room_with_one_hull_face_exposed_drains_monotonically():
     prev_total = total0
     # Baseline the counters at total0 — the seeding step's own residual is not
     # part of this run's drain.
-    base = dict(cool=int(solver.e_cool_sum), vac=int(solver.e_vac_wipe_sum),
+    base = dict(vac=int(solver.e_vac_wipe_sum),
                 trunc=int(solver.e_cond_trunc_sum),
                 cap=int(solver.e_cond_cap_sum))
     prev_books = _books(solver)
@@ -343,13 +393,30 @@ def test_sealed_room_with_one_hull_face_exposed_drains_monotonically():
     # ATTRIBUTED: the two space-facing channels (the exposed tile's
     # cool_shift_vacuum decay and the breach cell's Pass-0 wipe) must dominate
     # the counted conduction truncation, not merely exceed it.
-    e_space = -((int(solver.e_cool_sum) - base["cool"])
-                + (int(solver.e_vac_wipe_sum) - base["vac"]))
+    # T5b step 7: the "space-facing channels" are now the Pass-0 wipe ALONE --
+    # `cool_shift_vacuum`, the other half, is deleted with Pass 3. The
+    # bulkhead radiates through the SWEEP now, which this direct-binding
+    # fixture does not drive at all.
+    e_space = -(int(solver.e_vac_wipe_sum) - base["vac"])
     e_trunc = -(int(solver.e_cond_trunc_sum) - base["trunc"])
     e_cap = int(solver.e_cond_cap_sum) - base["cap"]
-    assert e_space > 10 * max(e_trunc, 1), (
-        f"the space-facing channels ({e_space}) do not dominate conduction's "
-        f"counted truncation ({e_trunc}) — the exposed face does not radiate")
+    # T5b step 7: at THIS seam the exposed bulkhead loses nothing at all, and
+    # that is the assertion now. `e_vac_wipe_sum` books only the open-vacuum
+    # CELL's wipe, which in this fixture never fires (the breach cell holds no
+    # gas-T to wipe), so the whole drain is conduction's counted truncation.
+    #
+    # That truncation is itself R10's dead band showing up (report_t3.md D2
+    # §3.4): below `2^s/65536` K a solid-solid face moves NOTHING to its
+    # neighbour while the hot cell still loses one raw count to the floor
+    # division -- a one-way sink with no counterparty, worth 1.3 K/hour per
+    # cell-face. Whether a sub-dead-band face should instead be a no-op is
+    # T3 §8 q4, Erik's open question, not answered here.
+    assert e_space == 0, (
+        f"the temperature solver still has a space-facing loss channel "
+        f"({e_space}) -- R1 deletes the last one, and a vacuum-facing hull "
+        f"tile must now lose heat only through the sweep")
+    assert e_trunc > 0, (
+        "the run drained nothing at all -- this gate would be vacuous")
     assert drop == e_space + e_trunc - e_cap, (
         "the run's total drain is not fully attributed to named channels")
     # The vacuum cell NEVER ACCUMULATES T across ticks (Pass 0 zeroes it at the
@@ -391,8 +458,6 @@ def test_solid_and_vacuum_hull_tile_is_not_wiped_by_pass0():
 
     solver = bp.TemperatureSolver()
     solver.no_face = NO_FACE
-    solver.cool_shift = 31             # isolate: disable cooling entirely here
-    solver.cool_shift_vacuum = 31
 
     solver.step(temperature, heat, shift, face, solid, is_vacuum, atmosphere,
                 wind_x, wind_y, 1.0 / 24.0)
@@ -408,35 +473,51 @@ def test_solid_solid_face_shift_unaffected_by_air_conductivity():
     mathematically, an entry that never reads air's conductivity cannot have
     moved when only air's config row changed. Also pins the concrete shift
     values so a future accidental edit to a SOLID material's own conductivity
-    (or KAPPA_REF/SHIFT_AT_REF/SHIFT_MIN) trips this test too."""
-    from simulation.materials import MAT_DOOR, MAT_GLASS, MAT_STEEL, MAT_WOOD
+    (or SHIFT_MIN, or the R10 constants) trips this test too.
+
+    T5b: the independent recompute is now R10's law (`rho_c_min * dx^2 /
+    (kappa_hm * dt)`) instead of the retired `KAPPA_REF` log bucket. The
+    PROPERTY is unchanged and is still the point -- an entry that never reads
+    air's conductivity cannot move when air's row changes -- and it is stronger
+    than before, because the recompute now carries the pair's CAPACITY too, so
+    a `thermal_mass` edit trips it as well."""
+    from simulation.materials import (MAT_DOOR, MAT_GLASS, MAT_STEEL, MAT_WOOD,
+                                      THERMAL_MASS_UNIT)
+    from config import CFG as _CFG
 
     SOLID_MATS = (MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_STEEL, MAT_GLASS)
     assert all(_TBL.permeability[m] <= 0.0 for m in SOLID_MATS), (
         "sanity: all five must still be solid materials")
 
-    kappa_ref = 50.0        # config.toml [physics.thermal].KAPPA_REF
     shift_min = 2           # config.toml [physics.thermal].SHIFT_MIN
     no_face = NO_FACE
+    dx = float(getattr(_CFG.physics.thermal, "tile_size_ref_m"))
+    dt = 1.0 / float(_CFG.clock.ticks_per_second)
 
-    def independent_face_shift(ka, kb):
+    def independent_face_shift(ka, kb, tm_a, tm_b):
         hm = 2.0 * ka * kb / (ka + kb)
-        s = int(round(-math.log2(hm / kappa_ref)))
+        rc = min(tm_a, tm_b) * THERMAL_MASS_UNIT
+        s = int(round(-math.log2((hm * dt) / (rc * dx * dx))))
         return max(shift_min, min(s, no_face))
 
     for a in SOLID_MATS:
         for b in SOLID_MATS:
-            ka = float(_TBL.conductivity[a])
-            kb = float(_TBL.conductivity[b])
-            expected = independent_face_shift(ka, kb)
+            # M2: the conductance is TILE-AVERAGED by the row's fill_fraction,
+            # the same factor `thermal_mass` already carries -- both sides of
+            # the rate, or neither (materials.py `_build_conduction_tables`).
+            ka = float(_TBL.conductivity[a]) * float(_TBL.fill_fraction[a])
+            kb = float(_TBL.conductivity[b]) * float(_TBL.fill_fraction[b])
+            expected = independent_face_shift(
+                ka, kb, float(_TBL.thermal_mass[a]), float(_TBL.thermal_mass[b]))
             actual = int(_TBL.face_shift_table[a, b])
             assert actual == expected, (
                 f"face_shift_table[{a},{b}] == {actual}, expected {expected} "
                 f"(independent recompute from solid-only conductivities — "
                 f"air's conductivity change must not reach here)")
 
-    # And the concrete, historically-known-good self-face values (the same
-    # ones test_temperature_conduction.py::test_face_table_anchor_values
-    # pins) stay put — a second, redundant confirmation.
-    assert int(_TBL.face_shift_table[MAT_HULL, MAT_HULL]) == 2
-    assert int(_TBL.face_shift_table[MAT_WOOD, MAT_WOOD]) == 8
+    # And the concrete self-face values R10 derives — a second, redundant
+    # confirmation. (T5b: these were 2 and 8, the retired log bucket's own
+    # anchor; they are now steel's and wood's real alpha*dt/dx^2, an e-fold of
+    # 3.0 h and 194 h respectively. See report_t3.md D2 section 3.2.)
+    assert int(_TBL.face_shift_table[MAT_HULL, MAT_HULL]) == 18
+    assert int(_TBL.face_shift_table[MAT_WOOD, MAT_WOOD]) == 24

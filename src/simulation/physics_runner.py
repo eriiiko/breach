@@ -306,24 +306,10 @@ class PhysicsRunner:
         self.temperature = self.engine.temperature
         thermal = getattr(CFG.physics, "thermal", None)
         self.temperature.no_face = int(getattr(thermal, "NO_FACE", 63))
-        # Ambient cooling dials (§3.3): interior vs vacuum-exposed decay shifts
-        # and the atmosphere threshold below which a 4-neighbour counts as
-        # space-facing. Bound from config so the burn-out tuning lives in one
-        # place. Cooling relaxes ΔT toward 0 (T_ambient == 0): T -= T >> shift.
-        # COOL-SHIFT AXIS (2026-07-30): the decay shift itself is now a
-        # PER-MATERIAL column projected to `GameMap.cool_shift` and handed to
-        # step_tail below. These two globals keep two live jobs: `cool_shift`
-        # is the solver's fallback when no per-tile grid is supplied, and the
-        # PAIR defines the vacuum-exposure discount as an OFFSET
-        # (cool_shift - cool_shift_vacuum) applied to every material's own
-        # shift — so "space sheds 4x faster" stays one rule and each material
-        # keeps exactly ONE dial. `cool_shift_floor` clamps that subtraction;
-        # it is the SAME SHIFT_MIN the material loader validates the column
-        # against, bound from the one config key so the two can never disagree.
-        self.temperature.cool_shift = int(getattr(thermal, "COOL_SHIFT", 5))
-        self.temperature.cool_shift_vacuum = int(
-            getattr(thermal, "COOL_SHIFT_VACUUM", 3))
-        self.temperature.cool_shift_floor = int(getattr(thermal, "SHIFT_MIN", 2))
+        # T5b step 7 / thermal model v2 R1: the three `cool_shift*` binds
+        # stood here. Pass 3 is deleted on both backends -- the sweep
+        # computes the real radiative loss, so a hand-rolled Newtonian
+        # relaxation beside it counted the same physics twice.
         self.temperature.o2_vacuum_thresh = float(
             getattr(thermal, "o2_vacuum_thresh", 0.3))
         # EOS refactor P2 (docs/eos_refactor_design.md §4, §9): gas-T dials —
@@ -1035,13 +1021,7 @@ class PhysicsRunner:
             # (permeable but thermally solid) holds an object temperature
             # instead of gas the plume advects away.
             gmap.thermal_solid,
-            # COOL-SHIFT AXIS (2026-07-30): the per-tile ambient-decay shift
-            # (`T -= T >> cool_shift[i]`), the LOSS-side twin of the
-            # heat_inv_shift above. Per-material because the thermal-mass arc
-            # made furniture a thermal solid whose ONLY loss channel is this
-            # decay, and one global cannot be right for a hull plate and a
-            # wooden crate at once.
-            gmap.cool_shift,
+            # T5b step 7 / R1: `gmap.cool_shift` was passed here.
             # FUEL-FRACTION AXIS (2026-07-30): the per-tile reciprocal of each
             # tile's material's OWN full-health hp, which the fire logistic's
             # fuel term F = clamp01(wall_hp/hp_full) reads. Per-material because
@@ -1166,6 +1146,11 @@ class PhysicsRunner:
                 self.combustion.fire_T_ext, self.combustion.fire_T_span,
                 self.combustion.hotf_cap,
                 gmap.fire_T_ext_plane,
+                # R14's fuel half (thermal model v2, T5b): the per-material
+                # fuel exchange rate, derived from each row's own combustible
+                # mass. The scalar `self.combustion.fuel_per_o2` above is now
+                # only the fallback for a caller with no plane.
+                gmap.fuel_per_o2_plane,
             )
         else:
             self.combustion.step(
@@ -1232,6 +1217,9 @@ class PhysicsRunner:
                 # hotf_cap are already bound onto the solver instance at
                 # init, read internally by CombustionSolver::step).
                 gmap.fire_T_ext_plane,
+                # R14's fuel half (thermal model v2, T5b) — the CPU twin of the
+                # CUDA call above.
+                gmap.fuel_per_o2_plane,
             )
 
     # ------------------------------------------------------------------
@@ -1472,7 +1460,7 @@ class PhysicsRunner:
             gmap.is_vacuum, gmap.flammable,
             gmap.heat, gmap.heat_inv_shift, gmap.face_shift,
             gmap.thermal_solid,          # thermal-mass axis (host mirror)
-            gmap.cool_shift,             # cool-shift axis (host mirror)
+            # T5b step 7 / R1: gmap.cool_shift was passed here.
             gmap.fuel_recip,             # fuel-fraction axis (host mirror)
             gmap.fire_T_ext_plane,       # per-material T_ext (host mirror)
             gmap.gas, gmap.gases.conservative, self._o2_idx,

@@ -469,6 +469,44 @@ FP_HD inline int64_t shr_round0_i64(int64_t x, int s) {
     return (x < 0) ? -((-x) >> s) : (x >> s);
 }
 
+// The SIGNED-EXPONENT twin (M1, docs/thin_material_rows_design_2026-09-20.md
+// section 5). Divides by 2^s where `s` MAY BE NEGATIVE.
+//
+// WHY A NEGATIVE EXPONENT EXISTS. `heat_inv_shift` is log2(thermal_mass), and
+// since M1 a material row may be LIGHTER than one thermal_mass unit (a 5 mm
+// wood panel is 2^-3 units). `heat_inv_shift` has always been int32_t —
+// signed — and `conduction::cell_capacity_q` has always built a Q16.16 capacity
+// `1 << (s + 16)` from it, which at s = -2 is exactly 0.25. What blocked it was
+// a GUARD, not the arithmetic. Lifting the guard makes every `>> heat_inv_shift`
+// in the engine a potential NEGATIVE shift, which is undefined behaviour — on
+// the determinism path. This is the one function that may hold that sign.
+//
+//   s >= 0 : shr_round0_i64(x, s), value for value. That identity is what keeps
+//            every shipped material row bit-identical across M1, which changes
+//            no row — and it is what the golden non-movement proves.
+//   s <  0 : x · 2^(-s). This branch is EXACT: a left shift loses nothing,
+//            where the right shift truncates. Computed as a MULTIPLY, not
+//            `x << (-s)`: left-shifting a negative int64 is implementation-
+//            defined before C++20 and the sim path may not carry that.
+//
+// SATURATING at the int64 rails rather than wrapping: signed overflow is UB,
+// and this is a determinism TU. In practice the product is far inside the range
+// (the capacity floor caps -s at 16 and every caller's operand is bounded by
+// the Q16.16 temperature/energy domain), so the rails are diagnostics, not a
+// law — no caller may depend on their value.
+FP_HD inline int64_t shr_round0_signed_i64(int64_t x, int s) {
+    if (s >= 0) return shr_round0_i64(x, s);
+    // `1 << k` is UB for k >= 64; 62 already saturates every nonzero operand,
+    // so clamping here costs nothing a caller could observe and removes the UB
+    // a direct-binding caller could otherwise reach.
+    const int k = (-s > 62) ? 62 : -s;
+    const int64_t m = (int64_t)1 << k;
+    const int64_t lim = INT64_MAX / m;          // m >= 2, so lim is exact enough
+    if (x >  lim) return INT64_MAX;
+    if (x < -lim) return INT64_MIN;
+    return x * m;
+}
+
 // ---- per-cell integer reciprocal (Newton-Raphson, GPU-clean) --------------
 //
 // reciprocal_q16(denom_q) == round_toward_neg_inf(2^16 / denom_real) in Q16.16,

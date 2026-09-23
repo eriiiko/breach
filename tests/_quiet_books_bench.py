@@ -120,7 +120,7 @@ def main() -> None:
             # combustion's own object-site solid heat deposit (bypasses
             # TemperatureSolver's Pass 1 entirely). Accumulating.
             int(tsolver.e_solid_deposit_sum) + int(tsolver.e_solid_cond_sum)
-            + int(tsolver.e_thermostat_sum) + int(comb.e_comb_solid_heat_sum),
+            + int(comb.e_comb_solid_heat_sum),   # T5b: no thermostat term
         )
 
     def solid_books():
