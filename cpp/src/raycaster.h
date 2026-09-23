@@ -209,6 +209,15 @@ inline void heat_saturating_add(int32_t* cell, int32_t delta) {
 // to emissive_table.cpp; Raycaster::bake_emissive_table() calls it.
 #include "emissive_table.h"
 
+// T6 (issue #12): RAD_LIM_SHIFT / rad_pair_budget / rad_pair_budget_s below
+// are NOT deleted, though their only CPU-side callers (march_ray_radiation,
+// cast_from_fire_plane) are gone. `cuda_raycaster.cu`'s radiation kernel
+// (breach_cuda::raycaster_cast_radiation, dispatched only by the now-deleted
+// cuda_raycaster_cast_from_fire_plane binding) `#include`s raycaster.h
+// specifically for these RC_HD symbols; cuda_raycaster.{cu,h} are kept
+// out of this patch's scope (P4 deletes them alongside the CUDA radiation
+// sweep port), so deleting the symbols here would break that kept file's
+// build for a branch nothing calls any more. P4 removes both together.
 // ---- the flux limiter (ruling A1.6; Levermore & Pomraning 1981) ------------
 // Per pair, per ray, per tick, |net| may not exceed the heat that would close
 // 1/2^RAD_LIM_SHIFT of the pair's temperature GAP through either end's own
@@ -423,6 +432,16 @@ struct RadRay {
 
 // The planes the exchange reads/writes. nullptr `rad_net` == radiation OFF for
 // this cast (every non-fire caller: lamps, muzzle flashes, the render pass).
+//
+// T6 (issue #12): the only code that ever built a non-null RadCtx/RadSource/
+// RadRay — build_fire_sources, cast_from_fire_plane, build_fire_ray_list,
+// march_ray_radiation — is deleted. `cast_source_directional` and
+// `march_ray_directional` keep their `RadCtx*`/`RadSource*`/`RadRay*`
+// parameters (always null now) because those two ARE the kept render march
+// (raycaster.{h,cpp}'s light path, staying until P6) and changing their
+// signature is out of this patch's scope; `RadCtx::active()` is therefore
+// unreachable-false forever. Left for P6 to fold away with the rest of the
+// old march's radiation vestiges.
 struct RadCtx {
     const int64_t* e_table        = nullptr;   // E_TABLE_SIZE entries (int64)
     const int32_t* temperature    = nullptr;   // Q16.16 (h,w)
@@ -488,39 +507,18 @@ public:
     // staleness cache below).
     double kelvin_ambient = 293.0;
     double k_temp_to_kelvin = 3.0;
-    // `T_emit_gate` — the temperature (game units) at or above which a NON-
-    // burning thermal solid also CASTS (ruling A1.8, Erik's 180 = 653 K). The
-    // gate decides who can radiatively LOSE heat; RECEIVERS ARE FREE (a cold
-    // crate is heated correctly on the flame's own rays whatever this is).
-    double T_emit_gate = 180.0;
-    // ---- P-F1a / v7 rule 4: RADIATION_RANGE ------------------------------
-    //
-    // The reach of an EMISSION ray, in tiles. A STABILITY-CLASS CONSTANT, NOT A
-    // FEEL DIAL: it must be >= the GRID DIAGONAL of the largest shipping level
-    // so that reach-termination can NEVER precede the world edge. That is what
-    // makes "the ray genuinely escaped" mean "the ray left the world" —
-    // map-independent, and it makes the corridor leak (a ray dying mid-room and
-    // charging nobody, so a long room silently loses less than a short one)
-    // STRUCTURALLY IMPOSSIBLE rather than tuned away.
-    //
-    // FLOOR: the largest shipping level is 128 x 256 ⇒ diagonal
-    // sqrt(128² + 256²) = 286.22 ⇒ the floor is 287. The shipped 320 carries
-    // ~12% headroom for a larger level without a law change.
-    //
-    // COST: air cells cost a march STEP and no deposit work — which is why the
-    // PURE-RADIATION FAST PATH (march_ray_radiation) exists and is mandatory:
-    // an emission ray does no RGB, no gas optics, no `exp`. Fire's visible
-    // light is a SEPARATE short cast on the legacy range formula.
-    //
-    // `range_base` / `range_per_intensity` return to render/legacy duty and to
-    // D3's damage_range guard; they do NOT bound an emission ray.
-    static constexpr double RADIATION_RANGE_MIN = 287.0;
-    double radiation_range = 320.0;
+    // T6 (issue #12): `T_emit_gate`, `RADIATION_RANGE_MIN` and
+    // `radiation_range` lived here for the old fire-plane cast's emitter gate
+    // and emission-ray reach (ruling A1.8 / v7 rule 4). Deleted with
+    // `cast_from_fire_plane`/`build_fire_sources`/`march_ray_radiation` —
+    // the sweep (radiation_sweep.h) has no emitter gate (every cell radiates
+    // E°(T)) and no reach concept (one traversal over the whole grid).
 
     // Bake (or re-bake) the E° table from the CURRENT `rad_scale`. Idempotent
-    // and a pure function of `rad_scale` — cast_from_fire_plane / the ray-list
-    // builders call it lazily when `rad_scale` has moved since the last bake,
-    // so a caller that only sets the dial can never march against a stale table.
+    // and a pure function of `rad_scale`. Two owners share this one bake
+    // (tests/test_emissive_table.py): this Raycaster instance (kept for the
+    // render march's contract and the bake-identity test) and
+    // PhysicsEngine.emissive (the sweep's live table, `rad_scale_derived`).
     void bake_emissive_table() const;
     // The baked table (E_TABLE_SIZE int64 entries). Bakes on first use.
     const int64_t* emissive_table() const;
@@ -691,90 +689,18 @@ public:
         const RadSource* rs = nullptr
     ) const;
 
-    // ---- P-R1: whole-fire-plane cast (source build moved into C++) ----
-    //
-    // docs/radiation_raycaster_extinction_ruling_2026-07-31.md A4.1-A4.2.
-    // Replaces PhysicsRunner.cast_fire_heat's old per-tile Python loop
-    // (one bp.LightSource() + ~10 pybind attribute writes PER BURNING TILE,
-    // PER TICK): enumerates every burning tile (fire[i] > 0, Q16.16) in
-    // ROW-MAJOR order via build_fire_sources() and casts each resulting
-    // source immediately with cast_source_directional — i.e. the SAME
-    // per-source CPU cast the old Python loop drove, just built natively.
-    // `heat` is byte-identical to that old loop (same sources, same march,
-    // same order-free saturating add) — this is a mechanical relocation,
-    // no law/behavior change (P-R1's byte-identity gate).
-    //
-    // `fire` is the Q16.16 int32 fire plane (h, w); the dial parameters
-    // mirror the old Python-side runner attributes EXACTLY (see
-    // build_fire_sources for the float-parity contract on why they are
-    // `double`, not `float`). `jitter` stays fixed at 0.0 by the caller
-    // (fire heat is sim-affecting — no dither; S8c item 1's RNG-coupling
-    // guard).
-    //
-    // *** P-R4 (ruling A1): THE PAINTER IS GONE. ***  This cast no longer
-    // takes `k_fire_heat` and no longer takes the `heat` plane: a fire does
-    // not PAINT one-way energy into every cell its rays cross. It now runs the
-    // antisymmetric net-T⁴ EXCHANGE into `rad_net` (signed), reading
-    // `temperature` for both ends' E° and `heat_inv_shift` for the limiter.
-    // The emitter set also widens (ruling A1.8): burning tiles ∪ thermal
-    // solids at or above `T_emit_gate`, still row-major.
-    //
-    // *** P-F1a: TWO CASTS PER SOURCE. ***  The single combined march is split:
-    //
-    //   1. THE EMISSION CAST (march_ray_radiation) — the PURE-RADIATION FAST
-    //      PATH, mandatory under v7 rule 4. Marches to `radiation_range` (>=
-    //      the grid diagonal) doing ONLY the integer exchange terms and the
-    //      heat_atten survival. No RGB, no direction accumulation, no gas
-    //      optics, no `exp`. This is what pays for the long rays.
-    //   2. THE VISIBLE-LIGHT CAST (cast_source_directional with radiation OFF)
-    //      — the OLD range formula (`range_base + range_per_intensity·I`) and
-    //      the OLD light machinery, unchanged. It is GOLDEN-NEUTRAL FOR RENDER:
-    //      identical LightSource, identical angles, identical march ⇒ the
-    //      light_rgb / light_dx / light_dy this function writes are bit-for-bit
-    //      what the combined cast wrote before. It is SKIPPED ENTIRELY when
-    //      `light_rgb == nullptr`, which is the zero-cost route for a caller
-    //      that only wants the books.
-    //
-    //      (NOTE for the reader: the live sim path — PhysicsRunner.
-    //      cast_fire_heat — passes scratch light buffers and DISCARDS them; the
-    //      renderer draws fire light from its own blackbody selector,
-    //      renderer/fire_lights.py. The light cast is kept here so this C++ API
-    //      keeps its contract and any light-consuming caller is unaffected.)
-    // RETURNS: the number of emission rays that terminated on a CONTACT FACE
-    // (rule 3) this cast. A pure diagnostic — contact directions are
-    // non-participating BY DESIGN — but the equivalence gate needs it to derive
-    // its a = 0.5 tolerance instead of guessing one, and it is the honest
-    // measure of how much of a given geometry's telescoping identity is
-    // legitimately not covered.
-    int64_t cast_from_fire_plane(
-        const int32_t* fire, int h, int w,
-        int fire_ray_count,
-        double range_base, double range_per_intensity,
-        double intensity_base, double intensity_per_intensity,
-        const float color[3],
-        float* light_rgb,
-        float* light_dx,
-        float* light_dy,
-        float* smoke_glow,          // RGB god-ray glow, (h,w,3) or nullptr
-        const float* gas_field,     // (n_gases, h, w) contiguous gas densities
-        const float* gas_absorption,// (n_gases, 3) per-gas per-channel absorption
-        const float* gas_scatter,   // (n_gases, 3) per-gas per-channel scatter
-        int n_gases,
-        const float* light_atten,   // per-tile static material atten (h,w,3)
-        const float* heat_atten,    // per-tile heat atten (h,w) — a_x, REQUIRED
-        // ---- P-R4 radiation planes ---------------------------------------
-        const int32_t* temperature,     // Q16.16 (h,w) — both ends' E° source
-        const int32_t* heat_inv_shift,  // (h,w) — the limiter's per-end budget
-        const bool* thermal_solid,      // (h,w) — the warm-emitter mask
-        int64_t* rad_net,               // Q16.16 (h,w) — SIGNED accumulator
-        int64_t* rad_amb,               // (h,w) — the SKY ledger (rule 4)
-        int64_t* rad_flux,              // D3: (h,w) positive-only damage sensor
-        // D4 (amendment 5): the SIM TICK, as a plain integer. The per-source
-        // fan phase rotates with it, so the discrete view factor time-averages
-        // and no tile pair is permanently disconnected (see build_fire_sources).
-        int tick,
-        double jitter = 0.0
-    ) const;
+    // T6 (issue #12): `cast_from_fire_plane` — the whole-fire-plane cast that
+    // used to replace PhysicsRunner.cast_fire_heat's per-tile Python loop —
+    // is DELETED. Since the flip (T5b step 6) the temperature fold reads the
+    // radiation sweep's own planes (radiation_sweep.h: rad_net_sweep /
+    // rad_flux_sweep / rad_amb_sweep / rad_fluence), computed once per tick
+    // over the whole grid; this per-source 8-ray-fan cast had been running
+    // alongside it writing planes nothing read. `march_ray_radiation` (the
+    // pure-radiation fast path this cast drove) is deleted with it; see the
+    // enumerator `build_fire_sources`, deleted below, for the emitter-gate
+    // history. The generic per-source cast below (`cast_source_directional`)
+    // is NOT part of this cast — it is the render march's own entry point and
+    // stays.
 
     // ---- CUDA-S2 gate: host ray-list builder (shared CPU/GPU angle math) ----
     //
@@ -795,47 +721,10 @@ public:
     std::vector<breach_cuda::RayHD> build_ray_list(
         const LightSource& src, const RadSource* rs = nullptr) const;
 
-    // ---- P-R1: CUDA twin of cast_from_fire_plane ----
-    //
-    // The SAME enumeration + per-source parameter construction as
-    // cast_from_fire_plane (build_fire_sources, shared — the float-parity-
-    // critical code path runs exactly once for both backends), folded into
-    // RayHD via build_ray_list and concatenated in row-major source order —
-    // IDENTICAL to how cuda_raycaster_cast_batch (bindings.cpp, S8c item 1)
-    // concatenates a Python-supplied source list, except the source list is
-    // now built FROM THE FIRE PLANE here instead of supplied by Python. The
-    // caller feeds the result straight into the existing
-    // breach_cuda::raycaster_cast_directional batched march — no new device
-    // code, no march/law change.
-    // P-F1a: `emit_mask_out` (nullable) receives the once-per-tick emitter mask
-    // plane so the caller can upload it alongside the rays — rule 2's branch
-    // reads it on the device exactly as the CPU march does.
-    //
-    // `light_rays_out` (nullable) receives the SECOND, SHORT cast: the same
-    // sources' VISIBLE-LIGHT rays on the legacy `range_base +
-    // range_per_intensity·I` formula, carrying no radiation payload
-    // (`rad_src_idx < 0`). The device runs them through the UNCHANGED
-    // raycaster_cast_directional; the returned (primary) list is the pure
-    // emission set, for the fast-path kernel.
-    std::vector<breach_cuda::RayHD> build_fire_ray_list(
-        const int32_t* fire, int h, int w,
-        int fire_ray_count,
-        double range_base, double range_per_intensity,
-        double intensity_base, double intensity_per_intensity,
-        const float color[3],
-        // P-R4: the same three planes the CPU builder reads (temperature for
-        // T_s/E_s, heat_atten for a_s, heat_inv_shift for the limiter) plus
-        // the warm-emitter mask. Every RayHD comes back carrying its emitter's
-        // payload, so the device march needs no source table.
-        const int32_t* temperature,
-        const float* heat_atten,
-        const int32_t* heat_inv_shift,
-        const bool* thermal_solid,
-        int tick,                       // D4: the fan's per-tick phase rotation
-        double jitter = 0.0,
-        std::vector<uint8_t>* emit_mask_out = nullptr,
-        std::vector<breach_cuda::RayHD>* light_rays_out = nullptr
-    ) const;
+    // T6 (issue #12): `build_fire_ray_list` — the CUDA twin of
+    // `cast_from_fire_plane` (fed the `cuda_raycaster_cast_from_fire_plane`
+    // binding, also deleted) — is DELETED with it. `build_ray_list` above,
+    // which this reused, is unaffected: it has its own (kept) live callers.
 
     // Normalize direction vectors in place: (dx, dy) /= length(dx, dy).
     // Tiles with zero-length direction stay (0, 0).
@@ -874,103 +763,16 @@ private:
         const RadRay* rr            // P-R4: this ray's emitter payload
     ) const;
 
-    // ---- P-F1a: THE PURE-RADIATION FAST PATH (v7 rule 4 / round-3.6 MAJOR-3)
-    //
-    // The emission ray. Same DDA, same det_cos/det_sin directions, same
-    // `heat_atten` survival and `heat_cull` floor as march_ray_directional —
-    // and NOTHING else. No light_rgb, no light_dx/dy, no smoke_glow, no gas
-    // absorption/scatter loop, no `exp`. That is what makes a >= 287-tile ray
-    // affordable: an air cell costs one DDA step, two float multiplies and a
-    // bounds test.
-    //
-    // It is also where the three structural rules live that the combined march
-    // never had: the explicit distance-0 SELF-CELL exclusion, rule 3's CONTACT
-    // TERMINATION, and rule 4's SKY charge at the grid edge.
-    //
-    // `max_range` is RADIATION_RANGE (the caller's `radiation_range`), NOT the
-    // per-intensity formula. D3's rad_flux write keeps the legacy reach through
-    // `rr->damage_range`.
-    // Returns 1 if this ray terminated on a CONTACT FACE (rule 3), else 0 — the
-    // contact-termination counter the equivalence gate's a = 0.5 variant needs
-    // to DERIVE its tolerance rather than guess one (v7.1 item 5, M5). Contact
-    // directions are non-participating by design, so their residual is charged
-    // to nobody; the count is how much of the telescoping identity a given
-    // geometry legitimately does not cover.
-    int march_ray_radiation(
-        float sx, float sy, float angle, float max_range,
-        const float* heat_atten,    // a_x — REQUIRED (Kirchhoff)
-        int h, int w,
-        const RadCtx* rad,
-        const RadRay* rr
-    ) const;
-
-    // ---- P-R1: the shared fire-plane source enumerator ----
-    //
-    // Enumerates fire[row*w+col] > 0 in ROW-MAJOR order (row outer, col
-    // inner — the same order np.nonzero(fire > 0) yielded to the old Python
-    // loop) and builds ONE LightSource per burning tile, reproducing
-    // PhysicsRunner.cast_fire_heat's old per-tile Python math EXACTLY:
-    //   x = col + 0.5, y = row + 0.5
-    //   max_range  = range_base + range_per_intensity * I
-    //   angle_center = ((col*7 + row*13) % ray_count) * (2*pi/ray_count)
-    //   intensity  = intensity_base + intensity_per_intensity * I
-    //   heat       = k_fire_heat * I
-    //   jitter = 0, angle_spread = 2*pi (omni), ray_count = fire_ray_count
-    // where I = float(fire_q) / 65536 (Q16.16 dequant, fire_fixed.FP_ONE).
-    //
-    // FLOAT-PARITY CONTRACT (the reason this function exists rather than
-    // just inlining floats): the old Python loop computed every expression
-    // above in DOUBLE (Python floats are C doubles; math.pi is a double)
-    // and narrowed to float32 ONLY at the final `src.field = <python
-    // float>` pybind attribute set. To land the identical float32 bits,
-    // every expression here is DOUBLE arithmetic, with the same operator
-    // shapes/order as the Python source, cast to `float` ONLY at the point
-    // that mirrors that pybind narrowing. The dial parameters are `double`
-    // in this signature for the same reason: the Python runner's attributes
-    // (self.k_fire_heat etc.) stay double for their whole lifetime and are
-    // never pre-narrowed to float32 before this multiply — accepting them
-    // as `float` here would round a tick early and could flip the final
-    // float32 bit. `color` has no arithmetic before it lands on the source
-    // (a pure passthrough constant either way), so it is safely `float`.
-    //
-    // P-R4 (ruling A1.8): the enumeration widens to `burning ∪ (thermal_solid
-    // && T >= T_emit_gate)` and every source also yields a RadSource into
-    // `rad_out` (same index, same order). `heat` is GONE from the payload —
-    // `k_fire_heat` no longer exists — and a WARM (non-burning) emitter uses
-    // I = 0 in the range/intensity formulas, i.e. max_range = range_base: the
-    // documented interim choice (short reach for a merely-warm surface; the
-    // ruling defers a per-emitter reach model).
-    //
-    // D4 — THE PER-TICK FAN PHASE ROTATION (amendment 5, Erik's ruling).
-    // The shipped phase `((x*7 + y*13) mod N) * (2*pi/N)` is a NO-OP for a
-    // full-circle fan: rotating N evenly-spaced rays by a multiple of their own
-    // spacing maps the set onto itself, so every source in the world casts the
-    // SAME N directions and some tile pairs are NEVER connected (measured: no
-    // ray reaches the (+2, 0) axis neighbour, at any intensity — pre-existing
-    // painter aliasing that became load-bearing once spread depended on it).
-    // The fix adds a sub-spacing rotation that advances with the tick:
-    //     angle_center = (hash mod N)*(2*pi/N) + (tick mod N)*(2*pi/(N*N))
-    // Over N consecutive ticks the fan sweeps one full ray spacing, so EVERY
-    // direction is sampled and the discrete view factor time-averages to the
-    // continuous one. Deterministic and a pure function of (x, y, tick) — the
-    // tick arrives as a plain integer so CPU and CUDA build identical fans.
-    std::vector<LightSource> build_fire_sources(
-        const int32_t* fire, int h, int w,
-        int fire_ray_count,
-        double range_base, double range_per_intensity,
-        double intensity_base, double intensity_per_intensity,
-        const float color[3], double jitter,
-        const int32_t* temperature, const float* heat_atten,
-        const int32_t* heat_inv_shift, const bool* thermal_solid,
-        int tick,
-        std::vector<RadSource>* rad_out,
-        // P-F1a / v7.1 item 13: the once-per-tick EMITTER MASK PLANE, filled
-        // here (h*w bytes) from the SAME temperature snapshot the E° lookups
-        // read, by the SAME integer threshold the caster predicate uses. Both
-        // backends get it from this one function, so rule 2's half-weight
-        // branch can never key on a different set on GPU than on CPU.
-        std::vector<uint8_t>* emit_mask_out = nullptr
-    ) const;
+    // T6 (issue #12): `march_ray_radiation` (the pure-radiation fast path,
+    // v7 rule 4 / round-3.6 MAJOR-3 — the explicit distance-0 self-cell
+    // exclusion, rule 3's contact termination, rule 4's sky charge) and
+    // `build_fire_sources` (the shared fire-plane emitter enumerator,
+    // `burning ∪ (thermal_solid && T >= T_emit_gate)`, row-major, the D4
+    // per-tick fan-phase rotation) are DELETED: both existed only to serve
+    // `cast_from_fire_plane`/`build_fire_ray_list`, deleted above. The
+    // radiation_sweep's traversal (radiation_sweep.h) replaces the whole
+    // per-source-fan model with one exact-integer pass per ordinate over the
+    // grid — no emitter gate, no fan, no per-source reach.
 
     // P-R4: the baked E° table + the `rad_scale` it was baked at. `mutable` so
     // the const cast entry points can lazily (re-)bake — the bake is a PURE
