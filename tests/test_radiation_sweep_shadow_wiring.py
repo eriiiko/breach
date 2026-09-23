@@ -6,14 +6,6 @@ The goldens themselves are asserted unmoved by the tests that own them
 this file adds the two conditions the design says must be CHECKED rather than
 believed, plus the proof that the sweep is live:
 
-  * the A/B default scenario is WRAP-FREE on the old cast's int32 `rad_net` —
-    detected through the pre-fold ledger identity `Σ rad_net + Σ rad_amb == 0`
-    (a wrap breaks it by exactly 2^32, tests/test_pf1a_radiation_books.py) and
-    the measured max|rad_net| reported. FINDING: that scenario is radiatively
-    INERT — its seeded fire delivers no heat (CLAUDE.md "Starting a fire"), no
-    thermal solid ever leaves ambient, and the old cast's rad_net is zero on
-    every tick — so the check there is exact but vacuous; the same check on a
-    shipped level with a real hot tile is the non-vacuous one;
   * the shadow sweep's three-term identity holds on the live engine EVERY
     tick and its Φ plane is non-zero on every cell (the ambient ring lights
     the grid even when nothing radiates);
@@ -22,12 +14,23 @@ believed, plus the proof that the sweep is live:
     zeroes its own outputs instead, so the render-time tile inspector reads
     real numbers; the second tick must therefore OVERWRITE, not accumulate.
 
-Since P3a-1 it also owns the LOUDNESS gate for the three LIVE planes
+T6 (issue #12): this file used to ALSO check the old fire-plane cast's own
+int32 `rad_net` for a wrap (the pre-fold ledger identity `Σ rad_net +
+Σ rad_amb == 0`) side by side with the sweep, since both ran every tick
+during the transition. The old cast (`cast_fire_heat` /
+`Raycaster.cast_from_fire_plane`) is deleted, so those checks are gone with
+it — `gmap.rad_net`/`rad_amb` are never written by anything any more (kept
+as GameMap fields only because `PhysicsEngine.step_tail` still takes
+`rad_net` as a required-but-internally-unused argument; see report_t6.md).
+
+Since P3a-1 this file also owns the LOUDNESS gate for the three LIVE planes
 (`rad_net` / `rad_amb` / `rad_flux`), which widened to int64 with the whole
 path in one commit. A widening that misses one binding is worse than no
 widening: pybind11 would hand that binding a truncated int32 copy and the
-cast's heat would vanish with no error anywhere. The two tests at the bottom
-of this file make every one of the four bindings refuse a narrow plane.
+fold's heat would vanish with no error anywhere. The tests at the bottom of
+this file make each surviving binding refuse a narrow plane (T6 deletes the
+two that used to cover `Raycaster.cast_from_fire_plane` and its CUDA twin,
+since both are gone).
 
 Run:
     C:/Users/steen/anaconda3/python.exe -m pytest tests/test_radiation_sweep_shadow_wiring.py -q
@@ -51,8 +54,8 @@ from level_loader import load as load_level  # noqa: E402
 from simulation import Simulation, fire_fixed  # noqa: E402
 from simulation.materials import MAT_WOOD, MaterialTable  # noqa: E402
 
-INT32_LIMIT = 2 ** 31
-INT32_MAX = 2 ** 31 - 1
+# T6 (issue #12): INT32_LIMIT / INT32_MAX (the old int32-wrap bound and the
+# old rad_flux ceiling) are deleted along with the tests that read them.
 _SWEEP_PLANES = ("rad_net_sweep", "rad_flux_sweep", "rad_amb_sweep", "rad_fluence")
 
 
@@ -65,21 +68,15 @@ def _sweep_dials(sim):
 
 
 def _watch_physics(sim):
-    """Wrap the runner's step so every per-tick plane is read right after the
-    physics tail and before the conductor wipes it."""
+    """Wrap the runner's step so every per-tick sweep plane is read right
+    after the physics tail and before the conductor wipes it."""
     runner = sim.physics_runner
     orig = runner.step
-    seen = {"max_abs_rad_net": 0, "old_identity": [], "sweep_identity": [],
-            "sweep_nonzero_ticks": 0, "old_nonzero_ticks": 0,
+    seen = {"sweep_identity": [], "sweep_nonzero_ticks": 0,
             "fluence_min": None, "fluence_max": 0, "ticks": 0}
 
     def wrapped(gmap, sim_time, tick=0):
         out = orig(gmap, sim_time, tick=tick)
-        rn = gmap.rad_net.astype(np.int64)
-        ra = gmap.rad_amb.astype(np.int64)
-        seen["max_abs_rad_net"] = max(seen["max_abs_rad_net"], int(np.abs(rn).max()))
-        seen["old_identity"].append(int(rn.sum()) + int(ra.sum()))
-        seen["old_nonzero_ticks"] += int(bool(np.any(rn != 0)))
         s = (int(gmap.rad_net_sweep.sum()) + int(gmap.rad_flux_sweep.sum())
              + int(gmap.rad_amb_sweep.sum()))
         seen["sweep_identity"].append(s)
@@ -100,16 +97,25 @@ def _ambient_fluence_s16(sim):
     return 16 * ((e0 * 4096) >> 16)
 
 
-def test_ab_default_scenario_is_wrap_free_and_the_sweep_runs_every_tick():
+def test_ab_default_scenario_the_sweep_runs_every_tick_and_is_pure_ambient():
     """PROPERTY (design §3 condition (i), critique 3 §6c): over 40 ticks of the
-    A/B default scenario the old cast's pre-fold identity holds every tick (no
-    int32 cell wrapped), max|rad_net| < 2^31 is CHECKED and reported; the
-    shadow sweep's three-term identity holds every tick; and Φ is exactly the
-    ambient fluence 16·amb_m on every cell every tick (step 2b ran — and the
-    scene is radiatively inert, which is the FINDING this test records).
+    A/B default scenario the shadow sweep's three-term identity holds every
+    tick, and Phi is exactly the ambient fluence 16*amb_m on every cell every
+    tick (step 2b ran — and the scene is radiatively inert, which is the
+    FINDING this test records: its seeded fire delivers no heat, per
+    CLAUDE.md's "Starting a fire" row, so no thermal solid ever leaves
+    ambient).
 
-    BREAKS IF: the old cast wraps on the goldens' scene, step 2b is not wired
-    (Φ would be zero), or a sweep term stops being booked.
+    T6 (issue #12): this test used to ALSO check the old cast's own pre-fold
+    ledger identity (Sum rad_net + Sum rad_amb == 0) and its int32 wrap bound
+    side by side with the sweep, since both ran every tick during the
+    transition. The old cast (cast_fire_heat / Raycaster.cast_from_fire_plane)
+    is deleted, and that half of the test with it; the sweep-only property
+    here is unchanged by the deletion (the sweep never depended on the old
+    cast).
+
+    BREAKS IF: step 2b is not wired (Phi would be zero), or a sweep term
+    stops being booked.
     """
     sim = default_scenario_sim()
     seen = _watch_physics(sim)
@@ -117,16 +123,12 @@ def test_ab_default_scenario_is_wrap_free_and_the_sweep_runs_every_tick():
         sim.set_paused(False)
         sim.step()
     assert seen["ticks"] == 40
-    assert all(v == 0 for v in seen["old_identity"]), seen["old_identity"][:5]
-    assert seen["max_abs_rad_net"] < INT32_LIMIT
     assert all(v == 0 for v in seen["sweep_identity"]), seen["sweep_identity"][:5]
     amb = _ambient_fluence_s16(sim)
     assert seen["fluence_min"] == amb and seen["fluence_max"] == amb, (seen["fluence_min"], amb)
-    print(f"\nA/B default scenario, 40 ticks: max|rad_net| (old cast) = "
-          f"{seen['max_abs_rad_net']}; old cast non-zero on {seen['old_nonzero_ticks']}/40 "
-          f"ticks; sweep rad_net_sweep non-zero on {seen['sweep_nonzero_ticks']}/40 ticks; "
-          f"Phi == 16*amb_m == {amb} on every cell (the scene is radiatively inert; "
-          f"the wrap check here is exact but vacuous)")
+    print(f"\nA/B default scenario, 40 ticks: sweep rad_net_sweep non-zero on "
+          f"{seen['sweep_nonzero_ticks']}/40 ticks; Phi == 16*amb_m == {amb} on "
+          f"every cell (the scene is radiatively inert)")
 
 
 def _playground_with_a_hot_wood_tile():
@@ -155,11 +157,14 @@ def test_sweep_on_a_real_level_is_non_trivial_after_one_tick():
     """PROPERTY: on a shipped level, one physics tick after a wood tile is
     heated to the crate plateau (1263 game) and lit, the shadow sweep books a
     NEGATIVE rad_net_sweep on that tile (it radiates), a POSITIVE one on some
-    other cell (it absorbs), Φ exceeds the ambient fluence somewhere, and the
-    three-term identity is exact — read directly after PhysicsRunner.step,
-    before the conductor's wipe. The old cast is active on the same scene
-    (its rad_net is non-zero: the hot tile is above T_emit_gate), so the
-    old-law identity + max|rad_net| are checked NON-vacuously here too.
+    other cell (it absorbs), Phi exceeds the ambient fluence somewhere, and
+    the three-term identity is exact — read directly after PhysicsRunner.step,
+    before the conductor's wipe.
+
+    T6 (issue #12): this test used to ALSO check the old cast's own ledger
+    (its rad_net non-zero and its identity exact) NON-vacuously on this same
+    hot scene. The old cast (cast_fire_heat) is deleted, and that half with
+    it; the sweep-only property here is unchanged.
 
     BREAKS IF: the sweep is not wired into step_tail, reads the wrong
     temperature plane, or the extinction planes are not projected from the
@@ -189,14 +194,8 @@ def test_sweep_on_a_real_level_is_non_trivial_after_one_tick():
     assert int(rn.max()) > 0, "some cell must absorb (rad_net_sweep > 0)"
     assert int(rn.sum()) + int(rf.sum()) + int(ra.sum()) == 0
     assert np.all(g.rad_fluence > 0) and int(g.rad_fluence.max()) > amb
-    old_rn = g.rad_net.astype(np.int64)
-    old_ra = g.rad_amb.astype(np.int64)
-    assert np.any(old_rn != 0), "the old cast must be active on this scene"
-    assert int(old_rn.sum()) + int(old_ra.sum()) == 0
-    assert int(np.abs(old_rn).max()) < INT32_LIMIT
     print(f"\nplayground level: hot wood at ({y},{x}) rad_net_sweep={int(rn[y, x])}, "
-          f"max absorber {int(rn.max())}, sweep identity exact; old cast max|rad_net| = "
-          f"{int(np.abs(old_rn).max())}, old-law identity exact")
+          f"max absorber {int(rn.max())}, sweep identity exact")
 
 
 def test_shadow_planes_survive_the_tick_and_hold_the_sweep_s_own_values():
@@ -382,29 +381,30 @@ def test_the_three_live_planes_are_int64_and_the_engine_refuses_a_narrow_one():
     eng.step_tail(**common, rad_net=g.rad_net)
 
 
-def test_the_casts_and_the_fold_all_refuse_a_narrow_live_plane():
-    """PROPERTY (P3a-1, the OTHER three bindings on the widened path): the CPU
-    emission cast (`Raycaster.cast_from_fire_plane`), its CUDA twin
-    (`cuda_raycaster_cast_from_fire_plane`) and the direct fold binding
-    (`TemperatureSolver.step`) each refuse an int32 plane where an int64 one
-    is expected. Together with the test above that is ALL FOUR bindings that
-    touch these planes -- which is the point: one missed surface and
-    pybind11's forcecast makes the truncation invisible.
+def test_the_temperature_folds_direct_binding_refuses_a_narrow_rad_net():
+    """PROPERTY (P3a-1): the direct fold binding (`TemperatureSolver.step`)
+    refuses an int32 `rad_net` plane where an int64 one is expected.
 
-    The two by-value casts are made loud by `.noconvert()`; note that dropping
-    `forcecast` alone would NOT be loud, because pybind11's second (convert)
-    overload pass still performs the safe int32 -> int64 cast into a discarded
-    temporary (design row 36). `TemperatureSolver.step` is the py::object
-    idiom again and is loud by an explicit dtype check.
+    T6 (issue #12): this test used to also cover the OTHER three widened
+    bindings — the CPU emission cast (`Raycaster.cast_from_fire_plane`), its
+    CUDA twin (`cuda_raycaster_cast_from_fire_plane`), and the sweep-plane
+    coverage in the test above (`step_tail`'s `rad_net_sweep` et al.) — under
+    the framing "together, ALL FOUR bindings that touch these planes". The
+    old cast's two bindings are deleted with it; `step_tail`'s coverage lives
+    on in the test above (`test_the_three_live_planes_are_int64_and_the_
+    engine_refuses_a_narrow_one`). This is the one survivor of the original
+    four, renamed to say so.
 
-    BREAKS IF: any of those three bindings loses its noconvert / dtype check,
-    or a plane argument is widened back down.
+    `TemperatureSolver.step` is the py::object idiom (`.noconvert()` is inert
+    on a `py::object` argument) and is loud by an explicit dtype check.
+
+    BREAKS IF: `TemperatureSolver.step` loses its `rad_net` dtype check, or
+    the plane argument is widened back down.
     """
     sim = default_scenario_sim()
     g = sim.gmap
     narrow = np.zeros(g.temperature.shape, dtype=np.int32)
 
-    # --- the fold's direct binding -------------------------------------
     solver = bp.TemperatureSolver()
     wide = np.zeros(g.temperature.shape, dtype=np.int64)
     with pytest.raises(TypeError):
@@ -414,92 +414,6 @@ def test_the_casts_and_the_fold_all_refuse_a_narrow_live_plane():
     solver.step(g.temperature.copy(), g.heat, g.heat_inv_shift, g.face_shift,
                 g.solid, g.is_vacuum, g.atmosphere,
                 thermal_solid=g.thermal_solid, rad_net=wide)   # NON-VACUITY
-
-    # --- the CPU emission cast ------------------------------------------
-    ray = sim.physics_runner.raycaster
-    cast_args = dict(
-        fire=np.zeros(g.temperature.shape, dtype=np.int32),
-        fire_ray_count=8, range_base=1.0, range_per_intensity=1.0,
-        intensity_base=1.0, intensity_per_intensity=1.0, color=[1.0, 1.0, 1.0],
-        light_rgb=None, light_dx=None, light_dy=None,
-        gas=np.zeros((1,) + g.temperature.shape, dtype=np.float32),
-        gas_absorption=np.zeros((1, 3), dtype=np.float32),
-        gas_scatter=np.zeros((1, 3), dtype=np.float32),
-        light_atten=np.zeros(g.temperature.shape + (3,), dtype=np.float32),
-        heat_atten=np.zeros(g.temperature.shape, dtype=np.float32),
-        temperature=g.temperature, heat_inv_shift=g.heat_inv_shift,
-        thermal_solid=g.thermal_solid, tick=0)
-    for narrowed in ("rad_net", "rad_amb", "rad_flux"):
-        planes = {n: (narrow if n == narrowed else getattr(g, n))
-                  for n in ("rad_net", "rad_amb", "rad_flux")}
-        with pytest.raises(TypeError):
-            ray.cast_from_fire_plane(**cast_args, **planes)
-    # NON-VACUITY: all three wide -> the overload resolves and the cast runs.
-    ray.cast_from_fire_plane(**cast_args, rad_net=g.rad_net, rad_amb=g.rad_amb,
-                             rad_flux=g.rad_flux)
-
-    # --- the CUDA twin's binding (a HOST-side dtype refusal: the overload
-    # never resolves, so no device is touched and this runs on any box) ---
-    if hasattr(bp, "cuda_raycaster_cast_from_fire_plane"):
-        for narrowed in ("rad_net", "rad_amb", "rad_flux"):
-            planes = {n: (narrow if n == narrowed else getattr(g, n))
-                      for n in ("rad_net", "rad_amb", "rad_flux")}
-            with pytest.raises(TypeError):
-                bp.cuda_raycaster_cast_from_fire_plane(raycaster=ray, **cast_args, **planes)
-        # NON-VACUITY is the CPU cast's above: this binding shares the arg
-        # spec, and actually RUNNING it would need a device. The refusal here
-        # is host-side overload resolution -- it never reaches the GPU.
-
-
-@pytest.mark.xfail(strict=True, reason=(
-    "the OLD cast's flux-sensor ceiling: dead since the flip (units read "
-    "rad_flux_sweep); its scene reached the cap only via the 2^16 H_bed "
-    "deposit, gone at M3 (report_m3.md finding 6). T6 deletes the cast and "
-    "this test with it."))
-def test_the_flux_sensor_ceiling_did_not_move_with_the_width():
-    """PROPERTY (ray-engine-v2 P3a-1): widening `rad_flux` to int64 did NOT
-    lift its saturation ceiling. It stays at INT32_MAX
-    (`raycaster.h::RAD_FLUX_CEILING`), because that number is not an overflow
-    guard -- it is a CAP ON UNIT HEAT DAMAGE, and it BINDS IN ORDINARY PLAY.
-
-    Measured at P3a-1 on this very scene under the full conductor: the cap
-    engages from tick 12 (with the level only at 2740 game), on 38 of 120
-    ticks and as many as 249 cells at once; un-capped the peak reaches 459 %
-    of it. So lifting it makes fires meaningfully more lethal in hot rooms --
-    a FEEL change (CLAUDE.md: feel-adjacent changes never auto-merge), and
-    P3a-1 is a behaviour-neutral widening.
-
-    This test is the tripwire that makes lifting it DELIBERATE. If a later
-    patch decides the cap should go (report_p3a1.md section 6, finding 3, is
-    the open question), it changes RAD_FLUX_CEILING *and this test*, with
-    Erik in the loop -- rather than discovering months later that unit burn
-    damage moved because a storage width did.
-
-    BREAKS IF: RAD_FLUX_CEILING is raised (intended -> re-rule this test), or
-    the sensor stops saturating at all.
-    """
-    sim, (y, x) = _playground_with_a_hot_wood_tile()
-    g = sim.gmap
-    g.stamp_units(sim.units)
-    sim.paused = False
-    assert g.rad_flux.dtype == np.int64, "the plane is wide"
-
-    seen_cap = 0
-    for tick in range(24):
-        sim.physics_runner.step(g, 1.0 / 24.0, tick=tick)
-        peak = int(g.rad_flux.max())
-        # NEVER above the ceiling, however hot the scene gets ...
-        assert peak <= INT32_MAX, (tick, peak)
-        seen_cap += int((g.rad_flux == INT32_MAX).sum())
-        g.rad_flux.fill(0)          # the conductor's end-of-tick wipe
-
-    # ... and NON-VACUOUSLY so: this scene actually reaches it, so the
-    # assertion above is testing the clamp and not an absence of flux.
-    assert seen_cap > 0, (
-        "the cap never engaged -- this scene no longer proves the ceiling "
-        "holds; find a hotter one before trusting this test")
-    print(f"\nrad_flux ceiling held: {seen_cap} capped cell-ticks over 24 ticks "
-          f"at INT32_MAX ({INT32_MAX / 65536:.0f} game)")
 
 
 if __name__ == "__main__":
