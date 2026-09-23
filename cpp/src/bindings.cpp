@@ -30,6 +30,7 @@
 #include "cuda_eos_step.h"     // EOS P6.5: chained full-eos.step dispatch predicate
 #include "cuda_eos_resident.h" // S8a Path A: resident EOS telemetry + build parity
 #include "cuda_combustion.h"   // EOS P6.9b: GPU two-gather combustion + backend flag
+#include "cuda_radiation_sweep.h"  // ray-engine-v2 P4: the sweep's CUDA twin + backend flag
 // CUDA-S5 cuda_wave.h / CUDA-S7 cuda_atmosphere.h RETIRED in EOS P6.0 — the
 // wave+diffuse solvers they mirrored were replaced by the compressible EOS
 // solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
@@ -603,6 +604,204 @@ PYBIND11_MODULE(breach_physics, m) {
     m.def("get_raycaster_backend",
           []() { return breach_cuda::raycaster_backend_is_cuda(); },
           "Vestigial since T6 (issue #12) -- see set_raycaster_backend.");
+
+    // ---- ray-engine-v2 P4: the radiation sweep's CUDA twin -----------------
+    // The backend flag switches PhysicsEngine::step_tail's step 2b between
+    // RadiationSweep::run and breach_cuda::radiation_sweep_step (the live CPU
+    // fallback stays). cuda_radiation_sweep_run is the ISOLATED per-call
+    // entry for the tol-0 gate: RadiationSweep.run's arguments in
+    // RadiationSweep.run's order (so a gate can drive either with one call
+    // shape), plus the ambient's second door (is_vacuum + vac_level, the twin
+    // of derive_ambient) and an optional Fleck-plane out-array. Returns
+    // (min_stream, max_stream, launches). Planes are c_style WITHOUT forcecast
+    // and noconvert, as on RadiationSweep.run; the three py::object planes are
+    // dtype-CHECKED (noconvert cannot make a py::object loud).
+    m.def("set_radiation_backend",
+          [](bool use_cuda) { breach_cuda::set_radiation_backend_cuda(use_cuda); },
+          py::arg("use_cuda"),
+          "Switch PhysicsEngine's radiation sweep (step 2b of step_tail) to the "
+          "GPU twin (True) or RadiationSweep.run (False).");
+    m.def("get_radiation_backend",
+          []() { return breach_cuda::radiation_backend_is_cuda(); },
+          "True if the radiation sweep currently runs on the GPU.");
+    m.def("radiation_sweep_cuda_calls",
+          []() { return breach_cuda::radiation_sweep_cuda_calls(); },
+          "How many GPU sweeps (radiation_sweep_step) have completed in this "
+          "process — the P4 gate's dispatch-fired telemetry.");
+    // The launch core's per-env counter block layout (cuda_resident.h), so a
+    // caller of cuda_radiation_sweep_resident reads the slots by name from
+    // the ONE definition rather than re-typing indices.
+    m.attr("RADIATION_SWEEP_CNT_SLOTS") = breach_cuda::RADIATION_SWEEP_CNT_SLOTS;
+    m.attr("RS_SLOT_BAD_EXTINCTION")    = breach_cuda::RS_SLOT_BAD_EXTINCTION;
+    m.attr("RS_SLOT_BAD_AMBIENT")       = breach_cuda::RS_SLOT_BAD_AMBIENT;
+    m.attr("RS_SLOT_BAD_SCALARS")       = breach_cuda::RS_SLOT_BAD_SCALARS;
+    m.attr("RS_SLOT_MIN_STREAM")        = breach_cuda::RS_SLOT_MIN_STREAM;
+    m.attr("RS_SLOT_MAX_STREAM")        = breach_cuda::RS_SLOT_MAX_STREAM;
+    m.def("cuda_radiation_sweep_launch_count",
+          [](int transport, int n_ordinates, int h, int w) {
+              return breach_cuda::radiation_sweep_launch_count(
+                  transport, n_ordinates, h, w);
+          },
+          py::arg("transport"), py::arg("n_ordinates"), py::arg("h"), py::arg("w"),
+          "Kernel launches one sweep of this shape issues (3 bookkeeping + one "
+          "per wavefront index; design v3 section 10). -1 if unsupported.");
+    m.def("cuda_radiation_sweep_run",
+          [](py::array_t<int32_t, py::array::c_style> temperature,
+             py::array_t<int32_t, py::array::c_style> heat_atten_q,
+             py::array_t<int32_t, py::array::c_style> dyn_heat_atten_q,
+             py::array_t<int32_t, py::array::c_style> heat_inv_shift,
+             py::array_t<bool,    py::array::c_style> thermal_solid,
+             const EmissiveTable& e_table,
+             py::object amb_level,
+             int32_t t_amb_q, int32_t k_leak_q,
+             int transport, int n_ordinates,
+             py::array_t<int64_t, py::array::c_style> rad_net,
+             py::array_t<int64_t, py::array::c_style> rad_flux,
+             py::array_t<int64_t, py::array::c_style> rad_amb,
+             py::array_t<int64_t, py::array::c_style> rad_fluence,
+             bool fleck_enabled,
+             py::object is_vacuum, int64_t vac_level,
+             py::object fleck_out) -> py::tuple {
+              auto [T, h, w]      = get_2d_const(temperature);
+              auto [aq, h2, w2]   = get_2d_const(heat_atten_q);
+              auto [dq, h3, w3]   = get_2d_const(dyn_heat_atten_q);
+              auto [his, h4, w4]  = get_2d_const(heat_inv_shift);
+              auto [ts, h5, w5]   = get_2d_const(thermal_solid);
+              auto [rn, h6, w6]   = get_2d(rad_net);
+              auto [rf, h7, w7]   = get_2d(rad_flux);
+              auto [ra, h8, w8]   = get_2d(rad_amb);
+              auto [rl, h9, w9]   = get_2d(rad_fluence);
+              if (h2 != h || w2 != w || h3 != h || w3 != w || h4 != h || w4 != w ||
+                  h5 != h || w5 != w || h6 != h || w6 != w || h7 != h || w7 != w ||
+                  h8 != h || w8 != w || h9 != h || w9 != w) {
+                  throw py::value_error(
+                      "cuda_radiation_sweep_run: every plane must be (h, w)");
+              }
+              // The three optional planes: dtype and shape CHECKED, never
+              // converted (a converted copy would be a silently different
+              // input, or a discarded output).
+              const int64_t* amb = nullptr;
+              py::array_t<int64_t, py::array::c_style> amb_arr;
+              if (!amb_level.is_none()) {
+                  if (!py::isinstance<py::array_t<int64_t>>(amb_level))
+                      throw py::type_error(
+                          "cuda_radiation_sweep_run: amb_level must be an int64 "
+                          "(h, w) array or None");
+                  amb_arr = amb_level.cast<py::array_t<int64_t, py::array::c_style>>();
+                  auto [ap, ha, wa] = get_2d_const(amb_arr);
+                  if (ha != h || wa != w)
+                      throw py::value_error(
+                          "cuda_radiation_sweep_run: amb_level must be (h, w)");
+                  amb = ap;
+              }
+              const bool* vac = nullptr;
+              py::array_t<bool, py::array::c_style> vac_arr;
+              if (!is_vacuum.is_none()) {
+                  if (!py::isinstance<py::array_t<bool>>(is_vacuum))
+                      throw py::type_error(
+                          "cuda_radiation_sweep_run: is_vacuum must be a bool "
+                          "(h, w) array or None");
+                  vac_arr = is_vacuum.cast<py::array_t<bool, py::array::c_style>>();
+                  auto [vp, hv, wv] = get_2d_const(vac_arr);
+                  if (hv != h || wv != w)
+                      throw py::value_error(
+                          "cuda_radiation_sweep_run: is_vacuum must be (h, w)");
+                  vac = vp;
+              }
+              int32_t* fo = nullptr;
+              py::array_t<int32_t, py::array::c_style> fo_arr;
+              if (!fleck_out.is_none()) {
+                  if (!py::isinstance<py::array_t<int32_t>>(fleck_out))
+                      throw py::type_error(
+                          "cuda_radiation_sweep_run: fleck_out must be an int32 "
+                          "(h, w) array or None");
+                  fo_arr = fleck_out.cast<py::array_t<int32_t, py::array::c_style>>();
+                  auto [fp, hf, wf] = get_2d(fo_arr);
+                  if (hf != h || wf != w)
+                      throw py::value_error(
+                          "cuda_radiation_sweep_run: fleck_out must be (h, w)");
+                  fo = fp;
+              }
+              int64_t s_min = 0, s_max = 0;
+              const int launches = breach_cuda::radiation_sweep_step(
+                  T, aq, dq, his, ts, e_table.table(), amb, vac, vac_level,
+                  t_amb_q, k_leak_q, transport, n_ordinates, h, w,
+                  rn, rf, ra, rl, fleck_enabled, fo, &s_min, &s_max);
+              return py::make_tuple(s_min, s_max, launches);
+          },
+          py::arg("temperature").noconvert(), py::arg("heat_atten_q").noconvert(),
+          py::arg("dyn_heat_atten_q").noconvert(), py::arg("heat_inv_shift").noconvert(),
+          py::arg("thermal_solid").noconvert(), py::arg("e_table"),
+          py::arg("amb_level"),
+          py::arg("t_amb_q"), py::arg("k_leak_q"),
+          py::arg("transport"), py::arg("n_ordinates"),
+          py::arg("rad_net").noconvert(), py::arg("rad_flux").noconvert(),
+          py::arg("rad_amb").noconvert(), py::arg("rad_fluence").noconvert(),
+          py::arg("fleck_enabled") = true,
+          py::arg("is_vacuum") = py::none(), py::arg("vac_level") = (int64_t)-1,
+          py::arg("fleck_out") = py::none(),
+          "P4 isolated: ONE radiation sweep on the GPU (the per-call path "
+          "PhysicsEngine.step_tail dispatches), bit-identical to "
+          "RadiationSweep.run on the same arguments. amb_level None + is_vacuum "
+          "None is the uniform E0 door; amb_level None + is_vacuum given DERIVES "
+          "the ambient on the device (derive_ambient's twin). Overwrites the four "
+          "int64 planes (untouched on an ingress rejection, which raises "
+          "ValueError). Returns (min_stream, max_stream, launches).");
+    m.def("cuda_radiation_sweep_resident",
+          [](int n_env, int h, int w,
+             std::uintptr_t d_temperature, std::uintptr_t d_heat_atten_q,
+             std::uintptr_t d_dyn_heat_atten_q, std::uintptr_t d_heat_inv_shift,
+             std::uintptr_t d_thermal_solid,
+             std::uintptr_t d_amb_level, std::uintptr_t d_is_vacuum,
+             std::uintptr_t d_e_table,
+             std::uintptr_t d_vac_level, std::uintptr_t d_k_leak_q,
+             std::uintptr_t d_t_amb_q,
+             int transport, int n_ordinates, bool fleck_enabled,
+             std::uintptr_t d_outflow, std::uintptr_t d_amb_m,
+             std::uintptr_t d_ex_cell, std::uintptr_t d_f_q24,
+             std::uintptr_t d_rad_net, std::uintptr_t d_rad_flux,
+             std::uintptr_t d_rad_amb, std::uintptr_t d_rad_fluence,
+             std::uintptr_t d_cnt) {
+              return breach_cuda::radiation_sweep_launch_resident(
+                  n_env, h, w,
+                  reinterpret_cast<const int32_t*>(d_temperature),
+                  reinterpret_cast<const int32_t*>(d_heat_atten_q),
+                  reinterpret_cast<const int32_t*>(d_dyn_heat_atten_q),
+                  reinterpret_cast<const int32_t*>(d_heat_inv_shift),
+                  reinterpret_cast<const bool*>(d_thermal_solid),
+                  reinterpret_cast<const int64_t*>(d_amb_level),
+                  reinterpret_cast<const bool*>(d_is_vacuum),
+                  reinterpret_cast<const int64_t*>(d_e_table),
+                  reinterpret_cast<const int64_t*>(d_vac_level),
+                  reinterpret_cast<const int32_t*>(d_k_leak_q),
+                  reinterpret_cast<const int32_t*>(d_t_amb_q),
+                  transport, n_ordinates, fleck_enabled,
+                  reinterpret_cast<int64_t*>(d_outflow),
+                  reinterpret_cast<int64_t*>(d_amb_m),
+                  reinterpret_cast<int64_t*>(d_ex_cell),
+                  reinterpret_cast<int32_t*>(d_f_q24),
+                  reinterpret_cast<int64_t*>(d_rad_net),
+                  reinterpret_cast<int64_t*>(d_rad_flux),
+                  reinterpret_cast<int64_t*>(d_rad_amb),
+                  reinterpret_cast<int64_t*>(d_rad_fluence),
+                  reinterpret_cast<int64_t*>(d_cnt));
+          },
+          py::arg("n_env"), py::arg("h"), py::arg("w"),
+          py::arg("d_temperature"), py::arg("d_heat_atten_q"),
+          py::arg("d_dyn_heat_atten_q"), py::arg("d_heat_inv_shift"),
+          py::arg("d_thermal_solid"), py::arg("d_amb_level"), py::arg("d_is_vacuum"),
+          py::arg("d_e_table"), py::arg("d_vac_level"), py::arg("d_k_leak_q"),
+          py::arg("d_t_amb_q"),
+          py::arg("transport"), py::arg("n_ordinates"), py::arg("fleck_enabled"),
+          py::arg("d_outflow"), py::arg("d_amb_m"), py::arg("d_ex_cell"),
+          py::arg("d_f_q24"),
+          py::arg("d_rad_net"), py::arg("d_rad_flux"), py::arg("d_rad_amb"),
+          py::arg("d_rad_fluence"), py::arg("d_cnt"),
+          "P4 (TEST/BENCH): the sweep's LAUNCH CORE on raw device pointers "
+          "(CuPy .data.ptr uintptr_t; 0 == nullptr for d_amb_level/d_is_vacuum), "
+          "(N, h, w)-shaped. Launch only: no malloc, no transfer, no sync — the "
+          "caller synchronizes and reads the (N, 5) counter block. Returns the "
+          "launch count.");
 
     // CUDA-S3: the GPU water solver. The backend flag switches PhysicsEngine::
     // step_water's per-substep call between the CPU and GPU pipe-model solver

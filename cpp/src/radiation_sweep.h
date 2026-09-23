@@ -39,7 +39,9 @@
 // the four int64 planes rad_net_sweep / rad_flux_sweep / rad_amb_sweep /
 // rad_fluence. The temperature fold reads rad_net_sweep, the Pass-1
 // maximum-principle clamp reads rad_fluence, and units absorb from
-// rad_flux_sweep. Host-side on both backends until P4 adds its CUDA twin.
+// rad_flux_sweep. Since P4 the radiation backend flag (set_radiation_backend)
+// runs its CUDA twin instead (cuda_radiation_sweep.h), held to this class at
+// tol 0 by tests/cuda_radiation_sweep_check.py.
 
 #include <cstdint>
 #include <vector>
@@ -167,8 +169,8 @@ public:
     //                     a hotter-than-room ambient would make a cell's
     //                     excess negative, which the excess-form Fleck factor
     //                     and positivity both rest on being >= 0).
-    // P4's CUDA twin does the same select per cell from the resident
-    // `is_vacuum` plane and two scalars — no plane is uploaded.
+    // P4's CUDA twin does the same select per cell from the `is_vacuum` plane
+    // and two scalars inside its pre-pass — no ambient plane is uploaded.
     const int64_t* derive_ambient(const bool* is_vacuum, const int64_t* e_table,
                                   int64_t vac_level, int n) const;
 
@@ -183,7 +185,21 @@ public:
     mutable int64_t min_stream = 0;
     mutable int64_t max_stream = 0;
 
+    // THE TWIN'S DOOR (P4). When PhysicsEngine::step_tail runs the sweep on
+    // the GPU (cuda_radiation_sweep.h), this object's observable state must
+    // still be that sweep's — fleck_plane(), last_h()/last_w() and
+    // min_stream/max_stream read the same whichever backend ran (the tree's
+    // backend-agnostic telemetry idiom, as t_max_phys_hits). This sizes the
+    // scratch EXACTLY as run() does for (h, w, n_ordinates) and returns the
+    // Fleck plane's storage for the twin to write into; the caller assigns
+    // min_stream/max_stream. run() never calls it.
+    int32_t* fleck_plane_for_twin(int h, int w, int n_ordinates) const;
+
 private:
+    // The scratch sizing both run() and fleck_plane_for_twin() use — ONE rule
+    // for when (h_, w_, n_ord_) describe every buffer below.
+    void size_scratch_(int h, int w, int n_ordinates) const;
+
     // Scratch, keyed by (n_ordinates, h, w), reallocated on change. The stored
     // outflow carries one plane per ordinate — the shape the concurrent CUDA
     // twin needs (design §8.2, row 29) — even though the CPU runs them one

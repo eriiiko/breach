@@ -104,7 +104,12 @@ if(BREACH_CUDA)
         src/cuda_mg_solve.cu       # EOS P6.3 multigrid pressure solve (RB-GS + fused tail)
         src/cuda_eos_step.cu       # EOS P6.5 chained full-eos.step dispatch (the big flip)
         src/cuda_eos_resident.cu   # S8a Path A: fully device-resident EOS tick + device MG build
-        src/cuda_combustion.cu)    # EOS P6.9b two-gather combustion (closes P6)
+        src/cuda_combustion.cu     # EOS P6.9b two-gather combustion (closes P6)
+        # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
+        # pure integer; it takes the target-wide determinism device flags
+        # below (--fmad=false, no fast math, the strict host floor) like
+        # every other .cu, which is all an integer kernel needs.
+        src/cuda_radiation_sweep.cu)
     # S5 cuda_wave.cu / S7 cuda_atmosphere.cu RETIRED in EOS P6.0 — their CPU
     # solvers (wave_substep / diffuse_solve) were replaced by the compressible
     # EOS solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
