@@ -11,6 +11,16 @@ they inherit the attributes of the individual they infect - a strong person will
 
 Same also holds true for equipment, zombified heavily armored soldiers will be very tough to down.
 
+**Larva-infested zombie** (Erik's idea, 2026-09-24): a zombie carrying larvae
+inside it. Kill it and it bursts, releasing a brood, perhaps hundreds of larvae,
+at the spot where it died. Killing it solves one problem and creates a swarm.
+Builds on arc #63 (swarm units): the death event would call the same spawn path
+that a placed `swarm_brood` uses (patch P4), so the zombie is effectively a
+walking brood. Open questions for its own design pass: is the infestation
+visible before the kill (a readable warning, e.g. a swollen or twitching body)?
+Does fire kill the larvae inside, so burning the zombie is the clean answer?
+Does it spread (larvae re-infecting corpses)? Not in #63's scope.
+
 i think i wrote some etries of monsters or beasts in claude ai, those conversations have now been dreamt by the egregore - perhaps we can try to extract all of htem into this document.
 
 
