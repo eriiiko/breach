@@ -6,8 +6,31 @@
 
 ## 1. What landed
 
-_pending_ — change 1 (derived `H_bed`, and how `_o2_potency` resolved);
-change 2 (the integer reference bakes at `rad_scale_derived`).
+**Change 1 — `H_bed` derived** (`ccc1da7`). `H_BED_M` 19827 → **38.73**,
+`H_BED_SHIFT` 7 → **0**. Heat counts per RAW count of O₂ burned =
+0.25 (Drysdale) × 13.1 MJ/kg (Huggett) × 0.36878 kg/65536 ÷ 0.4759 J = 38.73
+(`V_tile` cancels). **`_o2_potency` resolved: it is 1.0 and folds into the
+mantissa**, so the config value IS the solver value; measured on the live
+`CombustionSolver.step`, 38.7274 vs the long-form 38.7443 (0.04 %).
+
+**Change 2 — the reference guards the sweep's scale** (`ea2e3ef`).
+`config_dials_match()` now compares `RAD_SCALE_LIVE` with `[physics.radiation]
+rad_scale_derived`; `E_LIVE` is baked at it; G12 measures the shipped rows and
+its Q16 control on `E_LIVE` (0 backward steps on every row; control 14) and
+keeps its pathological-corner mechanism on the resolving table P0b built it on.
+Oracle: full and fast gate output byte-identical to the tip's except the config
+line, one table line and G12. **ALL GATES PASS.**
+
+**Deviation from the brief, measured — Erik's call (§6).** The brief moves the
+reference's *default* table to the live scale, "gate 0 and the harness family
+unaffected". Done literally, **115 tests go red**: gate 0 ×96, G4/G5/G10/G12
+and their C++ twins, the frozen scalar-era digest, ambient-plane item 3, M1's
+exponent test, the i64 table-top chain, `test_emissive_table` — every one a
+non-vacuity pair (no f < 2²⁴, a clamp that never binds, a 9600-tick equilibrium
+that does not converge). **None is an arithmetic disagreement**: C++ equals the
+reference bit for bit at the live scale. The default therefore stays a
+*resolving* scale, now documented as that and read from nowhere; moving it means
+re-plumbing every arithmetic gate to name its scale — a third change.
 
 ## 2. The red list, before and after
 
