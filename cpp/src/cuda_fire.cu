@@ -71,6 +71,7 @@
 #include "cuda_fire.h"
 #include "fixed_point.h"   // q16, quantize, mul_q16, mul_wide, narrow_round, FP_ONE, FP_SHIFT, make_recip, mean_round
 #include "cuda_fixedpoint_device.cuh"  // sqrt_q16_dev, recip_mul_dev (S6 §2 shared kit)
+#include "o2_pressure_factor.h"        // issue #7: the SAME FP_HD g(p) the CPU step calls
 
 #include <cuda_runtime.h>
 
@@ -137,6 +138,7 @@ __device__ __forceinline__ q16 clamp0cap_q_dev(q16 v, q16 cap) {
 // mul_q16 tree, clamps, and snap-extinguishes below I_min. Own-cell write to fire.
 // All scalar dials arrive as host-precomputed Q16.16 / make_recip args.
 __global__ void fire_logistic(int32_t* __restrict__ fire,
+                              const int32_t* __restrict__ atmosphere,  // #7 (nullable)
                               const int32_t* __restrict__ n_o2,
                               const int32_t* __restrict__ n_total,
                               const int32_t* __restrict__ wall_hp,
@@ -156,8 +158,10 @@ __global__ void fire_logistic(int32_t* __restrict__ fire,
                               bool temp_is_identity, int64_t recip_temp_scale,
                               int64_t recip_fuel_ref, int64_t recip_T_span,
                               int64_t recip_x_span, bool x_degenerate,
-                              int32_t o2f_cap_q) {                    // R1
+                              int32_t o2f_cap_q,                      // R1
+                              o2_pressure::Factor pf) {               // #7
     const int n = h * w;
+    const bool p_on = (atmosphere != nullptr);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         if (!flammable[i]) continue;        // only fuel burns
@@ -181,8 +185,12 @@ __global__ void fire_logistic(int32_t* __restrict__ fire,
         // X: local O2 MOLE FRACTION over OPEN (non-solid, non-vacuum)
         // 4-neighbours — continuous-O2 law (design §2.1). Both sums int64,
         // exact, order-free. No open nbr -> both sums 0 -> den floors -> X = 0.
+        // Issue #7 (VERBATIM the CPU gather): the same loop and predicate also
+        // sum the materialized pressure and count the open neighbours.
         int64_t sum_o2 = 0;
         int64_t sum_tot = 0;
+        int64_t sum_p = 0;
+        int64_t n_open = 0;
         for (int d = 0; d < 4; ++d) {
             const int ny = y + D4_dy[d], nx = x + D4_dx[d];
             if (ny >= 0 && ny < h && nx >= 0 && nx < w) {
@@ -190,6 +198,8 @@ __global__ void fire_logistic(int32_t* __restrict__ fire,
                 if (!is_wall[ni] && !is_vacuum[ni]) {
                     sum_o2  += (int64_t)n_o2[ni];      // exact, order-free
                     sum_tot += (int64_t)n_total[ni];   // exact, order-free
+                    if (p_on) sum_p += (int64_t)atmosphere[ni];   // exact, order-free
+                    ++n_open;
                 }
             }
         }
@@ -215,7 +225,13 @@ __global__ void fire_logistic(int32_t* __restrict__ fire,
         const q16 o2f = x_degenerate
             ? ((X < x_ext_q) ? (q16)0 : o2f_cap_q)
             : clamp0cap_q_dev(recip_mul_dev(X - x_ext_q, recip_x_span), o2f_cap_q);
-        const q16 avail = mul_q16(F, o2f);
+        // THE PRESSURE FACTOR (issue #7) — VERBATIM the CPU step: g of the
+        // open-neighbour mean pressure, through the SAME FP_HD
+        // o2_pressure::factor, folded into o2f by ONE mul_q16.
+        const q16 p_nbr = p_on ? mean_round(sum_p, n_open) : (q16)0;
+        const q16 g = p_on ? o2_pressure::factor(pf, p_nbr) : (q16)FP_ONE;
+        const q16 o2f_p = mul_q16(o2f, g);
+        const q16 avail = mul_q16(F, o2f_p);
 
         // THE CAPACITY LAW (P-R3, ruling A3) — VERBATIM the CPU sequence
         // (fire_simulation.cpp): the capacity factor is the SIGNED
@@ -348,11 +364,10 @@ std::vector<std::pair<int, int>> fire_step(
                                           // + the new enrichment-ceiling dial
     float hotf_cap,                      // R3 (see header): the hotf ramp's ceiling
     const int64_t* fuel_recip,           // FUEL-FRACTION AXIS (nullable, see header)
-    const int32_t* fire_T_ext_plane) {   // PER-MATERIAL T_ext (nullable, see header)
-    (void)atmosphere;   // EOS P4: vestigial — the CPU step keeps it in its
-                        // signature (ABI parity) but no longer reads it (the O2
-                        // gate moved to n_o2; the plume that once self-limited
-                        // against it is deleted, P-R2).
+    const int32_t* fire_T_ext_plane,     // PER-MATERIAL T_ext (nullable, see header)
+    int32_t p_ext_q, int32_t p_full_q) { // #7 PRESSURE FACTOR edges (see header)
+    // `atmosphere` is READ again since issue #7: the pressure factor's input
+    // (it was vestigial from EOS P4 until then). Uploaded below when non-null.
     const int n = h * w;
     if (n <= 0) return {};
 
@@ -405,6 +420,9 @@ std::vector<std::pair<int, int>> fire_step(
     // ceiling, VERBATIM the CPU's hotf_cap_q load-time bake.
     const q16 hotf_cap_q           = quantize((double)hotf_cap);
     const q16 X_N_FLOOR             = quantize(0.01);   // 655 counts, SAME as CPU
+    // THE PRESSURE FACTOR (issue #7): the span reciprocal baked on the HOST by
+    // the SAME o2_pressure::bake the CPU step calls (integer reciprocal_q16).
+    const o2_pressure::Factor pf    = o2_pressure::bake(p_ext_q, p_full_q);
 
     // ---- Device buffers (the 4 mutated fields + read-only fields/masks + the
     //      destroyed counter/index array). Per-call H2D/D2H; residency is S8. ----
@@ -423,6 +441,9 @@ std::vector<std::pair<int, int>> fire_step(
     // (P-R3, ruling A3 ride-along) rides the identical idiom, one plane over.
     int64_t *d_fuel_recip = nullptr;
     int32_t *d_T_ext_plane = nullptr;
+    // #7: the materialized pressure plane, the pressure factor's input — the
+    // same nullable idiom (nullptr host -> nullptr device -> g == FP_ONE).
+    int32_t *d_atm = nullptr;
 
     cuda_check(cudaMalloc(&d_fire, nb), "malloc fire");
     cuda_check(cudaMalloc(&d_n_o2, nb), "malloc n_o2");
@@ -463,6 +484,11 @@ std::vector<std::pair<int, int>> fire_step(
         cuda_check(cudaMemcpy(d_T_ext_plane, fire_T_ext_plane, nb,
                               cudaMemcpyHostToDevice), "H2D fire_T_ext_plane");
     }
+    if (atmosphere) {
+        cuda_check(cudaMalloc(&d_atm, nb), "malloc atmosphere");
+        cuda_check(cudaMemcpy(d_atm, atmosphere, nb,
+                              cudaMemcpyHostToDevice), "H2D atmosphere");
+    }
 
     const int block = 256;
     const int grid = (n + block - 1) / block;
@@ -470,11 +496,12 @@ std::vector<std::pair<int, int>> fire_step(
     // P2 logistic feedback (in-place on d_fire; O2 gate reads d_n_o2 neighbour
     // mean; reads wall_hp/temp/wind/masks).
     fire_logistic<<<grid, block>>>(
-        d_fire, d_n_o2, d_n_total, d_whp, d_temp, d_wx, d_wy, d_wall, d_vac,
+        d_fire, d_atm, d_n_o2, d_n_total, d_whp, d_temp, d_wx, d_wy, d_wall, d_vac,
         d_flam, d_fuel_recip, d_T_ext_plane, h, w,
         dt_q, k_grow_q, k_die_q, k_wind_fan_q, k_wind_strip_q, fire_T_ext_q,
         x_ext_q, X_N_FLOOR, I_min_q, INV_C, temp_is_identity, recip_temp_scale,
-        recip_fuel_ref, recip_T_span, recip_x_span, x_degenerate, o2f_cap_q);
+        recip_fuel_ref, recip_T_span, recip_x_span, x_degenerate, o2f_cap_q,
+        pf);
     cuda_check(cudaGetLastError(), "logistic launch");
 
     // P4 smoke emission scatter DELETED (P-S1) — see the file header.
@@ -498,8 +525,8 @@ std::vector<std::pair<int, int>> fire_step(
     cuda_check(cudaDeviceSynchronize(), "sync");
 
     // D2H the 4 mutated fields (fire, smoke, wall_hp, temperature). n_o2/wind/masks
-    // are read-only — not copied back. (atmosphere is now read-only + vestigial —
-    // never uploaded, never returned.)
+    // are read-only — not copied back. (atmosphere is read-only — uploaded for
+    // the #7 pressure factor, never returned.)
     cuda_check(cudaMemcpy(fire, d_fire, nb, cudaMemcpyDeviceToHost), "D2H fire");
     cuda_check(cudaMemcpy(smoke, d_smoke, nb, cudaMemcpyDeviceToHost), "D2H smoke");
     cuda_check(cudaMemcpy(wall_hp, d_whp, nb, cudaMemcpyDeviceToHost), "D2H wall_hp");
@@ -555,6 +582,7 @@ std::vector<std::pair<int, int>> fire_step(
     cudaFree(d_destroyed_idx);
     cudaFree(d_fuel_recip);   // nullptr-safe (no plane supplied -> never allocated)
     cudaFree(d_T_ext_plane);  // nullptr-safe (same nullable-plane idiom)
+    cudaFree(d_atm);          // nullptr-safe (#7, same idiom)
 
     return destroyed;
 }

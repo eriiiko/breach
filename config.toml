@@ -426,6 +426,21 @@ fuel_ref          = 60.0   # FALLBACK wall_hp normaliser (inert in the live engi
 # instead. `o2_frac_full` below is RETIRED from THIS (sustain) law — it stays
 # live only on the DEMAND side (combustion.cpp's o2f_j, unchanged by R1).
 o2_frac_ext       = 0.13   # X_ext — physical flame-extinction O2 mole fraction (~13%)
+# THE PRESSURE FACTOR (issue #7 "vacuum kills fire", Erik's ruling 2026-09-23;
+# docs/fire_vacuum_pressure_factor_brief_2026-09-23.md). The fraction law above
+# is MULTIPLIED, at both of its reads (the fire ODE's o2f and combustion's
+# claim gate o2f_j), by
+#   g = clamp01((p - p_ext_atm) / (p_full_atm - p_ext_atm))
+# where p is the MATERIALIZED pressure `atmosphere` (atm) over the same air the
+# fraction reads. Venting removes O2 and N2 together, so X stays ~0.21 down to
+# zero molecules; only pressure sees the room empty. PRESSURE, not density:
+# hot air at ambient pressure is thin but keeps g == 1 (the July density-trap
+# fix, continuous_o2_law_design §2.1, survives). Authored in atm, quantized ONCE
+# at load by PhysicsRunner through atmosphere_fixed (the pressure field's own
+# Q16 door) into FireParams/CombustionSolver p_ext_q/p_full_q. GLOBAL (flame
+# and air), not a material column. Must satisfy 0 <= p_ext_atm < p_full_atm.
+p_ext_atm         = 0.1    # no fire at or below this pressure (atm). Literature: flaming spread over thin cellulose (paper) in reduced-pressure air is a NEAR-LIMIT regime, its limiting O2 concentration rising as pressure falls — measured across 4-45 kPa by He, X., Wang, J. & Fang, J., "Flammability limits and near-limit chemistry controlled flame spread over thermally thin paper under sub-atmospheric pressure", Fire Safety Journal 120:103042 (2021), doi:10.1016/j.firesaf.2020.103042 (paywalled; see docs/papers/continuous_o2_law_citations.md for what was and was not verified).
+p_full_atm        = 0.5    # no pressure effect at or above this pressure (atm). Literature: NASA WSTF self-extinguishment thresholds (NASA-STD-6001 Test 1) show "little relation to total pressures above 41 kPa (6 psia)", pressure "highly influential" below it — Harper, S.A., Juarez, A., Perez, H., Hirsch, D.B. & Beeson, H.D., "Oxygen Partial Pressure and Oxygen Concentration Flammability: Can They Be Correlated?", J. ASTM International (2016), NASA NTRS 20160001047; and near-flat thresholds over 48.2-101.3 kPa in Hirsch, D., Williams, J. & Beeson, H., "Pressure Effects on Oxygen Concentration Flammability Thresholds of Materials for Aerospace Applications", J. Testing and Evaluation (2006), NASA NTRS 20070005041. Both archived under docs/papers/.
 o2f_cap           = 5.0    # NEW (R1): enrichment ceiling on the renormalized o2f ratio
 # hotf_cap (R3, fire session #12, 2026-09-06, docs/fire_3c_design_2026-09-01.md
 # "Ruling R3" — Erik's "hot-burns-faster" catch: `hot` clamps at 1, so above

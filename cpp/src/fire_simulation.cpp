@@ -1,5 +1,6 @@
 #include "fire_simulation.h"
 #include "fixed_point.h"
+#include "o2_pressure_factor.h"   // issue #7: the O2 law's pressure factor g(p)
 #include <algorithm>
 #include <cstdint>
 
@@ -11,6 +12,10 @@
 //   declines ~linearly with O2 volume fraction below ambient (the linear law).
 //   (Extinction-limit ~13-16 vol-% O2: Beyler, SFPE Handbook, flammability
 //   limits.) Both archived under docs/papers/.
+// Issue #7 (Erik's ruling 2026-09-23) multiplies that fraction factor by a
+// PRESSURE factor g(p), zero below 0.1 atm, one above 0.5 atm, linear between —
+// the law and its literature (Harper et al. 2016 / Hirsch et al. 2006, NASA
+// WSTF; He, Wang & Fang 2021 on thin cellulose) are in o2_pressure_factor.h.
 
 // Neighbor offsets: 4-connected (the open-neighbour pressure mean + smoke spread).
 static constexpr int D4[][2] = {{-1,0},{1,0},{0,-1},{0,1}};
@@ -64,7 +69,7 @@ static inline q16 clamp0cap_q(q16 v, q16 cap) {
 
 std::vector<std::pair<int, int>> FireSimulation::step(
     q16* fire,                    // S3b: Q16.16 int32 (was float)
-    const q16* atmosphere,        // S2c: Q16.16 int32 == P (EOS P3: read-only, plume only)
+    const q16* atmosphere,        // Q16.16 atm == P, read-only: the #7 pressure factor's input
     const q16* n_o2,               // EOS P4: Q16.16 int32 real O2 density (fraction numerator)
     const q16* n_total,            // continuous-O2 law: Q16.16 int32 real N_total (fraction denom)
     int32_t* smoke,               // S2b: Q16.16
@@ -172,6 +177,13 @@ std::vector<std::pair<int, int>> FireSimulation::step(
     // note) -> Σ >> this floor, so it never engages for a real burn. Same value
     // host + device (the fraction division must be bit-identical CPU<->CUDA).
     const q16 X_N_FLOOR           = fp::quantize(0.01);   // 655 counts
+    // THE PRESSURE FACTOR (issue #7, o2_pressure_factor.h): the two edges are
+    // already Q16.16 atm (PhysicsRunner quantized them at load); the span
+    // reciprocal is hoisted here ONCE per step with the kit's integer
+    // reciprocal_q16, the same place the fraction law hoists its own span.
+    // p_ext_q == p_full_q == 0 (the struct default) -> dormant, g == FP_ONE.
+    const o2_pressure::Factor pf  = o2_pressure::bake(p.p_ext_q, p.p_full_q);
+    const bool p_on               = (atmosphere != nullptr);
 
     // --- Per-tile signed-logistic FEEDBACK (fire_design_proposal §2 + §5) ---
     // Spread is gone (radiation -> heat -> temperature -> ignition handles it);
@@ -210,14 +222,22 @@ std::vector<std::pair<int, int>> FireSimulation::step(
         // n_o2 mean: invariant under thermal expansion, so hot thin gas at
         // ambient composition burns (closes the density trap; design §2.1).
         // No open neighbour -> both sums 0 -> den floors -> X = 0.
+        // Issue #7: the SAME loop, the SAME open-neighbour predicate, also sums
+        // the materialized pressure P over those cells, so the pressure factor
+        // and the fraction read one parcel of air (brief §3.2). int64, exact,
+        // order-free; the count is the open-neighbour count (0..4).
         int64_t sum_o2 = 0;
         int64_t sum_tot = 0;
+        int64_t sum_p = 0;
+        int64_t n_open = 0;
         for (const auto& d : D4) {
             int ny = y + d[0], nx = x + d[1];
             int ni = ny * w + nx;
             if (in_bounds(ny, nx, h, w) && !is_wall[ni] && !is_vacuum[ni]) {
                 sum_o2  += (int64_t)n_o2[ni];      // exact, order-free
                 sum_tot += (int64_t)n_total[ni];   // exact, order-free
+                if (p_on) sum_p += (int64_t)atmosphere[ni];   // exact, order-free
+                ++n_open;
             }
         }
         // X = Σn_o2 / max(Σn_total, floor), ONE per-cell reciprocal_q16 divide
@@ -252,7 +272,16 @@ std::vector<std::pair<int, int>> FireSimulation::step(
         const q16 o2f = x_degenerate
             ? ((X < x_ext_q) ? (q16)0 : o2f_cap_q)
             : clamp0cap_q(fp::recip_mul(X - x_ext_q, recip_x_span), o2f_cap_q);
-        const q16 avail = fp::mul_q16(F, o2f);
+        // THE PRESSURE FACTOR (issue #7): g of the open-neighbour MEAN pressure
+        // (mean_round — the kit's order-free integer mean; no open neighbour ->
+        // mean 0, where X is already 0). It multiplies o2f through ONE mul_q16:
+        // at p >= p_full g == FP_ONE exactly and mul_q16(o2f, FP_ONE) == o2f, so
+        // there the law is the pre-#7 law bit for bit. No atmosphere plane ->
+        // g == FP_ONE (the pre-#7 law).
+        const q16 p_nbr = p_on ? fp::mean_round(sum_p, n_open) : (q16)0;
+        const q16 g = p_on ? o2_pressure::factor(pf, p_nbr) : (q16)fp::FP_ONE;
+        const q16 o2f_p = fp::mul_q16(o2f, g);
+        const q16 avail = fp::mul_q16(F, o2f_p);
 
         // Signed logistic update, fanned + stripped by wind. PINNED MULTIPLY ORDER
         // (master plan §2.4 / plan §5.2 — the chained-truncation association hazard):

@@ -130,7 +130,14 @@ void combustion_step(
     // EXCHANGE RATE plane, `GameMap.fuel_per_o2_plane` -- the twin of
     // combustion.h's parameter of the same name, which carries the rationale.
     // nullptr -> the `fuel_per_o2` scalar fallback, pre-R14 bit-for-bit.
-    const int32_t* fuel_per_o2_plane = nullptr);
+    const int32_t* fuel_per_o2_plane = nullptr,
+    // THE PRESSURE FACTOR (issue #7): the materialized pressure plane
+    // (`atmosphere`, Q16.16 atm, READ) and the two edges (CombustionSolver::
+    // p_ext_q / p_full_q). The claim gate's o2f_j is multiplied by the SAME
+    // FP_HD o2_pressure::factor the CPU pass calls, at the same air cell j.
+    // nullptr / 0 / 0 -> g == FP_ONE, the pre-#7 law bit-for-bit.
+    const int32_t* atmosphere = nullptr,
+    int32_t p_ext_q = 0, int32_t p_full_q = 0);
 
 // Backend flag: when ON, PhysicsRunner's combustion pass dispatches to
 // combustion_step on the GPU instead of the CPU CombustionSolver::step.
