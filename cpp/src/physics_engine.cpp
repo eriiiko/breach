@@ -220,18 +220,18 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             fire_T_ext_plane);   // PER-MATERIAL T_ext (see header)
     }
 
-    // --- 2b. Radiation sweep (SHADOW, ray-engine-v2 P1) --------------------
+    // --- 2b. Radiation sweep (LIVE since T5b, ray-engine-v2) ---------------
     // Design v3 §11 P1 / row 35: the directional sweep runs EVERY tick, after
     // the fire step and before the temperature pass, on the SAME temperature
     // the pass is about to fold and the two Q16 extinction planes, into the
-    // four int64 SHADOW planes — which nothing consumes until P3 flips the
-    // fold onto them. Shear transport, S16 (heat takes shear, §2.4). The
-    // fire step above does not write `temperature`, so the sweep and the old
-    // cast (which ran at the top of the tick) see the same field. No dormancy
-    // skip (§8.2): a uniform-ambient cell costs the same and computes exact
-    // zeros; cost is set by the grid, which is the thesis. All six planes
-    // must be supplied (the binding makes them required); a C++ caller that
-    // omits them gets the pre-P1 tail byte for byte.
+    // four int64 planes rad_net_sweep/rad_flux_sweep/rad_amb_sweep/
+    // rad_fluence — the ONLY radiation planes the fold, the clamp and units
+    // read (the old fire-plane cast is deleted, T6). Shear transport, S16
+    // (heat takes shear, §2.4). No dormancy skip (§8.2): a uniform-ambient
+    // cell costs the same and computes exact zeros; cost is set by the grid,
+    // which is the thesis. All six planes must be supplied (the binding makes
+    // them required); a C++ caller that omits them gets the pre-P1 tail byte
+    // for byte.
     if (heat_atten_q != nullptr && dyn_heat_atten_q != nullptr &&
         rad_net_sweep != nullptr && rad_flux_sweep != nullptr &&
         rad_amb_sweep != nullptr && rad_fluence != nullptr) {
@@ -379,7 +379,7 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             // P-G5: the solid_energy_books_sum snapshot out-param.
             &solid_books,
             // ...and the clamp's two planes, live on this backend as well
-            // (design v3 P3: "the clamp's GPU twin lands here"). Slot 13 of
+            // (design v3 P3: "the clamp's GPU twin lands here"). Slot 11 of
             // `cond_counters` brings its engagement count home.
             rad_fluence, this->emissive.table(),
             E_TABLE_SIZE);
@@ -420,18 +420,14 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             thermal_solid,
             // T5b step 7 / R1: `cool_shift_grid` was passed here. Pass 3 is
             // deleted, so there is nothing to pass.
-            // THE FLIP (T5b step 6, design v3 P3). The SIGNED radiation
-            // accumulator the fold converts, and it is now the SWEEP's
-            // `rad_net_sweep` -- written at step 2b above, this tick, on the
-            // same `temperature` this pass is about to read -- not the old
-            // cast's `rad_net`. The old cast still runs and still fills its
-            // planes; nothing reads them any more, and T6 deletes it.
-            //
-            // WHAT CHANGES, in one line: the fan of 8 rays per fire tile with
-            // a fitted emission scale becomes ONE exact-integer traversal per
-            // ordinate over the whole grid, conservative to the count
-            // (Sum rad_net + Sum rad_flux + Sum rad_amb == 0 in int64), with
-            // every emission derived from E°(T) at the R13 currency pin.
+            // THE FLIP (T5b step 6, design v3 P3): the SIGNED radiation
+            // accumulator the fold converts is the SWEEP's `rad_net_sweep`
+            // -- written at step 2b above, this tick, on the same
+            // `temperature` this pass is about to read -- not the old cast's
+            // `rad_net`, deleted at T6 (report_t5b.md / report_t6.md have the
+            // history). Conservative to the count in int64:
+            // Sum rad_net_sweep + Sum rad_flux_sweep + Sum rad_amb_sweep == 0,
+            // with every emission derived from E°(T) at the R13 currency pin.
             rad_net_sweep,
             // arc #54 P-G1b (design §2.7 row 3): the conserved gas energy
             // field + the T_AMB_K fold. With these supplied, an accountable

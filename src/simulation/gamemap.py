@@ -130,19 +130,19 @@ class GameMap:
         # — PhysicsRunner._step_resident uploads/downloads it explicitly
         # beside `temperature`.
         "gas_energy",
-        # Ray-engine-v2 P1 (design v3 §3, critique 3 §8a): the radiation
-        # sweep's four SHADOW planes, int64 (the `gas_energy` precedent). Born
-        # through the residency path from day one (RL-batch habits §A rule 3:
-        # no mirror-only fields) — a device buffer each at `enable_residency`,
-        # written on the HOST MIRROR by step 2b of the bracketed `step_tail`
-        # (no device kernel touches them until P4). They are per-tick planes
-        # OVERWRITTEN by the sweep's own start (P2a, design row 38 — not wiped
-        # by the conductor), so the resident tick's explicit `to_host` lists
-        # never name them (a defaulted `to_host()` would carry stale device
-        # zeros over the mirror, which the resident tick forbids anyway). NOTE: the three LIVE planes rad_net/rad_amb/rad_flux are NOT
-        # resident today; they are int64 since P3a-1 (the widening, design
-        # rows 26/35) but the old cast still fills them on the mirror — the
-        # FOLD flips to the sweep's planes at P3a-2, not here.
+        # Ray-engine-v2 (design v3 §3, critique 3 §8a): the radiation sweep's
+        # four planes, int64 (the `gas_energy` precedent), LIVE since T5b.
+        # Born through the residency path from day one (RL-batch habits §A
+        # rule 3: no mirror-only fields) — a device buffer each at
+        # `enable_residency`, written on the HOST MIRROR by step 2b of the
+        # bracketed `step_tail` (no device kernel touches them until P4).
+        # They are per-tick planes OVERWRITTEN by the sweep's own start (P2a,
+        # design row 38 — not wiped by the conductor), so the resident tick's
+        # explicit `to_host` lists never name them (a defaulted `to_host()`
+        # would carry stale device zeros over the mirror, which the resident
+        # tick forbids anyway). NOTE: the old planes rad_net/rad_amb/rad_flux
+        # are NOT resident and, since T6 deleted the cast that wrote them,
+        # carry nothing at all any more — see the field definitions above.
         "rad_net_sweep", "rad_flux_sweep", "rad_amb_sweep", "rad_fluence",
     )
     _RESIDENT_MASKS = (
@@ -485,86 +485,42 @@ class GameMap:
         # IN-PLACE (never reassigned) so any C++ view stays valid.
         self.heat = np.zeros((h, w), dtype=np.int32)
         # P-R4 (docs/radiation_raycaster_extinction_ruling_2026-07-31.md A1.7):
-        # the RADIATION accumulator — the second per-tick deposit plane, with a
-        # DIFFERENT contract from ``heat`` above, which is why it is a separate
-        # buffer and not another writer into that one:
-        #   * ``heat``    — POSITIVE-SATURATING adds. Order-free only because
-        #                   positives are monotone under the clamp. Writers:
-        #                   combustion (H_fuel gas-side, H_bed fuel-bed side)
-        #                   and weapons/payloads.
-        #   * ``rad_net`` — PLAIN SIGNED adds (wrapping). The net-T⁴ exchange
-        #                   applies the SAME integer + to the receiver and − to
-        #                   the emitter, so a tile's total is a sum of signed
-        #                   terms; under SATURATION that sum would be order-
-        #                   DEPENDENT and the CPU↔CUDA tol-0 gate would break the
-        #                   moment two rays reached one cell in a different
-        #                   order. Plain signed adds ARE order-free.
-        # Same Q16.16 scale and the SAME per-tick lifetime as ``heat`` (cleared
-        # together at the very end of Simulation.step, after every consumer).
-        # Written IN-PLACE (never reassigned) so any C++ view stays valid.
-        #
-        # **int64 since ray-engine-v2 P3a-1** (design v3 §3, rows 26/35). The
-        # widening is BEHAVIOUR-NEUTRAL: every term the old cast writes is
-        # clamped by the flux limiter to < 2^31 (raycaster.h), and P1 measured
-        # max|rad_net| == 150,148,108 on the playground — 7 % of 2^31 — so
-        # nothing truncated. What the width buys is the ability to carry the
-        # SWEEP's values when the fold flips to them at P3a-2.
+        # the old net-T⁴ radiation accumulator. DEAD since T6 (issue #12): the
+        # fire-plane cast that wrote it is deleted, so nothing writes this
+        # plane any more — it survives only as a dead `step_tail` argument
+        # (cpp/src/physics_engine.h). The live radiative accumulator is the
+        # sweep's own `rad_net_sweep` below. Kept int64 (widened at
+        # ray-engine-v2 P3a-1) rather than removed outright, matching
+        # `rad_net_sweep`'s width.
         self.rad_net = np.zeros((h, w), dtype=np.int64)
-        # P-F1a (design v6.1 rule 4 / v7.1 items 8-9) — THE AMBIENT (SKY) LEDGER.
-        # The ONLY place energy leaves the tile books. When an emission ray
-        # LEAVES THE GRID the emitter is charged the escaping residual
-        # ``a_s * tau_end * w * (E[T_s] - E[0])`` and the SAME integer is booked
-        # here, keyed by the EMITTER's cell index:
-        #     rad_net[s] -= sky ;  rad_amb[s] += sky
-        # so ``rad_net.sum() + rad_amb.sum() == 0`` EXACTLY, pre-fold — gate (ii),
-        # and the whole content of the conservation claim.
-        #
-        # WHY A PLANE AND NOT A SCALAR: a single global counter would be a
-        # contended atomic on the device and — worse — an ORDER-DEPENDENT one if
-        # it ever saturated. A per-tile plane with PLAIN adds is order-free by
-        # the same argument ``rad_net`` uses (int64 since P3a-1, with the same
-        # plain wrapping add one width up), and the host reduces it to a
-        # uint64 total once per tick (entries are non-negative, since
-        # ``E[T_s] >= E[0]`` for every bucket, so the reduction is exact).
-        #
-        # Same Q16.16 scale and the SAME per-tick lifetime as ``heat`` /
-        # ``rad_net``: cleared together at the very end of Simulation.step.
-        # Written IN-PLACE (never reassigned) so any C++ view stays valid.
+        # P-F1a (design v6.1 rule 4 / v7.1 items 8-9) — the old cast's AMBIENT
+        # (SKY) LEDGER, the counterpart to `rad_net` above. DEAD since T6
+        # along with the cast that wrote it; not even a dead `step_tail`
+        # argument — nothing reads or writes it any more. The live ambient
+        # ledger is the sweep's own `rad_amb_sweep` below.
         self.rad_amb = np.zeros((h, w), dtype=np.int64)
-        # D3 (ruling amendment 5) — the RADIANT-FLUX SENSOR plane.
-        # *** NOT part of the energy ledger. ***  It moves no energy, changes no
-        # temperature, and nothing is debited to pay for it; no solver reads it.
-        # Its ONE consumer is unit heat damage
-        # (:func:`simulation.exchange.apply_environmental_damage`), which used
-        # to sample the retired painter's deposit on the AIR tiles a unit
-        # stands on. The radiation exchange lands only on SOLIDS (air has
-        # ``heat_atten == 0`` so by Kirchhoff it neither absorbs nor emits), so
-        # without this plane a fire could not burn a marine standing beside it.
-        # Written along the rays at air cells as ``τ·w·a_s·E°[T_s]`` — same
-        # occlusion, same 1/r ray-density falloff the painter had — with
-        # POSITIVE-SATURATING adds, i.e. ``heat``'s order-free contract (it can
-        # never go negative, unlike ``rad_net``). int64 since P3a-1 — but its
-        # SATURATION CEILING DELIBERATELY DID NOT MOVE with the width: it stays
-        # at INT32_MAX (``raycaster.h::RAD_FLUX_CEILING``) because it is a cap
-        # on UNIT HEAT DAMAGE that binds in ordinary play, i.e. feel, not
-        # storage. Lifting it is a separate feel-gated decision. Same per-tick
-        # lifetime as
-        # ``heat``/``rad_net``: cleared together at the end of Simulation.step.
+        # D3 (ruling amendment 5) — the old cast's RADIANT-FLUX SENSOR plane,
+        # never part of the energy ledger. DEAD since T6: its one reader,
+        # ``simulation.exchange.apply_environmental_damage``, was flipped at
+        # T5b step 6 to the sweep's own `rad_flux_sweep` below (see
+        # exchange.py). Nothing reads or writes this plane any more.
         self.rad_flux = np.zeros((h, w), dtype=np.int64)
-        # ---- ray-engine-v2 P1 (design v3 §3, §11; critique 3 §6d): THE SHADOW
-        # SWEEP'S PLANES. The radiation sweep (PhysicsEngine::step_tail step 2b,
-        # cpp/src/radiation_sweep.*) writes these four every tick while the OLD
-        # cast still fills the three live planes above — two writers into one
-        # plane would make the sweep's gates unassertable, so the sweep gets
-        # its own set until P3 flips the fold onto it (and these become the
-        # live planes; three fewer wipes then). All int64: E°[T_MAX] ~ 3.6e12
-        # per cell per ordinate, far past int32 (design §2.3, four corrections).
+        # ---- ray-engine-v2 (design v3 §3, §11; critique 3 §6d): THE SWEEP'S
+        # PLANES, LIVE since T5b. The radiation sweep (PhysicsEngine::
+        # step_tail step 2b, cpp/src/radiation_sweep.*) writes these four
+        # every tick; the temperature fold reads `rad_net_sweep`, the Pass-1
+        # maximum-principle clamp reads `rad_fluence`, and unit heat damage
+        # reads `rad_flux_sweep` (exchange.py). The old cast that used to fill
+        # the three planes above is deleted (T6) — these are the only
+        # radiation planes anything reads today. All int64: E°[T_MAX] ~
+        # 3.6e12 per cell per ordinate, far past int32 (design §2.3, four
+        # corrections).
         #   rad_net_sweep  — the MATERIAL ledger, signed: absorbed − emitted
         #   rad_flux_sweep — the BODY sensor, signed: net absorbed above ambient
         #   rad_amb_sweep  — the AMBIENT ledger, signed: sky out − sky in at
         #                    boundary cells, ceiling leak − return everywhere
         #   rad_fluence    — Φ, the total stream each cell absorbed FROM, for
-        #                    the Pass-1 maximum-principle clamp (dormant at P1)
+        #                    the Pass-1 maximum-principle clamp (LIVE since T5b)
         # Σ rad_net_sweep + Σ rad_flux_sweep + Σ rad_amb_sweep == 0 exactly, in
         # int64, every tick (gate 1). PER-TICK IN MEANING, BUT NOT WIPED BY THE
         # CONDUCTOR (P2a, design v3 row 38): `RadiationSweep::run` OVERWRITES
@@ -572,8 +528,9 @@ class GameMap:
         # the LAST tick's values between runs instead of a wiped zero, which is
         # what lets the render-time tile inspector show Φ, `f` and E°⁻¹(Φ).
         # Nothing digested changes: none of the four is in DIGEST_FIELDS or
-        # SIM_FIELDS. (The three LIVE planes above ARE still wiped at the end of
-        # Simulation.step — the old cast does not clear its own outputs.)
+        # SIM_FIELDS. (The three old planes above are still wiped at the end
+        # of Simulation.step even though dead — the cleanup never
+        # distinguished.)
         # Written IN PLACE (never reassigned) so the C++ view stays valid;
         # resident (`_RESIDENT_SYNCED`) from day one.
         self.rad_net_sweep  = np.zeros((h, w), dtype=np.int64)
@@ -1792,10 +1749,11 @@ class GameMap:
         Idempotent. Requires CuPy (the resident path is opt-in behind the
         ``--resident`` flag; with residency OFF, ``import cupy`` is never touched
         and the CPU/per-call paths are byte-for-byte unchanged). After this the
-        numpy fields are the HOST MIRROR (all host code — ``cast_fire_heat``,
-        ``stamp_units``, structural edits, combat/recorder/render — reads/writes
-        them unchanged); the CuPy copies in ``self._dev`` are the device-resident
-        buffers ``PhysicsEngine.step_resident`` runs the launch cores on, kept in
+        numpy fields are the HOST MIRROR (all host code — ``step_tail``'s
+        radiation sweep, ``stamp_units``, structural edits, combat/recorder/
+        render — reads/writes them unchanged); the CuPy copies in
+        ``self._dev`` are the device-resident buffers
+        ``PhysicsEngine.step_resident`` runs the launch cores on, kept in
         sync by :meth:`from_host` / :meth:`to_host`.
         """
         if self.__dict__.get("_residency_on", False):

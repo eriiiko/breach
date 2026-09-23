@@ -532,8 +532,8 @@ wall_damage       = 0.36   # wall HP lost per second per unit intensity, TIMES h
 # (docs/ray_engine_v2_reach_and_papers_2026-09-13.md §2, table at :135).
 # UNIFORM by ruling: a per-tile authored leak (a floor grate, open sky) needs
 # level data and editor support and is a named extension point, not v1.
-# The sweep is still in SHADOW at T1, so this moves no golden; T5's flip is
-# where it starts cooling rooms.
+# Set at T1 while the sweep was still in shadow, so it moved no golden then;
+# T5b's flip made it load-bearing — k_leak now actively cools sealed rooms.
 k_leak = 0.10
 
 # vacuum_ambient_K — the temperature of SPACE, in Kelvin, for the PER-TILE
@@ -611,18 +611,24 @@ vacuum_ambient_K = 295.0
 #     of stacked 12 mm plywood crates -> 9.84e-8)
 #   * rho_c across the wood literature band 0.52..0.90 -> 2.86e-8 .. 1.65e-8
 #
-# CONSEQUENCE worth knowing before reading a sweep plane: at this scale the
-# Fleck damping NEVER engages (f == 2^24 on all 4000 buckets for every shipped
-# row; the worst case is wood at the table top, g = 0.70 <= 1). A physically
-# heavy tile cannot radiate an appreciable share of its own heat in 1/24 s. The
-# fitted key above is 2419x larger, i.e. it behaves as if a furniture tile held
-# 80 J/K — 65 grams of wood — instead of 194 kJ/K.
+# CONSEQUENCE worth knowing before reading a sweep plane: across the FIRE
+# range (fires plateau at 285-300 game, M3) f == 2^24 on every shipped row —
+# no damping where it matters for combat. Damping does engage above any fire,
+# though, on the thinner rows: measured (fleck_f_solid_q24) at wood/foliage
+# 4868 game, kindling 5988, furniture 7620 (hull/steel/glass/door never reach
+# g > 1 inside the table). A physically heavy tile cannot radiate an
+# appreciable share of its own heat in 1/24 s. The fitted key above is 2419x
+# larger, i.e. it behaves as if a furniture tile held 80 J/K — 65 grams of
+# wood — instead of 194 kJ/K.
 rad_scale_derived = 1.6533e-08  # heat counts per K^4 in the SWEEP's E° table
                                 # R13 [Erik, 2026-09-19]: the currency pin is
                                 # 0.9 MJ/(m^3 K), wood at ~12% MC, so
                                 # J_per_count = 0.4759 J. The 2.125632e-08 that
                                 # stood here was the provisional 0.7 pin, -22.2%.
-                                # Caught by T3; nothing live reads this key yet.
+                                # Caught by T3. LIVE since T6: the sweep's E°
+                                # table bakes from this key alone now (T6
+                                # deletes the old cast's separate
+                                # [physics.fire] rad_scale).
 
 # Water pipe model (engine/07 §2, water plan W2). The C++ WaterSolver advances
 # gmap.water_depth (metres of standing water) each tick: damped velocity kick +

@@ -492,9 +492,15 @@ public:
     //
     // `rad_scale` — the EMISSION calibration constant: heat counts per K⁴, with
     // σ, the 0.833 m² tile face, the per-tick dt and the game↔Kelvin mapping all
-    // folded into it at bake time (ruling A1.3). Derivation of the shipped value
-    // is in config.toml [physics.fire] rad_scale and in bake_emissive_table().
-    // Changing it re-bakes the table (see bake_emissive_table).
+    // folded into it at bake time (ruling A1.3). T6 (issue #12): the old
+    // `[physics.fire] rad_scale` config key this derivation used is deleted
+    // with the fire-plane cast that read it, and physics_runner no longer
+    // assigns this field at all — it sits at its struct default unless a
+    // caller (tests/test_emissive_table.py) sets it directly. The live
+    // emission scale is `[physics.radiation] rad_scale_derived`, fed to
+    // PhysicsEngine.emissive (emissive_table.h) — see there for the
+    // derivation. Changing this field re-bakes the table (see
+    // bake_emissive_table).
     double rad_scale = 1.0e-5;
     // `kelvin_ambient` / `k_temp_to_kelvin` — the canonical game-T -> Kelvin
     // map (temperature_scale_unification_design_2026-08-13 §2/§3a), owned by

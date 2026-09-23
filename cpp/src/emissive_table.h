@@ -1,11 +1,13 @@
 #pragma once
 // ============================================================================
 // The emissive table E°(T) — THE black-body map, its inverse, and its bake.
-// Ray-engine-v2 P1 (docs/ray_engine_v2_design_v3_2026-09-15.md §2.6; critique
+// Ray-engine-v2 (docs/ray_engine_v2_design_v3_2026-09-15.md §2.6; critique
 // 3 §5a). ONE instance is owned by PhysicsEngine (`emissive`) and read by the
-// radiation sweep, by the temperature solver's Pass-1 clamp and — until P3
-// retires it — by the old Raycaster's march, whose own bake now CALLS the bake
-// below (one implementation, two owners; never two bakes).
+// radiation sweep (LIVE since T5b) and the temperature solver's Pass-1 clamp.
+// The old Raycaster keeps a vestigial copy of the SAME bake — only
+// tests/test_emissive_table.py still reads it, since T6 retired its march —
+// whose own bake CALLS the bake below (one implementation, two owners; never
+// two bakes).
 // ============================================================================
 //
 // Credit: J.R. Howell, M.P. Mengüç, R. Siegel, "Thermal Radiation Heat
@@ -92,14 +94,15 @@ void bake_emissive_table_exact(int64_t* out, double rad_scale,
                                double kelvin_ambient, double k_temp_to_kelvin);
 
 // The owner: the three dials (the SAME [physics] config homes the old
-// Raycaster reads — physics_runner assigns both until P3) and the lazily
+// Raycaster reads for kelvin_ambient/k_temp_to_kelvin; `rad_scale` itself is
+// vestigial on the Raycaster since T6 — see raycaster.h) and the lazily
 // baked table. `table()` re-bakes when a dial has moved since the last bake
 // (the Raycaster::emissive_table() contract, kept). Every method is const and
 // the table is `mutable` because it is a pure function of the dials: a cache,
 // not hidden state.
 class EmissiveTable {
 public:
-    double rad_scale        = 1.0e-5;   // heat counts per K⁴ ([physics.fire] rad_scale)
+    double rad_scale        = 1.0e-5;   // heat counts per K⁴ ([physics.radiation] rad_scale_derived)
     double kelvin_ambient   = 293.0;    // [physics.temperature_scale] kelvin_ambient
     double k_temp_to_kelvin = 1.0;      // [physics.temperature_scale] k_temp_to_kelvin
 
