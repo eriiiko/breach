@@ -492,7 +492,15 @@ def reach_run():
 
 
 def _reach_run_inner():
-    scales = {"fitted": float(CFG.physics.fire.rad_scale),
+    # T6 (issue #12): "fitted" was [physics.fire] rad_scale, the old cast's
+    # scale -- deleted with the cast. This reach bench's whole point (P2b)
+    # was comparing it against the sweep's derived scale BEFORE the flip
+    # decided which one ships; that decision is made, but the historical
+    # comparison arm is kept working (as a literal, no longer a config key)
+    # rather than reworking this function's (mat, sname, size, k_leak)
+    # curve/meta/CSV shape to drop it -- a bigger, judgment-heavy change
+    # this mechanical patch does not take on.
+    scales = {"fitted": 5.1427e-5,
               "derived": float(CFG.physics.radiation.rad_scale_derived)}
     dist = np.arange(1, REACH_MAX_D + 1)
     curves, meta, src_rows = {}, {}, {}
