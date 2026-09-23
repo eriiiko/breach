@@ -23,10 +23,10 @@ Usage (the CUDA build must exist first — run ``cpp/build_cuda.bat``):
 Equivalent shortcut: ``python main.py --cuda`` (main.py routes --cuda here).
 
 The GPU surface: 4 field solvers (temperature, water, smoke, fire) dispatch
-inside PhysicsEngine::step, plus the raycaster (the fire->heat ray cast in
-PhysicsRunner.cast_fire_heat; set_raycaster_backend, CUDA-S2 live). The cast's
-synced `heat` output is bit-identical CPU<->GPU (the S2 gate); the light
-channels it also produces are render-only / deterministic-exempt.
+inside PhysicsEngine::step, plus the radiation sweep (step 2b of step_tail;
+set_radiation_backend, ray-engine-v2 P4 — it replaced the CUDA-S2 raycaster
+flag, deleted with cuda_raycaster.{cu,h}). The sweep's four planes are
+bit-identical CPU<->GPU (tests/cuda_radiation_sweep_check.py).
 EOS P6.0: the wave/atmosphere backends are RETIRED (their CPU solvers were
 replaced by the compressible EOS solve in P3), and the remaining kernels are
 STALE until their P6 ports land — see tests/cuda_harness.py
@@ -81,9 +81,9 @@ def setup_cuda_import() -> None:
 
 
 # The live-dispatched GPU backends. The first four are field solvers
-# (PhysicsEngine::step); the fifth — the raycaster (the fire->heat ray cast in
-# PhysicsRunner.cast_fire_heat) — is live-wired (CUDA-S2 live). cast_fire_heat
-# reads the raycaster flag per tick (heat bit-identical).
+# (PhysicsEngine::step); the fifth — the radiation sweep (step 2b of
+# PhysicsEngine::step_tail, ray-engine-v2 P4) — is read per tick by step_tail
+# (bit-identical, tests/cuda_radiation_sweep_check.py).
 # EOS P6.0: set_wave_backend / set_atmos_backend RETIRED (cuda_wave.cu /
 # cuda_atmosphere.cu deleted — their CPU solvers were replaced by the EOS solve
 # in P3; docs/eos_p6_gpu_alignment_review.md §1.11). NOTE the remaining kernels
@@ -94,7 +94,7 @@ _BACKEND_SETTERS = (
     "set_water_backend",
     "set_smoke_backend",
     "set_fire_backend",
-    "set_raycaster_backend",
+    "set_radiation_backend",
     # EOS P6.5: the four EOS kernel-surface flags below are now LIVE-DISPATCHED
     # — PhysicsEngine::run_substeps routes the whole eos.step tick to the
     # chained GPU orchestration (cuda_eos_step.cu) when ALL FOUR are on

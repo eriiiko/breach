@@ -19,7 +19,6 @@
 #include "cuda_spike.h"        // CUDA-S8a: residency spike (raw device pointer in)
 #include "cuda_resident.h"     // CUDA-S8a Path B: water/smoke resident launch cores
 #include "cuda_temperature.h"  // CUDA-S1: GPU temperature solver + backend flag
-#include "cuda_raycaster.h"    // CUDA-S2: GPU directional raycaster (heat bit-identical)
 #include "cuda_water.h"        // CUDA-S3: GPU water solver + backend flag
 #include "cuda_smoke.h"        // CUDA-S4a: GPU smoke solver + backend flag
 #include "cuda_fire.h"         // CUDA-S6: GPU fire solver + backend flag
@@ -399,211 +398,13 @@ PYBIND11_MODULE(breach_physics, m) {
           "this call (P-E2a + P-E2b + arc #54 + P-G5; the last is a SNAPSHOT, "
           "not a per-call delta).");
 
-    // CUDA-S2: the GPU directional raycaster gate. Casts ONE LightSource on the
-    // GPU into the (pre-zeroed) output fields, replicating the CPU cast's per-ray
-    // loop via Raycaster::build_ray_list (the shared /fp:strict angle math) and
-    // dispatching to breach_cuda::raycaster_cast_directional. The HEAT output is
-    // bit-identical to Raycaster::cast_source_directional; the render channels
-    // (light_rgb/dir/smoke_glow) are deterministic-exempt. Mirrors the numpy
-    // field-unpacking of the CPU cast_source_directional binding exactly. Used by
-    // the S2 bit-identity gate — NOT a live game path (the live cast is the CPU
-    // method above; this isolated entry never touches it).
-    m.def("cuda_raycaster_cast",
-          [](const Raycaster& self,
-             const LightSource& src,
-             py::array_t<float> light_rgb,
-             py::array_t<float> light_dx,
-             py::array_t<float> light_dy,
-             py::array_t<float> gas,
-             py::array_t<float> gas_absorption,
-             py::array_t<float> gas_scatter,
-             py::array_t<float> light_atten,
-             py::object heat,
-             py::object smoke_glow,
-             py::object heat_atten) {
-              auto [lrgb, h, w]  = get_3d(light_rgb);
-              auto [ldx, h2, w2] = get_2d(light_dx);
-              auto [ldy, h3, w3] = get_2d(light_dy);
-              auto gv = gas.unchecked<3>();
-              const float* gas_field = gv.data(0, 0, 0);
-              const int n_gases = static_cast<int>(gv.shape(0));
-              auto ga = gas_absorption.unchecked<2>();
-              const float* gabs = ga.data(0, 0);
-              auto gs = gas_scatter.unchecked<2>();
-              const float* gsca = gs.data(0, 0);
-              auto a = light_atten.unchecked<3>();
-              const float* atten = a.data(0, 0, 0);
-              int32_t* heat_ptr = nullptr;
-              py::array_t<int32_t> heat_arr;
-              if (!heat.is_none()) {
-                  heat_arr = heat.cast<py::array_t<int32_t>>();
-                  auto ha = heat_arr.mutable_unchecked<2>();
-                  heat_ptr = ha.mutable_data(0, 0);
-              }
-              float* glow_ptr = nullptr;
-              py::array_t<float> glow_arr;
-              if (!smoke_glow.is_none()) {
-                  glow_arr = smoke_glow.cast<py::array_t<float>>();
-                  auto gga = glow_arr.mutable_unchecked<3>();
-                  glow_ptr = gga.mutable_data(0, 0, 0);
-              }
-              const float* hatten = nullptr;
-              py::array_t<float> heat_atten_arr;
-              if (!heat_atten.is_none()) {
-                  heat_atten_arr = heat_atten.cast<py::array_t<float>>();
-                  auto haa = heat_atten_arr.unchecked<2>();
-                  hatten = haa.data(0, 0);
-              }
-              // Build the ray list in the /fp:strict TU so the angle/energy/heat
-              // math (and dx=cos/dy=sin) is bit-identical to the CPU march.
-              std::vector<breach_cuda::RayHD> rays = self.build_ray_list(src);
-              breach_cuda::raycaster_cast_directional(
-                  rays.data(), static_cast<int>(rays.size()),
-                  lrgb, ldx, ldy, heat_ptr, glow_ptr,
-                  gas_field, gabs, gsca, n_gases,
-                  atten, hatten,
-                  self.smoke_absorb_scale, self.light_cull, self.heat_cull,
-                  h, w);
-          },
-          py::arg("raycaster"), py::arg("source"), py::arg("light_rgb"),
-          py::arg("light_dx"), py::arg("light_dy"),
-          py::arg("gas"), py::arg("gas_absorption"), py::arg("gas_scatter"),
-          py::arg("light_atten"),
-          py::arg("heat") = py::none(),
-          py::arg("smoke_glow") = py::none(),
-          py::arg("heat_atten") = py::none(),
-          "S2 isolated: cast one LightSource on the GPU into the pre-zeroed output "
-          "fields; `heat` is bit-identical to Raycaster.cast_source_directional.");
-
-    // S8c item 1 (the fire-FPS fix): cast a SEQUENCE of LightSources in ONE
-    // device march. Field-for-field identical to cuda_raycaster_cast above,
-    // except it concatenates build_ray_list over every source (in this
-    // /fp:strict TU) and issues a SINGLE raycaster_cast_directional — one H2D of
-    // the inputs + running heat plane, one march, one D2H — instead of one
-    // round-trip PER source. That collapses the per-tick transfer tax that made
-    // hundreds of burning tiles run at ~3 fps (2026-07-20 B5 feel-test).
-    //
-    // `heat` is BYTE-IDENTICAL to the per-source cuda_raycaster_cast loop: heat
-    // deposits are saturating integer atomic adds of non-negative, per-ray-
-    // independent deltas (heat_atomic_sat_add, cuda_raycaster.cu:41) — order-free
-    // under the monotone INT32_MAX clamp, so batching every source's rays into one
-    // launch yields the identical per-cell min(base + Σdeltas, MAX). No march
-    // arithmetic changes; the (x*7+y*13)%ray_count phase is still set per source
-    // in Python. build_ray_list is a pure function of its source (its per-source
-    // mt19937 is drawn ONLY when jitter>0; cast_fire_heat sets jitter=0), so
-    // concatenation cannot perturb any ray's bits. Design +3-lens critique:
-    // docs/s8c_item1_fire_heat_batch_impl_2026-07-21.md.
-    //
-    // RENDER CHANNELS ARE NOT BYTE-STABLE HERE: light_rgb/dx/dy/smoke_glow use
-    // float atomics whose interleave order differs from the per-source launches.
-    // They are determinism-EXEMPT (render-only) AND cast_fire_heat discards them
-    // (smoke_glow=None, rgb/dir scratch thrown away). ONLY use this entry from a
-    // caller that discards the render channels.
-    m.def("cuda_raycaster_cast_batch",
-          [](const Raycaster& self,
-             const std::vector<LightSource>& sources,
-             py::array_t<float> light_rgb,
-             py::array_t<float> light_dx,
-             py::array_t<float> light_dy,
-             py::array_t<float> gas,
-             py::array_t<float> gas_absorption,
-             py::array_t<float> gas_scatter,
-             py::array_t<float> light_atten,
-             py::object heat,
-             py::object smoke_glow,
-             py::object heat_atten) {
-              auto [lrgb, h, w]  = get_3d(light_rgb);
-              auto [ldx, h2, w2] = get_2d(light_dx);
-              auto [ldy, h3, w3] = get_2d(light_dy);
-              auto gv = gas.unchecked<3>();
-              const float* gas_field = gv.data(0, 0, 0);
-              const int n_gases = static_cast<int>(gv.shape(0));
-              auto ga = gas_absorption.unchecked<2>();
-              const float* gabs = ga.data(0, 0);
-              auto gs = gas_scatter.unchecked<2>();
-              const float* gsca = gs.data(0, 0);
-              auto a = light_atten.unchecked<3>();
-              const float* atten = a.data(0, 0, 0);
-              int32_t* heat_ptr = nullptr;
-              py::array_t<int32_t> heat_arr;
-              if (!heat.is_none()) {
-                  heat_arr = heat.cast<py::array_t<int32_t>>();
-                  auto ha = heat_arr.mutable_unchecked<2>();
-                  heat_ptr = ha.mutable_data(0, 0);
-              }
-              float* glow_ptr = nullptr;
-              py::array_t<float> glow_arr;
-              if (!smoke_glow.is_none()) {
-                  glow_arr = smoke_glow.cast<py::array_t<float>>();
-                  auto gga = glow_arr.mutable_unchecked<3>();
-                  glow_ptr = gga.mutable_data(0, 0, 0);
-              }
-              const float* hatten = nullptr;
-              py::array_t<float> heat_atten_arr;
-              if (!heat_atten.is_none()) {
-                  heat_atten_arr = heat_atten.cast<py::array_t<float>>();
-                  auto haa = heat_atten_arr.unchecked<2>();
-                  hatten = haa.data(0, 0);
-              }
-              // Concatenate every source's rays IN SOURCE ORDER (row-major from
-              // Python). Order is irrelevant to `heat` (order-free atomics) but
-              // keeps the discarded render scratch aligned with the per-source
-              // path. Each build_ray_list call runs in this /fp:strict TU — the
-              // same place the per-source entry builds its one list.
-              std::vector<breach_cuda::RayHD> rays;
-              for (const auto& src : sources) {
-                  std::vector<breach_cuda::RayHD> r = self.build_ray_list(src);
-                  rays.insert(rays.end(), r.begin(), r.end());
-              }
-              // n_rays==0 guard (empty source list, or all sources fully
-              // angular-culled). Python also guards via burning.any(); this is
-              // defense in depth. rays.size() <= INT_MAX for any playable map
-              // (8 rays/tile; int overflows only near a 16384²-all-ablaze map).
-              if (rays.empty()) return;
-              breach_cuda::raycaster_cast_directional(
-                  rays.data(), static_cast<int>(rays.size()),
-                  lrgb, ldx, ldy, heat_ptr, glow_ptr,
-                  gas_field, gabs, gsca, n_gases,
-                  atten, hatten,
-                  self.smoke_absorb_scale, self.light_cull, self.heat_cull,
-                  h, w);
-          },
-          py::arg("raycaster"), py::arg("sources"), py::arg("light_rgb"),
-          py::arg("light_dx"), py::arg("light_dy"),
-          py::arg("gas"), py::arg("gas_absorption"), py::arg("gas_scatter"),
-          py::arg("light_atten"),
-          py::arg("heat") = py::none(),
-          py::arg("smoke_glow") = py::none(),
-          py::arg("heat_atten") = py::none(),
-          "S8c: cast a SEQUENCE of LightSources in ONE device march (the fire-FPS "
-          "fix). `heat` is bit-identical to a per-source cuda_raycaster_cast loop "
-          "(order-free saturating add). Render channels differ in float-atomic "
-          "order from the per-source path and are only valid for callers that "
-          "discard rgb/dir/glow (cast_fire_heat).");
-
-    // T6 (issue #12): this flag's ONLY reader was PhysicsRunner.cast_fire_heat's
-    // CPU/GPU dispatch branch (CUDA-S2 LIVE) — cast_fire_heat is deleted, so
-    // `get_raycaster_backend()` is now read by nothing live; the setter is
-    // WRITE-ONLY dead state. NOT removed: ~6 CUDA check scripts
-    // (cuda_s8a_check.py, cuda_sky_exchange_check.py, cuda_thermal_mass_check.py,
-    // cuda_thermal_mass_eos_check.py, _run_cuda_smoke.py) and
-    // tools/run_on_cuda.py call `getattr(bp, "set_raycaster_backend")`
-    // unconditionally in a shared all-backends-on/off loop, with no
-    // `hasattr` guard — deleting the binding would break them for no live
-    // benefit. `breach_cuda::set_raycaster_backend_cuda`/
-    // `raycaster_backend_is_cuda` (cuda_raycaster.h) are themselves out of
-    // this patch's scope (kept until P4). Candidate cleanup for P4, alongside
-    // cuda_raycaster.{cu,h}.
-    m.def("set_raycaster_backend",
-          [](bool use_cuda) { breach_cuda::set_raycaster_backend_cuda(use_cuda); },
-          py::arg("use_cuda"),
-          "Vestigial since T6 (issue #12): used to switch PhysicsRunner."
-          "cast_fire_heat's fire->heat ray cast between GPU and CPU; that "
-          "method is deleted, so this now sets state nothing reads. Kept "
-          "because several CUDA check scripts call it unconditionally.");
-    m.def("get_raycaster_backend",
-          []() { return breach_cuda::raycaster_backend_is_cuda(); },
-          "Vestigial since T6 (issue #12) -- see set_raycaster_backend.");
+    // P4 (issue #12): the CUDA-S2 raycaster entry points that stood here --
+    // cuda_raycaster_cast, cuda_raycaster_cast_batch and the vestigial
+    // set_raycaster_backend / get_raycaster_backend flag -- are DELETED with
+    // cuda_raycaster.{cu,h}. Their only live caller, PhysicsRunner.
+    // cast_fire_heat, died at T6; the render march never had a GPU path. The
+    // radiation backend below (set_radiation_backend) is the flag the CUDA
+    // check scripts and tools/run_on_cuda.py switch now.
 
     // ---- ray-engine-v2 P4: the radiation sweep's CUDA twin -----------------
     // The backend flag switches PhysicsEngine::step_tail's step 2b between
@@ -1722,13 +1523,8 @@ PYBIND11_MODULE(breach_physics, m) {
           "fixed_point.h shr_round0_signed_i64: divide by 2^s for a SIGNED s. "
           "s >= 0 is shr_round0_i64 exactly; s < 0 MULTIPLIES by 2^-s, which "
           "is exact (a left shift loses nothing).");
-    m.def("rad_pair_budget_s",
-          [](int64_t abs_dT_q, int his, int shift) {
-              return rad_pair_budget_s(abs_dT_q, his, shift);
-          },
-          py::arg("abs_dT_q"), py::arg("his"), py::arg("shift"),
-          "raycaster.h rad_pair_budget_s: the flux limiter's per-end budget, "
-          "floor(x * 2^his / 2^shift). SIGNED in `his` since M1.");
+    // (rad_pair_budget_s -- the old cast's flux-limiter budget -- is deleted
+    //  with RAD_LIM_SHIFT at P4: its last caller was cuda_raycaster.cu.)
     m.def("conduction_cell_capacity_q",
           [](bool is_ts, int32_t heat_inv_shift, int32_t n_raw,
              int32_t n_floor_q, int32_t c_v_q) {

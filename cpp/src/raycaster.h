@@ -20,8 +20,9 @@
 //     Astrophysical Journal 248:321 (1981) — the FLUX LIMITER: a radiative
 //     transfer whose linearised coefficient steepens as T³ is capped at a
 //     fraction of what would equalise the pair, so the explicit update stays
-//     monotone. `RAD_LIM_SHIFT` below is that cap, as a power-of-two shift
-//     (ruling A1.6).
+//     monotone. `RAD_LIM_SHIFT` (= 4) was that cap, as a power-of-two shift
+//     (ruling A1.6) — deleted at ray-engine-v2 P4 with its last caller, the
+//     CUDA march; the comments below that name it describe the old law.
 //
 // Both are listed for archival under docs/papers/ in
 // docs/papers/README_radiation_2026-08.md (no PDF could be fetched from this
@@ -35,11 +36,8 @@
 // Falloff types for light sources
 enum class Falloff : int { UNIFORM = 0, COSINE = 1, SHARP = 2 };
 
-// CUDA-S2 gate: the host-precomputed ray POD lives in cuda_raycaster.h (a plain
-// header, no CUDA symbols). Forward-declare it so build_ray_list can return a
-// vector of them without dragging the CUDA header into every CPU TU that
-// includes raycaster.h.
-namespace breach_cuda { struct RayHD; }
+// (CUDA-S2's `breach_cuda::RayHD` forward declaration stood here, for
+// build_ray_list; both went with cuda_raycaster.{cu,h} at ray-engine-v2 P4.)
 
 // ---- Fixed-point heat format (ch.04 §Fixed-point format) ----
 //
@@ -79,9 +77,9 @@ inline void heat_saturating_add(int32_t* cell, int32_t delta) {
 // ============================================================================
 // P-F1a — THE VERIFIED RADIATION BOOKS (design v6.1 rules 1/3/4 as amended by
 // v7 + the v7.1 closure edits; docs/fire_realism_design_2026-08-01.md). Shared
-// by the CPU march (raycaster.cpp), the CUDA march (cuda_raycaster.cu) and the
-// temperature solver's signed fold, so the three read ONE definition of every
-// boundary.
+// by the CPU march (raycaster.cpp), the CUDA march (cuda_raycaster.cu, deleted
+// at ray-engine-v2 P4) and the temperature solver's signed fold, so the three
+// read ONE definition of every boundary.
 //
 // SUPERSEDES P-R4's exchange. There is NO sink, NO credit and NO refund of any
 // kind: five compensating terms telescoped into four rules (round-3.5), rule 2
@@ -193,7 +191,8 @@ inline void heat_saturating_add(int32_t* cell, int32_t delta) {
 // RC_HD marks the exchange helpers callable from BOTH the CPU march (.cpp) and
 // the CUDA march (.cu device code) — the fixed_point.h FP_HD idiom, so the two
 // backends share ONE definition of every boundary instead of a hand-copied twin
-// that can drift. Under a plain host compiler it expands to nothing.
+// that can drift. Under a plain host compiler it expands to nothing. (Since P4
+// no .cu includes this header: the CUDA march is deleted.)
 #if defined(__CUDACC__)
   #define RC_HD __host__ __device__
 #else
@@ -205,55 +204,18 @@ inline void heat_saturating_add(int32_t* cell, int32_t delta) {
 // now live in emissive_table.h — ONE definition shared by this march, the
 // radiation sweep, the Pass-1 clamp and the CUDA twins (all FP_HD). Included
 // here so every existing user that reached them through raycaster.h (the
-// bindings, cuda_raycaster.cu) keeps resolving unchanged. The bake body moved
-// to emissive_table.cpp; Raycaster::bake_emissive_table() calls it.
+// bindings) keeps resolving unchanged. The bake body moved to
+// emissive_table.cpp; Raycaster::bake_emissive_table() calls it.
 #include "emissive_table.h"
 
-// T6 (issue #12): RAD_LIM_SHIFT / rad_pair_budget / rad_pair_budget_s below
-// are NOT deleted, though their only CPU-side callers (march_ray_radiation,
-// cast_from_fire_plane) are gone. `cuda_raycaster.cu`'s radiation kernel
-// (breach_cuda::raycaster_cast_radiation, dispatched only by the now-deleted
-// cuda_raycaster_cast_from_fire_plane binding) `#include`s raycaster.h
-// specifically for these RC_HD symbols; cuda_raycaster.{cu,h} are kept
-// out of this patch's scope (P4 deletes them alongside the CUDA radiation
-// sweep port), so deleting the symbols here would break that kept file's
-// build for a branch nothing calls any more. P4 removes both together.
-// ---- the flux limiter (ruling A1.6; Levermore & Pomraning 1981) ------------
-// Per pair, per ray, per tick, |net| may not exceed the heat that would close
-// 1/2^RAD_LIM_SHIFT of the pair's temperature GAP through either end's own
-// thermal mass. At 4 that is 1/16 of the gap per ray; with 8 rays the
-// worst-case aggregate is half the gap per tick — 2x inside conduction's own
-// monotone line (4 faces x 1/4 = 1) and 4x from divergence. It is a STABILITY
-// constant, not a feel dial, and in normal operation it is INERT (the T⁴ net
-// sits far below the budget) — it is a rail against the T³ steepening at
-// T_MAX_PHYS-scale gaps.
-static constexpr int RAD_LIM_SHIFT = 4;
-
-// The pair budget for ONE end, from the Q16.16 gap |T_s − T_r| and that end's
-// heat_inv_shift: (|ΔT| << his) >> shift, in HEAT counts. int64 because
-// |ΔT| can reach T_MAX_PHYS·65536 ≈ 1.05e9 and his can reach 5 (steel).
-//
-// `shift` is RAD_LIM_SHIFT for the rule-1 (single-caster) branch and
-// RAD_LIM_SHIFT + 1 — i.e. HALF the shared budget — for the rule-2 mutual
-// half-weight branch (v7.1 item 2, M2). Halving the CAP alongside the term is
-// what keeps the rail TRUE BY CONSTRUCTION when BOTH ends cast: the pair's two
-// half-casts can together move at most 2 × (gap/2^(LIM+1)) == gap/2^LIM, i.e.
-// exactly the single-caster rail, never more.
-// M1: `his` may be NEGATIVE (a material lighter than one thermal_mass unit),
-// and `abs_dT_q << his` would then be UB. The two shifts collapse into one
-// signed exponent — for abs_dT_q >= 0 (which it is, by name and by every call
-// site: the callers pass |T_s - T_r|),
-//     (x << his) >> shift == floor(x * 2^his / 2^shift) == x >> (shift - his)
-// when shift >= his, and == x << (his - shift) otherwise — so the kit's
-// signed-exponent twin is this expression exactly, for either sign, with no
-// intermediate that can overflow where the original did not.
-RC_HD inline int64_t rad_pair_budget_s(int64_t abs_dT_q, int his, int shift) {
-    return fixedpoint::shr_round0_signed_i64(abs_dT_q, shift - his);
-}
-// The shared symmetric budget (rule 1 / the sky term).
-RC_HD inline int64_t rad_pair_budget(int64_t abs_dT_q, int his) {
-    return rad_pair_budget_s(abs_dT_q, his, RAD_LIM_SHIFT);
-}
+// ---- the flux limiter (ruling A1.6; Levermore & Pomraning 1981) — DELETED ----
+// RAD_LIM_SHIFT (= 4: a pair's net per ray, per tick, capped at 1/16 of the
+// temperature gap through either end's own thermal mass) and the pair
+// budget rad_pair_budget / rad_pair_budget_s stood here. T6 kept them only
+// because cuda_raycaster.cu still compiled against them; ray-engine-v2 P4
+// deletes that file, so they go with it (issue #12). The radiation sweep
+// has no pair and no limiter: its stability pair is the Fleck factor and
+// the Pass-1 maximum-principle clamp (radiation_sweep.h, design v3 §2.8).
 
 // ---- the ONE deposit boundary (mirrors heat_quantize's contract) -----------
 // The radiation deposit is quantized ONCE per marched cell, exactly like the
@@ -336,7 +298,8 @@ RC_HD inline int64_t rad_quantize_signed64(double v) {
 // now begins at 2^63 instead of 2^31, four billion times further out than the
 // firestorm that motivated the paragraph. The device twin is
 // atomicAdd((unsigned long long*)cell, (unsigned long long)delta), which is
-// this same modular add — see cuda_raycaster.cu.
+// this same modular add (it lived in cuda_raycaster.cu, deleted at P4; the
+// radiation sweep's CUDA twin books its planes by the same idiom).
 inline void rad_signed_add(int64_t* cell, int64_t delta) {
     *cell = (int64_t)((uint64_t)*cell + (uint64_t)delta);
 }
@@ -708,29 +671,13 @@ public:
     // is NOT part of this cast — it is the render march's own entry point and
     // stays.
 
-    // ---- CUDA-S2 gate: host ray-list builder (shared CPU/GPU angle math) ----
-    //
-    // Replicates cast_source_directional's per-ray loop EXACTLY — same
-    // get_ray_count(), the same (i+0.5)/N angle sweep, the same jitter RNG
-    // (mt19937 seeded (unsigned)(src.x*1000+src.y), uniform_real(-1,1)*jitter),
-    // the same falloff angular_atten, the same inv_n normalisation — and folds
-    // angle->(cos,sin), angular_atten, color and /N into each RayHD's
-    // (dx,dy,e_r,e_g,e_b,heat_emit). Rays with angular_atten<=0 are SKIPPED, just
-    // as the CPU cast skips them. Because this runs in THIS /fp:strict TU (the one
-    // that already owns the identical angle math in cast_source_directional), the
-    // GPU march's host-precomputed dx=cos(angle)/dy=sin(angle) are bit-identical
-    // to what the CPU march_ray_directional computes internally from `angle` —
-    // which is the contract that makes the DDA tile path (hence heat) match.
-    // P-R4: `rs` (nullable) folds the emitter's radiation payload into every
-    // RayHD alongside the light/heat budgets — the device march then runs the
-    // identical exchange with no extra per-source lookup.
-    std::vector<breach_cuda::RayHD> build_ray_list(
-        const LightSource& src, const RadSource* rs = nullptr) const;
+    // (CUDA-S2's `build_ray_list` — the host ray-list builder that fed the GPU
+    // march — is DELETED at ray-engine-v2 P4 with cuda_raycaster.{cu,h}.)
 
     // T6 (issue #12): `build_fire_ray_list` — the CUDA twin of
     // `cast_from_fire_plane` (fed the `cuda_raycaster_cast_from_fire_plane`
-    // binding, also deleted) — is DELETED with it. `build_ray_list` above,
-    // which this reused, is unaffected: it has its own (kept) live callers.
+    // binding, also deleted) — is DELETED with it. (`build_ray_list` above,
+    // which this reused, outlived it by one patch: see its note.)
 
     // Normalize direction vectors in place: (dx, dy) /= length(dx, dy).
     // Tiles with zero-length direction stay (0, 0).

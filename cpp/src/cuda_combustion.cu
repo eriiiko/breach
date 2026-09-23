@@ -106,8 +106,9 @@ __device__ __forceinline__ q16 clamp0cap_q_dev(q16 v, q16 cap) {
 
 // P-R4: SATURATING integer atomic add — the device twin of raycaster.h's
 // `heat_saturating_add` (and a verbatim copy of cuda_raycaster.cu's
-// heat_atomic_sat_add). Needed here because several AIR cells can feed the same
-// flammable claimant, so the H_bed deposits at one source cell race. Order-free
+// heat_atomic_sat_add — the only copy since P4 deleted that file). Needed here
+// because several AIR cells can feed the same flammable claimant, so the
+// H_bed deposits at one source cell race. Order-free
 // for non-negative deltas: a saturating add under a monotone clamp is
 // associative + commutative, so the total is bit-identical to the CPU's ordered
 // sequence of heat_saturating_add calls.
