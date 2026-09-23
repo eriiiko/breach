@@ -277,11 +277,13 @@ class WindForcer:
     """Monkeypatch a PhysicsRunner instance so the fire (and smoke transport) sees
     a STEADY UNIFORM +x wind of magnitude ``wind_q`` (Q16.16) each tick.
 
-    Tick order (physics_runner.PhysicsRunner.step): cast_fire_heat -> _step_water
-    -> eos.run_substeps (WRITES wind_x/wind_y, advects smoke on its output wind)
-    -> _run_combustion -> step_tail (the FIRE logistic READS |wind| here). Two
-    seams, both pure ``gmap.wind_*`` writes: top-of-step() seeds the transport
-    wind so smoke rides ~W; _run_combustion re-forces so the fire reads exactly W.
+    Tick order (physics_runner.PhysicsRunner.step): _step_water -> eos.
+    run_substeps (WRITES wind_x/wind_y, advects smoke on its output wind)
+    -> _run_combustion -> step_tail (the radiation sweep, then the FIRE
+    logistic READS |wind| here). Two seams, both pure ``gmap.wind_*`` writes:
+    top-of-step() seeds the transport wind so smoke rides ~W; _run_combustion
+    re-forces so the fire reads exactly W. (T6, issue #12: cast_fire_heat,
+    which used to open this order, is deleted.)
     """
 
     def __init__(self, runner, wind_q: int):

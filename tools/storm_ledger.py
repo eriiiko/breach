@@ -7,14 +7,23 @@ tick and attributes the change in total momentum, kinetic energy, and thermal
 energy to the pass that made it. Nothing in cpp/ or src/ changes — the passes
 are seamed at the Python call sites in PhysicsRunner.step():
 
-    fire_cast   PhysicsRunner.cast_fire_heat      (radiation -> heat/rad_net)
     water       PhysicsRunner._step_water         (dormant here)
     eos         PhysicsEngine.run_substeps        (SL advect + solve + kick +
                                                    wave_absorb + compression)
     combustion  PhysicsRunner._run_combustion     (O2 burn + gas heat deposit)
     sky         PhysicsRunner._run_sky_exchange   (dormant on space maps)
-    tail        PhysicsEngine.step_tail           (fire feedback + T pass)
+    tail        PhysicsEngine.step_tail           (radiation sweep + fire
+                                                   feedback + T pass)
     other       everything else in Simulation.step (ignition, damage, ...)
+
+T6 (issue #12): the `fire_cast` pass (PhysicsRunner.cast_fire_heat, radiation
+-> heat/rad_net) is DROPPED, not remapped. cast_fire_heat is deleted; fire's
+radiant heat is now the radiation sweep, step 2b INSIDE PhysicsEngine.step_tail
+(radiation_sweep.h) — the same single C++ call this ledger already wraps as
+the `tail` pass, with no Python-level seam between the sweep and the
+temperature fold that follows it in the same call. There is therefore no
+callable left to attribute a separate `fire_cast` share to; the sweep's energy
+movement is counted under `tail`, same as the temperature fold always was.
 
 The C++ engine calls are seamed by swapping ``runner.engine`` for a forwarding
 proxy — a harness-side wrap, not an engine change.
@@ -64,7 +73,8 @@ from fire_timing_harness import (                # noqa: E402
     FP_ONE, apply_overrides, restore_overrides,
 )
 
-PASSES = ("fire_cast", "water", "eos", "combustion", "sky", "tail", "other")
+# T6 (issue #12): "fire_cast" dropped -- see the module docstring.
+PASSES = ("water", "eos", "combustion", "sky", "tail", "other")
 
 # Ambient bulk N (Q16.16 == FP_ONE): the o2+n2 split sums to 1.0 by design
 # (ambient pin C*N_amb*T_amb == 1.0). Verified against the level's own planes
@@ -288,8 +298,10 @@ def run_ledger(ticks=4800, damp=0.0, dials=None, keep_series=True):
                 state["comb_pre_T"] = None
 
         runner.engine = _EngineProxy(runner.engine, before, after)
-        for nm, pass_name in (("cast_fire_heat", "fire_cast"),
-                              ("_step_water", "water"),
+        # T6 (issue #12): the ("cast_fire_heat", "fire_cast") entry this list
+        # used to carry is dropped -- see the module docstring for why there
+        # is no seam left to attribute it separately from "tail".
+        for nm, pass_name in (("_step_water", "water"),
                               ("_run_combustion", "combustion"),
                               ("_run_sky_exchange", "sky")):
             real = getattr(runner, nm)
