@@ -174,8 +174,8 @@ class PhysicsRunner:
         # pick its CPU/GPU dispatch — is deleted with that method.
 
         # EOS P6.9b: the combustion pass can run on the GPU when the combustion
-        # backend flag is on (bp.set_combustion_backend). Same idiom as the
-        # raycaster flag — the setter/getter only EXIST on the CUDA build, so
+        # backend flag is on (bp.set_combustion_backend). Same idiom as every
+        # *_backend flag — the setter/getter only EXIST on the CUDA build, so
         # cache a query that is a constant False on the CPU build. Flag-off
         # (default) is the EXACT prior CPU CombustionSolver.step call.
         _get_comb_backend = getattr(bp, "get_combustion_backend", None)

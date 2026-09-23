@@ -348,7 +348,7 @@ _EOS_BACKENDS = ("set_bulk_flux_backend", "set_sl_advection_backend",
                  "set_combustion_backend")
 _ALL_BACKENDS = ("set_temperature_backend", "set_water_backend",
                  "set_smoke_backend", "set_fire_backend",
-                 "set_raycaster_backend") + _EOS_BACKENDS
+                 "set_radiation_backend") + _EOS_BACKENDS   # P4: was set_raycaster_backend
 
 _FIELDS = ("atmosphere", "wave_p", "wind_x", "wind_y", "temperature", "heat",
            "fire", "wall_hp", "water_depth", "flow_vx", "flow_vy", "gas",

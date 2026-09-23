@@ -54,11 +54,13 @@ FP_ONE = 65536
 
 # The GPU backends flipped on for the resident/per-call runs (run_on_cuda's set +
 # combustion). In the resident tick the water/smoke per-call flags are inert (those
-# stages run resident), but the EOS/combustion/fire/temperature/raycaster brackets
-# use their per-call GPU path — so a resident tick is a genuine all-GPU tick.
+# stages run resident), but the EOS/combustion/fire/temperature/radiation-sweep
+# brackets use their per-call GPU path — so a resident tick is a genuine all-GPU
+# tick. (ray-engine-v2 P4: set_radiation_backend replaces the vestigial
+# set_raycaster_backend, deleted with cuda_raycaster.{cu,h}.)
 _BACKENDS = (
     "set_temperature_backend", "set_water_backend", "set_smoke_backend",
-    "set_fire_backend", "set_raycaster_backend",
+    "set_fire_backend", "set_radiation_backend",
     "set_bulk_flux_backend", "set_sl_advection_backend",
     "set_mg_solve_backend", "set_kick_compression_backend",
     "set_combustion_backend",

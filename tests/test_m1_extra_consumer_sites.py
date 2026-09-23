@@ -10,11 +10,13 @@ undefined behaviour the day M2 authors a row below one thermal_mass unit:
   * `combustion.cpp` + `cuda_combustion.cu` — the fuel-bed deposit's OBJECT-SITE
     conversion, which is how a burning crate heats itself;
   * `raycaster.h::rad_pair_budget_s` — the old cast's flux limiter. The old cast
-    still runs every tick after T5b's flip (it fills `rad_net` and the light
-    channels; only the FOLD moved to `rad_net_sweep`), so this is hot code.
+    died at T6 and the limiter's last caller, cuda_raycaster.cu, at P4 (issue
+    #12), which DELETED the function; its gate (section 2 here) went with it,
+    because the property it pinned no longer exists anywhere in the engine.
 
-Each is gated here against an oracle that is not the engine: the committed
-integer reference for the sweep, and exact arithmetic for the other two.
+Each surviving site is gated here against an oracle that is not the engine:
+the committed integer reference for the sweep, and exact arithmetic for
+combustion.
 
 The shipped material table reaches none of these exponents, so NOTHING ELSE IN
 THE SUITE COVERS THEM — which is precisely why they were missed.
@@ -130,26 +132,10 @@ def test_a_negative_exponent_damps_emission_harder_than_a_positive_one():
 
 
 # ===========================================================================
-# 2. The old raycaster's flux limiter
+# 2. (The old raycaster's flux limiter — DELETED at P4 with rad_pair_budget_s,
+#    whose last caller was cuda_raycaster.cu. Numbering kept so section 3
+#    stays section 3.)
 # ===========================================================================
-@pytest.mark.parametrize("his", list(range(-16, 6)))
-@pytest.mark.parametrize("shift", [1, 2, 4])
-@pytest.mark.parametrize("x", [0, 1, 65535, 1_048_576_000, 2 ** 40 + 7])
-def test_the_raycaster_pair_budget_is_the_exact_signed_scaling(his, shift, x):
-    """PROPERTY: `rad_pair_budget_s(x, his, shift) == floor(x * 2**his / 2**shift)`
-    for a non-negative `x` and EITHER sign of `his` — the limiter budget scales
-    with the emitter's own thermal mass, which is the whole point of the term.
-
-    Asserted against Python integers, so the oracle is not the engine.
-
-    BREAKS IF: the site keeps `(x << his) >> shift` — undefined behaviour at a
-    negative `his`. On x86-64 that compiles to a shift by `his & 63`, i.e. 63
-    for `his = -1`, so an even `x` yields a budget of ZERO: the limiter clamps
-    every radiative exchange to nothing and a thin object silently stops
-    exchanging heat with the old cast at all.
-    """
-    assert x >= 0
-    assert bp.rad_pair_budget_s(x, his, shift) == (x * 2 ** his) // 2 ** shift
 
 
 # ===========================================================================

@@ -150,6 +150,22 @@ const OrdinateConst* RadiationSweep::ordinate_table(int n_ordinates, int transpo
     return nullptr;
 }
 
+void RadiationSweep::size_scratch_(int h, int w, int n_ordinates) const {
+    const int n = h * w;
+    if (h_ != h || w_ != w || n_ord_ != n_ordinates) {
+        outflow_.assign((size_t)n_ordinates * (size_t)n, 0);
+        ex_cell_.assign((size_t)n, 0);
+        amb_m_.assign((size_t)n, 0);
+        f_q24_.assign((size_t)n, F_ONE);
+        h_ = h; w_ = w; n_ord_ = n_ordinates;
+    }
+}
+
+int32_t* RadiationSweep::fleck_plane_for_twin(int h, int w, int n_ordinates) const {
+    size_scratch_(h, w, n_ordinates);
+    return f_q24_.data();
+}
+
 const int64_t* RadiationSweep::derive_ambient(const bool* is_vacuum,
                                              const int64_t* e_table,
                                              int64_t vac_level, int n) const {
@@ -195,13 +211,7 @@ void RadiationSweep::run(const int32_t* temperature,
             "builds the uniform R4 plane for a caller that has no opinion");
     }
     const int n = h * w;
-    if (h_ != h || w_ != w || n_ord_ != n_ordinates) {
-        outflow_.assign((size_t)n_ordinates * (size_t)n, 0);
-        ex_cell_.assign((size_t)n, 0);
-        amb_m_.assign((size_t)n, 0);
-        f_q24_.assign((size_t)n, F_ONE);
-        h_ = h; w_ = w; n_ord_ = n_ordinates;
-    }
+    size_scratch_(h, w, n_ordinates);
 
     // ---- the per-ordinate constants (door 1) ------------------------------
     // `amb_m` and `ret` were hoisted here while the ambient was one global

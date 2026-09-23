@@ -1,5 +1,4 @@
 #include "raycaster.h"
-#include "cuda_raycaster.h"   // CUDA-S2 gate: RayHD POD (plain header, no CUDA symbols)
 #include "fixed_point.h"      // Q2-LIFT: the deterministic trig kit (sin/cos_q16)
 #include <algorithm>
 #include <random>
@@ -23,8 +22,8 @@ static constexpr float PI = 3.14159265358979f;
 // (|a| < 2pi + jitter), inside the kit's pinned |a| <= 4pi accuracy range.
 // dx can now be EXACTLY 0.0f at the quantized axes — the existing
 // `|dx| > 1e-8 ? 1/dx : 1e8` DDA guards already handle that.
-// build_ray_list (the GPU's dir source) and the CPU march share these same
-// helpers, so both backends walk identical DDA tiles (the S2/S2b contract).
+// (build_ray_list, the deleted CUDA march's direction source, shared these
+// helpers; it went with cuda_raycaster.{cu,h} at ray-engine-v2 P4.)
 static inline float det_cos(float angle) {
     return fixedpoint::dequantize_f(fixedpoint::cos_q16(fixedpoint::quantize(angle)));
 }
@@ -552,94 +551,9 @@ void Raycaster::normalize_directions(float* light_dx, float* light_dy, int h, in
     }
 }
 
-// ---- CUDA-S2 gate: host ray-list builder ----------------------------------
-//
-// A line-for-line replica of cast_source_directional's per-ray loop (above),
-// EXCEPT the body folds each ray into a RayHD instead of marching it on the CPU.
-// Same ray_count, the same t=(i+0.5)/N angle sweep, the SAME jitter RNG drawn in
-// the SAME order, the same falloff angular_atten, the same inv_n. The per-channel
-// emitted energy folds the source tint exactly as march_ray_directional does
-// internally (e_c = ray_energy * color[c]; heat_emit = ray_heat). Rays with
-// angular_atten<=0 are SKIPPED (the CPU cast guards `if (angular_atten > 0)`),
-// so the RNG draw still advances for every i — preserving the jitter sequence.
-//
-// dx=cos(angle)/dy=sin(angle) are computed HERE in this /fp:strict TU, the same
-// place cast_source_directional computes `angle`; march_ray_directional recomputes
-// dx/dy from the identical `angle` with the same det_cos/det_sin (Q2-LIFT: the
-// pure-integer kit — identical bits in ANY TU on ANY machine, stronger than the
-// old shared-libm argument) — so the GPU (which reads these precomputed dx/dy)
-// walks bit-identical DDA tiles -> heat matches CPU byte-for-byte.
-std::vector<breach_cuda::RayHD> Raycaster::build_ray_list(
-        const LightSource& src, const RadSource* rs) const {
-    std::vector<breach_cuda::RayHD> rays;
-
-    int ray_count = src.get_ray_count();
-    float inv_n = 1.0f / static_cast<float>(ray_count);
-    float half_spread = src.angle_spread * 0.5f;
-    bool is_cone = src.angle_spread < 2.0f * PI - 0.01f;
-
-    std::mt19937 rng(static_cast<unsigned>(src.x * 1000 + src.y));
-    std::uniform_real_distribution<float> jitter_dist(-1.0f, 1.0f);
-
-    rays.reserve(static_cast<size_t>(ray_count));
-
-    for (int i = 0; i < ray_count; ++i) {
-        float t = (i + 0.5f) / ray_count;
-        float angle = src.angle_center - half_spread + t * src.angle_spread;
-
-        if (src.jitter > 0.0f) {
-            angle += jitter_dist(rng) * src.jitter;
-        }
-
-        float angular_atten = 1.0f;
-        if (is_cone) {
-            float offset = angle - src.angle_center;
-            while (offset >  PI) offset -= 2.0f * PI;
-            while (offset < -PI) offset += 2.0f * PI;
-            float norm = std::abs(offset) / (half_spread + 1e-6f);
-
-            switch (src.falloff) {
-                case Falloff::COSINE:
-                    // Q2-LIFT: integer-kit cos (arg in [0, pi/2] — in range).
-                    angular_atten = det_cos(std::min(norm, 1.0f) * PI * 0.5f);
-                    break;
-                case Falloff::SHARP:
-                    angular_atten = (norm < 0.9f) ? 1.0f : 0.0f;
-                    break;
-                default:
-                    angular_atten = 1.0f;
-                    break;
-            }
-        }
-
-        float ray_energy = src.intensity * angular_atten * inv_n;
-        float ray_heat   = src.heat * angular_atten * inv_n;
-        if (angular_atten > 0.0f) {
-            breach_cuda::RayHD ray;
-            ray.sx = src.x;
-            ray.sy = src.y;
-            ray.dx = det_cos(angle);   // Q2-LIFT: same kit as the CPU march ->
-            ray.dy = det_sin(angle);   // GPU and CPU consume IDENTICAL dirs
-            ray.e_r = ray_energy * src.color[0];
-            ray.e_g = ray_energy * src.color[1];
-            ray.e_b = ray_energy * src.color[2];
-            ray.heat_emit = ray_heat;
-            ray.max_range = src.max_range;
-            // P-R4: the emitter's radiation payload rides on the ray, folded
-            // in the SAME pinned order the CPU cast folds it
-            // (a_s * angular_atten * inv_n) and in the SAME /fp:strict TU — so
-            // the device march starts from a bit-identical coefficient.
-            if (rs != nullptr) {
-                ray.rad_src_idx = rs->idx;
-                ray.rad_T_q     = rs->T_q;
-                ray.rad_E_s     = rs->E_s;
-                ray.rad_his_s   = rs->his_s;
-                ray.rad_coef    = rs->a_s * angular_atten * inv_n;
-                ray.rad_damage_range = rs->damage_range;
-            }
-            rays.push_back(ray);
-        }
-    }
-    return rays;
-}
+// ---- (CUDA-S2 gate: Raycaster::build_ray_list) ----------------------------
+// DELETED at ray-engine-v2 P4 (issue #12) with the CUDA march it fed
+// (cuda_raycaster.{cu,h}): the S2 bit-identity gate and the S8c batched
+// fire-heat cast were its only callers, and both are gone. The CPU render
+// march above never needed it.
 

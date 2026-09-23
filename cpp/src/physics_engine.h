@@ -176,7 +176,9 @@ public:
         // live temperature / extinction / capacity planes into the four
         // int64 planes below, which the temperature fold, the Pass-1 clamp
         // and unit heat damage now read (the old cast that used to fill a
-        // separate set of planes is deleted, T6).
+        // separate set of planes is deleted, T6). With the radiation backend
+        // on (P4, set_radiation_backend) the same step runs the sweep's CUDA
+        // twin instead, bit-identical (cuda_radiation_sweep.h).
         //   heat_atten_q / dyn_heat_atten_q : int32 Q16 (h, w), the extinction
         //                                     planes (GameMap, optics_fixed.py)
         //   rad_net_sweep / rad_flux_sweep / rad_amb_sweep / rad_fluence :

@@ -249,3 +249,29 @@ are re-emitted *from where they were absorbed*, rather than uniformly over the c
 standard for energy conservation is machine precision (*"of the order of 1e-12. For
 larger values than this one should suspect programming errors"*), which our int64
 formulation beats by being exact.
+
+## Added 2026-09-24 (P4, the CUDA twin)
+
+### 16. Koch, Baker & Alcouffe 1992 — the KBA wavefront sweep
+K. R. Koch, R. S. Baker, R. E. Alcouffe, *"Solution of the first-order form of
+the 3-D discrete ordinates equation on a massively parallel processor"*,
+Trans. Am. Nucl. Soc. **65**, 198–199 (1992) · LANL report LA-UR-91-4157
+(CONF-920606-2), ANS annual meeting, Boston, June 1992 ·
+[OSTI record](https://www.osti.gov/biblio/10108750)
+
+**No PDF archived, honestly:** the Transactions item is a two-page meeting
+summary, and OSTI states it holds no digital full text of the LANL report. This
+entry is the placeholder the iron rule allows (the precedent is
+`README_radiation_2026-08.md`), not a fabricated archive.
+
+**Why it is cited.** `cpp/src/cuda_radiation_sweep.cu` parallelises the sweep
+on KBA's principle: a discrete-ordinates sweep is a dependency DAG per
+ordinate, and every cell of one *wavefront* — the anti-diagonal of the step
+transport (the design's "KBA skew"), a column or row of the shear — depends
+only on the previous wavefront, so a wavefront's cells run concurrently and
+the wavefronts in order, with the ordinates pipelined through the same
+wavefront steps. KBA applied this to a 3-D grid decomposed over processors
+(sweeping the undecomposed axis); the twin is the single-device 2-D case: one
+kernel per wavefront index, all 16 ordinates concurrent in it (design v3
+§8.2). The integer arithmetic is untouched by it: the gather form makes the
+order structural (§2.3), so the GPU's integers are the CPU's.

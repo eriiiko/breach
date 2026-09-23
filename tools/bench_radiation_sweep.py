@@ -1,4 +1,5 @@
-"""Timing bench for the CPU radiation sweep (ray-engine-v2 P1, design v3 §10).
+"""Timing bench for the radiation sweep (ray-engine-v2 P1 CPU, P4 CUDA twin;
+design v3 §10).
 
 Design §10 estimated ~10 ms per tick at 128x256 on one core, from a GUESSED
 ~5 ns per cell-update ("the number that is not known is a single
@@ -11,8 +12,24 @@ The scene is a bordered room with random opaque solids (about 12 % of the
 interior) at fire temperatures and a few bodies — a busy scene, not an empty
 one, so the timing is not flattered by a uniform field.
 
+--cuda (P4) runs the SAME scenes through the CUDA build (cpp/build_cuda, which
+carries the CPU sweep too, so both are timed in one process on one binary) and
+adds §10's two unknowns, measured rather than assumed:
+  * gpu/call   — breach_cuda::radiation_sweep_step, the per-call path
+                 PhysicsEngine.step_tail dispatches (arena malloc, H2D, the
+                 launches, sync, D2H, free), wall clock;
+  * core       — the launch core alone on resident CuPy buffers (launch +
+                 sync): the kernels and their launch overhead, no transfer;
+  * launches   — kernel launches per sweep (3 bookkeeping + one per
+                 wavefront index) and core time per launch;
+  * H2D / D2H  — what the per-call path moves, bytes and ms, measured with
+                 CuPy on the same pageable numpy planes;
+  * alloc      — one cudaMalloc + cudaFree of the per-call arena's size.
+Every GPU result is checked bit for bit against the CPU sweep first.
+
 Run:
     C:/Users/steen/anaconda3/python.exe tools/bench_radiation_sweep.py [--iters N]
+    C:/Users/steen/anaconda3/python.exe tools/bench_radiation_sweep.py --cuda [--iters N]
 """
 from __future__ import annotations
 
@@ -24,19 +41,34 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
-for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
-
-import breach_physics as bp  # noqa: E402
-from config import CFG  # noqa: E402
-import temperature_scale  # noqa: E402
-
-ONE = 65536
 SIZES = ((72, 46), (128, 256), (256, 512))
+ONE = 65536
+
+bp = None           # the breach_physics module, imported per mode in main()
+
+
+def _import_bp(cuda: bool):
+    """The CPU build by default; with --cuda the CUDA build, through
+    tools/run_on_cuda.py's one path setup (never a second copy of it)."""
+    global bp
+    if cuda:
+        sys.path.insert(0, str(ROOT / "tools"))
+        from run_on_cuda import setup_cuda_import
+        setup_cuda_import()
+    else:
+        for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
+            if str(_p) not in sys.path:
+                sys.path.insert(0, str(_p))
+    import breach_physics
+    bp = breach_physics
+    if cuda and not getattr(bp, "HAS_CUDA", False):
+        raise SystemExit("--cuda: the imported breach_physics is the CPU build")
+    return bp
 
 
 def _table():
+    from config import CFG
+    import temperature_scale
     ts = temperature_scale.load(CFG)
     tbl = bp.EmissiveTable()
     # T6 (issue #12): [physics.fire] rad_scale (the old cast's fitted key) is
@@ -68,12 +100,19 @@ def _scene(h, w, rng):
             his, np.ascontiguousarray(ts))
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--iters", type=int, default=20)
-    args = ap.parse_args(argv)
-    tbl, t_amb_q = _table()
-    rng = np.random.default_rng(20260916)
+def _best_of(fn, iters, reps=3):
+    """min over `reps` of the mean over `iters` calls, in seconds."""
+    best = None
+    for _ in range(reps):
+        t0 = time.perf_counter()
+        for _ in range(iters):
+            fn()
+        dt = (time.perf_counter() - t0) / iters
+        best = dt if best is None else min(best, dt)
+    return best
+
+
+def _cpu_rows(args, tbl, t_amb_q, rng):
     print(f"radiation sweep CPU timing, S16, {args.iters} iterations per point "
           f"(one cell-update = one cell in one ordinate)")
     print(f"{'grid':>10} {'transport':>10} {'ms/tick':>10} {'ns/cell-update':>16} {'cells':>10}")
@@ -84,19 +123,116 @@ def main(argv=None):
             planes = [np.zeros((h, w), dtype=np.int64) for _ in range(4)]
             # warm-up (scratch allocation) outside the timed loop
             sweep.run(T, a, d, his, ts, tbl, None, t_amb_q, 0, transport, 16, *planes)
-            best = None
-            for _ in range(3):
-                for p in planes:
-                    p.fill(0)
-                t0 = time.perf_counter()
-                for _ in range(args.iters):
-                    sweep.run(T, a, d, his, ts, tbl, None, t_amb_q, 0, transport, 16, *planes)
-                dt = (time.perf_counter() - t0) / args.iters
-                best = dt if best is None else min(best, dt)
+            best = _best_of(lambda: sweep.run(T, a, d, his, ts, tbl, None, t_amb_q, 0,
+                                              transport, 16, *planes), args.iters)
             ident = int(planes[0].sum()) + int(planes[1].sum()) + int(planes[2].sum())
             assert ident == 0, "the identity failed inside the bench"
             n_updates = h * w * 16
             print(f"{h:>4}x{w:<5} {name:>10} {best * 1e3:10.2f} {best * 1e9 / n_updates:16.1f} {h * w:10d}")
+
+
+def _cuda_rows(args, tbl, t_amb_q, rng):
+    import cupy as cp
+    SLOTS = int(bp.RADIATION_SWEEP_CNT_SLOTS)
+    k_leak_q = 6554                     # [physics.radiation] k_leak = 0.10, Q16
+    print(f"radiation sweep CPU vs CUDA twin, S16, k_leak 0.10, {args.iters} "
+          f"iterations per point; device: {bp.cuda_device_info()}")
+    print(f"{'grid':>10} {'transport':>9} {'cpu ms':>8} {'gpu/call':>9} {'core ms':>8} "
+          f"{'launches':>9} {'us/launch':>10} {'H2D KB':>7} {'H2D ms':>7} "
+          f"{'D2H KB':>7} {'D2H ms':>7} {'alloc ms':>9}")
+    for (h, w) in SIZES:
+        T, a, d, his, ts = _scene(h, w, rng)
+        vac = np.zeros((h, w), dtype=bool)
+        for name, transport in (("shear", bp.RadiationSweep.SHEAR), ("step", bp.RadiationSweep.STEP)):
+            # --- the CPU sweep, the engine's own derive + run ---
+            sweep = bp.RadiationSweep()
+            cpu = [np.zeros((h, w), dtype=np.int64) for _ in range(4)]
+            amb = sweep.derive_ambient(vac, tbl, -1)
+
+            def cpu_once():
+                sweep.run(T, a, d, his, ts, tbl, amb, t_amb_q, k_leak_q,
+                          transport, 16, *cpu)
+            cpu_once()
+            t_cpu = _best_of(cpu_once, args.iters)
+            # --- the per-call GPU path (what step_tail dispatches) ---
+            gpu = [np.zeros((h, w), dtype=np.int64) for _ in range(4)]
+
+            def gpu_once():
+                return bp.cuda_radiation_sweep_run(
+                    T, a, d, his, ts, tbl, None, t_amb_q, k_leak_q, transport, 16,
+                    *gpu, is_vacuum=vac, vac_level=-1)
+            _mn, _mx, launches = gpu_once()
+            for c_, g_ in zip(cpu, gpu):
+                assert np.array_equal(c_, g_), "the GPU sweep is not the CPU sweep"
+            t_call = _best_of(gpu_once, args.iters)
+            # --- the launch core on resident buffers (launch + sync only) ---
+            dv = {k: cp.asarray(v) for k, v in (("T", T), ("a", a), ("d", d),
+                                               ("his", his), ("ts", ts), ("vac", vac))}
+            d_etab = cp.asarray(np.asarray(tbl.table(), dtype=np.int64))
+            d_vl = cp.asarray(np.asarray([-1], dtype=np.int64))
+            d_kl = cp.asarray(np.asarray([k_leak_q], dtype=np.int32))
+            d_ta = cp.asarray(np.asarray([t_amb_q], dtype=np.int32))
+            d_out = cp.empty((1, 16, h, w), dtype=cp.int64)
+            scratch = [cp.empty((1, h, w), dtype=cp.int64) for _ in range(2)]
+            d_f = cp.empty((1, h, w), dtype=cp.int32)
+            d_rad = [cp.empty((1, h, w), dtype=cp.int64) for _ in range(4)]
+            d_cnt = cp.empty((1, SLOTS), dtype=cp.int64)
+
+            def core_once():
+                bp.cuda_radiation_sweep_resident(
+                    1, h, w, dv["T"].data.ptr, dv["a"].data.ptr, dv["d"].data.ptr,
+                    dv["his"].data.ptr, dv["ts"].data.ptr, 0, dv["vac"].data.ptr,
+                    d_etab.data.ptr, d_vl.data.ptr, d_kl.data.ptr, d_ta.data.ptr,
+                    transport, 16, True, d_out.data.ptr, scratch[0].data.ptr,
+                    scratch[1].data.ptr, d_f.data.ptr, *[p.data.ptr for p in d_rad],
+                    d_cnt.data.ptr)
+                cp.cuda.Device().synchronize()
+            core_once()
+            for c_, g_ in zip(cpu, d_rad):
+                assert np.array_equal(c_, g_.get()[0]), "the core is not the CPU sweep"
+            t_core = _best_of(core_once, args.iters)
+            # --- what the per-call path moves, on the same pageable planes ---
+            ins = (T, a, d, his, ts, vac, np.asarray(tbl.table(), dtype=np.int64))
+            h2d_bytes = sum(int(x.nbytes) for x in ins)
+
+            def h2d_once():
+                for x in ins:
+                    cp.asarray(x)
+                cp.cuda.Device().synchronize()
+            t_h2d = _best_of(h2d_once, args.iters)
+            d2h_bytes = sum(int(x.nbytes) for x in cpu)
+
+            def d2h_once():
+                for p in d_rad:
+                    p.get()
+            t_d2h = _best_of(d2h_once, args.iters)
+            # --- one cudaMalloc + cudaFree of the arena's size ---
+            arena = (h2d_bytes + 16 * h * w * 8 + 2 * h * w * 8 + h * w * 4
+                     + 4 * h * w * 8)
+
+            def alloc_once():
+                ptr = cp.cuda.runtime.malloc(arena)
+                cp.cuda.runtime.free(ptr)
+            t_alloc = _best_of(alloc_once, args.iters)
+            print(f"{h:>4}x{w:<5} {name:>9} {t_cpu * 1e3:8.2f} {t_call * 1e3:9.2f} "
+                  f"{t_core * 1e3:8.2f} {launches:>9d} {t_core * 1e6 / launches:10.2f} "
+                  f"{h2d_bytes / 1024:7.0f} {t_h2d * 1e3:7.2f} {d2h_bytes / 1024:7.0f} "
+                  f"{t_d2h * 1e3:7.2f} {t_alloc * 1e3:9.3f}")
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--iters", type=int, default=20)
+    ap.add_argument("--cuda", action="store_true",
+                    help="time the CUDA twin against the CPU sweep (design §10)")
+    args = ap.parse_args(argv)
+    _import_bp(args.cuda)
+    tbl, t_amb_q = _table()
+    rng = np.random.default_rng(20260916)
+    if args.cuda:
+        _cuda_rows(args, tbl, t_amb_q, rng)
+    else:
+        _cpu_rows(args, tbl, t_amb_q, rng)
     return 0
 
 
