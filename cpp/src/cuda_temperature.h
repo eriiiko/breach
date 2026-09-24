@@ -112,6 +112,11 @@ int64_t temperature_step(
     //  11 rad_clamp_hits      (T5b, the Pass-1 clamp's engagement COUNT)
     //  12 e_rad_clamp_drop_sum (P5c, the clamp's withheld energy, >= 0 —
     //                          APPENDED, so no pinned index moved)
+    //  13 e_rad_boundary_export_sum (P5c follow-up: rad_net on a gas cell
+    //                          outside the accountable set, exported; signed)
+    //  14 e_rad_floor_drop_sum (P5c follow-up: the floored chain's unlanded
+    //                          remainder below n_floor_heat; signed) — both
+    //                          APPENDED, no pinned index moved
     // T5b step 7: slots 3 (e_cool_sum) and 12 (e_thermostat_sum) are
     // DELETED with Pass 3, and every survivor below them RENUMBERED. The
     // indices are pinned positional and physics_engine.cpp folds them by
@@ -160,7 +165,9 @@ int64_t temperature_step(
 // .cu and the by-index fold in physics_engine.cpp are edited with it.
 // P5c: 12 -> 13 -- slot 12 = `e_rad_clamp_drop_sum`, APPENDED at the end, so
 // every pinned index keeps its meaning (the rule: append, never renumber).
-constexpr int TEMPERATURE_ENERGY_SLOTS = 13;
+// P5c follow-up: 13 -> 15 -- slots 13 (`e_rad_boundary_export_sum`) and 14
+// (`e_rad_floor_drop_sum`), APPENDED the same way.
+constexpr int TEMPERATURE_ENERGY_SLOTS = 15;
 
 // Backend selection (S1 gate + integration). When true, PhysicsEngine::step_tail
 // runs temperature on the GPU instead of the CPU solver. Defaults false so the

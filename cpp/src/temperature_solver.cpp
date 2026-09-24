@@ -405,14 +405,37 @@ void TemperatureSolver::step(
             // * A cell with rn == 0 is untouched — not even its mirror — so a
             //   smoke-free scene (a_gas == 0, hence rn == 0, on every gas cell)
             //   folds bit-identically to the pre-P5c pass.
+            // * NOTHING LEAVES THE BOUNDARY UNCOUNTED (P5c follow-up, design
+            //   §8.4 "bounded AND counted"; sweep_ref_q's module docstring and
+            //   gate G15 (g)). Two exits are neither a landing nor a truncation,
+            //   so §8.4's one-LSB bound does not cover them, and both are counted
+            //   in e_rad_clamp_drop_sum's heat currency (rn in heat counts, ×
+            //   FP_ONE), SIGNED, as COUNTERS ONLY — no landing moves:
+            //   - `e_rad_boundary_export_sum`: rad_net on a gas cell OUTSIDE the
+            //     accountable set (the ambient ring, an open breach). It is never
+            //     landed — the cell's energy is not in the books, and Pass 0 pins
+            //     it to ambient every tick — so it leaves with the boundary: the
+            //     radiative twin of the face flux's vacuum/ring OUTFLOW export.
+            //   - `e_rad_floor_drop_sum`: on an accountable cell whose bulk N is
+            //     below n_floor_q the chain divides by the floor and lands only
+            //     ~N/n_floor of rn; the conversion's whole unlanded remainder,
+            //     rn·FP_ONE − (T_after − T_before)·cap_real, is booked there — the
+            //     radiative twin of Pass 2's e_cond_cap_sum.
+            //   Neither is a term of the #54 identity: neither touches gas_energy,
+            //   so a term there would break it by exactly its own amount.
             // Energy form only: with gas_energy == nullptr (the pre-#54 direct
             // binding path) a gas cell's rad_net is not folded, as before P5c.
+            if (rad_net != nullptr && e_on && !ts[i] && !acct(i)) {
+                const int64_t rn = rad_net[i];
+                if (rn != 0) e_rad_boundary_export_sum += rn * (int64_t)FP_ONE;
+            }
             if (rad_net != nullptr && e_on && !ts[i] && acct(i)) {
                 const int64_t rn = rad_net[i];
                 if (rn != 0) {
                     const int64_t nb = n_books(i);                 // the books' N
-                    int32_t N_q = (n_bulk != nullptr) ? n_bulk[i] : atmosphere[i];
-                    if (N_q < n_floor_q) N_q = n_floor_q;          // the chain's floor
+                    const int32_t N_raw = (n_bulk != nullptr) ? n_bulk[i] : atmosphere[i];
+                    const bool floored = (N_raw < n_floor_q);      // the chain's floor
+                    const int32_t N_q = floored ? n_floor_q : N_raw;
                     const int32_t recip_N_q = reciprocal_q16(N_q);
                     const int64_t mag = deposit_dT_wide_i64(
                         (rn < 0) ? -rn : rn, recip_N_q, recip_cv);
@@ -420,6 +443,10 @@ void TemperatureSolver::step(
                     const int32_t t_before =
                         gas_energy::mirror_q(gas_energy[i], nb, t_amb_q);
                     int32_t t_target = sat_add_q16_i64(t_before, dT);
+                    if (floored) {
+                        e_rad_floor_drop_sum += rn * (int64_t)FP_ONE
+                            - ((int64_t)t_target - (int64_t)t_before) * cap_real_[i];
+                    }
                     if (rad_fluence != nullptr && e_table != nullptr) {
                         const int32_t t_cap = e_inv_q(e_table, rad_fluence[i]);
                         const int32_t ceiling =

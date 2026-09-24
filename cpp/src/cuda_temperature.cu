@@ -104,6 +104,9 @@ __device__ __forceinline__ int dx_of(int d) {
 // commit. TEMPERATURE_ENERGY_SLOTS drops 14 -> 12.
 // P5c: C_RAD_CLAMP_DROP APPENDED at 12 -- appended, never renumbered, so no
 // pinned index moves. TEMPERATURE_ENERGY_SLOTS 12 -> 13.
+// P5c follow-up: C_RAD_BND_EXPORT (13) and C_RAD_FLOOR_DROP (14) APPENDED the
+// same way -- the sweep->fold boundary's other two exits (design 8.4; the CPU
+// twin's comment in temperature_solver.cpp). TEMPERATURE_ENERGY_SLOTS 13 -> 15.
 enum : int {
     C_COND_TRUNC = 0,   // e_cond_trunc_sum   (endpoint floordiv residual, <= 0)
     C_COND_CAP   = 1,   // e_cond_cap_sum     (capacity floor/ceiling, signed)
@@ -118,6 +121,8 @@ enum : int {
     C_SOLID_COND    = 10, // e_solid_cond_sum    (P-G5, Pass 2 on ts cells)
     C_RAD_CLAMP     = 11, // rad_clamp_hits      (a count, not an energy)
     C_RAD_CLAMP_DROP = 12, // e_rad_clamp_drop_sum (P5c, the clamp's withheld energy)
+    C_RAD_BND_EXPORT = 13, // e_rad_boundary_export_sum (rad_net off the books, exported)
+    C_RAD_FLOOR_DROP = 14, // e_rad_floor_drop_sum (the floored chain's remainder)
 };
 
 __device__ __forceinline__ void cadd(unsigned long long* c, int slot, int64_t v) {
@@ -278,14 +283,20 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
         // mirror on max(T_before, E^-1(Phi)) through dE = N·(T_target −
         // T_before), and the seam's railed deposit books it (group 1). A cell
         // with rn == 0 is not touched. Energy form only (gas_energy != null).
+        // P5c follow-up (§8.4, the CPU twin verbatim): a gas cell OUTSIDE the
+        // accountable set books its rn as exported (C_RAD_BND_EXPORT), and an
+        // accountable one below n_floor books the floored chain's unlanded
+        // remainder (C_RAD_FLOOR_DROP) -- counters only, no landing moves.
         if (rad_net != nullptr && gas_energy != nullptr && !thermal_solid[i]) {
             const bool acct_r = !solid[i] && !is_vacuum[i]
                               && !(is_ambient != nullptr && is_ambient[i]);
             const int64_t rn = rad_net[i];
+            if (!acct_r && rn != 0)
+                cadd(cnt, C_RAD_BND_EXPORT, rn * (int64_t)fixedpoint::FP_ONE);
             if (acct_r && rn != 0) {
                 const int64_t nb = (int64_t)n_src[i] > 0 ? (int64_t)n_src[i] : 0;
-                int32_t N_q = n_src[i];
-                if (N_q < n_floor_q) N_q = n_floor_q;         // the chain's floor
+                const bool floored = (n_src[i] < n_floor_q);  // the chain's floor
+                const int32_t N_q = floored ? n_floor_q : n_src[i];
                 const int32_t recip_N_q = fixedpoint::reciprocal_q16(N_q);
                 const int64_t mag = fixedpoint::deposit_dT_wide_i64(
                     (rn < 0) ? -rn : rn, recip_N_q, recip_cv);
@@ -293,6 +304,10 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
                 const int32_t t_before =
                     gas_energy::mirror_q(gas_energy[i], nb, t_amb_q);
                 int32_t t_target = sat_add_q16_i64(t_before, dT);
+                if (floored)
+                    cadd(cnt, C_RAD_FLOOR_DROP,
+                         rn * (int64_t)fixedpoint::FP_ONE
+                         - ((int64_t)t_target - (int64_t)t_before) * cap_real[i]);
                 if (rad_fluence != nullptr && e_table != nullptr) {
                     const int32_t t_cap = e_inv_q(e_table, rad_fluence[i]);
                     const int32_t ceiling =

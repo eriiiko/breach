@@ -471,6 +471,9 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         this->temperature.solid_energy_books_sum = solid_books;     // P-G5 (=, not +=)
         this->temperature.rad_clamp_hits      += cond_counters[11]; // T5b: the clamp
         this->temperature.e_rad_clamp_drop_sum += cond_counters[12]; // P5c: appended slot
+        // P5c follow-up: the boundary's other two exits, APPENDED (13, 14).
+        this->temperature.e_rad_boundary_export_sum += cond_counters[13];
+        this->temperature.e_rad_floor_drop_sum      += cond_counters[14];
     } else
 #endif
     {

@@ -453,11 +453,13 @@ PYBIND11_MODULE(breach_physics, m) {
               // deleted with Pass 3 and the survivors renumbered).
               // P5c: slot 12 (e_rad_clamp_drop_sum) is APPENDED after the
               // solid-books snapshot, so every index a caller already reads
-              // keeps its meaning.
+              // keeps its meaning. P5c follow-up: slots 13
+              // (e_rad_boundary_export_sum) and 14 (e_rad_floor_drop_sum)
+              // APPENDED after it, the same way.
               return py::make_tuple(hits, cnt[0], cnt[1], cnt[2], cnt[3],
                                     cnt[4], cnt[5], cnt[6], cnt[7], cnt[8],
                                     cnt[9], cnt[10], cnt[11], solid_books,
-                                    cnt[12]);
+                                    cnt[12], cnt[13], cnt[14]);
           },
           py::arg("temperature"), py::arg("heat"), py::arg("heat_inv_shift"),
           py::arg("face_shift"), py::arg("solid"), py::arg("is_vacuum"),
@@ -481,7 +483,8 @@ PYBIND11_MODULE(breach_physics, m) {
           "e_ring_pin_sum, e_deposit_drop_sum, e_gas_deposit_sum, "
           "e_gas_cond_sum, e_gas_rail_sum, e_solid_deposit_sum, "
           "e_solid_cond_sum, rad_clamp_hits, solid_energy_books_sum, "
-          "e_rad_clamp_drop_sum) for this call (P-E2a + P-E2b + arc #54 + P-G5 "
+          "e_rad_clamp_drop_sum, e_rad_boundary_export_sum, "
+          "e_rad_floor_drop_sum) for this call (P-E2a + P-E2b + arc #54 + P-G5 "
           "+ P5c; solid_energy_books_sum is a SNAPSHOT, not a per-call delta).");
 
     // P4 (issue #12): the CUDA-S2 raycaster entry points that stood here --
@@ -2060,6 +2063,13 @@ PYBIND11_MODULE(breach_physics, m) {
         // currency e_solid_deposit_sum books landings in). Not a closure
         // term: the books close on what landed.
         .def_readonly("e_rad_clamp_drop_sum",    &TemperatureSolver::e_rad_clamp_drop_sum)
+        // P5c follow-up (§8.4): the sweep->fold boundary's other two exits,
+        // counted -- rad_net on a gas cell outside the accountable set
+        // (exported with the boundary), and the floored chain's unlanded
+        // remainder below n_floor_heat. Same heat currency, signed, not
+        // closure terms (neither touches gas_energy).
+        .def_readonly("e_rad_boundary_export_sum", &TemperatureSolver::e_rad_boundary_export_sum)
+        .def_readonly("e_rad_floor_drop_sum",      &TemperatureSolver::e_rad_floor_drop_sum)
         // P2: wind_x/wind_y/dt are OPTIONAL (default None/0.0) so the shipped
         // direct-binding call sites (tests/test_temperature_*.py,
         // tests/cuda_s1_check.py — all pre-P2, 7 positional args) keep working

@@ -425,12 +425,46 @@ public:
     // NOT a term of any closure identity: the books close on what LANDED
     // (e_solid_deposit_sum, e_gas_deposit_sum); this is energy that never
     // entered them. It is the counted half of design §8.4's sweep→fold
-    // boundary — Σ rad_net − Σ landed is this counter plus the conversions'
-    // own truncation (and the counted rails) — and the number Erik's P5c
-    // question reads: the clamp's shave as a share of absorbed radiation.
+    // boundary — Σ rad_net − Σ landed is this counter plus the two below plus
+    // the conversions' own truncation (and the counted rails) — and the number
+    // Erik's P5c question reads: the clamp's shave as a share of absorbed
+    // radiation.
     // Same accumulate-across-step() idiom as every counter here; the CUDA twin
     // folds its own slot (C_RAD_CLAMP_DROP, 12) into it.
     mutable int64_t e_rad_clamp_drop_sum = 0;
+    // ---- P5c follow-up (design v3 §8.4): THE BOUNDARY'S OTHER TWO EXITS ----
+    // At P5c two parts of what the sweep booked left the fold UNCOUNTED, and
+    // neither is a truncation, so §8.4's one-LSB-per-cell bound did not cover
+    // them. Both are now counted in e_rad_clamp_drop_sum's heat currency
+    // (rad_net in heat counts × FP_ONE, the unit the landing is priced in),
+    // both SIGNED, both COUNTERS ONLY (no landing moves). With them the
+    // boundary reads, per tick,
+    //     Σ rad_net · FP_ONE == Σ landed + e_rad_clamp_drop_sum
+    //                           + e_rad_boundary_export_sum + e_rad_floor_drop_sum
+    //                           + the conversions' rounding (+ the counted rails)
+    // (sweep_ref_q.py fold_pass1_gas; gate G15 (g); tests/test_temperature_
+    // gas_radiation.py holds the engine to it on live breached rooms).
+    // Neither is a TERM of the #54 identity, by construction: neither ever
+    // touches gas_energy, so a term there would break that identity by exactly
+    // its own amount (the EOS's e_absorb_export_sum class: an export, named).
+    //
+    // e_rad_boundary_export_sum: rad_net on a gas cell OUTSIDE the accountable
+    // set — the ambient ring, an open-vacuum breach. The fold never lands it
+    // (that cell's energy is not in the books; Pass 0 pins it to ambient every
+    // tick), so it leaves with the boundary: + where the boundary absorbed from
+    // the stream, − where it emitted into it. The radiative twin of the face
+    // flux's vacuum/ring OUTFLOW export (eos_solver.h e_work_export_sum).
+    // CUDA slot C_RAD_BND_EXPORT (13), appended.
+    mutable int64_t e_rad_boundary_export_sum = 0;
+    // e_rad_floor_drop_sum: on an ACCOUNTABLE gas cell whose bulk N is below
+    // n_floor_heat, the chain divides by the floor and lands only ~N/n_floor of
+    // the cell's rad_net; the conversion's whole unlanded remainder,
+    // rn·FP_ONE − (T_after − T_before)·cap_real, is booked here, on exactly
+    // those cells. + a thin absorber's heat destroyed; − a thin EMITTER paying
+    // less than it radiated (energy the stream carries that the cell never
+    // paid). The radiative twin of Pass 2's own capacity-floor term,
+    // e_cond_cap_sum. CUDA slot C_RAD_FLOOR_DROP (14), appended.
+    mutable int64_t e_rad_floor_drop_sum = 0;
 
     // --- P-E2a ENERGY BOOKS (design §2.3, §5, §7) --------------------------
     // Every counter here is an int64 sum in RAW ENERGY counts (Q16.16 capacity
