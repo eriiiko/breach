@@ -53,6 +53,7 @@ def handle_debug_keys(sim, renderer, state, selected_unit_id=None) -> None:
                  rl.is_key_down(K.KEY_RIGHT_CONTROL))
     if ctrl_held and rl.is_key_pressed(K.KEY_R):
         CFG.reload()
+        sim.on_config_reload()   # arc #63 P2: the one reload seam
 
     if rl.is_key_pressed(K.KEY_F8) and sim.recorder is not None:
         sim.recorder.dump("manual")

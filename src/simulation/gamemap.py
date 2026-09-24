@@ -55,6 +55,10 @@ from simulation.gases import (  # noqa: F401  (re-exported)
     INERT_N2,
 )
 
+# Swarm store (arc #63 P2, engine/17 §1.3): the per-species SoA arrays +
+# their allocation hook. No other GameMap dependency on the swarm module.
+from simulation.swarm import SWARM_RESIDENT_NAMES, allocate_swarm_store  # arc #63 P2
+
 
 # P-O2b (docs/fire_realism_design_2026-08-01.md v5.2 "F-O2b") — the draw's two
 # authored dials, resolved in ONE place so the dem_acc plane's depth and the
@@ -220,6 +224,14 @@ class GameMap:
         # re-uploading them is harmless.
         "sponge_sigma", "sponge_udamp",
     )
+    # arc #63 P2 (engine/17 §2): the swarm store — host-written resident arrays.
+    # No device kernel reads them in P2, so no per-tick transfer list names them
+    # and device copies go stale after any host store write (spawn/reclaim set
+    # gmap.swarm_host_dirty[sp]; P3's upload consumes it). Being in
+    # _RESIDENT_SYNCED puts them in the DEFAULT to_host() set: a defaulted
+    # to_host() would overwrite host writes with stale device data (the resident
+    # tick already forbids a defaulted to_host(), physics_runner._step_resident).
+    _RESIDENT_SYNCED = _RESIDENT_SYNCED + SWARM_RESIDENT_NAMES
     _RESIDENT_FIELD_NAMES = _RESIDENT_SYNCED + _RESIDENT_MASKS
 
     def __setattr__(self, name, value):
@@ -823,6 +835,14 @@ class GameMap:
         # per-level temperature seed exists yet), so this only matters where
         # `air_init_q` set N != the P1 calibration default.
         self.refresh_gas_energy()
+
+        # Swarm store (arc #63 P2, engine/17 §1.3): the last statement of
+        # __init__, deliberately after every other seed above. Allocation
+        # draws no RNG and runs on every level/reset (fresh GameMap each
+        # time). Dormancy comes from the presence gate (§5.1), not from
+        # skipping allocation — no code ever branches on "does the store
+        # exist".
+        allocate_swarm_store(self)
 
     # ------------------------------------------------------------------
     # Gas energy field (gas-energy conservation arc #54, design §2.2/§2.7)

@@ -98,6 +98,7 @@ from simulation.logic_nodes import (
 from simulation.sensor_system import build_sensors, sample_sensors
 from simulation.pump_system import build_pumps, sweep_pumps
 from simulation.vent_system import build_vents, sweep_vents
+from simulation.swarm import SwarmUnits, reload_species  # arc #63 P2
 from simulation.entities.schema import INPUT_HELD
 from simulation.gamemap import GameMap, MAT_DOOR, MAT_DOOR_CLOSED
 from simulation.movement import FootprintSamples, default_speed
@@ -257,11 +258,21 @@ class Simulation:
         """
         self._reset_internal(seed)
 
+    def on_config_reload(self) -> None:
+        """THE config-reload seam: the Ctrl+R path calls this right after
+        CFG.reload() (src/debug_keys.py). Re-binds every live table from the
+        fresh CFG; applies from the next tick. Today: the swarm species table
+        (arc #63 P2). Chapter 12's material/physics re-binds may join here."""
+        reload_species(self.gmap)
+
     def _reset_internal(self, seed: Optional[int]) -> None:
         # Fresh map (allocates grids), fresh RNG, fresh entity lists.
         self.gmap = GameMap(self.level)
         self.rng = np.random.default_rng(seed)
         self._seed = seed
+        # arc #63 P2: rebuild the swarm facade against the fresh GameMap.
+        # Structural — "reset" needs no swarm-specific method beyond this.
+        self.swarm = SwarmUnits(self.gmap)
 
         # A6 (a6 doors design §6.1): the sim's RUNTIME entity list — the
         # level's parsed instances with door entries replaced by fresh
@@ -406,6 +417,7 @@ class Simulation:
                 fh=self.gmap.material.shape[0],
                 fw=self.gmap.material.shape[1],
                 capacity=CFG.recorder.capacity,
+                swarm_units_cap=CFG.recorder.swarm_units_cap,  # arc #63 P2
             )
         else:
             self.recorder = None
@@ -1581,7 +1593,8 @@ class Simulation:
         if self.recorder is not None:
             self.recorder.record(self.gmap, self.tick, self.real_time,
                                  self.units, entities=self.entities,
-                                 signals=self._digest_signals())
+                                 signals=self._digest_signals(),
+                                 swarm=self.swarm.carrier())  # arc #63 P2
 
         # Clear the per-tick `heat` deposit — END OF TICK, AFTER every heat
         # consumer (engine/06 §1.3/§6 step 7). `heat` is a per-tick deposit

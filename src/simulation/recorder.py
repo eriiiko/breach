@@ -29,6 +29,17 @@ coordinating: the on-disk format is what offline tools depend on.
                              locate an entity divergence per instance)
         entity_registry_hash (0-d str) registry_content_hash() — entity
                              digests are only comparable at equal hash
+    Arc #63 P2 (ADDITIVE, presence-gated — a swarm-free session's .npz is
+    byte-identical to the frozen schema above; engine/17 §6/§7):
+        swarm_<species>_<col> (T, wmax) at the ROSTER dtype VERBATIM (no
+                             dequantize, no cast), env 0 only, wmax =
+                             min(swarm_units_cap, max recorded high_water)
+        swarm_<species>_high_water (T,) int32
+        swarm_next_unit_id   (T,) int32 — shared across species
+        swarm_species_hash   (T,) int64 — the species table hash's first 8
+                             bytes, per tick (so a hot reload inside the
+                             ring window is visible at its tick); 0 == no
+                             swarm that tick
 
 Filename: ``debug_{reason}_{YYYYMMDD_HHMMSS}.npz``. ``reason`` is one of
 ``"manual"`` (F8 dump) or ``"blowup"`` (auto-trigger when
@@ -42,6 +53,10 @@ import numpy as np
 
 from simulation.entities.registry import registry_content_hash
 from simulation.entities.serialize import serialize_entity_state
+from simulation.swarm import (  # arc #63 P2
+    FIRST_UNIT_ID, NEXT_UNIT_ID_ATTR, ROSTER, SPECIES_HASH_NPZ_KEY,
+    SWARM_SPECIES, high_water_attr, store_attr,
+)
 
 
 class PhysicsRecorder:
@@ -97,7 +112,7 @@ class PhysicsRecorder:
     # per-tick change is.
     BLOWUP_THRESHOLD = 50.0  # max |P - P_prev| (atm/tick) that triggers auto-dump
 
-    def __init__(self, fh, fw, capacity=1200, fields=None):
+    def __init__(self, fh, fw, capacity=1200, fields=None, swarm_units_cap=1024):
         self.fh = fh
         self.fw = fw
         self.capacity = capacity
@@ -105,6 +120,18 @@ class PhysicsRecorder:
         self.index = 0       # next write position
         self.count = 0       # total snapshots written (whether buffer wrapped)
         self.dumped = False  # prevent repeated auto-dumps for same blowup
+
+        # arc #63 P2 (engine/17 §6/§7): swarm per-unit ring family — a
+        # SEPARATE ring family from the grid `fields` rings above, allocated
+        # LAZILY at the first tick a swarm is present (env 0 only). Staying
+        # None keeps a swarm-free session's dump byte-identical to pre-P2
+        # (the entity/signal precedent, §7).
+        self.swarm_units_cap = swarm_units_cap
+        self._swarm_rings = None        # {species: {col_name: ndarray}}
+        self._swarm_hw_rings = None     # {species: ndarray (capacity,) int32}
+        self._swarm_nid_ring = None     # ndarray (capacity,) int32
+        self._swarm_shash_ring = None   # ndarray (capacity,) int64
+        self._swarm_truncated_printed = False   # one truncation line, ever
 
         # Pre-allocate ring buffers. BOOL synced planes (`obstacles`, and the
         # edge-trigger `ignition_armed`) record at bool dtype; everything else is
@@ -147,7 +174,45 @@ class PhysicsRecorder:
         total += self.tick_ids.nbytes + self.tick_times.nbytes
         return total / (1024 * 1024)
 
-    def record(self, gmap, tick, real_time, units, entities=None, signals=()):
+    def _alloc_swarm_rings(self):
+        """Lazy allocation at the first present tick (§7). Env 0 only, width
+        ``swarm_units_cap`` — a real swarm may run at ``max_units`` far wider
+        than this cap; capacity moves no digest byte and the recorder trims
+        the same way (``[0, high_water)``, capped)."""
+        W = self.swarm_units_cap
+        self._swarm_rings = {
+            sp: {c.name: np.zeros((self.capacity, W), dtype=c.dtype)
+                 for c in ROSTER}
+            for sp in SWARM_SPECIES
+        }
+        self._swarm_hw_rings = {
+            sp: np.zeros((self.capacity,), dtype=np.int32)
+            for sp in SWARM_SPECIES
+        }
+        # "earlier rows are truthfully 'nothing spawned'" (§7) — FIRST_UNIT_ID,
+        # not 0, is the correct pre-spawn value of next_unit_id.
+        self._swarm_nid_ring = np.full((self.capacity,), FIRST_UNIT_ID,
+                                       dtype=np.int32)
+        self._swarm_shash_ring = np.zeros((self.capacity,), dtype=np.int64)
+        total = sum(a.nbytes for cols in self._swarm_rings.values()
+                    for a in cols.values())
+        total += sum(a.nbytes for a in self._swarm_hw_rings.values())
+        total += self._swarm_nid_ring.nbytes + self._swarm_shash_ring.nbytes
+        print(f"[recorder] Swarm ring buffer: {self.capacity} slots x "
+              f"{W} units/species, ~{total / (1024 * 1024):.0f} MB")
+
+    @staticmethod
+    def _species_hash_int64(species_hash: str) -> int:
+        """The species-hash ring's int64 value (R13): the hash's first 8
+        bytes, little-endian signed. 0 == no swarm this tick — an existing
+        ring dtype class (``_INT64_FIELDS``)."""
+        if not species_hash:
+            return 0
+        return int.from_bytes(bytes.fromhex(species_hash)[:8], "little",
+                              signed=True)
+
+    def record(self, gmap, tick, real_time, units, entities=None, signals=(),
+              swarm=None):
         """Snapshot current state into ring buffer.
 
         ``entities`` (A4, additive): the sim's runtime entity list — Arc A
@@ -163,6 +228,14 @@ class PhysicsRecorder:
         ``serialize_entity_state`` is NOT extended to fold signals (that would
         change every door level's recorded bytes) — signals ride their own
         additive key.
+
+        ``swarm`` (arc #63 P2, additive): the §5.2 carrier
+        (``simulation.swarm.swarm_carrier``) — the digest and the recorder
+        consume the SAME carrier structure. ``None`` (a swarm-free session,
+        or a caller that never passes it — the ``_FakeGmap`` recorder tests)
+        is treated as absent; the per-unit ring family is allocated lazily
+        at the first present tick and stays unallocated (no ``swarm_*`` dump
+        key at all) for a swarm-free run.
         """
         i = self.index % self.capacity
         for name in self.fields:
@@ -216,6 +289,50 @@ class PhysicsRecorder:
             self.signal_snapshots[i] = serialize_signal_state(signals)
         else:
             self.signal_snapshots[i] = None
+
+        # arc #63 P2 (engine/17 §6/§7): the swarm per-unit ring family — a
+        # SEPARATE ring family from the grid `fields` rings, allocated
+        # lazily at the first present tick, env 0 only. Values are raw, at
+        # the ROSTER dtype (no dequantize, no cast).
+        if swarm is not None and swarm.get("present"):
+            if self._swarm_rings is None:
+                self._alloc_swarm_rings()
+            W = self.swarm_units_cap
+            for sp in SWARM_SPECIES:
+                block = swarm["blocks"].get(sp)
+                ring = self._swarm_rings[sp]
+                if block is None:
+                    # A species absent this tick writes zeros and hw 0.
+                    for c in ROSTER:
+                        ring[c.name][i] = 0
+                    self._swarm_hw_rings[sp][i] = 0
+                    continue
+                hw = int(block["high_water"])
+                w = min(hw, W)
+                for c in ROSTER:
+                    col = block["columns"][c.name]
+                    ring[c.name][i, :w] = col[:w]
+                    ring[c.name][i, w:] = 0
+                self._swarm_hw_rings[sp][i] = hw
+                if hw > W and not self._swarm_truncated_printed:
+                    print(f"[recorder] swarm {sp} high_water {hw} > "
+                          f"swarm_units_cap {W}: recording truncated to "
+                          f"the first {W} slots")
+                    self._swarm_truncated_printed = True
+            self._swarm_nid_ring[i] = int(swarm["next_unit_id"])
+            self._swarm_shash_ring[i] = self._species_hash_int64(
+                swarm.get("species_hash", ""))
+        elif self._swarm_rings is not None:
+            # Rings exist from an earlier present tick, but this record()
+            # call's swarm is absent/None — the "nothing" row (defensive:
+            # unreachable via Simulation, whose presence is monotone within
+            # one recorder's lifetime, but correct for a direct caller).
+            for sp in SWARM_SPECIES:
+                for c in ROSTER:
+                    self._swarm_rings[sp][c.name][i] = 0
+                self._swarm_hw_rings[sp][i] = 0
+            self._swarm_nid_ring[i] = FIRST_UNIT_ID
+            self._swarm_shash_ring[i] = 0
 
         self.index += 1
         self.count += 1
@@ -300,6 +417,23 @@ class PhysicsRecorder:
             data['signal_state'] = np.array(
                 [s if s is not None else b"" for s in sig_snaps],
                 dtype=np.bytes_)
+
+        # arc #63 P2 (engine/17 §7): swarm per-unit rings — ADDITIVE +
+        # presence-gated: no swarm_* key at all when no ring was ever
+        # allocated (identical key set to pre-P2). `wmax` bounds each
+        # column ring to [0, max recorded high_water) — the same
+        # [0, high_water) trim the digest applies, offline.
+        if self._swarm_rings is not None:
+            for sp in SWARM_SPECIES:
+                hw_ring = self._swarm_hw_rings[sp][slc]
+                wmax = min(self.swarm_units_cap,
+                          int(hw_ring.max()) if hw_ring.size else 0)
+                for c in ROSTER:
+                    data[store_attr(sp, c.name)] = \
+                        self._swarm_rings[sp][c.name][slc][:, :wmax]
+                data[high_water_attr(sp)] = hw_ring
+            data[NEXT_UNIT_ID_ATTR] = self._swarm_nid_ring[slc]
+            data[SPECIES_HASH_NPZ_KEY] = self._swarm_shash_ring[slc]
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"debug_{reason}_{timestamp}.npz"

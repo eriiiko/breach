@@ -20,6 +20,9 @@ Field kinds carry the determinism story at the declaration level:
 - ``KIND_LENGTH_M`` values are meters-first authoring numbers (editor design
   §4): stored as declared here, quantized ONCE at load by the canonical
   rule when a loader consumes them. Never used raw in the sim path.
+- ``KIND_REAL_Q16`` values are authored reals (TOML int or float), quantized
+  to Q16.16 ONCE at load by their consumer (first consumer: the swarm
+  species table, arc #63). Unused by entities today.
 - ``KIND_FLOAT_RENDER`` values are render-local floats that NEVER enter
   synced state (same class as ``light_rgb`` — see LightEntry's contract in
   level_loader.py).
@@ -38,6 +41,7 @@ patch enforces them; this module only states them.
 from __future__ import annotations
 
 import abc
+import math
 import re
 from dataclasses import dataclass
 
@@ -60,6 +64,7 @@ DIGEST_NAME_RE = re.compile(r"[A-Za-z0-9_]+\Z")
 KIND_INT = "int"                    # plain integer (counts, ids, team ints)
 KIND_Q16 = "q16"                    # Q16.16 fixed-point integer (synced domain)
 KIND_LENGTH_M = "length_m"          # meters-first length; quantized at load
+KIND_REAL_Q16 = "real_q16"  # authored real; quantized to Q16.16 at load
 KIND_BOOL = "bool"
 KIND_STR = "str"
 KIND_ENUM = "enum"                  # str constrained to `choices`
@@ -77,7 +82,7 @@ KIND_ROSTER = "roster"              # list of [unit_type(str), count(int>=1)]
 
 ALL_KINDS = (KIND_INT, KIND_Q16, KIND_LENGTH_M, KIND_BOOL, KIND_STR,
              KIND_ENUM, KIND_FLOAT_RENDER, KIND_COLOR_RGB, KIND_STR_LIST,
-             KIND_ENTITY_REF, KIND_ROSTER)
+             KIND_ENTITY_REF, KIND_ROSTER, KIND_REAL_Q16)
 
 # Kinds the entities.toml tuning overlay may override — NUMBERS only.
 NUMERIC_KINDS = (KIND_INT, KIND_Q16, KIND_LENGTH_M, KIND_FLOAT_RENDER)
@@ -241,6 +246,11 @@ def field_value_error(f: Field, value) -> str | None:
     elif f.kind in (KIND_LENGTH_M, KIND_FLOAT_RENDER):
         if not _is_number(value):
             err = "must be a number"
+    elif f.kind == KIND_REAL_Q16:
+        if not _is_number(value) or (isinstance(value, float)
+                                     and not math.isfinite(value)):
+            err = ("must be a finite number (authored real, quantized to "
+                   "Q16.16 at load)")
     elif f.kind == KIND_BOOL:
         if not isinstance(value, bool):
             err = "must be a bool"

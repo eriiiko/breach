@@ -2436,3 +2436,16 @@ poison_dps = 6.0
 # Physics ring-buffer length in seconds. config.py derives the integer slot
 # capacity via round(replay_seconds * ticks_per_second). 100 s -> 1200 @ 12 tps.
 replay_seconds = 100.0
+# Swarm recorder ring width (arc #63 P2, engine/17 §6): slots recorded per
+# species per tick (the [0, high_water) extent, capped here). Memory while a
+# swarm is present: 33 B x cap x capacity -> ~77 MiB at 1024 x 2400 (24 tps).
+# Reset-bound (the recorder is built in Simulation._reset_internal).
+swarm_units_cap = 1024
+
+[swarm.larva]
+# Swarm species row (engine/17 §2, arc #63). Schema lives in code
+# (simulation/swarm.py SPECIES_FIELDS + SPECIES_RELOAD: kind, reload class,
+# bounds); an unknown key or species here is a load error. Hot on Ctrl+R
+# (applied by Simulation.on_config_reload from the next tick) unless marked.
+max_units = 8192    # LOAD-TIME: slots per env (fork 2b). A Ctrl+R edit applies at the next reset/level load.
+hp_max    = 1.0     # hit points at spawn. Placeholder: v1 kills by threshold (fork 7b), hp is roster state for future targeting.
