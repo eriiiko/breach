@@ -1155,7 +1155,7 @@ flammable      = false
 emits_when_hot = false
 effect         = "vision_block"       # pure concealment; clears on decompression
 conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
-heat_absorb    = 0.0                  # P5a: dormant (see [gases.smoke]); water vapour IS an IR absorber -- a later patch's value
+heat_absorb    = 0.0                  # ACCEPTED GAP (P5c): a BAND absorber (H2O), not modelled -- only soot absorbs, grey (see [gases.smoke])
 
 [gases.smoke]            # combustion soot (== today's generic smoke)
 absorption     = [0.88, 0.90, 0.93]   # near-neutral, slight blue tilt: thin soot reads warm/brown
@@ -1167,14 +1167,49 @@ flammable      = false                # the soot itself is spent fuel
 emits_when_hot = true                 # black-body emission driven by heat buffer (M2/M3)
 effect         = "vision_block_heavy" # near-opaque concealment at density
 conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
-heat_absorb    = 0.0                  # HEAT extinction per unit density (ray-engine-v2 P5a, design v3
-                                     # 6.3): on a GAS cell the sweep reads a_gas = min(1, sum_g
-                                     # heat_absorb * N_g), 0 below gas_energy.h's N_EPS_RAW bulk.
-                                     # DORMANT at 0.0 on every row until P5c opens the temperature
-                                     # fold's gas branch: until then nothing consumes a gas cell's
-                                     # rad_net, so a value > 0 would take radiation out of the
-                                     # stream with no book to land in. Door [0, 4096] (gases.py
-                                     # HEAT_ABSORB_MAX -- the sweep's int64 headroom, not physics)
+heat_absorb    = 25.36                # HEAT extinction per unit smoke density (ray-engine-v2 P5a/P5c,
+                                     # design v3 6.3): on a GAS cell the sweep reads a_gas = min(1,
+                                     # sum_g heat_absorb * N_g), 0 below gas_energy.h's N_EPS_RAW
+                                     # bulk; the temperature fold's gas branch (P5c) lands what the
+                                     # smoke absorbs in gas_energy. Door [0, 4096] (gases.py
+                                     # HEAT_ABSORB_MAX -- the sweep's int64 headroom, not physics).
+# DERIVED, not fitted (P5c, 2026-09-24): the optical depth ONE unit of smoke density puts
+# across one tile, tau = sigma_P * M / (tile_w * ceiling_h):
+#  * sigma_P -- soot's mass-specific extinction, Planck-mean over the fire's own black body.
+#    Widmann, Yang, Smith, Manzello & Mulholland, "Measurement of the optical extinction
+#    coefficients of post-flame soot in the infrared", Combust. Flame 134 (2003) 119-129
+#    (NIST, public domain; docs/papers/widmann2003_post_flame_soot_ir_extinction_nist.pdf):
+#    K_e = 8.0-9.0 over 2.8-4.1 um for well-ventilated soot -- the band that carries fire
+#    heat, where scattering is negligible (a pure absorber, as this engine's gas is) -- at
+#    rho_soot = 1.86 g/cm3. K_e flat in lambda is the Rayleigh 1/lambda law, whose Planck
+#    mean is 360 zeta(5)/pi^4 * T/C2 = 3.8322 T/C2 (Modest, Radiative Heat Transfer, ch. 11).
+#    At the arc's 1263-game fire plateau (1556 K): sigma_P = 8.5 * 3.8322 * 1556 /
+#    (0.014388 m.K * 1.86e6 g/m3) = 1.894 m2/g. Cross-check: Mulholland & Croarkin,
+#    "Specific extinction coefficient of flame generated smoke", Fire Mater. 24 (2000)
+#    227-230 give 8.7 +/- 1.1 m2/g at 632.8 nm across 29 fuels; the same 1/lambda law takes
+#    it to 2.28 m2/g at 1556 K -- 20 % higher, the visible scattering albedo (~0.19) that
+#    the IR measurement does not carry.
+#  * M -- the soot mass ONE unit of smoke density holds, through the engine's own
+#    bookkeeping: combustion mints `soot_yield` (0.5) units of smoke per unit of N_O2
+#    burned, and one unit of N_O2 burns KG_FUEL_PER_N_O2 = 0.3716 kg of wood (materials.py:
+#    Huggett's 13.1 MJ/kg O2 over wood's effective 13 MJ/kg), which sheds y_s = 0.015 g of
+#    soot per g (red oak, well ventilated: Tewarson, SFPE Handbook of Fire Protection
+#    Engineering, "Generation of heat and chemical compounds in fires"). M = 0.015 * 371.6
+#    g / 0.5 = 11.15 g per tile.
+#  * tile_w * ceiling_h = 0.333 m * 2.5 m: the stream crosses one tile width through the
+#    tile volume, so tau = sigma M L / V = sigma M / (tile_w * ceiling_h).
+#  => heat_absorb = 1.894 * 11.15 / 0.8325 = 25.36. tests/test_gas_heat_absorb.py re-derives
+#     it from these constants and the LIVE dials: if soot_yield, the fuel constant or the
+#     tile geometry moves, it goes red until this is re-derived.
+# What it means: the measured in-game smoke (docs/smoke_tau_diagnostic_2026-08-25.md, rho
+# p50 0.021 / p90 0.060) is a_gas = 0.53 per tile at the median and heat-opaque from rho
+# 0.039. The same M through M&C's VISIBLE 8.7 m2/g gives tau = 116.5 per unit density --
+# within 3.3x of the renderer's hand-tuned plume opacity (379 per unit density, same doc):
+# smoke is correctly more transparent to fire heat than to the eye.
+# ACCEPTED GAPS: soot is treated as a GREY absorber at the fire's temperature (a cooler
+# soot cell's real Planck mean is lower, sigma_P ~ T); the density law is the optically-
+# thin min(1, tau), not 1 - exp(-tau) (design 6.3); and the combustion soot yield is the
+# visibility dial `soot_yield` -- if it moves, this value moves inversely.
 
 [gases.poison]                 # chlorine (Cl2), yellow-green
 absorption     = [0.45, 0.10, 0.80]   # B absorbed hardest, R moderate, G passes -> yellow-green tint
@@ -1186,7 +1221,7 @@ flammable      = false
 emits_when_hot = false
 effect         = "damage_over_time"   # lethal cloud; saturates to iconic green at mid-high density
 conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
-heat_absorb    = 0.0                  # P5a: dormant (see [gases.smoke])
+heat_absorb    = 0.0                  # ACCEPTED GAP (P5c): not modelled -- only soot absorbs, grey (see [gases.smoke])
 
 [gases.teargas]                # CS aerosol, pale near-white (ambiguous vs steam)
 absorption     = [0.12, 0.16, 0.30]   # low overall, B ~2x R -> faint warm/yellow only in thick plumes
@@ -1198,7 +1233,7 @@ flammable      = false
 emits_when_hot = false
 effect         = "area_denial"        # forces units out of the area; non-lethal
 conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
-heat_absorb    = 0.0                  # P5a: dormant (see [gases.smoke])
+heat_absorb    = 0.0                  # ACCEPTED GAP (P5c): not modelled -- only soot absorbs, grey (see [gases.smoke])
 
 [gases.fuel_gas]               # combustible vapour, faint, FLAMMABLE
 absorption     = [0.08, 0.10, 0.16]   # very faint, slight blue tilt — nearly invisible haze
@@ -1210,7 +1245,7 @@ flammable      = true                 # IGNITES -> spawns heat + smoke; the only
 emits_when_hot = true                 # while burning it glows via the black-body curve
 effect         = "ignition_hazard"    # invisible-ish until lit; then a fireball
 conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
-heat_absorb    = 0.0                  # P5a: dormant (see [gases.smoke])
+heat_absorb    = 0.0                  # ACCEPTED GAP (P5c): a BAND absorber (C-H), not modelled -- only soot absorbs, grey (see [gases.smoke])
 
 # EOS refactor P1 — the two BULK species (docs/eos_refactor_design.md §1/§2.1).
 # Together they ARE "air": ambient splits 21/79 (O2/inert_N2 by mole fraction,
@@ -1243,7 +1278,7 @@ flammable      = false
 emits_when_hot = false
 effect         = ""                   # no gameplay tag
 conservative   = true                 # EOS P1: donor-cell flux transport, not semi-Lagrangian
-heat_absorb    = 0.0                  # P5a: 0.0 is PHYSICAL (as o2); the burnt products' CO2/H2O are not modelled
+heat_absorb    = 0.0                  # 0.0 is PHYSICAL for N2; ACCEPTED GAP (P5c): the burnt products lumped here (CO2, H2O) are BAND absorbers, not modelled
 
 # ---------------------------------------------------------------------------
 # Duct filter table (vent system PATCH 1, issue #48 — docs/vent_system_

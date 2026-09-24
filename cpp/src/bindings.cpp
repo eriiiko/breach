@@ -335,7 +335,14 @@ PYBIND11_MODULE(breach_physics, m) {
              // CPU/GPU parity gate can drive Pass 1's radiation fold at a
              // NEGATIVE `heat_inv_shift` — the fold was already int64 but it
              // was not SIGNED, and "already wide" is not "already signed".
-             py::object rad_net_obj) -> py::tuple {
+             py::object rad_net_obj,
+             // P5c: the maximum-principle clamp's two planes (the sweep's Φ,
+             // int64 (h, w), and an EmissiveTable) and the ambient ring, all
+             // OPTIONAL — so the tol-0 gate can drive the fold's GAS branch
+             // WITH its clamp, and a ring cell, on this entry exactly as the
+             // CPU TemperatureSolver.step binding does.
+             py::object rad_fluence_obj, py::object e_table_obj,
+             py::object is_ambient_obj) -> py::tuple {
               auto [temp, h, w]    = get_2d(temperature);
               auto [hp, h2, w2]    = get_2d_const(heat);
               auto [shift, h3, w3] = get_2d_const(heat_inv_shift);
@@ -399,6 +406,28 @@ PYBIND11_MODULE(breach_physics, m) {
                   auto rn = rnet_arr.unchecked<2>();
                   rnet = rn.data(0, 0);
               }
+              // P5c: the clamp's planes, dtype-CHECKED like rad_net above.
+              const int64_t* rflu = nullptr;
+              const int64_t* etab = nullptr;
+              py::array_t<int64_t, py::array::c_style> rflu_arr;
+              if (!rad_fluence_obj.is_none() && !e_table_obj.is_none()) {
+                  if (!py::isinstance<py::array_t<int64_t>>(rad_fluence_obj)) {
+                      throw std::runtime_error(
+                          "cuda_temperature_step: rad_fluence must be an int64 "
+                          "numpy array (the sweep's Phi plane)");
+                  }
+                  rflu_arr = rad_fluence_obj.cast<py::array_t<int64_t, py::array::c_style>>();
+                  auto rf = rflu_arr.unchecked<2>();
+                  rflu = rf.data(0, 0);
+                  etab = e_table_obj.cast<const EmissiveTable&>().table();
+              }
+              const bool* amb = nullptr;
+              py::array_t<bool> amb_arr;
+              if (!is_ambient_obj.is_none()) {
+                  amb_arr = is_ambient_obj.cast<py::array_t<bool>>();
+                  auto [ap, ha, wa] = get_2d_const(amb_arr);
+                  amb = ap;
+              }
               const int32_t t_amb_q = fixedpoint::quantize((double)t_amb_k);
               // P-E2a/P-E2b/arc #54: the isolated GPU entry now returns
               // (t_max_phys_hits, e_cond_trunc_sum, e_cond_cap_sum,
@@ -417,13 +446,20 @@ PYBIND11_MODULE(breach_physics, m) {
                   temp, hp, shift, fs, sol, vac, atm, nb, wx, wy,
                   no_face, o2_vacuum_thresh,
                   c_v, n_floor_heat, gas_advection_rate, t_max_phys, h, w, dt,
-                  nullptr, tsol, nullptr, rnet, cnt,
-                  ge, t_amb_q, &solid_books);
+                  amb, tsol, nullptr, rnet, cnt,
+                  ge, t_amb_q, &solid_books,
+                  rflu, etab, (etab != nullptr) ? E_TABLE_SIZE : 0);
               // T5b step 7: 13 counters -> 11 (C_COOL and C_THERMOSTAT are
               // deleted with Pass 3 and the survivors renumbered).
+              // P5c: slot 12 (e_rad_clamp_drop_sum) is APPENDED after the
+              // solid-books snapshot, so every index a caller already reads
+              // keeps its meaning. P5c follow-up: slots 13
+              // (e_rad_boundary_export_sum) and 14 (e_rad_floor_drop_sum)
+              // APPENDED after it, the same way.
               return py::make_tuple(hits, cnt[0], cnt[1], cnt[2], cnt[3],
                                     cnt[4], cnt[5], cnt[6], cnt[7], cnt[8],
-                                    cnt[9], cnt[10], cnt[11], solid_books);
+                                    cnt[9], cnt[10], cnt[11], solid_books,
+                                    cnt[12], cnt[13], cnt[14]);
           },
           py::arg("temperature"), py::arg("heat"), py::arg("heat_inv_shift"),
           py::arg("face_shift"), py::arg("solid"), py::arg("is_vacuum"),
@@ -437,15 +473,19 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("gas_energy") = py::none(),      // arc #54 §2.2 (optional)
           py::arg("t_amb_k") = 290.0f,
           py::arg("rad_net") = py::none(),         // M1: int64, loud (optional)
+          py::arg("rad_fluence") = py::none(),     // P5c: the clamp's Phi (optional)
+          py::arg("e_table") = py::none(),         // P5c: an EmissiveTable (optional)
+          py::arg("is_ambient") = py::none(),      // P5c: the ambient ring (optional)
           "P6.6/P-G2 isolated: run the GPU unified temperature solver in place "
           "on `temperature` (+ `gas_energy` when supplied — bit-identical to "
           "TemperatureSolver.step); returns (t_max_phys_hits, e_cond_trunc_sum, "
-          "e_cond_cap_sum, cond_limit_hits, e_cool_sum, e_vac_wipe_sum, "
+          "e_cond_cap_sum, cond_limit_hits, e_vac_wipe_sum, "
           "e_ring_pin_sum, e_deposit_drop_sum, e_gas_deposit_sum, "
           "e_gas_cond_sum, e_gas_rail_sum, e_solid_deposit_sum, "
-          "e_solid_cond_sum, e_thermostat_sum, solid_energy_books_sum) for "
-          "this call (P-E2a + P-E2b + arc #54 + P-G5; the last is a SNAPSHOT, "
-          "not a per-call delta).");
+          "e_solid_cond_sum, rad_clamp_hits, solid_energy_books_sum, "
+          "e_rad_clamp_drop_sum, e_rad_boundary_export_sum, "
+          "e_rad_floor_drop_sum) for this call (P-E2a + P-E2b + arc #54 + P-G5 "
+          "+ P5c; solid_energy_books_sum is a SNAPSHOT, not a per-call delta).");
 
     // P4 (issue #12): the CUDA-S2 raycaster entry points that stood here --
     // cuda_raycaster_cast, cuda_raycaster_cast_batch and the vestigial
@@ -2018,6 +2058,18 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readonly("solid_energy_books_sum",  &TemperatureSolver::solid_energy_books_sum)
         // Ray-engine-v2 P1: the Pass-1 maximum-principle clamp's counter.
         .def_readonly("rad_clamp_hits",          &TemperatureSolver::rad_clamp_hits)
+        // P5c (design v3 §2.8 / §8.4): the energy that clamp WITHHOLDS, on
+        // solids and gas, priced at the cell's real capacity (the heat
+        // currency e_solid_deposit_sum books landings in). Not a closure
+        // term: the books close on what landed.
+        .def_readonly("e_rad_clamp_drop_sum",    &TemperatureSolver::e_rad_clamp_drop_sum)
+        // P5c follow-up (§8.4): the sweep->fold boundary's other two exits,
+        // counted -- rad_net on a gas cell outside the accountable set
+        // (exported with the boundary), and the floored chain's unlanded
+        // remainder below n_floor_heat. Same heat currency, signed, not
+        // closure terms (neither touches gas_energy).
+        .def_readonly("e_rad_boundary_export_sum", &TemperatureSolver::e_rad_boundary_export_sum)
+        .def_readonly("e_rad_floor_drop_sum",      &TemperatureSolver::e_rad_floor_drop_sum)
         // P2: wind_x/wind_y/dt are OPTIONAL (default None/0.0) so the shipped
         // direct-binding call sites (tests/test_temperature_*.py,
         // tests/cuda_s1_check.py — all pre-P2, 7 positional args) keep working
@@ -2046,7 +2098,10 @@ PYBIND11_MODULE(breach_physics, m) {
                         py::object rad_net_obj,
                         py::object rad_fluence_obj,
                         py::object e_table_obj,
-                        bool clamp_enabled) {
+                        bool clamp_enabled,
+                        py::object gas_energy_obj,
+                        int32_t t_amb_q,
+                        py::object is_ambient_obj) {
             auto [temp, h, w]     = get_2d(temperature);
             auto [hp, h2, w2]     = get_2d_const(heat);
             auto [shift, h3, w3]  = get_2d_const(heat_inv_shift);
@@ -2149,8 +2204,48 @@ PYBIND11_MODULE(breach_physics, m) {
                 rflu = rf.data(0, 0);
                 etab = e_table_obj.cast<const EmissiveTable&>().table();
             }
+            // P5c: the ENERGY FORM on the direct binding, so the fold's gas
+            // branch — which exists only there (a gas cell's rad_net is folded
+            // through the gas-energy seam or not at all) — can be driven and
+            // held to sweep_ref_q.fold_pass1_gas bit for bit. `gas_energy` is
+            // the conserved field, (h, w) int64, MUTATED (in/out); its dtype is
+            // CHECKED, never converted — a converted copy would be a silently
+            // discarded temporary, the design-row-26 trap. `t_amb_q` is T_AMB_K
+            // raw (the engine passes 293 << 16), read only with gas_energy.
+            // None (the default) keeps the pre-#54 T-form law bit for bit.
+            int64_t* ge = nullptr;
+            py::array_t<int64_t, py::array::c_style> ge_arr;
+            if (!gas_energy_obj.is_none()) {
+                if (!py::isinstance<py::array_t<int64_t>>(gas_energy_obj)) {
+                    throw py::type_error(
+                        "TemperatureSolver.step: gas_energy must be an int64 numpy "
+                        "array (the conserved field, mutated in place)");
+                }
+                ge_arr = gas_energy_obj.cast<py::array_t<int64_t, py::array::c_style>>();
+                if (ge_arr.ptr() != gas_energy_obj.ptr()) {
+                    // a non-contiguous caller got a COPY: its writes would vanish
+                    throw py::type_error(
+                        "TemperatureSolver.step: gas_energy must be a C-contiguous "
+                        "int64 array (it is written in place)");
+                }
+                auto [gep, hg, wg] = get_2d(ge_arr);
+                if (hg != h || wg != w) {
+                    throw py::value_error("TemperatureSolver.step: gas_energy must be (h, w)");
+                }
+                ge = gep;
+            }
+            // P5c: the ambient ring, OPTIONAL by the same idiom — None ->
+            // nullptr (a space map). The ring is outside the accountable set,
+            // so a gate can show the gas branch leaves a ring cell alone.
+            const bool* amb = nullptr;
+            py::array_t<bool> amb_arr;
+            if (!is_ambient_obj.is_none()) {
+                amb_arr = is_ambient_obj.cast<py::array_t<bool>>();
+                auto [ap, ha, wa] = get_2d_const(amb_arr);
+                amb = ap;
+            }
             self.step(temp, hp, shift, fs, sol, vac, atm, nb, wx, wy, h, w, dt,
-                      nullptr, tsol, rnet, nullptr, 0, rflu, etab);
+                      amb, tsol, rnet, ge, t_amb_q, rflu, etab);
         }, py::arg("temperature"), py::arg("heat"),
            py::arg("heat_inv_shift"), py::arg("face_shift"),
            py::arg("solid"), py::arg("is_vacuum"), py::arg("atmosphere"),
@@ -2160,7 +2255,10 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("rad_net") = py::none(),
            py::arg("rad_fluence") = py::none(),     // ray-engine-v2 P1: the clamp's Φ
            py::arg("e_table") = py::none(),         // ray-engine-v2 P1: an EmissiveTable
-           py::arg("clamp_enabled") = true);        // ray-engine-v2 P1: gate 5's switch
+           py::arg("clamp_enabled") = true,         // ray-engine-v2 P1: gate 5's switch
+           py::arg("gas_energy") = py::none(),      // P5c: the energy form (int64, in/out)
+           py::arg("t_amb_q") = 0,                  // P5c: T_AMB_K raw, with gas_energy
+           py::arg("is_ambient") = py::none());     // P5c: the ambient ring (optional)
 
     // --- EmissiveTable + RadiationSweep (ray-engine-v2 P1) --------------
     // The E° table's one owner (PhysicsEngine.emissive; the old Raycaster
@@ -2258,6 +2356,36 @@ PYBIND11_MODULE(breach_physics, m) {
              "absorbs a_gas_q, exactly as the sweep's pre-pass forms it (P5b): "
              "L priced in the temperature fold's gas currency (n_floor_q, "
              "recip_cv — PhysicsEngine.gas_capacity_q()).")
+        // P5c: the smoke term's extinction for ONE cell, through the very
+        // FP_HD functions the pre-pass sums with (gas_density_term,
+        // gas_extinction_finish) — so the tile inspector shows a gas cell's
+        // a_gas without a second transcription of the density law.
+        .def_static("gas_extinction_q16",
+             [](py::array_t<int32_t, py::array::c_style> densities,
+                py::array_t<int32_t, py::array::c_style> heat_absorb_q16,
+                int32_t n_bulk) {
+                 auto dn = densities.unchecked<1>();
+                 auto hq = heat_absorb_q16.unchecked<1>();
+                 if (dn.shape(0) != hq.shape(0) ||
+                     hq.shape(0) > RadiationSweep::N_GAS_PLANES_MAX) {
+                     throw py::value_error(
+                         "gas_extinction_q16: one heat_absorb_q16 per density, at "
+                         "most N_GAS_PLANES_MAX of them");
+                 }
+                 int64_t sum = 0;
+                 for (py::ssize_t g = 0; g < hq.shape(0); ++g) {
+                     if (hq(g) < 0 || hq(g) > RadiationSweep::HEAT_ABSORB_Q_MAX) {
+                         throw py::value_error(
+                             "gas_extinction_q16: a heat_absorb_q16 outside [0, 2^28]");
+                     }
+                     sum += gas_density_term(hq(g), dn(g));
+                 }
+                 return gas_extinction_finish(sum, n_bulk);
+             }, py::arg("densities").noconvert(), py::arg("heat_absorb_q16").noconvert(),
+                py::arg("n_bulk"),
+             "a_gas (Q16) for ONE gas cell: min(ONE, sum_g heat_absorb_q16[g] * "
+             "max(0, N_g) >> 16), 0 below the N_EPS bulk floor — the smoke term "
+             "the sweep's pre-pass forms (P5a), for the tile inspector (P5c).")
         .def("derive_ambient", [](const RadiationSweep& self,
                                   py::array_t<bool, py::array::c_style> is_vacuum,
                                   const EmissiveTable& e_table,

@@ -270,7 +270,7 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // prices every absorbing gas cell in the temperature fold's own gas
         // currency — gas_capacity_q() above, from this->temperature's dials,
         // the SAME n_bulk_ the fold divides by. Read only where a_gas > 0:
-        // nowhere in the shipped game, where every heat_absorb is 0.0.
+        // wherever there is smoke, since P5c ships smoke's heat_absorb.
         const GasCapacityQ cap = this->gas_capacity_q();
 #ifdef BREACH_HAS_CUDA
         if (breach_cuda::radiation_backend_is_cuda()) {
@@ -470,6 +470,10 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         this->temperature.e_solid_cond_sum    += cond_counters[10]; // P-G5
         this->temperature.solid_energy_books_sum = solid_books;     // P-G5 (=, not +=)
         this->temperature.rad_clamp_hits      += cond_counters[11]; // T5b: the clamp
+        this->temperature.e_rad_clamp_drop_sum += cond_counters[12]; // P5c: appended slot
+        // P5c follow-up: the boundary's other two exits, APPENDED (13, 14).
+        this->temperature.e_rad_boundary_export_sum += cond_counters[13];
+        this->temperature.e_rad_floor_drop_sum      += cond_counters[14];
     } else
 #endif
     {

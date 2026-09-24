@@ -97,14 +97,25 @@ def _ambient_fluence_s16(sim):
     return 16 * ((e0 * 4096) >> 16)
 
 
-def test_ab_default_scenario_the_sweep_runs_every_tick_and_is_pure_ambient():
+def test_ab_default_scenario_the_sweep_runs_every_tick_and_only_its_smoke_radiates():
     """PROPERTY (design §3 condition (i), critique 3 §6c): over 40 ticks of the
     A/B default scenario the shadow sweep's three-term identity holds every
-    tick, and Phi is exactly the ambient fluence 16*amb_m on every cell every
-    tick (step 2b ran — and the scene is radiatively inert, which is the
-    FINDING this test records: its seeded fire delivers no heat, per
-    CLAUDE.md's "Starting a fire" row, so no thermal solid ever leaves
-    ambient).
+    tick and Phi is never below the ambient fluence 16*amb_m anywhere (step 2b
+    ran). The scene's SOLIDS are radiatively inert -- the FINDING this test
+    records: its seeded fire delivers no heat, per CLAUDE.md's "Starting a
+    fire" row, so no thermal solid ever leaves ambient -- which is measured
+    directly: with the smoke term zeroed on this world's gas table, Phi is
+    EXACTLY 16*amb_m on every cell every tick.
+
+    P5c (issue #12): with the SHIPPED smoke coefficient the scene is no longer
+    inert as a whole -- it seeds smoke at 0.6 over its interior, and the EOS
+    answering its hull breach moves that smoke's temperature from tick 0 (the
+    ghost fire and the wave source do not: measured, without the breach no gas
+    cell leaves ambient before the fold), so the smoke exchanges radiation and
+    Phi leaves ambient (asserted: the smoke term is live in the canonical
+    scenario, which is also why GOLDEN_AGGREGATE moved at P5c). Until P5c this
+    test asserted Phi == ambient with the shipped table, true only while every
+    heat_absorb was 0.0.
 
     T6 (issue #12): this test used to ALSO check the old cast's own pre-fold
     ledger identity (Sum rad_net + Sum rad_amb == 0) and its int32 wrap bound
@@ -114,21 +125,33 @@ def test_ab_default_scenario_the_sweep_runs_every_tick_and_is_pure_ambient():
     here is unchanged by the deletion (the sweep never depended on the old
     cast).
 
-    BREAKS IF: step 2b is not wired (Phi would be zero), or a sweep term
-    stops being booked.
+    BREAKS IF: step 2b is not wired (Phi would be zero), a sweep term stops
+    being booked, a thermal solid of this fireless scene starts radiating, or
+    the smoke term stops reaching the live sweep.
     """
-    sim = default_scenario_sim()
-    seen = _watch_physics(sim)
-    for _ in range(40):
-        sim.set_paused(False)
-        sim.step()
-    assert seen["ticks"] == 40
-    assert all(v == 0 for v in seen["sweep_identity"]), seen["sweep_identity"][:5]
-    amb = _ambient_fluence_s16(sim)
-    assert seen["fluence_min"] == amb and seen["fluence_max"] == amb, (seen["fluence_min"], amb)
-    print(f"\nA/B default scenario, 40 ticks: sweep rad_net_sweep non-zero on "
-          f"{seen['sweep_nonzero_ticks']}/40 ticks; Phi == 16*amb_m == {amb} on "
-          f"every cell (the scene is radiatively inert)")
+    from simulation.gases import SMOKE
+    amb = None
+    for smoke_live in (False, True):
+        sim = default_scenario_sim()
+        if not smoke_live:
+            hq = sim.gmap.gases.heat_absorb_q16.copy()
+            hq[SMOKE] = 0
+            sim.gmap.gases.heat_absorb_q16 = np.ascontiguousarray(hq)
+        seen = _watch_physics(sim)
+        for _ in range(40):
+            sim.set_paused(False)
+            sim.step()
+        assert seen["ticks"] == 40
+        assert all(v == 0 for v in seen["sweep_identity"]), seen["sweep_identity"][:5]
+        amb = _ambient_fluence_s16(sim)
+        assert seen["fluence_min"] == amb, (seen["fluence_min"], amb)
+        if smoke_live:
+            assert seen["fluence_max"] > amb, "the shipped smoke never radiated: vacuous"
+        else:
+            assert seen["fluence_max"] == amb, (seen["fluence_max"], amb)
+    print(f"\nA/B default scenario, 40 ticks: the solids are inert (Phi == 16*amb_m == "
+          f"{amb} everywhere with the smoke term zeroed); with the shipped smoke Phi "
+          f"reaches {seen['fluence_max']}")
 
 
 def _playground_with_a_hot_wood_tile():
@@ -262,21 +285,34 @@ def test_a_second_tick_overwrites_the_planes_and_does_not_accumulate():
     after_one = {n: getattr(g, n).copy() for n in _SWEEP_PLANES}
     # tick 2: snapshot the sweep's INPUTS as the physics tail sees them, then
     # let the tick finish and compare against a single direct run on them.
+    # P5c: taken at step_tail ENTRY (the engine proxy idiom), not at the
+    # runner's: the SMOKE term is live, so the gas planes and the gas
+    # temperatures the EOS and combustion move earlier in the tick are sweep
+    # inputs now -- a runner-entry snapshot was exact only while no gas cell
+    # absorbed. The direct run gets the smoke term and the fold's currency
+    # exactly as step_tail hands them.
     grabbed = {}
     runner = sim.physics_runner
-    orig = runner.step
+    eng = runner.engine
 
-    def wrapped(gmap, sim_time, tick=0):
-        grabbed["inputs"] = (gmap.temperature.copy(), gmap.heat_atten_q.copy(),
-                             gmap.dyn_heat_atten_q.copy(), gmap.heat_inv_shift.copy(),
-                             gmap.thermal_solid.copy())
-        return orig(gmap, sim_time, tick=tick)
+    class _Capture:
+        def __getattr__(self, name):
+            return getattr(eng, name)
 
-    runner.step = wrapped
-    sim.step()
+        def step_tail(self, *args, **kwargs):
+            grabbed["inputs"] = (g.temperature.copy(), g.heat_atten_q.copy(),
+                                 g.dyn_heat_atten_q.copy(), g.heat_inv_shift.copy(),
+                                 g.thermal_solid.copy(), g.gas.copy(),
+                                 np.asarray(kwargs["gas_heat_absorb_q16"]).copy())
+            return eng.step_tail(*args, **kwargs)
+
+    runner.engine = _Capture()
+    try:
+        sim.step()
+    finally:
+        runner.engine = eng
     assert "inputs" in grabbed
-    T, a_q, d_q, his, ts = grabbed["inputs"]
-    eng = sim.physics_runner.engine
+    T, a_q, d_q, his, ts, gas, hq = grabbed["inputs"]
     h, w = T.shape
     one = [np.zeros((h, w), dtype=np.int64) for _ in range(4)]
     t_amb_q, k_leak_q = _sweep_dials(sim)
@@ -287,8 +323,14 @@ def test_a_second_tick_overwrites_the_planes_and_does_not_accumulate():
     # default, so the test would go silently vacuous the day a cold sky ships.
     amb_lvl = sweep.derive_ambient(g.is_vacuum, eng.emissive,
                                    int(runner.rad_amb_vacuum_q))
+    n_bulk = sum(gas[gi].astype(np.int64)
+                 for gi in np.flatnonzero(g.gases.conservative)).astype(np.int32)
+    n_floor_q, _c_v_q, recip_cv = eng.gas_capacity_q()
     sweep.run(T, a_q, d_q, his, ts, eng.emissive, amb_lvl, t_amb_q, k_leak_q,
-              bp.RadiationSweep.SHEAR, 16, *one)
+              bp.RadiationSweep.SHEAR, 16, *one, gas=np.ascontiguousarray(gas),
+              heat_absorb_q16=np.ascontiguousarray(hq),
+              n_bulk=np.ascontiguousarray(n_bulk), n_floor_q=int(n_floor_q),
+              recip_cv=int(recip_cv))
     for name, expect in zip(_SWEEP_PLANES, one):
         got = getattr(g, name)
         assert np.array_equal(got, expect), (

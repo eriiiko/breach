@@ -1,8 +1,9 @@
 """P0 GATES for the integer reference (`sweep_ref_q.py`), 2026-09-15 (+ P0b).
 
 Runs the twelve gates of `docs/ray_engine_v2_design_v3_2026-09-15.md` sections
-2.8-2.9 and of critique 3 sections 1-4 -- and since P5a / P5b the gas term's two
-(G13, design 6.3's smoke extinction; G14, the gas arm of the Fleck pre-pass) --
+2.8-2.9 and of critique 3 sections 1-4 -- and since P5a / P5b / P5c the gas
+term's three (G13, design 6.3's smoke extinction; G14, the gas arm of the Fleck
+pre-pass; G15, the temperature fold's gas branch and design 8.4's boundary) --
 prints the MEASURED numbers (never a bare boolean), and exits non-zero if any
 fails.
 
@@ -1716,6 +1717,381 @@ def gate14_gas_fleck_arm(fast=False):
     return ok, lines
 
 
+# --------------------------------------------------------------------------- #
+# P5c: THE FOLD'S GAS BRANCH (design 2.8 / 6.3 / 8.4). fold_pass1_gas is what
+# temperature_solver.cpp's gas branch and its CUDA twin transcribe; this gate is
+# its property sheet, and tests/test_temperature_gas_radiation.py holds the
+# engine's fold to it bit for bit.
+# --------------------------------------------------------------------------- #
+def _gas_fold_cells(rng, n, table):
+    """n random ACCOUNTABLE gas cells as 1 x n planes: stored energy with a random
+    residual E mod N, bulk from the N_EPS edge through the n_floor density to 3
+    atm, rad_net of both signs from one count to 2^44, and a fluence that puts
+    the cell's cap both above and below it (so the clamp binds on some and not
+    on others, and some cells sit ABOVE their cap -- a combustion-held flame)."""
+    T, Eg, rn, phi, nb = [[]], [[]], [[]], [[]], [[]]
+    n_pool = [R.N_EPS_RAW, 200, R.N_FLOOR_Q_LIVE, Q(0.2), ONE, 3 * ONE]
+    for _ in range(n):
+        N = rng.choice(n_pool)
+        t_game = rng.choice([-150, 0, 5, 300, 804, 1263, 3000, 9000])
+        t_q = (t_game << 16) + rng.randrange(0, 1 << 16)
+        e = N * (t_q + R.T_AMB_Q) + rng.randrange(0, N)      # a real residual
+        mag = rng.choice([1, 77, 1 << 12, 1 << 20, 1 << 30, 1 << 44])
+        r = mag if rng.random() < 0.6 else -mag
+        cap_game = rng.choice([0, 4, 290, 804, 1263, 5000, 15996])
+        f = table[min(R.E_TABLE_SIZE - 1, cap_game // 4)] + rng.choice([0, 1, 999])
+        T[0].append(R.gas_mirror_q(e, N))
+        Eg[0].append(e)
+        rn[0].append(r)
+        phi[0].append(f)
+        nb[0].append(N)
+    return T, Eg, rn, phi, nb
+
+
+def _sealed_smoky_room(h, w, *, smoke_q, hq, T_smoke_game, wall_a=Q(0.85), wall_his=5):
+    """A sealed room: one ring of opaque ambient walls (a thermal solid, a =
+    wall_a, thermal_mass 2^wall_his), the interior full of smoke at density
+    smoke_q (one absorbing gas, coefficient hq) and T_smoke_game, at ambient bulk
+    density. Returns a reference Scene on the LIVE table."""
+    a = R.plane(h, w, 0)
+    T = R.plane(h, w, 0)
+    for y in range(h):
+        for x in range(w):
+            if y in (0, h - 1) or x in (0, w - 1):
+                a[y][x] = wall_a
+            else:
+                T[y][x] = T_smoke_game << 16
+    ts = [[1 if a[y][x] > 0 else 0 for x in range(w)] for y in range(h)]
+    smoke = [[0 if ts[y][x] else smoke_q for x in range(w)] for y in range(h)]
+    nb = R.plane(h, w, ONE)
+    return R.Scene(a=a, d=[r[:] for r in a], k=R.plane(h, w, 0), T=T, his=wall_his,
+                   ts=ts, gas=[smoke], heat_absorb_q=[hq], n_bulk=nb, table=R.E_LIVE)
+
+
+def _shield_scene(smoke_q, *, h=7, w=13, hq=Q(5.0)):
+    """A held hot wall column (a = 1, 1263 game) at x = 0, a cold target column
+    held at ambient at x = w - 1 (a = 0.9), smoke of density smoke_q filling
+    x = 3..w-4 at ambient bulk density; everything else clear air. Returns the
+    Scene (LIVE table) and the target cells."""
+    a = R.plane(h, w, 0)
+    T = R.plane(h, w, 0)
+    held = R.plane(h, w, 0)
+    for y in range(h):
+        a[y][0] = ONE
+        T[y][0] = T_SRC_GAME << 16
+        held[y][0] = 1
+        a[y][w - 1] = Q(0.9)
+        held[y][w - 1] = 1
+    ts = [[1 if a[y][x] > 0 else 0 for x in range(w)] for y in range(h)]
+    smoke = [[smoke_q if (3 <= x <= w - 4) else 0 for x in range(w)] for y in range(h)]
+    sc = R.Scene(a=a, d=[r[:] for r in a], k=R.plane(h, w, 0), T=T, his=3, ts=ts,
+                 held=held, gas=[smoke], heat_absorb_q=[hq], n_bulk=R.plane(h, w, ONE),
+                 table=R.E_LIVE)
+    return sc, [(y, w - 1) for y in range(h)]
+
+
+def _chain_bound(rn, N, cap, dT):
+    """The staged chain's own precision, per gas cell, in Q32 heat currency
+    (design 2.8's 'a DIFFERENT rounding, declared'): |rn << 16 - dT * cap_real| <=
+    |rn| * N_q / 2^16 (recip_N is floor(2^32 / N_q), relative error < N_q / 2^32)
+    + 132 * cap_real (stage 1's floor, amplified by recip_cv / 2^32 ~ 130.2 LSB,
+    plus stage 2's own) + |dT| + 1 (cap_real's own floor of N * c_v_q / 2^16).
+    Valid for N >= n_floor (below it the floor DILUTES the landing by N / n_floor,
+    which is not a truncation -- measured separately)."""
+    return abs(rn) * N // (1 << 16) + 132 * cap + abs(dT) + 1
+
+
+def gate15_gas_fold(fast=False):
+    """G15 (P5c, design 2.8 / 6.3 / 8.4): THE TEMPERATURE FOLD'S GAS BRANCH.
+
+      (a) THE CLAMP'S ENERGY FORM HITS ITS TARGET AND KEEPS THE RESIDUAL. On
+          randomised accountable gas cells (a stored residual E mod N; bulk from
+          the N_EPS edge to 3 atm; rad_net of both signs up to 2^44; a fluence
+          whose cap sits above and below the cell), every clamped cell's mirror
+          lands EXACTLY on max(T_before, E°⁻¹(Phi)) and every other on
+          sat(T_before + dT), with E mod N unchanged on every cell. The PAIR:
+          the design's letter N * (T_target + t_amb) - E lands on the same
+          mirror but DRAINS the residual -- counted, and non-zero.
+      (b) THE BOOKS, and the withheld energy, exactly. sum(Eg) moves by
+          e_gas_deposit_sum + e_gas_rail_sum to the count (group 1 -- no new
+          group); per cell the landing plus what the clamp withheld is the
+          unclamped step, and e_rad_clamp_drop_sum is that withheld step priced
+          at cap_real, summed -- on the gas cells AND on thermal solids.
+      (c) THE MAXIMUM PRINCIPLE ON GAS: on the radiative sub-step alone, every
+          gas cell ends at or below max(T_before, E°⁻¹(Phi)); with the clamp off
+          some cell does not (the non-vacuity pair).
+      (d) HOT SMOKE COOLS, THROUGH THE WHOLE TICK, ON THE LIVE TABLE: a sealed
+          room of ambient walls full of hot absorbing smoke -- every smoke cell's
+          T never rises, never goes below ambient, and ends lower; the walls warm.
+          With the fold's gas branch off (the P5b state) the smoke does not move.
+      (e) SMOKE SHIELDS, WITH THE FOLD LIVE: a held 1263-game wall and a target
+          held at ambient across clear air; a smoke layer between them cuts the
+          target's absorbed flux on EVERY tick against the clear-air control --
+          also after the smoke has heated and re-radiates -- and thin smoke cuts
+          less than thick.
+      (f) THE SWEEP->FOLD BOUNDARY (design 8.4), over (d)'s and (e)'s runs: on
+          every touched cell-tick, the sweep's rad_net and what the fold landed
+          plus what the clamp withheld differ by at most the conversion's own
+          truncation -- < one temperature LSB x C on a thermal solid (shr_round0),
+          the staged chain's declared precision on gas (_chain_bound) -- so
+          sum(rad_net) - sum(landed) - e_rad_clamp_drop_sum is bounded by the sum
+          of those, and nothing else leaves the boundary uncounted.
+      (g) THE BOUNDARY'S OTHER TWO EXITS, COUNTED (P5c follow-up): below
+          n_floor the chain lands only ~N / n_floor of rn -- per cell, rn << 16
+          is exactly the landing + the clamp's drop + e_rad_floor_drop_sum's
+          share, and that share exceeds the chain's declared precision (a
+          dilution, not a rounding); a gas cell OUTSIDE the accountable set is
+          untouched and its whole rn << 16 goes to e_rad_boundary_export_sum.
+
+    Breaks if: the gas branch scales dE instead of stepping N * (T_target -
+    T_before) (a misses the target), drains or mints the residual (a), books a
+    new group or skips e_gas_deposit_sum (b), clamps a cooling step or clamps
+    before the conversion (c), converts through anything but the staged chain in
+    the fold's currency, or is disconnected (d, f); or a floored cell's
+    remainder or a boundary cell's rad_net leaves the fold uncounted (g).
+    """
+    lines, ok = [], True
+    live = R.E_LIVE
+    rng = random.Random(20260925)
+    # (a) + (b) + (c): one-shot randomised cells, through fold_pass1_gas
+    n = 400 if fast else 3000
+    T, Eg, rn, phi, nb = _gas_fold_cells(rng, n, live)
+    T0, E0 = [r[:] for r in T], [r[:] for r in Eg]
+    ts = R.plane(1, n, 0)
+    c = R.FoldCounters()
+    R.fold_pass1_gas(T, Eg, rn, phi, nb, ts, c, table=live)
+    target_ok = resid_ok = mp_ok = step_ok = True
+    n_clamped = n_free = n_letter_drain = 0
+    letter_drained = 0
+    drop_sum = 0
+    for i in range(n):
+        N, e0, t0, r = nb[0][i], E0[0][i], T0[0][i], rn[0][i]
+        dT = R.gas_rad_dT_q(r, N)
+        t_after = R.sat_add_q16(t0, dT)
+        ceiling = max(R.e_inv_q(phi[0][i], live), t0)
+        if t_after > ceiling:
+            n_clamped += 1
+            target_ok &= (T[0][i] == ceiling)
+            drop_sum += (t_after - ceiling) * R.cap_real_q(False, 0, N)
+            # the design's letter lands on the same mirror with a ZERO residual,
+            # i.e. it drains the cell's E mod N; this form keeps it
+            target_ok &= (R.gas_mirror_q(N * (ceiling + R.T_AMB_Q), N) == ceiling)
+            drained = e0 - N * (t0 + R.T_AMB_Q)          # == e0 mod N
+            if drained > 0:
+                n_letter_drain += 1
+                letter_drained += drained
+        else:
+            n_free += 1
+            step_ok &= (T[0][i] == t_after)
+        resid_ok &= (Eg[0][i] % N == e0 % N)
+        mp_ok &= (T[0][i] <= ceiling)
+    # every start is below 9001 game and every cap below the 15996 table top, so
+    # no landing reaches T_MAX_PHYS: the rail is not what any assertion rests on
+    books_ok = (sum(Eg[0]) - sum(E0[0]) == c.e_gas_deposit_sum + c.e_gas_rail_sum
+                and c.t_max_phys_hits == 0)
+    drop_ok = (c.e_rad_clamp_drop_sum == drop_sum) and (c.rad_clamp_hits == n_clamped)
+    # ...and the same two books on THERMAL SOLIDS (fold_pass1_solid): the landing
+    # priced at cap plus the withheld energy is the unclamped step, to the count
+    n_s = n // 4
+    Ts = [[rng.choice([0, 290 << 16, 804 << 16, 1263 << 16]) for _ in range(n_s)]]
+    hs = [[rng.choice([-4, 0, 3, 5]) for _ in range(n_s)]]
+    rs = [[rng.choice([1, -1]) * rng.choice([7, 1 << 14, 1 << 24, 1 << 34])
+           for _ in range(n_s)]]
+    ps = [[live[rng.choice([0, 72, 201, 315])] for _ in range(n_s)]]
+    Ts0 = [r[:] for r in Ts]
+    cs = R.FoldCounters()
+    R.fold_pass1_solid(Ts, rs, ps, hs, R.plane(1, n_s, 1), cs, table=live)
+    solid_books = cs.e_solid_deposit_sum + cs.e_rad_clamp_drop_sum
+    solid_want = 0
+    for i in range(n_s):
+        cap = 1 << (hs[0][i] + 16)
+        t_after = R.sat_add_q16(Ts0[0][i], R.shr_round0_signed(rs[0][i], hs[0][i]))
+        ceiling = max(R.e_inv_q(ps[0][i], live), Ts0[0][i])
+        t_cl = min(t_after, ceiling)
+        t_railed = min(max(t_cl, 0), R.T_MAX_PHYS_Q)
+        # the landing (post clamp, post rails -- the rails are counted by HITS,
+        # the landing books what they allowed) plus the clamp's withheld step
+        solid_want += (t_railed - Ts0[0][i]) * cap + (t_after - t_cl) * cap
+    solid_ok = (solid_books == solid_want and cs.rad_clamp_hits > 0
+                and cs.e_rad_clamp_drop_sum > 0)
+    drop_ok &= solid_ok
+    c_off = R.FoldCounters()
+    T_off, E_off = [r[:] for r in T0], [r[:] for r in E0]
+    R.fold_pass1_gas(T_off, E_off, rn, phi, nb, ts, c_off, table=live, clamp_enabled=False)
+    over = sum(1 for i in range(n)
+               if T_off[0][i] > max(R.e_inv_q(phi[0][i], live), T0[0][i]))
+    good = (target_ok and step_ok and resid_ok and books_ok and drop_ok and mp_ok
+            and n_clamped > 0 and n_free > 0 and n_letter_drain > 0 and over > 0
+            and c_off.rad_clamp_hits == 0 and c_off.e_rad_clamp_drop_sum == 0)
+    ok &= good
+    # (g) P5c follow-up: the two other ways out of the boundary, counted -- on
+    # (a)'s cells. BELOW THE FLOOR, per cell, the sweep's rn << 16 is exactly the
+    # landing plus the clamp's drop plus the floor's remainder, and the remainder
+    # is NOT a rounding (it exceeds the chain's declared precision); at or above
+    # it nothing is booked there. OUTSIDE THE BOOKS (an acct mask), a cell is
+    # untouched and its rn << 16 is exported, while every other cell folds
+    # exactly as without the mask.
+    floor_want = 0
+    floor_exact = True
+    n_floored = n_undiluted = 0
+    for i in range(n):
+        N, t0, r = nb[0][i], T0[0][i], rn[0][i]
+        if N >= R.N_FLOOR_Q_LIVE:
+            continue
+        n_floored += 1
+        cap = R.cap_real_q(False, 0, N)
+        dT = R.gas_rad_dT_q(r, N)
+        t_after = R.sat_add_q16(t0, dT)
+        rem = (r << 16) - (t_after - t0) * cap
+        floor_want += rem
+        ceiling = max(R.e_inv_q(phi[0][i], live), t0)
+        t_land = min(t_after, ceiling)
+        floor_exact &= ((r << 16) == (t_land - t0) * cap + (t_after - t_land) * cap + rem)
+        if abs(rem) > _chain_bound(r, N, cap, dT):
+            n_undiluted += 1
+    floor_ok = (c.e_rad_floor_drop_sum == floor_want and floor_exact and n_floored > 0
+                and n_undiluted > 0 and c_off.e_rad_floor_drop_sum == floor_want)
+    mask_rng = random.Random(20260926)
+    acct = [[1 if mask_rng.random() < 0.7 else 0 for _ in range(n)]]
+    T_m, E_m = [r[:] for r in T0], [r[:] for r in E0]
+    c_m = R.FoldCounters()
+    R.fold_pass1_gas(T_m, E_m, rn, phi, nb, ts, c_m, acct=acct, table=live)
+    out_cells = [i for i in range(n) if not acct[0][i]]
+    export_want = sum(rn[0][i] << 16 for i in out_cells)
+    export_ok = (c_m.e_rad_boundary_export_sum == export_want and len(out_cells) > 0
+                 and all(T_m[0][i] == T0[0][i] and E_m[0][i] == E0[0][i] for i in out_cells)
+                 and all(T_m[0][i] == T[0][i] and E_m[0][i] == Eg[0][i]
+                         for i in range(n) if acct[0][i])
+                 and c.e_rad_boundary_export_sum == 0)
+    good_g = floor_ok and export_ok
+    ok &= good_g
+    lines.append(f"  (a) {n} random accountable gas cells, LIVE table: {n_clamped} clamped, "
+                 f"{n_free} not; every clamped mirror lands on max(T_before, E_inv(Phi)): "
+                 f"{target_ok}; every other on sat(T_before + dT): {step_ok}; E mod N "
+                 f"unchanged on every cell: {resid_ok}. The design's letter N*(T_target + "
+                 f"t_amb) - E hits the same mirror but drains the residual on "
+                 f"{n_letter_drain} clamped cells ({letter_drained} raw counts)")
+    lines.append(f"  (b) sum(Eg) moved by e_gas_deposit_sum + e_gas_rail_sum exactly: "
+                 f"{books_ok}; e_rad_clamp_drop_sum = sum (T_after - T_target) * cap_real "
+                 f"= {c.e_rad_clamp_drop_sum} and rad_clamp_hits = {c.rad_clamp_hits}; on "
+                 f"{n_s} thermal solids e_solid_deposit_sum + e_rad_clamp_drop_sum is the "
+                 f"unclamped step priced at cap ({cs.rad_clamp_hits} clamped): {drop_ok}")
+    lines.append(f"  (c) T_new <= max(T_before, E_inv(Phi)) on every gas cell: {mp_ok}; with "
+                 f"the clamp off {over} cells exceed it (no hits, no drop booked)  "
+                 f"{'OK' if good else 'FAIL'}")
+    lines.append(f"  (g) the boundary's other two exits, counted: on the {n_floored} cells "
+                 f"below n_floor, rn << 16 == landed + clamp drop + floor remainder per "
+                 f"cell: {floor_exact}; e_rad_floor_drop_sum = {c.e_rad_floor_drop_sum} "
+                 f"== the sum: {c.e_rad_floor_drop_sum == floor_want}, the clamp's switch "
+                 f"leaves it alone: {c_off.e_rad_floor_drop_sum == floor_want}; the "
+                 f"remainder exceeds the chain's declared precision on {n_undiluted} of "
+                 f"them (a dilution, not a rounding); {len(out_cells)} cells OUTSIDE the "
+                 f"books are untouched and exported whole (e_rad_boundary_export_sum = "
+                 f"{c_m.e_rad_boundary_export_sum}), every other cell folds as unmasked: "
+                 f"{export_ok}  {'OK' if good_g else 'FAIL'}")
+    # (d) hot smoke cools in a sealed room, the whole tick, live table
+    hh, ww = (7, 9) if fast else (9, 12)
+    ticks = 24 if fast else 72
+    sc = _sealed_smoky_room(hh, ww, smoke_q=Q(0.06), hq=Q(5.0), T_smoke_game=T_SRC_GAME)
+    off = _sealed_smoky_room(hh, ww, smoke_q=Q(0.06), hq=Q(5.0), T_smoke_game=T_SRC_GAME)
+    off.gas_fold = False
+    interior = [(y, x) for y in range(hh) for x in range(ww) if not sc.ts[y][x]]
+    walls = [(y, x) for y in range(hh) for x in range(ww) if sc.ts[y][x]]
+    start = {p: sc.T[p[0]][p[1]] for p in interior}
+    rises = below = 0
+    bound_ok = True
+    worst_ratio = 0.0
+    n_touch = 0
+    for _t in range(ticks):
+        before_T = [r[:] for r in sc.T]
+        before_E = [r[:] for r in sc.Eg]
+        cdrop0 = sc.counters.e_rad_clamp_drop_sum
+        rails0 = (sc.counters.t_max_phys_hits, sc.counters.t_low_rail_hits,
+                  sc.counters.e_gas_rail_sum)
+        res = sc.tick()
+        off.tick()
+        # (f) the boundary, per touched cell-tick
+        landed = 0
+        bound = 0
+        rn_sum = 0
+        for y in range(hh):
+            for x in range(ww):
+                r = res.rad_net[y][x]
+                if r == 0:
+                    continue
+                n_touch += 1
+                rn_sum += r << 16
+                if sc.ts[y][x]:
+                    cap = R.cap_real_q(True, sc.his, 0)
+                    landed += (sc.T[y][x] - before_T[y][x]) * cap
+                    bound += cap
+                else:
+                    N = sc.n_bulk[y][x]
+                    cap = R.cap_real_q(False, 0, N)
+                    dE = sc.Eg[y][x] - before_E[y][x]
+                    landed += (dE // N) * cap          # dE is a whole multiple of N
+                    dT = R.gas_rad_dT_q(r, N)
+                    bound += _chain_bound(r, N, cap, dT)
+        cdrop = sc.counters.e_rad_clamp_drop_sum - cdrop0
+        resid = rn_sum - landed - cdrop
+        rails_now = (sc.counters.t_max_phys_hits, sc.counters.t_low_rail_hits,
+                     sc.counters.e_gas_rail_sum)
+        bound_ok &= (abs(resid) <= bound) and rails_now == rails0
+        if bound:
+            worst_ratio = max(worst_ratio, abs(resid) / bound)
+        for (y, x) in interior:
+            if sc.T[y][x] > before_T[y][x]:
+                rises += 1
+            if sc.T[y][x] < 0:
+                below += 1
+    cooled = all(sc.T[y][x] < start[(y, x)] for (y, x) in interior)
+    walls_warm = sum(sc.T[y][x] for (y, x) in walls) > 0
+    frozen = all(off.T[y][x] == start[(y, x)] for (y, x) in interior)
+    good = rises == 0 and below == 0 and cooled and walls_warm and frozen
+    ok &= good
+    t_mean = sum(sc.T[y][x] for (y, x) in interior) / len(interior) / 65536.0
+    t_min = min(sc.T[y][x] for (y, x) in interior) / 65536.0
+    lines.append(f"  (d) a sealed {hh}x{ww} room of ambient walls full of {T_SRC_GAME}-game "
+                 f"smoke (a_gas = 0.3), {ticks} ticks through the whole tick, LIVE table: "
+                 f"cell-ticks where smoke ROSE {rises}, went BELOW ambient {below}; every "
+                 f"cell cooled: {cooled} (mean {t_mean:.1f}, min {t_min:.1f} game); walls "
+                 f"warmed: {walls_warm}; with the gas branch off the smoke never moved: "
+                 f"{frozen}  {'OK' if good else 'FAIL'}")
+    # (e) smoke shields, with the fold live
+    ticks_e = 24 if fast else 96
+    runs = {}
+    for name, dens in (("clear", 0), ("thin", Q(0.02)), ("thick", Q(0.2))):
+        s, tgt = _shield_scene(dens)
+        series = []
+        for _t in range(ticks_e):
+            res = s.tick()
+            series.append(sum(res.rad_net[y][x] for (y, x) in tgt))
+        runs[name] = (series, s)
+    clear, thin, thick = runs["clear"][0], runs["thin"][0], runs["thick"][0]
+    every_tick = all(th < cl for th, cl in zip(thick, clear))
+    ordered = all(tk < tn < cl for tk, tn, cl in zip(thick, thin, clear))
+    s_thick = runs["thick"][1]
+    smoke_cells = [(y, x) for y in range(len(s_thick.T)) for x in range(len(s_thick.T[0]))
+                   if not s_thick.ts[y][x] and s_thick.gas[0][y][x] > 0]
+    hot_smoke = max(s_thick.T[y][x] for (y, x) in smoke_cells) / 65536.0
+    good = every_tick and ordered and hot_smoke > 0
+    ok &= good
+    lines.append(f"  (e) the target's absorbed flux (its rad_net, held at ambient), {ticks_e} "
+                 f"ticks, LIVE table: clear {clear[0]} -> {clear[-1]}, thin smoke "
+                 f"{thin[0]} -> {thin[-1]}, thick {thick[0]} -> {thick[-1]}; thick below "
+                 f"clear on every tick: {every_tick}; thick < thin < clear on every tick: "
+                 f"{ordered}; the smoke layer heated to {hot_smoke:.1f} game and still "
+                 f"shields  {'OK' if good else 'FAIL'}")
+    # (f) the boundary, measured over (d)
+    good = bound_ok and n_touch > 0
+    ok &= good
+    lines.append(f"  (f) over (d)'s {ticks} ticks ({n_touch} touched cell-ticks, walls and "
+                 f"smoke), sum(rad_net) - sum(landed) - e_rad_clamp_drop_sum stays within "
+                 f"the conversions' own truncation every tick (worst |resid| / bound = "
+                 f"{worst_ratio:.3g}), no rail engaged: {bound_ok}  {'OK' if good else 'FAIL'}")
+    return ok, lines
+
+
 GATES = [
     ("G1  conservation", gate1_conservation),
     ("G2a uniform ambient fixed point", gate2a_uniform_ambient),
@@ -1734,6 +2110,8 @@ GATES = [
      gate13_gas_extinction),
     ("G14 the gas arm of the Fleck pre-pass: monotone cooling, never below ambient",
      gate14_gas_fleck_arm),
+    ("G15 the fold's gas branch: the clamp's energy form, the books, cooling, "
+     "shielding, the 8.4 boundary", gate15_gas_fold),
 ]
 
 

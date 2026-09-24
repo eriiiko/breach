@@ -36,8 +36,9 @@ to the donor-cell transport instead of the per-gas semi-Lagrangian loop.
 Ray-engine-v2 P5a (docs/ray_engine_v2_design_v3_2026-09-15.md §6.3) adds
 ``heat_absorb``: the gas's HEAT extinction per unit of its density, quantized to
 ``heat_absorb_q16`` and read by the radiation sweep on every gas cell (the density
-law: what thin smoke does not absorb continues down the stream). DORMANT — 0.0 on
-every shipped row until P5c opens the temperature fold's gas branch.
+law: what thin smoke does not absorb continues down the stream). LIVE since P5c,
+which opened the temperature fold's gas branch: smoke carries a DERIVED value
+(config.toml [gases.smoke]); every other shipped row is 0.0 with its reason.
 """
 from __future__ import annotations
 
@@ -201,9 +202,9 @@ class GasTable:
         #     density is heat_absorb 10, and physical.
         # Stored as a contiguous int32 ARRAY (not a tuple like the beam's): the
         # engine takes it by pointer every tick (PhysicsEngine.step_tail).
-        # Every shipped row is 0.0 until P5c opens the Pass-1 fold's gas branch —
-        # until then nothing consumes a gas cell's rad_net, so a non-zero value
-        # would take radiation out of the stream with no book to land in.
+        # P5c opened the Pass-1 fold's gas branch, so a non-zero value now has a
+        # book to land in (e_gas_deposit_sum): smoke ships its derived value,
+        # every other gas 0.0 (tests/test_gas_heat_absorb.py pins both).
         heat_absorb_q16 = []
         for name, value in zip(self.names, self.heat_absorb.tolist()):
             v = float(value)
