@@ -48,6 +48,10 @@ from simulation.entities.serialize import (  # A4: entity presence carrier
 )
 from simulation.status import serialize_statuses  # P3: __unit_status__ payload
 from simulation.unit import Unit
+from simulation import swarm_fixed          # arc #63 P2: heading Q16.16 helper
+from simulation.swarm import (              # arc #63 P2: swarm presence carrier
+    SWARM_DIGEST_KEY, require_swarm_carrier, swarm_carrier, swarm_section_bytes,
+)
 
 SEED = 20260615
 
@@ -136,6 +140,37 @@ def default_scenario_sim() -> Simulation:
     sim.add_unit(Unit("M1", x=7, y=7, team=0))   # stamp_units footprint
     g.destroy_wall(8, 0)             # hull breach on the map edge -> vacuum (venting)
     sim.set_paused(False)
+    return sim
+
+
+def swarm_scenario_sim() -> Simulation:
+    """The swarm-present A/B fixture (arc #63 P2): the default scenario plus
+    a scripted spawn/reclaim/spawn sequence, using explicit raw-Q16 values
+    from ``swarm_fixed`` (NO RNG) -- 12 larvae at interior tile centres
+    (``(tx << FP_SHIFT) + (FP_ONE >> 1)``, interior == tiles 1..14 of
+    ``_scenario_level``'s 16x16 map), with fixed headings including
+    ``+-PI_Q16``; 3 reclaimed (making holes); 2 more spawned (filling 2 of
+    the 3 holes). The result has ``high_water > live count``, non-contiguous
+    ids, and ``check_invariants(sim.gmap) == []`` -- the swarm-present
+    fixture for P2's tests and a ready scenario for P3's lockstep."""
+    sim = default_scenario_sim()
+
+    def tile_centre(t):
+        return (t << swarm_fixed.FP_SHIFT) + (swarm_fixed.FP_ONE >> 1)
+
+    tiles = [(1 + i, 1 + i) for i in range(12)]   # interior, tiles 1..12
+    xs = [tile_centre(tx) for tx, _ in tiles]
+    ys = [tile_centre(ty) for _, ty in tiles]
+    headings = [swarm_fixed.PI_Q16, -swarm_fixed.PI_Q16, 0, 1000, -1000,
+               50000, -50000, 100, -100, 205887, -205887, 12345]
+    slots = sim.swarm.spawn("larva", xs, ys, headings)
+
+    sim.swarm.reclaim("larva", slots[[2, 5, 9]])
+
+    xs2 = [tile_centre(2), tile_centre(3)]
+    ys2 = [tile_centre(13), tile_centre(13)]
+    sim.swarm.spawn("larva", xs2, ys2, [0, swarm_fixed.PI_Q16])
+
     return sim
 
 
@@ -300,6 +335,11 @@ def capture_trajectory(make_sim=default_scenario_sim, n_steps=30, fields=SIM_FIE
         signals = digest_signals() if callable(digest_signals) else ()
         snap[ENTITY_DIGEST_KEY] = entity_carrier(ents, signals=signals)
         require_entity_carrier(ents, snap)   # the A4 strict presence rule
+        # arc #63 P2: the swarm presence carrier — ALWAYS written (present ==
+        # False on the canonical scenario, which spawns no swarm units), the
+        # same strict-presence idiom as the entity carrier above.
+        snap[SWARM_DIGEST_KEY] = swarm_carrier(sim.gmap)
+        require_swarm_carrier(sim.gmap, snap)
         traj.append(snap)
     return traj
 
@@ -375,6 +415,66 @@ def _diff_entity_state(t, ea, eb):
     return out
 
 
+def _swarm_present(c):
+    """A carrier's presence, tolerating an absent carrier (``None`` — a
+    pre-P2 snapshot, or the R1 stripped fixture) as simply not-present."""
+    return c is not None and c.get("present", False)
+
+
+def _diff_swarm_state(t, ca, cb):
+    """Locate the first divergence between two swarm presence carriers
+    (arc #63 P2, engine/17 P2 §6). ``None`` reads as an absent carrier —
+    never a mismatch by itself (a pre-P2 snapshot has no key at all).
+    Returns human-readable mismatch lines (empty == match)."""
+    pa, pb = _swarm_present(ca), _swarm_present(cb)
+    if not pa and not pb:
+        return []                      # neither side ever spawned a unit
+    if pa != pb:
+        return [f"tick {t}: __swarm__ present in only one run"]
+
+    # Both present. The fast path is byte + species_hash equality — NEVER
+    # `ca == cb`: the carriers hold ndarrays, so `==` raises "truth value
+    # ... is ambiguous" (the entity fast path above must not be copied).
+    if (swarm_section_bytes(ca) == swarm_section_bytes(cb)
+            and ca["species_hash"] == cb["species_hash"]):
+        return []
+
+    out = []
+    if ca["next_unit_id"] != cb["next_unit_id"]:
+        out.append(f"tick {t}: __swarm__ next_unit_id "
+                   f"{ca['next_unit_id']} != {cb['next_unit_id']}")
+    for sp in sorted(set(ca["blocks"]) | set(cb["blocks"])):
+        ba, bb = ca["blocks"].get(sp), cb["blocks"].get(sp)
+        if ba is None or bb is None:
+            out.append(f"tick {t}: __swarm__ species {sp!r} block present "
+                       f"in only one run")
+            continue
+        if ba["high_water"] != bb["high_water"]:
+            out.append(f"tick {t}: __swarm__ species {sp!r} high_water "
+                       f"{ba['high_water']} != {bb['high_water']}")
+        hw = min(ba["high_water"], bb["high_water"])
+        for col_name, cola in ba["columns"].items():
+            colb = bb["columns"][col_name]
+            mism = np.flatnonzero(cola[:hw] != colb[:hw])
+            if mism.size:
+                slot = int(mism[0])
+                uid_a = int(ba["columns"]["unit_id"][slot])
+                uid_b = int(bb["columns"]["unit_id"][slot])
+                out.append(
+                    f"tick {t}: __swarm__ species {sp!r} column "
+                    f"'{col_name}' differs at slot {slot} "
+                    f"(a={cola[slot]!r} unit_id={uid_a} vs "
+                    f"b={colb[slot]!r} unit_id={uid_b})")
+    if ca["species_hash"] != cb["species_hash"]:
+        out.append(f"tick {t}: __swarm__ species_hash differs "
+                   f"({ca['species_hash'][:12]} != "
+                   f"{cb['species_hash'][:12]}) — A/B runs must share tuning")
+    if not out:   # carriers differed but nothing located — surface it loudly
+        out.append(f"tick {t}: __swarm__ carriers differ but no field "
+                   f"located — serialization drift?")
+    return out
+
+
 def diff_trajectories(a, b, tol=0.0):
     """Per-field per-cell mismatches between two trajectories (empty list == match).
 
@@ -388,6 +488,14 @@ def diff_trajectories(a, b, tol=0.0):
     diffs = []
     for t, (sa, sb) in enumerate(zip(a, b)):
         for k in sorted(set(sa) | set(sb)):
+            if k == SWARM_DIGEST_KEY:
+                # arc #63 P2 (R1): BEFORE the one-sided-key check — a
+                # pre-P2 snapshot has no key at all, and that must read as
+                # an absent carrier, not a one-sided-key mismatch (else a
+                # tracked pre-P2 trajectory pickle goes red against every
+                # fresh capture).
+                diffs.extend(_diff_swarm_state(t, sa.get(k), sb.get(k)))
+                continue
             if k not in sa or k not in sb:
                 diffs.append(f"tick {t}: field '{k}' present in only one run")
                 continue
@@ -448,7 +556,7 @@ if __name__ == "__main__":
     b = capture_trajectory()
     assert_trajectories_match(a, b, tol=0.0)
     nfields = len(a[-1]) - sum(
-        k in a[-1] for k in (UNIT_DIGEST_KEY, ENTITY_DIGEST_KEY))
+        k in a[-1] for k in (UNIT_DIGEST_KEY, ENTITY_DIGEST_KEY, SWARM_DIGEST_KEY))
     # S2a — make the integer WAVE determinism explicit: wave_p/wave_v/wave_source
     # are now int32 Q16.16 (the synced wave state). Assert the dtype + bit-identity
     # run-to-run (np.array_equal is exact on int32). This is the S2a P1 gate.

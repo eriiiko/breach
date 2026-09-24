@@ -25,7 +25,9 @@ desync on the Q2-fenced float-HP path is caught alongside the fields. A4 adds
 the ``__entity__``/``__signals__`` sections the same way — absence-transparent
 (folded ONLY when entities are present, via the snapshot's ``__entity__``
 presence carrier), section-local versioned (ENTITY_SECT_V1 / SIGNAL_SECT_V1),
-serialized by the ONE canonical ``simulation.entities.serialize`` module.
+serialized by the ONE canonical ``simulation.entities.serialize`` module. The
+``__swarm__`` section folds the same way (arc #63 P2, ``SWARM_SECT_V1``,
+``simulation.swarm.swarm_section_bytes``).
 
 Endianness: x86 and CUDA are both little-endian, so the raw int bytes compare
 directly. A big-endian dtype is REFUSED so a silent byteorder mismatch can never
@@ -173,6 +175,14 @@ def tick_digest(snapshot: dict) -> str:
         h.update(eh.encode("ascii"))
         h.update(b"|__signals__|")
         h.update(sh.encode("ascii"))
+
+    from simulation.swarm import SWARM_DIGEST_KEY, swarm_section_bytes
+    sw = snapshot.get(SWARM_DIGEST_KEY)
+    if sw is not None and sw["present"]:
+        wh = hashlib.blake2b(swarm_section_bytes(sw),
+                             digest_size=32).hexdigest()
+        h.update(b"|__swarm__|")
+        h.update(wh.encode("ascii"))
     return h.hexdigest()
 
 

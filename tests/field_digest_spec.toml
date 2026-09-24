@@ -90,3 +90,20 @@ excluded_kinds = ["length_m", "float_render", "str", "color_rgb", "str_list"]
 # comparable at equal registry hash; every entity-present artifact records it
 # (xarch line 'ents=N,esect_v1,reg=<hash12>', recorder 'entity_registry_hash').
 field_list = "defined by the entity registry at the recorded content-hash"
+
+# arc #63 P2 (ADDITIVE — docs/swarm_P2_impl.md §5): the __swarm__ section
+# folds into tick_digest ONLY when the snapshot's presence carrier says
+# present == true, so a swarm-free digest is byte-identical to the stream
+# without this section and NO golden regenerates for it. `version` above
+# stays 5; the section carries its own version in its hashed SWARM_SECT_V1
+# preamble (a future roster change bumps it loudly without touching
+# swarm-free bytes).
+[swarm_section]
+format     = "SWARM_SECT_V1"    # hashed preamble, section-local version
+encoder    = "simulation.swarm.swarm_section_bytes (the ONE encoder — the digest hashes it, the recorder stores the same columns raw, T27 gates them equal)"
+extent     = "env 0 only (N_ENV == 1, an explicit raise otherwise); per species, [0, high_water) — a species with high_water == 0 is OMITTED; the multi-env fold is left to the RL arc's B1"
+encoding   = "'SWARM_SECT_V1\\n' + 'next_unit_id|<nid>\\n' + per species in SWARM_SPECIES order: 'species|<sp>|high_water|<hw>\\n' + per ROSTER column in declaration order: '<col>|<dtype.str>|(<hw>,)\\n' + raw C-order bytes"
+integers   = "every integer token (next_unit_id, high_water, the shape length) is ASCII decimal via int() — never str()/repr() of a numpy scalar"
+never_hashed = "capacity (max_units), the species table / its hash, slots at or beyond high_water, and any env other than 0"
+provenance = "species_hash (simulation.swarm.SwarmSpeciesTable.hash) — carried by the carrier, NEVER hashed into the section; swarm-present digests are only comparable at equal species_hash"
+per_unit_state = "per-unit swarm state never joins `fields` — it rides this section exclusively"

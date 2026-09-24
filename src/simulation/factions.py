@@ -12,6 +12,10 @@ from enum import Enum
 # Foundation pass: just a type alias. Full relationship table comes later.
 FactionId = int
 
+# No faction (arc #63 P2): the swarm-unit default; v1 never targets swarm
+# units. Team ints in use are non-negative, so this never aliases a team.
+FACTION_NONE: FactionId = -1
+
 
 class Stance(Enum):
     """Defined for completeness — not yet consulted by any code (spec §10.1)."""
@@ -21,4 +25,4 @@ class Stance(Enum):
     HOSTILE  = "hostile"
 
 
-__all__ = ["FactionId", "Stance"]
+__all__ = ["FactionId", "Stance", "FACTION_NONE"]
