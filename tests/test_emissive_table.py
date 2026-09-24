@@ -6,7 +6,8 @@ and now has TWO callers — Raycaster::bake_emissive_table (the old march, until
 P3) and PhysicsEngine.emissive (the sweep's and the clamp's owner). One
 implementation, two owners: these tests assert the two tables are identical
 entry for entry and equal to the integer reference's own bake, and that the
-new inverse E°⁻¹ is the reference's e_inv_q.
+new inverse E°⁻¹ is the reference's e_inv_q -- and, since P5d, that the
+clamp's ceiling e_ceiling_q is the reference's too.
 
 Run:
     C:/Users/steen/anaconda3/python.exe -m pytest tests/test_emissive_table.py -q
@@ -182,6 +183,56 @@ def test_e_inv_q_is_the_reference_inverse_with_both_edge_cases():
         assert E[R.e_bucket_of(got)] <= phi or phi < E[0]
     for b in range(0, R.E_TABLE_SIZE, 7):
         assert tbl.e_inv_q(E[b]) == (4 * b) << 16
+
+
+def _baked(scale):
+    tbl = bp.EmissiveTable()
+    tbl.rad_scale = scale
+    tbl.kelvin_ambient = float(R.K_AMB)
+    tbl.k_temp_to_kelvin = float(R.K_SLOPE)
+    tbl.bake()
+    return tbl
+
+
+@pytest.mark.parametrize("scale_name", ["resolving", "live"])
+def test_e_ceiling_q_is_the_top_of_the_first_bucket_out_emitting_phi(scale_name):
+    """PROPERTY (P5d, Erik's ruling of 2026-09-24 -- the Pass-1 clamp's ceiling):
+    over EVERY bucket of the table (each bucket's two edges and its midpoint in
+    Phi), the engine's EmissiveTable.e_ceiling_q(Phi) equals the reference's
+    sweep_ref_q.e_ceiling_q(Phi), and its value c is the LAST Q16 value of its
+    bucket, whose E° is the first to exceed Phi: E°[bucket(c) - 1] <= Phi <
+    E°[bucket(c)]. It is >= e_inv_q(Phi) (the radiation temperature, unchanged)
+    and monotone in Phi; Phi < E°[0] -> 0 (design row 31); Phi >= E°[3999] ->
+    E_CEILING_TOP_Q, one LSB below 16000 game, below T_MAX_PHYS. Both the
+    resolving table (the gates') and the live one (the game's).
+
+    BREAKS IF: the clamp's ceiling is reverted to e_inv_q (its bucket is then
+    Phi's own, whose E° does NOT exceed Phi -- every probe fails), moves to any
+    other edge of the staircase, loses the sub-E°[0] case, or saturates at or
+    above T_MAX_PHYS; or the binding stops calling the one FP_HD definition the
+    folds call (it drifts from the reference).
+    """
+    scale = R.RAD_SCALE if scale_name == "resolving" else R.RAD_SCALE_LIVE
+    tbl = _baked(scale)
+    E = R.bake_e_table(rad_scale=scale)
+    assert np.array_equal(np.asarray(tbl.table(), dtype=np.int64), np.asarray(E))
+    last, n = -1, 0
+    for b in range(R.E_TABLE_SIZE - 1):
+        for phi in sorted({E[b], E[b] + (E[b + 1] - E[b]) // 2, E[b + 1] - 1}):
+            c = tbl.e_ceiling_q(phi)
+            assert c == R.e_ceiling_q(phi, E), (b, phi)
+            bc = c >> R.E_INDEX_SHIFT
+            assert ((c + 1) >> R.E_INDEX_SHIFT) == bc + 1, (b, phi, c)   # its bucket's top
+            assert E[bc - 1] <= phi < E[bc], (b, phi, bc)                # first above Phi
+            assert c >= tbl.e_inv_q(phi)
+            assert c >= last
+            last = c
+            n += 1
+    assert tbl.e_ceiling_q(0) == 0 and tbl.e_ceiling_q(E[0] - 1) == 0
+    for phi in (E[3999], E[3999] + 1, 3 * E[3999]):
+        assert tbl.e_ceiling_q(phi) == bp.E_CEILING_TOP_Q == (16000 << 16) - 1
+    assert bp.E_CEILING_TOP_Q < 16000 << 16
+    assert n >= R.E_TABLE_SIZE - 1                # every bucket probed at least once
 
 
 if __name__ == "__main__":
