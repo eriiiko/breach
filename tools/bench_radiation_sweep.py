@@ -117,7 +117,8 @@ def _smoke_group(h, w, rng, ts, T):
     """--smoke (P5b): a TEST-FIXTURE smoke group, to time the gas arm of the Fleck
     pre-pass where it engages -- the engine's 7-plane layout (steam, smoke,
     poison, teargas, fuel_gas, o2, inert_n2), smoke absorbing at heat_absorb 5.0
-    (every SHIPPED row is 0.0, so the live game never pays this) on every air
+    (a fixture; the SHIPPED smoke absorbs at its derived 25.36 since P5c, so the
+    live game pays this wherever there is smoke) on every air
     cell, the bulk pair at ambient, and the air HOT (a fire's plume), so the arm
     prices every one of them and damps the hot ones. Mutates T; returns
     (gas, hq, n_bulk)."""
@@ -226,14 +227,13 @@ def _cuda_rows(args, tbl, t_amb_q, rng):
             scratch = [cp.empty((1, h, w), dtype=cp.int64) for _ in range(2)]
             d_f = cp.empty((1, h, w), dtype=cp.int32)
             # P5a: the effective extinction planes the wavefronts read (int32
-            # scratch); no gas group here — the shipped table is all zero, so
-            # the live per-call path uploads no gas plane either.
+            # scratch); no gas group without --smoke (a smoke-free scene: the
+            # live per-call path uploads no gas plane there either).
             eff = [cp.empty((1, h, w), dtype=cp.int32) for _ in range(2)]
             d_rad = [cp.empty((1, h, w), dtype=cp.int64) for _ in range(4)]
             d_cnt = cp.empty((1, SLOTS), dtype=cp.int64)
-            # the gas group on the device: none by default (the shipped table
-            # is all zero, so the live per-call path uploads no gas plane
-            # either); --smoke uploads the fixture's ACTIVE plane, as the
+            # the gas group on the device: none by default (a smoke-free
+            # scene); --smoke uploads the fixture's ACTIVE plane, as the
             # per-call path does (P5a), with the currency by value (P5b)
             core_gas = (0, 0, 0, 0, 0, 0)
             if args.smoke:

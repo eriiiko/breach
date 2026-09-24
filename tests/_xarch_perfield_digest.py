@@ -323,7 +323,36 @@ UNIT_FIELD_LABEL = "__unit_state__"
 #
 # REPRODUCED: the harness was run twice on this build, identical both times.
 # (was 167b96bddfe37c0d256afed4d3b9271371fcaf3edd7557e02cf685a17208953f)
-GOLDEN_AGGREGATE = "e369b616bb251e19a2053ef744125e8568d933f9b8d4b6d0445b256676106d45"
+# ===========================================================================
+# P5c RE-BASELINE (2026-09-24, issue #12, ray-engine-v2 P5 -- "smoke absorbs
+# heat", design v3 §6.3 / §11's P5 row; Erik approved P5 on 2026-09-24 and this
+# is its one golden move). A VALUE move, not a schema move: DIGEST_SPEC_VERSION
+# unchanged (v6) -- no field added, removed or retyped.
+#
+# CAUSE, and it is a single one: smoke's heat radiation goes LIVE. The canonical
+# A/B scenario seeds smoke at 0.6 over its whole interior and opens a hull
+# breach, and [gases.smoke] heat_absorb moves 0.0 -> 25.36 (derived in
+# config.toml: soot's IR mass-specific extinction, Widmann et al. 2003, through
+# the engine's own soot bookkeeping and tile geometry). With it the sweep's
+# smoke term absorbs and emits on those cells (P5a's mechanism) and the
+# temperature fold's new GAS branch lands the result in gas_energy (P5c). What
+# puts the smoke off ambient is the EOS answering the BREACH: at the fold of
+# tick 0 all 196 interior gas cells sit between -46 and +307 game, and 48 of
+# them book a non-zero rad_net (measured: without the breach no gas cell leaves
+# ambient before the fold; the (ghost) fire and the wave source change nothing
+# there). So the first fields to move are temperature and gas_energy at tick 0,
+# then atmosphere / wind / gas from tick 1 (the EOS answering the re-heated
+# gas: design §6.3's predicted second-order coupling), and wave_p and the
+# marine's position from tick 2 (the wind). No other field moves.
+#
+# VERIFIED SOLE CAUSE, not assumed: the P5c build with heat_absorb set back to
+# 0.0 on every row reproduces the PREVIOUS value, e369b616..., exactly -- so
+# the fold's gas branch, the clamp's drop counter, the bindings and the CUDA
+# twin move nothing on their own (the branch only acts where a_gas > 0).
+#
+# REPRODUCED: the harness was run twice on this build, identical both times.
+# (was e369b616bb251e19a2053ef744125e8568d933f9b8d4b6d0445b256676106d45)
+GOLDEN_AGGREGATE = "9d56649172e5b90b917cb7a6dd9447570e8f2a20a8b9196fd8802d22dcfa1dfa"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs

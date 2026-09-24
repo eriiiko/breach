@@ -19,9 +19,10 @@ file owns the three things neither can see:
   * THE LIVE PATH HANDS IT OVER: the conductor's sweep (step 2b of step_tail)
     damps HOT smoke on the live table in exactly that currency, and follows the
     fold's dials when they move.
-  * DORMANCY: every shipped heat_absorb is 0.0, so no gas cell absorbs and the
-    live game's Fleck plane is 2^24 on every gas cell -- GOLDEN_AGGREGATE does
-    not move (the suite's golden tests are the oracle; this is the direct read).
+  * WHERE IT ENGAGES (P5c; P5b's dormancy gate, retired as its docstring
+    said it would be): smoke now absorbs in the SHIPPED table, so the live game
+    damps hot smoky gas cells -- and only those: a gas cell whose smoke term is
+    zero stays at 2^24.
 
 Run:
     C:/Users/steen/anaconda3/python.exe -m pytest tests/test_radiation_sweep_gas_fleck.py -q
@@ -46,7 +47,7 @@ from simulation.gases import SMOKE  # noqa: E402
 from simulation.materials import MAT_WOOD  # noqa: E402
 
 NO_FACE = 63                     # [physics.thermal] NO_FACE: no conduction face
-H_SMOKE = 5.0                    # a TEST-FIXTURE coefficient; every shipped row is 0.0
+H_SMOKE = 5.0                    # a TEST-FIXTURE coefficient (the shipped smoke is 25.36, P5c)
 _SWEEP_PLANES = ("rad_net_sweep", "rad_flux_sweep", "rad_amb_sweep", "rad_fluence")
 
 
@@ -268,28 +269,38 @@ def test_the_live_sweep_damps_hot_smoke_in_the_folds_currency():
               f"min f {int(live_f[gas].min())}")
 
 
-def test_the_shipped_game_damps_no_gas_cell():
-    """PROPERTY (P5b's dormancy): with the SHIPPED gas table -- every heat_absorb
-    0.0 -- no gas cell absorbs, so the gas arm engages nowhere: after live ticks
-    of a burning playground (hot solids, radiation flowing) the engine's Fleck
-    plane is exactly 2^24 on every gas cell, while the solid arm is live
-    (non-vacuity: this same world with a fixture coefficient and hot smoke damps
-    gas cells, the test above). GOLDEN_AGGREGATE is the stronger oracle and the
-    suite asserts it unmoved; this is the direct read of why.
+def test_the_shipped_game_damps_exactly_the_smoky_gas_cells():
+    """PROPERTY (P5c): with the SHIPPED gas table -- smoke absorbs, derived in
+    config.toml; every other gas is 0.0 -- the live game's gas arm engages on
+    exactly the gas cells whose smoke term absorbs: over live ticks of a burning
+    playground with a hot smoke cloud, every DAMPED gas cell (f < 2^24 in the
+    engine's own Fleck plane) held smoke with a bulk count at or above N_EPS_RAW
+    at the sweep's input, and every gas cell with no smoke stayed at 2^24 -- while
+    some gas cells ARE damped (non-vacuity; before P5c this gate asserted none
+    were, which its docstring named P5c to retire).
 
-    BREAKS IF: a shipped heat_absorb leaves 0.0, or the arm reaches a gas cell
-    whose smoke term is zero (a_gas == 0) -- e.g. by keying on a_eff with a
-    material extinction on gas, or on the bulk count alone.
+    BREAKS IF: the arm reaches a gas cell whose smoke term is zero (a_gas == 0)
+    -- e.g. by keying on a_eff with a material extinction on gas, or on the bulk
+    count alone -- or the shipped smoke stops absorbing (nothing damped).
     """
     sim, cloud = _hot_smoky_playground(fixture=False)     # the SHIPPED gas table
     g = sim.gmap
-    assert not np.any(g.gases.heat_absorb_q16), "a shipped heat_absorb left 0.0"
+    assert g.gases.heat_absorb_q16[SMOKE] > 0, "the shipped smoke absorbs nothing"
     eng = sim.physics_runner.engine
+    n_damped = 0
     for _ in range(3):
-        sim.set_paused(False)
-        sim.step()
+        grabbed = _step_capturing(sim)
         fl = np.asarray(eng.radiation.fleck_plane())
-        assert np.all(fl[~g.thermal_solid] == F_ONE), "a gas cell was damped, shipped"
+        gas = ~g.thermal_solid
+        smoke_in = grabbed["gas"][SMOKE] > 0
+        n_bulk = sum(grabbed["gas"][gi].astype(np.int64)
+                     for gi in np.flatnonzero(g.gases.conservative))
+        damped = (fl < F_ONE) & gas
+        n_damped += int(np.count_nonzero(damped))
+        assert np.all(smoke_in[damped] & (n_bulk[damped] >= 1)), (
+            "a gas cell with no absorbing smoke was damped")
+        assert np.all(fl[gas & ~smoke_in] == F_ONE)
+    assert n_damped > 0, "no gas cell damped in the shipped game: vacuous"
     assert np.any(g.rad_net_sweep != 0), "no radiation flowed: vacuous"
 
 

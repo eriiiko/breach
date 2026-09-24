@@ -11,8 +11,9 @@ DORMANCY:
   * the live conductor hands the sweep the smoke term -- the gas planes, the table,
     the bulk sum -- so with a (test-fixture) coefficient the live planes ARE a
     direct sweep with the smoke term, and differ from one without it;
-  * NOTHING consumes a gas cell's rad_net yet: the temperature fold's `ts` mask is
-    unchanged (P5c opens it), so the smoke term moves no gas temperature.
+  * since P5c the temperature fold consumes a gas cell's rad_net -- through the
+    gas-energy seam, on accountable cells only (the last test below; the fold's
+    arithmetic is tests/test_temperature_gas_radiation.py's).
 
 (P5b's gas arm of the Fleck pre-pass has its own wiring and dormancy tests, in
 tests/test_radiation_sweep_gas_fleck.py; the direct sweep below is handed the
@@ -42,7 +43,7 @@ from simulation.gases import SMOKE  # noqa: E402
 from simulation.materials import MAT_WOOD  # noqa: E402
 
 _SWEEP_PLANES = ("rad_net_sweep", "rad_flux_sweep", "rad_amb_sweep", "rad_fluence")
-H_SMOKE = 5.0            # a TEST-FIXTURE coefficient; every shipped row is 0.0
+H_SMOKE = 5.0            # a TEST-FIXTURE coefficient (the shipped smoke is 25.36, P5c)
 
 
 def _step_tail_kwargs(g, runner):
@@ -195,43 +196,72 @@ def test_the_live_sweep_reads_the_smoke_term():
           f"cells, a_eff there {int(a_eff[cloud].min())}..{int(a_eff[cloud].max())} Q16")
 
 
-def test_nothing_consumes_a_gas_cells_rad_net_yet():
-    """PROPERTY (P5a's dormancy, second half): the temperature fold converts
-    rad_net on THERMAL SOLIDS only -- the Pass-1 `ts[i]` mask is unchanged -- so a
-    rad_net booked on a gas cell (which the smoke term now produces) moves no
-    temperature anywhere: the fold with rad_net non-zero on every gas cell and
-    zero on every solid equals the fold with no rad_net at all, cell for cell,
-    counter for counter. And the same plane on the SOLIDS does move them
-    (non-vacuity: the fold is live, only its gas branch is closed).
+def test_a_gas_cells_rad_net_lands_only_through_the_seam_on_accountable_cells():
+    """PROPERTY (P5c; P5a's dormancy gate, retired as its docstring said P5c
+    would): the temperature fold consumes a GAS cell's rad_net only in the ENERGY
+    form and only on the ACCOUNTABLE set.
 
-    WHEN THIS MUST CHANGE: P5c opens the mask to accountable gas cells (the
-    Pass-1 gas radiation branch, the clamp on gas, the group-1 books) and
-    replaces this with the closure identity. Opening it anywhere else, earlier
-    -- P5b wires only the sweep's gas Fleck arm -- is the change this exists to
-    catch.
+      * On the pre-#54 T-form path (no gas_energy -- the legacy direct binding) a
+        gas cell's rad_net still moves nothing: the fold with rad_net on every gas
+        cell equals the fold with none, cell for cell and counter for counter.
+      * In the energy form (gas_energy supplied, the live path's) the same plane
+        moves every accountable gas cell's stored energy and mirror, books it in
+        e_gas_deposit_sum exactly as sum(gas_energy) moved (group 1), and leaves
+        every NON-accountable cell -- vacuum, the ambient ring -- untouched.
+      * A solid's rad_net moves it on both paths (non-vacuity: the fold is live).
+
+    BREAKS IF: the gas branch is reachable without the seam (a bare temperature
+    write), books into a new group, reaches a vacuum or ring cell, or is not
+    reached at all.
     """
     sim = default_scenario_sim()
     g = sim.gmap
+    runner = sim.physics_runner
     ts = g.thermal_solid
+    ring = np.zeros_like(g.is_vacuum)
+    ring[1, 1:5] = True                              # a fixture ring segment
+    ring &= ~ts & ~g.is_vacuum
+    assert np.any(ring)
     gas_cells = (~ts) & (~g.is_vacuum)
-    assert np.any(gas_cells) and np.any(ts)
-    rn_gas = np.where(gas_cells, np.int64(5_000_000), np.int64(0)).astype(np.int64)
+    acct = gas_cells & ~ring & ~g.solid
+    assert np.any(acct) and np.any(ts) and np.any(g.is_vacuum & ~ts)
+    rn_gas = np.where(~ts, np.int64(5_000_000), np.int64(0)).astype(np.int64)
     rn_solid = np.where(ts, np.int64(5_000_000), np.int64(0)).astype(np.int64)
+    n_bulk = sum(g.gas[gi].astype(np.int64)
+                 for gi in np.flatnonzero(g.gases.conservative)).astype(np.int32)
+    t_amb_q = int(runner._eos_t_amb_raw())
+    eng_t = runner.engine.temperature
 
-    def fold(rad_net):
+    def fold(rad_net, energy):
         solver = bp.TemperatureSolver()
+        solver.c_v, solver.n_floor_heat = eng_t.c_v, eng_t.n_floor_heat
         T = g.temperature.copy()
-        solver.step(T, np.zeros_like(g.heat), g.heat_inv_shift, g.face_shift, g.solid,
-                    g.is_vacuum, g.atmosphere, thermal_solid=ts, rad_net=rad_net)
-        return T, (solver.t_max_phys_hits, solver.t_low_rail_hits,
-                   solver.e_gas_deposit_sum, solver.e_solid_deposit_sum)
+        E = np.ascontiguousarray(g.gas_energy.copy()) if energy else None
+        solver.step(T, np.zeros_like(g.heat), g.heat_inv_shift,
+                    np.full_like(g.face_shift, 63), g.solid, g.is_vacuum, g.atmosphere,
+                    n_bulk=np.ascontiguousarray(n_bulk), thermal_solid=ts,
+                    rad_net=rad_net, gas_energy=E, t_amb_q=t_amb_q,
+                    is_ambient=np.ascontiguousarray(ring))
+        return T, E, (solver.t_max_phys_hits, solver.t_low_rail_hits,
+                      solver.e_gas_deposit_sum, solver.e_solid_deposit_sum,
+                      solver.e_gas_rail_sum)
 
-    base, c_base = fold(None)
-    on_gas, c_gas = fold(rn_gas)
-    on_solid, _c = fold(rn_solid)
+    base, _e, c_base = fold(None, False)
+    on_gas, _e, c_gas = fold(rn_gas, False)
     assert np.array_equal(on_gas, base) and c_gas == c_base, (
-        "a gas cell's rad_net reached the fold -- the ts mask opened before P5b")
-    assert not np.array_equal(on_solid, base), "the fold is dead: vacuous"
+        "a gas cell's rad_net reached the T-form fold -- a write outside the seam")
+    base_e, E0, c0 = fold(None, True)
+    on_gas_e, E1, c1 = fold(rn_gas, True)
+    moved = E1 != E0
+    assert np.any(moved), "the gas branch never ran: vacuous"
+    assert not np.any(moved & ~acct), "a non-accountable cell's energy moved"
+    assert np.array_equal(on_gas_e[~acct], base_e[~acct]), "a ring/vacuum mirror moved"
+    booked = int(E1[acct].astype(object).sum()) - int(E0[acct].astype(object).sum())
+    assert booked == (c1[2] - c0[2]) + (c1[4] - c0[4]), (booked, c1, c0)
+    for energy in (False, True):
+        on_solid, _e, _c = fold(rn_solid, energy)
+        ref, _e2, _c2 = fold(None, energy)
+        assert not np.array_equal(on_solid, ref), "the fold is dead: vacuous"
 
 
 if __name__ == "__main__":

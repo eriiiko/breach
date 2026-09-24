@@ -1011,8 +1011,9 @@ class PhysicsRunner:
             # ray-engine-v2 P5a (design v3 §6.3): SMOKE ABSORBS HEAT — the
             # per-gas heat_absorb column; the sweep reads the smoke term on
             # every gas cell from gmap.gas and the bulk sum step_tail builds.
-            # Every shipped value is 0.0 (dormant until P5c opens the fold's
-            # gas branch), so no gas plane is read and nothing moves.
+            # Since P5c smoke absorbs (its derived [gases.smoke] value) and the
+            # temperature fold's gas branch lands what it absorbs; only the
+            # smoke plane is read (a zero coefficient's plane never is).
             gas_heat_absorb_q16=gmap.gases.heat_absorb_q16,
             k_leak_q=self.k_leak_q,
             # thermal v2 R3: the level a VACUUM cell radiates against; the
@@ -1450,7 +1451,7 @@ class PhysicsRunner:
             rad_flux_sweep=gmap.rad_flux_sweep,
             rad_amb_sweep=gmap.rad_amb_sweep,
             rad_fluence=gmap.rad_fluence,
-            gas_heat_absorb_q16=gmap.gases.heat_absorb_q16,   # P5a (dormant: all 0.0)
+            gas_heat_absorb_q16=gmap.gases.heat_absorb_q16,   # P5a; live smoke since P5c
             k_leak_q=self.k_leak_q,
             rad_amb_vacuum_q=self.rad_amb_vacuum_q,   # thermal v2 R3
             is_ambient=amb[0],

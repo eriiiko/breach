@@ -79,9 +79,9 @@ holds:
 
 and the sweep reads `a = max(heat_atten_q, a_gas)`, `d = max(dyn_heat_atten_q,
 a)` there (stamps are MAX, never sums). A thermal solid keeps its material
-extinction whatever gas its pores hold. Nothing consumes a gas cell's rad_net
-yet (the fold's `ts` mask stays closed until P5c), and every shipped
-`heat_absorb` is 0.0, so the live game does not move.
+extinction whatever gas its pores hold. (At P5a nothing consumed a gas cell's
+rad_net and every shipped `heat_absorb` was 0.0; since P5c the fold's gas branch
+consumes it -- fold_pass1_gas -- and the shipped smoke absorbs.)
 
 THE GAS ARM OF THE FLECK PRE-PASS -- WIRED, DORMANT (P5b, 2026-09-24; design v3
 2.8 / 6.3). P5a measured gas bounded but NOT modest (p5a_gas_stiffness_study.py:

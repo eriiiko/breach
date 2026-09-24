@@ -6,7 +6,8 @@ cell the radiation sweep reads a_gas = min(ONE, Σ_g heat_absorb_q16[g] · N_g >
 0 where the bulk count is below gas_energy.h's N_EPS_RAW (the sweep side is gated
 bit for bit against the integer reference in test_radiation_sweep_reference.py).
 This file owns the DOOR: validation, the one quantization, the bound's single
-value across its three homes, and the dormancy the golden rests on.
+value across its three homes -- and, since P5c, the SHIPPED values: only smoke
+absorbs, and its coefficient is the cited derivation at the engine's own units.
 
 Run:
     C:/Users/steen/anaconda3/python.exe -m pytest tests/test_gas_heat_absorb.py -q
@@ -134,27 +135,89 @@ def test_the_bound_is_one_number_in_its_three_homes():
     assert gases.N_GASES <= R.N_GAS_PLANES_MAX
 
 
-def test_no_shipped_gas_absorbs_heat_while_nothing_consumes_gas_rad_net():
-    """PROPERTY (P5a's dormancy): every shipped gas has heat_absorb == 0, because
-    until P5b opens the temperature fold's gas branch NOTHING consumes a gas
-    cell's rad_net -- a non-zero value would take radiation out of the stream
-    (smoke shadowing a crate) with no book for it to land in: an uncounted sink,
-    exactly what the materials door refuses for `heat_atten > 0` on a gas-regime
-    row. This is also why GOLDEN_AGGREGATE does not move at P5a.
+# ---- P5c: the shipped values ----------------------------------------------
+# The cited constants of [gases.smoke] heat_absorb's derivation (config.toml
+# carries the prose). Each is a published number, not a dial:
+K_E_IR = 8.5            # Widmann et al. 2003 (NIST), K_e = 8.0-9.0 over 2.8-4.1 um
+RHO_SOOT = 1.86e6       # g/m3 -- the soot density Widmann et al. convert K_e with
+PLANCK_MEAN_1_OVER_LAMBDA = 360.0 * 1.0369277551433699 / math.pi ** 4   # 3.8322
+C2 = 1.438777e-2        # m.K, the second radiation constant
+T_FIRE_GAME = 1263      # the arc's fire plateau (design 2.8's 1263-game source)
+Y_SOOT_WOOD = 0.015     # g soot / g wood, well ventilated (Tewarson, SFPE Handbook)
+SIGMA_MC_633 = 8.7      # m2/g at 632.8 nm (Mulholland & Croarkin 2000) -- the cross-check
 
-    WHEN THIS MUST CHANGE: P5b, in the patch that opens the fold's `ts` mask to
-    gas cells, replaces this with the books gate (the #54 closure identity with
-    gas absorbing). Setting a value > 0 BEFORE that is the change it exists to
-    catch.
+
+def _derived_smoke_heat_absorb():
+    """[gases.smoke] heat_absorb from the cited constants and the LIVE dials:
+    tau per unit smoke density = sigma_P * M / (tile_w * ceiling_h), with
+    sigma_P the Planck mean at the fire plateau and M the soot one unit of smoke
+    density holds through the engine's own combustion bookkeeping."""
+    from config import CFG
+    from simulation.materials import KG_FUEL_PER_N_O2
+    t_k = float(CFG.physics.temperature_scale.kelvin_ambient) + T_FIRE_GAME
+    sigma_p = K_E_IR * PLANCK_MEAN_1_OVER_LAMBDA * t_k / (C2 * RHO_SOOT)   # m2/g
+    m_soot = Y_SOOT_WOOD * KG_FUEL_PER_N_O2 * 1000.0 / float(
+        CFG.physics.combustion.soot_yield)                                  # g per unit
+    face = float(CFG.physics.thermal.tile_size_ref_m) * float(CFG.physics.water.ceiling_h)
+    return sigma_p * m_soot / face, sigma_p, m_soot, face
+
+
+def test_smoke_heat_absorb_is_the_cited_derivation_at_the_live_dials():
+    """PROPERTY (P5c): the shipped [gases.smoke] heat_absorb IS the derivation
+    its config comment states -- soot's IR mass-specific extinction (Widmann et
+    al. 2003, K_e = 8.5), Planck-meaned at the 1263-game fire plateau (1.894
+    m2/g), times the soot mass one unit of smoke density holds through the
+    engine's OWN bookkeeping (soot_yield units of smoke per unit N_O2 burned,
+    KG_FUEL_PER_N_O2 kg of wood per unit N_O2, 0.015 g of soot per g of wood:
+    11.15 g), over the tile's cross-section (tile_size_ref_m x ceiling_h) --
+    to the four figures the config carries. And the visible cross-check holds:
+    Mulholland & Croarkin's 8.7 m2/g at 632.8 nm, carried to the same Planck
+    mean by the same 1/lambda law, lands within 25 % above it (the visible
+    scattering the IR measurement does not carry), never below.
+
+    BREAKS IF: soot_yield, KG_FUEL_PER_N_O2, the tile geometry or the ambient
+    moves without the value being re-derived (the value is then silently the
+    old soot mass), or the value is hand-tuned away from its derivation.
+    """
+    derived, sigma_p, m_soot, face = _derived_smoke_heat_absorb()
+    tbl = GasTable.from_config()
+    shipped = float(tbl.heat_absorb[gases.SMOKE])
+    assert abs(shipped - derived) <= 0.005 * derived, (shipped, derived, sigma_p, m_soot)
+    assert tbl.heat_absorb_q16[gases.SMOKE] == unit_fixed.quantize_scalar(shipped)
+    mc = SIGMA_MC_633 * 0.6328e-6 * PLANCK_MEAN_1_OVER_LAMBDA * (
+        T_FIRE_GAME + 293.0) / C2
+    assert sigma_p < mc <= 1.25 * sigma_p, (sigma_p, mc)
+    print(f"\nsmoke heat_absorb: shipped {shipped}, derived {derived:.4f} "
+          f"(sigma_P {sigma_p:.4f} m2/g, M {m_soot:.3f} g, face {face:.4f} m2; "
+          f"M&C cross-check sigma_P {mc:.4f} m2/g)")
+
+
+def test_only_smoke_absorbs_heat_and_every_other_gas_is_a_stated_gap():
+    """PROPERTY (P5c, replacing P5a's dormancy gate, whose docstring named this
+    patch as the one that retires it): the temperature fold's gas branch now
+    lands what a gas cell absorbs, so a gas may carry a non-zero heat_absorb --
+    and exactly ONE does: smoke, the combustion soot, a grey absorber. Every
+    other shipped row stays 0.0, each for a STATED reason in its config comment
+    -- the bulk pair physically (homonuclear diatomics do not absorb in the IR;
+    N2's lumped burnt products an ACCEPTED GAP), the trace gases as ACCEPTED
+    GAPS (steam and fuel gas are band absorbers that are not modelled).
+
+    BREAKS IF: a second gas starts absorbing without its own derivation and
+    gate, smoke goes back to 0.0 (the branch would be dormant again), or a
+    zero row loses the comment that says why it is zero.
     """
     tbl = GasTable.from_config()
-    assert np.all(tbl.heat_absorb_q16 == 0), {
-        tbl.names[g]: int(tbl.heat_absorb_q16[g])
-        for g in range(tbl.n) if tbl.heat_absorb_q16[g] != 0}
-    # ...and the physically-zero rows are zero for their OWN reason: the bulk
-    # pair (homonuclear diatomics) carries no optics at all
+    absorbing = [tbl.names[g] for g in range(tbl.n) if tbl.heat_absorb_q16[g] != 0]
+    assert absorbing == ["smoke"], absorbing
     for gid in np.flatnonzero(tbl.conservative):
         assert float(tbl.heat_absorb[gid]) == 0.0
+    text = (ROOT / "config.toml").read_text(encoding="utf-8")
+    for name in tbl.names:
+        if name == "smoke":
+            continue
+        block = text.split(f"[gases.{name}]", 1)[1].split("\n[", 1)[0]
+        line = next(ln for ln in block.splitlines() if ln.startswith("heat_absorb"))
+        assert ("ACCEPTED GAP" in line) or ("PHYSICAL" in line), (name, line)
 
 
 if __name__ == "__main__":

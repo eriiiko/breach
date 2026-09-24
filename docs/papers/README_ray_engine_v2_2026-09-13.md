@@ -275,3 +275,39 @@ wavefront steps. KBA applied this to a 3-D grid decomposed over processors
 kernel per wavefront index, all 16 ordinates concurrent in it (design v3
 §8.2). The integer arithmetic is untouched by it: the gather form makes the
 order structural (§2.3), so the GPU's integers are the CPU's.
+
+## Added 2026-09-24 (P5c, smoke's heat radiation)
+
+### 17. Widmann, Yang, Smith, Manzello & Mulholland 2003 -- soot in the infrared
+J. F. Widmann, J. C. Yang, T. J. Smith, S. L. Manzello, G. W. Mulholland,
+*"Measurement of the optical extinction coefficients of post-flame soot in the
+infrared"*, Combust. Flame **134** (2003) 119-129 ·
+`widmann2003_post_flame_soot_ir_extinction_nist.pdf` (NIST, public domain;
+tsapps.nist.gov pub_id 911529) · 11 pp, text-extractable.
+
+**Why it is cited.** `config.toml [gases.smoke] heat_absorb` is DERIVED from it:
+the mass-specific extinction of post-flame soot measured by gravimetry and IR
+spectroscopy over 2.8-4.1 um, *"an important region of the electromagnetic
+spectrum for radiant heat transfer in fires"* ("radiative heat transfer within
+fires is dominated by radiation transport over the wavelength range from 2 to 5
+um"). Well-ventilated soot gives K_e = 8.0-9.0 (sigma_s = 1.4 m2/g at 3.5 um),
+roughly constant in lambda -- the Rayleigh 1/lambda law, whose Planck mean at the
+arc's 1263-game fire plateau (1556 K) is 1.894 m2/g. Scattering is negligible in
+the IR, so it is the ABSORPTION a grey, non-scattering engine gas should carry.
+
+### 18. Mulholland & Croarkin 2000 -- the visible cross-check (not archived)
+G. W. Mulholland, C. Croarkin, *"Specific extinction coefficient of flame
+generated smoke"*, Fire Mater. **24** (2000) 227-230,
+doi:10.1002/1099-1018(200009/10)24:5<227::AID-FAM742>3.0.CO;2-9 -- 8.7 +/- 1.1
+m2/g at 632.8 nm across seven studies and 29 fuels. A U.S. Government work, but
+Wiley serves the PDF behind a login (HTTP 403) and NIST's own record carries no
+download, so **no PDF is archived** -- the placeholder the iron rule allows.
+Carried to the same Planck mean by the same 1/lambda law it gives 2.28 m2/g,
+20 % above #17: the visible scattering albedo (~0.19, Mulholland & Choi) that
+#17's IR measurement does not carry, and which #17's own discussion reconciles.
+
+The other two inputs of the derivation are textbook values, cited in place in
+config.toml and not archived: wood's soot yield y_s = 0.015 g/g (red oak, well
+ventilated -- Tewarson, SFPE Handbook of Fire Protection Engineering) and the
+Planck mean of 1/lambda, 360 zeta(5)/pi^4 * T/C2 = 3.8322 T/C2 (Modest,
+*Radiative Heat Transfer*, ch. 11).
