@@ -5,8 +5,11 @@ P5c opens the Pass-1 fold to accountable gas cells on BOTH temperature backends
 in one patch (CLAUDE.md "Radiation sweep": the CUDA twin lands with the CPU
 change): cuda_temperature.cu's temp_convert_unified carries the CPU block
 verbatim -- the staged chain through the FP_HD kit, the clamp's energy form, the
-railed seam deposit, e_rad_clamp_drop_sum in the APPENDED slot 12. This check
-holds the two to each other.
+railed seam deposit, e_rad_clamp_drop_sum in the APPENDED slot 12 -- and, since
+the P5c follow-up (design 8.4), the boundary's two other exits in the APPENDED
+slots 13 and 14: e_rad_boundary_export_sum (rad_net on a gas cell outside the
+accountable set, exported) and e_rad_floor_drop_sum (the floored chain's
+unlanded remainder below n_floor_heat). This check holds the two to each other.
 
   PART 1 -- ISOLATED (TemperatureSolver.step vs cuda_temperature_step, one
   call): random scenes with accountable gas cells (stored residuals E mod N,
@@ -15,17 +18,21 @@ holds the two to each other.
   HEAT deposit on some of every kind (Pass 1's second half runs after the fold
   on the same cell) and live conduction faces (Pass 2 reads the fold's mirror)
   -- clamp on and off, LIVE and resolving tables. Tol 0 on `temperature`,
-  `gas_energy` and every counter the isolated entry returns, including slot 12.
-  Non-vacuous per config: the gas branch booked, and with the clamp on it bound
-  on a gas cell.
+  `gas_energy` and every counter the isolated entry returns, including slots
+  12-14. Non-vacuous per config: the gas branch booked, with the clamp on it
+  bound on a gas cell, and both boundary counters moved.
 
   PART 2 -- THE LIVE CONDUCTOR: Simulation.step on a sealed room of hot smoke
-  radiating into its hull (the shipped coefficient), and on the smoke-shield
-  room (a held 1263-game column shining through a smoke layer at a marine), the
-  temperature backend flipping CPU <-> CUDA every tick in one world against a
-  CPU-only world: every GameMap array and every temperature counter (slot 12
-  included) at tol 0, tick for tick. Non-vacuous: the gas branch booked on the
-  GPU ticks, and on the shield the clamp withheld energy there.
+  radiating into its hull (the shipped coefficient), on the smoke-shield room
+  (a held 1263-game column shining through a smoke layer at a marine), and on
+  the two breached rooms of test_temperature_gas_radiation's closure test (a
+  burning smoky room vented to space; one breached into an ambient ring whose
+  air absorbs -- a fixture), the temperature backend flipping CPU <-> CUDA
+  every tick in one world against a CPU-only world: every GameMap array and
+  every temperature counter (slots 12-14 included) at tol 0, tick for tick.
+  Non-vacuous: the gas branch booked on the GPU ticks; on the shield the clamp
+  withheld energy there; the vented room's floor remainder and the ring's
+  export moved on GPU ticks.
 
 Prints ``TGR_RESULT: PASS``/``FAIL`` and exits 0/1.
 """
@@ -53,7 +60,15 @@ GPU_TUPLE = ("t_max_phys_hits", "e_cond_trunc_sum", "e_cond_cap_sum", "cond_limi
              "e_vac_wipe_sum", "e_ring_pin_sum", "e_deposit_drop_sum",
              "e_gas_deposit_sum", "e_gas_cond_sum", "e_gas_rail_sum",
              "e_solid_deposit_sum", "e_solid_cond_sum", "rad_clamp_hits",
-             "solid_energy_books_sum", "e_rad_clamp_drop_sum")
+             "solid_energy_books_sum", "e_rad_clamp_drop_sum",
+             # P5c follow-up (slots 13, 14, appended)
+             "e_rad_boundary_export_sum", "e_rad_floor_drop_sum")
+# The boundary counters sum rn << 16 over the cells they read (outside the
+# books; below n_floor): capped there at 2^34, a 16x margin over the physical
+# bound E[3999] ~ 2^30 on the live table (test_temperature_gas_radiation.
+# RN_PHYS_MAX), so the int64 sums cannot wrap; the 2^40 stress stays on every
+# other cell.
+RN_PHYS_MAX = 1 << 34
 _FAILS: list[str] = []
 
 
@@ -97,6 +112,8 @@ def _scene(rng, h, w, tref):
     mag = rng.choice([1, 77, 1 << 12, 1 << 20, 1 << 30, 1 << 40], size=(h, w))
     rn = np.where(rng.random((h, w)) < 0.6, mag, -mag).astype(np.int64)
     rn[rng.random((h, w)) < 0.1] = 0
+    counted = (vac | ring) | (~ts & ~solid & (nb < R.N_FLOOR_Q_LIVE))
+    rn = np.where(counted, np.clip(rn, -RN_PHYS_MAX, RN_PHYS_MAX), rn)
     caps = rng.choice([0, 4, 290, 804, 1263, 5000, 15996], size=(h, w)) // 4
     phi = np.asarray([[tref[min(R.E_TABLE_SIZE - 1, int(c))] for c in row]
                       for row in caps], dtype=np.int64)
@@ -145,7 +162,7 @@ def _run_gpu(sc, table, clamp):
 def part1_isolated():
     print("PART 1 -- isolated: TemperatureSolver.step vs cuda_temperature_step, gas branch live")
     n = 0
-    booked = bound = 0
+    booked = bound = exits = 0
     fails_before = len(_FAILS)
     for tname, table, tref in (("live", live_table(), R.E_LIVE),
                                ("resolving", reference_table(), R.E)):
@@ -182,18 +199,23 @@ def part1_isolated():
                             bound += 1
                     elif cc["rad_clamp_hits"] or cc["e_rad_clamp_drop_sum"]:
                         _fail(f"{tag}: the clamp counted with no fluence")
+                    if not cc["e_rad_boundary_export_sum"] or not cc["e_rad_floor_drop_sum"]:
+                        _fail(f"{tag}: a boundary counter never moved -- vacuous")
+                    else:
+                        exits += 1
                     n += 1
     verdict = "at tol 0" if len(_FAILS) == fails_before else "with FAILURES"
     print(f"  {n} configurations {verdict} on temperature, gas_energy and all "
           f"{len(GPU_TUPLE)} counters; the gas branch booked in {booked}, the clamp "
-          f"withheld energy in {bound}")
+          f"withheld energy in {bound}, both boundary counters moved in {exits}")
 
 
 # ---------------------------------------------------------------------------
 # PART 2 -- the live conductor, the temperature backend flipping
 # ---------------------------------------------------------------------------
 _TEMP_COUNTERS = ("t_max_phys_hits", "t_low_rail_hits", "rad_clamp_hits",
-                  "e_rad_clamp_drop_sum", "e_cond_trunc_sum", "e_cond_cap_sum",
+                  "e_rad_clamp_drop_sum", "e_rad_boundary_export_sum",
+                  "e_rad_floor_drop_sum", "e_cond_trunc_sum", "e_cond_cap_sum",
                   "cond_limit_hits", "e_vac_wipe_sum", "e_ring_pin_sum",
                   "e_deposit_drop_sum", "e_gas_deposit_sum", "e_gas_cond_sum",
                   "e_gas_rail_sum", "e_solid_deposit_sum", "e_solid_cond_sum",
@@ -204,7 +226,12 @@ def _worlds():
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import test_temperature_gas_radiation as T5c
     return {"hot smoky room": lambda: (T5c._sealed_hot_smoky_room()[0], None),
-            "smoke shield": lambda: (T5c._shield_room(0.2)[0], T5c._shield_room)}
+            "smoke shield": lambda: (T5c._shield_room(0.2)[0], T5c._shield_room),
+            # the P5c follow-up's two breached rooms (the closure test's scenes)
+            "vented to space": lambda: (T5c._breached_room("space", fire=True,
+                                                           T_game=300), None),
+            "breached into the ring": lambda: (T5c._breached_room(
+                "ambient", fire=True, n2_absorb=0.5), None)}
 
 
 def _hold(sim):
@@ -223,19 +250,24 @@ def part2_live():
         s_gpu, _h = build()
         booked = 0
         drop = 0
-        for t in range(30):
+        exits = dict(e_rad_boundary_export_sum=0, e_rad_floor_drop_sum=0)
+        ticks = 72 if name in ("vented to space", "breached into the ring") else 30
+        for t in range(ticks):
             for s, on in ((s_cpu, False), (s_gpu, True)):
                 if held is not None:
                     _hold(s)
                 bp.set_temperature_backend(on)
                 ts = s.physics_runner.engine.temperature
                 d0, c0 = int(ts.e_gas_deposit_sum), int(ts.e_rad_clamp_drop_sum)
+                x0 = {k: int(getattr(ts, k)) for k in exits}
                 s.set_paused(False)
                 s.step()
                 bp.set_temperature_backend(False)
                 if on:
                     booked += int(int(ts.e_gas_deposit_sum) != d0)
                     drop += int(ts.e_rad_clamp_drop_sum) - c0
+                    for k in exits:
+                        exits[k] += int(int(getattr(ts, k)) != x0[k])
             a = {k: v for k, v in vars(s_cpu.gmap).items() if isinstance(v, np.ndarray)}
             b = {k: v for k, v in vars(s_gpu.gmap).items() if isinstance(v, np.ndarray)}
             bad = [k for k in a if not np.array_equal(a[k], b[k])]
@@ -249,10 +281,16 @@ def part2_live():
             _fail(f"P2 {name}: the GPU fold's gas branch never booked -- vacuous")
         if name == "smoke shield" and drop <= 0:
             _fail(f"P2 {name}: the GPU clamp never withheld energy -- vacuous")
+        if name == "vented to space" and not exits["e_rad_floor_drop_sum"]:
+            _fail(f"P2 {name}: the GPU floor remainder never moved -- vacuous")
+        if name == "breached into the ring" and not exits["e_rad_boundary_export_sum"]:
+            _fail(f"P2 {name}: the GPU ring export never moved -- vacuous")
         verdict = "at tol 0" if len(_FAILS) == fails_before else "FAILED"
-        print(f"  {name}: 30 ticks {verdict} on every GameMap array and "
+        print(f"  {name}: {ticks} ticks {verdict} on every GameMap array and "
               f"{len(_TEMP_COUNTERS)} temperature counters; GPU ticks booking the gas "
-              f"branch {booked}, GPU clamp drop {drop}")
+              f"branch {booked}, GPU clamp drop {drop}, GPU ticks moving the export "
+              f"{exits['e_rad_boundary_export_sum']} / the floor "
+              f"{exits['e_rad_floor_drop_sum']}")
 
 
 def main() -> int:

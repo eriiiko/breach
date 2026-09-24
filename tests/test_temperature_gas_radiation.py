@@ -11,15 +11,22 @@ ACCOUNTABLE gas cell with rad_net != 0 takes it into the conserved field:
     dE       = N * (T_target - T_before)  -> deposit_railed, e_gas_deposit_sum
 
 and the clamp's withheld step is counted, on gas AND solids, in
-TemperatureSolver.e_rad_clamp_drop_sum. The arithmetic is the integer
-reference's (sweep_ref_q.fold_pass1_gas, gate G15); this file holds the ENGINE
-to it and pins the properties the patch exists for, each named with the change
-that must break it:
+TemperatureSolver.e_rad_clamp_drop_sum. So are the boundary's two other exits
+(the P5c follow-up, design 8.4 "bounded AND counted"): rad_net on a gas cell
+OUTSIDE the accountable set (the ambient ring, an open breach) is exported in
+e_rad_boundary_export_sum, and the part of a thin cell's rad_net the floored
+chain does not land (bulk N below n_floor_heat) in e_rad_floor_drop_sum. The
+arithmetic is the integer reference's (sweep_ref_q.fold_pass1_gas, gate G15);
+this file holds the ENGINE to it and pins the properties the patch exists for,
+each named with the change that must break it:
 
   (0) the C++ fold equals the reference, bit for bit, cell and counter -- one
       tick on random cells, and tick for tick with the C++ sweep in the loop;
   (a) the #54 closure identity and the P-G5 total ledger still close in int64
-      with gas radiation live -- no new group;
+      with gas radiation live -- no new group -- and, on live rooms breached to
+      space and into the ambient ring, the sweep->fold boundary is COUNTED:
+      every exit that is not a landing equals its counter exactly, tick for
+      tick, and what remains is the conversions' declared rounding;
   (b) smoke SHIELDS, in the live engine, against a clear-air control;
   (c) hot smoke COOLS RADIATIVELY in the live engine, never below ambient;
   (d) a smoke-free scene is bit-identical to the pre-P5c fold -- the branch acts
@@ -61,7 +68,17 @@ AIR, HULL = 0, 1
 T_AMB_Q = R.T_AMB_Q
 COUNTERS = ("t_max_phys_hits", "t_low_rail_hits", "rad_clamp_hits",
             "e_rad_clamp_drop_sum", "e_gas_deposit_sum", "e_gas_rail_sum",
-            "e_solid_deposit_sum")
+            "e_solid_deposit_sum",
+            # P5c follow-up (design 8.4): the boundary's other two exits
+            "e_rad_boundary_export_sum", "e_rad_floor_drop_sum")
+# A cell's |rad_net| never exceeds the table's top black body -- it absorbs at
+# most a * Phi and emits at most a * E°(T), and the sweep's fluence is bounded by
+# its hottest emitter -- i.e. E°[3999] ~ 2^30 on the live table. The two
+# boundary counters sum rn << 16 over cells, so a fixture stressing the chain at
+# 2^44 on cells THEY read would leave int64 within a few dozen cells; those cells
+# are capped at 2^34 (a 16x margin over the physical bound). The 2^44 stress
+# stays on every cell the counters do not read.
+RN_PHYS_MAX = 1 << 34
 
 
 # ---------------------------------------------------------------------------
@@ -116,14 +133,18 @@ def test_cpp_fold_equals_the_reference_on_gas_and_solids_bit_for_bit(table_name,
     heat_inv_shift), and (row 2) NON-accountable gas cells with rad_net != 0 --
     vacuum and the ambient ring -- equals sweep_ref_q.fold_pass1_solid +
     fold_pass1_gas on the same planes: every temperature, every stored energy,
-    and all seven counters, with the clamp on and off, on the live and the
-    resolving table. Row 2 is untouched on both. Non-vacuous: the clamp binds on
-    some gas cells and not on others, and on some solids.
+    and all nine counters, with the clamp on and off, on the live and the
+    resolving table. Row 2 is untouched on both, and its whole rad_net is
+    EXPORTED (e_rad_boundary_export_sum); row 0's cells below n_floor book the
+    floored chain's unlanded remainder (e_rad_floor_drop_sum). Non-vacuous: the
+    clamp binds on some gas cells and not on others, and on some solids; both
+    boundary counters move.
 
     BREAKS IF: temperature_solver.cpp's gas branch differs from the reference
     in any step -- the staged chain or its floor, the mirror as T_before, the
     energy form of the clamp, the rail -- or reaches a non-accountable cell, or
-    the drop is priced at anything but cap_real.
+    the drop is priced at anything but cap_real, or a boundary cell's rad_net or
+    a floored cell's remainder is booked differently (or not at all).
     """
     live = table_name == "live"
     tbl = live_table() if live else reference_table()
@@ -131,6 +152,9 @@ def test_cpp_fold_equals_the_reference_on_gas_and_solids_bit_for_bit(table_name,
     rng = random.Random(20260925 + int(clamp) + 2 * int(live))
     n = 600
     T, Eg, rn, phi, nb = G._gas_fold_cells(rng, n, tref)
+    for i in range(n):                  # the counters' cells, at the physical bound
+        if nb[0][i] < R.N_FLOOR_Q_LIVE and abs(rn[0][i]) > RN_PHYS_MAX:
+            rn[0][i] = RN_PHYS_MAX if rn[0][i] > 0 else -RN_PHYS_MAX
     # row 1: thermal solids; row 2: vacuum / ring gas cells (non-accountable)
     Ts = [rng.choice([0, 290 << 16, 804 << 16, 1263 << 16]) for _ in range(n)]
     hs = [rng.choice([-4, -2, 0, 3, 5]) for _ in range(n)]
@@ -176,8 +200,13 @@ def test_cpp_fold_equals_the_reference_on_gas_and_solids_bit_for_bit(table_name,
     want = dict(t_max_phys_hits=c.t_max_phys_hits, t_low_rail_hits=c.t_low_rail_hits,
                 rad_clamp_hits=c.rad_clamp_hits, e_rad_clamp_drop_sum=c.e_rad_clamp_drop_sum,
                 e_gas_deposit_sum=c.e_gas_deposit_sum, e_gas_rail_sum=c.e_gas_rail_sum,
-                e_solid_deposit_sum=c.e_solid_deposit_sum)
+                e_solid_deposit_sum=c.e_solid_deposit_sum,
+                e_rad_boundary_export_sum=c.e_rad_boundary_export_sum,
+                e_rad_floor_drop_sum=c.e_rad_floor_drop_sum)
     assert d == want, (d, want)
+    # the boundary counters: row 2 exported whole, row 0's thin cells booked
+    assert c.e_rad_boundary_export_sum == sum(int(r) << 16 for r in r3) > 0
+    assert c.e_rad_floor_drop_sum != 0, "no floored cell folded: vacuous"
     if clamp:
         gas_hits = sum(1 for i in range(n)
                        if R.sat_add_q16(T_all[0, i], R.gas_rad_dT_q(int(rn_all[0, i]),
@@ -255,7 +284,8 @@ def test_cpp_sweep_and_fold_follow_the_reference_scene_tick_for_tick(name):
         c = sc.counters
         got = _counters(eng.solver)
         for k in ("rad_clamp_hits", "e_rad_clamp_drop_sum", "e_gas_deposit_sum",
-                  "e_gas_rail_sum", "e_solid_deposit_sum", "t_max_phys_hits"):
+                  "e_gas_rail_sum", "e_solid_deposit_sum", "t_max_phys_hits",
+                  "e_rad_boundary_export_sum", "e_rad_floor_drop_sum"):
             assert got[k] == getattr(c, k), (t, k, got[k], getattr(c, k))
     assert not np.array_equal(eng.T[gas], T0[gas]), "the smoke never moved: vacuous"
     if name == "smoke shield":
@@ -274,6 +304,10 @@ def test_the_sweep_fold_boundary_is_bounded_and_counted_on_the_engine(name):
     precision per gas cell (sweep_ref_q_gates._chain_bound) -- with no rail
     engaged, so nothing else crosses the boundary uncounted. On the shield the
     counted drop is non-zero (the clamp binds), so its CURRENCY is in the sum.
+    (These sealed scenes hold every gas cell at ambient density and have no
+    boundary cells, so the two other exits -- e_rad_boundary_export_sum,
+    e_rad_floor_drop_sum -- stay 0 here; they are subtracted all the same, and
+    test_closure_identity... drives both on live breached rooms.)
 
     BREAKS IF: the fold drops energy it does not count (a floor the drop
     counter misses, a second truncation), or e_rad_clamp_drop_sum is priced in
@@ -302,7 +336,8 @@ def test_the_sweep_fold_boundary_is_bounded_and_counted_on_the_engine(name):
                 assert dE % N == 0, "the gas landing is not a whole step of N"
                 landed += (dE // N) * cap
                 bound += G._chain_bound(r, N, cap, R.gas_rad_dT_q(r, N))
-        resid = (int(rn.astype(object).sum()) << 16) - landed - d["e_rad_clamp_drop_sum"]
+        resid = ((int(rn.astype(object).sum()) << 16) - landed - d["e_rad_clamp_drop_sum"]
+                 - d["e_rad_boundary_export_sum"] - d["e_rad_floor_drop_sum"])
         assert abs(resid) <= bound, (resid, bound)
         worst = max(worst, abs(resid) / bound if bound else 0.0)
         drops += d["e_rad_clamp_drop_sum"]
@@ -351,52 +386,249 @@ def _step(sim):
     sim.step()
 
 
-def test_closure_identity_and_total_ledger_close_with_gas_radiation_live():
-    """PROPERTY (a): with smoke's heat radiation LIVE -- the shipped coefficient,
-    a sealed room of hot smoke radiating into its hull -- the P-G5 TOTAL ledger
-    (gas books + solid books) closes EXACTLY in int64 on every one of 120 ticks
-    against the same six groups tests/test_thermostat_books.py sums (EOS, the
-    thermal solver's gas side, combustion, the Python seams, water evac, the
-    solid side), and the gas-only #54 identity (tests/test_e1_hot_rail's four
-    groups) closes too: radiation into gas is GROUP 1 (e_gas_deposit_sum), with
-    no new term. Non-vacuous: e_gas_deposit_sum moved (there is no heat deposit
-    in this fireless room, so every count of it is the radiation branch), the
-    smoke cooled, and the walls warmed.
+SPACE, FURN = 9, 6        # the SPACE code (vacuum, or the ambient ring) / furniture
+
+
+def _breached_room(boundary, *, smoke=0.3, T_game=800, fire=False, n2_absorb=0.0,
+                   h_in=8, w_in=12):
+    """A hull room inside a one-tile ring of SPACE tiles -- open vacuum on a
+    space map, the ambient reservoir RING on an ambient one (gamemap.py routes
+    the SPACE code by the map's boundary) -- its air seeded hot and smoky
+    through the gas-energy seam, optionally a burning 3x3 furniture block (lit
+    AT its ignition_temp: CLAUDE.md "Starting a fire"), and its east hull wall
+    BREACHED (destroy_wall) before the first tick, while that wall still sits
+    exactly at ambient. `n2_absorb` is a TEST-FIXTURE heat_absorb for the bulk
+    inert gas (0.0 shipped)."""
+    from config import CFG
+    from simulation import fire_fixed
+    from simulation.gases import INERT_N2
+    h, w = h_in + 4, w_in + 4
+    tm = np.full((h, w), SPACE, dtype=np.int32)
+    tm[1:-1, 1:-1] = HULL
+    tm[2:-2, 2:-2] = AIR
+    blk = (slice(h // 2 - 1, h // 2 + 2), slice(3, 6))
+    if fire:
+        tm[blk] = FURN
+    lvl = LevelData(name="p5c_breach_" + boundary, version="2", path=Path("."),
+                    tilemap=tm, tile_size_m=0.333, diffuse_path=Path("."),
+                    boundary=boundary)
+    sim = Simulation(lvl, seed=1, breach_physics=bp, enable_recorder=False)
+    g = sim.gmap
+    inner = g._gas_energy_accountable()
+    g.gas[SMOKE][inner] = gas_fixed.quantize_scalar(smoke)
+    g.seed_gas_temperature(inner, T_game << 16)
+    if fire:
+        g.fire[blk] = fire_fixed.quantize_scalar(float(CFG.physics.fire.ignition_seed))
+        g.temperature[blk] = fire_fixed.quantize_scalar(
+            float(g.materials.ignition_temp[FURN]))
+    if n2_absorb:
+        t = g.gases.heat_absorb_q16.copy()
+        t[INERT_N2] = int(round(n2_absorb * ONE))
+        g.gases.heat_absorb_q16 = np.ascontiguousarray(t)
+    g.destroy_wall(h // 2, w - 2)
+    return sim
+
+
+class _FoldReplay:
+    """Design 8.4's sweep->fold boundary, split per tick. Snapshots the fold's
+    own inputs at step_tail entry (the engine-proxy idiom of
+    tools/bench_clamp_shave.py), replays Pass 1's radiative sub-step on every
+    cell with the integer reference's arithmetic (which the tests above hold
+    the engine's fold to, bit for bit), and splits what the sweep booked,
+    sum(rad_net) << 16, into what LANDED, the clamp's drop, the rails, the
+    rad_net of cells outside the books (the boundary export), the floored
+    chain's remainder below n_floor, and the conversions' ROUNDING -- with the
+    rounding's declared bound (one temperature LSB x C per thermal solid, the
+    chain's precision per gas cell above the floor)."""
+
+    def __init__(self, sim):
+        self.g = sim.gmap
+        self._runner = runner = sim.physics_runner
+        self._eng = eng = runner.engine
+        me = self
+
+        class _Proxy:
+            def __getattr__(self, name):
+                return getattr(eng, name)
+
+            def step_tail(self, *args, **kwargs):
+                g = me.g
+                me.pre = dict(
+                    T=g.temperature.copy(), E=g.gas_energy.copy(),
+                    nb=sum(g.gas[gi].astype(np.int64)
+                           for gi in np.flatnonzero(g.gases.conservative)),
+                    ts=g.thermal_solid.copy(), acct=g._gas_energy_accountable(),
+                    his=g.heat_inv_shift.astype(np.int64))
+                return eng.step_tail(*args, **kwargs)
+
+        runner.engine = _Proxy()
+        n_floor_q, c_v_q, _rcv = eng.gas_capacity_q()
+        self.n_floor_q, self.c_v_q = int(n_floor_q), int(c_v_q)
+        self.t_amb_q = int(runner._eos_t_amb_raw())
+        self.table = [int(v) for v in np.asarray(eng.emissive.table())]
+
+    def close(self):
+        self._runner.engine = self._eng
+
+    def books(self):
+        g, pre = self.g, self.pre
+        rn = g.rad_net_sweep.astype(np.int64)
+        phi = g.rad_fluence.astype(np.int64)
+        ts, acct = pre["ts"], pre["acct"]
+        b = dict(A=int(rn.astype(object).sum()) << 16, L=0, C=0, rail=0, export=0,
+                 floor=0, rnd=0, bound=0, n_floor=0)
+        b["export"] = int(rn[~ts & ~acct].astype(object).sum()) << 16
+        for y, x in zip(*np.nonzero(ts & (rn != 0))):
+            r, s, t0 = int(rn[y, x]), int(pre["his"][y, x]), int(pre["T"][y, x])
+            t_after = R.sat_add_q16(t0, R.shr_round0_signed(r, s))
+            cap = R.cap_real_q(True, s, 0)
+            t_tg = min(t_after, max(R.e_inv_q(int(phi[y, x]), self.table), t0))
+            t_new = max(min(t_tg, R.T_MAX_PHYS_Q), 0)
+            b["C"] += (t_after - t_tg) * cap
+            b["rail"] += (t_tg - t_new) * cap
+            b["L"] += (t_new - t0) * cap
+            b["rnd"] += (r << 16) - (t_after - t0) * cap
+            b["bound"] += cap
+        for y, x in zip(*np.nonzero(acct & (rn != 0))):
+            r, n_raw = int(rn[y, x]), int(pre["nb"][y, x])
+            nb = max(0, n_raw)
+            dT = R.gas_rad_dT_q(r, n_raw, c_v_q=self.c_v_q, n_floor_q=self.n_floor_q)
+            t0 = R.gas_mirror_q(int(pre["E"][y, x]), nb, self.t_amb_q)
+            t_after = R.sat_add_q16(t0, dT)
+            cap = R.cap_real_q(False, 0, nb, self.c_v_q)
+            t_tg = min(t_after, max(R.e_inv_q(int(phi[y, x]), self.table), t0))
+            b["C"] += (t_after - t_tg) * cap
+            b["L"] += (t_tg - t0) * cap
+            rem = (r << 16) - (t_after - t0) * cap
+            if n_raw < self.n_floor_q:
+                b["floor"] += rem
+                b["n_floor"] += 1
+            else:
+                b["rnd"] += rem
+                b["bound"] += G._chain_bound(r, n_raw, cap, dT)
+        return b
+
+
+_BOUNDARY = ("e_rad_clamp_drop_sum", "e_rad_boundary_export_sum", "e_rad_floor_drop_sum")
+
+
+def _closure_scene(name):
+    """(sim, ticks, warm-up ticks). The warm-up keeps a fixture's direct SOLID
+    temperature seeding (the lit furniture) out of the P-G5 ledger: the solid
+    books are a snapshot the solver takes inside step(), so the first tick
+    would carry the seeding itself."""
+    if name == "sealed":
+        return _sealed_hot_smoky_room()[0], 120, 0
+    if name == "vented to space":
+        return _breached_room("space", fire=True, T_game=300), 240, 1
+    return _breached_room("ambient", fire=True, n2_absorb=0.5), 120, 1
+
+
+@pytest.mark.parametrize("name", ["sealed", "vented to space", "breached into the ring"])
+def test_closure_identity_and_total_ledger_close_with_gas_radiation_live(name):
+    """PROPERTY (a): with smoke's heat radiation LIVE (the shipped coefficient),
+    on every tick of three live rooms --
+      * sealed: hot smoke radiating into its hull (120 ticks);
+      * vented to space: a burning smoky room whose wall is breached to vacuum,
+        so its bulk N falls through n_floor_heat while smoke still absorbs
+        (240 ticks);
+      * breached into the ring: a burning smoky room on an AMBIENT map, its
+        wall breached into the reservoir ring, the bulk inert gas absorbing (a
+        TEST FIXTURE: with the shipped table the ring holds no absorber -- its
+        smoke is clamped to 0 and O2 / N2 absorb nothing -- so the ring's
+        rad_net is 0 today, and this is the day a band absorber lands; 120
+        ticks)
+    -- (1) the P-G5 TOTAL ledger (gas books + solid books) closes EXACTLY in
+    int64 against the six groups tests/test_thermostat_books.py sums, and the
+    gas-only #54 identity closes too: radiation into gas is GROUP 1
+    (e_gas_deposit_sum), no new term; and (2) design 8.4's sweep->fold
+    BOUNDARY is counted: per tick the engine's e_rad_clamp_drop_sum,
+    e_rad_boundary_export_sum and e_rad_floor_drop_sum each equal, exactly, what
+    a per-cell replay of the fold says left the books that way, and what the
+    sweep booked minus the landing, the rails and those three is the
+    conversions' rounding, within its declared bound. Neither boundary counter
+    is a #54 term -- neither touches gas_energy -- which (1) proves by closing
+    without them. Non-vacuous: the gas branch booked; sealed -- the smoke
+    cooled and the walls warmed; vented -- the floor's remainder moved; ring --
+    the export moved; and on both breached rooms the boundary WITHOUT the new
+    counters (P5c's state) breaks 8.4's declared bound on some tick, i.e. what
+    they count is not a rounding (the reproduction, kept as a gate).
 
     BREAKS IF: the gas branch writes gas_energy without booking it, books it
-    into a new counter the identities do not sum, or books the clamp's WITHHELD
-    energy (e_rad_clamp_drop_sum) as if it had landed.
+    into a new counter the identities do not sum, or books a WITHHELD or
+    EXPORTED energy as if it had landed; or the ring's / a breach's rad_net or a
+    thin cell's unlanded remainder leaves the fold uncounted (left out: red on
+    the scene that drives it, measured).
     """
     from test_thermostat_books import _gas_books, _terms
-    sim, inner = _sealed_hot_smoky_room()
+    sim, ticks, warm = _closure_scene(name)
     g = sim.gmap
     eos = sim.physics_runner.eos
     tsolver = sim.physics_runner.engine.temperature
     comb = sim.physics_runner.combustion
     engine = sim.physics_runner.engine
+    for _w in range(warm):
+        _step(sim)
+    inner = g._gas_energy_accountable()
+    walls = g.thermal_solid & ~g.is_vacuum
+    T_wall0 = int(g.temperature[walls].astype(np.int64).sum())
+    T_gas0 = int(g.temperature[inner].astype(np.int64).sum())
     prev_total = _gas_books(g) + int(tsolver.solid_energy_books_sum)
     prev_gas = _gas_books(g)
     prev_terms = _terms(g, eos, tsolver, comb, engine)
+    prev_b = {k: int(getattr(tsolver, k)) for k in _BOUNDARY}
     dep0 = int(tsolver.e_gas_deposit_sum)
-    walls = g.thermal_solid
-    T_wall0 = int(g.temperature[walls].astype(np.int64).sum())
-    T_gas0 = int(g.temperature[inner].astype(np.int64).sum())
     bad_total = bad_gas = 0
-    for t in range(120):
-        _step(sim)
-        terms = _terms(g, eos, tsolver, comb, engine)
-        gas_now = _gas_books(g)
-        total_now = gas_now + int(tsolver.solid_energy_books_sum)
-        d = [terms[0], terms[1] - prev_terms[1], terms[2] - prev_terms[2],
-             terms[3] - prev_terms[3], terms[4], terms[5] - prev_terms[5]]
-        bad_total += int((total_now - prev_total) != sum(d))
-        bad_gas += int((gas_now - prev_gas) != sum(d[:5]))
-        prev_total, prev_gas, prev_terms = total_now, gas_now, terms
-    assert bad_total == 0, f"the P-G5 total ledger broke on {bad_total}/120 ticks"
-    assert bad_gas == 0, f"the #54 gas identity broke on {bad_gas}/120 ticks"
+    moved = dict(export=0, floor=0)
+    uncounted_at_p5c = counted_now = over_bound_at_p5c = 0
+    rp = _FoldReplay(sim)
+    try:
+        for t in range(ticks):
+            _step(sim)
+            terms = _terms(g, eos, tsolver, comb, engine)
+            gas_now = _gas_books(g)
+            total_now = gas_now + int(tsolver.solid_energy_books_sum)
+            d = [terms[0], terms[1] - prev_terms[1], terms[2] - prev_terms[2],
+                 terms[3] - prev_terms[3], terms[4], terms[5] - prev_terms[5]]
+            bad_total += int((total_now - prev_total) != sum(d))
+            bad_gas += int((gas_now - prev_gas) != sum(d[:5]))
+            prev_total, prev_gas, prev_terms = total_now, gas_now, terms
+            # (2) the boundary, per tick, exactly
+            b = rp.books()
+            now = {k: int(getattr(tsolver, k)) for k in _BOUNDARY}
+            dc = {k: now[k] - prev_b[k] for k in _BOUNDARY}
+            prev_b = now
+            assert dc["e_rad_clamp_drop_sum"] == b["C"], (t, dc, b)
+            assert dc["e_rad_boundary_export_sum"] == b["export"], (t, dc, b)
+            assert dc["e_rad_floor_drop_sum"] == b["floor"], (t, dc, b)
+            resid = b["A"] - b["L"] - b["rail"] - sum(dc.values())
+            assert resid == b["rnd"] and abs(resid) <= b["bound"], (t, resid, b)
+            moved["export"] += int(b["export"] != 0)
+            moved["floor"] += int(b["floor"] != 0)
+            at_p5c = b["export"] + b["floor"] + b["rnd"]      # what P5c left uncounted
+            uncounted_at_p5c = max(uncounted_at_p5c, abs(at_p5c))
+            over_bound_at_p5c += int(abs(at_p5c) > b["bound"])
+            counted_now = max(counted_now, abs(resid))
+    finally:
+        rp.close()
+    assert bad_total == 0, f"the P-G5 total ledger broke on {bad_total}/{ticks} ticks"
+    assert bad_gas == 0, f"the #54 gas identity broke on {bad_gas}/{ticks} ticks"
     assert int(tsolver.e_gas_deposit_sum) != dep0, "the gas branch never booked: vacuous"
-    assert int(g.temperature[inner].astype(np.int64).sum()) < T_gas0
-    assert int(g.temperature[walls].astype(np.int64).sum()) > T_wall0
+    if name == "sealed":
+        assert moved == dict(export=0, floor=0) and over_bound_at_p5c == 0
+        assert int(g.temperature[inner].astype(np.int64).sum()) < T_gas0
+        assert int(g.temperature[walls].astype(np.int64).sum()) > T_wall0
+    elif name == "vented to space":
+        assert moved["floor"] > 0, "no cell below n_floor absorbed: vacuous"
+        assert over_bound_at_p5c > 0, "the floor's remainder never beat a rounding"
+    else:
+        assert moved["export"] > 0, "the ring never took radiation: vacuous"
+        assert over_bound_at_p5c > 0, "the ring's export never beat a rounding"
+    print(f"\n{name}: {ticks} ticks, #54 and P-G5 exact; 8.4 boundary: worst per-tick "
+          f"residual {uncounted_at_p5c} with P5c's counters (over the declared bound "
+          f"on {over_bound_at_p5c} ticks), {counted_now} (the declared rounding) with "
+          f"the two boundary counters; ticks moving the export {moved['export']}, "
+          f"the floor {moved['floor']}")
 
 
 def test_hot_smoke_cools_radiatively_end_to_end_never_below_ambient():

@@ -726,6 +726,7 @@ _ALL_BACKENDS = (
 )
 _TEMP_COUNTERS = ("t_max_phys_hits", "t_low_rail_hits", "rad_clamp_hits",
                   "e_rad_clamp_drop_sum",                       # P5c
+                  "e_rad_boundary_export_sum", "e_rad_floor_drop_sum",  # P5c follow-up
                   "e_cond_trunc_sum", "e_cond_cap_sum", "cond_limit_hits",
                   "e_vac_wipe_sum", "e_ring_pin_sum", "e_deposit_drop_sum",
                   "e_gas_deposit_sum", "e_gas_cond_sum", "e_gas_rail_sum",
