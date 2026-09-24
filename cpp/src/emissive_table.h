@@ -36,7 +36,7 @@
 // NO INTERPOLATION, deliberately: the 4-unit staircase means near-equal pairs
 // land in the SAME bucket and net exactly 0.
 //
-// Both lookups below are FP_HD so the CUDA twins (the P3 clamp in
+// The lookups below are FP_HD so the CUDA twins (the P3 clamp in
 // cuda_temperature.cu, the P4 sweep) share ONE definition with the host.
 
 #include <cstdint>
@@ -49,9 +49,13 @@ static constexpr int E_BUCKET_SHIFT = 2;      // 4 game units per bucket
 // Total right shift from a Q16.16 temperature to a bucket index: 16 + 2.
 static constexpr int E_INDEX_SHIFT  = 16 + E_BUCKET_SHIFT;
 // Where E°⁻¹ saturates: the LAST bucket's low edge, 4·3999 = 15996 game — BELOW
-// T_MAX_PHYS = 16000, so on the radiative sub-step the clamp binds first and the
-// T_MAX_PHYS rail stays reachable only through the `heat` deposit branch.
+// T_MAX_PHYS = 16000.
 static constexpr int32_t E_INV_TOP_GAME = 4 * (E_TABLE_SIZE - 1);
+// P5d: where the clamp's CEILING (e_ceiling_q, below) saturates — the LAST
+// bucket's top, one Q16 LSB below 16000 game. Still BELOW T_MAX_PHYS, so on the
+// radiative sub-step the clamp binds first and the T_MAX_PHYS rail stays
+// reachable only through the `heat` deposit branch.
+static constexpr int32_t E_CEILING_TOP_Q = ((4 * E_TABLE_SIZE) << 16) - 1;
 
 // Q16.16 temperature -> E° bucket index. NEGATIVE T indexes bucket 0 (a tile
 // below ambient does not emit less than the ambient floor in this model); T at
@@ -71,8 +75,10 @@ FP_HD inline int e_bucket_of(int32_t T_q) {
 //                            such a cell's rad_net is <= 0 anyway)
 //   * Φ >= E°[3999]  -> 15996 game (E_INV_TOP_GAME), below T_MAX_PHYS
 // Idempotent by construction — e_bucket_of((4b) << 16) == b, so
-// E°[E°⁻¹(Φ)] <= Φ and re-applying the clamp changes nothing. This is the
-// transcription of sweep_ref_q.py::e_inv_q, which is the spec.
+// E°[E°⁻¹(Φ)] <= Φ. This is the transcription of sweep_ref_q.py::e_inv_q,
+// which is the spec. P5d: THE inverse of the table and the "radiation
+// temperature" (the tile inspector's, the heat-law tests'), unchanged — but no
+// longer the clamp's ceiling; the clamp reads e_ceiling_q below.
 FP_HD inline int32_t e_inv_q(const int64_t* table, int64_t phi) {
     if (phi < table[0]) return 0;
     int lo = 0;
@@ -82,6 +88,37 @@ FP_HD inline int32_t e_inv_q(const int64_t* table, int64_t phi) {
         lo = up ? nxt : lo;
     }
     return (int32_t)((4 * lo) << 16);
+}
+
+// THE MAXIMUM-PRINCIPLE CLAMP'S CEILING (P5d, Erik's ruling of 2026-09-24;
+// docs/ray_engine_v2_p5d_clamp_headroom_brief_2026-09-24.md): the TOP of the
+// first bucket whose E° exceeds Φ, as a Q16.16 game temperature. With b =
+// e_inv_q's bucket (the largest with E°[b] <= Φ), that bucket is b + 1, and its
+// top is its last Q16.16 value:
+//     e_ceiling_q(Φ) = (min(4·(b+2), 4·E_TABLE_SIZE) << 16) − 1
+// WHY: the forward emission is a staircase with no temperature at which it
+// equals Φ. An undamped cell with no clamp balances by flickering across the
+// edge 4(b+1), where its bucket's E° crosses Φ; a ceiling at e_inv_q's 4b
+// stopped it a bucket short, where it still emits E°[b] < Φ, so it net-absorbed
+// every tick and the clamp withheld the whole surplus (P5c's counted shave).
+// Radiation may now carry a cell into the first bucket in which it out-emits
+// what it absorbs, and no further: "a clamped cell never emits more than it
+// absorbs" became "... by more than one bucket", the resolution the emission
+// itself works at. The edge cases:
+//   * Φ < E°[0]      -> 0, UNCHANGED (design row 31: no radiative warming above
+//                        the ambient floor — the one deliberate exception, so
+//                        a shadowed cell cannot creep)
+//   * Φ >= E°[3999]  -> E_CEILING_TOP_Q, one LSB below 16000 game, below
+//                        T_MAX_PHYS (the clamp still binds before the rail)
+// Built ON e_inv_q — the one fixed 12-trip lifting, not a second search — so
+// the two cannot disagree about b. FP_HD: one definition, host and device (the
+// Pass-1 clamp in temperature_solver.cpp and its CUDA twin). The transcription
+// of sweep_ref_q.py::e_ceiling_q, which is the spec (gate G16).
+FP_HD inline int32_t e_ceiling_q(const int64_t* table, int64_t phi) {
+    if (phi < table[0]) return 0;
+    const int b = (int)(e_inv_q(table, phi) >> E_INDEX_SHIFT);
+    const int top_game = (b + 2 < E_TABLE_SIZE) ? 4 * (b + 2) : 4 * E_TABLE_SIZE;
+    return (int32_t)((top_game << 16) - 1);
 }
 
 // The exact int64 bake (the body moved verbatim from raycaster.cpp, P-R4 /

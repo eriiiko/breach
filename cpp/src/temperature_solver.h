@@ -403,8 +403,10 @@ public:
     // Ray-engine-v2 P1 (design v3 §2.8, gate 4): the Pass-1 MAXIMUM-PRINCIPLE
     // clamp's engagement counter, the t_max_phys_hits idiom. The clamp bounds
     // the radiative sub-step alone — T <- min(T_after, max(T_before,
-    // E°⁻¹(Φ))) — so a cell cannot be carried BY RADIATION above the black
-    // body in equilibrium with the fluence it absorbs (Fleck & Cummings 1971's
+    // e_ceiling_q(Φ))) — so a cell cannot be carried BY RADIATION past the
+    // black body in equilibrium with the fluence it absorbs by more than one
+    // E° bucket (P5d: the ceiling is the top of the first bucket out-emitting
+    // Φ, emissive_table.h; it was E°⁻¹(Φ)) (Fleck & Cummings 1971's
     // "arguably the most serious deficiency of the IMC equations", closed by
     // this clamp rather than by effective scattering). It engages ONLY when
     // `rad_fluence` and `e_table` are both supplied to step(); at P1 the live
@@ -753,7 +755,7 @@ public:
         // the total stream each cell absorbed from this tick; `e_table` — the
         // E° table (E_TABLE_SIZE int64 entries, EmissiveTable::table()). With
         // BOTH supplied, the Pass-1 radiation fold clips each thermal solid's
-        // radiative sub-step at max(T_before, E°⁻¹(Φ)) between the saturating
+        // radiative sub-step at max(T_before, e_ceiling_q(Φ)) (P5d) between the saturating
         // add and the rails, counted in `rad_clamp_hits`, and the applied-ΔT
         // booking below it sees the clipped value (so the P-G5 solid ledger
         // keeps closing with no extra counter). EITHER nullptr -> no clamp —

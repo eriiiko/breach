@@ -6,7 +6,7 @@
 #include "raycaster.h"     // HEAT_SCALE, heat_saturating_add (shared Q16.16 domain)
 #include "fixed_point.h"   // S3c: quantize() for the o2_vacuum_thresh integer compare
 #include "gas_energy.h"    // arc #54 P-G1b: THE gas energy seam (design §2.7)
-#include "emissive_table.h" // ray-engine-v2 P1: e_inv_q for the Pass-1 clamp
+#include "emissive_table.h" // ray-engine-v2 P1 / P5d: e_ceiling_q, the Pass-1 clamp's ceiling
 #include <algorithm>        // P-E2b: std::clamp on the wide deposit-divide result
 
 // Direction order for the per-tile face_shift cache (MUST match the Python
@@ -298,12 +298,17 @@ void TemperatureSolver::step(
                     temperature[i] = sat_add_q16_i64(temperature[i], dTr);
                     // ---- THE MAXIMUM-PRINCIPLE CLAMP (ray-engine-v2 P1,
                     // design v3 §2.8, in its CORRECT form, row 21) ------------
-                    //   T_new = min(T_after, max(T_before, E°⁻¹(Φ)))
-                    // It binds only when radiation would RAISE the cell above
-                    // the black body in equilibrium with the fluence it
-                    // absorbed; a cell already above that (a burning crate,
-                    // heated by combustion) keeps T_before as its ceiling and
-                    // may only cool; a cooling step is never clipped. Its home
+                    //   T_new = min(T_after, max(T_before, e_ceiling_q(Φ)))
+                    // It binds only when radiation would RAISE the cell past
+                    // the top of the first E° bucket that out-emits the fluence
+                    // it absorbed (P5d, Erik's ruling of 2026-09-24: one bucket
+                    // of headroom over the black body in equilibrium with it —
+                    // the resolution the emission itself works at; E°⁻¹(Φ), a
+                    // bucket short, pinned every undamped cell below its
+                    // balance and withheld its whole surplus); a cell already
+                    // above that (a burning crate, heated by combustion) keeps
+                    // T_before as its ceiling and may only cool; a cooling step
+                    // is never clipped. Its home
                     // is HERE — between the saturating add and the rails and
                     // BEFORE the applied-ΔT booking — so the P-G5 solid ledger
                     // books the clipped landing with no extra counter. Dormant
@@ -311,7 +316,7 @@ void TemperatureSolver::step(
                     // engagement count is `rad_clamp_hits`. This is the
                     // transcription of sweep_ref_q.py::fold_pass1_solid.
                     if (rad_fluence != nullptr && e_table != nullptr) {
-                        const int32_t t_cap = e_inv_q(e_table, rad_fluence[i]);
+                        const int32_t t_cap = e_ceiling_q(e_table, rad_fluence[i]);
                         const int32_t ceiling =
                             (t_cap > t_before_rad) ? t_cap : t_before_rad;
                         if (temperature[i] > ceiling) {
@@ -370,7 +375,8 @@ void TemperatureSolver::step(
             // into the conserved field, in order:
             //   dT       = sign(rn) · deposit_dT_wide_i64(|rn|, recip_N, recip_cv)
             //   T_before = mirror_q(E, N)            (the STORED energy's mirror)
-            //   T_target = min(sat(T_before + dT), max(T_before, E°⁻¹(Φ)))
+            //   T_target = min(sat(T_before + dT), max(T_before, e_ceiling_q(Φ)))
+            //              (P5d's ceiling — the solid branch above has the why)
             //   dE       = N · (T_target − T_before)
             //   deposit_railed(dE), e_gas_deposit_sum += dE
             // * THE CONVERSION is §2.8's STAGED chain — magnitude then sign, so
@@ -448,7 +454,7 @@ void TemperatureSolver::step(
                             - ((int64_t)t_target - (int64_t)t_before) * cap_real_[i];
                     }
                     if (rad_fluence != nullptr && e_table != nullptr) {
-                        const int32_t t_cap = e_inv_q(e_table, rad_fluence[i]);
+                        const int32_t t_cap = e_ceiling_q(e_table, rad_fluence[i]);
                         const int32_t ceiling =
                             (t_cap > t_before) ? t_cap : t_before;
                         if (t_target > ceiling) {

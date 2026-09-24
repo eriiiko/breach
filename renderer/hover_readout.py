@@ -106,7 +106,14 @@ class HoverReadout:
     atten_d: float = 0.0          # the effective stamped extinction d >= a
     a_gas: float = float("nan")   # P5c: the smoke term alone (0 on a thermal solid); nan without an engine
     fleck_f: float = float("nan")  # the Fleck factor f the pre-pass forms (solid OR gas arm); nan without an engine
-    t_cap: float = float("nan")    # E_inv(Phi) in game units (the clamp's ceiling); nan without an engine
+    # P5d: the clamp's ACTUAL ceiling, e_ceiling_q(Phi) in game units -- the top
+    # of the first E° bucket out-emitting Phi (it was E_inv(Phi) until P5d); nan
+    # without an engine.
+    t_cap: float = float("nan")
+    # P5d: E_inv(Phi) in game units -- the RADIATION TEMPERATURE (the black body
+    # in equilibrium with Phi, to the bucket's low edge), no longer the clamp's
+    # ceiling; nan without an engine.
+    t_rad: float = float("nan")
     lines: List[str] = field(default_factory=list)   # panel-ready text rows
 
 
@@ -189,12 +196,14 @@ def pack_hover_readout(gmap, tx: int, ty: int,
     # Ray-engine-v2 P1 (design v3 §4.2): the shadow sweep's per-tile rows.
     # Phi (rad_fluence) is in the heat/temperature Q16.16 currency, so it is
     # dequantized through the SAME scale as T; a and d through the optics
-    # boundary module. f and E_inv(Phi) are NOT re-derived here: they come
-    # from the engine's own FP_HD functions (RadiationSweep.fleck_f_solid_q24
-    # on the engine's EmissiveTable, EmissiveTable.e_inv_q) so there is ONE
-    # implementation of each in the tree — the reference, the sweep and this
-    # readout cannot drift apart. With no engine bound (a bare GameMap, a
-    # stub) both show nan. NOTE: rad_fluence is per-tick in meaning but the
+    # boundary module. f, E_inv(Phi) and the clamp's ceiling are NOT re-derived
+    # here: they come from the engine's own FP_HD functions
+    # (RadiationSweep.fleck_f_solid_q24 on the engine's EmissiveTable,
+    # EmissiveTable.e_inv_q, EmissiveTable.e_ceiling_q -- P5d: the one the
+    # Pass-1 clamp reads) so there is ONE implementation of each in the tree —
+    # the reference, the sweep, the fold and this readout cannot drift apart.
+    # With no engine bound (a bare GameMap, a stub) all show nan. NOTE:
+    # rad_fluence is per-tick in meaning but the
     # SWEEP overwrites it at its own start (P2a, design row 38), so a
     # render-time read after the tick has ended sees the last tick's real
     # value — which is the whole reason the conductor's wipe was removed.
@@ -206,6 +215,7 @@ def pack_hover_readout(gmap, tx: int, ty: int,
     a_gas = float("nan")
     fleck_f = float("nan")
     t_cap = float("nan")
+    t_rad = float("nan")
     eng = getattr(gmap, "_physics_engine", None)
     t_amb_fn = getattr(gmap, "_gas_energy_t_amb_raw", None)
     ts_plane = getattr(gmap, "thermal_solid", None)
@@ -239,7 +249,8 @@ def pack_hover_readout(gmap, tx: int, ty: int,
                 eng.emissive, T_q, a_mat_q, int(gmap.heat_inv_shift[ty, tx]), t_amb_q))
         a_gas = _optics_fx.dequantize(np.int32(a_gas_q)).item()
         fleck_f = f_q24 / float(1 << 24)
-        t_cap = int(eng.emissive.e_inv_q(phi_raw)) / TEMP_SCALE
+        t_rad = int(eng.emissive.e_inv_q(phi_raw)) / TEMP_SCALE
+        t_cap = int(eng.emissive.e_ceiling_q(phi_raw)) / TEMP_SCALE
     atten_a = _optics_fx.dequantize(np.int32(a_eff_q)).item()
     atten_d = _optics_fx.dequantize(np.int32(d_eff_q)).item()
 
@@ -257,7 +268,7 @@ def pack_hover_readout(gmap, tx: int, ty: int,
         f"gas_energy: {gas_energy:10.3f} N.K",
         f"Phi: {phi:12.1f} u/t   a: {atten_a:5.3f}  d: {atten_d:5.3f}"
         + (f"  (smoke {a_gas:5.3f})" if (not is_ts and a_gas == a_gas) else ""),
-        f"f: {fleck_f:9.6f}   E_inv(Phi): {t_cap:8.1f} u",
+        f"f: {fleck_f:9.6f}   E_inv(Phi): {t_rad:8.1f} u   clamp cap: {t_cap:8.1f} u",
     ]
     return HoverReadout(tx=int(tx), ty=int(ty), material=material,
                         t_game=t_game, kelvin=kelvin, fire=fire, gases=gases,
@@ -266,7 +277,7 @@ def pack_hover_readout(gmap, tx: int, ty: int,
                         water_depth=water_depth, wall_hp=wall_hp,
                         fuel_frac=fuel_frac, gas_energy=gas_energy,
                         phi=phi, atten_a=atten_a, atten_d=atten_d,
-                        a_gas=a_gas, fleck_f=fleck_f, t_cap=t_cap,
+                        a_gas=a_gas, fleck_f=fleck_f, t_cap=t_cap, t_rad=t_rad,
                         lines=lines)
 
 
