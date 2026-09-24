@@ -38,49 +38,59 @@ def _run(gate):
 
 
 def test_config_dials_have_not_drifted():
-    """The reference's four dials still equal config.toml's.
+    """The reference's six dials still equal config.toml's.
 
     Breaks if: rad_scale, kelvin_ambient, k_temp_to_kelvin or T_MAX_PHYS is
     retuned without re-running P0 -- which silently invalidates every number in
-    report_p0.md and every gate below.
+    report_p0.md and every gate below -- or c_v / n_floor_heat move under the gas
+    capacity chain (P5a), which invalidates the gas-stiffness numbers
+    (p5a_gas_stiffness_study.py).
     """
     ok, detail = R.config_dials_match()
     assert ok, f"config.toml has moved under the reference: {detail}"
 
 
 def test_conservation_identity_is_exact():
-    """G1: sum(rad_net) + sum(rad_flux) + sum(rad_amb) == 0 exactly, in int64.
+    """G1: sum(rad_net) + sum(rad_flux) + sum(rad_amb) == 0 exactly, in int64 --
+    also with absorbing SMOKE cells (P5a), where a gas cell must book a non-zero
+    rad_net somewhere.
 
     Breaks if: any writer books one side of a transfer and not the other -- the
     remainder split, the body's ambient re-emission, or either of the virtual
-    ring's two books.
+    ring's two books -- or the smoke term stops reaching the sweep's arithmetic.
     """
     print(_run(G.gate1_conservation))
 
 
 def test_uniform_ambient_is_a_per_cell_fixed_point():
     """G2a: a uniform ambient field leaves all three planes exactly zero, per cell,
-    with bodies present.
+    with bodies present -- and with absorbing SMOKE at ambient, bodies standing in
+    it (P5a).
 
     Breaks if: the body stops re-emitting at ambient (Erik's ruling, design row 25)
     or the Fleck factor goes back to multiplying the whole emission (row 22) --
-    both alternatives are measured in the gate and both are non-zero.
+    both alternatives are measured in the gate and both are non-zero -- or a gas
+    cell's emission stops being the arithmetic its absorption is.
     """
     print(_run(G.gate2a_uniform_ambient))
 
 
 def test_enclosed_isothermal_box_inner_layer_is_zero():
     """G2b: the inner layer of a sealed isothermal box is an exact per-cell zero
-    with f < 1 forced.
+    with f < 1 forced -- and the same box FILLED WITH SMOKE at the walls'
+    temperature is an exact zero at every inner cell, smoke included (P5a).
 
-    Breaks if: emission stops being the same arithmetic as absorption, or the
-    downwind split stops carrying its remainder.
+    Breaks if: emission stops being the same arithmetic as absorption (on a solid
+    OR a gas cell), or the downwind split stops carrying its remainder.
     """
     print(_run(G.gate2b_isothermal_box))
 
 
 def test_stream_is_positive_and_illegal_extinction_is_rejected():
-    """G3: no negative stream anywhere; a > d, d > ONE and k > ONE raise.
+    """G3: no negative stream anywhere, smoke included; a > d, d > ONE and k > ONE
+    raise, and so do the gas extinction's own illegal inputs (a heat_absorb
+    outside [0, 4096] in Q16, a table/plane mismatch, more planes than the
+    headroom covers, gas without the thermal-solid mask).
 
     Breaks if: absorption stops being bounded by a + b <= ONE, or an illegal
     extinction plane becomes measurable instead of rejected at the door.
@@ -177,7 +187,10 @@ def test_headroom_stays_inside_int64():
 
     Breaks if: the ordinate count, the ordinate weight, the table top or the Fleck
     factor's fixed point grows enough to need more than int64 -- the one arithmetic
-    assumption the whole scheme rests on.
+    assumption the whole scheme rests on. Since P5a also: the gas density sum at
+    the door's maximum heat_absorb over 16 planes of INT32_MAX density fits int64
+    and twice that bound would not (so the door's 4096 is the arithmetic's own
+    limit), and a room of opaque smoke at the table top keeps the per-cell bounds.
     """
     print(_run(G.gate11_headroom))
 
@@ -198,6 +211,25 @@ def test_damped_source_is_monotone_in_temperature():
     and is a failure this gate should raise, not hide.
     """
     print(_run(G.gate12_damped_source_is_monotone))
+
+
+def test_gas_extinction_rides_the_density_law():
+    """G13 (P5a, design 6.3): smoke's heat extinction. a_gas counts absorbers
+    (k x density = k x a_gas to truncation, up to the ONE cap; a negative density
+    absorbs nothing); what thin smoke does not absorb continues down the stream
+    (an absorber behind a smoke column receives strictly less as it thickens, and
+    cold opaque smoke is a perfect shield); a cell below N_EPS_RAW bulk is
+    invisible even when hot; a thermal solid ignores the gas in its pores; the
+    stamped total on a gas cell is a MAX; and the gas L_q chain (P5b's to wire)
+    is the solid chain at unit capacity and follows L = a*ex/(max(N, n_floor)*c_v).
+
+    Breaks if: a second density factor is applied on top of the extinction (the
+    v2.4 min(N, N_AMB)/N_AMB -- design 6.3's double debit), the floor moves off
+    N_EPS_RAW or off the BULK count, thermal solids take the smoke term, the body
+    share is summed instead of MAXed, or the staged chain drops or reorders a
+    reciprocal. Each of these was injected once and turned this gate red.
+    """
+    print(_run(G.gate13_gas_extinction))
 
 
 if __name__ == "__main__":       # pragma: no cover
