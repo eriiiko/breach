@@ -31,7 +31,14 @@ WHAT TRANSCRIBES WHAT
   gas_rad_dT_q       <- design v3 sections 2.8 / 6.3: a gas cell's signed
                         rad_net through the same chain, magnitude then sign --
                         the 0-D gas cell's radiative sub-step (P5b), and the
-                        conversion P5c's Pass-1 gas branch owes
+                        conversion P5c's Pass-1 gas branch makes
+  gas_mirror_q       <- cpp/src/gas_energy.h mirror_q (the gas temperature
+                        is a floor-division of the stored energy by N)
+  cap_real_q         <- temperature_solver.h conduction::cell_capacity_q's
+                        cap_real (the counters' honest capacity)
+  fold_pass1_gas     <- temperature_solver.cpp Pass 1's GAS radiation branch
+                        (P5c, design v3 sections 2.8 / 6.3): the staged chain,
+                        the clamp in its energy form, deposit_railed
 
 ARITHMETIC. Pure Python ints throughout, so no overflow is possible and every
 headroom question is *measured* (`SweepResult.max_*`) rather than assumed. The
@@ -100,6 +107,41 @@ cell keeps L = 0 (it emits no excess the pre-pass could see). The property it
 exists for -- a hot absorbing gas cell cools monotonically and never below
 ambient -- is gate 14, on `gas_cell_march`, a 0-D model of the gas radiative
 sub-step.
+
+THE FOLD'S GAS BRANCH -- LIVE (P5c, 2026-09-24; design v3 2.8 / 6.3 / 8.4).
+`fold_pass1_gas` is the Pass-1 radiative sub-step of an ACCOUNTABLE GAS cell,
+the transcription temperature_solver.cpp's gas branch and its CUDA twin are
+written against. In order, for a cell with rad_net != 0:
+
+    dT       = sign(rn) * min(INT32_MAX, deposit_dT_wide_i64(|rn|, recip_N, recip_cv))
+    T_before = gas_mirror_q(E, N)          -- the mirror of the STORED energy
+    T_after  = T_before + dT
+    T_target = min(T_after, max(T_before, E°⁻¹(Phi)))            -- the clamp
+    dE       = N * (T_target - T_before)
+    E       += dE,  then the T_MAX_PHYS rail (deposit_railed), booked
+
+`N` is the cell's bulk count, the capacity the books divide by; the chain's
+recip_N floors it at n_floor_heat exactly as the heat deposit's does. There is
+NO min(N, N_AMB)/N_AMB factor: the density law already lives in a_gas, so
+rad_net is the absorbed amount (design 6.3).
+
+THE CLAMP'S ENERGY FORM, and one refinement of the design's letter. Design 2.8
+writes the clamped deposit as `N * (T_target + t_amb) - E`. It hits T_target
+exactly, and so does `N * (T_target - T_before)`; the two differ by the cell's
+sub-LSB residual `E mod N` (0..N-1 raw counts), which the letter would DRAIN on
+every clamped tick -- exactly the drip class arc #54 exists to kill ("N *
+floordiv(E, N) <= E ... drains up to N - 1 raw counts per cell per write",
+gas_energy.h). This form keeps the residual, so the clamp only ever WITHHOLDS
+part of a radiative gain: `dE` is 0 when the ceiling is T_before, never
+negative, and the mirror lands on T_target in both cases (G15 (a) measures
+both forms and the residual the letter drains).
+
+THE DROP IS COUNTED (design 8.4): `e_rad_clamp_drop_sum` is the energy the
+clamp withholds, priced at the cell's REAL capacity -- (T_after - T_target) *
+cap_real, the heat currency e_solid_deposit_sum / e_ring_pin_sum already use
+(Q16.16 capacity x Q16.16 temperature) -- on a gas cell here and on a thermal
+solid in fold_pass1_solid. Exact per cell in both media: the withheld step is
+a whole number of temperature LSBs.
 """
 from __future__ import annotations
 
@@ -800,6 +842,37 @@ def fleck_f_gas_q(T_q: int, a_gas_q: int, n_bulk_raw: int, *,
     return fleck_f_q(T_q, L, shift=shift, alpha_floor=alpha_floor), L
 
 
+# ---- the gas-energy seam and the capacity, as the fold reads them (P5c) ----
+T_AMB_Q = K_AMB << 16            # T_AMB_K raw: the seam's absolute offset (293 game)
+CAP_SHIFT_MAX = 12               # temperature_solver.h conduction::CAP_SHIFT_MAX
+CAP_SHIFT_MIN = -16              # conduction::CAP_SHIFT_MIN (M1's representation floor)
+
+
+def gas_mirror_q(e: int, n_raw: int, t_amb_q: int = T_AMB_Q) -> int:
+    """gas_energy.h mirror_q: T_rel = floordiv(E, N) - T_AMB_raw. A sub-N_EPS
+    cell has no meaningful temperature and reads ambient. Python's // IS the
+    kit's floordiv_q (floor toward minus infinity, for either sign of E)."""
+    if n_raw < N_EPS_RAW:
+        return 0
+    return e // n_raw - t_amb_q
+
+
+def cap_real_q(is_ts: bool, his: int, n_raw: int, c_v_q: int = C_V_Q_LIVE) -> int:
+    """conduction::cell_capacity_q's `cap_real` -- the unfloored capacity every
+    energy counter of the temperature solver is priced at, in Q16.16 (heat
+    counts x 65536 per game degree): 2^(his + 16) on a thermal solid (his floored
+    at the representation floor, capped at 30 for int64 hygiene), N * c_v on a
+    gas cell (capped at the conduction ceiling 2^28, never negative)."""
+    if is_ts:
+        s = his if his > CAP_SHIFT_MIN else CAP_SHIFT_MIN
+        s = 30 if s > 30 else s
+        return 1 << (s + 16)
+    nr = n_raw if n_raw > 0 else 0
+    cr = (nr * c_v_q) >> 16
+    ceiling = 1 << (CAP_SHIFT_MAX + 16)
+    return ceiling if cr > ceiling else cr
+
+
 # --------------------------------------------------------------------------- #
 # Ordinates (design section 2.5) and their per-ordinate constants.
 # --------------------------------------------------------------------------- #
@@ -1232,6 +1305,14 @@ class FoldCounters:
     rad_clamp_hits: int = 0
     e_solid_deposit_sum: int = 0
     clamp_drop_sum: int = 0       # Q16.16 temperature removed by the clamp
+    # P5c (design v3 2.8 / 8.4): the ENERGY the clamp withholds, on both media,
+    # priced at the cell's real capacity (cap_real_q) -- the engine's
+    # TemperatureSolver.e_rad_clamp_drop_sum, bit for bit.
+    e_rad_clamp_drop_sum: int = 0
+    # P5c: the gas branch's group-1 books (TemperatureSolver.e_gas_deposit_sum /
+    # e_gas_rail_sum), in the gas books' own currency N * T_abs.
+    e_gas_deposit_sum: int = 0
+    e_gas_rail_sum: int = 0
 
     def zero(self):
         return (self.t_max_phys_hits == 0 and self.t_low_rail_hits == 0
@@ -1254,6 +1335,11 @@ def fold_pass1_solid(T, rad_net, rad_fluence, his, ts, counters: FoldCounters, *
     non-vacuity). `rails_enabled=False` and `int32_sat=False` exist only to
     reproduce the float study's unbounded runaway number; the engine has both.
     `held` is an optional mask of cells whose temperature is pinned (a source).
+
+    P5c: the clamp's withheld step is booked as ENERGY too, (T_after - ceiling) *
+    cap_real (the capacity e_solid_deposit_sum prices the landing at), into
+    `e_rad_clamp_drop_sum` -- so per cell, what landed plus what the clamp
+    withheld is the unclamped landing, exactly.
     """
     h, w = len(T), len(T[0])
     for y in range(h):
@@ -1270,21 +1356,6 @@ def fold_pass1_solid(T, rad_net, rad_fluence, his, ts, counters: FoldCounters, *
             dTr = shr_round0_signed(rn, s)
             t_after = sat_add_q16(t_before, dTr) if int32_sat else t_before + dTr
             t_new = t_after
-            if clamp_enabled:
-                t_cap = e_inv_q(rad_fluence[y][x], table)
-                ceiling = t_cap if t_cap > t_before else t_before
-                if t_new > ceiling:
-                    counters.rad_clamp_hits += 1
-                    counters.clamp_drop_sum += t_new - ceiling
-                    t_new = ceiling
-            if rails_enabled:
-                if t_new > T_MAX_PHYS_Q:
-                    t_new = T_MAX_PHYS_Q
-                    counters.t_max_phys_hits += 1
-                if t_new < 0:
-                    t_new = 0
-                    counters.t_low_rail_hits += 1
-            T[y][x] = t_new
             # The books' capacity, in the ENGINE's own normalisation:
             # `conduction::cell_capacity_q` builds `1 << (s + FP_SHIFT)`, a
             # Q16.16 capacity, and books `dT_q16 * cap_real`.
@@ -1300,10 +1371,105 @@ def fold_pass1_solid(T, rad_net, rad_fluence, his, ts, counters: FoldCounters, *
             #
             # `s` is floored at the representation floor exactly as
             # `cell_capacity_q` floors it, so `cap >= 1` (one raw count) and is
-            # never zero.
+            # never zero. P5c: the clamp's withheld energy is priced at it too.
             s_cap = s if s > THERMAL_MASS_EXP_MIN_REF else THERMAL_MASS_EXP_MIN_REF
             cap = (1 << (s_cap + 16)) if cap_real is None else cap_real[y][x]
+            if clamp_enabled:
+                t_cap = e_inv_q(rad_fluence[y][x], table)
+                ceiling = t_cap if t_cap > t_before else t_before
+                if t_new > ceiling:
+                    counters.rad_clamp_hits += 1
+                    counters.clamp_drop_sum += t_new - ceiling
+                    counters.e_rad_clamp_drop_sum += (t_new - ceiling) * cap
+                    t_new = ceiling
+            if rails_enabled:
+                if t_new > T_MAX_PHYS_Q:
+                    t_new = T_MAX_PHYS_Q
+                    counters.t_max_phys_hits += 1
+                if t_new < 0:
+                    t_new = 0
+                    counters.t_low_rail_hits += 1
+            T[y][x] = t_new
             counters.e_solid_deposit_sum += (t_new - t_before) * cap
+
+
+# --------------------------------------------------------------------------- #
+# The Pass-1 fold for GAS (P5c): temperature_solver.cpp's gas radiation branch.
+# --------------------------------------------------------------------------- #
+def fold_pass1_gas(T, Eg, rad_net, rad_fluence, n_bulk, ts, counters: FoldCounters, *,
+                   acct=None, c_v_q: int = C_V_Q_LIVE, n_floor_q: int = N_FLOOR_Q_LIVE,
+                   clamp_enabled: bool = True, table=E, t_amb_q: int = T_AMB_Q,
+                   t_max_phys_q: int = T_MAX_PHYS_Q, held=None):
+    """The radiative sub-step of Pass 1 for ACCOUNTABLE GAS cells, IN ORDER
+    (design v3 2.8 / 6.3; the module docstring's P5c section has the argument):
+
+        dT       = sign(rn) * deposit_dT_wide_i64(|rn|, recip_N, recip_cv)
+        T_before = gas_mirror_q(Eg[i], N)                # the STORED energy's mirror
+        T_after  = sat_add_q16(T_before, dT)             # the int32 field's own bound
+        T_target = min(T_after, max(T_before, E°⁻¹(Phi)))       # the clamp
+        dE       = N * (T_target - T_before)             # hits T_target, keeps E mod N
+        Eg[i]   += dE;  T_MAX_PHYS rail (gas_energy.h deposit_railed), booked
+        e_gas_deposit_sum += dE                          # group 1, no new group
+
+    `Eg` is the gas energy plane (GameMap.gas_energy: N_raw * T_abs_raw, no >> 16)
+    and is MUTATED with `T` (its mirror). `n_bulk` is the bulk count the books
+    divide by, `acct` the accountable set (None: every non-thermal-solid cell --
+    the reference has no vacuum or ambient ring). The chain's N is floored at
+    n_floor_q (gas_capacity_recips, the heat deposit's own floor); the books'
+    N is not. No min(N, N_AMB)/N_AMB factor: rad_net is already the absorbed
+    amount (design 6.3). `clamp_enabled=False` is the binding keyword's switch.
+    A cell with rn == 0 is not touched at all -- not even its mirror -- which is
+    what keeps a smoke-free scene bit-identical to the pre-P5c fold (every gas
+    cell's rn is 0 where a_gas == 0).
+    """
+    h, w = len(T), len(T[0])
+    for y in range(h):
+        for x in range(w):
+            if ts[y][x]:
+                continue
+            if acct is not None and not acct[y][x]:
+                continue
+            if held is not None and held[y][x]:
+                continue
+            rn = rad_net[y][x]
+            if rn == 0:
+                continue
+            nb = n_bulk[y][x] if n_bulk[y][x] > 0 else 0
+            dT = gas_rad_dT_q(rn, n_bulk[y][x], c_v_q=c_v_q, n_floor_q=n_floor_q)
+            e = Eg[y][x]
+            t_before = gas_mirror_q(e, nb, t_amb_q)
+            t_target = sat_add_q16(t_before, dT)
+            if clamp_enabled:
+                t_cap = e_inv_q(rad_fluence[y][x], table)
+                ceiling = t_cap if t_cap > t_before else t_before
+                if t_target > ceiling:
+                    counters.rad_clamp_hits += 1
+                    counters.clamp_drop_sum += t_target - ceiling
+                    counters.e_rad_clamp_drop_sum += (
+                        (t_target - ceiling) * cap_real_q(False, 0, nb, c_v_q))
+                    t_target = ceiling
+            dE = nb * (t_target - t_before)
+            # gas_energy.h deposit_railed: the deposit, the mirror, the ceiling
+            e += dE
+            t = gas_mirror_q(e, nb, t_amb_q)
+            if t > t_max_phys_q and nb >= N_EPS_RAW:
+                t = t_max_phys_q
+                e_new = nb * (t + t_amb_q)
+                counters.e_gas_rail_sum += e_new - e
+                e = e_new
+                counters.t_max_phys_hits += 1
+            Eg[y][x] = e
+            T[y][x] = t
+            counters.e_gas_deposit_sum += dE
+
+
+def seed_gas_energy(T, n_bulk, ts, t_amb_q: int = T_AMB_Q):
+    """E = N * (T + t_amb) on every gas cell, 0 on thermal solids: the gas energy
+    plane a scene builder seeds (GameMap.seed_gas_temperature's arithmetic), so
+    every gas cell's mirror is exactly its T with a zero residual."""
+    h, w = len(T), len(T[0])
+    return [[0 if ts[y][x] else max(0, n_bulk[y][x]) * (T[y][x] + t_amb_q)
+             for x in range(w)] for y in range(h)]
 
 
 # --------------------------------------------------------------------------- #
@@ -1326,23 +1492,35 @@ class Scene:
     fleck: bool = True
     alpha_floor: str = ALPHA_FLOOR_DEFAULT
     counters: FoldCounters = field(default_factory=FoldCounters)
-    # P5a: the gas extinction's inputs (sweep_q's), all three or none. The
-    # fold below still converts THERMAL SOLIDS only -- a gas cell's rad_net is
-    # booked by the sweep and consumed by nothing until P5c. Since P5b the
-    # pre-pass's GAS ARM reads them too, priced in the fold's gas currency.
+    # P5a: the gas extinction's inputs (sweep_q's), all three or none. Since
+    # P5b the pre-pass's GAS ARM reads them too, priced in the fold's gas
+    # currency; since P5c the fold's GAS BRANCH consumes a gas cell's rad_net
+    # (fold_pass1_gas) into `Eg`, the gas energy plane -- seeded from T at
+    # construction (seed_gas_energy) when the caller brings none.
     gas: list = None
     heat_absorb_q: list = None
     n_bulk: list = None
     c_v_q: int = C_V_Q_LIVE
     n_floor_q: int = N_FLOOR_Q_LIVE
+    Eg: list = None                 # P5c: the gas energy plane (N_raw * T_abs_raw)
+    acct: list = None               # P5c: the accountable set; None = every gas cell
+    # P5c: False is the P5b state -- a gas cell's rad_net consumed by nothing --
+    # kept ONLY so a gate can show the gas branch is what moved a gas cell.
+    gas_fold: bool = True
+    # The E° table every stage of the tick reads; None is the RESOLVING default
+    # (E), so every pre-P5c caller is unchanged. E_LIVE is the table the game runs.
+    table: list = None
 
     def __post_init__(self):
         h, w = len(self.a), len(self.a[0])
         if self.ts is None:
             self.ts = [[1 if self.a[y][x] > 0 else 0 for x in range(w)]
                        for y in range(h)]
+        if self.gas is not None and self.Eg is None:
+            self.Eg = seed_gas_energy(self.T, self.n_bulk, self.ts)
 
     def tick(self, *, clamp_enabled=True, rails_enabled=True, int32_sat=True):
+        tbl = E if self.table is None else self.table
         gas_kw = {}
         if self.gas is not None:
             gas_kw = dict(gas=self.gas, heat_absorb_q=self.heat_absorb_q,
@@ -1350,14 +1528,19 @@ class Scene:
         f = fleck_prepass(self.T, self.a, self.his, e_ref=self.e_ref,
                           enabled=self.fleck, alpha_floor=self.alpha_floor,
                           ts=self.ts, c_v_q=self.c_v_q, n_floor_q=self.n_floor_q,
-                          **gas_kw)
+                          table=tbl, **gas_kw)
         res = sweep_q(self.a, self.d, self.k, self.T, n_ord=self.n_ord,
                       transport=self.transport, f_plane=f, e_ref=self.e_ref,
-                      body_mode=self.body_mode, ts=self.ts, **gas_kw)
+                      body_mode=self.body_mode, ts=self.ts, table=tbl, **gas_kw)
         fold_pass1_solid(self.T, res.rad_net, res.rad_fluence, self.his, self.ts,
                          self.counters, clamp_enabled=clamp_enabled,
                          rails_enabled=rails_enabled, int32_sat=int32_sat,
-                         held=self.held)
+                         held=self.held, table=tbl)
+        if self.gas is not None and self.gas_fold:
+            fold_pass1_gas(self.T, self.Eg, res.rad_net, res.rad_fluence, self.n_bulk,
+                           self.ts, self.counters, acct=self.acct, c_v_q=self.c_v_q,
+                           n_floor_q=self.n_floor_q, clamp_enabled=clamp_enabled,
+                           table=tbl, held=self.held)
         return res
 
     def run(self, ticks, **kw):

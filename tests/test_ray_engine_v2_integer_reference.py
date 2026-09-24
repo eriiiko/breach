@@ -258,5 +258,29 @@ def test_gas_fleck_arm_keeps_radiative_cooling_monotone():
     print(_run(G.gate14_gas_fleck_arm))
 
 
+def test_gas_fold_clamps_in_energy_form_and_closes_the_boundary():
+    """G15 (P5c, design 2.8 / 6.3 / 8.4): THE TEMPERATURE FOLD'S GAS BRANCH, the
+    arithmetic temperature_solver.cpp's gas branch and its CUDA twin transcribe.
+    The clamp in its energy form lands every clamped gas cell's mirror EXACTLY on
+    max(T_before, E_inv(Phi)) and keeps the cell's sub-LSB residual E mod N (the
+    design's letter N*(T_target + t_amb) - E hits the same mirror but drains it
+    -- measured beside it); sum(Eg) moves by e_gas_deposit_sum + e_gas_rail_sum
+    to the count (group 1, no new group); e_rad_clamp_drop_sum is the withheld
+    step priced at cap_real on gas AND on thermal solids; the maximum principle
+    holds on gas (and fails with the clamp off); a sealed room of hot smoke cools
+    through the whole tick, never rising, never below ambient, walls warming; a
+    smoke layer shields a target on every tick against clear air, also once it
+    has heated and re-radiates; and design 8.4's sweep->fold boundary stays
+    inside the conversions' own truncation plus the counted drop.
+
+    Breaks if: the gas branch uses the design's letter (the residual drains:
+    (a) red), a scaled dE (the target is missed), a second currency (c_v = 1:
+    the landing is off), or is disconnected (the smoke never cools and the
+    boundary leaks 276x its bound). Each was injected once into the reference and
+    turned this gate red.
+    """
+    print(_run(G.gate15_gas_fold))
+
+
 if __name__ == "__main__":       # pragma: no cover
     sys.exit(pytest.main([__file__, "-q"]))
