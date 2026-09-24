@@ -1309,8 +1309,8 @@ Stage explicit paths only; never `git add -A`.
 
 | lens | verdict | doc |
 |---|---|---|
-| Determinism & twin spec (integer sequence, draws, wrap, CPU==GPU, events) | | |
-| Residency & CUDA (placement, snapshot contract, uploads/D2H, dormancy, §A) | | |
+| Determinism & twin spec (integer sequence, draws, wrap, CPU==GPU, events) | SOUND WITH FIXES (1 blocker: L1-B1) | `swarm_P3_critique_2026-09-24.md §Lens 1` |
+| Residency & CUDA (placement, snapshot contract, uploads/D2H, dormancy, §A) | SOUND WITH FIXES (majors L1-M1, L1-M3) | `swarm_P3_critique_2026-09-24.md §Lens 1` |
 | Systems reuse & scope (canon rows, new systems, merge-friendliness) | | |
 | Behaviour law & biology (sensing, turns, coma/kill, units, defaults, E1) | | |
 | Verification (property tests, non-vacuity, gate coverage) | | |
