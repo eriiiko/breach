@@ -1,8 +1,10 @@
 """P0 GATES for the integer reference (`sweep_ref_q.py`), 2026-09-15 (+ P0b).
 
 Runs the twelve gates of `docs/ray_engine_v2_design_v3_2026-09-15.md` sections
-2.8-2.9 and of critique 3 sections 1-4, prints the MEASURED numbers (never a bare
-boolean), and exits non-zero if any fails.
+2.8-2.9 and of critique 3 sections 1-4 -- and since P5a / P5b the gas term's two
+(G13, design 6.3's smoke extinction; G14, the gas arm of the Fleck pre-pass) --
+prints the MEASURED numbers (never a bare boolean), and exits non-zero if any
+fails.
 
     C:/Users/steen/anaconda3/python.exe sweep_ref_q_gates.py [--fast]
 
@@ -1147,6 +1149,31 @@ def gate11_headroom(fast=False):
                      f"everywhere: {opaque}): max|rad_net| = 2^{lg(res.max_abs_net):.1f}, "
                      f"max fluence = 2^{lg(res.max_fluence):.1f}, max product = "
                      f"2^{lg(res.max_product):.1f}  {'OK' if good else 'FAIL'}")
+    # P5b: THE GAS ARM'S CHAIN, the pre-pass's one new product chain. The engine
+    # forms 4L as `L << 2` for the Fleck denominator, so L must stay below 2^61.
+    # Its widest value is at a_gas = ONE, the table top under a 0-K sky (the
+    # excess is then all of E°) and N at the floor; stage 1 of the staged chain
+    # (mul128_shr(deposit, recip_N, 16)) must fit int64 too.
+    top = R.T_TABLE_TOP_GAME << 16
+    for tname, tbl in (("resolving", R.E), ("live", R.E_LIVE)):
+        L = R.fleck_L_gas_q(top, ONE, R.N_FLOOR_Q_LIVE, table=tbl, e_ref=0)
+        rn, _rc = R.gas_capacity_recips(R.N_FLOOR_Q_LIVE, R.C_V_Q_LIVE, R.N_FLOOR_Q_LIVE)
+        stage1 = (tbl[-1] * rn) >> 16
+        good = (L << 2) < 2 ** 63 and stage1 < 2 ** 63
+        ok &= good
+        lines.append(f"  the gas arm's L at its widest on the {tname} table, the fold's "
+                     f"currency (c_v_q = {R.C_V_Q_LIVE}, n_floor_q = {R.N_FLOOR_Q_LIVE}): "
+                     f"L = 2^{lg(L):.2f}, 4L = 2^{lg(4 * L):.2f}, stage 1 = "
+                     f"2^{lg(stage1):.2f}  (< 2^63 required)  {'OK' if good else 'FAIL'}")
+    # ...and on the LIVE table (the one the engine bakes) no positive integer
+    # currency can overflow it: the most extreme dials there are, c_v_q = 1 and
+    # n_floor_q = 1 (one raw count each), still leave 4L inside int64.
+    L_x = R.fleck_L_gas_q(top, ONE, 1, c_v_q=1, n_floor_q=1, table=R.E_LIVE, e_ref=0)
+    good = (L_x << 2) < 2 ** 63
+    ok &= good
+    lines.append(f"  live table, the most extreme currency (c_v_q = n_floor_q = 1): "
+                 f"4L = 2^{lg(4 * L_x):.2f} (< 2^63: every positive dial fits)  "
+                 f"{'OK' if good else 'FAIL'}")
     return ok, lines
 
 
@@ -1299,7 +1326,7 @@ def gate13_gas_extinction(fast=False):
           them, so the comparison is not vacuous).
       (e) the stamped total is a MAX: a body standing in OPAQUE smoke books no
           rad_flux (the smoke took the stream), in thin smoke it books some.
-      (f) THE GAS L_q CHAIN (fleck_L_gas_q -- measured here, wired at P5b): at
+      (f) THE GAS L_q CHAIN (fleck_L_gas_q -- the gas arm's, wired at P5b: G14): at
           unit capacity (c_v = 1, N_bulk = 1) it IS the solid chain at
           thermal_mass 1, bucket for bucket; and while the cell is thin DENSITY
           CANCELS -- L at k x (soot, bulk) equals L at (soot, bulk) to the chain's
@@ -1483,6 +1510,212 @@ def gate13_gas_extinction(fast=False):
     return ok, lines
 
 
+# --------------------------------------------------------------------------- #
+# P5b: THE GAS ARM OF THE FLECK PRE-PASS (design 2.8 / 6.3). The cells of
+# p5a_gas_stiffness_study.py's table: pure soot (a = 1, "soot fraction 1.0") and
+# a typical smoke mixture (a = 0.2 per tile), each at ambient bulk density, at
+# the density a cell at T holds at AMBIENT PRESSURE, and at the n_floor_heat
+# density -- the STIFFEST any gas cell can be, since g scales as
+# a_gas / max(N, n_floor) with a_gas <= ONE.
+# --------------------------------------------------------------------------- #
+GAS_A_SOOT = ONE
+GAS_A_MIX = Q(0.2)
+
+
+def _isobaric_n_q(T_game):
+    """The bulk N a cell at T holds at ambient pressure (p = C N T_abs):
+    N = N_amb * T_amb / T_abs -- a hot cell is a thin cell."""
+    return (ONE * R.K_AMB) // (T_game + R.K_AMB)
+
+
+GAS_ARM_CASES = (
+    ("pure soot, N = 1", GAS_A_SOOT, lambda T: ONE),
+    ("typical mix (a = 0.2), N = 1", GAS_A_MIX, lambda T: ONE),
+    ("pure soot, isobaric", GAS_A_SOOT, _isobaric_n_q),
+    ("typical mix, isobaric", GAS_A_MIX, _isobaric_n_q),
+    ("pure soot at the n_floor density", GAS_A_SOOT, lambda T: R.N_FLOOR_Q_LIVE),
+    ("typical mix at the n_floor density", GAS_A_MIX, lambda T: R.N_FLOOR_Q_LIVE),
+)
+# 2 s. Above g = 1 the damped step is a quarter of T_abs per tick, so even a
+# start at the table top is inside the undamped range within ~8 ticks; the rest
+# of the march is the explicit tail the property must also hold on.
+GAS_MARCH_TICKS = 48
+
+
+def gate14_gas_fleck_arm(fast=False):
+    """G14 (P5b, design 2.8 / 6.3): THE GAS ARM OF THE FLECK PRE-PASS.
+
+      (a) THE PROPERTY IT EXISTS FOR, on the LIVE table (rad_scale_derived) in the
+          fold's gas currency: a hot absorbing gas cell radiating into an ambient
+          room (a held Phi = E°[0]) cools MONOTONICALLY and NEVER BELOW AMBIENT,
+          from every start temperature up to the table top, over P5a's whole
+          stiffness range (GAS_ARM_CASES) -- and it COOLS: every start ends below
+          where it began, so the march is not vacuous.
+      (b) THE BREAK THAT PROVES IT: the same march with the arm at L = 0 (what
+          P5a shipped) overshoots below ambient in ONE step, and the set of starts
+          where it does is EXACTLY {T : g > 4T/T_abs} = {T : L_q > T_q} (the
+          undamped step removes more than the cell's whole excess) -- start for
+          start, in every case, and it is not empty.
+      (c) THE PRE-PASS CALLS IT: on randomised smoky scenes, both tables, every
+          absorbing gas cell's f is fleck_f_gas_q's -- some damped (f < 2^24), some
+          not; every thermal solid keeps the solid arm's f; a gas cell that
+          absorbs nothing keeps 2^24; without the gas group every gas cell is back
+          at 2^24 (the P5a arm) and the sweep's rad_net moves.
+      (d) THE INGRESS: the arm refuses a non-positive c_v or n_floor (a silently
+          undamped arm) and a partial gas group.
+      (e) WHAT IT EMITS (gate 12's property, on the gas arm): on the live table at
+          a held N, the damped source a gas cell emits never steps backward in T
+          by more than gate 12's pathological bound -- Q24 is resolved finely
+          enough for the stiffest gas cell there is. (At ambient PRESSURE the
+          damped emission of a stiff cell is FLAT in T -- its loss is T_abs/4 of
+          a capacity N c_v ~ 1/T_abs, a constant -- so the isobaric cells are
+          reported, not held to it.)
+
+    Breaks if: the arm loses or reorders a reciprocal, prices the cell in any
+    currency but the fold's, reads anything but a_gas and the BULK count, or is
+    disconnected -- (a) then fails, and (b) shows it must fail exactly where the
+    undamped step exceeds the cell's own excess.
+    """
+    lines, ok = [], True
+    live = R.E_LIVE
+    phi = live[0]
+    stride = 7 if fast else 1
+    ticks = GAS_MARCH_TICKS
+    lines.append(f"  (a)/(b) the 0-D gas cell, LIVE table (E°[0] = {live[0]}), currency "
+                 f"c_v_q = {R.C_V_Q_LIVE}, n_floor_q = {R.N_FLOOR_Q_LIVE}, a held Phi = "
+                 f"E°[0], {ticks} ticks from every {4 * stride}-game start in "
+                 f"4..{R.T_TABLE_TOP_GAME}:")
+    lines.append(f"    {'cell':<36}{'damped from':>12}{'wired: T<0':>11}{'non-mono':>9}"
+                 f"{'worst step':>11}{'L = 0: T<0':>11}{'= g > 4T/T_abs':>15}")
+    for name, a_q, n_of in GAS_ARM_CASES:
+        undershoot = nonmono = stalled = 0
+        worst_share = 0.0
+        broke, predicted = set(), set()
+        onset = None
+        n_starts = 0
+        for b in range(1, R.E_TABLE_SIZE, stride):
+            T0g = 4 * b
+            T0 = T0g << 16
+            n_q = n_of(T0g)
+            n_starts += 1
+            tr = R.gas_cell_march(T0, phi, a_q, n_q, ticks, table=live, trace=True)
+            undershoot += int(min(tr) < 0)
+            nonmono += int(any(tr[i + 1] > tr[i] for i in range(len(tr) - 1)))
+            stalled += int(not tr[-1] < T0)
+            worst_share = max(worst_share, (tr[0] - tr[1]) / T0)
+            f_q, L_q = R.fleck_f_gas_q(T0, a_q, n_q, table=live)
+            if f_q < F_ONE and onset is None:
+                onset = T0g
+            if L_q > T0:                               # g > 4T/T_abs, exactly
+                predicted.add(T0g)
+            if R.gas_cell_march(T0, phi, a_q, n_q, 1, table=live, fleck=False) < 0:
+                broke.add(T0g)
+        exact = (broke == predicted)
+        good = (undershoot == 0 and nonmono == 0 and stalled == 0 and exact
+                and len(broke) > 0)
+        ok &= good
+        lines.append(f"    {name:<36}{str(onset) + ' game':>12}{undershoot:>11}{nonmono:>9}"
+                     f"{worst_share * 100:>10.1f}%{len(broke):>11}"
+                     f"{('yes, ' + str(len(predicted))) if exact else 'NO':>15}"
+                     f"  {'OK' if good else 'FAIL'}")
+    lines.append(f"    over {n_starts} starts per cell: the wired arm never crossed ambient, "
+                 f"never rose, always cooled; 'worst step' is its largest first step as a "
+                 f"share of the cell's own excess (< 100 % is the margin to ambient). The "
+                 f"L = 0 arm crossed below ambient in ONE step at exactly the starts where "
+                 f"L_q > T_q, i.e. g > 4T/T_abs")
+    # (c) the pre-pass calls it
+    rng = random.Random(20260924)
+    h, w = (7, 8) if fast else (9, 11)
+    n_damped = n_undamped = n_solid = n_silent = 0
+    arm_ok = solids_ok = silent_ok = p5a_ok = moved_ok = True
+    for tname, table in (("resolving", R.E), ("live", R.E_LIVE)):
+        for _trial in range(2 if fast else 4):
+            a, d, T, _f = _rand_scene(rng, h, w)      # T up to 15999 game: the live
+            gkw = _gas_kw(rng, a)                     # table damps gas there too
+            ts = gkw["ts"]
+            k = R.plane(h, w, K_LEAK)
+            f = R.fleck_prepass(T, a, 3, table=table, **gkw)
+            f0 = R.fleck_prepass(T, a, 3, table=table, ts=ts)
+            a_gas = R.gas_extinction_plane(gkw["gas"], gkw["heat_absorb_q"],
+                                           gkw["n_bulk"], ts)
+            for y in range(h):
+                for x in range(w):
+                    if ts[y][x]:
+                        n_solid += 1
+                        solids_ok &= (f[y][x] == f0[y][x] == R.fleck_f_solid_q(
+                            T[y][x], a[y][x], 3, table)[0])
+                        continue
+                    p5a_ok &= (f0[y][x] == F_ONE)
+                    if a_gas[y][x] == 0:
+                        n_silent += 1
+                        silent_ok &= (f[y][x] == F_ONE)
+                        continue
+                    want = R.fleck_f_gas_q(T[y][x], a_gas[y][x], gkw["n_bulk"][y][x],
+                                           table=table)[0]
+                    arm_ok &= (f[y][x] == want)
+                    n_damped += int(want < F_ONE)
+                    n_undamped += int(want == F_ONE)
+            if any(f[y][x] < F_ONE for y in range(h) for x in range(w) if not ts[y][x]):
+                r1 = R.sweep_q(a, d, k, T, f_plane=f, table=table, **gkw)
+                r0 = R.sweep_q(a, d, k, T, f_plane=f0, table=table, **gkw)
+                moved_ok &= (r1.rad_net != r0.rad_net) and (r1.identity() == 0)
+    good = (arm_ok and solids_ok and silent_ok and p5a_ok and moved_ok
+            and n_damped > 0 and n_undamped > 0 and n_solid > 0 and n_silent > 0)
+    ok &= good
+    lines.append(f"  (c) randomised smoky scenes, both tables: every absorbing gas cell's f is "
+                 f"fleck_f_gas_q's: {arm_ok} ({n_damped} damped, {n_undamped} undamped); "
+                 f"{n_solid} thermal solids keep the solid arm: {solids_ok}; {n_silent} "
+                 f"non-absorbing gas cells keep 2^24: {silent_ok}; without the gas group "
+                 f"every gas cell is 2^24 (the P5a arm): {p5a_ok}, and the arm moves "
+                 f"rad_net with the identity exact: {moved_ok}  {'OK' if good else 'FAIL'}")
+    # (d) the ingress
+    a2, T2 = R.plane(2, 2, 0), R.plane(2, 2, 300 << 16)
+    ts2 = R.plane(2, 2, 0)
+    grp = dict(gas=[R.plane(2, 2, ONE)], heat_absorb_q=[Q(0.9)], n_bulk=R.plane(2, 2, ONE))
+    R.fleck_prepass(T2, a2, 3, ts=ts2, **grp)                        # legal: no raise
+    rejected = []
+    for bad_name, kw in (("c_v_q = 0", dict(c_v_q=0)), ("c_v_q < 0", dict(c_v_q=-504)),
+                         ("n_floor_q = 0", dict(n_floor_q=0)),
+                         ("n_floor_q < 0", dict(n_floor_q=-655)),
+                         ("no n_bulk", dict(gas=grp["gas"], heat_absorb_q=grp["heat_absorb_q"],
+                                            n_bulk=None)),
+                         ("no ts", dict(ts=None))):
+        call = dict(ts=ts2, **grp)
+        call.update(kw)
+        try:
+            R.fleck_prepass(T2, a2, 3, **call)
+            rejected.append((bad_name, False))
+        except ValueError:
+            rejected.append((bad_name, True))
+    good = all(r for _n, r in rejected)
+    ok &= good
+    lines.append(f"  (d) the arm's ingress refuses " + ", ".join(
+        f"{n}: {'raised' if r else 'ACCEPTED -- FAIL'}" for n, r in rejected)
+        + f"  {'OK' if good else 'FAIL'}")
+    # (e) what the arm's cell emits, over the whole live table
+    lines.append(f"  (e) the damped source E°[0] + f (E°[T] - E°[0]) of a gas cell, every "
+                 f"bucket of the LIVE table (gate 12's property; its pathological bound "
+                 f"{PATHOLOGICAL_WOBBLE_BOUND * 100:.1f} %):")
+    for name, a_q, n_of in GAS_ARM_CASES:
+        vals = []
+        for b in range(R.E_TABLE_SIZE):
+            f_q = R.fleck_f_gas_q((4 * b) << 16, a_q, n_of(4 * b), table=live)[0]
+            vals.append(live[0] + (((live[b] - live[0]) * f_q) >> R.F_SHIFT))
+        drops = [(vals[i] - vals[i + 1]) / vals[i] for i in range(len(vals) - 1)
+                 if vals[i + 1] < vals[i]]
+        worst = max(drops, default=0.0)
+        f_top = R.fleck_f_gas_q(R.T_TABLE_TOP_GAME << 16, a_q, n_of(R.T_TABLE_TOP_GAME),
+                                table=live)[0]
+        held_n = "isobaric" not in name
+        good = (worst < PATHOLOGICAL_WOBBLE_BOUND) if held_n else True
+        ok &= good
+        lines.append(f"    {name:<36} backward steps {len(drops):>5}, worst "
+                     f"{worst * 100:.4f} %, f at the table top {f_top:>7} counts  "
+                     + (("OK" if good else "FAIL") if held_n
+                        else "(reported: flat at ambient pressure)"))
+    return ok, lines
+
+
 GATES = [
     ("G1  conservation", gate1_conservation),
     ("G2a uniform ambient fixed point", gate2a_uniform_ambient),
@@ -1499,6 +1732,8 @@ GATES = [
     ("G12 the damped source is monotone in T", gate12_damped_source_is_monotone),
     ("G13 the gas extinction: density law, N_EPS floor, transmission",
      gate13_gas_extinction),
+    ("G14 the gas arm of the Fleck pre-pass: monotone cooling, never below ambient",
+     gate14_gas_fleck_arm),
 ]
 
 

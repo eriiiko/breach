@@ -191,6 +191,9 @@ def test_headroom_stays_inside_int64():
     the door's maximum heat_absorb over 16 planes of INT32_MAX density fits int64
     and twice that bound would not (so the door's 4096 is the arithmetic's own
     limit), and a room of opaque smoke at the table top keeps the per-cell bounds.
+    Since P5b: the gas arm's L at its widest (a_gas = ONE, the table top, a 0-K
+    sky, N at the floor) keeps 4L inside int64 on both tables in the fold's
+    currency, and on the live table for ANY positive currency.
     """
     print(_run(G.gate11_headroom))
 
@@ -220,16 +223,39 @@ def test_gas_extinction_rides_the_density_law():
     (an absorber behind a smoke column receives strictly less as it thickens, and
     cold opaque smoke is a perfect shield); a cell below N_EPS_RAW bulk is
     invisible even when hot; a thermal solid ignores the gas in its pores; the
-    stamped total on a gas cell is a MAX; and the gas L_q chain (P5b's to wire)
-    is the solid chain at unit capacity and follows L = a*ex/(max(N, n_floor)*c_v).
+    stamped total on a gas cell is a MAX; and the gas L_q chain (the gas arm's,
+    wired at P5b: G14) is the solid chain at unit capacity and follows
+    L = a*ex/(max(N, n_floor)*c_v).
 
     Breaks if: a second density factor is applied on top of the extinction (the
     v2.4 min(N, N_AMB)/N_AMB -- design 6.3's double debit), the floor moves off
     N_EPS_RAW or off the BULK count, thermal solids take the smoke term, the body
     share is summed instead of MAXed, or the staged chain drops or reorders a
-    reciprocal. Each of these was injected once and turned this gate red.
+    reciprocal. Each of these was injected once and turned this gate red (P5b
+    added one: the gas arm reading the raw bulk count without its n_floor floor).
     """
     print(_run(G.gate13_gas_extinction))
+
+
+def test_gas_fleck_arm_keeps_radiative_cooling_monotone():
+    """G14 (P5b, design 2.8 / 6.3): THE GAS ARM OF THE FLECK PRE-PASS. On the LIVE
+    table in the fold's gas currency, a hot absorbing gas cell radiating into an
+    ambient room cools MONOTONICALLY and NEVER BELOW AMBIENT from every start up
+    to the table top -- pure soot and a typical mix, at ambient density,
+    isobaric, and at the n_floor_heat density (the stiffest any gas cell can
+    be) -- while the L = 0 arm P5a shipped overshoots below ambient in ONE step
+    at EXACTLY the starts where g > 4T/T_abs. The pre-pass calls the arm on every
+    absorbing gas cell and nowhere else, refuses a non-positive c_v or n_floor,
+    and what the cell emits steps backward in T by less than gate 12's
+    pathological bound.
+
+    Breaks if: the arm is disconnected (L = 0: every case undershoots), priced in
+    a currency other than the fold's (c_v = 1, the pre-P5a premise: 130x
+    under-damped, every case undershoots), or reads the material `a` instead of
+    a_gas in the pre-pass (the pre-pass check goes red). Each was injected once
+    into the reference and turned this gate red.
+    """
+    print(_run(G.gate14_gas_fleck_arm))
 
 
 if __name__ == "__main__":       # pragma: no cover
