@@ -37,7 +37,8 @@
 #include "cuda_radiation_sweep.h"
 #include "cuda_resident.h"            // radiation_sweep_launch_resident + slots
 #include "radiation_sweep.h"          // OrdinateConst, ordinate_table (host);
-                                      // fleck_L_solid_q, fleck_f_q24 (FP_HD)
+                                      // fleck_L_solid_q, fleck_L_gas_q (P5b),
+                                      // fleck_f_q24 (FP_HD)
 #include "emissive_table.h"           // e_bucket_of (FP_HD), E_TABLE_SIZE
 #include "fixed_point.h"              // FP_ONE, FP_SHIFT, mul128_shr (FP_HD)
 #include "cuda_fixedpoint_device.cuh" // the shared device kit
