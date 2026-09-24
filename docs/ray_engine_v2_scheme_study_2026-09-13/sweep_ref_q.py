@@ -21,6 +21,13 @@ WHAT TRANSCRIBES WHAT
   sweep_q            <- design v3 section 2.3 (gather form; body re-emission, row 25)
   fold_pass1_solid   <- cpp/src/temperature_solver.cpp:247-299 + the clamp of
                         section 2.8 in its corrected form (row 21)
+  gas_extinction_q   <- design v3 section 6.3 (P5a): the density law and the
+                        N_EPS floor -- smoke's heat extinction on a GAS cell
+  reciprocal_q16     <- cpp/src/fixed_point.h reciprocal_q16 (4 Newton trips)
+  make_recip         <- cpp/src/fixed_point.h make_recip (one double divide)
+  deposit_dT_wide_i64 <- cpp/src/fixed_point.h, the STAGED wide chain (2.8)
+  fleck_L_gas_q      <- design v3 section 2.8's gas L_q (P5a: a MEASURING
+                        primitive -- no pre-pass calls it yet, see below)
 
 ARITHMETIC. Pure Python ints throughout, so no overflow is possible and every
 headroom question is *measured* (`SweepResult.max_*`) rather than assumed. The
@@ -51,6 +58,22 @@ exist so the gates can MEASURE the forms this file does not ship:
 which gates 8 and 10 measure beside the default so "equals explicit" and "within
 one count" cannot pass vacuously (`p0b_alpha_floor.py` is P0b's measurement of
 both, and it names its floors explicitly, so it is unaffected by the default).
+
+SMOKE ABSORBS HEAT -- THE MECHANISM, DORMANT (P5a, 2026-09-24; design v3 6.3).
+A GAS cell (not a thermal solid) takes its material extinction from the gas it
+holds:
+
+    a_gas = min(ONE, sum_g heat_absorb_q[g] * max(0, N_g) >> 16),
+            0 where N_bulk < N_EPS_RAW
+
+and the sweep reads `a = max(heat_atten_q, a_gas)`, `d = max(dyn_heat_atten_q,
+a)` there (stamps are MAX, never sums). A thermal solid keeps its material
+extinction whatever gas its pores hold. The Fleck pre-pass's GAS arm stays L = 0
+(f == 2^24) on both backends: `fleck_L_gas_q` below is section 2.8's chain,
+transcribed so P5a can MEASURE the gas stiffness, and no pre-pass calls it --
+wiring it is P5b's, with the Pass-1 gas branch. Nothing consumes a gas cell's
+rad_net yet (the fold's `ts` mask), and every shipped `heat_absorb` is 0.0, so
+the live game does not move.
 """
 from __future__ import annotations
 
@@ -98,10 +121,16 @@ T_TABLE_TOP_GAME = 4 * (E_TABLE_SIZE - 1)   # 15996 — where E°⁻¹ saturates
 TICK_HZ = 24.0                   # the sim clock (for the analytic cooling reference)
 INT32_MAX = (1 << 31) - 1
 INT32_MIN = -(1 << 31)
+# The GAS side of the heat-count currency (P5a). Read by the gas capacity chain
+# (`fleck_L_gas_q`), which is a measuring primitive; `config_dials_match()`
+# guards both against config.toml [physics.thermal].
+C_V_LIVE = 0.0076849             # config.toml:172   c_v (air's rho*c_v / THERMAL_MASS_UNIT)
+N_FLOOR_HEAT_LIVE = 0.01         # config.toml:206   n_floor_heat (the deposit's N floor)
 
 
 def config_dials_match(config_path=None):
-    """Return (ok, detail). Parses config.toml and compares the four dials above.
+    """Return (ok, detail). Parses config.toml and compares the six dials above
+    (P5a added the gas capacity chain's two, `c_v` and `n_floor_heat`).
 
     A drift here silently invalidates every number this file prints, so the gate
     runner calls it and reports the result.
@@ -123,12 +152,17 @@ def config_dials_match(config_path=None):
         "kelvin_ambient": cfg["physics"]["temperature_scale"]["kelvin_ambient"],
         "k_temp_to_kelvin": cfg["physics"]["temperature_scale"]["k_temp_to_kelvin"],
         "T_MAX_PHYS": cfg["physics"]["thermal"]["T_MAX_PHYS"],
+        # P5a: the gas capacity chain's two dials (fleck_L_gas_q)
+        "c_v": cfg["physics"]["thermal"]["c_v"],
+        "n_floor_heat": cfg["physics"]["thermal"]["n_floor_heat"],
     }
     want = {
         "rad_scale": RAD_SCALE_LIVE,
         "kelvin_ambient": float(K_AMB),
         "k_temp_to_kelvin": float(K_SLOPE),
         "T_MAX_PHYS": float(T_MAX_PHYS_Q >> 16),
+        "c_v": C_V_LIVE,
+        "n_floor_heat": N_FLOOR_HEAT_LIVE,
     }
     bad = {k: (got[k], want[k]) for k in want if got[k] != want[k]}
     return (not bad), (bad if bad else got)
@@ -328,6 +362,59 @@ def sat_add_q16(a: int, b: int) -> int:
     return v
 
 
+# ---- the GAS capacity chain's kit (P5a; section 2.8's staged wide chain) ----
+RECIP_SHIFT = 32                 # fixed_point.h RECIP_SHIFT (the Q.32 reciprocal)
+
+
+def make_recip(divisor_real: float) -> int:
+    """fixed_point.h make_recip: round(2^32 / divisor), ONE correctly-rounded
+    double divide on a load-time constant (door 2). Python's float IS the
+    IEEE double the C++ divides in."""
+    r = float(1 << RECIP_SHIFT) / divisor_real
+    return int(r + 0.5)
+
+
+def reciprocal_q16(denom_q: int) -> int:
+    """fixed_point.h reciprocal_q16: the per-cell Newton reciprocal 1/N in
+    Q16.16 -- a two-bit seed, then four round-to-nearest Newton trips. The
+    deposit chain's `recip_N`; transcribed line for line (the two `>> 16` are
+    arithmetic shifts on non-negative operands, Python's `>>` is the same)."""
+    if denom_q <= 0:
+        return 0
+    if denom_q < 3:
+        denom_q = 3
+    bitlen = denom_q.bit_length()
+    shift = 32 - bitlen
+    if shift >= 1:
+        base = 1 << shift
+        upper_half = bitlen >= 2 and ((denom_q >> (bitlen - 2)) & 1)
+        r = base if upper_half else base + (base >> 1)
+    else:
+        r = (1 << shift) if shift >= 0 else 1
+        if r < 1:
+            r = 1
+    two_q = ONE << 1
+    half = 1 << 15
+    for _ in range(4):
+        dr = (denom_q * r + half) >> 16
+        r = (r * (two_q - dr) + half) >> 16
+    return r
+
+
+def mul128_shr(a: int, b: int, shift: int) -> int:
+    """fixed_point.h mul128_shr: the exact 128-bit product, arithmetic-shifted
+    (floor). A Python int IS the exact product."""
+    return (a * b) >> shift
+
+
+def deposit_dT_wide_i64(deposit: int, recip_n_q: int, recip_cv: int) -> int:
+    """fixed_point.h deposit_dT_wide_i64 -- design 2.8's STAGED chain, two
+    narrows: mul128_shr(mul128_shr(deposit, recip_n, 16), recip_cv, 32). The
+    chain the gas branch of the Fleck pre-pass (and P5b's radiative gas
+    deposit) converts heat counts to a Q16.16 temperature through."""
+    return mul128_shr(mul128_shr(deposit, recip_n_q, 16), recip_cv, RECIP_SHIFT)
+
+
 # --------------------------------------------------------------------------- #
 # The emissive table and its inverse (design section 2.6).
 # --------------------------------------------------------------------------- #
@@ -496,6 +583,149 @@ def damped_source_q(T_q: int, a_q: int, his: int, table=E, e_ref: int = None, *,
 
 
 # --------------------------------------------------------------------------- #
+# The GAS extinction (design section 6.3; P5a): smoke's heat extinction.
+# --------------------------------------------------------------------------- #
+N_EPS_RAW = 1                    # cpp/src/gas_energy.h:48 -- THE bulk floor, "ONE
+                                 # value, every file" (design 2.6); never a new one
+# The `[gases.*] heat_absorb` door's upper bound (src/simulation/gases.py
+# HEAT_ABSORB_MAX) and its Q16 image, which the sweep re-checks. WHY 4096: it is
+# the largest power of two for which the per-cell density sum below is EXACT in
+# int64 for ANY int32 densities on up to N_GAS_PLANES_MAX planes, with no
+# saturating arithmetic and no data-dependent branch: every term is
+# hq * N < 2^28 * 2^31 = 2^59, and 16 of them stay below 2^63. It constrains
+# nothing physical -- at 4096 a gas is opaque at 1/4096 of ambient density.
+HEAT_ABSORB_MAX = 4096
+HEAT_ABSORB_Q_MAX = HEAT_ABSORB_MAX << 16    # 2^28
+N_GAS_PLANES_MAX = 16            # the plane count that headroom argument covers
+
+
+def gas_density_sum(densities, heat_absorb_q) -> int:
+    """sum_g heat_absorb_q[g] * max(0, N_g) -- the raw Q32 absorber count of one
+    cell, before the shift (exposed so gate 11 can MEASURE its headroom).
+
+    A negative density -- which no transport should produce, but an int32 plane
+    can represent -- absorbs NOTHING: `max(0, N_g)` per term, so it can neither
+    cancel a real absorber nor become a negative extinction (a source)."""
+    s = 0
+    for hq, n in zip(heat_absorb_q, densities):
+        if n > 0:
+            s += hq * n
+    return s
+
+
+def gas_extinction_q(densities, heat_absorb_q, n_bulk_raw: int) -> int:
+    """a_gas for ONE cell, design 6.3's density law and N_EPS floor:
+
+        a_gas = min(ONE, sum_g heat_absorb_q[g] * max(0, N_g) >> 16)
+              = 0                     if N_bulk_raw < N_EPS_RAW
+
+    `densities` are the cell's gas planes (Q16.16 raw, ONE = one ambient air
+    cell's worth), `heat_absorb_q` the per-gas Q16 column, `n_bulk_raw` the
+    cell's BULK (O2 + N2) count -- the same N the energy books divide by.
+
+    Absorption proportional to the number of absorbers IS the density law, and
+    what thin smoke does not absorb continues down the stream. The floor: a
+    sub-N_EPS cell is DEFINED to read ambient (gas_energy.h mirror_q), so it
+    must not emit at any other temperature -- a_gas = 0 makes its absorption and
+    its emission vanish together, with the canonical value."""
+    if n_bulk_raw < N_EPS_RAW:
+        return 0
+    a = gas_density_sum(densities, heat_absorb_q) >> 16
+    return ONE if a > ONE else a
+
+
+def validate_gas(gas, heat_absorb_q, n_bulk, ts, h, w):
+    """The gas extinction's ingress invariants (P5a), as raises -- the sweep's
+    own re-check, mirrored in radiation_sweep.cpp:
+
+      * one heat_absorb entry per gas plane, at most N_GAS_PLANES_MAX planes
+        (the headroom argument above covers no more);
+      * 0 <= heat_absorb_q[g] <= HEAT_ABSORB_Q_MAX: negative would be a
+        source, above the bound the int64 sum is no longer provably exact;
+      * every plane (gas, n_bulk, ts) is (h, w)."""
+    if len(heat_absorb_q) != len(gas):
+        raise ValueError(f"heat_absorb_q has {len(heat_absorb_q)} entries for "
+                         f"{len(gas)} gas planes")
+    if len(gas) > N_GAS_PLANES_MAX:
+        raise ValueError(f"{len(gas)} gas planes: the density sum's headroom is "
+                         f"argued for at most {N_GAS_PLANES_MAX}")
+    for g, hq in enumerate(heat_absorb_q):
+        if hq < 0 or hq > HEAT_ABSORB_Q_MAX:
+            raise ValueError(f"heat_absorb_q[{g}] = {hq} outside [0, "
+                             f"{HEAT_ABSORB_Q_MAX}] (heat_absorb in [0, "
+                             f"{HEAT_ABSORB_MAX}])")
+    for name, p in [("n_bulk", n_bulk), ("ts", ts)] + \
+            [(f"gas[{g}]", gp) for g, gp in enumerate(gas)]:
+        if len(p) != h or len(p[0]) != w:
+            raise ValueError(f"{name} is {len(p)}x{len(p[0])}, scene is {h}x{w}")
+
+
+def gas_extinction_plane(gas, heat_absorb_q, n_bulk, ts):
+    """a_gas per cell; 0 on every THERMAL SOLID. A thermal solid's temperature
+    is owned by the temperature solver and its extinction is its material's --
+    whatever gas its pores hold is part of the lumped solid, and the Pass-1
+    fold routes that cell's rad_net to the solid branch anyway."""
+    h, w = len(ts), len(ts[0])
+    ng = len(gas)
+    out = plane(h, w)
+    for y in range(h):
+        for x in range(w):
+            if ts[y][x]:
+                continue
+            out[y][x] = gas_extinction_q([gas[g][y][x] for g in range(ng)],
+                                         heat_absorb_q, n_bulk[y][x])
+    return out
+
+
+def effective_extinction(a, d, a_gas, ts):
+    """The planes the sweep actually reads, per cell (P5a):
+
+        a_eff = a                 on a thermal solid
+              = max(a, a_gas)     on a gas cell (a == 0 there on every legal
+                                  material table: heat_atten > 0 => thermal
+                                  solid; MAX keeps a direct caller's a intact)
+        d_eff = max(d, a_eff)     the stamped total is a MAX, never a sum --
+                                  a body in smoke keeps d - a_gas of the stream
+
+    so 0 <= a_eff <= d_eff <= ONE holds by construction whenever the INPUT
+    planes satisfy the design 2.3 invariant, and a_gas == 0 everywhere returns
+    the input planes unchanged (the dormancy the golden rests on)."""
+    h, w = len(a), len(a[0])
+    a_eff = [[a[y][x] if ts[y][x] else max(a[y][x], a_gas[y][x]) for x in range(w)]
+             for y in range(h)]
+    d_eff = [[max(d[y][x], a_eff[y][x]) for x in range(w)] for y in range(h)]
+    return a_eff, d_eff
+
+
+def gas_capacity_recips(n_bulk_raw: int, c_v_q: int, n_floor_q: int):
+    """(recip_N_q, recip_cv) exactly as the Pass-1 gas deposit forms them
+    (temperature_solver.cpp): N floored at n_floor_heat, reciprocal_q16 per
+    cell; c_v's reciprocal from its ONE integer form c_v_q (report_t2 10.2)."""
+    n_q = n_bulk_raw if n_bulk_raw > n_floor_q else n_floor_q
+    return reciprocal_q16(n_q), make_recip(c_v_q / 65536.0)
+
+
+def fleck_L_gas_q(T_q: int, a_gas_q: int, n_bulk_raw: int, *, c_v_q: int,
+                  n_floor_q: int, table=E, e_ref: int = None) -> int:
+    """Design 2.8's GAS L_q: the cell's free excess-emission loss this tick, in
+    Q16.16 temperature -- the excess a_gas*(E°[T] - E_ref) through the STAGED
+    deposit chain (recip_N, then recip_cv):
+
+        L_q = deposit_dT_wide_i64((a_gas * ex) >> 16, recip_N_q, recip_cv)
+
+    A MEASURING PRIMITIVE (P5a). No pre-pass calls it: the sweep's gas arm is
+    L = 0 on both backends until P5b wires this, with the Pass-1 gas branch, in
+    the reference first. P5a uses it to re-derive the gas stiffness
+    g = 4 L / T_abs at the live scale and c_v (p5a_gas_stiffness_study.py)."""
+    ref = table[0] if e_ref is None else e_ref
+    ex = table[e_bucket_of(T_q)] - ref
+    if ex < 0:
+        ex = 0
+    recip_n, recip_cv = gas_capacity_recips(n_bulk_raw, c_v_q, n_floor_q)
+    return deposit_dT_wide_i64((a_gas_q * ex) >> 16, recip_n, recip_cv)
+
+
+# --------------------------------------------------------------------------- #
 # Ordinates (design section 2.5) and their per-ordinate constants.
 # --------------------------------------------------------------------------- #
 def ordinates(n: int = 16, half_offset: bool = True):
@@ -534,6 +764,11 @@ class SweepResult:
     max_product: int = 0          # the largest intermediate product (headroom)
     min_stream: int = 0           # positivity: must never be negative
     max_fleck_product: int = 0    # max (ex_m * f_q24), the widest Q24 product (G11)
+    # P5a: the extinction planes the sweep actually READ (a, d with the gas
+    # term folded in); None when the scene carried no gas. For the gates'
+    # non-vacuity checks -- "a gas cell really absorbed".
+    a_eff: list = None
+    d_eff: list = None
 
     def sums(self):
         return (plane_sum(self.rad_net), plane_sum(self.rad_flux),
@@ -626,13 +861,23 @@ def validate_planes(a, d, k, amb=None, table=E):
 def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
             f_plane=None, w_m: int = None, e_ref: int = None,
             body_mode: str = "reemit", table=E, validate: bool = True,
-            half_offset: bool = True) -> SweepResult:
+            half_offset: bool = True, gas=None, heat_absorb_q=None,
+            n_bulk=None, ts=None) -> SweepResult:
     """One tick of the sweep, exactly as design section 2.3 writes it.
 
     a, d, k : Q16 planes (material extinction, stamped extinction, leak)
     T       : Q16.16 temperature plane
     f_plane : the Fleck pre-pass output (Q24, row 32); None means f == F_ONE
     w_m     : the ordinate weight; default ONE // n_ord (4096 at S16)
+    gas, heat_absorb_q, n_bulk, ts : THE GAS EXTINCTION (design 6.3, P5a) --
+              given together or not at all. `gas` is a list of Q16.16 density
+              planes, `heat_absorb_q` their per-gas Q16 column, `n_bulk` the
+              bulk (O2 + N2) plane, `ts` the thermal-solid mask. Each gas cell
+              then reads a = max(a, a_gas) and d = max(d, a) (see
+              effective_extinction); a thermal solid ignores its gas. The
+              design-2.3 invariant is checked on the INPUT planes, the gas
+              ones by validate_gas. All None is the pre-P5a sweep, integer for
+              integer.
     e_ref   : the ambient LEVEL -- a scalar (broadcast at the door) or a
               per-cell plane (thermal v2 R3). None is E°[0], the design's
               original single value; 0 reproduces the float scheme study's
@@ -685,6 +930,20 @@ def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
     amb_lvl = ambient_plane(e_ref, h, w, table)
     if validate:
         validate_planes(a, d, k, amb_lvl, table)
+    # THE GAS EXTINCTION (P5a, design 6.3). Folded into the two planes the
+    # loop below reads, AFTER the input invariant is checked; the effective
+    # planes satisfy 0 <= a <= d <= ONE by construction (effective_extinction).
+    a_eff = d_eff = None
+    gas_args = (gas, heat_absorb_q, n_bulk)
+    if any(v is not None for v in gas_args):
+        if any(v is None for v in gas_args) or ts is None:
+            raise ValueError("the gas extinction takes gas, heat_absorb_q, "
+                             "n_bulk and ts together")
+        if validate:
+            validate_gas(gas, heat_absorb_q, n_bulk, ts, h, w)
+        a_gas = gas_extinction_plane(gas, heat_absorb_q, n_bulk, ts)
+        a_eff, d_eff = effective_extinction(a, d, a_gas, ts)
+        a, d = a_eff, d_eff
     # The per-cell ambient stream. NOT hoisted out of the cell loop -- that
     # hoist is precisely what thermal v2 section 6 item 3 exists to make
     # impossible, and it is what the first draft of this patch would have
@@ -694,7 +953,8 @@ def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
     if f_plane is None:
         f_plane = plane(h, w, F_ONE)
 
-    res = SweepResult(plane(h, w), plane(h, w), plane(h, w), plane(h, w))
+    res = SweepResult(plane(h, w), plane(h, w), plane(h, w), plane(h, w),
+                      a_eff=a_eff, d_eff=d_eff)
     rad_net, rad_flux, rad_amb, rad_flu = (res.rad_net, res.rad_flux,
                                            res.rad_amb, res.rad_fluence)
     # The per-cell excess emission over THAT CELL'S OWN ambient, independent of
@@ -812,7 +1072,7 @@ def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
 
 
 def fleck_prepass(T, a, his, *, table=E, e_ref=None, enabled: bool = True,
-                  alpha_floor: str = ALPHA_FLOOR_DEFAULT):
+                  alpha_floor: str = ALPHA_FLOOR_DEFAULT, ts=None):
     """The pre-sweep Fleck pass for SOLIDS (design section 2.8). Q24 (row 32).
 
     `his` may be an int (uniform) or a plane. `e_ref` is the ambient LEVEL, the
@@ -820,6 +1080,14 @@ def fleck_prepass(T, a, his, *, table=E, e_ref=None, enabled: bool = True,
     EXCESS emission, and the excess is over THAT CELL'S OWN ambient -- a cell
     facing a cold sky has more excess to shed and is damped accordingly.
     Returns the f_plane.
+
+    `ts` (P5a) is the thermal-solid mask, exactly the branch the engine takes
+    (radiation_sweep.cpp's pre-pass): a thermal solid takes the solid L_q on
+    its MATERIAL `a`, every other cell -- a GAS cell, now absorbing through the
+    smoke term -- takes the gas arm, which is still L = 0 (f == 2^24): the
+    gas chain (`fleck_L_gas_q`) is P5b's to wire. `ts=None` is the pre-P5a
+    call, every cell on the solid branch; on a legal scene (a == 0 off the
+    thermal solids) the two agree cell for cell.
     """
     h, w = len(T), len(T[0])
     if not enabled:
@@ -828,6 +1096,8 @@ def fleck_prepass(T, a, his, *, table=E, e_ref=None, enabled: bool = True,
     out = plane(h, w, F_ONE)
     for y in range(h):
         for x in range(w):
+            if ts is not None and not ts[y][x]:
+                continue                    # the GAS arm: L = 0, f == 2^24 (P5b wires it)
             s = his if isinstance(his, int) else his[y][x]
             out[y][x] = fleck_f_solid_q(T[y][x], a[y][x], s, table,
                                         amb_lvl[y][x],
@@ -939,6 +1209,12 @@ class Scene:
     fleck: bool = True
     alpha_floor: str = ALPHA_FLOOR_DEFAULT
     counters: FoldCounters = field(default_factory=FoldCounters)
+    # P5a: the gas extinction's inputs (sweep_q's), all three or none. The
+    # fold below still converts THERMAL SOLIDS only -- a gas cell's rad_net is
+    # booked by the sweep and consumed by nothing until P5b.
+    gas: list = None
+    heat_absorb_q: list = None
+    n_bulk: list = None
 
     def __post_init__(self):
         h, w = len(self.a), len(self.a[0])
@@ -948,10 +1224,15 @@ class Scene:
 
     def tick(self, *, clamp_enabled=True, rails_enabled=True, int32_sat=True):
         f = fleck_prepass(self.T, self.a, self.his, e_ref=self.e_ref,
-                          enabled=self.fleck, alpha_floor=self.alpha_floor)
+                          enabled=self.fleck, alpha_floor=self.alpha_floor,
+                          ts=self.ts)
+        gas_kw = {}
+        if self.gas is not None:
+            gas_kw = dict(gas=self.gas, heat_absorb_q=self.heat_absorb_q,
+                          n_bulk=self.n_bulk, ts=self.ts)
         res = sweep_q(self.a, self.d, self.k, self.T, n_ord=self.n_ord,
                       transport=self.transport, f_plane=f, e_ref=self.e_ref,
-                      body_mode=self.body_mode)
+                      body_mode=self.body_mode, **gas_kw)
         fold_pass1_solid(self.T, res.rad_net, res.rad_fluence, self.his, self.ts,
                          self.counters, clamp_enabled=clamp_enabled,
                          rails_enabled=rails_enabled, int32_sat=int32_sat,

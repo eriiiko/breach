@@ -323,7 +323,10 @@ def test_stale_caller_cannot_hand_step_tail_a_narrow_plane():
                   fuel_recip=g.fuel_recip,
                   fire_T_ext_plane=g.fire_T_ext_plane, gas=g.gas,
                   gas_conservative=g.gases.conservative,
-                  o2_idx=int(g.gases.name_to_id["o2"]), sim_time=1.0 / 24.0)
+                  o2_idx=int(g.gases.name_to_id["o2"]), sim_time=1.0 / 24.0,
+                  # P5a: the smoke term's (required) table, present so the
+                  # second refusal below is about the narrow plane alone
+                  gas_heat_absorb_q16=g.gases.heat_absorb_q16)
     with pytest.raises(TypeError):
         eng.step_tail(**common)                                   # the six args missing
     narrow = np.zeros(g.temperature.shape, dtype=np.int32)
@@ -372,6 +375,7 @@ def test_the_three_live_planes_are_int64_and_the_engine_refuses_a_narrow_one():
                   heat_atten_q=g.heat_atten_q, dyn_heat_atten_q=g.dyn_heat_atten_q,
                   rad_net_sweep=g.rad_net_sweep, rad_flux_sweep=g.rad_flux_sweep,
                   rad_amb_sweep=g.rad_amb_sweep, rad_fluence=g.rad_fluence,
+                  gas_heat_absorb_q16=g.gases.heat_absorb_q16,   # P5a (required)
                   k_leak_q=0)
     narrow = np.zeros(g.temperature.shape, dtype=np.int32)
     with pytest.raises(TypeError):

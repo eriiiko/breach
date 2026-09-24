@@ -166,7 +166,8 @@ def test_gas_table_from_dict():
 
     GasTable always iterates the module-level GAS_NAMES (EOS P1: 7 ids, not
     5), so a from-scratch table must supply a row for every id — including
-    the bulk pair's ``conservative`` column, now required on every row.
+    the bulk pair's ``conservative`` column, now required on every row, and
+    (ray-engine-v2 P5a) the ``heat_absorb`` column, required the same way.
     """
     names = ["steam", "smoke", "poison", "teargas", "fuel_gas",
              "o2", "inert_n2"]
@@ -181,6 +182,7 @@ def test_gas_table_from_dict():
             "emits_when_hot": False,
             "effect": "x",
             "conservative": name in ("o2", "inert_n2"),
+            "heat_absorb": 0.0,
         }
         for i, name in enumerate(names)
     }

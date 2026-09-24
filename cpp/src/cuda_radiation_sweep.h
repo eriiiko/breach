@@ -93,11 +93,20 @@ namespace breach_cuda {
 //   min_stream_out / max_stream_out : nullable — the smallest and largest
 //                       per-ordinate stream seen at any cell, the twin of
 //                       RadiationSweep::min_stream / max_stream.
+//   gas, n_gases, heat_absorb_q16, n_bulk : THE GAS EXTINCTION (P5a) — run()'s
+//                       four, host pointers, all or none. Only the ACTIVE
+//                       gases (heat_absorb_q16 != 0) cross the bus: a zero
+//                       coefficient adds exactly 0 to the density sum, so its
+//                       plane is never uploaded — and with every shipped row at
+//                       0.0 the live GPU sweep uploads no gas plane and no
+//                       n_bulk at all, so P4's measured cost does not move.
 // Throws std::invalid_argument on everything run() and derive_ambient() reject
 // (an unsupported (n_ordinates, transport), k_leak_q outside [0, ONE],
-// vac_level above e_table[0], a cell violating 0 <= a <= d <= ONE or an
-// ambient level outside [0, e_table[0]]), and std::runtime_error on a CUDA
-// error. Returns the number of kernel launches issued (design §10's count).
+// vac_level above e_table[0], a cell violating 0 <= a <= d <= ONE, an
+// ambient level outside [0, e_table[0]], a partial gas group, n_gases outside
+// [0, N_GAS_PLANES_MAX] or a heat_absorb_q16 outside [0, HEAT_ABSORB_Q_MAX]),
+// and std::runtime_error on a CUDA error. Returns the number of kernel
+// launches issued (design §10's count).
 int radiation_sweep_step(
     const int32_t* temperature,
     const int32_t* heat_atten_q, const int32_t* dyn_heat_atten_q,
@@ -108,7 +117,9 @@ int radiation_sweep_step(
     int transport, int n_ordinates, int h, int w,
     int64_t* rad_net, int64_t* rad_flux, int64_t* rad_amb, int64_t* rad_fluence,
     bool fleck_enabled,
-    int32_t* fleck_out, int64_t* min_stream_out, int64_t* max_stream_out);
+    int32_t* fleck_out, int64_t* min_stream_out, int64_t* max_stream_out,
+    const int32_t* gas = nullptr, int n_gases = 0,
+    const int32_t* heat_absorb_q16 = nullptr, const int32_t* n_bulk = nullptr);
 
 // The launch count radiation_sweep_launch_resident issues for one call of the
 // given shape (the three bookkeeping kernels + one per wavefront index), or -1

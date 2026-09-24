@@ -48,6 +48,7 @@
 
 #include "fixed_point.h"
 #include "emissive_table.h"
+#include "gas_energy.h"      // N_EPS_RAW — THE bulk floor (P5a's smoke term reads it)
 
 // One ordinate's checked-in constants (design §2.3, critique 3 §5b): the
 // sign of its x/y direction cosines, whether |mu| >= |eta| (which of the two
@@ -90,12 +91,65 @@ FP_HD inline int32_t fleck_f_q24(int64_t T_abs_q, int64_t L_q) {
     return (int32_t)fixedpoint::floordiv_q(T_abs_q << 24, D);
 }
 
+// ---- the GAS extinction (ray-engine-v2 P5a, design v3 §6.3; FP_HD: the
+// CUDA twin's pre-pass calls these very functions) ---------------------------
+// Smoke absorbs heat by the DENSITY LAW, on a GAS cell (not a thermal solid):
+//     a_gas = min(ONE, Σ_g heat_absorb_q16[g] · max(0, N_g) >> 16)
+//           = 0                      where N_bulk < gas_energy::N_EPS_RAW
+// Absorption proportional to the number of absorbers IS the density law, and
+// what thin smoke does not absorb continues down the stream. The floor is the
+// canonical one ("ONE value, every file"): a sub-N_EPS cell is DEFINED to read
+// ambient (gas_energy::mirror_q), so it must not emit at any other temperature
+// — a_gas = 0 makes its absorption and its emission vanish together.
+// Transcribes sweep_ref_q.py::gas_extinction_q.
+
+// One term of the density sum. A NEGATIVE density — no transport should make
+// one (the trace planes are [0, 1] tracers), but an int32 plane can hold one —
+// absorbs NOTHING: it can neither cancel a real absorber nor become a negative
+// extinction, i.e. a source. |term| < 2^28 · 2^31 = 2^59 under the door's
+// bounds, so a sum over at most N_GAS_PLANES_MAX planes is exact in int64.
+FP_HD inline int64_t gas_density_term(int32_t hq, int32_t n_g) {
+    return (n_g > 0) ? (int64_t)hq * (int64_t)n_g : (int64_t)0;
+}
+
+// The law's finish: the bulk floor, then one shift and the ONE cap.
+FP_HD inline int32_t gas_extinction_finish(int64_t sum, int32_t n_bulk) {
+    if ((int64_t)n_bulk < gas_energy::N_EPS_RAW) return 0;
+    const int64_t a = sum >> fixedpoint::FP_SHIFT;
+    return (a > (int64_t)fixedpoint::FP_ONE) ? fixedpoint::FP_ONE : (int32_t)a;
+}
+
+// The two planes the sweep then READS on every cell (design §2.3's a_i, d_i):
+//   a_eff = a                  on a thermal solid — its extinction is its
+//                              material's whatever gas its pores hold; its T
+//                              is owned by the temperature solver
+//         = max(a, a_gas)      on a gas cell (a == 0 there on every legal
+//                              material table: heat_atten > 0 ⇒ thermal solid)
+//   d_eff = max(d, a_eff)      the stamped total is a MAX, never a sum — a
+//                              body in smoke keeps d − a_gas of the stream
+// With 0 <= a <= d <= ONE on the inputs, 0 <= a_eff <= d_eff <= ONE by
+// construction; a_gas == 0 everywhere returns the inputs unchanged.
+FP_HD inline int32_t gas_effective_a(int32_t a, int32_t a_gas, bool thermal_solid) {
+    return (thermal_solid || a_gas <= a) ? a : a_gas;
+}
+FP_HD inline int32_t gas_effective_d(int32_t d, int32_t a_eff) {
+    return (d >= a_eff) ? d : a_eff;
+}
+
 class RadiationSweep {
 public:
     static constexpr int TRANSPORT_STEP  = 0;   // design §2.4: θ = 0
     static constexpr int TRANSPORT_SHEAR = 1;   //              θ = 1 (heat)
     static constexpr int F_SHIFT = 24;          // the Fleck factor's fixed point (row 32)
     static constexpr int32_t F_ONE = 1 << F_SHIFT;
+    // P5a: the gas extinction's two ingress bounds — the SAME numbers as the
+    // gas-table door (gases.py HEAT_ABSORB_MAX = 4096, in Q16 2^28) and the
+    // integer reference (sweep_ref_q.HEAT_ABSORB_Q_MAX / N_GAS_PLANES_MAX):
+    // together they make the density sum exact in int64 for ANY int32
+    // densities (16 terms, each < 2^59). tests/test_gas_heat_absorb.py holds
+    // the three homes equal.
+    static constexpr int32_t HEAT_ABSORB_Q_MAX = 1 << 28;
+    static constexpr int N_GAS_PLANES_MAX = 16;
 
     // The checked-in table for (n_ordinates, transport); nullptr if the pair
     // is not one of {12, 16} x {step, shear}.
@@ -141,11 +195,26 @@ public:
     //                      `f_plane=None` configuration, which its isotropy and
     //                      float-agreement gates are measured in. A per-call
     //                      knob for the gates, never hidden state.
+    //   THE GAS EXTINCTION (P5a, design v3 §6.3) — given together or not at
+    //   all (all null: the pre-P5a sweep, integer for integer):
+    //   gas              : int32 Q16.16 (n_gases, h, w) — the gas density planes
+    //                      (GameMap.gas), ONE = one ambient air cell's worth
+    //   n_gases          : planes in `gas`, 0 <= n_gases <= N_GAS_PLANES_MAX
+    //   heat_absorb_q16  : int32 Q16 (n_gases,) — [gases.*] heat_absorb
+    //                      (GasTable.heat_absorb_q16), each in [0, HEAT_ABSORB_Q_MAX]
+    //   n_bulk           : int32 Q16.16 (h, w) — the BULK (O2 + N2) count, the
+    //                      one the N_EPS floor and the energy books read
+    //   A gas cell (!thermal_solid) reads a = max(a, a_gas), d = max(d, a);
+    //   the Fleck pre-pass's GAS arm is still L = 0 (f == 2^24) — P5b wires it.
+    //   Nothing downstream consumes a gas cell's rad_net until P5b opens the
+    //   temperature fold's `ts` mask.
     // Throws std::invalid_argument on an unsupported (n_ordinates, transport),
     // a k_leak_q outside [0, ONE], a null amb_level or one outside
-    // [0, e_table[0]], or a cell violating 0 <= a <= d <= ONE (the ingress
+    // [0, e_table[0]], a cell violating 0 <= a <= d <= ONE (the ingress
     // invariants the materials door enforces; re-checked here so a direct
-    // caller cannot measure an illegal scene).
+    // caller cannot measure an illegal scene), a partial gas group, n_gases
+    // outside [0, N_GAS_PLANES_MAX], or a heat_absorb_q16 outside
+    // [0, HEAT_ABSORB_Q_MAX] (the gas door's own bounds).
     void run(const int32_t* temperature,
              const int32_t* heat_atten_q, const int32_t* dyn_heat_atten_q,
              const int32_t* heat_inv_shift, const bool* thermal_solid,
@@ -153,7 +222,18 @@ public:
              int32_t t_amb_q, int32_t k_leak_q,
              int transport, int n_ordinates, int h, int w,
              int64_t* rad_net, int64_t* rad_flux, int64_t* rad_amb,
-             int64_t* rad_fluence, bool fleck_enabled = true) const;
+             int64_t* rad_fluence, bool fleck_enabled = true,
+             const int32_t* gas = nullptr, int n_gases = 0,
+             const int32_t* heat_absorb_q16 = nullptr,
+             const int32_t* n_bulk = nullptr) const;
+
+    // The effective extinction planes the last CPU run() READ (Q16, (h, w)):
+    // the material/stamped planes with the smoke term folded in (P5a).
+    // Observable so the gates can see a gas cell absorb. The CUDA twin keeps
+    // its own on the device and does not copy them back (a per-tick transfer
+    // for a gate's convenience is not a price the live path pays).
+    const std::vector<int32_t>& a_eff_plane() const { return a_eff_; }
+    const std::vector<int32_t>& d_eff_plane() const { return d_eff_; }
 
     // THE DERIVATION (thermal model v2 R3): the per-cell ambient level from
     // state the engine already has. A vacuum cell radiates against
@@ -209,5 +289,7 @@ private:
     mutable std::vector<int64_t> amb_m_;     // (h, w): (amb_level[i] · w_m) >> 16
     mutable std::vector<int64_t> amb_derived_;  // (h, w): derive_ambient()'s output
     mutable std::vector<int32_t> f_q24_;     // (h, w): the Fleck factor, Q24
+    mutable std::vector<int32_t> a_eff_;     // (h, w): the extinction the sweep reads (P5a)
+    mutable std::vector<int32_t> d_eff_;     // (h, w): the stamped total it reads (P5a)
     mutable int h_ = 0, w_ = 0, n_ord_ = 0;
 };

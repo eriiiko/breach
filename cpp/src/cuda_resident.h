@@ -232,7 +232,9 @@ void energy_flux_launch_resident(
 //   0 cells violating 0 <= a <= d <= ONE          (a count)
 //   1 cells whose ambient level is outside [0, E°[0]]   (a count)
 //   2 scalar violations, a bitmask: 1 = k_leak_q outside [0, ONE],
-//     2 = vac_level above E°[0] (only when the level is derived)
+//     2 = vac_level above E°[0] (only when the level is derived),
+//     4 = a heat_absorb_q16 outside [0, RadiationSweep::HEAT_ABSORB_Q_MAX]
+//         (P5a; the table is shared, so every env carries the bit)
 //   3 min_stream   4 max_stream   (RadiationSweep's telemetry, via 64-bit
 //                                   atomicMin / atomicMax — order-free)
 // The core INITIALISES the block itself (its first kernel); the caller never
@@ -243,8 +245,9 @@ constexpr int RS_SLOT_BAD_AMBIENT    = 1;
 constexpr int RS_SLOT_BAD_SCALARS    = 2;
 constexpr int RS_SLOT_MIN_STREAM     = 3;
 constexpr int RS_SLOT_MAX_STREAM     = 4;
-constexpr int RS_BAD_K_LEAK    = 1;
-constexpr int RS_BAD_VAC_LEVEL = 2;
+constexpr int RS_BAD_K_LEAK      = 1;
+constexpr int RS_BAD_VAC_LEVEL   = 2;
+constexpr int RS_BAD_HEAT_ABSORB = 4;
 //
 //   d_temperature, d_heat_atten_q, d_dyn_heat_atten_q, d_heat_inv_shift,
 //   d_thermal_solid : (N, h, w) — RadiationSweep::run's inputs
@@ -254,15 +257,24 @@ constexpr int RS_BAD_VAC_LEVEL = 2;
 //   d_e_table       : (E_TABLE_SIZE,) int64 — shared by every env (a pure
 //                     function of the calibration dials, not per-env state)
 //   d_vac_level, d_k_leak_q, d_t_amb_q : (N,) per-env scalars
+//   THE GAS EXTINCTION (P5a, design v3 §6.3) — all three pointers or none
+//   (none, with n_gases == 0: the pre-P5a sweep):
+//   d_gas           : (N, n_gases, h, w) int32 Q16.16 — the gas planes
+//   n_gases         : 0 <= n_gases <= RadiationSweep::N_GAS_PLANES_MAX (host)
+//   d_heat_absorb_q16 : (n_gases,) int32 Q16 — shared by every env (config)
+//   d_n_bulk        : (N, h, w) int32 Q16.16 — the bulk (O2 + N2) count
 //   d_outflow       : (N, n_ordinates, h, w) int64 scratch (every cell is
 //                     written before it is read; never needs clearing)
 //   d_amb_m, d_ex_cell : (N, h, w) int64 scratch
 //   d_f_q24         : (N, h, w) int32 — the Fleck plane (observable)
+//   d_a_eff, d_d_eff : (N, h, w) int32 scratch — the extinction planes the
+//                     wavefronts READ (the smoke term folded in, P5a)
 //   d_rad_*         : (N, h, w) int64 — OVERWRITTEN (zeroed here first)
 //   d_cnt           : (N, RADIATION_SWEEP_CNT_SLOTS) int64
-// Throws std::invalid_argument on an unsupported (n_ordinates, transport) or
-// an n_env above 65535 (the wavefront grid's blockIdx.z carries the env) —
-// host control flow, checked before any launch. Returns the launch count.
+// Throws std::invalid_argument on an unsupported (n_ordinates, transport),
+// an n_env above 65535 (the wavefront grid's blockIdx.z carries the env), a
+// partial gas group or an n_gases outside [0, N_GAS_PLANES_MAX] — host
+// control flow, checked before any launch. Returns the launch count.
 int radiation_sweep_launch_resident(
     int n_env, int h, int w,
     const int32_t* d_temperature,
@@ -272,8 +284,11 @@ int radiation_sweep_launch_resident(
     const int64_t* d_e_table,
     const int64_t* d_vac_level, const int32_t* d_k_leak_q,
     const int32_t* d_t_amb_q,
+    const int32_t* d_gas, int n_gases,
+    const int32_t* d_heat_absorb_q16, const int32_t* d_n_bulk,
     int transport, int n_ordinates, bool fleck_enabled,
     int64_t* d_outflow, int64_t* d_amb_m, int64_t* d_ex_cell, int32_t* d_f_q24,
+    int32_t* d_a_eff, int32_t* d_d_eff,
     int64_t* d_rad_net, int64_t* d_rad_flux, int64_t* d_rad_amb,
     int64_t* d_rad_fluence,
     int64_t* d_cnt);

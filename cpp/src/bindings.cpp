@@ -68,6 +68,55 @@ static std::tuple<T*, int, int> get_3d(py::array_t<T>& arr) {
             static_cast<int>(a.shape(1))};
 }
 
+// ray-engine-v2 P5a: the radiation sweep's optional GAS GROUP (the smoke term,
+// design v3 §6.3) — gas (n_gases, h, w), heat_absorb_q16 (n_gases,), n_bulk
+// (h, w), all int32 — extracted ONE way for both direct sweep entries
+// (RadiationSweep.run and cuda_radiation_sweep_run), so the gate's CPU and GPU
+// calls cannot read it differently. All None -> the pre-P5a sweep. A partial
+// group or a wrong shape raises ValueError; a dtype other than int32 raises
+// TypeError (dtype-CHECKED, never converted: a silently converted copy would
+// be a different input). The arrays are held here so the pointers outlive the
+// call; a non-contiguous input is read through a contiguous copy of the same
+// values (inputs only — nothing is written back).
+struct GasGroupArgs {
+    py::array_t<int32_t, py::array::c_style> gas_arr, hq_arr, nb_arr;
+    const int32_t* gas = nullptr;
+    const int32_t* hq = nullptr;
+    const int32_t* nb = nullptr;
+    int n = 0;
+};
+static GasGroupArgs gas_group_args(const char* who, const py::object& gas,
+                                   const py::object& hq, const py::object& n_bulk,
+                                   int h, int w) {
+    GasGroupArgs g;
+    if (gas.is_none() && hq.is_none() && n_bulk.is_none()) return g;
+    const std::string w_ = who;
+    if (gas.is_none() || hq.is_none() || n_bulk.is_none()) {
+        throw py::value_error(w_ + ": gas, heat_absorb_q16 and n_bulk are given "
+                              "together or not at all (the smoke term, design v3 §6.3)");
+    }
+    if (!py::isinstance<py::array_t<int32_t>>(gas) ||
+        !py::isinstance<py::array_t<int32_t>>(hq) ||
+        !py::isinstance<py::array_t<int32_t>>(n_bulk)) {
+        throw py::type_error(w_ + ": gas, heat_absorb_q16 and n_bulk must be int32 "
+                             "numpy arrays (dtype-checked, never converted)");
+    }
+    g.gas_arr = gas.cast<py::array_t<int32_t, py::array::c_style>>();
+    g.hq_arr  = hq.cast<py::array_t<int32_t, py::array::c_style>>();
+    g.nb_arr  = n_bulk.cast<py::array_t<int32_t, py::array::c_style>>();
+    if (g.gas_arr.ndim() != 3 || g.gas_arr.shape(1) != h || g.gas_arr.shape(2) != w ||
+        g.hq_arr.ndim() != 1 || g.hq_arr.shape(0) != g.gas_arr.shape(0) ||
+        g.nb_arr.ndim() != 2 || g.nb_arr.shape(0) != h || g.nb_arr.shape(1) != w) {
+        throw py::value_error(w_ + ": gas must be (n_gases, h, w), heat_absorb_q16 "
+                              "(n_gases,) and n_bulk (h, w)");
+    }
+    g.gas = g.gas_arr.data();
+    g.hq  = g.hq_arr.data();
+    g.nb  = g.nb_arr.data();
+    g.n   = static_cast<int>(g.gas_arr.shape(0));
+    return g;
+}
+
 // arc #54 §2.7 (gas-energy conservation): the W3 water-displacement
 // evacuation's six optional energy arguments, extracted the SAME nullable way
 // the BC args are (None -> nullptr -> the pre-#54 byte-identical path). Both
@@ -438,6 +487,7 @@ PYBIND11_MODULE(breach_physics, m) {
     m.attr("RS_SLOT_BAD_SCALARS")       = breach_cuda::RS_SLOT_BAD_SCALARS;
     m.attr("RS_SLOT_MIN_STREAM")        = breach_cuda::RS_SLOT_MIN_STREAM;
     m.attr("RS_SLOT_MAX_STREAM")        = breach_cuda::RS_SLOT_MAX_STREAM;
+    m.attr("RS_BAD_HEAT_ABSORB")        = breach_cuda::RS_BAD_HEAT_ABSORB;   // P5a
     m.def("cuda_radiation_sweep_launch_count",
           [](int transport, int n_ordinates, int h, int w) {
               return breach_cuda::radiation_sweep_launch_count(
@@ -462,7 +512,9 @@ PYBIND11_MODULE(breach_physics, m) {
              py::array_t<int64_t, py::array::c_style> rad_fluence,
              bool fleck_enabled,
              py::object is_vacuum, int64_t vac_level,
-             py::object fleck_out) -> py::tuple {
+             py::object fleck_out,
+             py::object gas, py::object heat_absorb_q16,
+             py::object n_bulk) -> py::tuple {
               auto [T, h, w]      = get_2d_const(temperature);
               auto [aq, h2, w2]   = get_2d_const(heat_atten_q);
               auto [dq, h3, w3]   = get_2d_const(dyn_heat_atten_q);
@@ -523,11 +575,17 @@ PYBIND11_MODULE(breach_physics, m) {
                           "cuda_radiation_sweep_run: fleck_out must be (h, w)");
                   fo = fp;
               }
+              // P5a: the smoke term's optional group — the SAME extraction
+              // RadiationSweep.run uses (gas_group_args), so the gate's two
+              // calls read one input one way.
+              GasGroupArgs gg = gas_group_args("cuda_radiation_sweep_run", gas,
+                                               heat_absorb_q16, n_bulk, h, w);
               int64_t s_min = 0, s_max = 0;
               const int launches = breach_cuda::radiation_sweep_step(
                   T, aq, dq, his, ts, e_table.table(), amb, vac, vac_level,
                   t_amb_q, k_leak_q, transport, n_ordinates, h, w,
-                  rn, rf, ra, rl, fleck_enabled, fo, &s_min, &s_max);
+                  rn, rf, ra, rl, fleck_enabled, fo, &s_min, &s_max,
+                  gg.gas, gg.n, gg.hq, gg.nb);
               return py::make_tuple(s_min, s_max, launches);
           },
           py::arg("temperature").noconvert(), py::arg("heat_atten_q").noconvert(),
@@ -541,12 +599,16 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("fleck_enabled") = true,
           py::arg("is_vacuum") = py::none(), py::arg("vac_level") = (int64_t)-1,
           py::arg("fleck_out") = py::none(),
+          py::arg("gas") = py::none(), py::arg("heat_absorb_q16") = py::none(),
+          py::arg("n_bulk") = py::none(),
           "P4 isolated: ONE radiation sweep on the GPU (the per-call path "
           "PhysicsEngine.step_tail dispatches), bit-identical to "
           "RadiationSweep.run on the same arguments. amb_level None + is_vacuum "
           "None is the uniform E0 door; amb_level None + is_vacuum given DERIVES "
-          "the ambient on the device (derive_ambient's twin). Overwrites the four "
-          "int64 planes (untouched on an ingress rejection, which raises "
+          "the ambient on the device (derive_ambient's twin). gas / "
+          "heat_absorb_q16 / n_bulk (int32, all or none) are the smoke term (P5a); "
+          "only the gases with a non-zero coefficient cross the bus. Overwrites "
+          "the four int64 planes (untouched on an ingress rejection, which raises "
           "ValueError). Returns (min_stream, max_stream, launches).");
     m.def("cuda_radiation_sweep_resident",
           [](int n_env, int h, int w,
@@ -557,9 +619,12 @@ PYBIND11_MODULE(breach_physics, m) {
              std::uintptr_t d_e_table,
              std::uintptr_t d_vac_level, std::uintptr_t d_k_leak_q,
              std::uintptr_t d_t_amb_q,
+             std::uintptr_t d_gas, int n_gases,
+             std::uintptr_t d_heat_absorb_q16, std::uintptr_t d_n_bulk,
              int transport, int n_ordinates, bool fleck_enabled,
              std::uintptr_t d_outflow, std::uintptr_t d_amb_m,
              std::uintptr_t d_ex_cell, std::uintptr_t d_f_q24,
+             std::uintptr_t d_a_eff, std::uintptr_t d_d_eff,
              std::uintptr_t d_rad_net, std::uintptr_t d_rad_flux,
              std::uintptr_t d_rad_amb, std::uintptr_t d_rad_fluence,
              std::uintptr_t d_cnt) {
@@ -576,11 +641,16 @@ PYBIND11_MODULE(breach_physics, m) {
                   reinterpret_cast<const int64_t*>(d_vac_level),
                   reinterpret_cast<const int32_t*>(d_k_leak_q),
                   reinterpret_cast<const int32_t*>(d_t_amb_q),
+                  reinterpret_cast<const int32_t*>(d_gas), n_gases,
+                  reinterpret_cast<const int32_t*>(d_heat_absorb_q16),
+                  reinterpret_cast<const int32_t*>(d_n_bulk),
                   transport, n_ordinates, fleck_enabled,
                   reinterpret_cast<int64_t*>(d_outflow),
                   reinterpret_cast<int64_t*>(d_amb_m),
                   reinterpret_cast<int64_t*>(d_ex_cell),
                   reinterpret_cast<int32_t*>(d_f_q24),
+                  reinterpret_cast<int32_t*>(d_a_eff),
+                  reinterpret_cast<int32_t*>(d_d_eff),
                   reinterpret_cast<int64_t*>(d_rad_net),
                   reinterpret_cast<int64_t*>(d_rad_flux),
                   reinterpret_cast<int64_t*>(d_rad_amb),
@@ -593,16 +663,21 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("d_thermal_solid"), py::arg("d_amb_level"), py::arg("d_is_vacuum"),
           py::arg("d_e_table"), py::arg("d_vac_level"), py::arg("d_k_leak_q"),
           py::arg("d_t_amb_q"),
+          py::arg("d_gas"), py::arg("n_gases"),
+          py::arg("d_heat_absorb_q16"), py::arg("d_n_bulk"),
           py::arg("transport"), py::arg("n_ordinates"), py::arg("fleck_enabled"),
           py::arg("d_outflow"), py::arg("d_amb_m"), py::arg("d_ex_cell"),
-          py::arg("d_f_q24"),
+          py::arg("d_f_q24"), py::arg("d_a_eff"), py::arg("d_d_eff"),
           py::arg("d_rad_net"), py::arg("d_rad_flux"), py::arg("d_rad_amb"),
           py::arg("d_rad_fluence"), py::arg("d_cnt"),
           "P4 (TEST/BENCH): the sweep's LAUNCH CORE on raw device pointers "
           "(CuPy .data.ptr uintptr_t; 0 == nullptr for d_amb_level/d_is_vacuum), "
-          "(N, h, w)-shaped. Launch only: no malloc, no transfer, no sync — the "
-          "caller synchronizes and reads the (N, 5) counter block. Returns the "
-          "launch count.");
+          "(N, h, w)-shaped. P5a: d_gas (N, n_gases, h, w) / d_heat_absorb_q16 "
+          "(n_gases,) / d_n_bulk (N, h, w) are the smoke term, all three or all 0 "
+          "(with n_gases 0); d_a_eff / d_d_eff are required (N, h, w) int32 "
+          "scratch. Launch only: no malloc, no transfer, no sync — the caller "
+          "synchronizes and reads the (N, 5) counter block. Returns the launch "
+          "count.");
 
     // CUDA-S3: the GPU water solver. The backend flag switches PhysicsEngine::
     // step_water's per-substep call between the CPU and GPU pipe-model solver
@@ -2117,6 +2192,10 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readonly_static("SHEAR", &RadiationSweep::TRANSPORT_SHEAR)
         .def_readonly_static("F_SHIFT", &RadiationSweep::F_SHIFT)
         .def_readonly_static("F_ONE",   &RadiationSweep::F_ONE)
+        // P5a: the gas extinction's two ingress bounds (the gas door's, the
+        // reference's; tests/test_gas_heat_absorb.py holds all three equal)
+        .def_readonly_static("HEAT_ABSORB_Q_MAX", &RadiationSweep::HEAT_ABSORB_Q_MAX)
+        .def_readonly_static("N_GAS_PLANES_MAX",  &RadiationSweep::N_GAS_PLANES_MAX)
         .def_readonly("min_stream", &RadiationSweep::min_stream)
         .def_readonly("max_stream", &RadiationSweep::max_stream)
         .def_static("ordinate_constants",
@@ -2177,6 +2256,28 @@ PYBIND11_MODULE(breach_physics, m) {
                  return out;
              },
              "A COPY of the Fleck plane (Q24, (h, w)) the last run() computed.")
+        .def("a_eff_plane", [](const RadiationSweep& self) {
+                 const auto& p = self.a_eff_plane();
+                 py::array_t<int32_t> out({self.last_h(), self.last_w()});
+                 auto o = out.mutable_unchecked<2>();
+                 for (int y = 0; y < self.last_h(); ++y)
+                     for (int x = 0; x < self.last_w(); ++x)
+                         o(y, x) = p[(size_t)y * self.last_w() + x];
+                 return out;
+             },
+             "P5a: a COPY of the extinction plane (Q16, (h, w)) the last run() "
+             "READ — the material extinction with the smoke term on gas cells.")
+        .def("d_eff_plane", [](const RadiationSweep& self) {
+                 const auto& p = self.d_eff_plane();
+                 py::array_t<int32_t> out({self.last_h(), self.last_w()});
+                 auto o = out.mutable_unchecked<2>();
+                 for (int y = 0; y < self.last_h(); ++y)
+                     for (int x = 0; x < self.last_w(); ++x)
+                         o(y, x) = p[(size_t)y * self.last_w() + x];
+                 return out;
+             },
+             "P5a: a COPY of the stamped-total plane (Q16, (h, w)) the last run() "
+             "READ — max(dyn_heat_atten_q, the effective extinction).")
         // run(): the four OUTPUT planes and the two extinction planes are
         // c_style int64 / int32 WITHOUT forcecast AND marked noconvert — a
         // stale caller handing an int32 plane where int64 is expected fails
@@ -2198,7 +2299,9 @@ PYBIND11_MODULE(breach_physics, m) {
                        py::array_t<int64_t, py::array::c_style> rad_flux,
                        py::array_t<int64_t, py::array::c_style> rad_amb,
                        py::array_t<int64_t, py::array::c_style> rad_fluence,
-                       bool fleck_enabled) {
+                       bool fleck_enabled,
+                       py::object gas, py::object heat_absorb_q16,
+                       py::object n_bulk) {
             auto [T, h, w]      = get_2d_const(temperature);
             auto [aq, h2, w2]   = get_2d_const(heat_atten_q);
             auto [dq, h3, w3]   = get_2d_const(dyn_heat_atten_q);
@@ -2234,8 +2337,13 @@ PYBIND11_MODULE(breach_physics, m) {
                 }
                 amb = ap;
             }
+            // P5a: the smoke term's optional group (gas_group_args — the same
+            // extraction the GPU twin's direct entry uses).
+            GasGroupArgs gg = gas_group_args("RadiationSweep.run", gas,
+                                             heat_absorb_q16, n_bulk, h, w);
             self.run(T, aq, dq, his, ts, e_table.table(), amb, t_amb_q, k_leak_q,
-                     transport, n_ordinates, h, w, rn, rf, ra, rl, fleck_enabled);
+                     transport, n_ordinates, h, w, rn, rf, ra, rl, fleck_enabled,
+                     gg.gas, gg.n, gg.hq, gg.nb);
         }, py::arg("temperature").noconvert(), py::arg("heat_atten_q").noconvert(),
            py::arg("dyn_heat_atten_q").noconvert(), py::arg("heat_inv_shift").noconvert(),
            py::arg("thermal_solid").noconvert(), py::arg("e_table"),
@@ -2245,6 +2353,8 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("rad_net").noconvert(), py::arg("rad_flux").noconvert(),
            py::arg("rad_amb").noconvert(), py::arg("rad_fluence").noconvert(),
            py::arg("fleck_enabled") = true,
+           py::arg("gas") = py::none(), py::arg("heat_absorb_q16") = py::none(),
+           py::arg("n_bulk") = py::none(),
            "One tick of the sweep over all ordinates. It OVERWRITES the four "
            "int64 planes — zeroed here before the first ordinate, so they hold "
            "the last run's values until the next run and the tile inspector can "
@@ -2254,7 +2364,11 @@ PYBIND11_MODULE(breach_physics, m) {
            "reference's undamped (f_plane=None) configuration, for the gates. "
            "amb_level is the PER-CELL ambient LEVEL plane (int64 (h, w), "
            "0 <= amb <= e_table[0]) the sweep radiates against — None means "
-           "E°[0] everywhere, the uniform thermal-v2-R4 configuration.");
+           "E°[0] everywhere, the uniform thermal-v2-R4 configuration. "
+           "gas (int32 (n_gases, h, w)), heat_absorb_q16 (int32 (n_gases,)) and "
+           "n_bulk (int32 (h, w)) — all or none — are the SMOKE TERM (P5a, design "
+           "v3 §6.3): a gas cell reads a = max(a, min(ONE, Σ hq·N >> 16)), 0 below "
+           "the N_EPS bulk floor, and d = max(d, a). None is the pre-P5a sweep.");
 
     // --- Raycaster ---
     py::class_<LightSource>(m, "LightSource")
@@ -3290,6 +3404,14 @@ PYBIND11_MODULE(breach_physics, m) {
                              py::array_t<int64_t, py::array::c_style> rad_flux_sweep,
                              py::array_t<int64_t, py::array::c_style> rad_amb_sweep,
                              py::array_t<int64_t, py::array::c_style> rad_fluence,
+                             // ray-engine-v2 P5a (design v3 §6.3): the per-gas
+                             // [gases.*] heat_absorb in Q16 (GasTable.
+                             // heat_absorb_q16) — the smoke term's table.
+                             // REQUIRED and noconvert like the sweep planes:
+                             // a caller that forgets it must fail loudly, not
+                             // silently run a smoke-blind sweep once P5b ships
+                             // non-zero values.
+                             py::array_t<int32_t, py::array::c_style> gas_heat_absorb_q16,
                              int32_t k_leak_q, int64_t rad_amb_vacuum_q,
                              py::object is_ambient,                 // BC
                              py::object rad_net,                    // P-R4
@@ -3393,6 +3515,13 @@ PYBIND11_MODULE(breach_physics, m) {
                 throw py::value_error(
                     "PhysicsEngine.step_tail: the radiation planes must be (h, w)");
             }
+            // P5a: one heat_absorb entry per gas plane.
+            if (gas_heat_absorb_q16.ndim() != 1 || gas_heat_absorb_q16.shape(0) != n_gases) {
+                throw py::value_error(
+                    "PhysicsEngine.step_tail: gas_heat_absorb_q16 must be (n_gases,) "
+                    "— one entry per gas plane");
+            }
+            const int32_t* ghq = gas_heat_absorb_q16.data();
 
             auto destroyed = self.step_tail(
                 rip, ripv, wd, wp, sol,
@@ -3400,7 +3529,7 @@ PYBIND11_MODULE(breach_physics, m) {
                 temp, hp, shift, fs, tsol, fr, tep,
                 gas_ptr, gcons, n_gases, o2_idx,
                 h, w, sim_time, amb, rnet, gen, t_amb_q,
-                haq, dhq, rns, rfs, ras, rfl, k_leak_q, rad_amb_vacuum_q);
+                haq, dhq, rns, rfs, ras, rfl, k_leak_q, rad_amb_vacuum_q, ghq);
             py::list result;
             for (const auto& [dy, dx] : destroyed) {
                 result.append(py::make_tuple(dy, dx));
@@ -3425,6 +3554,7 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("rad_flux_sweep").noconvert(),
            py::arg("rad_amb_sweep").noconvert(),
            py::arg("rad_fluence").noconvert(),
+           py::arg("gas_heat_absorb_q16").noconvert(),   // P5a (required)
            py::arg("k_leak_q"), py::arg("rad_amb_vacuum_q") = (int64_t)-1,
            py::arg("is_ambient") = py::none(),   // BC (default None = space map)
            py::arg("rad_net") = py::none(),      // P-R4 (default None = no fold)

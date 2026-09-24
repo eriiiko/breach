@@ -75,6 +75,51 @@ def _rand_scene(rng, h, w, *, bodies=True, hot=True):
 
 
 # --------------------------------------------------------------------------- #
+# P5a: gas cells that absorb (design 6.3). The scene vocabulary every gas gate
+# shares: four gas planes in the engine's roles -- a SMOKE-like absorber, a
+# STEAM-like weak one, and the BULK pair (O2, N2) that carries no optics -- the
+# bulk sum as n_bulk (the engine's own derivation), and the thermal-solid mask
+# as the cells whose material extinction is non-zero.
+# --------------------------------------------------------------------------- #
+O2_AMB, N2_AMB = 13763, 51773          # the P1 calibration split of one ambient cell
+GAS_HQ = [Q(5.0), Q(0.3), 0, 0]        # smoke, steam, o2, n2 -- smoke SATURATES at 0.2
+
+
+def _gas_planes(rng, h, w, ts):
+    """Random gas planes over a scene: smoke from none to thick (so a_gas spans 0,
+    thin, and the ONE cap), steam, the ambient bulk pair -- and some cells with NO
+    bulk (below N_EPS_RAW: a breached cell) and one at EXACTLY N_EPS_RAW (the floor's
+    edge, which must still absorb)."""
+    smoke = [[rng.choice([0, 0, Q(0.001), Q(0.02), Q(0.06), Q(0.27), ONE, 3 * ONE])
+              for _ in range(w)] for _ in range(h)]
+    steam = [[rng.choice([0, 0, Q(0.5)]) for _ in range(w)] for _ in range(h)]
+    o2 = [[O2_AMB] * w for _ in range(h)]
+    n2 = [[N2_AMB] * w for _ in range(h)]
+    for _ in range(max(1, (h * w) // 10)):
+        y, x = rng.randrange(h), rng.randrange(w)
+        o2[y][x] = n2[y][x] = 0                       # vacuum-like: no bulk
+    y, x = rng.randrange(h), rng.randrange(w)
+    o2[y][x], n2[y][x] = 0, R.N_EPS_RAW               # the floor's edge
+    gas = [smoke, steam, o2, n2]
+    n_bulk = [[o2[y][x] + n2[y][x] for x in range(w)] for y in range(h)]
+    return gas, list(GAS_HQ), n_bulk
+
+
+def _gas_kw(rng, a):
+    """The four sweep_q gas arguments for a scene whose thermal solids are a > 0."""
+    h, w = len(a), len(a[0])
+    ts = [[1 if a[y][x] > 0 else 0 for x in range(w)] for y in range(h)]
+    gas, hq, n_bulk = _gas_planes(rng, h, w, ts)
+    return dict(gas=gas, heat_absorb_q=hq, n_bulk=n_bulk, ts=ts)
+
+
+def _absorbing_gas_cells(res, ts):
+    """Cells that are GAS (not thermal solid) and absorb through the smoke term."""
+    return [(y, x) for y in range(len(ts)) for x in range(len(ts[0]))
+            if not ts[y][x] and res.a_eff[y][x] > 0]
+
+
+# --------------------------------------------------------------------------- #
 def gate1_conservation(fast=False):
     """G1. Sum(rad_net) + Sum(rad_flux) + Sum(rad_amb) == 0, exactly, in int64.
 
@@ -124,6 +169,31 @@ def gate1_conservation(fast=False):
                 f"net={sn:>16d} flux={sf:>15d} amb={sa:>15d} "
                 f"identity={ident}  each-nonzero={nonzero}  "
                 f"{'OK' if good else 'FAIL'}")
+    # P5a: GAS CELLS THAT ABSORB (design 6.3). The identity is structural -- the
+    # smoke term only changes WHICH a and d a cell reads -- so it must survive
+    # absorbing and emitting gas cells, bodies standing in smoke, cells below the
+    # N_EPS floor, the ONE cap, the leak on and off. NON-VACUOUS: a gas cell
+    # absorbs somewhere and books a non-zero rad_net.
+    for transport in ("shear", "step"):
+        for kleak in (0, K_LEAK):
+            for n_ord in (16, 12):
+                a, d, T, f = _rand_scene(rng, h, w)
+                gkw = _gas_kw(rng, a)
+                k = R.plane(h, w, kleak)
+                res = R.sweep_q(a, d, k, T, n_ord=n_ord, transport=transport,
+                                f_plane=f, **gkw)
+                sn, sf, sa = res.sums()
+                ident = sn + sf + sa
+                cells = _absorbing_gas_cells(res, gkw["ts"])
+                gas_booked = sum(1 for (y, x) in cells if res.rad_net[y][x] != 0)
+                nonzero = (sn != 0) and (sf != 0) and (sa != 0)
+                good = (ident == 0) and nonzero and gas_booked > 0
+                ok &= good
+                lines.append(
+                    f"  {transport:5s} k={kleak:5d} S{n_ord:2d} WITH SMOKE: "
+                    f"net={sn:>16d} flux={sf:>15d} amb={sa:>15d} "
+                    f"identity={ident}  absorbing gas cells={len(cells):>2} "
+                    f"(booking rad_net: {gas_booked:>2})  {'OK' if good else 'FAIL'}")
     return ok, lines
 
 
@@ -188,6 +258,38 @@ def gate2a_uniform_ambient(fast=False):
                  f"every T still at ambient) -> {nz_cold} nonzero cells, "
                  f"min rad_net = {cold_net} (a 293 K wall facing 0 K radiates; "
                  f"a HOISTED amb_m gives 0 everywhere)")
+    # P5a: SMOKE AT AMBIENT is still a per-cell exact fixed point -- an absorbing
+    # gas cell at ambient absorbs exactly the ambient stream it re-emits, by the
+    # same integers (its excess is zero), with bodies standing in the smoke. Holds
+    # BY CONSTRUCTION of the excess form, as the solid case does.
+    rng_g = random.Random(40)
+    gkw = _gas_kw(rng_g, a)
+    for transport in ("shear", "step"):
+        for n_ord in (16, 12):
+            res = R.sweep_q(a, d, k, T, n_ord=n_ord, transport=transport,
+                            f_plane=f, **gkw)
+            nz = sum(1 for p in (res.rad_net, res.rad_flux, res.rad_amb)
+                     for row in p for v in row if v != 0)
+            cells = _absorbing_gas_cells(res, gkw["ts"])
+            body_in_smoke = sum(1 for (y, x) in cells if res.d_eff[y][x] > res.a_eff[y][x])
+            good = (nz == 0) and len(cells) > 0 and body_in_smoke > 0
+            ok &= good
+            lines.append(f"  {transport:5s} S{n_ord:2d} WITH SMOKE: nonzero cells = {nz}  "
+                         f"(absorbing gas cells {len(cells)}, bodies standing in smoke "
+                         f"{body_in_smoke}, k=0.10, f=0.3)  {'OK' if good else 'FAIL'}")
+    # non-vacuity (d): ONE hot smoke cell in the same ambient scene breaks it --
+    # so the smoke term really is in the arithmetic above
+    (gy, gx) = _absorbing_gas_cells(
+        R.sweep_q(a, d, k, T, f_plane=f, **gkw), gkw["ts"])[0]
+    T_hot = [row[:] for row in T]
+    T_hot[gy][gx] = T_SRC_GAME << 16
+    res_h = R.sweep_q(a, d, k, T_hot, transport="shear", f_plane=f, **gkw)
+    nz_h = sum(1 for p in (res_h.rad_net, res_h.rad_flux, res_h.rad_amb)
+               for row in p for v in row if v != 0)
+    ok &= (nz_h > 0 and res_h.rad_net[gy][gx] < 0)
+    lines.append(f"  non-vacuity: one smoke cell at {T_SRC_GAME} game in the same scene -> "
+                 f"{nz_h} nonzero cells, its own rad_net = {res_h.rad_net[gy][gx]} "
+                 f"(hot smoke radiates)")
     return ok, lines
 
 
@@ -230,6 +332,43 @@ def gate2b_isothermal_box(fast=False):
                          f"{mi}   outer layer min = {min(outer)}   interior air "
                          f"max|rad_net| = {max(abs(v) for v in interior)}  "
                          f"{'OK' if mi == 0 else 'FAIL'}")
+    # P5a: the SAME box FILLED WITH SMOKE at T0 -- thin, thick and saturated cells,
+    # one below the N_EPS floor. A smoke cell in an isothermal cavity receives the
+    # walls' damped source on every ordinate and re-emits it by the same
+    # integers, so every INNER cell -- wall layer and smoke alike -- stays an exact
+    # zero with f < 1 forced on all of them.
+    ts = [[1 if a[y][x] > 0 else 0 for x in range(n)] for y in range(n)]
+    smoke = R.plane(n, n, 0)
+    o2 = R.plane(n, n, 0)
+    n2 = R.plane(n, n, 0)
+    T_f = [row[:] for row in T]
+    dens = (Q(0.02), Q(0.06), Q(0.27), ONE)
+    for y in range(2, n - 2):
+        for x in range(2, n - 2):
+            smoke[y][x] = dens[(y + x) % len(dens)]
+            o2[y][x], n2[y][x] = O2_AMB, N2_AMB
+            T_f[y][x] = T_SRC_GAME << 16
+    o2[2][2] = n2[2][2] = 0                         # one breached cell: no bulk
+    gkw = dict(gas=[smoke, R.plane(n, n, 0), o2, n2], heat_absorb_q=list(GAS_HQ),
+               n_bulk=[[o2[y][x] + n2[y][x] for x in range(n)] for y in range(n)],
+               ts=ts)
+    for transport in ("shear", "step"):
+        for n_ord in (16, 12):
+            res = R.sweep_q(a, d, k, T_f, n_ord=n_ord, transport=transport,
+                            f_plane=f, **gkw)
+            rn = res.rad_net
+            inner = [rn[y][x] for y in range(1, n - 1) for x in range(1, n - 1)]
+            outer = [rn[y][x] for y in range(n) for x in range(n)
+                     if y in (0, n - 1) or x in (0, n - 1)]
+            smoky = sum(1 for y in range(2, n - 2) for x in range(2, n - 2)
+                        if res.a_eff[y][x] > 0)
+            mi = max(abs(v) for v in inner)
+            good = (mi == 0) and (min(outer) < 0) and smoky > 0
+            ok &= good
+            lines.append(f"  {transport:5s} S{n_ord:2d} FILLED WITH SMOKE at {T_SRC_GAME}: "
+                         f"every inner cell max|rad_net| = {mi} over {smoky} absorbing "
+                         f"smoke cells   outer layer min = {min(outer)}  "
+                         f"{'OK' if good else 'FAIL'}")
     return ok, lines
 
 
@@ -265,6 +404,51 @@ def gate3_positivity(fast=False):
     for name, aa, dd, kk in cases:
         try:
             R.validate_planes(aa, dd, kk)
+            raised = False
+        except ValueError:
+            raised = True
+        ok &= raised
+        lines.append(f"  ingress rejects {name}: {'raised' if raised else 'ACCEPTED -- FAIL'}")
+    # P5a: positivity WITH SMOKE -- a_gas <= ONE by its cap and d = max(d, a) keep
+    # a + b <= ONE on every gas cell, so the stream stays non-negative.
+    worst_g = None
+    n_cells = 0
+    for transport in ("shear", "step"):
+        for kleak in (0, K_LEAK):
+            a, d, T, f = _rand_scene(rng, h, w)
+            gkw = _gas_kw(rng, a)
+            res = R.sweep_q(a, d, R.plane(h, w, kleak), T, transport=transport,
+                            f_plane=f, **gkw)
+            worst_g = res.min_stream if worst_g is None else min(worst_g, res.min_stream)
+            n_cells += len(_absorbing_gas_cells(res, gkw["ts"]))
+    ok &= (worst_g >= 0) and n_cells > 0
+    lines.append(f"  WITH SMOKE: min stream over four runs = {worst_g} "
+                 f"({n_cells} absorbing gas cells)  {'OK' if worst_g >= 0 else 'FAIL'}")
+    # ...and the gas extinction's own ingress rejections (validate_gas), each paired
+    # with the legal scene that must be accepted.
+    a2 = R.plane(2, 2, 0)
+    d2 = R.plane(2, 2, 0)
+    k2 = R.plane(2, 2, 0)
+    T2 = R.plane(2, 2, 0)
+    ts2 = R.plane(2, 2, 0)
+    g2 = [R.plane(2, 2, Q(0.5)), R.plane(2, 2, ONE)]
+    nb2 = R.plane(2, 2, ONE)
+    R.sweep_q(a2, d2, k2, T2, gas=g2, heat_absorb_q=[Q(1.0), R.HEAT_ABSORB_Q_MAX],
+              n_bulk=nb2, ts=ts2)                                    # must not raise
+    bad = [("heat_absorb < 0", dict(gas=g2, heat_absorb_q=[-1, 0], n_bulk=nb2, ts=ts2)),
+           ("heat_absorb > max", dict(gas=g2, heat_absorb_q=[R.HEAT_ABSORB_Q_MAX + 1, 0],
+                                      n_bulk=nb2, ts=ts2)),
+           ("one heat_absorb per plane", dict(gas=g2, heat_absorb_q=[0], n_bulk=nb2, ts=ts2)),
+           ("more planes than the headroom covers",
+            dict(gas=[R.plane(2, 2, 0)] * (R.N_GAS_PLANES_MAX + 1),
+                 heat_absorb_q=[0] * (R.N_GAS_PLANES_MAX + 1), n_bulk=nb2, ts=ts2)),
+           ("a gas plane of the wrong shape", dict(gas=[R.plane(2, 3, 0), g2[1]],
+                                                   heat_absorb_q=[0, 0], n_bulk=nb2, ts=ts2)),
+           ("gas without the thermal-solid mask", dict(gas=g2, heat_absorb_q=[0, 0],
+                                                       n_bulk=nb2))]
+    for name, kw in bad:
+        try:
+            R.sweep_q(a2, d2, k2, T2, **kw)
             raised = False
         except ValueError:
             raised = True
@@ -926,6 +1110,43 @@ def gate11_headroom(fast=False):
                  f"amb_m(S16) = {(R.E0 * (ONE // 16)) >> 16}; the stream cannot exceed "
                  f"the largest upstream source by more than one count per cell "
                  f"(critique 3 section 2e)")
+    # P5a: THE GAS DENSITY SUM -- the one new product. Its worst case is every
+    # plane the headroom argument covers at the door's maximum heat_absorb and the
+    # largest int32 density; the engine accumulates it in plain int64.
+    worst = R.gas_density_sum([R.INT32_MAX] * R.N_GAS_PLANES_MAX,
+                              [R.HEAT_ABSORB_Q_MAX] * R.N_GAS_PLANES_MAX)
+    lg = lambda v: math.log2(max(abs(v), 1))  # noqa: E731
+    good = worst < 2 ** 63
+    ok &= good
+    # ...and the bound is the right one: ONE more doubling of it would NOT fit, so
+    # the door's 4096 is the arithmetic's own limit, not a guess with slack in it.
+    doubled = R.gas_density_sum([R.INT32_MAX] * R.N_GAS_PLANES_MAX,
+                                [2 * R.HEAT_ABSORB_Q_MAX] * R.N_GAS_PLANES_MAX)
+    good = good and doubled >= 2 ** 63
+    ok &= good
+    lines.append(f"  gas density sum, {R.N_GAS_PLANES_MAX} planes x heat_absorb_q = "
+                 f"2^{lg(R.HEAT_ABSORB_Q_MAX):.0f} x N = INT32_MAX: 2^{lg(worst):.4f} "
+                 f"(< 2^63 required); at twice the door's bound it would be "
+                 f"2^{lg(doubled):.4f} (does not fit)  {'OK' if good else 'FAIL'}")
+    # and a smoke-filled room at the table top: a gas cell at a_gas = ONE is, to the
+    # stream, an a = 1 solid, so the per-cell bounds above must hold unchanged.
+    ts = R.plane(h, w, 0)
+    smoke = R.plane(h, w, 3 * ONE)
+    o2 = R.plane(h, w, O2_AMB)
+    n2 = R.plane(h, w, N2_AMB)
+    n_bulk = [[o2[y][x] + n2[y][x] for x in range(w)] for y in range(h)]
+    for transport in ("shear", "step"):
+        res = R.sweep_q(R.plane(h, w, 0), R.plane(h, w, 0), R.plane(h, w, K_LEAK), T,
+                        transport=transport, gas=[smoke, o2, n2],
+                        heat_absorb_q=[R.HEAT_ABSORB_Q_MAX, 0, 0], n_bulk=n_bulk, ts=ts)
+        opaque = all(v == ONE for row in res.a_eff for v in row)
+        good = (opaque and res.max_abs_net < 2 ** 46 and res.max_fluence < 2 ** 46
+                and res.max_product < 2 ** 63)
+        ok &= good
+        lines.append(f"  {transport:5s} a room of OPAQUE SMOKE at the table top (a_gas = ONE "
+                     f"everywhere: {opaque}): max|rad_net| = 2^{lg(res.max_abs_net):.1f}, "
+                     f"max fluence = 2^{lg(res.max_fluence):.1f}, max product = "
+                     f"2^{lg(res.max_product):.1f}  {'OK' if good else 'FAIL'}")
     return ok, lines
 
 
@@ -1034,6 +1255,234 @@ def gate12_damped_source_is_monotone(fast=False):
     return ok, lines
 
 
+def _smoke_row_scene(smoke_q, *, bulk=None, T_smoke=0, h=5, w=9):
+    """A hot source (a = 1, 1263 game) at x = 1, a full COLUMN of smoke cells at
+    x = 4 (every ordinate from the source to the right half crosses it), a cold
+    absorber (a = 1) at (h//2, 7). Everything else is transparent air. Returns
+    (a, d, k, T, gas kwargs, receiver)."""
+    a = R.plane(h, w, 0)
+    T = R.plane(h, w, 0)
+    for y in range(h):
+        a[y][1] = ONE
+        T[y][1] = T_SRC_GAME << 16
+    rcv = (h // 2, 7)
+    a[rcv[0]][rcv[1]] = ONE
+    ts = [[1 if a[y][x] > 0 else 0 for x in range(w)] for y in range(h)]
+    smoke = R.plane(h, w, 0)
+    nb = R.plane(h, w, ONE)
+    for y in range(h):
+        smoke[y][4] = smoke_q
+        T[y][4] = T_smoke << 16
+        if bulk is not None:
+            nb[y][4] = bulk
+    gkw = dict(gas=[smoke], heat_absorb_q=[Q(0.9)], n_bulk=nb, ts=ts)
+    return a, [row[:] for row in a], R.plane(h, w, 0), T, gkw, rcv
+
+
+def gate13_gas_extinction(fast=False):
+    """G13 (P5a, design 6.3): THE DENSITY LAW, THE N_EPS FLOOR, AND WHAT A GAS
+    CELL DOES TO THE STREAM.
+
+      (a) a_gas counts absorbers: k x the density is k x a_gas (within the k - 1
+          counts truncation can lose) up to the ONE cap, monotone in every plane,
+          and a NEGATIVE density absorbs nothing.
+      (b) TRANSMISSION: what thin smoke does not absorb continues down the stream.
+          A cold absorber behind a smoke column receives strictly less as the
+          smoke thickens, OPAQUE cold smoke is a perfect shield (the absorber books
+          exactly 0), and the smoke books what the absorber lost.
+      (c) THE N_EPS FLOOR: a cell with bulk N below N_EPS_RAW is INVISIBLE -- a
+          thick, HOT smoke column with no bulk neither absorbs nor emits (its
+          rad_net is 0, the absorber sees exactly the no-smoke stream); at
+          N_EPS_RAW exactly it absorbs again.
+      (d) a THERMAL SOLID ignores the gas in its pores: every plane identical with
+          and without smoke on a furniture cell (and the same smoke on air moves
+          them, so the comparison is not vacuous).
+      (e) the stamped total is a MAX: a body standing in OPAQUE smoke books no
+          rad_flux (the smoke took the stream), in thin smoke it books some.
+      (f) THE GAS L_q CHAIN (fleck_L_gas_q -- measured here, wired at P5b): at
+          unit capacity (c_v = 1, N_bulk = 1) it IS the solid chain at
+          thermal_mass 1, bucket for bucket; and while the cell is thin DENSITY
+          CANCELS -- L at k x (soot, bulk) equals L at (soot, bulk) to the chain's
+          truncation.
+
+    Breaks if: a second density factor is applied (the v2.4 min(N, N_AMB)/N_AMB
+    on top of the extinction -- design 6.3's double debit), the floor moves off
+    N_EPS_RAW or off the BULK count, thermal solids start taking the smoke term,
+    the body share is summed instead of MAXed, or the staged chain's order or its
+    reciprocals change.
+    """
+    lines, ok = [], True
+    hq = [Q(0.9), Q(0.3)]
+    # (a) the density law, as arithmetic
+    base = Q(0.013)
+    a1 = R.gas_extinction_q([base, 0], hq, ONE)
+    prop = True
+    for kk in (2, 3, 5, 8):
+        ak = R.gas_extinction_q([kk * base, 0], hq, ONE)
+        prop &= (0 <= ak - kk * a1 <= kk - 1)
+    mono = True
+    prev = -1
+    for n_s in range(0, 2 * ONE, ONE // 37):
+        v = R.gas_extinction_q([n_s, Q(0.4)], hq, ONE)
+        mono &= (v >= prev)
+        prev = v
+    capped = R.gas_extinction_q([10 * ONE, 10 * ONE], hq, ONE) == ONE
+    neg = (R.gas_extinction_q([-ONE, Q(0.4)], hq, ONE)
+           == R.gas_extinction_q([0, Q(0.4)], hq, ONE))
+    good = prop and mono and capped and neg and a1 > 0
+    ok &= good
+    lines.append(f"  (a) a_gas(k x N) - k x a_gas(N) in [0, k-1] for k = 2,3,5,8 (a_gas(N) = "
+                 f"{a1}): {prop};  monotone in density: {mono};  capped at ONE: {capped};  "
+                 f"a negative density absorbs nothing: {neg}  {'OK' if good else 'FAIL'}")
+    # (b) transmission through a smoke column
+    got = []
+    for dens in (0, Q(0.05), Q(0.2), Q(0.5), 2 * ONE):
+        a, d, k, T, gkw, rcv = _smoke_row_scene(dens)
+        res = R.sweep_q(a, d, k, T, **gkw)
+        smoke_net = sum(res.rad_net[y][4] for y in range(len(a)))
+        got.append((dens, res.a_eff[0][4], res.rad_net[rcv[0]][rcv[1]], smoke_net,
+                    res.identity()))
+    rcv_nets = [g[2] for g in got]
+    strictly = all(rcv_nets[i + 1] < rcv_nets[i] for i in range(len(rcv_nets) - 1))
+    shield = rcv_nets[-1] == 0 and got[-1][1] == ONE
+    books = all(g[3] >= 0 for g in got) and got[0][3] == 0 and all(g[3] > 0 for g in got[1:])
+    exact = all(g[4] == 0 for g in got)
+    good = strictly and shield and books and exact
+    ok &= good
+    lines.append(f"  (b) a cold absorber behind a smoke column, source {T_SRC_GAME} game:")
+    for dens, a_g, rn, sn, _i in got:
+        lines.append(f"        smoke density {dens / ONE:5.2f} (a_gas {a_g / ONE:.4f}): "
+                     f"absorber rad_net {rn:>9d}   smoke column books {sn:>9d}")
+    lines.append(f"      strictly less behind thicker smoke: {strictly};  opaque cold smoke "
+                 f"is a perfect shield (absorber books 0): {shield};  the smoke books a "
+                 f"positive absorption: {books};  identity exact: {exact}  "
+                 f"{'OK' if good else 'FAIL'}")
+    # (c) the N_EPS floor
+    a, d, k, T, gkw0, rcv = _smoke_row_scene(0)
+    clear = R.sweep_q(a, d, k, T, **gkw0)
+    a, d, k, T_hot, gkw_v, rcv = _smoke_row_scene(2 * ONE, bulk=R.N_EPS_RAW - 1,
+                                                  T_smoke=5000)
+    vac = R.sweep_q(a, d, k, T_hot, **gkw_v)
+    silent = all(vac.rad_net[y][4] == 0 for y in range(len(a)))
+    invisible = all(getattr(vac, p) == getattr(clear, p)
+                    for p in ("rad_net", "rad_flux", "rad_amb", "rad_fluence"))
+    a, d, k, T_hot, gkw_e, rcv = _smoke_row_scene(2 * ONE, bulk=R.N_EPS_RAW, T_smoke=5000)
+    edge = R.sweep_q(a, d, k, T_hot, **gkw_e)
+    edge_live = edge.a_eff[0][4] == ONE and edge.rad_net[0][4] != 0
+    good = invisible and silent and edge_live
+    ok &= good
+    lines.append(f"  (c) a thick smoke column at 5000 game with bulk N = N_EPS_RAW - 1: its "
+                 f"rad_net is 0 on every cell ({silent}) and all four planes equal the "
+                 f"clear-air run's ({invisible}); at N = N_EPS_RAW it absorbs and radiates "
+                 f"again (rad_net {edge.rad_net[0][4]}): {edge_live}  "
+                 f"{'OK' if good else 'FAIL'}")
+    # (d) thermal solids ignore their gas
+    rng = random.Random(1313)
+    a, d, T, f = _rand_scene(rng, 7, 8)
+    for y in range(7):
+        for x in range(8):
+            if a[y][x] == 0:
+                a[y][x] = Q(0.5)                   # every cell a thermal solid...
+                d[y][x] = max(d[y][x], a[y][x])
+    ts = [[1] * 8 for _ in range(7)]
+    k = R.plane(7, 8, K_LEAK)
+    smoke = R.plane(7, 8, 2 * ONE)
+    nb = R.plane(7, 8, ONE)
+    plain = R.sweep_q(a, d, k, T, f_plane=f)
+    pores = R.sweep_q(a, d, k, T, f_plane=f, gas=[smoke], heat_absorb_q=[Q(0.9)],
+                      n_bulk=nb, ts=ts)
+    same = all(getattr(plain, p) == getattr(pores, p)
+               for p in ("rad_net", "rad_flux", "rad_amb", "rad_fluence"))
+    ts_air = [row[:] for row in ts]
+    ts_air[3][4] = 0                              # ... but ONE of them is air
+    a_air = [row[:] for row in a]
+    a_air[3][4] = 0
+    d_air = [row[:] for row in d]
+    plain_air = R.sweep_q(a_air, d_air, k, T, f_plane=f)
+    smoky_air = R.sweep_q(a_air, d_air, k, T, f_plane=f, gas=[smoke],
+                          heat_absorb_q=[Q(0.9)], n_bulk=nb, ts=ts_air)
+    moved = plain_air.rad_net != smoky_air.rad_net
+    good = same and moved
+    ok &= good
+    lines.append(f"  (d) smoke in the pores of 56 thermal solids moves nothing: {same};  the "
+                 f"same smoke on ONE air cell moves the books: {moved}  "
+                 f"{'OK' if good else 'FAIL'}")
+    # (e) a body in smoke: the stamped total is a MAX
+    fl = []
+    for dens in (Q(0.05), 2 * ONE):
+        a, d, k, T, gkw, rcv = _smoke_row_scene(dens)
+        d[2][4] = ONE                               # a marine standing in the smoke
+        res = R.sweep_q(a, d, k, T, **gkw)
+        fl.append((dens, res.a_eff[2][4], res.d_eff[2][4], res.rad_flux[2][4]))
+    thin_ok = fl[0][3] > 0 and fl[0][2] == ONE and fl[0][1] < ONE
+    opaque_ok = fl[1][3] == 0 and fl[1][1] == ONE and fl[1][2] == ONE
+    # a PARTIAL body (d = 0.5, a small drone) in thin smoke is where a MAX and a
+    # capped SUM part ways: the stamped total stays 0.5, the body keeps 0.5 - a_gas
+    a, d, k, T, gkw, rcv = _smoke_row_scene(Q(0.05))
+    d[2][4] = Q(0.5)
+    res = R.sweep_q(a, d, k, T, **gkw)
+    part_ok = (res.d_eff[2][4] == Q(0.5) and res.a_eff[2][4] == fl[0][1]
+               and res.rad_flux[2][4] > 0)
+    good = thin_ok and opaque_ok and part_ok
+    ok &= good
+    lines.append(f"  (e) a marine (d = ONE) in thin smoke (a_gas {fl[0][1] / ONE:.4f}) books "
+                 f"rad_flux {fl[0][3]}; in opaque smoke (a_gas 1) it books {fl[1][3]}; a "
+                 f"half-opaque body in the thin smoke keeps d = {res.d_eff[2][4] / ONE:.4f} "
+                 f"(a MAX, not {(Q(0.5) + fl[0][1]) / ONE:.4f}): {part_ok}  "
+                 f"{'OK' if good else 'FAIL'}")
+    # (f) the gas L_q chain
+    stride = 7 if fast else 1
+    unit = all(R.fleck_L_gas_q((4 * b) << 16, a_q, ONE, c_v_q=ONE, n_floor_q=655)
+               == R.fleck_L_solid_q((4 * b) << 16, a_q, 0)
+               for a_q in (ONE, Q(0.37), Q(0.9)) for b in range(0, R.E_TABLE_SIZE, stride))
+    c_v_q = R.quant(R.C_V_LIVE)
+    n_floor_q = R.quant(R.N_FLOOR_HEAT_LIVE)
+    # The tolerance is the arithmetic's own: a_gas truncates to a whole count, so
+    # the thinner cell's L may differ from its denser twin's by up to one count in
+    # a_k (relative 1/a_k); the two reciprocals and two floors add < 1e-5. Twice
+    # that is the bound -- a change of LAW (a second density factor) moves L by
+    # the density ratio itself, 2x or 4x, so the gate cannot mistake one for it.
+    worst_rel, worst_tol, cancels = 0.0, 0.0, True
+    for T_game in (300, 1263, 5000, 15996):
+        for n_b in (ONE, Q(0.5), Q(0.2)):
+            soot = Q(0.2) * n_b // ONE
+            L1 = R.fleck_L_gas_q(T_game << 16, R.gas_extinction_q([soot], [Q(0.9)], n_b),
+                                 n_b, c_v_q=c_v_q, n_floor_q=n_floor_q)
+            for kk in (2, 4):
+                a_k = R.gas_extinction_q([soot // kk], [Q(0.9)], n_b // kk)
+                Lk = R.fleck_L_gas_q(T_game << 16, a_k, n_b // kk, c_v_q=c_v_q,
+                                     n_floor_q=n_floor_q)
+                rel, tol = abs(Lk - L1) / L1, 2.0 / a_k
+                cancels &= rel <= tol
+                if rel > worst_rel:
+                    worst_rel, worst_tol = rel, tol
+    # ...and THE CAPACITY LAW itself, L = a_gas * ex / (N_bulk * c_v), against the
+    # float formula at the LIVE c_v (its one integer form c_v_q), over bulk counts
+    # above and BELOW the n_floor_heat floor (where N stops shrinking). Pins what
+    # the two comparisons above cannot see: both cancel c_v.
+    worst_law = 0.0
+    for T_game in (300, 1263, 5000, 15996):
+        ex = R.E[R.e_bucket_of(T_game << 16)] - R.E[0]
+        for a_q in (ONE, Q(0.2)):
+            for n_b in (ONE, Q(0.3), n_floor_q, n_floor_q // 4):
+                L = R.fleck_L_gas_q(T_game << 16, a_q, n_b, c_v_q=c_v_q,
+                                    n_floor_q=n_floor_q)
+                n_eff = max(n_b, n_floor_q) / ONE
+                want = (a_q / ONE) * ex / (n_eff * (c_v_q / ONE))
+                worst_law = max(worst_law, abs(L - want) / want)
+    law = worst_law < 1e-4
+    good = unit and cancels and law
+    ok &= good
+    lines.append(f"  (f) the gas chain at unit capacity IS the solid chain at his = 0, bucket "
+                 f"for bucket, three absorptivities: {unit};  thin cell (soot fraction 0.2, "
+                 f"h = 0.9), bulk N from 1.0 down to 0.05: L's worst relative change "
+                 f"{worst_rel:.2e} against its truncation bound 2/a_gas = "
+                 f"{worst_tol:.2e} (density cancels): {cancels};  L against a*ex/(max(N, "
+                 f"n_floor) * c_v) at the live c_v, above and below the floor: worst "
+                 f"relative {worst_law:.2e} (< 1e-4): {law}  {'OK' if good else 'FAIL'}")
+    return ok, lines
+
+
 GATES = [
     ("G1  conservation", gate1_conservation),
     ("G2a uniform ambient fixed point", gate2a_uniform_ambient),
@@ -1048,6 +1497,8 @@ GATES = [
     ("G10 stability and equilibrium on the new forms", gate10_stability),
     ("G11 headroom", gate11_headroom),
     ("G12 the damped source is monotone in T", gate12_damped_source_is_monotone),
+    ("G13 the gas extinction: density law, N_EPS floor, transmission",
+     gate13_gas_extinction),
 ]
 
 
