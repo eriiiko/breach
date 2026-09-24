@@ -142,6 +142,31 @@ cap_real, the heat currency e_solid_deposit_sum / e_ring_pin_sum already use
 (Q16.16 capacity x Q16.16 temperature) -- on a gas cell here and on a thermal
 solid in fold_pass1_solid. Exact per cell in both media: the withheld step is
 a whole number of temperature LSBs.
+
+THE TWO OTHER WAYS OUT OF THE BOUNDARY ARE COUNTED TOO (P5c follow-up,
+2026-09-24; design 8.4 "bounded AND counted"). Both were uncounted at P5c, and
+neither is a truncation, so neither is covered by 8.4's one-LSB-per-cell bound:
+  * `e_rad_boundary_export_sum` -- the rad_net the sweep booked on a gas cell
+    OUTSIDE the accountable set (the ambient ring, an open-vacuum breach). The
+    fold never lands it (the cell's energy is not in the books, and Pass 0 pins
+    it back to ambient every tick), so it leaves with the boundary: `rn << 16`,
+    signed (+ the boundary absorbed from the stream, - it emitted into it). The
+    radiative twin of the face flux's vacuum/ring OUTFLOW export.
+  * `e_rad_floor_drop_sum` -- on an accountable gas cell whose bulk N is below
+    n_floor_heat, the chain divides by the floor, so the cell lands only about
+    N / n_floor of its rad_net. The whole unlanded remainder of the conversion,
+    `(rn << 16) - (T_after - T_before) * cap_real`, is booked on exactly those
+    cells (signed: a net-EMITTING thin cell pays less than it radiated, and the
+    counter goes negative -- energy the stream carries that the cell never
+    paid). The radiative twin of Pass 2's e_cond_cap_sum (conduction's own
+    capacity-floor term).
+Both are in the heat currency of e_rad_clamp_drop_sum and, like it, are NOT
+terms of the #54 identity: neither ever touched `gas_energy`, so a term there
+would break it by its own amount. With them, design 8.4's boundary reads
+    sum(rad_net) << 16 == landed + e_rad_clamp_drop_sum
+                          + e_rad_boundary_export_sum + e_rad_floor_drop_sum
+                          + the conversions' rounding (+ the counted rails)
+and the rounding is what the one-LSB-per-cell bound covers.
 """
 from __future__ import annotations
 
@@ -1313,6 +1338,14 @@ class FoldCounters:
     # e_gas_rail_sum), in the gas books' own currency N * T_abs.
     e_gas_deposit_sum: int = 0
     e_gas_rail_sum: int = 0
+    # P5c follow-up (design 8.4): the two other ways out of the sweep->fold
+    # boundary, in e_rad_clamp_drop_sum's heat currency, both SIGNED (module
+    # docstring). rad_net on a gas cell outside the accountable set, exported
+    # with it, never folded:
+    e_rad_boundary_export_sum: int = 0
+    # the floored chain's unlanded remainder on an accountable gas cell whose
+    # bulk N is below n_floor: (rn << 16) - (T_after - T_before) * cap_real
+    e_rad_floor_drop_sum: int = 0
 
     def zero(self):
         return (self.t_max_phys_hits == 0 and self.t_low_rail_hits == 0
@@ -1421,24 +1454,38 @@ def fold_pass1_gas(T, Eg, rad_net, rad_fluence, n_bulk, ts, counters: FoldCounte
     A cell with rn == 0 is not touched at all -- not even its mirror -- which is
     what keeps a smoke-free scene bit-identical to the pre-P5c fold (every gas
     cell's rn is 0 where a_gas == 0).
+
+    P5c follow-up (design 8.4, the module docstring): nothing leaves the
+    boundary uncounted. A NON-accountable gas cell (outside `acct`: the ambient
+    ring, an open breach) with rn != 0 is still never landed, but its rn is
+    booked as exported, `e_rad_boundary_export_sum += rn << 16`; and on an
+    accountable cell whose bulk N is below n_floor_q the conversion's whole
+    unlanded remainder, `(rn << 16) - (T_after - T_before) * cap_real`, goes to
+    `e_rad_floor_drop_sum`. Counters only: no landing moves.
     """
     h, w = len(T), len(T[0])
     for y in range(h):
         for x in range(w):
             if ts[y][x]:
                 continue
-            if acct is not None and not acct[y][x]:
-                continue
             if held is not None and held[y][x]:
                 continue
             rn = rad_net[y][x]
             if rn == 0:
+                continue
+            if acct is not None and not acct[y][x]:
+                # outside the books: exported with the boundary, never folded
+                counters.e_rad_boundary_export_sum += rn << 16
                 continue
             nb = n_bulk[y][x] if n_bulk[y][x] > 0 else 0
             dT = gas_rad_dT_q(rn, n_bulk[y][x], c_v_q=c_v_q, n_floor_q=n_floor_q)
             e = Eg[y][x]
             t_before = gas_mirror_q(e, nb, t_amb_q)
             t_target = sat_add_q16(t_before, dT)
+            if n_bulk[y][x] < n_floor_q:
+                # the floored chain lands ~N / n_floor of rn: the rest, counted
+                counters.e_rad_floor_drop_sum += (
+                    (rn << 16) - (t_target - t_before) * cap_real_q(False, 0, nb, c_v_q))
             if clamp_enabled:
                 t_cap = e_inv_q(rad_fluence[y][x], table)
                 ceiling = t_cap if t_cap > t_before else t_before

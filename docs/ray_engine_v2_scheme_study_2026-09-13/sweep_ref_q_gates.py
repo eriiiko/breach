@@ -1836,12 +1836,19 @@ def gate15_gas_fold(fast=False):
           the staged chain's declared precision on gas (_chain_bound) -- so
           sum(rad_net) - sum(landed) - e_rad_clamp_drop_sum is bounded by the sum
           of those, and nothing else leaves the boundary uncounted.
+      (g) THE BOUNDARY'S OTHER TWO EXITS, COUNTED (P5c follow-up): below
+          n_floor the chain lands only ~N / n_floor of rn -- per cell, rn << 16
+          is exactly the landing + the clamp's drop + e_rad_floor_drop_sum's
+          share, and that share exceeds the chain's declared precision (a
+          dilution, not a rounding); a gas cell OUTSIDE the accountable set is
+          untouched and its whole rn << 16 goes to e_rad_boundary_export_sum.
 
     Breaks if: the gas branch scales dE instead of stepping N * (T_target -
     T_before) (a misses the target), drains or mints the residual (a), books a
     new group or skips e_gas_deposit_sum (b), clamps a cooling step or clamps
     before the conversion (c), converts through anything but the staged chain in
-    the fold's currency, or is disconnected (d, f).
+    the fold's currency, or is disconnected (d, f); or a floored cell's
+    remainder or a boundary cell's rad_net leaves the fold uncounted (g).
     """
     lines, ok = [], True
     live = R.E_LIVE
@@ -1917,6 +1924,47 @@ def gate15_gas_fold(fast=False):
             and n_clamped > 0 and n_free > 0 and n_letter_drain > 0 and over > 0
             and c_off.rad_clamp_hits == 0 and c_off.e_rad_clamp_drop_sum == 0)
     ok &= good
+    # (g) P5c follow-up: the two other ways out of the boundary, counted -- on
+    # (a)'s cells. BELOW THE FLOOR, per cell, the sweep's rn << 16 is exactly the
+    # landing plus the clamp's drop plus the floor's remainder, and the remainder
+    # is NOT a rounding (it exceeds the chain's declared precision); at or above
+    # it nothing is booked there. OUTSIDE THE BOOKS (an acct mask), a cell is
+    # untouched and its rn << 16 is exported, while every other cell folds
+    # exactly as without the mask.
+    floor_want = 0
+    floor_exact = True
+    n_floored = n_undiluted = 0
+    for i in range(n):
+        N, t0, r = nb[0][i], T0[0][i], rn[0][i]
+        if N >= R.N_FLOOR_Q_LIVE:
+            continue
+        n_floored += 1
+        cap = R.cap_real_q(False, 0, N)
+        dT = R.gas_rad_dT_q(r, N)
+        t_after = R.sat_add_q16(t0, dT)
+        rem = (r << 16) - (t_after - t0) * cap
+        floor_want += rem
+        ceiling = max(R.e_inv_q(phi[0][i], live), t0)
+        t_land = min(t_after, ceiling)
+        floor_exact &= ((r << 16) == (t_land - t0) * cap + (t_after - t_land) * cap + rem)
+        if abs(rem) > _chain_bound(r, N, cap, dT):
+            n_undiluted += 1
+    floor_ok = (c.e_rad_floor_drop_sum == floor_want and floor_exact and n_floored > 0
+                and n_undiluted > 0 and c_off.e_rad_floor_drop_sum == floor_want)
+    mask_rng = random.Random(20260926)
+    acct = [[1 if mask_rng.random() < 0.7 else 0 for _ in range(n)]]
+    T_m, E_m = [r[:] for r in T0], [r[:] for r in E0]
+    c_m = R.FoldCounters()
+    R.fold_pass1_gas(T_m, E_m, rn, phi, nb, ts, c_m, acct=acct, table=live)
+    out_cells = [i for i in range(n) if not acct[0][i]]
+    export_want = sum(rn[0][i] << 16 for i in out_cells)
+    export_ok = (c_m.e_rad_boundary_export_sum == export_want and len(out_cells) > 0
+                 and all(T_m[0][i] == T0[0][i] and E_m[0][i] == E0[0][i] for i in out_cells)
+                 and all(T_m[0][i] == T[0][i] and E_m[0][i] == Eg[0][i]
+                         for i in range(n) if acct[0][i])
+                 and c.e_rad_boundary_export_sum == 0)
+    good_g = floor_ok and export_ok
+    ok &= good_g
     lines.append(f"  (a) {n} random accountable gas cells, LIVE table: {n_clamped} clamped, "
                  f"{n_free} not; every clamped mirror lands on max(T_before, E_inv(Phi)): "
                  f"{target_ok}; every other on sat(T_before + dT): {step_ok}; E mod N "
@@ -1931,6 +1979,16 @@ def gate15_gas_fold(fast=False):
     lines.append(f"  (c) T_new <= max(T_before, E_inv(Phi)) on every gas cell: {mp_ok}; with "
                  f"the clamp off {over} cells exceed it (no hits, no drop booked)  "
                  f"{'OK' if good else 'FAIL'}")
+    lines.append(f"  (g) the boundary's other two exits, counted: on the {n_floored} cells "
+                 f"below n_floor, rn << 16 == landed + clamp drop + floor remainder per "
+                 f"cell: {floor_exact}; e_rad_floor_drop_sum = {c.e_rad_floor_drop_sum} "
+                 f"== the sum: {c.e_rad_floor_drop_sum == floor_want}, the clamp's switch "
+                 f"leaves it alone: {c_off.e_rad_floor_drop_sum == floor_want}; the "
+                 f"remainder exceeds the chain's declared precision on {n_undiluted} of "
+                 f"them (a dilution, not a rounding); {len(out_cells)} cells OUTSIDE the "
+                 f"books are untouched and exported whole (e_rad_boundary_export_sum = "
+                 f"{c_m.e_rad_boundary_export_sum}), every other cell folds as unmasked: "
+                 f"{export_ok}  {'OK' if good_g else 'FAIL'}")
     # (d) hot smoke cools in a sealed room, the whole tick, live table
     hh, ww = (7, 9) if fast else (9, 12)
     ticks = 24 if fast else 72
