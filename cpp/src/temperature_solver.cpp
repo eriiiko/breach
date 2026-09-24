@@ -262,11 +262,11 @@ void TemperatureSolver::step(
             // clamp at the T_MAX_PHYS rail, so the order is observable there
             // and the CUDA twin pins the identical order.
             //
-            // THERMAL SOLIDS ONLY: only a tile with heat_atten > 0 can ever
-            // accumulate a nonzero rad_net (air neither absorbs nor emits), and
-            // in the shipped material table every such tile is a thermal solid;
-            // the mask test is belt-and-braces so a hypothetical absorbing gas
-            // cell can never take the solid bit-shift path.
+            // THE SOLID BRANCH: a thermal solid converts its rad_net through its
+            // own `>> heat_inv_shift`. Since P5c a GAS cell has a branch of its
+            // own below (its smoke term makes it absorb and emit, design v3
+            // §6.3); the mask keeps the two from ever crossing — a gas cell
+            // never takes the bit-shift path, a solid never the seam.
             if (rad_net != nullptr && ts[i]) {
                 const int64_t rn = rad_net[i];
                 if (rn != 0) {
@@ -315,6 +315,12 @@ void TemperatureSolver::step(
                         const int32_t ceiling =
                             (t_cap > t_before_rad) ? t_cap : t_before_rad;
                         if (temperature[i] > ceiling) {
+                            // P5c (design v3 §2.8 / §8.4): the energy the clamp
+                            // WITHHOLDS, priced at the cell's real capacity —
+                            // the same capacity the landing below is booked at,
+                            // so landing + drop is the unclamped step exactly.
+                            e_rad_clamp_drop_sum +=
+                                ((int64_t)temperature[i] - ceiling) * cap_real_[i];
                             temperature[i] = ceiling; ++rad_clamp_hits;
                         }
                     }
@@ -354,6 +360,82 @@ void TemperatureSolver::step(
                     // this thermal solid, post both rails.
                     e_solid_deposit_sum +=
                         ((int64_t)temperature[i] - t_before_rad) * cap_real_[i];
+                }
+            }
+            // ---- P5c: THE GAS BRANCH OF THE RADIATION FOLD ----------------
+            // Design v3 §2.8 / §6.3; the transcription of sweep_ref_q.py::
+            // fold_pass1_gas (gate G15), held to it bit for bit by
+            // tests/test_temperature_gas_radiation.py. An ACCOUNTABLE gas cell
+            // whose smoke term made the sweep book a nonzero rad_net takes it
+            // into the conserved field, in order:
+            //   dT       = sign(rn) · deposit_dT_wide_i64(|rn|, recip_N, recip_cv)
+            //   T_before = mirror_q(E, N)            (the STORED energy's mirror)
+            //   T_target = min(sat(T_before + dT), max(T_before, E°⁻¹(Φ)))
+            //   dE       = N · (T_target − T_before)
+            //   deposit_railed(dE), e_gas_deposit_sum += dE
+            // * THE CONVERSION is §2.8's STAGED chain — magnitude then sign, so
+            //   +x and −x lose equal magnitude (the shr_round0 symmetry idiom) —
+            //   in this pass's OWN gas currency: N floored at n_floor_q exactly
+            //   as the heat deposit below floors it, the per-cell Newton
+            //   reciprocal, and `recip_cv`, c_v's one exact inverse. It is the
+            //   SAME chain the sweep's Fleck gas arm prices this cell's loss in
+            //   (radiation_sweep.h fleck_L_gas_q, PhysicsEngine::gas_capacity_q),
+            //   so the damping and the landing are one arithmetic.
+            // * NO min(N, N_AMB)/N_AMB factor (design §6.3): the density law
+            //   already lives in a_gas, so rad_net IS the absorbed amount —
+            //   applying the heat deposit's factor as well would debit the
+            //   stream in full and destroy the un-absorbed remainder.
+            // * THE CLAMP IN ITS ENERGY FORM (§2.8): never `temperature[i] =`
+            //   (CLAUDE.md "Gas temperature is a mirror": a bare write moves no
+            //   books and goes VACUOUS). N·(T_target − T_before) lands the
+            //   mirror EXACTLY on T_target, because the mirror is a floor-division
+            //   of E by N. The design's letter, N·(T_target + t_amb) − E, lands on
+            //   the same mirror but also DRAINS the cell's sub-LSB residual E mod
+            //   N (up to N − 1 raw counts) on every clamped tick — the drip class
+            //   arc #54 exists to kill — so this form keeps it: the clamp only
+            //   ever WITHHOLDS part of a radiative gain, dE is never negative on
+            //   a clamped cell. G15 (a) measures both forms.
+            // * THE WITHHELD STEP IS COUNTED (§8.4) in `e_rad_clamp_drop_sum`,
+            //   priced at cap_real_ like the solid branch above: a whole number
+            //   of temperature LSBs times the real capacity, so it is exact.
+            // * Cooling below ambient is not railed here: the once-per-tick
+            //   recovery rails (eos_solver.cpp step 7) own T_MIN, and radiation
+            //   alone cannot drive a cell below ambient (§6.3; gate 14 pins it
+            //   for the Fleck-damped step).
+            // * A cell with rn == 0 is untouched — not even its mirror — so a
+            //   smoke-free scene (a_gas == 0, hence rn == 0, on every gas cell)
+            //   folds bit-identically to the pre-P5c pass.
+            // Energy form only: with gas_energy == nullptr (the pre-#54 direct
+            // binding path) a gas cell's rad_net is not folded, as before P5c.
+            if (rad_net != nullptr && e_on && !ts[i] && acct(i)) {
+                const int64_t rn = rad_net[i];
+                if (rn != 0) {
+                    const int64_t nb = n_books(i);                 // the books' N
+                    int32_t N_q = (n_bulk != nullptr) ? n_bulk[i] : atmosphere[i];
+                    if (N_q < n_floor_q) N_q = n_floor_q;          // the chain's floor
+                    const int32_t recip_N_q = reciprocal_q16(N_q);
+                    const int64_t mag = deposit_dT_wide_i64(
+                        (rn < 0) ? -rn : rn, recip_N_q, recip_cv);
+                    const int64_t dT = (rn < 0) ? -mag : mag;
+                    const int32_t t_before =
+                        gas_energy::mirror_q(gas_energy[i], nb, t_amb_q);
+                    int32_t t_target = sat_add_q16_i64(t_before, dT);
+                    if (rad_fluence != nullptr && e_table != nullptr) {
+                        const int32_t t_cap = e_inv_q(e_table, rad_fluence[i]);
+                        const int32_t ceiling =
+                            (t_cap > t_before) ? t_cap : t_before;
+                        if (t_target > ceiling) {
+                            e_rad_clamp_drop_sum +=
+                                ((int64_t)t_target - ceiling) * cap_real_[i];
+                            t_target = ceiling; ++rad_clamp_hits;
+                        }
+                    }
+                    const int64_t dE = nb * ((int64_t)t_target - (int64_t)t_before);
+                    gas_energy::deposit_railed(
+                        gas_energy, temperature, i, dE, nb,
+                        t_amb_q, t_max_phys_q, &e_gas_rail_sum,
+                        &t_max_phys_hits);
+                    e_gas_deposit_sum += dE;
                 }
             }
             int32_t deposit = heat[i];

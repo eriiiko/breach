@@ -253,8 +253,8 @@ void RadiationSweep::run(const int32_t* temperature,
             "arm; PhysicsEngine::gas_capacity_q() on the live path)");
     }
     // The ACTIVE gases: a zero heat_absorb contributes exactly 0 to the sum, so
-    // its plane is never read (every shipped row is 0.0 until P5c — the live
-    // sweep reads no gas plane at all, and its cost does not move).
+    // its plane is never read (since P5c the live sweep reads exactly one, the
+    // smoke plane: every other shipped row is 0.0).
     int act_g[N_GAS_PLANES_MAX];
     int32_t act_hq[N_GAS_PLANES_MAX];
     int n_act = 0;
@@ -338,8 +338,8 @@ void RadiationSweep::run(const int32_t* temperature,
             // recip_cv — through §2.8's staged chain. a_gas > 0 implies an
             // active gas and a bulk count >= N_EPS_RAW, so n_bulk is live here.
             // A gas cell that absorbs nothing emits no excess and keeps
-            // L = 0, f == 2^24 — which is also every gas cell of the shipped
-            // game, where every heat_absorb is 0.0.
+            // L = 0, f == 2^24 — which is every smoke-free gas cell of the
+            // shipped game (only smoke absorbs, since P5c).
             L = fleck_L_gas_q(ex, a_gas, n_bulk[i], n_floor_q, recip_cv);
         }
         // T_abs > 0 always in the engine (T_MIN = -292 game keeps T_abs >= 1);

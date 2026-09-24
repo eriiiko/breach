@@ -245,8 +245,8 @@ public:
     //                      (a_gas > 0): L = fleck_L_gas_q(ex, a_gas, n_bulk,
     //                      n_floor_q, recip_cv), f = fleck_f_q24(T_abs, L). A
     //                      gas cell that absorbs nothing keeps f == 2^24.
-    //   Nothing downstream consumes a gas cell's rad_net until P5c opens the
-    //   temperature fold's `ts` mask; every shipped heat_absorb is 0.0.
+    //   Since P5c the temperature fold's GAS branch consumes a gas cell's
+    //   rad_net (TemperatureSolver Pass 1), and the shipped smoke absorbs.
     // Throws std::invalid_argument on an unsupported (n_ordinates, transport),
     // a k_leak_q outside [0, ONE], a null amb_level or one outside
     // [0, e_table[0]], a cell violating 0 <= a <= d <= ONE (the ingress

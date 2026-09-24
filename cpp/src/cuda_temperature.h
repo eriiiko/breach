@@ -110,6 +110,8 @@ int64_t temperature_step(
     //   9 e_solid_deposit_sum (P-G5, Pass 1 landing on thermal solids, signed)
     //  10 e_solid_cond_sum    (P-G5, Pass 2 landing on thermal solids, signed)
     //  11 rad_clamp_hits      (T5b, the Pass-1 clamp's engagement COUNT)
+    //  12 e_rad_clamp_drop_sum (P5c, the clamp's withheld energy, >= 0 —
+    //                          APPENDED, so no pinned index moved)
     // T5b step 7: slots 3 (e_cool_sum) and 12 (e_thermostat_sum) are
     // DELETED with Pass 3, and every survivor below them RENUMBERED. The
     // indices are pinned positional and physics_engine.cpp folds them by
@@ -122,7 +124,10 @@ int64_t temperature_step(
     // Pass-1 deposit and Pass-2 conduction sum land in `gas_energy` through
     // the seam (gas_energy.h — device-compatible, FP_HD) instead of the
     // T-form law; nullptr -> the pre-#54 T-form law, bit for bit. `t_amb_q`
-    // is T_AMB_K raw, only read when gas_energy is supplied.
+    // is T_AMB_K raw, only read when gas_energy is supplied. P5c: with it,
+    // the radiation fold's GAS branch runs too (an accountable gas cell's
+    // rad_net through the staged chain, clamped on the deposit), the CPU
+    // twin's block verbatim.
     int64_t* gas_energy = nullptr,
     int32_t t_amb_q = 0,
     // P-G5: out-param for `solid_energy_books_sum` — a SNAPSHOT (ASSIGNED,
@@ -153,7 +158,9 @@ int64_t temperature_step(
 // C_THERMOSTAT are DELETED with Pass 3 -- a REMOVAL, which renumbers the
 // survivors (design v3 / L2 names this exact hazard), so the enum in the
 // .cu and the by-index fold in physics_engine.cpp are edited with it.
-constexpr int TEMPERATURE_ENERGY_SLOTS = 12;
+// P5c: 12 -> 13 -- slot 12 = `e_rad_clamp_drop_sum`, APPENDED at the end, so
+// every pinned index keeps its meaning (the rule: append, never renumber).
+constexpr int TEMPERATURE_ENERGY_SLOTS = 13;
 
 // Backend selection (S1 gate + integration). When true, PhysicsEngine::step_tail
 // runs temperature on the GPU instead of the CPU solver. Defaults false so the
