@@ -274,6 +274,55 @@ def test_sweep_rows_are_still_readable_after_a_whole_simulation_step():
           f"f = {r.fleck_f:.6f}")
 
 
+def test_a_gas_cell_shows_the_extinction_and_f_the_sweep_actually_uses():
+    """PROPERTY (P5c): on a GAS cell the inspector shows what the sweep READS --
+    `a` is the smoke term's extinction as a MAX with the material's (air's is
+    0), `d` the stamped total as a MAX with it, and `f` the pre-pass's GAS arm
+    priced in the fold's own currency -- not the material's a = 0 and the solid
+    arm's f = 1 it showed before. Checked against the integer reference's own
+    law (gas_extinction_q, fleck_f_gas_q) on a live engine with the SHIPPED
+    smoke coefficient, on a hot smoky cell; a smoke-free gas cell still reads a
+    = 0 and f = 1; a thermal solid keeps its material's a and the solid arm.
+
+    BREAKS IF: the readout shows the material planes on a gas cell, forms the
+    smoke term or f with a second copy of the law, or prices the gas arm in a
+    currency other than PhysicsEngine.gas_capacity_q().
+    """
+    sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
+    sys.path.insert(0, str(ROOT / "tests"))
+    import breach_physics as bp
+    from _radiation_sweep_harness import R
+    from level_loader import load as load_level
+    from simulation import Simulation, gas_fixed
+    sim = Simulation(load_level("playground"), seed=1, breach_physics=bp,
+                     enable_recorder=False)
+    g = sim.gmap
+    air = g._gas_energy_accountable()
+    ys, xs = np.nonzero(air)
+    y, x = int(ys[len(ys) // 2]), int(xs[len(xs) // 2])
+    y2, x2 = int(ys[len(ys) // 3]), int(xs[len(xs) // 3])
+    g.gas[SMOKE][y, x] = gas_fixed.quantize_scalar(0.02)
+    sel = np.zeros_like(air)
+    sel[y, x] = True
+    g.seed_gas_temperature(sel, 3000 << 16)                  # hot: the arm damps it
+    hq = [int(v) for v in g.gases.heat_absorb_q16]
+    assert hq[SMOKE] > 0, "the shipped smoke absorbs nothing"
+    n_bulk = int(g.gas[O2][y, x]) + int(g.gas[INERT_N2][y, x])
+    a_gas_q = R.gas_extinction_q([int(v) for v in g.gas[:, y, x]], hq, n_bulk)
+    assert 0 < a_gas_q < 65536
+    r = pack_hover_readout(g, x, y, KELVIN_FN)
+    assert r.atten_a == pytest.approx(a_gas_q / 65536.0, abs=1e-12)
+    assert r.a_gas == r.atten_a and r.atten_d >= r.atten_a
+    f_want = R.fleck_f_gas_q(3000 << 16, a_gas_q, n_bulk, table=R.E_LIVE)[0]
+    assert r.fleck_f == f_want / float(1 << 24) and r.fleck_f < 1.0
+    assert "smoke" in r.lines[11]
+    r0 = pack_hover_readout(g, x2, y2, KELVIN_FN)             # smoke-free air
+    assert r0.atten_a == 0.0 and r0.fleck_f == 1.0 and r0.a_gas == 0.0
+    ts_y, ts_x = (int(v[0]) for v in np.nonzero(g.thermal_solid))
+    rs = pack_hover_readout(g, ts_x, ts_y, KELVIN_FN)
+    assert rs.atten_a == pytest.approx(int(g.heat_atten_q[ts_y, ts_x]) / 65536.0)
+
+
 def test_vacuum_tile_labelled_vacuum():
     g = _stub_gmap()
     g.is_vacuum[0, 0] = True

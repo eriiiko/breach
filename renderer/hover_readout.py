@@ -54,6 +54,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
 
+import numpy as np
+
 from simulation import atmosphere_fixed as _atmo_fx
 from simulation import optics_fixed as _optics_fx
 from simulation import wall_fixed as _wall_fx
@@ -96,9 +98,14 @@ class HoverReadout:
     gas_energy: float = 0.0       # gas_energy raw / FP_ONE_F**2, unit "N.K"
     # Ray-engine-v2 P1 (design v3 §4.2, critique 1j): the shadow sweep's rows.
     phi: float = 0.0              # rad_fluence, dequantized: heat units absorbed-from per tick
-    atten_a: float = 0.0          # heat_atten_q dequantized: the material extinction a
-    atten_d: float = 0.0          # dyn_heat_atten_q dequantized: the stamped extinction d >= a
-    fleck_f: float = float("nan")  # the Fleck factor f (Q24 shown as a fraction); nan without an engine
+    # P5c: `atten_a` / `atten_d` are the EFFECTIVE extinction the sweep reads --
+    # on a gas cell the smoke term joins the material's, a = max(a, a_gas),
+    # d = max(d, a) -- not just the material's planes (without an engine bound
+    # the smoke term cannot be formed and they fall back to the material's).
+    atten_a: float = 0.0          # the effective extinction a the sweep reads
+    atten_d: float = 0.0          # the effective stamped extinction d >= a
+    a_gas: float = float("nan")   # P5c: the smoke term alone (0 on a thermal solid); nan without an engine
+    fleck_f: float = float("nan")  # the Fleck factor f the pre-pass forms (solid OR gas arm); nan without an engine
     t_cap: float = float("nan")    # E_inv(Phi) in game units (the clamp's ceiling); nan without an engine
     lines: List[str] = field(default_factory=list)   # panel-ready text rows
 
@@ -193,18 +200,48 @@ def pack_hover_readout(gmap, tx: int, ty: int,
     # value — which is the whole reason the conductor's wipe was removed.
     phi_raw = int(gmap.rad_fluence[ty, tx])
     phi = phi_raw / TEMP_SCALE
-    atten_a = _optics_fx.dequantize(gmap.heat_atten_q[ty, tx]).item()
-    atten_d = _optics_fx.dequantize(gmap.dyn_heat_atten_q[ty, tx]).item()
+    a_mat_q = int(gmap.heat_atten_q[ty, tx])
+    d_mat_q = int(gmap.dyn_heat_atten_q[ty, tx])
+    a_eff_q, d_eff_q = a_mat_q, d_mat_q
+    a_gas = float("nan")
     fleck_f = float("nan")
     t_cap = float("nan")
     eng = getattr(gmap, "_physics_engine", None)
     t_amb_fn = getattr(gmap, "_gas_energy_t_amb_raw", None)
+    ts_plane = getattr(gmap, "thermal_solid", None)
+    is_ts = bool(ts_plane[ty, tx]) if ts_plane is not None else a_mat_q > 0
     if eng is not None and t_amb_fn is not None and hasattr(eng, "emissive"):
-        f_q24 = int(eng.radiation.fleck_f_solid_q24(
-            eng.emissive, int(gmap.temperature[ty, tx]), int(gmap.heat_atten_q[ty, tx]),
-            int(gmap.heat_inv_shift[ty, tx]), int(t_amb_fn())))
+        t_amb_q = int(t_amb_fn())
+        T_q = int(gmap.temperature[ty, tx])
+        # P5c (design v3 §6.3): a GAS cell's extinction is the smoke term as a
+        # MAX with its material's, and its f is the pre-pass's GAS arm priced in
+        # the fold's own currency -- formed by the sweep's own FP_HD functions
+        # (RadiationSweep.gas_extinction_q16 / fleck_f_gas_q24), never here.
+        a_gas_q = 0
+        gas_tbl = getattr(gmap, "gases", None)
+        if not is_ts and gas_tbl is not None:
+            dens = np.ascontiguousarray(gmap.gas[:, ty, tx].astype(np.int32))
+            n_bulk = int(sum(int(gmap.gas[gi][ty, tx])
+                             for gi in np.flatnonzero(gas_tbl.conservative)))
+            a_gas_q = int(eng.radiation.gas_extinction_q16(
+                dens, np.ascontiguousarray(gas_tbl.heat_absorb_q16), n_bulk))
+            a_eff_q = max(a_mat_q, a_gas_q)
+            d_eff_q = max(d_mat_q, a_eff_q)
+            if a_gas_q > 0:
+                n_floor_q, _c_v_q, recip_cv = eng.gas_capacity_q()
+                f_q24 = int(eng.radiation.fleck_f_gas_q24(
+                    eng.emissive, T_q, a_gas_q, n_bulk, int(n_floor_q), int(recip_cv),
+                    t_amb_q))
+            else:
+                f_q24 = 1 << 24                     # no absorber: no excess to damp
+        else:
+            f_q24 = int(eng.radiation.fleck_f_solid_q24(
+                eng.emissive, T_q, a_mat_q, int(gmap.heat_inv_shift[ty, tx]), t_amb_q))
+        a_gas = _optics_fx.dequantize(np.int32(a_gas_q)).item()
         fleck_f = f_q24 / float(1 << 24)
         t_cap = int(eng.emissive.e_inv_q(phi_raw)) / TEMP_SCALE
+    atten_a = _optics_fx.dequantize(np.int32(a_eff_q)).item()
+    atten_d = _optics_fx.dequantize(np.int32(d_eff_q)).item()
 
     lines = [
         f"tile ({tx}, {ty})  {material}",
@@ -218,7 +255,8 @@ def pack_hover_readout(gmap, tx: int, ty: int,
         f"water: {water_depth:6.3f} m",
         f"wall_hp: {wall_hp:7.2f}  F: {fuel_frac:5.3f}",
         f"gas_energy: {gas_energy:10.3f} N.K",
-        f"Phi: {phi:12.1f} u/t   a: {atten_a:5.3f}  d: {atten_d:5.3f}",
+        f"Phi: {phi:12.1f} u/t   a: {atten_a:5.3f}  d: {atten_d:5.3f}"
+        + (f"  (smoke {a_gas:5.3f})" if (not is_ts and a_gas == a_gas) else ""),
         f"f: {fleck_f:9.6f}   E_inv(Phi): {t_cap:8.1f} u",
     ]
     return HoverReadout(tx=int(tx), ty=int(ty), material=material,
@@ -228,7 +266,7 @@ def pack_hover_readout(gmap, tx: int, ty: int,
                         water_depth=water_depth, wall_hp=wall_hp,
                         fuel_frac=fuel_frac, gas_energy=gas_energy,
                         phi=phi, atten_a=atten_a, atten_d=atten_d,
-                        fleck_f=fleck_f, t_cap=t_cap,
+                        a_gas=a_gas, fleck_f=fleck_f, t_cap=t_cap,
                         lines=lines)
 
 
