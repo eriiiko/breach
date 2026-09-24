@@ -514,7 +514,8 @@ PYBIND11_MODULE(breach_physics, m) {
              py::object is_vacuum, int64_t vac_level,
              py::object fleck_out,
              py::object gas, py::object heat_absorb_q16,
-             py::object n_bulk) -> py::tuple {
+             py::object n_bulk,
+             int32_t n_floor_q, int64_t recip_cv) -> py::tuple {
               auto [T, h, w]      = get_2d_const(temperature);
               auto [aq, h2, w2]   = get_2d_const(heat_atten_q);
               auto [dq, h3, w3]   = get_2d_const(dyn_heat_atten_q);
@@ -585,7 +586,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   T, aq, dq, his, ts, e_table.table(), amb, vac, vac_level,
                   t_amb_q, k_leak_q, transport, n_ordinates, h, w,
                   rn, rf, ra, rl, fleck_enabled, fo, &s_min, &s_max,
-                  gg.gas, gg.n, gg.hq, gg.nb);
+                  gg.gas, gg.n, gg.hq, gg.nb, n_floor_q, recip_cv);
               return py::make_tuple(s_min, s_max, launches);
           },
           py::arg("temperature").noconvert(), py::arg("heat_atten_q").noconvert(),
@@ -601,15 +602,17 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("fleck_out") = py::none(),
           py::arg("gas") = py::none(), py::arg("heat_absorb_q16") = py::none(),
           py::arg("n_bulk") = py::none(),
+          py::arg("n_floor_q") = 0, py::arg("recip_cv") = (int64_t)0,   // P5b
           "P4 isolated: ONE radiation sweep on the GPU (the per-call path "
           "PhysicsEngine.step_tail dispatches), bit-identical to "
           "RadiationSweep.run on the same arguments. amb_level None + is_vacuum "
           "None is the uniform E0 door; amb_level None + is_vacuum given DERIVES "
           "the ambient on the device (derive_ambient's twin). gas / "
           "heat_absorb_q16 / n_bulk (int32, all or none) are the smoke term (P5a); "
-          "only the gases with a non-zero coefficient cross the bus. Overwrites "
-          "the four int64 planes (untouched on an ingress rejection, which raises "
-          "ValueError). Returns (min_stream, max_stream, launches).");
+          "only the gases with a non-zero coefficient cross the bus; with them "
+          "n_floor_q / recip_cv (both > 0) are the gas arm's currency (P5b). "
+          "Overwrites the four int64 planes (untouched on an ingress rejection, "
+          "which raises ValueError). Returns (min_stream, max_stream, launches).");
     m.def("cuda_radiation_sweep_resident",
           [](int n_env, int h, int w,
              std::uintptr_t d_temperature, std::uintptr_t d_heat_atten_q,
@@ -621,6 +624,7 @@ PYBIND11_MODULE(breach_physics, m) {
              std::uintptr_t d_t_amb_q,
              std::uintptr_t d_gas, int n_gases,
              std::uintptr_t d_heat_absorb_q16, std::uintptr_t d_n_bulk,
+             int32_t n_floor_q, int64_t recip_cv,
              int transport, int n_ordinates, bool fleck_enabled,
              std::uintptr_t d_outflow, std::uintptr_t d_amb_m,
              std::uintptr_t d_ex_cell, std::uintptr_t d_f_q24,
@@ -644,6 +648,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   reinterpret_cast<const int32_t*>(d_gas), n_gases,
                   reinterpret_cast<const int32_t*>(d_heat_absorb_q16),
                   reinterpret_cast<const int32_t*>(d_n_bulk),
+                  n_floor_q, recip_cv,
                   transport, n_ordinates, fleck_enabled,
                   reinterpret_cast<int64_t*>(d_outflow),
                   reinterpret_cast<int64_t*>(d_amb_m),
@@ -665,6 +670,7 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("d_t_amb_q"),
           py::arg("d_gas"), py::arg("n_gases"),
           py::arg("d_heat_absorb_q16"), py::arg("d_n_bulk"),
+          py::arg("n_floor_q"), py::arg("recip_cv"),
           py::arg("transport"), py::arg("n_ordinates"), py::arg("fleck_enabled"),
           py::arg("d_outflow"), py::arg("d_amb_m"), py::arg("d_ex_cell"),
           py::arg("d_f_q24"), py::arg("d_a_eff"), py::arg("d_d_eff"),
@@ -674,10 +680,11 @@ PYBIND11_MODULE(breach_physics, m) {
           "(CuPy .data.ptr uintptr_t; 0 == nullptr for d_amb_level/d_is_vacuum), "
           "(N, h, w)-shaped. P5a: d_gas (N, n_gases, h, w) / d_heat_absorb_q16 "
           "(n_gases,) / d_n_bulk (N, h, w) are the smoke term, all three or all 0 "
-          "(with n_gases 0); d_a_eff / d_d_eff are required (N, h, w) int32 "
-          "scratch. Launch only: no malloc, no transfer, no sync — the caller "
-          "synchronizes and reads the (N, 5) counter block. Returns the launch "
-          "count.");
+          "(with n_gases 0); P5b: n_floor_q / recip_cv are the gas arm's "
+          "currency, two host scalars, both > 0 with the smoke term (0 without); "
+          "d_a_eff / d_d_eff are required (N, h, w) int32 scratch. Launch only: "
+          "no malloc, no transfer, no sync — the caller synchronizes and reads "
+          "the (N, 5) counter block. Returns the launch count.");
 
     // CUDA-S3: the GPU water solver. The backend flag switches PhysicsEngine::
     // step_water's per-substep call between the CPU and GPU pipe-model solver
@@ -2228,6 +2235,29 @@ PYBIND11_MODULE(breach_physics, m) {
                 py::arg("t_amb_q"),
              "The solid-branch Fleck factor (Q24) for one cell, exactly as the "
              "sweep's pre-pass forms it — the tile inspector's `f` row.")
+        // P5b: the GAS arm's twin of the above, one cell, through the very
+        // FP_HD functions the pre-pass calls (fleck_L_gas_q, fleck_f_q24) — so
+        // gate 0 can hold the arm to sweep_ref_q.fleck_f_gas_q over the whole
+        // table, and a readout can show a gas cell's `f`.
+        .def_static("fleck_f_gas_q24",
+             [](const EmissiveTable& tbl, int32_t T_q, int32_t a_gas_q,
+                int32_t n_bulk, int32_t n_floor_q, int64_t recip_cv,
+                int32_t t_amb_q) {
+                 const int64_t* e = tbl.table();
+                 int64_t ex = e[e_bucket_of(T_q)] - e[0];
+                 if (ex < 0) ex = 0;
+                 const int64_t L = fleck_L_gas_q(ex, a_gas_q, n_bulk, n_floor_q,
+                                                 recip_cv);
+                 int64_t T_abs = (int64_t)T_q + (int64_t)t_amb_q;
+                 if (T_abs < 1) T_abs = 1;
+                 return fleck_f_q24(T_abs, L);
+             }, py::arg("e_table"), py::arg("T_q"), py::arg("a_gas_q"),
+                py::arg("n_bulk"), py::arg("n_floor_q"), py::arg("recip_cv"),
+                py::arg("t_amb_q"),
+             "The GAS-arm Fleck factor (Q24) for one gas cell whose smoke term "
+             "absorbs a_gas_q, exactly as the sweep's pre-pass forms it (P5b): "
+             "L priced in the temperature fold's gas currency (n_floor_q, "
+             "recip_cv — PhysicsEngine.gas_capacity_q()).")
         .def("derive_ambient", [](const RadiationSweep& self,
                                   py::array_t<bool, py::array::c_style> is_vacuum,
                                   const EmissiveTable& e_table,
@@ -2301,7 +2331,8 @@ PYBIND11_MODULE(breach_physics, m) {
                        py::array_t<int64_t, py::array::c_style> rad_fluence,
                        bool fleck_enabled,
                        py::object gas, py::object heat_absorb_q16,
-                       py::object n_bulk) {
+                       py::object n_bulk,
+                       int32_t n_floor_q, int64_t recip_cv) {
             auto [T, h, w]      = get_2d_const(temperature);
             auto [aq, h2, w2]   = get_2d_const(heat_atten_q);
             auto [dq, h3, w3]   = get_2d_const(dyn_heat_atten_q);
@@ -2343,7 +2374,7 @@ PYBIND11_MODULE(breach_physics, m) {
                                              heat_absorb_q16, n_bulk, h, w);
             self.run(T, aq, dq, his, ts, e_table.table(), amb, t_amb_q, k_leak_q,
                      transport, n_ordinates, h, w, rn, rf, ra, rl, fleck_enabled,
-                     gg.gas, gg.n, gg.hq, gg.nb);
+                     gg.gas, gg.n, gg.hq, gg.nb, n_floor_q, recip_cv);
         }, py::arg("temperature").noconvert(), py::arg("heat_atten_q").noconvert(),
            py::arg("dyn_heat_atten_q").noconvert(), py::arg("heat_inv_shift").noconvert(),
            py::arg("thermal_solid").noconvert(), py::arg("e_table"),
@@ -2355,6 +2386,10 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("fleck_enabled") = true,
            py::arg("gas") = py::none(), py::arg("heat_absorb_q16") = py::none(),
            py::arg("n_bulk") = py::none(),
+           // P5b: the gas arm's currency (PhysicsEngine.gas_capacity_q()'s
+           // n_floor_q and recip_cv) — REQUIRED > 0 with the gas group: the
+           // default 0 is refused there, so a caller that forgets it is loud.
+           py::arg("n_floor_q") = 0, py::arg("recip_cv") = (int64_t)0,
            "One tick of the sweep over all ordinates. It OVERWRITES the four "
            "int64 planes — zeroed here before the first ordinate, so they hold "
            "the last run's values until the next run and the tile inspector can "
@@ -2368,7 +2403,12 @@ PYBIND11_MODULE(breach_physics, m) {
            "gas (int32 (n_gases, h, w)), heat_absorb_q16 (int32 (n_gases,)) and "
            "n_bulk (int32 (h, w)) — all or none — are the SMOKE TERM (P5a, design "
            "v3 §6.3): a gas cell reads a = max(a, min(ONE, Σ hq·N >> 16)), 0 below "
-           "the N_EPS bulk floor, and d = max(d, a). None is the pre-P5a sweep.");
+           "the N_EPS bulk floor, and d = max(d, a). None is the pre-P5a sweep. "
+           "With the group, n_floor_q and recip_cv (both > 0) are the temperature "
+           "fold's gas currency (PhysicsEngine.gas_capacity_q()), in which the "
+           "Fleck pre-pass's GAS ARM (P5b, design v3 §2.8) damps every absorbing "
+           "gas cell: L = deposit_dT_wide_i64((a_gas·ex) >> 16, "
+           "reciprocal_q16(max(N, n_floor_q)), recip_cv).");
 
     // --- Raycaster ---
     py::class_<LightSource>(m, "LightSource")
@@ -3302,6 +3342,18 @@ PYBIND11_MODULE(breach_physics, m) {
         // gas_energy Q32 currency, reset per step_water_tail call.
         .def_readonly("e_water_evac_export_sum",
                       &PhysicsEngine::e_water_evac_export_sum)
+        // ray-engine-v2 P5b (design v3 §2.8 / §6.3): the gas currency step_tail
+        // hands the sweep's gas Fleck arm — derived in physics_engine.cpp
+        // (/fp:strict) from this engine's own temperature solver dials.
+        .def("gas_capacity_q", [](const PhysicsEngine& e) {
+                 const PhysicsEngine::GasCapacityQ g = e.gas_capacity_q();
+                 return py::make_tuple(g.n_floor_q, g.c_v_q, g.recip_cv);
+             },
+             "(n_floor_q, c_v_q, recip_cv): THE GAS CURRENCY — quantize("
+             "temperature.n_floor_heat), quantize(temperature.c_v) and "
+             "make_recip(c_v_q / 65536), the integers the temperature fold's "
+             "gas deposit divides by and the sweep's gas Fleck arm prices a gas "
+             "cell in (P5b).")
         .def_property_readonly("atmos",
             [](PhysicsEngine& e) -> AtmosphereSolver& { return e.atmos; },
             py::return_value_policy::reference_internal)
@@ -3409,8 +3461,8 @@ PYBIND11_MODULE(breach_physics, m) {
                              // heat_absorb_q16) — the smoke term's table.
                              // REQUIRED and noconvert like the sweep planes:
                              // a caller that forgets it must fail loudly, not
-                             // silently run a smoke-blind sweep once P5b ships
-                             // non-zero values.
+                             // silently run a smoke-blind sweep once non-zero
+                             // values ship (P5c or later).
                              py::array_t<int32_t, py::array::c_style> gas_heat_absorb_q16,
                              int32_t k_leak_q, int64_t rad_amb_vacuum_q,
                              py::object is_ambient,                 // BC

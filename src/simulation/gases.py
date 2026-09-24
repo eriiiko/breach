@@ -37,7 +37,7 @@ Ray-engine-v2 P5a (docs/ray_engine_v2_design_v3_2026-09-15.md §6.3) adds
 ``heat_absorb``: the gas's HEAT extinction per unit of its density, quantized to
 ``heat_absorb_q16`` and read by the radiation sweep on every gas cell (the density
 law: what thin smoke does not absorb continues down the stream). DORMANT — 0.0 on
-every shipped row until P5b opens the temperature fold's gas branch.
+every shipped row until P5c opens the temperature fold's gas branch.
 """
 from __future__ import annotations
 
@@ -201,7 +201,7 @@ class GasTable:
         #     density is heat_absorb 10, and physical.
         # Stored as a contiguous int32 ARRAY (not a tuple like the beam's): the
         # engine takes it by pointer every tick (PhysicsEngine.step_tail).
-        # Every shipped row is 0.0 until P5b opens the Pass-1 fold's gas branch —
+        # Every shipped row is 0.0 until P5c opens the Pass-1 fold's gas branch —
         # until then nothing consumes a gas cell's rad_net, so a non-zero value
         # would take radiation out of the stream with no book to land in.
         heat_absorb_q16 = []

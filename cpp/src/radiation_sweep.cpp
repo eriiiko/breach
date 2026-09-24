@@ -33,7 +33,10 @@
 // where a, d are the EFFECTIVE planes (P5a, design §6.3): on a GAS cell the
 // smoke term joins the material extinction, a = max(a, a_gas) with
 // a_gas = min(ONE, Σ_g heat_absorb_q16[g]·max(0, N_g) >> 16) (0 below the
-// N_EPS bulk floor), and d = max(d, a); a thermal solid keeps its own.
+// N_EPS bulk floor), and d = max(d, a); a thermal solid keeps its own. The
+// Fleck factor's L has TWO ARMS: a thermal solid's material emission through
+// its heat_inv_shift, and (P5b) a gas cell's smoke-term emission through the
+// temperature fold's own gas currency (fleck_L_gas_q, radiation_sweep.h).
 //
 // A boundary cell additionally books into its own rad_amb every share of its
 // i_out that leaves the grid (+) and every fa/fb it gathered from the virtual
@@ -199,7 +202,8 @@ void RadiationSweep::run(const int32_t* temperature,
                          int64_t* rad_fluence, bool fleck_enabled,
                          const int32_t* gas, int n_gases,
                          const int32_t* heat_absorb_q16,
-                         const int32_t* n_bulk) const {
+                         const int32_t* n_bulk,
+                         int32_t n_floor_q, int64_t recip_cv) const {
     using fixedpoint::FP_ONE;
     using fixedpoint::FP_SHIFT;
 
@@ -236,8 +240,20 @@ void RadiationSweep::run(const int32_t* temperature,
             "RadiationSweep::run: n_gases outside [0, N_GAS_PLANES_MAX] — the "
             "gas density sum's int64 headroom is argued for at most 16 planes");
     }
+    // P5b: the gas arm's CURRENCY rides with the group. Both are the fold's
+    // own positive integers (n_floor_heat > 0, c_v > 0); a zero here is a
+    // caller that forgot them, and it would price every gas cell's L at 0 —
+    // the arm silently undamped — so it is refused, as the reference's
+    // validate_gas_capacity refuses it.
+    if (gas_given && (n_floor_q <= 0 || recip_cv <= 0)) {
+        throw std::invalid_argument(
+            "RadiationSweep::run: the gas group needs the temperature fold's gas "
+            "currency — n_floor_q (quantize(n_floor_heat)) and recip_cv "
+            "(make_recip(c_v_q / 65536)) must both be > 0 (design v3 §2.8's gas "
+            "arm; PhysicsEngine::gas_capacity_q() on the live path)");
+    }
     // The ACTIVE gases: a zero heat_absorb contributes exactly 0 to the sum, so
-    // its plane is never read (every shipped row is 0.0 until P5b — the live
+    // its plane is never read (every shipped row is 0.0 until P5c — the live
     // sweep reads no gas plane at all, and its cost does not move).
     int act_g[N_GAS_PLANES_MAX];
     int32_t act_hq[N_GAS_PLANES_MAX];
@@ -299,12 +315,14 @@ void RadiationSweep::run(const int32_t* temperature,
         // Transcribes sweep_ref_q.py::gas_extinction_plane / effective_extinction.
         int32_t a_eff = heat_atten_q[i];
         int32_t d_eff = dyn_heat_atten_q[i];
+        int32_t a_gas = 0;                  // the smoke term's own extinction
         if (n_act > 0 && !thermal_solid[i]) {
             int64_t sum = 0;
             for (int j = 0; j < n_act; ++j) {
                 sum += gas_density_term(act_hq[j], gas[(size_t)act_g[j] * (size_t)n + (size_t)i]);
             }
-            a_eff = gas_effective_a(a_eff, gas_extinction_finish(sum, n_bulk[i]), false);
+            a_gas = gas_extinction_finish(sum, n_bulk[i]);
+            a_eff = gas_effective_a(a_eff, a_gas, false);
             d_eff = gas_effective_d(d_eff, a_eff);
         }
         a_eff_[i] = a_eff;
@@ -312,16 +330,17 @@ void RadiationSweep::run(const int32_t* temperature,
         int64_t L = 0;
         if (thermal_solid[i]) {
             L = fleck_L_solid_q(ex, heat_atten_q[i], heat_inv_shift[i]);
-        } else {
-            // GAS: the arm is still L = 0, so f is exactly 2^24 — also on a
-            // gas cell that ABSORBS through the smoke term since P5a. P5b fills
-            // it (design §2.8 / §6.3), reference first: the same excess through
-            // the STAGED wide chain, fixedpoint::deposit_dT_wide_i64(
-            // (a_eff·ex) >> 16, recip_n, recip_cv) — two narrows, declared to
-            // differ from the heat deposit's one-narrow chain by at most one
-            // LSB (sweep_ref_q.py::fleck_L_gas_q is that chain, transcribed and
-            // measured by p5a_gas_stiffness_study.py, and called by no pre-pass).
-            L = 0;
+        } else if (a_gas > 0) {
+            // THE GAS ARM (P5b, design §2.8 / §6.3; sweep_ref_q.py's
+            // fleck_prepass): a gas cell whose smoke term absorbs is damped on
+            // that term's excess, priced in the temperature fold's own gas
+            // currency — N floored at n_floor_q, reciprocal_q16 per cell,
+            // recip_cv — through §2.8's staged chain. a_gas > 0 implies an
+            // active gas and a bulk count >= N_EPS_RAW, so n_bulk is live here.
+            // A gas cell that absorbs nothing emits no excess and keeps
+            // L = 0, f == 2^24 — which is also every gas cell of the shipped
+            // game, where every heat_absorb is 0.0.
+            L = fleck_L_gas_q(ex, a_gas, n_bulk[i], n_floor_q, recip_cv);
         }
         // T_abs > 0 always in the engine (T_MIN = -292 game keeps T_abs >= 1);
         // the floor at 1 is the runner's own A7 floor, so a direct caller with

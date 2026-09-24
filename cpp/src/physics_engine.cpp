@@ -28,6 +28,20 @@
 #include <cassert>     // EOS P3 GPU-backend-retirement guards
 #include <stdexcept>   // S8a Path A: run_substeps_resident's loud-fail throws
 
+// ray-engine-v2 P5b (design v3 §2.8 / §6.3): THE GAS CURRENCY the sweep's gas
+// Fleck arm prices a gas cell in — see physics_engine.h. Three kit calls on the
+// temperature fold's own two dials, exactly as TemperatureSolver::step() makes
+// them (temperature_solver.cpp: `n_floor_q` / `c_v_q` at the top of step(),
+// `recip_cv` in Pass 1), so the arm reads the fold's currency, not a second one.
+PhysicsEngine::GasCapacityQ PhysicsEngine::gas_capacity_q() const {
+    GasCapacityQ g;
+    g.n_floor_q = fixedpoint::quantize((double)this->temperature.n_floor_heat);
+    g.c_v_q     = fixedpoint::quantize(
+        (this->temperature.c_v > 0.0f) ? (double)this->temperature.c_v : 1.0);
+    g.recip_cv  = fixedpoint::make_recip((double)g.c_v_q / 65536.0);
+    return g;
+}
+
 // Patch 1 S4a — the per-tick TAIL, the three trailing pure-solver-call steps of
 // PhysicsRunner.step (everything AFTER the IMEX atmosphere/smoke substep loop):
 //
@@ -252,6 +266,12 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         const int32_t* sw_gas   = smoke ? gas : nullptr;
         const int      sw_ng    = smoke ? n_gases : 0;
         const int32_t* sw_nbulk = smoke ? n_bulk_.data() : nullptr;
+        // P5b (design v3 §2.8 / §6.3): the gas arm of the Fleck pre-pass
+        // prices every absorbing gas cell in the temperature fold's own gas
+        // currency — gas_capacity_q() above, from this->temperature's dials,
+        // the SAME n_bulk_ the fold divides by. Read only where a_gas > 0:
+        // nowhere in the shipped game, where every heat_absorb is 0.0.
+        const GasCapacityQ cap = this->gas_capacity_q();
 #ifdef BREACH_HAS_CUDA
         if (breach_cuda::radiation_backend_is_cuda()) {
             // ray-engine-v2 P4: the CUDA twin (cuda_radiation_sweep.h), the
@@ -274,7 +294,8 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
                 RadiationSweep::TRANSPORT_SHEAR, 16, h, w,
                 rad_net_sweep, rad_flux_sweep, rad_amb_sweep, rad_fluence,
                 /*fleck_enabled=*/true, f_plane, &s_min, &s_max,
-                sw_gas, sw_ng, gas_heat_absorb_q16, sw_nbulk);
+                sw_gas, sw_ng, gas_heat_absorb_q16, sw_nbulk,
+                cap.n_floor_q, cap.recip_cv);
             this->radiation.min_stream = s_min;
             this->radiation.max_stream = s_max;
         } else
@@ -293,7 +314,8 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
                 RadiationSweep::TRANSPORT_SHEAR, 16, h, w,
                 rad_net_sweep, rad_flux_sweep, rad_amb_sweep, rad_fluence,
                 /*fleck_enabled=*/true,
-                sw_gas, sw_ng, gas_heat_absorb_q16, sw_nbulk);
+                sw_gas, sw_ng, gas_heat_absorb_q16, sw_nbulk,
+                cap.n_floor_q, cap.recip_cv);
         }
     }
 

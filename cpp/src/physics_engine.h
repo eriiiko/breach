@@ -67,6 +67,31 @@ public:
     // TemperatureSolver::step as the real Pass-1 heat-deposit divisor.
     mutable std::vector<int32_t> n_bulk_;
 
+    // ---- ray-engine-v2 P5b (design v3 §2.8 / §6.3): THE GAS CURRENCY ------
+    // The three integers the temperature fold's Pass 1 divides a gas deposit
+    // by, derived from the fold's OWN two dials (`temperature.c_v`,
+    // `temperature.n_floor_heat`) by the SAME kit calls TemperatureSolver::
+    // step() makes at its top and in Pass 1:
+    //     n_floor_q = quantize(n_floor_heat)                 the N floor
+    //     c_v_q     = quantize(c_v > 0 ? c_v : 1)           c_v's ONE integer form
+    //     recip_cv  = make_recip(c_v_q / 65536)             its exact inverse, Q.32
+    // step_tail hands n_floor_q / recip_cv to the radiation sweep (both
+    // backends), whose Fleck pre-pass prices every absorbing gas cell's L in
+    // them — so the gas arm and the fold cannot disagree about what one heat
+    // count is worth in a gas cell. Here rather than in temperature_solver.cpp
+    // because the fold is not this patch's to touch (P5c owns its gas branch);
+    // tests/test_radiation_sweep_gas_fleck.py holds these three to the fold's
+    // own gas deposit, bit for bit, at the shipped dials and at another pair.
+    // Out of line in this /fp:strict TU: quantize and make_recip are real
+    // arithmetic, and a header-inline copy would compile under bindings.cpp's
+    // /fp:fast.
+    struct GasCapacityQ {
+        int32_t n_floor_q;
+        int32_t c_v_q;
+        int64_t recip_cv;
+    };
+    GasCapacityQ gas_capacity_q() const;
+
     // --- Patch 1 S4a: the per-tick orchestration TAIL --------------------
     // Moves the three trailing PURE-SOLVER-CALL steps of PhysicsRunner.step
     // (everything AFTER the IMEX substep loop) into C++: the W6a ripple, the

@@ -89,10 +89,13 @@ whose smoke term absorbs (a_gas > 0) now takes
 its free excess-emission loss through THE TEMPERATURE FOLD'S OWN GAS CURRENCY:
 N floored at n_floor_heat, `reciprocal_q16` per cell, and c_v's exact inverse
 `make_recip(c_v_q / 65536)` -- the three integers temperature_solver.cpp's Pass
-1 divides its gas deposit by, which the engine hands the sweep through
-`TemperatureSolver::gas_capacity_q()`. The chain is design 2.8's STAGED one (two
-narrows), declared to differ from the heat deposit's one-narrow chain by at most
-one LSB. `fleck_prepass` takes the gas group to wire it; without the group a gas
+1 divides its gas deposit by, which the engine derives from the fold's own dials
+and hands the sweep through `PhysicsEngine::gas_capacity_q()`. The chain is
+design 2.8's STAGED one (two narrows), which floors differently from the heat
+deposit's one-narrow chain: by at most (recip_cv >> 32) + 1 LSB, i.e. one LSB at
+c_v >= 1 and 131 LSB (0.002 game) at the shipped c_v
+(tests/test_fixed_point_i64_twins.py) -- and it is the chain P5c's radiative gas
+deposit converts through. `fleck_prepass` takes the gas group to wire it; without the group a gas
 cell keeps L = 0 (it emits no excess the pre-pass could see). The property it
 exists for -- a hot absorbing gas cell cools monotonically and never below
 ambient -- is gate 14, on `gas_cell_march`, a 0-D model of the gas radiative
@@ -443,9 +446,11 @@ def deposit_dT_wide_i64(deposit: int, recip_n_q: int, recip_cv: int) -> int:
 # temperature_solver.cpp's Pass 1 derives exactly these three from its two
 # dials -- `n_floor_q = quantize(n_floor_heat)`, `c_v_q = quantize(c_v)` (c_v's
 # ONE integer form, report_t2 10.2) and `recip_cv = make_recip(c_v_q / 65536)`
-# -- and the engine hands the sweep's gas arm the same three through
-# `TemperatureSolver::gas_capacity_q()`, so the arm cannot price a gas cell in
-# a second currency. These are the shipped values (config_dials_match() guards
+# -- and the engine derives the same three from the fold's own dials and hands
+# them to the sweep's gas arm through `PhysicsEngine::gas_capacity_q()`, so the
+# arm cannot price a gas cell in a second currency (tests/
+# test_radiation_sweep_gas_fleck.py holds it to the fold's own gas deposit, bit
+# for bit). These are the shipped values (config_dials_match() guards
 # the real dials they quantize) and the DEFAULT currency of every gas function
 # below, as K_AMB is the default ambient; a gate that wants another passes it.
 C_V_Q_LIVE = quant(C_V_LIVE)                  # 504

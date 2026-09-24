@@ -91,6 +91,36 @@ FP_HD inline int32_t fleck_f_q24(int64_t T_abs_q, int64_t L_q) {
     return (int32_t)fixedpoint::floordiv_q(T_abs_q << 24, D);
 }
 
+// L_q for a GAS cell (ray-engine-v2 P5b, design v3 §2.8 / §6.3): the cell's
+// free excess-emission loss this tick in Q16.16 temperature, its smoke term's
+// excess priced in THE TEMPERATURE FOLD'S OWN GAS CURRENCY —
+//     L_q = deposit_dT_wide_i64((a_gas·ex) >> 16, recip_N, recip_cv)
+//     recip_N = reciprocal_q16(max(N_bulk, n_floor_q))
+// the N floor, the per-cell Newton reciprocal and c_v's exact inverse that
+// temperature_solver.cpp's Pass 1 divides its gas deposit by (`n_floor_q`,
+// `recip_N_q`, `recip_cv` there), handed in by the caller as integers
+// (PhysicsEngine::gas_capacity_q() on the live path). The chain is §2.8's
+// STAGED one: two narrows through the kit's 128-bit mul128_shr, because the
+// excess reaches 2^41.7 at the table top where the heat deposit's one-narrow
+// chain forms an int64 product. The two floor differently: they differ by at
+// most (recip_cv >> 32) + 1 LSB — one LSB at c_v >= 1, 131 LSB (0.002 game)
+// at the shipped c_v = 0.0077 (tests/test_fixed_point_i64_twins.py) — and the
+// staged chain is the one P5c's radiative gas deposit converts through, so
+// the arm and that deposit will be the same arithmetic. `a_gas` is the smoke term's own
+// extinction (design §6.3's letter; on every legal table the effective `a` of
+// a gas cell), `n_bulk` the BULK count the energy books divide by. Transcribes
+// sweep_ref_q.py::fleck_L_gas_q. Headroom: tests' gate 11 measures the widest
+// L (a_gas = ONE, the table top, a 0-K sky, N at the floor) — 4L stays inside
+// int64 at the shipped currency on both tables, and on the live table at ANY
+// positive one.
+FP_HD inline int64_t fleck_L_gas_q(int64_t ex, int32_t a_gas, int32_t n_bulk,
+                                   int32_t n_floor_q, int64_t recip_cv) {
+    const int32_t n_q = (n_bulk > n_floor_q) ? n_bulk : n_floor_q;
+    return fixedpoint::deposit_dT_wide_i64(
+        ((int64_t)a_gas * ex) >> fixedpoint::FP_SHIFT,
+        fixedpoint::reciprocal_q16(n_q), recip_cv);
+}
+
 // ---- the GAS extinction (ray-engine-v2 P5a, design v3 §6.3; FP_HD: the
 // CUDA twin's pre-pass calls these very functions) ---------------------------
 // Smoke absorbs heat by the DENSITY LAW, on a GAS cell (not a thermal solid):
@@ -204,17 +234,28 @@ public:
     //                      (GasTable.heat_absorb_q16), each in [0, HEAT_ABSORB_Q_MAX]
     //   n_bulk           : int32 Q16.16 (h, w) — the BULK (O2 + N2) count, the
     //                      one the N_EPS floor and the energy books read
-    //   A gas cell (!thermal_solid) reads a = max(a, a_gas), d = max(d, a);
-    //   the Fleck pre-pass's GAS arm is still L = 0 (f == 2^24) — P5b wires it.
-    //   Nothing downstream consumes a gas cell's rad_net until P5b opens the
-    //   temperature fold's `ts` mask.
+    //   A gas cell (!thermal_solid) reads a = max(a, a_gas), d = max(d, a).
+    //   THE GAS CURRENCY (P5b) — required with the gas group, both > 0:
+    //   n_floor_q        : quantize(n_floor_heat), the N floor of every gas divide
+    //   recip_cv         : make_recip(c_v_q / 65536), c_v's exact inverse (Q.32)
+    //                      — the integers the temperature fold's gas deposit
+    //                      divides by; PhysicsEngine::gas_capacity_q() on the
+    //                      live path. With them the Fleck pre-pass's GAS ARM
+    //                      damps every gas cell whose smoke term absorbs
+    //                      (a_gas > 0): L = fleck_L_gas_q(ex, a_gas, n_bulk,
+    //                      n_floor_q, recip_cv), f = fleck_f_q24(T_abs, L). A
+    //                      gas cell that absorbs nothing keeps f == 2^24.
+    //   Nothing downstream consumes a gas cell's rad_net until P5c opens the
+    //   temperature fold's `ts` mask; every shipped heat_absorb is 0.0.
     // Throws std::invalid_argument on an unsupported (n_ordinates, transport),
     // a k_leak_q outside [0, ONE], a null amb_level or one outside
     // [0, e_table[0]], a cell violating 0 <= a <= d <= ONE (the ingress
     // invariants the materials door enforces; re-checked here so a direct
     // caller cannot measure an illegal scene), a partial gas group, n_gases
-    // outside [0, N_GAS_PLANES_MAX], or a heat_absorb_q16 outside
-    // [0, HEAT_ABSORB_Q_MAX] (the gas door's own bounds).
+    // outside [0, N_GAS_PLANES_MAX], a heat_absorb_q16 outside
+    // [0, HEAT_ABSORB_Q_MAX] (the gas door's own bounds), or — with the gas
+    // group — an n_floor_q or recip_cv that is not positive (a forgotten
+    // currency would otherwise leave the gas arm silently undamped).
     void run(const int32_t* temperature,
              const int32_t* heat_atten_q, const int32_t* dyn_heat_atten_q,
              const int32_t* heat_inv_shift, const bool* thermal_solid,
@@ -225,7 +266,8 @@ public:
              int64_t* rad_fluence, bool fleck_enabled = true,
              const int32_t* gas = nullptr, int n_gases = 0,
              const int32_t* heat_absorb_q16 = nullptr,
-             const int32_t* n_bulk = nullptr) const;
+             const int32_t* n_bulk = nullptr,
+             int32_t n_floor_q = 0, int64_t recip_cv = 0) const;
 
     // The effective extinction planes the last CPU run() READ (Q16, (h, w)):
     // the material/stamped planes with the smoke term folded in (P5a).

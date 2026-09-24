@@ -1155,7 +1155,7 @@ flammable      = false
 emits_when_hot = false
 effect         = "vision_block"       # pure concealment; clears on decompression
 conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
-heat_absorb    = 0.0                  # P5a: dormant (see [gases.smoke]); water vapour IS an IR absorber -- P5b's value
+heat_absorb    = 0.0                  # P5a: dormant (see [gases.smoke]); water vapour IS an IR absorber -- a later patch's value
 
 [gases.smoke]            # combustion soot (== today's generic smoke)
 absorption     = [0.88, 0.90, 0.93]   # near-neutral, slight blue tilt: thin soot reads warm/brown
@@ -1170,7 +1170,7 @@ conservative   = false                # trace gas — semi-Lagrangian transport 
 heat_absorb    = 0.0                  # HEAT extinction per unit density (ray-engine-v2 P5a, design v3
                                      # 6.3): on a GAS cell the sweep reads a_gas = min(1, sum_g
                                      # heat_absorb * N_g), 0 below gas_energy.h's N_EPS_RAW bulk.
-                                     # DORMANT at 0.0 on every row until P5b opens the temperature
+                                     # DORMANT at 0.0 on every row until P5c opens the temperature
                                      # fold's gas branch: until then nothing consumes a gas cell's
                                      # rad_net, so a value > 0 would take radiation out of the
                                      # stream with no book to land in. Door [0, 4096] (gases.py
