@@ -13,6 +13,9 @@ WHAT TRANSCRIBES WHAT
   bake_e_table       <- cpp/src/raycaster.cpp:62-97 (the exact int64 chain)
   e_bucket_of        <- cpp/src/raycaster.h:203-213
   e_inv_q            <- design v3 section 2.6 ("E°⁻¹"), both edge cases of row 31
+  e_ceiling_q        <- the maximum-principle clamp's CEILING (P5d, Erik's ruling
+                        of 2026-09-24): the top of the first bucket whose E°
+                        exceeds Phi, 0 below E°[0] -- see THE CLAMP'S CEILING below
   shr_round0         <- cpp/src/fixed_point.h:410 (the int64 twin P1 owes)
   shr_round0_signed  <- cpp/src/fixed_point.h, shr_round0_signed_i64 (M1's
                         signed-exponent twin: a thermal_mass below 1 unit)
@@ -20,7 +23,8 @@ WHAT TRANSCRIBES WHAT
   fleck_f_solid_q    <- design v3 section 2.8 (the excess form, row 22; Q24, row 32)
   sweep_q            <- design v3 section 2.3 (gather form; body re-emission, row 25)
   fold_pass1_solid   <- cpp/src/temperature_solver.cpp:247-299 + the clamp of
-                        section 2.8 in its corrected form (row 21)
+                        section 2.8 in its corrected form (row 21), at P5d's
+                        ceiling
   gas_extinction_q   <- design v3 section 6.3 (P5a): the density law and the
                         N_EPS floor -- smoke's heat extinction on a GAS cell
   reciprocal_q16     <- cpp/src/fixed_point.h reciprocal_q16 (4 Newton trips)
@@ -116,7 +120,7 @@ written against. In order, for a cell with rad_net != 0:
     dT       = sign(rn) * min(INT32_MAX, deposit_dT_wide_i64(|rn|, recip_N, recip_cv))
     T_before = gas_mirror_q(E, N)          -- the mirror of the STORED energy
     T_after  = T_before + dT
-    T_target = min(T_after, max(T_before, E°⁻¹(Phi)))            -- the clamp
+    T_target = min(T_after, max(T_before, e_ceiling_q(Phi)))  -- the clamp (P5d)
     dE       = N * (T_target - T_before)
     E       += dE,  then the T_MAX_PHYS rail (deposit_railed), booked
 
@@ -167,6 +171,34 @@ would break it by its own amount. With them, design 8.4's boundary reads
                           + e_rad_boundary_export_sum + e_rad_floor_drop_sum
                           + the conversions' rounding (+ the counted rails)
 and the rounding is what the one-LSB-per-cell bound covers.
+
+THE CLAMP'S CEILING -- ONE BUCKET OF HEADROOM (P5d, 2026-09-24; Erik's ruling;
+docs/ray_engine_v2_p5d_clamp_headroom_brief_2026-09-24.md). Both folds clamp at
+
+    T_new = min(T_after, max(T_before, e_ceiling_q(Phi)))
+
+and NOT at e_inv_q(Phi) any more. e_inv_q returns the LOW edge of the largest
+bucket b with E°[b] <= Phi. The forward emission is a staircase (4-game buckets,
+no interpolation), so no temperature exists at which emission equals absorption:
+an undamped cell with no clamp settles by flickering across the edge 4(b+1),
+where its bucket's E° crosses Phi, and balances there on average. A ceiling at
+4b stopped it a bucket short, where it still emits E°[b] < Phi -- so it
+net-absorbed every tick and the clamp withheld the whole surplus (P5c's counted
+shave, tools/bench_clamp_shave.py). The ruled ceiling is the TOP of the first
+bucket whose E° exceeds Phi -- the last Q16 value of bucket b+1,
+(min(4(b+2), 4 * E_TABLE_SIZE) << 16) - 1: radiation may carry a cell into the
+first bucket in which it out-emits what it absorbs, and no further. The promise
+"a clamped cell never emits more than it absorbs" becomes "... by more than one
+bucket", the resolution the emission itself works at. Two cases keep their P1
+form: Phi < E°[0] -> 0 (design row 31: no radiative warming above the ambient
+floor -- the one deliberate exception, so a shadowed cell cannot creep), and the
+top saturates at (16000 << 16) - 1, still below T_MAX_PHYS, so the rail stays
+unreachable on the radiative sub-step with the clamp on. e_inv_q itself is
+UNCHANGED: it is still THE inverse of the table, and "radiation temperature"
+(the tile inspector's, the heat-law tests') is still e_inv_q. Gate 16 pins the
+ceiling and the two 0-D properties it exists for: an undamped cell balances with
+nothing withheld, and a Fleck-damped one is still held within [T_cont - 1
+bucket, T_cont + 2 buckets] where Fleck alone runs away.
 """
 from __future__ import annotations
 
@@ -211,6 +243,9 @@ E_BUCKET_SHIFT = 2               # raycaster.h:204   4 game units per bucket
 E_INDEX_SHIFT = 16 + E_BUCKET_SHIFT
 T_MAX_PHYS_Q = 16000 << 16       # config.toml:186   the counted physical rail
 T_TABLE_TOP_GAME = 4 * (E_TABLE_SIZE - 1)   # 15996 — where E°⁻¹ saturates
+# P5d: where the clamp's CEILING saturates -- the last Q16 value of the table's
+# last bucket, one LSB below 16000 game, so still below the T_MAX_PHYS rail.
+T_CEILING_TOP_Q = ((4 * E_TABLE_SIZE) << 16) - 1
 TICK_HZ = 24.0                   # the sim clock (for the analytic cooling reference)
 INT32_MAX = (1 << 31) - 1
 INT32_MIN = -(1 << 31)
@@ -596,10 +631,13 @@ def e_inv_q(phi: int, table=E) -> int:
       * Phi < E°[0]  -> 0 (no radiative warming above the ambient floor; such a
         cell's rad_net is <= 0 anyway).
       * Phi >= E°[3999] -> 15996 game, the last bucket's low edge, which is BELOW
-        T_MAX_PHYS = 16000: on the radiative sub-step the clamp saturates first
-        and the T_MAX_PHYS rail is unreachable.
+        T_MAX_PHYS = 16000.
 
     Idempotent by construction: e_bucket_of(4b << 16) == b, so E°[E°⁻¹(Φ)] <= Φ.
+
+    P5d: this is THE inverse of the table and the "radiation temperature" (the
+    tile inspector's, the heat-law tests'), unchanged -- but it is no longer the
+    clamp's ceiling. The clamp reads e_ceiling_q, which is built on this search.
     """
     if phi < table[0]:
         return 0
@@ -611,6 +649,40 @@ def e_inv_q(phi: int, table=E) -> int:
             lo = nxt
         span >>= 1
     return (4 * lo) << 16
+
+
+def e_ceiling_q(phi: int, table=E) -> int:
+    """THE MAXIMUM-PRINCIPLE CLAMP'S CEILING (P5d, Erik's ruling of 2026-09-24):
+    the TOP of the first bucket whose E° exceeds Phi, as a Q16.16 game
+    temperature. With b = the largest bucket with E°[b] <= Phi (e_inv_q's
+    bucket), the first bucket whose E° exceeds Phi is b + 1, and its top is its
+    last Q16 value:
+
+        e_ceiling_q(Phi) = (min(4 (b + 2), 4 * E_TABLE_SIZE) << 16) - 1
+
+    so e_bucket_of(ceiling) == b + 1 and E°[b] <= Phi < E°[b + 1] (module
+    docstring, THE CLAMP'S CEILING: radiation may carry a cell into the first
+    bucket in which it out-emits what it absorbs, and no further).
+
+    The edge cases:
+      * Phi < E°[0]      -> 0, UNCHANGED from e_inv_q (design row 31: no
+        radiative warming above the ambient floor). The one deliberate exception
+        to "the top of the first out-emitting bucket": such a cell's rad_net is
+        <= 0 except through rounding, and a shadowed cell must not creep.
+      * Phi >= E°[3999]  -> T_CEILING_TOP_Q = (16000 << 16) - 1, the table's last
+        bucket's top: one LSB below T_MAX_PHYS, so on the radiative sub-step the
+        clamp still binds before the rail can.
+
+    Built ON e_inv_q -- the one 12-trip lifting, not a second search -- so the
+    two cannot disagree about b; e_inv_q itself is untouched. NOT idempotent in
+    e_inv_q's sense, by design: E°[bucket(ceiling)] > Phi, so an undamped cell
+    clamped there out-emits Phi and cools on its next tick, by at most one
+    bucket's excess -- which is the ruling's point."""
+    if phi < table[0]:
+        return 0
+    b = e_inv_q(phi, table) >> E_INDEX_SHIFT
+    top_game = min(4 * (b + 2), 4 * E_TABLE_SIZE)
+    return (top_game << 16) - 1
 
 
 # --------------------------------------------------------------------------- #
@@ -1354,13 +1426,14 @@ class FoldCounters:
 
 def fold_pass1_solid(T, rad_net, rad_fluence, his, ts, counters: FoldCounters, *,
                      clamp_enabled: bool = True, rails_enabled: bool = True,
-                     int32_sat: bool = True, cap_real=None, held=None, table=E):
+                     int32_sat: bool = True, cap_real=None, held=None, table=E,
+                     ceiling_fn=None):
     """The radiative sub-step of Pass 1, for thermal solids, IN ORDER.
 
         t_before = T[i]
         dTr      = shr_round0_signed(rad_net[i], heat_inv_shift[i])
         T[i]     = sat_add_q16(T[i], dTr)                      # T_after
-        T[i]     = min(T_after, max(t_before, E°⁻¹(Phi)))       # the clamp (row 21)
+        T[i]     = min(T_after, max(t_before, e_ceiling_q(Phi)))  # the clamp (row 21, P5d)
         rails: T_MAX_PHYS, then the low rail at 0
         books the ACTUAL applied dT x cap_real into e_solid_deposit_sum
 
@@ -1373,7 +1446,13 @@ def fold_pass1_solid(T, rad_net, rad_fluence, his, ts, counters: FoldCounters, *
     cap_real (the capacity e_solid_deposit_sum prices the landing at), into
     `e_rad_clamp_drop_sum` -- so per cell, what landed plus what the clamp
     withheld is the unclamped landing, exactly.
+
+    P5d: the ceiling is `e_ceiling_q` (module docstring, THE CLAMP'S CEILING).
+    `ceiling_fn(phi, table)` replaces it ONLY so a gate can MEASURE a ceiling
+    this file does not ship -- e_inv_q, the pre-P5d low edge, or an exact inverse
+    -- the alpha_floor / fleck_f_q(shift=16) idiom; None is the shipped form.
     """
+    cfn = e_ceiling_q if ceiling_fn is None else ceiling_fn
     h, w = len(T), len(T[0])
     for y in range(h):
         for x in range(w):
@@ -1408,7 +1487,7 @@ def fold_pass1_solid(T, rad_net, rad_fluence, his, ts, counters: FoldCounters, *
             s_cap = s if s > THERMAL_MASS_EXP_MIN_REF else THERMAL_MASS_EXP_MIN_REF
             cap = (1 << (s_cap + 16)) if cap_real is None else cap_real[y][x]
             if clamp_enabled:
-                t_cap = e_inv_q(rad_fluence[y][x], table)
+                t_cap = cfn(rad_fluence[y][x], table)
                 ceiling = t_cap if t_cap > t_before else t_before
                 if t_new > ceiling:
                     counters.rad_clamp_hits += 1
@@ -1432,14 +1511,14 @@ def fold_pass1_solid(T, rad_net, rad_fluence, his, ts, counters: FoldCounters, *
 def fold_pass1_gas(T, Eg, rad_net, rad_fluence, n_bulk, ts, counters: FoldCounters, *,
                    acct=None, c_v_q: int = C_V_Q_LIVE, n_floor_q: int = N_FLOOR_Q_LIVE,
                    clamp_enabled: bool = True, table=E, t_amb_q: int = T_AMB_Q,
-                   t_max_phys_q: int = T_MAX_PHYS_Q, held=None):
+                   t_max_phys_q: int = T_MAX_PHYS_Q, held=None, ceiling_fn=None):
     """The radiative sub-step of Pass 1 for ACCOUNTABLE GAS cells, IN ORDER
     (design v3 2.8 / 6.3; the module docstring's P5c section has the argument):
 
         dT       = sign(rn) * deposit_dT_wide_i64(|rn|, recip_N, recip_cv)
         T_before = gas_mirror_q(Eg[i], N)                # the STORED energy's mirror
         T_after  = sat_add_q16(T_before, dT)             # the int32 field's own bound
-        T_target = min(T_after, max(T_before, E°⁻¹(Phi)))       # the clamp
+        T_target = min(T_after, max(T_before, e_ceiling_q(Phi)))  # the clamp (P5d)
         dE       = N * (T_target - T_before)             # hits T_target, keeps E mod N
         Eg[i]   += dE;  T_MAX_PHYS rail (gas_energy.h deposit_railed), booked
         e_gas_deposit_sum += dE                          # group 1, no new group
@@ -1462,7 +1541,11 @@ def fold_pass1_gas(T, Eg, rad_net, rad_fluence, n_bulk, ts, counters: FoldCounte
     accountable cell whose bulk N is below n_floor_q the conversion's whole
     unlanded remainder, `(rn << 16) - (T_after - T_before) * cap_real`, goes to
     `e_rad_floor_drop_sum`. Counters only: no landing moves.
+
+    P5d: the ceiling is `e_ceiling_q`; `ceiling_fn` is fold_pass1_solid's
+    measuring knob (None = the shipped form).
     """
+    cfn = e_ceiling_q if ceiling_fn is None else ceiling_fn
     h, w = len(T), len(T[0])
     for y in range(h):
         for x in range(w):
@@ -1487,7 +1570,7 @@ def fold_pass1_gas(T, Eg, rad_net, rad_fluence, n_bulk, ts, counters: FoldCounte
                 counters.e_rad_floor_drop_sum += (
                     (rn << 16) - (t_target - t_before) * cap_real_q(False, 0, nb, c_v_q))
             if clamp_enabled:
-                t_cap = e_inv_q(rad_fluence[y][x], table)
+                t_cap = cfn(rad_fluence[y][x], table)
                 ceiling = t_cap if t_cap > t_before else t_before
                 if t_target > ceiling:
                     counters.rad_clamp_hits += 1
@@ -1631,9 +1714,10 @@ def cell_march(T0_q: int, phi: int, a_q: int, his: int, ticks: int, *,
                table=E, e_ref: int = None, fleck: bool = True,
                alpha_floor: str = ALPHA_FLOOR_DEFAULT,
                clamp_enabled: bool = True, rails_enabled: bool = True,
-               int32_sat: bool = True, trace: bool = False):
+               int32_sat: bool = True, trace: bool = False, ceiling_fn=None):
     """March one cell `ticks` ticks under a held fluence. Returns (T_q, counters)
-    or (trace list, counters) when trace=True."""
+    or (trace list, counters) when trace=True. `ceiling_fn` is the fold's
+    measuring knob (P5d; None = the shipped e_ceiling_q)."""
     T = [[T0_q]]
     ts = [[1]]
     counters = FoldCounters()
@@ -1643,7 +1727,7 @@ def cell_march(T0_q: int, phi: int, a_q: int, his: int, ticks: int, *,
                             fleck=fleck, alpha_floor=alpha_floor)
         fold_pass1_solid(T, [[rn]], [[phi]], his, ts, counters,
                          clamp_enabled=clamp_enabled, rails_enabled=rails_enabled,
-                         int32_sat=int32_sat, table=table)
+                         int32_sat=int32_sat, table=table, ceiling_fn=ceiling_fn)
         out.append(T[0][0])
     return (out if trace else T[0][0]), counters
 
