@@ -61,8 +61,10 @@ one binary, one scene.
           N = 3 with per-env gas planes and a shared table (and an illegal
           table flagged in every env); the gas ingress rejections; and the
           live conductor with a TEST-FIXTURE smoke coefficient, only the
-          radiation backend flipping. Every shipped heat_absorb is 0.0, so
-          parts 1-9 are the dormant path and this is the live one.
+          radiation backend flipping. Parts 1-9 carry no smoke (the dormant
+          path of the smoke term); this is the live one. SINCE P5c the shipped
+          smoke absorbs (config.toml [gases.smoke] heat_absorb, derived), so the
+          live worlds of part 9 run the smoke term wherever combustion made smoke.
           SINCE P5b (design v3 §2.8 / §6.3) the Fleck plane every one of
           those compares carries the GAS ARM too -- damped gas cells asserted
           present in the smoke matrix, the features scene, the full-size
@@ -723,6 +725,7 @@ _ALL_BACKENDS = (
     "set_combustion_backend",
 )
 _TEMP_COUNTERS = ("t_max_phys_hits", "t_low_rail_hits", "rad_clamp_hits",
+                  "e_rad_clamp_drop_sum",                       # P5c
                   "e_cond_trunc_sum", "e_cond_cap_sum", "cond_limit_hits",
                   "e_vac_wipe_sum", "e_ring_pin_sum", "e_deposit_drop_sum",
                   "e_gas_deposit_sum", "e_gas_cond_sum", "e_gas_rail_sum",
@@ -1208,7 +1211,8 @@ def part10i_live_hot_smoke() -> None:
 
 def _smoky_burning_playground():
     """part 9's scene plus a smoke cloud around the fire and a TEST-FIXTURE smoke
-    coefficient (every shipped row is 0.0): the smoke term on the live path."""
+    coefficient (5.0; the SHIPPED smoke is 25.36 since P5c): the smoke term on
+    the live path."""
     from simulation import gas_fixed, unit_fixed
     from simulation.gases import SMOKE
     sim, pick = _burning_playground()
