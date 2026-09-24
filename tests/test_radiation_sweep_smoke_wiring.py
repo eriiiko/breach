@@ -12,7 +12,11 @@ DORMANCY:
     the bulk sum -- so with a (test-fixture) coefficient the live planes ARE a
     direct sweep with the smoke term, and differ from one without it;
   * NOTHING consumes a gas cell's rad_net yet: the temperature fold's `ts` mask is
-    unchanged (P5b opens it), so the smoke term moves no gas temperature.
+    unchanged (P5c opens it), so the smoke term moves no gas temperature.
+
+(P5b's gas arm of the Fleck pre-pass has its own wiring and dormancy tests, in
+tests/test_radiation_sweep_gas_fleck.py; the direct sweep below is handed the
+engine's own gas currency, which that arm reads.)
 
 Run:
     C:/Users/steen/anaconda3/python.exe -m pytest tests/test_radiation_sweep_smoke_wiring.py -q
@@ -174,9 +178,11 @@ def test_the_live_sweep_reads_the_smoke_term():
                   bp.RadiationSweep.SHEAR, 16, *out, **gas_kw)
         return out
 
+    n_floor_q, _c_v_q, recip_cv = eng.gas_capacity_q()     # P5b: the gas arm's currency
     with_smoke = direct(gas=np.ascontiguousarray(grabbed["gas"]),
                         heat_absorb_q16=np.ascontiguousarray(grabbed["hq"]),
-                        n_bulk=np.ascontiguousarray(n_bulk))
+                        n_bulk=np.ascontiguousarray(n_bulk),
+                        n_floor_q=int(n_floor_q), recip_cv=int(recip_cv))
     a_eff = sweep.a_eff_plane()
     without = direct()
     for name, want in zip(_SWEEP_PLANES, with_smoke):
@@ -198,10 +204,11 @@ def test_nothing_consumes_a_gas_cells_rad_net_yet():
     counter for counter. And the same plane on the SOLIDS does move them
     (non-vacuity: the fold is live, only its gas branch is closed).
 
-    WHEN THIS MUST CHANGE: P5b opens the mask to accountable gas cells (the
+    WHEN THIS MUST CHANGE: P5c opens the mask to accountable gas cells (the
     Pass-1 gas radiation branch, the clamp on gas, the group-1 books) and
-    replaces this with the closure identity. Opening it anywhere else, earlier,
-    is the change this exists to catch.
+    replaces this with the closure identity. Opening it anywhere else, earlier
+    -- P5b wires only the sweep's gas Fleck arm -- is the change this exists to
+    catch.
     """
     sim = default_scenario_sim()
     g = sim.gmap

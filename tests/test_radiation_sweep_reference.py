@@ -15,6 +15,14 @@ carrying every feature of the term, and at the engine's door (the rejections).
 Validated by breaking the C++ once: shifting each gas term before summing (the
 design sums, then shifts once) turned the smoke matrix red.
 
+P5b (design v3 §2.8 / §6.3) wires the GAS ARM of the Fleck pre-pass, so the
+Fleck plane every smoke comparison above already checks now carries damped gas
+cells (asserted, per case, against the P5a arm), and three tests are the arm's
+own: one scene carrying every case of it on the LIVE table and the resolving one,
+the engine's one-cell mirror (RadiationSweep.fleck_f_gas_q24) against
+sweep_ref_q.fleck_f_gas_q over the whole table in three currencies, and the
+currency's door. Validated by breaking the C++ once (see the arm's tests).
+
 Run:
     C:/Users/steen/anaconda3/python.exe -m pytest tests/test_radiation_sweep_reference.py -q
 """
@@ -32,7 +40,8 @@ if str(ROOT / "tests") not in sys.path:
     sys.path.insert(0, str(ROOT / "tests"))
 
 from _radiation_sweep_harness import (  # noqa: E402
-    F_ONE, ONE, R, cpp_sweep, random_gas, random_scene, ref_sweep, reference_table,
+    F_ONE, ONE, R, cpp_sweep, engine_currency, gas_arrays, gas_fleck_scene,
+    isobaric_n_q, live_table, random_gas, random_scene, ref_sweep, reference_table,
     smoke_feature_scene, ts_from_a)
 
 Q = R.quant
@@ -150,7 +159,10 @@ def test_cpp_sweep_reproduces_the_reference_with_smoke_bit_for_bit(seed, h, w, n
     N_EPS_RAW, a thermal solid takes the smoke term, the stamped total is summed
     instead of MAXed, a negative density absorbs, the zero-coefficient
     compaction drops a live gas, or the loop reads the input planes instead of
-    the effective ones.
+    the effective ones. Since P5b ALSO the gas arm of the pre-pass: the Fleck
+    plane compared here carries damped GAS cells (asserted non-vacuous per case,
+    and different from the P5a arm's), so any change to the arm's chain — its
+    floor, its reciprocals, its currency, which extinction it reads — is red.
     """
     rng = random.Random(20260924 + seed)
     a, d, T, his, ts = random_scene(rng, h, w)
@@ -164,9 +176,18 @@ def test_cpp_sweep_reproduces_the_reference_with_smoke_bit_for_bit(seed, h, w, n
     _assert_bit_for_bit(tag, got, exp, effective=True)
     a_eff = np.asarray(exp[5].a_eff)
     ts_a = np.asarray(ts) != 0
-    assert np.any((a_eff > np.asarray(a)) & ~ts_a), "no gas cell absorbed: vacuous"
+    gas_abs = (a_eff > np.asarray(a)) & ~ts_a
+    assert np.any(gas_abs), "no gas cell absorbed: vacuous"
     clear = ref_sweep(a, d, k_q, T, his, transport=transport, n_ord=n_ord, amb=amb, ts=ts)
     assert not np.array_equal(clear[0], exp[0]), "the smoke moved nothing: vacuous"
+    # P5b: the gas arm really damped a gas cell here, and the P5a arm (no gas
+    # group to the pre-pass: L = 0 on gas) would not have.
+    f = np.asarray(exp[4])
+    assert np.any((f < F_ONE) & gas_abs), "no absorbing gas cell was damped: vacuous"
+    p5a = ref_sweep(a, d, k_q, T, his, transport=transport, n_ord=n_ord, amb=amb,
+                    ts=ts, gas=gas, hq=hq, n_bulk=n_bulk, gas_fleck=False)
+    assert np.all(np.asarray(p5a[4])[~ts_a] == F_ONE)
+    assert not np.array_equal(np.asarray(p5a[4]), f), "the gas arm moved nothing"
 
 
 @pytest.mark.parametrize("transport", ["shear", "step"])
@@ -196,7 +217,19 @@ def test_cpp_sweep_reproduces_the_reference_on_every_feature_of_the_smoke_term(t
     assert 0 < ae[at("thin")[0]][at("thin")[1]] < ONE                   # thin: the law
     assert ae[at("thin")[0]][at("thin")[1]] == (Q(5.0) * Q(0.06)) >> 16
     assert ae[at("saturated")[0]][at("saturated")[1]] == ONE            # the ONE cap
-    assert rn[at("hot")] < 0                                            # hot smoke radiates
+    # Hot smoke radiates: it books strictly less than the same cell COLD. (P5a
+    # asserted rad_net < 0 here, which was true only while the gas arm was L = 0:
+    # on this RESOLVING table a 5000-game soot cell is g ~ 6e4 stiff, the P5b arm
+    # damps its excess to f = 276/2^24, and beside the 1263-game wall it becomes a
+    # net absorber that still EMITS -- the property the assert was for. On the
+    # live table the same cell stays a net emitter, g = 19.5: gate 0's
+    # live-table gas-arm test below.)
+    y, x = at("hot")
+    T_cold = [row[:] for row in T]
+    T_cold[y][x] = 0
+    cold = ref_sweep(a, d, k_q, T_cold, 3, transport=transport, ts=ts, gas=gas, hq=hq,
+                     n_bulk=n_bulk)
+    assert rn[y, x] < cold[0][y, x]                                     # hot smoke radiates
     assert ae[at("floored")[0]][at("floored")[1]] == 0 and rn[at("floored")] == 0
     assert ae[at("at_floor")[0]][at("at_floor")[1]] == ONE              # N_EPS_RAW absorbs
     y, x = at("body_thin")
@@ -205,6 +238,163 @@ def test_cpp_sweep_reproduces_the_reference_on_every_feature_of_the_smoke_term(t
     assert de[y][x] == ONE and ae[y][x] == ONE and exp[1][y, x] == 0   # a MAX, not a sum
     assert ae[5][6] == Q(0.5)                                           # ts ignores its gas
     assert ae[at("negative")[0]][at("negative")[1]] == 0                # absorbs nothing
+
+
+# The gas_fleck_scene cells the arm must damp on BOTH tables, and the ones it must
+# leave at 2^24 (on the resolving table the cool cell is damped too: that table
+# is 3110x hotter, which is why the live table is in this matrix at all).
+_GAS_DAMPED = ("hot_N1", "hot_top", "hot_isobaric", "hot_floor", "hot_below_floor",
+               "hot_eps", "mix_hot", "body_hot")
+_GAS_UNDAMPED = ("sub_ambient", "hot_no_bulk", "hot_inert_only")
+
+
+@pytest.mark.parametrize("table_name", ["live", "resolving"])
+@pytest.mark.parametrize("transport", ["shear", "step"])
+@pytest.mark.parametrize("k_q", [0, K_LEAK])
+@pytest.mark.parametrize("n_ord", [16, 12])
+def test_cpp_gas_fleck_arm_reproduces_the_reference_on_every_case(table_name, transport,
+                                                                k_q, n_ord):
+    """PROPERTY (P5b, design v3 §2.8 / §6.3): on one scene carrying every case of
+    the GAS ARM -- hot absorbing smoke at ambient density and at the table top,
+    at ambient pressure, at and BELOW the n_floor_heat density, at the N_EPS
+    edge, a hot a = 0.2 mix, a body in hot smoke; beside cool, sub-ambient,
+    bulk-less and inert-gas cells and a hot thermal solid full of smoke -- the
+    C++ sweep's four planes, its Fleck plane and its effective planes EQUAL the
+    reference's, on the LIVE table (rad_scale_derived, where the game runs) and
+    on the resolving one, both transports, S16 and S12, leak on and off. And the
+    arm does what the design says there: every hot absorbing gas cell is damped
+    (f < 2^24) and its f is sweep_ref_q.fleck_f_gas_q's; a cell below the floor
+    is priced AT the floor; the cells that absorb nothing, or have no excess,
+    keep 2^24; the thermal solid keeps the solid arm; and on the live table the
+    cool absorbing cell is undamped (g < 1).
+
+    BREAKS IF: radiation_sweep.cpp's gas arm drops or reorders a reciprocal,
+    floors N anywhere but at n_floor_q, reads a_eff or d_eff instead of a_gas,
+    reads anything but the bulk count, uses the one-narrow chain, or is
+    reached by a cell with a_gas == 0; or the currency the engine is handed
+    differs from the reference's.
+    """
+    a, d, T, ts, gas, hq, n_bulk, cells = gas_fleck_scene()
+    live = (table_name == "live")
+    tbl = live_table() if live else reference_table()
+    tref = R.E_LIVE if live else R.E
+    tag = f"{table_name} {transport} S{n_ord} k={k_q} GAS ARM"
+    got = cpp_sweep(a, d, k_q, T, 3, ts, transport=transport, n_ord=n_ord, table=tbl,
+                    gas=gas, hq=hq, n_bulk=n_bulk)
+    exp = ref_sweep(a, d, k_q, T, 3, transport=transport, n_ord=n_ord, table=tref,
+                    ts=ts, gas=gas, hq=hq, n_bulk=n_bulk)
+    _assert_bit_for_bit(tag, got, exp, effective=True)
+    f = np.asarray(exp[4])
+    a_gas = R.gas_extinction_plane(gas, hq, n_bulk, ts)
+    for name in _GAS_DAMPED:
+        y, x = cells[name]
+        want = R.fleck_f_gas_q(T[y][x], a_gas[y][x], n_bulk[y][x], table=tref)[0]
+        assert f[y, x] == want < F_ONE, (tag, name, int(f[y, x]), want)
+    for name in _GAS_UNDAMPED:
+        y, x = cells[name]
+        assert f[y, x] == F_ONE, (tag, name, int(f[y, x]))
+    y, x = cells["hot_below_floor"]                      # priced AT the floor
+    assert f[y, x] == R.fleck_f_gas_q(T[y][x], ONE, R.N_FLOOR_Q_LIVE, table=tref)[0]
+    assert R.fleck_f_gas_q(T[y][x], ONE, 2 * n_bulk[y][x], table=tref)[0] == f[y, x]
+    assert f[6, 9] == R.fleck_f_solid_q(T[6][9], a[6][9], 3, tref)[0]   # the solid arm
+    if live:
+        y, x = cells["cool"]
+        assert f[y, x] == F_ONE                           # g < 1 on the live table
+    # non-vacuity: the P5a arm (L = 0 on gas) is a different Fleck plane AND
+    # different books, so the arm is in the arithmetic the C++ just matched
+    p5a = ref_sweep(a, d, k_q, T, 3, transport=transport, n_ord=n_ord, table=tref,
+                    ts=ts, gas=gas, hq=hq, n_bulk=n_bulk, gas_fleck=False)
+    assert not np.array_equal(np.asarray(p5a[4]), f)
+    assert not np.array_equal(np.asarray(p5a[0]), np.asarray(exp[0]))
+
+
+@pytest.mark.parametrize("table_name", ["live", "resolving"])
+def test_fleck_gas_arm_matches_the_reference_cell_by_cell_over_the_table(table_name):
+    """PROPERTY (P5b): the engine's one-cell gas arm -- RadiationSweep.
+    fleck_f_gas_q24, the very FP_HD fleck_L_gas_q / fleck_f_q24 the pre-pass
+    calls -- equals sweep_ref_q.fleck_f_gas_q at every 7th bucket of the table,
+    on both tables, for a_gas = ONE, 0.2 and one count, bulk N from three ambient
+    cells down through ambient pressure, the n_floor_heat density, below it and
+    one raw count, in THREE currencies (the shipped one; c_v = 1 with a 0.05
+    floor; c_v = 0.5 with the floor at one count) -- plus sub-ambient, the table
+    top and the top of the int32 field. Both sides of g = 1 are present.
+
+    BREAKS IF: the arm's chain differs from the reference's in any currency:
+    the floor's comparison, the reciprocal's seed or trips, a narrow, the shift
+    split, or the Fleck division.
+    """
+    import breach_physics as bp
+    live = (table_name == "live")
+    tbl = live_table() if live else reference_table()
+    tref = R.E_LIVE if live else R.E
+    t_amb_q = R.K_AMB << 16
+    arm = bp.RadiationSweep.fleck_f_gas_q24
+    currencies = ((R.C_V_Q_LIVE, R.N_FLOOR_Q_LIVE), (ONE, R.quant(0.05)),
+                  (R.quant(0.5), 1))
+    a_gases = (ONE, R.quant(0.2), 1)
+    n_bulks = (3 * ONE, ONE, isobaric_n_q(3000), R.N_FLOOR_Q_LIVE, 200, 1)
+    temps = [(4 * b) << 16 for b in range(0, R.E_TABLE_SIZE, 7)]
+    temps += [-(292 << 16), -(1 << 16), (15996 << 16) + 65535, (32767 << 16) + 65535]
+    damped = undamped = 0
+    for c_v_q, n_floor_q in currencies:
+        nf, rcv = engine_currency(c_v_q, n_floor_q)
+        for a_g in a_gases:
+            for n_q in n_bulks:
+                for T_q in temps:
+                    got = arm(tbl, T_q, a_g, n_q, nf, rcv, t_amb_q)
+                    want = R.fleck_f_gas_q(T_q, a_g, n_q, c_v_q=c_v_q,
+                                           n_floor_q=n_floor_q, table=tref)[0]
+                    assert got == want, (table_name, c_v_q, n_floor_q, a_g, n_q, T_q,
+                                         got, want)
+                    damped += int(want < F_ONE)
+                    undamped += int(want == F_ONE)
+    assert damped > 0 and undamped > 0, (damped, undamped)
+
+
+def test_the_gas_group_requires_the_folds_currency_at_the_engine_door():
+    """PROPERTY (P5b): with the gas group, the C++ sweep REFUSES a gas currency
+    that is not positive -- n_floor_q <= 0 or recip_cv <= 0, the binding's
+    defaults included -- with a ValueError, before it touches the caller's
+    planes; the reference refuses the same (validate_gas_capacity). A forgotten
+    currency would otherwise price every gas cell's L at 0: the arm silently
+    undamped. Without the gas group the currency is not read (the legal pre-P5a
+    call). The legal edge (one count each) is accepted.
+
+    BREAKS IF: the check is dropped from radiation_sweep.cpp, or the binding
+    grows a non-zero default currency.
+    """
+    import breach_physics as bp
+    h = w = 4
+    a = R.plane(h, w, 0)
+    T = R.plane(h, w, 300 << 16)
+    ts = R.plane(h, w, 0)
+    gas, hq, nb = [R.plane(h, w, ONE)], [R.quant(5.0)], R.plane(h, w, ONE)
+    cpp_sweep(a, a, 0, T, 3, ts, gas=gas, hq=hq, n_bulk=nb)             # legal
+    sweep = bp.RadiationSweep()
+    tbl = reference_table()
+    z32 = np.zeros((h, w), dtype=np.int32)
+    his = np.full((h, w), 3, np.int32)
+    tsa = np.zeros((h, w), dtype=bool)
+    g_a, hq_a, nb_a = gas_arrays(gas, hq, nb)
+    nf, rcv = engine_currency()
+    outs = [np.full((h, w), 777, dtype=np.int64) for _ in range(4)]
+    base = (np.full((h, w), 300 << 16, np.int32), z32, z32, his, tsa, tbl, None,
+            293 << 16, 0, bp.RadiationSweep.SHEAR, 16, *outs)
+    sweep.run(*base, gas=g_a, heat_absorb_q16=hq_a, n_bulk=nb_a, n_floor_q=1,
+              recip_cv=1)                                                 # the legal edge
+    sweep.run(*base)                                                      # no group: not read
+    outs[:] = [np.full((h, w), 777, dtype=np.int64) for _ in range(4)]
+    base = base[:11] + tuple(outs)
+    for bad in (dict(), dict(n_floor_q=nf), dict(recip_cv=rcv),
+                dict(n_floor_q=0, recip_cv=rcv), dict(n_floor_q=nf, recip_cv=0),
+                dict(n_floor_q=-nf, recip_cv=rcv), dict(n_floor_q=nf, recip_cv=-rcv)):
+        with pytest.raises(ValueError):
+            sweep.run(*base, gas=g_a, heat_absorb_q16=hq_a, n_bulk=nb_a, **bad)
+    assert all(np.all(p == 777) for p in outs), "a rejected scene touched the planes"
+    for c_v_q, n_floor_q in ((0, R.N_FLOOR_Q_LIVE), (R.C_V_Q_LIVE, 0)):
+        with pytest.raises(ValueError):
+            R.fleck_prepass(T, a, 3, ts=ts, gas=gas, heat_absorb_q=hq, n_bulk=nb,
+                            c_v_q=c_v_q, n_floor_q=n_floor_q)
 
 
 def test_fleck_prepass_matches_the_reference_cell_by_cell_on_the_shipped_rows():

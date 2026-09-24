@@ -16,7 +16,8 @@
 //                 of derive_ambient), and run()'s pre-pass verbatim: amb_m,
 //                 the emission excess, the EFFECTIVE extinction planes (the
 //                 smoke term on a gas cell, P5a — radiation_sweep.h's FP_HD
-//                 gas_* functions), the Fleck factor.
+//                 gas_* functions), the Fleck factor on both of its arms (the
+//                 solid one, and since P5b the gas one, fleck_L_gas_q).
 //   rs_zero       one thread per cell: OVERWRITE, not accumulate — run()
 //                 zeroes its four outputs after its ingress check, and so does
 //                 this, per env, only where the env passed it.
@@ -26,8 +27,9 @@
 //
 // NOTHING HERE IS ALLOWED TO DIFFER FROM radiation_sweep.cpp IN VALUE. Every
 // shift, split and product below is the CPU line it sits beside in design
-// §2.3; the three FP_HD helpers (fleck_L_solid_q, fleck_f_q24, e_bucket_of)
-// and fixedpoint::mul128_shr are the SAME function on both backends; the
+// §2.3; the FP_HD helpers (fleck_L_solid_q, fleck_L_gas_q, fleck_f_q24,
+// e_bucket_of) and fixedpoint::mul128_shr / reciprocal_q16 /
+// deposit_dT_wide_i64 are the SAME function on both backends; the
 // ordinate constants are copied on the host out of RadiationSweep's own
 // table. The one freedom the GPU takes — the ORDER in which the per-cell books
 // accumulate — is exactly the freedom integer addition grants.
@@ -35,7 +37,8 @@
 #include "cuda_radiation_sweep.h"
 #include "cuda_resident.h"            // radiation_sweep_launch_resident + slots
 #include "radiation_sweep.h"          // OrdinateConst, ordinate_table (host);
-                                      // fleck_L_solid_q, fleck_f_q24 (FP_HD)
+                                      // fleck_L_solid_q, fleck_L_gas_q (P5b),
+                                      // fleck_f_q24 (FP_HD)
 #include "emissive_table.h"           // e_bucket_of (FP_HD), E_TABLE_SIZE
 #include "fixed_point.h"              // FP_ONE, FP_SHIFT, mul128_shr (FP_HD)
 #include "cuda_fixedpoint_device.cuh" // the shared device kit
@@ -169,6 +172,7 @@ __global__ void rs_prepass(int n_env, int plane,
                            int n_gases,
                            const int32_t* __restrict__ heat_absorb_q16,
                            const int32_t* __restrict__ n_bulk,
+                           int32_t n_floor_q, int64_t recip_cv,   // P5b: the gas currency
                            int64_t w_m, bool fleck_enabled,
                            int64_t* __restrict__ amb_m,
                            int64_t* __restrict__ ex_cell,
@@ -214,6 +218,7 @@ __global__ void rs_prepass(int n_env, int plane,
         // which skips the zero-coefficient gases this kernel may be handed.
         int32_t ae = (int32_t)a;
         int32_t de = (int32_t)d;
+        int32_t ag = 0;                     // the smoke term's own extinction
         if (n_gases > 0 && !thermal_solid[gi]) {
             const size_t cell = (size_t)(gi - (int64_t)env * (int64_t)plane);
             const int32_t* genv = gas + (size_t)env * (size_t)n_gases * (size_t)plane;
@@ -221,7 +226,8 @@ __global__ void rs_prepass(int n_env, int plane,
             for (int g = 0; g < n_gases; ++g) {
                 sum += gas_density_term(heat_absorb_q16[g], genv[(size_t)g * (size_t)plane + cell]);
             }
-            ae = gas_effective_a(ae, gas_extinction_finish(sum, n_bulk[gi]), false);
+            ag = gas_extinction_finish(sum, n_bulk[gi]);
+            ae = gas_effective_a(ae, ag, false);
             de = gas_effective_d(de, ae);
         }
         a_eff[gi] = ae;
@@ -229,9 +235,13 @@ __global__ void rs_prepass(int n_env, int plane,
         int64_t L = 0;
         if (thermal_solid[gi]) {
             L = fleck_L_solid_q(ex, heat_atten_q[gi], heat_inv_shift[gi]);
+        } else if (ag > 0) {
+            // THE GAS ARM (P5b) — run()'s, through the same FP_HD function: the
+            // smoke term's excess in the temperature fold's own gas currency
+            // (the two scalars ride by value; the per-cell reciprocal_q16 and
+            // the staged mul128_shr chain are the kit's, on both backends).
+            L = fleck_L_gas_q(ex, ag, n_bulk[gi], n_floor_q, recip_cv);
         }
-        // GAS: still L = 0 on BOTH backends — also on an absorbing gas cell
-        // since P5a; P5b fills the arm (run()'s comment).
         int64_t T_abs = (int64_t)temperature[gi] + (int64_t)t_amb_q[env];
         if (T_abs < 1) T_abs = 1;
         f_q24[gi] = fleck_enabled ? fleck_f_q24(T_abs, L) : F_ONE;
@@ -450,6 +460,7 @@ int radiation_sweep_launch_resident(
     const int32_t* d_t_amb_q,
     const int32_t* d_gas, int n_gases,
     const int32_t* d_heat_absorb_q16, const int32_t* d_n_bulk,
+    int32_t n_floor_q, int64_t recip_cv,
     int transport, int n_ordinates, bool fleck_enabled,
     int64_t* d_outflow, int64_t* d_amb_m, int64_t* d_ex_cell, int32_t* d_f_q24,
     int32_t* d_a_eff, int32_t* d_d_eff,
@@ -473,6 +484,15 @@ int radiation_sweep_launch_resident(
             "radiation_sweep_launch_resident: the gas group (d_gas, "
             "d_heat_absorb_q16, d_n_bulk) is all or none, with 0 <= n_gases <= "
             "N_GAS_PLANES_MAX (design v3 section 6.3, P5a)");
+    }
+    // P5b: the gas arm's currency — two HOST scalars shared by every env (the
+    // fold's config dials, like the heat_absorb table), so checked here as
+    // host control flow, exactly as run() checks them.
+    if (gas_given && (n_floor_q <= 0 || recip_cv <= 0)) {
+        throw std::invalid_argument(
+            "radiation_sweep_launch_resident: the gas group needs the "
+            "temperature fold's gas currency - n_floor_q and recip_cv must both "
+            "be > 0 (design v3 section 2.8's gas arm, P5b)");
     }
     if (d_a_eff == nullptr || d_d_eff == nullptr) {
         throw std::invalid_argument(
@@ -509,6 +529,7 @@ int radiation_sweep_launch_resident(
         d_heat_inv_shift, d_thermal_solid, d_amb_level, d_is_vacuum,
         d_e_table, d_vac_level, d_t_amb_q,
         d_gas, n_gases, d_heat_absorb_q16, d_n_bulk,
+        n_floor_q, recip_cv,
         w_m, fleck_enabled,
         d_amb_m, d_ex_cell, d_f_q24, d_a_eff, d_d_eff, d_cnt);
     cuda_check(cudaGetLastError(), "prepass launch");
@@ -547,7 +568,8 @@ int radiation_sweep_step(
     bool fleck_enabled,
     int32_t* fleck_out, int64_t* min_stream_out, int64_t* max_stream_out,
     const int32_t* gas, int n_gases,
-    const int32_t* heat_absorb_q16, const int32_t* n_bulk) {
+    const int32_t* heat_absorb_q16, const int32_t* n_bulk,
+    int32_t n_floor_q, int64_t recip_cv) {
     if (RadiationSweep::ordinate_table(n_ordinates, transport) == nullptr) {
         throw std::invalid_argument(
             "radiation_sweep_step (CUDA): unsupported (n_ordinates, transport) "
@@ -568,6 +590,14 @@ int radiation_sweep_step(
             "radiation_sweep_step (CUDA): n_gases outside [0, "
             "N_GAS_PLANES_MAX] - the gas density sum's int64 headroom is "
             "argued for at most 16 planes");
+    }
+    // P5b: the gas arm's currency, refused on the host exactly as run()
+    // refuses it — before anything crosses the bus.
+    if (gas_given && (n_floor_q <= 0 || recip_cv <= 0)) {
+        throw std::invalid_argument(
+            "radiation_sweep_step (CUDA): the gas group needs the temperature "
+            "fold's gas currency - n_floor_q and recip_cv must both be > 0 "
+            "(design v3 section 2.8's gas arm, P5b)");
     }
     // The ACTIVE gases, as run() forms them: a zero coefficient adds exactly 0
     // to the density sum, so its plane never crosses the bus.
@@ -675,6 +705,7 @@ int radiation_sweep_step(
         n_act ? ar.at<int32_t>(o_gas) : nullptr, n_act,
         n_act ? ar.at<int32_t>(o_hq) : nullptr,
         n_act ? ar.at<int32_t>(o_nb) : nullptr,
+        n_floor_q, recip_cv,               // P5b: read only where a_gas > 0
         transport, n_ordinates, fleck_enabled,
         ar.at<int64_t>(o_out), ar.at<int64_t>(o_ambm), ar.at<int64_t>(o_ex),
         ar.at<int32_t>(o_f),

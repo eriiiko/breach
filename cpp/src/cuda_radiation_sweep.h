@@ -100,13 +100,19 @@ namespace breach_cuda {
 //                       plane is never uploaded — and with every shipped row at
 //                       0.0 the live GPU sweep uploads no gas plane and no
 //                       n_bulk at all, so P4's measured cost does not move.
+//   n_floor_q, recip_cv : THE GAS CURRENCY (P5b) — run()'s two, required > 0
+//                       with the gas group: the temperature fold's own N floor
+//                       and c_v reciprocal, which the Fleck pre-pass's gas arm
+//                       prices every absorbing gas cell in (fleck_L_gas_q).
+//                       Two scalars by value; nothing new crosses the bus, and
+//                       they are read only where a_gas > 0 — never, shipped.
 // Throws std::invalid_argument on everything run() and derive_ambient() reject
 // (an unsupported (n_ordinates, transport), k_leak_q outside [0, ONE],
 // vac_level above e_table[0], a cell violating 0 <= a <= d <= ONE, an
 // ambient level outside [0, e_table[0]], a partial gas group, n_gases outside
-// [0, N_GAS_PLANES_MAX] or a heat_absorb_q16 outside [0, HEAT_ABSORB_Q_MAX]),
-// and std::runtime_error on a CUDA error. Returns the number of kernel
-// launches issued (design §10's count).
+// [0, N_GAS_PLANES_MAX], a heat_absorb_q16 outside [0, HEAT_ABSORB_Q_MAX], or a
+// non-positive gas currency with the group), and std::runtime_error on a CUDA
+// error. Returns the number of kernel launches issued (design §10's count).
 int radiation_sweep_step(
     const int32_t* temperature,
     const int32_t* heat_atten_q, const int32_t* dyn_heat_atten_q,
@@ -119,7 +125,8 @@ int radiation_sweep_step(
     bool fleck_enabled,
     int32_t* fleck_out, int64_t* min_stream_out, int64_t* max_stream_out,
     const int32_t* gas = nullptr, int n_gases = 0,
-    const int32_t* heat_absorb_q16 = nullptr, const int32_t* n_bulk = nullptr);
+    const int32_t* heat_absorb_q16 = nullptr, const int32_t* n_bulk = nullptr,
+    int32_t n_floor_q = 0, int64_t recip_cv = 0);
 
 // The launch count radiation_sweep_launch_resident issues for one call of the
 // given shape (the three bookkeeping kernels + one per wavefront index), or -1

@@ -263,6 +263,11 @@ constexpr int RS_BAD_HEAT_ABSORB = 4;
 //   n_gases         : 0 <= n_gases <= RadiationSweep::N_GAS_PLANES_MAX (host)
 //   d_heat_absorb_q16 : (n_gases,) int32 Q16 — shared by every env (config)
 //   d_n_bulk        : (N, h, w) int32 Q16.16 — the bulk (O2 + N2) count
+//   n_floor_q, recip_cv : THE GAS CURRENCY (P5b), two host scalars shared by
+//                     every env (the temperature fold's config dials, like the
+//                     heat_absorb table), required > 0 with the gas group —
+//                     the Fleck pre-pass's gas arm prices every absorbing gas
+//                     cell in them (radiation_sweep.h fleck_L_gas_q)
 //   d_outflow       : (N, n_ordinates, h, w) int64 scratch (every cell is
 //                     written before it is read; never needs clearing)
 //   d_amb_m, d_ex_cell : (N, h, w) int64 scratch
@@ -273,8 +278,9 @@ constexpr int RS_BAD_HEAT_ABSORB = 4;
 //   d_cnt           : (N, RADIATION_SWEEP_CNT_SLOTS) int64
 // Throws std::invalid_argument on an unsupported (n_ordinates, transport),
 // an n_env above 65535 (the wavefront grid's blockIdx.z carries the env), a
-// partial gas group or an n_gases outside [0, N_GAS_PLANES_MAX] — host
-// control flow, checked before any launch. Returns the launch count.
+// partial gas group, an n_gases outside [0, N_GAS_PLANES_MAX] or a
+// non-positive gas currency with the group — host control flow, checked
+// before any launch. Returns the launch count.
 int radiation_sweep_launch_resident(
     int n_env, int h, int w,
     const int32_t* d_temperature,
@@ -286,6 +292,7 @@ int radiation_sweep_launch_resident(
     const int32_t* d_t_amb_q,
     const int32_t* d_gas, int n_gases,
     const int32_t* d_heat_absorb_q16, const int32_t* d_n_bulk,
+    int32_t n_floor_q, int64_t recip_cv,
     int transport, int n_ordinates, bool fleck_enabled,
     int64_t* d_outflow, int64_t* d_amb_m, int64_t* d_ex_cell, int32_t* d_f_q24,
     int32_t* d_a_eff, int32_t* d_d_eff,

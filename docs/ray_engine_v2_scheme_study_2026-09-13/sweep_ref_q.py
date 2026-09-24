@@ -26,8 +26,12 @@ WHAT TRANSCRIBES WHAT
   reciprocal_q16     <- cpp/src/fixed_point.h reciprocal_q16 (4 Newton trips)
   make_recip         <- cpp/src/fixed_point.h make_recip (one double divide)
   deposit_dT_wide_i64 <- cpp/src/fixed_point.h, the STAGED wide chain (2.8)
-  fleck_L_gas_q      <- design v3 section 2.8's gas L_q (P5a: a MEASURING
-                        primitive -- no pre-pass calls it yet, see below)
+  fleck_L_gas_q      <- design v3 section 2.8's gas L_q (P5a transcribed it to
+                        measure; P5b's pre-pass calls it: the GAS ARM, below)
+  gas_rad_dT_q       <- design v3 sections 2.8 / 6.3: a gas cell's signed
+                        rad_net through the same chain, magnitude then sign --
+                        the 0-D gas cell's radiative sub-step (P5b), and the
+                        conversion P5c's Pass-1 gas branch owes
 
 ARITHMETIC. Pure Python ints throughout, so no overflow is possible and every
 headroom question is *measured* (`SweepResult.max_*`) rather than assumed. The
@@ -68,12 +72,34 @@ holds:
 
 and the sweep reads `a = max(heat_atten_q, a_gas)`, `d = max(dyn_heat_atten_q,
 a)` there (stamps are MAX, never sums). A thermal solid keeps its material
-extinction whatever gas its pores hold. The Fleck pre-pass's GAS arm stays L = 0
-(f == 2^24) on both backends: `fleck_L_gas_q` below is section 2.8's chain,
-transcribed so P5a can MEASURE the gas stiffness, and no pre-pass calls it --
-wiring it is P5b's, with the Pass-1 gas branch. Nothing consumes a gas cell's
-rad_net yet (the fold's `ts` mask), and every shipped `heat_absorb` is 0.0, so
-the live game does not move.
+extinction whatever gas its pores hold. Nothing consumes a gas cell's rad_net
+yet (the fold's `ts` mask stays closed until P5c), and every shipped
+`heat_absorb` is 0.0, so the live game does not move.
+
+THE GAS ARM OF THE FLECK PRE-PASS -- WIRED, DORMANT (P5b, 2026-09-24; design v3
+2.8 / 6.3). P5a measured gas bounded but NOT modest (p5a_gas_stiffness_study.py:
+at equal temperature sooty gas is ~18x stiffer than any shipped solid, damped
+from 160 game at the n_floor_heat density), and its 0-D model showed the L = 0
+arm overshooting below ambient in ONE step wherever g > 4T/T_abs. So a gas cell
+whose smoke term absorbs (a_gas > 0) now takes
+
+    L = fleck_L_gas_q(T, a_gas, N_bulk) = deposit_dT_wide_i64((a_gas * ex) >> 16,
+                                                              recip_N, recip_cv)
+
+its free excess-emission loss through THE TEMPERATURE FOLD'S OWN GAS CURRENCY:
+N floored at n_floor_heat, `reciprocal_q16` per cell, and c_v's exact inverse
+`make_recip(c_v_q / 65536)` -- the three integers temperature_solver.cpp's Pass
+1 divides its gas deposit by, which the engine derives from the fold's own dials
+and hands the sweep through `PhysicsEngine::gas_capacity_q()`. The chain is
+design 2.8's STAGED one (two narrows), which floors differently from the heat
+deposit's one-narrow chain: by at most (recip_cv >> 32) + 1 LSB, i.e. one LSB at
+c_v >= 1 and 131 LSB (0.002 game) at the shipped c_v
+(tests/test_fixed_point_i64_twins.py) -- and it is the chain P5c's radiative gas
+deposit converts through. `fleck_prepass` takes the gas group to wire it; without the group a gas
+cell keeps L = 0 (it emits no excess the pre-pass could see). The property it
+exists for -- a hot absorbing gas cell cools monotonically and never below
+ambient -- is gate 14, on `gas_cell_march`, a 0-D model of the gas radiative
+sub-step.
 """
 from __future__ import annotations
 
@@ -122,8 +148,9 @@ TICK_HZ = 24.0                   # the sim clock (for the analytic cooling refer
 INT32_MAX = (1 << 31) - 1
 INT32_MIN = -(1 << 31)
 # The GAS side of the heat-count currency (P5a). Read by the gas capacity chain
-# (`fleck_L_gas_q`), which is a measuring primitive; `config_dials_match()`
-# guards both against config.toml [physics.thermal].
+# (`fleck_L_gas_q` -- the pre-pass's gas arm since P5b) in their integer forms
+# C_V_Q_LIVE / N_FLOOR_Q_LIVE below; `config_dials_match()` guards both against
+# config.toml [physics.thermal].
 C_V_LIVE = 0.0076849             # config.toml:172   c_v (air's rho*c_v / THERMAL_MASS_UNIT)
 N_FLOOR_HEAT_LIVE = 0.01         # config.toml:206   n_floor_heat (the deposit's N floor)
 
@@ -410,9 +437,42 @@ def mul128_shr(a: int, b: int, shift: int) -> int:
 def deposit_dT_wide_i64(deposit: int, recip_n_q: int, recip_cv: int) -> int:
     """fixed_point.h deposit_dT_wide_i64 -- design 2.8's STAGED chain, two
     narrows: mul128_shr(mul128_shr(deposit, recip_n, 16), recip_cv, 32). The
-    chain the gas branch of the Fleck pre-pass (and P5b's radiative gas
-    deposit) converts heat counts to a Q16.16 temperature through."""
+    chain the gas arm of the Fleck pre-pass (P5b) and P5c's radiative gas
+    deposit convert heat counts to a Q16.16 temperature through."""
     return mul128_shr(mul128_shr(deposit, recip_n_q, 16), recip_cv, RECIP_SHIFT)
+
+
+# THE GAS CURRENCY, in the integer forms the temperature fold divides by (P5b).
+# temperature_solver.cpp's Pass 1 derives exactly these three from its two
+# dials -- `n_floor_q = quantize(n_floor_heat)`, `c_v_q = quantize(c_v)` (c_v's
+# ONE integer form, report_t2 10.2) and `recip_cv = make_recip(c_v_q / 65536)`
+# -- and the engine derives the same three from the fold's own dials and hands
+# them to the sweep's gas arm through `PhysicsEngine::gas_capacity_q()`, so the
+# arm cannot price a gas cell in a second currency (tests/
+# test_radiation_sweep_gas_fleck.py holds it to the fold's own gas deposit, bit
+# for bit). These are the shipped values (config_dials_match() guards
+# the real dials they quantize) and the DEFAULT currency of every gas function
+# below, as K_AMB is the default ambient; a gate that wants another passes it.
+C_V_Q_LIVE = quant(C_V_LIVE)                  # 504
+N_FLOOR_Q_LIVE = quant(N_FLOOR_HEAT_LIVE)     # 655
+
+
+def validate_gas_capacity(c_v_q: int, n_floor_q: int):
+    """The gas capacity chain's ingress (P5b), as raises -- the sweep's own
+    re-check, mirrored in radiation_sweep.cpp (which is handed c_v's reciprocal
+    rather than c_v itself, and requires that positive):
+
+      * c_v_q > 0: c_v has no reciprocal otherwise (make_recip divides by it),
+        and a reciprocal <= 0 would make every gas L <= 0 -- the arm silently
+        UNDAMPED, which is the failure this check exists to make loud;
+      * n_floor_q > 0: the N floor keeps max(N, floor) >= 1, the domain
+        reciprocal_q16 is defined on."""
+    if c_v_q <= 0:
+        raise ValueError(f"c_v_q = {c_v_q}: the gas capacity c_v must be > 0 "
+                         f"(the gas arm divides by it)")
+    if n_floor_q <= 0:
+        raise ValueError(f"n_floor_q = {n_floor_q}: the n_floor_heat floor must be "
+                         f"> 0 (it bounds the per-cell reciprocal)")
 
 
 # --------------------------------------------------------------------------- #
@@ -705,24 +765,39 @@ def gas_capacity_recips(n_bulk_raw: int, c_v_q: int, n_floor_q: int):
     return reciprocal_q16(n_q), make_recip(c_v_q / 65536.0)
 
 
-def fleck_L_gas_q(T_q: int, a_gas_q: int, n_bulk_raw: int, *, c_v_q: int,
-                  n_floor_q: int, table=E, e_ref: int = None) -> int:
+def fleck_L_gas_q(T_q: int, a_gas_q: int, n_bulk_raw: int, *,
+                  c_v_q: int = C_V_Q_LIVE, n_floor_q: int = N_FLOOR_Q_LIVE,
+                  table=E, e_ref: int = None) -> int:
     """Design 2.8's GAS L_q: the cell's free excess-emission loss this tick, in
     Q16.16 temperature -- the excess a_gas*(E°[T] - E_ref) through the STAGED
     deposit chain (recip_N, then recip_cv):
 
         L_q = deposit_dT_wide_i64((a_gas * ex) >> 16, recip_N_q, recip_cv)
 
-    A MEASURING PRIMITIVE (P5a). No pre-pass calls it: the sweep's gas arm is
-    L = 0 on both backends until P5b wires this, with the Pass-1 gas branch, in
-    the reference first. P5a uses it to re-derive the gas stiffness
-    g = 4 L / T_abs at the live scale and c_v (p5a_gas_stiffness_study.py)."""
+    THE GAS ARM of the Fleck pre-pass since P5b (fleck_prepass, via
+    fleck_f_gas_q); P5a transcribed it to re-derive the gas stiffness
+    g = 4 L / T_abs at the live scale and c_v (p5a_gas_stiffness_study.py).
+    `c_v_q` / `n_floor_q` are the fold's currency (C_V_Q_LIVE / N_FLOOR_Q_LIVE
+    by default); `n_bulk_raw` is the cell's BULK count, the N its capacity is."""
     ref = table[0] if e_ref is None else e_ref
     ex = table[e_bucket_of(T_q)] - ref
     if ex < 0:
         ex = 0
     recip_n, recip_cv = gas_capacity_recips(n_bulk_raw, c_v_q, n_floor_q)
     return deposit_dT_wide_i64((a_gas_q * ex) >> 16, recip_n, recip_cv)
+
+
+def fleck_f_gas_q(T_q: int, a_gas_q: int, n_bulk_raw: int, *,
+                  c_v_q: int = C_V_Q_LIVE, n_floor_q: int = N_FLOOR_Q_LIVE,
+                  table=E, e_ref: int = None, shift: int = F_SHIFT,
+                  alpha_floor: str = ALPHA_FLOOR_DEFAULT):
+    """(f_q, L_q) for ONE GAS cell -- the gas twin of fleck_f_solid_q and exactly
+    what the pre-pass's gas arm computes there (P5b): the SAME excess-form Q24
+    factor f = floordiv(T_abs << 24, max(T_abs, 4L)) on the gas L. The
+    engine's one-cell mirror is RadiationSweep.fleck_f_gas_q24 (gate 0)."""
+    L = fleck_L_gas_q(T_q, a_gas_q, n_bulk_raw, c_v_q=c_v_q, n_floor_q=n_floor_q,
+                      table=table, e_ref=e_ref)
+    return fleck_f_q(T_q, L, shift=shift, alpha_floor=alpha_floor), L
 
 
 # --------------------------------------------------------------------------- #
@@ -1072,8 +1147,10 @@ def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
 
 
 def fleck_prepass(T, a, his, *, table=E, e_ref=None, enabled: bool = True,
-                  alpha_floor: str = ALPHA_FLOOR_DEFAULT, ts=None):
-    """The pre-sweep Fleck pass for SOLIDS (design section 2.8). Q24 (row 32).
+                  alpha_floor: str = ALPHA_FLOOR_DEFAULT, ts=None,
+                  gas=None, heat_absorb_q=None, n_bulk=None,
+                  c_v_q: int = C_V_Q_LIVE, n_floor_q: int = N_FLOOR_Q_LIVE):
+    """The pre-sweep Fleck pass (design section 2.8). Q24 (row 32).
 
     `his` may be an int (uniform) or a plane. `e_ref` is the ambient LEVEL, the
     same scalar-or-plane the sweep takes (ambient_plane): L_q is the cell's free
@@ -1082,14 +1159,47 @@ def fleck_prepass(T, a, his, *, table=E, e_ref=None, enabled: bool = True,
     Returns the f_plane.
 
     `ts` (P5a) is the thermal-solid mask, exactly the branch the engine takes
-    (radiation_sweep.cpp's pre-pass): a thermal solid takes the solid L_q on
-    its MATERIAL `a`, every other cell -- a GAS cell, now absorbing through the
-    smoke term -- takes the gas arm, which is still L = 0 (f == 2^24): the
-    gas chain (`fleck_L_gas_q`) is P5b's to wire. `ts=None` is the pre-P5a
-    call, every cell on the solid branch; on a legal scene (a == 0 off the
-    thermal solids) the two agree cell for cell.
+    (radiation_sweep.cpp's pre-pass): a thermal solid takes the SOLID arm on its
+    MATERIAL `a` and its `his`; every other cell is a GAS cell. `ts=None` is the
+    pre-P5a call, every cell on the solid branch; on a legal scene (a == 0 off
+    the thermal solids) the two agree cell for cell.
+
+    THE GAS ARM (P5b, design 2.8 / 6.3). With the gas group -- `gas`,
+    `heat_absorb_q`, `n_bulk`, the same three sweep_q takes, and `ts` -- a gas
+    cell whose smoke term absorbs (a_gas > 0) takes
+
+        (f, L) = fleck_f_gas_q(T, a_gas, N_bulk; c_v_q, n_floor_q)
+        L      = deposit_dT_wide_i64((a_gas * ex) >> 16, recip_N, recip_cv)
+
+    its free excess-emission loss through the SAME capacity chain the
+    temperature fold's gas deposit divides by (N floored at n_floor_heat,
+    reciprocal_q16 per cell, c_v's exact inverse) -- `c_v_q` / `n_floor_q`
+    default to that shipped currency. Every other gas cell keeps L = 0,
+    f == 2^24: a_gas == 0 means no absorber, or a cell below the N_EPS floor,
+    whose emission vanishes with its absorption (design 6.3), so it has no
+    excess to damp; and without the gas group the pre-pass cannot see the
+    smoke term at all -- the arm P5a shipped, which gate 14 measures beside
+    this one.
+
+    WHY a_gas AND NOT THE EFFECTIVE `a` the sweep reads. Design 6.3 writes the
+    gas L on a_gas, and on every LEGAL material table the two are equal on a
+    gas cell (heat_atten > 0 => thermal solid, so the material `a` is 0
+    there). They part only on a direct caller's ILLEGAL scene -- a material
+    `a` on a gas cell -- whose material emission is left exactly as P5a
+    shipped it rather than handed a capacity the gas group did not bring.
     """
     h, w = len(T), len(T[0])
+    # The gas group parses and validates first, with the flag on or off: a
+    # rejected scene is rejected whether or not the damping is enabled.
+    a_gas = None
+    gas_args = (gas, heat_absorb_q, n_bulk)
+    if any(v is not None for v in gas_args):
+        if any(v is None for v in gas_args) or ts is None:
+            raise ValueError("the gas arm takes gas, heat_absorb_q, n_bulk and ts "
+                             "together")
+        validate_gas(gas, heat_absorb_q, n_bulk, ts, h, w)
+        validate_gas_capacity(c_v_q, n_floor_q)
+        a_gas = gas_extinction_plane(gas, heat_absorb_q, n_bulk, ts)
     if not enabled:
         return plane(h, w, F_ONE)
     amb_lvl = ambient_plane(e_ref, h, w, table)
@@ -1097,7 +1207,14 @@ def fleck_prepass(T, a, his, *, table=E, e_ref=None, enabled: bool = True,
     for y in range(h):
         for x in range(w):
             if ts is not None and not ts[y][x]:
-                continue                    # the GAS arm: L = 0, f == 2^24 (P5b wires it)
+                # THE GAS ARM (P5b): the smoke term's extinction, priced in the
+                # fold's gas currency. No absorber -> no excess -> f == 2^24.
+                if a_gas is not None and a_gas[y][x] > 0:
+                    out[y][x] = fleck_f_gas_q(T[y][x], a_gas[y][x], n_bulk[y][x],
+                                              c_v_q=c_v_q, n_floor_q=n_floor_q,
+                                              table=table, e_ref=amb_lvl[y][x],
+                                              alpha_floor=alpha_floor)[0]
+                continue
             s = his if isinstance(his, int) else his[y][x]
             out[y][x] = fleck_f_solid_q(T[y][x], a[y][x], s, table,
                                         amb_lvl[y][x],
@@ -1211,10 +1328,13 @@ class Scene:
     counters: FoldCounters = field(default_factory=FoldCounters)
     # P5a: the gas extinction's inputs (sweep_q's), all three or none. The
     # fold below still converts THERMAL SOLIDS only -- a gas cell's rad_net is
-    # booked by the sweep and consumed by nothing until P5b.
+    # booked by the sweep and consumed by nothing until P5c. Since P5b the
+    # pre-pass's GAS ARM reads them too, priced in the fold's gas currency.
     gas: list = None
     heat_absorb_q: list = None
     n_bulk: list = None
+    c_v_q: int = C_V_Q_LIVE
+    n_floor_q: int = N_FLOOR_Q_LIVE
 
     def __post_init__(self):
         h, w = len(self.a), len(self.a[0])
@@ -1223,16 +1343,17 @@ class Scene:
                        for y in range(h)]
 
     def tick(self, *, clamp_enabled=True, rails_enabled=True, int32_sat=True):
-        f = fleck_prepass(self.T, self.a, self.his, e_ref=self.e_ref,
-                          enabled=self.fleck, alpha_floor=self.alpha_floor,
-                          ts=self.ts)
         gas_kw = {}
         if self.gas is not None:
             gas_kw = dict(gas=self.gas, heat_absorb_q=self.heat_absorb_q,
-                          n_bulk=self.n_bulk, ts=self.ts)
+                          n_bulk=self.n_bulk)
+        f = fleck_prepass(self.T, self.a, self.his, e_ref=self.e_ref,
+                          enabled=self.fleck, alpha_floor=self.alpha_floor,
+                          ts=self.ts, c_v_q=self.c_v_q, n_floor_q=self.n_floor_q,
+                          **gas_kw)
         res = sweep_q(self.a, self.d, self.k, self.T, n_ord=self.n_ord,
                       transport=self.transport, f_plane=f, e_ref=self.e_ref,
-                      body_mode=self.body_mode, **gas_kw)
+                      body_mode=self.body_mode, ts=self.ts, **gas_kw)
         fold_pass1_solid(self.T, res.rad_net, res.rad_fluence, self.his, self.ts,
                          self.counters, clamp_enabled=clamp_enabled,
                          rails_enabled=rails_enabled, int32_sat=int32_sat,
@@ -1295,6 +1416,82 @@ def cell_march(T0_q: int, phi: int, a_q: int, his: int, ticks: int, *,
                          int32_sat=int32_sat, table=table)
         out.append(T[0][0])
     return (out if trace else T[0][0]), counters
+
+
+# --------------------------------------------------------------------------- #
+# The 0-D GAS cell (P5b): cell_rad_net_q / cell_march's twin for a gas cell --
+# the gas arm's Fleck factor, the gas capacity chain -- for gate 14, the
+# property the arm exists for. The engine's Pass-1 GAS branch is P5c's to build;
+# this models its RADIATIVE SUB-STEP only, under a held fluence and a held bulk
+# count (0-D: nothing flows in or out).
+# --------------------------------------------------------------------------- #
+def gas_rad_dT_q(rn: int, n_bulk_raw: int, *, c_v_q: int = C_V_Q_LIVE,
+                 n_floor_q: int = N_FLOOR_Q_LIVE) -> int:
+    """A gas cell's signed rad_net (heat counts) as a Q16.16 temperature step,
+    through the capacity chain the fold's gas deposit divides by, MAGNITUDE
+    THEN SIGN (design 2.8 / 6.3), so +x and -x lose equal magnitude -- the
+    shr_round0 symmetry idiom, since the staged chain floors:
+
+        dT = sign(rn) * deposit_dT_wide_i64(|rn|, recip_N, recip_cv)
+
+    The conversion P5c's Pass-1 gas branch owes (there it lands as an energy
+    through the seam, not as a temperature); here it is the 0-D model's step."""
+    recip_n, recip_cv = gas_capacity_recips(n_bulk_raw, c_v_q, n_floor_q)
+    mag = deposit_dT_wide_i64(-rn if rn < 0 else rn, recip_n, recip_cv)
+    return -mag if rn < 0 else mag
+
+
+def gas_cell_rad_net_q(T_q: int, phi: int, a_q: int, n_bulk_raw: int, *,
+                       c_v_q: int = C_V_Q_LIVE, n_floor_q: int = N_FLOOR_Q_LIVE,
+                       table=E, e_ref: int = None, fleck: bool = True,
+                       alpha_floor: str = ALPHA_FLOOR_DEFAULT) -> int:
+    """rad_net for one GAS cell under a held total fluence Phi -- cell_rad_net_q's
+    excess form with the GAS arm's Fleck factor:
+
+        rad_net = ((Phi*a) >> 16) - ((src*a) >> 16),
+        src     = e_ref + ((ex * f) >> 24),   f = fleck_f_gas_q(T, a, N_bulk)
+
+    `a_q` is the cell's a_gas. `fleck=False` is the arm P5a shipped -- L = 0,
+    f == 2^24 -- which gate 14 measures beside the wired one."""
+    ref = table[0] if e_ref is None else e_ref
+    ex = table[e_bucket_of(T_q)] - ref
+    if ex < 0:
+        ex = 0
+    f_q = F_ONE
+    if fleck:
+        f_q = fleck_f_gas_q(T_q, a_q, n_bulk_raw, c_v_q=c_v_q, n_floor_q=n_floor_q,
+                            table=table, e_ref=ref, alpha_floor=alpha_floor)[0]
+    src = ref + ((ex * f_q) >> F_SHIFT)
+    return ((phi * a_q) >> 16) - ((src * a_q) >> 16)
+
+
+def gas_cell_march(T0_q: int, phi: int, a_q: int, n_bulk_raw: int, ticks: int, *,
+                   c_v_q: int = C_V_Q_LIVE, n_floor_q: int = N_FLOOR_Q_LIVE,
+                   table=E, e_ref: int = None, fleck: bool = True,
+                   alpha_floor: str = ALPHA_FLOOR_DEFAULT, trace: bool = False):
+    """March one GAS cell's radiative sub-step `ticks` times under a held
+    fluence, its bulk count held. Returns T_q, or the trace when trace=True.
+
+    NO CLAMP AND NO RAILS, ON PURPOSE. The maximum-principle clamp never clips a
+    COOLING step (design 2.8), and the recovery's T_MIN rail (eos_solver.cpp
+    step 7) would HIDE a step that crossed below ambient -- which is exactly
+    what this model exists to measure: it shows what the damping alone does.
+    The one bound kept is the int32 field's own, sat_add_q16. A step that lands
+    at or below ABSOLUTE ZERO ends the march there: the Fleck factor is not
+    defined at T_abs <= 0 (fleck_f_q's precondition, which the engine's T_MIN
+    rail keeps), and a march that got there has failed the property already."""
+    T = T0_q
+    out = [T]
+    for _ in range(ticks):
+        rn = gas_cell_rad_net_q(T, phi, a_q, n_bulk_raw, c_v_q=c_v_q,
+                                n_floor_q=n_floor_q, table=table, e_ref=e_ref,
+                                fleck=fleck, alpha_floor=alpha_floor)
+        T = sat_add_q16(T, gas_rad_dT_q(rn, n_bulk_raw, c_v_q=c_v_q,
+                                        n_floor_q=n_floor_q))
+        out.append(T)
+        if T + (K_AMB << 16) <= 0:
+            break
+    return out if trace else T
 
 
 # --------------------------------------------------------------------------- #
