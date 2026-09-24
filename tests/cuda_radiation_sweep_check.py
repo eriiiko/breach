@@ -63,6 +63,18 @@ one binary, one scene.
           live conductor with a TEST-FIXTURE smoke coefficient, only the
           radiation backend flipping. Every shipped heat_absorb is 0.0, so
           parts 1-9 are the dormant path and this is the live one.
+          SINCE P5b (design v3 §2.8 / §6.3) the Fleck plane every one of
+          those compares carries the GAS ARM too -- damped gas cells asserted
+          present in the smoke matrix, the features scene, the full-size
+          grids and the batch -- and three legs are the arm's own: P10h, one
+          scene carrying every case of it (hot smoke at ambient density, at
+          ambient pressure, at / below the n_floor density, at the N_EPS
+          edge, a mix, a body in it; beside the cells it must leave at 2^24)
+          on the LIVE table and the resolving one; the currency's ingress
+          (refused alike on both backends, planes untouched); and P10i, the
+          live conductor with HOT smoke (seeded through the gas-energy seam)
+          and a fixture coefficient, where the engine's own gas_capacity_q
+          prices the damped gas cells on both backends.
 
 NON-VACUITY is asserted per part: planes non-zero, Fleck factors below 2^24
 where a part claims damping, bodies present, the GPU dispatch counter moving.
@@ -81,8 +93,9 @@ import numpy as np
 import breach_physics as bp
 
 from _radiation_sweep_harness import (  # noqa: E402
-    F_ONE, ONE, R, T_AMB_Q, TRANSPORTS, as_i32, gas_arrays, random_gas, random_scene,
-    reference_table, smoke_feature_scene)
+    F_ONE, ONE, R, T_AMB_Q, TRANSPORTS, as_i32, engine_currency, gas_arrays,
+    gas_fleck_scene, live_table, random_gas, random_scene, reference_table,
+    smoke_feature_scene)
 
 Q = R.quant
 K_LEAK = Q(0.10)
@@ -112,11 +125,22 @@ class Scene:
         self.h, self.w = self.a.shape
 
 
+def _currency_kw(gas, currency):
+    """The gas arm's currency (P5b) as the two engine keywords -- only with the
+    gas group; `currency` is (n_floor_q, recip_cv), the shipped one by default."""
+    if gas is None:
+        return {}
+    nf, rcv = currency if currency is not None else engine_currency()
+    return dict(n_floor_q=int(nf), recip_cv=int(rcv))
+
+
 def cpu_run(sc, table, *, transport="shear", n_ord=16, k_q=0, t_amb=int(T_AMB_Q),
-            amb=None, is_vacuum=None, vac_level=-1, fleck=True, gas=None):
+            amb=None, is_vacuum=None, vac_level=-1, fleck=True, gas=None,
+            currency=None):
     """RadiationSweep.run — with derive_ambient() first when the ambient is to be
     DERIVED (amb None, is_vacuum given): exactly what step_tail does. `gas` is
-    the P5a smoke group, a (gas, heat_absorb_q16, n_bulk) tuple of int32 arrays."""
+    the P5a smoke group, a (gas, heat_absorb_q16, n_bulk) tuple of int32 arrays;
+    `currency` its gas arm's (n_floor_q, recip_cv), P5b (shipped by default)."""
     sw = bp.RadiationSweep()
     amb_arr = None
     if amb is not None:
@@ -129,13 +153,14 @@ def cpu_run(sc, table, *, transport="shear", n_ord=16, k_q=0, t_amb=int(T_AMB_Q)
     g_a, hq_a, nb_a = gas if gas is not None else (None, None, None)
     sw.run(sc.T, sc.a, sc.d, sc.his, sc.ts, table, amb_arr, int(t_amb), int(k_q),
            TRANSPORTS[transport], int(n_ord), *out, fleck_enabled=bool(fleck),
-           gas=g_a, heat_absorb_q16=hq_a, n_bulk=nb_a)
+           gas=g_a, heat_absorb_q16=hq_a, n_bulk=nb_a, **_currency_kw(gas, currency))
     return out, np.asarray(sw.fleck_plane(), dtype=np.int32), \
         int(sw.min_stream), int(sw.max_stream)
 
 
 def gpu_run(sc, table, *, transport="shear", n_ord=16, k_q=0, t_amb=int(T_AMB_Q),
-            amb=None, is_vacuum=None, vac_level=-1, fleck=True, gas=None):
+            amb=None, is_vacuum=None, vac_level=-1, fleck=True, gas=None,
+            currency=None):
     """cuda_radiation_sweep_run — the per-call path. The outputs start as
     GARBAGE, so every comparison is also the overwrite property."""
     amb_arr = None
@@ -150,7 +175,7 @@ def gpu_run(sc, table, *, transport="shear", n_ord=16, k_q=0, t_amb=int(T_AMB_Q)
         sc.T, sc.a, sc.d, sc.his, sc.ts, table, amb_arr, int(t_amb), int(k_q),
         TRANSPORTS[transport], int(n_ord), *out, fleck_enabled=bool(fleck),
         is_vacuum=vac, vac_level=int(vac_level), fleck_out=fo,
-        gas=g_a, heat_absorb_q16=hq_a, n_bulk=nb_a)
+        gas=g_a, heat_absorb_q16=hq_a, n_bulk=nb_a, **_currency_kw(gas, currency))
     want = bp.cuda_radiation_sweep_launch_count(TRANSPORTS[transport], int(n_ord),
                                                 sc.h, sc.w)
     if launches != want:
@@ -508,7 +533,8 @@ def _raises_on_both(tag, sc, table, **kw):
             int(kw.get("k_q", 0)), TRANSPORTS[kw.get("transport", "shear")],
             int(kw.get("n_ord", 16)), *out,
             is_vacuum=kw.get("is_vacuum"), vac_level=int(kw.get("vac_level", -1)),
-            fleck_out=fo, gas=g_a, heat_absorb_q16=hq_a, n_bulk=nb_a)
+            fleck_out=fo, gas=g_a, heat_absorb_q16=hq_a, n_bulk=nb_a,
+            **_currency_kw(kw.get("gas"), kw.get("currency")))
     except ValueError:
         gpu_raised = True
     else:
@@ -573,10 +599,12 @@ def part7_ingress(table) -> None:
 # PART 8 — the launch core at N = 3
 # ---------------------------------------------------------------------------
 def run_batch(table, scs, transport, n_ord, vacs, vac_levels, k_leaks, t_ambs,
-              amb_planes=None, gas_planes=None, hq=None, nb_planes=None):
+              amb_planes=None, gas_planes=None, hq=None, nb_planes=None,
+              currency=None):
     """The (N, h, w) LAUNCH CORE on N scenes in one launch sequence. `gas_planes`
     (N arrays of (n_gases, h, w)), `hq` (one shared (n_gases,) table) and
-    `nb_planes` (N (h, w) bulk planes) are the P5a smoke group — all or none."""
+    `nb_planes` (N (h, w) bulk planes) are the P5a smoke group — all or none;
+    with it `currency` is the gas arm's shared (n_floor_q, recip_cv), P5b."""
     import cupy as cp
     SLOTS = int(bp.RADIATION_SWEEP_CNT_SLOTS)
     N = len(scs)
@@ -592,11 +620,13 @@ def run_batch(table, scs, transport, n_ord, vacs, vac_levels, k_leaks, t_ambs,
     d_ta = cp.asarray(np.asarray(t_ambs[:N], dtype=np.int32))
     d_gas = d_hq = d_nb = None
     n_gases = 0
+    nf = rcv = 0                                   # no group: the currency is not read
     if gas_planes is not None:
         d_gas = cp.asarray(np.stack(gas_planes).astype(np.int32))      # (N, n_gases, h, w)
         d_hq = cp.asarray(np.asarray(hq, dtype=np.int32))
         d_nb = cp.asarray(np.stack(nb_planes).astype(np.int32))
         n_gases = int(d_gas.shape[1])
+        nf, rcv = currency if currency is not None else engine_currency()
     d_out = cp.empty((N, n_ord, h, w), dtype=cp.int64)
     d_ambm = cp.empty((N, h, w), dtype=cp.int64)
     d_ex = cp.empty((N, h, w), dtype=cp.int64)
@@ -610,7 +640,7 @@ def run_batch(table, scs, transport, n_ord, vacs, vac_levels, k_leaks, t_ambs,
         N, h, w, d_T.data.ptr, d_a.data.ptr, d_d.data.ptr, d_his.data.ptr,
         d_ts.data.ptr, ptr(d_amb), d_vac.data.ptr,
         d_etab.data.ptr, d_vl.data.ptr, d_kl.data.ptr, d_ta.data.ptr,
-        ptr(d_gas), n_gases, ptr(d_hq), ptr(d_nb),
+        ptr(d_gas), n_gases, ptr(d_hq), ptr(d_nb), int(nf), int(rcv),
         TRANSPORTS[transport], n_ord, True,
         d_out.data.ptr, d_ambm.data.ptr, d_ex.data.ptr, d_f.data.ptr,
         d_ae.data.ptr, d_de.data.ptr,
@@ -924,14 +954,22 @@ def part10_smoke(table) -> None:
                                         k_q=k_q, amb=amb)
                         if np.array_equal(res[0][0], clear[0][0]):
                             _fail(f"{tag}: the smoke term moved nothing — vacuous")
+                        # P5b: the gas arm damped a gas cell here, so the
+                        # compared Fleck plane carries it
+                        if not np.any((res[1] < F_ONE) & ~sc.ts):
+                            _fail(f"{tag}: no gas cell damped — the gas arm was "
+                                  "never compared")
                         n += 1
     # (b) the one scene carrying every feature
-    a, d, T, ts, gas_l, hq_l, nb_l, _cells = smoke_feature_scene()
+    a, d, T, ts, gas_l, hq_l, nb_l, cells = smoke_feature_scene()
     sc_f = Scene(a, d, T, R.plane(len(a), len(a[0]), 3), ts)
     for transport in ("shear", "step"):
         for k_q in (0, K_LEAK):
-            both(f"P10b features {transport} k={k_q}", sc_f, table, transport=transport,
-                 k_q=k_q, gas=_gas(gas_l, hq_l, nb_l))
+            res = both(f"P10b features {transport} k={k_q}", sc_f, table,
+                       transport=transport, k_q=k_q, gas=_gas(gas_l, hq_l, nb_l))
+            if not res[1][cells["hot"]] < F_ONE:
+                _fail(f"P10b features {transport} k={k_q}: the hot smoke cell is "
+                      "undamped — the gas arm was never compared")
             n += 1
     # (c) a burning tile in a smoke cloud, on the LIVE calibration
     live, k_live, t_amb_live = _live_table_and_leak()
@@ -966,8 +1004,10 @@ def part10_smoke(table) -> None:
         gas = _np_gas(rng, h, w)
         vac = rng.random((h, w)) < 0.05
         for transport in ("shear", "step"):
-            both(f"P10d {h}x{w} {transport}", sc, table, transport=transport,
-                 k_q=K_LEAK, is_vacuum=vac, vac_level=0, gas=gas)
+            res = both(f"P10d {h}x{w} {transport}", sc, table, transport=transport,
+                       k_q=K_LEAK, is_vacuum=vac, vac_level=0, gas=gas)
+            if not np.any((res[1] < F_ONE) & ~sc.ts):
+                _fail(f"P10d {h}x{w} {transport}: no gas cell damped (P5b arm)")
             n += 1
     # an all-zero table on the SAME planes is the gas-free sweep, both backends
     sc = _np_scene(rng, 33, 65)
@@ -997,7 +1037,18 @@ def part10_smoke(table) -> None:
                 _fail(f"{tag}: accepted by {fn.__name__}")
             except ValueError:
                 pass
-    print(f"  {n} configurations + the N = 3 batch + 4 illegal gas inputs")
+    # P5b: the gas arm's currency — a non-positive one (a forgotten currency, the
+    # bindings' 0 default) is refused alike, planes untouched
+    nf, rcv = engine_currency()
+    for tag, cur in (("P10f currency n_floor_q = 0", (0, rcv)),
+                     ("P10f currency recip_cv = 0", (nf, 0)),
+                     ("P10f currency n_floor_q < 0", (-nf, rcv)),
+                     ("P10f currency recip_cv < 0", (nf, -rcv))):
+        _raises_on_both(tag, base, table, gas=g_ok, currency=cur)
+    print(f"  {n} configurations + the N = 3 batch + 4 illegal gas inputs + 4 "
+          f"illegal currencies")
+    # (h) the gas arm's own scene, both tables, two currencies
+    part10h_gas_arm(table)
 
 
 def _cpu_partial(sc, table, **kw):
@@ -1025,6 +1076,7 @@ def part10_batch(table) -> None:
     vac_levels = [-1, 0, e0 // 2]
     k_leaks = [0, K_LEAK, Q(0.37)]
     t_ambs = [int(T_AMB_Q), int(T_AMB_Q), int(T_AMB_Q) + (7 << 16)]
+    damped_envs = 0
     for transport, n_ord in (("shear", 16), ("step", 12)):
         rad, f, cnt = run_batch(table, scenes, transport, n_ord, vacs, vac_levels,
                                 k_leaks, t_ambs, gas_planes=[g[0] for g in gases], hq=hq,
@@ -1035,6 +1087,20 @@ def part10_batch(table) -> None:
                         gas=(gases[e][0], hq, gases[e][2]))
             g = ([rad[i][e] for i in range(4)], f[e], int(cnt[e][S_MIN]), int(cnt[e][S_MAX]))
             same(f"P10e env {e} {transport} S{n_ord}", c, g)
+            damped_envs += int(np.any((f[e] < F_ONE) & ~sc.ts))    # P5b: the gas arm
+    if damped_envs == 0:
+        _fail("P10e: no env had a damped gas cell — the batch never compared the gas arm")
+    # P5b: a NON-SHIPPED currency rides the core by value into every env alike
+    cur = engine_currency(ONE, Q(0.05))
+    rad, f, cnt = run_batch(table, scenes, "shear", 16, vacs, vac_levels, k_leaks, t_ambs,
+                            gas_planes=[g[0] for g in gases], hq=hq,
+                            nb_planes=[g[2] for g in gases], currency=cur)
+    for e, sc in enumerate(scenes):
+        c = cpu_run(sc, table, k_q=k_leaks[e], t_amb=t_ambs[e], is_vacuum=vacs[e],
+                    vac_level=vac_levels[e], gas=(gases[e][0], hq, gases[e][2]),
+                    currency=cur)
+        same(f"P10e env {e} currency c_v = 1, floor 0.05", c,
+             ([rad[i][e] for i in range(4)], f[e], int(cnt[e][S_MIN]), int(cnt[e][S_MAX])))
     # an ILLEGAL shared table: every env flagged, every env's planes untouched
     bad_hq = hq.copy()
     bad_hq[2] = R.HEAT_ABSORB_Q_MAX + 1
@@ -1048,7 +1114,96 @@ def part10_batch(table) -> None:
         if any(np.any(rad[i][e] != GARBAGE) for i in range(4)):
             _fail(f"P10e illegal table: env {e}'s planes were touched")
     print("  P10e: N = 3 with per-env gas planes and one shared table, each env == its "
-          "own CPU run; an illegal table flagged in every env, planes untouched")
+          "own CPU run (the shipped currency and a non-shipped one); an illegal table "
+          "flagged in every env, planes untouched")
+
+
+# The gas_fleck_scene cells the arm damps on both tables (gate 0's own list).
+_GAS_DAMPED = ("hot_N1", "hot_top", "hot_isobaric", "hot_floor", "hot_below_floor",
+               "hot_eps", "mix_hot", "body_hot")
+_GAS_UNDAMPED = ("sub_ambient", "hot_no_bulk", "hot_inert_only")
+
+
+def part10h_gas_arm(table) -> None:
+    """P10h (P5b): the GAS ARM's own scene -- every case of it at once, on the
+    LIVE table (where the game runs) and the resolving one, in the shipped
+    currency and a non-shipped one (so a device that ignored the currency it was
+    handed could not pass), both transports, S16 and S12, leak on and off."""
+    print("PART 10h — the gas Fleck arm (P5b): every case, both tables, two currencies")
+    a, d, T, ts, gas_l, hq_l, nb_l, cells = gas_fleck_scene()
+    sc = Scene(a, d, T, R.plane(len(a), len(a[0]), 3), ts)
+    gas = _gas(gas_l, hq_l, nb_l)
+    live = live_table()
+    shipped, other = engine_currency(), engine_currency(ONE, Q(0.05))
+    n = 0
+    for tname, tbl in (("live", live), ("resolving", table)):
+        for transport in ("shear", "step"):
+            for n_ord in (16, 12):
+                for k_q in (0, K_LEAK):
+                    tag = f"P10h {tname} {transport} S{n_ord} k={k_q}"
+                    res = both(tag + " shipped currency", sc, tbl, transport=transport,
+                               n_ord=n_ord, k_q=k_q, gas=gas, currency=shipped)
+                    f = res[1]
+                    bad = [c for c in _GAS_DAMPED if not f[cells[c]] < F_ONE]
+                    bad += [c for c in _GAS_UNDAMPED if f[cells[c]] != F_ONE]
+                    if bad:
+                        _fail(f"{tag}: the gas arm's cases went wrong at {bad}")
+                    # c_v = 1 with a 0.05 floor: 130x less stiff, so it damps less
+                    # -- and a device that ignored the currency it was handed
+                    # (priced every gas cell in the shipped one) would fail here
+                    res_o = both(tag + " c_v = 1, floor 0.05", sc, tbl, transport=transport,
+                                 n_ord=n_ord, k_q=k_q, gas=gas, currency=other)
+                    if np.array_equal(res_o[1], f):
+                        _fail(f"{tag}: the currency moved nothing — the second one "
+                              "cannot tell a device that ignores it")
+                    n += 2
+    print(f"  {n} configurations; in the shipped currency every hot absorbing gas cell "
+          f"is damped on both tables and every non-absorbing or sub-ambient one is at "
+          f"2^24; the second currency moves the Fleck plane on both")
+
+
+def _hot_smoky_burning_playground():
+    """10g's smoky world with the smoke cloud HOT -- seeded at 3000 game through
+    the gas-energy seam (gamemap.seed_gas_temperature, never a bare temperature
+    write: CLAUDE.md 'Gas temperature is a mirror') -- so on the LIVE table the
+    gas arm damps it (soot at ambient density is damped from 1676 game)."""
+    sim, pick = _smoky_burning_playground()
+    g = sim.gmap
+    from simulation.gases import SMOKE
+    cloud = (g.gas[SMOKE] > 0) & ~g.thermal_solid & ~g.solid & ~g.is_vacuum
+    g.seed_gas_temperature(cloud, 3000 << 16)
+    return sim, pick
+
+
+def part10i_live_hot_smoke() -> None:
+    print("PART 10i — the live conductor with HOT smoke: the gas arm on the live path "
+          "(P5b)")
+    from simulation import physics_runner
+
+    def only_radiation(on):
+        physics_runner.set_residency(False)
+        for name in _ALL_BACKENDS:
+            getattr(bp, name)(False)
+        bp.set_radiation_backend(bool(on))
+
+    # NON-VACUITY first: one GPU tick of the hot smoky world damps gas cells in
+    # the engine's own Fleck plane, priced in its own gas_capacity_q.
+    s, _ = _hot_smoky_burning_playground()
+    only_radiation(True)
+    s.set_paused(False)
+    s.step()
+    only_radiation(False)
+    eng = s.physics_runner.engine
+    fl = np.asarray(eng.radiation.fleck_plane())
+    g = s.gmap
+    damped = int(np.count_nonzero((fl < F_ONE) & ~g.thermal_solid))
+    if damped == 0:
+        _fail("10i: no gas cell damped on the live GPU path — the arm is vacuous there")
+    _run_live("10i step path, HOT smoke absorbing (the gas arm live)", 15,
+              lambda: only_radiation(True), lambda: only_radiation(False),
+              builder=_hot_smoky_burning_playground)
+    print(f"  one GPU tick damped {damped} gas cells in the engine's own Fleck plane "
+          f"(currency {tuple(int(v) for v in eng.gas_capacity_q())})")
 
 
 def _smoky_burning_playground():
@@ -1111,6 +1266,7 @@ def main() -> int:
         part(table)
     part9_live()
     part10_live()
+    part10i_live_hot_smoke()
     if _FAILS:
         print(f"RS_RESULT: FAIL ({len(_FAILS)} failures)")
         return 1

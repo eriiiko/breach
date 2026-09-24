@@ -40,11 +40,34 @@ T_AMB_Q = R.K_AMB << 16              # 293 game in Q16.16 (G12: slope 1)
 TRANSPORTS = {"step": bp.RadiationSweep.STEP, "shear": bp.RadiationSweep.SHEAR}
 
 
+def engine_currency(c_v_q=R.C_V_Q_LIVE, n_floor_q=R.N_FLOOR_Q_LIVE):
+    """The gas arm's currency (P5b) as the ENGINE's sweep takes it: (n_floor_q,
+    recip_cv), from the integer form of c_v the reference takes -- recip_cv =
+    make_recip(c_v_q / 65536), the fold's own derivation (sweep_ref_q.make_recip
+    transcribes the kit's one double divide). The default is the shipped
+    currency, the reference's C_V_Q_LIVE / N_FLOOR_Q_LIVE; the live engine's own
+    derivation of it (PhysicsEngine.gas_capacity_q) is held to this by
+    tests/test_radiation_sweep_gas_fleck.py."""
+    return int(n_floor_q), int(R.make_recip(c_v_q / 65536.0))
+
+
 def reference_table():
     """An EmissiveTable baked at the reference's own dials (== config.toml's,
     which test_ray_engine_v2_integer_reference.py guards)."""
     tbl = bp.EmissiveTable()
     tbl.rad_scale = R.RAD_SCALE
+    tbl.kelvin_ambient = float(R.K_AMB)
+    tbl.k_temp_to_kelvin = float(R.K_SLOPE)
+    tbl.bake()
+    return tbl
+
+
+def live_table():
+    """An EmissiveTable baked at the LIVE calibration, the sweep's own
+    `rad_scale_derived` -- the engine's twin of sweep_ref_q.E_LIVE (which
+    config_dials_match() pins to config.toml). The table the game runs on."""
+    tbl = bp.EmissiveTable()
+    tbl.rad_scale = R.RAD_SCALE_LIVE
     tbl.kelvin_ambient = float(R.K_AMB)
     tbl.k_temp_to_kelvin = float(R.K_SLOPE)
     tbl.bake()
@@ -160,6 +183,69 @@ def smoke_feature_scene():
     return a, d, T, ts, gas, hq, n_bulk, cells
 
 
+def isobaric_n_q(T_game):
+    """The bulk N a cell at T holds at AMBIENT PRESSURE (p = C N T_abs):
+    N = N_amb * T_amb / T_abs -- a hot cell is a thin cell."""
+    return (ONE * R.K_AMB) // (T_game + R.K_AMB)
+
+
+def gas_fleck_scene():
+    """ONE scene carrying every case of the GAS FLECK ARM on purpose (P5b), damped
+    on the LIVE table as well as the resolving one: hot absorbing smoke in each of
+    P5a's stiffness regimes -- at ambient bulk density (and at the table top), at
+    ambient PRESSURE (a hot cell's thin N), at the n_floor_heat density, BELOW it
+    (the floor, not N, is then the capacity), at the N_EPS edge -- and a hot
+    a = 0.2 mix; beside the cells the arm must leave at 2^24: cool absorbing smoke
+    (g < 1), sub-ambient smoke (no excess), hot smoke with NO bulk (below N_EPS:
+    a_gas = 0) and a hot cell whose only gas has coefficient 0; plus a hot
+    THERMAL SOLID full of smoke (the solid arm, not the gas one), a body standing
+    in hot smoke, and a burning wall column whose stream the smoke absorbs.
+    Returns (a, d, T, ts, gas, hq, n_bulk, cells), cells = {name: (y, x)}."""
+    Q = R.quant
+    h, w = 8, 12
+    a = R.plane(h, w, 0)
+    d = R.plane(h, w, 0)
+    T = R.plane(h, w, 0)
+    for y in range(h):
+        a[y][0] = d[y][0] = ONE
+        T[y][0] = 1263 << 16                            # the burning wall column
+    a[6][9] = d[6][9] = Q(0.5)                          # a hot thermal solid ...
+    T[6][9] = 5000 << 16
+    ts = ts_from_a(a)
+    smoke = R.plane(h, w, 0)
+    inert = R.plane(h, w, 0)                            # coefficient 0: never absorbs
+    n2 = R.plane(h, w, ONE)                             # the bulk count, one plane
+    smoke[6][9] = ONE                                   # ... full of smoke it ignores
+    # name: (y, x, smoke density, bulk N, T game)
+    spec = {
+        "hot_N1":          (1, 3, ONE, ONE, 3000),
+        "hot_top":         (1, 5, ONE, ONE, 15996),
+        "hot_isobaric":    (1, 7, ONE, isobaric_n_q(5000), 5000),
+        "hot_floor":       (2, 3, ONE, R.N_FLOOR_Q_LIVE, 1263),
+        "hot_below_floor": (2, 5, ONE, 200, 800),
+        "hot_eps":         (2, 7, ONE, R.N_EPS_RAW, 400),
+        "mix_hot":         (3, 3, Q(0.04), ONE, 8000),   # a_gas = 5.0 x 0.04 = 0.2
+        "cool":            (3, 5, ONE, ONE, 150),
+        "sub_ambient":     (3, 7, ONE, ONE, -100),
+        "hot_no_bulk":     (4, 3, ONE, 0, 5000),
+        "hot_inert_only":  (4, 5, 0, ONE, 5000),
+        "body_hot":        (4, 7, ONE, ONE, 5000),
+    }
+    cells = {}
+    for name, (y, x, dens, n_q, T_game) in spec.items():
+        smoke[y][x] = dens
+        n2[y][x] = n_q
+        T[y][x] = T_game << 16
+        cells[name] = (y, x)
+    inert[4][5] = ONE
+    y, x = cells["body_hot"]
+    d[y][x] = ONE                                       # a marine standing in hot smoke
+    gas = [inert, smoke, n2]
+    hq = [0, Q(5.0), 0]
+    n_bulk = [row[:] for row in n2]
+    return a, d, T, ts, gas, hq, n_bulk, cells
+
+
 def as_i32(plane):
     return np.ascontiguousarray(np.asarray(plane, dtype=np.int64).astype(np.int32))
 
@@ -188,15 +274,19 @@ def gas_arrays(gas, hq, n_bulk):
 
 def cpp_sweep(a, d, k_q, T, his, ts, *, transport="shear", n_ord=16,
               table=None, sweep=None, fleck=True, amb=None,
-              gas=None, hq=None, n_bulk=None):
+              gas=None, hq=None, n_bulk=None,
+              c_v_q=R.C_V_Q_LIVE, n_floor_q=R.N_FLOOR_Q_LIVE):
     """Run the C++ sweep on a reference-format scene. `k_q` is the UNIFORM leak
     (an int, Q16). `fleck=False` is the reference's `f_plane=None` (undamped)
     configuration. `amb` is the ambient LEVEL the same way the reference takes
     it (thermal v2 R3): None -> E°[0] everywhere, an int -> broadcast, a plane
     -> as given. `gas`/`hq`/`n_bulk` (P5a, all or none) are the smoke term, in
-    the reference's list format. Returns (rad_net, rad_flux, rad_amb,
-    rad_fluence, fleck, sweep) as int64/int32 numpy arrays plus the sweep
-    object (its min_stream / max_stream telemetry and effective planes)."""
+    the reference's list format; with them the sweep's gas Fleck arm (P5b)
+    prices every absorbing gas cell in the currency (`c_v_q`, `n_floor_q`,
+    the reference's integer forms, handed to the engine through
+    engine_currency). Returns (rad_net, rad_flux, rad_amb, rad_fluence, fleck,
+    sweep) as int64/int32 numpy arrays plus the sweep object (its min_stream /
+    max_stream telemetry and effective planes)."""
     h, w = len(a), len(a[0])
     table = table if table is not None else reference_table()
     sweep = sweep if sweep is not None else bp.RadiationSweep()
@@ -212,9 +302,14 @@ def cpp_sweep(a, d, k_q, T, his, ts, *, transport="shear", n_ord=16,
     amb_a = None if amb is None else np.ascontiguousarray(
         np.asarray(amb_plane(amb, h, w), dtype=np.int64))
     g_a, hq_a, nb_a = gas_arrays(gas, hq, n_bulk)
+    cur = {}
+    if gas is not None:
+        nf, rcv = engine_currency(c_v_q, n_floor_q)
+        cur = dict(n_floor_q=nf, recip_cv=rcv)
     sweep.run(T_a, a_a, d_a, his_a, ts_a, table, amb_a, int(T_AMB_Q), int(k_q),
               TRANSPORTS[transport], int(n_ord), rn, rf, ra, rl,
-              fleck_enabled=bool(fleck), gas=g_a, heat_absorb_q16=hq_a, n_bulk=nb_a)
+              fleck_enabled=bool(fleck), gas=g_a, heat_absorb_q16=hq_a, n_bulk=nb_a,
+              **cur)
     return rn, rf, ra, rl, sweep.fleck_plane(), sweep
 
 
@@ -228,21 +323,31 @@ def amb_plane(amb, h, w):
 
 
 def ref_sweep(a, d, k_q, T, his, *, transport="shear", n_ord=16, amb=None,
-              ts=None, gas=None, hq=None, n_bulk=None):
+              ts=None, gas=None, hq=None, n_bulk=None,
+              c_v_q=R.C_V_Q_LIVE, n_floor_q=R.N_FLOOR_Q_LIVE, table=None,
+              gas_fleck=True):
     """The reference on the SAME scene: its Fleck pre-pass then its sweep.
     `ts` (the thermal-solid mask) selects the pre-pass branch exactly as the
     engine does; `gas`/`hq`/`n_bulk` (P5a, all or none, with `ts`) are the
-    smoke term. Returns (rad_net, rad_flux, rad_amb, rad_fluence, f_plane) as
-    int64 arrays (the reference computes in Python ints; every value fits int64
-    by G11), plus the SweepResult (its telemetry and effective planes)."""
+    smoke term, and the pre-pass's GAS ARM (P5b) reads them in the currency
+    (`c_v_q`, `n_floor_q`). `gas_fleck=False` hands the pre-pass no gas group --
+    the arm P5a shipped (L = 0 on gas) -- so a gate can show the arm moved
+    something. `table` defaults to the reference's own (the resolving scale,
+    which reference_table() bakes for the engine). Returns (rad_net, rad_flux,
+    rad_amb, rad_fluence, f_plane) as int64 arrays (the reference computes in
+    Python ints; every value fits int64 by G11), plus the SweepResult (its
+    telemetry and effective planes)."""
     h, w = len(a), len(a[0])
-    f = R.fleck_prepass(T, a, his_plane(his, h, w), e_ref=amb, ts=ts)
-    k = R.plane(h, w, int(k_q))
+    tbl = R.E if table is None else table
     gas_kw = {}
     if gas is not None:
-        gas_kw = dict(gas=gas, heat_absorb_q=hq, n_bulk=n_bulk, ts=ts)
+        gas_kw = dict(gas=gas, heat_absorb_q=hq, n_bulk=n_bulk)
+    f = R.fleck_prepass(T, a, his_plane(his, h, w), e_ref=amb, ts=ts, table=tbl,
+                        c_v_q=c_v_q, n_floor_q=n_floor_q,
+                        **(gas_kw if gas_fleck else {}))
+    k = R.plane(h, w, int(k_q))
     res = R.sweep_q(a, d, k, T, n_ord=n_ord, transport=transport, f_plane=f,
-                    e_ref=amb, **gas_kw)
+                    e_ref=amb, table=tbl, ts=ts, **gas_kw)
     to64 = lambda p: np.asarray(p, dtype=np.int64)   # noqa: E731
     return (to64(res.rad_net), to64(res.rad_flux), to64(res.rad_amb),
             to64(res.rad_fluence), np.asarray(f, dtype=np.int64), res)
