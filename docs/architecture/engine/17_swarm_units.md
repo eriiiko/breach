@@ -58,13 +58,18 @@ Per-unit synced state (v1 roster — additions bump the section version, §6):
 | `heading` | int32 Q16.16 | radians, canonically wrapped to (−π, π] at every write (one representation per direction — digest-stable); movement via `sin_q16`/`cos_q16` |
 | `hp` | int32 Q16.16 | hit points |
 | `ai_state` | int32 | RUN / EAT / COMA / DEAD (enum field like `life_state`; EAT is a state, not a timer — §4) |
-| `T_prev` | int32 Q16.16 | own-tile temperature sampled last step — the temporal-sensing memory the tumble law reads (critique B2) |
 | `dist_walked` | uint32 Q16.16 | cumulative path length, wraps mod 2^32 by definition (no UB; twin uses uint32). Render crawl wavelengths use power-of-two raw λ so phase is continuous across wrap |
 | `unit_id` | int32 | persistent monotone id, distinct from slot; RNG/recorder identity across slot reuse |
 | `faction` | int32 | present from v1 (B3 lists it; targeting arrives later without a section bump) |
 | `valid` | uint8 | slot occupied (spawn sets, reclaim clears; §7) |
 
 Per-env synced scalars in the same section: `next_unit_id`, `high_water`.
+
+> **As built (P2, 2026-09-24):** the roster lives in code as `swarm.ROSTER`
+> (`src/simulation/swarm.py`); arrays are per species, `gmap.swarm_<species>_<col>`.
+> `T_prev` was REMOVED (Erik's ruling, Review log 2026-09-09/10, re-confirmed
+> 2026-09-24: sensing is the spatial grad(T) head-sweep — temporal dT/dt is
+> non-directional on 1/3 m tiles). The table above is the design record.
 
 Species-table row (Q16.16 unless noted): `radius`, `speed`, `hp_max`,
 `T_prefer`, `T_hot`, `T_ctmin` (+ `T_coma_hyst`, ≥1 count, against boundary
@@ -150,6 +155,12 @@ The kit is also the owed deterministic sampler from the stats redesign (the
 Ada/LAPACK incident): the spawn-stat work adopts it, not a second sampler.
 
 ## 4. Pilot behavior: larvae
+
+> **SUPERSEDED on sensing (2026-09-24):** the temporal `T_prev` tumble law in
+> §4 and §4.1 below is replaced by the spatial grad(T) head-sweep ruled in the
+> Review log; P3's implementation doc re-specifies §4.1 as the exact integer
+> sequence. The state machine (RUN / EAT / COMA / DEAD), the movement probe
+> and the heat/cold thresholds stand.
 
 Erik's spec (random-walk until collision; food density per painted area;
 stop-and-eat; flee heat; freeze when cold), mapped to citable biology:
