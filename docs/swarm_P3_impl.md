@@ -1311,9 +1311,9 @@ Stage explicit paths only; never `git add -A`.
 |---|---|---|
 | Determinism & twin spec (integer sequence, draws, wrap, CPU==GPU, events) | SOUND WITH FIXES (1 blocker: L1-B1) | `swarm_P3_critique_2026-09-24.md §Lens 1` |
 | Residency & CUDA (placement, snapshot contract, uploads/D2H, dormancy, §A) | SOUND WITH FIXES (majors L1-M1, L1-M3) | `swarm_P3_critique_2026-09-24.md §Lens 1` |
-| Systems reuse & scope (canon rows, new systems, merge-friendliness) | | |
-| Behaviour law & biology (sensing, turns, coma/kill, units, defaults, E1) | | |
-| Verification (property tests, non-vacuity, gate coverage) | | |
+| Systems reuse & scope (canon rows, new systems, merge-friendliness) | SOUND WITH FIXES (1 blocker: L2-B1; majors L2-M1, L2-M2, L2-M3) | `swarm_P3_critique_2026-09-24.md §Lens 2` |
+| Behaviour law & biology (sensing, turns, coma/kill, units, defaults, E1) | Erik — E1 + P4 play-test | — |
+| Verification (property tests, non-vacuity, gate coverage) | SOUND WITH FIXES (1 blocker: L2-B2; majors L2-M4, L2-M5, L2-M6) | `swarm_P3_critique_2026-09-24.md §Lens 2` |
 
 ---
 
