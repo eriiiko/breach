@@ -1155,6 +1155,7 @@ flammable      = false
 emits_when_hot = false
 effect         = "vision_block"       # pure concealment; clears on decompression
 conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
+heat_absorb    = 0.0                  # P5a: dormant (see [gases.smoke]); water vapour IS an IR absorber -- P5b's value
 
 [gases.smoke]            # combustion soot (== today's generic smoke)
 absorption     = [0.88, 0.90, 0.93]   # near-neutral, slight blue tilt: thin soot reads warm/brown
@@ -1166,6 +1167,14 @@ flammable      = false                # the soot itself is spent fuel
 emits_when_hot = true                 # black-body emission driven by heat buffer (M2/M3)
 effect         = "vision_block_heavy" # near-opaque concealment at density
 conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
+heat_absorb    = 0.0                  # HEAT extinction per unit density (ray-engine-v2 P5a, design v3
+                                     # 6.3): on a GAS cell the sweep reads a_gas = min(1, sum_g
+                                     # heat_absorb * N_g), 0 below gas_energy.h's N_EPS_RAW bulk.
+                                     # DORMANT at 0.0 on every row until P5b opens the temperature
+                                     # fold's gas branch: until then nothing consumes a gas cell's
+                                     # rad_net, so a value > 0 would take radiation out of the
+                                     # stream with no book to land in. Door [0, 4096] (gases.py
+                                     # HEAT_ABSORB_MAX -- the sweep's int64 headroom, not physics)
 
 [gases.poison]                 # chlorine (Cl2), yellow-green
 absorption     = [0.45, 0.10, 0.80]   # B absorbed hardest, R moderate, G passes -> yellow-green tint
@@ -1177,6 +1186,7 @@ flammable      = false
 emits_when_hot = false
 effect         = "damage_over_time"   # lethal cloud; saturates to iconic green at mid-high density
 conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
+heat_absorb    = 0.0                  # P5a: dormant (see [gases.smoke])
 
 [gases.teargas]                # CS aerosol, pale near-white (ambiguous vs steam)
 absorption     = [0.12, 0.16, 0.30]   # low overall, B ~2x R -> faint warm/yellow only in thick plumes
@@ -1188,6 +1198,7 @@ flammable      = false
 emits_when_hot = false
 effect         = "area_denial"        # forces units out of the area; non-lethal
 conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
+heat_absorb    = 0.0                  # P5a: dormant (see [gases.smoke])
 
 [gases.fuel_gas]               # combustible vapour, faint, FLAMMABLE
 absorption     = [0.08, 0.10, 0.16]   # very faint, slight blue tilt — nearly invisible haze
@@ -1199,6 +1210,7 @@ flammable      = true                 # IGNITES -> spawns heat + smoke; the only
 emits_when_hot = true                 # while burning it glows via the black-body curve
 effect         = "ignition_hazard"    # invisible-ish until lit; then a fireball
 conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
+heat_absorb    = 0.0                  # P5a: dormant (see [gases.smoke])
 
 # EOS refactor P1 — the two BULK species (docs/eos_refactor_design.md §1/§2.1).
 # Together they ARE "air": ambient splits 21/79 (O2/inert_N2 by mole fraction,
@@ -1219,6 +1231,7 @@ flammable      = false
 emits_when_hot = false
 effect         = ""                   # no gameplay tag (unit-side suffocation reads N directly, later)
 conservative   = true                 # EOS P1: donor-cell flux transport, not semi-Lagrangian
+heat_absorb    = 0.0                  # P5a: 0.0 is PHYSICAL -- homonuclear diatomics do not absorb in the IR (report_p2b.md)
 
 [gases.inert_n2]                # nitrogen + "burnt products" — bulk air, inert half
 absorption     = [0.0, 0.0, 0.0]
@@ -1230,6 +1243,7 @@ flammable      = false
 emits_when_hot = false
 effect         = ""                   # no gameplay tag
 conservative   = true                 # EOS P1: donor-cell flux transport, not semi-Lagrangian
+heat_absorb    = 0.0                  # P5a: 0.0 is PHYSICAL (as o2); the burnt products' CO2/H2O are not modelled
 
 # ---------------------------------------------------------------------------
 # Duct filter table (vent system PATCH 1, issue #48 — docs/vent_system_

@@ -83,7 +83,8 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         int64_t* rad_net_sweep, int64_t* rad_flux_sweep,
         int64_t* rad_amb_sweep, int64_t* rad_fluence,
         int32_t k_leak_q,
-        int64_t rad_amb_vacuum_q) const {
+        int64_t rad_amb_vacuum_q,
+        const int32_t* gas_heat_absorb_q16) const {
 
     using namespace fixedpoint;
 
@@ -243,6 +244,14 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         rad_net_sweep != nullptr && rad_flux_sweep != nullptr &&
         rad_amb_sweep != nullptr && rad_fluence != nullptr) {
         const int64_t* e_tbl = this->emissive.table();   // lazy re-bake on a dial change
+        // P5a (design v3 §6.3): the smoke term's inputs — the gas planes, the
+        // per-gas heat_absorb column and the bulk sum built above (one source
+        // of truth with the fire and the temperature fold). All three or none:
+        // a caller without the column gets the pre-P5a sweep.
+        const bool smoke = (gas_heat_absorb_q16 != nullptr);
+        const int32_t* sw_gas   = smoke ? gas : nullptr;
+        const int      sw_ng    = smoke ? n_gases : 0;
+        const int32_t* sw_nbulk = smoke ? n_bulk_.data() : nullptr;
 #ifdef BREACH_HAS_CUDA
         if (breach_cuda::radiation_backend_is_cuda()) {
             // ray-engine-v2 P4: the CUDA twin (cuda_radiation_sweep.h), the
@@ -264,7 +273,8 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
                 t_amb_q, k_leak_q,
                 RadiationSweep::TRANSPORT_SHEAR, 16, h, w,
                 rad_net_sweep, rad_flux_sweep, rad_amb_sweep, rad_fluence,
-                /*fleck_enabled=*/true, f_plane, &s_min, &s_max);
+                /*fleck_enabled=*/true, f_plane, &s_min, &s_max,
+                sw_gas, sw_ng, gas_heat_absorb_q16, sw_nbulk);
             this->radiation.min_stream = s_min;
             this->radiation.max_stream = s_max;
         } else
@@ -281,7 +291,9 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
                 e_tbl, amb_level,
                 t_amb_q, k_leak_q,
                 RadiationSweep::TRANSPORT_SHEAR, 16, h, w,
-                rad_net_sweep, rad_flux_sweep, rad_amb_sweep, rad_fluence);
+                rad_net_sweep, rad_flux_sweep, rad_amb_sweep, rad_fluence,
+                /*fleck_enabled=*/true,
+                sw_gas, sw_ng, gas_heat_absorb_q16, sw_nbulk);
         }
     }
 

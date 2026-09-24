@@ -30,6 +30,11 @@
 //   rad_amb[i]     += leaked - ret               // the ceiling channel (+ ring books)
 //   rad_fluence[i] += stream                     // Φ, for the Pass-1 clamp
 //
+// where a, d are the EFFECTIVE planes (P5a, design §6.3): on a GAS cell the
+// smoke term joins the material extinction, a = max(a, a_gas) with
+// a_gas = min(ONE, Σ_g heat_absorb_q16[g]·max(0, N_g) >> 16) (0 below the
+// N_EPS bulk floor), and d = max(d, a); a thermal solid keeps its own.
+//
 // A boundary cell additionally books into its own rad_amb every share of its
 // i_out that leaves the grid (+) and every fa/fb it gathered from the virtual
 // ring (−). CONSERVATION IS STRUCTURAL: every integer leaving the stream is
@@ -157,6 +162,8 @@ void RadiationSweep::size_scratch_(int h, int w, int n_ordinates) const {
         ex_cell_.assign((size_t)n, 0);
         amb_m_.assign((size_t)n, 0);
         f_q24_.assign((size_t)n, F_ONE);
+        a_eff_.assign((size_t)n, 0);
+        d_eff_.assign((size_t)n, 0);
         h_ = h; w_ = w; n_ord_ = n_ordinates;
     }
 }
@@ -189,7 +196,10 @@ void RadiationSweep::run(const int32_t* temperature,
                          int32_t t_amb_q, int32_t k_leak_q,
                          int transport, int n_ordinates, int h, int w,
                          int64_t* rad_net, int64_t* rad_flux, int64_t* rad_amb,
-                         int64_t* rad_fluence, bool fleck_enabled) const {
+                         int64_t* rad_fluence, bool fleck_enabled,
+                         const int32_t* gas, int n_gases,
+                         const int32_t* heat_absorb_q16,
+                         const int32_t* n_bulk) const {
     using fixedpoint::FP_ONE;
     using fixedpoint::FP_SHIFT;
 
@@ -210,6 +220,39 @@ void RadiationSweep::run(const int32_t* temperature,
             "ambient it radiates against (thermal v2 R3); derive_ambient() "
             "builds the uniform R4 plane for a caller that has no opinion");
     }
+    // ---- THE GAS EXTINCTION's ingress (P5a) ---------------------------------
+    // The group is all-or-nothing, and the two bounds are the gas door's own
+    // (gases.py): with n_gases <= 16 and every heat_absorb_q16 in [0, 2^28],
+    // each density term is < 2^59 and the per-cell sum is exact in int64 for
+    // ANY int32 density — the one argument the plain int64 sum below rests on.
+    const bool gas_given = (gas != nullptr);
+    if (gas_given != (heat_absorb_q16 != nullptr) || gas_given != (n_bulk != nullptr)) {
+        throw std::invalid_argument(
+            "RadiationSweep::run: gas, heat_absorb_q16 and n_bulk are given "
+            "together or not at all (the smoke term, design v3 §6.3)");
+    }
+    if (n_gases < 0 || n_gases > N_GAS_PLANES_MAX || (!gas_given && n_gases != 0)) {
+        throw std::invalid_argument(
+            "RadiationSweep::run: n_gases outside [0, N_GAS_PLANES_MAX] — the "
+            "gas density sum's int64 headroom is argued for at most 16 planes");
+    }
+    // The ACTIVE gases: a zero heat_absorb contributes exactly 0 to the sum, so
+    // its plane is never read (every shipped row is 0.0 until P5b — the live
+    // sweep reads no gas plane at all, and its cost does not move).
+    int act_g[N_GAS_PLANES_MAX];
+    int32_t act_hq[N_GAS_PLANES_MAX];
+    int n_act = 0;
+    for (int g = 0; g < n_gases; ++g) {
+        const int32_t hq = heat_absorb_q16[g];
+        if (hq < 0 || hq > HEAT_ABSORB_Q_MAX) {
+            throw std::invalid_argument(
+                "RadiationSweep::run: a heat_absorb_q16 outside [0, 2^28] (the "
+                "gas door's [0, 4096]; negative would be a source, above it the "
+                "density sum is no longer provably exact in int64)");
+        }
+        if (hq != 0) { act_g[n_act] = g; act_hq[n_act] = hq; ++n_act; }
+    }
+
     const int n = h * w;
     size_scratch_(h, w, n_ordinates);
 
@@ -249,16 +292,35 @@ void RadiationSweep::run(const int32_t* temperature,
         int64_t ex = e_table[e_bucket_of(temperature[i])] - amb_i;
         if (ex < 0) ex = 0;                 // dead under the invariant above; belt and braces
         ex_cell_[i] = ex;
+        // THE EFFECTIVE EXTINCTION (P5a, design §6.3): a GAS cell takes the
+        // smoke term — the density law over the active gases, the N_EPS floor
+        // on the BULK count — as a MAX with its material extinction; the
+        // stamped total follows as a MAX. A thermal solid keeps its own.
+        // Transcribes sweep_ref_q.py::gas_extinction_plane / effective_extinction.
+        int32_t a_eff = heat_atten_q[i];
+        int32_t d_eff = dyn_heat_atten_q[i];
+        if (n_act > 0 && !thermal_solid[i]) {
+            int64_t sum = 0;
+            for (int j = 0; j < n_act; ++j) {
+                sum += gas_density_term(act_hq[j], gas[(size_t)act_g[j] * (size_t)n + (size_t)i]);
+            }
+            a_eff = gas_effective_a(a_eff, gas_extinction_finish(sum, n_bulk[i]), false);
+            d_eff = gas_effective_d(d_eff, a_eff);
+        }
+        a_eff_[i] = a_eff;
+        d_eff_[i] = d_eff;
         int64_t L = 0;
         if (thermal_solid[i]) {
             L = fleck_L_solid_q(ex, heat_atten_q[i], heat_inv_shift[i]);
         } else {
-            // GAS (P5 fills this arm, design §2.8 / §6.3): the same excess
-            // through the STAGED wide chain, fixedpoint::deposit_dT_wide_i64(
-            // (a·ex) >> 16, recip_n, recip_cv) — two narrows, declared to differ
-            // from the heat deposit's one-narrow chain by at most one LSB. At
-            // P1 no gas cell carries extinction (a == 0 by the materials
-            // ingress rule), so its L is 0 and f is exactly 2^24.
+            // GAS: the arm is still L = 0, so f is exactly 2^24 — also on a
+            // gas cell that ABSORBS through the smoke term since P5a. P5b fills
+            // it (design §2.8 / §6.3), reference first: the same excess through
+            // the STAGED wide chain, fixedpoint::deposit_dT_wide_i64(
+            // (a_eff·ex) >> 16, recip_n, recip_cv) — two narrows, declared to
+            // differ from the heat deposit's one-narrow chain by at most one
+            // LSB (sweep_ref_q.py::fleck_L_gas_q is that chain, transcribed and
+            // measured by p5a_gas_stiffness_study.py, and called by no pre-pass).
             L = 0;
         }
         // T_abs > 0 always in the engine (T_MIN = -292 game keeps T_abs >= 1);
@@ -338,8 +400,8 @@ void RadiationSweep::run(const int32_t* temperature,
             const int64_t leaked = (i_in * k) >> FP_SHIFT;
             const int64_t ret    = (amb_m * k) >> FP_SHIFT;   // ITS OWN ceiling
             const int64_t stream = i_in - leaked + ret;
-            const int64_t a = heat_atten_q[i];
-            const int64_t b = (int64_t)dyn_heat_atten_q[i] - a;   // the body share
+            const int64_t a = a_eff_[i];                        // material + smoke (P5a)
+            const int64_t b = (int64_t)d_eff_[i] - a;           // the body share
             const int64_t abs_mat  = (stream * a) >> FP_SHIFT;
             const int64_t abs_body = (stream * b) >> FP_SHIFT;
             const int64_t ex_m = (ex_cell_[i] * w_m) >> FP_SHIFT;

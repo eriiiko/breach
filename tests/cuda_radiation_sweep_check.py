@@ -52,6 +52,17 @@ one binary, one scene.
           per tick, tol 0; the same under a cold sky; and the resident tick
           with every backend on but combustion (whose own twin diverges on
           this scene — a P4 finding, see part9_live).
+  PART 10 THE SMOKE TERM (P5a, design v3 §6.3): gate 0's smoke matrix (random
+          gas planes, heat_absorb tables with zero, thin, saturating and
+          maximal coefficients, bulk counts below / at / above the N_EPS
+          floor, negative densities); the one scene carrying every feature;
+          a burning tile in a smoke cloud on the LIVE calibration; the
+          engine's 7-plane gas layout on full-size grids; the launch core at
+          N = 3 with per-env gas planes and a shared table (and an illegal
+          table flagged in every env); the gas ingress rejections; and the
+          live conductor with a TEST-FIXTURE smoke coefficient, only the
+          radiation backend flipping. Every shipped heat_absorb is 0.0, so
+          parts 1-9 are the dormant path and this is the live one.
 
 NON-VACUITY is asserted per part: planes non-zero, Fleck factors below 2^24
 where a part claims damping, bodies present, the GPU dispatch counter moving.
@@ -70,7 +81,8 @@ import numpy as np
 import breach_physics as bp
 
 from _radiation_sweep_harness import (  # noqa: E402
-    F_ONE, ONE, R, T_AMB_Q, TRANSPORTS, as_i32, random_scene, reference_table)
+    F_ONE, ONE, R, T_AMB_Q, TRANSPORTS, as_i32, gas_arrays, random_gas, random_scene,
+    reference_table, smoke_feature_scene)
 
 Q = R.quant
 K_LEAK = Q(0.10)
@@ -101,9 +113,10 @@ class Scene:
 
 
 def cpu_run(sc, table, *, transport="shear", n_ord=16, k_q=0, t_amb=int(T_AMB_Q),
-            amb=None, is_vacuum=None, vac_level=-1, fleck=True):
+            amb=None, is_vacuum=None, vac_level=-1, fleck=True, gas=None):
     """RadiationSweep.run — with derive_ambient() first when the ambient is to be
-    DERIVED (amb None, is_vacuum given): exactly what step_tail does."""
+    DERIVED (amb None, is_vacuum given): exactly what step_tail does. `gas` is
+    the P5a smoke group, a (gas, heat_absorb_q16, n_bulk) tuple of int32 arrays."""
     sw = bp.RadiationSweep()
     amb_arr = None
     if amb is not None:
@@ -113,14 +126,16 @@ def cpu_run(sc, table, *, transport="shear", n_ord=16, k_q=0, t_amb=int(T_AMB_Q)
         amb_arr = sw.derive_ambient(np.ascontiguousarray(is_vacuum), table,
                                     int(vac_level))
     out = [np.zeros((sc.h, sc.w), dtype=np.int64) for _ in range(4)]
+    g_a, hq_a, nb_a = gas if gas is not None else (None, None, None)
     sw.run(sc.T, sc.a, sc.d, sc.his, sc.ts, table, amb_arr, int(t_amb), int(k_q),
-           TRANSPORTS[transport], int(n_ord), *out, fleck_enabled=bool(fleck))
+           TRANSPORTS[transport], int(n_ord), *out, fleck_enabled=bool(fleck),
+           gas=g_a, heat_absorb_q16=hq_a, n_bulk=nb_a)
     return out, np.asarray(sw.fleck_plane(), dtype=np.int32), \
         int(sw.min_stream), int(sw.max_stream)
 
 
 def gpu_run(sc, table, *, transport="shear", n_ord=16, k_q=0, t_amb=int(T_AMB_Q),
-            amb=None, is_vacuum=None, vac_level=-1, fleck=True):
+            amb=None, is_vacuum=None, vac_level=-1, fleck=True, gas=None):
     """cuda_radiation_sweep_run — the per-call path. The outputs start as
     GARBAGE, so every comparison is also the overwrite property."""
     amb_arr = None
@@ -130,10 +145,12 @@ def gpu_run(sc, table, *, transport="shear", n_ord=16, k_q=0, t_amb=int(T_AMB_Q)
     vac = None if is_vacuum is None else np.ascontiguousarray(is_vacuum)
     out = [np.full((sc.h, sc.w), GARBAGE, dtype=np.int64) for _ in range(4)]
     fo = np.full((sc.h, sc.w), F_GARBAGE, dtype=np.int32)
+    g_a, hq_a, nb_a = gas if gas is not None else (None, None, None)
     mn, mx, launches = bp.cuda_radiation_sweep_run(
         sc.T, sc.a, sc.d, sc.his, sc.ts, table, amb_arr, int(t_amb), int(k_q),
         TRANSPORTS[transport], int(n_ord), *out, fleck_enabled=bool(fleck),
-        is_vacuum=vac, vac_level=int(vac_level), fleck_out=fo)
+        is_vacuum=vac, vac_level=int(vac_level), fleck_out=fo,
+        gas=g_a, heat_absorb_q16=hq_a, n_bulk=nb_a)
     want = bp.cuda_radiation_sweep_launch_count(TRANSPORTS[transport], int(n_ord),
                                                 sc.h, sc.w)
     if launches != want:
@@ -484,13 +501,14 @@ def _raises_on_both(tag, sc, table, **kw):
     amb = kw.get("amb")
     amb_arr = None if amb is None else np.ascontiguousarray(
         np.broadcast_to(np.asarray(amb, dtype=np.int64), (sc.h, sc.w)))
+    g_a, hq_a, nb_a = kw["gas"] if kw.get("gas") is not None else (None, None, None)
     try:
         bp.cuda_radiation_sweep_run(
             sc.T, sc.a, sc.d, sc.his, sc.ts, table, amb_arr, int(T_AMB_Q),
             int(kw.get("k_q", 0)), TRANSPORTS[kw.get("transport", "shear")],
             int(kw.get("n_ord", 16)), *out,
             is_vacuum=kw.get("is_vacuum"), vac_level=int(kw.get("vac_level", -1)),
-            fleck_out=fo)
+            fleck_out=fo, gas=g_a, heat_absorb_q16=hq_a, n_bulk=nb_a)
     except ValueError:
         gpu_raised = True
     else:
@@ -554,10 +572,58 @@ def part7_ingress(table) -> None:
 # ---------------------------------------------------------------------------
 # PART 8 — the launch core at N = 3
 # ---------------------------------------------------------------------------
-def part8_batch(table) -> None:
-    print("PART 8 — the launch core, N = 3 envs in one launch sequence")
+def run_batch(table, scs, transport, n_ord, vacs, vac_levels, k_leaks, t_ambs,
+              amb_planes=None, gas_planes=None, hq=None, nb_planes=None):
+    """The (N, h, w) LAUNCH CORE on N scenes in one launch sequence. `gas_planes`
+    (N arrays of (n_gases, h, w)), `hq` (one shared (n_gases,) table) and
+    `nb_planes` (N (h, w) bulk planes) are the P5a smoke group — all or none."""
     import cupy as cp
     SLOTS = int(bp.RADIATION_SWEEP_CNT_SLOTS)
+    N = len(scs)
+    h, w = scs[0].h, scs[0].w
+    stack = lambda key, dt: cp.asarray(np.stack([getattr(s, key) for s in scs]).astype(dt))  # noqa: E731
+    d_T, d_a, d_d = stack("T", np.int32), stack("a", np.int32), stack("d", np.int32)
+    d_his, d_ts = stack("his", np.int32), stack("ts", np.bool_)
+    d_vac = cp.asarray(np.stack(vacs[:N]))
+    d_amb = None if amb_planes is None else cp.asarray(np.stack(amb_planes).astype(np.int64))
+    d_etab = cp.asarray(np.asarray(table.table(), dtype=np.int64))
+    d_vl = cp.asarray(np.asarray(vac_levels[:N], dtype=np.int64))
+    d_kl = cp.asarray(np.asarray(k_leaks[:N], dtype=np.int32))
+    d_ta = cp.asarray(np.asarray(t_ambs[:N], dtype=np.int32))
+    d_gas = d_hq = d_nb = None
+    n_gases = 0
+    if gas_planes is not None:
+        d_gas = cp.asarray(np.stack(gas_planes).astype(np.int32))      # (N, n_gases, h, w)
+        d_hq = cp.asarray(np.asarray(hq, dtype=np.int32))
+        d_nb = cp.asarray(np.stack(nb_planes).astype(np.int32))
+        n_gases = int(d_gas.shape[1])
+    d_out = cp.empty((N, n_ord, h, w), dtype=cp.int64)
+    d_ambm = cp.empty((N, h, w), dtype=cp.int64)
+    d_ex = cp.empty((N, h, w), dtype=cp.int64)
+    d_f = cp.full((N, h, w), F_GARBAGE, dtype=cp.int32)
+    d_ae = cp.empty((N, h, w), dtype=cp.int32)
+    d_de = cp.empty((N, h, w), dtype=cp.int32)
+    d_rad = [cp.full((N, h, w), GARBAGE, dtype=cp.int64) for _ in range(4)]
+    d_cnt = cp.zeros((N, SLOTS), dtype=cp.int64)
+    ptr = lambda a: 0 if a is None else a.data.ptr                    # noqa: E731
+    launches = bp.cuda_radiation_sweep_resident(
+        N, h, w, d_T.data.ptr, d_a.data.ptr, d_d.data.ptr, d_his.data.ptr,
+        d_ts.data.ptr, ptr(d_amb), d_vac.data.ptr,
+        d_etab.data.ptr, d_vl.data.ptr, d_kl.data.ptr, d_ta.data.ptr,
+        ptr(d_gas), n_gases, ptr(d_hq), ptr(d_nb),
+        TRANSPORTS[transport], n_ord, True,
+        d_out.data.ptr, d_ambm.data.ptr, d_ex.data.ptr, d_f.data.ptr,
+        d_ae.data.ptr, d_de.data.ptr,
+        *[p.data.ptr for p in d_rad], d_cnt.data.ptr)
+    cp.cuda.Device().synchronize()
+    want = bp.cuda_radiation_sweep_launch_count(TRANSPORTS[transport], n_ord, h, w)
+    if launches != want:
+        _fail(f"batch: the core issued {launches} launches, the shape says {want}")
+    return ([p.get() for p in d_rad], d_f.get(), d_cnt.get())
+
+
+def part8_batch(table) -> None:
+    print("PART 8 — the launch core, N = 3 envs in one launch sequence")
     BAD_EXTINCTION = int(bp.RS_SLOT_BAD_EXTINCTION)
     S_MIN, S_MAX = int(bp.RS_SLOT_MIN_STREAM), int(bp.RS_SLOT_MAX_STREAM)
     e0 = int(np.asarray(table.table())[0])
@@ -569,39 +635,13 @@ def part8_batch(table) -> None:
     k_leaks = [0, K_LEAK, Q(0.37)]
     t_ambs = [int(T_AMB_Q), int(T_AMB_Q), int(T_AMB_Q) + (7 << 16)]
 
-    def run_batch(scs, transport, n_ord, amb_planes=None):
-        N = len(scs)
-        stack = lambda key, dt: cp.asarray(np.stack([getattr(s, key) for s in scs]).astype(dt))  # noqa: E731
-        d_T, d_a, d_d = stack("T", np.int32), stack("a", np.int32), stack("d", np.int32)
-        d_his, d_ts = stack("his", np.int32), stack("ts", np.bool_)
-        d_vac = cp.asarray(np.stack(vacs[:N]))
-        d_amb = None if amb_planes is None else cp.asarray(np.stack(amb_planes).astype(np.int64))
-        d_etab = cp.asarray(np.asarray(table.table(), dtype=np.int64))
-        d_vl = cp.asarray(np.asarray(vac_levels[:N], dtype=np.int64))
-        d_kl = cp.asarray(np.asarray(k_leaks[:N], dtype=np.int32))
-        d_ta = cp.asarray(np.asarray(t_ambs[:N], dtype=np.int32))
-        d_out = cp.empty((N, n_ord, h, w), dtype=cp.int64)
-        d_ambm = cp.empty((N, h, w), dtype=cp.int64)
-        d_ex = cp.empty((N, h, w), dtype=cp.int64)
-        d_f = cp.full((N, h, w), F_GARBAGE, dtype=cp.int32)
-        d_rad = [cp.full((N, h, w), GARBAGE, dtype=cp.int64) for _ in range(4)]
-        d_cnt = cp.zeros((N, SLOTS), dtype=cp.int64)
-        launches = bp.cuda_radiation_sweep_resident(
-            N, h, w, d_T.data.ptr, d_a.data.ptr, d_d.data.ptr, d_his.data.ptr,
-            d_ts.data.ptr, 0 if d_amb is None else d_amb.data.ptr, d_vac.data.ptr,
-            d_etab.data.ptr, d_vl.data.ptr, d_kl.data.ptr, d_ta.data.ptr,
-            TRANSPORTS[transport], n_ord, True,
-            d_out.data.ptr, d_ambm.data.ptr, d_ex.data.ptr, d_f.data.ptr,
-            *[p.data.ptr for p in d_rad], d_cnt.data.ptr)
-        cp.cuda.Device().synchronize()
-        want = bp.cuda_radiation_sweep_launch_count(TRANSPORTS[transport], n_ord, h, w)
-        if launches != want:
-            _fail(f"P8: the core issued {launches} launches, the shape says {want}")
-        return ([p.get() for p in d_rad], d_f.get(), d_cnt.get())
+    def run_batch_(scs, transport, n_ord, amb_planes=None):
+        return run_batch(table, scs, transport, n_ord, vacs, vac_levels, k_leaks,
+                         t_ambs, amb_planes=amb_planes)
 
     n = 0
     for transport, n_ord in (("shear", 16), ("step", 12)):
-        rad, f, cnt = run_batch(scenes, transport, n_ord)
+        rad, f, cnt = run_batch_(scenes, transport, n_ord)
         for e, sc in enumerate(scenes):
             c = cpu_run(sc, table, transport=transport, n_ord=n_ord, k_q=k_leaks[e],
                         t_amb=t_ambs[e], is_vacuum=vacs[e], vac_level=vac_levels[e])
@@ -614,7 +654,7 @@ def part8_batch(table) -> None:
     # an explicit ambient plane per env (run()'s door) at N = 3
     amb_planes = [np.where(rng.random((h, w)) < 0.3, 0, e0).astype(np.int64)
                   for _ in range(3)]
-    rad, f, cnt = run_batch(scenes, "shear", 16, amb_planes=amb_planes)
+    rad, f, cnt = run_batch_(scenes, "shear", 16, amb_planes=amb_planes)
     for e, sc in enumerate(scenes):
         c = cpu_run(sc, table, k_q=k_leaks[e], t_amb=t_ambs[e], amb=amb_planes[e])
         same(f"P8 env {e} amb-plane", c,
@@ -625,7 +665,7 @@ def part8_batch(table) -> None:
                             scenes[1].ts), scenes[2]]
     bad[1].a = bad[1].a.copy(); bad[1].d = bad[1].d.copy()
     bad[1].a[5, 5] = Q(0.9); bad[1].d[5, 5] = Q(0.4)
-    rad, f, cnt = run_batch(bad, "shear", 16)
+    rad, f, cnt = run_batch_(bad, "shear", 16)
     if int(cnt[1][BAD_EXTINCTION]) != 1:
         _fail(f"P8 illegal env: counted {int(cnt[1][BAD_EXTINCTION])} bad cells, want 1")
     if int(cnt[0][BAD_EXTINCTION]) or int(cnt[2][BAD_EXTINCTION]):
@@ -748,10 +788,12 @@ def _compare_worlds(tag, t, s_cpu, s_gpu, fields=None) -> int:
     return bad
 
 
-def _run_live(tag, n_ticks, gpu_on, gpu_off, cold_sky=False, fields=None):
+def _run_live(tag, n_ticks, gpu_on, gpu_off, cold_sky=False, fields=None,
+              builder=None):
     fails_before = len(_FAILS)
-    s_cpu, pick = _burning_playground()
-    s_gpu, _ = _burning_playground()
+    builder = builder if builder is not None else _burning_playground
+    s_cpu, pick = builder()
+    s_gpu, _ = builder()
     if cold_sky:
         for s in (s_cpu, s_gpu):
             s.physics_runner.rad_amb_vacuum_q = 0      # Erik's cold sky, both worlds
@@ -835,6 +877,228 @@ def part9_live() -> None:
 
 
 # ---------------------------------------------------------------------------
+# PART 10 — THE SMOKE TERM (P5a, design v3 §6.3)
+# ---------------------------------------------------------------------------
+def _gas(gas, hq, n_bulk):
+    """A reference-format gas group as the (gas, table, bulk) int32 triple."""
+    return gas_arrays(gas, hq, n_bulk)
+
+
+def _np_gas(rng, h, w, *, active=(Q(5.0), Q(0.9))):
+    """The ENGINE's gas layout on a big grid: 7 planes (steam .. fuel_gas, o2,
+    inert_n2), two trace gases absorbing, the rest at coefficient 0 (the per-call
+    path must upload only the active two), trace densities in the tracer range,
+    and a bulk count with vacuum-like and thin cells."""
+    gas = np.zeros((7, h, w), dtype=np.int32)
+    for gi in range(5):
+        gas[gi] = np.where(rng.random((h, w)) < 0.4,
+                           rng.choice([1, Q(0.02), Q(0.06), Q(0.27), ONE], size=(h, w)), 0)
+    bulk = np.where(rng.random((h, w)) < 0.1, 0,
+                    np.where(rng.random((h, w)) < 0.2, Q(0.2), ONE))
+    gas[5] = (bulk * 13763) // ONE
+    gas[6] = bulk - gas[5]
+    hq = np.zeros(7, dtype=np.int32)
+    hq[1], hq[3] = active                      # smoke, teargas absorb; others 0
+    n_bulk = (gas[5].astype(np.int64) + gas[6]).astype(np.int32)
+    return np.ascontiguousarray(gas), hq, np.ascontiguousarray(n_bulk)
+
+
+def part10_smoke(table) -> None:
+    print("PART 10 — THE SMOKE TERM (P5a): gas extinction on both backends, tol 0")
+    n = 0
+    # (a) gate 0's smoke matrix, verbatim
+    for seed, h, w in ((11, 7, 9), (12, 9, 11), (13, 12, 8), (14, 5, 5)):
+        for n_ord in (16, 12):
+            for k_q in (0, K_LEAK):
+                for transport in ("shear", "step"):
+                    for kind in ("uniform", "random"):
+                        rng = random.Random(20260924 + seed)
+                        a, d, T, his, ts = random_scene(rng, h, w)
+                        amb = _ambient(kind, rng, h, w)
+                        gas = _gas(*random_gas(rng, h, w))
+                        sc = Scene(a, d, T, his, ts)
+                        tag = f"P10a seed={seed} S{n_ord} k={k_q} {transport} {kind}"
+                        res = both(tag, sc, table, transport=transport, n_ord=n_ord,
+                                   k_q=k_q, amb=amb, gas=gas)
+                        clear = cpu_run(sc, table, transport=transport, n_ord=n_ord,
+                                        k_q=k_q, amb=amb)
+                        if np.array_equal(res[0][0], clear[0][0]):
+                            _fail(f"{tag}: the smoke term moved nothing — vacuous")
+                        n += 1
+    # (b) the one scene carrying every feature
+    a, d, T, ts, gas_l, hq_l, nb_l, _cells = smoke_feature_scene()
+    sc_f = Scene(a, d, T, R.plane(len(a), len(a[0]), 3), ts)
+    for transport in ("shear", "step"):
+        for k_q in (0, K_LEAK):
+            both(f"P10b features {transport} k={k_q}", sc_f, table, transport=transport,
+                 k_q=k_q, gas=_gas(gas_l, hq_l, nb_l))
+            n += 1
+    # (c) a burning tile in a smoke cloud, on the LIVE calibration
+    live, k_live, t_amb_live = _live_table_and_leak()
+    sc_r, fire = _fire_room(1263 << 16)
+    fy, fx = fire
+    h, w = sc_r.h, sc_r.w
+    smoke = np.zeros((h, w), dtype=np.int32)
+    yy, xx = np.mgrid[0:h, 0:w]
+    ring = (np.abs(yy - fy) <= 3) & (np.abs(xx - fx) <= 3) & ~sc_r.ts
+    smoke[ring] = np.where(((yy + xx) % 2 == 0)[ring], Q(0.27), Q(0.06))
+    o2 = np.full((h, w), 13763, dtype=np.int32)
+    n2 = np.full((h, w), 51773, dtype=np.int32)
+    gas_c = (np.ascontiguousarray(np.stack([smoke, o2, n2])),
+             np.asarray([Q(5.0), 0, 0], dtype=np.int32),
+             np.ascontiguousarray(o2 + n2))
+    for transport in ("shear", "step"):
+        tag = f"P10c live smoky fire {transport}"
+        res = both(tag, sc_r, live, transport=transport, k_q=k_live, t_amb=t_amb_live,
+                   gas=gas_c)
+        clear = cpu_run(sc_r, live, transport=transport, k_q=k_live, t_amb=t_amb_live)
+        rn, rn0 = res[0][0], clear[0][0]
+        if not (int(rn[ring].sum()) > 0 and int(rn[ring].max()) > 0):
+            _fail(f"{tag}: the smoke ring does not absorb on the live table")
+        if not (rn[fy, fx + 2] < rn0[fy, fx + 2]):
+            _fail(f"{tag}: the crate behind the smoke is not shaded "
+                  f"({int(rn[fy, fx + 2])} vs clear {int(rn0[fy, fx + 2])})")
+        n += 1
+    # (d) the engine's 7-plane layout on full-size grids (wavefronts > one block)
+    rng = np.random.default_rng(20260925)
+    for (h, w) in ((33, 65), (128, 256), (256, 512)):
+        sc = _np_scene(rng, h, w)
+        gas = _np_gas(rng, h, w)
+        vac = rng.random((h, w)) < 0.05
+        for transport in ("shear", "step"):
+            both(f"P10d {h}x{w} {transport}", sc, table, transport=transport,
+                 k_q=K_LEAK, is_vacuum=vac, vac_level=0, gas=gas)
+            n += 1
+    # an all-zero table on the SAME planes is the gas-free sweep, both backends
+    sc = _np_scene(rng, 33, 65)
+    gas_z = _np_gas(rng, 33, 65, active=(0, 0))
+    z = both("P10d all-zero table", sc, table, k_q=K_LEAK, gas=gas_z)
+    same("P10d all-zero table == no gas group", z, cpu_run(sc, table, k_q=K_LEAK))
+    n += 1
+    # (e) the launch core at N = 3: per-env gas planes, one shared table
+    part10_batch(table)
+    # (f) ingress: what the CPU rejects the GPU rejects, planes untouched
+    base = Scene(*random_scene(random.Random(77), 6, 7))
+    g_ok = _gas(*random_gas(random.Random(78), 6, 7))
+    bad = (
+        ("P10f heat_absorb < 0", (g_ok[0], np.where(np.arange(len(g_ok[1])) == 1, -1,
+                                                    g_ok[1]).astype(np.int32), g_ok[2])),
+        ("P10f heat_absorb > 2^28", (g_ok[0], np.full_like(g_ok[1], R.HEAT_ABSORB_Q_MAX + 1),
+                                     g_ok[2])),
+        ("P10f 17 gas planes", (np.zeros((17, 6, 7), dtype=np.int32),
+                                np.zeros(17, dtype=np.int32), g_ok[2])),
+    )
+    for tag, g in bad:
+        _raises_on_both(tag, base, table, gas=g)
+    for tag, kw in (("P10f partial group", dict(gas=g_ok[0], heat_absorb_q16=g_ok[1])),):
+        for fn in (_cpu_partial, _gpu_partial):
+            try:
+                fn(base, table, **kw)
+                _fail(f"{tag}: accepted by {fn.__name__}")
+            except ValueError:
+                pass
+    print(f"  {n} configurations + the N = 3 batch + 4 illegal gas inputs")
+
+
+def _cpu_partial(sc, table, **kw):
+    out = [np.zeros((sc.h, sc.w), dtype=np.int64) for _ in range(4)]
+    bp.RadiationSweep().run(sc.T, sc.a, sc.d, sc.his, sc.ts, table, None, int(T_AMB_Q),
+                            0, TRANSPORTS["shear"], 16, *out, **kw)
+
+
+def _gpu_partial(sc, table, **kw):
+    out = [np.zeros((sc.h, sc.w), dtype=np.int64) for _ in range(4)]
+    bp.cuda_radiation_sweep_run(sc.T, sc.a, sc.d, sc.his, sc.ts, table, None,
+                                int(T_AMB_Q), 0, TRANSPORTS["shear"], 16, *out, **kw)
+
+
+def part10_batch(table) -> None:
+    S_MIN, S_MAX = int(bp.RS_SLOT_MIN_STREAM), int(bp.RS_SLOT_MAX_STREAM)
+    SCALARS = int(bp.RS_SLOT_BAD_SCALARS)
+    e0 = int(np.asarray(table.table())[0])
+    h, w = 13, 21
+    rng = np.random.default_rng(99)
+    scenes = [_np_scene(rng, h, w) for _ in range(3)]
+    gases = [_np_gas(rng, h, w) for _ in range(3)]
+    hq = gases[0][1]                                      # ONE table, shared by all envs
+    vacs = [rng.random((h, w)) < p for p in (0.0, 0.3, 0.6)]
+    vac_levels = [-1, 0, e0 // 2]
+    k_leaks = [0, K_LEAK, Q(0.37)]
+    t_ambs = [int(T_AMB_Q), int(T_AMB_Q), int(T_AMB_Q) + (7 << 16)]
+    for transport, n_ord in (("shear", 16), ("step", 12)):
+        rad, f, cnt = run_batch(table, scenes, transport, n_ord, vacs, vac_levels,
+                                k_leaks, t_ambs, gas_planes=[g[0] for g in gases], hq=hq,
+                                nb_planes=[g[2] for g in gases])
+        for e, sc in enumerate(scenes):
+            c = cpu_run(sc, table, transport=transport, n_ord=n_ord, k_q=k_leaks[e],
+                        t_amb=t_ambs[e], is_vacuum=vacs[e], vac_level=vac_levels[e],
+                        gas=(gases[e][0], hq, gases[e][2]))
+            g = ([rad[i][e] for i in range(4)], f[e], int(cnt[e][S_MIN]), int(cnt[e][S_MAX]))
+            same(f"P10e env {e} {transport} S{n_ord}", c, g)
+    # an ILLEGAL shared table: every env flagged, every env's planes untouched
+    bad_hq = hq.copy()
+    bad_hq[2] = R.HEAT_ABSORB_Q_MAX + 1
+    rad, f, cnt = run_batch(table, scenes, "shear", 16, vacs, vac_levels, k_leaks, t_ambs,
+                            gas_planes=[g[0] for g in gases], hq=bad_hq,
+                            nb_planes=[g[2] for g in gases])
+    flag = int(bp.RS_BAD_HEAT_ABSORB)
+    for e in range(3):
+        if not int(cnt[e][SCALARS]) & flag:
+            _fail(f"P10e illegal table: env {e} not flagged RS_BAD_HEAT_ABSORB")
+        if any(np.any(rad[i][e] != GARBAGE) for i in range(4)):
+            _fail(f"P10e illegal table: env {e}'s planes were touched")
+    print("  P10e: N = 3 with per-env gas planes and one shared table, each env == its "
+          "own CPU run; an illegal table flagged in every env, planes untouched")
+
+
+def _smoky_burning_playground():
+    """part 9's scene plus a smoke cloud around the fire and a TEST-FIXTURE smoke
+    coefficient (every shipped row is 0.0): the smoke term on the live path."""
+    from simulation import gas_fixed, unit_fixed
+    from simulation.gases import SMOKE
+    sim, pick = _burning_playground()
+    g = sim.gmap
+    y0, x0 = pick
+    air = (~g.thermal_solid) & (~g.solid) & (~g.is_vacuum)
+    yy, xx = np.mgrid[0:g.material.shape[0], 0:g.material.shape[1]]
+    cloud = air & (np.abs(yy - y0) <= 4) & (np.abs(xx - x0) <= 4)
+    dens = gas_fixed.quantize(np.where((yy + xx) % 3 == 0, 0.27, 0.06))
+    g.gas[SMOKE][cloud] = dens[cloud]
+    hq = g.gases.heat_absorb_q16.copy()
+    hq[SMOKE] = unit_fixed.quantize_scalar(5.0)
+    g.gases.heat_absorb_q16 = np.ascontiguousarray(hq)
+    return sim, pick
+
+
+def part10_live() -> None:
+    print("PART 10g — the live conductor with the smoke term on (a fixture coefficient)")
+    from simulation import physics_runner
+
+    def only_radiation(on):
+        physics_runner.set_residency(False)
+        for name in _ALL_BACKENDS:
+            getattr(bp, name)(False)
+        bp.set_radiation_backend(bool(on))
+
+    # NON-VACUITY first: on the GPU backend, one tick of the smoky world and of
+    # the same world with the coefficient zeroed must book different sweeps --
+    # so the smoke term really crossed the bus on the live per-call path.
+    s_on, _ = _smoky_burning_playground()
+    s_off, _ = _smoky_burning_playground()
+    s_off.gmap.gases.heat_absorb_q16 = np.zeros_like(s_off.gmap.gases.heat_absorb_q16)
+    only_radiation(True)
+    for s in (s_on, s_off):
+        s.set_paused(False)
+        s.step()
+    only_radiation(False)
+    if np.array_equal(s_on.gmap.rad_net_sweep, s_off.gmap.rad_net_sweep):
+        _fail("10g: the smoke coefficient changed nothing on the GPU path — vacuous")
+    _run_live("10g step path, smoke absorbing", 20,
+              lambda: only_radiation(True), lambda: only_radiation(False),
+              builder=_smoky_burning_playground)
+
+
+# ---------------------------------------------------------------------------
 def main() -> int:
     if not getattr(bp, "HAS_CUDA", False) or not bp.cuda_available():
         print("RS_RESULT: FAIL (no CUDA build / device)")
@@ -843,9 +1107,10 @@ def main() -> int:
     table = reference_table()
     for part in (part1_gate0_matrix, part2_derived_ambient, part3_thin_rows,
                  part4_fire_tile, part5_bodies, part6_shapes, part7_ingress,
-                 part8_batch):
+                 part8_batch, part10_smoke):
         part(table)
     part9_live()
+    part10_live()
     if _FAILS:
         print(f"RS_RESULT: FAIL ({len(_FAILS)} failures)")
         return 1

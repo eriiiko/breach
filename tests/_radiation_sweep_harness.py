@@ -81,6 +81,85 @@ def random_scene(rng, h, w):
     return a, d, T, his, ts
 
 
+def random_gas(rng, h, w, n_trace=3):
+    """THE randomised GAS vocabulary (P5a, design v3 §6.3) gate 0 and the CUDA
+    gate share: `n_trace` trace planes plus the bulk pair (O2, N2), in the
+    reference's list format.
+
+    * trace densities span none, a wisp, the measured smoke p90 / p99
+      (docs/smoke_tau_diagnostic_2026-08-25.md) and the tracer cap ONE — and a
+      few NEGATIVE values, which an int32 plane can hold and which must absorb
+      nothing on both sides;
+    * `hq` mixes a zero (the CPU skips it, the reference sums it: the two must
+      agree), thin coefficients, a saturating one and the door's maximum; the
+      bulk pair's coefficients are 0 (air does not absorb in the IR);
+    * the bulk count is ambient on most cells, THIN on some, ZERO (below the
+      N_EPS floor) on a tenth, and exactly N_EPS_RAW on one.
+    Returns (gas planes, hq list, n_bulk plane)."""
+    Q = R.quant
+    dens = [0, 0, 1, Q(0.001), Q(0.06), Q(0.27), ONE, -Q(0.05)]
+    trace = [[[rng.choice(dens) for _ in range(w)] for _ in range(h)]
+             for _ in range(n_trace)]
+    hq_pool = [0, Q(0.3), Q(0.9), Q(5.0), Q(37.5), R.HEAT_ABSORB_Q_MAX]
+    hq = [0] + [rng.choice(hq_pool[1:]) for _ in range(n_trace - 1)] + [0, 0]
+    o2 = [[13763] * w for _ in range(h)]
+    n2 = [[51773] * w for _ in range(h)]
+    for y in range(h):
+        for x in range(w):
+            r = rng.random()
+            if r < 0.10:
+                o2[y][x] = n2[y][x] = 0                      # below the floor
+            elif r < 0.25:
+                o2[y][x], n2[y][x] = Q(0.04), Q(0.16)       # a thin, hot-ish cell
+    y, x = rng.randrange(h), rng.randrange(w)
+    o2[y][x], n2[y][x] = 0, R.N_EPS_RAW                      # the floor's edge
+    n_bulk = [[o2[y][x] + n2[y][x] for x in range(w)] for y in range(h)]
+    return trace + [o2, n2], hq, n_bulk
+
+
+def smoke_feature_scene():
+    """ONE scene carrying every feature of the smoke term on purpose (gate 0's
+    random matrix may or may not draw each): a hot source, a thin absorbing
+    cell, a SATURATED one (a_gas == ONE), a HOT one, a cell full of smoke but
+    below the N_EPS floor, one exactly AT the floor, a body standing in thin
+    smoke and one in opaque smoke, a thermal solid holding absorbing gas, a
+    negative density, and a zero-coefficient gas with density everywhere."""
+    Q = R.quant
+    h, w = 7, 11
+    a = R.plane(h, w, 0)
+    d = R.plane(h, w, 0)
+    T = R.plane(h, w, 0)
+    for y in range(h):
+        a[y][0] = d[y][0] = ONE
+        T[y][0] = 1263 << 16                            # the source column
+    a[3][10] = d[3][10] = Q(0.9)                        # a cold receiver
+    a[5][6] = d[5][6] = Q(0.5)                          # a thermal solid ...
+    ts = ts_from_a(a)
+    smoke = R.plane(h, w, 0)
+    zero_g = R.plane(h, w, Q(0.5))                      # coefficient 0: never read
+    o2 = R.plane(h, w, 13763)
+    n2 = R.plane(h, w, 51773)
+    cells = {"thin": (1, 3), "saturated": (2, 4), "hot": (3, 5), "floored": (4, 3),
+             "at_floor": (4, 4), "body_thin": (1, 7), "body_opaque": (2, 7),
+             "negative": (6, 2)}
+    for key, (y, x) in cells.items():
+        smoke[y][x] = {"thin": Q(0.06), "negative": -Q(0.4)}.get(key, ONE)
+    smoke[5][6] = ONE                                   # ... full of smoke it ignores
+    T[3][5] = 5000 << 16                                # hot smoke radiates
+    y, x = cells["floored"]
+    o2[y][x] = n2[y][x] = 0
+    y, x = cells["at_floor"]
+    o2[y][x], n2[y][x] = 0, R.N_EPS_RAW
+    for key in ("body_thin", "body_opaque"):
+        y, x = cells[key]
+        d[y][x] = ONE
+    smoke[1][7] = Q(0.06)
+    gas = [zero_g, smoke, o2, n2]
+    hq = [0, Q(5.0), 0, 0]
+    n_bulk = [[o2[y][x] + n2[y][x] for x in range(w)] for y in range(h)]
+    return a, d, T, ts, gas, hq, n_bulk, cells
+
+
 def as_i32(plane):
     return np.ascontiguousarray(np.asarray(plane, dtype=np.int64).astype(np.int32))
 
@@ -97,15 +176,27 @@ def ts_from_a(a):
     return [[1 if v > 0 else 0 for v in row] for row in a]
 
 
+def gas_arrays(gas, hq, n_bulk):
+    """The gas group as the contiguous int32 arrays the bindings take (or three
+    Nones)."""
+    if gas is None:
+        return None, None, None
+    return (np.ascontiguousarray(np.asarray(gas, dtype=np.int64).astype(np.int32)),
+            np.ascontiguousarray(np.asarray(hq, dtype=np.int64).astype(np.int32)),
+            as_i32(n_bulk))
+
+
 def cpp_sweep(a, d, k_q, T, his, ts, *, transport="shear", n_ord=16,
-              table=None, sweep=None, fleck=True, amb=None):
+              table=None, sweep=None, fleck=True, amb=None,
+              gas=None, hq=None, n_bulk=None):
     """Run the C++ sweep on a reference-format scene. `k_q` is the UNIFORM leak
     (an int, Q16). `fleck=False` is the reference's `f_plane=None` (undamped)
     configuration. `amb` is the ambient LEVEL the same way the reference takes
     it (thermal v2 R3): None -> E°[0] everywhere, an int -> broadcast, a plane
-    -> as given. Returns (rad_net, rad_flux, rad_amb, rad_fluence, fleck,
-    sweep) as int64/int32 numpy arrays plus the sweep object (its min_stream /
-    max_stream telemetry)."""
+    -> as given. `gas`/`hq`/`n_bulk` (P5a, all or none) are the smoke term, in
+    the reference's list format. Returns (rad_net, rad_flux, rad_amb,
+    rad_fluence, fleck, sweep) as int64/int32 numpy arrays plus the sweep
+    object (its min_stream / max_stream telemetry and effective planes)."""
     h, w = len(a), len(a[0])
     table = table if table is not None else reference_table()
     sweep = sweep if sweep is not None else bp.RadiationSweep()
@@ -120,9 +211,10 @@ def cpp_sweep(a, d, k_q, T, his, ts, *, transport="shear", n_ord=16,
     rl = np.zeros((h, w), dtype=np.int64)
     amb_a = None if amb is None else np.ascontiguousarray(
         np.asarray(amb_plane(amb, h, w), dtype=np.int64))
+    g_a, hq_a, nb_a = gas_arrays(gas, hq, n_bulk)
     sweep.run(T_a, a_a, d_a, his_a, ts_a, table, amb_a, int(T_AMB_Q), int(k_q),
               TRANSPORTS[transport], int(n_ord), rn, rf, ra, rl,
-              fleck_enabled=bool(fleck))
+              fleck_enabled=bool(fleck), gas=g_a, heat_absorb_q16=hq_a, n_bulk=nb_a)
     return rn, rf, ra, rl, sweep.fleck_plane(), sweep
 
 
@@ -135,15 +227,22 @@ def amb_plane(amb, h, w):
     return amb
 
 
-def ref_sweep(a, d, k_q, T, his, *, transport="shear", n_ord=16, amb=None):
+def ref_sweep(a, d, k_q, T, his, *, transport="shear", n_ord=16, amb=None,
+              ts=None, gas=None, hq=None, n_bulk=None):
     """The reference on the SAME scene: its Fleck pre-pass then its sweep.
-    Returns (rad_net, rad_flux, rad_amb, rad_fluence, f_plane) as int64 arrays
-    (the reference computes in Python ints; every value fits int64 by G11)."""
+    `ts` (the thermal-solid mask) selects the pre-pass branch exactly as the
+    engine does; `gas`/`hq`/`n_bulk` (P5a, all or none, with `ts`) are the
+    smoke term. Returns (rad_net, rad_flux, rad_amb, rad_fluence, f_plane) as
+    int64 arrays (the reference computes in Python ints; every value fits int64
+    by G11), plus the SweepResult (its telemetry and effective planes)."""
     h, w = len(a), len(a[0])
-    f = R.fleck_prepass(T, a, his_plane(his, h, w), e_ref=amb)
+    f = R.fleck_prepass(T, a, his_plane(his, h, w), e_ref=amb, ts=ts)
     k = R.plane(h, w, int(k_q))
+    gas_kw = {}
+    if gas is not None:
+        gas_kw = dict(gas=gas, heat_absorb_q=hq, n_bulk=n_bulk, ts=ts)
     res = R.sweep_q(a, d, k, T, n_ord=n_ord, transport=transport, f_plane=f,
-                    e_ref=amb)
+                    e_ref=amb, **gas_kw)
     to64 = lambda p: np.asarray(p, dtype=np.int64)   # noqa: E731
     return (to64(res.rad_net), to64(res.rad_flux), to64(res.rad_amb),
             to64(res.rad_fluence), np.asarray(f, dtype=np.int64), res)

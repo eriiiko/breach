@@ -9,17 +9,24 @@ scene matrix, the derived and the per-cell ambient (the vacuum ring included),
 thin rows, a burning tile on the live calibration, stamped bodies, degenerate to
 full-size grids, ingress rejections, an N = 3 batch, and the live conductor
 (the step path with only the radiation backend flipping, a cold sky, and the
-resident tick with every backend on but combustion). Gate 0 holds the CPU to
-the integer reference, so this chains the GPU to the reference.
+resident tick with every backend on but combustion) -- and since P5a the SMOKE
+TERM (design §6.3) on all of those axes: gate 0's smoke matrix, the scene with
+every feature of the term, a smoky fire on the live table, the engine's 7-plane
+gas layout on full-size grids, an N = 3 batch with per-env gas planes, the gas
+ingress rejections, and the live conductor with a fixture smoke coefficient.
+Gate 0 holds the CPU to the integer reference, so this chains the GPU to the
+reference.
 
-BREAKS IF: the .cu transcribes any term of design §2.3 differently, a wavefront
-launch stops being a topological order of an ordinate's dependency DAG, the
-per-cell books stop being order-free integer sums, or the (N, h, w) indexing
-leaks one env into another.
+BREAKS IF: the .cu transcribes any term of design §2.3 or §6.3 differently, a
+wavefront launch stops being a topological order of an ordinate's dependency
+DAG, the per-cell books stop being order-free integer sums, or the (N, h, w)
+indexing leaks one env into another (its gas planes included). P5a broke it
+twice to prove it: a per-env gas offset missing its n_gases factor (P10e red)
+and the N_EPS floor off by one on the device (P10a/b red).
 
 Runs in an isolated subprocess (tests/cuda_harness.py — the CUDA .pyd is never
 imported into pytest); SKIPS cleanly without a CUDA build / device. See
-tests/cuda_radiation_sweep_check.py for the nine parts and their non-vacuity
+tests/cuda_radiation_sweep_check.py for the ten parts and their non-vacuity
 assertions.
 """
 from __future__ import annotations

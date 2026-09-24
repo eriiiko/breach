@@ -8,12 +8,15 @@
 //
 //   rs_init_env   one thread per env: initialise the env's counter block and
 //                 check the per-env scalars (k_leak in [0, ONE]; vac_level <=
-//                 E0 when the ambient is derived) — run()'s scalar checks and
-//                 derive_ambient()'s.
+//                 E0 when the ambient is derived; since P5a every entry of the
+//                 shared heat_absorb table in [0, HEAT_ABSORB_Q_MAX]) — run()'s
+//                 scalar checks and derive_ambient()'s.
 //   rs_prepass    one thread per cell: the extinction ingress check, the
 //                 per-cell ambient (read, or derived from is_vacuum — the twin
 //                 of derive_ambient), and run()'s pre-pass verbatim: amb_m,
-//                 the emission excess, the Fleck factor.
+//                 the emission excess, the EFFECTIVE extinction planes (the
+//                 smoke term on a gas cell, P5a — radiation_sweep.h's FP_HD
+//                 gas_* functions), the Fleck factor.
 //   rs_zero       one thread per cell: OVERWRITE, not accumulate — run()
 //                 zeroes its four outputs after its ingress check, and so does
 //                 this, per env, only where the env passed it.
@@ -125,6 +128,8 @@ __global__ void rs_init_env(int n_env,
                             const int32_t* __restrict__ k_leak_q,
                             const int64_t* __restrict__ vac_level,
                             bool derive,
+                            const int32_t* __restrict__ heat_absorb_q16,  // P5a, nullable
+                            int n_gases,
                             int64_t* __restrict__ cnt) {
     for (int env = blockIdx.x * blockDim.x + threadIdx.x; env < n_env;
          env += gridDim.x * blockDim.x) {
@@ -134,6 +139,10 @@ __global__ void rs_init_env(int n_env,
         if (k < 0 || k > FP_ONE) bits |= RS_BAD_K_LEAK;           // run()
         if (derive && vac_level[env] > e_table[0])
             bits |= RS_BAD_VAC_LEVEL;                               // derive_ambient()
+        for (int g = 0; g < n_gases; ++g) {                         // run(), P5a
+            const int32_t hq = heat_absorb_q16[g];
+            if (hq < 0 || hq > RadiationSweep::HEAT_ABSORB_Q_MAX) bits |= RS_BAD_HEAT_ABSORB;
+        }
         c[RS_SLOT_BAD_EXTINCTION] = 0;
         c[RS_SLOT_BAD_AMBIENT]    = 0;
         c[RS_SLOT_BAD_SCALARS]    = bits;
@@ -156,10 +165,16 @@ __global__ void rs_prepass(int n_env, int plane,
                            const int64_t* __restrict__ e_table,
                            const int64_t* __restrict__ vac_level,
                            const int32_t* __restrict__ t_amb_q,
+                           const int32_t* __restrict__ gas,         // P5a, nullable
+                           int n_gases,
+                           const int32_t* __restrict__ heat_absorb_q16,
+                           const int32_t* __restrict__ n_bulk,
                            int64_t w_m, bool fleck_enabled,
                            int64_t* __restrict__ amb_m,
                            int64_t* __restrict__ ex_cell,
                            int32_t* __restrict__ f_q24,
+                           int32_t* __restrict__ a_eff,
+                           int32_t* __restrict__ d_eff,
                            int64_t* __restrict__ cnt) {
     const int64_t total = (int64_t)n_env * (int64_t)plane;
     for (int64_t gi = (int64_t)blockIdx.x * blockDim.x + threadIdx.x; gi < total;
@@ -191,11 +206,32 @@ __global__ void rs_prepass(int n_env, int plane,
         int64_t ex = e_table[e_bucket_of(temperature[gi])] - amb_i;
         if (ex < 0) ex = 0;                 // dead under the invariant; run()'s belt and braces
         ex_cell[gi] = ex;
+        // THE EFFECTIVE EXTINCTION (P5a) — run()'s, through the same FP_HD
+        // functions: the density law over this env's gas planes on a GAS cell,
+        // the N_EPS floor on its bulk count, both planes as MAXes. The sum over
+        // at most N_GAS_PLANES_MAX planes is exact in int64 (radiation_sweep.h),
+        // so the order the terms are added in is irrelevant, as on the CPU —
+        // which skips the zero-coefficient gases this kernel may be handed.
+        int32_t ae = (int32_t)a;
+        int32_t de = (int32_t)d;
+        if (n_gases > 0 && !thermal_solid[gi]) {
+            const size_t cell = (size_t)(gi - (int64_t)env * (int64_t)plane);
+            const int32_t* genv = gas + (size_t)env * (size_t)n_gases * (size_t)plane;
+            int64_t sum = 0;
+            for (int g = 0; g < n_gases; ++g) {
+                sum += gas_density_term(heat_absorb_q16[g], genv[(size_t)g * (size_t)plane + cell]);
+            }
+            ae = gas_effective_a(ae, gas_extinction_finish(sum, n_bulk[gi]), false);
+            de = gas_effective_d(de, ae);
+        }
+        a_eff[gi] = ae;
+        d_eff[gi] = de;
         int64_t L = 0;
         if (thermal_solid[gi]) {
             L = fleck_L_solid_q(ex, heat_atten_q[gi], heat_inv_shift[gi]);
         }
-        // GAS: P5 fills this arm on BOTH backends (run()'s comment); L = 0.
+        // GAS: still L = 0 on BOTH backends — also on an absorbing gas cell
+        // since P5a; P5b fills the arm (run()'s comment).
         int64_t T_abs = (int64_t)temperature[gi] + (int64_t)t_amb_q[env];
         if (T_abs < 1) T_abs = 1;
         f_q24[gi] = fleck_enabled ? fleck_f_q24(T_abs, L) : F_ONE;
@@ -227,8 +263,8 @@ __global__ void rs_zero(int n_env, int plane, const int64_t* __restrict__ cnt,
 // is what lets the warp reduction at the end use a full mask).
 __global__ void rs_wavefront(int wf, int h, int w, int n_ordinates, bool shear,
                              SweepOrdinates ords, int64_t w_m,
-                             const int32_t* __restrict__ heat_atten_q,
-                             const int32_t* __restrict__ dyn_heat_atten_q,
+                             const int32_t* __restrict__ a_eff,       // P5a: the
+                             const int32_t* __restrict__ d_eff,       // effective planes
                              const int32_t* __restrict__ k_leak_q,
                              const int64_t* __restrict__ amb_m,
                              const int64_t* __restrict__ ex_cell,
@@ -322,8 +358,8 @@ __global__ void rs_wavefront(int wf, int h, int w, int n_ordinates, bool shear,
         const int64_t leaked = (i_in * kq) >> FP_SHIFT;
         const int64_t ret    = (amb * kq) >> FP_SHIFT;   // ITS OWN ceiling
         const int64_t stream = i_in - leaked + ret;
-        const int64_t a = heat_atten_q[gi];
-        const int64_t b = (int64_t)dyn_heat_atten_q[gi] - a;   // the body share
+        const int64_t a = a_eff[gi];                           // material + smoke (P5a)
+        const int64_t b = (int64_t)d_eff[gi] - a;              // the body share
         const int64_t abs_mat  = (stream * a) >> FP_SHIFT;
         const int64_t abs_body = (stream * b) >> FP_SHIFT;
         const int64_t ex_m = (ex_cell[gi] * w_m) >> FP_SHIFT;
@@ -412,8 +448,11 @@ int radiation_sweep_launch_resident(
     const int64_t* d_e_table,
     const int64_t* d_vac_level, const int32_t* d_k_leak_q,
     const int32_t* d_t_amb_q,
+    const int32_t* d_gas, int n_gases,
+    const int32_t* d_heat_absorb_q16, const int32_t* d_n_bulk,
     int transport, int n_ordinates, bool fleck_enabled,
     int64_t* d_outflow, int64_t* d_amb_m, int64_t* d_ex_cell, int32_t* d_f_q24,
+    int32_t* d_a_eff, int32_t* d_d_eff,
     int64_t* d_rad_net, int64_t* d_rad_flux, int64_t* d_rad_amb,
     int64_t* d_rad_fluence,
     int64_t* d_cnt) {
@@ -423,6 +462,22 @@ int radiation_sweep_launch_resident(
             "radiation_sweep_launch_resident: unsupported (n_ordinates, "
             "transport) - n_ordinates must be 16 or 12, transport "
             "TRANSPORT_STEP (0) or TRANSPORT_SHEAR (1)");
+    }
+    // P5a: the gas group's host-side shape checks (the table's VALUES are
+    // counted on the device by rs_init_env, per env, the core's contract).
+    const bool gas_given = (d_gas != nullptr);
+    if (gas_given != (d_heat_absorb_q16 != nullptr) || gas_given != (d_n_bulk != nullptr) ||
+        n_gases < 0 || n_gases > RadiationSweep::N_GAS_PLANES_MAX ||
+        (!gas_given && n_gases != 0)) {
+        throw std::invalid_argument(
+            "radiation_sweep_launch_resident: the gas group (d_gas, "
+            "d_heat_absorb_q16, d_n_bulk) is all or none, with 0 <= n_gases <= "
+            "N_GAS_PLANES_MAX (design v3 section 6.3, P5a)");
+    }
+    if (d_a_eff == nullptr || d_d_eff == nullptr) {
+        throw std::invalid_argument(
+            "radiation_sweep_launch_resident: d_a_eff / d_d_eff scratch is "
+            "required (the wavefronts read the effective extinction planes)");
     }
     if (n_env <= 0 || h <= 0 || w <= 0) return 0;
     if (n_env > 65535) {
@@ -444,6 +499,7 @@ int radiation_sweep_launch_resident(
 
     rs_init_env<<<(n_env + 63) / 64, 64>>>(n_env, d_e_table, d_k_leak_q,
                                            d_vac_level, d_amb_level == nullptr,
+                                           d_heat_absorb_q16, n_gases,
                                            d_cnt);
     cuda_check(cudaGetLastError(), "init launch");
     ++launches;
@@ -451,8 +507,10 @@ int radiation_sweep_launch_resident(
     rs_prepass<<<grid_for(total), BLOCK>>>(
         n_env, plane, d_temperature, d_heat_atten_q, d_dyn_heat_atten_q,
         d_heat_inv_shift, d_thermal_solid, d_amb_level, d_is_vacuum,
-        d_e_table, d_vac_level, d_t_amb_q, w_m, fleck_enabled,
-        d_amb_m, d_ex_cell, d_f_q24, d_cnt);
+        d_e_table, d_vac_level, d_t_amb_q,
+        d_gas, n_gases, d_heat_absorb_q16, d_n_bulk,
+        w_m, fleck_enabled,
+        d_amb_m, d_ex_cell, d_f_q24, d_a_eff, d_d_eff, d_cnt);
     cuda_check(cudaGetLastError(), "prepass launch");
     ++launches;
 
@@ -467,7 +525,7 @@ int radiation_sweep_launch_resident(
     for (int wf = 0; wf < ws.K; ++wf) {
         rs_wavefront<<<grid, BLOCK>>>(
             wf, h, w, n_ordinates, shear, ords, w_m,
-            d_heat_atten_q, d_dyn_heat_atten_q, d_k_leak_q,
+            d_a_eff, d_d_eff, d_k_leak_q,
             d_amb_m, d_ex_cell, d_f_q24, d_outflow,
             d_rad_net, d_rad_flux, d_rad_amb, d_rad_fluence, d_cnt);
         cuda_check(cudaGetLastError(), "wavefront launch");
@@ -487,12 +545,44 @@ int radiation_sweep_step(
     int transport, int n_ordinates, int h, int w,
     int64_t* rad_net, int64_t* rad_flux, int64_t* rad_amb, int64_t* rad_fluence,
     bool fleck_enabled,
-    int32_t* fleck_out, int64_t* min_stream_out, int64_t* max_stream_out) {
+    int32_t* fleck_out, int64_t* min_stream_out, int64_t* max_stream_out,
+    const int32_t* gas, int n_gases,
+    const int32_t* heat_absorb_q16, const int32_t* n_bulk) {
     if (RadiationSweep::ordinate_table(n_ordinates, transport) == nullptr) {
         throw std::invalid_argument(
             "radiation_sweep_step (CUDA): unsupported (n_ordinates, transport) "
             "- n_ordinates must be 16 or 12, transport TRANSPORT_STEP (0) or "
             "TRANSPORT_SHEAR (1)");
+    }
+    // ---- P5a: the gas group, checked on the HOST exactly as run() checks it,
+    // before anything crosses the bus (a rejected scene touches nothing) ----
+    const bool gas_given = (gas != nullptr);
+    if (gas_given != (heat_absorb_q16 != nullptr) || gas_given != (n_bulk != nullptr)) {
+        throw std::invalid_argument(
+            "radiation_sweep_step (CUDA): gas, heat_absorb_q16 and n_bulk are "
+            "given together or not at all (the smoke term, design v3 §6.3)");
+    }
+    if (n_gases < 0 || n_gases > RadiationSweep::N_GAS_PLANES_MAX ||
+        (!gas_given && n_gases != 0)) {
+        throw std::invalid_argument(
+            "radiation_sweep_step (CUDA): n_gases outside [0, "
+            "N_GAS_PLANES_MAX] - the gas density sum's int64 headroom is "
+            "argued for at most 16 planes");
+    }
+    // The ACTIVE gases, as run() forms them: a zero coefficient adds exactly 0
+    // to the density sum, so its plane never crosses the bus.
+    int act_g[RadiationSweep::N_GAS_PLANES_MAX];
+    int32_t act_hq[RadiationSweep::N_GAS_PLANES_MAX];
+    int n_act = 0;
+    for (int g = 0; g < n_gases; ++g) {
+        const int32_t hq = heat_absorb_q16[g];
+        if (hq < 0 || hq > RadiationSweep::HEAT_ABSORB_Q_MAX) {
+            throw std::invalid_argument(
+                "radiation_sweep_step (CUDA): a heat_absorb_q16 outside [0, "
+                "2^28] (the gas door's [0, 4096]; negative would be a source, "
+                "above it the density sum is no longer provably exact in int64)");
+        }
+        if (hq != 0) { act_g[n_act] = g; act_hq[n_act] = hq; ++n_act; }
     }
     const size_t n = (size_t)h * (size_t)w;
     if (h <= 0 || w <= 0) {
@@ -521,6 +611,11 @@ int radiation_sweep_step(
     const size_t o_ambm = ar.carve(n64);
     const size_t o_ex   = ar.carve(n64);
     const size_t o_f    = ar.carve(n32);
+    const size_t o_ae   = ar.carve(n32);                 // P5a: the effective
+    const size_t o_de   = ar.carve(n32);                 // extinction planes
+    const size_t o_gas  = n_act ? ar.carve((size_t)n_act * n32) : 0;   // active only
+    const size_t o_hq   = n_act ? ar.carve((size_t)n_act * sizeof(int32_t)) : 0;
+    const size_t o_nb   = n_act ? ar.carve(n32) : 0;
     const size_t o_rn   = ar.carve(n64);
     const size_t o_rf   = ar.carve(n64);
     const size_t o_ra   = ar.carve(n64);
@@ -554,6 +649,20 @@ int radiation_sweep_step(
                           cudaMemcpyHostToDevice), "H2D k_leak_q");
     cuda_check(cudaMemcpy(ar.at<int32_t>(o_ta), &t_amb_q, sizeof(int32_t),
                           cudaMemcpyHostToDevice), "H2D t_amb_q");
+    // P5a: the ACTIVE gas planes, packed in order, their coefficients, and the
+    // bulk count — nothing at all when every coefficient is zero (shipped).
+    for (int j = 0; j < n_act; ++j) {
+        cuda_check(cudaMemcpy(ar.at<int32_t>(o_gas) + (size_t)j * n,
+                              gas + (size_t)act_g[j] * n, n32,
+                              cudaMemcpyHostToDevice), "H2D gas plane");
+    }
+    if (n_act) {
+        cuda_check(cudaMemcpy(ar.at<int32_t>(o_hq), act_hq,
+                              (size_t)n_act * sizeof(int32_t),
+                              cudaMemcpyHostToDevice), "H2D heat_absorb_q16");
+        cuda_check(cudaMemcpy(ar.at<int32_t>(o_nb), n_bulk, n32,
+                              cudaMemcpyHostToDevice), "H2D n_bulk");
+    }
 
     const int launches = radiation_sweep_launch_resident(
         1, h, w,
@@ -563,9 +672,13 @@ int radiation_sweep_step(
         is_vacuum ? ar.at<bool>(o_vac) : nullptr,
         ar.at<int64_t>(o_etab),
         ar.at<int64_t>(o_vl), ar.at<int32_t>(o_kl), ar.at<int32_t>(o_ta),
+        n_act ? ar.at<int32_t>(o_gas) : nullptr, n_act,
+        n_act ? ar.at<int32_t>(o_hq) : nullptr,
+        n_act ? ar.at<int32_t>(o_nb) : nullptr,
         transport, n_ordinates, fleck_enabled,
         ar.at<int64_t>(o_out), ar.at<int64_t>(o_ambm), ar.at<int64_t>(o_ex),
         ar.at<int32_t>(o_f),
+        ar.at<int32_t>(o_ae), ar.at<int32_t>(o_de),
         ar.at<int64_t>(o_rn), ar.at<int64_t>(o_rf), ar.at<int64_t>(o_ra),
         ar.at<int64_t>(o_rl),
         ar.at<int64_t>(o_cnt));
@@ -585,6 +698,12 @@ int radiation_sweep_step(
             "radiation_sweep_step (CUDA): the vacuum ambient level exceeds E0; "
             "the per-cell ambient invariant is 0 <= amb <= E0, which is what "
             "keeps every cell's emission excess non-negative");
+    }
+    if (cnt[RS_SLOT_BAD_SCALARS] & RS_BAD_HEAT_ABSORB) {
+        // Unreachable through this door (the host checked the table above);
+        // kept so the device's verdict can never be silently ignored.
+        throw std::invalid_argument(
+            "radiation_sweep_step (CUDA): a heat_absorb_q16 outside [0, 2^28]");
     }
     if (cnt[RS_SLOT_BAD_EXTINCTION] != 0) {
         throw std::invalid_argument(

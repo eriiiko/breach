@@ -211,7 +211,16 @@ public:
         int64_t* rad_amb_sweep = nullptr,
         int64_t* rad_fluence = nullptr,
         int32_t k_leak_q = 0,
-        int64_t rad_amb_vacuum_q = -1) const;
+        int64_t rad_amb_vacuum_q = -1,
+        // ray-engine-v2 P5a (design v3 §6.3): SMOKE ABSORBS HEAT. The per-gas
+        // [gases.*] heat_absorb column in Q16 (GasTable.heat_absorb_q16,
+        // n_gases entries). With it the sweep (both backends) reads the smoke
+        // term on every gas cell from `gas` above and the bulk sum `n_bulk_`
+        // this function already builds — the SAME N the fold divides by and
+        // the N_EPS floor keys on. The pybind binding makes it REQUIRED
+        // (noconvert); null here is the pre-P5a sweep. Every shipped value is
+        // 0.0, so no gas plane is read and the live game does not move.
+        const int32_t* gas_heat_absorb_q16 = nullptr) const;
 
     // --- Patch 1 S4b: the IMEX atmosphere/smoke substep loop -------------
     // Moves the per-tick IMEX substep block out of PhysicsRunner.step (Python)

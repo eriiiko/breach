@@ -32,6 +32,12 @@ and mechanics at M2/M3. ``decay`` is loaded but **not yet applied** in transport
 preservation — see :mod:`simulation.physics_runner`). ``conservative`` (P1) is
 read by :class:`simulation.physics_runner.PhysicsRunner` to route the bulk pair
 to the donor-cell transport instead of the per-gas semi-Lagrangian loop.
+
+Ray-engine-v2 P5a (docs/ray_engine_v2_design_v3_2026-09-15.md §6.3) adds
+``heat_absorb``: the gas's HEAT extinction per unit of its density, quantized to
+``heat_absorb_q16`` and read by the radiation sweep on every gas cell (the density
+law: what thin smoke does not absorb continues down the stream). DORMANT — 0.0 on
+every shipped row until P5b opens the temperature fold's gas branch.
 """
 from __future__ import annotations
 
@@ -96,7 +102,20 @@ _SCALAR_COLUMNS = {
     "flammable": bool,
     "emits_when_hot": bool,
     "conservative": bool,
+    # ray-engine-v2 P5a (design v3 §6.3): the gas's HEAT extinction per unit of
+    # its own density — validated and quantized to ``heat_absorb_q16`` below.
+    "heat_absorb": np.float32,
 }
+
+# The ``heat_absorb`` door's upper bound (ray-engine-v2 P5a). NOT a physical
+# guess: it is the largest power of two for which the radiation sweep's per-cell
+# density sum ``Σ_g heat_absorb_q16[g] · N_g`` is EXACT in int64 for ANY int32
+# densities on up to 16 gas planes (every term < 2^28 · 2^31 = 2^59, sixteen of
+# them < 2^63) — no saturating arithmetic, no data-dependent branch; the sweep
+# re-checks both numbers at its own door (radiation_sweep.h). Physically it
+# constrains nothing: at 4096 a gas is opaque at 1/4096 of ambient density, a
+# wisp. The integer reference mirrors it as ``sweep_ref_q.HEAT_ABSORB_MAX``.
+HEAT_ABSORB_MAX = 4096.0
 
 
 class GasTable:
@@ -166,6 +185,39 @@ class GasTable:
             for i in range(self.n)
         )
 
+        # heat_absorb_q16 (ray-engine-v2 P5a, design v3 §6.3): the per-gas
+        # Q16.16 HEAT-extinction coefficient the radiation sweep reads on a GAS
+        # cell — the density law, a_gas = min(ONE, Σ_g heat_absorb_q16[g] · N_g
+        # >> 16), 0 where the bulk N is below gas_energy.h's N_EPS_RAW. Validated
+        # HERE, at the table door, then quantized ONCE in the beam_absorb_q16
+        # idiom (door 2: the standard round-half-away-from-zero twin, no divide
+        # this time — the column IS the coefficient). The door:
+        #   * finite and >= 0 — a negative coefficient would make smoke a
+        #     SOURCE (the sweep's positivity rests on a >= 0);
+        #   * <= HEAT_ABSORB_MAX (4096) — the arithmetic's own limit, see the
+        #     constant's comment. No [0, 1] cap: heat_absorb is a coefficient
+        #     PER UNIT DENSITY, not a fraction, and min(ONE, ·) is what keeps
+        #     a_gas a fraction — a soot that is opaque at a tenth of ambient
+        #     density is heat_absorb 10, and physical.
+        # Stored as a contiguous int32 ARRAY (not a tuple like the beam's): the
+        # engine takes it by pointer every tick (PhysicsEngine.step_tail).
+        # Every shipped row is 0.0 until P5b opens the Pass-1 fold's gas branch —
+        # until then nothing consumes a gas cell's rad_net, so a non-zero value
+        # would take radiation out of the stream with no book to land in.
+        heat_absorb_q16 = []
+        for name, value in zip(self.names, self.heat_absorb.tolist()):
+            v = float(value)
+            if not np.isfinite(v) or v < 0.0 or v > HEAT_ABSORB_MAX:
+                raise ValueError(
+                    f"gases.{name}.heat_absorb must lie in [0, {HEAT_ABSORB_MAX:g}] "
+                    f"(heat extinction per unit density: negative would make the "
+                    f"gas a radiation SOURCE, above {HEAT_ABSORB_MAX:g} the "
+                    f"radiation sweep's density sum is no longer provably exact in "
+                    f"int64 — design v3 section 6.3, P5a); got {value!r}")
+            heat_absorb_q16.append(_ufx.quantize_scalar(v))
+        self.heat_absorb_q16 = np.ascontiguousarray(
+            np.asarray(heat_absorb_q16, dtype=np.int32))
+
         # effect: per-gas gameplay tag string (read unit-side in mechanics; the
         # solver only transports the field). Stored as a plain list by id.
         self.effect = [
@@ -220,5 +272,5 @@ class GasTable:
 __all__ = [
     "STEAM", "SMOKE", "POISON", "TEARGAS", "FUEL_GAS",
     "O2", "INERT_N2",
-    "GAS_NAMES", "N_GASES", "N_TRACE_GASES", "GasTable",
+    "GAS_NAMES", "N_GASES", "N_TRACE_GASES", "GasTable", "HEAT_ABSORB_MAX",
 ]

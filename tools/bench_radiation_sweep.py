@@ -175,6 +175,10 @@ def _cuda_rows(args, tbl, t_amb_q, rng):
             d_out = cp.empty((1, 16, h, w), dtype=cp.int64)
             scratch = [cp.empty((1, h, w), dtype=cp.int64) for _ in range(2)]
             d_f = cp.empty((1, h, w), dtype=cp.int32)
+            # P5a: the effective extinction planes the wavefronts read (int32
+            # scratch); no gas group here — the shipped table is all zero, so
+            # the live per-call path uploads no gas plane either.
+            eff = [cp.empty((1, h, w), dtype=cp.int32) for _ in range(2)]
             d_rad = [cp.empty((1, h, w), dtype=cp.int64) for _ in range(4)]
             d_cnt = cp.empty((1, SLOTS), dtype=cp.int64)
 
@@ -183,9 +187,11 @@ def _cuda_rows(args, tbl, t_amb_q, rng):
                     1, h, w, dv["T"].data.ptr, dv["a"].data.ptr, dv["d"].data.ptr,
                     dv["his"].data.ptr, dv["ts"].data.ptr, 0, dv["vac"].data.ptr,
                     d_etab.data.ptr, d_vl.data.ptr, d_kl.data.ptr, d_ta.data.ptr,
+                    0, 0, 0, 0,                          # P5a: no gas group
                     transport, 16, True, d_out.data.ptr, scratch[0].data.ptr,
-                    scratch[1].data.ptr, d_f.data.ptr, *[p.data.ptr for p in d_rad],
-                    d_cnt.data.ptr)
+                    scratch[1].data.ptr, d_f.data.ptr,
+                    eff[0].data.ptr, eff[1].data.ptr,
+                    *[p.data.ptr for p in d_rad], d_cnt.data.ptr)
                 cp.cuda.Device().synchronize()
             core_once()
             for c_, g_ in zip(cpu, d_rad):
@@ -208,6 +214,7 @@ def _cuda_rows(args, tbl, t_amb_q, rng):
             t_d2h = _best_of(d2h_once, args.iters)
             # --- one cudaMalloc + cudaFree of the arena's size ---
             arena = (h2d_bytes + 16 * h * w * 8 + 2 * h * w * 8 + h * w * 4
+                     + 2 * h * w * 4                   # P5a: the effective planes
                      + 4 * h * w * 8)
 
             def alloc_once():
