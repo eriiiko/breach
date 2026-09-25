@@ -1014,6 +1014,8 @@ preserved differently: the C++ path draws on any machine, and headless training
 simply does not request the light channels. Erik blessed the transport collapse
 in v2; the clock and language are the part he has not ruled on (§12).
 
+> **2026-09-25, P6a:** built as ruled in `ray_engine_v2_p6a_light_channels_brief_2026-09-25.md` — three step-transported RGB channels on heat's own traversal (CPU: both walks are topological for both transports; CUDA: the step anti-diagonals for every ordinate while light rides, h + w − 1 launches + one glow launch), REQUESTED via `PhysicsEngine.light_requested` (default off), Kirchhoff per channel with a dark ambient (a body absorbs d − a and emits nothing; no Fleck), the smoke term and the glow through the heat term's density law over `GasTable.light_absorb_q16` / `light_glow_q16`, per-channel books exact. `light_q` is the irradiance Σ_m stream (Φ's twin); `light_flux_q` is Σ_m I_m ŝ_m over the gathered streams, pointing the way light travels (the old march's `light_dir` pointed at the source); the ring is dark until P6b's sky. Heat is bit-identical with light on and off on both backends; the reference's gate 18 is the spec.
+
 ### 7.2 What step costs, and cone emitters
 
 Step's four-point cross is visible as a halo around an *isolated* small source
@@ -1072,6 +1074,8 @@ regeneration script under `tools/` — never from `renderer/blackbody.py`'s
 `np.power`/`np.log` at load, which would be a determinism hole the day P7 puts
 `light_q` in the digest. **No `exp`, no `pow`, no float divide, no RNG** — door
 3 is not opened and door 4 is untouched (Philox stays a swarm-units concern).
+
+> **2026-09-25, P6a:** `L°` is CHECKED IN — `cpp/src/light_emission_table.inc`, 3 × 4000 int64, written offline by `tools/gen_light_table.py` from blackbody.py's own float64 curves (`BlackbodyRamp.emission_at_kelvin`, on the ramp's LUT domain [800, 10000] K) at E°'s bucket midpoints through `temperature_scale`, compiled by `emissive_table.cpp` (static_asserts: its currency, a dark bucket 0, every entry below 2^44) and read by the integer reference from the same file. Currency `L_FINE_BITS` = 37 counts per light unit (the ramp's intensity 1.0): the faintest glow the ramp shows (7.23e-8, its LUT's first step) lands 2^9.28 counts per ordinate on an opaque cell, a burning crate 2^21.78 at sixteen tiles on the dimmest bearing; table top 2^40, widest plain product 2^53.77, per-cell `light_q` 2^40 (gate 18 (g), (h); `tests/test_light_table.py`). The per-ordinate direction cosines of the flux vector are checked-in literals too (`RadiationSweep::ordinate_dirs`).
 
 The three guards, extended at P1 (critique items 10, 5b), as P1 deliverables:
 
