@@ -1140,7 +1140,10 @@ def gate11_headroom(fast=False):
     S16 and S12, because the ordinate weight (and so `ex_m`) grows as S falls.
 
     Breaks if: the ordinate weight, the table's top, the number of ordinates or
-    the Fleck factor's fixed point grows enough to need more than int64.
+    the Fleck factor's fixed point grows enough to need more than int64 -- or
+    (#78) the live table's FINE_BITS grows past 11 (at 12 the pre-pass's a * ex
+    crosses 2^58; at 13 the Fleck product crosses 2^63), or the gas chain's
+    conversion moves off its final narrow (measured: it would then overflow).
     """
     lines, ok = [], True
     h, w = (7, 8) if fast else (9, 11)
@@ -1247,6 +1250,70 @@ def gate11_headroom(fast=False):
     lines.append(f"  live table, the most extreme currency (c_v_q = n_floor_q = 1): "
                  f"4L = 2^{lg(4 * L_x):.2f} (< 2^63: every positive dial fits)  "
                  f"{'OK' if good else 'FAIL'}")
+    # ---- #78: THE FINE HEAT CURRENCY'S HEADROOM (brief section 4) ----------
+    # The live table is baked 2^FINE_BITS finer than one heat count (E°[3999] ~
+    # 2^41.1, ~0.66x the resolving table's 2^41.7), so design v3's int64 bounds
+    # must be restated on IT: over-driven at the table top (a = 1 everywhere,
+    # f = 2^24 undamped, S16 and S12, both transports, the leak on and off), and
+    # a travelling stream under a 0-K sky. The per-cell sums stay below 2^46; every
+    # PLAIN int64 product of the sweep loop stays below 2^58, and so does the
+    # pre-pass's a * ex (the widest plain product there is, 2^16 x the table top);
+    # the one product above that is ex_m * f_q24, which the engine forms in 128
+    # bits (mul128_shr, design 2.8: "no headroom argument is load-bearing").
+    live = R.E_LIVE
+    fb = R.fine_bits_of(live)
+    worst = dict(stream=0, net=0, flu=0, amb=0, plain=0, fleck=0)
+    for transport in ("shear", "step"):
+        for n_ord in (16, 12):
+            for kleak in (0, K_LEAK):
+                res = R.sweep_q(R.plane(h, w, ONE), R.plane(h, w, ONE),
+                                R.plane(h, w, kleak), T, transport=transport,
+                                n_ord=n_ord, table=live)
+                res2 = R.sweep_q(a2, d2, R.plane(h, w, kleak), T2, transport=transport,
+                                 n_ord=n_ord, table=live, e_ref=0)
+                for r in (res, res2):
+                    worst["stream"] = max(worst["stream"], r.max_stream)
+                    worst["net"] = max(worst["net"], r.max_abs_net)
+                    worst["flu"] = max(worst["flu"], r.max_fluence)
+                    worst["amb"] = max(worst["amb"], R.plane_max_abs(r.rad_amb))
+                    worst["plain"] = max(worst["plain"], r.max_plain_product)
+                    worst["fleck"] = max(worst["fleck"], r.max_fleck_product)
+    a_ex = ONE * live[-1]                     # the pre-pass's a * ex, zero sky
+    sums_ok = max(worst["net"], worst["flu"], worst["amb"]) < 2 ** 46
+    plain_ok = worst["plain"] < 2 ** 58 and a_ex < 2 ** 58
+    good = sums_ok and plain_ok and worst["fleck"] < 2 ** 63
+    ok &= good
+    lines.append(f"  #78 the FINE live table (k = {fb}, E°[3999] = 2^{lg(live[-1]):.2f}), "
+                 f"over-driven at the top, S16/S12 x shear/step x leak on/off, and "
+                 f"the travelling stream under a 0-K sky: max stream = "
+                 f"2^{lg(worst['stream']):.2f}, per-cell |rad_net| = 2^{lg(worst['net']):.2f}, "
+                 f"fluence = 2^{lg(worst['flu']):.2f}, |rad_amb| = 2^{lg(worst['amb']):.2f} "
+                 f"(< 2^46); plain int64 products = 2^{lg(worst['plain']):.2f}, the "
+                 f"pre-pass's a * ex = 2^{lg(a_ex):.2f} (< 2^58: >= 2^5 of int64 margin); "
+                 f"the 128-bit ex_m * f_q24 = 2^{lg(worst['fleck']):.2f} (< 2^63)  "
+                 f"{'OK' if good else 'FAIL'}")
+    # ...and the GAS chain converts at its FINAL narrow, which is what keeps its
+    # int64 results where they were at k = 0: at the most extreme currency the
+    # stage-1 result and L stay inside int64 on the fine table, while a chain that
+    # narrowed to int64 at 32 and converted AFTER would overflow (measured, the
+    # pair). The fold's widest other conversion is an exact LEFT shift of a
+    # per-cell sum, fine_heat_shr(rn, -16, k) = rn << (16 - k): the counters'
+    # currency and the thinnest representable row's step (his = -16) alike, < 2^47.
+    rN_x, rc_x = R.gas_capacity_recips(1, 1, 1)
+    s1_x = (live[-1] * rN_x) >> 16
+    L_last = (s1_x * rc_x) >> (32 + fb)
+    s2_at_32 = (s1_x * rc_x) >> 32
+    left = R.fine_heat_shr(worst["net"], -16, fb)
+    # the pair is only meaningful on a FINE table (at k = 0 the two orders are one)
+    pair = (fb == 0) or s2_at_32 >= 2 ** 63
+    good = s1_x < 2 ** 63 and (L_last << 2) < 2 ** 63 and pair and left < 2 ** 47
+    ok &= good
+    lines.append(f"  #78 the gas chain on the fine table, most extreme currency: stage 1 = "
+                 f"2^{lg(s1_x):.2f}, L (converted at the final narrow, 32 + {fb}) = "
+                 f"2^{lg(L_last):.2f}, 4L < 2^63; the SAME chain narrowed to int64 at 32 "
+                 f"then converted would carry 2^{lg(s2_at_32):.2f} (does not fit -- why "
+                 f"the conversion is the final narrow); the fold's left shifts of the "
+                 f"widest rad_net = 2^{lg(left):.2f} (< 2^47)  {'OK' if good else 'FAIL'}")
     return ok, lines
 
 
@@ -1862,15 +1929,23 @@ def _shield_scene(smoke_q, *, h=7, w=13, hq=Q(5.0)):
     return sc, [(y, w - 1) for y in range(h)]
 
 
-def _chain_bound(rn, N, cap, dT):
+def _chain_bound(rn, N, cap, dT, fine_bits=0, c_v_q=R.C_V_Q_LIVE):
     """The staged chain's own precision, per gas cell, in Q32 heat currency
-    (design 2.8's 'a DIFFERENT rounding, declared'): |rn << 16 - dT * cap_real| <=
-    |rn| * N_q / 2^16 (recip_N is floor(2^32 / N_q), relative error < N_q / 2^32)
-    + 132 * cap_real (stage 1's floor, amplified by recip_cv / 2^32 ~ 130.2 LSB,
-    plus stage 2's own) + |dT| + 1 (cap_real's own floor of N * c_v_q / 2^16).
+    (design 2.8's 'a DIFFERENT rounding, declared'): |rn_q16 - dT * cap_real| <=
+    |rn| * N_q / 2^(16 + k) (recip_N is floor(2^32 / N_q), relative error <
+    N_q / 2^32) + (ceil(recip_cv / 2^(32 + k)) + 1) * cap_real (stage 1's floor,
+    amplified by recip_cv / 2^(32 + k), plus stage 2's own) + |dT| + 1
+    (cap_real's own floor of N * c_v_q / 2^16). rn_q16 is rn in the Q16 heat
+    currency, fine_heat_shr(rn, -16, k) (#78: k = the table's fine bits).
     Valid for N >= n_floor (below it the floor DILUTES the landing by N / n_floor,
-    which is not a truncation -- measured separately)."""
-    return abs(rn) * N // (1 << 16) + 132 * cap + abs(dT) + 1
+    which is not a truncation -- measured separately).
+
+    #78 IS THIS BOUND'S SECOND TERM: at k = 0 it is 132 * cap_real (stage 1's
+    floor alone costs ~130 temperature LSBs at the shipped c_v); at the live
+    k = 11 it is 2 * cap_real -- the temperature field's own resolution."""
+    rc = R.make_recip(c_v_q / 65536.0)
+    amp = -(-rc // (1 << (32 + fine_bits)))          # ceil(recip_cv / 2^(32+k))
+    return abs(rn) * N // (1 << (16 + fine_bits)) + (amp + 1) * cap + abs(dT) + 1
 
 
 def gate15_gas_fold(fast=False):
@@ -1937,9 +2012,10 @@ def gate15_gas_fold(fast=False):
     n_clamped = n_free = n_letter_drain = 0
     letter_drained = 0
     drop_sum = 0
+    fb = R.fine_bits_of(live)                  # #78: rn is in the table's currency
     for i in range(n):
         N, e0, t0, r = nb[0][i], E0[0][i], T0[0][i], rn[0][i]
-        dT = R.gas_rad_dT_q(r, N)
+        dT = R.gas_rad_dT_q(r, N, fine_bits=fb)
         t_after = R.sat_add_q16(t0, dT)
         ceiling = max(R.e_ceiling_q(phi[0][i], live), t0)
         if t_after > ceiling:
@@ -1978,7 +2054,7 @@ def gate15_gas_fold(fast=False):
     solid_want = 0
     for i in range(n_s):
         cap = 1 << (hs[0][i] + 16)
-        t_after = R.sat_add_q16(Ts0[0][i], R.shr_round0_signed(rs[0][i], hs[0][i]))
+        t_after = R.sat_add_q16(Ts0[0][i], R.fine_heat_shr(rs[0][i], hs[0][i], fb))
         ceiling = max(R.e_ceiling_q(ps[0][i], live), Ts0[0][i])
         t_cl = min(t_after, ceiling)
         t_railed = min(max(t_cl, 0), R.T_MAX_PHYS_Q)
@@ -2013,14 +2089,15 @@ def gate15_gas_fold(fast=False):
             continue
         n_floored += 1
         cap = R.cap_real_q(False, 0, N)
-        dT = R.gas_rad_dT_q(r, N)
+        dT = R.gas_rad_dT_q(r, N, fine_bits=fb)
         t_after = R.sat_add_q16(t0, dT)
-        rem = (r << 16) - (t_after - t0) * cap
+        r_q16 = R.fine_heat_shr(r, -16, fb)       # rn in the Q16 heat currency
+        rem = r_q16 - (t_after - t0) * cap
         floor_want += rem
         ceiling = max(R.e_ceiling_q(phi[0][i], live), t0)
         t_land = min(t_after, ceiling)
-        floor_exact &= ((r << 16) == (t_land - t0) * cap + (t_after - t_land) * cap + rem)
-        if abs(rem) > _chain_bound(r, N, cap, dT):
+        floor_exact &= (r_q16 == (t_land - t0) * cap + (t_after - t_land) * cap + rem)
+        if abs(rem) > _chain_bound(r, N, cap, dT, fb):
             n_undiluted += 1
     floor_ok = (c.e_rad_floor_drop_sum == floor_want and floor_exact and n_floored > 0
                 and n_undiluted > 0 and c_off.e_rad_floor_drop_sum == floor_want)
@@ -2030,7 +2107,7 @@ def gate15_gas_fold(fast=False):
     c_m = R.FoldCounters()
     R.fold_pass1_gas(T_m, E_m, rn, phi, nb, ts, c_m, acct=acct, table=live)
     out_cells = [i for i in range(n) if not acct[0][i]]
-    export_want = sum(rn[0][i] << 16 for i in out_cells)
+    export_want = sum(R.fine_heat_shr(rn[0][i], -16, fb) for i in out_cells)
     export_ok = (c_m.e_rad_boundary_export_sum == export_want and len(out_cells) > 0
                  and all(T_m[0][i] == T0[0][i] and E_m[0][i] == E0[0][i] for i in out_cells)
                  and all(T_m[0][i] == T[0][i] and E_m[0][i] == Eg[0][i]
@@ -2093,7 +2170,7 @@ def gate15_gas_fold(fast=False):
                 if r == 0:
                     continue
                 n_touch += 1
-                rn_sum += r << 16
+                rn_sum += R.fine_heat_shr(r, -16, fb)
                 if sc.ts[y][x]:
                     cap = R.cap_real_q(True, sc.his, 0)
                     landed += (sc.T[y][x] - before_T[y][x]) * cap
@@ -2103,8 +2180,8 @@ def gate15_gas_fold(fast=False):
                     cap = R.cap_real_q(False, 0, N)
                     dE = sc.Eg[y][x] - before_E[y][x]
                     landed += (dE // N) * cap          # dE is a whole multiple of N
-                    dT = R.gas_rad_dT_q(r, N)
-                    bound += _chain_bound(r, N, cap, dT)
+                    dT = R.gas_rad_dT_q(r, N, fine_bits=fb)
+                    bound += _chain_bound(r, N, cap, dT, fb)
         cdrop = sc.counters.e_rad_clamp_drop_sum - cdrop0
         resid = rn_sum - landed - cdrop
         rails_now = (sc.counters.t_max_phys_hits, sc.counters.t_low_rail_hits,
@@ -2296,7 +2373,7 @@ def gate16_clamp_ceiling(fast=False):
             b = t_eq // 4
             for u in us:
                 phi = live[b] + int(u * (live[b + 1] - live[b]))
-                t_cont = R.e_inv_float(phi, R.RAD_SCALE_LIVE)
+                t_cont = R.e_inv_float(phi, R.RAD_SCALE_LIVE, R.fine_bits_of(live))
                 lower_half = t_cont < 4 * b + 4          # T_cont inside Phi's own bucket
                 for name, fn in forms:
                     tr, c = _held_phi_march(phi, a_q, his, ticks=ticks, window=window,
@@ -2304,7 +2381,8 @@ def gate16_clamp_ceiling(fast=False):
                     st = stats[name]
                     st["n"] += 1
                     st["withheld"] += c.e_rad_clamp_drop_sum
-                    st["gross"] += window * (((phi * a_q) >> 16) << 16)
+                    st["gross"] += window * R.fine_heat_shr((phi * a_q) >> 16, -16,
+                                                            R.fine_bits_of(live))
                     st["withheld_cases"] += int(c.e_rad_clamp_drop_sum > 0)
                     st["dev"].append(sum(tr) / len(tr) / 65536.0 - t_cont)
                     st["lower"] += int(lower_half)
@@ -2345,7 +2423,7 @@ def gate16_clamp_ceiling(fast=False):
     for t_eq in (5000, 11000):
         b = t_eq // 4
         phi = live[b] + (live[b + 1] - live[b]) // 2
-        t_cont = R.e_inv_float(phi, R.RAD_SCALE_LIVE)
+        t_cont = R.e_inv_float(phi, R.RAD_SCALE_LIVE, R.fine_bits_of(live))
         t_c, cc = R.cell_march(0, phi, a_q, his, ticks_c, table=live)
         t_u, _cu = R.cell_march(0, phi, a_q, his, ticks_c, table=live, clamp_enabled=False)
         f_c = R.fleck_f_solid_q(t_c, a_q, his, table=live)[0]
@@ -2359,6 +2437,231 @@ def gate16_clamp_ceiling(fast=False):
                      f"clamp OFF -> {t_u / 65536:9.1f} game (Fleck alone, "
                      f"{t_u / 65536 - t_cont:+.1f})  {'OK' if g else 'FAIL'}")
     ok &= good_c
+    return ok, lines
+
+
+# --------------------------------------------------------------------------- #
+# #78: THE SWEEP'S FINE HEAT CURRENCY (docs/sweep_fine_heat_currency_brief_78_
+# 2026-09-25.md sections 5.2 / 5.3). The live table is baked 2^FINE_BITS finer
+# than a heat count; this gate is what that buys near ambient -- every property
+# PAIRED with the pre-#78 live table: the same scale, in whole heat counts.
+# --------------------------------------------------------------------------- #
+E_LIVE_COARSE = R.bake_e_table(rad_scale=R.RAD_SCALE_LIVE)   # k = 0: the pre-#78 live table
+
+
+def _lone_cell_scene(n, a_q, T_q, kleak):
+    """One absorbing cell (a_q) at T_q in the middle of an n x n transparent room
+    of ambient air: every stream it sees is the ambient ring's, unmodified."""
+    a = R.plane(n, n, 0)
+    T = R.plane(n, n, 0)
+    c = n // 2
+    a[c][c] = a_q
+    T[c][c] = T_q
+    return a, [r[:] for r in a], R.plane(n, n, kleak), T, (c, c)
+
+
+def _near_ambient_scene(rng, h, w):
+    """Shipped rows, air and bodies at temperatures from 8 game below to 20 above
+    ambient -- where the per-ordinate floors decided the exchange before #78."""
+    rows = [(a_q, his) for a_q, his, _nm in SHIPPED_ROWS]
+    a = R.plane(h, w, 0)
+    his = R.plane(h, w, 3)
+    T = R.plane(h, w, 0)
+    for y in range(h):
+        for x in range(w):
+            if rng.random() < 0.6:
+                a[y][x], his[y][x] = rng.choice(rows)
+            T[y][x] = rng.choice([-8, -4, 0, 0, 0, 2, 4, 6, 8, 12, 20]) << 16
+    d = [[min(ONE, a[y][x] + rng.choice([0, 0, 0, 0, ONE - a[y][x]]))
+          for x in range(w)] for y in range(h)]
+    return a, d, T, his
+
+
+def gate17_fine_heat_currency(fast=False):
+    """G17 (#78): THE FINE HEAT CURRENCY RESOLVES THE EXCHANGE NEAR AMBIENT.
+
+      (a) RADIATIVE COOLING NEAR AMBIENT (brief 5.2): on the LIVE table (fine,
+          k = FINE_BITS) one cell of every shipped absorbing row at a temperature
+          in bucket 1 or 2 (4 .. 12 game), alone in a transparent room of ambient
+          air, books rad_net < 0 -- both transports, S16 and S12, the leak on and
+          off -- and the same cell AT ambient (0) or below it (-4 game: the table
+          floors at bucket 0) books exactly 0, on every plane of every cell. The
+          PAIR: the pre-#78 live table (the same scale in whole heat counts) books
+          exactly 0 on every S16 case -- the excess (7 and 14 counts) times
+          w_m >> 16 floors to 0 in every ordinate, so such a cell could not shed it
+          (at S12, w_m = 5461, bucket 2's excess reaches one count per ordinate).
+      (b) THE UNIFORM AMBIENT FIXED POINT and THE IDENTITY survive the currency
+          (brief 5.3): gate 2a's scene (bodies, the leak, non-dyadic a, f = 0.3
+          forced) on the fine table is a per-cell exact zero on all three planes,
+          S16 and S12, both transports, with absorbing smoke too; and Sum(rad_net)
+          + Sum(rad_flux) + Sum(rad_amb) == 0 exactly on randomised fine scenes
+          (gate 1's vocabulary), each sum non-zero.
+      (c) WHAT ROW 31 STILL CATCHES (brief section 3; measured): the ambient field
+          reads Phi = n x (E°_k[0] w_m >> 16), a few FINE counts below E°_k[0], so
+          a cell at ambient still takes row 31's 0 ceiling. What a net absorber
+          with Phi < E°[0] can book there -- on randomised near-ambient scenes of
+          shipped rows, bodies and air at -8 .. 20 game -- is at most
+          (E°[0] - n amb_m) + n counts of the table's currency, which on the fine
+          table is under 1/32 of a heat count; the pre-#78 table books WHOLE heat
+          counts there (the P5d bench's "shadow class", 11-13 on a thin panel).
+      (d) STAGNATION IS GONE, through the whole tick (pre-pass, sweep, fold): a
+          thin shipped row (his < 0) at 10 game alone in the ambient room cools on
+          every tick and never below ambient on the fine table; on the pre-#78
+          table it does not move at all (rad_net == 0: Croci & Giles' stagnation).
+          The heavy rows' landing is reported: near ambient it is under one
+          temperature LSB per tick, the temperature FIELD's own resolution (the
+          fold's shr_round0, #73), not the sweep's.
+
+    Breaks if: the live table is baked coarse (k = 0: (a), (c) and (d) fail,
+    measured by their pairs), a reader converts absorption and emission in two
+    currencies (b's fixed point breaks), or the excess stops being formed over the
+    cell's own ambient (b).
+    """
+    lines, ok = [], True
+    live, coarse = R.E_LIVE, E_LIVE_COARSE
+    fb = R.fine_bits_of(live)
+    n_room = 5 if fast else 7
+    # ---- (a) near-ambient cooling, every shipped row, buckets 1 and 2 ----------
+    temps = [4 << 16, 8 << 16, (12 << 16) - 1] if fast else \
+        [4 << 16, 6 << 16, 8 << 16, 10 << 16, (12 << 16) - 1]
+    n_case = n_neg = n_coarse_zero = n_s16 = n_s16_zero = 0
+    ambient_zero = True
+    least = None                                 # the least negative live rad_net
+    for a_q, his, _nm in SHIPPED_ROWS:
+        for transport in ("shear", "step"):
+            for n_ord in (16, 12):
+                for kleak in (0, K_LEAK):
+                    for T_q in temps:
+                        a, d, k, T, (cy, cx) = _lone_cell_scene(n_room, a_q, T_q, kleak)
+                        rn = R.sweep_q(a, d, k, T, transport=transport, n_ord=n_ord,
+                                       f_plane=R.fleck_prepass(T, a, his, table=live),
+                                       table=live).rad_net[cy][cx]
+                        rc = R.sweep_q(a, d, k, T, transport=transport, n_ord=n_ord,
+                                       f_plane=R.fleck_prepass(T, a, his, table=coarse),
+                                       table=coarse).rad_net[cy][cx]
+                        n_case += 1
+                        n_neg += int(rn < 0)
+                        n_coarse_zero += int(rc == 0)
+                        if n_ord == 16:
+                            n_s16 += 1
+                            n_s16_zero += int(rc == 0)
+                        least = rn if least is None else max(least, rn)
+                    for T_q in (0, -(4 << 16)):
+                        a, d, k, T, _c = _lone_cell_scene(n_room, a_q, T_q, kleak)
+                        for tbl in (live, coarse):
+                            r = R.sweep_q(a, d, k, T, transport=transport, n_ord=n_ord,
+                                          f_plane=R.fleck_prepass(T, a, his, table=tbl),
+                                          table=tbl)
+                            ambient_zero &= all(v == 0 for p in (r.rad_net, r.rad_flux,
+                                                                 r.rad_amb)
+                                                for row in p for v in row)
+    good = (n_neg == n_case and ambient_zero and n_s16_zero == n_s16 and n_s16 > 0)
+    ok &= good
+    lines.append(f"  (a) {n_case} cases ({len(SHIPPED_ROWS)} shipped (a, his) pairs x "
+                 f"shear/step x S16/S12 x leak on/off x T in buckets 1-2): rad_net < 0 "
+                 f"on {n_neg} on the FINE live table (k = {fb}; the least negative "
+                 f"{least} fine = {least / (1 << fb):.2f} heat counts per tick); the "
+                 f"cell at ambient or below books exactly 0 everywhere, both tables: "
+                 f"{ambient_zero}. PAIR: the pre-#78 live table books exactly 0 -- no "
+                 f"radiative cooling at all -- on {n_coarse_zero} of {n_case}, every one "
+                 f"of the {n_s16} S16 cases among them (its excess floors away in every "
+                 f"ordinate)  {'OK' if good else 'FAIL'}")
+    # ---- (b) the fixed point and the identity, on the fine table ---------------
+    h, w = (7, 8) if fast else (8, 10)
+    rng = random.Random(4)                       # gate 2a's scene, draw for draw
+    a = [[rng.choice([0, Q(0.37), Q(0.91), ONE]) for _ in range(w)] for _ in range(h)]
+    d = [[min(ONE, a[y][x] + rng.choice([0, Q(0.5), ONE - a[y][x]]))
+          for x in range(w)] for y in range(h)]
+    k = R.plane(h, w, K_LEAK)
+    T0 = R.plane(h, w, 0)
+    f03 = R.plane(h, w, QF(0.3))
+    gkw = _gas_kw(random.Random(40), a)
+    nz_all = 0
+    for transport in ("shear", "step"):
+        for n_ord in (16, 12):
+            for kw in ({}, gkw):
+                r = R.sweep_q(a, d, k, T0, n_ord=n_ord, transport=transport,
+                              f_plane=f03, table=live, **kw)
+                nz_all += sum(1 for p in (r.rad_net, r.rad_flux, r.rad_amb)
+                              for row in p for v in row if v != 0)
+    rng1 = random.Random(20260925)
+    ident_ok = True
+    for transport in ("shear", "step"):
+        for n_ord in (16, 12):
+            aa, dd, TT, ff = _rand_scene(rng1, h, w)
+            for kw in ({}, _gas_kw(rng1, aa)):
+                r = R.sweep_q(aa, dd, R.plane(h, w, K_LEAK), TT, n_ord=n_ord,
+                              transport=transport, f_plane=ff, table=live, **kw)
+                sn, sf, sa = r.sums()
+                ident_ok &= (sn + sf + sa == 0) and sn != 0 and sf != 0 and sa != 0
+    good = nz_all == 0 and ident_ok
+    ok &= good
+    lines.append(f"  (b) gate 2a's ambient scene (bodies, k = 0.10, f = 0.3, with and "
+                 f"without smoke) on the fine table: {nz_all} non-zero cells over the "
+                 f"three planes; the identity exact with every sum non-zero on "
+                 f"randomised fine scenes: {ident_ok}  {'OK' if good else 'FAIL'}")
+    # ---- (c) what row 31 still catches ----------------------------------------
+    rng2 = random.Random(78)
+    caught = {"fine": [0, 0, 0], "coarse": [0, 0, 0]}   # n cell-ticks, max, bound viol.
+    trials = 3 if fast else 8
+    hh, ww = (7, 9) if fast else (9, 11)
+    for _trial in range(trials):
+        aa, dd, TT, hs = _near_ambient_scene(rng2, hh, ww)
+        for transport in ("shear", "step"):
+            for n_ord in (16, 12):
+                for kleak in (0, K_LEAK):
+                    for name, tbl in (("fine", live), ("coarse", coarse)):
+                        amb_m = (tbl[0] * (ONE // n_ord)) >> 16
+                        bound = (tbl[0] - n_ord * amb_m) + n_ord
+                        r = R.sweep_q(aa, dd, R.plane(hh, ww, kleak), TT, n_ord=n_ord,
+                                      transport=transport, table=tbl,
+                                      f_plane=R.fleck_prepass(TT, aa, hs, table=tbl))
+                        for y in range(hh):
+                            for x in range(ww):
+                                rn = r.rad_net[y][x]
+                                if r.rad_fluence[y][x] < tbl[0] and rn > 0:
+                                    c = caught[name]
+                                    c[0] += 1
+                                    c[1] = max(c[1], rn)
+                                    c[2] += int(rn > bound)
+    f_n, f_max, f_viol = caught["fine"]
+    c_n, c_max, c_viol = caught["coarse"]
+    amb16 = 16 * ((live[0] * 4096) >> 16)
+    good = (f_viol == 0 and c_viol == 0 and f_max < (1 << fb) // 32 and c_max >= 1
+            and c_n > 0)
+    ok &= good
+    lines.append(f"  (c) row 31 still catches: the ambient field reads Phi = {amb16} = "
+                 f"E°[0] - {live[0] - amb16} fine counts (S16), so an ambient cell takes "
+                 f"the 0 ceiling. On near-ambient random scenes the Phi < E°[0] net "
+                 f"absorbers book at most {f_max} fine counts = {f_max / (1 << fb):.4f} "
+                 f"heat counts per cell-tick ({f_n} cell-ticks; the derived bound "
+                 f"(E°[0] - n amb_m) + n never exceeded: {f_viol == 0}); the pre-#78 "
+                 f"table books up to {c_max} WHOLE heat counts there ({c_n} cell-ticks)  "
+                 f"{'OK' if good else 'FAIL'}")
+    # ---- (d) stagnation is gone, through the whole tick ------------------------
+    ticks = 48 if fast else 240
+    thin_ok = True
+    notes = []
+    for a_q, his, nm in SHIPPED_ROWS:
+        runs = {}
+        for name, tbl in (("fine", live), ("coarse", coarse)):
+            a, d, k, T, (cy, cx) = _lone_cell_scene(n_room, a_q, 10 << 16, K_LEAK)
+            sc = R.Scene(a=a, d=d, k=k, T=T, his=his, table=tbl)
+            tr = [sc.T[cy][cx]]
+            for _t in range(ticks):
+                sc.tick()
+                tr.append(sc.T[cy][cx])
+            runs[name] = tr
+        fine, crs = runs["fine"], runs["coarse"]
+        mono = all(fine[i + 1] <= fine[i] for i in range(ticks)) and min(fine) >= 0
+        if his < 0:
+            thin_ok &= mono and fine[-1] < fine[0] and all(v == crs[0] for v in crs)
+        notes.append(f"{nm}: {fine[0] - fine[-1]} LSB fine vs {crs[0] - crs[-1]} coarse")
+    ok &= thin_ok
+    lines.append(f"  (d) one cell at 10 game in the ambient room, {ticks} full ticks, the "
+                 f"temperature drop in Q16 LSBs (thin rows asserted: cools monotonically, "
+                 f"never below ambient, where the pre-#78 table does not move): "
+                 + "; ".join(notes) + f"  {'OK' if thin_ok else 'FAIL'}")
     return ok, lines
 
 
@@ -2383,6 +2686,8 @@ GATES = [
     ("G15 the fold's gas branch: the clamp's energy form, the books, cooling, "
      "shielding, the 8.4 boundary", gate15_gas_fold),
     ("G16 the clamp's ceiling: one bucket of headroom", gate16_clamp_ceiling),
+    ("G17 the fine heat currency: near-ambient exchange resolved (#78)",
+     gate17_fine_heat_currency),
 ]
 
 
@@ -2394,9 +2699,11 @@ def main(argv):
     print(f"E°[0] = {R.E0}   E°[3999] = {R.E[3999]}   "
           f"amb_m(S16) = {(R.E0 * (ONE // 16)) >> 16}   "
           f"mode: {'fast' if fast else 'full'}")
-    print(f"  (the RESOLVING default table, rad_scale = {R.RAD_SCALE:g}; the LIVE "
-          f"table, rad_scale_derived = {R.RAD_SCALE_LIVE:g}: E°[0] = {R.E_LIVE[0]}, "
-          f"E°[3999] = {R.E_LIVE[3999]} -- G12's shipped rows are measured on it)")
+    print(f"  (the RESOLVING default table, rad_scale = {R.RAD_SCALE:g}, whole heat "
+          f"counts; the LIVE table, rad_scale_derived = {R.RAD_SCALE_LIVE:g}, in the "
+          f"FINE currency 2^{R.fine_bits_of(R.E_LIVE)} per heat count (#78): E°[0] = "
+          f"{R.E_LIVE[0]}, E°[3999] = {R.E_LIVE[3999]} -- G12's shipped rows are "
+          f"measured on it)")
     all_ok = ok_cfg
     for name, fn in GATES:
         if only and not any(name.lower().startswith(o.lower()) for o in only):
