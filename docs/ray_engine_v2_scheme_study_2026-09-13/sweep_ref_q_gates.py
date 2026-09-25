@@ -2774,7 +2774,7 @@ def gate18_light_channels(fast=False):
       (h) THE RESOLUTION FLOOR (decision 4): one burning tile (the shipped
           furniture row, 1263 game) in clear air carries >= 2^8 counts in its
           brightest ordinate at EVERY cell 16 tiles away. PAIR: the same scene
-          on a table 2^11 coarser does not.
+          on a table 2^14 coarser (k = 23) does not.
 
     Breaks if: a light share is booked by one side only (a); the light code
     writes a heat integer (b); the ring stops being dark or a cold cell emits
@@ -2782,7 +2782,7 @@ def gate18_light_channels(fast=False):
     smoke term drops a channel or the glow reaches a solid (d); the emission
     bypasses the table or its per-ordinate split (e); the flux reads the stream
     with the wrong sign or floors instead of the symmetric shift (f); the light
-    currency grows by 2^4 (g) or shrinks by 2^11 (h). Each variant above was run.
+    currency grows by 2^5 (g) or shrinks by 2^14 (h). Each variant above was run.
     """
     lines, ok = [], True
     lg2 = lambda v: math.log2(max(abs(v), 1))  # noqa: E731

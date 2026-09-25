@@ -90,6 +90,15 @@ def _make_sim() -> Simulation:
     # fifth stamp output's per-channel MAX sees a partial triple as well as the
     # default opaque one (and the float stamp beside it the same triple).
     m2.light_atten = (0.25, 0.5, 1.0)
+    # ... and a GLASS tile under M2's early path (its footprint covers (5, 15)
+    # at ticks 1-3): a PARTIAL body over a PARTIAL material is the one place a
+    # MAX stamp and a (capped) SUM part -- light 0.1 vs M2's tint, heat 0.3 vs
+    # M2's 0.5 -- so the 0-ULP match below can see a stamp that sums. Over air
+    # the two coincide (validated: a summing C++ light stamp passed the old
+    # air-only scenario). Sealed through the topology seam, never a bare
+    # `material[...] =` write.
+    from simulation.materials import MAT_GLASS
+    g.seal_tiles([(5, 15)], MAT_GLASS)
     sim.add_unit(m1)
     sim.add_unit(m2)
     g.destroy_wall(10, 0)            # hull breach -> vacuum (venting)
@@ -150,7 +159,13 @@ def test_stamp_units_cpp_matches_python_0ulp():
 def test_stamp_changes_tick_to_tick():
     """Guard the gate itself: confirm the scenario's stamp is NON-trivial — the
     dyn_* fields and obstacles must actually change as units move/die, else the
-    0-ULP match above would be vacuous."""
+    0-ULP match above would be vacuous.
+
+    P6a: the scenario also stands M2's PARTIAL tint on a PARTIAL material
+    (glass), the one cell where a per-channel MAX and a capped SUM part. BREAKS
+    IF either stamp path sums instead of taking the MAX (validated: a summing C++
+    light stamp stayed green on the air-only scenario and goes red on this one).
+    """
     traj = _capture(use_cpp_stamp=True)
     # dyn_permeability must differ between an early and a late tick (units moved).
     assert not np.array_equal(traj[2]["dyn_permeability"],
@@ -189,6 +204,11 @@ def test_stamp_changes_tick_to_tick():
     assert np.all(lq_early >= lq_static), "a body lowered a material's light extinction"
     assert not np.any(np.all(traj[30]["dyn_light_atten_q"]
                              == np.array([16384, 32768, 65536]), axis=-1))
+    # the glass tile under M2 at tick 2: the stamp is the per-channel MAX of
+    # glass's 0.1 (6554) and M2's tint -- never their sum
+    assert list(traj[2]["light_atten_q"][5, 15]) == [6554, 6554, 6554]
+    assert list(traj[2]["dyn_light_atten_q"][5, 15]) == [16384, 32768, 65536]
+    assert int(traj[2]["dyn_heat_atten_q"][5, 15]) == 32768     # max(0.3, 0.5)
 
 
 if __name__ == "__main__":

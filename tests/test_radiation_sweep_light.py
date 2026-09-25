@@ -717,8 +717,10 @@ def test_light_is_computed_only_when_requested():
     found them (a sentinel survives) and computes the same heat as ever -- and
     ON when PhysicsEngine.light_requested is set: the sweep then OVERWRITES the
     light planes (the sentinel is gone, the hull is lit by the fire) while every
-    heat-side GameMap array stays identical to the unrequested run, tick after
-    tick. Requesting light without handing the planes is refused loudly.
+    synced GameMap field (the A/B harness's SIM_FIELDS, a superset of the
+    digest's) and the sweep's four heat planes stay identical to the unrequested
+    run, tick after tick. Requesting light without handing the planes is
+    refused loudly.
 
     BREAKS IF: light is computed by default (headless training would pay for
     it and the golden would see its planes), the request is ignored, requesting
@@ -731,8 +733,12 @@ def test_light_is_computed_only_when_requested():
     for s in (s_off, s_on):
         s.gmap.light_q[...] = SENT
     s_on.physics_runner.engine.light_requested = True
-    heat_fields = ("temperature", "gas_energy", "rad_net_sweep", "rad_flux_sweep",
-                   "rad_amb_sweep", "rad_fluence", "fire", "gas", "atmosphere")
+    # EVERY synced field (the A/B harness's SIM_FIELDS -- the digest's superset)
+    # plus the four heat planes the sweep overwrites each tick: a request that
+    # moved any of them shows here, not only one that moved the heat solver's
+    from field_ab_harness import SIM_FIELDS
+    heat_fields = tuple(SIM_FIELDS) + ("rad_net_sweep", "rad_flux_sweep",
+                                       "rad_amb_sweep", "rad_fluence")
     for _t in range(6):
         for s in (s_off, s_on):
             s.set_paused(False)
