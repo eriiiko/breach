@@ -73,9 +73,12 @@ struct OrdinateConst {
 // non-negative exponent (no shipped row moves). Physically the negative branch
 // is the right answer too: a thin panel's free emission is a LARGER swing in
 // temperature units because there is less mass behind it.
-FP_HD inline int64_t fleck_L_solid_q(int64_t ex, int32_t a_q, int his) {
-    return fixedpoint::shr_round0_signed_i64(
-        ((int64_t)a_q * ex) >> fixedpoint::FP_SHIFT, his);
+// #78: `ex` is in the TABLE'S currency (2^fine_bits per heat count), so the
+// conversion is the kit's ONE helper at his — a single symmetric shift by
+// his + fine_bits (fine_bits == 0: the pre-#78 expression, value for value).
+FP_HD inline int64_t fleck_L_solid_q(int64_t ex, int32_t a_q, int his, int fine_bits) {
+    return fixedpoint::fine_heat_shr(
+        ((int64_t)a_q * ex) >> fixedpoint::FP_SHIFT, his, fine_bits);
 }
 
 // f_q24 = floordiv_q(T_abs_q << 24, max(T_abs_q, 4·L_q)) — design §2.8 +
@@ -113,12 +116,16 @@ FP_HD inline int32_t fleck_f_q24(int64_t T_abs_q, int64_t L_q) {
 // L (a_gas = ONE, the table top, a 0-K sky, N at the floor) — 4L stays inside
 // int64 at the shipped currency on both tables, and on the live table at ANY
 // positive one.
+// #78: `ex` is in the TABLE'S currency; the chain converts at its final narrow
+// (deposit_dT_wide_i64's fine_bits) — the SAME conversion the fold's gas branch
+// lands its deposit through, so the damping and the landing stay one arithmetic.
 FP_HD inline int64_t fleck_L_gas_q(int64_t ex, int32_t a_gas, int32_t n_bulk,
-                                   int32_t n_floor_q, int64_t recip_cv) {
+                                   int32_t n_floor_q, int64_t recip_cv,
+                                   int fine_bits) {
     const int32_t n_q = (n_bulk > n_floor_q) ? n_bulk : n_floor_q;
     return fixedpoint::deposit_dT_wide_i64(
         ((int64_t)a_gas * ex) >> fixedpoint::FP_SHIFT,
-        fixedpoint::reciprocal_q16(n_q), recip_cv);
+        fixedpoint::reciprocal_q16(n_q), recip_cv, fine_bits);
 }
 
 // ---- the GAS extinction (ray-engine-v2 P5a, design v3 §6.3; FP_HD: the
@@ -198,6 +205,14 @@ public:
     //   heat_inv_shift   : int32 (h, w) — log2(thermal_mass), the solid capacity
     //   thermal_solid    : bool (h, w) — which cells take the solid Fleck branch
     //   e_table          : the E° table (E_TABLE_SIZE int64 entries)
+    //   e_fine_bits      : THE TABLE'S CURRENCY (#78): its integers are
+    //                      2^e_fine_bits per heat count (EmissiveTable::
+    //                      fine_bits — E_FINE_BITS on the live path, 0 for a
+    //                      coarse test table), in [0, E_FINE_BITS]. The sweep
+    //                      itself is unit-agnostic; only the Fleck pre-pass
+    //                      converts (both arms, through fine_heat_shr and the
+    //                      gas chain's final narrow), and the four planes come
+    //                      out in this same currency.
     //   amb_level        : int64 (h, w) — THE PER-CELL AMBIENT LEVEL (thermal
     //                      model v2 R3), an EMISSIVE level in e_table's own
     //                      units, invariant 0 <= amb_level[i] <= e_table[0].
@@ -248,6 +263,7 @@ public:
     //   Since P5c the temperature fold's GAS branch consumes a gas cell's
     //   rad_net (TemperatureSolver Pass 1), and the shipped smoke absorbs.
     // Throws std::invalid_argument on an unsupported (n_ordinates, transport),
+    // an e_fine_bits outside [0, E_FINE_BITS] (#78),
     // a k_leak_q outside [0, ONE], a null amb_level or one outside
     // [0, e_table[0]], a cell violating 0 <= a <= d <= ONE (the ingress
     // invariants the materials door enforces; re-checked here so a direct
@@ -259,7 +275,7 @@ public:
     void run(const int32_t* temperature,
              const int32_t* heat_atten_q, const int32_t* dyn_heat_atten_q,
              const int32_t* heat_inv_shift, const bool* thermal_solid,
-             const int64_t* e_table, const int64_t* amb_level,
+             const int64_t* e_table, int e_fine_bits, const int64_t* amb_level,
              int32_t t_amb_q, int32_t k_leak_q,
              int transport, int n_ordinates, int h, int w,
              int64_t* rad_net, int64_t* rad_flux, int64_t* rad_amb,

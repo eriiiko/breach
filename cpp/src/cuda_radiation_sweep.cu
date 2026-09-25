@@ -173,6 +173,7 @@ __global__ void rs_prepass(int n_env, int plane,
                            const int32_t* __restrict__ heat_absorb_q16,
                            const int32_t* __restrict__ n_bulk,
                            int32_t n_floor_q, int64_t recip_cv,   // P5b: the gas currency
+                           int e_fine_bits,                       // #78: the table's currency
                            int64_t w_m, bool fleck_enabled,
                            int64_t* __restrict__ amb_m,
                            int64_t* __restrict__ ex_cell,
@@ -234,13 +235,15 @@ __global__ void rs_prepass(int n_env, int plane,
         d_eff[gi] = de;
         int64_t L = 0;
         if (thermal_solid[gi]) {
-            L = fleck_L_solid_q(ex, heat_atten_q[gi], heat_inv_shift[gi]);
+            // #78: ex is in the table's currency; the arm converts once
+            // (fixedpoint::fine_heat_shr at his), the same FP_HD function.
+            L = fleck_L_solid_q(ex, heat_atten_q[gi], heat_inv_shift[gi], e_fine_bits);
         } else if (ag > 0) {
             // THE GAS ARM (P5b) — run()'s, through the same FP_HD function: the
             // smoke term's excess in the temperature fold's own gas currency
             // (the two scalars ride by value; the per-cell reciprocal_q16 and
             // the staged mul128_shr chain are the kit's, on both backends).
-            L = fleck_L_gas_q(ex, ag, n_bulk[gi], n_floor_q, recip_cv);
+            L = fleck_L_gas_q(ex, ag, n_bulk[gi], n_floor_q, recip_cv, e_fine_bits);
         }
         int64_t T_abs = (int64_t)temperature[gi] + (int64_t)t_amb_q[env];
         if (T_abs < 1) T_abs = 1;
@@ -455,7 +458,7 @@ int radiation_sweep_launch_resident(
     const int32_t* d_heat_atten_q, const int32_t* d_dyn_heat_atten_q,
     const int32_t* d_heat_inv_shift, const bool* d_thermal_solid,
     const int64_t* d_amb_level, const bool* d_is_vacuum,
-    const int64_t* d_e_table,
+    const int64_t* d_e_table, int e_fine_bits,
     const int64_t* d_vac_level, const int32_t* d_k_leak_q,
     const int32_t* d_t_amb_q,
     const int32_t* d_gas, int n_gases,
@@ -499,6 +502,13 @@ int radiation_sweep_launch_resident(
             "radiation_sweep_launch_resident: d_a_eff / d_d_eff scratch is "
             "required (the wavefronts read the effective extinction planes)");
     }
+    // #78: the table's currency -- a host scalar shared by every env, checked
+    // as host control flow exactly as run() checks it.
+    if (e_fine_bits < 0 || e_fine_bits > E_FINE_BITS) {
+        throw std::invalid_argument(
+            "radiation_sweep_launch_resident: e_fine_bits outside [0, "
+            "E_FINE_BITS] -- the table's currency (#78, emissive_table.h)");
+    }
     if (n_env <= 0 || h <= 0 || w <= 0) return 0;
     if (n_env > 65535) {
         // The wavefront grid carries the env on blockIdx.z (hardware limit
@@ -529,7 +539,7 @@ int radiation_sweep_launch_resident(
         d_heat_inv_shift, d_thermal_solid, d_amb_level, d_is_vacuum,
         d_e_table, d_vac_level, d_t_amb_q,
         d_gas, n_gases, d_heat_absorb_q16, d_n_bulk,
-        n_floor_q, recip_cv,
+        n_floor_q, recip_cv, e_fine_bits,
         w_m, fleck_enabled,
         d_amb_m, d_ex_cell, d_f_q24, d_a_eff, d_d_eff, d_cnt);
     cuda_check(cudaGetLastError(), "prepass launch");
@@ -560,7 +570,7 @@ int radiation_sweep_step(
     const int32_t* temperature,
     const int32_t* heat_atten_q, const int32_t* dyn_heat_atten_q,
     const int32_t* heat_inv_shift, const bool* thermal_solid,
-    const int64_t* e_table,
+    const int64_t* e_table, int e_fine_bits,
     const int64_t* amb_level, const bool* is_vacuum, int64_t vac_level,
     int32_t t_amb_q, int32_t k_leak_q,
     int transport, int n_ordinates, int h, int w,
@@ -575,6 +585,13 @@ int radiation_sweep_step(
             "radiation_sweep_step (CUDA): unsupported (n_ordinates, transport) "
             "- n_ordinates must be 16 or 12, transport TRANSPORT_STEP (0) or "
             "TRANSPORT_SHEAR (1)");
+    }
+    // #78: the table's currency, refused on the host exactly as run() refuses
+    // it -- before anything crosses the bus.
+    if (e_fine_bits < 0 || e_fine_bits > E_FINE_BITS) {
+        throw std::invalid_argument(
+            "radiation_sweep_step (CUDA): e_fine_bits outside [0, E_FINE_BITS] "
+            "-- the table's currency (#78, emissive_table.h)");
     }
     // ---- P5a: the gas group, checked on the HOST exactly as run() checks it,
     // before anything crosses the bus (a rejected scene touches nothing) ----
@@ -700,7 +717,7 @@ int radiation_sweep_step(
         ar.at<int32_t>(o_his), ar.at<bool>(o_ts),
         amb_level ? ar.at<int64_t>(o_amb) : nullptr,
         is_vacuum ? ar.at<bool>(o_vac) : nullptr,
-        ar.at<int64_t>(o_etab),
+        ar.at<int64_t>(o_etab), e_fine_bits,
         ar.at<int64_t>(o_vl), ar.at<int32_t>(o_kl), ar.at<int32_t>(o_ta),
         n_act ? ar.at<int32_t>(o_gas) : nullptr, n_act,
         n_act ? ar.at<int32_t>(o_hq) : nullptr,

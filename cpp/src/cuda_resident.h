@@ -256,6 +256,10 @@ constexpr int RS_BAD_HEAT_ABSORB = 4;
 //                     interior) and d_vac_level, derive_ambient's twin
 //   d_e_table       : (E_TABLE_SIZE,) int64 — shared by every env (a pure
 //                     function of the calibration dials, not per-env state)
+//   e_fine_bits     : THE TABLE'S CURRENCY (#78), a host scalar shared by every
+//                     env like the table: 2^e_fine_bits of its integers per heat
+//                     count, in [0, E_FINE_BITS]. The pre-pass's two Fleck arms
+//                     convert out of it; the planes come out in it
 //   d_vac_level, d_k_leak_q, d_t_amb_q : (N,) per-env scalars
 //   THE GAS EXTINCTION (P5a, design v3 §6.3) — all three pointers or none
 //   (none, with n_gases == 0: the pre-P5a sweep):
@@ -277,6 +281,7 @@ constexpr int RS_BAD_HEAT_ABSORB = 4;
 //   d_rad_*         : (N, h, w) int64 — OVERWRITTEN (zeroed here first)
 //   d_cnt           : (N, RADIATION_SWEEP_CNT_SLOTS) int64
 // Throws std::invalid_argument on an unsupported (n_ordinates, transport),
+// an e_fine_bits outside [0, E_FINE_BITS] (#78),
 // an n_env above 65535 (the wavefront grid's blockIdx.z carries the env), a
 // partial gas group, an n_gases outside [0, N_GAS_PLANES_MAX] or a
 // non-positive gas currency with the group — host control flow, checked
@@ -287,7 +292,7 @@ int radiation_sweep_launch_resident(
     const int32_t* d_heat_atten_q, const int32_t* d_dyn_heat_atten_q,
     const int32_t* d_heat_inv_shift, const bool* d_thermal_solid,
     const int64_t* d_amb_level, const bool* d_is_vacuum,
-    const int64_t* d_e_table,
+    const int64_t* d_e_table, int e_fine_bits,
     const int64_t* d_vac_level, const int32_t* d_k_leak_q,
     const int32_t* d_t_amb_q,
     const int32_t* d_gas, int n_gases,

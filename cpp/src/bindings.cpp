@@ -117,6 +117,29 @@ static GasGroupArgs gas_group_args(const char* who, const py::object& gas,
     return g;
 }
 
+// #78: THE CURRENCY OF A DIRECT CALLER'S rad_net (the Pass-1 fold's two direct
+// entries, TemperatureSolver.step and cuda_temperature_step, share this ONE
+// rule). A sweep plane is in the currency of the E° table the sweep booked it
+// from, so the table the caller hands (clamp on OR off -- the clamp is a switch,
+// the currency is a fact about the plane) carries it; an explicit
+// `rad_fine_bits` (>= 0) must AGREE with that table -- two currencies for one
+// plane is refused, never guessed between; with neither, the plane is in whole
+// heat counts (0: every pre-#78 direct caller's hand-made plane).
+static int rad_currency_arg(const char* who, const py::object& e_table_obj,
+                            int rad_fine_bits) {
+    if (!e_table_obj.is_none()) {
+        const int tb = e_table_obj.cast<const EmissiveTable&>().fine_bits;
+        if (rad_fine_bits >= 0 && rad_fine_bits != tb) {
+            throw py::value_error(std::string(who) + ": rad_fine_bits = " +
+                                  std::to_string(rad_fine_bits) + " disagrees with "
+                                  "the e_table's own currency (fine_bits = " +
+                                  std::to_string(tb) + ") -- one plane, one currency (#78)");
+        }
+        return tb;
+    }
+    return (rad_fine_bits >= 0) ? rad_fine_bits : 0;
+}
+
 // arc #54 §2.7 (gas-energy conservation): the W3 water-displacement
 // evacuation's six optional energy arguments, extracted the SAME nullable way
 // the BC args are (None -> nullptr -> the pre-#54 byte-identical path). Both
@@ -342,7 +365,7 @@ PYBIND11_MODULE(breach_physics, m) {
              // WITH its clamp, and a ring cell, on this entry exactly as the
              // CPU TemperatureSolver.step binding does.
              py::object rad_fluence_obj, py::object e_table_obj,
-             py::object is_ambient_obj) -> py::tuple {
+             py::object is_ambient_obj, int rad_fine_bits) -> py::tuple {
               auto [temp, h, w]    = get_2d(temperature);
               auto [hp, h2, w2]    = get_2d_const(heat);
               auto [shift, h3, w3] = get_2d_const(heat_inv_shift);
@@ -429,6 +452,10 @@ PYBIND11_MODULE(breach_physics, m) {
                   amb = ap;
               }
               const int32_t t_amb_q = fixedpoint::quantize((double)t_amb_k);
+              // #78: the currency rad_net is in -- the one rule every direct
+              // fold entry shares (rad_currency_arg).
+              const int rfb = rad_currency_arg("cuda_temperature_step",
+                                               e_table_obj, rad_fine_bits);
               // P-E2a/P-E2b/arc #54: the isolated GPU entry now returns
               // (t_max_phys_hits, e_cond_trunc_sum, e_cond_cap_sum,
               //  cond_limit_hits, e_cool_sum, e_vac_wipe_sum, e_ring_pin_sum,
@@ -448,7 +475,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   c_v, n_floor_heat, gas_advection_rate, t_max_phys, h, w, dt,
                   amb, tsol, nullptr, rnet, cnt,
                   ge, t_amb_q, &solid_books,
-                  rflu, etab, (etab != nullptr) ? E_TABLE_SIZE : 0);
+                  rflu, etab, (etab != nullptr) ? E_TABLE_SIZE : 0, rfb);
               // T5b step 7: 13 counters -> 11 (C_COOL and C_THERMOSTAT are
               // deleted with Pass 3 and the survivors renumbered).
               // P5c: slot 12 (e_rad_clamp_drop_sum) is APPENDED after the
@@ -476,6 +503,7 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("rad_fluence") = py::none(),     // P5c: the clamp's Phi (optional)
           py::arg("e_table") = py::none(),         // P5c: an EmissiveTable (optional)
           py::arg("is_ambient") = py::none(),      // P5c: the ambient ring (optional)
+          py::arg("rad_fine_bits") = -1,           // #78: rad_net's currency (-1: the table's, else 0)
           "P6.6/P-G2 isolated: run the GPU unified temperature solver in place "
           "on `temperature` (+ `gas_energy` when supplied — bit-identical to "
           "TemperatureSolver.step); returns (t_max_phys_hits, e_cond_trunc_sum, "
@@ -623,7 +651,8 @@ PYBIND11_MODULE(breach_physics, m) {
                                                heat_absorb_q16, n_bulk, h, w);
               int64_t s_min = 0, s_max = 0;
               const int launches = breach_cuda::radiation_sweep_step(
-                  T, aq, dq, his, ts, e_table.table(), amb, vac, vac_level,
+                  T, aq, dq, his, ts, e_table.table(), e_table.fine_bits,
+                  amb, vac, vac_level,
                   t_amb_q, k_leak_q, transport, n_ordinates, h, w,
                   rn, rf, ra, rl, fleck_enabled, fo, &s_min, &s_max,
                   gg.gas, gg.n, gg.hq, gg.nb, n_floor_q, recip_cv);
@@ -659,7 +688,7 @@ PYBIND11_MODULE(breach_physics, m) {
              std::uintptr_t d_dyn_heat_atten_q, std::uintptr_t d_heat_inv_shift,
              std::uintptr_t d_thermal_solid,
              std::uintptr_t d_amb_level, std::uintptr_t d_is_vacuum,
-             std::uintptr_t d_e_table,
+             std::uintptr_t d_e_table, int e_fine_bits,
              std::uintptr_t d_vac_level, std::uintptr_t d_k_leak_q,
              std::uintptr_t d_t_amb_q,
              std::uintptr_t d_gas, int n_gases,
@@ -681,7 +710,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   reinterpret_cast<const bool*>(d_thermal_solid),
                   reinterpret_cast<const int64_t*>(d_amb_level),
                   reinterpret_cast<const bool*>(d_is_vacuum),
-                  reinterpret_cast<const int64_t*>(d_e_table),
+                  reinterpret_cast<const int64_t*>(d_e_table), e_fine_bits,
                   reinterpret_cast<const int64_t*>(d_vac_level),
                   reinterpret_cast<const int32_t*>(d_k_leak_q),
                   reinterpret_cast<const int32_t*>(d_t_amb_q),
@@ -706,7 +735,8 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("d_temperature"), py::arg("d_heat_atten_q"),
           py::arg("d_dyn_heat_atten_q"), py::arg("d_heat_inv_shift"),
           py::arg("d_thermal_solid"), py::arg("d_amb_level"), py::arg("d_is_vacuum"),
-          py::arg("d_e_table"), py::arg("d_vac_level"), py::arg("d_k_leak_q"),
+          py::arg("d_e_table"), py::arg("e_fine_bits"),
+          py::arg("d_vac_level"), py::arg("d_k_leak_q"),
           py::arg("d_t_amb_q"),
           py::arg("d_gas"), py::arg("n_gases"),
           py::arg("d_heat_absorb_q16"), py::arg("d_n_bulk"),
@@ -718,7 +748,10 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("d_rad_fluence"), py::arg("d_cnt"),
           "P4 (TEST/BENCH): the sweep's LAUNCH CORE on raw device pointers "
           "(CuPy .data.ptr uintptr_t; 0 == nullptr for d_amb_level/d_is_vacuum), "
-          "(N, h, w)-shaped. P5a: d_gas (N, n_gases, h, w) / d_heat_absorb_q16 "
+          "(N, h, w)-shaped. #78: e_fine_bits is the device table's currency "
+          "(the EmissiveTable.fine_bits it was baked with; REQUIRED -- a table "
+          "on the device carries none of its own). "
+          "P5a: d_gas (N, n_gases, h, w) / d_heat_absorb_q16 "
           "(n_gases,) / d_n_bulk (N, h, w) are the smoke term, all three or all 0 "
           "(with n_gases 0); P5b: n_floor_q / recip_cv are the gas arm's "
           "currency, two host scalars, both > 0 with the smoke term (0 without); "
@@ -1687,15 +1720,31 @@ PYBIND11_MODULE(breach_physics, m) {
     m.attr("CAP_SHIFT_MAX") = conduction::CAP_SHIFT_MAX;
 
     m.def("fp_deposit_dT_wide_i64",
-          [](int64_t deposit, int32_t recip_n_q, int64_t recip_cv) {
+          [](int64_t deposit, int32_t recip_n_q, int64_t recip_cv, int fine_bits) {
               return fixedpoint::deposit_dT_wide_i64(deposit, recip_n_q,
-                                                      recip_cv);
+                                                      recip_cv, fine_bits);
           },
           py::arg("deposit"), py::arg("recip_n_q"), py::arg("recip_cv"),
+          py::arg("fine_bits") = 0,
           "fixed_point.h deposit_dT_wide_i64: the STAGED wide chain "
-          "mul128_shr(mul128_shr(deposit, recip_n_q, 16), recip_cv, 32) — an "
-          "int64 first operand, two floors; within one LSB of "
-          "deposit_dT_wide_q16 on int32-range deposits.");
+          "mul128_shr(mul128_shr(deposit, recip_n_q, 16), recip_cv, 32 + fine_bits) "
+          "— an int64 first operand, two floors; within one LSB of "
+          "deposit_dT_wide_q16 on int32-range deposits. #78: fine_bits is the "
+          "currency of a deposit in the sweep's fine heat currency, converted at "
+          "the chain's final narrow (0: whole heat counts).");
+    // #78: THE ONE CONVERSION out of the sweep's fine heat currency, exposed so
+    // its Python twins (sweep_ref_q.fine_heat_shr, optics_fixed.fine_heat_shr)
+    // are held to it value for value (tests/test_sweep_fine_currency.py).
+    m.def("fp_fine_heat_shr",
+          [](int64_t x, int s, int fine_bits) {
+              return fixedpoint::fine_heat_shr(x, s, fine_bits);
+          },
+          py::arg("x"), py::arg("s"), py::arg("fine_bits"),
+          "fixed_point.h fine_heat_shr (#78): x in a currency 2^fine_bits finer "
+          "than one heat count, divided by 2^(s + fine_bits), rounded toward zero, "
+          "SYMMETRIC (shr_round0_signed_i64 at s + fine_bits): s = heat_inv_shift "
+          "gives a thermal solid's temperature step, s = 0 whole heat counts, "
+          "s = -16 the Q16 heat currency the counters are in (exact).");
 
     // S2a: the explicit WAVE state (wave_p / wave_v / wave_source) is now int32
     // Q16.16 (same 2^16 scale as water/heat). Python (gamemap fields, field
@@ -2101,7 +2150,8 @@ PYBIND11_MODULE(breach_physics, m) {
                         bool clamp_enabled,
                         py::object gas_energy_obj,
                         int32_t t_amb_q,
-                        py::object is_ambient_obj) {
+                        py::object is_ambient_obj,
+                        int rad_fine_bits) {
             auto [temp, h, w]     = get_2d(temperature);
             auto [hp, h2, w2]     = get_2d_const(heat);
             auto [shift, h3, w3]  = get_2d_const(heat_inv_shift);
@@ -2244,8 +2294,14 @@ PYBIND11_MODULE(breach_physics, m) {
                 auto [ap, ha, wa] = get_2d_const(amb_arr);
                 amb = ap;
             }
+            // #78: rad_net's currency -- the table's when one is handed
+            // (clamp on OR off: the clamp is a switch, the currency is a fact
+            // about the plane), else whole heat counts; an explicit
+            // rad_fine_bits must agree with the table (rad_currency_arg).
+            const int rfb = rad_currency_arg("TemperatureSolver.step",
+                                             e_table_obj, rad_fine_bits);
             self.step(temp, hp, shift, fs, sol, vac, atm, nb, wx, wy, h, w, dt,
-                      amb, tsol, rnet, ge, t_amb_q, rflu, etab);
+                      amb, tsol, rnet, ge, t_amb_q, rflu, etab, rfb);
         }, py::arg("temperature"), py::arg("heat"),
            py::arg("heat_inv_shift"), py::arg("face_shift"),
            py::arg("solid"), py::arg("is_vacuum"), py::arg("atmosphere"),
@@ -2258,7 +2314,8 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("clamp_enabled") = true,         // ray-engine-v2 P1: gate 5's switch
            py::arg("gas_energy") = py::none(),      // P5c: the energy form (int64, in/out)
            py::arg("t_amb_q") = 0,                  // P5c: T_AMB_K raw, with gas_energy
-           py::arg("is_ambient") = py::none());     // P5c: the ambient ring (optional)
+           py::arg("is_ambient") = py::none(),      // P5c: the ambient ring (optional)
+           py::arg("rad_fine_bits") = -1);          // #78: rad_net's currency (-1: the table's, else 0)
 
     // --- EmissiveTable + RadiationSweep (ray-engine-v2 P1) --------------
     // The E° table's one owner (PhysicsEngine.emissive; the old Raycaster
@@ -2272,8 +2329,15 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("rad_scale",        &EmissiveTable::rad_scale)
         .def_readwrite("kelvin_ambient",   &EmissiveTable::kelvin_ambient)
         .def_readwrite("k_temp_to_kelvin", &EmissiveTable::k_temp_to_kelvin)
+        // #78: THE TABLE'S CURRENCY -- 2^fine_bits of its integers per heat
+        // count; E_FINE_BITS by default (the engine's), 0 bakes the pre-#78
+        // coarse table (the integer reference's resolving instrument). Every
+        // entry that hands this table to the C++ hands its currency with it.
+        .def_readwrite("fine_bits",        &EmissiveTable::fine_bits)
         .def("bake", &EmissiveTable::bake,
-             "Bake (or re-bake) the E° table from the current dials.")
+             "Bake (or re-bake) the E° table from the current dials -- in the "
+             "currency `fine_bits` (rad_scale * 2^fine_bits; [0, E_FINE_BITS], "
+             "ValueError outside it).")
         .def("table", [](const EmissiveTable& self) {
                  return py::array_t<int64_t>(E_TABLE_SIZE, self.table());
              },
@@ -2299,6 +2363,9 @@ PYBIND11_MODULE(breach_physics, m) {
              "bucket whose E° exceeds Φ; 0 below E°[0]; saturates one LSB below "
              "16000 game (E_CEILING_TOP_Q), below T_MAX_PHYS.");
     m.attr("E_TABLE_SIZE") = E_TABLE_SIZE;
+    // #78: THE ONE CONSTANT, read by Python through here (never a copy of 11).
+    m.attr("E_FINE_BITS") = E_FINE_BITS;
+    m.attr("E_TABLE_TOP_MAX") = E_TABLE_TOP_MAX;   // #78: the bake's headroom door
     m.attr("E_INV_TOP_GAME") = E_INV_TOP_GAME;
     m.attr("E_CEILING_TOP_Q") = E_CEILING_TOP_Q;   // P5d
 
@@ -2336,7 +2403,7 @@ PYBIND11_MODULE(breach_physics, m) {
                  const int64_t* e = tbl.table();
                  int64_t ex = e[e_bucket_of(T_q)] - e[0];
                  if (ex < 0) ex = 0;
-                 const int64_t L = fleck_L_solid_q(ex, a_q, his);
+                 const int64_t L = fleck_L_solid_q(ex, a_q, his, tbl.fine_bits);
                  int64_t T_abs = (int64_t)T_q + (int64_t)t_amb_q;
                  if (T_abs < 1) T_abs = 1;
                  return fleck_f_q24(T_abs, L);
@@ -2356,7 +2423,7 @@ PYBIND11_MODULE(breach_physics, m) {
                  int64_t ex = e[e_bucket_of(T_q)] - e[0];
                  if (ex < 0) ex = 0;
                  const int64_t L = fleck_L_gas_q(ex, a_gas_q, n_bulk, n_floor_q,
-                                                 recip_cv);
+                                                 recip_cv, tbl.fine_bits);
                  int64_t T_abs = (int64_t)T_q + (int64_t)t_amb_q;
                  if (T_abs < 1) T_abs = 1;
                  return fleck_f_q24(T_abs, L);
@@ -2511,7 +2578,8 @@ PYBIND11_MODULE(breach_physics, m) {
             // extraction the GPU twin's direct entry uses).
             GasGroupArgs gg = gas_group_args("RadiationSweep.run", gas,
                                              heat_absorb_q16, n_bulk, h, w);
-            self.run(T, aq, dq, his, ts, e_table.table(), amb, t_amb_q, k_leak_q,
+            self.run(T, aq, dq, his, ts, e_table.table(), e_table.fine_bits,
+                     amb, t_amb_q, k_leak_q,
                      transport, n_ordinates, h, w, rn, rf, ra, rl, fleck_enabled,
                      gg.gas, gg.n, gg.hq, gg.nb, n_floor_q, recip_cv);
         }, py::arg("temperature").noconvert(), py::arg("heat_atten_q").noconvert(),

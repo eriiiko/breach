@@ -8,6 +8,7 @@
 #include "gas_energy.h"    // arc #54 P-G1b: THE gas energy seam (design §2.7)
 #include "emissive_table.h" // ray-engine-v2 P1 / P5d: e_ceiling_q, the Pass-1 clamp's ceiling
 #include <algorithm>        // P-E2b: std::clamp on the wide deposit-divide result
+#include <stdexcept>        // #78: the rad_fine_bits door
 
 // Direction order for the per-tile face_shift cache (MUST match the Python
 // bake in GameMap: index 0=N, 1=S, 2=E, 3=W).
@@ -61,9 +62,17 @@ void TemperatureSolver::step(
     int64_t* gas_energy,            // arc #54 P-G1b: the conserved gas energy
     int32_t t_amb_q,                // T_AMB_K raw (only read with gas_energy)
     const int64_t* rad_fluence,     // ray-engine-v2 P1: the sweep's Φ (clamp)
-    const int64_t* e_table          // ray-engine-v2 P1: E° (clamp); both null = no clamp
+    const int64_t* e_table,         // ray-engine-v2 P1: E° (clamp); both null = no clamp
+    int rad_fine_bits               // #78: the currency rad_net is in (see the header)
 ) const {
     const int n = h * w;
+    // #78: the currency the sweep's planes are in; [0, E_FINE_BITS] is what the
+    // conversions' headroom argument covers (emissive_table.h).
+    if (rad_fine_bits < 0 || rad_fine_bits > E_FINE_BITS) {
+        throw std::invalid_argument(
+            "TemperatureSolver::step: rad_fine_bits outside [0, E_FINE_BITS] -- "
+            "the currency of the sweep's rad_net (#78, emissive_table.h)");
+    }
     const bool ambient_mode = (is_ambient != nullptr);   // BC: dormancy by branch
 
     // --- THERMAL-MEDIUM mask (docs/thermal_mass_axis_design_2026-07-25.md) ---
@@ -287,8 +296,13 @@ void TemperatureSolver::step(
                     // this returns exactly what shr_round0_i64 returned, so no
                     // shipped row moves; the negative branch is EXACT (a left
                     // shift loses nothing where the right shift truncates).
+                    // #78: rn is in the sweep's FINE currency, so the ONE
+                    // conversion is the kit's fine_heat_shr at his — a single
+                    // symmetric shift by his + k, i.e. the landing loses under
+                    // one temperature LSB (the field's own resolution), never a
+                    // whole heat count first (rad_fine_bits == 0: the old line).
                     const int64_t dTr =
-                        shr_round0_signed_i64(rn, heat_inv_shift[i]);
+                        fine_heat_shr(rn, heat_inv_shift[i], rad_fine_bits);
                     // SYMMETRIC saturating add: raycaster.h's
                     // heat_saturating_add early-returns on delta <= 0 (its
                     // accumulator is contractually non-negative), which would
@@ -427,13 +441,21 @@ void TemperatureSolver::step(
             //     ~N/n_floor of rn; the conversion's whole unlanded remainder,
             //     rn·FP_ONE − (T_after − T_before)·cap_real, is booked there — the
             //     radiative twin of Pass 2's e_cond_cap_sum.
+            //   #78: "rn·FP_ONE" is rn in the Q16 heat currency, formed from the
+            //   sweep's fine rn by the kit's ONE helper, fine_heat_shr(rn,
+            //   -FP_SHIFT, rad_fine_bits) = rn << (16 - k) — exact. The chain
+            //   above converts at its final narrow (deposit_dT_wide_i64's
+            //   fine_bits), where the Fleck gas arm converts too.
             //   Neither is a term of the #54 identity: neither touches gas_energy,
             //   so a term there would break it by exactly its own amount.
             // Energy form only: with gas_energy == nullptr (the pre-#54 direct
             // binding path) a gas cell's rad_net is not folded, as before P5c.
             if (rad_net != nullptr && e_on && !ts[i] && !acct(i)) {
                 const int64_t rn = rad_net[i];
-                if (rn != 0) e_rad_boundary_export_sum += rn * (int64_t)FP_ONE;
+                if (rn != 0) {
+                    e_rad_boundary_export_sum +=
+                        fine_heat_shr(rn, -FP_SHIFT, rad_fine_bits);
+                }
             }
             if (rad_net != nullptr && e_on && !ts[i] && acct(i)) {
                 const int64_t rn = rad_net[i];
@@ -444,13 +466,14 @@ void TemperatureSolver::step(
                     const int32_t N_q = floored ? n_floor_q : N_raw;
                     const int32_t recip_N_q = reciprocal_q16(N_q);
                     const int64_t mag = deposit_dT_wide_i64(
-                        (rn < 0) ? -rn : rn, recip_N_q, recip_cv);
+                        (rn < 0) ? -rn : rn, recip_N_q, recip_cv, rad_fine_bits);
                     const int64_t dT = (rn < 0) ? -mag : mag;
                     const int32_t t_before =
                         gas_energy::mirror_q(gas_energy[i], nb, t_amb_q);
                     int32_t t_target = sat_add_q16_i64(t_before, dT);
                     if (floored) {
-                        e_rad_floor_drop_sum += rn * (int64_t)FP_ONE
+                        e_rad_floor_drop_sum +=
+                            fine_heat_shr(rn, -FP_SHIFT, rad_fine_bits)
                             - ((int64_t)t_target - (int64_t)t_before) * cap_real_[i];
                     }
                     if (rad_fluence != nullptr && e_table != nullptr) {

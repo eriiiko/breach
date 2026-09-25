@@ -57,6 +57,17 @@
 // every product here is below 2^58 and the widest one, ex_m * f_q24, is below
 // 2^63 (measured 2^62.13 at S12) — and it goes through the kit's 128-bit
 // mul128_shr anyway, so no headroom argument is load-bearing on it.
+//
+// THE CURRENCY (#78). Every integer above is in the E° table's currency,
+// `e_fine_bits` (emissive_table.h): the live table is baked 2^E_FINE_BITS finer
+// than one heat count, so near ambient the per-ordinate terms carry thousands
+// of counts instead of single digits and the floors stop deciding the exchange.
+// The sweep's own arithmetic is unit-agnostic and unchanged; the pre-pass is
+// the one place here that CONVERTS (the Fleck L is a temperature), through the
+// kit's fine_heat_shr / the gas chain's final narrow. At the fine live scale the
+// bounds above hold with room (sweep_ref_q_gates G11: E°[3999] = 2^41.1, plain
+// products <= 2^57.1 (the pre-pass's a * ex), per-cell sums <= 2^41.1, the
+// 128-bit Fleck product 2^61.5).
 
 #include "radiation_sweep.h"
 
@@ -195,7 +206,8 @@ const int64_t* RadiationSweep::derive_ambient(const bool* is_vacuum,
 void RadiationSweep::run(const int32_t* temperature,
                          const int32_t* heat_atten_q, const int32_t* dyn_heat_atten_q,
                          const int32_t* heat_inv_shift, const bool* thermal_solid,
-                         const int64_t* e_table, const int64_t* amb_level,
+                         const int64_t* e_table, int e_fine_bits,
+                         const int64_t* amb_level,
                          int32_t t_amb_q, int32_t k_leak_q,
                          int transport, int n_ordinates, int h, int w,
                          int64_t* rad_net, int64_t* rad_flux, int64_t* rad_amb,
@@ -217,6 +229,14 @@ void RadiationSweep::run(const int32_t* temperature,
     if (k_leak_q < 0 || k_leak_q > FP_ONE) {
         throw std::invalid_argument(
             "RadiationSweep::run: k_leak_q outside [0, ONE] (design §2.3 invariant)");
+    }
+    // #78: the table's CURRENCY. The sweep books everything in it; the pre-pass
+    // converts out of it (both Fleck arms). [0, E_FINE_BITS] is what the int64
+    // headroom argument covers (emissive_table.h) — the bake refuses the same.
+    if (e_fine_bits < 0 || e_fine_bits > E_FINE_BITS) {
+        throw std::invalid_argument(
+            "RadiationSweep::run: e_fine_bits outside [0, E_FINE_BITS] -- the "
+            "table's currency (#78, emissive_table.h)");
     }
     if (amb_level == nullptr) {
         throw std::invalid_argument(
@@ -329,7 +349,9 @@ void RadiationSweep::run(const int32_t* temperature,
         d_eff_[i] = d_eff;
         int64_t L = 0;
         if (thermal_solid[i]) {
-            L = fleck_L_solid_q(ex, heat_atten_q[i], heat_inv_shift[i]);
+            // #78: ex is in the table's currency; the arm converts once
+            // (fixedpoint::fine_heat_shr at his, inside fleck_L_solid_q).
+            L = fleck_L_solid_q(ex, heat_atten_q[i], heat_inv_shift[i], e_fine_bits);
         } else if (a_gas > 0) {
             // THE GAS ARM (P5b, design §2.8 / §6.3; sweep_ref_q.py's
             // fleck_prepass): a gas cell whose smoke term absorbs is damped on
@@ -340,7 +362,7 @@ void RadiationSweep::run(const int32_t* temperature,
             // A gas cell that absorbs nothing emits no excess and keeps
             // L = 0, f == 2^24 — which is every smoke-free gas cell of the
             // shipped game (only smoke absorbs, since P5c).
-            L = fleck_L_gas_q(ex, a_gas, n_bulk[i], n_floor_q, recip_cv);
+            L = fleck_L_gas_q(ex, a_gas, n_bulk[i], n_floor_q, recip_cv, e_fine_bits);
         }
         // T_abs > 0 always in the engine (T_MIN = -292 game keeps T_abs >= 1);
         // the floor at 1 is the runner's own A7 floor, so a direct caller with

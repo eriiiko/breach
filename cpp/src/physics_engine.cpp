@@ -258,6 +258,10 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         rad_net_sweep != nullptr && rad_flux_sweep != nullptr &&
         rad_amb_sweep != nullptr && rad_fluence != nullptr) {
         const int64_t* e_tbl = this->emissive.table();   // lazy re-bake on a dial change
+        // #78: the table's CURRENCY -- every integer the sweep books is 2^k of
+        // them per heat count, and the fold below converts by the SAME k (it
+        // is handed this->emissive.fine_bits too), so a table and its planes
+        // are never read in two currencies. E_FINE_BITS on the live path.
         // P5a (design v3 §6.3): the smoke term's inputs — the gas planes, the
         // per-gas heat_absorb column and the bulk sum built above (one source
         // of truth with the fire and the temperature fold). All three or none:
@@ -289,7 +293,8 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             breach_cuda::radiation_sweep_step(
                 temperature, heat_atten_q, dyn_heat_atten_q,
                 heat_inv_shift, thermal_solid,
-                e_tbl, /*amb_level=*/nullptr, is_vacuum, rad_amb_vacuum_q,
+                e_tbl, this->emissive.fine_bits,
+                /*amb_level=*/nullptr, is_vacuum, rad_amb_vacuum_q,
                 t_amb_q, k_leak_q,
                 RadiationSweep::TRANSPORT_SHEAR, 16, h, w,
                 rad_net_sweep, rad_flux_sweep, rad_amb_sweep, rad_fluence,
@@ -309,7 +314,7 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             this->radiation.run(
                 temperature, heat_atten_q, dyn_heat_atten_q,
                 heat_inv_shift, thermal_solid,
-                e_tbl, amb_level,
+                e_tbl, this->emissive.fine_bits, amb_level,
                 t_amb_q, k_leak_q,
                 RadiationSweep::TRANSPORT_SHEAR, 16, h, w,
                 rad_net_sweep, rad_flux_sweep, rad_amb_sweep, rad_fluence,
@@ -451,7 +456,10 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             // (design v3 P3: "the clamp's GPU twin lands here"). Slot 11 of
             // `cond_counters` brings its engagement count home.
             rad_fluence, this->emissive.table(),
-            E_TABLE_SIZE);
+            E_TABLE_SIZE,
+            // #78: rad_net_sweep's currency -- the table the sweep booked it
+            // from (the CPU branch below passes the same).
+            this->emissive.fine_bits);
         // T5b step 7: RENUMBERED. Slots 3 (e_cool_sum) and 12
         // (e_thermostat_sum) are DELETED with Pass 3, so every survivor below
         // them shifts down; the enum in cuda_temperature.cu is the authority
@@ -515,7 +523,10 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             // the same traversal, this same tick. Clamping against a Φ from a
             // different law would have been meaningless, which is why P1 left
             // it dormant.
-            rad_fluence, this->emissive.table());
+            rad_fluence, this->emissive.table(),
+            // #78: rad_net_sweep is in the emissive table's FINE currency; the
+            // fold converts once, by the same k the sweep booked it in.
+            this->emissive.fine_bits);
     }
 
     return destroyed;

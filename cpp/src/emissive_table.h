@@ -38,11 +38,53 @@
 //
 // The lookups below are FP_HD so the CUDA twins (the P3 clamp in
 // cuda_temperature.cu, the P4 sweep) share ONE definition with the host.
+//
+// THE SWEEP'S HEAT CURRENCY (#78, 2026-09-25; Erik asked for the fix on
+// 2026-09-24; docs/sweep_fine_heat_currency_brief_78_2026-09-25.md). At the
+// live scale a room-temperature black body is only E°[0] = 125 heat counts per
+// tick, so the sweep's per-ordinate terms were single-digit integers and every
+// floor lost up to one count — ~10 K of emission-equivalent near ambient: cells
+// a few kelvin warm read as net ABSORBERS and could not shed a small excess
+// (the literature's STAGNATION; Croci & Giles 2023, Kloewer et al. 2020 — whose
+// remedy, rescaling, is the ruled fix). So the table is baked 2^E_FINE_BITS
+// finer than one heat count: rad_scale · 2^k, a power of two, exact in double,
+// so the bake still rounds ONCE. Φ, the ambient level, and the sweep's four
+// planes are then all in that fine currency — the sweep itself is
+// unit-agnostic — and EVERY reader that turns one back into heat counts
+// converts ONCE, through fixedpoint::fine_heat_shr (fixed_point.h; the gas
+// chain at its final narrow, deposit_dT_wide_i64's fine_bits), never an inline
+// shift. e_inv_q / e_ceiling_q need nothing: they compare Φ and E° in one unit.
+// A table RECORDS its currency (EmissiveTable::fine_bits, below): the engine's
+// is always E_FINE_BITS; a test instrument may bake a COARSE table (0 — the
+// pre-#78 currency; the integer reference's resolving table, whose physics does
+// not fit the fine currency inside int64), and every reader converts by the
+// currency of the table it was handed.
 
 #include <cstdint>
 #include <vector>
 
 #include "fixed_point.h"   // FP_HD
+
+// THE ONE CONSTANT (#78): the sweep's heat channel works in a currency
+// 2^E_FINE_BITS finer than one heat count. 11 is the largest k whose fine live
+// table stays inside design v3's int64 bounds (per-cell sums < 2^46, plain
+// products < 2^58; the integer reference's gate 11) — it puts the live table at
+// ~0.66x the magnitude the reference's resolving table already exercises. Its
+// Python twin is sweep_ref_q.FINE_BITS (tests/test_ray_engine_v2_integer_
+// reference.py holds the two equal); Python reads this value through the
+// binding (breach_physics.E_FINE_BITS / EmissiveTable.fine_bits), never a copy.
+static constexpr int E_FINE_BITS = 11;
+
+// THE TABLE'S HEADROOM DOOR (#78). The sweep's int64 arithmetic is argued for a
+// table whose top entry is below 2^44: every plain int64 product it forms is at
+// most 2^16 x the top (stream x a, ex_cell x w_m, the pre-pass's a x ex), i.e.
+// below 2^60 -- >= 2^3 of int64 margin, the brief's criterion -- and the per-cell
+// sums stay below 2^48 (sweep_ref_q_gates G11 measures the shipped tables: the
+// fine live table's top is 2^41.1, the coarse resolving table's 2^41.7). A
+// currency makes a table 2^k larger, so a scale x currency pair outside it --
+// the resolving scale baked FINE (2^52.7) -- is REFUSED at the bake, never
+// swept into a silent int64 wrap.
+static constexpr int64_t E_TABLE_TOP_MAX = (int64_t)1 << 44;
 
 static constexpr int E_TABLE_SIZE   = 4000;   // T_game in [0, 16000)
 static constexpr int E_BUCKET_SHIFT = 2;      // 4 game units per bucket
@@ -127,21 +169,37 @@ FP_HD inline int32_t e_ceiling_q(const int64_t* table, int64_t phi) {
 // dial is not integer-valued (the integer-bake precondition — a HARD
 // invariant, not a debug assert: a config that moved them off-integer would
 // silently desync CPU/CUDA through this table).
+// #78: `fine_bits` bakes the table in a currency 2^fine_bits finer than one
+// heat count — the scale becomes rad_scale · 2^fine_bits, a power-of-two
+// multiply, EXACT in double, so the one rounding of the bake is unchanged.
+// Throws std::invalid_argument outside [0, E_FINE_BITS] (the currencies the
+// engine's int64 headroom argument covers: the engine's own, and coarse), or
+// when the baked top entry reaches E_TABLE_TOP_MAX (the headroom door above).
 void bake_emissive_table_exact(int64_t* out, double rad_scale,
-                               double kelvin_ambient, double k_temp_to_kelvin);
+                               double kelvin_ambient, double k_temp_to_kelvin,
+                               int fine_bits);
 
 // The owner: the three dials (the SAME [physics] config homes the old
 // Raycaster reads for kelvin_ambient/k_temp_to_kelvin; `rad_scale` itself is
-// vestigial on the Raycaster since T6 — see raycaster.h) and the lazily
-// baked table. `table()` re-bakes when a dial has moved since the last bake
-// (the Raycaster::emissive_table() contract, kept). Every method is const and
-// the table is `mutable` because it is a pure function of the dials: a cache,
-// not hidden state.
+// vestigial on the Raycaster since T6 — see raycaster.h), the table's CURRENCY
+// (#78) and the lazily baked table. `table()` re-bakes when a dial has moved
+// since the last bake (the Raycaster::emissive_table() contract, kept). Every
+// method is const and the table is `mutable` because it is a pure function of
+// the dials: a cache, not hidden state.
 class EmissiveTable {
 public:
     double rad_scale        = 1.0e-5;   // heat counts per K⁴ ([physics.radiation] rad_scale_derived)
     double kelvin_ambient   = 293.0;    // [physics.temperature_scale] kelvin_ambient
     double k_temp_to_kelvin = 1.0;      // [physics.temperature_scale] k_temp_to_kelvin
+    // #78: the CURRENCY the baked integers are in — 2^fine_bits of them per
+    // heat count. The engine's table (PhysicsEngine::emissive) is always
+    // E_FINE_BITS; 0 bakes the pre-#78 coarse table, which a test instrument
+    // uses for the integer reference's RESOLVING table (its physics does not fit
+    // the fine currency inside int64). Everything booked from this table — Φ,
+    // the ambient level, the sweep's four planes — is in this currency, and
+    // every reader converts by THIS value (fixedpoint::fine_heat_shr), so a
+    // table and its planes can never be read in two currencies.
+    int    fine_bits        = E_FINE_BITS;
 
     // Bake (or re-bake) from the CURRENT dials. Idempotent.
     void bake() const;
@@ -154,4 +212,5 @@ private:
     mutable double baked_scale_ = 0.0;   // 0 == never baked
     mutable double baked_amb_   = 0.0;
     mutable double baked_slope_ = 0.0;
+    mutable int    baked_bits_  = -1;    // #78: the currency the cache holds
 };

@@ -208,7 +208,12 @@ def pack_hover_readout(gmap, tx: int, ty: int,
     # render-time read after the tick has ended sees the last tick's real
     # value — which is the whole reason the conductor's wipe was removed.
     phi_raw = int(gmap.rad_fluence[ty, tx])
-    phi = phi_raw / TEMP_SCALE
+    # #78: Phi is in the sweep's FINE heat currency (2^k per heat count, k the
+    # engine table's own fine_bits); shown in heat units, the pre-#78 display
+    # scale, through the optics boundary module's one door. The two lookups
+    # below take phi_raw as it is: they compare Phi and E° in one currency.
+    phi_counts = float(_optics_fx.dequantize_heat(phi_raw, _optics_fx.sweep_fine_bits(gmap)))
+    phi = phi_counts / TEMP_SCALE
     a_mat_q = int(gmap.heat_atten_q[ty, tx])
     d_mat_q = int(gmap.dyn_heat_atten_q[ty, tx])
     a_eff_q, d_eff_q = a_mat_q, d_mat_q

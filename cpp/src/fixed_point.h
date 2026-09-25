@@ -357,10 +357,25 @@ FP_HD inline int64_t deposit_dT_wide_q16(int32_t deposit_q, int32_t recip_n_q,
 // through (magnitude first, then sign, as the caller declares); it is NOT
 // swapped in for the live heat deposit, whose one-narrow rounding is pinned by
 // the goldens. Same primitive on both backends (mul128_shr is FP_HD).
+//
+// THE GAS CHAIN'S ONE CONVERSION POINT (#78). `deposit` may be in the radiation
+// sweep's FINE heat currency (emissive_table.h E_FINE_BITS: 2^fine_bits per heat
+// count); the chain then converts at its FINAL narrow, RECIP_SHIFT + fine_bits —
+// for the Fleck pre-pass's gas arm and the fold's gas branch alike, so the
+// damping and the landing stay one arithmetic. For the non-negative operand every
+// caller passes (magnitude first, the sign after) that IS the floor of the exact
+// chain divided by 2^fine_bits (nested floors of divisions compose), i.e. the
+// round-toward-zero of fine_heat_shr below, taken where it costs least: the fine
+// bits survive to the last narrow (the conversion loses under one temperature
+// LSB, plus recip_cv / 2^(32 + k) of one for stage 1's floor), and the stage-2
+// result stays the size it was at k = 0 — converting after an int64 narrow at 32
+// would overflow at the most extreme currency (sweep_ref_q_gates G11). The
+// transcription of sweep_ref_q.py::deposit_dT_wide_i64. fine_bits == 0 is the
+// pre-#78 chain, bit for bit.
 FP_HD inline int64_t deposit_dT_wide_i64(int64_t deposit, int32_t recip_n_q,
-                                          int64_t recip_cv) {
+                                          int64_t recip_cv, int fine_bits = 0) {
     const int64_t stage1 = mul128_shr(deposit, (int64_t)recip_n_q, FP_SHIFT);
-    return mul128_shr(stage1, recip_cv, RECIP_SHIFT);
+    return mul128_shr(stage1, recip_cv, RECIP_SHIFT + fine_bits);
 }
 
 // ---- wide DRAG deposit divide: ΔE_cell*heat_frac/c_v, no premature narrow --
@@ -505,6 +520,32 @@ FP_HD inline int64_t shr_round0_signed_i64(int64_t x, int s) {
     if (x >  lim) return INT64_MAX;
     if (x < -lim) return INT64_MIN;
     return x * m;
+}
+
+// ---- THE ONE CONVERSION OUT OF THE SWEEP'S FINE HEAT CURRENCY (#78) ----------
+// The radiation sweep's heat channel works in a currency 2^fine_bits finer than
+// one heat count (emissive_table.h E_FINE_BITS; a table records its own in
+// EmissiveTable::fine_bits): the E° table, Φ, the ambient level and the four
+// sweep planes are all in it. EVERY reader that turns such a value back into
+// heat-count terms converts ONCE, HERE — never an inline `>> 11`:
+//
+//     fine_heat_shr(x, s, k) == x / 2^(s + k), rounded toward zero, SYMMETRIC
+//
+//   s = heat_inv_shift  a thermal solid's temperature step: ONE shift, his + k
+//                       (the fold's solid branch, the Fleck pre-pass's solid arm)
+//   s = 0               whole heat counts (a unit's heat exposure, exchange.py)
+//   s = -FP_SHIFT       the Q16 heat currency every energy counter is in
+//                       (e_rad_boundary_export_sum, e_rad_floor_drop_sum):
+//                       x << (16 - k), EXACT while k <= 16
+//
+// It IS shr_round0_signed_i64 at the exponent s + k — +x and -x lose the same
+// magnitude, a negative exponent is an exact multiply — so on a COARSE table
+// (k == 0) it is every pre-#78 conversion, value for value. The gas chain's
+// conversion is deposit_dT_wide_i64's fine_bits (above): its final narrow. One
+// FP_HD definition; the CUDA twins never re-derive it. Its Python twins are
+// sweep_ref_q.fine_heat_shr (the spec) and simulation/optics_fixed.py's.
+FP_HD inline int64_t fine_heat_shr(int64_t x, int s, int fine_bits) {
+    return shr_round0_signed_i64(x, s + fine_bits);
 }
 
 // ---- per-cell integer reciprocal (Newton-Raphson, GPU-clean) --------------
