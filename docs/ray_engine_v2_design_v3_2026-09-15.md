@@ -360,6 +360,8 @@ both defined (row 31):
   60 000-game rows in v2's §2.8 table describe states the engine clamps away
   and are struck.
 
+> **2026-09-24, P5d (Erik's ruling):** the clamp no longer reads `E°⁻¹`; its ceiling is `e_ceiling_q`, the top of the first bucket out-emitting Φ (saturating one LSB below 16 000) — `ray_engine_v2_p5d_clamp_headroom_brief_2026-09-24.md`. `E°⁻¹` itself is unchanged.
+
 **The sub-ambient floor** is inherited, not new: `e_bucket_of(T ≤ 0) = 0`, so a
 cell below ambient emits at the ambient level. Its excess is zero, so it neither
 warms nor cools radiatively in an ambient bath. A modelling boundary, recorded.
@@ -529,6 +531,8 @@ so the clamp bounds the radiative sub-step, not the temperature:
     T_cap    =  E°⁻¹(Φ_i)                               // rad_fluence[i], §3
     T_new    =  min(T_after, max(T_before, T_cap))
 ```
+
+> **2026-09-24, P5d (Erik's ruling):** `T_cap` is now `e_ceiling_q(Φ_i)`, the top of the first bucket out-emitting Φ_i (up to two buckets above `E°⁻¹(Φ_i)`) — `ray_engine_v2_p5d_clamp_headroom_brief_2026-09-24.md`.
 
 It binds only when radiation would *raise* a cell above `T_cap`; a cell that was
 already above it (a fire) keeps `T_before` as its ceiling and may only cool; a
