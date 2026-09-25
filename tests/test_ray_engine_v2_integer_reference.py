@@ -201,6 +201,14 @@ def test_headroom_stays_inside_int64():
     Since P5b: the gas arm's L at its widest (a_gas = ONE, the table top, a 0-K
     sky, N at the floor) keeps 4L inside int64 on both tables in the fold's
     currency, and on the live table for ANY positive currency.
+    Since #78 (the brief's section 4): the FINE live table (2^11 per heat count)
+    over-driven at the table top keeps the per-cell sums below 2^46 and every
+    plain int64 product -- the pre-pass's a * ex included -- below 2^58, the
+    128-bit Fleck product below 2^63, and the gas chain inside int64 because it
+    converts at its FINAL narrow (the same chain narrowed at 32 and converted
+    after would carry 2^71.5 -- measured). Validated by baking the live table at
+    k = 12 (a * ex crosses 2^58) and k = 13 (the Fleck product crosses 2^63):
+    both red.
     """
     print(_run(G.gate11_headroom))
 
@@ -307,6 +315,25 @@ def test_the_clamp_ceiling_gives_one_bucket_of_headroom():
     Each was injected once into the reference and turned this gate red.
     """
     print(_run(G.gate16_clamp_ceiling))
+
+
+def test_the_fine_heat_currency_resolves_the_exchange_near_ambient():
+    """G17 (#78, docs/sweep_fine_heat_currency_brief_78_2026-09-25.md 5.2 / 5.3):
+    on the FINE live table (a) one cell of every shipped absorbing row in bucket
+    1 or 2 (4 .. 12 game) alone in an ambient room books rad_net < 0 -- both
+    transports, S16 and S12, the leak on and off -- and exactly 0 at or below
+    ambient; (b) gate 2a's uniform-ambient scene (bodies, the leak, f = 0.3,
+    with smoke) is still a per-cell exact zero and the sweep's identity is exact
+    on randomised fine scenes; (c) a net absorber with Phi < E°[0] (row 31's 0
+    ceiling, unchanged) books at most (E°[0] - n amb_m) + n fine counts, under
+    1/32 of a heat count, where the pre-#78 table booked whole counts; (d) a thin
+    shipped row at 10 game cools every tick through pre-pass, sweep and fold.
+
+    Breaks if: the live table is baked coarse (k = 0) -- validated: (a), (c) and
+    (d) all go red, the pre-#78 table's own measurements being their pairs --
+    or absorption and emission are read in two currencies ((b)'s fixed point).
+    """
+    print(_run(G.gate17_fine_heat_currency))
 
 
 if __name__ == "__main__":       # pragma: no cover

@@ -438,9 +438,11 @@ public:
     // At P5c two parts of what the sweep booked left the fold UNCOUNTED, and
     // neither is a truncation, so §8.4's one-LSB-per-cell bound did not cover
     // them. Both are now counted in e_rad_clamp_drop_sum's heat currency
-    // (rad_net in heat counts × FP_ONE, the unit the landing is priced in),
-    // both SIGNED, both COUNTERS ONLY (no landing moves). With them the
-    // boundary reads, per tick,
+    // (rad_net in heat counts × FP_ONE, the unit the landing is priced in —
+    // since #78 formed from the sweep's FINE rad_net as fixedpoint::
+    // fine_heat_shr(rn, -FP_SHIFT, rad_fine_bits) = rn << (16 - k), EXACT, so
+    // the counters' currency did not move), both SIGNED, both COUNTERS ONLY (no
+    // landing moves). With them the boundary reads, per tick,
     //     Σ rad_net · FP_ONE == Σ landed + e_rad_clamp_drop_sum
     //                           + e_rad_boundary_export_sum + e_rad_floor_drop_sum
     //                           + the conversions' rounding (+ the counted rails)
@@ -767,7 +769,18 @@ public:
         // T_before) through gas_energy::deposit_railed, never a bare write —
         // and both branches book the withheld step in e_rad_clamp_drop_sum.
         const int64_t* rad_fluence = nullptr,
-        const int64_t* e_table = nullptr
+        const int64_t* e_table = nullptr,
+        // #78: THE CURRENCY `rad_net` (and `rad_fluence`, and `e_table`) are
+        // in — the fine bits of the E° table the sweep booked them from
+        // (EmissiveTable::fine_bits; the live step_tail passes the engine's,
+        // E_FINE_BITS). Every conversion out of it goes through the kit's ONE
+        // helper: the solid branch's fine_heat_shr(rn, heat_inv_shift, k) —
+        // one shift, his + k — the gas branch's staged chain at its final
+        // narrow (deposit_dT_wide_i64's fine_bits), and the two boundary
+        // counters' fine_heat_shr(rn, -FP_SHIFT, k). 0 is a plane in whole
+        // heat counts: the pre-#78 fold, bit for bit (a direct caller that
+        // folds a hand-made plane). [0, E_FINE_BITS]; outside it throws.
+        int rad_fine_bits = 0
     ) const;
 
     // --- DEBUG probe (temporary instrumentation, eos-p3fix-thermal-ceiling

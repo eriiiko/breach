@@ -64,10 +64,16 @@ static inline float det_sin(float angle) {
 // PhysicsEngine::emissive is the second caller — so the two owners cannot
 // drift (tests/test_emissive_table.py: identical entry for entry). The cache
 // dials below keep the lazy re-bake contract of emissive_table() unchanged.
+// #78: this vestigial copy FOLLOWS THE SAME BAKE, in the engine's currency
+// (E_FINE_BITS, emissive_table.h), so the two owners stay identical at equal
+// dials. Nothing marches against it (T6); P6c deletes it.
 void Raycaster::bake_emissive_table() const {
-    e_table_.resize(E_TABLE_SIZE);
-    bake_emissive_table_exact(e_table_.data(), rad_scale, kelvin_ambient,
-                              k_temp_to_kelvin);
+    // A fresh buffer, swapped in only on success (a refused bake leaves the
+    // cache as it was -- the EmissiveTable::bake idiom, #78).
+    std::vector<int64_t> fresh((size_t)E_TABLE_SIZE);
+    bake_emissive_table_exact(fresh.data(), rad_scale, kelvin_ambient,
+                              k_temp_to_kelvin, E_FINE_BITS);
+    e_table_.swap(fresh);
     e_table_scale_ = rad_scale;
     e_table_amb_   = kelvin_ambient;
     e_table_slope_ = k_temp_to_kelvin;

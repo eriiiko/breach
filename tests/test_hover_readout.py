@@ -50,6 +50,7 @@ from simulation.gas_fixed import FP_ONE_F as GAS_FP_ONE_F  # noqa: E402
 from simulation.atmosphere_fixed import FP_ONE_F as ATMO_FP_ONE_F  # noqa: E402
 from simulation.water_fixed import FP_ONE_F as WATER_FP_ONE_F  # noqa: E402
 from simulation.wall_fixed import FP_ONE_F as WALL_FP_ONE_F  # noqa: E402
+from simulation import optics_fixed as OF  # noqa: E402  (#78: the planes' currency)
 from temperature_scale import load as _load_temperature_scale  # noqa: E402
 
 H, W = 4, 5
@@ -203,6 +204,9 @@ def test_sweep_rows_come_from_the_engine_when_one_is_bound():
     eng.emissive.rad_scale = RAD_SCALE_FOR_DAMPING_TEST
     eng.emissive.kelvin_ambient = float(_TS.kelvin_ambient)
     eng.emissive.k_temp_to_kelvin = float(_TS.k_temp_to_kelvin)
+    # #78: that scale exists only in the COARSE currency -- baked fine its top
+    # would be 2^52.7, which the bake's headroom door refuses (emissive_table.h)
+    eng.emissive.fine_bits = 0
     eng.emissive.bake()
     table = np.asarray(eng.emissive.table(), dtype=np.int64)
     g = _stub_gmap()
@@ -225,7 +229,56 @@ def test_sweep_rows_come_from_the_engine_when_one_is_bound():
     assert r_hot.t_rad == pytest.approx(4 * b, abs=1e-9)
     assert r_hot.t_cap == int(eng.emissive.e_ceiling_q(int(table[b]))) / TEMP_SCALE
     assert r_hot.t_cap == pytest.approx(4 * (b + 2) - 1 / TEMP_SCALE, abs=1e-9)
-    assert r_hot.phi == pytest.approx(table[b] / TEMP_SCALE, rel=1e-12)
+    # #78: Phi is shown in heat units whatever currency the engine's table is in
+    assert r_hot.phi == pytest.approx(
+        float(OF.dequantize_heat(table[b], eng.emissive.fine_bits)) / TEMP_SCALE, rel=1e-12)
+
+
+def test_phi_reads_the_same_heat_whatever_the_tables_currency():
+    """PROPERTY (#78): the inspector shows Phi in the pre-#78 heat units whatever
+    currency the bound engine's table -- and so the sweep's rad_fluence plane --
+    is in. The same black body (the live calibration's E°[b], stored in the plane
+    in the table's own currency) reads the same Phi with the table fine
+    (E_FINE_BITS) as coarse (0), to the coarse bake's one rounding (< 1 heat
+    count), and E_inv(Phi) reads the same bucket either way.
+
+    BREAKS IF: pack_hover_readout shows the plane without converting out of the
+    fine currency (Phi 2^11 x too large on the fine table), or converts through
+    a currency other than the bound engine table's own. Validated: the readout
+    showing rad_fluence unconverted turns this red (and nothing else in this
+    file notices).
+    """
+    sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
+    import breach_physics as bp
+    from config import CFG
+    tx, ty = 1, 2
+    buckets = (0, 3, 70, 700, 3000)
+    seen = {}
+    for fb in (bp.E_FINE_BITS, 0):
+        eng = bp.PhysicsEngine()
+        eng.emissive.rad_scale = float(CFG.physics.radiation.rad_scale_derived)
+        eng.emissive.kelvin_ambient = float(_TS.kelvin_ambient)
+        eng.emissive.k_temp_to_kelvin = float(_TS.k_temp_to_kelvin)
+        eng.emissive.fine_bits = fb
+        eng.emissive.bake()
+        table = np.asarray(eng.emissive.table(), dtype=np.int64)
+        g = _stub_gmap()
+        g._physics_engine = eng
+        g._gas_energy_t_amb_raw = lambda: int(round(_TS.kelvin_ambient * TEMP_SCALE))
+        g.material[ty, tx] = MAT_WOOD
+        g.heat_atten_q[ty, tx] = 65536
+        g.dyn_heat_atten_q[ty, tx] = 65536
+        g.heat_inv_shift[ty, tx] = 3
+        seen[fb] = []
+        for b in buckets:
+            g.rad_fluence[ty, tx] = int(table[b])
+            r = pack_hover_readout(g, tx, ty, KELVIN_FN)
+            seen[fb].append((r.phi, r.t_rad))
+    assert bp.E_FINE_BITS > 0
+    for b, (phi_f, t_f), (phi_c, t_c) in zip(buckets, seen[bp.E_FINE_BITS], seen[0]):
+        assert phi_c > 0.0
+        assert abs(phi_f - phi_c) * TEMP_SCALE < 1.0, (b, phi_f, phi_c)
+        assert t_f == t_c == pytest.approx(4 * b, abs=1e-9), (b, t_f, t_c)
 
 
 def test_sweep_rows_are_still_readable_after_a_whole_simulation_step():
@@ -276,7 +329,10 @@ def test_sweep_rows_are_still_readable_after_a_whole_simulation_step():
     # non-vacuous: the neighbour of a 1263-game fire sees MORE than the bare
     # ambient ring every cell gets, so this is the fire's own radiation.
     e0 = int(np.asarray(sim.physics_runner.engine.emissive.table())[0])
-    ambient_phi = 16 * ((e0 * 4096) >> 16) / TEMP_SCALE
+    # #78: the ring's Phi is booked in the table's (fine) currency; the readout
+    # shows heat units, so the comparison converts through the same one door
+    ambient_phi = float(OF.dequantize_heat(16 * ((e0 * 4096) >> 16),
+                                           OF.sweep_fine_bits(g))) / TEMP_SCALE
     assert r.phi > ambient_phi, (r.phi, ambient_phi)
     print(f"\nafter one Simulation.step: neighbour of the fire reads Phi = {r.phi:.1f} u/t "
           f"(ambient ring alone would be {ambient_phi:.1f}), E_inv(Phi) = {r.t_rad:.1f} u, "

@@ -30,8 +30,21 @@
 #include <string>
 
 void bake_emissive_table_exact(int64_t* out, double rad_scale,
-                               double kelvin_ambient, double k_temp_to_kelvin) {
-    const double scale = rad_scale;
+                               double kelvin_ambient, double k_temp_to_kelvin,
+                               int fine_bits) {
+    // #78: the table's CURRENCY. A table 2^fine_bits finer than one heat count
+    // is the SAME bake at rad_scale · 2^fine_bits — a multiply by a power of two,
+    // which is EXACT (only the exponent moves), so the one rounding
+    // boundary below is unchanged and the reference's bake_e_table(.., k) is
+    // this table integer for integer. [0, E_FINE_BITS] is what the engine's int64
+    // headroom argument covers (emissive_table.h).
+    if (fine_bits < 0 || fine_bits > E_FINE_BITS) {
+        throw std::invalid_argument(
+            "bake_emissive_table_exact: fine_bits = " + std::to_string(fine_bits) +
+            " outside [0, E_FINE_BITS = " + std::to_string(E_FINE_BITS) + "] -- the "
+            "currencies the sweep's int64 headroom argument covers (#78)");
+    }
+    const double scale = rad_scale * (double)((int64_t)1 << fine_bits);
     const double amb   = kelvin_ambient;
     const double slope = k_temp_to_kelvin;
     // Integer-bake precondition (temperature_scale design §3a): the exact-int64
@@ -61,20 +74,35 @@ void bake_emissive_table_exact(int64_t* out, double rad_scale,
             ? INT64_MAX
             : (int64_t)((v > 0.0) ? (v + 0.5) : 0.0);   // rad_scale > 0 by contract
     }
+    // #78: the headroom door (emissive_table.h). A table the sweep's int64
+    // argument does not cover is refused here, loudly, not swept into a wrap.
+    if (out[E_TABLE_SIZE - 1] >= E_TABLE_TOP_MAX) {
+        throw std::invalid_argument(
+            "bake_emissive_table_exact: the table's top entry reaches 2^44 "
+            "(E_TABLE_TOP_MAX) -- outside the radiation sweep's int64 headroom "
+            "(#78). Bake a large scale in a coarser currency (fine_bits), or a "
+            "smaller scale.");
+    }
 }
 
 void EmissiveTable::bake() const {
-    table_.resize(E_TABLE_SIZE);
-    bake_emissive_table_exact(table_.data(), rad_scale, kelvin_ambient,
-                              k_temp_to_kelvin);
+    // #78: bake into a FRESH buffer and swap it in only on success, so a bake
+    // the doors refuse leaves the cache exactly as it was (never a refused
+    // table's entries under the previous dials' cache keys).
+    std::vector<int64_t> fresh((size_t)E_TABLE_SIZE);
+    bake_emissive_table_exact(fresh.data(), rad_scale, kelvin_ambient,
+                              k_temp_to_kelvin, fine_bits);
+    table_.swap(fresh);
     baked_scale_ = rad_scale;
     baked_amb_   = kelvin_ambient;
     baked_slope_ = k_temp_to_kelvin;
+    baked_bits_  = fine_bits;
 }
 
 const int64_t* EmissiveTable::table() const {
     if (table_.size() != (size_t)E_TABLE_SIZE || baked_scale_ != rad_scale ||
-        baked_amb_ != kelvin_ambient || baked_slope_ != k_temp_to_kelvin) {
+        baked_amb_ != kelvin_ambient || baked_slope_ != k_temp_to_kelvin ||
+        baked_bits_ != fine_bits) {
         bake();
     }
     return table_.data();

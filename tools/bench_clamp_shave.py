@@ -78,9 +78,19 @@ SCENES
   playground -- the shipped playground level with a wood tile at the 1263-game
             plateau and lit (the CUDA gate's live scene), 30 s.
 
+#78 (2026-09-25; docs/sweep_fine_heat_currency_brief_78_2026-09-25.md): the
+sweep's planes are in the engine table's FINE heat currency (2^k per heat count,
+k = its fine_bits). The replay converts exactly as the fold does -- one shift by
+his + k (optics_fixed.fine_heat_shr), the gas chain at its final narrow -- and the
+watts leave the currency through optics_fixed.dequantize_heat; the drop is priced
+in the Q16 heat currency, which k does not touch. The shadow class also reports
+the largest rad_net a shadowed net absorber booked (what row 31 still catches).
+`--fine-bits K` runs the engine's table in currency K instead of its own
+(0 == the pre-#78 arithmetic, bit for bit): #78's before/after on one build.
+
 Run:
     C:/Users/steen/anaconda3/python.exe tools/bench_clamp_shave.py [scene ...]
-        [--seconds S] [--dump PATH]
+        [--seconds S] [--dump PATH] [--fine-bits K]
 `--dump PATH` writes the run-end temperature plane, the mask of cells the clamp
 ever touched and the (c) signature counts per cell to PATH (.npz), one file per
 scene (PATH is suffixed with the scene name) -- for a paired comparison.
@@ -102,6 +112,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "tools", ROOT / "tests",
 import breach_physics as bp  # noqa: E402
 import sweep_ref_q as R  # noqa: E402
 from config import CFG  # noqa: E402
+from simulation import optics_fixed as _optics_fx  # noqa: E402  (#78: the one door)
 
 TPS = 24
 STOP_E_INV_GAME = 20          # brief §4: the unlit environment's radiation temperature
@@ -213,12 +224,18 @@ class ShaveMeter:
         n_floor_q, c_v_q, _rcv = self.engine.gas_capacity_q()
         self.c_v_q, self.n_floor_q = int(c_v_q), int(n_floor_q)
         self.t_amb_q = int(self.runner._eos_t_amb_raw())
-        self.table = [int(v) for v in np.asarray(self.engine.emissive.table())]
+        # #78: the sweep's planes and the table are in the table's FINE currency
+        # (2^k per heat count, k = the engine table's own fine_bits); the
+        # replay converts exactly as the fold does, through the one door
+        self.fine_bits = int(self.engine.emissive.fine_bits)
+        self.table = R.ETable((int(v) for v in np.asarray(self.engine.emissive.table())),
+                              fine_bits=self.fine_bits)
         self.tbl_np = np.asarray(self.table, dtype=np.int64)
         self.acc = {m: dict(absorbed=0, gain=0, drop=0, drop_shadow=0, drop_at=0,
                             drop_held=0, hits=0) for m in ("solid", "gas")}
         # shadowed (Phi < E°[0]) net absorbers: rounding the row-31 ceiling holds
-        self.shadow = {m: dict(n=0, max_T=None) for m in ("solid", "gas")}
+        # (#78: and the largest rad_net such a cell booked, in heat counts)
+        self.shadow = {m: dict(n=0, max_T=None, max_rn=0.0) for m in ("solid", "gas")}
         # net absorbers in or above the ceiling's bucket, by Fleck factor
         self.held = {m: dict(damped=0, damped_max_T=None, undamped=0, undamped_max_T=None)
                      for m in ("solid", "gas")}
@@ -291,10 +308,8 @@ class ShaveMeter:
         his = g.heat_inv_shift.astype(np.int64)
         if np.any(sm):
             r, s, t0, f = rn[sm], his[sm], T0[sm], phi[sm]
-            pos = s >= 0
-            mag = np.abs(r)
-            d = np.where(pos, mag >> np.where(pos, s, 0), mag << np.where(pos, 0, -s))
-            dTr = np.where(r < 0, -d, d)
+            # the fold's ONE conversion, one shift by his + k (#78)
+            dTr = _optics_fx.fine_heat_shr(r, s, self.fine_bits)
             t_after = np.clip(t0 + dTr, -(1 << 31), (1 << 31) - 1)
             t_cap = self._ceiling(f)
             ceiling = np.maximum(t_cap, t0)
@@ -319,7 +334,7 @@ class ShaveMeter:
             warms = t_after > t0
             absorber = warms & ~shadow & (_bucket(t0) >= _bucket(t_cap))
             self._held("solid", absorber & ~ud, absorber & ud, t0)
-            self._shadow("solid", warms & shadow, t0)
+            self._shadow("solid", warms & shadow, t0, r)
             at_ceiling = (cut > 0) & at & ud
             t_new = np.minimum(t_after, ceiling)
             sy, sx = np.nonzero(sm)
@@ -336,7 +351,8 @@ class ShaveMeter:
             r = int(rn[y, x])
             n_raw = int(pre["nb"][y, x])
             nb = max(0, n_raw)
-            dT = R.gas_rad_dT_q(r, n_raw, c_v_q=self.c_v_q, n_floor_q=self.n_floor_q)
+            dT = R.gas_rad_dT_q(r, n_raw, c_v_q=self.c_v_q, n_floor_q=self.n_floor_q,
+                                fine_bits=self.fine_bits)
             t_before = R.gas_mirror_q(int(pre["E"][y, x]), nb, self.t_amb_q)
             t_after = R.sat_add_q16(t_before, dT)
             t_cap = self._ceiling_1(phi[y, x])
@@ -361,7 +377,8 @@ class ShaveMeter:
                                     np.asarray([y]), np.asarray([x]))
                     sig_plane[y, x] = True
             if t_after > t_before and shadow:
-                self._shadow("gas", np.asarray([True]), np.asarray([t_before]))
+                self._shadow("gas", np.asarray([True]), np.asarray([t_before]),
+                             np.asarray([r]))
             elif t_after > t_before and R.e_bucket_of(t_before) >= R.e_bucket_of(t_cap):
                 # a net absorber in or above the first bucket that out-emits Phi
                 tg = np.asarray([t_before])
@@ -402,13 +419,15 @@ class ShaveMeter:
         assert int(self._e_inv(np.asarray([k]))[0]) == R.e_inv_q(k, self.table)
         self.ticks += 1
 
-    def _shadow(self, medium, mask, t0):
+    def _shadow(self, medium, mask, t0, rn):
         n = int(np.count_nonzero(mask))
         if n:
             sh = self.shadow[medium]
             sh["n"] += n
             tmax = float(np.max(t0[mask])) / 65536.0
             sh["max_T"] = tmax if sh["max_T"] is None else max(sh["max_T"], tmax)
+            rmax = float(_optics_fx.dequantize_heat(int(np.max(rn[mask])), self.fine_bits))
+            sh["max_rn"] = max(sh["max_rn"], rmax)
 
     def _held(self, medium, damped_mask, undamped_mask, t0):
         h = self.held[medium]
@@ -421,9 +440,13 @@ class ShaveMeter:
                 h[key + "_max_T"] = tmax if prev is None else max(prev, tmax)
 
 
-def run(scene_name, seconds=None, dump=None, meter_cls=ShaveMeter):
+def run(scene_name, seconds=None, dump=None, meter_cls=ShaveMeter, fine_bits=None):
     sim, default_s = SCENES[scene_name]()
     seconds = default_s if seconds is None else seconds
+    if fine_bits is not None:
+        # #78: the engine's table in another currency (the vacuum level follows
+        # the table's currency by construction -- PhysicsRunner.rad_amb_vacuum_q)
+        sim.physics_runner.engine.emissive.fine_bits = int(fine_bits)
     meter = meter_cls(sim)
     from simulation.gases import SMOKE
     from simulation.materials import MATERIAL_NAMES
@@ -440,16 +463,20 @@ def run(scene_name, seconds=None, dump=None, meter_cls=ShaveMeter):
     j = _j_per_count()
     print(f"\n=== {scene_name}: {seconds:.0f} s ({n} ticks), smoke peak density "
           f"{smoke_peak:.3f}; the replay reproduced e_rad_clamp_drop_sum and "
-          f"rad_clamp_hits exactly on every tick ===")
+          f"rad_clamp_hits exactly on every tick; the sweep's currency 2^"
+          f"{meter.fine_bits} per heat count ===")
     print(f"{'medium':>7} {'absorbed W':>12} {'net gain W':>12} {'drop W':>10} "
           f"{'drop/absorbed':>14} {'drop/net gain':>14} {'hits':>7}   drop split: "
           f"{'shadow':>7} {'at ceil':>8} {'held':>6}")
     out = {}
     for m in ("solid", "gas"):
         a = meter.acc[m]
-        # heat counts (Q16) per tick -> W; the drop is Q32 (cap * dT), so >> 16
-        absorbed_w = a["absorbed"] * j * TPS / n
-        gain_w = a["gain"] * j * TPS / n
+        # the sweep's FINE currency per tick -> heat counts -> W (#78); the drop
+        # is Q32 (cap * dT), so >> 16
+        absorbed_c = float(_optics_fx.dequantize_heat(a["absorbed"], meter.fine_bits))
+        gain_c = float(_optics_fx.dequantize_heat(a["gain"], meter.fine_bits))
+        absorbed_w = absorbed_c * j * TPS / n
+        gain_w = gain_c * j * TPS / n
         drop_w = (a["drop"] / 65536.0) * j * TPS / n
         pa = 100.0 * drop_w / absorbed_w if absorbed_w else float("nan")
         pg = 100.0 * drop_w / gain_w if gain_w else float("nan")
@@ -467,7 +494,8 @@ def run(scene_name, seconds=None, dump=None, meter_cls=ShaveMeter):
     for m in ("solid", "gas"):
         sh = meter.shadow[m]
         print(f"  {m} shadowed net absorbers (Phi < E°[0], warmed only by rounding, held "
-              f"by row 31): " + (f"{sh['n']} cell-ticks, hottest {sh['max_T']:.2f} game"
+              f"by row 31): " + (f"{sh['n']} cell-ticks, hottest {sh['max_T']:.2f} game, "
+                                 f"largest rad_net {sh['max_rn']:.4f} heat counts per tick"
                                  if sh["n"] else "none"))
         out[m + "_shadow"] = dict(sh)
     for m in ("solid", "gas"):
@@ -533,9 +561,14 @@ def main(argv):
         i = argv.index("--dump")
         dump = argv[i + 1]
         argv = argv[:i] + argv[i + 2:]
+    fine_bits = None
+    if "--fine-bits" in argv:
+        i = argv.index("--fine-bits")
+        fine_bits = int(argv[i + 1])
+        argv = argv[:i] + argv[i + 2:]
     names = [a for a in argv[1:] if not a.startswith("--")] or list(SCENES)
     for name in names:
-        run(name, seconds, dump)
+        run(name, seconds, dump, fine_bits=fine_bits)
     return 0
 
 

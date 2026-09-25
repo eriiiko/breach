@@ -19,6 +19,10 @@ WHAT TRANSCRIBES WHAT
   shr_round0         <- cpp/src/fixed_point.h:410 (the int64 twin P1 owes)
   shr_round0_signed  <- cpp/src/fixed_point.h, shr_round0_signed_i64 (M1's
                         signed-exponent twin: a thermal_mass below 1 unit)
+  fine_heat_shr      <- cpp/src/fixed_point.h fine_heat_shr (#78): THE one
+                        conversion out of a table's fine heat currency
+  ETable / FINE_BITS <- cpp/src/emissive_table.h EmissiveTable::fine_bits /
+                        E_FINE_BITS (#78): a table and the currency it is in
   floordiv_q         <- cpp/src/fixed_point.h:562
   fleck_f_solid_q    <- design v3 section 2.8 (the excess form, row 22; Q24, row 32)
   sweep_q            <- design v3 section 2.3 (gather form; body re-emission, row 25)
@@ -170,7 +174,10 @@ would break it by its own amount. With them, design 8.4's boundary reads
     sum(rad_net) << 16 == landed + e_rad_clamp_drop_sum
                           + e_rad_boundary_export_sum + e_rad_floor_drop_sum
                           + the conversions' rounding (+ the counted rails)
-and the rounding is what the one-LSB-per-cell bound covers.
+and the rounding is what the one-LSB-per-cell bound covers. (#78: `rn << 16`
+here and below means rn in that Q16 heat currency, fine_heat_shr(rn, -16, k) =
+rn << (16 - k) on a fine table -- exact, and the currency the counters were
+always in.)
 
 THE CLAMP'S CEILING -- ONE BUCKET OF HEADROOM (P5d, 2026-09-24; Erik's ruling;
 docs/ray_engine_v2_p5d_clamp_headroom_brief_2026-09-24.md). Both folds clamp at
@@ -199,6 +206,63 @@ UNCHANGED: it is still THE inverse of the table, and "radiation temperature"
 ceiling and the two 0-D properties it exists for: an undamped cell balances with
 nothing withheld, and a Fleck-damped one is still held within [T_cont - 1
 bucket, T_cont + 2 buckets] where Fleck alone runs away.
+
+THE FINE HEAT CURRENCY (#78, 2026-09-25; Erik asked for the fix on 2026-09-24,
+before #12's P7; docs/sweep_fine_heat_currency_brief_78_2026-09-25.md). At the
+live scale a room-temperature black body is only E°[0] = 125 heat counts per
+tick, so the sweep's per-ordinate terms were single-digit integers: amb_m = 7,
+the excess (E°[T] - E°[0]) * w_m >> 16 stayed 0 until bucket 3, and every floor
+lost up to one count -- ~10 K of emission-equivalent near ambient. Cells a few
+kelvin warm read as net ABSORBERS, could not shed a small excess, and the clamp
+deleted the spurious gain (the P5d bench's "shadow class"; the literature's
+STAGNATION, Croci & Giles 2023; Kloewer et al. 2020 rescale so increments sit
+well above the quantum -- which is the ruled fix, option 1 on #78).
+
+So a table now carries its CURRENCY: `ETable.fine_bits` = k means its integers
+are 2^k heat counts per heat count. The live table is baked FINE,
+`bake_e_table(RAD_SCALE_LIVE, fine_bits=FINE_BITS)` -- rad_scale * 2^k, a power
+of two, exact in double, so the bake still rounds ONCE -- and Phi, the ambient
+level, and the four sweep planes are all in that currency. The SWEEP is
+unit-agnostic and did not change. What changed is every reader that turns a
+table value or a sweep plane back into heat counts: each converts ONCE, through
+ONE helper, `fine_heat_shr(x, s, k)` = shr_round0_signed(x, s + k) -- symmetric
+(+x and -x lose the same), exact for s + k < 0 -- the transcription of
+fixed_point.h's kit helper of the same name:
+  * the Fleck pre-pass's SOLID arm: L = fine_heat_shr((a * ex) >> 16, his, k);
+  * the fold's SOLID branch: dT = fine_heat_shr(rn, his, k) -- one shift, his + k;
+  * the boundary counters, in the heat currency x 2^16: fine_heat_shr(rn, -16, k),
+    i.e. rn << (16 - k), EXACT (k <= 16);
+and the GAS chain converts at ONE defined point, its final narrow:
+deposit_dT_wide_i64(x, recip_N, recip_cv, k) =
+mul128_shr(mul128_shr(x, recip_N, 16), recip_cv, 32 + k) -- the pre-pass's gas
+arm and the fold's gas branch (gas_rad_dT_q) both, so the damping and the
+landing stay one arithmetic. Folding k into the LAST narrow keeps the fine bits
+through the chain -- the conversion then costs under one temperature LSB for the
+final floor plus recip_cv / 2^(32 + k) (~0.06 LSB at the shipped c_v) for the
+first, where a whole-count rounding at the start would cost ~130 LSB -- and
+keeps the int64 stage-2 result the size it was at k = 0 (at the most extreme
+currency it would be 2^71.5 if converted after an int64 narrow at 32 -- gate 11).
+
+What k does NOT touch: e_inv_q / e_ceiling_q (they compare Phi and E° in one
+unit), cap_real_q and every counter priced at it (a whole number of temperature
+LSBs times a capacity), the Fleck factor f (a ratio), design row 31's Phi <
+E°[0] -> 0 (UNCHANGED, the brief's one-change-at-a-time rule: the ambient
+field's Phi = 16 * (E°_k[0] >> 4) sits up to 15 fine counts below E°_k[0], so
+near-ambient cells still take that branch -- gate 17 measures what it catches).
+
+The DEFAULT table E stays COARSE (fine_bits = 0), on purpose. It is the
+RESOLVING scale (M3): its physics -- 5.1427e-5 heat counts per K^4, where the
+damping, the clamp and the equilibria engage inside the gates' scenes -- cannot
+be expressed in the fine currency inside int64 (its top would be 2^52.7 and
+stream * a 2^68.7), and every gate that exercises that physics keeps its
+integers exactly. A plain list of E° values is read as coarse (fine_bits_of()
+defaults to 0): every pre-#78 caller is unchanged, and a caller that copies a
+FINE engine table into a plain list must wrap it (ETable(..., fine_bits=...)),
+or its replay disagrees with the engine loudly. The engine's table records its
+currency the same way (EmissiveTable.fine_bits, default E_FINE_BITS = FINE_BITS
+here; tests/test_ray_engine_v2_integer_reference.py holds the two equal).
+Gates 11 (headroom at the fine live scale) and 17 (near-ambient exchange is
+resolved) are #78's; gates 12, 14, 15 and 16 run on the fine live table.
 """
 from __future__ import annotations
 
@@ -236,6 +300,16 @@ RAD_SCALE = 5.1427e-5
 # number read off this file without `table=E_LIVE` is on the resolving scale --
 # which is how M2 quoted f = 0.013 from a table the game never runs (M2b).
 RAD_SCALE_LIVE = 1.6533e-08
+# THE SWEEP'S FINE HEAT CURRENCY (#78): the live table is baked 2^FINE_BITS finer
+# than one heat count (E_LIVE below). The engine's ONE constant is
+# cpp/src/emissive_table.h E_FINE_BITS; tests/test_ray_engine_v2_integer_
+# reference.py holds this twin equal to it through the binding. 11 is the largest
+# k whose fine live table stays inside design v3's int64 bounds (gate 11: per-cell
+# sums < 2^46, plain products < 2^58) -- ~0.66x the resolving table's magnitude.
+FINE_BITS = 11
+# The largest currency the reference will bake: the boundary counters' exact
+# left shift rn << (16 - k) needs k <= 16. (The ENGINE admits [0, E_FINE_BITS].)
+FINE_BITS_MAX = 16
 K_AMB = 293                      # config.toml:813   kelvin_ambient (integer-valued)
 K_SLOPE = 1                      # config.toml:814   k_temp_to_kelvin (G12: the x1 map)
 E_TABLE_SIZE = 4000              # raycaster.h:203   T_game in [0, 16000)
@@ -463,6 +537,24 @@ def shr_round0_signed(x: int, s: int) -> int:
     return shr_round0(x, s) if s >= 0 else x << (-s)
 
 
+def fine_heat_shr(x: int, s: int, fine_bits: int) -> int:
+    """fixed_point.h `fine_heat_shr` (#78) -- THE one conversion out of a table's
+    fine heat currency. `x` is in the currency of a table 2^fine_bits finer than
+    one heat count (a sweep plane, an E° value or a product of one with a Q16
+    coefficient); the result is x / 2^(s + fine_bits) in HEAT-COUNT terms divided
+    by 2^s, rounded toward zero, SYMMETRIC (+x and -x lose the same magnitude):
+
+        s = his        a thermal solid's temperature step (Q16.16), one shift his + k
+        s = 0          whole heat counts
+        s = -16        the Q16 heat currency the counters are in, rn << (16 - k),
+                       EXACT while k <= 16
+
+    It IS shr_round0_signed at the exponent s + fine_bits, so at fine_bits == 0
+    it is every pre-#78 conversion, value for value -- which is what keeps a
+    coarse table (the resolving default E) bit-identical across #78."""
+    return shr_round0_signed(x, s + fine_bits)
+
+
 def floordiv_q(n: int, d: int) -> int:
     """fixed_point.h:562. Python's // already floors; the C++ correction branch
     is unreachable for the Fleck operands (both strictly positive)."""
@@ -536,12 +628,22 @@ def mul128_shr(a: int, b: int, shift: int) -> int:
     return (a * b) >> shift
 
 
-def deposit_dT_wide_i64(deposit: int, recip_n_q: int, recip_cv: int) -> int:
+def deposit_dT_wide_i64(deposit: int, recip_n_q: int, recip_cv: int,
+                        fine_bits: int = 0) -> int:
     """fixed_point.h deposit_dT_wide_i64 -- design 2.8's STAGED chain, two
-    narrows: mul128_shr(mul128_shr(deposit, recip_n, 16), recip_cv, 32). The
+    narrows: mul128_shr(mul128_shr(deposit, recip_n, 16), recip_cv, 32 + k). The
     chain the gas arm of the Fleck pre-pass (P5b) and P5c's radiative gas
-    deposit convert heat counts to a Q16.16 temperature through."""
-    return mul128_shr(mul128_shr(deposit, recip_n_q, 16), recip_cv, RECIP_SHIFT)
+    deposit convert heat counts to a Q16.16 temperature through.
+
+    #78: `deposit` may be in a table's FINE currency (2^fine_bits per heat
+    count); the chain then converts at ONE defined point, its FINAL narrow,
+    32 + fine_bits -- the gas chain's one conversion, for the pre-pass's gas arm
+    and the fold's gas branch alike. For the non-negative operands every caller
+    passes (magnitude first, the sign after) this equals the floor of the exact
+    chain divided by 2^fine_bits (nested floors compose), and fine_bits == 0 is
+    the pre-#78 chain."""
+    return mul128_shr(mul128_shr(deposit, recip_n_q, 16), recip_cv,
+                      RECIP_SHIFT + fine_bits)
 
 
 # THE GAS CURRENCY, in the integer forms the temperature fold divides by (P5b).
@@ -580,31 +682,64 @@ def validate_gas_capacity(c_v_q: int, n_floor_q: int):
 # --------------------------------------------------------------------------- #
 # The emissive table and its inverse (design section 2.6).
 # --------------------------------------------------------------------------- #
+class ETable(list):
+    """An E° table AND the currency its integers are in (#78).
+
+    `fine_bits` = k: every entry, and everything the sweep books from it (Phi,
+    the four planes, the ambient level), is 2^k per heat count. 0 is the pre-#78
+    currency -- whole heat counts. It is a list in every other respect, so every
+    function that indexes a table is unchanged; the readers that CONVERT read
+    `fine_bits_of(table)`. NOTE a slice or `list(t)` is a plain list again (read
+    as coarse): a caller that copies a fine table must wrap the copy."""
+
+    def __init__(self, values=(), fine_bits: int = 0):
+        super().__init__(values)
+        self.fine_bits = int(fine_bits)
+
+
+def fine_bits_of(table) -> int:
+    """The currency of `table`: its `fine_bits` when it records one, else 0 -- a
+    plain list of E° values is in whole heat counts, as every table was before
+    #78. The one place a reader asks which currency it holds."""
+    return int(getattr(table, "fine_bits", 0))
+
+
 def bake_e_table(rad_scale: float = RAD_SCALE, kelvin_ambient: int = K_AMB,
-                 slope: int = K_SLOPE) -> list:
+                 slope: int = K_SLOPE, fine_bits: int = 0) -> ETable:
     """raycaster.cpp:62-97 verbatim: bucket midpoints, K^4 by repeated int64
     multiplication, ONE double boundary (`(double)k4 * scale + 0.5`).
 
     The integer-bake precondition (both Kelvin dials whole) is a hard invariant
     in the engine; it is asserted here for the same reason.
+
+    #78: `fine_bits` = k bakes the table 2^k finer than one heat count, at the
+    scale rad_scale * 2^k -- a power of two, so the scale is EXACT in double and
+    the bake still rounds once (emissive_table.cpp does the same multiply). The
+    result records its currency (ETable.fine_bits).
     """
     assert float(kelvin_ambient).is_integer() and float(slope).is_integer(), (
         "the exact int64 bake requires integer-valued Kelvin dials")
+    if not (0 <= fine_bits <= FINE_BITS_MAX):
+        raise ValueError(f"fine_bits = {fine_bits} outside [0, {FINE_BITS_MAX}]: the "
+                         f"counters' exact left shift rn << (16 - k) needs k <= 16")
     amb_i, slope_i = int(kelvin_ambient), int(slope)
-    tbl = []
+    scale = rad_scale * float(1 << fine_bits)     # exact: a power-of-two scaling
+    tbl = ETable(fine_bits=fine_bits)
     for t in range(E_TABLE_SIZE):
         T_mid = 4 * t + 2
         K = amb_i + slope_i * T_mid
         k2 = K * K
         k4 = k2 * k2
-        v = float(k4) * rad_scale
+        v = float(k4) * scale
         tbl.append(int(v + 0.5) if v > 0.0 else 0)
     return tbl
 
 
-E = bake_e_table()                           # the RESOLVING table (the default)
+E = bake_e_table()                           # the RESOLVING table (the default; coarse)
 E0 = E[0]
-E_LIVE = bake_e_table(rad_scale=RAD_SCALE_LIVE)  # the sweep's live table (M3)
+# The sweep's live table (M3), in the FINE currency the engine bakes it in (#78):
+# E°[0] = 256 431 = 2^11 x 125.2 heat counts.
+E_LIVE = bake_e_table(rad_scale=RAD_SCALE_LIVE, fine_bits=FINE_BITS)
 
 
 def e_bucket_of(T_q: int) -> int:
@@ -690,17 +825,21 @@ def e_ceiling_q(phi: int, table=E) -> int:
 # --------------------------------------------------------------------------- #
 def fleck_L_solid_q(T_q: int, a_q: int, his: int, table=E, e_ref: int = None) -> int:
     """The solid branch of L_q: the cell's FREE excess-emission loss this tick,
-    in Q16.16 temperature.  L_q = shr_round0_signed((a*(E°[T] - E°[0])) >> 16, his).
+    in Q16.16 temperature.  L_q = fine_heat_shr((a*(E°[T] - E°[0])) >> 16, his, k).
 
     SIGNED in `his` since M1: a row lighter than one thermal_mass unit carries a
     negative exponent, and a thin panel's free emission is correspondingly
     LARGER in temperature units. Identical to the old `shr_round0` form on every
-    non-negative `his`."""
+    non-negative `his`.
+
+    #78: the excess is in the table's currency, so the ONE conversion is
+    fine_heat_shr at his: a single symmetric shift by his + k (on a coarse
+    table, exactly the pre-#78 expression)."""
     ref = table[0] if e_ref is None else e_ref
     ex = table[e_bucket_of(T_q)] - ref
     if ex < 0:
         ex = 0
-    return shr_round0_signed((a_q * ex) >> 16, his)
+    return fine_heat_shr((a_q * ex) >> 16, his, fine_bits_of(table))
 
 
 def fleck_D_q(T_abs_q: int, L_q: int, alpha_floor: str = ALPHA_FLOOR_DEFAULT) -> int:
@@ -917,13 +1056,18 @@ def fleck_L_gas_q(T_q: int, a_gas_q: int, n_bulk_raw: int, *,
     fleck_f_gas_q); P5a transcribed it to re-derive the gas stiffness
     g = 4 L / T_abs at the live scale and c_v (p5a_gas_stiffness_study.py).
     `c_v_q` / `n_floor_q` are the fold's currency (C_V_Q_LIVE / N_FLOOR_Q_LIVE
-    by default); `n_bulk_raw` is the cell's BULK count, the N its capacity is."""
+    by default); `n_bulk_raw` is the cell's BULK count, the N its capacity is.
+
+    #78: on a fine table the chain converts at its final narrow (the table's
+    fine_bits) -- the SAME conversion gas_rad_dT_q lands the fold's gas deposit
+    through, so the damping and the landing stay one arithmetic."""
     ref = table[0] if e_ref is None else e_ref
     ex = table[e_bucket_of(T_q)] - ref
     if ex < 0:
         ex = 0
     recip_n, recip_cv = gas_capacity_recips(n_bulk_raw, c_v_q, n_floor_q)
-    return deposit_dT_wide_i64((a_gas_q * ex) >> 16, recip_n, recip_cv)
+    return deposit_dT_wide_i64((a_gas_q * ex) >> 16, recip_n, recip_cv,
+                               fine_bits_of(table))
 
 
 def fleck_f_gas_q(T_q: int, a_gas_q: int, n_bulk_raw: int, *,
@@ -1009,6 +1153,11 @@ class SweepResult:
     max_product: int = 0          # the largest intermediate product (headroom)
     min_stream: int = 0           # positivity: must never be negative
     max_fleck_product: int = 0    # max (ex_m * f_q24), the widest Q24 product (G11)
+    # #78: every PLAIN int64 product the engine forms in the sweep loop (the
+    # splits io * s_m, the leak i_in * k, stream * a / b, ex_cell * w_m, src * a)
+    # -- i.e. max_product WITHOUT the Fleck product, which the engine forms in
+    # 128 bits (mul128_shr). Gate 11 bounds it by design v3's 2^58.
+    max_plain_product: int = 0
     # P5a: the extinction planes the sweep actually READ (a, d with the gas
     # term folded in); None when the scene carried no gas. For the gates'
     # non-vacuity checks -- "a gas cell really absorbed".
@@ -1218,6 +1367,7 @@ def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
     min_stream = None
     max_product = 0
     max_fleck_product = 0
+    max_plain_product = 0
     for (mu, eta) in ordinates(n_ord, half_offset):
         x_major, s_m, sx, sy = ordinate_constants(mu, eta, transport)
         store = [[None] * w for _ in range(h)]
@@ -1306,6 +1456,11 @@ def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
                 max_product = p
             if fleck_product > max_fleck_product:
                 max_fleck_product = fleck_product
+            pp = max(abs(io_a * s_m), abs(io_b * s_m), abs(i_in * ki), abs(amb_m * ki),
+                     abs(stream * ai), abs(stream * bi), abs(ex_cell[y][x] * w_m),
+                     abs(src * ai), abs(amb_m * bi), abs(i_out * s_m))
+            if pp > max_plain_product:
+                max_plain_product = pp
 
     res.max_stream = max_stream
     res.min_stream = 0 if min_stream is None else min_stream
@@ -1313,6 +1468,7 @@ def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
     res.max_fluence = max(v for row in rad_flu for v in row)
     res.max_product = max_product
     res.max_fleck_product = max_fleck_product
+    res.max_plain_product = max_plain_product
     return res
 
 
@@ -1431,7 +1587,7 @@ def fold_pass1_solid(T, rad_net, rad_fluence, his, ts, counters: FoldCounters, *
     """The radiative sub-step of Pass 1, for thermal solids, IN ORDER.
 
         t_before = T[i]
-        dTr      = shr_round0_signed(rad_net[i], heat_inv_shift[i])
+        dTr      = fine_heat_shr(rad_net[i], heat_inv_shift[i], k)   # k: the table's currency (#78)
         T[i]     = sat_add_q16(T[i], dTr)                      # T_after
         T[i]     = min(T_after, max(t_before, e_ceiling_q(Phi)))  # the clamp (row 21, P5d)
         rails: T_MAX_PHYS, then the low rail at 0
@@ -1451,8 +1607,12 @@ def fold_pass1_solid(T, rad_net, rad_fluence, his, ts, counters: FoldCounters, *
     `ceiling_fn(phi, table)` replaces it ONLY so a gate can MEASURE a ceiling
     this file does not ship -- e_inv_q, the pre-P5d low edge, or an exact inverse
     -- the alpha_floor / fleck_f_q(shift=16) idiom; None is the shipped form.
+
+    #78: `rad_net` is in `table`'s currency (the sweep booked it from that
+    table), so the conversion is fine_heat_shr at his -- ONE shift, his + k.
     """
     cfn = e_ceiling_q if ceiling_fn is None else ceiling_fn
+    fb = fine_bits_of(table)
     h, w = len(T), len(T[0])
     for y in range(h):
         for x in range(w):
@@ -1465,7 +1625,7 @@ def fold_pass1_solid(T, rad_net, rad_fluence, his, ts, counters: FoldCounters, *
                 continue
             s = his if isinstance(his, int) else his[y][x]
             t_before = T[y][x]
-            dTr = shr_round0_signed(rn, s)
+            dTr = fine_heat_shr(rn, s, fb)
             t_after = sat_add_q16(t_before, dTr) if int32_sat else t_before + dTr
             t_new = t_after
             # The books' capacity, in the ENGINE's own normalisation:
@@ -1544,8 +1704,13 @@ def fold_pass1_gas(T, Eg, rad_net, rad_fluence, n_bulk, ts, counters: FoldCounte
 
     P5d: the ceiling is `e_ceiling_q`; `ceiling_fn` is fold_pass1_solid's
     measuring knob (None = the shipped form).
+
+    #78: `rad_net` is in `table`'s currency. The chain converts at its final
+    narrow (gas_rad_dT_q's fine_bits) and both boundary counters take rn in the
+    Q16 heat currency through fine_heat_shr(rn, -16, k) = rn << (16 - k), exact.
     """
     cfn = e_ceiling_q if ceiling_fn is None else ceiling_fn
+    fb = fine_bits_of(table)
     h, w = len(T), len(T[0])
     for y in range(h):
         for x in range(w):
@@ -1558,17 +1723,19 @@ def fold_pass1_gas(T, Eg, rad_net, rad_fluence, n_bulk, ts, counters: FoldCounte
                 continue
             if acct is not None and not acct[y][x]:
                 # outside the books: exported with the boundary, never folded
-                counters.e_rad_boundary_export_sum += rn << 16
+                counters.e_rad_boundary_export_sum += fine_heat_shr(rn, -16, fb)
                 continue
             nb = n_bulk[y][x] if n_bulk[y][x] > 0 else 0
-            dT = gas_rad_dT_q(rn, n_bulk[y][x], c_v_q=c_v_q, n_floor_q=n_floor_q)
+            dT = gas_rad_dT_q(rn, n_bulk[y][x], c_v_q=c_v_q, n_floor_q=n_floor_q,
+                              fine_bits=fb)
             e = Eg[y][x]
             t_before = gas_mirror_q(e, nb, t_amb_q)
             t_target = sat_add_q16(t_before, dT)
             if n_bulk[y][x] < n_floor_q:
                 # the floored chain lands ~N / n_floor of rn: the rest, counted
                 counters.e_rad_floor_drop_sum += (
-                    (rn << 16) - (t_target - t_before) * cap_real_q(False, 0, nb, c_v_q))
+                    fine_heat_shr(rn, -16, fb)
+                    - (t_target - t_before) * cap_real_q(False, 0, nb, c_v_q))
             if clamp_enabled:
                 t_cap = cfn(rad_fluence[y][x], table)
                 ceiling = t_cap if t_cap > t_before else t_before
@@ -1697,6 +1864,9 @@ def cell_rad_net_q(T_q: int, phi: int, a_q: int, his: int, *, table=E,
     per-ordinate truncations folded into one; it differs from a full sweep by at
     most N counts, which is why the sweep gates run on the sweep and only the
     stability tables run here.
+
+    #78: Phi, the table and the result are in `table`'s currency; the Fleck L is
+    fleck_L_solid_q's (the pre-pass's own conversion), never re-derived here.
     """
     ref = table[0] if e_ref is None else e_ref
     ex = table[e_bucket_of(T_q)] - ref
@@ -1704,7 +1874,7 @@ def cell_rad_net_q(T_q: int, phi: int, a_q: int, his: int, *, table=E,
         ex = 0
     f_q = F_ONE
     if fleck:
-        f_q = fleck_f_q(T_q, shr_round0_signed((a_q * ex) >> 16, his),
+        f_q = fleck_f_q(T_q, fleck_L_solid_q(T_q, a_q, his, table, e_ref),
                         alpha_floor=alpha_floor)
     src = ref + ((ex * f_q) >> F_SHIFT)
     return ((phi * a_q) >> 16) - ((src * a_q) >> 16)
@@ -1740,18 +1910,20 @@ def cell_march(T0_q: int, phi: int, a_q: int, his: int, ticks: int, *,
 # count (0-D: nothing flows in or out).
 # --------------------------------------------------------------------------- #
 def gas_rad_dT_q(rn: int, n_bulk_raw: int, *, c_v_q: int = C_V_Q_LIVE,
-                 n_floor_q: int = N_FLOOR_Q_LIVE) -> int:
+                 n_floor_q: int = N_FLOOR_Q_LIVE, fine_bits: int = 0) -> int:
     """A gas cell's signed rad_net (heat counts) as a Q16.16 temperature step,
     through the capacity chain the fold's gas deposit divides by, MAGNITUDE
     THEN SIGN (design 2.8 / 6.3), so +x and -x lose equal magnitude -- the
     shr_round0 symmetry idiom, since the staged chain floors:
 
-        dT = sign(rn) * deposit_dT_wide_i64(|rn|, recip_N, recip_cv)
+        dT = sign(rn) * deposit_dT_wide_i64(|rn|, recip_N, recip_cv, k)
 
     The conversion P5c's Pass-1 gas branch owes (there it lands as an energy
-    through the seam, not as a temperature); here it is the 0-D model's step."""
+    through the seam, not as a temperature); here it is the 0-D model's step.
+    #78: `fine_bits` is the currency of the table rn was booked from; the chain
+    converts at its final narrow (0: the pre-#78 chain)."""
     recip_n, recip_cv = gas_capacity_recips(n_bulk_raw, c_v_q, n_floor_q)
-    mag = deposit_dT_wide_i64(-rn if rn < 0 else rn, recip_n, recip_cv)
+    mag = deposit_dT_wide_i64(-rn if rn < 0 else rn, recip_n, recip_cv, fine_bits)
     return -mag if rn < 0 else mag
 
 
@@ -1801,7 +1973,8 @@ def gas_cell_march(T0_q: int, phi: int, a_q: int, n_bulk_raw: int, ticks: int, *
                                 n_floor_q=n_floor_q, table=table, e_ref=e_ref,
                                 fleck=fleck, alpha_floor=alpha_floor)
         T = sat_add_q16(T, gas_rad_dT_q(rn, n_bulk_raw, c_v_q=c_v_q,
-                                        n_floor_q=n_floor_q))
+                                        n_floor_q=n_floor_q,
+                                        fine_bits=fine_bits_of(table)))
         out.append(T)
         if T + (K_AMB << 16) <= 0:
             break
@@ -1855,12 +2028,15 @@ def cool_exact_zero_sky(T0: float, seconds: float, a: float, his: int) -> float:
     return (k0 ** -3 + 3.0 * c * seconds) ** (-1.0 / 3.0) - K_AMB
 
 
-def e_inv_float(phi: float, rad_scale: float = RAD_SCALE) -> float:
+def e_inv_float(phi: float, rad_scale: float = RAD_SCALE,
+                fine_bits: int = 0) -> float:
     """The continuous inverse of E°, for reporting the exact equilibrium beside
-    the table's bucket-quantized one."""
+    the table's bucket-quantized one. `rad_scale` is the PHYSICAL calibration
+    (heat counts per K^4); `fine_bits` the currency `phi` is in (#78: a Phi from
+    E_LIVE is 2^FINE_BITS per heat count)."""
     if phi <= 0.0:
         return 0.0
-    return (phi / rad_scale) ** 0.25 - K_AMB
+    return (phi / float(1 << fine_bits) / rad_scale) ** 0.25 - K_AMB
 
 
 # --------------------------------------------------------------------------- #

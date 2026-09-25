@@ -76,11 +76,12 @@ COUNTERS = ("t_max_phys_hits", "t_low_rail_hits", "rad_clamp_hits",
             "e_rad_boundary_export_sum", "e_rad_floor_drop_sum")
 # A cell's |rad_net| never exceeds the table's top black body -- it absorbs at
 # most a * Phi and emits at most a * E°(T), and the sweep's fluence is bounded by
-# its hottest emitter -- i.e. E°[3999] ~ 2^30 on the live table. The two
-# boundary counters sum rn << 16 over cells, so a fixture stressing the chain at
-# 2^44 on cells THEY read would leave int64 within a few dozen cells; those cells
-# are capped at 2^34 (a 16x margin over the physical bound). The 2^44 stress
-# stays on every cell the counters do not read.
+# its hottest emitter -- i.e. E°[3999] ~ 2^30 heat counts on the live table (#78:
+# 2^41 in its fine currency). The two boundary counters sum rn in the Q16 heat
+# currency over cells (rn << 16 in whole counts; rn << (16 - k) in the fine
+# currency), so a fixture stressing the chain at 2^44 on cells THEY read could
+# leave int64 within a few dozen cells on a coarse table; those cells are capped
+# at 2^34. The 2^44 stress stays on every cell the counters do not read.
 RN_PHYS_MAX = 1 << 34
 
 
@@ -147,7 +148,10 @@ def test_cpp_fold_equals_the_reference_on_gas_and_solids_bit_for_bit(table_name,
     in any step -- the staged chain or its floor, the mirror as T_before, the
     energy form of the clamp, the rail -- or reaches a non-accountable cell, or
     the drop is priced at anything but cap_real, or a boundary cell's rad_net or
-    a floored cell's remainder is booked differently (or not at all).
+    a floored cell's remainder is booked differently (or not at all). #78: on the
+    live table rn is in the fine currency -- validated: the solid branch's
+    conversion without k, and the gas chain converting before its final narrow,
+    each turn the live variants red.
     """
     live = table_name == "live"
     tbl = live_table() if live else reference_table()
@@ -207,13 +211,18 @@ def test_cpp_fold_equals_the_reference_on_gas_and_solids_bit_for_bit(table_name,
                 e_rad_boundary_export_sum=c.e_rad_boundary_export_sum,
                 e_rad_floor_drop_sum=c.e_rad_floor_drop_sum)
     assert d == want, (d, want)
-    # the boundary counters: row 2 exported whole, row 0's thin cells booked
-    assert c.e_rad_boundary_export_sum == sum(int(r) << 16 for r in r3) > 0
+    # the boundary counters: row 2 exported whole, row 0's thin cells booked --
+    # #78: rn is in the table's currency, the counters in the Q16 heat currency,
+    # through the one conversion (on the live table rn << 5, on the resolving << 16)
+    fb = R.fine_bits_of(tref)
+    assert c.e_rad_boundary_export_sum == sum(R.fine_heat_shr(int(r), -16, fb)
+                                              for r in r3) > 0
     assert c.e_rad_floor_drop_sum != 0, "no floored cell folded: vacuous"
     if clamp:
         gas_hits = sum(1 for i in range(n)
                        if R.sat_add_q16(T_all[0, i], R.gas_rad_dT_q(int(rn_all[0, i]),
-                                                                    int(nb_all[0, i])))
+                                                                    int(nb_all[0, i]),
+                                                                    fine_bits=fb))
                        > max(R.e_ceiling_q(int(phi_all[0, i]), tref), int(T_all[0, i])))
         assert 0 < gas_hits < n and c.rad_clamp_hits > gas_hits, (gas_hits, c.rad_clamp_hits)
         assert c.e_rad_clamp_drop_sum > 0
@@ -255,21 +264,41 @@ class _EngineScene:
         return rn, d, before_T, before_E
 
 
+def _thin_smoke_shield():
+    """G15's smoke shield with the smoke layer at the n_floor_heat BULK density:
+    the same absorber, 100x less heat capacity -- a smoke layer the 1263-game
+    wall genuinely OVER-DRIVES (#78: at ambient density the shield never reaches
+    its cap once the sweep's per-ordinate floors are resolved -- the P5c
+    binding there was that artifact -- so the clamp's non-vacuity needs a scene
+    where radiation really carries a cell past its ceiling)."""
+    sc = G._shield_scene(R.quant(0.2))[0]
+    for y in range(len(sc.T)):
+        for x in range(len(sc.T[0])):
+            if sc.gas[0][y][x] > 0:
+                sc.n_bulk[y][x] = R.N_FLOOR_Q_LIVE
+    sc.Eg = R.seed_gas_energy(sc.T, sc.n_bulk, sc.ts)
+    return sc
+
+
 def _scenes():
     return {"sealed smoky room": (G._sealed_smoky_room(7, 9, smoke_q=R.quant(0.06),
                                                        hq=R.quant(5.0),
                                                        T_smoke_game=G.T_SRC_GAME), 24),
-            "smoke shield": (G._shield_scene(R.quant(0.2))[0], 24)}
+            "smoke shield": (G._shield_scene(R.quant(0.2))[0], 24),
+            "thin smoke shield": (_thin_smoke_shield(), 24)}
 
 
-@pytest.mark.parametrize("name", ["sealed smoky room", "smoke shield"])
+@pytest.mark.parametrize("name", ["sealed smoky room", "smoke shield", "thin smoke shield"])
 def test_cpp_sweep_and_fold_follow_the_reference_scene_tick_for_tick(name):
     """PROPERTY (gate 0 across the whole tick, P5c): the C++ sweep feeding the
     C++ fold, on G15's two scenes on the LIVE table -- a sealed room of hot
     absorbing smoke, and a held 1263-game wall shining through a smoke layer at
-    a held target -- reproduces the reference Scene tick for tick: every
+    a held target -- and (#78) the same shield with THIN smoke (the n_floor bulk
+    density: over-driven) reproduces the reference Scene tick for tick: every
     temperature, every stored gas energy, and the counters. Non-vacuous: the
-    smoke's temperature moves, and on the shield scene the clamp binds.
+    smoke's temperature moves, and on the thin shield the clamp binds (#78: on
+    the ambient-density shield it no longer does -- its P5c binding was the
+    per-ordinate floors' artifact, gone with the fine currency).
 
     BREAKS IF: the engine's fold or sweep diverges from the reference anywhere
     in a multi-tick scene (a divergence one tick cannot show -- a mirror left
@@ -291,11 +320,11 @@ def test_cpp_sweep_and_fold_follow_the_reference_scene_tick_for_tick(name):
                   "e_rad_boundary_export_sum", "e_rad_floor_drop_sum"):
             assert got[k] == getattr(c, k), (t, k, got[k], getattr(c, k))
     assert not np.array_equal(eng.T[gas], T0[gas]), "the smoke never moved: vacuous"
-    if name == "smoke shield":
+    if name == "thin smoke shield":
         assert eng.solver.rad_clamp_hits > 0, "the clamp never bound: vacuous"
 
 
-@pytest.mark.parametrize("name", ["sealed smoky room", "smoke shield"])
+@pytest.mark.parametrize("name", ["sealed smoky room", "smoke shield", "thin smoke shield"])
 def test_the_sweep_fold_boundary_is_bounded_and_counted_on_the_engine(name):
     """PROPERTY (f), design §8.4 on the ENGINE's own planes and counters: on
     every tick of G15's two scenes (C++ sweep -> C++ fold; a cooling room where
@@ -305,8 +334,13 @@ def test_the_sweep_fold_boundary_is_bounded_and_counted_on_the_engine(name):
     withheld by at most the conversions' own truncation -- < one temperature
     LSB x C per thermal solid (shr_round0), the staged chain's declared
     precision per gas cell (sweep_ref_q_gates._chain_bound) -- with no rail
-    engaged, so nothing else crosses the boundary uncounted. On the shield the
-    counted drop is non-zero (the clamp binds), so its CURRENCY is in the sum.
+    engaged, so nothing else crosses the boundary uncounted. On the THIN smoke
+    shield the counted drop is non-zero (the clamp binds), so its CURRENCY is in
+    the sum. #78: the sweep's rn is in the table's fine currency and the bound is
+    restated there -- the solid conversion is one shift by his + k (< one
+    temperature LSB x C), the gas chain converts at its final narrow (its stage-1
+    floor now costs recip_cv / 2^(32 + k) of an LSB, not ~130: _chain_bound(..,
+    k) is 2 C where it was 132 C), i.e. the temperature field's own resolution.
     (These sealed scenes hold every gas cell at ambient density and have no
     boundary cells, so the two other exits -- e_rad_boundary_export_sum,
     e_rad_floor_drop_sum -- stay 0 here; they are subtracted all the same, and
@@ -319,6 +353,7 @@ def test_the_sweep_fold_boundary_is_bounded_and_counted_on_the_engine(name):
     """
     sc = _scenes()[name][0]
     eng = _EngineScene(sc)
+    fb = int(eng.table.fine_bits)                      # #78: the planes' currency
     worst = 0.0
     drops = 0
     for _t in range(24):
@@ -338,14 +373,15 @@ def test_the_sweep_fold_boundary_is_bounded_and_counted_on_the_engine(name):
                 dE = int(eng.E[y, x]) - int(bE[y, x])
                 assert dE % N == 0, "the gas landing is not a whole step of N"
                 landed += (dE // N) * cap
-                bound += G._chain_bound(r, N, cap, R.gas_rad_dT_q(r, N))
-        resid = ((int(rn.astype(object).sum()) << 16) - landed - d["e_rad_clamp_drop_sum"]
+                bound += G._chain_bound(r, N, cap, R.gas_rad_dT_q(r, N, fine_bits=fb), fb)
+        resid = (R.fine_heat_shr(int(rn.astype(object).sum()), -16, fb) - landed
+                 - d["e_rad_clamp_drop_sum"]
                  - d["e_rad_boundary_export_sum"] - d["e_rad_floor_drop_sum"])
         assert abs(resid) <= bound, (resid, bound)
         worst = max(worst, abs(resid) / bound if bound else 0.0)
         drops += d["e_rad_clamp_drop_sum"]
     assert worst > 0.0, "the bound was never approached at all: vacuous"
-    if name == "smoke shield":
+    if name == "thin smoke shield":
         assert drops > 0, "the clamp never withheld anything: the drop is vacuous here"
     print(f"\n8.4 boundary ({name}): worst |resid| / bound = {worst:.3f}, "
           f"counted drop {drops}")
@@ -468,7 +504,10 @@ class _FoldReplay:
         n_floor_q, c_v_q, _rcv = eng.gas_capacity_q()
         self.n_floor_q, self.c_v_q = int(n_floor_q), int(c_v_q)
         self.t_amb_q = int(runner._eos_t_amb_raw())
-        self.table = [int(v) for v in np.asarray(eng.emissive.table())]
+        # #78: the sweep's planes are in the engine table's FINE currency
+        self.fb = int(eng.emissive.fine_bits)
+        self.table = R.ETable((int(v) for v in np.asarray(eng.emissive.table())),
+                              fine_bits=self.fb)
 
     def close(self):
         self._runner.engine = self._eng
@@ -478,37 +517,39 @@ class _FoldReplay:
         rn = g.rad_net_sweep.astype(np.int64)
         phi = g.rad_fluence.astype(np.int64)
         ts, acct = pre["ts"], pre["acct"]
-        b = dict(A=int(rn.astype(object).sum()) << 16, L=0, C=0, rail=0, export=0,
-                 floor=0, rnd=0, bound=0, n_floor=0)
-        b["export"] = int(rn[~ts & ~acct].astype(object).sum()) << 16
+        fb = self.fb
+        b = dict(A=R.fine_heat_shr(int(rn.astype(object).sum()), -16, fb), L=0, C=0,
+                 rail=0, export=0, floor=0, rnd=0, bound=0, n_floor=0)
+        b["export"] = R.fine_heat_shr(int(rn[~ts & ~acct].astype(object).sum()), -16, fb)
         for y, x in zip(*np.nonzero(ts & (rn != 0))):
             r, s, t0 = int(rn[y, x]), int(pre["his"][y, x]), int(pre["T"][y, x])
-            t_after = R.sat_add_q16(t0, R.shr_round0_signed(r, s))
+            t_after = R.sat_add_q16(t0, R.fine_heat_shr(r, s, fb))
             cap = R.cap_real_q(True, s, 0)
             t_tg = min(t_after, max(R.e_ceiling_q(int(phi[y, x]), self.table), t0))
             t_new = max(min(t_tg, R.T_MAX_PHYS_Q), 0)
             b["C"] += (t_after - t_tg) * cap
             b["rail"] += (t_tg - t_new) * cap
             b["L"] += (t_new - t0) * cap
-            b["rnd"] += (r << 16) - (t_after - t0) * cap
+            b["rnd"] += R.fine_heat_shr(r, -16, fb) - (t_after - t0) * cap
             b["bound"] += cap
         for y, x in zip(*np.nonzero(acct & (rn != 0))):
             r, n_raw = int(rn[y, x]), int(pre["nb"][y, x])
             nb = max(0, n_raw)
-            dT = R.gas_rad_dT_q(r, n_raw, c_v_q=self.c_v_q, n_floor_q=self.n_floor_q)
+            dT = R.gas_rad_dT_q(r, n_raw, c_v_q=self.c_v_q, n_floor_q=self.n_floor_q,
+                                fine_bits=fb)
             t0 = R.gas_mirror_q(int(pre["E"][y, x]), nb, self.t_amb_q)
             t_after = R.sat_add_q16(t0, dT)
             cap = R.cap_real_q(False, 0, nb, self.c_v_q)
             t_tg = min(t_after, max(R.e_ceiling_q(int(phi[y, x]), self.table), t0))
             b["C"] += (t_after - t_tg) * cap
             b["L"] += (t_tg - t0) * cap
-            rem = (r << 16) - (t_after - t0) * cap
+            rem = R.fine_heat_shr(r, -16, fb) - (t_after - t0) * cap
             if n_raw < self.n_floor_q:
                 b["floor"] += rem
                 b["n_floor"] += 1
             else:
                 b["rnd"] += rem
-                b["bound"] += G._chain_bound(r, n_raw, cap, dT)
+                b["bound"] += G._chain_bound(r, n_raw, cap, dT, fb, self.c_v_q)
         return b
 
 

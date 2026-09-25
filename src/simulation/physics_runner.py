@@ -441,8 +441,13 @@ class PhysicsRunner:
                 f"exact int64 E° chain, whose precondition is integer-valued "
                 f"Kelvin dials (emissive_table.cpp:42-48)")
         _k_i = int(_vac_k)
-        _v = float(_k_i * _k_i * _k_i * _k_i) * _rad_scale_derived
-        self.rad_amb_vacuum_q = int(_v + 0.5) if _v > 0.0 else 0
+        # #78: the level is an E° value, so it is baked in the TABLE'S currency
+        # -- read from the engine's table every time it is asked for (the
+        # `rad_amb_vacuum_q` property below), never a copy of k, so the level
+        # and the table can never be in two currencies.
+        self._vac_k4 = _k_i * _k_i * _k_i * _k_i
+        self._vac_rad_scale = _rad_scale_derived
+        self._vac_level_cache = (None, 0)
         _e0 = int(self.engine.emissive.table()[0])
         if self.rad_amb_vacuum_q > _e0:
             raise ValueError(
@@ -1706,6 +1711,32 @@ class PhysicsRunner:
         """
         from simulation import gas_fixed as _gas_fx
         return max(1, _gas_fx.quantize_scalar(float(self.eos.T_AMB_K)))
+
+    @property
+    def rad_amb_vacuum_q(self):
+        """The EMISSIVE LEVEL a vacuum cell radiates against (thermal model v2
+        R3; `[physics.radiation] vacuum_ambient_K`), in the ENGINE TABLE'S OWN
+        CURRENCY (#78): baked through the same exact chain emissive_table.cpp's
+        bake uses -- K^4 by integer multiplication, ONE boundary multiply by
+        rad_scale * 2^fine_bits (a power-of-two scaling: exact), round half up
+        -- with `fine_bits` read off the engine's table at the time of asking,
+        so the level can never be in another currency than the table the sweep
+        compares it with (the default 295 K lands on e_table[0] integer for
+        integer). Cached per currency; one int per tick otherwise."""
+        fb = int(self.engine.emissive.fine_bits)
+        cached_fb, level = self._vac_level_cache
+        if cached_fb != fb:
+            v = float(self._vac_k4) * (self._vac_rad_scale * float(1 << fb))
+            level = int(v + 0.5) if v > 0.0 else 0
+            self._vac_level_cache = (fb, level)
+        return level
+
+    @rad_amb_vacuum_q.setter
+    def rad_amb_vacuum_q(self, level):
+        """PIN a level in the table's CURRENT currency (a test's cold sky: 0,
+        which is 0 in every currency). A later change of the table's currency
+        drops the pin and re-derives the level from vacuum_ambient_K."""
+        self._vac_level_cache = (int(self.engine.emissive.fine_bits), int(level))
 
     # (_step_ripple() DELETED - audit Patch A / A9, 2026-08-04. The ripple
     # pass moved into C++ (PhysicsEngine::step_tail, which reproduces this

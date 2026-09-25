@@ -121,6 +121,7 @@ import breach_physics as bp  # noqa: E402
 from level_loader import load as load_level  # noqa: E402
 from simulation import Simulation  # noqa: E402
 from simulation import materials  # noqa: E402
+from simulation import optics_fixed as _optics_fx  # noqa: E402  (#78: the one door)
 from simulation.payloads import ignite_ring  # noqa: E402
 from simulation.gas_fixed import FP_ONE_F as _Q, FP_SHIFT as _SH  # noqa: E402  (#70)
 
@@ -494,10 +495,10 @@ class _Trace70:
         fold_H = np.zeros_like(T0)
         if fm.any():
             his, x = self.his[fm], rn[fm]
-            sh = np.maximum(his, 0)
-            dtr = np.where(his >= 0,
-                           np.where(x < 0, -((-x) >> sh), x >> sh),
-                           x * (np.int64(1) << np.minimum(-his, 62)))
+            # #78: rad_net_sweep is in the sweep's FINE currency; the fold's ONE
+            # conversion is one shift by his + k (the kit's fine_heat_shr)
+            dtr = _optics_fx.fine_heat_shr(
+                x, his, _optics_fx.sweep_fine_bits(g))
             t = np.clip(T1[fm] + dtr, -2 ** 31, 2 ** 31 - 1)
             t = np.maximum(np.minimum(t, self.t_max_q), 0)   # both rails
             fold_H[fm] = (t - T0[fm]) * self.cap_real_ts[fm]

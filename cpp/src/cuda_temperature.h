@@ -157,7 +157,14 @@ int64_t temperature_step(
     // The engagement count comes back in slot 11 (see below).
     const int64_t* rad_fluence = nullptr,
     const int64_t* e_table = nullptr,
-    int e_table_n = 0);
+    int e_table_n = 0,
+    // #78: the CURRENCY `rad_net` is in -- the fine bits of the E° table the
+    // sweep booked it from (EmissiveTable::fine_bits), the CPU fold's
+    // `rad_fine_bits` one for one: the solid step fine_heat_shr(rn, his, k),
+    // the gas chain's final narrow, the two boundary counters'
+    // fine_heat_shr(rn, -FP_SHIFT, k). 0: a plane in whole heat counts (the
+    // pre-#78 kernel, bit for bit). Outside [0, E_FINE_BITS] throws.
+    int rad_fine_bits = 0);
 
 // The number of slots `energy_counters_out` must have room for.
 // T5b step 6: 13 -> 14 (slot 13 = `rad_clamp_hits`, the clamp's engagement

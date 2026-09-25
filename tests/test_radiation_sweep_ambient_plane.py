@@ -186,6 +186,11 @@ def test_item2_the_three_uniform_doors_are_the_same_integers(transport, n_ord):
 # assertions below would go half-vacuous while still reporting green. What this
 # file gates is the ARITHMETIC of the per-cell ambient; what the live
 # calibration can RESOLVE is T5's measurement (report_t1.md §6.6).
+# #78 (2026-09-25): the numbers above describe the live table in WHOLE heat
+# counts (E°[0] = 125 at today's calibration, 8 distinct `amb_m`). The engine now
+# bakes it 2^11 finer (emissive_table.h E_FINE_BITS: E°[0] = 256431, 0.66x the
+# reference's), so the live game does resolve this range; the file stays on
+# `reference_table()` all the same -- it gates the arithmetic, not a calibration.
 H_HULL, W_HULL = 7, 10
 WALL_PORT, WALL_STBD = 2, W_HULL - 3
 A_WALL = Q(0.91)

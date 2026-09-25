@@ -67,8 +67,9 @@ namespace breach_cuda {
 // dispatches at step 2b when the radiation backend is on, on the host mirror,
 // on both the normal and the resident tick (design §8.2 "Residency").
 //
-// The arguments are RadiationSweep::run's, one for one, plus the ambient's
-// second door:
+// The arguments are RadiationSweep::run's, one for one (e_fine_bits -- the
+// table's currency, #78 -- rides beside e_table exactly as there), plus the
+// ambient's second door:
 //   amb_level         : int64 (h, w) — the per-cell ambient LEVEL, as run()
 //                       takes it (0 <= amb <= e_table[0]). NULLABLE: when null
 //                       the level is DERIVED per cell on the device from
@@ -107,7 +108,8 @@ namespace breach_cuda {
 //                       Two scalars by value; nothing new crosses the bus, and
 //                       they are read only where a_gas > 0 — never, shipped.
 // Throws std::invalid_argument on everything run() and derive_ambient() reject
-// (an unsupported (n_ordinates, transport), k_leak_q outside [0, ONE],
+// (an unsupported (n_ordinates, transport), an e_fine_bits outside
+// [0, E_FINE_BITS], k_leak_q outside [0, ONE],
 // vac_level above e_table[0], a cell violating 0 <= a <= d <= ONE, an
 // ambient level outside [0, e_table[0]], a partial gas group, n_gases outside
 // [0, N_GAS_PLANES_MAX], a heat_absorb_q16 outside [0, HEAT_ABSORB_Q_MAX], or a
@@ -117,7 +119,7 @@ int radiation_sweep_step(
     const int32_t* temperature,
     const int32_t* heat_atten_q, const int32_t* dyn_heat_atten_q,
     const int32_t* heat_inv_shift, const bool* thermal_solid,
-    const int64_t* e_table,
+    const int64_t* e_table, int e_fine_bits,
     const int64_t* amb_level, const bool* is_vacuum, int64_t vac_level,
     int32_t t_amb_q, int32_t k_leak_q,
     int transport, int n_ordinates, int h, int w,

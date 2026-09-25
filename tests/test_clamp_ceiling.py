@@ -93,6 +93,10 @@ def test_the_engine_fold_clamps_at_the_headroom_ceiling_on_both_branches(table_n
     _cpp_fold(_solver(), Tc, Ec, rn_all, phi_all, nb_all.astype(np.int32), ts, his_all, tbl)
 
     seen = {m: dict(at_ceiling=0, cooling=0, above=0) for m in ("gas", "solid")}
+    # #78: rad_net is in the table's currency (fine on the live table), so the
+    # expected T_after converts through the reference's twin of the kit's ONE
+    # conversion, exactly as the fold does -- the properties below are unchanged
+    fb = R.fine_bits_of(tref)
     for row, medium in ((0, "gas"), (1, "solid")):
         for i in range(n):
             r = int(rn_all[row, i])
@@ -101,11 +105,11 @@ def test_the_engine_fold_clamps_at_the_headroom_ceiling_on_both_branches(table_n
             if medium == "gas":
                 N = int(nb_all[0, i])
                 t0 = R.gas_mirror_q(int(E_all[0, i]), max(0, N))
-                t_after = R.sat_add_q16(t0, R.gas_rad_dT_q(r, N))
+                t_after = R.sat_add_q16(t0, R.gas_rad_dT_q(r, N, fine_bits=fb))
                 railed = t_after                    # the fold's gas side has no low rail
             else:
                 t0 = int(T_all[1, i])
-                t_after = R.sat_add_q16(t0, R.shr_round0_signed(r, int(his_all[1, i])))
+                t_after = R.sat_add_q16(t0, R.fine_heat_shr(r, int(his_all[1, i]), fb))
                 railed = max(t_after, 0)            # the solid low rail (a rail, counted)
             ceiling = int(tbl.e_ceiling_q(int(phi_all[row, i])))
             t_new = int(Tc[row, i])

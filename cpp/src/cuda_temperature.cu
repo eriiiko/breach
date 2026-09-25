@@ -212,6 +212,8 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
                                      // T5b step 6: the clamp's two planes.
                                      const int64_t* __restrict__ rad_fluence,
                                      const int64_t* __restrict__ e_table,
+                                     // #78: the currency rad_net is in.
+                                     int rad_fine_bits,
                                      int64_t recip_cv, int32_t n_floor_q,
                                      int32_t t_max_phys_q,
                                      unsigned long long* __restrict__ hits,
@@ -237,8 +239,10 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
                 // P3a-1: the int64 twins of the SAME two kit functions, the
                 // one FP_HD definition the CPU fold also calls.
                 // M1: SIGNED in the exponent, the CPU twin's line for line.
+                // #78: rn is in the sweep's FINE currency -- the kit's ONE
+                // conversion, fine_heat_shr at his (one shift, his + k).
                 const int64_t dTr =
-                    shr_round0_signed_i64(rn, heat_inv_shift[i]);
+                    fine_heat_shr(rn, heat_inv_shift[i], rad_fine_bits);
                 tr = sat_add_q16_i64(tr, dTr);
                 // ---- THE MAXIMUM-PRINCIPLE CLAMP (T5b step 6) -------------
                 //   T_new = min(T_after, max(T_before, e_ceiling_q(Phi)))
@@ -294,22 +298,25 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
             const bool acct_r = !solid[i] && !is_vacuum[i]
                               && !(is_ambient != nullptr && is_ambient[i]);
             const int64_t rn = rad_net[i];
+            // #78: the counters take rn in the Q16 heat currency through the
+            // kit's ONE conversion, fine_heat_shr(rn, -FP_SHIFT, k) -- exact.
             if (!acct_r && rn != 0)
-                cadd(cnt, C_RAD_BND_EXPORT, rn * (int64_t)fixedpoint::FP_ONE);
+                cadd(cnt, C_RAD_BND_EXPORT,
+                     fine_heat_shr(rn, -fixedpoint::FP_SHIFT, rad_fine_bits));
             if (acct_r && rn != 0) {
                 const int64_t nb = (int64_t)n_src[i] > 0 ? (int64_t)n_src[i] : 0;
                 const bool floored = (n_src[i] < n_floor_q);  // the chain's floor
                 const int32_t N_q = floored ? n_floor_q : n_src[i];
                 const int32_t recip_N_q = fixedpoint::reciprocal_q16(N_q);
                 const int64_t mag = fixedpoint::deposit_dT_wide_i64(
-                    (rn < 0) ? -rn : rn, recip_N_q, recip_cv);
+                    (rn < 0) ? -rn : rn, recip_N_q, recip_cv, rad_fine_bits);
                 const int64_t dT = (rn < 0) ? -mag : mag;
                 const int32_t t_before =
                     gas_energy::mirror_q(gas_energy[i], nb, t_amb_q);
                 int32_t t_target = sat_add_q16_i64(t_before, dT);
                 if (floored)
                     cadd(cnt, C_RAD_FLOOR_DROP,
-                         rn * (int64_t)fixedpoint::FP_ONE
+                         fine_heat_shr(rn, -fixedpoint::FP_SHIFT, rad_fine_bits)
                          - ((int64_t)t_target - (int64_t)t_before) * cap_real[i]);
                 if (rad_fluence != nullptr && e_table != nullptr) {
                     const int32_t t_cap = e_ceiling_q(e_table, rad_fluence[i]);
@@ -575,8 +582,15 @@ int64_t temperature_step(
                                  // not +=), nullable
     const int64_t* rad_fluence, // T5b step 6: the clamp's Phi plane (nullable)
     const int64_t* e_table,     // T5b step 6: the E° table (nullable)
-    int e_table_n) {            // its length, in entries
+    int e_table_n,              // its length, in entries
+    int rad_fine_bits) {        // #78: the currency rad_net is in
     const int n = h * w;
+    // #78: refused on the host exactly as the CPU fold refuses it.
+    if (rad_fine_bits < 0 || rad_fine_bits > E_FINE_BITS) {
+        throw std::invalid_argument(
+            "temperature_step (CUDA): rad_fine_bits outside [0, E_FINE_BITS] -- "
+            "the currency of the sweep's rad_net (#78, emissive_table.h)");
+    }
     if (n <= 0) return 0;
 
     // The SAME once-per-step host boundary casts the CPU does (round-to-nearest
@@ -724,7 +738,7 @@ int64_t temperature_step(
     temp_convert_unified<<<grid, block>>>(d_temp, d_heat, d_his, d_ts, d_vac,
                                           d_solid, d_amb,
                                           d_nsrc, d_radnet,
-                                          d_fluence, d_etable,
+                                          d_fluence, d_etable, rad_fine_bits,
                                           recip_cv, n_floor_q,
                                           t_max_phys_q, d_hits, d_low_hits,
                                           d_cnt, d_cap_real, d_gas_energy,

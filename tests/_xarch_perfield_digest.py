@@ -392,7 +392,42 @@ UNIT_FIELD_LABEL = "__unit_state__"
 #
 # REPRODUCED: the harness was run twice on this build, identical both times.
 # (was 9d56649172e5b90b917cb7a6dd9447570e8f2a20a8b9196fd8802d22dcfa1dfa)
-GOLDEN_AGGREGATE = "e9cb8ca8f08c2f8f2ee36428a8ac7f395dadcd01a3c81606223ee4ca0dbce785"
+# ===========================================================================
+# #78 RE-BASELINE (2026-09-25, issue #78 -- "the sweep's heat channel gets
+# fractional bits"; ERIK'S REQUEST OF 2026-09-24: "better to really try to fix
+# this before P7"; docs/sweep_fine_heat_currency_brief_78_2026-09-25.md). A VALUE
+# move, not a schema move: DIGEST_SPEC_VERSION unchanged (v6) -- no field added,
+# removed or retyped.
+#
+# CAUSE, and it is a single one: the radiation sweep's heat channel now works in
+# a currency 2^11 finer than one heat count (emissive_table.h E_FINE_BITS; the
+# engine's E° table is baked at rad_scale_derived * 2^11 and every reader of a
+# sweep plane converts once through fixedpoint::fine_heat_shr / the gas chain's
+# final narrow). Near-ambient radiative exchange is now RESOLVED: the sweep's
+# per-ordinate floors used to lose up to one whole count per term (~10 K of
+# emission-equivalent at E°[0] = 125), so cells a few kelvin off ambient read as
+# net absorbers or could not shed a small excess; they now exchange what their
+# temperatures say, to ~2^-11 of a count. In the canonical scenario the first
+# fields to move are temperature and gas_energy at tick 0 -- the first fold that
+# lands the sweep's rad_net -- and everything else that moves follows them.
+#
+# FIELDS THAT MOVED, first tick: temperature and gas_energy at tick 0;
+# atmosphere, wind_x, wind_y, gas and the marine's position (__unit_pos__, so
+# __unit_state__) at tick 1 -- the EOS answering the moved gas energy; wave_p at
+# tick 2. Unmoved over all 30 ticks: fire, heat, wall_hp, water_depth,
+# flow_vx/vy, dyn_heat_atten_q, dem_acc, ignition_armed, wave_v, wave_source,
+# material, obstacles, is_vacuum and the unit's hp, facing, status and life
+# events.
+#
+# VERIFIED SOLE CAUSE, not assumed: on the #78 build, the engine's table set to
+# the pre-#78 currency (EmissiveTable.fine_bits = 0 -- every conversion then IS
+# the pre-#78 expression, value for value) reproduces the PREVIOUS value,
+# e9cb8ca8..., exactly; fine_bits = E_FINE_BITS gives this one. Both on the CPU
+# build and on the CUDA build's CPU path.
+#
+# REPRODUCED: the capture was run on both builds, identical both times.
+# (was e9cb8ca8f08c2f8f2ee36428a8ac7f395dadcd01a3c81606223ee4ca0dbce785)
+GOLDEN_AGGREGATE = "2739f7431cebb7c7f8f73ce2cdc6bea625e72e4409713d75e471acfa6a6e6a86"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs

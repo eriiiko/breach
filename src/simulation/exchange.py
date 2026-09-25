@@ -312,9 +312,20 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
     # own `heat_atten` (default 1.0, an opaque body), so a marine on an air tile
     # absorbs the whole stream crossing its cell and re-emits ambient onward
     # (design v3 §6.2, row 25).
+    #
+    # #78: THE SWEEP'S PLANES ARE IN ITS FINE HEAT CURRENCY (2^k per heat
+    # count, k = the engine table's `fine_bits`), `heat` in whole heat counts.
+    # The sensor is converted ONCE, through the kit's twin
+    # (optics_fixed.fine_heat_shr at s = 0: whole heat counts, symmetric), so
+    # `max(heat, rad_flux)` compares two exposures in ONE unit and a marine burns
+    # exactly as before in real units -- the fine bits refine the sweep's
+    # exchange, they are not heat (tests/test_sweep_fine_currency.py: the same
+    # HP per second within 1 %).
+    from simulation import optics_fixed as _optics_fx
     h, w = gmap.heat.shape
     heat = gmap.heat
     rad_flux = getattr(gmap, "rad_flux_sweep", None)
+    rad_fine_bits = _optics_fx.sweep_fine_bits(gmap)
     cmb = CFG.combat
 
     absorption   = float(cmb.unit_absorption)
@@ -342,8 +353,10 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
                     # D3: the radiant sensor and the (non-radiative) heat
                     # writers are two independent exposures at the same tile —
                     # take the larger, exactly as the footprint loop takes the
-                    # hottest tile. Both are Q16.16 in the same domain.
-                    fv = int(rad_flux[ty, tx])
+                    # hottest tile. Both are Q16.16 in the same domain --
+                    # once the sensor leaves the sweep's fine currency (#78).
+                    fv = _optics_fx.fine_heat_shr(int(rad_flux[ty, tx]), 0,
+                                                  rad_fine_bits)
                     if fv > v:
                         v = fv
                 if v > peak_raw:
