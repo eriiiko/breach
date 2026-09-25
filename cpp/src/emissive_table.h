@@ -99,6 +99,64 @@ static constexpr int32_t E_INV_TOP_GAME = 4 * (E_TABLE_SIZE - 1);
 // reachable only through the `heat` deposit branch.
 static constexpr int32_t E_CEILING_TOP_Q = ((4 * E_TABLE_SIZE) << 16) - 1;
 
+// ============================================================================
+// THE LIGHT EMISSION TABLE L°[T] (ray-engine-v2 P6a; design v3 §2.6 / §4.1 /
+// §7.3 / §8.1; docs/ray_engine_v2_p6a_light_channels_brief_2026-09-25.md
+// decisions 3-5). E°'s visible-band twin, in this module and this pattern:
+// three int64 channels (R, G, B) over E°'s OWN 4000 buckets, indexed by the
+// same e_bucket_of. A cell whose light extinction is a_c emits a_c · L°_c[T]
+// (Kirchhoff per channel), split over the ordinates exactly as E° is.
+//
+// CHECKED IN, NEVER COMPUTED AT LOAD. The values are renderer/blackbody.py's
+// Helland/Bartlett chroma x Macklin intensity (the ONE colour map) at the
+// shipped [render.blackbody] dials, evaluated OFFLINE by tools/gen_light_table.py
+// and written to light_emission_table.inc, which emissive_table.cpp compiles in:
+// the two curves are libm (log, pow), a determinism hole the day P7 digests
+// light_q (§8.1). tests/test_light_table.py re-runs the generator and requires
+// every entry within one count. L°_c[0] == 0 in every channel: a room-
+// temperature body emits no visible light, so the light ambient is DARK and a
+// body (the stamped share d − a) re-emits nothing (decision 5).
+//
+// THE LIGHT CURRENCY (decision 4, #78's lesson built in): the table's integers
+// are 2^L_FINE_BITS per LIGHT UNIT, the ramp's intensity 1.0 in the peak channel
+// (Macklin's reference level at kelvin_ref). 37 is chosen so that
+//   * the faintest glow the ramp SHOWS (its LUT's first non-zero step, intensity
+//     7.23e-8 at 836 K) lands >= 2^8 counts per ordinate on an opaque cell:
+//     2^37 · 7.23e-8 / 16 = 621 = 2^9.28 (at k = 36 it would be 311, 2^8.28 --
+//     no margin); and a burning crate (1263 game, the shipped furniture row) is
+//     ~2^21.8 counts per ordinate SIXTEEN tiles away on the dimmest bearing
+//     (sweep_ref_q_gates G18 measures both);
+//   * the table top (intensity_max 8, chroma 1) is 8 · 2^37 = 2^40, so a stream
+//     is <= 2^36.4, every plain int64 product of the light loop <= 2^54 (the
+//     flux term, 3 channels x 2^16), the per-cell light_q <= 2^40 -- 2^4 below
+//     the design's 2^58 product line; G18 measures it over-driven.
+// A table carries its currency (LightEmissionTable::fine_bits, the
+// EmissiveTable::fine_bits pattern) and the generated data records the currency
+// it was generated at (L_TABLE_GEN_FINE_BITS, static_asserted equal to this):
+// moving this constant without regenerating the table does not build.
+static constexpr int L_FINE_BITS = 37;
+static constexpr int L_CHANNELS  = 3;
+// THE LIGHT TABLE'S HEADROOM DOOR (the E_TABLE_TOP_MAX idiom): every entry of
+// the checked-in table is below it -- static_asserted in emissive_table.cpp. A
+// top below 2^44 keeps the light loop's widest plain product (the flux term,
+// 3 streams x a Q16 cosine) below 2^58 and its per-cell sums below 2^46.
+static constexpr int64_t L_TABLE_TOP_MAX = (int64_t)1 << 44;
+
+// The checked-in L° table: L_CHANNELS x E_TABLE_SIZE int64, CHANNEL-MAJOR --
+// L°_c[t] = light_emission_table()[c * E_TABLE_SIZE + t]. One definition
+// (emissive_table.cpp, from light_emission_table.inc); host memory (a CUDA
+// caller uploads it, as it uploads E°).
+const int64_t* light_emission_table();
+
+// The owner pattern (EmissiveTable's): the table and its CURRENCY travel
+// together, so a reader converts by the currency of the table it was handed.
+// Unlike E° there is no bake and no dial -- one checked-in table, one currency.
+class LightEmissionTable {
+public:
+    static constexpr int fine_bits = L_FINE_BITS;
+    const int64_t* table() const { return light_emission_table(); }
+};
+
 // Q16.16 temperature -> E° bucket index. NEGATIVE T indexes bucket 0 (a tile
 // below ambient does not emit less than the ambient floor in this model); T at
 // or above the table top saturates on the last bucket. Pure integer.

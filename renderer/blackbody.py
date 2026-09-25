@@ -112,7 +112,23 @@ def _tanner_helland_chroma(kelvin: np.ndarray) -> np.ndarray:
     Returns an (N, 3) float32 array; each row's max channel == 1 (pure chroma,
     brightness carried separately). The classic piecewise fit works on
     ``kelvin / 100`` and yields 0..255; we rescale to 0..1 then normalize.
-    Determinism-exempt (render-layer float / libm allowed here).
+    Determinism-exempt (render-layer float / libm allowed here). The float32
+    cast of :func:`_tanner_helland_chroma_f64` -- the SAME curve, byte for byte
+    what this function always returned (every step before the cast was float64).
+    """
+    return _tanner_helland_chroma_f64(kelvin).astype(np.float32)
+
+
+def _tanner_helland_chroma_f64(kelvin: np.ndarray) -> np.ndarray:
+    """The Helland / Bartlett chroma in FULL float64 -- the curve itself, before
+    the float32 cast the LUT stores. ONE implementation: the LUT and the sim's
+    offline light-table generator (tools/gen_light_table.py, ray-engine-v2 P6a)
+    both read it, the LUT through :func:`_tanner_helland_chroma`, the generator
+    through :meth:`BlackbodyRamp.emission_at_kelvin`. Float64 because the
+    generator scales it by 2^37: a float32 chroma would put its own rounding
+    (2^-24 relative) above one integer count, where float64 keeps a machine's
+    last-ULP libm difference below it (the regeneration test's one-count
+    tolerance rests on that).
     """
     t = np.asarray(kelvin, dtype=np.float64) / 100.0
 
@@ -148,7 +164,7 @@ def _tanner_helland_chroma(kelvin: np.ndarray) -> np.ndarray:
     # for kelvin > 0, but keep the divide safe).
     peak = np.max(rgb, axis=-1, keepdims=True)
     peak = np.where(peak > 1e-6, peak, 1.0)
-    return (rgb / peak).astype(np.float32)
+    return rgb / peak
 
 
 class BlackbodyRamp:
@@ -216,6 +232,30 @@ class BlackbodyRamp:
             0.0, None)
         return np.clip(np.power(ratio, self.intensity_exponent),
                        0.0, self.intensity_max)
+
+    def emission_at_kelvin(self, kelvin):
+        """The ramp's map at ARBITRARY Kelvin, in full float64, WITHOUT the LUT's
+        sampling: ``(chroma (N, 3), intensity (N,))`` -- the SAME Helland/Bartlett
+        chroma (max channel 1) and Macklin intensity the LUT holds at
+        ``lut_size`` points, on the SAME domain: Kelvin is clamped to
+        ``[kelvin_floor, kelvin_ceil]`` exactly as :meth:`_index` clamps it, so
+        a tile hotter than ``kelvin_ceil`` is the ceiling's colour here as on
+        screen. What this adds over :meth:`chroma_intensity` is resolution, not
+        a different map.
+
+        This is how the sim reads the ONE colour map (ray-engine-v2 P6a):
+        ``tools/gen_light_table.py`` evaluates it OFFLINE at the emissive
+        table's 4000 bucket midpoints and checks the result in as the integer
+        light-emission table L°[T] (cpp/src/light_emission_table.inc). Nothing
+        in the sim path calls this -- a transcendental at load would be a
+        determinism hole (design v3 section 8.1) -- and render code keeps using
+        the LUT through :meth:`chroma_intensity` / :meth:`light_color`.
+        Render-layer float, determinism-exempt, like the rest of this module.
+        """
+        k = np.clip(np.asarray(kelvin, dtype=np.float64),
+                    self.kelvin_floor, self.kelvin_ceil)
+        return _tanner_helland_chroma_f64(k), np.asarray(
+            self._intensity_curve(k), dtype=np.float64)
 
     def _kelvin_from_tgame(self, t_game):
         """Dequantized game ΔT -> pseudo-Kelvin (the honest 'white for extremes'

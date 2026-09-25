@@ -2665,6 +2665,470 @@ def gate17_fine_heat_currency(fast=False):
     return ok, lines
 
 
+# --------------------------------------------------------------------------- #
+# P6a: THE LIGHT CHANNELS (docs/ray_engine_v2_p6a_light_channels_brief_2026-09-25
+# .md sections 2-3). Every property PAIRED with a variant in which it fails.
+# --------------------------------------------------------------------------- #
+LQ = Q                                     # light extinctions are Q16 too
+T_BURN_GAME = T_SRC_GAME                   # a burning crate's plateau (1263 game)
+# Light gas coefficients in G13's gas vocabulary (smoke, steam, o2, n2): soot's
+# and steam's shipped RGB absorption x the shipped [smoke] absorb scale 1.4, and
+# their scatter albedos -- the numbers GasTable.light_absorb_q16 / light_glow_q16
+# carry (tests/test_gas_light_columns.py holds the table to config).
+LIGHT_ABSORB = [[LQ(0.88 * 1.4), LQ(0.90 * 1.4), LQ(0.93 * 1.4)],
+                [LQ(0.10 * 1.4), LQ(0.10 * 1.4), LQ(0.10 * 1.4)], [0, 0, 0], [0, 0, 0]]
+LIGHT_GLOW = [[LQ(0.04)] * 3, [LQ(0.92), LQ(0.92), LQ(0.95)], [0, 0, 0], [0, 0, 0]]
+
+
+def _config_row(section, name):
+    """A SHIPPED config.toml row -- the light gate's glass and furniture numbers
+    are the game's, so retuning a row can fail it."""
+    import pathlib
+    import tomllib
+    with open(pathlib.Path(R.__file__).resolve().parents[2] / "config.toml", "rb") as fh:
+        cfg = tomllib.load(fh)
+    return cfg[section][name]
+
+
+def _lplanes(h, w, v=0):
+    return [R.plane(h, w, v) for _ in range(R.L_CHANNELS)]
+
+
+def _light_rand_scene(rng, h, w):
+    """Random light extinction -- clear air, glass, a crate, opaque walls, two
+    asymmetric tints -- with bodies stamped on some cells (d = ONE), and
+    temperatures from sub-ambient past the glow floor to the table top.
+    Returns (la, ld, T); T is the ONE temperature plane heat and light share."""
+    tints = [(0, 0, 0), (0, 0, 0), (LQ(0.1),) * 3, (LQ(0.55),) * 3, (ONE,) * 3,
+             (LQ(0.2), LQ(0.6), LQ(0.9)), (LQ(0.9), LQ(0.1), LQ(0.4))]
+    la, ld = _lplanes(h, w), _lplanes(h, w)
+    T = R.plane(h, w)
+    for y in range(h):
+        for x in range(w):
+            t = rng.choice(tints)
+            body = rng.random() < 0.15
+            for c in range(R.L_CHANNELS):
+                la[c][y][x] = t[c]
+                ld[c][y][x] = ONE if body else t[c]
+            T[y][x] = rng.choice([-(100 << 16), 0, 400 << 16, 540 << 16, 1263 << 16,
+                                  3000 << 16, 8000 << 16, R.T_TABLE_TOP_GAME << 16])
+    return la, ld, T
+
+
+def _clear_room(n, T_src=None, a_src=ONE, at=None):
+    """An n x n transparent room with, optionally, ONE light source at `at`
+    (default the centre): opaque to light (a = d = a_src) at T_src. Returns the
+    heat planes a, d, k, T, the light planes la, ld and the source cell."""
+    c = (n // 2, n // 2) if at is None else at
+    a, d, T = R.plane(n, n), R.plane(n, n), R.plane(n, n)
+    la, ld = _lplanes(n, n), _lplanes(n, n)
+    if T_src is not None:
+        T[c[0]][c[1]] = T_src
+        for ch in range(R.L_CHANNELS):
+            la[ch][c[0]][c[1]] = ld[ch][c[0]][c[1]] = a_src
+    return a, d, R.plane(n, n, 0), T, la, ld, c
+
+
+def _light_sweep(scene, **kw):
+    """sweep_q on a (a, d, k, T, la, ld[, ...]) scene tuple with the light group."""
+    a, d, k, T, la, ld = scene[:6]
+    lkw = {key: kw.pop(key) for key in ("table", "transport", "light_absorb_q",
+                                        "light_glow_q", "record_streams") if key in kw}
+    return R.sweep_q(a, d, k, T, light=R.LightGroup(la=la, ld=ld, **lkw), **kw)
+
+
+def gate18_light_channels(fast=False):
+    """G18 (P6a): THE LIGHT CHANNELS on the sweep -- the brief's section 3, in the
+    reference.
+
+      (a) THE BOOKS close per channel, exactly: emit + ring_in == absorb +
+          ring_out on randomised light scenes (tints, glass, bodies, the whole
+          temperature range) x S16/S12 x heat shear/step x light step/shear x
+          smoke on/off; emit, absorb and ring_out each non-zero, ring_in == 0
+          (the dark ring), some gas cell absorbing light through the smoke term.
+      (b) HEAT IS UNTOUCHED: every heat plane and the heat telemetry are
+          identical with the light group on and off (the engine's gate is the
+          real one; this pins the spec's own separation).
+      (c) A DARK WORLD IS EXACTLY DARK: nothing above the glow floor -> light_q,
+          flux, glow and the emission book are 0 everywhere, with smoke, bodies
+          and glass present. PAIR: one cell at the burning plateau lights it.
+      (d) OPTICS: an a = ONE wall spanning the grid leaves the far side exactly
+          0 on every channel (PAIR: a one-tile gap lets light through); a BODY
+          column blocks light and does not glow even at 3000 game (PAIR: the
+          same column as MATERIAL glows); the shipped GLASS row -- the light
+          channel's result is independent of heat_atten and the heat channel's
+          of light_atten, each moving with its own (PAIR: the other one moved);
+          smoke TINTS by its RGB absorption and DIMS monotonically with density,
+          strictly until opaque, exactly 0 beyond; no gas -> no glow; glow ==
+          (light_q * g) >> 16, on gas cells only, proportional to density.
+      (e) COLOUR FOLLOWS TEMPERATURE through the sweep: a lone opaque cell emits
+          EXACTLY n_ord * ((L°_c[T] * w_m) >> 16) per channel (the table's
+          chroma; tests/test_light_table.py holds the table to blackbody.py), and
+          HOTTER IS BRIGHTER: the peak-channel emission never falls as T rises.
+      (f) THE FLUX VECTOR points AWAY from a lone source on each of its four
+          sides, and every mirrored cell books the exactly mirrored vector.
+      (g) HEADROOM, over-driven (the table top everywhere; a transparent room of
+          top emitters): light_q < 2^46, every plain product < 2^58, the books
+          < 2^63. PAIR: a table 2^5 larger crosses 2^58.
+      (h) THE RESOLUTION FLOOR (decision 4): one burning tile (the shipped
+          furniture row, 1263 game) in clear air carries >= 2^8 counts in its
+          brightest ordinate at EVERY cell 16 tiles away. PAIR: the same scene
+          on a table 2^11 coarser does not.
+
+    Breaks if: a light share is booked by one side only (a); the light code
+    writes a heat integer (b); the ring stops being dark or a cold cell emits
+    (c); a channel reads the other channel's (or heat's) plane, a body emits, the
+    smoke term drops a channel or the glow reaches a solid (d); the emission
+    bypasses the table or its per-ordinate split (e); the flux reads the stream
+    with the wrong sign or floors instead of the symmetric shift (f); the light
+    currency grows by 2^4 (g) or shrinks by 2^11 (h). Each variant above was run.
+    """
+    lines, ok = [], True
+    lg2 = lambda v: math.log2(max(abs(v), 1))  # noqa: E731
+    h, w = (6, 8) if fast else (8, 10)
+    rng = random.Random(20260925)
+    # ---- (a) the books, (b) heat untouched ------------------------------------
+    n_cases = n_ok = 0
+    heat_same = True
+    gas_light = 0
+    for n_ord in (16, 12):
+        for htr in ("shear", "step"):
+            for ltr in ("step", "shear"):
+                for smoke in (False, True):
+                    a, d, _T, f = _rand_scene(rng, h, w)
+                    la, ld, T = _light_rand_scene(rng, h, w)
+                    gkw, lkw = {}, {}
+                    if smoke:
+                        gkw = _gas_kw(rng, a)
+                        lkw = dict(light_absorb_q=LIGHT_ABSORB, light_glow_q=LIGHT_GLOW)
+                    k = R.plane(h, w, K_LEAK)
+                    r0 = R.sweep_q(a, d, k, T, n_ord=n_ord, transport=htr, f_plane=f,
+                                   **gkw)
+                    r1 = R.sweep_q(a, d, k, T, n_ord=n_ord, transport=htr, f_plane=f,
+                                   light=R.LightGroup(la=la, ld=ld, transport=ltr, **lkw),
+                                   **gkw)
+                    heat_same &= (r0.rad_net == r1.rad_net and r0.rad_flux == r1.rad_flux
+                                  and r0.rad_amb == r1.rad_amb
+                                  and r0.rad_fluence == r1.rad_fluence
+                                  and (r0.min_stream, r0.max_stream)
+                                  == (r1.min_stream, r1.max_stream)
+                                  and any(v for row in r0.rad_net for v in row))
+                    nonzero = all(r1.light_emit[c] > 0 and r1.light_absorb[c] > 0
+                                  and r1.light_ring_out[c] > 0 for c in range(3))
+                    good = (r1.light_books_close() == [0, 0, 0] and nonzero
+                            and r1.light_ring_in == [0, 0, 0]
+                            and r1.min_light_stream >= 0)
+                    if smoke:
+                        ts = gkw["ts"]
+                        gas_light += sum(1 for c in range(3) for y in range(h)
+                                         for x in range(w) if not ts[y][x]
+                                         and r1.light_a_eff[c][y][x] > la[c][y][x])
+                    n_cases += 1
+                    n_ok += int(good)
+    good = n_ok == n_cases and heat_same and gas_light > 0
+    ok &= good
+    lines.append(f"  (a) the light books close per channel (emit + ring_in == absorb + "
+                 f"ring_out; emit, absorb, ring_out each non-zero; ring_in == 0, the "
+                 f"dark ring) on {n_ok}/{n_cases} randomised scenes (S16/S12 x heat "
+                 f"shear/step x light step/shear x smoke on/off; {gas_light} gas "
+                 f"cell-channels absorbing light through the smoke term). (b) every heat "
+                 f"plane and the heat telemetry identical with light on and off: "
+                 f"{heat_same}  {'OK' if good else 'FAIL'}")
+    # ---- (c) a dark world is exactly dark --------------------------------------
+    n = 9 if fast else 11
+    a, d, k, T, la, ld, c0 = _clear_room(n)
+    rngd = random.Random(7)
+    for y in range(n):
+        for x in range(n):
+            T[y][x] = rngd.choice([-(200 << 16), 0, 300 << 16, 480 << 16])   # < 800 K
+            t = rngd.choice([(0, 0, 0), (LQ(0.1),) * 3, (ONE,) * 3])
+            for ch in range(3):
+                la[ch][y][x] = t[ch]
+                ld[ch][y][x] = ONE if rngd.random() < 0.1 else t[ch]
+    gkw = _gas_kw(random.Random(8), R.plane(n, n))
+    lkw = dict(light_absorb_q=LIGHT_ABSORB, light_glow_q=LIGHT_GLOW)
+    rd = _light_sweep((a, d, k, T, la, ld), **lkw, **gkw)
+    dark = (rd.max_light_q == 0 and rd.light_emit == [0, 0, 0]
+            and all(v == 0 for p in rd.light_flux + rd.light_glow for row in p for v in row))
+    T[c0[0]][c0[1]] = T_BURN_GAME << 16
+    for ch in range(3):
+        la[ch][c0[0]][c0[1]] = ld[ch][c0[0]][c0[1]] = ONE
+    rl = _light_sweep((a, d, k, T, la, ld), **lkw, **gkw)
+    lit = sum(1 for y in range(n) for x in range(n) if rl.light_q[0][y][x] > 0)
+    good = dark and lit > n
+    ok &= good
+    lines.append(f"  (c) nothing above the glow floor (-200 .. 480 game), smoke, bodies and "
+                 f"glass present: light_q, flux, glow and the emission book exactly 0 "
+                 f"everywhere: {dark}. PAIR: one cell at {T_BURN_GAME} game lights {lit} of "
+                 f"{n * n} cells  {'OK' if good else 'FAIL'}")
+    # ---- (d) optics --------------------------------------------------------------
+    n = 9 if fast else 11
+    xw = n // 2                                   # the obstacle column
+    yc = n // 2
+
+    def _source_scene(T_src_game=T_BURN_GAME):
+        """A hot, light-opaque source column at x = 0 in an n x n clear room."""
+        a_, d_, k_, T_, la_, ld_, _c = _clear_room(n)
+        for y in range(n):
+            T_[y][0] = T_src_game << 16
+            for ch in range(3):
+                la_[ch][y][0] = ld_[ch][y][0] = ONE
+        return a_, d_, k_, T_, la_, ld_
+
+    def _column(sc, *, la_v=None, ld_v=None, gap=None, T_game=None):
+        _a, _d, _k, T_, la_, ld_ = sc
+        for y in range(n):
+            if gap is not None and y == gap:
+                continue
+            for ch in range(3):
+                if la_v is not None:
+                    la_[ch][y][xw] = la_v[ch]
+                if ld_v is not None:
+                    ld_[ch][y][xw] = ld_v[ch]
+            if T_game is not None:
+                T_[y][xw] = T_game << 16
+        return sc
+
+    far = [(y, x) for y in range(n) for x in range(xw + 1, n)]
+    near = [(y, x) for y in range(n) for x in range(1, xw)]
+    opaque = (ONE,) * 3
+    r_w = _light_sweep(_column(_source_scene(), la_v=opaque, ld_v=opaque))
+    r_g = _light_sweep(_column(_source_scene(), la_v=opaque, ld_v=opaque, gap=yc))
+    wall_dark = all(r_w.light_q[ch][y][x] == 0 for ch in range(3) for (y, x) in far)
+    near_lit = all(r_w.light_q[0][y][x] > 0 for (y, x) in near)
+    gap_lit = sum(1 for (y, x) in far if r_g.light_q[0][y][x] > 0)
+    good = wall_dark and near_lit and gap_lit > 0
+    ok &= good
+    lines.append(f"  (d) an a = ONE wall spanning the grid: far side exactly 0 on every "
+                 f"channel {wall_dark} (near side lit {near_lit}). PAIR: a one-tile gap "
+                 f"lights {gap_lit} far cells  {'OK' if good else 'FAIL'}")
+    r_b = _light_sweep(_column(_source_scene(), la_v=(0, 0, 0), ld_v=opaque, T_game=3000))
+    r_m = _light_sweep(_column(_source_scene(), la_v=opaque, ld_v=opaque, T_game=3000))
+    body_dark = all(r_b.light_q[ch][y][x] == 0 for ch in range(3) for (y, x) in far)
+    mat_glows = all(r_m.light_q[0][y][x] > 0 for (y, x) in far)
+    good = body_dark and mat_glows
+    ok &= good
+    lines.append(f"  (d) a BODY column (a = 0, d = ONE) at 3000 game blocks the fire and "
+                 f"emits nothing: far side 0 {body_dark}. PAIR: the same column as "
+                 f"MATERIAL (a = d = ONE) glows onto every far cell {mat_glows}  "
+                 f"{'OK' if good else 'FAIL'}")
+    # the shipped GLASS row: each channel reads ITS OWN coefficient
+
+    def _glass(light_c, heat_c):
+        sc = _source_scene()
+        a_, d_ = sc[0], sc[1]
+        for y in range(n):
+            a_[y][0] = d_[y][0] = ONE                # heat's source is opaque too
+            a_[y][xw] = d_[y][xw] = heat_c
+        _column(sc, la_v=(light_c,) * 3, ld_v=(light_c,) * 3)
+        return _light_sweep(sc)
+
+    glass = _config_row("materials", "glass")
+    gl, gh = LQ(glass["light_atten"][0]), LQ(glass["heat_atten"])
+    r_ref = _glass(gl, gh)
+    r_hmove = _glass(gl, LQ(0.9))                   # heat_atten moves, light_atten not
+    r_lmove = _glass(LQ(0.9), gh)                   # light_atten moves, heat_atten not
+    light_own = (r_ref.light_q == r_hmove.light_q and r_ref.light_q != r_lmove.light_q)
+    heat_own = (r_ref.rad_fluence == r_lmove.rad_fluence
+                and r_ref.rad_fluence != r_hmove.rad_fluence)
+    s0 = _light_sweep(_source_scene())
+    amb_phi = 16 * ((R.E0 * (ONE // 16)) >> 16)
+    t_light = r_ref.light_q[0][yc][n - 1] / s0.light_q[0][yc][n - 1]
+    s0h = _source_scene()
+    for y in range(n):
+        s0h[0][y][0] = s0h[1][y][0] = ONE
+    s0h_r = _light_sweep(s0h)
+    t_heat = ((r_ref.rad_fluence[yc][n - 1] - amb_phi)
+              / (s0h_r.rad_fluence[yc][n - 1] - amb_phi))
+    good = light_own and heat_own and t_light > t_heat
+    ok &= good
+    lines.append(f"  (d) the shipped glass row (light_atten {glass['light_atten'][0]}, "
+                 f"heat_atten {glass['heat_atten']}): light's planes do not move when "
+                 f"heat_atten does and do when light_atten does {light_own}; heat's "
+                 f"fluence likewise with the roles swapped {heat_own}. Transmission "
+                 f"behind one glass column: light {t_light:.3f} (step, R), heat excess "
+                 f"{t_heat:.3f} (shear) -- light-clear, heat-dimmer  "
+                 f"{'OK' if good else 'FAIL'}")
+
+    def _smoke(coef_rgb, dens, albedo=LQ(0.5)):
+        sc = _source_scene(3000)
+        ts = R.plane(n, n)
+        for y in range(n):
+            ts[y][0] = 1
+        smoke = R.plane(n, n)
+        for y in range(n):
+            smoke[y][xw] = dens
+        o2, n2 = R.plane(n, n, O2_AMB), R.plane(n, n, N2_AMB)
+        nb = [[o2[y][x] + n2[y][x] for x in range(n)] for y in range(n)]
+        return _light_sweep(sc, gas=[smoke, o2, n2], heat_absorb_q=[0, 0, 0],
+                            n_bulk=nb, ts=ts,
+                            light_absorb_q=[list(coef_rgb), [0] * 3, [0] * 3],
+                            light_glow_q=[[albedo] * 3, [0] * 3, [0] * 3])
+
+    poison = [LQ(0.45 * 1.4), LQ(0.10 * 1.4), LQ(0.80 * 1.4)]
+    rc_ = _smoke(poison, 0)
+    rp_ = _smoke(poison, LQ(0.5))
+    rc = [rc_.light_q[ch][yc][n - 1] for ch in range(3)]
+    rp = [rp_.light_q[ch][yc][n - 1] for ch in range(3)]
+    tint = (rp[1] / rp[0] > rc[1] / rc[0]) and (rp[2] / rp[0] < rc[2] / rc[0])
+    soot = LIGHT_ABSORB[0]
+    dens_steps = [LQ(v / 20) for v in range(21)]
+    curve = [[_smoke(soot, dd).light_q[ch][yc][n - 1] for ch in range(3)]
+             for dd in dens_steps]
+    mono = all(curve[i + 1][ch] <= curve[i][ch] for i in range(20) for ch in range(3))
+    opaque_at = [next((i for i, row in enumerate(curve) if row[ch] == 0), None)
+                 for ch in range(3)]
+    reached = all(o is not None for o in opaque_at)
+    strict = reached and all(curve[i + 1][ch] < curve[i][ch]
+                             for ch in range(3) for i in range(opaque_at[ch]))
+    beyond = reached and all(curve[j][ch] == 0 for ch in range(3)
+                             for j in range(opaque_at[ch], 21))
+    good = tint and mono and strict and beyond
+    ok &= good
+    lines.append(f"  (d) a poison-like column (density 0.5) TINTS the transmitted light: "
+                 f"G/R {rc[1] / rc[0]:.3f} -> {rp[1] / rp[0]:.3f}, B/R {rc[2] / rc[0]:.3f} -> "
+                 f"{rp[2] / rp[0]:.3f}; a soot column over densities 0 .. 1 in 0.05: "
+                 f"monotone {mono}, strictly decreasing until opaque {strict} (opaque from "
+                 f"density {[round(dens_steps[o] / ONE, 2) for o in opaque_at] if reached else None}), "
+                 f"exactly 0 beyond {beyond}  {'OK' if good else 'FAIL'}")
+    no_glow = s0.max_light_q > 0 and all(v == 0 for p in s0.light_glow for row in p
+                                         for v in row)
+    exact = all(rp_.light_glow[ch][y][x]
+                == (rp_.light_q[ch][y][x] * rp_.light_gcoef[ch][y][x]) >> 16
+                for ch in range(3) for y in range(n) for x in range(n))
+    only_gas = all(rp_.light_glow[ch][y][x] == 0 for ch in range(3)
+                   for y in range(n) for x in range(n) if x != xw)
+    glows = all(rp_.light_glow[ch][y][xw] > 0 for ch in range(3) for y in range(n))
+    rh_ = _smoke(poison, LQ(0.25))
+    prop = all(abs(rp_.light_glow[ch][y][xw] / rp_.light_q[ch][y][xw]
+                   - 2.0 * rh_.light_glow[ch][y][xw] / rh_.light_q[ch][y][xw]) <= 2.0 / ONE
+               for ch in range(3) for y in range(n))
+    good = no_glow and exact and only_gas and glows and prop
+    ok &= good
+    lines.append(f"  (d) no gas -> glow exactly 0 with light present {no_glow}; a gas "
+                 f"column: glow == (light_q * g) >> 16 at every cell {exact}, non-zero on "
+                 f"the gas cells {glows}, 0 on every other cell {only_gas}, glow per unit "
+                 f"light doubling with density (0.25 -> 0.5, within 2 Q16 counts) {prop}  "
+                 f"{'OK' if good else 'FAIL'}")
+    # ---- (e) colour follows temperature, hotter is brighter ---------------------
+    ok_e = True
+    temps = [540, 800, T_BURN_GAME, 3000, 6000, 12000, R.T_TABLE_TOP_GAME]
+    for tg in temps:
+        sc = _clear_room(5, T_src=tg << 16)
+        b = R.e_bucket_of(tg << 16)
+        for n_ord in (16, 12):
+            r = _light_sweep(sc, n_ord=n_ord)
+            wm = ONE // n_ord
+            ok_e &= r.light_emit == [n_ord * ((R.L_LIVE[ch][b] * wm) >> 16)
+                                     for ch in range(3)]
+    peak = [max((R.L_LIVE[ch][t] * 4096) >> 16 for ch in range(3))
+            for t in range(R.E_TABLE_SIZE)]
+    backward = sum(1 for t in range(R.E_TABLE_SIZE - 1) if peak[t + 1] < peak[t])
+    first = next(t for t in range(R.E_TABLE_SIZE) if peak[t] > 0)
+    good = ok_e and backward == 0
+    ok &= good
+    lines.append(f"  (e) a lone opaque cell at {temps} game emits EXACTLY n_ord * "
+                 f"((L°_c[T] * w_m) >> 16) per channel at S16 and S12: {ok_e}; the "
+                 f"peak-channel emission steps backward {backward} times over the whole "
+                 f"table (first glowing bucket {first}, {4 * first} game)  "
+                 f"{'OK' if good else 'FAIL'}")
+    # ---- (f) the flux vector points away from a lone source --------------------
+    n = 9 if fast else 13
+    sc = _clear_room(n, T_src=T_BURN_GAME << 16)
+    cy, cx = sc[6]
+    fxp, fyp = _light_sweep(sc).light_flux
+    right = all(fxp[cy][x] > 0 for x in range(cx + 1, n))
+    left = all(fxp[cy][x] < 0 for x in range(cx))
+    down = all(fyp[y][cx] > 0 for y in range(cy + 1, n))
+    up = all(fyp[y][cx] < 0 for y in range(cy))
+    mirror = all(fxp[y][cx + dx] == -fxp[y][cx - dx] and fyp[y][cx + dx] == fyp[y][cx - dx]
+                 for y in range(n) for dx in range(1, cx + 1))
+    good = right and left and down and up and mirror
+    ok &= good
+    lines.append(f"  (f) a lone source at ({cy},{cx}): flux_x > 0 to its right {right}, "
+                 f"< 0 to its left {left}; flux_y > 0 below {down}, < 0 above {up}; every "
+                 f"mirrored cell books the exactly mirrored vector {mirror}  "
+                 f"{'OK' if good else 'FAIL'}")
+    # ---- (g) headroom -------------------------------------------------------------
+    hh, ww = (7, 8) if fast else (9, 11)
+    top = R.T_TABLE_TOP_GAME << 16
+
+    def _over(tbl):
+        out = dict(stream=0, plain=0, lq=0, books=0)
+        for n_ord in (16, 12):
+            for ltr in ("step", "shear"):
+                full = _lplanes(hh, ww, ONE)
+                r1 = R.sweep_q(R.plane(hh, ww), R.plane(hh, ww), R.plane(hh, ww),
+                               R.plane(hh, ww, top), n_ord=n_ord,
+                               light=R.LightGroup(full, full, table=tbl, transport=ltr))
+                T2, la2 = R.plane(hh, ww), _lplanes(hh, ww)
+                for (y, x) in ((1, 1), (hh - 2, ww - 2), (hh // 2, 1)):
+                    T2[y][x] = top
+                    for ch in range(3):
+                        la2[ch][y][x] = ONE
+                r2 = R.sweep_q(R.plane(hh, ww), R.plane(hh, ww), R.plane(hh, ww), T2,
+                               n_ord=n_ord,
+                               light=R.LightGroup(la2, la2, table=tbl, transport=ltr))
+                for rr in (r1, r2):
+                    out["stream"] = max(out["stream"], rr.max_light_stream)
+                    out["plain"] = max(out["plain"], rr.max_light_plain_product)
+                    out["lq"] = max(out["lq"], rr.max_light_q)
+                    out["books"] = max(out["books"], *rr.light_emit, *rr.light_absorb,
+                                       *rr.light_ring_out)
+        return out
+
+    worst = _over(R.L_LIVE)
+    big = R.LTable([[v << 5 for v in ch] for ch in R.L_LIVE], fine_bits=R.L_FINE_BITS + 5)
+    worst_big = _over(big)
+    good = (worst["lq"] < 2 ** 46 and worst["plain"] < 2 ** 58
+            and worst["books"] < 2 ** 63 and worst_big["plain"] >= 2 ** 58)
+    ok &= good
+    lines.append(f"  (g) L_FINE_BITS = {R.L_FINE_BITS} (table top "
+                 f"2^{lg2(max(ch[-1] for ch in R.L_LIVE)):.2f}), over-driven (the top "
+                 f"everywhere; a transparent room of top emitters; S16/S12 x light "
+                 f"step/shear): max light stream 2^{lg2(worst['stream']):.2f}, per-cell "
+                 f"light_q 2^{lg2(worst['lq']):.2f} (< 2^46), widest plain product "
+                 f"2^{lg2(worst['plain']):.2f} (< 2^58), books 2^{lg2(worst['books']):.2f} "
+                 f"(< 2^63). PAIR: a table 2^5 larger: plain product "
+                 f"2^{lg2(worst_big['plain']):.2f} (crosses 2^58)  {'OK' if good else 'FAIL'}")
+    # ---- (h) the resolution floor -------------------------------------------------
+    fur = [LQ(v) for v in _config_row("materials", "furniture")["light_atten"]]
+    n = 35 if fast else 41
+    rad = 16
+
+    def _floor(tbl):
+        sc_ = _clear_room(n, T_src=T_BURN_GAME << 16, a_src=fur[0])
+        la_, ld_, (cy_, cx_) = sc_[4], sc_[5], sc_[6]
+        for ch in range(3):
+            la_[ch][cy_][cx_] = ld_[ch][cy_][cx_] = fur[ch]
+        r_ = _light_sweep(sc_, table=tbl, record_streams=True)
+        ring = [(y, x) for y in range(n) for x in range(n)
+                if rad - 0.5 <= math.hypot(y - cy_, x - cx_) < rad + 0.5]
+        per_cell = [max(r_.light_streams[m][0][y][x] for m in range(16)) for (y, x) in ring]
+        return min(per_cell), max(per_cell), len(ring)
+
+    lo, hi, n_ring = _floor(R.L_LIVE)
+    # the PAIR: the coarsest currency this criterion ALONE admits, and one bit
+    # past it -- so the measurement can fail, and the report says which of the
+    # brief's two floors sets L_FINE_BITS (the faintest-glow one does:
+    # tests/test_light_table.py, which needs blackbody.py's own LUT).
+    drop = 14                       # 2^21.8 of margin at k = 37: k = 23 must fail
+    coarse = R.LTable([[v >> drop for v in ch] for ch in R.L_LIVE],
+                      fine_bits=R.L_FINE_BITS - drop)
+    lo_c, _hi_c, _n = _floor(coarse)
+    good = lo >= 2 ** 8 and lo_c < 2 ** 8
+    ok &= good
+    lines.append(f"  (h) one burning tile (furniture light_atten {fur[0] / ONE:.2f}, "
+                 f"{T_BURN_GAME} game) in clear air, the {n_ring} cells 16 tiles away: its "
+                 f"brightest ordinate carries >= {lo} = 2^{lg2(lo):.2f} R counts on the "
+                 f"dimmest bearing (2^{lg2(hi):.2f} on the brightest); >= 2^8 required. "
+                 f"PAIR: a table 2^{drop} coarser (k = {R.L_FINE_BITS - drop}) falls to "
+                 f"2^{lg2(lo_c):.2f} -- this floor alone admits k >= "
+                 f"{R.L_FINE_BITS - drop + 1}; the faintest-glow floor sets k  "
+                 f"{'OK' if good else 'FAIL'}")
+    return ok, lines
+
+
 GATES = [
     ("G1  conservation", gate1_conservation),
     ("G2a uniform ambient fixed point", gate2a_uniform_ambient),
@@ -2688,6 +3152,8 @@ GATES = [
     ("G16 the clamp's ceiling: one bucket of headroom", gate16_clamp_ceiling),
     ("G17 the fine heat currency: near-ambient exchange resolved (#78)",
      gate17_fine_heat_currency),
+    ("G18 the light channels: books, darkness, optics, colour, flux, headroom, "
+     "floor (P6a)", gate18_light_channels),
 ]
 
 
