@@ -247,7 +247,8 @@ def _cuda_rows(args, tbl, t_amb_q, rng):
                 bp.cuda_radiation_sweep_resident(
                     1, h, w, dv["T"].data.ptr, dv["a"].data.ptr, dv["d"].data.ptr,
                     dv["his"].data.ptr, dv["ts"].data.ptr, 0, dv["vac"].data.ptr,
-                    d_etab.data.ptr, d_vl.data.ptr, d_kl.data.ptr, d_ta.data.ptr,
+                    d_etab.data.ptr, int(tbl.fine_bits),  # #78: the device table's currency
+                    d_vl.data.ptr, d_kl.data.ptr, d_ta.data.ptr,
                     *core_gas,                           # P5a gas group + P5b currency
                     transport, 16, True, d_out.data.ptr, scratch[0].data.ptr,
                     scratch[1].data.ptr, d_f.data.ptr,
