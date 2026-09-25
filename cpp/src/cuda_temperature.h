@@ -146,10 +146,12 @@ int64_t temperature_step(
     // ---- ray-engine-v2, THE FLIP (T5b step 6; design v3 P3) --------------
     // The MAXIMUM-PRINCIPLE CLAMP's two planes, the GPU twin of the CPU
     // solver's `rad_fluence` / `e_table` pair:
-    //     T_new = min(T_after, max(T_before, E^-1(Phi)))
+    //     T_new = min(T_after, max(T_before, e_ceiling_q(Phi)))
     // `rad_fluence` is the sweep's own Phi at the cell (int64 (h,w), H2D'd
     // here); `e_table` is the E° table (int64, EMISSIVE_TABLE_N entries) whose
-    // inverse `e_inv_q` is FP_HD and therefore the SAME function the CPU calls.
+    // clamp ceiling `e_ceiling_q` (P5d: the top of the first bucket out-emitting
+    // Phi; it was the inverse E^-1) is FP_HD and therefore the SAME function the
+    // CPU calls.
     // BOTH null -> no clamp, byte-identical to the pre-flip kernel, which is
     // what every direct-binding caller and every pre-flip test still gets.
     // The engagement count comes back in slot 11 (see below).
