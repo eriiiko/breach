@@ -91,5 +91,31 @@ def test_half_offset_keeps_every_ordinate_off_the_axes():
     assert math.isclose(sum(abs(mu) for mu, _ in R.ordinates(16)), 16 * 2 / math.pi, rel_tol=0.05)
 
 
+@pytest.mark.parametrize("n_ord", [16, 12])
+def test_direction_cosines_match_a_recompute_and_the_transport_tables(n_ord):
+    """PROPERTY (P6a, the light flux vector): the checked-in per-ordinate
+    direction cosines (mu_q, eta_q) in Q16 equal the reference's
+    ordinate_dirs() -- quant(cos), quant(sin) of the half-offset angles -- within
+    one count on this machine's libm, and ordinate m's signs are ordinate m's
+    sx, sy in BOTH transport tables (the flux sums I_m * s_m over the SAME
+    ordinates the streams were gathered along), with |s| = 1 to the Q16 grid.
+
+    BREAKS IF: a literal is mistyped, the table is out of step with the
+    transport tables (a flux component flips sign), or the angle set changes.
+    """
+    got = bp.RadiationSweep.ordinate_dirs(n_ord)
+    want = R.ordinate_dirs(n_ord)
+    assert len(got) == n_ord
+    shear = bp.RadiationSweep.ordinate_constants(n_ord, bp.RadiationSweep.SHEAR)
+    step = bp.RadiationSweep.ordinate_constants(n_ord, bp.RadiationSweep.STEP)
+    for m, ((gmu, geta), (wmu, weta)) in enumerate(zip(got, want)):
+        assert abs(gmu - wmu) <= 1 and abs(geta - weta) <= 1, (n_ord, m)
+        for tbl in (shear, step):
+            assert (1 if gmu > 0 else -1, 1 if geta > 0 else -1) == (tbl[m][0], tbl[m][1])
+        assert abs(gmu * gmu + geta * geta - R.ONE * R.ONE) <= 2 * R.ONE
+    with pytest.raises(ValueError):
+        bp.RadiationSweep.ordinate_dirs(8)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

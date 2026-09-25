@@ -114,8 +114,32 @@ WavefrontShape wavefront_shape(const OrdinateConst* tbl, int n_ordinates,
 
 __device__ __forceinline__ bool env_rejected(const int64_t* c) {
     return (c[RS_SLOT_BAD_EXTINCTION] | c[RS_SLOT_BAD_AMBIENT] |
-            c[RS_SLOT_BAD_SCALARS]) != 0;
+            c[RS_SLOT_BAD_SCALARS] | c[RS_SLOT_BAD_LIGHT_EXTINCTION]) != 0;
 }
+
+// P6a: THE LIGHT GROUP's kernel arguments, passed BY VALUE (device pointers +
+// the per-ordinate constants of LIGHT's transport and the direction cosines,
+// copied on the host from RadiationSweep's own checked-in tables -- never
+// re-typed here). `on` false: every light branch below is dead.
+struct LightKArgs {
+    bool on;
+    bool lshear;                          // light's transport is shear (step live)
+    OrdinateConst loc[16];                // light's per-ordinate table
+    int32_t mu[16];                       // direction cosines, Q16
+    int32_t eta[16];
+    const int32_t* la;                    // (N, h, w, 3) material share a_c
+    const int32_t* ld;                    // (N, h, w, 3) stamped total d_c
+    const int64_t* l_table;               // (3, E_TABLE_SIZE)
+    const int32_t* lab;                   // (n_gases, 3) nullable
+    const int32_t* lgl;                   // (n_gases, 3) nullable
+    int64_t* l_outflow;                   // (N, n_ord, h, w, 3)
+    int64_t* l_emit;                      // (N, h, w, 3)
+    int32_t* l_d;                         // (N, h, w, 3)
+    int32_t* l_g;                         // (N, h, w, 3)
+    int64_t* light_q;                     // (N, h, w, 3)
+    int64_t* light_flux_q;                // (N, h, w, 2)
+    int64_t* light_glow;                  // (N, h, w, 3)
+};
 
 // One book entry, the tree's int64 atomic idiom (design §8.2;
 // cuda_temperature.cu's cadd): unsigned wrap IS two's-complement signed
@@ -151,6 +175,11 @@ __global__ void rs_init_env(int n_env,
         c[RS_SLOT_BAD_SCALARS]    = bits;
         c[RS_SLOT_MIN_STREAM]     = INT64_MAX;
         c[RS_SLOT_MAX_STREAM]     = INT64_MIN;
+        // P6a: the light slots -- the rejection count and the four books start
+        // at 0, the light-stream telemetry at the empty-set sentinels.
+        for (int s = RS_SLOT_BAD_LIGHT_EXTINCTION; s < RS_SLOT_LIGHT_MIN_STREAM; ++s) c[s] = 0;
+        c[RS_SLOT_LIGHT_MIN_STREAM] = INT64_MAX;
+        c[RS_SLOT_LIGHT_MAX_STREAM] = INT64_MIN;
     }
 }
 
@@ -180,7 +209,8 @@ __global__ void rs_prepass(int n_env, int plane,
                            int32_t* __restrict__ f_q24,
                            int32_t* __restrict__ a_eff,
                            int32_t* __restrict__ d_eff,
-                           int64_t* __restrict__ cnt) {
+                           int64_t* __restrict__ cnt,
+                           LightKArgs lk, int n_ordinates) {   // P6a
     const int64_t total = (int64_t)n_env * (int64_t)plane;
     for (int64_t gi = (int64_t)blockIdx.x * blockDim.x + threadIdx.x; gi < total;
          gi += (int64_t)gridDim.x * blockDim.x) {
@@ -248,6 +278,48 @@ __global__ void rs_prepass(int n_env, int plane,
         int64_t T_abs = (int64_t)temperature[gi] + (int64_t)t_amb_q[env];
         if (T_abs < 1) T_abs = 1;
         f_q24[gi] = fleck_enabled ? fleck_f_q24(T_abs, L) : F_ONE;
+
+        if (!lk.on) continue;
+        // ---- P6a: run()'s LIGHT PRE-PASS, per channel, verbatim -------------
+        // The ingress check (counted, not thrown), the smoke term on a gas cell
+        // through the same FP_HD pieces (the planes here are the UNION of the
+        // heat- and light-active gases; a gas with zero light coefficients adds
+        // exactly 0 to these sums, as it does on the CPU which skips it), the
+        // glow coefficient, and the per-ordinate emission formed once. The
+        // emission book is n_ordinates x that integer, booked per cell.
+        const int b = e_bucket_of(temperature[gi]);
+        const bool gas_cell = (lk.lab != nullptr && n_gases > 0 && !thermal_solid[gi]);
+        const size_t cell = (size_t)(gi - (int64_t)env * (int64_t)plane);
+        const int32_t* genv = (n_gases > 0)
+            ? gas + (size_t)env * (size_t)n_gases * (size_t)plane : nullptr;
+        for (int ch = 0; ch < 3; ++ch) {
+            const size_t ic = (size_t)gi * 3 + (size_t)ch;
+            int32_t la_c = lk.la[ic];
+            int32_t ld_c = lk.ld[ic];
+            if (la_c < 0 || la_c > ld_c || ld_c > FP_ONE)
+                atomicAdd((unsigned long long*)&c[RS_SLOT_BAD_LIGHT_EXTINCTION], 1ULL);
+            int32_t g_c = 0;
+            if (gas_cell) {
+                int64_t sa = 0, sg = 0;
+                for (int g = 0; g < n_gases; ++g) {
+                    const int32_t dens = genv[(size_t)g * (size_t)plane + cell];
+                    sa += gas_density_term(lk.lab[g * 3 + ch], dens);
+                    sg += gas_density_term(lk.lgl[g * 3 + ch], dens);
+                }
+                const int32_t a_gas = gas_extinction_finish(sa, n_bulk[gi]);
+                la_c = gas_effective_a(la_c, a_gas, false);
+                ld_c = gas_effective_d(ld_c, la_c);
+                g_c = gas_extinction_finish(sg, n_bulk[gi]);
+            }
+            lk.l_d[ic] = ld_c;
+            lk.l_g[ic] = g_c;
+            const int64_t src = (lk.l_table[(size_t)ch * E_TABLE_SIZE + (size_t)b] * w_m) >> FP_SHIFT;
+            const int64_t em = (src * (int64_t)la_c) >> FP_SHIFT;
+            lk.l_emit[ic] = em;
+            if (em != 0)
+                atomicAdd((unsigned long long*)&c[RS_SLOT_LIGHT_EMIT + ch],
+                          (unsigned long long)(em * (int64_t)n_ordinates));
+        }
     }
 }
 
@@ -256,7 +328,8 @@ __global__ void rs_zero(int n_env, int plane, const int64_t* __restrict__ cnt,
                         int64_t* __restrict__ rad_net,
                         int64_t* __restrict__ rad_flux,
                         int64_t* __restrict__ rad_amb,
-                        int64_t* __restrict__ rad_fluence) {
+                        int64_t* __restrict__ rad_fluence,
+                        LightKArgs lk) {                         // P6a
     const int64_t total = (int64_t)n_env * (int64_t)plane;
     for (int64_t gi = (int64_t)blockIdx.x * blockDim.x + threadIdx.x; gi < total;
          gi += (int64_t)gridDim.x * blockDim.x) {
@@ -266,6 +339,14 @@ __global__ void rs_zero(int n_env, int plane, const int64_t* __restrict__ cnt,
         rad_flux[gi] = 0;
         rad_amb[gi] = 0;
         rad_fluence[gi] = 0;
+        if (lk.on) {             // run()'s zeroing of the three light outputs
+            for (int ch = 0; ch < 3; ++ch) {
+                lk.light_q[(size_t)gi * 3 + ch] = 0;
+                lk.light_glow[(size_t)gi * 3 + ch] = 0;
+            }
+            lk.light_flux_q[(size_t)gi * 2 + 0] = 0;
+            lk.light_flux_q[(size_t)gi * 2 + 1] = 0;
+        }
     }
 }
 
@@ -274,6 +355,14 @@ __global__ void rs_zero(int n_env, int plane, const int64_t* __restrict__ cnt,
 // blockIdx.z the env, so the env, the ordinate and the wavefront's geometry
 // are BLOCK-UNIFORM (every early return below is taken by whole blocks, which
 // is what lets the warp reduction at the end use a full mask).
+// P6a: templated on LIGHT. With it every ordinate's wavefront is the step
+// transport's ANTI-DIAGONAL (px + py == wf, measured from the ordinate's upwind
+// corner) -- topological for step (both upwind cells on wf - 1) and for shear
+// (x-major: wf - 1 and wf - 2; y-major likewise), so the heat body below reads
+// only cells an earlier launch wrote, and the gather form gives it the SAME
+// integers as the column walk: heat bit-identical with light on or off. Without
+// LIGHT the geometry is exactly the P4 one, launch for launch.
+template <bool LIGHT>
 __global__ void rs_wavefront(int wf, int h, int w, int n_ordinates, bool shear,
                              SweepOrdinates ords, int64_t w_m,
                              const int32_t* __restrict__ a_eff,       // P5a: the
@@ -287,7 +376,8 @@ __global__ void rs_wavefront(int wf, int h, int w, int n_ordinates, bool shear,
                              int64_t* __restrict__ rad_flux,
                              int64_t* __restrict__ rad_amb,
                              int64_t* __restrict__ rad_fluence,
-                             int64_t* __restrict__ cnt) {
+                             int64_t* __restrict__ cnt,
+                             LightKArgs lk) {                        // P6a
     const int env = blockIdx.z;
     const int m = blockIdx.y;
     int64_t* c = cnt + (size_t)env * RADIATION_SWEEP_CNT_SLOTS;
@@ -314,9 +404,11 @@ __global__ void rs_wavefront(int wf, int h, int w, int n_ordinates, bool shear,
 
     // This ordinate's wavefront `wf`: its length L (0 when this ordinate has no
     // wavefront at this index — a short axis, or past the last anti-diagonal).
+    // P6a: with LIGHT, the anti-diagonal for every ordinate (see above).
+    const bool diag = LIGHT || !shear;
     int L = 0;
     int py_lo = 0;
-    if (shear) {
+    if (!diag) {
         if (xm) L = (wf < w) ? h : 0;          // column wf, from the upwind side
         else    L = (wf < h) ? w : 0;          // row wf, from the upwind side
     } else {
@@ -329,9 +421,13 @@ __global__ void rs_wavefront(int wf, int h, int w, int n_ordinates, bool shear,
     const int j = blockIdx.x * blockDim.x + threadIdx.x;
     int64_t s_min = INT64_MAX;
     int64_t s_max = INT64_MIN;
+    // P6a: this thread's absorbed light (warp-reduced below) and telemetry
+    int64_t l_abs0 = 0, l_abs1 = 0, l_abs2 = 0;
+    int64_t ls_min = INT64_MAX;
+    int64_t ls_max = INT64_MIN;
     if (j < L) {
         int y, x;
-        if (shear) {
+        if (!diag) {
             if (xm) { x = (sx > 0) ? wf : (w - 1 - wf); y = j; }
             else    { y = (sy > 0) ? wf : (h - 1 - wf); x = j; }
         } else {
@@ -397,6 +493,69 @@ __global__ void rs_wavefront(int wf, int h, int w, int n_ordinates, bool shear,
         book(&rad_fluence[gi], stream);                // Φ, for the clamp
         s_min = stream;
         s_max = stream;
+
+        if (LIGHT) {
+            // ---- P6a: run()'s LIGHT channels at this cell, this ordinate ----
+            // LIGHT's own upwind pair (its transport's table entry), its own
+            // stores (plane m of (N, n_ord, h, w, 3)), the DARK ring (an
+            // off-grid read is 0), the whole stamped share absorbed, the
+            // per-ordinate emission added; line for line radiation_sweep.cpp.
+            const OrdinateConst loc = lk.loc[m];
+            const int64_t ls_m = loc.s_m;
+            int lady, ladx, lbdy, lbdx;
+            if (lk.lshear) {
+                if (loc.x_major != 0) { lady = 0;   ladx = -sx; lbdy = -sy; lbdx = -sx; }
+                else                  { lady = -sy; ladx = 0;   lbdy = -sy; lbdx = -sx; }
+            } else {
+                lady = 0; ladx = -sx; lbdy = -sy; lbdx = 0;
+            }
+            const int luay = y + lady, luax = x + ladx;
+            const int luby = y + lbdy, lubx = x + lbdx;
+            const bool in_la = (luay >= 0 && luay < h && luax >= 0 && luax < w);
+            const bool in_lb = (luby >= 0 && luby < h && lubx >= 0 && lubx < w);
+            const int ltay = y - lady, ltax = x - ladx;
+            const int ltby = y - lbdy, ltbx = x - lbdx;
+            const bool out_la = !(ltay >= 0 && ltay < h && ltax >= 0 && ltax < w);
+            const bool out_lb = !(ltby >= 0 && ltby < h && ltbx >= 0 && ltbx < w);
+            int64_t* lstore = lk.l_outflow + ((size_t)env * n_ordinates + m) * plane * 3;
+            const int64_t* la_src = in_la ? lstore + ((size_t)luay * w + luax) * 3 : nullptr;
+            const int64_t* lb_src = in_lb ? lstore + ((size_t)luby * w + lubx) * 3 : nullptr;
+            int64_t I_m = 0;
+            int64_t l_abs[3];
+            for (int ch = 0; ch < 3; ++ch) {
+                const int64_t io_la = in_la ? la_src[ch] : 0;       // the dark ring
+                const int64_t io_lb = in_lb ? lb_src[ch] : 0;
+                const int64_t lfa = (io_la * ls_m) >> FP_SHIFT;
+                const int64_t lfb = io_lb - ((io_lb * ls_m) >> FP_SHIFT);   // the REMAINDER
+                const int64_t lstream = lfa + lfb;
+                int64_t rin = 0;
+                if (!in_la) rin += lfa;
+                if (!in_lb) rin += lfb;
+                book(&c[RS_SLOT_LIGHT_RING_IN + ch], rin);
+                const size_t ic = gi * 3 + (size_t)ch;
+                const int64_t absorbed = (lstream * (int64_t)lk.l_d[ic]) >> FP_SHIFT;
+                const int64_t lout = lstream - absorbed + lk.l_emit[ic];
+                book(&lk.light_q[ic], lstream);
+                l_abs[ch] = absorbed;
+                lstore[(size_t)i * 3 + ch] = lout;
+                if (out_la || out_lb) {
+                    const int64_t lfa_o = (lout * ls_m) >> FP_SHIFT;
+                    int64_t rout = 0;
+                    if (out_la) rout += lfa_o;
+                    if (out_lb) rout += lout - lfa_o;
+                    book(&c[RS_SLOT_LIGHT_RING_OUT + ch], rout);
+                }
+                I_m += lstream;
+                if (lstream < ls_min) ls_min = lstream;
+                if (lstream > ls_max) ls_max = lstream;
+            }
+            l_abs0 = l_abs[0]; l_abs1 = l_abs[1]; l_abs2 = l_abs[2];
+            // the net flux vector, the SYMMETRIC shift (the kit's one function)
+            book(&lk.light_flux_q[gi * 2 + 0],
+                 fixedpoint::shr_round0_i64(I_m * (int64_t)lk.mu[m], FP_SHIFT));
+            book(&lk.light_flux_q[gi * 2 + 1],
+                 fixedpoint::shr_round0_i64(I_m * (int64_t)lk.eta[m], FP_SHIFT));
+        }
     }
 
     // The stream telemetry (run()'s min_stream / max_stream): a warp
@@ -407,10 +566,45 @@ __global__ void rs_wavefront(int wf, int h, int w, int n_ordinates, bool shear,
         const long long o_max = __shfl_down_sync(0xffffffffu, (long long)s_max, off);
         if (o_min < s_min) s_min = o_min;
         if (o_max > s_max) s_max = o_max;
+        if (LIGHT) {
+            // P6a: the absorbed light (a SUM -- integer addition is order-free,
+            // so the warp's partial is the CPU's partial) and its telemetry
+            l_abs0 += (int64_t)__shfl_down_sync(0xffffffffu, (long long)l_abs0, off);
+            l_abs1 += (int64_t)__shfl_down_sync(0xffffffffu, (long long)l_abs1, off);
+            l_abs2 += (int64_t)__shfl_down_sync(0xffffffffu, (long long)l_abs2, off);
+            const long long ol_min = __shfl_down_sync(0xffffffffu, (long long)ls_min, off);
+            const long long ol_max = __shfl_down_sync(0xffffffffu, (long long)ls_max, off);
+            if (ol_min < ls_min) ls_min = ol_min;
+            if (ol_max > ls_max) ls_max = ol_max;
+        }
     }
     if ((threadIdx.x & 31) == 0 && s_min <= s_max) {
         atomicMin((long long*)&c[RS_SLOT_MIN_STREAM], (long long)s_min);
         atomicMax((long long*)&c[RS_SLOT_MAX_STREAM], (long long)s_max);
+        if (LIGHT) {
+            book(&c[RS_SLOT_LIGHT_ABSORB + 0], l_abs0);
+            book(&c[RS_SLOT_LIGHT_ABSORB + 1], l_abs1);
+            book(&c[RS_SLOT_LIGHT_ABSORB + 2], l_abs2);
+            atomicMin((long long*)&c[RS_SLOT_LIGHT_MIN_STREAM], (long long)ls_min);
+            atomicMax((long long*)&c[RS_SLOT_LIGHT_MAX_STREAM], (long long)ls_max);
+        }
+    }
+}
+
+// ---- 5. P6a: THE GLOW (render-only, never in the books) --------------------
+// run()'s post-pass: light_q x the glow coefficient, in 128 bits, per env,
+// only where the env passed ingress; 0 wherever the smoke term put no
+// coefficient (the CPU's `g == 0` branch).
+__global__ void rs_glow(int n_env, int plane, const int64_t* __restrict__ cnt,
+                        LightKArgs lk) {
+    const int64_t total = (int64_t)n_env * (int64_t)plane * 3;
+    for (int64_t gi = (int64_t)blockIdx.x * blockDim.x + threadIdx.x; gi < total;
+         gi += (int64_t)gridDim.x * blockDim.x) {
+        const int env = (int)(gi / ((int64_t)plane * 3));
+        if (env_rejected(cnt + (size_t)env * RADIATION_SWEEP_CNT_SLOTS)) continue;
+        const int32_t g = lk.l_g[gi];
+        lk.light_glow[gi] = (g == 0) ? 0
+            : fixedpoint::mul128_shr(lk.light_q[gi], (int64_t)g, FP_SHIFT);
     }
 }
 
@@ -444,11 +638,15 @@ long long g_radiation_sweep_calls = 0;
 }  // namespace
 
 // ---------------------------------------------------------------------------
-int radiation_sweep_launch_count(int transport, int n_ordinates, int h, int w) {
+int radiation_sweep_launch_count(int transport, int n_ordinates, int h, int w,
+                                 bool light) {
     const OrdinateConst* tbl = RadiationSweep::ordinate_table(n_ordinates, transport);
     if (tbl == nullptr) return -1;
     if (h <= 0 || w <= 0) return 0;
     const bool shear = (transport == RadiationSweep::TRANSPORT_SHEAR);
+    // P6a: with light, every ordinate walks the step anti-diagonals (h + w - 1
+    // launches, whatever heat's transport) and one glow launch follows.
+    if (light) return 3 + (h + w - 1) + 1;
     return 3 + wavefront_shape(tbl, n_ordinates, shear, h, w).K;
 }
 
@@ -469,13 +667,57 @@ int radiation_sweep_launch_resident(
     int32_t* d_a_eff, int32_t* d_d_eff,
     int64_t* d_rad_net, int64_t* d_rad_flux, int64_t* d_rad_amb,
     int64_t* d_rad_fluence,
-    int64_t* d_cnt) {
+    int64_t* d_cnt,
+    const RadiationLightDev* light) {
     const OrdinateConst* tbl = RadiationSweep::ordinate_table(n_ordinates, transport);
     if (tbl == nullptr) {
         throw std::invalid_argument(
             "radiation_sweep_launch_resident: unsupported (n_ordinates, "
             "transport) - n_ordinates must be 16 or 12, transport "
             "TRANSPORT_STEP (0) or TRANSPORT_SHEAR (1)");
+    }
+    // P6a: THE LIGHT GROUP's host-side door (the per-cell extinction check is
+    // counted on the device): every plane and scratch pointer present, a known
+    // light transport, the smoke columns both-or-neither and only with the gas
+    // group. The table's dark bucket 0 and the coefficients' range are the
+    // per-call path's (they are host data there; here they live on the device).
+    LightKArgs lk{};
+    lk.on = (light != nullptr);
+    if (lk.on) {
+        const OrdinateConst* ltbl =
+            RadiationSweep::ordinate_table(n_ordinates, light->transport);
+        const OrdinateDir* dirs = RadiationSweep::ordinate_dirs(n_ordinates);
+        if (ltbl == nullptr || dirs == nullptr ||
+            light->d_light_atten_q == nullptr || light->d_dyn_light_atten_q == nullptr ||
+            light->d_l_table == nullptr || light->d_l_outflow == nullptr ||
+            light->d_l_emit == nullptr || light->d_l_d == nullptr ||
+            light->d_l_g == nullptr || light->d_light_q == nullptr ||
+            light->d_light_flux_q == nullptr || light->d_light_glow == nullptr ||
+            ((light->d_light_absorb_q16 == nullptr) != (light->d_light_glow_q16 == nullptr)) ||
+            (light->d_light_absorb_q16 != nullptr && d_gas == nullptr)) {
+            throw std::invalid_argument(
+                "radiation_sweep_launch_resident: the light group needs every "
+                "plane and scratch pointer, a known light transport, and its two "
+                "smoke columns together and only with the gas group (P6a)");
+        }
+        lk.lshear = (light->transport == RadiationSweep::TRANSPORT_SHEAR);
+        for (int m = 0; m < n_ordinates; ++m) {
+            lk.loc[m] = ltbl[m];
+            lk.mu[m] = dirs[m].mu_q;
+            lk.eta[m] = dirs[m].eta_q;
+        }
+        lk.la = light->d_light_atten_q;
+        lk.ld = light->d_dyn_light_atten_q;
+        lk.l_table = light->d_l_table;
+        lk.lab = light->d_light_absorb_q16;
+        lk.lgl = light->d_light_glow_q16;
+        lk.l_outflow = light->d_l_outflow;
+        lk.l_emit = light->d_l_emit;
+        lk.l_d = light->d_l_d;
+        lk.l_g = light->d_l_g;
+        lk.light_q = light->d_light_q;
+        lk.light_flux_q = light->d_light_flux_q;
+        lk.light_glow = light->d_light_glow;
     }
     // P5a: the gas group's host-side shape checks (the table's VALUES are
     // counted on the device by rs_init_env, per env, the core's contract).
@@ -541,27 +783,50 @@ int radiation_sweep_launch_resident(
         d_gas, n_gases, d_heat_absorb_q16, d_n_bulk,
         n_floor_q, recip_cv, e_fine_bits,
         w_m, fleck_enabled,
-        d_amb_m, d_ex_cell, d_f_q24, d_a_eff, d_d_eff, d_cnt);
+        d_amb_m, d_ex_cell, d_f_q24, d_a_eff, d_d_eff, d_cnt,
+        lk, n_ordinates);
     cuda_check(cudaGetLastError(), "prepass launch");
     ++launches;
 
     rs_zero<<<grid_for(total), BLOCK>>>(n_env, plane, d_cnt, d_rad_net,
-                                        d_rad_flux, d_rad_amb, d_rad_fluence);
+                                        d_rad_flux, d_rad_amb, d_rad_fluence, lk);
     cuda_check(cudaGetLastError(), "zero launch");
     ++launches;
 
-    const WavefrontShape ws = wavefront_shape(tbl, n_ordinates, shear, h, w);
-    const dim3 grid((unsigned)((ws.L_max + BLOCK - 1) / BLOCK),
+    if (!lk.on) {
+        const WavefrontShape ws = wavefront_shape(tbl, n_ordinates, shear, h, w);
+        const dim3 grid((unsigned)((ws.L_max + BLOCK - 1) / BLOCK),
+                        (unsigned)n_ordinates, (unsigned)n_env);
+        for (int wf = 0; wf < ws.K; ++wf) {
+            rs_wavefront<false><<<grid, BLOCK>>>(
+                wf, h, w, n_ordinates, shear, ords, w_m,
+                d_a_eff, d_d_eff, d_k_leak_q,
+                d_amb_m, d_ex_cell, d_f_q24, d_outflow,
+                d_rad_net, d_rad_flux, d_rad_amb, d_rad_fluence, d_cnt, lk);
+            cuda_check(cudaGetLastError(), "wavefront launch");
+            ++launches;
+        }
+        return launches;
+    }
+    // P6a: LIGHT -- the step anti-diagonals for every ordinate (topological for
+    // heat's shear too), h + w - 1 launches of at most min(h, w) cells, then the
+    // glow post-pass once every stream has been booked.
+    const int K = h + w - 1;
+    const int L_max = (h < w) ? h : w;
+    const dim3 grid((unsigned)((L_max + BLOCK - 1) / BLOCK),
                     (unsigned)n_ordinates, (unsigned)n_env);
-    for (int wf = 0; wf < ws.K; ++wf) {
-        rs_wavefront<<<grid, BLOCK>>>(
+    for (int wf = 0; wf < K; ++wf) {
+        rs_wavefront<true><<<grid, BLOCK>>>(
             wf, h, w, n_ordinates, shear, ords, w_m,
             d_a_eff, d_d_eff, d_k_leak_q,
             d_amb_m, d_ex_cell, d_f_q24, d_outflow,
-            d_rad_net, d_rad_flux, d_rad_amb, d_rad_fluence, d_cnt);
-        cuda_check(cudaGetLastError(), "wavefront launch");
+            d_rad_net, d_rad_flux, d_rad_amb, d_rad_fluence, d_cnt, lk);
+        cuda_check(cudaGetLastError(), "light wavefront launch");
         ++launches;
     }
+    rs_glow<<<grid_for(total * 3), BLOCK>>>(n_env, plane, d_cnt, lk);
+    cuda_check(cudaGetLastError(), "glow launch");
+    ++launches;
     return launches;
 }
 
@@ -579,7 +844,9 @@ int radiation_sweep_step(
     int32_t* fleck_out, int64_t* min_stream_out, int64_t* max_stream_out,
     const int32_t* gas, int n_gases,
     const int32_t* heat_absorb_q16, const int32_t* n_bulk,
-    int32_t n_floor_q, int64_t recip_cv) {
+    int32_t n_floor_q, int64_t recip_cv,
+    const LightChannels* light,
+    int64_t* light_books_out, int64_t* light_min_out, int64_t* light_max_out) {
     if (RadiationSweep::ordinate_table(n_ordinates, transport) == nullptr) {
         throw std::invalid_argument(
             "radiation_sweep_step (CUDA): unsupported (n_ordinates, transport) "
@@ -616,10 +883,25 @@ int radiation_sweep_step(
             "fold's gas currency - n_floor_q and recip_cv must both be > 0 "
             "(design v3 section 2.8's gas arm, P5b)");
     }
-    // The ACTIVE gases, as run() forms them: a zero coefficient adds exactly 0
-    // to the density sum, so its plane never crosses the bus.
+    // P6a: the light group's host-side door -- the SAME function run() calls,
+    // so the two backends refuse one scene one way, before anything crosses
+    // the bus (the per-cell extinction check is counted on the device).
+    const bool light_on = (light != nullptr);
+    if (light_on) {
+        RadiationSweep::validate_light_group(*light, n_ordinates, gas, n_bulk, n_gases);
+    }
+    const bool lsmoke = light_on && (light->light_absorb_q16 != nullptr);
+    // The ACTIVE gases: a zero coefficient adds exactly 0 to a density sum, so
+    // its plane never crosses the bus. Heat's are the gases with a non-zero
+    // heat_absorb (run()'s set); with light (P6a) the planes uploaded are the
+    // UNION with light's (any non-zero light coefficient) -- each carried with
+    // its heat coefficient (0 for a light-only gas: the heat sum adds exactly
+    // 0 for it) and its two light rows (0 for a heat-only gas). Light off, the
+    // set and the cost are P4's, plane for plane.
     int act_g[RadiationSweep::N_GAS_PLANES_MAX];
     int32_t act_hq[RadiationSweep::N_GAS_PLANES_MAX];
+    int32_t act_lab[RadiationSweep::N_GAS_PLANES_MAX * 3];
+    int32_t act_lgl[RadiationSweep::N_GAS_PLANES_MAX * 3];
     int n_act = 0;
     for (int g = 0; g < n_gases; ++g) {
         const int32_t hq = heat_absorb_q16[g];
@@ -629,7 +911,22 @@ int radiation_sweep_step(
                 "2^28] (the gas door's [0, 4096]; negative would be a source, "
                 "above it the density sum is no longer provably exact in int64)");
         }
-        if (hq != 0) { act_g[n_act] = g; act_hq[n_act] = hq; ++n_act; }
+        bool lact = false;
+        if (lsmoke) {
+            for (int c = 0; c < 3; ++c) {
+                lact = lact || light->light_absorb_q16[g * 3 + c] != 0 ||
+                       light->light_glow_q16[g * 3 + c] != 0;
+            }
+        }
+        if (hq != 0 || lact) {
+            act_g[n_act] = g;
+            act_hq[n_act] = hq;
+            for (int c = 0; c < 3; ++c) {
+                act_lab[n_act * 3 + c] = lsmoke ? light->light_absorb_q16[g * 3 + c] : 0;
+                act_lgl[n_act * 3 + c] = lsmoke ? light->light_glow_q16[g * 3 + c] : 0;
+            }
+            ++n_act;
+        }
     }
     const size_t n = (size_t)h * (size_t)w;
     if (h <= 0 || w <= 0) {
@@ -668,6 +965,20 @@ int radiation_sweep_step(
     const size_t o_ra   = ar.carve(n64);
     const size_t o_rl   = ar.carve(n64);
     const size_t o_cnt  = ar.carve(RADIATION_SWEEP_CNT_SLOTS * sizeof(int64_t));
+    // P6a: the light group's inputs, scratch and outputs (light on only)
+    const bool l_gas = lsmoke && n_act > 0;
+    const size_t o_la    = light_on ? ar.carve(n32 * 3) : 0;
+    const size_t o_ld    = light_on ? ar.carve(n32 * 3) : 0;
+    const size_t o_ltab  = light_on ? ar.carve((size_t)L_CHANNELS * E_TABLE_SIZE * sizeof(int64_t)) : 0;
+    const size_t o_lab   = l_gas ? ar.carve((size_t)n_act * 3 * sizeof(int32_t)) : 0;
+    const size_t o_lgl   = l_gas ? ar.carve((size_t)n_act * 3 * sizeof(int32_t)) : 0;
+    const size_t o_lout  = light_on ? ar.carve((size_t)n_ordinates * n64 * 3) : 0;
+    const size_t o_lemit = light_on ? ar.carve(n64 * 3) : 0;
+    const size_t o_ldd   = light_on ? ar.carve(n32 * 3) : 0;
+    const size_t o_lg    = light_on ? ar.carve(n32 * 3) : 0;
+    const size_t o_lq    = light_on ? ar.carve(n64 * 3) : 0;
+    const size_t o_lf    = light_on ? ar.carve(n64 * 2) : 0;
+    const size_t o_lglow = light_on ? ar.carve(n64 * 3) : 0;
     cuda_check(cudaMalloc((void**)&ar.base, ar.size), "malloc arena");
 
     // ---- H2D: the inputs and the three per-env scalars (N = 1) ----
@@ -710,6 +1021,39 @@ int radiation_sweep_step(
         cuda_check(cudaMemcpy(ar.at<int32_t>(o_nb), n_bulk, n32,
                               cudaMemcpyHostToDevice), "H2D n_bulk");
     }
+    // P6a: the light group's inputs -- its two planes, the L° table and the
+    // union-packed light coefficient rows.
+    RadiationLightDev ldev{};
+    if (light_on) {
+        cuda_check(cudaMemcpy(ar.at<int32_t>(o_la), light->light_atten_q, n32 * 3,
+                              cudaMemcpyHostToDevice), "H2D light_atten_q");
+        cuda_check(cudaMemcpy(ar.at<int32_t>(o_ld), light->dyn_light_atten_q, n32 * 3,
+                              cudaMemcpyHostToDevice), "H2D dyn_light_atten_q");
+        cuda_check(cudaMemcpy(ar.at<int64_t>(o_ltab), light->l_table,
+                              (size_t)L_CHANNELS * E_TABLE_SIZE * sizeof(int64_t),
+                              cudaMemcpyHostToDevice), "H2D l_table");
+        if (l_gas) {
+            cuda_check(cudaMemcpy(ar.at<int32_t>(o_lab), act_lab,
+                                  (size_t)n_act * 3 * sizeof(int32_t),
+                                  cudaMemcpyHostToDevice), "H2D light_absorb_q16");
+            cuda_check(cudaMemcpy(ar.at<int32_t>(o_lgl), act_lgl,
+                                  (size_t)n_act * 3 * sizeof(int32_t),
+                                  cudaMemcpyHostToDevice), "H2D light_glow_q16");
+        }
+        ldev.d_light_atten_q     = ar.at<int32_t>(o_la);
+        ldev.d_dyn_light_atten_q = ar.at<int32_t>(o_ld);
+        ldev.d_l_table           = ar.at<int64_t>(o_ltab);
+        ldev.d_light_absorb_q16  = l_gas ? ar.at<int32_t>(o_lab) : nullptr;
+        ldev.d_light_glow_q16    = l_gas ? ar.at<int32_t>(o_lgl) : nullptr;
+        ldev.transport           = light->transport;
+        ldev.d_l_outflow         = ar.at<int64_t>(o_lout);
+        ldev.d_l_emit            = ar.at<int64_t>(o_lemit);
+        ldev.d_l_d               = ar.at<int32_t>(o_ldd);
+        ldev.d_l_g               = ar.at<int32_t>(o_lg);
+        ldev.d_light_q           = ar.at<int64_t>(o_lq);
+        ldev.d_light_flux_q      = ar.at<int64_t>(o_lf);
+        ldev.d_light_glow        = ar.at<int64_t>(o_lglow);
+    }
 
     const int launches = radiation_sweep_launch_resident(
         1, h, w,
@@ -729,7 +1073,8 @@ int radiation_sweep_step(
         ar.at<int32_t>(o_ae), ar.at<int32_t>(o_de),
         ar.at<int64_t>(o_rn), ar.at<int64_t>(o_rf), ar.at<int64_t>(o_ra),
         ar.at<int64_t>(o_rl),
-        ar.at<int64_t>(o_cnt));
+        ar.at<int64_t>(o_cnt),
+        light_on ? &ldev : nullptr);       // P6a
     cuda_check(cudaDeviceSynchronize(), "sync");
 
     // ---- the ingress verdict FIRST: a rejected scene copies nothing back ----
@@ -764,6 +1109,12 @@ int radiation_sweep_step(
             "radiation_sweep_step (CUDA): amb_level outside [0, E0] (the "
             "per-cell ambient invariant, thermal model v2 R3)");
     }
+    if (cnt[RS_SLOT_BAD_LIGHT_EXTINCTION] != 0) {
+        throw std::invalid_argument(
+            "radiation_sweep_step (CUDA): the light extinction planes violate "
+            "0 <= a <= d <= ONE on some channel (light_atten_q / "
+            "dyn_light_atten_q ingress invariant, P6a)");
+    }
 
     // ---- D2H: the four books, the Fleck plane, the stream telemetry ----
     cuda_check(cudaMemcpy(rad_net, ar.at<int64_t>(o_rn), n64,
@@ -779,6 +1130,25 @@ int radiation_sweep_step(
                               cudaMemcpyDeviceToHost), "D2H fleck");
     if (min_stream_out) *min_stream_out = cnt[RS_SLOT_MIN_STREAM];
     if (max_stream_out) *max_stream_out = cnt[RS_SLOT_MAX_STREAM];
+    // P6a: the three light planes, the books and the light telemetry
+    if (light_on) {
+        cuda_check(cudaMemcpy(light->light_q, ar.at<int64_t>(o_lq), n64 * 3,
+                              cudaMemcpyDeviceToHost), "D2H light_q");
+        cuda_check(cudaMemcpy(light->light_flux_q, ar.at<int64_t>(o_lf), n64 * 2,
+                              cudaMemcpyDeviceToHost), "D2H light_flux_q");
+        cuda_check(cudaMemcpy(light->light_glow, ar.at<int64_t>(o_lglow), n64 * 3,
+                              cudaMemcpyDeviceToHost), "D2H light_glow");
+        if (light_books_out) {
+            for (int c = 0; c < 3; ++c) {
+                light_books_out[c]     = cnt[RS_SLOT_LIGHT_EMIT + c];
+                light_books_out[3 + c] = cnt[RS_SLOT_LIGHT_ABSORB + c];
+                light_books_out[6 + c] = cnt[RS_SLOT_LIGHT_RING_IN + c];
+                light_books_out[9 + c] = cnt[RS_SLOT_LIGHT_RING_OUT + c];
+            }
+        }
+        if (light_min_out) *light_min_out = cnt[RS_SLOT_LIGHT_MIN_STREAM];
+        if (light_max_out) *light_max_out = cnt[RS_SLOT_LIGHT_MAX_STREAM];
+    }
     ++g_radiation_sweep_calls;
     return launches;
 }

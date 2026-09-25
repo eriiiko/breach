@@ -263,6 +263,56 @@ currency the same way (EmissiveTable.fine_bits, default E_FINE_BITS = FINE_BITS
 here; tests/test_ray_engine_v2_integer_reference.py holds the two equal).
 Gates 11 (headroom at the fine live scale) and 17 (near-ambient exchange is
 resolved) are #78's; gates 12, 14, 15 and 16 run on the fine live table.
+
+THE LIGHT CHANNELS (P6a, 2026-09-25; design v3 sections 4, 5, 6.3, 7, 8.1-8.3;
+docs/ray_engine_v2_p6a_light_channels_brief_2026-09-25.md). Light rides the SAME
+traversal as heat: three RGB channels, each with its own stored outflow, gathered
+in the same visit from the upwind pair of LIGHT's transport (step -- Erik's
+choice on the real-scene renders; heat keeps shear). Any row-major or
+column-major walk in the ordinate's direction is topological for both
+transports, and the gather form makes the integers independent of the order, so
+the light group changes no heat integer (the engine's gate: heat bit-identical
+with light on vs off). `sweep_q(..., light=LightGroup(...))`; per ordinate m,
+per channel c, at cell i:
+
+    io_a, io_b = the light store of light's upwind pair; OFF-GRID READS 0 (the
+                 ring is DARK until P6b's sky boundary replaces that 0)
+    fa, fb     = (io_a * s_m) >> 16,  io_b - ((io_b * s_m) >> 16)   (s_m: light's)
+    stream     = fa + fb                         (no leak for light, §4.1)
+    absorbed   = (stream * d_c) >> 16            d_c: the STAMPED light extinction
+    emitted    = (((L°_c[T_i] * w_m) >> 16) * a_c) >> 16    a_c: the MATERIAL share
+    i_out      = stream - absorbed + emitted
+    light_q[c][i] += stream                      the irradiance (Phi's twin)
+    I_m       += stream                          (summed over c, for the flux)
+  then flux_x[i] += shr_round0(I_m * mu_q[m], 16), flux_y[i] += ... eta_q[m]
+  and, after all ordinates, glow[c][i] = (light_q[c][i] * g_c[i]) >> 16.
+
+Kirchhoff per channel with a DARK ambient (decision 5): the material share a_c
+absorbs and emits a_c * L°_c[T]; the body share d_c - a_c absorbs and re-emits
+the ambient level, which for light is L°[0] = 0 -- so `absorbed` is the whole
+stamped share and a body emits nothing (units block light and do not glow). No
+Fleck on light: it has no material feedback (4.1). The table is the CHECKED-IN
+integer L° (load_l_table below reads cpp/src/light_emission_table.inc, written
+offline by tools/gen_light_table.py from renderer/blackbody.py) -- never libm at
+load (8.1) -- in a currency 2^L_FINE_BITS per light unit (the table records it).
+
+SMOKE (decision 6, the heat side's P5a pattern): on a GAS cell a_c =
+max(a_c, gas_extinction_q(densities, light_absorb_q[:, c], N_bulk)) and d_c =
+max(d_c, a_c) -- the SAME density law and N_EPS floor, one channel at a time --
+so hot smoke emits through L° like any cell with a light extinction (the arc's
+"black-body smoke"). The glow coefficient g_c = gas_extinction_q(densities,
+light_glow_q[:, c], N_bulk) is the in-scatter albedo x density, capped at ONE
+(a cell scatters back at most the light it receives), on gas cells only.
+light_absorb_q / light_glow_q come from GasTable (the gases door, the [smoke]
+dials folded in there).
+
+THE LIGHT BOOKS, per channel, exact in Python ints (the engine's int64): what
+entered the stream equals what left it --
+    emit[c] + ring_in[c] == absorb[c] + ring_out[c]
+by the face_flux argument the heat identity rests on (every interior share is
+booked by its gatherer as the same integer its upwind cell split off). ring_in
+is 0 in P6a (the dark ring); it is booked so P6b's sky plugs into the same books.
+Gate 18 holds all of it.
 """
 from __future__ import annotations
 
@@ -742,6 +792,58 @@ E0 = E[0]
 E_LIVE = bake_e_table(rad_scale=RAD_SCALE_LIVE, fine_bits=FINE_BITS)
 
 
+# --------------------------------------------------------------------------- #
+# The LIGHT emission table L° (P6a; design 2.6 / 7.3 / 8.1). CHECKED IN, never
+# computed here: tools/gen_light_table.py writes it offline from
+# renderer/blackbody.py into the .inc the engine compiles, and this reads the
+# SAME file -- one copy of the numbers in the tree.
+# --------------------------------------------------------------------------- #
+L_CHANNELS = 3
+L_TABLE_PATH = (__import__("pathlib").Path(__file__).resolve().parents[2]
+                / "cpp" / "src" / "light_emission_table.inc")
+
+
+class LTable(list):
+    """The light table -- L_CHANNELS lists of E_TABLE_SIZE ints, channel-major
+    (`table[c][t]`) -- AND the currency its integers are in: `fine_bits` = k
+    means 2^k counts per light unit (the ramp's intensity 1.0). The ETable
+    pattern, one table over."""
+
+    def __init__(self, channels=(), fine_bits: int = 0):
+        super().__init__([list(ch) for ch in channels])
+        self.fine_bits = int(fine_bits)
+
+
+def load_l_table(path=None) -> LTable:
+    """The checked-in L° (cpp/src/light_emission_table.inc): every integer
+    between the definition's braces, in order, plus the currency it records.
+    Asserts the table's two invariants: L°_c[0] == 0 in every channel (the DARK
+    ambient, decision 3) and no negative entry (emission is never a sink)."""
+    import re
+    text = (L_TABLE_PATH if path is None else __import__("pathlib").Path(path)) \
+        .read_text(encoding="utf-8")
+    m = re.search(r"L_TABLE_GEN_FINE_BITS\s*=\s*(\d+)\s*;", text)
+    if m is None:
+        raise ValueError("light table: no L_TABLE_GEN_FINE_BITS")
+    body = text[text.index("{", text.index("L_TABLE_DATA")) + 1: text.rindex("}")]
+    body = re.sub(r"//[^\n]*", "", body)
+    vals = [int(v) for v in re.findall(r"-?\d+", body)]
+    if len(vals) != L_CHANNELS * E_TABLE_SIZE:
+        raise ValueError(f"light table: {len(vals)} entries, want "
+                         f"{L_CHANNELS * E_TABLE_SIZE}")
+    chans = [vals[c * E_TABLE_SIZE:(c + 1) * E_TABLE_SIZE] for c in range(L_CHANNELS)]
+    if any(ch[0] != 0 for ch in chans):
+        raise ValueError("light table: L°[0] must be 0 in every channel (the "
+                         "room-temperature body emits no visible light)")
+    if any(v < 0 for ch in chans for v in ch):
+        raise ValueError("light table: a negative entry")
+    return LTable(chans, fine_bits=int(m.group(1)))
+
+
+L_LIVE = load_l_table()          # THE light table the engine compiles in
+L_FINE_BITS = L_LIVE.fine_bits   # its currency (== emissive_table.h L_FINE_BITS)
+
+
 def e_bucket_of(T_q: int) -> int:
     """raycaster.h:206-213. Sub-ambient indexes bucket 0 (the ambient floor)."""
     if T_q <= 0:
@@ -1123,6 +1225,14 @@ def ordinates(n: int = 16, half_offset: bool = True):
              (math.sin((m + off) * (2 * math.pi / n)))) for m in range(n)]
 
 
+def ordinate_dirs(n: int = 16, half_offset: bool = True):
+    """(mu_q, eta_q) per ordinate: the direction cosines in Q16 (P6a, the light
+    flux vector's sum_m I_m s_m). Quantized ONCE here with the door's rounding;
+    the engine carries them as checked-in literals (radiation_sweep.cpp),
+    recomputed within one count by tests/test_radiation_sweep_constants.py."""
+    return [(quant(mu), quant(eta)) for (mu, eta) in ordinates(n, half_offset)]
+
+
 def ordinate_constants(mu: float, eta: float, transport: str):
     """Returns (x_major, s_m, sx, sy). s_m is the MAJOR share of the split,
     quantized once at load (door 2); the minor share is the remainder."""
@@ -1163,6 +1273,37 @@ class SweepResult:
     # non-vacuity checks -- "a gas cell really absorbed".
     a_eff: list = None
     d_eff: list = None
+    # P6a: THE LIGHT CHANNELS (None unless a LightGroup rode the sweep). Planes
+    # are CHANNEL-FIRST lists, [c][y][x] (the engine's are (h, w, 3) /
+    # (h, w, 2) interleaved; the harness transposes).
+    light_q: list = None          # [3][h][w] irradiance: sum over ordinates of the stream
+    light_flux: list = None       # [2][h][w] sum_m shr_round0(I_m * (mu_q, eta_q)_m, 16)
+    light_glow: list = None       # [3][h][w] (light_q * g_c) >> 16 on gas cells
+    light_a_eff: list = None      # [3][h][w] the material share the loop READ (smoke folded)
+    light_d_eff: list = None      # [3][h][w] the stamped total it READ
+    light_gcoef: list = None      # [3][h][w] the glow coefficient g_c
+    # The light books, per channel: emit + ring_in == absorb + ring_out.
+    light_emit: list = None
+    light_absorb: list = None
+    light_ring_in: list = None
+    light_ring_out: list = None
+    # headroom telemetry (G18): the largest light stream, the widest PLAIN
+    # product the light loop forms (splits, stream * d, L * w_m, src * a, the
+    # flux terms), the largest per-cell light_q.
+    max_light_stream: int = 0
+    min_light_stream: int = 0
+    max_light_plain_product: int = 0
+    max_light_q: int = 0
+    # Optional per-ordinate record, [m][c][y][x] (record_light_streams=True):
+    # the resolution floor measures what ONE ordinate carries.
+    light_streams: list = None
+
+    def light_books_close(self):
+        """Per channel: emit + ring_in - absorb - ring_out (all zero when the
+        books close)."""
+        return [self.light_emit[c] + self.light_ring_in[c]
+                - self.light_absorb[c] - self.light_ring_out[c]
+                for c in range(L_CHANNELS)]
 
     def sums(self):
         return (plane_sum(self.rad_net), plane_sum(self.rad_flux),
@@ -1252,12 +1393,83 @@ def validate_planes(a, d, k, amb=None, table=E):
                         f"({y},{x}): {mi}")
 
 
+@dataclass
+class LightGroup:
+    """THE LIGHT CHANNELS' inputs (P6a), handed to sweep_q as `light=`. Planes
+    are CHANNEL-FIRST, [c][y][x], Q16:
+
+      la  -- the MATERIAL light extinction a_c (GameMap.light_atten_q): absorbs
+             and emits a_c * L°_c[T] (Kirchhoff per channel)
+      ld  -- the STAMPED total d_c >= a_c (GameMap.dyn_light_atten_q, the
+             stamp_units MAX): d_c - a_c is a body -- it absorbs and re-emits the
+             dark ambient, i.e. nothing
+      table -- the L° table (an LTable); None is L_LIVE, the checked-in one
+      transport -- LIGHT's transport step: "step" (Erik's choice), a parameter
+             like heat's, never a fork
+      light_absorb_q / light_glow_q -- (n_gases, 3) Q16 per unit density
+             (GasTable.light_absorb_q16 / light_glow_q16), both or neither; they
+             need sweep_q's gas group (gas, n_bulk, ts), whose planes they read
+      record_streams -- keep every ordinate's streams (res.light_streams), for
+             the resolution-floor gate
+    """
+    la: list
+    ld: list
+    table: object = None
+    transport: str = "step"
+    light_absorb_q: list = None
+    light_glow_q: list = None
+    record_streams: bool = False
+
+
+def validate_light(lg: LightGroup, h: int, w: int, n_gases: int):
+    """The light channels' ingress invariants, as raises (the sweep's door,
+    mirrored in radiation_sweep.cpp): the planes are [3][h][w] with
+    0 <= a_c <= d_c <= ONE per channel (positivity rests on it exactly as on
+    the heat side); the smoke coefficients are both-or-neither, one [R, G, B]
+    row per gas plane, each in [0, HEAT_ABSORB_Q_MAX] (the density sum's own
+    int64 bound, the heat door's); a known transport."""
+    if lg.transport not in ("shear", "step"):
+        raise ValueError(f"unknown light transport {lg.transport!r}")
+    for name, p in (("la", lg.la), ("ld", lg.ld)):
+        if len(p) != L_CHANNELS or any(len(pc) != h or len(pc[0]) != w for pc in p):
+            raise ValueError(f"light {name} must be [3][{h}][{w}]")
+    for c in range(L_CHANNELS):
+        for y in range(h):
+            for x in range(w):
+                ai, di = lg.la[c][y][x], lg.ld[c][y][x]
+                if ai < 0 or ai > di or di > ONE:
+                    raise ValueError(f"light extinction violates 0 <= a <= d <= ONE "
+                                     f"at channel {c} ({y},{x}): a={ai} d={di}")
+    if (lg.light_absorb_q is None) != (lg.light_glow_q is None):
+        raise ValueError("light_absorb_q and light_glow_q are given together or "
+                         "not at all")
+    if lg.light_absorb_q is not None:
+        for name, col in (("light_absorb_q", lg.light_absorb_q),
+                          ("light_glow_q", lg.light_glow_q)):
+            if len(col) != n_gases:
+                raise ValueError(f"{name} has {len(col)} rows for {n_gases} gas planes")
+            for g, row in enumerate(col):
+                if len(row) != L_CHANNELS:
+                    raise ValueError(f"{name}[{g}] must be [R, G, B]")
+                for v in row:
+                    if v < 0 or v > HEAT_ABSORB_Q_MAX:
+                        raise ValueError(f"{name}[{g}] = {v} outside [0, "
+                                         f"{HEAT_ABSORB_Q_MAX}]")
+
+
 def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
             f_plane=None, w_m: int = None, e_ref: int = None,
             body_mode: str = "reemit", table=E, validate: bool = True,
             half_offset: bool = True, gas=None, heat_absorb_q=None,
-            n_bulk=None, ts=None) -> SweepResult:
+            n_bulk=None, ts=None, light: LightGroup = None) -> SweepResult:
     """One tick of the sweep, exactly as design section 2.3 writes it.
+
+    light   : THE LIGHT CHANNELS (P6a; the module docstring's THE LIGHT CHANNELS
+              section): a LightGroup rides the SAME traversal, each channel
+              gathering from its own stored outflow through LIGHT's transport.
+              None is the heat-only sweep, integer for integer -- the light
+              code reads nothing the heat code writes and writes nothing it
+              reads.
 
     a, d, k : Q16 planes (material extinction, stamped extinction, leak)
     T       : Q16.16 temperature plane
@@ -1363,13 +1575,74 @@ def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
                 raise ValueError("E°[T] < the cell's own ambient level: "
                                  "the excess must be >= 0")
 
+    # ---- THE LIGHT GROUP's per-cell pre-pass (P6a) --------------------------
+    # Validated on the INPUT planes, like heat; the smoke term folds into the
+    # two planes the loop reads (the heat side's effective_extinction, one
+    # channel at a time), and a cell's per-ordinate emission is formed ONCE:
+    # the same integer in every ordinate (w_m is uniform), exactly the heat
+    # side's src -- with a DARK ambient (L°[0] = 0) and no Fleck.
+    lt = None
+    if light is not None:
+        lt = L_LIVE if light.table is None else light.table
+        if any(lt[c][0] != 0 for c in range(L_CHANNELS)):
+            raise ValueError("light table: L°[0] must be 0 in every channel")
+        n_g = len(gas) if gas is not None else 0
+        if validate:
+            validate_light(light, h, w, n_g)
+        la_eff = [[row[:] for row in light.la[c]] for c in range(L_CHANNELS)]
+        ld_eff = [[row[:] for row in light.ld[c]] for c in range(L_CHANNELS)]
+        gcoef = [plane(h, w) for _ in range(L_CHANNELS)]
+        if light.light_absorb_q is not None:
+            if gas is None or n_bulk is None or ts is None:
+                raise ValueError("the light smoke term reads sweep_q's gas group "
+                                 "(gas, n_bulk, ts): give it")
+            for y in range(h):
+                for x in range(w):
+                    if ts[y][x]:
+                        continue                 # a thermal solid keeps its own
+                    dens = [gas[g][y][x] for g in range(n_g)]
+                    for c in range(L_CHANNELS):
+                        ag = gas_extinction_q(dens, [light.light_absorb_q[g][c]
+                                                     for g in range(n_g)], n_bulk[y][x])
+                        a_c = max(la_eff[c][y][x], ag)
+                        la_eff[c][y][x] = a_c
+                        ld_eff[c][y][x] = max(ld_eff[c][y][x], a_c)
+                        gcoef[c][y][x] = gas_extinction_q(
+                            dens, [light.light_glow_q[g][c] for g in range(n_g)],
+                            n_bulk[y][x])
+        l_emit = [[[(((lt[c][e_bucket_of(T[y][x])] * w_m) >> 16) * la_eff[c][y][x]) >> 16
+                    for x in range(w)] for y in range(h)] for c in range(L_CHANNELS)]
+        res.light_q = [plane(h, w) for _ in range(L_CHANNELS)]
+        res.light_flux = [plane(h, w), plane(h, w)]
+        res.light_a_eff, res.light_d_eff, res.light_gcoef = la_eff, ld_eff, gcoef
+        res.light_emit = [0] * L_CHANNELS
+        res.light_absorb = [0] * L_CHANNELS
+        res.light_ring_in = [0] * L_CHANNELS
+        res.light_ring_out = [0] * L_CHANNELS
+        if light.record_streams:
+            res.light_streams = []
+        dirs = ordinate_dirs(n_ord, half_offset)
+    max_l_stream = 0
+    min_l_stream = None
+    max_l_plain = 0
+
     max_stream = 0
     min_stream = None
     max_product = 0
     max_fleck_product = 0
     max_plain_product = 0
-    for (mu, eta) in ordinates(n_ord, half_offset):
+    for m_idx, (mu, eta) in enumerate(ordinates(n_ord, half_offset)):
         x_major, s_m, sx, sy = ordinate_constants(mu, eta, transport)
+        if light is not None:
+            # LIGHT's constants for THIS ordinate: the same direction, its own
+            # transport's split -- the one-table, one-code-path parameter.
+            lx_major, s_l, lsx, lsy = ordinate_constants(mu, eta, light.transport)
+            assert (lsx, lsy) == (sx, sy)
+            mu_q, eta_q = dirs[m_idx]
+            lstore = [[[None] * w for _ in range(h)] for _ in range(L_CHANNELS)]
+            if light.record_streams:
+                rec = [plane(h, w) for _ in range(L_CHANNELS)]
+                res.light_streams.append(rec)
         store = [[None] * w for _ in range(h)]
         xs = range(w) if mu > 0 else range(w - 1, -1, -1)
         ys = range(h) if eta > 0 else range(h - 1, -1, -1)
@@ -1461,6 +1734,93 @@ def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
                      abs(src * ai), abs(amb_m * bi), abs(i_out * s_m))
             if pp > max_plain_product:
                 max_plain_product = pp
+
+            if light is None:
+                continue
+            # ---- THE LIGHT CHANNELS at this cell, this ordinate (P6a) ----------
+            # LIGHT's upwind pair (its own transport), read from its own stores.
+            # The walk above is topological for it too (asserted below).
+            if light.transport == "shear":
+                if lx_major:
+                    la_u, lb_u = (y, x - sx), (y - sy, x - sx)
+                    la_t, lb_t = (y, x + sx), (y + sy, x + sx)
+                else:
+                    la_u, lb_u = (y - sy, x), (y - sy, x - sx)
+                    la_t, lb_t = (y + sy, x), (y + sy, x + sx)
+            else:
+                la_u, lb_u = (y, x - sx), (y - sy, x)
+                la_t, lb_t = (y, x + sx), (y + sy, x)
+            in_la = 0 <= la_u[0] < h and 0 <= la_u[1] < w
+            in_lb = 0 <= lb_u[0] < h and 0 <= lb_u[1] < w
+            out_la = not (0 <= la_t[0] < h and 0 <= la_t[1] < w)
+            out_lb = not (0 <= lb_t[0] < h and 0 <= lb_t[1] < w)
+            I_m = 0
+            for c in range(L_CHANNELS):
+                st = lstore[c]
+                # THE DARK RING: an off-grid upwind read is 0 (P6b's sky
+                # boundary replaces this zero with per-ordinate RGB).
+                lio_a = st[la_u[0]][la_u[1]] if in_la else 0
+                lio_b = st[lb_u[0]][lb_u[1]] if in_lb else 0
+                if in_la:
+                    assert lio_a is not None, "light upwind not yet computed"
+                if in_lb:
+                    assert lio_b is not None, "light upwind not yet computed"
+                lfa = (lio_a * s_l) >> 16
+                lfb = lio_b - ((lio_b * s_l) >> 16)     # the REMAINDER
+                lstream = lfa + lfb
+                if not in_la:
+                    res.light_ring_in[c] += lfa
+                if not in_lb:
+                    res.light_ring_in[c] += lfb
+                dc = ld_eff[c][y][x]
+                absorbed = (lstream * dc) >> 16          # the whole stamped share
+                emitted = l_emit[c][y][x]                # a_c * L°_c[T] per ordinate
+                lout = lstream - absorbed + emitted
+                if lstream < 0 or lout < 0:
+                    raise AssertionError(f"light positivity broken at ({y},{x}) c={c}")
+                res.light_q[c][y][x] += lstream
+                res.light_absorb[c] += absorbed
+                res.light_emit[c] += emitted
+                st[y][x] = lout
+                lfa_o = (lout * s_l) >> 16
+                lfb_o = lout - lfa_o
+                if out_la:
+                    res.light_ring_out[c] += lfa_o
+                if out_lb:
+                    res.light_ring_out[c] += lfb_o
+                I_m += lstream
+                if light.record_streams:
+                    rec[c][y][x] = lstream
+                if lstream > max_l_stream:
+                    max_l_stream = lstream
+                if min_l_stream is None or lstream < min_l_stream:
+                    min_l_stream = lstream
+                lsrc = (lt[c][e_bucket_of(T[y][x])] * w_m)
+                lp = max(lio_a * s_l, lio_b * s_l, lstream * dc, lsrc,
+                         (lsrc >> 16) * la_eff[c][y][x], lout * s_l)
+                if lp > max_l_plain:
+                    max_l_plain = lp
+            # the net flux vector, sum_m I_m s_m: two multiply-adds, the SYMMETRIC
+            # shift (so a mirrored scene books an exactly mirrored vector)
+            fx = I_m * mu_q
+            fy = I_m * eta_q
+            res.light_flux[0][y][x] += shr_round0(fx, 16)
+            res.light_flux[1][y][x] += shr_round0(fy, 16)
+            lp = max(abs(fx), abs(fy))
+            if lp > max_l_plain:
+                max_l_plain = lp
+
+    if light is not None:
+        # THE GLOW (render-only, never in the books): the in-scattered light,
+        # light_q x the cell's scatter-albedo-times-density, only on gas cells
+        # (g_c is 0 everywhere else). The engine forms the product in 128 bits.
+        res.light_glow = [[[(res.light_q[c][y][x] * gcoef[c][y][x]) >> 16
+                            for x in range(w)] for y in range(h)]
+                          for c in range(L_CHANNELS)]
+        res.max_light_stream = max_l_stream
+        res.min_light_stream = 0 if min_l_stream is None else min_l_stream
+        res.max_light_plain_product = max_l_plain
+        res.max_light_q = max(v for p in res.light_q for row in p for v in row)
 
     res.max_stream = max_stream
     res.min_stream = 0 if min_stream is None else min_stream

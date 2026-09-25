@@ -63,6 +63,60 @@ struct OrdinateConst {
     int32_t s_m;       // the major share, Q16
 };
 
+// One ordinate's DIRECTION COSINES in Q16 (P6a: the light flux vector
+// Σ_m I_m ŝ_m). The same ordinate m as both transport tables (the angle
+// (m + ½)·2π/N does not depend on the transport, and neither do sx, sy), so
+// one table per ordinate count. Checked-in literals, never std::cos at load
+// (critique 3 §5b); tests/test_radiation_sweep_constants.py recomputes them
+// within one count from sweep_ref_q.ordinate_dirs.
+struct OrdinateDir {
+    int32_t mu_q;      // cos, Q16 (the x component)
+    int32_t eta_q;     // sin, Q16 (the y component; +y is the increasing row)
+};
+
+// ---- THE LIGHT CHANNELS (ray-engine-v2 P6a) ---------------------------------
+// design v3 §4 / §5 / §6.3 / §7; docs/ray_engine_v2_p6a_light_channels_brief_
+// 2026-09-25.md; the executable spec is sweep_ref_q.py's LightGroup (gate 18).
+// Three RGB channels on the SAME traversal as heat, each with its own stored
+// outflow, gathered in the same visit from the upwind pair of LIGHT's transport
+// (TRANSPORT_STEP live -- Erik's choice on the real-scene renders; heat keeps
+// shear). The gather form makes the integers independent of the visiting order,
+// and every walk run() uses is topological for both transports, so light moves
+// no heat integer (tests/test_radiation_sweep_light.py: heat bit-identical with
+// light on vs off). Per ordinate m, channel c, cell i (int64):
+//   stream   = gather of light's upwind pair (an off-grid read is 0: the DARK
+//              ring, until P6b's sky boundary)
+//   absorbed = (stream * d_c) >> 16      -- the whole STAMPED share: the body
+//              share d_c - a_c re-emits the light ambient L°[0] = 0 (decision 5)
+//   emitted  = (((L°_c[T_i] * w_m) >> 16) * a_c) >> 16   -- Kirchhoff, no Fleck
+//   i_out    = stream - absorbed + emitted;  light_q[i][c] += stream
+// then flux[i] += shr_round0_i64(Σ_c stream * (mu_q, eta_q), 16), and after the
+// last ordinate glow[i][c] = mul128_shr(light_q[i][c], g_c[i], 16). On a GAS
+// cell the smoke term joins per channel exactly as the heat side's does (P5a):
+// a_c = max(a_c, min(ONE, Σ_g light_absorb_q16[g][c]·max(0, N_g) >> 16)), 0
+// below the N_EPS bulk floor, d_c = max(d_c, a_c); the glow coefficient g_c is
+// the same law over light_glow_q16 (scatter albedo x density, capped at ONE),
+// 0 on every thermal solid. Books, per channel, exact:
+//   emit + ring_in == absorb + ring_out.
+// Given as a group or not at all (nullptr: the heat-only sweep, integer for
+// integer). Planes are (h, w, 3) / (h, w, 2) INTERLEAVED, the GameMap layout.
+struct LightChannels {
+    // ---- inputs
+    const int32_t* light_atten_q     = nullptr;  // (h, w, 3) Q16 -- a_c, the MATERIAL
+    const int32_t* dyn_light_atten_q = nullptr;  // (h, w, 3) Q16 -- d_c >= a_c, stamped
+    const int64_t* l_table           = nullptr;  // (3, E_TABLE_SIZE) L°, CHANNEL-MAJOR
+    // The smoke term's two per-gas columns, (n_gases, 3) Q16 per unit density
+    // (GasTable.light_absorb_q16 / light_glow_q16): both or neither, and they
+    // read run()'s gas group (gas, n_bulk), which must then be given.
+    const int32_t* light_absorb_q16  = nullptr;
+    const int32_t* light_glow_q16    = nullptr;
+    int transport = 0;                           // RadiationSweep::TRANSPORT_STEP
+    // ---- outputs, OVERWRITTEN (run() zeroes them itself, design row 38)
+    int64_t* light_q      = nullptr;             // (h, w, 3) the irradiance, Σ_m stream
+    int64_t* light_flux_q = nullptr;             // (h, w, 2) Σ_m I_m (mu, eta), x then y
+    int64_t* light_glow   = nullptr;             // (h, w, 3) in-scatter, gas cells only
+};
+
 // ---- the Fleck pre-pass primitives (FP_HD: P4's twin shares them) ---------
 // L_q for a THERMAL SOLID: the cell's free excess-emission loss this tick in
 // Q16.16 temperature, shr_round0((a·(E°[T] − E°[0])) >> 16, heat_inv_shift).
@@ -191,6 +245,9 @@ public:
     // The checked-in table for (n_ordinates, transport); nullptr if the pair
     // is not one of {12, 16} x {step, shear}.
     static const OrdinateConst* ordinate_table(int n_ordinates, int transport);
+    // P6a: the checked-in direction cosines for n_ordinates (16 or 12);
+    // nullptr otherwise. Entry m is ordinate m of BOTH transport tables.
+    static const OrdinateDir* ordinate_dirs(int n_ordinates);
 
     // One tick of the sweep over all ordinates. run() OVERWRITES the four
     // output planes: it zeroes them itself before the first ordinate (the
@@ -262,6 +319,12 @@ public:
     //                      gas cell that absorbs nothing keeps f == 2^24.
     //   Since P5c the temperature fold's GAS branch consumes a gas cell's
     //   rad_net (TemperatureSolver Pass 1), and the shipped smoke absorbs.
+    //   light            : THE LIGHT CHANNELS (P6a, LightChannels above), or
+    //                      nullptr -- the heat-only sweep, integer for integer.
+    //                      Light is REQUESTED, never always on (§7.1): the
+    //                      engine hands it only when PhysicsEngine::
+    //                      light_requested. Its books and stream telemetry land
+    //                      in the light_* members below.
     // Throws std::invalid_argument on an unsupported (n_ordinates, transport),
     // an e_fine_bits outside [0, E_FINE_BITS] (#78),
     // a k_leak_q outside [0, ONE], a null amb_level or one outside
@@ -271,7 +334,12 @@ public:
     // outside [0, N_GAS_PLANES_MAX], a heat_absorb_q16 outside
     // [0, HEAT_ABSORB_Q_MAX] (the gas door's own bounds), or — with the gas
     // group — an n_floor_q or recip_cv that is not positive (a forgotten
-    // currency would otherwise leave the gas arm silently undamped).
+    // currency would otherwise leave the gas arm silently undamped). With the
+    // LIGHT group (P6a) also: a missing light plane or table, an unsupported
+    // light transport, a table whose bucket 0 is not dark on every channel, a
+    // smoke column pair given by half or without the gas group, a light
+    // coefficient outside [0, HEAT_ABSORB_Q_MAX], or a cell violating
+    // 0 <= a_c <= d_c <= ONE on any channel -- all before any output is touched.
     void run(const int32_t* temperature,
              const int32_t* heat_atten_q, const int32_t* dyn_heat_atten_q,
              const int32_t* heat_inv_shift, const bool* thermal_solid,
@@ -283,7 +351,16 @@ public:
              const int32_t* gas = nullptr, int n_gases = 0,
              const int32_t* heat_absorb_q16 = nullptr,
              const int32_t* n_bulk = nullptr,
-             int32_t n_floor_q = 0, int64_t recip_cv = 0) const;
+             int32_t n_floor_q = 0, int64_t recip_cv = 0,
+             const LightChannels* light = nullptr) const;
+
+    // P6a: the light group's own ingress, as run() applies it BEFORE touching
+    // any output -- the host-side door the CUDA twin shares (the per-cell
+    // extinction check aside, which each backend makes over its own planes).
+    // Throws std::invalid_argument; see run().
+    static void validate_light_group(const LightChannels& light, int n_ordinates,
+                                     const int32_t* gas, const int32_t* n_bulk,
+                                     int n_gases);
 
     // The effective extinction planes the last CPU run() READ (Q16, (h, w)):
     // the material/stamped planes with the smoke term folded in (P5a).
@@ -323,6 +400,33 @@ public:
     mutable int64_t min_stream = 0;
     mutable int64_t max_stream = 0;
 
+    // P6a: THE LIGHT BOOKS of the last run() that carried the light group, per
+    // channel R, G, B -- emit + ring_in == absorb + ring_out, exactly -- and
+    // its light-stream telemetry (positivity is light_min_stream >= 0). Left as
+    // they were by a heat-only run. Whichever backend ran (the CUDA twin's
+    // counters are copied here by set_light_telemetry_from_twin).
+    mutable int64_t light_emit_sum[3]     = {0, 0, 0};
+    mutable int64_t light_absorb_sum[3]   = {0, 0, 0};
+    mutable int64_t light_ring_in_sum[3]  = {0, 0, 0};
+    mutable int64_t light_ring_out_sum[3] = {0, 0, 0};
+    mutable int64_t light_min_stream = 0;
+    mutable int64_t light_max_stream = 0;
+
+    // P6a: the effective light planes the last CPU run() READ, (h, w, 3) Q16:
+    // the material share with the smoke term, the stamped total, and the glow
+    // coefficient. Observable so the gates can see a gas cell take the smoke
+    // term; the CUDA twin keeps its own on the device.
+    const std::vector<int32_t>& light_a_eff_plane() const { return l_a_; }
+    const std::vector<int32_t>& light_d_eff_plane() const { return l_d_; }
+    const std::vector<int32_t>& light_gcoef_plane() const { return l_g_; }
+
+    // P6a, THE TWIN'S DOOR (the fleck_plane_for_twin idiom): the CUDA path's
+    // books and light-stream telemetry, copied onto this object so its
+    // observable state is the sweep's whichever backend ran. books is
+    // {emit[3], absorb[3], ring_in[3], ring_out[3]}.
+    void set_light_telemetry_from_twin(const int64_t* books12, int64_t min_s,
+                                       int64_t max_s) const;
+
     // THE TWIN'S DOOR (P4). When PhysicsEngine::step_tail runs the sweep on
     // the GPU (cuda_radiation_sweep.h), this object's observable state must
     // still be that sweep's — fleck_plane(), last_h()/last_w() and
@@ -350,4 +454,13 @@ private:
     mutable std::vector<int32_t> a_eff_;     // (h, w): the extinction the sweep reads (P5a)
     mutable std::vector<int32_t> d_eff_;     // (h, w): the stamped total it reads (P5a)
     mutable int h_ = 0, w_ = 0, n_ord_ = 0;
+    // P6a, the LIGHT scratch -- sized only when a run carries the light group
+    // (a heat-only engine never allocates it), keyed like the heat scratch.
+    void size_light_scratch_(int h, int w, int n_ordinates) const;
+    mutable std::vector<int64_t> l_outflow_; // (n_ordinates, h, w, 3) stored outflow
+    mutable std::vector<int64_t> l_emit_;    // (h, w, 3): the per-ordinate emission
+    mutable std::vector<int32_t> l_a_;       // (h, w, 3): a_c the loop reads
+    mutable std::vector<int32_t> l_d_;       // (h, w, 3): d_c the loop reads
+    mutable std::vector<int32_t> l_g_;       // (h, w, 3): the glow coefficient
+    mutable int lh_ = 0, lw_ = 0, ln_ord_ = 0;
 };

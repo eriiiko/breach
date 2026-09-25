@@ -90,6 +90,12 @@ SIM_FIELDS = (
     # `dyn_heat_atten_q` (the fourth stamp_units output). SIM_FIELDS only:
     # `dyn_heat_atten_q` enters DIGEST_FIELDS at P3 (row 28), never before.
     "heat_atten_q", "dyn_heat_atten_q",
+    # Ray-engine-v2 P6a (design v3 §8.3; the P6a brief, decision 7): the two Q16
+    # LIGHT extinction planes the sweep's light channels read, beside the heat
+    # ones -- `light_atten_q` (static projection) and `dyn_light_atten_q` (the
+    # fifth stamp_units output, the float `dyn_light_atten`'s integer twin).
+    # SIM_FIELDS only: nothing light-side enters DIGEST_FIELDS before P7.
+    "light_atten_q", "dyn_light_atten_q",
     "wall_hp", "material", "is_vacuum", "ignition_armed",
     # P-R4 D1 (digest spec v3): the combustion demand accumulator —
     # persistent synced state (see tests/field_digest.py).

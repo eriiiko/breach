@@ -237,17 +237,57 @@ void energy_flux_launch_resident(
 //         (P5a; the table is shared, so every env carries the bit)
 //   3 min_stream   4 max_stream   (RadiationSweep's telemetry, via 64-bit
 //                                   atomicMin / atomicMax — order-free)
+//   P6a, APPENDED (the light channels; zero unless the light group rode):
+//   5 cells violating 0 <= a_c <= d_c <= ONE on some light channel (a count)
+//   6..8   light emit (R, G, B)      9..11  light absorb
+//   12..14 light ring_in             15..17 light ring_out   (the light books,
+//          exact integer sums: emit + ring_in == absorb + ring_out per channel)
+//   18 light min_stream   19 light max_stream
 // The core INITIALISES the block itself (its first kernel); the caller never
 // zeroes it.
-constexpr int RADIATION_SWEEP_CNT_SLOTS = 5;
+constexpr int RADIATION_SWEEP_CNT_SLOTS = 20;
 constexpr int RS_SLOT_BAD_EXTINCTION = 0;
 constexpr int RS_SLOT_BAD_AMBIENT    = 1;
 constexpr int RS_SLOT_BAD_SCALARS    = 2;
 constexpr int RS_SLOT_MIN_STREAM     = 3;
 constexpr int RS_SLOT_MAX_STREAM     = 4;
+constexpr int RS_SLOT_BAD_LIGHT_EXTINCTION = 5;   // P6a
+constexpr int RS_SLOT_LIGHT_EMIT     = 6;         // P6a: + channel
+constexpr int RS_SLOT_LIGHT_ABSORB   = 9;
+constexpr int RS_SLOT_LIGHT_RING_IN  = 12;
+constexpr int RS_SLOT_LIGHT_RING_OUT = 15;
+constexpr int RS_SLOT_LIGHT_MIN_STREAM = 18;
+constexpr int RS_SLOT_LIGHT_MAX_STREAM = 19;
 constexpr int RS_BAD_K_LEAK      = 1;
 constexpr int RS_BAD_VAC_LEVEL   = 2;
 constexpr int RS_BAD_HEAT_ABSORB = 4;
+
+// P6a: THE LIGHT GROUP on the device (RadiationSweep's LightChannels, one
+// pointer per plane, (N, ...)-shaped like everything else here; a plain host
+// struct of device pointers, so the declaration stays free of CUDA types).
+// Shared by every env: the L° table and the two smoke columns (config, like
+// heat_absorb). The light transport is a host scalar. With it the wavefronts
+// become the step transport's ANTI-DIAGONALS for EVERY ordinate (h + w - 1
+// launches): topological for step and shear alike, so heat rides them with
+// its integers unchanged (the gather form). Without it (nullptr) the core is
+// the heat-only one, launch for launch.
+struct RadiationLightDev {
+    const int32_t* d_light_atten_q     = nullptr;  // (N, h, w, 3) Q16
+    const int32_t* d_dyn_light_atten_q = nullptr;  // (N, h, w, 3) Q16
+    const int64_t* d_l_table           = nullptr;  // (3, E_TABLE_SIZE), shared
+    const int32_t* d_light_absorb_q16  = nullptr;  // (n_gases, 3), shared, nullable
+    const int32_t* d_light_glow_q16    = nullptr;  // (n_gases, 3), shared, nullable
+    int transport = 0;                             // RadiationSweep::TRANSPORT_STEP
+    // scratch
+    int64_t* d_l_outflow = nullptr;                // (N, n_ordinates, h, w, 3)
+    int64_t* d_l_emit    = nullptr;                // (N, h, w, 3)
+    int32_t* d_l_d       = nullptr;                // (N, h, w, 3) the d_c the loop reads
+    int32_t* d_l_g       = nullptr;                // (N, h, w, 3) the glow coefficient
+    // outputs, OVERWRITTEN (zeroed by the core first)
+    int64_t* d_light_q      = nullptr;             // (N, h, w, 3)
+    int64_t* d_light_flux_q = nullptr;             // (N, h, w, 2)
+    int64_t* d_light_glow   = nullptr;             // (N, h, w, 3)
+};
 //
 //   d_temperature, d_heat_atten_q, d_dyn_heat_atten_q, d_heat_inv_shift,
 //   d_thermal_solid : (N, h, w) — RadiationSweep::run's inputs
@@ -303,6 +343,7 @@ int radiation_sweep_launch_resident(
     int32_t* d_a_eff, int32_t* d_d_eff,
     int64_t* d_rad_net, int64_t* d_rad_flux, int64_t* d_rad_amb,
     int64_t* d_rad_fluence,
-    int64_t* d_cnt);
+    int64_t* d_cnt,
+    const RadiationLightDev* light = nullptr);   // P6a: nullptr = heat only
 
 }  // namespace breach_cuda

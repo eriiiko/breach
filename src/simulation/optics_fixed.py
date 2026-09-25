@@ -138,3 +138,33 @@ def dequantize_heat(raw, fine_bits: int):
     RENDER / readout / report only (the dequantize convention: a fresh float
     copy, never written back); a sim-path reader uses fine_heat_shr."""
     return np.asarray(raw, dtype=np.float64) / float(1 << int(fine_bits))
+
+
+# ---------------------------------------------------------------------------
+# THE LIGHT PLANES (ray-engine-v2 P6a; design v3 §4, §7). The sweep's light
+# channels read two Q16 extinction planes this module's `quantize` fills --
+# `GameMap.light_atten_q` (the material, MaterialTable.light_atten_q16) and
+# `GameMap.dyn_light_atten_q` (the stamp_units MAX, a unit's light_atten triple
+# through `quantize_scalar`) -- and write three int64 planes (`light_q`,
+# `light_flux_q`, `light_glow`) in the L° table's CURRENCY: 2^L_FINE_BITS counts
+# per light unit (the blackbody ramp's intensity 1.0), cpp/src/emissive_table.h,
+# read through the binding -- never a copy of the number here. A reader turns
+# one into light units ONCE, through dequantize_light (render / readout: the
+# dequantize convention, a fresh float copy never written back); P6b's accessor
+# (light_field.py) and P7's rules are those readers.
+# ---------------------------------------------------------------------------
+def light_fine_bits(gmap) -> int:
+    """The currency of the gmap's three light planes: the fine bits of the L°
+    table the bound engine's sweep writes them from. A GameMap with no engine
+    bound has no sweep writing them: 0."""
+    eng = getattr(gmap, "_physics_engine", None)
+    if eng is None or not hasattr(eng, "light_emission"):
+        return 0
+    return int(eng.light_emission.fine_bits)
+
+
+def dequantize_light(raw, fine_bits: int):
+    """A light plane (or a value of it, or a sum of them) as a float in LIGHT
+    UNITS: raw / 2^fine_bits. RENDER / readout only; exact in float64 while a
+    value stays below 2^53 (a light_q cell stays below 2^41 -- G18)."""
+    return np.asarray(raw, dtype=np.float64) / float(1 << int(fine_bits))

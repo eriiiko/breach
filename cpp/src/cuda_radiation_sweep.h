@@ -59,6 +59,8 @@
 // other families' cores.
 #include <cstdint>
 
+#include "radiation_sweep.h"   // P6a: LightChannels (a plain struct of host pointers)
+
 namespace breach_cuda {
 
 // ONE sweep on the GPU, the PER-CALL path (the cuda_resident.h `*_step`
@@ -113,8 +115,18 @@ namespace breach_cuda {
 // vac_level above e_table[0], a cell violating 0 <= a <= d <= ONE, an
 // ambient level outside [0, e_table[0]], a partial gas group, n_gases outside
 // [0, N_GAS_PLANES_MAX], a heat_absorb_q16 outside [0, HEAT_ABSORB_Q_MAX], or a
-// non-positive gas currency with the group), and std::runtime_error on a CUDA
-// error. Returns the number of kernel launches issued (design §10's count).
+// non-positive gas currency with the group), and std::invalid_argument too on
+// everything run() rejects for the LIGHT group (P6a), and std::runtime_error on
+// a CUDA error. Returns the number of kernel launches issued (design §10's count).
+//   light             : THE LIGHT CHANNELS (P6a) -- run()'s LightChannels, HOST
+//                       pointers, or nullptr (the heat-only sweep, launch for
+//                       launch as before). With it the wavefronts are the step
+//                       anti-diagonals for every ordinate (h + w - 1 launches)
+//                       plus one glow launch, and only the union of the heat-
+//                       and light-active gases crosses the bus.
+//   light_books_out   : nullable -- 12 int64, {emit, absorb, ring_in, ring_out}
+//                       x (R, G, B), RadiationSweep's light_*_sum twin
+//   light_min_out / light_max_out : nullable -- the light-stream telemetry
 int radiation_sweep_step(
     const int32_t* temperature,
     const int32_t* heat_atten_q, const int32_t* dyn_heat_atten_q,
@@ -128,12 +140,17 @@ int radiation_sweep_step(
     int32_t* fleck_out, int64_t* min_stream_out, int64_t* max_stream_out,
     const int32_t* gas = nullptr, int n_gases = 0,
     const int32_t* heat_absorb_q16 = nullptr, const int32_t* n_bulk = nullptr,
-    int32_t n_floor_q = 0, int64_t recip_cv = 0);
+    int32_t n_floor_q = 0, int64_t recip_cv = 0,
+    const LightChannels* light = nullptr,
+    int64_t* light_books_out = nullptr,
+    int64_t* light_min_out = nullptr, int64_t* light_max_out = nullptr);
 
 // The launch count radiation_sweep_launch_resident issues for one call of the
-// given shape (the three bookkeeping kernels + one per wavefront index), or -1
-// for an unsupported (n_ordinates, transport). A pure function of the shape.
-int radiation_sweep_launch_count(int transport, int n_ordinates, int h, int w);
+// given shape (the three bookkeeping kernels + one per wavefront index, and
+// with light the anti-diagonal wavefronts + the glow launch), or -1 for an
+// unsupported (n_ordinates, transport). A pure function of the shape.
+int radiation_sweep_launch_count(int transport, int n_ordinates, int h, int w,
+                                 bool light = false);
 
 // Backend selection (the S1 idiom). When true, PhysicsEngine::step_tail runs
 // the sweep on the GPU instead of RadiationSweep::run. Defaults false.

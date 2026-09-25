@@ -86,6 +86,19 @@ def _make_sim() -> Simulation:
     # output exercises BOTH the quantize-at-the-boundary and the MAX (a 0.5
     # body over air stamps 32768; over a wall it must not lower the wall's ONE).
     m2.heat_atten = 0.5
+    # Ray-engine-v2 P6a: M2 also declares a TINTED light extinction, so the
+    # fifth stamp output's per-channel MAX sees a partial triple as well as the
+    # default opaque one (and the float stamp beside it the same triple).
+    m2.light_atten = (0.25, 0.5, 1.0)
+    # ... and a GLASS tile under M2's early path (its footprint covers (5, 15)
+    # at ticks 1-3): a PARTIAL body over a PARTIAL material is the one place a
+    # MAX stamp and a (capped) SUM part -- light 0.1 vs M2's tint, heat 0.3 vs
+    # M2's 0.5 -- so the 0-ULP match below can see a stamp that sums. Over air
+    # the two coincide (validated: a summing C++ light stamp passed the old
+    # air-only scenario). Sealed through the topology seam, never a bare
+    # `material[...] =` write.
+    from simulation.materials import MAT_GLASS
+    g.seal_tiles([(5, 15)], MAT_GLASS)
     sim.add_unit(m1)
     sim.add_unit(m2)
     g.destroy_wall(10, 0)            # hull breach -> vacuum (venting)
@@ -146,7 +159,13 @@ def test_stamp_units_cpp_matches_python_0ulp():
 def test_stamp_changes_tick_to_tick():
     """Guard the gate itself: confirm the scenario's stamp is NON-trivial — the
     dyn_* fields and obstacles must actually change as units move/die, else the
-    0-ULP match above would be vacuous."""
+    0-ULP match above would be vacuous.
+
+    P6a: the scenario also stands M2's PARTIAL tint on a PARTIAL material
+    (glass), the one cell where a per-channel MAX and a capped SUM part. BREAKS
+    IF either stamp path sums instead of taking the MAX (validated: a summing C++
+    light stamp stayed green on the air-only scenario and goes red on this one).
+    """
     traj = _capture(use_cpp_stamp=True)
     # dyn_permeability must differ between an early and a late tick (units moved).
     assert not np.array_equal(traj[2]["dyn_permeability"],
@@ -170,6 +189,26 @@ def test_stamp_changes_tick_to_tick():
     # after M2 dies (tick 20) no 32768 stamp remains
     late = traj[30]["dyn_heat_atten_q"]
     assert not np.any(late == 32768)
+    # Ray-engine-v2 P6a: the FIFTH output, the Q16 light twin (h, w, 3), must
+    # vary, carry M2's tint per channel (16384, 32768, 65536 over air) and M1's
+    # opaque triple, never fall below the static plane (MAX), and lose the tint
+    # once M2 is dead -- so the 0-ULP match above covers a real integer stamp.
+    lq_early = traj[2]["dyn_light_atten_q"]
+    lq_static = traj[2]["light_atten_q"]
+    assert lq_early.shape[-1] == 3
+    assert not np.array_equal(lq_early, traj[18]["dyn_light_atten_q"]), \
+        "dyn_light_atten_q never changed — the integer light stamp is trivial"
+    tint = np.all(lq_early == np.array([16384, 32768, 65536]), axis=-1)
+    assert np.any(tint), "M2's tinted light extinction was never stamped"
+    assert np.any(np.all(lq_early == 65536, axis=-1) & ~np.all(lq_static == 65536, axis=-1))
+    assert np.all(lq_early >= lq_static), "a body lowered a material's light extinction"
+    assert not np.any(np.all(traj[30]["dyn_light_atten_q"]
+                             == np.array([16384, 32768, 65536]), axis=-1))
+    # the glass tile under M2 at tick 2: the stamp is the per-channel MAX of
+    # glass's 0.1 (6554) and M2's tint -- never their sum
+    assert list(traj[2]["light_atten_q"][5, 15]) == [6554, 6554, 6554]
+    assert list(traj[2]["dyn_light_atten_q"][5, 15]) == [16384, 32768, 65536]
+    assert int(traj[2]["dyn_heat_atten_q"][5, 15]) == 32768     # max(0.3, 0.5)
 
 
 if __name__ == "__main__":

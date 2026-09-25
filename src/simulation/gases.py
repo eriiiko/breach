@@ -136,12 +136,18 @@ class GasTable:
     Rebuild via :meth:`from_config` after a config hot-reload.
     """
 
-    def __init__(self, gases_cfg):
+    def __init__(self, gases_cfg, smoke_cfg=None):
         """Build from the ``CFG.gases`` namespace (or any equivalent).
 
         ``gases_cfg`` is the :class:`config.Namespace` for ``[gases]``; each
         attribute (``steam``, ``smoke``, ...) is itself a namespace
         of the named columns. A plain dict-of-dicts is also accepted (tests).
+
+        ``smoke_cfg`` (ray-engine-v2 P6a) is the ``[smoke]`` section whose three
+        optics dials fold into the LIGHT columns below (one owner, the dials
+        the render medium reads). ``None`` reads ``CFG.smoke`` -- so a table
+        built from test rows still carries the shipped dials; a dial the
+        section omits is neutral (1.0).
         """
         ids = sorted(GAS_NAMES)
         # Contiguity: ids must be 0..N-1 so an array indexed by id has no gaps.
@@ -219,6 +225,65 @@ class GasTable:
         self.heat_absorb_q16 = np.ascontiguousarray(
             np.asarray(heat_absorb_q16, dtype=np.int32))
 
+        # ---- ray-engine-v2 P6a (design v3 §4.1 / §4.4 / §6.3; the P6a brief,
+        # decision 6): THE LIGHT CHANNELS' SMOKE TERM, the heat term's pattern
+        # one channel at a time. Two (N, 3) int32 Q16 columns the radiation
+        # sweep reads on every GAS cell, per unit of the gas's density:
+        #   light_absorb_q16[g][c] = absorption[g][c] * smoke_absorption[c]
+        #                            * smoke_absorb_scale
+        #       -> a_gas_c = min(ONE, Σ_g light_absorb_q16[g][c]·max(0, N_g) >> 16),
+        #          the density law and the N_EPS floor exactly as heat's; what
+        #          thin smoke does not absorb continues down the stream, and hot
+        #          smoke EMITS through L° (the arc's "black-body smoke")
+        #   light_glow_q16[g][c]   = scatter_albedo[g][c] * smoke_scatter_albedo[c]
+        #       -> the in-scatter glow coefficient (albedo x density, capped at
+        #          ONE), render-only, never in the books
+        # THE [smoke] DIALS ARE FOLDED IN HERE -- one owner, the same dials the
+        # render medium reads (design v3 §4.4: the medium reads [smoke]
+        # directly from P6b; no Raycaster). Validated and quantized ONCE here,
+        # in the heat_absorb_q16 idiom (door 3 -- the product of load-time
+        # constants in float64 -- then door 2, the round-half-away twin): finite,
+        # >= 0 (a negative coefficient is a light SOURCE), <= HEAT_ABSORB_MAX
+        # (the density sum's own int64 bound, the heat door's).
+        if smoke_cfg is None:
+            from config import CFG as _CFG
+            smoke_cfg = getattr(_CFG, "smoke", None)
+
+        def _dial(name, default):
+            if smoke_cfg is None:
+                return default
+            if isinstance(smoke_cfg, dict):
+                return smoke_cfg.get(name, default)
+            return getattr(smoke_cfg, name, default)
+
+        s_abs = [float(v) for v in _dial("smoke_absorption", (1.0, 1.0, 1.0))]
+        s_sca = [float(v) for v in _dial("smoke_scatter_albedo", (1.0, 1.0, 1.0))]
+        s_scale = float(_dial("smoke_absorb_scale", 1.0))
+        if len(s_abs) != 3 or len(s_sca) != 3:
+            raise ValueError("[smoke] smoke_absorption / smoke_scatter_albedo must be "
+                             "[R, G, B] triples")
+        lab, lgl = [], []
+        for i, name in enumerate(self.names):
+            row_a, row_g = [], []
+            for c in range(3):
+                va = float(self.absorption[i, c]) * s_abs[c] * s_scale
+                vg = float(self.scatter_albedo[i, c]) * s_sca[c]
+                for what, v in (("absorption x [smoke] dials", va),
+                                ("scatter_albedo x [smoke] dial", vg)):
+                    if not np.isfinite(v) or v < 0.0 or v > HEAT_ABSORB_MAX:
+                        raise ValueError(
+                            f"gases.{name}: {what} channel {c} = {v!r} outside [0, "
+                            f"{HEAT_ABSORB_MAX:g}] (a light extinction per unit "
+                            f"density: negative would make the gas a light SOURCE, "
+                            f"above {HEAT_ABSORB_MAX:g} the sweep's density sum is no "
+                            f"longer provably exact in int64 -- P6a)")
+                row_a.append(_ufx.quantize_scalar(va))
+                row_g.append(_ufx.quantize_scalar(vg))
+            lab.append(row_a)
+            lgl.append(row_g)
+        self.light_absorb_q16 = np.ascontiguousarray(np.asarray(lab, dtype=np.int32))
+        self.light_glow_q16 = np.ascontiguousarray(np.asarray(lgl, dtype=np.int32))
+
         # effect: per-gas gameplay tag string (read unit-side in mechanics; the
         # solver only transports the field). Stored as a plain list by id.
         self.effect = [
@@ -267,7 +332,7 @@ class GasTable:
         if cfg is None:
             from config import CFG
             cfg = CFG
-        return cls(cfg.gases)
+        return cls(cfg.gases, getattr(cfg, "smoke", None))
 
 
 __all__ = [

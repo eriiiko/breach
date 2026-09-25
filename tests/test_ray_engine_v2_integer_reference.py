@@ -336,5 +336,49 @@ def test_the_fine_heat_currency_resolves_the_exchange_near_ambient():
     print(_run(G.gate17_fine_heat_currency))
 
 
+def test_the_light_channels_close_their_books_and_obey_the_optics():
+    """G18 (P6a, docs/ray_engine_v2_p6a_light_channels_brief_2026-09-25.md
+    section 3, in the SPEC): the three step-transported RGB channels on the
+    heat sweep's own traversal -- (a) per-channel books emit + ring_in == absorb
+    + ring_out exactly, ring_in 0 (the dark ring); (b) every heat plane identical
+    with light on and off; (c) nothing above the glow floor -> light_q, flux and
+    glow exactly 0; (d) an opaque wall leaves the far side 0, a body blocks and
+    does not glow, glass's two coefficients are each read by its own channel,
+    smoke tints by its RGB absorption and dims monotonically with density, glow
+    only on gas cells, == (light_q * g) >> 16; (e) a hot opaque cell emits
+    exactly n_ord * ((L°_c[T] * w_m) >> 16), hotter never dimmer; (f) the flux
+    points away from a lone source, mirrored exactly; (g) headroom: light_q <
+    2^46, plain products < 2^58 at the table top (a table 2^5 larger crosses);
+    (h) one burning tile carries >= 2^8 counts per ordinate 16 tiles away
+    (a table 2^14 coarser does not).
+
+    Breaks if: the light split loses its remainder, the light code writes a
+    heat integer, the ring stops being dark, a body emits, a channel reads the
+    heat plane, the flux floors instead of the symmetric shift, the emission
+    bypasses its per-ordinate split, the glow reaches a solid, or the smoke term
+    reads one channel's coefficient for all three -- each injected once into the
+    reference and turned this gate red.
+    """
+    print(_run(G.gate18_light_channels))
+
+
+def test_the_light_table_is_the_checked_in_one_with_a_dark_ambient():
+    """The reference's L° IS the checked-in table the engine compiles
+    (cpp/src/light_emission_table.inc), in the currency emissive_table.h
+    declares, dark in bucket 0 on every channel.
+
+    Breaks if: the reference grows a second copy of the numbers, the .inc and
+    the header disagree about the currency, or a regenerated table stops being
+    dark at room temperature (a room-temperature body would glow).
+    """
+    import re
+    header = (Path(__file__).resolve().parents[1] / "cpp" / "src"
+              / "emissive_table.h").read_text(encoding="utf-8")
+    k = int(re.search(r"static\s+constexpr\s+int\s+L_FINE_BITS\s*=\s*(\d+)", header).group(1))
+    assert R.L_FINE_BITS == k == R.L_LIVE.fine_bits
+    assert len(R.L_LIVE) == R.L_CHANNELS == 3
+    assert all(len(ch) == R.E_TABLE_SIZE and ch[0] == 0 for ch in R.L_LIVE)
+
+
 if __name__ == "__main__":       # pragma: no cover
     sys.exit(pytest.main([__file__, "-q"]))

@@ -1,0 +1,165 @@
+"""Generate the sweep's checked-in LIGHT EMISSION TABLE L°[T] (ray-engine-v2 P6a).
+
+Design v3 §2.6 / §4.1 / §7.3 / §8.1; the P6a brief (docs/ray_engine_v2_p6a_light_
+channels_brief_2026-09-25.md) decisions 3 and 4.
+
+WHAT. L°_c[t] is the visible-band emission of a black body in bucket t, per RGB
+channel c: a cell whose light extinction is a_c emits a_c * L°_c[T] (Kirchhoff),
+split over the sweep's ordinates exactly as E° is. Its buckets are E°'s (4000
+of 4 game units, bucket t at its MIDPOINT T = 4t + 2), and it comes from the ONE
+temperature -> colour map, renderer/blackbody.py -- Helland/Bartlett chroma
+(max channel 1) x Macklin intensity (the T^4 ramp, 1.0 at kelvin_ref) -- at the
+shipped [render.blackbody] dials, through the ONE T_game -> Kelvin map,
+src/temperature_scale.py:
+
+    L°_c[t] = round( chroma_c(K_t) * intensity(K_t) * 2^L_FINE_BITS ),
+    K_t     = temperature_scale.to_kelvin(4t + 2)
+
+WHY OFFLINE. The two curves are libm (log, pow). Evaluated at load they would be
+a determinism hole the day P7 digests light_q (design v3 §8.1); checked in as
+integers they are data. This script is the ONE writer of the table; the engine
+compiles it in (emissive_table.cpp #includes the .inc) and the integer reference
+reads the same file (sweep_ref_q.load_l_table). tests/test_light_table.py
+re-runs compute_light_table() and requires every entry to match within ONE count
+(a machine's float64 libm may differ in its last ULP; x 2^40 that is far below
+one count, so a rounding can flip by at most one).
+
+THE CURRENCY (decision 4). The table's integers are 2^L_FINE_BITS per "light
+unit", the ramp's intensity 1.0 in the peak channel; L_FINE_BITS is the ONE
+constant in cpp/src/emissive_table.h and is READ from there (never a copy). The
+table records it (L_TABLE_GEN_FINE_BITS), and emissive_table.cpp static_asserts
+the two agree, so a header that moved without a regenerated table does not build.
+
+L°_c[0] is 0 in every channel by construction (295 K is below the ramp's glow
+floor): a room-temperature body emits no visible light, so the sweep's light
+ambient is dark and a body re-emits nothing (decision 5).
+
+Run:
+    C:/Users/steen/anaconda3/python.exe tools/gen_light_table.py           # check (exit 1 on drift)
+    C:/Users/steen/anaconda3/python.exe tools/gen_light_table.py --write   # regenerate the .inc
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from pathlib import Path
+
+import numpy as np
+
+ROOT = Path(__file__).resolve().parent.parent
+for _p in (ROOT, ROOT / "src"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
+INC_PATH = ROOT / "cpp" / "src" / "light_emission_table.inc"
+HEADER_PATH = ROOT / "cpp" / "src" / "emissive_table.h"
+E_TABLE_SIZE = 4000             # emissive_table.h E_TABLE_SIZE -- the SAME buckets
+L_CHANNELS = 3
+PER_LINE = 8
+
+
+def l_fine_bits_from_header(path: Path = HEADER_PATH) -> int:
+    """THE light currency, read from its one home (emissive_table.h L_FINE_BITS)."""
+    m = re.search(r"static\s+constexpr\s+int\s+L_FINE_BITS\s*=\s*(\d+)\s*;",
+                  Path(path).read_text(encoding="utf-8"))
+    if m is None:
+        raise RuntimeError(f"{path}: no `static constexpr int L_FINE_BITS = <k>;`")
+    return int(m.group(1))
+
+
+def bucket_kelvin(cfg=None) -> np.ndarray:
+    """The absolute temperature of every emissive bucket's midpoint (T = 4t + 2
+    game), through the ONE T_game -> Kelvin map (temperature_scale)."""
+    import temperature_scale
+    ts = temperature_scale.load(cfg)
+    t_mid = 4.0 * np.arange(E_TABLE_SIZE, dtype=np.float64) + 2.0
+    return ts.kelvin_ambient + ts.k_temp_to_kelvin * t_mid
+
+
+def compute_light_table(cfg=None, fine_bits: int | None = None) -> np.ndarray:
+    """L° as a (3, E_TABLE_SIZE) int64 array, channel-major, from blackbody.py's
+    own curves (BlackbodyRamp.emission_at_kelvin, full float64) at the shipped
+    dials: round-half-up of chroma_c * intensity * 2^fine_bits (every value is
+    >= 0, and <= 8 * 2^k is exact in float64 for k <= 49)."""
+    if cfg is None:
+        from config import CFG
+        cfg = CFG
+    from renderer.blackbody import BlackbodyRamp
+    k = l_fine_bits_from_header() if fine_bits is None else int(fine_bits)
+    ramp = BlackbodyRamp.from_config(cfg)
+    chroma, inten = ramp.emission_at_kelvin(bucket_kelvin(cfg))
+    v = chroma * inten[:, None] * float(1 << k)          # (E_TABLE_SIZE, 3)
+    if not np.all(np.isfinite(v)) or float(v.min()) < 0.0:
+        raise RuntimeError("the ramp produced a negative or non-finite emission")
+    q = np.floor(v + 0.5).astype(np.int64)
+    return np.ascontiguousarray(q.T)                    # (3, E_TABLE_SIZE)
+
+
+def render_inc(table: np.ndarray, fine_bits: int) -> str:
+    """The .inc text: a C++ definition the engine #includes and a format the
+    integer reference parses (every integer between the braces, in order)."""
+    table = np.asarray(table, dtype=np.int64)
+    assert table.shape == (L_CHANNELS, E_TABLE_SIZE)
+    out = [
+        "// GENERATED by tools/gen_light_table.py -- DO NOT EDIT BY HAND.",
+        "// The sweep's LIGHT EMISSION TABLE L°_c[t] (ray-engine-v2 P6a; design v3",
+        "// sections 2.6 / 7.3 / 8.1): renderer/blackbody.py's Helland/Bartlett chroma",
+        "// x Macklin intensity at the shipped [render.blackbody] dials, at the",
+        "// emissive table's bucket midpoints (T = 4t + 2 game, through",
+        "// src/temperature_scale.py), in integers 2^L_TABLE_GEN_FINE_BITS per light",
+        "// unit (the ramp's intensity 1.0). Channel-major: [c * 4000 + t], c = R, G, B.",
+        "// Regenerate with `tools/gen_light_table.py --write` whenever blackbody.py,",
+        "// [render.blackbody] or [physics.temperature_scale] moves;",
+        "// tests/test_light_table.py fails until you do.",
+        f"constexpr int L_TABLE_GEN_FINE_BITS = {int(fine_bits)};",
+        f"constexpr int64_t L_TABLE_DATA[{L_CHANNELS} * {E_TABLE_SIZE}] = {{",
+    ]
+    for c, name in enumerate("RGB"):
+        out.append(f"    // ---- channel {name}: t = 0 .. {E_TABLE_SIZE - 1}")
+        row = table[c]
+        for s in range(0, E_TABLE_SIZE, PER_LINE):
+            vals = ", ".join(str(int(v)) for v in row[s:s + PER_LINE])
+            out.append(f"    {vals},")
+    out.append("};")
+    return "\n".join(out) + "\n"
+
+
+def parse_inc(path: Path = INC_PATH):
+    """(fine_bits, (3, E_TABLE_SIZE) int64 table) from the checked-in .inc."""
+    text = Path(path).read_text(encoding="utf-8")
+    m = re.search(r"L_TABLE_GEN_FINE_BITS\s*=\s*(\d+)\s*;", text)
+    if m is None:
+        raise RuntimeError(f"{path}: no L_TABLE_GEN_FINE_BITS")
+    body = text[text.index("{", text.index("L_TABLE_DATA")) + 1: text.rindex("}")]
+    body = re.sub(r"//[^\n]*", "", body)
+    vals = [int(v) for v in re.findall(r"-?\d+", body)]
+    if len(vals) != L_CHANNELS * E_TABLE_SIZE:
+        raise RuntimeError(f"{path}: {len(vals)} entries, expected "
+                           f"{L_CHANNELS * E_TABLE_SIZE}")
+    return int(m.group(1)), np.asarray(vals, dtype=np.int64).reshape(
+        L_CHANNELS, E_TABLE_SIZE)
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--write", action="store_true",
+                    help="regenerate cpp/src/light_emission_table.inc")
+    args = ap.parse_args(argv)
+    k = l_fine_bits_from_header()
+    table = compute_light_table(fine_bits=k)
+    if args.write:
+        INC_PATH.write_text(render_inc(table, k), encoding="utf-8", newline="\n")
+        print(f"wrote {INC_PATH.relative_to(ROOT)}: L_FINE_BITS = {k}, "
+              f"top (R, G, B) = {table[:, -1].tolist()}")
+        return 0
+    got_k, got = parse_inc()
+    diff = int(np.max(np.abs(got - table)))
+    ok = (got_k == k) and diff <= 1
+    print(f"checked-in table: fine_bits {got_k} (header {k}); max |entry - "
+          f"regenerated| = {diff} count(s) -> {'OK' if ok else 'DRIFTED: run --write'}")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -144,6 +144,12 @@ class GameMap:
         # are NOT resident and, since T6 deleted the cast that wrote them,
         # carry nothing at all any more — see the field definitions above.
         "rad_net_sweep", "rad_flux_sweep", "rad_amb_sweep", "rad_fluence",
+        # Ray-engine-v2 P6a: the sweep's three LIGHT planes, born through the
+        # residency path the same way (no mirror-only fields) and written on the
+        # host mirror by the same bracketed step_tail -- only while light is
+        # requested -- so the resident tick's explicit to_host lists never name
+        # them either.
+        "light_q", "light_flux_q", "light_glow",
     )
     _RESIDENT_MASKS = (
         "solid", "is_vacuum", "is_ambient", "obstacles", "flammable",
@@ -157,6 +163,11 @@ class GameMap:
         # output and rides the per-tick always-upload set beside
         # `dyn_light_atten`. No device kernel reads either until P4.
         "heat_atten_q", "dyn_heat_atten_q",
+        # Ray-engine-v2 P6a: their LIGHT twins (h, w, 3), on the same terms --
+        # `light_atten_q` a static projection (reassigned by _update_caches,
+        # patched in place by on_tile_changed), `dyn_light_atten_q` the fifth
+        # stamp_units output. The sweep reads both on the host mirror.
+        "light_atten_q", "dyn_light_atten_q",
         # THERMAL-MASS AXIS, P2 (docs/thermal_mass_axis_design_2026-07-25.md +
         # build addendum §3): the per-medium THERMAL mask (`thermal_mass > 0`)
         # the temperature pass's six medium tests key on, on BOTH backends. It
@@ -441,6 +452,18 @@ class GameMap:
         # Q16, rebuilt IN PLACE every tick (never reassigned, C++ view valid).
         # Enters the digest at P3 (design row 28), not before.
         self.dyn_heat_atten_q = np.zeros((h, w), dtype=np.int32)
+        # Ray-engine-v2 P6a (design v3 §4.1, §5): the INTEGER LIGHT twins the
+        # sweep's light channels read, int32 Q16 (h, w, 3) interleaved RGB (the
+        # light_atten layout). `light_atten_q` is the material share `a_c`,
+        # quantized ONCE at the material door (MaterialTable.light_atten_q16,
+        # through optics_fixed) and projected here -- built in _update_caches,
+        # patched in on_tile_changed, the heat_atten_q seam. `dyn_light_atten_q`
+        # is the FIFTH stamp_units output, `d_c >= a_c`: the static plane with
+        # each living unit's own light_atten triple MAX-stamped on its
+        # footprint (the float dyn_light_atten's integer replacement; that one
+        # dies at P6c). Not digested until P7 (design §8.3); in SIM_FIELDS.
+        self.light_atten_q = np.zeros((h, w, 3), dtype=np.int32)
+        self.dyn_light_atten_q = np.zeros((h, w, 3), dtype=np.int32)
         # Per-tile thermal conductivity (table-derived). Allocated + populated
         # now; consumed later by the temperature/conduction pass (ch.04).
         self.conductivity = np.zeros((h, w), dtype=np.float32)
@@ -537,6 +560,24 @@ class GameMap:
         self.rad_flux_sweep = np.zeros((h, w), dtype=np.int64)
         self.rad_amb_sweep  = np.zeros((h, w), dtype=np.int64)
         self.rad_fluence    = np.zeros((h, w), dtype=np.int64)
+        # ---- ray-engine-v2 P6a (design v3 §4.2, §7): THE LIGHT PLANES, written
+        # by the same sweep ONLY while the engine's light is requested
+        # (PhysicsEngine.light_requested, default OFF -- §7.1); otherwise
+        # nothing touches them. int64, in the L° table's currency (2^L_FINE_BITS
+        # counts per light unit; optics_fixed.light_fine_bits / dequantize_light
+        # are the readers' one door):
+        #   light_q      (h, w, 3) — the RGB irradiance, Σ over ordinates of the
+        #                            stream reaching the cell (Φ's light twin)
+        #   light_flux_q (h, w, 2) — the net flux vector Σ_m I_m ŝ_m (x, y),
+        #                            pointing the way the light travels
+        #   light_glow   (h, w, 3) — the in-scattered glow at gas cells,
+        #                            render-only
+        # OVERWRITTEN by the sweep (it zeroes them itself, design row 38), so
+        # they hold the last lit tick's values. Not digested until P7 (§8.3).
+        # Resident from day one (RL-batch habits §A rule 3), like the rad planes.
+        self.light_q        = np.zeros((h, w, 3), dtype=np.int64)
+        self.light_flux_q   = np.zeros((h, w, 2), dtype=np.int64)
+        self.light_glow     = np.zeros((h, w, 3), dtype=np.int64)
         # D1 (ruling amendment 5) — the COMBUSTION DEMAND ACCUMULATOR.
         # ``(max_claimants, h, w)`` int32, PERSISTENT SYNCED state (not a
         # per-tick buffer). Slot ``[s, y, x]`` is the sub-count oxygen debt the
@@ -1390,6 +1431,10 @@ class GameMap:
         # a cache rebuild and the next stamp would otherwise hand the sweep a
         # zero `d` under a wall's `a` and be refused at its door.
         self.dyn_heat_atten_q[:] = self.heat_atten_q
+        # Ray-engine-v2 P6a: the LIGHT twin, the same seam and the same resting
+        # state (d == a until the next stamp), per channel.
+        self.light_atten_q = np.ascontiguousarray(tbl.light_atten_q16[m], dtype=np.int32)
+        self.dyn_light_atten_q[:] = self.light_atten_q
         self.flammable = tbl.flammable[m]
         # wall_hp -> int32 Q16.16 (S3b): quantize the per-material HP table once at
         # cache build (round-to-nearest; integer HP values are exact at Q16.16).
@@ -1620,6 +1665,11 @@ class GameMap:
         _a_new = int(self.heat_atten_q[fy, fx])
         if int(self.dyn_heat_atten_q[fy, fx]) < _a_new:
             self.dyn_heat_atten_q[fy, fx] = _a_new
+        # Ray-engine-v2 P6a: the LIGHT twin through the SAME seam, per channel,
+        # the dynamic plane raised by MAX so a <= d holds until the next stamp.
+        self.light_atten_q[fy, fx] = tbl.light_atten_q16[mat_id]
+        np.maximum(self.dyn_light_atten_q[fy, fx], self.light_atten_q[fy, fx],
+                   out=self.dyn_light_atten_q[fy, fx])
         self.flammable[fy, fx] = bool(tbl.flammable[mat_id])
         # wall_hp -> int32 Q16.16 (S3b): quantize the new material's HP scalar.
         from simulation import wall_fixed as _wall_fx
@@ -1848,6 +1898,7 @@ class GameMap:
         perm, wabsorb = [], []
         atten_r, atten_g, atten_b = [], [], []
         heat_q = []
+        light_q_rows = []
         for u in units:
             if not u.alive:
                 continue
@@ -1857,6 +1908,10 @@ class GameMap:
             u_heat_q = _optics_fx.quantize_scalar(
                 float(getattr(u, "heat_atten", default_heat)))
             ar, ag, ab = float(u_atten[0]), float(u_atten[1]), float(u_atten[2])
+            # Ray-engine-v2 P6a: the SAME triple, quantized at this boundary for
+            # the integer light stamp (the heat_q idiom).
+            u_light_q = [_optics_fx.quantize_scalar(ar), _optics_fx.quantize_scalar(ag),
+                         _optics_fx.quantize_scalar(ab)]
             for (tx, ty) in u.occupied_tiles():
                 if 0 <= ty < h and 0 <= tx < w:
                     ys.append(ty)
@@ -1867,6 +1922,7 @@ class GameMap:
                     atten_g.append(ag)
                     atten_b.append(ab)
                     heat_q.append(u_heat_q)
+                    light_q_rows.append(u_light_q)
 
         ys_a = np.asarray(ys, dtype=np.int32)
         xs_a = np.asarray(xs, dtype=np.int32)
@@ -1876,6 +1932,8 @@ class GameMap:
         atten_g_a = np.asarray(atten_g, dtype=np.float32)
         atten_b_a = np.asarray(atten_b, dtype=np.float32)
         heat_q_a = np.asarray(heat_q, dtype=np.int32)
+        light_q_rows_a = np.ascontiguousarray(
+            np.asarray(light_q_rows, dtype=np.int32).reshape(len(light_q_rows), 3))
 
         # C++ reset + obstacles + min/max stamp loop (all IN-PLACE).
         self._physics_engine.stamp_units(
@@ -1884,6 +1942,7 @@ class GameMap:
             self.obstacles,
             ys_a, xs_a, perm_a, wabsorb_a, atten_r_a, atten_g_a, atten_b_a,
             self.heat_atten_q, self.dyn_heat_atten_q, heat_q_a,
+            self.light_atten_q, self.dyn_light_atten_q, light_q_rows_a,
         )
 
         # Atmosphere refill (Python-only, UNCHANGED — gamemap.py contract §c).
@@ -1961,6 +2020,8 @@ class GameMap:
         # SAME arithmetic as the C++ stamp (tests/test_stamp_units_cpp_ab.py
         # compares the two paths byte for byte).
         self.dyn_heat_atten_q[:] = self.heat_atten_q
+        # Ray-engine-v2 P6a: the integer LIGHT twin, reset the same way.
+        self.dyn_light_atten_q[:] = self.light_atten_q
         from simulation import optics_fixed as _optics_fx
         default_atten = (1.0, 1.0, 1.0)
         default_perm = float(getattr(CFG.physics, "unit_permeability", 0.5))
@@ -1985,6 +2046,9 @@ class GameMap:
             # Quantized at this boundary, exactly as the C++ path's rows are.
             u_heat_q = _optics_fx.quantize_scalar(
                 float(getattr(u, "heat_atten", default_heat)))
+            # Ray-engine-v2 P6a: the same light triple, quantized for the
+            # integer stamp exactly as the C++ path's rows are.
+            u_light_q = [_optics_fx.quantize_scalar(float(u_atten[c])) for c in range(3)]
             for (tx, ty) in u.occupied_tiles():
                 if 0 <= ty < h and 0 <= tx < w:
                     # Unit is a soft body: partial permeability, NOT an obstacle.
@@ -2009,6 +2073,11 @@ class GameMap:
                     # never remove a wall's (a <= d <= ONE by construction).
                     hc = int(self.dyn_heat_atten_q[ty, tx])
                     self.dyn_heat_atten_q[ty, tx] = hc if hc >= u_heat_q else u_heat_q
+                    # Light extinction (P6a): per-channel MAX on the integer twin.
+                    lcell = self.dyn_light_atten_q[ty, tx]
+                    for c in range(3):
+                        lc = int(lcell[c])
+                        lcell[c] = lc if lc >= u_light_q[c] else u_light_q[c]
 
         freed = prev_obstacles & ~self.obstacles
         if freed.any():
