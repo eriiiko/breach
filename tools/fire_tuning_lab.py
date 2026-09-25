@@ -126,6 +126,7 @@ import breach_physics as bp                                 # noqa: E402
 from config import CFG                                      # noqa: E402
 from level_loader import load as load_level                 # noqa: E402
 from simulation import Simulation, fire_fixed               # noqa: E402
+from simulation import optics_fixed as _optics_fx           # noqa: E402  (#78: the one door)
 from simulation.gases import O2, INERT_N2                   # noqa: E402
 import temperature_scale                                    # noqa: E402
 
@@ -459,11 +460,17 @@ def _reach_sweep(T, a, d, his, ts, table, k_leak):
     return out[3], np.asarray(sweep.fleck_plane(), dtype=np.int64)
 
 
-def _baked_table(scale):
+def _baked_table(scale, fine_bits):
+    """#78: a table records its CURRENCY. The live ("derived") scale is baked in
+    the engine's (E_FINE_BITS), so the free field and the LIVE probe below are one
+    currency; the historical "fitted" arm is the integer reference's RESOLVING
+    scale, which only exists coarse (fine, its top would overflow the sweep's
+    int64 products)."""
     tbl = bp.EmissiveTable()
     tbl.rad_scale = float(scale)
     tbl.kelvin_ambient = float(TS.kelvin_ambient)
     tbl.k_temp_to_kelvin = float(TS.k_temp_to_kelvin)
+    tbl.fine_bits = int(fine_bits)
     tbl.bake()
     return tbl
 
@@ -511,7 +518,7 @@ def _reach_run_inner():
         a_src_q = int(round(ha * FP_ONE))
         his_src = int(tm).bit_length() - 1      # log2(thermal_mass), the engine's own
         for sname, scale in scales.items():
-            tbl = _baked_table(scale)
+            tbl = _baked_table(scale, bp.E_FINE_BITS if sname == "derived" else 0)
             e0 = int(np.asarray(tbl.table())[0])
             for size in REACH_SIZES:
                 T, a, d, his, ts, c, hi = _reach_scene(
@@ -530,7 +537,9 @@ def _reach_run_inner():
                     # independent of the calibration (only the Fleck factor
                     # carries a scale dependence). Reported so that claim can be
                     # read off the CSV instead of taken on trust.
-                    q = REACH_SIGMA * (p - e0) / scale        # W/m2, excess over ambient
+                    # W/m2, excess over ambient; Phi leaves the table's currency
+                    # through the one door first (#78)
+                    q = REACH_SIGMA * _optics_fx.dequantize_heat(p - e0, tbl.fine_bits) / scale
                     key = (mat, sname, size, k_leak)
                     curves[key] = dict(phi=p, t_cap=t_cap, q=q)
                     meta[key] = dict(
