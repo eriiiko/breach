@@ -150,14 +150,15 @@ def test_packs_all_fields_dequantized():
     assert r.gas_energy == pytest.approx(123456789 / (GAS_FP_ONE_F ** 2), rel=1e-9)
 
     # Ray-engine-v2 P1: Phi / a / d dequantized through the temperature and
-    # optics scales; f and E_inv(Phi) are nan on a stub with no engine bound.
+    # optics scales; f, E_inv(Phi) and the clamp's ceiling are nan on a stub
+    # with no engine bound.
     g.rad_fluence[ty, tx] = int(round(12.5 * TEMP_SCALE))
     g.heat_atten_q[ty, tx] = 65536
     g.dyn_heat_atten_q[ty, tx] = 65536
     r = pack_hover_readout(g, tx, ty, KELVIN_FN)
     assert r.phi == pytest.approx(12.5, abs=1e-6)
     assert r.atten_a == 1.0 and r.atten_d == 1.0
-    assert np.isnan(r.fleck_f) and np.isnan(r.t_cap)
+    assert np.isnan(r.fleck_f) and np.isnan(r.t_cap) and np.isnan(r.t_rad)
 
     # Panel-ready lines carry the tile + a couple of the numbers.
     assert r.lines[0] == "tile (2, 1)  wood"
@@ -168,11 +169,15 @@ def test_packs_all_fields_dequantized():
 def test_sweep_rows_come_from_the_engine_when_one_is_bound():
     """PROPERTY: with a PhysicsEngine bound (as Simulation binds it), the f row
     is the engine's own Fleck factor — exactly 1.0 at ambient, below 1.0 on a
-    hot opaque wood tile — and E_inv(Phi) inverts the engine's E° table (Phi =
-    E°[b] -> 4b game), so the readout and the sweep share ONE implementation.
+    hot opaque wood tile — E_inv(Phi) inverts the engine's E° table (Phi =
+    E°[b] -> 4b game), and the clamp field is the clamp's ACTUAL ceiling, the
+    engine's own e_ceiling_q (P5d: the top of the first bucket out-emitting
+    Phi, 4(b + 2) game less one LSB), so the readout, the sweep and the fold
+    share ONE implementation of each.
 
-    BREAKS IF: the readout re-derives f or E_inv locally (a third copy that
-    can drift), or reads them off the wrong engine member.
+    BREAKS IF: the readout re-derives f, E_inv or the ceiling locally (a third
+    copy that can drift), reads them off the wrong engine member, or shows
+    E_inv(Phi) as the clamp's ceiling (the pre-P5d field).
     """
     sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
     import breach_physics as bp
@@ -210,13 +215,16 @@ def test_sweep_rows_come_from_the_engine_when_one_is_bound():
     g.heat_inv_shift[ty, tx] = 3
     r_amb = pack_hover_readout(g, tx, ty, KELVIN_FN)
     assert r_amb.fleck_f == 1.0
-    assert r_amb.t_cap == 0.0                      # Phi = 0 < E°[0] -> E_inv = 0
+    assert r_amb.t_rad == 0.0                      # Phi = 0 < E°[0] -> E_inv = 0
+    assert r_amb.t_cap == 0.0                      # ... and the ceiling's row-31 case
     g.temperature[ty, tx] = int(round(1263.0 * TEMP_SCALE))
     b = 700
     g.rad_fluence[ty, tx] = int(table[b])
     r_hot = pack_hover_readout(g, tx, ty, KELVIN_FN)
     assert 0.0 < r_hot.fleck_f < 1.0
-    assert r_hot.t_cap == pytest.approx(4 * b, abs=1e-9)
+    assert r_hot.t_rad == pytest.approx(4 * b, abs=1e-9)
+    assert r_hot.t_cap == int(eng.emissive.e_ceiling_q(int(table[b]))) / TEMP_SCALE
+    assert r_hot.t_cap == pytest.approx(4 * (b + 2) - 1 / TEMP_SCALE, abs=1e-9)
     assert r_hot.phi == pytest.approx(table[b] / TEMP_SCALE, rel=1e-12)
 
 
@@ -263,6 +271,7 @@ def test_sweep_rows_are_still_readable_after_a_whole_simulation_step():
     assert r is not None
     assert r.phi > 0.0, "Phi is zero after the tick — the readout is blind again"
     assert math.isfinite(r.t_cap) and r.t_cap >= 0.0
+    assert math.isfinite(r.t_rad) and 0.0 <= r.t_rad <= r.t_cap
     assert math.isfinite(r.fleck_f) and 0.0 < r.fleck_f <= 1.0
     # non-vacuous: the neighbour of a 1263-game fire sees MORE than the bare
     # ambient ring every cell gets, so this is the fire's own radiation.
@@ -270,7 +279,8 @@ def test_sweep_rows_are_still_readable_after_a_whole_simulation_step():
     ambient_phi = 16 * ((e0 * 4096) >> 16) / TEMP_SCALE
     assert r.phi > ambient_phi, (r.phi, ambient_phi)
     print(f"\nafter one Simulation.step: neighbour of the fire reads Phi = {r.phi:.1f} u/t "
-          f"(ambient ring alone would be {ambient_phi:.1f}), E_inv(Phi) = {r.t_cap:.1f} u, "
+          f"(ambient ring alone would be {ambient_phi:.1f}), E_inv(Phi) = {r.t_rad:.1f} u, "
+          f"clamp ceiling = {r.t_cap:.1f} u, "
           f"f = {r.fleck_f:.6f}")
 
 

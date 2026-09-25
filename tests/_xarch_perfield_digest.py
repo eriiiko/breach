@@ -352,7 +352,47 @@ UNIT_FIELD_LABEL = "__unit_state__"
 #
 # REPRODUCED: the harness was run twice on this build, identical both times.
 # (was e369b616bb251e19a2053ef744125e8568d933f9b8d4b6d0445b256676106d45)
-GOLDEN_AGGREGATE = "9d56649172e5b90b917cb7a6dd9447570e8f2a20a8b9196fd8802d22dcfa1dfa"
+# ===========================================================================
+# P5d RE-BASELINE (2026-09-25, issue #12, ray-engine-v2 P5d -- "the clamp's
+# ceiling gets one bucket of headroom"; docs/ray_engine_v2_p5d_clamp_headroom_
+# brief_2026-09-24.md). A VALUE move, not a schema move: DIGEST_SPEC_VERSION
+# unchanged (v6) -- no field added, removed or retyped.
+#
+# CAUSE, and it is a single one: ERIK'S RULING OF 2026-09-24. The Pass-1
+# maximum-principle clamp's ceiling moves from E°⁻¹(Phi) -- the LOW edge of
+# Phi's own E° bucket, which pinned every undamped cell one bucket short of
+# its own staircase balance -- to e_ceiling_q(Phi), the TOP of the first bucket
+# whose E° exceeds Phi (emissive_table.h; both backends, both branches of the
+# fold). A radiatively held cell may now land up to one bucket (4 game) higher.
+# In the canonical scenario the clamp binds on the SMOKE the breach puts off
+# ambient: at the fold of tick 0 the old ceiling clipped 10 cells, the new one
+# 3, and the difference lands on accountable gas cells only (the thermal
+# solids' temperatures are unchanged that tick).
+#
+# FIELDS THAT MOVED, first tick: temperature and gas_energy at tick 0;
+# atmosphere, wind_x, wind_y, gas and the marine's position (__unit_pos__, so
+# __unit_state__) at tick 1 -- the EOS answering the re-heated gas; wave_p at
+# tick 2. Unmoved over all 30 ticks: fire, heat, wall_hp, water_depth,
+# flow_vx/vy, dyn_heat_atten_q, dem_acc, ignition_armed, wave_v, wave_source,
+# material, obstacles, is_vacuum and the unit's hp, facing, status and life
+# events.
+#
+# VERIFIED SOLE CAUSE, not assumed: the P5d sources with ONLY the two CPU clamp
+# lines routed back to e_inv_q reproduce the PREVIOUS value, 9d566491...,
+# exactly; the P5d build gives this one. The CUDA build agrees on its CPU path,
+# with every GPU backend on, and with the temperature twin alone on the GPU.
+#
+# MEASURED AND ACCEPTED (Erik, 2026-09-25, on P5d's §4 STOP): the headroom also
+# lets the sweep's per-ordinate emission floor land near ambient. That floor can
+# under-read a slightly warm cell's emission by more than a live bucket's ~7
+# counts, so a dark thin panel (radiation temperature E°⁻¹(Phi) = 0) could be
+# pinned at the top of bucket 1, ~8 game, for 235 consecutive ticks on the
+# playground at 180 s, where the old ceiling held it at T_before. That rounding
+# artifact is issue #78, fixed there -- not here, and not in this value.
+#
+# REPRODUCED: the harness was run twice on this build, identical both times.
+# (was 9d56649172e5b90b917cb7a6dd9447570e8f2a20a8b9196fd8802d22dcfa1dfa)
+GOLDEN_AGGREGATE = "e9cb8ca8f08c2f8f2ee36428a8ac7f395dadcd01a3c81606223ee4ca0dbce785"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs

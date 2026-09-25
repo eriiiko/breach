@@ -100,17 +100,22 @@ def test_stream_is_positive_and_illegal_extinction_is_rejected():
 
 def test_counters_are_silent_where_the_design_says_they_are():
     """G4: the low rail and the clamp are silent on a marine beside an ambient
-    wall, and the clamp fires on an over-driven scene.
+    wall, and the clamp fires on an over-driven scene -- since P5d one whose
+    crate is the SHIPPED furniture row (Fleck-damped there), because the P0-era
+    crate is undamped and the headroom ceiling never clamps it (measured beside).
 
     Breaks if: the body becomes a pure radiative sink again -- the gate measures
-    that variant and it trips the low rail on every wall cell, every tick.
+    that variant and it trips the low rail on every wall cell, every tick -- or
+    the clamp stops engaging on the over-driven crate.
     """
     print(_run(G.gate4_counters))
 
 
 def test_maximum_principle_holds_on_the_radiative_substep():
-    """G5: T_new <= max(T_before, E_inv(Phi)) for every cell, evaluated on the
-    radiative sub-step alone.
+    """G5: T_new <= max(T_before, e_ceiling_q(Phi)) for every cell -- the clamp's
+    ceiling since P5d, the top of the first bucket out-emitting Phi -- evaluated
+    on the radiative sub-step alone, with the clamp engaging; and no cooling
+    step is ever clipped.
 
     Breaks if: the clamp is removed (the gate measures the un-clamped climb), or
     it is written in the bare v2 form, which would cool a burning crate toward
@@ -169,8 +174,10 @@ def test_stability_and_equilibrium_on_the_new_forms():
     forward Euler's -5.7 % and is measured against the superseded floor's +0.23 %
     on the same march -- while above g = 1 the damping still stops the explicit
     rail-to-zero, the march stays monotone and positive from every start up to the
-    table top, and the clamp reproduces the exact equilibrium where Fleck alone
-    runs to millions.
+    table top, and the clamp holds every equilibrium within [T_cont - 1 bucket,
+    T_cont + 2 buckets] where Fleck alone runs to millions (P5d restated P0's
+    exact-equality pin as that band: the ceiling now sits up to two buckets above
+    E_inv(Phi)).
 
     Breaks if: the excess form is replaced; alpha's floor moves back off 0 (the
     fire-range march stops matching explicit and the un-clamped 1263-game
@@ -262,7 +269,7 @@ def test_gas_fold_clamps_in_energy_form_and_closes_the_boundary():
     """G15 (P5c, design 2.8 / 6.3 / 8.4): THE TEMPERATURE FOLD'S GAS BRANCH, the
     arithmetic temperature_solver.cpp's gas branch and its CUDA twin transcribe.
     The clamp in its energy form lands every clamped gas cell's mirror EXACTLY on
-    max(T_before, E_inv(Phi)) and keeps the cell's sub-LSB residual E mod N (the
+    max(T_before, e_ceiling_q(Phi)) and keeps the cell's sub-LSB residual E mod N (the
     design's letter N*(T_target + t_amb) - E hits the same mirror but drains it
     -- measured beside it); sum(Eg) moves by e_gas_deposit_sum + e_gas_rail_sum
     to the count (group 1, no new group); e_rad_clamp_drop_sum is the withheld
@@ -280,6 +287,26 @@ def test_gas_fold_clamps_in_energy_form_and_closes_the_boundary():
     turned this gate red.
     """
     print(_run(G.gate15_gas_fold))
+
+
+def test_the_clamp_ceiling_gives_one_bucket_of_headroom():
+    """G16 (P5d, Erik's ruling of 2026-09-24): THE CLAMP'S CEILING. (a) Over every
+    bucket of both tables, e_ceiling_q(Phi) is the TOP of the first bucket whose
+    E° exceeds Phi, >= E_inv(Phi), monotone, 0 below E°[0], saturating one LSB
+    below 16000 game. (b) On the live table an UNDAMPED cell (the shipped wood and
+    furniture rows) under a held Phi -- Phi in both halves of its bucket --
+    balances with NOTHING withheld over its last ticks, its mean within one bucket
+    of the continuous equilibrium. (c) A Fleck-DAMPED cell far above the fire
+    range is held within [T_cont - 1 bucket, T_cont + 2 buckets], where Fleck
+    alone runs away.
+
+    Breaks if: the ceiling is reverted to e_inv_q (the low edge withholds on
+    every case -- measured), made the exact inverse (it withholds on every
+    lower-half case -- measured) or the low edge of the next bucket, loses its
+    Phi < E°[0] -> 0 case, saturates at T_MAX_PHYS, or the clamp is removed.
+    Each was injected once into the reference and turned this gate red.
+    """
+    print(_run(G.gate16_clamp_ceiling))
 
 
 if __name__ == "__main__":       # pragma: no cover

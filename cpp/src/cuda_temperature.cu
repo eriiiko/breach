@@ -52,7 +52,7 @@
                                        // face_energy_q / opposite_dir) — one
                                        // transcription, both backends.
 #include "fixed_point.h"              // quantize/make_recip/mul_q16/mul_wide/narrow
-#include "emissive_table.h"           // T5b step 6: e_inv_q for the Pass-1 clamp
+#include "emissive_table.h"           // T5b step 6 / P5d: e_ceiling_q, the Pass-1 clamp's ceiling
 #include "cuda_fixedpoint_device.cuh" // heat_saturating_add_dev, reciprocal_q16_dev,
                                        // recip_mul_dev
 #include "gas_energy.h"               // arc #54 P-G1b/P-G2: THE gas energy seam
@@ -241,15 +241,18 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
                     shr_round0_signed_i64(rn, heat_inv_shift[i]);
                 tr = sat_add_q16_i64(tr, dTr);
                 // ---- THE MAXIMUM-PRINCIPLE CLAMP (T5b step 6) -------------
-                //   T_new = min(T_after, max(T_before, E^-1(Phi)))
-                // The CPU twin verbatim (temperature_solver.cpp Pass 1), in
+                //   T_new = min(T_after, max(T_before, e_ceiling_q(Phi)))
+                // P5d (Erik's ruling of 2026-09-24): the ceiling is the TOP
+                // of the first E° bucket out-emitting Phi (emissive_table.h
+                // has the why; it was E^-1(Phi), a bucket short). The CPU
+                // twin verbatim (temperature_solver.cpp Pass 1), in
                 // the SAME position -- between the saturating add and the
                 // rails, and BEFORE the applied-delta-T booking, so the P-G5
                 // solid ledger books the clipped landing with no extra
-                // counter. `e_inv_q` is FP_HD: one implementation, both
+                // counter. `e_ceiling_q` is FP_HD: one implementation, both
                 // backends. Dormant unless both planes are supplied.
                 if (rad_fluence != nullptr && e_table != nullptr) {
-                    const int32_t t_cap = e_inv_q(e_table, rad_fluence[i]);
+                    const int32_t t_cap = e_ceiling_q(e_table, rad_fluence[i]);
                     const int32_t ceiling =
                         (t_cap > t_before_rad) ? t_cap : t_before_rad;
                     if (tr > ceiling) {
@@ -280,7 +283,7 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
         // then sign) in this pass's own gas currency — the FP_HD kit's
         // reciprocal_q16 / deposit_dT_wide_i64, the very functions the
         // sweep's gas Fleck arm calls on this device — the clamp lands the
-        // mirror on max(T_before, E^-1(Phi)) through dE = N·(T_target −
+        // mirror on max(T_before, e_ceiling_q(Phi)) (P5d) through dE = N·(T_target −
         // T_before), and the seam's railed deposit books it (group 1). A cell
         // with rn == 0 is not touched. Energy form only (gas_energy != null).
         // P5c follow-up (§8.4, the CPU twin verbatim): a gas cell OUTSIDE the
@@ -309,7 +312,7 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
                          rn * (int64_t)fixedpoint::FP_ONE
                          - ((int64_t)t_target - (int64_t)t_before) * cap_real[i]);
                 if (rad_fluence != nullptr && e_table != nullptr) {
-                    const int32_t t_cap = e_inv_q(e_table, rad_fluence[i]);
+                    const int32_t t_cap = e_ceiling_q(e_table, rad_fluence[i]);
                     const int32_t ceiling =
                         (t_cap > t_before) ? t_cap : t_before;
                     if (t_target > ceiling) {

@@ -302,35 +302,48 @@ def test_g4_marine_beside_ambient_wall_leaves_every_counter_silent_for_24_ticks(
 
 def test_g4_over_driven_scene_engages_the_clamp_and_not_the_rails():
     """G4 (per counter): a held 16000-game source one tile from a cold crate —
-    rad_clamp_hits > 0 within 24 ticks, t_max_phys_hits == 0 (E°⁻¹ saturates
-    at 15996, below the rail) and t_low_rail_hits == 0, tick for tick equal to
-    the reference; the crate's temperature is reported.
+    rad_clamp_hits > 0 within 24 ticks, t_max_phys_hits == 0 (the clamp's
+    ceiling saturates one LSB below 16000 game, below the rail) and
+    t_low_rail_hits == 0, tick for tick equal to the reference -- and the crate
+    is HELD AT its ceiling, e_ceiling_q(Φ) of the fluence it absorbs.
+
+    P5d: the crate is the SHIPPED furniture row (sweep_ref_q_gates.
+    HIS_OVERDRIVEN), which the source genuinely over-drives (Fleck-damped). The
+    P0-era crate (thermal_mass 8) is undamped there since P2a's alpha floor 0:
+    its clamp hits were the bucket-edge pinning P5d removes, and the headroom
+    ceiling never clamps it (the reference's G4 measures it beside this scene).
 
     BREAKS IF: the clamp is dropped or placed after the rails (the rail would
-    fire first), or e_inv_q saturates at or above T_MAX_PHYS.
+    fire first), its ceiling saturates at or above T_MAX_PHYS, or the fold
+    stops holding an over-driven cell at e_ceiling_q (e.g. e_inv_q again: the
+    crate would sit two buckets lower).
     """
     ref_scene, cpp_scene, crate = _run_both(_overdriven, 24)
     t_max, low, clamp = cpp_scene.counters()
     assert clamp > 0 and t_max == 0 and low == 0, (t_max, low, clamp)
     cy, cx = crate
     t_crate = cpp_scene.T[cy, cx] / 65536.0
+    ceiling = int(cpp_scene.table.e_ceiling_q(int(cpp_scene.last_rl[cy, cx])))
     print(f"\nG4 over-driven: clamp={clamp} t_max={t_max} low_rail={low} "
-          f"crate T={t_crate:.1f} game after 24 ticks; max|rad_net| narrowed = "
-          f"{cpp_scene.max_abs_rad_net}")
-    assert 1000.0 < t_crate < 1300.0   # P0b: 1108 clamped (Q24), a 10 % band
+          f"crate T={t_crate:.3f} game after 24 ticks (its ceiling {ceiling / 65536:.3f}); "
+          f"max|rad_net| narrowed = {cpp_scene.max_abs_rad_net}")
+    assert int(cpp_scene.T[cy, cx]) == ceiling
 
 
 # --------------------------------------------------------------------------- #
 # G5 the maximum principle
 # --------------------------------------------------------------------------- #
-def test_g5_radiative_substep_never_exceeds_max_t_before_e_inv_phi():
+def test_g5_radiative_substep_never_exceeds_max_t_before_e_ceiling_phi():
     """G5: immediately after the Pass-1 radiative sub-step, on that sub-step
-    alone, T_new <= max(T_before, E°⁻¹(Φ)) for every non-held thermal solid
-    over 24 ticks of the over-driven scene, evaluated from the direct
-    binding with the sweep's own Φ; the clamp engages (hits > 0).
+    alone, T_new <= max(T_before, e_ceiling_q(Φ)) for every non-held thermal
+    solid over 24 ticks of the over-driven scene, evaluated from the direct
+    binding with the sweep's own Φ; the clamp engages (hits > 0). P5d: the
+    ceiling is the top of the first E° bucket out-emitting Φ (it was E°⁻¹(Φ),
+    at most two buckets lower).
 
-    BREAKS IF: the clamp is removed, written in the bare v2 form, or
-    evaluated after conduction/cooling (which would falsely fail).
+    BREAKS IF: the clamp is removed, written in the bare v2 form, evaluated
+    after conduction/cooling (which would falsely fail), or its ceiling moves
+    above the top of the first out-emitting bucket.
     """
     ref_scene, cpp_scene, crate = _run_both(_overdriven, 24)
     tbl = cpp_scene.table
@@ -342,7 +355,7 @@ def test_g5_radiative_substep_never_exceeds_max_t_before_e_inv_phi():
         for x in range(cpp_scene.w):
             if not cpp_scene.ts[y, x] or cpp_scene.held[y, x]:
                 continue
-            cap = max(int(before[y, x]), int(tbl.e_inv_q(int(rl[y, x]))))
+            cap = max(int(before[y, x]), int(tbl.e_ceiling_q(int(rl[y, x]))))
             ex = int(cpp_scene.T[y, x]) - cap
             worst = ex if worst is None else max(worst, ex)
     assert worst is not None and worst <= 0, worst
@@ -355,16 +368,14 @@ def test_g5_clamp_disabled_climbs_past_the_clamped_value_tick_for_tick_with_the_
     gate 5(a) assertion), rad_clamp_hits stays 0, and the C++ trajectory
     equals the reference's tick for tick over 96 ticks.
 
-    FINDING, stated rather than hidden: in the 2-D sweep the un-clamped crate
-    SETTLES just above the clamped one — 1108.0 vs 1113.6 game, 0.5 %, at the
-    RULED alpha floor 0 (P2a; it was 1108 vs 1219.8, 10 %, at the superseded
-    floor of ½, which is the pair P0 §0.6 and design row 34 quote) — it does
-    NOT run to the T_MAX_PHYS rail. The 0-D runaway that rails the
-    field (P0 §0.5) is driven by a held fluence whose rad_net is far outside
-    int32 — which the P1 fold could not even receive while `rad_net` was int32
-    (design row 35); the plane is int64 since P3a-1 but THE FOLD STILL READS
-    THE OLD CAST'S PLANE, not the sweep's, so this scene is unchanged (the
-    flip is P3a-2). The rail's reachability on the radiative branch is proved
+    P5d: the crate is the SHIPPED furniture row (Fleck-damped at its
+    equilibrium), so this is a real over-drive: clamped, it is held at its
+    ceiling (~1116 game); un-clamped, Fleck alone carries it to the T_MAX_PHYS
+    rail within a few ticks. (Until P5d the crate was the P0-era thermal_mass-8
+    row, which at the RULED alpha floor 0 is undamped there and SETTLED just
+    above the clamped value -- 1108.0 vs 1113.6 game: the clamp was pinning it
+    one bucket short of its own balance, which is what P5d removes.) The rail's
+    reachability on the radiative branch with an INT32_MAX deposit is proved
     separately below. Both counters are printed.
 
     BREAKS IF: the binding keyword stops switching the clamp off, or the
@@ -381,7 +392,7 @@ def test_g5_clamp_disabled_climbs_past_the_clamped_value_tick_for_tick_with_the_
     assert low == 0
     print(f"\nG5 (a): clamped crate {t_clamped / 65536:.1f} game (24 ticks) vs un-clamped "
           f"{t_unclamped / 65536:.1f} game (96 ticks); t_max_phys_hits={t_max} on the "
-          f"2-D scene (the crate settles, it does not rail)")
+          f"2-D scene (clamped it is held at its ceiling; Fleck alone rails it)")
 
 
 def test_g5_t_max_phys_rail_is_reachable_on_the_radiative_branch_with_the_clamp_off():
@@ -393,10 +404,13 @@ def test_g5_t_max_phys_rail_is_reachable_on_the_radiative_branch_with_the_clamp_
     t_max_phys_hits counts every tick after; the SAME deposit with the clamp ON
     and a modest Φ (E°[100] = 400 game) is clipped at E°⁻¹(Φ) every tick,
     rad_clamp_hits counts it and the rail stays silent — the clamp binds first.
-    Both runs equal the reference's fold_pass1_solid tick for tick.
+    Both runs equal the reference's fold_pass1_solid tick for tick. P5d: the
+    clipped value is the clamp's ceiling e_ceiling_q(Φ) -- the top of the first
+    bucket out-emitting Φ = E°[100], i.e. 408 game less one LSB (it was
+    E°⁻¹(Φ) = 400 game).
 
     BREAKS IF: the clamp is placed after the rail, the rail stops counting, or
-    the clamp's ceiling loses its E°⁻¹ arm.
+    the clamp's ceiling loses its fluence arm (or stops being e_ceiling_q).
     """
     from simulation.materials import MAT_WOOD, MaterialTable
     tbl = MaterialTable.from_config()
@@ -430,16 +444,18 @@ def test_g5_t_max_phys_rail_is_reachable_on_the_radiative_branch_with_the_clamp_
         if expect == "rail":
             assert t_max > 0 and clamp == 0 and int(T[0, 0]) == 16000 << 16
         else:
-            assert clamp > 0 and t_max == 0 and int(T[0, 0]) == 400 << 16
+            assert clamp > 0 and t_max == 0
+            assert int(T[0, 0]) == int(table.e_ceiling_q(phi)) == (408 << 16) - 1
         print(f"\nG5 rail/clamp: clamp_on={clamp_on} Phi={phi}: t_max_phys_hits={t_max} "
               f"rad_clamp_hits={clamp} T={T[0, 0] / 65536:.0f} game after 8 ticks")
 
 
 def test_g5_burning_crate_above_its_cap_is_not_clamped():
     """G5 non-vacuity (b): a crate held hot by COMBUSTION (T_before = 1263 game,
-    far above E°⁻¹(Φ) of the ambient bath it sits in) is NOT clamped — it
-    cools by one radiative step and rad_clamp_hits stays 0 — where the bare v2
-    form would have set it to E°⁻¹(Φ) in one tick (reported).
+    far above the clamp's ceiling e_ceiling_q(Φ) of the ambient bath it sits
+    in) is NOT clamped — it cools by one radiative step and rad_clamp_hits
+    stays 0 — where the bare v2 form would have set it to that ceiling in one
+    tick (reported).
 
     BREAKS IF: the clamp loses its max(T_before, ·) arm.
     """
@@ -449,7 +465,7 @@ def test_g5_burning_crate_above_its_cap_is_not_clamped():
     sc = R.Scene(a=a, d=d, k=k, T=T, his=HIS_FURN)
     cpp_scene = _FoldScene(sc)
     before = cpp_scene.tick()
-    cap_bare = cpp_scene.table.e_inv_q(int(cpp_scene.last_rl[3, 3]))
+    cap_bare = cpp_scene.table.e_ceiling_q(int(cpp_scene.last_rl[3, 3]))
     assert cpp_scene.counters()[2] == 0
     assert int(cpp_scene.T[3, 3]) < int(before[3, 3])
     assert cap_bare < int(before[3, 3])

@@ -2287,9 +2287,20 @@ PYBIND11_MODULE(breach_physics, m) {
                  return e_inv_q(self.table(), phi);
              }, py::arg("phi"),
              "emissive_table.h e_inv_q: E°⁻¹(Φ) as a Q16.16 game temperature "
-             "(the bucket's LOW edge; 0 below E°[0]; saturates at 15996 game).");
+             "(the bucket's LOW edge; 0 below E°[0]; saturates at 15996 game). "
+             "The radiation temperature -- not the clamp's ceiling (e_ceiling_q).")
+        // P5d (Erik's ruling of 2026-09-24): the Pass-1 clamp's CEILING, the
+        // SAME FP_HD function the CPU fold and its CUDA twin call.
+        .def("e_ceiling_q", [](const EmissiveTable& self, int64_t phi) {
+                 return e_ceiling_q(self.table(), phi);
+             }, py::arg("phi"),
+             "emissive_table.h e_ceiling_q: the maximum-principle clamp's ceiling "
+             "as a Q16.16 game temperature -- the TOP (last Q16 value) of the first "
+             "bucket whose E° exceeds Φ; 0 below E°[0]; saturates one LSB below "
+             "16000 game (E_CEILING_TOP_Q), below T_MAX_PHYS.");
     m.attr("E_TABLE_SIZE") = E_TABLE_SIZE;
     m.attr("E_INV_TOP_GAME") = E_INV_TOP_GAME;
+    m.attr("E_CEILING_TOP_Q") = E_CEILING_TOP_Q;   // P5d
 
     py::class_<RadiationSweep>(m, "RadiationSweep")
         .def(py::init<>())

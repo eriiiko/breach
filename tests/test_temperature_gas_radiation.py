@@ -7,8 +7,11 @@ ACCOUNTABLE gas cell with rad_net != 0 takes it into the conserved field:
 
     dT       = sign(rn) * deposit_dT_wide_i64(|rn|, recip_N, recip_cv)
     T_before = mirror_q(E, N)
-    T_target = min(sat(T_before + dT), max(T_before, E°⁻¹(Φ)))
+    T_target = min(sat(T_before + dT), max(T_before, e_ceiling_q(Φ)))
     dE       = N * (T_target - T_before)  -> deposit_railed, e_gas_deposit_sum
+
+(the clamp's ceiling since P5d: the top of the first E° bucket out-emitting Φ;
+it was E°⁻¹(Φ))
 
 and the clamp's withheld step is counted, on gas AND solids, in
 TemperatureSolver.e_rad_clamp_drop_sum. So are the boundary's two other exits
@@ -211,7 +214,7 @@ def test_cpp_fold_equals_the_reference_on_gas_and_solids_bit_for_bit(table_name,
         gas_hits = sum(1 for i in range(n)
                        if R.sat_add_q16(T_all[0, i], R.gas_rad_dT_q(int(rn_all[0, i]),
                                                                     int(nb_all[0, i])))
-                       > max(R.e_inv_q(int(phi_all[0, i]), tref), int(T_all[0, i])))
+                       > max(R.e_ceiling_q(int(phi_all[0, i]), tref), int(T_all[0, i])))
         assert 0 < gas_hits < n and c.rad_clamp_hits > gas_hits, (gas_hits, c.rad_clamp_hits)
         assert c.e_rad_clamp_drop_sum > 0
     else:
@@ -482,7 +485,7 @@ class _FoldReplay:
             r, s, t0 = int(rn[y, x]), int(pre["his"][y, x]), int(pre["T"][y, x])
             t_after = R.sat_add_q16(t0, R.shr_round0_signed(r, s))
             cap = R.cap_real_q(True, s, 0)
-            t_tg = min(t_after, max(R.e_inv_q(int(phi[y, x]), self.table), t0))
+            t_tg = min(t_after, max(R.e_ceiling_q(int(phi[y, x]), self.table), t0))
             t_new = max(min(t_tg, R.T_MAX_PHYS_Q), 0)
             b["C"] += (t_after - t_tg) * cap
             b["rail"] += (t_tg - t_new) * cap
@@ -496,7 +499,7 @@ class _FoldReplay:
             t0 = R.gas_mirror_q(int(pre["E"][y, x]), nb, self.t_amb_q)
             t_after = R.sat_add_q16(t0, dT)
             cap = R.cap_real_q(False, 0, nb, self.c_v_q)
-            t_tg = min(t_after, max(R.e_inv_q(int(phi[y, x]), self.table), t0))
+            t_tg = min(t_after, max(R.e_ceiling_q(int(phi[y, x]), self.table), t0))
             b["C"] += (t_after - t_tg) * cap
             b["L"] += (t_tg - t0) * cap
             rem = (r << 16) - (t_after - t0) * cap

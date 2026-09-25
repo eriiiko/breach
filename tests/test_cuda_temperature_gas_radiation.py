@@ -16,7 +16,11 @@ branch, converts through a device reciprocal the CPU does not use, clamps in a
 different form, books slots 12-14 elsewhere (or not at all: measured, the
 device's ring booking left out fails every isolated configuration), or
 physics_engine.cpp stops folding slots 12-14 into their counters (measured:
-slot 14 unfolded fails the vented room from its first floored tick).
+slot 14 unfolded fails the vented room from its first floored tick). P5d
+(brief §5.6): or the device clamps at anything but e_ceiling_q -- the isolated
+part asserts, per table, cells clamped AT the headroom ceiling on thermal
+solids AND gas cells (non-vacuity), and a build with only the device's two
+clamp lines back on e_inv_q fails it (measured: 198 failures).
 
 SKIPS cleanly without a CUDA build / device. See
 tests/cuda_temperature_gas_radiation_check.py for the two parts and their

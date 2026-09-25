@@ -20,7 +20,14 @@ unlanded remainder below n_floor_heat). This check holds the two to each other.
   -- clamp on and off, LIVE and resolving tables. Tol 0 on `temperature`,
   `gas_energy` and every counter the isolated entry returns, including slots
   12-14. Non-vacuous per config: the gas branch booked, with the clamp on it
-  bound on a gas cell, and both boundary counters moved.
+  bound on a gas cell, and both boundary counters moved. P5d (brief §5.6):
+  per table, the clamp binds AT the headroom ceiling e_ceiling_q(Phi) -- the
+  top of the first E° bucket out-emitting Phi, where the pre-P5d E°⁻¹(Phi)
+  would land one to two buckets lower -- on thermal solids AND on accountable
+  gas cells, counted from the scene's inputs through the reference's arithmetic
+  (which the CPU fold equals bit for bit), so a device clamp still at E°⁻¹
+  cannot pass the tol-0 comparison (measured: a build with only the device's
+  two clamp lines back on e_inv_q fails it).
 
   PART 2 -- THE LIVE CONDUCTOR: Simulation.step on a sealed room of hot smoke
   radiating into its hull (the shipped coefficient), on the smoke-shield room
@@ -127,6 +134,39 @@ def _scene(rng, h, w, tref):
                 solid=solid, vac=vac, ring=ring, heat=heat, fs=fs)
 
 
+def _at_headroom(sc, tref):
+    """P5d §5.6: (solid, gas) counts of cells whose Pass-1 radiative sub-step is
+    clamped AT the headroom ceiling -- Phi >= E°[0] (a real ceiling, not row
+    31's 0), the ceiling at or above T_before, and the unclamped T_after above
+    it -- from the scene's INPUTS through the reference's arithmetic (the fold
+    runs first in Pass 1, so the heat deposit and conduction after it cannot
+    move the sub-step)."""
+    ts, solid, vac, ring = sc["ts"], sc["solid"], sc["vac"], sc["ring"]
+    acct = ~ts & ~solid & ~vac & ~ring
+    n_s = n_g = 0
+    for y, x in zip(*np.nonzero(sc["rn"])):
+        if not (ts[y, x] or acct[y, x]):
+            continue
+        phi = int(sc["phi"][y, x])
+        if phi < tref[0]:
+            continue
+        r = int(sc["rn"][y, x])
+        if ts[y, x]:
+            t0 = int(sc["T"][y, x])
+            t_after = R.sat_add_q16(t0, R.shr_round0_signed(r, int(sc["his"][y, x])))
+        else:
+            n = int(sc["nb"][y, x])
+            t0 = R.gas_mirror_q(int(sc["E"][y, x]), max(0, n))
+            t_after = R.sat_add_q16(t0, R.gas_rad_dT_q(r, n))
+        ceiling = R.e_ceiling_q(phi, tref)
+        if ceiling >= t0 and t_after > ceiling:
+            if ts[y, x]:
+                n_s += 1
+            else:
+                n_g += 1
+    return n_s, n_g
+
+
 def _run_cpu(sc, table, clamp):
     s = _solver()
     T = np.ascontiguousarray(sc["T"].copy())
@@ -163,6 +203,7 @@ def part1_isolated():
     print("PART 1 -- isolated: TemperatureSolver.step vs cuda_temperature_step, gas branch live")
     n = 0
     booked = bound = exits = 0
+    at_ceiling = {}                    # P5d §5.6: per table, (solid, gas)
     fails_before = len(_FAILS)
     for tname, table, tref in (("live", live_table(), R.E_LIVE),
                                ("resolving", reference_table(), R.E)):
@@ -197,6 +238,9 @@ def part1_isolated():
                             _fail(f"{tag}: the clamp withheld nothing -- vacuous")
                         else:
                             bound += 1
+                        a_s, a_g = _at_headroom(sc, tref)
+                        prev = at_ceiling.get(tname, (0, 0))
+                        at_ceiling[tname] = (prev[0] + a_s, prev[1] + a_g)
                     elif cc["rad_clamp_hits"] or cc["e_rad_clamp_drop_sum"]:
                         _fail(f"{tag}: the clamp counted with no fluence")
                     if not cc["e_rad_boundary_export_sum"] or not cc["e_rad_floor_drop_sum"]:
@@ -204,10 +248,17 @@ def part1_isolated():
                     else:
                         exits += 1
                     n += 1
+    for tname, (a_s, a_g) in at_ceiling.items():
+        if a_s == 0 or a_g == 0:
+            _fail(f"P1 {tname}: the clamp never bound AT the headroom ceiling on "
+                  f"{'thermal solids' if a_s == 0 else 'gas cells'} -- vacuous (P5d §5.6)")
     verdict = "at tol 0" if len(_FAILS) == fails_before else "with FAILURES"
     print(f"  {n} configurations {verdict} on temperature, gas_energy and all "
           f"{len(GPU_TUPLE)} counters; the gas branch booked in {booked}, the clamp "
           f"withheld energy in {bound}, both boundary counters moved in {exits}")
+    print("  P5d: cells clamped AT the headroom ceiling e_ceiling_q(Phi) in the "
+          "clamp-on configurations, (thermal solid, gas): "
+          + ", ".join(f"{t} {v}" for t, v in at_ceiling.items()))
 
 
 # ---------------------------------------------------------------------------

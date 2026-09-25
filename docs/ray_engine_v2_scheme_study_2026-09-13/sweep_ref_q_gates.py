@@ -3,9 +3,9 @@
 Runs the twelve gates of `docs/ray_engine_v2_design_v3_2026-09-15.md` sections
 2.8-2.9 and of critique 3 sections 1-4 -- and since P5a / P5b / P5c the gas
 term's three (G13, design 6.3's smoke extinction; G14, the gas arm of the Fleck
-pre-pass; G15, the temperature fold's gas branch and design 8.4's boundary) --
-prints the MEASURED numbers (never a bare boolean), and exits non-zero if any
-fails.
+pre-pass; G15, the temperature fold's gas branch and design 8.4's boundary), and
+since P5d the clamp's ceiling (G16, one bucket of headroom) -- prints the
+MEASURED numbers (never a bare boolean), and exits non-zero if any fails.
 
     C:/Users/steen/anaconda3/python.exe sweep_ref_q_gates.py [--fast]
 
@@ -38,6 +38,14 @@ T_IGN_GAME = 280           # furniture ignition_temp  (K = 573)
 A_FURNITURE = Q(0.5)       # furniture-class absorptivity
 HIS_FURNITURE = 3          # log2(thermal_mass)
 K_LEAK = Q(0.10)           # the derived 2.5 m deck leak (dormant in the engine)
+# P5d: the over-driven scene's RECEIVER is the furniture row as it SHIPS (a 0.5,
+# thermal_mass 0.25 since M2's thin rows), not the P0-era HIS_FURNITURE = 3. At
+# alpha floor 0 (P2a, row 39) that P0 crate is UNDAMPED below 1424 game and the
+# one-tile 16000-game source holds it near 1110, so the scene stopped over-driving
+# at P2a: its clamp hits since then were the bucket-edge pinning P5d removes, and
+# under the headroom ceiling it is never clamped at all (G4 measures it). The
+# shipped row is Fleck-damped there -- f ~ 0.06 -- which is what over-driven means.
+HIS_OVERDRIVEN = -2
 
 
 def _shipped_pairs():
@@ -475,8 +483,13 @@ def _marine_scene(body_mode):
     return R.Scene(a=a, d=d, k=k, T=T, his=6, body_mode=body_mode)
 
 
-def _overdriven_scene(src_game=16000, gap=1, n=9):
-    """A held source one tile from a cold crate (design gate 4's over-drive)."""
+def _overdriven_scene(src_game=16000, gap=1, n=9, crate_his=HIS_OVERDRIVEN):
+    """A held source one tile from a cold crate (design gate 4's over-drive).
+
+    P5d: the crate is the SHIPPED furniture row (a 0.5, his -2 -- HIS_OVERDRIVEN
+    has the why); the source keeps HIS_FURNITURE, which sets its own Fleck
+    damping and so the fluence the crate sees -- unchanged from P0.
+    `crate_his=HIS_FURNITURE` rebuilds the P0-era scene, which G4 measures."""
     a = R.plane(n, n, 0)
     d = R.plane(n, n, 0)
     k = R.plane(n, n, 0)
@@ -490,7 +503,9 @@ def _overdriven_scene(src_game=16000, gap=1, n=9):
     d[cy][cx] = A_FURNITURE
     held = R.plane(n, n, 0)
     held[sy][sx] = 1
-    sc = R.Scene(a=a, d=d, k=k, T=T, his=HIS_FURNITURE, held=held)
+    his = R.plane(n, n, HIS_FURNITURE)
+    his[cy][cx] = crate_his
+    sc = R.Scene(a=a, d=d, k=k, T=T, his=his, held=held)
     return sc, (cy, cx)
 
 
@@ -498,7 +513,13 @@ def gate4_counters(fast=False):
     """G4. Per counter (design row 31). On the marine-beside-an-ambient-wall scene
     the low rail and the clamp are BOTH silent over 24 ticks; on the over-driven
     scene the clamp counter is non-zero and the T_MAX_PHYS rail stays silent
-    (E_inv saturates at 15996, below the rail).
+    (the clamp's ceiling saturates one LSB below 16000, below the rail).
+
+    P5d: the over-driven crate is the SHIPPED furniture row, which the source
+    genuinely over-drives (Fleck-damped, f ~ 0.06); the P0-era crate
+    (HIS_FURNITURE = 3) is undamped there and is MEASURED beside it -- under the
+    headroom ceiling it is not clamped at all, which is the ceiling working as
+    ruled (an undamped cell needs no clamp), and why the receiver changed.
 
     Breaks if: the body stops re-emitting at ambient (the pure-sink variant, run
     below, trips the low rail every tick on every wall cell), or the clamp stops
@@ -541,40 +562,54 @@ def gate4_counters(fast=False):
     lines.append(f"  positive: a re-emitting body one tile from a {T_SRC_GAME}-game "
                  f"fire books rad_flux = {flux} counts (> 0, so the sensor lives)")
     # Over-driven: the clamp must engage, the T_MAX_PHYS rail must not. The crate
-    # starts cold and CLIMBS to its cap, so this sub-check needs its own tick
-    # count: at alpha floor 0 (P2a, row 39) the crate's own emission is undamped
-    # below g = 1, so it climbs more slowly and the first clamp hit falls at tick
-    # 11, where the superseded floor of one half had it at tick 8. The fast mode's
-    # 8 ticks would therefore pass VACUOUSLY (clamp = 0, crate at 1074.6 game) --
-    # measured, and the reason for the separate number below. 24 ticks: 14 hits at
-    # floor 0, 17 at floor 1/2; the CLAMPED answer is 1108.0 game at both.
+    # starts cold and CLIMBS to its cap, so this sub-check has its own tick count.
+    # History, measured: with the P0-era crate (his 3) at alpha floor 0 (P2a, row
+    # 39) the first hit fell at tick 11 (the fast mode's 8 ticks would have passed
+    # VACUOUSLY -- the reason this count is separate). P5d: that crate is undamped
+    # and the headroom ceiling never clamps it (measured below); the shipped
+    # furniture crate is over-driven from its first tick -- one explicit step from
+    # cold would carry it to ~6100 game -- and is held at the ceiling.
     o_ticks = 12 if fast else 24
     sc_o, crate = _overdriven_scene()
     sc_o.run(o_ticks)
     co = sc_o.counters
     good = co.rad_clamp_hits > 0 and co.t_max_phys_hits == 0 and co.t_low_rail_hits == 0
     ok &= good
-    lines.append(f"  over-driven (16000-game source one tile from a cold crate), "
-                 f"{o_ticks} ticks: clamp={co.rad_clamp_hits} t_max={co.t_max_phys_hits} "
-                 f"low_rail={co.t_low_rail_hits}, crate T = "
+    lines.append(f"  over-driven (16000-game source one tile from a cold crate, the "
+                 f"shipped furniture row), {o_ticks} ticks: clamp={co.rad_clamp_hits} "
+                 f"t_max={co.t_max_phys_hits} low_rail={co.t_low_rail_hits}, crate T = "
                  f"{sc_o.T[crate[0]][crate[1]] / 65536:.1f} game  "
                  f"{'OK' if good else 'FAIL'}")
+    sc_p, crate_p = _overdriven_scene(crate_his=HIS_FURNITURE)
+    sc_p.run(o_ticks)
+    f_p = R.fleck_f_solid_q(sc_p.T[crate_p[0]][crate_p[1]], A_FURNITURE, HIS_FURNITURE)[0]
+    lines.append(f"  measured beside it: the P0-era crate (his {HIS_FURNITURE}) on the same "
+                 f"scene is undamped (f = {f_p / F_ONE:.4f}) and settles at "
+                 f"{sc_p.T[crate_p[0]][crate_p[1]] / 65536:.1f} game with "
+                 f"{sc_p.counters.rad_clamp_hits} clamp hits -- the headroom ceiling does not "
+                 f"touch a cell radiation cannot over-drive")
     return ok, lines
 
 
 def gate5_maximum_principle(fast=False):
     """G5. Immediately after the radiative sub-step, on that sub-step alone:
-    T_new <= max(T_before, E_inv(Phi)) for every cell.
+    T_new <= max(T_before, e_ceiling_q(Phi)) for every cell -- the clamp's
+    ceiling since P5d (the top of the first bucket out-emitting Phi; it was
+    E_inv(Phi), that bucket's predecessor's low edge) -- and a COOLING step is
+    never clipped: wherever the unclamped step does not raise the cell, T_new is
+    that step exactly.
 
-    Non-vacuity: (a) with the clamp disabled the same cell climbs past the cap
-    (reported); (b) a burning crate (T_before far above E_inv(Phi)) is NOT
-    clamped -- the bare v2 form would have slammed it down, and that number is
-    reported beside it.
+    Non-vacuity: the clamp engages on the over-driven scene (hits > 0, asserted);
+    (a) with the clamp disabled the same cell climbs past the ceiling
+    (reported); (b) a burning crate (T_before far above its ceiling) is NOT
+    clamped -- the bare v2 form would have slammed it down to the ceiling, and
+    that number is reported beside it.
     """
     lines, ok = [], True
     ticks = 8 if fast else 24
     sc, crate = _overdriven_scene()
     worst_excess = None
+    cooling_steps = cooling_clipped = 0
     for _ in range(ticks):
         f = R.fleck_prepass(sc.T, sc.a, sc.his)
         res = R.sweep_q(sc.a, sc.d, sc.k, sc.T, transport=sc.transport, f_plane=f)
@@ -585,23 +620,34 @@ def gate5_maximum_principle(fast=False):
             for x in range(len(sc.T[0])):
                 if not sc.ts[y][x] or sc.held[y][x]:
                     continue
-                cap = max(before[y][x], R.e_inv_q(res.rad_fluence[y][x]))
+                cap = max(before[y][x], R.e_ceiling_q(res.rad_fluence[y][x]))
                 ex = sc.T[y][x] - cap
                 worst_excess = ex if worst_excess is None else max(worst_excess, ex)
-    ok &= (worst_excess is not None and worst_excess <= 0)
-    lines.append(f"  clamped, {ticks} ticks: worst (T_new - max(T_before, E_inv(Phi))) "
+                t_after = R.sat_add_q16(before[y][x], R.shr_round0_signed(
+                    res.rad_net[y][x], sc.his[y][x]))
+                if t_after <= before[y][x]:
+                    cooling_steps += 1
+                    cooling_clipped += int(sc.T[y][x] != t_after)
+    good = (worst_excess is not None and worst_excess <= 0
+            and sc.counters.rad_clamp_hits > 0 and cooling_clipped == 0)
+    ok &= good
+    lines.append(f"  clamped, {ticks} ticks: worst (T_new - max(T_before, e_ceiling(Phi))) "
                  f"= {worst_excess} counts  (<= 0 required)  clamp hits = "
-                 f"{sc.counters.rad_clamp_hits}  "
-                 f"{'OK' if worst_excess is not None and worst_excess <= 0 else 'FAIL'}")
+                 f"{sc.counters.rad_clamp_hits} (> 0 required)  {'OK' if good else 'FAIL'}")
     t_clamped = sc.T[crate[0]][crate[1]]
     # (a) the same scene with the clamp disabled
     sc2, crate2 = _overdriven_scene()
     sc2.run(ticks * 4, clamp_enabled=False)
     t_unclamped = sc2.T[crate2[0]][crate2[1]]
     ok &= (t_unclamped > t_clamped)
+    # the crate's Phi as the fold saw it: the sweep WITH the pre-pass's Fleck
+    # plane (P0's line read an undamped sweep here, whose "cap" was 8724 game)
+    phi_c = R.sweep_q(sc.a, sc.d, sc.k, sc.T, f_plane=R.fleck_prepass(
+        sc.T, sc.a, sc.his)).rad_fluence[crate[0]][crate[1]]
     lines.append(f"  non-vacuity (a): clamp_enabled=False, {ticks*4} ticks -> crate "
                  f"{t_unclamped / 65536:.1f} game vs clamped {t_clamped / 65536:.1f} "
-                 f"game (cap = {R.e_inv_q(R.sweep_q(sc.a, sc.d, sc.k, sc.T).rad_fluence[crate[0]][crate[1]]) >> 16})")
+                 f"game (ceiling = {R.e_ceiling_q(phi_c) / 65536:.2f}, E_inv(Phi) = "
+                 f"{R.e_inv_q(phi_c) >> 16})")
     # the 0-D equilibrium the design quotes, where the geometric factor is 0.25
     phi = int(0.25 * R.E[R.e_bucket_of(16000 << 16)])
     t_run, _ = R.cell_march(0, phi, A_FURNITURE, HIS_FURNITURE, 400 * 24,
@@ -609,8 +655,9 @@ def gate5_maximum_principle(fast=False):
     t_true = R.e_inv_q(phi) >> 16
     ok &= (t_run / 65536 > 1e6)
     lines.append(f"  non-vacuity (a'): the 0-D G=0.25 model the design quotes -- "
-                 f"Fleck-only equilibrium = {t_run / 65536:,.0f} game vs the true "
-                 f"{t_true} game (clamped)")
+                 f"Fleck-only equilibrium = {t_run / 65536:,.0f} game vs the radiation "
+                 f"temperature E_inv(Phi) = {t_true} game (the clamp holds it at or below "
+                 f"{R.e_ceiling_q(phi) / 65536:.2f})")
     # (b) a burning crate must NOT be clamped
     n = 7
     a = R.plane(n, n, A_FURNITURE)
@@ -622,16 +669,27 @@ def gate5_maximum_principle(fast=False):
     f = R.fleck_prepass(sc3.T, sc3.a, sc3.his)
     res3 = R.sweep_q(sc3.a, sc3.d, sc3.k, sc3.T, f_plane=f)
     before = T[3][3]
+    before3 = [row[:] for row in sc3.T]
     R.fold_pass1_solid(sc3.T, res3.rad_net, res3.rad_fluence, sc3.his, sc3.ts,
                        sc3.counters)
-    cap_bare = R.e_inv_q(res3.rad_fluence[3][3])
-    bound = (sc3.counters.rad_clamp_hits == 0) and (sc3.T[3][3] < before)
+    for y in range(n):
+        for x in range(n):
+            t_after = R.sat_add_q16(before3[y][x], R.shr_round0_signed(
+                res3.rad_net[y][x], sc3.his))
+            if t_after <= before3[y][x]:
+                cooling_steps += 1
+                cooling_clipped += int(sc3.T[y][x] != t_after)
+    cap_bare = R.e_ceiling_q(res3.rad_fluence[3][3])
+    bound = ((sc3.counters.rad_clamp_hits == 0) and (sc3.T[3][3] < before)
+             and cap_bare < before and cooling_steps > 0 and cooling_clipped == 0)
     ok &= bound
     lines.append(f"  non-vacuity (b): a burning crate at {before >> 16} game, "
-                 f"E_inv(Phi) = {cap_bare >> 16} game -> corrected clamp does not bind "
-                 f"(hits={sc3.counters.rad_clamp_hits}, T {before / 65536:.1f} -> "
+                 f"ceiling(Phi) = {cap_bare / 65536:.2f} game -> corrected clamp does not "
+                 f"bind (hits={sc3.counters.rad_clamp_hits}, T {before / 65536:.1f} -> "
                  f"{sc3.T[3][3] / 65536:.1f}); the bare v2 form would have set it to "
-                 f"{cap_bare >> 16} game in one tick  {'OK' if bound else 'FAIL'}")
+                 f"{cap_bare / 65536:.2f} game in one tick. Over both scenes, cooling "
+                 f"steps clipped: {cooling_clipped} of {cooling_steps}  "
+                 f"{'OK' if bound else 'FAIL'}")
     return ok, lines
 
 
@@ -938,12 +996,19 @@ def gate10_stability(fast=False):
           that cannot tell two laws apart.
       (b) ABOVE it the damping still does its whole job: from 2500 and 16 000 game
           the explicit update rails to zero and the damped one does not, and the
-          clamp still pins every equilibrium to E°inv(Phi) exactly.
+          clamp still pins every equilibrium within [T_cont - 1 bucket, T_cont + 2
+          buckets] of the continuous one, T_cont -- where Fleck alone (the damped
+          5000- and 16 000-game rows) runs far outside that band. P5d: the
+          ceiling is the top of the first bucket out-emitting Phi, so a held cell
+          sits up to two buckets above E_inv(Phi) where P0 pinned it exactly ON
+          E_inv(Phi); the "true (E_inv)" column is printed as the measured
+          radiation temperature, never as a pin.
 
     Breaks if: the Fleck factor stops damping above g = 1 (explicit overshoots and
     the low rail fires), or alpha's floor moves back off 0 (the fire-range
     trajectory stops matching explicit and the un-clamped 1263-game equilibrium
-    jumps from +0.15 % to +4.6 %).
+    jumps from +0.15 % to +4.6 %), or the clamp is dropped from the fold (the
+    damped rows leave the band -- the Fleck-only column, asserted outside it).
     """
     lines, ok = [], True
     A, HIS = A_FURNITURE, HIS_FURNITURE
@@ -1025,9 +1090,10 @@ def gate10_stability(fast=False):
     lines.append(f"  equilibrium under a held fluence Phi = G x E°[T_src], G = 0.25 "
                  f"({iters} ticks). The un-clamped column is the SCHEME'S BIAS, not a "
                  f"sweep prediction (design row 34):")
-    lines.append(f"    {'T_src':>8}{'true (E_inv)':>14}{'true (float)':>14}"
+    lines.append(f"    {'T_src':>8}{'E_inv(Phi)':>14}{'T_cont':>14}"
                  f"{'Fleck only, 0':>16}{'Fleck only, 1/2':>17}"
-                 f"{'Fleck+clamp':>13}{'clamp hits':>12}")
+                 f"{'Fleck+clamp':>13}{'clamp hits':>12}   (clamped within "
+                 f"[T_cont - 4, T_cont + 8] required)")
     bias_0 = bias_h = None
     for T_src in (1263, 5000, 16000):
         phi = int(0.25 * R.E[R.e_bucket_of(T_src << 16)])
@@ -1039,7 +1105,13 @@ def gate10_stability(fast=False):
                               rails_enabled=False, int32_sat=False,
                               alpha_floor=R.ALPHA_FLOOR_HALF)
         t_c, cc = R.cell_march(0, phi, A, HIS, iters, clamp_enabled=True)
-        good = (t_c >> 16) == t_true
+        # P5d: a PROPERTY, not P0's snapshot `(t_c >> 16) == E_inv(Phi)`: the
+        # clamped equilibrium lies within one bucket below and two above the
+        # continuous one -- and where Fleck damps (the two hotter rows), Fleck
+        # alone does not (the clamp is what holds it there)
+        in_band = (t_true_f - 4.0) <= t_c / 65536 <= (t_true_f + 8.0)
+        runaway = t_f / 65536 > t_true_f + 8.0
+        good = in_band and (runaway if T_src > T_SRC_GAME else True)
         ok &= good
         if T_src == T_SRC_GAME:
             bias_0 = (t_f / 65536 - t_true_f) / t_true_f * 100
@@ -1808,7 +1880,8 @@ def gate15_gas_fold(fast=False):
           randomised accountable gas cells (a stored residual E mod N; bulk from
           the N_EPS edge to 3 atm; rad_net of both signs up to 2^44; a fluence
           whose cap sits above and below the cell), every clamped cell's mirror
-          lands EXACTLY on max(T_before, E°⁻¹(Phi)) and every other on
+          lands EXACTLY on max(T_before, e_ceiling_q(Phi)) -- the clamp's
+          ceiling since P5d -- and every other on
           sat(T_before + dT), with E mod N unchanged on every cell. The PAIR:
           the design's letter N * (T_target + t_amb) - E lands on the same
           mirror but DRAINS the residual -- counted, and non-zero.
@@ -1818,8 +1891,8 @@ def gate15_gas_fold(fast=False):
           unclamped step, and e_rad_clamp_drop_sum is that withheld step priced
           at cap_real, summed -- on the gas cells AND on thermal solids.
       (c) THE MAXIMUM PRINCIPLE ON GAS: on the radiative sub-step alone, every
-          gas cell ends at or below max(T_before, E°⁻¹(Phi)); with the clamp off
-          some cell does not (the non-vacuity pair).
+          gas cell ends at or below max(T_before, e_ceiling_q(Phi)); with the
+          clamp off some cell does not (the non-vacuity pair).
       (d) HOT SMOKE COOLS, THROUGH THE WHOLE TICK, ON THE LIVE TABLE: a sealed
           room of ambient walls full of hot absorbing smoke -- every smoke cell's
           T never rises, never goes below ambient, and ends lower; the walls warm.
@@ -1868,7 +1941,7 @@ def gate15_gas_fold(fast=False):
         N, e0, t0, r = nb[0][i], E0[0][i], T0[0][i], rn[0][i]
         dT = R.gas_rad_dT_q(r, N)
         t_after = R.sat_add_q16(t0, dT)
-        ceiling = max(R.e_inv_q(phi[0][i], live), t0)
+        ceiling = max(R.e_ceiling_q(phi[0][i], live), t0)
         if t_after > ceiling:
             n_clamped += 1
             target_ok &= (T[0][i] == ceiling)
@@ -1906,7 +1979,7 @@ def gate15_gas_fold(fast=False):
     for i in range(n_s):
         cap = 1 << (hs[0][i] + 16)
         t_after = R.sat_add_q16(Ts0[0][i], R.shr_round0_signed(rs[0][i], hs[0][i]))
-        ceiling = max(R.e_inv_q(ps[0][i], live), Ts0[0][i])
+        ceiling = max(R.e_ceiling_q(ps[0][i], live), Ts0[0][i])
         t_cl = min(t_after, ceiling)
         t_railed = min(max(t_cl, 0), R.T_MAX_PHYS_Q)
         # the landing (post clamp, post rails -- the rails are counted by HITS,
@@ -1919,7 +1992,7 @@ def gate15_gas_fold(fast=False):
     T_off, E_off = [r[:] for r in T0], [r[:] for r in E0]
     R.fold_pass1_gas(T_off, E_off, rn, phi, nb, ts, c_off, table=live, clamp_enabled=False)
     over = sum(1 for i in range(n)
-               if T_off[0][i] > max(R.e_inv_q(phi[0][i], live), T0[0][i]))
+               if T_off[0][i] > max(R.e_ceiling_q(phi[0][i], live), T0[0][i]))
     good = (target_ok and step_ok and resid_ok and books_ok and drop_ok and mp_ok
             and n_clamped > 0 and n_free > 0 and n_letter_drain > 0 and over > 0
             and c_off.rad_clamp_hits == 0 and c_off.e_rad_clamp_drop_sum == 0)
@@ -1944,7 +2017,7 @@ def gate15_gas_fold(fast=False):
         t_after = R.sat_add_q16(t0, dT)
         rem = (r << 16) - (t_after - t0) * cap
         floor_want += rem
-        ceiling = max(R.e_inv_q(phi[0][i], live), t0)
+        ceiling = max(R.e_ceiling_q(phi[0][i], live), t0)
         t_land = min(t_after, ceiling)
         floor_exact &= ((r << 16) == (t_land - t0) * cap + (t_after - t_land) * cap + rem)
         if abs(rem) > _chain_bound(r, N, cap, dT):
@@ -1966,7 +2039,7 @@ def gate15_gas_fold(fast=False):
     good_g = floor_ok and export_ok
     ok &= good_g
     lines.append(f"  (a) {n} random accountable gas cells, LIVE table: {n_clamped} clamped, "
-                 f"{n_free} not; every clamped mirror lands on max(T_before, E_inv(Phi)): "
+                 f"{n_free} not; every clamped mirror lands on max(T_before, e_ceiling(Phi)): "
                  f"{target_ok}; every other on sat(T_before + dT): {step_ok}; E mod N "
                  f"unchanged on every cell: {resid_ok}. The design's letter N*(T_target + "
                  f"t_amb) - E hits the same mirror but drains the residual on "
@@ -1976,7 +2049,7 @@ def gate15_gas_fold(fast=False):
                  f"= {c.e_rad_clamp_drop_sum} and rad_clamp_hits = {c.rad_clamp_hits}; on "
                  f"{n_s} thermal solids e_solid_deposit_sum + e_rad_clamp_drop_sum is the "
                  f"unclamped step priced at cap ({cs.rad_clamp_hits} clamped): {drop_ok}")
-    lines.append(f"  (c) T_new <= max(T_before, E_inv(Phi)) on every gas cell: {mp_ok}; with "
+    lines.append(f"  (c) T_new <= max(T_before, e_ceiling(Phi)) on every gas cell: {mp_ok}; with "
                  f"the clamp off {over} cells exceed it (no hits, no drop booked)  "
                  f"{'OK' if good else 'FAIL'}")
     lines.append(f"  (g) the boundary's other two exits, counted: on the {n_floored} cells "
@@ -2092,6 +2165,203 @@ def gate15_gas_fold(fast=False):
     return ok, lines
 
 
+# --------------------------------------------------------------------------- #
+# P5d: THE CLAMP'S CEILING -- ONE BUCKET OF HEADROOM (Erik's ruling, 2026-09-24;
+# docs/ray_engine_v2_p5d_clamp_headroom_brief_2026-09-24.md sections 5.1, 5.3,
+# 5.4). The fold clamps at e_ceiling_q, the top of the first bucket whose E°
+# exceeds Phi; this gate is its property sheet, and the two ceilings the ruling
+# rejected are measured beside it so none of its properties can pass vacuously.
+# --------------------------------------------------------------------------- #
+ROW_WOOD = ("wood", Q(0.9), -3)                     # the shipped wood row (M2 thin)
+ROW_FURNITURE = ("furniture", A_FURNITURE, HIS_OVERDRIVEN)   # the shipped furniture row
+
+
+def _ceiling_low_edge(phi, table):
+    """The PRE-P5d ceiling: E_inv(Phi), the low edge of Phi's own bucket."""
+    return R.e_inv_q(phi, table)
+
+
+def _ceiling_exact_inverse(phi, table):
+    """The CONTINUOUS inverse of the staircase -- linear between the bucket
+    MIDPOINTS the table is baked at (E°[b] sits at 4b + 2) -- i.e. what a patch
+    that made E_inv 'exact' would ship. Not shipped; measured."""
+    if phi < table[0]:
+        return 0
+    b = R.e_inv_q(phi, table) >> R.E_INDEX_SHIFT
+    if b >= R.E_TABLE_SIZE - 1:
+        return R.T_TABLE_TOP_GAME << 16
+    lo, hi = table[b], table[b + 1]
+    return ((4 * b + 2) << 16) + ((phi - lo) * (4 << 16)) // (hi - lo)
+
+
+def _held_phi_march(phi, a_q, his, *, ticks, window, table, ceiling_fn=None,
+                    clamp_enabled=True, t0_q=0):
+    """One cell under a held Phi (cell_march, the fold's own arithmetic), marched
+    FROM COLD: `ticks - window` ticks, then `window` more with fresh counters.
+    Returns (trace of the last window, its counters). A cell_march's state is its
+    T alone, so the split is exact; the approach is not what is measured."""
+    t_mid, _ = R.cell_march(t0_q, phi, a_q, his, ticks - window, table=table,
+                            ceiling_fn=ceiling_fn, clamp_enabled=clamp_enabled)
+    tr, c = R.cell_march(t_mid, phi, a_q, his, window, table=table, trace=True,
+                         ceiling_fn=ceiling_fn, clamp_enabled=clamp_enabled)
+    return tr[1:], c
+
+
+def gate16_clamp_ceiling(fast=False):
+    """G16 (P5d, Erik's ruling of 2026-09-24): THE CLAMP'S CEILING -- ONE BUCKET
+    OF HEADROOM. The fold clamps the radiative sub-step at max(T_before,
+    e_ceiling_q(Phi)), the TOP of the first bucket whose E° exceeds Phi.
+
+      (a) THE LOOKUP, over EVERY bucket of BOTH tables: for Phi in [E°[0],
+          E°[3999]) -- each bucket's two edges and a point inside -- the ceiling
+          c is the LAST Q16 value of its bucket, and that bucket is the FIRST
+          whose E° exceeds Phi: E°[bucket(c) - 1] <= Phi < E°[bucket(c)]. c >=
+          E_inv(Phi); c is monotone in Phi; Phi < E°[0] -> 0 (design row 31, the
+          one deliberate exception); Phi >= E°[3999] -> (16000 << 16) - 1, below
+          T_MAX_PHYS. The pair: E_inv, the pre-P5d ceiling, fails "first bucket
+          above Phi" on every probe.
+      (b) AN UNDAMPED CELL BALANCES WITH NOTHING WITHHELD (0-D, the LIVE table):
+          the shipped wood and furniture rows under a held Phi whose continuous
+          equilibrium T_cont spans the fire range, Phi in BOTH halves of its
+          bucket: over the last W ticks the clamp withholds NOTHING, the mean T
+          is within one bucket of T_cont, and the cell is undamped there (f ==
+          2^24, else the case is not the one claimed). The pairs: the low edge
+          (E_inv) withholds on every Phi; the exact inverse (linear between
+          bucket midpoints) withholds wherever T_cont falls in Phi's own bucket
+          -- the lower half -- which is why both halves are sampled.
+      (c) THE CLAMP'S REAL JOB (0-D, the LIVE table): the wood row under a Phi far
+          above the fire range (T_cont ~ 5 000 and ~ 11 000 game), where Fleck
+          damps it (f < 2^24): the clamped march ends within [T_cont - 1 bucket,
+          T_cont + 2 buckets], and the same march with the clamp OFF runs past
+          that band -- Fleck alone does not hold it.
+
+    Breaks if: the clamp's ceiling is reverted to e_inv_q (a: its bucket is
+    Phi's own, not the first above it; b: the low edge withholds every tick), is
+    made the exact inverse (b: the lower half withholds), loses its Phi < E°[0]
+    -> 0 case or saturates at or above T_MAX_PHYS (a), or the clamp is removed
+    (c: the damped cell runs away).
+    """
+    lines, ok = [], True
+    # ---- (a) the lookup, every bucket, both tables -------------------------
+    n_probe = bad = low_edge_fails = 0
+    mono = True
+    for _tname, tbl in (("resolving", R.E), ("live", R.E_LIVE)):
+        last = -1
+        for b in range(R.E_TABLE_SIZE - 1):
+            lo, hi = tbl[b], tbl[b + 1]
+            for phi in sorted({lo, lo + (hi - lo) // 2, hi - 1}):
+                n_probe += 1
+                c = R.e_ceiling_q(phi, tbl)
+                bc = c >> R.E_INDEX_SHIFT
+                top = ((c + 1) >> R.E_INDEX_SHIFT) == bc + 1
+                first = 1 <= bc < R.E_TABLE_SIZE and tbl[bc - 1] <= phi < tbl[bc]
+                if not (top and first and bc == R.e_bucket_of(c)
+                        and c >= R.e_inv_q(phi, tbl)):
+                    bad += 1
+                mono &= c >= last
+                last = c
+                ci = R.e_inv_q(phi, tbl) >> R.E_INDEX_SHIFT
+                low_edge_fails += int(not (1 <= ci and tbl[ci - 1] <= phi < tbl[ci]))
+        below = [R.e_ceiling_q(v, tbl) for v in (0, tbl[0] - 1)]
+        sat = [R.e_ceiling_q(v, tbl) for v in (tbl[R.E_TABLE_SIZE - 1],
+                                              3 * tbl[R.E_TABLE_SIZE - 1])]
+        edges = (below == [0, 0] and sat == [R.T_CEILING_TOP_Q] * 2
+                 and R.T_CEILING_TOP_Q < R.T_MAX_PHYS_Q)
+        bad += int(not edges)
+    good = bad == 0 and mono and low_edge_fails == n_probe
+    ok &= good
+    lines.append(f"  (a) the lookup on {n_probe} probes (every bucket's two edges and "
+                 f"midpoint, both tables): the ceiling is its bucket's top and that "
+                 f"bucket is the first above Phi, >= E_inv, edge cases (0 below E°[0]; "
+                 f"{R.T_CEILING_TOP_Q / 65536:.5f} game at the top, < T_MAX_PHYS): "
+                 f"{bad} violations; monotone: {mono}. E_inv as the ceiling fails "
+                 f"'first bucket above Phi' on {low_edge_fails} of {n_probe}  "
+                 f"{'OK' if good else 'FAIL'}")
+    # ---- (b) an undamped cell balances with nothing withheld ---------------
+    live = R.E_LIVE
+    # From cold the slowest case is the last bucket before the edge, where the
+    # staircase's drive is only u x (E°[b+1] - E°[b]): the furniture row at 400
+    # game and u = 0.15 needs ~13 000 ticks to cross it. `settled` below asserts
+    # every shipped-ceiling case reached its balance inside the window.
+    ticks, window = (8000, 2000) if fast else (20000, 2000)
+    t_eqs = (800,) if fast else (400, 800, 1500)
+    us = (0.2, 0.8) if fast else (0.15, 0.4, 0.6, 0.85)
+    forms = (("headroom (shipped)", None), ("low edge (E_inv)", _ceiling_low_edge),
+             ("exact inverse", _ceiling_exact_inverse))
+    stats = {name: dict(n=0, withheld_cases=0, withheld=0, gross=0, dev=[], lower=0,
+                        lower_withheld=0) for name, _ in forms}
+    undamped = settled = True
+    for _row, a_q, his in (ROW_WOOD, ROW_FURNITURE):
+        for t_eq in t_eqs:
+            b = t_eq // 4
+            for u in us:
+                phi = live[b] + int(u * (live[b + 1] - live[b]))
+                t_cont = R.e_inv_float(phi, R.RAD_SCALE_LIVE)
+                lower_half = t_cont < 4 * b + 4          # T_cont inside Phi's own bucket
+                for name, fn in forms:
+                    tr, c = _held_phi_march(phi, a_q, his, ticks=ticks, window=window,
+                                            table=live, ceiling_fn=fn)
+                    st = stats[name]
+                    st["n"] += 1
+                    st["withheld"] += c.e_rad_clamp_drop_sum
+                    st["gross"] += window * (((phi * a_q) >> 16) << 16)
+                    st["withheld_cases"] += int(c.e_rad_clamp_drop_sum > 0)
+                    st["dev"].append(sum(tr) / len(tr) / 65536.0 - t_cont)
+                    st["lower"] += int(lower_half)
+                    st["lower_withheld"] += int(lower_half and c.e_rad_clamp_drop_sum > 0)
+                    if fn is None:
+                        undamped &= all(R.fleck_f_solid_q(t, a_q, his, table=live)[0] == F_ONE
+                                        for t in (min(tr), max(tr)))
+                        # balanced, not still approaching: the window straddles the
+                        # edge 4(b+1) where the bucket's E° crosses Phi
+                        settled &= min(tr) < ((4 * (b + 1)) << 16) <= max(tr)
+    head, low, exact = (stats[n] for n, _ in forms)
+    good = (head["withheld_cases"] == 0 and all(abs(d) <= 4.0 for d in head["dev"])
+            and undamped and settled
+            and low["withheld_cases"] == low["n"]
+            and exact["lower"] > 0 and exact["lower_withheld"] == exact["lower"]
+            and head["lower"] > 0 and head["lower"] < head["n"])
+    ok &= good
+    lines.append(f"  (b) undamped rows (wood a 0.9 his -3, furniture a 0.5 his -2) under "
+                 f"a held Phi, LIVE table, T_cont ~ {'/'.join(map(str, t_eqs))} game, Phi at "
+                 f"{us} of its bucket ({head['lower']} of {head['n']} cases with T_cont in "
+                 f"the lower half), {ticks} ticks from cold, stats over the last "
+                 f"{window}; undamped there: {undamped}; every shipped-ceiling cell "
+                 f"flickers across the edge where its bucket's E° crosses Phi: {settled}:")
+    for name, _fn in forms:
+        st = stats[name]
+        lines.append(f"      {name:>20}: withheld / gross absorbed "
+                     f"{100.0 * st['withheld'] / st['gross']:7.4f} %, on {st['withheld_cases']:2d}"
+                     f" of {st['n']} cases (lower half {st['lower_withheld']} of "
+                     f"{st['lower']}); mean T - T_cont in "
+                     f"[{min(st['dev']):+.2f}, {max(st['dev']):+.2f}] game")
+    lines.append(f"      the shipped ceiling withholds nothing and sits within one bucket; "
+                 f"the low edge withholds on every case, the exact inverse on every "
+                 f"lower-half case  {'OK' if good else 'FAIL'}")
+    # ---- (c) the clamp's real job: a Fleck-damped cell -----------------------
+    _row, a_q, his = ROW_WOOD
+    ticks_c = 200 if fast else 600
+    good_c = True
+    for t_eq in (5000, 11000):
+        b = t_eq // 4
+        phi = live[b] + (live[b + 1] - live[b]) // 2
+        t_cont = R.e_inv_float(phi, R.RAD_SCALE_LIVE)
+        t_c, cc = R.cell_march(0, phi, a_q, his, ticks_c, table=live)
+        t_u, _cu = R.cell_march(0, phi, a_q, his, ticks_c, table=live, clamp_enabled=False)
+        f_c = R.fleck_f_solid_q(t_c, a_q, his, table=live)[0]
+        held = (t_cont - 4.0) <= t_c / 65536 <= (t_cont + 8.0)
+        runaway = t_u / 65536 > t_cont + 8.0
+        g = held and runaway and f_c < F_ONE and cc.rad_clamp_hits > 0
+        good_c &= g
+        lines.append(f"  (c) wood under Phi with T_cont = {t_cont:8.1f} game, {ticks_c} ticks, "
+                     f"LIVE: clamped -> {t_c / 65536:8.2f} (f = {f_c / F_ONE:.4f}, "
+                     f"{cc.rad_clamp_hits} hits; band [{t_cont - 4:.1f}, {t_cont + 8:.1f}]), "
+                     f"clamp OFF -> {t_u / 65536:9.1f} game (Fleck alone, "
+                     f"{t_u / 65536 - t_cont:+.1f})  {'OK' if g else 'FAIL'}")
+    ok &= good_c
+    return ok, lines
+
+
 GATES = [
     ("G1  conservation", gate1_conservation),
     ("G2a uniform ambient fixed point", gate2a_uniform_ambient),
@@ -2112,6 +2382,7 @@ GATES = [
      gate14_gas_fleck_arm),
     ("G15 the fold's gas branch: the clamp's energy form, the books, cooling, "
      "shielding, the 8.4 boundary", gate15_gas_fold),
+    ("G16 the clamp's ceiling: one bucket of headroom", gate16_clamp_ceiling),
 ]
 
 
