@@ -2674,7 +2674,8 @@ T_BURN_GAME = T_SRC_GAME                   # a burning crate's plateau (1263 gam
 # Light gas coefficients in G13's gas vocabulary (smoke, steam, o2, n2): soot's
 # and steam's shipped RGB absorption x the shipped [smoke] absorb scale 1.4, and
 # their scatter albedos -- the numbers GasTable.light_absorb_q16 / light_glow_q16
-# carry (tests/test_gas_light_columns.py holds the table to config).
+# carry (tests/test_light_extinction_doors.py holds these constants to the
+# shipped table, count for count).
 LIGHT_ABSORB = [[LQ(0.88 * 1.4), LQ(0.90 * 1.4), LQ(0.93 * 1.4)],
                 [LQ(0.10 * 1.4), LQ(0.10 * 1.4), LQ(0.10 * 1.4)], [0, 0, 0], [0, 0, 0]]
 LIGHT_GLOW = [[LQ(0.04)] * 3, [LQ(0.92), LQ(0.92), LQ(0.95)], [0, 0, 0], [0, 0, 0]]

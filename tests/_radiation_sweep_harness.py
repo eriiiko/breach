@@ -279,10 +279,40 @@ def gas_arrays(gas, hq, n_bulk):
             as_i32(n_bulk))
 
 
+def light_arrays(light, h, w):
+    """P6a: the LIGHT group as the engine's binding takes it, from the
+    reference's channel-first lists ({la, ld: [3][h][w]}, optional transport,
+    light_absorb_q / light_glow_q [n_gases][3] and table), plus freshly allocated
+    outputs. Returns the kwargs for RadiationSweep.run / cuda_radiation_sweep_run
+    (the outputs among them, so a caller reads them back after the call)."""
+    to_hw3 = lambda p: np.ascontiguousarray(                         # noqa: E731
+        np.moveaxis(np.asarray(p, dtype=np.int64), 0, -1).astype(np.int32))
+    kw = dict(light_atten_q=to_hw3(light["la"]), dyn_light_atten_q=to_hw3(light["ld"]),
+              light_q=np.zeros((h, w, 3), dtype=np.int64),
+              light_flux_q=np.zeros((h, w, 2), dtype=np.int64),
+              light_glow=np.zeros((h, w, 3), dtype=np.int64),
+              light_transport=TRANSPORTS[light.get("transport", "step")])
+    if light.get("light_absorb_q") is not None:
+        kw["light_absorb_q16"] = np.ascontiguousarray(
+            np.asarray(light["light_absorb_q"], dtype=np.int64).astype(np.int32))
+        kw["light_glow_q16"] = np.ascontiguousarray(
+            np.asarray(light["light_glow_q"], dtype=np.int64).astype(np.int32))
+    if light.get("table") is not None:
+        kw["light_table"] = np.ascontiguousarray(np.asarray(light["table"], dtype=np.int64))
+    return kw
+
+
+def light_out(kw):
+    """The three light outputs of a light_arrays() call, channel-first like the
+    reference's: (light_q (3,h,w), light_flux (2,h,w), light_glow (3,h,w))."""
+    cf = lambda p: np.moveaxis(p, -1, 0)                              # noqa: E731
+    return cf(kw["light_q"]), cf(kw["light_flux_q"]), cf(kw["light_glow"])
+
+
 def cpp_sweep(a, d, k_q, T, his, ts, *, transport="shear", n_ord=16,
               table=None, sweep=None, fleck=True, amb=None,
               gas=None, hq=None, n_bulk=None,
-              c_v_q=R.C_V_Q_LIVE, n_floor_q=R.N_FLOOR_Q_LIVE):
+              c_v_q=R.C_V_Q_LIVE, n_floor_q=R.N_FLOOR_Q_LIVE, light=None):
     """Run the C++ sweep on a reference-format scene. `k_q` is the UNIFORM leak
     (an int, Q16). `fleck=False` is the reference's `f_plane=None` (undamped)
     configuration. `amb` is the ambient LEVEL the same way the reference takes
@@ -293,10 +323,14 @@ def cpp_sweep(a, d, k_q, T, his, ts, *, transport="shear", n_ord=16,
     the reference's integer forms, handed to the engine through
     engine_currency). Returns (rad_net, rad_flux, rad_amb, rad_fluence, fleck,
     sweep) as int64/int32 numpy arrays plus the sweep object (its min_stream /
-    max_stream telemetry and effective planes)."""
+    max_stream telemetry and effective planes). P6a: with `light` (a dict --
+    see light_arrays) a SEVENTH element is returned: {"light_q", "light_flux",
+    "light_glow"} channel-first int64 arrays and "books" (the sweep's
+    light_books)."""
     h, w = len(a), len(a[0])
     table = table if table is not None else reference_table()
     sweep = sweep if sweep is not None else bp.RadiationSweep()
+    lkw = light_arrays(light, h, w) if light is not None else {}
     T_a = as_i32(T)
     a_a = as_i32(a)
     d_a = as_i32(d)
@@ -316,8 +350,12 @@ def cpp_sweep(a, d, k_q, T, his, ts, *, transport="shear", n_ord=16,
     sweep.run(T_a, a_a, d_a, his_a, ts_a, table, amb_a, int(T_AMB_Q), int(k_q),
               TRANSPORTS[transport], int(n_ord), rn, rf, ra, rl,
               fleck_enabled=bool(fleck), gas=g_a, heat_absorb_q16=hq_a, n_bulk=nb_a,
-              **cur)
-    return rn, rf, ra, rl, sweep.fleck_plane(), sweep
+              **cur, **lkw)
+    if light is None:
+        return rn, rf, ra, rl, sweep.fleck_plane(), sweep
+    lq, lf, lg = light_out(lkw)
+    return rn, rf, ra, rl, sweep.fleck_plane(), sweep, dict(
+        light_q=lq, light_flux=lf, light_glow=lg, books=sweep.light_books)
 
 
 def amb_plane(amb, h, w):
@@ -332,7 +370,7 @@ def amb_plane(amb, h, w):
 def ref_sweep(a, d, k_q, T, his, *, transport="shear", n_ord=16, amb=None,
               ts=None, gas=None, hq=None, n_bulk=None,
               c_v_q=R.C_V_Q_LIVE, n_floor_q=R.N_FLOOR_Q_LIVE, table=None,
-              gas_fleck=True):
+              gas_fleck=True, light=None):
     """The reference on the SAME scene: its Fleck pre-pass then its sweep.
     `ts` (the thermal-solid mask) selects the pre-pass branch exactly as the
     engine does; `gas`/`hq`/`n_bulk` (P5a, all or none, with `ts`) are the
@@ -353,8 +391,22 @@ def ref_sweep(a, d, k_q, T, his, *, transport="shear", n_ord=16, amb=None,
                         c_v_q=c_v_q, n_floor_q=n_floor_q,
                         **(gas_kw if gas_fleck else {}))
     k = R.plane(h, w, int(k_q))
+    lg = None
+    if light is not None:
+        lg = R.LightGroup(la=light["la"], ld=light["ld"],
+                          table=light.get("table"),
+                          transport=light.get("transport", "step"),
+                          light_absorb_q=light.get("light_absorb_q"),
+                          light_glow_q=light.get("light_glow_q"))
     res = R.sweep_q(a, d, k, T, n_ord=n_ord, transport=transport, f_plane=f,
-                    e_ref=amb, table=tbl, ts=ts, **gas_kw)
+                    e_ref=amb, table=tbl, ts=ts, light=lg, **gas_kw)
     to64 = lambda p: np.asarray(p, dtype=np.int64)   # noqa: E731
-    return (to64(res.rad_net), to64(res.rad_flux), to64(res.rad_amb),
-            to64(res.rad_fluence), np.asarray(f, dtype=np.int64), res)
+    out = (to64(res.rad_net), to64(res.rad_flux), to64(res.rad_amb),
+           to64(res.rad_fluence), np.asarray(f, dtype=np.int64), res)
+    if light is None:
+        return out
+    books = dict(emit=tuple(res.light_emit), absorb=tuple(res.light_absorb),
+                 ring_in=tuple(res.light_ring_in), ring_out=tuple(res.light_ring_out),
+                 min_stream=res.min_light_stream, max_stream=res.max_light_stream)
+    return out + (dict(light_q=to64(res.light_q), light_flux=to64(res.light_flux),
+                       light_glow=to64(res.light_glow), books=books),)

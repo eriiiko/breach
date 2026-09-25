@@ -196,6 +196,27 @@ def test_the_faintest_glow_the_ramp_shows_is_resolved(checked_in, ramp):
           f"2^{math.log2(per_ord):.2f} counts per ordinate at k = {k}")
 
 
+def test_the_engine_compiles_the_same_numbers_in_the_same_currency(checked_in):
+    """PROPERTY: the engine's L° (LightEmissionTable.table(), compiled from the
+    .inc) is the checked-in table value for value; its currency
+    (LightEmissionTable.fine_bits, bp.L_FINE_BITS) is the header's; the
+    headroom door the .cpp static_asserts is 2^44; and PhysicsEngine owns one.
+
+    BREAKS IF: the build compiles a stale .inc, or the binding reports another
+    currency than the table was generated at.
+    """
+    import breach_physics as bp
+    k, table = checked_in
+    eng_tbl = np.asarray(bp.LightEmissionTable().table(), dtype=np.int64)
+    assert eng_tbl.shape == (3, GEN.E_TABLE_SIZE)
+    assert np.array_equal(eng_tbl, table)
+    assert int(bp.L_FINE_BITS) == int(bp.LightEmissionTable.fine_bits) == k
+    assert int(bp.L_TABLE_TOP_MAX) == 1 << 44 and int(bp.L_CHANNELS) == 3
+    eng = bp.PhysicsEngine()
+    assert np.array_equal(np.asarray(eng.light_emission.table()), table)
+    assert eng.light_requested is False
+
+
 def test_the_reference_reads_the_same_numbers(checked_in):
     """PROPERTY: the integer reference's L_LIVE (sweep_ref_q.load_l_table) is
     the checked-in table value for value, in the same currency -- ONE copy of
