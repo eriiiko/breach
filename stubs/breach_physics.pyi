@@ -6,7 +6,7 @@ import collections.abc
 import numpy
 import numpy.typing
 import typing
-__all__: list[str] = ['ATMOSPHERE_FIXEDPOINT', 'ATMOSPHERE_FP_ONE', 'ATMOSPHERE_FP_SHIFT', 'AtmosphereSolver', 'CAP_SHIFT_MAX', 'CAP_SHIFT_MIN', 'CombustionSolver', 'EOSSolver', 'E_INV_TOP_GAME', 'E_TABLE_SIZE', 'EmissiveTable', 'FireParams', 'FireSimulation', 'HAS_CUDA', 'LightSource', 'PhysicsEngine', 'RADIATION_SWEEP_CNT_SLOTS', 'RS_BAD_HEAT_ABSORB', 'RS_SLOT_BAD_AMBIENT', 'RS_SLOT_BAD_EXTINCTION', 'RS_SLOT_BAD_SCALARS', 'RS_SLOT_MAX_STREAM', 'RS_SLOT_MIN_STREAM', 'RadiationSweep', 'Raycaster', 'SmokeDynamics', 'TemperatureSolver', 'WATER_FIXEDPOINT', 'WATER_FP_ONE', 'WATER_FP_SHIFT', 'WAVE_FIXEDPOINT', 'WAVE_FP_ONE', 'WAVE_FP_SHIFT', 'WIND_FIXEDPOINT', 'WIND_FP_ONE', 'WIND_FP_SHIFT', 'WaterSolver', 'atan2_q16', 'bulk_flux_transport', 'conduction_cell_capacity_q', 'cos_q16', 'cuda_available', 'cuda_bulk_flux_transport', 'cuda_combustion_step', 'cuda_device_info', 'cuda_eos_energy_flux', 'cuda_eos_kick_compression', 'cuda_eos_mg_solve', 'cuda_eos_sl_advect', 'cuda_fire_step', 'cuda_map_mul_q16', 'cuda_radiation_sweep_launch_count', 'cuda_radiation_sweep_resident', 'cuda_radiation_sweep_run', 'cuda_smoke_step', 'cuda_spike_add1', 'cuda_temperature_step', 'cuda_water_step', 'eos_energy_books_sum', 'eos_kick_compression_ref', 'eos_mg_build_parity', 'eos_mg_solve_ref', 'eos_resident_calls', 'eos_sl_advect_ref', 'eos_step_cuda_calls', 'fp_deposit_dT_wide_i64', 'fp_deposit_dT_wide_q16', 'fp_make_recip', 'fp_quantize', 'fp_recip_mul', 'fp_reciprocal_q16', 'fp_shr_round0', 'fp_shr_round0_i64', 'fp_shr_round0_signed_i64', 'get_bulk_flux_backend', 'get_combustion_backend', 'get_eos_step_backend', 'get_fire_backend', 'get_kick_compression_backend', 'get_mg_solve_backend', 'get_radiation_backend', 'get_sl_advection_backend', 'get_smoke_backend', 'get_temperature_backend', 'get_water_backend', 'radiation_sweep_cuda_calls', 'set_bulk_flux_backend', 'set_combustion_backend', 'set_fire_backend', 'set_kick_compression_backend', 'set_mg_solve_backend', 'set_radiation_backend', 'set_sl_advection_backend', 'set_smoke_backend', 'set_temperature_backend', 'set_water_backend', 'sin_q16', 'sky_exchange_step', 'smoke_cliff_count', 'trace_smoke_resident', 'water_substeps_resident']
+__all__: list[str] = ['ATMOSPHERE_FIXEDPOINT', 'ATMOSPHERE_FP_ONE', 'ATMOSPHERE_FP_SHIFT', 'AtmosphereSolver', 'CAP_SHIFT_MAX', 'CAP_SHIFT_MIN', 'CombustionSolver', 'EOSSolver', 'E_CEILING_TOP_Q', 'E_INV_TOP_GAME', 'E_TABLE_SIZE', 'EmissiveTable', 'FireParams', 'FireSimulation', 'HAS_CUDA', 'LightSource', 'PhysicsEngine', 'RADIATION_SWEEP_CNT_SLOTS', 'RS_BAD_HEAT_ABSORB', 'RS_SLOT_BAD_AMBIENT', 'RS_SLOT_BAD_EXTINCTION', 'RS_SLOT_BAD_SCALARS', 'RS_SLOT_MAX_STREAM', 'RS_SLOT_MIN_STREAM', 'RadiationSweep', 'Raycaster', 'SmokeDynamics', 'TemperatureSolver', 'WATER_FIXEDPOINT', 'WATER_FP_ONE', 'WATER_FP_SHIFT', 'WAVE_FIXEDPOINT', 'WAVE_FP_ONE', 'WAVE_FP_SHIFT', 'WIND_FIXEDPOINT', 'WIND_FP_ONE', 'WIND_FP_SHIFT', 'WaterSolver', 'atan2_q16', 'bulk_flux_transport', 'conduction_cell_capacity_q', 'cos_q16', 'cuda_available', 'cuda_bulk_flux_transport', 'cuda_combustion_step', 'cuda_device_info', 'cuda_eos_energy_flux', 'cuda_eos_kick_compression', 'cuda_eos_mg_solve', 'cuda_eos_sl_advect', 'cuda_fire_step', 'cuda_map_mul_q16', 'cuda_radiation_sweep_launch_count', 'cuda_radiation_sweep_resident', 'cuda_radiation_sweep_run', 'cuda_smoke_step', 'cuda_spike_add1', 'cuda_temperature_step', 'cuda_water_step', 'eos_energy_books_sum', 'eos_kick_compression_ref', 'eos_mg_build_parity', 'eos_mg_solve_ref', 'eos_resident_calls', 'eos_sl_advect_ref', 'eos_step_cuda_calls', 'fp_deposit_dT_wide_i64', 'fp_deposit_dT_wide_q16', 'fp_make_recip', 'fp_quantize', 'fp_recip_mul', 'fp_reciprocal_q16', 'fp_shr_round0', 'fp_shr_round0_i64', 'fp_shr_round0_signed_i64', 'get_bulk_flux_backend', 'get_combustion_backend', 'get_eos_step_backend', 'get_fire_backend', 'get_kick_compression_backend', 'get_mg_solve_backend', 'get_radiation_backend', 'get_sl_advection_backend', 'get_smoke_backend', 'get_temperature_backend', 'get_water_backend', 'radiation_sweep_cuda_calls', 'set_bulk_flux_backend', 'set_combustion_backend', 'set_fire_backend', 'set_kick_compression_backend', 'set_mg_solve_backend', 'set_radiation_backend', 'set_sl_advection_backend', 'set_smoke_backend', 'set_temperature_backend', 'set_water_backend', 'sin_q16', 'sky_exchange_step', 'smoke_cliff_count', 'trace_smoke_resident', 'water_substeps_resident']
 class AtmosphereSolver:
     def __init__(self) -> None:
         ...
@@ -514,9 +514,13 @@ class EmissiveTable:
         """
         emissive_table.h e_bucket_of: Q16.16 temperature -> bucket index.
         """
+    def e_ceiling_q(self, phi: typing.SupportsInt | typing.SupportsIndex) -> int:
+        """
+        emissive_table.h e_ceiling_q: the maximum-principle clamp's ceiling as a Q16.16 game temperature -- the TOP (last Q16 value) of the first bucket whose E° exceeds Φ; 0 below E°[0]; saturates one LSB below 16000 game (E_CEILING_TOP_Q), below T_MAX_PHYS.
+        """
     def e_inv_q(self, phi: typing.SupportsInt | typing.SupportsIndex) -> int:
         """
-        emissive_table.h e_inv_q: E°⁻¹(Φ) as a Q16.16 game temperature (the bucket's LOW edge; 0 below E°[0]; saturates at 15996 game).
+        emissive_table.h e_inv_q: E°⁻¹(Φ) as a Q16.16 game temperature (the bucket's LOW edge; 0 below E°[0]; saturates at 15996 game). The radiation temperature -- not the clamp's ceiling (e_ceiling_q).
         """
     def table(self) -> numpy.typing.NDArray[numpy.int64]:
         """
@@ -1396,6 +1400,7 @@ ATMOSPHERE_FP_ONE: int = 65536
 ATMOSPHERE_FP_SHIFT: int = 16
 CAP_SHIFT_MAX: int = 12
 CAP_SHIFT_MIN: int = -16
+E_CEILING_TOP_Q: int = 1048575999
 E_INV_TOP_GAME: int = 15996
 E_TABLE_SIZE: int = 4000
 HAS_CUDA: bool = True
