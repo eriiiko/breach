@@ -1120,6 +1120,27 @@ class MaterialTable:
                 )
             atten[idx] = arr
         self.light_atten = atten
+        # ---- ray-engine-v2 P6a (design v3 §2.3 / §4.1 / §5): the LIGHT
+        # extinction's ingress and its Q16 column. The sweep's light channels
+        # read `a_c` per channel exactly as the heat channel reads `a` -- the
+        # material share absorbs AND emits (Kirchhoff per channel) -- so the
+        # invariant is the heat door's, per channel: 0 <= light_atten <= 1,
+        # rejected by name, never clamped. No `thermal_mass` rule: absorbed
+        # light is not booked into any temperature (light has no material
+        # feedback, §4.1), so a light-absorbing gas-regime row is not an
+        # uncounted sink. Quantized ONCE here through the optics boundary module
+        # and projected per tile by GameMap (`light_atten_q`), the heat plane's
+        # seam.
+        for name, trip in zip(self.names, self.light_atten.tolist()):
+            if not all(0.0 <= float(v) <= 1.0 for v in trip):
+                raise ValueError(
+                    f"materials.{name}.light_atten must lie in [0, 1] on every "
+                    f"channel (a Q16 extinction on the radiation sweep's light "
+                    f"planes; design v3 section 2.3: 0 <= a <= d <= ONE); got "
+                    f"{trip!r}")
+        from simulation import optics_fixed as _optics_fx_l
+        self.light_atten_q16 = np.ascontiguousarray(
+            _optics_fx_l.quantize(self.light_atten), dtype=np.int32)   # (N, 3)
 
         # permeability: gas + smoke flow coefficient (0 = sealed wall, 1 = open
         # air; partial = a leaky/porous material). OPTIONAL column — if a

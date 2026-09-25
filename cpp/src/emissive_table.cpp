@@ -107,3 +107,43 @@ const int64_t* EmissiveTable::table() const {
     }
     return table_.data();
 }
+
+// ============================================================================
+// THE LIGHT EMISSION TABLE L° (ray-engine-v2 P6a) -- CHECKED IN, never computed.
+// light_emission_table.inc is written offline by tools/gen_light_table.py from
+// renderer/blackbody.py (emissive_table.h has the argument); this TU is its
+// one definition. Pure integer data: nothing here rounds, and the ratchet's
+// baseline for this file does not move. Three compile-time doors on the data
+// itself, so a table that breaks one does not build:
+//   * it was generated at THIS header's currency (L_FINE_BITS),
+//   * bucket 0 is dark on every channel (the light ambient is L°[0] = 0: a
+//     room-temperature body emits no visible light, decision 3),
+//   * every entry lies in [0, L_TABLE_TOP_MAX) (the light loop's headroom).
+// ============================================================================
+namespace {
+#include "light_emission_table.inc"   // L_TABLE_GEN_FINE_BITS, L_TABLE_DATA[3 * 4000]
+
+constexpr bool light_table_ambient_is_dark() {
+    return L_TABLE_DATA[0] == 0 && L_TABLE_DATA[E_TABLE_SIZE] == 0 &&
+           L_TABLE_DATA[2 * E_TABLE_SIZE] == 0;
+}
+
+constexpr bool light_table_inside_its_door() {
+    for (int i = 0; i < L_CHANNELS * E_TABLE_SIZE; ++i) {
+        if (L_TABLE_DATA[i] < 0 || L_TABLE_DATA[i] >= L_TABLE_TOP_MAX) return false;
+    }
+    return true;
+}
+}  // namespace
+
+static_assert(L_TABLE_GEN_FINE_BITS == L_FINE_BITS,
+              "light_emission_table.inc was generated at another currency than "
+              "emissive_table.h's L_FINE_BITS: run tools/gen_light_table.py --write");
+static_assert(sizeof(L_TABLE_DATA) == sizeof(int64_t) * L_CHANNELS * E_TABLE_SIZE,
+              "the light table must be L_CHANNELS x E_TABLE_SIZE entries");
+static_assert(light_table_ambient_is_dark(),
+              "L°[0] must be 0 on every channel (the light ambient is dark)");
+static_assert(light_table_inside_its_door(),
+              "a light table entry is negative or at/above L_TABLE_TOP_MAX");
+
+const int64_t* light_emission_table() { return L_TABLE_DATA; }

@@ -53,6 +53,15 @@ public:
     // step_tail, LIVE since T5b.
     EmissiveTable     emissive;
     RadiationSweep    radiation;
+    // Ray-engine-v2 P6a: THE LIGHT EMISSION TABLE L° (checked in, emissive_
+    // table.h -- one table, one currency, no dial) and THE REQUEST. Light is
+    // REQUESTED, never always on (design v3 §7.1: "headless training simply
+    // does not request the light channels"): step_tail runs the sweep's light
+    // group only while `light_requested`, and only then touches the light
+    // planes. Default OFF, so the live game and every golden are unmoved until
+    // P6b's renderer asks for it.
+    LightEmissionTable light_emission;
+    bool               light_requested = false;
 
     // (wave_p_f_ / atm_f_ DELETED — audit Patch A / A9, 2026-08-04. Both float
     // scratch buffers were DECLARED HERE AND NEVER USED: repo-wide grep found
@@ -245,7 +254,27 @@ public:
         // the N_EPS floor keys on. The pybind binding makes it REQUIRED
         // (noconvert); null here is the pre-P5a sweep. Every shipped value is
         // 0.0, so no gas plane is read and the live game does not move.
-        const int32_t* gas_heat_absorb_q16 = nullptr) const;
+        const int32_t* gas_heat_absorb_q16 = nullptr,
+        // ---- ray-engine-v2 P6a: THE LIGHT CHANNELS (radiation_sweep.h's
+        // LightChannels), read only while `light_requested`. Then all five
+        // planes are REQUIRED (std::invalid_argument otherwise -- a request
+        // that silently computes nothing is the failure this makes loud):
+        //   light_atten_q / dyn_light_atten_q : int32 Q16 (h, w, 3), the
+        //        material / stamped light extinction (GameMap, optics_fixed)
+        //   light_q / light_flux_q / light_glow : int64 (h, w, 3) / (h, w, 2) /
+        //        (h, w, 3), OVERWRITTEN by the sweep (it zeroes them itself)
+        //   gas_light_absorb_q16 / gas_light_glow_q16 : int32 (n_gases, 3), the
+        //        smoke term's columns (GasTable), both or neither -- they read
+        //        the gas group above (gas_heat_absorb_q16 given)
+        // With the request off every one of them is ignored and the light
+        // planes keep whatever they held.
+        const int32_t* light_atten_q = nullptr,
+        const int32_t* dyn_light_atten_q = nullptr,
+        int64_t* light_q = nullptr,
+        int64_t* light_flux_q = nullptr,
+        int64_t* light_glow = nullptr,
+        const int32_t* gas_light_absorb_q16 = nullptr,
+        const int32_t* gas_light_glow_q16 = nullptr) const;
 
     // --- Patch 1 S4b: the IMEX atmosphere/smoke substep loop -------------
     // Moves the per-tick IMEX substep block out of PhysicsRunner.step (Python)
@@ -582,6 +611,18 @@ public:
     //   heat_q                    : int32 Q16 (n_stamp,) — per-row unit extinction
     //                               (unit.heat_atten, default 1.0 = an opaque body,
     //                               quantized Python-side by optics_fixed)
+    // Ray-engine-v2 P6a (design v3 §4.1, §5): the FIFTH dynamic output, the
+    // INTEGER light-extinction twin the sweep's light channels read, per
+    // channel exactly as the heat plane:
+    //        dyn_light_atten_q[i]   = light_atten_q[i]                (copy, x3)
+    //        dyn_light_atten_q[idx] = max(., light_q_rows[r][c])      (MAX, x3)
+    //   light_atten_q             : int32 Q16 (h, w, 3) — static material extinction (read)
+    //   dyn_light_atten_q         : int32 Q16 (h, w, 3) — dynamic target (write)
+    //   light_q_rows              : int32 Q16 (n_stamp, 3) — per-row unit light
+    //                               extinction (the SAME unit.light_atten triple the
+    //                               float stamp reads, default {1,1,1}, quantized
+    //                               Python-side by optics_fixed)
+    // The float dyn_light_atten above is the old render march's, deleted at P6c.
     void stamp_units(
         const float* permeability, const float* wave_absorb,
         const float* light_atten,
@@ -592,5 +633,7 @@ public:
         const float* atten_r, const float* atten_g, const float* atten_b,
         const int32_t* heat_atten_q, int32_t* dyn_heat_atten_q,
         const int32_t* heat_q,
-        int n_stamp, int h, int w) const;
+        int n_stamp, int h, int w,
+        const int32_t* light_atten_q = nullptr, int32_t* dyn_light_atten_q = nullptr,
+        const int32_t* light_q_rows = nullptr) const;
 };

@@ -1020,6 +1020,19 @@ class PhysicsRunner:
             # temperature fold's gas branch lands what it absorbs; only the
             # smoke plane is read (a zero coefficient's plane never is).
             gas_heat_absorb_q16=gmap.gases.heat_absorb_q16,
+            # ray-engine-v2 P6a (design v3 §7): THE LIGHT CHANNELS' planes and
+            # the gas table's two light columns. Handed every tick, READ by the
+            # engine only while its light is requested (PhysicsEngine.
+            # light_requested, default False -- the live game and headless
+            # training compute no light, §7.1); the sweep then writes
+            # light_q / light_flux_q / light_glow on the same traversal.
+            light_atten_q=gmap.light_atten_q,
+            dyn_light_atten_q=gmap.dyn_light_atten_q,
+            light_q=gmap.light_q,
+            light_flux_q=gmap.light_flux_q,
+            light_glow=gmap.light_glow,
+            gas_light_absorb_q16=gmap.gases.light_absorb_q16,
+            gas_light_glow_q16=gmap.gases.light_glow_q16,
             k_leak_q=self.k_leak_q,
             # thermal v2 R3: the level a VACUUM cell radiates against; the
             # engine selects it per cell from `is_vacuum` (derive_ambient).
@@ -1457,6 +1470,15 @@ class PhysicsRunner:
             rad_amb_sweep=gmap.rad_amb_sweep,
             rad_fluence=gmap.rad_fluence,
             gas_heat_absorb_q16=gmap.gases.heat_absorb_q16,   # P5a; live smoke since P5c
+            # P6a: the light channels' planes, on the SAME host-mirror bracket;
+            # read only while the engine's light is requested (default off).
+            light_atten_q=gmap.light_atten_q,
+            dyn_light_atten_q=gmap.dyn_light_atten_q,
+            light_q=gmap.light_q,
+            light_flux_q=gmap.light_flux_q,
+            light_glow=gmap.light_glow,
+            gas_light_absorb_q16=gmap.gases.light_absorb_q16,
+            gas_light_glow_q16=gmap.gases.light_glow_q16,
             k_leak_q=self.k_leak_q,
             rad_amb_vacuum_q=self.rad_amb_vacuum_q,   # thermal v2 R3
             is_ambient=amb[0],

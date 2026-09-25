@@ -98,7 +98,13 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         int64_t* rad_amb_sweep, int64_t* rad_fluence,
         int32_t k_leak_q,
         int64_t rad_amb_vacuum_q,
-        const int32_t* gas_heat_absorb_q16) const {
+        const int32_t* gas_heat_absorb_q16,
+        // ray-engine-v2 P6a: the light channels (see header), read only while
+        // `light_requested`
+        const int32_t* light_atten_q, const int32_t* dyn_light_atten_q,
+        int64_t* light_q, int64_t* light_flux_q, int64_t* light_glow,
+        const int32_t* gas_light_absorb_q16,
+        const int32_t* gas_light_glow_q16) const {
 
     using namespace fixedpoint;
 
@@ -276,6 +282,33 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // the SAME n_bulk_ the fold divides by. Read only where a_gas > 0:
         // wherever there is smoke, since P5c ships smoke's heat_absorb.
         const GasCapacityQ cap = this->gas_capacity_q();
+        // P6a: THE LIGHT CHANNELS ride the same traversal -- REQUESTED, never
+        // always on (design v3 §7.1). Off (the default) nothing below reads a
+        // light pointer and the sweep is the heat-only one, integer for
+        // integer. On, the whole group is required: a request that silently
+        // computed nothing would hand P6b a dark field it believes is lit.
+        LightChannels lc;
+        const LightChannels* lcp = nullptr;
+        if (this->light_requested) {
+            if (light_atten_q == nullptr || dyn_light_atten_q == nullptr ||
+                light_q == nullptr || light_flux_q == nullptr || light_glow == nullptr) {
+                throw std::invalid_argument(
+                    "PhysicsEngine::step_tail: light is requested but the light "
+                    "planes (light_atten_q, dyn_light_atten_q, light_q, light_flux_q, "
+                    "light_glow) were not all handed in (P6a)");
+            }
+            lc.light_atten_q     = light_atten_q;
+            lc.dyn_light_atten_q = dyn_light_atten_q;
+            lc.l_table           = this->light_emission.table();
+            // the smoke term reads the heat term's gas group: both need it
+            lc.light_absorb_q16  = smoke ? gas_light_absorb_q16 : nullptr;
+            lc.light_glow_q16    = smoke ? gas_light_glow_q16 : nullptr;
+            lc.transport         = RadiationSweep::TRANSPORT_STEP;   // Erik's choice (§2.4)
+            lc.light_q           = light_q;
+            lc.light_flux_q      = light_flux_q;
+            lc.light_glow        = light_glow;
+            lcp = &lc;
+        }
 #ifdef BREACH_HAS_CUDA
         if (breach_cuda::radiation_backend_is_cuda()) {
             // ray-engine-v2 P4: the CUDA twin (cuda_radiation_sweep.h), the
@@ -290,6 +323,10 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             // ran (the t_max_phys_hits idiom), through fleck_plane_for_twin.
             int32_t* f_plane = this->radiation.fleck_plane_for_twin(h, w, 16);
             int64_t s_min = 0, s_max = 0;
+            // P6a: the twin's light books + light-stream telemetry come back
+            // here and land on this->radiation, the backend-agnostic idiom.
+            int64_t lbooks[12] = {0};
+            int64_t ls_min = 0, ls_max = 0;
             breach_cuda::radiation_sweep_step(
                 temperature, heat_atten_q, dyn_heat_atten_q,
                 heat_inv_shift, thermal_solid,
@@ -300,9 +337,12 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
                 rad_net_sweep, rad_flux_sweep, rad_amb_sweep, rad_fluence,
                 /*fleck_enabled=*/true, f_plane, &s_min, &s_max,
                 sw_gas, sw_ng, gas_heat_absorb_q16, sw_nbulk,
-                cap.n_floor_q, cap.recip_cv);
+                cap.n_floor_q, cap.recip_cv,
+                lcp, lbooks, &ls_min, &ls_max);
             this->radiation.min_stream = s_min;
             this->radiation.max_stream = s_max;
+            if (lcp != nullptr)
+                this->radiation.set_light_telemetry_from_twin(lbooks, ls_min, ls_max);
         } else
 #endif
         {
@@ -320,7 +360,8 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
                 rad_net_sweep, rad_flux_sweep, rad_amb_sweep, rad_fluence,
                 /*fleck_enabled=*/true,
                 sw_gas, sw_ng, gas_heat_absorb_q16, sw_nbulk,
-                cap.n_floor_q, cap.recip_cv);
+                cap.n_floor_q, cap.recip_cv,
+                lcp);                                   // P6a: nullptr unless requested
         }
     }
 
@@ -1081,9 +1122,27 @@ void PhysicsEngine::stamp_units(
         const float* atten_r, const float* atten_g, const float* atten_b,
         const int32_t* heat_atten_q, int32_t* dyn_heat_atten_q,
         const int32_t* heat_q,
-        int n_stamp, int h, int w) const {
+        int n_stamp, int h, int w,
+        const int32_t* light_atten_q, int32_t* dyn_light_atten_q,
+        const int32_t* light_q_rows) const {
 
     const int n = h * w;
+    // Ray-engine-v2 P6a: the INTEGER light-extinction twin (the fifth output).
+    // The two planes together or not at all (the binding makes them required;
+    // a C++ caller that omits them gets the pre-P6a stamp, byte for byte); the
+    // per-row triples only when there are rows to stamp.
+    const bool light_stamp = (light_atten_q != nullptr && dyn_light_atten_q != nullptr &&
+                              (n_stamp == 0 || light_q_rows != nullptr));
+    if (light_stamp) {
+        for (int i = 0; i < n * 3; ++i) dyn_light_atten_q[i] = light_atten_q[i];   // copy (Q16)
+        for (int r = 0; r < n_stamp; ++r) {
+            int32_t* cell = dyn_light_atten_q + (size_t)(ys[r] * w + xs[r]) * 3;
+            const int32_t* u = light_q_rows + (size_t)r * 3;
+            // Per-channel MAX: a body can only ADD extinction, never remove a
+            // wall's (a <= d <= ONE by construction, design §2.3).
+            for (int c = 0; c < 3; ++c) cell[c] = (cell[c] >= u[c]) ? cell[c] : u[c];
+        }
+    }
 
     // --- a. Reset to static baseline, IN-PLACE ----------------------------
     // obstacles = (permeability <= 0.0): WALLS ONLY (units are NOT stamped into
