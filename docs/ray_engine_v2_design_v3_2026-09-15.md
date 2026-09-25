@@ -256,6 +256,8 @@ shipped `rad_scale`, and v2 measured 1.9·10⁷ on a small fire scene. `E°` was
 already int64 (`cpp/src/raycaster.cpp:62-97`); what widens is `rad_net`,
 `rad_amb`, `rad_flux` and the new `rad_fluence` (§3).
 
+> **2026-09-25, #78 (Erik's request of 2026-09-24):** every integer in this section is in the heat channel's FINE currency, `2^k` per heat count (`E_FINE_BITS = 11`, `emissive_table.h`): the `E°` table, and with it `amb_m`, `ex_m`, Φ and the four planes, is baked at `rad_scale_derived · 2^k`, and every reader converts once through `fixedpoint::fine_heat_shr` (the gas chain at `deposit_dT_wide_i64`'s final narrow). The per-ordinate floors lose at most `2^−11` of a heat count; the identity is unchanged — `sweep_fine_heat_currency_brief_78_2026-09-25.md`.
+
 ### 2.4 The transport step: one parameter, two settings
 
 ```
@@ -361,6 +363,8 @@ both defined (row 31):
   and are struck.
 
 > **2026-09-24, P5d (Erik's ruling):** the clamp no longer reads `E°⁻¹`; its ceiling is `e_ceiling_q`, the top of the first bucket out-emitting Φ (saturating one LSB below 16 000) — `ray_engine_v2_p5d_clamp_headroom_brief_2026-09-24.md`. `E°⁻¹` itself is unchanged.
+
+> **2026-09-25, #78:** in the fine currency the ambient field's Φ = `n·(E°[0]·w_m >> 16)` sits up to 15 fine counts below `E°[0]`, so near-ambient cells still take the `Φ < E°[0]` branch (about 2.4 M cell-ticks on the P5d bench's 180 s playground), but what they book there is at most 0.0063 heat counts a tick and none of it converts to a temperature LSB: the clamp never binds on that branch (0 hits, 0 W, against P5d's 152 988 landing cell-ticks and ~1 kW). The branch stays as ruled — `sweep_fine_heat_currency_brief_78_2026-09-25.md`.
 
 **The sub-ambient floor** is inherited, not new: `e_bucket_of(T ≤ 0) = 0`, so a
 cell below ambient emits at the ambient level. Its excess is zero, so it neither
@@ -1140,6 +1144,8 @@ inside physics slot 7; `Simulation.step` gains one `fill(0)`.
   readback and a sync, which is host gating with a stall — the thing §A rule 4
   forbids. Cost is set by the grid; that is the thesis.
 
+> **2026-09-25, #78:** the headroom is restated at the fine live scale (`k = 11`, measured by the integer reference at the table top, over-driven): per-cell sums ≤ `2^41.1` (< `2^46`), the sweep loop's plain products ≤ `2^53.5`, the Fleck pre-pass's `a·ex` `2^57.1` (< `2^58`, `2^5.9` below int64), `ex_m·f` `2^61.5` (formed in 128 bits, as before) — 0.6 bits under the resolving scale the gates already exercise. The bake refuses a table top at or above `2^44` (`E_TABLE_TOP_MAX`); `k = 12` would break the `2^58` line (`a·ex` `2^58.1`) — `sweep_fine_heat_currency_brief_78_2026-09-25.md` §4.
+
 ### 8.3 What enters the digest (critique items 6b, 6e)
 
 Per §3: **no new `DIGEST_FIELDS` entry** in P0–P6. The heat channel reaches the
@@ -1168,6 +1174,8 @@ rail and clamp drops** (`t_max_phys_hits`, `t_low_rail_hits`, `rad_clamp_hits`,
 `e_rad_clamp_drop_sum`, `e_gas_rail_sum`). "Exactly conservative inside the
 sim" is withdrawn as a phrase; "exactly conservative on the sweep's books,
 bounded and counted across the fold" is what is claimed.
+
+> **2026-09-25, #78:** the fold converts out of the sweep's fine currency ONCE per touched cell — a solid's one shift by `his + k`, the gas chain at its final narrow (its stage-1 floor now costs `recip_cv / 2^(32+k)` of an LSB: the declared bound fell from 132·C to 2·C at the shipped currency) — so the unlanded remainder is under one temperature LSB × capacity per cell, the temperature field's own resolution; gated per tick on the smoke scenes and the breached rooms by `test_temperature_gas_radiation.py` — `sweep_fine_heat_currency_brief_78_2026-09-25.md`.
 
 ### 8.5 The gate that keeps the two light fields honest
 
