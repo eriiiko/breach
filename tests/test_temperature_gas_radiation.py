@@ -148,7 +148,10 @@ def test_cpp_fold_equals_the_reference_on_gas_and_solids_bit_for_bit(table_name,
     in any step -- the staged chain or its floor, the mirror as T_before, the
     energy form of the clamp, the rail -- or reaches a non-accountable cell, or
     the drop is priced at anything but cap_real, or a boundary cell's rad_net or
-    a floored cell's remainder is booked differently (or not at all).
+    a floored cell's remainder is booked differently (or not at all). #78: on the
+    live table rn is in the fine currency -- validated: the solid branch's
+    conversion without k, and the gas chain converting before its final narrow,
+    each turn the live variants red.
     """
     live = table_name == "live"
     tbl = live_table() if live else reference_table()

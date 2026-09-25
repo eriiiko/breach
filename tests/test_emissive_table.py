@@ -122,7 +122,8 @@ def test_lazy_rebake_on_a_dial_change():
     (#78) when the CURRENCY moves: a table whose fine_bits changed is re-baked in
     the new currency, never served from the old cache.
 
-    BREAKS IF: the cache key drops a dial or the currency.
+    BREAKS IF: the cache key drops a dial or the currency. Validated (#78): the
+    cache key without the currency serves the fine table to a coarse request.
     """
     eng = _engine_with_dials()
     fb = int(eng.emissive.fine_bits)
@@ -266,7 +267,8 @@ def test_the_fine_currency_is_the_same_bake_at_a_power_of_two_scale():
     BREAKS IF: the currency is applied AFTER the bake's rounding (a shifted
     coarse table: every entry a multiple of 2^k, and it differs from the bake
     at rad_scale * 2^k), a second rounding enters the scale, or the engine's
-    default currency drifts from the one constant.
+    default currency drifts from the one constant. Validated: the bake with the
+    scale left unscaled and each rounded entry shifted left by k -- red at k = 1.
     """
     assert int(bp.EmissiveTable().fine_bits) == bp.E_FINE_BITS == R.FINE_BITS
     for k in (0, 1, 5, bp.E_FINE_BITS):
@@ -290,7 +292,8 @@ def test_the_bake_refuses_a_currency_outside_its_headroom():
     its measuring range too), so a table the arithmetic was never proven for
     cannot be baked silently.
 
-    BREAKS IF: the bake's currency door is dropped or widened.
+    BREAKS IF: the bake's currency door is dropped or widened. Validated: the
+    door replaced by `if (false)` -- the bake at k = -1 and k = 12 did not raise.
     """
     for k in (0, bp.E_FINE_BITS):
         _baked(R.RAD_SCALE_LIVE, k)                          # the legal edges

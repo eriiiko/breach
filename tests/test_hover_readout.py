@@ -244,7 +244,9 @@ def test_phi_reads_the_same_heat_whatever_the_tables_currency():
 
     BREAKS IF: pack_hover_readout shows the plane without converting out of the
     fine currency (Phi 2^11 x too large on the fine table), or converts through
-    a currency other than the bound engine table's own.
+    a currency other than the bound engine table's own. Validated: the readout
+    showing rad_fluence unconverted turns this red (and nothing else in this
+    file notices).
     """
     sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
     import breach_physics as bp

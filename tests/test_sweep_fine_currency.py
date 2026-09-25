@@ -297,8 +297,9 @@ def test_the_fine_live_scale_keeps_int64_headroom_over_driven(transport, n_ord, 
 
     BREAKS IF: E_FINE_BITS grows past what the bounds allow (measured on the
     reference: at 12 the pre-pass's a * ex is 2^58.1, at 13 the Fleck product
-    2^63.5), or a conversion moves to where it overflows. Validated: the
-    reference's table baked at k = 12 fails the a * ex bound here.
+    2^63.5), or a conversion moves to where it overflows. Validated: with
+    E_FINE_BITS and the reference's FINE_BITS both set to 12 the pre-pass's
+    a * ex bound goes red (65536 x E°[top] = 2^58.1).
     """
     fine = live_table()
     tref = R.E_LIVE
