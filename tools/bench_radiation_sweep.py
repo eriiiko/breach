@@ -291,6 +291,135 @@ def _cuda_rows(args, tbl, t_amb_q, rng):
                   f"{t_d2h * 1e3:7.2f} {t_alloc * 1e3:9.3f}")
 
 
+def _playground_planes():
+    """The PLAYGROUND's own planes, as the live step_tail hands them to the
+    sweep: a wood tile heated to the 1263-game plateau and lit (CLAUDE.md
+    "Starting a fire"), a marine stamped beside it, a few ticks run with light
+    requested so the smoke, the plume and the stamps are the game's. Returns a
+    dict of the sweep's inputs (heat, gas and light groups)."""
+    from level_loader import load as load_level
+    from simulation import Simulation, fire_fixed
+    from simulation.materials import MAT_WOOD
+    from simulation.unit import Unit
+    sim = Simulation(load_level("playground"), seed=1, breach_physics=bp,
+                     enable_recorder=False)
+    g = sim.gmap
+    ys, xs = np.where((g.material == MAT_WOOD) & g.thermal_solid)
+    for y, x in zip(ys, xs):
+        if 0 < y < g.material.shape[0] - 1 and 0 < x < g.material.shape[1] - 1 \
+                and not g.thermal_solid[y, x + 1]:
+            g.temperature[y, x] = 1263 << 16
+            g.fire[y, x] = fire_fixed.quantize_scalar(0.8)
+            sim.add_unit(Unit("M1", x=int(x) + 2, y=int(y), team=0))
+            break
+    sim.physics_runner.engine.light_requested = True
+    for _ in range(12):
+        sim.set_paused(False)
+        sim.step()
+    pr = sim.physics_runner
+    nb = (g.gas[pr._o2_idx].astype(np.int64)
+          + g.gas[int(g.gases.name_to_id["inert_n2"])]).astype(np.int32)
+    return dict(sim=sim, T=g.temperature, a=g.heat_atten_q, d=g.dyn_heat_atten_q,
+                his=g.heat_inv_shift, ts=g.thermal_solid, vac=g.is_vacuum,
+                k_leak_q=int(pr.k_leak_q), vac_level=int(pr.rad_amb_vacuum_q),
+                gas=np.ascontiguousarray(g.gas), hq=g.gases.heat_absorb_q16,
+                n_bulk=np.ascontiguousarray(nb),
+                la=g.light_atten_q, ld=g.dyn_light_atten_q,
+                lab=g.gases.light_absorb_q16, lgl=g.gases.light_glow_q16)
+
+
+def _synthetic_planes(h, w, rng):
+    """The bench's busy random scene at (h, w), with light planes on the same
+    solids (a per channel, a tint on a third of them) and bodies stamped."""
+    T, a, d, his, ts = _scene(h, w, rng)
+    la = np.repeat(a[..., None], 3, axis=-1).astype(np.int32)
+    tint = (rng.random((h, w)) < 0.33) & ts
+    la[tint, 1] //= 2
+    ld = np.maximum(la, np.repeat(d[..., None], 3, axis=-1)).astype(np.int32)
+    return dict(T=T, a=a, d=d, his=his, ts=ts, vac=np.zeros((h, w), dtype=bool),
+                k_leak_q=6554, vac_level=-1, gas=None,
+                la=np.ascontiguousarray(la), ld=np.ascontiguousarray(ld))
+
+
+def _light_rows(args, tbl, t_amb_q, rng):
+    """P6a (design §10's gate; the brief's timing STOP): the sweep's ms per
+    tick with the light channels OFF and ON, CPU and (with --cuda) the CUDA
+    per-call path, on the playground's own planes and on 128x256. Every light
+    run is checked bit for bit CPU vs GPU, and heat with light on against heat
+    with light off, before it is timed."""
+    cur = _currency()
+    rows = [("playground", _playground_planes())]
+    rows.append(("128x256", _synthetic_planes(128, 256, rng)))
+    print(f"radiation sweep, light OFF vs ON (P6a), shear heat + step light, S16, "
+          f"{args.iters} iterations per point"
+          + (f"; device: {bp.cuda_device_info()}" if args.cuda else ""))
+    hdr = f"{'scene':>11} {'cells':>7} {'cpu off':>8} {'cpu on':>8} {'light +':>8}"
+    if args.cuda:
+        hdr += f" {'gpu off':>8} {'gpu on':>8} {'launch off':>11} {'launch on':>10}"
+    print(hdr + "   (ms per tick)")
+    for name, P in rows:
+        h, w = P["T"].shape
+        gkw = {}
+        lkw_extra = {}
+        if P.get("gas") is not None:
+            gkw = dict(gas=P["gas"], heat_absorb_q16=P["hq"], n_bulk=P["n_bulk"],
+                       n_floor_q=cur[0], recip_cv=cur[1])
+            lkw_extra = dict(light_absorb_q16=P["lab"], light_glow_q16=P["lgl"])
+        sweep = bp.RadiationSweep()
+        amb = sweep.derive_ambient(np.ascontiguousarray(P["vac"]), tbl, P["vac_level"])
+        heat = [np.zeros((h, w), dtype=np.int64) for _ in range(4)]
+        lq = np.zeros((h, w, 3), dtype=np.int64)
+        lf = np.zeros((h, w, 2), dtype=np.int64)
+        lg = np.zeros((h, w, 3), dtype=np.int64)
+        lkw = dict(light_atten_q=P["la"], dyn_light_atten_q=P["ld"], light_q=lq,
+                   light_flux_q=lf, light_glow=lg, **lkw_extra)
+        base = (P["T"], P["a"], P["d"], P["his"], P["ts"], tbl, amb, t_amb_q,
+                P["k_leak_q"], bp.RadiationSweep.SHEAR, 16)
+
+        def cpu_off():
+            sweep.run(*base, *heat, **gkw)
+
+        def cpu_on():
+            sweep.run(*base, *heat, **gkw, **lkw)
+        cpu_off()
+        heat_off = [p.copy() for p in heat]
+        cpu_on()
+        assert all(np.array_equal(x, y) for x, y in zip(heat_off, heat)), \
+            "light moved a heat plane"
+        assert np.any(lq), f"{name}: a light run lit nothing"
+        light_cpu = (lq.copy(), lf.copy(), lg.copy())
+        t_off = _best_of(cpu_off, args.iters)
+        t_on = _best_of(cpu_on, args.iters)
+        line = (f"{name:>11} {h * w:7d} {t_off * 1e3:8.2f} {t_on * 1e3:8.2f} "
+                f"{(t_on - t_off) * 1e3:8.2f}")
+        if args.cuda:
+            gheat = [np.zeros((h, w), dtype=np.int64) for _ in range(4)]
+            glq, glf, glg = (np.zeros_like(lq), np.zeros_like(lf), np.zeros_like(lg))
+            glkw = dict(light_atten_q=P["la"], dyn_light_atten_q=P["ld"], light_q=glq,
+                        light_flux_q=glf, light_glow=glg, **lkw_extra)
+            gbase = (P["T"], P["a"], P["d"], P["his"], P["ts"], tbl, None, t_amb_q,
+                     P["k_leak_q"], bp.RadiationSweep.SHEAR, 16)
+            vkw = dict(is_vacuum=np.ascontiguousarray(P["vac"]), vac_level=P["vac_level"])
+
+            def gpu_off():
+                return bp.cuda_radiation_sweep_run(*gbase, *gheat, **vkw, **gkw)
+
+            def gpu_on():
+                return bp.cuda_radiation_sweep_run(*gbase, *gheat, **vkw, **gkw, **glkw)
+            n_off = gpu_off()[2]
+            n_on = gpu_on()[2]
+            assert all(np.array_equal(x, y) for x, y in zip(heat, gheat)), "GPU heat != CPU"
+            assert all(np.array_equal(x, y) for x, y in zip(light_cpu, (glq, glf, glg))), \
+                "GPU light != CPU"
+            g_off = _best_of(gpu_off, args.iters)
+            g_on = _best_of(gpu_on, args.iters)
+            line += f" {g_off * 1e3:8.2f} {g_on * 1e3:8.2f} {n_off:11d} {n_on:10d}"
+        print(line)
+    budget = 41.67
+    print(f"  the brief's STOP: CPU heat + light on the playground must stay under "
+          f"{budget / 2:.2f} ms (half the {budget} ms tick)")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--iters", type=int, default=20)
@@ -300,11 +429,17 @@ def main(argv=None):
                     help="P5b: add a test-fixture absorbing smoke on every air cell "
                          "(hot), so the gas arm of the Fleck pre-pass is priced "
                          "everywhere -- its cost where it engages")
+    ap.add_argument("--light", action="store_true",
+                    help="P6a: the sweep with the light channels OFF vs ON, on the "
+                         "playground's own planes and on 128x256 (with --cuda: the "
+                         "per-call GPU path too)")
     args = ap.parse_args(argv)
     _import_bp(args.cuda)
     tbl, t_amb_q = _table()
     rng = np.random.default_rng(20260916)
-    if args.cuda:
+    if args.light:
+        _light_rows(args, tbl, t_amb_q, rng)
+    elif args.cuda:
         _cuda_rows(args, tbl, t_amb_q, rng)
     else:
         _cpu_rows(args, tbl, t_amb_q, rng)
