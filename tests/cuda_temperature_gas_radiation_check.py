@@ -31,15 +31,18 @@ unlanded remainder below n_floor_heat). This check holds the two to each other.
 
   PART 2 -- THE LIVE CONDUCTOR: Simulation.step on a sealed room of hot smoke
   radiating into its hull (the shipped coefficient), on the smoke-shield room
-  (a held 1263-game column shining through a smoke layer at a marine), and on
+  (a held 1263-game column shining through a smoke layer at a marine), on the
+  same room OVER-DRIVEN (the column held at 8000 game; #78), and on
   the two breached rooms of test_temperature_gas_radiation's closure test (a
   burning smoky room vented to space; one breached into an ambient ring whose
   air absorbs -- a fixture), the temperature backend flipping CPU <-> CUDA
   every tick in one world against a CPU-only world: every GameMap array and
   every temperature counter (slots 12-14 included) at tol 0, tick for tick.
-  Non-vacuous: the gas branch booked on the GPU ticks; on the shield the clamp
-  withheld energy there; the vented room's floor remainder and the ring's
-  export moved on GPU ticks.
+  Non-vacuous: the gas branch booked on the GPU ticks; on the over-driven
+  shield the clamp withheld energy (#78: at the 1263-game plateau it no longer
+  does -- its P5c binding there was the sweep's per-ordinate floor artifact,
+  gone with the fine currency); the vented room's floor remainder and the
+  ring's export moved on GPU ticks.
 
 Prints ``TGR_RESULT: PASS``/``FAIL`` and exits 0/1.
 """
@@ -143,6 +146,7 @@ def _at_headroom(sc, tref):
     move the sub-step)."""
     ts, solid, vac, ring = sc["ts"], sc["solid"], sc["vac"], sc["ring"]
     acct = ~ts & ~solid & ~vac & ~ring
+    fb = R.fine_bits_of(tref)          # #78: rn is in the table's currency
     n_s = n_g = 0
     for y, x in zip(*np.nonzero(sc["rn"])):
         if not (ts[y, x] or acct[y, x]):
@@ -153,11 +157,11 @@ def _at_headroom(sc, tref):
         r = int(sc["rn"][y, x])
         if ts[y, x]:
             t0 = int(sc["T"][y, x])
-            t_after = R.sat_add_q16(t0, R.shr_round0_signed(r, int(sc["his"][y, x])))
+            t_after = R.sat_add_q16(t0, R.fine_heat_shr(r, int(sc["his"][y, x]), fb))
         else:
             n = int(sc["nb"][y, x])
             t0 = R.gas_mirror_q(int(sc["E"][y, x]), max(0, n))
-            t_after = R.sat_add_q16(t0, R.gas_rad_dT_q(r, n))
+            t_after = R.sat_add_q16(t0, R.gas_rad_dT_q(r, n, fine_bits=fb))
         ceiling = R.e_ceiling_q(phi, tref)
         if ceiling >= t0 and t_after > ceiling:
             if ts[y, x]:
@@ -276,8 +280,16 @@ _TEMP_COUNTERS = ("t_max_phys_hits", "t_low_rail_hits", "rad_clamp_hits",
 def _worlds():
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import test_temperature_gas_radiation as T5c
+    # The second element is the temperature (game) the shield's emitter column
+    # is HELD at before every tick, or None. #78: at the 1263-game plateau
+    # nothing over-drives the ambient-density smoke once the sweep's
+    # per-ordinate floors are resolved (its P5c clamp binding was that
+    # artifact), so the clamp's non-vacuity lives on the OVER-DRIVEN shield,
+    # whose emitter is held at 8000 game (measured: ~1200 clamped cell-ticks
+    # in 30 ticks on the CPU engine).
     return {"hot smoky room": lambda: (T5c._sealed_hot_smoky_room()[0], None),
-            "smoke shield": lambda: (T5c._shield_room(0.2)[0], T5c._shield_room),
+            "smoke shield": lambda: (T5c._shield_room(0.2)[0], 1263),
+            "over-driven shield": lambda: (T5c._shield_room(0.2)[0], 8000),
             # the P5c follow-up's two breached rooms (the closure test's scenes)
             "vented to space": lambda: (T5c._breached_room("space", fire=True,
                                                            T_game=300), None),
@@ -285,12 +297,12 @@ def _worlds():
                 "ambient", fire=True, n2_absorb=0.5), None)}
 
 
-def _hold(sim):
-    """The shield world's emitter is held at the plateau before every tick."""
+def _hold(sim, T_game):
+    """The shield world's emitter is held at T_game before every tick."""
     g = sim.gmap
     col = np.zeros(g.material.shape, dtype=bool)
     col[1:8, 2] = True
-    g.temperature[col] = 1263 << 16
+    g.temperature[col] = int(T_game) << 16
 
 
 def part2_live():
@@ -306,7 +318,7 @@ def part2_live():
         for t in range(ticks):
             for s, on in ((s_cpu, False), (s_gpu, True)):
                 if held is not None:
-                    _hold(s)
+                    _hold(s, held)
                 bp.set_temperature_backend(on)
                 ts = s.physics_runner.engine.temperature
                 d0, c0 = int(ts.e_gas_deposit_sum), int(ts.e_rad_clamp_drop_sum)
@@ -330,7 +342,7 @@ def part2_live():
                 break
         if booked == 0:
             _fail(f"P2 {name}: the GPU fold's gas branch never booked -- vacuous")
-        if name == "smoke shield" and drop <= 0:
+        if name == "over-driven shield" and drop <= 0:
             _fail(f"P2 {name}: the GPU clamp never withheld energy -- vacuous")
         if name == "vented to space" and not exits["e_rad_floor_drop_sum"]:
             _fail(f"P2 {name}: the GPU floor remainder never moved -- vacuous")

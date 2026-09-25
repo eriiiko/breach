@@ -109,6 +109,52 @@ def test_cpp_sweep_reproduces_the_reference_bit_for_bit(seed, h, w, n_ord, k_q,
     assert got[5].max_stream == exp[5].max_stream
 
 
+@pytest.mark.parametrize("seed,h,w", [(21, 7, 9), (22, 9, 11), (23, 12, 8)])
+@pytest.mark.parametrize("n_ord", [16, 12])
+@pytest.mark.parametrize("k_q", [0, K_LEAK])
+@pytest.mark.parametrize("transport", ["shear", "step"])
+@pytest.mark.parametrize("ambient", ("uniform", "random"))
+@pytest.mark.parametrize("smoke", [False, True])
+def test_cpp_sweep_reproduces_the_reference_on_the_fine_live_table(seed, h, w, n_ord, k_q,
+                                                                   transport, ambient, smoke):
+    """PROPERTY (#78, brief 5.6 -- gate 0 on the LIVE table): on the table the
+    game runs, baked in its FINE currency (2^E_FINE_BITS per heat count), the C++
+    sweep's four planes and its Fleck plane EQUAL the reference's integer for
+    integer -- gate 0's randomised scenes with THIN rows mixed in (so the Fleck
+    damping engages at the live scale: the currency's conversion is inside the
+    pre-pass's L), both transports, S16 and S12, the leak on and off, a uniform
+    and a random per-cell ambient (in the fine currency), with and without the
+    smoke term. Non-vacuous: every plane non-zero somewhere, some f < 2^24.
+
+    BREAKS IF: the pre-pass converts out of the table's currency differently
+    from the reference -- an arm ignoring fine_bits, a second rounding, the gas
+    chain converting before its final narrow -- or the sweep books any term in a
+    different currency. Validated: fleck_L_solid_q with the fine bits dropped
+    (L 2^11 too large: damped where the reference is not) turns this red.
+    """
+    rng = random.Random(20260925 + seed)
+    a, d, T, _his, ts = random_scene(rng, h, w)
+    his = [[rng.choice([-3, -2, 3, 5]) for _ in range(w)] for _ in range(h)]
+    amb = None
+    if ambient == "random":
+        e0 = int(R.E_LIVE[0])
+        amb = [[rng.choice([0, 1, e0 // 4, e0 // 2, e0 - 1, e0]) for _ in range(w)]
+               for _ in range(h)]
+    kw = {}
+    if smoke:
+        gas, hq, n_bulk = random_gas(rng, h, w)
+        kw = dict(gas=gas, hq=hq, n_bulk=n_bulk)
+    tag = f"LIVE {transport} S{n_ord} k={k_q} seed={seed} amb={ambient} smoke={smoke}"
+    got = cpp_sweep(a, d, k_q, T, his, ts, transport=transport, n_ord=n_ord, amb=amb,
+                    table=live_table(), **kw)
+    exp = ref_sweep(a, d, k_q, T, his, transport=transport, n_ord=n_ord, amb=amb,
+                    ts=ts, table=R.E_LIVE, **kw)
+    _assert_bit_for_bit(tag, got, exp, effective=smoke)
+    rn, rf, ra, rl, fl = (np.asarray(p, dtype=np.int64) for p in got[:5])
+    assert np.any(rn != 0) and np.any(rf != 0) and np.any(ra != 0) and np.any(rl != 0)
+    assert np.any(fl < F_ONE), f"{tag}: no cell damped on the live table: vacuous"
+
+
 _PLANES = ("rad_net", "rad_flux", "rad_amb", "rad_fluence", "fleck")
 
 

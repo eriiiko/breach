@@ -53,11 +53,15 @@ def engine_currency(c_v_q=R.C_V_Q_LIVE, n_floor_q=R.N_FLOOR_Q_LIVE):
 
 def reference_table():
     """An EmissiveTable baked at the reference's own dials (== config.toml's,
-    which test_ray_engine_v2_integer_reference.py guards)."""
+    which test_ray_engine_v2_integer_reference.py guards) -- the engine's twin
+    of sweep_ref_q.E, the RESOLVING table, in its COARSE currency (#78:
+    fine_bits = 0 -- the reference's own; that physics does not fit the fine
+    currency inside int64, and every gate exercising it keeps its integers)."""
     tbl = bp.EmissiveTable()
     tbl.rad_scale = R.RAD_SCALE
     tbl.kelvin_ambient = float(R.K_AMB)
     tbl.k_temp_to_kelvin = float(R.K_SLOPE)
+    tbl.fine_bits = R.fine_bits_of(R.E)
     tbl.bake()
     return tbl
 
@@ -65,11 +69,14 @@ def reference_table():
 def live_table():
     """An EmissiveTable baked at the LIVE calibration, the sweep's own
     `rad_scale_derived` -- the engine's twin of sweep_ref_q.E_LIVE (which
-    config_dials_match() pins to config.toml). The table the game runs on."""
+    config_dials_match() pins to config.toml). The table the game runs on, in
+    the currency the game runs it in (#78: the reference's fine bits, which
+    tests/test_sweep_fine_currency.py holds equal to the engine's E_FINE_BITS)."""
     tbl = bp.EmissiveTable()
     tbl.rad_scale = R.RAD_SCALE_LIVE
     tbl.kelvin_ambient = float(R.K_AMB)
     tbl.k_temp_to_kelvin = float(R.K_SLOPE)
+    tbl.fine_bits = R.fine_bits_of(R.E_LIVE)
     tbl.bake()
     return tbl
 

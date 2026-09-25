@@ -88,7 +88,12 @@ def test_raycaster_and_engine_tables_are_identical_and_equal_the_reference_bake(
     scale, _amb, _slope = _dials()
     ray = np.asarray(eng.raycaster.emissive_table(), dtype=np.int64)
     own = np.asarray(eng.emissive.table(), dtype=np.int64)
-    ref = np.asarray(R.bake_e_table(rad_scale=scale), dtype=np.int64)
+    # #78: the engine's table is baked in its FINE currency (E_FINE_BITS, the
+    # reference's FINE_BITS); the vestigial Raycaster copy follows the same bake,
+    # so the identity is at equal dials AND equal currency.
+    assert int(eng.emissive.fine_bits) == bp.E_FINE_BITS == R.FINE_BITS
+    ref = np.asarray(R.bake_e_table(rad_scale=scale, fine_bits=int(eng.emissive.fine_bits)),
+                     dtype=np.int64)
     assert ray.shape == own.shape == ref.shape == (bp.E_TABLE_SIZE,)
     assert np.array_equal(ray, own), "Raycaster and engine tables differ"
     assert np.array_equal(own, ref), "engine table differs from the reference bake"
@@ -113,17 +118,26 @@ def test_raycaster_and_engine_tables_are_identical_and_equal_the_reference_bake(
 
 def test_lazy_rebake_on_a_dial_change():
     """PROPERTY: table() re-bakes when rad_scale moves (the Raycaster contract,
-    kept), and the re-baked table equals the reference at the new scale.
+    kept), and the re-baked table equals the reference at the new scale -- and
+    (#78) when the CURRENCY moves: a table whose fine_bits changed is re-baked in
+    the new currency, never served from the old cache.
 
-    BREAKS IF: the cache key drops a dial.
+    BREAKS IF: the cache key drops a dial or the currency.
     """
     eng = _engine_with_dials()
+    fb = int(eng.emissive.fine_bits)
     before = np.asarray(eng.emissive.table(), dtype=np.int64)
     eng.emissive.rad_scale = eng.emissive.rad_scale * 2.0
     after = np.asarray(eng.emissive.table(), dtype=np.int64)
     assert not np.array_equal(before, after)
-    ref = np.asarray(R.bake_e_table(rad_scale=eng.emissive.rad_scale), dtype=np.int64)
+    ref = np.asarray(R.bake_e_table(rad_scale=eng.emissive.rad_scale, fine_bits=fb),
+                     dtype=np.int64)
     assert np.array_equal(after, ref)
+    eng.emissive.fine_bits = 0
+    coarse = np.asarray(eng.emissive.table(), dtype=np.int64)
+    assert np.array_equal(coarse, np.asarray(R.bake_e_table(rad_scale=eng.emissive.rad_scale),
+                                             dtype=np.int64))
+    assert not np.array_equal(coarse, after)
 
 
 def test_bake_precondition_rejects_a_non_integer_kelvin_dial():
@@ -168,6 +182,7 @@ def test_e_inv_q_is_the_reference_inverse_with_both_edge_cases():
     tbl.rad_scale = R.RAD_SCALE
     tbl.kelvin_ambient = float(R.K_AMB)
     tbl.k_temp_to_kelvin = float(R.K_SLOPE)
+    tbl.fine_bits = R.fine_bits_of(R.E)       # #78: the resolving table is coarse
     tbl.bake()
     E = R.E
     assert tbl.e_inv_q(E[0] - 1) == 0
@@ -185,11 +200,12 @@ def test_e_inv_q_is_the_reference_inverse_with_both_edge_cases():
         assert tbl.e_inv_q(E[b]) == (4 * b) << 16
 
 
-def _baked(scale):
+def _baked(scale, fine_bits):
     tbl = bp.EmissiveTable()
     tbl.rad_scale = scale
     tbl.kelvin_ambient = float(R.K_AMB)
     tbl.k_temp_to_kelvin = float(R.K_SLOPE)
+    tbl.fine_bits = fine_bits
     tbl.bake()
     return tbl
 
@@ -212,9 +228,12 @@ def test_e_ceiling_q_is_the_top_of_the_first_bucket_out_emitting_phi(scale_name)
     above T_MAX_PHYS; or the binding stops calling the one FP_HD definition the
     folds call (it drifts from the reference).
     """
+    # #78: each table in its own currency (the resolving one coarse, the live
+    # one fine) -- the ceiling compares Phi and E° in one unit, so it is the
+    # same function in either
+    E = R.E if scale_name == "resolving" else R.E_LIVE
     scale = R.RAD_SCALE if scale_name == "resolving" else R.RAD_SCALE_LIVE
-    tbl = _baked(scale)
-    E = R.bake_e_table(rad_scale=scale)
+    tbl = _baked(scale, R.fine_bits_of(E))
     assert np.array_equal(np.asarray(tbl.table(), dtype=np.int64), np.asarray(E))
     last, n = -1, 0
     for b in range(R.E_TABLE_SIZE - 1):
@@ -233,6 +252,86 @@ def test_e_ceiling_q_is_the_top_of_the_first_bucket_out_emitting_phi(scale_name)
         assert tbl.e_ceiling_q(phi) == bp.E_CEILING_TOP_Q == (16000 << 16) - 1
     assert bp.E_CEILING_TOP_Q < 16000 << 16
     assert n >= R.E_TABLE_SIZE - 1                # every bucket probed at least once
+
+
+def test_the_fine_currency_is_the_same_bake_at_a_power_of_two_scale():
+    """PROPERTY (#78): a table in the currency k (2^k integers per heat count)
+    is THE SAME BAKE at the scale rad_scale * 2^k -- a power-of-two multiply,
+    exact in the bake's own arithmetic, so the one rounding boundary is
+    unchanged -- entry for entry equal to the reference's bake_e_table(..., k),
+    at every currency the engine admits, and the engine's own table is in
+    E_FINE_BITS. It is a genuinely FINER table, not the coarse one shifted: its
+    entries are not all multiples of 2^k.
+
+    BREAKS IF: the currency is applied AFTER the bake's rounding (a shifted
+    coarse table: every entry a multiple of 2^k, and it differs from the bake
+    at rad_scale * 2^k), a second rounding enters the scale, or the engine's
+    default currency drifts from the one constant.
+    """
+    assert int(bp.EmissiveTable().fine_bits) == bp.E_FINE_BITS == R.FINE_BITS
+    for k in (0, 1, 5, bp.E_FINE_BITS):
+        tbl = _baked(R.RAD_SCALE_LIVE, k)
+        got = np.asarray(tbl.table(), dtype=np.int64)
+        same = _baked(R.RAD_SCALE_LIVE * float(1 << k), 0)
+        ref = np.asarray(R.bake_e_table(rad_scale=R.RAD_SCALE_LIVE, fine_bits=k),
+                         dtype=np.int64)
+        assert np.array_equal(got, np.asarray(same.table(), dtype=np.int64)), k
+        assert np.array_equal(got, ref), k
+        if k > 0:
+            assert np.any(got % (1 << k) != 0), "a shifted coarse table, not a finer bake"
+    live = np.asarray(_baked(R.RAD_SCALE_LIVE, bp.E_FINE_BITS).table(), dtype=np.int64)
+    assert np.array_equal(live, np.asarray(R.E_LIVE, dtype=np.int64))
+
+
+def test_the_bake_refuses_a_currency_outside_its_headroom():
+    """PROPERTY (#78): the bake admits exactly the currencies the sweep's int64
+    headroom argument covers, [0, E_FINE_BITS] -- coarse and the engine's own --
+    and refuses anything else with a ValueError (the reference refuses outside
+    its measuring range too), so a table the arithmetic was never proven for
+    cannot be baked silently.
+
+    BREAKS IF: the bake's currency door is dropped or widened.
+    """
+    for k in (0, bp.E_FINE_BITS):
+        _baked(R.RAD_SCALE_LIVE, k)                          # the legal edges
+    for k in (-1, bp.E_FINE_BITS + 1):
+        tbl = bp.EmissiveTable()
+        tbl.rad_scale = R.RAD_SCALE_LIVE
+        tbl.fine_bits = k
+        with pytest.raises(ValueError):
+            tbl.bake()
+    with pytest.raises(ValueError):
+        R.bake_e_table(rad_scale=R.RAD_SCALE_LIVE, fine_bits=R.FINE_BITS_MAX + 1)
+
+
+def test_the_bake_refuses_a_table_outside_the_sweeps_int64_headroom():
+    """PROPERTY (#78): a currency makes a table 2^k larger, so the bake is the
+    door where a scale x currency pair outside the sweep's int64 headroom is
+    refused: a table whose top entry reaches E_TABLE_TOP_MAX (2^44 -- every plain
+    int64 product of the sweep, at most 2^16 x the top, stays below 2^60) raises
+    a ValueError and LEAVES THE CACHE AS IT WAS. The shipped tables are inside
+    with room: the fine live table (2^41.1) and the coarse resolving one
+    (2^41.7); the resolving scale baked FINE (2^52.7) is refused.
+
+    BREAKS IF: the door is dropped (the resolving scale bakes fine and a sweep
+    on it silently wraps int64), moved below a shipped table, or a refused bake
+    leaves its entries in the cache under the previous dials. Validated: with the
+    door commented out the fine resolving bake goes through and this is red.
+    """
+    assert bp.E_TABLE_TOP_MAX == 1 << 44
+    for scale, k in ((R.RAD_SCALE_LIVE, bp.E_FINE_BITS), (R.RAD_SCALE, 0)):
+        top = int(np.asarray(_baked(scale, k).table(), dtype=np.int64)[-1])
+        assert top < bp.E_TABLE_TOP_MAX >> 2, (scale, k, top)   # >= 2^2 of room
+    tbl = _baked(R.RAD_SCALE_LIVE, bp.E_FINE_BITS)
+    good = np.asarray(tbl.table(), dtype=np.int64)
+    tbl.rad_scale = R.RAD_SCALE                               # the resolving scale, fine
+    with pytest.raises(ValueError):
+        tbl.table()
+    tbl.rad_scale = R.RAD_SCALE_LIVE                          # back: the cache is intact
+    assert np.array_equal(np.asarray(tbl.table(), dtype=np.int64), good)
+    tbl.rad_scale = R.RAD_SCALE
+    tbl.fine_bits = 0                                         # coarse: inside the door
+    assert np.array_equal(np.asarray(tbl.table(), dtype=np.int64), np.asarray(R.E))
 
 
 if __name__ == "__main__":

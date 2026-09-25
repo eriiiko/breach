@@ -258,6 +258,10 @@ def _probe_sim(force_scale=None):
     eng = sim.physics_runner.engine
     if force_scale is not None:
         eng.emissive.rad_scale = float(force_scale)
+        # #78: the fitted scale exists only in the COARSE currency (baked fine its
+        # top would be 2^52.7, which the bake's headroom door refuses); the
+        # damping the control reads is the same physics in either currency
+        eng.emissive.fine_bits = 0
         eng.emissive.bake()
     ix, iy = PROBE_IGNITE
     delta = float(CFG.physics.fire.ignition_to_ext_delta)

@@ -26,6 +26,11 @@ one binary, one scene.
   PART 1  gate 0's scene matrix — 4 seeds x S16/S12 x leak off/on x shear/step
           x three ambients (uniform, a cold half-plane, a random multi-level
           plane), and the undamped (fleck off) configuration.
+  PART 1L #78: the same matrix on the LIVE table in its FINE currency (2^11
+          per heat count), thin rows mixed in so the Fleck damping engages at
+          the live scale and the pre-pass's conversion is compared, with and
+          without the smoke term; and PART 8 (the launch core) runs on both
+          tables -- the device table's currency is a launch argument.
   PART 2  the DERIVED ambient (derive_ambient's twin, the live path's door):
           random vacuum masks at five vacuum levels, and THE VACUUM RING — the
           grid's border as space under a cold sky, so the virtual ambient ring
@@ -268,6 +273,46 @@ def part1_gate0_matrix(table) -> None:
         _fail("P1: no configuration carried a body share")
     print(f"  {n} configurations; {damped} with Fleck damping engaged, "
           f"{bodies} with bodies")
+
+
+def part1_live_matrix() -> None:
+    """#78 (brief 5.6): CPU == CUDA at tol 0 on the LIVE table in its fine
+    currency -- the table the game runs."""
+    print("PART 1L — #78: gate 0's matrix on the FINE live table, GPU vs CPU, tol 0")
+    table = live_table()
+    n = damped = smoky = 0
+    for seed, h, w in ((21, 7, 9), (22, 9, 11), (23, 12, 8)):
+        for n_ord in (16, 12):
+            for k_q in (0, K_LEAK):
+                for transport in ("shear", "step"):
+                    for kind in ("uniform", "random"):
+                        for smoke in (False, True):
+                            rng = random.Random(20260925 + seed)
+                            a, d, T, _his, ts = random_scene(rng, h, w)
+                            his = [[rng.choice([-3, -2, 3, 5]) for _ in range(w)]
+                                   for _ in range(h)]
+                            amb = None
+                            if kind == "random":
+                                e0 = int(R.E_LIVE[0])
+                                amb = [[rng.choice([0, 1, e0 // 4, e0 // 2, e0 - 1, e0])
+                                        for _ in range(w)] for _ in range(h)]
+                            gas = None
+                            if smoke:
+                                gas = gas_arrays(*random_gas(rng, h, w))
+                                smoky += 1
+                            sc = Scene(a, d, T, his, ts)
+                            tag = (f"P1L seed={seed} S{n_ord} k={k_q} {transport} "
+                                   f"{kind} smoke={smoke}")
+                            res = both(tag, sc, table, transport=transport, n_ord=n_ord,
+                                       k_q=k_q, amb=amb, gas=gas)
+                            nonzero_everywhere(tag, res)
+                            damped += int(np.any(res[1] < F_ONE))
+                            n += 1
+    if damped == 0:
+        _fail("P1L: no live-table configuration had a Fleck factor below 2^24 -- "
+              "the fine currency's conversion in the pre-pass was never compared")
+    print(f"  {n} configurations on the fine live table ({smoky} with smoke); "
+          f"{damped} with Fleck damping engaged")
 
 
 # ---------------------------------------------------------------------------
@@ -641,7 +686,8 @@ def run_batch(table, scs, transport, n_ord, vacs, vac_levels, k_leaks, t_ambs,
     launches = bp.cuda_radiation_sweep_resident(
         N, h, w, d_T.data.ptr, d_a.data.ptr, d_d.data.ptr, d_his.data.ptr,
         d_ts.data.ptr, ptr(d_amb), d_vac.data.ptr,
-        d_etab.data.ptr, d_vl.data.ptr, d_kl.data.ptr, d_ta.data.ptr,
+        d_etab.data.ptr, int(table.fine_bits),                # #78: its currency
+        d_vl.data.ptr, d_kl.data.ptr, d_ta.data.ptr,
         ptr(d_gas), n_gases, ptr(d_hq), ptr(d_nb), int(nf), int(rcv),
         TRANSPORTS[transport], n_ord, True,
         d_out.data.ptr, d_ambm.data.ptr, d_ex.data.ptr, d_f.data.ptr,
@@ -1269,6 +1315,8 @@ def main() -> int:
                  part4_fire_tile, part5_bodies, part6_shapes, part7_ingress,
                  part8_batch, part10_smoke):
         part(table)
+    part1_live_matrix()                          # #78: the fine live table
+    part8_batch(live_table())                    # #78: the launch core on it too
     part9_live()
     part10_live()
     part10i_live_hot_smoke()
