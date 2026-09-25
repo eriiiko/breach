@@ -651,6 +651,12 @@ void RadiationSweep::run(const int32_t* temperature,
             lstore = l_outflow_.data() + (size_t)m * (size_t)n * 3;
         }
 
+        // THE HEAT VISIT -- design §2.3, unchanged since P5b. P6a keeps it the
+        // ONE heat formulation and calls it from both walks below; the light
+        // work is a SEPARATE lambda run after it on the same cell, so a
+        // heat-only run executes exactly the pre-P6a loop (a light branch inside
+        // this lambda cost heat-only ~40 %, measured -- the integers were
+        // unchanged, the inlining was not).
         auto visit = [&](int y, int x) {
             const int i = y * w + x;
             const int uay = y + ady, uax = x + adx;
@@ -704,14 +710,17 @@ void RadiationSweep::run(const int32_t* temperature,
                 if (stream < min_s) min_s = stream;
                 if (stream > max_s) max_s = stream;
             }
+        };
 
-            if (!light_on) return;
-            // ---- THE LIGHT CHANNELS at this cell, this ordinate (P6a) ----------
-            // sweep_ref_q.py's LightGroup, line for line: LIGHT's upwind pair from
-            // its own stores (an off-grid read is 0, the DARK ring -- P6b's sky
-            // replaces that 0), the split with its remainder, the whole stamped
-            // share absorbed, the per-ordinate emission added. Reads nothing the
-            // heat code above writes and writes nothing it reads.
+        // ---- THE LIGHT CHANNELS at a cell, this ordinate (P6a) ----------------
+        // sweep_ref_q.py's LightGroup, line for line: LIGHT's upwind pair from
+        // its own stores (an off-grid read is 0, the DARK ring -- P6b's sky
+        // replaces that 0), the split with its remainder, the whole stamped
+        // share absorbed, the per-ordinate emission added. Reads nothing the heat
+        // visit writes and writes nothing it reads; runs right after it on the
+        // same cell, in the same walk.
+        auto visit_light = [&](int y, int x) {
+            const int i = y * w + x;
             const int luay = y + lady, luax = x + ladx;
             const int luby = y + lbdy, lubx = x + lbdx;
             const bool in_la = (luay >= 0 && luay < h && luax >= 0 && luax < w);
@@ -770,12 +779,22 @@ void RadiationSweep::run(const int32_t* temperature,
         const int x_end   = (sx > 0) ? w : -1;
         const int y_begin = (sy > 0) ? 0 : h - 1;
         const int y_end   = (sy > 0) ? h : -1;
-        if (shear && xm) {
-            for (int x = x_begin; x != x_end; x += sx)
-                for (int y = y_begin; y != y_end; y += sy) visit(y, x);
+        if (!light_on) {
+            if (shear && xm) {
+                for (int x = x_begin; x != x_end; x += sx)
+                    for (int y = y_begin; y != y_end; y += sy) visit(y, x);
+            } else {
+                for (int y = y_begin; y != y_end; y += sy)
+                    for (int x = x_begin; x != x_end; x += sx) visit(y, x);
+            }
         } else {
-            for (int y = y_begin; y != y_end; y += sy)
-                for (int x = x_begin; x != x_end; x += sx) visit(y, x);
+            if (shear && xm) {
+                for (int x = x_begin; x != x_end; x += sx)
+                    for (int y = y_begin; y != y_end; y += sy) { visit(y, x); visit_light(y, x); }
+            } else {
+                for (int y = y_begin; y != y_end; y += sy)
+                    for (int x = x_begin; x != x_end; x += sx) { visit(y, x); visit_light(y, x); }
+            }
         }
     }
     min_stream = min_s;
