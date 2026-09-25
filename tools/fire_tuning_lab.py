@@ -545,7 +545,7 @@ def _reach_run_inner():
                     meta[key] = dict(
                         f_src=float(fpl[c, c]) / float(bp.RadiationSweep.F_ONE),
                         e0=e0, phi_src=int(phi[c, c]), scale=scale,
-                        a=ha, tm=tm)
+                        a=ha, tm=tm, fine_bits=int(tbl.fine_bits))
 
     ign = {m: _mat(m)[2] for m in REACH_RECV_MATS}
     return dict(dist=dist, curves=curves, meta=meta, ign=ign, scales=scales,
@@ -688,7 +688,8 @@ def reach_real_level(scale_name="derived"):
     return dict(dist=ys - sy, phi=p, t_cap=t_cap,
                 scale=float(tbl.rad_scale),
                 T_src=int(g.temperature[sy, sx]) / FP_ONE,
-                e0=int(np.asarray(tbl.table())[0]))
+                e0=int(np.asarray(tbl.table())[0]),
+                fine_bits=int(tbl.fine_bits))
 
 
 def reach_main():
@@ -699,14 +700,15 @@ def reach_main():
     print(f"\n  source held at {REACH_T_SRC:.0f} game = {TS.to_kelvin(REACH_T_SRC):.0f} K, "
           f"{REACH_TRANSPORT} S{REACH_N_ORD}, free field {REACH_GRID}x{REACH_GRID}")
     print(f"  {'src':<10}{'scale':<9}{'size':<6}{'k_leak':<8}{'rad_scale':<12}"
-          f"{'f_src':<10}{'E0':>10}  {'reach (last tile >= ignition)':<34}"
+          f"{'f_src':<10}{'E0 [cnt]':>10}  {'reach (last tile >= ignition)':<34}"
           "q at d=1,2,3 [kW/m2]")
     for key in keys:
         mat, sname, size, k = key
         md, c, cur = m["meta"][key], cross[key], m["curves"][key]
         q = "  ".join(f"{cur['q'][i] / 1e3:7.2f}" for i in (0, 1, 2))
         print(f"  {mat:<10}{sname:<9}{size}x{size:<4}{k:<8.2f}{md['scale']:<12.4e}"
-              f"{md['f_src']:<10.6f}{md['e0']:>10}  " +
+              f"{md['f_src']:<10.6f}"
+              f"{float(_optics_fx.dequantize_heat(md['e0'], md['fine_bits'])):>10.1f}  " +
               "  ".join(f"{n} {v:>2}t" for n, v in c.items()).ljust(34) + q)
     r = reach_real_level()
     ff = m["curves"][("furniture", "derived", 1, 0.0)]
@@ -716,7 +718,8 @@ def reach_main():
     print(f"    the source tile reads {r['T_src']:.1f} game AFTER the tick (the sweep is "
           f"step 2b, before the fold, so it saw {REACH_T_SRC:.0f})")
     for i in (0, 1, 2, 4, 9, 19, 29):
-        print(f"    d={r['dist'][i]:>3}  Phi={r['phi'][i]:>14d}  "
+        phi_cnt = float(_optics_fx.dequantize_heat(r['phi'][i], r['fine_bits']))
+        print(f"    d={r['dist'][i]:>3}  Phi={phi_cnt:>14.2f} cnt  "
               f"E_inv(Phi)={r['t_cap'][i]:8.1f} game   free field "
               f"{ff['t_cap'][i]:8.1f}")
     print(f"    -> {n_eq}/{len(r['t_cap'])} probes EQUAL the free field, integer for integer")
@@ -730,7 +733,8 @@ def reach_main():
         mat, sname, size, k = key
         stem = f"{mat}_{sname}_{size}x{size}_kleak{k:g}"
         header += [f"{stem}_phi", f"{stem}_t_cap", f"{stem}_q_Wm2"]
-        cols += [m["curves"][key]["phi"].astype(np.float64),
+        cols += [_optics_fx.dequantize_heat(m["curves"][key]["phi"],
+                                            m["meta"][key]["fine_bits"]),
                  m["curves"][key]["t_cap"], m["curves"][key]["q"]]
     csv = OUT / f"{REACH_TAG}.csv"
     np.savetxt(csv, np.column_stack(cols), delimiter=",",
