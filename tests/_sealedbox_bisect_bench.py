@@ -502,8 +502,9 @@ class _Trace70:
             t = np.maximum(np.minimum(t, self.t_max_q), 0)   # both rails
             fold_H[fm] = (t - T0[fm]) * self.cap_real_ts[fm]
             T1[fm] = t
-        # The maximum-principle clamp needs e_inv_q, which is not replayed:
-        # a tick where it engaged is flagged instead. Likewise a heat deposit.
+        # The maximum-principle clamp needs its ceiling (e_ceiling_q since P5d),
+        # which is not replayed: a tick where it engaged is flagged instead.
+        # Likewise a heat deposit.
         if c_post["ts_rad_clamp_hits"] != c_pre["ts_rad_clamp_hits"]:
             self.bad["clamp_ticks"] += 1
         if np.any(g.heat != 0):
