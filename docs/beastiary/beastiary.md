@@ -1,3 +1,5 @@
+spindel med giftigt mönster, leopard liknande färger, gul med svarta prickar
+
 dinosaurie med mycket pansar där fram'
 gråsugga
 
