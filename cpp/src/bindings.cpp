@@ -3787,6 +3787,15 @@ PYBIND11_MODULE(breach_physics, m) {
             "P6a: when True, step_tail's sweep carries the light channels into the "
             "light planes it is handed (all five then required); False (the "
             "default) computes no light and leaves those planes untouched.")
+        // Ray-engine-v2 P6d: the light channels' transport setting (design v3
+        // §2.4), bound ONCE by PhysicsRunner from [light] transport. Default
+        // RadiationSweep.STEP; heat's own transport is not exposed here -- it
+        // stays TRANSPORT_SHEAR, a run_sweep_ literal.
+        .def_readwrite("light_transport", &PhysicsEngine::light_transport,
+            "P6d: the light group's transport at the one sweep invocation "
+            "(run_sweep_, both step_tail and relight(), both backends) -- "
+            "RadiationSweep.STEP (default) or .SHEAR. Bound once from "
+            "[light] transport; heat's transport is unaffected.")
         // --- Patch 1 S4a: the per-tick TAIL ---------------------------------
         // step_tail moves the three trailing pure-solver-call steps of
         // PhysicsRunner.step (ripple, fire, temperature — after the IMEX substep

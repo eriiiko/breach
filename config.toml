@@ -1492,6 +1492,23 @@ floor = [0.03, 0.03, 0.04] # the NEW path's small FLAT FLOOR (design v3 §2.7:
 #   sun              a sun's irradiance, light units, travelling along
 #   sun_bearing_deg  (screen convention: 0 = toward +x/east, 90 = toward +y/
 #                    south) inside sun_spread_deg -- "a few ordinates"
+# --- ray-engine-v2 P6d: the light channels' TRANSPORT ----------------------
+# docs/ray_engine_v2_p6d_light_transport_setting_brief_2026-09-29.md decision
+# 1. "shear for heat, step for light" (design v3 section 2.4) was Erik's
+# original per-channel choice, not a physical law -- the sweep already
+# carries BOTH as a parameter on light (gate 18), so trying shear here is one
+# edit + a restart, never a C++ rebuild or a key (Erik's ruling 2026-09-29:
+# "I try to get away from all these shortcut keys" -- decision 2, no key).
+# step (the default) reproduces every shipped light golden and scene exactly
+# as before P6d. shear carries ~0.90 of a corridor's exact throughput against
+# step's ~0.52 (the scheme study, report.md "What the heat schemes look
+# like") but paints its own visible sixteen-pointed star artifact on a point
+# source where step paints a four-pointed cross. Heat's own transport is NOT
+# this key -- it stays TRANSPORT_SHEAR, unconditionally.
+[light]
+transport = "step"          # "step" or "shear" -- anything else is refused
+                             # at config load (physics_runner.py, door 2)
+
 [light.sky.space]
 overcast = [0.0, 0.0, 0.0]         # space is dark: a breach lets NO light in
 [light.sky.ambient]

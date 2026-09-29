@@ -550,7 +550,9 @@ void PhysicsEngine::run_sweep_(
             // the smoke term reads the heat term's gas group: both need it
             lc.light_absorb_q16  = smoke ? gas_light_absorb_q16 : nullptr;
             lc.light_glow_q16    = smoke ? gas_light_glow_q16 : nullptr;
-            lc.transport         = RadiationSweep::TRANSPORT_STEP;   // Erik's choice (§2.4)
+            // P6d: the setting, not a literal -- PhysicsRunner binds this
+            // from [light] transport (config door 2); default TRANSPORT_STEP.
+            lc.transport         = this->light_transport;
             lc.light_q           = light_q;
             lc.light_flux_q      = light_flux_q;
             lc.light_glow        = light_glow;
