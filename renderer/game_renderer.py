@@ -375,6 +375,18 @@ class GameRenderer:
         self._gas_render_f = None
 
         self.lighting.set_ambient((0.18, 0.18, 0.22))
+        # ray-engine-v2 P6b: THE LIGHT SOURCE. NEW (default, [render.lighting]
+        # new_light) = the radiation sweep's light channels read through the one
+        # accessor (simulation.light_field) and uploaded once per sim tick;
+        # OLD = the render march (compute_light_field + fire_lights + the
+        # per-frame sources), kept behind F11 for this patch only so the old
+        # and new light can be flipped in one scene -- P6c deletes it. The
+        # caller (main.py) requests the sweep's light while NEW is showing.
+        self.light_mode_new = bool(getattr(getattr(getattr(CFG, "render", None),
+                                                   "lighting", None), "new_light", True))
+        self.lighting.set_new_light(self.light_mode_new)
+        self._light_serial_seen = None       # the Simulation.light_serial last uploaded
+        self.last_light_ms = 0.0             # the NEW path's read + pack + upload time
 
         # Unit sprites — loaded once, unloaded in shutdown().
         self.sprites = UnitSprites()
@@ -430,18 +442,40 @@ class GameRenderer:
 
     # ---- per-frame physics->GPU upload ---------------------------------
 
+    def set_light_mode_new(self, on: bool) -> None:
+        """P6b: show the NEW light (the sweep, through the accessor) or the OLD
+        render march. The flat term follows (floor vs the old ambient), and the
+        next upload re-reads the field whatever the serial says."""
+        self.light_mode_new = bool(on)
+        self.lighting.set_new_light(self.light_mode_new)
+        self._light_serial_seen = None
+
     def upload_state(self, gmap, light_sources: Optional[List] = None,
-                     sim_tick: int = 0) -> None:
+                     sim_tick: int = 0, light_serial: Optional[int] = None) -> None:
         t_start = time.perf_counter()
 
-        # Light field. Occlusion is the per-channel DYNAMIC attenuation field
+        # ray-engine-v2 P6b: THE NEW PATH -- the light field is the radiation
+        # sweep's, read through the ONE accessor (simulation.light_field) and
+        # uploaded only when it changed (`light_serial`: a light-carrying tick
+        # or a relight -- once per sim tick; None re-reads every frame). The
+        # textures keep their layout, so the ship shader, the 3D units and the
+        # water pass read the new light unchanged. No producer is called here.
+        if self.show_lighting and self.light_mode_new:
+            if light_serial is None or light_serial != self._light_serial_seen:
+                from simulation import light_field
+                t_l = time.perf_counter()
+                self.lighting.consume_light_view(light_field.read_light(gmap))
+                self._light_serial_seen = light_serial
+                self.last_light_ms = (time.perf_counter() - t_l) * 1000
+            self.last_raycast_ms = 0.0
+        # Light field (the OLD path, P6c deletes it). Occlusion is the per-channel DYNAMIC attenuation field
         # (ch.03 §units, ch.02 §static×dynamic): pass `gmap.dyn_light_atten`
         # (h, w, 3) = static material attenuation MAX'd with stamped-unit
         # opacity, rebuilt each tick in `stamp_units`. Opaque walls/units
         # ([1,1,1]) block exactly like the old wall hard-stop; glass transmits.
         # Away from units it equals the static field, so behaviour matches S2;
         # over a unit footprint it restores the pre-S2 unit shadow.
-        if self.show_lighting and light_sources:
+        elif self.show_lighting and light_sources:
             t_ray = time.perf_counter()
             # Pass gmap.heat (Q16.16 deposit) and gmap.smoke_glow (god-ray
             # glow) so the march writes both Slice-4 outputs in-place. The cast
@@ -484,6 +518,14 @@ class GameRenderer:
             core.update_rgba16f_texture(self.lighting.light_tex_b,
                                         self.lighting.packed_b)
             self.last_raycast_ms = 0.0
+            self.lighting.glow_rgb.fill(0)
+            self._light_serial_seen = None    # P6b: re-read when the light returns
+
+        # P6b: the in-scattered GLOW the smoke medium draws -- the sweep's
+        # light_glow (through the accessor, calibrated) on the NEW path, the
+        # old march's smoke_glow on the OLD one.
+        glow_field = (self.lighting.glow_rgb if self.light_mode_new
+                      else gmap.smoke_glow)
 
         # Smoke medium. Fire & Heat Beauty B2 P2: the physical gas-medium pass
         # (renderer/gas_medium.py) replaces the flat-grey smoke_overlay + additive
@@ -501,7 +543,7 @@ class GameRenderer:
             from simulation.gases import N_TRACE_GASES
             if self.legacy_smoke_on:
                 self.smoke_overlay.update(gas_fixed.dequantize_f32(gmap.smoke))
-                self.glow_overlay.update(gmap.smoke_glow)
+                self.glow_overlay.update(glow_field)
             else:
                 # k_s (per-gas mean extinction) is read from gmap.gases — the
                 # SAME optics table the ray march sums — and scaled by the
@@ -509,7 +551,7 @@ class GameRenderer:
                 # and god-rays track by construction (single source of scale).
                 trace = gas_fixed.dequantize_f32(gmap.gas[:N_TRACE_GASES])
                 self.gas_medium.update(
-                    trace, gmap.smoke_glow, gmap.gases,
+                    trace, glow_field, gmap.gases,
                     base_absorb_scale=float(self.raycaster.smoke_absorb_scale))
                 # P3 detail: upload the TAMED wind (raw -grad(P) is fire-spiked +
                 # unusable as a velocity — see gas_detail.py) + the P2 density
@@ -1380,7 +1422,15 @@ class GameRenderer:
         frame_ms = 1000.0 / max(1, rl.get_fps())
         draw_text(f"Frame:   {frame_ms:.1f} ms (smoothed)", x, y, 14)
         y += 18
-        draw_text(f"Raycast: {self.last_raycast_ms:.1f} ms", x, y, 14)
+        # P6b: which light is showing (F11 flips it), and what it cost this
+        # frame -- the NEW path's cost is the per-tick read + pack + upload;
+        # the sweep itself runs inside the sim tick.
+        if self.light_mode_new:
+            draw_text(f"Light: NEW sweep ({self.last_light_ms:.1f} ms up)",
+                      x, y, 14, color=(180, 255, 180, 255))
+        else:
+            draw_text(f"Light: OLD march {self.last_raycast_ms:.1f} ms",
+                      x, y, 14, color=(255, 200, 120, 255))
         y += 18
         # Upload = the light-cast + overlay-texture-build slice INSIDE
         # upload_state (a SUBSET of "Frame:" above, not the whole frame).
@@ -1402,6 +1452,7 @@ class GameRenderer:
             ("F2 smoke",       self.show_smoke),
             ("F3 fire",        self.show_fire),
             ("F4 light",       self.show_lighting),
+            ("F11 NEW light",  self.light_mode_new),     # P6b old/new A/B
             ("F5 normal map",  self.show_normal_map),
             ("F6 coords",      self.show_debug_coords),
             ("F7 pressure",    self.show_pressure),
@@ -1518,6 +1569,14 @@ class GameRenderer:
         # after F9's legacy-smoke A/B.) Prints the new mode for the console log.
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F10):
             print(f"[speckle] mode -> {self.speckle.cycle_mode()}")
+        # F11: ray-engine-v2 P6b's OLD/NEW LIGHT A/B -- the sweep's light (NEW,
+        # the default) vs the old render march + fire lights + the per-frame
+        # sources (OLD), in the same scene, for the play test. main.py reads
+        # light_mode_new to request the sweep's light. P6c deletes the old
+        # path and this key. (F11 was free: F1-F7/F9/F10 here, F8 the recorder.)
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_F11):
+            self.set_light_mode_new(not self.light_mode_new)
+            print(f"[light] -> {'NEW (the sweep)' if self.light_mode_new else 'OLD (the march)'}")
         # T: emissive black-body temperature overlay (over gmap.temperature).
         if rl.is_key_pressed(rl.KeyboardKey.KEY_T):
             self.show_temperature = not self.show_temperature

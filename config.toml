@@ -1470,6 +1470,48 @@ master_gain = 2.0          # ONE master display-exposure dial on the light field
                            # "too dark everywhere" gap. TRIAL 2.0 (Erik
                            # 2026-08-25, "just double it"); reconcile with the
                            # demo's regime in the pre-tuning instrument pass.
+# ray-engine-v2 P6b (docs/ray_engine_v2_p6b_lit_world_brief_2026-09-25.md): the
+# NEW light is the radiation sweep's light channels, read through the one
+# accessor (src/simulation/light_field.py). All three dials are RENDER dials,
+# applied at the render read, never written back; the integer field is not
+# tuned (brief decision 2).
+new_light = true           # start on the NEW light (F11 flips to the OLD march
+                           # for the A/B; the old path is deleted at P6c)
+sweep_gain = 1.0           # light units -> the old march's field scale. MEASURED
+                           # 1:1 against the old path in a clear room (old/new,
+                           # summed over r = 2..12 tiles): a 1.0 lamp 0.996, the
+                           # 110-degree flashlight 1.05, a 1263-game crate 0.83
+                           # (the old fire light was dimmed by its own cell).
+floor = [0.03, 0.03, 0.04] # the NEW path's small FLAT FLOOR (design v3 §2.7:
+                           # a separate dial, never a substitute for the sky).
+                           # A sealed room with no lights reads exactly this.
+                           # The old path's flat ambient was (0.10, 0.10, 0.13)
+                           # everywhere (main.py) -- this is the tune-by-eye dial.
+
+# --- ray-engine-v2 P6b: THE SKY (the light ring) ---------------------------
+# The light channels' boundary (design v3 §2.7): the virtual ring carries one RGB
+# per ordinate. Chosen PER BOUNDARY TYPE -- the level's own `boundary` ("space"
+# or "ambient", the fact the EOS boundary already keys on) picks the table, so
+# no level data or editor field is added (the smallest honest source: space IS
+# dark, open air IS lit). Read ONCE at level load by renderer/frame_lights.py
+# sky_for_level, quantized into L°'s currency there. LIGHT UNITS (1.0 = the
+# blackbody ramp's intensity 1.0), not render units: the rules field (P7) sees
+# these integers, so they never depend on an exposure dial.
+#   overcast         the IRRADIANCE a clear boundary cell receives from a uniform
+#                    sky (split evenly over the 16 ordinates; a uniform sky
+#                    carries exactly this into every clear cell)
+#   sun              a sun's irradiance, light units, travelling along
+#   sun_bearing_deg  (screen convention: 0 = toward +x/east, 90 = toward +y/
+#                    south) inside sun_spread_deg -- "a few ordinates"
+[light.sky.space]
+overcast = [0.0, 0.0, 0.0]         # space is dark: a breach lets NO light in
+[light.sky.ambient]
+overcast = [0.05, 0.05, 0.065]     # = the old flat ambient (0.10, 0.10, 0.13) at
+                                   # master_gain 2.0 x sweep_gain 1.0, on a clear
+                                   # boundary cell -- the planetside daylight
+sun = [0.0, 0.0, 0.0]              # dormant; try e.g. [0.3, 0.28, 0.22]
+sun_bearing_deg = 35.0
+sun_spread_deg = 10.0
 
 # --- Fire & Heat Beauty B2 gas-medium render pass -------------------------
 # P1 PLUMBING ONLY: these blocks have NO consumers yet — renderer/gas_medium.py

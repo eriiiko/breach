@@ -1,9 +1,20 @@
-"""Lighting renderer: computes the RGB directional light field via the C++
-raycaster, packs it into two small RGBA16F textures (ch.05), and draws the
-diffuse ship lit by the lighting shader.
+"""Lighting renderer: packs the RGB directional light field into two small
+RGBA16F textures (ch.05) and draws the diffuse ship lit by the lighting shader.
 
 Texture A = light_rgb (RGB) + light_dir.x (A, signed).
-Texture B = smoke_glow (RGB, reserved/zero this slice) + light_dir.y (A, signed).
+Texture B = glow (RGB) + light_dir.y (A, signed).
+
+RAY-ENGINE-V2 P6b (design v3 §4.3, §7.1): LightingPass is a CONSUMER. On the
+NEW path it uploads the one accessor's field (``simulation.light_field.
+read_light`` -- the radiation sweep's light channels) into the SAME two
+textures once per sim tick (:meth:`LightingPass.consume_light_view`, packed by
+the pure :func:`pack_light_view`); the shader, the 3D units (renderer/lit3d.py)
+and the water pass sample them per frame exactly as before. It never calls a
+producer on that path. The old render march (:meth:`compute_light_field`, the
+Raycaster) stays for the P6b old/new toggle only and is deleted at P6c. The
+flat term is the NEW path's small FLOOR dial (``[render.lighting] floor``) or
+the old path's flat ambient -- never both (design §2.7: the floor is a separate
+dial, never a substitute for the sky).
 """
 from __future__ import annotations
 
@@ -40,6 +51,40 @@ def art_src_and_uv_rect(art_align, grid_w: int, grid_h: int,
     return src, (src[0] / aw, src[1] / ah, src[2] / aw, src[3] / ah)
 
 
+def pack_light_view(view, gain: float, light_rgb: np.ndarray, light_dx: np.ndarray,
+                    light_dy: np.ndarray, light_map: np.ndarray,
+                    packed_a: np.ndarray, packed_b: np.ndarray,
+                    glow_rgb: Optional[np.ndarray] = None) -> None:
+    """THE NEW PATH'S PACK (P6b), pure numpy, headless-testable: the accessor's
+    :class:`simulation.light_field.LightView` -> the texture contract the ship
+    shader, the 3D units and the water pass already read.
+
+      light_rgb = view.rgb * gain          the calibrated field (render dial
+                                           ``[render.lighting] sweep_gain``;
+                                           light units -> the old march's scale)
+      light_dir = -view.flux_dir           toward the light, the contract's
+                                           convention (the sweep's flux points
+                                           the way light TRAVELS)
+      light_map = max over the channels    the scalar the sprite tint reads
+      packed_a  = (light_rgb, dir.x) ; packed_b = (glow * gain, dir.y)   16F
+
+    Every output is a MONOTONE non-decreasing function of the integer field
+    per channel (a positive scale, then float rounding, which is monotone) --
+    design §8.5, held by tests/test_light_field.py. A post-process that mixes
+    cells or channels here would break it."""
+    np.multiply(view.rgb, np.float32(gain), out=light_rgb)
+    np.negative(view.flux_dir[..., 0], out=light_dx)
+    np.negative(view.flux_dir[..., 1], out=light_dy)
+    np.max(light_rgb, axis=2, out=light_map)
+    packed_a[..., 0:3] = light_rgb
+    packed_a[..., 3] = light_dx
+    glow = view.glow * np.float32(gain)
+    packed_b[..., 0:3] = glow
+    packed_b[..., 3] = light_dy
+    if glow_rgb is not None:
+        glow_rgb[...] = glow
+
+
 class LightingPass:
     """Owns the lighting shader and the dynamic light-field texture."""
 
@@ -47,6 +92,22 @@ class LightingPass:
         self.raycaster = raycaster
         self.h = grid_h
         self.w = grid_w
+        # P6b: the light SOURCE. False (the class default, the harness's) is
+        # the old render march via compute_light_field; True is the sweep's
+        # field through the accessor (consume_light_view). GameRenderer sets
+        # it (F11 flips it live). The flat term follows it: the old path's
+        # ambient, or the new path's FLOOR dial.
+        self.new_light = False
+        _lcfg = getattr(getattr(CFG, "render", None), "lighting", None)
+        # [render.lighting] sweep_gain: light units -> the old march's field
+        # scale, a RENDER dial (dequantized at the render read, never written
+        # back). Measured 1:1 (report: lamp 0.996, flashlight 1.05, crate 0.83).
+        self.sweep_gain = float(getattr(_lcfg, "sweep_gain", 1.0))
+        # [render.lighting] floor: the new path's small flat floor (design §2.7).
+        self.floor = tuple(float(v) for v in getattr(_lcfg, "floor", (0.03, 0.03, 0.04)))
+        self._old_ambient = (0.18, 0.18, 0.22)
+        # the new path's calibrated glow (for the gas-medium pass), (h, w, 3)
+        self.glow_rgb = np.zeros((grid_h, grid_w, 3), dtype=np.float32)
 
         # CPU-side scratch buffers for the raycaster
         # RGB light accumulator (f32), shape (h, w, 3) — interleaved per ch.03.
@@ -133,10 +194,29 @@ class LightingPass:
         return loc
 
     def set_ambient(self, rgb):
+        """The OLD path's flat ambient (the u_ambient the render march's ship
+        was lit by). P6b: pushed to the shader only while the old path is
+        active; the new path's flat term is the floor (set_floor)."""
+        self._old_ambient = (float(rgb[0]), float(rgb[1]), float(rgb[2]))
+        self._push_flat_term()
+
+    def set_floor(self, rgb):
+        """P6b: the NEW path's small flat floor (design §2.7) -- a render dial,
+        never a substitute for the sky: a sealed room reads exactly this."""
+        self.floor = (float(rgb[0]), float(rgb[1]), float(rgb[2]))
+        self._push_flat_term()
+
+    def set_new_light(self, on: bool):
+        """P6b: switch the light SOURCE (see __init__) and its flat term."""
+        self.new_light = bool(on)
+        self._push_flat_term()
+
+    def _push_flat_term(self):
         # Cache as a Python tuple so non-shader consumers (e.g. unit sprite
-        # tinting in game_renderer._draw_units_world) can read the same
-        # ambient value the ship is lit by. Single source of truth.
-        self.ambient = (float(rgb[0]), float(rgb[1]), float(rgb[2]))
+        # tinting in game_renderer._draw_units_world, the water pass, the 3D
+        # units' LightFieldCtx) read the same flat term the ship is lit by.
+        # Single source of truth: `ambient` is the ACTIVE flat term.
+        self.ambient = self.floor if self.new_light else self._old_ambient
         val = rl.ffi.new("float[3]", list(self.ambient))
         rl.set_shader_value(self.shader, self._loc_ambient, val,
                             rl.ShaderUniformDataType.SHADER_UNIFORM_VEC3)
@@ -226,7 +306,21 @@ class LightingPass:
         rl.set_texture_filter(self.light_tex_a, filt)
         rl.set_texture_filter(self.light_tex_b, filt)
 
-    # ---- light field computation ---------------------------------------
+    # ---- light field: the NEW path (P6b) ---------------------------------
+
+    def consume_light_view(self, view) -> None:
+        """Upload the accessor's field (``light_field.read_light``) into
+        light_tex_a / light_tex_b -- the NEW path, once per sim tick (the
+        caller watches Simulation.light_serial). Packed by
+        :func:`pack_light_view`; the texture layout is the old one, so the 3D
+        units and the water pass need no change."""
+        pack_light_view(view, self.sweep_gain, self.light_rgb, self.light_dx,
+                        self.light_dy, self.light_map, self.packed_a,
+                        self.packed_b, glow_rgb=self.glow_rgb)
+        core.update_rgba16f_texture(self.light_tex_a, self.packed_a)
+        core.update_rgba16f_texture(self.light_tex_b, self.packed_b)
+
+    # ---- light field computation: the OLD path (P6c deletes it) -----------
 
     def compute_light_field(self, sources: List, gas: np.ndarray,
                             gas_absorption: np.ndarray, gas_scatter: np.ndarray,
@@ -366,4 +460,4 @@ class LightingPass:
         rl.end_shader_mode()
 
 
-__all__ = ["LightingPass", "art_src_and_uv_rect"]
+__all__ = ["LightingPass", "art_src_and_uv_rect", "pack_light_view"]
