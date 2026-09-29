@@ -420,6 +420,28 @@ class PhysicsRunner:
         self.light_cones = None
         self.light_sky = None
         self.light_serial = 0
+        # ray-engine-v2 P6d (design v3 §2.4; brief decision 1): the light
+        # channels' TRANSPORT, permanently a config setting. "shear for heat,
+        # step for light" was Erik's original per-channel choice, not a
+        # physical law -- the sweep already carries both as a parameter on
+        # light (gate 18), so trying shear is this one config edit + a
+        # restart, never a C++ rebuild or a key (decision 2: no key). Door 2
+        # -- exactly "step" or "shear" -- bound ONCE here onto
+        # PhysicsEngine.light_transport, which run_sweep_ reads at the one
+        # sweep invocation (step_tail and relight(), both backends). Heat's
+        # own transport is not this key; it stays TRANSPORT_SHEAR, unaffected.
+        light_cfg = getattr(CFG, "light", None)
+        _light_transport = str(getattr(light_cfg, "transport", "step"))
+        _LIGHT_TRANSPORTS = {"step": bp.RadiationSweep.STEP,
+                             "shear": bp.RadiationSweep.SHEAR}
+        if _light_transport not in _LIGHT_TRANSPORTS:
+            raise ValueError(
+                f"[light] transport = {_light_transport!r} is not a light "
+                f"transport: must be exactly \"step\" or \"shear\" "
+                f"(RadiationSweep.STEP / .SHEAR, design v3 section 2.4). "
+                f"Light is the only configurable transport here -- heat's "
+                f"stays TRANSPORT_SHEAR.")
+        self.engine.light_transport = _LIGHT_TRANSPORTS[_light_transport]
         # [physics.radiation] vacuum_ambient_K (thermal model v2 R3): the
         # temperature of SPACE, baked into the EMISSIVE LEVEL a vacuum cell
         # radiates against. Door 2 — one load-time conversion, here, through

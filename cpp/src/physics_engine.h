@@ -60,6 +60,21 @@ public:
     // P6b's renderer asks for it.
     LightEmissionTable light_emission;
     bool               light_requested = false;
+    // Ray-engine-v2 P6d (design v3 §2.4; docs/ray_engine_v2_p6d_light_
+    // transport_setting_brief_2026-09-29.md decision 1): the light channels'
+    // TRANSPORT is a permanent SETTING, not a literal. "shear for heat, step
+    // for light" was Erik's original per-channel choice, not physics -- the
+    // sweep already carries both as a parameter on light (gate 18), so P6d
+    // turns the ONE place that used to hardcode it (run_sweep_) into a read
+    // of this member. Bound ONCE by PhysicsRunner from `[light] transport`
+    // (config door 2: exactly "step" or "shear"); run_sweep_ reads it at the
+    // one sweep invocation, both step_tail and relight(), both backends (the
+    // CUDA twin's light walk is already topological for either value).
+    // Default TRANSPORT_STEP, so an engine nobody configures is unmoved.
+    // Heat's own transport is NOT this member -- it stays TRANSPORT_SHEAR,
+    // a literal at run_sweep_'s two RadiationSweep::run / radiation_sweep_
+    // step call sites; that choice is not this patch's to make configurable.
+    int                light_transport = RadiationSweep::TRANSPORT_STEP;
 
     // (wave_p_f_ / atm_f_ DELETED — audit Patch A / A9, 2026-08-04. Both float
     // scratch buffers were DECLARED HERE AND NEVER USED: repo-wide grep found
