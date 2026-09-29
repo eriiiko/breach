@@ -52,8 +52,9 @@ class FieldOverlay:
         Smoke is drawn as a flat grey DENSITY medium: alpha is density-driven,
         the RGB tint is constant. The old ``light_modulation`` parameter (which
         multiplied the smoke colour by the local light to fake lit-smoke tint)
-        is RETIRED — the god-ray glow (``GlowOverlay``, fed by the ray march's
-        ``smoke_glow`` output) now provides lit-smoke shafts as an additive
+        is RETIRED — the god-ray glow (``GlowOverlay``, fed the in-scattered
+        glow: the sweep's ``light_glow`` since ray-engine-v2 P6b, the render
+        march's ``smoke_glow`` before P6c) provides lit-smoke shafts as an additive
         layer, one energy-conserving mechanism with no double-count (ch.03 C16,
         ch.05 §God-rays). Alpha is never modulated by light: smoke as a physical
         medium is always there; the glow overlay adds the colour it scatters.
@@ -388,8 +389,9 @@ class HeatFieldOverlay:
 class GlowOverlay:
     """God-ray / lit-smoke glow overlay (ch.05 §God-rays).
 
-    Draws the ray march's ``smoke_glow`` field — the RGB light the smoke
-    *absorbed*, per channel — as an ADDITIVE volumetric shaft. This supersedes
+    Draws the in-scattered glow field (the radiation sweep's ``light_glow``,
+    through the light accessor and LightingPass -- the render march's
+    ``smoke_glow`` until P6c) as an ADDITIVE volumetric shaft. This supersedes
     the retired ``light_modulation`` smoke surface-tint: a red beam through
     smoke casts a red shaft, energy-conserving by construction (the energy is
     exactly what the smoke removed from the ray). The additive draw must raise
@@ -399,8 +401,8 @@ class GlowOverlay:
     blit — so draw() uses RGB-only separate blend factors instead (see
     ``_begin_additive_rgb_only_blend``). Unlike the alpha-blended smoke it is
     NOT premultiplied (ch.05 §Blend discipline). Drawn before units so they
-    occlude it in screen space; the march deposits no glow past opaque tiles,
-    so shafts already terminate at walls.
+    occlude it in screen space; the sweep puts no glow on non-gas cells and
+    none past opaque tiles, so shafts already terminate at walls.
     """
 
     def __init__(self, grid_h: int, grid_w: int, gain: float = 1.0):
@@ -412,8 +414,8 @@ class GlowOverlay:
         self.tex = core.create_dynamic_rgba_texture(grid_w, grid_h)
         self.packed = np.zeros((grid_h, grid_w, 4), dtype=np.uint8)
 
-    def update(self, smoke_glow: np.ndarray) -> None:
-        """smoke_glow: (H, W, 3) float — the absorbed-light god-ray field.
+    def update(self, glow: np.ndarray) -> None:
+        """glow: (H, W, 3) float — the in-scattered god-ray field.
 
         Tone-map by simple clamp (ACES is the final-slice job) and pack into
         an RGBA texture with full alpha. With the RGB factors (SRC_ALPHA, ONE)
@@ -422,7 +424,7 @@ class GlowOverlay:
         entirely (RGB-only additive — dstA must never be written, see
         ``_begin_additive_rgb_only_blend``).
         """
-        glow = np.clip(smoke_glow * self.gain, 0.0, 1.0)
+        glow = np.clip(glow * self.gain, 0.0, 1.0)
         self.packed[..., 0] = (glow[..., 0] * 255.0).astype(np.uint8)
         self.packed[..., 1] = (glow[..., 1] * 255.0).astype(np.uint8)
         self.packed[..., 2] = (glow[..., 2] * 255.0).astype(np.uint8)

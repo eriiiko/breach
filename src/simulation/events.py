@@ -62,8 +62,8 @@ class LaserFiredEvent:
     (heavy laser, cutting beam). Render-only — NOT part of the synced event
     digest (the damage it caused rides UnitHitEvent as usual).
 
-    The beam-as-light-source hookup (its glow feeding the raycaster as a
-    transient source) is explicitly DEFERRED to the explosion-light pass
+    The beam-as-light-source hookup (its glow feeding the light sweep as a
+    transient cone emitter, renderer/frame_lights.py) is explicitly DEFERRED to the explosion-light pass
     (mechanics/03 §8 status note).
     """
     unit_id: int                    # the shooter's unit id

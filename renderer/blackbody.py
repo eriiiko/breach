@@ -10,8 +10,11 @@ is headless-testable.
 One module, one job: map the dequantized game temperature ΔT (``gmap.temperature``
 in Q16.16 above ambient) to a *normalized chroma* (max channel = 1) plus a
 *separate HDR intensity* that carries the T⁴ brightness the chromaticity fits
-deliberately drop. The overlay and the fire light sources both read this ONE code
-path, so their colour agrees by construction.
+deliberately drop. The overlay and (offline, through tools/gen_light_table.py)
+the radiation sweep's checked-in L° table both read this ONE code path, so the
+glow the overlay paints and the light a fire casts agree by construction. (The
+render march's per-frame fire light sources, renderer/fire_lights.py, read it
+too until ray-engine-v2 P6c deleted them.)
 
 Two moves, from the research:
 
@@ -47,8 +50,9 @@ from simulation.fire_fixed import FP_ONE_F as TEMP_SCALE
 # "MUST match" comment): sourced from simulation.fire_fixed.FP_ONE_F, the
 # pure-numpy leaf module (no breach_physics, no pyray) that already proves
 # this exact value across the shared Q16.16 domain (fire/water/wave/
-# atmosphere/gas/heat all == 65536). cold_overlay.py / fire_lights.py /
-# hover_readout.py import this SAME name from the SAME place.
+# atmosphere/gas/heat all == 65536). cold_overlay.py / hover_readout.py
+# import this SAME name from the SAME place (fire_lights.py did too, until
+# ray-engine-v2 P6c deleted it).
 
 
 def aces_tonemap(x: np.ndarray) -> np.ndarray:
@@ -288,8 +292,10 @@ class BlackbodyRamp:
                                                   float]:
         """Scalar dequantized game ΔT -> ((r, g, b) chroma, intensity).
 
-        The per-source colour path for fire lights. Shares ``_index`` with the
-        vectorized overlay so a light and the overlay tile beneath it agree.
+        The per-source colour path the old fire lights used (their module was
+        deleted at ray-engine-v2 P6c; the ramp's tests still read it). Shares
+        ``_index`` with the vectorized overlay so a light and the overlay tile
+        beneath it agree.
         """
         idx = int(self._index(self._kelvin_from_tgame(float(t_game))))
         r, g, b = self._chroma_lut[idx]

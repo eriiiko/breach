@@ -1193,18 +1193,16 @@ void PhysicsEngine::step_water_tail(
 // check / the getattr-or-default for each unit's perm/wabsorb/atten all stay in
 // Python (CPU actors own that), flattened into the per-row arrays passed in. This
 // reproduces the contract directions EXACTLY: permeability is MIN (never unseal a
-// door), wave_absorb is MAX (a body only adds damping), light_atten is per-channel
+// door), wave_absorb is MAX (a body only adds damping), dyn_light_atten_q is per-channel
 // MAX (opacity only rises). The atmosphere-refill bit (gamemap.py:586-588) is NOT
 // here — it stays Python (Q1, locked). All writes are IN-PLACE (the engine re-
 // fetches field pointers each step; reassignment would dangle them).
 void PhysicsEngine::stamp_units(
         const float* permeability, const float* wave_absorb,
-        const float* light_atten,
-        float* dyn_permeability, float* dyn_wave_absorb, float* dyn_light_atten,
+        float* dyn_permeability, float* dyn_wave_absorb,
         bool* obstacles,
         const int32_t* ys, const int32_t* xs,
         const float* perm, const float* wabsorb,
-        const float* atten_r, const float* atten_g, const float* atten_b,
         const int32_t* heat_atten_q, int32_t* dyn_heat_atten_q,
         const int32_t* heat_q,
         int n_stamp, int h, int w,
@@ -1233,17 +1231,15 @@ void PhysicsEngine::stamp_units(
     // obstacles = (permeability <= 0.0): WALLS ONLY (units are NOT stamped into
     // obstacles — they are soft bodies, gamemap.py:532). dyn_* are in-place
     // copies of the static material baselines (gamemap.py:536/540/544). Done in
-    // one pass over the (h,w) fields; light_atten is interleaved (h,w,3).
-    // Ray-engine-v2 P1: the Q16 heat-extinction plane joins the reset, an
-    // integer copy of the static material plane.
+    // one pass over the (h,w) fields. Ray-engine-v2 P1: the Q16 heat-extinction
+    // plane joins the reset, an integer copy of the static material plane.
+    // (The float light plane's (h,w,3) copy went with the render march, P6c;
+    // the light stamp is the integer twin above.)
     for (int i = 0; i < n; ++i) {
         obstacles[i]        = (permeability[i] <= 0.0f);   // walls only
         dyn_permeability[i] = permeability[i];             // copy
         dyn_wave_absorb[i]  = wave_absorb[i];              // copy
         dyn_heat_atten_q[i] = heat_atten_q[i];             // copy (Q16)
-    }
-    for (int i = 0; i < n * 3; ++i) {
-        dyn_light_atten[i]  = light_atten[i];              // copy (RGB)
     }
 
     // --- b. Stamp each living unit's footprint over the flat rows ---------
@@ -1263,14 +1259,6 @@ void PhysicsEngine::stamp_units(
         const float cur = dyn_wave_absorb[idx];
         const float uw  = wabsorb[r];
         dyn_wave_absorb[idx] = (cur >= uw) ? cur : uw;
-        // Per-channel MAX: opacity can only increase (gamemap.py:578-581).
-        float* cell = dyn_light_atten + (size_t)idx * 3;
-        const float ar = atten_r[r];
-        const float ag = atten_g[r];
-        const float ab = atten_b[r];
-        cell[0] = (cell[0] >= ar) ? cell[0] : ar;
-        cell[1] = (cell[1] >= ag) ? cell[1] : ag;
-        cell[2] = (cell[2] >= ab) ? cell[2] : ab;
         // Ray-engine-v2 P1: heat extinction is a MAX too — a body can only
         // ADD extinction, never remove a wall's (design §2.3: every dynamic
         // stamp is a MAX, so a <= d <= ONE holds by construction).

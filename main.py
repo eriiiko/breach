@@ -68,7 +68,6 @@ from level_loader import load as load_level
 from level_lights import monotonic_total_tick, partition_lights
 from renderer import GameRenderer
 from renderer import frame_lights
-from renderer.fire_lights import FireLightSelector
 from renderer.game_renderer import RenderConfig
 from renderer.static_props import placements_from_entities
 from simulation import Simulation
@@ -275,7 +274,7 @@ def _onephase_world_overlay(sim, control_source, hover_tile=None):
         selected = (sim.get_unit(control_source.selected_unit_id)
                     if control_source.selected_unit_id is not None else None)
         # NOTE: the flashlight cones are NOT drawn as sectors here. They are
-        # already real ray-traced light sources in the frame's source list, and
+        # already real light (cone emitters on the radiation sweep), and
         # drawing a translucent wedge on top of the light they cast doubled the
         # cone and read as a UI overlay rather than as a torch (Erik, 2nd play
         # session: "the half cones … flashlights already kind of show this, and
@@ -403,7 +402,7 @@ def main():
               f"WASD/arrows pan")
         if debug_mode:
             print(f"  --debug ON: the diagnostic keys are re-armed "
-                  f"(F1-F11, T/V/M/L/B/H/G, I/J/K/U/N/O/P, Ctrl+R, F8)")
+                  f"(F1-F10, T/V/M/B/H/G, I/J/K/U/N/O/P, Ctrl+R, F8)")
         else:
             print(f"  (no diagnostic keys in game mode — relaunch with "
                   f"--debug to re-arm them)")
@@ -418,8 +417,6 @@ def main():
               f"V toggles water overlay | P / Shift+P tilts the ship +/-2 deg")
         print(f"  DEBUG: O toggles the door under the cursor (A6 doors v0 — "
               f"dev-only latch)")
-        print(f"  DEBUG: F11 flips the light: NEW (the radiation sweep, default) "
-              f"<-> OLD (the render march) -- the P6b A/B")
         print(f"  DEBUG: N cycles the selected unit's weapon through the "
               f"armory (W6 — the tuning key)")
 
@@ -434,11 +431,6 @@ def main():
     renderer = GameRenderer(level, bp, cfg,
                             initial_camera=initial_camera,
                             borderless=BORDERLESS)
-    # The OLD light path's flat ambient (ray-engine-v2 P6b: shown only while F11
-    # has the old render march up; the NEW path's flat term is the small
-    # [render.lighting] floor, and its ambient light is the SKY below).
-    renderer.lighting.set_ambient((0.10, 0.10, 0.13))
-
     # Level lights (P4): the [[light]] entities from level.toml (the old
     # hardcoded emergency lamps now live in the vessel/playground tomls).
     # Beacons turn with the SIM tick (they freeze with the sim —
@@ -447,9 +439,10 @@ def main():
     ticks_per_round = int(CFG.clock.ticks_per_round)
 
     # ray-engine-v2 P6b: THE ONE ASSEMBLY (renderer/frame_lights.py). Every
-    # light is enumerated once as a spec; the NEW path hands the engine their
-    # CONE-EMITTER rows once per sim tick (the sweep lights the world), the OLD
-    # path (F11, P6c deletes it) casts them through the render march per frame.
+    # light is enumerated once as a spec, and the engine gets their
+    # CONE-EMITTER rows once per sim tick (the sweep lights the world). The
+    # flat term is the small [render.lighting] floor; the ambient light is the
+    # SKY below.
     lights_in, lights_off = partition_lights(level.lights,
                                              level.width, level.height)
     if lights_off:
@@ -467,16 +460,9 @@ def main():
     # boundary is open sky. None = the dark ring.
     light_sky = frame_lights.sky_for_level(getattr(level, "boundary", "space"), CFG, bp)
     light_fine_bits = int(bp.L_FINE_BITS)
-    print(f"  Light: sweep (F11 = old march A/B); sky "
+    print(f"  Light: sweep; sky "
           f"{'dark' if light_sky is None else 'lit'} "
           f"(boundary '{getattr(level, 'boundary', 'space')}')")
-
-    # Fire light sources (Fire & Heat Beauty B1): the brightest-K hot tiles
-    # become omni ray-traced lights each frame, colour + intensity from the
-    # renderer's shared black-body ramp. RENDER-ONLY — they never write the
-    # synced heat channel (see renderer/fire_lights.py). Built once from
-    # [render.fire_lights]; queried per frame in the sources block below.
-    fire_light_selector = FireLightSelector.from_config(CFG)
 
     # Entity registry (entity design §3b): apply the dev tuning overlay
     # (hard-errors on schema-in-TOML mistakes, like a bad config.toml), then
@@ -498,7 +484,7 @@ def main():
         u = sim.get_unit(uid)
         return int(getattr(u, "footprint", 3)) if u is not None else 3
 
-    def assemble_lights(with_fire_lights: bool):
+    def assemble_lights():
         total = monotonic_total_tick(sim.turn_number, ticks_per_round, sim.tick)
         extra = []
         if onephase:
@@ -520,14 +506,11 @@ def main():
         extra += frame_lights.transient_specs(renderer.transient_light_specs())
         return frame_lights.frame_light_specs(
             lights_in, total_tick=total, sim_time_per_tick=sim_time_per_tick,
-            extra=extra, fire_selector=fire_light_selector,
-            temperature_field=sim.gmap.temperature,
-            blackbody_ramp=renderer.blackbody_ramp,
-            with_fire_lights=with_fire_lights)
+            extra=extra)
 
     def cone_rows_now():
         grid_h, grid_w = sim.gmap.solid.shape
-        return frame_lights.cone_rows(assemble_lights(False).specs, grid_w, grid_h,
+        return frame_lights.cone_rows(assemble_lights().specs, grid_w, grid_h,
                                       light_fine_bits)
 
     # 3. Main loop.
@@ -556,11 +539,11 @@ def main():
             renderer.update_camera(dt)
             control_source.handle_frame(sim, renderer)
 
-            # ----- ray-engine-v2 P6b: which light is up -----
-            # NEW (default): the radiation sweep lights the world -- the game
-            # REQUESTS light, and the cone rows ride each sim tick. OLD (F11):
-            # the render march per frame; the sweep's light is not requested.
-            new_light = bool(renderer.light_mode_new and renderer.show_lighting)
+            # ----- ray-engine-v2 P6b: the light -----
+            # The radiation sweep lights the world: the game REQUESTS light
+            # while the lighting pass shows (F4), and the cone rows ride each
+            # sim tick.
+            new_light = bool(renderer.show_lighting)
             if new_light != light_on:
                 if not new_light:
                     sim.set_light(False)
@@ -605,20 +588,9 @@ def main():
             # detail clock too (replays render identical smoke).
             total_tick = monotonic_total_tick(
                 sim.turn_number, ticks_per_round, sim.tick)
-            sources = None
-            if not new_light:
-                # ----- The OLD path (F11; P6c deletes it): the SAME assembly,
-                # per frame, with the old fire lights, cast by the render march.
-                frame = assemble_lights(renderer.show_fire_lights)
-                sources = frame_lights.light_sources(bp, frame.specs)
-                renderer.set_fire_light_stats(frame.fire_count, frame.fire_peaks,
-                                              fire_light_selector.max_lights)
-            else:
-                renderer.set_fire_light_stats(0, 0, fire_light_selector.max_lights)
 
             # ----- Upload + draw -----
-            renderer.upload_state(sim.gmap, light_sources=sources,
-                                  sim_tick=total_tick,
+            renderer.upload_state(sim.gmap, sim_tick=total_tick,
                                   light_serial=sim.light_serial if new_light else None)
             renderer.begin_frame()
 

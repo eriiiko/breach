@@ -1,12 +1,15 @@
-"""THE ASSEMBLY'S NEW OUTPUT ROW -- cone emitters from every light (ray-engine-v2 P6b).
+"""THE ASSEMBLY'S OUTPUT ROW -- cone emitters from every light (ray-engine-v2 P6b).
 
 docs/ray_engine_v2_p6b_lit_world_brief_2026-09-25.md sections 1.3, 2.1 and 3.4;
 design v3 sections 4.1 and 4.4. renderer/frame_lights.py enumerates every
-light the game shows ONCE as a LightSpec and builds either the sweep's
-cone-emitter rows (the live path) or the old march's LightSource list (the P6b
-toggle only). These tests hold that seam: every old light type has a new form
-and lights the world through the real conductor; the float -> integer door;
-the flashlight's lens; the old row is the same numbers; the sky's door.
+light the game shows ONCE as a LightSpec and builds the sweep's cone-emitter
+rows from it (since P6c the only row: the old march's LightSource list went
+with the march). These tests hold that seam: every old light type has a new
+form and lights the world through the real conductor; the float -> integer
+door; the flashlight's lens; the sky's door; and -- moved here at P6c from
+the deleted old-row oracle tests/test_frame_lights.py -- the assembly
+enumerates each in-grid level light exactly once, and a beacon's row turns
+with the sim tick and only with it.
 
 Every test's docstring names its property and the change that breaks it.
 
@@ -120,8 +123,6 @@ def test_every_old_light_type_has_a_new_form_that_lights_the_world():
     g.light_atten_q[20, 20] = g.dyn_light_atten_q[20, 20] = 36045   # furniture 0.55
     q = _lit(sim, None)
     assert _around(q, 20, 20) > 0, "fire: the thermal emission lights nothing"
-    fire_specs, _peaks = fl.fire_light_specs(None, g.temperature, None)
-    assert fl.cone_rows(fire_specs, w, h, FB).shape == (0, 7)
     assert "fire" in fl.EMITTER_INPUTS
     assert set(OLD_LIGHT_TYPES) <= set(produced) | {"fire"}
 
@@ -205,29 +206,77 @@ def test_a_flashlight_shines_from_its_lens_outside_the_carriers_body():
 
 
 # ---------------------------------------------------------------------------
-# 4. THE OLD ROW IS THE SAME NUMBERS
+# 4. THE ASSEMBLY ENUMERATES EACH LEVEL LIGHT ONCE; THE BEACON RIDES THE TICK
+#    (moved at P6c from the deleted tests/test_frame_lights.py, the old-row
+#    oracle: its partition and its beacon-sweep properties, on the cone row)
 # ---------------------------------------------------------------------------
-def test_the_old_row_carries_the_specs_numbers():
-    """PROPERTY (P6b toggle): light_sources(bp, specs) -- the old march's row,
-    built from the SAME spec list -- carries each spec's position, range,
-    intensity, colour and beam, with heat and jitter structurally 0, so the
-    F11 A/B compares the two engines on identical inputs.
+def _level_lights():
+    """Two static lamps + one beacon in a 40x30 grid, and one lamp off it."""
+    return [
+        LightEntry(x=6.5, y=4.5, color=(1.0, 0.1, 0.05), intensity=0.9,
+                   range=18.0, kind="static"),
+        LightEntry(x=30.5, y=4.5, color=(0.6, 0.7, 1.0), intensity=1.2,
+                   range=14.0, kind="static"),
+        LightEntry(x=18.5, y=12.5, color=(1.0, 0.63, 0.16), intensity=3.0,
+                   range=12.0, kind="beacon", period_s=2.0, beam_deg=30.0,
+                   phase=0.0),
+        LightEntry(x=100.0, y=200.0, color=(1.0, 1.0, 1.0), intensity=1.0,
+                   range=10.0, kind="static"),
+    ]
 
-    BREAKS IF: the old row drifts from the spec (a second enumeration, a
-    different beam convention) or starts writing the synced heat channel.
+
+def test_the_assembly_gives_each_in_grid_level_light_one_row_and_no_fire():
+    """PROPERTY (moved from test_frame_lights.py's partition + old-inline
+    oracle): through the one assembly (partition_lights -> frame_light_specs ->
+    cone_rows) every in-grid [[light]] becomes exactly ONE cone row at its own
+    cell with its own colour x intensity, an off-grid light none, and the
+    caller's extras are appended after -- whatever the map's temperature: the
+    assembly never adds a fire row (the sweep's fire light is its own).
+
+    BREAKS IF: the assembly enumerates a light twice or drops one, lets an
+    off-grid light through, reorders a light's numbers, or grows a fire row.
     """
-    specs = [fl.LightSpec(x=3.5, y=4.5, color=(0.9, 0.2, 0.1), intensity=1.7,
-                          angle_center=0.3, angle_spread=1.1, max_range=14.0,
-                          kind="beacon"),
-             fl.cursor_lamp_spec((6.25, 7.75))]
-    for s, src in zip(specs, fl.light_sources(bp, specs)):
-        assert (src.x, src.y) == pytest.approx((s.x, s.y))
-        assert src.max_range == pytest.approx(s.max_range)
-        assert src.intensity == pytest.approx(s.intensity)
-        assert tuple(src.color) == pytest.approx(s.color)
-        assert (src.angle_center, src.angle_spread) == pytest.approx(
-            (s.angle_center, s.angle_spread))
-        assert src.heat == 0.0 and src.jitter == 0.0
+    lights = _level_lights()
+    lights_in, off = fl.partition_lights(lights, 40, 30)
+    assert [e.x for e in off] == [100.0]
+    extra = [fl.cursor_lamp_spec((2.5, 2.5))]
+    specs = fl.frame_light_specs(lights_in, total_tick=17, sim_time_per_tick=DT,
+                                 extra=extra).specs
+    rows = fl.cone_rows(specs, 40, 30, FB)
+    assert len(rows) == len(lights_in) + len(extra) == 4
+    scale = 1 << FB
+    for e, r in zip(lights_in, rows[:3]):
+        assert (int(r[0]), int(r[1])) == (int(e.y), int(e.x))
+        assert [int(v) for v in r[2:5]] == [round(e.intensity * c * scale)
+                                            for c in e.color]
+    assert (int(rows[3][0]), int(rows[3][1])) == (2, 2)
+    assert sorted(s.kind for s in specs) == ["beacon", "cursor", "lamp", "lamp"]
+
+
+def test_a_beacons_cone_row_turns_with_the_sim_tick_and_only_with_it():
+    """PROPERTY (moved from test_frame_lights.py's beacon-sweep test; P4's
+    freeze ruling): a beacon's cone-row centre is a pure function of the
+    MONOTONIC sim tick -- the same tick gives the same row (a paused sim is a
+    frozen beacon, a replay the same beam), a later tick turns it by
+    period_s's rate in Q16 turns; the static lamps' rows never move.
+
+    BREAKS IF: the beacon's facing reads the wall clock or accumulates per
+    call, the assembly feeds statics the tick, or the row door stops
+    converting the angle.
+    """
+    lights_in, _off = fl.partition_lights(_level_lights(), 40, 30)
+
+    def rows_at(tick):
+        specs = fl.frame_light_specs(lights_in, total_tick=tick,
+                                     sim_time_per_tick=DT).specs
+        return fl.cone_rows(specs, 40, 30, FB)
+
+    r0, r0b, r6 = rows_at(0), rows_at(0), rows_at(6)
+    assert np.array_equal(r0, r0b)
+    assert np.array_equal(r0[:2], r6[:2]), "a static lamp moved with the tick"
+    turn = (int(r6[2][5]) - int(r0[2][5])) % TURN
+    # 6 ticks at 24 Hz = 0.25 s of a 2 s period = 1/8 turn (row door rounding)
+    assert abs(turn - TURN // 8) <= 1, turn
 
 
 # ---------------------------------------------------------------------------

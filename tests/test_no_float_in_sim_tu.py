@@ -45,11 +45,11 @@ CPP_SRC = ROOT / "cpp" / "src"
 
 # The simulation solver translation units the migration must drive to integer.
 # (The pure-glue bindings.cpp is NOT in scope — it is not part of the synced
-# lockstep state. raycaster.cpp is NOT render-only any more: it has written the
-# synced `rad_net` since P-R4 (2026-08-01) and sits on the /fp:strict list;
-# it is still not on this ratchet — a pre-existing gap, listed honestly rather
-# than closed here, alongside eos_solver.cpp / combustion.cpp /
-# bulk_transport.cpp / sky_exchange.cpp, which are strict but unscanned. So
+# lockstep state. raycaster.cpp was never on this ratchet, though it wrote the
+# synced `rad_net` from P-R4 (2026-08-01) until T6 and sat on the /fp:strict
+# list; ray-engine-v2 P6c deleted it. eos_solver.cpp / combustion.cpp /
+# bulk_transport.cpp / sky_exchange.cpp are strict but unscanned — a
+# pre-existing gap, listed honestly rather than closed here. So
 # "every sim TU" is not what SIM_TUS covers; each entry is a statement about
 # that TU alone. Ray-engine-v2 P1 adds radiation_sweep.cpp at a HARD 0/0/0 and
 # emissive_table.cpp at its documented floor.)
@@ -355,13 +355,19 @@ _FP_FAST_RE = re.compile(r"fp:fast")
 # multiply, door 2, the pre-existing audited chain) — its `double` lines are
 # that bake's declarations, the dial-integrality check and the comment lines
 # that explain them, recorded at their actual count. `float` 0, `fp:fast` 0.
+# Ray-engine-v2 P6c (2026-09-29): physics_engine.cpp `float` 68 -> 53. The
+# render march's float dyn_light_atten stamp is DELETED from stamp_units (its
+# static `light_atten` input, the three per-row atten_{r,g,b} inputs, the
+# per-cell pointer and three channel locals: 58 -> 53 at the file), and the
+# recorded 68 was already 10 stale-low before this patch -- tightened to the
+# real count so the ratchet stays sharp. `double` / `fp:fast` unchanged.
 BASELINE = {
     "atmosphere_solver.cpp":  {"float": 32, "double": 32, "fp:fast": 1},
     "smoke_dynamics.cpp":     {"float": 24, "double": 13, "fp:fast": 0},
     "fire_simulation.cpp":    {"float": 6,  "double": 18, "fp:fast": 0},
     "water_solver.cpp":       {"float": 32, "double": 22, "fp:fast": 1},
     "temperature_solver.cpp": {"float": 4,  "double": 6,  "fp:fast": 0},
-    "physics_engine.cpp":     {"float": 68, "double": 28, "fp:fast": 1},
+    "physics_engine.cpp":     {"float": 53, "double": 28, "fp:fast": 1},
     "radiation_sweep.cpp":    {"float": 0,  "double": 0,  "fp:fast": 0},
     "emissive_table.cpp":     {"float": 0,  "double": 8,  "fp:fast": 0},
 }

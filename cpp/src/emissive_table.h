@@ -4,10 +4,9 @@
 // Ray-engine-v2 (docs/ray_engine_v2_design_v3_2026-09-15.md §2.6; critique
 // 3 §5a). ONE instance is owned by PhysicsEngine (`emissive`) and read by the
 // radiation sweep (LIVE since T5b) and the temperature solver's Pass-1 clamp.
-// The old Raycaster keeps a vestigial copy of the SAME bake — only
-// tests/test_emissive_table.py still reads it, since T6 retired its march —
-// whose own bake CALLS the bake below (one implementation, two owners; never
-// two bakes).
+// It is the table's ONLY owner since P6c deleted the old Raycaster and its
+// vestigial copy of the same bake (one implementation, one owner; never two
+// bakes — tests/test_emissive_table.py holds it to the integer reference's).
 // ============================================================================
 //
 // Credit: J.R. Howell, M.P. Mengüç, R. Siegel, "Thermal Radiation Heat
@@ -221,7 +220,7 @@ FP_HD inline int32_t e_ceiling_q(const int64_t* table, int64_t phi) {
     return (int32_t)((top_game << 16) - 1);
 }
 
-// The exact int64 bake (the body moved verbatim from raycaster.cpp, P-R4 /
+// The exact int64 bake (the body moved verbatim from the old raycaster.cpp, P-R4 /
 // P-F1a lineage), OUT OF LINE in the strict TU emissive_table.cpp. Writes
 // E_TABLE_SIZE entries into `out`. Throws std::runtime_error if either Kelvin
 // dial is not integer-valued (the integer-bake precondition — a HARD
@@ -237,11 +236,11 @@ void bake_emissive_table_exact(int64_t* out, double rad_scale,
                                double kelvin_ambient, double k_temp_to_kelvin,
                                int fine_bits);
 
-// The owner: the three dials (the SAME [physics] config homes the old
-// Raycaster reads for kelvin_ambient/k_temp_to_kelvin; `rad_scale` itself is
-// vestigial on the Raycaster since T6 — see raycaster.h), the table's CURRENCY
-// (#78) and the lazily baked table. `table()` re-bakes when a dial has moved
-// since the last bake (the Raycaster::emissive_table() contract, kept). Every
+// The owner: the three dials (their config homes, [physics.radiation]
+// rad_scale_derived and [physics.temperature_scale] kelvin_ambient /
+// k_temp_to_kelvin, assigned by simulation/physics_runner.py), the table's
+// CURRENCY (#78) and the lazily baked table. `table()` re-bakes when a dial has
+// moved since the last bake (the lazy re-bake contract). Every
 // method is const and the table is `mutable` because it is a pure function of
 // the dials: a cache, not hidden state.
 class EmissiveTable {

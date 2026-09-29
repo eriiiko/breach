@@ -11,7 +11,7 @@ S-step gates): it captures one trajectory with the Python ``stamp_units`` and on
 with the C++ ``stamp_units`` on the SAME seed + the SAME deterministic unit
 driver, and asserts per-FIELD per-CELL equality (0-ULP) over the whole trajectory
 — for ``obstacles`` / ``dyn_permeability`` / ``dyn_wave_absorb`` /
-``dyn_light_atten`` AND every downstream field (the ``dyn_*`` fields feed the
+``dyn_heat_atten_q`` / ``dyn_light_atten_q`` AND every downstream field (the ``dyn_*`` fields feed the
 solvers, so a stamp slip shows up everywhere).
 
 CRUCIALLY the scenario has units whose footprints MOVE and DIE tick-to-tick (a
@@ -171,10 +171,6 @@ def test_stamp_changes_tick_to_tick():
     assert not np.array_equal(traj[2]["dyn_permeability"],
                               traj[18]["dyn_permeability"]), \
         "dyn_permeability never changed — scenario units are not moving"
-    # dyn_light_atten must also vary (the per-channel MAX stamp).
-    assert not np.array_equal(traj[2]["dyn_light_atten"],
-                              traj[18]["dyn_light_atten"]), \
-        "dyn_light_atten never changed — stamp is trivial"
     # Ray-engine-v2 P1: the fourth output, the Q16 heat-extinction plane, must
     # vary too, carry BOTH unit values (M1's opaque 65536 and M2's partial
     # 32768 over air), and never fall below the static material plane (MAX).

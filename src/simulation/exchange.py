@@ -227,9 +227,9 @@ REDUCTIONS: dict[str, Callable] = {
 # Environmental (radiant heat) damage to units — engine/06 §4, proposal §4.2
 # — the `heat | max` coupling row. Moved VERBATIM from combat.py (P1).
 # ---------------------------------------------------------------------------
-# Q16.16 scale shared with the `heat`/`temperature` fields (cpp/src/raycaster.h
-# HEAT_SCALE). One unit of heat energy == HEAT_SCALE raw int counts in the
-# buffer; Phi divides back out to the energy-unit domain the [combat] consts and
+# Q16.16 scale shared with the `heat`/`temperature` fields (cpp/src/fixed_point.h
+# HEAT_SCALE, the heat-domain kit; raycaster.h until P6c). One unit of heat
+# energy == HEAT_SCALE raw int counts in the buffer; Phi divides back out to the energy-unit domain the [combat] consts and
 # the felt-temp model are authored in.
 HEAT_SCALE = 65536
 

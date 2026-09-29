@@ -90,7 +90,7 @@ def main():
                     tick_accum -= sim_time_per_tick
                     steps += 1
 
-            renderer.upload_state(sim.gmap, light_sources=[])
+            renderer.upload_state(sim.gmap)   # the light accessor's field (P6c)
             renderer.begin_frame()
             renderer.compose_world(
                 units_marines=sim.marines(),

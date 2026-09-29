@@ -6,8 +6,8 @@
 #include "smoke_dynamics.h"
 #include "fire_simulation.h"
 #include "temperature_solver.h"
-#include "raycaster.h"
 #include "water_solver.h"
+#include "emissive_table.h"  // the E° table + L° (EmissiveTable, LightEmissionTable)
 #include "eos_solver.h"
 #include "combustion.h"
 #include "physics_engine.h"
@@ -1809,8 +1809,8 @@ PYBIND11_MODULE(breach_physics, m) {
 
     // Q2-LIFT: the deterministic trig kit (fixed_point.h). Pure integer q16 ->
     // q16 — the cross-machine-safe replacement for the libm transcendentals in
-    // the SYNCED unit state (facing atan2, combat bullet cos/sin) and the
-    // raycaster ray dirs. Python quantizes its float radians at the boundary,
+    // the SYNCED unit state (facing atan2, combat bullet cos/sin; the render
+    // march's ray dirs until P6c deleted it). Python quantizes its float radians at the boundary,
     // calls these, and dequantizes back (exact n/65536 doubles). Exposed in
     // BOTH the CPU and CUDA builds (plain defs, no #ifdef) so every backend's
     // Python layer computes the identical bits. Accuracy is gated by
@@ -2535,8 +2535,8 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("rad_fine_bits") = -1);          // #78: rad_net's currency (-1: the table's, else 0)
 
     // --- EmissiveTable + RadiationSweep (ray-engine-v2 P1) --------------
-    // The E° table's one owner (PhysicsEngine.emissive; the old Raycaster
-    // keeps a copy of the same bake until P3) and the shadow sweep
+    // The E° table's ONLY owner (PhysicsEngine.emissive; the old Raycaster's
+    // vestigial copy went with the class at P6c) and the sweep
     // (PhysicsEngine.radiation, step 2b of step_tail). Both are ALSO
     // constructible standalone so the gates can drive them on arbitrary
     // grids: tests/test_emissive_table.py, test_radiation_sweep_reference.py
@@ -2974,175 +2974,6 @@ PYBIND11_MODULE(breach_physics, m) {
            "the ordinates' bins by overlap and entering the cell's stream -- and "
            "light_sky int64 (n_ordinates, 3), the virtual ring's per-ordinate "
            "outflow (None: the dark ring).");
-
-    // --- Raycaster ---
-    py::class_<LightSource>(m, "LightSource")
-        .def(py::init<>())
-        .def_readwrite("x", &LightSource::x)
-        .def_readwrite("y", &LightSource::y)
-        .def_readwrite("max_range", &LightSource::max_range)
-        .def_readwrite("ray_count", &LightSource::ray_count)
-        .def_readwrite("angle_center", &LightSource::angle_center)
-        .def_readwrite("angle_spread", &LightSource::angle_spread)
-        .def_readwrite("intensity", &LightSource::intensity)
-        .def_readwrite("heat", &LightSource::heat)
-        .def_readwrite("jitter", &LightSource::jitter)
-        // RGB tint exposed as a 3-tuple (r, g, b). Default white {1,1,1}.
-        .def_property("color",
-            [](const LightSource& s) {
-                return py::make_tuple(s.color[0], s.color[1], s.color[2]);
-            },
-            [](LightSource& s, const std::array<float, 3>& c) {
-                s.color[0] = c[0]; s.color[1] = c[1]; s.color[2] = c[2];
-            });
-
-    py::class_<Raycaster>(m, "Raycaster")
-        .def(py::init<>())
-        .def_readwrite("smoke_absorption", &Raycaster::smoke_absorption)
-        .def_readwrite("smoke_absorb_scale", &Raycaster::smoke_absorb_scale)
-        // Pure-density propagation cull floors (engine/08 §The march): per-channel
-        // survival thresholds. `light_cull` = ε_rgb (render), `heat_cull` = ε_heat
-        // (gameplay/damage, its own dial so heat-shield materials can diverge).
-        .def_readwrite("light_cull", &Raycaster::light_cull)
-        .def_readwrite("heat_cull", &Raycaster::heat_cull)
-        // `rad_scale` is the E° bake's emission calibration (heat counts per
-        // K⁴); the table re-bakes lazily whenever it moves, so setting the
-        // dial is enough. Kept for the bake-identity test
-        // (tests/test_emissive_table.py) even though this Raycaster's own
-        // cast entry points that used to read the baked table are gone
-        // (T6, issue #12) — see bake_emissive_table below.
-        .def_readwrite("rad_scale", &Raycaster::rad_scale)
-        // Canonical game-T -> Kelvin map (temperature_scale_unification design
-        // §2/§3a): kelvin_ambient + k_temp_to_kelvin owned by config
-        // [physics.temperature_scale], assigned here by physics_runner.
-        .def_readwrite("kelvin_ambient", &Raycaster::kelvin_ambient)
-        .def_readwrite("k_temp_to_kelvin", &Raycaster::k_temp_to_kelvin)
-        // T6 (issue #12): `T_emit_gate` (the old cast's warm-emitter gate),
-        // `RADIATION_RANGE_MIN`/`radiation_range` (the emission ray's reach
-        // floor/dial, v7 rule 4) are deleted with `cast_from_fire_plane` and
-        // `build_fire_sources` — the sweep has no emitter gate and no reach
-        // concept (raycaster.h has the full note).
-        .def("bake_emissive_table", &Raycaster::bake_emissive_table,
-             "(Re)bake the black-body E° table from the current rad_scale. "
-             "Idempotent. Two owners share this one bake implementation "
-             "(tests/test_emissive_table.py): this Raycaster and "
-             "PhysicsEngine.emissive.")
-        .def("emissive_table", [](const Raycaster& self) {
-                const int64_t* t = self.emissive_table();
-                return py::array_t<int64_t>(E_TABLE_SIZE, t);
-             },
-             "P-F1a: a COPY of the baked E° table (E_TABLE_SIZE INT64 entries, "
-             "4 game-units per bucket) — the oracle for the bake's tests. The "
-             "table widened from int32 at P-F1a (L2-B3): its old INT32_MAX "
-             "saturation above T_game ~ 1768 was a silent ceiling on the law.")
-        // Per-channel Beer-Lambert absorption (R,G,B) — exposed as a 3-tuple.
-        .def_property("smoke_absorption_rgb",
-            [](const Raycaster& r) {
-                return py::make_tuple(r.smoke_absorption_rgb[0],
-                                      r.smoke_absorption_rgb[1],
-                                      r.smoke_absorption_rgb[2]);
-            },
-            [](Raycaster& r, const std::array<float, 3>& c) {
-                r.smoke_absorption_rgb[0] = c[0];
-                r.smoke_absorption_rgb[1] = c[1];
-                r.smoke_absorption_rgb[2] = c[2];
-            })
-        // Per-channel additive scatter/glow albedo (R,G,B) — 3-tuple.
-        .def_property("smoke_scatter_albedo",
-            [](const Raycaster& r) {
-                return py::make_tuple(r.smoke_scatter_albedo[0],
-                                      r.smoke_scatter_albedo[1],
-                                      r.smoke_scatter_albedo[2]);
-            },
-            [](Raycaster& r, const std::array<float, 3>& c) {
-                r.smoke_scatter_albedo[0] = c[0];
-                r.smoke_scatter_albedo[1] = c[1];
-                r.smoke_scatter_albedo[2] = c[2];
-            })
-        // (P-R1, 2026-07-31: update_from_fire + coarse_cluster deleted here —
-        // no production caller; see raycaster.h's tombstone comment and
-        // docs/radiation_raycaster_extinction_ruling_2026-07-31.md A4.2.)
-        .def("cast_source_directional",
-             [](const Raycaster& self,
-                const LightSource& src,
-                py::array_t<float> light_rgb,
-                py::array_t<float> light_dx,
-                py::array_t<float> light_dy,
-                py::array_t<float> gas,
-                py::array_t<float> gas_absorption,
-                py::array_t<float> gas_scatter,
-                py::array_t<float> light_atten,
-                py::object heat,
-                py::object smoke_glow,
-                py::object heat_atten) {
-            auto [lrgb, h, w]  = get_3d(light_rgb);
-            auto [ldx, h2, w2] = get_2d(light_dx);
-            auto [ldy, h3, w3] = get_2d(light_dy);
-            // Multi-gas density fields (engine/05 §6.2): contiguous (n_gases,h,w).
-            // Each gas[g] is a (h,w) plane; the march sums them density-weighted
-            // with the per-gas absorption/scatter table rows below.
-            auto gv = gas.unchecked<3>();
-            const float* gas_field = gv.data(0, 0, 0);
-            const int n_gases = static_cast<int>(gv.shape(0));
-            // Per-gas per-channel tables, shape (n_gases, 3) contiguous.
-            auto ga = gas_absorption.unchecked<2>();
-            const float* gabs = ga.data(0, 0);
-            auto gs = gas_scatter.unchecked<2>();
-            const float* gsca = gs.data(0, 0);
-            // Per-tile static material attenuation, shape (h, w, 3) — same
-            // interleaved layout as light_rgb. Replaces the binary is_wall:
-            // occlusion is now per-channel (opaque [1,1,1] == old wall stop).
-            auto a = light_atten.unchecked<3>();
-            const float* atten = a.data(0, 0, 0);
-            // Slice-4 optional outputs. `heat` is Q16.16 int32 (h, w); the
-            // sim/headless owns it. `smoke_glow` is f32 RGB (h, w, 3) — the
-            // render-only god-ray buffer. Both default to None (skip the
-            // deposit) so render-only callers can pass only what they need.
-            // Hold the arrays alive for the duration of the cast.
-            int32_t* heat_ptr = nullptr;
-            py::array_t<int32_t> heat_arr;
-            if (!heat.is_none()) {
-                heat_arr = heat.cast<py::array_t<int32_t>>();
-                auto ha = heat_arr.mutable_unchecked<2>();
-                heat_ptr = ha.mutable_data(0, 0);
-            }
-            float* glow_ptr = nullptr;
-            py::array_t<float> glow_arr;
-            if (!smoke_glow.is_none()) {
-                glow_arr = smoke_glow.cast<py::array_t<float>>();
-                auto ga = glow_arr.mutable_unchecked<3>();
-                glow_ptr = ga.mutable_data(0, 0, 0);
-            }
-            // Per-tile heat attenuation (h, w) f32 — the heat analogue of
-            // light_atten (engine/06 §1). Optional: None -> nullptr -> heat is
-            // NOT attenuated (heat survival stays 1.0 the whole march, the
-            // pre-S6 behaviour). The const pointer is held alive by heat_atten_arr.
-            const float* hatten = nullptr;
-            py::array_t<float> heat_atten_arr;
-            if (!heat_atten.is_none()) {
-                heat_atten_arr = heat_atten.cast<py::array_t<float>>();
-                auto haa = heat_atten_arr.unchecked<2>();
-                hatten = haa.data(0, 0);
-            }
-            self.cast_source_directional(src, lrgb, ldx, ldy,
-                                         heat_ptr, glow_ptr,
-                                         gas_field, gabs, gsca, n_gases,
-                                         atten, hatten, h, w);
-        }, py::arg("source"), py::arg("light_rgb"),
-           py::arg("light_dx"), py::arg("light_dy"),
-           py::arg("gas"), py::arg("gas_absorption"), py::arg("gas_scatter"),
-           py::arg("light_atten"),
-           py::arg("heat") = py::none(),
-           py::arg("smoke_glow") = py::none(),
-           py::arg("heat_atten") = py::none())
-        // T6 (issue #12): `cast_from_fire_plane` (the whole-fire-plane cast
-        // this binding wrapped) is deleted; see raycaster.h for the full note.
-        .def_static("normalize_directions",
-             [](py::array_t<float> light_dx, py::array_t<float> light_dy) {
-            auto [ldx, h, w]   = get_2d(light_dx);
-            auto [ldy, h2, w2] = get_2d(light_dy);
-            Raycaster::normalize_directions(ldx, ldy, h, w);
-        }, py::arg("light_dx"), py::arg("light_dy"));
 
     // --- EOSSolver (EOS refactor P3 — the compressible Kwatra solver) --------
     // Tunables bound from [physics.eos] config (physics_runner.py); step() is
@@ -3829,7 +3660,7 @@ PYBIND11_MODULE(breach_physics, m) {
             auto [vx, h2, w2]  = get_2d(flow_vx);
             auto [vy, h3, w3]  = get_2d(flow_vy);
             auto [sol, h4, w4] = get_2d_const(solid);
-            // Nullable fields (cast_source_directional precedent): None ->
+            // Nullable fields: None ->
             // nullptr, else cast to an array kept alive in this scope.
             // floor_height None -> flat zero (Q16.16 int32); atmosphere None
             // -> no head term (and with k_p == 0 it is never read). EOS P3:
@@ -3930,9 +3761,6 @@ PYBIND11_MODULE(breach_physics, m) {
             py::return_value_policy::reference_internal)
         .def_property_readonly("temperature",
             [](PhysicsEngine& e) -> TemperatureSolver& { return e.temperature; },
-            py::return_value_policy::reference_internal)
-        .def_property_readonly("raycaster",
-            [](PhysicsEngine& e) -> Raycaster& { return e.raycaster; },
             py::return_value_policy::reference_internal)
         .def_property_readonly("water",
             [](PhysicsEngine& e) -> WaterSolver& { return e.water; },
@@ -4691,26 +4519,22 @@ PYBIND11_MODULE(breach_physics, m) {
         // Moves the FIELD-REBUILD half of GameMap.stamp_units into C++ (the unit
         // iteration / occupied_tiles() / alive-filter / bounds-check / defaults
         // stay Python, flattened into per-row arrays). Static (h,w) grids
-        // permeability/wave_absorb + (h,w,3) light_atten are read; the dyn_*
-        // targets + the (h,w) bool obstacles are written IN-PLACE. The flat stamp
-        // arrays (ys/xs int32; perm/wabsorb/atten_{r,g,b} float32) carry one row
-        // per stamped footprint tile. PURE-STRUCTURE, 0-ULP (copies + compare +
+        // permeability/wave_absorb are read; the dyn_* targets + the (h,w) bool
+        // obstacles are written IN-PLACE. The flat stamp arrays (ys/xs int32;
+        // perm/wabsorb float32) carry one row per stamped footprint tile. (The
+        // float light plane and its atten_{r,g,b} rows went with the render
+        // march at P6c; the light stamp is the integer twin below.) PURE-STRUCTURE, 0-ULP (copies + compare +
         // min/max only). The atmosphere-refill bit stays Python (Q1, locked).
         .def("stamp_units", [](const PhysicsEngine& self,
                                py::array_t<float> permeability,
                                py::array_t<float> wave_absorb,
-                               py::array_t<float> light_atten,
                                py::array_t<float> dyn_permeability,
                                py::array_t<float> dyn_wave_absorb,
-                               py::array_t<float> dyn_light_atten,
                                py::array_t<bool>  obstacles,
                                py::array_t<int32_t> ys,
                                py::array_t<int32_t> xs,
                                py::array_t<float> perm,
                                py::array_t<float> wabsorb,
-                               py::array_t<float> atten_r,
-                               py::array_t<float> atten_g,
-                               py::array_t<float> atten_b,
                                // Ray-engine-v2 P1: the Q16 heat-extinction
                                // plane (static in, dynamic out) + per-row value.
                                py::array_t<int32_t, py::array::c_style> heat_atten_q,
@@ -4730,12 +4554,6 @@ PYBIND11_MODULE(breach_physics, m) {
             auto [obs, h5, w5] = get_2d(obstacles);
             auto [haq, h6, w6] = get_2d_const(heat_atten_q);
             auto [dhq, h7, w7] = get_2d(dyn_heat_atten_q);
-            // light_atten / dyn_light_atten are (h, w, 3) f32 — pass the base
-            // pointer; the loop strides the trailing channel axis internally.
-            auto la_v  = light_atten.unchecked<3>();
-            const float* la = la_v.data(0, 0, 0);
-            auto dla_v = dyn_light_atten.mutable_unchecked<3>();
-            float* dla = dla_v.mutable_data(0, 0, 0);
             // Flat per-row stamp arrays (1D). Empty arrays (no living units) are
             // valid — n_stamp == 0 -> the stamp loop is a no-op (reset only).
             auto ys_v = ys.unchecked<1>();
@@ -4745,14 +4563,8 @@ PYBIND11_MODULE(breach_physics, m) {
             const int32_t* xs_p = (n_stamp > 0) ? xs_v.data(0) : nullptr;
             auto perm_v = perm.unchecked<1>();
             auto wabs_v = wabsorb.unchecked<1>();
-            auto ar_v   = atten_r.unchecked<1>();
-            auto ag_v   = atten_g.unchecked<1>();
-            auto ab_v   = atten_b.unchecked<1>();
             const float* perm_p = (n_stamp > 0) ? perm_v.data(0) : nullptr;
             const float* wabs_p = (n_stamp > 0) ? wabs_v.data(0) : nullptr;
-            const float* ar_p   = (n_stamp > 0) ? ar_v.data(0) : nullptr;
-            const float* ag_p   = (n_stamp > 0) ? ag_v.data(0) : nullptr;
-            const float* ab_p   = (n_stamp > 0) ? ab_v.data(0) : nullptr;
             auto hq_v = heat_q.unchecked<1>();
             const int32_t* hq_p = (n_stamp > 0) ? hq_v.data(0) : nullptr;
             // P6a: the integer light twin -- shapes checked, pointers passed.
@@ -4767,17 +4579,16 @@ PYBIND11_MODULE(breach_physics, m) {
                     "be (h, w, 3) and light_q_rows (n_stamp, 3), all int32 (P6a)");
             }
             const int32_t* lq_p = (n_stamp > 0) ? light_q_rows.data() : nullptr;
-            self.stamp_units(pm, wa, la, dpm, dwa, dla, obs,
-                             ys_p, xs_p, perm_p, wabs_p, ar_p, ag_p, ab_p,
+            self.stamp_units(pm, wa, dpm, dwa, obs,
+                             ys_p, xs_p, perm_p, wabs_p,
                              haq, dhq, hq_p,
                              n_stamp, h, w,
                              light_atten_q.data(), dyn_light_atten_q.mutable_data(),
                              lq_p);
-        }, py::arg("permeability"), py::arg("wave_absorb"), py::arg("light_atten"),
+        }, py::arg("permeability"), py::arg("wave_absorb"),
            py::arg("dyn_permeability"), py::arg("dyn_wave_absorb"),
-           py::arg("dyn_light_atten"), py::arg("obstacles"),
+           py::arg("obstacles"),
            py::arg("ys"), py::arg("xs"), py::arg("perm"), py::arg("wabsorb"),
-           py::arg("atten_r"), py::arg("atten_g"), py::arg("atten_b"),
            py::arg("heat_atten_q").noconvert(),
            py::arg("dyn_heat_atten_q").noconvert(),
            py::arg("heat_q").noconvert(),

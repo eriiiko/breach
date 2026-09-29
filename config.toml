@@ -585,9 +585,8 @@ vacuum_ambient_K = 295.0
 # one, so the live game and every golden stayed bit-unchanged while the sweep
 # ran on real physics in the shadow). T6 (issue #12) deletes the old cast and
 # its `rad_scale` key with it — this is the only emission-calibration key
-# now, and PhysicsEngine.emissive is its only owner (tests/test_emissive_
-# table.py still bakes this Raycaster's OWN copy from the same key, as the
-# shared-bake-implementation identity's other side).
+# now, and PhysicsEngine.emissive is its only owner (the old Raycaster's
+# vestigial second copy of the bake went with the class at ray-engine-v2 P6c).
 #
 #   rad_scale_derived = sigma * A_rad * dt / J_per_count            [counts/K^4]
 #
@@ -677,11 +676,14 @@ k_amp = 0.5       # ripple amplitude clamp |ripple| <= k_amp*depth — waves no 
 k_splash = 2.0    # wave_p -> ripple_v splash gain (W6a) — PURE FEEL DIAL, awaiting Erik's eyeball with W6b
 
 [smoke]
-# Ray-engine smoke optics (ch.05 §6.1 §6 — decoupled per-channel absorption vs
-# glow). Two INDEPENDENT budgets, NOT constrained to absorb + glow = 1:
-#
-#   transmission:  tau_c = absorption[c] * density * absorb_scale; trans_c = exp(-tau_c)
-#   scatter/glow:  smoke_glow[c] += local_light[c] * scatter_albedo[c] * density   (additive)
+# Smoke optics (ch.05 §6.1 §6 — decoupled per-channel absorption vs glow). Two
+# INDEPENDENT budgets, NOT constrained to absorb + glow = 1. ONE owner: these
+# dials are folded ONCE into the radiation sweep's light columns at the gases
+# door (GasTable.light_absorb_q16 = absorption x smoke_absorption x
+# smoke_absorb_scale; light_glow_q16 = scatter_albedo x smoke_scatter_albedo,
+# ray-engine-v2 P6a), and the gas-medium render pass reads smoke_absorb_scale
+# as its base scale (renderer/gas_medium.py). (They were the old render
+# march's Beer-Lambert exp and god-ray glow until P6c deleted the march.)
 #
 # smoke_absorb_scale is the global "beam reach" dial. Dial it DOWN for the
 # long-beam "flashlight travels far through smoke and still glows" look Erik
@@ -708,9 +710,9 @@ smoke_absorb_scale = 1.4                 # beam-reach dial: LOW = long beam (fla
 # diffusion, decay, flags) + a name->index map.
 #
 # Columns (research-approved values, §6.2):
-#   absorption     [R,G,B] per-unit-density Beer-Lambert absorption (subtractive
-#                  tint of transmitted light). M2 sums these density-weighted
-#                  across coexisting gases in the raycaster; M1 only loads them.
+#   absorption     [R,G,B] per-unit-density absorption (subtractive tint of
+#                  transmitted light), summed density-weighted across
+#                  coexisting gases by the sweep's light channels (P6a).
 #   scatter_albedo [R,G,B] additive god-ray/glow gain (decoupled from absorption,
 #                  NOT constrained to absorb+glow=1).
 #   diffusion      per-gas base diffusion coefficient (the per-gas d_smoke the
@@ -1401,9 +1403,9 @@ height_floor = 0.3
 
 # =============================================================================
 # Render-layer beauty config (Fire & Heat Beauty arc, B1). ALL keys here are
-# RENDER-ONLY and determinism-EXEMPT: they drive renderer/blackbody.py +
-# renderer/fire_lights.py, which read gmap.temperature and write only render
-# structures. NOTHING here touches the sim, the digest, or a golden. Every
+# RENDER-ONLY and determinism-EXEMPT: they drive renderer/blackbody.py (and,
+# until ray-engine-v2 P6c deleted it, renderer/fire_lights.py), which read
+# gmap.temperature and write only render structures. NOTHING here touches the sim, the digest, or a golden. Every
 # value is a tune-by-eye dial (Erik), never a gated constant.
 # =============================================================================
 
@@ -1446,21 +1448,10 @@ kelvin_ref = 3000.0        # exposure reference temperature (Macklin)
 intensity_exponent = 4.0   # Stefan-Boltzmann flavour (T⁴)
 intensity_max = 8.0        # HDR headroom pre-tonemap (16F pipeline + ACES; NO bloom)
 
-# Fire light sources (renderer/fire_lights.py; design §3). Tier 2 of the fire
-# glow: the brightest-K hot tiles become omni ray-traced light sources so fire
-# lights rooms, walls, and marines (the marine shader samples the same light
-# field). Candidates (T_game >= t_light_min) -> 3x3 non-max suppression ->
-# brightest max_lights by temperature. RENDER-ONLY: these NEVER write the synced
-# heat channel (heat is cast separately in the sim). Cost = sum over sources of
-# ceil(2π·range) rays, so max_lights (not range) is the budget lever — range is
-# LONG on purpose (geometry caps it; big-room illumination is the point).
-[render.fire_lights]
-enabled = true             # master on/off for fire lights
-t_light_min = 250.0        # game-ΔT candidate threshold
-nms_window = 3             # non-max-suppression window (3 or 5; widen if oversubscribed)
-max_lights = 16            # brightest-K cap (the budget lever)
-light_range = 18.0         # omni reach in tiles (LONG on purpose — Erik ruling)
-light_gain = 1.0           # multiplies the black-body intensity into light weight
+# (The [render.fire_lights] section -- B1's brightest-K fire lights for the old
+# render march -- is DELETED at ray-engine-v2 P6c with renderer/fire_lights.py:
+# every burning cell lights the world through the sweep's own thermal emission,
+# a_c * L°[T], design v3 §7.3.)
 
 # --- Lighting pass (master exposure) ---------------------------------------
 [render.lighting]
@@ -1471,12 +1462,10 @@ master_gain = 2.0          # ONE master display-exposure dial on the light field
                            # 2026-08-25, "just double it"); reconcile with the
                            # demo's regime in the pre-tuning instrument pass.
 # ray-engine-v2 P6b (docs/ray_engine_v2_p6b_lit_world_brief_2026-09-25.md): the
-# NEW light is the radiation sweep's light channels, read through the one
-# accessor (src/simulation/light_field.py). All three dials are RENDER dials,
-# applied at the render read, never written back; the integer field is not
-# tuned (brief decision 2).
-new_light = true           # start on the NEW light (F11 flips to the OLD march
-                           # for the A/B; the old path is deleted at P6c)
+# light is the radiation sweep's light channels, read through the one accessor
+# (src/simulation/light_field.py). Both dials below are RENDER dials, applied
+# at the render read, never written back; the integer field is not tuned (brief
+# decision 2). (P6b's `new_light` A/B switch is gone with the old march, P6c.)
 sweep_gain = 1.0           # light units -> the old march's field scale. MEASURED
                            # 1:1 against the old path in a clear room (old/new,
                            # summed over r = 2..12 tiles): a 1.0 lamp 0.996, the

@@ -1,13 +1,13 @@
 """The emissive table E°(T), its owner and its inverse (ray-engine-v2 P1,
 design v3 §2.6).
 
-The bake body moved from raycaster.cpp into the strict TU emissive_table.cpp
-and now has TWO callers — Raycaster::bake_emissive_table (the old march, until
-P3) and PhysicsEngine.emissive (the sweep's and the clamp's owner). One
-implementation, two owners: these tests assert the two tables are identical
-entry for entry and equal to the integer reference's own bake, and that the
-new inverse E°⁻¹ is the reference's e_inv_q -- and, since P5d, that the
-clamp's ceiling e_ceiling_q is the reference's too.
+The bake body moved from raycaster.cpp into the strict TU emissive_table.cpp.
+PhysicsEngine.emissive (the sweep's and the clamp's table) is its ONLY owner
+since ray-engine-v2 P6c deleted the old Raycaster and its vestigial second copy
+(until then these tests also held the two owners' tables identical). These
+tests assert the table equals the integer reference's own bake, that the
+inverse E°⁻¹ is the reference's e_inv_q -- and, since P5d, that the clamp's
+ceiling e_ceiling_q is the reference's too.
 
 Run:
     C:/Users/steen/anaconda3/python.exe -m pytest tests/test_emissive_table.py -q
@@ -42,8 +42,8 @@ def _dials():
     T6 (issue #12): rebased on `[physics.radiation] rad_scale_derived` --
     the sweep's emission calibration is now the only one there is.
     `[physics.fire] rad_scale` (the old cast's FITTED key) is deleted with
-    the cast; this test's own property (the E° tables are identical to each
-    other and to the reference bake) survives unchanged at the new key.
+    the cast; the test's own property (the E° table equals the reference
+    bake) survives unchanged at the new key.
     """
     ts = temperature_scale.load(CFG)
     return (float(getattr(CFG.physics.radiation, "rad_scale_derived", 1.0e-5)),
@@ -53,10 +53,6 @@ def _dials():
 def _engine_with_dials():
     eng = bp.PhysicsEngine()
     scale, amb, slope = _dials()
-    eng.raycaster.rad_scale = scale
-    eng.raycaster.kelvin_ambient = amb
-    eng.raycaster.k_temp_to_kelvin = slope
-    eng.raycaster.bake_emissive_table()
     eng.emissive.rad_scale = scale
     eng.emissive.kelvin_ambient = amb
     eng.emissive.k_temp_to_kelvin = slope
@@ -64,9 +60,13 @@ def _engine_with_dials():
     return eng
 
 
-def test_raycaster_and_engine_tables_are_identical_and_equal_the_reference_bake():
-    """PROPERTY: Raycaster's E° table == PhysicsEngine.emissive's table, entry
-    for entry, == sweep_ref_q.bake_e_table() at the config dials.
+def test_the_engine_table_equals_the_reference_bake():
+    """PROPERTY: PhysicsEngine.emissive's E° table (the ONE owner) ==
+    sweep_ref_q.bake_e_table() at the config dials, entry for entry.
+
+    P6c: until the old Raycaster was deleted this test also held its vestigial
+    second copy identical to the engine's ("one bake, two owners"); with one
+    owner left, the reference equality is the whole property.
 
     T6 (issue #12): `ref` now bakes at `_dials()`'s OWN scale explicitly,
     rather than at `R.bake_e_table()`'s no-arg default (`R.RAD_SCALE`, a
@@ -74,28 +74,25 @@ def test_raycaster_and_engine_tables_are_identical_and_equal_the_reference_bake(
     §6 -- which only equalled `_dials()`'s old `[physics.fire] rad_scale`
     read by historical coincidence: both were 5.1427e-5). Rebasing `_dials()`
     onto `[physics.radiation] rad_scale_derived` broke that coincidence; this
-    keeps the actual property (two owners agree with EACH OTHER and with the
-    reference, at whatever scale config configures) rather than pinning to
-    the reference's unrelated default.
+    keeps the actual property (the owner agrees with the reference, at
+    whatever scale config configures) rather than pinning to the reference's
+    unrelated default.
 
-    BREAKS IF: a second bake appears (one owner drifts), the bake stops being
-    the exact int64 K⁴ chain with one boundary multiply, or config.toml's dials
-    move under the reference (the reference test guards that separately).
+    BREAKS IF: the bake stops being the exact int64 K⁴ chain with one boundary
+    multiply, bakes in another currency, or config.toml's dials move under the
+    reference (the reference test guards that separately).
     """
     ok, detail = R.config_dials_match()
     assert ok, f"config.toml dials drifted under the reference: {detail}"
     eng = _engine_with_dials()
     scale, _amb, _slope = _dials()
-    ray = np.asarray(eng.raycaster.emissive_table(), dtype=np.int64)
     own = np.asarray(eng.emissive.table(), dtype=np.int64)
     # #78: the engine's table is baked in its FINE currency (E_FINE_BITS, the
-    # reference's FINE_BITS); the vestigial Raycaster copy follows the same bake,
-    # so the identity is at equal dials AND equal currency.
+    # reference's FINE_BITS), so the identity is at equal dials AND currency.
     assert int(eng.emissive.fine_bits) == bp.E_FINE_BITS == R.FINE_BITS
     ref = np.asarray(R.bake_e_table(rad_scale=scale, fine_bits=int(eng.emissive.fine_bits)),
                      dtype=np.int64)
-    assert ray.shape == own.shape == ref.shape == (bp.E_TABLE_SIZE,)
-    assert np.array_equal(ray, own), "Raycaster and engine tables differ"
+    assert own.shape == ref.shape == (bp.E_TABLE_SIZE,)
     assert np.array_equal(own, ref), "engine table differs from the reference bake"
     # non-vacuity: the table is monotone and spans 8 orders of magnitude
     assert np.all(np.diff(own) > 0) and own[0] > 0 and own[-1] > own[0] * 10 ** 6
@@ -110,15 +107,15 @@ def test_raycaster_and_engine_tables_are_identical_and_equal_the_reference_bake(
 # longer exists to protect: the old cast and its config key are deleted, so
 # PhysicsRunner now binds ONE key to both owners and the "each owner its own
 # key, and they must differ" assertions this test made would themselves be
-# wrong going forward. The surviving property -- one bake implementation,
-# two owners producing IDENTICAL tables -- is
-# test_raycaster_and_engine_tables_are_identical_and_equal_the_reference_bake
-# above, now exercised at the one remaining key via the rebased _dials().
+# wrong going forward. The surviving property -- one bake implementation
+# producing the reference's table -- is test_the_engine_table_equals_the_
+# reference_bake above (one owner since P6c), exercised at the one remaining
+# key via the rebased _dials().
 
 
 def test_lazy_rebake_on_a_dial_change():
-    """PROPERTY: table() re-bakes when rad_scale moves (the Raycaster contract,
-    kept), and the re-baked table equals the reference at the new scale -- and
+    """PROPERTY: table() re-bakes when rad_scale moves (the lazy re-bake
+    contract), and the re-baked table equals the reference at the new scale -- and
     (#78) when the CURRENCY moves: a table whose fine_bits changed is re-baked in
     the new currency, never served from the old cache.
 

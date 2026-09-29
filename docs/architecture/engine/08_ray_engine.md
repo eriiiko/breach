@@ -1,5 +1,20 @@
 # Ray Engine
 
+> **HISTORICAL — 2026-09-29, ray-engine-v2 P6c.** The ray engine this chapter
+> describes is DELETED: `cpp/src/raycaster.{h,cpp}` (the DDA march, the C++
+> `Raycaster` and `LightSource`), its bindings and its CMake entries went at
+> P6c, with `renderer/fire_lights.py`, the per-frame light sources and the
+> render march behind P6b's F11 A/B; the CUDA march had gone at P4 and the
+> heat cast at T6. Radiative heat AND light are one exact-integer directional
+> sweep now (`cpp/src/radiation_sweep.*` + its CUDA twin), read through
+> `src/simulation/light_field.py`. The design of record is
+> `docs/ray_engine_v2_design_v3_2026-09-15.md` (§4.4 is the member-by-member
+> fate of everything below); the deletion is
+> `docs/ray_engine_v2_p6c_old_light_deletion_brief_2026-09-29.md`. The code
+> lives on in git history — the last commit carrying `raycaster.{h,cpp}` is
+> `7f47ffb`. This chapter stays the description of record for the TECHNIQUE
+> (Erik may want ray marching back) until the deferred canon fold rewrites it.
+
 **Depends on:** [Grid & Coordinates](01_grid_and_coordinates.md), [World State & Ownership](02_state_and_ownership.md), [Material System](03_material_system.md)
 
 One DDA ray-march primitive serves every directional energy query in Breach — light,

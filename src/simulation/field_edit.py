@@ -61,7 +61,8 @@ from simulation import atmosphere_fixed  # S2c: atmosphere Q16.16 quantize helpe
 from simulation import fire_fixed      # S3a: fire Q16.16 quantize helpers
 
 # Q16.16 fixed-point scale for the `heat` field — MUST match the C++
-# raycaster.h HEAT_SCALE (and materials.TEMP_SCALE). One unit of heat energy ==
+# fixed_point.h HEAT_SCALE (the heat-domain kit; raycaster.h until P6c) and
+# materials.TEMP_SCALE. One unit of heat energy ==
 # HEAT_SCALE raw int32 counts. Mirrored here (not imported from C++) so the
 # Python write path is self-contained and testable headless.
 HEAT_SCALE = 65536
@@ -78,9 +79,9 @@ T_MAX_PHYS = 16000.0
 
 
 # ---------------------------------------------------------------------------
-# Q16.16 helpers — Python mirrors of cpp/src/raycaster.h heat_quantize /
-# heat_saturating_add. Same semantics: round-to-nearest, saturate at INT32_MAX,
-# never wrap, never go negative on a positive accumulator. The `heat` field is
+# Q16.16 helpers — Python mirrors of cpp/src/fixed_point.h heat_quantize /
+# heat_saturating_add (the heat-domain kit, moved from raycaster.h at P6c).
+# Same semantics: round-to-nearest, saturate at INT32_MAX, never wrap, never go negative on a positive accumulator. The `heat` field is
 # written ONLY through these — never a float `+=`.
 # ---------------------------------------------------------------------------
 def heat_quantize(energy: float) -> int:

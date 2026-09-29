@@ -14,9 +14,12 @@ All headless, no ``breach_physics``. Pins the design-gate hard requirements:
   - ``monotonic_total_tick``: advances by exactly 1 through every round
     boundary (critique M1 — ``sim.tick`` rewinds, ``turn_number``
     increments, the combined tick never snaps back);
-  - ``light_source_params``: heat == 0.0 and jitter == 0.0 for EVERY kind,
-    no ``falloff`` key (not in the Python bindings), only bound
-    LightSource attribute names (the setattr-loop contract);
+  - ``light_spec``: a static lamp is omni and carries the entry's numbers,
+    a beacon's beam is ``beam_deg`` centred on ``beacon_angle`` reduced into
+    [0, 2*pi); specs rebuilt at a fixed tick are identical (ray-engine-v2 P6c:
+    the old row's ``light_source_params`` and its heat/jitter/setattr
+    contract went with the render march -- the cone-emitter row has no field
+    for either, and the loader still rejects the keys);
   - lamp port: 5 static lamps in both vessels + 3 in playground, positions
     verbatim from the deleted main.py block, colors within +/-1/255 of the
     old (1.0, 0.1, 0.05) floats (exactness is impossible under the 0-255
@@ -47,20 +50,12 @@ sys.path.insert(0, str(ROOT / "tools"))
 from config import CFG  # noqa: E402
 from level_loader import LIGHT_KINDS, LightEntry, load  # noqa: E402
 from level_lights import (STATIC_SPREAD, beacon_angle,  # noqa: E402
-                          light_source_params, monotonic_total_tick,
+                          light_spec, monotonic_total_tick,
                           partition_lights)
 from map_editor import (LIGHT_COLOR_PRESETS, LIGHT_PICK_RADIUS,  # noqa: E402
                         color_255, format_light_lines, light_at,
                         light_color_name, next_light_color, write_lights,
                         write_spawns)
-
-# The Python-bound LightSource attribute surface (cpp/src/bindings.cpp:
-# 847-865). light_source_params dicts are applied with a setattr loop, so
-# any key OUTSIDE this set would raise AttributeError on the pybind class.
-BOUND_LIGHTSOURCE_ATTRS = frozenset({
-    "x", "y", "max_range", "ray_count", "angle_center", "angle_spread",
-    "intensity", "heat", "jitter", "color",
-})
 
 # The five emergency lamps as main.py hardcoded them (positions verbatim).
 LAMP_POSITIONS = [(25.0, 10.0), (25.0, 30.0), (25.0, 55.0),
@@ -243,7 +238,8 @@ def test_beacon_no_round_boundary_snap():
 
 
 # ---------------------------------------------------------------------------
-# light_source_params — structural zeroes, cone math, setattr surface
+# light_spec — the beam of each kind (the old row's light_source_params and its
+# heat/jitter/setattr contract went with the render march, ray-engine-v2 P6c)
 # ---------------------------------------------------------------------------
 
 def _entry(kind: str) -> LightEntry:
@@ -252,40 +248,44 @@ def _entry(kind: str) -> LightEntry:
                       phase=0.25)
 
 
-def test_params_pin_heat_and_jitter_zero_for_every_kind():
-    for kind in LIGHT_KINDS:
-        p = light_source_params(_entry(kind), 17, 1.0 / 24.0)
-        assert p["heat"] == 0.0, kind      # the ONE synced ray output
-        assert p["jitter"] == 0.0, kind    # no C++ RNG pull
-        assert "falloff" not in p          # not in the Python bindings (M2)
-        # Every key must be a bound LightSource attribute (setattr loop).
-        assert set(p) <= BOUND_LIGHTSOURCE_ATTRS, kind
+def test_spec_static_uniform_and_beacon_cone():
+    """PROPERTY (P4 beam contract, carried by the spec since P6c): a static
+    lamp's spec is omni (centre 0, spread 2*pi) and carries the entry's
+    position, intensity and colour at any tick; a beacon's spread is its
+    beam_deg and its centre the beacon angle, always reduced into [0, 2*pi).
 
-
-def test_params_static_uniform_and_beacon_cone():
+    BREAKS IF: light_spec drops a field, stops reducing the beacon angle, or
+    gives a static lamp a beam.
+    """
     dt = 1.0 / 24.0
-    ps = light_source_params(_entry("static"), 999, dt)
-    assert ps["angle_spread"] == STATIC_SPREAD == math.tau
-    assert ps["angle_center"] == 0.0
-    assert (ps["x"], ps["y"]) == (3.0, 4.0)
-    assert ps["max_range"] == 16.0 and ps["intensity"] == 1.5
-    assert ps["color"] == (1.0, 0.5, 0.25)
-    pb = light_source_params(_entry("beacon"), 0, dt)
-    assert pb["angle_spread"] == pytest.approx(math.radians(30.0))
-    assert pb["angle_center"] == pytest.approx(math.pi / 2.0)  # phase 0.25
+    ps = light_spec(_entry("static"), 999, dt)
+    assert ps.angle_spread == STATIC_SPREAD == math.tau
+    assert ps.angle_center == 0.0
+    assert (ps.x, ps.y) == (3.0, 4.0)
+    assert ps.intensity == 1.5
+    assert ps.color == (1.0, 0.5, 0.25)
+    assert (ps.kind, ps.source) == ("lamp", "sim")
+    pb = light_spec(_entry("beacon"), 0, dt)
+    assert pb.angle_spread == pytest.approx(math.radians(30.0))
+    assert pb.angle_center == pytest.approx(math.pi / 2.0)  # phase 0.25
+    assert (pb.kind, pb.source) == ("beacon", "sim")
     # angle_center is always reduced into [0, 2*pi).
-    pb2 = light_source_params(_entry("beacon"), 100_000, dt)
-    assert 0.0 <= pb2["angle_center"] < math.tau
+    pb2 = light_spec(_entry("beacon"), 100_000, dt)
+    assert 0.0 <= pb2.angle_center < math.tau
 
 
-def test_params_identical_when_rebuilt_at_fixed_tick():
-    """Integration-shaped freeze test (design §2.2): building the params
-    twice with the PRODUCTION arguments — sim_time_per_tick from config,
-    the monotonic tick from turn/tick — yields identical dicts."""
+def test_spec_identical_when_rebuilt_at_fixed_tick():
+    """Integration-shaped freeze test (design §2.2): building the spec twice
+    with the PRODUCTION arguments — sim_time_per_tick from config, the
+    monotonic tick from turn/tick — yields identical specs (a frozen sim is a
+    frozen beacon).
+
+    BREAKS IF: the spec reads the wall clock or any per-call state.
+    """
     sim_time_per_tick = 1.0 / float(CFG.clock.ticks_per_second)
     total_tick = monotonic_total_tick(3, int(CFG.clock.ticks_per_round), 17)
-    p1 = light_source_params(_entry("beacon"), total_tick, sim_time_per_tick)
-    p2 = light_source_params(_entry("beacon"), total_tick, sim_time_per_tick)
+    p1 = light_spec(_entry("beacon"), total_tick, sim_time_per_tick)
+    p2 = light_spec(_entry("beacon"), total_tick, sim_time_per_tick)
     assert p1 == p2
 
 

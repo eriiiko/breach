@@ -11,7 +11,7 @@ Owns the cached arrays the physics systems read and write:
     material, wall_hp, fuel_recip, solid, thermal_solid,
     is_vacuum, flammable,
     atmosphere, wave_p, wave_v, wave_source, wind_x, wind_y,
-    smoke, fire, obstacles, light_map, heat, smoke_glow
+    smoke, fire, obstacles, heat
 
 Plus ``self.level`` (the :class:`level_loader.LevelData` instance) and the
 methods needed by combat / pathfinding / physics (``stamp_units``,
@@ -116,8 +116,9 @@ class GameMap:
     # once-per-tick batched D2H (:meth:`to_host`) copies back to the numpy mirror
     # (combat/recorder/render read the mirror unchanged — the Q4 baseline). The
     # `_RESIDENT_MASKS` are the read-only inputs the resident kernels consume;
-    # they + the four §5b unit-stamp masks (`dyn_permeability`/`dyn_wave_absorb`/
-    # `dyn_light_atten` + `obstacles`) ride the per-tick always-upload set
+    # they + the §5b unit-stamp masks (`dyn_permeability`/`dyn_wave_absorb` +
+    # `obstacles`; the float `dyn_light_atten` went with the render march at
+    # P6c) ride the per-tick always-upload set
     # (:meth:`from_host`). Rung 2 must NOT narrow these masks to structural-edit
     # deltas — body-shielding (a unit damping a shockwave for the unit behind it)
     # depends on them being re-uploaded every tick (units move every tick).
@@ -154,14 +155,14 @@ class GameMap:
     _RESIDENT_MASKS = (
         "solid", "is_vacuum", "is_ambient", "obstacles", "flammable",
         "floor_height", "heat_inv_shift", "face_shift",
-        "dyn_permeability", "dyn_wave_absorb", "conductivity", "dyn_light_atten",
+        "dyn_permeability", "dyn_wave_absorb", "conductivity",
         # Ray-engine-v2 P1 (design v3 §3): the two Q16 EXTINCTION planes the
         # radiation sweep reads. `heat_atten_q` is a static-projection mask
         # (the `heat_inv_shift` precedent: REASSIGNED by `_update_caches`,
         # patched IN PLACE by `on_tile_changed`, one upload at
         # `enable_residency`); `dyn_heat_atten_q` is the fourth `stamp_units`
-        # output and rides the per-tick always-upload set beside
-        # `dyn_light_atten`. No device kernel reads either until P4.
+        # output and rides the per-tick always-upload set beside the other
+        # stamp outputs. No device kernel reads either until P4.
         "heat_atten_q", "dyn_heat_atten_q",
         # Ray-engine-v2 P6a: their LIGHT twins (h, w, 3), on the same terms --
         # `light_atten_q` a static projection (reassigned by _update_caches,
@@ -361,7 +362,7 @@ class GameMap:
         # ``smoke`` is the canonical name for the SMOKE slice (combustion
         # soot — what fire/explosions emit; its diffusion 0.10 matches today's
         # d_smoke=0.1). It is a VIEW into ``gas[SMOKE]``: every reader and
-        # in-place writer of ``gmap.smoke`` (recorder, renderer, raycaster, fire,
+        # in-place writer of ``gmap.smoke`` (recorder, renderer, fire,
         # sink-pull, the FieldEdit deposit path) sees the same buffer, and writing
         # one is visible in the other. Behaviour-preserving: with only smoke
         # populated the result matches the pre-multigas single smoke field. NEVER
@@ -395,9 +396,9 @@ class GameMap:
         # BFS rebuild — is DELETED, EOS refactor P3 / decisions.md #3: venting
         # is native to the compressible solver; smoke rides the real venting
         # wind out of a breach instead of a scripted BFS pull.)
-        # (Scalar light field `light_map`: since ray-engine-v2 P6b a DERIVED
-        # read-only property below -- the accessor's scalar -- not a stored
-        # array; deleted at P6c. Design v3 §4.3.)
+        # (Scalar light field `light_map`: DELETED at ray-engine-v2 P6c, design
+        # v3 §4.3 -- the renderer reads light only through the one accessor,
+        # simulation.light_field.read_light; its scalar is LightView.scalar.)
         # RGB light field (ch.03 render byproduct): total light colour reaching
         # each tile, summed over all sources. Shape (h, w, 3), f32 accumulator
         # down-converted to the RGBA16F render textures at pack time (ch.05).
@@ -432,17 +433,10 @@ class GameMap:
         # ``on_tile_changed`` through the SAME seam as ``heat_atten``. The
         # sweep's invariant ``0 <= a <= d <= ONE`` is enforced at that door.
         self.heat_atten_q = np.zeros((h, w), dtype=np.int32)
-        # Per-tile DYNAMIC light attenuation (ch.02 §static×dynamic, ch.03
-        # §units): the live per-channel field the ray march actually reads.
-        # Rebuilt every tick in ``stamp_units`` = static ``light_atten`` (copy)
-        # combined per-channel via MAX with each living unit's opacity stamped
-        # over its footprint (default [1,1,1] = opaque → unit shadow, restoring
-        # pre-S2 behaviour). An occluder can only ADD opacity, never remove it.
-        # Allocated once here and filled IN-PLACE each tick (never reassigned)
-        # so a C++ view of the buffer never goes stale (project gotcha:
-        # in-place writes vs reassignment). Away from units it equals the
-        # static field, so behaviour matches S2 in unoccupied regions.
-        self.dyn_light_atten = np.zeros((h, w, 3), dtype=np.float32)
+        # (The FLOAT dynamic light plane ``dyn_light_atten`` -- the old render
+        # march's per-channel occlusion input -- is DELETED at ray-engine-v2 P6c
+        # with the march; the sweep's light channels read its integer twin
+        # ``dyn_light_atten_q`` below, the fifth ``stamp_units`` output.)
         # Ray-engine-v2 P1 (design v3 §3, §6.2): the STAMPED heat extinction
         # `d_i >= a_i` — the fourth dynamic output of ``stamp_units``: a copy of
         # ``heat_atten_q`` combined via MAX with each living unit's own
@@ -460,8 +454,9 @@ class GameMap:
         # patched in on_tile_changed, the heat_atten_q seam. `dyn_light_atten_q`
         # is the FIFTH stamp_units output, `d_c >= a_c`: the static plane with
         # each living unit's own light_atten triple MAX-stamped on its
-        # footprint (the float dyn_light_atten's integer replacement; that one
-        # dies at P6c). Not digested until P7 (design §8.3); in SIM_FIELDS.
+        # footprint (default [1,1,1] = an opaque body -> a unit shadow). Since
+        # P6c the ONE dynamic light plane (the float dyn_light_atten it
+        # replaced is gone). Not digested until P7 (design §8.3); in SIM_FIELDS.
         self.light_atten_q = np.zeros((h, w, 3), dtype=np.int32)
         self.dyn_light_atten_q = np.zeros((h, w, 3), dtype=np.int32)
         # Per-tile thermal conductivity (table-derived). Allocated + populated
@@ -666,13 +661,9 @@ class GameMap:
         # seam as conductivity/heat_inv_shift, so a breached wall's faces update
         # the instant the tile changes. (h, w, 4) int32, C-contiguous for C++.
         self.face_shift = np.zeros((h, w, 4), dtype=np.int32)
-        # Smoke-glow buffer (ch.03 C16 / ch.05 §God-rays): RENDER-ONLY god-ray
-        # glow. The light each tile's smoke ABSORBS is deposited here per
-        # channel by the march (energy-conserving). Shape (h, w, 3) f32 ->
-        # packed into render Texture B at pack time (ch.05). Supersedes the old
-        # surface-tint light_modulation path (no double-count). float (no
-        # downstream sim threshold). Allocated once, written IN-PLACE.
-        self.smoke_glow = np.zeros((h, w, 3), dtype=np.float32)
+        # (The render march's float god-ray buffer ``smoke_glow`` is DELETED at
+        # ray-engine-v2 P6c: the in-scattered glow is the sweep's ``light_glow``
+        # plane, read through simulation.light_field.read_light.)
         # --- Water layer (engine/07 §2, water plan W2) --------------------
         # ``water_depth`` — metres of standing water on the floor — is THE
         # shared field of the water<->fire interface: the C++ WaterSolver pipe
@@ -1844,21 +1835,12 @@ class GameMap:
         for name in (names if names is not None else self._RESIDENT_SYNCED):
             self._dev[name].get(out=getattr(self, name))
 
-    @property
-    def light_map(self):
-        """The legacy SCALAR light field, DERIVED from the one light accessor
-        (ray-engine-v2 P6b, design v3 §4.3): the brightest channel of
-        ``light_field.read_light(self)``, (h, w) float32 in light units, a fresh
-        copy. It used to be a stored array nothing wrote since the render march
-        moved into the renderer; deleted at P6c once no consumer names it."""
-        from simulation import light_field
-        return light_field.read_light(self).scalar
-
     def stamp_units(self, units):
         """Per-tick dynamic-field rebuild — dispatches to C++ or Python.
 
         The field rebuild (``obstacles`` + ``dyn_permeability`` +
-        ``dyn_wave_absorb`` + ``dyn_light_atten``) runs in the C++
+        ``dyn_wave_absorb`` + ``dyn_heat_atten_q`` + ``dyn_light_atten_q``)
+        runs in the C++
         ``PhysicsEngine`` when one is bound (:meth:`bind_physics_engine`) AND
         ``use_cpp_stamp`` is True (the default); otherwise the Python reference
         path (:meth:`_stamp_units_python`). The two are byte-for-byte identical
@@ -1880,9 +1862,10 @@ class GameMap:
         The unit iteration + ``occupied_tiles()`` + the ``u.alive`` filter + the
         per-tile bounds check + the per-unit getattr-or-default all stay in
         Python (CPU actors own that). We build one row per stamped footprint
-        tile — ``ys/xs`` (int32) and ``perm/wabsorb/atten_{r,g,b}`` (float32) —
-        and hand them to :meth:`PhysicsEngine.stamp_units`, which does the
-        in-place reset (``obstacles`` + the three ``dyn_*`` copies) and the
+        tile — ``ys/xs`` (int32), ``perm/wabsorb`` (float32) and the Q16
+        ``heat_q`` / ``light_q_rows`` — and hand them to
+        :meth:`PhysicsEngine.stamp_units`, which does the
+        in-place reset (``obstacles`` + the ``dyn_*`` copies) and the
         min/max stamp loop. ``prev_obstacles`` is captured HERE, before the C++
         reset overwrites ``obstacles`` in place, so the atmosphere-refill diff
         below sees the pre-tick walls (exactly as the Python path did)."""
@@ -1906,7 +1889,6 @@ class GameMap:
         # tile). Plain Python lists — the unit count and footprints are tiny.
         ys, xs = [], []
         perm, wabsorb = [], []
-        atten_r, atten_g, atten_b = [], [], []
         heat_q = []
         light_q_rows = []
         for u in units:
@@ -1917,20 +1899,15 @@ class GameMap:
             u_wabsorb = float(getattr(u, "wave_absorb", default_wabsorb))
             u_heat_q = _optics_fx.quantize_scalar(
                 float(getattr(u, "heat_atten", default_heat)))
-            ar, ag, ab = float(u_atten[0]), float(u_atten[1]), float(u_atten[2])
-            # Ray-engine-v2 P6a: the SAME triple, quantized at this boundary for
-            # the integer light stamp (the heat_q idiom).
-            u_light_q = [_optics_fx.quantize_scalar(ar), _optics_fx.quantize_scalar(ag),
-                         _optics_fx.quantize_scalar(ab)]
+            # Ray-engine-v2 P6a: the unit's light triple, quantized at this
+            # boundary for the integer light stamp (the heat_q idiom).
+            u_light_q = [_optics_fx.quantize_scalar(float(u_atten[c])) for c in range(3)]
             for (tx, ty) in u.occupied_tiles():
                 if 0 <= ty < h and 0 <= tx < w:
                     ys.append(ty)
                     xs.append(tx)
                     perm.append(u_perm)
                     wabsorb.append(u_wabsorb)
-                    atten_r.append(ar)
-                    atten_g.append(ag)
-                    atten_b.append(ab)
                     heat_q.append(u_heat_q)
                     light_q_rows.append(u_light_q)
 
@@ -1938,19 +1915,16 @@ class GameMap:
         xs_a = np.asarray(xs, dtype=np.int32)
         perm_a = np.asarray(perm, dtype=np.float32)
         wabsorb_a = np.asarray(wabsorb, dtype=np.float32)
-        atten_r_a = np.asarray(atten_r, dtype=np.float32)
-        atten_g_a = np.asarray(atten_g, dtype=np.float32)
-        atten_b_a = np.asarray(atten_b, dtype=np.float32)
         heat_q_a = np.asarray(heat_q, dtype=np.int32)
         light_q_rows_a = np.ascontiguousarray(
             np.asarray(light_q_rows, dtype=np.int32).reshape(len(light_q_rows), 3))
 
         # C++ reset + obstacles + min/max stamp loop (all IN-PLACE).
         self._physics_engine.stamp_units(
-            self.permeability, self.wave_absorb, self.light_atten,
-            self.dyn_permeability, self.dyn_wave_absorb, self.dyn_light_atten,
+            self.permeability, self.wave_absorb,
+            self.dyn_permeability, self.dyn_wave_absorb,
             self.obstacles,
-            ys_a, xs_a, perm_a, wabsorb_a, atten_r_a, atten_g_a, atten_b_a,
+            ys_a, xs_a, perm_a, wabsorb_a,
             self.heat_atten_q, self.dyn_heat_atten_q, heat_q_a,
             self.light_atten_q, self.dyn_light_atten_q, light_q_rows_a,
         )
@@ -1968,7 +1942,7 @@ class GameMap:
     def _stamp_units_python(self, units):
         """Rebuild ``obstacles`` = static walls (units are NO LONGER stamped
         here), and in the SAME pass rebuild the dynamic per-channel
-        light-attenuation field ``dyn_light_atten`` and the dynamic gas/smoke
+        light-extinction field ``dyn_light_atten_q`` and the dynamic gas/smoke
         permeability field ``dyn_permeability`` from each living unit's
         footprint (ch.04 §3b, ch.03 §units, ch.02 §static×dynamic).
 
@@ -1990,12 +1964,13 @@ class GameMap:
           open tile porous but never RAISE a sealed tile's permeability (a
           closed door under a unit stays flow-sealed — stamping it open made
           the solvers destroy mass at its faces, the door-stamp leak).
-        * ``dyn_light_atten`` = static material attenuation combined per-channel
-          via MAX with each living unit's opacity (UNCHANGED — units still cast
-          solid shadows). Because the field is RGB a unit can occlude *per
-          colour* via an optional ``unit.light_atten`` (default ``[1,1,1]`` =
-          full block → a shadow). An occluder can only ADD opacity, never remove
-          it.
+        * ``dyn_light_atten_q`` = the static Q16 material extinction combined
+          per-channel via MAX with each living unit's opacity (units cast solid
+          shadows). Because the field is RGB a unit can occlude *per colour* via
+          an optional ``unit.light_atten`` (default ``[1,1,1]`` = full block → a
+          shadow), quantized once through ``optics_fixed``. An occluder can only
+          ADD opacity, never remove it. (Its float twin ``dyn_light_atten``, the
+          render march's, went with the march at P6c.)
 
         Uses ``unit.occupied_tiles()`` so the footprint contract (spec §6)
         is the only dependency — no assumption about storage representation.
@@ -2013,10 +1988,6 @@ class GameMap:
         # longer painted into ``obstacles`` (3b): they are soft bodies, not
         # hard walls, so the C++ hard-zeroing BCs must not fire on them.
         self.obstacles = self.permeability <= 0.0
-        # Reset the dynamic attenuation field to the static material baseline
-        # IN-PLACE (no reassignment — keeps any C++ view valid). Units then
-        # raise opacity per-channel below.
-        self.dyn_light_atten[:] = self.light_atten
         # Reset the dynamic permeability field to the static material baseline
         # IN-PLACE (no reassignment — keeps any C++ view valid). Units then
         # lower their footprint to a PARTIAL value below (3b: porous body).
@@ -2074,16 +2045,12 @@ class GameMap:
                     # remove a lossy material's absorption underneath it.
                     cur = self.dyn_wave_absorb[ty, tx]
                     self.dyn_wave_absorb[ty, tx] = cur if cur >= u_wabsorb else u_wabsorb
-                    # Per-channel MAX: opacity can only increase.
-                    cell = self.dyn_light_atten[ty, tx]
-                    cell[0] = cell[0] if cell[0] >= u_atten[0] else u_atten[0]
-                    cell[1] = cell[1] if cell[1] >= u_atten[1] else u_atten[1]
-                    cell[2] = cell[2] if cell[2] >= u_atten[2] else u_atten[2]
                     # Heat extinction: MAX — a body can only ADD extinction,
                     # never remove a wall's (a <= d <= ONE by construction).
                     hc = int(self.dyn_heat_atten_q[ty, tx])
                     self.dyn_heat_atten_q[ty, tx] = hc if hc >= u_heat_q else u_heat_q
-                    # Light extinction (P6a): per-channel MAX on the integer twin.
+                    # Light extinction (P6a): per-channel MAX on the integer
+                    # plane -- opacity can only increase.
                     lcell = self.dyn_light_atten_q[ty, tx]
                     for c in range(3):
                         lc = int(lcell[c])

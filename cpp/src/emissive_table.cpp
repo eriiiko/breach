@@ -1,14 +1,14 @@
 // The E° bake — OUT OF LINE, on the /fp:strict list (cpp/CMakeLists.txt).
 // Ray-engine-v2 P1 (design v3 §2.6, critique 3 §5a): the body below is the
-// bake that lived in raycaster.cpp (P-R4 ruling A1.3; P-F1a L2-B3 widened it
-// to int64), moved here VERBATIM so there is exactly one bake in the tree.
-// Raycaster::bake_emissive_table() and EmissiveTable::bake() both call it;
-// tests/test_emissive_table.py asserts the two tables are identical entry for
-// entry and equal to the integer reference's bake_e_table().
+// bake that lived in the old raycaster.cpp (P-R4 ruling A1.3; P-F1a L2-B3
+// widened it to int64), moved here VERBATIM so there is exactly one bake in the
+// tree. EmissiveTable::bake() is its one caller since P6c deleted the old
+// Raycaster (its second, vestigial owner); tests/test_emissive_table.py asserts
+// the table equal to the integer reference's bake_e_table().
 //
 // Credit: J.R. Howell, M.P. Mengüç, R. Siegel, "Thermal Radiation Heat
 // Transfer" (E°(T) = σT⁴); the integer-K⁴ / one-boundary-multiply form is
-// this tree's determinism idiom (raycaster.h's original E° block).
+// this tree's determinism idiom (the deleted raycaster.h's original E° block).
 //
 // WHY A STRICT TU AND NOT A HEADER: the chain `v = (double)k4 * scale;
 // (int64)(v + 0.5)` is a multiply feeding an add. Under the global fast-math

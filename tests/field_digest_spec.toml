@@ -71,8 +71,11 @@ fields = [
 # (render/lighting-bound or a known residual float boundary; still covered
 # same-machine by field_ab_harness.diff_trajectories). The synced UNIT state
 # (HP/life/event stream) is folded in separately via field_digest.tick_digest.
+# This list is documentation, never hashed: ray-engine-v2 P6c dropped
+# "dyn_light_atten" when the field itself was deleted -- membership, dtype and
+# order of `fields` above are unchanged, so `version` does not move.
 excluded_float_fields = [
-    "ripple", "ripple_v", "dyn_permeability", "dyn_wave_absorb", "dyn_light_atten",
+    "ripple", "ripple_v", "dyn_permeability", "dyn_wave_absorb",
 ]
 
 # A4 (ADDITIVE — docs/a4_digest_impl_note_2026-07-18.md): the __entity__ /

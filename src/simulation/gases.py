@@ -25,8 +25,10 @@ semi-Lagrangian transport, they move by donor-cell CONSERVATIVE flux
 flammable, and set no gameplay ``effect`` tag.
 
 M1 scope: this table is **loaded** (data only). The per-channel ``absorption`` /
-``scatter_albedo`` are summed density-weighted across coexisting gases in the
-raycaster at M2; ``flammable`` / ``emits_when_hot`` / ``effect`` are read by fire
+``scatter_albedo`` are summed density-weighted across coexisting gases by the
+radiation sweep's light channels (the ``light_absorb_q16`` / ``light_glow_q16``
+columns below, ray-engine-v2 P6a; the render march that summed them first went
+at P6c); ``flammable`` / ``emits_when_hot`` / ``effect`` are read by fire
 and mechanics at M2/M3. ``decay`` is loaded but **not yet applied** in transport
 (the M1 C++ smoke solver has no decay term; applying it would break behaviour
 preservation — see :mod:`simulation.physics_runner`). ``conservative`` (P1) is
@@ -239,8 +241,9 @@ class GasTable:
         #       -> the in-scatter glow coefficient (albedo x density, capped at
         #          ONE), render-only, never in the books
         # THE [smoke] DIALS ARE FOLDED IN HERE -- one owner, the same dials the
-        # render medium reads (design v3 §4.4: the medium reads [smoke]
-        # directly from P6b; no Raycaster). Validated and quantized ONCE here,
+        # render medium reads (design v3 §4.4: renderer/gas_medium.py reads
+        # [smoke] directly; the Raycaster that once held them is deleted,
+        # P6c). Validated and quantized ONCE here,
         # in the heat_absorb_q16 idiom (door 3 -- the product of load-time
         # constants in float64 -- then door 2, the round-half-away twin): finite,
         # >= 0 (a negative coefficient is a light SOURCE), <= HEAT_ABSORB_MAX

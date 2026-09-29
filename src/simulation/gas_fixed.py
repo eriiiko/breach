@@ -13,7 +13,7 @@ they are NON-conservative but DETERMINISTIC (Q-S2-1, docs/s2_fixed_point_plan.md
 cross-machine — that determinism, not conservation, is the contract.
 
 These helpers convert real density <-> Q16.16 at the boundaries (field edits, the
-recorder/render dequantize, the raycaster float bridge, tests). Mirrors C++
+recorder/render dequantize, tests). Mirrors C++
 ``fixed_point.h`` exactly:
   * quantize  — round-to-nearest (round-half-away-from-zero), matching
     ``fixedpoint::quantize`` so a value written Python-side and one written
@@ -62,5 +62,5 @@ def dequantize(q):
 
 
 def dequantize_f32(q):
-    """Q16.16 int32 -> float32 (the renderer/raycaster/recorder float bridge)."""
+    """Q16.16 int32 -> float32 (the renderer/recorder float bridge)."""
     return (np.asarray(q, dtype=np.float64) / FP_ONE_F).astype(np.float32)

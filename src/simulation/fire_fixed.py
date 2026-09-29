@@ -68,5 +68,5 @@ def dequantize(q):
 
 
 def dequantize_f32(q):
-    """Q16.16 int32 -> float32 (the renderer/raycaster/recorder/C++ float bridge)."""
+    """Q16.16 int32 -> float32 (the renderer/recorder/C++ float bridge)."""
     return (np.asarray(q, dtype=np.float64) / FP_ONE_F).astype(np.float32)

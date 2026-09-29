@@ -1,8 +1,15 @@
 """tools/lighting_demo.py — Lighting parameter tuning tool for Breach.
 
 Standalone script: loads UNHCR Vessel, runs a live physics sim, and lets
-Erik dial in visual parameters (ambient, lighting, smoke tint, grenade
+Erik dial in visual parameters (the flat floor, lighting, smoke tint, grenade
 blast) via raygui sliders while seeing the result in real time.
+
+The light is the game's: the radiation sweep's light channels (ray-engine-v2
+P6b), fed through the ONE assembly (renderer/frame_lights.py: LightSpec ->
+cone rows -> Simulation.set_light / relight) -- the level's lamps and beacon
+plus the slider-driven mouse flashlight. (Ported at P6c, when the old render
+march this studio drove was deleted; a fire lights the room through the sweep's
+own thermal emission, so there is no fire-light toggle any more.)
 
 Run:
     C:/Users/steen/anaconda3/python.exe tools/lighting_demo.py
@@ -23,7 +30,7 @@ printed at startup / drawn in the panel, tools/lighting_demo.py §keybinds):
     P / Shift+P    — tilt ship +2° / −2° (the Titanic dial, clamped ±20°)
     G              — toggle sRGB decode (renderer toggle from game)
     V              — toggle water optics pass (renderer toggle; O moved -> V)
-    L              — toggle fire lights   F1/F2/F4 — grid / smoke / lighting
+    F1/F2/F4       — grid / smoke / lighting
     F9             — legacy smoke A/B (old flat smoke+glow vs the B2 medium)
     F10            — dirty-Planck speckle A/B (flame mottle off / noise / soot)
     --- B2 studio (tool-side sim writes at the cursor) ---
@@ -115,10 +122,8 @@ from simulation.unit import Unit
 from simulation.payloads import execute_payload
 from simulation.weapons import PayloadDef
 from simulation.gases import STEAM, SMOKE
-from level_lights import monotonic_total_tick
-from renderer.fire_lights import FireLightSelector
-from renderer.frame_lights import (build_frame_light_sources,
-                                    build_static_light_sources)
+from level_lights import LightSpec, monotonic_total_tick, partition_lights
+from renderer import frame_lights
 from renderer.hover_readout import pack_hover_readout
 from renderer.gas_detail import tame_wind
 from renderer.lit3d import LightFieldCtx, make_camera
@@ -134,20 +139,23 @@ PRESETS_PATH = Path(__file__).resolve().parent / "lighting_presets.toml"
 # Defaults — §4 of the patch plan
 # ---------------------------------------------------------------------------
 DEFAULTS = {
-    "ambient_r": 0.10,
-    "ambient_g": 0.10,
-    "ambient_b": 0.13,
+    # The FLAT FLOOR ([render.lighting] floor, design v3 §2.7) -- the only flat
+    # term since P6c. Keys keep their old `ambient_*` names so saved presets
+    # round-trip; main() re-seeds them from config after the preset load.
+    "ambient_r": 0.03,
+    "ambient_g": 0.03,
+    "ambient_b": 0.04,
     "light_z": 0.5,
-    # Render exposure (engine/08 §Falloff is density). The pure-density raycaster
-    # makes light_rgb a PHYSICAL 1/r field where `intensity` = total emitted power
-    # (N-independent) — ~ray_count× dimmer than the legacy per-ray-dist_atten
-    # field. This master dial maps physical power -> display brightness. Drag it
-    # FIRST after the redesign lands: physics tunes power, exposure tunes look.
+    # Render exposure: light_rgb is a PHYSICAL field (the sweep's irradiance in
+    # light units, `intensity` = total emitted power). This master dial maps
+    # physical power -> display brightness: physics tunes power, exposure tunes
+    # look. (The demo's historical 10 vs the game's [render.lighting]
+    # master_gain 2.0 predates the sweep; reconcile in a tuning session.)
     "light_gain": 10.0,
     "normal_strength": 1.0,
     "use_normal": True,
     "srgb_decode": True,
-    "flash_max_range": 25.0,
+    "flash_max_range": 25.0,   # IGNORED since P6c (a sweep has no range); presets
     "flash_intensity": 2.5,
     "flash_angle_spread": 6.283,
     "smoke_tint_r": 190.0,
@@ -858,6 +866,30 @@ _CRATE_CLUSTER_IGNITE_TILES = ((7, 9), (7, 10))
 _WATER_POOL_CENTER_TILE = (33, 27)     # gen_fire_studio's POOL_X0..X1/Y0..Y1
 
 
+def demo_light_rows(lights_in, total_tick: int, sim_time_per_tick: float,
+                    grid_w: int, grid_h: int, state=None, mouse_f=None):
+    """THE STUDIO'S LIGHTS through THE ONE ASSEMBLY (renderer/frame_lights.py;
+    ray-engine-v2 P6c port): the level's lamps and beacon -- a group dropped
+    when its demo toggle (``state.lamps_on`` / ``state.beacon_on``) is off --
+    plus the slider-driven mouse flashlight at ``mouse_f`` (a cursor-kind cone
+    of ``flash_intensity`` and ``flash_angle_spread``, centred on +x like the
+    old demo's), as the sweep's cone-emitter rows for ``Simulation.set_light``.
+    ``state=None`` is everything on and no flashlight (the --perf pass)."""
+    lights = [e for e in lights_in if state is None
+              or (state.beacon_on if e.kind == "beacon" else state.lamps_on)]
+    extra = []
+    if state is not None and mouse_f is not None:
+        extra.append(LightSpec(x=float(mouse_f[0]), y=float(mouse_f[1]),
+                               color=(1.0, 1.0, 0.95),
+                               intensity=float(state.get("flash_intensity")),
+                               angle_spread=float(state.get("flash_angle_spread")),
+                               kind="cursor", source="render"))
+    specs = frame_lights.frame_light_specs(
+        lights, total_tick=total_tick, sim_time_per_tick=sim_time_per_tick,
+        extra=extra).specs
+    return frame_lights.cone_rows(specs, grid_w, grid_h, int(bp.L_FINE_BITS))
+
+
 def _parse_perf_frames() -> Optional[int]:
     """Read the optional ``--perf [N]`` perf-pass flag (B2 P5). ``--perf``
     alone measures :data:`PERF_DEFAULT_FRAMES`; ``--perf 500`` measures 500
@@ -897,7 +929,7 @@ def _seed_burning_scene(sim) -> None:
     _inject_gas(sim, _WATER_POOL_CENTER_TILE, STEAM)
 
 
-def _run_perf_bench(renderer, sim, static_lights, beacon_lights, fire_selector,
+def _run_perf_bench(renderer, sim, lights_in, light_sky,
                     sim_time_per_tick: float, ticks_per_round: int,
                     frames: int) -> None:
     """B2 P5 perf pass (design §7 P5 + §8): measure whole-frame render cost in
@@ -906,8 +938,8 @@ def _run_perf_bench(renderer, sim, static_lights, beacon_lights, fire_selector,
     legacy_smoke_on (the pre-B2 path) for comparison. Both paths are timed
     BACK-TO-BACK in the SAME process (the tests/bench_s8c_fire_heat_check.py
     precedent: comparable clock/thermal state), driving the EXACT per-frame
-    call sequence main()'s interactive loop uses (sim tick, light-source
-    assembly, upload_state, compose_world, blit) so the numbers mean what a
+    call sequence main()'s interactive loop uses (the light assembly + the
+    lit sim tick, upload_state, compose_world, blit) so the numbers mean what a
     real session would see -- minus the demo's own raygui debug panel (~80
     immediate-mode UI draws that cost the same in both conditions, so they
     would only shift both numbers by a roughly constant offset, not change
@@ -929,8 +961,17 @@ def _run_perf_bench(renderer, sim, static_lights, beacon_lights, fire_selector,
     """
     rl.set_target_fps(0)     # perf-only: remove raylib's software FPS pacing
     _seed_burning_scene(sim)
-    for _ in range(PERF_SCENE_WARMUP_TICKS):
+    grid_h, grid_w = sim.gmap.solid.shape
+
+    def _lit_step():
+        # the one assembly, once per sim tick, for the engine (main.py's order)
+        total = monotonic_total_tick(sim.turn_number, ticks_per_round, sim.tick)
+        sim.set_light(True, demo_light_rows(lights_in, total, sim_time_per_tick,
+                                            grid_w, grid_h), light_sky)
         _step_keep_running(sim)
+
+    for _ in range(PERF_SCENE_WARMUP_TICKS):
+        _lit_step()
 
     def _measure(label: str) -> None:
         wall_ms = []
@@ -938,23 +979,12 @@ def _run_perf_bench(renderer, sim, static_lights, beacon_lights, fire_selector,
         total = PERF_WARMUP_FRAMES + frames
         for i in range(total):
             t0 = time.perf_counter()
-            _step_keep_running(sim)
+            _lit_step()
 
             total_tick = monotonic_total_tick(sim.turn_number, ticks_per_round,
                                               sim.tick)
-            frame = build_frame_light_sources(
-                bp, static_lights, beacon_lights,
-                total_tick=total_tick, sim_time_per_tick=sim_time_per_tick,
-                fire_selector=fire_selector,
-                temperature_field=sim.gmap.temperature,
-                blackbody_ramp=renderer.blackbody_ramp,
-                show_fire_lights=renderer.show_fire_lights)
-            sources = frame.sources
-            renderer.set_fire_light_stats(frame.fire_count, frame.fire_peaks,
-                                          fire_selector.max_lights)
-
-            renderer.upload_state(sim.gmap, light_sources=sources,
-                                  sim_tick=total_tick)
+            renderer.upload_state(sim.gmap, sim_tick=total_tick,
+                                  light_serial=sim.light_serial)
             renderer.begin_frame()
             renderer.compose_world(units_marines=sim.marines(),
                                    units_zombies=sim.zombies(),
@@ -1062,29 +1092,26 @@ def main() -> None:
     renderer = GameRenderer(level, bp, cfg,
                             initial_camera=initial_camera,
                             borderless=BORDERLESS)
-    # ray-engine-v2 P6b: the game's renderer defaults to the NEW light (the
-    # sweep, read through simulation.light_field); this harness still drives
-    # the OLD render march (its sliders feed LightSource rows), so it pins the
-    # old path until P6c converts it.
-    renderer.set_light_mode_new(False)
-
     # Pressure overlay is now built into the renderer (renderer/pressure_overlay.py),
     # shared with the main game. No demo-local allocations needed.
 
-    # ---- B2: shared frame-light assembly (statics + beacon + fire) ----
-    # The SAME helper main.py uses (renderer/frame_lights.py) so the studio gets
-    # the level's lamps + rotating beacon + B1 fire lights with no drift. Lamps
-    # and beacon are DEMO-SIDE toggles (state.lamps_on / state.beacon_on) — NOT
-    # an entity system; passing [] to the helper drops a group this frame.
+    # ---- the shared light assembly (renderer/frame_lights.py) ----
+    # The SAME seam main.py uses, so the studio gets the level's lamps + the
+    # rotating beacon with no drift, as the sweep's cone emitters (a fire
+    # lights the room through the sweep's own thermal emission). Lamps and
+    # beacon are DEMO-SIDE toggles (state.lamps_on / state.beacon_on) — NOT an
+    # entity system; demo_light_rows drops a switched-off group.
     sim_time_per_tick = 1.0 / float(CFG.clock.ticks_per_second)
     ticks_per_round = int(CFG.clock.ticks_per_round)
-    static_lights, beacon_lights, lights_off = build_static_light_sources(
-        bp, level.lights, level.width, level.height, sim_time_per_tick)
-    fire_selector = FireLightSelector.from_config(CFG)
+    lights_in, lights_off = partition_lights(level.lights, level.width,
+                                             level.height)
+    light_sky = frame_lights.sky_for_level(getattr(level, "boundary", "space"),
+                                           CFG, bp)
     if level.lights:
         _off = f"  ({len(lights_off)} off-grid skipped)" if lights_off else ""
-        print(f"[lighting_demo] Lights: {len(static_lights)} static + "
-              f"{len(beacon_lights)} beacon from level.toml{_off}")
+        _nb = sum(1 for e in lights_in if e.kind == "beacon")
+        print(f"[lighting_demo] Lights: {len(lights_in) - _nb} static + "
+              f"{_nb} beacon from level.toml{_off}")
 
     # ---- B2 P5 (design §7 P5 + §8): --perf branches to the headless perf
     # pass and exits before the interactive loop / PanelState / preset
@@ -1094,9 +1121,8 @@ def main() -> None:
     perf_frames = _parse_perf_frames()
     if perf_frames is not None:
         try:
-            _run_perf_bench(renderer, sim, static_lights, beacon_lights,
-                            fire_selector, sim_time_per_tick, ticks_per_round,
-                            perf_frames)
+            _run_perf_bench(renderer, sim, lights_in, light_sky,
+                            sim_time_per_tick, ticks_per_round, perf_frames)
         finally:
             renderer.shutdown()
         return
@@ -1122,7 +1148,7 @@ def main() -> None:
     print("[lighting_demo]   F1=grid  F2=smoke  F3=fire(legacy overlay)  "
           "F4=lighting  F5=normal-map  F6=debug coords  F7=pressure")
     print("[lighting_demo]   F9=legacy smoke A/B  F10=speckle A/B "
-          "(off/noise/soot)  T=temperature  L=fire lights")
+          "(off/noise/soot)  T=temperature")
     print("[lighting_demo]   V=water optics  M=3D units  B=bilinear  "
           "H=flip-Y normal  G=sRGB  [ / ] = light Z")
     print("[lighting_demo]   WASD/arrows=pan  Q/E/wheel=zoom  "
@@ -1179,10 +1205,15 @@ def main() -> None:
         state.apply_dict(saved)
         print("[lighting_demo] Loaded preset 'default' from lighting_presets.toml")
 
-    # Apply initial ambient to the renderer
-    renderer.lighting.set_ambient((state.get("ambient_r"),
-                                   state.get("ambient_g"),
-                                   state.get("ambient_b")))
+    # The flat FLOOR opens where [render.lighting] floor sits (the config
+    # mirrors below win over a saved preset's stale copy, same rule): a saved
+    # `ambient` was the old march's flat ambient, a different term.
+    for _k, _v in zip(("ambient_r", "ambient_g", "ambient_b"),
+                      renderer.lighting.floor):
+        state.set(_k, float(_v))
+    renderer.lighting.set_floor((state.get("ambient_r"),
+                                 state.get("ambient_g"),
+                                 state.get("ambient_b")))
     renderer.lighting.set_light_z(state.get("light_z"))
     renderer.lighting.set_light_gain(state.get("light_gain"))
     renderer.lighting.set_normal_strength(state.get("normal_strength"))
@@ -1351,11 +1382,31 @@ def main() -> None:
                 if not sim.gmap.solid[ty, tx]:
                     sim.gmap.water_depth[ty, tx] = 0.4
 
+    # The light (ray-engine-v2 P6c port): requested for the whole session; the
+    # one assembly's cone rows ride each sim tick (demo_light_rows), and a
+    # paused frame is RELIT when its emitters move (the mouse flashlight) and
+    # at 4 Hz anyway -- main.py's rule.
+    grid_h, grid_w = sim.gmap.solid.shape
+    lit_rows = None
+    last_relight = 0.0
+
+    def _light_rows_now(mouse_f):
+        total = monotonic_total_tick(sim.turn_number, ticks_per_round, sim.tick)
+        return demo_light_rows(lights_in, total, sim_time_per_tick, grid_w,
+                               grid_h, state=state, mouse_f=mouse_f)
+
     try:
         while not renderer.should_close():
             now = time.perf_counter()
             dt = now - last_time
             last_time = now
+            # HEADLESS: there is no human aiming the flashlight, and the OS
+            # cursor's position INSIDE the window varies with where the window
+            # opened — which made two --shot runs of the same frame differ
+            # everywhere (the flashlight relights the whole room). Under --auto
+            # the "cursor" is therefore PINNED to the viewport centre, which is
+            # what makes headless shots comparable run to run.
+            mouse_f = auto_cursor if auto else renderer.mouse_to_tile_float()
 
             # ---- Input: toggles ----
             renderer.poll_toggles()
@@ -1456,7 +1507,8 @@ def main() -> None:
                 state.props_on = not state.props_on
                 print(f"[demo] props {'ON' if state.props_on else 'OFF'}")
 
-            # ---- Sim tick ----
+            # ---- Sim tick (lit: the cone rows ride each tick) ----
+            stepped = False
             if not state.paused:
                 # The sim auto-pauses at end of round. In the demo we want
                 # continuous physics — re-enable after each auto-pause so
@@ -1472,14 +1524,27 @@ def main() -> None:
                     # of the P4r stillness/blast verification (and of any
                     # future headless look-check). The --perf pass already
                     # steps this way for the same reason.
+                    lit_rows = _light_rows_now(mouse_f)
+                    sim.set_light(True, lit_rows, light_sky)
                     sim.step()
+                    stepped = True
                 else:
                     tick_accum += dt
                     steps = 0
                     while tick_accum >= sim_dt and steps < max_catch_up:
+                        lit_rows = _light_rows_now(mouse_f)
+                        sim.set_light(True, lit_rows, light_sky)
                         sim.step()
+                        stepped = True
                         tick_accum -= sim_dt
                         steps += 1
+            if not stepped:
+                rows = _light_rows_now(mouse_f)
+                if (lit_rows is None or not np.array_equal(rows, lit_rows)
+                        or now - last_relight > 0.25):
+                    sim.set_light(True, rows, light_sky)
+                    sim.relight()
+                    lit_rows, last_relight = rows, now
 
             # ---- Detonate (left click while R-armed) ----
             # ONE call into the canonical payload executor (see `detonate`):
@@ -1573,9 +1638,9 @@ def main() -> None:
                 pr.combustion.soot_yield = float(state.get("soot_yield"))
 
             # ---- Lighting setters ----
-            renderer.lighting.set_ambient((state.get("ambient_r"),
-                                           state.get("ambient_g"),
-                                           state.get("ambient_b")))
+            renderer.lighting.set_floor((state.get("ambient_r"),
+                                         state.get("ambient_g"),
+                                         state.get("ambient_b")))
             renderer.lighting.set_light_z(state.get("light_z"))
             renderer.lighting.set_light_gain(state.get("light_gain"))
             renderer.lighting.set_normal_strength(state.get("normal_strength"))
@@ -1608,51 +1673,17 @@ def main() -> None:
             wp.set_height_edge(state.get("water_height_edge"))
             wp.set_height_floor(state.get("water_height_floor"))
 
-            # ---- Lights: level statics + beacon + fire (shared assembly) ----
-            # The SAME helper main.py uses (B2 P1). Lamps/beacon are DEMO-SIDE
-            # toggles: pass [] to drop a group this frame. total_tick = the
-            # MONOTONIC sim tick on the SIM clock so the beacon freezes on pause
-            # + replays exactly (never wall dt).
+            # ---- Lights: the one assembly's cone rows rode the sim tick above
+            # (demo_light_rows); total_tick = the MONOTONIC sim tick on the SIM
+            # clock so the beacon freezes on pause + replays exactly.
             total_tick = monotonic_total_tick(
                 sim.turn_number, ticks_per_round, sim.tick)
-            frame = build_frame_light_sources(
-                bp,
-                static_lights if state.lamps_on else [],
-                beacon_lights if state.beacon_on else [],
-                total_tick=total_tick, sim_time_per_tick=sim_time_per_tick,
-                fire_selector=fire_selector,
-                temperature_field=sim.gmap.temperature,
-                blackbody_ramp=renderer.blackbody_ramp,
-                show_fire_lights=renderer.show_fire_lights)
-            sources = frame.sources
-            renderer.set_fire_light_stats(frame.fire_count, frame.fire_peaks,
-                                          fire_selector.max_lights)
-
-            # ---- Mouse flashlight (caller-side, slider-driven) ----
-            # HEADLESS: there is no human aiming it, and the OS cursor's
-            # position INSIDE the window varies with where the window opened —
-            # which made two --shot runs of the same frame differ everywhere
-            # (the flashlight relights the whole room). Under --auto the
-            # "cursor" is therefore PINNED to the viewport centre, which is what
-            # makes headless shots comparable run to run.
-            mouse_f = auto_cursor if auto else renderer.mouse_to_tile_float()
-            if mouse_f is not None:
-                src = bp.LightSource()
-                src.x = float(mouse_f[0])
-                src.y = float(mouse_f[1])
-                src.max_range = int(max(1, state.get("flash_max_range")))
-                src.intensity = state.get("flash_intensity")
-                src.angle_spread = state.get("flash_angle_spread")
-                # Flashlight — cool white (profile: flashlight).
-                src.color = (1.0, 1.0, 0.95)
-                src.jitter = 0.0
-                sources.append(src)
 
             # ---- Upload physics state ----
             # total_tick (the MONOTONIC sim clock above) drives the P3 gas-detail
             # crossfade too — sim tick, never wall time (replay-identical smoke).
-            renderer.upload_state(sim.gmap, light_sources=sources,
-                                  sim_tick=total_tick)
+            renderer.upload_state(sim.gmap, sim_tick=total_tick,
+                                  light_serial=sim.light_serial)
             renderer.consume_events(sim.tick_events)
             renderer._advance_effects(dt)
 
@@ -1831,7 +1862,7 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     rl.draw_text("Lighting Demo", x, y, 16, rl.Color(200, 220, 255, 255))
     frame_ms = 1000.0 / max(1, rl.get_fps())
     fps_str = (f"  FPS:{rl.get_fps()} Frame:{frame_ms:.1f}ms "
-              f"RT:{renderer.last_raycast_ms:.0f}ms")
+              f"Light:{renderer.last_light_ms:.1f}ms")
     rl.draw_text(fps_str, x + 100, y + 2, 11, rl.Color(140, 140, 160, 255))
     y += 22
 
@@ -1848,11 +1879,11 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
         y += 14
     y += 6
 
-    # -- §4.1 Ambient --
-    y = _section_header("Ambient", x, y)
-    y = _slider(state, "ambient_r", "Amb R", 0.0, 1.0, x, y)
-    y = _slider(state, "ambient_g", "Amb G", 0.0, 1.0, x, y)
-    y = _slider(state, "ambient_b", "Amb B", 0.0, 1.0, x, y)
+    # -- §4.1 The flat floor ([render.lighting] floor; the old ambient's slot) --
+    y = _section_header("Floor (flat term)", x, y)
+    y = _slider(state, "ambient_r", "Floor R", 0.0, 1.0, x, y)
+    y = _slider(state, "ambient_g", "Floor G", 0.0, 1.0, x, y)
+    y = _slider(state, "ambient_b", "Floor B", 0.0, 1.0, x, y)
 
     # -- §4.2 Lighting --
     y = _section_header("Lighting", x, y)
@@ -1862,9 +1893,8 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     y = _checkbox(state, "use_normal", "Use normal map", x, y)
     y = _checkbox(state, "srgb_decode", "sRGB decode", x, y)
 
-    # -- §4.3 Mouse flashlight --
+    # -- §4.3 Mouse flashlight (a cone emitter; a sweep has no range) --
     y = _section_header("Flashlight", x, y)
-    y = _slider(state, "flash_max_range", "Max range", 5.0, 40.0, x, y)
     y = _slider(state, "flash_intensity", "Intensity", 0.0, 5.0, x, y)
     y = _slider(state, "flash_angle_spread", "Spread", 0.0, 6.283, x, y)
 

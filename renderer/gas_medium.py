@@ -2,11 +2,13 @@
 Beauty arc, B2 P2). Replaces the flat-grey ``smoke_overlay`` + additive
 ``glow_overlay`` pair with a single premultiplied-over layer built per frame:
 alpha = the medium's OCCLUSION (Beer-Lambert extinction over all five trace
-gases), RGB = the medium's LIT half (the ray march's inscatter, tone-mapped).
+gases), RGB = the medium's LIT half (the in-scattered glow, tone-mapped -- since
+ray-engine-v2 P6b the radiation sweep's ``light_glow``, read through
+``simulation.light_field.read_light`` and calibrated by LightingPass).
 
 Design: docs/fire_b2_smoke_honesty_design_2026-07-21.md §3. RENDER-ONLY,
 determinism-EXEMPT: pure float math on read-only copies of sim fields
-(``gmap.gas``, ``gmap.smoke_glow``); it never writes any sim state and never
+(``gmap.gas``, and the accessor's glow); it never writes any sim state and never
 moves a golden. The core packing is pyray-free (numpy only), so it is
 headless-testable without a GL context — the overlay class only owns the GPU
 texture + the premult-over draw.
@@ -28,15 +30,17 @@ construction:
 
 Single source of scale (critique finding)
 ------------------------------------------
-The ray march already scales absorption by ``smoke_absorb_scale`` (the
-Raycaster's shared beam-reach dial, default 1.4). This pass reads THAT as the
-shared base scale and applies ``plume_k_scale`` (default 1.0) as a RELATIVE
-multiplier on top, so the plume body and its god-rays track by construction
-instead of via two independent dials agreeing. The per-gas extinction ``k_s``
-is ``mean(absorption[s])`` read from the SAME GasTable optics columns the march
-sums (``simulation/gases.py``) — the panchromatic collapse ``beam_absorb_q16``
-already uses — so plume body and beam reach can never disagree about what a gas
-is.
+``[smoke] smoke_absorb_scale`` (the shared beam-reach dial, 1.4 shipped) is the
+ONE owner of the absorption scale: the gases door folds it into the sweep's
+light columns (``GasTable.light_absorb_q16``) and this pass reads the SAME key
+as its base scale (design v3 §4.4; until P6c it read it back off the old
+Raycaster), applying ``plume_k_scale`` (default 1.0) as a RELATIVE multiplier on
+top, so the plume body and its god-rays track by construction instead of via two
+independent dials agreeing. The per-gas extinction ``k_s`` is
+``mean(absorption[s])`` read from the SAME GasTable optics columns the light
+channels use (``simulation/gases.py``) — the panchromatic collapse
+``beam_absorb_q16`` already uses — so plume body and beam reach can never
+disagree about what a gas is.
 
 Credit (repo rule — cite what a file implements):
   - Beer-Lambert transmittance / volume emission-absorption:
@@ -80,7 +84,7 @@ def gas_optical_depth(
     """Panchromatic optical depth (H, W) float64 — the PRE-curve tau.
 
     ``tau = base_absorb_scale * plume_k_scale * Σ_s ( k_s · ρ_s )`` — the
-    density-weighted mean-extinction sum the ray march does, sharing the SAME
+    density-weighted mean-extinction sum, sharing the SAME
     base scale (single source of scale, design §3). Extracted so both the alpha
     build (``gas_medium_layer``) and the P3 detail pass's density-solidity field
     read ONE definition of "how much smoke is here" (byte-identical to the old
@@ -101,7 +105,7 @@ def gas_medium_layer(
     plume_k_scale: float,
     tau_curve_a: float,
     tau_curve_b: float,
-    smoke_glow: np.ndarray,
+    glow: np.ndarray,
     glow_gain: float,
     effect_gas_floor: float = 0.0,
     effect_gas_mask: Optional[np.ndarray] = None,
@@ -116,16 +120,17 @@ def gas_medium_layer(
         is excluded by the caller (slice ``gmap.gas[:N_TRACE_GASES]``).
     k_s : (S,) float — per-gas mean extinction = ``mean`` over the absorption
         RGB triple (the panchromatic collapse the beam optics use). Read from
-        the GasTable, so plume body and ray march share ONE optical identity.
-    base_absorb_scale : the Raycaster's ``smoke_absorb_scale`` — the SHARED base
-        scale the ray march already applies (single source of scale).
+        the GasTable, so plume body and light channels share ONE optical identity.
+    base_absorb_scale : ``[smoke] smoke_absorb_scale`` — the SHARED base scale
+        (single source of scale; the overlay reads it from config).
     plume_k_scale : RELATIVE multiplier on the base (design default 1.0).
     tau_curve_a, tau_curve_b : artistic remap IN TAU-SPACE (never on alpha):
         ``tau' = a * tau**b`` (defaults 1/1 = honest). ``b > 1`` steepens edges.
-    smoke_glow : (H, W, 3) float — the ray march's inscatter buffer. It ALREADY
-        carries the per-gas ``scatter_albedo`` colour summed density-weighted and
-        multiplied by the local light, i.e. the species' LIT identity (steam
-        near-white, soot barely). Read, never written.
+    glow : (H, W, 3) float — the in-scattered glow (the sweep's ``light_glow``
+        through the accessor, calibrated). It ALREADY carries the per-gas
+        ``scatter_albedo`` colour summed density-weighted and multiplied by the
+        local light, i.e. the species' LIT identity (steam near-white, soot
+        barely). Read, never written.
     glow_gain : render exposure on the inscatter before the tone-map.
     effect_gas_floor : NON-PHYSICAL emissive legibility floor for gameplay gases
         (design override; default 0.0 = honest/off). When > 0 the HUD flags it.
@@ -140,7 +145,7 @@ def gas_medium_layer(
     gas_density = np.asarray(gas_density, dtype=np.float32)
     k_s = np.asarray(k_s, dtype=np.float32)
 
-    # --- optical depth (panchromatic), sharing the ray march's base scale ----
+    # --- optical depth (panchromatic), on the shared base scale --------------
     # tau = base_absorb_scale * plume_k_scale * Σ_s ( k_s · ρ_s ), the density-
     # weighted mean-extinction sum. Done in float64 so `1 - exp(-tau)` below has
     # no catastrophic cancellation at tiny tau (the thin-smoke limit); the uint8
@@ -159,7 +164,7 @@ def gas_medium_layer(
     alpha = 1.0 - np.exp(-tau_p)
 
     # --- the lit half: tone-mapped inscatter (premultiplied additive RGB) ----
-    glow = np.array(smoke_glow, dtype=np.float32) * float(glow_gain)
+    glow = np.array(glow, dtype=np.float32) * float(glow_gain)
     if (effect_gas_floor > 0.0 and effect_gas_mask is not None
             and scatter_albedo is not None):
         # Add a faint self-emission for gameplay gases, tinted by their own
@@ -205,7 +210,7 @@ def pack_gas_medium_rgba(
     plume_k_scale: float,
     tau_curve_a: float,
     tau_curve_b: float,
-    smoke_glow: np.ndarray,
+    glow: np.ndarray,
     glow_gain: float,
     effect_gas_floor: float = 0.0,
     effect_gas_mask: Optional[np.ndarray] = None,
@@ -215,7 +220,7 @@ def pack_gas_medium_rgba(
     rgb, alpha = gas_medium_layer(
         gas_density, k_s, base_absorb_scale=base_absorb_scale,
         plume_k_scale=plume_k_scale, tau_curve_a=tau_curve_a,
-        tau_curve_b=tau_curve_b, smoke_glow=smoke_glow, glow_gain=glow_gain,
+        tau_curve_b=tau_curve_b, glow=glow, glow_gain=glow_gain,
         effect_gas_floor=effect_gas_floor, effect_gas_mask=effect_gas_mask,
         scatter_albedo=scatter_albedo)
     return pack_premult_rgba(rgb, alpha)
@@ -229,17 +234,19 @@ class GasMediumOverlay:
     ``[render.gas_medium]`` and mutated live by the harness sliders — exactly
     like ``GlowOverlay.gain``. The per-gas optics (``k_s`` / albedo / effect
     mask) are bound from the live GasTable (``gmap.gases``) so the plume reads
-    the SAME optical data as the ray march; rebound automatically if the table
-    is rebuilt (config reload). ``base_absorb_scale`` is passed per-frame from
-    the Raycaster (single source of scale), never cached here.
+    the SAME optical data as the light channels; rebound automatically if the
+    table is rebuilt (config reload). ``base_absorb_scale`` is
+    ``[smoke] smoke_absorb_scale``, read by :meth:`from_config` (single source of
+    scale: the same key the gases door folds into the sweep's light columns).
     """
 
     def __init__(self, grid_h: int, grid_w: int, *,
                  plume_k_scale: float = 1.0, tau_curve_a: float = 1.0,
                  tau_curve_b: float = 1.0, glow_gain: float = 1.0,
-                 effect_gas_floor: float = 0.0):
+                 effect_gas_floor: float = 0.0, base_absorb_scale: float = 1.4):
         self.h = grid_h
         self.w = grid_w
+        self.base_absorb_scale = float(base_absorb_scale)
         self.plume_k_scale = float(plume_k_scale)
         self.tau_curve_a = float(tau_curve_a)
         self.tau_curve_b = float(tau_curve_b)
@@ -262,10 +269,18 @@ class GasMediumOverlay:
     @classmethod
     def from_config(cls, grid_h: int, grid_w: int, cfg) -> "GasMediumOverlay":
         """Build with the ``[render.gas_medium]`` defaults (getattr-guarded —
-        a config without the block still gets the honest design defaults)."""
+        a config without the block still gets the honest design defaults) and
+        the base scale ``[smoke] smoke_absorb_scale``.
+
+        The base scale is held at FLOAT32 precision on purpose: that is the
+        value this pass has always drawn with (until ray-engine-v2 P6c it read
+        the dial back off the C++ Raycaster's ``float`` member), so moving its
+        owner to config changed the look by not one byte (P6c gate G2)."""
         render = getattr(cfg, "render", None)
         gm = getattr(render, "gas_medium", None)
         g = lambda name, default: float(getattr(gm, name, default))
+        smoke = getattr(cfg, "smoke", None)
+        base = float(np.float32(getattr(smoke, "smoke_absorb_scale", 1.4)))
         return cls(
             grid_h, grid_w,
             plume_k_scale=g("plume_k_scale", 1.0),
@@ -273,13 +288,14 @@ class GasMediumOverlay:
             tau_curve_b=g("tau_curve_b", 1.0),
             glow_gain=g("glow_gain", 1.0),
             effect_gas_floor=g("effect_gas_floor", 0.0),
+            base_absorb_scale=base,
         )
 
     def _bind_table(self, gas_table) -> None:
         """Cache k_s / albedo / effect-mask from the GasTable's trace-gas rows.
 
         ``k_s = mean(absorption[s])`` — the panchromatic collapse; the SAME data
-        that drives the ray march (single optical identity, design §3)."""
+        that drives the light channels (single optical identity, design §3)."""
         n = N_TRACE_GASES
         self._k_s = np.asarray(gas_table.absorption[:n],
                                dtype=np.float32).mean(axis=1)
@@ -290,14 +306,15 @@ class GasMediumOverlay:
             dtype=bool)
         self._table_id = id(gas_table)
 
-    def update(self, gas_density_trace: np.ndarray, smoke_glow: np.ndarray,
-               gas_table, *, base_absorb_scale: float) -> None:
+    def update(self, gas_density_trace: np.ndarray, glow: np.ndarray,
+               gas_table) -> None:
         """Rebuild the premultiplied layer texture for this frame.
 
         ``gas_density_trace`` : (N_TRACE_GASES, H, W) float — dequantized trace
-        densities. ``smoke_glow`` : (H, W, 3) float — the ray march inscatter.
-        ``gas_table`` : the live GasTable (``gmap.gases``). ``base_absorb_scale``
-        : the Raycaster's ``smoke_absorb_scale`` (shared base scale)."""
+        densities. ``glow`` : (H, W, 3) float — the in-scattered glow
+        (LightingPass.glow_rgb: the accessor's, calibrated). ``gas_table`` : the
+        live GasTable (``gmap.gases``). The base scale is
+        ``self.base_absorb_scale`` (``[smoke] smoke_absorb_scale``)."""
         if self._table_id != id(gas_table):
             self._bind_table(gas_table)
         # Density solidity for the P3 detail pass: saturate(pre-curve tau) built
@@ -306,15 +323,15 @@ class GasMediumOverlay:
         # off), tau<1 as a wispy edge (erosion on). Cheap; the grid is small.
         self.density_proxy = np.clip(
             gas_optical_depth(gas_density_trace, self._k_s,
-                              base_absorb_scale=base_absorb_scale,
+                              base_absorb_scale=self.base_absorb_scale,
                               plume_k_scale=self.plume_k_scale),
             0.0, 1.0).astype(np.float32)
         self.packed = pack_gas_medium_rgba(
             gas_density_trace, self._k_s,
-            base_absorb_scale=base_absorb_scale,
+            base_absorb_scale=self.base_absorb_scale,
             plume_k_scale=self.plume_k_scale,
             tau_curve_a=self.tau_curve_a, tau_curve_b=self.tau_curve_b,
-            smoke_glow=smoke_glow, glow_gain=self.glow_gain,
+            glow=glow, glow_gain=self.glow_gain,
             effect_gas_floor=self.effect_gas_floor,
             effect_gas_mask=self._effect_mask, scatter_albedo=self._scatter)
         core.update_rgba_texture(self.tex, self.packed)

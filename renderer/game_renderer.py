@@ -1,7 +1,7 @@
 """GameRenderer: thin orchestrator over core/lighting/overlays/world_composite.
 
 Public API (used by main.py):
-    renderer.upload_state(gmap, light_sources)
+    renderer.upload_state(gmap, sim_tick=..., light_serial=...)
     renderer.begin_frame()
     renderer.compose_world(...)        # everything in world space, inside RT
     renderer.blit_world_to_screen()    # camera blit from RT to map area
@@ -154,23 +154,11 @@ class GameRenderer:
 
         # Level textures + lighting + overlays
         self.textures = core.load_level_textures(level_data)
-        self.raycaster = breach_physics.Raycaster()
-        # Smoke optics: decoupled per-channel Beer-Lambert absorption + a
-        # SEPARATE additive scatter/glow budget (ch.05 §6.1 §6). Bound from
-        # the [smoke] config section so the look is tunable live (F5 reload).
-        #   transmission:  trans_c = exp(-absorption[c] * density * absorb_scale)
-        #   scatter/glow:  smoke_glow[c] += local_light[c] * scatter_albedo[c] * density
-        # Dialing smoke_absorb_scale DOWN gives the long-beam "flashlight travels
-        # far through smoke and still glows" look (the beam survives deep smoke
-        # because exp(-tau) never hits 0). Defaults approximate the shipped look.
-        smoke_cfg = getattr(CFG, "smoke", None)
-        self.raycaster.smoke_absorption_rgb = tuple(
-            getattr(smoke_cfg, "smoke_absorption", (1.0, 1.0, 1.0)))
-        self.raycaster.smoke_scatter_albedo = tuple(
-            getattr(smoke_cfg, "smoke_scatter_albedo", (1.0, 1.0, 1.0)))
-        self.raycaster.smoke_absorb_scale = float(
-            getattr(smoke_cfg, "smoke_absorb_scale", 1.4))
-        self.lighting = LightingPass(self.raycaster, cfg.grid_h, cfg.grid_w)
+        # Ray-engine-v2 P6c: LightingPass is a pure CONSUMER of the one light
+        # accessor (simulation.light_field) -- the C++ Raycaster that used to be
+        # built here (and held the [smoke] optics dials for the render march) is
+        # deleted; the gas medium reads [smoke] from config itself.
+        self.lighting = LightingPass(cfg.grid_h, cfg.grid_w)
         # [art.align] (level format v2 §1.3): bind the level's explicit art
         # alignment so draw_lit_world samples the art through the transform
         # (art pixel offset_px lands on grid (0,0); px_per_tile art pixels
@@ -208,18 +196,20 @@ class GameRenderer:
                                           tint=(190, 195, 210), max_alpha=180,
                                           gamma=_LEGACY_SMOKE_GAMMA)
         self.fire_overlay = FireOverlay(cfg.grid_h, cfg.grid_w)
-        # God-ray / lit-smoke glow (ch.05): additive shaft from the ray march's
-        # smoke_glow output. LEGACY (pre-B2) path — the new gas medium below
-        # folds occlusion + inscatter into ONE premultiplied layer instead.
+        # God-ray / lit-smoke glow (ch.05): additive shaft from the in-scattered
+        # glow (the sweep's, through LightingPass). LEGACY (pre-B2) path — the
+        # new gas medium below folds occlusion + inscatter into ONE
+        # premultiplied layer instead.
         self.glow_overlay = GlowOverlay(cfg.grid_h, cfg.grid_w)
         # Fire & Heat Beauty B2 P2 — the physical gas-medium pass (the heart of
         # B2). ONE premultiplied-over layer per frame: alpha = Beer-Lambert
         # extinction over the five trace gases (k_s from the SAME GasTable optics
-        # the ray march sums, scaled by the Raycaster's shared smoke_absorb_scale
-        # base × the relative plume_k_scale), RGB = ACES(glow_gain·smoke_glow) —
-        # the ray march's inscatter. Supersedes the flat smoke_overlay + additive
-        # glow_overlay pair (kept behind legacy_smoke_on). RENDER-ONLY: reads
-        # gmap.gas + gmap.smoke_glow, writes only its own texture.
+        # the light channels use, scaled by [smoke] smoke_absorb_scale -- read
+        # by GasMediumOverlay.from_config -- times the relative plume_k_scale),
+        # RGB = ACES(glow_gain·glow), the in-scattered glow (the sweep's
+        # light_glow through LightingPass). Supersedes the flat smoke_overlay +
+        # additive glow_overlay pair (kept behind legacy_smoke_on). RENDER-ONLY:
+        # reads gmap.gas + the glow, writes only its own texture.
         self.gas_medium = GasMediumOverlay.from_config(
             cfg.grid_h, cfg.grid_w, CFG)
         # Fire & Heat Beauty B2 P3 — the sub-tile detail shader for the gas
@@ -334,12 +324,6 @@ class GameRenderer:
         # ramp is the #8 cold-blast instrument, one config flip away).
         self.show_cold = bool(getattr(
             getattr(CFG, "render", None), "cold_overlay_on", False))
-        # Fire light sources (B1 §3) — live A/B gate for the ray-traced fire
-        # glow, seeded from [render.fire_lights] enabled; toggle with L. main.py
-        # skips the fire-light cast when this is off. RENDER-ONLY.
-        self.show_fire_lights = bool(getattr(
-            getattr(getattr(CFG, "render", None), "fire_lights", None),
-            "enabled", True))
         # Water OPTICS pass (graphics/water_rendering.md) — ON by default; the
         # GLSL pass is dormant-safe (alpha 0 on dry tiles), so a dry ship looks
         # identical whether it's on or off. Toggle with O to disable the water
@@ -348,13 +332,6 @@ class GameRenderer:
 
         # Frame timing
         self.last_frame_ms = 0.0
-        self.last_raycast_ms = 0.0
-        # Fire-light HUD counter (Fire & Heat Beauty B1): kept count, NMS peak
-        # count, and the cap — so a tuning session SEES when the brightest-K cap
-        # truncates (no silent caps). Set each frame from main.py's sources block.
-        self.fire_light_count = 0
-        self.fire_light_peaks = 0
-        self.fire_light_cap = 0
         # Render-animation epoch: the water overlay's ambient sines take a
         # seconds clock; epoch-relative keeps the float32 sine phases small.
         # Wall-clock (animates through pause) — render-only, determinism-
@@ -368,25 +345,12 @@ class GameRenderer:
         # _draw_effects_world.
         self._effects: list = []
 
-        # S2b render FLOAT BRIDGE scratch: gmap.gas is int32 Q16.16, but the C++
-        # raycaster gas optics are float — dequantize the (N,h,w) planes into this
-        # reused float32 buffer each frame the cast runs (allocated lazily on first
-        # use; resized if the grid shape changes).
-        self._gas_render_f = None
-
-        self.lighting.set_ambient((0.18, 0.18, 0.22))
-        # ray-engine-v2 P6b: THE LIGHT SOURCE. NEW (default, [render.lighting]
-        # new_light) = the radiation sweep's light channels read through the one
-        # accessor (simulation.light_field) and uploaded once per sim tick;
-        # OLD = the render march (compute_light_field + fire_lights + the
-        # per-frame sources), kept behind F11 for this patch only so the old
-        # and new light can be flipped in one scene -- P6c deletes it. The
-        # caller (main.py) requests the sweep's light while NEW is showing.
-        self.light_mode_new = bool(getattr(getattr(getattr(CFG, "render", None),
-                                                   "lighting", None), "new_light", True))
-        self.lighting.set_new_light(self.light_mode_new)
+        # ray-engine-v2 P6b/P6c: THE LIGHT is the radiation sweep's light
+        # channels, read through the one accessor (simulation.light_field) and
+        # uploaded once per sim tick; the caller (main.py) requests it. (P6b's
+        # F11 A/B against the old render march is gone with the march, P6c.)
         self._light_serial_seen = None       # the Simulation.light_serial last uploaded
-        self.last_light_ms = 0.0             # the NEW path's read + pack + upload time
+        self.last_light_ms = 0.0             # the read + pack + upload time
 
         # Unit sprites — loaded once, unloaded in shutdown().
         self.sprites = UnitSprites()
@@ -442,96 +406,35 @@ class GameRenderer:
 
     # ---- per-frame physics->GPU upload ---------------------------------
 
-    def set_light_mode_new(self, on: bool) -> None:
-        """P6b: show the NEW light (the sweep, through the accessor) or the OLD
-        render march. The flat term follows (floor vs the old ambient), and the
-        next upload re-reads the field whatever the serial says."""
-        self.light_mode_new = bool(on)
-        self.lighting.set_new_light(self.light_mode_new)
-        self._light_serial_seen = None
-
-    def upload_state(self, gmap, light_sources: Optional[List] = None,
-                     sim_tick: int = 0, light_serial: Optional[int] = None) -> None:
+    def upload_state(self, gmap, sim_tick: int = 0,
+                     light_serial: Optional[int] = None) -> None:
         t_start = time.perf_counter()
 
-        # ray-engine-v2 P6b: THE NEW PATH -- the light field is the radiation
-        # sweep's, read through the ONE accessor (simulation.light_field) and
-        # uploaded only when it changed (`light_serial`: a light-carrying tick
-        # or a relight -- once per sim tick; None re-reads every frame). The
-        # textures keep their layout, so the ship shader, the 3D units and the
-        # water pass read the new light unchanged. No producer is called here.
-        if self.show_lighting and self.light_mode_new:
+        # ray-engine-v2 P6b/P6c: THE LIGHT FIELD is the radiation sweep's, read
+        # through the ONE accessor (simulation.light_field) and uploaded only
+        # when it changed (`light_serial`: a light-carrying tick or a relight --
+        # once per sim tick; None re-reads every frame). The ship shader, the 3D
+        # units and the water pass read the textures. No producer is called here.
+        if self.show_lighting:
             if light_serial is None or light_serial != self._light_serial_seen:
                 from simulation import light_field
                 t_l = time.perf_counter()
                 self.lighting.consume_light_view(light_field.read_light(gmap))
                 self._light_serial_seen = light_serial
                 self.last_light_ms = (time.perf_counter() - t_l) * 1000
-            self.last_raycast_ms = 0.0
-        # Light field (the OLD path, P6c deletes it). Occlusion is the per-channel DYNAMIC attenuation field
-        # (ch.03 §units, ch.02 §static×dynamic): pass `gmap.dyn_light_atten`
-        # (h, w, 3) = static material attenuation MAX'd with stamped-unit
-        # opacity, rebuilt each tick in `stamp_units`. Opaque walls/units
-        # ([1,1,1]) block exactly like the old wall hard-stop; glass transmits.
-        # Away from units it equals the static field, so behaviour matches S2;
-        # over a unit footprint it restores the pre-S2 unit shadow.
-        elif self.show_lighting and light_sources:
-            t_ray = time.perf_counter()
-            # Pass gmap.heat (Q16.16 deposit) and gmap.smoke_glow (god-ray
-            # glow) so the march writes both Slice-4 outputs in-place. The cast
-            # still lives here in the renderer; it moves into the sim in S5.
-            # Multi-gas coloured optics (engine/05 §6.2): pass the full (N,h,w)
-            # gas array + the per-gas absorption/scatter tables so the march sums
-            # all gases density-weighted per channel (poison greens the beam,
-            # smoke dims it, mixing falls out of the sum). `gmap.smoke` is
-            # just the smoke slice of `gmap.gas`.
-            # S2b: gmap.gas is int32 Q16.16 — DEQUANTIZE the (N,h,w) array to
-            # float32 density for the render cast (the C++ raycaster's gas optics
-            # are float; render-only FLOAT BRIDGE, one source of truth = the int
-            # field). Reused scratch to avoid a per-frame alloc.
-            from simulation import gas_fixed
-            if (self._gas_render_f is None
-                    or self._gas_render_f.shape != gmap.gas.shape):
-                self._gas_render_f = np.empty(gmap.gas.shape, dtype=np.float32)
-            np.multiply(gmap.gas, 1.0 / gas_fixed.FP_ONE_F,
-                        out=self._gas_render_f, casting="unsafe")
-            self.lighting.compute_light_field(
-                light_sources, self._gas_render_f,
-                gmap.gases.absorption, gmap.gases.scatter_albedo,
-                gmap.dyn_light_atten,
-                heat=gmap.heat, smoke_glow=gmap.smoke_glow,
-                heat_atten=gmap.heat_atten,
-            )
-            self.last_raycast_ms = (time.perf_counter() - t_ray) * 1000
         else:
-            self.lighting.light_rgb.fill(0)
-            self.lighting.light_map.fill(0)
-            self.lighting.light_dx.fill(0)
-            self.lighting.light_dy.fill(0)
-            self.lighting.packed_a.fill(0)
-            self.lighting.packed_b.fill(0)
-            # No cast this frame -> no deposits. Clear the glow so a stale shaft
-            # doesn't linger (heat is sim-owned; left to the sim's cleanup).
-            gmap.smoke_glow.fill(0)
-            core.update_rgba16f_texture(self.lighting.light_tex_a,
-                                        self.lighting.packed_a)
-            core.update_rgba16f_texture(self.lighting.light_tex_b,
-                                        self.lighting.packed_b)
-            self.last_raycast_ms = 0.0
-            self.lighting.glow_rgb.fill(0)
-            self._light_serial_seen = None    # P6b: re-read when the light returns
+            self.lighting.clear_light()
+            self._light_serial_seen = None    # re-read when the light returns
 
-        # P6b: the in-scattered GLOW the smoke medium draws -- the sweep's
-        # light_glow (through the accessor, calibrated) on the NEW path, the
-        # old march's smoke_glow on the OLD one.
-        glow_field = (self.lighting.glow_rgb if self.light_mode_new
-                      else gmap.smoke_glow)
+        # The in-scattered GLOW the smoke medium draws: the sweep's light_glow,
+        # through the accessor, calibrated by LightingPass.
+        glow_field = self.lighting.glow_rgb
 
         # Smoke medium. Fire & Heat Beauty B2 P2: the physical gas-medium pass
         # (renderer/gas_medium.py) replaces the flat-grey smoke_overlay + additive
         # glow_overlay pair with ONE premultiplied-over layer — alpha = Beer-
         # Lambert occlusion over the five trace gases, RGB = ACES-tone-mapped
-        # inscatter (gmap.smoke_glow). The legacy pair is kept behind
+        # inscatter (the glow above). The legacy pair is kept behind
         # legacy_smoke_on for the live A/B (F9). Only the ACTIVE path's texture
         # is refreshed; a toggle shows the other path on the next frame.
         if self.show_smoke:
@@ -546,13 +449,12 @@ class GameRenderer:
                 self.glow_overlay.update(glow_field)
             else:
                 # k_s (per-gas mean extinction) is read from gmap.gases — the
-                # SAME optics table the ray march sums — and scaled by the
-                # Raycaster's smoke_absorb_scale (the shared base), so plume body
-                # and god-rays track by construction (single source of scale).
+                # SAME optics table the light channels use — and scaled by
+                # [smoke] smoke_absorb_scale (the shared base, held by the
+                # overlay), so plume body and god-rays track by construction
+                # (single source of scale).
                 trace = gas_fixed.dequantize_f32(gmap.gas[:N_TRACE_GASES])
-                self.gas_medium.update(
-                    trace, glow_field, gmap.gases,
-                    base_absorb_scale=float(self.raycaster.smoke_absorb_scale))
+                self.gas_medium.update(trace, glow_field, gmap.gases)
                 # P3 detail: upload the TAMED wind (raw -grad(P) is fire-spiked +
                 # unusable as a velocity — see gas_detail.py) + the P2 density
                 # solidity, and advance the crossfade phase on the SIM clock
@@ -1162,10 +1064,11 @@ class GameRenderer:
         'transient light emitter' half of the spray/plasma visuals.
 
         Returns plain dicts (x, y, max_range, intensity, color) in TILE
-        coordinates; main.py converts them to ``bp.LightSource`` and appends
-        them to the frame's source list (the renderer stays free of the
-        physics module, and the sim is never touched — lights are a pure
-        function of the renderer's own effect queue). A flame jet lights
+        coordinates; main.py turns them into cone-emitter specs
+        (renderer/frame_lights.py ``transient_specs``, the one assembly) for the
+        sweep (the renderer stays free of the physics module, and the sim is
+        never touched — lights are a pure function of the renderer's own
+        effect queue; ``max_range`` is ignored, a sweep has no range). A flame jet lights
         from ~1/3 down the cone axis in warm orange; a miasma jet barely
         glows (faint sickly green); a plasma bolt carries a small warm
         light with it. Intensities fade with the effect's remaining life.
@@ -1422,28 +1325,16 @@ class GameRenderer:
         frame_ms = 1000.0 / max(1, rl.get_fps())
         draw_text(f"Frame:   {frame_ms:.1f} ms (smoothed)", x, y, 14)
         y += 18
-        # P6b: which light is showing (F11 flips it), and what it cost this
-        # frame -- the NEW path's cost is the per-tick read + pack + upload;
-        # the sweep itself runs inside the sim tick.
-        if self.light_mode_new:
-            draw_text(f"Light: NEW sweep ({self.last_light_ms:.1f} ms up)",
-                      x, y, 14, color=(180, 255, 180, 255))
-        else:
-            draw_text(f"Light: OLD march {self.last_raycast_ms:.1f} ms",
-                      x, y, 14, color=(255, 200, 120, 255))
+        # The light's render-side cost: the per-tick read + pack + upload (the
+        # sweep itself runs inside the sim tick).
+        draw_text(f"Light: sweep ({self.last_light_ms:.1f} ms up)",
+                  x, y, 14, color=(180, 255, 180, 255))
         y += 18
         # Upload = the light-cast + overlay-texture-build slice INSIDE
         # upload_state (a SUBSET of "Frame:" above, not the whole frame).
         # Renamed from the old, misleading "Frame:" label this line used to
         # carry (it never included compose_world/draw/blit/sim.step).
         draw_text(f"Upload:  {self.last_frame_ms:.1f} ms", x, y, 14)
-        y += 18
-        # Fire-light counter (B1 §3): kept / NMS-peaks, flag when the cap bites.
-        capped = self.fire_light_count < self.fire_light_peaks
-        fl_color = (255, 200, 120, 255) if capped else (180, 200, 180, 255)
-        fl_txt = (f"Fire lights: {self.fire_light_count}/{self.fire_light_peaks}"
-                  f"  cap {self.fire_light_cap}" + ("  CAP!" if capped else ""))
-        draw_text(fl_txt, x, y, 14, color=fl_color)
         y += 28
         draw_text("Toggles:", x, y, 14, color=(180, 200, 255, 255))
         y += 20
@@ -1452,12 +1343,10 @@ class GameRenderer:
             ("F2 smoke",       self.show_smoke),
             ("F3 fire",        self.show_fire),
             ("F4 light",       self.show_lighting),
-            ("F11 NEW light",  self.light_mode_new),     # P6b old/new A/B
             ("F5 normal map",  self.show_normal_map),
             ("F6 coords",      self.show_debug_coords),
             ("F7 pressure",    self.show_pressure),
             ("T  temperature", self.show_temperature),
-            ("L  fire lights", self.show_fire_lights),
             ("O  water optics", self.show_water),
             ("M  3D units",    self.cfg.use_3d_units),
             ("B  bilinear",    self.lighting.bilinear),
@@ -1510,17 +1399,6 @@ class GameRenderer:
                   color=(140, 140, 160, 255))
         y += 14
 
-    def set_fire_light_stats(self, count: int, peaks: int, cap: int) -> None:
-        """Record this frame's fire-light counts for the debug HUD (B1 §3).
-
-        ``count`` = lights actually emitted (<= cap), ``peaks`` = NMS peaks
-        before the cap, ``cap`` = max_lights. count < peaks means the cap
-        truncated — surfaced on the HUD so tuning sessions see saturation.
-        """
-        self.fire_light_count = int(count)
-        self.fire_light_peaks = int(peaks)
-        self.fire_light_cap = int(cap)
-
     # ---- input ----------------------------------------------------------
 
     def poll_toggles(self) -> None:
@@ -1537,7 +1415,7 @@ class GameRenderer:
         self.poll_camera_zoom()
 
     def poll_debug_toggles(self) -> None:
-        """The diagnostic/graphical toggles (F1-F10, T/L/V/M/B/H/G, brackets).
+        """The diagnostic/graphical toggles (F1-F10, T/V/M/B/H/G, brackets).
 
         Every key here is a development affordance, not a game binding — which
         is exactly why §17 evicts them from game mode.
@@ -1565,24 +1443,13 @@ class GameRenderer:
         # F10: dirty-Planck speckle A/B (Fire & Heat Beauty B2 P4) — cycles the
         # black-body flame mottle off -> noise -> soot so Erik picks by eye in the
         # studio. (Keymap audited: in-game F1-F7 + F9 are poll_toggles, F8 is the
-        # input_handler recorder dump — F10/F11/F12 are all free; F10 is the next
+        # input_handler recorder dump — F10/F11/F12 were free; F10 is the next
         # after F9's legacy-smoke A/B.) Prints the new mode for the console log.
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F10):
             print(f"[speckle] mode -> {self.speckle.cycle_mode()}")
-        # F11: ray-engine-v2 P6b's OLD/NEW LIGHT A/B -- the sweep's light (NEW,
-        # the default) vs the old render march + fire lights + the per-frame
-        # sources (OLD), in the same scene, for the play test. main.py reads
-        # light_mode_new to request the sweep's light. P6c deletes the old
-        # path and this key. (F11 was free: F1-F7/F9/F10 here, F8 the recorder.)
-        if rl.is_key_pressed(rl.KeyboardKey.KEY_F11):
-            self.set_light_mode_new(not self.light_mode_new)
-            print(f"[light] -> {'NEW (the sweep)' if self.light_mode_new else 'OLD (the march)'}")
         # T: emissive black-body temperature overlay (over gmap.temperature).
         if rl.is_key_pressed(rl.KeyboardKey.KEY_T):
             self.show_temperature = not self.show_temperature
-        # L: fire light sources (B1) — A/B the ray-traced fire glow live.
-        if rl.is_key_pressed(rl.KeyboardKey.KEY_L):
-            self.show_fire_lights = not self.show_fire_lights
         # V: toggle the water optics pass (GLSL Fresnel/GGX/refraction). The
         # pass is dormant-safe (alpha 0 on dry tiles); toggling only matters
         # once water is on the floor — disable to A/B against the bare floor.
