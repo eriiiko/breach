@@ -3130,6 +3130,340 @@ def gate18_light_channels(fast=False):
     return ok, lines
 
 
+# --------------------------------------------------------------------------- #
+# P6b: CONE EMITTERS and THE SKY BOUNDARY (docs/ray_engine_v2_p6b_lit_world_brief
+# _2026-09-25.md sections 1.3, 1.4 and 3.2-3.3). Every property PAIRED.
+# --------------------------------------------------------------------------- #
+def _brute_overlaps(center_q, spread_q, n_ord):
+    """The projection's ORACLE, by counting: how many integer angles of the beam
+    fall in each ordinate's bin. Independent of cone_overlaps' interval algebra
+    (it never forms an edge or unwraps anything)."""
+    T = R.CONE_TURN
+    if spread_q >= T:
+        angles = range(T)
+    elif spread_q == 0:
+        angles = [center_q]
+    else:
+        lo = center_q - (spread_q >> 1)
+        angles = range(lo, lo + spread_q)
+    ov = [0] * n_ord
+    for a in angles:
+        ov[((a % T) * n_ord) >> 16] += 1
+    return ov
+
+
+def _cone_room(n, cones=None, sky=None, *, opaque_at=None, body_at=None):
+    """An n x n clear, cold room (heat and light transparent) with the given
+    cones / sky. `opaque_at` cells are light MATERIAL walls (a = d = ONE),
+    `body_at` cells light BODIES (a = 0, d = ONE)."""
+    a, d, T = R.plane(n, n), R.plane(n, n), R.plane(n, n)
+    la, ld = _lplanes(n, n), _lplanes(n, n)
+    for (y, x) in (opaque_at or ()):
+        for ch in range(3):
+            la[ch][y][x] = ld[ch][y][x] = ONE
+    for (y, x) in (body_at or ()):
+        for ch in range(3):
+            ld[ch][y][x] = ONE
+    return (a, d, R.plane(n, n), T, la, ld), dict(cones=cones, sky=sky)
+
+
+def _cone_sweep(scene, lkw, **kw):
+    a, d, k, T, la, ld = scene
+    rec = kw.pop("record_streams", False)
+    tr = kw.pop("ltransport", "step")
+    return R.sweep_q(a, d, k, T, light=R.LightGroup(la=la, ld=ld, transport=tr,
+                                                    record_streams=rec, **lkw), **kw)
+
+
+def gate19_cones_and_sky(fast=False):
+    """G19 (P6b): CONE EMITTERS and THE SKY BOUNDARY on the light channels.
+
+      (a) THE PROJECTION: every ordinate's overlap equals the count of the beam's
+          integer angles in its bin (a brute-force oracle), so the overlaps sum
+          to the spread; a zero-spread cone puts everything into the ONE bin
+          holding its centre; an omni cone gives every ordinate rgb // 16 (S16);
+          the floors lose less than one count per lit ordinate; rotating the
+          centre by one bin rotates the emission by one ordinate exactly (S16).
+          PAIR: dropping the unwrap (the bin's second copy) loses the part of a
+          beam crossing angle 0.
+      (b) IN THE SWEEP: a lone cone in a clear room lights ONLY its beam's
+          ordinates -- every stream in an ordinate it gives 0 is exactly 0 at
+          every cell -- a zero-spread cone lights exactly one ordinate, the
+          emitter's own light_q is its whole emission, the books close with
+          emit == the summed injection. PAIR: the same cone on a BODY cell
+          (d = ONE) lights its own cell and nothing else.
+      (c) THE SKY: a uniform sky S carries EXACTLY S per ordinate into every cell
+          of a clear grid (light_q == n_ord * S), both light transports, S16 and
+          S12, books closing through ring_in; a SEALED box (a light-opaque wall
+          ring) is exactly 0 inside while the outside is lit -- PAIR: a one-cell
+          opening lets the sky in, and the entering light DECAYS with distance
+          from the opening; a SUN (the sky from cone_emission of a narrow beam)
+          lights only its ordinates, and a full-height wall leaves its lee
+          exactly dark -- PAIR: an overcast sky lights the same lee.
+      (d) HEAT IS UNTOUCHED: with cones and a sky, every heat plane and the heat
+          telemetry equal the heat-only run's.
+      (e) THE DOOR refuses a cone outside the grid, a negative rgb, a centre or a
+          spread out of range, a summed rgb one count over the budget, a sky
+          value out of range or a sky of the wrong shape. PAIR: exactly the
+          budget and exactly the sky maximum are accepted.
+      (f) HEADROOM, over-driven (the whole cone budget into ONE ordinate of ONE
+          cell, the sky at its maximum in every ordinate, table-top emitters):
+          every light stream < 2^45, light_q < 2^50, every plain product < 2^62,
+          the books < 2^63. PAIR: a budget 2^3 larger crosses 2^63.
+
+    Breaks if: a beam's power reaches an ordinate outside its bins or misses one
+    inside them (a, b), the injection enters after the absorption or is not
+    booked as emission (b), the ring stops reading the sky or reads it for only
+    one of the two upwind shares (c), the light code touches a heat integer
+    (d), the door stops refusing (e), the budget grows past the int64 argument
+    (f). Each variant above was run.
+    """
+    lines, ok = [], True
+    lg2 = lambda v: math.log2(max(abs(v), 1))  # noqa: E731
+    T_ = R.CONE_TURN
+    rng = random.Random(20260929)
+    # ---- (a) the projection -------------------------------------------------------
+    cases = [(0, 0), (4095, 0), (4096, 0), (65535, 0), (0, 10923), (60000, 12000),
+             (100, 65535), (123, 65536), (40000, 1), (32768, 32768), (5000, 4096)]
+    n_rand = 6 if fast else 18
+    for _ in range(n_rand):
+        cases.append((rng.randrange(T_), rng.choice([rng.randrange(1, 9000),
+                                                    rng.randrange(T_ + 1)])))
+    brute_ok = sums_ok = zero_ok = floor_ok = True
+    for n_ord in (16, 12):
+        for (cq, sq) in cases:
+            ov, tot = R.cone_overlaps(cq, sq, n_ord)
+            if sq == 0:
+                b = (cq * n_ord) >> 16
+                zero_ok &= (ov == [int(m == b) for m in range(n_ord)] and tot == 1)
+            else:
+                brute_ok &= ov == _brute_overlaps(cq, sq, n_ord)
+                sums_ok &= (sum(ov) == tot == min(sq, T_))
+            rgb = [rng.randrange(1, 1 << 40) for _ in range(3)]
+            e = R.cone_emission(rgb, cq, sq, n_ord)
+            lit = sum(1 for m in range(n_ord) if ov[m] > 0)
+            floor_ok &= all(rgb[c] - lit < sum(e[m][c] for m in range(n_ord)) <= rgb[c]
+                            for c in range(3))
+    omni = R.cone_emission([12345678901, 3, 99], 777, T_, 16)
+    omni_ok = all(omni[m] == [12345678901 >> 4, 0, 99 >> 4] for m in range(16))
+    rot_ok = True
+    for (cq, sq) in cases:
+        e0 = R.cone_emission([1 << 37] * 3, cq, sq, 16)
+        e1 = R.cone_emission([1 << 37] * 3, (cq + 4096) % T_, sq, 16)
+        rot_ok &= all(e1[(m + 1) % 16] == e0[m] for m in range(16))
+
+    def _no_unwrap(cq, sq, n_ord=16):
+        lo = (cq - (sq >> 1)) % T_
+        hi = lo + sq
+        return [max(0, min(hi, R.cone_bin_edge(m + 1, n_ord)) - max(lo, R.cone_bin_edge(m, n_ord)))
+                for m in range(n_ord)]
+    lost = 10923 - sum(_no_unwrap(0, 10923))
+    good = brute_ok and sums_ok and zero_ok and floor_ok and omni_ok and rot_ok and lost > 0
+    ok &= good
+    lines.append(f"  (a) {2 * len(cases)} beams (S16/S12): every overlap == the brute count "
+                 f"of the beam's integer angles in the bin {brute_ok}, overlaps sum to the "
+                 f"spread {sums_ok}; zero spread -> the centre's bin alone {zero_ok}; omni "
+                 f"-> rgb // 16 per ordinate {omni_ok}; floors lose < 1 count per lit "
+                 f"ordinate {floor_ok}; a one-bin rotation rotates the emission by one "
+                 f"ordinate {rot_ok}. PAIR: without the unwrap a beam centred on 0 loses "
+                 f"{lost} of its 10923 turn-counts  {'OK' if good else 'FAIL'}")
+    # ---- (b) in the sweep ------------------------------------------------------------
+    n = 9 if fast else 11
+    c0 = (n // 2, n // 2)
+    rgb = (1 << 37, 3 << 35, 1 << 36)                 # a warm lamp, ~1 light unit
+    only_beam = own_q = books = zero_one = heat_same = True
+    for (cq, sq) in ((0, 10923), (20000, 0), (50000, 30000), (123, T_)):
+        for ltr in ("step", "shear"):
+            cones = [(c0[0], c0[1], rgb, cq, sq)]
+            sc, lkw = _cone_room(n, cones=cones)
+            r = _cone_sweep(sc, lkw, record_streams=True, ltransport=ltr)
+            e = R.cone_emission(rgb, cq, sq, 16)
+            for m in range(16):
+                for ch in range(3):
+                    pl = r.light_streams[m][ch]
+                    if e[m][ch] == 0:
+                        only_beam &= all(v == 0 for row in pl for v in row)
+                    else:
+                        only_beam &= pl[c0[0]][c0[1]] == e[m][ch]
+            own_q &= all(r.light_q[ch][c0[0]][c0[1]] == sum(e[m][ch] for m in range(16))
+                         for ch in range(3))
+            books &= (r.light_books_close() == [0, 0, 0]
+                      and r.light_emit == [sum(e[m][ch] for m in range(16)) for ch in range(3)])
+            if sq == 0:
+                zero_one &= sum(1 for m in range(16)
+                                if any(v for row in r.light_streams[m][0] for v in row)) == 1
+            a, d, k, T, la, ld = sc
+            r0 = R.sweep_q(a, d, k, T)
+            heat_same &= (r0.rad_net == r.rad_net and r0.rad_fluence == r.rad_fluence
+                          and r0.rad_amb == r.rad_amb and r0.rad_flux == r.rad_flux)
+    sc_b, lkw_b = _cone_room(n, cones=[(c0[0], c0[1], rgb, 0, 10923)], body_at=[c0])
+    r_b = _cone_sweep(sc_b, lkw_b)
+    body_ok = (all(r_b.light_q[ch][y][x] == 0 for ch in range(3) for y in range(n)
+                   for x in range(n) if (y, x) != c0)
+               and r_b.light_q[0][c0[0]][c0[1]] > 0 and r_b.light_books_close() == [0, 0, 0])
+    good = only_beam and own_q and books and zero_one and body_ok
+    ok &= good
+    lines.append(f"  (b) a lone cone ({n}x{n}, four beams x light step/shear): every stream "
+                 f"in an ordinate it gives 0 is exactly 0 everywhere and its beam ordinates "
+                 f"leave the emitter at exactly e_m {only_beam}; a zero-spread cone lights "
+                 f"exactly one ordinate {zero_one}; the emitter's light_q == its whole "
+                 f"emission {own_q}; books close with emit == the injection {books}. PAIR: "
+                 f"on a BODY cell it lights its own cell and nothing else {body_ok}  "
+                 f"{'OK' if good else 'FAIL'}")
+    # ---- (c) the sky -------------------------------------------------------------------
+    S = 7 << 30
+    uni_ok = True
+    for n_ord in (16, 12):
+        for ltr in ("step", "shear"):
+            sc, lkw = _cone_room(n, sky=[[S, S // 2, S // 3]] * n_ord)
+            r = _cone_sweep(sc, lkw, n_ord=n_ord, ltransport=ltr, record_streams=True)
+            uni_ok &= all(r.light_q[ch][y][x] == n_ord * [S, S // 2, S // 3][ch]
+                          for ch in range(3) for y in range(n) for x in range(n))
+            uni_ok &= all(v == [S, S // 2, S // 3][ch] for m in range(n_ord)
+                          for ch in range(3) for row in r.light_streams[m][ch] for v in row)
+            uni_ok &= (r.light_books_close() == [0, 0, 0]
+                       and all(v > 0 for v in r.light_ring_in))
+    # the sealed box, and one opening in it
+    nb = 13 if fast else 17
+    lo_, hi_ = 3, nb - 4
+    wall = [(y, x) for y in range(lo_, hi_ + 1) for x in range(lo_, hi_ + 1)
+            if y in (lo_, hi_) or x in (lo_, hi_)]
+    inside = [(y, x) for y in range(lo_ + 1, hi_) for x in range(lo_ + 1, hi_)]
+    outside = [(y, x) for y in range(nb) for x in range(nb)
+               if not (lo_ <= y <= hi_ and lo_ <= x <= hi_)]
+    sky16 = [[S] * 3] * 16
+    sc, lkw = _cone_room(nb, sky=sky16, opaque_at=wall)
+    r_s = _cone_sweep(sc, lkw)
+    sealed = (all(r_s.light_q[ch][y][x] == 0 for ch in range(3) for (y, x) in inside)
+              and all(r_s.light_q[0][y][x] > 0 for (y, x) in outside))
+    ymid = (lo_ + hi_) // 2
+    open_wall = [p for p in wall if p != (ymid, lo_)]
+    sc, lkw = _cone_room(nb, sky=sky16, opaque_at=open_wall)
+    r_o = _cone_sweep(sc, lkw)
+    axis = [r_o.light_q[0][ymid][x] for x in range(lo_ + 1, hi_)]
+    lit_in = sum(1 for (y, x) in inside if r_o.light_q[0][y][x] > 0)
+    decays = all(axis[i + 1] < axis[i] for i in range(len(axis) - 1)) and axis[-1] > 0
+    # a sun from the west: bearing 0 (light travels +x), a 20-degree disc; a
+    # box walled on its west, north and south sides and OPEN TO THE EAST -- the
+    # side facing away from the sun (a sun at infinity enters through EVERY
+    # boundary face its rays cross, so a lee has to be closed on those faces)
+    sun = R.cone_emission([S] * 3, 0, (T_ * 20) // 360, 16)
+    sun_ords = [m for m in range(16) if sun[m][0] > 0]
+    lee_wall = [(y, x) for y in range(lo_, hi_ + 1) for x in range(lo_, hi_ + 1)
+                if y in (lo_, hi_) or x == lo_]
+    lee = [(y, x) for y in range(lo_ + 1, hi_) for x in range(lo_ + 1, hi_ + 1)]
+    sc, lkw = _cone_room(nb, sky=sun, opaque_at=lee_wall)
+    r_sun = _cone_sweep(sc, lkw, record_streams=True)
+    sun_only = all(all(v == 0 for row in r_sun.light_streams[m][0] for v in row)
+                   for m in range(16) if m not in sun_ords)
+    lee_dark = (all(r_sun.light_q[ch][y][x] == 0 for ch in range(3) for (y, x) in lee)
+                and all(r_sun.light_q[0][y][x] > 0 for (y, x) in outside if x < lo_))
+    sc, lkw = _cone_room(nb, sky=sky16, opaque_at=lee_wall)
+    r_ov = _cone_sweep(sc, lkw)
+    lee_lit = all(r_ov.light_q[0][y][x] > 0 for (y, x) in lee)
+    good = uni_ok and sealed and lit_in > 0 and decays and sun_only and lee_dark and lee_lit
+    ok &= good
+    lines.append(f"  (c) a uniform sky: exactly S per ordinate and light_q == n_ord * S at "
+                 f"every cell, books closing through ring_in (S16/S12 x light step/shear) "
+                 f"{uni_ok}; a SEALED box is exactly 0 inside, lit outside {sealed}. PAIR: "
+                 f"one opening lights {lit_in} of {len(inside)} inside cells and the light "
+                 f"decays along its axis {decays} ({lg2(axis[0]):.1f} -> "
+                 f"{lg2(axis[-1]):.1f} bits over {len(axis)} cells); a sun (ordinates "
+                 f"{sun_ords}) lights only its ordinates {sun_only} and leaves a box open only "
+                 f"AWAY from it exactly dark inside {lee_dark}. PAIR: overcast lights that box "
+                 f"{lee_lit}  {'OK' if good else 'FAIL'}")
+    # ---- (d) heat untouched --------------------------------------------------------
+    h, w = (6, 8) if fast else (8, 10)
+    heat_mixed = True
+    for n_ord in (16, 12):
+        for htr in ("shear", "step"):
+            a, d, _T, f = _rand_scene(rng, h, w)
+            la, ld, T = _light_rand_scene(rng, h, w)
+            k = R.plane(h, w, K_LEAK)
+            cones = [(rng.randrange(h), rng.randrange(w),
+                      tuple(rng.randrange(1 << 38) for _ in range(3)),
+                      rng.randrange(T_), rng.randrange(T_ + 1)) for _ in range(4)]
+            sky = [[rng.randrange(1 << 36) for _ in range(3)] for _ in range(n_ord)]
+            r0 = R.sweep_q(a, d, k, T, n_ord=n_ord, transport=htr, f_plane=f)
+            r1 = R.sweep_q(a, d, k, T, n_ord=n_ord, transport=htr, f_plane=f,
+                           light=R.LightGroup(la=la, ld=ld, cones=cones, sky=sky))
+            heat_mixed &= (r0.rad_net == r1.rad_net and r0.rad_flux == r1.rad_flux
+                           and r0.rad_amb == r1.rad_amb and r0.rad_fluence == r1.rad_fluence
+                           and (r0.min_stream, r0.max_stream) == (r1.min_stream, r1.max_stream)
+                           and r1.light_books_close() == [0, 0, 0])
+    good = heat_same and heat_mixed
+    ok &= good
+    lines.append(f"  (d) every heat plane and the heat telemetry identical with cones and "
+                 f"a sky on (the lone-cone rooms {heat_same}; randomised scenes, S16/S12 x "
+                 f"heat shear/step, books closing {heat_mixed})  {'OK' if good else 'FAIL'}")
+    # ---- (e) the door ------------------------------------------------------------
+    sc, _ = _cone_room(5)
+    B = R.LIGHT_CONE_BUDGET
+
+    def _refused(cones=None, sky=None):
+        try:
+            _cone_sweep(sc, dict(cones=cones, sky=sky))
+        except ValueError:
+            return True
+        return False
+    bad = [dict(cones=[(5, 0, (1, 1, 1), 0, 0)]), dict(cones=[(0, -1, (1, 1, 1), 0, 0)]),
+           dict(cones=[(0, 0, (-1, 1, 1), 0, 0)]), dict(cones=[(0, 0, (1, 1, 1), T_, 0)]),
+           dict(cones=[(0, 0, (1, 1, 1), -1, 0)]), dict(cones=[(0, 0, (1, 1, 1), 0, T_ + 1)]),
+           dict(cones=[(0, 0, (B, 0, 0), 0, 0), (1, 1, (1, 0, 0), 0, 0)]),
+           dict(sky=[[R.LIGHT_SKY_MAX + 1, 0, 0]] + [[0] * 3] * 15),
+           dict(sky=[[-1, 0, 0]] + [[0] * 3] * 15), dict(sky=[[0] * 3] * 12)]
+    refused = [_refused(**kw) for kw in bad]
+    accepted = not _refused(cones=[(0, 0, (B, B, B), 0, 0)],
+                            sky=[[R.LIGHT_SKY_MAX] * 3] * 16)
+    good = all(refused) and accepted
+    ok &= good
+    lines.append(f"  (e) the door refuses {sum(refused)}/{len(refused)} illegal inputs "
+                 f"(off-grid, negative, centre/spread out of range, budget + 1, sky out of "
+                 f"range or shape). PAIR: exactly the budget and the sky maximum are "
+                 f"accepted {accepted}  {'OK' if good else 'FAIL'}")
+    # ---- (f) headroom ------------------------------------------------------------
+    hh, ww = (7, 8) if fast else (9, 11)
+    top = R.T_TABLE_TOP_GAME << 16
+
+    def _over(budget):
+        out = dict(stream=0, plain=0, lq=0, books=0)
+        for n_ord in (16, 12):
+            for ltr in ("step", "shear"):
+                T2, la2 = R.plane(hh, ww), _lplanes(hh, ww)
+                for (y, x) in ((1, 1), (hh - 2, ww - 2), (hh // 2, 1)):
+                    T2[y][x] = top
+                    for ch in range(3):
+                        la2[ch][y][x] = ONE
+                cones = [(0, 0, (budget,) * 3, 0, 0)]          # the whole budget, one ordinate
+                sky = [[R.LIGHT_SKY_MAX] * 3] * n_ord
+                rr = R.sweep_q(R.plane(hh, ww), R.plane(hh, ww), R.plane(hh, ww), T2,
+                               n_ord=n_ord,
+                               light=R.LightGroup(la2, la2, transport=ltr, cones=cones,
+                                                  sky=sky),
+                               validate=budget <= R.LIGHT_CONE_BUDGET)
+                out["stream"] = max(out["stream"], rr.max_light_stream)
+                out["plain"] = max(out["plain"], rr.max_light_plain_product)
+                out["lq"] = max(out["lq"], rr.max_light_q)
+                out["books"] = max(out["books"], *rr.light_emit, *rr.light_absorb,
+                                   *rr.light_ring_out, *rr.light_ring_in)
+        return out
+
+    worst = _over(R.LIGHT_CONE_BUDGET)
+    worst_big = _over(R.LIGHT_CONE_BUDGET << 3)
+    good = (worst["stream"] < 2 ** 45 and worst["lq"] < 2 ** 50 and worst["plain"] < 2 ** 62
+            and worst["books"] < 2 ** 63 and worst_big["plain"] >= 2 ** 63)
+    ok &= good
+    lines.append(f"  (f) over-driven (budget 2^{lg2(R.LIGHT_CONE_BUDGET):.0f} into one "
+                 f"ordinate of one cell, the sky at 2^{lg2(R.LIGHT_SKY_MAX):.0f} in every "
+                 f"ordinate, table-top emitters; S16/S12 x light step/shear): max stream "
+                 f"2^{lg2(worst['stream']):.2f} (< 2^45), light_q 2^{lg2(worst['lq']):.2f} "
+                 f"(< 2^50), widest plain product 2^{lg2(worst['plain']):.2f} (< 2^62), books "
+                 f"2^{lg2(worst['books']):.2f} (< 2^63). PAIR: a budget 2^3 larger: plain "
+                 f"product 2^{lg2(worst_big['plain']):.2f} (crosses 2^63)  "
+                 f"{'OK' if good else 'FAIL'}")
+    return ok, lines
+
+
 GATES = [
     ("G1  conservation", gate1_conservation),
     ("G2a uniform ambient fixed point", gate2a_uniform_ambient),
@@ -3155,6 +3489,8 @@ GATES = [
      gate17_fine_heat_currency),
     ("G18 the light channels: books, darkness, optics, colour, flux, headroom, "
      "floor (P6a)", gate18_light_channels),
+    ("G19 cone emitters and the sky boundary: projection, beams, sky, door, "
+     "headroom (P6b)", gate19_cones_and_sky),
 ]
 
 
