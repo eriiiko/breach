@@ -423,6 +423,13 @@ class PhysicsRunner:
                 f"per cell (design v3 section 2.3's `0 <= k <= ONE` invariant)")
         from simulation import optics_fixed as _optics_fx
         self.k_leak_q = int(_optics_fx.quantize_scalar(_k_leak))
+        # ray-engine-v2 P6b: the light channels' two render-state inputs (the
+        # cone emitters and the sky, set by the game's renderer -- never by a
+        # headless run) and a serial the renderer watches to know when the
+        # light planes hold a new field (a light-carrying tick or a relight).
+        self.light_cones = None
+        self.light_sky = None
+        self.light_serial = 0
         # [physics.radiation] vacuum_ambient_K (thermal model v2 R3): the
         # temperature of SPACE, baked into the EMISSIVE LEVEL a vacuum cell
         # radiates against. Door 2 — one load-time conversion, here, through
@@ -1033,6 +1040,10 @@ class PhysicsRunner:
             light_glow=gmap.light_glow,
             gas_light_absorb_q16=gmap.gases.light_absorb_q16,
             gas_light_glow_q16=gmap.gases.light_glow_q16,
+            # P6b: the cone emitters and the sky (set_light_cones /
+            # set_light_sky; None = none / the dark ring), read only while
+            # light is requested.
+            light_cones=self.light_cones, light_sky=self.light_sky,
             k_leak_q=self.k_leak_q,
             # thermal v2 R3: the level a VACUUM cell radiates against; the
             # engine selects it per cell from `is_vacuum` (derive_ambient).
@@ -1075,6 +1086,8 @@ class PhysicsRunner:
         # wrote would vanish unbooked). `refresh_gas_energy` survives as the
         # level-load initialiser only.
 
+        if self.engine.light_requested:
+            self.light_serial += 1          # P6b: a new light field for the renderer
         return destroyed
 
     # ------------------------------------------------------------------
@@ -1479,6 +1492,10 @@ class PhysicsRunner:
             light_glow=gmap.light_glow,
             gas_light_absorb_q16=gmap.gases.light_absorb_q16,
             gas_light_glow_q16=gmap.gases.light_glow_q16,
+            # P6b: the cone emitters and the sky (set_light_cones /
+            # set_light_sky; None = none / the dark ring), read only while
+            # light is requested.
+            light_cones=self.light_cones, light_sky=self.light_sky,
             k_leak_q=self.k_leak_q,
             rad_amb_vacuum_q=self.rad_amb_vacuum_q,   # thermal v2 R3
             is_ambient=amb[0],
@@ -1510,7 +1527,59 @@ class PhysicsRunner:
         # wrote would vanish unbooked). `refresh_gas_energy` survives as the
         # level-load initialiser only.
 
+        if self.engine.light_requested:
+            self.light_serial += 1          # P6b: a new light field for the renderer
         return destroyed
+
+    # ------------------------------------------------------------------
+    # ray-engine-v2 P6b: THE LIGHT INPUTS and RELIGHT
+    # ------------------------------------------------------------------
+    def set_light_cones(self, rows):
+        """The CONE EMITTERS the next light computation reads: an int64 (n, 7)
+        array of rows (y, x, r, g, b, center_q, spread_q) -- the frame-lights
+        assembly's output row (renderer/frame_lights.py, the ONE assembly) --
+        or None / an empty array for none. Held as given (C-contiguous int64);
+        the sweep's own door refuses an illegal row. Render-state input: light
+        is not sim-pure until P7 separates these inputs (CLAUDE.md)."""
+        if rows is None or len(rows) == 0:
+            self.light_cones = None
+            return
+        a = np.ascontiguousarray(np.asarray(rows), dtype=np.int64)
+        if a.ndim != 2 or a.shape[1] != 7:
+            raise ValueError("set_light_cones: rows must be (n, 7) "
+                             "(y, x, r, g, b, center_q, spread_q)")
+        self.light_cones = a
+
+    def set_light_sky(self, sky):
+        """THE SKY -- the virtual ring's per-ordinate light outflow, int64
+        (16, 3) -- or None for the dark ring (space). Set once per level from
+        its boundary type (renderer/frame_lights.py sky_for_level)."""
+        if sky is None:
+            self.light_sky = None
+            return
+        a = np.ascontiguousarray(np.asarray(sky), dtype=np.int64)
+        if a.shape != (16, 3):
+            raise ValueError("set_light_sky: the sky is (16, 3) -- one RGB per ordinate")
+        self.light_sky = a
+
+    def relight(self, gmap):
+        """Recompute the light field on the CURRENT state without a tick
+        (PhysicsEngine.relight): the paused renderer's path, so the cursor lamp
+        and a planning flashlight follow the mouse while nothing ticks, and the
+        first frame after load is lit. The sweep's heat outputs land in the
+        engine's own scratch -- no GameMap array but the three light planes is
+        written (tests/test_light_field.py). Bumps light_serial."""
+        self.engine.relight(
+            gmap.temperature, gmap.heat_atten_q, gmap.dyn_heat_atten_q,
+            gmap.heat_inv_shift, gmap.thermal_solid, gmap.is_vacuum,
+            gmap.gas, gmap.gases.conservative, gmap.gases.heat_absorb_q16,
+            self.k_leak_q, self.rad_amb_vacuum_q, self._eos_t_amb_raw(),
+            gmap.light_atten_q, gmap.dyn_light_atten_q,
+            gmap.light_q, gmap.light_flux_q, gmap.light_glow,
+            gas_light_absorb_q16=gmap.gases.light_absorb_q16,
+            gas_light_glow_q16=gmap.gases.light_glow_q16,
+            light_cones=self.light_cones, light_sky=self.light_sky)
+        self.light_serial += 1
 
     # ------------------------------------------------------------------
     # BC: planetside AMBIENT ring args (boundary_conditions_spec_2026-07-19)

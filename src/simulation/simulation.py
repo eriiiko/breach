@@ -243,6 +243,11 @@ class Simulation:
         # simulation.ruleset.OnePhaseWEGO.ticks_per_round.
         self._onephase_ticks_per_round = CFG.clock.onephase_ticks_per_round
 
+        # ray-engine-v2 P6b: the renderer's light request and its two render-
+        # state inputs (cone emitters, sky), held HERE so a reset() -- which
+        # builds a fresh PhysicsRunner -- re-applies them (set_light).
+        self._light = (False, None, None)
+
         # Build the world & RNG.
         self._reset_internal(seed)
 
@@ -397,6 +402,7 @@ class Simulation:
             # path (the runner owns the engine). A bare GameMap with no engine
             # bound falls back to the Python reference path automatically.
             self.gmap.bind_physics_engine(self.physics_runner.engine)
+            self._apply_light()             # P6b: the renderer's light survives a reset
         else:
             self.physics_runner = None
 
@@ -1067,6 +1073,43 @@ class Simulation:
 
     def set_paused(self, value: bool) -> None:
         self.paused = bool(value)
+
+    # ------------------------------------------------------------------
+    # ray-engine-v2 P6b: THE RENDERER'S LIGHT (design v3 §7.1; the P6b brief
+    # §1.5). Light is REQUESTED by the game whenever it renders and never by a
+    # headless run, a bench or RL (P6a decision 2). The two inputs are RENDER
+    # STATE -- the cursor lamp, the selected unit's flashlight mode, the
+    # renderer's W6 effect queue -- so `light_q` is not sim-pure until P7
+    # separates them (CLAUDE.md); none of this touches a synced field.
+    # ------------------------------------------------------------------
+    def set_light(self, requested: bool, cones=None, sky=None) -> None:
+        """Request (or stop requesting) the light channels, and hand the
+        cone-emitter rows ((n, 7) int64, renderer/frame_lights.py) and the sky
+        ((16, 3) int64) the next light computation reads. No-op without a
+        physics runner."""
+        self._light = (bool(requested), cones, sky)
+        self._apply_light()
+
+    def _apply_light(self) -> None:
+        if self.physics_runner is None:
+            return
+        requested, cones, sky = self._light
+        self.physics_runner.engine.light_requested = requested
+        self.physics_runner.set_light_cones(cones)
+        self.physics_runner.set_light_sky(sky)
+
+    def relight(self) -> None:
+        """Recompute the light field on the current state WITHOUT a tick (the
+        paused renderer's path; PhysicsRunner.relight). Writes only the three
+        light planes. No-op without a runner or without a light request."""
+        if self.physics_runner is not None and self._light[0]:
+            self.physics_runner.relight(self.gmap)
+
+    @property
+    def light_serial(self) -> int:
+        """Bumped by every light-carrying tick and every relight: the renderer
+        re-uploads its light textures when this changes (once per tick)."""
+        return 0 if self.physics_runner is None else int(self.physics_runner.light_serial)
 
     def get_tick(self) -> int:
         return self.tick

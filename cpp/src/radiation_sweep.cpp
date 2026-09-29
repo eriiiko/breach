@@ -238,9 +238,75 @@ void RadiationSweep::set_light_telemetry_from_twin(const int64_t* books12,
     light_max_stream = max_s;
 }
 
+// ---- P6b: THE PROJECTION (sweep_ref_q.cone_bin_edge / cone_overlaps /
+// cone_emission, line for line) ---------------------------------------------
+namespace {
+int64_t cone_bin_edge(int m, int n_ordinates) {
+    return ((int64_t)m * CONE_TURN + n_ordinates - 1) / n_ordinates;   // ceil(m T / n)
+}
+}  // namespace
+
+void RadiationSweep::cone_emission(const int64_t* rgb, int64_t center_q, int64_t spread_q,
+                                   int n_ordinates, int64_t* out) {
+    int64_t ov[16] = {0};
+    int64_t tot = 1;
+    if (spread_q >= CONE_TURN) {                     // omni: each bin by its width
+        for (int m = 0; m < n_ordinates; ++m)
+            ov[m] = cone_bin_edge(m + 1, n_ordinates) - cone_bin_edge(m, n_ordinates);
+        tot = CONE_TURN;
+    } else if (spread_q == 0) {                      // the centre's bin alone
+        const int64_t b = (center_q * n_ordinates) >> 16;
+        ov[b] = 1;
+        tot = 1;
+    } else {
+        // [lo, lo + spread) unwrapped once inside [0, 2T): each bin is counted
+        // against both of its copies (a beam across angle 0 keeps its power).
+        int64_t lo = (center_q - (spread_q >> 1)) % CONE_TURN;
+        if (lo < 0) lo += CONE_TURN;
+        const int64_t hi = lo + spread_q;
+        for (int m = 0; m < n_ordinates; ++m) {
+            const int64_t e0 = cone_bin_edge(m, n_ordinates);
+            const int64_t e1 = cone_bin_edge(m + 1, n_ordinates);
+            const int64_t o1 = std::min(hi, e1) - std::max(lo, e0);
+            const int64_t o2 = std::min(hi, e1 + CONE_TURN) - std::max(lo, e0 + CONE_TURN);
+            ov[m] = (o1 > 0 ? o1 : 0) + (o2 > 0 ? o2 : 0);
+        }
+        tot = spread_q;
+    }
+    for (int m = 0; m < n_ordinates; ++m)
+        for (int c = 0; c < 3; ++c)
+            out[m * 3 + c] = (rgb[c] * ov[m]) / tot;   // both >= 0: the floor
+}
+
+void RadiationSweep::build_cone_injection(const int64_t* cones, int n_cones, int n_ordinates,
+                                          int h, int w, ConeInjection& out) {
+    const size_t n = (size_t)h * (size_t)w;
+    out.index.assign(n, -1);
+    out.inj.clear();
+    out.n_slots = 0;
+    for (int c = 0; c < 3; ++c) out.emit_total[c] = 0;
+    int64_t e[16 * 3];
+    for (int r = 0; r < n_cones; ++r) {
+        const int64_t* row = cones + (size_t)r * CONE_ROW_WIDTH;
+        const size_t i = (size_t)row[0] * (size_t)w + (size_t)row[1];
+        cone_emission(row + 2, row[5], row[6], n_ordinates, e);
+        int32_t slot = out.index[i];
+        if (slot < 0) {
+            slot = out.n_slots++;
+            out.index[i] = slot;
+            out.inj.resize((size_t)out.n_slots * (size_t)n_ordinates * 3, 0);
+        }
+        int64_t* acc = out.inj.data() + (size_t)slot * (size_t)n_ordinates * 3;
+        for (int k = 0; k < n_ordinates * 3; ++k) {
+            acc[k] += e[k];
+            out.emit_total[k % 3] += e[k];
+        }
+    }
+}
+
 void RadiationSweep::validate_light_group(const LightChannels& light, int n_ordinates,
                                           const int32_t* gas, const int32_t* n_bulk,
-                                          int n_gases) {
+                                          int n_gases, int h, int w) {
     if (light.light_atten_q == nullptr || light.dyn_light_atten_q == nullptr ||
         light.l_table == nullptr || light.light_q == nullptr ||
         light.light_flux_q == nullptr || light.light_glow == nullptr) {
@@ -283,6 +349,52 @@ void RadiationSweep::validate_light_group(const LightChannels& light, int n_ordi
                     "RadiationSweep: a light_absorb_q16 / light_glow_q16 outside "
                     "[0, 2^28] (the gas door's bound: the density sum's int64 "
                     "headroom; negative would be a source)");
+            }
+        }
+    }
+    // P6b: THE CONE DOOR (sweep_ref_q.validate_cones) and THE SKY DOOR.
+    if (light.n_cones < 0 || (light.n_cones > 0 && light.cones == nullptr)) {
+        throw std::invalid_argument(
+            "RadiationSweep: n_cones > 0 needs the cone rows (P6b)");
+    }
+    int64_t tot[3] = {0, 0, 0};
+    for (int r = 0; r < light.n_cones; ++r) {
+        const int64_t* row = light.cones + (size_t)r * CONE_ROW_WIDTH;
+        if (row[0] < 0 || row[0] >= h || row[1] < 0 || row[1] >= w) {
+            throw std::invalid_argument(
+                "RadiationSweep: a cone emitter outside the grid (P6b cone door)");
+        }
+        if (row[2] < 0 || row[3] < 0 || row[4] < 0) {
+            throw std::invalid_argument(
+                "RadiationSweep: a cone emitter with a negative rgb (P6b cone door)");
+        }
+        if (row[5] < 0 || row[5] >= CONE_TURN || row[6] < 0 || row[6] > CONE_TURN) {
+            throw std::invalid_argument(
+                "RadiationSweep: a cone's center outside [0, CONE_TURN) or spread "
+                "outside [0, CONE_TURN] (P6b cone door)");
+        }
+        for (int c = 0; c < 3; ++c) {
+            // each rgb <= the budget is checked before the add, so the running
+            // sum stays below 2^45 and cannot wrap
+            if (row[2 + c] > LIGHT_CONE_BUDGET) {
+                throw std::invalid_argument(
+                    "RadiationSweep: the cones' summed rgb exceeds LIGHT_CONE_BUDGET "
+                    "(2^44 per channel -- the int64 argument, P6b cone door)");
+            }
+            tot[c] += row[2 + c];
+            if (tot[c] > LIGHT_CONE_BUDGET) {
+                throw std::invalid_argument(
+                    "RadiationSweep: the cones' summed rgb exceeds LIGHT_CONE_BUDGET "
+                    "(2^44 per channel -- the int64 argument, P6b cone door)");
+            }
+        }
+    }
+    if (light.sky != nullptr) {
+        for (int k = 0; k < n_ordinates * 3; ++k) {
+            if (light.sky[k] < 0 || light.sky[k] > LIGHT_SKY_MAX) {
+                throw std::invalid_argument(
+                    "RadiationSweep: a sky value outside [0, LIGHT_SKY_MAX = 2^40] "
+                    "(P6b sky door)");
             }
         }
     }
@@ -421,7 +533,7 @@ void RadiationSweep::run(const int32_t* temperature,
     const OrdinateConst* ltbl = nullptr;
     const OrdinateDir* dirs = nullptr;
     if (light_on) {
-        validate_light_group(*light, n_ordinates, gas, n_bulk, n_gases);
+        validate_light_group(*light, n_ordinates, gas, n_bulk, n_gases, h, w);
         ltbl = ordinate_table(n_ordinates, light->transport);
         dirs = ordinate_dirs(n_ordinates);
         if (light->light_absorb_q16 != nullptr) {
@@ -572,6 +684,16 @@ void RadiationSweep::run(const int32_t* temperature,
             }
         }
     }
+    // P6b: the CONE EMITTERS summed per cell (the door passed above), and the
+    // SKY -- both read by the light visit below. An empty row set leaves every
+    // cell at slot -1.
+    const bool has_cones = light_on && light->n_cones > 0;
+    const int64_t* lsky = light_on ? light->sky : nullptr;
+    if (has_cones) {
+        build_cone_injection(light->cones, light->n_cones, n_ordinates, h, w, cones_);
+    }
+    const int32_t* cone_idx = has_cones ? cones_.index.data() : nullptr;
+    const int64_t* cone_inj = has_cones ? cones_.inj.data() : nullptr;
 
     // ---- OVERWRITE, not accumulate: run() clears its own four outputs -----
     // The per-ordinate books below are `+=`, so the first ordinate needs clean
@@ -714,8 +836,9 @@ void RadiationSweep::run(const int32_t* temperature,
 
         // ---- THE LIGHT CHANNELS at a cell, this ordinate (P6a) ----------------
         // sweep_ref_q.py's LightGroup, line for line: LIGHT's upwind pair from
-        // its own stores (an off-grid read is 0, the DARK ring -- P6b's sky
-        // replaces that 0), the split with its remainder, the whole stamped
+        // its own stores (an off-grid read is the SKY in this ordinate since
+        // P6b; 0, the DARK ring, without one), the split with its remainder, the
+        // cell's cone injection entering the stream (P6b), the whole stamped
         // share absorbed, the per-ordinate emission added. Reads nothing the heat
         // visit writes and writes nothing it reads; runs right after it on the
         // same cell, in the same walk.
@@ -732,13 +855,22 @@ void RadiationSweep::run(const int32_t* temperature,
             const size_t i3 = (size_t)i * 3;
             const int64_t* la_src = in_la ? lstore + ((size_t)luay * w + luax) * 3 : nullptr;
             const int64_t* lb_src = in_lb ? lstore + ((size_t)luby * w + lubx) * 3 : nullptr;
+            // P6b: THE SKY in this ordinate (the ring's outflow; the dark ring
+            // without one) and this cell's CONE injection (nullptr off-emitter).
+            const int64_t* ring = (lsky != nullptr) ? lsky + (size_t)m * 3 : nullptr;
+            const int32_t slot = (cone_idx != nullptr) ? cone_idx[i] : -1;
+            const int64_t* inj = (slot >= 0)
+                ? cone_inj + ((size_t)slot * (size_t)n_ordinates + (size_t)m) * 3 : nullptr;
             int64_t I_m = 0;
             for (int c = 0; c < 3; ++c) {
-                const int64_t io_la = in_la ? la_src[c] : 0;      // the dark ring
-                const int64_t io_lb = in_lb ? lb_src[c] : 0;
+                const int64_t ring_c = (ring != nullptr) ? ring[c] : 0;
+                const int64_t io_la = in_la ? la_src[c] : ring_c;     // the ring: the sky
+                const int64_t io_lb = in_lb ? lb_src[c] : ring_c;
                 const int64_t lfa = (io_la * ls_m) >> FP_SHIFT;
                 const int64_t lfb = io_lb - ((io_lb * ls_m) >> FP_SHIFT);   // the REMAINDER
-                const int64_t lstream = lfa + lfb;
+                // P6b: a cone's emission ENTERS this cell's stream, before the
+                // cell absorbs (sweep_ref_q.py; booked as emission, below).
+                const int64_t lstream = lfa + lfb + ((inj != nullptr) ? inj[c] : 0);
                 if (!in_la) l_ring_in[c] += lfa;
                 if (!in_lb) l_ring_in[c] += lfb;
                 const int64_t absorbed = (lstream * (int64_t)l_d_[i3 + c]) >> FP_SHIFT;
@@ -812,7 +944,10 @@ void RadiationSweep::run(const int32_t* temperature,
             : fixedpoint::mul128_shr(light->light_q[i], (int64_t)g, FP_SHIFT);
     }
     for (int c = 0; c < 3; ++c) {
-        light_emit_sum[c]     = l_emit_tot[c] * (int64_t)n_ordinates;
+        // the thermal emission (the same integer in every ordinate) plus every
+        // cone injection (P6b)
+        light_emit_sum[c]     = l_emit_tot[c] * (int64_t)n_ordinates
+                                + (has_cones ? cones_.emit_total[c] : 0);
         light_absorb_sum[c]   = l_absorb[c];
         light_ring_in_sum[c]  = l_ring_in[c];
         light_ring_out_sum[c] = l_ring_out[c];
