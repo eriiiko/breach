@@ -15,8 +15,9 @@ dtype drifts from the spec raises (loudly) rather than silently changing the has
 — if a field legitimately changes dtype/shape, BUMP the version and regenerate
 every golden in the same commit (the §7.6 gate-7 rule).
 
-SCOPE — int fields only. The five remaining float sim fields (``ripple``,
-``ripple_v``, ``dyn_permeability``, ``dyn_wave_absorb``, ``dyn_light_atten``) are
+SCOPE — int fields only. The four remaining float sim fields (``ripple``,
+``ripple_v``, ``dyn_permeability``, ``dyn_wave_absorb``; the fifth, the render
+march's ``dyn_light_atten``, was deleted with the march at ray-engine-v2 P6c) are
 EXCLUDED: they are render/lighting-bound or a known residual float boundary, NOT
 part of the cross-GPU integer bit-identity contract. The same-machine A/B harness
 still covers them. The synced UNIT state (HP/life/events) rides in via
@@ -116,8 +117,11 @@ DIGEST_FIELDS = (
 )
 
 # Float sim fields deliberately NOT in the cross-GPU integer digest (documented).
+# Not hashed (the digest reads DIGEST_FIELDS only), so editing this list moves no
+# digest and is no spec-version change: ray-engine-v2 P6c removed
+# "dyn_light_atten" because the field itself is gone (golden unmoved).
 EXCLUDED_FLOAT_FIELDS = (
-    "ripple", "ripple_v", "dyn_permeability", "dyn_wave_absorb", "dyn_light_atten",
+    "ripple", "ripple_v", "dyn_permeability", "dyn_wave_absorb",
 )
 
 

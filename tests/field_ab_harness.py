@@ -78,13 +78,15 @@ SYNCED_UNIT_FIELDS = (
 # is_vacuum / wall_hp catch any topology-path change. `ignition_armed` is the
 # edge-trigger arm bool (combat.apply_temperature_ignition) — synced state, so it
 # must ride the snapshot (field_digest v2 hashes it). Render-only buffers
-# (light_rgb, light_dir, smoke_glow) are intentionally EXCLUDED — they are not
-# sim state and may legitimately differ between machines/builds.
+# (light_rgb, light_dir) are intentionally EXCLUDED — they are not sim state and
+# may legitimately differ between machines/builds. (The float
+# `dyn_light_atten` stamp output and the `smoke_glow` buffer rode here / were
+# excluded here until ray-engine-v2 P6c deleted both with the render march.)
 SIM_FIELDS = (
     "atmosphere", "wave_p", "wave_v", "wave_source", "wind_x", "wind_y",
     "gas", "fire", "water_depth", "flow_vx", "flow_vy",
     "heat", "temperature", "ripple", "ripple_v",
-    "dyn_permeability", "dyn_wave_absorb", "obstacles", "dyn_light_atten",
+    "dyn_permeability", "dyn_wave_absorb", "obstacles",
     # Ray-engine-v2 P1 (design v3 §3, §8.3): the two Q16 extinction planes the
     # radiation sweep reads — `heat_atten_q` (static projection) and
     # `dyn_heat_atten_q` (the fourth stamp_units output). SIM_FIELDS only:
@@ -93,7 +95,7 @@ SIM_FIELDS = (
     # Ray-engine-v2 P6a (design v3 §8.3; the P6a brief, decision 7): the two Q16
     # LIGHT extinction planes the sweep's light channels read, beside the heat
     # ones -- `light_atten_q` (static projection) and `dyn_light_atten_q` (the
-    # fifth stamp_units output, the float `dyn_light_atten`'s integer twin).
+    # fifth stamp_units output; since P6c the only dynamic light plane).
     # SIM_FIELDS only: nothing light-side enters DIGEST_FIELDS before P7.
     "light_atten_q", "dyn_light_atten_q",
     "wall_hp", "material", "is_vacuum", "ignition_armed",

@@ -1,26 +1,26 @@
-"""Multi-gas coloured ray march (engine/05 §6.2, M2).
+"""Multi-gas colour on the LIGHT SWEEP -- mixing is a density-weighted sum.
 
-The directional ray march now sums ALL gases density-weighted per channel,
-each with its own per-channel `absorption` / `scatter_albedo` row from
-`GasTable`:
+Rewritten at ray-engine-v2 P6c (design v3 §11.2 row "test_multigas_colour.py:
+rewrite 4, delete 4"). Until P6c this file cast the old C++ render march
+through coloured gas and checked its float Beer-Lambert ``exp`` identities;
+the march is deleted. The four properties that still mean something are now
+properties of the sweep's INTEGER per-gas light extinction term (design §4.1,
+§6.3: ``a_c = min(ONE, Σ_g light_absorb_q16[g][c] · N_g >> 16)`` and the glow
+coefficient ``g_c`` likewise over ``light_glow_q16``):
 
-    transmission:  tau_c = absorb_scale * Σ_g ( gas[g][tile] * absorption[g][c] )
-                   trans_c = exp(-tau_c);  remaining[c] *= trans_c
-    scatter/glow:  smoke_glow[c] += dep_c * Σ_g ( gas[g][tile] * scatter_albedo[g][c] )
+  * a gas tints the light by its per-channel absorption, and
+  * a dense grey soot dims every channel -- both held on the engine by
+    tests/test_radiation_sweep_light.py::test_smoke_tints_by_its_rgb_absorption_
+    and_dims_with_density (P6a);
+  * two gases sharing a cell MIX as the density-weighted SUM of their terms,
+    per channel, for extinction and glow alike -- here;
+  * an empty gas stack is optically nothing: no extinction, no glow, the same
+    light field as no gas group at all -- here.
 
-This file pins the colour model on small headless gmaps (1-row grids force a
-pure +x march so each downrange tile sees the ray exactly once — deterministic,
-no diagonal aliasing), mirroring test_heat_smoke_glow.py. It verifies, against
-the CANON gas table in config.toml:
+Every test's docstring names its property and the change that breaks it.
 
-  * poison tints the beam GREEN downrange (G survives > R > B);
-  * smoke dims strongly and ~neutrally (R≈G≈B, all far below poison's G);
-  * steam barely dims but its smoke_glow brightens (scatter-dominated);
-  * mixing falls out of the SUM — poison+black in the same tile attenuates as
-    the product of the two transmissions (== summing their tau), per channel;
-  * a single populated gas reproduces the documented single-smoke Beer-Lambert
-    path for that gas's coefficients;
-  * determinism (bit-identical across casts).
+Run:
+    C:/Users/steen/anaconda3/python.exe -m pytest tests/test_multigas_colour.py -q
 """
 from __future__ import annotations
 
@@ -30,266 +30,106 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
+if str(ROOT / "tests") not in sys.path:
+    sys.path.insert(0, str(ROOT / "tests"))
 
-import breach_physics as bp  # noqa: E402
-from simulation.gases import (  # noqa: E402
-    GasTable, N_GASES,
-    STEAM, SMOKE, POISON,
-)
+from _radiation_sweep_harness import ONE, R, cpp_sweep, live_table  # noqa: E402
 
-
-# ----------------------------------------------------------------- canon table
+Q = R.quant
+N = 9            # a 9 x 9 transparent room
+SRC_T = 3000     # a hot column at x = 0 (all three channels emit)
+O2_Q, N2_Q = 13763, 51773   # an ambient air cell's bulk pair
 
 
-def _canon_table():
-    """Load the real per-gas absorption/scatter tables from config.toml.
+def _run(cells, table):
+    """The engine's sweep on the room, the gas planes filled per `cells`
+    ({(y, x): {gas_id: density_q}}; None = no gas group at all), the SHIPPED
+    light columns; returns (light_q, light_glow, a_eff (3, h, w), gcoef
+    (3, h, w))."""
+    from simulation.gases import N_GASES, O2, INERT_N2
+    a = [[0] * N for _ in range(N)]
+    d = [[0] * N for _ in range(N)]
+    T = [[0] * N for _ in range(N)]
+    his = [[3] * N for _ in range(N)]
+    ts = [[0] * N for _ in range(N)]
+    la = [[[0] * N for _ in range(N)] for _ in range(3)]
+    ld = [[[0] * N for _ in range(N)] for _ in range(3)]
+    for y in range(N):
+        T[y][0] = SRC_T << 16
+        ts[y][0] = 1
+        for c in range(3):
+            la[c][y][0] = ld[c][y][0] = ONE
+    light = dict(la=la, ld=ld)
+    kw = {}
+    if cells is not None:
+        planes = [[[0] * N for _ in range(N)] for _ in range(N_GASES)]
+        for y in range(N):
+            for x in range(N):
+                planes[O2][y][x] = O2_Q
+                planes[INERT_N2][y][x] = N2_Q
+        for (y, x), dens in cells.items():
+            for g, q in dens.items():
+                planes[g][y][x] = q
+        nb = [[planes[O2][y][x] + planes[INERT_N2][y][x] for x in range(N)]
+              for y in range(N)]
+        light.update(light_absorb_q=table.light_absorb_q16.tolist(),
+                     light_glow_q=table.light_glow_q16.tolist())
+        kw = dict(gas=planes, hq=[0] * N_GASES, n_bulk=nb)
+    got = cpp_sweep(a, d, 0, T, his, ts, transport="shear", n_ord=16,
+                    table=live_table(), light=light, **kw)
+    sweep, out = got[5], got[6]
+    a_eff = np.moveaxis(np.asarray(sweep.light_a_eff_plane()), -1, 0)
+    gco = np.moveaxis(np.asarray(sweep.light_gcoef_plane()), -1, 0)
+    return out["light_q"], out["light_glow"], a_eff, gco
 
-    Loaded headless via tomllib (no pyray / full config machinery) so the test
-    asserts against the SAME research-approved coefficients the game runs with.
+
+def test_two_gases_in_one_cell_mix_as_the_density_weighted_sum():
+    """PROPERTY (design §6.3 "mixing falls out of the sum", on the light
+    channels): with the SHIPPED light columns, a cell holding poison at dP AND
+    soot at dS reads, per channel, the light extinction
+    min(ONE, (absP_c·dP + absS_c·dS) >> 16) -- the ONE density-weighted sum,
+    shifted once -- which is MORE than either gas alone gives, and its glow
+    coefficient is the same sum over the glow column; the same two gases in
+    two separate cells each read only their own term.
+
+    BREAKS IF: the smoke term takes the MAX over gases instead of the sum,
+    shifts per gas, drops a channel, or mixes the absorption and glow columns.
     """
-    import tomllib
-    cfg = tomllib.load(open(ROOT / "config.toml", "rb"))
-    gt = GasTable(cfg["gases"])
-    return gt.absorption.astype(np.float32), gt.scatter_albedo.astype(np.float32)
-
-
-# --------------------------------------------------------------------- casting
-
-
-def _make_source(color=(1.0, 1.0, 1.0), heat=0.0, intensity=1.0, w=20):
-    s = bp.LightSource()
-    s.x, s.y = 0.0, 0.0
-    s.max_range = float(w * 2)
-    s.intensity = intensity
-    s.angle_center = 0.0          # +x
-    s.angle_spread = 0.05         # thin pencil beam along +x
-    s.ray_count = 1
-    s.color = color
-    s.heat = heat
-    return s
-
-
-def _cast(gas, gas_absorption, gas_scatter, *, color=(1.0, 1.0, 1.0),
-          absorb_scale=1.0, w=None, want_glow=True):
-    """Cast one +x white-by-default beam through `gas` (N,h,w); return (rgb, glow).
-
-    `gas_absorption` / `gas_scatter` are (N,3) per-gas per-channel tables.
-    """
-    n, h, w_ = gas.shape
-    if w is None:
-        w = w_
-    rc = bp.Raycaster()
-    rc.smoke_absorb_scale = absorb_scale
-    rgb = np.zeros((h, w, 3), np.float32)
-    dx = np.zeros((h, w), np.float32)
-    dy = np.zeros((h, w), np.float32)
-    glow = np.zeros((h, w, 3), np.float32) if want_glow else None
-    s = _make_source(color=color, w=w)
-    rc.cast_source_directional(s, rgb, dx, dy,
-                               np.ascontiguousarray(gas, np.float32),
-                               np.ascontiguousarray(gas_absorption, np.float32),
-                               np.ascontiguousarray(gas_scatter, np.float32),
-                               np.zeros((h, w, 3), np.float32),
-                               smoke_glow=glow)
-    return rgb, glow
-
-
-def _single_gas_field(gas_id, n, col, density, h=1, w=20):
-    """An (n,h,w) gas array that is `density` for `gas_id` at `col`, else 0."""
-    gas = np.zeros((n, h, w), np.float32)
-    gas[gas_id, 0, col] = density
-    return gas
-
-
-# ------------------------------------------------------------------ poison green
-
-
-def test_poison_tints_beam_green_downrange():
-    # White beam through ONE poison tile (canon absorption [0.45,0.10,0.80]):
-    # G is absorbed least -> most green survives; B absorbed hardest -> least.
-    absorp, scatter = _canon_table()
-    w = 20
-    smoke_col = 5
-    gas = _single_gas_field(POISON, N_GASES, smoke_col, 0.6, w=w)
-    rgb, _ = _cast(gas, absorp, scatter, absorb_scale=1.4, w=w)
-    past = smoke_col + 1
-    r, g, b = rgb[0, past, 0], rgb[0, past, 1], rgb[0, past, 2]
-    # Yellow-green: green transmits most, then red, then blue.
-    assert g > r > b > 0.0, (
-        f"poison should green the beam (G>R>B), got r={r} g={g} b={b}")
-    # The beam SURVIVES (exp(-tau) never hits 0) — coloured, not killed.
-    assert g > 0.0
-
-
-# --------------------------------------------------------------- black neutral
-
-
-def test_black_smoke_dims_strongly_and_neutrally():
-    # Black smoke (absorption [0.88,0.90,0.93]) dims hard and ~neutrally: the
-    # three surviving channels stay close to each other (no strong hue) and all
-    # sit far below poison's green-survival for the same density.
-    absorp, scatter = _canon_table()
-    w = 20
-    smoke_col = 5
-    gas = _single_gas_field(SMOKE, N_GASES, smoke_col, 0.6, w=w)
-    rgb, _ = _cast(gas, absorp, scatter, absorb_scale=1.4, w=w)
-    past = smoke_col + 1
-    r, g, b = rgb[0, past, 0], rgb[0, past, 1], rgb[0, past, 2]
-    ctrl, _ = _cast(np.zeros((N_GASES, 1, w), np.float32), absorp, scatter,
-                    absorb_scale=1.4, w=w)
-    # Strong dimming: the survivor is a small fraction of the no-smoke control.
-    assert rgb[0, past].sum() < 0.5 * ctrl[0, past].sum(), "black smoke must dim strongly"
-    # ~Neutral: channels within ~12% of one another (slight blue tilt is fine).
-    mx, mn = max(r, g, b), min(r, g, b)
-    assert (mx - mn) / mx < 0.12, f"black smoke should be ~neutral, got r={r} g={g} b={b}"
-    # And it dims FAR more than poison greens: black's brightest survivor is
-    # below poison's green survivor at the same density.
-    poison_gas = _single_gas_field(POISON, N_GASES, smoke_col, 0.6, w=w)
-    rgb_p, _ = _cast(poison_gas, absorp, scatter, absorb_scale=1.4, w=w)
-    assert mx < rgb_p[0, past, 1], "black smoke survivor should be below poison's green"
-
-
-# ------------------------------------------------------- white scatter-dominated
-
-
-def test_white_smoke_barely_dims_but_glows():
-    # White smoke: absorption [0.10,...] (tiny) but scatter_albedo [0.92,...]
-    # (large). Transmission stays HIGH (beam barely dims) while smoke_glow is
-    # BRIGHT — the scatter-dominated steam signature (engine/05 §6.2).
-    absorp, scatter = _canon_table()
-    w = 20
-    smoke_col = 5
-    sd = 0.6
-    gas = _single_gas_field(STEAM, N_GASES, smoke_col, sd, w=w)
-    rgb, glow = _cast(gas, absorp, scatter, absorb_scale=1.4, w=w)
-    ctrl, _ = _cast(np.zeros((N_GASES, 1, w), np.float32), absorp, scatter,
-                    absorb_scale=1.4, w=w)
-    past = smoke_col + 1
-    # Barely dims: >80% of the control light still reaches downrange.
-    assert rgb[0, past].sum() > 0.8 * ctrl[0, past].sum(), "white smoke must barely dim"
-    # But the glow is bright: the scatter deposit at the smoke tile is large
-    # (dep * scatter_albedo * density, ~0.92*sd of the local light).
-    glow_tile = glow[0, smoke_col]
-    assert np.all(glow_tile > 0.0), "white smoke must glow (scatter)"
-    # White smoke glows FAR brighter than black smoke for the same density.
-    black = _single_gas_field(SMOKE, N_GASES, smoke_col, sd, w=w)
-    _, glow_black = _cast(black, absorp, scatter, absorb_scale=1.4, w=w)
-    assert glow_tile.sum() > 5.0 * glow_black[0, smoke_col].sum(), (
-        "white smoke (scatter 0.92) must out-glow black smoke (scatter 0.04)")
-
-
-# -------------------------------------------------------------- mixing = Σ tau
-
-
-def test_mixing_is_density_weighted_sum_of_tau():
-    # Two gases sharing a tile attenuate as exp(-scale*(tau_a + tau_b)) per
-    # channel == trans_a * trans_b. Verify the combined transmission equals the
-    # PRODUCT of the two single-gas transmissions, per channel (mixing == Σ tau).
-    absorp, scatter = _canon_table()
-    w = 20
-    smoke_col = 5
-    scale = 1.4
-    da, db = 0.5, 0.4  # poison density, black density
-    # Single-gas casts (control transmissions).
-    g_pois = _single_gas_field(POISON, N_GASES, smoke_col, da, w=w)
-    g_blk = _single_gas_field(SMOKE, N_GASES, smoke_col, db, w=w)
-    rgb_p, _ = _cast(g_pois, absorp, scatter, absorb_scale=scale, w=w)
-    rgb_b, _ = _cast(g_blk, absorp, scatter, absorb_scale=scale, w=w)
-    ctrl, _ = _cast(np.zeros((N_GASES, 1, w), np.float32), absorp, scatter,
-                    absorb_scale=scale, w=w)
-    # Mixed cast: BOTH gases in the same tile.
-    g_mix = g_pois + g_blk
-    rgb_m, _ = _cast(g_mix, absorp, scatter, absorb_scale=scale, w=w)
-    past = smoke_col + 1
+    from simulation.gases import GasTable, POISON, SMOKE
+    tbl = GasTable.from_config()
+    lab, lgl = tbl.light_absorb_q16, tbl.light_glow_q16
+    dP, dS = Q(0.05), Q(0.03)          # thin enough that nothing caps at ONE
+    y, xp, xs, xm = 4, 3, 5, 7
+    _lq, _gl, a_eff, gco = _run({(y, xp): {POISON: dP}, (y, xs): {SMOKE: dS},
+                                 (y, xm): {POISON: dP, SMOKE: dS}}, tbl)
     for c in range(3):
-        trans_p = rgb_p[0, past, c] / ctrl[0, past, c]
-        trans_b = rgb_b[0, past, c] / ctrl[0, past, c]
-        trans_m = rgb_m[0, past, c] / ctrl[0, past, c]
-        # exp(-scale*(da*ab_p + db*ab_b)) == exp(-scale*da*ab_p)*exp(-scale*db*ab_b)
-        assert np.isclose(trans_m, trans_p * trans_b, rtol=1e-4), (
-            f"channel {c}: mixed transmission {trans_m} != product of singles "
-            f"{trans_p * trans_b} (mixing must be Σ tau)")
-    # Cross-check against the analytic summed-tau transmission for one channel.
-    tau_b_blue = scale * (da * absorp[POISON, 2] + db * absorp[SMOKE, 2])
-    trans_blue_analytic = float(np.exp(-tau_b_blue))
-    trans_blue_measured = rgb_m[0, past, 2] / ctrl[0, past, 2]
-    assert np.isclose(trans_blue_measured, trans_blue_analytic, rtol=1e-3), (
-        f"blue mixed transmission {trans_blue_measured} != analytic "
-        f"{trans_blue_analytic}")
+        want_a = min(ONE, (int(lab[POISON][c]) * dP + int(lab[SMOKE][c]) * dS) >> 16)
+        want_g = min(ONE, (int(lgl[POISON][c]) * dP + int(lgl[SMOKE][c]) * dS) >> 16)
+        assert want_a < ONE, "the scene must stay below the cap to test the sum"
+        assert int(a_eff[c, y, xm]) == want_a, (c, int(a_eff[c, y, xm]), want_a)
+        assert int(gco[c, y, xm]) == want_g, (c, int(gco[c, y, xm]), want_g)
+        assert int(a_eff[c, y, xp]) == (int(lab[POISON][c]) * dP) >> 16
+        assert int(a_eff[c, y, xs]) == (int(lab[SMOKE][c]) * dS) >> 16
+        assert int(a_eff[c, y, xm]) > max(int(a_eff[c, y, xp]), int(a_eff[c, y, xs]))
 
 
-def test_mixing_scatter_glow_is_summed():
-    # The scatter/glow deposit is ALSO a density-weighted sum: poison+black glow
-    # == poison-glow + black-glow at the shared tile (additive, per channel).
-    absorp, scatter = _canon_table()
-    w = 20
-    smoke_col = 3
-    da, db = 0.5, 0.4
-    g_pois = _single_gas_field(POISON, N_GASES, smoke_col, da, w=w)
-    g_blk = _single_gas_field(SMOKE, N_GASES, smoke_col, db, w=w)
-    _, glow_p = _cast(g_pois, absorp, scatter, absorb_scale=1.4, w=w)
-    _, glow_b = _cast(g_blk, absorp, scatter, absorb_scale=1.4, w=w)
-    _, glow_m = _cast(g_pois + g_blk, absorp, scatter, absorb_scale=1.4, w=w)
-    # Glow deposit happens BEFORE attenuation (same local light), so it sums.
-    assert np.allclose(glow_m[0, smoke_col],
-                       glow_p[0, smoke_col] + glow_b[0, smoke_col], rtol=1e-4), (
-        f"mixed glow {glow_m[0,smoke_col]} != sum of singles "
-        f"{glow_p[0,smoke_col] + glow_b[0,smoke_col]}")
+def test_an_empty_gas_stack_is_optically_nothing():
+    """PROPERTY (the old "empty gas leaves light untouched and no glow", on the
+    sweep): a gas group whose trace planes are all zero -- ambient air only --
+    gives every gas cell zero light extinction and zero glow, and the light
+    field is EXACTLY the one computed with no gas group at all. PAIR: one thin
+    soot cell in the same room does absorb and glow.
 
-
-# ------------------------------------------- single gas == old single-smoke path
-
-
-def test_single_gas_reproduces_beer_lambert():
-    # A single populated gas with neutral coefficients [a,a,a] reproduces the
-    # documented single-smoke Beer-Lambert transmission exp(-a*sd*scale) for the
-    # tile it occupies — the M1 "behaviour-preserving" property.
-    w = 20
-    smoke_col = 5
-    sd, a, scale = 0.5, 0.7, 1.4
-    # One-gas table (N=1) with neutral grey coefficients.
-    gas = np.zeros((1, 1, w), np.float32)
-    gas[0, 0, smoke_col] = sd
-    absorp = np.array([[a, a, a]], np.float32)
-    scatter = np.zeros((1, 3), np.float32)
-    rgb, _ = _cast(gas, absorp, scatter, absorb_scale=scale, w=w)
-    ctrl, _ = _cast(np.zeros((1, 1, w), np.float32), absorp, scatter,
-                    absorb_scale=scale, w=w)
-    past = smoke_col + 1
-    trans = rgb[0, past, 0] / ctrl[0, past, 0]
-    expected = float(np.exp(-a * sd * scale))
-    assert np.isclose(trans, expected, rtol=1e-3), (
-        f"single-gas transmission {trans} != Beer-Lambert {expected}")
-    assert rgb[0, past, 0] > 0.0, "beam survives (exp never hits 0)"
-
-
-def test_empty_gas_leaves_light_untouched_and_no_glow():
-    # No gas density anywhere -> the march deposits zero glow and the light is
-    # the plain no-occlusion beam (gases only act where density > 0).
-    absorp, scatter = _canon_table()
-    w = 20
-    gas = np.zeros((N_GASES, 1, w), np.float32)
-    rgb, glow = _cast(gas, absorp, scatter, absorb_scale=1.4, w=w)
-    assert rgb.sum() > 0.0, "sanity: the beam is lit"
-    assert np.all(glow == 0.0), f"no gas must leave glow zero: {glow[glow != 0]}"
-
-
-# --------------------------------------------------------------- determinism
-
-
-def test_multigas_march_is_bit_identical():
-    # Same multi-gas scene, two casts -> bit-identical light AND glow buffers
-    # (no RNG on a single fixed ray; the inner gas sum is a deterministic fold).
-    absorp, scatter = _canon_table()
-    w = 24
-    gas = np.zeros((N_GASES, 1, w), np.float32)
-    gas[POISON, 0, 5] = 0.5
-    gas[SMOKE, 0, 5] = 0.4
-    gas[STEAM, 0, 8] = 0.3
-    rgb1, glow1 = _cast(gas, absorp, scatter, absorb_scale=1.4, w=w)
-    rgb2, glow2 = _cast(gas, absorp, scatter, absorb_scale=1.4, w=w)
-    assert np.array_equal(rgb1, rgb2), "light buffer must be deterministic"
-    assert np.array_equal(glow1, glow2), "glow buffer must be deterministic"
+    BREAKS IF: the bulk pair (O2, N2) carries optics, the smoke term reads a
+    nonzero floor, or the glow is computed where there is no absorber.
+    """
+    from simulation.gases import GasTable, SMOKE
+    tbl = GasTable.from_config()
+    lq_none, gl_none, _a0, _g0 = _run(None, tbl)
+    lq_air, gl_air, a_air, g_air = _run({}, tbl)
+    assert np.array_equal(lq_air, lq_none), "empty gas changed the light"
+    assert not np.any(gl_air) and not np.any(gl_none)
+    assert not np.any(a_air[:, :, 1:]) and not np.any(g_air)
+    assert np.any(lq_air[:, :, 1:] > 0), "the room must be lit for this to mean anything"
+    lq_s, gl_s, a_s, g_s = _run({(4, 4): {SMOKE: Q(0.05)}}, tbl)
+    assert np.all(a_s[:, 4, 4] > 0) and np.all(gl_s[:, 4, 4] > 0)
