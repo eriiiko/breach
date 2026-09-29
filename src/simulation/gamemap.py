@@ -395,9 +395,9 @@ class GameMap:
         # BFS rebuild — is DELETED, EOS refactor P3 / decisions.md #3: venting
         # is native to the compressible solver; smoke rides the real venting
         # wind out of a breach instead of a scripted BFS pull.)
-        # Scalar light field (legacy: fire raycaster output + render unit/smoke
-        # tinting). Kept alongside light_rgb during the RGB migration.
-        self.light_map    = np.zeros((h, w), dtype=np.float32)
+        # (Scalar light field `light_map`: since ray-engine-v2 P6b a DERIVED
+        # read-only property below -- the accessor's scalar -- not a stored
+        # array; deleted at P6c. Design v3 §4.3.)
         # RGB light field (ch.03 render byproduct): total light colour reaching
         # each tile, summed over all sources. Shape (h, w, 3), f32 accumulator
         # down-converted to the RGBA16F render textures at pack time (ch.05).
@@ -1843,6 +1843,16 @@ class GameMap:
         the mirror unchanged)."""
         for name in (names if names is not None else self._RESIDENT_SYNCED):
             self._dev[name].get(out=getattr(self, name))
+
+    @property
+    def light_map(self):
+        """The legacy SCALAR light field, DERIVED from the one light accessor
+        (ray-engine-v2 P6b, design v3 §4.3): the brightest channel of
+        ``light_field.read_light(self)``, (h, w) float32 in light units, a fresh
+        copy. It used to be a stored array nothing wrote since the render march
+        moved into the renderer; deleted at P6c once no consumer names it."""
+        from simulation import light_field
+        return light_field.read_light(self).scalar
 
     def stamp_units(self, units):
         """Per-tick dynamic-field rebuild — dispatches to C++ or Python.

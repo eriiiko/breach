@@ -278,6 +278,15 @@ struct RadiationLightDev {
     const int32_t* d_light_absorb_q16  = nullptr;  // (n_gases, 3), shared, nullable
     const int32_t* d_light_glow_q16    = nullptr;  // (n_gases, 3), shared, nullable
     int transport = 0;                             // RadiationSweep::TRANSPORT_STEP
+    // P6b: THE SKY and THE CONE EMITTERS (radiation_sweep.h LightChannels),
+    // both nullable. The sky is the virtual ring's per-ordinate outflow, PER
+    // ENV; the cones arrive as the host-built per-cell injection
+    // (RadiationSweep::build_cone_injection -- the projection has one
+    // implementation): an index plane (-1 off an emitter) and the slots it
+    // points into, slots numbered across every env.
+    const int64_t* d_sky        = nullptr;         // (N, n_ordinates, 3), nullable
+    const int32_t* d_cone_index = nullptr;         // (N, h, w), nullable
+    const int64_t* d_cone_inj   = nullptr;         // (n_slots, n_ordinates, 3)
     // scratch
     int64_t* d_l_outflow = nullptr;                // (N, n_ordinates, h, w, 3)
     int64_t* d_l_emit    = nullptr;                // (N, h, w, 3)

@@ -275,10 +275,13 @@ the light group changes no heat integer (the engine's gate: heat bit-identical
 with light on vs off). `sweep_q(..., light=LightGroup(...))`; per ordinate m,
 per channel c, at cell i:
 
-    io_a, io_b = the light store of light's upwind pair; OFF-GRID READS 0 (the
-                 ring is DARK until P6b's sky boundary replaces that 0)
+    io_a, io_b = the light store of light's upwind pair; OFF-GRID READS the SKY
+                 in this ordinate (P6b; 0 -- the dark ring -- without one)
     fa, fb     = (io_a * s_m) >> 16,  io_b - ((io_b * s_m) >> 16)   (s_m: light's)
-    stream     = fa + fb                         (no leak for light, §4.1)
+    stream     = fa + fb + inj_m             (no leak for light, §4.1; inj_m: the
+                                              cell's CONE EMITTERS in ordinate m,
+                                              P6b -- see the section before
+                                              LightGroup)
     absorbed   = (stream * d_c) >> 16            d_c: the STAMPED light extinction
     emitted    = (((L°_c[T_i] * w_m) >> 16) * a_c) >> 16    a_c: the MATERIAL share
     i_out      = stream - absorbed + emitted
@@ -311,8 +314,8 @@ entered the stream equals what left it --
     emit[c] + ring_in[c] == absorb[c] + ring_out[c]
 by the face_flux argument the heat identity rests on (every interior share is
 booked by its gatherer as the same integer its upwind cell split off). ring_in
-is 0 in P6a (the dark ring); it is booked so P6b's sky plugs into the same books.
-Gate 18 holds all of it.
+is 0 in P6a (the dark ring); P6b's sky plugs into it, and P6b's cone emitters
+into `emit`. Gate 18 holds the P6a channels, gate 19 the cones and the sky.
 """
 from __future__ import annotations
 
@@ -1393,6 +1396,139 @@ def validate_planes(a, d, k, amb=None, table=E):
                         f"({y},{x}): {mi}")
 
 
+# --------------------------------------------------------------------------- #
+# P6b: CONE EMITTERS and THE SKY BOUNDARY (design v3 2.7, 4.1, 7.2; the P6b
+# brief, docs/ray_engine_v2_p6b_lit_world_brief_2026-09-25.md sections 1.3-1.4).
+#
+# A CONE EMITTER is a row (y, x, (r, g, b), center_q, spread_q): a cell, a
+# per-channel TOTAL emitted power in the light currency (L°'s: 2^L_FINE_BITS
+# per light unit), and a beam as two integer ANGLES in Q16 TURNS (CONE_TURN =
+# 65536 is one full turn; 0 is +x, increasing toward +y, the increasing row --
+# the ordinates' own convention, (mu, eta) = (cos, sin)). No range, no ray
+# count, no jitter, no heat (design 4.4).
+#
+# THE PROJECTION (cone_overlaps / cone_emission). Ordinate m stands for the
+# angular BIN around it -- the half-offset ordinates are the bin centres --
+#     bin m = [edge(m), edge(m + 1)),  edge(m) = ceil(m * TURN / n_ord)
+# and the beam's power goes to the bins it overlaps, in proportion to the
+# overlap: e_m = (rgb * overlap_m) // total, total = spread (the overlaps sum to
+# it exactly). A beam that crosses angle 0 is unwrapped once ([lo, lo + spread)
+# inside [0, 2 TURN)), so every bin is counted against both of its copies. Two
+# edge cases: spread 0 puts everything into the ONE bin containing the centre
+# (a zero-spread cone lights one ordinate), and spread >= TURN is omni (every bin
+# by its width: rgb // 16 each at S16). The floors lose less than one count per
+# lit ordinate, never create one: sum_m e_m is in (rgb - n_ord, rgb].
+#
+# WHERE IT ENTERS (cone_injection, sweep_q's light visit). A cone's per-ordinate
+# emission ENTERS ITS OWN CELL'S STREAM, before that cell's absorption:
+#     stream = fa + fb + inj_m        (inj: the sum over the cell's cones)
+# so the emitter lights its own tile (its light crosses the cell it hangs in)
+# and whatever stands there -- a wall, a body -- absorbs it (a lamp inside an
+# opaque cell emits nothing out). The injection is booked as EMISSION, so the
+# books still close: emit + ring_in == absorb + ring_out. A thermal cell's glow,
+# by contrast, LEAVES its cell (P6a's `emitted`, added after absorption) -- the
+# cell's own surface emitting outward.
+#
+# THE SKY (sweep_q's `light.sky`): the ring is no longer dark. A virtual ring
+# cell's outflow in ordinate m, channel c, is sky[m][c]; an off-grid upwind read
+# returns it (it was 0 in P6a). Uniform over m is an overcast sky (a clear grid
+# then carries exactly sky per ordinate everywhere: fa + fb == sky), a sun is a
+# few ordinates (cone_emission of a narrow beam), all zero is space. It enters
+# the books on ring_in, which P6a already booked for exactly this.
+#
+# THE DOOR (validate_cones / validate_sky): every cone inside the grid, rgb >= 0,
+# center in [0, TURN), spread in [0, TURN]; per channel the SUM over all cones
+# at most LIGHT_CONE_BUDGET; each sky value in [0, LIGHT_SKY_MAX]. Those two
+# bounds are the int64 argument: a stream is at most the sky plus every
+# injection plus the largest thermal outflow (Kirchhoff keeps a thermal cell's
+# outflow a convex combination of its stream and its source, P6a G18(g)), so it
+# stays below 2^44.3, every plain product below 2^61, and rgb * overlap below
+# 2^60 -- gate 19 (f) measures it over-driven.
+# --------------------------------------------------------------------------- #
+CONE_TURN = ONE                     # one full turn, in Q16 turns
+LIGHT_CONE_BUDGET = 1 << 44         # sum over ALL cones of one channel's rgb
+LIGHT_SKY_MAX = 1 << 40             # one ordinate's sky, per channel (the table
+                                    # top's per-ordinate share at S16)
+
+
+def cone_bin_edge(m: int, n_ord: int) -> int:
+    """The low edge of ordinate m's angular bin, in Q16 turns: ceil(m*TURN/n).
+    An angle a in [0, TURN) is in bin (a * n_ord) >> 16."""
+    return (m * CONE_TURN + n_ord - 1) // n_ord
+
+
+def cone_overlaps(center_q: int, spread_q: int, n_ord: int = 16):
+    """(overlap per ordinate, total): how much of the beam [center - spread/2,
+    center - spread/2 + spread) each ordinate's bin covers, in Q16 turns. The
+    overlaps sum to `total` exactly. spread 0 -> the centre's bin alone (1 of 1);
+    spread >= TURN -> omni (each bin's width, of TURN)."""
+    if spread_q >= CONE_TURN:
+        return [cone_bin_edge(m + 1, n_ord) - cone_bin_edge(m, n_ord)
+                for m in range(n_ord)], CONE_TURN
+    if spread_q == 0:
+        b = (center_q * n_ord) >> 16
+        return [1 if m == b else 0 for m in range(n_ord)], 1
+    lo = (center_q - (spread_q >> 1)) % CONE_TURN
+    hi = lo + spread_q                                  # < 2 TURN: unwrapped once
+    ov = []
+    for m in range(n_ord):
+        e0, e1 = cone_bin_edge(m, n_ord), cone_bin_edge(m + 1, n_ord)
+        o = (max(0, min(hi, e1) - max(lo, e0))
+             + max(0, min(hi, e1 + CONE_TURN) - max(lo, e0 + CONE_TURN)))
+        ov.append(o)
+    return ov, spread_q
+
+
+def cone_emission(rgb, center_q: int, spread_q: int, n_ord: int = 16):
+    """A cone's per-ordinate emission, [n_ord][3]: e_m[c] = (rgb[c] * overlap_m)
+    // total (the projection above). Also the sun's per-ordinate sky values."""
+    ov, tot = cone_overlaps(center_q, spread_q, n_ord)
+    return [[(int(rgb[c]) * ov[m]) // tot for c in range(L_CHANNELS)]
+            for m in range(n_ord)]
+
+
+def validate_cones(cones, h: int, w: int):
+    """The cone door, as raises (radiation_sweep.cpp mirrors it)."""
+    tot = [0] * L_CHANNELS
+    for i, row in enumerate(cones):
+        y, x, rgb, cq, sq = row
+        if not (0 <= y < h and 0 <= x < w):
+            raise ValueError(f"cone {i} at ({y},{x}) is outside the {h}x{w} grid")
+        if len(rgb) != L_CHANNELS or any(v < 0 for v in rgb):
+            raise ValueError(f"cone {i}: rgb must be 3 non-negative counts")
+        if not (0 <= cq < CONE_TURN):
+            raise ValueError(f"cone {i}: center {cq} outside [0, {CONE_TURN})")
+        if not (0 <= sq <= CONE_TURN):
+            raise ValueError(f"cone {i}: spread {sq} outside [0, {CONE_TURN}]")
+        for c in range(L_CHANNELS):
+            tot[c] += rgb[c]
+    if any(t > LIGHT_CONE_BUDGET for t in tot):
+        raise ValueError(f"the cones' summed rgb {tot} exceeds the budget "
+                         f"{LIGHT_CONE_BUDGET} (the int64 argument)")
+
+
+def validate_sky(sky, n_ord: int):
+    if len(sky) != n_ord or any(len(r) != L_CHANNELS for r in sky):
+        raise ValueError(f"sky must be [{n_ord}][3]")
+    for r in sky:
+        for v in r:
+            if not (0 <= v <= LIGHT_SKY_MAX):
+                raise ValueError(f"a sky value {v} outside [0, {LIGHT_SKY_MAX}]")
+
+
+def cone_injection(cones, n_ord: int = 16):
+    """{(y, x): [n_ord][3]} -- every cone's per-ordinate emission summed per cell
+    (the order the rows come in is irrelevant: integer addition)."""
+    inj = {}
+    for (y, x, rgb, cq, sq) in cones:
+        e = cone_emission(rgb, cq, sq, n_ord)
+        acc = inj.setdefault((y, x), [[0] * L_CHANNELS for _ in range(n_ord)])
+        for m in range(n_ord):
+            for c in range(L_CHANNELS):
+                acc[m][c] += e[m][c]
+    return inj
+
+
 @dataclass
 class LightGroup:
     """THE LIGHT CHANNELS' inputs (P6a), handed to sweep_q as `light=`. Planes
@@ -1411,6 +1547,10 @@ class LightGroup:
              need sweep_q's gas group (gas, n_bulk, ts), whose planes they read
       record_streams -- keep every ordinate's streams (res.light_streams), for
              the resolution-floor gate
+      cones -- P6b: the CONE EMITTERS, rows (y, x, (r, g, b), center_q,
+             spread_q) (the section above); None or [] is none
+      sky   -- P6b: THE SKY, [n_ord][3] -- the virtual ring's outflow per
+             ordinate and channel; None is the dark ring (P6a's 0)
     """
     la: list
     ld: list
@@ -1419,6 +1559,8 @@ class LightGroup:
     light_absorb_q: list = None
     light_glow_q: list = None
     record_streams: bool = False
+    cones: list = None
+    sky: list = None
 
 
 def validate_light(lg: LightGroup, h: int, w: int, n_gases: int):
@@ -1612,6 +1754,14 @@ def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
                             n_bulk[y][x])
         l_emit = [[[(((lt[c][e_bucket_of(T[y][x])] * w_m) >> 16) * la_eff[c][y][x]) >> 16
                     for x in range(w)] for y in range(h)] for c in range(L_CHANNELS)]
+        # P6b: the cone emitters, projected and summed per cell, and the sky.
+        cones = light.cones or []
+        if validate:
+            validate_cones(cones, h, w)
+        l_inj = cone_injection(cones, n_ord)
+        l_sky = light.sky
+        if l_sky is not None and validate:
+            validate_sky(l_sky, n_ord)
         res.light_q = [plane(h, w) for _ in range(L_CHANNELS)]
         res.light_flux = [plane(h, w), plane(h, w)]
         res.light_a_eff, res.light_d_eff, res.light_gcoef = la_eff, ld_eff, gcoef
@@ -1754,20 +1904,28 @@ def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
             in_lb = 0 <= lb_u[0] < h and 0 <= lb_u[1] < w
             out_la = not (0 <= la_t[0] < h and 0 <= la_t[1] < w)
             out_lb = not (0 <= lb_t[0] < h and 0 <= lb_t[1] < w)
+            # P6b: this cell's cone injection in this ordinate (0 off-emitter)
+            inj_here = l_inj.get((y, x))
+            inj_m = inj_here[m_idx] if inj_here is not None else None
+            sky_m = l_sky[m_idx] if l_sky is not None else None
             I_m = 0
             for c in range(L_CHANNELS):
                 st = lstore[c]
-                # THE DARK RING: an off-grid upwind read is 0 (P6b's sky
-                # boundary replaces this zero with per-ordinate RGB).
-                lio_a = st[la_u[0]][la_u[1]] if in_la else 0
-                lio_b = st[lb_u[0]][lb_u[1]] if in_lb else 0
+                # THE RING: an off-grid upwind read is the SKY's outflow in this
+                # ordinate (P6b; 0 -- the dark ring -- without one).
+                ring = sky_m[c] if sky_m is not None else 0
+                lio_a = st[la_u[0]][la_u[1]] if in_la else ring
+                lio_b = st[lb_u[0]][lb_u[1]] if in_lb else ring
                 if in_la:
                     assert lio_a is not None, "light upwind not yet computed"
                 if in_lb:
                     assert lio_b is not None, "light upwind not yet computed"
                 lfa = (lio_a * s_l) >> 16
                 lfb = lio_b - ((lio_b * s_l) >> 16)     # the REMAINDER
-                lstream = lfa + lfb
+                # P6b: a cone's emission ENTERS its own cell's stream, before the
+                # cell absorbs -- booked as emission.
+                inj = inj_m[c] if inj_m is not None else 0
+                lstream = lfa + lfb + inj
                 if not in_la:
                     res.light_ring_in[c] += lfa
                 if not in_lb:
@@ -1780,7 +1938,7 @@ def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
                     raise AssertionError(f"light positivity broken at ({y},{x}) c={c}")
                 res.light_q[c][y][x] += lstream
                 res.light_absorb[c] += absorbed
-                res.light_emit[c] += emitted
+                res.light_emit[c] += emitted + inj
                 st[y][x] = lout
                 lfa_o = (lout * s_l) >> 16
                 lfb_o = lout - lfa_o

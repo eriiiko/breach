@@ -362,6 +362,31 @@ def test_the_light_channels_close_their_books_and_obey_the_optics():
     print(_run(G.gate18_light_channels))
 
 
+def test_cone_emitters_and_the_sky_boundary_obey_the_spec():
+    """G19 (P6b, docs/ray_engine_v2_p6b_lit_world_brief_2026-09-25.md sections
+    1.3-1.4 and 3.2-3.3, in the SPEC): (a) a cone's power is projected onto the
+    ordinates' angular bins by overlap -- each overlap equals a brute-force count
+    of the beam's integer angles in the bin, a zero-spread cone lights ONE
+    ordinate, omni gives rgb // 16 each, a one-bin rotation rotates the emission;
+    (b) in the sweep a lone cone lights ONLY its beam's ordinates, its own cell
+    carries its whole emission, the books close with emit == the injection, and
+    on a body cell it lights nothing beyond its cell; (c) a uniform sky carries
+    exactly S per ordinate into every clear cell, a sealed box is exactly 0
+    inside (an opening lets the sky in, decaying with distance), a sun lights
+    only its ordinates and leaves a box open away from it dark (overcast does
+    not); (d) heat is untouched by cones and sky; (e) the door refuses every
+    illegal cone and sky and accepts the exact budget and maximum; (f) headroom
+    over-driven: plain products < 2^62 (a budget 2^3 larger crosses 2^63).
+
+    Breaks if: the injection enters after the cell's absorption (validated: (b)
+    red), the ring reads the sky for only one upwind share ((c) red), the
+    injection is not booked as emission ((d)'s books red), or a bin edge floors
+    instead of ceiling ((a) red at S12) -- each injected once into the
+    reference and turned this gate red.
+    """
+    print(_run(G.gate19_cones_and_sky))
+
+
 def test_the_light_table_is_the_checked_in_one_with_a_dark_ambient():
     """The reference's L° IS the checked-in table the engine compiles
     (cpp/src/light_emission_table.inc), in the currency emissive_table.h

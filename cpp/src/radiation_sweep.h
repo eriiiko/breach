@@ -84,8 +84,9 @@ struct OrdinateDir {
 // and every walk run() uses is topological for both transports, so light moves
 // no heat integer (tests/test_radiation_sweep_light.py: heat bit-identical with
 // light on vs off). Per ordinate m, channel c, cell i (int64):
-//   stream   = gather of light's upwind pair (an off-grid read is 0: the DARK
-//              ring, until P6b's sky boundary)
+//   stream   = gather of light's upwind pair (an off-grid read is the SKY in
+//              this ordinate since P6b -- 0, the DARK ring, without one) + the
+//              cell's CONE injection in this ordinate (P6b, below)
 //   absorbed = (stream * d_c) >> 16      -- the whole STAMPED share: the body
 //              share d_c - a_c re-emits the light ambient L°[0] = 0 (decision 5)
 //   emitted  = (((L°_c[T_i] * w_m) >> 16) * a_c) >> 16   -- Kirchhoff, no Fleck
@@ -100,6 +101,29 @@ struct OrdinateDir {
 //   emit + ring_in == absorb + ring_out.
 // Given as a group or not at all (nullptr: the heat-only sweep, integer for
 // integer). Planes are (h, w, 3) / (h, w, 2) INTERLEAVED, the GameMap layout.
+//
+// ---- P6b: CONE EMITTERS and THE SKY (design v3 §2.7, §4.1, §7.2; the P6b
+// brief §1.3-1.4; the spec is sweep_ref_q.py's cone_overlaps / cone_emission /
+// cone_injection and LightGroup.cones / .sky, gate 19) -----------------------
+// A cone is a row of CONE_ROW_WIDTH int64s: (y, x, r, g, b, center_q,
+// spread_q) -- a cell, a per-channel TOTAL power in L°'s currency, and a beam
+// in Q16 TURNS (CONE_TURN = one turn; 0 is +x, increasing toward +y, the
+// ordinates' own (mu, eta) convention). Its power is projected onto the
+// ordinates' angular bins by OVERLAP (cone_emission below: e_m = rgb *
+// overlap_m / spread; spread 0 -> the centre's bin alone, spread >= CONE_TURN
+// -> omni) and ENTERS its own cell's stream in ordinate m before the cell
+// absorbs:  stream = fa + fb + inj_m  -- booked as emission. The SKY is the
+// virtual ring's outflow per ordinate and channel, (n_ordinates, 3): an
+// off-grid light upwind read returns sky[m][c] (0 without one, P6a's dark
+// ring), booked on ring_in. THE DOOR: every cone inside the grid, rgb >= 0,
+// center in [0, CONE_TURN), spread in [0, CONE_TURN]; per channel the SUM of
+// every cone's rgb <= LIGHT_CONE_BUDGET; every sky value in [0, LIGHT_SKY_MAX]
+// -- the int64 argument (a stream stays below 2^44.3, every plain product
+// below 2^62: gate 19 (f), over-driven).
+static constexpr int     CONE_ROW_WIDTH    = 7;
+static constexpr int64_t CONE_TURN         = 65536;             // one turn, Q16
+static constexpr int64_t LIGHT_CONE_BUDGET = (int64_t)1 << 44;  // Σ_cones rgb, per channel
+static constexpr int64_t LIGHT_SKY_MAX     = (int64_t)1 << 40;  // one ordinate's sky
 struct LightChannels {
     // ---- inputs
     const int32_t* light_atten_q     = nullptr;  // (h, w, 3) Q16 -- a_c, the MATERIAL
@@ -111,10 +135,27 @@ struct LightChannels {
     const int32_t* light_absorb_q16  = nullptr;
     const int32_t* light_glow_q16    = nullptr;
     int transport = 0;                           // RadiationSweep::TRANSPORT_STEP
+    // ---- P6b inputs, both optional (see above)
+    const int64_t* cones = nullptr;              // (n_cones, CONE_ROW_WIDTH) rows
+    int n_cones = 0;
+    const int64_t* sky = nullptr;                // (n_ordinates, 3); nullptr: the dark ring
     // ---- outputs, OVERWRITTEN (run() zeroes them itself, design row 38)
     int64_t* light_q      = nullptr;             // (h, w, 3) the irradiance, Σ_m stream
     int64_t* light_flux_q = nullptr;             // (h, w, 2) Σ_m I_m (mu, eta), x then y
     int64_t* light_glow   = nullptr;             // (h, w, 3) in-scatter, gas cells only
+};
+
+// P6b: the cones summed per CELL, the shape both backends' light visit reads:
+// `index` (h * w int32) is -1 off an emitter or the cell's slot, `inj` holds
+// (n_slots, n_ordinates, 3) int64 per-ordinate injections, `emit_total` the
+// per-channel sum of every injection (what the emission book adds). Built by
+// RadiationSweep::build_cone_injection on the host (the rows are host data on
+// both backends), so the projection has ONE implementation.
+struct ConeInjection {
+    std::vector<int32_t> index;
+    std::vector<int64_t> inj;
+    int n_slots = 0;
+    int64_t emit_total[3] = {0, 0, 0};
 };
 
 // ---- the Fleck pre-pass primitives (FP_HD: P4's twin shares them) ---------
@@ -338,8 +379,9 @@ public:
     // LIGHT group (P6a) also: a missing light plane or table, an unsupported
     // light transport, a table whose bucket 0 is not dark on every channel, a
     // smoke column pair given by half or without the gas group, a light
-    // coefficient outside [0, HEAT_ABSORB_Q_MAX], or a cell violating
-    // 0 <= a_c <= d_c <= ONE on any channel -- all before any output is touched.
+    // coefficient outside [0, HEAT_ABSORB_Q_MAX], a cell violating
+    // 0 <= a_c <= d_c <= ONE on any channel, or (P6b) a cone or sky the door
+    // refuses -- all before any output is touched.
     void run(const int32_t* temperature,
              const int32_t* heat_atten_q, const int32_t* dyn_heat_atten_q,
              const int32_t* heat_inv_shift, const bool* thermal_solid,
@@ -357,10 +399,25 @@ public:
     // P6a: the light group's own ingress, as run() applies it BEFORE touching
     // any output -- the host-side door the CUDA twin shares (the per-cell
     // extinction check aside, which each backend makes over its own planes).
-    // Throws std::invalid_argument; see run().
+    // P6b: also THE CONE AND SKY DOOR (see LightChannels), which needs the
+    // grid's (h, w). Throws std::invalid_argument; see run().
     static void validate_light_group(const LightChannels& light, int n_ordinates,
                                      const int32_t* gas, const int32_t* n_bulk,
-                                     int n_gases);
+                                     int n_gases, int h, int w);
+
+    // P6b: THE PROJECTION (sweep_ref_q.cone_emission): one cone's per-ordinate
+    // emission, out[m * 3 + c] = rgb[c] * overlap_m / total over the ordinates'
+    // angular bins bin m = [ceil(m T / n), ceil((m + 1) T / n)), T = CONE_TURN.
+    // spread 0 -> the centre's bin alone; spread >= CONE_TURN -> omni. Every
+    // product is < 2^60 under the door (rgb <= 2^44, overlap <= 2^16). Also
+    // the sun's per-ordinate sky values (the Python door reads it through the
+    // binding, so the projection has one implementation).
+    static void cone_emission(const int64_t* rgb, int64_t center_q, int64_t spread_q,
+                              int n_ordinates, int64_t* out);
+    // P6b: the cones summed per cell (ConeInjection above). Assumes the door
+    // (validate_light_group) has passed.
+    static void build_cone_injection(const int64_t* cones, int n_cones, int n_ordinates,
+                                     int h, int w, ConeInjection& out);
 
     // The effective extinction planes the last CPU run() READ (Q16, (h, w)):
     // the material/stamped planes with the smoke term folded in (P5a).
@@ -463,4 +520,5 @@ private:
     mutable std::vector<int32_t> l_d_;       // (h, w, 3): d_c the loop reads
     mutable std::vector<int32_t> l_g_;       // (h, w, 3): the glow coefficient
     mutable int lh_ = 0, lw_ = 0, ln_ord_ = 0;
+    mutable ConeInjection cones_;            // P6b: the last light run's cone injection
 };

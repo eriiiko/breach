@@ -104,7 +104,10 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         const int32_t* light_atten_q, const int32_t* dyn_light_atten_q,
         int64_t* light_q, int64_t* light_flux_q, int64_t* light_glow,
         const int32_t* gas_light_absorb_q16,
-        const int32_t* gas_light_glow_q16) const {
+        const int32_t* gas_light_glow_q16,
+        // P6b: the cone emitters and the sky (see header)
+        const int64_t* light_cones, int n_light_cones,
+        const int64_t* light_sky) const {
 
     using namespace fixedpoint;
 
@@ -263,106 +266,18 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     if (heat_atten_q != nullptr && dyn_heat_atten_q != nullptr &&
         rad_net_sweep != nullptr && rad_flux_sweep != nullptr &&
         rad_amb_sweep != nullptr && rad_fluence != nullptr) {
-        const int64_t* e_tbl = this->emissive.table();   // lazy re-bake on a dial change
-        // #78: the table's CURRENCY -- every integer the sweep books is 2^k of
-        // them per heat count, and the fold below converts by the SAME k (it
-        // is handed this->emissive.fine_bits too), so a table and its planes
-        // are never read in two currencies. E_FINE_BITS on the live path.
-        // P5a (design v3 §6.3): the smoke term's inputs — the gas planes, the
-        // per-gas heat_absorb column and the bulk sum built above (one source
-        // of truth with the fire and the temperature fold). All three or none:
-        // a caller without the column gets the pre-P5a sweep.
-        const bool smoke = (gas_heat_absorb_q16 != nullptr);
-        const int32_t* sw_gas   = smoke ? gas : nullptr;
-        const int      sw_ng    = smoke ? n_gases : 0;
-        const int32_t* sw_nbulk = smoke ? n_bulk_.data() : nullptr;
-        // P5b (design v3 §2.8 / §6.3): the gas arm of the Fleck pre-pass
-        // prices every absorbing gas cell in the temperature fold's own gas
-        // currency — gas_capacity_q() above, from this->temperature's dials,
-        // the SAME n_bulk_ the fold divides by. Read only where a_gas > 0:
-        // wherever there is smoke, since P5c ships smoke's heat_absorb.
-        const GasCapacityQ cap = this->gas_capacity_q();
-        // P6a: THE LIGHT CHANNELS ride the same traversal -- REQUESTED, never
-        // always on (design v3 §7.1). Off (the default) nothing below reads a
-        // light pointer and the sweep is the heat-only one, integer for
-        // integer. On, the whole group is required: a request that silently
-        // computed nothing would hand P6b a dark field it believes is lit.
-        LightChannels lc;
-        const LightChannels* lcp = nullptr;
-        if (this->light_requested) {
-            if (light_atten_q == nullptr || dyn_light_atten_q == nullptr ||
-                light_q == nullptr || light_flux_q == nullptr || light_glow == nullptr) {
-                throw std::invalid_argument(
-                    "PhysicsEngine::step_tail: light is requested but the light "
-                    "planes (light_atten_q, dyn_light_atten_q, light_q, light_flux_q, "
-                    "light_glow) were not all handed in (P6a)");
-            }
-            lc.light_atten_q     = light_atten_q;
-            lc.dyn_light_atten_q = dyn_light_atten_q;
-            lc.l_table           = this->light_emission.table();
-            // the smoke term reads the heat term's gas group: both need it
-            lc.light_absorb_q16  = smoke ? gas_light_absorb_q16 : nullptr;
-            lc.light_glow_q16    = smoke ? gas_light_glow_q16 : nullptr;
-            lc.transport         = RadiationSweep::TRANSPORT_STEP;   // Erik's choice (§2.4)
-            lc.light_q           = light_q;
-            lc.light_flux_q      = light_flux_q;
-            lc.light_glow        = light_glow;
-            lcp = &lc;
-        }
-#ifdef BREACH_HAS_CUDA
-        if (breach_cuda::radiation_backend_is_cuda()) {
-            // ray-engine-v2 P4: the CUDA twin (cuda_radiation_sweep.h), the
-            // per-call path on this host mirror — design §8.2, the temperature
-            // twin's shape: H2D the inputs, launch, sync, D2H the four planes.
-            // The SAME arguments as the CPU branch below, with the ambient
-            // DERIVED on the device from `is_vacuum` + the vacuum level (the
-            // twin of derive_ambient, so no ambient plane crosses the bus).
-            // Bit-identical to the CPU branch: tests/cuda_radiation_sweep_check.py.
-            // The engine's RadiationSweep still carries the run's observable
-            // state — its Fleck plane and stream telemetry — whichever backend
-            // ran (the t_max_phys_hits idiom), through fleck_plane_for_twin.
-            int32_t* f_plane = this->radiation.fleck_plane_for_twin(h, w, 16);
-            int64_t s_min = 0, s_max = 0;
-            // P6a: the twin's light books + light-stream telemetry come back
-            // here and land on this->radiation, the backend-agnostic idiom.
-            int64_t lbooks[12] = {0};
-            int64_t ls_min = 0, ls_max = 0;
-            breach_cuda::radiation_sweep_step(
-                temperature, heat_atten_q, dyn_heat_atten_q,
-                heat_inv_shift, thermal_solid,
-                e_tbl, this->emissive.fine_bits,
-                /*amb_level=*/nullptr, is_vacuum, rad_amb_vacuum_q,
-                t_amb_q, k_leak_q,
-                RadiationSweep::TRANSPORT_SHEAR, 16, h, w,
-                rad_net_sweep, rad_flux_sweep, rad_amb_sweep, rad_fluence,
-                /*fleck_enabled=*/true, f_plane, &s_min, &s_max,
-                sw_gas, sw_ng, gas_heat_absorb_q16, sw_nbulk,
-                cap.n_floor_q, cap.recip_cv,
-                lcp, lbooks, &ls_min, &ls_max);
-            this->radiation.min_stream = s_min;
-            this->radiation.max_stream = s_max;
-            if (lcp != nullptr)
-                this->radiation.set_light_telemetry_from_twin(lbooks, ls_min, ls_max);
-        } else
-#endif
-        {
-            // THE PER-CELL AMBIENT (thermal model v2 R3), derived from the
-            // vacuum/interior state already in scope — never authored, and no
-            // new plane crosses the binding. Uniform at the shipped dial (R4).
-            const int64_t* amb_level = this->radiation.derive_ambient(
-                is_vacuum, e_tbl, rad_amb_vacuum_q, h * w);
-            this->radiation.run(
-                temperature, heat_atten_q, dyn_heat_atten_q,
-                heat_inv_shift, thermal_solid,
-                e_tbl, this->emissive.fine_bits, amb_level,
-                t_amb_q, k_leak_q,
-                RadiationSweep::TRANSPORT_SHEAR, 16, h, w,
-                rad_net_sweep, rad_flux_sweep, rad_amb_sweep, rad_fluence,
-                /*fleck_enabled=*/true,
-                sw_gas, sw_ng, gas_heat_absorb_q16, sw_nbulk,
-                cap.n_floor_q, cap.recip_cv,
-                lcp);                                   // P6a: nullptr unless requested
-        }
+        // P6b: the body moved VERBATIM into run_sweep_ (below), the ONE sweep
+        // invocation this engine has; relight() is its other caller.
+        this->run_sweep_(temperature, heat_atten_q, dyn_heat_atten_q,
+                         heat_inv_shift, thermal_solid, is_vacuum,
+                         gas, n_gases, n_bulk_.data(), h, w,
+                         t_amb_q, k_leak_q, rad_amb_vacuum_q, gas_heat_absorb_q16,
+                         rad_net_sweep, rad_flux_sweep, rad_amb_sweep, rad_fluence,
+                         this->light_requested,
+                         light_atten_q, dyn_light_atten_q,
+                         light_q, light_flux_q, light_glow,
+                         gas_light_absorb_q16, gas_light_glow_q16,
+                         light_cones, n_light_cones, light_sky);
     }
 
     // --- 3. Temperature pass (PhysicsRunner: self.temperature.step) ------
@@ -571,6 +486,176 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     }
 
     return destroyed;
+}
+
+// P6b: THE ONE SWEEP INVOCATION -- step 2b's body until P6b, moved verbatim
+// (the per-cell ambient derivation, the gas group and currency, the light group
+// when `with_light`, the CPU sweep or its CUDA twin). step_tail calls it with
+// with_light = light_requested; relight() with light always on. `n_bulk` is
+// the caller's bulk (O2 + N2) sum -- step_tail's n_bulk_, relight's own.
+void PhysicsEngine::run_sweep_(
+        const int32_t* temperature,
+        const int32_t* heat_atten_q, const int32_t* dyn_heat_atten_q,
+        const int32_t* heat_inv_shift, const bool* thermal_solid,
+        const bool* is_vacuum,
+        const int32_t* gas, int n_gases, const int32_t* n_bulk, int h, int w,
+        int32_t t_amb_q, int32_t k_leak_q, int64_t rad_amb_vacuum_q,
+        const int32_t* gas_heat_absorb_q16,
+        int64_t* rad_net_sweep, int64_t* rad_flux_sweep,
+        int64_t* rad_amb_sweep, int64_t* rad_fluence,
+        bool with_light,
+        const int32_t* light_atten_q, const int32_t* dyn_light_atten_q,
+        int64_t* light_q, int64_t* light_flux_q, int64_t* light_glow,
+        const int32_t* gas_light_absorb_q16, const int32_t* gas_light_glow_q16,
+        const int64_t* light_cones, int n_light_cones,
+        const int64_t* light_sky) const {
+    {
+        const int64_t* e_tbl = this->emissive.table();   // lazy re-bake on a dial change
+        // #78: the table's CURRENCY -- every integer the sweep books is 2^k of
+        // them per heat count, and the fold below converts by the SAME k (it
+        // is handed this->emissive.fine_bits too), so a table and its planes
+        // are never read in two currencies. E_FINE_BITS on the live path.
+        // P5a (design v3 §6.3): the smoke term's inputs — the gas planes, the
+        // per-gas heat_absorb column and the bulk sum built above (one source
+        // of truth with the fire and the temperature fold). All three or none:
+        // a caller without the column gets the pre-P5a sweep.
+        const bool smoke = (gas_heat_absorb_q16 != nullptr);
+        const int32_t* sw_gas   = smoke ? gas : nullptr;
+        const int      sw_ng    = smoke ? n_gases : 0;
+        const int32_t* sw_nbulk = smoke ? n_bulk : nullptr;
+        // P5b (design v3 §2.8 / §6.3): the gas arm of the Fleck pre-pass
+        // prices every absorbing gas cell in the temperature fold's own gas
+        // currency — gas_capacity_q() above, from this->temperature's dials,
+        // the SAME n_bulk_ the fold divides by. Read only where a_gas > 0:
+        // wherever there is smoke, since P5c ships smoke's heat_absorb.
+        const GasCapacityQ cap = this->gas_capacity_q();
+        // P6a: THE LIGHT CHANNELS ride the same traversal -- REQUESTED, never
+        // always on (design v3 §7.1). Off (the default) nothing below reads a
+        // light pointer and the sweep is the heat-only one, integer for
+        // integer. On, the whole group is required: a request that silently
+        // computed nothing would hand P6b a dark field it believes is lit.
+        LightChannels lc;
+        const LightChannels* lcp = nullptr;
+        if (with_light) {
+            if (light_atten_q == nullptr || dyn_light_atten_q == nullptr ||
+                light_q == nullptr || light_flux_q == nullptr || light_glow == nullptr) {
+                throw std::invalid_argument(
+                    "PhysicsEngine: light is requested but the light "
+                    "planes (light_atten_q, dyn_light_atten_q, light_q, light_flux_q, "
+                    "light_glow) were not all handed in (P6a)");
+            }
+            lc.light_atten_q     = light_atten_q;
+            lc.dyn_light_atten_q = dyn_light_atten_q;
+            lc.l_table           = this->light_emission.table();
+            // the smoke term reads the heat term's gas group: both need it
+            lc.light_absorb_q16  = smoke ? gas_light_absorb_q16 : nullptr;
+            lc.light_glow_q16    = smoke ? gas_light_glow_q16 : nullptr;
+            lc.transport         = RadiationSweep::TRANSPORT_STEP;   // Erik's choice (§2.4)
+            lc.light_q           = light_q;
+            lc.light_flux_q      = light_flux_q;
+            lc.light_glow        = light_glow;
+            // P6b: the cone emitters and the sky (both optional; the sweep's
+            // own door refuses an illegal row or sky value)
+            lc.cones             = light_cones;
+            lc.n_cones           = (light_cones != nullptr) ? n_light_cones : 0;
+            lc.sky               = light_sky;
+            lcp = &lc;
+        }
+#ifdef BREACH_HAS_CUDA
+        if (breach_cuda::radiation_backend_is_cuda()) {
+            // ray-engine-v2 P4: the CUDA twin (cuda_radiation_sweep.h), the
+            // per-call path on this host mirror — design §8.2, the temperature
+            // twin's shape: H2D the inputs, launch, sync, D2H the four planes.
+            // The SAME arguments as the CPU branch below, with the ambient
+            // DERIVED on the device from `is_vacuum` + the vacuum level (the
+            // twin of derive_ambient, so no ambient plane crosses the bus).
+            // Bit-identical to the CPU branch: tests/cuda_radiation_sweep_check.py.
+            // The engine's RadiationSweep still carries the run's observable
+            // state — its Fleck plane and stream telemetry — whichever backend
+            // ran (the t_max_phys_hits idiom), through fleck_plane_for_twin.
+            int32_t* f_plane = this->radiation.fleck_plane_for_twin(h, w, 16);
+            int64_t s_min = 0, s_max = 0;
+            // P6a: the twin's light books + light-stream telemetry come back
+            // here and land on this->radiation, the backend-agnostic idiom.
+            int64_t lbooks[12] = {0};
+            int64_t ls_min = 0, ls_max = 0;
+            breach_cuda::radiation_sweep_step(
+                temperature, heat_atten_q, dyn_heat_atten_q,
+                heat_inv_shift, thermal_solid,
+                e_tbl, this->emissive.fine_bits,
+                /*amb_level=*/nullptr, is_vacuum, rad_amb_vacuum_q,
+                t_amb_q, k_leak_q,
+                RadiationSweep::TRANSPORT_SHEAR, 16, h, w,
+                rad_net_sweep, rad_flux_sweep, rad_amb_sweep, rad_fluence,
+                /*fleck_enabled=*/true, f_plane, &s_min, &s_max,
+                sw_gas, sw_ng, gas_heat_absorb_q16, sw_nbulk,
+                cap.n_floor_q, cap.recip_cv,
+                lcp, lbooks, &ls_min, &ls_max);
+            this->radiation.min_stream = s_min;
+            this->radiation.max_stream = s_max;
+            if (lcp != nullptr)
+                this->radiation.set_light_telemetry_from_twin(lbooks, ls_min, ls_max);
+        } else
+#endif
+        {
+            // THE PER-CELL AMBIENT (thermal model v2 R3), derived from the
+            // vacuum/interior state already in scope — never authored, and no
+            // new plane crosses the binding. Uniform at the shipped dial (R4).
+            const int64_t* amb_level = this->radiation.derive_ambient(
+                is_vacuum, e_tbl, rad_amb_vacuum_q, h * w);
+            this->radiation.run(
+                temperature, heat_atten_q, dyn_heat_atten_q,
+                heat_inv_shift, thermal_solid,
+                e_tbl, this->emissive.fine_bits, amb_level,
+                t_amb_q, k_leak_q,
+                RadiationSweep::TRANSPORT_SHEAR, 16, h, w,
+                rad_net_sweep, rad_flux_sweep, rad_amb_sweep, rad_fluence,
+                /*fleck_enabled=*/true,
+                sw_gas, sw_ng, gas_heat_absorb_q16, sw_nbulk,
+                cap.n_floor_q, cap.recip_cv,
+                lcp);                                   // P6a: nullptr unless requested
+        }
+    }
+}
+
+// P6b: RELIGHT -- the light field recomputed on the CURRENT state without a
+// tick (header). The sweep's heat outputs land in this engine's own scratch,
+// never in a caller's plane, so nothing a tick reads moves.
+void PhysicsEngine::relight(
+        const int32_t* temperature,
+        const int32_t* heat_atten_q, const int32_t* dyn_heat_atten_q,
+        const int32_t* heat_inv_shift, const bool* thermal_solid,
+        const bool* is_vacuum,
+        const int32_t* gas, const bool* gas_conservative, int n_gases, int h, int w,
+        int32_t t_amb_q, int32_t k_leak_q, int64_t rad_amb_vacuum_q,
+        const int32_t* gas_heat_absorb_q16,
+        const int32_t* light_atten_q, const int32_t* dyn_light_atten_q,
+        int64_t* light_q, int64_t* light_flux_q, int64_t* light_glow,
+        const int32_t* gas_light_absorb_q16, const int32_t* gas_light_glow_q16,
+        const int64_t* light_cones, int n_light_cones,
+        const int64_t* light_sky) const {
+    const size_t n = (size_t)h * (size_t)w;
+    // the bulk sum, built the way step_tail builds n_bulk_ (its own scratch:
+    // a relight between two ticks never touches the tick's)
+    if (relight_n_bulk_.size() != n) relight_n_bulk_.assign(n, 0);
+    std::fill(relight_n_bulk_.begin(), relight_n_bulk_.end(), 0);
+    for (int gi = 0; gi < n_gases; ++gi) {
+        if (!gas_conservative[gi]) continue;
+        const int32_t* plane = gas + (size_t)gi * n;
+        for (size_t i = 0; i < n; ++i) relight_n_bulk_[i] += plane[i];
+    }
+    if (relight_rad_.size() != 4 * n) relight_rad_.assign(4 * n, 0);
+    int64_t* scratch = relight_rad_.data();
+    this->run_sweep_(temperature, heat_atten_q, dyn_heat_atten_q,
+                     heat_inv_shift, thermal_solid, is_vacuum,
+                     gas, n_gases, relight_n_bulk_.data(), h, w,
+                     t_amb_q, k_leak_q, rad_amb_vacuum_q, gas_heat_absorb_q16,
+                     scratch, scratch + n, scratch + 2 * n, scratch + 3 * n,
+                     /*with_light=*/true,
+                     light_atten_q, dyn_light_atten_q,
+                     light_q, light_flux_q, light_glow,
+                     gas_light_absorb_q16, gas_light_glow_q16,
+                     light_cones, n_light_cones, light_sky);
 }
 
 // EOS refactor P3 (docs/eos_refactor_design.md §3, §8 patch P3) — the

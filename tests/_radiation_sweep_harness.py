@@ -299,7 +299,20 @@ def light_arrays(light, h, w):
             np.asarray(light["light_glow_q"], dtype=np.int64).astype(np.int32))
     if light.get("table") is not None:
         kw["light_table"] = np.ascontiguousarray(np.asarray(light["table"], dtype=np.int64))
+    # P6b: the cone rows (the reference's (y, x, (r, g, b), center_q, spread_q)
+    # flattened to the engine's (n, 7) int64) and the sky ([n_ord][3])
+    if light.get("cones"):
+        kw["light_cones"] = cone_rows(light["cones"])
+    if light.get("sky") is not None:
+        kw["light_sky"] = np.ascontiguousarray(np.asarray(light["sky"], dtype=np.int64))
     return kw
+
+
+def cone_rows(cones):
+    """P6b: reference cone rows -> the engine's (n, 7) int64 array."""
+    return np.ascontiguousarray(np.asarray(
+        [[y, x, rgb[0], rgb[1], rgb[2], cq, sq] for (y, x, rgb, cq, sq) in cones],
+        dtype=np.int64).reshape(len(cones), 7))
 
 
 def light_out(kw):
@@ -397,7 +410,8 @@ def ref_sweep(a, d, k_q, T, his, *, transport="shear", n_ord=16, amb=None,
                           table=light.get("table"),
                           transport=light.get("transport", "step"),
                           light_absorb_q=light.get("light_absorb_q"),
-                          light_glow_q=light.get("light_glow_q"))
+                          light_glow_q=light.get("light_glow_q"),
+                          cones=light.get("cones"), sky=light.get("sky"))
     res = R.sweep_q(a, d, k, T, n_ord=n_ord, transport=transport, f_plane=f,
                     e_ref=amb, table=tbl, ts=ts, light=lg, **gas_kw)
     to64 = lambda p: np.asarray(p, dtype=np.int64)   # noqa: E731

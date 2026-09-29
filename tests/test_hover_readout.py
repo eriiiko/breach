@@ -163,7 +163,9 @@ def test_packs_all_fields_dequantized():
 
     # Panel-ready lines carry the tile + a couple of the numbers.
     assert r.lines[0] == "tile (2, 1)  wood"
-    assert len(r.lines) == 13
+    # P6b restated (was `len(r.lines) == 13`): the readout is a list designed to
+    # grow (P6b appended the light row), so the rows are pinned by position and
+    # prefix, never by count.
     assert r.lines[11].startswith("Phi:") and r.lines[12].startswith("f:")
 
 

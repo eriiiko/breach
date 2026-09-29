@@ -1,4 +1,9 @@
-"""Pure ``[[light]]`` -> raycaster ``LightSource`` parameter helpers (P4).
+"""Pure ``[[light]]`` -> light parameter helpers (P4; P6b: :class:`LightSpec`).
+
+Since ray-engine-v2 P6b a level light is first a :class:`LightSpec` (what it
+is), then an output row: the sweep's cone-emitter row (renderer/frame_lights.py
+``cone_rows``, live) or, behind the P6b old/new toggle only, the old march's
+``LightSource`` via :func:`light_source_params` (deleted at P6c).
 
 Render-side module (deliberately NOT under ``src/simulation/`` — render
 channels are ingress-exempt, engine/14 synced-vs-local) and importable
@@ -33,9 +38,65 @@ Binding design calls (docs/patch_levels_p4_lights.md):
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 # angle_spread >= 2*pi = omnidirectional emission (raycaster cone contract).
 STATIC_SPREAD = math.tau
+
+
+# ---------------------------------------------------------------------------
+# ray-engine-v2 P6b: THE LIGHT SPEC -- what a light IS, before its output row.
+# ---------------------------------------------------------------------------
+# The frame-lights assembly (renderer/frame_lights.py, the ONE assembly)
+# enumerates every light the game shows as a LightSpec, once; two output rows
+# are built from the SAME list: the sweep's CONE-EMITTER row (frame_lights.
+# cone_rows, the live one) and, for P6b's old/new toggle only, the old render
+# march's bp.LightSource (frame_lights.light_sources, deleted at P6c). Plain
+# data, importable without breach_physics or the renderer.
+@dataclass(frozen=True)
+class LightSpec:
+    """One light, in the old LightSource's float convention.
+
+    x, y          tile coordinates (float; the cell is (floor(y), floor(x)))
+    color         (r, g, b) tint, max channel ~1
+    intensity     TOTAL emitted power in LIGHT UNITS (1.0 = the blackbody
+                  ramp's intensity 1.0) -- the old LightSource.intensity's unit;
+                  measured 1:1 against the old march (the P6b calibration)
+    angle_center  beam centre, radians, SCREEN convention (dx = cos, dy = sin,
+                  +y the increasing row -- the ordinates' own)
+    angle_spread  full beam angle, radians; >= 2*pi - 0.01 is omni (the old
+                  march's own cone test)
+    max_range     the old march's reach in tiles (the OLD row only; a sweep
+                  has no range)
+    kind          "lamp" | "beacon" | "flashlight" | "cursor" | "transient" |
+                  "fire" (the old path's fire lights; the sweep's fire light is
+                  the thermal emission, never a row)
+    source        "sim" or "render": where the light's INPUTS come from -- the
+                  determinism map of P6b brief decision 1 (render-sourced
+                  lights keep light_q from being sim-pure until P7)
+    """
+    x: float
+    y: float
+    color: tuple
+    intensity: float
+    angle_center: float = 0.0
+    angle_spread: float = STATIC_SPREAD
+    max_range: float = 20.0
+    kind: str = "lamp"
+    source: str = "sim"
+
+
+def light_spec(entry, total_tick: int, tick_dt_s: float) -> LightSpec:
+    """``LightEntry`` -> its :class:`LightSpec`, the SAME numbers
+    :func:`light_source_params` puts in the old row (position, colour,
+    intensity, the beacon's sim-tick facing and beam, the range). Level data
+    and the monotonic sim tick: a SIM-sourced light."""
+    p = light_source_params(entry, total_tick, tick_dt_s)
+    return LightSpec(x=p["x"], y=p["y"], color=p["color"], intensity=p["intensity"],
+                     angle_center=p["angle_center"], angle_spread=p["angle_spread"],
+                     max_range=p["max_range"],
+                     kind="beacon" if entry.kind == "beacon" else "lamp",
+                     source="sim")
 
 
 def beacon_angle(total_tick: int, tick_dt_s: float, period_s: float,

@@ -1062,6 +1062,11 @@ def main() -> None:
     renderer = GameRenderer(level, bp, cfg,
                             initial_camera=initial_camera,
                             borderless=BORDERLESS)
+    # ray-engine-v2 P6b: the game's renderer defaults to the NEW light (the
+    # sweep, read through simulation.light_field); this harness still drives
+    # the OLD render march (its sliders feed LightSource rows), so it pins the
+    # old path until P6c converts it.
+    renderer.set_light_mode_new(False)
 
     # Pressure overlay is now built into the renderer (renderer/pressure_overlay.py),
     # shared with the main game. No demo-local allocations needed.

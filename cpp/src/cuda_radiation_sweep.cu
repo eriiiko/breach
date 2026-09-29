@@ -139,6 +139,11 @@ struct LightKArgs {
     int64_t* light_q;                     // (N, h, w, 3)
     int64_t* light_flux_q;                // (N, h, w, 2)
     int64_t* light_glow;                  // (N, h, w, 3)
+    // P6b: the sky (N, n_ord, 3) and the cone injection (index (N, h, w),
+    // slots (n_slots, n_ord, 3)), each nullable
+    const int64_t* sky;
+    const int32_t* cone_index;
+    const int64_t* cone_inj;
 };
 
 // One book entry, the tree's int64 atomic idiom (design §8.2;
@@ -320,6 +325,19 @@ __global__ void rs_prepass(int n_env, int plane,
                 atomicAdd((unsigned long long*)&c[RS_SLOT_LIGHT_EMIT + ch],
                           (unsigned long long)(em * (int64_t)n_ordinates));
         }
+        // P6b: a cone emitter's injection is emission too -- run()'s
+        // emit_total, booked here per emitter cell (a sum: order-free).
+        if (lk.cone_index != nullptr) {
+            const int32_t slot = lk.cone_index[gi];
+            if (slot >= 0) {
+                const int64_t* inj = lk.cone_inj + (size_t)slot * (size_t)n_ordinates * 3;
+                for (int ch = 0; ch < 3; ++ch) {
+                    int64_t t = 0;
+                    for (int mm = 0; mm < n_ordinates; ++mm) t += inj[mm * 3 + ch];
+                    book(&c[RS_SLOT_LIGHT_EMIT + ch], t);
+                }
+            }
+        }
     }
 }
 
@@ -497,8 +515,9 @@ __global__ void rs_wavefront(int wf, int h, int w, int n_ordinates, bool shear,
         if (LIGHT) {
             // ---- P6a: run()'s LIGHT channels at this cell, this ordinate ----
             // LIGHT's own upwind pair (its transport's table entry), its own
-            // stores (plane m of (N, n_ord, h, w, 3)), the DARK ring (an
-            // off-grid read is 0), the whole stamped share absorbed, the
+            // stores (plane m of (N, n_ord, h, w, 3)), the ring (the SKY
+            // since P6b; 0 without one), the cone injection entering the
+            // stream (P6b), the whole stamped share absorbed, the
             // per-ordinate emission added; line for line radiation_sweep.cpp.
             const OrdinateConst loc = lk.loc[m];
             const int64_t ls_m = loc.s_m;
@@ -520,14 +539,23 @@ __global__ void rs_wavefront(int wf, int h, int w, int n_ordinates, bool shear,
             int64_t* lstore = lk.l_outflow + ((size_t)env * n_ordinates + m) * plane * 3;
             const int64_t* la_src = in_la ? lstore + ((size_t)luay * w + luax) * 3 : nullptr;
             const int64_t* lb_src = in_lb ? lstore + ((size_t)luby * w + lubx) * 3 : nullptr;
+            // P6b: THE SKY in this ordinate (this env's ring outflow; the dark
+            // ring without one) and this cell's CONE injection -- run()'s.
+            const int64_t* ring = (lk.sky != nullptr)
+                ? lk.sky + ((size_t)env * n_ordinates + m) * 3 : nullptr;
+            const int32_t slot = (lk.cone_index != nullptr) ? lk.cone_index[gi] : -1;
+            const int64_t* inj = (slot >= 0)
+                ? lk.cone_inj + ((size_t)slot * (size_t)n_ordinates + (size_t)m) * 3 : nullptr;
             int64_t I_m = 0;
             int64_t l_abs[3];
             for (int ch = 0; ch < 3; ++ch) {
-                const int64_t io_la = in_la ? la_src[ch] : 0;       // the dark ring
-                const int64_t io_lb = in_lb ? lb_src[ch] : 0;
+                const int64_t ring_c = (ring != nullptr) ? ring[ch] : 0;
+                const int64_t io_la = in_la ? la_src[ch] : ring_c;  // the ring: the sky
+                const int64_t io_lb = in_lb ? lb_src[ch] : ring_c;
                 const int64_t lfa = (io_la * ls_m) >> FP_SHIFT;
                 const int64_t lfb = io_lb - ((io_lb * ls_m) >> FP_SHIFT);   // the REMAINDER
-                const int64_t lstream = lfa + lfb;
+                // P6b: the cone's emission ENTERS the stream before absorption
+                const int64_t lstream = lfa + lfb + ((inj != nullptr) ? inj[ch] : 0);
                 int64_t rin = 0;
                 if (!in_la) rin += lfa;
                 if (!in_lb) rin += lfb;
@@ -718,6 +746,15 @@ int radiation_sweep_launch_resident(
         lk.light_q = light->d_light_q;
         lk.light_flux_q = light->d_light_flux_q;
         lk.light_glow = light->d_light_glow;
+        // P6b: the sky and the cone injection (index and slots both or neither)
+        if ((light->d_cone_index == nullptr) != (light->d_cone_inj == nullptr)) {
+            throw std::invalid_argument(
+                "radiation_sweep_launch_resident: d_cone_index and d_cone_inj are "
+                "given together or not at all (P6b)");
+        }
+        lk.sky = light->d_sky;
+        lk.cone_index = light->d_cone_index;
+        lk.cone_inj = light->d_cone_inj;
     }
     // P5a: the gas group's host-side shape checks (the table's VALUES are
     // counted on the device by rs_init_env, per env, the core's contract).
@@ -888,8 +925,19 @@ int radiation_sweep_step(
     // the bus (the per-cell extinction check is counted on the device).
     const bool light_on = (light != nullptr);
     if (light_on) {
-        RadiationSweep::validate_light_group(*light, n_ordinates, gas, n_bulk, n_gases);
+        RadiationSweep::validate_light_group(*light, n_ordinates, gas, n_bulk, n_gases,
+                                             h, w);
     }
+    // P6b: the cones summed per cell ON THE HOST, by the CPU sweep's own
+    // builder (one implementation of the projection); the device reads the
+    // index plane and the slots.
+    ConeInjection cinj;
+    const bool l_cones = light_on && light->n_cones > 0 && h > 0 && w > 0;
+    if (l_cones) {
+        RadiationSweep::build_cone_injection(light->cones, light->n_cones, n_ordinates,
+                                             h, w, cinj);
+    }
+    const bool l_sky = light_on && light->sky != nullptr;
     const bool lsmoke = light_on && (light->light_absorb_q16 != nullptr);
     // The ACTIVE gases: a zero coefficient adds exactly 0 to a density sum, so
     // its plane never crosses the bus. Heat's are the gases with a non-zero
@@ -979,6 +1027,10 @@ int radiation_sweep_step(
     const size_t o_lq    = light_on ? ar.carve(n64 * 3) : 0;
     const size_t o_lf    = light_on ? ar.carve(n64 * 2) : 0;
     const size_t o_lglow = light_on ? ar.carve(n64 * 3) : 0;
+    // P6b: the sky and the cone injection
+    const size_t o_lsky  = l_sky ? ar.carve((size_t)n_ordinates * 3 * sizeof(int64_t)) : 0;
+    const size_t o_cidx  = l_cones ? ar.carve(n32) : 0;
+    const size_t o_cinj  = l_cones ? ar.carve(cinj.inj.size() * sizeof(int64_t)) : 0;
     cuda_check(cudaMalloc((void**)&ar.base, ar.size), "malloc arena");
 
     // ---- H2D: the inputs and the three per-env scalars (N = 1) ----
@@ -1053,6 +1105,22 @@ int radiation_sweep_step(
         ldev.d_light_q           = ar.at<int64_t>(o_lq);
         ldev.d_light_flux_q      = ar.at<int64_t>(o_lf);
         ldev.d_light_glow        = ar.at<int64_t>(o_lglow);
+        // P6b: the sky and the host-built cone injection
+        if (l_sky) {
+            cuda_check(cudaMemcpy(ar.at<int64_t>(o_lsky), light->sky,
+                                  (size_t)n_ordinates * 3 * sizeof(int64_t),
+                                  cudaMemcpyHostToDevice), "H2D light_sky");
+            ldev.d_sky = ar.at<int64_t>(o_lsky);
+        }
+        if (l_cones) {
+            cuda_check(cudaMemcpy(ar.at<int32_t>(o_cidx), cinj.index.data(), n32,
+                                  cudaMemcpyHostToDevice), "H2D cone_index");
+            cuda_check(cudaMemcpy(ar.at<int64_t>(o_cinj), cinj.inj.data(),
+                                  cinj.inj.size() * sizeof(int64_t),
+                                  cudaMemcpyHostToDevice), "H2D cone_inj");
+            ldev.d_cone_index = ar.at<int32_t>(o_cidx);
+            ldev.d_cone_inj   = ar.at<int64_t>(o_cinj);
+        }
     }
 
     const int launches = radiation_sweep_launch_resident(

@@ -274,7 +274,73 @@ public:
         int64_t* light_flux_q = nullptr,
         int64_t* light_glow = nullptr,
         const int32_t* gas_light_absorb_q16 = nullptr,
-        const int32_t* gas_light_glow_q16 = nullptr) const;
+        const int32_t* gas_light_glow_q16 = nullptr,
+        // ---- ray-engine-v2 P6b: THE CONE EMITTERS and THE SKY (radiation_
+        // sweep.h LightChannels.cones / .sky), read only while light is
+        // requested; both optional:
+        //   light_cones   : (n_light_cones, CONE_ROW_WIDTH) int64 rows (y, x, r,
+        //                   g, b, center_q, spread_q) -- the frame-lights
+        //                   assembly's output row (renderer/frame_lights.py)
+        //   light_sky     : (16, 3) int64, the virtual ring's per-ordinate
+        //                   outflow (nullptr: the dark ring)
+        const int64_t* light_cones = nullptr,
+        int n_light_cones = 0,
+        const int64_t* light_sky = nullptr) const;
+
+    // --- ray-engine-v2 P6b: RELIGHT -------------------------------------
+    // The light field recomputed on the CURRENT state WITHOUT a tick: the
+    // game's light rides the tick (step_tail, light_requested), so while the
+    // sim is PAUSED nothing would move it -- the cursor lamp would freeze
+    // where the last tick left it and the first paused frame after load would
+    // be dark. relight() runs the one sweep invocation (run_sweep_, the same
+    // as step 2b) with the light group, writing the caller's three light
+    // planes and landing the sweep's HEAT outputs in this engine's own scratch
+    // (relight_rad_) -- no plane a tick reads is written, so a relight between
+    // ticks moves no synced integer (tests/test_light_field.py holds it). The
+    // sweep's observable telemetry (Fleck plane, stream extremes, light books)
+    // then describes the relight, as it would any run. The arguments are
+    // step_tail's sweep inputs; the bulk sum is built here, into its own
+    // scratch. Render-only use (the renderer's pause path); RL and headless
+    // runs never call it.
+    void relight(
+        const int32_t* temperature,
+        const int32_t* heat_atten_q, const int32_t* dyn_heat_atten_q,
+        const int32_t* heat_inv_shift, const bool* thermal_solid,
+        const bool* is_vacuum,
+        const int32_t* gas, const bool* gas_conservative, int n_gases, int h, int w,
+        int32_t t_amb_q, int32_t k_leak_q, int64_t rad_amb_vacuum_q,
+        const int32_t* gas_heat_absorb_q16,
+        const int32_t* light_atten_q, const int32_t* dyn_light_atten_q,
+        int64_t* light_q, int64_t* light_flux_q, int64_t* light_glow,
+        const int32_t* gas_light_absorb_q16, const int32_t* gas_light_glow_q16,
+        const int64_t* light_cones, int n_light_cones,
+        const int64_t* light_sky) const;
+
+private:
+    // P6b: THE ONE SWEEP INVOCATION (step 2b's body, moved verbatim): step_tail
+    // calls it with with_light = light_requested, relight() with true.
+    void run_sweep_(
+        const int32_t* temperature,
+        const int32_t* heat_atten_q, const int32_t* dyn_heat_atten_q,
+        const int32_t* heat_inv_shift, const bool* thermal_solid,
+        const bool* is_vacuum,
+        const int32_t* gas, int n_gases, const int32_t* n_bulk, int h, int w,
+        int32_t t_amb_q, int32_t k_leak_q, int64_t rad_amb_vacuum_q,
+        const int32_t* gas_heat_absorb_q16,
+        int64_t* rad_net_sweep, int64_t* rad_flux_sweep,
+        int64_t* rad_amb_sweep, int64_t* rad_fluence,
+        bool with_light,
+        const int32_t* light_atten_q, const int32_t* dyn_light_atten_q,
+        int64_t* light_q, int64_t* light_flux_q, int64_t* light_glow,
+        const int32_t* gas_light_absorb_q16, const int32_t* gas_light_glow_q16,
+        const int64_t* light_cones, int n_light_cones,
+        const int64_t* light_sky) const;
+    // relight()'s own scratch: the bulk sum and the four heat outputs it
+    // discards (never a tick's plane)
+    mutable std::vector<int32_t> relight_n_bulk_;
+    mutable std::vector<int64_t> relight_rad_;
+
+public:
 
     // --- Patch 1 S4b: the IMEX atmosphere/smoke substep loop -------------
     // Moves the per-tick IMEX substep block out of PhysicsRunner.step (Python)

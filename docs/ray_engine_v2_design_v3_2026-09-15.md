@@ -411,6 +411,8 @@ per-ordinate values on the virtual ring, so overcast is uniform, a sun is a few
 ordinates, and a sealed compartment goes properly black. A small flat floor stays
 a separate dial. §7.
 
+> **2026-09-29, P6b:** built — `LightChannels.sky` ((16, 3), the ring's per-ordinate outflow, booked on ring_in; spec `LightGroup.sky`, gate 19). Its source is PER BOUNDARY TYPE (`[light.sky.<boundary>]`, read by `renderer/frame_lights.py::sky_for_level`): space is dark; a planetside (`ambient`) boundary carries a uniform overcast in light units (default = the old flat ambient at the shipped exposure) plus an optional sun projected by `cone_emission`. The floor is `[render.lighting] floor`.
+
 ### 2.8 Stability: the Fleck factor in exact integers, and the clamp in its correct form and home
 
 **The problem.** The material update is explicit and the loss goes as T⁴, so it
@@ -1027,6 +1029,8 @@ Measured ring ripple around an isotropic lamp in a plume: step 1.75×, shear
 A flashlight emits only into the ordinates inside its beam — native to a
 directional solve, and it gives the hard-edged cone Erik prefers. Its tell at S16
 is banding inside the beam (a cone quantised into ordinates).
+
+> **2026-09-29, P6b:** built as ruled in `ray_engine_v2_p6b_lit_world_brief_2026-09-25.md` — a cone row `(y, x, r, g, b, center_q, spread_q)` (angles in Q16 turns) is projected onto the ordinates' angular BINS by overlap (`RadiationSweep::cone_emission`, spec `sweep_ref_q.cone_emission`, gate 19): a zero-spread cone lights one ordinate, omni gives each `rgb // 16`. The emission ENTERS the emitter cell's stream before that cell absorbs (a lamp lights its own tile; a wall or a body on it swallows it) and is booked as emission. Every light the game shows is a row (level lamps/beacons, flashlights at a lens outside the carrier's body, the cursor lamp, the W6 transients); fire is the thermal emission, never a row. The renderer reads light only through `src/simulation/light_field.py` (§4.3), and `LightingPass` uploads it once per sim tick; a paused frame RELIGHTS (`PhysicsEngine::relight`, the one sweep invocation with its heat outputs in scratch). Brightness parity with the old march is 1:1 in light units (render `sweep_gain = 1.0`: lamp 0.996, flashlight 1.05, crate 0.83 old/new). HUMAN-TEST pending.
 
 ### 7.3 Fire's light and the deleted cap
 

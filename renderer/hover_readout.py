@@ -114,6 +114,9 @@ class HoverReadout:
     # in equilibrium with Phi, to the bucket's low edge), no longer the clamp's
     # ceiling; nan without an engine.
     t_rad: float = float("nan")
+    # P6b: the light at this tile, (r, g, b) in light units, through the light
+    # accessor (simulation.light_field) -- 0 while no light is requested.
+    light_rgb: tuple = (0.0, 0.0, 0.0)
     lines: List[str] = field(default_factory=list)   # panel-ready text rows
 
 
@@ -259,6 +262,19 @@ def pack_hover_readout(gmap, tx: int, ty: int,
     atten_a = _optics_fx.dequantize(np.int32(a_eff_q)).item()
     atten_d = _optics_fx.dequantize(np.int32(d_eff_q)).item()
 
+    # Ray-engine-v2 P6b: THE LIGHT at this tile, through the ONE light accessor
+    # (simulation.light_field.light_at -- the rules' integer read), shown in
+    # light units through optics_fixed's light door. It is what the sweep's
+    # light channels computed on the last light-carrying tick or relight (0
+    # while no light is requested).
+    # A stub map without the light planes shows nan (the rows' stub idiom).
+    light_rgb = (float("nan"),) * 3
+    if getattr(gmap, "light_q", None) is not None:
+        from simulation import light_field as _light_field
+        _lq = _light_field.light_at(gmap, ty, tx)
+        _lfb = _optics_fx.light_fine_bits(gmap)
+        light_rgb = tuple(float(_optics_fx.dequantize_light(v, _lfb)) for v in _lq)
+
     lines = [
         f"tile ({tx}, {ty})  {material}",
         f"T: {t_game:8.1f} u   ({kelvin:6.0f} {kelvin_label})",
@@ -274,6 +290,7 @@ def pack_hover_readout(gmap, tx: int, ty: int,
         f"Phi: {phi:12.1f} u/t   a: {atten_a:5.3f}  d: {atten_d:5.3f}"
         + (f"  (smoke {a_gas:5.3f})" if (not is_ts and a_gas == a_gas) else ""),
         f"f: {fleck_f:9.6f}   E_inv(Phi): {t_rad:8.1f} u   clamp cap: {t_cap:8.1f} u",
+        f"light: {light_rgb[0]:8.5f} {light_rgb[1]:8.5f} {light_rgb[2]:8.5f} lu",
     ]
     return HoverReadout(tx=int(tx), ty=int(ty), material=material,
                         t_game=t_game, kelvin=kelvin, fire=fire, gases=gases,
@@ -283,7 +300,7 @@ def pack_hover_readout(gmap, tx: int, ty: int,
                         fuel_frac=fuel_frac, gas_energy=gas_energy,
                         phi=phi, atten_a=atten_a, atten_d=atten_d,
                         a_gas=a_gas, fleck_f=fleck_f, t_cap=t_cap, t_rad=t_rad,
-                        lines=lines)
+                        light_rgb=light_rgb, lines=lines)
 
 
 __all__ = ["HoverReadout", "pack_hover_readout", "TEMP_SCALE"]
