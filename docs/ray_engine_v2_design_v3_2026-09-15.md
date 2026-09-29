@@ -785,6 +785,8 @@ accessor at P6 and is deleted when its two render consumers
 `cpp/src/raycaster.h` (933 lines) + `.cpp` (1235) + `cuda_raycaster.cu` (446) +
 `.h` (127), bound at `bindings.cpp:399-730` and `:2083-2135`.
 
+> **2026-09-29, P6c:** executed as ruled in `ray_engine_v2_p6c_old_light_deletion_brief_2026-09-29.md` — `raycaster.{h,cpp}` are deleted (last carried by `7f47ffb`; the banner on `docs/architecture/engine/08_ray_engine.md` points here), `HEAT_SCALE` / `heat_quantize` / `heat_saturating_add` moved to `fixed_point.h`, `PhysicsEngine::emissive` is the `E°` table's only owner (the three dials assigned to it by `physics_runner.py`), the gas medium reads `[smoke] smoke_absorb_scale` from config, and `fire_lights.py`, the F11 A/B, the float `dyn_light_atten`, `smoke_glow` and `gmap.light_map` are gone. Row-by-row dispositions are in the P6c report.
+
 | old member | fate |
 |---|---|
 | `LightSource {x, y, max_range, ray_count, angle_center, angle_spread, intensity, heat, jitter, color}` | → the cone-emitter row `(cell, rgb_q, angle_center, angle_spread)`. `max_range` and `ray_count` have no meaning in a sweep; `heat` was already hard-pinned 0 (`fire_lights.py` header); `jitter` was the only RNG door and is gone (door 4 stays untouched). `src/level_lights.py` and `renderer/frame_lights.py` keep their inputs and change their output row |
