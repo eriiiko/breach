@@ -1,5 +1,7 @@
-"""Smoke test: open the renderer with a real level, render a few frames with
-a synthetic flashlight at the cursor, and exit cleanly.
+"""Smoke test: open the renderer with a real level, render a few frames and
+exit cleanly. (Its synthetic mouse flashlight and the march-input shim fields
+went with the render march at ray-engine-v2 P6c; the end-to-end check is
+tools/e2e_drive.py.)
 
 Run:
     C:/Users/steen/anaconda3/python.exe tests/test_renderer_smoke.py
@@ -42,18 +44,6 @@ def main():
     g.is_vacuum = vac
     g.solid     = np.isin(mat, [1])     # MAT_HULL only for now
     g.obstacles = g.solid.copy()       # no units in this test
-    # Static per-channel light attenuation (ch.03 march input). Derive from the
-    # material table so opaque tiles ([1,1,1]) block light like the old wall
-    # hard-stop. upload_state reads gmap.light_atten now (replaces the bool mask).
-    from simulation.materials import MaterialTable
-    from config import CFG
-    g.light_atten = np.ascontiguousarray(
-        MaterialTable.from_config(CFG).light_atten[mat], dtype=np.float32)
-    # Dynamic per-channel attenuation field (ch.03 §units): the live field the
-    # march reads = static material atten MAX'd with stamped-unit opacity. With
-    # no units in this smoke test it equals the static field. (A real GameMap
-    # rebuilds this in stamp_units each tick; the shim has no units.)
-    g.dyn_light_atten = g.light_atten.copy()
 
     # Drop some smoke and fire for visual test
     g.smoke[60:80, 20:30] = 0.7
@@ -78,19 +68,11 @@ def main():
         while not renderer.should_close():
             renderer.poll_toggles()
 
-            # Build one moving light source at the mouse
-            sources = []
-            mouse = renderer.mouse_to_tile()
-            if mouse is not None:
-                src = bp.LightSource()
-                src.x = float(mouse[0])
-                src.y = float(mouse[1])
-                src.max_range = 25
-                src.intensity = 1.5
-                src.angle_spread = 6.283  # omni
-                sources.append(src)
-
-            renderer.upload_state(g, light_sources=sources)
+            # (The old synthetic mouse flashlight -- a bp.LightSource cast by
+            # the render march -- went with the march at ray-engine-v2 P6c;
+            # the light is the sweep's, read from gmap through the accessor.
+            # The end-to-end check is tools/e2e_drive.py.)
+            renderer.upload_state(g)
 
             renderer.begin_frame()
             renderer.compose_world(units_marines=[], units_zombies=[])

@@ -110,10 +110,10 @@ class SpawnEntry:
 LIGHT_KINDS = ("static", "beacon")
 
 # [[light]] keys the loader REJECTS outright (P4 design §2.2, critique M2):
-# level lights are RENDER-ONLY — `heat` is the one synced ray output (a leak
-# would silently diverge interactive sessions from their headless replays,
-# since goldens never run the render light pass) and `jitter` pulls C++ RNG.
-# src/level_lights.py hard-pins both to 0.0; the schema never carries them.
+# level lights never write synced state (`heat`) and never draw random
+# numbers (`jitter`). The schema never carries them, and since ray-engine-v2
+# P6c neither does the light's one output row (the sweep's cone emitter, which
+# has no field for either).
 _LIGHT_FORBIDDEN_KEYS = ("heat", "jitter")
 
 
@@ -122,17 +122,23 @@ class LightEntry:
     """One ``[[light]]`` entity declared in level.toml (engine/15 §2.2, P4).
 
     Render-only in P4 (Erik's locked call 2026-07-07): consumed by main.py
-    as raycaster ``LightSource`` parameters via :mod:`level_lights`; never
+    as a :class:`level_lights.LightSpec` and from it the radiation sweep's
+    cone-emitter row (renderer/frame_lights.py, ray-engine-v2 P6b); never
     enters synced sim state. Values are render-local floats — no Q16.16
-    snap (same class as ``light_rgb``; the sim-side migration note lives in
-    engine/15 §2.2). Beacons freeze with the sim: their facing angle is a
-    pure function of the sim tick (:func:`level_lights.beacon_angle`).
+    snap (the one quantization is the cone row's door; the sim-side
+    migration note lives in engine/15 §2.2). Beacons freeze with the sim:
+    their facing angle is a pure function of the sim tick
+    (:func:`level_lights.beacon_angle`).
+
+    ``range`` is still PARSED and validated (level data is not migrated),
+    but NOTHING READS IT since ray-engine-v2 P6c: a sweep has no reach —
+    the light ignores it (P6c brief decision 9).
     """
     x: float                # tile coords (tile centers at .5)
     y: float
     color: tuple            # (r, g, b) 0-1 floats (toml carries 0-255 ints)
     intensity: float = 1.0
-    range: float = 12.0     # tiles
+    range: float = 12.0     # tiles -- parsed, IGNORED since P6c (a sweep has no range)
     kind: str = "static"    # "static" | "beacon"
     period_s: float = 2.0   # beacon: seconds per full rotation
     beam_deg: float = 30.0  # beacon: cone width in degrees

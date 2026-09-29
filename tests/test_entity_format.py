@@ -29,7 +29,7 @@ for _p in (ROOT, ROOT / "src"):
 import level_loader  # noqa: E402
 from level_lib import (MANAGED_FAMILIES, format_entity_lines,  # noqa: E402
                        format_light_lines, open_level, write_managed_blocks)
-from level_lights import light_source_params  # noqa: E402
+from level_lights import light_spec  # noqa: E402
 from simulation.entities import (  # noqa: E402
     Entity, Field, KIND_ENTITY_REF, REGISTRY, apply_tuning_overlay,
     clear_tuning_overlay, register,
@@ -281,10 +281,11 @@ def test_light_alias_equivalence(tmp_path):
     # Same LightEntry list, field for field (authored + defaulted values).
     assert lvl_ent.lights == lvl_leg.lights
     assert len(lvl_ent.lights) == 2
-    # And the same raycaster LightSource parameters downstream.
+    # And the same light downstream (the LightSpec the cone row is built
+    # from; the old LightSource params went with the render march at P6c).
     for a, b in zip(lvl_ent.lights, lvl_leg.lights):
-        assert (light_source_params(a, total_tick=7, tick_dt_s=1.0 / 24.0)
-                == light_source_params(b, total_tick=7, tick_dt_s=1.0 / 24.0))
+        assert (light_spec(a, total_tick=7, tick_dt_s=1.0 / 24.0)
+                == light_spec(b, total_tick=7, tick_dt_s=1.0 / 24.0))
     # The entity spelling also lands in `entities` (parsed data, dormant).
     assert [e.id for e in lvl_ent.entities] == ["lamp_1", "lamp_2"]
     assert lvl_leg.entities == []
