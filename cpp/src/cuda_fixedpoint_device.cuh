@@ -71,7 +71,8 @@ __device__ __forceinline__ q16 flux_to_dq_dev(int64_t flux_wide, q16 coeff_q) {
 }
 
 // ---- heat_saturating_add_dev — plain (non-atomic) saturating add ------------
-// A VERBATIM device port of heat_saturating_add (raycaster.h:43-51): add a
+// A VERBATIM device port of heat_saturating_add (fixed_point.h's heat-domain
+// kit; it lived in raycaster.h until P6c): add a
 // Q16.16 delta into a Q16.16 accumulator, clamped at INT32_MAX, never wrap;
 // delta <= 0 is a no-op. For SINGLE-WRITER kernels only (one thread owns the
 // cell — the temperature Pass 1 / future P6.6 conduction and P6.9 combustion

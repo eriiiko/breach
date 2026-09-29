@@ -4,8 +4,9 @@ M1 generalises the single ``smoke`` scalar field into N gas density fields
 (``gmap.gas``, shape ``(N, h, w)``) + a data-driven ``[gases.*]`` table, WITHOUT
 changing any visible behaviour: the existing smoke becomes the ``smoke``
 slice, ``gmap.smoke`` is a view onto it, and the per-gas transport loop steps each
-gas with the SAME C++ smoke solver. The raycaster still reads ``gmap.smoke``
-(smoke); per-channel colour summation over gases is M2.
+gas with the SAME C++ smoke solver. (At M1 the render march still read
+``gmap.smoke``; per-channel colour summation over gases came at M2 and is the
+radiation sweep's light channels' since ray-engine-v2 P6a.)
 
 These tests assert the M1 contract:
 

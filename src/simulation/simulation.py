@@ -23,10 +23,9 @@ plumbed through the three known nondeterminism sites:
 
 - :func:`simulation.combat.fire_burst` — bullet cone offsets
 - :func:`simulation.physics.add_explosion_smoke` — per-tile noise
-- (deferred) ``Raycaster.cast_source`` — fire jitter. For now fire
-  light sources default to ``jitter = 0.0`` (the natural smoke
-  advection creates the flicker we want); the C++ raycaster keeps its
-  internal seeding. Revisit when training begins.
+- (gone) the old render march's per-source ``jitter`` — pinned 0.0 for
+  every light and then deleted with the C++ Raycaster at ray-engine-v2 P6c;
+  the radiation sweep that lights the game draws no random numbers.
 
 The same seed gives the same trajectory for any sequence of
 ``apply_action / step`` calls — assuming the C++ physics is

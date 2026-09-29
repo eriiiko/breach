@@ -1,8 +1,7 @@
 #include "combustion.h"
-#include "fixed_point.h"
+#include "fixed_point.h"   // incl. heat_saturating_add (the heat-domain kit, P6c)
 #include "gas_energy.h"  // arc #54 P-G1b: THE gas energy seam (design §2.7)
 #include "o2_pressure_factor.h"  // issue #7: the O2 law's pressure factor g(p)
-#include "raycaster.h"   // heat_saturating_add (shared Q16.16 domain)
 #include "temperature_solver.h"  // arc #54 P-G5: conduction::cell_capacity_q,
                                  // reused (not re-derived) to price the
                                  // object-site solid heat deposit below

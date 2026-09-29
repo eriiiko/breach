@@ -36,7 +36,7 @@ from simulation.materials import (
     MaterialTable,
 )
 
-# Q16.16 scale — must match cpp/src/raycaster.h HEAT_SCALE and the temperature
+# Q16.16 scale — must match cpp/src/fixed_point.h HEAT_SCALE and the temperature
 # field (TEMP_SCALE == HEAT_SCALE).
 HEAT_SCALE = 65536
 INT32_MAX = 2**31 - 1

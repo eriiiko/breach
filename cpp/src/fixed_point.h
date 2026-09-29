@@ -12,8 +12,8 @@
 // FORMAT: Q16.16 == int32 with an implicit scale of 2^16 == 65536. The integer
 // part is the top 16 bits, the fraction the bottom 16. One real unit == 65536
 // raw counts. Range: [-32768, +32768) with a resolution of 1/65536 ~= 1.526e-5.
-// (This matches raycaster.h's HEAT_SCALE/temperature domain exactly, so the
-// water + heat fixed-point worlds share one scale.)
+// (This matches HEAT_SCALE -- the heat/temperature domain, at the end of this
+// header -- exactly, so the water + heat fixed-point worlds share one scale.)
 //
 // ROUNDING CONVENTION (documented, load-bearing):
 //   * mul_q16 TRUNCATES toward -inf via an arithmetic right shift `>> 16`, the
@@ -24,7 +24,7 @@
 //     and -flux to its neighbour, the identical (truncated) int64 value cancels
 //     exactly, so no mass is created or destroyed at the >>16 narrow (S1 P2).
 //   * quantize() (float/double -> Q16.16) rounds to NEAREST (like
-//     raycaster.h::heat_quantize), because that is a one-time load/boundary cast
+//     heat_quantize, at the end of this header), because that is a one-time load/boundary cast
 //     where round-to-nearest minimises the quantization bias of a constant.
 //   * The arithmetic right shift on a NEGATIVE int rounds toward -inf in C++20
 //     (>> on signed is implementation-defined pre-C++20 but arithmetic on every
@@ -66,7 +66,7 @@ using q16 = int32_t;
 
 namespace fixedpoint {
 
-// The scale: one real unit == FP_ONE raw counts. Shares raycaster.h's HEAT_SCALE.
+// The scale: one real unit == FP_ONE raw counts. Shared by HEAT_SCALE (below).
 constexpr int32_t FP_SHIFT = 16;
 constexpr int32_t FP_ONE   = 1 << FP_SHIFT;   // 65536
 constexpr int64_t FP_ONE64 = (int64_t)1 << FP_SHIFT;
@@ -431,7 +431,7 @@ FP_HD inline int64_t drag_dT_wide_q16(int64_t energy_q16, int32_t heat_frac_q,
 #endif
 
 // ---- signed saturating add (never wrap) ------------------------------------
-// eos-p3fix-thermal-ceiling: raycaster.h's `heat_saturating_add` only
+// eos-p3fix-thermal-ceiling: `heat_saturating_add` (end of this header) only
 // saturates the POSITIVE side (its accumulator is contractually non-negative
 // — heat/deposit domains). Q16.16 fields that can go negative (temperature,
 // which floors at T_MIN but is otherwise signed) need the SYMMETRIC form:
@@ -1117,9 +1117,10 @@ FP_HD inline q16 sin_core_q30(int64_t a30u) {
 // INPUT RANGE: any int32 is DEFINED and deterministic (the `%` wrap is total).
 // The 9.0e-6 accuracy pin is stated for |a| <= 2*(2pi), i.e. |a| <= ~823550
 // counts (+-4pi rad) — one wrap each side, covering every caller today (unit
-// facing in (-pi, pi], raycaster ray angles in [0, 2pi+jitter), combat bullet
-// angles in (-pi-cone, pi+cone)). Beyond that the constant's 0.26-count-per-
-// wrap defect accumulates gracefully (~2.4e-10 rad per wrap — still ~1.3e-6 rad
+// facing in (-pi, pi], combat bullet angles in (-pi-cone, pi+cone); the render
+// march's ray angles in [0, 2pi+jitter) were one until P6c deleted it).
+// Beyond that the constant's 0.26-count-per-wrap defect accumulates
+// gracefully (~2.4e-10 rad per wrap — still ~1.3e-6 rad
 // at 5000 wraps), it just is not part of the pinned contract.
 // OUTPUT RANGE: [-FP_ONE, +FP_ONE] — verified over the full dense sweep; the
 // poly never overshoots past the narrow's half-count.
@@ -1197,3 +1198,48 @@ FP_HD inline q16 atan2_q16(q16 y, q16 x) {
 }
 
 } // namespace fixedpoint
+
+// ============================================================================
+// THE HEAT-DOMAIN KIT -- MOVED HERE from raycaster.h at ray-engine-v2 P6c
+// (design v3 §4.4, row "HEAT_SCALE, heat_quantize, heat_saturating_add":
+// "kit functions living in the wrong header"). Verbatim; global scope, so the
+// callers (temperature_solver.cpp, combustion.cpp) did not change a line.
+// The device twin is cuda_fixedpoint_device.cuh's heat_saturating_add_dev; the
+// Python mirrors are simulation/field_edit.py's HEAT_SCALE / heat_quantize and
+// simulation/exchange.py's HEAT_SCALE.
+// ============================================================================
+//
+// `heat` and `temperature` are Q16.16 int32: 16 integer bits, 16 fractional
+// bits. One "unit" of heat energy == HEAT_SCALE raw int counts (== FP_ONE,
+// the kit's own scale). A deposit is QUANTIZED into this domain
+// (round-to-nearest) and added with a SATURATING add (clamp at int32 max,
+// never wrap) so a firestorm depositing many sources into few cells can never
+// overflow past the ignition threshold (ch.04 review #6). Integer += is
+// order-independent -> deterministic / cross-machine-safe.
+static constexpr int32_t HEAT_SCALE = 65536;   // 2^16 (Q16.16)
+static_assert(HEAT_SCALE == fixedpoint::FP_ONE,
+              "the heat domain shares the kit's Q16.16 scale");
+
+// Saturating quantize: float energy -> Q16.16 int32, rounded, clamped.
+// (No C++ caller since P6c -- its last one was the deleted render march; kept as
+// the contract simulation/field_edit.py's heat_quantize mirrors.)
+inline int32_t heat_quantize(float energy) {
+    if (energy <= 0.0f) return 0;
+    double scaled = static_cast<double>(energy) * static_cast<double>(HEAT_SCALE);
+    double max_i32 = static_cast<double>(INT32_MAX);
+    if (scaled >= max_i32) return INT32_MAX;
+    return static_cast<int32_t>(scaled + 0.5);
+}
+
+// Saturating add into a Q16.16 accumulator: clamp at INT32_MAX, never wrap.
+// Positive side only (the accumulator is contractually non-negative); the
+// SYMMETRIC form for signed fields is fixedpoint::sat_add_q16 above.
+inline void heat_saturating_add(int32_t* cell, int32_t delta) {
+    if (delta <= 0) return;
+    // Overflow-safe: if adding delta would exceed INT32_MAX, clamp.
+    if (*cell > INT32_MAX - delta) {
+        *cell = INT32_MAX;
+    } else {
+        *cell += delta;
+    }
+}

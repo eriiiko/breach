@@ -23,7 +23,6 @@
 #include "smoke_dynamics.h"
 #include "fire_simulation.h"
 #include "temperature_solver.h"
-#include "raycaster.h"
 #include "water_solver.h"
 #include "bulk_transport.h"   // EOS refactor P1: bulk O2/N2 donor-cell flux
 #include "eos_solver.h"       // EOS refactor P3: the compressible Kwatra solver
@@ -43,14 +42,13 @@ public:
     SmokeDynamics     smoke;
     FireSimulation    fire;
     TemperatureSolver temperature;
-    Raycaster         raycaster;
     WaterSolver       water;
     EOSSolver         eos;   // EOS refactor P3
     CombustionSolver  combustion;   // EOS refactor P4
-    // Ray-engine-v2 (design v3 §2.6, §11): THE E° table's one owner (the old
-    // `raycaster` above keeps a vestigial copy of the SAME bake since T6 —
-    // never two bakes), and the radiation sweep that runs as step 2b of
-    // step_tail, LIVE since T5b.
+    // Ray-engine-v2 (design v3 §2.6, §11): THE E° table's ONLY owner (the old
+    // Raycaster's vestigial copy of the same bake went with the class at P6c),
+    // and the radiation sweep that runs as step 2b of step_tail, LIVE since
+    // T5b.
     EmissiveTable     emissive;
     RadiationSweep    radiation;
     // Ray-engine-v2 P6a: THE LIGHT EMISSION TABLE L° (checked in, emissive_
@@ -643,14 +641,12 @@ public:
     //        obstacles[i]        = (permeability[i] <= 0.0f)   // walls only
     //        dyn_permeability[i] = permeability[i]             // copy
     //        dyn_wave_absorb[i]  = wave_absorb[i]              // copy
-    //        dyn_light_atten[i]  = light_atten[i]              // copy (×3 chan)
     //   b. Stamp each living unit's footprint over the flat stamp rows. Python
     //      builds one row per (living-unit, in-bounds footprint-tile) — the unit
     //      iteration + occupied_tiles() + the `u.alive` filter + the bounds
     //      check all stay Python (CPU actors); C++ just applies the combine ops:
     //        dyn_permeability[idx] = min(perm[r], permeability[idx])   // MIN
     //        dyn_wave_absorb[idx]  = max(dyn_wave_absorb[idx], wabs[r]) // MAX
-    //        dyn_light_atten[idx]  = max(., atten_{r,g,b}[r]) per-channel // MAX
     //      where idx = ys[r]*w + xs[r]. The defaults (unit_permeability 0.5,
     //      unit_wave_absorb 0.5, light_atten {1,1,1}) are applied PYTHON-side per
     //      unit before flattening (matches the getattr-or-default contract).
@@ -660,13 +656,10 @@ public:
     // the engine's re-fetched field pointers stay valid.
     //
     //   permeability, wave_absorb : float (h, w) — static material baselines (read)
-    //   light_atten               : float (h, w, 3) — static attenuation (read)
     //   dyn_permeability, dyn_wave_absorb : float (h, w) — dynamic targets (write)
-    //   dyn_light_atten           : float (h, w, 3) — dynamic target (write)
     //   obstacles                 : bool (h, w) — solid mask (write, walls only)
     //   ys, xs                    : int32 (n_stamp,) — footprint tile (row, col)
     //   perm, wabsorb             : float (n_stamp,) — per-row unit values
-    //   atten_r, atten_g, atten_b : float (n_stamp,) — per-row unit opacity (RGB)
     // Ray-engine-v2 P1 (design v3 §3, §6.2): the FOURTH dynamic output, the
     // integer heat-extinction plane the radiation sweep reads —
     //        dyn_heat_atten_q[i]   = heat_atten_q[i]                  // copy (Q16)
@@ -685,18 +678,18 @@ public:
     //   light_atten_q             : int32 Q16 (h, w, 3) — static material extinction (read)
     //   dyn_light_atten_q         : int32 Q16 (h, w, 3) — dynamic target (write)
     //   light_q_rows              : int32 Q16 (n_stamp, 3) — per-row unit light
-    //                               extinction (the SAME unit.light_atten triple the
-    //                               float stamp reads, default {1,1,1}, quantized
-    //                               Python-side by optics_fixed)
-    // The float dyn_light_atten above is the old render march's, deleted at P6c.
+    //                               extinction (unit.light_atten, default {1,1,1}
+    //                               = an opaque body, quantized Python-side by
+    //                               optics_fixed)
+    // (The float dyn_light_atten plane and its light_atten / atten_{r,g,b}
+    // inputs were the old render march's; they went with it at P6c. The light
+    // stamp is this integer twin alone.)
     void stamp_units(
         const float* permeability, const float* wave_absorb,
-        const float* light_atten,
-        float* dyn_permeability, float* dyn_wave_absorb, float* dyn_light_atten,
+        float* dyn_permeability, float* dyn_wave_absorb,
         bool* obstacles,
         const int32_t* ys, const int32_t* xs,
         const float* perm, const float* wabsorb,
-        const float* atten_r, const float* atten_g, const float* atten_b,
         const int32_t* heat_atten_q, int32_t* dyn_heat_atten_q,
         const int32_t* heat_q,
         int n_stamp, int h, int w,

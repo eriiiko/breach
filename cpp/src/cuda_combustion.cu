@@ -14,7 +14,7 @@
 // heat-deposit reciprocals use reciprocal_q16_dev / recip_mul_dev (the CUDA-S4
 // device kit, bit-identical to fixedpoint::reciprocal_q16 / recip_mul); the
 // aggregate deposit's saturating add is heat_saturating_add_dev (verbatim of
-// raycaster.h::heat_saturating_add). mul_wide / narrow_round / mul_q16 are the
+// fixed_point.h::heat_saturating_add). mul_wide / narrow_round / mul_q16 are the
 // FP_HD host/device helpers used directly.
 //
 // S. Feldman, J.F. O'Brien, O. Arikan, "Animating Suspended Particle
@@ -105,7 +105,7 @@ __device__ __forceinline__ q16 clamp0cap_q_dev(q16 v, q16 cap) {
     return v;
 }
 
-// P-R4: SATURATING integer atomic add — the device twin of raycaster.h's
+// P-R4: SATURATING integer atomic add — the device twin of fixed_point.h's
 // `heat_saturating_add` (and a verbatim copy of cuda_raycaster.cu's
 // heat_atomic_sat_add — the only copy since P4 deleted that file). Needed here
 // because several AIR cells can feed the same flammable claimant, so the

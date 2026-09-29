@@ -3,8 +3,8 @@
 // contract.
 
 #include "temperature_solver.h"
-#include "raycaster.h"     // HEAT_SCALE, heat_saturating_add (shared Q16.16 domain)
-#include "fixed_point.h"   // S3c: quantize() for the o2_vacuum_thresh integer compare
+#include "fixed_point.h"   // S3c: quantize() for the o2_vacuum_thresh integer compare;
+                           // HEAT_SCALE, heat_saturating_add (the heat-domain kit, P6c)
 #include "gas_energy.h"    // arc #54 P-G1b: THE gas energy seam (design §2.7)
 #include "emissive_table.h" // ray-engine-v2 P1 / P5d: e_ceiling_q, the Pass-1 clamp's ceiling
 #include <algorithm>        // P-E2b: std::clamp on the wide deposit-divide result
@@ -303,7 +303,7 @@ void TemperatureSolver::step(
                     // whole heat count first (rad_fine_bits == 0: the old line).
                     const int64_t dTr =
                         fine_heat_shr(rn, heat_inv_shift[i], rad_fine_bits);
-                    // SYMMETRIC saturating add: raycaster.h's
+                    // SYMMETRIC saturating add: the kit's
                     // heat_saturating_add early-returns on delta <= 0 (its
                     // accumulator is contractually non-negative), which would
                     // drop exactly the radiative losses this fold exists to

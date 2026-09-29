@@ -354,18 +354,11 @@ class PhysicsRunner:
         self._t_max_phys = float(getattr(thermal, "T_MAX_PHYS", 16000.0))
         self.temperature.T_MAX_PHYS = self._t_max_phys
 
-        # T6 (issue #12): the fire-plane heat cast (proposal §1's K2) that used
-        # to run through this Raycaster instance is deleted (cast_fire_heat
-        # and cast_from_fire_plane/cuda_raycaster_cast_from_fire_plane — see
-        # cpp/src/raycaster.h). `self.raycaster` stays: `kelvin_ambient`/
-        # `k_temp_to_kelvin` below still feed `self.engine.emissive`'s copy of
-        # the canonical game-T -> Kelvin map (and the `vacuum_ambient_K`
-        # default further down), and `rad_scale`/`bake_emissive_table`/
-        # `emissive_table` stay live as the bake-identity test's other owner
-        # (tests/test_emissive_table.py) — this Raycaster still bakes its own
-        # E° table from `[physics.fire]`'s absence-fallback 1.0e-5, it is just
-        # never marched against any more.
-        self.raycaster = self.engine.raycaster
+        # T6 (issue #12) deleted the fire-plane heat cast (proposal §1's K2);
+        # ray-engine-v2 P6c deleted the Raycaster itself (design v3 §4.4) with
+        # the render march that was its last user. Its three emission dials
+        # were only ever the E° table's, and the table has ONE owner now:
+        # `self.engine.emissive` (cpp/src/emissive_table.h), fed below.
         fire_cfg = getattr(CFG.physics, "fire", None)
         # k_fire_heat TOMBSTONE (P-R4, 2026-08-01 — ruling A1): the painter is
         # dead. Nothing reads the config key; it survives only as a config
@@ -376,15 +369,12 @@ class PhysicsRunner:
         # load-time assert (temperature_scale._assert_invariants) always
         # runs on this path too. K(t) is baked from these below.
         _ts = temperature_scale.load(CFG)
-        self.raycaster.kelvin_ambient = float(_ts.kelvin_ambient)
-        self.raycaster.k_temp_to_kelvin = float(_ts.k_temp_to_kelvin)
         rad_cfg = getattr(CFG.physics, "radiation", None)
-        # Ray-engine-v2 P1 (design v3 §2.6): the E° table's NEW owner, the
-        # engine's `emissive` — ONE bake implementation
-        # (cpp/src/emissive_table.cpp). TWO owners (this Raycaster and
-        # `emissive`) share it; the raycaster's copy is now vestigial (T6 —
-        # see the note above) but the shared bake is still asserted identical
-        # by tests/test_emissive_table.py, so it is not deleted.
+        # Ray-engine-v2 P1 (design v3 §2.6): the E° table's owner, the engine's
+        # `emissive` — ONE bake implementation (cpp/src/emissive_table.cpp),
+        # and since P6c ONE owner (the Raycaster's vestigial second copy went
+        # with the class; tests/test_emissive_table.py holds this one to the
+        # integer reference's bake).
         #
         # P2b (design v3 §9) / T6 (issue #12): the two owners used to carry
         # DIFFERENT scales on purpose — the old cast fed the live fold from
@@ -407,8 +397,8 @@ class PhysicsRunner:
                 f"in T, which is the precondition E°⁻¹'s binary lifting needs "
                 f"(design v3 §2.6).")
         self.engine.emissive.rad_scale = _rad_scale_derived
-        self.engine.emissive.kelvin_ambient = self.raycaster.kelvin_ambient
-        self.engine.emissive.k_temp_to_kelvin = self.raycaster.k_temp_to_kelvin
+        self.engine.emissive.kelvin_ambient = float(_ts.kelvin_ambient)
+        self.engine.emissive.k_temp_to_kelvin = float(_ts.k_temp_to_kelvin)
         self.engine.emissive.bake()
         # [physics.radiation] k_leak (design v3 §2.3, §2.7): the sweep's
         # UNIFORM out-of-plane leak coefficient — LIVE at the derived 2.5 m
@@ -439,8 +429,8 @@ class PhysicsRunner:
         # of near it. The engine does the per-cell select from `is_vacuum`;
         # this is a global physical constant, not a per-tile authored field.
         _vac_k = float(getattr(rad_cfg, "vacuum_ambient_K",
-                               float(self.raycaster.kelvin_ambient)
-                               + 2.0 * float(self.raycaster.k_temp_to_kelvin)))
+                               float(self.engine.emissive.kelvin_ambient)
+                               + 2.0 * float(self.engine.emissive.k_temp_to_kelvin)))
         if _vac_k < 0.0 or _vac_k != float(int(_vac_k)):
             raise ValueError(
                 f"[physics.radiation] vacuum_ambient_K = {_vac_k} must be a "
@@ -514,7 +504,7 @@ class PhysicsRunner:
         self.eos.CFL_ADV        = _ep("CFL_ADV", self.eos.CFL_ADV)
         self.eos.N_FLOOR_SOLVER = _ep("N_FLOOR_SOLVER", self.eos.N_FLOOR_SOLVER)
         # P-K3: [physics.eos] no longer carries t_amb_k/C — both are read via
-        # the canonical accessor (_ts, loaded above for the raycaster's
+        # the canonical accessor (_ts, loaded above for the emissive table's
         # kelvin map). G12 (issue #12, docs/fire_g12_one_map_patch_2026-08-31.md)
         # dissolved ruling 6's exception: eos_t_amb_k now equals kelvin_ambient
         # (293, was 290); S_EOS is the phi_exp*k_temp_to_kelvin slope
@@ -1324,7 +1314,7 @@ class PhysicsRunner:
         #       combustion, tail) read the numpy MIRROR directly, so the full
         #       synced set need not ride to the device this rung. `from_host()`'s
         #       DEFAULT is still the full §5b always-upload set (incl.
-        #       dyn_wave_absorb / dyn_light_atten / obstacles) — that is the
+        #       dyn_wave_absorb / obstacles) — that is the
         #       contract Path-A inherits when it makes the brackets resident; Rung 2
         #       must NOT narrow those masks (body-shielding depends on them). --------
         dev = gmap.device_ptrs()

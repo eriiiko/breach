@@ -78,7 +78,8 @@ set(BREACH_SOURCES
     src/smoke_dynamics.cpp
     src/fire_simulation.cpp
     src/temperature_solver.cpp
-    src/raycaster.cpp
+    # (raycaster.cpp -- the old render march -- DELETED at ray-engine-v2 P6c;
+    #  the radiation sweep's light channels light the game since P6b.)
     src/water_solver.cpp
     src/bulk_transport.cpp
     src/sky_exchange.cpp
@@ -154,15 +155,9 @@ endif()
 # here for consistency). The wave_solver.cpp and the pure-glue bindings.cpp are
 # NOT sim state and keep the global /fp:fast for speed.
 #
-# raycaster.cpp WAS in that render-only /fp:fast set, but the pure-density
-# redesign (engine/08, CUDA-S2) makes its directional march deposit `heat` — a
-# Q16.16 SYNCED gameplay field (feeds temperature -> unit damage). For the CUDA
-# heat bit-identity gate (CPU reference must match the GPU's --fmad=false /fp:strict
-# device math) the CPU heat path needs the SAME determinism floor: no FMA
-# contraction, no reordering. So raycaster.cpp moves onto /fp:strict here. The
-# render channels (light_rgb/dir/smoke_glow) ride along — they are float and a
-# sub-ULP shift is cosmetically irrelevant (feel-gated). The CPU render-cast loses
-# some fast-math speed, but the raycaster's perf answer is the GPU port itself.
+# raycaster.cpp WAS on this list (from CUDA-S2, when its march deposited the
+# synced `heat` field) until ray-engine-v2 P6c deleted the file with the old
+# render march; its radiative job is the radiation sweep's below.
 #
 # These are PER-SOURCE COMPILE_OPTIONS, which CMake appends AFTER the global
 # /fp:fast from add_compile_options() above; MSVC honours the LAST /fp: switch on
@@ -193,7 +188,6 @@ set_source_files_properties(
     src/combustion.cpp
     src/temperature_solver.cpp
     src/physics_engine.cpp
-    src/raycaster.cpp
     # Ray-engine-v2 P1 (design v3 §8.1): the sweep TU (pure integer, pinned
     # 0/0/0 on the ratchet) and the E° bake TU — the bake's `k4 * scale + 0.5`
     # is a multiply feeding an add that /fp:fast may contract (critique 3
