@@ -11,8 +11,10 @@ Asset: Quaternius "Universal Animation Library" (CC0), a rigged character + a
 portion of the animation set, one glTF holding the mesh and all 46 clips. See
 ``assets/models/marine/LICENSE.txt``.
 
-Skinning: CPU (``update_model_animation``) — this pyray/raylib 6.1-dev binding
-exposes no ``UpdateModelAnimationBoneMatrices`` GPU helper. The shared model is
+Skinning: CPU (``update_model_animation``) — the pyray bindings in use (a raylib
+6.1-dev build where this was written, 5.5.0.4 on the home desktop) expose no
+``UpdateModelAnimationBoneMatrices`` GPU helper, and they name a clip's frame
+count differently (read through :func:`anim_frame_count`, #80). The shared model is
 re-skinned to each unit's pose immediately before its ``DrawModelEx``; soft
 ceiling ~20 animated units in CPython. The GPU-skinning upgrade (compute bone
 matrices + a skinning vertex shader) is a self-contained change INSIDE this
@@ -77,6 +79,23 @@ _SHADOW_COLOR = (0, 0, 0, 90)
 _STALE_SECONDS = 1.0
 # _CAM_HEIGHT and LightFieldCtx moved to renderer/lit3d.py (P1 extraction,
 # #60); imported above and re-exported here for import-compat.
+
+# The raylib bindings in use name a clip's frame count differently: raylib 5.5
+# (the home desktop's pyray 5.5.0.4) ``ModelAnimation.frameCount``, raylib 6.x
+# ``keyframeCount``. Read in this order, first present wins.
+_FRAME_COUNT_FIELDS = ("frameCount", "keyframeCount")
+
+
+def anim_frame_count(anim) -> int:
+    """A clip's frame count under EITHER raylib binding -- the ONE read of it
+    (#80: reading 6.x's ``keyframeCount`` crashed the 3D marines on 5.5).
+    Raises AttributeError naming both fields when the struct has neither."""
+    for name in _FRAME_COUNT_FIELDS:
+        try:
+            return int(getattr(anim, name))
+        except AttributeError:
+            continue
+    raise AttributeError(f"ModelAnimation carries none of {_FRAME_COUNT_FIELDS}")
 
 
 @dataclass
@@ -382,7 +401,7 @@ class UnitModelRenderer:
         anim_idx = self._clip_index.get(CLIP_MAP.get(clip, ""),
                                         self._clip_index.get(CLIP_MAP["idle"], 0))
         anim = self._anims[anim_idx]
-        n_keys = max(1, anim.keyframeCount)
+        n_keys = max(1, anim_frame_count(anim))
         st.phase += dt * _ANIM_FPS
         frame = int(st.phase) % n_keys
         rl.update_model_animation(self.model, anim, frame)  # CPU skin (swap seam)
@@ -425,4 +444,4 @@ class UnitModelRenderer:
             del self._anim[uid]
 
 
-__all__ = ["UnitModelRenderer", "CLIP_MAP"]
+__all__ = ["UnitModelRenderer", "CLIP_MAP", "anim_frame_count"]
