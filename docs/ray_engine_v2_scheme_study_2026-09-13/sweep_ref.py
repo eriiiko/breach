@@ -1,6 +1,6 @@
 """Reference implementation of the ray-engine-v2 heat sweep, float, in numpy.
 
-Faithful to docs/ray_engine_v2_design_2026-09-12.md section 2.3 WITH critique 1's
+Faithful to docs/archive/ray_engine_v2_design_2026-09-12.md section 2.3 WITH critique 1's
 required fixes 3, 4, 5 applied:
   - the downwind face split carries the remainder (fix 3)
   - emission re-associated as (E * w) * a, the same arithmetic as absorption (fix 4)

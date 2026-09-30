@@ -35,8 +35,8 @@ papers.**
 | # | Document | Why |
 |---|---|---|
 | 1 | `docs/ray_engine_v2_survey_2026-09-12.md` | The blessed shape and Erik's rulings R-A..R-S. **Rulings are not up for critique**; fidelity to them is. |
-| 2 | `docs/ray_engine_v2_design_2026-09-12.md` | The design under review. Section 3 maps every current ray interaction to v2. |
-| 3 | `docs/ray_engine_v2_critique_1_physics_2026-09-12.md` | The adversarial critique. **12 required changes, every number measured.** The design is "yes-with-fixes for P1, no as a whole" until these land. |
+| 2 | `docs/archive/ray_engine_v2_design_2026-09-12.md` | The design under review. Section 3 maps every current ray interaction to v2. |
+| 3 | `docs/archive/ray_engine_v2_critique_1_physics_2026-09-12.md` | The adversarial critique. **12 required changes, every number measured.** The design is "yes-with-fixes for P1, no as a whole" until these land. |
 | 4 | `docs/ray_engine_v2_scheme_study_2026-09-13/report.md` | The bake-off + renders. Contains a **withdrawn conclusion** — read the correction at the top, it is a lesson about metrics. |
 | 5 | `docs/fire_radiation_assumptions_2026-09-11.md` | What the CURRENT engine does, with citations. The baseline being replaced. |
 | 6 | `docs/papers/README_ray_engine_v2_2026-09-13.md` | The paper archive, with a reading order and the finding that justified the architecture. |

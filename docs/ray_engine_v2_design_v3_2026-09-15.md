@@ -4,6 +4,12 @@
 > determinism/CUDA). **Critique 3 is folded in** (2026-09-15 evening; every
 > change is in §0 rows 25–31 and Appendix C, and the affected sections are
 > edited in place). Nothing built. **Next: P0.**
+> **2026-09-30: ARC CLOSED at P6d.** P0–P6d are built and merged on `fire-12`
+> (tag `ray-engine-v2`); light ships on the shear transport, Erik's ruling after
+> playing it. **P7 moved out** to issue #81 (Light as Game State), parked until its
+> first consumer. This doc stays in `docs/` as the design of record for the live
+> sweep (code and CLAUDE.md cite it) until the deferred canon fold; the arc's
+> finished working docs (v1, v2, the critiques, the handoffs) are in `docs/archive/`.
 > This supersedes `ray_engine_v2_design_v2_2026-09-13.md` wherever they disagree;
 > §0 lists every disagreement and its reason. Every file:line below was verified
 > against the tree at `fire-12` `5a252f5` on 2026-09-15; critique 3 re-verified
@@ -1171,6 +1177,9 @@ digest" row) — not a re-baseline — on the day a rule reads `light_q`. Until
 then the rules-side field is computed and not digested: a field nothing consumes
 cannot change behaviour, and entering the digest is a one-way door.
 
+> **2026-09-30:** P7 moved out of the arc to issue #81 (Light as Game State). The
+> rule above stands: the digest entry waits for the first rule that reads `light_q`.
+
 ### 8.4 The sweep→fold boundary (critique item 17)
 
 §2.3's identity holds on the sweep's own books. The channel into temperature is
@@ -1288,6 +1297,10 @@ finally lets the old raycaster be archived; then the rules-side payload.
 | **P5** | **Smoke absorbs heat** (§6.3): `[gases.*] heat_absorb`, the smoke term in `a_i`, the Pass-1 gas radiation branch with the clamp on gas (`ΔE_new = N·T_target_abs − E`, §2.8), the staged wide chain (§2.8), `rad_clamp_hits` / `e_rad_clamp_drop_sum`; **the gas clamp in `cuda_temperature.cu` in the same patch**, with the drop counter in a pinned `TEMPERATURE_ENERGY_SLOTS` slot | the #54 closure identity still closes with six groups (`test_thermostat_books.py`, the §6 benches); the sweep→fold boundary bound (§8.4); a smoke-shielding bench | **books** | — |
 | **P6** | **Light on the sweep** (§7): RGB + flux vector + glow channels, `L°[T]` (baked by the `E°` algebraic pattern or checked in as constants — never from `np.power`/`np.log` at load, §8.1), cone emitters, the directional sky BC, `light_atten_q`/`dyn_light_atten_q` (the float `dyn_light_atten` leaves `EXCLUDED_FLOAT_FIELDS`), `light_field.py`, `LightingPass` as a consumer; **archive `raycaster.{h,cpp}`** (git history + `docs/archive/` pointer + banner on engine/08); delete `fire_lights.py` + its 15 tests + `[render.fire_lights]`, `light_cull`/`heat_cull`, `intensity_base`/`per_intensity`, the smoke dials off the `Raycaster`; `light_map` derived then deleted. **Render-side test surface** disposed (table below) | timing on a real map; the look; the A/B harness; §8.5's monotone gate | HUMAN-TEST | **yes** — the look |
 | **P7** | **`light_q` for the rules**: the stealth query, the RL observation hook, `DIGEST_SPEC_VERSION` bump + all goldens regenerated | agreement on a real scene; the spec bump procedure | design-complete | — |
+
+> **2026-09-30:** the P7 row moved out of the arc to issue #81 (Light as Game
+> State), parked until its first consumer (#76 or a stealth rule). The arc closed
+> at P6d.
 
 **Is P1 wired?** No (critique item 30). The shadow sweep is computed every tick
 into planes nothing consumes; gates 1–6 run against the engine's own output,

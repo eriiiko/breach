@@ -6,7 +6,7 @@ render, only rendering one frame, to see how the different methods compare?"
 This is that. One frame, no engine, numpy + matplotlib only.
 
 WHAT IS BEING DECIDED
-    docs/ray_engine_v2_design_2026-09-12.md §2.4 picks STEP (upwind) differencing
+    docs/archive/ray_engine_v2_design_2026-09-12.md §2.4 picks STEP (upwind) differencing
     for the heat sweep, on the grounds of positivity and exact conservation, and
     claims its numerical diffusion is "comfortably below the tile quantisation we
     already accept". I doubted my own claim: transverse spread in a step scheme
