@@ -230,3 +230,98 @@ after a fire died, at the ~1 % level, unexplained (#12, comment of 2026-09-06).
 | 76 | RL-ready wrap-up | tooling | feature | no — the exit gate | L | milestone 7 |
 | 77 | S8 GPU residency | tooling | feature | maybe | L | milestone 6 |
 | 79 | Heatless explosion ignition (new) | physics | live bug | yes — decorative grenade fires | S | WITH #31 (first patch) |
+
+---
+
+## 7. Rulings (2026-09-30, Erik, walkthrough with Claude)
+
+Every proposal above was walked through one decision at a time and ruled.
+Each ruling is also a comment on its issue (the authoritative record); this
+section is the digest. Erik's framing that changed the explosion reasoning:
+**explosions will deliver HEAT (energy), not minted pressure** — the post-EOS
+grenade mints gas at room temperature and cools the room on expansion, which
+is the one thing every explosion must not do.
+
+### The explosion (#31, #8)
+
+- The explosion design is its own research + testing session. §B of the
+  lit-research doc is INPUT (Erik has not read it), not the recipe. The ask
+  was only "one unified explosion with a yield parameter, reused for
+  whatever explodes".
+- The **heat-only payload row is the proxy explosion**, moved up as
+  low-hanging fruit: `frag_standard` with `pressure = 0` plus the W6
+  `heat_amount` / `heat_radius` columns (already executed, booked, landing
+  on gas and solids). Three variants to compare by feel: heat only, today's
+  mass-only control, hot mass. Erik will also play-test the plasma splash
+  rows. Order of magnitude at honest yield (~1 MJ): tens of K at tile scale;
+  the fireball is sub-tile; the proxy is sized by eye.
+- #8 closed into #31; its two symptoms are the proxy's acceptance.
+
+### Fix-before proposals (section 2)
+
+- **#72** — REJECTED as "before the milestone". Slotted by the proxy's
+  bench measurement (`_sealedbox_bisect_bench.py --trace` +
+  `_blast_bench.py`; the same batch re-measures the #62/#48 vent-loop
+  growth). Not a gate on the fire session.
+- **#73** — SPLIT. Items 1–3 (uncounted channels) = one mechanical books
+  patch after the fire session, before the proxy measurement. Item 4 (the
+  floordiv sink) → a requirement of #68.
+- **#4** — the dial turn (P3) is PULLED FORWARD into an "explosion + air"
+  session that precedes fire + smoke; `k_drag2` stays 0 until then. Erik's
+  feel brief: air rings 10–20 swings "like water"; he wants slow air to
+  drift long and fast air to stop fast (= k1 down, k2 up). FINDING: the
+  venting gate's blast seeding had been vacuous since P-G1b (mirror writes);
+  fixed the same day (`5580081`), the rest of the class is #82.
+- **#11** — CLOSED, re-verified green on the CUDA build 2026-09-30; its
+  trajectory gate is seeded the vacuous way (noted on the close, in #82).
+
+### The "explosion + air" session (logged on #31; #4 rides it)
+
+Erik's plan: one generated level (through `level_lib`), three charges of
+increasing yield and a fourth breaching the hull into vacuum, charges
+repeating every ~5 s (a timed-charge entity), time running continuously (no
+two-phase pause); the proxy rows and `k_drag2` tuned by feel in one session,
+BEFORE fire + smoke, because drag sets the transport regime fire and smoke
+are judged in. Prep patches, pre-authorized as mechanical: #59's B key,
+#62's overlay, #79's heatless ignite, #9's broken-wall graphics, the level
+generator + timed charge (the gate re-seed is done). #22 is deferred to the
+design session. No hot reload for either dial: edit + restart/reset.
+
+### Gates inside the milestone (section 3)
+
+#51 before #6 (with the CLAUDE.md wind-row correction) · #71 with #77 ·
+#13's fire-less golden stands, the studio level is a candidate canonical
+scenario · **#68 after the fire session, possibly after RL ready** — and the
+two-node model is NOT decided: Erik's direction is separate solid and gas
+temperature arrays so floors conduct too; #61 merged in; #23 stays with #20.
+
+### Closes / merges / re-scopes (section 4) — executed
+
+Closed: #11, #10, #5, #60 (terrarium feel test → fire session), #66, #8
+(→ #31), #61 (→ #68). #59 closes with its prep patch; #12 closes after the
+fire + smoke session. Pointers on #63/#72, #62/#48, #37/#38, #24/#25 (→ #77),
+#27–#29 (→ #76), #40/#36 (→ #75). #53 keeps only the controls review; #15's
+deferred half split to #6 / #74 / #31 / #12.
+
+### Corrections (section 5) — filed
+
+#83 float ratchet scans no headers (+ the #67 slack) · #84 umbrella for the
+rest of #63's sweep · residency flag → pointer on #77 · #82 the seeding audit.
+
+### The ordering (Erik's item 2) — ACCEPTED
+
+1. Prep patches (agents, no screen time). 2. Explosion + air session.
+3. Fire + smoke session; #12 closes after it. 4. #73 books patch.
+5. Proxy measurement batch → slots #72. 6. Explosion design session.
+7. The rest of RL ready as listed (#68 after #20, possibly after the milestone).
+
+### Light from heat (Erik's item 4) — parked with a note
+
+Two anchors are needed (a room-lighting fire and one heat-delivered
+explosion) because what is tuned is the checked-in ramp's compression into
+one exposure; the proxy gives the second anchor first; the order does not
+matter (one tool run regenerates the table). Erik's open points for that
+discussion, at the fire session: temperature gives the colour but not the
+intensity on its own; fires are barely visible today; clean air neither
+absorbs nor emits in the sweep, so the proxy's light comes from hot smoke
+and hot walls (he likes this) — a serious discussion first.
