@@ -2721,6 +2721,54 @@ ignite_intensity = 0.0
 clear_smoke = true                    # data-of-record: the inner clear lives in apply_explosion (v1)
 emit_blast_smoke = true               # LIVE: the executor's add_explosion_smoke gate (W3)
 
+# --- #79 proxy rows: ignition now rides delivered heat, not a bare fire=max
+# edit (apply_explosion's heatless ignite block is DELETED; see CLAUDE.md
+# "Starting a fire" and physics.py::apply_explosion). These sit beside
+# frag_standard (the mass-only CONTROL, kept byte-identical) as a heat-only
+# and a mass+heat variant, for A/B measurement against it.
+#
+# heat_amount / heat_radius here are PROVISIONAL PLACEHOLDERS (Erik, #79):
+# 3200.0 follows the same plasma-splash derivation above (centre jump 400,
+# wood ignites instantly). Note for the later explosion design session
+# (#31), not acted on here: a gas tile's heat capacity is N*c_v ~= 0.0077 in
+# the same unit — about 130x less than wood's — so this SAME deposit also
+# rails the air at the centre (to T_MAX_PHYS, the excess counted, never
+# lost); whether a heat deposit should split between gas and solids, and in
+# what proportion, is that session's question, not this patch's.
+#
+# To switch the grenade between variants, edit ONE line:
+# [ammo.grenade_frag]'s `payload` column (frag_standard | frag_heat |
+# frag_hot_mass) — do not change it here.
+[payloads.frag_heat]                  # heat-only proxy: no blast pressure, delivered heat instead
+radius = 5
+pressure = 0.0
+wall_damage = 200
+unit_damage = 60
+gas_species = ""
+gas_amount = 0.0
+gas_radius = 0
+ignite_radius = 0.0
+ignite_intensity = 0.0
+clear_smoke = true
+emit_blast_smoke = true
+heat_amount = 3200.0                  # PROVISIONAL — see note above
+heat_radius = 5.0                     # PROVISIONAL — see note above
+
+[payloads.frag_hot_mass]              # mass AND heat proxy: frag_standard's blast plus the same heat deposit
+radius = 5
+pressure = 10.0
+wall_damage = 200
+unit_damage = 60
+gas_species = ""
+gas_amount = 0.0
+gas_radius = 0
+ignite_radius = 0.0
+ignite_intensity = 0.0
+clear_smoke = true
+emit_blast_smoke = true
+heat_amount = 3200.0                  # PROVISIONAL — see note above
+heat_radius = 5.0                     # PROVISIONAL — see note above
+
 [payloads.breach_focus]               # the shipped door charge, byte-for-byte
 radius = 3
 pressure = 5.0
