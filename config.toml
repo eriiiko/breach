@@ -1476,6 +1476,14 @@ floor = [0.03, 0.03, 0.04] # the NEW path's small FLAT FLOOR (design v3 §2.7:
                            # A sealed room with no lights reads exactly this.
                            # The old path's flat ambient was (0.10, 0.10, 0.13)
                            # everywhere (main.py) -- this is the tune-by-eye dial.
+bilinear = true            # bilinear (true) vs nearest (false) filtering on the
+                           # light texture, read ONCE at LightingPass construction
+                           # (#59: was a live B-key toggle -- collided with
+                           # ORDER_EXPLOSIVE's B binding, confounding every look
+                           # judgement with explosives armed all session; Erik's
+                           # ruling 2026-09-29, fewer shortcut keys, a switch is a
+                           # config.toml setting). Default true = today's shipped
+                           # state; edit + restart to change.
 
 # --- ray-engine-v2 P6b: THE SKY (the light ring) ---------------------------
 # The light channels' boundary (design v3 §2.7): the virtual ring carries one RGB

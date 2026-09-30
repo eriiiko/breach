@@ -124,8 +124,20 @@ class LightingPass:
         self.vacuum_tex = core.create_dynamic_rgba_texture(grid_w, grid_h)
         rl.set_texture_filter(self.vacuum_tex,
                               rl.TextureFilter.TEXTURE_FILTER_POINT)
-        # Toggle bilinear vs nearest on the light texture
-        self.bilinear = True
+        # [render.lighting] bilinear: bilinear vs nearest on the light
+        # texture. Read ONCE here (#59: was a live B-key toggle, which
+        # collided with ORDER_EXPLOSIVE's B binding and confounded every look
+        # judgement during a session with explosives armed all the time --
+        # Erik's ruling 2026-09-29, fewer shortcut keys, a switch is a
+        # config.toml setting, edit + restart). Default True = today's
+        # shipped state (create_dynamic_rgba16f_texture already creates the
+        # two textures bilinear-filtered; only a False here needs to change
+        # anything).
+        self.bilinear = bool(getattr(_lcfg, "bilinear", True))
+        if not self.bilinear:
+            point = rl.TextureFilter.TEXTURE_FILTER_POINT
+            rl.set_texture_filter(self.light_tex_a, point)
+            rl.set_texture_filter(self.light_tex_b, point)
 
         self.shader = core.load_shader_with_fallback(
             str(SHADERS_DIR / "lighting.vs"),
@@ -276,13 +288,6 @@ class LightingPass:
         val = rl.ffi.new("float[4]", [float(v) for v in rect])
         rl.set_shader_value(self.shader, self._loc_art_uv_rect, val,
                             rl.ShaderUniformDataType.SHADER_UNIFORM_VEC4)
-
-    def toggle_bilinear(self):
-        self.bilinear = not self.bilinear
-        filt = (rl.TextureFilter.TEXTURE_FILTER_BILINEAR
-                if self.bilinear else rl.TextureFilter.TEXTURE_FILTER_POINT)
-        rl.set_texture_filter(self.light_tex_a, filt)
-        rl.set_texture_filter(self.light_tex_b, filt)
 
     # ---- the light field: the one accessor's, uploaded ---------------------
 
