@@ -1505,9 +1505,17 @@ floor = [0.03, 0.03, 0.04] # the NEW path's small FLAT FLOOR (design v3 §2.7:
 # like") but paints its own visible sixteen-pointed star artifact on a point
 # source where step paints a four-pointed cross. Heat's own transport is NOT
 # this key -- it stays TRANSPORT_SHEAR, unconditionally.
+# AVAILABLE TRANSPORTS (the full list -- anything else is refused at config
+# load; the authority is _LIGHT_TRANSPORTS in physics_runner.py, door 2: a new
+# transport is added THERE first, then listed here):
+#   "step"   theta = 0, the shipped default. Each cell rebuilt from its side + down
+#            neighbours, split by the direction cosines: beams smear like
+#            sqrt(distance); a point source paints a four-pointed cross.
+#   "shear"  theta = 1, heat's transport. A full cell along the dominant axis,
+#            split only transversally: beams keep their heading and barely
+#            smear; a point source paints a sixteen-pointed star.
 [light]
-transport = "step"          # "step" or "shear" -- anything else is refused
-                             # at config load (physics_runner.py, door 2)
+transport = "shear"
 
 [light.sky.space]
 overcast = [0.0, 0.0, 0.0]         # space is dark: a breach lets NO light in

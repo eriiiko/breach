@@ -41,14 +41,29 @@ from simulation.physics_runner import PhysicsRunner             # noqa: E402
 # ---------------------------------------------------------------------------
 # G5 -- the config door
 # ---------------------------------------------------------------------------
-def test_the_default_config_binds_step():
-    """PROPERTY (brief decision 1): the shipped config.toml's [light] transport
-    = "step" binds onto PhysicsEngine.light_transport as RadiationSweep.STEP --
-    an engine nobody configures behaves exactly as it did before P6d.
-    BREAKS IF: the default in config.toml or the binding's fallback changes to
-    something other than "step", or the binding reads the wrong config key."""
+def test_an_absent_key_falls_back_to_step(monkeypatch):
+    """PROPERTY (brief decision 1): a config with no [light] transport key
+    binds RadiationSweep.STEP -- an engine nobody configures behaves exactly as
+    it did before P6d. (The SHIPPED value is a separate choice: Erik ruled
+    "shear" on 2026-09-30 after playing it; see the next test.)
+    BREAKS IF: the binding's fallback changes to something other than "step",
+    or the binding reads the wrong config key."""
+    monkeypatch.delattr(CFG.light, "transport")
     pr = PhysicsRunner(bp)
     assert pr.engine.light_transport == bp.RadiationSweep.STEP
+
+
+def test_the_shipped_config_binds_its_own_value():
+    """PROPERTY: whatever config.toml ships as [light] transport binds onto
+    PhysicsEngine.light_transport as the enum of the same name -- the running
+    game shows the transport the file says. Deliberately NOT a pin on which
+    value ships (a feel ruling: step -> shear on 2026-09-30).
+    BREAKS IF: the binding ignores the shipped key, or maps a name onto the
+    other transport's enum."""
+    by_name = {"step": bp.RadiationSweep.STEP,
+               "shear": bp.RadiationSweep.SHEAR}
+    pr = PhysicsRunner(bp)
+    assert pr.engine.light_transport == by_name[CFG.light.transport]
 
 
 def test_shear_binds_when_configured(monkeypatch):
