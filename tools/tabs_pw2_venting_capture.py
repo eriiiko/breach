@@ -84,9 +84,31 @@ def build_scenario():
     assert g.is_vacuum.any(), "scenario must have vacuum to vent into"
 
     q = atmosphere_fixed.quantize_scalar
-    g.temperature[10:16, 10:16] += q(5000.0)
+    # gas-energy conservation arc #54, design §2.7 last row (P-G0): both
+    # patches are open interior air (material 4, inside the [3:45,3:45]
+    # carve), so their temperature seeds go through the seam primitive that
+    # keeps gas_energy in sync -- not a raw `temperature[...] =` write
+    # (CLAUDE.md "Gas temperature is a mirror"; issue #4 finding, 2026-09-30:
+    # a bare write here evaporates on the first runner.step, since
+    # GameMap.__init__ already derived gas_energy from the pre-seed (N, T)
+    # and nothing re-derives it afterward -- measured, the +5000 patch read
+    # -236.5 and the +15500 patch read -23.6 after one tick).
+    g.seed_gas_temperature((slice(10, 16), slice(10, 16)),
+                           g.temperature[10:16, 10:16] + q(5000.0))
+    # The O2 top-up is a bare bulk-`gas` write too (more Dalton mass, same
+    # cells) -- gamemap.py::reseed_gas_energy's own docstring names exactly
+    # this case ("a scenario builder that just wrote bulk `gas` ... directly
+    # and needs the stored energy brought back into agreement"): left
+    # un-reseeded, gas_energy here still reflects the SMALLER pre-O2 N at
+    # the patch's T, so the mirror recomputed next tick divides that same
+    # energy by the NEW, larger N and reads far colder than 5000 (measured:
+    # implied ~768 K immediately, before any tick even runs). Reseed this
+    # sub-selection so its energy matches the N now sitting there at the
+    # patch's already-seeded temperature.
     g.gas[O2, 11:14, 11:14] += q(4.0)
-    g.temperature[30:36, 30:36] += q(15500.0)
+    g.reseed_gas_energy((slice(11, 14), slice(11, 14)))
+    g.seed_gas_temperature((slice(30, 36), slice(30, 36)),
+                           g.temperature[30:36, 30:36] + q(15500.0))
     return g
 
 
