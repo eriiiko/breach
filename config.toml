@@ -2769,6 +2769,55 @@ emit_blast_smoke = true
 heat_amount = 3200.0                  # PROVISIONAL — see note above
 heat_radius = 5.0                     # PROVISIONAL — see note above
 
+# --- #31 explosion-studio rows (levels/explosion_studio, fired by its
+# timed_charge entities). ALL PROVISIONAL — Erik edits them at the "explosion
+# + air" session. studio_small|medium|large are frag_heat at 1x / 2x / 4x its
+# heat_amount, with radius 4 / 5 / 6 applied to BOTH `radius` (the blast
+# disc: wall damage, smoke) and `heat_radius` (the heat disc) — frag_heat
+# keeps the two equal, and so do these. studio_hull is the breach charge:
+# demolition_c4's wall_damage (800) plus studio_small's heat, on the heat-only
+# family's pressure = 0; radius 4 blows a ~5-tile hole in the 1-tile hull
+# (hull hp 300: tiles closer than 0.625*radius go) so the room vents to vacuum.
+[payloads.studio_small]
+radius = 4
+pressure = 0.0
+wall_damage = 200
+unit_damage = 60
+clear_smoke = true
+emit_blast_smoke = true
+heat_amount = 3200.0                  # PROVISIONAL — 1x frag_heat
+heat_radius = 4.0                     # PROVISIONAL
+
+[payloads.studio_medium]
+radius = 5
+pressure = 0.0
+wall_damage = 200
+unit_damage = 60
+clear_smoke = true
+emit_blast_smoke = true
+heat_amount = 6400.0                  # PROVISIONAL — 2x frag_heat
+heat_radius = 5.0                     # PROVISIONAL
+
+[payloads.studio_large]
+radius = 6
+pressure = 0.0
+wall_damage = 200
+unit_damage = 60
+clear_smoke = true
+emit_blast_smoke = true
+heat_amount = 12800.0                 # PROVISIONAL — 4x frag_heat
+heat_radius = 6.0                     # PROVISIONAL
+
+[payloads.studio_hull]
+radius = 4
+pressure = 0.0
+wall_damage = 800                     # PROVISIONAL — demolition_c4's wall_damage
+unit_damage = 60
+clear_smoke = true
+emit_blast_smoke = true
+heat_amount = 3200.0                  # PROVISIONAL — 1x frag_heat
+heat_radius = 4.0                     # PROVISIONAL
+
 [payloads.breach_focus]               # the shipped door charge, byte-for-byte
 radius = 3
 pressure = 5.0
