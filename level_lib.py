@@ -547,6 +547,39 @@ def write_boundary_field(toml_path, boundary: str, *,
     return bak
 
 
+def write_level_header(level_dir, *, name: str, tile_size_m: float,
+                       tilemap_rel: str = "tilemap.csv",
+                       diffuse_rel: str = "diffuse.png",
+                       comment_lines=()) -> Path:
+    """Create a NEW level folder's ``level.toml`` holding only the scalar
+    header (``version``/``name``/``tilemap``/``tile_size_m``/``diffuse``),
+    preceded by ``comment_lines`` (each written as ``# <line>``).
+
+    The one-writer home for the "new level" scaffold that generators used to
+    hand-roll (#31 P5): a generator calls this ONCE, then fills the managed
+    families through :func:`write_managed_blocks` and the ``boundary`` scalar
+    through :func:`write_boundary_field`. LF line endings, UTF-8, the same
+    atomic temp + ``os.replace`` write as every other writer here. Refuses to
+    overwrite an existing level.toml (a generator that regenerates clears its
+    own folder first). Returns the path written."""
+    level_dir = Path(level_dir)
+    toml_path = level_dir / "level.toml"
+    if toml_path.exists():
+        raise ValueError(f"{toml_path} already exists — write_level_header "
+                         f"only scaffolds a NEW level")
+    lines = [f"# {c}".rstrip() + "\n" for c in comment_lines]
+    lines += [
+        'version = "2"\n',
+        f"name = {_fmt_value(str(name))}\n",
+        "\n",
+        f"tilemap = {_fmt_value(str(tilemap_rel))}\n",
+        f"tile_size_m = {_fmt_coord(tile_size_m)}\n",
+        f"diffuse = {_fmt_value(str(diffuse_rel))}\n",
+    ]
+    _atomic_write_bytes(toml_path, "".join(lines).encode("utf-8"))
+    return toml_path
+
+
 def write_tilemap_csv(level_dir, grid, *, tilemap_rel: str = "tilemap.csv",
                       csv_bak: bool = True):
     """Write a level's tilemap CSV atomically — the migration tool's grid

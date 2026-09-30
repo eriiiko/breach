@@ -97,6 +97,8 @@ from simulation.logic_nodes import (
 from simulation.sensor_system import build_sensors, sample_sensors
 from simulation.pump_system import build_pumps, sweep_pumps
 from simulation.vent_system import build_vents, sweep_vents
+from simulation.timed_charge_system import (build_timed_charges,
+                                            sweep_timed_charges)
 from simulation.entities.schema import INPUT_HELD
 from simulation.gamemap import GameMap, MAT_DOOR, MAT_DOOR_CLOSED
 from simulation.movement import FootprintSamples, default_speed
@@ -326,6 +328,12 @@ class Simulation:
         # executor and the hotbar; inert under every other ruleset.
         self.actions_table = rebuild_action_table(
             weapons_tables=self.weapons_tables)
+        # Timed charges (#31 P5): built AFTER the weapon tables because each
+        # charge's `payload` is validated against the PayloadTable here (an
+        # unknown row name is a load error). Replaces each timed_charge row in
+        # self.entities with its runtime (the countdown row serializes). A
+        # charge-free level builds an empty list (dormancy).
+        self._timed_charges = build_timed_charges(self)
 
         self.units: List = []
         self.projectiles: List = []
@@ -1601,6 +1609,13 @@ class Simulation:
             sweep_vents(self)               # (d) vent circulation edit — BEFORE doors
         if self._doors:
             sweep_doors(self)               # (d) door structural sweep
+        # Timed charges (#31 P5): wire-free like vents, so OUTSIDE the bus
+        # gate; AFTER the door sweep so a blast this tick meets this tick's
+        # door state, and its wall damage lands before the recorder snapshot.
+        # Its queued FieldEdits land at the next step's 6b flush (the door
+        # charge's slot-8 latency).
+        if self._timed_charges:
+            sweep_timed_charges(self)       # (d') timed-charge detonations
         if self._signal_bus is not None:
             self._signal_bus.swap_node_signals()   # (e) pub[node-slots] ← stg
 
