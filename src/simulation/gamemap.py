@@ -305,6 +305,16 @@ class GameMap:
         # set): the per-tick sky pass runs on the mirror after combustion.
         self.sky_mask     = np.zeros((h, w), dtype=bool)
         self._sky_mask_dirty = False
+        # #9 wall-destruction render seam: the tiles whose topology changed
+        # since the renderer last drained them. Filled by `on_tile_changed`
+        # (which every runtime topology writer -- destroy_wall, seal_tiles,
+        # unseal_tiles -- funnels through), drained by the renderer
+        # (`drain_render_dirty`). RENDER-ONLY bookkeeping: a plain Python set,
+        # deliberately NOT an ndarray -- never digested, never recorded, never
+        # read by any sim pass, so it cannot move a golden. Bounded by the grid
+        # (a set of coordinates), so a headless run that never drains it holds
+        # at most H*W entries.
+        self.render_dirty = set()
         self.flammable    = np.zeros((h, w), dtype=bool)
         # S2c: the atmosphere (bulk pressure) is int32 Q16.16 (scale 2^16, shared
         # with water/heat/wave/gas) — the CLOSER of the S2 group: with atmosphere
@@ -1326,6 +1336,16 @@ class GameMap:
             self._sky_mask_dirty = False
         return self.sky_mask
 
+    def drain_render_dirty(self):
+        """Return the tiles marked by :meth:`on_tile_changed` since the last
+        drain (sorted ``(fy, fx)`` list) and clear the mark set.
+
+        #9: the renderer's one consumer call (``GameRenderer.upload_state``).
+        Sim code never calls it; it touches no synced state."""
+        tiles = sorted(self.render_dirty)
+        self.render_dirty.clear()
+        return tiles
+
     # ------------------------------------------------------------------
     # The map's ambient air constant — ONE accessor (P-M3 §3.1.1)
     # ------------------------------------------------------------------
@@ -1710,6 +1730,12 @@ class GameMap:
         # once, lazily, at the next tick's fixed sky-pass point. Idempotent, so a
         # firestorm melting many walls per tick still costs at most one rebuild.
         self._sky_mask_dirty = True
+        # #9: the ONE render-invalidation mark, for every cause (burst valve,
+        # explosion, bullet chew, fire burn-through, door death, door
+        # open/close). The renderer reads the tile's state when it drains, not
+        # here, so writers that finish the edit after this seam (destroy_wall's
+        # vacuum join) are seen as they end the tick.
+        self.render_dirty.add((int(fy), int(fx)))
 
         # --- arc #54 P-G1b: THE MEMBERSHIP DIFF (design §2.7 last row) ------
         # Every structural edit funnels through this seam (seal, unseal,

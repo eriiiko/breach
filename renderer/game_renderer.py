@@ -35,6 +35,7 @@ from .gas_medium import GasMediumOverlay
 from .hover_readout import pack_hover_readout
 from .lighting import LightingPass
 from .speckle import SpeckleField
+from .tile_art import TileArtSeam, patch_block
 from .static_props import (DEFAULT_TILE_SIZE_M, StaticPropRenderer,
                            SwaySettings)
 from .overlays import (
@@ -175,6 +176,21 @@ class GameRenderer:
         _mat, vacuum_mask = materials_from_tilemap(level_data.tilemap,
                                                    level_data.version)
         self.lighting.set_vacuum_mask(vacuum_mask)
+        # #9 wall-destruction render seam (renderer/tile_art.py): the CPU copy
+        # of the uploaded vacuum mask (patched per changed tile, re-uploaded
+        # only when a drained tile changed it), the drained-but-unapplied tile
+        # patches, and the static art layers' PRISTINE pixels, read back from
+        # the GPU once HERE, at load: on the largest shipped art (playground,
+        # 6400x4480 diffuse + normal) the readback costs ~0.2 s, which would
+        # otherwise be a hitch on the frame the first wall breaks.
+        self._vacuum_mask = np.array(vacuum_mask, dtype=bool, copy=True)
+        self.tile_art = TileArtSeam()
+        self._pending_tile_patches: list = []
+        self._pristine_art: dict = {}
+        for _name in ("diffuse", "normal", "height"):
+            _tex = getattr(self.textures, _name, None)
+            if _tex:
+                self._pristine_pixels(_name, _tex)
         # BC render tint (boundary_conditions_spec_2026-07-19 B5) — RENDER-ONLY,
         # determinism-EXEMPT: it never reads or writes any synced sim field, so
         # it cannot perturb a golden/lockstep. On a planetside `boundary ==
@@ -410,6 +426,11 @@ class GameRenderer:
                      light_serial: Optional[int] = None) -> None:
         t_start = time.perf_counter()
 
+        # #9: THE topology -> render seam. Drain the tiles every topology
+        # writer marked (GameMap.on_tile_changed) into patches, read from the
+        # tiles' state now; compose_world applies them. One path, every cause.
+        self._pending_tile_patches.extend(self.tile_art.consume(gmap))
+
         # ray-engine-v2 P6b/P6c: THE LIGHT FIELD is the radiation sweep's, read
         # through the ONE accessor (simulation.light_field) and uploaded only
         # when it changed (`light_serial`: a light-carrying tick or a relight --
@@ -611,6 +632,11 @@ class GameRenderer:
         Drawn in the SAME shared 3D pass as the units (one batch flush, one
         depth buffer); zero cost when empty.
         """
+        # #9: re-blit the tiles whose topology changed (drained in
+        # upload_state) before the lit ship samples the art.
+        if self._pending_tile_patches:
+            self._apply_tile_patches()
+
         self.world.begin(clear_color=(0, 0, 0, 0))
 
         # 1. Lit ship — covers the entire world RT
@@ -726,6 +752,68 @@ class GameRenderer:
             overlay_fn(self.world.world_px_per_tile)
 
         self.world.end()
+
+    def _apply_tile_patches(self) -> None:
+        """#9: apply the drained tile patches (renderer/tile_art.py): the
+        vacuum-mask texel of each tile, then each tile's rect of every static
+        art layer (diffuse, normal, floor height) re-blitted from the donor's
+        PRISTINE pixels. Render-only; runs only on frames after a topology
+        change."""
+        patches, self._pending_tile_patches = self._pending_tile_patches, []
+        mask = self._vacuum_mask
+        mask_changed = False
+        for p in patches:
+            fy, fx = p.tile
+            if (0 <= fy < mask.shape[0] and 0 <= fx < mask.shape[1]
+                    and bool(mask[fy, fx]) != p.vacuum):
+                mask[fy, fx] = p.vacuum
+                mask_changed = True
+        if mask_changed:
+            self.lighting.set_vacuum_mask(mask)
+        diffuse = self.textures.diffuse
+        if not diffuse:
+            return
+        art_align = self.lighting.art_align
+        for name in ("diffuse", "normal", "height"):
+            tex = getattr(self.textures, name, None)
+            if not tex:
+                continue
+            pristine = self._pristine_pixels(name, tex)
+            if pristine is None:
+                continue
+            for p in patches:
+                blit = patch_block(pristine, p, self.cfg.grid_h,
+                                   self.cfg.grid_w, art_align,
+                                   int(diffuse.width), int(diffuse.height))
+                if blit is None:
+                    continue
+                (x, y, w, h), px = blit
+                rl.update_texture_rec(tex, rl.Rectangle(x, y, w, h),
+                                      rl.ffi.cast("void *",
+                                                  rl.ffi.from_buffer(px)))
+
+    def _pristine_pixels(self, name: str, tex) -> Optional[np.ndarray]:
+        """The layer's load-time pixels as (H, W, bytes-per-pixel) uint8, read
+        back from the GPU once, at load, before any patch (in the texture's own format, so a patch
+        uploads in that format). ``None`` for a format with no whole-byte
+        pixel (compressed) -- that layer is then never patched."""
+        if name in self._pristine_art:
+            return self._pristine_art[name]
+        img = rl.load_image_from_texture(tex)
+        try:
+            w, h = int(img.width), int(img.height)
+            size = int(rl.get_pixel_data_size(w, h, img.format))
+            arr = None
+            if w > 0 and h > 0 and size % (w * h) == 0:
+                bpp = size // (w * h)
+                buf = rl.ffi.buffer(rl.ffi.cast("unsigned char *", img.data),
+                                    size)
+                arr = np.frombuffer(buf, dtype=np.uint8).reshape(
+                    h, w, bpp).copy()
+        finally:
+            rl.unload_image(img)
+        self._pristine_art[name] = arr
+        return arr
 
     # A6 dev door colors (render-only; the tileset's amber door reads).
     _DOOR_CLOSED_FILL = (208, 168, 62, 210)     # amber panel
