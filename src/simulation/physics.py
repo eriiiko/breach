@@ -65,8 +65,12 @@ def apply_explosion(gmap, queue, fy, fx, radius, pressure, wall_damage):
       (the propagating shockwave) and a direct ``atmosphere`` boost (the
       sustained wind that drives smoke) — both ADD edits.
     - Enqueues a smoke-clear (REMOVE-to-0) over the inner 40 percent of the radius.
-    - Enqueues an ``fire = max(...)`` ignite (MAX edit) over flammable tiles
-      inside 70 percent of the radius.
+
+    Ignition is not a direct effect here: a fire is started by delivering heat
+    (CLAUDE.md "Starting a fire"), never by writing ``fire`` alone — a payload
+    that should ignite carries ``heat_amount``/``heat_radius`` (or an
+    ``ignite_radius`` ring), and ``apply_temperature_ignition`` lights any tile
+    that heat brings at or above its own ``ignition_temp`` (#79).
 
     The deposits are not applied here — they land when the Simulation flushes the
     queue (before the solvers), in deterministic stable-sorted order. ``queue``
@@ -135,18 +139,6 @@ def apply_explosion(gmap, queue, fy, fx, radius, pressure, wall_damage):
                                     mode=EditMode.ADD,
                                     source_id=_SRC_EXPLOSION,
                                 ))
-                    # Ignite flammable tiles within 70 percent of the radius. The
-                    # MEMBERSHIP radius (0.7 r) differs from the FALLOFF radius
-                    # (full r), so this is a per-tile MAX edit with the
-                    # pre-computed ``0.5 * falloff`` amount rather than one DISC
-                    # edit (which would couple the two radii). The fire policy's
-                    # non-flammable skip-mask + [0, 1] clamp are applied at flush.
-                    if gmap.flammable[ny, nx] and dist <= radius * 0.7:
-                        queue.enqueue(FieldEdit(
-                            field="fire", region=Region.TILE, coords=(ny, nx),
-                            amount=0.5 * falloff, mode=EditMode.MAX,
-                            clamp=(0.0, 1.0), source_id=_SRC_EXPLOSION,
-                        ))
 
 
 def add_explosion_smoke(gmap, queue, fy, fx, radius, noise=None):
