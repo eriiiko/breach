@@ -3,7 +3,7 @@
 > **Status:** critique pass, remit = **ENGINE INTEGRATION ONLY**. Not physics,
 > not integer numerics — critique 1 covered those and its 12 required changes
 > are resolved in v2 and are not re-litigated here.
-> **Reviews:** `docs/ray_engine_v2_design_v2_2026-09-13.md`.
+> **Reviews:** `docs/archive/ray_engine_v2_design_v2_2026-09-13.md`.
 > **Against:** `docs/ray_engine_v2_survey_2026-09-12.md` (rulings R-A..R-S, not
 > under critique — only the design's fidelity to them) · `CLAUDE.md`'s
 > canonical-systems table (the heart of this remit) ·

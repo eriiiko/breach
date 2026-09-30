@@ -10,7 +10,7 @@
 > `src/simulation/light_field.py`. The design of record is
 > `docs/ray_engine_v2_design_v3_2026-09-15.md` (§4.4 is the member-by-member
 > fate of everything below); the deletion is
-> `docs/ray_engine_v2_p6c_old_light_deletion_brief_2026-09-29.md`. The code
+> `docs/archive/ray_engine_v2_p6c_old_light_deletion_brief_2026-09-29.md`. The code
 > lives on in git history — the last commit carrying `raycaster.{h,cpp}` is
 > `7f47ffb`. This chapter stays the description of record for the TECHNIQUE
 > (Erik may want ray marching back) until the deferred canon fold rewrites it.

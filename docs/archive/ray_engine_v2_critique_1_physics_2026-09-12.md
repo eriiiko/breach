@@ -1,7 +1,7 @@
 # Ray engine v2 — adversarial critique 1: physics and integer mathematics (2026-09-12)
 
 > **Status:** critique pass, remit = the physics and the integer arithmetic.
-> **Reviews:** `docs/ray_engine_v2_design_2026-09-12.md`.
+> **Reviews:** `docs/archive/ray_engine_v2_design_2026-09-12.md`.
 > **Against:** `docs/ray_engine_v2_survey_2026-09-12.md` (rulings R-A..R-S, not
 > under critique — only the design's fidelity to them) ·
 > `docs/fire_radiation_assumptions_2026-09-11.md` (what the engine does today).

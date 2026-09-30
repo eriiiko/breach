@@ -3,7 +3,7 @@
 Reproduces every table in docs/ray_engine_v2_reach_and_papers_2026-09-13.md sections
 1-5, in one run (~4 minutes).
 
-THE QUESTION.  docs/ray_engine_v2_NEXT_SESSION_2026-09-13.md section 3 offers three
+THE QUESTION.  docs/archive/ray_engine_v2_NEXT_SESSION_2026-09-13.md section 3 offers three
 reach levers, the first being "adopt 1/r^2 as structural".  A discrete-ordinates sweep
 has no notion of distance from a source, because it has no source: the only laws it can
 express are in-plane geometric spreading (1/r) and extinction (exp(-k r)).  So the third

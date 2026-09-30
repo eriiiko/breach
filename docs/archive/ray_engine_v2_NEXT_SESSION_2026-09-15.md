@@ -3,7 +3,7 @@
 > **STATUS UPDATE, 2026-09-15 evening — §3 and §4 below are DONE.**
 > Design v3 is `docs/ray_engine_v2_design_v3_2026-09-15.md` (committed
 > `968f62a`, then amended in place). Critique 3 (determinism + CUDA, Fable) is
-> `docs/ray_engine_v2_critique_3_determinism_cuda_2026-09-15.md`: 3 blocking,
+> `docs/archive/ray_engine_v2_critique_3_determinism_cuda_2026-09-15.md`: 3 blocking,
 > 12 required, 10 notes, and its integer probe confirmed the sweep's core. All
 > of it is folded into v3 (its §0 rows 25–31, Appendix C), and Erik ruled the
 > three open questions the same evening (a body radiates at ambient;
@@ -69,11 +69,11 @@ designed, critiqued twice, and measured — but not built.**
 
 | # | Document | Why |
 |---|---|---|
-| 1 | `docs/ray_engine_v2_design_v2_2026-09-13.md` | **The design.** §0 is a table of what changed from v1 and why — read that first, it is the fastest way in |
-| 2 | `docs/ray_engine_v2_critique_2_engine_2026-09-13.md` | **Your work order.** 5 BLOCKING, 31 REQUIRED, 9 NOTE, consolidated into 30 prioritised entries at the end |
+| 1 | `docs/archive/ray_engine_v2_design_v2_2026-09-13.md` | **The design.** §0 is a table of what changed from v1 and why — read that first, it is the fastest way in |
+| 2 | `docs/archive/ray_engine_v2_critique_2_engine_2026-09-13.md` | **Your work order.** 5 BLOCKING, 31 REQUIRED, 9 NOTE, consolidated into 30 prioritised entries at the end |
 | 3 | `docs/ray_engine_v2_survey_2026-09-12.md` §1 | Erik's rulings R-A..R-S. **Not under critique** — fidelity to them is |
 | 4 | `docs/ray_engine_v2_reach_and_papers_2026-09-13.md` | The measurement session: the papers, the reach lever, the flashover case |
-| 5 | `docs/ray_engine_v2_critique_1_physics_2026-09-12.md` | Round 1, for scope — its 12 changes are resolved in v2, do not re-litigate |
+| 5 | `docs/archive/ray_engine_v2_critique_1_physics_2026-09-12.md` | Round 1, for scope — its 12 changes are resolved in v2, do not re-litigate |
 | 6 | `docs/papers/README_ray_engine_v2_2026-09-13.md` | 16 papers, with what each one changed. **Erik's standing instruction: read in full before implementing something from one** |
 
 **The instruments** are in `docs/ray_engine_v2_scheme_study_2026-09-13/`. Every
@@ -123,7 +123,7 @@ sweep), `reach_and_leak_study.py`, `flashover_study.py`, `contact_faces_study.py
 
 ## 3. First task — design v3
 
-**Rewrite `docs/ray_engine_v2_design_v2_2026-09-13.md` into a v3 that resolves
+**Rewrite `docs/archive/ray_engine_v2_design_v2_2026-09-13.md` into a v3 that resolves
 critique 2's 30 entries.** Work the BLOCKING six first; they are what stands
 between here and cutting P1.
 

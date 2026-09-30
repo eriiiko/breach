@@ -206,6 +206,16 @@ the atmosphere group alone measured **18.97 ms p99 at 160²**, a grid comparable
 to ours. One system is already consuming ~45% of a 24 Hz tick. Any new ray
 engine has to fit in what is left.
 
+> **Correction, 2026-09-30 (arc close, #67 item 7).** The 18.97 ms is not the
+> atmosphere group, and 160² is not comparable to our grid. It is
+> `tests/_eos_p3_bench.py` timing the WHOLE `Simulation.step()`, every system,
+> under a hostile load (five explosions, a hull breach, a flood), at 25 600 cells:
+> four times `unhcr_vessel`'s ~6 000. At the shipped ship scale the same bench
+> reports p50 1.6 ms, p99 9.78 ms, about a quarter of the 41.67 ms tick
+> (`docs/eos_p3_microbench_results.md`; design v2 §10 made this correction first).
+> Restating the older perf docs' per-system gate against 41.67 ms instead of
+> 83 ms is still owed (#67).
+
 ---
 
 ## 6. Determinism: where the line is, and why

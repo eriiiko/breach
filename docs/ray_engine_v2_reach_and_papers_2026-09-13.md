@@ -1,7 +1,7 @@
 # Ray engine v2 — the reach lever, the papers read in full, and two study cases (2026-09-13)
 
 > **Status:** measurement and reading session. Nothing built, nothing ruled. This
-> answers the blocking question in `docs/ray_engine_v2_NEXT_SESSION_2026-09-13.md`
+> answers the blocking question in `docs/archive/ray_engine_v2_NEXT_SESSION_2026-09-13.md`
 > §3 with an option that was not on its menu, reads the three priority papers in
 > full, and delivers Tasks 1 and 2 from its §5.
 >
