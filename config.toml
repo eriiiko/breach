@@ -1455,7 +1455,7 @@ intensity_max = 8.0        # HDR headroom pre-tonemap (16F pipeline + ACES; NO b
 
 # --- Lighting pass (master exposure) ---------------------------------------
 [render.lighting]
-master_gain = 2.0          # ONE master display-exposure dial on the light field
+master_gain = 1.0         # ONE master display-exposure dial on the light field
                            # (LightingPass u_light_gain). Was hardcoded 1.0 in
                            # the game while the demo harness tunes at ~10 — the
                            # "too dark everywhere" gap. TRIAL 2.0 (Erik
@@ -1471,7 +1471,7 @@ sweep_gain = 1.0           # light units -> the old march's field scale. MEASURE
                            # summed over r = 2..12 tiles): a 1.0 lamp 0.996, the
                            # 110-degree flashlight 1.05, a 1263-game crate 0.83
                            # (the old fire light was dimmed by its own cell).
-floor = [0.03, 0.03, 0.04] # the NEW path's small FLAT FLOOR (design v3 §2.7:
+floor = [0.03, 0.03, 0.03] # the NEW path's small FLAT FLOOR (design v3 §2.7:
                            # a separate dial, never a substitute for the sky).
                            # A sealed room with no lights reads exactly this.
                            # The old path's flat ambient was (0.10, 0.10, 0.13)
@@ -1542,7 +1542,9 @@ sun_spread_deg = 10.0
 # the honest / identity values (design §6). RENDER-ONLY, tuned by eye with Erik,
 # never gated. (docs/fire_b2_smoke_honesty_design_2026-07-21.md §3-§6.)
 [render.gas_medium]
-plume_k_scale = 50.0        # RELATIVE multiplier on the shared smoke_absorb_scale base
+plume_k_scale = 31.5        # RELATIVE multiplier on the shared smoke_absorb_scale base
+                            # 2026-10-02 explosion+air session: Erik halves the
+                            # render occlusion step by step (50 -> 25 -> ...) by eye.
                             # 2026-08-25 #6 diagnostic (docs/smoke_tau_diagnostic_2026-08-25.md):
                             # the 300.0 hack was calibrated on the old ~0.002-peak soot
                             # regime; real fire sessions live at rho 0.02-0.3, so 300 put
