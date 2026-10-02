@@ -833,7 +833,7 @@ k_drag = 0.5                          # energy-books arc (design §2.8, NEW patc
 # Delta(|u|^2) bracket. 0.0014 was the hand-rolled stand-in for exactly
 # that constant (1/c_v_phys ~= 0.0018). physics_runner raises loudly if
 # this key comes back -- see the stale-key guard there.
-k_drag2 = 0.0                         # drag-law v2 (design docs/drag_law_v2_design_
+k_drag2 = 0.125                         # drag-law v2 (design docs/drag_law_v2_design_
                                       # 2026-08-23.md, issue #4 P1): the QUADRATIC
                                       # term of the two-term interior drag law
                                       # F = -k1*u - k2*|u|*u (k1 = k_drag above,
