@@ -377,10 +377,10 @@ def compose(panels, order, backdrop=BACKDROP):
 TURNAROUND = (("front", 0.0, 560), ("side", -90.0, 440), ("back", 180.0, 560), ("quarter", 35.0, 560))
 
 
-def turnaround(rig, cam, floor, out_dir, height_m, tag="turnaround", views=TURNAROUND, height_px=1100):
+def turnaround(rig, cam, floor, out_dir, height_m, tag="turnaround", views=TURNAROUND, height_px=1100, backdrop=BACKDROP):
     m_per_px = height_m * 1.12 / height_px
     panels = ortho_panels(rig, cam, floor, out_dir, views, m_per_px, height_px, height_m * 0.5, tag)
-    save_rgba(compose(panels, [v[0] for v in views]), os.path.join(out_dir, tag + ".png"))
+    save_rgba(compose(panels, [v[0] for v in views], backdrop), os.path.join(out_dir, tag + ".png"))
     return panels
 
 

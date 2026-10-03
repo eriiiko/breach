@@ -410,13 +410,13 @@ def anchor_matrix(anchor, shift=(0.0, 0.0), lift=0.0):
 
 
 # ------------------------------------------------------------------------- pieces
-def _finish(obj, thick=None, bevel=None, seg=2, subsurf=0):
+def _finish(obj, thick=None, bevel=None, seg=2, subsurf=0, angle=42.0):
     if thick:
         m = obj.modifiers.new("Solidify", "SOLIDIFY")
         m.thickness, m.offset, m.use_even_offset, m.use_rim = thick, -1.0, True, True
     if bevel:
         m = obj.modifiers.new("Bevel", "BEVEL")
-        m.width, m.segments, m.limit_method, m.angle_limit = bevel, seg, "ANGLE", math.radians(42)
+        m.width, m.segments, m.limit_method, m.angle_limit = bevel, seg, "ANGLE", math.radians(angle)
         m.harden_normals = True
     if subsurf:
         m = obj.modifiers.new("Subsurf", "SUBSURF")
@@ -554,4 +554,88 @@ def mirror(obj, merge=False):
     m.use_mirror_merge, m.merge_threshold, m.use_clip = merge, 2e-4, False
     if len(obj.modifiers) > 1:
         obj.modifiers.move(len(obj.modifiers) - 1, 0)
+    return obj
+
+
+# ----------------------------------------------------------------- faceted armour
+def _facet_mesh(name, P, N, closed, thick, bevel, seg, angle, mat, coll):
+    R, C = P.shape[:2]
+    idx = np.arange(R * C).reshape(R, C)
+    if closed:
+        nxt = np.roll(idx, -1, axis=1)
+        faces = np.stack([idx[:-1], idx[1:], nxt[1:], nxt[:-1]], axis=-1).reshape(-1, 4)
+    else:
+        faces = np.stack([idx[:-1, :-1], idx[1:, :-1], idx[1:, 1:], idx[:-1, 1:]], axis=-1).reshape(-1, 4)
+    Pf, Nf = P.reshape(-1, 3), N.reshape(-1, 3)
+    f0 = faces[0]
+    if np.cross(Pf[f0[1]] - Pf[f0[0]], Pf[f0[3]] - Pf[f0[0]]) @ Nf[f0[0]] < 0:
+        faces = faces[:, ::-1]
+    return _finish(new_mesh(name, Pf, faces, None, mat, coll), thick, bevel, seg, angle=angle)
+
+
+def facet_loft(name, loft, rows, thick=0.006, bevel=0.0015, seg=2, angle=14.0, closed=False, sag=True, mat=None, coll="Marine"):
+    """Angular plate wrapped on a loft: a COARSE grid whose quads stay flat facets.
+
+    `rows` = [(t, [(phi_deg, offset), ...]), ...] with the same count in every row, so a
+    row may span a narrower arc than its neighbour (a pointed knee, a notched breastplate).
+    Creases sharper than `angle` degrees are chamfered. A flat facet is a chord across a
+    round limb; `sag` lifts every vertex by that chord's sagitta, so `offset` stays the
+    clearance at the facet's MIDDLE and the limb never shows through the plate."""
+    ph = np.radians([[p for p, _ in r[1]] for r in rows])
+    off = np.array([[o for _, o in r[1]] for r in rows], float)
+    tt = np.array([[r[0]] * ph.shape[1] for r in rows], float)
+    if sag:
+        d = np.abs(np.diff(ph, axis=1))
+        gap = np.zeros_like(ph)
+        gap[:, :-1] = d
+        gap[:, 1:] = np.maximum(gap[:, 1:], d)
+        off = off + loft.radius(ph.ravel(), tt.ravel()).reshape(ph.shape) * (1.0 - np.cos(0.5 * gap))
+    P, N = loft.pn(ph.ravel(), tt.ravel(), off.ravel())
+    return _facet_mesh(name, P.reshape(*ph.shape, 3), N.reshape(*ph.shape, 3), closed, thick, bevel, seg, angle, mat, coll)
+
+
+def facet_anchor(name, anchor, rows, thick=0.006, bevel=0.0015, seg=2, angle=14.0, mat=None, coll="Marine"):
+    """The same on any anchor: `rows` = [[(s, t, offset), ...], ...]."""
+    A = np.array(rows, float)
+    P, N = anchor.pn(A[..., 0].ravel(), A[..., 1].ravel(), A[..., 2].ravel())
+    return _facet_mesh(name, P.reshape(*A.shape[:2], 3), N.reshape(*A.shape[:2], 3), False, thick, bevel, seg, angle, mat, coll)
+
+
+def ribbon_on(name, loft, path, width, offset=0.003, thick=0.003, step=0.006, bevel=0.0008, mat=None, coll="Marine"):
+    """Flat strap laid along a polyline `path` = [(phi_deg, t), ...] on a loft."""
+    ph, tt = np.radians([p for p, _ in path]), np.array([t for _, t in path], float)
+    r = float(loft.radius(ph[:1], tt[:1])[0])
+    seg = np.hypot(np.diff(ph) * r, np.diff(tt))
+    u = np.concatenate([[0.0], np.cumsum(seg)])
+    q = np.linspace(0.0, u[-1], max(3, int(u[-1] / step) + 1))
+    P, N = loft.pn(np.interp(q, u, ph), np.interp(q, u, tt), offset)
+    T = unit(np.gradient(P, axis=0))
+    side = unit(np.cross(N, T))
+    V = np.concatenate([P - 0.5 * width * side, P + 0.5 * width * side])
+    k = len(P)
+    i = np.arange(k - 1)
+    faces = np.stack([i, i + 1, i + 1 + k, i + k], axis=-1)
+    if np.cross(V[1] - V[0], V[k] - V[0]) @ N[0] < 0:
+        faces = faces[:, ::-1]
+    return _finish(new_mesh(name, V, faces, None, mat, coll), thick, bevel, 2)
+
+
+def tape_attr(g, paths):
+    """`tape` attribute: distance to free polylines [(phi_deg, t), ...] on the loft, in the same
+    encoding as `seam_attr`. For bands wider than the grid pitch (bonded seam tape, piping)."""
+    d = np.full(g.phi.shape, 1.0)
+    for path in paths:
+        for (p1, t1), (p2, t2) in zip(path[:-1], path[1:]):
+            p1, p2 = math.radians(p1), math.radians(p2)
+            ax, ay = wrap(g.phi - p1) * g.r, g.t - t1
+            bx, by = wrap(p2 - p1) * g.r, t2 - t1
+            k = np.clip((ax * bx + ay * by) / np.maximum(bx * bx + by * by, 1e-12), 0.0, 1.0)
+            d = np.minimum(d, np.hypot(ax - k * bx, ay - k * by))
+    return 1.0 - np.minimum(d, SEAM_CAP) / SEAM_CAP
+
+
+def flip_x(obj):
+    """Move a part built on the left limb to the right one (for asymmetric gear)."""
+    obj.data.transform(Matrix.Scale(-1.0, 4, (1.0, 0.0, 0.0)))
+    obj.data.flip_normals()
     return obj

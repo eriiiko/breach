@@ -11,6 +11,7 @@ import numpy as np
 from mathutils import Matrix, Vector
 
 import kit
+import parts
 from kit import (TAU, Loft, OnEllipsoid, OnLoft, OnPlane, Oval, band_mask, band_on, box, box_at, crumple_set, fold_field, fold_set,
                  loft_mesh, mirror, plate, seam_attr, solid, studs, tube, unit, wrap)
 
@@ -323,41 +324,11 @@ WRIST = np.array([0.447, -0.037, 0.926])
 HAND_L = unit([0.19, -0.08, -1.0])  # down the fingers
 _hb = np.array([0.86, -0.50, 0.0])
 HAND_B = unit(_hb - (_hb @ HAND_L) * HAND_L)  # out of the back of the hand
-HAND_W = np.cross(HAND_L, HAND_B)  # towards the thumb
-
-
-def _digit(name, base, d0, length, r, curl, M, coll):
-    """A gloved finger: three phalanges, each bent `curl[i]` further towards the palm."""
-    pts, rad = [base - 0.016 * d0, base.copy()], [r, 1.05 * r]
-    p, ang, d = base.copy(), 0.0, d0
-    for seg, c, k in zip(np.array([0.46, 0.30, 0.24]) * length, curl, (1.0, 0.94, 0.82)):
-        ang += c
-        d = unit(d0 * math.cos(ang) - HAND_B * math.sin(ang))
-        p = p + seg * d
-        pts.append(p.copy())
-        rad.append(k * r)
-    pts += [p + 0.45 * r * d, p + 0.72 * r * d]
-    rad += [0.58 * r, 0.16 * r]
-    loft = Loft([dict(p=q, a=a, b=a * 0.96, n=2.0) for q, a in zip(pts, rad)], front=HAND_B)
-    return mirror(loft_mesh(name, loft, res=0.0022, cap1=True, mat=M["rubber"], coll=coll))
 
 
 def build_gloves(M):
     C = "Gloves"
-    hp = lambda l, w=0.0, b=0.0: WRIST + l * HAND_L + w * HAND_W + b * HAND_B
-    palm = Loft([dict(p=hp(l), a=a, b=b, n=2.6) for l, a, b in (
-        (-0.020, .040, .034), (0.012, .042, .028), (0.042, .048, .023), (0.072, .050, .020), (0.092, .048, .017), (0.102, .040, .010))],
-        front=HAND_B)
-    # Loft rings run wrist -> knuckles, so its tangent points DOWN the hand and
-    # phi = 0 is the thumb side, 90 deg the back of the hand.
-    mirror(loft_mesh("Glove_Palm", palm, res=0.003, cap1=True, mat=M["rubber"], coll=C))
-    for name, w, k, length, r, curl in (
-            ("Glove_Index", 0.033, 0.07, 0.068, 0.0116, (0.20, 0.35, 0.30)),
-            ("Glove_Middle", 0.011, 0.01, 0.075, 0.0120, (0.26, 0.42, 0.32)),
-            ("Glove_Ring", -0.011, -0.05, 0.070, 0.0114, (0.30, 0.45, 0.32)),
-            ("Glove_Pinky", -0.033, -0.11, 0.055, 0.0102, (0.34, 0.48, 0.32))):
-        _digit(name, hp(0.094, w, -0.002), unit(HAND_L + k * HAND_W), length, r, curl, M, C)
-    _digit("Glove_Thumb", hp(0.028, 0.038, -0.010), unit(0.62 * HAND_L + 0.70 * HAND_W - 0.25 * HAND_B), 0.072, 0.0142, (0.0, 0.25, 0.22), M, C)
+    palm, _ = parts.hand("Glove", WRIST, HAND_L, HAND_B, M["rubber"], C)
     back = OnLoft(palm, FRONT, 0.070)
     mirror(plate("Glove_Plate", back, 0.035, 0.033, n=4.0, offset=0.006, thick=0.008, bevel=0.002, seg=3, mat=M["armor"], coll=C))
     mirror(plate("Glove_Knuckle", back, 0.030, 0.008, n=5.0, shift=(0, 0.033), offset=0.005, thick=0.006, mat=M["armor"], coll=C))
