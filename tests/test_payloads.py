@@ -7,12 +7,11 @@ What is locked here:
     :func:`execute_payload` reproduces the pre-W3 inline detonation triple
     (apply_explosion -> apply_blast_damage -> add_explosion_smoke ->
     ExplosionEvent) BIT-FOR-BIT — every field array, every unit hp, the
-    event stream, and the RNG end-state;
-  - FULL-SIM DORMANCY (the W2 replica-test pattern): a scripted round with
-    ONLY shipped weapons (a frag grenade + a door charge — no gas, no
-    launcher, no C4) on the W3 code is bit-identical, tick for tick, to a
-    twin sim whose executor is rebound to the verbatim pre-W3 site body —
-    fields, unit hp, synced events, and the generator end-state;
+    event stream, and the RNG end-state (this single-detonation replica is
+    the W3 dormancy gate; the former FULL-SIM, tick-for-tick twin gate ended
+    its job with W3 and pinned the shipped rows' values, so it was deleted
+    per Erik's 2026-10-03 "tests must never break on retuning a config row"
+    ruling);
   - PAYLOAD ROW SHARING: hand-grenade rounds and 40 mm rounds reference THE
     SAME payload row objects (one definition of frag/smoke/tear/poison, two
     deliveries);
@@ -52,7 +51,7 @@ from simulation.gases import (  # noqa: E402
     STEAM,
 )
 from simulation.orders import (  # noqa: E402
-    DET_START_PHASE1, ORDER_EXPLOSIVE, ORDER_GRENADE, Order,
+    DET_START_PHASE1, ORDER_EXPLOSIVE, Order,
 )
 from simulation.payloads import emit_gas, execute_payload, ignite_ring  # noqa: E402
 from simulation.physics import add_explosion_smoke, apply_explosion  # noqa: E402
@@ -155,69 +154,6 @@ def test_frag_and_breach_byte_identical_to_prew3_triple():
             assert ua.alive == ub.alive
         assert repr(ev_a) == repr(ev_b)
         assert rng_a.bit_generator.state == rng_b.bit_generator.state
-
-
-def test_shipped_weapons_full_run_bit_identical_to_prew3():
-    """FULL-SIM DORMANCY (the W2 replica pattern): a scripted round throwing
-    a frag grenade + firing a door charge — and NOTHING W3-new — is
-    bit-identical, tick for tick, between the live W3 code and a twin whose
-    executor is rebound to the verbatim pre-W3 site body. Fields, unit hp,
-    synced events, RNG end-state."""
-    import simulation.combat as combat_mod
-    import simulation.simulation as sim_mod
-
-    def build():
-        sim = Simulation(_level(edits=((9, 12, 2),)), seed=SEED,
-                         breach_physics=bp, enable_recorder=False)
-        m = Unit("M", x=3, y=3, team=0)
-        z = Unit("Z", x=16, y=16, team=1)
-        mid = sim.add_unit(m)
-        sim.add_unit(z)
-        assert sim.apply_action(mid, Order(
-            ORDER_GRENADE, target_fx=11, target_fy=10, phase=0,
-            grenade_fuse=0.5))
-        assert sim.apply_action(mid, Order(
-            ORDER_EXPLOSIVE, target_fx=12, target_fy=9, phase=0,
-            det_slot=DET_START_PHASE1))
-        sim.spawn_projectiles_from_grenade_orders()
-        sim.set_paused(False)
-        return sim
-
-    def run(sim, n=20):
-        traj = []
-        for _ in range(n):
-            sim.set_paused(False)
-            sim.step()
-            snap = {f: np.copy(getattr(sim.gmap, f)) for f in _FIELDS}
-            snap["__events__"] = repr(sim.tick_events)
-            snap["__hp__"] = tuple(u.current_hp for u in sim.units)
-            snap["__alive__"] = tuple(u.alive for u in sim.units)
-            traj.append(snap)
-        return traj, sim.rng.bit_generator.state
-
-    # The W3 path (the live executor).
-    traj_new, rng_new_state = run(build())
-
-    # The pre-W3 twin: rebind BOTH detonation sites' executor binding to the
-    # verbatim inline-site replica (the bare-name import contract).
-    saved_sim, saved_combat = sim_mod.execute_payload, combat_mod.execute_payload
-    sim_mod.execute_payload = _prew3_site_replica
-    combat_mod.execute_payload = _prew3_site_replica
-    try:
-        traj_old, rng_old_state = run(build())
-    finally:
-        sim_mod.execute_payload = saved_sim
-        combat_mod.execute_payload = saved_combat
-
-    assert len(traj_new) == len(traj_old)
-    for t, (sn, so) in enumerate(zip(traj_new, traj_old)):
-        for f in _FIELDS:
-            assert np.array_equal(sn[f], so[f]), \
-                f"tick {t}: field '{f}' diverged from the pre-W3 replica"
-        assert sn["__events__"] == so["__events__"], f"tick {t}: events diverged"
-        assert sn["__hp__"] == so["__hp__"], f"tick {t}: hp diverged"
-        assert sn["__alive__"] == so["__alive__"], f"tick {t}: life diverged"
-    assert rng_new_state == rng_old_state, "RNG stream moved vs pre-W3"
 
 
 # ---------------------------------------------------------------------------
