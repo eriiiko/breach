@@ -15,6 +15,7 @@ import random
 import sys
 
 import bpy
+import bmesh
 from mathutils import Vector
 
 
@@ -46,6 +47,11 @@ def mesh_object(name, verts, faces, material, group, smooth=True):
     mesh = bpy.data.meshes.new(name + " / surface")
     mesh.from_pydata(verts, [], faces)
     mesh.update()
+    # Weld collapsed polar/centre rings, and consistently orient closed shells.
+    bm=bmesh.new();bm.from_mesh(mesh)
+    bmesh.ops.remove_doubles(bm,verts=list(bm.verts),dist=.000001)
+    bmesh.ops.recalc_face_normals(bm,faces=list(bm.faces))
+    bm.to_mesh(mesh);bm.free();mesh.update()
     obj = bpy.data.objects.new(name, mesh)
     collection(group).objects.link(obj)
     if material:
@@ -183,24 +189,52 @@ def material(name, color, roughness, metallic=0.0, fabric=False, coat=0.0):
     bump.inputs["Distance"].default_value = 0.00045 if fabric else 0.00016
     links.new(fine.outputs["Fac"], bump.inputs["Height"])
     links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+    if fabric:
+        # The two crossing yarn directions only affect the microsurface.
+        waves=[]
+        for i,direction in enumerate(("X","Z")):
+            wave=nodes.new("ShaderNodeTexWave");wave.wave_type="BANDS";wave.bands_direction=direction
+            wave.name="Woven yarn / "+direction;wave.location=(-520,-400-i*170)
+            wave.inputs["Scale"].default_value=380
+            wave.inputs["Distortion"].default_value=2
+            wave.inputs["Detail Scale"].default_value=.3
+            links.new(tex.outputs["Object"],wave.inputs["Vector"]);waves.append(wave)
+        weave=nodes.new("ShaderNodeMath");weave.operation="MULTIPLY";weave.location=(-270,-390)
+        links.new(waves[0].outputs["Fac"],weave.inputs[0]);links.new(waves[1].outputs["Fac"],weave.inputs[1])
+        yarn=nodes.new("ShaderNodeBump");yarn.name="Woven yarn relief";yarn.location=(80,-160)
+        yarn.inputs["Strength"].default_value=.18;yarn.inputs["Distance"].default_value=.00022
+        links.new(weave.outputs[0],yarn.inputs["Height"]);links.new(bump.outputs["Normal"],yarn.inputs["Normal"])
+        links.new(yarn.outputs["Normal"],bsdf.inputs["Normal"])
+    if "enamel" in name:
+        scuff=nodes.new("ShaderNodeTexNoise");scuff.name="Restrained enamel flecking";scuff.location=(-770,380)
+        scuff.inputs["Scale"].default_value=210;scuff.inputs["Detail"].default_value=2
+        links.new(tex.outputs["Object"],scuff.inputs["Vector"])
+        mask=nodes.new("ShaderNodeValToRGB");mask.name="Wear amount / raise positions for less";mask.location=(-550,410)
+        mask.color_ramp.elements[0].position=.70;mask.color_ramp.elements[0].color=(0,0,0,1)
+        mask.color_ramp.elements[1].position=.77;mask.color_ramp.elements[1].color=(1,1,1,1)
+        links.new(scuff.outputs["Fac"],mask.inputs["Fac"])
+        mix=nodes.new("ShaderNodeMixRGB");mix.name="Enamel wear tint";mix.location=(-80,300)
+        mix.inputs[2].default_value=(*(c*.47 for c in color),1)
+        links.new(mask.outputs["Color"],mix.inputs[0]);links.new(ramp.outputs["Color"],mix.inputs[1])
+        links.new(mix.outputs[0],bsdf.inputs["Base Color"])
     MATERIALS[name] = mat
     return mat
 
 
 def make_materials():
-    material("Ivory ceramic enamel", (0.71, 0.666, 0.567), 0.42, 0.075, coat=0.16)
-    material("Warm woven pressure fabric", (0.70, 0.659, 0.563), 0.82, fabric=True)
+    material("Ivory ceramic enamel", (0.56, 0.510, 0.424), 0.44, 0.075, coat=0.12)
+    material("Warm woven pressure fabric", (0.61, 0.559, 0.472), 0.88, fabric=True)
     material("Reinforced textile seams", (0.47, 0.435, 0.365), 0.88, fabric=True)
     material("Ivory binding", (0.64, 0.594, 0.497), 0.75, fabric=True)
-    material("Charcoal flex textile", (0.032, 0.036, 0.033), 0.85, fabric=True)
-    material("Glove rubber", (0.022, 0.027, 0.025), 0.58, fabric=True)
-    material("Graphite elastomer", (0.026, 0.031, 0.029), 0.63)
+    material("Charcoal flex textile", (0.013, 0.016, 0.014), 0.88, fabric=True)
+    material("Glove rubber", (0.009, 0.012, 0.010), 0.62, fabric=True)
+    material("Graphite elastomer", (0.014, 0.018, 0.015), 0.69)
     material("Recess", (0.011, 0.015, 0.014), 0.64)
     material("Steel blue enamel", (0.155, 0.239, 0.313), 0.46, 0.13, coat=0.1)
     material("Fastener", (0.26, 0.268, 0.251), 0.37, 0.68)
     material("Printed charcoal", (0.10, 0.119, 0.107), 0.64)
     material("Sole rubber", (0.040, 0.045, 0.041), 0.91)
-    visor = material("Deep olive optical shield", (0.024, 0.049, 0.025), 0.12, 0.54, coat=0.8)
+    visor = material("Deep olive optical shield", (0.008, 0.023, 0.009), 0.135, 0.48, coat=0.55)
     bsdf = visor.node_tree.nodes.get("Principled BSDF")
     bsdf.inputs["Coat Roughness"].default_value = 0.07
     bsdf.inputs["IOR"].default_value = 1.48
@@ -227,15 +261,33 @@ def wrapped_angle(a):
 
 
 def fold_field(t, theta, folds, seed):
+    if not folds:
+        return 0.0
     displacement = 0.0
-    for pos, amplitude, width, slope, angle, spread in folds:
-        centre = pos + slope * math.sin(theta - angle + 0.3)
+    for index,(pos, amplitude, width, slope, angle, spread) in enumerate(folds):
+        da=wrapped_angle(theta-angle)
+        centre = pos + slope * da + .030*da*da*math.sin(seed+index)
         dt = (t - centre) / width
-        local = math.exp(-0.5 * (wrapped_angle(theta - angle) / spread) ** 2)
-        ridge = math.exp(-dt*dt) - 0.58 * math.exp(-((dt-1.55)/0.8)**2)
+        local = math.exp(-0.5 * (da / spread) ** 2)
+        if index % 3:
+            # Rounded triangular tents give creased edges and planar flanks rather
+            # than an inflated sinusoid. Their paths terminate within one cloth panel.
+            ridge = max(0,1-math.sqrt(dt*dt+.0225))**1.2
+            ridge -= .58*max(0,1-math.sqrt(((dt-.95)/.54)**2+.025))
+        else:
+            # Interleave a narrow valley with wider soft shoulders: a compressed fold.
+            ridge = .43*math.exp(-((dt+.72)/.92)**2)-.60*math.exp(-(dt/.31)**2)
+            ridge += .34*math.exp(-((dt-.86)/.94)**2)
         displacement += amplitude * ridge * local
-    displacement += 0.00125 * math.sin(theta*3 + t*9 + seed) * math.sin(math.pi*t)**2
-    displacement += 0.00050 * math.sin(theta*7 - t*26 + seed) * math.sin(math.pi*t)
+    # Longitudinal secondary creases break the circumferential tendency of a loft.
+    for i,angle in enumerate((-2.12,-1.16,.94,2.12)):
+        anchor=.25 if i%2 else .72
+        axis_angle=angle+.40*math.sin(seed+i)*(t-anchor)
+        d=wrapped_angle(theta-axis_angle)/.11
+        patch=math.exp(-((t-anchor)/.19)**2)
+        displacement += .0028*(max(0,1-abs(d))-.50*math.exp(-((d-.85)/.40)**2))*patch
+    displacement += 0.0019 * math.sin(theta*3 + t*9 + seed) * math.sin(math.pi*t)**2
+    displacement += 0.0007 * math.sin(theta*7 - t*17 + seed) * math.sin(math.pi*t)
     # No periodic axial corrugation: every medium crease above has a location,
     # diagonal direction, angular envelope and compression-dependent amplitude.
     return displacement * min(1, t*20, (1-t)*20)
@@ -256,6 +308,8 @@ def garment(name, start, end, radii_u, radii_v, folds, group="01 / Pressure garm
         c = math.copysign(abs(c)**cross_power, c)
         s = math.copysign(abs(s)**cross_power, s)
         fold = fold_field(t, theta, folds, seed)
+        limit=min(r1,r2)*.10
+        fold=limit*math.tanh(fold/limit)
         return a.lerp(b, t) + u*(c*(r1+fold+offset)) + v*(s*(r2+fold+offset))
 
     verts = [point(j/count, k/sides*TAU) for j in range(count+1) for k in range(sides)]
@@ -269,10 +323,10 @@ def garment(name, start, end, radii_u, radii_v, folds, group="01 / Pressure garm
         faces.append(tuple(count*sides+k for k in range(sides)))
     obj = mesh_object(name, verts, faces, material_name, group)
     for i, angle in enumerate(seam_angles):
-        points = [point(0.025 + j/100*0.95, angle, 0.0010) for j in range(101)]
+        points = [point(0.070 + j/100*0.85, angle, 0.0010) for j in range(101)]
         curve(name + f" / tailored seam {i+1}", points, 0.00115,
               "Reinforced textile seams", group)
-        points = [point(0.025 + j/100*0.95, angle+0.027, 0.0011) for j in range(101)]
+        points = [point(0.070 + j/100*0.85, angle+0.027, 0.0011) for j in range(101)]
         curve(name + f" / seam binding {i+1}", points, 0.00065, "Ivory binding", group)
     return obj, point
 
@@ -284,9 +338,15 @@ def folds(seed, amount=10, amplitude=0.009, edge_bias=False):
         t = rng.uniform(0.10, 0.90)
         if edge_bias:
             t = rng.choice((rng.uniform(.08,.28), rng.uniform(.66,.93)))
-        result.append((t, rng.uniform(.48,1)*amplitude,
-                       rng.uniform(.023,.055), rng.uniform(-.09,.09),
-                       rng.uniform(-math.pi,math.pi), rng.uniform(.45,1.12)))
+        result.append((t, rng.uniform(.44,.92)*amplitude,
+                       rng.uniform(.029,.060), rng.uniform(-.27,.27),
+                       rng.uniform(-math.pi,math.pi), rng.uniform(.32,.69)))
+    # Deliberately authored compression fans across the visible front and back.
+    # These stop within one quadrant rather than wrapping around an entire limb.
+    if edge_bias:
+        for angle in (-1.57,1.57):
+            for pos,slant,shift in ((.16,.23,.22),(.31,-.18,-.24),(.67,.24,.23),(.84,-.22,-.27)):
+                result.append((pos,amplitude*1.45,.045,slant,angle+shift,.48))
     return result
 
 
@@ -308,12 +368,12 @@ def panel(name, center, outline, material_name="Ivory ceramic enamel", group="02
     for j in range(len(levels)-1):
         for k in range(N):
             nxt=(k+1)%N
-            faces.append((j*N+k,j*N+nxt,(j+1)*N+nxt,(j+1)*N+k))
+            faces.append(((j+1)*N+k,(j+1)*N+nxt,j*N+nxt,j*N+k))
     back=len(verts)
     verts.extend(c+bu*x+bv*y-n*thickness*.5 for x,y in outline)
     for k in range(N):
         nxt=(k+1)%N
-        faces.append(((len(levels)-1)*N+k,(len(levels)-1)*N+nxt,back+nxt,back+k))
+        faces.append((back+k,back+nxt,(len(levels)-1)*N+nxt,(len(levels)-1)*N+k))
     faces.append(tuple(reversed(range(back,back+N))))
     obj=mesh_object(name,verts,faces,material_name,group)
     bevel(obj,edge,3)
@@ -357,25 +417,29 @@ def build_garment():
             cross_power=.88,seam_angles=(-1.12,-2.02,.96,2.18),seed=40,count=130)
     garment("Hip / continuous seat and abdominal section",(0,.018,.885),(0,.018,1.158),
             [.082,.163,.210,.202,.182],[.085,.121,.134,.131,.119],
-            folds(47,15,.007),cross_power=.91,seam_angles=(-1.48,-1.66,1.15,1.99),seed=18)
+            folds(47,15,.009)+[(.40,.013,.042,.23,-1.25,.5),(.46,.012,.044,-.23,-1.91,.5),
+                              (.70,.010,.045,-.17,-1.36,.55)],
+            cross_power=.91,seam_angles=(-1.48,-1.66,1.15,1.99),seed=18)
     # Dark inner gusset is inset, almost completely covered by the leg roots.
-    ellipsoid("Crotch / stretch gusset",(0,.008,.914),(.055,.082,.072),
+    ellipsoid("Crotch / stretch gusset",(0,.018,.949),(.041,.055,.040),
               "Charcoal flex textile","01 / Pressure garment")
     for side, suffix in ((-1,"L"),(1,"R")):
-        garment(f"Upper arm {suffix} / flex under pauldron",(side*.328,.0,1.337),(side*.260,.002,1.532),
-                [.084,.098,.097,.087],[.081,.098,.108,.087],folds(10+side,8,.007),
+        ellipsoid(f"Shoulder {suffix} / padded jacket bridge",(side*.221,.006,1.511),(.095,.113,.088),
+                  "Warm woven pressure fabric","01 / Pressure garment")
+        garment(f"Upper arm {suffix} / flex under pauldron",(side*.308,.0,1.337),(side*.250,.002,1.531),
+                [.068,.071,.074,.069],[.067,.076,.084,.072],folds(10+side,8,.006),
                 material_name="Charcoal flex textile",seed=side,count=64)
-        garment(f"Sleeve {suffix} / upper woven section",(side*.382,-.012,1.224),(side*.303,0,1.444),
-                [.071,.078,.093,.082],[.071,.088,.096,.080],folds(23+side,15,.0095,True),
+        garment(f"Sleeve {suffix} / upper woven section",(side*.382,-.012,1.224),(side*.284,0,1.433),
+                [.071,.079,.086,.075],[.071,.082,.089,.074],folds(23+side,15,.0095,True),
                 seed=23+side,seam_angles=(-1.38,1.57),count=90)
         garment(f"Elbow {suffix} / compressed flex",(side*.411,-.011,1.132),(side*.380,-.011,1.249),
                 [.065,.075,.076,.070],[.066,.075,.076,.070],folds(33+side,11,.008),
                 material_name="Charcoal flex textile",seed=33+side,count=76)
-        garment(f"Sleeve {suffix} / forearm",(side*.473,-.013,.989),(side*.410,-.008,1.151),
-                [.055,.067,.076,.067],[.052,.068,.073,.065],folds(50+side,14,.0085,True),
+        garment(f"Sleeve {suffix} / forearm",(side*.470,-.013,1.003),(side*.410,-.008,1.151),
+                [.049,.067,.076,.067],[.047,.068,.073,.065],folds(50+side,14,.0085,True),
                 seed=53+side,seam_angles=(-1.4,1.55),count=90)
         garment(f"Wrist {suffix} / seal",(side*.480,-.013,.955),(side*.470,-.013,1.011),
-                [.051,.057,.056,.054],[.048,.053,.052,.050],[],material_name="Graphite elastomer",count=12)
+                [.050,.058,.060,.058],[.047,.055,.057,.055],[],material_name="Graphite elastomer",count=12)
         garment(f"Thigh {suffix} / woven pressure trouser",(side*.158,.008,.653),(side*.108,.019,1.051),
                 [.084,.108,.119,.120,.108],[.079,.103,.115,.114,.104],folds(70+side,21,.010,True),
                 seed=73+side,seam_angles=(-1.19,-2.08,1.46),count=126)
@@ -385,6 +449,21 @@ def build_garment():
         garment(f"Calf {suffix} / woven pressure trouser",(side*.194,.027,.225),(side*.177,.013,.527),
                 [.061,.075,.082,.090,.077],[.063,.078,.082,.084,.072],folds(120+side,19,.0095,True),
                 seed=121+side,seam_angles=(-.93,-2.24,1.52),count=118)
+    # Join the pressure trousers into a genuinely continuous surface at the hips.
+    # A 2 mm source remesh retains the broad folds while removing intersecting ovals.
+    bpy.ops.object.select_all(action="DESELECT")
+    pants=[bpy.data.objects["Hip / continuous seat and abdominal section"],
+           bpy.data.objects["Thigh L / woven pressure trouser"],bpy.data.objects["Thigh R / woven pressure trouser"]]
+    for obj in pants:obj.select_set(True)
+    bpy.context.view_layer.objects.active=pants[0]
+    bpy.ops.object.join()
+    pants[0].name="Trousers / unified seat, crotch and thighs"
+    pants[0].data.remesh_voxel_size=.0020
+    bpy.ops.object.voxel_remesh()
+    smooth=pants[0].modifiers.new("Relax joined cloth surface","SMOOTH")
+    smooth.factor=.48;smooth.iterations=3
+    bpy.ops.object.modifier_apply(modifier=smooth.name)
+    for face in pants[0].data.polygons:face.use_smooth=True
 
 
 def helmet_point(azimuth, phi, offset=0):
@@ -409,8 +488,8 @@ def build_helmet():
         for i in range(angular):
             nxt=(i+1)%angular
             for j in range(vertical):
-                faces.append((i*(vertical+1)+j,nxt*(vertical+1)+j,
-                              nxt*(vertical+1)+j+1,i*(vertical+1)+j+1))
+                faces.append((i*(vertical+1)+j+1,nxt*(vertical+1)+j+1,
+                              nxt*(vertical+1)+j,i*(vertical+1)+j))
         obj=mesh_object("Helmet / "+("crown shell" if top else "mandible shell"),verts,faces,
                         "Ivory ceramic enamel",group)
         solidify(obj,.007)
@@ -428,7 +507,7 @@ def build_helmet():
     for j in range(steps):
         for k in range(sides):
             n=(k+1)%sides
-            faces.append((j*sides+k,j*sides+n,(j+1)*sides+n,(j+1)*sides+k))
+            faces.append(((j+1)*sides+k,(j+1)*sides+n,j*sides+n,j*sides+k))
     shield=mesh_object("Visor / convex olive laminated shield",verts,faces,"Deep olive optical shield",group)
     solidify(shield,.004)
     for rad, offset, mat, label in ((.007,.003,"Recess","pressure gasket"),
@@ -444,6 +523,16 @@ def build_helmet():
     for angle in (-2.52,-1.52,1.52,2.52):
         points=[helmet_point(angle,.13+j/100*2.66,.0004) for j in range(101)]
         curve(f"Helmet / meridian seam {angle}",points,.00085,"Reinforced textile seams",group)
+    for angle in (-.52,.52):
+        points=[helmet_point(angle,.13+j/90*.85,.0012) for j in range(91)]
+        curve(f"Helmet / crown-front panel seam {angle}",points,.0008,"Reinforced textile seams",group)
+    points=[helmet_point(-1.5+j/140*3,.735,.0012) for j in range(141)]
+    curve("Helmet / brow crown panel seam",points,.0009,"Reinforced textile seams",group)
+    for angle in (-.95,-.46,.46,.95):
+        for phi in (.79,.97):
+            p=helmet_point(angle,phi,.002)
+            n=(math.sin(phi)*math.sin(angle),-math.sin(phi)*math.cos(angle),math.cos(phi))
+            screw(f"Helmet / front crown screw {angle} {phi}",p,n,group,.0016)
     for phi in (.75,1.61,2.32):
         points=[helmet_point(1.22+j/140*(TAU-2.44),phi,.0008) for j in range(141)]
         curve(f"Helmet / rear panel seam {phi}",points,.0010,"Reinforced textile seams",group)
@@ -462,6 +551,9 @@ def build_helmet():
     ring("Neck / flexible seated gasket",(0,.009,0),
          [(.174,.137,1.571),(.181,.145,1.584),(.180,.143,1.625),
           (.150,.119,1.628),(.148,.117,1.577)],"Graphite elastomer",group,.019)
+    ring("Neck / continuous inner pressure reducer",(0,.009,0),
+         [(.173,.139,1.615),(.161,.130,1.650),(.129,.111,1.664),
+          (.096,.084,1.600),(.158,.125,1.585)],"Graphite elastomer",group,.015)
     ring("Collar / armoured lower flange",(0,.009,0),
          [(.170,.131,1.544),(.197,.157,1.559),(.199,.161,1.579),
           (.191,.155,1.600),(.164,.129,1.598),(.158,.125,1.557)],
@@ -490,13 +582,16 @@ def shoulder_patch(name, side, theta_extent, phi_min, phi_max, offset, material_
     for j in range(rows+1):
         phi=phi_min+(phi_max-phi_min)*j/rows
         for k in range(cols+1):
-            th=-theta_extent+2*theta_extent*k/cols
+            edge_t=min(j/rows,(rows-j)/rows)
+            corner=.10*max(0,1-edge_t/.10)**2 if offset else .035*max(0,1-edge_t/.08)**2
+            extent=theta_extent-corner
+            th=-extent+2*extent*k/cols
             verts.append(shoulder_surface(side,th,phi,offset))
     for j in range(rows):
         for k in range(cols):
             q=j*(cols+1)+k
             face=(q,q+1,q+cols+2,q+cols+1)
-            faces.append(face if side>0 else tuple(reversed(face)))
+            faces.append(tuple(reversed(face)) if side>0 else face)
     obj=mesh_object(name,verts,faces,material_name,"02 / Armour")
     solidify(obj,.006 if offset else .010)
     bevel(obj,.0028,3)
@@ -516,8 +611,8 @@ def build_armour():
         for edge in (-1,1):
             curve(f"Harness {label} / edge seam {edge}",[(x+edge*.016,y-.0002,z+.001) for x,y,z in points],
                   .0013,"Reinforced textile seams",group)
-        shoulder_patch(f"Pauldron {label} / compound shell",side,1.48,.20,1.60,0,"Ivory ceramic enamel")
-        shoulder_patch(f"Pauldron {label} / steel-blue inset",side,1.25,.57,1.365,.003,"Steel blue enamel")
+        shoulder_patch(f"Pauldron {label} / compound shell",side,1.82,.015,1.68,0,"Ivory ceramic enamel")
+        shoulder_patch(f"Pauldron {label} / steel-blue inset",side,1.52,.53,1.365,.003,"Steel blue enamel")
         for phi in (.60,1.33):
             for theta in (-1.17,0,1.17):
                 p=shoulder_surface(side,theta,phi,.008)
@@ -570,10 +665,10 @@ def build_belt_pockets():
          [(.191,.129,1.101),(.196,.134,1.105),(.196,.134,1.172),
           (.192,.130,1.176),(.180,.117,1.167),(.180,.117,1.108)],"Charcoal flex textile",group)
     # Solid front belt with small articulated side/rear sections.
-    for a in (-2.60,-1.98,-1.57,-1.15,-.54,.10,.72,1.35,1.98,2.60):
+    for a in (-math.pi/2+j*TAU/12 for j in range(12)):
         n=Vector((math.cos(a),math.sin(a),0))
         center=(.197*math.cos(a),.013+.137*math.sin(a),1.139)
-        panel(f"Belt / articulated segment {a}",center,chamfer_outline(.077,.064,.006),
+        panel(f"Belt / articulated segment {a}",center,chamfer_outline(.101,.064,.006),
               group=group,normal=n,u=(-n.y,n.x,0),v=(0,0,1),thickness=.009,bulge=.001,edge=.003)
     for side,label in ((-1,"L"),(1,"R")):
         x=side*.203
@@ -592,9 +687,27 @@ def build_belt_pockets():
         n=Vector((side*.67,-.743,0));u=Vector((.743,side*.67,0))
         center=Vector((side*.226,-.051,.855))
         pocket_outline=[(-.063,-.094),(.059,-.094),(.073,-.070),(.069,.086),(.047,.105),(-.055,.103),(-.071,.081),(-.071,-.069)]
-        panel(f"Thigh cargo {label} / padded pocket",center,pocket_outline,"Warm woven pressure fabric",group,
-              normal=n,u=u,thickness=.031,bulge=.014,edge=.009)
-        border=[center+u*x+Vector((0,0,z))+n*.021 for x,z in pocket_outline]
+        # A sewn, softly buckled front with a real gusset rather than decorative tubes.
+        rows=48;cols=40;verts=[];faces=[]
+        for j in range(rows+1):
+            v=-1+2*j/rows
+            for k in range(cols+1):
+                h=-1+2*k/cols
+                width=.069*(1-.115*max(0,(abs(v)-.82)/.18)**2)
+                puff=.010*(1-h*h)*(1-v*v)
+                buckle=0.0
+                for pos,slope in ((-.62,.25),(-.10,-.32),(.42,.21)):
+                    d=(v-pos-slope*h)/.11
+                    buckle+=.0033*(math.exp(-d*d)-.47*math.exp(-((d-1.2)/.95)**2))*(1-h*h)
+                verts.append(center+u*(h*width)+Vector((0,0,.100*v))+n*(.021+puff+buckle))
+        for j in range(rows):
+            for k in range(cols):
+                q=j*(cols+1)+k;faces.append((q,q+1,q+cols+2,q+cols+1))
+        pocket=mesh_object(f"Thigh cargo {label} / sewn front and gusset",verts,faces,"Warm woven pressure fabric",group)
+        solidify(pocket,.030)
+        border=[]
+        for x,z in pocket_outline:
+            border.append(center+u*(x*.93)+Vector((0,0,z*.96))+n*.024)
         curve(f"Thigh cargo {label} / stitched perimeter",border,.00125,"Reinforced textile seams",group,True)
         flap_center=center+Vector((0,0,.077))+n*.027
         panel(f"Thigh cargo {label} / overlapping flap",flap_center,chamfer_outline(.152,.053,.008),
@@ -603,13 +716,6 @@ def build_belt_pockets():
             p=flap_center+u*dx+n*.004
             panel(f"Thigh cargo {label} / flap latch {dx}",p,chamfer_outline(.011,.044,.003),
                   "Graphite elastomer",group,normal=n,u=u,thickness=.005,bulge=0,edge=.0015)
-        for i in range(3):
-            z=.797+i*.031
-            points=[]
-            for j in range(35):
-                t=j/34
-                points.append(center+u*(-.051+.104*t)+Vector((0,0,z-.855+.010*math.sin(t*4+i)))+n*(.029+.004*math.sin(t*math.pi)))
-            curve(f"Thigh cargo {label} / soft gusset fold {i}",points,.0014,"Ivory binding",group)
 
 
 def finger(name, points, radius, group):
@@ -668,12 +774,16 @@ def build_boots():
         x=side*.194
         # The boot is a foot-shaped horizontal loft: broad toe, narrow heel and a rising instep.
         def boot_loft(name, profiles, mat):
-            sides=96;verts=[];faces=[]
+            sides=192;verts=[];faces=[]
             for z,rx,ry,cy in profiles:
                 for k in range(sides):
                     a=k/sides*TAU;c=math.cos(a);s=math.sin(a)
                     xx=math.copysign(abs(c)**.65,c)*rx*(1-.18*(s+1)/2)
                     yy=math.copysign(abs(s)**.65,s)*ry
+                    if mat=="Sole rubber" and z<.055:
+                        # Shallow cuts are part of the continuous outsole itself.
+                        cuts=sum(math.exp(-((cy+yy-(-.153+j*.036))/.004)**4) for j in range(7))
+                        xx*=1-.037*min(1,cuts)
                     verts.append((x+xx,cy+yy,z))
             for j in range(len(profiles)-1):
                 for k in range(sides):
@@ -688,17 +798,37 @@ def build_boots():
                     (.051,.087,.153,-.039),(.060,.081,.149,-.039)],"Sole rubber")
         boot_loft(f"Boot {label} / welt",[(.054,.081,.150,-.039),(.064,.084,.149,-.037),
                     (.076,.082,.146,-.036)],"Graphite elastomer")
-        boot_loft(f"Boot {label} / pressure upper",[(.070,.078,.143,-.035),(.096,.083,.141,-.035),
+        upper_profiles=[(.070,.078,.143,-.035),(.096,.083,.141,-.035),
                     (.119,.082,.136,-.031),(.144,.077,.120,-.016),(.173,.071,.097,.008),
-                    (.209,.067,.078,.030),(.257,.065,.073,.032)],"Ivory ceramic enamel")
-        for a in range(7):
-            yy=-.164+a*.043
-            for sign in (-1,1):
-                box(f"Boot {label} / lateral tread {a} {sign}",(x+sign*.078,yy,.034),(.023,.023,.034),
-                    "Sole rubber",group,.004)
+                    (.209,.067,.078,.030),(.257,.065,.073,.032)]
+        boot_loft(f"Boot {label} / pressure upper",upper_profiles,"Ivory binding")
+        def boot_point(z,a,offset=0):
+            for lo,hi in zip(upper_profiles,upper_profiles[1:]):
+                if lo[0] <= z <= hi[0]:
+                    t=(z-lo[0])/(hi[0]-lo[0]);rx,ry,cy=[lo[j]+t*(hi[j]-lo[j]) for j in (1,2,3)]
+                    break
+            c=math.cos(a);s=math.sin(a)
+            return Vector((x+math.copysign(abs(c)**.65,c)*(rx+offset)*(1-.18*(s+1)/2),
+                           cy+math.copysign(abs(s)**.65,s)*(ry+offset),z))
+        capverts=[];capfaces=[];nr=22;nc=48
+        for j in range(nr+1):
+            z=.084+.068*j/nr
+            for k in range(nc+1):
+                a=-2.70+2.26*k/nc
+                capverts.append(boot_point(z,a,.0027))
+        for j in range(nr):
+            for k in range(nc):
+                q=j*(nc+1)+k;capfaces.append((q,q+1,q+nc+2,q+nc+1))
+        cap=mesh_object(f"Boot {label} / curved protective toe cap",capverts,capfaces,"Ivory ceramic enamel",group)
+        solidify(cap,.003)
+        sole_edge=[]
+        for k in range(192):
+            a=k/192*TAU;c=math.cos(a);s=math.sin(a)
+            sole_edge.append((x+math.copysign(abs(c)**.65,c)*.086*(1-.18*(s+1)/2),
+                              -.039+math.copysign(abs(s)**.65,s)*.152,.049))
+        curve(f"Boot {label} / continuous sidewall mould line",sole_edge,.0012,"Graphite elastomer",group,True)
         for sign in (-1,1):
-            box(f"Boot {label} / toe tread {sign}",(x+sign*.031,-.185,.033),(.045,.026,.035),"Sole rubber",group,.004)
-            box(f"Boot {label} / heel lug {sign}",(x+sign*.038,.100,.030),(.040,.035,.033),"Sole rubber",group,.004)
+            box(f"Boot {label} / heel traction pad {sign}",(x+sign*.027,.105,.026),(.033,.022,.018),"Sole rubber",group,.005)
         # Rubber heel cup and toe bumper are attached to the outsole.
         panel(f"Boot {label} / toe bumper",(x,-.178,.074),chamfer_outline(.082,.040,.012),
               "Graphite elastomer",group,thickness=.012,bulge=.003,edge=.004)
@@ -708,18 +838,15 @@ def build_boots():
         panel(f"Boot {label} / heel cup",(x,.103,.091),chamfer_outline(.105,.059,.013),
               "Graphite elastomer",group,normal=(0,1,0),u=(-1,0,0),thickness=.012,bulge=.002,edge=.004)
         # Curved toe-cap and instep stitch lines follow the shell.
-        for i,(yy,zz) in enumerate(((-.133,.134),(-.088,.158),(-.040,.192))):
-            points=[]
-            for k in range(51):
-                u=-1+2*k/50
-                points.append((x+.068*u,yy+.023*u*u,zz-.027*u*u))
+        for i,zz in enumerate((.116,.153,.202)):
+            points=[boot_point(zz,-2.72+2.30*k/60,.0036) for k in range(61)]
             curve(f"Boot {label} / upper panel joint {i}",points,.0012,"Reinforced textile seams",group)
             curve(f"Boot {label} / upper panel binding {i}",[(a,b+.002,c+.0003) for a,b,c in points],.0007,"Ivory binding",group)
         # Wide angled instep strap conforms to the top of the foot.
-        panel(f"Boot {label} / instep strap",(x,-.048,.173),chamfer_outline(.145,.046,.008),
+        panel(f"Boot {label} / instep strap",(x,-.075,.186),chamfer_outline(.145,.046,.008),
               "Ivory binding",group,normal=(0,-.69,.72),u=(1,0,0),v=(0,.72,.69),
-              thickness=.008,bulge=.010,edge=.003)
-        panel(f"Boot {label} / instep buckle",(x+side*.065,-.052,.166),chamfer_outline(.023,.045,.004),
+              thickness=.008,bulge=.005,edge=.003)
+        panel(f"Boot {label} / instep buckle",(x+side*.065,-.064,.177),chamfer_outline(.023,.045,.004),
               "Graphite elastomer",group,normal=(side*.40,-.58,.71),u=(.9,side*.4,0),v=(0,.72,.69),
               thickness=.010,bulge=.001,edge=.003)
         ring(f"Boot {label} / ankle strap",(x,.029,0),[(.067,.075,.217),(.071,.079,.220),
@@ -730,6 +857,24 @@ def build_boots():
         for sign in (-1,1):
             panel(f"Boot {label} / ankle latch {sign}",(x+sign*.066,-.008,.239),chamfer_outline(.023,.039,.004),
                   "Graphite elastomer",group,normal=(sign,0,0),u=(0,1,0),thickness=.010,bulge=.001,edge=.002)
+        for sign in (-1,1):
+            outline=[(-.133,-.049),(.064,-.049),(.064,.034),(.031,.074),
+                     (-.024,.070),(-.060,.021),(-.107,.003)]
+            side_plate=panel(f"Boot {label} / fitted side quarter {sign}",(x+sign*.074,.018,.139),outline,
+                             "Ivory ceramic enamel",group,normal=(sign,0,0),u=(0,1,0),v=(0,0,1),
+                             thickness=.006,bulge=.003,edge=.003)
+            for vertex in side_plate.data.vertices:
+                t=max(0,min(1,(vertex.co.z-.09)/.14))
+                vertex.co.x+=sign*(.003-.018*t)
+            edge=[]
+            for dy,dz in outline:
+                z=.139+dz;t=max(0,min(1,(z-.09)/.14))
+                edge.append((x+sign*(.081-.018*t),.018+dy,z))
+            curve(f"Boot {label} / quarter seam {sign}",edge,.00095,"Reinforced textile seams",group,True)
+            for dy,dz in ((-.093,-.020),(.037,.031)):
+                z=.139+dz;t=max(0,min(1,(z-.09)/.14))
+                screw(f"Boot {label} / quarter fastener {sign} {dy}",(x+sign*(.082-.018*t),.018+dy,z),
+                      (sign,0,0),group,.0018)
 
 
 def build_pack():
@@ -822,25 +967,28 @@ def setup_studio():
         print("GPU setup fallback:",exc)
     scene.world.use_nodes=True
     scene.world.node_tree.nodes["Background"].inputs["Color"].default_value=(.31,.36,.39,1)
-    scene.world.node_tree.nodes["Background"].inputs["Strength"].default_value=.33
-    floor=box("Studio / seamless ground",(0,0,-.013),(200,200,.022),"Studio warm grey","90 / Studio",.001)
+    scene.world.node_tree.nodes["Background"].inputs["Strength"].default_value=.24
+    floor=box("Studio / seamless ground",(0,0,-.013),(2000,2000,.022),"Studio warm grey","90 / Studio",.001)
     for name,loc,power,size,color in (
-        ("Key / broad softbox",(-3.0,-4.0,5.0),550,3.0,(1.0,.91,.79)),
-        ("Fill / neutral softbox",(3.4,-1.7,2.8),340,2.7,(.82,.90,1.0)),
-        ("Rim / upper strip",(1.8,3.3,4.0),650,2.5,(.86,.93,1.0)),
-        ("Front / visor strip",(-.7,-3.5,2.8),70,1.0,(1.0,1.0,.95))):
-        data=bpy.data.lights.new(name,"AREA");data.energy=power;data.shape="DISK";data.size=size;data.color=color
+        ("Key / broad softbox",(-3.0,-4.0,5.0),340,2.6,(1.0,.94,.85)),
+        ("Fill / neutral softbox",(3.4,-1.7,2.8),130,2.7,(.86,.92,1.0)),
+        ("Rim / upper strip",(1.8,3.3,4.0),420,2.5,(.86,.93,1.0)),
+        ("Front / visor strip",(-1.8,-3.5,3.5),22,.60,(1.0,1.0,.95))):
+        data=bpy.data.lights.new(name,"AREA");data.energy=power;data.shape="RECTANGLE";data.size=size;data.size_y=size*1.4;data.color=color
         obj=bpy.data.objects.new(name,data);collection("90 / Studio").objects.link(obj);obj.location=loc;aim(obj,(0,0,1))
+        if name.startswith("Fill") or name.startswith("Rim"):
+            obj.visible_glossy=False
     cameras={
-        "front":((0,-5.5,1.02),(0,0,.97),2.13),
-        "side":((5.5,0,1.02),(0,0,.97),2.13),
-        "back":((0,5.5,1.02),(0,0,.97),2.13),
+        "front":((0,-25,1.40),(0,0,.97),2.13),
+        "side":((25,0,1.40),(0,0,.97),2.13),
+        "back":((0,25,1.40),(0,0,.97),2.13),
         "hero":((3.1,-5.5,2.75),(0,0,.99),2.17),
         "closeup":((1.65,-3.4,2.1),(0,-.02,1.55),.87),
         "elevated":((2.8,-3.8,5.6),(0,0,.96),2.23),
+        "details":((2.3,-4.0,1.40),(0,-.01,.59),1.19),
     }
     for name,(loc,target,scale) in cameras.items():
-        data=bpy.data.cameras.new("Camera / "+name);data.type="ORTHO";data.ortho_scale=scale
+        data=bpy.data.cameras.new("Camera / "+name);data.type="ORTHO";data.ortho_scale=scale;data.clip_end=5000
         obj=bpy.data.objects.new("Camera / "+name,data);collection("91 / Review cameras").objects.link(obj)
         obj.location=loc;aim(obj,target)
     scene.camera=bpy.data.objects["Camera / hero"]
@@ -849,11 +997,12 @@ def setup_studio():
     scene.render.image_settings.color_mode="RGBA"
     scene.view_settings.view_transform="AgX"
     scene.view_settings.look="AgX - Medium High Contrast"
-    scene.view_settings.exposure=.1
+    scene.view_settings.exposure=0
     scene.render.film_transparent=False
     scene.render.image_settings.color_depth="8"
     # A packed non-rendering sheet makes the source useful away from this checkout.
     ref=bpy.data.images.load(str(REFERENCE));ref.name="REFERENCE / supplied turnaround";ref.pack()
+    ref.filepath="//../../Space Marine Turnaround Sheet.png"
     obj=bpy.data.objects.new("REFERENCE / Space Marine Turnaround Sheet",None)
     obj.empty_display_type="IMAGE";obj.data=ref;obj.empty_display_size=2.9
     obj.location=(2.4,.75,1.0);obj.rotation_euler=(math.pi/2,0,0);obj.hide_render=True
@@ -869,6 +1018,10 @@ def setup_studio():
                 area.spaces.active.region_3d.view_location=(0,0,1)
                 area.spaces.active.region_3d.view_rotation=scene.camera.rotation_euler.to_quaternion()
                 area.spaces.active.shading.type="MATERIAL"
+                area.spaces.active.overlay.show_floor=False
+                area.spaces.active.overlay.show_extras=False
+    for obj in collection("90 / Studio").objects:obj.hide_set(True)
+    for obj in collection("91 / Review cameras").objects:obj.hide_set(True)
     bpy.ops.object.select_all(action="DESELECT")
     shell=bpy.data.objects.get("Helmet / crown shell")
     shell.select_set(True);bpy.context.view_layer.objects.active=shell
@@ -928,6 +1081,14 @@ def main():
     make_materials()
     for fn in (build_garment,build_helmet,build_armour,build_belt_pockets,build_hands,build_boots,build_pack,add_small_markings):
         print("BUILD",fn.__name__,flush=True);fn()
+    root=bpy.data.objects.new("SPACE MARINE / move the complete source",None)
+    collection("00 / Asset root").objects.link(root)
+    for name,col in COLLECTIONS.items():
+        if name!="00 / Asset root":
+            for obj in col.objects:obj.parent=root
+    root.location.z=-.013
+    root.empty_display_type="PLAIN_AXES";root.empty_display_size=.12
+    bpy.context.view_layer.update()
     setup_studio();stats()
     bpy.ops.wm.save_as_mainfile(filepath=str(SOURCE/"space_marine.blend"),compress=True)
     print("CHECKPOINT_SAVED",flush=True)
