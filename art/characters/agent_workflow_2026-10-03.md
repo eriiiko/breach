@@ -1,0 +1,29 @@
+# First agent: silhouette review (2026-10-03)
+
+Related tracker: eriiiko/breach #33. User explicitly selected this asset milestone ahead of roadmap ordering. Worktree: `.claude/worktrees/33-agent-blockout`, branch `33-agent-blockout`, based on main `ef9d39c`. Main checkout remains on `fire-12`; existing untracked files are preserved. No merge until Erik reviews the silhouette.
+
+## Approved scope and execution
+
+One implementation agent, inherited Codex model and effort (Claude family aliases are unavailable here). HUMAN-TEST: Erik reviews the rough silhouette and major forms before detail, textures, or rigging. No simulation, renderer, skeleton replacement, animation system, or final performance budget changes.
+
+Reference: `art/characters/sleek-agent-with-bag.png`, supplied by Erik; original remains untouched in the main checkout. Slim athletic adult female agent, narrow hips/upper thighs and modest bust, charcoal suit, pale armour, enclosed helmet/dark visor/respirator/sealed collar, practical gloves and boots, no emission. Separate teal soft duffel/black webbing and original compact P90-inspired weapon. Unseen surfaces are provisional design decisions.
+
+Implement an editable Blender rough model and reproducible Python script. Inspect the existing Quaternius mesh before deciding whether it supplies useful anatomy; a new authored surface is allowed if its blocky proportions are unsuitable. Keep the canonical humanoid skeleton as the future binding target, unmodified. No external download is necessary for authored geometry. Review renders: front, side, back, three-quarter and actual vertical orthographic top-down approximation. Inspect and correct obvious errors before delivery. Label unfinished topology and equipment honestly. Retain adjustable named materials and separate equipment collections. Record mesh statistics without imposing a 1–5k triangle ceiling.
+
+Verification: Blender background Python succeeds, saves a reopenable .blend, renders all views; visually inspect proportions/armour/helmet and independent equipment. No game suite needed for offline asset-only files. Future rigged glTF compatibility still requires hierarchy/rest transforms/weights/export validation and real shader lighting review.
+
+## Instruction and environment connection
+
+Explicitly read: global `C:/Users/steen/.claude/CLAUDE.md` (symlink target `G:/Min enhet/ClaudeSync/CLAUDE.md`), project `CLAUDE.md`, relevant global skills `git-workflow`, `autonomous-patch-workflow`, `permissions-policy`, `path-rules-hook`, `machine-env`; ClaudeSync `environment.md`; `docs/dev_setup.md`, `docs/lenovo_dev_setup.md`, `docs/reference/adding_character_models.md`; renderer unit/lit3d entry points and marine provenance files. No project path rules or hooks were present. No @imports in the global/project entry files. Egregore MCP is unavailable to this Codex session; no historical recall claimed. Claude permissions/plugins/model aliases do not configure Codex.
+
+Installed: Blender 4.5.10 LTS, `C:/Program Files/Blender Foundation/Blender 4.5/blender.exe`; Codex CLI 0.160.0 bundled by VS Code OpenAI extension. GitHub CLI authentication and `git fetch origin` succeed outside sandbox using existing keyring login. main/origin/main and fire-12/origin/fire-12 agree after fetch. No token copying or login needed. VS Code extensions: Claude Code, OpenAI ChatGPT/Codex Audio, Python/debugpy/Pylance/envs. CLI pyright/clangd/cmake/ninja resolve under anaconda; Claude LSP plugins are not Codex tools. Home Desktop uses anaconda base for Breach, Blender bundled Python for asset scripts.
+
+`C:/Users/steen/.codex/config.toml`: added top-level `project_doc_fallback_filenames = ["CLAUDE.md"]`, preserved unrelated settings and backup `config.toml.before-breach-20261003`. Created tiny `.codex/AGENTS.md` linking the canonical global rules. Future sessions automatically discover the bridge and project CLAUDE.md (unless AGENTS.override.md/AGENTS.md wins in that directory); they must explicitly read referenced global rules/skills. Default discovered-project limit 32 KiB; referenced files require explicit reads. Official docs: https://learn.chatgpt.com/docs/agent-configuration/agents-md . Fresh local `codex debug prompt-input` inspection verifies discovery without inference; does not retroactively change this session. Open a new Codex session in this worktree for a conversational discovery check and ask it to list instruction sources and read this progress note.
+
+## Systems
+
+Reuse `renderer/unit_model_renderer.py` and `marine_shader.py` for later character integration; `renderer/lit3d.py` is the shared camera/light seam. Canonical asset remains `assets/models/marine/AnimationLibrary_Godot_Standard.gltf` and its CC0 provenance. Existing map/prop/simulation systems do not need changes. New work is offline asset authoring only; no new runtime system or canonical rule required.
+
+## Outputs, reproduction and next step
+
+Pending implementation: record source, script, preview paths and command here. Next step after review is proportion revision, then deformation-ready topology and canonical rig binding; animation production remains deferred.
