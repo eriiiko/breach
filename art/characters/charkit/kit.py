@@ -622,11 +622,15 @@ def ribbon_on(name, loft, path, width, offset=0.003, thick=0.003, step=0.006, be
 
 def tape_attr(g, paths):
     """`tape` attribute: distance to free polylines [(phi_deg, t), ...] on the loft, in the same
-    encoding as `seam_attr`. For bands wider than the grid pitch (bonded seam tape, piping)."""
+    encoding as `seam_attr`. For bands wider than the grid pitch (bonded seam tape, piping).
+    A segment that runs straight along the limb (same phi at both ends) is snapped to a grid
+    column, so its edges come out exactly straight."""
     d = np.full(g.phi.shape, 1.0)
     for path in paths:
         for (p1, t1), (p2, t2) in zip(path[:-1], path[1:]):
             p1, p2 = math.radians(p1), math.radians(p2)
+            if p1 == p2:
+                p1 = p2 = g.snap_phi(p1)
             ax, ay = wrap(g.phi - p1) * g.r, g.t - t1
             bx, by = wrap(p2 - p1) * g.r, t2 - t1
             k = np.clip((ax * bx + ay * by) / np.maximum(bx * bx + by * by, 1e-12), 0.0, 1.0)

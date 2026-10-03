@@ -52,3 +52,57 @@ def hand(prefix, wrist, L, B, mat, coll, scale=1.0, curl=1.0, mirrored=True):
         digit("%s_%s" % (prefix, name), hp(0.094, w, -0.002), unit(L + fan * W), length * k, r * k, curls)
     digit(prefix + "_Thumb", hp(0.028, 0.038, -0.010), unit(0.62 * L + 0.70 * W - 0.25 * B), 0.072 * k, 0.0142 * k, (0.0, 0.25, 0.22))
     return palm, hp
+
+
+# Weld a LEFT half-body loft to its mirror: clamp it at the mid-plane and drop what lies beyond.
+CLAMP = dict(drop=lambda P: P[:, 0] <= 1e-6, post=lambda P: np.column_stack([np.maximum(P[:, 0], 0.0), P[:, 1:]]))
+
+
+def ring(z, cx, cy, a, bf, bb, n=2.0, pin=0):
+    """A horizontal body section; `pin` keeps its plane level whatever the centre line does."""
+    r = dict(p=(cx, cy, z), a=a, bf=bf, bb=bb, n=n)
+    if pin:
+        r["t"] = (0.0, 0.0, 1.0)
+    return r
+
+
+def rivets(name, anchor, st, off, r=0.003, mat=None, coll="Armor"):
+    from kit import studs
+    s, t = zip(*st)
+    P, N = anchor.pn(s, t, off)
+    return studs(name, P, N, r, mat=mat, coll=coll)
+
+
+def helmet_dome(center, radii, z0, p=2.0, flare=0.55, n=2.1):
+    """Helmet shell as a loft: a dome of profile exponent `p` (2 = ellipsoid, 3 = boxy,
+    flat-topped) whose part below the centre stays wide (`flare` < 1). Returns the loft
+    and `rows(res)`, row heights evenly spaced along the dome rather than in z."""
+    c = np.asarray(center, float)
+    A, B, CZ = radii
+
+    def fn(t):
+        z = z0 + t
+        u = np.clip((z - c[2]) / CZ, -1.0, 1.0)
+        k = np.maximum(1.0 - np.abs(np.where(u < 0, flare * u, u)) ** p, 4e-5 ** (p / 2.0)) ** (1.0 / p)
+        m = len(t)
+        return (np.column_stack([np.full(m, c[0]), np.full(m, c[1]), z]), np.tile([0.0, 0.0, 1.0], (m, 1)),
+                np.column_stack([A * k, B * k, B * k, np.full(m, n), np.full(m, n)]))
+
+    def rows(res):
+        b0 = math.asin((z0 - c[2]) / CZ)
+        beta = np.linspace(b0, math.pi / 2 - 0.012, int(round((math.pi / 2 - b0) * CZ / res)))
+        return c[2] + CZ * np.sin(beta) - z0
+
+    return Loft(fn=fn, length=c[2] + CZ - z0), rows
+
+
+def tread(y_toe, pitch=0.026, lug=0.0035, arch_y=-0.015, arch_w=0.04, arch_h=0.011):
+    """Sole displacement for a foot loft running toe -> heel: lugs cut into the side walls,
+    and the arch lifted between ball and heel."""
+    def f(g):
+        y = g.t + y_toe
+        sn = np.sin(g.phi)
+        lugs = np.clip((0.5 - np.abs(sn)) / 0.15, 0, 1) * (np.clip(np.sin(2.0 * math.pi * g.t / pitch) * 3.0, -1, 1) * 0.5 + 0.5)
+        arch = np.clip((-sn - 0.6) / 0.2, 0, 1) * np.clip(1.6 * (1.0 - np.abs(y - arch_y) / arch_w), 0, 1)
+        return -lug * lugs - arch_h * arch
+    return f

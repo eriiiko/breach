@@ -13,6 +13,7 @@ from mathutils import Matrix
 
 import kit
 import parts
+from parts import CLAMP, ring, rivets
 from kit import (TAU, Loft, OnEllipsoid, OnLoft, OnPlane, Oval, band_mask, band_on, box, box_at, facet_anchor, facet_loft,
                  flip_x, fold_field, fold_set, loft_mesh, mirror, plate, ribbon_on, seam_attr, solid, studs, tape_attr, tube,
                  unit, wrap)
@@ -43,19 +44,6 @@ def make_materials():
     )
 
 
-def ring(z, cx, cy, a, bf, bb, n=2.0, pin=0):
-    r = dict(p=(cx, cy, z), a=a, bf=bf, bb=bb, n=n)
-    if pin:
-        r["t"] = (0.0, 0.0, 1.0)
-    return r
-
-
-def rivets(name, anchor, st, off, r=0.003, mat=None, coll="Armor"):
-    s, t = zip(*st)
-    P, N = anchor.pn(s, t, off)
-    return studs(name, P, N, r, mat=mat, coll=coll)
-
-
 # ----------------------------------------------------------------- body surfaces
 # The bodysuit is ONE surface from ankle to neck: each leg's section grows into half
 # the pelvis, then half the torso, clamped at the mid-plane and welded to its mirror.
@@ -82,9 +70,6 @@ ARM = Loft([dict(p=p, a=a, b=b, n=2.0) for p, a, b in (
     ((.130, .000, 1.425), .042, .047), ((.095, .000, 1.430), .036, .044))])
 az = ARM.t_at_z
 T_ELBOW = ARM.t_ring(4)
-
-CLAMP = dict(drop=lambda P: P[:, 0] <= 1e-6, post=lambda P: np.column_stack([np.maximum(P[:, 0], 0.0), P[:, 1:]]))
-
 
 def body_band(name, z0, z1, offset=0.004, thick=0.004, mat=None, coll="Gear"):
     """A strap right round the pelvis or torso: built on the left half and welded to its mirror."""
@@ -284,23 +269,7 @@ HC = np.array([0.0, -0.004, 1.632])
 HA, HB, HCZ, HZ0 = 0.090, 0.108, 0.108, 1.528
 
 
-def _helmet_fn(t):
-    z = HZ0 + t
-    u = np.clip((z - HC[2]) / HCZ, -1.0, 1.0)
-    k = np.sqrt(np.maximum(1.0 - np.where(u < 0, 0.55 * u, u) ** 2, 4e-5))
-    n = len(t)
-    c = np.column_stack([np.zeros(n), np.full(n, HC[1]), z])
-    par = np.column_stack([HA * k, HB * k, HB * k, np.full(n, 2.1), np.full(n, 2.1)])
-    return c, np.tile(Z, (n, 1)), par
-
-
-HELMET = Loft(fn=_helmet_fn, length=HC[2] + HCZ - HZ0)
-
-
-def helmet_rows(res):
-    b0 = math.asin((HZ0 - HC[2]) / HCZ)
-    beta = np.linspace(b0, math.pi / 2 - 0.012, int(round((math.pi / 2 - b0) * HCZ / res)))
-    return HC[2] + HCZ * np.sin(beta) - HZ0
+HELMET, helmet_rows = parts.helmet_dome(HC, (HA, HB, HCZ), HZ0, p=2.0, flare=0.55, n=2.1)
 
 
 def build_helmet(M):
@@ -405,13 +374,7 @@ def build_boots(M):
     arm, strap = M["armor"], M["strap"]
     ft = lambda y: y - Y_TOE
 
-    def tread(g):
-        y = g.t + Y_TOE
-        sn = np.sin(g.phi)
-        lugs = np.clip((0.5 - np.abs(sn)) / 0.15, 0, 1) * (np.clip(np.sin(TAU * g.t / 0.024) * 3.0, -1, 1) * 0.5 + 0.5)
-        arch = np.clip((-sn - 0.6) / 0.2, 0, 1) * np.clip(1.6 * (1.0 - np.abs(y + 0.020) / 0.036), 0, 1)
-        return -0.0035 * lugs - 0.010 * arch
-
+    tread = parts.tread(Y_TOE, pitch=0.024, lug=0.0035, arch_y=-0.020, arch_w=0.036, arch_h=0.010)
     mirror(loft_mesh("Boot_Sole", SOLE, res=0.0028, disp=tread, cap0=True, cap1=True, mat=M["sole"], coll=C))
     mirror(loft_mesh("Boot_Foot", FOOT, res=0.003, cap0=True, cap1=True, mat=strap, coll=C))
     mirror(loft_mesh("Boot_Shaft", SHAFT, res=0.003, mat=strap, coll=C))
