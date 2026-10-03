@@ -1,0 +1,4 @@
+source/*.blend
+source/*.blend1
+scripts/__pycache__/
+previews/_*.png
