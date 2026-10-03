@@ -1,0 +1,23 @@
+# Space marine turnaround: model quality pass
+
+## User request and scope
+
+2026-10-03: Erik supplied `art/characters/Space Marine Turnaround Sheet.png` and requested the highest-quality Blender character we can achieve as a serious game-asset quality evaluation. This replaces the earlier slim female agent reference for this new asset, not the preserved first attempt. The new sheet is authoritative. Model quality from EVERY angle matters; top-down is only the current game camera. Rigging is a separate later stage and is explicitly deferred. This new request authorizes substantive form refinement, material work and detail beyond the prior rough-silhouette milestone.
+
+One implementation agent, GPT-6 Astra / Max effort per Erik's request for the best available model/effort, in the existing `33-agent-blockout` worktree. HUMAN-TEST: Erik judges the result before integration/merge. Scope: offline asset files only. No runtime/simulation edits or new skeleton. Source quality comes first; report measured mesh counts, choose final game budgets later. Preserve `art/characters/agent/` and its previews.
+
+## Visual target
+
+Ivory/off-white padded space suit with realistic adult humanoid proportions, moderately bulky silhouette; helmet width ~0.30 m for ~1.88 m overall height. Rounded compact helmet (not tall egg-shaped), broad glossy dark green convex visor, thick dark gasket, sealed rigid layered collar. Full chest protection/harness, slightly projecting rectangular breast panel with upper black sockets and lower vent. Curved ivory shoulder plates with muted steel-blue inset fields. Black flexible shoulder/armpit, elbow and knee sections. Ivory sleeves and trousers with purposeful fabric folds and visible seam placement. Large cargo pockets on outer thighs, two waist pouches and broad belt. Black gloves with separate natural fingers and ivory back-of-hand plates. Practical rounded boots with layered soles, defined toe/heel, ivory panels and dark straps. Backpack closely follows the back: ivory bevelled rectangular housing, blue upper panel, double lower vents and edge latches. Restrained wear and roughness variation, no glowing decoration. No bag/weapon is shown or requested in this new sheet.
+
+Read the front, side and back sheet together. Approximate normalized height landmarks (feet 0, helmet top 1): knees 0.30, crotch 0.49, belt 0.60, elbows 0.64, shoulders 0.82, visor centre 0.91. Treat these as guides and inspect the image; do not substitute numbers for visual judgment.
+
+## Execution and validation
+
+Create `art/characters/space_marine/{scripts,source,previews}` with reproducible Blender Python and editable .blend. The desired result is a convincing authored surface model: use tailored smooth garment volumes, controlled fold placement, compound-curved armour surfaces, well-shaped helmet/visor, boots and gloved hands. Spend effort on proportional matching and construction before small decals or bolts. Named adjustable PBR materials and subtle surface variation should support the shapes. Studio renders must reveal geometry honestly; avoid hiding errors with darkness or busy staging. Existing Blender 4.5.10 LTS is `C:/Program Files/Blender Foundation/Blender 4.5/blender.exe`; bundled Python is appropriate. No need to install software or pay for external assets. If third-party content becomes necessary, verify source/licence first.
+
+Inspect reference with view_image, build, render, inspect, revise. Save a checkpoint before long renders. Deliver neutral front/side/back/three-quarter views, a close helmet/upper-body view and a top-down or elevated view; a simple local gallery plus a hero render makes review easy. Include a model-only view if studio props are used. Explicitly inspect all required angles, fix conspicuous gaps/poke-through/floating parts and silhouette errors, reopen saved .blend, report source/evaluated mesh stats and known limitations. Do not claim rigging, UV baking, optimized deformation topology or engine compatibility without actual evidence. Keep a short progress/provenance note and reproduction command. Commit coherent work with explicit paths; no push or merge.
+
+## Systems
+
+Use the existing asset worktree and offline authoring conventions. The unchanged Quaternius humanoid in `assets/models/marine/AnimationLibrary_Godot_Standard.gltf` remains a later skeleton compatibility target; its 53-bone hierarchy/rest report is already in `art/characters/agent/source/canonical_rig_inspection.json`. Do not deform or replace that skeleton now. Runtime integration later uses `renderer/unit_model_renderer.py`, `marine_shader.py` and shared `lit3d.py`, separate from deterministic simulation and headless training. No new runtime system is introduced.
