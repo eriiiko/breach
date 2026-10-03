@@ -101,6 +101,16 @@ class NT:
         self.put(node.inputs["Normal"], normal)
         return node.outputs[0]
 
+    def low(self, top=0.55):
+        """1 at the floor fading to 0 at height `top`: where the dust collects."""
+        sep = self.n("ShaderNodeSeparateXYZ")
+        self.put(sep.inputs[0], self.pos())
+        return self.math("SUBTRACT", 1.0, self.ramp(sep.outputs["Z"], 0.03, top))
+
+    def dust(self, col, amount=0.45):
+        f = self.math("MULTIPLY", self.math("MULTIPLY", self.low(), self.ramp(self.noise(5.0, 4.0, 0.6), 0.30, 0.75)), amount)
+        return self.mix(f, col, GRIME)
+
     def seam(self):
         """1 on a seam line, 0 elsewhere (see kit.seam_attr)."""
         d = self.math("MULTIPLY", self.math("SUBTRACT", 1.0, self.attr("seam")), kit.SEAM_CAP)
@@ -111,7 +121,7 @@ def rgb(r, g, b):
     return (r, g, b, 1.0)
 
 
-IVORY_A, IVORY_B = rgb(0.52, 0.45, 0.34), rgb(0.62, 0.55, 0.43)
+IVORY_A, IVORY_B = rgb(0.54, 0.45, 0.32), rgb(0.64, 0.56, 0.42)
 GRIME = rgb(0.24, 0.20, 0.15)
 BLACK = rgb(0.012, 0.012, 0.014)
 
@@ -130,6 +140,7 @@ def mat_suit():
     ivory = t.mix(t.noise(2.6, 3.0), IVORY_A, IVORY_B)
     ivory = t.mix(t.math("MULTIPLY", t.ramp(t.noise(7.0, 4.0, 0.6), 0.45, 0.8), 0.32), ivory, GRIME)  # stains
     ivory = t.mix(t.math("MULTIPLY", t.math("SUBTRACT", 1.0, ao), 0.65), ivory, GRIME)  # dirt in the creases
+    ivory = t.dust(ivory)
     ivory = t.mix(t.math("MULTIPLY", seam, 0.7), ivory, rgb(0.20, 0.17, 0.13))
     col = t.mix(flex, ivory, BLACK)
     crumple = t.math("ADD", t.math("MULTIPLY", t.noise(24.0, 2.0, 0.55, 0.6, "RIDGED_MULTIFRACTAL"), 0.7),
@@ -158,7 +169,8 @@ def mat_armor(name="armor_ivory", a=IVORY_A, b=IVORY_B, rough=(0.42, 0.66), lift
     ao = t.ramp(t.ao(0.05), 0.30, 0.95)
     col = t.mix(t.noise(3.0, 3.0), a, b)
     col = t.mix(1.0, col, rgb(lift, lift, lift), "MULTIPLY")
-    col = t.mix(t.math("MULTIPLY", t.ramp(t.noise(11.0, 5.0, 0.65), 0.5, 0.85), 0.25), col, GRIME)
+    col = t.mix(t.math("MULTIPLY", t.ramp(t.noise(11.0, 5.0, 0.65), 0.5, 0.85), 0.36), col, GRIME)
+    col = t.dust(col)
     col = t.mix(t.math("MULTIPLY", t.math("SUBTRACT", 1.0, ao), 0.6), col, GRIME)
     wear = t.math("MULTIPLY", edge, t.ramp(t.noise(60.0, 3.0), 0.35, 0.7))
     col = t.mix(t.math("MULTIPLY", wear, 0.45), col, rgb(0.30, 0.27, 0.23))
@@ -296,6 +308,10 @@ def render(path, res, transparent=False):
     sc.render.resolution_x, sc.render.resolution_y = res
     sc.render.resolution_percentage = 100
     sc.render.film_transparent = transparent
+    jpg = path.lower().endswith(".jpg")
+    sc.render.image_settings.file_format = "JPEG" if jpg else "PNG"
+    sc.render.image_settings.color_mode = "RGB" if jpg else "RGBA"
+    sc.render.image_settings.quality = 92
     sc.render.filepath = path
     bpy.ops.render.render(write_still=True)
 
@@ -372,8 +388,8 @@ def compare_sheet(panels, out_dir, tag="sheet", verbose=True):
 # Beauty views: name -> (rig azimuth, camera azimuth within the rig, elevation, distance,
 # target height, lens mm, resolution). The rig turns the lights with the camera.
 BEAUTY = {
-    "hero": (0.0, 32.0, 8.0, 4.7, 0.95, 85.0, (1200, 1600)),
-    "hero_back": (180.0, 32.0, 8.0, 4.7, 0.95, 85.0, (1200, 1600)),
+    "hero": (0.0, 32.0, 8.0, 5.4, 0.93, 85.0, (1200, 1600)),
+    "hero_back": (180.0, 32.0, 8.0, 5.4, 0.93, 85.0, (1200, 1600)),
     "closeup": (0.0, 24.0, 4.0, 2.7, 1.50, 85.0, (1400, 1400)),
     "closeup_back": (180.0, 25.0, 10.0, 2.7, 1.48, 85.0, (1400, 1400)),
     "elevated": (0.0, 35.0, 52.0, 5.2, 0.95, 85.0, (1200, 1400)),
@@ -391,5 +407,5 @@ def render_beauty(rig, cam, name, out_dir, scale=1.0):
     a, e = math.radians(az), math.radians(el)
     cam.location = (dist * math.sin(a) * math.cos(e), -dist * math.cos(a) * math.cos(e), tz + dist * math.sin(e))
     _look_at(cam, (0.0, 0.0, tz))
-    render(os.path.join(out_dir, name + ".png"), (int(res[0] * scale), int(res[1] * scale)))
+    render(os.path.join(out_dir, name + ".jpg"), (int(res[0] * scale), int(res[1] * scale)))
     rig.rotation_euler = (0.0, 0.0, 0.0)

@@ -143,13 +143,17 @@ def build_suit(M):
         centre = np.where(z > 0.84, np.maximum(g.P[..., 0], 0.0), 1.0)
         return seam_attr(g, phis=[OUT, (IN, 0, t(0.70))], ts=[t(0.224)], extra=centre)
 
-    legs = loft_mesh("Trousers", LEG, coll=C, mat=M["suit"],
-                     disp=lambda g: ff_leg(g) * (1 - flex_leg(g)) - 0.003 * flex_leg(g),
+    def disp_leg(g):
+        fx = flex_leg(g)
+        fade = np.clip(g.t / 0.045, 0.0, 1.0) ** 2
+        hem = 0.006 * np.exp(-((g.t - 0.010) / 0.009) ** 2)
+        return ff_leg(g) * (1 - fx) * fade + hem - 0.003 * fx
+
+    legs = loft_mesh("Trousers", LEG, coll=C, mat=M["suit"], disp=disp_leg,
                      attrs=dict(flex=flex_leg, seam=seam_leg),
                      drop=lambda P: P[:, 0] <= 1e-6,
                      post=lambda P: np.column_stack([np.maximum(P[:, 0], 0.0), P[:, 1:]]))
     mirror(legs, merge=True)
-    mirror(band_on("Trouser_Hem", LEG, 0.0, 0.022, offset=0.004, thick=0.009, bevel=0.003, mat=M["suit"], coll=C))
 
     # sleeves ----------------------------------------------------------------
     rng = np.random.default_rng(37)
@@ -188,10 +192,10 @@ def build_armor(M):
     band_on("Chest_Strap", TORSO, t(1.412), t(1.448), offset=0.006, thick=0.004, mat=suit, coll=C)
 
     # shoulder: curved plate with the recessed steel-blue field
-    sh = OnEllipsoid((0.234, 0.010, 1.458), (0.100, 0.106, 0.106), n0=(0.82, -0.02, 0.57))
-    mirror(plate("Pauldron", sh, 0.092, 0.112, n=4.0, offset=0.014, thick=0.012, hole=0.70, bevel=0.003, seg=3, mat=arm, coll=C))
-    mirror(plate("Pauldron_Field", sh, 0.092 * 0.74, 0.112 * 0.74, n=4.0, offset=0.0095, thick=0.008, mat=M["blue"], coll=C))
-    mirror(rivets("Pauldron_Rivets", sh, [(sx, sy) for sx in (-0.071, 0.071) for sy in (-0.089, 0.089)], 0.0145, mat=M["metal"], coll=C))
+    sh = OnEllipsoid((0.234, 0.010, 1.448), (0.100, 0.106, 0.106), n0=(0.90, -0.02, 0.44))
+    mirror(plate("Pauldron", sh, 0.092, 0.100, n=4.0, offset=0.014, thick=0.012, hole=0.70, bevel=0.003, seg=3, mat=arm, coll=C))
+    mirror(plate("Pauldron_Field", sh, 0.092 * 0.74, 0.100 * 0.74, n=4.0, offset=0.0095, thick=0.008, mat=M["blue"], coll=C))
+    mirror(rivets("Pauldron_Rivets", sh, [(sx, sy) for sx in (-0.071, 0.071) for sy in (-0.079, 0.079)], 0.0145, mat=M["metal"], coll=C))
 
     # elbow and knee
     elbow = OnLoft(ARM, D(300), T_ELBOW)
@@ -207,7 +211,7 @@ def build_armor(M):
     loft_mesh("Belt", BELT, mat=arm, coll=C, attrs=dict(seam=lambda g: seam_attr(g, ts=[tb(1.112), tb(1.162)])))
     box("Belt_Buckle", (0.060, 0.016, 0.052), loc=(0, -0.178, 1.137), bevel=0.005, mat=arm, coll=C)
     box("Belt_Buckle_Inset", (0.034, 0.006, 0.026), loc=(0, -0.187, 1.137), bevel=0.002, mat=dark, coll=C)
-    for name, phi, size in (("Pouch_Front", D(34), (0.105, 0.132, 0.048)), ("Pouch_Back", D(312), (0.086, 0.094, 0.042))):
+    for name, phi, size in (("Pouch_Front", D(38), (0.100, 0.132, 0.048)), ("Pouch_Back", D(312), (0.086, 0.094, 0.042))):
         w, h, d = size
         F = kit.anchor_matrix(OnLoft(BELT, phi, tb(1.134)))  # one frame for the whole pouch
         mirror(box(name, size, M=F @ Matrix.Translation((0, 0, d / 2 - 0.006)), bevel=0.012, seg=4, mat=suit, coll=C))
@@ -218,9 +222,9 @@ def build_armor(M):
 
     # cargo pockets on the outer thigh
     tl = LEG.t_at_z
-    mirror(plate("Cargo_Pocket", OnLoft(LEG, D(22), tl(0.790)), 0.070, 0.100, n=7.0, offset=0.027, thick=0.025, bevel=0.007, seg=3, subsurf=1, mat=suit, coll=C))
-    mirror(plate("Cargo_Flap", OnLoft(LEG, D(22), tl(0.866)), 0.075, 0.031, n=6.0, offset=0.034, thick=0.008, bevel=0.003, subsurf=1, mat=suit, coll=C))
-    mirror(rivets("Cargo_Snap", OnLoft(LEG, D(22), tl(0.852)), [(0.0, 0.0)], 0.0345, r=0.006, mat=M["metal"], coll=C))
+    mirror(plate("Cargo_Pocket", OnLoft(LEG, D(22), tl(0.778)), 0.070, 0.100, n=7.0, offset=0.027, thick=0.025, bevel=0.007, seg=3, subsurf=1, mat=suit, coll=C))
+    mirror(plate("Cargo_Flap", OnLoft(LEG, D(22), tl(0.853)), 0.075, 0.031, n=6.0, offset=0.034, thick=0.008, bevel=0.003, subsurf=1, mat=suit, coll=C))
+    mirror(rivets("Cargo_Snap", OnLoft(LEG, D(22), tl(0.839)), [(0.0, 0.0)], 0.0345, r=0.006, mat=M["metal"], coll=C))
 
     # collar: shoulder yoke and the helmet's neck ring
     ty = YOKE.t_at_z
@@ -230,6 +234,9 @@ def build_armor(M):
     al = np.linspace(0, TAU, 96, endpoint=False)
     tube("Neck_Seal", np.column_stack([0.146 * np.cos(al), -0.018 + 0.149 * np.sin(al), np.full(96, 1.668)]),
          np.tile(Z, (96, 1)), r=0.009, closed=True, mat=M["rubber"], coll=C)
+    lock = OnLoft(YOKE, FRONT, ty(1.580))
+    box_at("Collar_Lock", lock, (0.056, 0.040, 0.016), sink=0.005, bevel=0.005, mat=arm, coll=C)
+    box_at("Collar_Lock_Inset", lock, (0.030, 0.016, 0.004), sink=-0.011, bevel=0.0015, mat=dark, coll=C)
     for sgn in (-1, 1):
         box_at("Collar_Clip", OnLoft(YOKE, FRONT + sgn * D(36), ty(1.588)), (0.030, 0.026, 0.016), sink=0.004, bevel=0.004, mat=dark, coll=C)
 
@@ -353,7 +360,7 @@ def build_gloves(M):
     _digit("Glove_Thumb", hp(0.028, 0.038, -0.010), unit(0.62 * HAND_L + 0.70 * HAND_W - 0.25 * HAND_B), 0.072, 0.0142, (0.0, 0.25, 0.22), M, C)
     back = OnLoft(palm, FRONT, 0.070)
     mirror(plate("Glove_Plate", back, 0.035, 0.033, n=4.0, offset=0.006, thick=0.008, bevel=0.002, seg=3, mat=M["armor"], coll=C))
-    mirror(plate("Glove_Knuckle", back, 0.040, 0.009, n=5.0, shift=(0, 0.044), offset=0.005, thick=0.006, mat=M["armor"], coll=C))
+    mirror(plate("Glove_Knuckle", back, 0.030, 0.008, n=5.0, shift=(0, 0.033), offset=0.005, thick=0.006, mat=M["armor"], coll=C))
     # cuff ring on the forearm's end
     f = unit(ARM.Pk[1] - ARM.Pk[0])  # up the forearm
     cuff = Loft([dict(p=WRIST + l * f, a=a, b=a + 0.004, n=2.0) for l, a in (
@@ -363,7 +370,7 @@ def build_gloves(M):
 
 
 # ------------------------------------------------------------------------- boots
-ANKLE = np.array([0.247, 0.048, 0.0])
+ANKLE = np.array([0.243, 0.048, 0.0])
 _c, _s = math.cos(D(13)), math.sin(D(13))  # toe-out
 BX, BY = np.array([_c, _s, 0.0]), np.array([-_s, _c, 0.0])  # boot-local x (outer side), y (towards the heel)
 Y_TOE, Y_HEEL = -0.247, 0.108
@@ -381,10 +388,10 @@ FOOT_PROFILE = (  # y', half-width, height of the upper over its base
     (-0.247, .004, .020), (-0.243, .030, .050), (-0.228, .050, .072), (-0.200, .064, .084), (-0.150, .071, .092),
     (-0.100, .070, .102), (-0.050, .066, .120), (-0.010, .064, .140), (0.030, .062, .150), (0.070, .058, .145),
     (0.095, .045, .120), (0.105, .020, .090), (0.108, .004, .050))
-FOOT = Loft([dict(p=bw(0, y, sole_top(y) + 0.010), a=a, bf=h, bb=0.014, n=(2.3, 7.0)) for y, a, h in FOOT_PROFILE], front=Z)
+FOOT = Loft([dict(p=bw(0, y, sole_top(y) + 0.010), a=a, bf=h, bb=0.014, n=(2.8, 7.0)) for y, a, h in FOOT_PROFILE], front=Z)
 SOLE = Loft([dict(p=bw(0, y, sole_top(y) / 2), a=a + 0.007, bf=sole_top(y) / 2 + 0.004, bb=sole_top(y) / 2, n=7.0) for y, a, _ in FOOT_PROFILE], front=Z)
 SHAFT = Loft([dict(p=bw(0, -0.004, z), a=a, bf=bf, bb=bb, n=2.2) for z, a, bf, bb in (
-    (0.060, .058, .090, .094), (0.110, .060, .086, .090), (0.170, .064, .085, .086), (0.230, .067, .086, .086), (0.275, .066, .086, .086))],
+    (0.060, .058, .090, .094), (0.110, .060, .086, .090), (0.170, .063, .084, .085), (0.225, .062, .080, .080), (0.262, .058, .076, .076))],
     front=-BY)
 
 
@@ -406,14 +413,13 @@ def build_boots(M):
     mirror(loft_mesh("Boot_Foot", FOOT, cap0=True, cap1=True, mat=arm, coll=C, attrs=dict(seam=lambda g: seam_attr(g, ts=[ft(-0.165), ft(-0.02)]))))
     mirror(loft_mesh("Boot_Shaft", SHAFT, mat=arm, coll=C, attrs=dict(seam=lambda g: seam_attr(g, phis=[BACK, D(40), D(140)]))))
     top = lambda y: OnLoft(FOOT, FRONT, ft(y))
-    mirror(plate("Boot_ToeCap", top(-0.203), 0.088, 0.036, n=3.0, offset=0.005, thick=0.007, bevel=0.002, mat=arm, coll=C))
+    mirror(plate("Boot_ToeCap", top(-0.198), 0.098, 0.044, n=3.0, offset=0.005, thick=0.007, bevel=0.002, mat=arm, coll=C))
     for y in (-0.128, -0.062):
         mirror(plate("Boot_Strap", top(y), 0.112, 0.014, n=9.0, offset=0.005, thick=0.005, mat=strap, coll=C))
         mirror(box_at("Boot_Strap_Buckle", top(y), (0.020, 0.024, 0.009), shift=(-0.060, 0.0), sink=-0.004, bevel=0.002, mat=M["metal"], coll=C))
     sz = SHAFT.t_at_z
-    mirror(band_on("Boot_Ankle_Strap", SHAFT, sz(0.150), sz(0.184), offset=0.005, thick=0.006, mat=strap, coll=C))
-    mirror(box_at("Boot_Ankle_Buckle", OnLoft(SHAFT, D(28), sz(0.167)), (0.026, 0.028, 0.007), sink=-0.003, bevel=0.002, mat=arm, coll=C))
-    mirror(plate("Boot_Tongue", OnLoft(SHAFT, FRONT, sz(0.225)), 0.040, 0.034, n=4.0, offset=0.006, thick=0.008, mat=arm, coll=C))
+    mirror(band_on("Boot_Ankle_Strap", SHAFT, sz(0.140), sz(0.172), offset=0.005, thick=0.006, mat=strap, coll=C))
+    mirror(box_at("Boot_Ankle_Buckle", OnLoft(SHAFT, D(28), sz(0.156)), (0.026, 0.028, 0.007), sink=-0.003, bevel=0.002, mat=arm, coll=C))
     mirror(plate("Boot_Heel", OnLoft(SHAFT, BACK, sz(0.098)), 0.066, 0.036, n=4.0, offset=0.006, thick=0.008, mat=arm, coll=C))
     mirror(plate("Boot_Ankle_Disc", OnLoft(SHAFT, OUT, sz(0.115)), 0.019, 0.019, n=2.0, offset=0.006, thick=0.006, mat=arm, coll=C))
 
