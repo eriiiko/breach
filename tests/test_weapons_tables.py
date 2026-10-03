@@ -7,9 +7,12 @@ backstop; these tests lock the data layer itself):
   - the three tables load from the real config.toml (rows present, columns
     typed as authored);
   - re-home equivalence LITERALS: k5_carbine == the old [weapons.rifle]
-    numbers (10 / 5 / 3.0 / 90 / 1 + the cadence derivation), frag_standard ==
-    the old grenade blast (5 / 10.0 / 200 / 60), breach_focus == the old door
-    charge (3 / 5.0 / 500 / 60), hand_grenade == the old fuse/throw knobs;
+    numbers (10 / 5 / 3.0 / 90 / 1 + the cadence derivation), breach_focus ==
+    the old door charge (3 / 5.0 / 500 / 60), hand_grenade == the old
+    fuse/throw knobs. ``frag_standard`` is Erik's live tunable (shared by the
+    hand grenade and the 40 mm round) and is retuned often, so only its
+    STRUCTURAL resolution is gated (2026-10-03 ruling: tests must never break
+    on retuning a config row) — never its column values;
   - the grenade travel-speed representation: the Projectile-consumed
     travel_speed_tiles_per_second is EXACTLY the old 30.0, and the W2
     data-of-record speed_tiles_per_tick is exactly consistent with it at the
@@ -84,20 +87,16 @@ def test_k5_carbine_equals_the_old_rifle():
     assert k5.rof_interval_ticks == ticks_from_seconds(0.16666667, tps)
 
 
-def test_frag_standard_equals_the_old_grenade_blast():
+def test_grenade_frag_ammo_resolves_to_a_payload_row():
+    """Structural property only: [ammo.grenade_frag] resolves to a payload
+    row that EXISTS in the payload table (the W1 re-home wiring). It never
+    pins frag_standard's column values — Erik keeps retuning that row (it is
+    shared by the hand grenade and the 40 mm round), and a test pinning
+    tunable values broke on every retune (2026-10-03 ruling). Breaks if the
+    ammo->payload cross-ref wiring is removed or mis-resolved, not if the row's
+    numbers change."""
     t = get_tables()
     frag = t.payloads.by_name["frag_standard"]
-    assert frag.radius == 5                        # was blast_radius
-    assert frag.pressure == 10.0
-    assert frag.wall_damage == 200
-    assert frag.unit_damage == 60
-    # W3 smoke boolean split (the W1 finding of record): BOTH true — the
-    # inner clear (data-of-record, inside apply_explosion in v1) AND the
-    # live add_explosion_smoke gate.
-    assert frag.clear_smoke is True
-    assert frag.emit_blast_smoke is True
-    assert frag.gas_species == "" and frag.gas_amount == 0.0
-    # ...and the grenade round resolves to it.
     assert t.payload_for_ammo("grenade_frag") is frag
 
 

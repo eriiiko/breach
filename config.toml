@@ -833,7 +833,7 @@ k_drag = 0.5                          # energy-books arc (design §2.8, NEW patc
 # Delta(|u|^2) bracket. 0.0014 was the hand-rolled stand-in for exactly
 # that constant (1/c_v_phys ~= 0.0018). physics_runner raises loudly if
 # this key comes back -- see the stale-key guard there.
-k_drag2 = 0.0                         # drag-law v2 (design docs/drag_law_v2_design_
+k_drag2 = 0.0                           # drag-law v2 (design docs/drag_law_v2_design_
                                       # 2026-08-23.md, issue #4 P1): the QUADRATIC
                                       # term of the two-term interior drag law
                                       # F = -k1*u - k2*|u|*u (k1 = k_drag above,
@@ -1455,7 +1455,7 @@ intensity_max = 8.0        # HDR headroom pre-tonemap (16F pipeline + ACES; NO b
 
 # --- Lighting pass (master exposure) ---------------------------------------
 [render.lighting]
-master_gain = 2.0          # ONE master display-exposure dial on the light field
+master_gain = 1.0         # ONE master display-exposure dial on the light field
                            # (LightingPass u_light_gain). Was hardcoded 1.0 in
                            # the game while the demo harness tunes at ~10 — the
                            # "too dark everywhere" gap. TRIAL 2.0 (Erik
@@ -1471,7 +1471,7 @@ sweep_gain = 1.0           # light units -> the old march's field scale. MEASURE
                            # summed over r = 2..12 tiles): a 1.0 lamp 0.996, the
                            # 110-degree flashlight 1.05, a 1263-game crate 0.83
                            # (the old fire light was dimmed by its own cell).
-floor = [0.03, 0.03, 0.04] # the NEW path's small FLAT FLOOR (design v3 §2.7:
+floor = [0.03, 0.03, 0.03] # the NEW path's small FLAT FLOOR (design v3 §2.7:
                            # a separate dial, never a substitute for the sky).
                            # A sealed room with no lights reads exactly this.
                            # The old path's flat ambient was (0.10, 0.10, 0.13)
@@ -1542,7 +1542,9 @@ sun_spread_deg = 10.0
 # the honest / identity values (design §6). RENDER-ONLY, tuned by eye with Erik,
 # never gated. (docs/fire_b2_smoke_honesty_design_2026-07-21.md §3-§6.)
 [render.gas_medium]
-plume_k_scale = 50.0        # RELATIVE multiplier on the shared smoke_absorb_scale base
+plume_k_scale = 31.5        # RELATIVE multiplier on the shared smoke_absorb_scale base
+                            # 2026-10-02 explosion+air session: Erik halves the
+                            # render occlusion step by step (50 -> 25 -> ...) by eye.
                             # 2026-08-25 #6 diagnostic (docs/smoke_tau_diagnostic_2026-08-25.md):
                             # the 300.0 hack was calibrated on the old ~0.002-peak soot
                             # regime; real fire sessions live at rho 0.02-0.3, so 300 put
@@ -2708,9 +2710,9 @@ payload = "incendiary_splash"
 # emit_blast_smoke is LIVE: the payload executor (simulation.payloads) gates
 # add_explosion_smoke (the noisy textured cloud) on it. BOTH must be true on
 # frag_standard AND breach_focus or the door charge silently loses its smoke.
-[payloads.frag_standard]              # the shipped grenade blast, byte-for-byte
-radius = 5                            # was blast_radius
-pressure = 10.0
+[payloads.frag_standard]              # the frag grenade (hand + 40 mm): Erik's by-eye tuning, 2026-10-03 -- expect retuning
+radius = 2                            # was blast_radius (5 until 2026-10-03)
+pressure = 0.0
 wall_damage = 200
 unit_damage = 60
 gas_species = ""
@@ -2720,12 +2722,15 @@ ignite_radius = 0.0
 ignite_intensity = 0.0
 clear_smoke = true                    # data-of-record: the inner clear lives in apply_explosion (v1)
 emit_blast_smoke = true               # LIVE: the executor's add_explosion_smoke gate (W3)
+heat_amount = 3200.0                  # PROVISIONAL — see note below
+heat_radius = 1.5
 
 # --- #79 proxy rows: ignition now rides delivered heat, not a bare fire=max
 # edit (apply_explosion's heatless ignite block is DELETED; see CLAUDE.md
 # "Starting a fire" and physics.py::apply_explosion). These sit beside
-# frag_standard (the mass-only CONTROL, kept byte-identical) as a heat-only
-# and a mass+heat variant, for A/B measurement against it.
+# frag_standard as a heat-only and a mass+heat variant. (frag_standard was the
+# mass-only control until Erik retuned it on 2026-10-03: the cold mass-only
+# blast is out of the picture; frag_heat is the ignition grenade.)
 #
 # heat_amount / heat_radius here are PROVISIONAL PLACEHOLDERS (Erik, #79):
 # 3200.0 follows the same plasma-splash derivation above (centre jump 400,
@@ -2779,18 +2784,18 @@ heat_radius = 5.0                     # PROVISIONAL — see note above
 # family's pressure = 0; radius 4 blows a ~5-tile hole in the 1-tile hull
 # (hull hp 300: tiles closer than 0.625*radius go) so the room vents to vacuum.
 [payloads.studio_small]
-radius = 4
-pressure = 0.0
+radius = 2
+pressure = 1.0
 wall_damage = 200
 unit_damage = 60
 clear_smoke = true
 emit_blast_smoke = true
-heat_amount = 3200.0                  # PROVISIONAL — 1x frag_heat
-heat_radius = 4.0                     # PROVISIONAL
+heat_amount = 5000.0                  # PROVISIONAL — Erik's studio tuning, 2026-10-03
+heat_radius = 2                     # PROVISIONAL
 
 [payloads.studio_medium]
 radius = 5
-pressure = 0.0
+pressure = 3.0
 wall_damage = 200
 unit_damage = 60
 clear_smoke = true
@@ -2800,7 +2805,7 @@ heat_radius = 5.0                     # PROVISIONAL
 
 [payloads.studio_large]
 radius = 6
-pressure = 0.0
+pressure = 10.0
 wall_damage = 200
 unit_damage = 60
 clear_smoke = true

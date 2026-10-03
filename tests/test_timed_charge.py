@@ -109,12 +109,10 @@ def test_charge_fires_at_its_tick_and_the_level_is_fire_free_until_then():
     ev = [e for e in sim.tick_events if isinstance(e, ExplosionEvent)]
     assert len(ev) == 1 and ev[0].kind == EVENT_KIND
     assert ev[0].pos == (CHARGE_AT[1], CHARGE_AT[0])   # (fx, fy)
-    # and it is a real detonation through the executor: its heat lights the
-    # crate within a few seconds (delivered heat -> apply_temperature_ignition)
-    for _ in range(3 * TPS):
-        sim.set_paused(False)
-        sim.step()
-    assert int(g.fire[CRATE_AT]) > 0, "studio_small's heat must ignite the crate"
+    # (Whether the blast then lights the crate depends on studio_small's
+    # tunable heat, so it is not asserted here -- Erik's ruling 2026-10-03:
+    # tests never break on retuning a config row. Heat-delivered ignition is
+    # test_heat_ignition_proxy_payloads.py's property.)
 
 
 def test_charge_repeats_at_its_period_across_round_boundaries():

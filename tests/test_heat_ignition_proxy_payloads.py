@@ -12,8 +12,14 @@ already wired through ``payloads.py::execute_payload``/``deposit_heat``).
 Two new provisional config rows exercise this for the grenade family:
 ``[payloads.frag_heat]`` (heat only, no blast pressure) and
 ``[payloads.frag_hot_mass]`` (frag_standard's blast plus the same heat
-deposit). ``[payloads.frag_standard]`` itself stays byte-identical — the
-mass-only CONTROL Erik tunes against.
+deposit).
+
+The HEATLESS-BLAST properties below used to run on ``[payloads.frag_standard]``
+(the shipped grenade/40mm payload) as a mass-only control. Erik keeps
+retuning that row, so per his 2026-10-03 ruling ("tests must never break on
+retuning a config row") they now run on ``tests/_test_charge.py``'s
+``TEST_CHARGE`` instead — a payload with ``heat_amount == 0.0`` the tests
+own outright, never a shipped row.
 
 Properties gated here (breaks if the ruling above is reverted, or if a new
 igniter is added the CLAUDE.md-required way but with `fire` written directly
@@ -25,13 +31,12 @@ instead of heat):
     (the deleted mechanism) would show fire > 0 with NEITHER O2 nor fuel
     moving — this test would not distinguish the two if it only checked
     ``fire > 0``, so it checks the honest-fire triple.
-  - ``frag_standard`` (shipped, byte-identical) queues NO ``fire`` FieldEdit
-    at all from ``apply_explosion`` — the property #79 deletes, checked
-    directly on the edit queue rather than by absence-of-effect (which a
-    coincidentally-cold blast could also produce).
-  - the shipped ``frag_standard`` blast leaves the whole level fire-free
-    over a several-second window (the emergent, game-visible form of the
-    same property).
+  - a HEATLESS blast (TEST_CHARGE, ``heat_amount == 0.0``) queues NO ``fire``
+    FieldEdit at all from ``apply_explosion`` — the property #79 deletes,
+    checked directly on the edit queue rather than by absence-of-effect
+    (which a coincidentally-cold blast could also produce).
+  - a HEATLESS blast leaves the whole level fire-free over a several-second
+    window (the emergent, game-visible form of the same property).
 
 Run:
     C:/Users/steen/anaconda3/python.exe -m pytest tests/test_heat_ignition_proxy_payloads.py -q
@@ -56,6 +61,8 @@ from simulation.gases import O2  # noqa: E402
 from simulation.materials import MAT_AIR, MAT_FURNITURE, MAT_HULL  # noqa: E402
 from simulation.payloads import execute_payload  # noqa: E402
 
+from _test_charge import TEST_CHARGE  # noqa: E402
+
 TPS = int(CFG.clock.ticks_per_second)
 RUN_SECONDS = 3.0
 RUN_TICKS = round(RUN_SECONDS * TPS)
@@ -76,16 +83,15 @@ def _room_with_crate(hh=14, crate_at=None):
 CRATE_AT = (7, 7)
 
 
-def _run(payload_name, ticks=RUN_TICKS, crate_at=CRATE_AT):
-    """Build a fresh sim, execute `payload_name` centred on the crate tile,
-    and step `ticks` ticks. Returns (sim, gmap)."""
+def _run(payload, ticks=RUN_TICKS, crate_at=CRATE_AT):
+    """Build a fresh sim, execute `payload` (a PayloadDef) centred on the
+    crate tile, and step `ticks` ticks. Returns (sim, gmap)."""
     lvl = _room_with_crate(crate_at=crate_at)
     sim = Simulation(lvl, seed=1, breach_physics=bp, enable_recorder=False)
     g = sim.gmap
     assert g.material[crate_at] == MAT_FURNITURE
     assert g.flammable[crate_at], "crate tile must be a fuel-bearing (flammable) material"
 
-    payload = sim.weapons_tables.payloads.by_name[payload_name]
     execute_payload(g, sim.edit_queue, sim.units, crate_at[0], crate_at[1],
                     payload, sim.rng)
     sim.set_paused(False)
@@ -132,33 +138,39 @@ def test_frag_heat_lights_an_honest_fire_on_a_fuel_tile():
 
 
 # ---------------------------------------------------------------------------
-# Oracle 2 — frag_standard queues no `fire` edit, and stays fire-free
+# Oracle 2 — a heatless blast (TEST_CHARGE) queues no `fire` edit, and stays
+# fire-free. This used to run on frag_standard as a "byte-identical" mass-
+# only control; Erik's 2026-10-03 ruling retargets it onto the tests' own
+# TEST_CHARGE (heat_amount == 0.0) so retuning frag_standard can't break it.
 # ---------------------------------------------------------------------------
-def test_frag_standard_queues_no_fire_edit():
+def test_heatless_blast_queues_no_fire_edit():
     """The literal property #79 deletes: apply_explosion (via execute_payload)
-    for the byte-identical `frag_standard` control never enqueues a `fire`
-    FieldEdit — checked on the queue itself, not by absence of a downstream
-    effect (which a cold/short blast could also produce for other reasons)."""
+    for a HEATLESS blast (TEST_CHARGE, heat_amount == 0.0) never enqueues a
+    `fire` FieldEdit — checked on the queue itself, not by absence of a
+    downstream effect (which a cold/short blast could also produce for other
+    reasons). Breaks if apply_explosion's deleted heatless ignite block is
+    reintroduced."""
     lvl = _room_with_crate(crate_at=CRATE_AT)
     sim = Simulation(lvl, seed=1, breach_physics=bp, enable_recorder=False)
     g = sim.gmap
-    payload = sim.weapons_tables.payloads.by_name["frag_standard"]
+    assert TEST_CHARGE.heat_amount == 0.0
 
     execute_payload(g, sim.edit_queue, sim.units, CRATE_AT[0], CRATE_AT[1],
-                    payload, sim.rng)
+                    TEST_CHARGE, sim.rng)
 
     fields_queued = {edit.field for edit, _seq in sim.edit_queue._edits}
     assert "fire" not in fields_queued, (
-        "frag_standard (shipped, byte-identical) must not queue a `fire` "
-        "FieldEdit — apply_explosion's heatless ignite block is deleted (#79)")
+        "a heatless blast must not queue a `fire` FieldEdit — "
+        "apply_explosion's heatless ignite block is deleted (#79)")
 
 
-def test_frag_standard_blast_leaves_the_level_fire_free():
+def test_heatless_blast_leaves_the_level_fire_free():
     """The emergent, game-visible form of the same property: over several
-    seconds of real sim ticks, the shipped frag_standard blast never lights
-    a single tile anywhere on the level (no heat is delivered, so
-    apply_temperature_ignition has nothing to trigger on)."""
-    sim, g = _run("frag_standard")
+    seconds of real sim ticks, a HEATLESS blast (TEST_CHARGE) never lights a
+    single tile anywhere on the level (no heat is delivered, so
+    apply_temperature_ignition has nothing to trigger on). Breaks if a
+    heatless blast starts igniting tiles again."""
+    sim, g = _run(TEST_CHARGE)
     assert int(g.fire.astype(np.int64).sum()) == 0, (
         "frag_standard must leave the level fire-free — its blast carries "
         "no heat_amount, so nothing can cross ignition_temp")
