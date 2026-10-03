@@ -1,0 +1,26 @@
+{
+  "character_objects": 448,
+  "source_mesh_vertices": 188826,
+  "source_mesh_polygons": 184177,
+  "evaluated_vertices_including_curve_detail": 354020,
+  "evaluated_triangles": 700194,
+  "bounds_min_metres": [
+    -0.5413094162940979,
+    -0.1979999989271164,
+    0.013000000268220901
+  ],
+  "bounds_max_metres": [
+    0.5413379073143005,
+    0.30550000071525574,
+    1.8999996185302734
+  ],
+  "dimensions_metres": [
+    1.0826473236083984,
+    0.5034999996423721,
+    1.8869996182620525
+  ],
+  "rigged": false,
+  "uv_baked": false,
+  "game_optimized": false,
+  "reference_sha256": "b80b4b84eec0a7f64ae905458eafb2b9da6f30c22cb91374801c8e96dfc766b6"
+}
