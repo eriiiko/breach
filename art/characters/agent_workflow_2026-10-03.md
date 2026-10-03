@@ -4,6 +4,8 @@ Related tracker: eriiiko/breach #33. User explicitly selected this asset milesto
 
 ## Approved scope and execution
 
+Erik's clarification (2026-10-03): models must look good from any perspective. The current game camera is top-down, but its eventual tilt is undecided. Use top-down as one review angle, not as a restriction on anatomy, geometry or finish; judge front, side, back and three-quarter quality equally.
+
 One implementation agent, inherited Codex model and effort (Claude family aliases are unavailable here). HUMAN-TEST: Erik reviews the rough silhouette and major forms before detail, textures, or rigging. No simulation, renderer, skeleton replacement, animation system, or final performance budget changes.
 
 Reference: `art/characters/sleek-agent-with-bag.png`, supplied by Erik; original remains untouched in the main checkout. Slim athletic adult female agent, narrow hips/upper thighs and modest bust, charcoal suit, pale armour, enclosed helmet/dark visor/respirator/sealed collar, practical gloves and boots, no emission. Separate teal soft duffel/black webbing and original compact P90-inspired weapon. Unseen surfaces are provisional design decisions.
