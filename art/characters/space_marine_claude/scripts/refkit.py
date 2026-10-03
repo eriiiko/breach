@@ -7,8 +7,9 @@ through one scale, so a render made with the matching orthographic cameras
 """
 import os
 
-import bpy
 import numpy as np
+
+from studio import load_rgba, save_rgba  # noqa: F401
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REF_PATH = os.path.normpath(os.path.join(HERE, "..", "..", "Space Marine Turnaround Sheet.png"))
@@ -22,26 +23,6 @@ M_PER_PX = HEIGHT_M / (FOOT_ROW - TOP_ROW)
 
 # Per-view panel: (name, centre column on the sheet, panel width in px).
 PANELS = (("front", 315, 512), ("side", 776, 400), ("back", 1218, 512))
-
-
-def load_rgba(path):
-    """Image as float32 (h, w, 4), row 0 at the TOP, display-referred values."""
-    img = bpy.data.images.load(path, check_existing=False)
-    w, h = img.size
-    buf = np.empty(w * h * 4, dtype=np.float32)
-    img.pixels.foreach_get(buf)
-    bpy.data.images.remove(img)
-    return buf.reshape(h, w, 4)[::-1].copy()
-
-
-def save_rgba(arr, path):
-    h, w = arr.shape[:2]
-    img = bpy.data.images.new("_out", w, h, alpha=True)
-    img.pixels.foreach_set(np.ascontiguousarray(arr[::-1]).astype(np.float32).ravel())
-    img.filepath_raw = path
-    img.file_format = "PNG"
-    img.save()
-    bpy.data.images.remove(img)
 
 
 def ref_mask(rgba, thr=0.075):

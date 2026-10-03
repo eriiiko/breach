@@ -20,35 +20,14 @@ import time
 import bpy
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+sys.path[:0] = [HERE, os.path.normpath(os.path.join(HERE, "..", "..", "charkit"))]
 import kit  # noqa: E402
 import marine  # noqa: E402
 import scene  # noqa: E402
+import studio  # noqa: E402
 
 ROOT = os.path.normpath(os.path.join(HERE, ".."))
 PREVIEWS, SOURCE = os.path.join(ROOT, "previews"), os.path.join(ROOT, "source")
-
-
-def mesh_stats():
-    dg = bpy.context.evaluated_depsgraph_get()
-    out, tot_src, tot_eval = {}, 0, 0
-    for ob in bpy.data.objects:
-        if ob.type != "MESH" or ob.name == "Floor":
-            continue
-        ev = ob.evaluated_get(dg)
-        me = ev.to_mesh()
-        me.calc_loop_triangles()
-        src = sum(len(p.vertices) - 2 for p in ob.data.polygons)
-        coll = ob.users_collection[0].name
-        c = out.setdefault(coll, dict(objects=0, source_tris=0, evaluated_tris=0))
-        c["objects"] += 1
-        c["source_tris"] += src
-        c["evaluated_tris"] += len(me.loop_triangles)
-        tot_src += src
-        tot_eval += len(me.loop_triangles)
-        ev.to_mesh_clear()
-    out["TOTAL"] = dict(source_tris=tot_src, evaluated_tris=tot_eval)
-    return out
 
 
 def main():
@@ -74,9 +53,7 @@ def main():
     os.makedirs(SOURCE, exist_ok=True)
 
     if args.save:
-        stats = mesh_stats()
-        with open(os.path.join(SOURCE, "mesh_stats.json"), "w") as f:
-            json.dump(stats, f, indent=1)
+        stats = studio.mesh_stats(os.path.join(SOURCE, "mesh_stats.json"))
         print("mesh stats:", json.dumps(stats["TOTAL"]))
         bpy.ops.wm.save_as_mainfile(filepath=os.path.join(SOURCE, "space_marine.blend"))
     if args.sheet:
