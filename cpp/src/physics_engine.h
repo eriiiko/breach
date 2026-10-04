@@ -20,7 +20,6 @@
 #include <vector>
 
 #include "atmosphere_solver.h"
-#include "smoke_dynamics.h"
 #include "fire_simulation.h"
 #include "temperature_solver.h"
 #include "water_solver.h"
@@ -39,7 +38,8 @@ public:
     // paths it fronted are asserted unreachable in run_substeps below (D7 +
     // the P3 GPU-guard task).
     AtmosphereSolver  atmos;
-    SmokeDynamics     smoke;
+    // (SmokeDynamics `smoke` DELETED — smoke transport v2, #12: the trace
+    //  planes ride the bulk face flux; see run_substeps.)
     FireSimulation    fire;
     TemperatureSolver temperature;
     WaterSolver       water;
@@ -356,6 +356,8 @@ private:
 public:
 
     // --- Patch 1 S4b: the IMEX atmosphere/smoke substep loop -------------
+    // (HISTORICAL banner: the loop below describes the pre-P3 shape; read the
+    //  P3 and smoke-transport-v2 blocks further down for what runs today.)
     // Moves the per-tick IMEX substep block out of PhysicsRunner.step (Python)
     // into C++ — the loop that runs BETWEEN the water/fire-heat steps (still
     // Python, before) and step_tail (already C++, after). It advances the
@@ -371,7 +373,8 @@ public:
     //     (double)atmos.max_dt())); the double ceil was already correctly-rounded
     //     (cross-platform deterministic) but the integer form removes the last
     //     double from the substep-count path so a CUDA kernel matches the CPU
-    //     exactly. n_smoke is likewise integer via fixedpoint::smoke_cliff_count.
+    //     exactly. (n_smoke was likewise integer via fixedpoint::smoke_cliff_count
+    //     — that kit and the whole SL smoke step are DELETED, smoke transport v2.)
     //   * `dt_actual` and `dt_smoke` stay DOUBLE until the solver-call boundary:
     //     dt_actual = (double)sim_time / n; dt_smoke = (double)sim_time / n_smoke.
     //     They are cast to float ONLY when passed to the solvers — matching
@@ -416,11 +419,13 @@ public:
     // n_smoke-substepped semi-Lagrangian loop for the two CONSERVATIVE gas
     // planes (bulk O2/N2 now move ONCE PER EOS SUBSTEP, inside eos.step, via
     // bulk_flux_transport — not once per tick as P1 shipped it). The 5 TRACE
-    // planes still ride the per-gas SmokeDynamics::step, but now ONCE per
-    // tick (design §3.2 step 4b: "traces advect ONCE per tick on the final
-    // velocity") on the solver's post-correction `wind_x`/`wind_y` — the
-    // n_smoke CFL-floor substep loop AND the decoupled sink_hop BFS loop are
-    // BOTH DELETED (sink_hop + its BFS machinery, decisions.md #3; native
+    // planes rode the per-gas SmokeDynamics::step ONCE per tick from P3 until
+    // smoke transport v2 (#12, docs/smoke_transport_design_2026-10-04.md),
+    // which DELETED it: they now ride the bulk face flux inside every EOS
+    // substep (stages 3b/3c) plus a once-per-tick trace_tail (stranded
+    // zeroing, conservative Jacobi diffusion, ceil decay) run here after the
+    // dispatch. (Historical, P3:) the n_smoke CFL-floor substep loop AND the
+    // decoupled sink_hop BFS loop are BOTH DELETED (sink_hop + its BFS machinery, decisions.md #3; native
     // venting replaces it). `wave_p` is REPURPOSED as `P_prev` (the design's
     // own "keep the old name, change the meaning" pattern, already applied
     // to `atmosphere`->P — see eos_solver.h); `wave_v`/`wave_source` are
@@ -465,10 +470,11 @@ public:
         int32_t p_amb = 0,
         const int32_t* sponge_sigma = nullptr,
         const int32_t* sponge_udamp = nullptr,
-        // S8a Path B: when false, the EOS step runs but the once-per-tick TRACE
-        // smoke loop (+ decay) is SKIPPED — the resident path runs those traces
-        // itself on device (trace_smoke_resident) so the 5 per-plane per-call
-        // transfers are gone. Default true == the exact prior behaviour.
+        // S8a Path B, redefined by smoke transport v2 (#12, design §5):
+        // `do_traces` means "the once-per-tick trace TAIL (stranded zeroing,
+        // diffusion, decay) runs on the HOST". false skips it — the resident
+        // path runs it on device (P2b). The trace ADVECTION is inside the EOS
+        // step on every path. Default true.
         bool do_traces = true,
         // THERMAL-MASS AXIS, P-EOS (docs/thermal_mass_eos_ruling_2026-07-30.md
         // §4 item 1): the per-medium THERMAL mask (GameMap.thermal_solid),

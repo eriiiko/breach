@@ -13,10 +13,10 @@
 // earlier this tick) — no solver change, nothing yet consumes N_O2/N_N2.
 //
 // Non-conservative TRACE gas planes (gas_conservative[gi] == false) are left
-// completely untouched here — they stay on the existing per-gas
-// semi-Lagrangian loop (PhysicsEngine::run_substeps), which in turn SKIPS the
-// conservative planes so the two transport schemes never both touch the same
-// plane (see the run_substeps body).
+// completely untouched by THIS entry (the mass flux). Since smoke transport v2
+// (#12) they RIDE its applied face dq inside bulk_flux_energy_transport_cached
+// (stages 3b/3c below) and get the once-per-tick trace_tail; the
+// semi-Lagrangian SmokeDynamics step that once moved them is deleted.
 #include <cstdint>
 
 // gas               : (n_gases, h, w) contiguous Q16.16 density planes, mutated in place
@@ -190,6 +190,38 @@ struct BulkEnergyCounters {
 // dqsum_s: caller-owned (h*w) int64 scratch (overwritten here). t_min_q: the
 // caller's quantize(T_MIN) fold. Counters ACCUMULATE (+=) — caller resets per
 // tick. The trailing ambient args mirror bulk_flux_transport_cached.
+//
+// ===========================================================================
+// SMOKE TRANSPORT v2 (#12, docs/smoke_transport_design_2026-10-04.md §2.1):
+// THE TRACE PLANES RIDE THE AIR. Two more stages run inside this entry, on
+// every TRACE plane (gas_conservative[g] == false) that is not all zero:
+//
+//   3b. trace apply, after stage 3 (energy) and before stage 4 (mirror):
+//         phi_f = price_face(dq_f, S_pre[donor], N_pre[donor])
+//       — the SAME exact floordiv(dq·S, N) the energy rides, on the SAME
+//       applied face dq (dqsum_e / dqsum_s), in the SAME gather form and the
+//       SAME pinned face order E, W, S, N. Both sides of a face price the same
+//       triple, so the pass telescopes; the limiter bounds Σ_f dq_f ≤ N_pre, so
+//       Σ_f phi_f ≤ S_pre and a donor never goes negative. The donor's
+//       trace-per-air ratio is invariant as air leaves it: expanding air THINS
+//       its smoke instead of multiplying it (the H1 fix).
+//       Participants: !solid && !is_vacuum && !ring — thermal-solid (crate)
+//       tiles INCLUDED (air seeps through their pores and the trace goes with
+//       it). `n_pre` therefore holds the true pre-flux N on thermal-solid
+//       cells too; stage 3 reads it only behind e_participates, so the energy
+//       books are untouched. A participating donor priced onto a vacuum / ring
+//       receiver EXPORTS that trace, booked by the donor in `trace_vent[g]`;
+//       inflow from vacuum / ring carries no trace.
+//   3c. trace wipe, after stage 4: a participating cell whose post-flux bulk N
+//       is below N_EPS_RAW has no air left to carry its trace — destroyed,
+//       booked in `trace_wipe[g]`.
+//
+// s_pre: caller-owned (h*w) int32 scratch (the per-plane snapshot S_pre).
+// trace_vent / trace_wipe: (n_gases,) int64 books, ACCUMULATED (+=). All three
+// nullptr -> the trace stages do not run (no live caller passes nullptr: the
+// EOS always hands them; the default exists for signature back-compat only).
+// The trace never touches the air: not bulk N, not p*, not the energy books.
+// ===========================================================================
 void bulk_flux_energy_transport_cached(
     int32_t* gas,
     const bool* gas_conservative,
@@ -223,4 +255,51 @@ void bulk_flux_energy_transport_cached(
     BulkEnergyCounters& cnt,
     const bool* is_ambient = nullptr,
     const int32_t* n_amb = nullptr,
-    int64_t* boundary_flux = nullptr);
+    int64_t* boundary_flux = nullptr,
+    // smoke transport v2 (#12) stages 3b/3c — see the block above.
+    int32_t* s_pre = nullptr,
+    int64_t* trace_vent = nullptr,
+    int64_t* trace_wipe = nullptr);
+
+// ===========================================================================
+// SMOKE TRANSPORT v2 (#12, design §2.2-§2.4): THE ONCE-PER-TICK TRACE TAIL.
+// Runs after the EOS substep loop (PhysicsEngine::run_substeps, where the
+// semi-Lagrangian step was), on every trace plane that is not all zero, in
+// this order:
+//
+//   1. stranded zeroing (§2.4): trace sitting on a solid ∨ vacuum ∨ ring cell
+//      (a breach, a seal or a deposit put it there) is zeroed and booked in
+//      `sink[g]`. Done FIRST, so the diffusion below never reads it.
+//   2. diffusion (§2.2): Jacobi from a snapshot S0, each face once in
+//      canonical orientation (i = lower index):
+//          c_ij = mul_q16(dd_q[g], min(quantize(min(perm_i, perm_j)), ONE))
+//          |F|  = (c_ij · |S0_i − S0_j|) >> 16      (magnitude truncation)
+//      flowing from the larger to the smaller, gathered per cell with ±.
+//      dd_q[g] = quantize(d_g · dt), folded once here; 4·dd_q ≤ ONE is the
+//      stability door (gases.py + PhysicsRunner; asserted here). Magnitude
+//      truncation (never a floor toward −inf) keeps positivity exact, the
+//      flux symmetric and the field drift-free. Faces to vacuum / ring cells
+//      diffuse like any other (their S0 is 0 after step 1) and their outflow
+//      is booked in `vent[g]`; solid faces carry perm 0.
+//   3. decay (§2.3): lost = ceil(v · frac_q / 2^16) for v > 0, frac_q =
+//      quantize(decay_g · dt) clamped to [0, ONE] — the configured e-fold
+//      above the old floor, one count a tick below it, so thin gas reaches 0
+//      in bounded time. Booked in `decay[g]`.
+//
+// vent / sink / decay: (n_gases,) int64 books, ACCUMULATED (+=).
+// ===========================================================================
+void trace_tail(
+    int32_t* gas,
+    const bool* gas_conservative,
+    int n_gases,
+    const float* gas_diffusion,
+    const float* gas_decay,
+    float dt,
+    const bool* solid,
+    const bool* is_vacuum,
+    const bool* is_ambient,          // nullptr on a space map
+    const float* dyn_permeability,
+    int h, int w,
+    int64_t* vent,
+    int64_t* sink,
+    int64_t* decay);

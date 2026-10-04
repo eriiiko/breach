@@ -594,9 +594,10 @@ def test_closure_identity_and_total_ledger_close_with_gas_radiation_live(name):
     is a #54 term -- neither touches gas_energy -- which (1) proves by closing
     without them. Non-vacuous: the gas branch booked; sealed -- the smoke
     cooled and the walls warmed; vented -- the floor's remainder moved; ring --
-    the export moved; and on both breached rooms the boundary WITHOUT the new
+    the export moved; and on the ring room the boundary WITHOUT the new
     counters (P5c's state) breaks 8.4's declared bound on some tick, i.e. what
-    they count is not a rounding (the reproduction, kept as a gate).
+    they count is not a rounding (the reproduction, kept as a gate; the vented
+    room lost that reproduction to smoke transport v2 -- see its branch).
 
     BREAKS IF: the gas branch writes gas_energy without booking it, books it
     into a new counter the identities do not sum, or books a WITHHELD or
@@ -664,7 +665,16 @@ def test_closure_identity_and_total_ledger_close_with_gas_radiation_live(name):
         assert int(g.temperature[walls].astype(np.int64).sum()) > T_wall0
     elif name == "vented to space":
         assert moved["floor"] > 0, "no cell below n_floor absorbed: vacuous"
-        assert over_bound_at_p5c > 0, "the floor's remainder never beat a rounding"
+        # (The reproduction clause `over_bound_at_p5c > 0` is NOT asserted on
+        # this scene since smoke transport v2, #12: the trace now rides its
+        # air, so a cell whose bulk N falls below n_floor_heat holds smoke in
+        # proportion to that air, and its unlanded remainder stays inside the
+        # declared rounding bound -- measured 0 over-bound ticks at smoke
+        # seeds of 0.3, 1.0 and 3.0. Under the old semi-Lagrangian step a
+        # draining cell kept its smoke while its air left, which is what made
+        # this remainder beat a rounding. The floor counter is still exact and
+        # still moves (asserted above); its necessity needs a new scene.
+        # Recorded as a finding of the smoke-transport patch.)
     else:
         assert moved["export"] > 0, "the ring never took radiation: vacuous"
         assert over_bound_at_p5c > 0, "the ring's export never beat a rounding"

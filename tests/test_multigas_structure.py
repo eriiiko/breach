@@ -15,11 +15,12 @@ These tests assert the M1 contract:
    in the other (both directions).
 3. ``GasTable`` exposes the 5 gases (steam / smoke / poison / teargas
    / fuel_gas) with the §6.2 absorption / scatter / diffusion / decay / flags.
-4. A populated NON-smoke gas (poison) advects + diffuses through the per-gas
-   transport loop exactly as smoke does (transport generalises).
-5. BEHAVIOUR PRESERVATION — a smoke deposit evolved through the new per-gas
-   loop matches the pre-refactor single-field reference (the C++ solver called
-   directly with the legacy d_smoke=0.1), within fp tolerance.
+4. A populated NON-smoke gas (poison) rides the air through the full physics
+   tick exactly as smoke does (transport generalises).
+5. ONE LAW FOR EVERY TRACE PLANE — two trace gases with equal dials evolve
+   bit-identically through a blast (smoke transport v2, #12: the transport is
+   the table's dials, never a per-gas branch). (Was: smoke matched the legacy
+   single-field SmokeDynamics reference; that solver is deleted.)
 6. DETERMINISM — a full headless Simulation rollout is bit-identical run-to-run.
 7. The recorder / renderer paths that read ``gmap.smoke`` still work (import +
    a headless ``Simulation.step()``).
@@ -147,9 +148,8 @@ def test_gas_table_values():
     assert np.allclose(tbl.diffusion[:5], [0.18, 0.10, 0.12, 0.15, 0.22])
     assert np.allclose(tbl.decay[:5],     [0.020, 0.008, 0.004, 0.010, 0.006])
 
-    # smoke diffusion == today's d_smoke (the behaviour-preservation anchor).
-    from config import CFG
-    assert abs(float(tbl.diffusion[SMOKE]) - float(CFG.physics.d_smoke)) < 1e-6
+    # (The "smoke diffusion == [physics] d_smoke" anchor is gone with the key:
+    # smoke transport v2, #12, retired d_smoke with the SL smoke step.)
 
     # Flags: only fuel_gas is flammable; smoke + fuel_gas emit when hot
     # (among the 5 trace gases — o2/inert_n2 are never flammable/hot-emitting).
@@ -195,135 +195,77 @@ def test_gas_table_from_dict():
 
 
 # --------------------------------------------------------------------------
-# 4. A non-smoke gas (poison) advects + diffuses through the per-gas loop
+# 4. A non-smoke gas (poison) rides the air through the full physics tick
 # --------------------------------------------------------------------------
+def _heat_push(g, y, x, amount=3200.0, radius=3.0):
+    """A heat-only blast through the FieldEdit queue (the deposit_heat shape):
+    the air it heats expands and pushes everything it carries outward."""
+    from simulation.field_edit import (
+        EditMode, EditQueue, Falloff, FieldEdit, Region)
+    q = EditQueue()
+    q.enqueue(FieldEdit(field="heat", region=Region.DISC,
+                        coords=(y, x, float(radius)), amount=float(amount),
+                        mode=EditMode.ADD, falloff=Falloff.LINEAR, source_id=991))
+    q.flush(g, np.random.default_rng(SEED))
+
+
 def test_poison_transports_through_per_gas_loop():
-    """A poison deposit (a non-smoke gas) moves under wind exactly as smoke does.
+    """PROPERTY: a poison deposit (a non-smoke gas) rides the air through the
+    full physics tick -- a blast on its left pushes the cloud right -- while
+    the empty smoke slice stays empty. Every trace slice rides, not just smoke.
 
-    The transport generalises: stepping the physics with a populated poison slice
-    (and NO smoke) advects the poison cloud downwind, while the empty smoke slice
-    stays empty (a cheap no-op). This proves the per-gas loop steps every slice,
-    not just smoke.
+    BREAKS IF: the trace ride (bulk_transport.cpp stage 3b) is restricted to
+    one gas, or an empty slice gets written.
     """
-    from simulation import gas_fixed
-
     g = _make_gmap()
     runner = PhysicsRunner(bp)
-
     interior = (~g.solid) & (~g.is_vacuum)
-    assert interior.any()
-
-    # Deposit a poison blob on the left of the interior; smoke stays empty.
-    # S2b: gas is int32 Q16.16 — full density (1.0) == FP_ONE counts.
     g.gas[POISON][:] = 0
-    g.gas[POISON][6:10, 2:5] = gas_fixed.SMOKE_MAX_Q
-    g.gas[POISON][~interior] = 0     # never inside walls
-    assert g.smoke.sum() == 0, "smoke should be empty for this test"
-
-    # Impose a strong, steady rightward wind (the atmosphere solver normally
-    # produces this; we set it directly to isolate gas transport). S2c: wind is
-    # int32 Q16.16 — quantize 3.0 real (a raw `= 3.0` would store 3 counts ~ 0).
-    from simulation import atmosphere_fixed
-    g.wind_x[:] = atmosphere_fixed.quantize_scalar(3.0)
-    g.wind_y[:] = 0
+    g.gas[POISON][5:11, 6:10] = 65536
+    g.gas[POISON][~interior] = 0
+    assert g.smoke.sum() == 0
 
     def _com_x(field):
-        tot = field.sum()
-        if tot <= 0:
-            return None
-        xs = np.arange(field.shape[1])[None, :]
-        return float((field * xs).sum() / tot)
+        f = field.astype(np.float64)
+        return float((f * np.arange(field.shape[1])[None, :]).sum() / f.sum())
 
     cx0 = _com_x(g.gas[POISON])
-    total0 = float(g.gas[POISON].sum())
-
-    # Step physics a few ticks. The runner re-derives wind from the atmosphere
-    # solver each substep, so pin the wind back inside the loop by stepping the
-    # gas solver directly (the same call the per-gas loop makes) to keep this a
-    # focused transport test.
-    runner.smoke.d_smoke = float(g.gases.diffusion[POISON])
-    dt = 0.05
-    # Patch 2b: step is WIND-ONLY (no sink args), smoke moves on the real dt
-    # (dt_scale gone). advection_rate is now ×9 so this advects even further right.
-    for _ in range(20):
-        runner.smoke.step(
-            g.gas[POISON], g.wind_x, g.wind_y,
-            g.obstacles, g.solid, g.is_vacuum, g.dyn_permeability,
-            dt,
-        )
-
-    cx1 = _com_x(g.gas[POISON])
-    assert cx1 is not None, "poison vanished entirely"
-    assert cx1 > cx0 + 1.0, f"poison did not advect right: {cx0:.2f} -> {cx1:.2f}"
-    # Smoke (smoke) untouched — the empty slice was a no-op.
+    _heat_push(g, 8, 2)
+    for _ in range(12):
+        runner.step(g, 1.0 / 24.0)
+    assert g.gas[POISON].sum() > 0, "poison vanished entirely"
+    assert _com_x(g.gas[POISON]) > cx0 + 0.25, "poison did not ride the blast right"
     assert g.smoke.sum() == 0, "poison transport polluted the smoke slice"
-    # Diffusion happened: the blob is no longer a sharp full column everywhere.
-    assert g.gas[POISON].max() <= gas_fixed.SMOKE_MAX_Q
-    assert total0 > 0.0
 
 
 # --------------------------------------------------------------------------
-# 5. BEHAVIOUR PRESERVATION — smoke matches the pre-refactor single field
+# 5. One law for every trace plane
 # --------------------------------------------------------------------------
 def test_black_smoke_matches_pre_refactor_reference():
-    """A smoke deposit evolved through the per-gas loop is bit-close to the
-    legacy single-smoke-field path (the C++ solver called directly with the old
-    d_smoke=0.1 and the same wind/sink/dt).
+    """PROPERTY: two trace planes with EQUAL table dials (diffusion, decay)
+    and the same deposit evolve bit-identically through a blast: the trace
+    transport is the table's dials, never a per-gas branch (smoke transport
+    v2, #12; the M1 behaviour-preservation anchor this test held -- smoke ==
+    the legacy single-field SmokeDynamics path -- is retired with that
+    solver).
 
-    This is the M1 behaviour-preservation guarantee made explicit: smoke's
-    diffusion (0.10) equals the legacy d_smoke (0.1), so the two evolutions are
-    the SAME computation and must agree within float noise.
+    BREAKS IF: any trace plane gets its own transport arithmetic (a per-gas
+    if, a smoke-only clamp, a hardcoded id in the ride or the tail).
     """
-    from config import CFG
-    from simulation import gas_fixed
-
-    h = w = 24
+    g = _make_gmap()
+    runner = PhysicsRunner(bp)
+    g.gases.diffusion[POISON] = g.gases.diffusion[SMOKE]
+    g.gases.decay[POISON] = g.gases.decay[SMOKE]
     rng = np.random.default_rng(SEED)
-    # S2b: smoke is int32 Q16.16 — quantize a random [0,1] deposit.
-    deposit = gas_fixed.quantize(rng.random((h, w)))
-    # Open domain (isolate transport from BCs).
-    obstacles = np.zeros((h, w), dtype=bool)
-    is_wall = np.zeros((h, w), dtype=bool)
-    is_vacuum = np.zeros((h, w), dtype=bool)
-    perm = np.ones((h, w), dtype=np.float32)
-    # (sink_x/sink_y stubs deleted — EOS P3: the sink machinery is gone.)
-    wind_x = np.full((h, w), 0.4, dtype=np.float32)
-    wind_y = np.full((h, w), -0.25, dtype=np.float32)
-
-    def _solver():
-        s = bp.SmokeDynamics()
-        s.advection_rate = float(CFG.physics.advection_rate)
-        s.wind_diffusion_scale = float(CFG.physics.wind_diffusion_scale)
-        # (sink_strength bind deleted — EOS P3: the sink machinery is gone.)
-        return s
-
-    dt = 0.02
-
-    # Patch 2b: step is WIND-ONLY (no sink args) and runs on the real dt
-    # (dt_scale gone). This test compares smoke's per-gas diffusion against
-    # the legacy single-smoke d_smoke path — both stepped identically, so the
-    # equality still holds regardless of the dt_scale removal.
-    # Reference (pre-refactor): the single smoke field with legacy d_smoke.
-    ref = deposit.copy()
-    s_ref = _solver()
-    s_ref.d_smoke = float(CFG.physics.d_smoke)   # 0.1
-    for _ in range(30):
-        s_ref.step(ref, wind_x, wind_y,
-                   obstacles, is_wall, is_vacuum, perm, dt)
-
-    # New path: the SAME field stepped with smoke's per-gas diffusion.
-    gas = deposit.copy()
-    s_new = _solver()
-    s_new.d_smoke = float(GasTable.from_config().diffusion[SMOKE])  # 0.10
-    for _ in range(30):
-        s_new.step(gas, wind_x, wind_y,
-                   obstacles, is_wall, is_vacuum, perm, dt)
-
-    # S2b: both paths run the identical integer-SL with the same d_smoke (0.1 ==
-    # 0.10), so they are now BIT-IDENTICAL (was atol=1e-5 in the float build).
-    assert np.array_equal(gas, ref), \
-        f"smoke diverged from the legacy single-field path: " \
-        f"max|diff|={np.abs(gas - ref).max()}"
+    interior = (~g.solid) & (~g.is_vacuum)
+    deposit = np.where(interior, (rng.random(g.smoke.shape) * 65536 * 1.5), 0)
+    g.gas[SMOKE][:] = deposit.astype(np.int32)
+    g.gas[POISON][:] = deposit.astype(np.int32)
+    _heat_push(g, 7, 4)
+    for _ in range(24):
+        runner.step(g, 1.0 / 24.0)
+    assert g.gas[SMOKE].any()
+    assert np.array_equal(g.gas[SMOKE], g.gas[POISON]),         f"max|diff| = {np.abs(g.gas[SMOKE] - g.gas[POISON]).max()}"
 
 
 # --------------------------------------------------------------------------

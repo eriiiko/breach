@@ -55,7 +55,9 @@ CPP_SRC = ROOT / "cpp" / "src"
 # emissive_table.cpp at its documented floor.)
 SIM_TUS = (
     "atmosphere_solver.cpp",
-    "smoke_dynamics.cpp",
+    # (smoke_dynamics.cpp DELETED, smoke transport v2 #12: the trace planes
+    #  ride the bulk face flux in bulk_transport.cpp -- itself still in the
+    #  strict-but-unscanned gap named above.)
     "fire_simulation.cpp",
     "water_solver.cpp",
     "temperature_solver.cpp",
@@ -361,13 +363,20 @@ _FP_FAST_RE = re.compile(r"fp:fast")
 # per-cell pointer and three channel locals: 58 -> 53 at the file), and the
 # recorded 68 was already 10 stale-low before this patch -- tightened to the
 # real count so the ratchet stays sharp. `double` / `fp:fast` unchanged.
+# Smoke transport v2 (#12, 2026-10-04): smoke_dynamics.cpp is DELETED with the
+# semi-Lagrangian smoke step (its row goes with it). physics_engine.cpp `float`
+# 53 -> 51 and `double` 28 -> 20: the SL dispatch's d_smoke line, the decay
+# dial local and the decay fold left with the trace loop (the tail's
+# arithmetic lives in bulk_transport.cpp now); `double` was 7 stale-high
+# before this patch. fire_simulation.cpp `float` 6 -> 5: no line of this
+# patch -- it was 1 stale-high. Both tightened to their real counts so the
+# ratchet stays sharp.
 BASELINE = {
     "atmosphere_solver.cpp":  {"float": 32, "double": 32, "fp:fast": 1},
-    "smoke_dynamics.cpp":     {"float": 24, "double": 13, "fp:fast": 0},
-    "fire_simulation.cpp":    {"float": 6,  "double": 18, "fp:fast": 0},
+    "fire_simulation.cpp":    {"float": 5,  "double": 18, "fp:fast": 0},
     "water_solver.cpp":       {"float": 32, "double": 22, "fp:fast": 1},
     "temperature_solver.cpp": {"float": 4,  "double": 6,  "fp:fast": 0},
-    "physics_engine.cpp":     {"float": 53, "double": 28, "fp:fast": 1},
+    "physics_engine.cpp":     {"float": 51, "double": 20, "fp:fast": 1},
     "radiation_sweep.cpp":    {"float": 0,  "double": 0,  "fp:fast": 0},
     "emissive_table.cpp":     {"float": 0,  "double": 8,  "fp:fast": 0},
 }

@@ -75,7 +75,6 @@ find_package(pybind11 REQUIRED)
 # The physics module
 set(BREACH_SOURCES
     src/atmosphere_solver.cpp
-    src/smoke_dynamics.cpp
     src/fire_simulation.cpp
     src/temperature_solver.cpp
     # (raycaster.cpp -- the old render march -- DELETED at ray-engine-v2 P6c;
@@ -179,7 +178,6 @@ endif()
 # "/fp:strict" there. Verified by digest: goldens unmoved (A3 gate).
 set_source_files_properties(
     src/atmosphere_solver.cpp
-    src/smoke_dynamics.cpp
     src/fire_simulation.cpp
     src/water_solver.cpp
     src/bulk_transport.cpp

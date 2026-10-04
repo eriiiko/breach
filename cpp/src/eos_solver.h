@@ -514,8 +514,34 @@ public:
     // Sized n_gases in ambient mode, empty otherwise. PUBLIC mutable (the
     // digest/counter telemetry pattern) so the CUDA path (eos_step_cuda) writes
     // it exactly as the CPU step() does; the getter gives the read-only view.
+    //
+    // Smoke transport v2 (#12, docs/smoke_transport_design_2026-10-04.md §3):
+    // the rail is sized n_gases on EVERY map now (space maps included; the
+    // bulk slots stay 0 there, since only the ring reset writes them), and its
+    // TRACE slots carry the trace VENT channel — everything stage 3b prices
+    // onto a vacuum / ring receiver plus everything the trace tail diffuses
+    // onto one. Three sibling per-gas int64 books sit next to it:
+    //   trace_wipe_sum_   stage 3c's N_EPS wipe (no air left to carry it);
+    //   trace_sink_sum_   stranded trace zeroed on solid ∨ vacuum ∨ ring (§2.4);
+    //   trace_decay_sum_  the tail's ceil-rounded decay (§2.3).
+    // All reset at step() entry, accumulated through the tick (the trace tail
+    // in PhysicsEngine::run_substeps adds after step() returns), diagnostics
+    // only, never digested. The identity, exact in int64 per tick and plane:
+    //   Σ S(after) − Σ S(before) == deposits − vent − wipe − sink − decay.
     mutable std::vector<int64_t> boundary_flux_;
     const std::vector<int64_t>& boundary_flux() const { return boundary_flux_; }
+    mutable std::vector<int64_t> trace_wipe_sum_;
+    mutable std::vector<int64_t> trace_sink_sum_;
+    mutable std::vector<int64_t> trace_decay_sum_;
+    // Size all four per-gas books to n_gases (zeros), leaving correctly-sized
+    // ones untouched — for a caller (the trace tail) that may run after a path
+    // which did not size them.
+    void ensure_trace_books(int n_gases) const {
+        if ((int)boundary_flux_.size()  != n_gases) boundary_flux_.assign(n_gases, 0);
+        if ((int)trace_wipe_sum_.size()  != n_gases) trace_wipe_sum_.assign(n_gases, 0);
+        if ((int)trace_sink_sum_.size()  != n_gases) trace_sink_sum_.assign(n_gases, 0);
+        if ((int)trace_decay_sum_.size() != n_gases) trace_decay_sum_.assign(n_gases, 0);
+    }
 
     // ---- one multigrid level (v2.2 D-B) ---------------------------------
     // (EOS P6.3: struct made public — unchanged fields — so the CUDA binding
@@ -647,6 +673,8 @@ private:
     // arc #54 §2.7 row 1: the transport's PRE-flux bulk-N denominator plane
     // (e_scratch_ becomes its energy sibling — see bulk_transport.h).
     mutable std::vector<int64_t> n_pre_;
+    // Smoke transport v2 (#12): stage 3b's per-plane pre-flux trace snapshot.
+    mutable std::vector<int32_t> s_pre_;
     // arc #54 P-G1a scratch (design §2.4/§2.5). All rebuilt every tick, never
     // synced, never digested. RL-batch habits: CPU keeps (h,w); the device
     // twin (P-G2) allocates (N,h,w) with N=1.

@@ -345,14 +345,16 @@ void EOSSolver::step(
     // is_ambient == nullptr and takes the byte-identical path (dormancy BY
     // BRANCH, spec §5; NO unconditional arithmetic change on the space path).
     const bool ambient_mode = (is_ambient != nullptr);
-    // The boundary_flux rail (spec §5): zero it each tick in ambient mode; the
-    // per-substep bulk reset accumulates into it. Empty on space maps.
-    if (ambient_mode) {
-        if ((int)boundary_flux_.size() != n_gases) boundary_flux_.assign(n_gases, 0);
-        else std::fill(boundary_flux_.begin(), boundary_flux_.end(), (int64_t)0);
-    } else if (!boundary_flux_.empty()) {
-        boundary_flux_.clear();
-    }
+    // The boundary_flux rail (spec §5): zero it each tick; the per-substep bulk
+    // reset accumulates into its bulk slots (ambient maps only). Smoke
+    // transport v2 (#12, design §3): sized n_gases on EVERY map now, because
+    // its trace slots carry the trace vent channel, which a space map's
+    // breaches feed too; the three sibling trace books reset with it.
+    ensure_trace_books(n_gases);
+    std::fill(boundary_flux_.begin(), boundary_flux_.end(), (int64_t)0);
+    std::fill(trace_wipe_sum_.begin(), trace_wipe_sum_.end(), (int64_t)0);
+    std::fill(trace_sink_sum_.begin(), trace_sink_sum_.end(), (int64_t)0);
+    std::fill(trace_decay_sum_.begin(), trace_decay_sum_.end(), (int64_t)0);
 
     // P-E0 (energy-books design §2.5): the law-independent bracket sum
     // S = Σ n_bulk·T over the step-4c skip-set complement (!solid, !ts,
@@ -421,6 +423,7 @@ void EOSSolver::step(
     if ((int)dqsum_s_.size()   != n) dqsum_s_.assign(n, 0);
     // arc #54 P-G1a (design §2.4/§2.5): the energy-pass scratch planes.
     if ((int)n_pre_.size()   != n) n_pre_.assign(n, 0);
+    if ((int)s_pre_.size()   != n) s_pre_.assign(n, 0);   // smoke transport v2
     if ((int)e0_.size()      != n) e0_.assign(n, 0);
     if ((int)pcur_.size()    != n) pcur_.assign(n, 0);
     if ((int)s_plane_.size() != n) s_plane_.assign(n, 0);
@@ -854,7 +857,14 @@ void EOSSolver::step(
                 dqsum_e_.data(), dqsum_s_.data(), ec,
                 ambient_mode ? is_ambient : nullptr,
                 ambient_mode ? n_amb : nullptr,
-                ambient_mode ? boundary_flux_.data() : nullptr);
+                // The bulk ring reset only writes this rail on ambient maps
+                // (it is branch-gated inside on is_ambient), so handing it on
+                // a space map changes nothing there; the trace stages need its
+                // trace slots on every map (smoke transport v2, #12).
+                boundary_flux_.data(),
+                // smoke transport v2 (#12) stages 3b/3c: the trace rides
+                // these very faces; vent into the rail, wipe beside it.
+                s_pre_.data(), boundary_flux_.data(), trace_wipe_sum_.data());
             e_ts_residual     += ec.e_ts_residual;
             e_wipe_sum        += ec.e_wipe_sum;
             e_floor_sum       += ec.e_floor_sum;

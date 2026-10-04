@@ -92,16 +92,12 @@ wave_damping = 3.0                    # wave velocity damping (1/s)
 wave_transfer = 0.5                   # wave_p -> atmosphere transfer rate (1/s)
 source_feed_rate = 200.0              # wave_source -> wave_p feed rate (1/s)
 d_atm = 200.0                         # atmosphere diffusion (IMEX = no CFL limit!)
-# Patch 2b (2026-06-22): smoke now moves on the REAL dt (the double-applied
-# smoke_dt_scale=3.0 -> 9× fudge is GONE). advection_rate was bumped ×9 (100->900)
-# to preserve the visible wind-ride; the smoke DIFFUSION is now ~9× weaker than
-# the shipped build, so d_smoke (and the per-gas [gases.*] diffusion table) WANT A
-# RE-TUNE by eye. "Tuning isn't sacred" — these are sensible defaults, not final.
-d_smoke = 0.1                          # FLAG: ~9× weaker effective diffusion now (dt_scale removed) — re-tune
-advection_rate = 900.0                # smoke wind-ride coefficient on the real dt (was 100 × dt_scale²=9)
+# (d_smoke / advection_rate / wind_diffusion_scale RETIRED -- smoke transport
+# v2, #12, docs/smoke_transport_design_2026-10-04.md: the semi-Lagrangian smoke
+# step they tuned is deleted; trace gases ride the bulk face flux, and their
+# diffusion / decay are the [gases.*] columns.)
 breach_rate = 5.0                     # relaxation rate toward vacuum at hull breaches (1/s)
 max_source_per_step = 10.0             # max wave energy fed per substep (IMEX handles big spikes)
-wind_diffusion_scale = 50.0            # wind-dependent diffusion: D = d_smoke * (1 + scale * |wind|)
 smoke_sink_strength = 2.0              # smoke-side sink-pull toward nearest breach (cells/hop along the breach-ward gradient, capped at 1 to follow the BFS path). 0 = off (sealed-room behaviour); >=1 = full per-hop pull. Sealed room always untouched. Binds at PhysicsRunner construction (restart, not Ctrl+R).
 smoke_vent_hops = 16                   # Patch 2b: K = vent hops/tick — how many 1-cell breach-sink passes run each tick, decoupled from the wave CFL. Default ≈ the old n_wave so venting starts where it was. Erik tunes by eye (more = faster drain).
 explosion_smoke_noise = 0.85           # per-tile contrast of the explosion smoke deposit (add_explosion_smoke). The per-tile multiplier is drawn uniform in [1 - noise, 1.0]: noise=0 => flat blob (no texture); noise=0.6 => the old [0.4,1.0] look; noise=0.85 (default) drops the floor to 0.15 so some tiles read near-empty (ragged holes / missing patches) giving the cloud visible initial texture for advection to grab; noise=1.0 => full contrast ([0.0,1.0], maximal holes). Seeded RNG => deterministic.
@@ -165,10 +161,9 @@ o2_vacuum_thresh  = 0.3  # atmosphere below which a 4-neighbour counts as vacuum
 
 # EOS refactor P2 — unified temperature, gas-T dials (docs/eos_refactor_design.md
 # §4, §9). TUNING DIALS (feel-gated, first real pass at P5); sane starting points.
-gas_advection_rate = 900.0  # gas-T wind->displacement scale; SAME convention/value
-                             # as [physics].advection_rate (smoke) — hot air rides the
-                             # wind at smoke's visual rate until P3 makes `wind` a real
-                             # velocity, at which point this dial goes away.
+gas_advection_rate = 900.0  # gas-T wind->displacement scale (inert: the gas-T
+                             # SL pre-pass it fed is gone; the retired smoke
+                             # advection_rate shared its value).
 c_v         = 0.0076849     # THE GAS HALF OF THE HEAT-COUNT CURRENCY — derived, not
                              # dialled (thermal model v2 ledger item 4, R13;
                              # report_t2.md §2.1-2.2). It is the ONE exchange rate
@@ -717,23 +712,21 @@ smoke_absorb_scale = 1.4                 # beam-reach dial: LOW = long beam (fla
 #                  coexisting gases by the sweep's light channels (P6a).
 #   scatter_albedo [R,G,B] additive god-ray/glow gain (decoupled from absorption,
 #                  NOT constrained to absorb+glow=1).
-#   diffusion      per-gas base diffusion coefficient (the per-gas d_smoke the
-#                  transport loop binds before stepping that slice).
-#   decay          per-tick decay rate (LOADED for M2/M3; NOT yet applied in
-#                  transport — the M1 solver has no decay term, so applying it
-#                  would break behaviour preservation; see physics_runner).
+#   diffusion      per-gas diffusion coefficient (1/s, per tile^2) of the trace
+#                  tail's conservative face diffusion (smoke transport v2, #12);
+#                  the gases door refuses diffusion * dt > 0.25 (stability).
+#   decay          per-second decay rate, applied once a tick by the trace tail
+#                  (ceil-rounded: thin gas reaches 0; smoke transport v2, #12).
 #   flammable      ignites where density > threshold (fuel_gas only) — read M3.
 #   emits_when_hot black-body emission driven by the heat buffer — read M2/M3.
 #   effect         per-gas gameplay tag, read unit-side in mechanics (not here).
 #   conservative   EOS refactor P1 (docs/eos_refactor_design.md §2.1/§2.2):
 #                  true ONLY for the bulk pair (o2 / inert_n2) below — routes
 #                  that plane to donor-cell CONSERVATIVE flux transport
-#                  (bulk_transport.cpp) instead of this per-gas semi-Lagrangian
-#                  loop. False for every trace gas (unchanged behaviour).
+#                  (bulk_transport.cpp). False for every trace gas, which RIDES
+#                  that flux priced by air (smoke transport v2, #12).
 #
-# smoke is combustion soot — what fire and explosions emit. Its diffusion
-# (0.10) matches today's d_smoke (0.1), so mapping the EXISTING generic smoke to
-# the smoke slice is behaviour-preserving (engine/05 §6.2; M1).
+# smoke is combustion soot — what fire and explosions emit (engine/05 §6.2; M1).
 
 # EOS refactor P1 calibration constants (docs/eos_refactor_design.md §2.1).
 # Pressure is derived as P = C * N_total * T (Kelvin) once the compressible
@@ -1158,19 +1151,19 @@ glow           = 0.0                  # no self-glow (but scatters local light b
 flammable      = false
 emits_when_hot = false
 effect         = "vision_block"       # pure concealment; clears on decompression
-conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
+conservative   = false                # trace gas — rides the bulk face flux (smoke transport v2)
 heat_absorb    = 0.0                  # ACCEPTED GAP (P5c): a BAND absorber (H2O), not modelled -- only soot absorbs, grey (see [gases.smoke])
 
 [gases.smoke]            # combustion soot (== today's generic smoke)
 absorption     = [0.88, 0.90, 0.93]   # near-neutral, slight blue tilt: thin soot reads warm/brown
 scatter_albedo = [0.04, 0.04, 0.04]   # soot barely scatters — it is the dark gas
-diffusion      = 0.10                 # heavier, clings; matches today's d_smoke=0.1 (behaviour-preserving)
+diffusion      = 0.10                 # heavier, clings
 decay          = 0.008                # lingers — soot settles slowly
 glow           = 0.0                  # cold soot does NOT glow; hot soot via emits_when_hot
 flammable      = false                # the soot itself is spent fuel
 emits_when_hot = true                 # black-body emission driven by heat buffer (M2/M3)
 effect         = "vision_block_heavy" # near-opaque concealment at density
-conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
+conservative   = false                # trace gas — rides the bulk face flux (smoke transport v2)
 heat_absorb    = 25.36                # HEAT extinction per unit smoke density (ray-engine-v2 P5a/P5c,
                                      # design v3 6.3): on a GAS cell the sweep reads a_gas = min(1,
                                      # sum_g heat_absorb * N_g), 0 below gas_energy.h's N_EPS_RAW
@@ -1243,7 +1236,7 @@ glow           = 0.0
 flammable      = false
 emits_when_hot = false
 effect         = "damage_over_time"   # lethal cloud; saturates to iconic green at mid-high density
-conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
+conservative   = false                # trace gas — rides the bulk face flux (smoke transport v2)
 heat_absorb    = 0.0                  # ACCEPTED GAP (P5c): not modelled -- only soot absorbs, grey (see [gases.smoke])
 
 [gases.teargas]                # CS aerosol, pale near-white (ambiguous vs steam)
@@ -1255,7 +1248,7 @@ glow           = 0.0
 flammable      = false
 emits_when_hot = false
 effect         = "area_denial"        # forces units out of the area; non-lethal
-conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
+conservative   = false                # trace gas — rides the bulk face flux (smoke transport v2)
 heat_absorb    = 0.0                  # ACCEPTED GAP (P5c): not modelled -- only soot absorbs, grey (see [gases.smoke])
 
 [gases.fuel_gas]               # combustible vapour, faint, FLAMMABLE
@@ -1267,7 +1260,7 @@ glow           = 0.0
 flammable      = true                 # IGNITES -> spawns heat + smoke; the only flammable gas
 emits_when_hot = true                 # while burning it glows via the black-body curve
 effect         = "ignition_hazard"    # invisible-ish until lit; then a fireball
-conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
+conservative   = false                # trace gas — rides the bulk face flux (smoke transport v2)
 heat_absorb    = 0.0                  # ACCEPTED GAP (P5c): a BAND absorber (C-H), not modelled -- only soot absorbs, grey (see [gases.smoke])
 
 # EOS refactor P1 — the two BULK species (docs/eos_refactor_design.md §1/§2.1).

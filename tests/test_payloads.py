@@ -16,8 +16,9 @@ What is locked here:
     SAME payload row objects (one definition of frag/smoke/tear/poison, two
     deliveries);
   - GAS DEPOSIT EXACTNESS: hand-computed Q16.16 expectations for the radial
-    linear falloff, the [0,1] saturation clamp, the solid skip, slice
-    targeting per species, additivity, and the NO-RNG guarantee;
+    linear falloff, NO ceiling (smoke transport v2 D1: a deposit adds
+    exactly its amount), the solid skip, slice targeting per species,
+    additivity, and the NO-RNG guarantee;
   - INCENDIARY IGNITE RING: fire = max(fire, intensity x falloff) — never
     lowers an existing fire, skips non-flammable tiles;
   - C4 DET-SLOT: the demolition_c4 numbers through the shipped
@@ -209,10 +210,15 @@ def _disc_weight(dy, dx, radius):
 
 
 def test_gas_deposit_exact_q16_falloff_clamp_skip_and_slice():
-    """Hand-computed per-tile expectations for smoke_screen (amount 1.5,
-    radius 4): centre saturates to FP_ONE (the [0,1] clamp), every in-disc
-    tile holds quantize(min(1, 1.5 x (1 - d/4))), solid tiles are skipped,
-    the ring d >= 4 is untouched, and ONLY the steam slice moves."""
+    """PROPERTY: hand-computed per-tile expectations for a smoke_screen-shaped
+    deposit (amount 1.5, radius 4): every in-disc tile holds exactly
+    quantize(1.5 x (1 - d/4)) -- the centre 1.5, NOT cut to 1 (smoke
+    transport v2, design §11 D1, Erik 2026-10-04: deposits are additive) --
+    solid tiles are skipped, the ring d >= 4 is untouched, and ONLY the
+    steam slice moves.
+
+    BREAKS IF: the deposit is clamped to [0, 1] again, enters walls, or
+    lands on another slice."""
     gmap = _room(edits=[(10, 13, 1)])     # a hull tile INSIDE the disc
     queue = EditQueue()
     rng = np.random.default_rng(SEED)
@@ -225,8 +231,8 @@ def test_gas_deposit_exact_q16_falloff_clamp_skip_and_slice():
     assert rng.bit_generator.state == state_before
 
     ws = gmap.gas[STEAM]
-    # Centre: weight 1.0 -> 1.5 clamps to 1.0 -> FP_ONE counts exactly.
-    assert int(ws[10, 11]) == gas_fixed.FP_ONE
+    # Centre: weight 1.0 -> 1.5 exactly (no ceiling, D1) -> 98304 counts.
+    assert int(ws[10, 11]) == gas_fixed.quantize_scalar(1.5)
     # On-axis d=2: weight 0.5 -> 0.75 -> 49152 counts exactly (hand: .75*2^16).
     assert int(ws[10, 9]) == 49152
     # Diagonal d=sqrt(5) (dy=1,dx=2): the float falloff chain, quantized once.
@@ -246,8 +252,11 @@ def test_gas_deposit_exact_q16_falloff_clamp_skip_and_slice():
 
 
 def test_gas_deposit_is_additive_with_saturation_guard():
-    """Two identical deposits: unsaturated tiles double exactly; the core
-    stays clamped at FP_ONE (the saturation guard)."""
+    """PROPERTY: two identical deposits add exactly -- below 1 and above it
+    alike: nothing saturates a trace tile (smoke transport v2 D1).
+
+    BREAKS IF: a ceiling returns at the deposit (the old saturation guard
+    destroyed smoke already on the tile)."""
     gmap = _room()
     queue = EditQueue()
     rng = np.random.default_rng(SEED)
@@ -258,12 +267,12 @@ def test_gas_deposit_is_additive_with_saturation_guard():
     # Centre: 2 x 0.3 = 0.6 (below clamp) -> quantize(0.3)+combine(0.3) —
     # the combine dequantizes exactly (n/65536), so twice = quantize(0.6).
     assert int(tg[10, 11]) == gas_fixed.quantize_scalar(0.6)
-    # Saturation: a 1.5-amount deposit twice stays clamped at FP_ONE.
+    # Above 1: a 1.5-amount deposit twice holds 3.0 at its centre.
     gmap2 = _room()
     for _ in range(2):
         emit_gas(gmap2, queue, 10, 11, "poison", 1.5, 3)
         queue.flush(gmap2, rng)
-    assert int(gmap2.gas[GAS_POISON][10, 11]) == gas_fixed.FP_ONE
+    assert int(gmap2.gas[GAS_POISON][10, 11]) == gas_fixed.quantize_scalar(3.0)
 
 
 def test_gas_payload_species_route_to_their_slices():

@@ -745,104 +745,29 @@ void PhysicsEngine::run_substeps(
             thermal_solid);
     }
 
-    // S8a Path B: the resident path skips this loop (do_traces=false) and runs
-    // the trace planes on device itself (trace_smoke_resident) so the 5 per-plane
-    // per-call transfers are gone. Default (do_traces=true) is the exact prior
-    // behaviour — the CPU + per-call GPU paths are untouched.
+    // S8a Path B: the resident path skips the trace tail (do_traces=false) and
+    // will run it on device itself (smoke transport v2 P2b). Default
+    // (do_traces=true): the tail runs here, on the host, after the dispatch —
+    // so CPU and chained GPU EOS share it automatically.
     if (!do_traces) return;
 
-    // Traces advect ONCE per tick, on the solver's final (post-correction)
-    // wind_x/wind_y — §3.2 step 4b. Skip the two conservative bulk planes
-    // (already transported every eos substep) and any all-zero plane
-    // (matches numpy `.any()`).
-    const int plane = h * w;
-    for (int gi = 0; gi < n_gases; ++gi) {
-        if (gas_conservative[gi]) continue;
-        int32_t* gas_slice = gas + (size_t)gi * plane;
-        bool any = false;
-        for (int i = 0; i < plane; ++i) {
-            if (gas_slice[i] != 0) { any = true; break; }
-        }
-        if (!any) continue;
-        this->smoke.d_smoke = (float)gas_diffusion[gi];
-        // EOS P3 UNIT CONVERSION (engine-owned, FLAGGED): the solver's u is
-        // real m/s; SmokeDynamics' SL displacement is wind*(advection_rate*
-        // dt) in TILES — the physical rate is exactly 1/dx (u*dt/dx tiles).
-        // The config advection_rate (900, calibrated against the OLD
-        // -grad(P)-in-q16 wind scale) is DEAD at P3 — left un-read here;
-        // feel re-tuning is P5's pass. wind_diffusion_scale is likewise
-        // old-wind-unit-calibrated (50 * |8 m/s|^2 would explode the
-        // forward-Euler diffusion now that the CFL substep floor is gone) —
-        // disabled pending P5 recalibration.
-        this->smoke.advection_rate = 1.0f / std::max(this->eos.dx, 1e-3f);
-        this->smoke.wind_diffusion_scale = 0.0f;
-#ifdef BREACH_HAS_CUDA
-        // EOS P6.7 (docs/eos_p6_gpu_alignment_review.md §4, P6.7 row): RESOLVE
-        // the P3 once-per-tick cadence assert by wiring the real GPU dispatch.
-        // The trace CADENCE changed in the EOS refactor (traces advect ONCE per
-        // tick on the solver's final corrected wind, not n_smoke-substepped on
-        // the old wave loop's wind), but SmokeDynamics::step's per-pass
-        // arithmetic is UNCHANGED — so cuda_smoke.cu's smoke_step (the verbatim
-        // S4a device mirror: diffusion Laplacian -> post-diffusion src snapshot
-        // -> SL back-trace -> clamp/zero) is bit-identical at the new cadence;
-        // only the DISPATCH SITE moved. This is the existing water/smoke/fire/
-        // eos dispatch idiom: with the flag OFF (default) it is the EXACT prior
-        // CPU call (the live CPU path stays byte-identical); with it ON,
-        // smoke_step runs this same single once-per-tick step on the GPU. The
-        // subsequent P4 decay (its inert_N2 credit DELETED at P-T0, design
-        // §2.6 — decay just removes mass now) below stays on the CPU in BOTH
-        // paths (it is not part of the advection pass — strictly additive).
-        // Gated by tests/cuda_trace_smoke_check.py (key "trace_smoke").
-        if (breach_cuda::smoke_backend_is_cuda()) {
-            breach_cuda::smoke_step(
-                gas_slice, wind_x, wind_y,
-                solid, solid, is_vacuum,
-                dyn_permeability,
-                h, w, sim_time,
-                this->smoke.d_smoke,
-                this->smoke.wind_diffusion_scale,
-                this->smoke.advection_rate,
-                is_ambient);   // BC: ambient ring is a trace sink (null=space)
-        } else
-#endif
-        {
-            this->smoke.step(
-                gas_slice, wind_x, wind_y,
-                solid, solid, is_vacuum,
-                dyn_permeability,
-                h, w,
-                sim_time,
-                is_ambient);   // BC: ambient ring is a trace sink (null=space)
-        }
-
-        // EOS refactor P4's decay->inert_N2 credit is DELETED (P-T0,
-        // energy-books arc, design §2.6 — the 0% ruling): with zero
-        // pressure weight there is no mass to conserve, so the "decay is
-        // oxidation, not deletion" doctrine is deliberately retired. The
-        // decay ITSELF STAYS — this trace plane's `decay` column still
-        // applies ONCE per tick, right after its own once-per-tick
-        // advection above — but the lost count simply VANISHES instead of
-        // crediting inert_N2 in the same cell. The two conservative bulk
-        // planes carry decay=0 by config contract (gases.py), so
-        // `gas_conservative[gi]` guards this loop out for them structurally
-        // (unreachable here already).
-        const float decay_gi = gas_decay[gi];
-        if (decay_gi > 0.0f) {
-            using namespace fixedpoint;
-            q16 frac_q = quantize((double)decay_gi * (double)sim_time);
-            if (frac_q < 0) frac_q = 0;
-            if (frac_q > FP_ONE) frac_q = FP_ONE;   // a decay*dt >= 1.0 removes it all
-            if (frac_q > 0) {
-                for (int i = 0; i < plane; ++i) {
-                    const int32_t v = gas_slice[i];
-                    if (v <= 0) continue;
-                    const int32_t lost = mul_q16(v, frac_q);
-                    if (lost <= 0) continue;
-                    gas_slice[i] = v - lost;
-                }
-            }
-        }
-    }
+    // ---- SMOKE TRANSPORT v2 (#12, docs/smoke_transport_design_2026-10-04.md)
+    // The trace planes' ADVECTION is no longer here: they ride the bulk face
+    // flux inside every EOS substep (bulk_flux_energy_transport_cached stages
+    // 3b/3c — the semi-Lagrangian SmokeDynamics step that stood here, with its
+    // [0, 1] clamp, is DELETED). What remains once per tick is the trace TAIL:
+    // stranded zeroing, conservative Jacobi diffusion, ceil-rounded decay, all
+    // booked beside the EOS rail (vent in boundary_flux_'s trace slots; sink,
+    // decay in their own books). The EOS reset those books at step() entry;
+    // ensure_trace_books only sizes them for a path that did not.
+    this->eos.ensure_trace_books(n_gases);
+    trace_tail(gas, gas_conservative, n_gases,
+               gas_diffusion, gas_decay, sim_time,
+               solid, is_vacuum, is_ambient, dyn_permeability,
+               h, w,
+               this->eos.boundary_flux_.data(),
+               this->eos.trace_sink_sum_.data(),
+               this->eos.trace_decay_sum_.data());
 }
 
 // ---- S8a Path A: the fully device-resident EOS stage ----------------------

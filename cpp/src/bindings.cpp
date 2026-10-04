@@ -3,7 +3,6 @@
 #include <pybind11/stl.h>
 #include <array>
 #include "atmosphere_solver.h"
-#include "smoke_dynamics.h"
 #include "fire_simulation.h"
 #include "temperature_solver.h"
 #include "water_solver.h"
@@ -13,7 +12,7 @@
 #include "physics_engine.h"
 #include "bulk_transport.h"  // EOS refactor P1: expose bulk_flux_transport for direct unit test
 #include "sky_exchange.h"    // sky-exchange: planetside volumetric O2 replenishment (per-tick host pass)
-#include "fixed_point.h"   // Bedrock cliff-patch: expose smoke_cliff_count for unit test
+#include "fixed_point.h"   // the Q16.16 kit (quantize, make_recip, the trig kit, ...)
 #ifdef BREACH_HAS_CUDA
 #include "cuda_hello.h"        // CUDA-S0: hello-world map kernel + device info
 #include "cuda_spike.h"        // CUDA-S8a: residency spike (raw device pointer in)
@@ -1729,19 +1728,8 @@ PYBIND11_MODULE(breach_physics, m) {
     m.attr("WATER_FP_SHIFT") = 16;
     m.attr("WATER_FP_ONE") = 65536;
 
-    // Bedrock cliff-patch: expose the integer smoke-CFL substep-count helper so a
-    // unit test (tests/test_bedrock_cliff_counts.py) can verify the SHIPPED C++
-    // (the real 128-bit / _umul128 path) against the Python reference mirror — not
-    // just a re-implementation. Args are the quantized Q16.16 cliff constants +
-    // the Q.32 integer max|wind|^2 (exactly what run_substeps feeds the engine).
-    m.def("smoke_cliff_count",
-          [](int32_t c4st_q, int32_t dsmoke_q, int32_t wds_q, int64_t mws_q32) {
-              return fixedpoint::smoke_cliff_count(c4st_q, dsmoke_q, wds_q, mws_q32);
-          },
-          py::arg("c4st_q"), py::arg("dsmoke_q"), py::arg("wds_q"),
-          py::arg("mws_q32"),
-          "Bedrock: integer smoke-CFL substep count "
-          "n=ceil(4*sim_time*d_smoke_max*(1+wds*max_wind_sq)) from quantized inputs.");
+    // (smoke_cliff_count — the integer smoke-CFL substep-count helper — is
+    //  DELETED with the n_smoke kit, smoke transport v2, #12.)
 
     // EOS refactor P1 (docs/eos_refactor_design.md §2.2): expose
     // bulk_flux_transport directly (not just via PhysicsEngine::run_substeps)
@@ -2104,35 +2092,8 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
            py::arg("permeability"), py::arg("dt"));
 
-    // --- SmokeDynamics (uses precomputed wind from AtmosphereSolver) ---
-    py::class_<SmokeDynamics>(m, "SmokeDynamics")
-        .def(py::init<>())
-        .def_readwrite("d_smoke",               &SmokeDynamics::d_smoke)
-        .def_readwrite("advection_rate",         &SmokeDynamics::advection_rate)
-        .def_readwrite("wind_diffusion_scale",   &SmokeDynamics::wind_diffusion_scale)
-        // (sink_strength / vent_hops / sink_hop DELETED — EOS refactor P3,
-        // decisions.md #3: native venting replaces the BFS sink-pull.)
-        .def("step", [](const SmokeDynamics& self,
-                        py::array_t<int32_t> smoke,        // S2b: Q16.16 int32
-                        py::array_t<int32_t> wind_x,       // S2c: Q16.16 int32
-                        py::array_t<int32_t> wind_y,       // S2c: Q16.16 int32
-                        py::array_t<bool>  obstacles,
-                        py::array_t<bool>  is_wall,
-                        py::array_t<bool>  is_vacuum,
-                        py::array_t<float> permeability,
-                        float dt) {
-            auto [sm, h, w] = get_2d(smoke);
-            auto [wx, h2, w2] = get_2d_const(wind_x);
-            auto [wy, h3, w3] = get_2d_const(wind_y);
-            auto [obs, h4, w4] = get_2d_const(obstacles);
-            auto [wl, h5, w5] = get_2d_const(is_wall);
-            auto [vac, h6, w6] = get_2d_const(is_vacuum);
-            auto [perm, h7, w7] = get_2d_const(permeability);
-            self.step(sm, wx, wy, obs, wl, vac, perm, h, w, dt);
-        }, py::arg("smoke"), py::arg("wind_x"), py::arg("wind_y"),
-           py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
-           py::arg("permeability"),
-           py::arg("dt"));
+    // (--- SmokeDynamics binding DELETED — smoke transport v2, #12: the trace
+    //  planes ride the bulk face flux inside the EOS; no SL step remains.)
 
     // --- FireSimulation (signed-logistic feedback; fire_design_proposal §2/§3) ---
     py::class_<FireParams>(m, "FireParams")
@@ -3083,6 +3044,26 @@ PYBIND11_MODULE(breach_physics, m) {
             for (int64_t v : s.boundary_flux()) out.append(v);
             return out;
         })
+        // Smoke transport v2 (#12, design §3): the per-gas TRACE books, READ
+        // ONLY. The vent channel is boundary_flux()'s trace slots; these are
+        // its three siblings. Per tick (reset at step() entry, the trace tail
+        // adds after it), int64, never digested. Tests check the identity
+        //   Σ S(after) − Σ S(before) == deposits − vent − wipe − sink − decay.
+        .def("trace_wipe_sum", [](const EOSSolver& s) {
+            py::list out;
+            for (int64_t v : s.trace_wipe_sum_) out.append(v);
+            return out;
+        })
+        .def("trace_sink_sum", [](const EOSSolver& s) {
+            py::list out;
+            for (int64_t v : s.trace_sink_sum_) out.append(v);
+            return out;
+        })
+        .def("trace_decay_sum", [](const EOSSolver& s) {
+            py::list out;
+            for (int64_t v : s.trace_decay_sum_) out.append(v);
+            return out;
+        })
         .def_readonly("digest_advect",      &EOSSolver::digest_advect)
         .def_readonly("digest_bulk_flux",   &EOSSolver::digest_bulk_flux)
         .def_readonly("digest_pstar",       &EOSSolver::digest_pstar)
@@ -3752,9 +3733,6 @@ PYBIND11_MODULE(breach_physics, m) {
              "cell in (P5b).")
         .def_property_readonly("atmos",
             [](PhysicsEngine& e) -> AtmosphereSolver& { return e.atmos; },
-            py::return_value_policy::reference_internal)
-        .def_property_readonly("smoke",
-            [](PhysicsEngine& e) -> SmokeDynamics& { return e.smoke; },
             py::return_value_policy::reference_internal)
         .def_property_readonly("fire",
             [](PhysicsEngine& e) -> FireSimulation& { return e.fire; },
