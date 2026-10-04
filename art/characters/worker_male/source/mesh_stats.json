@@ -7,7 +7,7 @@
  "Coverall": {
   "objects": 26,
   "source_tris": 365546,
-  "evaluated_tris": 1456508
+  "evaluated_tris": 1456316
  },
  "Hands": {
   "objects": 6,
@@ -22,7 +22,7 @@
  "TOTAL": {
   "objects": 56,
   "source_tris": 722908,
-  "evaluated_tris": 2089040
+  "evaluated_tris": 2088848
  },
  "NORMALS": {
   "flipped": [

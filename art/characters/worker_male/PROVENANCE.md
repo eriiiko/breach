@@ -87,7 +87,7 @@ thickness, clumps — long hair would need a new hair function); and a `sheet_re
   photographic edges), the hands (the model's fingers hang a little lower and more spread), the
   contact shadows the mask still catches under the artwork's boots, hair wisps, and the artwork's
   slight asymmetry (his weight and arms are not mirror images; the model is).
-- `source/mesh_stats.json`: 56 mesh objects, 722,908 source triangles, 2,089,040 after modifiers
+- `source/mesh_stats.json`: 56 mesh objects, 722,908 source triangles, 2,088,848 after modifiers
   (coverall 366 k, head and hair 189 k, boots 147 k, hands 21 k source). All 56 evaluated parts
   are closed; all face outward (the eyeballs are built inward and flipped by the check).
 - Full build with every render: about 2.6 minutes on this machine (OptiX).
