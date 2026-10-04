@@ -1676,6 +1676,26 @@ normal_map = true       # false = the mesh's own smooth normals
 normal_strength = 1.0   # 0 = no tilt .. 1 = the map as baked
 blob_shadow = true      # the round dark disc under each unit; false = none
 
+[render.unit_shadow]
+# The 3D units' SHARP projected shadows (#33, tier 1;
+# renderer/unit_shadow.py): each unit's posed model drawn once more, flattened
+# onto the floor and slid away from the light, as one flat see-through dark
+# shape. Independent of blob_shadow above. Read every frame (Ctrl+R). Every
+# key is required; a missing or mistyped one raises, naming it.
+enabled = true          # false = exactly the picture without them
+length = 0.75           # shadow length as a multiple of the unit's height:
+                        # ONE elevation for every light (tier 1)
+strength = 0.35         # the most the floor darkens (0..1) under a strong,
+                        # one-sided light
+# The shadow fades in with the light around the unit: 0 at or below each
+# threshold, full strength at twice it (the two multiply).
+min_brightness = 0.05   # the light's brightness in the ship shader's units
+                        # (incoming x sweep_gain x master_gain): a dark tile
+                        # casts nothing
+min_directionality = 0.2  # |net flux| / irradiance (0 = light evenly from
+                          # all sides, 1 = one beam): balanced light casts
+                          # nothing, so the direction never flickers
+
 [render.speckle]
 mode = "soot"              # "off" | "noise" | "soot"  (A/B in studio)
 amp = 0.25
