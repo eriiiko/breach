@@ -24,6 +24,10 @@ module and its `sheet_ref`, call `run(...)`:
     --scale S        beauty resolution scale (default 1.0)
     --samples N      Cycles samples (default 96, draft 24)
     --save           write source/<name>.blend and source/mesh_stats.json
+    --outline        slice the built body and print its outlines' worst direction change per cm, waist
+                     to knee, per view (`hipsview.measure`; source/<prefix>outline.json)
+    --hips           the hip pictures (hips.jpg, hips_vs_drawings.jpg, hips_before_after.jpg; needs
+                     tables.HIPS_BEFORE, tables.COMPARE_BAND and sheet_ref.SIDE / BACK): `hipsview.pictures`
 """
 import argparse
 import json
@@ -164,6 +168,8 @@ def run(root, name, tables, sheet_ref):
     ap.add_argument("--samples", type=int, default=0)
     ap.add_argument("--save", action="store_true")
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--outline", action="store_true")
+    ap.add_argument("--hips", action="store_true")
     args = ap.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else [])
 
     t0 = time.time()
@@ -172,6 +178,11 @@ def run(root, name, tables, sheet_ref):
     os.makedirs(source, exist_ok=True)
     prefix = (args.shape + "_" if args.shape else "") + (args.variant + "_" if args.variant else "")
 
+    if args.hips:
+        import hipsview
+        hipsview.pictures(tables, sheet_ref, previews, source, args, sys.modules[__name__])
+        print("done in %.1fs" % (time.time() - t0))
+        return
     if args.compare:
         (compare_shapes if hasattr(tables, "COMPARE") else compare)(tables, sheet_ref, previews, args)
         print("done in %.1fs" % (time.time() - t0))
@@ -179,6 +190,9 @@ def run(root, name, tables, sheet_ref):
 
     report, rig, cam, floor = build(tables, args.shape, args.variant, args.draft, args.samples)
     print("built in %.1fs" % (time.time() - t0))
+    if args.outline:
+        import hipsview
+        hipsview.measure(source, prefix)
     if args.save:
         path = os.path.join(source, prefix + "mesh_stats.json")
         stats = studio.mesh_stats(path)
@@ -317,6 +331,37 @@ def band_crop(S, img, z0, z1, half_w):
     cx = S.panels[0][1] - S.panel_slice(S.panels[0][0])[1].start
     hw = int(round(half_w / S.m_per_px))
     return img[r0:r1, max(cx - hw, 0):cx + hw]
+
+
+def concept_panel(sheet_ref, F):
+    """The concept placed at the front view's scale, over the backdrop, in the front sheet's frame."""
+    cf = sheet_ref.CONCEPT_FRAME
+    k = 1.0 / cf["scale"]
+    con = load_scaled(sheet_ref.CONCEPT_PATH, k)
+    h_img = F.size[1]
+    cpan = np.ones((h_img, F.size[0], 4), np.float32)
+    cpan[..., :3] = studio.to_srgb(studio.BACKDROP)
+    ox = int(round(F.panel_slice("front")[0] - cf["waist"][0] * k))
+    oy = int(round(cf["sheet_waist_row"] - cf["waist"][1] * k))
+    ch, cw = con.shape[:2]
+    y0, y1, x0, x1 = max(oy, 0), min(oy + ch, h_img), max(ox, 0), min(ox + cw, F.size[0])
+    cpan[y0:y1, x0:x1, :3] = con[y0 - oy:y1 - oy, x0 - ox:x1 - ox, :3]
+    return cpan
+
+
+def assemble_row(cells, title=None):
+    """[(RGBA image, label), ...] side by side, each under its label, a title strip above."""
+    h = max(p.shape[0] for p, _ in cells)
+    row = []
+    for p, lab in cells:
+        cell = np.ones((h, p.shape[1], 4), np.float32)
+        cell[..., :3] = studio.to_srgb(studio.BACKDROP)
+        cell[:p.shape[0]] = p
+        row += [np.concatenate([label_strip(lab, p.shape[1]), cell], axis=0), np.ones((h + 40, 10, 4), np.float32)]
+    img = np.concatenate(row[:-1], axis=1)
+    for t in reversed([title] if isinstance(title, str) else (title or [])):
+        img = np.concatenate([label_strip(t, img.shape[1], 44), img], axis=0)
+    return img
 
 
 def compare_shapes(tables, sheet_ref, previews, args):

@@ -189,7 +189,52 @@ class Suit:
             facing = np.clip(((-N[..., 1]) if side == "front" else N[..., 1]) - 0.15, 0.0, 0.45) / 0.45
             centre = np.clip((ax - 0.006) / 0.02, 0.0, 1.0) if side == "front" else 1.0
             d += h * np.exp(-((ax - x0) / sx) ** 2 - ((z - z0) / sz) ** 2) * facing * centre
+        if self.d.get("midline"):
+            d += self.midline_fillet(P, N)
         return d
+
+    # --- the centre line over the pelvis -----------------------------------------
+    # Above the crotch the half-body's section reaches past the centre line and is cut there (the
+    # mirror weld), so front and back the two halves meet at an angle: a V crease down the centre,
+    # whose weld follows the grid in steps. `dims["midline"]` = dict(front=w, back=w, z=(z_lo, z_hi),
+    # fade=m, s_max=s) fills that V with a smooth fillet reaching w (m) either side, as a smooth maximum of the
+    # two halves' surfaces: at the centre the surface then crosses the mid-plane square, so the two
+    # halves meet with no crease. The fillet grows in over `fade` above z_lo (the crotch, where the
+    # legs part) and is off where the halves meet steeper than `s_max` (the crotch itself).
+    def _midline_slopes(self):
+        """(z, |dy/dx| of the section where it crosses x = 0 in front, behind), nan where it does not."""
+        if not hasattr(self, "_mls"):
+            ml = self.d["midline"]
+            zs = np.arange(ml["z"][0], ml["z"][1] + 1e-9, 0.001)
+            zt, tt = self._zt_table()
+            ph = np.linspace(-math.pi, math.pi, 1441)
+            sf, sb = np.full(len(zs), np.nan), np.full(len(zs), np.nan)
+            for i, z in enumerate(zs):
+                Q = self.B.pos(ph, np.full(ph.shape, float(np.interp(z, zt, tt))))
+                for half, out in ((Q[:, 1] < self.centre_y(z)[0], sf), (Q[:, 1] >= self.centre_y(z)[0], sb)):
+                    q = Q[half]
+                    q = q[np.argsort(q[:, 0])]
+                    if q[0, 0] < 0.0 < q[-1, 0]:
+                        j = int(np.searchsorted(q[:, 0], 0.0))
+                        dx = q[j, 0] - q[j - 1, 0]
+                        out[i] = abs((q[j, 1] - q[j - 1, 1]) / dx) if dx > 1e-9 else np.inf
+            self._mls = (zs, sf, sb)
+        return self._mls
+
+    def midline_fillet(self, P, N):
+        ml = self.d["midline"]
+        zs, sf, sb = self._midline_slopes()
+        P = np.asarray(P, float)
+        ax, z = np.abs(P[..., 0]), P[..., 2]
+        back = P[..., 1] >= self.centre_y(np.clip(z, zs[0], zs[-1]).ravel()).reshape(z.shape)
+        s = np.where(back, np.interp(z, zs, np.nan_to_num(sb, nan=-1.0)), np.interp(z, zs, np.nan_to_num(sf, nan=-1.0)))
+        w = np.where(back, ml.get("back", 0.0), ml.get("front", 0.0))
+        k = 2.0 * s * w * np.clip((z - ml["z"][0]) / ml.get("fade", 0.02), 0.0, 1.0) * ((z >= zs[0]) & (z <= zs[-1]))
+        on = (s > 0.0) & (s < ml.get("s_max", 3.0)) & (k > 1e-9)
+        s, k = np.where(on, s, 1.0), np.where(on, k, 1.0)
+        a = s * ax
+        f = kit.smax(a, -a, k) - a
+        return np.where(on, np.maximum(f, 0.0), 0.0)
 
     def lift(self, P, N):
         """Everything that displaces the body's surface (for pieces laid on it)."""
@@ -433,6 +478,60 @@ def _clean(obj, dist=2e-5):
     return obj
 
 
+def weld_rows(post, snap=None):
+    """A grid post (kit.loft_mesh) for the half-body: `post` first (on the flat vertex list), then in
+    every row (a section) the run of vertices at or past the mid-plane (x <= SNAP) is moved onto the
+    point where that row's surface crosses x = 0 -- the front part of the run onto the front crossing,
+    the back part onto the back one, each found by interpolating between the run's end and its
+    neighbour on the surface. The plain clamp (x -> 0, y kept) puts those vertices on the mid-plane
+    at whatever y they had, so the weld line steps from row to row wherever the section meets the
+    mid-plane at an angle (above the crotch); here it runs along the true crossing, smooth in height.
+    Faces lying wholly in the run collapse and are dropped by the snap's `drop` as before."""
+    from workwear import SNAP as _SNAP
+    snap = _SNAP if snap is None else snap
+
+    def f(G):
+        R, C, _ = G.shape
+        return np.asarray(post(G.reshape(-1, 3)), float).reshape(R, C, 3).copy()
+
+    def g(G):
+        R, C, _ = G.shape
+        X = np.asarray(G, float).reshape(R, C, 3)
+        raw = X[..., 0].copy()
+        X = f(X)
+        for r in range(R):
+            run = raw[r] <= snap
+            if not run.any() or run.all():
+                continue
+            # the run is one circular arc of columns: start where a positive column is followed by a run column
+            starts = np.flatnonzero(~run & np.roll(run, -1))
+            ends = np.flatnonzero(run & np.roll(~run, -1))
+            if len(starts) != 1 or len(ends) != 1:
+                continue
+            c0, c1 = (starts[0] + 1) % C, ends[0]           # first and last run column
+            p0, q0 = X[r, starts[0]], np.array([raw[r, c0], X[r, c0, 1], X[r, c0, 2]])
+            p1, q1 = X[r, (c1 + 1) % C], np.array([raw[r, c1], X[r, c1, 1], X[r, c1, 2]])
+
+            def cross(p, q):
+                a, b = p[0], q[0]
+                w = a / (a - b) if b < 0.0 else 1.0  # no true crossing (a grazing run): the run's end itself
+                out = p + w * (q - p)
+                out[0] = 0.0
+                return out
+
+            A, B = cross(p0, q0), cross(p1, q1)
+            cols = (c0 + np.arange((c1 - c0) % C + 1)) % C
+            front = X[r, cols, 1] < 0.5 * (A[1] + B[1])
+            if A[1] > B[1]:
+                A, B = B, A
+            X[r, cols[front]] = A
+            X[r, cols[~front]] = B
+        return X
+
+    g.grid = True
+    return g
+
+
 def sleeve_to_join(S, mat, coll="Suit"):
     """The sleeve from the wrist up to the shoulder's join line (Suit.t_join), its top edge exactly
     on that line: a grid whose rows stretch per column, t = u * t_join(phi)."""
@@ -589,6 +688,8 @@ def build_suit(S, M, coll="Suit"):
         snap["post"] = lambda P: CLAMP_SNAP["post"](S.body_onto_cut(P, lambda Q, Nq: S.forms(Q, Nq) + S.edge_lift(Q, Nq)))
     elif patch:
         snap["drop"] = lambda P: CLAMP_SNAP["drop"](P) | S.give_way(P)[1]
+    if d.get("midline"):  # the weld exactly on the section's crossing of the mid-plane, row by row
+        snap["post"] = weld_rows(snap["post"])
     suit_end = d["boot"].get("implicit", {}).get("suit_end")
     if suit_end:  # inside an implicit boot the suit's leg ends (its foot is the boot's)
         drop0 = snap["drop"]

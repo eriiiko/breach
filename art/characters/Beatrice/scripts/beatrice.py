@@ -15,11 +15,18 @@ This file is DATA; the figure is built by `charkit/bodysuit.py`:
             is the body's own surface): heights, limbs, shoulders, arms and torso above the
             waist, knees and below fitted to the front view; hips, seat and thighs to the
             CONCEPT's proportions (Erik: the front views' hips and seat are too wide)
-  SHAPES    shape variants (row overrides): `sheet_hips` = the front view's wide hips and thighs
+  PELVIS    stage 4: knee to waist authored as its OUTLINES (charkit/profiles.edge_rows), at the owner's
+            "one step slimmer" size, the waist pinched; SEAT and MIDLINE finish its surface
+  SHAPES    shape variants: `slimmer` / `fuller` = a step of the pelvis either side of the default;
+            `stage3` (the previous default), `stage3_slim`, `sheet_hips` = the stage-3 row construction
   HEAD      the placeholder head (`charkit/parts.py::head`)
 
 Faces -Y, +X is her LEFT; heights in metres from the soles.
 """
+import numpy as np
+
+import profiles
+
 HEIGHT = 1.68
 PREFIX = "beatrice"
 
@@ -84,7 +91,7 @@ HIPS = (
 # deepest point at the waist, 5 cm in front of the seat). Stage 3: the drawn S-curve -- the upper back
 # rounded (fullest at the shoulder blades), the lumbar hollow deeper at the waist, the chest lifted
 TORSO = (
-    ("waist", 1.140, .000, -.027, .094, .077, .069, 2.15, 1),
+    ("waist", 1.140, .000, -.027, .090, .077, .069, 2.15, 1),   # stage 4: pinched (.094 before)
     ("waist_top", 1.180, .000, -.029, .099, .081, .075, 2.15, 1),
     ("ribs", 1.220, .000, -.028, .112, .090, .086, 2.2, 1),
     ("chest_low", 1.250, .000, -.0265, .122, .0995, .0965, 2.25, 1),
@@ -100,8 +107,78 @@ TORSO = (
     ("neck_top", 1.462, .000, .012, .040, .039, .043, 2.0, 1),
 )
 
-# Shape variants: rows replaced by landmark name.
+# Stage 4: the PELVIS as outlines (charkit/profiles.edge_rows). From above the knee to under the waist
+# the trunk is authored as its silhouettes, each a smooth function of height, and generated as level
+# rows every 5 mm: the hand-set HIPS rows above left the outline as straight pieces meeting in a corner
+# at the crotch (the leg rows held the outer edge upright, the hip rows ran it in a straight line to
+# the waist). Widths at the owner's "one step slimmer"; the waist pinched (concept: hip / waist 1.79).
+#   outer  front view, the left half's outer edge: from the pinched waist ONE swell to its widest just
+#          under the crotch, easing into a near-upright outer thigh down to the knee
+#   inner  the gap between the legs: a rounded arch at the crotch (z 0.887), the inner thighs opening
+#          evenly below it; above it the half-section's reach past the centre line (centred from 1.07)
+#   front  side view: belly, groin, the thigh's forward swell into the knee
+#   back   side view: the lumbar hollow, a moderate round seat whose lower half runs on into the back
+#          of the thigh (no fold, no shelf)
+PELVIS = dict(
+    name="pelvis", z=(0.665, 1.135), step=0.005, level_from=0.80, inner_meets_outer=1.07, interp=dict(inner=("pchip", 0.895, 0.93)),
+    outer=((0.70, .1635), (0.74, .1626), (0.78, .1623), (0.81, .1623), (0.84, .1615), (0.87, .1589), (0.90, .1544),
+           (0.93, .1482), (0.96, .1406), (0.99, .1318), (1.02, .1220), (1.05, .1115), (1.08, .1010), (1.11, .0935)),
+    inner=((0.70, .0535), (0.71, .0510), (0.74, .0430), (0.77, .0340), (0.80, .0270), (0.83, .0210), (0.85, .0170), (0.865, .0135),
+           (0.875, .0100), (0.880, .0075), (0.884, .0045), (0.887, .0000), (0.895, -.0090), (0.910, -.0280), (0.930, -.0500),
+           (0.960, -.0800)),
+    front=((0.70, -.0815), (0.74, -.0905), (0.77, -.0950), (0.80, -.0968), (0.83, -.0972), (0.86, -.0966), (0.89, -.0960),
+           (0.92, -.0965), (0.96, -.0978), (1.00, -.0993), (1.04, -.1015), (1.08, -.1033), (1.11, -.1040)),
+    back=((0.70, .0600), (0.74, .0638), (0.78, .0665), (0.81, .0680), (0.84, .0705), (0.87, .0750), (0.90, .0810),
+          (0.93, .0848), (0.955, .0858), (0.98, .0845), (1.01, .0800), (1.04, .0720), (1.07, .0610), (1.10, .0485), (1.12, .0440),
+          (1.13, .0428)),
+    cy=((0.72, -.012), (0.80, -.014), (0.86, -.012), (0.92, -.008), (0.98, -.008), (1.04, -.018), (1.10, -.026)),
+    n=((0.72, 2.10), (0.84, 2.15), (0.90, 2.15), (0.98, 2.15), (1.06, 2.15)),
+)
+# the seat's roundness over the profile (bodysuit.Suit.forms): two broad rounds either side of the centre
+SEAT = (0.056, 0.945, "back", 0.054, 0.065, 0.006)
+# the centre line over the pelvis (bodysuit.Suit.midline_fillet): the V where the half-sections are cut at
+# the mid-plane filled with a smooth fillet, broad in front (no crease down the front of the pelvis), narrow
+# behind (a soft cleft between the seat's two rounds)
+MIDLINE = dict(front=0.020, back=0.008, z=(0.887, 1.12), fade=0.03, s_max=3.0)
+
+# A step of the pelvis (the comparison's "one step slimmer / fuller"): the outer edge (about the inner), the seat's depth
+# behind the section centre and the section's reach past the centre line scaled by k, fully from the
+# thigh (`full`) to the seat and fading to nothing at the waist and above the knee (`fade`). Table values only.
+PELVIS_STEP = dict(full=(0.82, 1.00), fade=(0.68, 1.11))
+
+
+def pelvis(k=1.0):
+    if k == 1.0:
+        return PELVIS
+    (f0, f1), (e0, e1) = PELVIS_STEP["full"], PELVIS_STEP["fade"]
+
+    def w(z):
+        if z < f0:
+            return max(0.0, (z - e0) / (f0 - e0))
+        return max(0.0, min(1.0, (e1 - z) / (e1 - f1)))
+
+    cz, cv = [c[0] for c in PELVIS["cy"]], [c[1] for c in PELVIS["cy"]]
+    cy = lambda z: float(np.interp(z, cz, cv))
+    sp = dict(PELVIS)
+    # the outer edge about the inner one (the leg's own width below the crotch, the centre line above)
+    iz, iv = [c[0] for c in PELVIS["inner"]], [max(c[1], 0.0) for c in PELVIS["inner"]]
+    ref = lambda z: float(np.interp(z, iz, iv))
+    sp["outer"] = tuple((z, ref(z) + (v - ref(z)) * (1.0 + (k - 1.0) * w(z))) for z, v in PELVIS["outer"])
+    sp["back"] = tuple((z, cy(z) + (v - cy(z)) * (1.0 + (k - 1.0) * w(z))) for z, v in PELVIS["back"])
+    # the gap stays the gap; above the crotch the section's reach past the centre line goes with the outer edge
+    sp["inner"] = tuple((z, v if v >= 0.0 else v * (1.0 + (k - 1.0) * w(z))) for z, v in PELVIS["inner"])
+    return sp
+
+
+# Shape variants. `pelvis` = a step of the pelvis profile (above); `rows` = the stage-3 construction
+# (the HIPS rows, replaced by landmark name, the waist as it was), kept for comparison and as the suit
+# design's frame (`feature_frame`: the drawing's own figure)
+WAIST3 = ("waist", 1.140, .000, -.027, .094, .077, .069, 2.15, 1)
 SHAPES = dict(
+    slimmer=dict(pelvis=0.93, seat=(0.056, 0.945, "back", 0.052, 0.065, 0.0045)),
+    fuller=dict(pelvis=1.07, seat=(0.058, 0.945, "back", 0.056, 0.065, 0.0075)),
+    # stage 3's default (the previous default, for the before/after comparison)
+    stage3=dict(rows=(WAIST3,), seat=(0.058, 0.960, "back", 0.058, 0.062, 0.009)),
     # the front view's own hips and thighs (wider), for comparison by eye
     # (the three modelling-pose drawings' widths AND the side view's full seat and thigh depth)
     sheet_hips=dict(rows=(
@@ -113,9 +190,10 @@ SHAPES = dict(
         ("hip", 0.970, .020, -.002, .150, .102, .106, 2.25, 1),
         ("seat", 1.010, .000, -.006, .1545, .101, .100, 2.25, 1),
         ("belly_low", 1.060, .000, -.025, .134, .086, .086, 2.2, 1),
+        WAIST3,
     ), seat=(0.060, 0.960, "back", 0.062, 0.066, 0.014)),
-    # one step slimmer than the default (hip widths about 7 % narrower, the seat a little flatter)
-    slim=dict(rows=(
+    # stage 3's "one step slimmer" (the owner's choice of size: hip widths about 7 % under stage 3's default)
+    stage3_slim=dict(rows=(
         ("thigh_low", 0.720, .1065, -.012, .0545, .072, .072, 2.1, 0),
         ("thigh", 0.780, .0955, -.014, .0650, .077, .077, 2.1, 0),
         ("thigh_top", 0.840, .0875, -.0135, .0730, .082, .082, 2.15, 0),
@@ -124,13 +202,16 @@ SHAPES = dict(
         ("hip", 0.970, .020, -.006, .112, .092, .092, 2.25, 1),
         ("seat", 1.010, .000, -.009, .117, .092, .090, 2.25, 1),
         ("belly_low", 1.060, .000, -.025, .102, .081, .081, 2.2, 1),
+        WAIST3,
     ), seat=(0.056, 0.960, "back", 0.054, 0.058, 0.006)),
 )
 
 # The hips comparison (`--compare`, shape_vs_concept.jpg): (shape, label), slimmest first, and the
 # height band it shows (waist to knee, metres)
-COMPARE = (("slim", "one step slimmer"), ("", "default"), ("sheet_hips", "sheet_hips (drawings)"))
+COMPARE = (("slimmer", "one step slimmer"), ("", "default (stage 4)"), ("fuller", "one step fuller"))
 COMPARE_BAND = (0.56, 1.22)
+# the hip pictures' "before" (`--hips`, hips_before_after.jpg): the previous default
+HIPS_BEFORE = "stage3"
 
 # The concept's proportions, measured by hand on `concept.jfif` (three-quarter view, walking,
 # cropped at the crotch). Only the FAR side (her left, image right) shows hip and thigh free of
@@ -145,11 +226,13 @@ CONCEPT = dict(hip_shoulder=278 / 305, hip_waist=278 / 155, thigh_hip=268 / (2 *
 
 
 def _rows(shape=None):
-    rows = list(LEGS + HIPS + TORSO)
-    if shape:
-        over = {r[0]: r for r in SHAPES[shape]["rows"]}
-        rows = [over.get(r[0], r) for r in rows]
-    return tuple(rows)
+    sh = SHAPES[shape] if shape else {}
+    if "rows" in sh:  # the stage-3 construction: landmark rows
+        over = {r[0]: r for r in sh["rows"]}
+        return tuple(over.get(r[0], r) for r in LEGS + HIPS + TORSO)
+    sp = pelvis(sh.get("pelvis", 1.0))
+    legs = tuple(r for r in LEGS if r[1] < sp["z"][0])
+    return legs + profiles.edge_rows(sp, below=legs[-3:], above=TORSO[:3]) + TORSO
 
 
 # The sleeve, wrist -> a root ring sunk inside the shoulder: (landmark, centre x, y, z,
@@ -189,7 +272,7 @@ ARM_SEAM = (1.228, 1.266)
 # broad body forms under the suit (x0, z0, side, sx, sz, height): the bust and the seat's
 # roundness, nothing anatomical beyond them
 FORMS = ((0.060, 1.286, "front", 0.044, 0.040, 0.035),
-         (0.058, 0.960, "back", 0.058, 0.062, 0.009))
+         SEAT)
 
 
 def dims(shape=None):
@@ -210,6 +293,7 @@ def dims(shape=None):
                   # the bare hand (charkit/parts.py::bare_hand): its defaults are her slender hand
                   bare=dict()),
         forms=(FORMS[0], sh.get("seat", FORMS[1])) + FORMS[2:],
+        midline=None if "rows" in sh else MIDLINE,
         garment=dict(
             cloth=0.002,
             armhole=dict(x=0.128, z=1.370, tilt=4.0),
@@ -272,8 +356,10 @@ def dims(shape=None):
                     # from the raglan seam at the back of the armpit down past the rib and waist panels, round the hip
                     (("bx", .119, 1.326), ("bx", .104, 1.280), ("bx", .090, 1.230), ("bx", .074, 1.190), ("bx", .068, 1.160),
                      ("bx", .076, 1.120), ("bx", .098, 1.070), ("bx", .120, 1.030), ("bx", .131, .996)),
-                    # under the seat: the hip round to the crotch
-                    (("phi", 0, 1.030), ("bx", .128, .985), ("bx", .098, .940), ("bx", .060, .912), ("bx", .025, .899), ("bx", .004, .896)),
+                    # round the seat (stage 4, as the back view draws it): from the hip down the seat's outer side, then
+                    # level along its foot to the centre -- a broad U, not the stage-3 diagonal "heart"
+                    (("phi", 0, 1.030), ("bx", .131, .990), ("bx", .128, .955), ("bx", .114, .928), ("bx", .090, .913), ("bx", .060, .906),
+                     ("bx", .030, .902), ("bx", .004, .898)),
                     # centre back, below the zip
                     (("phi", -90, 0.898), ("phi", -90, 1.165)),
                     # down the back of the calf from the knee to the boot
@@ -300,13 +386,14 @@ def dims(shape=None):
                 # the back's sides at the ribs (from the side down and in towards the spine) and at the waist (a lens)
                 dict(name="Back_Rib", drop=dict(a=("phi", -16, 1.268), b=("bx", .058, 1.204), w=0.0100, bow=0.10)),
                 dict(name="Back_Waist", drop=dict(a=("bx", .076, 1.168), b=("bx", .102, 1.098), w=0.0075, bow=0.10, blunt=0.0)),
-                # the outer thigh: a long almond from the hip down to the knee on the side and back of the thigh
-                # (side view: its straight edge behind, its front edge bowing forward at mid-thigh), dark grey: the
-                # net over the suit, not skin
+                # the outer thigh: a long almond from the hip down to the knee on the side of the thigh, dark grey: the
+                # net over the suit, not skin. Stage 4: both edges bow well in from the outline at mid-thigh (front
+                # view: the front edge ~3 cm inside, as drawn; back view: the back edge likewise), so neither reads
+                # as a second outline beside the silhouette
                 dict(name="Thigh", mat="mesh_thigh",
-                     pts=(("phi", 2, 0.992), ("phi", 18, .955), ("phi", 34, .900), ("phi", 44, .840), ("phi", 44, .780), ("phi", 34, .720),
-                          ("phi", 18, .680), ("phi", 6, .662), ("phi", -8, .690), ("phi", -16, .760), ("phi", -20, .840),
-                          ("phi", -16, .920), ("phi", -6, .968))),
+                     pts=(("phi", 2, 0.992), ("phi", 22, .955), ("phi", 42, .905), ("phi", 55, .845), ("phi", 58, .785), ("phi", 50, .730),
+                          ("phi", 32, .690), ("phi", 6, .662), ("phi", -12, .690), ("phi", -30, .750), ("phi", -42, .820),
+                          ("phi", -44, .870), ("phi", -36, .920), ("phi", -20, .962), ("phi", -6, .985))),
             ),
         ),
         boot=dict(

@@ -302,8 +302,8 @@ def loft_mesh(name, loft, t0=0.0, t1=None, phi0=0.0, phi1=TAU, res=None, rows=No
         P = P + np.asarray(disp(g), float).ravel()[:, None] * N
     vattrs = {k: np.asarray(f(g), float).ravel() for k, f in (attrs or {}).items()}
     dropv = drop(P) if drop is not None else None
-    if post is not None:
-        P = post(P)
+    if post is not None:  # a post marked `grid` sees the vertices as the (rows, cols, 3) grid
+        P = post(P.reshape(R, C, 3)).reshape(-1, 3) if getattr(post, "grid", False) else post(P)
     idx = np.arange(R * C).reshape(R, C)
     if closed:
         nxt = np.roll(idx, -1, axis=1)
