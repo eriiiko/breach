@@ -2,8 +2,8 @@
 
 **Issue:** #12, the fire + smoke session, step 3.
 **Branch:** `12-smoke-transport`, cut off `fire-12`.
-**Status:** v2. Three critique lenses have been run and folded in (§12). One ruling
-is still open for Erik (§11, D1).
+**Status:** v2, APPROVED by Erik 2026-10-04 (D1 ruled (a); "Let's go").
+Three critique lenses have been run and folded in (§12).
 **Depends on:** `docs/smoke_transport_handoff_2026-10-04.md` (the problem) and the
 #12 comments of 2026-10-04, which hold the measurements and the look spike
 (`prototypes/smoke_transport_spike/`, untracked).
@@ -357,8 +357,13 @@ Nothing pins a count or a set of gases.
 
 ## 11. Decisions
 
-**Open, for Erik:**
-- **D1, the deposit ceiling.** FieldEdit's `"smoke"` / `"gas"` policies clamp the
+**Ruled by Erik:**
+- **D1 = (a), ruled 2026-10-04.** Erik: "I don't want smoke deposits to cut the
+  whole tile to 1. I want smoke adding to be additive." So every trace ADD edit
+  through FieldEdit adds exactly its amount, with no upper clamp, and the tile's
+  existing trace is never cut. (Only the lower bound stays, at 0 for REMOVE
+  edits.)
+- **D1, the deposit ceiling (as put to Erik).** FieldEdit's `"smoke"` / `"gas"` policies clamp the
   WHOLE tile to [0, 1] after old + contribution (`field_edit.py:219,227,488-498`;
   `payloads.py:87`, `physics.py:180`, `combat.py:1372`). Under conservation, a
   deposit onto a compressed tile above 1 destroys smoke that was already there.
