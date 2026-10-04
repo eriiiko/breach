@@ -51,12 +51,13 @@ VARIANTS = dict(
 # the mid-plane. Front-view half-widths from the drawing (`build.py --sheet` prints them);
 # the depths are hers by design (no side view): a slender, athletic profile.
 LEGS = (
-    # (centres a little in from the front view's: the back view stands narrower; the two drawings split)
+    # (centres a little in from the front view's: the back view stands narrower; the two drawings split;
+    # stage 3: ankle and boot 1 mm further out, for the slimmer boot)
     ("leg_end", 0.055, 0.1921, .020, .034, .060, .062, 2.0, 0),
-    ("instep", 0.115, 0.1891, .024, .0265, .036, .040, 2.0, 0),       # stage 3: inside the boot, slim (the boot's foot is its own)
-    ("ankle", 0.170, 0.1851, .028, .026, .042, .040, 2.0, 0),
-    ("ankle_top", 0.240, 0.1801, .0235, .027, .0385, .0385, 2.0, 0),
-    ("shin_low", 0.300, 0.1775, .0265, .031, .0415, .0415, 2.0, 0),
+    ("instep", 0.115, 0.1901, .024, .0265, .036, .040, 2.0, 0),       # stage 3: inside the boot, slim (the boot's foot is its own)
+    ("ankle", 0.170, 0.1861, .028, .026, .042, .040, 2.0, 0),
+    ("ankle_top", 0.240, 0.1811, .0235, .027, .0385, .0385, 2.0, 0),
+    ("shin_low", 0.300, 0.1782, .0265, .031, .0415, .0415, 2.0, 0),
     ("shin", 0.360, 0.1719, .0285, .041, .0495, .0495, 2.0, 0),
     ("calf_low", 0.400, 0.1666, .031, .051, .057, .057, 2.0, 0),
     ("calf", 0.440, 0.1613, .032, .056, .064, .064, 2.0, 0),
@@ -310,7 +311,7 @@ def dims(shape=None):
             ),
         ),
         boot=dict(
-            ankle=(0.187, 0.028), toe_out=7.0,
+            ankle=(0.1885, 0.028), toe_out=12.0,   # stage 3: the drawings turn the feet out a little more
             # the foot, toe -> heel: (y along the foot, centre height, half-width, up, down); on a LOW heel
             # (Erik: about 3 cm), an almond toe
             foot=((-0.170, .015, .005, .007, .008), (-0.162, .017, .013, .011, .011), (-0.148, .019, .020, .016, .013),
@@ -332,7 +333,7 @@ def dims(shape=None):
                       (-0.068, 0.037, 0.0300, 0.0200), (-0.098, 0.025, 0.0310, 0.0150), (-0.128, 0.019, 0.0265, 0.0115),
                       (-0.150, 0.016, 0.0175, 0.0090), (-0.160, 0.0150, 0.0085, 0.0060)),
                 sole_line=((0.002, 0.032), (-0.088, 0.008), (-0.166, 0.013)),
-                top=(0.232, 0.016, 0.95), ease=(0.0022, 0.0032), n=2.8, shaft_low=0.080, k=0.020,
+                top=(0.232, 0.016, 0.95), ease=(0.0022, 0.0048), n=2.8, shaft_low=0.080, k=0.020,
                 sole=(0.0045, 0.012), heel=(0.032, 0.0185, 0.0205, 0.82),
                 suit_end=0.100, res=(0.0009, 0.0020)),
         ),

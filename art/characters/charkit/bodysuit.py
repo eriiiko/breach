@@ -410,6 +410,29 @@ class Suit:
         return sh.get("sink", 0.0008) * np.clip((dep - 1.5 * h) / (1.5 * h), 0.0, 1.0), dep > 4.0 * h
 
 
+def _clean(obj, dist=2e-5):
+    """Weld the coincident vertices a trim leaves (several snapped onto the same point of a cut), drop
+    the faces that collapse and any edge shared by more than two faces, so solidify closes the sheet."""
+    import bmesh
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=dist)
+    bmesh.ops.dissolve_degenerate(bm, edges=bm.edges, dist=dist)
+    bad = [f for f in bm.faces if f.calc_area() < 1e-12]
+    if bad:
+        bmesh.ops.delete(bm, geom=bad, context="FACES")
+    for _ in range(3):  # a non-manifold fan (surface nets' rare ambiguous cell): drop its faces
+        nm = [e for e in bm.edges if len(e.link_faces) > 2]
+        if not nm:
+            break
+        bmesh.ops.delete(bm, geom=list({f for e in nm for f in e.link_faces}), context="FACES")
+    bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context="VERTS")
+    bm.to_mesh(obj.data)
+    bm.free()
+    obj.data.update()
+    return obj
+
+
 def sleeve_to_join(S, mat, coll="Suit"):
     """The sleeve from the wrist up to the shoulder's join line (Suit.t_join), its top edge exactly
     on that line: a grid whose rows stretch per column, t = u * t_join(phi)."""
@@ -495,6 +518,7 @@ def build_shoulder(S, mat, coll="Suit"):
     G = np.stack([(S.union_field(V + e * a) - S.union_field(V - e * a)) / (2 * e) for a in np.eye(3)], axis=1)
     V = V - (sh.get("dip", 0.0 if "cut" in sh else 0.0003) * np.clip(1.0 - dep / (2.5 * h), 0.0, 1.0))[:, None] * unit(G)
     obj = kit.new_mesh("Suit_Shoulder", V, Q, None, mat, coll)
+    _clean(obj)
     solid(obj, S.d["garment"]["cloth"], bevel=0.0)
     obj.modifiers["Solidify"].use_even_offset = False  # an open patch's ragged edge would spike
     return mirror(obj)
