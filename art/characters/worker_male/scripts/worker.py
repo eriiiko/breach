@@ -18,18 +18,18 @@ HEIGHT = 1.80
 
 # ---------------------------------------------------------------------- palette
 PALETTE = dict(
-    SKIN="#9a6a56",
+    SKIN="#946b5a",
     HAIR="#2f2722",
-    COVERALL="#343a4a",     # faded navy work twill
+    COVERALL="#283043",     # faded navy work twill
     UNDERSHIRT="#303131",
-    BOOT="#4a3f37",          # worn brown-grey leather
+    BOOT="#3a322c",          # worn brown-grey leather
     METAL="#7d776c",         # zips, buttons, snaps, eyelets
     SOLE="#22201e",
     LACE="#2a2420",
     STITCH="#8f7f66",        # the contrast thread of the seams
     SCLERA="#d9d2c8",
     IRIS="#5a4a3a",
-    GRIME="#8f7c64",         # what full-strength dirt MULTIPLIES the cloth and leather by
+    GRIME="#b39466",         # what full-strength dirt MULTIPLIES the cloth and leather by
     LIP_TINT=(1.0, 0.80, 0.78),  # lips = skin times this
 )
 DIRT = 1.0
@@ -46,17 +46,17 @@ VARIANTS = dict(
 DIMS = dict(
     # The coverall's outer surface, ONE half (x >= 0), trouser hem -> neckline. A row is
     # (landmark, height z, centre x, centre y, half-width, half-depth to the front, to the
-    # back, superellipse exponent, level section 0/1). Below the crotch a row is one leg
+    # back, superellipse exponent, section plane: 0 follows the limb, 1 level, or a normal). Below the crotch a row is one leg
     # (the stance is in its centre x); above, the section grows into half the pelvis and
     # is welded to its mirror at x = 0.
     trunk=(
-        ("hem", 0.100, .198, .048, .078, .090, .098, 2.0, 0),
+        ("hem", 0.122, .198, .048, .078, .090, .098, 2.0, (0.0, 0.45, 1.0)),
         ("boot_top", 0.170, .192, .055, .076, .096, .097, 2.0, 0),
         ("shin_low", 0.240, .192, .058, .082, .093, .094, 2.0, 0),
         ("shin", 0.320, .176, .057, .084, .098, .098, 2.0, 0),
         ("calf", 0.400, .170, .050, .085, .102, .100, 2.0, 0),
-        ("knee", 0.480, .162, .034, .082, .110, .110, 2.0, 0),
-        ("knee_top", 0.560, .148, .020, .084, .114, .116, 2.0, 0),
+        ("knee", 0.480, .162, .034, .079, .110, .110, 2.0, 0),
+        ("knee_top", 0.560, .148, .020, .081, .114, .116, 2.0, 0),
         ("thigh_low", 0.640, .133, .010, .085, .112, .116, 2.0, 0),
         ("thigh", 0.720, .121, .006, .098, .118, .122, 2.1, 0),
         ("crotch", 0.780, .110, .002, .100, .120, .124, 2.2, 1),
@@ -70,7 +70,7 @@ DIMS = dict(
         ("chest", 1.310, .000, .012, .198, .150, .155, 2.5, 1),
         ("chest_top", 1.390, .000, .022, .195, .143, .146, 2.5, 1),
         ("shoulder", 1.450, .000, .030, .168, .125, .126, 2.5, 1),
-        ("yoke", 1.500, .000, .032, .125, .098, .095, 2.4, 1),
+        ("yoke", 1.500, .000, .032, .140, .098, .095, 2.4, 1),
         ("neck", 1.535, .000, .028, .090, .078, .070, 2.2, 1),
     ),
     # The sleeve, cuff -> shoulder root, turning in over the shoulder: (landmark, centre
@@ -83,25 +83,25 @@ DIMS = dict(
         ("upper", .282, .028, 1.200, .066, .064),
         ("biceps", .246, .028, 1.290, .066, .066),
         ("deltoid", .217, .026, 1.370, .065, .066),
-        ("shoulder", .186, .025, 1.425, .058, .062),
-        ("root", .140, .028, 1.452, .050, .056),
-        ("root_in", .100, .030, 1.462, .044, .050),
+        ("shoulder", .188, .025, 1.436, .058, .062),
+        ("root", .142, .028, 1.462, .050, .056),
+        ("root_in", .100, .030, 1.470, .044, .050),
     ),
     elbow_z=1.110,
     armpit_z=1.240,
     crotch_z=0.785,
-    hand=dict(scale=1.04, curl=1.15, girth=0.80, palm_girth=1.0, drop=0.010,
-              down=(0.12, -0.10, -1.0), back=(0.95, -0.25, 0.0),
+    hand=dict(scale=1.04, curl=1.5, girth=0.80, palm_girth=1.0, drop=0.010,
+              down=(0.20, -0.10, -1.0), back=(0.80, -0.60, 0.0),
               # bare palm sections, wrist -> knuckles: (distance down the hand, half-width, half-thickness)
               palm=((-0.040, .026, .021), (-0.012, .028, .020), (0.015, .036, .018), (0.045, .042, .0165),
                     (0.072, .044, .015), (0.092, .042, .013), (0.102, .035, .008))),
     boot=dict(
-        ankle=(0.206, 0.058), toe_out=10.0, sole=(0.030, 0.038), welt=0.006,
+        ankle=(0.207, 0.058), toe_out=9.0, sole=(0.030, 0.038), welt=0.006,
         # foot, toe -> heel: (y along the foot from the ankle, half-width, height of the upper)
-        profile=((-0.245, .004, .014), (-0.240, .026, .032), (-0.225, .042, .058), (-0.200, .050, .068), (-0.160, .053, .076),
-                 (-0.120, .052, .084), (-0.080, .050, .098), (-0.040, .048, .114), (0.000, .048, .125), (0.035, .046, .128),
-                 (0.060, .042, .118), (0.078, .032, .095), (0.086, .016, .060), (0.088, .004, .030)),
-        toe_cap_y=-0.170, vamp_y=-0.110, shaft_y=-0.004, lace_half=0.016,
+        profile=((-0.245, .004, .014), (-0.240, .024, .032), (-0.225, .040, .050), (-0.200, .048, .058), (-0.160, .051, .066),
+                 (-0.120, .050, .076), (-0.080, .048, .094), (-0.040, .046, .114), (0.000, .046, .125), (0.035, .044, .128),
+                 (0.060, .040, .118), (0.078, .030, .095), (0.086, .016, .060), (0.088, .004, .030)),
+        toe_cap_y=-0.170, vamp_y=-0.120, lace_top_y=-0.030, lace_rows=4, shaft_y=-0.004, lace_half=0.014,
         # ankle shaft: (z, half-width, front, back)
         shaft=((0.040, .050, .058, .060), (0.090, .052, .056, .060), (0.130, .053, .056, .058), (0.165, .055, .058, .060), (0.178, .058, .062, .064)),
     ),
@@ -113,14 +113,14 @@ DIMS = dict(
         zip_bottom_z=0.905,
         notch=(0.042, 0.095),         # the open neck: half-width at the top, depth
         waistband=(1.072, 1.114),
-        elastic_ripples=150,          # gathers round the whole waist (only the back gathers)
+        elastic_ripples=90,          # gathers round the whole waist (only the back gathers)
         yoke_back_z=1.430,
         cuff=(0.932, 0.975),
         collar=dict(gap=24.0, stand=0.028, edge_drop=0.042, point_drop=0.045),
         chest_pocket=dict(z=1.290, x=0.085, hs=0.055, ht=0.080, zip_dt=0.020),
         sleeve_pocket=dict(z=1.330, phi=12.0, hs=0.033, ht=0.050),  # left sleeve only
         back_pocket=dict(z=0.940, x=0.125, hs=0.060, ht=0.078),
-        cargo=dict(z=0.705, phi=-14.0, hs=0.072, ht=0.088, depth=0.018),
+        cargo=dict(z=0.705, phi=-14.0, hs=0.078, ht=0.088, depth=0.011),
         knee=dict(z=0.485, hs=0.088, ht=0.112),
     ),
     dirt=dict(chest=0.85, chest_z=1.25, knees=1.0, shins=0.45, seat=0.8, thighs=0.35, cuffs=0.9),
@@ -138,7 +138,7 @@ HEAD = dict(
     eye_z=1.668, nose_z=1.628, mouth_z=1.596, chin_z=1.560,
     jaw=(-0.100, 1.552, 0.030, 1.604, 0.010),  # chin (y, z) -> jaw angle (y, z), step in to the neck
     nose_proj=0.027, eye_dx=0.032, eye_r=0.0118, eye_sink=0.002,
-    ear=dict(z=1.622, y=0.008, h=0.064, w=0.033, tilt=14.0, flare=28.0, sink=0.002),
+    ear=dict(z=1.618, y=0.008, h=0.068, w=0.034, tilt=14.0, flare=40.0, sink=0.002),
 )
 
 HAIR = dict(

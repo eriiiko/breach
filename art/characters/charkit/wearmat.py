@@ -78,7 +78,7 @@ def mat_coverall(name, base, stitch, grime, dirt=1.0, fade=0.10, rough=0.86):
     ao = t.ramp(t.ao(0.06), 0.25, 0.95)
     blot = t.ramp(t.noise(6.0, 4.0, 0.62, 0.3), 0.38, 0.72)
     speck = t.ramp(t.noise(38.0, 3.0, 0.6), 0.55, 0.80)
-    zone = t.math("MULTIPLY", t.attr("dirt"), t.math("ADD", t.math("MULTIPLY", blot, 0.85), 0.25), clamp=True)
+    zone = t.math("MULTIPLY", t.attr("dirt"), t.math("ADD", t.math("MULTIPLY", blot, 0.9), 0.45), clamp=True)
     crease = t.math("MULTIPLY", t.math("SUBTRACT", 1.0, ao), 0.55)
     amount = t.math("ADD", t.math("ADD", zone, crease), t.math("MULTIPLY", speck, 0.12), clamp=True)
     amount = t.math("MULTIPLY", amount, strength, clamp=True)
@@ -93,7 +93,8 @@ def mat_coverall(name, base, stitch, grime, dirt=1.0, fade=0.10, rough=0.86):
     h = t.math("ADD", h, t.math("MULTIPLY", t.noise(20.0, 2.0, 0.55, 0.5, "RIDGED_MULTIFRACTAL"), 0.45))
     h = t.math("SUBTRACT", h, t.math("MULTIPLY", groove, 0.9))
     h = t.math("ADD", h, t.math("MULTIPLY", thread, 0.35))
-    t.set(Base_Color=col, Roughness=t.mixf(amount, rough, rough - 0.14), Sheen_Weight=0.22, Sheen_Roughness=0.6,
+    # a little sheen, tinted by the cloth itself: a white sheen washes a dark cloth (and its dirt) out
+    t.set(Base_Color=col, Roughness=t.mixf(amount, rough, rough - 0.14), Sheen_Weight=0.08, Sheen_Roughness=0.6, Sheen_Tint=col,
           Normal=t.bump(h, 0.45, 0.004))
     return m
 
@@ -134,7 +135,7 @@ def mat_hair(name, hair, grey=0.0):
     ao = t.ramp(t.ao(0.02), 0.2, 0.95)
     col = t.mix(t.math("MULTIPLY", t.math("SUBTRACT", 1.0, ao), 0.7), col, (hc[0] * 0.35, hc[1] * 0.35, hc[2] * 0.35, 1.0))
     h = t.math("ADD", t.math("MULTIPLY", strands, 0.8), t.math("MULTIPLY", t.noise(60.0, 3.0, 0.6), 0.4))
-    t.set(Base_Color=col, Roughness=0.6, Sheen_Weight=0.12, Sheen_Roughness=0.4,
+    t.set(Base_Color=col, Roughness=0.6, Sheen_Weight=0.12, Sheen_Roughness=0.4, Sheen_Tint=col,
           Normal=t.bump(h, 0.6, 0.002))
     return m
 
@@ -153,7 +154,7 @@ def mat_eye(name, sclera, iris):
     return m
 
 
-def mat_leather(name, base, grime, dirt=1.0, rough=(0.50, 0.72)):
+def mat_leather(name, base, grime, dirt=1.0, rough=(0.62, 0.82)):
     """Worn work-boot leather: scuffed lighter on the edges and toes, grime in the creases
     (scaled by `dirt_strength`)."""
     m, t = _new(name)
@@ -176,9 +177,9 @@ def mat_leather(name, base, grime, dirt=1.0, rough=(0.50, 0.72)):
     seam = t.math("MAXIMUM", _stitches(t, "seam", 0.0025), _stitches(t, "stitch", 0.0025))
     col = t.mix(t.math("MULTIPLY", seam, 0.6), col, (b[0] * 0.5, b[1] * 0.5, b[2] * 0.5, 1.0))
     crease = t.noise(55.0, 3.0, 0.55, 0.4, "RIDGED_MULTIFRACTAL")
-    h = t.math("ADD", t.math("MULTIPLY", crease, 0.35), t.math("MULTIPLY", t.noise(500.0, 2.0), 0.15))
-    t.set(Base_Color=col, Roughness=t.mixf(scuff, rough[0], rough[1]), Coat_Weight=0.15, Coat_Roughness=0.4,
-          Normal=t.bump(h, 0.35, 0.002, bev.outputs[0]))
+    h = t.math("ADD", t.math("MULTIPLY", crease, 0.6), t.math("MULTIPLY", t.noise(500.0, 2.0), 0.25))
+    t.set(Base_Color=col, Roughness=t.mixf(scuff, rough[0], rough[1]), Coat_Weight=0.08, Coat_Roughness=0.5,
+          Normal=t.bump(h, 0.5, 0.002, bev.outputs[0]))
     return m
 
 
@@ -207,5 +208,5 @@ def mat_knit(name, base, rough=0.9):
     sep = t.n("ShaderNodeSeparateXYZ")
     t.put(sep.inputs[0], t.pos())
     rib = t.math("SINE", t.math("MULTIPLY", sep.outputs["X"], kit.TAU / 0.0012))
-    t.set(Base_Color=col, Roughness=rough, Sheen_Weight=0.3, Normal=t.bump(t.math("ADD", t.math("MULTIPLY", rib, 0.2), t.noise(200.0, 2.0)), 0.25, 0.002))
+    t.set(Base_Color=col, Roughness=rough, Sheen_Weight=0.08, Sheen_Tint=col, Normal=t.bump(t.math("ADD", t.math("MULTIPLY", rib, 0.2), t.noise(200.0, 2.0)), 0.25, 0.002))
     return m

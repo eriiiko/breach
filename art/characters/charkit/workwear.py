@@ -64,12 +64,19 @@ class Figure:
     def __init__(self, dims):
         self.d = d = dims
         self.lm = {r[0]: r[1] for r in d["trunk"]}  # landmark heights
-        self.body = Loft([ring(z, cx, cy, a, bf, bb, n, pin) for _, z, cx, cy, a, bf, bb, n, pin in d["trunk"]])
+        self.body = Loft([self._ring(*r[1:]) for r in d["trunk"]])
         self.arm = Loft([dict(p=(x, y, z), a=a, b=b, n=2.0) for _, x, y, z, a, b in d["sleeve"]])
         self.bz = self.body.t_at_z
         self.az = self.arm.t_at_z
         self.t_top = self.body.L
         self.t_elbow = self.az(d["elbow_z"])
+
+    @staticmethod
+    def _ring(z, cx, cy, a, bf, bb, n, level):
+        r = ring(z, cx, cy, a, bf, bb, n, level if not isinstance(level, tuple) else 0)
+        if isinstance(level, tuple):  # an explicit section plane (a hem higher at the front)
+            r["t"] = level
+        return r
 
     def z(self, name):
         return self.lm[name]
@@ -126,7 +133,7 @@ def build_coverall(F, M, coll="Coverall"):
         z = gr.P[..., 2]
         band = np.clip(1.0 - np.abs(z - 0.5 * (g["waistband"][0] + g["waistband"][1])) / 0.045, 0.0, 1.0)
         across = np.clip((D(62) - np.abs(wrap(gr.phi - back_c))) / D(12), 0.0, 1.0)
-        return band * across * (amp * np.sin(gr.phi * g["elastic_ripples"]) - 0.006)
+        return band * across * (amp * np.sin(gr.phi * g["elastic_ripples"]) - 0.007)
 
     def fold_mask(gr):
         x, z = gr.P[..., 0], gr.P[..., 2]
@@ -136,7 +143,7 @@ def build_coverall(F, M, coll="Coverall"):
 
     def disp(gr):
         hem = 0.005 * np.exp(-((gr.t - bz(z_hem) - 0.010) / 0.009) ** 2)
-        return ff(gr) * fold_mask(gr) + elastic(gr, 0.0026) + hem
+        return ff(gr) * fold_mask(gr) + elastic(gr, 0.0040) + hem
 
     yoke = g["yoke_back_z"]
 
@@ -182,7 +189,7 @@ def build_coverall(F, M, coll="Coverall"):
     # waistband: a band all round, gathered by elastic across the back
     w0, w1 = bz(g["waistband"][0]), bz(g["waistband"][1])
     band = band_on("Coverall_Waistband", B, w0, w1, offset=0.0035, thick=0.004, mat=cloth, coll=coll,
-                   disp=lambda gr: elastic(gr, 0.0030), attrs=dict(stitch=lambda gr: seam_attr(gr, ts=[w0 + 0.005, w1 - 0.005]), dirt=dirt_g),
+                   disp=lambda gr: elastic(gr, 0.0045), attrs=dict(stitch=lambda gr: seam_attr(gr, ts=[w0 + 0.005, w1 - 0.005]), dirt=dirt_g),
                    **CLAMP)
     mirror(band, merge=True)
 
@@ -320,34 +327,32 @@ def build_boots(F, M, coll="Boots"):
                  mat=leather, coll=coll))
     mirror(patch("Boot_Heel_Counter", OnLoft(shaft, BACK, sz(0.078)), 0.055, 0.026, offset=0.003, thick=0.003, n=4.0, inset=0.004,
                  mat=leather, coll=coll))
-    # tongue and laces up the instep and the shaft's front
-    yv = s["vamp_y"]
-    tongue_pts = []
-    for y in np.linspace(yv, s["shaft_y"] - 0.04, 6):
-        tongue_pts.append(foot.pn([FRONT], [ft(y)], 0.002)[0][0])
-    for z in np.linspace(sz(0.115), shaft.L - 0.005, 4):
-        tongue_pts.append(shaft.pn([FRONT], [z], 0.003)[0][0])
-    eyelets, lace = [], []
-    k = len(tongue_pts)
-    for i, p0 in enumerate(tongue_pts[1:-1]):
-        side = s["lace_half"] * bt.BX
-        eyelets += [p0 + side, p0 - side]
-    nrm = []
-    for i in range(0, len(eyelets) - 2, 2):
-        a0, b0, a1, b1 = eyelets[i], eyelets[i + 1], eyelets[i + 2], eyelets[i + 3]
-        for p, q in ((a0, b1), (b0, a1)):
-            seg = np.linspace(0.0, 1.0, 10)
-            pts = p[None, :] * (1 - seg[:, None]) + q[None, :] * seg[:, None]
-            bulge = np.sin(seg * math.pi)[:, None] * 0.004
-            out = unit(np.cross(bt.BX, q - p))
-            if out[2] < 0 and out @ (-bt.BY) < 0:
-                out = -out
-            lace.append(pts + bulge * out)
-    for i, pts in enumerate(lace):
-        mirror(tube("Boot_Lace_%d" % i, pts, r=0.0022, n_u=8, mat=M["lace"], coll=coll))
-    E = np.array(eyelets)
-    En = np.array([unit((p - w(0, s["shaft_y"], p[2] - bt.ankle[2]))) for p in E])
-    mirror(studs("Boot_Eyelets", E, En, r=0.0036, flat=0.4, mat=M["metal"], coll=coll))
+    # lacing on the instep: a tongue between two raised facings, eyelets, crossed laces
+    y0, y1 = s["vamp_y"], s["lace_top_y"]
+    ym = 0.5 * (y0 + y1)
+    inst = OnLoft(foot, FRONT, ft(ym))
+    half = 0.5 * (y1 - y0)
+    mirror(patch("Boot_Tongue", inst, s["lace_half"] + 0.004, half + 0.012, shift=(0.0, 0.004), offset=0.0035, thick=0.003, n=4.0,
+                 inset=0.0035, mat=leather, coll=coll))
+    for sg in (-1, 1):
+        mirror(patch("Boot_Facing", inst, 0.010, half + 0.006, shift=(sg * (s["lace_half"] + 0.006), 0.0), offset=0.0070, thick=0.004,
+                     n=6.0, inset=0.003, mat=leather, coll=coll))
+    rows = np.linspace(-half + 0.008, half - 0.004, s["lace_rows"])
+    E, En = [], []
+    for tt in rows:
+        P, N = inst.pn([-s["lace_half"], s["lace_half"]], [tt, tt], 0.0075)
+        E += list(P)
+        En += list(N)
+    mirror(studs("Boot_Eyelets", np.array(E), np.array(En), r=0.0042, flat=0.45, mat=M["metal"], coll=coll))
+    k = 0
+    for i in range(len(rows) - 1):
+        for (sa, ta), (sb, tb) in (((-1, rows[i]), (1, rows[i + 1])), ((1, rows[i]), (-1, rows[i + 1]))):
+            u = np.linspace(0.0, 1.0, 12)
+            ss = s["lace_half"] * (sa + (sb - sa) * u)
+            tt = ta + (tb - ta) * u
+            P, _ = inst.pn(ss, tt, 0.0090 + 0.0025 * np.sin(np.pi * u) + (0.0018 if sa < 0 else 0.0))
+            mirror(tube("Boot_Lace_%d" % k, P, r=0.0021, n_u=8, mat=M["lace"], coll=coll))
+            k += 1
 
 
 # -------------------------------------------------------------------------- head
