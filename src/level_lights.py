@@ -61,7 +61,8 @@ class LightSpec:
     angle_center  beam centre, radians, SCREEN convention (dx = cos, dy = sin,
                   +y the increasing row -- the ordinates' own)
     angle_spread  full beam angle, radians; >= 2*pi - 0.01 is omni
-    kind          "lamp" | "beacon" | "flashlight" | "cursor" | "transient"
+    kind          "lamp" | "beacon" | "spot" | "flashlight" | "cursor" |
+                  "transient"
                   (a fire is never a spec: its light is the sweep's own
                   thermal emission)
     source        "sim" or "render": where the light's INPUTS come from -- the
@@ -82,13 +83,19 @@ def light_spec(entry, total_tick: int, tick_dt_s: float) -> LightSpec:
     """``LightEntry`` -> its :class:`LightSpec`: position, colour, intensity,
     and the beam -- a static lamp is omni (centre 0, spread 2*pi); a beacon's
     centre is :func:`beacon_angle` at the MONOTONIC sim tick reduced into
-    [0, 2*pi), its spread ``beam_deg``. Level data and the sim tick: a
+    [0, 2*pi), its spread ``beam_deg``; a spot is a beacon that never turns
+    (centre ``phase`` turns, spread ``beam_deg``). Level data and the sim tick: a
     SIM-sourced light. (``entry.range`` is not read: a sweep has no range.)"""
     if entry.kind == "beacon":
         center = beacon_angle(total_tick, tick_dt_s, entry.period_s,
                               entry.phase) % math.tau
         spread = math.radians(float(entry.beam_deg))
         kind = "beacon"
+    elif entry.kind == "spot":
+        # a beacon that never turns: aimed at `phase`, independent of the tick
+        center = (math.tau * float(entry.phase)) % math.tau
+        spread = math.radians(float(entry.beam_deg))
+        kind = "spot"
     else:
         center = 0.0
         spread = STATIC_SPREAD

@@ -138,8 +138,8 @@ def format_spawn_lines(spawns, nl: str = "\n") -> list:
 def format_light_lines(lights, nl: str = "\n") -> list:
     """The managed [[light]] block as ``nl``-terminated lines — schema per
     level_loader.LightEntry / engine/15 §2.2 (color back to 0-255 ints;
-    period_s/beam_deg/phase written for beacons only — static lights take
-    the loader defaults)."""
+    period_s/beam_deg/phase written for beacons only, beam_deg/phase for
+    spots — static lights take the loader defaults)."""
     lines = []
     for i, l in enumerate(lights):
         if i:
@@ -153,6 +153,9 @@ def format_light_lines(lights, nl: str = "\n") -> list:
         lines.append(f'kind = "{l.kind}"{nl}')
         if l.kind == "beacon":
             lines.append(f"period_s = {_fmt_coord(l.period_s)}{nl}")
+            lines.append(f"beam_deg = {_fmt_coord(l.beam_deg)}{nl}")
+            lines.append(f"phase = {_fmt_coord(l.phase)}{nl}")
+        elif l.kind == "spot":
             lines.append(f"beam_deg = {_fmt_coord(l.beam_deg)}{nl}")
             lines.append(f"phase = {_fmt_coord(l.phase)}{nl}")
     return lines
