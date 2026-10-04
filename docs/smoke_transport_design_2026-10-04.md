@@ -271,6 +271,6 @@ match P1's CPU numbers bit for bit.
 
 | lens | critic | verdict | resolution |
 |---|---|---|---|
-| conservation / integer arithmetic | | | |
+| conservation / integer arithmetic | Opus, 2026-10-04 | PASS WITH FIXES. Stage 3b is confirmed exact and non-negative, cited against the code (the per-plane limiter on the pre-flux N; `dqsum` after the limiter; sign(dq) == sign(v); the N_EPS guard; one call path, `eos_solver.cpp:848`; filling `n_pre` on thermal-solid cells is energy-safe because it is read only behind `e_participates`). Findings: **(1) BLOCKER**: the diffusion floor toward −∞ breaks positivity and pumps thin smoke north-west; the fix is magnitude truncation (the `scale_mag` idiom). **(2) BLOCKER**: trace stranded on cells that become solid, vacuum or ring (the old step zeroed them, `smoke_dynamics.cpp:309-314`); zero it once per tick, booked. (3) Diffusion through vacuum and ring faces is unspecified. (4) Diffusion must be Jacobi (a snapshot), not in place. (5) Build the coefficient as an integer chain (the `coeffE` idiom), and run the stability check on the integer value and where dt is bound. (6) State and assert the int32 narrow bound. (7) V2's bound is wrong: run it with diffusion at 0 and count substeps. (8) V1 must include `trace_wipe_sum`. (9) Specify the trace's N snapshot (before stage 2, same planes, assert extended) | pending synthesis |
 | backends / resident path / CUDA lockstep | | | |
 | systems reuse / readers / scope | | | |
