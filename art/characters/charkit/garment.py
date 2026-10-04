@@ -21,11 +21,12 @@ def _stitch_value(d):
 
 
 def patch(name, anchor, hs, ht, offset=0.003, thick=0.003, n=8.0, shift=(0.0, 0.0), rot=0.0, dome=0.0, inset=0.0055,
-          lines=(), bevel=None, seg=2, res=None, attrs=None, mat=None, coll="Garment"):
+          lines=(), bevel=None, seg=2, res=None, point=0.0, attrs=None, mat=None, coll="Garment"):
     """A sewn-on panel (pocket, flap, knee patch): `plate()`'s superellipse shell, plus a
     `stitch` attribute along a line `inset` in from the edge and along each local
     horizontal line in `lines` (t positions, e.g. a pocket's top hem). `offset` is the
-    height of the panel's top surface over the anchor, `thick` its inward thickness."""
+    height of the panel's top surface over the anchor, `thick` its inward thickness.
+    `point` draws the bottom edge down to a point at the middle (a chevron hem), by that much."""
     res = res or kit.RES
     m = int(np.clip(math.ceil(max(hs, ht) / (0.7 * res)), 4, 60))
     ax = np.linspace(-1.0, 1.0, 2 * m + 1)
@@ -35,10 +36,12 @@ def patch(name, anchor, hs, ht, offset=0.003, thick=0.003, n=8.0, shift=(0.0, 0.
     dx, dy = A / safe, B / safe
     k = np.where(rho > 0, np.maximum(np.abs(dx) ** n + np.abs(dy) ** n, 1e-12) ** (-1.0 / n), 0.0)
     x, y = rho * k * dx * hs, rho * k * dy * ht
+    edge = np.minimum(hs - np.abs(x), ht - np.abs(y)).ravel()
+    if point:
+        y = y - point * (1.0 - np.abs(x) / hs) * np.clip(-y / ht, 0.0, 1.0)
     cr, sr = math.cos(rot), math.sin(rot)
     s, t = x * cr - y * sr + shift[0], x * sr + y * cr + shift[1]
     P, N = anchor.pn(s.ravel(), t.ravel(), (offset + dome * (1.0 - rho ** 2)).ravel())
-    edge = np.minimum(hs - np.abs(x), ht - np.abs(y)).ravel()
     d = np.abs(edge - inset)
     for ly in lines:
         d = np.minimum(d, np.where(np.abs(x.ravel()) < hs - inset * 0.5, np.abs(y.ravel() - ly), 1.0))
@@ -53,6 +56,15 @@ def patch(name, anchor, hs, ht, offset=0.003, thick=0.003, n=8.0, shift=(0.0, 0.
         va[key] = np.asarray(f(P), float)
     obj = new_mesh(name, P, faces, None, mat, coll, attrs=va)
     return _finish(obj, thick, bevel if bevel is not None else min(0.4 * thick, 0.0025), seg)
+
+
+def seg_dist(x, z, p0, p1):
+    """Distance in the (x, z) plane from points to the segment p0 -> p1 (a stitched line
+    seen from the front or back: a pocket opening, a dart)."""
+    ax, az = x - p0[0], z - p0[1]
+    bx, bz = p1[0] - p0[0], p1[1] - p0[1]
+    k = np.clip((ax * bx + az * bz) / max(bx * bx + bz * bz, 1e-12), 0.0, 1.0)
+    return np.hypot(ax - k * bx, az - k * bz)
 
 
 def front_phi(loft, t, x=0.0):
@@ -103,9 +115,15 @@ def shirt_collar(name, loft, t_top, gap_deg=26.0, stand=0.032, edge_drop=0.040, 
             nb = nbf if u[1] < 0 else nbb
             rn = 1.0 / math.sqrt((u[0] / na) ** 2 + (u[1] / nb) ** 2)
             ring = lambda r, z: np.array([u[0] * r, cy + u[1] * r, z])
-            fold = ring(rn + clear + 0.003, top[2] + stand * (1.0 - 0.35 * w))
-            inner_top = ring(rn + clear, top[2] + stand * (1.0 - 0.35 * w) - 0.006)
-            inner_bot = ring(rn + clear * 0.6, top[2] - 0.016)
+            # never outside the neckline itself (where the neckline is tight the stand rises
+            # straight), or the sheet would fold back over itself
+            rt = float(np.linalg.norm(v)) - 0.001
+            # the stand's inner face runs 7 mm inside the fold, more than the cloth's thickness,
+            # so the solidified sheet never meets itself at the turn
+            ro = min(rn + clear + 0.003, rt)
+            fold = ring(ro, top[2] + stand * (1.0 - 0.35 * w))
+            inner_top = ring(ro - 0.007, top[2] + stand * (1.0 - 0.35 * w) - 0.007)
+            inner_bot = ring(ro - 0.008, top[2] - 0.016)
         pts = np.vstack([P, fold, inner_top, inner_bot])
         u = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(pts, axis=0), axis=1))])
         q = np.linspace(0.0, u[-1], rows)

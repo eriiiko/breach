@@ -224,7 +224,11 @@ def face_field(spec):
         beard = np.maximum(beard, np.clip((z - (cz - 0.040)) / 0.01, 0, 1) * np.clip((cz + 0.012 - z) / 0.01, 0, 1)
                            * np.clip((g.P0[..., 1] - cy + 0.0) / -0.02, 0, 1))  # under the jaw
         beard = beard * (1.0 - lips) * (1.0 - np.clip(gauss2(x, z, 0.0, spec["nose_z"] + 0.012, 0.016, 0.014) * 2.0, 0, 1))
-        brow = np.clip(2.2 * gauss2(ax, z, 0.030, ez + 0.0155, 0.021, 0.0042) - 0.35, 0.0, 1.0) * fr
+        beard = beard * spec.get("stubble", 1.0)
+        # the brows: `brow` = dict(x, dz, sx, sz, arch, gain); `arch` lifts the middle of each brow
+        bw = dict(dict(x=0.030, dz=0.0155, sx=0.021, sz=0.0042, arch=0.0, gain=2.2), **spec.get("brow", {}))
+        zb = ez + bw["dz"] + bw["arch"] * np.exp(-((ax - bw["x"] + 0.004) / (0.8 * bw["sx"])) ** 2)
+        brow = np.clip(bw["gain"] * gauss2(ax, z - zb, bw["x"], 0.0, bw["sx"], bw["sz"]) - 0.35, 0.0, 1.0) * fr
         nostril = np.clip(3.0 * gauss2(ax, z, 0.009, spec["nose_z"] + 0.002, 0.004, 0.0028) - 0.5, 0, 1) * fr
         return dict(lips=lips, stubble=beard, brow=brow, nostril=nostril)
 
@@ -408,7 +412,11 @@ def hair(prefix, head_loft, spec, mat, coll="Head", res=None, seed=7):
     tt = np.array([head_loft.t_at_z(z) for z in rng.uniform(tz_lo, spec["crown_z"] - 0.004, n)])
     tc = head_loft.pos(tp, tt)
     flow = unit(head_loft.pos(tp, np.minimum(tt + 0.004, head_loft.L)) - head_loft.pos(tp, np.maximum(tt - 0.004, 0.0)))
-    flow = unit(flow + rng.normal(0.0, 0.35, flow.shape))
+    if "flow_to" in spec:  # hair drawn back towards one point (a bun): the flow runs along the scalp towards it
+        nrm = head_loft.pn(tp, tt)[1]
+        to = np.asarray(spec["flow_to"], float) - tc
+        flow = unit(to - np.sum(to * nrm, axis=1)[:, None] * nrm)
+    flow = unit(flow + rng.normal(0.0, spec.get("flow_noise", 0.35), flow.shape))
     tufts = dict(c=tc, f=flow, h=rng.uniform(*spec.get("tuft_h", (0.002, 0.006)), n), s=rng.uniform(*spec.get("tuft_size", (0.008, 0.018)), n))
     thin, thick = spec["thick"]
 
@@ -453,3 +461,84 @@ def hair(prefix, head_loft, spec, mat, coll="Head", res=None, seed=7):
     obj = loft_mesh(prefix + "_Hair", head_loft, rows=rows, res=res, offset=offset, disp=disp, drop=drop, cap1=True, mat=mat, coll=coll,
                     attrs=dict(cover=cover))
     return solid(obj, spec.get("shell", 0.002), bevel=0.0, seg=1)
+
+
+def _blob(name, c, axes, radius, mat, coll, n_lat=40, n_lon=64, attrs=None):
+    """A closed sphere-topology mesh: `radius(D)` (m) along each unit direction D in the
+    frame `axes` = (e1, e2, e3), e3 the pole. `attrs` = {name: f(D)}."""
+    from kit import new_mesh
+    e1, e2, e3 = (np.asarray(a, float) for a in axes)
+    th = np.linspace(0.0, math.pi, n_lat + 1)[1:-1]
+    al = np.linspace(0.0, 2 * math.pi, n_lon, endpoint=False)
+    TH, AL = np.meshgrid(th, al, indexing="ij")
+    Dl = np.stack([np.sin(TH) * np.cos(AL), np.sin(TH) * np.sin(AL), np.cos(TH)], axis=-1).reshape(-1, 3)
+    Dl = np.vstack([Dl, [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]])
+    R = np.asarray(radius(Dl), float)
+    V = np.asarray(c, float) + (Dl[:, :1] * e1 + Dl[:, 1:2] * e2 + Dl[:, 2:] * e3) * R[:, None]
+    nr, C = len(th), n_lon
+    idx = np.arange(nr * C).reshape(nr, C)
+    nxt = np.roll(idx, -1, axis=1)
+    quads = np.stack([idx[:-1], idx[1:], nxt[1:], nxt[:-1]], axis=-1).reshape(-1, 4)
+    top, bot = nr * C, nr * C + 1
+    tris = np.vstack([np.stack([np.full(C, top), idx[0], nxt[0]], axis=-1), np.stack([np.full(C, bot), nxt[-1], idx[-1]], axis=-1)])
+    va = {k: np.asarray(f(Dl), float) for k, f in (attrs or {}).items()}
+    return new_mesh(name, V, quads, tris, mat, coll, attrs=va)
+
+
+def hair_bun(prefix, spec, mat, coll="Head"):
+    """A bun of coiled hair: an ellipsoid (`r` = half-sizes across, along the axis, up)
+    centred at `c`, its pole along `axis` (pointing out of the head), with `coils` turns of
+    hair spiralling in to the pole, each a rounded ridge `depth` high. One closed object."""
+    from kit import unit as _u
+    c = np.asarray(spec["c"], float)
+    e3 = _u(np.asarray(spec["axis"], float))
+    e1 = _u(np.cross(np.array([0.0, 0.0, 1.0]), e3)) if abs(e3[2]) < 0.95 else np.array([1.0, 0.0, 0.0])
+    e2 = np.cross(e3, e1)
+    ra, rc, rb = spec["r"]  # across, up, along the axis
+    k, h = spec.get("coils", 6), spec.get("depth", 0.003)
+
+    def radius(Dl):
+        x, y, z = Dl[:, 0], Dl[:, 1], Dl[:, 2]
+        base = 1.0 / np.sqrt((x / ra) ** 2 + (y / rc) ** 2 + (z / rb) ** 2)
+        th = np.arccos(np.clip(z, -1.0, 1.0))
+        al = np.arctan2(y, x)
+        coil = np.abs(np.sin(0.5 * (al + k * 2.0 * th)))  # a spiral groove between rounded strands
+        fine = 0.25 * np.sin(al * 23.0 + th * 41.0)
+        return base + h * (coil ** 0.6 - 0.6 + 0.3 * fine) * np.clip(th / 0.3, 0.0, 1.0)
+
+    return _blob(prefix + "_Hair_Bun", c, (e1, e2, e3), radius, mat, coll, n_lat=48, n_lon=96, attrs=dict(cover=lambda Dl: np.ones(len(Dl))))
+
+
+def hair_strands(prefix, head_loft, rows, mat, coll="Head", seed=11):
+    """Loose strands falling from the hairline: each row (phi deg, root z, length, sway out,
+    forward) is a small clump of three tapered tubes starting under the hair and hanging
+    down beside the face, curving out and in. Closed objects (capped ends)."""
+    from kit import new_mesh, unit as _u
+    import garment
+    rng = np.random.default_rng(seed)
+    objs = []
+    for i, (phd, z0, length, out, fwd) in enumerate(rows):
+        ph = math.radians(phd)
+        P0, N0 = head_loft.pn([ph], [head_loft.t_at_z(z0)])
+        P0, N0 = P0[0], N0[0]
+        side = _u(np.array([N0[0], N0[1], 0.0]))
+        for j in range(3):
+            u = np.linspace(0.0, 1.0, 22)
+            jit = rng.normal(0.0, 0.002, 3)
+            sway = np.sin(np.pi * u) * (out + jit[0]) + u * 0.004
+            pts = (P0 - 0.002 * N0)[None, :] + side[None, :] * (0.003 + sway)[:, None]                 + np.array([0.0, fwd + jit[1], 0.0])[None, :] * u[:, None] ** 2 + np.array([0.0, 0.0, -1.0])[None, :] * (length * (1.0 + 0.15 * jit[2] / 0.002) * u)[:, None]
+            pts[:, 0] += jit[1] * u
+            r = 0.0016 * (1.0 - 0.7 * u)
+            T = _u(np.gradient(pts, axis=0))
+            ref = np.where(np.abs(T[:, 2:3]) < 0.9, np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0]))
+            Nn = _u(np.cross(ref, T))
+            Bn = np.cross(T, Nn)
+            al = np.linspace(0.0, 2 * math.pi, 8, endpoint=False)
+            V = pts[:, None, :] + r[:, None, None] * (np.cos(al)[None, :, None] * Nn[:, None, :] + np.sin(al)[None, :, None] * Bn[:, None, :])
+            idx = np.arange(len(pts) * 8).reshape(len(pts), 8)
+            nx = np.roll(idx, -1, axis=1)
+            faces = np.stack([idx[:-1], nx[:-1], nx[1:], idx[1:]], axis=-1).reshape(-1, 4)
+            objs.append(new_mesh("%s_Hair_Strand_%d_%d" % (prefix, i, j), V.reshape(-1, 3), faces, None, mat, coll,
+                                 attrs=dict(cover=np.ones(V.shape[0] * V.shape[1]))))
+    garment.close_holes(objs)
+    return objs

@@ -185,25 +185,29 @@ def build_coverall(F, M, coll="Coverall"):
 
     # authored folds: stacking on the boots, behind and over the knee, the groin, under
     # the seat, gathered at the waist and over the belly, drape under the arms
+    # (heights relative to the figure's own hem, knee, crotch and armpit)
+    kz, ap = g["knee"]["z"], d["armpit_z"]
     rng = np.random.default_rng(31)
     ff = fold_field(
-        fold_set(rng, 16, (bz(z_hem + 0.01), bz(0.30)), (0, TAU), (0.0, 0.18), (0.05, 0.11), (0.006, 0.010), (0.003, 0.0065))
-        + fold_set(rng, 8, (bz(0.43), bz(0.56)), (D(215), D(325)), (0.0, 0.25), (0.04, 0.08), (0.005, 0.008), (0.0025, 0.0045))
-        + fold_set(rng, 6, (bz(0.45), bz(0.60)), (D(30), D(150)), (0.0, 0.25), (0.04, 0.07), (0.005, 0.008), (0.0015, 0.003))
-        + fold_set(rng, 7, (bz(0.62), bz(0.76)), (D(30), D(160)), (-0.4, 0.3), (0.05, 0.10), (0.007, 0.011), (0.002, 0.004))
+        fold_set(rng, 16, (bz(z_hem + 0.01), bz(z_hem + 0.178)), (0, TAU), (0.0, 0.18), (0.05, 0.11), (0.006, 0.010), (0.003, 0.0065))
+        + fold_set(rng, 8, (bz(kz - 0.055), bz(kz + 0.075)), (D(215), D(325)), (0.0, 0.25), (0.04, 0.08), (0.005, 0.008), (0.0025, 0.0045))
+        + fold_set(rng, 6, (bz(kz - 0.035), bz(kz + 0.115)), (D(30), D(150)), (0.0, 0.25), (0.04, 0.07), (0.005, 0.008), (0.0015, 0.003))
+        + fold_set(rng, 7, (bz(z_crotch - 0.165), bz(z_crotch - 0.025)), (D(30), D(160)), (-0.4, 0.3), (0.05, 0.10), (0.007, 0.011), (0.002, 0.004))
         + fold_set(rng, 5, (bz(z_crotch + 0.01), bz(z_crotch + 0.10)), (D(55), D(125)), (-0.5, 0.15), (0.05, 0.10), (0.007, 0.011), (0.003, 0.005))
         + fold_set(rng, 5, (bz(z_crotch), bz(z_crotch + 0.08)), (D(220), D(310)), (0.15, 0.2), (0.05, 0.09), (0.007, 0.011), (0.003, 0.005))
         + fold_set(rng, 10, (bz(z_waist + 0.05), bz(z_waist + 0.16)), (D(20), D(160)), (0.0, 0.2), (0.05, 0.10), (0.007, 0.011), (0.002, 0.004))
-        + fold_set(rng, 8, (bz(1.17), bz(1.30)), (D(-35), D(35)), (0.6, 0.3), (0.05, 0.09), (0.006, 0.010), (0.002, 0.004))
+        + fold_set(rng, 8, (bz(ap - 0.07), bz(ap + 0.06)), (D(-35), D(35)), (0.6, 0.3), (0.05, 0.09), (0.006, 0.010), (0.002, 0.004))
         + crumple_set(rng, 420, (0.0, bz(z_neck - 0.06))))
     back_c = BACK - TAU  # -90 deg: the back's centre on the left half
 
     def elastic(gr, amp):
-        """Elastic gathering across the back of the waistband: fine vertical ripples."""
+        """Elastic gathering across the back of the waistband: fine vertical ripples
+        (`garment["elastic"]` scales it; 0 = a plain waistband)."""
         z = gr.P[..., 2]
+        amp, k = amp * g.get("elastic", 1.0), g.get("elastic", 1.0)
         band = np.clip(1.0 - np.abs(z - 0.5 * (g["waistband"][0] + g["waistband"][1])) / 0.045, 0.0, 1.0)
         across = np.clip((D(62) - np.abs(wrap(gr.phi - back_c))) / D(12), 0.0, 1.0)
-        return band * across * (amp * np.sin(gr.phi * g["elastic_ripples"]) - 0.007)
+        return band * across * (amp * np.sin(gr.phi * g["elastic_ripples"]) - 0.007 * k)
 
     def fold_mask(gr):
         x, z = gr.P[..., 0], gr.P[..., 2]
@@ -225,11 +229,16 @@ def build_coverall(F, M, coll="Coverall"):
         x, y, z = gr.P[..., 0], gr.P[..., 1], gr.P[..., 2]
         placket = np.where((y < 0.0) & (z > g["zip_bottom_z"]) & (z < z_neck), np.abs(np.abs(x) - g["placket"]), 1.0)
         fly = np.where((y < 0.0) & (z <= g["zip_bottom_z"]) & (z > z_crotch - 0.05), np.abs(x), 1.0)
-        seat = np.where((y > 0.0) & (z > z_crotch - 0.05) & (z < z_waist), np.abs(x), 1.0)
+        seat = np.where((y > 0.0) & (z > z_crotch - 0.05) & (z < (yoke if g.get("back_centre") else z_waist)), np.abs(x), 1.0)
+        lines = [placket, fly, seat]
+        for key, side in (("back_darts", y > 0.0), ("hip_pocket", y < 0.0)):  # optional stitched lines
+            if key in g:
+                (x0, z0), (x1, z1) = g[key]
+                lines.append(np.where(side, garment.seg_dist(np.abs(x), z, (x0, z0), (x1, z1)), 1.0))
         Pd = gr.P + getattr(gr, "env", np.zeros(gr.P.shape[:-1]))[..., None] * gr.N  # where the surface really is
         armhole = F.armhole_seam(Pd)
         return seam_attr(gr, phis=[(OUT, bz(z_hem) + 0.02, bz(d["armpit_z"])), (IN, 0.0, bz(z_crotch))],
-                         ts=[bz(z_hem) + 0.024, (bz(yoke), back_c, D(78))], extra=np.minimum.reduce([placket, fly, seat, armhole]))
+                         ts=[bz(z_hem) + 0.024, (bz(yoke), back_c, D(78))], extra=np.minimum.reduce(lines + [armhole]))
 
     t_top = F.t_top
     notch = Oval(B, FRONT, t_top, g["notch"][0], g["notch"][1], n=1.6, taper=0.25)
@@ -298,29 +307,65 @@ def build_coverall(F, M, coll="Coverall"):
     t = bz(cp["z"])
     ph = front_phi(B, t, cp["x"])
     pk = OnLoft(B, ph, t)
-    mirror(patch("Coverall_Chest_Pocket", pk, cp["hs"], cp["ht"], offset=0.0050, thick=0.0035, n=9.0, attrs=dict(dirt=F.dirt), mat=cloth, coll=coll))
-    zt = t + cp["ht"] - cp["zip_dt"]
     r = float(B.radius(ph, t)[0])
-    dph = math.degrees((cp["hs"] - 0.010) / r)
-    zpath = [(math.degrees(ph) + dph, zt), (math.degrees(ph) - dph, zt)]
-    mirror(ribbon_on("Coverall_Chest_Zip_Tape", B, zpath, 0.012, offset=0.0062, thick=0.002, mat=cloth, coll=coll))
-    mirror(ribbon_on("Coverall_Chest_Zip_Teeth", B, zpath, 0.0045, offset=0.0074, thick=0.002, mat=metal, coll=coll))
-    zip_slider(B, ph + math.radians(dph) - 0.012 / r, zt - 0.008, 0.0078, metal, coll, "Coverall_Chest_Zip_Pull", mirrored=True)
 
-    sp = g["sleeve_pocket"]  # left arm only
-    ta = az(sp["z"])
-    spk = OnLoft(A, D(sp["phi"]), ta)
-    patch("Coverall_Sleeve_Pocket", spk, sp["hs"], sp["ht"], offset=0.0040, thick=0.003, n=9.0, attrs=dict(dirt=F.dirt), mat=cloth, coll=coll)
-    patch("Coverall_Sleeve_Pocket_Flap", spk, sp["hs"] + 0.003, 0.014, shift=(0.0, sp["ht"] - 0.010), offset=0.0072, thick=0.003, n=9.0,
-          inset=0.004, attrs=dict(dirt=F.dirt), mat=cloth, coll=coll)
-    patch("Coverall_Sleeve_Pen_Slot", spk, 0.006, sp["ht"] * 0.55, shift=(sp["hs"] * 0.62, -0.006), offset=0.0068, thick=0.002, n=6.0,
-          inset=0.002, attrs=dict(dirt=F.dirt), mat=cloth, coll=coll)
+    def zip_pocket(sfx):
+        """A patch pocket with a zip across its top."""
+        objs = [patch("Coverall_Chest_Pocket" + sfx, pk, cp["hs"], cp["ht"], offset=0.0050, thick=0.0035, n=9.0, attrs=dict(dirt=F.dirt),
+                      mat=cloth, coll=coll)]
+        zt = t + cp["ht"] - cp["zip_dt"]
+        dph = math.degrees((cp["hs"] - 0.010) / r)
+        zpath = [(math.degrees(ph) + dph, zt), (math.degrees(ph) - dph, zt)]
+        objs += [ribbon_on("Coverall_Chest_Zip_Tape" + sfx, B, zpath, 0.012, offset=0.0062, thick=0.002, mat=cloth, coll=coll),
+                 ribbon_on("Coverall_Chest_Zip_Teeth" + sfx, B, zpath, 0.0045, offset=0.0074, thick=0.002, mat=metal, coll=coll)]
+        objs += zip_slider(B, ph + math.radians(dph) - 0.012 / r, zt - 0.008, 0.0078, metal, coll, "Coverall_Chest_Zip_Pull" + sfx)
+        return objs
+
+    def flap_pocket(sfx):
+        """A patch pocket with a buttoned flap over its top and a stitched pen slot."""
+        objs = [patch("Coverall_Chest_Pocket" + sfx, pk, cp["hs"], cp["ht"], offset=0.0050, thick=0.0035, n=9.0, attrs=dict(dirt=F.dirt),
+                      mat=cloth, coll=coll)]
+        fh = cp.get("flap_h", 0.024)
+        objs.append(patch("Coverall_Chest_Flap" + sfx, pk, cp["hs"] + 0.004, fh * 0.5, shift=(0.0, cp["ht"] - fh * 0.5 + 0.004), offset=0.0080,
+                          thick=0.0035, n=8.0, inset=0.004, point=cp.get("flap_point", 0.006), attrs=dict(dirt=F.dirt), mat=cloth, coll=coll))
+        P, N = pk.pn([0.0], [cp["ht"] - fh + 0.004 - cp.get("flap_point", 0.006) + 0.007], 0.0082)
+        objs.append(studs("Coverall_Chest_Button" + sfx, P, N, r=0.0055, flat=0.40, mat=metal, coll=coll))
+        if cp.get("pen_slot"):
+            objs.append(patch("Coverall_Chest_Pen_Slot" + sfx, pk, 0.005, cp["ht"] - 0.5 * fh - 0.008, shift=(cp["pen_slot"], -0.5 * fh - 0.002),
+                              offset=0.0068, thick=0.002, n=6.0, inset=0.002, attrs=dict(dirt=F.dirt), mat=cloth, coll=coll))
+        return objs
+
+    kinds = dict(zip=zip_pocket, flap=flap_pocket)
+    left, right = cp.get("left", "zip"), cp.get("right", "zip")
+    if left == right:
+        for o in kinds[left](""):
+            mirror(o)
+    else:  # a different pocket on each breast: build both on the left, move one across
+        kinds[left]("_L")
+        for o in kinds[right]("_R"):
+            kit.flip_x(o)
+
+    sp = g.get("sleeve_pocket")  # left arm only, where the worker has one
+    if sp:
+        ta = az(sp["z"])
+        spk = OnLoft(A, D(sp["phi"]), ta)
+        patch("Coverall_Sleeve_Pocket", spk, sp["hs"], sp["ht"], offset=0.0040, thick=0.003, n=9.0, attrs=dict(dirt=F.dirt), mat=cloth, coll=coll)
+        patch("Coverall_Sleeve_Pocket_Flap", spk, sp["hs"] + 0.003, 0.014, shift=(0.0, sp["ht"] - 0.010), offset=0.0072, thick=0.003, n=9.0,
+              inset=0.004, attrs=dict(dirt=F.dirt), mat=cloth, coll=coll)
+        patch("Coverall_Sleeve_Pen_Slot", spk, 0.006, sp["ht"] * 0.55, shift=(sp["hs"] * 0.62, -0.006), offset=0.0068, thick=0.002, n=6.0,
+              inset=0.002, attrs=dict(dirt=F.dirt), mat=cloth, coll=coll)
+
+    for i, (x, back) in enumerate(g.get("belt_loops", ())):  # short tabs stitched over the waistband
+        tb = 0.5 * (w0 + w1)
+        lp = OnLoft(B, phi_where_x(B, tb, x, back=back), tb)
+        mirror(patch("Coverall_Belt_Loop_%d" % i, lp, 0.006, 0.5 * (w1 - w0) + 0.006, offset=0.0085, thick=0.003, n=5.0, inset=0.0025,
+                     attrs=dict(dirt=F.dirt), mat=cloth, coll=coll))
 
     bp = g["back_pocket"]
     t = bz(bp["z"])
     pk = OnLoft(B, phi_where_x(B, t, bp["x"], back=True), t)
-    mirror(patch("Coverall_Back_Pocket", pk, bp["hs"], bp["ht"], offset=0.0045, thick=0.0035, n=8.0, lines=(-(bp["ht"] - 0.024),),
-                 attrs=dict(dirt=F.dirt), mat=cloth, coll=coll))
+    mirror(patch("Coverall_Back_Pocket", pk, bp["hs"], bp["ht"], offset=0.0045, thick=0.0035, n=8.0, lines=(bp.get("hem_y", -(bp["ht"] - 0.024)),),
+                 point=bp.get("point", 0.0), attrs=dict(dirt=F.dirt), mat=cloth, coll=coll))
 
     cg = g["cargo"]
     t = bz(cg["z"])
@@ -330,8 +375,9 @@ def build_coverall(F, M, coll="Coverall"):
     fl = OnLoft(B, D(cg["phi"]), t + cg["ht"] - 0.006)
     mirror(patch("Coverall_Cargo_Flap", fl, cg["hs"] + 0.004, 0.026, offset=cg["depth"] + 0.0055, thick=0.005, n=8.0, inset=0.0045,
                  attrs=dict(dirt=F.dirt), mat=cloth, coll=coll))
-    P, N = fl.pn([-0.035, 0.035], [-0.010, -0.010], cg["depth"] + 0.0055)
-    mirror(studs("Coverall_Cargo_Snap", P, N, r=0.0055, flat=0.35, mat=metal, coll=coll))
+    if cg.get("snaps", True):
+        P, N = fl.pn([-0.035, 0.035], [-0.010, -0.010], cg["depth"] + 0.0055)
+        mirror(studs("Coverall_Cargo_Snap", P, N, r=0.0055, flat=0.35, mat=metal, coll=coll))
 
     kp = g["knee"]
     mirror(patch("Coverall_Knee_Patch", OnLoft(B, FRONT, bz(kp["z"])), kp["hs"], kp["ht"], offset=0.0050, thick=0.0035, n=4.0, inset=0.006,
@@ -456,6 +502,10 @@ def build_boots(F, M, coll="Boots"):
 def build_head(F, M, head_spec, hair_spec, coll="Head"):
     loft, _ = parts.head("Worker", head_spec, dict(skin=M["skin"], eye=M["eye"]), coll=coll)
     parts.hair("Worker", loft, hair_spec, M["hair"], coll=coll)
+    if "bun" in hair_spec:
+        parts.hair_bun("Worker", hair_spec["bun"], M["hair"], coll=coll)
+    if "strands" in hair_spec:
+        parts.hair_strands("Worker", loft, hair_spec["strands"], M["hair"], coll=coll)
     return loft
 
 
@@ -466,5 +516,5 @@ def build(M, dims, head_spec, hair_spec):
     build_hands(F, M)
     build_boots(F, M)
     build_head(F, M, head_spec, hair_spec)
-    garment.close_holes([o for o in bpy.data.objects if o.name.startswith(("Boot_Lace", "Boot_Eyelets", "Coverall_Cargo_Snap", "Coverall_Cuff_Button"))])
+    garment.close_holes([o for o in bpy.data.objects if o.name.startswith(("Boot_Lace", "Boot_Eyelets", "Coverall_Cargo_Snap", "Coverall_Cuff_Button", "Coverall_Chest_Button"))])
     return F
