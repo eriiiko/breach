@@ -1,0 +1,143 @@
+r"""tools/gen_smoke_light_studio.py — generates levels/smoke_light_studio/, the
+still-picture level for tuning smoke against light (#12 fire + smoke session,
+step 3; Erik's idea from the explosion + air session, logged on #31).
+
+THE EXPLOSION STUDIO'S GEOMETRY, UNCHANGED (imported from
+``tools/gen_explosion_studio.py``, never copied): the 48x48 hull in its vacuum
+band, the west hall and the NE / SE rooms, the crates. What differs:
+
+  * the three interior charges fire ONCE (``period_s = 0``), half a second
+    apart -- small 1.0 s (NE), medium 1.5 s (SE), large 2.0 s (west hall) --
+    so one picture holds three distinct clouds of different yield and age.
+    The hull charge is left out (the vacuum case is its own topic);
+  * more lights, placed to be seen THROUGH the smoke (see LIGHTS below);
+  * a light grey floor, so light, shadow and smoke read against it.
+
+THE STILL PICTURE comes from determinism, not from a saved snapshot: the same
+level stepped to the same tick is the same field, bit for bit, on every
+launch. ``main.py --warp SECONDS`` steps the sim that far before the first
+frame and leaves it paused; the paused renderer relights at 4 Hz, so render
+and light dials (``[render.*]``, ``[smoke]``, the smoke row's optics) can be
+changed and judged on the identical scene after a restart. None of those
+dials feeds the sim, so the scene does not move when they change.
+
+ONE WRITER, LEVEL_LIB ONLY (CLAUDE.md "Level generators"). DETERMINISTIC.
+
+Run:
+    C:/Users/steen/anaconda3/python.exe tools/gen_smoke_light_studio.py
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+for _p in (ROOT, ROOT / "src", ROOT / "tools"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
+import level_lib  # noqa: E402
+import gen_explosion_studio as studio  # noqa: E402
+from level_loader import LightEntry  # noqa: E402
+
+LEVEL_NAME = "smoke_light_studio"
+DEFAULT_OUT_DIR = ROOT / "levels" / LEVEL_NAME
+
+# The studio's three interior charges, each fired ONCE, half a second apart,
+# so a freeze shortly after the last one holds three distinct clouds of
+# different yield and age (the studio's 2 / 4 / 6 s spacing lets the first
+# cloud fill its whole room before the last one fires).
+FIRST_AT_S = {"charge_small": 1.0, "charge_medium": 1.5, "charge_large": 2.0}
+CHARGES = tuple((cid, x, y, payload, FIRST_AT_S[cid])
+                for (cid, x, y, payload, _t) in studio.CHARGES
+                if cid in FIRST_AT_S)
+
+WARM = (1.0, 0.84, 0.67)        # the studio's lamp colour
+COOL = (0.80, 0.88, 1.0)        # a cool white, to read the smoke's hue against
+# (x, y, color, intensity, kind, aim_turns, beam_deg) -- aim in turns, screen
+# convention: 0 east, 0.25 south, 0.5 west, 0.75 north.
+#
+# Placed against the smoke as it lies at --warp 3.0 (seed 42, the game's): the
+# big blast piles its cloud against the west hall's EAST wall and pushes
+# plumes through both doorways; the NE and SE clouds fill the middle of their
+# rooms. Each light shows one relation between light and smoke:
+#   * the studio's four lamps, in corners the smoke has not reached: the
+#     clean-air reference;
+#   * spot from the west wall, aimed east across the hall into the dense wedge
+#     (cool): a beam going from clear air into thick smoke;
+#   * a dim lamp INSIDE the dense wedge (warm): light from within the smoke;
+#   * spot from the NE corner through the NE cloud (warm) and from the SE corner
+#     through the SE cloud (cool): one warm, one cool beam through similar
+#     smoke, so the smoke's own hue reads against both;
+#   * spot in the NE room aimed west THROUGH the NE doorway onto the plume that
+#     comes through it (warm): backlit smoke in a doorway.
+LIGHTS = tuple((x, y, WARM, 1.2, "static", 0.0, 30.0) for (x, y) in studio.LAMPS) + (
+    (5.5, 21.5, COOL, 1.5, "spot", 0.0, 25.0),
+    (23.5, 27.5, WARM, 0.6, "static", 0.0, 30.0),
+    (49.5, 5.5, WARM, 1.5, "spot", 0.395, 25.0),
+    (49.5, 49.5, COOL, 1.5, "spot", 0.612, 25.0),
+    (31.5, 15.5, WARM, 1.0, "spot", 0.5, 25.0),
+)
+
+
+# A LIGHT floor, the photographer's grey backdrop. The explosion studio's
+# near-black floor (34, 36, 42 sRGB, ~0.017 linear albedo) returns almost none
+# of the light that reaches it, so neither a beam nor the shadow a cloud casts
+# can be seen on it -- and smoke over a black floor has nothing to hide. Mid
+# grey (~0.25 linear) makes light, shadow and occlusion all readable.
+PALETTE = dict(studio.PALETTE)
+PALETTE[studio.MAT_AIR] = (140, 140, 140)
+AIR_ALT = (132, 132, 132)
+PALETTE[studio.MAT_HULL] = (70, 74, 84)
+
+
+def build_lights() -> list:
+    return [LightEntry(x=x, y=y, color=col, intensity=inten, range=16.0,
+                       kind=kind, phase=aim, beam_deg=beam)
+            for (x, y, col, inten, kind, aim, beam) in LIGHTS]
+
+
+HEADER_COMMENTS = (
+    "SMOKE-LIGHT STUDIO — the still-picture level for tuning smoke against",
+    "light (#12, step 3). GENERATED by tools/gen_smoke_light_studio.py",
+    "through level_lib on the explosion studio's geometry. Three charges fire",
+    "once (1.0 / 1.5 / 2.0 s); launch with --warp to freeze a moment (README.md).",
+    "",
+    "v2 codes ARE canon material ids (src/simulation/materials.py):",
+    "  0=air 1=hull 6=furniture 9=SPACE",
+)
+
+
+def main(out_dir: Path = DEFAULT_OUT_DIR) -> None:
+    out_dir = Path(out_dir)
+    for name in ("level.toml", "tilemap.csv", "diffuse.png"):
+        p = out_dir / name
+        if p.exists():
+            p.unlink()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    toml_path = level_lib.write_level_header(
+        out_dir, name="Smoke-Light Studio", tile_size_m=studio.TILE_SIZE_M,
+        comment_lines=HEADER_COMMENTS)
+    level_lib.write_boundary_field(toml_path, "space")
+    tm = studio.build_tilemap()
+    level_lib.write_tilemap_csv(out_dir, tm, csv_bak=False)
+    studio.build_diffuse(tm, CHARGES, PALETTE, AIR_ALT).save(
+        out_dir / "diffuse.png")
+    lights = build_lights()
+    charges = studio.build_charges(CHARGES, period_s=0.0)
+    level_lib.write_managed_blocks(
+        toml_path,
+        {"light": lambda nl: level_lib.format_light_lines(lights, nl),
+         "entity": lambda nl: level_lib.format_entity_lines(charges, nl)})
+
+    print(f"wrote {out_dir}  ({studio.W}x{studio.H} tiles)")
+    for (cid, x, y, payload, first) in CHARGES:
+        print(f"  {cid:14s} ({x},{y})  {payload:14s} once at {first} s")
+    for (x, y, _c, inten, kind, aim, beam) in LIGHTS:
+        extra = f" aim {aim} turn, {beam} deg" if kind == "spot" else ""
+        print(f"  light {kind:6s} ({x}, {y}) x{inten}{extra}")
+
+
+if __name__ == "__main__":
+    main()
