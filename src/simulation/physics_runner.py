@@ -1326,8 +1326,9 @@ class PhysicsRunner:
         """One GPU-resident tick (S8a: Path B framework + Path A EOS residency).
         Bit-identical to the CPU/per-call tick: the water SUBSTEP loop, the
         whole EOS STAGE (advection substeps, on-device MG build + solve,
-        kick/compression — docs/cuda_s8a_path_a_impl_2026-07-21.md), and the
-        smoke TRACE loop all run resident on persistent device buffers — the
+        kick/compression — docs/cuda_s8a_path_a_impl_2026-07-21.md; the trace
+        planes ride its substeps, smoke transport v2), and the once-per-tick
+        TRACE TAIL all run resident on persistent device buffers — the
         Path-B EOS bracket is GONE (spec §3.3's zero mid-tick transfers, for
         real). Combustion + the tail stay BRACKETED on the mirror (S8c).
         The numpy fields are the authoritative mirror throughout — every EOS
@@ -1456,20 +1457,20 @@ class PhysicsRunner:
             d_gas_energy=dev["gas_energy"],
         )
 
-        # -- 5. TRACE smoke loop + decay RESIDENT (on device) --------------------
-        # Path A: NO from_host here — the device gas/wind are FRESHER than the
-        # mirror (the resident EOS just wrote them, bit-identically), and the
-        # masks/perm rode up in step 4's pre-upload.
-        # advection_rate = 1.0f / max(eos.dx, 1e-3f) — computed in float32 to match
-        # run_substeps' float expression exactly (bit-identity of the SL displacement).
-        adv_rate = np.float32(1.0) / max(np.float32(self.eos.dx), np.float32(1e-3))
-        self.bp.trace_smoke_resident(
-            dev["gas"], dev["wind_x"], dev["wind_y"],
-            dev["solid"], dev["is_vacuum"], dev["dyn_permeability"],
-            dev["is_ambient"] if amb[0] is not None else 0,
-            h, w, gmap.gas.shape[0], self._inert_n2_idx,
+        # -- 5. The TRACE TAIL, RESIDENT (smoke transport v2, #12 P2b) ------------
+        # The trace planes already rode the bulk face flux inside the resident
+        # EOS substeps (stages 3b/3c); what remains once per tick is the tail --
+        # stranded zeroing, Jacobi diffusion, ceil decay -- the device twin of
+        # the tail run_substeps runs on the host, booked into the SAME EOSSolver
+        # books. NO from_host: the device gas is fresher than the mirror (the
+        # resident EOS just wrote it), and the masks/perm rode up in step 4.
+        self.engine.run_trace_tail_resident(
             gmap.gases.conservative, gmap.gases.diffusion, gmap.gases.decay,
-            sim_time, float(adv_rate), 0.0,
+            h, w, sim_time,
+            d_gas=dev["gas"], d_solid=dev["solid"],
+            d_is_vacuum=dev["is_vacuum"],
+            d_is_ambient=dev["is_ambient"] if amb[0] is not None else 0,
+            d_dyn_permeability=dev["dyn_permeability"],
         )
 
         # -- 6. The once-per-tick synced-set D2H (the locked Q4 decision): the

@@ -34,7 +34,8 @@
 // int32 wrap for all inputs — design §3.2.6e; do NOT widen to int64).
 //
 // TELEMETRY: boundary_flux_ ASSIGNED and the five rail counters ACCUMULATED
-// exactly as eos_step_cuda does; d_rail/d_cnt are PERSISTENT and therefore
+// exactly as eos_step_cuda does (smoke transport v2, P2b: boundary_flux_'s
+// TRACE slots + trace_wipe_sum_ assigned from the stage-3b/3c book block); d_rail/d_cnt are PERSISTENT and therefore
 // cudaMemset EVERY tick (§3.2.5 — the per-call wrappers' memsets moved
 // here). Digests / dbg probes / host levels_ are stale on this path (§3.3).
 // ============================================================================
@@ -580,6 +581,16 @@ struct EOSResidentScratch {
     int64_t* e0 = nullptr;
     int32_t *pcur = nullptr, *s_plane = nullptr;
     unsigned long long* flux_cnt = nullptr;    // (FLUX_CNT_SLOTS,)
+    // Smoke transport v2 (#12, design §5 "Resident", P2b): stages 3b/3c run on
+    // the resident trace planes (every non-conservative plane of d_gas_base —
+    // already device-resident; NO host liveness scan, RL habits §A: a zero
+    // plane stays zero with zero counters). `spre` is the per-plane S_pre
+    // snapshot (one plane, reused plane by plane — the chained path's d_spre);
+    // `tcnt` the (2·n_gases) unsigned-long-long book block indexed by the
+    // trace's position k in the per-tick trace list: [0, n_gases) vent,
+    // [n_gases, 2·n_gases) wipe. Zeroed every tick (the PER-TICK ZERO RULE).
+    int32_t* spre = nullptr;
+    unsigned long long* tcnt = nullptr;
     // MG hierarchy
     DevLevel lv[MG_MAX_LEVELS_RES];
 
@@ -590,6 +601,8 @@ struct EOSResidentScratch {
         f(absorb_q); f(cap2); f(cons_flag); f(rail); f(cnt);
         f(e); f(nbulk); f(dqsum_e); f(dqsum_s); f(ecnt);
         f(e0); f(pcur); f(s_plane); f(flux_cnt);
+        f(spre); f(tcnt);
+        spre = nullptr; tcnt = nullptr;
         svx = svy = st = coeffE = coeffS = dq_e = dq_s = scale = nullptr;
         div_u = ntot = pstar = absorb_q = nullptr;
         cap2 = nullptr;
@@ -650,6 +663,10 @@ struct EOSResidentScratch {
         a64(&dqsum_e, n, "res malloc dqsum_e");
         a64(&dqsum_s, n, "res malloc dqsum_s");
         cuda_check(cudaMalloc(&ecnt, 6 * 8), "res malloc ecnt");   // + e_transport_net_sum (arc #54)
+        // Smoke transport v2 (#12, P2b): the trace S_pre snapshot + book block.
+        a32(&spre, n, "res malloc spre");
+        if (NG > 0)
+            cuda_check(cudaMalloc(&tcnt, (size_t)2 * NG * 8), "res malloc tcnt");
         int lh = H, lw = W;
         for (int l = 0; l < NL; ++l) {
             DevLevel& L = lv[l];
@@ -778,6 +795,20 @@ void eos_step_resident(
     const bool use_rail = ambient_mode && n_cons > 0;
     if (use_rail)
         cuda_check(cudaMemset(S.rail, 0, (size_t)n_cons * 8), "memset rail");
+    // Smoke transport v2 (#12, design §2.1/§5, P2b): EVERY trace plane rides
+    // stages 3b/3c — the resident path skips none (no host scan, RL habits §A;
+    // an all-zero plane prices phi = floordiv(dq·0, N) = 0 and stays zero with
+    // zero counters, so this equals the CPU's skip-after-scan exactly).
+    std::vector<int> trace_gi;
+    std::vector<int32_t*> trace_planes;
+    for (int gi = 0; gi < n_gases; ++gi) {
+        if (gas_conservative[gi]) continue;
+        trace_gi.push_back(gi);
+        trace_planes.push_back(d_gas_base + (size_t)gi * n);
+    }
+    const int n_trace = (int)trace_gi.size();
+    if (n_trace > 0)
+        cuda_check(cudaMemset(S.tcnt, 0, (size_t)2 * n_gases * 8), "memset tcnt");
 
     // ---- step 0 on device: P_prev := P (D2D — same bytes the host copy
     //      just wrote to the mirror wave_p). ------------------------------
@@ -821,7 +852,12 @@ void eos_step_resident(
             S.e, S.nbulk, S.dqsum_e, S.dqsum_s,
             S.dq_e, S.dq_s, S.scale, S.ecnt,
             d_is_ambient, n_amb_cons.data(),
-            use_rail ? rail_ptrs.data() : nullptr);
+            use_rail ? rail_ptrs.data() : nullptr,
+            // smoke transport v2 (#12) stages 3b/3c on the resident planes:
+            // vent -> boundary_flux_'s trace slots, wipe -> trace_wipe_sum_.
+            n_trace ? trace_planes.data() : nullptr, n_trace, S.spre,
+            n_trace ? S.tcnt : nullptr,
+            n_trace ? S.tcnt + n_gases : nullptr);
     }
 
     // ---- DEVICE MID-STAGE: div(u*), Dalton N, p* (per-cell, verbatim). ---
@@ -891,6 +927,22 @@ void eos_step_resident(
 
     // ---- telemetry D2H (scalars only): rail ASSIGNED, counters ACCUMULATED
     //      — exactly the per-call semantics (design §3.2.7). ---------------
+    // Smoke transport v2 (#12, P2b): the trace books of stages 3b/3c. The
+    // shared pre-stage zeroed boundary_flux_ and the three sibling books at
+    // tick entry (EOSSolver::step's reset, verbatim), so these are plain stores
+    // into the TRACE slots (the bulk slots are the rail's, below). Integer
+    // atomicAdd is order-free: the device totals equal the CPU's sequential
+    // sums. The once-per-tick resident trace tail (trace_tail_resident) then
+    // ADDS its vent / sink / decay on top, exactly as the CPU tail does.
+    if (n_trace > 0) {
+        std::vector<unsigned long long> tc((size_t)2 * n_gases, 0);
+        cuda_check(cudaMemcpy(tc.data(), S.tcnt, tc.size() * 8,
+                              cudaMemcpyDeviceToHost), "D2H trace counters");
+        for (int k = 0; k < n_trace; ++k) {
+            solver.boundary_flux_[trace_gi[k]]  = (int64_t)tc[k];
+            solver.trace_wipe_sum_[trace_gi[k]] = (int64_t)tc[n_gases + k];
+        }
+    }
     if (use_rail) {
         std::vector<unsigned long long> rail_host(n_cons, 0);
         cuda_check(cudaMemcpy(rail_host.data(), S.rail, (size_t)n_cons * 8,

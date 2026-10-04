@@ -22,8 +22,9 @@ Usage (the CUDA build must exist first — run ``cpp/build_cuda.bat``):
 
 Equivalent shortcut: ``python main.py --cuda`` (main.py routes --cuda here).
 
-The GPU surface: 4 field solvers (temperature, water, smoke, fire) dispatch
-inside PhysicsEngine::step, plus the radiation sweep (step 2b of step_tail;
+The GPU surface: 3 field solvers (temperature, water, fire) dispatch
+inside PhysicsEngine::step (the per-call smoke solver is gone: the trace planes
+ride the EOS bulk flux, smoke transport v2 #12), plus the radiation sweep (step 2b of step_tail;
 set_radiation_backend, ray-engine-v2 P4 — it replaced the CUDA-S2 raycaster
 flag, deleted with cuda_raycaster.{cu,h}). The sweep's four planes are
 bit-identical CPU<->GPU (tests/cuda_radiation_sweep_check.py).
@@ -135,7 +136,8 @@ def main() -> None:
     # S8a Path B: --resident turns on GPU field residency (default OFF). The
     # per-call backends above stay on (EOS + combustion + fire + temperature run
     # bracketed via their per-call GPU path inside the resident tick); the water
-    # substep loop + the smoke trace loop run resident on persistent device
+    # substep loop, the whole EOS stage (the trace planes riding its substeps)
+    # and the once-per-tick trace tail run resident on persistent device
     # buffers, killing the substep-/plane-MULTIPLIED transfer tax. The runner
     # lazily puts each GameMap into residency mode on its first resident tick, so
     # no game-loop change is needed here.
@@ -143,7 +145,7 @@ def main() -> None:
         from simulation import physics_runner
         physics_runner.set_residency(True)
         print("[run_on_cuda] GPU field RESIDENCY on (--resident): water substeps "
-              "+ smoke traces resident; EOS/combustion/tail bracketed.")
+              "+ EOS + trace tail resident; combustion/tail bracketed.")
     # Hand off to the real game entry (no duplication of the loop). main.main()
     # imports the already-loaded CUDA breach_physics from sys.modules and reads
     # --res itself.

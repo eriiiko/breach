@@ -153,8 +153,9 @@ void bulk_flux_plane_device(
 // d_tvent/d_twipe: n_trace unsigned-long-long device slots EACH, ACCUMULATED
 //                  into (caller memsets per tick): vent = what a donor prices
 //                  onto a vacuum / ring receiver, wipe = the N_EPS wipe.
-// n_trace == 0 (or any nullptr) -> the trace stages do not run: the RESIDENT
-// path passes none until P2b gives g_eos_res its trace scratch.
+// n_trace == 0 (or any nullptr) -> the trace stages do not run. The chained
+// path hands its LIVE planes (host scan); the RESIDENT path (P2b) hands EVERY
+// trace plane of its resident gas block (no host scan, RL habits §A).
 //
 // arc #54 (gas-energy conservation, design §2.7 row 1): `d_gas_energy` is now
 // the LIVE conserved field this pass MOVES — priced off it directly

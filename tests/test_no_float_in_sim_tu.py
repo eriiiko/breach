@@ -371,12 +371,22 @@ _FP_FAST_RE = re.compile(r"fp:fast")
 # before this patch. fire_simulation.cpp `float` 6 -> 5: no line of this
 # patch -- it was 1 stale-high. Both tightened to their real counts so the
 # ratchet stays sharp.
+# Smoke transport v2 P2b (#12, 2026-10-04): physics_engine.cpp `float` 51 -> 54.
+# The resident trace tail's seam, PhysicsEngine::run_trace_tail_resident, takes
+# the per-gas config columns `const float* gas_diffusion, const float*
+# gas_decay` and `float sim_time` (the SAME pass-through parameter types
+# run_substeps carries for the CPU tail) and forwards the device permeability
+# as `reinterpret_cast<const float*>` (run_substeps_resident's line, once
+# more): three LINES of interface types, NO float arithmetic -- every fold of
+# those dials happens in bulk_transport.cpp (/fp:strict, trace_diffusion_dd_q /
+# trace_decay::frac_q), shared by both backends. The CUDA-S4a precedent above.
+# Net over the arc: the deleted SL dispatch's lines (53 -> 51 at P1) and these.
 BASELINE = {
     "atmosphere_solver.cpp":  {"float": 32, "double": 32, "fp:fast": 1},
     "fire_simulation.cpp":    {"float": 5,  "double": 18, "fp:fast": 0},
     "water_solver.cpp":       {"float": 32, "double": 22, "fp:fast": 1},
     "temperature_solver.cpp": {"float": 4,  "double": 6,  "fp:fast": 0},
-    "physics_engine.cpp":     {"float": 51, "double": 20, "fp:fast": 1},
+    "physics_engine.cpp":     {"float": 54, "double": 20, "fp:fast": 1},
     "radiation_sweep.cpp":    {"float": 0,  "double": 0,  "fp:fast": 0},
     "emissive_table.cpp":     {"float": 0,  "double": 8,  "fp:fast": 0},
 }

@@ -1,5 +1,6 @@
 #include "bulk_transport.h"
 #include "fixed_point.h"
+#include "trace_decay.h"   // smoke transport v2: the shared decay rule
 #include <algorithm>
 #include <cassert>
 #include <vector>
@@ -641,6 +642,39 @@ void bulk_flux_energy_transport_cached(
 }
 
 // ===========================================================================
+// Smoke transport v2 (#12, design §2.3) — the tail's DECAY step, isolated.
+// ===========================================================================
+int32_t trace_decay::frac_q(float decay_g, float dt) {
+    // Out of line on purpose (this TU is on /fp:strict) — see trace_decay.h.
+    if (!(decay_g > 0.0f)) return 0;
+    q16 f = quantize((double)decay_g * (double)dt);
+    if (f < 0) f = 0;
+    if (f > FP_ONE) f = FP_ONE;   // decay·dt >= 1 removes it all
+    return f;
+}
+
+int32_t trace_diffusion_dd_q(float d_g, float dt) {
+    // The §2.2 host fold, out of line on /fp:strict (one definition, both
+    // backends — the resident CUDA tail folds through this same function).
+    q16 dd_q = quantize((double)d_g * (double)dt);
+    if (dd_q < 0) dd_q = 0;
+    return dd_q;
+}
+
+int64_t trace_decay_plane(int32_t* S, int n, int32_t frac_q) {
+    if (frac_q <= 0) return 0;
+    int64_t lost_sum = 0;
+    for (int i = 0; i < n; ++i) {
+        const int64_t v = S[i];
+        if (v <= 0) continue;
+        const int64_t lost = trace_decay::lost(v, frac_q);
+        S[i] = (int32_t)(v - lost);
+        lost_sum += lost;
+    }
+    return lost_sum;
+}
+
+// ===========================================================================
 // Smoke transport v2 (#12, design §2.2-§2.4) — the once-per-tick trace tail.
 // Contract and order in bulk_transport.h.
 // ===========================================================================
@@ -686,8 +720,7 @@ void trace_tail(
         // dd_q = quantize(d·dt), the host fold. Stability (Σ_j c_ij ≤ ONE, hence
         // exact positivity) needs 4·dd_q ≤ ONE: refused at the gases door and at
         // PhysicsRunner's dt binding; asserted here.
-        q16 dd_q = quantize((double)gas_diffusion[gi] * (double)dt);
-        if (dd_q < 0) dd_q = 0;
+        const q16 dd_q = trace_diffusion_dd_q(gas_diffusion[gi], dt);
         assert(4 * (int64_t)dd_q <= (int64_t)FP_ONE);
         if (dd_q > 0) {
             if (!perm_built) {
@@ -762,25 +795,9 @@ void trace_tail(
         }
 
         // ---- 3. decay (§2.3): ceil rounding, booked -------------------------
-        const float decay_g = gas_decay[gi];
-        if (decay_g > 0.0f) {
-            q16 frac_q = quantize((double)decay_g * (double)dt);
-            if (frac_q < 0) frac_q = 0;
-            if (frac_q > FP_ONE) frac_q = FP_ONE;   // decay·dt >= 1 removes it all
-            if (frac_q > 0) {
-                int64_t lost_sum = 0;
-                for (int i = 0; i < n; ++i) {
-                    const int64_t v = S[i];
-                    if (v <= 0) continue;
-                    // ceil(v·frac / 2^16): v < 2^31, frac <= 2^16 -> < 2^47.
-                    int64_t lost = (v * (int64_t)frac_q + (FP_ONE - 1)) >> FP_SHIFT;
-                    if (lost > v) lost = v;
-                    S[i] = (int32_t)(v - lost);
-                    lost_sum += lost;
-                }
-                decay[gi] += lost_sum;
-            }
-        }
+        // Its own function over the shared per-cell rule (trace_decay.h), so a
+        // decay-rounding amendment is one local edit on both backends.
+        decay[gi] += trace_decay_plane(S, n, trace_decay::frac_q(gas_decay[gi], dt));
 
 #ifndef NDEBUG
         // §2.4: the int32 narrow is safe while Σ_map S < 2^31 per plane.

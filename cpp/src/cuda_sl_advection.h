@@ -13,7 +13,7 @@
 // SL advection is a pure GATHER — each destination cell reads its backtraced
 // source from the frozen snapshot and writes only itself — so there is no
 // scatter hazard and bit-identity is direct (docs/eos_p6_gpu_alignment_review.md
-// §1.4; device precedent: cuda_smoke.cu's backtrace class, S4a).
+// §1.4; device precedent: the (since deleted) cuda_smoke.cu's backtrace class, S4a).
 //
 // The transport core is pure-integer Q16.16; the ONLY float is the host-side
 // dt_s_q = quantize((double)dt / n_sub) scalar fold, replicated in double

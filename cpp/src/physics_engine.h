@@ -473,7 +473,8 @@ public:
         // S8a Path B, redefined by smoke transport v2 (#12, design §5):
         // `do_traces` means "the once-per-tick trace TAIL (stranded zeroing,
         // diffusion, decay) runs on the HOST". false skips it — the resident
-        // path runs it on device (P2b). The trace ADVECTION is inside the EOS
+        // path runs it on device (run_trace_tail_resident, P2b) and never
+        // comes through here. The trace ADVECTION is inside the EOS
         // step on every path. Default true.
         bool do_traces = true,
         // THERMAL-MASS AXIS, P-EOS (docs/thermal_mass_eos_ruling_2026-07-30.md
@@ -489,8 +490,9 @@ public:
     // run_substeps' EOS dispatch: host mirrors feed the shared pre-stage (all
     // reductions — tick-entry state) + telemetry; the device pointers are the
     // persistent CuPy resident fields (uintptr_t so this header stays
-    // CUDA-free; 0 == nullptr for the ambient statics). NO trace loop (the
-    // runner drives trace_smoke_resident, as in Path B). Declared on every
+    // CUDA-free; 0 == nullptr for the ambient statics). The trace planes ride
+    // stages 3b/3c inside it (smoke transport v2); the once-per-tick trace TAIL
+    // is run_trace_tail_resident below, which the runner calls next. Declared on every
     // build; the body THROWS on a non-CUDA build, and on a CUDA build throws
     // unless eos_step_backend_is_cuda() (no CPU fallback for device
     // pointers). Bit-identity gate: tests/cuda_s8a_check.py PART 1a/1b/1c.
@@ -524,6 +526,26 @@ public:
         // pre-stage reduces over it (unlike thermal_solid's cap2 fold); the
         // caller's from_host/to_host round-trips the mirror around this call.
         std::uintptr_t d_gas_energy = 0);
+
+    // --- Smoke transport v2 (#12, design §5 "Resident", P2b): the resident
+    // path's once-per-tick TRACE TAIL. The device twin of the tail
+    // run_substeps runs on the host after the EOS dispatch (stranded zeroing
+    // -> Jacobi diffusion -> ceil decay, trace_tail in bulk_transport.h), on
+    // the persistent device fields, booked into the SAME EOSSolver books the
+    // CPU tail writes (vent -> boundary_flux_'s trace slots, sink, decay;
+    // ADDED to what run_substeps_resident's stages 3b/3c stored this tick).
+    // The runner calls it right after run_substeps_resident (where the
+    // deleted trace_smoke_resident stood). Declared on every build; the body
+    // THROWS on a non-CUDA build. Gate: tests/cuda_trace_smoke_check.py
+    // (V6-resident).
+    void run_trace_tail_resident(
+        int n_gases, const bool* gas_conservative,
+        const float* gas_diffusion, const float* gas_decay,
+        int h, int w, float sim_time,
+        std::uintptr_t d_gas_base,
+        std::uintptr_t d_solid, std::uintptr_t d_is_vacuum,
+        std::uintptr_t d_is_ambient,          // 0 on a space map
+        std::uintptr_t d_dyn_permeability);
 
     // --- Patch 1 S4c: the water-layer ARRAY ARITHMETIC -------------------
     // Moves the array-op core of PhysicsRunner._step_water into C++ — the part

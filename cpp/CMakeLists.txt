@@ -98,7 +98,9 @@ if(BREACH_CUDA)
         #  died with cast_fire_heat at T6; cuda_radiation_sweep.cu below is
         #  the radiative transport's GPU path now.)
         src/cuda_water.cu          # S3 water solver (pipe model, bit-identical)
-        src/cuda_smoke.cu          # S4a smoke solver (diffusion + SL advection)
+        # (S4a cuda_smoke.cu DELETED at smoke transport v2 P2b, #12 -- the trace
+        #  planes ride the bulk flux in cuda_bulk_transport.cu, which also holds
+        #  the resident trace tail.)
         src/cuda_fire.cu           # S6 fire solver (logistic + plume + smoke scatter + burn)
         src/cuda_sl_advection.cu   # EOS P6.2 fused 3-field SL advection (u self + gas T)
         src/cuda_bulk_transport.cu # EOS P6.1 bulk donor-cell flux (water K3-K8 pattern)

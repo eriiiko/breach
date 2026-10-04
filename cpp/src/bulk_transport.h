@@ -303,3 +303,17 @@ void trace_tail(
     int64_t* vent,
     int64_t* sink,
     int64_t* decay);
+
+// The tail's decay step (§2.3), ISOLATED (smoke transport v2 P2b): one trace
+// plane `S` of `n` cells, `lost = trace_decay::lost(v, frac_q)` per cell with
+// v > 0 (the shared rule in trace_decay.h, which the resident CUDA tail's
+// decay kernel calls too), returns the counts removed (the decay book's
+// increment). frac_q <= 0 -> no-op, returns 0. A decay-rounding amendment
+// lands in trace_decay.h; this function and its CUDA twin stay as they are.
+int64_t trace_decay_plane(int32_t* S, int n, int32_t frac_q);
+
+// The tail's diffusion coefficient fold (§2.2): dd_q = quantize(d_g · dt),
+// floored at 0. One out-of-line definition (bulk_transport.cpp, /fp:strict)
+// shared by the CPU tail and the resident CUDA tail's host fold. The caller
+// owns the stability door 4·dd_q <= ONE.
+int32_t trace_diffusion_dd_q(float d_g, float dt);

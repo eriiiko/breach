@@ -18,6 +18,7 @@
 #include "cuda_eos_step.h"      // EOS P6.5: chained eos.step GPU dispatch
 #include "cuda_eos_resident.h"  // S8a Path A: fully device-resident EOS tick
 #include "cuda_radiation_sweep.h"  // ray-engine-v2 P4: the sweep's CUDA twin
+#include "cuda_resident.h"      // smoke transport v2 P2b: trace_tail_resident
 // CUDA-S5 cuda_wave.h / CUDA-S7 cuda_atmosphere.h RETIRED in EOS P6.0 (their
 // CPU solvers were replaced by the EOS solve in P3; nothing here called them).
 #endif
@@ -744,10 +745,11 @@ void PhysicsEngine::run_substeps(
             thermal_solid);
     }
 
-    // S8a Path B: the resident path skips the trace tail (do_traces=false) and
-    // will run it on device itself (smoke transport v2 P2b). Default
-    // (do_traces=true): the tail runs here, on the host, after the dispatch —
-    // so CPU and chained GPU EOS share it automatically.
+    // Smoke transport v2 (#12, design §5): `do_traces` means "the tail runs on
+    // the HOST". Default true: it runs here, after the dispatch — so CPU and
+    // chained GPU EOS share it automatically. The resident tick never comes
+    // through here: it runs run_substeps_resident + run_trace_tail_resident
+    // (the device tail, P2b). false is the isolated EOS-stage bench's switch.
     if (!do_traces) return;
 
     // ---- SMOKE TRANSPORT v2 (#12, docs/smoke_transport_design_2026-10-04.md)
@@ -836,6 +838,42 @@ void PhysicsEngine::run_substeps_resident(
     (void)thermal_solid; (void)d_thermal_solid; (void)d_gas_energy;
     throw std::runtime_error(
         "run_substeps_resident requires the CUDA build (BREACH_CUDA=ON).");
+#endif
+}
+
+// ---- Smoke transport v2 (#12, P2b): the resident trace tail -----------------
+// Contract in the header. The device work is breach_cuda::trace_tail_resident
+// (cuda_bulk_transport.cu, the (N, h, w) launch core at N = 1); this method
+// owns only the books' sizing and routing, so the CPU tail (run_substeps) and
+// this one book into the SAME EOSSolver members.
+void PhysicsEngine::run_trace_tail_resident(
+        int n_gases, const bool* gas_conservative,
+        const float* gas_diffusion, const float* gas_decay,
+        int h, int w, float sim_time,
+        std::uintptr_t d_gas_base,
+        std::uintptr_t d_solid, std::uintptr_t d_is_vacuum,
+        std::uintptr_t d_is_ambient,
+        std::uintptr_t d_dyn_permeability) {
+#ifdef BREACH_HAS_CUDA
+    // The resident EOS's shared pre-stage reset + sized the books this tick;
+    // ensure_trace_books only sizes them for a caller that did not.
+    this->eos.ensure_trace_books(n_gases);
+    breach_cuda::trace_tail_resident(
+        reinterpret_cast<int32_t*>(d_gas_base),
+        reinterpret_cast<const bool*>(d_solid),
+        reinterpret_cast<const bool*>(d_is_vacuum),
+        reinterpret_cast<const bool*>(d_is_ambient),
+        reinterpret_cast<const float*>(d_dyn_permeability),
+        h, w, n_gases, gas_conservative, gas_diffusion, gas_decay, sim_time,
+        this->eos.boundary_flux_.data(),
+        this->eos.trace_sink_sum_.data(),
+        this->eos.trace_decay_sum_.data());
+#else
+    (void)n_gases; (void)gas_conservative; (void)gas_diffusion; (void)gas_decay;
+    (void)h; (void)w; (void)sim_time; (void)d_gas_base; (void)d_solid;
+    (void)d_is_vacuum; (void)d_is_ambient; (void)d_dyn_permeability;
+    throw std::runtime_error(
+        "run_trace_tail_resident requires the CUDA build (BREACH_CUDA=ON).");
 #endif
 }
 
