@@ -1,5 +1,7 @@
-"""Smoke transport v2 (#12) V6-CHAINED: CPU == chained GPU EOS at tolerance 0 on
-every trace plane and every trace counter (runs inside the GPU subprocess).
+"""Smoke transport v2 (#12) V6: CPU == GPU at tolerance 0 on every trace plane
+and every trace counter, on BOTH GPU paths -- the chained GPU EOS (V6-chained,
+P2a) and the device-RESIDENT tick (V6-resident, P2b) -- runs inside the GPU
+subprocess.
 
 Rewritten at P2a. The checker this file used to be tested the semi-Lagrangian
 SmokeDynamics step against ``bp.cuda_smoke_step`` (both DELETED with the old
@@ -37,6 +39,19 @@ never pass). Three scenarios, each with its own non-vacuity guards:
 
 Part 2: the CUDA build's CPU path (flags off) still reproduces the committed
 default-scenario golden.
+
+Part 3, V6-RESIDENT (P2b): the same three scenarios, CPU vs the RESIDENT tick
+(``physics_runner.set_residency(True)`` + the four EOS flags: stages 3b/3c ride
+the resident EOS substeps on every trace plane, and the once-per-tick trace
+tail -- stranded zeroing, Jacobi diffusion, ceil decay -- runs as the device
+launch ``PhysicsEngine.run_trace_tail_resident``). Per tick at tol 0: every gas
+plane, E, wind, T, P and the four trace books. Fired-proof via
+``eos_resident_calls``. (``digest_bulk_flux`` is an accepted telemetry gap on
+the resident path -- cuda_eos_resident.h -- so it is compared on PART 1 only.)
+BREAKS IF: the resident tail is dropped or reordered (sink / diffusion / decay),
+a device tail expression differs from trace_tail's (a face perm, the magnitude
+truncation, the decay rounding), a tail book is not ADDED onto the EOS's, or the
+resident EOS stops handing its trace planes to stages 3b/3c.
 
 Prints ``TRACE_SMOKE_RESULT: PASS``/``FAIL`` and exits 0/1.
 """
@@ -184,7 +199,16 @@ def _scn_crates():
     return tm, setup, action, 48
 
 
-def _run_scenario(name, builder) -> bool:
+def _residency(on: bool) -> None:
+    from simulation import physics_runner
+    physics_runner.set_residency(bool(on))
+
+
+def _run_scenario(name, builder, resident: bool = False) -> bool:
+    """CPU world vs GPU world, per tick at tol 0. ``resident`` selects the GPU
+    path: False = the chained GPU EOS (V6-chained), True = the device-resident
+    tick with the resident trace tail (V6-resident)."""
+    tag = f"{name}/{'resident' if resident else 'chained'}"
     tm, setup, action, n_ticks = builder()
     cpu, gpu = _sim(tm), _sim(tm)
     setup(cpu)
@@ -196,17 +220,20 @@ def _run_scenario(name, builder) -> bool:
         assert np.array_equal(getattr(gc, f), getattr(gg, f)), \
             f"{name}: scenario construction not deterministic on {f}"
 
-    calls0 = bp.eos_step_cuda_calls()
+    calls0 = bp.eos_resident_calls() if resident else bp.eos_step_cuda_calls()
     tot = {k: 0 for k in ("vent", "wipe", "sink", "decay")}
     max_nsub = 0
     bad = 0
     for tick in range(n_ticks):
         action(tick, cpu)
         action(tick, gpu)
+        _residency(False)
         _set_eos_backends(False)
         cpu.step()
         _set_eos_backends(True)
+        _residency(resident)
         gpu.step()
+        _residency(False)
         _set_eos_backends(False)
 
         for f in fields:
@@ -215,20 +242,22 @@ def _run_scenario(name, builder) -> bool:
                 bad += 1
                 mism = int(np.count_nonzero(a != b))
                 idx = int(np.argmax(a != b))
-                print(f"  [{name}] tick {tick}: field {f}: {mism} MISMATCH(es) "
+                print(f"  [{tag}] tick {tick}: field {f}: {mism} MISMATCH(es) "
                       f"(first flat @ {idx}: cpu={a.flat[idx]} gpu={b.flat[idx]})")
         # The EOS's own bulk-flux digest hashes EVERY gas plane (trace included)
         # from host memory: the trace D2H must have landed before it.
-        dc = cpu.physics_runner.engine.eos.digest_bulk_flux
-        dg = gpu.physics_runner.engine.eos.digest_bulk_flux
-        if dc != dg:
-            bad += 1
-            print(f"  [{name}] tick {tick}: digest_bulk_flux cpu={dc} gpu={dg}")
+        # (Not maintained on the resident path -- an accepted telemetry gap.)
+        if not resident:
+            dc = cpu.physics_runner.engine.eos.digest_bulk_flux
+            dg = gpu.physics_runner.engine.eos.digest_bulk_flux
+            if dc != dg:
+                bad += 1
+                print(f"  [{tag}] tick {tick}: digest_bulk_flux cpu={dc} gpu={dg}")
         bc, bg = _books(cpu), _books(gpu)
         for key in bc:
             if bc[key] != bg[key]:
                 bad += 1
-                print(f"  [{name}] tick {tick}: books[{key}] cpu={bc[key]} gpu={bg[key]}")
+                print(f"  [{tag}] tick {tick}: books[{key}] cpu={bc[key]} gpu={bg[key]}")
         for t in traces:
             tot["vent"] += bc["vent"][t]
             tot["wipe"] += bc["wipe"][t]
@@ -240,15 +269,18 @@ def _run_scenario(name, builder) -> bool:
             break
 
     ok = (bad == 0)
-    fired = bp.eos_step_cuda_calls() - calls0
+    fired = (bp.eos_resident_calls() if resident else bp.eos_step_cuda_calls()) - calls0
     if fired < n_ticks:
         ok = False
-        print(f"  [{name}] the chained dispatch fired {fired}/{n_ticks} ticks "
-              f"(a silently-CPU run cannot pass)")
+        print(f"  [{tag}] the {'resident' if resident else 'chained'} dispatch "
+              f"fired {fired}/{n_ticks} ticks (a silently-CPU run cannot pass)")
+    if resident and not bool(gg.residency_on()):
+        ok = False
+        print(f"  [{tag}] the GPU world never entered residency mode -- VACUOUS")
     # boundary_flux() must agree on map kind: n_gases zeros-or-values on BOTH.
     if len(_books(cpu)["vent"]) != len(_books(gpu)["vent"]):
         ok = False
-        print(f"  [{name}] boundary_flux size differs CPU/GPU")
+        print(f"  [{tag}] boundary_flux size differs CPU/GPU")
 
     # ---- non-vacuity guards: the gate must exercise what it claims ----------
     need = {"BLAST": ("wipe", "decay"), "BREACH": ("vent", "sink", "decay"),
@@ -256,17 +288,17 @@ def _run_scenario(name, builder) -> bool:
     for k in need:
         if tot[k] <= 0:
             ok = False
-            print(f"  [{name}] scenario too tame: no '{k}' was ever booked")
+            print(f"  [{tag}] scenario too tame: no '{k}' was ever booked")
     if max_nsub <= 1:
         ok = False
-        print(f"  [{name}] scenario too tame: the EOS never needed a 2nd substep")
+        print(f"  [{tag}] scenario too tame: the EOS never needed a 2nd substep")
     if name == "CRATES":
         from simulation.gases import SMOKE
         if not int(gg.gas[SMOKE][1:-1, 18:-1].sum()) > 0:
             ok = False
-            print("  [CRATES] no smoke crossed the crate wall")
+            print(f"  [{tag}] no smoke crossed the crate wall")
     if ok:
-        print(f"  [{name}] {n_ticks} ticks bit-identical (gas, E, wind, T, P, "
+        print(f"  [{tag}] {n_ticks} ticks bit-identical (gas, E, wind, T, P, "
               f"all trace books); booked totals {tot}, max n_sub {max_nsub}.")
     return ok
 
@@ -302,6 +334,22 @@ def part2_golden() -> bool:
     return True
 
 
+def part3_resident_parity() -> bool:
+    print("PART 3 — V6-resident: CPU == the device-RESIDENT tick (stages 3b/3c "
+          "on the resident EOS + the resident trace tail) on every trace plane "
+          "and every trace book, per tick:")
+    try:
+        import cupy  # noqa: F401
+    except Exception as exc:      # pragma: no cover -- reported, never skipped
+        print(f"  cupy unavailable ({exc}) -- the resident leg CANNOT be gated")
+        return False
+    ok = True
+    for name, builder in (("BLAST", _scn_blast), ("BREACH", _scn_breach),
+                          ("CRATES", _scn_crates)):
+        ok = _run_scenario(name, builder, resident=True) and ok
+    return ok
+
+
 def main() -> int:
     if not getattr(bp, "HAS_CUDA", False) or not bp.cuda_available():
         print("TRACE_SMOKE_RESULT: FAIL (no CUDA build / device)")
@@ -309,7 +357,8 @@ def main() -> int:
     print("device:", bp.cuda_device_info())
     p1 = part1_chained_parity()
     p2 = part2_golden()
-    if p1 and p2:
+    p3 = part3_resident_parity()
+    if p1 and p2 and p3:
         print("TRACE_SMOKE_RESULT: PASS")
         return 0
     print("TRACE_SMOKE_RESULT: FAIL")

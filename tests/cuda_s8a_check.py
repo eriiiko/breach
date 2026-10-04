@@ -9,7 +9,8 @@ docs/cuda_s8a_path_a_impl_2026-07-21.md §7). Parts:
   scenario with detonations / water / fire / a scripted structural edit, driven
   through the REAL per-tick path (PhysicsRunner.step) on two independently
   built worlds — CPU (residency OFF, backends OFF) vs GPU-RESIDENT (residency
-  ON, backends ON; Path A: water + the WHOLE EOS stage + traces resident, the
+  ON, backends ON; Path A: water + the WHOLE EOS stage (trace planes riding
+  its substeps) + the trace tail resident, the
   Path-B EOS bracket GONE). Per tick, asserts byte-for-byte identity (tol 0)
   of ALL synced fields (incl. host heat/ripple/ripple_v) AND the resident-
   maintained telemetry (dbg_last_n_sub / dbg_last_c_local_q / the five rail
@@ -31,12 +32,29 @@ docs/cuda_s8a_path_a_impl_2026-07-21.md §7). Parts:
   level per array (excl/m/gE/gS/recip/b/P) against a poisoned hierarchy.
   Localized proof for the hardest port.
 
-  PART 2 — THE PAYOFF: (i) the Path-B isolated water/smoke tax bench; (ii) the
+  PART 2 — THE PAYOFF: (i) the Path-B isolated WATER tax bench; (ii) the
   Path-A isolated EOS-stage bench — per-call run_substeps(do_traces=False) vs
   from_host + run_substeps_resident + to_host at >=2 grid sizes: resident must
   clearly win and win MORE on the bigger grid. (Bench note: the per-call side
   also pays ~6 host FNV plane digests the resident path skips by design —
-  part of the margin is digest removal, not transfer removal.)
+  part of the margin is digest removal, not transfer removal.) (iii) smoke
+  transport v2 (#12, P2b): THE RESIDENT TRACE TAIL MOVES NO PLANE ACROSS THE
+  BUS — at every grid size, one resident tail (run_trace_tail_resident:
+  stranded zeroing + Jacobi diffusion + decay on the device gas block, one
+  small H2D of folds, one small D2H of books) costs less than ONE host
+  round-trip of the gas block it would need if the tail ran on the host.
+  BREAKS IF the tail grows a per-plane (or whole-block) transfer.
+  (P2b: the smoke half of (i) is GONE with its subject — it timed the per-call
+  per-plane GPU semi-Lagrangian smoke step, cuda_smoke_step, against the
+  resident SL loop, trace_smoke_resident; both were deleted with the old law.
+  The trace planes now ride the bulk face flux inside the EOS substeps on every
+  path, so there is no per-plane trace transfer tax left to bench; (iii) is
+  the residency property of what replaced the loop.)
+
+  Per tick, PART 1a/1b also A/B the four TRACE BOOKS (boundary_flux() — the
+  vent channel in its trace slots — trace_wipe_sum, trace_sink_sum,
+  trace_decay_sum): the resident EOS's stages 3b/3c and the resident trace
+  tail book exactly what the CPU books (smoke transport v2 V6-resident).
 
 Prints ``S8A_RESULT: PASS``/``FAIL`` and exits 0/1.
 """
@@ -53,7 +71,7 @@ import breach_physics as bp
 FP_ONE = 65536
 
 # The GPU backends flipped on for the resident/per-call runs (run_on_cuda's set +
-# combustion). In the resident tick the water/smoke per-call flags are inert (those
+# combustion). In the resident tick the water per-call flag is inert (that
 # stages run resident), but the EOS/combustion/fire/temperature/radiation-sweep
 # brackets use their per-call GPU path — so a resident tick is a genuine all-GPU
 # tick. (ray-engine-v2 P4: set_radiation_backend replaces the vestigial
@@ -117,7 +135,8 @@ def _build_scenario(H, W):
     g.water_depth[H - 8:H - 4, 6:W // 2] = water_fixed.quantize_scalar(0.4)
     # A fire seed (burns -> plume into atmosphere + smoke emission into gas).
     g.fire[12:15, 12:15] = fire_fixed.quantize_scalar(0.8)
-    # A trace cloud (the resident trace loop must transport a non-zero plane).
+    # A trace cloud (the resident EOS's stages 3b/3c and the resident trace
+    # tail must carry a non-zero plane).
     trace_ids = [gi for gi in range(g.gas.shape[0])
                  if not bool(g.gases.conservative[gi])]
     assert trace_ids, "scenario needs a trace plane"
@@ -183,11 +202,17 @@ def _compare_tick(t, g_cpu, g_gpu, eos_cpu, eos_gpu, ambient):
         if cc != cg:
             bad += 1
             print(f"  tick {t}: counter {c} mismatch (cpu={cc} gpu={cg})")
-    if ambient:
-        rc, rg = list(eos_cpu.boundary_flux()), list(eos_gpu.boundary_flux())
+    # boundary_flux() (the bulk rail on an ambient map + the trace VENT slots
+    # on every map) and the three sibling trace books (smoke transport v2):
+    # n_gases entries on both paths, every map, every tick.
+    del ambient   # every map now carries comparable books
+    for book in ("boundary_flux", "trace_wipe_sum", "trace_sink_sum",
+                 "trace_decay_sum"):
+        rc = list(getattr(eos_cpu, book)())
+        rg = list(getattr(eos_gpu, book)())
         if rc != rg:
             bad += 1
-            print(f"  tick {t}: boundary_flux mismatch cpu={rc} gpu={rg}")
+            print(f"  tick {t}: {book} mismatch cpu={rc} gpu={rg}")
     return bad
 
 
@@ -392,12 +417,11 @@ def _bench_run(H, W, n_ticks, residency, backends, repeats=3):
 
 
 def _bench_tax(H, W, reps=150):
-    """Isolate the substep-/plane-MULTIPLIED transfer tax: time ONLY the water
-    substep loop + the 5-plane smoke trace loop, per-call (each substep/plane a
-    separate cudaMalloc + H2D + D2H) vs resident (two batched round-trips on
-    persistent buffers). This is exactly the tax the FLOOR kills — the full-tick
-    win (informational, below) buries it under the still-bracketed EOS. Returns
-    (per_call_ms, resident_ms) per iteration."""
+    """Isolate the substep-MULTIPLIED transfer tax of the WATER loop: per-call
+    (each substep a separate cudaMalloc + H2D + D2H) vs resident (one batched
+    round-trip on persistent buffers). (The 5-plane smoke half this bench used
+    to carry is gone with the deleted per-call smoke step — see the docstring.)
+    Returns (per_call_ms, resident_ms, n_sub) per iteration."""
     import cupy as cp
 
     _residency(False); _set_backends(True)
@@ -408,24 +432,15 @@ def _bench_tax(H, W, reps=150):
     dx = float(g.tile_size_m)
     n_sub = int(runner.engine.water_substep_count(dt))
     wdt = dt / n_sub
-    trace_ids = [gi for gi in range(g.gas.shape[0])
-                 if not bool(g.gases.conservative[gi])]
-    n2 = int(g.gases.name_to_id["inert_n2"])
-    diffusion = g.gases.diffusion
-    adv = float(np.float32(1.0) / max(np.float32(dx), np.float32(1e-3)))
 
-    def per_call():   # the MULTIPLIED per-call path (n_sub + 5 malloc/H2D/D2H)
+    def per_call():   # the MULTIPLIED per-call path (n_sub malloc/H2D/D2H)
         for _ in range(n_sub):
             bp.cuda_water_step(g.water_depth, g.flow_vx, g.flow_vy,
                                g.floor_height, g.atmosphere, g.solid,
                                wdt, g.tilt_x, g.tilt_y, wp.g, wp.damping,
                                dx, wp.k_p, wp.v_max, wp.depth_eps)
-        for gi in trace_ids:
-            bp.cuda_smoke_step(g.gas[gi], g.wind_x, g.wind_y,
-                               g.solid, g.solid, g.is_vacuum, g.dyn_permeability,
-                               dt, float(diffusion[gi]), 0.0, adv)
 
-    def resident():   # the RESIDENT path (2 batched round-trips)
+    def resident():   # the RESIDENT path (1 batched round-trip)
         g.from_host(["water_depth", "flow_vx", "flow_vy", "atmosphere", "solid"])
         bp.water_substeps_resident(
             dev["water_depth"], dev["flow_vx"], dev["flow_vy"],
@@ -433,14 +448,6 @@ def _bench_tax(H, W, reps=150):
             H, W, n_sub, wdt, g.tilt_x, g.tilt_y,
             wp.g, wp.damping, dx, wp.k_p, wp.v_max, wp.depth_eps)
         g.to_host(["water_depth", "flow_vx", "flow_vy"])
-        g.from_host(["gas", "wind_x", "wind_y", "dyn_permeability",
-                     "is_vacuum", "solid"])
-        bp.trace_smoke_resident(
-            dev["gas"], dev["wind_x"], dev["wind_y"],
-            dev["solid"], dev["is_vacuum"], dev["dyn_permeability"], 0,
-            H, W, g.gas.shape[0], n2,
-            g.gases.conservative, g.gases.diffusion, g.gases.decay, dt, adv, 0.0)
-        g.to_host(["gas"])
 
     per_call(); resident(); cp.cuda.Stream.null.synchronize()   # warm-up
 
@@ -455,7 +462,56 @@ def _bench_tax(H, W, reps=150):
         return 1e3 * best / reps
     pc, res = timeit(per_call), timeit(resident)
     _residency(False); _set_backends(False)
-    return pc, res, n_sub, len(trace_ids)
+    return pc, res, n_sub
+
+
+def _bench_trace_tail(H, W, reps=100):
+    """Smoke transport v2 (#12, P2b): the resident trace tail vs ONE host
+    round-trip of the gas block (to_host + from_host of `gas` — the minimum a
+    host-side tail would add to the resident tick). Every trace plane carries
+    a live, non-uniform field so the tail does real work on every plane.
+    Returns (tail_ms, roundtrip_ms, n_trace) per iteration."""
+    import cupy as cp
+
+    _residency(False); _set_backends(True)
+    runner, g, dt = _build_scenario(H, W)
+    q = 65536
+    trace_ids = [gi for gi in range(g.gas.shape[0])
+                 if not bool(g.gases.conservative[gi])]
+    for k, gi in enumerate(trace_ids):
+        g.gas[gi, 4:H - 4, 4:W // 2] += (q // 4) + (k + 1) * 97
+    g.enable_residency()
+    g.from_host(["gas", "solid", "is_vacuum", "dyn_permeability"])
+    dev = g.device_ptrs()
+    eos = runner.engine.eos
+
+    def tail():
+        runner.engine.run_trace_tail_resident(
+            g.gases.conservative, g.gases.diffusion, g.gases.decay,
+            H, W, dt, d_gas=dev["gas"], d_solid=dev["solid"],
+            d_is_vacuum=dev["is_vacuum"], d_is_ambient=0,
+            d_dyn_permeability=dev["dyn_permeability"])
+
+    def roundtrip():
+        g.to_host(["gas"])
+        g.from_host(["gas"])
+
+    tail(); roundtrip(); cp.cuda.Stream.null.synchronize()   # warm-up
+    if int(sum(eos.trace_decay_sum())) <= 0:
+        raise AssertionError("trace-tail bench is vacuous: the tail decayed nothing")
+
+    def timeit(fn):
+        best = float("inf")
+        for _ in range(3):
+            t0 = time.perf_counter()
+            for _ in range(reps):
+                fn()
+            cp.cuda.Stream.null.synchronize()
+            best = min(best, time.perf_counter() - t0)
+        return 1e3 * best / reps
+    t_tail, t_rt = timeit(tail), timeit(roundtrip)
+    _residency(False); _set_backends(False)
+    return t_tail, t_rt, len(trace_ids)
 
 
 def _bench_eos_stage(H, W, reps=60):
@@ -546,17 +602,17 @@ def _bench_eos_stage(H, W, reps=60):
 
 
 def part2_payoff() -> bool:
-    print("PART 2 — the payoff (the substep-/plane-MULTIPLIED transfer tax must be "
-          "gone). ISOLATED water-substep + 5-plane-smoke loop, per-call vs resident "
-          "at >=2 grid sizes (the tax is a grid-AREA cost -> resident wins MORE on "
-          "bigger grids):")
+    print("PART 2 — the payoff (the substep-MULTIPLIED transfer tax must be "
+          "gone). ISOLATED water-substep loop, per-call vs resident at >=2 grid "
+          "sizes (the tax is a grid-AREA cost -> resident wins MORE on bigger "
+          "grids):")
     sizes = [(128, 128), (256, 256), (384, 384)]
     ratios = []
     for (H, W) in sizes:
-        pc, res, n_sub, n_tr = _bench_tax(H, W)
+        pc, res, n_sub = _bench_tax(H, W)
         ratio = pc / max(res, 1e-9)
         ratios.append(ratio)
-        print(f"  {H:3d}x{W:<3d} (water x{n_sub} substeps + smoke x{n_tr} planes): "
+        print(f"  {H:3d}x{W:<3d} (water x{n_sub} substeps): "
               f"per-call {pc:7.3f} | RESIDENT {res:7.3f} ms  "
               f"({ratio:.2f}x faster resident)")
     # The tax is GONE iff resident clearly beats per-call at EVERY size AND the
@@ -595,7 +651,7 @@ def part2_payoff() -> bool:
         eos_ratios.append(ratio)
         print(f"  {H:3d}x{W:<3d} EOS stage: per-call {pc:7.3f} | "
               f"RESIDENT {res:7.3f} ms  ({ratio:.2f}x faster resident)")
-    # Same robustness shape as the water/smoke assert above: wins at every
+    # Same robustness shape as the water assert above: wins at every
     # size + a strong absolute floor at the biggest grid (growth 1.8x -> 2.2x
     # was demonstrated consistently at build time; adjacent-size ORDER is
     # laptop-bench noise, the multiplied advantage at scale is the signal).
@@ -613,13 +669,37 @@ def part2_payoff() -> bool:
               f"~40 mallocs + MG-hierarchy upload + host digests per call.)")
     ok = ok and eos_wins and eos_big
 
+    # Smoke transport v2 (#12, P2b) — (iii): the resident trace tail is
+    # transfer-free. Property: at every size it costs less than ONE host
+    # round-trip of the gas block (what any host-side tail would add), so no
+    # plane crosses the bus. The tail is a handful of launches + ~100 B of
+    # fold/book traffic, the round-trip two full-block copies; a regression to
+    # a host tail or a per-plane transfer makes the tail at least as slow as
+    # the round-trip it would contain.
+    print("  smoke transport v2 — the resident trace tail vs ONE host "
+          "round-trip of the gas block:")
+    tail_ok = True
+    for (H, W) in [(128, 128), (256, 256), (384, 384)]:
+        t_tail, t_rt, n_tr = _bench_trace_tail(H, W)
+        print(f"  {H:3d}x{W:<3d} ({n_tr} trace planes): resident tail "
+              f"{t_tail:7.3f} | gas round-trip {t_rt:7.3f} ms")
+        if not t_tail < t_rt:
+            tail_ok = False
+            print(f"  FAIL: the resident trace tail ({t_tail:.3f} ms) is not "
+                  f"cheaper than a gas-block round-trip ({t_rt:.3f} ms) at "
+                  f"{H}x{W} — has the tail grown a host transfer?")
+    if tail_ok:
+        print("  the resident trace tail moves no plane across the bus "
+              "(cheaper than one gas round-trip at every size).")
+    ok = ok and tail_ok
+
     # Full-engine context (informational): with Path A the EOS bracket is gone —
     # only combustion + the tail remain bracketed (S8c).
     cpu = _bench_run(256, 256, 20, residency=False, backends=False)
     percall = _bench_run(256, 256, 20, residency=False, backends=True)
     resident = _bench_run(256, 256, 20, residency=True, backends=True)
     print(f"  [full tick @256x256, informational: CPU {cpu:.1f} | per-call GPU "
-          f"{percall:.1f} | RESIDENT {resident:.1f} ms/tick -- water+EOS+smoke "
+          f"{percall:.1f} | RESIDENT {resident:.1f} ms/tick -- water+EOS+trace tail "
           f"resident, combustion/tail still bracketed (S8c)]")
     return ok
 
