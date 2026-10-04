@@ -2,7 +2,7 @@
 
 2026-10-04. Tracker: eriiiko/breach #33. Branch `33-worker-characters`, worktree
 `.claude/worktrees/33-worker-characters`. Offline asset files only. High-resolution source and
-its renders; no rig, no game mesh yet.
+its renders; the rigged game model is the last section (Game model).
 
 ## Source and scope
 
@@ -75,8 +75,8 @@ Absent, as on her sheet: the male's sleeve pocket; the elastic gathering of his 
 
 ## Not done, and known weaknesses
 
-- No UV maps, no bake, no rig, no game mesh. Pieces overlap rather than weld, except the coverall's
-  two halves.
+- The source itself has no UVs and no rig (the game model: Game model). Pieces overlap rather
+  than weld, except the coverall's two halves.
 - The face is the weakest part: the male's displacement face with her own spec (narrower jaw, no
   stubble, finer arched brows, fuller lips, a smaller nose). It reads as a stylised mannequin, not
   plainly as a woman's face; the silhouette carries her build, the face does not.
@@ -88,4 +88,56 @@ Absent, as on her sheet: the male's sleeve pocket; the elastic gathering of his 
 - The back darts are straight lines; the artwork's curve towards the side seam. The hip-pocket
   openings are stitched lines without an opening in the cloth.
 - The waistband stands proud like a belt; the boots are the male's boot shape scaled down.
-- Materials are Cycles node graphs; the dirt and region masks will need baking for the game mesh.
+- Materials are Cycles node graphs; the game mesh carries them baked (Game model).
+
+## Game model (rigged)
+
+2026-10-04, tracker #33. The game asset `assets/models/worker_female/worker_female.glb` (tracked,
+5.70 MB, licence beside it): one fused 10,000-triangle skin with a baked 1024 px albedo (colour x
+AO) and normal map, bound to the game's one 53-bone skeleton with all 46 clips converted to her own
+arms-down rest pose. Same shared step as the male worker -- method, code layout and options are in
+`../worker_male/PROVENANCE.md` (Game model); only what is hers is here.
+
+    cd art/characters/worker_female
+    "C:/Program Files/Blender Foundation/Blender 4.5/blender.exe" -b --factory-startup -P scripts/game.py
+        # everything: about 2.5 min on an RTX 3070 (static skin 91 s, rig 58 s, evidence)
+    ... -P scripts/game.py -- --rig-only | --variant white_clean | --evidence-only
+
+Joints, from her tables (`workergame.joints`): pelvis at the `hip` row (0.88 m); hip joints on the
+leg loft's centre line at that height (x 0.107, wider than his 0.090); knees at the `knee` row
+(0.46 m); ankles 0.100 m; shoulders at the sleeve's `shoulder` row (0.170, 1.338); neck base at
+the `yoke` row (1.400 m); head pivot on the chin-to-jaw line at the neck's centre (1.489 m); head
+top at the crown (1.672 m). Foot yaw 12 deg (her boots' toe-out). Modelled upper arm 19.3 deg from
+vertical, so the clips' arms get 4.3 deg of extra abduction.
+
+Skin: 32 thin walls thickened, the trunk loft to 24 mm (as his). Her fingers are thinner than his
+(16 mm across, 4 mm apart): thinned for the skin they came out as spikes and lost tips, so the
+hands are remeshed apart at 2.5 mm into their own shells (35,688 -> 1,398 triangles); four fingers
+and a thumb survive on each hand. The bun survives whole (a 9 x 9 x 7 cm blob) and is what tells
+her from him from above; the five loose temple strands (5-9 mm wide) are lost in the remesh and
+come back only as hair-coloured texels baked onto the temples.
+
+Measured (`game/stats.json`):
+
+- Skin: 10,000 triangles (8,602 body + 1,398 hands), 5,006 vertices (7,217 after UV seams); 0
+  boundary, 0 non-manifold edges; 190 UV islands, 1 still folded; 1.6 % of the area sees no sky
+  (wrists inside the cuffs, the sunk palm). Silhouette IoU against the source: front 0.989, side
+  0.990, back 0.989. Bake: 42 % texture coverage, 0.39 % of covered texels missed, 4 overlapping.
+- raylib 5.5: 1 mesh, vertexCount 7,214 (marine 7,029, mannequin 8,547), 9,999 triangles,
+  boneCount 53, 46 clips with the mannequin's names and frame counts, bind-pose height 1.682 m.
+- Clip conversion: fit-pose joint miss 0.0008 mm; worst D-T bone head/tail distance 0.0100 mm
+  (Sprint_Loop); Idle 0.0056, Walk 0.0066, Death01 0.0080 mm. Leg-length ratio 0.948, stance lift
+  12.1 mm.
+- Weights: face 319 rigid + 15 partial vertices on the head bone (bun, hair, ears, eyes whole);
+  hands 403 / 401; boots on foot / toe; no vertex left empty by the heat solve.
+- Floor: Walk_Loop, every frame, deepest skin point -1.8 mm. Idle -2 mm, Pistol_Shoot -3,
+  Crouch_Idle +2; Death01's last frame -80 mm (lying), Fixing_Kneeling -92 mm (a knee).
+- `.glb` 5,702,212 bytes. White_clean albedo: `assets/models/worker_female/worker_female_white_clean_albedo.png`.
+
+Pictures: `previews/game/index.html` (the same set as his: test poses, extremes, face and hand
+close-ups, high-res vs game, turnaround, the white_clean variant, the real game).
+
+Known weaknesses of the game model: as his (rigid fingers, linear-blend stretching overhead,
+the clamp acting on every clip, the game shader's rim greying the coverall, height normalised to 6
+tiles by the renderer), plus: the loose strands are gone from the silhouette; small dark bake
+texels show on the white_clean variant (chest pocket, shin).
