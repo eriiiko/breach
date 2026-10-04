@@ -143,15 +143,27 @@ def _thicken_thin_walls(sources, wall, log, walls=()):
     return saved
 
 
-def make_skin(sources, voxel, tris_target, close_r, log, min_wall=None, inset=(), walls=()):
+def make_skin(sources, voxel, tris_target, close_r, log, min_wall=None, inset=(), walls=(), fine=None):
     """Apply + join copies of the sources, voxel-remesh, drop enclosed shells, decimate. With `min_wall`
     (m), thinner inward solidified walls are thickened to it for the skin only (the bake source keeps them).
     `inset` = ((name prefix, metres), ...): those parts move inward along their normals by that much in the
-    skin only -- fingers thinned so the gaps between them stay open at this voxel size."""
+    skin only (a palm sunk inside its own fine shell). `fine` = dict(prefixes, voxel, tris, keep=()):
+    parts named so are remeshed apart at the finer voxel into their own shells, decimated to their own
+    `tris` and joined to the skin (bare fingers 3-4 mm apart fuse into a mitten at 6 mm); of them,
+    only the `keep` prefixes also enter the main skin (a palm that closes the sleeve's cuff)."""
     saved = _thicken_thin_walls(sources, min_wall, log, walls) if (min_wall or walls) else []
     dg = bpy.context.evaluated_depsgraph_get()
-    parts, thickened = [], 0
+    parts, thickened, fine_parts = [], 0, []
     for ob in sources:
+        if fine and ob.name.startswith(tuple(fine["prefixes"])):
+            fm = bpy.data.meshes.new_from_object(ob.evaluated_get(dg))
+            fm.transform(ob.matrix_world)
+            fm.materials.clear()
+            fp = bpy.data.objects.new("_fine_part", fm)
+            bpy.context.scene.collection.objects.link(fp)
+            fine_parts.append(fp)
+            if not ob.name.startswith(tuple(fine.get("keep", ()))):
+                continue
         me = bpy.data.meshes.new_from_object(ob.evaluated_get(dg))
         me.transform(ob.matrix_world)
         me.materials.clear()
@@ -178,6 +190,9 @@ def make_skin(sources, voxel, tris_target, close_r, log, min_wall=None, inset=()
     for m, th in saved:
         m.thickness = th
     log["open_parts_thickened"] = thickened
+    fine_skin = _fine_shells(fine_parts, fine, log) if fine_parts else None
+    if fine_skin is not None:
+        tris_target -= _tris(fine_skin)
     skin = parts[0]
     with bpy.context.temp_override(active_object=skin, selected_editable_objects=parts, selected_objects=parts):
         bpy.ops.object.join()
@@ -208,6 +223,11 @@ def make_skin(sources, voxel, tris_target, close_r, log, min_wall=None, inset=()
         dm.decimate_type, dm.ratio = "COLLAPSE", tris_target / n
         dm.use_symmetry, dm.symmetry_axis, dm.use_collapse_triangulate = True, "X", True
         _apply_modifier(skin, dm)
+    if fine_skin is not None:
+        both = [skin, fine_skin]
+        with bpy.context.temp_override(active_object=skin, selected_editable_objects=both, selected_objects=both):
+            bpy.ops.object.join()
+        skin.name = skin.data.name = "GameSkin"
     me = skin.data
     me.polygons.foreach_set("use_smooth", np.ones(len(me.polygons), bool))
     if me.has_custom_normals:
@@ -216,6 +236,50 @@ def make_skin(sources, voxel, tris_target, close_r, log, min_wall=None, inset=()
     me.update()
     log["tris"] = _tris(skin)
     return skin
+
+
+def _fine_shells(fine_parts, fine, log):
+    """The `fine` parts joined, remeshed at their own voxel, crumbs dropped, decimated to their budget."""
+    ob = fine_parts[0]
+    with bpy.context.temp_override(active_object=ob, selected_editable_objects=fine_parts, selected_objects=fine_parts):
+        bpy.ops.object.join()
+    rm = ob.modifiers.new("Remesh", "REMESH")
+    rm.mode, rm.voxel_size, rm.adaptivity, rm.use_smooth_shade = "VOXEL", fine["voxel"], 0.0, True
+    _apply_modifier(ob, rm)
+    bm = bmesh.new()
+    bm.from_mesh(ob.data)
+    shells, seen = [], set()
+    for f in bm.faces:  # connected pieces; a crumb under 24 faces goes
+        if f.index in seen:
+            continue
+        stack, piece = [f], []
+        seen.add(f.index)
+        while stack:
+            g = stack.pop()
+            piece.append(g)
+            for e in g.edges:
+                for h in e.link_faces:
+                    if h.index not in seen:
+                        seen.add(h.index)
+                        stack.append(h)
+        shells.append(piece)
+    crumbs = [g for p in shells if len(p) < 24 for g in p]
+    bmesh.ops.delete(bm, geom=crumbs, context="FACES")
+    bm.to_mesh(ob.data)
+    bm.free()
+    log["fine_shells"] = sum(len(p) >= 24 for p in shells)
+    log["fine_remeshed_tris"] = _tris(ob)
+    for _ in range(3):
+        n = _tris(ob)
+        if n <= fine["tris"]:
+            break
+        dm = ob.modifiers.new("Decimate", "DECIMATE")
+        dm.decimate_type, dm.ratio = "COLLAPSE", fine["tris"] / n
+        dm.use_symmetry, dm.symmetry_axis, dm.use_collapse_triangulate = True, "X", True
+        _apply_modifier(ob, dm)
+    ob.name = ob.data.name = "_FineSkin"
+    log["fine_tris"] = _tris(ob)
+    return ob
 
 
 def _remesh(ob, voxel):
@@ -882,7 +946,8 @@ def run(root, name, build, make_materials, height, beauty, backdrop=studio.BACKD
     `previews_dir` replaces <character>/previews; `variants(name)` returns the make_materials of a look
     variant, for `--variant` (a re-bake of the albedo alone, nothing else runs). `skin_opts`: `min_wall_voxels`
     (inward solidified walls thinner than that many voxels thickened to it, for the skin) and `inset`
-    (parts thinned for the skin) and `walls` (per-part skin walls), see `make_skin` -- characters in thin cloth, with bare fingers."""
+    (parts thinned for the skin), `walls` (per-part skin walls) and `fine` (parts remeshed apart at
+    a finer voxel), see `make_skin` -- characters in thin cloth, with bare fingers."""
     args = _args()
     if args.variant:
         if variants is None:
@@ -942,7 +1007,7 @@ def static(args, root, name, build, make_materials, height, beauty, backdrop, pr
     so = skin_opts or {}
     skin = make_skin(sources, args.voxel, args.tris, args.close, log,
                      min_wall=args.voxel * so["min_wall_voxels"] if so.get("min_wall_voxels") else None,
-                     inset=so.get("inset", ()), walls=so.get("walls", ()))
+                     inset=so.get("inset", ()), walls=so.get("walls", ()), fine=so.get("fine"))
     timing["skin_s"] = round(time.time() - t, 1)
     print("skin:", json.dumps(log), flush=True)
 
@@ -1015,6 +1080,8 @@ def static(args, root, name, build, make_materials, height, beauty, backdrop, pr
                  source=dict(objects=len(sources), joined_tris_after_thickening=log["joined_tris"]),
                  skin=dict(open_parts_thickened=log["open_parts_thickened"], remeshed_tris=log["remeshed_tris"],
                            thin_walls_thickened=log.get("thin_walls_thickened", 0), inset_parts=log.get("inset_parts", 0),
+                           fine_shells=log.get("fine_shells", 0), fine_remeshed_tris=log.get("fine_remeshed_tris", 0),
+                           fine_tris=log.get("fine_tris", 0),
                            cavity_voxels_filled=log.get("cavity_voxels", 0), filled_tris=log["filled_tris"],
                            pieces_kept=log["pieces_kept"], enclosed_or_tiny_pieces_dropped=log["pieces_dropped"]),
                  mesh=m, bake=bake, silhouette_iou=iou,

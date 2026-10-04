@@ -41,9 +41,11 @@ MIN_WALL_VOXELS = 1.5
 # to 3.8 cm off the boot shaft inside it, an opening the cavity fill (2 voxels) does not close, so the
 # legs stayed hollow and the decimated skin kept an inner surface and slits into it.
 BODY_WALLS = (("Coverall_Body", 0.024),)
-# Bare fingers stand ~3 mm apart, under a voxel: in the skin each finger is thinned by this much (m)
-# so they stay apart instead of fusing into a mitten; the bake still reads the real fingers.
-FINGER_INSET = tuple(("Hand_" + f, 0.0025) for f in ("Index", "Middle", "Ring", "Pinky", "Thumb"))
+# Bare fingers stand 3-4 mm apart, under a voxel: at 6 mm they fuse into a mitten. The hands are
+# remeshed apart at FINE_VOXEL into their own shells with their own triangle budget (out of the 10,000);
+# the palm also enters the main skin, sunk PALM_INSET inside the fine one, to close the sleeve's cuff.
+FINE_HANDS = dict(prefixes=("Hand_",), keep=("Hand_Palm",), voxel=0.0025, tris=1400)
+PALM_INSET = (("Hand_Palm", 0.004),)
 # A boot's toe bone takes over from the foot bone across this distance (m) at the toe cap's seam.
 TOE_FADE_M = 0.02
 # Head rigidity fades out over this distance (m) below the chin-to-jaw-angle line.
@@ -213,7 +215,7 @@ def run(root, name, worker, rig_spec):
     if not own["--evidence-only"]:
         gameready.run(root, name, build, make_materials(), worker.HEIGHT, worker.BEAUTY, rig_spec=rig_spec,
                       rig_out=asset, previews_dir=prev, variants=make_materials,
-                      skin_opts=dict(min_wall_voxels=MIN_WALL_VOXELS, inset=FINGER_INSET,
+                      skin_opts=dict(min_wall_voxels=MIN_WALL_VOXELS, inset=PALM_INSET, fine=FINE_HANDS,
                                      walls=BODY_WALLS))
     if own["variant"]:
         variant_previews(root, name, own["variant"], prev)

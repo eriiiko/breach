@@ -2,7 +2,7 @@
 
 2026-10-04. Tracker: eriiiko/breach #33. Branch `33-worker-characters`, worktree
 `.claude/worktrees/33-worker-characters`. Offline asset files only. High-resolution source and
-its renders; no rig, no game mesh yet.
+its renders; the rigged game model is the last section (Game model).
 
 ## Source and scope
 
@@ -118,17 +118,18 @@ placket, seat, back yoke, armhole, hems, pockets); creasing at elbows, knees and
 - Materials are Cycles node graphs and do not carry to the game's shader; the game mesh carries
   them baked (Game model).
 
+
 ## Game model (rigged)
 
 2026-10-04, tracker #33. The game asset `assets/models/worker_male/worker_male.glb` (tracked,
-5.73 MB, licence beside it) is the marine's game-ready step run on this worker's tables: one fused
+5.53 MB, licence beside it) is the marine's game-ready step run on this worker's tables: one fused
 10,000-triangle skin with a baked 1024 px albedo (colour x AO) and normal map, bound to the game's
 one 53-bone skeleton with all 46 clips converted to his own arms-down rest pose.
 
     cd art/characters/worker_male
     "C:/Program Files/Blender Foundation/Blender 4.5/blender.exe" -b --factory-startup -P scripts/game.py
         # everything, scripts -> asset + evidence: about 3.5 min on an RTX 3070
-        # (static skin 101 s, rig 62 s, evidence renders ~40 s)
+        # (static skin 89 s, rig 63 s, evidence renders ~40 s)
     ... -P scripts/game.py -- --rig-only               # rig + evidence from the saved game/worker_male_game.blend
     ... -P scripts/game.py -- --variant white_clean    # that look on the SAME mesh and UVs (~50 s)
     ... -P scripts/game.py -- --evidence-only          # the pose pictures again
@@ -160,9 +161,12 @@ is a 2.5 mm shell and its pockets 3-4 mm -- all lost in the 6 mm level set on th
 inward to 9 mm for the skin only (29 parts), and the trunk loft to 24 mm, which closes the up to
 3.8 cm gap between the trouser hem and the boot shaft inside it (without it the legs stayed
 hollow: 6 % of the surface hidden, dark slits into the cavity after decimation). Bare fingers
-stand ~3 mm apart, under a voxel, and fused into a mitten (the thumb apart); in the skin each
-finger is moved 2.5 mm inward along its normals, which keeps them apart. The bake still reads
-the real, full-thickness source.
+stand ~3 mm apart, under a voxel, and fused into a mitten (the thumb apart). The hands are
+therefore remeshed apart at 2.5 mm into their own two shells (48,928 triangles) and decimated to
+their own 1,400 of the 10,000; the palm also enters the main skin, sunk 4 mm inside its fine
+shell, so the sleeve's cuff stays closed. (A first fix, thinning each finger 2.5 mm for the skin,
+held his fingers apart but left her thinner ones as spikes.) The bake still reads the real,
+full-thickness source.
 
 Bake: from ONE joined copy of the source (9 material slots; attributes kept: `dirt`, `seam`,
 `stitch`, the face masks, `iris`, `cover`), so the palette, the dirt layer and its AO-driven
@@ -173,7 +177,7 @@ written beside the default (`game/albedo_white_clean.png`, copied to
 (`previews/game/white_clean_*`).
 
 Rig, beyond the marine's: rigid parts (`workergame.gear`) -- the face rides `DEF-head` above the
-chin-to-jaw line and fades into the neck's bone heat over 2 cm below it (297 rigid + 35 partial
+chin-to-jaw line and fades into the neck's bone heat over 2 cm below it (257 rigid + 28 partial
 vertices); hair, ears and eyes ride the head whole; hands their hand bone (the fingers do not
 move, as on the marine); a boot its foot bone behind the toe cap's seam and its toe bone in front
 of it (blended over 2 cm); the boot shaft bends by heat; the collar and the undershirt ride
@@ -184,21 +188,24 @@ about the ball the same way (0.5 deg steps, at most 45 deg); only the foot and t
 
 Measured (`game/stats.json`):
 
-- Skin: 10,000 triangles, 5,002 vertices (7,214 after UV seams); 0 boundary, 0 non-manifold
-  edges; 264 UV islands, 0 folded; 0.06 % of the area sees no sky. Silhouette IoU against the
-  source: front 0.986, side 0.992, back 0.986. Bake: 45 % texture coverage, 0.47 % of covered
-  texels missed (inpainted), no overlap.
-- raylib 5.5: 1 mesh, vertexCount 7,211 (marine 7,029, mannequin 8,547), 9,999 triangles,
+- Skin: 9,998 triangles (8,598 body + 1,400 hands), 5,005 vertices (6,818 after UV seams); 0
+  boundary, 0 non-manifold edges (three closed shells: body, two hands); 98 UV islands, 2 still
+  folded; 2.3 % of the area sees no sky (the hands' wrists inside the cuffs, the sunk palm).
+  Silhouette IoU against the source: front 0.990, side 0.992, back 0.990. Bake: 44 % texture
+  coverage, 0.40 % of covered texels missed (inpainted), 25 texels overlapping.
+- raylib 5.5: 1 mesh, vertexCount 6,818 (marine 7,029, mannequin 8,547), 9,998 triangles,
   boneCount 53, 46 clips with the mannequin's (and the marine's) names and frame counts, bind-pose
   height 1.799 m.
 - Clip conversion: fit-pose joint miss 0.0005 mm; worst D-T bone head/tail distance over every
   frame of every clip 0.0048 mm (Roll_RM); Idle 0.0017, Walk 0.0028, Death01 0.0036 mm (before
   the floor clamp, which changes the foot and toe keys on purpose).
-- Floor: Walk_Loop, every frame, deepest skin point -9.4 mm (frame 19, the trailing foot's toe;
+- Floor: Walk_Loop, every frame, deepest skin point -7.9 mm (frame 19, the trailing foot's toe;
   -55.9 mm before the toe bone took the toe cap and before the clamp; marine -39 mm). Idle -3 mm,
   Pistol_Shoot -3, Crouch_Idle -2; Death01's last frame -80 mm (the back, lying), Fixing_Kneeling
   -93 mm (a knee: the clamp keeps only the boots up).
-- `.glb` 5,728,656 bytes.
+- `.glb` 5,532,012 bytes. The floor clamp's largest correction is 45 deg (its cap) in a few clips
+  (toe-offs, jumps, Swim_Idle); after it the worst boot penetration left in any clip is in
+  Swim_Idle (-79 mm), where the mannequin itself swims below the floor's plane.
 
 Pictures, `previews/game/index.html`: `pose_*` -- Idle_Loop, Walk_Loop at its widest stride
 (frame 0), Pistol_Shoot 5, Death01 last frame, Crouch_Idle_Loop, each from the front three-quarter
@@ -210,7 +217,11 @@ playground, untinted, under the cursor lamp: 110 px per tile and 48 px per tile)
 
 Known weaknesses of the game model:
 
-- The fingers do not move (rigid on the hand bone): grips show a half-open hand.
+- The fingers do not move (rigid on the hand bone): grips show a half-open hand. The hands are
+  separate shells overlapping the cuff, not welded to it (invisible at the wrist; it costs the
+  hidden 2 % of texture).
+- A few small dark texels on the back and the shins: bake rays that found a crevice of the source
+  (the clean white variant shows them most).
 - Linear blend skinning on a skin made arms-down: arms overhead (Sword_Attack, Death01) stretch
   the shoulder cloth and its baked folds; deep knee bends stretch the knee patch.
 - The floor clamp acts on every clip, also where the mannequin itself is off the floor's plane
