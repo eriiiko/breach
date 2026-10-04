@@ -6,8 +6,8 @@
 </style>
 <main>
 <h1>Space marine</h1>
-<p>Reference-guided Blender surface study, 3 October 2026. Ivory pressure suit, olive glass shield, steel-blue armour insets and a compact life-support pack. Every character image below is an actual Cycles render of the saved model.</p>
-<nav class="links"><a href="../source/space_marine.blend">Editable Blender source</a><a href="../README.md">Notes &amp; reproduction</a><a href="../source/validation.json">Reopen audit &amp; measured geometry</a><a href="contact_sheet.png">View contact sheet</a></nav>
+<p>Reference-guided Blender surface study, 3–4 October 2026. This is the completed source-cleanup baseline: ivory pressure suit, olive glass shield, steel-blue armour insets and a compact life-support pack. Every character image below is an actual Cycles render of the saved model.</p>
+<nav class="links"><a href="../source/space_marine.blend">Editable Blender source</a><a href="../README.md">Notes &amp; reproduction</a><a href="../source/validation.json">Reopen audit &amp; measured geometry</a><a href="render_manifest.json">Render provenance</a><a href="contact_sheet.png">View contact sheet</a></nav>
 <div class="reference"><a href="../../Space%20Marine%20Turnaround%20Sheet.png"><img src="../../Space%20Marine%20Turnaround%20Sheet.png" alt="The user-supplied authoritative front, side and back concept sheet"></a><p class="note">Supplied concept reference. This image is shown for comparison; it is not a model render.</p></div>
 <h2>Neutral views</h2>
 <div class="grid">
@@ -22,5 +22,5 @@
 <figure><a href="details.png"><img src="details.png" alt="Cargo pockets, knees, gloves and layered boots"></a><figcaption>Garment, gloves, cargo pockets and boots</figcaption></figure>
 <figure><a href="elevated.png"><img src="elevated.png" alt="Elevated three-quarter view showing the model silhouette"></a><figcaption>Elevated review · no game camera commitment</figcaption></figure>
 </div>
-<footer><p><strong>Source asset, awaiting human visual approval.</strong> Rigging is deferred. The source has dense geometry and Blender procedural materials; game retopology, UVs, texture baking, weights, LODs and runtime validation remain separate work. No skeleton, renderer or simulation code was changed.</p><p class="note">The supplied reference is packed in the .blend. The previous agent asset is preserved separately. Render controls and materials are editable in Blender; rendering an existing file does not rebuild or overwrite it.</p></footer>
+<footer><p><strong>Source asset, awaiting human visual approval.</strong> The approximately 1.25-million-triangle source is deliberately retained. Rigging and game preparation belong to the existing later workflow. No skeleton, renderer or simulation code was changed.</p><p><strong>Independent visor controls:</strong> select <code>VISOR GLASS / convex optical shield</code> in its own collection. Its separate Principled material exposes Roughness, Coat Weight and Coat Roughness directly. Object and Material Index 1 identify the glass; the gasket and frame remain separate.</p><p class="note">The supplied reference is packed in the .blend. The previous agent asset is preserved separately. Render controls and materials are editable in Blender; rendering an existing file does not rebuild or overwrite it. The separate sleeve experiment has not been applied. Some authored fabric creases remain cord-like; a bounded sleeve comparison is a later step.</p></footer>
 </main></html>

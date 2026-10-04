@@ -46,6 +46,27 @@ for view in ("front","side","back","hero","closeup","elevated","details"):
     if "Camera / "+view not in bpy.data.objects:errors.append("Missing camera: "+view)
 armatures=[obj.name for obj in scene.objects if obj.type=="ARMATURE"]
 if armatures:errors.append("Unexpected skeleton added to deferred rigging source")
+live_cloth=[obj.name for obj in scene.objects if any(mod.type=="CLOTH" for mod in obj.modifiers)]
+if live_cloth:errors.append("Live cloth/cache dependency remains in delivery source")
+glass=bpy.data.objects.get("VISOR GLASS / convex optical shield")
+glass_report={}
+if not glass:
+    errors.append("Missing independently selectable visor glass")
+else:
+    mat=glass.data.materials[0]
+    bsdf=mat.node_tree.nodes.get("Principled BSDF")
+    material_users=[obj.name for obj in character if mat.name in obj.data.materials]
+    glass_report={"object":glass.name,"material":mat.name,"object_mask_id":glass.pass_index,
+                  "material_mask_id":mat.pass_index,"roughness":bsdf.inputs["Roughness"].default_value,
+                  "coat_weight":bsdf.inputs["Coat Weight"].default_value,
+                  "coat_roughness":bsdf.inputs["Coat Roughness"].default_value,
+                  "game_gloss_override":mat.get("game_gloss"),
+                  "material_used_by":material_users,
+                  "separate_from_frame_and_gasket":True}
+    if glass.pass_index!=1 or mat.pass_index!=1:errors.append("Visor mask ID is not 1")
+    if any(obj!=glass and obj.pass_index==1 for obj in scene.objects):errors.append("Glass object mask ID reused")
+    if any(material!=mat and material.pass_index==1 for material in bpy.data.materials):errors.append("Glass material mask ID reused")
+    if any(name!=glass.name for name in material_users):errors.append("Glass material assigned outside the visor")
 report={
     "opened_file":Path(bpy.data.filepath).name,
     "blender_version":bpy.app.version_string,
@@ -58,6 +79,7 @@ report={
     "dimensions_metres":[b-a for a,b in zip(minimum,maximum)],
     "materials":sorted(material_names),"packed_images":references,
     "external_unpacked_images":external_images,"armatures":armatures,
+    "live_cloth_modifiers":live_cloth,"visor_glass":glass_report,
     "reference_sha256":actual_hash,"errors":errors,
     "limitations":["No rig, skin weights or deformation test", "No authored UV atlas or baked textures",
                    "Dense parametric source and remeshed trousers; game retopology and LODs remain",

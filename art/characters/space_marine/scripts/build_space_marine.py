@@ -234,7 +234,11 @@ def make_materials():
     material("Fastener", (0.26, 0.268, 0.251), 0.37, 0.68)
     material("Printed charcoal", (0.10, 0.119, 0.107), 0.64)
     material("Sole rubber", (0.040, 0.045, 0.041), 0.91)
-    visor = material("Deep olive optical shield", (0.008, 0.023, 0.009), 0.135, 0.48, coat=0.55)
+    visor = material("VISOR GLASS / olive optical coating", (0.008, 0.023, 0.009), 0.135, 0.48, coat=0.55)
+    visor.pass_index=1
+    visor["surface_role"]="Visor glass only; gasket and frame have separate materials"
+    visor["gloss_controls"]="Principled BSDF: Roughness, Coat Weight, Coat Roughness"
+    visor["gloss_bake_convention"]="charkit.gameready.gloss_signal reads these Principled inputs; no override set"
     bsdf = visor.node_tree.nodes.get("Principled BSDF")
     bsdf.inputs["Coat Roughness"].default_value = 0.07
     bsdf.inputs["IOR"].default_value = 1.48
@@ -295,7 +299,7 @@ def fold_field(t, theta, folds, seed):
 
 def garment(name, start, end, radii_u, radii_v, folds, group="01 / Pressure garment",
             material_name="Warm woven pressure fabric", seed=1, count=104, sides=80,
-            cross_power=1.0, seam_angles=(), cap=True):
+            cross_power=1.0, seam_angles=(), cap=True, inset_ends=0.0):
     a, b = Vector(start), Vector(end)
     axis = (b-a).normalized()
     v = Vector((0, 1, 0))
@@ -310,6 +314,12 @@ def garment(name, start, end, radii_u, radii_v, folds, group="01 / Pressure garm
         fold = fold_field(t, theta, folds, seed)
         limit=min(r1,r2)*.10
         fold=limit*math.tanh(fold/limit)
+        # Flexible liners tuck beneath sewn ivory cuffs. The taper acts only at
+        # overlapping ends; it does not change the established visible fold field.
+        if inset_ends:
+            end=min(t,1-t)
+            tuck=1-inset_ends*max(0,1-end/.30)**2
+            r1*=tuck;r2*=tuck;fold*=tuck
         return a.lerp(b, t) + u*(c*(r1+fold+offset)) + v*(s*(r2+fold+offset))
 
     verts = [point(j/count, k/sides*TAU) for j in range(count+1) for k in range(sides)]
@@ -323,10 +333,13 @@ def garment(name, start, end, radii_u, radii_v, folds, group="01 / Pressure garm
         faces.append(tuple(count*sides+k for k in range(sides)))
     obj = mesh_object(name, verts, faces, material_name, group)
     for i, angle in enumerate(seam_angles):
-        points = [point(0.070 + j/100*0.85, angle, 0.0010) for j in range(101)]
+        def sewn_offset(j,base):
+            edge=max(0,1-min(j,100-j)/7)
+            return base-.0024*edge*edge
+        points = [point(0.100 + j/100*0.78, angle, sewn_offset(j,.0010)) for j in range(101)]
         curve(name + f" / tailored seam {i+1}", points, 0.00115,
               "Reinforced textile seams", group)
-        points = [point(0.070 + j/100*0.85, angle+0.027, 0.0011) for j in range(101)]
+        points = [point(0.100 + j/100*0.78, angle+0.027, sewn_offset(j,.0011)) for j in range(101)]
         curve(name + f" / seam binding {i+1}", points, 0.00065, "Ivory binding", group)
     return obj, point
 
@@ -427,14 +440,14 @@ def build_garment():
         ellipsoid(f"Shoulder {suffix} / padded jacket bridge",(side*.221,.006,1.511),(.095,.113,.088),
                   "Warm woven pressure fabric","01 / Pressure garment")
         garment(f"Upper arm {suffix} / flex under pauldron",(side*.308,.0,1.337),(side*.250,.002,1.531),
-                [.068,.071,.074,.069],[.067,.076,.084,.072],folds(10+side,8,.006),
+                [.057,.061,.068,.069],[.057,.064,.076,.072],folds(10+side,8,.006),
                 material_name="Charcoal flex textile",seed=side,count=64)
         garment(f"Sleeve {suffix} / upper woven section",(side*.382,-.012,1.224),(side*.284,0,1.433),
                 [.071,.079,.086,.075],[.071,.082,.089,.074],folds(23+side,15,.0095,True),
                 seed=23+side,seam_angles=(-1.38,1.57),count=90)
         garment(f"Elbow {suffix} / compressed flex",(side*.411,-.011,1.132),(side*.380,-.011,1.249),
                 [.065,.075,.076,.070],[.066,.075,.076,.070],folds(33+side,11,.008),
-                material_name="Charcoal flex textile",seed=33+side,count=76)
+                material_name="Charcoal flex textile",seed=33+side,count=76,inset_ends=.38)
         garment(f"Sleeve {suffix} / forearm",(side*.470,-.013,1.003),(side*.410,-.008,1.151),
                 [.049,.067,.076,.067],[.047,.068,.073,.065],folds(50+side,14,.0085,True),
                 seed=53+side,seam_angles=(-1.4,1.55),count=90)
@@ -445,7 +458,7 @@ def build_garment():
                 seed=73+side,seam_angles=(-1.19,-2.08,1.46),count=126)
         garment(f"Knee {suffix} / articulated textile",(side*.177,.004,.493),(side*.157,.012,.679),
                 [.077,.090,.097,.084],[.073,.085,.089,.078],folds(90+side,13,.009),
-                material_name="Charcoal flex textile",seed=93+side,count=88)
+                material_name="Charcoal flex textile",seed=93+side,count=88,inset_ends=.38)
         garment(f"Calf {suffix} / woven pressure trouser",(side*.194,.027,.225),(side*.177,.013,.527),
                 [.061,.075,.082,.090,.077],[.063,.078,.082,.084,.072],folds(120+side,19,.0095,True),
                 seed=121+side,seam_angles=(-.93,-2.24,1.52),count=118)
@@ -508,7 +521,11 @@ def build_helmet():
         for k in range(sides):
             n=(k+1)%sides
             faces.append(((j+1)*sides+k,(j+1)*sides+n,j*sides+n,j*sides+k))
-    shield=mesh_object("Visor / convex olive laminated shield",verts,faces,"Deep olive optical shield",group)
+    shield=mesh_object("VISOR GLASS / convex optical shield",verts,faces,
+                       "VISOR GLASS / olive optical coating","03 / Visor glass selection")
+    shield.pass_index=1
+    shield["surface_role"]="Independently selectable visor glass"
+    shield["mask_id"]=1
     solidify(shield,.004)
     for rad, offset, mat, label in ((.007,.003,"Recess","pressure gasket"),
                                      (.0028,.0085,"Ivory ceramic enamel","retaining lip")):
@@ -762,8 +779,8 @@ def build_hands():
                 curve(f"Glove {label} / finger {i+1} crease {t}",points,.00065,"Recess",group)
         thumb=[(side*.461,-.013,.942),(side*.448,-.020,.922),(side*.440,-.014,.898),(side*.437,-.007,.886)]
         finger(f"Glove {label} / opposed thumb",thumb,.0144,group)
-        garment(f"Glove {label} / cuff binding",(side*.478,-.013,.963),(side*.474,-.013,.987),
-                [.053,.054,.054],[.050,.051,.051],[],group=group,material_name="Ivory binding",count=10)
+        garment(f"Glove {label} / inset cuff binding",(side*.478,-.013,.963),(side*.474,-.013,.987),
+                [.044,.045,.045],[.041,.042,.042],[],group=group,material_name="Ivory binding",count=10)
         panel(f"Glove {label} / cuff closure",(side*.478,-.064,.977),chamfer_outline(.038,.011,.002),
               "Graphite elastomer",group,thickness=.006,bulge=0,edge=.0015)
 
@@ -1000,6 +1017,8 @@ def setup_studio():
     scene.view_settings.exposure=0
     scene.render.film_transparent=False
     scene.render.image_settings.color_depth="8"
+    scene.view_layers[0].use_pass_object_index=True
+    scene.view_layers[0].use_pass_material_index=True
     # A packed non-rendering sheet makes the source useful away from this checkout.
     ref=bpy.data.images.load(str(REFERENCE));ref.name="REFERENCE / supplied turnaround";ref.pack()
     ref.filepath="//../../Space Marine Turnaround Sheet.png"
@@ -1011,6 +1030,18 @@ def setup_studio():
     scene["asset_status"]="Authored source study — unrigged, not retopologized, no baked game textures"
     scene["reference_sha256"]=hashlib.sha256(REFERENCE.read_bytes()).hexdigest()
     scene["forward_axis"]="-Y"
+    note=bpy.data.texts.new("README / source and visor controls")
+    note.write("Space marine high-detail source / 2026-10-04\n\n"
+               "Select the collection 03 / Visor glass selection or object VISOR GLASS / convex optical shield.\n"
+               "Its sole material is VISOR GLASS / olive optical coating.\n"
+               "Edit the Principled BSDF Roughness, Coat Weight and Coat Roughness directly.\n"
+               "Object Index and Material Index 1 identify only the glass; all other objects/materials use 0.\n"
+               "Index passes are enabled. Render Result or a multilayer EXR can retain them; beauty PNGs cannot.\n"
+               "The gasket and frame are separate geometry/materials. No game_gloss override is set.\n"
+               "charkit.gameready.gloss_signal consumes these standard Principled inputs when baking later.\n"
+               "The existing generator predates charkit and is retained by the authorized continuation.\n"
+               "The source has no rig, decimation, UV bake, engine export or live cloth cache.\n"
+               "Read ../README.md beside the source folder for commands and review limitations.\n")
     for screen in bpy.data.screens:
         for area in screen.areas:
             if area.type=="VIEW_3D":
@@ -1020,11 +1051,14 @@ def setup_studio():
                 area.spaces.active.shading.type="MATERIAL"
                 area.spaces.active.overlay.show_floor=False
                 area.spaces.active.overlay.show_extras=False
+            elif area.type=="PROPERTIES":
+                area.spaces.active.context="MATERIAL"
     for obj in collection("90 / Studio").objects:obj.hide_set(True)
     for obj in collection("91 / Review cameras").objects:obj.hide_set(True)
     bpy.ops.object.select_all(action="DESELECT")
-    shell=bpy.data.objects.get("Helmet / crown shell")
-    shell.select_set(True);bpy.context.view_layer.objects.active=shell
+    selected=bpy.data.objects.get("VISOR GLASS / convex optical shield")
+    if selected:
+        selected.select_set(True);bpy.context.view_layer.objects.active=selected
 
 
 def stats():

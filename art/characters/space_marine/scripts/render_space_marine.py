@@ -4,6 +4,8 @@ blender --background source/space_marine.blend --python scripts/render_space_mar
 Arguments after --: --views hero,front,side,back,closeup,elevated,details --draft
 """
 import argparse
+import hashlib
+import json
 from pathlib import Path
 import sys
 import bpy
@@ -18,6 +20,9 @@ root=Path(__file__).resolve().parents[1]
 output=args.output or root/"previews"
 output.mkdir(exist_ok=True,parents=True)
 scene=bpy.context.scene
+source_path=Path(bpy.data.filepath)
+source_digest=hashlib.sha256(source_path.read_bytes()).hexdigest()
+manifest=[]
 scene.render.engine="CYCLES"
 scene.cycles.samples=40 if args.draft else args.samples
 scene.cycles.use_denoising=True
@@ -38,5 +43,13 @@ for name in args.views.split(","):
     scene.render.image_settings.file_format="PNG"
     scene.render.filepath=str(output/(("draft_" if args.draft else "")+name+".png"))
     bpy.ops.render.render(write_still=True)
+    manifest.append({"view":name,"image":Path(scene.render.filepath).name,
+                     "width":scene.render.resolution_x,"height":scene.render.resolution_y,
+                     "samples":scene.cycles.samples,"camera":camera.name})
     print("RENDERED",scene.render.filepath,flush=True)
+if hashlib.sha256(source_path.read_bytes()).hexdigest()!=source_digest:
+    raise RuntimeError("Source .blend changed while rendering")
+(output/(("draft_" if args.draft else "")+"render_manifest.json")).write_text(
+    json.dumps({"source_blend":source_path.name,"source_sha256":source_digest,
+                "blender_version":bpy.app.version_string,"engine":"Cycles","views":manifest},indent=2)+"\n",encoding="utf-8")
 print("Existing .blend left unchanged.")
