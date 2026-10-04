@@ -1613,8 +1613,30 @@ density_max = 2.0        # clamp ceiling on frac: overpressure can push sway
                          # up to 2x; vacuum (frac == 0) always zeroes it
                          # regardless of this dial or the exponent above.
 
+[render.unit_looks]
+# Which model each unit is drawn with; a name is assets/models/<name>/<name>.glb.
+# Units of a role are dealt the role's list round-robin in ascending unit id
+# (the k-th unit gets entry k mod n). A unit keeps the look it was first given:
+# a player who turns zombie mid-match keeps his model (#33). Render-only --
+# read once when the renderer loads (restart to change), never on Unit, no
+# digest. All looks share the space marine's scale, so each is drawn at its own
+# true height relative to him (renderer/unit_model_renderer.py).
+player = ["space_marine"]
+zombie = ["worker_male", "worker_female"]
+
+[render.unit_shading]
+# The 3D units' edge glow (renderer/marine_shader.py rim term). Read every
+# frame, so Ctrl+R retunes it live.
+rim_albedo = 0.9    # how much the rim takes the surface's own colour:
+                    # 0 = white rim (pre-#33: the workers' navy coverall read
+                    # light grey from above -- seen top-down, most of a
+                    # figure is grazing surface), 1 = fully albedo-tinted.
+                    # 0.9: the navy reads navy and keeps a faint lighter edge;
+                    # the light marine armour keeps a near-white edge (its
+                    # albedo is light). 0.75 still left the sleeves grey.
+
 [render.speckle]
-mode = "soot"               # "off" | "noise" | "soot"  (A/B in studio)
+mode = "soot"              # "off" | "noise" | "soot"  (A/B in studio)
 amp = 0.25
 
 # Material property table (named-key format, ch.02 — Material System).

@@ -11,7 +11,7 @@ uniform sampler2D texture1;   // light_tex_a: RGB incoming light, A = dir.x
 uniform sampler2D texture2;   // light_tex_b: RGB smoke_glow, A = dir.y
 uniform sampler2D texture3;   // P2 marine normal map (MATERIAL_MAP_ROUGHNESS
                               // slot — a FREE slot; light textures own 1 & 2)
-uniform vec4  colDiffuse;     // group tint (draw color): marines / zombies
+uniform vec4  colDiffuse;     // draw colour (white since #33: looks are models)
 
 uniform vec3  u_ambient;       // ship's ambient floor (single source of truth)
 uniform float u_light_gain;    // ship's render exposure
@@ -22,6 +22,7 @@ uniform vec2  u_world_px;      // (world_px_w, world_px_h) for the field UV
 uniform vec3  u_view_dir;      // direction toward the eye (ortho ~ (0,1,0))
 uniform float u_rim_strength;
 uniform float u_rim_power;
+uniform float u_rim_albedo;    // #33: rim colour = mix(white, albedo, this)
 uniform int   u_srgb_decode;
 uniform int   u_use_normal_marine; // P2 guard: 0 = inert (N unchanged), 1 = on
 uniform float u_normal_strength;   // P2 perturbation strength (feel knob)
@@ -106,15 +107,17 @@ void main() {
 
     vec3 albedo = texture(texture0, fragTexCoord).rgb;
     if (u_srgb_decode == 1) albedo = srgb_to_linear(albedo);  // else double-dark
-    albedo *= colDiffuse.rgb;                                  // group identity
+    albedo *= colDiffuse.rgb;                                  // draw colour
 
     vec3 lit = albedo * (u_ambient + incoming_rgb * u_light_gain * ndotl);
 
     // Rim: Fresnel-ish silhouette term, tinted by the LOCAL light so it never
     // brightens a marine the room around it can't (dark room -> faint ambient
-    // rim only).
+    // rim only), and by the surface's own colour (#33, u_rim_albedo) so dark
+    // cloth keeps a dark edge instead of reading light grey from above.
     float rim = pow(1.0 - max(0.0, dot(N, u_view_dir)), u_rim_power);
-    lit += u_rim_strength * rim * (u_ambient + incoming_rgb * u_light_gain);
+    vec3 rim_col = mix(vec3(1.0), albedo, u_rim_albedo);
+    lit += u_rim_strength * rim * rim_col * (u_ambient + incoming_rgb * u_light_gain);
 
     lit = aces_tonemap(lit);
     if (u_srgb_decode == 1) lit = linear_to_srgb(lit);

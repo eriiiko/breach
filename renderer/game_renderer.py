@@ -892,8 +892,9 @@ class GameRenderer:
 
         # 3D units: when use_3d_units AND the model loaded, draw units as
         # animated 3D bodies (nested begin_mode_3d inside the already-open world
-        # RT) and skip the sprite path entirely. Marines green, zombies red — the
-        # same read as the sprite tints. light_at keeps the local-light dimming.
+        # RT) and skip the sprite path entirely. Each unit's model comes from
+        # [render.unit_looks] (#33), untinted; the sprite fallback below keeps
+        # its green/red tints. light_at keeps the local-light dimming.
         # If the model failed to load, draw_units no-ops and we fall through to
         # the unchanged sprite path below. This branch is the ONLY change to the
         # unit-draw slot; with use_3d_units False it is never entered.
@@ -934,13 +935,15 @@ class GameRenderer:
             rl.begin_mode_3d(self._world_cam3d)
             try:
                 if draw_units_3d:
+                    # #33: untinted -- teams are told apart by model and
+                    # texture ([render.unit_looks]), Erik's ruling.
                     self.unit_models.draw_units(
                         marines, wpt, clock, self._world_cam3d,
-                        base_tint=(90, 200, 90, 255), light_rgb_fn=light_rgb_at,
+                        light_rgb_fn=light_rgb_at,
                         light_ctx=light_ctx, open_mode_3d=False)
                     self.unit_models.draw_units(
                         zombies, wpt, clock, self._world_cam3d,
-                        base_tint=(210, 70, 70, 255), light_rgb_fn=light_rgb_at,
+                        light_rgb_fn=light_rgb_at,
                         light_ctx=light_ctx, open_mode_3d=False)
                 if draw_props_3d:
                     # P4: sway on the SIM clock + the tamed wind sampled per

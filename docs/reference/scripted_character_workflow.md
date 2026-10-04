@@ -91,7 +91,9 @@ game's one skeleton and converts all 46 animation clips. Output:
   quarter and from straight above; close-ups of face and hands; the high-resolution and game
   versions side by side; screenshots from the real game. They land in `previews/game/`.
 - See it in the real game without changing the game:
-  `python art/characters/charkit/preview_in_game.py --root <checkout> --model <file.glb> --untinted -- --level playground`.
+  `python art/characters/charkit/preview_in_game.py --root <checkout> --model <file.glb> -- --level playground`
+  (every unit drawn with that file, at its true size beside the marine; without `--model` it
+  shows the game as configured).
 
 ### 4. Review, record, Erik looks, merge
 The orchestrator looks at the game pictures, runs the preview command once, and checks that the
@@ -100,7 +102,9 @@ checkpoint on the issue. Erik looks at the pictures or plays the preview; the br
 after that.
 
 Putting the model on units in the game is a separate, play-tested change to the game, never part
-of the character's branch.
+of the character's branch: it is one name in a role's list in `config.toml`
+`[render.unit_looks]` (`player = [...]`, `zombie = [...]`; a name is
+`assets/models/<name>/<name>.glb`, dealt round-robin by unit id).
 
 ## Writing the brief
 
