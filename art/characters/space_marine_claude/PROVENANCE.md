@@ -217,8 +217,29 @@ Known weaknesses of the rig:
   aim) are pushed 12 deg further out.
 - The flat-foot fit drops the marine's own leg splay in the clips: their legs keep the mannequin's
   stance, not the marine's.
-- Not tried in the game itself (no engine code touched): the renderer still loads the mannequin, and
-  binds its own placeholder normal map into material 1 regardless of what the model carries.
+
+## In the game (preview only)
+
+2026-10-04. `charkit/preview_in_game.py` runs a Breach checkout's own `main.py` with the unit model
+swapped for a file and 3D units on, editing nothing in that checkout:
+
+    python art/characters/charkit/preview_in_game.py --root <breach checkout> \
+        --model assets/models/space_marine/space_marine.glb [--untinted] -- --level playground
+
+Run against the `fire-12` checkout (raylib 5.5), level `playground`: the file loads (`clips=46
+native_height=1.885 rigged=True`), the lit marine shader takes it, the units stand in `Idle_Loop` at
+the mannequin's size and facing, lit by the level's light field. `previews/ingame_playground.png`
+(48 px per tile) and `previews/ingame_close.png` (110 px per tile), both untinted, under the cursor lamp.
+
+Not part of the game yet, and what the preview shows about it:
+
+- The renderer loads ONE model for every unit, so the preview draws the zombies as marines too.
+  Which unit type gets which model is the per-unit-type mapping of issue #33.
+- The game multiplies a team tint into the unit colour (green / red); on a textured model it
+  recolours the whole bake. `--untinted` shows the bake as it is.
+- The renderer binds its own placeholder normal map regardless of what the model carries: the baked
+  `normal.png` is in the file but not used.
+- Only `Idle_Loop` was seen in the game; walking needs orders, which the hidden run does not give.
 
 ## Not done, and known weaknesses (of the source model)
 
