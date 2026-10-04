@@ -16,6 +16,13 @@ one rule that governs everything here is:
 
 ---
 
+> **2026-10-04 (#33):** the route for OUR OWN characters is built. A character scripted on
+> `art/characters/charkit/` goes through `charkit/gameready.py` + `rig.py` in one command: one
+> low-poly skin with a baked texture, on the skeleton below, with its clips. That answers §3c for
+> scripted characters; the rest of this guide still holds for meshes that come from outside. The
+> unit model the game draws is now `assets/models/space_marine/`; `assets/models/marine/` (the
+> mannequin) stays as the skeleton and clip source.
+
 ## 0. The 30-second version (the checklist)
 
 1. **Does it need a new skeleton?** Apply the topology test (§1). Almost always: no.

@@ -65,12 +65,12 @@ class RenderConfig:
     grid_w: int            # physics grid width in tiles
     grid_h: int            # physics grid height in tiles
     world_px_per_tile: float = 24.0   # world RT resolution (independent of zoom)
-    # Phase-0 3D marines (docs/anim_phase0_impl_2026-07-20.md): render-only,
-    # default OFF. When True, GameRenderer loads a rigged glTF and draws units
-    # as animated 3D bodies at the unit-draw slot instead of the 2D sprites;
-    # when False the sprite path is byte-for-byte unchanged. Feel-gated. The J
-    # key flips it live (poll_toggles) once the model is loaded.
-    use_3d_units: bool = False
+    # 3D units (docs/anim_phase0_impl_2026-07-20.md): render-only, and the
+    # normal unit look since #33 (2026-10-04, Erik) -- GameRenderer loads the
+    # rigged unit model and draws units as animated 3D bodies at the unit-draw
+    # slot. No key toggles it. False (or a model that fails to load) leaves
+    # the 2D sprite path, byte-for-byte unchanged.
+    use_3d_units: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -372,18 +372,18 @@ class GameRenderer:
         self.sprites = UnitSprites()
         self.sprites.load()
 
-        # Phase-0 3D marines (render-only, toggle-gated). The 2D sprite path
-        # above is always loaded (the toggle can flip live, and it's the
-        # fallback if the model fails to load). The model + its clips are loaded
-        # ONLY when use_3d_units, so the sprite-only path pays no load cost. The
-        # top-down Camera3D is framed to the world RT once. Per-unit animation
-        # state lives inside UnitModelRenderer (keyed by unit.id) — never on Unit.
+        # 3D units (render-only). The 2D sprite path above is always loaded:
+        # it is the fallback if the model fails to load. The model + its clips
+        # are loaded ONLY when use_3d_units, so a sprite-only caller pays no
+        # load cost. The top-down Camera3D is framed to the world RT once.
+        # Per-unit animation state lives inside UnitModelRenderer (keyed by
+        # unit.id) — never on Unit.
         self.unit_models = UnitModelRenderer()
         # Props & vegetation arc #60 P3 (design §4.3 F2): the top-down
         # Camera3D is built UNCONDITIONALLY now — it is the ONE camera every
-        # 3D-in-world-RT consumer shares (marines when toggled on, props
-        # whenever a level has any), no longer gated on use_3d_units. Only
-        # the (expensive) rigged-model LOAD stays behind the toggle.
+        # 3D-in-world-RT consumer shares (units, and props whenever a level
+        # has any), no longer gated on use_3d_units. Only the (expensive)
+        # rigged-model LOAD stays behind the flag.
         self._world_cam3d = UnitModelRenderer.make_camera(
             self.world.world_px_w, self.world.world_px_h)
         if self.cfg.use_3d_units:
@@ -890,7 +890,7 @@ class GameRenderer:
                         min(1.0, amb[2] + float(inc[2]) * gain))
             return (min(1.0, amb[0]), min(1.0, amb[1]), min(1.0, amb[2]))
 
-        # Phase-0 3D marines: when toggled on AND the model loaded, draw units as
+        # 3D units: when use_3d_units AND the model loaded, draw units as
         # animated 3D bodies (nested begin_mode_3d inside the already-open world
         # RT) and skip the sprite path entirely. Marines green, zombies red — the
         # same read as the sprite tints. light_at keeps the local-light dimming.
@@ -1436,7 +1436,6 @@ class GameRenderer:
             ("F7 pressure",    self.show_pressure),
             ("T  temperature", self.show_temperature),
             ("O  water optics", self.show_water),
-            ("M  3D units",    self.cfg.use_3d_units),
             ("G  sRGB",        self.srgb_decode),
             ("H  flip-Y norm", self.normal_y_flipped),
         ]:
@@ -1545,16 +1544,6 @@ class GameRenderer:
         # toggle. See input_handler.py.)
         if rl.is_key_pressed(rl.KeyboardKey.KEY_V):
             self.show_water = not self.show_water
-        # J: flip the Phase-0 3D marines live (render-only, feel gate). Lazy-load
-        # the rigged model the first time it turns on, so a sprite-only session
-        # never pays the load cost. If the model fails to load, draw_units
-        # no-ops and the sprite path stays in effect. The shared top-down
-        # camera (self._world_cam3d) is built unconditionally at construction
-        # (props & vegetation #60 P3, design §4.3 F2) — nothing to build here.
-        if rl.is_key_pressed(rl.KeyboardKey.KEY_M):
-            self.cfg.use_3d_units = not self.cfg.use_3d_units
-            if self.cfg.use_3d_units and not self.unit_models.ready:
-                self.unit_models.load()
         if rl.is_key_pressed(rl.KeyboardKey.KEY_H):
             self.normal_y_flipped = not self.normal_y_flipped
             self.lighting.set_normal_y_sign(-1.0 if self.normal_y_flipped else 1.0)
