@@ -61,6 +61,10 @@ def materials(p, gloss, prefix):
                                coat_rough=g.get("boot_coat_rough", 0.08), piping=0.5),
         sole=wearmat.mat_rubber(prefix + "_sole", p["SOLE"], rough=0.55),
         metal=wearmat.mat_metal(prefix + "_metal", p["METAL"], rough=0.25),
+        # a second net for panels that show the suit, not skin, through it (`MESH_THIGH` = what shows)
+        **({"mesh_thigh": wearmat.mat_mesh(prefix + "_mesh_thigh", p["MESH"], p["MESH_THIGH"], cell=g.get("mesh_thigh_cell", 0.0030),
+                                           show=1.0, surface=True, coat=g.get("mesh_coat", 0.0), width=g.get("mesh_thigh_width", 0.42))}
+           if "MESH_THIGH" in p else {}),
     )
 
 
@@ -99,6 +103,40 @@ class Suit:
         self.B, self.A, self.bz, self.az = self.F.body, self.F.arm, self.F.bz, self.F.az
         self.frame = Frame(dims["trunk"])
         self.ref = Frame(dims.get("feature_frame", dims["trunk"]))
+        g = dims.get("garment", {})
+        if any("drop" in pn for pn in g.get("mesh_panels", ())):  # teardrop panels: their outline from two ends
+            g["mesh_panels"] = tuple(dict(pn, pts=self.teardrop(**pn["drop"])) if "drop" in pn else pn for pn in g["mesh_panels"])
+
+    def teardrop(self, a, b, w, bow=0.0, blunt=1.0, cap=0.18, n=30):
+        """A clean teardrop (or a lens, `blunt` 0) on the body from its round end `a` to its point `b`
+        (feature points), `w` its greatest half-width (m), its centre line bowed sideways by `bow` x its
+        length (+ = to the left of a -> b on the developed surface). Laid out in the surface's own
+        developed metric (round x along), returned as ("phi", deg, z) outline points."""
+        (pa, ta), (pb, tb) = self.phi_t(a), self.phi_t(b)
+        pb = pa + kit.wrap(pb - pa)
+        r0 = float(self.B.radius([0.5 * (pa + pb)], [0.5 * (ta + tb)])[0])
+        A, Bp = np.array([pa * r0, ta]), np.array([pb * r0, tb])
+        d = Bp - A
+        ln = float(np.linalg.norm(d))
+        Tn = d / ln
+        Nn = np.array([-Tn[1], Tn[0]])
+        C = 0.5 * (A + Bp) + bow * ln * Nn
+        s = np.linspace(0.0, 1.0, n)
+        cen = ((1 - s) ** 2)[:, None] * A + (2 * s * (1 - s))[:, None] * C + (s ** 2)[:, None] * Bp
+        tg = np.gradient(cen, axis=0)
+        tg /= np.linalg.norm(tg, axis=1, keepdims=True)
+        nr = np.column_stack([-tg[:, 1], tg[:, 0]])
+        if blunt:
+            q = np.clip(s / cap, 0.0, 1.0)
+            wid = w * np.sqrt(np.clip(1.0 - (1.0 - q) ** 2, 0.0, 1.0)) * np.where(s < cap, 1.0, ((1.0 - s) / (1.0 - cap)) ** 0.85)
+        else:
+            wid = w * np.sin(np.pi * s) ** 0.85
+        up, lo = cen + wid[:, None] * nr, cen - wid[:, None] * nr
+        loop = np.vstack([up[:-1], lo[::-1][:-1]])
+        if not hasattr(self, "_zt"):
+            ts = np.linspace(0.0, self.B.L, 1500)
+            self._zt = (ts, self.B.frames(ts)[0][:, 2])
+        return tuple(("phi", math.degrees(u / r0), float(np.interp(v, *self._zt))) for u, v in loop)
 
     # --- points --------------------------------------------------------------
     def phi_t(self, pt, on="body"):
@@ -481,7 +519,13 @@ def build_suit(S, M, coll="Suit"):
 
     build_panels(S, M, coll)
     kp = g.get("knee_pad")
-    if kp:  # shaped knee pads: a domed panel over the knee cap
+    if kp and "layers" in kp:  # layered knee pads: thin domed panels stacked over the front of the knee
+        for i, ly in enumerate(kp["layers"]):
+            ph, t = S.phi_t(("x", ly["x"], ly["z"]))
+            mirror(garment.patch("Suit_Knee_Pad_%d" % i, OnLoft(B, ph, t), ly["hs"], ly["ht"], offset=ly["offset"], thick=ly["thick"],
+                                 n=ly.get("n", 2.4), dome=ly.get("dome", 0.002), inset=ly.get("inset", 0.004), point=ly.get("point", 0.0),
+                                 mat=suit, coll=coll))
+    elif kp:  # shaped knee pads: a domed panel over the knee cap
         ph, t = S.phi_t(("x", kp["x"], kp["z"]))
         mirror(garment.patch("Suit_Knee_Pad", OnLoft(B, ph, t), kp["hs"], kp["ht"], offset=kp.get("offset", 0.0030), thick=0.0035,
                              n=kp.get("n", 2.4), dome=kp.get("dome", 0.003), inset=kp.get("inset", 0.004), mat=suit, coll=coll))
@@ -554,7 +598,7 @@ def build_panels(S, M, coll):
         lift = None if on == "arm" else S.lift
         if rim == "seam":
             obj, _ = garment.panel(name, lo, outline, offset=g.get("panel_offset", 0.0003), thick=g.get("panel_thick", 0.0004), lift=lift,
-                                   mat=M["mesh"], coll=coll, surface_uv=True)
+                                   mat=M[pn.get("mat", "mesh")], coll=coll, surface_uv=True)
             obj.modifiers["Solidify"].use_even_offset = False  # thin sliver triangles at a tip would spike
             mirror(obj)
             continue
@@ -590,14 +634,14 @@ def zip_teeth(name, loft, path, width, pitch, lift, mat, coll, tooth=(0.0016, 0.
     return kit.link(bpy.data.objects.new(name, me), coll)
 
 
-def zip_pull(name, loft, phi, t, lift, mat, coll):
+def zip_pull(name, loft, phi, t, lift, mat, coll, k=1.0):
     """A zip slider at the top of its track with the pull lying FLAT on the zip, pointing down:
-    nothing stands off the suit."""
+    nothing stands off the suit. `k` scales it (a fine zip has a small slider)."""
     Fm = kit.anchor_matrix(OnLoft(loft, phi, t), lift=lift)
-    return [box(name, (0.0085, 0.010, 0.0030), M=Fm @ Matrix.Translation((0, 0.0, 0.0015)), bevel=0.0010, seg=2, mat=mat, coll=coll,
-                taper=(0.8, 0.85)),
-            box(name + "_Tab", (0.0050, 0.014, 0.0011), M=Fm @ Matrix.Translation((0, -0.010, 0.0034)), bevel=0.0004, seg=2, mat=mat,
-                coll=coll)]
+    return [box(name, (0.0085 * k, 0.010 * k, 0.0030 * k), M=Fm @ Matrix.Translation((0, 0.0, 0.0015 * k)), bevel=0.0010 * k, seg=2, mat=mat,
+                coll=coll, taper=(0.8, 0.85)),
+            box(name + "_Tab", (0.0050 * k, 0.014 * k, 0.0011 * k), M=Fm @ Matrix.Translation((0, -0.010 * k, 0.0034 * k)), bevel=0.0004 * k, seg=2,
+                mat=mat, coll=coll)]
 
 
 def build_zips(S, M, CL, coll):
@@ -618,10 +662,11 @@ def build_zips(S, M, CL, coll):
         neck = [(math.degrees(phi_c), CL.t_at_z(z)) for z in np.linspace(z_top - 0.002, col["rings"][0][0] + 0.004, 16)]
         for lo, path, sfx in ((B, body, ""), (CL, neck, "_Collar")):
             ribbon_on("Suit_Zip_Tape_%s%s" % (side, sfx), lo, path, zp["tape"], offset=0.0004, thick=0.0008, mat=M["suit"], coll=coll)
-            zip_teeth("Suit_Zip_Teeth_%s%s" % (side, sfx), lo, path, zp["width"], zp["pitch"], 0.0002, M["metal"], coll)
+            zip_teeth("Suit_Zip_Teeth_%s%s" % (side, sfx), lo, path, zp["width"], zp["pitch"], 0.0002, M["metal"], coll,
+                      tooth=zp.get("tooth", (0.0016, 0.0013)))
         stop = OnLoft(B, phi_c if side == "Back" else front_phi(B, bz(z_end)), bz(z_end))
         kit.box_at("Suit_Zip_Stop_%s" % side, stop, (0.007, 0.005, 0.0025), sink=-0.0008, bevel=0.0007, seg=2, mat=M["metal"], coll=coll)
-        zip_pull("Suit_Zip_Pull_%s" % side, CL, phi_c, CL.t_at_z(z_top - 0.007), 0.0002, M["metal"], coll)
+        zip_pull("Suit_Zip_Pull_%s" % side, CL, phi_c, CL.t_at_z(z_top - 0.007), 0.0002, M["metal"], coll, k=zp.get("pull_scale", 1.0))
 
 
 # --------------------------------------------------------------------- boots

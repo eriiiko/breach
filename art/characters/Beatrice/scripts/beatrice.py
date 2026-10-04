@@ -27,6 +27,7 @@ PREFIX = "beatrice"
 PALETTE = dict(
     SUIT="#0e0e10",          # glossy black
     MESH="#141316",          # the inserts' net
+    MESH_THIGH="#5a5a62",    # what shows through the thigh panels' net: a dark grey (the suit's, not skin)
     SKIN="#efcbbb",          # pale, as drawn
     BROW="#4a3a34",
     SCLERA="#e2dcd6",
@@ -34,13 +35,13 @@ PALETTE = dict(
     LIP_TINT=(0.97, 0.80, 0.80),
     BOOT="#0d0d0f",
     SOLE="#0a0a0b",
-    METAL="#b9b9be",         # the zip
+    METAL="#8e8e94",         # the zip (stage 3: a darker, finer silver, as drawn)
 )
 GLOSS = dict(rough=0.30, coat=0.45, coat_rough=0.20, specular=0.45, piping=0.9,
              boot_rough=0.22, boot_coat=0.7, boot_coat_rough=0.10, mesh_cell=0.0036, mesh_show=0.42, mesh_surface=True, mesh_coat=0.35)
 
 VARIANTS = dict(
-    crimson=dict(palette=dict(SUIT="#4a0b12", BOOT="#1a0a0c", MESH="#22090c", SKIN="#a8775e", BROW="#2a1c16", IRIS="#4a3626")),
+    crimson=dict(palette=dict(SUIT="#4a0b12", BOOT="#1a0a0c", MESH="#22090c", MESH_THIGH="#3a161a", SKIN="#a8775e", BROW="#2a1c16", IRIS="#4a3626")),
 )
 
 # ------------------------------------------------------------------- dimensions
@@ -79,15 +80,16 @@ HIPS = (
     ("belly_low", 1.060, .000, -.025, .108, .083, .083, 2.2, 1),
 )
 # waist -> neck: front-view widths; depths from the side view (bust, the lumbar curve: the back's
-# deepest point at the waist, 5 cm in front of the seat)
+# deepest point at the waist, 5 cm in front of the seat). Stage 3: the drawn S-curve -- the upper back
+# rounded (fullest at the shoulder blades), the lumbar hollow deeper at the waist, the chest lifted
 TORSO = (
-    ("waist", 1.140, .000, -.027, .094, .077, .077, 2.15, 1),
-    ("waist_top", 1.180, .000, -.029, .099, .081, .081, 2.15, 1),
-    ("ribs", 1.220, .000, -.028, .112, .090, .090, 2.2, 1),
-    ("chest_low", 1.250, .000, -.0265, .122, .0985, .0985, 2.25, 1),
-    ("chest", 1.285, .000, -.021, .128, .101, .101, 2.3, 1),
-    ("chest_top", 1.320, .000, -.013, .132, .097, .097, 2.3, 1),
-    ("shoulder", 1.360, .000, .000, .148, .085, .086, 2.3, 1),
+    ("waist", 1.140, .000, -.027, .094, .077, .069, 2.15, 1),
+    ("waist_top", 1.180, .000, -.029, .099, .081, .075, 2.15, 1),
+    ("ribs", 1.220, .000, -.028, .112, .090, .086, 2.2, 1),
+    ("chest_low", 1.250, .000, -.0265, .122, .0995, .0965, 2.25, 1),
+    ("chest", 1.285, .000, -.021, .128, .1035, .1030, 2.3, 1),
+    ("chest_top", 1.320, .000, -.013, .132, .1010, .1020, 2.3, 1),
+    ("shoulder", 1.360, .000, .000, .148, .086, .090, 2.3, 1),
     ("shoulder_top", 1.395, .000, .012, .150, .068, .072, 2.2, 1),
     ("trapezius", 1.420, .000, .015, .132, .058, .062, 2.2, 1),
     ("yoke", 1.430, .000, .015, .110, .054, .058, 2.2, 1),
@@ -179,9 +181,8 @@ ARM_SEAM = (1.228, 1.266)
 
 # broad body forms under the suit (x0, z0, side, sx, sz, height): the bust and the seat's
 # roundness, nothing anatomical beyond them
-FORMS = ((0.060, 1.280, "front", 0.044, 0.040, 0.035),
-         (0.058, 0.960, "back", 0.058, 0.062, 0.009),
-         (0.121, 0.618, "front", 0.020, 0.030, 0.006))   # the kneecap under the knee shield
+FORMS = ((0.060, 1.286, "front", 0.044, 0.040, 0.035),
+         (0.058, 0.960, "back", 0.058, 0.062, 0.009))
 
 
 def dims(shape=None):
@@ -211,7 +212,7 @@ def dims(shape=None):
             shoulder=dict(k=(0.004, 0.024), z=(1.270, 1.345), box=((0.112, -0.095, 1.195), (0.215, 0.100, 1.445)), res=(0.0012, 0.0024),
                           join=ARM_SEAM),
             armhole_seam=False,
-            cuff=(0.933, 0.957), cuff_lift=0.0018, cuff_thick=0.0032,
+            cuff=(0.937, 0.950), cuff_lift=0.0006, cuff_thick=0.0011,   # stage 3: a thin band, as drawn
             # the stand collar's rings (z, centre y, half-width, front, back, exponent), neckline -> just
             # under the jaw (the side view: it stands straight and hugs the neck)
             collar=dict(rings=((1.428, .012, .064, .056, .062, 2.3), (1.445, .012, .052, .049, .055, 2.2), (1.458, .012, .046, .046, .052, 2.1),
@@ -219,8 +220,12 @@ def dims(shape=None):
                         thick=0.003, top_seam=0.005),
             # the zips, front (collar -> below the navel) and back (collar -> the small of the back): teeth on a
             # dark tape, a slider with its pull lying flat at the collar's top
-            zip=dict(bottom_z=1.040, back_bottom_z=1.165, width=0.0060, tape=0.0100, pitch=0.0024, teeth=True),
-            knee_pad=None,     # the kneecap is a body form (FORMS) framed by a seam loop (seams.body_loops)
+            zip=dict(bottom_z=1.040, back_bottom_z=1.165, width=0.0030, tape=0.0052, pitch=0.0013, teeth=True,
+                     tooth=(0.0008, 0.0007), pull_scale=0.72),   # stage 3: fine, as drawn
+            # stage 3: layered pads on the FRONT of the knee (a pointed shield, a smaller plate over its top);
+            # behind the knee only a seam
+            knee_pad=dict(layers=(dict(x=.121, z=.612, hs=.0245, ht=.040, offset=.0016, thick=.0016, dome=.0022, n=2.3, inset=.004, point=.010),
+                                  dict(x=.121, z=.634, hs=.0175, ht=.0225, offset=.0031, thick=.0016, dome=.0016, n=2.2, inset=.0035))),
             panel_rim="seam",  # mesh panels set IN the suit, edged by the suit's own seams
             seam_style="tube", piping=(0.0009, 0.0001),  # seams are piping cords (radius, centre above the surface)
             # seams as points seen on the front view ("x", x, z), on the back view ("bx", x, z), or by
@@ -231,38 +236,36 @@ def dims(shape=None):
                     # slit), round the side of the bust, past the waist crescent, out to the hip
                     (("x", .060, 1.432), ("x", .086, 1.402), ("x", .110, 1.366), ("x", .126, 1.330), ("x", .128, 1.300),
                      ("x", .123, 1.270), ("x", .112, 1.240), ("x", .098, 1.208), ("x", .086, 1.178), ("x", .079, 1.150),
-                     ("x", .080, 1.122), ("x", .091, 1.098), ("x", .114, 1.072), ("x", .143, 1.046), ("x", .166, 1.012)),
+                     ("x", .080, 1.122), ("x", .091, 1.098), ("x", .114, 1.072), ("x", .143, 1.046), ("phi", 0, 1.030)),
                     # under the bust, from the side to the zip
-                    (("x", .118, 1.262), ("x", .100, 1.240), ("x", .075, 1.232), ("x", .046, 1.238), ("x", .024, 1.252)),
-                    # princess lines, under the bust down to the waist and out towards the hip
-                    (("x", .066, 1.234), ("x", .060, 1.196), ("x", .055, 1.158), ("x", .056, 1.122), ("x", .066, 1.090)),
+                    (("x", .118, 1.262), ("x", .100, 1.240), ("x", .075, 1.232), ("x", .046, 1.238), ("x", .024, 1.250), ("x", .003, 1.254)),
+                    # princess lines, under the bust down to the waist and out into the side seam above the hip
+                    (("x", .066, 1.234), ("x", .060, 1.196), ("x", .055, 1.158), ("x", .058, 1.122), ("x", .070, 1.100), ("x", .086, 1.091),
+                     ("x", .100, 1.088)),
                     # the leotard line: outer hip down to the crotch
-                    (("x", .165, 1.034), ("x", .130, 1.000), ("x", .090, .960), ("x", .050, .925), ("x", .020, .903), ("x", .004, .895)),
-                    # from the thigh panel's foot to the knee shield
-                    (("phi", 22, .676), ("x", .146, .662)),
-                    # from the knee shield down the outer shin to the boot
-                    (("x", .150, .566), ("x", .172, .520), ("x", .190, .460), ("x", .200, .400), ("x", .200, .320), ("x", .196, .250)),
+                    (("phi", 0, 1.030), ("x", .130, 1.000), ("x", .090, .960), ("x", .050, .925), ("x", .020, .903), ("x", .004, .895)),
+                    # from the thigh panel's foot to the knee pad (each end on another edge: no seam stops on the surface)
+                    (("phi", 6, .662), ("x", .139, .641)),
+                    # from under the knee pad down the outer shin into the boot
+                    (("x", .137, .592), ("x", .150, .566), ("x", .172, .520), ("x", .190, .460), ("x", .200, .400), ("x", .200, .320), ("x", .196, .222)),
+                    # behind the knee: an arc from under the pad's outer edge round the back to under its inner edge
+                    (("x", .141, .602), ("phi", 0, .620), ("phi", -45, .636), ("bx", .124, .642), ("phi", -135, .636), ("phi", -180, .620),
+                     ("x", .101, .602)),
                     # --- the back (without_hair_back.png): a V from the shoulder blades to the waist's centre
                     (("bx", .050, 1.425), ("bx", .046, 1.370), ("bx", .036, 1.300), ("bx", .022, 1.230), ("bx", .008, 1.180),
                      ("bx", .001, 1.166)),
                     # from the back of the armpit down past the rib and waist panels, round the hip to the thigh panel
                     (("bx", .110, 1.326), ("bx", .104, 1.280), ("bx", .090, 1.230), ("bx", .074, 1.190), ("bx", .068, 1.160),
-                     ("bx", .076, 1.120), ("bx", .098, 1.070), ("bx", .120, 1.030), ("bx", .138, .995)),
+                     ("bx", .076, 1.120), ("bx", .098, 1.070), ("bx", .120, 1.030), ("bx", .131, .996)),
                     # under the seat: the hip round to the crotch
-                    (("bx", .150, 1.050), ("bx", .128, .985), ("bx", .098, .940), ("bx", .060, .912), ("bx", .025, .899), ("bx", .004, .896)),
+                    (("phi", 0, 1.030), ("bx", .128, .985), ("bx", .098, .940), ("bx", .060, .912), ("bx", .025, .899), ("bx", .004, .896)),
                     # centre back, below the zip
                     (("phi", -90, 0.898), ("phi", -90, 1.165)),
                     # down the back of the calf from the knee to the boot
-                    (("bx", .126, .618), ("bx", .138, .540), ("bx", .146, .460), ("bx", .156, .380), ("bx", .170, .300), ("bx", .180, .250)),
+                    (("bx", .124, .642), ("bx", .128, .600), ("bx", .138, .540), ("bx", .146, .460), ("bx", .156, .380), ("bx", .170, .300),
+                     ("bx", .180, .222)),
                 ),
-                body_loops=(
-                    # the knee shield, round the kneecap (front view)
-                    (("x", .121, .656), ("x", .137, .647), ("x", .144, .620), ("x", .139, .592), ("x", .121, .580), ("x", .103, .592),
-                     ("x", .098, .620), ("x", .105, .647)),
-                    # the back of the knee (back view)
-                    (("bx", .116, .682), ("bx", .134, .672), ("bx", .140, .652), ("bx", .133, .632), ("bx", .116, .624), ("bx", .099, .632),
-                     ("bx", .093, .652), ("bx", .099, .672)),
-                ),
+                body_loops=(),   # stage 3: the knee's loops are gone (pads in front, an arc seam behind)
                 # the sleeve: a chevron at the foot of the deltoid, lowest on the outside of the arm
                 arm=(tuple(("phi", a, ARM_SEAM[0] + (ARM_SEAM[1] - ARM_SEAM[0]) * abs(a) / 180.0) for a in range(-180, 181, 15)),),
             ),
@@ -270,25 +273,25 @@ def dims(shape=None):
                 # front of the shoulder: a thin curved slit from the collar's side down to the armpit's front
                 dict(name="Shoulder", pts=(("x", .054, 1.424), ("x", .080, 1.402), ("x", .104, 1.370), ("x", .121, 1.336), ("x", .125, 1.324),
                                            ("x", .114, 1.334), ("x", .094, 1.362), ("x", .070, 1.392), ("x", .050, 1.414))),
-                # the ribs: a narrow crescent from under the arm down and in towards the waist
-                dict(name="Waist", pts=(("phi", 2, 1.268), ("x", .118, 1.246), ("x", .105, 1.216), ("x", .092, 1.184), ("x", .086, 1.170),
-                                        ("x", .098, 1.186), ("x", .112, 1.212), ("phi", 2, 1.234))),
-                # the waist's side: a second crescent, from the side down to the front of the hip
-                dict(name="Hip", pts=(("phi", 4, 1.150), ("x", .118, 1.128), ("x", .104, 1.100), ("x", .092, 1.070), ("x", .088, 1.056),
-                                      ("x", .100, 1.068), ("x", .114, 1.092), ("phi", 4, 1.118))),
+                # stage 3: the inserts as clean teardrops (bodysuit.Suit.teardrop: round end a -> point b, half-width w,
+                # bow), placed from the three drawings. The ribs: from under the arm, down and forward to the waist,
+                # the point on the side seam ("THE line")
+                dict(name="Waist", drop=dict(a=("phi", -12, 1.264), b=("x", .080, 1.172), w=0.0125, bow=-0.08, cap=0.22)),
+                # the waist's side: from the side of the waist down to the front of the hip, outside the side seam
+                dict(name="Hip", drop=dict(a=("phi", -4, 1.144), b=("x", .118, 1.056), w=0.0105, bow=-0.10, cap=0.22)),
                 # the back of the shoulder: a strip from the yoke down along the shoulder blade to the back of the armpit
                 dict(name="Blade", pts=(("bx", .060, 1.414), ("bx", .084, 1.405), ("bx", .100, 1.378), ("bx", .110, 1.348), ("bx", .112, 1.332),
                                         ("bx", .107, 1.344), ("bx", .088, 1.374), ("bx", .068, 1.400))),
-                # the back's sides at the ribs and at the waist
-                dict(name="Back_Rib", pts=(("phi", -16, 1.286), ("bx", .098, 1.272), ("bx", .080, 1.244), ("bx", .063, 1.214), ("bx", .058, 1.205),
-                                           ("bx", .071, 1.212), ("bx", .090, 1.236), ("bx", .104, 1.258), ("phi", -16, 1.264))),
-                dict(name="Back_Waist", pts=(("phi", -16, 1.176), ("bx", .090, 1.160), ("bx", .076, 1.138), ("bx", .066, 1.116), ("bx", .064, 1.108),
-                                             ("bx", .078, 1.120), ("bx", .094, 1.140), ("phi", -16, 1.152))),
-                # the outer thigh: a long almond from the hip to above the knee, round the side (narrow from the
-                # front, wide from the side, a broad strip from behind)
-                dict(name="Thigh", pts=(("phi", 14, 1.000), ("phi", 34, .950), ("phi", 48, .880), ("phi", 52, .800), ("phi", 44, .730),
-                                        ("phi", 22, .676), ("phi", -6, .702), ("phi", -26, .772), ("phi", -36, .850), ("phi", -30, .930),
-                                        ("phi", -10, .984))),
+                # the back's sides at the ribs (from the side down and in towards the spine) and at the waist (a lens)
+                dict(name="Back_Rib", drop=dict(a=("phi", -16, 1.268), b=("bx", .058, 1.204), w=0.0100, bow=0.10)),
+                dict(name="Back_Waist", drop=dict(a=("bx", .076, 1.168), b=("bx", .102, 1.098), w=0.0075, bow=0.10, blunt=0.0)),
+                # the outer thigh: a long almond from the hip down to the knee on the side and back of the thigh
+                # (side view: its straight edge behind, its front edge bowing forward at mid-thigh), dark grey: the
+                # net over the suit, not skin
+                dict(name="Thigh", mat="mesh_thigh",
+                     pts=(("phi", 2, 0.992), ("phi", 18, .955), ("phi", 34, .900), ("phi", 44, .840), ("phi", 44, .780), ("phi", 34, .720),
+                          ("phi", 18, .680), ("phi", 6, .662), ("phi", -8, .690), ("phi", -16, .760), ("phi", -20, .840),
+                          ("phi", -16, .920), ("phi", -6, .968))),
             ),
         ),
         boot=dict(
