@@ -87,8 +87,9 @@ def test_two_gases_in_one_cell_mix_as_the_density_weighted_sum():
     """PROPERTY (design §6.3 "mixing falls out of the sum", on the light
     channels): with the SHIPPED light columns, a cell holding poison at dP AND
     soot at dS reads, per channel, the light extinction
-    min(ONE, (absP_c·dP + absS_c·dS) >> 16) -- the ONE density-weighted sum,
-    shifted once -- which is MORE than either gas alone gives, and its glow
+    ONE - exp(-((absP_c·dP + absS_c·dS) >> 16)) -- the ONE density-weighted
+    sum, shifted once, through the light's Beer-Lambert law (#12 handle 2;
+    the reference's exp_neg_q16) -- which is MORE than either gas alone gives, and its glow
     coefficient is the same sum over the glow column; the same two gases in
     two separate cells each read only their own term.
 
@@ -108,13 +109,13 @@ def test_two_gases_in_one_cell_mix_as_the_density_weighted_sum():
     _lq, _gl, a_eff, gco = _run({(y, xp): {POISON: dP}, (y, xs): {SMOKE: dS},
                                  (y, xm): {POISON: dP, SMOKE: dS}}, tbl)
     for c in range(3):
-        want_a = min(ONE, (int(lab[POISON][c]) * dP + int(lab[SMOKE][c]) * dS) >> 16)
+        want_a = ONE - R.exp_neg_q16((int(lab[POISON][c]) * dP + int(lab[SMOKE][c]) * dS) >> 16)
         want_g = min(ONE, (int(lgl[POISON][c]) * dP + int(lgl[SMOKE][c]) * dS) >> 16)
         assert want_a < ONE, "the scene must stay below the cap to test the sum"
         assert int(a_eff[c, y, xm]) == want_a, (c, int(a_eff[c, y, xm]), want_a)
         assert int(gco[c, y, xm]) == want_g, (c, int(gco[c, y, xm]), want_g)
-        assert int(a_eff[c, y, xp]) == (int(lab[POISON][c]) * dP) >> 16
-        assert int(a_eff[c, y, xs]) == (int(lab[SMOKE][c]) * dS) >> 16
+        assert int(a_eff[c, y, xp]) == ONE - R.exp_neg_q16((int(lab[POISON][c]) * dP) >> 16)
+        assert int(a_eff[c, y, xs]) == ONE - R.exp_neg_q16((int(lab[SMOKE][c]) * dS) >> 16)
         assert int(a_eff[c, y, xm]) > max(int(a_eff[c, y, xp]), int(a_eff[c, y, xs]))
 
 

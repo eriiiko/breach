@@ -251,6 +251,31 @@ FP_HD inline int32_t gas_extinction_finish(int64_t sum, int32_t n_bulk) {
     return (a > (int64_t)fixedpoint::FP_ONE) ? fixedpoint::FP_ONE : (int32_t)a;
 }
 
+// THE LIGHT CHANNELS' DENSITY LAW (#12 smoke x light, handle 2, 2026-10-04):
+// Beer-Lambert per tile, a_gas = ONE - exp(-tau) with tau = the same density sum
+// >> 16 and the same N_EPS floor -- the law the renderer draws the medium's
+// opacity with, so smoke that looks black blocks the light. The HEAT term keeps
+// gas_extinction_finish's min(ONE, tau). Transcribes sweep_ref_q.py::
+// exp_neg_q16 / gas_extinction_exp_q.
+//
+// exp(-x) in Q16, PURE INTEGER: (1 - x/2^16)^(2^16) -- y0 = 2^30 - floor(x_q/4)
+// (x / 2^16 in Q30), squared 16 times (y <- y*y >> 30, y < 2^30 so the product
+// is < 2^60, exact in int64), then >> 14. Monotone non-increasing in x_q by
+// construction (light through denser smoke never rises); exp_neg_q16(0) == ONE;
+// 0 from x = 16 (exp(-16) is 0.007 counts); within 3 Q16 counts of exp(-x).
+FP_HD inline int32_t exp_neg_q16(int64_t x_q) {
+    if (x_q <= 0) return fixedpoint::FP_ONE;
+    if (x_q >= ((int64_t)16 << fixedpoint::FP_SHIFT)) return 0;
+    int64_t y = ((int64_t)1 << 30) - (x_q >> 2);
+    for (int k = 0; k < 16; ++k) y = (y * y) >> 30;
+    return (int32_t)(y >> 14);
+}
+
+FP_HD inline int32_t gas_extinction_exp_finish(int64_t sum, int32_t n_bulk) {
+    if ((int64_t)n_bulk < gas_energy::N_EPS_RAW) return 0;
+    return fixedpoint::FP_ONE - exp_neg_q16(sum >> fixedpoint::FP_SHIFT);
+}
+
 // The two planes the sweep then READS on every cell (design §2.3's a_i, d_i):
 //   a_eff = a                  on a thermal solid — its extinction is its
 //                              material's whatever gas its pores hold; its T
