@@ -5,9 +5,9 @@ fixed number of frames. Bug fixes start here (master rules: an E2E
 reproduction as an end user would see it) -- never a parallel harness.
 
     C:/Users/steen/anaconda3/python.exe tools/e2e_drive.py --level playground \\
-        --press M@40 --frames 120
+        --press F4@40 --frames 120
     C:/Users/steen/anaconda3/python.exe tools/e2e_drive.py --level playground \\
-        --press M@40 --frames 120 --cuda
+        --press F4@40 --frames 120 --cuda
     ... --control onephase --debug --press F4@10 --press F4@20 --frames 60
 
 Flags (this tool's own):
@@ -33,7 +33,8 @@ own SystemExit code otherwise.
 
 Born from issue #80 (ray-engine-v2 P6c): the 3D-marines crash
 (``anim.keyframeCount`` on raylib 5.5) reproduced on the first try by exactly
-this: ``--level playground --press M@40 --frames 120``.
+this: ``--level playground --press M@40 --frames 120`` (M toggled the 3D
+units then; they are always on since #33, and no key toggles them).
 """
 from __future__ import annotations
 
