@@ -22,7 +22,8 @@ charges run on the sim clock either way.
 
 ## What happens
 
-48 x 48 hull at 1 m tiles inside a 4-tile vacuum band (`boundary = "space"`),
+48 x 48 hull at 0.333 m tiles (16 m across; the engine's reference tile,
+since 2026-10-04 -- it was 1 m) inside a 4-tile vacuum band (`boundary = "space"`),
 three rooms joined by open doorways, furniture crates (fuel) beside the
 charges. Every charge repeats every 5 s after its first detonation.
 

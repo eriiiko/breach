@@ -138,8 +138,8 @@ def format_spawn_lines(spawns, nl: str = "\n") -> list:
 def format_light_lines(lights, nl: str = "\n") -> list:
     """The managed [[light]] block as ``nl``-terminated lines — schema per
     level_loader.LightEntry / engine/15 §2.2 (color back to 0-255 ints;
-    period_s/beam_deg/phase written for beacons only — static lights take
-    the loader defaults)."""
+    period_s/beam_deg/phase written for beacons only, beam_deg/phase for
+    spots — static lights take the loader defaults)."""
     lines = []
     for i, l in enumerate(lights):
         if i:
@@ -153,6 +153,9 @@ def format_light_lines(lights, nl: str = "\n") -> list:
         lines.append(f'kind = "{l.kind}"{nl}')
         if l.kind == "beacon":
             lines.append(f"period_s = {_fmt_coord(l.period_s)}{nl}")
+            lines.append(f"beam_deg = {_fmt_coord(l.beam_deg)}{nl}")
+            lines.append(f"phase = {_fmt_coord(l.phase)}{nl}")
+        elif l.kind == "spot":
             lines.append(f"beam_deg = {_fmt_coord(l.beam_deg)}{nl}")
             lines.append(f"phase = {_fmt_coord(l.phase)}{nl}")
     return lines
@@ -550,9 +553,11 @@ def write_boundary_field(toml_path, boundary: str, *,
 def write_level_header(level_dir, *, name: str, tile_size_m: float,
                        tilemap_rel: str = "tilemap.csv",
                        diffuse_rel: str = "diffuse.png",
+                       normal_rel=None,
                        comment_lines=()) -> Path:
     """Create a NEW level folder's ``level.toml`` holding only the scalar
-    header (``version``/``name``/``tilemap``/``tile_size_m``/``diffuse``),
+    header (``version``/``name``/``tilemap``/``tile_size_m``/``diffuse``,
+    plus ``normal`` when ``normal_rel`` is given),
     preceded by ``comment_lines`` (each written as ``# <line>``).
 
     The one-writer home for the "new level" scaffold that generators used to
@@ -576,6 +581,8 @@ def write_level_header(level_dir, *, name: str, tile_size_m: float,
         f"tile_size_m = {_fmt_coord(tile_size_m)}\n",
         f"diffuse = {_fmt_value(str(diffuse_rel))}\n",
     ]
+    if normal_rel is not None:
+        lines.append(f"normal = {_fmt_value(str(normal_rel))}\n")
     _atomic_write_bytes(toml_path, "".join(lines).encode("utf-8"))
     return toml_path
 

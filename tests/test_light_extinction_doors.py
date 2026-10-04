@@ -119,17 +119,18 @@ def test_gamemap_projects_patches_and_stamps_the_light_twin():
 # the gases door
 # ---------------------------------------------------------------------------
 def test_the_gases_door_folds_the_smoke_dials_into_the_light_columns():
-    """PROPERTY (decision 6): GasTable.light_absorb_q16[g][c] ==
-    quantize(absorption[g][c] * smoke_absorption[c] * smoke_absorb_scale) and
-    light_glow_q16[g][c] == quantize(scatter_albedo[g][c] *
-    smoke_scatter_albedo[c]) for every shipped gas and channel -- the [smoke]
-    dials folded in HERE, once, the same dials the render medium reads; the
+    """PROPERTY (decision 6; restated at #12 handle 1, 2026-10-04): for every
+    shipped gas WITHOUT a derived light_absorb, GasTable.light_absorb_q16[g][c]
+    == quantize(absorption[g][c] * smoke_absorption[c] * smoke_absorb_scale);
+    a gas WITH one (soot) gets exactly that derived value, no dial; and for
+    every gas light_glow_q16[g][c] == quantize(scatter_albedo[g][c] *
+    smoke_scatter_albedo[c]) -- the [smoke] dials folded in HERE, once; the
     bulk pair carries no optics (0). A table built from rows alone still
     carries the shipped dials (it reads CFG.smoke).
 
-    BREAKS IF: a dial is dropped, applied twice, or the columns are quantized
-    anywhere else; the absorb scale (1.4 shipped) moves the light column
-    without moving this, or vice versa.
+    BREAKS IF: a dial is dropped, applied twice, applied to a derived value, or
+    the columns are quantized anywhere else; the absorb scale moves a dial
+    gas's light column without moving this, or vice versa.
     """
     cfg = _cfg()
     sm = cfg["smoke"]
@@ -137,19 +138,22 @@ def test_the_gases_door_folds_the_smoke_dials_into_the_light_columns():
     for tbl in (GasTable.from_config(), GasTable(cfg["gases"])):
         assert tbl.light_absorb_q16.shape == (tbl.n, 3) == tbl.light_glow_q16.shape
         for i in range(tbl.n):
+            physical = not np.isnan(tbl.light_absorb[i, 0])
             for c in range(3):
-                va = float(tbl.absorption[i, c]) * float(sm["smoke_absorption"][c]) * scale
+                va = (float(tbl.light_absorb[i, c]) if physical else
+                      float(tbl.absorption[i, c]) * float(sm["smoke_absorption"][c]) * scale)
                 vg = float(tbl.scatter_albedo[i, c]) * float(sm["smoke_scatter_albedo"][c])
                 assert tbl.light_absorb_q16[i, c] == unit_fixed.quantize_scalar(va)
                 assert tbl.light_glow_q16[i, c] == unit_fixed.quantize_scalar(vg)
     tbl = GasTable.from_config()
-    from simulation.gases import O2, INERT_N2, SMOKE
+    from simulation.gases import O2, INERT_N2, SMOKE, STEAM
     assert not np.any(tbl.light_absorb_q16[[O2, INERT_N2]])
     assert not np.any(tbl.light_glow_q16[[O2, INERT_N2]])
     assert np.all(tbl.light_absorb_q16[SMOKE] > 0)
-    # a moved dial moves the column: double the absorb scale
+    # a moved dial moves a DIAL gas's column (steam), never soot's derived one
     tbl2 = GasTable(cfg["gases"], dict(sm, smoke_absorb_scale=2 * scale))
-    assert np.all(np.abs(tbl2.light_absorb_q16[SMOKE] - 2 * tbl.light_absorb_q16[SMOKE]) <= 1)
+    assert np.all(np.abs(tbl2.light_absorb_q16[STEAM] - 2 * tbl.light_absorb_q16[STEAM]) <= 1)
+    assert np.array_equal(tbl2.light_absorb_q16[SMOKE], tbl.light_absorb_q16[SMOKE])
 
 
 def test_the_reference_gate_uses_the_shipped_light_columns():

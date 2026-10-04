@@ -28,19 +28,20 @@ construction:
     steam in darkness is invisible (alpha ~ 0 because steam barely absorbs, and
     inscatter 0 until a beam lights it) — the beacon/flashlight reveals it.
 
-Single source of scale (critique finding)
-------------------------------------------
-``[smoke] smoke_absorb_scale`` (the shared beam-reach dial, 1.4 shipped) is the
-ONE owner of the absorption scale: the gases door folds it into the sweep's
-light columns (``GasTable.light_absorb_q16``) and this pass reads the SAME key
-as its base scale (design v3 §4.4; until P6c it read it back off the old
-Raycaster), applying ``plume_k_scale`` (default 1.0) as a RELATIVE multiplier on
-top, so the plume body and its god-rays track by construction instead of via two
-independent dials agreeing. The per-gas extinction ``k_s`` is
-``mean(absorption[s])`` read from the SAME GasTable optics columns the light
-channels use (``simulation/gases.py``) — the panchromatic collapse
-``beam_absorb_q16`` already uses — so plume body and beam reach can never
-disagree about what a gas is.
+One optical identity: what looks black blocks light (#12 handle 2, 2026-10-04)
+------------------------------------------------------------------------------
+The plume's opacity IS the light engine's extinction: the per-gas ``k_s`` is
+the mean over R/G/B of ``GasTable.light_absorb_q16`` / ONE -- the very
+coefficient the radiation sweep's light channels read per unit density per tile
+-- under the SAME Beer-Lambert law (alpha = 1 - exp(-tau); the sweep's light
+term is ONE - exp_neg_q16(tau) since handle 2). Soot's coefficient is derived
+physics ([gases.smoke] light_absorb); the other gases' is their ``absorption``
+x the ``[smoke]`` dials, folded in at the gases door -- so either way there is
+ONE number per gas and no render-side scale. ``plume_k_scale`` and the
+``smoke_absorb_scale`` base are RETIRED from this pass (both held at 1.0 by
+:meth:`GasMediumOverlay.from_config`; the pure functions keep the parameters
+for the dev tools). The look of smoke is now tuned at its SOURCE -- how much
+smoke a fire or a blast makes -- not here.
 
 Credit (repo rule — cite what a file implements):
   - Beer-Lambert transmittance / volume emission-absorption:
@@ -279,11 +280,12 @@ class GasMediumOverlay:
         render = getattr(cfg, "render", None)
         gm = getattr(render, "gas_medium", None)
         g = lambda name, default: float(getattr(gm, name, default))
-        smoke = getattr(cfg, "smoke", None)
-        base = float(np.float32(getattr(smoke, "smoke_absorb_scale", 1.4)))
+        # #12 handle 2: k_s IS the light engine's coefficient (see _bind_table),
+        # so the plume takes NO render-side scale -- base and plume_k are 1.
+        base = 1.0
         return cls(
             grid_h, grid_w,
-            plume_k_scale=g("plume_k_scale", 1.0),
+            plume_k_scale=1.0,
             tau_curve_a=g("tau_curve_a", 1.0),
             tau_curve_b=g("tau_curve_b", 1.0),
             glow_gain=g("glow_gain", 1.0),
@@ -294,11 +296,13 @@ class GasMediumOverlay:
     def _bind_table(self, gas_table) -> None:
         """Cache k_s / albedo / effect-mask from the GasTable's trace-gas rows.
 
-        ``k_s = mean(absorption[s])`` — the panchromatic collapse; the SAME data
-        that drives the light channels (single optical identity, design §3)."""
+        ``k_s = mean_c(light_absorb_q16[s, c]) / ONE`` -- the light engine's
+        OWN extinction per unit density per tile, collapsed over R/G/B (the
+        layer has one alpha). One optical identity (#12 handle 2): a tile this
+        pass draws opaque is a tile the sweep's light does not cross."""
         n = N_TRACE_GASES
-        self._k_s = np.asarray(gas_table.absorption[:n],
-                               dtype=np.float32).mean(axis=1)
+        self._k_s = (np.asarray(gas_table.light_absorb_q16[:n], dtype=np.float64)
+                     .mean(axis=1) / 65536.0).astype(np.float32)
         self._scatter = np.asarray(gas_table.scatter_albedo[:n],
                                    dtype=np.float32)
         self._effect_mask = np.array(

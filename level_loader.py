@@ -107,7 +107,10 @@ class SpawnEntry:
     footprint: int = 3  # side length of unit's square footprint in tiles
 
 
-LIGHT_KINDS = ("static", "beacon")
+# "spot" (2026-10-04, the smoke-light studio): a beacon that never turns --
+# a fixed cone aimed at `phase` (a fraction of a turn, screen convention:
+# 0 east, 0.25 south, 0.5 west, 0.75 north), `beam_deg` wide.
+LIGHT_KINDS = ("static", "beacon", "spot")
 
 # [[light]] keys the loader REJECTS outright (P4 design §2.2, critique M2):
 # level lights never write synced state (`heat`) and never draw random
@@ -154,8 +157,8 @@ def _parse_light_entry(entry, index: int, toml_path) -> LightEntry:
     """
     hint = ("Required fields: pos = [x, y] (tile floats), color = [r, g, b] "
             "(0-255 ints). Optional: intensity (> 0), range (tiles, > 0), "
-            "kind ('static' | 'beacon'), period_s (> 0), beam_deg (0-360], "
-            "phase (fraction of a turn).")
+            "kind ('static' | 'beacon' | 'spot'), period_s (> 0), "
+            "beam_deg (0-360], phase (fraction of a turn; a spot's aim).")
 
     def err(msg: str) -> ValueError:
         return ValueError(

@@ -2,7 +2,7 @@ r"""tools/gen_explosion_studio.py — generates levels/explosion_studio/, the
 test level for the "explosion + air" session (#31;
 docs/prep_patches_handoff_2026-09-30.md P5).
 
-A 48x48 hull at 1 m tiles inside a vacuum band (boundary "space"), cut into
+A 48x48 hull at 0.333 m tiles (16 m across) inside a vacuum band (boundary "space"), cut into
 three rooms joined by open doorways, with furniture crates (fuel) beside four
 ``timed_charge`` entities:
 
@@ -56,7 +56,12 @@ SPACE_CODE = 9
 BAND = 4                 # vacuum band outside the hull (tiles)
 HULL = 48                # hull box side (tiles), outer faces included
 W = H = HULL + 2 * BAND  # 56 x 56 grid
-TILE_SIZE_M = 1.0
+# THE REFERENCE TILE (Erik, 2026-10-04: tune everything at 0.333 m; was
+# 1.0 m). The conduction table, the radiation calibration and soot's derived
+# extinctions are built at [physics.thermal] tile_size_ref_m = 0.333 -- a 1 m
+# level runs them off-reference (T3 section 8 q9). Values judged here at 1 m
+# (k_drag2 = 0.125, the frag grenade) are to be re-judged.
+TILE_SIZE_M = 0.333
 PX = 16                  # diffuse px per tile
 
 # Hull box (inclusive outer faces) and the interior partitions.
@@ -100,12 +105,12 @@ def build_tilemap() -> np.ndarray:
     return tm
 
 
-def build_charges() -> list:
+def build_charges(charges=CHARGES, period_s: float = PERIOD_S) -> list:
     ents = []
     keys = ("x", "y", "payload", "first_at_s", "period_s", "enabled")
-    for i, (cid, x, y, payload, first) in enumerate(CHARGES):
+    for i, (cid, x, y, payload, first) in enumerate(charges):
         fields = {"x": x, "y": y, "payload": payload,
-                  "first_at_s": float(first), "period_s": PERIOD_S,
+                  "first_at_s": float(first), "period_s": float(period_s),
                   "enabled": True}
         ents.append(EntityInstance(id=cid, class_name="timed_charge",
                                    ordinal=i, fields=fields,
@@ -133,16 +138,19 @@ CHARGE_RGB = (170, 40, 30)
 LABELS = ((15, 7, "WEST HALL"), (38, 6, "NE ROOM"), (38, 30, "SE ROOM"))
 
 
-def build_diffuse(tm: np.ndarray) -> Image.Image:
+def build_diffuse(tm: np.ndarray, charges=CHARGES, palette=None,
+                  air_alt=None) -> Image.Image:
+    palette = PALETTE if palette is None else palette
+    air_alt = AIR_ALT if air_alt is None else air_alt
     img = np.zeros((H * PX, W * PX, 3), dtype=np.uint8)
     for ty in range(H):
         for tx in range(W):
             code = int(tm[ty, tx])
-            c = PALETTE.get(code, (200, 40, 200))     # loud magenta = bug
+            c = palette.get(code, (200, 40, 200))     # loud magenta = bug
             if code == MAT_AIR and (tx + ty) % 2:
-                c = AIR_ALT
+                c = air_alt
             img[ty * PX:(ty + 1) * PX, tx * PX:(tx + 1) * PX] = c
-    for (_id, x, y, _p, _t) in CHARGES:
+    for (_id, x, y, _p, _t) in charges:
         q = PX // 4
         img[y * PX + q:(y + 1) * PX - q, x * PX + q:(x + 1) * PX - q] = CHARGE_RGB
     img[::PX, :, :] = (img[::PX, :, :] * 0.82).astype(np.uint8)

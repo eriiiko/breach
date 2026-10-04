@@ -251,7 +251,8 @@ class PayloadDef:
     def __init__(self, name, radius=0, pressure=0.0, wall_damage=0,
                  unit_damage=0, gas_species="", gas_amount=0.0, gas_radius=0,
                  ignite_radius=0.0, ignite_intensity=0.0, clear_smoke=False,
-                 emit_blast_smoke=False, heat_amount=0.0, heat_radius=0.0):
+                 emit_blast_smoke=False, heat_amount=0.0, heat_radius=0.0,
+                 explosive="", explosive_kg=0.0, blast_soot_g=0.0):
         self.name = name
         self.radius = radius                    # blast radius (tiles)
         self.pressure = pressure                # wave source magnitude
@@ -264,6 +265,13 @@ class PayloadDef:
         self.ignite_intensity = ignite_intensity
         self.clear_smoke = clear_smoke          # data-of-record (v1: inside apply_explosion)
         self.emit_blast_smoke = emit_blast_smoke  # LIVE: gates add_explosion_smoke (W3)
+        # #12 handle 3 (2026-10-04): the blast's smoke is PHYSICAL -- the
+        # charge's explosive and mass give its soot, explosive_kg x 1000 x
+        # [explosives.<explosive>] soot_yield grams (resolved at table load);
+        # the executor deposits exactly that mass (gases.smoke_units_of_soot).
+        self.explosive = explosive
+        self.explosive_kg = explosive_kg
+        self.blast_soot_g = blast_soot_g
         # Heat splash (W6 — the plasma payload): a one-shot DISC ADD of
         # ``heat_amount`` heat units (linear falloff to ``heat_radius``)
         # into the engine/06 ``heat`` ingress buffer at the detonation tile
@@ -519,10 +527,23 @@ class PayloadTable:
     (simulation.gases.GAS_NAMES — the ``gmap.gas`` slice vocabulary) so a
     typo'd species is loud at startup, not at the first detonation."""
 
-    def __init__(self, payloads_cfg):
+    def __init__(self, payloads_cfg, explosives_cfg=None):
         # Lazy import (module constants only, mirrors AmmoTable's unit_fixed).
         from simulation.gases import GAS_NAMES
         valid_gases = set(GAS_NAMES.values())
+        # #12 handle 3: [explosives.<name>] soot_yield (g soot / g explosive).
+        # None reads CFG.explosives (the GasTable / CFG.smoke idiom).
+        if explosives_cfg is None:
+            from config import CFG as _CFG
+            explosives_cfg = getattr(_CFG, "explosives", None)
+        soot_yield = {}
+        if explosives_cfg is not None:
+            for ename, erow in _iter_rows(explosives_cfg):
+                y = float(_get_field(erow, "explosives", ename, "soot_yield"))
+                if not (0.0 <= y <= 1.0):
+                    raise ValueError(f"explosives.{ename}.soot_yield {y!r} outside "
+                                     f"[0, 1] (grams of soot per gram of explosive)")
+                soot_yield[ename] = y
         self.by_name: dict[str, PayloadDef] = {}
         for name, row in _iter_rows(payloads_cfg):
             def col(c, default, _row=row, _name=name):
@@ -533,6 +554,23 @@ class PayloadTable:
                 raise ValueError(
                     f"payloads.{name}.gas_species {gas_species!r} is not a "
                     f"known gas (engine/05 §6.2): {sorted(valid_gases)}")
+            emit_blast_smoke = bool(col("emit_blast_smoke", False))
+            explosive = str(col("explosive", ""))
+            explosive_kg = float(col("explosive_kg", 0.0))
+            if emit_blast_smoke:
+                # The blast's smoke is the charge's soot: a row that makes
+                # blast smoke must say what it is made of and how much.
+                if explosive not in soot_yield:
+                    raise ValueError(
+                        f"payloads.{name} emits blast smoke but its explosive "
+                        f"{explosive!r} is not an [explosives.*] row "
+                        f"({sorted(soot_yield)}) -- #12 handle 3")
+                if not explosive_kg > 0.0:
+                    raise ValueError(
+                        f"payloads.{name} emits blast smoke but explosive_kg = "
+                        f"{explosive_kg!r} (the charge mass, kg, must be > 0)")
+            blast_soot_g = (explosive_kg * 1000.0 * soot_yield[explosive]
+                            if emit_blast_smoke else 0.0)
             self.by_name[name] = PayloadDef(
                 name=name,
                 radius=col("radius", 0),
@@ -545,9 +583,12 @@ class PayloadTable:
                 ignite_radius=col("ignite_radius", 0.0),
                 ignite_intensity=col("ignite_intensity", 0.0),
                 clear_smoke=bool(col("clear_smoke", False)),
-                emit_blast_smoke=bool(col("emit_blast_smoke", False)),
+                emit_blast_smoke=emit_blast_smoke,
                 heat_amount=col("heat_amount", 0.0),
                 heat_radius=col("heat_radius", 0.0),
+                explosive=explosive,
+                explosive_kg=explosive_kg,
+                blast_soot_g=blast_soot_g,
             )
         self.names = list(self.by_name)
 

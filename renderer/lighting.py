@@ -350,6 +350,16 @@ class LightingPass:
         rl.begin_shader_mode(self.shader)
         if normal is not None:
             rl.set_shader_value_texture(self.shader, self._loc_normal_tex, normal)
+        else:
+            # No normal map for this level: never let the shader sample an
+            # UNBOUND u_normal. It reads whatever the texture unit holds -- in
+            # practice art -- as a normal, so a flat grey floor (0.55) decodes
+            # to a ~55-degree diagonal tilt and every lamp lights one side and
+            # "shadows" the other, and a near-black floor tilts below the
+            # horizon and takes no light at all (found in the smoke-light
+            # studio, 2026-10-04, #12). Re-asserted each draw: the F5 toggle
+            # sets the flag every frame before this.
+            self.set_use_normal(False)
         rl.set_shader_value_texture(self.shader, self._loc_light_tex_a, self.light_tex_a)
         rl.set_shader_value_texture(self.shader, self._loc_light_tex_b, self.light_tex_b)
         rl.set_shader_value_texture(self.shader, self._loc_vacuum_tex, self.vacuum_tex)

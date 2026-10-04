@@ -141,7 +141,7 @@ def apply_explosion(gmap, queue, fy, fx, radius, pressure, wall_damage):
                                 ))
 
 
-def add_explosion_smoke(gmap, queue, fy, fx, radius, noise=None):
+def add_explosion_smoke(gmap, queue, fy, fx, radius, noise=None, amount=0.8):
     """Enqueue a noisy smoke disc into ``gmap.smoke`` (engine/13 ADD edit).
 
     Behaviour-preserving migration of the legacy inline deposit onto the
@@ -176,6 +176,6 @@ def add_explosion_smoke(gmap, queue, fy, fx, radius, noise=None):
     noise = min(1.0, max(0.0, noise))
     queue.enqueue(FieldEdit(
         field="smoke", region=Region.DISC, coords=(fy, fx, float(radius)),
-        amount=0.8, mode=EditMode.ADD, falloff=Falloff.LINEAR,
+        amount=float(amount), mode=EditMode.ADD, falloff=Falloff.LINEAR,
         clamp=(0.0, 1.0), noise=noise, source_id=_SRC_EXPLOSION_SMOKE,
     ))

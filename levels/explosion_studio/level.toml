@@ -11,7 +11,7 @@ version = "2"
 name = "Explosion Studio"
 
 tilemap = "tilemap.csv"
-tile_size_m = 1.0
+tile_size_m = 0.333
 diffuse = "diffuse.png"
 boundary = "space"
 
