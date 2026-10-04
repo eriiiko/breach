@@ -459,6 +459,11 @@ def main():
     # Beacons turn with the SIM tick (they freeze with the sim —
     # src/level_lights.py owns the math).
     sim_time_per_tick = 1.0 / float(CFG.clock.ticks_per_second)
+    # Playback speed (#4 tuning aid, 2026-10-04): 1.0 real time, 0.25 = quarter
+    # speed. Render pacing only; refused outside (0, 4].
+    sim_speed = float(getattr(CFG.display, "sim_speed", 1.0))
+    if not (0.0 < sim_speed <= 4.0):
+        raise SystemExit(f"[display] sim_speed must be in (0, 4], got {sim_speed}")
     ticks_per_round = int(CFG.clock.ticks_per_round)
 
     # ray-engine-v2 P6b: THE ONE ASSEMBLY (renderer/frame_lights.py). Every
@@ -586,7 +591,10 @@ def main():
             # ----- Tick the simulation while not paused -----
             stepped = False
             if not sim.is_paused():
-                tick_accum += dt
+                # [display] sim_speed: wall-clock pacing ONLY (slow motion for
+                # tuning) -- every tick is the same tick, so the sim and its
+                # determinism are untouched.
+                tick_accum += dt * sim_speed
                 # Cap the per-frame catch-up to avoid spirals if a
                 # background pause stalls the loop.
                 max_catch_up = 5
