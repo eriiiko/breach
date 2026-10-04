@@ -11,6 +11,8 @@ strategy. Every rule below serves that.
 ## Where things live
 
 - **Rules** (invariants + canonical systems): this file. Keep it lean.
+- **Procedures**: project skills in `.claude/skills/` (tracked in this repo),
+  provisional until proven — see Working style.
 - **Tasks & ordering**: GitHub issues at `eriiiko/breach`. The pinned
   **Roadmap issue (#46)** holds the arc sequencing — work top-down unless
   Erik reorders. (`docs/TODO.md` + `docs/priority_ledger.md` are retired →
@@ -170,3 +172,16 @@ One line per system built for reuse. Long form + entry points:
   remote); never touch Erik's parked branches (check the Roadmap issue).
 - Commit design docs to the branch BEFORE spawning worktree agents that
   depend on them — agents can't see your uncommitted working tree.
+- **Project skills are refined by the runs that use them** (Erik, 2026-10-04;
+  this repo only — breach is where workflows are still being explored). A
+  skill in `.claude/skills/` records how the last good run went, not how every
+  run must go:
+  - every run that used a skill amends it in its own branch before merging —
+    what was skipped, what failed, what was learned, a cost that moved; one
+    dated line is enough;
+  - a step is a MUST only with its incident written beside it, and is demoted
+    the same way when the incident no longer applies;
+  - any other step may be done differently when the brief or the report says
+    which step and why; if the other route was better, it replaces the step;
+  - a skill is marked PROVISIONAL until three runs in a row needed no
+    amendment.

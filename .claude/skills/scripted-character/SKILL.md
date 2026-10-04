@@ -174,7 +174,9 @@ What made the briefs work:
 ## Keeping this skill honest
 
 This procedure is young. Modelling and animation are still being explored, and a skill that is
-followed to the letter while it is wrong costs more than no skill.
+followed to the letter while it is wrong costs more than no skill. The rule below holds for
+every project skill in this repo (project CLAUDE.md, Working style); it is repeated here so the
+skill carries its own upkeep.
 
 - **After every character, the orchestrator amends this file in the character's own branch**,
   before the merge: a step that was skipped or done differently and worked, a step that failed,
