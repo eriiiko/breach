@@ -22,7 +22,8 @@ def hand(prefix, wrist, L, B, mat, coll, scale=1.0, curl=1.0, mirrored=True, gir
     `L` is the unit vector down the fingers, `B` out of the back of the hand. Returns
     `(palm, hp)`: the palm loft (phi = 0 thumb side, 90 deg the back of the hand, t from
     the wrist down) and `hp(l, w, b)`, a point in the hand's frame, for the caller's plates.
-    `girth` scales the finger radii and `palm_girth` the palm's thickness: a bare hand is
+    `girth` scales the finger radii, `palm_girth` the palm's thickness and `palm` replaces the palm
+    section table (bare hands: a narrower wrist); a bare hand is
     about 0.8 / 0.85 of the gloved default (1.0 / 1.0 is the original gloved hand)."""
     L, B = unit(L), unit(B)
     W = np.cross(L, B)  # towards the thumb
