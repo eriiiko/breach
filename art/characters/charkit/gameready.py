@@ -740,8 +740,26 @@ def _value(t, sock):
     return sock.links[0].from_socket if sock.is_linked else sock.default_value
 
 
-def gloss_signal(t, bsdf):
-    """A float socket carrying the gloss of a Principled BSDF (see GLOSS_ROUGH_*)."""
+def gloss_signal(t, bsdf, mat=None):
+    """A float socket (or a constant) carrying the gloss of a Principled BSDF (see GLOSS_ROUGH_*).
+    A material may state its game gloss itself, as custom properties on the material: `game_gloss`
+    (the gloss outright, 0..1) or `game_gloss_scale` (times the roughness mapping) -- for a surface
+    whose roughness says sheen where the game wants none (skin, hair: their roughness is the
+    marine armour's). Without either, the roughness mapping alone."""
+    if mat is not None and "game_gloss" in mat:
+        return float(mat["game_gloss"])
+    scale = float(mat["game_gloss_scale"]) if mat is not None and "game_gloss_scale" in mat else None
+    out = _gloss_from_roughness(t, bsdf)
+    if scale is None:
+        return out
+    mul = t.nodes.new("ShaderNodeMath")
+    mul.operation = "MULTIPLY"
+    t.links.new(out, mul.inputs[0])
+    mul.inputs[1].default_value = scale
+    return mul.outputs[0]
+
+
+def _gloss_from_roughness(t, bsdf):
 
     def g(rough):
         mr = t.nodes.new("ShaderNodeMapRange")
@@ -792,7 +810,11 @@ class EmissionSwap:
             if white:
                 em.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)
             elif gloss:
-                t.links.new(gloss_signal(t, bsdf), em.inputs["Color"])
+                g = gloss_signal(t, bsdf, m)
+                if isinstance(g, float):
+                    em.inputs["Color"].default_value = (g, g, g, 1.0)
+                else:
+                    t.links.new(g, em.inputs["Color"])
             elif bc.is_linked:
                 t.links.new(bc.links[0].from_socket, em.inputs["Color"])
             else:
