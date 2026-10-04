@@ -114,12 +114,115 @@ Known weaknesses of the game mesh:
   0.6, no metal, no coat).
 - Texture use is 41 %: the charts are irregular; texel density varies about +/-20 % (5th-95th pct).
 - The exporter drops one of the 10,000 triangles (raylib counts 9,999) -- presumably a degenerate one.
-- No rig, no skin weights, no LODs; the game's marine shader has not been tried on it.
+- No LODs; the game's marine shader has not been tried on it. (Rig and weights: see Rig.)
+
+## Rig
+
+2026-10-04, tracker #33 P2. The game asset `assets/models/space_marine/space_marine.glb` (tracked,
+5.55 MB, licence beside it) is the game skin bound to the game's existing skeleton (Quaternius
+Universal Animation Library, 53 bones, CC0) with all 46 of its clips. It is stage 7 of the same command:
+
+    cd art/characters/space_marine_claude
+    "C:/Program Files/Blender Foundation/Blender 4.5/blender.exe" -b --factory-startup -P scripts/game.py
+        # everything, scripts -> asset: about 2 min (86 s skin + 36 s rig)
+    "C:/Program Files/Blender Foundation/Blender 4.5/blender.exe" -b --factory-startup -P scripts/game.py -- --rig-only
+        # the rig alone, from the saved game/space_marine_game.blend: about 40 s
+
+Code: `../charkit/rig.py` (generic to the skeleton); the character's own part is
+`scripts/rig_spec.py` -- its joints, its hard-gear table, its toe-out and its arm abduction. Also
+written: `game/space_marine_rigged.blend` (gitignored), the `rig` block of `game/stats.json`,
+`previews/rig_poses.png` (Blender) and `previews/rig_poses_raylib.png` (raylib).
+
+Method. The skeleton rests in a T-pose; the marine is modelled arms-down. The skin is not bent to
+the T-pose; the marine gets its own rest pose and the clips are converted to it.
+
+1. Joints, from `marine.py`'s numbers: pelvis on the torso axis at 0.94 m; hip joints on the thigh's
+   loft centre line extended to 0.95 m (above the crotch gusset); knees at the knee-pad centre
+   (0.565 m); ankles on the boot shaft's axis at the ankle disc (0.115 m); ball and toe tip on the
+   foot loft; shoulders at the pauldron ellipsoid's centre; elbows at the sleeve's elbow ring; wrists
+   at `WRIST`; the middle knuckle from the glove frame; neck base at the yoke's bottom, head pivot
+   inside the neck ring (1.65 m), head top at the helmet dome. The three spine joints are spread
+   between pelvis and neck base in the source's proportions.
+2. Driver rig D: the source rig re-proportioned -- every bone keeps its rest direction and roll;
+   lengths and offsets come from the joints (fingers and clavicles scale with their parent). D still
+   rests in the T-pose, so the source clips play on it unchanged, except the `root` and `DEF-hips`
+   locations, scaled by the leg-length ratio (1.024), and the `root` raised by a stance lift (below).
+3. Fit pose: D posed by pure rotations, each bone the shortest arc from its parent-carried direction
+   to its joint. Joints miss by 0.0002 mm. The feet are the exception: they are fitted FLAT, turned
+   only by the boots' 13 deg toe-out, so a boot modelled flat on the floor stays flat wherever a clip
+   puts the source's flat foot (shortest arcs left the splayed legs' tilt in the boots: with it and
+   without the stance lift the feet stood 5 cm under the floor in Idle).
+4. Target rig T = D's fit-pose matrices made the rest pose: the same 53 names and hierarchy.
+5. Clips: every source clip is played on D and baked onto T, every integer frame (the clips are 24 fps
+   keys on integer frames), so that every T bone's armature-space matrix equals D's: T's local key =
+   `restT^-1 . restT(parent) . D(parent)^-1 . D` (linear keys, quaternion signs made continuous).
+   Names and frame ranges are kept.
+6. Weights: bone heat at T's rest (the `root` bone, lying on the floor behind the heels, excluded),
+   then rigid gear: every skin vertex is labelled with the nearest part of the rebuilt high-res source
+   and `rig_spec.GEAR` maps parts to bones; at most 4 influences, normalised (401 vertices had more).
+7. Export: Y-up, armature and mesh at identity, one skin, the 46 clips as separate glTF animations
+   under their own names, albedo + normal map embedded. The skin is moved back by P1's export offset
+   (1.0 / 2.0 cm in x / y) so the skeleton's mid-plane is x = 0: the rigged model's origin is the
+   character's own, not the feet's mean. The static P1 export is unchanged.
+
+Stance lift: D's legs hang straight in the source's rest; the marine stands splayed, so the same leg
+lengths reach 20.1 mm lower when straight. The clips' root rises by that much.
+
+Arm abduction: 12 deg (`rig_spec.ABDUCTION_DEG`), added to the upper arms in every clip. Measured on
+the rig: the marine is modelled with its upper arms 27 deg out from vertical; the clips hold them at
+14-23 deg in Idle and down to 8 deg in Walk, pushing the sleeves into the torso and the pouches.
+
+Gear (vertices rigid to one bone; decided by looking at Idle, Walk, Pistol, Death, Crouch and a
+sword swing): helmet and visor -> head (259); pack, chest plate and the collar (yoke and neck
+ring) -> spine.003 (771); belt and pouches -> hips (259); thigh cargo pockets -> that thigh (72/68);
+knee pads, boot shaft, ankle strap and heel plate -> shin (98/108); the rest of the boot -> foot
+(255/268, so the toe never bends); elbow pads and glove cuffs -> forearm (111/113); gloves -> hand
+(106/107; the finger bones carry nothing); the rubber neck seal -> neck (20; the seam between helmet
+and collar then opens over two joints instead of one); pauldrons -> a constant 50/50 blend of upper
+arm and clavicle (41/41: they ride half the arm's swing; fully on the arm, the collar seam above
+them tore). Bone heat keeps the suit cloth and the pack hoses. Every vertex got a label (nearest part
+within 5 cm); the heat solve left none empty.
+
+Measured (`game/stats.json` -> `rig`):
+
+- Conversion exactness, max over all frames and all 53 bones of the distance between D's and T's
+  bone heads or tails: Idle_Loop 0.0011 mm, Walk_Loop 0.0033 mm, Pistol_Shoot 0.0014 mm, Death01
+  0.0061 mm (the worst of all 46 clips); rotations agree to float precision.
+- raylib 5.5 on the exported file: model boneCount 53, `meshes[0].boneCount` 53, 46 clips, clip names
+  equal to the mannequin file's, every clip's `frameCount` equal to the mannequin's (e.g. Idle 148,
+  Walk 79, Pistol_Shoot 37, Death01 140), one mesh on material index 1 with the 1024 px albedo,
+  7,029 vertices, 9,999 triangles, bind-pose height 1.885 m. Posed with `update_model_animation` it
+  matches Blender's pose to the millimetre (lowest point and height per test pose) and faces the same
+  way as the mannequin at yaw 0 (`previews/rig_poses_raylib.png`: marine above, mannequin below, same
+  cameras).
+- Lowest skin point: Idle -4 mm, Pistol_Shoot -4 mm; Walk at heel strike -39 / -36 mm (the
+  mannequin: -5 mm); Death01's last frame -175 mm (lying on its back: the pack, which the mannequin
+  does not have, sinks into the floor).
+
+`previews/rig_poses.png` (Blender Workbench) and `previews/rig_poses_raylib.png`: left to right
+Idle_Loop frame 0, Walk_Loop frames 0 and 16 (opposite phases), Pistol_Shoot frame 5, Death01 last
+frame; three-quarter view above, straight down (the game's view) below.
+
+Known weaknesses of the rig:
+
+- Stretched texels where the pose departs far from the modelled one: lifting the arms overhead
+  (Death01) opens the armpit, whose baked occlusion is black, into a dark smear; tilting the head far
+  back (Death01) stretches the visor's lower edge, welded to the neck ring in the skin, into black
+  streaks; deep knee bends (Crouch) stretch the dark knee hollow. Linear blend skinning on a skin made
+  arms-down; not visible from above in Idle/Walk.
+- Walk's heel strike puts the boot heel up to 39 mm into the floor: the marine's boot reaches 11 cm
+  behind the ankle, further than the mannequin's foot. The clips' feet are not re-planted.
+- The fingers do not move: the gloves are rigid to the hand. Pistol and other grips show a fist.
+- The arm abduction is one global angle for every clip; arms the clips already hold out (pistol
+  aim) are pushed 12 deg further out.
+- The flat-foot fit drops the marine's own leg splay in the clips: their legs keep the mannequin's
+  stance, not the marine's.
+- Not tried in the game itself (no engine code touched): the renderer still loads the mannequin, and
+  binds its own placeholder normal map into material 1 regardless of what the model carries.
 
 ## Not done, and known weaknesses (of the source model)
 
-- No rig, no skin weights, no engine test. (UVs, texture bake and a static glTF export: see Game mesh.) The
-  Quaternius 53-bone skeleton (`assets/models/marine/`) is untouched and nothing is bound to it.
+- The source model itself has no rig. (UVs, bake and export: see Game mesh; the rigged game asset: see Rig.)
 - This is a high-resolution source, not a game mesh: a 4 mm grid on the suit. A game asset needs
   retopology or decimation and a normal-map bake of the folds and plate edges.
 - Parts overlap rather than weld (except the trousers); loft ends are open where a neighbour
