@@ -45,11 +45,18 @@ class ShotFiredEvent:
     ``hit_target_id`` is the ID of the unit hit (or ``None`` for a miss /
     wall-stop). Useful for the renderer to attach a hit spark at the
     target end vs. just fading the tracer.
+
+    ``launch`` is True on the segment a round LEAVES THE BARREL on (its first
+    advance); a slow marching round (plasma bolt, 40 mm) emits one event per
+    tick it flies, and only the first is a shot at the muzzle. The renderer's
+    muzzle flash (#33) keys on it. Render-only, like the whole event -- not in
+    the synced event digest.
     """
     unit_id: int                    # the shooter's unit id
     from_tile: tuple                # (fx, fy) — bullet origin
     to_tile: tuple                  # (fx, fy) — where the bullet ended up
     hit_target_id: Optional[int] = None
+    launch: bool = True             # this segment starts at the muzzle
 
 
 @dataclass

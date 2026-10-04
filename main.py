@@ -529,9 +529,11 @@ def main():
             cursor = frame_lights.cursor_lamp_spec(renderer.mouse_to_tile_float())
             if cursor is not None:
                 extra.append(cursor)
-        # W6 transient emitters: flame/miasma jets + plasma bolts, from the
-        # renderer's own live effect queue — render-side only.
-        extra += frame_lights.transient_specs(renderer.transient_light_specs())
+        # W6 transient emitters: flame/miasma jets + plasma bolts + (#33) the
+        # bullets' muzzle flashes, from the renderer's own live effect queue —
+        # render-side only.
+        extra += frame_lights.transient_specs(
+            renderer.transient_light_specs(_footprint_of))
         return frame_lights.frame_light_specs(
             lights_in, total_tick=total, sim_time_per_tick=sim_time_per_tick,
             extra=extra)
