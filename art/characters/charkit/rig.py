@@ -365,14 +365,21 @@ def label_skin(skin, sources):
     return best
 
 
-def gear_bone(part, x, gear):
+def gear_bone(part, x, gear, co=None):
     """The gear rule for a source part: None (keep the heat weights) or {bone: weight}. A rule's bone
-    is a name or a {name: weight} mix -- constant weights move the gear (nearly) rigidly by a blend."""
+    is a name or a {name: weight} mix -- constant weights move the gear (nearly) rigidly by a blend --
+    or a callable `f(co, side)` returning such a mix (or None) for the vertex at `co`. A mix whose
+    weights sum to less than 1 is PARTIAL: `bind` keeps that share of the heat weights (a rigid
+    part fading into the bone-heat skin round it)."""
     if part is None:
         return None
     side = "L" if x > 0 else "R"
     for prefix, bone in gear:
         if part.startswith(prefix):
+            if callable(bone):
+                mix = bone(co if co is not None else (x, 0.0, 0.0), side) or {}
+                mix = {b.format(s=side): w for b, w in mix.items() if w > 0.0}
+                return mix or None
             if not bone:
                 return None
             mix = bone if isinstance(bone, dict) else {bone: 1.0}
@@ -402,12 +409,20 @@ def bind(skin, T, labels, gear):
     heat_empty = int((W.sum(1) <= 1e-6).sum())
     rigid = {}
     for v in me.vertices:
-        mix = gear_bone(labels[v.index][0], v.co.x, gear)
+        mix = gear_bone(labels[v.index][0], v.co.x, gear, v.co)
         if mix:
-            W[v.index] = 0.0
-            for b, w in mix.items():
-                W[v.index, idx[b]] = w
-            key = "+".join(sorted(mix))
+            share = sum(mix.values())
+            if share >= 1.0 - 1e-9:
+                W[v.index] = 0.0
+                for b, w in mix.items():
+                    W[v.index, idx[b]] = w
+                key = "+".join(sorted(mix))
+            else:  # partial: the heat weights keep the rest
+                h = W[v.index].sum()
+                W[v.index] *= (1.0 - share) / h if h > 1e-9 else 0.0
+                for b, w in mix.items():
+                    W[v.index, idx[b]] += w
+                key = "+".join(sorted(mix)) + " (partial)"
             rigid[key] = rigid.get(key, 0) + 1
     # a vertex the heat solve left empty takes its nearest bone segment
     empty = np.flatnonzero(W.sum(1) <= 1e-6)
@@ -439,6 +454,92 @@ def _seg_dist(p, a, b):
     return (a + ab * t - p).length
 
 
+# ------------------------------------------------------------------ floor clamp
+CLAMP_STEP_DEG, CLAMP_MAX_DEG = 0.5, 45.0
+
+
+def _pitch_search(pts_local, P, pivot, axis):
+    """Smallest rotation (rad) about `axis` through `pivot` lifting every point (bone-local, posed by
+    P) to z >= 0; if none reaches it, the one with the least penetration. Returns (angle, min z after)."""
+    W = np.array([(P @ Vector(p))[:] for p in pts_local])
+    z0 = W[:, 2].min()
+    if z0 >= 0.0:
+        return 0.0, z0
+    rel = W - np.array(pivot[:])
+    a = np.array(axis[:])
+    best = (z0, 0.0)
+    steps = np.arange(CLAMP_STEP_DEG, CLAMP_MAX_DEG + 1e-9, CLAMP_STEP_DEG)
+    for deg in steps:
+        for th in (math.radians(deg), -math.radians(deg)):
+            c, s = math.cos(th), math.sin(th)
+            # Rodrigues, z component only
+            z = pivot[2] + rel[:, 2] * c + np.cross(a, rel)[:, 2] * s + a[2] * (rel @ a) * (1 - c)
+            m = z.min()
+            if m >= 0.0:
+                return th, m
+            if m > best[0]:
+                best = (m, th)
+    return best[1], best[0]
+
+
+def floor_clamp(T, skin, clips, frames_by_clip):
+    """Keep the boots out of the floor: per clip frame, the foot bone is pitched about the ankle by
+    the smallest angle that lifts every vertex bound mainly to it to z >= 0 (a heel strike's heel, a
+    toe-off's ball), then the toe bone about the ball for the vertices bound to it. Only DEF-foot.* and
+    DEF-toe.* keys change. Returns per-clip stats (largest correction, worst penetration left, mm)."""
+    sc = bpy.context.scene
+    names = {g.index: g.name for g in skin.vertex_groups}
+    RT = {b.name: b.matrix_local.copy() for b in T.data.bones}
+    sets = {}
+    for s in ("L", "R"):
+        for b in ("DEF-foot." + s, "DEF-toe." + s):
+            inv = RT[b].inverted()
+            sets[b] = [(inv @ v.co)[:] for v in skin.data.vertices
+                       if any(names[g.group] == b and g.weight > 0.5 for g in v.groups)]
+    out = {}
+    for clip, (act, slot) in clips.items():
+        _assign(T, act, slot)
+        frames = frames_by_clip[clip]
+        cb, _ = _channelbag(act)
+        keys = {}
+        worst_fix = worst_left = 0.0
+        for f in frames:
+            sc.frame_set(int(f))
+            for s in ("L", "R"):
+                fn, tn, sn = "DEF-foot." + s, "DEF-toe." + s, "DEF-shin." + s
+                Pf, Pt, Ps = (T.pose.bones[n].matrix.copy() for n in (fn, tn, sn))
+                th, _m = _pitch_search(sets[fn], Pf, Pf.translation, Pf.col[0].xyz.normalized())
+                R1 = Matrix.Translation(Pf.translation) @ Matrix.Rotation(th, 4, Pf.col[0].xyz.normalized()) \
+                    @ Matrix.Translation(-Pf.translation)
+                Pf2, Pt2 = R1 @ Pf, R1 @ Pt
+                th2, m2 = _pitch_search(sets[tn], Pt2, Pt2.translation, Pt2.col[0].xyz.normalized())
+                R2 = Matrix.Translation(Pt2.translation) @ Matrix.Rotation(th2, 4, Pt2.col[0].xyz.normalized()) \
+                    @ Matrix.Translation(-Pt2.translation)
+                Pt2 = R2 @ Pt2
+                m1 = min((Pf2 @ Vector(p)).z for p in sets[fn]) if sets[fn] else 0.0
+                worst_fix = max(worst_fix, abs(math.degrees(th)), abs(math.degrees(th2)))
+                worst_left = min(worst_left, m1, m2)
+                keys.setdefault(fn, []).append(RT[fn].inverted() @ RT[sn] @ Ps.inverted() @ Pf2)
+                keys.setdefault(tn, []).append(RT[tn].inverted() @ RT[fn] @ Pf2.inverted() @ Pt2)
+        for n, mats in keys.items():
+            q_prev, Q = None, []
+            for M in mats:
+                q = M.to_quaternion()
+                if q_prev is not None and q.dot(q_prev) < 0:
+                    q.negate()
+                Q.append(q[:])
+                q_prev = q
+            Q = np.array(Q)
+            for i in range(4):
+                _set_curve(cb, 'pose.bones["%s"].rotation_quaternion' % n, i, frames, Q[:, i], n)
+            L = np.array([M.to_translation()[:] for M in mats])
+            for i in range(3):
+                _set_curve(cb, 'pose.bones["%s"].location' % n, i, frames, L[:, i], n)
+        out[clip] = dict(max_correction_deg=round(worst_fix, 1), penetration_left_mm=round(worst_left * 1e3, 1))
+    _clear_anim(T)
+    return out
+
+
 # --------------------------------------------------------------------- previews
 def _camera(name, loc, target, ortho=None, lens=50):
     cd = bpy.data.cameras.new(name)
@@ -466,7 +567,7 @@ def _floor():
     return ob
 
 
-def render_poses(T, skin, clips, out_png, tmp_dir, px=(420, 560)):
+def render_poses(T, skin, clips, out_png, tmp_dir, px=(420, 560), poses=TEST_POSES):
     """3/4 view (top row) and straight down (bottom row) per test pose; returns per-pose stats."""
     sc = bpy.context.scene
     sc.render.engine = "BLENDER_WORKBENCH"
@@ -481,7 +582,7 @@ def render_poses(T, skin, clips, out_png, tmp_dir, px=(420, 560)):
     sc.render.image_settings.file_format = "PNG"
     floor = _floor()
     tiles, info = [], []
-    for clip, frame in TEST_POSES:
+    for clip, frame in poses:
         act, slot = clips[clip]
         _assign(T, act, slot)
         f = int(act.frame_end) if frame < 0 else frame
@@ -538,10 +639,11 @@ def _offset(skin, game, name):
         return Vector(json.load(f)["export"]["offset_m"])
 
 
-def run(args, root, name, build, make_materials, spec, out_glb):
+def run(args, root, name, build, make_materials, spec, out_glb, previews_dir=None):
     t0 = time.time()
     timing = {}
-    game, prev = os.path.join(root, "game"), os.path.join(root, "previews")
+    game, prev = os.path.join(root, "game"), previews_dir or os.path.join(root, "previews")
+    os.makedirs(prev, exist_ok=True)
     bpy.ops.wm.open_mainfile(filepath=os.path.join(game, name + "_game.blend"))
     sc = bpy.context.scene
     sc.render.fps, sc.render.fps_base = 24, 1.0
@@ -605,6 +707,12 @@ def run(args, root, name, build, make_materials, spec, out_glb):
     wstats["unlabelled_vertices"] = unlabelled
     timing["bind_s"] = round(time.time() - t, 1)
     print("rig: weights", json.dumps(wstats), flush=True)
+    clamp = None
+    if getattr(spec, "FLOOR_CLAMP", False):  # opt-in: the boots kept out of the floor
+        t = time.time()
+        clamp = floor_clamp(T, skin, clips, {n: v[2] for n, v in d_clips.items()})
+        timing["floor_clamp_s"] = round(time.time() - t, 1)
+        print("rig: floor clamp", json.dumps(clamp), flush=True)
 
     t = time.time()
     poses = []
@@ -613,7 +721,8 @@ def run(args, root, name, build, make_materials, spec, out_glb):
         if tex:
             m.node_tree.nodes.active = tex[0]
     if not args.no_previews:
-        poses = render_poses(T, skin, clips, os.path.join(prev, "rig_poses.png"), prev)
+        poses = render_poses(T, skin, clips, os.path.join(prev, "rig_poses.png"), prev,
+                             poses=getattr(spec, "TEST_POSES", TEST_POSES))
         print("rig: poses", json.dumps(poses), flush=True)
     timing["previews_s"] = round(time.time() - t, 1)
 
@@ -663,7 +772,10 @@ def run(args, root, name, build, make_materials, spec, out_glb):
                                                 idle=ex_mm.get("Idle_Loop"), walk=ex_mm.get("Walk_Loop"),
                                                 death=ex_mm.get("Death01"), pistol_shoot=ex_mm.get("Pistol_Shoot")),
         clip_exactness_max_angle_rad=float("%.3g" % max(v[1] for v in exact.values())),
-        weights=wstats, test_poses=poses, offset_removed_m=[round(x, 4) for x in off],
+        weights=wstats, test_poses=poses,
+        **(dict(floor_clamp=dict(max_correction_deg=max(v["max_correction_deg"] for v in clamp.values()),
+                                 worst_penetration_left_mm=min(v["penetration_left_mm"] for v in clamp.values()),
+                                 per_clip=clamp)) if clamp else {}), offset_removed_m=[round(x, 4) for x in off],
         export=dict(file=os.path.relpath(out_glb, REPO).replace("\\", "/"), bytes=os.path.getsize(out_glb), **gl),
         timing_s=timing)
     with open(stats_path, "w") as f:

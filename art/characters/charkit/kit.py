@@ -155,6 +155,37 @@ class Loft:
         return P + (off.ravel()[:, None] if off.ndim else off) * N, N
 
 
+def loft_sdf(loft, P, m=600, chunk=3000):
+    """Approximate signed distance (m, negative inside) from points `P` (n, 3) to a loft's
+    surface, measured radially in the section plane that contains each point. Points
+    beyond either end of the loft count as outside (+1). Good near a tube-like loft whose
+    centre line does not fold back on itself (a sleeve, a leg)."""
+    P = np.asarray(P, float).reshape(-1, 3)
+    ts = np.linspace(0.0, loft.L, m)
+    C, T, e1, e2, par = loft.frames(ts)
+    reach = 1.6 * float(par[:, :3].max())
+    out = np.ones(len(P))
+    for i in range(0, len(P), chunk):
+        D = P[i:i + chunk, None, :] - C[None]
+        f = np.einsum("nmk,mk->nm", D, T)
+        dist = np.linalg.norm(D, axis=2)
+        k = np.argmin(np.abs(f) + 2.0 * np.maximum(dist - reach, 0.0), axis=1)
+        n = np.arange(len(k))
+        fk = f[n, k]
+        q = D[n, k] - fk[:, None] * T[k]
+        x1, x2 = np.einsum("nk,nk->n", q, e1[k]), np.einsum("nk,nk->n", q, e2[k])
+        r = Loft._polar(np.arctan2(x2, x1), par[k])[0]
+        valid = np.abs(fk) < 1.5 * loft.L / m + 1e-4
+        out[i:i + chunk] = np.where(valid, np.hypot(x1, x2) - r, 1.0)
+    return out
+
+
+def smax(a, b, k):
+    """Smooth maximum (polynomial): max(a, b) with a fillet of width k where they meet."""
+    h = np.clip(0.5 + 0.5 * (b - a) / k, 0.0, 1.0)
+    return a * (1.0 - h) + b * h + k * h * (1.0 - h) * 0.5
+
+
 class Oval:
     """Superellipse outline drawn on a loft, in developed metric coordinates.
 
