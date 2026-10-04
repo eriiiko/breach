@@ -78,3 +78,22 @@ def test_e2e_shot_flag_is_consumed_not_passed_to_main():
     assert shots == {5: ["C:/tmp/a.png", "b.png"]}
     assert "--shot" not in passthrough
     assert passthrough[:2] == ["--level", "x"]
+
+
+def test_level_header_can_name_a_normal_map(tmp_path):
+    """PROPERTY: level_lib's new-level header writes `normal = ...` when asked
+    and the loader resolves it, so a generated level can ship a normal map
+    through the one writer.
+
+    BREAKS IF: the key is dropped, misspelled, or the loader stops reading it.
+    """
+    import level_lib
+    toml = level_lib.write_level_header(tmp_path, name="n", tile_size_m=1.0,
+                                        normal_rel="normal.png")
+    assert 'normal = "normal.png"' in toml.read_text(encoding="utf-8")
+    (tmp_path / "p").mkdir()
+    plain = level_lib.write_level_header(tmp_path / "p", name="p",
+                                         tile_size_m=1.0)
+    assert "normal" not in plain.read_text(encoding="utf-8")
+    still = level_loader.load("smoke_light_studio", levels_dir=LEVELS)
+    assert still.normal_path is not None and Path(still.normal_path).exists()

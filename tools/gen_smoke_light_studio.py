@@ -38,6 +38,8 @@ for _p in (ROOT, ROOT / "src", ROOT / "tools"):
 
 import level_lib  # noqa: E402
 import gen_explosion_studio as studio  # noqa: E402
+import numpy as np  # noqa: E402
+from PIL import Image  # noqa: E402
 from level_loader import LightEntry  # noqa: E402
 
 LEVEL_NAME = "smoke_light_studio"
@@ -70,13 +72,22 @@ COOL = (0.80, 0.88, 1.0)        # a cool white, to read the smoke's hue against
 #     through the SE cloud (cool): one warm, one cool beam through similar
 #     smoke, so the smoke's own hue reads against both;
 #   * spot in the NE room aimed west THROUGH the NE doorway onto the plume that
-#     comes through it (warm): backlit smoke in a doorway.
+#     comes through it (warm): backlit smoke in a doorway;
+#   * the probe beam: white, as narrow as the sweep allows, due west from the NE
+#     room's east wall through its cloud -- where does the smoke stop it?
 LIGHTS = tuple((x, y, WARM, 1.2, "static", 0.0, 30.0) for (x, y) in studio.LAMPS) + (
     (5.5, 21.5, COOL, 1.5, "spot", 0.0, 25.0),
     (23.5, 27.5, WARM, 0.6, "static", 0.0, 30.0),
     (49.5, 5.5, WARM, 1.5, "spot", 0.395, 25.0),
     (49.5, 49.5, COOL, 1.5, "spot", 0.612, 25.0),
     (31.5, 15.5, WARM, 1.0, "spot", 0.5, 25.0),
+    # THE PROBE BEAM (Erik, 2026-10-04): from tile (50, 13) on the NE room's
+    # east wall, due west across the room and its cloud to the partition, as
+    # narrow as the sweep allows -- to see how far light gets through the smoke.
+    # 1 degree is far below one ordinate bin (22.5 degrees); due west sits on
+    # the edge between two bins, so it leaves as two ordinates 11.25 degrees
+    # either side of west, which the transport blurs into one narrow fan.
+    (50.5, 13.5, (1.0, 1.0, 1.0), 1.5, "spot", 0.5, 1.0),
 )
 
 
@@ -89,6 +100,34 @@ PALETTE = dict(studio.PALETTE)
 PALETTE[studio.MAT_AIR] = (140, 140, 140)
 AIR_ALT = (132, 132, 132)
 PALETTE[studio.MAT_HULL] = (70, 74, 84)
+
+
+def build_normal(tm) -> Image.Image:
+    """A REAL normal map for the floor: flat tiles with a shallow groove along
+    every tile seam (the diffuse's grid lines), so the lit floor shows relief
+    lit from the light's actual direction. Without one, the lighting pass
+    used to read the diffuse ITSELF as normals (an unbound sampler -- fixed in
+    renderer/lighting.py, 2026-10-04): the grid lines made relief Erik liked,
+    and the flat grey made a 55-degree tilt that lit one side of every lamp.
+    Walls and space stay flat (they are not floor). Pure numpy, deterministic;
+    encoded (n + 1) / 2 * 255, +y = increasing row (H flips it live)."""
+    px = studio.PX
+    def groove(n_px):                               # 1 on a tile, 0 in a seam
+        u = (np.arange(n_px) % px).astype(np.float64)
+        dist = np.minimum(u, px - u)                # px from the nearest seam
+        return np.where(dist < GROOVE_PX,
+                        0.5 - 0.5 * np.cos(np.pi * dist / GROOVE_PX), 1.0)
+    hgt = np.minimum(groove(studio.W * px)[None, :], groove(studio.H * px)[:, None])
+    floor = np.kron(tm == studio.MAT_AIR, np.ones((px, px), dtype=bool))
+    hgt = np.where(floor, hgt, 1.0)
+    gy, gx = np.gradient(hgt)
+    n = np.stack([-gx * GROOVE_DEPTH, -gy * GROOVE_DEPTH, np.ones_like(hgt)], -1)
+    n /= np.linalg.norm(n, axis=-1, keepdims=True)
+    return Image.fromarray(np.round((n + 1.0) * 0.5 * 255.0).astype(np.uint8))
+
+
+GROOVE_PX = 3.0       # half-width of a seam groove, diffuse px (16 per tile)
+GROOVE_DEPTH = 2.5    # slope scale: steepest groove wall ~60 degrees
 
 
 def build_lights() -> list:
@@ -110,7 +149,7 @@ HEADER_COMMENTS = (
 
 def main(out_dir: Path = DEFAULT_OUT_DIR) -> None:
     out_dir = Path(out_dir)
-    for name in ("level.toml", "tilemap.csv", "diffuse.png"):
+    for name in ("level.toml", "tilemap.csv", "diffuse.png", "normal.png"):
         p = out_dir / name
         if p.exists():
             p.unlink()
@@ -118,12 +157,13 @@ def main(out_dir: Path = DEFAULT_OUT_DIR) -> None:
 
     toml_path = level_lib.write_level_header(
         out_dir, name="Smoke-Light Studio", tile_size_m=studio.TILE_SIZE_M,
-        comment_lines=HEADER_COMMENTS)
+        normal_rel="normal.png", comment_lines=HEADER_COMMENTS)
     level_lib.write_boundary_field(toml_path, "space")
     tm = studio.build_tilemap()
     level_lib.write_tilemap_csv(out_dir, tm, csv_bak=False)
     studio.build_diffuse(tm, CHARGES, PALETTE, AIR_ALT).save(
         out_dir / "diffuse.png")
+    build_normal(tm).save(out_dir / "normal.png")
     lights = build_lights()
     charges = studio.build_charges(CHARGES, period_s=0.0)
     level_lib.write_managed_blocks(

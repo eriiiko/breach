@@ -11,6 +11,7 @@ name = "Smoke-Light Studio"
 tilemap = "tilemap.csv"
 tile_size_m = 1.0
 diffuse = "diffuse.png"
+normal = "normal.png"
 boundary = "space"
 
 [[light]]
@@ -82,6 +83,15 @@ intensity = 1.0
 range = 16.0
 kind = "spot"
 beam_deg = 25.0
+phase = 0.5
+
+[[light]]
+pos = [50.5, 13.5]
+color = [255, 255, 255]
+intensity = 1.5
+range = 16.0
+kind = "spot"
+beam_deg = 1.0
 phase = 0.5
 
 [[entity]]
