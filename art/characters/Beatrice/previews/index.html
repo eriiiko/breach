@@ -21,12 +21,28 @@
 </head>
 <body>
 <main>
-  <h1>Beatrice — body, suit, hands, boots (stage 3: second correction round)</h1>
+  <h1>Beatrice — body, suit, hands, boots (stage 4: the pelvis)</h1>
   <p>Built from Python alone on the shared character kit (<code>charkit/bodysuit.py</code>, Blender 4.5, Cycles) from the tables in
      <code>scripts/beatrice.py</code>, fitted to three drawings: front, side and back. The head is a bald placeholder for the
      face-and-hair stage. Character only, no props. This round answers <code>review_stage2.md</code>: new hands, the shoulder and
      arm as one surface, a sleek ankle boot, clean teardrop inserts and a dark-grey thigh panel, the S-curve of the back, a fine zip,
-     layered knee pads, thin cuffs, seams that end on other edges. See <code>PROVENANCE.md</code>.</p>
+     layered knee pads, thin cuffs, seams that end on other edges. See <code>PROVENANCE.md</code>.
+     <b>Stage 4</b> answers <code>review_stage3.md</code> for the pelvis only (waist, hips, seat, upper thighs); everything else is
+     unchanged, and the close-ups further down are stage 3's.</p>
+
+  <h2>The pelvis (stage 4)</h2>
+  <p>The corner at the crotch came from the table: the leg rows held the outer edge upright up to the crotch row and the hand-set hip
+     rows ran it in a straight line to the waist, two straight pieces meeting in one row. From above the knee to under the waist the
+     trunk is now authored as its outlines (the front view's outer edge and the gap between the legs, the side view's front and back),
+     each a smooth curve of height, at the owner's "one step slimmer" size, the waist pinched (hip / waist 1.795, the concept's 1.794).
+     The weld at the centre line follows each section's true crossing and the V there is filleted, so no crease or stepped seam runs
+     down the front. Measured on the built mesh, the outline's worst direction change from 0.68 to 1.12 m is now 2.6 deg/cm in front
+     and behind (stage 3: 12.7 at the crotch), 3.2 / 4.4 at the side's front / back (6.6 / 7.7), 4.6 / 4.9 on the diagonals (8.6 / 8.2).</p>
+  <figure><img src="hips.jpg" alt="The pelvis in matte grey, five views"><figcaption>Pure form, matte grey, no seams, panels or arms: front, three-quarter front, side, three-quarter back, back</figcaption></figure>
+  <div class="grid">
+    <figure><img src="hips_vs_drawings.jpg" alt="The pelvis against the drawings"><figcaption>Against the drawings (orange), the concept beside the front</figcaption></figure>
+    <figure><img src="hips_before_after.jpg" alt="Outlines before and after"><figcaption>Outlines: blue stage 3, orange now</figcaption></figure>
+  </div>
 
   <h2>Hands (the reviewer's first item)</h2>
   <p>One closed surface per hand (<code>charkit/parts.py::bare_hand</code>): a palm narrow at the wrist and widest at the knuckles, a
@@ -52,7 +68,8 @@
 
   <h2>The three drawings vs the model</h2>
   <p id="scores">Silhouette overlap (IoU), default build, per height band (above the waist / waist to knee / knees down):
-     front 0.946 / 0.871 / 0.908 (whole 0.903); side 0.918 / 0.915 / 0.856; back 0.911 / 0.848 / 0.813. The waist-to-knee band is narrower than the drawings on purpose (the owner's slimmer hips). Knees down: the front and
+     front 0.946 / 0.852 / 0.908 (whole 0.895); side 0.918 / 0.897 / 0.856 (0.893); back 0.912 / 0.833 / 0.813 (0.853).
+     Above the waist and knees down unchanged from stage 3; the waist-to-knee band fell (stage 3: 0.871 / 0.915 / 0.848) with the slimmer hips. The waist-to-knee band is narrower than the drawings on purpose (the owner's slimmer hips). Knees down: the front and
      back drawings place the lower legs apart and draw a high heel; the build splits the difference and wears the low heel asked for.</p>
   <div class="grid">
     <figure><img src="sheet_vs_reference.png" alt="Front drawing above the model"><figcaption>Front: drawing above, model below</figcaption></figure>
@@ -65,10 +82,10 @@
     <figure><img src="back_overlay.png" alt="Back overlay"><figcaption>Back overlay</figcaption></figure>
   </div>
 
-  <h2>Hip shapes, side by side (stage 2, unchanged)</h2>
-  <p>Three shapes built from table values only, matte grey, front and side, waist to knee, the drawing's outline in orange. The owner
-     chose <code>default</code>.</p>
-  <figure><img src="shape_vs_concept.jpg" alt="Three hip shapes in matte grey, front and side, with the drawing outlines"><figcaption>one step slimmer · default · sheet_hips (the drawings)</figcaption></figure>
+  <h2>Hip shapes, side by side (stage 4)</h2>
+  <p>Three steps of the new pelvis built from table values only (<code>beatrice.pelvis(k)</code>: the hip and seat 7 % either side),
+     matte grey, front and side, waist to knee, the drawing's outline in orange.</p>
+  <figure><img src="shape_vs_concept.jpg" alt="Three hip shapes in matte grey, front and side, with the drawing outlines"><figcaption>one step slimmer · default (stage 4) · one step fuller</figcaption></figure>
 
   <h2>Turnaround</h2>
   <figure><img src="turnaround.png" alt="Front, side, back, three-quarter"><figcaption>Orthographic front, side, back, three-quarter</figcaption></figure>

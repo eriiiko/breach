@@ -16,13 +16,13 @@
  },
  "Suit": {
   "objects": 50,
-  "source_tris": 332240,
-  "evaluated_tris": 1219072
+  "source_tris": 331909,
+  "evaluated_tris": 1218888
  },
  "TOTAL": {
   "objects": 60,
-  "source_tris": 932760,
-  "evaluated_tris": 2322320
+  "source_tris": 932429,
+  "evaluated_tris": 2322136
  },
  "NORMALS": {
   "flipped": [
