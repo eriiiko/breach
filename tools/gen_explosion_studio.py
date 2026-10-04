@@ -2,7 +2,7 @@ r"""tools/gen_explosion_studio.py — generates levels/explosion_studio/, the
 test level for the "explosion + air" session (#31;
 docs/prep_patches_handoff_2026-09-30.md P5).
 
-A 48x48 hull at 1 m tiles inside a vacuum band (boundary "space"), cut into
+A 48x48 hull at 0.333 m tiles (16 m across) inside a vacuum band (boundary "space"), cut into
 three rooms joined by open doorways, with furniture crates (fuel) beside four
 ``timed_charge`` entities:
 
@@ -56,7 +56,12 @@ SPACE_CODE = 9
 BAND = 4                 # vacuum band outside the hull (tiles)
 HULL = 48                # hull box side (tiles), outer faces included
 W = H = HULL + 2 * BAND  # 56 x 56 grid
-TILE_SIZE_M = 1.0
+# THE REFERENCE TILE (Erik, 2026-10-04: tune everything at 0.333 m; was
+# 1.0 m). The conduction table, the radiation calibration and soot's derived
+# extinctions are built at [physics.thermal] tile_size_ref_m = 0.333 -- a 1 m
+# level runs them off-reference (T3 section 8 q9). Values judged here at 1 m
+# (k_drag2 = 0.125, the frag grenade) are to be re-judged.
+TILE_SIZE_M = 0.333
 PX = 16                  # diffuse px per tile
 
 # Hull box (inclusive outer faces) and the interior partitions.
