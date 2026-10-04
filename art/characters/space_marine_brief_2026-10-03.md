@@ -20,4 +20,15 @@ Inspect reference with view_image, build, render, inspect, revise. Save a checkp
 
 ## Systems
 
+### 2026-10-04 authorized continuation and bounded checkpoints
+
+Erik accepts the cleanup recommendation and prioritizes visual quality. Preserve the approximately 1.25-million-triangle high-detail source; no decimation, UV/game preparation or rigging in this pass. His existing Claude concept-art and game-preparation workflows are already proven and are not work to recreate. Glass/visor must be independently selectable and adjustable for gloss.
+
+Execute sequential substeps using the existing implementation agent (GPT-6 Astra / Max), one writer, parent visual review, HUMAN-TEST before merge. Commit each completed substep with a concise durable handoff. No push or merge.
+
+1. **Cleanup and glass handoff:** eliminate visible jagged garment/flex/cuff intersections in front, side, back and close views while preserving the design and existing high detail. Give visor glass a clearly named separate object/material with directly adjustable roughness and coat controls; document selection and the existing charkit gloss-bake convention (source material roughness). Keep glass distinct from its gasket/frame. Save and reopen the source, finish actual rendered gallery, measured stats and reproduction notes. The existing cloth experiment remains separate. Exit: clean source and reviewable complete package, committed.
+2. **One-sleeve quality experiment:** at most two honest candidates against the completed cleanup baseline. Evaluate natural localized folds, silhouette and contact quality using equal camera/lighting. Save the comparison and keep/reject verdict. Only a demonstrably better candidate warrants bounded application to matching garments; otherwise preserve the completed baseline. No open-ended whole-character refinement loop.
+
+Existing `scripted-character` skill read from the main checkout. This continuation deliberately retains its older standalone generator instead of migrating it to charkit: it predates that kit and the authorized work is visual cleanup of an existing source. The game-ready stage is explicitly deferred to Erik's existing workflow. Preserve all-angle review despite the skill's present top-down emphasis. Record this exception and results in the handoff; update the project skill in this branch before any eventual merge. No new runtime or parallel game-export system.
+
 Use the existing asset worktree and offline authoring conventions. The unchanged Quaternius humanoid in `assets/models/marine/AnimationLibrary_Godot_Standard.gltf` remains a later skeleton compatibility target; its 53-bone hierarchy/rest report is already in `art/characters/agent/source/canonical_rig_inspection.json`. Do not deform or replace that skeleton now. Runtime integration later uses `renderer/unit_model_renderer.py`, `marine_shader.py` and shared `lit3d.py`, separate from deterministic simulation and headless training. No new runtime system is introduced.
