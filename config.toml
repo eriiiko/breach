@@ -1563,15 +1563,12 @@ sun_spread_deg = 10.0
 # the honest / identity values (design §6). RENDER-ONLY, tuned by eye with Erik,
 # never gated. (docs/fire_b2_smoke_honesty_design_2026-07-21.md §3-§6.)
 [render.gas_medium]
-plume_k_scale = 31.5        # RELATIVE multiplier on the shared smoke_absorb_scale base
-                            # 2026-10-02 explosion+air session: Erik halves the
-                            # render occlusion step by step (50 -> 25 -> ...) by eye.
-                            # 2026-08-25 #6 diagnostic (docs/smoke_tau_diagnostic_2026-08-25.md):
-                            # the 300.0 hack was calibrated on the old ~0.002-peak soot
-                            # regime; real fire sessions live at rho 0.02-0.3, so 300 put
-                            # 60-100% of visible smoke past alpha 0.98 (flat black). 50
-                            # puts the black knee at the measured p90 density. TRIAL value,
-                            # Erik's eye decides; final band placement after #48's drift.
+# plume_k_scale RETIRED (#12 smoke x light, handle 2, 2026-10-04; was 31.5, Erik's
+# by-eye value from the 2026-10-02 session). The plume's opacity is now the light
+# engine's OWN extinction ([gases.smoke] light_absorb, derived; the gases door's
+# light column for every other gas) under the same Beer-Lambert law, so a tile
+# that looks black is a tile light does not cross -- one number, no render scale.
+# The look of smoke is tuned at its source (soot_yield, the blast-smoke deposit).
 tau_curve_a = 1.0           # tau' = a*tau^b — artistic remap IN tau-SPACE
 tau_curve_b = 1.0           #   (b>1 steepens edges; 1/1 = fully honest)
 glow_gain = 1.0             # re-match the beloved god-ray brightness (tune)
