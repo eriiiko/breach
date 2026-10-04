@@ -127,3 +127,52 @@ def test_every_draw_call_of_a_frame_advances_the_animation_alike():
     for clock, step in ((10.5, 0.5), (10.75, 0.25)):
         assert r._frame_dt(clock) == pytest.approx(step)   # players
         assert r._frame_dt(clock) == pytest.approx(step)   # zombies
+
+
+_SHADING_KEYS = ("rim_albedo", "gloss_strength", "gloss_shininess",
+                 "normal_map", "normal_strength", "blob_shadow")
+
+
+def test_shipped_unit_shading_has_every_setting_and_zero_means_off():
+    """PROPERTY: the shipped ``[render.unit_shading]`` holds every setting the
+    unit renderer reads each frame, and a zero / false value reaches it as
+    zero / false (gloss_strength 0 = no highlight, normal_map false = no map,
+    blob_shadow false = no disc) -- never replaced by a default.
+
+    BREAKS IF: a setting is dropped from config.toml or renamed on one side
+    only, or the reader substitutes a default for a falsy value (``x or 1.0``),
+    so "off" in the file could not switch the effect off.
+    """
+    from config import CFG, Namespace
+    from renderer.unit_looks import unit_shading
+
+    shipped = unit_shading(CFG)
+    assert {k for k in _SHADING_KEYS} <= set(vars(shipped))
+    off = {"rim_albedo": 0.0, "gloss_strength": 0.0, "gloss_shininess": 1.0,
+           "normal_map": False, "normal_strength": 0.0, "blob_shadow": False}
+    got = unit_shading(Namespace({"render": {"unit_shading": dict(off)}}))
+    assert got.gloss_strength == 0.0 and got.normal_strength == 0.0
+    assert got.normal_map is False and got.blob_shadow is False
+
+
+def test_a_missing_or_mistyped_unit_shading_setting_fails_loudly():
+    """PROPERTY: every ``[render.unit_shading]`` key is required: leaving one
+    out, or giving an on/off switch a number (or a number a string), raises a
+    ValueError naming the key.
+
+    BREAKS IF: the reader falls back to a default for an absent key (a typo
+    in config.toml would then silently draw the default) or coerces
+    ``normal_map = 0`` / ``"2.0"`` instead of refusing them.
+    """
+    from config import Namespace
+    from renderer.unit_looks import unit_shading
+
+    full = {"rim_albedo": 0.9, "gloss_strength": 2.0, "gloss_shininess": 48.0,
+            "normal_map": True, "normal_strength": 1.0, "blob_shadow": True}
+    for key in _SHADING_KEYS:
+        partial = {k: v for k, v in full.items() if k != key}
+        with pytest.raises(ValueError, match=key):
+            unit_shading(Namespace({"render": {"unit_shading": partial}}))
+    for key, bad in (("normal_map", 0), ("blob_shadow", 1), ("gloss_strength", "2.0")):
+        with pytest.raises(ValueError, match=key):
+            unit_shading(Namespace({"render": {"unit_shading": dict(full, **{key: bad})}}))

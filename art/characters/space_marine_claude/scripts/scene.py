@@ -26,8 +26,14 @@ def make_materials():
         sole=mat_plain("boot_sole", rgb(0.03, 0.03, 0.032), 0.75, bump_scale=300.0, bump=0.2),
         dark=mat_plain("dark_fitting", rgb(0.02, 0.02, 0.022), 0.45),
         metal=mat_plain("fastener_metal", rgb(0.30, 0.29, 0.27), 0.4, metallic=1.0),
-        visor=mat_visor(),
+        visor=mat_visor(facing=AMBER_FACING, edge=AMBER_EDGE),
     )
+
+
+# The visor's amber (#33), measured on the concept "Retro EVA marine with wide amber visor.png":
+# the visor's orange pixels, upper quartile (the lit middle) and lower quartile (its darker rim),
+# sRGB -> linear. Glossy as before (mat_visor's roughness): the game draws its highlight.
+AMBER_FACING, AMBER_EDGE = (0.30, 0.11, 0.024), (0.10, 0.034, 0.0086)
 
 
 # The three sheet views: (name, rig azimuth). The rig carries camera AND lights, so

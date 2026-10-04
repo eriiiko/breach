@@ -13,4 +13,5 @@ is needed. From the repo root:
     C:/Users/steen/anaconda3/python.exe -c "import sys; sys.path[:0]=['.','src']; from pathlib import Path; from renderer import marine_shader as ms; d=Path('tests/_lit3d_marine_shader_golden'); (d/'marine.vs').write_text(ms.MARINE_VS, encoding='utf-8', newline='\n'); (d/'marine.fs').write_text(ms.MARINE_FS, encoding='utf-8', newline='\n')"
 
 Re-captures: 2026-09-06 (#60 P1, the oracle); 2026-10-04 (#33, the rim takes the albedo,
-`u_rim_albedo`).
+`u_rim_albedo`); 2026-10-04 (#33, the gloss highlight: the albedo's alpha is the gloss mask,
+`u_gloss_strength` / `u_gloss_shininess`).

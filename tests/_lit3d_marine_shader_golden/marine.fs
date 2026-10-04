@@ -23,6 +23,8 @@ uniform vec3  u_view_dir;      // direction toward the eye (ortho ~ (0,1,0))
 uniform float u_rim_strength;
 uniform float u_rim_power;
 uniform float u_rim_albedo;    // #33: rim colour = mix(white, albedo, this)
+uniform float u_gloss_strength;  // #33: highlight strength (0 = no highlight)
+uniform float u_gloss_shininess; // #33: highlight exponent at gloss 1
 uniform int   u_srgb_decode;
 uniform int   u_use_normal_marine; // P2 guard: 0 = inert (N unchanged), 1 = on
 uniform float u_normal_strength;   // P2 perturbation strength (feel knob)
@@ -105,11 +107,25 @@ void main() {
     // top-down token (design v2 §Bugs).
     float ndotl = dot(N, L) * 0.5 + 0.5;
 
-    vec3 albedo = texture(texture0, fragTexCoord).rgb;
+    vec4 albedo_gloss = texture(texture0, fragTexCoord);
+    vec3 albedo = albedo_gloss.rgb;
+    float gloss = albedo_gloss.a;  // #33: the bake's gloss mask (0 matte .. 1 glossiest)
     if (u_srgb_decode == 1) albedo = srgb_to_linear(albedo);  // else double-dark
     albedo *= colDiffuse.rgb;                                  // draw colour
 
     vec3 lit = albedo * (u_ambient + incoming_rgb * u_light_gain * ndotl);
+
+    // #33 highlight (Blinn-Phong): the LOCAL light's own colour, never the
+    // ambient (a dark room puts no shine on a visor), scaled AND tightened by
+    // the texel's gloss -- a visor gets a small bright spot, a plate a broad
+    // faint sheen, cloth nothing. Faded out where the surface turns away from
+    // the light (dot(N, L) < 0) so the lobe never lights a back face.
+    vec3 H = normalize(L + u_view_dir);
+    float shininess = mix(4.0, u_gloss_shininess, gloss);
+    float spec = u_gloss_strength * gloss
+               * pow(max(dot(N, H), 0.0), shininess)
+               * clamp(dot(N, L) * 4.0, 0.0, 1.0);
+    lit += spec * incoming_rgb * u_light_gain;
 
     // Rim: Fresnel-ish silhouette term, tinted by the LOCAL light so it never
     // brightens a marine the room around it can't (dark room -> faint ambient
@@ -123,6 +139,7 @@ void main() {
     if (u_srgb_decode == 1) lit = linear_to_srgb(lit);
 
     // alpha = 1.0: the world RT is blitted premultiplied; a translucent marine
-    // would bleed the background through (design v2 §Bugs).
+    // would bleed the background through (design v2 §Bugs). The texture's
+    // alpha is the gloss mask (#33), never coverage.
     finalColor = vec4(lit, 1.0);
 }

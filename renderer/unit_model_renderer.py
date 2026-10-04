@@ -48,9 +48,10 @@ import pyray as rl
 from config import CFG
 
 from .lit3d import LightFieldCtx, make_camera
-from .marine_shader import MARINE_NORMAL_MAP_FILENAME, load_marine_shader
+from .marine_shader import (MARINE_NORMAL_MAP_FILENAME, UNIT_NORMAL_Y_SIGN,
+                            load_marine_shader)
 from .unit_looks import (ROLES, LookAssigner, all_look_names, look_path,
-                         looks_table, unit_key)
+                         looks_table, unit_key, unit_shading)
 
 # ---------------------------------------------------------------------------
 # Asset + tunables
@@ -309,6 +310,7 @@ class UnitModelRenderer:
             if ms.shader.id == 0:
                 print("[unit_model] WARN: marine shader failed to compile; "
                       "falling back to flat RGB tint")
+                self._opaque_albedos()
                 return
             for look in self._looks.values():
                 for mi in self._live_materials(look.model):
@@ -322,19 +324,64 @@ class UnitModelRenderer:
             print(f"[unit_model] WARN: marine shader setup failed: {exc}")
             self._shader = None
             self._marine_shader = None
+            self._opaque_albedos()
+
+    def _opaque_albedos(self) -> None:
+        """Without the lit shader raylib's default one draws the albedo's
+        alpha as coverage -- but since #33 that alpha is the GLOSS mask, so a
+        matte texel would be see-through. Re-upload each look's albedo without
+        its alpha channel (RGB only: sampled alpha reads 1), so the fallback
+        path draws the model opaque like the lit one."""
+        MM = rl.MaterialMapIndex
+        for look in self._looks.values():
+            for mi in self._live_materials(look.model):
+                maps = look.model.materials[mi].maps
+                old = maps[MM.MATERIAL_MAP_ALBEDO].texture
+                if old.id <= 1:          # raylib's default 1x1 white
+                    continue
+                try:
+                    img = rl.load_image_from_texture(old)
+                    rl.image_format(img, rl.PixelFormat.PIXELFORMAT_UNCOMPRESSED_R8G8B8)
+                    new = rl.load_texture_from_image(img)
+                    rl.unload_image(img)
+                    if new.id == 0:
+                        continue
+                    rl.unload_texture(old)
+                    maps[MM.MATERIAL_MAP_ALBEDO].texture = new
+                except Exception as exc:  # pragma: no cover - defensive
+                    print(f"[unit_model] WARN: {look.name}: could not drop the "
+                          f"gloss alpha for the fallback path: {exc}")
 
     def _bind_normal_map(self, look: _Look) -> None:
         """P2: bind the look's normal map into the ROUGHNESS(3) material slot —
         a FREE slot (light textures own METALNESS=1 / NORMAL=2). Static, so bind
         ONCE here; draw_units only rewrites slots 1/2 per frame and never touches
-        3. A look gains a real normal map by a marine_normal_PLACEHOLDER.png
-        next to its .glb, with NO code change. Without one a 1x1 FLAT normal is
-        bound (0.5,0.5,1 -> tangent +Z), never raylib's default WHITE (which
-        would perturb N when the guard is on), so the path stays inert.
+        3. #33: the map is the one baked into the look's own .glb (raylib's
+        glTF loader puts it in the NORMAL slot, which the light field takes
+        over every frame, so it is moved here first and owned by the look).
+        A .glb without one takes a marine_normal_PLACEHOLDER.png next to it;
+        without either a 1x1 FLAT normal is bound (0.5,0.5,1 -> tangent +Z),
+        never raylib's default WHITE (which would perturb N when the guard is
+        on), so the path stays inert.
         """
+        MM = rl.MaterialMapIndex
         path = look.path.parent / MARINE_NORMAL_MAP_FILENAME
         try:
-            if path.is_file():
+            own = None
+            for mi in self._live_materials(look.model):
+                t = look.model.materials[mi].maps[MM.MATERIAL_MAP_NORMAL].texture
+                if t.id > 1:             # 0 none, 1 raylib's default white
+                    own = t
+                    break
+            if own is not None:
+                tex = rl.Texture(own.id, own.width, own.height, own.mipmaps,
+                                 own.format)
+                # Mipmapped + trilinear: a unit is drawn a few dozen pixels
+                # tall, and a point-sampled 1024 map would sparkle in the
+                # highlight as the model moves.
+                rl.gen_texture_mipmaps(tex)
+                rl.set_texture_filter(tex, rl.TextureFilter.TEXTURE_FILTER_TRILINEAR)
+            elif path.is_file():
                 tex = rl.load_texture(str(path.resolve()))
             else:
                 fimg = rl.gen_image_color(1, 1, rl.Color(128, 128, 255, 255))
@@ -343,10 +390,10 @@ class UnitModelRenderer:
             if tex.id == 0:
                 print(f"[unit_model] WARN: {look.name} normal map failed to load")
                 return
-            # Bilinear + wrap so the tiling detail-normal reads smoothly.
-            rl.set_texture_filter(tex, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
-            rl.set_texture_wrap(tex, rl.TextureWrap.TEXTURE_WRAP_REPEAT)
-            MM = rl.MaterialMapIndex
+            if own is None:
+                # Bilinear + wrap so a tiling detail-normal reads smoothly.
+                rl.set_texture_filter(tex, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
+                rl.set_texture_wrap(tex, rl.TextureWrap.TEXTURE_WRAP_REPEAT)
             for mi in self._live_materials(look.model):
                 look.model.materials[mi].maps[
                     MM.MATERIAL_MAP_ROUGHNESS].texture = tex
@@ -456,6 +503,9 @@ class UnitModelRenderer:
         shadow_r = _SHADOW_RADIUS_FRAC * (3.0 * wpt)  # footprint side ~3 tiles
         alive = [u for u in units if getattr(u, "alive", True)]
         names = self._assigner.looks_for(alive)
+        # #33: [render.unit_shading], read live (Ctrl+R retunes it); a missing
+        # or mistyped key raises here rather than drawing a silent default.
+        shading = unit_shading(CFG)
 
         # P1: wire the ship's light field into the marine material + push the
         # per-frame scalar uniforms ONCE (SetShaderValue self-enables the
@@ -473,12 +523,15 @@ class UnitModelRenderer:
             self._marine_shader.set_frame_uniforms(
                 light_ctx.ambient, light_ctx.light_gain,
                 light_ctx.world_px_w, light_ctx.world_px_h,
-                normal_y_sign=light_ctx.normal_y_sign,
+                normal_y_sign=UNIT_NORMAL_Y_SIGN * light_ctx.normal_y_sign,
                 view_dir=(0.0, 1.0, 0.0))
-            # #33: the rim's albedo tint, read live (Ctrl+R retunes it).
-            shading = getattr(CFG.render, "unit_shading", None)
-            self._marine_shader.set_rim_albedo(
-                float(getattr(shading, "rim_albedo", 0.0)))
+            # #33: rim tint, the gloss highlight and each look's own normal
+            # map, all from [render.unit_shading].
+            ms = self._marine_shader
+            ms.set_rim_albedo(shading.rim_albedo)
+            ms.set_gloss(shading.gloss_strength, shading.gloss_shininess)
+            ms.set_use_normal(shading.normal_map)
+            ms.set_normal_strength(shading.normal_strength)
 
         if open_mode_3d:
             rl.begin_mode_3d(camera3d)
@@ -486,7 +539,8 @@ class UnitModelRenderer:
             # Phase 0 parity: dead units skipped (sprite path).
             for u, name in zip(alive, names):
                 self._draw_one(u, self._resolve[name], wpt, dt, clock, scale,
-                               shadow_r, base_tint, light_rgb_fn)
+                               shadow_r if shading.blob_shadow else 0.0,
+                               base_tint, light_rgb_fn)
         finally:
             if open_mode_3d:
                 rl.end_mode_3d()
@@ -548,9 +602,11 @@ class UnitModelRenderer:
 
         # Blob shadow first (on the floor, under the model — reads great
         # top-down, no shadow maps). A thin filled disc via a short cylinder.
-        sr, sg, sb, sa = _SHADOW_COLOR
-        rl.draw_cylinder(rl.Vector3(cx, 0.5, cy), shadow_r, shadow_r, 1.0, 16,
-                         rl.Color(sr, sg, sb, sa))
+        # shadow_r 0 = [render.unit_shading] blob_shadow off (#33).
+        if shadow_r > 0.0:
+            sr, sg, sb, sa = _SHADOW_COLOR
+            rl.draw_cylinder(rl.Vector3(cx, 0.5, cy), shadow_r, shadow_r, 1.0,
+                             16, rl.Color(sr, sg, sb, sa))
 
         # Tint: base colour (white unless a caller passes one), per-CHANNEL modulated by the local baked RGB
         # light (Patch 0 — colour + occlusion parity with the ship: a red lamp
