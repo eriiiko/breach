@@ -835,7 +835,7 @@ k_drag = 0.5                          # energy-books arc (design §2.8, NEW patc
 # Delta(|u|^2) bracket. 0.0014 was the hand-rolled stand-in for exactly
 # that constant (1/c_v_phys ~= 0.0018). physics_runner raises loudly if
 # this key comes back -- see the stale-key guard there.
-k_drag2 = 0.25                         # drag-law v2 (design docs/drag_law_v2_design_
+k_drag2 = 0.125                         # drag-law v2 (design docs/drag_law_v2_design_
                                       # 2026-08-23.md, issue #4 P1): the QUADRATIC
                                       # term of the two-term interior drag law
                                       # F = -k1*u - k2*|u|*u (k1 = k_drag above,
@@ -1495,7 +1495,7 @@ sweep_gain = 1.0           # light units -> the old march's field scale. MEASURE
                            # summed over r = 2..12 tiles): a 1.0 lamp 0.996, the
                            # 110-degree flashlight 1.05, a 1263-game crate 0.83
                            # (the old fire light was dimmed by its own cell).
-floor = [0.93, 0.93, 0.93] # the NEW path's small FLAT FLOOR (design v3 §2.7:
+floor = [0.03, 0.03, 0.03] # the NEW path's small FLAT FLOOR (design v3 §2.7:
                            # a separate dial, never a substitute for the sky).
                            # A sealed room with no lights reads exactly this.
                            # The old path's flat ambient was (0.10, 0.10, 0.13)
