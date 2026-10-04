@@ -202,8 +202,24 @@ def run(root, name, tables, sheet_ref):
     names = list(tables.BEAUTY) if args.beauty == "all" else [n for n in args.beauty.split(",") if n]
     for n in names:
         view = tables.BEAUTY[n] if n in tables.BEAUTY else tables.DEV_VIEWS[n]  # DEV_VIEWS: close-ups on request, never in `all`
-        studio.render_beauty(rig, cam, view, prefix + n, previews, args.scale)
+        if isinstance(view, dict):
+            render_aimed(cam, view, prefix + n, previews, args.scale)
+        else:
+            studio.render_beauty(rig, cam, view, prefix + n, previews, args.scale)
     print("done in %.1fs" % (time.time() - t0))
+
+
+def render_aimed(cam, view, name, out_dir, scale=1.0):
+    """A close-up aimed at any point (studio.render_beauty always aims at the centre line):
+    view = dict(cam=(x, y, z), target=(x, y, z), lens=mm, res=(w, h)); the studio's lights
+    stay where they are."""
+    cam.data.type = "PERSP"
+    cam.data.lens = view.get("lens", 85.0)
+    cam.data.clip_start, cam.data.clip_end = 0.01, 60.0
+    cam.location = view["cam"]
+    studio._look_at(cam, view["target"])
+    res = view.get("res", (900, 900))
+    studio.render(os.path.join(out_dir, name + ".jpg"), (int(res[0] * scale), int(res[1] * scale)))
 
 
 def compare(tables, sheet_ref, previews, args):

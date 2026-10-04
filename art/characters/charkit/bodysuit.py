@@ -32,6 +32,7 @@ import numpy as np
 from mathutils import Matrix
 
 import garment
+import implicit
 import kit
 import parts
 import wearmat
@@ -90,6 +91,11 @@ class Suit:
     def __init__(self, dims):
         self.d = dims
         self.F = Figure(dims)
+        sb = dims.get("sleeve_back")
+        if sb:  # the sleeve with its own depth to the back at some rows (the point of the elbow)
+            self.F.arm = Loft([dict(p=(x, y, z), a=a, bf=b, bb=sb.get(nm, b), n=2.0) for nm, x, y, z, a, b in dims["sleeve"]])
+            self.F.az = self.F.arm.t_at_z
+            self.F.t_elbow = self.F.az(dims["elbow_z"])
         self.B, self.A, self.bz, self.az = self.F.body, self.F.arm, self.F.bz, self.F.az
         self.frame = Frame(dims["trunk"])
         self.ref = Frame(dims.get("feature_frame", dims["trunk"]))
@@ -149,7 +155,220 @@ class Suit:
 
     def lift(self, P, N):
         """Everything that displaces the body's surface (for pieces laid on it)."""
-        return self.forms(P, N) + self.F.envelope(P, N)
+        return self.forms(P, N) + self.shoulder(P, N, "body")
+
+    def arm_lift(self, P, N):
+        """What displaces the sleeve's surface for pieces laid on it (the shoulder's union; 0 without one)."""
+        return self.shoulder(P, N, "arm") if self.d["garment"].get("shoulder") else np.zeros(np.asarray(P).shape[:-1])
+
+    # --- the shoulder: torso and arm as ONE surface ---------------------------------
+    # With `garment["shoulder"]` the shoulder is the SMOOTH UNION of the body loft and the sleeve
+    # loft (`union_field`), its fillet k growing from k[0] at z[0] (under the arm) to k[1] at z[1]
+    # and above (over the shoulder, where the deltoid flows into the torso). Inside the box `box`
+    # (the left shoulder, mirrored) that surface is ONE mesh of its own (`build_shoulder`); the body
+    # and sleeve lofts give way inside the box (sunk under it, then dropped), and on the box's faces
+    # the union is the plain loft, so the three meet without a step. No set-in sleeve, no armhole.
+    def union_k(self, z):
+        sh = self.d["garment"]["shoulder"]
+        (k0, k1), (z0, z1) = sh["k"], sh["z"]
+        return k0 + (k1 - k0) * np.clip((np.asarray(z) - z0) / (z1 - z0), 0.0, 1.0)
+
+    def body_sdf(self, P):
+        """Signed distance (approx., m) to the body loft, measured in each point's OWN level
+        section (the trunk's sections are level): continuous in height, so a near-level surface (the
+        top of the shoulder) comes out smooth, where `kit.loft_sdf`'s nearest-section distance steps.
+        The radial gap is scaled by the surface's slope (first order)."""
+        B = self.F.body
+        if not hasattr(self, "_tz"):
+            ts = np.linspace(0.0, B.L, 2000)
+            self._tz = (B.frames(ts)[0][:, 2], ts)
+        zs, ts = self._tz
+
+        def radial(Pp, dz=0.0):
+            t = np.interp(Pp[:, 2] + dz, zs, ts)
+            c, _, e1, e2, par = B.frames(t)
+            q = Pp - c
+            x1, x2 = np.einsum("ij,ij->i", q, e1), np.einsum("ij,ij->i", q, e2)
+            return np.hypot(x1, x2), Loft._polar(np.arctan2(x2, x1), par)[0]
+
+        rho, R = radial(P)
+        h = 0.0015
+        dR = (radial(P, h)[1] - radial(P, -h)[1]) / (2 * h)
+        return (rho - R) / np.sqrt(1.0 + dR * dR)
+
+    def union_field(self, P, parts_=False):
+        """Signed distance (approx., m) to the union of torso and arm, LEFT half (|x|)."""
+        P = np.asarray(P, float)
+        Pa = np.column_stack([np.abs(P[:, 0]), P[:, 1:]])
+        db, da = self.body_sdf(Pa), kit.loft_sdf(self.F.arm, Pa, m=500)
+        u = implicit.smin(db, da, self.union_k(Pa[:, 2]))
+        return (u, db, da) if parts_ else u
+
+    def box_depth(self, P):
+        """How far (m) a point lies inside the shoulder box (negative outside), left half."""
+        lo, hi = (np.asarray(v, float) for v in self.d["garment"]["shoulder"]["box"])
+        P = np.asarray(P, float)
+        Pa = np.concatenate([np.abs(P[..., :1]), P[..., 1:]], axis=-1)
+        return np.minimum((Pa - lo).min(axis=-1), (hi - Pa).min(axis=-1))
+
+    def shoulder(self, P, N, on="body"):
+        """Displacement along N from the body (or sleeve) loft onto the shoulder's surface, for the
+        pieces laid on it (seams, panels): the first crossing of the union outward along N. Without
+        `garment["shoulder"]` the workers' set-in sleeve (`Figure.envelope`, body side only)."""
+        sh = self.d["garment"].get("shoulder")
+        if not sh:
+            return self.F.envelope(P, N) if on == "body" else np.zeros(np.asarray(P).shape[:-1])
+        P, N = np.asarray(P, float), np.asarray(N, float)
+        shp = P.shape[:-1]
+        P, N = P.reshape(-1, 3), N.reshape(-1, 3)
+        out = np.zeros(len(P))
+        Pa = np.column_stack([np.abs(P[:, 0]), P[:, 1:]])
+        Na = np.column_stack([np.sign(P[:, 0]) * N[:, 0], N[:, 1:]])
+        sel = self.box_depth(Pa) > -0.004
+        if not sel.any():
+            return out.reshape(shp)
+        p, n = Pa[sel], Na[sel]
+        other = (lambda Q: kit.loft_sdf(self.F.arm, Q, m=500)) if on == "body" else self.body_sdf
+        k = self.union_k(p[:, 2])
+        s_max, step = sh.get("reach", 0.04), sh.get("step", 0.002)
+        ss = np.arange(0.0, s_max + 1e-9, step)
+        u = lambda s: implicit.smin(s, other(p + np.reshape(s, (-1, 1)) * n), k)
+        U = np.stack([u(np.full(len(p), s)) for s in ss])
+        pos = U > 0.0
+        found = pos.any(axis=0)
+        j = np.maximum(np.argmax(pos, axis=0), 1)
+        idx = np.arange(len(p))
+        s0, s1, u0, u1 = ss[j - 1], ss[j], U[j - 1, idx], U[j, idx]
+        for _ in range(3):  # regula falsi inside the bracket
+            sm = s0 - u0 * (s1 - s0) / np.where(u1 - u0 == 0, 1e-12, u1 - u0)
+            um = u(sm)
+            left = um <= 0.0
+            s0, u0 = np.where(left, sm, s0), np.where(left, um, u0)
+            s1, u1 = np.where(left, s1, sm), np.where(left, u1, um)
+        s = np.where(found, s0 - u0 * (s1 - s0) / np.where(u1 - u0 == 0, 1e-12, u1 - u0), 0.0)
+        out[sel] = np.clip(np.nan_to_num(s), 0.0, s_max)
+        return out.reshape(shp)
+
+    def t_join(self, phi):
+        """Where the sleeve ends and the shoulder's own mesh begins, on the sleeve loft: t at each
+        section angle (rad), from `shoulder["join"]` = (z at the outer side, z at the inner side), the
+        line running straight between them in |phi| (a V lowest on the outside: the drawing's seam
+        at the foot of the deltoid, which a piping cord covers)."""
+        z0, z1 = self.d["garment"]["shoulder"]["join"]
+        a = np.abs(kit.wrap(np.asarray(phi, float))) / math.pi
+        zz = z0 + (z1 - z0) * a
+        if not hasattr(self, "_az"):
+            ts = np.linspace(0.0, self.A.L, 1500)
+            self._az = (self.A.frames(ts)[0][:, 2], ts)
+        zs, ts = self._az
+        return np.interp(zz, zs[::-1], ts[::-1]) if zs[0] > zs[-1] else np.interp(zz, zs, ts)
+
+    def arm_coords(self, P, m=1500, chunk=2000):
+        """(phi, t, distance) of points against the sleeve loft (its nearest section, as kit.loft_sdf)."""
+        A = self.F.arm
+        P = np.asarray(P, float).reshape(-1, 3)
+        ts = np.linspace(0.0, A.L, m)
+        C, T, e1, e2, par = A.frames(ts)
+        reach = 1.6 * float(par[:, :3].max())
+        ph, tt, dd = (np.empty(len(P)) for _ in range(3))
+        for i in range(0, len(P), chunk):
+            D = P[i:i + chunk, None, :] - C[None]
+            f = np.einsum("nmk,mk->nm", D, T)
+            k = np.argmin(np.abs(f) + 2.0 * np.maximum(np.linalg.norm(D, axis=2) - reach, 0.0), axis=1)
+            n = np.arange(len(k))
+            q = D[n, k] - f[n, k][:, None] * T[k]
+            x1, x2 = np.einsum("nk,nk->n", q, e1[k]), np.einsum("nk,nk->n", q, e2[k])
+            ph[i:i + chunk] = np.arctan2(x2, x1)
+            tt[i:i + chunk] = ts[k] + f[n, k]
+            dd[i:i + chunk] = np.hypot(x1, x2) - Loft._polar(ph[i:i + chunk], par[k])[0]
+        return ph, tt, dd
+
+    def edge_lift(self, P, N):
+        """The body loft's own lift onto the union, near the shoulder box's faces only (where it meets
+        the shoulder's mesh, so the two agree there); a lift beyond `edge_max` is a point buried in the
+        arm, left alone (it is inside the box, under the shoulder's mesh)."""
+        sh = self.d["garment"]["shoulder"]
+        h = sh["res"][0 if kit.RES < 0.006 else 1]
+        P = np.asarray(P, float)
+        dep = self.box_depth(P)
+        near = (dep > -0.006) & (dep < 5.0 * h)
+        out = np.zeros(P.shape[:-1])
+        if near.any():
+            s = self.shoulder(P[near], np.asarray(N, float)[near], "body")
+            out[near] = np.where(s > sh.get("edge_max", 0.008), 0.0, s)
+        return out
+
+    def give_way(self, P):
+        """For a loft mesh near the shoulder box: (sink along -N (m), drop mask). It sinks under the
+        shoulder's own mesh from `h` inside the box and is dropped deeper in."""
+        sh = self.d["garment"]["shoulder"]
+        h = sh["res"][0 if kit.RES < 0.006 else 1]
+        dep = self.box_depth(P)
+        # the shoulder's mesh is itself a hair UNDER the surface near the box's faces (build_shoulder), so its
+        # edge hides under the loft; the loft sinks under it farther in: they cross once, never coincide
+        return sh.get("sink", 0.0008) * np.clip((dep - 1.5 * h) / (1.5 * h), 0.0, 1.0), dep > 4.0 * h
+
+
+def sleeve_to_join(S, mat, coll="Suit"):
+    """The sleeve from the wrist up to the shoulder's join line (Suit.t_join), its top edge exactly
+    on that line: a grid whose rows stretch per column, t = u * t_join(phi)."""
+    A, res = S.A, kit.RES * 0.85
+    probe_t = np.repeat(np.linspace(0.0, A.L, 9), 12)
+    nc = int(round(2 * math.pi * float(A.radius(np.tile(np.linspace(0, 2 * math.pi, 12), 9), probe_t).max()) / res))
+    nc = max(8, nc + (-nc) % 4)
+    cols = np.linspace(0.0, 2 * math.pi, nc, endpoint=False)
+    tmax = S.t_join(cols)
+    u = np.linspace(0.0, 1.0, int(round(tmax.max() / res)) + 1)
+    PH, TT = np.meshgrid(cols, u)
+    TT = TT * tmax[None, :]
+    P, _ = A.pn(PH.ravel(), TT.ravel())
+    R, C = PH.shape
+    idx = np.arange(R * C).reshape(R, C)
+    nxt = np.roll(idx, -1, axis=1)
+    faces = np.stack([idx[:-1], idx[1:], nxt[1:], nxt[:-1]], axis=-1).reshape(-1, 4)
+    return kit.new_mesh("Suit_Sleeve", P, faces, None, mat, coll)
+
+
+def build_shoulder(S, mat, coll="Suit"):
+    """The shoulder as ONE surface (see Suit.union_field): the smooth union of torso and arm meshed
+    inside the shoulder box (implicit.surface_nets, every vertex projected onto the surface), the
+    body's broad forms laid on where the torso rules, given the suit's thickness, mirrored."""
+    sh = S.d["garment"]["shoulder"]
+    h = sh["res"][0 if kit.RES < 0.006 else 1]
+    lo, hi = (np.asarray(v, float) for v in sh["box"])
+    V, Q = implicit.mesh_field(S.union_field, lo, hi, h, border=False)
+    # the sampled distances leave a fine ripple that a glossy suit shows: smooth it away (the open
+    # edge on the box stays where the lofts meet it)
+    V = implicit.taubin(V, Q, iters=sh.get("smooth", 12), fixed=implicit.boundary_mask(Q, len(V)))
+    u, db, da = S.union_field(V, parts_=True)
+    e = 0.25 * h
+    G = np.stack([(S.union_field(V + e * a) - S.union_field(V - e * a)) / (2 * e) for a in np.eye(3)], axis=1)
+    N = unit(G)
+    w_body = np.clip(0.5 + 0.5 * (da - db) / np.maximum(S.union_k(V[:, 2]), 1e-9), 0.0, 1.0)
+    V = V + (S.forms(V, N) * w_body)[:, None] * N
+    if "join" in sh:  # the arm below the join is the sleeve's: trim there, the cut exactly ON the join line
+        ph, t, dA = S.arm_coords(V)
+        tj = S.t_join(ph)
+        below = (t < tj) & (dA < 0.0015)  # ON the arm and below the join (not the torso beside it)
+        Q = Q[~below[Q].all(axis=1)]
+        used = np.zeros(len(V), bool)
+        used[Q.ravel()] = True
+        mv = below & used
+        V[mv] = S.A.pos(ph[mv], tj[mv])
+        remap = np.cumsum(used) - 1
+        V, Q = V[used], remap[Q]
+    # near the box's faces the patch dips a hair under the surface: its edge (and solidify rim) hides
+    # under the body loft there, which sinks under the patch farther in (Suit.give_way)
+    dep = S.box_depth(V)
+    used = np.zeros(len(V), bool)
+    used[Q.ravel()] = True
+    e = 0.25 * h
+    G = np.stack([(S.union_field(V + e * a) - S.union_field(V - e * a)) / (2 * e) for a in np.eye(3)], axis=1)
+    V = V - (sh.get("dip", 0.0003) * np.clip(1.0 - dep / (2.5 * h), 0.0, 1.0))[:, None] * unit(G)
+    obj = kit.new_mesh("Suit_Shoulder", V, Q, None, mat, coll)
+    solid(obj, S.d["garment"]["cloth"], bevel=0.0)
+    obj.modifiers["Solidify"].use_even_offset = False  # an open patch's ragged edge would spike
+    return mirror(obj)
 
 
 def pipe_attr(g, paths):
@@ -188,11 +407,19 @@ def build_suit(S, M, coll="Suit"):
         if pn.get("rim", g.get("panel_rim", "tube")) == "seam":
             (arm_paths if pn.get("on") == "arm" else body_paths).append(S.loop(pn["pts"], pn.get("on", "body")))
 
+    patch = bool(g.get("shoulder"))  # the shoulder is its own mesh: the lofts give way inside its box
+
     def disp(gr):
+        if patch:  # sinking under the shoulder's own mesh inside its box; at the box's edge ON the union
+            return S.forms(gr.P, gr.N) + S.edge_lift(gr.P, gr.N) - S.give_way(gr.P)[0]
         env = gr.env = F.envelope(gr.P, gr.N)
         return S.forms(gr.P, gr.N) + env
 
+    armhole = g.get("armhole_seam", True)  # False: no seam round the armhole (torso and arm one surface)
+
     def seams(gr):
+        if not armhole:
+            return np.zeros(gr.P.shape[:-1])
         Pd = gr.P + getattr(gr, "env", np.zeros(gr.P.shape[:-1]))[..., None] * gr.N
         return 1.0 - np.minimum(F.armhole_seam(Pd), kit.SEAM_CAP) / kit.SEAM_CAP
 
@@ -200,8 +427,11 @@ def build_suit(S, M, coll="Suit"):
     if piping:  # the seams are their own geometry (piping cords on the surface), not an attribute
         build_piping(S, body_paths, arm_paths, suit, g.get("piping", (0.0008, 0.0001)), coll)
         body_paths, arm_paths = [], []
+    snap = dict(CLAMP_SNAP)
+    if patch:
+        snap["drop"] = lambda P: CLAMP_SNAP["drop"](P) | S.give_way(P)[1]
     body = loft_mesh("Suit_Body", B, res=kit.RES * 0.85, mat=suit, coll=coll, disp=disp,
-                     attrs=dict(seam=seams, pipe=lambda gr: pipe_attr(gr, body_paths)), **CLAMP_SNAP)
+                     attrs=dict(seam=seams, pipe=lambda gr: pipe_attr(gr, body_paths)), **snap)
     mirror(solid(body, g["cloth"], bevel=0.0), merge=True)
 
     # the sleeve, set in at the armhole (as the coverall's), smooth
@@ -213,11 +443,17 @@ def build_suit(S, M, coll="Suit"):
         return P + k[:, None] * T_root
 
     def sleeve_seams(gr):
+        if not armhole:
+            return np.zeros(gr.P.shape[:-1])
         return 1.0 - np.minimum(F.armhole_seam(gr.P, on_sleeve=True), kit.SEAM_CAP) / kit.SEAM_CAP
 
-    sleeve = loft_mesh("Suit_Sleeve", A, res=kit.RES * 0.85, mat=suit, coll=coll,
-                       attrs=dict(seam=sleeve_seams, pipe=lambda gr: pipe_attr(gr, arm_paths)),
-                       drop=lambda P: F.s_arm(P) < 0.0, post=onto_armhole)
+    if patch:
+        sleeve = sleeve_to_join(S, suit, coll)
+        build_shoulder(S, suit, coll)
+    else:
+        sleeve = loft_mesh("Suit_Sleeve", A, res=kit.RES * 0.85, mat=suit, coll=coll,
+                           attrs=dict(seam=sleeve_seams, pipe=lambda gr: pipe_attr(gr, arm_paths)),
+                           drop=lambda P: F.s_arm(P) < 0.0, post=onto_armhole)
     mirror(solid(sleeve, g["cloth"], bevel=0.0))
 
     # cuff bands at the wrists
@@ -268,6 +504,8 @@ def build_piping(S, body_paths, arm_paths, mat, spec, coll):
             P, N = lo.pn(phu, np.interp(q, u, tt))
             if on == "body":
                 P = P + np.asarray(S.lift(P, N), float)[:, None] * N
+            else:
+                P = P + np.asarray(S.arm_lift(P, N), float)[:, None] * N
             closed = abs(path[0][0] - path[-1][0]) < 1e-6 and abs(path[0][1] - path[-1][1]) < 1e-6
             if closed:
                 P, N = P[:-1], N[:-1]
@@ -454,10 +692,27 @@ def build_head(M, head_spec, prefix, coll="Head"):
     return loft
 
 
+def build_bare_hands(F, M, coll="Hands"):
+    """Bare hands as one implicit surface each (`parts.bare_hand`) when the hand table carries a
+    `bare` spec; otherwise the workers' lofted hands (`workwear.build_hands`)."""
+    h = F.d["hand"]
+    if "bare" not in h:
+        return build_hands(F, M, coll)
+    w = np.array(F.d["sleeve"][0][1:4], float)
+    L = unit(h["down"])
+    b = np.asarray(h["back"], float)
+    Bv = unit(b - (b @ L) * L)
+    spec = dict(h["bare"])
+    if kit.RES > 0.006:  # a draft: a coarser grid
+        spec["res"] = max(spec.get("res", parts.BARE_HAND["res"]), 0.0011)
+    arm = unit(np.array(F.d["sleeve"][1][1:4], float) - w)  # up the forearm from the cuff's end
+    return parts.bare_hand("Hand", w + L * h["drop"], L, Bv, M["skin"], coll, spec=spec, arm=arm)
+
+
 def build(M, dims, head_spec, prefix):
     S = Suit(dims)
     build_suit(S, M)
-    build_hands(S.F, M)
+    build_bare_hands(S.F, M)
     build_boots(S, M)
     build_head(M, head_spec, prefix)
     garment.close_holes([o for o in bpy.data.objects if o.name.startswith(("Suit_Zip_Stop", "Suit_Piping"))])

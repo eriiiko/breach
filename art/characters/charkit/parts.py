@@ -61,6 +61,161 @@ def hand(prefix, wrist, L, B, mat, coll, scale=1.0, curl=1.0, mirrored=True, gir
     return palm, hp
 
 
+# A bare hand as ONE implicit surface (`bare_hand`): a slender adult hand, relaxed, in metres in
+# the hand's own frame (l down the hand from the wrist point, w towards the thumb, b out of the
+# back of the hand). Every key can be overridden by a character's table.
+BARE_HAND = dict(
+    # the palm, wrist -> knuckles: (l, w centre, b centre, half-width, half-depth back, half-depth
+    # palm, superellipse exponent); it starts inside the cuff and ends rounded under the knuckles
+    palm=((-0.028, 0.000, 0.0005, 0.0165, 0.0120, 0.0120, 2.2), (0.000, 0.000, 0.0005, 0.0182, 0.0112, 0.0120, 2.4),
+          (0.022, 0.0005, 0.0000, 0.0232, 0.0102, 0.0112, 2.7), (0.045, 0.000, -0.0005, 0.0272, 0.0092, 0.0104, 2.9),
+          (0.062, -0.0008, -0.0010, 0.0285, 0.0085, 0.0095, 2.9)),
+    palm_k=0.004,
+    # the fingers: (name, knuckle (l, w, b), splay towards the thumb (rad), phalanx lengths (joint to
+    # joint, the last to the tip's centre), half-widths at knuckle / middle / end joints / tip,
+    # bends at the three joints (rad, towards the palm))
+    fingers=(
+        ("Index", (0.068, 0.0190, -0.0010), 0.09, (0.034, 0.020, 0.0135), (0.0075, 0.0066, 0.0058, 0.0051), (0.22, 0.30, 0.18)),
+        ("Middle", (0.071, 0.0062, 0.0004), 0.02, (0.037, 0.023, 0.0145), (0.0077, 0.0068, 0.0059, 0.0052), (0.28, 0.38, 0.20)),
+        ("Ring", (0.069, -0.0066, -0.0004), -0.06, (0.034, 0.022, 0.0135), (0.0071, 0.0063, 0.0055, 0.0049), (0.32, 0.44, 0.22)),
+        ("Pinky", (0.063, -0.0182, -0.0030), -0.15, (0.026, 0.016, 0.0115), (0.0062, 0.0055, 0.0048, 0.0043), (0.36, 0.50, 0.24)),
+    ),
+    finger_depth=0.90,      # a finger's depth / width
+    knuckle_k=0.0012,       # the smooth union between phalanges (no crease at a bent joint)
+    finger_k=0.0050,        # fingers into the palm: the fillet, and the webbing between them
+    waist=0.94,             # each phalanx's middle against its two joints: the slight knuckle
+    # the thumb, by its joint points (base inside the thenar pad, knuckle, joint, tip centre) and
+    # half-widths there; `nail` = the direction its nail faces
+    thumb=dict(pts=((0.012, 0.0100, -0.0060), (0.044, 0.0255, -0.0145), (0.071, 0.0300, -0.0190), (0.095, 0.0290, -0.0200)),
+               r=(0.0100, 0.0084, 0.0075, 0.0064), depth=0.86, nail=(0.0, 0.75, 0.66), k=0.0075),
+    # pads (ellipsoids, smooth-unioned): centre (l, w, b), radii along (the axis, across, depth), axis
+    pads=(((0.032, 0.0130, -0.0085), (0.025, 0.0115, 0.0090), (0.85, 0.48, -0.22)),      # the thumb's pad (thenar)
+          ((0.040, -0.0165, -0.0060), (0.026, 0.0095, 0.0082), (1.0, -0.05, 0.0)),        # the heel under the little finger
+          ((0.006, 0.0000, -0.0045), (0.012, 0.0165, 0.0095), (1.0, 0.0, 0.0))),          # the heel of the hand
+    pad_k=0.008,
+    # the hollow of the palm: an ellipsoid smoothly subtracted (centre, radii (l, w, b), smoothing)
+    hollow=((0.046, -0.002, -0.0205), (0.020, 0.015, 0.0085), 0.004),
+    curl=1.0,
+    res=0.0007,
+)
+
+
+def bare_hand(prefix, wrist, L, B, mat, coll, spec=None, res=None, mirrored=True, arm=None):
+    """A bare LEFT hand as ONE closed surface (mirrored to the right by default): a palm narrow
+    at the wrist and widest at the knuckles, with a rounded heel and a thumb pad; a thumb in
+    two segments growing from the side of the palm's base; four fingers of different lengths in
+    three tapering phalanges each, with a slight knuckle and a rounded tip, curled and spread a
+    little. Everything is one signed-distance field with smooth unions (`implicit.py`), so the
+    fingers flow out of the palm with webbing and no step. `L` = down the fingers, `B` = out of
+    the back of the hand (world, unit); `spec` overrides `BARE_HAND`. `arm` (world, unit, from the
+    wrist up the forearm): the palm's rows above the wrist (l < 0, hidden in the sleeve) follow the
+    forearm instead of the hand, so a hand bent at the wrist never shows through the cuff. Returns
+    the object."""
+    import implicit
+    from kit import new_mesh
+    s = dict(BARE_HAND, **(spec or {}))
+    L, B = unit(L), unit(B)
+    B = unit(B - (B @ L) * L)
+    W = np.cross(L, B)
+    e_l, e_w, e_b = np.eye(3)
+    curl = s["curl"]
+
+    # --- the fingers' joint chains in the hand frame (l, w, b) ---
+    fingers = []
+    for name, base, splay, lens, rads, bends in s["fingers"]:
+        d0 = np.array([np.cos(splay), np.sin(splay), 0.0])
+        up = e_b - (e_b @ d0) * d0
+        up /= np.linalg.norm(up)
+        p, ang = np.asarray(base, float), 0.0
+        pts, hints = [p.copy()], []
+        for seg, bend in zip(lens, bends):
+            ang += bend * curl
+            d = d0 * np.cos(ang) - up * np.sin(ang)
+            hints.append(d0 * np.sin(ang) + up * np.cos(ang))  # the finger's back, turning with it
+            p = p + seg * d
+            pts.append(p.copy())
+        nodes, hh = [], []
+        for i in range(3):  # a node mid-phalanx, a little thinner: the joints read as knuckles
+            ra, rb = rads[i], rads[i + 1]
+            nodes += [(pts[i], ra), (0.5 * (pts[i] + pts[i + 1]), 0.5 * (ra + rb) * (s["waist"] if i < 2 else 1.0))]
+            hh += [hints[i], hints[i]]
+        nodes.append((pts[3], rads[3]))
+        # the finger starts inside the palm, behind its knuckle
+        start = (pts[0] - 0.014 * d0 - 0.004 * e_b, rads[0] * 0.92)
+        nodes.insert(0, start)
+        hh.insert(0, up)
+        fingers.append((nodes, hh))
+    th = s["thumb"]
+    tp = [np.asarray(q, float) for q in th["pts"]]
+    t_nodes = [(tp[0], th["r"][0]), (tp[1], th["r"][1]), (0.5 * (tp[1] + tp[2]), 0.5 * (th["r"][1] + th["r"][2]) * s["waist"]),
+               (tp[2], th["r"][2]), (tp[3], th["r"][3])]
+    t_hint = np.asarray(th["nail"], float)
+    palm = [list(r) for r in s["palm"]]
+    if arm is not None:  # the rows inside the sleeve run up the forearm
+        a_h = np.array([unit(arm) @ L, unit(arm) @ np.cross(L, B), unit(arm) @ B])
+        for r in palm:
+            if r[0] < 0.0:
+                c = -r[0] * a_h + np.array([0.0, r[1], r[2]])
+                r[0], r[1], r[2] = c
+    palm = [tuple(r) for r in palm]
+
+    def palm_d(P):
+        d = None
+        for r0, r1 in zip(palm[:-1], palm[1:]):
+            c0 = np.array([r0[0], r0[1], r0[2]])
+            c1 = np.array([r1[0], r1[1], r1[2]])
+            # a section's depth differs back / palm: the capsule's V axis is the back (+b)
+            e = _palm_capsule(P, c0, c1, r0, r1, implicit)
+            d = e if d is None else implicit.smin(d, e, s["palm_k"])
+        return d
+
+    def field(P):
+        d = palm_d(P)
+        for c, rad, ax in s["pads"]:
+            a = unit(np.asarray(ax, float))
+            b2 = unit(np.cross(a, e_w)) if abs(a @ e_w) < 0.9 else e_b
+            a2 = np.cross(b2, a)
+            d = implicit.smin(d, implicit.ellipsoid(P, c, np.array([a, a2, b2]), rad), s["pad_k"])
+        hc, hr, hk = s["hollow"]
+        d = implicit.smax(d, -implicit.ellipsoid(P, hc, np.eye(3), hr), hk)
+        for nodes, hh in fingers:
+            f = implicit.chain(P, nodes, np.array(hh), k=s["knuckle_k"], ratio=s["finger_depth"])
+            d = implicit.smin(d, f, s["finger_k"])
+        t = implicit.chain(P, t_nodes, t_hint, k=s["knuckle_k"], ratio=th["depth"])
+        return implicit.smin(d, t, th["k"])
+
+    pts = [n[0] for f in fingers for n in f[0]] + tp + [np.array(r[:3]) for r in palm]
+    pts = np.array(pts)
+    pad = 0.022
+    h = res or s["res"]
+    V, Q = implicit.mesh_field(field, pts.min(axis=0) - pad, pts.max(axis=0) + pad, h)
+    Mw = np.column_stack([L, W, B])
+    Vw = np.asarray(wrist, float) + V @ Mw.T
+    obj = new_mesh(prefix + "_Hand", Vw, Q, None, mat, coll)
+    return mirror(obj) if mirrored else obj
+
+
+def _palm_capsule(P, c0, c1, r0, r1, implicit):
+    """One palm segment: a superellipse section, half-width r[3], depth r[4] to the back and r[5]
+    to the palm, exponent r[6], each running linearly between the two rows; rounded ends."""
+    ax = c1 - c0
+    ln = float(np.linalg.norm(ax))
+    T = ax / ln
+    U, V = implicit._perp_frame(T, np.array([0.0, 0.0, 1.0]))
+    v = P - c0
+    w = v @ T
+    s = np.clip(w / ln, 0.0, 1.0)
+    along = w - s * ln
+    q = v - w[..., None] * T
+    x, y = q @ U, q @ V
+    lerp = lambda i: r0[i] + (r1[i] - r0[i]) * s
+    a, bb, bp, n = lerp(3), lerp(4), lerp(5), lerp(6)
+    b = np.where(y >= 0.0, bb, bp)
+    rc = np.minimum(a, b)
+    rho = (np.abs(x / a) ** n + np.abs(y / b) ** n + np.abs(along / rc) ** n) ** (1.0 / n)
+    return (rho - 1.0) * rc
+
+
 # Weld a LEFT half-body loft to its mirror: clamp it at the mid-plane and drop what lies beyond.
 CLAMP = dict(drop=lambda P: P[:, 0] <= 1e-6, post=lambda P: np.column_stack([np.maximum(P[:, 0], 0.0), P[:, 1:]]))
 

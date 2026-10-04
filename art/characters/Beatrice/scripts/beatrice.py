@@ -154,20 +154,28 @@ def _rows(shape=None):
 # the arm's place front-to-back to the side view: it hangs from 3 cm behind the body's centre at the
 # shoulder to the side of the thigh at the wrist.
 SLEEVE = (
-    ("cuff_end", .300, .006, 0.935, .0175, .0170),
-    ("cuff_top", .284, .010, 0.968, .0190, .0180),
-    ("forearm_low", .266, .014, 1.000, .0210, .0200),
-    ("forearm", .2445, .019, 1.040, .0262, .0245),
-    ("forearm_top", .2245, .025, 1.080, .0312, .0290),
-    ("elbow", .204, .030, 1.125, .0320, .0305),
-    ("elbow_top", .189, .034, 1.165, .0300, .0305),
-    ("upper", .172, .038, 1.210, .0285, .0320),
-    ("biceps", .162, .036, 1.260, .0295, .0340),
+    # stage 3: refitted to the front view's arm (horizontal widths x the arm's slope): a slim wrist, the
+    # forearm swelling to its belly just under the elbow, a narrowing at the elbow, the upper arm, the deltoid
+    ("cuff_end", .300, .006, 0.935, .0170, .0165),
+    ("cuff_top", .284, .010, 0.968, .0184, .0174),
+    ("forearm_low", .2579, .0159, 1.015, .0212, .0200),
+    ("forearm", .2345, .0220, 1.060, .0280, .0245),
+    ("forearm_top", .2131, .0278, 1.105, .0325, .0280),
+    ("elbow", .1984, .0315, 1.140, .0300, .0270),
+    ("elbow_top", .1852, .0349, 1.175, .0278, .0290),
+    ("upper", .172, .038, 1.210, .0283, .0305),
+    ("biceps", .162, .036, 1.260, .0295, .0335),
     ("deltoid", .154, .033, 1.310, .0335, .0380),
     ("shoulder", .142, .030, 1.356, .0360, .0400),
     ("root", .104, .027, 1.350, .0310, .0350),
 )
+# the sleeve's depth to the BACK where it differs from the front's: the point of the elbow
+SLEEVE_BACK = {"elbow": .0325, "elbow_top": .0300}
 
+
+# the seam round the upper arm at the foot of the deltoid (side view: a shallow V, lowest on the outside):
+# z on the outer side, z on the inner side. The shoulder's own mesh meets the sleeve exactly here.
+ARM_SEAM = (1.228, 1.266)
 
 # broad body forms under the suit (x0, z0, side, sx, sz, height): the bust and the seat's
 # roundness, nothing anatomical beyond them
@@ -183,17 +191,26 @@ def dims(shape=None):
         trunk=_rows(shape),
         feature_frame=_rows("sheet_hips"),   # the suit's design is measured on the drawing's figure
         sleeve=SLEEVE,
-        elbow_z=1.165,
+        sleeve_back=SLEEVE_BACK,
+        elbow_z=1.140,
         armpit_z=1.245,
         crotch_z=0.893,
         hand=dict(scale=0.78, curl=1.05, fan=0.45, knuckle=0.084, finger_len=1.20, girth=0.70, palm_girth=0.88, drop=0.012,
                   down=(0.10, -0.04, -1.0), back=(0.92, -0.38, 0.0), thumb_dir=(0.80, 0.42, -0.42),
                   palm=((-0.032, .017, .014), (-0.010, .021, .016), (0.014, .032, .016), (0.040, .037, .015),
-                        (0.062, .039, .014), (0.078, .036, .012), (0.088, .028, .008), (0.096, .018, .004))),
+                        (0.062, .039, .014), (0.078, .036, .012), (0.088, .028, .008), (0.096, .018, .004)),
+                  # the bare hand (charkit/parts.py::bare_hand): its defaults are her slender hand
+                  bare=dict()),
         forms=(FORMS[0], sh.get("seat", FORMS[1])) + FORMS[2:],
         garment=dict(
             cloth=0.002,
             armhole=dict(x=0.128, z=1.370, tilt=4.0),
+            # torso and arm ONE surface (bodysuit.build_shoulder): the smooth union of the two lofts, a broad
+            # fillet over the shoulder (the deltoid flowing into the torso), a narrow one at the armpit,
+            # meshed on its own inside `box` (left shoulder, metres), at res (final, draft)
+            shoulder=dict(k=(0.004, 0.024), z=(1.270, 1.345), box=((0.112, -0.095, 1.195), (0.215, 0.100, 1.445)), res=(0.0012, 0.0024),
+                          join=ARM_SEAM),
+            armhole_seam=False,
             cuff=(0.933, 0.957), cuff_lift=0.0018, cuff_thick=0.0032,
             # the stand collar's rings (z, centre y, half-width, front, back, exponent), neckline -> just
             # under the jaw (the side view: it stands straight and hugs the neck)
@@ -229,7 +246,7 @@ def dims(shape=None):
                     (("bx", .050, 1.425), ("bx", .046, 1.370), ("bx", .036, 1.300), ("bx", .022, 1.230), ("bx", .008, 1.180),
                      ("bx", .001, 1.166)),
                     # from the back of the armpit down past the rib and waist panels, round the hip to the thigh panel
-                    (("bx", .118, 1.330), ("bx", .108, 1.280), ("bx", .090, 1.230), ("bx", .074, 1.190), ("bx", .068, 1.160),
+                    (("bx", .110, 1.326), ("bx", .104, 1.280), ("bx", .090, 1.230), ("bx", .074, 1.190), ("bx", .068, 1.160),
                      ("bx", .076, 1.120), ("bx", .098, 1.070), ("bx", .120, 1.030), ("bx", .138, .995)),
                     # under the seat: the hip round to the crotch
                     (("bx", .150, 1.050), ("bx", .128, .985), ("bx", .098, .940), ("bx", .060, .912), ("bx", .025, .899), ("bx", .004, .896)),
@@ -247,7 +264,7 @@ def dims(shape=None):
                      ("bx", .093, .652), ("bx", .099, .672)),
                 ),
                 # the sleeve: a chevron at the foot of the deltoid, lowest on the outside of the arm
-                arm=(tuple(("phi", a, 1.255 + 0.050 * abs(a) / 180.0) for a in range(-180, 181, 15)),),
+                arm=(tuple(("phi", a, ARM_SEAM[0] + (ARM_SEAM[1] - ARM_SEAM[0]) * abs(a) / 180.0) for a in range(-180, 181, 15)),),
             ),
             mesh_panels=(
                 # front of the shoulder: a thin curved slit from the collar's side down to the armpit's front
@@ -260,7 +277,7 @@ def dims(shape=None):
                 dict(name="Hip", pts=(("phi", 4, 1.150), ("x", .118, 1.128), ("x", .104, 1.100), ("x", .092, 1.070), ("x", .088, 1.056),
                                       ("x", .100, 1.068), ("x", .114, 1.092), ("phi", 4, 1.118))),
                 # the back of the shoulder: a strip from the yoke down along the shoulder blade to the back of the armpit
-                dict(name="Blade", pts=(("bx", .060, 1.414), ("bx", .084, 1.405), ("bx", .104, 1.376), ("bx", .118, 1.342), ("bx", .121, 1.326),
+                dict(name="Blade", pts=(("bx", .060, 1.414), ("bx", .084, 1.405), ("bx", .100, 1.378), ("bx", .110, 1.348), ("bx", .112, 1.332),
                                         ("bx", .107, 1.344), ("bx", .088, 1.374), ("bx", .068, 1.400))),
                 # the back's sides at the ribs and at the waist
                 dict(name="Back_Rib", pts=(("phi", -16, 1.286), ("bx", .098, 1.272), ("bx", .080, 1.244), ("bx", .063, 1.214), ("bx", .058, 1.205),
@@ -337,12 +354,17 @@ BEAUTY = {
 # Close-up working views, rendered on request only (`--beauty shoulder,wrist`), never in `all`
 DEV_VIEWS = {
     "shoulder": (0.0, 30.0, 12.0, 1.1, 1.36, 85.0, (900, 900)),
+    "shoulder_back": (180.0, 30.0, 12.0, 1.1, 1.36, 85.0, (900, 900)),
     "wrist": (0.0, 20.0, 5.0, 0.9, 0.92, 85.0, (900, 900)),
     "boot": (0.0, 30.0, 12.0, 1.0, 0.12, 85.0, (900, 900)),
     "flank": (0.0, 75.0, 5.0, 1.3, 1.18, 85.0, (900, 900)),
     "flank_back": (180.0, 60.0, 5.0, 1.3, 1.18, 85.0, (900, 900)),
     "knee": (0.0, 20.0, 5.0, 1.0, 0.55, 85.0, (900, 900)),
     "hand": (0.0, 90.0, 0.0, 0.75, 0.88, 85.0, (900, 900)),
+    # aimed close-ups (charkit/suitbuild.render_aimed): the palm and thumb of her left hand from
+    # behind and inside, between the hand and the thigh
+    "top_close": dict(cam=(0.0, -0.18, 2.45), target=(0.0, 0.0, 1.30), lens=50.0, res=(1000, 1000)),
+    "hand_palm": dict(cam=(0.040, 0.380, 0.870), target=(0.305, 0.000, 0.860), lens=85.0, res=(900, 900)),
 }
 
 # The overlap bands for the sheet score: (name, z from, z to)
