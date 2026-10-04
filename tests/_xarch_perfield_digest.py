@@ -450,7 +450,33 @@ UNIT_FIELD_LABEL = "__unit_state__"
 #
 # REPRODUCED: captured twice, identical both times.
 # (was 2739f7431cebb7c7f8f73ce2cdc6bea625e72e4409713d75e471acfa6a6e6a86)
-GOLDEN_AGGREGATE = "6944a29a3a259fc0c05e5bd45879105c605401e394e26efd7744639cbe7718ee"
+#
+# SMOKE TRANSPORT v2 (2026-10-04, issue #12, patch P1 --
+# docs/smoke_transport_design_2026-10-04.md, approved by Erik with D1 ruled
+# (a)). A VALUE move, not a schema move: DIGEST_SPEC_VERSION unchanged -- no
+# field added, removed or retyped. One approved behavioural change: the five
+# TRACE gas planes stop moving by the semi-Lagrangian SmokeDynamics step (which
+# minted smoke wherever air expanded and destroyed it at high CFL) and RIDE
+# THE AIR instead: each EOS substep moves them on the bulk planes' applied face
+# dq priced at the donor's trace-per-air ratio, and once a tick a conservative
+# magnitude-truncated diffusion, stranded zeroing and ceil-rounded decay run;
+# the fire step's smoke clamp and the FieldEdit trace ceiling are gone (D1:
+# deposits are additive).
+#
+# FIELDS THAT MOVED, first tick: `gas` at tick 0 -- only its trace planes; the
+# bulk O2 / inert_N2 planes ride exactly as before. UNMOVED over all 30 ticks:
+# every other field, temperature, gas_energy, atmosphere, wind_x / wind_y and
+# wave_p included, and the unit's position, hp, facing, status and life events
+# -- the canonical scenario's air does not see its smoke (design V5).
+#
+# VERIFIED SOLE CAUSE, not assumed: the pre-patch tree (c4eb330, exported and
+# built clean beside this one) reproduces the PREVIOUS value, 6944a29a...,
+# exactly; this patch's build gives this one. The per-field diff of the two
+# captures is the FIELDS THAT MOVED paragraph above.
+#
+# REPRODUCED: both captures run twice, identical both times.
+# (was 6944a29a3a259fc0c05e5bd45879105c605401e394e26efd7744639cbe7718ee)
+GOLDEN_AGGREGATE = "34b6edbe5199eb454b371cb021cbb005e4dd2fdccc5b4396eab6ea665901c68e"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs
