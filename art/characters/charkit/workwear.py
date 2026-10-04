@@ -13,6 +13,7 @@ neckline, welded to its mirror image at the mid-plane (parts.CLAMP).
 """
 import math
 
+import bpy
 import numpy as np
 from mathutils import Matrix
 
@@ -93,7 +94,7 @@ class Figure:
 
         front = np.clip((self.d["dirt_front_y"] - y) / 0.03, 0.0, 1.0)
         back = 1.0 - front
-        chest = g["chest"] * gs(z, g["chest_z"], 0.11) * gs(x, 0.0, 0.16) * front
+        chest = g["chest"] * gs(z, g["chest_z"], 0.13) * gs(x, 0.0, 0.18) * front
         knees = g["knees"] * gs(z, self.d["garment"]["knee"]["z"], 0.10) * front
         shins = g["shins"] * gs(z, 0.22, 0.10)
         seat = g["seat"] * gs(z, self.d["garment"]["back_pocket"]["z"] - 0.03, 0.08) * back * np.clip(1.0 - x / 0.24, 0.0, 1.0)
@@ -158,7 +159,7 @@ def build_coverall(F, M, coll="Coverall"):
     t_top = F.t_top
     notch = Oval(B, FRONT, t_top, g["notch"][0], g["notch"][1], n=1.6, taper=0.25)
     body = loft_mesh("Coverall_Body", B, res=kit.RES * 0.85, hole=notch, mat=cloth, coll=coll, disp=disp,
-                     attrs=dict(seam=seams, dirt=dirt_g), **CLAMP)
+                     attrs=dict(seam=seams, dirt=dirt_g), **CLAMP_SNAP)
     mirror(solid(body, g["cloth"], bevel=0.0), merge=True)
 
     # sleeves ---------------------------------------------------------------------
@@ -251,6 +252,15 @@ def build_coverall(F, M, coll="Coverall"):
                  attrs=dict(dirt=F.dirt), mat=cloth, coll=coll))
 
 
+# The half-body weld with a snap band: where the clamped surface meets the mid-plane at a
+# shallow angle (the crotch, the seat) its last vertices sit a millimetre or two off the
+# plane and the mirror merge would leave a slit. Vertices within SNAP of the plane go onto
+# it, and faces lying wholly in that band are dropped, so the two halves meet edge to edge.
+SNAP = 0.003
+CLAMP_SNAP = dict(drop=lambda P: P[:, 0] <= SNAP,
+                  post=lambda P: np.column_stack([np.where(P[:, 0] > SNAP, P[:, 0], 0.0), P[:, 1:]]))
+
+
 def zip_slider(loft, phi, t, off, mat, coll, name, mirrored=False):
     """A zip's slider and its hanging pull tab, sitting on a loft."""
     a = OnLoft(loft, phi, t)
@@ -283,6 +293,7 @@ def build_hands(F, M, coll="Hands"):
     wrist = w + L * h["drop"]
     parts.hand("Hand", wrist, L, Bv, M["skin"], coll, scale=h["scale"], curl=h["curl"], girth=h["girth"], palm_girth=h["palm_girth"],
                palm=h["palm"])
+    garment.close_holes([o for o in bpy.data.objects if o.name.startswith("Hand_")])
 
 
 # ------------------------------------------------------------------------- boots
@@ -318,7 +329,7 @@ def build_boots(F, M, coll="Boots"):
     mirror(loft_mesh("Boot_Upper", foot, res=0.003, cap0=True, cap1=True, mat=leather, coll=coll,
                      attrs=dict(seam=lambda g: seam_attr(g, ts=[ft(s["toe_cap_y"]), ft(s["vamp_y"])]), dirt=lambda g: np.full(g.phi.shape, 0.6))))
     shaft = Loft([dict(p=w(0, s["shaft_y"], z), a=a, bf=bf, bb=bb, n=2.2) for z, a, bf, bb in s["shaft"]], front=-bt.BY)
-    mirror(loft_mesh("Boot_Shaft", shaft, res=0.003, mat=leather, coll=coll, cap0=True,
+    mirror(loft_mesh("Boot_Shaft", shaft, res=0.003, mat=leather, coll=coll, cap0=True, cap1=True,
                      attrs=dict(seam=lambda g: seam_attr(g, phis=[BACK - TAU + 0.0, D(20), D(160)]))))
     sz = shaft.t_at_z
     mirror(band_on("Boot_Collar", shaft, shaft.L - 0.022, shaft.L, offset=0.004, thick=0.006, mat=leather, coll=coll))
@@ -369,4 +380,5 @@ def build(M, dims, head_spec, hair_spec):
     build_hands(F, M)
     build_boots(F, M)
     build_head(F, M, head_spec, hair_spec)
+    garment.close_holes([o for o in bpy.data.objects if o.name.startswith(("Boot_Lace", "Boot_Eyelets", "Coverall_Cargo_Snap", "Coverall_Cuff_Button"))])
     return F

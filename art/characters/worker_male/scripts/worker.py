@@ -20,7 +20,7 @@ HEIGHT = 1.80
 PALETTE = dict(
     SKIN="#946b5a",
     HAIR="#2f2722",
-    COVERALL="#283043",     # faded navy work twill
+    COVERALL="#2f3646",     # faded navy work twill
     UNDERSHIRT="#303131",
     BOOT="#3a322c",          # worn brown-grey leather
     METAL="#7d776c",         # zips, buttons, snaps, eyelets
@@ -123,7 +123,7 @@ DIMS = dict(
         cargo=dict(z=0.705, phi=-14.0, hs=0.078, ht=0.088, depth=0.011),
         knee=dict(z=0.485, hs=0.088, ht=0.112),
     ),
-    dirt=dict(chest=0.85, chest_z=1.25, knees=1.0, shins=0.45, seat=0.8, thighs=0.35, cuffs=0.9),
+    dirt=dict(chest=1.0, chest_z=1.22, knees=1.0, shins=0.45, seat=1.0, thighs=0.35, cuffs=0.9),
     dirt_front_y=0.02,
 )
 

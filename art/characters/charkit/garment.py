@@ -136,6 +136,23 @@ def _evaluated(ob, dg):
     return V, T, boundary
 
 
+def close_holes(objects):
+    """Cap every open boundary loop of each object's SOURCE mesh with a fan (an open
+    finger base, a tube's end, a stud's underside): parts become closed solids."""
+    for ob in objects:
+        bm = bmesh.new()
+        bm.from_mesh(ob.data)
+        edges = [e for e in bm.edges if e.is_boundary]
+        if edges:
+            res = bmesh.ops.holes_fill(bm, edges=edges, sides=0)
+            bmesh.ops.triangulate(bm, faces=res["faces"])
+            bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+            bm.to_mesh(ob.data)
+            ob.data.update()
+        bm.free()
+    return objects
+
+
 def orient_outward(objects=None, ratio=0.05, verbose=True):
     """Make every mesh's normals face OUT: the signed volume of its evaluated mesh (after
     mirror and solidify) must be positive; a mesh that comes out inside-out has its SOURCE
@@ -158,7 +175,9 @@ def orient_outward(objects=None, ratio=0.05, verbose=True):
             opened.append(ob.name)
         else:
             closed += 1
-        if absv <= 0 or abs(tot) < ratio * absv:
+        # a closed mesh's signed volume is exact whatever its shape (a thin shell has a small but
+        # positive one); an open sheet's is only meaningful when it is a large share of the total
+        if absv <= 0 or (boundary and abs(tot) < ratio * absv):
             undecided.append(ob.name)
         elif tot < 0:
             ob.data.flip_normals()
