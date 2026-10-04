@@ -217,10 +217,7 @@ class Suit:
         top of the shoulder) comes out smooth, where `kit.loft_sdf`'s nearest-section distance steps.
         The radial gap is scaled by the surface's slope (first order)."""
         B = self.F.body
-        if not hasattr(self, "_tz"):
-            ts = np.linspace(0.0, B.L, 2000)
-            self._tz = (B.frames(ts)[0][:, 2], ts)
-        zs, ts = self._tz
+        zs, ts = self._zt_table()
 
         def radial(Pp, dz=0.0):
             # the sections are level: evaluate each distinct height once (a grid has few)
@@ -239,7 +236,9 @@ class Suit:
         """Signed distance (approx., m) to the union of torso and arm, LEFT half (|x|)."""
         P = np.asarray(P, float)
         Pa = np.column_stack([np.abs(P[:, 0]), P[:, 1:]])
-        db, da = self.body_sdf(Pa), kit.loft_sdf(self.F.arm, Pa, m=500)
+        db, da = self.body_sdf(Pa), np.ones(len(Pa))
+        near = Pa[:, 0] > self.d["garment"]["shoulder"].get("arm_x", 0.0)  # nearer the neck the arm cannot reach the union
+        da[near] = kit.loft_sdf(self.F.arm, Pa[near], m=500)
         u = implicit.smin(db, da, self.union_k(Pa[:, 2]))
         return (u, db, da) if parts_ else u
 
@@ -330,12 +329,75 @@ class Suit:
         h = sh["res"][0 if kit.RES < 0.006 else 1]
         P = np.asarray(P, float)
         dep = self.box_depth(P)
-        near = (dep > -0.006) & (dep < 5.0 * h)
+        near = (dep > -0.006) & ((dep < 5.0 * h) | ("cut" in sh))
         out = np.zeros(P.shape[:-1])
         if near.any():
             s = self.shoulder(P[near], np.asarray(N, float)[near], "body")
             out[near] = np.where(s > sh.get("edge_max", 0.008), 0.0, s)
         return out
+
+    # --- the raglan cut: the shoulder's own mesh bounded by seam lines, not by its box -----
+    def _cut_curves(self):
+        """World x of the cut at each height, in front and behind (from `shoulder["cut"]` feature
+        points, on the loft), and the lowest height of the cut under the arm."""
+        if not hasattr(self, "_cuts"):
+            c = self.d["garment"]["shoulder"]["cut"]
+            cur = []
+            for pts in (c["front"], c["back"]):
+                path = self.path(pts, step=0.002)
+                P = self.B.pos(np.radians([q for q, _ in path]), np.array([t for _, t in path]))
+                o = np.argsort(P[:, 2])
+                cur.append((P[o, 2], P[o, 0]))
+            self._cuts = (cur[0], cur[1], c["z_low"])
+        return self._cuts
+
+    def _zt_table(self):
+        if not hasattr(self, "_tz"):
+            ts = np.linspace(0.0, self.B.L, 2000)
+            self._tz = (self.B.frames(ts)[0][:, 2], ts)
+        return self._tz
+
+    def centre_y(self, z):
+        zs, ts = self._zt_table()
+        return self.B.frames(np.interp(np.asarray(z, float), zs, ts))[0][:, 1]
+
+    def cut_x(self, y, z):
+        (zf, xf), (zb, xb), _ = self._cut_curves()
+        return np.where(y < self.centre_y(z), np.interp(z, zf, xf), np.interp(z, zb, xb))
+
+    def in_torso_region(self, P):
+        """Torso points (left half) the shoulder's mesh owns under a raglan cut."""
+        P = np.asarray(P, float)
+        x, y, z = np.abs(P[:, 0]), P[:, 1], P[:, 2]
+        z_low = self._cut_curves()[2]
+        return (z >= z_low) & (x > self.cut_x(y, z)) & (self.box_depth(P) > 0.0)
+
+    def body_onto_cut(self, P, disp):
+        """Body loft vertices the shoulder owns, moved onto the cut ALONG the loft (to the cut's x at
+        their height, or to its lowest line, whichever is nearer), then displaced afresh by
+        `disp(P, N)`: the body's edge lies exactly on the seam line."""
+        P = np.array(P, float)
+        ins = self.in_torso_region(P)
+        if not ins.any():
+            return P
+        B = self.B
+        zs, ts = self._zt_table()
+        p = P[ins]
+        t = np.interp(p[:, 2], zs, ts)
+        c, _, e1, e2, _ = B.frames(t)
+        q = p - c
+        ph = np.arctan2(np.einsum("ij,ij->i", q, e2), np.einsum("ij,ij->i", q, e1))
+        z_low = self._cut_curves()[2]
+        xc = self.cut_x(p[:, 1], p[:, 2])
+        down = (p[:, 2] - z_low) < (np.abs(p[:, 0]) - xc)
+        t2 = np.where(down, float(np.interp(z_low, zs, ts)), t)
+        ph2 = ph.copy()
+        for i in np.flatnonzero(~down):
+            back = ph[i] < 0.0
+            ph2[i] = phi_where_x(B, t[i], xc[i], back=back) - (2 * math.pi if back else 0.0)
+        Pn, Nn = B.pn(ph2, t2)
+        P[ins] = Pn + np.asarray(disp(Pn, Nn), float)[:, None] * Nn
+        return P
 
     def give_way(self, P):
         """For a loft mesh near the shoulder box: (sink along -N (m), drop mask). It sinks under the
@@ -385,7 +447,35 @@ def build_shoulder(S, mat, coll="Suit"):
     N = unit(G)
     w_body = np.clip(0.5 + 0.5 * (da - db) / np.maximum(S.union_k(V[:, 2]), 1e-9), 0.0, 1.0)
     V = V + (S.forms(V, N) * w_body)[:, None] * N
-    if "join" in sh:  # the arm below the join is the sleeve's: trim there, the cut exactly ON the join line
+    if "cut" in sh:  # bounded by seam lines: the arm above the join, the torso past the raglan cut
+        ph, t, dA = S.arm_coords(V)
+        tj = S.t_join(ph)
+        on_arm = dA < 0.0015
+        ins = np.where(on_arm, t >= tj, S.in_torso_region(V))
+        Q = Q[ins[Q].any(axis=1)]
+        used = np.zeros(len(V), bool)
+        used[Q.ravel()] = True
+        out = used & ~ins
+        arm_mv = out & on_arm
+        V[arm_mv] = S.A.pos(ph[arm_mv], tj[arm_mv])
+        z_low = S._cut_curves()[2]
+        rest = np.flatnonzero(out & ~on_arm)
+        if len(rest):
+            p = V[rest].copy()
+            low = (z_low - p[:, 2]) > (S.cut_x(p[:, 1], p[:, 2]) - p[:, 0])
+            p[low, 2] = z_low
+            p[~low, 0] = S.cut_x(p[~low, 1], p[~low, 2])
+            fix = np.where(low[:, None], np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0]))
+            ee = 0.25 * h
+            for _ in range(6):  # onto the union, staying on the cut's line
+                f = S.union_field(p)
+                g_ = np.stack([(S.union_field(p + ee * a) - S.union_field(p - ee * a)) / (2 * ee) for a in np.eye(3)], axis=1)
+                g_ = g_ - np.sum(g_ * fix, axis=1)[:, None] * fix
+                p = p - (f / np.maximum(np.sum(g_ * g_, axis=1), 1e-12))[:, None] * g_
+            V[rest] = p
+        remap = np.cumsum(used) - 1
+        V, Q = V[used], remap[Q]
+    elif "join" in sh:  # the arm below the join is the sleeve's: trim there, the cut exactly ON the join line
         ph, t, dA = S.arm_coords(V)
         tj = S.t_join(ph)
         below = (t < tj) & (dA < 0.0015)  # ON the arm and below the join (not the torso beside it)
@@ -403,7 +493,7 @@ def build_shoulder(S, mat, coll="Suit"):
     used[Q.ravel()] = True
     e = 0.25 * h
     G = np.stack([(S.union_field(V + e * a) - S.union_field(V - e * a)) / (2 * e) for a in np.eye(3)], axis=1)
-    V = V - (sh.get("dip", 0.0003) * np.clip(1.0 - dep / (2.5 * h), 0.0, 1.0))[:, None] * unit(G)
+    V = V - (sh.get("dip", 0.0 if "cut" in sh else 0.0003) * np.clip(1.0 - dep / (2.5 * h), 0.0, 1.0))[:, None] * unit(G)
     obj = kit.new_mesh("Suit_Shoulder", V, Q, None, mat, coll)
     solid(obj, S.d["garment"]["cloth"], bevel=0.0)
     obj.modifiers["Solidify"].use_even_offset = False  # an open patch's ragged edge would spike
@@ -447,8 +537,11 @@ def build_suit(S, M, coll="Suit"):
             (arm_paths if pn.get("on") == "arm" else body_paths).append(S.loop(pn["pts"], pn.get("on", "body")))
 
     patch = bool(g.get("shoulder"))  # the shoulder is its own mesh: the lofts give way inside its box
+    cut = patch and "cut" in g["shoulder"]  # ... or exactly past its raglan cut (seam lines)
 
     def disp(gr):
+        if cut:  # on the union near the shoulder; the shoulder's mesh owns what lies past the cut
+            return S.forms(gr.P, gr.N) + S.edge_lift(gr.P, gr.N)
         if patch:  # sinking under the shoulder's own mesh inside its box; at the box's edge ON the union
             return S.forms(gr.P, gr.N) + S.edge_lift(gr.P, gr.N) - S.give_way(gr.P)[0]
         env = gr.env = F.envelope(gr.P, gr.N)
@@ -467,7 +560,10 @@ def build_suit(S, M, coll="Suit"):
         build_piping(S, body_paths, arm_paths, suit, g.get("piping", (0.0008, 0.0001)), coll)
         body_paths, arm_paths = [], []
     snap = dict(CLAMP_SNAP)
-    if patch:
+    if cut:
+        snap["drop"] = lambda P: CLAMP_SNAP["drop"](P) | S.in_torso_region(P)
+        snap["post"] = lambda P: CLAMP_SNAP["post"](S.body_onto_cut(P, lambda Q, Nq: S.forms(Q, Nq) + S.edge_lift(Q, Nq)))
+    elif patch:
         snap["drop"] = lambda P: CLAMP_SNAP["drop"](P) | S.give_way(P)[1]
     suit_end = d["boot"].get("implicit", {}).get("suit_end")
     if suit_end:  # inside an implicit boot the suit's leg ends (its foot is the boot's)
