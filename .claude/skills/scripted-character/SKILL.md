@@ -146,9 +146,13 @@ What made the briefs work:
 ## Lessons
 
 1. **A fresh pair of eyes on the pictures.** The agents' numbers were accurate every time; their
-   reports were soft on looks (stage 2's incident). Whether a separate Opus reviewer given only
-   the pictures and the sheet catches as much as the orchestrator did is untested: try it on the
-   next character and compare the two lists.
+   reports were soft on looks (stage 2's incident). *2026-10-04, Beatrice:* tested once — a
+   separate Opus reviewer, given the pictures, the references and the owner's decisions, found
+   everything the orchestrator found and more (it opened all twelve renders, the orchestrator
+   four); both lists are in `art/characters/Beatrice/previews/review_stage1.md`. So the default
+   for stage 2 is now: the reviewer writes the defect list first, the orchestrator checks the top
+   items against the pictures and adds what only it knows (the owner's steer, presentation). One
+   character is one data point; keep comparing for the next two.
 2. **Put the first of a family in the real game before building the rest.** Two things only
    showed there: the navy coverall read light grey from above (the unit shader added an edge
    glow on top of the colour), and every model was drawn at the same height whatever its size.
