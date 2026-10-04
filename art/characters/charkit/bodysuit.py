@@ -185,8 +185,9 @@ class Suit:
         zs, ts = self._tz
 
         def radial(Pp, dz=0.0):
-            t = np.interp(Pp[:, 2] + dz, zs, ts)
-            c, _, e1, e2, par = B.frames(t)
+            # the sections are level: evaluate each distinct height once (a grid has few)
+            zu, inv = np.unique(Pp[:, 2] + dz, return_inverse=True)
+            c, _, e1, e2, par = (a[inv] for a in B.frames(np.interp(zu, zs, ts)))
             q = Pp - c
             x1, x2 = np.einsum("ij,ij->i", q, e1), np.einsum("ij,ij->i", q, e2)
             return np.hypot(x1, x2), Loft._polar(np.arctan2(x2, x1), par)[0]
@@ -430,6 +431,10 @@ def build_suit(S, M, coll="Suit"):
     snap = dict(CLAMP_SNAP)
     if patch:
         snap["drop"] = lambda P: CLAMP_SNAP["drop"](P) | S.give_way(P)[1]
+    suit_end = d["boot"].get("implicit", {}).get("suit_end")
+    if suit_end:  # inside an implicit boot the suit's leg ends (its foot is the boot's)
+        drop0 = snap["drop"]
+        snap["drop"] = lambda P: drop0(P) | (P[:, 2] < suit_end)
     body = loft_mesh("Suit_Body", B, res=kit.RES * 0.85, mat=suit, coll=coll, disp=disp,
                      attrs=dict(seam=seams, pipe=lambda gr: pipe_attr(gr, body_paths)), **snap)
     mirror(solid(body, g["cloth"], bevel=0.0), merge=True)
@@ -684,6 +689,96 @@ def build_boots(S, M, coll="Boots"):
     mirror(shaft_ob)
 
 
+def build_boots_implicit(S, M, coll="Boots"):
+    """A sleek ankle boot as ONE closed surface (implicit.py), when `boot["implicit"]` is given: the
+    shaft is the leg's own surface eased out a little (it hugs the calf and runs into a slim ankle),
+    smoothly joined to a heel cup and a slim foot (a chain of sections, heel -> toe), the whole cut
+    flat underneath on the sole line; its top edge level with a shallow dip at the front. A thin sole
+    under the forefoot and a block heel (`heel` = (y, half-width, half-depth, height taper)) are their
+    own parts. A fine seam runs up the back (the `seam` attribute)."""
+    bt = BootFrame(S.d["boot"])
+    s, im = bt.s, S.d["boot"]["implicit"]
+    BX, BY = bt.BX, bt.BY
+    ank = bt.ankle
+
+    def local(P):
+        q = P - ank
+        return np.column_stack([q @ BX, q @ BY, q[:, 2]])
+
+    nodes = [(np.array([0.0, y, zc]), a) for y, zc, a, _ in im["foot"]]
+    ratios = [hh / a for _, _, a, hh in im["foot"]]
+    z_top, dip, dip_w = im["top"]
+    ease0, ease1 = im["ease"]
+    (yb0, zb0), (yb1, zb1), (yb2, zb2) = im["sole_line"]
+
+    def bottom(y):  # the underside: the heel's seat, down the arch to the ball, the toe sprung a little
+        return np.interp(-y, [-yb0, -yb1, -yb2], [zb0, zb1, zb2])
+
+    def foot_d(L):
+        d = None
+        for (c0, r0), (c1, r1), q0, q1 in zip(nodes[:-1], nodes[1:], ratios[:-1], ratios[1:]):
+            e = implicit.capsule(L, c0, c1, r0, r1, np.array([0.0, 0.0, 1.0]), ratio=(q0, q1), n=im.get("n", 2.6))
+            d = e if d is None else implicit.smin(d, e, 0.003)
+        return d
+
+    def field(P):
+        P = np.asarray(P, float)
+        L = local(P)
+        Pa = np.column_stack([np.abs(P[:, 0]), P[:, 1:]])
+        z = P[:, 2]
+        ease = ease0 + (ease1 - ease0) * np.clip((z_top - z) / (z_top - 0.17), 0.0, 1.0)
+        shaft = np.ones(len(P))
+        up = z > im["shaft_low"] - 0.03  # the leg's distance only where the shaft can be
+        shaft[up] = S.body_sdf(Pa[up]) - ease[up]
+        shaft = implicit.smax(shaft, im["shaft_low"] - z, 0.012)
+        d = implicit.smin(shaft, foot_d(L), im["k"])
+        d = implicit.smax(d, bottom(L[:, 1]) - L[:, 2], 0.0015)                 # flat underneath
+        ang = np.arctan2(-L[:, 1], np.abs(L[:, 0]) + 1e-9)                      # 90 deg = straight ahead
+        top = z_top - dip * np.clip(1.0 - np.abs(ang - np.pi / 2) / dip_w, 0.0, 1.0) ** 1.5
+        return np.maximum(d, z - top)                                            # the top edge, cut level
+
+    lo = ank + np.array([-0.06, -0.20, -0.005])
+    hi = ank + np.array([0.06, 0.10, z_top + 0.01])
+    lo, hi = np.minimum(lo, hi), np.maximum(lo, hi)
+    h = im["res"][0 if kit.RES < 0.006 else 1]
+    V, Q = implicit.mesh_field(field, lo - 0.01, hi + 0.01, h)
+    V = implicit.taubin(V, Q, iters=4)
+    L = local(V)
+    back = np.clip((L[:, 1] - 0.0) / 0.01, 0.0, 1.0)                              # the back half only
+    seam = 1.0 - np.minimum(np.where(back > 0.5, np.abs(L[:, 0]), 1.0), kit.SEAM_CAP) / kit.SEAM_CAP
+    mirror(kit.new_mesh("Boot", V, Q, None, M["boot"], coll, attrs=dict(seam=seam)))
+
+    # the sole under the forefoot and the block heel (sole material), both closed
+    sole_t, sole_end = im["sole"]
+    hy, hw, hd, ht = im["heel"]
+
+    def sole_field(P):
+        L = local(np.asarray(P, float))
+        zc_foot = np.interp(-L[:, 1], [-n[0][1] for n in nodes], [n[0][2] for n in nodes])
+        zb = bottom(L[:, 1])
+        foot = foot_d(np.column_stack([L[:, 0], L[:, 1], zb + 0.4 * np.maximum(zc_foot - zb, 0.0)]))
+        # the footprint (the foot's outline just above its underside) a hair wider, a slab sole_t thick
+        zc = bottom(L[:, 1]) - 0.5 * sole_t + 0.0008
+        d = implicit.smax(foot - 0.0008, np.abs(L[:, 2] - zc) - 0.5 * sole_t, 0.0015)
+        return implicit.smax(d, L[:, 1] - sole_end, 0.004)
+
+    def heel_field(P):
+        L = local(np.asarray(P, float))
+        zt = bottom(L[:, 1])
+        f = np.clip(L[:, 2] / max(zb0, 1e-6), 0.0, 1.0)
+        k = ht + (1.0 - ht) * f                                                  # narrower at the floor
+        e = ((np.abs(L[:, 0]) / (hw * k)) ** 4 + (np.abs(L[:, 1] - hy) / (hd * k)) ** 4) ** 0.25 - 1.0  # a block
+        d = e * min(hw, hd)
+        d = implicit.smax(d, -L[:, 2], 0.0015)
+        return implicit.smax(d, L[:, 2] - zt - 0.001, 0.0015)
+
+    for name, fld, (y0, y1), (z0, z1) in (("Boot_Sole", sole_field, (-0.20, sole_end + 0.01), (-0.004, 0.03)),
+                                          ("Boot_Heel", heel_field, (hy - hd - 0.01, hy + hd + 0.01), (-0.004, zb0 + 0.01))):
+        cs = [ank + x * BX + y * BY + z * Z for x in (-0.05, 0.05) for y in (y0, y1) for z in (z0, z1)]
+        V, Q = implicit.mesh_field(fld, np.min(cs, axis=0), np.max(cs, axis=0), min(h, 0.0012))
+        mirror(kit.new_mesh(name, V, Q, None, M["sole"], coll))
+
+
 # ------------------------------------------------------------------------- head
 def build_head(M, head_spec, prefix, coll="Head"):
     """The bald placeholder head: `parts.head` with this figure's spec. Its own collection and
@@ -713,7 +808,10 @@ def build(M, dims, head_spec, prefix):
     S = Suit(dims)
     build_suit(S, M)
     build_bare_hands(S.F, M)
-    build_boots(S, M)
+    if "implicit" in S.d["boot"]:
+        build_boots_implicit(S, M)
+    else:
+        build_boots(S, M)
     build_head(M, head_spec, prefix)
     garment.close_holes([o for o in bpy.data.objects if o.name.startswith(("Suit_Zip_Stop", "Suit_Piping"))])
     return S

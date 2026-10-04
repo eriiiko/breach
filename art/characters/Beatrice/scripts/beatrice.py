@@ -52,7 +52,7 @@ VARIANTS = dict(
 LEGS = (
     # (centres a little in from the front view's: the back view stands narrower; the two drawings split)
     ("leg_end", 0.055, 0.1921, .020, .034, .060, .062, 2.0, 0),
-    ("instep", 0.115, 0.1891, .024, .031, .048, .050, 2.0, 0),
+    ("instep", 0.115, 0.1891, .024, .0265, .036, .040, 2.0, 0),       # stage 3: inside the boot, slim (the boot's foot is its own)
     ("ankle", 0.170, 0.1851, .028, .026, .042, .040, 2.0, 0),
     ("ankle_top", 0.240, 0.1801, .0235, .027, .0385, .0385, 2.0, 0),
     ("shin_low", 0.300, 0.1775, .0265, .031, .0415, .0415, 2.0, 0),
@@ -304,6 +304,19 @@ def dims(shape=None):
             shaft_z=(0.050, 0.240), shaft_ease=0.0012, shaft_thick=0.0020,
             feather=0.012,                                 # the top 12 mm thin into the leg: no step
             v_depth=0.030, v_half_angle=38.0,
+            # stage 3: the boot as ONE implicit surface (bodysuit.build_boots_implicit), in the foot's frame
+            # (y forward-negative from the ankle, z up): the foot's sections heel -> toe (y, centre z,
+            # half-width, half-height); the underside line (heel seat, ball, toe); the top edge (z, front
+            # dip, its half-angle rad); the shaft's ease over the leg (top, ankle); sole (thickness, its
+            # back end y); the block heel (centre y, half-width, half-depth, floor/top scale) -- a low heel
+            implicit=dict(
+                foot=((0.034, 0.058, 0.0245, 0.0285), (0.004, 0.054, 0.0270, 0.0290), (-0.034, 0.048, 0.0285, 0.0250),
+                      (-0.068, 0.037, 0.0300, 0.0200), (-0.098, 0.025, 0.0310, 0.0150), (-0.128, 0.019, 0.0265, 0.0115),
+                      (-0.150, 0.016, 0.0175, 0.0090), (-0.160, 0.0150, 0.0085, 0.0060)),
+                sole_line=((0.002, 0.032), (-0.088, 0.008), (-0.166, 0.013)),
+                top=(0.232, 0.016, 0.95), ease=(0.0022, 0.0032), n=2.8, shaft_low=0.080, k=0.020,
+                sole=(0.0045, 0.012), heel=(0.032, 0.0185, 0.0205, 0.82),
+                suit_end=0.100, res=(0.0009, 0.0020)),
         ),
     )
 
@@ -363,6 +376,7 @@ DEV_VIEWS = {
     "hand": (0.0, 90.0, 0.0, 0.75, 0.88, 85.0, (900, 900)),
     # aimed close-ups (charkit/suitbuild.render_aimed): the palm and thumb of her left hand from
     # behind and inside, between the hand and the thigh
+    "boot_side": dict(cam=(0.95, -0.05, 0.16), target=(0.19, 0.0, 0.14), lens=85.0, res=(900, 900)),
     "top_close": dict(cam=(0.0, -0.18, 2.45), target=(0.0, 0.0, 1.30), lens=50.0, res=(1000, 1000)),
     "hand_palm": dict(cam=(0.040, 0.380, 0.870), target=(0.305, 0.000, 0.860), lens=85.0, res=(900, 900)),
 }

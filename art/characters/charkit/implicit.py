@@ -42,7 +42,8 @@ def _perp_frame(T, hint):
 def capsule(P, c0, c1, r0, r1, hint, ratio=1.0, n=2.0, back=None):
     """A tapered capsule from c0 to c1 whose section is a superellipse: half-width r (across,
     along U) and half-depth r*ratio (along V, the `hint` side; `back` = the depth ratio on
-    the -V side if different), r running linearly r0 -> r1; the ends rounded. Approximate
+    the -V side if different), r running linearly r0 -> r1 (and `ratio` too, given as a pair);
+    the ends rounded. Approximate
     distance (exact on the surface, scaled near it), negative inside."""
     c0, c1 = np.asarray(c0, float), np.asarray(c1, float)
     ax = c1 - c0
@@ -56,6 +57,8 @@ def capsule(P, c0, c1, r0, r1, hint, ratio=1.0, n=2.0, back=None):
     q = v - w[..., None] * T
     x, y = q @ U, q @ V
     r = r0 + (r1 - r0) * s
+    if isinstance(ratio, tuple):  # a depth ratio running from one end to the other
+        ratio = ratio[0] + (ratio[1] - ratio[0]) * s
     rv = r * np.where(y >= 0.0, ratio, ratio if back is None else back)
     rc = np.minimum(r, rv)
     rho = (np.abs(x / r) ** n + np.abs(y / rv) ** n + np.abs(along / rc) ** n) ** (1.0 / n)
