@@ -43,6 +43,12 @@ from PIL import Image  # noqa: E402
 from level_loader import LightEntry  # noqa: E402
 
 LEVEL_NAME = "smoke_light_studio"
+# THE REFERENCE TILE (Erik, 2026-10-04: "assume tiles of side 1/3"), not the
+# explosion studio's 1.0 m: the conduction table, the radiation calibration and
+# soot's derived heat and light extinctions are all built at
+# [physics.thermal] tile_size_ref_m = 0.333, so a 1 m level runs them
+# off-reference (T3 section 8 q9). Same tiles, a room a third the size.
+TILE_SIZE_M = 0.333
 DEFAULT_OUT_DIR = ROOT / "levels" / LEVEL_NAME
 
 # The studio's three interior charges, each fired ONCE, half a second apart,
@@ -156,7 +162,7 @@ def main(out_dir: Path = DEFAULT_OUT_DIR) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     toml_path = level_lib.write_level_header(
-        out_dir, name="Smoke-Light Studio", tile_size_m=studio.TILE_SIZE_M,
+        out_dir, name="Smoke-Light Studio", tile_size_m=TILE_SIZE_M,
         normal_rel="normal.png", comment_lines=HEADER_COMMENTS)
     level_lib.write_boundary_field(toml_path, "space")
     tm = studio.build_tilemap()
