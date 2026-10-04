@@ -36,8 +36,8 @@ PALETTE = dict(
     SOLE="#0a0a0b",
     METAL="#b9b9be",         # the zip
 )
-GLOSS = dict(rough=0.16, coat=1.0, coat_rough=0.06, specular=0.5, piping=0.6,
-             boot_rough=0.18, boot_coat=0.9, boot_coat_rough=0.06, mesh_cell=0.0032, mesh_show=0.55)
+GLOSS = dict(rough=0.22, coat=0.8, coat_rough=0.10, specular=0.5, piping=0.9,
+             boot_rough=0.18, boot_coat=0.9, boot_coat_rough=0.06, mesh_cell=0.0032, mesh_show=0.40)
 
 VARIANTS = dict(
     crimson=dict(palette=dict(SUIT="#4a0b12", BOOT="#1a0a0c", MESH="#22090c", SKIN="#a8775e", BROW="#2a1c16", IRIS="#4a3626")),
@@ -154,9 +154,9 @@ def dims(shape=None):
         elbow_z=1.165,
         armpit_z=1.245,
         crotch_z=0.893,
-        hand=dict(scale=0.84, curl=0.6, girth=0.70, palm_girth=0.90, drop=0.006,
+        hand=dict(scale=0.84, curl=0.6, girth=0.70, palm_girth=0.90, drop=0.014,
                   down=(0.10, -0.04, -1.0), back=(0.92, -0.38, 0.0),
-                  palm=((-0.040, .024, .019), (-0.012, .026, .018), (0.015, .033, .016), (0.045, .039, .015),
+                  palm=((-0.040, .017, .014), (-0.012, .021, .016), (0.015, .033, .016), (0.045, .039, .015),
                         (0.072, .041, .014), (0.092, .039, .012), (0.102, .033, .008))),
         # broad body forms under the suit (x0, z0, side, sx, sz, height): nothing anatomical beyond them
         forms=((0.058, 1.280, "front", 0.040, 0.036, 0.024),
@@ -169,7 +169,7 @@ def dims(shape=None):
             collar=dict(rings=((1.428, .012, .060, .054, .060, 2.3), (1.445, .012, .052, .049, .055, 2.2), (1.465, .012, .046, .044, .050, 2.1),
                                (1.485, .012, .045, .043, .049, 2.0), (1.500, .012, .045, .043, .049, 2.0)),
                         thick=0.003, top_seam=0.006),
-            zip=dict(bottom_z=1.040, width=0.0075, pull_z=1.488),
+            zip=dict(bottom_z=1.040, width=0.0075, pull_z=1.474),
             knee_pad=dict(x=0.121, z=0.606, hs=0.030, ht=0.040, dome=0.004, n=2.3),
             # seams as front-view points ("x", x, z) or by section angle ("phi", deg, z)
             seams=dict(

@@ -1,0 +1,37 @@
+{
+ "Head": {
+  "objects": 6,
+  "source_tris": 105472,
+  "evaluated_tris": 113152
+ },
+ "Boots": {
+  "objects": 4,
+  "source_tris": 30572,
+  "evaluated_tris": 80056
+ },
+ "Hands": {
+  "objects": 6,
+  "source_tris": 19580,
+  "evaluated_tris": 39160
+ },
+ "Suit": {
+  "objects": 18,
+  "source_tris": 216772,
+  "evaluated_tris": 844284
+ },
+ "TOTAL": {
+  "objects": 34,
+  "source_tris": 372396,
+  "evaluated_tris": 1076652
+ },
+ "NORMALS": {
+  "flipped": [
+   "Beatrice_Eye_L",
+   "Beatrice_Eye_R",
+   "Suit_Zip_Pull_Tab"
+  ],
+  "closed": 34,
+  "open": [],
+  "undecided": []
+ }
+}
