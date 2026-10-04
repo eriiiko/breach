@@ -108,3 +108,22 @@ def test_a_look_table_that_draws_nobody_is_refused():
     cfg = Namespace({"render": {"unit_looks": {"zombie": ["x"]}}})
     with pytest.raises(ValueError, match="player"):
         looks_table(cfg)
+
+
+def test_every_draw_call_of_a_frame_advances_the_animation_alike():
+    """PROPERTY: the renderer's draw calls of one frame (the game makes one
+    for the players and one for the zombies, with the same clock) all
+    advance the animation by that frame's wall-clock step, and the step
+    follows the clock from frame to frame.
+
+    BREAKS IF: the step is taken as ``clock - last call's clock`` per call
+    again -- the second call of every frame then gets 0 and the zombies never
+    animate (found and fixed in #33's unit-looks patch).
+    """
+    from renderer.unit_model_renderer import UnitModelRenderer
+
+    r = UnitModelRenderer()   # no GL needed: nothing is loaded
+    r._frame_dt(10.0)
+    for clock, step in ((10.5, 0.5), (10.75, 0.25)):
+        assert r._frame_dt(clock) == pytest.approx(step)   # players
+        assert r._frame_dt(clock) == pytest.approx(step)   # zombies

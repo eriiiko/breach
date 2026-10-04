@@ -156,6 +156,7 @@ class UnitModelRenderer:
         self._loaded = False
         self._anim: Dict[int, _UnitAnimState] = {}
         self._last_clock: Optional[float] = None
+        self._dt = 0.0                   # the current frame's wall-clock step
         # P1 lit marine shader (set up in load() once the GL context exists),
         # SHARED by every look. None in the Patch-0 fallback path (flat per-
         # channel CPU RGB tint); when present, _draw_one lets the shader sample
@@ -448,8 +449,7 @@ class UnitModelRenderer:
         """
         if not self._loaded or not self._looks:
             return
-        dt = 0.0 if self._last_clock is None else max(0.0, clock - self._last_clock)
-        self._last_clock = clock
+        dt = self._frame_dt(clock)
 
         # ONE scale for every look (the marine's), so heights stay true.
         scale = (_SCALE_TILES_TALL * wpt) / self._scale_height
@@ -492,6 +492,19 @@ class UnitModelRenderer:
                 rl.end_mode_3d()
 
         self._prune(clock)
+
+    def _frame_dt(self, clock: float) -> float:
+        """The wall-clock step the animation advances by in the frame drawn
+        at ``clock``. Every draw_units call of ONE frame (the game makes two:
+        players, then zombies, with the same clock) gets the same step; it
+        changes only when the clock moves on. (Before this, the second call
+        of a frame always got 0, so the zombies never animated.)"""
+        if self._last_clock is None:
+            self._dt = 0.0
+        elif clock != self._last_clock:
+            self._dt = max(0.0, clock - self._last_clock)
+        self._last_clock = clock
+        return self._dt
 
     def _draw_one(self, u, look: _Look, wpt: float, dt: float, clock: float,
                   scale: float, shadow_r: float, base_tint,
