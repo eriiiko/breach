@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Beatrice — stage 1 body and suit</title>
+<title>Beatrice — body and suit</title>
 <style>
   :root { color-scheme: dark; --bg: #1c1e22; --panel: #26292f; --ink: #e6e3dc; --dim: #9aa0a8; --line: #3a3e46; }
   body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, "Segoe UI", sans-serif; }
@@ -21,42 +21,58 @@
 </head>
 <body>
 <main>
-  <h1>Beatrice — stage 1: body, suit, hands, boots</h1>
+  <h1>Beatrice — body, suit, hands, boots (stage 2: correction round)</h1>
   <p>Built from Python alone on the shared character kit (<code>charkit/bodysuit.py</code>, Blender 4.5, Cycles) from the tables in
-     <code>scripts/beatrice.py</code>. The head is a bald placeholder for the face-and-hair stage. Character only, no props. See <code>PROVENANCE.md</code>.</p>
+     <code>scripts/beatrice.py</code>, now fitted to three drawings: front, side and back. The head is a bald placeholder for the
+     face-and-hair stage. Character only, no props. The stage-1 review this round answers: <code>review_stage1.md</code>. See <code>PROVENANCE.md</code>.</p>
 
-  <h2>Hip shape: concept vs front view</h2>
-  <p>Left to right: the original concept (scaled to the front view's shoulders, waist aligned), the front view, the default build
-     (hips, seat and thighs to the concept's proportions), the <code>sheet_hips</code> build (the front view's own hips and thighs).</p>
-  <figure><img src="shape_vs_concept.jpg" alt="Concept, front view, default build, sheet_hips build"><figcaption>concept · front view · default · sheet_hips</figcaption></figure>
+  <h2>Hip shapes, side by side</h2>
+  <p>Three shapes built from table values only, in a matte grey so the gloss hides nothing, front and side, waist to knee. The orange
+     line is the drawing's outline (front view above, side view below); the concept sits beside the front row. <code>default</code>
+     is the build: the concept's hip ratios, a moderate seat. <code>sheet_hips</code> is the three drawings' width and full seat.</p>
+  <figure><img src="shape_vs_concept.jpg" alt="Three hip shapes in matte grey, front and side, with the drawing outlines"><figcaption>one step slimmer · default · sheet_hips (the drawings)</figcaption></figure>
 
-  <h2>Front view vs model</h2>
-  <p>Silhouette IoU, default build: whole 0.913; above the waist 0.963, waist to knee 0.873 (narrower hips on purpose), knees down 0.924.
-     <code>sheet_hips</code>: whole 0.948; 0.963 / 0.949 / 0.924.</p>
-  <div class="pair">
-    <figure><img src="sheet_vs_reference.png" alt="Reference above the default build"><figcaption>Default build</figcaption></figure>
-    <figure><img src="sheet_hips_sheet_vs_reference.png" alt="Reference above the sheet_hips build"><figcaption>sheet_hips build</figcaption></figure>
+  <h2>The three drawings vs the model</h2>
+  <p>Silhouette overlap (IoU), default build, per height band (above the waist / waist to knee / knees down). Front 0.947 / 0.870 / 0.900;
+     side 0.918 / 0.917 / 0.869; back 0.913 / 0.837 / 0.832. The waist-to-knee band is narrower than the drawings on purpose
+     (<code>sheet_hips</code>: front 0.947, side 0.959, back 0.886). Knees down: the front and back drawings place the lower legs
+     1.8 cm apart and draw a high heel; the build splits the difference and wears the low heel asked for.</p>
+  <div class="grid">
+    <figure><img src="sheet_vs_reference.png" alt="Front drawing above the model"><figcaption>Front: drawing above, model below</figcaption></figure>
+    <figure><img src="side_vs_reference.png" alt="Side drawing above the model"><figcaption>Side</figcaption></figure>
+    <figure><img src="back_vs_reference.png" alt="Back drawing above the model"><figcaption>Back</figcaption></figure>
   </div>
-  <div class="pair">
-    <figure><img src="sheet_overlay.png" alt="Silhouette overlay, default"><figcaption>Overlay, default: grey both, red reference only, blue model only</figcaption></figure>
-    <figure><img src="sheet_hips_sheet_overlay.png" alt="Silhouette overlay, sheet_hips"><figcaption>Overlay, sheet_hips</figcaption></figure>
+  <div class="grid">
+    <figure><img src="sheet_overlay.png" alt="Front overlay"><figcaption>Front overlay: grey both, red drawing only, blue model only</figcaption></figure>
+    <figure><img src="side_overlay.png" alt="Side overlay"><figcaption>Side overlay</figcaption></figure>
+    <figure><img src="back_overlay.png" alt="Back overlay"><figcaption>Back overlay</figcaption></figure>
   </div>
 
   <h2>Turnaround</h2>
-  <figure><img src="turnaround.png" alt="Front, side, back, three-quarter"><figcaption>Orthographic front, side, back, three-quarter (side and back are invented: no reference)</figcaption></figure>
+  <figure><img src="turnaround.png" alt="Front, side, back, three-quarter"><figcaption>Orthographic front, side, back, three-quarter</figcaption></figure>
 
   <h2>Studio views</h2>
   <div class="grid">
     <figure><img src="hero.jpg" alt="Three-quarter front"><figcaption>Three-quarter front</figcaption></figure>
     <figure><img src="hero_back.jpg" alt="Three-quarter back"><figcaption>Three-quarter back</figcaption></figure>
     <figure><img src="side.jpg" alt="Side"><figcaption>Side</figcaption></figure>
-    <figure><img src="torso.jpg" alt="Torso"><figcaption>Torso</figcaption></figure>
-    <figure><img src="torso_back.jpg" alt="Torso, back"><figcaption>Torso, back</figcaption></figure>
+    <figure><img src="torso.jpg" alt="Torso"><figcaption>Torso: piping, shoulder slits, rib and waist crescents, toothed zip</figcaption></figure>
+    <figure><img src="torso_back.jpg" alt="Torso, back"><figcaption>Torso, back: zip down the spine, blade, rib and waist panels, the V seams</figcaption></figure>
     <figure><img src="legs.jpg" alt="Legs and boots"><figcaption>Legs and boots</figcaption></figure>
     <figure><img src="head.jpg" alt="Placeholder head"><figcaption>Placeholder head (replaced in the next stage)</figcaption></figure>
     <figure><img src="top.jpg" alt="From above"><figcaption>From above (the game camera)</figcaption></figure>
     <figure><img src="elevated.jpg" alt="Elevated"><figcaption>Elevated</figcaption></figure>
-    <figure><img src="crimson_hero.jpg" alt="Crimson variant"><figcaption>Variant <code>crimson</code>: palette values only (suit, boots, net, skin, brows, iris)</figcaption></figure>
+    <figure><img src="crimson_hero.jpg" alt="Crimson variant"><figcaption>Variant <code>crimson</code>: palette values only</figcaption></figure>
+  </div>
+
+  <h2>Close-ups</h2>
+  <div class="grid">
+    <figure><img src="shoulder.jpg" alt="Shoulder and collar"><figcaption>Shoulder, collar, zip pull</figcaption></figure>
+    <figure><img src="flank.jpg" alt="Flank"><figcaption>Flank: the panels set in the suit</figcaption></figure>
+    <figure><img src="flank_back.jpg" alt="Flank from behind"><figcaption>Flank from behind</figcaption></figure>
+    <figure><img src="knee.jpg" alt="Knees"><figcaption>Knee shields and shin seams</figcaption></figure>
+    <figure><img src="boot.jpg" alt="Boots"><figcaption>Ankle boots: low block heel, almond toe, V top</figcaption></figure>
+    <figure><img src="hand.jpg" alt="Hand"><figcaption>Hand and cuff</figcaption></figure>
   </div>
 </main>
 </body>

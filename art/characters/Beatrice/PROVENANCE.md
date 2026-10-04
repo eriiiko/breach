@@ -1,4 +1,4 @@
-# Beatrice — scripted Blender model (Claude), stage 1
+# Beatrice — scripted Blender model (Claude), stages 1 and 2
 
 2026-10-04. Tracker: eriiiko/breach #33. Branch `33-beatrice`. Offline asset files only. This stage:
 body, bodysuit, hands and boots; the head is a bald placeholder (collection `Head`, objects
@@ -13,19 +13,25 @@ body, bodysuit, hands and boots; the head is a bald placeholder (collection `Hea
     `e50b669f5fe177c219896d8c65b06947ce368cc2a0336ad483e7a04884836dc2`.
   - `with_hair.png` — the same with hair (for the next stage). SHA-256
     `7be681b2d6861440a265cea25e070b03d048be6a4af5ca35623a78c8a829b40c`.
+  - `without_hair_side.png` — side view, same pose (supplied after stage 1). SHA-256
+    `32ffb098b3f380c3a28a014312202c8792032202ce024d70b03aeace904cad78`.
+  - `without_hair_back.png` — back view, same pose (supplied after stage 1). SHA-256
+    `78c62cfe49669e59a78c8e63b973ad6281e755f8ad7409ef9edac7c6130cb98e`.
 - Erik's steer: heights, limbs, shoulders, arms, torso above the waist, knees and below from the front
   view; hips, seat and thighs from the concept (the front view's are too wide); the front view's
-  full-length suit. 1.68 m to the top of the head, boots on. No side or back reference exists.
+  full-length suit. 1.68 m to the top of the head, boots on. Stage 2 (Erik): depths from the side view with the seat
+  and thigh taken in (a moderate seat), a LOW block heel of about 3 cm, the back from the back view.
 - No third-party geometry, textures or code.
 
 ## Reproduce
 
 Blender 4.5, bundled Python. From `art/characters/`:
 
-    bash charkit/run.sh Beatrice --sheet --turn --beauty all --save     # about 2.3 minutes
+    bash charkit/run.sh Beatrice --sheet --turn --beauty all --save     # about 2.6 minutes
     bash charkit/run.sh Beatrice --sheet --shape sheet_hips --save      # the front view's hips, about 15 s
     bash charkit/run.sh Beatrice --variant crimson --beauty hero         # about 20 s
-    bash charkit/run.sh Beatrice --compare                               # shape_vs_concept.jpg, about 30 s
+    bash charkit/run.sh Beatrice --compare                               # shape_vs_concept.jpg, about 1 min
+    bash charkit/run.sh Beatrice --beauty shoulder,flank,flank_back,knee,boot,hand   # close-ups, about 50 s
     bash charkit/run.sh Beatrice --draft --sheet                         # about 15 s, the working loop
 
 Outputs: `previews/` (tracked), `source/Beatrice.blend` (gitignored), `source/*mesh_stats.json`,
@@ -46,7 +52,30 @@ Outputs: `previews/` (tracked), `source/Beatrice.blend` (gitignored), `source/*m
 - Materials: `beatrice_suit`, `beatrice_mesh`, `beatrice_skin`, `beatrice_eye`, `beatrice_boot`,
   `beatrice_sole`, `beatrice_metal`.
 
-## Measured
+## Measured (stage 2)
+
+- Concept ratios against the default build: hip/shoulder 0.911 → 0.914 (+0.3 %), hip/waist 1.794 → 1.817 (+1.3 %),
+  thigh/hip 0.482 → 0.463 (−3.9 %).
+- Silhouette IoU, default build, bands above the waist / waist–knee / knees down: front 0.947 / 0.870 / 0.900 (whole 0.901);
+  side 0.918 / 0.917 / 0.869 (0.904); back 0.913 / 0.837 / 0.832 (0.859). `sheet_hips`: front 0.947 / 0.947 / 0.900,
+  side 0.918 / 0.959 / 0.869, back 0.913 / 0.886 / 0.832.
+- The front and back drawings disagree on where the lower legs stand (1.8 cm apart at the ankle); the leg centres split
+  the difference (front knees-down 0.937 → 0.900, back 0.783 → 0.832). All three draw a high heel; the build wears the
+  3 cm block heel.
+- `source/mesh_stats.json`: 62 objects, 405,437 source / 1,129,616 evaluated triangles; all 62 closed, none open.
+
+## Stage 2 construction (kit, additive)
+
+- `suitbuild`: further views (`sheet_ref.VIEWS`) scored per band with `<view>_vs_reference.png`; the hips comparison
+  (`tables.COMPARE`, `COMPARE_BAND`) in matte grey, front and side, outlines and labels drawn in Blender.
+- `bodysuit`: back-view feature points (`"bx"`); seams as piping cords (`seam_style="tube"`); mesh panels set in the suit
+  (`panel_rim="seam"`); toothed front and back zips with flat pulls (`zip.teeth`); a kneecap as a body form with a seam
+  loop (`knee_pad=None`); the boot shaft's top feathered into the leg (`boot.feather`); cuff height/lift from the table.
+- `garment.panel(surface_uv=)`, `wearmat.mat_mesh(surface=, coat=)`: the net laid in the panel's own coordinates (the
+  world-plane net cut curved panels in shimmering contour rings).
+- `parts.hand(thumb_dir=, fan=, knuckle=, finger_len=)`, passed through `workwear.build_hands`.
+
+## Stage 1 measures (superseded)
 
 - Concept (by hand, far-side half-widths from the midline, concept px): shoulder 305, waist 155, hip at
   the crotch 278, far thigh at the crotch 268 → hip/shoulder 0.911, hip/waist 1.794, thigh/hip 0.482.
@@ -59,5 +88,5 @@ Outputs: `previews/` (tracked), `source/Beatrice.blend` (gitignored), `source/*m
 
 ## Not done, and known weaknesses
 
-See the stage-1 report in issue #33. The face is the head function's default (doll-like); side and back
-are invented; the mesh inserts' net moirés at full-figure distance.
+The face is the head function's default (doll-like), for the next stage. See the stage-2 report for what still
+reads weak (hands, the boot's heel counter, the shoulder cap seam, the back drawing's leg stance).
