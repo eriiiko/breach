@@ -48,6 +48,10 @@ MARINE_LIGHT_Z = 0.35
 # small token reads as 3D more from its lit rim than from N·L over its top).
 MARINE_RIM_STRENGTH = 0.35
 MARINE_RIM_POWER = 2.5
+# #33: how much the rim takes the albedo (0 = white rim, 1 = fully tinted). The
+# shipped value is config.toml [render.unit_shading] rim_albedo, pushed per
+# frame by UnitModelRenderer; this is only the compile-time default (white).
+MARINE_RIM_ALBEDO = 0.0
 
 # --- P2 normal-map capability (default OFF; see below) ------------------------
 # The single feel knob for how hard the tangent-space normal map perturbs the
@@ -101,7 +105,7 @@ uniform sampler2D texture1;   // light_tex_a: RGB incoming light, A = dir.x
 uniform sampler2D texture2;   // light_tex_b: RGB smoke_glow, A = dir.y
 uniform sampler2D texture3;   // P2 marine normal map (MATERIAL_MAP_ROUGHNESS
                               // slot — a FREE slot; light textures own 1 & 2)
-uniform vec4  colDiffuse;     // group tint (draw color): marines / zombies
+uniform vec4  colDiffuse;     // draw colour (white since #33: looks are models)
 
 uniform vec3  u_ambient;       // ship's ambient floor (single source of truth)
 uniform float u_light_gain;    // ship's render exposure
@@ -112,6 +116,7 @@ uniform vec2  u_world_px;      // (world_px_w, world_px_h) for the field UV
 uniform vec3  u_view_dir;      // direction toward the eye (ortho ~ (0,1,0))
 uniform float u_rim_strength;
 uniform float u_rim_power;
+uniform float u_rim_albedo;    // #33: rim colour = mix(white, albedo, this)
 uniform int   u_srgb_decode;
 uniform int   u_use_normal_marine; // P2 guard: 0 = inert (N unchanged), 1 = on
 uniform float u_normal_strength;   // P2 perturbation strength (feel knob)
@@ -165,15 +170,17 @@ void main() {
 
     vec3 albedo = texture(texture0, fragTexCoord).rgb;
     if (u_srgb_decode == 1) albedo = srgb_to_linear(albedo);  // else double-dark
-    albedo *= colDiffuse.rgb;                                  // group identity
+    albedo *= colDiffuse.rgb;                                  // draw colour
 
     vec3 lit = albedo * (u_ambient + incoming_rgb * u_light_gain * ndotl);
 
     // Rim: Fresnel-ish silhouette term, tinted by the LOCAL light so it never
     // brightens a marine the room around it can't (dark room -> faint ambient
-    // rim only).
+    // rim only), and by the surface's own colour (#33, u_rim_albedo) so dark
+    // cloth keeps a dark edge instead of reading light grey from above.
     float rim = pow(1.0 - max(0.0, dot(N, u_view_dir)), u_rim_power);
-    lit += u_rim_strength * rim * (u_ambient + incoming_rgb * u_light_gain);
+    vec3 rim_col = mix(vec3(1.0), albedo, u_rim_albedo);
+    lit += u_rim_strength * rim * rim_col * (u_ambient + incoming_rgb * u_light_gain);
 
     lit = aces_tonemap(lit);
     if (u_srgb_decode == 1) lit = linear_to_srgb(lit);
@@ -224,6 +231,13 @@ class MarineShader:
                                                     float(view_dir[2])]),
                             rl.ShaderUniformDataType.SHADER_UNIFORM_VEC3)
 
+    def set_rim_albedo(self, amount: float) -> None:
+        """#33: rim tint by albedo, 0 (white rim) .. 1 (fully albedo-tinted).
+        Safe to call anytime -- SetShaderValue self-enables the program."""
+        rl.set_shader_value(self.shader, self.locs["u_rim_albedo"],
+                            rl.ffi.new("float[1]", [float(amount)]),
+                            rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
+
     def set_use_normal(self, enabled: bool) -> None:
         """P2 on/off. Clean, zero-cost when off (the fragment guard skips the
         whole TBN+sample path). Safe to call anytime — SetShaderValue self-
@@ -256,7 +270,8 @@ def load_marine_shader(light_z: float = MARINE_LIGHT_Z,
     shader = rl.load_shader_from_memory(MARINE_VS, MARINE_FS)
     names = ["u_ambient", "u_light_gain", "u_light_z", "u_normal_y_sign",
              "u_world_px", "u_view_dir", "u_rim_strength", "u_rim_power",
-             "u_srgb_decode", "u_use_normal_marine", "u_normal_strength"]
+             "u_srgb_decode", "u_use_normal_marine", "u_normal_strength",
+             "u_rim_albedo"]
     locs = {n: rl.get_shader_location(shader, n) for n in names}
 
     # P2 normal map: bind the ROUGHNESS(3) material slot to the `texture3`
@@ -280,6 +295,9 @@ def load_marine_shader(light_z: float = MARINE_LIGHT_Z,
     rl.set_shader_value(shader, locs["u_rim_power"],
                         rl.ffi.new("float[1]", [float(rim_power)]),
                         rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
+    rl.set_shader_value(shader, locs["u_rim_albedo"],
+                        rl.ffi.new("float[1]", [float(MARINE_RIM_ALBEDO)]),
+                        rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
     rl.set_shader_value(shader, locs["u_srgb_decode"],
                         rl.ffi.new("int[1]", [1 if srgb_decode else 0]),
                         rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
@@ -300,5 +318,6 @@ def load_marine_shader(light_z: float = MARINE_LIGHT_Z,
 
 __all__ = ["load_marine_shader", "MarineShader", "MARINE_VS", "MARINE_FS",
            "MARINE_LIGHT_Z", "MARINE_RIM_STRENGTH", "MARINE_RIM_POWER",
+           "MARINE_RIM_ALBEDO",
            "MARINE_NORMAL_STRENGTH", "MARINE_USE_NORMAL_DEFAULT",
            "MARINE_NORMAL_MAP_FILENAME"]
