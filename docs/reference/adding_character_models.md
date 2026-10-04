@@ -22,7 +22,7 @@ one rule that governs everything here is:
 > scripted characters; the rest of this guide still holds for meshes that come from outside. The
 > unit model the game draws is now `assets/models/space_marine/`; `assets/models/marine/` (the
 > mannequin) stays as the skeleton and clip source. The procedure for making such a character,
-> stage by stage, is `scripted_character_workflow.md`.
+> stage by stage, is the `scripted-character` skill (`.claude/skills/scripted-character/SKILL.md`).
 
 ## 0. The 30-second version (the checklist)
 
