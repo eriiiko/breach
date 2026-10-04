@@ -18,6 +18,7 @@ returns to loaded models.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Sequence
 
@@ -75,6 +76,51 @@ def role_of(unit) -> str:
     return ROLE_ZOMBIE if getattr(unit, "is_zombie", False) else ROLE_PLAYER
 
 
+@dataclass(frozen=True)
+class UnitShading:
+    """``[render.unit_shading]``: how the 3D units are shaded, read every
+    frame (Ctrl+R retunes it live). Zero/off means the effect is absent:
+    ``gloss_strength`` 0 draws no highlight, ``normal_map`` false leaves the
+    mesh normals as they are, ``blob_shadow`` false draws no disc under a unit."""
+    rim_albedo: float        # rim colour: 0 white .. 1 the surface's own colour
+    gloss_strength: float    # highlight strength; 0 = no highlight
+    gloss_shininess: float   # highlight exponent at gloss 1 (tightness)
+    normal_map: bool         # each look's own baked normal map on/off
+    normal_strength: float   # how far the map tilts the normal (0 .. 1)
+    blob_shadow: bool        # the round shadow disc under each unit
+
+
+_SHADING_KEYS = {"rim_albedo": float, "gloss_strength": float,
+                 "gloss_shininess": float, "normal_map": bool,
+                 "normal_strength": float, "blob_shadow": bool}
+
+
+def unit_shading(cfg) -> UnitShading:
+    """The ``[render.unit_shading]`` settings of a loaded config (``CFG``).
+    Raises ValueError naming the key when the section or any key is missing
+    or of the wrong type -- a shading setting that silently fell back to a
+    default would hide a typo in config.toml."""
+    section = getattr(getattr(cfg, "render", None), "unit_shading", None)
+    if section is None:
+        raise ValueError("config.toml has no [render.unit_shading] section")
+    values = {}
+    for key, kind in _SHADING_KEYS.items():
+        if not hasattr(section, key):
+            raise ValueError(f"[render.unit_shading] is missing {key!r}")
+        v = getattr(section, key)
+        ok = isinstance(v, bool) if kind is bool else (
+            isinstance(v, (int, float)) and not isinstance(v, bool))
+        if not ok:
+            raise ValueError(f"[render.unit_shading] {key} must be a "
+                             f"{kind.__name__}, got {v!r}")
+        values[key] = kind(v)
+    if values["gloss_strength"] < 0.0 or values["gloss_shininess"] < 1.0:
+        raise ValueError("[render.unit_shading] needs gloss_strength >= 0 and "
+                         "gloss_shininess >= 1, got "
+                         f"{values['gloss_strength']!r}, {values['gloss_shininess']!r}")
+    return UnitShading(**values)
+
+
 class LookAssigner:
     """Deals look names to units, once per unit id, and remembers them."""
 
@@ -100,4 +146,5 @@ class LookAssigner:
 
 
 __all__ = ["LookAssigner", "look_path", "looks_table", "all_look_names",
+           "UnitShading", "unit_shading",
            "role_of", "unit_key", "ROLES", "ROLE_PLAYER", "ROLE_ZOMBIE", "MODELS_DIR"]
