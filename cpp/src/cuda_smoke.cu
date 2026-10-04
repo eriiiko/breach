@@ -1,4 +1,10 @@
 // ============================================================================
+// SMOKE TRANSPORT v2 (#12) P2a NOTE: the per-call `smoke_step` (and its
+// backend flag, binding and callers) is DELETED. What stays is the RESIDENT
+// path's old semi-Lagrangian law -- smoke_launch_resident + trace_smoke_resident
+// + their kernels -- which no longer matches the CPU/chained law; P2b replaces
+// it with the resident trace tail and deletes this file.
+// ============================================================================
 // CUDA-S4a/S4b smoke solver implementation — see cuda_smoke.h.
 // A bit-identical GPU port of SmokeDynamics::step (smoke_dynamics.cpp 187-302)
 // and SmokeDynamics::sink_hop (the breach pull, smoke_dynamics.cpp 309-355 — S4b).
@@ -310,108 +316,12 @@ __global__ void trace_decay(int32_t* __restrict__ gas_slice,
 
 }  // namespace
 
-void smoke_step(
-    int32_t* smoke,
-    const int32_t* wind_x, const int32_t* wind_y,
-    const bool* obstacles, const bool* is_wall, const bool* is_vacuum,
-    const float* permeability,
-    int h, int w, float dt,
-    float d_smoke, float wind_diffusion_scale, float advection_rate,
-    const bool* is_ambient) {   // BC: ambient ring trace sink (nullptr = space)
-    const int n = h * w;
-    if (n <= 0) return;
-
-    // ---- Host scalar precompute (smoke_dynamics.cpp:199,267-268, VERBATIM, in
-    //      double). actual_dt = dt; dt_adv = advection_rate*actual_dt; quantize. --
-    const double actual_dt = (double)dt;
-    const double dt_adv = (double)advection_rate * actual_dt;
-    const int32_t dt_adv_q = quantize(dt_adv);
-    const double d_smoke_d = (double)d_smoke;
-    const double wds_d = (double)wind_diffusion_scale;
-
-    // ---- Device buffers (the gas plane + wind + masks + perm + scratch lap/src).
-    //      Per-call H2D/D2H of the plane (S1/S3 pattern); residency is S8. -------
-    const size_t nb    = (size_t)n * sizeof(int32_t);
-    const size_t nbool = (size_t)n * sizeof(bool);
-    const size_t nbf   = (size_t)n * sizeof(float);
-
-    int32_t *d_gas = nullptr, *d_wx = nullptr, *d_wy = nullptr,
-            *d_lap = nullptr, *d_src = nullptr;
-    bool *d_obs = nullptr, *d_wall = nullptr, *d_vac = nullptr;
-    float *d_perm = nullptr;
-
-    cuda_check(cudaMalloc(&d_gas, nb), "malloc smoke");
-    cuda_check(cudaMalloc(&d_wx, nb), "malloc wind_x");
-    cuda_check(cudaMalloc(&d_wy, nb), "malloc wind_y");
-    cuda_check(cudaMalloc(&d_lap, nb), "malloc lap");
-    cuda_check(cudaMalloc(&d_src, nb), "malloc src");
-    cuda_check(cudaMalloc(&d_obs, nbool), "malloc obstacles");
-    cuda_check(cudaMalloc(&d_wall, nbool), "malloc is_wall");
-    cuda_check(cudaMalloc(&d_vac, nbool), "malloc is_vacuum");
-    cuda_check(cudaMalloc(&d_perm, nbf), "malloc permeability");
-
-    cuda_check(cudaMemcpy(d_gas, smoke, nb, cudaMemcpyHostToDevice), "H2D smoke");
-    cuda_check(cudaMemcpy(d_wx, wind_x, nb, cudaMemcpyHostToDevice), "H2D wind_x");
-    cuda_check(cudaMemcpy(d_wy, wind_y, nb, cudaMemcpyHostToDevice), "H2D wind_y");
-    cuda_check(cudaMemcpy(d_obs, obstacles, nbool, cudaMemcpyHostToDevice), "H2D obstacles");
-    cuda_check(cudaMemcpy(d_wall, is_wall, nbool, cudaMemcpyHostToDevice), "H2D is_wall");
-    cuda_check(cudaMemcpy(d_vac, is_vacuum, nbool, cudaMemcpyHostToDevice), "H2D is_vacuum");
-    cuda_check(cudaMemcpy(d_perm, permeability, nbf, cudaMemcpyHostToDevice), "H2D permeability");
-
-    // BC: optional ambient ring mask (nullptr on space maps -> the kernels take
-    // the byte-identical space path via the `is_ambient && ...` short-circuit).
-    bool* d_amb = nullptr;
-    if (is_ambient) {
-        cuda_check(cudaMalloc(&d_amb, nbool), "malloc is_ambient");
-        cuda_check(cudaMemcpy(d_amb, is_ambient, nbool, cudaMemcpyHostToDevice), "H2D is_ambient");
-    }
-
-    const int block = 256;
-    const int grid = (n + block - 1) / block;
-
-    // K1 diffusion Laplacian -> d_lap (reads the live smoke).
-    smoke_lap<<<grid, block>>>(d_gas, d_perm, d_lap, h, w);
-    cuda_check(cudaGetLastError(), "lap launch");
-    // K2 diffusion apply (in-place on d_gas).
-    smoke_diffuse<<<grid, block>>>(d_gas, d_wx, d_wy, d_lap,
-                                   d_smoke_d, wds_d, actual_dt, n);
-    cuda_check(cudaGetLastError(), "diffuse launch");
-    // Snapshot the POST-DIFFUSION smoke into d_src (matches the CPU std::vector
-    // copy taken AFTER the diffusion apply, BEFORE the advection). A device-to-
-    // device copy = the exact int32 snapshot the back-trace reads.
-    cuda_check(cudaMemcpy(d_src, d_gas, nb, cudaMemcpyDeviceToDevice), "D2D src snapshot");
-    // K3 semi-Lagrangian advection (in-place on d_gas; reads the frozen d_src).
-    smoke_advect<<<grid, block>>>(d_gas, d_src, d_wx, d_wy,
-                                  d_obs, d_wall, d_vac, d_perm, dt_adv_q, h, w,
-                                  d_amb);
-    cuda_check(cudaGetLastError(), "advect launch");
-    // K4 clamp + zero walls/vacuum/ambient (in-place on d_gas).
-    smoke_clamp<<<grid, block>>>(d_gas, d_wall, d_vac, n, d_amb);
-    cuda_check(cudaGetLastError(), "clamp launch");
-
-    cuda_check(cudaDeviceSynchronize(), "sync");
-
-    cuda_check(cudaMemcpy(smoke, d_gas, nb, cudaMemcpyDeviceToHost), "D2H smoke");
-
-    cudaFree(d_gas);
-    cudaFree(d_wx);
-    cudaFree(d_wy);
-    cudaFree(d_lap);
-    cudaFree(d_src);
-    cudaFree(d_obs);
-    cudaFree(d_wall);
-    cudaFree(d_vac);
-    cudaFree(d_perm);
-    if (d_amb) cudaFree(d_amb);
-}
-
 // ---- STEP B launch core (S8a residency): the K1..K4 sequence, LAUNCH ONLY.
 // No cudaMalloc / cudaMemcpy (H2D/D2H) / cudaFree / cudaDeviceSynchronize — the
 // caller owns allocation, transfer, scratch (d_lap/d_src = n int32), and the
 // single sync. The D2D post-diffusion snapshot (d_src <- d_gas) stays here (it is
 // intrinsic to the algorithm — a device-to-device copy, NOT a host transfer). The
-// host scalar precompute is identical bits to smoke_step's, so smoke_step
-// (per-call) and trace_smoke_resident (once per tick) share ONE body.
+// host scalar precompute is identical bits to the (deleted) per-call smoke_step's.
 void smoke_launch_resident(
     int32_t* d_gas,
     const int32_t* d_wind_x, const int32_t* d_wind_y,
@@ -523,11 +433,5 @@ void trace_smoke_resident(
     }
     cuda_check(cudaDeviceSynchronize(), "trace_smoke_resident sync");
 }
-
-namespace {
-bool g_smoke_backend_cuda = false;
-}
-bool smoke_backend_is_cuda() { return g_smoke_backend_cuda; }
-void set_smoke_backend_cuda(bool on) { g_smoke_backend_cuda = on; }
 
 }  // namespace breach_cuda

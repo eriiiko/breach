@@ -369,6 +369,131 @@ __global__ void bulk_e_recover_v2(int32_t* __restrict__ temperature,
     }
 }
 
+// ===========================================================================
+// Smoke transport v2 (#12, design §2.1) — the TRACE planes ride the bulk face
+// flux. Stage 3b / 3c, each the CPU loop of the same name in
+// bulk_transport.cpp (bulk_flux_energy_transport_cached) transcribed
+// body-for-body. The CPU is THE oracle (P1).
+// ===========================================================================
+
+// The TRACE participation predicate (CPU t_participates, verbatim): wider than
+// e_part_dev by the thermal-solid (crate) tiles — air seeps through their pores
+// and the trace goes with it (D3).
+__device__ __forceinline__ bool t_part_dev(int i, const bool* solid,
+                                           const bool* is_vacuum,
+                                           const bool* is_ambient) {
+    return !solid[i] && !is_vacuum[i]
+           && !(is_ambient != nullptr && is_ambient[i]);
+}
+
+// ---- stage 3b: TRACE apply, GATHER form (CPU face order E, W, S, N) --------
+// phi = price_face(dq, S_pre[donor], N_pre[donor]), the stage-3 energy shape
+// with S in E's place. Reads ONLY frozen planes (s_pre = the plane's pre-flux
+// snapshot, n_pre = d_nb, the pre-flux bulk N; both dqsum planes) and writes
+// ONLY its own S[i] -> no race, no atomics on S. A donation to a
+// non-participant (vacuum / ring) is the EXPORT, booked by the donor into the
+// plane's vent slot via the unsigned-long-long atomicAdd idiom (integer sums
+// are order-free, so the device total == the CPU sequential sum); inflow from
+// vacuum / ring carries no trace. n_pre is read only at participating cells
+// (the loop gate and the receive guard), so the stale value a solid cell's
+// d_nb may hold is never seen — the CPU holds 0 there, unread.
+__global__ void trace_apply(int32_t* __restrict__ S,
+                            const int32_t* __restrict__ s_pre,
+                            const int64_t* __restrict__ n_pre,
+                            const int64_t* __restrict__ dqsum_e,
+                            const int64_t* __restrict__ dqsum_s,
+                            const bool* __restrict__ solid,
+                            const bool* __restrict__ is_vacuum,
+                            const bool* __restrict__ is_ambient,
+                            unsigned long long* __restrict__ vent,
+                            int h, int w) {
+    const int n = h * w;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += gridDim.x * blockDim.x) {
+        if (!t_part_dev(i, solid, is_vacuum, is_ambient)) continue;
+        const int y = i / w;
+        const int x = i % w;
+        const int64_t s_own = s_pre[i], n_own = n_pre[i];
+        int64_t ds = 0;
+        int64_t vented = 0;
+        if (x < w - 1) {                       // EAST face of i
+            const int64_t q = dqsum_e[i];
+            if (q > 0) {
+                const int64_t phi = (n_own >= 1) ? price_face_dev(q, s_own, n_own) : 0;
+                ds -= phi;
+                if (!t_part_dev(i + 1, solid, is_vacuum, is_ambient)) vented += phi;
+            } else if (q < 0) {
+                ds += !t_part_dev(i + 1, solid, is_vacuum, is_ambient) ? 0
+                    : ((n_pre[i + 1] >= 1)
+                        ? price_face_dev(-q, (int64_t)s_pre[i + 1], n_pre[i + 1]) : 0);
+            }
+        }
+        if (x > 0) {                           // WEST face of i
+            const int64_t q = dqsum_e[i - 1];
+            if (q > 0) {
+                ds += !t_part_dev(i - 1, solid, is_vacuum, is_ambient) ? 0
+                    : ((n_pre[i - 1] >= 1)
+                        ? price_face_dev(q, (int64_t)s_pre[i - 1], n_pre[i - 1]) : 0);
+            } else if (q < 0) {
+                const int64_t phi = (n_own >= 1) ? price_face_dev(-q, s_own, n_own) : 0;
+                ds -= phi;
+                if (!t_part_dev(i - 1, solid, is_vacuum, is_ambient)) vented += phi;
+            }
+        }
+        if (y < h - 1) {                       // SOUTH face of i
+            const int64_t q = dqsum_s[i];
+            if (q > 0) {
+                const int64_t phi = (n_own >= 1) ? price_face_dev(q, s_own, n_own) : 0;
+                ds -= phi;
+                if (!t_part_dev(i + w, solid, is_vacuum, is_ambient)) vented += phi;
+            } else if (q < 0) {
+                ds += !t_part_dev(i + w, solid, is_vacuum, is_ambient) ? 0
+                    : ((n_pre[i + w] >= 1)
+                        ? price_face_dev(-q, (int64_t)s_pre[i + w], n_pre[i + w]) : 0);
+            }
+        }
+        if (y > 0) {                           // NORTH face of i
+            const int64_t q = dqsum_s[i - w];
+            if (q > 0) {
+                ds += !t_part_dev(i - w, solid, is_vacuum, is_ambient) ? 0
+                    : ((n_pre[i - w] >= 1)
+                        ? price_face_dev(q, (int64_t)s_pre[i - w], n_pre[i - w]) : 0);
+            } else if (q < 0) {
+                const int64_t phi = (n_own >= 1) ? price_face_dev(-q, s_own, n_own) : 0;
+                ds -= phi;
+                if (!t_part_dev(i - w, solid, is_vacuum, is_ambient)) vented += phi;
+            }
+        }
+        // §2.4: S >= 0 by construction (Σ_f phi_f <= S_pre: the mass limiter
+        // bounds Σ_f dq_f by the donor's own N_pre, floordiv never rounds up);
+        // the int32 narrow is safe while Σ_map S < 2^31 (host-side tail assert).
+        S[i] = (int32_t)(s_own + ds);
+        if (vented != 0) atomicAdd(vent, (unsigned long long)vented);
+    }
+}
+
+// ---- stage 3c: TRACE wipe, on the POST-flux bulk N (CPU's stage-3c loop) ----
+// A participating cell with less than N_EPS (= 1 raw count) of air has nothing
+// left to carry its trace: destroyed, booked in the plane's wipe slot. `nb_post`
+// is d_nb re-accumulated by stage 4 — the CPU's n_new, the same Σ over the
+// conservative planes. Own-cell write, counter via atomicAdd.
+__global__ void trace_wipe(int32_t* __restrict__ S,
+                           const int64_t* __restrict__ nb_post,
+                           const bool* __restrict__ solid,
+                           const bool* __restrict__ is_vacuum,
+                           const bool* __restrict__ is_ambient,
+                           unsigned long long* __restrict__ wipe, int n) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += gridDim.x * blockDim.x) {
+        if (!t_part_dev(i, solid, is_vacuum, is_ambient)) continue;
+        if (nb_post[i] >= 1) continue;
+        const int32_t s = S[i];
+        if (s == 0) continue;
+        atomicAdd(wipe, (unsigned long long)(int64_t)s);
+        S[i] = 0;
+    }
+}
+
 }  // namespace
 
 void bulk_flux_transport_cached(
@@ -546,12 +671,19 @@ void bulk_flux_energy_transport_device(
         int32_t* d_dq_e, int32_t* d_dq_s, int32_t* d_scale,
         unsigned long long* d_ecnt,
         const bool* d_is_ambient, const int32_t* n_amb_cons,
-        unsigned long long* const* d_rail) {
+        unsigned long long* const* d_rail,
+        int32_t* const* d_trace_planes, int n_trace, int32_t* d_spre,
+        unsigned long long* d_tvent, unsigned long long* d_twipe) {
     const int n = h * w;
     if (n <= 0) return;
     const int block = 256;
     const int grid = (n + block - 1) / block;
     const size_t n8 = (size_t)n * sizeof(int64_t);
+    // Smoke transport v2 (#12): the trace stages run only when the caller hands
+    // trace planes (the chained path; the resident path passes none until P2b).
+    const bool do_trace = (d_trace_planes != nullptr && n_trace > 0
+                           && d_spre != nullptr && d_tvent != nullptr
+                           && d_twipe != nullptr);
 
     // ---- stage 1: snapshot (E, n_bulk) PRE-flux (arc #54 design §2.7) -----
     // `d_e` is now a PLAIN SNAPSHOT of the live `gas_energy` (D2D copy) —
@@ -583,6 +715,24 @@ void bulk_flux_energy_transport_device(
                                      t_amb_raw, d_ecnt, h, w);
     cuda_check(cudaGetLastError(), "e_apply");
 
+    // ---- stage 3b: TRACE apply (smoke transport v2, design §2.1) -----------
+    // BETWEEN stage 3 and stage 4's `d_nb` memset: d_nb still holds the PRE-flux
+    // bulk N (stage 1's accumulate; stage 2 mutates only the gas planes), which
+    // is the CPU's `n_pre`. One snapshot D2D + one gather launch per live plane;
+    // the kernel boundary is the CPU's loop boundary.
+    if (do_trace) {
+        const size_t n4 = (size_t)n * sizeof(int32_t);
+        for (int k = 0; k < n_trace; ++k) {
+            cuda_check(cudaMemcpy(d_spre, d_trace_planes[k], n4,
+                                  cudaMemcpyDeviceToDevice), "D2D s_pre snapshot");
+            trace_apply<<<grid, block>>>(d_trace_planes[k], d_spre, d_nb,
+                                         d_dqsum_e, d_dqsum_s,
+                                         d_solid, d_is_vacuum, d_is_ambient,
+                                         &d_tvent[k], h, w);
+            cuda_check(cudaGetLastError(), "trace_apply");
+        }
+    }
+
     // ---- stage 4: the mirror refresh (n_bulk POST, T = floordiv(E, n)) ----
     cuda_check(cudaMemset(d_nb, 0, n8), "memset nb (post)");
     for (int k = 0; k < n_cons; ++k) {
@@ -595,6 +745,19 @@ void bulk_flux_energy_transport_device(
                                        t_min_q, t_max_phys_q, t_amb_raw,
                                        d_ecnt, h, w);
     cuda_check(cudaGetLastError(), "e_recover");
+
+    // ---- stage 3c: TRACE wipe (smoke transport v2, design §2.1) ------------
+    // AFTER stage 4: `d_nb` now holds the POST-flux bulk N (stage 4's memset +
+    // re-accumulate) — the CPU's `n_new` — which is exactly why 3c cannot sit
+    // before it and 3b cannot sit after the memset.
+    if (do_trace) {
+        for (int k = 0; k < n_trace; ++k) {
+            trace_wipe<<<grid, block>>>(d_trace_planes[k], d_nb,
+                                        d_solid, d_is_vacuum, d_is_ambient,
+                                        &d_twipe[k], n);
+            cuda_check(cudaGetLastError(), "trace_wipe");
+        }
+    }
 }
 
 namespace {

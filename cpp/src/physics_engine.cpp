@@ -14,7 +14,6 @@
 #ifdef BREACH_HAS_CUDA
 #include "cuda_temperature.h"   // CUDA-S1: GPU temperature solver + backend flag
 #include "cuda_water.h"         // CUDA-S3: GPU water solver + backend flag
-#include "cuda_smoke.h"         // CUDA-S4a: GPU smoke solver + backend flag
 #include "cuda_fire.h"          // CUDA-S6: GPU fire solver + backend flag
 #include "cuda_eos_step.h"      // EOS P6.5: chained eos.step GPU dispatch
 #include "cuda_eos_resident.h"  // S8a Path A: fully device-resident EOS tick

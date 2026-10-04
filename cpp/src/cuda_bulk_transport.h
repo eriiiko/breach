@@ -140,6 +140,22 @@ void bulk_flux_plane_device(
 //                always 0) [3] n_active_flux [4] n_bulk_active_sum
 //                [5] e_transport_net (arc #54 §2.8's closure-identity term).
 //
+// Smoke transport v2 (#12, docs/smoke_transport_design_2026-10-04.md §2.1/§5):
+// stages 3b / 3c — the TRACE planes ride the same faces, priced at the donor's
+// trace-per-air ratio (bulk_transport.cpp stages 3b/3c, THE oracle). Stage 3b
+// runs between stage 3 and stage 4's d_nb memset (d_nb is still the pre-flux N),
+// stage 3c after stage 4's re-accumulation (d_nb is the post-flux N).
+// d_trace_planes : host array of `n_trace` DEVICE pointers, one per LIVE trace
+//                  plane (the caller decides liveness by a host scan; an
+//                  all-zero plane stays all-zero with zero counters, so the
+//                  skip is an optimisation only). Mutated in place.
+// d_spre         : one h*w int32 device scratch plane (the S_pre snapshot).
+// d_tvent/d_twipe: n_trace unsigned-long-long device slots EACH, ACCUMULATED
+//                  into (caller memsets per tick): vent = what a donor prices
+//                  onto a vacuum / ring receiver, wipe = the N_EPS wipe.
+// n_trace == 0 (or any nullptr) -> the trace stages do not run: the RESIDENT
+// path passes none until P2b gives g_eos_res its trace scratch.
+//
 // arc #54 (gas-energy conservation, design §2.7 row 1): `d_gas_energy` is now
 // the LIVE conserved field this pass MOVES — priced off it directly
 // (`price_face`, the exact `floordiv(dq*E,N)` split, bulk_transport.cpp),
@@ -159,7 +175,11 @@ void bulk_flux_energy_transport_device(
     unsigned long long* d_ecnt,
     const bool* d_is_ambient = nullptr,
     const int32_t* n_amb_cons = nullptr,
-    unsigned long long* const* d_rail = nullptr);
+    unsigned long long* const* d_rail = nullptr,
+    int32_t* const* d_trace_planes = nullptr, int n_trace = 0,
+    int32_t* d_spre = nullptr,
+    unsigned long long* d_tvent = nullptr,
+    unsigned long long* d_twipe = nullptr);
 
 // Backend selection (P6.1 gate). EOS P6.5: now CONSUMED by the engine
 // dispatch — PhysicsEngine::run_substeps routes eos.step to the GPU

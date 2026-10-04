@@ -19,7 +19,6 @@
 #include "cuda_resident.h"     // CUDA-S8a Path B: water/smoke resident launch cores
 #include "cuda_temperature.h"  // CUDA-S1: GPU temperature solver + backend flag
 #include "cuda_water.h"        // CUDA-S3: GPU water solver + backend flag
-#include "cuda_smoke.h"        // CUDA-S4a: GPU smoke solver + backend flag
 #include "cuda_fire.h"         // CUDA-S6: GPU fire solver + backend flag
 #include "cuda_sl_advection.h" // EOS P6.2: fused 3-field SL advection + backend flag
 #include "cuda_bulk_transport.h"  // EOS P6.1: GPU bulk donor-cell flux + backend flag
@@ -1033,53 +1032,11 @@ PYBIND11_MODULE(breach_physics, m) {
           "S3 isolated: run the GPU water solver in place on water_depth/flow_vx/"
           "flow_vy (bit-identical to WaterSolver.step).");
 
-    // CUDA-S4a: the GPU smoke solver. The backend flag switches PhysicsEngine::
-    // run_substeps's per-gas smoke transport between the CPU SmokeDynamics::step
-    // and the GPU smoke_step (the live CPU fallback stays). cuda_smoke_step runs
-    // the 4-pass solver IN PLACE on `smoke` (one gas plane) for the isolated
-    // GPU-vs-CPU bit-identity gate. The solver's scalar dials (d_smoke /
-    // wind_diffusion_scale / advection_rate) are passed explicitly since
-    // smoke_step is a free function — mirroring the live SmokeDynamics.step
-    // binding's array args plus those scalars.
-    // (The S4b sink_hop half of this banner went with the pass — A9, 2026-08-04.)
-    m.def("set_smoke_backend",
-          [](bool use_cuda) { breach_cuda::set_smoke_backend_cuda(use_cuda); },
-          py::arg("use_cuda"),
-          "Switch PhysicsEngine's smoke pass to the GPU (True) "
-          "or CPU (False).");
-    m.def("get_smoke_backend",
-          []() { return breach_cuda::smoke_backend_is_cuda(); },
-          "True if the smoke pass currently runs on the GPU.");
-    m.def("cuda_smoke_step",
-          [](py::array_t<int32_t> smoke,        // Q16.16 int32 (one gas plane)
-             py::array_t<int32_t> wind_x,       // Q16.16 int32
-             py::array_t<int32_t> wind_y,       // Q16.16 int32
-             py::array_t<bool>  obstacles,
-             py::array_t<bool>  is_wall,
-             py::array_t<bool>  is_vacuum,
-             py::array_t<float> permeability,
-             float dt, float d_smoke,
-             float wind_diffusion_scale, float advection_rate) {
-              auto [sm, h, w]    = get_2d(smoke);
-              auto [wx, h2, w2]  = get_2d_const(wind_x);
-              auto [wy, h3, w3]  = get_2d_const(wind_y);
-              auto [obs, h4, w4] = get_2d_const(obstacles);
-              auto [wl, h5, w5]  = get_2d_const(is_wall);
-              auto [vac, h6, w6] = get_2d_const(is_vacuum);
-              auto [perm, h7, w7] = get_2d_const(permeability);
-              breach_cuda::smoke_step(sm, wx, wy, obs, wl, vac, perm, h, w, dt,
-                                      d_smoke, wind_diffusion_scale, advection_rate);
-          },
-          py::arg("smoke"), py::arg("wind_x"), py::arg("wind_y"),
-          py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
-          py::arg("permeability"), py::arg("dt"), py::arg("d_smoke"),
-          py::arg("wind_diffusion_scale"), py::arg("advection_rate"),
-          "S4a isolated: run the GPU smoke solver in place on one gas plane "
-          "(bit-identical to SmokeDynamics.step).");
-    // (cuda_smoke_sink_hop DELETED — audit Patch A / A9, 2026-08-04. It
-    // exposed breach_cuda::smoke_sink_hop, an orphaned GPU port whose CPU
-    // twin SmokeDynamics::sink_hop went with EOS refactor P3. No Python
-    // caller existed; the kernel is deleted in cuda_smoke.cu.)
+    // (CUDA-S4a's set_smoke_backend / get_smoke_backend / cuda_smoke_step are
+    // DELETED -- smoke transport v2, #12 P2a: the trace planes ride the bulk face
+    // flux inside the EOS substeps, so there is no per-call GPU smoke step to
+    // switch to or test in isolation. `trace_smoke_resident`, above, is the
+    // resident path's old SL law and goes at P2b.)
 
     // CUDA-S5 (set_wave_backend / get_wave_backend / cuda_wave_substep) RETIRED
     // in EOS P6.0: the wave_substep solver it mirrored was deleted in P3 (the
