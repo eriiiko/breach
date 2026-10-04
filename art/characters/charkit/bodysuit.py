@@ -37,7 +37,7 @@ import parts
 import wearmat
 from garment import front_phi
 from kit import Loft, OnLoft, band_on, box, loft_mesh, mirror, ribbon_on, seam_attr, solid, tube, unit
-from workwear import CLAMP_SNAP, Figure, build_hands, zip_slider
+from workwear import CLAMP_SNAP, Figure, build_hands, phi_where_x, zip_slider
 
 D = math.radians
 FRONT = D(90)
@@ -52,7 +52,8 @@ def materials(p, gloss, prefix):
     return dict(
         suit=wearmat.mat_gloss(prefix + "_suit", p["SUIT"], rough=g["rough"], coat=g["coat"], coat_rough=g["coat_rough"],
                                specular=g.get("specular", 0.5), piping=g.get("piping", 0.6)),
-        mesh=wearmat.mat_mesh(prefix + "_mesh", p["MESH"], p["SKIN"], cell=g.get("mesh_cell", 0.0032), show=g.get("mesh_show", 0.55)),
+        mesh=wearmat.mat_mesh(prefix + "_mesh", p["MESH"], p["SKIN"], cell=g.get("mesh_cell", 0.0032), show=g.get("mesh_show", 0.55),
+                              surface=g.get("mesh_surface", False), coat=g.get("mesh_coat", 0.0)),
         skin=wearmat.mat_skin(prefix + "_skin", p["SKIN"], p["BROW"], p["LIP_TINT"]),
         eye=wearmat.mat_eye(prefix + "_eye", p["SCLERA"], p["IRIS"]),
         boot=wearmat.mat_gloss(prefix + "_boot", p["BOOT"], rough=g.get("boot_rough", 0.20), coat=g.get("boot_coat", 0.8),
@@ -102,7 +103,19 @@ class Suit:
         t = self.bz(z)
         if kind == "phi":
             return D(v), t
+        if kind == "bx":  # a point seen at x on the BACK view (x >= 0 her left, as on the front)
+            return phi_where_x(self.B, t, self.frame.remap(v, z, self.ref), back=True) - 2.0 * math.pi, t
         return front_phi(self.B, t, self.frame.remap(v, z, self.ref)), t
+
+    def loop(self, pts, on="body", step=0.004):
+        """A CLOSED outline of feature points -> [(phi_deg, t), ...], smoothed exactly as
+        garment.panel smooths a panel's outline, so a seam drawn on it frames the panel."""
+        O = np.array([self.phi_t(p, on) for p in pts], float)
+        lo = self.A if on == "arm" else self.B
+        r0 = float(lo.radius([O[:, 0].mean()], [O[:, 1].mean()])[0])
+        Q = garment.smooth_loop(np.column_stack([O[:, 0] * r0, O[:, 1]]), step)
+        Q = np.vstack([Q, Q[:1]])
+        return [(math.degrees(u / r0), v) for u, v in Q]
 
     def path(self, pts, on="body", step=0.004):
         """A polyline of feature points -> [(phi_deg, t), ...] for kit.tape_attr, densified so a
@@ -169,6 +182,11 @@ def build_suit(S, M, coll="Suit"):
     sm = g["seams"]
     body_paths = [S.path(p) for p in sm.get("body", ())]
     arm_paths = [S.path(p, on="arm") for p in sm.get("arm", ())]
+    body_paths += [S.loop(p) for p in sm.get("body_loops", ())]
+    # a panel set IN the suit (rim "seam") is framed by a seam drawn on the suit round its outline
+    for pn in g["mesh_panels"]:
+        if pn.get("rim", g.get("panel_rim", "tube")) == "seam":
+            (arm_paths if pn.get("on") == "arm" else body_paths).append(S.loop(pn["pts"], pn.get("on", "body")))
 
     def disp(gr):
         env = gr.env = F.envelope(gr.P, gr.N)
@@ -178,6 +196,10 @@ def build_suit(S, M, coll="Suit"):
         Pd = gr.P + getattr(gr, "env", np.zeros(gr.P.shape[:-1]))[..., None] * gr.N
         return 1.0 - np.minimum(F.armhole_seam(Pd), kit.SEAM_CAP) / kit.SEAM_CAP
 
+    piping = g.get("seam_style", "pipe") == "tube"
+    if piping:  # the seams are their own geometry (piping cords on the surface), not an attribute
+        build_piping(S, body_paths, arm_paths, suit, g.get("piping", (0.0008, 0.0001)), coll)
+        body_paths, arm_paths = [], []
     body = loft_mesh("Suit_Body", B, res=kit.RES * 0.85, mat=suit, coll=coll, disp=disp,
                      attrs=dict(seam=seams, pipe=lambda gr: pipe_attr(gr, body_paths)), **CLAMP_SNAP)
     mirror(solid(body, g["cloth"], bevel=0.0), merge=True)
@@ -200,7 +222,8 @@ def build_suit(S, M, coll="Suit"):
 
     # cuff bands at the wrists
     c0, c1 = az(g["cuff"][0]), az(g["cuff"][1])
-    mirror(band_on("Suit_Cuff", A, c0, c1, offset=0.0010, thick=0.0025, mat=suit, coll=coll, bevel=0.0008,
+    mirror(band_on("Suit_Cuff", A, c0, c1, offset=g.get("cuff_lift", 0.0010), thick=g.get("cuff_thick", 0.0025), mat=suit, coll=coll,
+                   bevel=0.0008,
                    attrs=dict(seam=lambda gr: seam_attr(gr, ts=[c0 + 0.0018, c1 - 0.0018]))))
 
     # the stand collar: a tube round the neck, rising from the neckline to under the jaw
@@ -210,7 +233,55 @@ def build_suit(S, M, coll="Suit"):
                        attrs=dict(seam=lambda gr: seam_attr(gr, ts=[CL.L - col.get("top_seam", 0.006)])))
     solid(collar, col.get("thick", 0.003), bevel=0.0012)
 
-    # the front zip: teeth from the collar's top down the front to below the navel, the pull at the top
+    if g["zip"].get("teeth"):
+        build_zips(S, M, CL, coll)
+    else:
+        build_tape_zip(S, M, CL, coll)
+
+    build_panels(S, M, coll)
+    kp = g.get("knee_pad")
+    if kp:  # shaped knee pads: a domed panel over the knee cap
+        ph, t = S.phi_t(("x", kp["x"], kp["z"]))
+        mirror(garment.patch("Suit_Knee_Pad", OnLoft(B, ph, t), kp["hs"], kp["ht"], offset=kp.get("offset", 0.0030), thick=0.0035,
+                             n=kp.get("n", 2.4), dome=kp.get("dome", 0.003), inset=kp.get("inset", 0.004), mat=suit, coll=coll))
+
+
+def build_piping(S, body_paths, arm_paths, mat, spec, coll):
+    """Seams as piping cords: a thin round tube laid along each path ON the figure's displaced
+    surface (the body's forms and the sleeve envelope included), sunk so only a cord of it stands
+    proud. A signed-distance attribute (pipe_attr) draws false lines wherever its sign flips (past a
+    line's ends, between two lines, inside a narrow loop); a cord cannot. `spec` = (radius, how far
+    its centre sits above the surface)."""
+    r, lift = spec
+    k = 0
+    for lo, paths, on in ((S.B, body_paths, "body"), (S.A, arm_paths, "arm")):
+        for path in paths:
+            ph = np.radians([p for p, _ in path])
+            tt = np.array([t for _, t in path], float)
+            # resample every 2 mm along the surface
+            rr = lo.radius(ph, tt)
+            u = np.concatenate([[0.0], np.cumsum(np.hypot(kit.wrap(np.diff(ph)) * rr[:-1], np.diff(tt)))])
+            if u[-1] < 0.004:
+                continue
+            q = np.linspace(0.0, u[-1], max(4, int(u[-1] / 0.002) + 1))
+            phu = np.interp(q, u, np.unwrap(ph))
+            P, N = lo.pn(phu, np.interp(q, u, tt))
+            if on == "body":
+                P = P + np.asarray(S.lift(P, N), float)[:, None] * N
+            closed = abs(path[0][0] - path[-1][0]) < 1e-6 and abs(path[0][1] - path[-1][1]) < 1e-6
+            if closed:
+                P, N = P[:-1], N[:-1]
+            P = P + lift * N
+            if on == "body":
+                P[:, 0] = np.maximum(P[:, 0], 0.0)  # the half body's cords end on the mid-plane
+            mirror(tube("Suit_Piping_%03d" % k, P, normals=N, r=r, closed=closed, n_u=8, mat=mat, coll=coll))
+            k += 1
+
+
+def build_tape_zip(S, M, CL, coll):
+    """The stage-1 zip: a flat metal strip and a hanging pull (kept for tables without `teeth`)."""
+    B, bz, g = S.B, S.bz, S.d["garment"]
+    col = g["collar"]
     zp = g["zip"]
     z_neck = B.pos([FRONT], [B.L])[0][2]
     zs = np.linspace(z_neck - 0.002, zp["bottom_z"], 60)
@@ -224,22 +295,90 @@ def build_suit(S, M, coll="Suit"):
     kit.box_at("Suit_Zip_Stop", stop, (0.009, 0.006, 0.003), sink=-0.0010, bevel=0.0008, seg=2, mat=M["metal"], coll=coll)
     zip_slider(CL, FRONT, CL.t_at_z(zp.get("pull_z", col["rings"][-1][0] - 0.012)), 0.004, M["metal"], coll, "Suit_Zip_Pull")
 
-    # mesh insert panels, each framed by a piping tube
+
+
+def build_panels(S, M, coll):
+    """Mesh insert panels. Rim "tube" (stage 1): the panel stands proud, framed by a piping tube.
+    Rim "seam": the panel is set IN the suit (a hair proud of it, so it never z-fights), its edge a
+    seam drawn on the suit itself (build_suit), its net laid in the panel's own surface coordinates."""
+    g = S.d["garment"]
     for i, pn in enumerate(g["mesh_panels"]):
         on = pn.get("on", "body")
-        lo = A if on == "arm" else B
+        lo = S.A if on == "arm" else S.B
         outline = [S.phi_t(p, on) for p in pn["pts"]]
         name = "Suit_Mesh_%s" % pn.get("name", i)
-        obj, rim = garment.panel(name, lo, outline, offset=0.0006, thick=0.0012, lift=None if on == "arm" else S.lift, mat=M["mesh"],
-                                 coll=coll)
+        rim = pn.get("rim", g.get("panel_rim", "tube"))
+        lift = None if on == "arm" else S.lift
+        if rim == "seam":
+            obj, _ = garment.panel(name, lo, outline, offset=g.get("panel_offset", 0.0003), thick=g.get("panel_thick", 0.0004), lift=lift,
+                                   mat=M["mesh"], coll=coll, surface_uv=True)
+            obj.modifiers["Solidify"].use_even_offset = False  # thin sliver triangles at a tip would spike
+            mirror(obj)
+            continue
+        obj, edge = garment.panel(name, lo, outline, offset=0.0006, thick=0.0012, lift=lift, mat=M["mesh"], coll=coll)
         mirror(obj)
-        mirror(tube(name + "_Piping", rim, r=pn.get("piping", 0.0012), closed=True, n_u=8, mat=suit, coll=coll))
+        mirror(tube(name + "_Piping", edge, r=pn.get("piping", 0.0012), closed=True, n_u=8, mat=M["suit"], coll=coll))
 
-    # shaped knee pads: a domed panel over the knee cap
-    kp = g["knee_pad"]
-    ph, t = S.phi_t(("x", kp["x"], kp["z"]))
-    mirror(garment.patch("Suit_Knee_Pad", OnLoft(B, ph, t), kp["hs"], kp["ht"], offset=kp.get("offset", 0.0030), thick=0.0035,
-                         n=kp.get("n", 2.4), dome=kp.get("dome", 0.003), inset=kp.get("inset", 0.004), mat=suit, coll=coll))
+
+def zip_teeth(name, loft, path, width, pitch, lift, mat, coll, tooth=(0.0016, 0.0013)):
+    """A zip's teeth along a path [(phi_deg, t), ...] on a loft: small blocks a `pitch` apart,
+    alternating from the two tapes (each reaching a little past the centre line), one mesh."""
+    import bmesh
+    ph, tt = np.radians([p for p, _ in path]), np.array([t for _, t in path], float)
+    r = float(loft.radius(ph[:1], tt[:1])[0])
+    u = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(ph) * r, np.diff(tt)))])
+    q = np.arange(0.5 * pitch, u[-1], pitch)
+    P, N = loft.pn(np.interp(q, u, ph), np.interp(q, u, tt), lift)
+    T = unit(np.gradient(P, axis=0))
+    bm = bmesh.new()
+    along, high = tooth
+    for i, (p, n, tg) in enumerate(zip(P, N, T)):
+        side = unit(np.cross(n, tg))
+        c = p + (0.12 if i % 2 else -0.12) * width * side + 0.5 * high * n
+        res = bmesh.ops.create_cube(bm, size=1.0)
+        for v in res["verts"]:
+            x, y, z = v.co
+            v.co = (c + x * 0.62 * width * side + y * along * tg + z * high * n).tolist()
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    me = bpy.data.meshes.new(name)
+    bm.to_mesh(me)
+    bm.free()
+    me.materials.append(mat)
+    return kit.link(bpy.data.objects.new(name, me), coll)
+
+
+def zip_pull(name, loft, phi, t, lift, mat, coll):
+    """A zip slider at the top of its track with the pull lying FLAT on the zip, pointing down:
+    nothing stands off the suit."""
+    Fm = kit.anchor_matrix(OnLoft(loft, phi, t), lift=lift)
+    return [box(name, (0.0085, 0.010, 0.0030), M=Fm @ Matrix.Translation((0, 0.0, 0.0015)), bevel=0.0010, seg=2, mat=mat, coll=coll,
+                taper=(0.8, 0.85)),
+            box(name + "_Tab", (0.0050, 0.014, 0.0011), M=Fm @ Matrix.Translation((0, -0.010, 0.0034)), bevel=0.0004, seg=2, mat=mat,
+                coll=coll)]
+
+
+def build_zips(S, M, CL, coll):
+    """The front zip (collar top -> below the navel) and the back zip (collar top -> the small of
+    the back, `back_bottom_z`): a dark tape, metal teeth, a slider with a flat pull at the top."""
+    B, bz, g = S.B, S.bz, S.d["garment"]
+    zp, col = g["zip"], g["collar"]
+    z_neck = B.pos([FRONT], [B.L])[0][2]
+    z_top = col["rings"][-1][0]
+    for side, phi_c, z_end in (("Front", FRONT, zp["bottom_z"]), ("Back", -FRONT, zp.get("back_bottom_z"))):
+        if z_end is None:
+            continue
+        zs = np.linspace(z_neck - 0.001, z_end, 90)
+        if side == "Front":
+            body = [(math.degrees(front_phi(B, bz(z))), bz(z)) for z in zs]
+        else:
+            body = [(-90.0, bz(z)) for z in zs]
+        neck = [(math.degrees(phi_c), CL.t_at_z(z)) for z in np.linspace(z_top - 0.002, col["rings"][0][0] + 0.004, 16)]
+        for lo, path, sfx in ((B, body, ""), (CL, neck, "_Collar")):
+            ribbon_on("Suit_Zip_Tape_%s%s" % (side, sfx), lo, path, zp["tape"], offset=0.0004, thick=0.0008, mat=M["suit"], coll=coll)
+            zip_teeth("Suit_Zip_Teeth_%s%s" % (side, sfx), lo, path, zp["width"], zp["pitch"], 0.0002, M["metal"], coll)
+        stop = OnLoft(B, phi_c if side == "Back" else front_phi(B, bz(z_end)), bz(z_end))
+        kit.box_at("Suit_Zip_Stop_%s" % side, stop, (0.007, 0.005, 0.0025), sink=-0.0008, bevel=0.0007, seg=2, mat=M["metal"], coll=coll)
+        zip_pull("Suit_Zip_Pull_%s" % side, CL, phi_c, CL.t_at_z(z_top - 0.007), 0.0002, M["metal"], coll)
 
 
 # --------------------------------------------------------------------- boots
@@ -295,7 +434,13 @@ def build_boots(S, M, coll="Boots"):
         return np.column_stack([P[:, :2], P[:, 2] - dip * k])
 
     t0, t1 = bz(z0), bz(z1)
-    shaft_ob = band_on("Boot_Shaft", B, t0, t1, offset=s["shaft_ease"], thick=0.0025, bevel=0.0010, mat=boot, coll=coll, post=v_top,
+    kw = {}
+    fe = s.get("feather")
+    if fe:  # the shaft's top thins into the leg: its last `fe` metres sink to just under the suit, so the
+        # suit meets the boot's edge flush (a seam line, not a step or a gap)
+        kw["disp"] = lambda g: -(s["shaft_ease"] + 0.0004) * np.clip((g.t - (t1 - fe)) / fe, 0.0, 1.0) ** 1.5
+    shaft_ob = band_on("Boot_Shaft", B, t0, t1, offset=s["shaft_ease"], thick=s.get("shaft_thick", 0.0025), bevel=0.0010, mat=boot,
+                       coll=coll, post=v_top, **kw,
                        attrs=dict(seam=lambda g: seam_attr(g, ts=[t1 - 0.004], phis=[(FRONT + D(s["panel_phi"]), t0, bz(z1 - vd)),
                                                                                      (FRONT - D(s["panel_phi"]), t0, bz(z1 - vd))])))
     mirror(shaft_ob)
@@ -315,5 +460,5 @@ def build(M, dims, head_spec, prefix):
     build_hands(S.F, M)
     build_boots(S, M)
     build_head(M, head_spec, prefix)
-    garment.close_holes([o for o in bpy.data.objects if o.name.startswith(("Suit_Zip_Stop",))])
+    garment.close_holes([o for o in bpy.data.objects if o.name.startswith(("Suit_Zip_Stop", "Suit_Piping"))])
     return S

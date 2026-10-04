@@ -228,27 +228,35 @@ def mat_gloss(name, base, rough=0.16, coat=1.0, coat_rough=0.06, specular=0.5, p
     return m
 
 
-def mat_mesh(name, thread, under, cell=0.0032, width=0.30, show=0.55, rough=0.45):
+def mat_mesh(name, thread, under, cell=0.0032, width=0.30, show=0.55, rough=0.45, surface=False, coat=0.0):
     """An open-mesh insert (fishnet stretch panel): `thread` the net's colour, `under` what shows
     through it (the skin), dimmed to `show`. The net is a lattice of fine thread planes in world
-    space, `cell` metres apart; `width` the thread's share of a cell."""
+    space, `cell` metres apart; `width` the thread's share of a cell. `surface`: a diamond net laid
+    IN the surface instead, from the panel's developed coordinates (`mesh_u` / `mesh_v`, see
+    garment.panel(uv=True)): world planes cut a curved panel in contour rings (a wood grain that
+    shimmers at full-figure distance); a net in the surface's own coordinates cannot. `coat`: a
+    clear coat over the net (the suit's gloss carried over the insert)."""
     m, t = _new(name)
     th, u = lin(thread), lin(under)
-    sep = t.n("ShaderNodeSeparateXYZ")
-    t.put(sep.inputs[0], t.pos())
-    x, y, z = sep.outputs["X"], sep.outputs["Y"], sep.outputs["Z"]
     k = kit.TAU / cell
 
     def lines(v):
         s = t.math("ABSOLUTE", t.math("SINE", t.math("MULTIPLY", v, k * 0.5)))
         return t.ramp(s, 1.0 - width * 1.6, 1.0 - width * 0.9)
 
-    # a cubic lattice of thread planes: any surface cuts at least two families, so the net never
-    # collapses into parallel stripes whatever way the panel faces
-    net = t.math("MAXIMUM", t.math("MAXIMUM", lines(x), lines(y)), lines(z))
+    if surface:
+        su, sv = t.attr("mesh_u"), t.attr("mesh_v")
+        net = t.math("MAXIMUM", lines(t.math("ADD", su, sv)), lines(t.math("SUBTRACT", su, sv)))
+    else:
+        sep = t.n("ShaderNodeSeparateXYZ")
+        t.put(sep.inputs[0], t.pos())
+        x, y, z = sep.outputs["X"], sep.outputs["Y"], sep.outputs["Z"]
+        # a cubic lattice of thread planes: any surface cuts at least two families, so the net never
+        # collapses into parallel stripes whatever way the panel faces
+        net = t.math("MAXIMUM", t.math("MAXIMUM", lines(x), lines(y)), lines(z))
     under_col = (u[0] * show, u[1] * show, u[2] * show, 1.0)
     col = t.mix(net, under_col, th)
-    t.set(Base_Color=col, Roughness=t.mixf(net, 0.55, rough), Coat_Weight=0.0, Normal=t.bump(net, 0.35, 0.0006))
+    t.set(Base_Color=col, Roughness=t.mixf(net, 0.55, rough), Coat_Weight=coat, Coat_Roughness=0.25, Normal=t.bump(net, 0.35, 0.0006))
     return m
 
 

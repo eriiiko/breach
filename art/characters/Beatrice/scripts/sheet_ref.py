@@ -27,3 +27,19 @@ SHEET = Sheet(REF_PATH, foot_row=1505, top_row=53.5, height_m=1.68, panels=(("fr
 # pixels per front-view pixel (the far-side shoulder half-width, 305 concept px against the front
 # view's 162), and the concept's waist point (column, row) on the midline.
 CONCEPT_FRAME = dict(scale=305.0 / 162.0, waist=(585.0, 1040.0), sheet_waist_row=520.0)
+
+# The side and back views (`without_hair_side.png`, `without_hair_back.png`, 1024 x 1536 each, supplied
+# after stage 1), each its own sheet in its own pixel frame, scaled to the same 1.68 m. Rows measured
+# the same way as the front (the figure mask's lowest and highest rows, +1 / -0.5). The side view faces
+# image-left, which the studio shows at rig azimuth +90. Its centre column is where the model's y = 0
+# plane lands: fitted once by sliding the model's side silhouette along the drawing (best overlap of
+# the head, neck and boots, the parts that are the drawing's own and not our shape decision). The back
+# view's centre column is the figure's midline (head, collar, between the heels).
+SIDE_PATH = os.path.join(ROOT, "without_hair_side.png")
+BACK_PATH = os.path.join(ROOT, "without_hair_back.png")
+SIDE = Sheet(SIDE_PATH, foot_row=1467, top_row=36.5, height_m=1.68, panels=(("side", 518, 1000),), thr=0.075, fill_holes=True,
+             floor=(1330, 0.25), azimuth=dict(side=90.0))
+BACK = Sheet(BACK_PATH, foot_row=1453, top_row=46.5, height_m=1.68, panels=(("back", 510, 1000),), thr=0.075, fill_holes=True,
+             floor=(1330, 0.25))
+# the extra views `--sheet` scores and pictures (tag, sheet)
+VIEWS = (("side", SIDE), ("back", BACK))

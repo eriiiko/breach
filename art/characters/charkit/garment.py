@@ -80,13 +80,15 @@ def smooth_loop(pts, step):
     return np.column_stack([np.interp(q, u, Qc[:, 0]), np.interp(q, u, Qc[:, 1])])
 
 
-def panel(name, loft, outline, offset=0.001, thick=0.001, res=None, lift=None, attrs=None, mat=None, coll="Garment"):
+def panel(name, loft, outline, offset=0.001, thick=0.001, res=None, lift=None, attrs=None, mat=None, coll="Garment", surface_uv=False):
     """An inset panel of any outline on a loft (a mesh insert, a shaped pad): `outline` =
     [(phi_rad, t), ...], a closed loop smoothed through its points. The panel is the loft's
     surface inside the loop, triangulated with the loop as its exact edge (no grid steps), lifted
     `offset` above the surface (plus `lift(P, N)`, metres along N, where the garment under it is
     displaced) and given `thick` inwards. Returns `(obj, rim)`: rim = the edge loop in world space
-    on the panel's top surface, for piping."""
+    on the panel's top surface, for piping. `surface_uv` stores the developed surface coordinates (metres
+    round and along the loft) as the `mesh_u` / `mesh_v` attributes, for a pattern that lies IN
+    the surface (wearmat.mat_mesh(surface=True)) instead of cutting it with world planes."""
     from mathutils import Vector
     from mathutils.geometry import delaunay_2d_cdt
     res = res or kit.RES
@@ -122,6 +124,8 @@ def panel(name, loft, outline, offset=0.001, thick=0.001, res=None, lift=None, a
     va = {}
     for key, f in (attrs or {}).items():
         va[key] = np.asarray(f(P), float)
+    if surface_uv:
+        va["mesh_u"], va["mesh_v"] = V2o[:, 0], V2o[:, 1]
     obj = new_mesh(name, P, np.zeros((0, 4), np.int32), T, mat, coll, attrs=va)
     # the edge loop, in the order of B (CDT keeps the input verts first when it can; match by position)
     rim_idx = [int(np.argmin(np.linalg.norm(V2o - b, axis=1))) for b in B]

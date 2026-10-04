@@ -16,13 +16,16 @@ DIGITS = (
 PALM = ((-0.020, .040, .034), (0.012, .042, .028), (0.042, .048, .023), (0.072, .050, .020), (0.092, .048, .017), (0.102, .040, .010))
 
 
-def hand(prefix, wrist, L, B, mat, coll, scale=1.0, curl=1.0, mirrored=True, girth=1.0, palm_girth=1.0, palm=PALM):
+def hand(prefix, wrist, L, B, mat, coll, scale=1.0, curl=1.0, mirrored=True, girth=1.0, palm_girth=1.0, palm=PALM,
+         thumb_dir=(0.62, 0.70, -0.25), fan=1.0, knuckle=0.094, finger_len=1.0):
     """A gloved LEFT hand with separate fingers, mirrored to the right by default.
 
     `L` is the unit vector down the fingers, `B` out of the back of the hand. Returns
     `(palm, hp)`: the palm loft (phi = 0 thumb side, 90 deg the back of the hand, t from
     the wrist down) and `hp(l, w, b)`, a point in the hand's frame, for the caller's plates.
-    `girth` scales the finger radii, `palm_girth` the palm's thickness and `palm` replaces the palm
+    `thumb_dir` = the thumb's direction (along L, W, B; the default sticks out sideways, a gloved
+    grip's); `knuckle` = where the fingers leave the palm (down the hand, at scale 1; a
+    shorter palm table moves it up), `finger_len` scales the fingers' length; `fan` scales how far the fingers spread (1.0 = the gloved default); `girth` scales the finger radii, `palm_girth` the palm's thickness and `palm` replaces the palm
     section table (bare hands: a narrower wrist); a bare hand is
     about 0.8 / 0.85 of the gloved default (1.0 / 1.0 is the original gloved hand)."""
     L, B = unit(L), unit(B)
@@ -51,9 +54,10 @@ def hand(prefix, wrist, L, B, mat, coll, scale=1.0, curl=1.0, mirrored=True, gir
         loft = Loft([dict(p=q, a=a, b=a * 0.96, n=2.0) for q, a in zip(pts, rad)], front=B)
         fin(loft_mesh(name, loft, res=0.0022 * k, cap1=True, mat=mat, coll=coll))
 
-    for name, w, fan, length, r, curls in DIGITS:
-        digit("%s_%s" % (prefix, name), hp(0.094, w, -0.002), unit(L + fan * W), length * k, r * k * girth, curls)
-    digit(prefix + "_Thumb", hp(0.028, 0.038, -0.010), unit(0.62 * L + 0.70 * W - 0.25 * B), 0.072 * k, 0.0142 * k * girth, (0.0, 0.25, 0.22))
+    for name, w, spread, length, r, curls in DIGITS:
+        digit("%s_%s" % (prefix, name), hp(knuckle, w, -0.002), unit(L + spread * fan * W), length * k * finger_len, r * k * girth, curls)
+    tl, tw, tb = thumb_dir  # the thumb's direction in the hand's frame (down, towards the thumb side, out of the back)
+    digit(prefix + "_Thumb", hp(0.028, 0.038, -0.010), unit(tl * L + tw * W + tb * B), 0.072 * k, 0.0142 * k * girth, (0.0, 0.25, 0.22))
     return palm, hp
 
 
