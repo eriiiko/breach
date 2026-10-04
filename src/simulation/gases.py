@@ -56,6 +56,35 @@ import numpy as np
 
 
 # ---------------------------------------------------------------------------
+# THE SOOT MASS ONE UNIT OF SMOKE DENSITY HOLDS (#12 smoke x light, handle 3,
+# 2026-10-04) -- the "M" of the [gases.smoke] heat_absorb / light_absorb
+# derivations (config.toml), now in code so a SOOT SOURCE other than the fire
+# (a blast) can deposit a physical mass: combustion mints `soot_yield` units of
+# smoke per unit of N_O2 burned, one unit of N_O2 burns KG_FUEL_PER_N_O2 kg of
+# wood, and wood sheds SOOT_G_PER_G_WOOD g of soot per g (red oak, well
+# ventilated: Tewarson, SFPE Handbook of Fire Protection Engineering,
+# "Generation of heat and chemical compounds in fires"). M = 11.15 g at the
+# shipped dials, at the reference tile (KG_FUEL_PER_N_O2 is tile-size
+# dependent, materials.py).
+# ---------------------------------------------------------------------------
+SOOT_G_PER_G_WOOD = 0.015
+
+
+def soot_g_per_smoke_unit(cfg=None) -> float:
+    """Grams of soot in ONE unit of smoke density (one tile's worth at ONE)."""
+    if cfg is None:
+        from config import CFG as cfg
+    from simulation.materials import KG_FUEL_PER_N_O2
+    return (SOOT_G_PER_G_WOOD * KG_FUEL_PER_N_O2 * 1000.0
+            / float(cfg.physics.combustion.soot_yield))
+
+
+def smoke_units_of_soot(grams: float, cfg=None) -> float:
+    """A soot MASS in grams as smoke-density units (summed over tiles)."""
+    return float(grams) / soot_g_per_smoke_unit(cfg)
+
+
+# ---------------------------------------------------------------------------
 # Gas IDs — the single source of truth (engine/05 §6.2). Order is the slice
 # order of the dense ``gmap.gas`` (N, h, w) array; ids must be contiguous
 # 0..N-1 so an array indexed by id has no gaps (validated in GasTable).
