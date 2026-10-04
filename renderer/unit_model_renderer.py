@@ -52,6 +52,8 @@ from .marine_shader import (MARINE_NORMAL_MAP_FILENAME, UNIT_NORMAL_Y_SIGN,
                             load_marine_shader)
 from .unit_looks import (ROLES, LookAssigner, all_look_names, look_path,
                          looks_table, unit_key, unit_shading)
+from .unit_shadow import (NO_SHADOW, ShadowCast, ShadowPainter, read_unit_light,
+                          shadow_cast, smooth_shadow, unit_shadow_settings)
 
 # ---------------------------------------------------------------------------
 # Asset + tunables
@@ -95,6 +97,10 @@ _MOVE_EPS_TILES = 0.01
 # Blob shadow: radius as a fraction of the footprint, and its RGBA.
 _SHADOW_RADIUS_FRAC = 0.32       # of footprint side, in world px
 _SHADOW_COLOR = (0, 0, 0, 90)
+# Projected shadow (#33): the time constant of the per-unit low-pass on the
+# shadow vector -- a turn of the light fades the shadow through faint rather
+# than snapping it across the unit. Render feel, not a setting.
+_SHADOW_SMOOTH_TAU_S = 0.12
 # Prune a unit's anim state once it has gone unseen this many seconds.
 _STALE_SECONDS = 1.0
 # _CAM_HEIGHT and LightFieldCtx moved to renderer/lit3d.py (P1 extraction,
@@ -127,6 +133,7 @@ class _UnitAnimState:
     last_y: float = 0.0
     last_seen: float = 0.0       # wall-clock of last draw (for pruning)
     initialised: bool = False
+    shadow: Optional[ShadowCast] = None   # projected shadow, low-passed (#33)
 
 
 @dataclass
@@ -164,6 +171,8 @@ class UnitModelRenderer:
         # the light field per-fragment and skips the CPU tint.
         self._shader = None
         self._marine_shader = None       # MarineShader wrapper (locs + setters)
+        # #33 projected shadows: the flat shader + single-darkening draw.
+        self._shadow_painter: Optional[ShadowPainter] = None
 
     @property
     def model(self):
@@ -223,6 +232,7 @@ class UnitModelRenderer:
         self._scale_height = self._reference_height(first)
         self._loaded = True
         self._setup_marine_shader()
+        self._shadow_painter = ShadowPainter(rl)
 
     def _load_look(self, name: str, path: Path) -> Optional[_Look]:
         """Load one look; None (with one warning) if missing, unloadable or
@@ -414,6 +424,9 @@ class UnitModelRenderer:
             rl.unload_model(look.model)
         if self._marine_shader is not None:
             rl.unload_shader(self._marine_shader.shader)
+        if self._shadow_painter is not None:
+            self._shadow_painter.unload()
+            self._shadow_painter = None
         self._looks.clear()
         self._resolve.clear()
         self._assigner = None
@@ -458,7 +471,8 @@ class UnitModelRenderer:
                    base_tint=(255, 255, 255, 255),
                    light_rgb_fn: Optional[Callable[[object], tuple]] = None,
                    light_ctx: Optional[LightFieldCtx] = None,
-                   open_mode_3d: bool = True) -> None:
+                   open_mode_3d: bool = True,
+                   light_view=None, light_exposure: float = 1.0) -> None:
         """Draw every alive unit as an animated 3D body inside the world RT.
 
         Nests ``begin_mode_3d`` in the already-open world RT. Per unit: infer
@@ -491,6 +505,14 @@ class UnitModelRenderer:
         its own grazing key). When the shader is live and light_ctx is given,
         the CPU tint above is skipped (the field sample replaces it).
 
+        ``light_view`` (#33) is the light accessor's ``LightView`` (the one
+        ``LightingPass`` last consumed) and ``light_exposure`` the factor that
+        takes its light units to the ship shader's (sweep_gain x master_gain).
+        With them, and ``[render.unit_shadow] enabled``, each unit casts a
+        sharp projected shadow (``renderer/unit_shadow.py``): its skinned model
+        once more, flattened onto the floor away from the light, faded by how
+        bright and how one-sided the light around it is. None = no shadows.
+
         No-op (leaving the sprite path's world untouched) if the model failed
         to load — the toggle can be on with the asset missing and nothing breaks.
         """
@@ -506,6 +528,11 @@ class UnitModelRenderer:
         # #33: [render.unit_shading], read live (Ctrl+R retunes it); a missing
         # or mistyped key raises here rather than drawing a silent default.
         shading = unit_shading(CFG)
+        # #33: [render.unit_shadow], read live too (raises naming a bad key).
+        shadow_cfg = unit_shadow_settings(CFG)
+        shadows_on = (shadow_cfg.enabled and light_view is not None
+                      and self._shadow_painter is not None
+                      and self._shadow_painter.ready)
 
         # P1: wire the ship's light field into the marine material + push the
         # per-frame scalar uniforms ONCE (SetShaderValue self-enables the
@@ -538,9 +565,16 @@ class UnitModelRenderer:
         try:
             # Phase 0 parity: dead units skipped (sprite path).
             for u, name in zip(alive, names):
+                cast = NO_SHADOW
+                if shadows_on:
+                    fp = int(getattr(u, "footprint", 3))
+                    cast = shadow_cast(
+                        read_unit_light(light_view, int(u.x), int(u.y), fp,
+                                        light_exposure), shadow_cfg)
                 self._draw_one(u, self._resolve[name], wpt, dt, clock, scale,
                                shadow_r if shading.blob_shadow else 0.0,
-                               base_tint, light_rgb_fn)
+                               base_tint, light_rgb_fn,
+                               cast if shadows_on else None)
         finally:
             if open_mode_3d:
                 rl.end_mode_3d()
@@ -562,10 +596,12 @@ class UnitModelRenderer:
 
     def _draw_one(self, u, look: _Look, wpt: float, dt: float, clock: float,
                   scale: float, shadow_r: float, base_tint,
-                  light_rgb_fn) -> None:
+                  light_rgb_fn, shadow: Optional[ShadowCast] = None) -> None:
         """Draw a single unit with its look. THE SWAP SEAM: a future GPU-
         skinning path replaces the update_model_animation + DrawModelEx pair
-        here without touching anything else."""
+        here without touching anything else. ``shadow`` (#33) is this frame's
+        projected-shadow target (None = projected shadows off); it is low-
+        passed per unit and drawn from the SAME skinned pose as the body."""
         uid = unit_key(u)
         st = self._anim.get(uid)
         if st is None:
@@ -599,6 +635,18 @@ class UnitModelRenderer:
         cy = (float(u.y) + fp / 2.0) * wpt
         facing = float(getattr(u, "facing", math.pi / 2.0))
         yaw = _YAW_SIGN * math.degrees(facing) + _YAW_OFFSET_DEG
+
+        # Projected shadow (#33) first, from the pose just skinned (no second
+        # skinning). Its fixed far depth keeps it off every body, whichever
+        # unit is drawn first, and darkens each floor pixel once.
+        if shadow is None:
+            st.shadow = None
+        else:
+            st.shadow = smooth_shadow(st.shadow, shadow, dt, _SHADOW_SMOOTH_TAU_S)
+            if st.shadow.alpha > 0.0:
+                self._shadow_painter.draw(
+                    look.model, self._live_materials(look.model), st.shadow,
+                    rl.Vector3(cx, 0.0, cy), yaw, scale)
 
         # Blob shadow first (on the floor, under the model — reads great
         # top-down, no shadow maps). A thin filled disc via a short cylinder.

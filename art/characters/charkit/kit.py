@@ -15,11 +15,32 @@ All geometry is emitted in WORLD coordinates with objects at identity, so a
 Mirror modifier about the origin gives the other half of the character.
 """
 import math
+import os
 
 import bmesh
 import bpy
 import numpy as np
 from mathutils import Matrix
+
+
+def _yield_the_machine():
+    """A headless build drops to the lowest processor priority (Windows), so a game being played on
+    the same machine keeps its frame rate. Incident (#33, 2026-10-04): all-core character builds
+    pushed the game's sim tick past its period, and the game's catch-up loop turned that into
+    200 ms frames; at idle priority the same load left every frame under 62 ms."""
+    if os.name != "nt" or not bpy.app.background:
+        return
+    try:
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        k32.GetCurrentProcess.restype = ctypes.c_void_p
+        k32.SetPriorityClass.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        k32.SetPriorityClass(k32.GetCurrentProcess(), 0x00000040)  # IDLE_PRIORITY_CLASS
+    except Exception:  # a build must never fail over its priority
+        pass
+
+
+_yield_the_machine()
 
 RES = 0.004  # grid pitch in metres; build.py overrides it for drafts
 TAU = 2.0 * math.pi
