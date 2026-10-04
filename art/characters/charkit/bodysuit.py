@@ -883,7 +883,7 @@ def build_boots_implicit(S, M, coll="Boots"):
         d = None
         for (c0, r0), (c1, r1), q0, q1 in zip(nodes[:-1], nodes[1:], ratios[:-1], ratios[1:]):
             e = implicit.capsule(L, c0, c1, r0, r1, np.array([0.0, 0.0, 1.0]), ratio=(q0, q1), n=im.get("n", 2.6))
-            d = e if d is None else implicit.smin(d, e, 0.003)
+            d = e if d is None else implicit.smin(d, e, im.get("foot_k", 0.003))
         return d
 
     def field(P):
@@ -907,7 +907,7 @@ def build_boots_implicit(S, M, coll="Boots"):
     lo, hi = np.minimum(lo, hi), np.maximum(lo, hi)
     h = im["res"][0 if kit.RES < 0.006 else 1]
     V, Q = implicit.mesh_field(field, lo - 0.01, hi + 0.01, h)
-    V = implicit.taubin(V, Q, iters=4)
+    V = implicit.taubin(V, Q, iters=im.get("smooth", 4))
     L = local(V)
     back = np.clip((L[:, 1] - 0.0) / 0.01, 0.0, 1.0)                              # the back half only
     seam = 1.0 - np.minimum(np.where(back > 0.5, np.abs(L[:, 0]), 1.0), kit.SEAM_CAP) / kit.SEAM_CAP

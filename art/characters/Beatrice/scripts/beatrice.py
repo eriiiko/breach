@@ -178,10 +178,9 @@ SLEEVE_BACK = {"elbow": .0325, "elbow_top": .0300}
 
 # the raglan cut (bodysuit.Suit.in_torso_region): front = the start of THE line, back = the raglan seam
 # outside the blade insert, both down to RAGLAN_LOW under the arm (seams.body carries all three as piping)
-RAGLAN_FRONT = (("x", .060, 1.432), ("x", .086, 1.402), ("x", .110, 1.366), ("x", .126, 1.330), ("x", .128, 1.300), ("x", .123, 1.270))
-RAGLAN_BACK = (("bx", .058, 1.426), ("bx", .090, 1.409), ("bx", .106, 1.380), ("bx", .117, 1.350), ("bx", .119, 1.328), ("bx", .117, 1.300),
-               ("bx", .114, 1.270))
-RAGLAN_LOW = 1.270
+RAGLAN_FRONT = (("x", .060, 1.432), ("x", .086, 1.402), ("x", .110, 1.366), ("x", .126, 1.330), ("x", .128, 1.300), ("x", .1275, 1.293))
+RAGLAN_BACK = (("bx", .058, 1.426), ("bx", .090, 1.409), ("bx", .106, 1.380), ("bx", .117, 1.350), ("bx", .119, 1.328), ("bx", .1175, 1.293))
+RAGLAN_LOW = 1.293
 
 # the seam round the upper arm at the foot of the deltoid (side view: a shallow V, lowest on the outside):
 # z on the outer side, z on the inner side. The shoulder's own mesh meets the sleeve exactly here.
@@ -269,7 +268,7 @@ def dims(shape=None):
                     # behind: the raglan seam from the collar outside the blade insert to the back of the armpit, and
                     # under the arm the short seam joining it to THE line (the shoulder's own mesh ends on these)
                     RAGLAN_BACK,
-                    (("bx", .114, RAGLAN_LOW), ("phi", 0, RAGLAN_LOW), ("x", .123, RAGLAN_LOW)),
+                    (("bx", .1175, RAGLAN_LOW), ("phi", 0, RAGLAN_LOW), ("x", .1275, RAGLAN_LOW)),
                     # from the raglan seam at the back of the armpit down past the rib and waist panels, round the hip
                     (("bx", .119, 1.326), ("bx", .104, 1.280), ("bx", .090, 1.230), ("bx", .074, 1.190), ("bx", .068, 1.160),
                      ("bx", .076, 1.120), ("bx", .098, 1.070), ("bx", .120, 1.030), ("bx", .131, .996)),
@@ -335,7 +334,7 @@ def dims(shape=None):
                 sole_line=((0.002, 0.032), (-0.088, 0.008), (-0.166, 0.013)),
                 top=(0.232, 0.016, 0.95), ease=(0.0022, 0.0048), n=2.8, shaft_low=0.080, k=0.020,
                 sole=(0.0045, 0.012), heel=(0.032, 0.0185, 0.0205, 0.82),
-                suit_end=0.100, res=(0.0009, 0.0020)),
+                suit_end=0.100, res=(0.0009, 0.0020), foot_k=0.012, smooth=12),
         ),
     )
 
@@ -396,6 +395,7 @@ DEV_VIEWS = {
     # aimed close-ups (charkit/suitbuild.render_aimed): the palm and thumb of her left hand from
     # behind and inside, between the hand and the thigh
     "boot_side": dict(cam=(0.95, -0.05, 0.16), target=(0.19, 0.0, 0.14), lens=85.0, res=(900, 900)),
+    "armpit_back": dict(cam=(0.42, 0.62, 1.36), target=(0.13, 0.05, 1.28), lens=85.0, res=(900, 900)),
     "top_close": dict(cam=(0.0, -0.18, 2.45), target=(0.0, 0.0, 1.30), lens=50.0, res=(1000, 1000)),
     "hand_palm": dict(cam=(0.040, 0.380, 0.870), target=(0.305, 0.000, 0.860), lens=85.0, res=(900, 900)),
 }

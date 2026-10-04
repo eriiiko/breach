@@ -21,22 +21,39 @@
 </head>
 <body>
 <main>
-  <h1>Beatrice — body, suit, hands, boots (stage 2: correction round)</h1>
+  <h1>Beatrice — body, suit, hands, boots (stage 3: second correction round)</h1>
   <p>Built from Python alone on the shared character kit (<code>charkit/bodysuit.py</code>, Blender 4.5, Cycles) from the tables in
-     <code>scripts/beatrice.py</code>, now fitted to three drawings: front, side and back. The head is a bald placeholder for the
-     face-and-hair stage. Character only, no props. The stage-1 review this round answers: <code>review_stage1.md</code>. See <code>PROVENANCE.md</code>.</p>
+     <code>scripts/beatrice.py</code>, fitted to three drawings: front, side and back. The head is a bald placeholder for the
+     face-and-hair stage. Character only, no props. This round answers <code>review_stage2.md</code>: new hands, the shoulder and
+     arm as one surface, a sleek ankle boot, clean teardrop inserts and a dark-grey thigh panel, the S-curve of the back, a fine zip,
+     layered knee pads, thin cuffs, seams that end on other edges. See <code>PROVENANCE.md</code>.</p>
 
-  <h2>Hip shapes, side by side</h2>
-  <p>Three shapes built from table values only, in a matte grey so the gloss hides nothing, front and side, waist to knee. The orange
-     line is the drawing's outline (front view above, side view below); the concept sits beside the front row. <code>default</code>
-     is the build: the concept's hip ratios, a moderate seat. <code>sheet_hips</code> is the three drawings' width and full seat.</p>
-  <figure><img src="shape_vs_concept.jpg" alt="Three hip shapes in matte grey, front and side, with the drawing outlines"><figcaption>one step slimmer · default · sheet_hips (the drawings)</figcaption></figure>
+  <h2>Hands (the reviewer's first item)</h2>
+  <p>One closed surface per hand (<code>charkit/parts.py::bare_hand</code>): a palm narrow at the wrist and widest at the knuckles, a
+     rounded heel and a thumb pad, a two-segment thumb from the side of the palm's base, four fingers of different lengths in three
+     tapering phalanges with a slight knuckle and a rounded tip, relaxed curl and a little spread. The fingers grow out of the palm
+     through smooth fillets (webbing), no notch or step.</p>
+  <div class="pair">
+    <figure><img src="hand.jpg" alt="The back of the left hand"><figcaption>Back of the hand, from her left</figcaption></figure>
+    <figure><img src="hand_palm.jpg" alt="The palm and thumb"><figcaption>Palm and thumb, from behind and inside</figcaption></figure>
+  </div>
+
+  <h2>Shoulder and arm</h2>
+  <p>Torso and arm are one surface over the shoulder: the smooth union of the body and sleeve lofts, meshed on its own and bounded by
+     seam lines (in front the line from the collar to the armpit, behind a raglan seam outside the blade insert, a short seam under
+     the arm, and on the arm the drawn seam at the foot of the deltoid), so every join lies under a piping cord. No armhole ring.
+     The sleeve is refitted: a slim wrist, the forearm swelling under the elbow, a narrowing and a point at the elbow.</p>
+  <div class="grid">
+    <figure><img src="shoulder.jpg" alt="Shoulder from the front"><figcaption>Shoulder, front</figcaption></figure>
+    <figure><img src="shoulder_back.jpg" alt="Shoulder from behind"><figcaption>Shoulder, back</figcaption></figure>
+    <figure><img src="armpit_back.jpg" alt="Back of the armpit"><figcaption>Back of the armpit: the raglan seam beside the blade insert (still ragged here)</figcaption></figure>
+    <figure><img src="top_close.jpg" alt="Shoulders from above"><figcaption>From above, close: the shoulder line from neck to arm</figcaption></figure>
+  </div>
 
   <h2>The three drawings vs the model</h2>
-  <p>Silhouette overlap (IoU), default build, per height band (above the waist / waist to knee / knees down). Front 0.947 / 0.870 / 0.900;
-     side 0.918 / 0.917 / 0.869; back 0.913 / 0.837 / 0.832. The waist-to-knee band is narrower than the drawings on purpose
-     (<code>sheet_hips</code>: front 0.947, side 0.959, back 0.886). Knees down: the front and back drawings place the lower legs
-     1.8 cm apart and draw a high heel; the build splits the difference and wears the low heel asked for.</p>
+  <p id="scores">Silhouette overlap (IoU), default build, per height band (above the waist / waist to knee / knees down):
+     front 0.946 / 0.871 / 0.908 (whole 0.903); side 0.918 / 0.915 / 0.856; back 0.911 / 0.848 / 0.813. The waist-to-knee band is narrower than the drawings on purpose (the owner's slimmer hips). Knees down: the front and
+     back drawings place the lower legs apart and draw a high heel; the build splits the difference and wears the low heel asked for.</p>
   <div class="grid">
     <figure><img src="sheet_vs_reference.png" alt="Front drawing above the model"><figcaption>Front: drawing above, model below</figcaption></figure>
     <figure><img src="side_vs_reference.png" alt="Side drawing above the model"><figcaption>Side</figcaption></figure>
@@ -48,6 +65,11 @@
     <figure><img src="back_overlay.png" alt="Back overlay"><figcaption>Back overlay</figcaption></figure>
   </div>
 
+  <h2>Hip shapes, side by side (stage 2, unchanged)</h2>
+  <p>Three shapes built from table values only, matte grey, front and side, waist to knee, the drawing's outline in orange. The owner
+     chose <code>default</code>.</p>
+  <figure><img src="shape_vs_concept.jpg" alt="Three hip shapes in matte grey, front and side, with the drawing outlines"><figcaption>one step slimmer · default · sheet_hips (the drawings)</figcaption></figure>
+
   <h2>Turnaround</h2>
   <figure><img src="turnaround.png" alt="Front, side, back, three-quarter"><figcaption>Orthographic front, side, back, three-quarter</figcaption></figure>
 
@@ -55,9 +77,9 @@
   <div class="grid">
     <figure><img src="hero.jpg" alt="Three-quarter front"><figcaption>Three-quarter front</figcaption></figure>
     <figure><img src="hero_back.jpg" alt="Three-quarter back"><figcaption>Three-quarter back</figcaption></figure>
-    <figure><img src="side.jpg" alt="Side"><figcaption>Side</figcaption></figure>
-    <figure><img src="torso.jpg" alt="Torso"><figcaption>Torso: piping, shoulder slits, rib and waist crescents, toothed zip</figcaption></figure>
-    <figure><img src="torso_back.jpg" alt="Torso, back"><figcaption>Torso, back: zip down the spine, blade, rib and waist panels, the V seams</figcaption></figure>
+    <figure><img src="side.jpg" alt="Side"><figcaption>Side: the S-curve, the dark-grey thigh panel</figcaption></figure>
+    <figure><img src="torso.jpg" alt="Torso"><figcaption>Torso: piping, shoulder slits, teardrop inserts, fine zip</figcaption></figure>
+    <figure><img src="torso_back.jpg" alt="Torso, back"><figcaption>Torso, back: zip down the spine, blade and back inserts, raglan seams</figcaption></figure>
     <figure><img src="legs.jpg" alt="Legs and boots"><figcaption>Legs and boots</figcaption></figure>
     <figure><img src="head.jpg" alt="Placeholder head"><figcaption>Placeholder head (replaced in the next stage)</figcaption></figure>
     <figure><img src="top.jpg" alt="From above"><figcaption>From above (the game camera)</figcaption></figure>
@@ -67,12 +89,11 @@
 
   <h2>Close-ups</h2>
   <div class="grid">
-    <figure><img src="shoulder.jpg" alt="Shoulder and collar"><figcaption>Shoulder, collar, zip pull</figcaption></figure>
-    <figure><img src="flank.jpg" alt="Flank"><figcaption>Flank: the panels set in the suit</figcaption></figure>
+    <figure><img src="boot.jpg" alt="Boots"><figcaption>Ankle boots: the shaft hugs the leg into a slim ankle, almond toe, 3 cm block heel</figcaption></figure>
+    <figure><img src="boot_side.jpg" alt="Boot from the side"><figcaption>Boot from the side: heel curve, instep, full-length sole</figcaption></figure>
+    <figure><img src="flank.jpg" alt="Flank"><figcaption>Flank: teardrop inserts edged with piping</figcaption></figure>
     <figure><img src="flank_back.jpg" alt="Flank from behind"><figcaption>Flank from behind</figcaption></figure>
-    <figure><img src="knee.jpg" alt="Knees"><figcaption>Knee shields and shin seams</figcaption></figure>
-    <figure><img src="boot.jpg" alt="Boots"><figcaption>Ankle boots: low block heel, almond toe, V top</figcaption></figure>
-    <figure><img src="hand.jpg" alt="Hand"><figcaption>Hand and cuff</figcaption></figure>
+    <figure><img src="knee.jpg" alt="Knees"><figcaption>Layered knee pads in front, shin seams running into the boots</figcaption></figure>
   </div>
 </main>
 </body>

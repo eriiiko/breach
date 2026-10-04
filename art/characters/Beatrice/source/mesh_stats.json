@@ -5,33 +5,34 @@
   "evaluated_tris": 113152
  },
  "Boots": {
-  "objects": 4,
-  "source_tris": 29860,
-  "evaluated_tris": 81448
+  "objects": 3,
+  "source_tris": 349484,
+  "evaluated_tris": 698968
  },
  "Hands": {
-  "objects": 6,
-  "source_tris": 19732,
-  "evaluated_tris": 39464
+  "objects": 1,
+  "source_tris": 145564,
+  "evaluated_tris": 291128
  },
  "Suit": {
-  "objects": 46,
-  "source_tris": 250373,
-  "evaluated_tris": 895552
+  "objects": 50,
+  "source_tris": 332240,
+  "evaluated_tris": 1219072
  },
  "TOTAL": {
-  "objects": 62,
-  "source_tris": 405437,
-  "evaluated_tris": 1129616
+  "objects": 60,
+  "source_tris": 932760,
+  "evaluated_tris": 2322320
  },
  "NORMALS": {
   "flipped": [
    "Beatrice_Eye_L",
    "Beatrice_Eye_R",
+   "Hand_Hand",
    "Suit_Zip_Pull_Front",
    "Suit_Zip_Stop_Front"
   ],
-  "closed": 62,
+  "closed": 60,
   "open": [],
   "undecided": []
  }

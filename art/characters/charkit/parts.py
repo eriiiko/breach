@@ -67,7 +67,7 @@ def hand(prefix, wrist, L, B, mat, coll, scale=1.0, curl=1.0, mirrored=True, gir
 BARE_HAND = dict(
     # the palm, wrist -> knuckles: (l, w centre, b centre, half-width, half-depth back, half-depth
     # palm, superellipse exponent); it starts inside the cuff and ends rounded under the knuckles
-    palm=((-0.028, 0.000, 0.0005, 0.0165, 0.0120, 0.0120, 2.2), (0.000, 0.000, 0.0005, 0.0182, 0.0112, 0.0120, 2.4),
+    palm=((-0.028, 0.000, 0.0005, 0.0138, 0.0105, 0.0105, 2.2), (0.000, 0.000, 0.0005, 0.0178, 0.0110, 0.0116, 2.4),
           (0.022, 0.0005, 0.0000, 0.0232, 0.0102, 0.0112, 2.7), (0.045, 0.000, -0.0005, 0.0272, 0.0092, 0.0104, 2.9),
           (0.062, -0.0008, -0.0010, 0.0285, 0.0085, 0.0095, 2.9)),
     palm_k=0.004,
@@ -86,13 +86,13 @@ BARE_HAND = dict(
     waist=0.94,             # each phalanx's middle against its two joints: the slight knuckle
     # the thumb, by its joint points (base inside the thenar pad, knuckle, joint, tip centre) and
     # half-widths there; `nail` = the direction its nail faces
-    thumb=dict(pts=((0.012, 0.0100, -0.0060), (0.044, 0.0255, -0.0145), (0.071, 0.0300, -0.0190), (0.095, 0.0290, -0.0200)),
-               r=(0.0100, 0.0084, 0.0075, 0.0064), depth=0.86, nail=(0.0, 0.75, 0.66), k=0.0075),
+    thumb=dict(pts=((0.014, 0.0085, -0.0085), (0.044, 0.0255, -0.0145), (0.071, 0.0300, -0.0190), (0.095, 0.0290, -0.0200)),
+               r=(0.0100, 0.0084, 0.0075, 0.0064), depth=0.86, nail=(0.0, 0.75, 0.66), k=0.0110),
     # pads (ellipsoids, smooth-unioned): centre (l, w, b), radii along (the axis, across, depth), axis
-    pads=(((0.032, 0.0130, -0.0085), (0.025, 0.0115, 0.0090), (0.85, 0.48, -0.22)),      # the thumb's pad (thenar)
+    pads=(((0.032, 0.0120, -0.0095), (0.026, 0.0112, 0.0088), (0.85, 0.48, -0.22)),      # the thumb's pad (thenar)
           ((0.040, -0.0165, -0.0060), (0.026, 0.0095, 0.0082), (1.0, -0.05, 0.0)),        # the heel under the little finger
           ((0.006, 0.0000, -0.0045), (0.012, 0.0165, 0.0095), (1.0, 0.0, 0.0))),          # the heel of the hand
-    pad_k=0.008,
+    pad_k=0.011,
     # the hollow of the palm: an ellipsoid smoothly subtracted (centre, radii (l, w, b), smoothing)
     hollow=((0.046, -0.002, -0.0205), (0.020, 0.015, 0.0085), 0.004),
     curl=1.0,

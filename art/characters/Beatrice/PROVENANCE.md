@@ -75,6 +75,37 @@ Outputs: `previews/` (tracked), `source/Beatrice.blend` (gitignored), `source/*m
   world-plane net cut curved panels in shimmering contour rings).
 - `parts.hand(thumb_dir=, fan=, knuckle=, finger_len=)`, passed through `workwear.build_hands`.
 
+## Stage 3: second correction round (2026-10-04, answers `previews/review_stage2.md`)
+
+Kit, all additive (every other character builds as before):
+
+- `charkit/implicit.py` (new): signed-distance primitives (tapered superellipse capsules, ellipsoids,
+  chains), smooth union/intersection, surface nets meshing with Newton projection onto the surface,
+  Taubin smoothing.
+- `parts.bare_hand` (new; `parts.hand` untouched): a bare hand as ONE closed implicit surface — palm
+  rows wrist→knuckles, thenar / hypothenar / heel pads, a palm hollow, a two-segment thumb from the
+  palm's base, four fingers of three tapering phalanges with knuckle waists and rounded tips, curl and
+  splay; its rows inside the sleeve follow the forearm. `BARE_HAND` holds her slender hand.
+- `bodysuit`: `build_bare_hands`; the shoulder as one surface (`garment["shoulder"]`): the smooth union
+  of body and sleeve lofts (fillet k growing from the armpit to the shoulder top), meshed on its own and
+  bounded by a raglan cut on seam lines (`Suit.in_torso_region`, `body_onto_cut`) and by the deltoid
+  seam on the arm (`sleeve_to_join`, `Suit.t_join`); `sleeve_back` depths (the elbow's point);
+  `build_boots_implicit` (`boot["implicit"]`: shaft = the leg eased out, heel cup, foot chain, flat
+  underside, full-length sole, block heel); `Suit.teardrop` panels; per-panel material and the
+  `mesh_thigh` net (palette `MESH_THIGH`); zip tooth size and pull scale; layered knee pads.
+- `suitbuild.render_aimed`: close-ups aimed at any point (`DEV_VIEWS` entries given as dicts).
+
+Her tables: the refitted `SLEEVE` + `SLEEVE_BACK`; the S-curve in `TORSO` (waist / waist_top / ribs /
+chest_low / chest / chest_top / shoulder depths; hip, seat and thigh rows unchanged); lower-leg rows
+1 mm out and the instep row slimmed (inside the boot); the raglan cut and arm seam (`RAGLAN_*`,
+`ARM_SEAM`); teardrop inserts and the new thigh panel; joined-up seams; layered knee pads; a fine zip,
+a darker `METAL`; thin cuffs; the implicit boot table; feet turned out 12°.
+
+Measured (stage 3): silhouette IoU above the waist / waist�knee / knees down: front 0.946 / 0.871 / 0.908;
+side 0.918 / 0.915 / 0.856; back 0.911 / 0.848 / 0.813 (back knees-down fell from 0.832: the lower legs sit 1 mm
+further out for the front view). `source/mesh_stats.json`: 60 objects, 932,760 source / 2,322,320 evaluated
+triangles, all closed.
+
 ## Stage 1 measures (superseded)
 
 - Concept (by hand, far-side half-widths from the midline, concept px): shoulder 305, waist 155, hip at
