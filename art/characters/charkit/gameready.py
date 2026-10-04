@@ -24,8 +24,10 @@ Stages:
 3. UVs: Smart UV Project, crumbs merged into neighbours, charts flattened angle-based,
    folded / crushed / self-overlapping charts re-cut, packed;
 4. bakes (Cycles, selected-to-active, from ONE joined copy of the source whose closed parts
-   have outward normals): tangent normal, ambient occlusion, base colour as emission; missed
-   texels inpainted -> albedo.png (sRGB, colour x AO) + normal.png (linear);
+   have outward normals): tangent normal, ambient occlusion, base colour as emission, gloss (from
+   the materials' roughness, `gloss_signal`) as emission; missed texels inpainted -> albedo.png
+   (sRGB colour x AO in RGB, the gloss mask in ALPHA -- the unit shader's contract, #33) +
+   normal.png (linear);
 5. measure (stats.json: mesh, UVs, bake coverage, silhouette IoU against the source) and
    preview (textured turnaround, top view, source-vs-game side by side);
 6. export a static .glb (Y-up, metres, feet at the origin) + a .blend of the skin;
@@ -35,6 +37,13 @@ Stages:
     --rig-only       skip stages 1-6, rig the saved game/<name>_game.blend
     --no-rig         stop after stage 6
     --abduct DEG     extra upper-arm abduction for the clips (overrides the spec's ABDUCTION_DEG)
+
+A change to the materials alone (a colour, the gloss mask) need not rebuild anything:
+
+    --retexture      re-bake the albedo (colour x AO, gloss in alpha) onto the game asset's OWN
+                     mesh and UVs and splice it into the .glb (`glbtex.py`); the mesh, skin and
+                     clips stay byte for byte (checked)
+    --variant NAME   a look variant's albedo on the same skin (the saved .blend, else the asset)
 
 Outputs under <character>/game/ (the .glb, the textures and the .blend are
 regenerated, so gitignored; stats.json is tracked) and <character>/previews/game_*.
@@ -76,6 +85,9 @@ def _args():
     ap.add_argument("--abduct", type=float, default=None, help="extra upper-arm abduction (deg), overrides the spec")
     ap.add_argument("--variant", default="", help="re-bake this look variant's albedo onto the saved skin (same mesh and "
                                                   "UVs) as game/albedo_<variant>.png; needs run(variants=...)")
+    ap.add_argument("--retexture", action="store_true", help="re-bake the game asset's albedo (gloss in alpha) onto its "
+                                                             "own mesh and UVs and splice it into the .glb; mesh, skin "
+                                                             "and clips stay byte for byte")
     return ap.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else [])
 
 
@@ -114,11 +126,14 @@ def _pixels(img):
     return buf.reshape(h, w, 4)  # row 0 = BOTTOM (Blender order)
 
 
-def _save_png(arr, path, colorspace):
-    """arr in Blender row order (row 0 = bottom), values already in the file's encoding."""
+def _save_png(arr, path, colorspace, alpha=False):
+    """arr in Blender row order (row 0 = bottom), values already in the file's encoding. With `alpha`
+    the PNG keeps arr's 4th channel as straight alpha (RGBA); else RGB."""
     h, w = arr.shape[:2]
-    img = bpy.data.images.new("_save", w, h, alpha=False)
+    img = bpy.data.images.new("_save", w, h, alpha=alpha)
     img.colorspace_settings.name = colorspace
+    if alpha:
+        img.alpha_mode = "STRAIGHT"
     img.pixels.foreach_set(np.ascontiguousarray(arr, np.float32).ravel())
     img.filepath_raw = path
     img.file_format = "PNG"
@@ -712,31 +727,83 @@ def uv_coverage(skin, tex):
 
 
 # -------------------------------------------------------------------------- bake
-class EmissionSwap:
-    """Temporarily re-wire every source material to emit its Base Color signal (or plain white)."""
+# Gloss (#33): the game's unit shader draws a highlight scaled and tightened by a per-texel gloss
+# value, baked into the albedo's ALPHA from the materials' own roughness: 1 at or below
+# GLOSS_ROUGH_FULL, 0 at or above GLOSS_ROUGH_MATTE, falling as the cube between -- so a visor
+# (0.045) bakes ~1, moulded armour (0.42-0.66) a little, cloth (0.84+) and rubber 0. A clear coat
+# counts by its weight: gloss = max(g(Roughness), Coat Weight * g(Coat Roughness)).
+GLOSS_ROUGH_FULL, GLOSS_ROUGH_MATTE, GLOSS_POWER = 0.05, 0.85, 3.0
 
-    def __init__(self, mats, white=False):
+
+def _value(t, sock):
+    """The signal into `sock`: its link's source socket, or its own default value."""
+    return sock.links[0].from_socket if sock.is_linked else sock.default_value
+
+
+def gloss_signal(t, bsdf):
+    """A float socket carrying the gloss of a Principled BSDF (see GLOSS_ROUGH_*)."""
+
+    def g(rough):
+        mr = t.nodes.new("ShaderNodeMapRange")
+        mr.clamp = True
+        mr.inputs["From Min"].default_value, mr.inputs["From Max"].default_value = GLOSS_ROUGH_MATTE, GLOSS_ROUGH_FULL
+        mr.inputs["To Min"].default_value, mr.inputs["To Max"].default_value = 0.0, 1.0
+        v = _value(t, rough)
+        if isinstance(v, bpy.types.NodeSocket):
+            t.links.new(v, mr.inputs["Value"])
+        else:
+            mr.inputs["Value"].default_value = v
+        pw = t.nodes.new("ShaderNodeMath")
+        pw.operation = "POWER"
+        t.links.new(mr.outputs[0], pw.inputs[0])
+        pw.inputs[1].default_value = GLOSS_POWER
+        return pw.outputs[0]
+
+    coat = t.nodes.new("ShaderNodeMath")
+    coat.operation = "MULTIPLY"
+    w = _value(t, bsdf.inputs["Coat Weight"])
+    if isinstance(w, bpy.types.NodeSocket):
+        t.links.new(w, coat.inputs[0])
+    else:
+        coat.inputs[0].default_value = w
+    t.links.new(g(bsdf.inputs["Coat Roughness"]), coat.inputs[1])
+    mx = t.nodes.new("ShaderNodeMath")
+    mx.operation = "MAXIMUM"
+    t.links.new(g(bsdf.inputs["Roughness"]), mx.inputs[0])
+    t.links.new(coat.outputs[0], mx.inputs[1])
+    return mx.outputs[0]
+
+
+class EmissionSwap:
+    """Temporarily re-wire every source material to emit its Base Color signal, plain white, or (gloss)
+    its gloss as grey (`gloss_signal`)."""
+
+    def __init__(self, mats, white=False, gloss=False):
         self.saved = []
         for m in mats:
             t = m.node_tree
             out = next(n for n in t.nodes if n.type == "OUTPUT_MATERIAL" and n.is_active_output)
             bsdf = next(n for n in t.nodes if n.type == "BSDF_PRINCIPLED")
             old = out.inputs["Surface"].links[0].from_socket if out.inputs["Surface"].is_linked else None
+            before = set(t.nodes)
             em = t.nodes.new("ShaderNodeEmission")
             em.inputs["Strength"].default_value = 1.0
             bc = bsdf.inputs["Base Color"]
             if white:
                 em.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+            elif gloss:
+                t.links.new(gloss_signal(t, bsdf), em.inputs["Color"])
             elif bc.is_linked:
                 t.links.new(bc.links[0].from_socket, em.inputs["Color"])
             else:
                 em.inputs["Color"].default_value = bc.default_value
             t.links.new(em.outputs[0], out.inputs["Surface"])
-            self.saved.append((t, out, old, em))
+            self.saved.append((t, out, old, [n for n in t.nodes if n not in before]))
 
     def restore(self):
-        for t, out, old, em in self.saved:
-            t.nodes.remove(em)
+        for t, out, old, added in self.saved:
+            for n in added:
+                t.nodes.remove(n)
             if old is not None:
                 t.links.new(old, out.inputs["Surface"])
 
@@ -822,6 +889,11 @@ def bake_all(skin, sources, tex, cage, ray, samples, timing, log):
     swap = EmissionSwap(src_mats)
     color = bake("EMIT", False)
     swap.restore()
+    t_color = timing["bake_emit_s"]
+    swap = EmissionSwap(src_mats, gloss=True)  # #33: the gloss mask, from the materials' roughness
+    gloss = bake("EMIT", True)[..., :1]
+    timing["bake_gloss_s"], timing["bake_emit_s"] = timing["bake_emit_s"], t_color
+    swap.restore()
     # Coverage check: everything emits white; a texel inside a UV triangle that stays dark was missed.
     swap = EmissionSwap(src_mats, white=True)
     img = bpy.data.images.new("_bake_hit", tex, tex, alpha=False, float_buffer=True)
@@ -839,7 +911,14 @@ def bake_all(skin, sources, tex, cage, ray, samples, timing, log):
     for k in ("visible_camera", "visible_diffuse", "visible_glossy", "visible_transmission", "visible_volume_scatter",
               "visible_shadow"):
         setattr(skin, k, True)
-    return normal, ao, color, hit
+    return normal, ao, color, gloss, hit
+
+
+def albedo_rgba(color, ao, gloss):
+    """The game albedo: sRGB colour x AO in RGB, the gloss mask (linear, 0 matte .. 1 glossiest) in
+    ALPHA -- the unit shader's contract (#33): the model is drawn opaque, alpha is gloss."""
+    albedo = np.clip(color[..., :3] * ao[..., :1], 0.0, 1.0)
+    return np.dstack([studio.to_srgb(albedo), np.clip(gloss[..., :1], 0.0, 1.0)])
 
 
 def _inpaint(img, valid, region, steps=64):
@@ -861,6 +940,14 @@ def _inpaint(img, valid, region, steps=64):
         ok |= grow
         todo &= ~grow
     return img
+
+
+def _splice_albedo(glb, albedo_path):
+    """Put the albedo PNG into the exported .glb byte for byte: the exporter's own encoding of an
+    image whose alpha no socket reads is not ours to rely on, and the alpha is the gloss mask (#33)."""
+    import glbtex
+    with open(albedo_path, "rb") as f:
+        glbtex.replace_image(glb, "baseColor", f.read())
 
 
 def game_material(albedo_path, normal_path):
@@ -952,7 +1039,12 @@ def run(root, name, build, make_materials, height, beauty, backdrop=studio.BACKD
     if args.variant:
         if variants is None:
             raise SystemExit("this character has no look variants")
-        rebake_variant(args, root, name, build, variants(args.variant), args.variant)
+        rebake_variant(args, root, name, build, variants(args.variant), args.variant, asset=rig_out)
+        return
+    if args.retexture:
+        if rig_out is None:
+            raise SystemExit("--retexture needs the character's game asset (run(rig_out=...))")
+        retexture(args, root, name, build, make_materials, rig_out)
         return
     if not args.rig_only:
         static(args, root, name, build, make_materials, height, beauty, backdrop, previews_dir, skin_opts)
@@ -961,31 +1053,114 @@ def run(root, name, build, make_materials, height, beauty, backdrop=studio.BACKD
         rig.run(args, root, name, build, make_materials, rig_spec, rig_out, previews_dir)
 
 
-def rebake_variant(args, root, name, build, make_materials, variant):
-    """The albedo of a look variant on the SAME skin and UVs: the saved game/<name>_game.blend's skin,
-    the source rebuilt with the variant's materials, the colour and AO bakes of stage 4 again ->
-    game/albedo_<variant>.png. Geometry, UVs, normal map and the .glb are untouched."""
-    t0 = time.time()
-    game = os.path.join(root, "game")
-    bpy.ops.wm.open_mainfile(filepath=os.path.join(game, name + "_game.blend"))
-    skin = bpy.data.objects["GameSkin"]
-    for ob in list(bpy.data.objects):
-        if ob is not skin:
-            bpy.data.objects.remove(ob)
-    skin.data.transform(Matrix.Translation(-Vector(skin["export_offset"])))  # back into the source's frame
+def _skin_from_asset(asset):
+    """The game asset's own skin as a bare mesh object "GameSkin" (no armature, no modifiers, rest
+    pose, in the character's frame -- `rig.py` exports it there): the mesh and UVs the asset's
+    textures are drawn on. Starts from an empty scene."""
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    bpy.ops.import_scene.gltf(filepath=asset)
+    # the skinned mesh (the importer also makes small bone-shape meshes)
+    ob = max((o for o in bpy.data.objects if o.type == "MESH"), key=lambda o: len(o.data.vertices))
+    me = ob.data.copy()
+    me.transform(ob.matrix_world)
+    for o in list(bpy.data.objects):
+        bpy.data.objects.remove(o)
+    me.materials.clear()
+    skin = bpy.data.objects.new("GameSkin", me)
+    bpy.context.scene.collection.objects.link(skin)
+    return skin
+
+
+def _saved_skin(root, name, asset):
+    """The skin a re-bake lands on, in the source's frame: the saved game/<name>_game.blend's when it
+    exists (stage 6 wrote it), else the game asset's own (`_skin_from_asset`) -- the .blend is
+    regenerated output, gitignored, so a fresh checkout has only the asset. Both carry the same mesh
+    and UVs."""
+    blend = os.path.join(root, "game", name + "_game.blend")
+    if os.path.isfile(blend):
+        bpy.ops.wm.open_mainfile(filepath=blend)
+        skin = bpy.data.objects["GameSkin"]
+        for ob in list(bpy.data.objects):
+            if ob is not skin:
+                bpy.data.objects.remove(ob)
+        skin.data.transform(Matrix.Translation(-Vector(skin["export_offset"])))  # back into the source's frame
+        return skin, blend
+    if asset is None or not os.path.isfile(asset):
+        raise SystemExit("no saved skin: neither %s nor the game asset %s exists" % (blend, asset))
+    return _skin_from_asset(asset), asset
+
+
+def _bake_albedo(args, skin, build, make_materials):
+    """The source rebuilt with `make_materials` round `skin`, the colour, AO and gloss bakes of stage 4
+    -> (RGBA albedo in Blender row order, timing, bake stats)."""
     kit.RES = 0.004
     build(make_materials())
     sources = [o for o in bpy.context.scene.objects if o.type == "MESH" and o is not skin]
-    studio.setup(samples=args.samples)
+    _rig, _cam, floor = studio.setup(samples=args.samples)
+    floor.hide_render = True  # as in stage 4: the studio floor would occlude the soles' AO
     log, timing = {}, {}
-    _normal, ao, color, hit = bake_all(skin, sources, args.tex, args.cage, args.ray, args.bake_samples, timing, log)
+    _normal, ao, color, gloss, hit = bake_all(skin, sources, args.tex, args.cage, args.ray, args.bake_samples,
+                                              timing, log)
     cover, _overlap = uv_coverage(skin, args.tex)
     valid = hit >= 0.5
-    ao, color = (_inpaint(x, valid, cover) for x in (ao, color))
-    albedo = np.clip(color[..., :3] * ao[..., :1], 0.0, 1.0)
+    ao, color, gloss = (_inpaint(x, valid, cover) for x in (ao, color, gloss))
+    return albedo_rgba(color, ao, gloss), timing, dict(missed_fraction_of_covered=round(float(
+        (cover & ~valid).sum() / max(1, cover.sum())), 5), **gloss_stats(gloss, cover))
+
+
+def gloss_stats(gloss, cover):
+    """How the gloss mask spreads over the covered texels."""
+    g = gloss[..., 0][cover]
+    return dict(gloss_mean=round(float(g.mean()), 4), gloss_over_0_5=round(float((g > 0.5).mean()), 4),
+                gloss_0_05_to_0_5=round(float(((g > 0.05) & (g <= 0.5)).mean()), 4),
+                gloss_matte_under_0_05=round(float((g <= 0.05).mean()), 4))
+
+
+def rebake_variant(args, root, name, build, make_materials, variant, asset=None):
+    """The albedo of a look variant on the SAME skin and UVs (`_saved_skin`), the source rebuilt with
+    the variant's materials, the colour, AO and gloss bakes of stage 4 again -> game/albedo_<variant>.png
+    (gloss in its alpha). Geometry, UVs, normal map and the .glb are untouched."""
+    t0 = time.time()
+    game = os.path.join(root, "game")
+    skin, frm = _saved_skin(root, name, asset)
+    rgba, timing, bstats = _bake_albedo(args, skin, build, make_materials)
     path = os.path.join(game, "albedo_%s.png" % variant)
-    _save_png(np.dstack([studio.to_srgb(albedo), np.ones(albedo.shape[:2])]), path, "sRGB")
-    print("variant %s: %s in %.1fs %s" % (variant, path, time.time() - t0, json.dumps(timing)), flush=True)
+    _save_png(rgba, path, "sRGB", alpha=True)
+    print("variant %s: %s (skin from %s) in %.1fs %s %s" % (variant, path, frm, time.time() - t0, json.dumps(timing),
+                                                           json.dumps(bstats)), flush=True)
+    return path
+
+
+def retexture(args, root, name, build, make_materials, asset):
+    """Re-bake the game asset's albedo (colour x AO, gloss in alpha) onto the asset's OWN mesh and UVs
+    and splice it into the .glb in place (`glbtex.replace_image`): the mesh, skin and clips -- every
+    other buffer view -- stay byte for byte, checked here. The normal map is kept. For a change to
+    the materials alone (the gloss mask, a colour) without re-running stages 1-7."""
+    import glbtex
+    t0 = time.time()
+    before = glbtex.digest(asset)
+    skin = _skin_from_asset(asset)
+    rgba, timing, bstats = _bake_albedo(args, skin, build, make_materials)
+    path = os.path.join(root, "game", "albedo.png")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    _save_png(rgba, path, "sRGB", alpha=True)
+    with open(path, "rb") as f:
+        glbtex.replace_image(asset, "baseColor", f.read())
+    after = glbtex.digest(asset)
+    if after != before:
+        raise SystemExit("retexture changed the mesh, skin or clips of %s: %s -> %s" % (asset, before, after))
+    stats_path = os.path.join(root, "game", "stats.json")
+    stats = {}
+    if os.path.isfile(stats_path):
+        with open(stats_path) as f:
+            stats = json.load(f)
+    stats["retexture"] = dict(asset=os.path.relpath(asset, os.path.join(root, "..", "..", "..")).replace("\\", "/"),
+                              mesh_skin_clips_unchanged=True, geometry_digest=before, bake=bstats,
+                              gloss=dict(rough_full=GLOSS_ROUGH_FULL, rough_matte=GLOSS_ROUGH_MATTE, power=GLOSS_POWER),
+                              timing_s=dict(timing, total_s=round(time.time() - t0, 1)))
+    with open(stats_path, "w") as f:
+        json.dump(stats, f, indent=1)
+    print("retexture %s: %s in %.1fs %s" % (name, asset, time.time() - t0, json.dumps(stats["retexture"])), flush=True)
     return path
 
 
@@ -1023,17 +1198,17 @@ def static(args, root, name, build, make_materials, height, beauty, backdrop, pr
 
     t = time.time()
     floor.hide_render = True
-    normal, ao, color, hit = bake_all(skin, sources, args.tex, args.cage, args.ray, args.bake_samples, timing, log)
+    normal, ao, color, gloss, hit = bake_all(skin, sources, args.tex, args.cage, args.ray, args.bake_samples,
+                                             timing, log)
     floor.hide_render = False
     cover, overlap = uv_coverage(skin, args.tex)
     missed = cover & (hit < 0.5)
     # A texel whose ray found no source (a sliver in a tight crease) takes its neighbours' values.
     valid = hit >= 0.5
-    normal, ao, color = (_inpaint(x, valid, cover) for x in (normal, ao, color))
-    albedo = np.clip(color[..., :3] * ao[..., :1], 0.0, 1.0)
+    normal, ao, color, gloss = (_inpaint(x, valid, cover) for x in (normal, ao, color, gloss))
     albedo_path, normal_path = os.path.join(game, "albedo.png"), os.path.join(game, "normal.png")
-    _save_png(np.dstack([studio.to_srgb(albedo), np.ones(albedo.shape[:2])]), albedo_path, "sRGB")
-    _save_png(np.dstack([normal[..., :3], np.ones(albedo.shape[:2])]), normal_path, "Non-Color")
+    _save_png(albedo_rgba(color, ao, gloss), albedo_path, "sRGB", alpha=True)
+    _save_png(np.dstack([normal[..., :3], np.ones(normal.shape[:2])]), normal_path, "Non-Color")
     skin.data.materials.append(game_material(albedo_path, normal_path))
     timing["bake_s"] = round(time.time() - t, 1)
     bake = dict(texture_px=args.tex, cage_extrusion_m=args.cage, max_ray_distance_m=args.ray,
@@ -1043,7 +1218,7 @@ def static(args, root, name, build, make_materials, height, beauty, backdrop, pr
                 source_faces_turned_outward=log.get("bake_source_faces_flipped", []),
                 source_material_slots=log.get("bake_source_material_slots"),
                 source_attributes=log.get("bake_source_attributes"),
-                mean_ao_on_covered=round(float(ao[..., 0][cover].mean()), 3))
+                mean_ao_on_covered=round(float(ao[..., 0][cover].mean()), 3), **gloss_stats(gloss, cover))
     print("bake:", json.dumps(bake), json.dumps(timing), flush=True)
 
     t = time.time()
@@ -1070,6 +1245,7 @@ def static(args, root, name, build, make_materials, height, beauty, backdrop, pr
                               export_apply=True, export_texcoords=True, export_normals=True, export_tangents=True,
                               export_materials="EXPORT", export_image_format="AUTO", export_animations=False,
                               export_skins=False, export_morph=False, export_cameras=False, export_lights=False)
+    _splice_albedo(glb, albedo_path)
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(game, name + "_game.blend"))
     timing["export_s"] = round(time.time() - t, 1)
     timing["total_s"] = round(time.time() - t0, 1)
