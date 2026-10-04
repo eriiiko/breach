@@ -1,4 +1,4 @@
-"""Materials for bare-skinned characters in workwear (Blender 4.5, Cycles).
+"""Materials for bare-skinned characters in workwear and bodysuits (Blender 4.5, Cycles).
 
 Every builder takes its colours as arguments: a character's palette table is the only
 place a colour lives. Colours are given as sRGB hex strings ("#4a5468") or linear
@@ -199,6 +199,56 @@ def mat_metal(name, base, rough=0.38):
     b = lin(base)
     col = t.mix(t.ramp(t.noise(30.0, 3.0), 0.4, 0.8), b, (b[0] * 0.55, b[1] * 0.52, b[2] * 0.48, 1.0))
     t.set(Base_Color=col, Metallic=1.0, Roughness=t.mixf(t.noise(40.0, 2.0), rough - 0.1, rough + 0.15))
+    return m
+
+
+def mat_gloss(name, base, rough=0.16, coat=1.0, coat_rough=0.06, specular=0.5, piping=0.6, groove=0.35):
+    """A glossy stretch garment (latex-look bodysuit, patent boots). The gloss is three named
+    Value nodes (`roughness`, `coat`, `coat_roughness`) so it can be tuned in the .blend. The
+    `seam` attribute (kit.seam_attr / kit.tape_attr) or the signed `pipe` one is a narrow raised piping line with a
+    darker core, drawn in relief (bump) so the gloss picks it out; `stitch` the same, finer."""
+    m, t = _new(name)
+    b = lin(base)
+    rough_v, coat_v, coat_r = _value(t, "roughness", rough), _value(t, "coat", coat), _value(t, "coat_roughness", coat_rough)
+    col = t.mix(t.ramp(t.noise(4.0, 2.0, 0.5), 0.35, 0.75), (b[0] * 0.92, b[1] * 0.92, b[2] * 0.92, 1.0), (b[0] * 1.08, b[1] * 1.08, b[2] * 1.08, 1.0))
+    d = t.math("MULTIPLY", t.math("SUBTRACT", 1.0, t.attr("seam")), kit.SEAM_CAP)
+    # `pipe`: a SIGNED distance to a line (0.5 on it, see bodysuit.pipe_attr), which interpolates
+    # exactly across a face, so a diagonal line stays unbroken on a coarse grid; absent = 0 = far
+    dp = t.math("MULTIPLY", t.math("ABSOLUTE", t.math("SUBTRACT", t.attr("pipe"), 0.5)), 2.0 * kit.SEAM_CAP)
+    d = t.math("MINIMUM", d, dp)
+    ridge = t.math("SUBTRACT", 1.0, t.ramp(d, 0.0004, 0.0013))
+    core = t.math("SUBTRACT", 1.0, t.ramp(d, 0.00008, 0.00030))
+    ds = t.math("MULTIPLY", t.math("SUBTRACT", 1.0, t.attr("stitch")), kit.SEAM_CAP)
+    fine = t.math("SUBTRACT", 1.0, t.ramp(ds, 0.0003, 0.0008))
+    col = t.mix(t.math("MULTIPLY", core, groove), col, (b[0] * 0.35, b[1] * 0.35, b[2] * 0.35, 1.0))
+    h = t.math("SUBTRACT", t.math("ADD", ridge, t.math("MULTIPLY", fine, 0.6)), t.math("MULTIPLY", core, 0.8))
+    h = t.math("ADD", h, t.math("MULTIPLY", t.noise(160.0, 2.0, 0.5), 0.02))
+    t.set(Base_Color=col, Roughness=rough_v, Specular_IOR_Level=specular, Coat_Weight=coat_v, Coat_Roughness=coat_r,
+          Normal=t.bump(h, piping, 0.0012))
+    return m
+
+
+def mat_mesh(name, thread, under, cell=0.0032, width=0.30, show=0.55, rough=0.45):
+    """An open-mesh insert (fishnet stretch panel): `thread` the net's colour, `under` what shows
+    through it (the skin), dimmed to `show`. The net is a lattice of fine thread planes in world
+    space, `cell` metres apart; `width` the thread's share of a cell."""
+    m, t = _new(name)
+    th, u = lin(thread), lin(under)
+    sep = t.n("ShaderNodeSeparateXYZ")
+    t.put(sep.inputs[0], t.pos())
+    x, y, z = sep.outputs["X"], sep.outputs["Y"], sep.outputs["Z"]
+    k = kit.TAU / cell
+
+    def lines(v):
+        s = t.math("ABSOLUTE", t.math("SINE", t.math("MULTIPLY", v, k * 0.5)))
+        return t.ramp(s, 1.0 - width * 1.6, 1.0 - width * 0.9)
+
+    # a cubic lattice of thread planes: any surface cuts at least two families, so the net never
+    # collapses into parallel stripes whatever way the panel faces
+    net = t.math("MAXIMUM", t.math("MAXIMUM", lines(x), lines(y)), lines(z))
+    under_col = (u[0] * show, u[1] * show, u[2] * show, 1.0)
+    col = t.mix(net, under_col, th)
+    t.set(Base_Color=col, Roughness=t.mixf(net, 0.55, rough), Coat_Weight=0.0, Normal=t.bump(net, 0.35, 0.0006))
     return m
 
 

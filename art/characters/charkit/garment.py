@@ -1,5 +1,6 @@
-"""Garment pieces on the kit's surfaces: stitched patches (pockets, knee patches), a shirt
-collar folded over a body loft, zips, and a mesh orientation check.
+"""Garment pieces on the kit's surfaces: stitched patches (pockets, knee patches), panels of
+any curved outline (`panel`: a bodysuit's mesh inserts), a shirt collar folded over a body
+loft, zips, and a mesh orientation check.
 
 Patches carry a `stitch` attribute (distance to a topstitch line inset from the edge), so
 a material that reads it (wearmat.mat_coverall) draws a double row of stitching round
@@ -56,6 +57,85 @@ def patch(name, anchor, hs, ht, offset=0.003, thick=0.003, n=8.0, shift=(0.0, 0.
         va[key] = np.asarray(f(P), float)
     obj = new_mesh(name, P, faces, None, mat, coll, attrs=va)
     return _finish(obj, thick, bevel if bevel is not None else min(0.4 * thick, 0.0025), seg)
+
+
+def smooth_loop(pts, step):
+    """A closed polyline [(u, v), ...] through its points (closed Catmull-Rom), resampled
+    every `step` (same units). Returns (n, 2)."""
+    P = np.asarray(pts, float)
+    n = len(P)
+    sub = 24
+    out = []
+    for i in range(n):
+        p0, p1, p2, p3 = P[(i - 1) % n], P[i], P[(i + 1) % n], P[(i + 2) % n]
+        for s in np.linspace(0.0, 1.0, sub, endpoint=False):
+            s2, s3 = s * s, s * s * s
+            out.append(0.5 * ((2 * p1) + (-p0 + p2) * s + (2 * p0 - 5 * p1 + 4 * p2 - p3) * s2 + (-p0 + 3 * p1 - 3 * p2 + p3) * s3))
+    Q = np.array(out)
+    seg = np.linalg.norm(np.diff(np.vstack([Q, Q[:1]]), axis=0), axis=1)
+    u = np.concatenate([[0.0], np.cumsum(seg)])
+    m = max(8, int(u[-1] / step))
+    q = np.linspace(0.0, u[-1], m, endpoint=False)
+    Qc = np.vstack([Q, Q[:1]])
+    return np.column_stack([np.interp(q, u, Qc[:, 0]), np.interp(q, u, Qc[:, 1])])
+
+
+def panel(name, loft, outline, offset=0.001, thick=0.001, res=None, lift=None, attrs=None, mat=None, coll="Garment"):
+    """An inset panel of any outline on a loft (a mesh insert, a shaped pad): `outline` =
+    [(phi_rad, t), ...], a closed loop smoothed through its points. The panel is the loft's
+    surface inside the loop, triangulated with the loop as its exact edge (no grid steps), lifted
+    `offset` above the surface (plus `lift(P, N)`, metres along N, where the garment under it is
+    displaced) and given `thick` inwards. Returns `(obj, rim)`: rim = the edge loop in world space
+    on the panel's top surface, for piping."""
+    from mathutils import Vector
+    from mathutils.geometry import delaunay_2d_cdt
+    res = res or kit.RES
+    O = np.asarray(outline, float)
+    r0 = float(loft.radius([O[:, 0].mean()], [O[:, 1].mean()])[0])
+    uv = np.column_stack([O[:, 0] * r0, O[:, 1]])
+    B = smooth_loop(uv, 0.6 * res)
+    # interior points on a grid, kept clear of the edge
+    lo, hi = B.min(axis=0), B.max(axis=0)
+    gx, gy = np.meshgrid(np.arange(lo[0] + res * 0.5, hi[0], res), np.arange(lo[1] + res * 0.5, hi[1], res))
+    G = np.column_stack([gx.ravel(), gy.ravel()])
+    inside = _inside(G, B) if len(G) else np.zeros(0, bool)
+    G = G[inside]
+    if len(G):
+        dmin = np.min(np.linalg.norm(G[:, None, :] - B[None, :, :], axis=2), axis=1)
+        G = G[dmin > 0.6 * res]
+    V2 = np.vstack([B, G])
+    nb = len(B)
+    verts = [Vector((float(x), float(y))) for x, y in V2]
+    edges = [(i, (i + 1) % nb) for i in range(nb)]
+    out = delaunay_2d_cdt(verts, edges, [list(range(nb))], 1, 1e-7)
+    V2o = np.array([[v[0], v[1]] for v in out[0]])
+    tris = [f for f in out[2] if len(f) == 3]
+    phi, t = V2o[:, 0] / r0, V2o[:, 1]
+    P, N = loft.pn(phi, t)
+    if lift is not None:
+        P = P + np.asarray(lift(P, N), float)[:, None] * N
+    P = P + offset * N
+    T = np.array(tris, np.int64)
+    a, b, c = P[T[:, 0]], P[T[:, 1]], P[T[:, 2]]
+    flip = np.einsum("ij,ij->i", np.cross(b - a, c - a), N[T[:, 0]]) < 0
+    T[flip] = T[flip][:, ::-1]
+    va = {}
+    for key, f in (attrs or {}).items():
+        va[key] = np.asarray(f(P), float)
+    obj = new_mesh(name, P, np.zeros((0, 4), np.int32), T, mat, coll, attrs=va)
+    # the edge loop, in the order of B (CDT keeps the input verts first when it can; match by position)
+    rim_idx = [int(np.argmin(np.linalg.norm(V2o - b, axis=1))) for b in B]
+    return _finish(obj, thick, None, 2), P[rim_idx]
+
+
+def _inside(Q, poly):
+    """Even-odd point-in-polygon for points Q (n, 2) against a closed loop poly (m, 2)."""
+    x, y = Q[:, 0][:, None], Q[:, 1][:, None]
+    x0, y0 = poly[:, 0][None, :], poly[:, 1][None, :]
+    x1, y1 = np.roll(poly[:, 0], -1)[None, :], np.roll(poly[:, 1], -1)[None, :]
+    cond = (y0 > y) != (y1 > y)
+    xc = x0 + (y - y0) * (x1 - x0) / np.where(y1 - y0 == 0, 1e-12, y1 - y0)
+    return (cond & (x < xc)).sum(axis=1) % 2 == 1
 
 
 def seg_dist(x, z, p0, p1):
