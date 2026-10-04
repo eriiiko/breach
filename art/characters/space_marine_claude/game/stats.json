@@ -91,7 +91,7 @@
  },
  "export": {
   "file": "space_marine.glb",
-  "bytes": 2911760,
+  "bytes": 2911780,
   "offset_m": [
    0.0098,
    0.0195,
@@ -99,15 +99,143 @@
   ]
  },
  "timing_s": {
-  "build_s": 7.2,
-  "skin_s": 10.2,
-  "uv_s": 15.4,
-  "bake_normal_s": 2.8,
-  "bake_ao_s": 2.3,
+  "build_s": 7.5,
+  "skin_s": 10.7,
+  "uv_s": 16.3,
+  "bake_normal_s": 3.3,
+  "bake_ao_s": 2.5,
   "bake_emit_s": 3.7,
-  "bake_s": 27.1,
-  "measure_previews_s": 23.1,
+  "bake_s": 28.5,
+  "measure_previews_s": 23.3,
   "export_s": 0.3,
-  "total_s": 83.2
+  "total_s": 86.6
+ },
+ "rig": {
+  "method": "driver rig D (source re-proportioned, T-pose) -> fit pose -> target rig T; clips baked by world matrix",
+  "source_rig": "assets/models/marine/AnimationLibrary_Godot_Standard.gltf",
+  "bones": 53,
+  "clips": 46,
+  "fit_pose_joint_miss_mm": 0.0002,
+  "leg_length_ratio": 1.0241,
+  "stance_lift_mm": 20.1,
+  "foot_yaw_deg": 13.0,
+  "abduction_deg": 12.0,
+  "bone_scale": {
+   "DEF-hips": 1.008,
+   "DEF-spine.001": 1.033,
+   "DEF-thigh.L": 0.986,
+   "DEF-thigh.R": 0.986,
+   "DEF-spine.002": 1.04,
+   "DEF-shin.L": 1.06,
+   "DEF-shin.R": 1.06,
+   "DEF-spine.003": 1.04,
+   "DEF-foot.L": 0.962,
+   "DEF-foot.R": 0.962,
+   "DEF-neck": 1.408,
+   "DEF-shoulder.L": 1.091,
+   "DEF-shoulder.R": 1.091,
+   "DEF-toe.L": 0.537,
+   "DEF-toe.R": 0.537,
+   "DEF-head": 2.786,
+   "DEF-upper_arm.L": 0.966,
+   "DEF-upper_arm.R": 0.966,
+   "DEF-forearm.L": 1.166,
+   "DEF-forearm.R": 1.166,
+   "DEF-hand.L": 0.778,
+   "DEF-hand.R": 0.778,
+   "DEF-f_middle.01.L": 0.778,
+   "DEF-f_middle.01.R": 0.778
+  },
+  "clip_exactness_max_head_or_tail_mm": {
+   "worst_clip": "Death01",
+   "worst": 0.006077,
+   "idle": 0.001092,
+   "walk": 0.003317,
+   "death": 0.006077,
+   "pistol_shoot": 0.001441
+  },
+  "clip_exactness_max_angle_rad": 0.0,
+  "weights": {
+   "heat_empty_vertices": 0,
+   "rigid_vertices": {
+    "DEF-foot.L": 255,
+    "DEF-foot.R": 268,
+    "DEF-forearm.L": 111,
+    "DEF-forearm.R": 113,
+    "DEF-hand.L": 106,
+    "DEF-hand.R": 107,
+    "DEF-head": 259,
+    "DEF-hips": 259,
+    "DEF-neck": 20,
+    "DEF-shin.L": 98,
+    "DEF-shin.R": 108,
+    "DEF-shoulder.L+DEF-upper_arm.L": 41,
+    "DEF-shoulder.R+DEF-upper_arm.R": 41,
+    "DEF-spine.003": 771,
+    "DEF-thigh.L": 72,
+    "DEF-thigh.R": 68
+   },
+   "influences_max": 4,
+   "influences_mean": 1.64,
+   "vertices_over_4_before_limit": 401,
+   "unlabelled_vertices": 0
+  },
+  "test_poses": [
+   {
+    "clip": "Idle_Loop",
+    "frame": 0,
+    "min_z_m": -0.0039,
+    "height_m": 1.853
+   },
+   {
+    "clip": "Walk_Loop",
+    "frame": 0,
+    "min_z_m": -0.0388,
+    "height_m": 1.875
+   },
+   {
+    "clip": "Walk_Loop",
+    "frame": 16,
+    "min_z_m": -0.0362,
+    "height_m": 1.872
+   },
+   {
+    "clip": "Pistol_Shoot",
+    "frame": 5,
+    "min_z_m": -0.004,
+    "height_m": 1.846
+   },
+   {
+    "clip": "Death01",
+    "frame": 57,
+    "min_z_m": -0.1751,
+    "height_m": 0.567
+   }
+  ],
+  "offset_removed_m": [
+   0.0098,
+   0.0195,
+   0.0
+  ],
+  "export": {
+   "file": "assets/models/space_marine/space_marine.glb",
+   "bytes": 5551920,
+   "meshes": 1,
+   "skins": 1,
+   "joints": 53,
+   "animations": 46,
+   "materials": 1,
+   "images": 2
+  },
+  "timing_s": {
+   "rigs_s": 1.6,
+   "clips_s": 3.3,
+   "verify_s": 2.4,
+   "label_s": 7.8,
+   "bind_s": 0.3,
+   "previews_s": 1.2,
+   "export_s": 19.0,
+   "total_s": 35.7
+  }
  }
 }

@@ -366,11 +366,17 @@ def label_skin(skin, sources):
 
 
 def gear_bone(part, x, gear):
+    """The gear rule for a source part: None (keep the heat weights) or {bone: weight}. A rule's bone
+    is a name or a {name: weight} mix -- constant weights move the gear (nearly) rigidly by a blend."""
     if part is None:
         return None
+    side = "L" if x > 0 else "R"
     for prefix, bone in gear:
         if part.startswith(prefix):
-            return bone.format(s="L" if x > 0 else "R") if bone else None
+            if not bone:
+                return None
+            mix = bone if isinstance(bone, dict) else {bone: 1.0}
+            return {b.format(s=side): w for b, w in mix.items()}
     return None
 
 
@@ -396,11 +402,13 @@ def bind(skin, T, labels, gear):
     heat_empty = int((W.sum(1) <= 1e-6).sum())
     rigid = {}
     for v in me.vertices:
-        b = gear_bone(labels[v.index][0], v.co.x, gear)
-        if b:
+        mix = gear_bone(labels[v.index][0], v.co.x, gear)
+        if mix:
             W[v.index] = 0.0
-            W[v.index, idx[b]] = 1.0
-            rigid[b] = rigid.get(b, 0) + 1
+            for b, w in mix.items():
+                W[v.index, idx[b]] = w
+            key = "+".join(sorted(mix))
+            rigid[key] = rigid.get(key, 0) + 1
     # a vertex the heat solve left empty takes its nearest bone segment
     empty = np.flatnonzero(W.sum(1) <= 1e-6)
     for i in empty:

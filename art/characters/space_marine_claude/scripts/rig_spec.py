@@ -56,17 +56,18 @@ FOOT_YAW_DEG = 13.0
 
 # Hard gear moves rigidly with one bone. Each skin vertex is labelled with the high-res source part
 # nearest to it; the first rule whose prefix matches that part's name decides. `{s}` is the side
-# (L where x > 0). None keeps the automatic (bone-heat) weights.
+# (L where x > 0). None keeps the automatic (bone-heat) weights; a {bone: weight} mix moves the
+# part by a constant blend of two bones.
 GEAR = (
     ("Helmet", "DEF-head"), ("Visor", "DEF-head"),
     ("Pack_Hose", None),
     ("Pack", "DEF-spine.003"),
     ("Chest", "DEF-spine.003"),
     ("Collar", "DEF-spine.003"), ("Neck_Ring", "DEF-spine.003"),
-    ("Neck_Seal", None),
+    ("Neck_Seal", "DEF-neck"),  # the rubber seal between ring and helmet: the neck's turn opens there
     ("Belt", "DEF-hips"), ("Pouch", "DEF-hips"),
     ("Cargo", "DEF-thigh.{s}"),
-    ("Pauldron", "DEF-upper_arm.{s}"),
+    ("Pauldron", {"DEF-upper_arm.{s}": 0.5, "DEF-shoulder.{s}": 0.5}),  # rides half the arm's swing
     ("Elbow", "DEF-forearm.{s}"),
     ("Knee", "DEF-shin.{s}"),
     ("Glove_Cuff", "DEF-forearm.{s}"),
@@ -76,5 +77,7 @@ GEAR = (
 )
 
 # Extra upper-arm abduction (degrees, away from the body) added to every clip: the clips were
-# authored for a slim mannequin.
-ABDUCTION_DEG = 0.0
+# authored for a slim mannequin. Measured on the rig: the marine is modelled with its upper arms
+# 27 deg out from vertical; the clips hold them at 14-23 deg in Idle and down to 8 deg in Walk, which
+# pushes the sleeves into the torso and the pouches. 12 deg puts Idle at 26-35 and Walk at >= 20.
+ABDUCTION_DEG = 12.0
