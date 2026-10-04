@@ -1,0 +1,113 @@
+{
+ "character": "space_marine",
+ "params": {
+  "tris_target": 10000,
+  "voxel_m": 0.006,
+  "close_voxels": 2,
+  "uv_angle_deg": 66.0,
+  "min_island_faces": 24,
+  "bake_samples": 128
+ },
+ "source": {
+  "objects": 105,
+  "joined_tris_after_thickening": 2298368
+ },
+ "skin": {
+  "open_parts_thickened": 28,
+  "remeshed_tris": 488076,
+  "cavity_voxels_filled": 603313,
+  "filled_tris": 285760,
+  "pieces_kept": [
+   [
+    243948
+   ],
+   [
+    142880
+   ]
+  ],
+  "enclosed_or_tiny_pieces_dropped": [
+   [
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6
+   ],
+   []
+  ]
+ },
+ "mesh": {
+  "triangles": 10000,
+  "blender_vertices": 4998,
+  "vertices_after_uv_split": 7032,
+  "uv_islands": 157,
+  "boundary_edges": 0,
+  "non_manifold_edges": 0,
+  "uv_min": [
+   0.00586,
+   0.00586
+  ],
+  "uv_max": [
+   0.9936,
+   0.97893
+  ],
+  "uv_outside_0_1": 0,
+  "zero_area_uv_faces": 0,
+  "smart_uv_islands_before_merge": 551,
+  "uv_charts_recut_for_folding": 10,
+  "uv_folded_charts_left": 1,
+  "hidden_area_fraction": 0.0057
+ },
+ "bake": {
+  "texture_px": 1024,
+  "cage_extrusion_m": 0.012,
+  "max_ray_distance_m": 0.04,
+  "uv_coverage": 0.4125,
+  "missed_texels": 2257,
+  "missed_fraction_of_covered": 0.00522,
+  "uv_overlap_texels": 135,
+  "source_faces_turned_outward": [
+   "Pouch_Front:300/300",
+   "Pouch_Front_Flap:300/300",
+   "Boot_Ankle_Buckle:196/196",
+   "Boot_Heel:5984/5984"
+  ],
+  "mean_ao_on_covered": 0.862
+ },
+ "silhouette_iou": {
+  "front": 0.9854,
+  "side": 0.9913,
+  "back": 0.9855
+ },
+ "export": {
+  "file": "space_marine.glb",
+  "bytes": 2911760,
+  "offset_m": [
+   0.0098,
+   0.0195,
+   0.0
+  ]
+ },
+ "timing_s": {
+  "build_s": 7.2,
+  "skin_s": 10.2,
+  "uv_s": 15.4,
+  "bake_normal_s": 2.8,
+  "bake_ao_s": 2.3,
+  "bake_emit_s": 3.7,
+  "bake_s": 27.1,
+  "measure_previews_s": 23.1,
+  "export_s": 0.3,
+  "total_s": 83.2
+ }
+}

@@ -2,3 +2,7 @@ source/*.blend
 source/*.blend1
 scripts/__pycache__/
 previews/_*.png
+game/*.glb
+game/*.png
+game/*.blend
+game/*.blend1
