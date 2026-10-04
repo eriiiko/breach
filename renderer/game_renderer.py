@@ -936,14 +936,23 @@ class GameRenderer:
                 if draw_units_3d:
                     # #33: untinted -- teams are told apart by model and
                     # texture ([render.unit_looks]), Erik's ruling.
+                    # #33 projected shadows read the accessor's LightView
+                    # (kept by LightingPass) in the ship shader's units:
+                    # light units x sweep_gain x master_gain.
+                    shadow_exposure = (self.lighting.sweep_gain
+                                       * self.lighting.light_gain)
                     self.unit_models.draw_units(
                         marines, wpt, clock, self._world_cam3d,
                         light_rgb_fn=light_rgb_at,
-                        light_ctx=light_ctx, open_mode_3d=False)
+                        light_ctx=light_ctx, open_mode_3d=False,
+                        light_view=self.lighting.light_view,
+                        light_exposure=shadow_exposure)
                     self.unit_models.draw_units(
                         zombies, wpt, clock, self._world_cam3d,
                         light_rgb_fn=light_rgb_at,
-                        light_ctx=light_ctx, open_mode_3d=False)
+                        light_ctx=light_ctx, open_mode_3d=False,
+                        light_view=self.lighting.light_view,
+                        light_exposure=shadow_exposure)
                 if draw_props_3d:
                     # P4: sway on the SIM clock + the tamed wind sampled per
                     # prop inside draw_props (one lookup each, no sim cost).

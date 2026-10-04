@@ -100,6 +100,8 @@ class LightingPass:
         self.floor = tuple(float(v) for v in getattr(_lcfg, "floor", (0.03, 0.03, 0.04)))
         # the calibrated glow (for the gas-medium pass), (h, w, 3)
         self.glow_rgb = np.zeros((grid_h, grid_w, 3), dtype=np.float32)
+        # the last LightView consumed (None = no light read yet / lighting off)
+        self.light_view = None
 
         # CPU-side scratch the pack writes (pack_light_view):
         # RGB light field (f32), shape (h, w, 3) — interleaved per ch.03.
@@ -301,11 +303,16 @@ class LightingPass:
                         self.packed_b, glow_rgb=self.glow_rgb)
         core.update_rgba16f_texture(self.light_tex_a, self.packed_a)
         core.update_rgba16f_texture(self.light_tex_b, self.packed_b)
+        # The accessor's view itself, kept for the CPU-side readers that need
+        # more than the textures carry (#33: the units' projected shadows read
+        # its directionality). Read-only; replaced on the next upload.
+        self.light_view = view
 
     def clear_light(self) -> None:
         """Lighting OFF (F4): zero every light buffer and upload the dark
         textures, so no stale field lingers (the flat floor still lights the
         ship)."""
+        self.light_view = None
         self.light_rgb.fill(0)
         self.light_map.fill(0)
         self.light_dx.fill(0)

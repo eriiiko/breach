@@ -53,10 +53,21 @@ class LightView:
                            (0, 0) where the flux is zero
     glow      (h, w, 3) -- the in-scattered glow at gas cells (dequantized
                            ``light_glow``), 0 elsewhere
+    directionality (h, w) -- HOW ONE-SIDED the light is (#33, the units'
+                           projected shadows): |net flux| / scalar irradiance,
+                           i.e. ``|light_flux_q| / Σ_c light_q`` -- both
+                           planes are sums over the same ordinates' streams
+                           (``I_m = Σ_c stream_c``) and every ordinate's
+                           direction is a unit vector, so it lies in [0, 1]:
+                           1 = all light along one ordinate, 0 = balanced from
+                           all sides (or dark). Clipped to [0, 1] against the
+                           shift's rounding. ``flux_dir * directionality *
+                           rgb.sum(-1)`` recovers the net flux in light units.
     """
     rgb: np.ndarray
     flux_dir: np.ndarray
     glow: np.ndarray
+    directionality: np.ndarray
 
     @property
     def scalar(self) -> np.ndarray:
@@ -75,7 +86,14 @@ def read_light(gmap) -> LightView:
     norm = np.sqrt(flux[..., 0] * flux[..., 0] + flux[..., 1] * flux[..., 1])
     safe = np.where(norm > 0.0, norm, 1.0)
     flux_dir = np.where(norm[..., None] > 0.0, flux / safe[..., None], 0.0)
-    return LightView(rgb=rgb, flux_dir=flux_dir.astype(np.float32), glow=glow)
+    # One-sidedness: the net flux over the scalar irradiance, in the planes'
+    # own (common) currency, so no dequantize enters the ratio.
+    total = np.asarray(gmap.light_q, dtype=np.float64).sum(axis=2)
+    directionality = np.where(total > 0.0,
+                              np.minimum(norm / np.where(total > 0.0, total, 1.0), 1.0),
+                              0.0)
+    return LightView(rgb=rgb, flux_dir=flux_dir.astype(np.float32), glow=glow,
+                     directionality=directionality.astype(np.float32))
 
 
 def light_at(gmap, y: int, x: int) -> tuple:
