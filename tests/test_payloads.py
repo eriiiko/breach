@@ -53,7 +53,8 @@ from simulation.gases import (  # noqa: E402
 from simulation.orders import (  # noqa: E402
     DET_START_PHASE1, ORDER_EXPLOSIVE, Order,
 )
-from simulation.payloads import emit_gas, execute_payload, ignite_ring  # noqa: E402
+from simulation.payloads import (blast_smoke_peak, emit_gas,  # noqa: E402
+                                 execute_payload, ignite_ring)
 from simulation.physics import add_explosion_smoke, apply_explosion  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 from simulation.weapons import get_tables  # noqa: E402
@@ -100,7 +101,12 @@ def _prew3_site_replica(gmap, queue, units, fy, fx, payload, rng, events=None,
                     payload.wall_damage)
     apply_blast_damage(units, fx, fy, radius, payload.unit_damage,
                        events=events)
-    add_explosion_smoke(gmap, queue, fy, fx, radius)
+    # RESTATED at #12 handle 3 (2026-10-04): the disc's peak is no longer the
+    # fixed 0.8 but the charge's physical soot (blast_smoke_peak); a charge
+    # with no soot (C4) deposits none and draws no noise.
+    peak = blast_smoke_peak(gmap, fy, fx, radius, payload.blast_soot_g)
+    if peak > 0.0:
+        add_explosion_smoke(gmap, queue, fy, fx, radius, amount=peak)
     if events is not None:
         events.append(ExplosionEvent(pos=(fx, fy), radius=radius, kind=kind))
 

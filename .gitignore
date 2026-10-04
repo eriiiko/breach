@@ -13,8 +13,9 @@
 __pycache__/
 *.pyc
 
-# Claude Code
-.claude/
+# Claude Code: local settings and worktrees stay out; project skills are tracked
+.claude/*
+!.claude/skills/
 
 # C++ build artifacts
 cpp/build/

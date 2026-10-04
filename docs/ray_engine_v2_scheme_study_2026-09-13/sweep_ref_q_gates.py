@@ -2672,11 +2672,13 @@ def gate17_fine_heat_currency(fast=False):
 LQ = Q                                     # light extinctions are Q16 too
 T_BURN_GAME = T_SRC_GAME                   # a burning crate's plateau (1263 game)
 # Light gas coefficients in G13's gas vocabulary (smoke, steam, o2, n2): soot's
-# and steam's shipped RGB absorption x the shipped [smoke] absorb scale 1.4, and
-# their scatter albedos -- the numbers GasTable.light_absorb_q16 / light_glow_q16
-# carry (tests/test_light_extinction_doors.py holds these constants to the
-# shipped table, count for count).
-LIGHT_ABSORB = [[LQ(0.88 * 1.4), LQ(0.90 * 1.4), LQ(0.93 * 1.4)],
+# DERIVED visible extinction ([gases.smoke] light_absorb, #12 handle 1,
+# 2026-10-04 -- physics, no [smoke] dial), steam's shipped RGB absorption x the
+# shipped [smoke] absorb scale 1.4, and their scatter albedos -- the numbers
+# GasTable.light_absorb_q16 / light_glow_q16 carry
+# (tests/test_light_extinction_doors.py holds these constants to the shipped
+# table, count for count).
+LIGHT_ABSORB = [[LQ(120.66), LQ(134.29), LQ(158.89)],
                 [LQ(0.10 * 1.4), LQ(0.10 * 1.4), LQ(0.10 * 1.4)], [0, 0, 0], [0, 0, 0]]
 LIGHT_GLOW = [[LQ(0.04)] * 3, [LQ(0.92), LQ(0.92), LQ(0.95)], [0, 0, 0], [0, 0, 0]]
 
@@ -2856,7 +2858,12 @@ def gate18_light_channels(fast=False):
         la[ch][c0[0]][c0[1]] = ld[ch][c0[0]][c0[1]] = ONE
     rl = _light_sweep((a, d, k, T, la, ld), **lkw, **gkw)
     lit = sum(1 for y in range(n) for x in range(n) if rl.light_q[0][y][x] > 0)
-    good = dark and lit > n
+    # The PAIR shows the gate can see light at all: the burning cell lights
+    # cells BEYOND itself. (It asked for more than a row's worth until #12
+    # handle 1, 2026-10-04: soot's derived visible extinction makes this
+    # scene's random smoke opaque within a tile, so the source now lights its
+    # neighbourhood, not the room -- which is the physics, not a blind gate.)
+    good = dark and lit > 1
     ok &= good
     lines.append(f"  (c) nothing above the glow floor (-200 .. 480 game), smoke, bodies and "
                  f"glass present: light_q, flux, glow and the emission book exactly 0 "

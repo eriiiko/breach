@@ -460,3 +460,29 @@ def test_format_light_lines_schema():
     assert raw["light"] == [{"pos": [25.0, 10.0], "color": [255, 26, 13],
                              "intensity": 0.9, "range": 18.0,
                              "kind": "static"}]
+
+
+def test_spot_is_a_fixed_cone_aimed_at_its_phase(tmp_path):
+    """PROPERTY (kind = "spot", 2026-10-04, the smoke-light studio): a spot is
+    a beacon that never turns -- its cone is centred at `phase` turns
+    (screen convention) with spread `beam_deg`, the SAME at every sim tick;
+    the loader accepts it and level_lib writes its aim and beam back so a
+    load -> save -> load round trip keeps it.
+
+    BREAKS IF: a spot starts turning with the tick, loses its aim or beam on
+    save, is refused by the loader, or is drawn as an omni lamp.
+    """
+    dt = 1.0 / 24.0
+    e = _entry("spot")
+    specs = [light_spec(e, t, dt) for t in (0, 1, 777, 100_000)]
+    assert all(s == specs[0] for s in specs)                 # never turns
+    assert specs[0].angle_center == pytest.approx(math.tau * e.phase)
+    assert specs[0].angle_spread == pytest.approx(math.radians(e.beam_deg))
+    assert specs[0].angle_spread < STATIC_SPREAD             # a cone, not omni
+    assert "spot" in LIGHT_KINDS
+    spot = LightEntry(x=4.5, y=1.5, color=(1.0, 0.8, 0.6), intensity=1.5,
+                      range=16.0, kind="spot", beam_deg=25.0, phase=0.375)
+    d = _mini_level(tmp_path)
+    write_lights(d / "level.toml", [spot], write_bak=False)
+    (back,) = load(str(d)).lights
+    assert (back.kind, back.beam_deg, back.phase) == ("spot", 25.0, 0.375)

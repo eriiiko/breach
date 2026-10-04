@@ -186,6 +186,39 @@ def deposit_heat(gmap, queue, fy, fx, heat_amount, heat_radius):
     ))
 
 
+def blast_smoke_peak(gmap, fy, fx, radius, soot_g, noise=None):
+    """The peak density of the blast-smoke disc that deposits ``soot_g`` grams
+    of soot (#12 handle 3, 2026-10-04): the disc keeps its shape -- LINEAR
+    falloff to ``radius``, per-tile noise uniform in [1 - noise, 1] drawn at
+    the flush -- and its peak is scaled so the EXPECTED total equals the
+    charge's soot in smoke units (gases.smoke_units_of_soot):
+
+        peak = units / (sum_{disc, non-solid} (1 - d/r) * (1 - noise/2))
+
+    The sum walks the SAME disc the FieldEdit flush walks
+    (field_edit._iter_region) and skips the smoke policy's solid tiles, so
+    smoke is not budgeted onto walls. 0 for no soot (an RDX/C4 charge) or a
+    disc with no open tile. The per-tile [0, 1] clamp still applies at the
+    flush; at physical charge masses no tile comes near it."""
+    if radius <= 0 or soot_g <= 0.0:
+        return 0.0
+    from simulation.field_edit import _iter_region, Region, Falloff
+    from simulation.gases import smoke_units_of_soot
+    from config import CFG
+    if noise is None:
+        noise = float(getattr(CFG.physics, "explosion_smoke_noise", 0.85))
+    noise = min(1.0, max(0.0, noise))
+    solid = gmap.solid
+    wsum = 0.0
+    for r, c, wgt in _iter_region(Region.DISC, (fy, fx, float(radius)),
+                                  Falloff.LINEAR, solid.shape):
+        if not solid[r, c]:
+            wsum += wgt
+    if wsum <= 0.0:
+        return 0.0
+    return smoke_units_of_soot(soot_g) / (wsum * (1.0 - 0.5 * noise))
+
+
 def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
                     kind="explosion"):
     """Execute one ``[payloads.*]`` row at tile (fy, fx) — the single owner
@@ -226,7 +259,11 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
         apply_blast_damage(units, fx, fy, payload.radius,
                            payload.unit_damage, events=events)
     if payload.emit_blast_smoke:
-        add_explosion_smoke(gmap, queue, fy, fx, payload.radius)
+        peak = blast_smoke_peak(gmap, fy, fx, payload.radius,
+                                getattr(payload, "blast_soot_g", 0.0))
+        if peak > 0.0:
+            add_explosion_smoke(gmap, queue, fy, fx, payload.radius,
+                                amount=peak)
     if payload.gas_species:
         emit_gas(gmap, queue, fy, fx, payload.gas_species,
                  payload.gas_amount, payload.gas_radius)
@@ -241,4 +278,5 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
                                      kind=kind))
 
 
-__all__ = ["execute_payload", "emit_gas", "ignite_ring", "deposit_heat"]
+__all__ = ["execute_payload", "emit_gas", "ignite_ring", "deposit_heat",
+           "blast_smoke_peak"]

@@ -15,6 +15,8 @@ Flags (this tool's own):
     --press KEY@F     report KEY as pressed on frame F (repeatable; KEY is a
                       raylib KeyboardKey name without the ``KEY_`` prefix:
                       M, F11, SPACE, I, ...)
+    --shot PATH@F     save the frame-F picture to PATH (.png; repeatable),
+                      read back just before that frame's end_drawing
     --level NAME      the level (passed through to main.py)
 Every other argument passes through to main.py unchanged (--cuda,
 --control NAME, --debug, --res N, ...); ``--windowed`` is always added (a fixed
@@ -55,6 +57,7 @@ def parse_args(argv):
     the tool's own flags are consumed, everything else passes through."""
     frames = DEFAULT_FRAMES
     presses = {}
+    shots = {}
     passthrough = []
     i = 0
     while i < len(argv):
@@ -71,18 +74,26 @@ def parse_args(argv):
             presses.setdefault(int(at), []).append(key.upper())
             i += 2
             continue
+        if a == "--shot":
+            spec = argv[i + 1]
+            path, _, at = spec.rpartition("@")
+            if not path or not at:
+                raise SystemExit(f"--shot wants PATH@FRAME, got {spec!r}")
+            shots.setdefault(int(at), []).append(path)
+            i += 2
+            continue
         passthrough.append(a)
         i += 1
     if frames < 1:
         raise SystemExit(f"--frames must be >= 1, got {frames}")
     if "--windowed" not in passthrough:
         passthrough.append("--windowed")
-    return frames, presses, passthrough
+    return frames, presses, shots, passthrough
 
 
 def main(argv=None) -> int:
     faulthandler.enable()
-    frames, presses, passthrough = parse_args(list(sys.argv[1:] if argv is None else argv))
+    frames, presses, shots, passthrough = parse_args(list(sys.argv[1:] if argv is None else argv))
 
     os.chdir(ROOT)
     import pyray as rl
@@ -116,8 +127,19 @@ def main(argv=None) -> int:
             return True
         return orig_pressed(key)
 
+    orig_end_drawing = rl.end_drawing
+
+    def _end_drawing():
+        for path in shots.get(frame[0], ()):
+            img = rl.load_image_from_screen()
+            rl.export_image(img, str(Path(path).resolve()))
+            rl.unload_image(img)
+            print(f"[e2e_drive] frame {frame[0]}: saved {path}", flush=True)
+        orig_end_drawing()
+
     rl.window_should_close = _should_close
     rl.is_key_pressed = _is_key_pressed
+    rl.end_drawing = _end_drawing
 
     sys.argv = ["main.py"] + passthrough
     print(f"[e2e_drive] main.py {' '.join(passthrough)} -- {frames} frames, "

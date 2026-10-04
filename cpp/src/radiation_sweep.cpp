@@ -669,7 +669,8 @@ void RadiationSweep::run(const int32_t* temperature,
                         sa += gas_density_term(light->light_absorb_q16[g * 3 + c], dens);
                         sg += gas_density_term(light->light_glow_q16[g * 3 + c], dens);
                     }
-                    const int32_t a_gas = gas_extinction_finish(sa, n_bulk[i]);
+                    // light: Beer-Lambert (#12 handle 2); the glow stays linear
+                    const int32_t a_gas = gas_extinction_exp_finish(sa, n_bulk[i]);
                     a = gas_effective_a(a, a_gas, false);
                     d = gas_effective_d(d, a);
                     g_c = gas_extinction_finish(sg, n_bulk[i]);

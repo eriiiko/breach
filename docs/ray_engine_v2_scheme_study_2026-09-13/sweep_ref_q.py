@@ -300,8 +300,10 @@ offline by tools/gen_light_table.py from renderer/blackbody.py) -- never libm at
 load (8.1) -- in a currency 2^L_FINE_BITS per light unit (the table records it).
 
 SMOKE (decision 6, the heat side's P5a pattern): on a GAS cell a_c =
-max(a_c, gas_extinction_q(densities, light_absorb_q[:, c], N_bulk)) and d_c =
-max(d_c, a_c) -- the SAME density law and N_EPS floor, one channel at a time --
+max(a_c, gas_extinction_exp_q(densities, light_absorb_q[:, c], N_bulk)) and d_c =
+max(d_c, a_c) -- the heat term's density sum and N_EPS floor, one channel at a
+time, under BEER-LAMBERT, a = ONE - exp(-tau) (#12 handle 2: the law the
+renderer draws the medium with; heat keeps min(ONE, tau)) --
 so hot smoke emits through L° like any cell with a light extinction (the arc's
 "black-body smoke"). The glow coefficient g_c = gas_extinction_q(densities,
 light_glow_q[:, c], N_bulk) is the in-scatter albedo x density, capped at ONE
@@ -1077,6 +1079,48 @@ def gas_extinction_q(densities, heat_absorb_q, n_bulk_raw: int) -> int:
     return ONE if a > ONE else a
 
 
+# --------------------------------------------------------------------------- #
+# THE LIGHT CHANNELS' DENSITY LAW (#12 smoke x light, handle 2, 2026-10-04):
+# Beer-Lambert per tile, a_gas = 1 - exp(-tau), tau = sum_g absorb_q[g] * N_g
+# >> 16 -- the SAME law the renderer draws the medium's opacity with, so smoke
+# that looks black blocks the light. The HEAT term keeps the optically-thin
+# min(ONE, tau) (gas_extinction_q above; heat is not touched by this).
+# --------------------------------------------------------------------------- #
+EXP_NEG_K = 16                   # (1 - x / 2^K)^(2^K): K squarings
+EXP_NEG_CUT_Q = 16 * ONE         # exp(-16) * ONE = 0.007 counts: 0 from here
+EXP_NEG_BITS = 30                # the chain's working fixed point (Q30)
+
+
+def exp_neg_q16(x_q: int) -> int:
+    """exp(-x) in Q16 for x = x_q / ONE >= 0, PURE INTEGER, monotone
+    non-increasing in x_q by construction, exp_neg_q16(0) == ONE exactly.
+
+    exp(-x) = lim (1 - x/n)^n, at n = 2^EXP_NEG_K: start from
+    y0 = 2^30 - floor(x_q / 4) (x / 2^16 in Q30) and square K times,
+    y <- (y * y) >> 30, then >> 14 to Q16. Every step is monotone (a floor
+    of a non-decreasing input; squaring a non-negative), so the chain is too
+    -- light through denser smoke can never rise. Accuracy: the limit's own
+    error ln((1 - x/n)^n) + x ~ -x^2 / 2n (0.1 % at x = 12) and one Q30 count
+    per step; below a Q16 count from x ~ 11 on. y stays < 2^30, so y * y <
+    2^60: exact in int64 (the C++ twin, radiation_sweep.h::exp_neg_q16)."""
+    if x_q <= 0:
+        return ONE
+    if x_q >= EXP_NEG_CUT_Q:
+        return 0
+    y = (1 << EXP_NEG_BITS) - (x_q >> 2)
+    for _ in range(EXP_NEG_K):
+        y = (y * y) >> EXP_NEG_BITS
+    return y >> (EXP_NEG_BITS - 16)
+
+
+def gas_extinction_exp_q(densities, absorb_q, n_bulk_raw: int) -> int:
+    """a_gas for ONE cell under the LIGHT law: ONE - exp_neg_q16(tau), tau =
+    the same density sum >> 16 as gas_extinction_q, the same N_EPS floor."""
+    if n_bulk_raw < N_EPS_RAW:
+        return 0
+    return ONE - exp_neg_q16(gas_density_sum(densities, absorb_q) >> 16)
+
+
 def validate_gas(gas, heat_absorb_q, n_bulk, ts, h, w):
     """The gas extinction's ingress invariants (P5a), as raises -- the sweep's
     own re-check, mirrored in radiation_sweep.cpp:
@@ -1744,8 +1788,8 @@ def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
                         continue                 # a thermal solid keeps its own
                     dens = [gas[g][y][x] for g in range(n_g)]
                     for c in range(L_CHANNELS):
-                        ag = gas_extinction_q(dens, [light.light_absorb_q[g][c]
-                                                     for g in range(n_g)], n_bulk[y][x])
+                        ag = gas_extinction_exp_q(dens, [light.light_absorb_q[g][c]
+                                                         for g in range(n_g)], n_bulk[y][x])
                         a_c = max(la_eff[c][y][x], ag)
                         la_eff[c][y][x] = a_c
                         ld_eff[c][y][x] = max(ld_eff[c][y][x], a_c)

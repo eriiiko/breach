@@ -311,7 +311,8 @@ __global__ void rs_prepass(int n_env, int plane,
                     sa += gas_density_term(lk.lab[g * 3 + ch], dens);
                     sg += gas_density_term(lk.lgl[g * 3 + ch], dens);
                 }
-                const int32_t a_gas = gas_extinction_finish(sa, n_bulk[gi]);
+                // light: Beer-Lambert (#12 handle 2), the CPU's own FP_HD law
+                const int32_t a_gas = gas_extinction_exp_finish(sa, n_bulk[gi]);
                 la_c = gas_effective_a(la_c, a_gas, false);
                 ld_c = gas_effective_d(ld_c, la_c);
                 g_c = gas_extinction_finish(sg, n_bulk[gi]);

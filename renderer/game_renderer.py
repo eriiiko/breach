@@ -219,9 +219,8 @@ class GameRenderer:
         self.glow_overlay = GlowOverlay(cfg.grid_h, cfg.grid_w)
         # Fire & Heat Beauty B2 P2 — the physical gas-medium pass (the heart of
         # B2). ONE premultiplied-over layer per frame: alpha = Beer-Lambert
-        # extinction over the five trace gases (k_s from the SAME GasTable optics
-        # the light channels use, scaled by [smoke] smoke_absorb_scale -- read
-        # by GasMediumOverlay.from_config -- times the relative plume_k_scale),
+        # extinction over the five trace gases (k_s IS the light channels' own
+        # GasTable.light_absorb_q16, no render-side scale -- #12 handle 2),
         # RGB = ACES(glow_gain·glow), the in-scattered glow (the sweep's
         # light_glow through LightingPass). Supersedes the flat smoke_overlay +
         # additive glow_overlay pair (kept behind legacy_smoke_on). RENDER-ONLY:

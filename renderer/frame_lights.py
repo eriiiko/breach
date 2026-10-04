@@ -61,6 +61,7 @@ from level_lights import (LightSpec, light_spec, monotonic_total_tick,
 EMITTER_INPUTS = {
     "lamp":       ("sim",    "level [[light]] row (position, colour, intensity)"),
     "beacon":     ("sim",    "level [[light]] row + the monotonic sim tick (facing)"),
+    "spot":       ("sim",    "level [[light]] row (position, colour, intensity, aim, beam)"),
     "flashlight": ("render", "unit position + facing (sim) + the flashlight mode and "
                              "selected unit (control-source state) + the planning aim "
                              "at the cursor while paused (mouse)"),
