@@ -29,6 +29,7 @@ Run:
     C:/Users/steen/anaconda3/python.exe main.py
     C:/Users/steen/anaconda3/python.exe main.py --level playground   # sandbox
     C:/Users/steen/anaconda3/python.exe main.py --control wego       # explicit default
+    C:/Users/steen/anaconda3/python.exe main.py --level smoke_light_studio --control gamepad --warp 4.5   # frozen frame
 """
 from __future__ import annotations
 
@@ -158,6 +159,28 @@ def _parse_control_flag() -> str:
     except IndexError:
         raise SystemExit("--control requires a name, e.g. --control wego")
     return name
+
+
+def _parse_warp_flag() -> float:
+    """``--warp SECONDS`` -- step the sim that far on the sim clock BEFORE the
+    first frame, then leave it PAUSED (#12 smoke-light studio, 2026-10-04).
+
+    The still picture comes from determinism, not a saved snapshot: the same
+    level stepped to the same tick is the same field on every launch, so a
+    render or light dial changed between launches is judged on the identical
+    scene. Under ``--control gamepad`` (no pause key) the frame then stays
+    frozen; under ``wego`` Space resumes as usual. Returns 0.0 when absent.
+    """
+    if "--warp" not in sys.argv:
+        return 0.0
+    i = sys.argv.index("--warp")
+    try:
+        s = float(sys.argv[i + 1])
+    except (IndexError, ValueError):
+        raise SystemExit("--warp requires seconds of sim time, e.g. --warp 4.5")
+    if not (s >= 0.0) or s == float("inf"):
+        raise SystemExit(f"--warp must be a finite number >= 0, got {s}")
+    return s
 
 
 def _parse_debug_flag() -> bool:
@@ -512,6 +535,17 @@ def main():
         grid_h, grid_w = sim.gmap.solid.shape
         return frame_lights.cone_rows(assemble_lights().specs, grid_w, grid_h,
                                       light_fine_bits)
+
+    # --warp: step to the requested sim time before the first frame, then
+    # hold paused (the paused path relights on the frozen state).
+    warp_s = _parse_warp_flag()
+    if warp_s > 0.0:
+        n_warp = int(round(warp_s / sim_time_per_tick))
+        for _ in range(n_warp):
+            sim.set_paused(False)
+            sim.step()
+        sim.set_paused(True)
+        print(f"  --warp {warp_s:g} s: stepped {n_warp} ticks, paused")
 
     # 3. Main loop.
     last_time = time.perf_counter()

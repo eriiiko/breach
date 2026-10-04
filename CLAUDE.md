@@ -141,7 +141,7 @@ One line per system built for reuse. Long form + entry points:
 | Vision / engagements / cover | `vision.py`, `engagement.py`, `cover_system.py` | One sight oracle; engagements share one shape; bullet fate is geometry |
 | A* | `pathfinding.py::astar` | The only pathfinder |
 | Timed charge | `src/simulation/entities/charge.py` (schema) + `timed_charge_system.py` (runtime, slot 9e) | A scripted or periodic detonation is a `timed_charge` entity row executing a `[payloads.*]` row through `execute_payload` on the sim clock — never a scheduler in `main.py`, a test-only hook, or a second payload path. The payload name is validated at load; its synced state is the `ticks_to_fire` COUNTDOWN (steps, not `sim.tick`, which TwoPhaseWEGO rewinds each round), digested only where a charge exists |
-| main.py | `main.py` `_parse_*` flags (`--level/--res/--control/--cuda/--resident/--debug`) | New launch flags are `_parse_*` helpers, never argv scans in subsystems |
+| main.py | `main.py` `_parse_*` flags (`--level/--res/--control/--cuda/--resident/--debug/--warp`) | New launch flags are `_parse_*` helpers, never argv scans in subsystems |
 
 ### Tools
 
@@ -154,7 +154,7 @@ One line per system built for reuse. Long form + entry points:
 | Level generators | `tools/gen_explosion_studio.py` (the precedent) | A generated level is written through `level_lib` — `write_level_header` for a new level.toml, `write_boundary_field`, `write_managed_blocks`, `write_tilemap_csv` — never a hand-written level.toml or CSV; `gen_fire_studio.py`'s `np.savetxt` + literal toml is the anti-pattern (#67 item 3) |
 | Benches | `tools/bench_*.py`, `storm_probe.py`, `analyze_blowup_dump.py`, … | Reuse the existing instrument before writing a new one |
 | GPU launch | `tools/run_on_cuda.py` (== `main.py --cuda`) | The only GPU launch path |
-| E2E driver | `tools/e2e_drive.py` | THE headless end-to-end reproduction: the real `main.py` in a hidden window with scripted keys (`--level`, `--frames N`, `--press KEY@FRAME`, main.py args pass through, exit != 0 on any exception) — bug fixes start here; never a parallel harness |
+| E2E driver | `tools/e2e_drive.py` | THE headless end-to-end reproduction: the real `main.py` in a hidden window with scripted keys (`--level`, `--frames N`, `--press KEY@FRAME`, `--shot PATH@FRAME` saves that frame's picture, main.py args pass through, exit != 0 on any exception) — bug fixes start here; never a parallel harness |
 
 ## Working style
 
