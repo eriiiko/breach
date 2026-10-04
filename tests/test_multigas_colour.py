@@ -98,7 +98,12 @@ def test_two_gases_in_one_cell_mix_as_the_density_weighted_sum():
     from simulation.gases import GasTable, POISON, SMOKE
     tbl = GasTable.from_config()
     lab, lgl = tbl.light_absorb_q16, tbl.light_glow_q16
-    dP, dS = Q(0.05), Q(0.03)          # thin enough that nothing caps at ONE
+    # Densities chosen FROM the table so each gas alone reaches ~30 % of ONE in
+    # its strongest channel: the sum stays below the cap whatever the shipped
+    # coefficients are (soot's derived light_absorb is ~100x the old dial
+    # product -- #12 handle 1 -- and a fixed density would cap).
+    dP = (3 * ONE * ONE) // (10 * int(max(lab[POISON])))
+    dS = (3 * ONE * ONE) // (10 * int(max(lab[SMOKE])))
     y, xp, xs, xm = 4, 3, 5, 7
     _lq, _gl, a_eff, gco = _run({(y, xp): {POISON: dP}, (y, xs): {SMOKE: dS},
                                  (y, xm): {POISON: dP, SMOKE: dS}}, tbl)

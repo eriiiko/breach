@@ -41,6 +41,14 @@ Ray-engine-v2 P5a (docs/ray_engine_v2_design_v3_2026-09-15.md §6.3) adds
 law: what thin smoke does not absorb continues down the stream). LIVE since P5c,
 which opened the temperature fold's gas branch: smoke carries a DERIVED value
 (config.toml [gases.smoke]); every other shipped row is 0.0 with its reason.
+
+``light_absorb`` (optional RGB, #12 smoke x light handle 1, 2026-10-04): the
+gas's VISIBLE extinction per unit of its density, per light channel. A row that
+carries it is PHYSICS: ``light_absorb_q16`` is that triple as is, and the
+``[smoke]`` dials do not touch it. A row without it keeps the older dial
+product ``absorption x smoke_absorption x smoke_absorb_scale``. Smoke carries a
+derived value (config.toml [gases.smoke]); ``absorption`` itself stays -- the
+hitscan beam (``beam_absorb_q16``) and the render medium still read it.
 """
 from __future__ import annotations
 
@@ -172,6 +180,9 @@ class GasTable:
         # scatter_albedo: per-channel RGB, (N, 3) float32 (additive god-ray glow
         # gain, decoupled from absorption).
         self.scatter_albedo = self._load_rgb(rows, "scatter_albedo")
+        # light_absorb: OPTIONAL per-channel RGB, (N, 3) float64 with NaN rows
+        # where a gas does not carry it (#12 handle 1) -- see the light door.
+        self.light_absorb = self._load_rgb_optional(rows, "light_absorb")
 
         # beam_absorb_q16: per-gas Q16.16 BEAM-absorption coefficient for the
         # HITSCAN laser (mechanics/03 §5, W2). DERIVATION OF RECORD, computed
@@ -268,10 +279,15 @@ class GasTable:
         lab, lgl = [], []
         for i, name in enumerate(self.names):
             row_a, row_g = [], []
+            physical = not np.isnan(self.light_absorb[i, 0])
             for c in range(3):
-                va = float(self.absorption[i, c]) * s_abs[c] * s_scale
+                # A row with its own light_absorb is PHYSICS (#12 handle 1):
+                # used as is, never scaled by a [smoke] dial.
+                va = (float(self.light_absorb[i, c]) if physical
+                      else float(self.absorption[i, c]) * s_abs[c] * s_scale)
                 vg = float(self.scatter_albedo[i, c]) * s_sca[c]
-                for what, v in (("absorption x [smoke] dials", va),
+                for what, v in (("light_absorb" if physical
+                                 else "absorption x [smoke] dials", va),
                                 ("scatter_albedo x [smoke] dial", vg)):
                     if not np.isfinite(v) or v < 0.0 or v > HEAT_ABSORB_MAX:
                         raise ValueError(
@@ -305,6 +321,22 @@ class GasTable:
                 raise ValueError(
                     f"gases.{name}.{col} must be a [R,G,B] triple, got {triple!r}"
                 )
+            arr[idx] = vec
+        return arr
+
+    def _load_rgb_optional(self, rows, col):
+        """An OPTIONAL ``(N, 3)`` RGB column: a row without ``col`` reads NaN
+        (float64, so a present value keeps its authored digits)."""
+        arr = np.full((self.n, 3), np.nan, dtype=np.float64)
+        for idx, (row, name) in enumerate(zip(rows, self.names)):
+            present = (col in row) if isinstance(row, dict) else hasattr(row, col)
+            if not present:
+                continue
+            triple = self._get_field(row, name, col)
+            vec = np.asarray(triple, dtype=np.float64)
+            if vec.shape != (3,) or not np.all(np.isfinite(vec)):
+                raise ValueError(
+                    f"gases.{name}.{col} must be a finite [R,G,B] triple, got {triple!r}")
             arr[idx] = vec
         return arr
 

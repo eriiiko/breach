@@ -695,6 +695,8 @@ k_splash = 2.0    # wave_p -> ripple_v splash gain (W6a) — PURE FEEL DIAL, awa
 smoke_absorption = [1.0, 1.0, 1.0]       # Beer-Lambert per-channel absorption (R,G,B)
 smoke_scatter_albedo = [1.0, 1.0, 1.0]   # additive god-ray/glow gain (R,G,B), decoupled from absorption
 smoke_absorb_scale = 1.4                 # beam-reach dial: LOW = long beam (flashlight travels far), HIGH = beam dies fast
+                                         # (#12, 2026-10-04: no longer touches SMOKE's light -- smoke carries a
+                                         #  derived [gases.smoke] light_absorb; still the render medium's base)
 # NOTE (Fire & Heat Beauty B2 §3/§6): the old `smoke_render_gamma` render-
 # contrast dial was DELETED here — the physical gas-medium pass's tau-curve
 # ([render.gas_medium] tau_curve_a / tau_curve_b) subsumes it (contrast now
@@ -1212,8 +1214,27 @@ heat_absorb    = 25.36                # HEAT extinction per unit smoke density (
 # soot cell's real Planck mean is lower, sigma_P ~ T); the density law is the optically-
 # thin min(1, tau), not 1 - exp(-tau) (design 6.3); and the combustion soot yield is the
 # visibility dial `soot_yield` -- if it moves, this value moves inversely.
+light_absorb   = [120.66, 134.29, 158.89]   # VISIBLE extinction per unit smoke density, R/G/B
+# DERIVED, not tuned (#12 smoke x light, handle 1, 2026-10-04): the heat_absorb derivation
+# above with soot's VISIBLE extinction in place of its IR Planck mean, one value per light
+# channel. tau_c = sigma_c * M / (tile_w * ceiling_h), the same M = 11.15 g and the same
+# 0.333 m * 2.5 m face:
+#  * sigma at 632.8 nm = 8.7 m2/g -- Mulholland & Croarkin, "Specific extinction
+#    coefficient of flame generated smoke", Fire Mater. 24 (2000) 227-230 (29 fuels,
+#    +/- 1.1). EXTINCTION, i.e. absorption + scattering: what leaves the beam (soot's visible
+#    scattering albedo is ~0.2; the light it scatters is the medium's glow, scatter_albedo).
+#  * per channel by the same Rayleigh 1/lambda law the heat value uses, at the dominant
+#    wavelengths of the sRGB primaries, 611 / 549 / 464 nm: sigma = 9.01 / 10.03 / 11.86 m2/g.
+#  => light_absorb = sigma_c * 11.15 / 0.8325 = 120.66 / 134.29 / 158.89 (116.5 at 632.8 nm).
+# A row that carries light_absorb is PHYSICS: the gases door hands it to the light channels
+# as is, and the [smoke] smoke_absorption / smoke_absorb_scale dials no longer touch smoke's
+# light (they still scale every gas WITHOUT this key). tests/test_gas_light_absorb.py
+# re-derives it from the live dials. What it means: at the measured p50 density 0.021 one
+# 0.333 m tile is optically 2.5-3.3 thick for the eye -- smoke stops light within a tile.
+# ACCEPTED GAPS: the 1/lambda exponent (real soot is 0.9-1.3); one wavelength per channel
+# instead of a band integral; soot only (steam, poison, teargas, fuel gas keep the dials).
 
-[gases.poison]                 # chlorine (Cl2), yellow-green
+[gases.poison]                # chlorine (Cl2), yellow-green
 absorption     = [0.45, 0.10, 0.80]   # B absorbed hardest, R moderate, G passes -> yellow-green tint
 scatter_albedo = [0.10, 0.30, 0.06]   # faint green inscatter
 diffusion      = 0.12                 # creeps and pools (heavier-than-air feel)
