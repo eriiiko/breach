@@ -92,7 +92,6 @@ def setup_cuda_import() -> None:
 _BACKEND_SETTERS = (
     "set_temperature_backend",
     "set_water_backend",
-    "set_smoke_backend",
     "set_fire_backend",
     "set_radiation_backend",
     # EOS P6.5: the four EOS kernel-surface flags below are now LIVE-DISPATCHED

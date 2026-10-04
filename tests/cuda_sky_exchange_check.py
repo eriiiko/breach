@@ -31,7 +31,7 @@ N_TICKS = 30
 SKY_TAU_S = 60.0
 
 _BACKENDS = (
-    "set_temperature_backend", "set_water_backend", "set_smoke_backend",
+    "set_temperature_backend", "set_water_backend",
     "set_fire_backend", "set_radiation_backend",   # P4: was set_raycaster_backend
     "set_bulk_flux_backend", "set_sl_advection_backend",
     "set_mg_solve_backend", "set_kick_compression_backend",

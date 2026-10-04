@@ -59,11 +59,11 @@ LEVEL = getattr(CFG.display, "level", "playground")
 # mg_solve, kick_compression) are now LIVE-DISPATCHED — with all four on,
 # run_substeps routes the whole eos.step tick to the chained GPU orchestration
 # (cuda_eos_step.cu). All six EOS-era setters are in the all-on set.
-SETTERS = ["set_temperature_backend", "set_water_backend", "set_smoke_backend",
+SETTERS = ["set_temperature_backend", "set_water_backend",
            "set_fire_backend", "set_radiation_backend", "set_bulk_flux_backend",
            "set_sl_advection_backend", "set_mg_solve_backend",
            "set_kick_compression_backend"]
-GETTERS = ["get_temperature_backend", "get_water_backend", "get_smoke_backend",
+GETTERS = ["get_temperature_backend", "get_water_backend",
            "get_fire_backend", "get_radiation_backend", "get_bulk_flux_backend",
            "get_sl_advection_backend", "get_mg_solve_backend",
            "get_kick_compression_backend"]

@@ -764,7 +764,7 @@ def part8_batch(table) -> None:
 # PART 9 — the live conductor
 # ---------------------------------------------------------------------------
 _ALL_BACKENDS = (
-    "set_temperature_backend", "set_water_backend", "set_smoke_backend",
+    "set_temperature_backend", "set_water_backend",
     "set_fire_backend", "set_radiation_backend",
     "set_bulk_flux_backend", "set_sl_advection_backend",
     "set_mg_solve_backend", "set_kick_compression_backend",
