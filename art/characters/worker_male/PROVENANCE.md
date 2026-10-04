@@ -103,8 +103,9 @@ placket, seat, back yoke, armhole, hems, pockets); creasing at elbows, knees and
 
 ## Not done, and known weaknesses
 
-- No UV maps, no bake, no rig, no game mesh. A high-resolution source; pieces overlap rather
-  than weld, except the coverall's two halves.
+- The source itself has no UVs and no rig: the game mesh, its bake and its rig are below
+  (Game model). A high-resolution source; pieces overlap rather than weld, except the coverall's
+  two halves.
 - Against the reference: the cargo pockets are flatter boxes than
   its bellows pockets; the zip stops at 0.905 m; the boots are smoother and more rounded than its
   scuffed, creased work boots; the cloth's fading and grime are procedural, not the artwork's
@@ -114,5 +115,110 @@ placket, seat, back yoke, armhole, hems, pockets); creasing at elbows, knees and
   close range; the neck is wide for the face. The hair is a clumped shell, not strands; the back edge of the
   sideburns shows a slight stair-step from the grid.
 - Fingers are thicker and more evenly spread than a real relaxed hand.
-- Materials are Cycles node graphs and do not carry to the game's shader; the dirt and region
-  masks will need baking for the game mesh.
+- Materials are Cycles node graphs and do not carry to the game's shader; the game mesh carries
+  them baked (Game model).
+
+## Game model (rigged)
+
+2026-10-04, tracker #33. The game asset `assets/models/worker_male/worker_male.glb` (tracked,
+5.73 MB, licence beside it) is the marine's game-ready step run on this worker's tables: one fused
+10,000-triangle skin with a baked 1024 px albedo (colour x AO) and normal map, bound to the game's
+one 53-bone skeleton with all 46 clips converted to his own arms-down rest pose.
+
+    cd art/characters/worker_male
+    "C:/Program Files/Blender Foundation/Blender 4.5/blender.exe" -b --factory-startup -P scripts/game.py
+        # everything, scripts -> asset + evidence: about 3.5 min on an RTX 3070
+        # (static skin 101 s, rig 62 s, evidence renders ~40 s)
+    ... -P scripts/game.py -- --rig-only               # rig + evidence from the saved game/worker_male_game.blend
+    ... -P scripts/game.py -- --variant white_clean    # that look on the SAME mesh and UVs (~50 s)
+    ... -P scripts/game.py -- --evidence-only          # the pose pictures again
+
+Code. Shared by both workers: `../charkit/workergame.py` (the rig spec derived from a worker's
+tables, the skin options, the evidence renders, `index.html`), on top of the marine's
+`../charkit/gameready.py` and `../charkit/rig.py` (both extended additively; the marine's
+`--rig-only` rebuild is byte-identical before and after). Per character: `scripts/game.py` and
+`scripts/rig_spec.py`, a few lines each. Outputs: the asset; `game/` (albedo, normal, .blends:
+gitignored; `stats.json`: tracked -- mesh, bake, IoU, the `rig` block with the floor clamp, the
+`evidence` block); every picture in `previews/game/` with `index.html`.
+
+Joints, all from `worker.py` (`workergame.joints`): pelvis on the mid-plane at the trunk's `hip` row
+(0.90 m); hip joints on the leg loft's centre line (through the `knee` and `thigh` rows) extended
+to that height (x 0.090); knees at the `knee` row's centre (0.48 m); ankles on the boot shaft's
+axis at half the upper's height over the boot's ankle point (0.106 m); ball at the toe cap's
+seam, toe tip at the profile's tip; shoulders at the sleeve's `shoulder` row (0.188, 1.436),
+elbows at its `elbow` row, wrists where `workwear.build_hands` puts the hand (cuff row + drop),
+the middle knuckle from `parts.hand`'s frame and the hand's scale; neck base at the trunk's
+`yoke` row on the neck's centre (1.505 m); head pivot where the line from the chin to the jaw
+angle (`HEAD["jaw"]`) crosses the neck's centre (1.590 m); head top at the crown (1.786 m).
+Foot yaw = the boots' `toe_out` (9 deg). Arm abduction = the modelled upper-arm angle (shoulder
+to elbow, 23.2 deg from vertical) minus the clips' own Idle angle (15 deg, the value the marine's
+27 - 12 fixes): 8.2 deg.
+
+Skin, beyond the marine's method (`workergame` skin options, `gameready.make_skin`): the coverall
+is a 2.5 mm shell and its pockets 3-4 mm -- all lost in the 6 mm level set on the first try
+(IoU 0.51, hundreds of crumbs) -- so every inward-solidified wall under 1.5 voxels is thickened
+inward to 9 mm for the skin only (29 parts), and the trunk loft to 24 mm, which closes the up to
+3.8 cm gap between the trouser hem and the boot shaft inside it (without it the legs stayed
+hollow: 6 % of the surface hidden, dark slits into the cavity after decimation). Bare fingers
+stand ~3 mm apart, under a voxel, and fused into a mitten (the thumb apart); in the skin each
+finger is moved 2.5 mm inward along its normals, which keeps them apart. The bake still reads
+the real, full-thickness source.
+
+Bake: from ONE joined copy of the source (9 material slots; attributes kept: `dirt`, `seam`,
+`stitch`, the face masks, `iris`, `cover`), so the palette, the dirt layer and its AO-driven
+crease grime, the stitching and the eyes are in the albedo. `--variant NAME` rebuilds the source
+with that variant's palette and bakes only colour and AO onto the saved skin: `white_clean` is
+written beside the default (`game/albedo_white_clean.png`, copied to
+`assets/models/worker_male/worker_male_white_clean_albedo.png`) and shown on the rigged model
+(`previews/game/white_clean_*`).
+
+Rig, beyond the marine's: rigid parts (`workergame.gear`) -- the face rides `DEF-head` above the
+chin-to-jaw line and fades into the neck's bone heat over 2 cm below it (297 rigid + 35 partial
+vertices); hair, ears and eyes ride the head whole; hands their hand bone (the fingers do not
+move, as on the marine); a boot its foot bone behind the toe cap's seam and its toe bone in front
+of it (blended over 2 cm); the boot shaft bends by heat; the collar and the undershirt ride
+`DEF-spine.003`; the coverall deforms by bone heat. Floor clamp (`rig.floor_clamp`, opt-in, new):
+the clips' feet are the mannequin's, so on every frame of every clip the foot bone is pitched about
+the ankle by the smallest angle that lifts the vertices bound mainly to it to z >= 0, then the toe
+about the ball the same way (0.5 deg steps, at most 45 deg); only the foot and toe keys change.
+
+Measured (`game/stats.json`):
+
+- Skin: 10,000 triangles, 5,002 vertices (7,214 after UV seams); 0 boundary, 0 non-manifold
+  edges; 264 UV islands, 0 folded; 0.06 % of the area sees no sky. Silhouette IoU against the
+  source: front 0.986, side 0.992, back 0.986. Bake: 45 % texture coverage, 0.47 % of covered
+  texels missed (inpainted), no overlap.
+- raylib 5.5: 1 mesh, vertexCount 7,211 (marine 7,029, mannequin 8,547), 9,999 triangles,
+  boneCount 53, 46 clips with the mannequin's (and the marine's) names and frame counts, bind-pose
+  height 1.799 m.
+- Clip conversion: fit-pose joint miss 0.0005 mm; worst D-T bone head/tail distance over every
+  frame of every clip 0.0048 mm (Roll_RM); Idle 0.0017, Walk 0.0028, Death01 0.0036 mm (before
+  the floor clamp, which changes the foot and toe keys on purpose).
+- Floor: Walk_Loop, every frame, deepest skin point -9.4 mm (frame 19, the trailing foot's toe;
+  -55.9 mm before the toe bone took the toe cap and before the clamp; marine -39 mm). Idle -3 mm,
+  Pistol_Shoot -3, Crouch_Idle -2; Death01's last frame -80 mm (the back, lying), Fixing_Kneeling
+  -93 mm (a knee: the clamp keeps only the boots up).
+- `.glb` 5,728,656 bytes.
+
+Pictures, `previews/game/index.html`: `pose_*` -- Idle_Loop, Walk_Loop at its widest stride
+(frame 0), Pistol_Shoot 5, Death01 last frame, Crouch_Idle_Loop, each from the front three-quarter
+and straight down; `extreme_*` -- Sword_Attack, Fixing_Kneeling, Punch_Cross, Sitting_Idle,
+Crouch_Fwd, Jump (armpits, crotch, knees); `face_*` / `hand_*` close-ups in four poses;
+`game_vs_source.jpg` (the high-res source left, the game mesh right, same camera);
+`game_turnaround.png`, `game_top.jpg`, `rig_poses.png`; `white_clean_*`; `ingame_*` (the real game,
+playground, untinted, under the cursor lamp: 110 px per tile and 48 px per tile).
+
+Known weaknesses of the game model:
+
+- The fingers do not move (rigid on the hand bone): grips show a half-open hand.
+- Linear blend skinning on a skin made arms-down: arms overhead (Sword_Attack, Death01) stretch
+  the shoulder cloth and its baked folds; deep knee bends stretch the knee patch.
+- The floor clamp acts on every clip, also where the mannequin itself is off the floor's plane
+  (Swim_Idle: the feet are bent 45 deg for nothing); kneeling knees and a lying body still go
+  through the floor.
+- The collar's points and the zip pulls are rounded into the 6 mm skin; the stitching survives as
+  colour only, faint at 1024 px.
+- In the game the marine shader's rim term (`MARINE_RIM_STRENGTH`, added, not multiplied by the
+  albedo) turns the navy coverall's flanks light grey from above; the game binds its own
+  placeholder normal map, not the baked one; the renderer scales every model to 6 tiles tall by
+  its bind-pose height, so his 1.80 m is normalised away.
