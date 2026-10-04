@@ -28,7 +28,13 @@ Stages:
    texels inpainted -> albedo.png (sRGB, colour x AO) + normal.png (linear);
 5. measure (stats.json: mesh, UVs, bake coverage, silhouette IoU against the source) and
    preview (textured turnaround, top view, source-vs-game side by side);
-6. export a static .glb (Y-up, metres, feet at the origin) + a .blend of the skin.
+6. export a static .glb (Y-up, metres, feet at the origin) + a .blend of the skin;
+7. rig (`rig.py`, when the character's game.py passes a rig spec): the skin bound to the game's
+   53-bone skeleton with its 46 clips, exported as the game asset. Starts from the saved .blend:
+
+    --rig-only       skip stages 1-6, rig the saved game/<name>_game.blend
+    --no-rig         stop after stage 6
+    --abduct DEG     extra upper-arm abduction for the clips (overrides the spec's ABDUCTION_DEG)
 
 Outputs under <character>/game/ (the .glb, the textures and the .blend are
 regenerated, so gitignored; stats.json is tracked) and <character>/previews/game_*.
@@ -65,6 +71,9 @@ def _args():
     ap.add_argument("--bake-samples", type=int, default=128)
     ap.add_argument("--samples", type=int, default=96)
     ap.add_argument("--no-previews", action="store_true")
+    ap.add_argument("--rig-only", action="store_true", help="skip stages 1-6: rig the saved game/<name>_game.blend")
+    ap.add_argument("--no-rig", action="store_true", help="stop after the static export")
+    ap.add_argument("--abduct", type=float, default=None, help="extra upper-arm abduction (deg), overrides the spec")
     return ap.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else [])
 
 
@@ -831,8 +840,17 @@ def previews(rig, cam, floor, sources, skin, out_dir, height, beauty, backdrop):
 
 
 # ---------------------------------------------------------------------------- run
-def run(root, name, build, make_materials, height, beauty, backdrop=studio.BACKDROP):
+def run(root, name, build, make_materials, height, beauty, backdrop=studio.BACKDROP, rig_spec=None, rig_out=None):
+    """Stages 1-6 (the static skin), then stage 7 (`rig.py`) when the character supplies a rig spec."""
     args = _args()
+    if not args.rig_only:
+        static(args, root, name, build, make_materials, height, beauty, backdrop)
+    if rig_spec is not None and not args.no_rig:
+        import rig
+        rig.run(args, root, name, build, make_materials, rig_spec, rig_out)
+
+
+def static(args, root, name, build, make_materials, height, beauty, backdrop):
     t0 = time.time()
     log, timing = {}, {}
     game, prev = os.path.join(root, "game"), os.path.join(root, "previews")
@@ -901,6 +919,7 @@ def run(root, name, build, make_materials, height, beauty, backdrop=studio.BACKD
     for ob in sources + [floor]:
         bpy.data.objects.remove(ob)
     skin.data.transform(Matrix.Translation(offset))
+    skin["export_offset"] = offset[:]  # the rig stage moves the skin back into the character's frame
     _select([skin], skin)
     glb = os.path.join(game, name + ".glb")
     bpy.ops.export_scene.gltf(filepath=glb, export_format="GLB", use_selection=True, export_yup=True,
