@@ -387,18 +387,25 @@ def test_fixture_bidirectional_cycle_evacuates_and_refills():
     IDLE). The refill is the point Erik's HUMAN-TEST wanted — the B5 single-pump
     gap is gone. Deterministic (integer, seed 1), so this is a stable gate.
 
-    Evacuation target RESTATED (arc #54 P-G3, 2026-08-30): measured p_evac
-    moved from <=6554 (0.1 atm exactly, the pre-arc isothermal bound) to 6618
-    raw -- a 1.0% miss, not a regression. Under stored gas_energy the
-    evacuated gas is honestly ADIABATIC: pumping mass out of the chamber cools
-    it (design §2.7's pump seam moves each parcel's own T_abs with it, no
-    ambient top-up), so P = C*N*T_abs settles a little higher than the old
-    isothermal-pump-down law predicted for the SAME extracted mass -- the
-    chamber is colder, so it takes slightly less N to reach a given pressure
-    than the pre-arc law assumed, and the fixed-duration pump undershoots the
-    old N target. The cycle-cap assertions below (green since P-G1b's pump
-    seam) are untouched -- this is a tolerance restatement of the pressure
-    target only."""
+    The targets are the LEVEL'S OWN decider thresholds (`dec_far`, `dec_near`
+    in airlock_demo/level.toml), read from the loaded level -- never a number
+    written here. Property: the chamber pressure the gas field actually shows
+    reaches the far target before the far door opens, and the near target
+    before the cycle returns to IDLE (the sensor -> decider -> controller wire
+    acts on real physics, not on a stale or unwired value). Breaks if the
+    pump stops evacuating/refilling, the sensor samples the wrong tile, or the
+    deciders are unwired.
+
+    Why not a pressure bound read on the transition tick (k_drag2 landing,
+    issue #4, 2026-10-04): the chamber probe carries a period-2 sawtooth of
+    +-300..450 raw during pump-down (present at every drag value -- recorded
+    on #48 as a vent/pump finding), so one sample taken the tick AFTER the
+    decider fired lands on either phase. The old `p_evac <= 6780` was 226 raw
+    above the threshold -- inside the sawtooth -- and had been loosened twice
+    (P-G3, G12) for exactly that reason; at k_drag2 = 0.125 it read the high
+    phase (6836) on a cycle whose timing is unchanged (OPEN_FAR 3.04 s vs
+    3.08 s, IDLE 5.25 s vs 5.33 s). The minimum over the last few ticks before
+    the transition is what the decider saw."""
     from simulation.unit import Unit
     from simulation.entities.door import DOOR_OPEN
 
@@ -410,38 +417,38 @@ def test_fixture_bidirectional_cycle_evacuates_and_refills():
     # The probe samples chamber air at (row 2, col 10) — read the same tile.
     chamber_p = lambda: int(sim.gmap.atmosphere[2, 10])
 
+    thresholds = {e.id: int(e.fields["threshold"]) for e in lvl.entities
+                  if e.id in ("dec_far", "dec_near")}
+    far_target, near_target = thresholds["dec_far"], thresholds["dec_near"]
+    trace = []                                     # chamber_p after each step
+
     def _run_until(state, cap):
+        trace.clear()
         for _ in range(cap):
             sim.set_paused(False)
             sim.step()
+            trace.append(chamber_p())
             if ctrl.state == state:
                 return True
         return False
 
     p_start = chamber_p()                          # ~1 atm
-    # Occupancy → seal → EVACUATE → dec_far fires → OPEN_FAR.
+    # Occupancy -> seal -> EVACUATE -> dec_far fires -> OPEN_FAR.
     assert _run_until(AIRLOCK_OPEN_FAR, 200), AIRLOCK_STATE_NAMES[ctrl.state]
-    p_evac = chamber_p()
+    p_evac = min(trace[-3:])                       # what the decider saw
     assert p_evac < p_start // 2                    # chamber genuinely evacuated
-    # RESTATED arc #54 P-G3: 6554 (0.1 atm exactly) -> 6650 (~0.1015 atm), a
-    # stated ~1.5% tolerance around the measured 6618 (see docstring: the
-    # evacuated gas is honestly cold now, adiabatic pump-down differs from
-    # the old isothermal law).
-    # RESTATED AGAIN, G12 (2026-08-31, issue #12,
-    # docs/fire_g12_one_map_patch_2026-08-31.md §6 point 1): the EOS pressure
-    # calibration C = 1/eos_t_amb_k moved 1/290 -> 1/293 (~1%), so P = C*N*T_abs
-    # settles a little higher still for the same extracted mass, on top of the
-    # P-G3 adiabatic-cooling effect already documented above. 6650 -> 6780
-    # (~0.19% margin over the measured 6748, matching the P-G3 restatement's
-    # own margin style).
-    assert p_evac <= 6780, f"chamber evacuated to {p_evac} raw (target <= 6780)"
+    assert p_evac <= far_target, (
+        f"far door opened but the chamber never reached dec_far's threshold: "
+        f"last readings {trace[-3:]} vs {far_target}")
 
-    # The marine walks out to space → presence clears.
+    # The marine walks out to space -> presence clears.
     unit.alive = False
-    # RESEAL → REPRESSURIZE → the chamber REFILLS → dec_near fires → IDLE.
+    # RESEAL -> REPRESSURIZE -> the chamber REFILLS -> dec_near fires -> IDLE.
     assert _run_until(AIRLOCK_IDLE, 300), AIRLOCK_STATE_NAMES[ctrl.state]
-    p_refill = chamber_p()
-    assert p_refill >= 58982                        # ≥ the near target (0.9 atm)
+    p_refill = max(trace[-3:])
+    assert p_refill >= near_target, (
+        f"cycle returned to IDLE but the chamber never reached dec_near's "
+        f"threshold: last readings {trace[-3:]} vs {near_target}")
     assert p_refill > p_evac * 4                    # the refill actually happened
     # The near (inner) door reopens at IDLE for the next entry.
     sim.set_paused(False)

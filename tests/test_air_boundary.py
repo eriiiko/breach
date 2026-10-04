@@ -790,38 +790,13 @@ def test_ambient_gate1_flat_interior_holds(dials):
     assert np.all(g.atmosphere[g.is_ambient] == cfg.pin_q)
 
 
-@pytest.mark.skipif(bp is None, reason="needs the compiled breach_physics")
-def test_ambient_gate2_rush_in_recovers_and_rails_bounded():
-    """GATE 2 (spec §6; RESTATED arc #54 P-G3, 2026-08-30 -- Erik's ruling on
-    the P-G1a open question): a depressurized interior open to the ambient
-    ring refills toward P_amb (the reservoir supplies mass), the
-    boundary_flux rail records the exchange (negative == mass INTO the
-    domain), and the T_MAX_PHYS rail hits are BOUNDED, COUNTED, and DECAY --
-    not absent.
-
-    Why the old `t_max_phys_hits == 0` STOP no longer holds (physics, not a
-    regression): this fixture slams the interior to 0.1 atm then opens it to
-    the ambient ring. The implicit MG solve lifts the interior's pressure to
-    ~1 atm ACOUSTICALLY, in one step, while the mass N is still at 0.1 --
-    pressure arrives before mass. The kick sees that gradient against
-    near-vacuum N and the inbound flow work (the p*u face flux, design §2.4)
-    lands in the still-near-empty boundary cells for one tick, an energy
-    Courant number of ~40 there. The T_MAX_PHYS rail (§2.2/§2.6 -- the
-    recovery clamp that keeps stored `gas_energy <= 2^60`) is exactly the
-    circuit breaker for that overshoot, and it is SUPPOSED to fire: measured
-    cumulative hits 424 / 550 / 564 / 564 / 564 at ticks 0-4 (zero NEW hits
-    from tick 3 on) -- a one-time acoustic transient, not sustained thermal
-    runaway. An inflow rail (clamping the kick velocity directly at the
-    boundary) was tried and reverted: it turns an honest open boundary into a
-    refrigerator, permanently damping every inrush instead of letting this
-    rail count a one-time overshoot. So the gate now asserts the three things
-    that actually matter: the room still refills, the rail is BOUNDED (no
-    runaway), and it DECAYS to zero new hits within 4 ticks -- and every hit
-    is counted in `e_rail_sum` the same tick it fires (never a silent energy
-    leak)."""
-    from simulation.physics_runner import PhysicsRunner
+def _gate2_rush_in(runner, n_watch=5, n_ticks=80):
+    """The gate-2 scenario: a 40x40 interior vented to 10 % of ambient (N-
+    primary), opened to the ambient ring and stepped `n_ticks`. Returns the
+    gmap, the interior mask, the starting mean pressure, the per-tick NEW
+    T_MAX_PHYS hits and `e_rail_sum` over the first `n_watch` ticks, and the
+    deepest point of the running boundary-flux total per gas."""
     g = _ambient_gmap(40, 40)
-    runner = PhysicsRunner(bp)
     o2, n2 = g.gases.name_to_id["o2"], g.gases.name_to_id["inert_n2"]
     interior = (~g.solid) & (~g.is_ambient)
     pin = g._ambient.pin_q
@@ -837,10 +812,8 @@ def test_ambient_gate2_rush_in_recovers_and_rails_bounded():
     g.reseed_gas_energy(interior)
     start = float(g.atmosphere[interior].mean())
 
-    # Watch the first few ticks' PER-TICK delta (the decay claim is about new
-    # hits per tick, not the running total) and correlate each hit with the
-    # SAME tick's e_rail_sum booking.
-    N_WATCH = 5
+    # The decay claim is about NEW hits per tick, not the running total; each
+    # hit is correlated with the SAME tick's e_rail_sum booking.
     hit_deltas, rail_at_tick = [], []
     prev_hits = 0
     # T5b: `boundary_flux()` is a PER-TICK rail -- `eos_solver.cpp:348-352`
@@ -848,21 +821,73 @@ def test_ambient_gate2_rush_in_recovers_and_rails_bounded():
     # RUNNING TOTAL. Reading it once after the loop reads the LAST tick alone.
     rail_cum = np.zeros(int(g.gas.shape[0]), dtype=np.int64)
     rail_min = np.zeros(int(g.gas.shape[0]), dtype=np.int64)
-
-    def _accumulate():
+    for t in range(n_ticks):
+        runner.step(g, DT_TICK)
         rail_cum[:] += np.asarray(runner.eos.boundary_flux(), dtype=np.int64)
         np.minimum(rail_min, rail_cum, out=rail_min)
+        if t < n_watch:
+            hits = runner.eos.t_max_phys_hits
+            hit_deltas.append(hits - prev_hits)
+            rail_at_tick.append(runner.eos.e_rail_sum)
+            prev_hits = hits
+    return dict(g=g, interior=interior, pin=pin, start=start, o2=o2, n2=n2,
+                hit_deltas=hit_deltas, rail_at_tick=rail_at_tick,
+                rail_min=rail_min)
 
-    for _ in range(N_WATCH):
-        runner.step(g, DT_TICK)
-        _accumulate()
-        hits = runner.eos.t_max_phys_hits
-        hit_deltas.append(hits - prev_hits)
-        rail_at_tick.append(runner.eos.e_rail_sum)
-        prev_hits = hits
-    for _ in range(80 - N_WATCH):
-        runner.step(g, DT_TICK)
-        _accumulate()
+
+def _assert_rail_bounded_decaying_counted(runner, r):
+    """The T_MAX_PHYS rail, WHEN it fires, is a bounded one-time transient
+    and every hit is booked in `e_rail_sum` the tick it fires."""
+    hit_deltas, rail_at_tick = r["hit_deltas"], r["rail_at_tick"]
+    # BOUNDED (2x the 564 measured at k_drag2 = 0 as a runaway tripwire, not
+    # a tight pin -- this gate watches for regressions, not the exact count)...
+    assert runner.eos.t_max_phys_hits <= 1200, (
+        f"t_max_phys_hits={runner.eos.t_max_phys_hits}: expected a bounded "
+        "one-time overshoot, not runaway")
+    # ...DECAYS to zero new hits within 4 ticks (measured at k_drag2 = 0:
+    # 424, 126, 14, 0, 0)...
+    assert all(d == 0 for d in hit_deltas[3:]), (
+        f"new T_MAX_PHYS hits still arriving past tick 3: {hit_deltas} -- "
+        "the acoustic overshoot should be a one-time transient")
+    # ...and every hit is COUNTED, never a silent energy leak.
+    for tick, (d, rs) in enumerate(zip(hit_deltas, rail_at_tick)):
+        assert d == 0 or rs != 0, (
+            f"tick {tick}: {d} new T_MAX_PHYS hits but e_rail_sum == 0 -- "
+            "an uncounted energy rail")
+
+
+@pytest.mark.skipif(bp is None, reason="needs the compiled breach_physics")
+def test_ambient_gate2_rush_in_recovers_and_rails_bounded():
+    """GATE 2 (spec §6; RESTATED arc #54 P-G3, 2026-08-30; RESTATED again at
+    the k_drag2 landing, issue #4, 2026-10-04): a depressurized interior open
+    to the ambient ring REFILLS toward P_amb (the reservoir supplies mass),
+    the refill is a SUBSTANTIAL INFLOW recorded by the boundary_flux rail
+    (negative == mass INTO the domain), the ring stays pinned, and IF the
+    T_MAX_PHYS rail fires it is bounded, decays and is counted. Runs at the
+    LIVE drag dials. Breaks if the open boundary stops supplying mass, the
+    rail stops recording the exchange, the ring drifts, or the rail runs away
+    or leaks uncounted.
+
+    Why the rail is no longer REQUIRED to fire here (physics, not a
+    regression): the implicit MG solve lifts the interior's pressure to
+    ~1 atm ACOUSTICALLY, in one step, while the mass N is still at 0.1 --
+    pressure arrives before mass -- and at k_drag2 = 0 the inbound flow work
+    lands in the near-empty boundary cells for one tick (energy Courant ~40),
+    which the T_MAX_PHYS rail catches: 564 hits, a room 'refilled' mostly
+    with heat (~7000 game early, ~4000 after 8 s, little gas). At the shipped
+    k_drag2 = 0.125 the quadratic drag limits the inrush itself: the peak
+    stays at ~11 760 game (under the rail), 2.8x more mass flows in, the room
+    sits at ~1 200 game, and recovery to ~1 atm takes ~0.3 s instead of
+    ~0.05 s -- so the rail never fires and a 'rail must fire' clause would
+    fail on better physics. The rail's own coverage (it fires, is bounded,
+    decays, is counted) lives in
+    `test_ambient_gate2_rail_counts_the_acoustic_overshoot`, which pins its
+    own k_drag2 = 0 so it never depends on a tuning dial."""
+    from simulation.physics_runner import PhysicsRunner
+    runner = PhysicsRunner(bp)
+    r = _gate2_rush_in(runner)
+    g, interior, pin, start = r["g"], r["interior"], r["pin"], r["start"]
+    o2, n2, rail_min = r["o2"], r["n2"], r["rail_min"]
 
     recovered = float(g.atmosphere[interior].mean())
     # Air rushed IN: the interior recovered most of the way to P_amb.
@@ -871,22 +896,16 @@ def test_ambient_gate2_rush_in_recovers_and_rails_bounded():
         f"(started {start:.0f})")
     # The rail recorded the boundary exchange, negative for a net inflow --
     # measured at the DEEPEST POINT of the running total, which is where the
-    # rush-in is (tick 2).
+    # rush-in is.
     #
     # T5b FINDING, and it is a gate that was blind to its own name. This line
     # used to read `runner.eos.boundary_flux()` ONCE after 80 ticks and assert
-    # it negative. That is a PER-TICK rail on a room that finished refilling by
-    # tick 3, so it was asserting the sign of settled ±noise: measured -1678 at
-    # the old `c_v` and +46 at the new one, a flip produced by a 0.1 % change in
-    # a trajectory that is otherwise identical. Worse, the property it claimed
-    # to measure is FALSE as a total: the interior ends up ~5000 game-K hot, so
-    # it vents back out and the 80-tick NET is a small OUTFLOW (+139 846 at the
-    # old `c_v`, +138 922 at the new -- the old assertion would have been wrong
-    # on the total in both cases). What is real, and identical at both values,
-    # is the refill itself: the running total bottoms out at -1 594 720 on tick
-    # 2, three orders of magnitude clear of the sign boundary. Cross-checked to
-    # the last count against the interior's own species mass: the cumulative
-    # rail is exactly minus the interior mass delta at every tick.
+    # it negative. That is a PER-TICK rail on a room that finished refilling
+    # early, so it was asserting the sign of settled +-noise. What is real is
+    # the refill itself: the running total's deepest point (-1 594 720 at
+    # k_drag2 = 0, deeper at 0.125) is three orders of magnitude clear of the
+    # sign boundary, and the cumulative rail is exactly minus the interior's
+    # species-mass delta at every tick.
     rail = runner.eos.boundary_flux()
     assert len(rail) == g.gas.shape[0]
     assert rail_min[o2] < -1e6 and rail_min[n2] < -1e6, (
@@ -894,25 +913,36 @@ def test_ambient_gate2_rush_in_recovers_and_rails_bounded():
         f"total {list(rail_min)} (last tick alone: {list(rail)})")
     # The ring stayed pinned throughout.
     assert np.all(g.atmosphere[g.is_ambient] == pin)
+    # If the overshoot reaches the rail at these dials, it stays well-behaved.
+    _assert_rail_bounded_decaying_counted(runner, r)
 
-    # The T_MAX_PHYS rail fires (the gate is vacuous if it never does)...
-    assert hit_deltas[0] > 0, (
+
+@pytest.mark.skipif(bp is None, reason="needs the compiled breach_physics")
+def test_ambient_gate2_rail_counts_the_acoustic_overshoot():
+    """GATE 2, the rail half (split out at the k_drag2 landing, issue #4,
+    2026-10-04): with the interior drag's quadratic term OFF (this test owns
+    its dial, `runner.eos.k_drag2 = 0.0`, so retuning config.toml never moves
+    it), the gate-2 rush-in's acoustic overshoot ENGAGES the T_MAX_PHYS rail
+    -- the recovery clamp that keeps stored `gas_energy <= 2^60` -- and the
+    rail is BOUNDED, DECAYS to zero new hits within 4 ticks, and BOOKS every
+    hit in `e_rail_sum` the tick it fires. Breaks if the rail stops firing on
+    a real over-range cell (the clamp is dead), runs away, or clamps energy
+    without booking it.
+
+    An inflow rail (clamping the kick velocity directly at the boundary) was
+    tried and reverted at arc #54: it turns an honest open boundary into a
+    refrigerator, permanently damping every inrush instead of letting this
+    rail count a one-time overshoot."""
+    from simulation.physics_runner import PhysicsRunner
+    runner = PhysicsRunner(bp)
+    runner.eos.k_drag2 = 0.0
+    r = _gate2_rush_in(runner)
+    # The rail fires (the gate is vacuous if it never does)...
+    assert r["hit_deltas"][0] > 0, (
         "gate is vacuous: the acoustic overshoot never engaged the rail "
-        f"(hit_deltas={hit_deltas})")
-    # ...is BOUNDED (2x the measured 564 as a runaway tripwire, not a tight
-    # pin -- this gate watches for regressions, not the exact count)...
-    assert runner.eos.t_max_phys_hits <= 1200, (
-        f"t_max_phys_hits={runner.eos.t_max_phys_hits}: expected a bounded "
-        "one-time overshoot (measured 564), not runaway")
-    # ...DECAYS to zero new hits within 4 ticks (measured: 424, 126, 14, 0, 0)...
-    assert all(d == 0 for d in hit_deltas[3:]), (
-        f"new T_MAX_PHYS hits still arriving past tick 3: {hit_deltas} -- "
-        "the acoustic overshoot should be a one-time transient")
-    # ...and every hit is COUNTED, never a silent energy leak.
-    for tick, (d, r) in enumerate(zip(hit_deltas, rail_at_tick)):
-        assert d == 0 or r != 0, (
-            f"tick {tick}: {d} new T_MAX_PHYS hits but e_rail_sum == 0 -- "
-            "an uncounted energy rail")
+        f"(hit_deltas={r['hit_deltas']})")
+    # ...and is bounded, decays, and is counted.
+    _assert_rail_bounded_decaying_counted(runner, r)
 
 
 # ---------------------------------------------------------------------------
