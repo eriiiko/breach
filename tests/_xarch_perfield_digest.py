@@ -427,7 +427,30 @@ UNIT_FIELD_LABEL = "__unit_state__"
 #
 # REPRODUCED: the capture was run on both builds, identical both times.
 # (was e9cb8ca8f08c2f8f2ee36428a8ac7f395dadcd01a3c81606223ee4ca0dbce785)
-GOLDEN_AGGREGATE = "2739f7431cebb7c7f8f73ce2cdc6bea625e72e4409713d75e471acfa6a6e6a86"
+#
+# k_drag2 LANDS (2026-10-04, issue #4 drag-law v2 P3 -- the HUMAN-TEST dial
+# turn): `[physics.eos] k_drag2` 0.0 -> 0.125, Erik's by-eye value from the
+# explosion studio (2026-10-02/03: "looks pretty nice"), inside the venting
+# band P2 measured (k2 ~ 0.10-0.15). The quadratic interior-drag term goes
+# live in the staged drag block of the kick loops and deposits the KE it
+# removes as heat through the derived k_ke, so every moving parcel of air
+# moves -- the canonical scenario's wind included.
+#
+# FIELDS THAT MOVED, first tick: wind_x, wind_y, gas, temperature and
+# gas_energy at tick 0 (the drag acts in the kick, its heat lands the same
+# tick); atmosphere and the marine's position (__unit_pos__, so
+# __unit_state__) at tick 1; wave_p at tick 2. Unmoved over all 30 ticks:
+# fire, heat, wall_hp, water_depth, flow_vx/vy, dyn_heat_atten_q, dem_acc,
+# ignition_armed, wave_v, wave_source, material, obstacles, is_vacuum and the
+# unit's hp, facing, status and life events.
+#
+# VERIFIED SOLE CAUSE, not assumed: the patch's only non-test diff is that
+# one config line; with it set back to 0.0 on the same build the capture
+# reproduces the PREVIOUS value, 2739f743..., exactly.
+#
+# REPRODUCED: captured twice, identical both times.
+# (was 2739f7431cebb7c7f8f73ce2cdc6bea625e72e4409713d75e471acfa6a6e6a86)
+GOLDEN_AGGREGATE = "6944a29a3a259fc0c05e5bd45879105c605401e394e26efd7744639cbe7718ee"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs
