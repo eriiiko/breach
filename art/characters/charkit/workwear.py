@@ -71,6 +71,66 @@ class Figure:
         self.az = self.arm.t_at_z
         self.t_top = self.body.L
         self.t_elbow = self.az(d["elbow_z"])
+        # the set-in sleeve's armhole: a plane through the shoulder point, leaning in towards
+        # the armpit by `tilt` degrees; the sleeve owns its outer side, the body the rest
+        ah = d["garment"]["armhole"]
+        tl = D(ah["tilt"])
+        self.arm_S = np.array([ah["x"], 0.0, ah["z"]])
+        self.arm_n = np.array([math.cos(tl), 0.0, -math.sin(tl)])
+
+    def s_arm(self, P):
+        """Signed distance (m) to the armhole plane on the LEFT half: > 0 on the sleeve's side."""
+        P = np.asarray(P, float)
+        Pa = np.concatenate([np.abs(P[..., :1]), P[..., 1:]], axis=-1)
+        return (Pa - self.arm_S) @ self.arm_n
+
+    def _near_arm(self, P):
+        return (np.abs(P[:, 0]) > 0.04) & (P[:, 2] > self.d["armpit_z"] - 0.10)
+
+    def armhole_seam(self, P, on_sleeve=False):
+        """Distance (m) to the set-in sleeve's seam: the edge of what shows of the body (or
+        of the sleeve) round the armhole. Over the shoulder it is the armhole plane, where
+        the two surfaces meet flush; down the front and back and under the arm it is where
+        the sleeve's surface runs into the body's."""
+        P = np.asarray(P, float)
+        shp = P.shape[:-1]
+        P = P.reshape(-1, 3)
+        Pa = np.column_stack([np.abs(P[:, 0]), P[:, 1:]])
+        out = np.ones(len(P))
+        sel = self._near_arm(Pa)
+        if sel.any():
+            p = Pa[sel]
+            s = self.s_arm(p)
+            if on_sleeve:  # what shows of the sleeve: its own side of the plane, outside the body
+                f = np.minimum(s, kit.loft_sdf(self.body, p))
+            else:  # what shows of the body: its own side of the plane, or outside the sleeve
+                f = np.maximum(-s, kit.loft_sdf(self.arm, p))
+            out[sel] = np.abs(f)
+        return out.reshape(shp)
+
+    def envelope(self, P, N, k=0.006, under=0.002, reach=0.032):
+        """How far (m, along the body's normal N) the body surface must rise to meet the
+        sleeve where the sleeve stands out of it: the body takes over the sleeve's surface on
+        its own side of the armhole, so the two meet flush at the seam. Beyond the armhole the
+        body stays `under` below the sleeve (it is hidden there). Smooth-max fillet `k`. A point
+        farther than `reach` under the sleeve's surface is the body's wall INSIDE the armhole
+        (its normal runs along the sleeve, not out through it) and stays where it is."""
+        P, N = np.asarray(P, float), np.asarray(N, float)
+        shp = P.shape[:-1]
+        P, N = P.reshape(-1, 3), N.reshape(-1, 3)
+        out = np.zeros(len(P))
+        sel = (P[:, 0] > 0.04) & (P[:, 2] > self.d["armpit_z"] - 0.08)
+        if sel.any():
+            p, n = P[sel], N[sel]
+            dd = np.zeros(len(p))
+            for _ in range(5):  # walk along the normal onto the sleeve's surface
+                s = kit.loft_sdf(self.arm, p + dd[:, None] * n)
+                dd = np.clip(dd - np.where(s < 0.5, s, 0.0), -0.02, 0.07)
+            sa = self.s_arm(p)
+            dd = dd * np.clip((reach - dd) / 0.008, 0.0, 1.0)
+            dd = (dd - under * np.clip(sa / 0.004, 0.0, 1.0)) * np.clip(1.0 - sa / 0.012, 0.0, 1.0)
+            out[sel] = kit.smax(0.0, dd, k)
+        return out.reshape(shp)
 
     @staticmethod
     def _ring(z, cx, cy, a, bf, bb, n, level):
@@ -83,8 +143,10 @@ class Figure:
         return self.lm[name]
 
     def dirt(self, P):
-        """Where grime collects, in world space (0..1): chest, knees and shins, seat, cuffs,
-        the fronts of the thighs (hands wiped on them) and the hems."""
+        """Where grime collects, in world space (0..1), after the sheets: strongest on the knee
+        patches and the fronts of the thighs (hands wiped on them), the forearms and cuffs,
+        the chest below the pockets and the trouser hems; the back and seat only fade, faintly
+        and evenly, never a stain on the centre seam. `DIMS["dirt"]` weighs each zone."""
         g = self.d["dirt"]
         P = np.asarray(P, float).reshape(-1, 3)
         x, y, z = np.abs(P[:, 0]), P[:, 1], P[:, 2]
@@ -93,16 +155,23 @@ class Figure:
             return np.exp(-((v - c) / s) ** 2)
 
         front = np.clip((self.d["dirt_front_y"] - y) / 0.03, 0.0, 1.0)
-        back = 1.0 - front
-        chest = g["chest"] * gs(z, g["chest_z"], 0.13) * gs(x, 0.0, 0.18) * front
-        knees = g["knees"] * gs(z, self.d["garment"]["knee"]["z"], 0.10) * front
-        shins = g["shins"] * gs(z, 0.22, 0.10)
-        seat = g["seat"] * gs(z, self.d["garment"]["back_pocket"]["z"] - 0.03, 0.08) * back * np.clip(1.0 - x / 0.24, 0.0, 1.0)
-        thigh = g["thighs"] * gs(z, 0.72, 0.08) * np.clip((x - 0.10) / 0.06, 0.0, 1.0)
-        wrist = np.array(self.d["sleeve"][0][1:4])
-        dw = np.linalg.norm(np.column_stack([x, y, z]) - wrist, axis=1)
-        cuffs = g["cuffs"] * np.clip(1.0 - (dw - 0.03) / 0.10, 0.0, 1.0)
-        return np.clip(chest + knees + shins + seat + thigh + cuffs, 0.0, 1.0)
+        legs = np.clip((self.d["crotch_z"] + 0.04 - z) / 0.04, 0.0, 1.0)
+        trunk = np.clip((self.d["armpit_z"] - z) / 0.04, 0.0, 1.0) * np.clip((x - 0.0) / 0.01, 0.0, 1.0)
+        knee_z = self.d["garment"]["knee"]["z"]
+        chest = g["chest"] * gs(z, g["chest_z"], 0.07) * gs(x, 0.06, 0.12) * front * trunk
+        knees = g["knees"] * np.exp(-np.abs((z - knee_z) / 0.085) ** 3) * front
+        shins = g["shins"] * gs(z, 0.26, 0.09) * front
+        thigh = g["thighs"] * gs(z, 0.68, 0.10) * front * legs
+        hems = g["hems"] * np.clip(1.0 - (z - self.d["trunk"][0][1]) / 0.08, 0.0, 1.0)
+        back = g["back"] * (1.0 - front) * np.clip((self.d["armpit_z"] - z) / 0.25, 0.0, 1.0) * np.clip((z - 0.25) / 0.2, 0.0, 1.0)
+        # forearms: along the sleeve from the cuff to just short of the elbow
+        sl = self.d["sleeve"]
+        wrist, elbow = np.array(sl[0][1:4]), np.array([r for r in sl if r[0] == "elbow"][0][1:4])
+        ax = elbow - wrist
+        u = np.clip((np.column_stack([x, y, z]) - wrist) @ ax / (ax @ ax), -0.5, 1.5)
+        near = np.linalg.norm(np.column_stack([x, y, z]) - (wrist + u[:, None] * ax), axis=1) < 0.10
+        forearm = g["forearms"] * near * np.clip(1.0 - u / 0.9, 0.0, 1.0) * np.clip((u + 0.25) / 0.2, 0.0, 1.0)
+        return np.clip(chest + knees + shins + thigh + hems + back + forearm, 0.0, 1.0)
 
 
 # --------------------------------------------------------------------- coverall
@@ -144,7 +213,11 @@ def build_coverall(F, M, coll="Coverall"):
 
     def disp(gr):
         hem = 0.005 * np.exp(-((gr.t - bz(z_hem) - 0.010) / 0.009) ** 2)
-        return ff(gr) * fold_mask(gr) + elastic(gr, 0.0040) + hem
+        env = gr.env = F.envelope(gr.P, gr.N)
+        # folds die out where the body carries the sleeve's surface, so the seam stays flush
+        calm = np.clip(1.0 - env / 0.002, 0.0, 1.0) * np.clip(np.abs(F.s_arm(gr.P)) / 0.03, 0.0, 1.0) ** 0.5
+        calm = np.maximum(calm, np.clip((F.d["armpit_z"] - 0.06 - gr.P[..., 2]) / 0.02, 0.0, 1.0))
+        return ff(gr) * fold_mask(gr) * calm + elastic(gr, 0.0040) + hem + env
 
     yoke = g["yoke_back_z"]
 
@@ -153,8 +226,10 @@ def build_coverall(F, M, coll="Coverall"):
         placket = np.where((y < 0.0) & (z > g["zip_bottom_z"]) & (z < z_neck), np.abs(np.abs(x) - g["placket"]), 1.0)
         fly = np.where((y < 0.0) & (z <= g["zip_bottom_z"]) & (z > z_crotch - 0.05), np.abs(x), 1.0)
         seat = np.where((y > 0.0) & (z > z_crotch - 0.05) & (z < z_waist), np.abs(x), 1.0)
+        Pd = gr.P + getattr(gr, "env", np.zeros(gr.P.shape[:-1]))[..., None] * gr.N  # where the surface really is
+        armhole = F.armhole_seam(Pd)
         return seam_attr(gr, phis=[(OUT, bz(z_hem) + 0.02, bz(d["armpit_z"])), (IN, 0.0, bz(z_crotch))],
-                         ts=[bz(z_hem) + 0.024, (bz(yoke), back_c, D(78))], extra=np.minimum.reduce([placket, fly, seat]))
+                         ts=[bz(z_hem) + 0.024, (bz(yoke), back_c, D(78))], extra=np.minimum.reduce([placket, fly, seat, armhole]))
 
     t_top = F.t_top
     notch = Oval(B, FRONT, t_top, g["notch"][0], g["notch"][1], n=1.6, taper=0.25)
@@ -171,10 +246,20 @@ def build_coverall(F, M, coll="Coverall"):
         + fold_set(rng, 5, (te - 0.03, te + 0.06), (D(240), D(330)), (0.2, 0.3), (0.03, 0.06), (0.005, 0.008), (0.002, 0.004))
         + fold_set(rng, 6, (A.t_ring(len(d["sleeve"]) - 4), A.t_ring(len(d["sleeve"]) - 2)), (D(130), D(230)), (0.5, 0.3), (0.04, 0.08), (0.006, 0.010), (0.003, 0.005))
         + crumple_set(rng, 200, (0.0, A.t_ring(len(d["sleeve"]) - 2))))
-    t_root = A.t_ring(len(d["sleeve"]) - 3)
+    # set in at the armhole: the sleeve ends ON the armhole plane (the body carries its surface
+    # beyond, see Figure.envelope), its folds die out towards the seam, and the seam is stitched
+    t_root = A.t_ring(len(d["sleeve"]) - 2)
+    T_root = unit(A.pos([0.0], [A.L])[0] - A.pos([0.0], [A.L - 0.05])[0])
+
+    def onto_armhole(P):
+        s = F.s_arm(P)
+        k = np.where(s < 0.0, -s / float(T_root @ F.arm_n), 0.0)
+        return P + k[:, None] * T_root
+
     sleeve = loft_mesh("Coverall_Sleeve", A, res=kit.RES * 0.85, mat=cloth, coll=coll,
-                       disp=lambda gr: ff_arm(gr) * np.clip((t_root - gr.t) / 0.04, 0.0, 1.0),
-                       attrs=dict(seam=lambda gr: seam_attr(gr, phis=[(IN, 0.0, t_root)], ts=[t_root - 0.01]), dirt=dirt_g))
+                       disp=lambda gr: ff_arm(gr) * np.clip(F.s_arm(gr.P) / 0.04, 0.0, 1.0),
+                       attrs=dict(seam=lambda gr: seam_attr(gr, phis=[(IN, 0.0, t_root)], extra=F.armhole_seam(gr.P, on_sleeve=True)), dirt=dirt_g),
+                       drop=lambda P: F.s_arm(P) < 0.0, post=onto_armhole)
     mirror(solid(sleeve, g["cloth"], bevel=0.0))
 
     # cuffs: a band with a buttoned tab on the outer-back side
@@ -197,7 +282,8 @@ def build_coverall(F, M, coll="Coverall"):
     # collar ---------------------------------------------------------------------
     c = g["collar"]
     mirror(garment.shirt_collar("Coverall_Collar", B, t_top, gap_deg=c["gap"], stand=c["stand"], edge_drop=c["edge_drop"],
-                                point_drop=c["point_drop"], lift=g["cloth"] + 0.002, attrs=dict(dirt=F.dirt), mat=cloth, coll=coll), merge=True)
+                                point_drop=c["point_drop"], lift=g["cloth"] + 0.002, neck=c.get("neck"), attrs=dict(dirt=F.dirt),
+                                mat=cloth, coll=coll), merge=True)
 
     # front zip ---------------------------------------------------------------------
     z_zip_top = z_neck - g["notch"][1] + 0.004

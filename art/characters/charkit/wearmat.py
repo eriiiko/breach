@@ -148,8 +148,10 @@ def mat_eye(name, sclera, iris):
     ir = lin(iris)
     streak = t.noise(900.0, 2.0, 0.5, 0.0, "FBM")
     iris_col = t.mix(t.ramp(streak, 0.35, 0.7), (ir[0] * 0.6, ir[1] * 0.6, ir[2] * 0.6, 1.0), (min(1, ir[0] * 1.4), min(1, ir[1] * 1.4), min(1, ir[2] * 1.4), 1.0))
-    col = t.mix(t.ramp(c, 0.915, 0.925), col, iris_col)
-    col = t.mix(t.ramp(c, 0.972, 0.978), col, rgb(0.004, 0.004, 0.005))
+    # iris ~28 deg across its radius (an 11-12 mm iris on a 24 mm eye), a dark limbal ring, pupil ~3.5 mm
+    col = t.mix(t.ramp(c, 0.872, 0.884), col, (ir[0] * 0.35, ir[1] * 0.35, ir[2] * 0.35, 1.0))
+    col = t.mix(t.ramp(c, 0.884, 0.900), col, iris_col)
+    col = t.mix(t.ramp(c, 0.981, 0.985), col, rgb(0.004, 0.004, 0.005))
     t.set(Base_Color=col, Roughness=0.08, Coat_Weight=1.0, Coat_Roughness=0.03)
     return m
 

@@ -69,11 +69,14 @@ DIMS = dict(
         ("chest_low", 1.230, .000, .006, .192, .150, .155, 2.5, 1),
         ("chest", 1.310, .000, .012, .198, .150, .155, 2.5, 1),
         ("chest_top", 1.390, .000, .022, .195, .143, .146, 2.5, 1),
-        ("shoulder", 1.450, .000, .030, .168, .125, .126, 2.5, 1),
-        ("yoke", 1.500, .000, .032, .140, .098, .095, 2.4, 1),
-        ("neck", 1.535, .000, .028, .090, .078, .070, 2.2, 1),
+        ("shoulder", 1.450, .000, .030, .206, .125, .126, 2.5, 1),
+        ("shoulder_top", 1.478, .000, .031, .192, .112, .110, 2.4, 1),
+        ("yoke", 1.505, .000, .032, .160, .096, .093, 2.4, 1),
+        ("collar", 1.522, .000, .030, .125, .085, .080, 2.3, 1),
+        ("neck", 1.535, .000, .018, .074, .068, .068, 2.2, 1),
     ),
-    # The sleeve, cuff -> shoulder root, turning in over the shoulder: (landmark, centre
+    # The sleeve, cuff -> a root ring sunk inside the shoulder (the armhole plane in
+    # `garment` cuts it, set-in): (landmark, centre
     # x, y, z, half-width, half-depth). Its first row is the wrist.
     sleeve=(
         ("cuff_end", .388, -.040, 0.928, .041, .040),
@@ -84,8 +87,7 @@ DIMS = dict(
         ("biceps", .246, .028, 1.290, .066, .066),
         ("deltoid", .217, .026, 1.370, .065, .066),
         ("shoulder", .188, .025, 1.436, .058, .062),
-        ("root", .142, .028, 1.462, .050, .056),
-        ("root_in", .100, .030, 1.470, .044, .050),
+        ("root", .150, .028, 1.440, .048, .052),   # sunk inside the body: the armhole cuts above it
     ),
     elbow_z=1.110,
     armpit_z=1.240,
@@ -115,15 +117,18 @@ DIMS = dict(
         waistband=(1.072, 1.114),
         elastic_ripples=90,          # gathers round the whole waist (only the back gathers)
         yoke_back_z=1.430,
+        armhole=dict(x=0.176, z=1.47, tilt=3.0),  # the set-in sleeve's seam plane: shoulder point, lean in to the armpit
         cuff=(0.932, 0.975),
-        collar=dict(gap=24.0, stand=0.028, edge_drop=0.042, point_drop=0.045),
+        # a low stand hugging the neck (`neck` = the neck's ellipse at the fold: cy, a, bf, bb, clearance)
+        collar=dict(gap=24.0, stand=0.024, edge_drop=0.030, point_drop=0.032, neck=(0.010, 0.056, 0.058, 0.060, 0.005)),
         chest_pocket=dict(z=1.290, x=0.085, hs=0.055, ht=0.080, zip_dt=0.020),
         sleeve_pocket=dict(z=1.330, phi=12.0, hs=0.033, ht=0.050),  # left sleeve only
         back_pocket=dict(z=0.940, x=0.125, hs=0.060, ht=0.078),
         cargo=dict(z=0.705, phi=-14.0, hs=0.078, ht=0.088, depth=0.011),
         knee=dict(z=0.485, hs=0.088, ht=0.112),
     ),
-    dirt=dict(chest=1.0, chest_z=1.22, knees=1.0, shins=0.45, seat=1.0, thighs=0.35, cuffs=0.9),
+    # grime by zone (charkit/workwear.py::Figure.dirt): the back and seat only fade, faintly
+    dirt=dict(chest=0.75, chest_z=1.17, knees=0.62, shins=0.35, thighs=0.55, hems=0.6, forearms=0.8, back=0.12),
     dirt_front_y=0.02,
 )
 
@@ -137,7 +142,7 @@ HEAD = dict(
     crown=(1.786, 2.2),
     eye_z=1.668, nose_z=1.628, mouth_z=1.596, chin_z=1.560,
     jaw=(-0.100, 1.552, 0.030, 1.604, 0.010),  # chin (y, z) -> jaw angle (y, z), step in to the neck
-    nose_proj=0.027, eye_dx=0.032, eye_r=0.0118, eye_sink=0.002,
+    nose_proj=0.027, eye_dx=0.032, eye_r=0.0120, eye_sink=0.0005,
     ear=dict(z=1.618, y=0.008, h=0.068, w=0.034, tilt=14.0, flare=40.0, sink=0.002),
 )
 

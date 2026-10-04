@@ -3,7 +3,7 @@ import math
 
 import numpy as np
 
-from kit import Loft, loft_mesh, mirror, unit
+from kit import Loft, loft_mesh, mirror, smax, unit
 
 # Fingers at scale 1 (a large gloved hand): name, position across the palm, fan,
 # length, radius, curl of each joint in radians (relaxed).
@@ -145,9 +145,13 @@ def gauss2(x, z, x0, z0, sx, sz):
 # The face's features at their default size: (x0, dz from its landmark, sx, sz, height).
 # `x0 > 0` features are mirrored (they act on |x|). Heights in metres along the normal.
 FACE = dict(
-    brow=((0.028, ("eye", 0.017), 0.024, 0.0075, 0.0075), (0.0, ("eye", 0.013), 0.012, 0.0080, 0.0040)),
-    socket=((0.032, ("eye", 0.0), 0.0190, 0.0100, -0.0080),),
-    lid=((0.032, ("eye", -0.0115), 0.0150, 0.0035, 0.0018),),
+    # a brow RIDGE the upper lid sits in under, and a soft fold between the two
+    brow=((0.029, ("eye", 0.0150), 0.022, 0.0065, 0.0070), (0.0, ("eye", 0.012), 0.012, 0.0080, 0.0035)),
+    lid_fold=((0.031, ("eye", 0.0072), 0.013, 0.0022, -0.0012),),
+    # the socket: wide and shallow, deepest at the corners, so the skin meets the lids near
+    # the opening instead of leaving the eyeball standing out of a pit
+    socket=((0.032, ("eye", 0.0), 0.0180, 0.0068, -0.0068),),
+    lid=((0.032, ("eye", -0.0105), 0.0140, 0.0030, 0.0012),),
     cheekbone=((0.050, ("eye", -0.021), 0.017, 0.012, 0.0070),),
     hollow=((0.050, ("mouth", 0.009), 0.015, 0.015, -0.0030),),
     temple=((0.072, ("eye", 0.020), 0.012, 0.016, -0.0025),),
@@ -156,14 +160,22 @@ FACE = dict(
     mouth=((0.0, ("mouth", 0.0), 0.026, 0.0015, -0.0035), (0.027, ("mouth", 0.0), 0.006, 0.006, -0.0020)),
     philtrum=((0.0, ("mouth", 0.012), 0.0045, 0.006, -0.0012),),
     chin=((0.0, ("chin", 0.010), 0.022, 0.011, 0.0090), (0.0, ("mouth", -0.016), 0.018, 0.004, -0.0025)),
-    alae=((0.0160, ("nose", 0.004), 0.0075, 0.0070, 0.0075),),
+    # nostril wings either side of the tip, the crease round them, and the nostrils
+    alae=((0.0150, ("nose", 0.0035), 0.0062, 0.0060, 0.0085),),
+    alar_crease=((0.0230, ("nose", 0.0060), 0.0030, 0.0070, -0.0022), (0.0175, ("nose", 0.0105), 0.0060, 0.0025, -0.0015)),
+    nostril=((0.0080, ("nose", 0.0005), 0.0035, 0.0022, -0.0020),),
 )
+
+# Nose defaults (spec key `nose`): tip dome radii across / up-down as fractions of the
+# projection, how far down the ridge reaches towards the tip, the bridge's width.
+NOSE = dict(tip_rx=0.42, tip_rz=0.45, tip_round=0.35, ridge=0.82, bridge=0.0060, tip_w=0.0070)
 
 
 def face_field(spec):
     """Displacement (m) and masks over the head loft's grid from a head spec."""
     fz = dict(eye=spec["eye_z"], mouth=spec["mouth_z"], chin=spec["chin_z"], nose=spec["nose_z"])
     feats = dict(FACE, **spec.get("features", {}))
+    nose = dict(NOSE, **spec.get("nose", {}))
     proj, z_tip, z_nasion = spec["nose_proj"], spec["nose_z"] + 0.010, spec["eye_z"] + 0.007
     cy = spec["rings"][0][1]
 
@@ -178,22 +190,29 @@ def face_field(spec):
         for items in feats.values():
             for x0, (lm, dz), sx, sz, h in items:
                 d += h * gauss2(ax, z, x0, fz[lm] + dz, sx, sz)
-        # nose: a ridge from the nasion to the tip that widens and rises, a bulb at the tip
+        # nose: a bridge from the nasion that widens and rises towards the tip, and a ROUND
+        # tip (a dome, not the bridge's sharp end) whose underside curves back to the lip
         s = np.clip((z_nasion - z) / (z_nasion - z_tip), 0.0, 1.0)
-        h = proj * (0.22 + 0.78 * s ** 1.6)
-        h = np.where(z < z_tip, proj * np.exp(-((z - z_tip) / 0.0068) ** 2), h)
-        h = np.where(z > z_nasion, proj * 0.22 * np.exp(-((z - z_nasion) / 0.010) ** 2), h)
-        sx = 0.0065 + 0.0065 * s
-        d += h * np.exp(-(x / sx) ** 2)
-        d += 0.0040 * gauss2(x, z, 0.0, z_tip + 0.001, 0.0095, 0.0075)
+        h = proj * nose["ridge"] * (0.25 + 0.75 * s ** 1.5)
+        h = np.where(z < z_tip, proj * nose["ridge"] * np.exp(-((z - z_tip) / 0.0055) ** 2), h)
+        h = np.where(z > z_nasion, proj * nose["ridge"] * 0.25 * np.exp(-((z - z_nasion) / 0.010) ** 2), h)
+        sx = nose["bridge"] + nose["tip_w"] * s
+        ridge = h * np.exp(-(x / sx) ** 2)
+        rx, rz = nose["tip_rx"] * proj, nose["tip_rz"] * proj
+        q = np.clip(1.0 - (x / rx) ** 2 - ((z - z_tip + 0.15 * rz) / rz) ** 2, 0.0, 1.0)
+        dome = proj * q ** nose.get("tip_round", 0.35)  # a blunt dome: the tip's radius ~ rz^2 / (0.7 proj)
+        d += smax(ridge, dome, 0.004)
         d = d * fr
-        if "jaw" in spec:  # the jaw line: below it, at the sides, the surface steps in to the neck
+        if "jaw" in spec:  # the jaw: a rounded edge of the mandible, then the surface turns in to the neck
             yf, zf, ya, za, depth = spec["jaw"]
             y = g.P0[..., 1]
             zl = zf + (za - zf) * np.clip((y - yf) / (ya - yf), 0.0, 1.0)
-            under = np.clip((zl - z) / 0.008, 0.0, 1.0) * np.clip((z - (zf - 0.045)) / 0.02, 0.0, 1.0)
+            u = np.clip((zl - z) / spec.get("jaw_soft", 0.022), 0.0, 1.0)
+            under = u * u * (3.0 - 2.0 * u) * np.clip((z - (zf - 0.06)) / 0.02, 0.0, 1.0)
             behind = np.clip((y - (ya + 0.02)) / -0.015, 0.0, 1.0)
-            d -= depth * under * np.clip((ax - 0.018) / 0.025, 0.0, 1.0) * behind
+            side = np.clip((ax - 0.016) / 0.03, 0.0, 1.0) * behind
+            edge = np.exp(-((z - zl - 0.004) / 0.008) ** 2)  # the jaw's own rounded edge, just above the line
+            d += depth * (0.30 * edge - under) * side
         return d
 
     def masks(g):
@@ -258,8 +277,8 @@ def head(prefix, spec, mats, coll="Head", res=None):
         P, N = loft.pn([ph], [t_eye])
         gaze = unit(np.array([0.0, -1.0, 0.0]) + 0.08 * N[0])
         c = P[0] - N[0] * (spec["eye_r"] - spec.get("eye_sink", 0.0))
-        lids = dict(spec.get("lids", dict(open_w=0.95, upper=0.36, lower=0.30)), mat=mats["skin"])
-        objs += list(eyeball("%s_Eye_%s" % (prefix, side), c, spec["eye_r"], gaze, mats["eye"], coll, lids=lids))
+        lids = dict(spec.get("lids", dict(open_w=1.20, upper=0.30, lower=0.44)), mat=mats["skin"])
+        objs += list(eyeball("%s_Eye_%s" % (prefix, side), c, spec["eye_r"], gaze, mats["eye"], coll, n_lat=40, n_lon=64, lids=lids))
     objs += ear(prefix, loft, spec["ear"], mats["skin"], coll)
     return loft, objs
 
@@ -287,22 +306,38 @@ def eyeball(name, c, r, gaze, mat, coll, n_lat=24, n_lon=40, lids=None):
     if lids is None:
         return eye
     # eyelids: a skin shell a little larger than the eyeball, open in an almond round the
-    # gaze; lids = dict(mat=, open_w=, upper=, lower=, gap=) (angles in radians)
-    ah = np.arctan2(D @ e1, D @ gaze)  # across the eye
-    av = np.arctan2(D @ e2, D @ gaze)  # up (e2 is up when the gaze is level)
+    # gaze, its edge an exact curve (not the sphere's grid). lids = dict(mat=, open_w=,
+    # upper=, lower=, gap=, thick=): the opening's half-width and its upper / lower edge
+    # above / below the gaze (radians), the shell's clearance (fraction of r) and thickness.
+    # An upper edge below the iris's top angle makes the lid cover the top of the iris.
     up = np.asarray(lids.get("up", (0.0, 0.0, 1.0)), float)
     if e2 @ up < 0:
-        av = -av
-    k = np.clip(1.0 - (ah / lids["open_w"]) ** 2, 0.0, 1.0)
-    inside = (D @ gaze > 0) & (av < lids["upper"] * k ** 0.6) & (av > -lids["lower"] * k ** 0.8)
-    inside = np.concatenate([inside, [True, False]])
-    rl = r * (1.0 + lids.get("gap", 0.07))
-    VL = np.vstack([np.asarray(c) + rl * D, np.asarray(c) + rl * gaze, np.asarray(c) - rl * gaze])
-    fq = quads[~inside[quads].all(axis=1)]
-    ft = tris[~inside[tris].all(axis=1)]
-    lid = new_mesh(name + "_Lids", VL, fq, ft, lids["mat"], coll)
+        e1, e2 = -e1, -e2
+    w, ku, kl = lids["open_w"], lids["upper"], lids["lower"]
+    C = 96
+    al = np.linspace(0.0, 2 * math.pi, C, endpoint=False)
+    sa = np.sin(al)
+    ah = w * np.cos(al)
+    av = np.where(sa >= 0, ku * np.abs(sa) ** 1.2, -kl * np.abs(sa) ** 1.5)
+    De = (np.cos(av) * np.sin(ah))[:, None] * e1 + np.sin(av)[:, None] * e2 + (np.cos(av) * np.cos(ah))[:, None] * gaze
+    th_e = np.arccos(np.clip(De @ gaze, -1.0, 1.0))
+    psi = np.arctan2(De @ e2, De @ e1)
+    v = np.linspace(0.0, 1.0, 12) ** 1.4
+    TH = th_e[None, :] + (math.radians(118.0) - th_e[None, :]) * v[:, None]
+    PS = np.broadcast_to(psi[None, :], TH.shape)
+    DL = (np.cos(TH)[..., None] * gaze + (np.sin(TH) * np.cos(PS))[..., None] * e1 + (np.sin(TH) * np.sin(PS))[..., None] * e2)
+    rl = r * (1.0 + lids.get("gap", 0.10))
+    VL = np.asarray(c) + rl * DL.reshape(-1, 3)
+    idx = np.arange(len(v) * C).reshape(len(v), C)
+    nx = np.roll(idx, -1, axis=1)
+    fq = np.stack([idx[:-1], idx[1:], nx[1:], nx[:-1]], axis=-1).reshape(-1, 4)
+    f0 = fq[C // 4]
+    nrm = np.cross(VL[f0[1]] - VL[f0[0]], VL[f0[3]] - VL[f0[0]])
+    if nrm @ (VL[f0[0]] - np.asarray(c)) < 0:
+        fq = fq[:, ::-1]
+    lid = new_mesh(name + "_Lids", VL, fq, None, lids["mat"], coll)
     kit_finish = __import__("kit")._finish
-    kit_finish(lid, lids.get("thick", 0.0007), None, 2)
+    kit_finish(lid, lids.get("thick", 0.0014), None, 2)
     return eye, lid
 
 

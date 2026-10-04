@@ -6,8 +6,8 @@
  },
  "Coverall": {
   "objects": 26,
-  "source_tris": 372994,
-  "evaluated_tris": 1486872
+  "source_tris": 365546,
+  "evaluated_tris": 1456508
  },
  "Hands": {
   "objects": 6,
@@ -16,13 +16,13 @@
  },
  "Head": {
   "objects": 7,
-  "source_tris": 181894,
-  "evaluated_tris": 232140
+  "source_tris": 189134,
+  "evaluated_tris": 240860
  },
  "TOTAL": {
   "objects": 56,
-  "source_tris": 723116,
-  "evaluated_tris": 2110684
+  "source_tris": 722908,
+  "evaluated_tris": 2089040
  },
  "NORMALS": {
   "flipped": [

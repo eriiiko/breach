@@ -18,7 +18,7 @@ its renders; no rig, no game mesh yet.
 
 Blender 4.5.10 LTS, bundled Python. From `art/characters/`:
 
-    bash charkit/run.sh worker_male --sheet --turn --beauty all --save     # about 2.6 minutes
+    bash charkit/run.sh worker_male --sheet --turn --beauty all --save     # about 2.7 minutes
     bash charkit/run.sh worker_male --variant white_clean --beauty hero     # about 30 seconds
     bash charkit/run.sh worker_male --draft --sheet                         # about 15 seconds
     blender -b --factory-startup -P worker_male/scripts/ref_measure.py -- 0.02   # the sheet's own silhouette table
@@ -41,25 +41,33 @@ female worker, a variant) is another set of tables.
   - Coverall: ONE half-body loft from the trouser hem to the neckline (the `DIMS["trunk"]` rows:
     landmark, height, centre, half-width, front/back depth, exponent, section plane), welded to its
     mirror at the mid-plane with a 3 mm snap band so it is one closed manifold surface; Solidify
-    2.5 mm. Sleeves are a second loft (`DIMS["sleeve"]`) turning in over the shoulder. Authored
+    2.5 mm. Sleeves are a second loft (`DIMS["sleeve"]`) SET IN at the armhole
+    (`DIMS["garment"]["armhole"]`, a plane through the shoulder point): the sleeve ends on the
+    plane, and on the body's side of it the body rises onto the sleeve's surface
+    (`Figure.envelope`, `kit.loft_sdf` + `kit.smax`), so the two meet flush; the seam is a stitch
+    line round the arm's junction (`Figure.armhole_seam`). Authored
     folds (boot stacking, knee front/back, groin, seat, waist, elbows, cuffs) over an all-over
     crumple; elastic gathers across the back of the waist. Seams are a `seam` vertex attribute.
-  - Garment pieces from `DIMS["garment"]`: shirt collar folded over the body (`garment.shirt_collar`),
+  - Garment pieces from `DIMS["garment"]`: shirt collar folded over the body with a low stand
+    hugging the neck (`garment.shirt_collar(..., neck=)`),
     open V-neck (an `Oval` hole) with the undershirt in it, front zip (tape, teeth, slider and pull)
     collar to crotch, waistband, cuffs with tab and button, and stitched patches (`garment.patch`).
   - Hands: `parts.hand` with a bare palm table and thinner fingers.
   - Boots: sole with lugs, welt, upper, ankle shaft and padded collar, toe cap, heel counter,
     tongue, facings, eyelets and crossed laces.
 - `charkit/parts.py::head` — head + neck as one closed loft from inside the collar to the crown,
-  the face a displacement field (brow, sockets, nose, cheekbones, lips, chin, jaw line step),
-  eyeballs with eyelid shells, ears; `parts.hair` a separate closed shell whose edge dives under
+  the face a displacement field (a brow ridge over a wide shallow socket, a nose bridge into a
+  round tip with nostril wings and the crease round them, cheekbones, lips, chin, the jaw as a
+  rounded mandible edge turning in to the neck), eyeballs with almond eyelid shells whose upper
+  edge covers the top of the iris (`parts.eyeball` lids, `HEAD["lids"]` optional), ears; `parts.hair` a separate closed shell whose edge dives under
   the skin, with clumps along the hair's flow. Stubble, brows, lips and nostrils are mask
   attributes the skin material reads (colours from HAIR / SKIN / LIP_TINT).
 - `charkit/wearmat.py` — materials, one named material per region: `worker_skin`, `worker_hair`,
   `worker_eye`, `worker_coverall`, `worker_undershirt`, `worker_boot`, `worker_sole`,
   `worker_lace`, `worker_metal`. Dirt is its own layer in `worker_coverall` (and `worker_boot`):
-  the `dirt` vertex attribute (chest, knees, shins, seat, cuffs, thigh fronts, from
-  `Figure.dirt`) plus crease grime, scaled by the `dirt_strength` value node and MULTIPLIED over
+  the `dirt` vertex attribute (`Figure.dirt`, weighted by `DIMS["dirt"]`: knee patches and thigh
+  fronts, forearms and cuffs, the chest below the pockets, shins and hems; the back and seat only
+  a faint even fade, never a stain on the centre seam) plus crease grime, scaled by the `dirt_strength` value node and MULTIPLIED over
   the clean cloth. Double stitching is drawn either side of every `seam` and along every
   `stitch` line (pockets, patches, cuffs, collar edge) in the STITCH colour.
 - `charkit/sheetfit.py` — the generic three-view sheet fit (re-shoot in the sheet's framing,
@@ -73,13 +81,14 @@ thickness, clumps — long hair would need a new hair function); and a `sheet_re
 
 ## Measured
 
-- Silhouette IoU in the sheet's framing (`previews/sheet_overlay.png`): front 0.939, side 0.957,
-  back 0.944. The remainder is a 1–3 px edge band all round (fold relief and the artwork's soft,
+- Silhouette IoU in the sheet's framing (`previews/sheet_overlay.png`): front 0.939, side 0.958,
+  back 0.943 (2026-10-04, after the set-in sleeves, collar, dirt and face corrections; before them
+  0.939 / 0.957 / 0.944). The remainder is a 1–3 px edge band all round (fold relief and the artwork's soft,
   photographic edges), the hands (the model's fingers hang a little lower and more spread), the
   contact shadows the mask still catches under the artwork's boots, hair wisps, and the artwork's
   slight asymmetry (his weight and arms are not mirror images; the model is).
-- `source/mesh_stats.json`: 56 mesh objects, 723,116 source triangles, 2,110,684 after modifiers
-  (coverall 373 k, head and hair 182 k, boots 147 k, hands 21 k source). All 56 evaluated parts
+- `source/mesh_stats.json`: 56 mesh objects, 722,908 source triangles, 2,089,040 after modifiers
+  (coverall 366 k, head and hair 189 k, boots 147 k, hands 21 k source). All 56 evaluated parts
   are closed; all face outward (the eyeballs are built inward and flipped by the check).
 - Full build with every render: about 2.6 minutes on this machine (OptiX).
 
@@ -89,20 +98,20 @@ Present: shirt collar with points; front zip collar to crotch; dark undershirt i
 two chest pockets with zips across their tops; patch pocket with flap and pen slot on the upper
 LEFT sleeve; waistband seam, with elastic gathering across the back; two back pockets; cargo
 pockets with flaps and snaps on both outer thighs; reinforced knee patches; buttoned cuffs (tab
-and button); double-stitched seams (side, inseam, placket, seat, back yoke, raglan, hems,
-pockets); creasing at elbows, knees and ankles.
+and button); set-in sleeves with a stitched armhole seam; double-stitched seams (side, inseam,
+placket, seat, back yoke, armhole, hems, pockets); creasing at elbows, knees and ankles.
 
 ## Not done, and known weaknesses
 
 - No UV maps, no bake, no rig, no game mesh. A high-resolution source; pieces overlap rather
   than weld, except the coverall's two halves.
-- Against the reference: the sleeves are raglan (a seam from the collar to the underarm), where
-  the artwork has set-in sleeves with a shoulder seam; the cargo pockets are flatter boxes than
+- Against the reference: the cargo pockets are flatter boxes than
   its bellows pockets; the zip stops at 0.905 m; the boots are smoother and more rounded than its
   scuffed, creased work boots; the cloth's fading and grime are procedural, not the artwork's
   photographic wear; the figure is symmetric.
 - The face is a stylised displacement on a loft: believable at game distance, plainly not the
-  artwork's photographic face. The hair is a clumped shell, not strands; the back edge of the
+  artwork's photographic face. The eyelids are a smooth shell, so they read as a rubbery rim at
+  close range; the neck is wide for the face. The hair is a clumped shell, not strands; the back edge of the
   sideburns shows a slight stair-step from the grid.
 - Fingers are thicker and more evenly spread than a real relaxed hand.
 - Materials are Cycles node graphs and do not carry to the game's shader; the dirt and region

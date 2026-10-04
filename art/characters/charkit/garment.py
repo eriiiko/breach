@@ -65,13 +65,18 @@ def front_phi(loft, t, x=0.0):
 
 
 def shirt_collar(name, loft, t_top, gap_deg=26.0, stand=0.032, edge_drop=0.040, point_drop=0.050, point_span=40.0,
-                 lift=0.004, hug=0.010, rows=26, cols=None, thick=0.003, attrs=None, mat=None, coll="Garment"):
+                 lift=0.004, hug=0.010, rows=26, cols=None, thick=0.003, neck=None, attrs=None, mat=None, coll="Garment"):
     """Half of a shirt collar on a HALF-BODY loft (mirror it with merge): one folded sheet
     that runs from the fall's edge on the shoulders, up the body `lift` above it to the
     neckline (`t_top`), over the fold `stand` higher, and back down inside as the stand,
     `hug` closer to the neck. The front is open by `gap_deg` either side of centre front;
     over the last `point_span` degrees the fall runs `point_drop` further down: the points.
-    Its section angle runs from the back (-90 deg) round the side to the front gap."""
+    Its section angle runs from the back (-90 deg) round the side to the front gap.
+
+    `neck` = (cy, a, bf, bb, clear) hugs the collar to the neck: the fold sits `clear` off
+    a level ellipse round the neck (centre y `cy`, half-width `a`, half-depths to the front
+    and back) instead of straight above the neckline, and the stand runs down the neck
+    inside it. None keeps the stand standing straight up off the neckline."""
     phis = np.radians(np.linspace(-90.0, 90.0 - gap_deg, cols or 72))
     c_top = loft.frames([t_top])[0][0]
     z_top = float(loft.pos([0.0], [t_top])[0][2])
@@ -87,9 +92,20 @@ def shirt_collar(name, loft, t_top, gap_deg=26.0, stand=0.032, edge_drop=0.040, 
         rad = top - c_top
         rad[2] = 0.0
         rad = unit(rad)
-        fold = top + np.array([0.0, 0.0, stand * (1.0 - 0.35 * w)]) + rad * 0.003
-        inner_top = fold - rad * (hug + 0.004) - np.array([0.0, 0.0, 0.006])
-        inner_bot = top - rad * (hug + 0.002) - np.array([0.0, 0.0, 0.016])
+        if neck is None:
+            fold = top + np.array([0.0, 0.0, stand * (1.0 - 0.35 * w)]) + rad * 0.003
+            inner_top = fold - rad * (hug + 0.004) - np.array([0.0, 0.0, 0.006])
+            inner_bot = top - rad * (hug + 0.002) - np.array([0.0, 0.0, 0.016])
+        else:
+            cy, na, nbf, nbb, clear = neck
+            v = np.array([top[0], top[1] - cy])
+            u = v / max(np.linalg.norm(v), 1e-9)
+            nb = nbf if u[1] < 0 else nbb
+            rn = 1.0 / math.sqrt((u[0] / na) ** 2 + (u[1] / nb) ** 2)
+            ring = lambda r, z: np.array([u[0] * r, cy + u[1] * r, z])
+            fold = ring(rn + clear + 0.003, top[2] + stand * (1.0 - 0.35 * w))
+            inner_top = ring(rn + clear, top[2] + stand * (1.0 - 0.35 * w) - 0.006)
+            inner_bot = ring(rn + clear * 0.6, top[2] - 0.016)
         pts = np.vstack([P, fold, inner_top, inner_bot])
         u = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(pts, axis=0), axis=1))])
         q = np.linspace(0.0, u[-1], rows)
