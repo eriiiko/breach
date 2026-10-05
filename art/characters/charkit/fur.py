@@ -40,13 +40,13 @@ def _tuft_field(tf, L, circ, k_up=0.0):
 
 
 def fur_roll(name, pts, r, seed=3, flat=0.85, density=14000.0, tuft=(0.004, 0.008), pile=(0.06, 0.20), up=None, n=None,
-             taper=0.0, scale=None, pile_fn=None, mat=None, coll="Garment"):
+             taper=0.0, scale=None, soft=None, mat=None, coll="Garment"):
     """A roll of fur `r` thick along control points `pts` (a smooth curve through them),
     squashed to `flat` across, covered in random tufts (`density` per m^2, sizes `tuft` in m,
     heights `pile` as fractions of r). `taper` thins both ends over that fraction of the
     length. `scale` (one per control point) varies the radius along the roll, and `flat` may
-    be one per control point too. `pile_fn(UU, AL, r)`, if given, replaces the random tufts as
-    the surface's displacement (m) -- e.g. a fine directional pile. Capped: one closed object."""
+    be one per control point too. `soft` (a dict of `pile_field` arguments, at least `amp`),
+    if given, replaces the random tufts by a fine directional pile. Capped: one closed object."""
     c = smooth_path(pts, n or max(12, int(np.linalg.norm(np.diff(np.asarray(pts, float), axis=0), axis=1).sum() / 0.004)))
     L = float(np.linalg.norm(np.diff(c, axis=0), axis=1).sum())
     circ = TAU * r
@@ -65,11 +65,65 @@ def fur_roll(name, pts, r, seed=3, flat=0.85, density=14000.0, tuft=(0.004, 0.00
     n_u = max(16, int(circ * float(np.max(radii)) / r / 0.004))
     if up is not None and np.ndim(up) == 2:  # one per control point: carried along the resampled curve
         up = np.column_stack([along(np.asarray(up, float)[:, k]) for k in range(3)])
-    if pile_fn is not None:
-        return swept(name, c, radii, n_u=n_u, flat=flat, up=up, disp=lambda UU, AL: pile_fn(UU, AL, r), mat=mat, coll=coll)
+    if soft is not None:
+        pf = pile_field(seed, L, circ, **soft)
+        return swept(name, c, radii, n_u=n_u, flat=flat, up=up, disp=lambda UU, AL: pf(UU, AL, r), mat=mat, coll=coll)
     tf = _tufts(rng, L, circ, density, tuft, (pile[0] * r, pile[1] * r))
     field = _tuft_field(tf, L, circ)
     return swept(name, c, radii, n_u=n_u, flat=flat, up=up, disp=lambda UU, AL: field(UU, AL, r) - 0.2 * r, mat=mat, coll=coll)
+
+
+def pile_field(seed, L, circ, amp, across=(0.006, 0.014), along=(0.012, 0.040), lean=0.35, waves=48, spike=1.6):
+    """A fine, directional pile as a displacement (m) over a tube's developed surface (s along,
+    a around): a sum of `waves` random plane waves, short ACROSS the pile (`across`
+    wavelengths, m) and long ALONG it (`along`), the pile direction leaning `lean` (radians)
+    off the tube's length, shaped to soft narrow ridges (`spike` > 1). Vectorised: cheap
+    on fine grids. Returns f(UU, AL, r) for `fur_roll(..., pile_fn=)` and `plume`."""
+    rng = np.random.default_rng(seed)
+    la = rng.uniform(*across, waves)
+    ll = rng.uniform(*along, waves)
+    th = lean + rng.normal(0.0, 0.18, waves)
+    ph = rng.uniform(0.0, TAU, waves)
+    # wave numbers in (s, a), with a wrapped round the tube: an integer count round it
+    ka = np.round(circ / la) * TAU / circ
+    ks = TAU / ll
+    ca, sa = np.cos(th), np.sin(th)
+    k_s, k_a = ks * ca - ka * sa, ks * sa + ka * ca
+    k_a = np.round(k_a * circ / TAU) * TAU / circ  # seamless round the tube
+    w = rng.uniform(0.5, 1.0, waves)
+    w = w / w.sum()
+    norm = 2.2 * math.sqrt(float((w ** 2).sum()) / 2.0)  # ~ the sum's spread: g spans 0..1
+
+    def f(UU, AL, r):
+        s, a = UU * L, AL / TAU * circ
+        acc = np.zeros(UU.shape)
+        for i in range(waves):
+            acc += w[i] * np.sin(k_s[i] * s + k_a[i] * a + ph[i])
+        g = np.clip(0.5 + 0.5 * acc / norm, 0.0, 1.0) ** spike
+        return amp * (g - 0.5)
+
+    return f
+
+
+def plume_soft(name, spec, seed=5, mat=None, coll="Plumes", grid=0.0016):
+    """A SOFT feather plume: a smooth tapered ovoid on a curved stem (narrow at the socket,
+    widest about two thirds up, a rounded tip), its edge broken by a fine hairy pile (barbs a
+    few millimetres across lying up the plume, `pile_field`), no tufts. `spec` as `plume`,
+    plus optional `pile` (m, the barbs' height). From above it reads as a round fuzzy tuft."""
+    c = smooth_path(spec["path"], max(80, int(np.linalg.norm(np.diff(np.asarray(spec["path"], float), axis=0), axis=1).sum() / grid)))
+    L = float(np.linalg.norm(np.diff(c, axis=0), axis=1).sum())
+    r = spec["r"]
+    u = np.linspace(0.0, 1.0, len(c))
+    pu, pr = zip(*spec.get("radius", ((0.0, 0.10), (0.06, 0.26), (0.20, 0.55), (0.40, 0.84), (0.60, 0.98), (0.72, 1.0), (0.84, 0.90),
+                                      (0.93, 0.66), (0.98, 0.36), (1.0, 0.06))))
+    radii = r * np.interp(u, pu, pr)
+    circ = TAU * r
+    pile = spec.get("pile", 0.0045)
+    field = pile_field(seed, L, circ, pile, across=(0.0030, 0.0065), along=(0.014, 0.045), lean=0.0, waves=56, spike=2.2)
+    swell = lambda UU: np.clip(np.interp(UU, pu, pr) / 0.5, 0.0, 1.0)
+    n_u = max(48, int(circ / grid))
+    return swept(name, c, radii, n_u=n_u, disp=lambda UU, AL: field(UU, AL, r) * swell(UU),
+                 attrs=dict(tip=lambda UU, AL: UU), mat=mat, coll=coll)
 
 
 def plume(name, spec, seed=5, mat=None, coll="Plumes"):

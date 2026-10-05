@@ -29,10 +29,11 @@ def _pos_sum(t):
     return t.math("ADD", t.math("ADD", sep.outputs["X"], sep.outputs["Y"]), sep.outputs["Z"]), sep
 
 
-def mat_wool(name, base, lace=None, lace_w=0.0030, rough=0.82, lace_rough=0.42, sheen=0.04, lace_metal=0.6):
+def mat_wool(name, base, lace=None, lace_w=0.0030, rough=0.82, lace_rough=0.42, sheen=0.04, lace_metal=0.6, relief=1.6, relief_d=0.002):
     """Wool broadcloth: a fine felted nap, a little sheen, AO darkening in the folds. Where the
     `braid` attribute marks a line, a band `lace_w` either side of it is gold lace (`lace`),
-    metallic and semi-gloss, with a woven ridge across it and a little relief."""
+    metallic and semi-gloss, with a woven ridge across it and a little relief (`relief`, over a
+    bump distance `relief_d`: raise both for raised cord)."""
     m, t = _new(name)
     b = lin(base)
     col = t.mix(t.ramp(t.noise(5.0, 3.0, 0.55), 0.3, 0.7), (b[0] * 0.92, b[1] * 0.92, b[2] * 0.92, 1.0), (b[0] * 1.08, b[1] * 1.08, b[2] * 1.08, 1.0))
@@ -48,10 +49,10 @@ def mat_wool(name, base, lace=None, lace_w=0.0030, rough=0.82, lace_rough=0.42, 
         gold = t.mix(t.ramp(weave, -0.6, 0.9), (lc[0] * 0.55, lc[1] * 0.52, lc[2] * 0.45, 1.0), lc)
         gold = t.mix(t.math("MULTIPLY", t.math("SUBTRACT", 1.0, ao), 0.5), gold, (lc[0] * 0.35, lc[1] * 0.32, lc[2] * 0.25, 1.0))
         col = t.mix(band, col, gold)
-        h = t.math("ADD", t.math("MULTIPLY", t.math("ADD", band, t.math("MULTIPLY", weave, t.math("MULTIPLY", band, 0.25))), 1.6), h)
+        h = t.math("ADD", t.math("MULTIPLY", t.math("ADD", band, t.math("MULTIPLY", weave, t.math("MULTIPLY", band, 0.25))), relief), h)
         metal = t.mixf(band, 0.0, lace_metal)
         r = t.mixf(band, rough, lace_rough)
-    t.set(Base_Color=col, Roughness=r, Metallic=metal, Sheen_Weight=sheen, Sheen_Roughness=0.5, Sheen_Tint=col, Normal=t.bump(h, 0.35, 0.002))
+    t.set(Base_Color=col, Roughness=r, Metallic=metal, Sheen_Weight=sheen, Sheen_Roughness=0.5, Sheen_Tint=col, Normal=t.bump(h, 0.35, relief_d))
     return m
 
 
@@ -93,7 +94,7 @@ def mat_gold_cord(name, gold, rough=0.44, metal=0.6):
     return m
 
 
-def mat_polished(name, base, rough=0.16, coat=0.7):
+def mat_polished(name, base, rough=0.16, coat=0.7, coat_rough=0.08, crease=0.4):
     """Polished black leather (boots, a shako's peak): a clear coat over a dark base, a few
     creases and a soft broken highlight."""
     m, t = _new(name)
@@ -101,9 +102,9 @@ def mat_polished(name, base, rough=0.16, coat=0.7):
     col = t.mix(t.noise(6.0, 3.0), (b[0] * 0.85, b[1] * 0.85, b[2] * 0.85, 1.0), (b[0] * 1.2, b[1] * 1.2, b[2] * 1.2, 1.0))
     ao = t.ramp(t.ao(0.04), 0.25, 0.95)
     col = t.mix(t.math("MULTIPLY", t.math("SUBTRACT", 1.0, ao), 0.5), col, scale(base, 0.4))
-    crease = t.noise(18.0, 3.0, 0.55, 0.4, "RIDGED_MULTIFRACTAL")
-    t.set(Base_Color=col, Roughness=t.mixf(t.noise(9.0, 2.0), rough, rough + 0.12), Coat_Weight=coat, Coat_Roughness=0.08,
-          Normal=t.bump(t.math("ADD", t.math("MULTIPLY", crease, 0.4), t.math("MULTIPLY", t.noise(300.0, 2.0), 0.1)), 0.25, 0.002))
+    crease_n = t.noise(18.0, 3.0, 0.55, 0.4, "RIDGED_MULTIFRACTAL")
+    t.set(Base_Color=col, Roughness=t.mixf(t.noise(9.0, 2.0), rough, rough + 0.12), Coat_Weight=coat, Coat_Roughness=coat_rough,
+          Normal=t.bump(t.math("ADD", t.math("MULTIPLY", crease_n, crease), t.math("MULTIPLY", t.noise(300.0, 2.0), 0.1)), 0.25, 0.002))
     return m
 
 
@@ -122,10 +123,10 @@ def mat_fur(name, base, tip, rough=0.92):
     return m
 
 
-def mat_feather(name, base, tip=None, tip_from=0.75, rough=0.85):
+def mat_feather(name, base, tip=None, tip_from=0.75, rough=0.85, blend=None):
     """Feathers: fine barbs (noise stretched along the plume's height), matte with a sheen;
     with `tip`, the plume turns that colour from `tip_from` of its length (the `tip`
-    attribute) upwards."""
+    attribute) upwards, over `blend` of its length (None: the first, short blend)."""
     m, t = _new(name)
     b = lin(base)
     barbs = t.noise(380.0, 2.0, 0.6, 0.6, "FBM", stretch=(1.0, 1.0, 0.25))
@@ -133,7 +134,8 @@ def mat_feather(name, base, tip=None, tip_from=0.75, rough=0.85):
     if tip is not None:
         tc = lin(tip)
         tcol = t.mix(t.ramp(barbs, 0.35, 0.75), (tc[0] * 0.6, tc[1] * 0.6, tc[2] * 0.6, 1.0), (min(1, tc[0] * 1.3), min(1, tc[1] * 1.3), min(1, tc[2] * 1.3), 1.0))
-        frac = t.ramp(t.math("ADD", t.attr("tip"), t.math("MULTIPLY", t.noise(25.0, 2.0), 0.08)), tip_from - 0.02, tip_from + 0.06)
+        lo, hi = (tip_from - 0.02, tip_from + 0.06) if blend is None else (tip_from - 0.5 * blend, tip_from + 0.5 * blend)
+        frac = t.ramp(t.math("ADD", t.attr("tip"), t.math("MULTIPLY", t.noise(25.0, 2.0), 0.08)), lo, hi)
         col = t.mix(frac, col, tcol)
     ao = t.ramp(t.ao(0.03), 0.15, 0.95)
     col = t.mix(t.math("MULTIPLY", t.math("SUBTRACT", 1.0, ao), 0.7), col, rgb(0.003, 0.003, 0.003))

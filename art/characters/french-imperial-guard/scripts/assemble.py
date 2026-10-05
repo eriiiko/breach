@@ -51,8 +51,8 @@ def materials(p, plumes):
         skin=wearmat.mat_skin("guard_skin", p["SKIN"], p["HAIR"], p["LIP_TINT"]),
         hair=wearmat.mat_hair("guard_hair", p["HAIR"]),
         eye=wearmat.mat_eye("guard_eye", p["SCLERA"], p["IRIS"]),
-        dolman=dressmat.mat_wool("guard_dolman", p["DOLMAN"], lace=p["GOLD"]),
-        pelisse=dressmat.mat_wool("guard_pelisse", p["PELISSE"], lace=p["GOLD"]),
+        dolman=dressmat.mat_wool("guard_dolman", p["DOLMAN"], lace=p["GOLD"], relief=3.5, relief_d=0.0035),
+        pelisse=dressmat.mat_wool("guard_pelisse", p["PELISSE"], lace=p["GOLD"], relief=3.5, relief_d=0.0035),
         cuff=dressmat.mat_wool("guard_cuff", p["CUFF"], lace=p["GOLD"]),
         breeches=dressmat.mat_wool("guard_breeches", p["BREECHES"], lace=p["GOLD"]),
         fur=dressmat.mat_fur("guard_fur", p["FUR"], p["FUR_TIP"]),
@@ -60,7 +60,7 @@ def materials(p, plumes):
         metal=dressmat.mat_gold_metal("guard_metal", p["METAL"]),
         steel=wearmat.mat_metal("guard_steel", p["STEEL"], rough=0.30),
         sash=dressmat.mat_sash("guard_sash", p["SASH"], p["SASH_STRIPE"], p["GOLD"]),
-        boot=dressmat.mat_polished("guard_boot", p["BOOT"]),
+        boot=dressmat.mat_polished("guard_boot", p["BOOT"], rough=0.30, coat=0.35, coat_rough=0.24, crease=0.7),
         sole=wearmat.mat_rubber("guard_sole", p["SOLE"], rough=0.6),
         glove=dressmat.mat_glove("guard_glove", p["GLOVE"]),
         shako=dressmat.mat_shako("guard_shako", p["SHAKO"]),
@@ -69,7 +69,7 @@ def materials(p, plumes):
     )
     for i, pl in enumerate(plumes):
         M["plume_%d" % i] = dressmat.mat_feather("guard_plume_" + "abcd"[i], p[pl["colour"]], p[pl["tip"]] if pl.get("tip") else None,
-                                                 pl.get("tip_from", 0.75))
+                                                 pl.get("tip_from", 0.75), blend=pl.get("tip_blend"))
     return M
 
 
@@ -87,6 +87,16 @@ def front_back(gr_P, front_lines, back_lines, side=0.01):
         db = polyline_dist(Q, back_lines)
         d = np.where(P[:, 1] > -side, np.minimum(d, db), d)
     return d.reshape(gr_P.shape[:-1])
+
+
+def bold_v(s0, t0, half, drop, n=3, pitch=0.004):
+    """A bold chevron (an inverted V of wide lace) in developed (s, t) coordinates: `n` parallel
+    Vs `pitch` apart, so the lace bands merge into one wide band."""
+    out = []
+    for k in range(n):
+        dt = (k - 0.5 * (n - 1)) * pitch
+        out.append(np.array([[s0 - half, t0 - drop + dt], [s0, t0 + dt], [s0 + half, t0 - drop + dt]]))
+    return out
 
 
 def dolman_lace(F):
@@ -191,7 +201,7 @@ def build_body(F, M, coll="Uniform"):
     chev = []
     for i in range(ch["n"]):
         tp = t_cuff + cf["point"] + (i + 1) * ch["gap"]
-        chev.append(np.array([[-ch["half"], tp - ch["drop"]], [0.0, tp], [ch["half"], tp - ch["drop"]]]))
+        chev += bold_v(0.0, tp, ch["half"], ch["drop"], ch.get("bold", 1), ch.get("pitch", 0.004))
 
     def sleeve_lace(gr):
         Q = np.column_stack([(wrap(gr.phi - pp) * gr.r).ravel(), gr.t.ravel()])
@@ -216,6 +226,25 @@ def build_body(F, M, coll="Uniform"):
                     attrs=dict(braid=lambda gr: line_value(np.minimum(np.abs(gr.t - 0.005), np.abs(gr.t - (lo.L - 0.005))))))
     solid(col, 0.004, bevel=0.0)
 
+    # the gold shoulder cord on his RIGHT shoulder (his left is under the pelisse), collar ->
+    # shoulder point, lying on the dolman's shoulder top
+    sc = g["shoulder_cord"]
+    trunk = workwear_trunk_field(F, 0.0075)
+    xs = -np.linspace(sc[0][0] + 0.03, sc[1][0] + 0.01, 14)
+    P0 = np.column_stack([xs, np.full(len(xs), 0.016), np.full(len(xs), 1.70)])
+    braid.cord("Dolman_Shoulder_Cord", march(P0, -Z, trunk, step=0.02, iters=40) + Z * 0.004, r=0.0042, mat=M["braid"], coll=coll)
+    # the pelisse's cord: from the right of the collar across the top of the chest to the
+    # pelisse's front edge, a small gilt medallion on it (the painting)
+    pc = g["pelisse_cord"]
+    u = np.linspace(0.0, 1.0, 24)
+    cx = pc["from"][0] + (pc["to"][0] - pc["from"][0]) * u
+    cz = pc["from"][1] + (pc["to"][1] - pc["from"][1]) * u - pc["sag"] * np.sin(math.pi * u)
+    Pcd, Ncd = half_body_pn(B, cx, cz, offset=0.011)
+    braid.cord("Dolman_Pelisse_Cord", Pcd, r=0.0034, mat=M["braid"], coll=coll)
+    k = int(pc["medal"] * (len(u) - 1))
+    an = kit.OnPlane(Pcd[k] + Ncd[k] * 0.003, unit(Pcd[k + 1] - Pcd[k - 1]), np.cross(Ncd[k], unit(Pcd[k + 1] - Pcd[k - 1])))
+    kit.plate("Dolman_Pelisse_Medallion", an, 0.010, 0.010, n=2.0, offset=0.003, thick=0.002, dome=0.003, mat=M["metal"], coll=coll)
+
     # buttons: the centre column and one each side, on every row of frogging
     fr = g["frogs"]
     zs = np.linspace(fr["z0"], fr["z1"], fr["n"])
@@ -227,6 +256,14 @@ def build_body(F, M, coll="Uniform"):
     P, N = half_body_pn(B, xs, zz, offset=0.0055)
     studs("Dolman_Buttons", P, N, r=fr["button_r"], flat=0.55, mat=M["metal"], coll=coll)
     return B
+
+
+def workwear_trunk_field(F, off):
+    """Signed distance (m) to the trunk loft's level sections, less `off` (for laying a cord on
+    the dolman's shoulder), the same measure as `PelisseSurface.trunk_sdf`."""
+    S = PelisseSurface.__new__(PelisseSurface)
+    S.F, S.pd = F, {}
+    return lambda Q: S.trunk_sdf(np.column_stack([np.abs(Q[:, 0]), Q[:, 1:]])) - off
 
 
 # ------------------------------------------------------------ cross-belt, sash
@@ -275,6 +312,10 @@ def build_belt_and_sash(F, M, coll="Uniform"):
 
 
 # ---------------------------------------------------------------------- pelisse
+# the fur's pile: short, soft, lying along the roll (`fur.pile_field`), no tufts
+FUR_PILE = dict(amp=0.0045, across=(0.008, 0.016), along=(0.020, 0.055), lean=0.5, waves=40, spike=1.5)
+
+
 def _smin(a, b, k):
     """Smooth minimum (the union of two signed distances, filleted over `k`)."""
     return -kit.smax(-a, -b, k)
@@ -513,13 +554,36 @@ def build_pelisse(F, M, coll="Pelisse"):
     N = unit(N + col[:, None] * (radial + np.array([0.0, 0.0, 0.6]) - N))
     T = np.gradient(C, axis=0)
     across = unit(np.cross(N, T))
-    fur.fur_roll("Pelisse_Fur", C, r0, seed=11, flat=flat, up=across, scale=rad / r0, mat=M["fur"], coll=coll)
+    fur.fur_roll("Pelisse_Fur", C, r0, seed=11, flat=flat, up=across, scale=rad / r0, soft=FUR_PILE, mat=M["fur"], coll=coll)
+
+    # its frogging's buttons: one at the inner loop of each row, on the carried surface
+    fr = pd["frogs"]
+    fz, fx = zip(*pd["front_x"])
+    zs = np.linspace(fr["z0"], fr["z1"], fr["n"])
+    P0 = np.column_stack([np.interp(zs, fz, fx) + 0.020 + 0.008, np.full(len(zs), -0.30), zs])
+    Pb = march(P0, np.array([0.0, 1.0, 0.0]), S.field)
+    studs("Pelisse_Buttons", Pb + np.array([0.0, -0.002, 0.0]), np.tile([0.0, -1.0, 0.0], (len(zs), 1)), r=0.0050, flat=0.7, mat=M["metal"], coll=coll)
+    # the gold shoulder cord on its shoulder, from the collar to the shoulder point
+    sc = F.d["garment"]["shoulder_cord"]
+    xs = np.linspace(sc[0][0] + 0.03, sc[1][0] + 0.03, 14)
+    P0 = np.column_stack([xs, np.full(len(xs), 0.016), np.full(len(xs), 1.70)])
+    Pc = march(P0, np.array([0.0, 0.0, -1.0]), S.field, step=0.02, iters=40)
+    braid.cord("Pelisse_Shoulder_Cord", Pc + np.array([0.0, 0.0, 0.004]), r=0.0042, mat=M["braid"], coll=coll)
 
     # the empty sleeve (`pd["sleeves"]`): a flattened tube along its centre line, a fur cuff
     # over its last `cuff` metres, gold chevrons on its broad face towards `face`
     for k, sl in enumerate(pd["sleeves"]):
         build_empty_sleeve("Pelisse_Sleeve_%s" % sl["name"], sl, M, coll, seed=15 + k)
     return S
+
+
+def march(P0, d, field, step=0.012, iters=30, off=0.0):
+    """Points carried from P0 along the direction d onto the zero set of `field` (+ `off`)."""
+    P0 = np.asarray(P0, float)
+    s = np.zeros(len(P0))
+    for _ in range(iters):
+        s = s + np.clip(0.8 * (field(P0 + s[:, None] * d) - off), -step, step)
+    return P0 + s[:, None] * d
 
 
 def build_empty_sleeve(name, sl, M, coll, seed=15):
@@ -532,8 +596,7 @@ def build_empty_sleeve(name, sl, M, coll, seed=15):
     Bn = np.cross(T, Nn)
     al_c = 0.5 * math.pi * (1.0 if Bn[len(c) // 2] @ np.asarray(sl["face"], float) >= 0 else -1.0)
     t_c = Ls - sl["cuff"]
-    chev = [np.array([[-0.045, t_c - 0.012 - 0.024 * i - 0.030], [0.0, t_c - 0.012 - 0.024 * i], [0.045, t_c - 0.012 - 0.024 * i - 0.030]])
-            for i in range(2)]
+    chev = sum([bold_v(0.0, t_c - 0.014 - 0.030 * i, 0.048, 0.034, 3, 0.004) for i in range(2)], [])
     r_m = 0.5 * (sl["a"] + sl["b"])
 
     def lace(UU, AL):  # chevrons point up the sleeve, drawn on the broad face round angle al_c
@@ -548,8 +611,15 @@ def build_empty_sleeve(name, sl, M, coll, seed=15):
     creases = lambda u, al: (0.0035 * np.sin(2.0 * al) ** 2 * np.sin(3.0 * al + 1.3 * seed + 2.0 * u)
                              - 0.0025 * np.exp(-((wrap(al - al_c) - 0.4) / 0.25) ** 2) * np.clip(u / 0.2, 0, 1))
     swept(name, c, radii, n_u=48, flat=flats, up=Nn, disp=creases, attrs=dict(braid=lace), mat=M["pelisse"], coll=coll)
-    k0 = int((1.0 - sl["cuff"] / Ls) * (len(c) - 1))
-    fur.fur_roll(name + "_Fur", c[k0:], sl["a"] + 0.012, seed=seed, flat=(sl["b"] + 0.012) / (sl["a"] + 0.012), up=Nn[k0:], mat=M["fur"], coll=coll)
+    # the fur cuff: a soft roll round the sleeve's end (a ring following its flattened
+    # section), and a second one a little higher, so it reads as a deep fur cuff, not a drum
+    for j, back in enumerate((0.022, 0.052)):
+        k = int(np.clip((1.0 - back / Ls) * (len(c) - 1), 0, len(c) - 1))
+        al = np.linspace(0.0, TAU, 41)
+        rr = radii[k] + 0.004
+        ring = c[k] + rr * (np.cos(al)[:, None] * Nn[k] + (flats[k] * np.sin(al))[:, None] * Bn[k])
+        ring_up = unit(c[k] - ring)  # across the roll: towards the sleeve's centre line
+        fur.fur_roll(name + "_Fur_%d" % j, ring, 0.020, seed=seed + j, flat=0.75, up=ring_up, soft=FUR_PILE, mat=M["fur"], coll=coll)
 
 
 def _outward(lo, phi, t):
@@ -627,7 +697,7 @@ def build_shako(M, spec, head_loft, plumes, coll="Shako"):
     lo, _ = shako.shako("Shako", spec, dict(body=M["shako"], gold=M["braid"], metal=M["metal"], peak=M["peak"], cockade=M["cockade"]), coll=coll)
     shako.chin_chain("Shako", lo, head_loft, spec, M["metal"], coll=coll)
     for i, pl in enumerate(plumes):
-        fur.plume("Plume_%d" % i, pl, seed=21 + i, mat=M["plume_%d" % i], coll="Plumes")
+        fur.plume_soft("Plume_%d" % i, pl, seed=21 + i, mat=M["plume_%d" % i], coll="Plumes")
     return lo
 
 

@@ -13,7 +13,8 @@ spec keys:
   rings    ((z, cy, a, bf, bb), ...) bottom -> top, all centred on x = 0
   tilt     deg: the section planes lean back (the top's front edge stands higher)
   band     (height, lift): the top band, `height` down from the top edge
-  peak     dict(length, droop, span deg, thick)
+  peak     dict(length, droop, span deg, thick; optional droop_exp (the droop's curve, 1.6),
+           shape (the outline's exponent, 0.5 = an ellipse), edge (r of a gold edge cord))
   plate    dict(dz from the top, hs, ht, point, lift)
   cockade  dict(dz from the top, r, rim)
   cords    dict(r, front=(dz top at the sides, dz bottom at the centre), back=(...))
@@ -54,13 +55,16 @@ def shako(prefix, spec, mats, coll="Shako"):
     rows = np.linspace(0.0, 1.0, 14)
     P0, N0 = lo.pn(cols, np.full(len(cols), 0.004))
     out = unit(np.column_stack([N0[:, 0], N0[:, 1], np.zeros(len(cols))]))
-    reach = pk["length"] * np.sqrt(np.clip(1.0 - ((cols - D(90)) / span) ** 2, 0.0, 1.0))
+    reach = pk["length"] * np.clip(1.0 - ((cols - D(90)) / span) ** 2, 0.0, 1.0) ** pk.get("shape", 0.5)
     V = (P0[None, :, :] + (rows[:, None] * reach[None, :])[..., None] * out[None, :, :]
-         - (pk["droop"] * rows[:, None] ** 1.6 * (reach[None, :] / pk["length"]))[..., None] * Z)
+         - (pk["droop"] * rows[:, None] ** pk.get("droop_exp", 1.6) * (reach[None, :] / pk["length"]))[..., None] * Z)
     Vf = V.reshape(-1, 3)
     up = np.tile(Z, (len(Vf), 1))
     faces = orient(grid_faces(len(rows), len(cols)), Vf, up)
     objs.append(kit._finish(new_mesh(prefix + "_Peak", Vf, faces, None, mats["peak"], coll), pk["thick"], 0.0015, 2))
+    if pk.get("edge"):  # a thin gold edge along the peak's free outline
+        rim = V[-1] - Z * (0.5 * pk["thick"])
+        objs.append(swept(prefix + "_Peak_Edge", rim, pk["edge"], n_u=8, mat=mats["gold"], coll=coll))
     # front plate and cockade
     pl = spec["plate"]
     t_pl = L - pl["dz"]

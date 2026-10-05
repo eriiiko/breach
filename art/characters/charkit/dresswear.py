@@ -206,7 +206,7 @@ class RidingBoot:
         f = np.sin(phi)  # 1 front, -1 back
         z = np.where(f >= 0, tp["side"] + (tp["front"] - tp["side"]) * np.maximum(f, 0.0) ** 0.7, tp["side"] + (tp["back"] - tp["side"]) * (-f))
         d = np.abs(kit.wrap(phi - D(90.0))) / D(tp["notch_w"])
-        return z - (tp["front"] - tp["notch"]) * np.clip(1.0 - d, 0.0, 1.0) ** 1.4
+        return z - (tp["front"] - tp["notch"]) * np.clip(1.0 - d, 0.0, 1.0) ** tp.get("notch_exp", 1.4)
 
 
 def riding_boot(prefix, spec, mats, coll="Boots", attrs=None):
@@ -216,8 +216,9 @@ def riding_boot(prefix, spec, mats, coll="Boots", attrs=None):
 
     spec keys: ankle (x, y), toe_out deg, sole / heel (m), ball_y, heel_front_y, profile ((y
     along the foot from the ankle, half-width, height of the upper), ...) toe -> heel, shaft
-    ((z, cx, cy, a, bf, bb), ...), top dict(back, side, front, notch, notch_w deg), trim (m).
-    mats: leather, sole, trim."""
+    ((z, cx, cy, a, bf, bb), ...), top dict(back, side, front, notch, notch_w deg; optional notch_exp:
+    the notch's arms' curve, 1.4 sagging, 1 straight, below 1 bulging), trim (m); optional creases dict(z=(lo, hi),
+    n, h): soft creases round the front of the ankle. mats: leather, sole, trim."""
     bt = RidingBoot(spec)
     s, w, st = bt.s, bt.w, bt.sole_top
     prof = s["profile"]
@@ -241,7 +242,17 @@ def riding_boot(prefix, spec, mats, coll="Boots", attrs=None):
     t_of_z = lambda z: np.interp(z, zs, ts)
     top_t = lambda phi: t_of_z(bt.top_z(phi))
     phi_of = lambda u, v: TAU * v
+    cr = s.get("creases")
+
+    def creases(g):  # soft folds round the front of the ankle, dying out towards the back
+        z = g.P[..., 2]
+        z0, z1 = cr["z"]
+        k = np.clip((z - z0) / (z1 - z0), 0.0, 1.0)
+        win = np.sin(math.pi * k) ** 2 * np.clip(0.3 + np.sin(g.phi), 0.0, 1.0)
+        return cr["h"] * win * np.sin(math.pi * cr["n"] * k + 0.6 * np.cos(g.phi)) ** 2
+
     objs.append(mirror(kit.solid(loft_region(prefix + "_Shaft", shaft, phi_of, lambda u, v: u * top_t(TAU * v), closed=True, mat=leather, coll=coll,
+                                             disp=creases if cr else None,
                                              attrs=attrs and {k: (lambda g, f=f: f(g.P)) for k, f in attrs.items()}), 0.003, bevel=0.0)))
     tw = s["trim"]
     trim = loft_region(prefix + "_Trim", shaft, phi_of, lambda u, v: top_t(TAU * v) - tw * (1.0 - u) * 1.0, closed=True, offset=0.0022,
