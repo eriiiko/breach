@@ -135,8 +135,10 @@ PELVIS = dict(
     n=((0.72, 2.10), (0.84, 2.15), (0.90, 2.15), (0.98, 2.15), (1.06, 2.15)),
 )
 # the seat's roundness over the profile (bodysuit.Suit.forms): two broad rounds either side of the centre
-SEAT = (0.056, 0.945, "back", 0.054, 0.065, 0.006)
-PELVIS4, SEAT4 = PELVIS, SEAT
+SEAT4 = (0.056, 0.945, "back", 0.054, 0.065, 0.006)
+PELVIS4 = PELVIS
+# B1e: the seat's two rounds broader and lower over the profile (the profile itself carries the round)
+SEAT = (0.056, 0.945, "back", 0.054, 0.080, 0.0045)
 # B1e, the gap between the legs: fuller upper INNER thighs (concept: thigh / hip 0.482 just under the crotch).
 # A narrow slot, its half-gap about 6 mm for the first 6 cm under the crotch, opening smoothly (the inner
 # outline's angle to the vertical easing 3 -> 28 -> 14 deg) into the knee's stance, which stays as it was;
@@ -147,7 +149,25 @@ PELVIS4, SEAT4 = PELVIS, SEAT
 PELVIS = dict(PELVIS4, inner=((0.70, .0535), (0.71, .0510), (0.74, .0430), (0.76, .0350), (0.78, .0246), (0.80, .0150), (0.815, .0105),
                               (0.83, .0080), (0.845, .0066), (0.86, .0060), (0.87, .0056), (0.874, .00515), (0.877, .0045), (0.880, .00354),
                               (0.883, .0023), (0.886, .0008), (0.890, -.0016), (0.895, -.0054), (0.900, -.0099), (0.910, -.0214),
-                              (0.920, -.0345), (0.930, -.0470), (0.940, -.0590), (0.960, -.0800)))
+                              (0.920, -.0345), (0.930, -.0470), (0.940, -.0590), (0.960, -.0800)),
+              # B1e step 3, the front: an S, not a cone -- from the pinched waist a quicker flare that eases off over
+              # the hip (after good-body-silhouette.jfif, the owner's frontal reference: the waist-to-hip gain 0.30 /
+              # 0.56 / 0.78 / 0.93 of the way at 0.2 / 0.4 / 0.6 / 0.8 of the height, here taken half the way from
+              # stage 4's 0.12 / 0.36 / 0.59 / 0.79: three quarters read boxy); waist and widest point as stage 4 (the
+              # owner's size)
+              outer=((0.70, .1635), (0.74, .1626), (0.78, .1623), (0.81, .1623), (0.84, .1618), (0.87, .1601), (0.90, .1568),
+                     (0.93, .1517), (0.96, .1449), (0.99, .1363), (1.02, .1261), (1.05, .1147), (1.08, .1029), (1.11, .0938)),
+              # step 2, the side: a slight roundness of the lower belly, a soft groin (0.905), the thigh's front swelling
+              # 3 mm and easing into the knee
+              front=((0.70, -.0790), (0.74, -.0890), (0.77, -.0955), (0.80, -.0982), (0.83, -.0984), (0.86, -.0972), (0.88, -.0962),
+                     (0.905, -.0956), (0.93, -.0963), (0.96, -.0978), (0.99, -.0999), (1.02, -.1024), (1.05, -.1043), (1.08, -.1050),
+                     (1.11, -.1045)),
+              # the lumbar curve (a round hollow) flowing into one round seat (fullest at 0.94, the profile carrying the
+              # round, SEAT only a broad low swell over it), its under-curve running over 8 cm into a slightly full back
+              # of the thigh (no notch)
+              back=((0.70, .0600), (0.73, .0634), (0.76, .0666), (0.79, .0692), (0.82, .0714), (0.84, .0738), (0.86, .0772),
+                    (0.88, .0814), (0.90, .0849), (0.92, .0872), (0.94, .0881), (0.96, .0877), (0.98, .0860), (1.00, .0830),
+                    (1.02, .0789), (1.04, .0736), (1.06, .0671), (1.08, .0598), (1.10, .0521), (1.12, .0452), (1.13, .0430)))
 # stage 4 (kept as the shape `stage4`): the centre line over the pelvis (bodysuit.Suit.midline_fillet): the V
 # where the half-sections are cut at the mid-plane filled with a smooth fillet, broad in front, narrow behind
 MIDLINE = dict(front=0.020, back=0.008, z=(0.887, 1.12), fade=0.03, s_max=3.0)
@@ -198,8 +218,8 @@ def pelvis(k=1.0):
 # design's frame (`feature_frame`: the drawing's own figure)
 WAIST3 = ("waist", 1.140, .000, -.027, .094, .077, .069, 2.15, 1)
 SHAPES = dict(
-    slimmer=dict(pelvis=0.93, seat=(0.056, 0.945, "back", 0.052, 0.065, 0.0045)),
-    fuller=dict(pelvis=1.07, seat=(0.058, 0.945, "back", 0.056, 0.065, 0.0075)),
+    slimmer=dict(pelvis=0.93, seat=(0.056, 0.945, "back", 0.052, 0.080, 0.0034)),
+    fuller=dict(pelvis=1.07, seat=(0.058, 0.945, "back", 0.056, 0.080, 0.0056)),
     # stage 4's default (before B1e: the half-sections cut at the mid-plane, a fillet down the centre line)
     stage4=dict(spec=PELVIS4, seat=SEAT4, midline=MIDLINE, midplane=None),
     # stage 3's default (the previous default, for the before/after comparison)

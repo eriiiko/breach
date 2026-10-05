@@ -8,8 +8,10 @@
                                          panels, zips, pads, arms), front / 3/4 front / side / 3/4 back / back
                   hips_vs_drawings.jpg   front, side, back in matte grey with the drawing's outline
                                          (orange), the concept beside the front
-                  hips_before_after.jpg  the outlines of tables.HIPS_BEFORE (the previous default) and of
-                                         the default, overlaid, front / side / back
+                  hips_before_after.jpg  tables.HIPS_BEFORE (the previous default) above, the default below with
+                                         the before's outline over it, matte, front / 3/4 front / side / back
+                  shape_vs_silhouette.jpg  sheet_ref.SILHOUETTE (a frontal body reference) beside both
+                                         defaults' matte front views at one scale
                   crotch.jpg             the crotch close up: matte front / back / 3/4 front / from below
                                          (front and back, 40 deg under the horizontal); glossy front, 3/4 front
     The measurements (source/<prefix>outline.json) also hold the half-gap between the legs every 5 mm,
@@ -221,8 +223,14 @@ def pictures(tables, sheet_ref, previews, source, args, suitbuild):
     F, Sd, Bk = sheet_ref.SHEET, sheet_ref.SIDE, sheet_ref.BACK
     # --- the previous default: its outlines only
     report, rig, cam, floor = suitbuild.build(tables, tables.HIPS_BEFORE, "", args.draft, args.samples)
+    sil = getattr(sheet_ref, "SILHOUETTE", None)
+    fronts = []
+    suitbuild.matte_figure()
+    hide(DECOR)
+    if sil:  # the matte front view, arms shown (the reference has them), for shape_vs_silhouette.jpg
+        fronts.append((studio.compose(F.render(rig, cam, floor, previews, "silh"), ["front"]), tables.HIPS_BEFORE))
     hide(DECOR + ARMS, ("Hands",))
-    before = _band_masks(sheet_ref, suitbuild, (rig, cam, floor), previews, z0, z1, (fw, sw))
+    before = pure_panels(rig, cam, floor, previews, z0, z1)
     measure(source, tables.HIPS_BEFORE + "_")
     # --- the default
     report, rig, cam, floor = suitbuild.build(tables, "", "", args.draft, args.samples)
@@ -230,6 +238,9 @@ def pictures(tables, sheet_ref, previews, source, args, suitbuild):
     glossy = crotch_cells(cam, previews, CROTCH_GLOSS, "glossy suit")
     suitbuild.matte_figure()
     hide(DECOR)
+    if sil:
+        fronts.append((studio.compose(F.render(rig, cam, floor, previews, "silh"), ["front"]), "default (B1e)"))
+        silhouette_picture(tables, sheet_ref, suitbuild, fronts, previews)
     matte = crotch_cells(cam, previews, CROTCH_VIEWS, "matte")
     w = sum(c.shape[1] for c, _ in matte) + 10 * (len(matte) - 1)
     rows = [suitbuild.assemble_row(matte), suitbuild.assemble_row(glossy)]
@@ -249,24 +260,54 @@ def pictures(tables, sheet_ref, previews, source, args, suitbuild):
         cells.append((p, view))
     suitbuild.save_image(suitbuild.assemble_row(cells, [tables.PREFIX.capitalize() + " - the hips against the drawings", "matte grey: the model, orange: the drawing's outline"]),
                          os.path.join(previews, "hips_vs_drawings.jpg"))
-    # hips_before_after.jpg: outlines only, over the new default's matte form (arms hidden)
+    # hips_before_after.jpg: tables.HIPS_BEFORE above, the default below with the before's outline (blue) over
+    # it, matte grey, pure form (arms hidden), front / three-quarter front / side / back, one scale
     hide(ARMS, ("Hands",))
-    after = _band_masks(sheet_ref, suitbuild, (rig, cam, floor), previews, z0, z1, (fw, sw))
-    cells = []
-    for S, view, hw in ((F, "front", fw), (Sd, "side", sw), (Bk, "back", fw)):
-        p = suitbuild.band_crop(S, studio.compose(S.render(rig, cam, floor, previews, "hips"), [view]), z0, z1, hw).copy()
-        p[..., :3] = 0.55 * p[..., :3] + 0.45 * 0.93   # the form faded, so the lines read
-        for m, col in ((before[view], BEFORE), (after[view], AFTER)):
-            e = suitbuild.outline(m, 3)
-            p[e[:p.shape[0], :p.shape[1]]] = (*col, 1.0)
-        cells.append((p, view))
+    after = pure_panels(rig, cam, floor, previews, z0, z1)
+    row_b, row_a = [], []
+    for name, _ in BA_VIEWS:
+        row_b.append((studio.compose(before, [name]), "%s, %s" % (tables.HIPS_BEFORE, name)))
+        p = studio.compose(after, [name]).copy()
+        e = suitbuild.outline(before[name][..., 3] > 0.5, 3)
+        p[e] = (*BEFORE, 1.0)
+        row_a.append((p, "now, %s (blue: %s's outline)" % (name, tables.HIPS_BEFORE)))
     w = out["worst"]
-    title = [tables.PREFIX.capitalize() + " - hip outlines: blue = before (%s), orange = now" % tables.HIPS_BEFORE,
-             "worst turn deg/cm now: front %.1f, side front %.1f, side back %.1f" % (
+    title = [tables.PREFIX.capitalize() + " - the pelvis before (%s, top) and now (below), matte grey, waist to knee" % tables.HIPS_BEFORE,
+             "worst turn deg/cm now (0.60-1.14 m, the waist included): front %.1f, side front %.1f, side back %.1f" % (
                  w["outer"]["deg_per_cm"], w["front"]["deg_per_cm"], w["back"]["deg_per_cm"])]
-    suitbuild.save_image(suitbuild.assemble_row(cells, title), os.path.join(previews, "hips_before_after.jpg"))
+    top, bot = suitbuild.assemble_row(row_b, title), suitbuild.assemble_row(row_a)
+    suitbuild.save_image(np.concatenate([top, np.ones((10, top.shape[1], 4), np.float32), bot], axis=0),
+                         os.path.join(previews, "hips_before_after.jpg"))
     # hips.jpg: pure form, five views, orthographic, waist to knee
     hip_views(tables, suitbuild, rig, cam, floor, previews, z0, z1)
+
+
+def silhouette_picture(tables, sheet_ref, suitbuild, fronts, previews, z0=0.80, z1=1.52):
+    """shape_vs_silhouette.jpg: sheet_ref.SILHOUETTE (a frontal body reference, not a sheet) beside the model's
+    matte front views (`fronts` = [(front sheet image, label)]) at ONE scale: the reference scaled so its
+    shoulder width (outer deltoids, `shoulder_hw` px) equals the model's (measured on the first front view's
+    mask, as suitbuild.proportions measures it), its waist row aligned with the model's waist height."""
+    F, si = sheet_ref.SHEET, sheet_ref.SILHOUETTE
+    mask = fronts[0][0]
+    c = F.panel_slice("front")[0] - F.panel_slice("front")[1].start
+    mine = np.abs(mask[..., :3] - studio.to_srgb(studio.BACKDROP)).max(axis=-1) > 0.02
+    prop = suitbuild.proportions(mine, F, c)
+    k = (0.5 * prop["shoulder"] / F.m_per_px) / si["shoulder_hw"]   # front-sheet px per reference px
+    ref = suitbuild.load_scaled(si["path"], k)
+    h_img, w_img = F.size[1], F.size[0]
+    pan = np.ones((h_img, w_img, 4), np.float32)
+    pan[..., :3] = studio.to_srgb(studio.BACKDROP)
+    wrow = int(round(F.foot_row - si["waist_z"] / F.m_per_px))
+    ox, oy = int(round(c - si["centre"] * k)), int(round(wrow - si["waist_row"] * k))
+    rh, rw = ref.shape[:2]
+    y0, y1, x0, x1 = max(oy, 0), min(oy + rh, h_img), max(ox, 0), min(ox + rw, w_img)
+    pan[y0:y1, x0:x1, :3] = ref[y0 - oy:y1 - oy, x0 - ox:x1 - ox, :3]
+    hw = 0.30
+    cells = [(suitbuild.band_crop(F, pan, z0, z1, hw), "the owner's front reference (good-body-silhouette)")]
+    cells += [(suitbuild.band_crop(F, img, z0, z1, hw), lab) for img, lab in fronts]
+    title = [tables.PREFIX.capitalize() + " - body shape against the owner's frontal reference, matte grey, %.2f-%.2f m" % (z0, z1),
+             "one scale: the reference's shoulder width = the model's (%.3f m), its narrowest waist on the model's (%.2f m)" % (prop["shoulder"], si["waist_z"])]
+    suitbuild.save_image(suitbuild.assemble_row(cells, title), os.path.join(previews, "shape_vs_silhouette.jpg"))
 
 
 # crotch.jpg: (label, azimuth deg, elevation deg) round the crotch's tip; below = 40 deg under the horizontal
@@ -291,6 +332,16 @@ def crotch_cells(cam, previews, views, what, d=0.75, res=640):
         img[..., 3] = 1.0
         cells.append((img, "%s, %s" % (name, what)))
     return cells
+
+
+BA_VIEWS = (("front", 0.0), ("three-quarter front", 40.0), ("side", 90.0), ("back", 180.0))
+
+
+def pure_panels(rig, cam, floor, previews, z0, z1, h_px=1000, half_w=0.24):
+    """{view name: RGBA} orthographic, BA_VIEWS, the band z0..z1 (for hips_before_after.jpg)."""
+    mpp = (z1 - z0) / h_px
+    w_px = int(round(2 * half_w / mpp))
+    return studio.ortho_panels(rig, cam, floor, previews, [(n, az, w_px) for n, az in BA_VIEWS], mpp, h_px, 0.5 * (z0 + z1), "ba")
 
 
 HIP_VIEWS = (("front", 0.0), ("three-quarter front", 40.0), ("side", 90.0), ("three-quarter back", 140.0), ("back", 180.0))

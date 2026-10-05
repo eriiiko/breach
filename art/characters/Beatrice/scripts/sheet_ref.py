@@ -43,3 +43,9 @@ BACK = Sheet(BACK_PATH, foot_row=1453, top_row=46.5, height_m=1.68, panels=(("ba
              floor=(1330, 0.25))
 # the extra views `--sheet` scores and pictures (tag, sheet)
 VIEWS = (("side", SIDE), ("back", BACK))
+
+# The owner's frontal BODY reference (good-body-silhouette.jfif, 683 x 1024, supplied 2026-10-05; head to the upper
+# thighs, arms a little out, the earlier high-cut suit): not a sheet, a shape witness (hipsview.silhouette_picture).
+# Measured by hand between the arms and the body where the backdrop shows: centre column 341, outer deltoids 213.5 px
+# (row 480), narrowest waist 128 px (row 760), widest 198.5 px just above the crotch (rows 980-1000) -- half-widths.
+SILHOUETTE = dict(path=os.path.join(ROOT, "good-body-silhouette.jfif"), centre=341.0, shoulder_hw=213.5, waist_row=760.0, waist_z=1.14)
