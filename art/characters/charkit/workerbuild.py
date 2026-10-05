@@ -40,8 +40,13 @@ DEV_VIEWS = {
 }
 
 
-def run(root, name, worker, sheet_ref):
-    """Build `worker`'s figure from its tables, then compare/render/save as asked."""
+def run(root, name, worker, sheet_ref, builder=None):
+    """Build `worker`'s figure from its tables, then compare/render/save as asked.
+
+    `builder` is the module (or any object) with `materials(palette, dirt)` and
+    `build(M, dims, head_spec, hair_spec)` that makes the figure; None is `workwear`, the
+    coverall worker. Another family (the French guard officer) passes its own."""
+    builder = builder or workwear
     ap = argparse.ArgumentParser()
     ap.add_argument("--draft", action="store_true")
     ap.add_argument("--sheet", action="store_true")
@@ -61,8 +66,8 @@ def run(root, name, worker, sheet_ref):
     bpy.ops.wm.read_factory_settings(use_empty=True)
     kit.RES = 0.008 if args.draft else 0.004
     pal, dirt = worker.palette(args.variant or None)
-    M = workwear.materials(pal, dirt)
-    workwear.build(M, worker.DIMS, worker.HEAD, worker.HAIR)
+    M = builder.materials(pal, dirt)
+    builder.build(M, worker.DIMS, worker.HEAD, worker.HAIR)
     report = garment.orient_outward()
     rig, cam, floor = studio.setup(samples=args.samples or (24 if args.draft else 96), backdrop=studio.BACKDROP)
     print("built in %.1fs" % (time.time() - t0))
