@@ -103,6 +103,19 @@ def fingerprints():
     return {"objects":geometry,"materials":materials}
 
 
+def studio_record():
+    scene=bpy.context.scene
+    lights={obj.name:{"location":list(obj.location),"rotation":list(obj.rotation_euler),
+                      "type":obj.data.type,"energy":obj.data.energy,"color":list(obj.data.color),
+                      "size":getattr(obj.data,"size",None),"size_y":getattr(obj.data,"size_y",None),
+                      "shape":getattr(obj.data,"shape",None)}
+            for obj in scene.objects if obj.type=="LIGHT"}
+    world={node.name:{sock.name:simple(sock.default_value) for sock in node.inputs if hasattr(sock,"default_value")}
+           for node in scene.world.node_tree.nodes}
+    return {"lights":lights,"world":world,"view_transform":scene.view_settings.view_transform,
+            "look":scene.view_settings.look,"exposure":scene.view_settings.exposure,"gamma":scene.view_settings.gamma}
+
+
 def shell_point(a,p):
     """Compact calotte, near-planar lower cheeks, and a projected facial envelope."""
     s=math.sin(p);c=math.cos(p)
@@ -130,7 +143,20 @@ def upper_boundary(a):
 
 def lower_boundary(a):
     u=min(1,abs(a)/APERTURE)
-    return 2.22-.12*u*u-.32*u**6-.20*u**16
+    # A calm horizontal chin span turns through clipped, radiused cheek corners.
+    # Monotone Hermite tangents keep the optical outline smooth at each transition.
+    knots=((0,2.13),(.70,2.13),(.82,2.080),(.94,1.91),(1,1.58))
+    slopes=[(b[1]-a[1])/(b[0]-a[0]) for a,b in zip(knots,knots[1:])]
+    tangents=[slopes[0]]
+    for before,after in zip(slopes,slopes[1:]):
+        tangents.append(0 if before*after<=0 else 2*before*after/(before+after))
+    tangents.append(slopes[-1])
+    for i,((x0,y0),(x1,y1)) in enumerate(zip(knots,knots[1:])):
+        if u<=x1:
+            t=(u-x0)/(x1-x0);h=x1-x0
+            return ((2*t**3-3*t*t+1)*y0+(t**3-2*t*t+t)*h*tangents[i]
+                    +(-2*t**3+3*t*t)*y1+(t**3-t*t)*h*tangents[i+1])
+    return knots[-1][1]
 
 
 def top_end(a):
@@ -157,7 +183,7 @@ def mesh_part(name,vertices,faces,material="Ivory ceramic enamel",group=GROUP,th
 
 
 def patch(name,amin,amax,pmin,pmax,offset=0,material="Ivory ceramic enamel",
-          thickness=.005,columns=48,rows=28):
+          thickness=.005,columns=40,rows=22):
     vertices=[];faces=[]
     for j in range(rows+1):
         t=j/rows
@@ -172,7 +198,7 @@ def patch(name,amin,amax,pmin,pmax,offset=0,material="Ivory ceramic enamel",
     return mesh_part(name,vertices,faces,material,thickness=thickness)
 
 
-def aperture_loop(samples=256):
+def aperture_loop(samples=128):
     # Cosine sampling resolves the rounded temporal corners without polar aliasing.
     angles=[-APERTURE*math.cos(math.pi*j/samples) for j in range(samples+1)]
     return [(a,upper_boundary(a)) for a in angles]+[(a,lower_boundary(a)) for a in reversed(angles[1:-1])]
@@ -205,25 +231,43 @@ def curved_panel(name,outline,offset,material):
     return mesh_part(name,vertices,faces,material,thickness=.004)
 
 
+def crown_panels():
+    # Two parallel longitudinal joints replace a featureless circular crown lid.
+    # The cuts align with the forehead panel edges and remain part of the shell.
+    for index,(xmin,xmax) in enumerate(((-1,-.407),(-.400,.400),(.407,1))):
+        vertices=[];faces=[];columns=22;rows=36
+        for row in range(rows+1):
+            for col in range(columns+1):
+                x=xmin+(xmax-xmin)*col/columns
+                half=math.sqrt(max(0,1-x*x))
+                y=(-1+2*row/rows)*half
+                radius=min(1,math.sqrt(x*x+y*y))
+                p=math.asin(radius*math.sin(.680))
+                a=math.atan2(x,-y)
+                vertices.append(surface(a,p,.001))
+        for row in range(rows):
+            for col in range(columns):
+                q=row*(columns+1)+col;faces.append((q,q+1,q+columns+2,q+columns+1))
+        mesh_part(f"Helmet V2 / longitudinal crown plate {index+1}",vertices,faces,thickness=.005)
+
+
 def build_head():
     # Under-shell is visible only within manufactured panel clearances.
     patch("Helmet V2 / continuous crown substrate",-math.pi,math.pi,.0001,top_end,
-          -.001,"Recess",.003,192,44)
+          -.001,"Recess",.003,96,24)
     patch("Helmet V2 / continuous jaw substrate",-math.pi,math.pi,bottom_start,lower_end,
-          -.001,"Recess",.003,192,24)
-    patch("Helmet V2 / removable crown cap",-math.pi,math.pi,.0001,.675,.001,
-          columns=192,rows=30)
+          -.001,"Recess",.003,96,16)
+    crown_panels()
     divisions=(-math.pi,-2.18,-1.32,-.43,.43,1.32,2.18,math.pi)
     for index,(lo,hi) in enumerate(zip(divisions,divisions[1:])):
-        patch(f"Helmet V2 / upper shell panel {index+1}",lo+.005,hi-.005,.686,
-              lambda a:top_end(a)-.008,.0015)
+        patch(f"Helmet V2 / upper shell panel {index+1}",lo+.005,hi-.005,.687,
+              lambda a:top_end(a)-.004,.0015)
     divisions=(-math.pi,-2.36,-1.32,-.53,.53,1.32,2.36,math.pi)
     for index,(lo,hi) in enumerate(zip(divisions,divisions[1:])):
         patch(f"Helmet V2 / cheek and nape panel {index+1}",lo+.005,hi-.005,
-              lambda a:bottom_start(a)+.009,lambda a:lower_end(a)-.007,.002,
-              columns=48,rows=30)
+              lambda a:bottom_start(a)+.004,lambda a:lower_end(a)-.007,.002)
     # A broad optical pane with clipped lower corners, rather than a rectangle.
-    contour=aperture_loop();count=len(contour);vertices=[];faces=[];rings=52
+    contour=aperture_loop();count=len(contour);vertices=[];faces=[];rings=36
     for row in range(rings+1):
         r=row/rings
         for a,p in contour:
@@ -369,24 +413,31 @@ def render(which,draft):
 
 
 def audit():
-    frozen,manifest=preserved_files();open_source(SOURCE)
+    frozen,manifest=preserved_files();open_source(frozen)
+    independent_original=fingerprints();original_studio=studio_record()
+    open_source(SOURCE)
     expected=json.loads((SOURCE.parent/"preservation_fingerprints.json").read_text(encoding="utf-8"))["unchanged_non_head"]
     current=fingerprints()
-    assert current==expected,"Reopened non-head geometry or shaders changed"
+    assert current==expected==independent_original,"Reopened non-head geometry or shaders changed"
+    assert studio_record()==original_studio,"Comparison studio lighting changed"
     glass=bpy.data.objects["VISOR GLASS / convex optical shield"];mat=glass.data.materials[0]
     users=[obj.name for obj in bpy.context.scene.objects if is_character(obj) and mat.name in obj.data.materials]
     assert users==[glass.name] and glass.pass_index==1 and mat.pass_index==1
     assert all(obj==glass or obj.pass_index!=1 for obj in bpy.context.scene.objects)
+    assert all(item==mat or item.pass_index!=1 for item in bpy.data.materials)
     missing=[image.name for image in bpy.data.images if image.source=="FILE" and not image.packed_file
              and not Path(bpy.path.abspath(image.filepath)).is_file()]
     cloth=[obj.name for obj in bpy.context.scene.objects if any(mod.type=="CLOTH" for mod in obj.modifiers)]
-    assert not missing and not cloth
-    depsgraph=bpy.context.evaluated_depsgraph_get();vertices=triangles=degenerate=0
+    armatures=[obj.name for obj in bpy.context.scene.objects if obj.type=="ARMATURE"]
+    external=[image.name for image in bpy.data.images if image.source=="FILE" and not image.packed_file]
+    assert not missing and not cloth and not armatures and not bpy.data.cache_files
+    depsgraph=bpy.context.evaluated_depsgraph_get();vertices=triangles=degenerate=head_triangles=0
     lower=[math.inf]*3;upper=[-math.inf]*3;objects=0
     for obj in bpy.context.scene.objects:
         if not is_character(obj):continue
         objects+=1;evaluated=obj.evaluated_get(depsgraph);mesh=evaluated.to_mesh();mesh.calc_loop_triangles()
         vertices+=len(mesh.vertices);triangles+=len(mesh.loop_triangles)
+        if is_head(obj):head_triangles+=len(mesh.loop_triangles)
         degenerate+=sum(face.area<1e-12 for face in mesh.loop_triangles)
         for vertex in mesh.vertices:
             point=evaluated.matrix_world@vertex.co
@@ -398,8 +449,12 @@ def audit():
             "preserved_original_files":len(manifest["preserved_files_relative_to_asset"]),
             "unchanged_non_head_objects":len(current["objects"]),"unchanged_non_head_materials":len(current["materials"]),
             "evaluated_vertices":vertices,"evaluated_triangles":triangles,"character_objects":objects,
+            "head_evaluated_triangles":head_triangles,"non_head_evaluated_triangles":triangles-head_triangles,
             "degenerate_triangles_below_1e_12_square_metres":degenerate,
             "bounds_min":lower,"bounds_max":upper,"missing_images":missing,"live_cloth":cloth,
+            "external_images":external,"external_cache_files":len(bpy.data.cache_files),"armatures":armatures,
+            "packed_images":[image.name for image in bpy.data.images if image.packed_file],
+            "studio_unchanged":True,"studio_sha256":hashlib.sha256(json.dumps(original_studio,sort_keys=True).encode()).hexdigest(),
             "visor":{"object":glass.name,"material":mat.name,"object_mask_id":glass.pass_index,
                      "material_mask_id":mat.pass_index,"material_users":users,
                      "roughness":bsdf.inputs["Roughness"].default_value,"coat_weight":bsdf.inputs["Coat Weight"].default_value,
