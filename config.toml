@@ -1676,6 +1676,25 @@ normal_map = true       # false = the mesh's own smooth normals
 normal_strength = 1.0   # 0 = no tilt .. 1 = the map as baked
 blob_shadow = true      # the round dark disc under each unit; false = none
 
+[render.muzzle_flash]
+# A bullet's muzzle flash (#33): a short omni lamp on the first cell outside
+# the shooter's footprint along the shot, through the sweep like every other
+# light (renderer/frame_lights.py muzzle_flash_lights; render state, never sim
+# state, no digest). One flash per shooter per shot, however many bullets the
+# burst carries. Read every frame, so F5 retunes it live.
+intensity = 12.0        # peak, in light units (a flashlight is 2.5, but aimed:
+                        # an omni lamp spreads over all 16 directions). 0 = no
+                        # flash. In the playground at 0.333 m tiles: 6 lit only
+                        # the shooter's hands; 12 throws a warm pool ~2 m
+                        # round the muzzle and catches the shooter's armour
+                        # without whiting out the floor; 24 lit half the room.
+                        # Four marines firing together at 12 = 48 light units,
+                        # inside the volley cap (64, MUZZLE_FLASH_MAX_TOTAL).
+duration_s = 0.1        # fades linearly to dark in this long (wall clock):
+                        # ~2-3 sim ticks at 24 tps -- a pop, never a lamp. The
+                        # tracer it rides lives 0.18 s, so longer is cut there
+color = [1.0, 0.82, 0.55]   # warm white, a little yellower than the flashlight
+
 [render.unit_shadow]
 # The 3D units' SHARP projected shadows (#33, tier 1;
 # renderer/unit_shadow.py): each unit's posed model drawn once more, flattened

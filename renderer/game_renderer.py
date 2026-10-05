@@ -1158,7 +1158,7 @@ class GameRenderer:
                 rl.draw_circle(int(cx), int(cy), max(3.0, 0.55 * wpt), halo)
                 rl.draw_circle(int(cx), int(cy), max(1.5, 0.22 * wpt), core)
 
-    def transient_light_specs(self) -> list:
+    def transient_light_specs(self, footprint_of=None) -> list:
         """Light sources implied by the LIVE jet/glow effects (W6) — the
         'transient light emitter' half of the spray/plasma visuals.
 
@@ -1171,6 +1171,13 @@ class GameRenderer:
         from ~1/3 down the cone axis in warm orange; a miasma jet barely
         glows (faint sickly green); a plasma bolt carries a small warm
         light with it. Intensities fade with the effect's remaining life.
+
+        #33: a bullet's MUZZLE FLASH rides the same queue -- a fresh
+        ``"tracer"`` that left the barrel lights a short warm lamp just outside
+        its shooter's footprint (``frame_lights.muzzle_flash_lights``, the pure
+        part, with ``[render.muzzle_flash]`` read here every call so F5 retunes
+        it). ``footprint_of(unit_id)`` gives a shooter's footprint in tiles;
+        None = no muzzle flashes (a caller without the sim).
         """
         import math as _m
         specs = []
@@ -1207,6 +1214,10 @@ class GameRenderer:
                     "intensity": 1.2 * alpha,
                     "color": (1.0, 0.65, 0.35),
                 })
+        if footprint_of is not None:
+            from . import frame_lights as _fl
+            specs += _fl.muzzle_flash_lights(
+                self._effects, _fl.muzzle_flash_settings(CFG), footprint_of)
         return specs
 
     def consume_events(self, events: Sequence) -> None:
@@ -1233,6 +1244,10 @@ class GameRenderer:
                     "kind": "tracer",
                     "from": ev.from_tile,
                     "to": ev.to_tile,
+                    "unit": ev.unit_id,
+                    "launch": bool(getattr(ev, "launch", True)),
+                    # not aged on the frame it is born (see _advance_effects)
+                    "fresh": True,
                     "t": 0.0,
                     "life": 0.18,    # ~5 frames @ 30 FPS
                 })
@@ -1282,8 +1297,17 @@ class GameRenderer:
                 pass
 
     def _advance_effects(self, dt: float) -> None:
-        """Tick effect lifetimes; drop expired entries."""
+        """Tick effect lifetimes; drop expired entries.
+
+        An effect marked ``fresh`` (a tracer, #33) is not aged on the frame it
+        was born: events are consumed AFTER this frame's sim ticks assembled
+        their lights, so aging it now would let a slow frame (dt > the muzzle
+        flash's duration) expire the flash before any tick ever lit it. It is
+        aged from the next frame on, after the next ticks have seen it at t=0.
+        """
         for fx in self._effects:
+            if fx.pop("fresh", False):
+                continue
             fx["t"] += dt
         self._effects = [fx for fx in self._effects if fx["t"] < fx["life"]]
 
