@@ -58,11 +58,15 @@ def camera_setup(scene,name):
     scene.camera=camera
 
 
-def render_pair(prefix):
-    scene=bpy.context.scene
+def review_render_settings(scene):
     scene.render.resolution_x=1000;scene.render.resolution_y=1400
     scene.render.resolution_percentage=100;scene.cycles.samples=96
     scene.cycles.use_denoising=True
+
+
+def render_pair(prefix):
+    scene=bpy.context.scene
+    review_render_settings(scene)
     for name in ("front","side"):
         camera_setup(scene,name)
         scene.render.filepath=str(HERE/(prefix+"_"+name+".png"))
@@ -154,7 +158,9 @@ def main():
              "baseline_source_sha256":baseline["source/space_marine.blend"],
              "seams_follow_applied_surface":True,"visual_verdict":"pending inspection"}
     (HERE/(prefix+"_metrics.json")).write_text(json.dumps(metrics,indent=2)+"\n",encoding="utf-8")
-    camera_setup(scene,"front")
+    # Store both comparison cameras and render settings in the editable study too.
+    review_render_settings(scene)
+    camera_setup(scene,"side");camera_setup(scene,"front")
     for screen in bpy.data.screens:
         for area in screen.areas:
             if area.type=="VIEW_3D":

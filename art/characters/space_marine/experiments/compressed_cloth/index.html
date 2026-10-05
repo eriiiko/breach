@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Compressed sleeve comparison</title>
+<style>
+body{background:#edeae3;color:#22292a;font:17px/1.5 system-ui,sans-serif;max-width:1600px;margin:30px auto;padding:0 20px}
+a{color:#215574}table{width:100%;table-layout:fixed;border-collapse:collapse}th,td{padding:9px;text-align:left;vertical-align:top}img{display:block;width:100%;height:auto}h1{font-size:28px}small{font-size:14px}
+</style>
+<h1>One sleeve: baseline and two bounded candidates</h1>
+<p>Actual Blender renders at equal framing, illumination and ivory fabric shader settings. The accepted character remains unchanged. <strong>Both candidates are rejected for rollout, agreed by implementation and parent visual review.</strong> Full conditions and limitations: <a href="README.md">study record</a>.</p>
+<p><a href="comparison.png">Labelled comparison sheet</a> · <a href="../../../Space%20Marine%20Turnaround%20Sheet.png">supplied reference</a> · <a href="../../previews/index.html">accepted character gallery</a> · <a href="reopened_validation.json">reopened validation</a></p>
+<table>
+<tr><th>Accepted cleanup baseline</th><th>Candidate 1: broad compression</th><th>Candidate 2: localized compression</th></tr>
+<tr><td><a href="baseline_front.png"><img src="baseline_front.png" alt="Accepted right arm, front"></a></td><td><a href="candidate_1_front.png"><img src="candidate_1_front.png" alt="Candidate 1, front"></a></td><td><a href="candidate_2_front.png"><img src="candidate_2_front.png" alt="Candidate 2, front"></a></td></tr>
+<tr><td><a href="baseline_side.png"><img src="baseline_side.png" alt="Accepted right arm, side"></a></td><td><a href="candidate_1_side.png"><img src="candidate_1_side.png" alt="Candidate 1, side"></a></td><td><a href="candidate_2_side.png"><img src="candidate_2_side.png" alt="Candidate 2, side"></a></td></tr>
+<tr><td><a href="../../source/space_marine.blend">Accepted source</a><br><small>a298b68. Long diagonal creases remain a known style limitation.</small></td><td><a href="candidate_1.blend">Applied study source</a> · <a href="candidate_1_metrics.json">metrics</a><br><small>Natural folds, but broad/sparse; smooth elbow flex and exposed cuff binding.</small></td><td><a href="candidate_2.blend">Applied study source</a> · <a href="candidate_2_metrics.json">metrics</a><br><small>Elbow and cuff improved; dense crumpling loses the padded EVA appearance. No rollout.</small></td></tr>
+</table>
+</html>
