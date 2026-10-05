@@ -1,0 +1,34 @@
+{
+  "candidate": 1,
+  "parameters": {
+    "compression": 0.13,
+    "bending": 0.045,
+    "pressure": 0.6
+  },
+  "simulation_frames": 42,
+  "solver_quality": 10,
+  "pressure_factor": 0.5,
+  "source_vertices": 36994,
+  "source_triangles": 73984,
+  "max_pinned_endpoint_error_metres": 0.0,
+  "finite_geometry": true,
+  "bounds_min_local_metres": [
+    0.18360646069049835,
+    -0.08850427716970444,
+    0.9582068920135498
+  ],
+  "bounds_max_local_metres": [
+    0.5309573411941528,
+    0.0862416923046112,
+    1.5447746515274048
+  ],
+  "live_cloth_modifiers": 0,
+  "shape_keys_on_baked_candidate": false,
+  "materials": [
+    "Charcoal flex textile",
+    "Warm woven pressure fabric"
+  ],
+  "baseline_source_sha256": "75b74ff12e5d8073ca8e10253c57d21b8a5de31b28390773244f64db3c3140e9",
+  "seams_follow_applied_surface": true,
+  "visual_verdict": "Reject for whole-sleeve rollout; retain as a study. Ivory folds are more natural and avoid sampled cord ridges, but are too broad and sparse, elbow flex is overly smooth, and an ivory cuff interior is visible in the side view."
+}

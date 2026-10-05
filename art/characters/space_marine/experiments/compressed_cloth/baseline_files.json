@@ -1,0 +1,19 @@
+{
+  "baseline_commit": "a298b68",
+  "files": {
+    "source/space_marine.blend": "75b74ff12e5d8073ca8e10253c57d21b8a5de31b28390773244f64db3c3140e9",
+    "source/model_stats.json": "1813c59a9548b091bdc534d5149865edc9517c360aa54a0c63d5be70ba3c8987",
+    "source/validation.json": "093e2978e8264b8049f622f0340ded63fcda63e54b11a24a98afa1c132e60d2f",
+    "README.md": "a6baab63057867bfa48092ce78a2de5c8c9b7195806d2565e0b39c50f20a0867",
+    "previews/index.html": "6f17dc35e444528c85f0c57d54a314d1125d0cd0c91a1f36b8e7fc882ed19441",
+    "previews/render_manifest.json": "1442b6aa00748fb0922e64ef176b4e566aa2173e6f768ca2f8a1dfedac580dad",
+    "previews/front.png": "a4df1cd6903e5d313544ff4dabf3b05c14c851d91ca4d960dddd75821a3cc29f",
+    "previews/side.png": "4192349e87b970ebcb69159196495a875764e059156af15ff7e2bc0728f605c6",
+    "previews/back.png": "9b877897c343be6fe2462e348b2095c56b6036b9bd2cac393bd38a08c02812e5",
+    "previews/hero.png": "0339a0ac269aada3fcf264ab6f52ce3158c8270b90065cff6869a0c691173143",
+    "previews/closeup.png": "eb8e7cd3017d700eb37167801ea836e95f7b8320f70c401844cc6c08c2255384",
+    "previews/elevated.png": "8b0cea490fcecb241774f992fc612e043be23760004e5883de4c83c394d87143",
+    "previews/details.png": "c1073a1827fd301acd0f135adc46379567b576af82195656d0307e1579674716",
+    "previews/contact_sheet.png": "7c84afe9c2a1bae2b05ebd52124ebf82dac1954c9777104a3dafaf7cfbcc1a48"
+  }
+}

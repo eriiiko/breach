@@ -16,7 +16,8 @@ def interpolate_profile(profiles,z):
     return list(profiles[0 if z<profiles[0][0] else -1][1:])
 
 
-def compressed_limb(author,name,profiles,cloth_ranges,side=1,compression=.13,sides=64):
+def compressed_limb(author,name,profiles,cloth_ranges,side=1,compression=.13,sides=64,
+                    bending=.045,pressure=.6):
     """Create one closed mesh with pinned black flex areas and cream cloth panels."""
     zmin,zmax=profiles[0][0],profiles[-1][0]
     heights={zmin,zmax}
@@ -69,13 +70,14 @@ def compressed_limb(author,name,profiles,cloth_ranges,side=1,compression=.13,sid
     settings=mod.settings
     settings.quality=10;settings.mass=.20;settings.air_damping=4
     settings.tension_stiffness=25;settings.compression_stiffness=25;settings.shear_stiffness=12
-    settings.bending_stiffness=.045;settings.bending_damping=.8
+    settings.bending_stiffness=bending;settings.bending_damping=.8
     settings.vertex_group_mass=group.name;settings.pin_stiffness=1
     settings.rest_shape_key=basis
-    settings.use_pressure=True;settings.uniform_pressure_force=.6;settings.pressure_factor=.5
+    settings.use_pressure=True;settings.uniform_pressure_force=pressure;settings.pressure_factor=.5
     mod.collision_settings.use_collision=False;mod.collision_settings.use_self_collision=False
     mod.point_cache.frame_start=1;mod.point_cache.frame_end=42
-    return obj,{"zs":zs,"sides":sides,"cloth_ranges":cloth_ranges,"final":final}
+    return obj,{"zs":zs,"sides":sides,"cloth_ranges":cloth_ranges,"final":final,
+                "pin_indices":pin,"compression":compression,"bending":bending,"pressure":pressure}
 
 
 def bake_compressed_cloth(objects,end=42):
@@ -92,7 +94,7 @@ def bake_compressed_cloth(objects,end=42):
         mesh.name=obj.name+" / applied cloth surface"
         obj.modifiers.clear();obj.data=mesh;obj.animation_data_clear()
         for face in mesh.polygons:face.use_smooth=True
-        obj["authoring_method"]="Pinned pressure cloth compressed 13 percent, applied as editable mesh"
+        obj["authoring_method"]="Pinned pressure cloth, applied as editable mesh; parameters in study metrics"
     scene.frame_set(1);scene.gravity=(0,0,-9.81)
 
 
