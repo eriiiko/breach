@@ -20,6 +20,10 @@ Inspect reference with view_image, build, render, inspect, revise. Save a checkp
 
 ## Systems
 
+### 2026-10-05 naming and coexistence requirement
+
+Erik explicitly wants BOTH this model and Claude's version retained when merging. This asset's display name is **Space Marine (Codex)** and its merge destination is `art/characters/space_marine_codex/`. Preserve Claude's existing `art/characters/space_marine_claude/` asset and any existing runtime marine. Before merge, rename this branch's current `art/characters/space_marine/` folder to the Codex destination, update its internal documentation/gallery/script paths and display labels, and verify source loading, reproduction paths and gallery links. Any later game export must also use a distinct Codex asset identifier; never overwrite or replace Claude's asset or the canonical rig. The current reviewed source and links remain at their existing location until that merge-preparation step. This instruction does not authorize merging now.
+
 ### 2026-10-04 authorized continuation and bounded checkpoints
 
 Erik accepts the cleanup recommendation and prioritizes visual quality. Preserve the approximately 1.25-million-triangle high-detail source; no decimation, UV/game preparation or rigging in this pass. His existing Claude concept-art and game-preparation workflows are already proven and are not work to recreate. Glass/visor must be independently selectable and adjustable for gloss.
