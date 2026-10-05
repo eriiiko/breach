@@ -1,0 +1,5 @@
+*.blend1
+*.blend2
+*.log
+__pycache__/
+previews/draft_*.png
