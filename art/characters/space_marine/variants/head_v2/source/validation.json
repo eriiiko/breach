@@ -1,0 +1,36 @@
+{
+  "source": "space_marine_codex_head_v2.blend",
+  "source_sha256": "dc3c6b0be0becf2c123df7858da6aa5bccee5b1a6185e353d6d031d021afc0ff",
+  "approved_snapshot_sha256": "75b74ff12e5d8073ca8e10253c57d21b8a5de31b28390773244f64db3c3140e9",
+  "preserved_original_files": 18,
+  "unchanged_non_head_objects": 415,
+  "unchanged_non_head_materials": 12,
+  "evaluated_vertices": 713851,
+  "evaluated_triangles": 1420290,
+  "character_objects": 463,
+  "degenerate_triangles_below_1e_12_square_metres": 234,
+  "bounds_min": [
+    -0.5413094162940979,
+    -0.19292861223220825,
+    0.0
+  ],
+  "bounds_max": [
+    0.5413379073143005,
+    0.30550000071525574,
+    1.8790000677108765
+  ],
+  "missing_images": [],
+  "live_cloth": [],
+  "visor": {
+    "object": "VISOR GLASS / convex optical shield",
+    "material": "VISOR GLASS / olive optical coating",
+    "object_mask_id": 1,
+    "material_mask_id": 1,
+    "material_users": [
+      "VISOR GLASS / convex optical shield"
+    ],
+    "roughness": 0.14000000059604645,
+    "coat_weight": 0.5199999809265137,
+    "coat_roughness": 0.06499999761581421
+  }
+}
