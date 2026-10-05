@@ -85,7 +85,8 @@ def run(root, name, worker, sheet_ref, builder=None):
         panels = sheet_ref.SHEET.render(rig, cam, floor, previews, prefix + "sheet")
         sheet_ref.SHEET.compare(panels, previews, prefix + "sheet", verbose=not args.quiet)
     if args.turn:
-        studio.turnaround(rig, cam, floor, previews, worker.HEIGHT, tag=prefix + "turnaround")
+        # a character taller than its stature (a plumed shako) frames on its TURN_HEIGHT
+        studio.turnaround(rig, cam, floor, previews, getattr(worker, "TURN_HEIGHT", worker.HEIGHT), tag=prefix + "turnaround")
     names = list(worker.BEAUTY) if args.beauty == "all" else [n for n in args.beauty.split(",") if n]
     for n in names:
         view = worker.BEAUTY.get(n)

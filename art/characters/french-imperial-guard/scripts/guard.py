@@ -22,6 +22,7 @@ for the body and set-in sleeves, `dresswear`, `braid`, `fur`, `shako`, `parts`) 
 Faces -Y, +X is his LEFT; heights in metres from the soles.
 """
 HEIGHT = 1.80
+TURN_HEIGHT = 2.08  # the turnaround's framing: the plumes stand to 2.2 m
 
 # ---------------------------------------------------------------------- palette
 PALETTE = dict(
@@ -124,12 +125,12 @@ DIMS = dict(
         # a slim rounded toe; the heel end stays inside the shaft, which forms the heel (ONE
         # leather piece: only the vamp and toe come out of it, at the instep's crease)
         profile=((-0.228, .005, .010), (-0.220, .020, .022), (-0.204, .031, .031), (-0.178, .038, .040), (-0.140, .042, .050),
-                 (-0.100, .042, .060), (-0.060, .040, .072), (-0.030, .038, .078), (0.000, .036, .070), (0.030, .034, .060),
+                 (-0.100, .042, .064), (-0.060, .040, .080), (-0.030, .038, .088), (0.000, .036, .070), (0.030, .034, .060),
                  (0.050, .030, .050), (0.062, .022, .040), (0.070, .012, .026), (0.073, .004, .016)),
         # the shaft, heel -> top: (z, centre x, centre y, half-width, front, back): wide at the
         # heel (it carries the heel counter round the foot's back), narrowest at the ankle,
         # the calf, the top
-        shaft=((0.034, .122, .048, .050, .050, .064), (0.075, .124, .043, .045, .050, .057), (0.120, .125, .036, .039, .047, .046),
+        shaft=((0.034, .122, .046, .050, .050, .058), (0.075, .124, .043, .045, .050, .057), (0.120, .125, .036, .039, .047, .046),
                (0.170, .126, .034, .048, .054, .056), (0.240, .127, .034, .058, .058, .072), (0.320, .128, .030, .066, .068, .084),
                (0.390, .128, .026, .074, .081, .083), (0.470, .128, .022, .079, .088, .082)),
         creases=dict(z=(0.085, 0.175), n=3, h=0.0022),
@@ -162,7 +163,7 @@ DIMS = dict(
         sash_cords=dict(hang=(-0.150, 1.080), ring=(-0.205, 1.035), tassels=((-0.110, 0.955), (-0.090, 0.950)), r=0.0035,
                         tassel=dict(length=0.062, r_head=0.008, r_skirt=0.013)),
         stripe=dict(gap=0.006),        # the breeches' double outer stripe, either side of the outer seam
-        knot=dict(x=0.100, top=1.045, height=0.190, width=0.075),
+        knot=dict(x=0.100, top=1.045, height=0.190, width=0.080, double=0.0035),
         seat=dict(curve=((0.040, 1.040), (0.105, 1.010), (0.160, 0.960), (0.185, 0.905)), knot=0.010),
     ),
     pelisse=dict(
@@ -182,7 +183,7 @@ DIMS = dict(
         # its hem the dolman's own hem flares out, so the pelisse rises with it
         # (the back's folds are shallower: it lies closer there); round the neck it closes in
         # under the fur collar
-        clear=dict(body=0.0300, back=0.0260, back_top=0.0180, arm=0.0340, hem=0.0340, hem_z=1.120, top=0.014, top_z=(1.480, 1.525)), thick=0.016,
+        clear=dict(body=0.0300, back=0.0340, back_top=0.0200, arm=0.0370, hem=0.0340, hem_z=1.120, top=0.014, top_z=(1.480, 1.525)), thick=0.018,
         hang_z=1.330,                   # below the chest it hangs plumb from it (front and back)
         # the smooth union's fillet (m): small over the shoulder, wide where the pelisse hangs
         # across the gap between the arm and the side (below the armpit)
@@ -196,10 +197,10 @@ DIMS = dict(
         hem_back=((-0.20, 1.062), (0.10, 1.062), (0.20, 1.085), (0.27, 1.125), (0.40, 1.135)),
         hem_front=((0.10, 1.100), (0.17, 1.100), (0.24, 1.118), (0.30, 1.135), (0.40, 1.140)),
         # fur: one roll round the whole edge, radius / flattening per stretch
-        fur=dict(collar=(0.031, 0.92), edge=(0.030, 0.70), hem=(0.022, 0.72),
+        fur=dict(collar=(0.033, 0.92), edge=(0.030, 0.70), diag=(0.025, 0.62), hem=(0.022, 0.72),
                  # the collar is a round roll hugging the neck, round its back and left side:
                  # its centre `ring` (m from the neck's axis) at height `z`
-                 ring=0.100, z=1.560),
+                 ring=0.099, z=1.568),
         drape=dict(amp=0.0035, n=9, rise=0.16),     # shallow vertical folds where it hangs free, near the hem
         frogs=dict(z0=1.200, z1=1.465, n=12, x1=0.238, loop=0.009),
         # the two empty sleeves (a slung pelisse has both sleeves empty), each hanging out from
@@ -210,9 +211,9 @@ DIMS = dict(
         # sleeve behind the hip with its fur cuff at the hand's level). Centre line top ->
         # bottom, half-width along `wide` / half-depth, the fur cuff (length up from the end),
         # `face` = the broad side the chevrons are on.
-        sleeves=(dict(name="L", path=((0.352, 0.048, 1.150), (0.384, 0.060, 1.060), (0.390, 0.072, 0.975), (0.396, 0.070, 0.900)),
+        sleeves=(dict(name="L", path=((0.360, 0.048, 1.150), (0.412, 0.060, 1.070), (0.410, 0.070, 0.990), (0.400, 0.070, 0.915)),
                       a=0.068, b=0.013, wide=(0.80, -0.60, 0.0), face=(0.60, 0.80, 0.0), cuff=0.070),
-                 dict(name="R", path=((0.205, 0.088, 1.140), (0.230, 0.128, 1.045), (0.236, 0.163, 0.955), (0.242, 0.170, 0.885)),
+                 dict(name="R", path=((0.205, 0.100, 1.140), (0.228, 0.148, 1.045), (0.236, 0.176, 0.955), (0.240, 0.182, 0.885)),
                       a=0.070, b=0.013, wide=(0.92, -0.40, 0.0), face=(0.40, 0.92, 0.0), cuff=0.072)),
     ),
     shako=dict(
@@ -221,11 +222,12 @@ DIMS = dict(
         tilt=6.0, band=(0.026, 0.002),
         # the peak: over the eyes only, ending at the temples, angled down ~22 deg, a gold edge
         peak=dict(length=0.064, droop=0.024, droop_exp=1.15, span=54.0, shape=0.35, thick=0.004, edge=0.0021),
-        plate=dict(dz=0.105, hs=0.034, ht=0.046, lift=0.003),
+        plate=dict(dz=0.105, hs=0.031, ht=0.044, lift=0.003, n=2.2, dome=0.0015, eagle=True),   # a shaped plate with a raised eagle
         cockade=dict(dz=0.014, r=0.016, rim=0.004),
-        cords=dict(r=0.0045, front=(0.040, 0.140), back=(0.040, 0.120)),
+        cords=dict(r=0.0045, front=(0.040, 0.140), back=(0.040, 0.120), festoons=((0.030, 0.062),)),   # a heavy lower swag and a high one
+        welt=0.0050,
         tassel=dict(side=-1, dz=0.050, x=0.124, y=-0.030, drop=0.185, length=0.085, r_head=0.010, r_skirt=0.017),
-        chain=dict(dz=0.008, r=0.0075, flat=0.35, lift=0.010, path_z=(1.660, 1.605), path_y=(-0.050, -0.088), chin=(0.0, -0.122, 1.558)),
+        chain=dict(dz=0.008, r=0.0080, flat=0.30, lift=0.0045, path_z=(1.660, 1.605), path_y=(-0.050, -0.088), chin=(0.0, -0.118, 1.560), boss=0.011, scales=46),
     ),
 )
 
@@ -242,7 +244,7 @@ HEAD = dict(
     eye_z=1.683, nose_z=1.643, mouth_z=1.611, chin_z=1.575,
     jaw=(-0.123, 1.567, 0.007, 1.619, 0.010),
     nose_proj=0.028, eye_dx=0.032, eye_r=0.0120, eye_sink=0.0005,
-    ear=dict(z=1.633, y=-0.015, h=0.066, w=0.033, tilt=14.0, flare=44.0, sink=0.002),
+    ear=dict(z=1.633, y=-0.015, h=0.064, w=0.031, tilt=14.0, flare=28.0, sink=0.003),   # lying flatter to the head
     stubble=0.25,
     brow=dict(gain=2.6),
     # the moustache: a full one over the upper lip, drooping a little at the ends: (x, dz from
@@ -254,9 +256,10 @@ HEAD = dict(
 HAIR = dict(
     # hairline height round the head: (phi deg, z); 90 = front, 0 / 180 = sides, 270 = back.
     # Short at the back and sides under the shako, sideburns down to the ear's middle.
-    line=((90, 1.737), (115, 1.749), (140, 1.727), (160, 1.640), (172, 1.645), (180, 1.690), (205, 1.660), (240, 1.625),
-          (270, 1.612), (300, 1.625), (335, 1.660), (0, 1.690), (8, 1.645), (20, 1.640), (40, 1.727), (65, 1.749)),
-    thick=(0.003, 0.010), thick_z=(1.700, 1.760), crown_z=1.801, tufts=600, tuft_h=(0.0012, 0.0030), tuft_size=(0.005, 0.011), fade=0.006,
+    # sideburns down to the jaw line in front of the ears; a soft, low nape
+    line=((90, 1.737), (115, 1.749), (140, 1.727), (157, 1.598), (170, 1.612), (180, 1.690), (205, 1.655), (240, 1.612),
+          (270, 1.598), (300, 1.612), (335, 1.655), (0, 1.690), (10, 1.612), (23, 1.598), (40, 1.727), (65, 1.749)),
+    thick=(0.003, 0.010), thick_z=(1.700, 1.760), crown_z=1.801, tufts=700, tuft_h=(0.0012, 0.0030), tuft_size=(0.005, 0.011), fade=0.016,
 )
 
 # Beauty views: (rig azimuth, camera azimuth, elevation, distance, target height, lens mm, resolution)

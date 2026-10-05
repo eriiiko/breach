@@ -127,10 +127,25 @@ def dolman_lace(F):
     return f
 
 
+def offset_lines(lines, d):
+    """Each (x, z) polyline doubled: two copies `d` either side along its own normal (0: as is)."""
+    if not d:
+        return lines
+    out = []
+    for l in lines:
+        l = np.asarray(l, float)
+        T = np.gradient(l, axis=0)
+        T = T / np.maximum(np.linalg.norm(T, axis=1, keepdims=True), 1e-12)
+        Nn = np.column_stack([-T[:, 1], T[:, 0]])
+        out += [l + d * Nn, l - d * Nn]
+    return out
+
+
 def breeches_lace(F, B):
     g = F.d["garment"]
     kn = g["knot"]
-    knot = braid.hungarian_knot((kn["x"], kn["top"]), kn["height"], kn["width"])
+    # the Hungarian knot in heavy braid: each line doubled, two cords side by side
+    knot = offset_lines(braid.hungarian_knot((kn["x"], kn["top"]), kn["height"], kn["width"]), kn.get("double", 0.0))
     se = g["seat"]
     seat = [smooth_path([[x, 0.0, z] for x, z in se["curve"]], 30)[:, [0, 2]]]
     seat += braid.trefoil(se["curve"][0], se["knot"], up=-1.0)
@@ -155,9 +170,9 @@ def build_body(F, M, coll="Uniform"):
     z_hem, z_btop = g["dolman_hem"], g["breeches_top"]
     kz = 0.50
     # breeches: knee and seat folds over a faint crumple (a tight-fitting cut)
+    # tight cloth: knee and groin folds only, no all-over crumple
     ff_b = fold_field(fold_set(rng, 6, (bz(kz - 0.04), bz(kz + 0.06)), (D(215), D(325)), (0.0, 0.25), (0.03, 0.06), (0.004, 0.007), (0.0015, 0.003))
-                      + fold_set(rng, 5, (bz(0.75), bz(0.84)), (D(40), D(140)), (-0.4, 0.3), (0.04, 0.08), (0.006, 0.010), (0.0015, 0.003))
-                      + crumple_set(rng, 160, (0.0, bz(z_btop))))
+                      + fold_set(rng, 5, (bz(0.75), bz(0.84)), (D(40), D(140)), (-0.4, 0.3), (0.04, 0.08), (0.006, 0.010), (0.0015, 0.003)))
     breeches = loft_mesh("Breeches", B, t0=0.0, t1=bz(z_btop), res=kit.RES * 0.85, mat=M["breeches"], coll=coll,
                          disp=lambda gr: 0.5 * ff_b(gr), attrs=dict(braid=breeches_lace(F, B)), **CLAMP_SNAP)
     mirror(solid(breeches, g["cloth"], bevel=0.0), merge=True)
@@ -413,8 +428,8 @@ class PelisseSurface:
         c, bl = self.pd["clear"], self.pd["blend"]
         z = Q[:, 2]
         cback = c.get("back", c["body"])
-        if "back_top" in c:  # the upper back, under the diagonal fur, lies closest
-            cback = cback + (c["back_top"] - cback) * np.clip((z - 1.38) / 0.08, 0.0, 1.0)
+        if "back_top" in c:  # the upper back, under the diagonal fur, lies closest; lower, it hangs
+            cback = cback + (c["back_top"] - cback) * np.clip((z - 1.30) / 0.14, 0.0, 1.0)
         cb = c["body"] + (cback - c["body"]) * np.clip((Q[:, 1] - 0.02) / 0.06, 0.0, 1.0)
         cb = cb + (c["hem"] - cb) * np.clip((c["hem_z"] - z) / 0.06, 0.0, 1.0)
         if "top" in c:
@@ -524,7 +539,7 @@ def build_pelisse(F, M, coll="Pelisse"):
     segs = [(lin_ * 0.0, lin_, "hem"),                    # u = 0, v 0 -> 1
             (lin_, np.ones(n), "edge"),                  # v = 1, u 0 -> 1 (the front edge)
             (np.ones(n), 1.0 - lin_, "collar"),          # u = 1, v 1 -> 0 (round the neck)
-            (1.0 - lin_, np.zeros(n), "edge")]           # v = 0, u 1 -> 0 (the back diagonal)
+            (1.0 - lin_, np.zeros(n), "diag")]           # v = 0, u 1 -> 0 (the back diagonal)
     U = np.concatenate([s[0] for s in segs])
     V = np.concatenate([s[1] for s in segs])
     kind = sum([[s[2]] * n for s in segs], [])

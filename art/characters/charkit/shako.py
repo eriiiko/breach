@@ -15,11 +15,15 @@ spec keys:
   band     (height, lift): the top band, `height` down from the top edge
   peak     dict(length, droop, span deg, thick; optional droop_exp (the droop's curve, 1.6),
            shape (the outline's exponent, 0.5 = an ellipse), edge (r of a gold edge cord))
-  plate    dict(dz from the top, hs, ht, point, lift)
+  plate    dict(dz from the top, hs, ht, point, lift; optional n, dome, eagle: a simple raised
+           eagle on it -- body, head, spread wings, tail -- as low gilt plates)
   cockade  dict(dz from the top, r, rim)
-  cords    dict(r, front=(dz top at the sides, dz bottom at the centre), back=(...))
+  cords    dict(r, front=(dz top at the sides, dz bottom at the centre), back=(...); optional
+           festoons: more front festoons as (dz top, dz bottom) pairs)
+  welt     optional r: a gold cord round the crown's rim (a ring framing the top)
   tassel   dict(side +1 his left / -1 his right, dz from the top, x, y, drop, length, r_head, r_skirt)
-  chain    dict(dz at the shako, r, flat, ear_y, chin)  (chin_chain)
+  chain    dict(dz at the shako, r, flat, ear_y, chin; optional boss: the radius of a round boss
+           at each side the scales hang from)  (chin_chain)
 mats: body, gold (cords, band), metal (plate, chain), peak, cockade.
 """
 import math
@@ -68,8 +72,16 @@ def shako(prefix, spec, mats, coll="Shako"):
     # front plate and cockade
     pl = spec["plate"]
     t_pl = L - pl["dz"]
-    objs.append(kit.plate(prefix + "_Plate", OnLoft(lo, D(90), t_pl), pl["hs"], pl["ht"], n=2.6, offset=pl["lift"], thick=0.003, dome=0.004,
+    an_pl = OnLoft(lo, D(90), t_pl)
+    objs.append(kit.plate(prefix + "_Plate", an_pl, pl["hs"], pl["ht"], n=pl.get("n", 2.6), offset=pl["lift"], thick=0.003, dome=pl.get("dome", 0.004),
                           mat=mats["metal"], coll=coll))
+    if pl.get("eagle"):  # a simple raised eagle: body, head, two spread wings, a tail
+        top = pl["lift"] + pl.get("dome", 0.004) + 0.0012
+        for nm, hs, ht, rot, sh, dome in (("Body", 0.0085, 0.017, 0.0, (0.0, 0.000), 0.0035), ("Head", 0.0055, 0.0060, 0.0, (0.0, 0.022), 0.0025),
+                                          ("Wing_L", 0.017, 0.0075, 0.55, (0.014, 0.010), 0.0020), ("Wing_R", 0.017, 0.0075, -0.55, (-0.014, 0.010), 0.0020),
+                                          ("Tail", 0.0080, 0.0070, 0.0, (0.0, -0.019), 0.0015)):
+            objs.append(kit.plate(prefix + "_Eagle_" + nm, an_pl, hs, ht, n=2.2, offset=top + dome, thick=0.0025, dome=dome, rot=rot, shift=sh,
+                                  mat=mats["metal"], coll=coll))
     ck = spec["cockade"]
     an = OnLoft(lo, D(90), L - ck["dz"])
     objs.append(kit.plate(prefix + "_Cockade", an, ck["r"], ck["r"], n=2.0, offset=lift + 0.004, thick=0.003, dome=0.002, mat=mats["cockade"], coll=coll))
@@ -78,12 +90,18 @@ def shako(prefix, spec, mats, coll="Shako"):
     # cords: festoons across the front and the back, on the surface
     cd = spec["cords"]
     tz = lambda dz: L - dz
-    for side, (dz_top, dz_low), a0, a1 in (("Front", cd["front"], 0.0, math.pi), ("Back", cd["back"], math.pi, TAU)):
+    fest = [("Front", cd["front"], 0.0, math.pi), ("Back", cd["back"], math.pi, TAU)]
+    fest += [("Front_%d" % (i + 2), f, 0.0, math.pi) for i, f in enumerate(cd.get("festoons", ()))]
+    for side, (dz_top, dz_low), a0, a1 in fest:
         ph = np.linspace(a0 + 0.05, a1 - 0.05, 40)
         s = np.sin(np.linspace(0.0, math.pi, 40))
         t = tz(dz_top) + (tz(dz_low) - tz(dz_top)) * s ** 0.8
         P, _ = lo.pn(ph, t, cd["r"] + 0.0025)
         objs.append(braid.cord(prefix + "_Cord_" + side, P, r=cd["r"], mat=mats["gold"], coll=coll))
+    if spec.get("welt"):  # a gold cord round the crown's rim
+        al = np.linspace(0.0, TAU, 97)[:-1]
+        P, _ = lo.pn(al, np.full(len(al), L - 0.5 * spec["welt"]), 0.5 * spec["welt"])
+        objs.append(kit.tube(prefix + "_Welt", P, r=spec["welt"], closed=True, n_u=10, mat=mats["gold"], coll=coll))
     # the hanging cord and its tassel on one side
     ts = spec["tassel"]
     sg = ts["side"]
@@ -122,5 +140,10 @@ def chin_chain(prefix, shako_lo, head_loft, spec, mat, coll="Shako"):
     c = smooth_path(path, 70)
     radial = unit(c - np.array([0.0, c[:, 1].mean(), c[:, 2].mean()]))
     up = unit(np.cross(radial, np.gradient(c, axis=0)))  # across the strap: `flat` thins it towards the skin
-    return swept(prefix + "_Chin_Chain", c, ch["r"], n_u=10, flat=ch["flat"], up=up, mat=mat, coll=coll,
-                 disp=lambda u, al: 0.25 * ch["r"] * np.abs(np.sin(u * 60.0 * math.pi)))
+    out = swept(prefix + "_Chin_Chain", c, ch["r"], n_u=10, flat=ch["flat"], up=up, mat=mat, coll=coll,
+                disp=lambda u, al: 0.25 * ch["r"] * np.abs(np.sin(u * ch.get("scales", 60) * math.pi)))
+    if ch.get("boss"):  # round bosses at the shako's sides, where the scales hang from
+        Pb = np.array([pts[0][0], pts[1][0]])
+        Nb = unit(np.column_stack([Pb[:, 0], np.zeros(2), np.zeros(2)]))
+        kit.studs(prefix + "_Chin_Boss", Pb + Nb * 0.003, Nb, r=ch["boss"], flat=0.45, mat=mat, coll=coll)
+    return out
