@@ -275,84 +275,251 @@ def build_belt_and_sash(F, M, coll="Uniform"):
 
 
 # ---------------------------------------------------------------------- pelisse
-def build_pelisse(F, M, coll="Pelisse"):
-    pd = F.d["pelisse"]
-    lo = Loft([dict(p=(cx, cy, z), a=a, bf=bf, bb=bb, n=pd.get("n", 2.4), t=(0.0, 0.0, 1.0)) for z, cx, cy, a, bf, bb in pd["rings"]])
-    L = lo.L
-    ts = np.linspace(0.0, L, 240)
-    zc = lo.frames(ts)[0][:, 2]
-    tz = lambda z: np.interp(z, zc, ts)
-    bx_z, bx_x = zip(*pd["back_x"])
+def _smin(a, b, k):
+    """Smooth minimum (the union of two signed distances, filleted over `k`)."""
+    return -kit.smax(-a, -b, k)
 
-    def edge_phi(t, x, front):
-        ph = np.linspace(0.0, math.pi, 721) if front else np.linspace(math.pi, TAU, 721)
-        X = lo.pos(ph, np.full(len(ph), t))[:, 0]
-        o = np.argsort(X)
-        return float(np.interp(x, X[o], ph[o]))
 
-    phi_f = np.array([edge_phi(t, pd["front_x"], True) for t in ts])
-    phi_b = np.array([edge_phi(t, np.interp(z, bx_z, bx_x), False) for t, z in zip(ts, zc)])
-    pf = lambda t: np.interp(t, ts, phi_f)
-    pb = lambda t: np.interp(t, ts, phi_b)
-    hb, hf = pd["hem"]
-    t_mid = tz(0.5 * (hb + hf))
+class PelisseSurface:
+    """The slung pelisse's surface, derived from the surfaces it lies on.
 
-    def t_lo(v):
-        ph = pb(t_mid) + v * (pf(t_mid) + TAU - pb(t_mid))
-        return tz(hb + (hf - hb) * np.clip(np.sin(ph), 0.0, 1.0))
+    A carrier loft round the trunk and the left arm (`DIMS["pelisse"]["rings"]`) gives the
+    parametrisation: (u, v) over the unit square, u from the hem up to the neck, v round from
+    the edge across the back (0) by his left side to the front edge (1). Each carrier point is
+    carried in along the carrier's normal onto the zero set of
+        smin(sdf_trunk - clear_body, sdf_sleeve - clear_arm, blend)
+    -- the dolman's trunk and left sleeve, filleted over the shoulder and bridged below the
+    armpit where the pelisse hangs across from the side to the arm. So it lies ON the shoulder
+    and arm by construction, never beside them."""
 
-    t_of = lambda u, v: t_lo(v) + u * (L - t_lo(v))
+    def __init__(self, F, pd):
+        self.F, self.pd = F, pd
+        lo = self.lo = Loft([dict(p=(cx, cy, z), a=a, bf=bf, bb=bb, n=pd.get("n", 2.4), t=(0.0, 0.0, 1.0)) for z, cx, cy, a, bf, bb in pd["rings"]])
+        L = self.L = lo.L
+        ts = np.linspace(0.0, L, 240)
+        zc = lo.frames(ts)[0][:, 2]
+        self.tz = lambda z: np.interp(z, zc, ts)
 
-    def phi_of(u, v):
-        t = t_of(u, v)
-        return pb(t) + v * (pf(t) + TAU - pb(t))
+        def edge_phi(t, x, front):
+            ph = np.linspace(0.0, math.pi, 721) if front else np.linspace(math.pi, TAU, 721)
+            X = lo.pos(ph, np.full(len(ph), t))[:, 0]
+            o = np.argsort(X)
+            return float(np.interp(x, X[o], ph[o]))
 
+        fz, fx = zip(*pd["front_x"])
+        bz_, bx = zip(*pd["back_x"])
+        phi_f = np.array([edge_phi(t, np.interp(z, fz, fx), True) for t, z in zip(ts, zc)])
+        phi_b = np.array([edge_phi(t, np.interp(z, bz_, bx), False) for t, z in zip(ts, zc)])
+        self.pf = lambda t: np.interp(t, ts, phi_f)
+        self.pb = lambda t: np.interp(t, ts, phi_b)
+        # the hem: by the carrier point's world x at mid-height, on the back or the front half
+        t_mid = self.tz(1.12)
+        vv = np.linspace(0.0, 1.0, 400)
+        ph = self.pb(t_mid) + vv * (self.pf(t_mid) + TAU - self.pb(t_mid))
+        X = lo.pos(ph, np.full(len(ph), t_mid))[:, 0]
+        hbx, hbz = zip(*pd["hem_back"])
+        hfx, hfz = zip(*pd["hem_front"])
+        zb, zf = np.interp(X, hbx, hbz), np.interp(X, hfx, hfz)
+        w = np.clip(0.5 + 0.5 * np.sin(ph) / 0.35, 0.0, 1.0)  # 0 on the back, 1 on the front, blended round the side
+        self._hem_t = self.tz(zb + (zf - zb) * w)
+        self._vv = vv
+
+    def t_lo(self, v):
+        return np.interp(v, self._vv, self._hem_t)
+
+    def t_of(self, u, v):
+        return self.t_lo(v) + u * (self.L - self.t_lo(v))
+
+    def phi_of(self, u, v):
+        t = self.t_of(u, v)
+        return self.pb(t) + v * (self.pf(t) + TAU - self.pb(t))
+
+    # the field it lies on
+    def trunk_sdf(self, Q):
+        """Signed distance to the trunk loft, radially in its LEVEL section at each point's
+        height (the trunk's rings are level above the crotch); above the neck ring the vertical
+        distance joins in, so a point over the top is outside, not undefined."""
+        B = self.F.body
+        if not hasattr(self, "_tz_body"):
+            ts = np.linspace(0.0, B.L, 1500)
+            self._tz_body = (B.frames(ts)[0][:, 2], ts)
+        zs, ts = self._tz_body
+        z = Q[:, 2]
+        t = np.interp(z, zs, ts)
+        c, _, e1, e2, par = B.frames(t)
+        # below the chest the cloth hangs plumb from it: the front and back depths do not
+        # recede towards the waist under the pelisse
+        zh = self.pd.get("hang_z")
+        if zh is not None:
+            below = z < zh
+            if below.any():
+                par_h = B.frames(np.full(int(below.sum()), np.interp(zh, zs, ts)))[4]
+                par[below, 1:3] = np.maximum(par[below, 1:3], par_h[:, 1:3])
+        D = Q - c
+        x1, x2 = np.einsum("nk,nk->n", D, e1), np.einsum("nk,nk->n", D, e2)
+        rad = np.hypot(x1, x2) - Loft._polar(np.arctan2(x2, x1), par)[0]
+        over = np.maximum(z - zs[-1], 0.0)
+        return np.where(over > 0, np.hypot(np.maximum(rad, 0.0), over), rad)
+
+    def arm_sdf(self, Q):
+        out = np.ones(len(Q))
+        near = (Q[:, 0] > 0.10) & (Q[:, 2] > 0.85)
+        if near.any():
+            out[near] = kit.loft_sdf(self.F.arm, Q[near], m=300)
+        return out
+
+    def field(self, Q):
+        c, bl = self.pd["clear"], self.pd["blend"]
+        z = Q[:, 2]
+        cback = c.get("back", c["body"])
+        if "back_top" in c:  # the upper back, under the diagonal fur, lies closest
+            cback = cback + (c["back_top"] - cback) * np.clip((z - 1.38) / 0.08, 0.0, 1.0)
+        cb = c["body"] + (cback - c["body"]) * np.clip((Q[:, 1] - 0.02) / 0.06, 0.0, 1.0)
+        cb = cb + (c["hem"] - cb) * np.clip((c["hem_z"] - z) / 0.06, 0.0, 1.0)
+        if "top" in c:
+            z0, z1 = c["top_z"]
+            cb = cb + (c["top"] - cb) * np.clip((z - z0) / (z1 - z0), 0.0, 1.0)
+        k = bl["top"] + (bl["low"] - bl["top"]) * np.clip((bl["z"][0] - z) / (bl["z"][0] - bl["z"][1]), 0.0, 1.0)
+        return _smin(self.trunk_sdf(Q) - cb, self.arm_sdf(Q) - c["arm"], k)
+
+    def carry(self, P, N, iters=22):
+        """Distance s along -N from each carrier point to the pelisse's surface: damped sphere
+        tracing with a step limit (the distances are radial, not Euclidean, so a ray that runs
+        steeply down onto the shoulder sees them overstated)."""
+        P, N = P.reshape(-1, 3), N.reshape(-1, 3)
+        s = np.zeros(len(P))
+        for i in range(iters):
+            f = self.field(P - s[:, None] * N)
+            s = np.clip(s + np.clip(0.75 * f, -0.012, 0.012), -0.03, 0.22)
+        return s
+
+    def at(self, U, V):
+        """Points on the pelisse's surface at (u, v) arrays (flat), and their outward normals."""
+        U, V = np.ravel(U), np.ravel(V)
+
+        def pts(u, v):
+            Pc, Nc = self.lo.pn(self.phi_of(u, v), self.t_of(u, v))
+            return Pc - self.carry(Pc, Nc)[:, None] * Nc, Nc
+
+        P, Nc = pts(U, V)
+        h = 2e-3
+        du = pts(np.clip(U + h, 0, 1), V)[0] - pts(np.clip(U - h, 0, 1), V)[0]
+        dv = pts(U, np.clip(V + h, 0, 1))[0] - pts(U, np.clip(V - h, 0, 1))[0]
+        N = unit(np.cross(du, dv))
+        N = np.where((np.sum(N * Nc, axis=1) < 0)[:, None], -N, N)
+        return P, N
+
+
+def pelisse_lace(F, S):
+    """The pelisse's gold lace: its own frogging across the front panel (rows from the front
+    edge out over the shoulder, a loop at each end), and on its back panel the same piping as
+    the dolman's back (two curved side-back seams, a centre seam, trefoils), so the back reads
+    as one braided back on both sides of the diagonal fur."""
+    pd, g = F.d["pelisse"], F.d["garment"]
     fr = pd["frogs"]
-    x0 = pd["front_x"] + 0.016
+    fz, fx = zip(*pd["front_x"])
     rows = []
     for z in np.linspace(fr["z0"], fr["z1"], fr["n"]):
-        rows.append(np.array([[x0, z], [x0 + fr["w"], z]]))
+        x0 = float(np.interp(z, fz, fx)) + 0.020
+        rows.append(np.array([[x0, z], [fr["x1"], z]]))
         rows.append(braid.loop_end(x0, z, -1, fr["loop"] * 0.8))
-        rows.append(braid.loop_end(x0 + fr["w"], z, 1, fr["loop"]))
+        rows.append(braid.loop_end(fr["x1"], z, 1, fr["loop"]))
+    bk = g["back"]
+    curve = smooth_path([[x, 0.0, z] for x, z in bk["curve"]], 30)[:, [0, 2]]
+    back = [curve, np.array([[0.0, bk["centre"][0]], [0.0, bk["centre"][1]]])]
+    for x, z in (bk["curve"][0], bk["curve"][-1]):
+        back += braid.trefoil((x, z), bk["knot"], up=1.0 if z > 1.3 else -1.0)
+    back += braid.trefoil((0.0, bk["centre"][1]), bk["knot"], up=-1.0)
 
-    def lace(gr):
-        P = gr.P.reshape(-1, 3)
-        Q = np.column_stack([P[:, 0], P[:, 2]])
-        dd = np.where(P[:, 1] < -0.03, polyline_dist(Q, rows), 1.0)
-        return line_value(dd.reshape(gr.P.shape[:-1]))
+    def f(gr):
+        P, N = gr.Pp.reshape(-1, 3), gr.Np.reshape(-1, 3)
+        d = np.ones(len(P))
+        fr_ = N[:, 1] < -0.25
+        if fr_.any():
+            d[fr_] = polyline_dist(np.column_stack([P[fr_, 0], P[fr_, 2]]), rows)
+        bk_ = N[:, 1] > 0.25
+        if bk_.any():
+            d[bk_] = polyline_dist(np.column_stack([np.abs(P[bk_, 0]), P[bk_, 2]]), back)
+        return line_value(d.reshape(gr.Pp.shape[:-1]))
 
-    def drape(gr):
-        z = gr.P[..., 2]
-        return 0.004 * np.sin(gr.phi * 11.0 + 0.7) * np.clip((1.32 - z) / 0.2, 0.0, 1.0)
+    return f
 
-    body = loft_region("Pelisse_Body", lo, phi_of, t_of, res=kit.RES * 0.9, disp=drape, attrs=dict(braid=lace), mat=M["pelisse"], coll=coll)
-    solid(body, 0.003, bevel=0.0)
 
-    # fur: the front edge, the hem, the edge across the back, the collar round the neck
+def build_pelisse(F, M, coll="Pelisse"):
+    pd = F.d["pelisse"]
+    S = PelisseSurface(F, pd)
+    dr = pd["drape"]
+
+    def disp(gr):
+        sh = gr.P.shape
+        P, N = gr.P.reshape(-1, 3), gr.N.reshape(-1, 3)
+        s = S.carry(P, N)
+        Pp = P - s[:, None] * N
+        gr.Pp = Pp.reshape(sh)
+        # normals of the carried surface, from the grid itself
+        G = Pp.reshape(sh)
+        du, dv = np.gradient(G, axis=0), np.gradient(G, axis=1)
+        Np = unit(np.cross(du, dv))
+        Np = np.where((np.sum(Np * gr.N, axis=-1) < 0)[..., None], -Np, Np)
+        gr.Np = Np
+        # drape: shallow vertical folds where it hangs free, near the hem, on the back and side
+        z = G[..., 2]
+        hem = S.pd["hem_back"][0][1]
+        free = np.clip((dr["rise"] - (z - hem)) / dr["rise"], 0.0, 1.0) ** 1.5 * np.clip((Np[..., 1] + 0.2) / 0.4, 0.0, 1.0)
+        folds = dr["amp"] * (0.5 + 0.5 * np.sin(gr.v * dr["n"] * TAU + 0.7)) * free
+        return -s.reshape(sh[:-1]) + folds
+
+    body = loft_region("Pelisse_Body", S.lo, S.phi_of, S.t_of, res=kit.RES * 0.9, disp=disp, attrs=dict(braid=pelisse_lace(F, S)),
+                       mat=M["pelisse"], coll=coll)
+    solid(body, pd["thick"], bevel=0.0)
+
+    # fur: ONE roll round the whole edge -- the hem from his right hip across the back, round
+    # the arm at elbow height to the front corner; up the front edge; round the back and left
+    # of the neck (the collar, thick and round); down the diagonal across the back to the hip.
+    # The corners are rounded (the control points near them are dropped).
     fu = pd["fur"]
-    r = fu["r"]
-    tt = np.linspace(t_lo(1.0), L, 30)
-    P, _ = lo.pn(pf(tt), tt, 0.4 * r)
-    fur.fur_roll("Pelisse_Fur_Front", P, r, seed=11, flat=fu["flat"], up=_outward(lo, pf(tt), tt), mat=M["fur"], coll=coll)
-    tt = np.linspace(t_lo(0.0), L, 30)
-    P, _ = lo.pn(pb(tt), tt, 0.4 * r)
-    fur.fur_roll("Pelisse_Fur_Back", P, r, seed=12, flat=fu["flat"], up=_outward(lo, pb(tt), tt), mat=M["fur"], coll=coll)
-    vv = np.linspace(0.0, 1.0, 60)
-    th = t_lo(vv)
-    ph_h = pb(th) + vv * (pf(th) + TAU - pb(th))
-    P, _ = lo.pn(ph_h, th, 0.4 * r)
-    fur.fur_roll("Pelisse_Fur_Hem", P, r, seed=13, flat=fu["flat"], up=_outward(lo, ph_h, th), mat=M["fur"], coll=coll)
-    # the shawl collar: a band of fur lying over the top of the pelisse, round the neck
-    t_col = tz(fu["collar_z"])
-    tcol_of = lambda u, v: t_col + u * (L - t_col)
-    fur.fur_patch("Pelisse_Fur_Collar", lo, lambda u, v: pb(tcol_of(u, v)) - 0.05 + v * (pf(tcol_of(u, v)) + TAU + 0.10 - pb(tcol_of(u, v))), tcol_of,
-                  fu["collar_h"], seed=14, mat=M["fur"], coll=coll)
+    n = 64
+    lin_ = np.linspace(0.0, 1.0, n)
+    segs = [(lin_ * 0.0, lin_, "hem"),                    # u = 0, v 0 -> 1
+            (lin_, np.ones(n), "edge"),                  # v = 1, u 0 -> 1 (the front edge)
+            (np.ones(n), 1.0 - lin_, "collar"),          # u = 1, v 1 -> 0 (round the neck)
+            (1.0 - lin_, np.zeros(n), "edge")]           # v = 0, u 1 -> 0 (the back diagonal)
+    U = np.concatenate([s[0] for s in segs])
+    V = np.concatenate([s[1] for s in segs])
+    kind = sum([[s[2]] * n for s in segs], [])
+    P, N = S.at(U, V)
+    keep = np.ones(len(P), bool)
+    corners = [k * n for k in range(1, 4)] + [k * n - 1 for k in range(1, 4)]
+    for c in corners:  # round the corners: drop control points within a few cm of each
+        keep &= np.linalg.norm(P - P[c], axis=1) > 0.035
+    keep[0] = keep[-1] = True
+    P, N = P[keep], N[keep]
+    kind = [k for k, kp in zip(kind, keep) if kp]
+    r0 = fu["hem"][0]
+    rad = np.array([fu[k][0] for k in kind])
+    flat = np.array([fu[k][1] for k in kind])
+    # smooth the radius change along the roll
+    rad = np.convolve(np.pad(rad, 6, mode="edge"), np.ones(13) / 13, mode="valid")
+    flat = np.convolve(np.pad(flat, 6, mode="edge"), np.ones(13) / 13, mode="valid")
+    C = P + N * (rad * flat * 0.62)[:, None]
+    # the collar stretch: a round roll hugging the neck (its centre on a ring round the neck's
+    # axis), blended into the edge rolls where they leave it
+    col = np.array([k == "collar" for k in kind], float)
+    col = np.convolve(np.pad(col, 5, mode="edge"), np.ones(11) / 11, mode="valid")
+    axis = np.array([0.0, F.d["garment"]["collar"]["cy"]])
+    radial = unit(np.column_stack([C[:, 0] - axis[0], C[:, 1] - axis[1], np.zeros(len(C))]))
+    Cn = np.column_stack([axis[0] + radial[:, 0] * fu["ring"], axis[1] + radial[:, 1] * fu["ring"], np.full(len(C), fu["z"])])
+    C = C + col[:, None] * (Cn - C)
+    N = unit(N + col[:, None] * (radial + np.array([0.0, 0.0, 0.6]) - N))
+    T = np.gradient(C, axis=0)
+    across = unit(np.cross(N, T))
+    fur.fur_roll("Pelisse_Fur", C, r0, seed=11, flat=flat, up=across, scale=rad / r0, mat=M["fur"], coll=coll)
 
-    # the two empty sleeves (`pd["sleeves"]`): a flattened tube along each centre line, a fur
-    # cuff over its last `cuff` metres, gold chevrons on its broad face towards `face`
+    # the empty sleeve (`pd["sleeves"]`): a flattened tube along its centre line, a fur cuff
+    # over its last `cuff` metres, gold chevrons on its broad face towards `face`
     for k, sl in enumerate(pd["sleeves"]):
         build_empty_sleeve("Pelisse_Sleeve_%s" % sl["name"], sl, M, coll, seed=15 + k)
-    return lo
+    return S
 
 
 def build_empty_sleeve(name, sl, M, coll, seed=15):
@@ -373,7 +540,14 @@ def build_empty_sleeve(name, sl, M, coll, seed=15):
         Q = np.column_stack([(wrap(AL - al_c) * r_m).ravel(), (UU * Ls).ravel()])
         return line_value(polyline_dist(Q, chev).reshape(UU.shape))
 
-    swept(name, c, sl["a"], n_u=48, flat=flat, up=Nn, attrs=dict(braid=lace), mat=M["pelisse"], coll=coll)
+    # limp: an EMPTY sleeve -- flattened, wider at the top than at the cuff, its two faces
+    # lying in a few soft lengthwise creases, the section a little uneven along it
+    uu = np.linspace(0.0, 1.0, len(c))
+    radii = sl["a"] * (1.08 - 0.16 * uu)
+    flats = flat * (1.0 + 0.25 * np.sin(uu * 7.0 + seed))
+    creases = lambda u, al: (0.0035 * np.sin(2.0 * al) ** 2 * np.sin(3.0 * al + 1.3 * seed + 2.0 * u)
+                             - 0.0025 * np.exp(-((wrap(al - al_c) - 0.4) / 0.25) ** 2) * np.clip(u / 0.2, 0, 1))
+    swept(name, c, radii, n_u=48, flat=flats, up=Nn, disp=creases, attrs=dict(braid=lace), mat=M["pelisse"], coll=coll)
     k0 = int((1.0 - sl["cuff"] / Ls) * (len(c) - 1))
     fur.fur_roll(name + "_Fur", c[k0:], sl["a"] + 0.012, seed=seed, flat=(sl["b"] + 0.012) / (sl["a"] + 0.012), up=Nn[k0:], mat=M["fur"], coll=coll)
 

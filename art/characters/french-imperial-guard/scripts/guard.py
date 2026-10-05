@@ -155,27 +155,54 @@ DIMS = dict(
         seat=dict(curve=((0.040, 1.040), (0.105, 1.010), (0.160, 0.960), (0.185, 0.905)), knot=0.010),
     ),
     pelisse=dict(
-        # the pelisse's own loft, centred to his LEFT: (z, centre x, centre y, half-width, front, back)
-        rings=((1.040, .055, .000, .315, .160, .150), (1.130, .055, .004, .308, .158, .152), (1.230, .052, .006, .296, .150, .156),
-               (1.330, .050, .008, .286, .144, .146), (1.410, .046, .010, .265, .134, .122), (1.470, .040, .012, .238, .118, .100),
-               (1.510, .028, .012, .172, .100, .086), (1.542, .012, .008, .118, .088, .080), (1.568, .004, .004, .088, .082, .078)),
+        # The pelisse LIES ON the body: its surface is derived from the dolman's (the trunk and
+        # the left sleeve, blended over the shoulder and bridged where it hangs across the gap
+        # between arm and side), not modelled beside it. A CARRIER loft round the trunk and the
+        # left arm is only its parametrisation: each carrier point is carried in along the
+        # carrier's normal onto the smooth union of the two surfaces, `clear` off them.
+        # carrier rings (z, centre x, centre y, half-width, front, back), centred to his LEFT
+        rings=((1.040, .060, .000, .325, .160, .150), (1.130, .058, .004, .315, .158, .152), (1.230, .054, .006, .300, .150, .156),
+               (1.330, .050, .008, .286, .144, .146), (1.410, .046, .010, .265, .134, .124), (1.470, .040, .012, .232, .118, .106),
+               (1.505, .026, .010, .170, .102, .094), (1.532, .010, .008, .128, .094, .088)),
         n=2.8,
-        front_x=0.040,                  # its front edge, just to his left of the centre front
-        back_x=((1.050, -0.150), (1.200, -0.100), (1.330, -0.055), (1.460, -0.012), (1.570, 0.000)),  # its other edge across his back
-        hem=(1.060, 1.095),             # the hem's height at the back and at the front
-        fur=dict(r=0.024, flat=0.62, collar_z=1.465, collar_h=0.016),
-        frogs=dict(z0=1.190, z1=1.440, n=12, w=0.085, loop=0.008),
-        # the two empty sleeves: centre line top -> bottom, half-width along `wide` / half-depth,
-        # the fur cuff (length up from the end), `face` = the broad side the chevrons are on.
-        # LEFT: from the shoulder down the outside of the pelisse, beside the arm, its cuff at
-        # the wrist (the front view's fur outside the arm, the side view's fur at the wrist).
-        # RIGHT: it hangs out from under the hem behind his left hip, between the hip and the arm
-        # (where the front and back views both draw a dark piece with a fur end and the back view
-        # chevrons, and the side view a fur cuff behind the hip).
-        sleeves=(dict(name="L", path=((0.250, 0.020, 1.380), (0.360, 0.015, 1.200), (0.428, 0.005, 1.060), (0.445, 0.000, 0.975)),
-                      a=0.058, b=0.026, wide=(0.0, 1.0, 0.0), face=(1.0, 0.0, 0.0), cuff=0.065),
-                 dict(name="R", path=((0.185, 0.075, 1.240), (0.200, 0.095, 1.080), (0.207, 0.140, 0.970), (0.205, 0.165, 0.880)),
-                      a=0.052, b=0.036, wide=(1.0, 0.0, 0.0), face=(0.0, 1.0, 0.0), cuff=0.070)),
+        # clearance of the pelisse's OUTER surface over the trunk loft / the sleeve loft. A
+        # pelisse is FUR-LINED: `thick` of cloth and lining. The dolman stands up to ~8 mm off
+        # the trunk with its folds, ~4 mm off the sleeve, so 10-12 mm stay between them; near
+        # its hem the dolman's own hem flares out, so the pelisse rises with it
+        # (the back's folds are shallower: it lies closer there); round the neck it closes in
+        # under the fur collar
+        clear=dict(body=0.0300, back=0.0260, back_top=0.0180, arm=0.0340, hem=0.0340, hem_z=1.120, top=0.014, top_z=(1.480, 1.525)), thick=0.016,
+        hang_z=1.330,                   # below the chest it hangs plumb from it (front and back)
+        # the smooth union's fillet (m): small over the shoulder, wide where the pelisse hangs
+        # across the gap between the arm and the side (below the armpit)
+        blend=dict(top=0.030, low=0.120, z=(1.330, 1.140)),
+        # its front edge (world x by height): from the left of the neck diagonally down the chest
+        front_x=((1.100, 0.142), (1.200, 0.130), (1.320, 0.116), (1.440, 0.104), (1.535, 0.094)),
+        # its other edge, across the back, from the left of the neck down to his RIGHT hip
+        back_x=((1.060, -0.170), (1.200, -0.112), (1.330, -0.056), (1.450, 0.000), (1.535, 0.030)),
+        # the hem round the garment: (world x, z) on the back, and on the front, outward to the
+        # arm (it rises to elbow height and crosses the arm there)
+        hem_back=((-0.20, 1.062), (0.10, 1.062), (0.20, 1.085), (0.27, 1.125), (0.40, 1.135)),
+        hem_front=((0.10, 1.100), (0.17, 1.100), (0.24, 1.118), (0.30, 1.135), (0.40, 1.140)),
+        # fur: one roll round the whole edge, radius / flattening per stretch
+        fur=dict(collar=(0.031, 0.92), edge=(0.030, 0.70), hem=(0.022, 0.72),
+                 # the collar is a round roll hugging the neck, round its back and left side:
+                 # its centre `ring` (m from the neck's axis) at height `z`
+                 ring=0.100, z=1.560),
+        drape=dict(amp=0.0035, n=9, rise=0.16),     # shallow vertical folds where it hangs free, near the hem
+        frogs=dict(z0=1.200, z1=1.470, n=12, x1=0.272, loop=0.008),
+        # the two empty sleeves (a slung pelisse has both sleeves empty), each hanging out from
+        # under the hem: LEFT from behind the elbow, down outside the forearm, its fur cuff
+        # outside the hand (the back view's sleeve with chevrons and a fur cuff there, the
+        # front view's dark piece with fur outside the forearm); RIGHT behind his left hip,
+        # between the hip and the arm (the front view's dark piece there, the side view's
+        # sleeve behind the hip with its fur cuff at the hand's level). Centre line top ->
+        # bottom, half-width along `wide` / half-depth, the fur cuff (length up from the end),
+        # `face` = the broad side the chevrons are on.
+        sleeves=(dict(name="L", path=((0.352, 0.048, 1.150), (0.380, 0.062, 1.050), (0.392, 0.068, 0.960), (0.394, 0.070, 0.895)),
+                      a=0.060, b=0.016, wide=(0.70, -0.70, 0.0), face=(0.70, 0.70, 0.0), cuff=0.070),
+                 dict(name="R", path=((0.205, 0.088, 1.140), (0.226, 0.135, 1.040), (0.238, 0.166, 0.950), (0.240, 0.176, 0.880)),
+                      a=0.062, b=0.016, wide=(0.70, -0.70, 0.0), face=(0.70, 0.70, 0.0), cuff=0.072)),
     ),
     shako=dict(
         rings=((1.702, -.030, .096, .106, .108), (1.746, -.024, .108, .113, .111), (1.805, -.016, .120, .121, .116),

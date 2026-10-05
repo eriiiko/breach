@@ -40,26 +40,35 @@ def _tuft_field(tf, L, circ, k_up=0.0):
 
 
 def fur_roll(name, pts, r, seed=3, flat=0.85, density=14000.0, tuft=(0.004, 0.008), pile=(0.06, 0.20), up=None, n=None,
-             taper=0.0, mat=None, coll="Garment"):
+             taper=0.0, scale=None, pile_fn=None, mat=None, coll="Garment"):
     """A roll of fur `r` thick along control points `pts` (a smooth curve through them),
     squashed to `flat` across, covered in random tufts (`density` per m^2, sizes `tuft` in m,
     heights `pile` as fractions of r). `taper` thins both ends over that fraction of the
-    length. Capped: one closed object."""
+    length. `scale` (one per control point) varies the radius along the roll, and `flat` may
+    be one per control point too. `pile_fn(UU, AL, r)`, if given, replaces the random tufts as
+    the surface's displacement (m) -- e.g. a fine directional pile. Capped: one closed object."""
     c = smooth_path(pts, n or max(12, int(np.linalg.norm(np.diff(np.asarray(pts, float), axis=0), axis=1).sum() / 0.004)))
     L = float(np.linalg.norm(np.diff(c, axis=0), axis=1).sum())
     circ = TAU * r
     rng = np.random.default_rng(seed)
-    tf = _tufts(rng, L, circ, density, tuft, (pile[0] * r, pile[1] * r))
-    field = _tuft_field(tf, L, circ)
     u = np.linspace(0.0, 1.0, len(c))
+    p = np.asarray(pts, float)
+    uc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(p, axis=0), axis=1))])
+    along = lambda a: np.interp(u, uc / uc[-1], np.asarray(a, float))  # a per-control-point value along the resampled curve
     radii = np.full(len(c), r)
     if taper > 0:
         radii = r * np.clip(np.minimum(u, 1 - u) / taper, 0.25, 1.0) ** 0.5
-    n_u = max(16, int(circ / 0.004))
+    if scale is not None:
+        radii = radii * along(scale)
+    if np.ndim(flat) == 1 and len(flat) == len(p):
+        flat = along(flat)
+    n_u = max(16, int(circ * float(np.max(radii)) / r / 0.004))
     if up is not None and np.ndim(up) == 2:  # one per control point: carried along the resampled curve
-        p = np.asarray(pts, float)
-        uc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(p, axis=0), axis=1))])
-        up = np.column_stack([np.interp(u, uc / uc[-1], np.asarray(up, float)[:, k]) for k in range(3)])
+        up = np.column_stack([along(np.asarray(up, float)[:, k]) for k in range(3)])
+    if pile_fn is not None:
+        return swept(name, c, radii, n_u=n_u, flat=flat, up=up, disp=lambda UU, AL: pile_fn(UU, AL, r), mat=mat, coll=coll)
+    tf = _tufts(rng, L, circ, density, tuft, (pile[0] * r, pile[1] * r))
+    field = _tuft_field(tf, L, circ)
     return swept(name, c, radii, n_u=n_u, flat=flat, up=up, disp=lambda UU, AL: field(UU, AL, r) - 0.2 * r, mat=mat, coll=coll)
 
 
