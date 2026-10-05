@@ -106,6 +106,7 @@ class Suit:
         g = dims.get("garment", {})
         if any("drop" in pn for pn in g.get("mesh_panels", ())):  # teardrop panels: their outline from two ends
             g["mesh_panels"] = tuple(dict(pn, pts=self.teardrop(**pn["drop"])) if "drop" in pn else pn for pn in g["mesh_panels"])
+        self.mid = MidUnion(self, dims["midplane"]) if dims.get("midplane") else None
 
     def teardrop(self, a, b, w, bow=0.0, blunt=1.0, cap=0.18, n=30):
         """A clean teardrop (or a lens, `blunt` 0) on the body from its round end `a` to its point `b`
@@ -179,11 +180,14 @@ class Suit:
         return [(math.degrees(p), t) for p, t in out]
 
     # --- the body's broad forms ---------------------------------------------
-    def forms(self, P, N):
+    def forms(self, P, N, signed=False):
         """Bust and seat: gaussian swellings along the normal (`dims["forms"]` rows: x0, z0,
-        side, sx, sz, height). Front forms fade out over the centre front, where the zip runs."""
+        side, sx, sz, height). Front forms fade out over the centre front, where the zip runs.
+        `signed`: the LEFT half's forms continued past the mid-plane (x < 0 read as it is, not
+        mirrored), so the half-body with its forms is smooth where it crosses the plane (the
+        midplane union, `MidUnion`, unites it with its mirror image there)."""
         P, N = np.asarray(P, float), np.asarray(N, float)
-        ax, z = np.abs(P[..., 0]), P[..., 2]
+        ax, z = (P[..., 0] if signed else np.abs(P[..., 0])), P[..., 2]
         d = np.zeros(ax.shape)
         for x0, z0, side, sx, sz, h in self.d.get("forms", ()):
             facing = np.clip(((-N[..., 1]) if side == "front" else N[..., 1]) - 0.15, 0.0, 0.45) / 0.45
@@ -238,7 +242,14 @@ class Suit:
 
     def lift(self, P, N):
         """Everything that displaces the body's surface (for pieces laid on it)."""
-        return self.forms(P, N) + self.shoulder(P, N, "body")
+        return self.body_lift(P, N) + self.shoulder(P, N, "body")
+
+    def body_lift(self, P, N):
+        """The body loft's own displacement along N: its forms, or with `dims["midplane"]` the lift onto
+        the midplane union (which carries the forms)."""
+        if self.mid is not None:
+            return self.mid.lift(P, N)[0]
+        return self.forms(P, N)
 
     def arm_lift(self, P, N):
         """What displaces the sleeve's surface for pieces laid on it (the shoulder's union; 0 without one)."""
@@ -455,6 +466,394 @@ class Suit:
         return sh.get("sink", 0.0008) * np.clip((dep - 1.5 * h) / (1.5 * h), 0.0, 1.0), dep > 4.0 * h
 
 
+# ------------------------------------------------------- the pelvis: one surface across the mid-plane
+def _smoothstep(q):
+    q = np.clip(q, 0.0, 1.0)
+    return q * q * (3.0 - 2.0 * q)
+
+
+class MidUnion:
+    """The pelvis as ONE surface across the mid-plane: the SMOOTH UNION of the left half-body and its
+    own mirror image (`dims["midplane"]`), from under the crotch to the waist.
+
+        U(P) = smin(F(P), F(mirror P), k)        F = Suit.body_sdf - Suit.forms(signed)   (implicit.smin)
+
+    F is the left half-body with its broad forms, the forms continued past the plane with signed x, so
+    it is smooth where it crosses the plane. For this smin two equal arguments give F - k/4 and
+    arguments more than k apart are untouched, so ON the mid-plane the surface lies where F = k/4:
+      - between the legs (half-gap g) the two thighs are bridged where g <= k/4 and untouched where
+        g >= k/2; between, the gap's half-width is sqrt(k (g - k/4)): it closes in a ROUND arch of
+        tip radius k |dg/dz| / 2, and under it the surface runs from front to back as one saddle;
+      - above the crotch the half-section is cut at the plane at an angle (a V); the union fills it
+        with a fillet reaching w either side: k = 2 w sigma, sigma = |n_x| of the half-body's normal
+        where it crosses the plane (a square crossing, the waist, gets k = 0 and is left as it is;
+        below the crotch's tip sigma = 1). `reach` = ((z, w front, w back), ...) is the table of w,
+        zero at its ends; front and back blend over `band` about the section's centre y.
+    ONE grid (the loft's, so its (phi, t) still carry the seams, piping and panels): every vertex is
+    lifted along its normal onto U = 0 (`lift`); a vertex the union swallows (its ray reaches the
+    plane still inside) is in the row's RUN, and `grid_post` welds the run onto the union's own
+    crossing of the plane in that row (its front part onto the front crossing, the back part onto the
+    back one); faces lying wholly in the run are dropped (`grid_drop`). `refine` = ((z_lo, z_hi, pitch,
+    grade), ...): rows `pitch` apart between z_lo and z_hi (graded over `grade`), the finest band
+    winning. The underside of the crotch is nearly LEVEL, so a level row just above the tip already
+    bridges a long stretch front to back; rows a fraction of a millimetre apart there let the bridge
+    grow a few columns per row (one long fan of slivers from each weld point otherwise)."""
+
+    X_EPS = 3e-4  # a vertex this close to the plane is welded, a free one held this far off it (the mirror merge's 2e-4)
+
+    def __init__(self, S, spec):
+        self.S, self.sp = S, spec
+        self.z0, self.z1 = spec["z"]
+        r = np.array(spec["reach"], float)
+        self.rz, self.rf, self.rb = r[:, 0], r[:, 1], r[:, 2]
+        self.band = spec.get("band", 0.03)
+        zs = np.arange(self.z0 - 0.01, self.z1 + 0.0105, 0.001)
+        self._cy = (zs, S.centre_y(zs))
+        self._sigma()
+
+    # --- the field -------------------------------------------------------------
+    def f(self, P, N):
+        return self.S.forms(P, N, signed=True)
+
+    def F(self, Q, N):
+        """The left half-body with its forms (approx. signed distance, m)."""
+        return self.S.body_sdf(Q) - self.f(Q, N)
+
+    def normal(self, Q, e=4e-4):
+        """The bare half-body's outward normal near Q (for the forms' facing)."""
+        g = np.stack([(self.S.body_sdf(Q + e * a) - self.S.body_sdf(Q - e * a)) / (2 * e) for a in np.eye(3)], axis=1)
+        return unit(g)
+
+    def grad_F(self, Q, e=4e-4):
+        N = self.normal(Q)
+        return np.stack([(self.F(Q + e * a, N) - self.F(Q - e * a, N)) / (2 * e) for a in np.eye(3)], axis=1)
+
+    def cy(self, z):
+        return np.interp(z, *self._cy)
+
+    def k(self, Q):
+        z, y = Q[:, 2], Q[:, 1]
+        wb = _smoothstep((y - self.cy(z)) / self.band + 0.5)
+        sf, sb = np.interp(z, self._sz, self._sf), np.interp(z, self._sz, self._sb)
+        kf = 2.0 * np.interp(z, self.rz, self.rf) * sf
+        kb = 2.0 * np.interp(z, self.rz, self.rb) * sb
+        inside = (z >= self.rz[0]) & (z <= self.rz[-1])
+        return np.where(inside, (1.0 - wb) * kf + wb * kb, 0.0)
+
+    def crossing(self, z, level=None, span=0.16, dy=0.0005):
+        """Where the surface `F = level` (default the union's, k/4) crosses the mid-plane at each height z:
+        (y front, y back, found) -- the front-most and back-most y on x = 0 with F <= level."""
+        z = np.atleast_1d(np.asarray(z, float))
+        ys = np.arange(-span, span + 1e-9, dy)
+        Y = self.cy(z)[:, None] + ys[None, :]
+        Q = np.stack([np.zeros(Y.shape), Y, np.repeat(z[:, None], len(ys), axis=1)], axis=-1).reshape(-1, 3)
+        N = self.normal(Q)
+        Fv = self.F(Q, N).reshape(Y.shape)
+        lv = (self.k(Q) / 4.0).reshape(Y.shape) if level is None else np.full(Y.shape, float(level))
+        g = Fv - lv
+        ins = g <= 0.0
+        found = ins.any(axis=1)
+        yf, yb = np.full(len(z), np.nan), np.full(len(z), np.nan)
+        for i in np.flatnonzero(found):
+            j = np.flatnonzero(ins[i])
+            j0, j1 = j[0], j[-1]
+            # the crossings, interpolated between the sample outside and the one inside
+            yf[i] = Y[i, j0] if j0 == 0 else Y[i, j0 - 1] + (Y[i, j0] - Y[i, j0 - 1]) * g[i, j0 - 1] / (g[i, j0 - 1] - g[i, j0])
+            yb[i] = Y[i, j1] if j1 == len(ys) - 1 else Y[i, j1] + (Y[i, j1 + 1] - Y[i, j1]) * g[i, j1] / (g[i, j1] - g[i, j1 + 1])
+        return yf, yb, found
+
+    def _sigma(self):
+        """sigma(z), front and back: |n_x| of the half-body (with its forms) where it crosses the plane;
+        1 below the crotch's tip, where it does not."""
+        zs = np.arange(self.z0 - 0.01, self.z1 + 0.0105, 0.002)
+        yf, yb, found = self.crossing(zs, level=0.0)
+        sf, sb = np.ones(len(zs)), np.ones(len(zs))
+        for y, out in ((yf, sf), (yb, sb)):
+            m = found & np.isfinite(y)
+            if m.any():
+                Q = np.column_stack([np.zeros(m.sum()), y[m], zs[m]])
+                g = self.grad_F(Q)
+                # the V is the level section's: its normal's horizontal part (so sigma -> 1 at the tip,
+                # where the section's inner point touches the plane, continuous with the slot below)
+                out[m] = np.abs(g[:, 0]) / np.maximum(np.hypot(g[:, 0], g[:, 1]), 1e-12)
+        self._sz, self._sf, self._sb = zs, sf, sb
+
+    # --- vertices onto the union --------------------------------------------------
+    def march(self, P0, D, Nf, rate, t_max=0.024, dt=0.0008):
+        """Points P0 on the half-body WITH its forms, pushed along D onto U = 0: (t, swallowed). The own
+        term grows as rate * t (rate = D . N), the mirror's is F at the mirrored point (Nf the normals for
+        the forms' facing). A point the union swallows (its ray reaches the plane still inside, or it starts
+        at or past the plane) gets t to the plane (0 if it starts past it)."""
+        mir = np.array([-1.0, 1.0, 1.0])
+
+        def U(t, idx=slice(None)):
+            Q = P0[idx] + t[:, None] * D[idx]
+            return implicit.smin(rate[idx] * t, self.F(Q * mir, Nf[idx]), self.k(Q)), Q[:, 0]
+
+        n = len(P0)
+        t0 = np.zeros(n)
+        u0, x0 = U(t0)
+        sw = x0 <= self.X_EPS                 # at or past the plane: welded, whatever the mirror (a centred
+        done = (u0 >= 0.0) & ~sw              # section's far half lies ON the mirror's surface); untouched
+        out = np.zeros(n)
+        hit = np.zeros(n, bool)
+        prev_t, prev_u = t0.copy(), u0.copy()
+        for j in range(1, int(t_max / dt) + 1):
+            act = ~done & ~hit & ~sw
+            if not act.any():
+                break
+            tj = np.full(n, j * dt)
+            uj, xj = U(tj)
+            root = act & (uj > 0.0)
+            sw |= act & ~root & (xj <= self.X_EPS)   # reached the plane inside the union
+            if root.any():
+                r = np.flatnonzero(root)
+                a, b, ua, ub = prev_t[r], tj[r], prev_u[r], uj[r]
+                for _ in range(5):  # regula falsi inside the bracket
+                    m = a - ua * (b - a) / np.where(ub - ua == 0, 1e-12, ub - ua)
+                    um = U(m, r)[0]
+                    lo = um <= 0.0
+                    a, ua = np.where(lo, m, a), np.where(lo, um, ua)
+                    b, ub = np.where(lo, b, m), np.where(lo, ub, um)
+                tr = a - ua * (b - a) / np.where(ub - ua == 0, 1e-12, ub - ua)
+                past = P0[r, 0] + tr * D[r, 0] <= self.X_EPS   # the root past the plane is the mirror's surface
+                out[r] = tr
+                hit[r[~past]] = True
+                sw[r[past]] = True
+            prev_t, prev_u = np.where(act, tj, prev_t), np.where(act, uj, prev_u)
+        sw |= ~done & ~hit                    # no root within reach: inside
+        dx = np.where(D[:, 0] < -1e-6, D[:, 0], -1e-6)
+        out = np.where(sw, np.where(P0[:, 0] > 0.0, np.clip(-P0[:, 0] / dx, 0.0, t_max), 0.0), out)
+        return out, sw
+
+    def _sel(self, P):
+        return (P[:, 2] >= self.rz[0]) & (P[:, 2] <= self.rz[-1]) & (P[:, 0] < 0.09)
+
+    def lift(self, P, N):
+        """(lift along N onto U = 0, swallowed mask) for loft points P with normals N: for the pieces laid
+        on the surface (seams, panels, zips: `Suit.lift`). Outside the region exactly the forms."""
+        P, N = np.asarray(P, float), np.asarray(N, float)
+        shp = P.shape[:-1]
+        P, N = P.reshape(-1, 3), N.reshape(-1, 3)
+        sel = self._sel(P)
+        s = self.S.forms(P, N)
+        run = np.zeros(len(P), bool)
+        if sel.any():
+            p, n = P[sel], N[sel]
+            f = self.f(p, n)
+            t, sw = self.march(p + f[:, None] * n, n, n, np.ones(len(p)))
+            s[sel], run[sel] = f + t, sw
+        return s.reshape(shp), run.reshape(shp)
+
+    # --- the grid (kit.loft_mesh) ------------------------------------------------------
+    def rows(self, res):
+        """The body loft's rows (t): `res` apart, `refine[2]` apart between refine[0] and refine[1] (graded)."""
+        B = self.S.B
+        self._res = res
+        zt, tt = self.S._zt_table()
+        ts = np.linspace(0.0, B.L, 20001)
+        if not self.sp.get("refine"):
+            return np.linspace(0.0, B.L, max(2, int(round(B.L / res))) + 1)
+        z = np.interp(ts, tt, zt)
+        dens = np.full(len(ts), 1.0 / res)
+        for za, zb, pitch, grade in self.sp["refine"]:
+            w = _smoothstep((z - (za - grade)) / grade) * _smoothstep(((zb + grade) - z) / grade)
+            dens = np.maximum(dens, 1.0 / res + w * (1.0 / pitch - 1.0 / res))
+        Phi = np.concatenate([[0.0], np.cumsum(0.5 * (dens[1:] + dens[:-1]) * np.diff(ts))])
+        n = max(2, int(round(Phi[-1])))
+        return np.interp(np.linspace(0.0, Phi[-1], n + 1), Phi, ts)
+
+    def grid_disp(self, gr):
+        """The body grid's displacement along N (rows, cols): its forms. The union then pushes each vertex
+        HORIZONTALLY, along its section's own normal, onto U = 0, so every row stays a level section of the
+        union (pushed along the 3D normal, the vertices near the crotch, whose normals point down, would land
+        below the next row's and fold the mesh); push and run stashed for grid_drop / grid_post."""
+        P, N = gr.P.reshape(-1, 3), gr.N.reshape(-1, 3)
+        R, C = gr.P.shape[:2]
+        f = self.S.forms(P, N)
+        sel = self._sel(P)
+        push = np.zeros((len(P), 3))
+        run = np.zeros(len(P), bool)
+        if sel.any():
+            p, n = P[sel], N[sel]
+            f[sel] = self.f(p, n)
+            nh = np.column_stack([n[:, 0], n[:, 1], np.zeros(len(n))])
+            ln = np.maximum(np.linalg.norm(nh, axis=1), 1e-6)
+            nh /= ln[:, None]
+            t, sw = self.march(p + f[sel][:, None] * n, nh, n, ln)
+            push[sel], run[sel] = t[:, None] * nh, sw
+        run = run.reshape(R, C)
+        zr = gr.P[:, :, 2].mean(axis=1)
+        region = (zr >= self.rz[0]) & (zr <= self.rz[-1])
+        run &= region[:, None]
+        A = np.full((R, 3), np.nan)
+        Bk = np.full((R, 3), np.nan)
+        rr = np.flatnonzero(run.any(axis=1))
+        if len(rr):
+            yf, yb, found = self.crossing(zr[rr])
+            for i, r in enumerate(rr):
+                if found[i]:
+                    A[r], Bk[r] = (0.0, yf[i], zr[r]), (0.0, yb[i], zr[r])
+                else:  # no bridge in this row (the slot is open, if only just): nothing is welded or dropped
+                    run[r] = False
+            close = np.linalg.norm(A - Bk, axis=1) < 3e-4  # a bridge one point wide: one weld point
+            mid = 0.5 * (A + Bk)
+            A[close], Bk[close] = mid[close], mid[close]
+        Q = (P + f[:, None] * N + push).reshape(R, C, 3)
+        fix = np.full((R, C, 3), np.nan)
+        for r in np.flatnonzero(run.any(axis=1)):
+            self._spread(Q[r], run[r], A[r], Bk[r], fix[r], self.sp.get("spread", 1.0) * getattr(self, "_res", 0.0034))
+        self._grid = dict(run=run, region=region, A=A, B=Bk, push=push.reshape(R, C, 3), fix=fix)
+        return f.reshape(R, C)
+
+    def relax(self, obj):
+        """The tip of the arch, where the union's surface is nearly LEVEL: level rows meet it at a grazing
+        angle, and the smallest error in a vertex's push folds the rows there. `relax` = (z_lo, z_hi, x_max,
+        rounds): the half-body mesh's vertices in that box (left half, x < x_max) are smoothed (Taubin) and
+        projected back onto U = 0 by Newton steps along its gradient, `rounds` times; the weld vertices stay
+        in the plane (smoothed and projected within it), the box's border vertices stay where they are."""
+        spec = self.sp.get("relax")
+        if not spec:
+            return
+        z_lo, z_hi, x_max, rounds = spec
+        me = obj.data
+        V = np.empty(len(me.vertices) * 3)
+        me.vertices.foreach_get("co", V)
+        V = V.reshape(-1, 3)
+        E = np.empty(len(me.edges) * 2, dtype=np.int64)
+        me.edges.foreach_get("vertices", E)
+        E = E.reshape(-1, 2)
+        box = (V[:, 0] < x_max) & (V[:, 2] > z_lo) & (V[:, 2] < z_hi)
+        # the box's border: vertices in it with a neighbour outside
+        out_nb = np.zeros(len(V), bool)
+        for a, b in ((E[:, 0], E[:, 1]), (E[:, 1], E[:, 0])):
+            out_nb[a[~box[b]]] = True
+        move = box & ~out_nb
+        on = np.abs(V[:, 0]) < 1e-7
+        if not move.any():
+            return
+        sub = np.flatnonzero(box)
+        keep = np.isin(E[:, 0], sub) & np.isin(E[:, 1], sub)
+        Es = E[keep]
+        deg = np.bincount(Es.ravel(), minlength=len(V)).astype(float)
+        e = 2e-4
+
+        def project(idx, iters=4):
+            for _ in range(iters):
+                Q = V[idx]
+                u = self.U(Q)
+                g = np.stack([(self.U(Q + e * a) - self.U(Q - e * a)) / (2 * e) for a in np.eye(3)], axis=1)
+                g[on[idx], 0] = 0.0  # a weld vertex moves within the plane
+                step = (u / np.maximum(np.sum(g * g, axis=1), 1e-12))[:, None] * g
+                n = np.linalg.norm(step, axis=1, keepdims=True)
+                V[idx] -= step * np.minimum(1.0, 5e-4 / np.maximum(n, 1e-12))
+
+        idx = np.flatnonzero(move)
+        for _ in range(rounds):
+            for f in (0.5, -0.53, 0.5, -0.53):
+                S_ = np.zeros_like(V)
+                np.add.at(S_, Es[:, 0], V[Es[:, 1]])
+                np.add.at(S_, Es[:, 1], V[Es[:, 0]])
+                L = S_ / np.maximum(deg, 1.0)[:, None] - V
+                L[on, 0] = 0.0
+                V[idx] += f * L[idx]
+            project(idx)
+        x = V[idx, 0]
+        V[idx, 0] = np.where(on[idx], 0.0, np.where(x < 2 * self.X_EPS, self.X_EPS + np.maximum(x, 0.0) ** 2 / (4 * self.X_EPS), x))
+        me.vertices.foreach_set("co", V.ravel())
+        me.update()
+
+    def U(self, Q):
+        """The union field at points Q (left half)."""
+        N = self.normal(Q)
+        return implicit.smin(self.F(Q, N), self.F(Q * np.array([-1.0, 1.0, 1.0]), N), self.k(Q))
+
+    def _spread(self, Q, run, A, B, fix, h):
+        """One row: next to each weld point the union's section hugs the plane (it leaves it as a square
+        root) for a stretch that no free vertex lands on -- their rays went into the bridge -- so the face
+        from the weld point to the first free vertex would lie almost IN the plane (a fin, dark in a
+        render). The run's columns nearest each end are taken out of the run and spread along the section
+        between the weld point and the first free vertex, `h` apart (each on U = 0, found square to the
+        chord), one column at least staying on the weld point. Writes their positions into `fix`."""
+        C = len(run)
+        starts = np.flatnonzero(~np.roll(run, 1) & run)
+        if len(starts) != 1 or run.all():
+            return
+        c0 = starts[0]
+        arc = (c0 + np.arange(int(run.sum()))) % C
+        ends = ((arc, (c0 - 1) % C), (arc[::-1], (arc[-1] + 1) % C))
+        Pn0, Pn1 = Q[ends[0][1]], Q[ends[1][1]]
+        # which end of the run meets which weld point: the nearer pairing
+        if np.linalg.norm(Pn0 - A) + np.linalg.norm(Pn1 - B) > np.linalg.norm(Pn0 - B) + np.linalg.norm(Pn1 - A):
+            A, B = B, A
+        used = 0
+        for (cols, nb), W in zip(ends, (A, B)):
+            Pn = Q[nb]
+            L = float(np.linalg.norm(Pn[:2] - W[:2]))
+            m = int(min(max(0, math.ceil(L / h) - 1), max(0, (len(arc) - used) // 2 - 1)))
+            if m == 0:
+                continue
+            d = (Pn - W) / max(L, 1e-9)
+            nrm = np.array([-d[1], d[0], 0.0])
+            mid = 0.5 * (Pn + W)
+            if self.U(np.array([mid + 5e-4 * nrm]))[0] < self.U(np.array([mid - 5e-4 * nrm]))[0]:
+                nrm = -nrm  # the side where the union is not
+            u = np.arange(m, 0, -1) / (m + 1.0)      # the column next to the free vertex first
+            Q0 = W + u[:, None] * (Pn - W)
+            ss = np.linspace(-0.003, 0.006, 19)
+            Uv = np.stack([self.U(Q0 + s * nrm) for s in ss])
+            for i in range(m):
+                k = np.flatnonzero((Uv[:-1, i] <= 0.0) & (Uv[1:, i] > 0.0))
+                if not len(k):
+                    continue
+                k = k[0]
+                a, b, ua, ub = ss[k], ss[k + 1], Uv[k, i], Uv[k + 1, i]
+                for _ in range(4):  # regula falsi
+                    m = a - ua * (b - a) / (ub - ua)
+                    um = self.U(np.array([Q0[i] + m * nrm]))[0]
+                    a, ua, b, ub = (m, um, b, ub) if um <= 0.0 else (a, ua, m, um)
+                s = a - ua * (b - a) / (ub - ua)
+                fix[cols[i]] = Q0[i] + s * nrm
+                run[cols[i]] = False
+            used += m
+
+    def grid_drop(self, base):
+        """drop for loft_mesh: inside the region the run, elsewhere `base`."""
+        def drop(P):
+            g = self._grid
+            reg = np.repeat(g["region"], g["run"].shape[1])
+            return np.where(reg, g["run"].ravel(), base(P))
+        return drop
+
+    def grid_post(self, base):
+        """post for loft_mesh (grid): `base` (a grid post) outside the region; inside, the run welded onto
+        the union's crossing of the plane and every other vertex left where its lift put it."""
+        def g_(G):
+            G = np.asarray(G, float)
+            X = np.asarray(base(G.copy()), float).reshape(G.shape).copy()
+            gd = self._grid
+            run, A, B = gd["run"], gd["A"], gd["B"]
+            for r in np.flatnonzero(gd["region"]):
+                X[r] = G[r] + gd["push"][r]
+                fx = np.isfinite(gd["fix"][r, :, 0])
+                X[r, fx] = gd["fix"][r, fx]
+                # a free vertex never nearer the plane than X_EPS (the mirror merge would pinch it): a C1 soft clamp
+                x, e = X[r, :, 0], self.X_EPS
+                X[r, :, 0] = np.where(x < 2.0 * e, e + np.maximum(x, 0.0) ** 2 / (4.0 * e), x)
+                cols = np.flatnonzero(run[r])
+                if not len(cols):
+                    continue
+                if not np.isfinite(A[r, 0]):  # a run but no bridge in this row: hold it at the plane's edge
+                    X[r, cols, 0] = self.X_EPS
+                    continue
+                front = G[r, cols, 1] < 0.5 * (A[r, 1] + B[r, 1])
+                X[r, cols[front]] = A[r]
+                X[r, cols[~front]] = B[r]
+            return X
+        g_.grid = True
+        return g_
+
+
 def _clean(obj, dist=2e-5):
     """Weld the coincident vertices a trim leaves (several snapped onto the same point of a cut), drop
     the faces that collapse and any edge shared by more than two faces, so solidify closes the sheet."""
@@ -646,7 +1045,8 @@ def pipe_attr(g, paths):
 
 
 # --------------------------------------------------------------------- the suit
-def build_suit(S, M, coll="Suit"):
+def build_suit(S, M, coll="Suit", body_only=False):
+    """The suit; `body_only`: the body loft alone, no seams (a quick look at the form)."""
     d, g = S.d, S.d["garment"]
     B, A, bz, az, F = S.B, S.A, S.bz, S.az, S.F
     suit = M["suit"]
@@ -662,13 +1062,16 @@ def build_suit(S, M, coll="Suit"):
     patch = bool(g.get("shoulder"))  # the shoulder is its own mesh: the lofts give way inside its box
     cut = patch and "cut" in g["shoulder"]  # ... or exactly past its raglan cut (seam lines)
 
+    def own(gr):  # the body's own displacement: its forms, or the lift onto the midplane union
+        return S.mid.grid_disp(gr) if S.mid is not None else S.forms(gr.P, gr.N)
+
     def disp(gr):
         if cut:  # on the union near the shoulder; the shoulder's mesh owns what lies past the cut
-            return S.forms(gr.P, gr.N) + S.edge_lift(gr.P, gr.N)
+            return own(gr) + S.edge_lift(gr.P, gr.N)
         if patch:  # sinking under the shoulder's own mesh inside its box; at the box's edge ON the union
-            return S.forms(gr.P, gr.N) + S.edge_lift(gr.P, gr.N) - S.give_way(gr.P)[0]
+            return own(gr) + S.edge_lift(gr.P, gr.N) - S.give_way(gr.P)[0]
         env = gr.env = F.envelope(gr.P, gr.N)
-        return S.forms(gr.P, gr.N) + env
+        return own(gr) + env
 
     armhole = g.get("armhole_seam", True)  # False: no seam round the armhole (torso and arm one surface)
 
@@ -679,8 +1082,9 @@ def build_suit(S, M, coll="Suit"):
         return 1.0 - np.minimum(F.armhole_seam(Pd), kit.SEAM_CAP) / kit.SEAM_CAP
 
     piping = g.get("seam_style", "pipe") == "tube"
-    if piping:  # the seams are their own geometry (piping cords on the surface), not an attribute
-        build_piping(S, body_paths, arm_paths, suit, g.get("piping", (0.0008, 0.0001)), coll)
+    if piping or body_only:  # the seams are their own geometry (piping cords on the surface), not an attribute
+        if not body_only:
+            build_piping(S, body_paths, arm_paths, suit, g.get("piping", (0.0008, 0.0001)), coll)
         body_paths, arm_paths = [], []
     snap = dict(CLAMP_SNAP)
     if cut:
@@ -688,15 +1092,24 @@ def build_suit(S, M, coll="Suit"):
         snap["post"] = lambda P: CLAMP_SNAP["post"](S.body_onto_cut(P, lambda Q, Nq: S.forms(Q, Nq) + S.edge_lift(Q, Nq)))
     elif patch:
         snap["drop"] = lambda P: CLAMP_SNAP["drop"](P) | S.give_way(P)[1]
-    if d.get("midline"):  # the weld exactly on the section's crossing of the mid-plane, row by row
+    if d.get("midline") or S.mid is not None:  # the weld exactly on the section's crossing of the mid-plane, row by row
         snap["post"] = weld_rows(snap["post"])
+    rows = None
+    if S.mid is not None:  # the pelvis: welded onto the union's own crossing of the plane (MidUnion)
+        snap["post"], snap["drop"] = S.mid.grid_post(snap["post"]), S.mid.grid_drop(snap["drop"])
+        rows = S.mid.rows(kit.RES * 0.85)
     suit_end = d["boot"].get("implicit", {}).get("suit_end")
     if suit_end:  # inside an implicit boot the suit's leg ends (its foot is the boot's)
         drop0 = snap["drop"]
         snap["drop"] = lambda P: drop0(P) | (P[:, 2] < suit_end)
-    body = loft_mesh("Suit_Body", B, res=kit.RES * 0.85, mat=suit, coll=coll, disp=disp,
+    body = loft_mesh("Suit_Body", B, res=kit.RES * 0.85, rows=rows, mat=suit, coll=coll, disp=disp,
                      attrs=dict(seam=seams, pipe=lambda gr: pipe_attr(gr, body_paths)), **snap)
+    if S.mid is not None:  # the run's vertices share their weld points: merge them (no zero-length edge)
+        _clean(body)
+        S.mid.relax(body)
     mirror(solid(body, g["cloth"], bevel=0.0), merge=True)
+    if body_only:
+        return body
 
     # the sleeve, set in at the armhole (as the coverall's), smooth
     T_root = unit(A.pos([0.0], [A.L])[0] - A.pos([0.0], [A.L - 0.05])[0])

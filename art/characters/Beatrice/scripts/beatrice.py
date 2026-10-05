@@ -136,10 +136,33 @@ PELVIS = dict(
 )
 # the seat's roundness over the profile (bodysuit.Suit.forms): two broad rounds either side of the centre
 SEAT = (0.056, 0.945, "back", 0.054, 0.065, 0.006)
-# the centre line over the pelvis (bodysuit.Suit.midline_fillet): the V where the half-sections are cut at
-# the mid-plane filled with a smooth fillet, broad in front (no crease down the front of the pelvis), narrow
-# behind (a soft cleft between the seat's two rounds)
+PELVIS4, SEAT4 = PELVIS, SEAT
+# B1e, the gap between the legs: fuller upper INNER thighs (concept: thigh / hip 0.482 just under the crotch).
+# A narrow slot, its half-gap about 6 mm for the first 6 cm under the crotch, opening smoothly (the inner
+# outline's angle to the vertical easing 3 -> 28 -> 14 deg) into the knee's stance, which stays as it was;
+# at the top the half-sections close at a rate growing evenly over 4 cm (0.87 -> 0.91: the inner edge's slope
+# 0.05 -> 1.3), so the midplane union's arch is round (its tip radius k |dg/dz| / 2), the saddle under it not
+# flat, and the hip's three-quarter outlines take no bend at crotch height (the section's centre swings
+# sideways as fast as the inner edge turns). From 0.96 up as stage 4.
+PELVIS = dict(PELVIS4, inner=((0.70, .0535), (0.71, .0510), (0.74, .0430), (0.76, .0350), (0.78, .0246), (0.80, .0150), (0.815, .0105),
+                              (0.83, .0080), (0.845, .0066), (0.86, .0060), (0.87, .0056), (0.874, .00515), (0.877, .0045), (0.880, .00354),
+                              (0.883, .0023), (0.886, .0008), (0.890, -.0016), (0.895, -.0054), (0.900, -.0099), (0.910, -.0214),
+                              (0.920, -.0345), (0.930, -.0470), (0.940, -.0590), (0.960, -.0800)))
+# stage 4 (kept as the shape `stage4`): the centre line over the pelvis (bodysuit.Suit.midline_fillet): the V
+# where the half-sections are cut at the mid-plane filled with a smooth fillet, broad in front, narrow behind
 MIDLINE = dict(front=0.020, back=0.008, z=(0.887, 1.12), fade=0.03, s_max=3.0)
+# B1e: the pelvis as ONE surface across the mid-plane (bodysuit.MidUnion): the half-body and its mirror image
+# as a smooth union from under the crotch to the waist. `reach` = the fillet's reach w either side of the plane
+# (k = 2 w sigma): under the crotch it sets the arch at the slot's top and the saddle under it (the slot is
+# untouched where its half-gap is at least w, closed where it falls to w / 2); above it the fillet in the V
+# where the half-sections meet, broad in front (no crease down the belly), narrower behind (a soft cleft).
+# `refine`: rows 0.6 mm apart round the tip and 0.1 mm at it (z from, z to, pitch, grading): the arch and the
+# nearly level underside drawn by many rows; `relax`: the arch's tip (z from, z to, x under, rounds) smoothed and
+# projected back onto the union (bodysuit.MidUnion.relax)
+MIDPLANE = dict(z=(0.80, 1.125), band=0.03, refine=((0.866, 0.898, 0.0006, 0.008), (0.879, 0.884, 0.0001, 0.002)),
+                relax=(0.874, 0.906, 0.010, 3),
+                reach=((0.800, 0.0, 0.0), (0.840, 0.0065, 0.0065), (0.895, 0.0065, 0.0065), (0.930, 0.016, 0.010),
+                       (0.960, 0.020, 0.010), (1.080, 0.020, 0.010), (1.125, 0.0, 0.0)))
 
 # A step of the pelvis (the comparison's "one step slimmer / fuller"): the outer edge (about the inner), the seat's depth
 # behind the section centre and the section's reach past the centre line scaled by k, fully from the
@@ -177,6 +200,8 @@ WAIST3 = ("waist", 1.140, .000, -.027, .094, .077, .069, 2.15, 1)
 SHAPES = dict(
     slimmer=dict(pelvis=0.93, seat=(0.056, 0.945, "back", 0.052, 0.065, 0.0045)),
     fuller=dict(pelvis=1.07, seat=(0.058, 0.945, "back", 0.056, 0.065, 0.0075)),
+    # stage 4's default (before B1e: the half-sections cut at the mid-plane, a fillet down the centre line)
+    stage4=dict(spec=PELVIS4, seat=SEAT4, midline=MIDLINE, midplane=None),
     # stage 3's default (the previous default, for the before/after comparison)
     stage3=dict(rows=(WAIST3,), seat=(0.058, 0.960, "back", 0.058, 0.062, 0.009)),
     # the front view's own hips and thighs (wider), for comparison by eye
@@ -211,7 +236,7 @@ SHAPES = dict(
 COMPARE = (("slimmer", "one step slimmer"), ("", "default (stage 4)"), ("fuller", "one step fuller"))
 COMPARE_BAND = (0.56, 1.22)
 # the hip pictures' "before" (`--hips`, hips_before_after.jpg): the previous default
-HIPS_BEFORE = "stage3"
+HIPS_BEFORE = "stage4"
 
 # The concept's proportions, measured by hand on `concept.jfif` (three-quarter view, walking,
 # cropped at the crotch). Only the FAR side (her left, image right) shows hip and thigh free of
@@ -230,7 +255,7 @@ def _rows(shape=None):
     if "rows" in sh:  # the stage-3 construction: landmark rows
         over = {r[0]: r for r in sh["rows"]}
         return tuple(over.get(r[0], r) for r in LEGS + HIPS + TORSO)
-    sp = pelvis(sh.get("pelvis", 1.0))
+    sp = sh["spec"] if "spec" in sh else pelvis(sh.get("pelvis", 1.0))
     legs = tuple(r for r in LEGS if r[1] < sp["z"][0])
     return legs + profiles.edge_rows(sp, below=legs[-3:], above=TORSO[:3]) + TORSO
 
@@ -293,7 +318,8 @@ def dims(shape=None):
                   # the bare hand (charkit/parts.py::bare_hand): its defaults are her slender hand
                   bare=dict()),
         forms=(FORMS[0], sh.get("seat", FORMS[1])) + FORMS[2:],
-        midline=None if "rows" in sh else MIDLINE,
+        midline=None if "rows" in sh else sh.get("midline"),
+        midplane=None if "rows" in sh else sh.get("midplane", MIDPLANE),
         garment=dict(
             cloth=0.002,
             armhole=dict(x=0.128, z=1.370, tilt=4.0),

@@ -121,3 +121,14 @@ triangles, all closed.
 
 The face is the head function's default (doll-like), for the next stage. See the stage-2 report for what still
 reads weak (hands, the boot's heel counter, the shoulder cap seam, the back drawing's leg stance).
+
+## B1e: the pelvis, second round (2026-10-05, answers `previews/review_stage4.md`) — in progress
+
+- Reference added: `good-body-silhouette.jfif` (683 x 1024, supplied by Erik 2026-10-05; front view, head to upper
+  thighs, the earlier high-cut suit; "a good body shape, the same as the original image"). SHA-256
+  `f1fd420732ad1fa18dab435340409632515b8d52a74a266510e97b93b9a8de43`. Body SHAPE only; nothing of its suit is used.
+- Step 1, the gap between the legs: the pelvis is ONE surface across the mid-plane, the smooth union of the
+  half-body and its mirror image (`charkit/bodysuit.py::MidUnion`, table `MIDPLANE`), replacing the mid-plane cut
+  (`weld_rows`) + `midline_fillet` from under the crotch to the waist with one mechanism on the loft's own grid;
+  fuller upper inner thighs (`PELVIS["inner"]`): a slot about 12 mm wide for 6 cm under the crotch, a round arch.
+  Stage 4's pelvis is kept as the shape `stage4` (the hip pictures' "before").
