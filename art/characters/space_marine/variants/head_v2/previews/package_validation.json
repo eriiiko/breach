@@ -1,9 +1,0 @@
-{
-  "gallery_links_checked": 28,
-  "missing_links": [],
-  "matched_camera_and_render_conditions": true,
-  "render_source_hashes_match": true,
-  "reference_sha256": "b80b4b84eec0a7f64ae905458eafb2b9da6f30c22cb91374801c8e96dfc766b6",
-  "reference_image_operation": "Labelled crops and enlargement only; no generative alteration",
-  "final_render_count": 9
-}
