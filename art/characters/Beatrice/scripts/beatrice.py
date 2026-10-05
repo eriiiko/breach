@@ -253,7 +253,7 @@ SHAPES = dict(
 
 # The hips comparison (`--compare`, shape_vs_concept.jpg): (shape, label), slimmest first, and the
 # height band it shows (waist to knee, metres)
-COMPARE = (("slimmer", "one step slimmer"), ("", "default (stage 4)"), ("fuller", "one step fuller"))
+COMPARE = (("slimmer", "one step slimmer"), ("", "default (B1e)"), ("fuller", "one step fuller"))
 COMPARE_BAND = (0.56, 1.22)
 # the hip pictures' "before" (`--hips`, hips_before_after.jpg): the previous default
 HIPS_BEFORE = "stage4"
