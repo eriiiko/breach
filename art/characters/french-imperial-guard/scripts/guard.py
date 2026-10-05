@@ -211,9 +211,9 @@ DIMS = dict(
         # sleeve behind the hip with its fur cuff at the hand's level). Centre line top ->
         # bottom, half-width along `wide` / half-depth, the fur cuff (length up from the end),
         # `face` = the broad side the chevrons are on.
-        sleeves=(dict(name="L", path=((0.360, 0.048, 1.150), (0.412, 0.060, 1.070), (0.410, 0.070, 0.990), (0.400, 0.070, 0.915)),
+        sleeves=(dict(name="L", path=((0.352, 0.052, 1.125), (0.408, 0.062, 1.060), (0.410, 0.070, 0.990), (0.400, 0.070, 0.915)),
                       a=0.068, b=0.013, wide=(0.80, -0.60, 0.0), face=(0.60, 0.80, 0.0), cuff=0.070),
-                 dict(name="R", path=((0.205, 0.100, 1.140), (0.228, 0.148, 1.045), (0.236, 0.176, 0.955), (0.240, 0.182, 0.885)),
+                 dict(name="R", path=((0.205, 0.100, 1.120), (0.228, 0.148, 1.040), (0.236, 0.176, 0.955), (0.240, 0.182, 0.885)),
                       a=0.070, b=0.013, wide=(0.92, -0.40, 0.0), face=(0.40, 0.92, 0.0), cuff=0.072)),
     ),
     shako=dict(

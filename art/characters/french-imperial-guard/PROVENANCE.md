@@ -1,5 +1,9 @@
 # Officer of the Imperial Guard light cavalry — scripted Blender model (Claude)
 
+> Correction round done 2026-10-05 (after `previews/review_stage1.md`): see "Correction round"
+> below for what changed, the numbers and what is still weak. The sections after it describe the
+> model as it now is.
+
 2026-10-05. Tracker: eriiiko/breach #33. Branch `33-french-imperial-guard`, worktree
 `.claude/worktrees/33-french-imperial-guard`. Offline asset files only. Stage 1 of the
 `scripted-character` procedure: the high-resolution source and its renders. No game model yet.
@@ -62,42 +66,75 @@ A new family: the first member is its own assembly on the kit, with its tables a
   turns into a 6 mm gold lace band, metallic and semi-gloss, with a woven ridge and a little bump.
   Dolman: 16 rows of frogging with oval eyes at both ends, hem edging, shoulder cords, the back
   piping (two curves and a centre seam with trefoil knots). Sleeves: two chevrons above the cuff.
-  Breeches: a double stripe on the outer seam, a Hungarian knot on each thigh, the seat piping with
-  trefoils. Pelisse: 12 rows on its front, two chevrons on each empty sleeve.
+  Breeches: a double stripe on the outer seam, a heavy Hungarian knot on each thigh (every line
+  doubled), the seat piping with trefoils; the breeches keep their knee and groin folds but lost
+  the all-over crumple (tight cloth). Pelisse: 12 rows on its front, two chevrons on each empty sleeve.
 - Pieces with real geometry: gilt buttons (3 columns x 16 rows), the standing collar (edged), the
-  red pointed cuffs (`dresswear.loft_region` with a free top edge, point to the front-outer side,
-  edged), the cross-belt (`dresswear.strap` across the welded front via `half_body_pn`, with a
+  red pointed cuffs (`dresswear.loft_region` with a free top edge, an 85 mm point on the outer
+  side, edged), two bold gold chevrons above each (each V three close lace lines, so they merge
+  into one wide band), the cross-belt (`dresswear.strap` across the welded front via `half_body_pn`, with a
   badge), the barrel sash (crimson cord rows, 16 gold barrels via a `barrel` attribute, a belt
   plate), the sash cords with a ring and two tassels at his right hip, the white gloves
-  (`parts.hand`, the gloved default), the Hessian boots (`dresswear.riding_boot`: foot, sole, low
-  heel, a shaft whose top edge is a table -- higher at the sides and front points, a V notch at
-  the front -- gold lace trim along it, a tassel in the notch) and spurs (`dresswear.spur`: strap,
-  neck, an 8-point star rowel).
-- Head: `parts.head` + `parts.hair` (short, sideburns, showing under the shako) and a full
-  moustache (`dresswear.swept`, flattened onto the upper lip over the face field's lip height).
+  (`parts.hand`, the gloved default), the Hessian boots (`dresswear.riding_boot`: sole, heel, a
+  slim rounded toe and a low vamp that run into the shaft at the instep; the shaft carries the
+  heel counter round the foot's back, narrows to the ankle with soft creases there, and flares a
+  little at the top; its top edge is a table -- higher at the sides, a broad scallop at the front
+  whose two arcs meet in a point -- edged in 19 mm gold lace, the tassel hanging from the point;
+  polished leather with broad soft highlights) and spurs (`dresswear.spur`: strap, neck, an
+  8-point star rowel).
+- Head: `parts.head` + `parts.hair` (short; sideburns to the jaw line; a soft, low nape edge; the
+  ears lying flatter) and a full moustache (`dresswear.swept`, flattened onto the upper lip over the
+  face field's lip height).
 - Shako (`charkit/shako.py`): an oval body flaring to the top with its section planes tilted 6 deg
-  back, a flat top, gold top band, polished peak, a gilt front plate, a red cockade with a gold
-  rim, twisted gold cords in festoons front and back, a hanging cord and tassel on his right, and
-  gilt chin scales from its sides along the cheeks and under the chin. Two plumes (`fur.plume`).
-- Pelisse (`DIMS["pelisse"]`): its own loft, centred to his left and wide enough to drape over the
-  left shoulder and upper arm like a cape (how a slung pelisse hangs: the arm is inside its body,
-  under the empty armhole), cut by `loft_region` between a front edge just left of his centre front
-  and an edge that runs diagonally across his back from the nape to his right hip; hem 1.06 m at
-  the back, 1.095 m at the front. Fur (`charkit/fur.py`): flattened tufted rolls along the front
-  edge, the hem and the diagonal back edge, and a shawl collar (`fur.fur_patch`) lying over the
-  left shoulder and round the back of the neck.
-- The two empty sleeves (ruling 2): LEFT hangs from the shoulder down the outside of the cape,
-  beside the arm, its fur cuff at the wrist (where the front view draws fur outside the arm and
-  the side view fur at the wrist). RIGHT hangs out from under the hem behind his left hip, between
-  the hip and the arm (where the front and the back views both draw a dark piece ending in fur, the
-  back view with chevrons, and the side view a fur cuff behind the hip). Both are flattened tubes
-  (`dresswear.swept`) with gold chevrons on their broad face and a fur cuff.
+  back, a flat top, gold top band and a gold welt cord round the crown's rim, a FRONT-ONLY peak
+  (over the eyes, ending at the temples, angled down ~22 deg, glossy, a thin gold edge), a shaped
+  gilt plate with a simple raised eagle (body, head, spread wings, tail), a red cockade with a gold
+  rim, twisted gold cords in two front festoons (a high one and a heavy lower swag) and one at the
+  back, a hanging cord and tassel on his right, and scaled gilt chin scales hanging from round
+  side bosses and lying along the jaw. Two plumes (`fur.plume_soft`).
+- Pelisse (`DIMS["pelisse"]`, `assemble.PelisseSurface`; rebuilt in the correction round): it LIES
+  ON the body by construction. A carrier loft round the trunk and the left arm only parametrises it
+  ((u, v): hem -> neck, back edge -> front edge); every carrier point is carried in along the
+  carrier's normal (damped, step-limited sphere tracing) onto the zero set of
+  `smin(sdf_trunk - clear_body, sdf_sleeve - clear_arm, blend)` -- the dolman's own trunk and left
+  sleeve lofts, filleted over the shoulder (3 cm) and bridged below the armpit where it hangs
+  across from the side to the arm (12 cm). The trunk distance is measured in its level section at
+  each height, and below the chest the front and back depths are held at the chest's (the cloth
+  hangs plumb from the chest and shoulder blades instead of following the waist in). It is
+  FUR-LINED: 18 mm of cloth and lining (`thick`); its outer surface stands 30 mm off the trunk loft
+  at the front and side, 20-34 mm at the back, 37 mm off the sleeve loft, so 2-15 mm stay between
+  it and the dolman (which stands up to 8 mm off the trunk with its folds, 4 mm off the sleeve).
+  Edges: the front edge from the left of the neck diagonally down the chest (x 0.094 m at the neck
+  to 0.142 m at 1.10 m); the edge across the back from the left of the neck to his right hip; the
+  hem at 1.06 m across the back, rising round the arm to elbow height (1.135 m) and back to 1.10 m
+  at the front corner. A few shallow vertical folds near the hem where it hangs free. Lace on it:
+  its own frogging (12 rows with loops, a gilt button at each inner loop, placed on the carried
+  surface), and on its back panel the dolman's back piping (both curved side-back seams, the centre
+  seam, trefoils), so the back reads braided on both sides of the diagonal fur. A gold shoulder
+  cord on its shoulder.
+- Fur (`charkit/fur.py`): ONE roll round the pelisse's whole edge -- hem, front edge, a round
+  collar roll hugging the back and left of the neck (its centre on a ring 99 mm from the neck's
+  axis at 1.568 m), the diagonal across the back -- radius and flattening varying per stretch
+  (`fur_roll(scale=, flat=)`), corners rounded. Its surface is a fine directional pile
+  (`fur.pile_field`: vectorised random plane waves, short across the pile, long along it), no
+  tufts; the strands are in the material.
+- The two empty sleeves (a slung pelisse has both sleeves empty), each hanging out from under the
+  hem: LEFT from behind the elbow down outside the forearm, its cuff outside the hand (the back
+  view's sleeve with chevrons and a fur cuff there, the front view's dark piece with fur outside
+  the forearm); RIGHT behind his left hip, between the hip and the arm (the front view's dark
+  piece there, the side view's sleeve behind the hip). Limp: flattened, wider at the top, soft
+  lengthwise creases; two bold chevrons on the broad face; the fur cuff as two soft rolls round
+  the sleeve's end.
+- Plumes (`fur.plume_soft`): each a smooth tapered ovoid on a curved stem, narrow at the socket,
+  widest about two thirds up, its edge a fine hairy pile (`pile_field`, barbs 3-6 mm across lying
+  up the plume, 1.6 mm grid). The green variant's red tip blends over 16 % of the plume's length.
 - Materials (`charkit/dressmat.py` + `wearmat`), one per region, the contract with the game step:
   `guard_skin`, `guard_hair`, `guard_eye`, `guard_dolman`, `guard_pelisse`, `guard_cuff`,
   `guard_breeches`, `guard_fur`, `guard_braid` (free-standing gold: cords, tassels, belt, boot
   trim, shako band), `guard_metal` (gilt), `guard_steel` (spurs), `guard_sash`, `guard_boot`,
   `guard_sole`, `guard_glove`, `guard_shako`, `guard_peak`, `guard_cockade`, `guard_plume_a`,
-  `guard_plume_b`. Roughness: boots 0.16 and peak 0.12 with a clear coat, gilt metal 0.26, gold
+  `guard_plume_b`. Roughness: boots 0.30 with a soft clear coat (0.35, coat roughness 0.24), peak
+  0.12 with a clear coat, gilt metal 0.26, gold
   lace 0.42-0.44, cloth 0.82, fur 0.92, feathers 0.85, gloves 0.62.
 
 ## Measured
@@ -105,54 +142,61 @@ A new family: the first member is its own assembly on the kit, with its tables a
 - Scale: soles on row 816 (front view, on the sheet's floor line), eye line on row 260 (the front
   view's pupils), eye line = 0.935 x 1.80 = 1.683 m -> 0.0030270 m per pixel, crown of the skull on
   row 221.4 (inside the shako, 32 px above its peak).
-- Silhouette IoU in the sheet's framing (`previews/sheet_overlay.png`, full resolution): front
-  0.910, side 0.901, back 0.904. Where it differs and why:
-  - The sheet's front and back views disagree on his left outline at 1.0-1.4 m (front 0.354 m at
-    1.30 m and 0.50 m at 1.06 m, back 0.321 and 0.39): an orthographic front and back silhouette
-    are mirror images, so no 3-D garment fits both; the model sits between them (the cape and the
-    left empty sleeve), costing front and back each about 1-2 %.
-  - The sheet's legs are 2 px off symmetric (his right leg nearer the centre); the model is
-    symmetric (panel centre 180 splits it).
-  - The side view's fore-and-aft plume pair is fitted by leaning the black plume forward (it stays
-    on his right in front and back), so the plumes cost little; their spiky tufted outline against
-    the sheet's softer feathering is a few px all round.
-  - The sheet's dark piece at his left hip (front view x 0.19-0.25 m, z 0.94-1.06 m) is matched
-    by the right empty sleeve only in part.
-  - Edge bands of 1-3 px all round (the sheet's outlines, fur and fringe), the gloves' fingers.
-- `source/mesh_stats.json`: 61 mesh objects, 843,632 source triangles, 1,936,210 after modifiers
-  (see the file for the split). All 61 evaluated parts closed; all face outward (the two eyeballs
+- Silhouette IoU in the sheet's framing (`previews/sheet_overlay.png`, full resolution), after the
+  correction round: front 0.893, side 0.882, back 0.906 (stage 1: 0.910 / 0.901 / 0.904). The
+  front and side fall BELOW 0.90, knowingly. The sheet's own outline carries a pelisse that stands
+  well off the body -- the stage-1 drum matched it; a pelisse lying on the shoulder and arm does
+  not. What is left, per view (full table in the build log):
+  - front, his left at 1.22-1.42 m: the sheet's shoulder and upper arm are 2-3 cm wider than the
+    model's (the sheet's left upper arm is 5 cm wider than its right); at 1.02-1.10 m the sheet's
+    piece outside the forearm reaches 0.49-0.51 m, the outer empty sleeve 0.46-0.47 m;
+  - side: the sheet's torso is a deep block from 1.10 to 1.26 m (front -0.179, back +0.185) where
+    the model's pelisse lies 2-4 cm inside it front and back; above 1.38 m the model's collar and
+    diagonal fur stand 1-3 cm proud of the sheet's;
+  - back: gained over stage 1 where the shell's stand-off was (left side 1.06-1.26 m), lost a
+    little at the outer sleeve and cuff;
+  - unchanged from stage 1: the sheet's legs 2 px off symmetric, edge bands of 1-3 px, the
+    gloves' fingers.
+  Raising the pelisse's clearance to meet the sheet's outline would bring back the stand-off that
+  this round existed to remove; the brief's "no more than about 1-1.5 cm" over the dolman was kept
+  (2-15 mm everywhere, inside a fur-lined garment 18 mm thick).
+- `source/mesh_stats.json`: 72 mesh objects, 913,846 source triangles, 1,959,686 after modifiers
+  (see the file for the split). All 72 evaluated parts closed; all face outward (the two eyeballs
   are built inward and flipped by the check).
-- Build: 19 s for the geometry; the full build with every render about 2.6 minutes (OptiX).
+- Build: 19 s for the geometry; the full build with every render 2.6 minutes (OptiX); the green
+  variant's hero 33 s; a draft 9 s (the per-tuft loops of the old fur and plumes are gone).
 
 ## Checklist (from zoomed crops of the sheet)
 
 Shako
 - black body, wider at the top — present
 - gold top band — present
-- black leather peak — present (polished)
-- gold front plate (a crowned plate) — simplified: a domed oval gilt plate, no relief
+- black leather peak — present: front only, over the eyes to the temples, angled down, glossy, thin gold edge (round 2)
+- gold front plate (a crowned plate) — simplified: a shaped gilt plate with a simple raised eagle (body, head, wings, tail; round 2)
 - cockade at the top front (red, gold rim) — present
-- plaited gold cords in festoons, front and back — present (twisted cord, one festoon each)
+- plaited gold cords in festoons, front and back — present (twisted cord; two festoons at the front, one at the back; no flounders)
 - cord and tassel hanging on his right side — present
-- gold chin chain — simplified: a flat gilt strap with a scale ripple, not linked scales
-- two plumes, black on his right, red on his left — present (side view: the black one leans forward)
+- gold chin chain — simplified: a flat scaled gilt band hanging from round side bosses along the jaw (round 2), not linked scales
+- two plumes, black on his right, red on his left — present: soft tapered ovoids with a fine hairy edge (round 2); side view: the black one leans forward
 
 Head
 - face — simplified (the male worker's stylised face field)
 - full moustache — present (one attempt rebuilt: thicker and level after the first drooped)
-- sideburns — present (hairline in front of the ears)
-- short brown hair under the shako at the sides and back — present
+- sideburns — present, to the jaw line (round 2)
+- short brown hair under the shako at the sides and back — present, a soft low nape edge (round 2)
 
 Dolman
 - dark navy body and sleeves — present
 - standing collar edged in gold — present (closed, no front gap)
-- rows of gold frogging across the chest with loops — present as colour (16 rows, oval eyes)
+- rows of gold frogging across the chest with loops — present as colour with stronger relief (16 rows, oval eyes, narrowing to the waist); not raised geometry
 - columns of gilt buttons — present (3 x 16)
 - gold edging at the hem — present (colour)
-- pointed red cuffs — present (point to the front-outer side), edged in gold
-- gold chevron lace above the cuffs — present (2 chevrons, colour)
-- gold piping with small knots on the back seams — present (colour)
-- shoulder cords — simplified: a lace line along each shoulder top, colour only
+- pointed red cuffs — present (an 85 mm point on the outer side), edged in gold (round 2)
+- gold chevron lace above the cuffs — present: 2 bold Vs (round 2)
+- gold piping with small knots on the back seams — present (colour), on BOTH sides of the pelisse's diagonal fur (round 2)
+- shoulder cords — present: a gold cord from the collar to each shoulder point (the left one on the pelisse; round 2)
+
+- the pelisse's cord from the right of the collar across the chest, with a medallion — present (round 2)
 
 Cross-belt
 - gold, over one shoulder to the opposite hip — present, from his LEFT shoulder to his RIGHT hip,
@@ -161,30 +205,30 @@ Cross-belt
 - small badge on it — simplified (a gilt oval)
 
 Pelisse
-- navy, slung on his left shoulder, hanging down the left side and across the back — present
-- brown fur collar — present (a shawl collar on the shoulder and round the nape)
-- fur on the front edge, the hem and the edge across the back — present
-- fur cuffs — present (on both empty sleeves)
-- its own gold braid rows on the front — present (12 rows, colour)
+- navy, slung on his left shoulder, hanging down the left side and across the back — present, lying ON the shoulder, arm and back (round 2)
+- brown fur collar — present: a round roll round the back and left of the neck (round 2)
+- fur on the front edge, the hem and the edge across the back — present: one roll round the whole edge, the front edge diagonal, soft corners, dark brown, fine pile (round 2)
+- fur cuffs — present (one deep soft roll on each empty sleeve)
+- its own gold braid rows on the front — present (12 rows with loops, a gilt button at each inner loop)
 - lace knots by the diagonal edge near the back hem (back view) — absent
-- empty sleeves — present (two, see How it is built)
+- empty sleeves — present (two, from under the hem: outside the forearm and behind the hip; still stiff, see below)
 
 Waist
-- crimson and gold barrel sash — present
+- crimson and gold barrel sash — present, dark crimson-maroon (round 2)
 - belt plate — simplified (a plain gilt plate)
 - cords with a ring and two tassels at his right hip — present
 
 Breeches
 - red — present
 - gold stripe down each outer seam — present (double, as the side view draws it)
-- Hungarian knot on the front of each thigh — simplified (a stylised two-loop knot in colour)
+- Hungarian knot on the front of each thigh — simplified (a stylised two-loop knot in heavy doubled braid, colour)
 - gold piping on the seat with small knots — present (colour)
 
 Boots
 - black polished Hessians to just under the knee — present
-- top edge cut to a V in front — present
-- gold lace edging along the top — present (a thin gold band)
-- small gold tassel in the V — present
+- top edge cut to a V in front — present: a broad scallop whose two arcs meet in a point (round 2)
+- gold lace edging along the top — present (a 19 mm gold band)
+- small gold tassel in the V — present, hanging from the point on the leather
 - low heel — present
 - spurs (strap, neck, rowel) — present
 
@@ -194,21 +238,63 @@ Gloves
 Nothing is modelled that neither reference shows. The saber section, the saber and its slings and
 the sabretache (the painting) are left out on purpose.
 
+## Correction round (2026-10-05)
+
+After the independent stage-1 review (`previews/review_stage1.md`), one correction round, in its
+order (stage 1 is commit `ac3e2ab`; `previews/before_after.jpg` puts stage 1 above the result for
+the hero, the back three-quarter and the top view):
+
+- A1 the pelisse lies on the body: rebuilt as a surface derived from the dolman's trunk and left
+  sleeve (see How it is built), fur-lined, one fur roll round its whole edge with a round collar
+  roll, the diagonal front edge, soft corners, its back panel braided like the dolman's back. Both
+  empty sleeves now hang from under the hem (one outside the forearm, one behind the hip: the
+  front IoU needs the outer one, and the sheet's front and back views both draw it).
+- A2 plumes: `fur.plume_soft`, smooth ovoids with a fine hairy pile; round fuzzy tufts from above.
+  Green variant: the red tip blends over 16 % of the plume.
+- A3 the peak: front only, angled down ~22 deg, ending at the temples, glossy, a thin gold edge.
+- A4 boots: a slimmer toe and a low vamp running into the shaft at the instep, the shaft carrying
+  the heel and narrowing to the ankle, soft ankle creases, polished leather with broad highlights
+  (roughness 0.30, a soft coat), the top a broad scallop in 19 mm gold lace with the tassel at its
+  point, the shaft's top flared so the breeches no longer show through it.
+- A5 fur: rich dark brown (`FUR` #2a1d13 / `FUR_TIP` #5c4630), a fine directional pile, no tufts.
+  Sash: dark crimson-maroon (`SASH` #5a1418).
+- A6 cuffs: an 85 mm point on the outer side; two bold gold chevrons on every sleeve, the dolman's
+  and the empty ones.
+- B1 shoulder cords on both shoulders, the cord across the chest with its medallion; the back
+  piping on both sides of the diagonal. B2 stronger lace relief, the chest panel narrowing to the
+  waist, the pelisse rows with a gilt button at each. B3 the eagle plate, a second festoon,
+  chinscales from side bosses lying along the jaw, a gold welt round the crown. B4 heavy doubled
+  Hungarian knots, no all-over crumple on the breeches. B5 sideburns to the jaw, a soft nape,
+  flatter ears. B6 the turnaround framed for the plumes (`TURN_HEIGHT`).
+- Kit, all additive with defaults that reproduce the earlier output, in modules only this
+  character uses: `fur.pile_field`, `fur.plume_soft`, `fur.fur_roll(scale=, soft=, per-point
+  flat)`; `dressmat.mat_wool(relief=, relief_d=)`, `mat_polished(coat_rough=, crease=)`,
+  `mat_feather(blend=)`; `dresswear.riding_boot` top `notch_exp` and `creases`; `shako` peak
+  `droop_exp` / `shape` / `edge`, plate `n` / `dome` / `eagle`, cord `festoons`, `welt`, chain
+  `boss` / `scales`; and `workerbuild.run` reads an optional `TURN_HEIGHT`. No module the other
+  characters' geometry comes from (`kit`, `workwear`, `parts`, `garment`, `studio`, `sheetfit`)
+  was touched.
+
 ## Not done, and known weaknesses
 
+Worst first, after the correction round:
+
+- IoU front 0.893 and side 0.882, below the 0.90 the round was asked to keep: the sheet's outline
+  wants a pelisse standing off the body (see Measured). `sheet_overlay.png`.
+- The empty sleeves still read stiff: flat slabs with straight edges, their tops ending under the
+  hem with a visible corner; limp drape (a bend, a fold-over) is not there. `torso_back.jpg`,
+  `pelisse.jpg`.
+- The boots are still two pieces to the eye: the foot comes out of the shaft at a crease line on
+  the instep and reads a little like an overshoe; the ankle creases hardly show. `boots.jpg`.
+- The pelisse over the left arm bridges the gap under the armpit down to the hem, so from the
+  front and from above the left arm and side read as one wide mass (the sheet's front view shows
+  the same panel to the arm, but less of it). `torso_front.jpg`, `top.jpg`.
+- The fur collar sits low round the neck (its top at about 1.60 m) and the diagonal fur makes a
+  loop where it leaves the collar at the back. `head_side.jpg`, `torso_back.jpg`.
+- The chest braid is still colour on the cloth with a stronger bump, not raised cord; the frogging
+  eyes are blobs close up. `torso_front.jpg`, `head.jpg`.
+- The breeches have no knee, calf or seat modelling of their own (only the outline); the outer
+  stripes still do not show at the leg's edge from front and back. `turnaround.png`.
+- Not done: the black waist belt (left out, as briefed); cord flounders on the shako.
 - The source has no UVs and no rig (the game-ready step is next). Pieces overlap rather than weld,
-  except the body's two halves.
-- The pelisse reads as a bell-shaped cape round the left arm, heavier than the sheet's jacket
-  lying over the shoulder; the left empty sleeve shows mainly as a fur flap below the cape's hem.
-  The right empty sleeve, hanging behind the left hip, looks like a stump from behind.
-- The plumes are spiky tufted shells: from close they read as feather dusters, not soft ostrich
-  plumes. Two attempts made (big tufts read as cauliflower; fine spikes as now).
-- The fur is a tufted displacement plus a strand shader: convincing as a mass, lumpy along the
-  rolls' edges.
-- Lace drawn as an attribute is faceted where the 4 mm grid is coarse against a 6 mm band (the
-  Hungarian knots and seat piping show stepped edges close up); the frogging's eyes are blobs.
-- The face is the worker's stylised face; the shako plate is a plain oval; the chin scales are a
-  smooth strap.
-- The boots' foot and shaft meet in a crease at the instep; the arch shows a dark slot between
-  the heel block and the sole.
-- Materials are Cycles node graphs; the game step will bake them.
+  except the body's two halves. Materials are Cycles node graphs; the game step will bake them.

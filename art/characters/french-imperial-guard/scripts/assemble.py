@@ -626,15 +626,14 @@ def build_empty_sleeve(name, sl, M, coll, seed=15):
     creases = lambda u, al: (0.0035 * np.sin(2.0 * al) ** 2 * np.sin(3.0 * al + 1.3 * seed + 2.0 * u)
                              - 0.0025 * np.exp(-((wrap(al - al_c) - 0.4) / 0.25) ** 2) * np.clip(u / 0.2, 0, 1))
     swept(name, c, radii, n_u=48, flat=flats, up=Nn, disp=creases, attrs=dict(braid=lace), mat=M["pelisse"], coll=coll)
-    # the fur cuff: a soft roll round the sleeve's end (a ring following its flattened
-    # section), and a second one a little higher, so it reads as a deep fur cuff, not a drum
-    for j, back in enumerate((0.022, 0.052)):
-        k = int(np.clip((1.0 - back / Ls) * (len(c) - 1), 0, len(c) - 1))
-        al = np.linspace(0.0, TAU, 41)
-        rr = radii[k] + 0.004
-        ring = c[k] + rr * (np.cos(al)[:, None] * Nn[k] + (flats[k] * np.sin(al))[:, None] * Bn[k])
-        ring_up = unit(c[k] - ring)  # across the roll: towards the sleeve's centre line
-        fur.fur_roll(name + "_Fur_%d" % j, ring, 0.020, seed=seed + j, flat=0.75, up=ring_up, soft=FUR_PILE, mat=M["fur"], coll=coll)
+    # the fur cuff: one deep soft roll round the sleeve's end (a ring following its flattened
+    # section, wide along the sleeve), so it reads as a fur cuff, not a drum
+    k = int(np.clip((1.0 - 0.034 / Ls) * (len(c) - 1), 0, len(c) - 1))
+    al = np.linspace(0.0, TAU, 41)
+    rr = radii[k] + 0.006
+    ring = c[k] + rr * (np.cos(al)[:, None] * Nn[k] + (flats[k] * np.sin(al))[:, None] * Bn[k])
+    along = np.tile(T[k], (len(al), 1))  # the roll's wide axis lies along the sleeve
+    fur.fur_roll(name + "_Fur", ring, 0.034, seed=seed, flat=0.62, up=along, soft=FUR_PILE, mat=M["fur"], coll=coll)
 
 
 def _outward(lo, phi, t):
@@ -726,5 +725,5 @@ def build(M, dims, head, hair, plumes):
     hl = build_head(M, head, hair)
     build_shako(M, dims["shako"], hl, plumes)
     build_pelisse(F, M)
-    garment.close_holes([o for o in bpy.data.objects if o.name.startswith(("Dolman_Buttons",))])
+    garment.close_holes([o for o in bpy.data.objects if o.name.startswith(("Dolman_Buttons", "Pelisse_Buttons", "Shako_Chin_Boss"))])
     return F
