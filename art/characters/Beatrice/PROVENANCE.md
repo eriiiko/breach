@@ -122,13 +122,37 @@ triangles, all closed.
 The face is the head function's default (doll-like), for the next stage. See the stage-2 report for what still
 reads weak (hands, the boot's heel counter, the shoulder cap seam, the back drawing's leg stance).
 
-## B1e: the pelvis, second round (2026-10-05, answers `previews/review_stage4.md`) — in progress
+## B1e: the pelvis, second round (2026-10-05, answers `previews/review_stage4.md`)
 
-- Reference added: `good-body-silhouette.jfif` (683 x 1024, supplied by Erik 2026-10-05; front view, head to upper
+- Reference added: `good-body-silhouette.jfif` (683 x 1024, supplied by Erik 2026-10-05; a front view, head to upper
   thighs, the earlier high-cut suit; "a good body shape, the same as the original image"). SHA-256
   `f1fd420732ad1fa18dab435340409632515b8d52a74a266510e97b93b9a8de43`. Body SHAPE only; nothing of its suit is used.
-- Step 1, the gap between the legs: the pelvis is ONE surface across the mid-plane, the smooth union of the
-  half-body and its mirror image (`charkit/bodysuit.py::MidUnion`, table `MIDPLANE`), replacing the mid-plane cut
-  (`weld_rows`) + `midline_fillet` from under the crotch to the waist with one mechanism on the loft's own grid;
-  fuller upper inner thighs (`PELVIS["inner"]`): a slot about 12 mm wide for 6 cm under the crotch, a round arch.
-  Stage 4's pelvis is kept as the shape `stage4` (the hip pictures' "before").
+  Measured by hand (half-widths, px, between arm and body where the backdrop shows): deltoids 213.5 (row 480), narrowest
+  waist 128 (row 760), widest 198.5 just above the crotch (rows 980-1000): hip/waist 1.55 (CONCEPT 1.794), hip/shoulder
+  0.93 (0.911). Its waist-to-hip gain at 0.2 / 0.4 / 0.6 / 0.8 of the height: 0.30 / 0.56 / 0.78 / 0.93 (stage 4: 0.12 /
+  0.36 / 0.59 / 0.79). Its frame: `scripts/sheet_ref.py::SILHOUETTE`.
+- Kit (`bodysuit.py` and `hipsview.py` are this character's alone; no shared kit file touched):
+  - `bodysuit.MidUnion` (`dims["midplane"]`): the pelvis as ONE surface across the mid-plane, the smooth union
+    `smin(F(P), F(mirror P), k)` of the half-body (with its forms, continued past the plane) and its mirror image,
+    k = 2 w sigma (`reach` w; sigma = the half-body's |n_x| where it crosses the plane, 1 under the crotch). On the loft's
+    own grid: each vertex pushed horizontally within its level row onto the union, the swallowed run welded onto the
+    union's own crossing of the plane, the stretch beside each weld point resampled (`_spread`), rows 0.1 mm apart at
+    the arch's tip (`refine`), the tip relaxed and re-projected (`relax`), coincident weld vertices merged (`_clean`).
+    Replaces `weld_rows` + `midline_fillet` from 0.80 to 1.125 m (both kept, used by the shape `stage4`).
+    `Suit.forms(signed=)`, `Suit.body_lift`, `build_suit(body_only=)`.
+  - `hipsview`: `crotch.jpg`, `shape_vs_silhouette.jpg`; `hips_before_after.jpg` now the before beside now (matte, four
+    views); the measurements add the half-gap every 5 mm, `midplane_normals` and `mesh_check` to
+    `source/<prefix>outline.json`.
+- Tables: `PELVIS` (inner, outer, front, back), `SEAT` (broader, lower), `MIDPLANE`; `PELVIS4` / `SEAT4` / `MIDLINE` and the
+  shape `stage4` (= `HIPS_BEFORE`); the slimmer / fuller steps' seats follow the new SEAT.
+- Measured (full build): half-gap 6.0-8.0 mm from 0.83 to 0.86 m, 5.5 at 0.87, closed at 0.883 (stage 4: 21.0 / 14.8 /
+  11.9, closed at 0.887); thigh/hip 0.479 (0.446; concept 0.482); hip/waist 1.795, hip/shoulder 0.859, hip width and
+  waist unchanged. Suit_Body: 0 degenerate faces (stage 4: 520), 0 non-manifold edges; the other suit objects' counts
+  are unchanged from stage 4 (cuffs, zip tapes, shoulder patch: pre-existing, outside the pelvis). Outline turning
+  0.68-1.12 m, deg/cm, now (stage 4): front outer 3.31 at the waist, 1.8 below 1.10 (2.63); side front 2.76 (3.25);
+  side back 4.11 at the waist, 3.73 at the seat (4.45); three-quarter front 2.20 (4.58); three-quarter back 3.91 at
+  the waist, 3.54 at 0.888 (4.92). In step 1 the front and three-quarter outlines outside 0.78-0.93 m moved under
+  1 mm (0.76 mm worst). Sheet IoU, hip-knee band, front / side / back: 0.853 / 0.907 / 0.833 (0.852 / 0.897 / 0.833).
+- `source/mesh_stats.json`: 60 objects, 985,629 source / 2,534,292 evaluated triangles, all closed.
+- Reproduce: `bash charkit/run.sh Beatrice --sheet --turn --beauty all --save` (about 6.5 min), `--hips` (about 10 min:
+  stage 4 and the default, the crotch close-ups), `--compare`.

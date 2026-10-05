@@ -21,7 +21,7 @@
 </head>
 <body>
 <main>
-  <h1>Beatrice — body, suit, hands, boots (stage 4: the pelvis)</h1>
+  <h1>Beatrice — body, suit, hands, boots (B1e: the pelvis, second round)</h1>
   <p>Built from Python alone on the shared character kit (<code>charkit/bodysuit.py</code>, Blender 4.5, Cycles) from the tables in
      <code>scripts/beatrice.py</code>, fitted to three drawings: front, side and back. The head is a bald placeholder for the
      face-and-hair stage. Character only, no props. This round answers <code>review_stage2.md</code>: new hands, the shoulder and
@@ -30,7 +30,20 @@
      <b>Stage 4</b> answers <code>review_stage3.md</code> for the pelvis only (waist, hips, seat, upper thighs); everything else is
      unchanged, and the close-ups further down are stage 3's.</p>
 
-  <h2>The pelvis (stage 4)</h2>
+  <h2>The pelvis, second round (B1e)</h2>
+  <p>Answers <code>review_stage4.md</code>, the pelvis only. <b>The gap between the legs:</b> the pelvis is now ONE surface across the
+     mid-plane, the smooth union of the half-body and its own mirror image (<code>charkit/bodysuit.py::MidUnion</code>), from under the
+     crotch to the waist, on the loft's own grid. The upper inner thighs are fuller (thigh / hip 0.479, the concept's 0.482; stage 4
+     0.446): a slot about 12 mm wide for the first 5&ndash;6 cm under the crotch that closes in a round arch, a smooth saddle from the
+     belly under to the seat's cleft, the surface crossing the mid-plane square (no crease line, no point). <b>The side:</b> a lumbar
+     curve flowing into one round seat, fullest at 0.94 m, its under-curve running over several centimetres into a slightly full back
+     of the thigh; a rounder lower belly, a soft groin, the front of the thigh swelling 3 mm into the knee. <b>The front:</b> the hip
+     rounds out sooner under the waist and eases off over the hip (half the way towards the owner's frontal reference,
+     <code>good-body-silhouette.jfif</code>), waist and widest point unchanged. Stage 4 is kept as the shape <code>stage4</code>.</p>
+  <figure><img src="crotch.jpg" alt="The crotch close up"><figcaption>The crotch close up: matte front, back, three-quarter front, from 40&deg; below front and back; glossy front and three-quarter</figcaption></figure>
+  <figure><img src="shape_vs_silhouette.jpg" alt="Against the owner's frontal reference"><figcaption>The owner's frontal body reference beside stage 4 and the new default, one scale (shoulder widths equal, waists aligned)</figcaption></figure>
+
+  <h2>The hip pictures (now B1e; the text is stage 4&#39;s)</h2>
   <p>The corner at the crotch came from the table: the leg rows held the outer edge upright up to the crotch row and the hand-set hip
      rows ran it in a straight line to the waist, two straight pieces meeting in one row. From above the knee to under the waist the
      trunk is now authored as its outlines (the front view's outer edge and the gap between the legs, the side view's front and back),
@@ -41,7 +54,7 @@
   <figure><img src="hips.jpg" alt="The pelvis in matte grey, five views"><figcaption>Pure form, matte grey, no seams, panels or arms: front, three-quarter front, side, three-quarter back, back</figcaption></figure>
   <div class="grid">
     <figure><img src="hips_vs_drawings.jpg" alt="The pelvis against the drawings"><figcaption>Against the drawings (orange), the concept beside the front</figcaption></figure>
-    <figure><img src="hips_before_after.jpg" alt="Outlines before and after"><figcaption>Outlines: blue stage 3, orange now</figcaption></figure>
+    <figure><img src="hips_before_after.jpg" alt="Outlines before and after"><figcaption>Stage 4 above, now below with stage 4&#39;s outline in blue</figcaption></figure>
   </div>
 
   <h2>Hands (the reviewer's first item)</h2>
