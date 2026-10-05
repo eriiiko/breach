@@ -122,6 +122,7 @@ def mat_skin(name, skin, hair, lip_tint=(1.0, 0.80, 0.78), sss=0.18):
     h = t.math("ADD", h, t.math("MULTIPLY", stub, t.math("MULTIPLY", dots, 0.4)))
     t.set(Base_Color=col, Roughness=t.mixf(lips, t.mixf(t.noise(20.0, 2.0), 0.48, 0.60), 0.38), Subsurface_Weight=sss,
           Subsurface_Radius=(1.0, 0.45, 0.28), Subsurface_Scale=0.004, Normal=t.bump(h, 0.22, 0.0015))
+    m["game_gloss"] = 0.0  # matte in the game: its roughness would bake the armour's sheen (gameready.gloss_signal)
     return m
 
 
@@ -137,6 +138,7 @@ def mat_hair(name, hair, grey=0.0):
     h = t.math("ADD", t.math("MULTIPLY", strands, 0.8), t.math("MULTIPLY", t.noise(60.0, 3.0, 0.6), 0.4))
     t.set(Base_Color=col, Roughness=0.6, Sheen_Weight=0.12, Sheen_Roughness=0.4, Sheen_Tint=col,
           Normal=t.bump(h, 0.6, 0.002))
+    m["game_gloss_scale"] = 0.25  # a faint sheen at most in the game (gameready.gloss_signal)
     return m
 
 

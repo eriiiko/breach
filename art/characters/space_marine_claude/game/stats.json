@@ -237,5 +237,47 @@
    "export_s": 19.0,
    "total_s": 35.7
   }
+ },
+ "retexture": {
+  "asset": "assets/models/space_marine/space_marine.glb",
+  "mesh_skin_clips_unchanged": true,
+  "geometry_digest": {
+   "mesh": {
+    "views": 7,
+    "bytes": 537966,
+    "sha256": "a100f45867ef0ef77fc4e1d6422034126d55f0df941a7515c5bc3df67608aedc"
+   },
+   "skin": {
+    "views": 1,
+    "bytes": 3392,
+    "sha256": "8ee191c2c22e2795461e245e46239b9585f0156f45c3bbe7b15cabf3ea560c01"
+   },
+   "animation": {
+    "views": 6418,
+    "bytes": 960320,
+    "sha256": "589f276f30db1791163d10148389c88247453a9c1ea5cb6eacc12485c71e70f6"
+   },
+   "json": "123f3b970a59adeb4c947c43e1fb41897a1abe1d7e84dda7f750c5f1bd1ca7a8",
+   "unaccounted_views": 0
+  },
+  "bake": {
+   "missed_fraction_of_covered": 0.00522,
+   "gloss_mean": 0.0362,
+   "gloss_over_0_5": 0.0115,
+   "gloss_0_05_to_0_5": 0.2837,
+   "gloss_matte_under_0_05": 0.7048
+  },
+  "gloss": {
+   "rough_full": 0.05,
+   "rough_matte": 0.85,
+   "power": 3.0
+  },
+  "timing_s": {
+   "bake_normal_s": 7.1,
+   "bake_ao_s": 2.6,
+   "bake_emit_s": 3.8,
+   "bake_gloss_s": 3.3,
+   "total_s": 48.0
+  }
  }
 }

@@ -102,10 +102,15 @@ One command per character makes the game file:
 `blender -b --factory-startup -P art/characters/<name>/scripts/game.py` (about 3.5 min). It fuses
 the parts into one skin of 10,000 triangles, bakes one 1024-pixel texture, binds the skin to the
 game's one skeleton and converts all 46 animation clips. Output:
-`assets/models/<name>/<name>.glb` and a `LICENSE.txt`.
+`assets/models/<name>/<name>.glb` and a `LICENSE.txt`. The texture's alpha channel is a gloss
+mask baked from the materials' own roughness (a glossy visor near 1, cloth 0), which the game
+draws as the highlight -- so a material's roughness is part of its look in the game.
 
 - `-- --rig-only` redoes only the skeleton step; `-- --variant <name>` bakes another palette onto
-  the same mesh (about 45 s); `-- --evidence-only` redoes the pictures.
+  the same mesh (about 45 s); `-- --evidence-only` redoes the pictures; `-- --retexture` re-bakes
+  only the texture (colour and gloss) onto the shipped file's own mesh and swaps it into the .glb,
+  leaving mesh, skeleton and clips byte for byte (about 45 s; the saved `.blend` files are
+  gitignored and usually absent).
 - Acceptance: the marine's budget (10,000 triangles, 53 bones, 46 clips); pictures of the rigged
   model in idle, walk, pistol, death and crouch poses plus a few extreme ones, from the front
   quarter and from straight above; close-ups of face and hands; the high-resolution and game

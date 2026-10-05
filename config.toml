@@ -1655,6 +1655,65 @@ rim_albedo = 0.9    # how much the rim takes the surface's own colour:
                     # 0.9: the navy reads navy and keeps a faint lighter edge;
                     # the light marine armour keeps a near-white edge (its
                     # albedo is light). 0.75 still left the sleeves grey.
+# The highlight (#33): the local light's own colour, reflected where the
+# surface turns halfway between the light and the eye, scaled AND tightened by
+# each texel's gloss (the albedo texture's alpha, baked from the materials'
+# roughness: the marine's visor ~1, armour a little, cloth and skin ~0).
+gloss_strength = 2.0    # 0 = no highlight (the picture before #33). 2: the
+                        # marine's armour (gloss ~0.05-0.15) gets a soft sheen
+                        # on the helmet dome and plates under a near lamp; at
+                        # 1.0 it hardly shows. The workers' skin and hair bake
+                        # the SAME low gloss (roughness 0.48-0.60, the armour's
+                        # range), and on dark hair a sheen shows more: 3 made
+                        # their heads look oiled. A gloss-1 visor peaks at 2x
+                        # the lamp (tone-mapped near white) where it catches it.
+gloss_shininess = 48.0  # the highlight's exponent at gloss 1 (higher = tighter):
+                        # a visor's spot ~10 deg wide; armour, at low gloss,
+                        # stays broad (exponent ~4 + 44 x gloss)
+# Each look's own normal map, baked into its .glb from the high-res model
+# (panel lines, seams, folds).
+normal_map = true       # false = the mesh's own smooth normals
+normal_strength = 1.0   # 0 = no tilt .. 1 = the map as baked
+blob_shadow = true      # the round dark disc under each unit; false = none
+
+[render.muzzle_flash]
+# A bullet's muzzle flash (#33): a short omni lamp on the first cell outside
+# the shooter's footprint along the shot, through the sweep like every other
+# light (renderer/frame_lights.py muzzle_flash_lights; render state, never sim
+# state, no digest). One flash per shooter per shot, however many bullets the
+# burst carries. Read every frame, so F5 retunes it live.
+intensity = 12.0        # peak, in light units (a flashlight is 2.5, but aimed:
+                        # an omni lamp spreads over all 16 directions). 0 = no
+                        # flash. In the playground at 0.333 m tiles: 6 lit only
+                        # the shooter's hands; 12 throws a warm pool ~2 m
+                        # round the muzzle and catches the shooter's armour
+                        # without whiting out the floor; 24 lit half the room.
+                        # Four marines firing together at 12 = 48 light units,
+                        # inside the volley cap (64, MUZZLE_FLASH_MAX_TOTAL).
+duration_s = 0.1        # fades linearly to dark in this long (wall clock):
+                        # ~2-3 sim ticks at 24 tps -- a pop, never a lamp. The
+                        # tracer it rides lives 0.18 s, so longer is cut there
+color = [1.0, 0.82, 0.55]   # warm white, a little yellower than the flashlight
+
+[render.unit_shadow]
+# The 3D units' SHARP projected shadows (#33, tier 1;
+# renderer/unit_shadow.py): each unit's posed model drawn once more, flattened
+# onto the floor and slid away from the light, as one flat see-through dark
+# shape. Independent of blob_shadow above. Read every frame (Ctrl+R). Every
+# key is required; a missing or mistyped one raises, naming it.
+enabled = true          # false = exactly the picture without them
+length = 0.75           # shadow length as a multiple of the unit's height:
+                        # ONE elevation for every light (tier 1)
+strength = 0.35         # the most the floor darkens (0..1) under a strong,
+                        # one-sided light
+# The shadow fades in with the light around the unit: 0 at or below each
+# threshold, full strength at twice it (the two multiply).
+min_brightness = 0.05   # the light's brightness in the ship shader's units
+                        # (incoming x sweep_gain x master_gain): a dark tile
+                        # casts nothing
+min_directionality = 0.2  # |net flux| / irradiance (0 = light evenly from
+                          # all sides, 1 = one beam): balanced light casts
+                          # nothing, so the direction never flickers
 
 [render.speckle]
 mode = "soot"              # "off" | "noise" | "soot"  (A/B in studio)

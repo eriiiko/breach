@@ -9,7 +9,10 @@ A worker's `scripts/game.py` puts `charkit` on the path and calls `run(...)`; it
     every `gameready.py` option (--tris, --voxel, --rig-only, --no-rig, ...), and
     --variant NAME   re-bake that look variant (worker.VARIANTS) onto the SAME skin and UVs:
                      game/albedo_NAME.png, copied beside the asset as <name>_NAME_albedo.png,
-                     and a pose sheet of the rigged model wearing it
+                     and a pose sheet of the rigged model wearing it (when the saved
+                     game/<name>_rigged.blend exists)
+    --retexture      re-bake the asset's own albedo (gloss in alpha) into its .glb, nothing else
+                     (`gameready.retexture`)
     --evidence-only  skip the build and the rig: re-render the pose evidence from the saved
                      game/<name>_rigged.blend
 
@@ -191,6 +194,7 @@ def _own_args():
     if own["--evidence-only"]:
         sys.argv.remove("--evidence-only")
     own["variant"] = argv[argv.index("--variant") + 1] if "--variant" in argv else ""
+    own["retexture"] = "--retexture" in argv
     own["no_previews"] = "--no-previews" in argv
     own["no_rig"] = "--no-rig" in argv
     return own
@@ -219,6 +223,8 @@ def run(root, name, worker, rig_spec):
                                      walls=BODY_WALLS))
     if own["variant"]:
         variant_previews(root, name, own["variant"], prev)
+    elif own["retexture"]:
+        return  # the asset's albedo alone (gameready.retexture); the evidence renders are of the rig
     elif not own["no_rig"] and not own["no_previews"]:
         evidence(root, name, prev)
         write_index(root, name, prev)
@@ -407,6 +413,9 @@ def variant_previews(root, name, variant, prev):
     src = os.path.join(root, "game", "albedo_%s.png" % variant)
     dst = os.path.join(REPO, "assets", "models", name, "%s_%s_albedo.png" % (name, variant))
     shutil.copyfile(src, dst)
+    if not os.path.isfile(os.path.join(root, "game", name + "_rigged.blend")):
+        print("variant albedo copied to", dst, "-- no saved rigged .blend, so no pose sheet")
+        return
     T, skin = _open_rigged(root, name)
     for m in skin.data.materials:
         for n in m.node_tree.nodes:

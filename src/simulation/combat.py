@@ -288,6 +288,9 @@ class BulletInFlight:
 
         h, w = gmap.material.shape
         seg_x, seg_y = self.rx, self.ry          # tracer segment start
+        # No step marched yet: this segment leaves the muzzle (the renderer's
+        # muzzle flash; read-only, no new round state).
+        launch = self.remaining_steps == int(self.weapon.range_tiles)
 
         # Integer step budget (door 1): whole tiles this tick, fraction carries.
         self.budget_q16 += self.speed_q16
@@ -421,6 +424,7 @@ class BulletInFlight:
                     from_tile=(seg_x, seg_y),
                     to_tile=(self.rx, self.ry),
                     hit_target_id=hit_id,
+                    launch=launch,
                 ))
                 # W6 glow rounds (ammo.glow — the plasma bolt): one
                 # RENDER-ONLY position ping per advanced tick, the

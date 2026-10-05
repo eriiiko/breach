@@ -53,19 +53,29 @@ MARINE_RIM_POWER = 2.5
 # frame by UnitModelRenderer; this is only the compile-time default (white).
 MARINE_RIM_ALBEDO = 0.0
 
-# --- P2 normal-map capability (default OFF; see below) ------------------------
-# The single feel knob for how hard the tangent-space normal map perturbs the
-# mesh normal: 0 = inert (N unchanged), 1 = full map. A future real normal-mapped
-# marine asset just replaces marine_normal_PLACEHOLDER.png — no code change.
+# #33 highlight: compile-time defaults only (highlight OFF). The shipped values
+# are config.toml [render.unit_shading] gloss_strength / gloss_shininess,
+# pushed per frame by UnitModelRenderer. The per-texel gloss is the albedo
+# texture's ALPHA (charkit/gameready.py bakes it from the materials' roughness).
+MARINE_GLOSS_STRENGTH = 0.0
+MARINE_GLOSS_SHININESS = 64.0
+
+# --- P2 normal-map capability -------------------------------------------------
+# How hard the tangent-space normal map perturbs the mesh normal: 0 = inert
+# (N unchanged), 1 = full map. Compile-time defaults only: since #33 every look
+# binds the normal map baked into its own .glb, and config.toml
+# [render.unit_shading] normal_map / normal_strength drive the guard and the
+# strength per frame.
 MARINE_NORMAL_STRENGTH = 1.0
-# Default state of the u_use_normal_marine guard. Ships OFF: the bundled asset is
-# UNTEXTURED (flat base-colour, no authored albedo/normal map), so the placeholder
-# normal map proves the plumbing but does NOT visibly improve this model — the
-# payoff awaits a real normal-mapped marine asset. Flip to True (or drive the
-# uniform) once such an asset is dropped in. See VERIFY note in the P2 patch.
 MARINE_USE_NORMAL_DEFAULT = False
-# Filename of the placeholder normal map, resolved next to the model asset.
+# A file of this name next to a model is bound when its .glb carries no normal
+# map of its own (none of the shipped looks needs it).
 MARINE_NORMAL_MAP_FILENAME = "marine_normal_PLACEHOLDER.png"
+# The green-channel sign of the looks' own maps (#33): Blender bakes +Y along
+# its UV v, which runs UP the image; glTF (and raylib reading it) flips v to run
+# DOWN, and cotangent_frame's B follows the texture coordinate as the shader
+# sees it -- so green is negated. Multiplied with the ship's H-toggle sign.
+UNIT_NORMAL_Y_SIGN = -1.0
 
 MARINE_VS = """#version 330
 // Lit-marine vertex shader. The mesh is CPU-skinned upstream
@@ -117,6 +127,8 @@ uniform vec3  u_view_dir;      // direction toward the eye (ortho ~ (0,1,0))
 uniform float u_rim_strength;
 uniform float u_rim_power;
 uniform float u_rim_albedo;    // #33: rim colour = mix(white, albedo, this)
+uniform float u_gloss_strength;  // #33: highlight strength (0 = no highlight)
+uniform float u_gloss_shininess; // #33: highlight exponent at gloss 1
 uniform int   u_srgb_decode;
 uniform int   u_use_normal_marine; // P2 guard: 0 = inert (N unchanged), 1 = on
 uniform float u_normal_strength;   // P2 perturbation strength (feel knob)
@@ -168,11 +180,25 @@ void main() {
     // top-down token (design v2 §Bugs).
     float ndotl = dot(N, L) * 0.5 + 0.5;
 
-    vec3 albedo = texture(texture0, fragTexCoord).rgb;
+    vec4 albedo_gloss = texture(texture0, fragTexCoord);
+    vec3 albedo = albedo_gloss.rgb;
+    float gloss = albedo_gloss.a;  // #33: the bake's gloss mask (0 matte .. 1 glossiest)
     if (u_srgb_decode == 1) albedo = srgb_to_linear(albedo);  // else double-dark
     albedo *= colDiffuse.rgb;                                  // draw colour
 
     vec3 lit = albedo * (u_ambient + incoming_rgb * u_light_gain * ndotl);
+
+    // #33 highlight (Blinn-Phong): the LOCAL light's own colour, never the
+    // ambient (a dark room puts no shine on a visor), scaled AND tightened by
+    // the texel's gloss -- a visor gets a small bright spot, a plate a broad
+    // faint sheen, cloth nothing. Faded out where the surface turns away from
+    // the light (dot(N, L) < 0) so the lobe never lights a back face.
+    vec3 H = normalize(L + u_view_dir);
+    float shininess = mix(4.0, u_gloss_shininess, gloss);
+    float spec = u_gloss_strength * gloss
+               * pow(max(dot(N, H), 0.0), shininess)
+               * clamp(dot(N, L) * 4.0, 0.0, 1.0);
+    lit += spec * incoming_rgb * u_light_gain;
 
     // Rim: Fresnel-ish silhouette term, tinted by the LOCAL light so it never
     // brightens a marine the room around it can't (dark room -> faint ambient
@@ -186,7 +212,8 @@ void main() {
     if (u_srgb_decode == 1) lit = linear_to_srgb(lit);
 
     // alpha = 1.0: the world RT is blitted premultiplied; a translucent marine
-    // would bleed the background through (design v2 §Bugs).
+    // would bleed the background through (design v2 §Bugs). The texture's
+    // alpha is the gloss mask (#33), never coverage.
     finalColor = vec4(lit, 1.0);
 }
 """
@@ -238,6 +265,16 @@ class MarineShader:
                             rl.ffi.new("float[1]", [float(amount)]),
                             rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
 
+    def set_gloss(self, strength: float, shininess: float) -> None:
+        """#33 highlight: strength (0 = none) and its exponent at gloss 1.
+        Safe to call anytime -- SetShaderValue self-enables the program."""
+        rl.set_shader_value(self.shader, self.locs["u_gloss_strength"],
+                            rl.ffi.new("float[1]", [float(strength)]),
+                            rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
+        rl.set_shader_value(self.shader, self.locs["u_gloss_shininess"],
+                            rl.ffi.new("float[1]", [float(shininess)]),
+                            rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
+
     def set_use_normal(self, enabled: bool) -> None:
         """P2 on/off. Clean, zero-cost when off (the fragment guard skips the
         whole TBN+sample path). Safe to call anytime — SetShaderValue self-
@@ -271,7 +308,7 @@ def load_marine_shader(light_z: float = MARINE_LIGHT_Z,
     names = ["u_ambient", "u_light_gain", "u_light_z", "u_normal_y_sign",
              "u_world_px", "u_view_dir", "u_rim_strength", "u_rim_power",
              "u_srgb_decode", "u_use_normal_marine", "u_normal_strength",
-             "u_rim_albedo"]
+             "u_rim_albedo", "u_gloss_strength", "u_gloss_shininess"]
     locs = {n: rl.get_shader_location(shader, n) for n in names}
 
     # P2 normal map: bind the ROUGHNESS(3) material slot to the `texture3`
@@ -298,6 +335,12 @@ def load_marine_shader(light_z: float = MARINE_LIGHT_Z,
     rl.set_shader_value(shader, locs["u_rim_albedo"],
                         rl.ffi.new("float[1]", [float(MARINE_RIM_ALBEDO)]),
                         rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
+    rl.set_shader_value(shader, locs["u_gloss_strength"],
+                        rl.ffi.new("float[1]", [float(MARINE_GLOSS_STRENGTH)]),
+                        rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
+    rl.set_shader_value(shader, locs["u_gloss_shininess"],
+                        rl.ffi.new("float[1]", [float(MARINE_GLOSS_SHININESS)]),
+                        rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
     rl.set_shader_value(shader, locs["u_srgb_decode"],
                         rl.ffi.new("int[1]", [1 if srgb_decode else 0]),
                         rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
@@ -318,6 +361,6 @@ def load_marine_shader(light_z: float = MARINE_LIGHT_Z,
 
 __all__ = ["load_marine_shader", "MarineShader", "MARINE_VS", "MARINE_FS",
            "MARINE_LIGHT_Z", "MARINE_RIM_STRENGTH", "MARINE_RIM_POWER",
-           "MARINE_RIM_ALBEDO",
+           "MARINE_RIM_ALBEDO", "MARINE_GLOSS_STRENGTH", "MARINE_GLOSS_SHININESS",
            "MARINE_NORMAL_STRENGTH", "MARINE_USE_NORMAL_DEFAULT",
-           "MARINE_NORMAL_MAP_FILENAME"]
+           "MARINE_NORMAL_MAP_FILENAME", "UNIT_NORMAL_Y_SIGN"]

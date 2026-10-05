@@ -751,6 +751,7 @@ def run(args, root, name, build, make_materials, spec, out_glb, previews_dir=Non
                               export_animations=True, export_animation_mode="ACTIONS", export_force_sampling=True,
                               export_frame_step=1, export_anim_single_armature=True, export_reset_pose_bones=True,
                               export_morph=False, export_cameras=False, export_lights=False)
+    gameready._splice_albedo(out_glb, os.path.join(game, "albedo.png"))  # the gloss mask in its alpha (#33)
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(game, name + "_rigged.blend"))
     timing["export_s"] = round(time.time() - t, 1)
     timing["total_s"] = round(time.time() - t0, 1)
