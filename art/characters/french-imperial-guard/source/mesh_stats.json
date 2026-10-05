@@ -1,0 +1,51 @@
+{
+ "Boots": {
+  "objects": 9,
+  "source_tris": 101032,
+  "evaluated_tris": 264784
+ },
+ "Uniform": {
+  "objects": 16,
+  "source_tris": 250942,
+  "evaluated_tris": 968788
+ },
+ "Hands": {
+  "objects": 6,
+  "source_tris": 25052,
+  "evaluated_tris": 50104
+ },
+ "Head": {
+  "objects": 8,
+  "source_tris": 192080,
+  "evaluated_tris": 245648
+ },
+ "Pelisse": {
+  "objects": 9,
+  "source_tris": 170642,
+  "evaluated_tris": 286590
+ },
+ "Plumes": {
+  "objects": 2,
+  "source_tris": 65520,
+  "evaluated_tris": 65520
+ },
+ "Shako": {
+  "objects": 11,
+  "source_tris": 38364,
+  "evaluated_tris": 54776
+ },
+ "TOTAL": {
+  "objects": 61,
+  "source_tris": 843632,
+  "evaluated_tris": 1936210
+ },
+ "NORMALS": {
+  "flipped": [
+   "Guard_Eye_L",
+   "Guard_Eye_R"
+  ],
+  "closed": 61,
+  "open": [],
+  "undecided": []
+ }
+}
