@@ -57,8 +57,8 @@ DIRT = 0.0  # a dress uniform: no grime layer (kept for the shared driver)
 # back views put them side by side, black on HIS right, red on HIS left; the side view shows
 # the black one leaning forward -- one 3-D arrangement fits all three.
 PLUMES = (
-    dict(colour="PLUME_BLACK", tip=None, tip_from=0.75, r=0.064,
-         path=((-0.006, -0.050, 1.880), (-0.008, -0.095, 1.975), (-0.010, -0.150, 2.075), (-0.010, -0.160, 2.170))),
+    dict(colour="PLUME_BLACK", tip=None, tip_from=0.75, r=0.060,
+         path=((-0.006, -0.050, 1.880), (-0.008, -0.090, 1.975), (-0.010, -0.142, 2.075), (-0.010, -0.150, 2.168))),
     dict(colour="PLUME_RED", tip=None, tip_from=0.75, r=0.045,
          path=((0.070, 0.004, 1.885), (0.115, 0.004, 1.960), (0.138, 0.002, 2.050), (0.140, 0.000, 2.115))),
 )
@@ -119,7 +119,7 @@ DIMS = dict(
     crotch_z=0.738,
     hand=dict(scale=1.0, curl=1.8, girth=1.0, palm_girth=1.0, drop=0.004, down=(0.32, -0.18, -1.0), back=(0.82, -0.55, 0.0)),
     boot=dict(
-        ankle=(0.125, 0.040), toe_out=7.0, sole=0.011, heel=0.032, ball_y=-0.110, heel_front_y=0.040,
+        ankle=(0.125, 0.030), toe_out=13.0, sole=0.011, heel=0.032, ball_y=-0.110, heel_front_y=0.040,
         # foot, toe -> heel: (y along the foot from the ankle, half-width, height of the upper)
         profile=((-0.222, .006, .012), (-0.214, .024, .028), (-0.198, .036, .040), (-0.172, .043, .049), (-0.135, .046, .062),
                  (-0.095, .044, .078), (-0.055, .041, .094), (-0.020, .040, .108), (0.015, .040, .110), (0.040, .039, .100),
@@ -138,17 +138,17 @@ DIMS = dict(
         dolman_hem=1.050,              # the dolman's hem; the breeches run up under it to `breeches_top`
         breeches_top=1.120,
         armhole=dict(x=0.160, z=1.480, tilt=3.0),
-        cuff=dict(top=1.040, point=0.070, point_w=70.0, lift=0.0035, edge=0.004),   # red pointed cuff: top at the inside, point height, half-width deg
+        cuff=dict(top=1.040, point=0.070, point_w=70.0, point_phi=40.0, lift=0.0035, edge=0.004),   # red pointed cuff: top at the inside, point height, half-width deg
         chevrons=dict(n=2, gap=0.022, drop=0.040, half=0.060),
         collar=dict(z=(1.520, 1.590), cy=-0.012, a=0.072, bf=0.074, bb=0.070, lift=0.004, gap=0.010),
         # chest frogging: rows from z0 to z1, half-width at the bottom / top, loops, the button columns
-        frogs=dict(z0=1.200, z1=1.455, n=16, w0=0.085, w1=0.118, loop=0.009, buttons=(0.0, 0.060), button_r=0.0055),
+        frogs=dict(z0=1.200, z1=1.455, n=16, w0=0.085, w1=0.118, loop=0.012, buttons=(0.0, 0.060), button_r=0.0055),
         edging=0.0030,                 # lace half-width of the hem edging, collar and seams (m)
         back=dict(curve=((0.150, 1.415), (0.128, 1.300), (0.098, 1.165)), knot=0.014, centre=(1.390, 1.160)),
         shoulder_cord=((0.040, 1.512), (0.170, 1.478)),
         belt=dict(start=(0.120, 1.470), end=(-0.182, 1.080), width=0.050, lift=0.007, badge=0.40),
         sash=dict(z=(1.075, 1.150), lift=0.010, thick=0.012, barrels=8, plate=(0.050, 0.055)),
-        sash_cords=dict(hang=(-0.150, 1.080), ring=(-0.196, 1.035), tassels=((-0.110, 0.955), (-0.090, 0.950)), r=0.0035,
+        sash_cords=dict(hang=(-0.150, 1.080), ring=(-0.205, 1.035), tassels=((-0.110, 0.955), (-0.090, 0.950)), r=0.0035,
                         tassel=dict(length=0.062, r_head=0.008, r_skirt=0.013)),
         stripe=dict(gap=0.006),        # the breeches' double outer stripe, either side of the outer seam
         knot=dict(x=0.100, top=1.045, height=0.190, width=0.075),
@@ -156,14 +156,14 @@ DIMS = dict(
     ),
     pelisse=dict(
         # the pelisse's own loft, centred to his LEFT: (z, centre x, centre y, half-width, front, back)
-        rings=((1.040, .070, .000, .330, .160, .165), (1.130, .068, .004, .320, .158, .168), (1.230, .060, .006, .302, .150, .164),
-               (1.330, .052, .008, .288, .144, .148), (1.410, .046, .010, .265, .134, .126), (1.470, .040, .012, .238, .118, .108),
-               (1.515, .028, .012, .196, .100, .092), (1.540, .012, .008, .124, .088, .082), (1.556, .004, .004, .088, .082, .078)),
+        rings=((1.040, .055, .000, .315, .160, .150), (1.130, .055, .004, .308, .158, .152), (1.230, .052, .006, .296, .150, .156),
+               (1.330, .050, .008, .286, .144, .146), (1.410, .046, .010, .265, .134, .122), (1.470, .040, .012, .238, .118, .100),
+               (1.510, .028, .012, .172, .100, .086), (1.542, .012, .008, .118, .088, .080), (1.568, .004, .004, .088, .082, .078)),
         n=2.8,
         front_x=0.040,                  # its front edge, just to his left of the centre front
-        back_x=((1.050, -0.180), (1.200, -0.110), (1.330, -0.055), (1.460, -0.012), (1.570, 0.000)),  # its other edge across his back
+        back_x=((1.050, -0.150), (1.200, -0.100), (1.330, -0.055), (1.460, -0.012), (1.570, 0.000)),  # its other edge across his back
         hem=(1.060, 1.095),             # the hem's height at the back and at the front
-        fur=dict(r=0.024, flat=0.62, collar_z=1.465, collar_h=0.020),
+        fur=dict(r=0.024, flat=0.62, collar_z=1.465, collar_h=0.016),
         frogs=dict(z0=1.190, z1=1.440, n=12, w=0.085, loop=0.008),
         # the two empty sleeves: centre line top -> bottom, half-width along `wide` / half-depth,
         # the fur cuff (length up from the end), `face` = the broad side the chevrons are on.
@@ -172,21 +172,21 @@ DIMS = dict(
         # RIGHT: it hangs out from under the hem behind his left hip, between the hip and the arm
         # (where the front and back views both draw a dark piece with a fur end and the back view
         # chevrons, and the side view a fur cuff behind the hip).
-        sleeves=(dict(name="L", path=((0.300, 0.020, 1.400), (0.405, 0.020, 1.230), (0.440, 0.010, 1.080), (0.448, 0.000, 0.975)),
+        sleeves=(dict(name="L", path=((0.250, 0.020, 1.380), (0.360, 0.015, 1.200), (0.428, 0.005, 1.060), (0.445, 0.000, 0.975)),
                       a=0.058, b=0.026, wide=(0.0, 1.0, 0.0), face=(1.0, 0.0, 0.0), cuff=0.065),
-                 dict(name="R", path=((0.190, 0.105, 1.300), (0.212, 0.155, 1.120), (0.218, 0.180, 0.980), (0.215, 0.188, 0.880)),
-                      a=0.052, b=0.040, wide=(1.0, 0.0, 0.0), face=(0.0, 1.0, 0.0), cuff=0.070)),
+                 dict(name="R", path=((0.185, 0.075, 1.240), (0.200, 0.095, 1.080), (0.207, 0.140, 0.970), (0.205, 0.165, 0.880)),
+                      a=0.052, b=0.036, wide=(1.0, 0.0, 0.0), face=(0.0, 1.0, 0.0), cuff=0.070)),
     ),
     shako=dict(
-        rings=((1.708, -.030, .096, .106, .108), (1.750, -.024, .104, .113, .111), (1.808, -.016, .116, .121, .116),
-               (1.856, -.010, .123, .126, .121), (1.895, -.006, .127, .129, .124)),
+        rings=((1.702, -.030, .096, .106, .108), (1.746, -.024, .108, .113, .111), (1.805, -.016, .120, .121, .116),
+               (1.854, -.010, .123, .126, .121), (1.894, -.006, .127, .129, .124)),
         tilt=6.0, band=(0.026, 0.002),
-        peak=dict(length=0.060, droop=0.010, span=72.0, thick=0.004),
+        peak=dict(length=0.066, droop=0.010, span=72.0, thick=0.004),
         plate=dict(dz=0.105, hs=0.034, ht=0.046, lift=0.003),
         cockade=dict(dz=0.014, r=0.016, rim=0.004),
         cords=dict(r=0.0045, front=(0.040, 0.140), back=(0.040, 0.120)),
-        tassel=dict(side=-1, dz=0.050, x=0.122, y=-0.030, drop=0.170, length=0.085, r_head=0.010, r_skirt=0.017),
-        chain=dict(dz=0.008, r=0.0060, flat=0.45, lift=0.006, path_z=(1.660, 1.605), path_y=(-0.050, -0.088), chin=(0.0, -0.122, 1.558)),
+        tassel=dict(side=-1, dz=0.050, x=0.124, y=-0.030, drop=0.185, length=0.085, r_head=0.010, r_skirt=0.017),
+        chain=dict(dz=0.008, r=0.0060, flat=0.45, lift=0.010, path_z=(1.660, 1.605), path_y=(-0.050, -0.088), chin=(0.0, -0.122, 1.558)),
     ),
 )
 
@@ -197,13 +197,13 @@ DIMS = dict(
 HEAD = dict(
     rings=((1.455, -.004, .062, .062, .062, 2.0), (1.505, -.008, .058, .058, .060, 2.0), (1.545, -.012, .053, .056, .058, 2.0),
            (1.561, -.017, .057, .076, .062, 2.2), (1.571, -.023, .060, .104, .068, 2.2), (1.587, -.027, .061, .110, .074, 2.2),
-           (1.615, -.029, .064, .107, .076, 2.2), (1.645, -.029, .069, .104, .082, 2.3), (1.680, -.029, .074, .100, .094, 2.3),
-           (1.715, -.028, .078, .098, .096, 2.3)),
+           (1.615, -.029, .067, .107, .076, 2.2), (1.645, -.029, .073, .104, .082, 2.3), (1.680, -.029, .078, .100, .094, 2.3),
+           (1.715, -.028, .081, .098, .096, 2.3)),
     crown=(1.801, 2.2),
     eye_z=1.683, nose_z=1.643, mouth_z=1.611, chin_z=1.575,
     jaw=(-0.123, 1.567, 0.007, 1.619, 0.010),
     nose_proj=0.028, eye_dx=0.032, eye_r=0.0120, eye_sink=0.0005,
-    ear=dict(z=1.633, y=-0.015, h=0.066, w=0.033, tilt=14.0, flare=38.0, sink=0.002),
+    ear=dict(z=1.633, y=-0.015, h=0.066, w=0.033, tilt=14.0, flare=44.0, sink=0.002),
     stubble=0.25,
     brow=dict(gain=2.6),
     # the moustache: a full one over the upper lip, drooping a little at the ends: (x, dz from
@@ -229,7 +229,7 @@ BEAUTY = {
     "torso_back": (180.0, -12.0, 6.0, 2.4, 1.28, 85.0, (1300, 1300)),
     "pelisse": (180.0, 40.0, 10.0, 3.0, 1.22, 85.0, (1300, 1400)),
     "boots": (0.0, 24.0, 8.0, 2.4, 0.30, 85.0, (1400, 1200)),
-    "top": (0.0, 0.0, 89.0, 5.0, 1.00, 85.0, (1200, 1200)),
+    "top": (0.0, 0.0, 89.0, 4.2, 1.00, 85.0, (1200, 1200)),
     "elevated": (0.0, 35.0, 52.0, 5.6, 1.00, 85.0, (1200, 1400)),
 }
 

@@ -184,7 +184,8 @@ def build_body(F, M, coll="Uniform"):
 
     cf = g["cuff"]
     t_cuff = az(cf["top"])
-    cuff_top = lambda phi: t_cuff + cf["point"] * np.clip(1.0 - np.abs(wrap(phi)) / D(cf["point_w"]), 0.0, 1.0)
+    pp = D(cf.get("point_phi", 0.0))  # where round the arm the point stands (0 outside, 90 deg front)
+    cuff_top = lambda phi: t_cuff + cf["point"] * np.clip(1.0 - np.abs(wrap(phi - pp)) / D(cf["point_w"]), 0.0, 1.0)
     ch = g["chevrons"]
     r_c = float(A.radius([0.0], [t_cuff])[0])
     chev = []
@@ -193,7 +194,7 @@ def build_body(F, M, coll="Uniform"):
         chev.append(np.array([[-ch["half"], tp - ch["drop"]], [0.0, tp], [ch["half"], tp - ch["drop"]]]))
 
     def sleeve_lace(gr):
-        Q = np.column_stack([(wrap(gr.phi) * gr.r).ravel(), gr.t.ravel()])
+        Q = np.column_stack([(wrap(gr.phi - pp) * gr.r).ravel(), gr.t.ravel()])
         return line_value(polyline_dist(Q, chev).reshape(gr.phi.shape))
 
     sleeve = loft_mesh("Dolman_Sleeve", A, res=kit.RES * 0.85, mat=M["dolman"], coll=coll,

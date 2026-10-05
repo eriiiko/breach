@@ -12,7 +12,7 @@ crown on row 221.4 -- 32 px above the shako's peak (row 253), so the shako sits 
 down over the skull.
 
 The side view faces image-LEFT, so it shows his left side and is re-shot from his left (+90).
-Panel centres: the front and back views' feet (columns 178 and 675); the side view's at the
+Panel centres: the front and back views' feet (columns 180 and 675; the front's legs are 2 px off symmetric); the side view's at the
 column that puts the model's mid-plane where the sheet's body is (fitted, `ref_measure.py`).
 """
 import os
@@ -29,5 +29,5 @@ M_PER_PX = EYE_FRACTION * HEIGHT_M / (FOOT_ROW - EYE_ROW)  # 0.0030270
 TOP_ROW = FOOT_ROW - HEIGHT_M / M_PER_PX                   # 221.4: the crown of the skull
 
 SHEET = MaskedSheet(REF_PATH, MASK_PATH, foot_row=FOOT_ROW, top_row=TOP_ROW, height_m=HEIGHT_M,
-                    panels=(("front", 178, 336), ("side", 440, 170), ("back", 675, 300)),
+                    panels=(("front", 180, 336), ("side", 440, 170), ("back", 675, 300)),
                     azimuth={"side": 90.0})
