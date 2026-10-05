@@ -98,7 +98,9 @@ def main():
     parser=argparse.ArgumentParser();parser.add_argument("--candidate",type=int,choices=(1,2),required=True)
     args=parser.parse_args(sys.argv[sys.argv.index("--")+1:] if "--" in sys.argv else [])
     # Candidate 2 is specified only after inspecting the first, never a parameter grid.
-    parameters={1:{"compression":.13,"bending":.045,"pressure":.6}}
+    parameters={1:{"compression":.13,"bending":.045,"pressure":.6},
+                2:{"compression":.18,"bending":.014,"pressure":.4,"sides":96,
+                   "ring_spacing":.003,"localized":True,"solver_quality":12}}
     if args.candidate not in parameters:raise RuntimeError("Candidate 2 has not been specified from the first review")
     prefix=f"candidate_{args.candidate}"
     baseline=check_baseline()
@@ -121,7 +123,10 @@ def main():
             if skin_object(obj):originals.append(obj)
     if args.candidate==1:render_pair("baseline")
     for obj in originals:obj.hide_render=True;obj.hide_set(True)
-    obj,meta=compressed_limb(author,"STUDY / candidate sleeve",sleeve_profiles(),[(1.008,1.137),(1.239,1.427)],**parameters[args.candidate])
+    cloth_ranges=[(1.008,1.137),(1.239,1.427)] if args.candidate==1 else [(1.008,1.149),(1.226,1.427)]
+    elbow_surface=bpy.data.objects["Elbow R / compressed flex"] if args.candidate==2 else None
+    obj,meta=compressed_limb(author,"STUDY / candidate sleeve",sleeve_profiles(extended_cuff=args.candidate==2),
+                             cloth_ranges,elbow_surface=elbow_surface,**parameters[args.candidate])
     obj.parent=bpy.data.objects["SPACE MARINE / move the complete source"]
     bake_compressed_cloth([obj])
     deltas=[(obj.data.vertices[i].co-meta["final"][i]).length for i in meta["pin_indices"]]
@@ -134,7 +139,10 @@ def main():
     positions=[v.co for v in obj.data.vertices]
     obj.data.calc_loop_triangles()
     metrics={"candidate":args.candidate,"parameters":parameters[args.candidate],
-             "simulation_frames":42,"solver_quality":10,"pressure_factor":.5,
+             "simulation_frames":42,"solver_quality":meta["solver_quality"],"pressure_factor":.5,
+             "soft_seam_restraint_vertices":meta["soft_pin_vertices"],
+             "cloth_ranges_local_z_metres":cloth_ranges,
+             "flex_shape_resampled_from_baseline":args.candidate==2,
              "source_vertices":len(obj.data.vertices),"source_triangles":len(obj.data.loop_triangles),
              "max_pinned_endpoint_error_metres":max(deltas),
              "finite_geometry":all(math.isfinite(value) for co in positions for value in co),
