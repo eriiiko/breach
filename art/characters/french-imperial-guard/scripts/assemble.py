@@ -262,12 +262,12 @@ def build_belt_and_sash(F, M, coll="Uniform"):
     # cords from the sash at his right hip, a ring, two tassels
     sc = g["sash_cords"]
     Ph, _ = half_body_pn(B, [sc["hang"][0]], [sc["hang"][1]], offset=sh["lift"] + 0.012)
-    Pr, _ = half_body_pn(B, [sc["ring"][0]], [sc["ring"][1]], offset=0.030)
+    Pr, _ = half_body_pn(B, [sc["ring"][0]], [sc["ring"][1]], offset=0.022)
     braid.cord("Sash_Cord_Loop", [Ph[0], 0.5 * (Ph[0] + Pr[0]) + np.array([-0.008, -0.010, -0.005]), Pr[0]], r=sc["r"], mat=M["braid"], coll=coll)
     ring_pts = [Pr[0] + 0.012 * np.array([0.0, math.cos(a), math.sin(a)]) for a in np.linspace(0, TAU, 25)]
     kit.tube("Sash_Cord_Ring", np.array(ring_pts[:-1]), r=0.0028, closed=True, n_u=8, mat=M["braid"], coll=coll)
     for i, (x, z) in enumerate(sc["tassels"]):
-        Pt, _ = half_body_pn(B, [x], [z + 0.002], offset=0.022 + 0.004 * i)
+        Pt, _ = half_body_pn(B, [x], [z + 0.002], offset=0.012 + 0.004 * i)
         braid.cord("Sash_Cord_%d" % i, [Pr[0], 0.5 * (Pr[0] + Pt[0]) + np.array([0.0, -0.006, 0.0]), Pt[0]], r=sc["r"], mat=M["braid"], coll=coll)
         tt = sc["tassel"]
         braid.tassel("Sash_Tassel_%d" % i, Pt[0], tt["length"], tt["r_head"], tt["r_skirt"], mat=M["braid"], coll=coll)
@@ -276,7 +276,7 @@ def build_belt_and_sash(F, M, coll="Uniform"):
 # ---------------------------------------------------------------------- pelisse
 def build_pelisse(F, M, coll="Pelisse"):
     pd = F.d["pelisse"]
-    lo = Loft([dict(p=(cx, cy, z), a=a, bf=bf, bb=bb, n=2.4, t=(0.0, 0.0, 1.0)) for z, cx, cy, a, bf, bb in pd["rings"]])
+    lo = Loft([dict(p=(cx, cy, z), a=a, bf=bf, bb=bb, n=pd.get("n", 2.4), t=(0.0, 0.0, 1.0)) for z, cx, cy, a, bf, bb in pd["rings"]])
     L = lo.L
     ts = np.linspace(0.0, L, 240)
     zc = lo.frames(ts)[0][:, 2]
@@ -332,40 +332,57 @@ def build_pelisse(F, M, coll="Pelisse"):
     r = fu["r"]
     tt = np.linspace(t_lo(1.0), L, 30)
     P, _ = lo.pn(pf(tt), tt, 0.4 * r)
-    fur.fur_roll("Pelisse_Fur_Front", P, r, seed=11, mat=M["fur"], coll=coll)
+    fur.fur_roll("Pelisse_Fur_Front", P, r, seed=11, flat=fu["flat"], up=_outward(lo, pf(tt), tt), mat=M["fur"], coll=coll)
     tt = np.linspace(t_lo(0.0), L, 30)
     P, _ = lo.pn(pb(tt), tt, 0.4 * r)
-    fur.fur_roll("Pelisse_Fur_Back", P, r, seed=12, mat=M["fur"], coll=coll)
+    fur.fur_roll("Pelisse_Fur_Back", P, r, seed=12, flat=fu["flat"], up=_outward(lo, pb(tt), tt), mat=M["fur"], coll=coll)
     vv = np.linspace(0.0, 1.0, 60)
     th = t_lo(vv)
-    P, _ = lo.pn(pb(th) + vv * (pf(th) + TAU - pb(th)), th, 0.4 * r)
-    fur.fur_roll("Pelisse_Fur_Hem", P, r, seed=13, mat=M["fur"], coll=coll)
-    rc = fu["collar_r"]
-    tc = L - 0.004
-    vv = np.linspace(0.0, 1.0, 40)
-    P, _ = lo.pn(pb(tc) + vv * (pf(tc) + TAU - pb(tc)), np.full(len(vv), tc), 0.5 * rc)
-    fur.fur_roll("Pelisse_Fur_Collar", P + Z * 0.008, rc, seed=14, flat=0.9, mat=M["fur"], coll=coll)
+    ph_h = pb(th) + vv * (pf(th) + TAU - pb(th))
+    P, _ = lo.pn(ph_h, th, 0.4 * r)
+    fur.fur_roll("Pelisse_Fur_Hem", P, r, seed=13, flat=fu["flat"], up=_outward(lo, ph_h, th), mat=M["fur"], coll=coll)
+    # the shawl collar: a band of fur lying over the top of the pelisse, round the neck
+    t_col = tz(fu["collar_z"])
+    tcol_of = lambda u, v: t_col + u * (L - t_col)
+    fur.fur_patch("Pelisse_Fur_Collar", lo, lambda u, v: pb(tcol_of(u, v)) - 0.05 + v * (pf(tcol_of(u, v)) + TAU + 0.10 - pb(tcol_of(u, v))), tcol_of,
+                  fu["collar_h"], seed=14, mat=M["fur"], coll=coll)
 
-    # the empty left sleeve hanging outside and behind the arm, fur at its end, chevrons above
-    sl = pd["sleeve"]
+    # the two empty sleeves (`pd["sleeves"]`): a flattened tube along each centre line, a fur
+    # cuff over its last `cuff` metres, gold chevrons on its broad face towards `face`
+    for k, sl in enumerate(pd["sleeves"]):
+        build_empty_sleeve("Pelisse_Sleeve_%s" % sl["name"], sl, M, coll, seed=15 + k)
+    return lo
+
+
+def build_empty_sleeve(name, sl, M, coll, seed=15):
     c = smooth_path(sl["path"], 60)
     Ls = float(np.linalg.norm(np.diff(c, axis=0), axis=1).sum())
     flat = sl["b"] / sl["a"]
-    up = np.array([1.0, -0.15, 0.0])
-    cuff_u = 1.0 - sl["cuff"] / Ls
-    chev = [np.array([[-0.05, (cuff_u - 0.03 - 0.06 * i) * Ls + 0.035], [0.0, (cuff_u - 0.03 - 0.06 * i) * Ls], [0.05, (cuff_u - 0.03 - 0.06 * i) * Ls + 0.035]])
+    wide = unit(np.asarray(sl["wide"], float))
+    T = unit(np.gradient(c, axis=0))
+    Nn = unit(wide[None, :] - (T @ wide)[:, None] * T)
+    Bn = np.cross(T, Nn)
+    al_c = 0.5 * math.pi * (1.0 if Bn[len(c) // 2] @ np.asarray(sl["face"], float) >= 0 else -1.0)
+    t_c = Ls - sl["cuff"]
+    chev = [np.array([[-0.045, t_c - 0.012 - 0.024 * i - 0.030], [0.0, t_c - 0.012 - 0.024 * i], [0.045, t_c - 0.012 - 0.024 * i - 0.030]])
             for i in range(2)]
-    # chevrons drawn on the sleeve's outer face (angle 0 = `up`), in (s around, t along) metres
+    r_m = 0.5 * (sl["a"] + sl["b"])
 
-    def sleeve_lace(UU, AL):
-        Q = np.column_stack([(wrap(AL) * sl["a"]).ravel(), (UU * Ls).ravel()])
+    def lace(UU, AL):  # chevrons point up the sleeve, drawn on the broad face round angle al_c
+        Q = np.column_stack([(wrap(AL - al_c) * r_m).ravel(), (UU * Ls).ravel()])
         return line_value(polyline_dist(Q, chev).reshape(UU.shape))
 
-    swept("Pelisse_Sleeve", c, sl["a"], n_u=48, flat=flat, up=up, attrs=dict(braid=sleeve_lace), mat=M["pelisse"], coll=coll)
-    k0 = int(cuff_u * (len(c) - 1))
-    fur.fur_roll("Pelisse_Sleeve_Fur", c[k0:] + (c[-1] - c[-2]) * 0.0, sl["a"] + 0.012, seed=15, flat=(sl["b"] + 0.012) / (sl["a"] + 0.012), up=up,
-                 mat=M["fur"], coll=coll)
-    return lo
+    swept(name, c, sl["a"], n_u=48, flat=flat, up=Nn, attrs=dict(braid=lace), mat=M["pelisse"], coll=coll)
+    k0 = int((1.0 - sl["cuff"] / Ls) * (len(c) - 1))
+    fur.fur_roll(name + "_Fur", c[k0:], sl["a"] + 0.012, seed=seed, flat=(sl["b"] + 0.012) / (sl["a"] + 0.012), up=Nn[k0:], mat=M["fur"], coll=coll)
+
+
+def _outward(lo, phi, t):
+    """Per point: the direction ALONG the surface across a fur roll lying on it, so its
+    `flat` squashes it towards the surface (the roll's frame: first axis = this)."""
+    P, N = lo.pn(phi, t)
+    T = np.gradient(P, axis=0)
+    return unit(np.cross(N, T))
 
 
 # ------------------------------------------------------------------- hands, boots

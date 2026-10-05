@@ -30,8 +30,8 @@ PALETTE = dict(
     SCLERA="#ddd6cc",
     IRIS="#4d5e6e",
     LIP_TINT=(1.0, 0.82, 0.80),
-    DOLMAN="#273246",        # dark navy broadcloth
-    PELISSE="#263145",
+    DOLMAN="#151b29",        # dark navy broadcloth
+    PELISSE="#151b29",
     CUFF="#b02a20",          # the dolman's pointed cuffs
     BREECHES="#a8301f",
     GOLD="#d6b062",          # lace, braid, cords, the cross-belt, boot trim
@@ -57,9 +57,9 @@ DIRT = 0.0  # a dress uniform: no grime layer (kept for the shared driver)
 # back views put them side by side, black on HIS right, red on HIS left; the side view shows
 # the black one leaning forward -- one 3-D arrangement fits all three.
 PLUMES = (
-    dict(colour="PLUME_BLACK", tip=None, tip_from=0.75, r=0.068,
+    dict(colour="PLUME_BLACK", tip=None, tip_from=0.75, r=0.064,
          path=((-0.006, -0.050, 1.880), (-0.008, -0.095, 1.975), (-0.010, -0.150, 2.075), (-0.010, -0.160, 2.170))),
-    dict(colour="PLUME_RED", tip=None, tip_from=0.75, r=0.050,
+    dict(colour="PLUME_RED", tip=None, tip_from=0.75, r=0.045,
          path=((0.070, 0.004, 1.885), (0.115, 0.004, 1.960), (0.138, 0.002, 2.050), (0.140, 0.000, 2.115))),
 )
 
@@ -95,49 +95,49 @@ DIMS = dict(
         ("chest_low", 1.230, .000, .000, .176, .128, .118, 2.5, 1),
         ("chest", 1.310, .000, .002, .178, .134, .120, 2.5, 1),
         ("chest_top", 1.390, .000, .006, .178, .130, .118, 2.5, 1),
-        ("shoulder", 1.445, .000, .010, .180, .118, .110, 2.5, 1),
-        ("shoulder_top", 1.478, .000, .012, .168, .104, .098, 2.4, 1),
-        ("yoke", 1.502, .000, .012, .138, .088, .085, 2.4, 1),
-        ("collar", 1.518, .000, .008, .105, .076, .072, 2.3, 1),
-        ("neck", 1.530, .000, .000, .072, .066, .064, 2.2, 1),
+        ("shoulder", 1.455, .000, .010, .184, .116, .108, 2.5, 1),
+        ("shoulder_top", 1.488, .000, .012, .180, .102, .096, 2.4, 1),
+        ("yoke", 1.512, .000, .012, .152, .088, .085, 2.4, 1),
+        ("collar", 1.528, .000, .008, .110, .076, .072, 2.3, 1),
+        ("neck", 1.540, .000, .000, .074, .066, .064, 2.2, 1),
     ),
     # The dolman sleeve, wrist -> a root ring sunk inside the shoulder (set in at the armhole):
     # (landmark, centre x, y, z, half-width, half-depth). Its first row is the wrist.
     sleeve=(
-        ("cuff_end", .381, -.026, 0.955, .046, .045),
-        ("cuff_top", .366, -.020, 1.010, .051, .050),
-        ("forearm", .345, -.008, 1.070, .056, .055),
-        ("elbow", .317, .004, 1.130, .060, .058),
-        ("upper", .272, .012, 1.210, .063, .062),
-        ("biceps", .236, .014, 1.290, .064, .064),
-        ("deltoid", .203, .014, 1.370, .063, .065),
-        ("shoulder", .176, .014, 1.432, .057, .061),
-        ("root", .140, .016, 1.440, .048, .052),
+        ("cuff_end", .372, -.026, 0.955, .043, .043),
+        ("cuff_top", .356, -.020, 1.010, .047, .047),
+        ("forearm", .333, -.008, 1.070, .051, .052),
+        ("elbow", .305, .004, 1.130, .055, .056),
+        ("upper", .264, .012, 1.210, .059, .060),
+        ("biceps", .230, .014, 1.290, .061, .062),
+        ("deltoid", .200, .014, 1.370, .061, .063),
+        ("shoulder", .178, .014, 1.445, .057, .061),
+        ("root", .140, .016, 1.455, .048, .052),
     ),
     elbow_z=1.130,
     armpit_z=1.250,
     crotch_z=0.738,
-    hand=dict(scale=1.0, curl=1.8, girth=1.0, palm_girth=1.0, drop=0.004, down=(0.20, -0.18, -1.0), back=(0.82, -0.55, 0.0)),
+    hand=dict(scale=1.0, curl=1.8, girth=1.0, palm_girth=1.0, drop=0.004, down=(0.32, -0.18, -1.0), back=(0.82, -0.55, 0.0)),
     boot=dict(
-        ankle=(0.125, 0.040), toe_out=6.0, sole=0.011, heel=0.032, ball_y=-0.110, heel_front_y=0.040,
+        ankle=(0.125, 0.040), toe_out=7.0, sole=0.011, heel=0.032, ball_y=-0.110, heel_front_y=0.040,
         # foot, toe -> heel: (y along the foot from the ankle, half-width, height of the upper)
-        profile=((-0.222, .006, .012), (-0.214, .024, .028), (-0.198, .036, .040), (-0.172, .043, .049), (-0.135, .046, .057),
-                 (-0.095, .044, .068), (-0.055, .041, .088), (-0.020, .040, .108), (0.015, .040, .110), (0.040, .039, .100),
+        profile=((-0.222, .006, .012), (-0.214, .024, .028), (-0.198, .036, .040), (-0.172, .043, .049), (-0.135, .046, .062),
+                 (-0.095, .044, .078), (-0.055, .041, .094), (-0.020, .040, .108), (0.015, .040, .110), (0.040, .039, .100),
                  (0.058, .034, .082), (0.068, .024, .060), (0.072, .012, .035), (0.073, .004, .020)),
         # the shaft, ankle -> top: (z, centre x, centre y, half-width, front, back)
-        shaft=((0.050, .125, .040, .046, .055, .045), (0.100, .125, .040, .047, .050, .050), (0.160, .126, .038, .050, .052, .058),
+        shaft=((0.050, .125, .040, .046, .055, .045), (0.100, .125, .040, .047, .050, .050), (0.160, .126, .036, .052, .058, .062),
                (0.240, .127, .034, .058, .058, .072), (0.320, .128, .030, .066, .066, .084), (0.390, .128, .026, .073, .072, .082),
                (0.470, .128, .022, .077, .078, .080)),
         top=dict(back=0.405, side=0.440, front=0.462, notch=0.405, notch_w=26.0),
         trim=0.012,
         tassel=dict(length=0.032, r_head=0.0055, r_skirt=0.0085),
-        spur=dict(strap=(0.058, 0.118), r=0.0032, neck=(0.052, 0.012), rowel=(0.017, 8)),
+        spur=dict(strap=(0.058, 0.118), r=0.0032, neck=(0.066, 0.020), rowel=(0.017, 8)),
     ),
     garment=dict(
         cloth=0.003,
         dolman_hem=1.050,              # the dolman's hem; the breeches run up under it to `breeches_top`
         breeches_top=1.120,
-        armhole=dict(x=0.158, z=1.465, tilt=3.0),
+        armhole=dict(x=0.160, z=1.480, tilt=3.0),
         cuff=dict(top=1.040, point=0.070, point_w=70.0, lift=0.0035, edge=0.004),   # red pointed cuff: top at the inside, point height, half-width deg
         chevrons=dict(n=2, gap=0.022, drop=0.040, half=0.060),
         collar=dict(z=(1.520, 1.590), cy=-0.012, a=0.072, bf=0.074, bb=0.070, lift=0.004, gap=0.010),
@@ -156,29 +156,37 @@ DIMS = dict(
     ),
     pelisse=dict(
         # the pelisse's own loft, centred to his LEFT: (z, centre x, centre y, half-width, front, back)
-        rings=((1.040, .040, .000, .245, .150, .145), (1.130, .040, .000, .262, .150, .145), (1.230, .045, .004, .270, .152, .145),
-               (1.330, .045, .008, .262, .150, .144), (1.410, .042, .010, .245, .144, .138), (1.470, .036, .012, .212, .126, .122),
-               (1.510, .022, .012, .162, .106, .102), (1.545, .010, .008, .110, .090, .086), (1.570, .004, .004, .088, .082, .080)),
+        rings=((1.040, .070, .000, .330, .160, .165), (1.130, .068, .004, .320, .158, .168), (1.230, .060, .006, .302, .150, .164),
+               (1.330, .052, .008, .288, .144, .148), (1.410, .046, .010, .265, .134, .126), (1.470, .040, .012, .238, .118, .108),
+               (1.515, .028, .012, .196, .100, .092), (1.540, .012, .008, .124, .088, .082), (1.556, .004, .004, .088, .082, .078)),
+        n=2.8,
         front_x=0.040,                  # its front edge, just to his left of the centre front
         back_x=((1.050, -0.180), (1.200, -0.110), (1.330, -0.055), (1.460, -0.012), (1.570, 0.000)),  # its other edge across his back
-        hem=(1.060, 1.125),             # the hem's height at the back and at the front
-        fur=dict(r=0.022, collar_r=0.030),
+        hem=(1.060, 1.095),             # the hem's height at the back and at the front
+        fur=dict(r=0.024, flat=0.62, collar_z=1.465, collar_h=0.020),
         frogs=dict(z0=1.190, z1=1.440, n=12, w=0.085, loop=0.008),
-        # the empty LEFT sleeve, hanging outside and behind the arm: centre line top -> bottom,
-        # its half-width / half-depth, the fur cuff (length up from the end)
-        sleeve=dict(path=((0.270, 0.065, 1.300), (0.330, 0.095, 1.150), (0.395, 0.125, 1.020), (0.425, 0.140, 0.935)),
-                    a=0.062, b=0.032, cuff=0.070),
+        # the two empty sleeves: centre line top -> bottom, half-width along `wide` / half-depth,
+        # the fur cuff (length up from the end), `face` = the broad side the chevrons are on.
+        # LEFT: from the shoulder down the outside of the pelisse, beside the arm, its cuff at
+        # the wrist (the front view's fur outside the arm, the side view's fur at the wrist).
+        # RIGHT: it hangs out from under the hem behind his left hip, between the hip and the arm
+        # (where the front and back views both draw a dark piece with a fur end and the back view
+        # chevrons, and the side view a fur cuff behind the hip).
+        sleeves=(dict(name="L", path=((0.300, 0.020, 1.400), (0.405, 0.020, 1.230), (0.440, 0.010, 1.080), (0.448, 0.000, 0.975)),
+                      a=0.058, b=0.026, wide=(0.0, 1.0, 0.0), face=(1.0, 0.0, 0.0), cuff=0.065),
+                 dict(name="R", path=((0.190, 0.105, 1.300), (0.212, 0.155, 1.120), (0.218, 0.180, 0.980), (0.215, 0.188, 0.880)),
+                      a=0.052, b=0.040, wide=(1.0, 0.0, 0.0), face=(0.0, 1.0, 0.0), cuff=0.070)),
     ),
     shako=dict(
-        rings=((1.695, -.036, .093, .104, .108), (1.740, -.030, .100, .112, .110), (1.800, -.020, .110, .120, .115),
-               (1.850, -.012, .118, .126, .120), (1.890, -.006, .124, .129, .124)),
+        rings=((1.708, -.030, .096, .106, .108), (1.750, -.024, .104, .113, .111), (1.808, -.016, .116, .121, .116),
+               (1.856, -.010, .123, .126, .121), (1.895, -.006, .127, .129, .124)),
         tilt=6.0, band=(0.026, 0.002),
-        peak=dict(length=0.062, droop=0.022, span=72.0, thick=0.004),
+        peak=dict(length=0.060, droop=0.010, span=72.0, thick=0.004),
         plate=dict(dz=0.105, hs=0.034, ht=0.046, lift=0.003),
         cockade=dict(dz=0.014, r=0.016, rim=0.004),
         cords=dict(r=0.0045, front=(0.040, 0.140), back=(0.040, 0.120)),
-        tassel=dict(side=-1, dz=0.050, x=0.122, y=-0.030, drop=0.135, length=0.085, r_head=0.010, r_skirt=0.017),
-        chain=dict(dz=0.008, r=0.0060, flat=0.45, lift=0.006, path_z=(1.660, 1.610), path_y=(-0.060, -0.095), chin=(0.0, -0.152, 1.570)),
+        tassel=dict(side=-1, dz=0.050, x=0.122, y=-0.030, drop=0.170, length=0.085, r_head=0.010, r_skirt=0.017),
+        chain=dict(dz=0.008, r=0.0060, flat=0.45, lift=0.006, path_z=(1.660, 1.605), path_y=(-0.050, -0.088), chin=(0.0, -0.122, 1.558)),
     ),
 )
 
@@ -187,21 +195,21 @@ DIMS = dict(
 # 0.935 of 1.80 m) and set 35 mm forward: the sheet's side view carries the head ahead of the
 # body's mid-plane.
 HEAD = dict(
-    rings=((1.455, -.016, .062, .062, .062, 2.0), (1.505, -.020, .058, .058, .060, 2.0), (1.545, -.024, .053, .056, .058, 2.0),
-           (1.561, -.029, .057, .076, .062, 2.2), (1.571, -.035, .060, .104, .068, 2.2), (1.587, -.039, .061, .110, .074, 2.2),
-           (1.615, -.041, .064, .107, .076, 2.2), (1.645, -.041, .069, .104, .082, 2.3), (1.680, -.041, .074, .100, .094, 2.3),
-           (1.715, -.040, .078, .098, .096, 2.3)),
+    rings=((1.455, -.004, .062, .062, .062, 2.0), (1.505, -.008, .058, .058, .060, 2.0), (1.545, -.012, .053, .056, .058, 2.0),
+           (1.561, -.017, .057, .076, .062, 2.2), (1.571, -.023, .060, .104, .068, 2.2), (1.587, -.027, .061, .110, .074, 2.2),
+           (1.615, -.029, .064, .107, .076, 2.2), (1.645, -.029, .069, .104, .082, 2.3), (1.680, -.029, .074, .100, .094, 2.3),
+           (1.715, -.028, .078, .098, .096, 2.3)),
     crown=(1.801, 2.2),
     eye_z=1.683, nose_z=1.643, mouth_z=1.611, chin_z=1.575,
-    jaw=(-0.135, 1.567, -0.005, 1.619, 0.010),
+    jaw=(-0.123, 1.567, 0.007, 1.619, 0.010),
     nose_proj=0.028, eye_dx=0.032, eye_r=0.0120, eye_sink=0.0005,
-    ear=dict(z=1.633, y=-0.027, h=0.066, w=0.033, tilt=14.0, flare=38.0, sink=0.002),
+    ear=dict(z=1.633, y=-0.015, h=0.066, w=0.033, tilt=14.0, flare=38.0, sink=0.002),
     stubble=0.25,
     brow=dict(gain=2.6),
     # the moustache: a full one over the upper lip, drooping a little at the ends: (x, dz from
     # the mouth, radius) from the middle out, flattened `flat` against the lip, `lift` off the skin
-    moustache=dict(rows=((0.000, 0.0115, 0.0050), (0.010, 0.0110, 0.0062), (0.022, 0.0085, 0.0062), (0.033, 0.0035, 0.0048),
-                         (0.041, -0.0015, 0.0030), (0.046, -0.0040, 0.0015)), flat=0.55, lift=0.0045),
+    moustache=dict(rows=((0.000, 0.0110, 0.0068), (0.010, 0.0108, 0.0080), (0.021, 0.0092, 0.0082), (0.032, 0.0068, 0.0068),
+                         (0.041, 0.0050, 0.0048), (0.048, 0.0050, 0.0022)), flat=0.55, lift=0.0040),
 )
 
 HAIR = dict(

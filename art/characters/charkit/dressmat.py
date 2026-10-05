@@ -29,7 +29,7 @@ def _pos_sum(t):
     return t.math("ADD", t.math("ADD", sep.outputs["X"], sep.outputs["Y"]), sep.outputs["Z"]), sep
 
 
-def mat_wool(name, base, lace=None, lace_w=0.0030, rough=0.82, lace_rough=0.36, sheen=0.10):
+def mat_wool(name, base, lace=None, lace_w=0.0030, rough=0.82, lace_rough=0.42, sheen=0.04, lace_metal=0.6):
     """Wool broadcloth: a fine felted nap, a little sheen, AO darkening in the folds. Where the
     `braid` attribute marks a line, a band `lace_w` either side of it is gold lace (`lace`),
     metallic and semi-gloss, with a woven ridge across it and a little relief."""
@@ -49,7 +49,7 @@ def mat_wool(name, base, lace=None, lace_w=0.0030, rough=0.82, lace_rough=0.36, 
         gold = t.mix(t.math("MULTIPLY", t.math("SUBTRACT", 1.0, ao), 0.5), gold, (lc[0] * 0.35, lc[1] * 0.32, lc[2] * 0.25, 1.0))
         col = t.mix(band, col, gold)
         h = t.math("ADD", t.math("MULTIPLY", t.math("ADD", band, t.math("MULTIPLY", weave, t.math("MULTIPLY", band, 0.25))), 1.6), h)
-        metal = t.mixf(band, 0.0, 0.85)
+        metal = t.mixf(band, 0.0, lace_metal)
         r = t.mixf(band, rough, lace_rough)
     t.set(Base_Color=col, Roughness=r, Metallic=metal, Sheen_Weight=sheen, Sheen_Roughness=0.5, Sheen_Tint=col, Normal=t.bump(h, 0.35, 0.002))
     return m
@@ -78,7 +78,7 @@ def mat_sash(name, base, stripe, barrel, rough=0.7, barrel_rough=0.34, barrel_w=
     return m
 
 
-def mat_gold_cord(name, gold, rough=0.40):
+def mat_gold_cord(name, gold, rough=0.44, metal=0.6):
     """Gold cord and lace standing free (cords, tassels, a cross-belt, boot trim): metallic,
     semi-gloss, a woven ridge pattern."""
     m, t = _new(name)
@@ -88,7 +88,7 @@ def mat_gold_cord(name, gold, rough=0.40):
     col = t.mix(t.ramp(weave, -0.5, 0.9), (g[0] * 0.55, g[1] * 0.52, g[2] * 0.45, 1.0), g)
     ao = t.ramp(t.ao(0.02), 0.2, 0.95)
     col = t.mix(t.math("MULTIPLY", t.math("SUBTRACT", 1.0, ao), 0.6), col, (g[0] * 0.3, g[1] * 0.27, g[2] * 0.2, 1.0))
-    t.set(Base_Color=col, Metallic=0.85, Roughness=t.mixf(t.noise(60.0, 2.0), rough - 0.06, rough + 0.08),
+    t.set(Base_Color=col, Metallic=metal, Roughness=t.mixf(t.noise(60.0, 2.0), rough - 0.06, rough + 0.08),
           Normal=t.bump(t.math("ADD", weave, t.math("MULTIPLY", t.noise(400.0, 2.0), 0.3)), 0.35, 0.0015))
     return m
 
