@@ -290,8 +290,16 @@ PELVIS_B1F, MIDPLANE_B1F, SEAT_B1F = PELVIS, MIDPLANE, SEAT
 # the first two knots are the base outline's own angle there, so it is left with its slope.
 WAIST = dict(
     top=1.265,
-    outer=(0.96, ((0.95, -11.24), (0.96, -12.60), (1.00, -21.89), (1.04, -27.75), (1.08, -17.32), (1.11, -7.78), (1.138, 1.00),
-                  (1.17, 13.06), (1.20, 22.04), (1.23, 19.53), (1.26, 11.02))),
+    # step 2 (review N2), the front: from above the knee. The outer thigh tapers 3 mm toward the knee (0.72) from its widest
+    # (0.81) instead of standing as a column; the hip is ONE convex round from there to about 1.06, the steepest flank (27 deg),
+    # where it turns into the waist's long concave turn (<= 4 deg/cm), and on up into the rib cage. Widest, hip line (0.893),
+    # narrowest waist, ribs and chest as B1f. (Step 1 kept B1f's hip below 0.96 and rounded only the waist: knots
+    # (0.96, -12.60) (1.00, -21.89) (1.04, -27.75) (1.08, -17.32) (1.11, -7.78) (1.138, 1.00) (1.17, 13.06) (1.20, 22.04)
+    # (1.23, 19.53) (1.26, 11.02).) The share of the waist-to-hip gain at 0.2 of the height can not exceed about 0.13 with
+    # the waist turning at most 4 deg/cm: the turn itself takes the first 5-7 cm under the narrowest waist
+    outer=(0.66, ((0.65, 0.44), (0.66, -0.55), (0.70, -5.69), (0.74, 0.98), (0.78, 3.89), (0.82, -1.25), (0.86, -3.65), (0.90, -4.56),
+                  (0.94, -8.68), (0.98, -13.71), (1.02, -24.51), (1.06, -27.08), (1.10, -14.74), (1.138, 0.18), (1.17, 11.05), (1.20, 23.82),
+                  (1.23, 22.58), (1.26, 9.71))),
     front=(1.04, ((1.03, -3.96), (1.04, -3.33), (1.08, -0.15), (1.11, 2.47), (1.14, -2.80), (1.17, -11.01), (1.20, -10.09), (1.23, -17.09),
                   (1.26, -0.34))),
     back=(1.04, ((1.03, -21.72), (1.04, -23.58), (1.08, -24.69), (1.11, -14.04), (1.14, -3.55), (1.17, 8.40), (1.20, 18.51), (1.23, 21.64),
@@ -393,11 +401,11 @@ SHAPES = dict(
 
 # The hips comparison (`--compare`, shape_vs_concept.jpg): (shape, label), slimmest first, and the
 # height band it shows (waist to knee, metres)
-COMPARE = (("slimmer", "one step slimmer"), ("", "default (B1f)"), ("fuller", "one step fuller"))
+COMPARE = (("slimmer", "one step slimmer"), ("", "default (B1g)"), ("fuller", "one step fuller"))
 COMPARE_BAND = (0.56, 1.22)
 # the hip pictures' "befores" (`--hips`: hips_before_after.jpg, shape_vs_silhouette.jpg, side_outlines.jpg), oldest first
-HIPS_BEFORE = ("stage4", "b1e", "flare_full")
-NOW_LABEL = "B1f"
+HIPS_BEFORE = ("stage4", "b1e", "b1f")
+NOW_LABEL = "B1g"
 
 # The concept's proportions, measured by hand on `concept.jfif` (three-quarter view, walking,
 # cropped at the crotch). Only the FAR side (her left, image right) shows hip and thigh free of
