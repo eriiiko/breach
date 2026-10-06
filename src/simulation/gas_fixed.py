@@ -34,7 +34,9 @@ import numpy as np
 FP_SHIFT = 16
 FP_ONE = 1 << FP_SHIFT          # 65536
 FP_ONE_F = float(FP_ONE)
-# [0,1] tracer saturation ceiling in Q16.16 (the integer clamp the solver applies).
+# One unit of trace density in Q16.16 ("full" density). NOT a ceiling any more:
+# smoke transport v2 (#12) deleted every trace clamp outside a reader, so a
+# compressed pocket can legitimately hold more than this.
 SMOKE_MAX_Q = FP_ONE
 
 

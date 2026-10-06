@@ -371,10 +371,18 @@ def test_marine_in_flames_loses_hp_via_the_existing_heat_row():
 # ---------------------------------------------------------------------------
 def test_miasma_sustained_poison_drains_a_marine():
     """The vent paints the near cone past poison_min_density within a few
-    ticks and HOLDS it (sustained emission vs the grenade's one-shot);
-    damage rides the W3 gas[poison] row (source 'poison_gas'). Only the
-    poison slice moves — a vent is not a flamethrower (no heat, no fire,
-    no blindness: poison is not teargas)."""
+    ticks and HOLDS it (sustained emission vs the grenade's one-shot): the
+    victim is dosed on EVERY tick of the window; damage rides the W3
+    gas[poison] row (source 'poison_gas'). Only the poison slice moves — a
+    vent is not a flamethrower (no heat, no fire, no blindness: poison is
+    not teargas).
+
+    Smoke transport v2 (#12): the clause "every poison hit lands on the
+    victim" is GONE. Deposits are additive now (D1) and the trace is
+    conserved, so the sustained cloud builds past 1 at the aim point and,
+    late in the window, its conservative spread reaches the shooter's own
+    tiles above poison_min_density — the operator is dosed by his own cloud
+    (recorded for Erik's HUMAN-TEST, not asserted either way here)."""
     sim = Simulation(_level(), seed=SEED, breach_physics=bp,
                      enable_recorder=False)
     s = _shooter("miasma_vent")
@@ -384,15 +392,15 @@ def test_miasma_sustained_poison_drains_a_marine():
     hp_v = victim.current_hp
     assert sim.apply_action(sid, Order(
         ORDER_FIRE, target_fx=12, target_fy=10, phase=0))
-    poison_hits = []
+    victim_hit_every_tick = True
     for _ in range(16):
         _step(sim)
-        poison_hits += [e for e in sim.tick_events
-                        if isinstance(e, UnitHitEvent)
-                        and e.source == "poison_gas"]
+        victim_hit_every_tick &= any(
+            isinstance(e, UnitHitEvent) and e.source == "poison_gas"
+            and e.unit_id == victim.id for e in sim.tick_events)
     assert sim.gmap.gas[GAS_POISON].any()
     assert victim.current_hp < hp_v
-    assert poison_hits and all(h.unit_id == victim.id for h in poison_hits)
+    assert victim_hit_every_tick, "the vent did not HOLD the victim in its cloud"
     # Poison ONLY: no heat deposit, no fire, no other TRACE gas slice touched
     # (the bulk O2/inert_N2 pair, EOS refactor P1, always carries ambient air).
     assert not sim.gmap.fire.any()

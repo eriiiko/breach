@@ -210,21 +210,31 @@ class _FieldPolicy:
     skip: Optional[object]   # callable(gmap) -> bool mask, or None
 
 
+# SMOKE TRANSPORT v2 (#12, design §11 D1, Erik's ruling 2026-10-04: "I don't
+# want smoke deposits to cut the whole tile to 1. I want smoke adding to be
+# additive."): a trace plane has NO upper bound at the write door. An ADD edit
+# adds exactly its amount and never cuts what the tile already holds (a
+# compressed pocket can legitimately sit above 1 now that the trace is
+# conserved); only the lower bound stays, at 0, so a REMOVE edit (the
+# explosion's inner clear) bottoms out at empty instead of going negative.
+TRACE_CLAMP = (0.0, float("inf"))
+
 FIELD_POLICY = {
     # S2b: smoke is int32 Q16.16. The "gas" dtype dequantizes the stored int to
     # real density, combines (the float path's exact +=/-=/max semantics + the
-    # [0,1] clamp), then re-quantizes round-to-nearest — so smoke/gas edits (the
-    # explosion deposit + clear) keep being authored in real density while the
-    # stored field stays integer/deterministic (same idiom as "wave" / "water").
-    "smoke":       _FieldPolicy("gas",   (0.0, 1.0), _skip_solid),
+    # TRACE_CLAMP lower bound), then re-quantizes round-to-nearest — so
+    # smoke/gas edits (the explosion deposit + clear) keep being authored in
+    # real density while the stored field stays integer/deterministic (same
+    # idiom as "wave" / "water").
+    "smoke":       _FieldPolicy("gas",   TRACE_CLAMP, _skip_solid),
     # W3 (mechanics/03 §4 gas payloads): the full multi-gas array (engine/05
     # §6.2). ``gmap.gas`` is (N, h, w) int32 Q16.16 — one slice per gas type;
     # a "gas" edit names its slice via ``FieldEdit.channel`` (the GAS_* id /
     # ``gmap.gases.name_to_id``), resolved to a contiguous (h, w) view at
     # apply time. Same combine + policy as "smoke" (which IS the SMOKE
-    # slice): solid skip-mask, [0, 1] saturation clamp, quantize-once at the
-    # write boundary.
-    "gas":         _FieldPolicy("gas",   (0.0, 1.0), _skip_solid),
+    # slice): solid skip-mask, TRACE_CLAMP (additive, floor 0 — D1),
+    # quantize-once at the write boundary.
+    "gas":         _FieldPolicy("gas",   TRACE_CLAMP, _skip_solid),
     # S2c: atmosphere is int32 Q16.16. The "atmosphere" dtype dequantizes the
     # stored int to real pressure, combines (the float path's exact +=/-=/max
     # semantics), then re-quantizes round-to-nearest — so atmosphere edits (the
@@ -490,8 +500,9 @@ def _combine_gas(old_q: int, contribution: float, mode: EditMode,
                  clamp: Optional[Tuple[float, float]]) -> int:
     """Q16.16 combine for the `smoke` / gas fields (S2b). The stored value is an
     int32 in Q16.16 density; dequantize to real density, combine with the float
-    path's exact +=/-=/max semantics (and the [0,1] clamp), re-quantize round-to-
-    nearest. Keeps the explosion smoke deposit / clear authored in real density
+    path's exact +=/-=/max semantics (and the policy's TRACE_CLAMP: additive,
+    floor 0 — smoke transport v2 D1), re-quantize round-to-nearest. Keeps the
+    explosion smoke deposit / clear authored in real density
     while the field stays integer/deterministic (the same idiom as
     `_combine_wave` / `_combine_water`)."""
     old_v = float(old_q) / gas_fixed.FP_ONE_F

@@ -122,8 +122,14 @@ from simulation.entities.registry import registry_content_hash  # noqa: E402
 # tests/_xarch_perfield_digest.py, same commit. Sole cause: k_drag2 = 0.0 on
 # the same build reproduces the previous value.
 # (was 5de6f98b2d08bd8d1cbb54bec3e6ab343f3b412de7b7c979c469d56d47d8de17)
+# Drag dials re-tuned (2026-10-06, issue #4): `[physics.eos] k_drag` 0.5 ->
+# 0.01 and `k_drag2` 0.125 -> 0.225 (Erik, by eye). The loop's live physics
+# moves with them -- one rationale, beside GOLDEN_AGGREGATE in
+# tests/_xarch_perfield_digest.py, same commit. Sole cause: the old dials on
+# the same build reproduce the previous value. Captured twice: identical.
+# (was b0c89a70ed0e11091a1a088b5057e67170cd08cd3c9320f190d15e29b46c5343)
 LOOP_GOLDEN_TRAJ_DIGEST = \
-    "b0c89a70ed0e11091a1a088b5057e67170cd08cd3c9320f190d15e29b46c5343"
+    "412bcbf51a002cb8995c276fb15664b4a2438d3ef8e9a4adf0b2d0503d49e5b3"
 LOOP_GOLDEN_STEPS = 30
 LOOP_GOLDEN_SEED = 1
 

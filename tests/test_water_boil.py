@@ -38,8 +38,10 @@ ever refill the cell; the W3 displacement only MULTIPLIES atmosphere
 breach/space semantics in the atmosphere & smoke solvers (drain toward
 space), and the steam puff must land in ordinary interior air. The sealed
 cell also makes the pipe-model substeps a no-op on the water (nowhere to
-flow) and gas transport a no-op on the puff (no open face, no wind, and a
-breach-less map has an all-zero smoke sink field).
+flow). The puff itself does not survive in the held cell: it has no air
+(bulk N == 0), so smoke transport v2's N_EPS wipe destroys it the tick it
+lands, booked — the tests read the DEPOSIT by bracketing against the trace
+books (``_step_puffed``), the design's measure for every deposit (#12 §3).
 
 Run:
     C:/Users/steen/anaconda3/python.exe -m pytest tests/test_water_boil.py -q
@@ -68,6 +70,24 @@ from simulation import gas_fixed  # noqa: E402  (S2b: gas Q16.16 dequantize)
 def _gas_mass(plane):
     """Total real-density mass of a gas plane (S2b: int32 Q16.16 -> /65536)."""
     return float(plane.astype(np.float64).sum()) / gas_fixed.FP_ONE_F
+
+
+def _step_puffed(sim, g):
+    """One sim tick; returns the STEAM the tick DEPOSITED, in real density,
+    measured by BRACKETING (smoke transport v2, #12, design §3): the change
+    in total steam plus everything the trace transport booked away this tick
+    (vent + wipe + sink + decay). The bracket, not the plane, is the puff's
+    measure because the boiling cell is HELD at bulk N == 0 (the vacuum hold
+    below): with no air to carry it, the trace transport's N_EPS wipe (stage
+    3c) destroys the puff the same tick it lands -- booked, so the bracket
+    still reads it to the count."""
+    eos = sim.physics_runner.engine.eos
+    before = int(g.gas[STEAM].astype(np.int64).sum())
+    sim.step()
+    after = int(g.gas[STEAM].astype(np.int64).sum())
+    booked = (eos.boundary_flux()[STEAM] + eos.trace_wipe_sum()[STEAM]
+              + eos.trace_sink_sum()[STEAM] + eos.trace_decay_sum()[STEAM])
+    return (after - before + booked) / gas_fixed.FP_ONE_F
 
 # S1: water_depth is int32 Q16.16 (~1.5e-5 m granularity). The W5 boil is a
 # FLOAT BRIDGE (it dequantizes depth, boils in float, re-quantizes the removed
@@ -168,13 +188,13 @@ def test_one_tick_vacuum_boil_depth_and_steam_gain():
     sim, g = _boil_sim()
     _assert_plan_params(sim.physics_runner)
 
-    # The steam GAIN is read as TOTAL steam mass (float64 sum) — robust
-    # against transport moving the puff between ticks (here transport is a
-    # no-op anyway: sealed cell, zero wind, breach-less map -> zero sink).
+    # The steam GAIN is read as the tick's DEPOSIT, bracketed against the
+    # trace books (_step_puffed) — robust against the transport moving or
+    # wiping the puff (here it wipes it: the held cell has no air).
     total0 = _gas_mass(g.gas[STEAM])    # S2b: dequantized real-density mass
     assert total0 == 0.0, "scene starts with stray steam"
 
-    sim.step()                                    # ONE tick = 1/24 s
+    gain = _step_puffed(sim, g)                   # ONE tick = 1/24 s
 
     # Depth: one full-rate increment boiled off the vacuum cell. S1: the depth
     # is Q16.16 and the boil round-trips through float once, so allow a few LSB
@@ -187,7 +207,6 @@ def test_one_tick_vacuum_boil_depth_and_steam_gain():
     # ITSELF is now Q16.16 too (the gas plane is integer), so the gain carries a
     # SECOND quantization (the puff quantize on top of the boil quantize) — widen
     # the slack to a few gas LSB (~1.5e-5 each) on top of the boil LSB.
-    gain = _gas_mass(g.gas[STEAM]) - total0
     assert abs(gain - STEAM_YIELD * INC) < STEAM_YIELD * 3 * Q_EPS + 3 * Q_EPS, (
         f"one-tick steam gain {gain} != {STEAM_YIELD * INC} "
         f"(tol {STEAM_YIELD * 3 * Q_EPS + 3 * Q_EPS:.2e})")
@@ -212,38 +231,27 @@ def test_one_tick_vacuum_boil_depth_and_steam_gain():
 def test_boils_dry_exact_zero_after_121_ticks():
     sim, g = _boil_sim()
 
+    puffed = 0.0
     for _ in range(119):
-        sim.step()
+        puffed += _step_puffed(sim, g)
     # Non-vacuity: ~one increment left — still wet, still boiling at 119.
     assert float(g.water_depth[A]) > 0.0, (
         "boiled dry too early — the 121-tick pin is measuring nothing")
 
-    sim.step()                                    # 120: the last increment
-    sim.step()                                    # 121: dry-snap any residue
+    puffed += _step_puffed(sim, g)                # 120: the last increment
+    puffed += _step_puffed(sim, g)                # 121: dry-snap any residue
     assert float(g.water_depth[A]) == 0.0, (
         f"depth after 121 ticks is {g.water_depth[A]!r}, not exactly 0.0")
 
     # Yield bookkeeping (the plan's numbers end-to-end): ALL the water left
-    # as steam, total steam starts at steam_yield * 0.1 = 0.4 as it is
-    # puffed in across the 121 ticks. EOS refactor P4 (design §2.2/§5 v2.1,
-    # decisions.md #12): the per-gas trace `decay` column is now APPLIED
-    # (steam decay=0.020/s, config.toml [gases.steam] — "loaded
-    # but never applied" pre-P4), crediting the lost mass to inert_N2 each
-    # tick, so the puffed-in steam settles/condenses as it accumulates —
-    # the measured total is ~4-5% below the undecayed 0.4 over this run
-    # (steam puffed early has more ticks to decay than steam puffed late).
-    # Widened from the pre-P4 0.1% float-rounding tolerance to comfortably
-    # cover the REAL, expected decay loss (not a regression — it is EXACTLY
-    # decision #12 v2.1's "burnt/settled products go to inert_N2" behaviour).
-    total = _gas_mass(g.gas[STEAM])     # S2b: dequantized real-density mass
-    assert 0.0 < total < STEAM_YIELD * DEPTH, (
-        f"steam total {total} should be positive and BELOW the undecayed "
-        f"steam_yield*depth {STEAM_YIELD * DEPTH} (decay only ever removes "
-        f"mass from this plane)")
-    assert abs(total - STEAM_YIELD * DEPTH) < 0.10 * STEAM_YIELD * DEPTH, (
-        f"steam total {total} strayed too far from steam_yield*depth "
-        f"{STEAM_YIELD * DEPTH} for the known steam decay rate "
-        f"(0.020/s over ~121 ticks) — investigate")
+    # as steam — the DEPOSITED steam (bracketed against the trace books, so
+    # decay and the held cell's N_EPS wipe are counted back in) is
+    # steam_yield * 0.1 = 0.4, to the per-tick quantization of the boil and
+    # the puff (a few Q16.16 LSB each, over 121 ticks).
+    tol = 121 * (STEAM_YIELD * 3 * Q_EPS + 3 * Q_EPS)
+    assert abs(puffed - STEAM_YIELD * DEPTH) < tol, (
+        f"deposited steam {puffed} != steam_yield*depth "
+        f"{STEAM_YIELD * DEPTH} (tol {tol:.2e})")
 
 
 # ---------------------------------------------------------------------------
@@ -254,12 +262,14 @@ def test_twin_tile_at_full_pressure_bit_exact_unchanged():
     depth_pre = g.water_depth.copy()
     gas_pre = g.gas.copy()
 
+    puffed = 0.0
     for _ in range(121):                          # the full boil-dry run
-        sim.step()
+        puffed += _step_puffed(sim, g)
 
-    # Control (the asserts bite): the vacuum twin DID boil in this same run.
+    # Control (the asserts bite): the vacuum twin DID boil — and puff — in
+    # this same run.
     assert float(g.water_depth[A]) < float(depth_pre[A])
-    assert _gas_mass(g.gas[STEAM]) > 0.0
+    assert puffed > 0.0
 
     # The full-pressure twin: depth bit-exact, every gas slice bit-exact.
     assert g.water_depth[B] == depth_pre[B], (

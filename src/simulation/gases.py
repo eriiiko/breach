@@ -12,14 +12,21 @@ The five TRACE gases (engine/05 §6.2):
     steam, smoke, poison, teargas, fuel_gas
 
 ``smoke`` is combustion soot — what fire and explosions emit. Its diffusion
-(0.10) matches today's ``physics.d_smoke`` (0.1), so the existing generic smoke
-field maps onto the ``smoke`` slice with **no behaviour change** (M1).
+(0.10) matched the retired ``physics.d_smoke`` (0.1), so the old generic smoke
+field mapped onto the ``smoke`` slice with no behaviour change (M1).
+
+SMOKE TRANSPORT v2 (#12, docs/smoke_transport_design_2026-10-04.md): the trace
+planes RIDE THE AIR — each EOS substep moves them on the bulk planes' applied
+face flux, priced at the donor's trace-per-air ratio, and once a tick they get
+a conservative face diffusion (``diffusion``, stability-checked at this door),
+stranded zeroing and ceil-rounded ``decay``. Nothing clamps them to [0, 1]: a
+compressed pocket can hold more than 1.
 
 EOS refactor P1 (docs/eos_refactor_design.md §1/§2, decisions log #11) appends
 two **bulk** species, ``o2`` and ``inert_n2`` — ALWAYS appended, never
 prepended/reordered (existing views like ``gmap.smoke = gas[SMOKE]`` are
-index-bound). These are the ``conservative`` pair: instead of the trace planes'
-semi-Lagrangian transport, they move by donor-cell CONSERVATIVE flux
+index-bound). These are the ``conservative`` pair: they move by donor-cell
+CONSERVATIVE flux (the trace planes ride it, see above)
 (``cpp/src/bulk_transport.cpp``), and carry NO optics (invisible bulk air —
 ``absorption``/``scatter_albedo`` all-zero, ``glow`` 0), NO decay, are not
 flammable, and set no gameplay ``effect`` tag.
@@ -29,11 +36,10 @@ M1 scope: this table is **loaded** (data only). The per-channel ``absorption`` /
 radiation sweep's light channels (the ``light_absorb_q16`` / ``light_glow_q16``
 columns below, ray-engine-v2 P6a; the render march that summed them first went
 at P6c); ``flammable`` / ``emits_when_hot`` / ``effect`` are read by fire
-and mechanics at M2/M3. ``decay`` is loaded but **not yet applied** in transport
-(the M1 C++ smoke solver has no decay term; applying it would break behaviour
-preservation — see :mod:`simulation.physics_runner`). ``conservative`` (P1) is
-read by :class:`simulation.physics_runner.PhysicsRunner` to route the bulk pair
-to the donor-cell transport instead of the per-gas semi-Lagrangian loop.
+and mechanics at M2/M3. ``decay`` is applied once a tick by the trace tail
+(EOS P4; ceil-rounded and booked since smoke transport v2). ``conservative``
+(P1) marks the bulk pair, read by
+:class:`simulation.physics_runner.PhysicsRunner`.
 
 Ray-engine-v2 P5a (docs/ray_engine_v2_design_v3_2026-09-15.md §6.3) adds
 ``heat_absorb``: the gas's HEAT extinction per unit of its density, quantized to
@@ -133,8 +139,9 @@ N_TRACE_GASES = O2
 # Scalar columns: name -> numpy dtype. ``absorption`` / ``scatter_albedo`` are
 # handled separately because they are per-channel RGB triples, not scalars.
 # ``conservative`` (P1): true only for the bulk pair (o2 / inert_n2) — read by
-# PhysicsRunner to route that plane to the donor-cell flux transport instead
-# of the per-gas semi-Lagrangian loop the trace gases still ride.
+# PhysicsRunner to route that plane to the donor-cell flux transport. Since
+# smoke transport v2 (#12) the trace gases RIDE that same flux (priced by
+# air); ``conservative`` keeps its one meaning, bulk membership.
 _SCALAR_COLUMNS = {
     "diffusion": np.float32,
     "decay": np.float32,
@@ -158,6 +165,42 @@ _SCALAR_COLUMNS = {
 HEAT_ABSORB_MAX = 4096.0
 
 
+# SMOKE TRANSPORT v2 (#12, docs/smoke_transport_design_2026-10-04.md §2.2): the
+# trace diffusion's STABILITY DOOR. The once-per-tick Jacobi face diffusion
+# (bulk_transport.cpp::trace_tail) folds dd_q = quantize(d_g * dt) on the host
+# and moves |F| = (mul_q16(dd_q, perm_face) * |dS|) >> 16 across each face; its
+# exact positivity rests on sum_j c_ij <= ONE, i.e. 4 * dd_q <= ONE. Checked ON
+# THE INTEGER, with the engine's own fold (float32 dial times float32 dt,
+# multiplied in double, round-half-away), here at the gases door and again
+# where PhysicsRunner binds dt. Shipped dials sit near 0.004 a tick.
+def trace_diffusion_dd_q(diffusion: float, dt: float) -> int:
+    """The engine's dd_q = quantize(d * dt) fold, bit for bit."""
+    v = float(np.float32(diffusion)) * float(np.float32(dt)) * 65536.0
+    return int(np.floor(v + 0.5)) if v >= 0.0 else int(np.ceil(v - 0.5))
+
+
+def check_trace_diffusion_stable(names, diffusion, conservative, dt: float,
+                                 where: str) -> None:
+    """Refuse a trace diffusion dial whose integer step is not stable at ``dt``.
+
+    Raises ValueError naming the gas when ``4 * dd_q > 65536`` or the dial is
+    negative / not finite (a negative coefficient would anti-diffuse)."""
+    for g, name in enumerate(names):
+        if bool(conservative[g]):
+            continue          # bulk planes do not diffuse through this law
+        d = float(diffusion[g])
+        if not np.isfinite(d) or d < 0.0:
+            raise ValueError(f"{where}: gases.{name}.diffusion must be finite and "
+                             f">= 0 (smoke transport v2, design 2.2); got {d!r}")
+        dd_q = trace_diffusion_dd_q(d, dt)
+        if 4 * dd_q > 65536:
+            raise ValueError(
+                f"{where}: gases.{name}.diffusion = {d!r} at dt = {dt!r} s gives "
+                f"dd_q = {dd_q}, and 4 * dd_q > 65536: the trace diffusion's "
+                f"Jacobi step would no longer be positivity-preserving (smoke "
+                f"transport v2, design 2.2 -- needs diffusion * dt <= 0.25)")
+
+
 class GasTable:
     """Per-gas property table, indexed by gas id (engine/05 §6.2).
 
@@ -175,7 +218,7 @@ class GasTable:
     Rebuild via :meth:`from_config` after a config hot-reload.
     """
 
-    def __init__(self, gases_cfg, smoke_cfg=None):
+    def __init__(self, gases_cfg, smoke_cfg=None, tick_dt=None):
         """Build from the ``CFG.gases`` namespace (or any equivalent).
 
         ``gases_cfg`` is the :class:`config.Namespace` for ``[gases]``; each
@@ -331,6 +374,21 @@ class GasTable:
             lgl.append(row_g)
         self.light_absorb_q16 = np.ascontiguousarray(np.asarray(lab, dtype=np.int32))
         self.light_glow_q16 = np.ascontiguousarray(np.asarray(lgl, dtype=np.int32))
+
+        # SMOKE TRANSPORT v2 (#12, design §2.2): the trace diffusion's
+        # stability door, on the integer, at the configured tick length
+        # ([clock] ticks_per_second; PhysicsRunner re-checks at the dt it is
+        # actually handed). ``tick_dt`` overrides it for a table built for
+        # another clock.
+        if tick_dt is None:
+            from config import CFG as _CFG
+            clock = getattr(_CFG, "clock", None)
+            tps = getattr(clock, "ticks_per_second", None) if clock is not None else None
+            tick_dt = (1.0 / float(tps)) if tps else None
+        if tick_dt is not None:
+            check_trace_diffusion_stable(self.names, self.diffusion,
+                                         self.conservative, float(tick_dt),
+                                         "gases door")
 
         # effect: per-gas gameplay tag string (read unit-side in mechanics; the
         # solver only transports the field). Stored as a plain list by id.

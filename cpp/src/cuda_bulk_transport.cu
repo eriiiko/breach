@@ -25,6 +25,9 @@
 // arithmetically a no-op regardless — an all-zero plane produces all-zero
 // fluxes, scale FP_ONE, unchanged N, and a clamp that re-writes zeros).
 #include "cuda_bulk_transport.h"
+#include "cuda_resident.h"   // trace_tail_launch_resident / trace_tail_resident (P2b)
+#include "bulk_transport.h"  // trace_diffusion_dd_q (the CPU tail's host fold, shared)
+#include "trace_decay.h"     // the shared decay rule + its host fold (P2b)
 #include "fixed_point.h"   // q16, mul_wide, scale_mag, FP_ONE, FP_SHIFT (FP_HD)
 #include "cuda_fixedpoint_device.cuh"  // flux_to_dq_dev (hoisted here in P6.1)
 
@@ -369,6 +372,131 @@ __global__ void bulk_e_recover_v2(int32_t* __restrict__ temperature,
     }
 }
 
+// ===========================================================================
+// Smoke transport v2 (#12, design §2.1) — the TRACE planes ride the bulk face
+// flux. Stage 3b / 3c, each the CPU loop of the same name in
+// bulk_transport.cpp (bulk_flux_energy_transport_cached) transcribed
+// body-for-body. The CPU is THE oracle (P1).
+// ===========================================================================
+
+// The TRACE participation predicate (CPU t_participates, verbatim): wider than
+// e_part_dev by the thermal-solid (crate) tiles — air seeps through their pores
+// and the trace goes with it (D3).
+__device__ __forceinline__ bool t_part_dev(int i, const bool* solid,
+                                           const bool* is_vacuum,
+                                           const bool* is_ambient) {
+    return !solid[i] && !is_vacuum[i]
+           && !(is_ambient != nullptr && is_ambient[i]);
+}
+
+// ---- stage 3b: TRACE apply, GATHER form (CPU face order E, W, S, N) --------
+// phi = price_face(dq, S_pre[donor], N_pre[donor]), the stage-3 energy shape
+// with S in E's place. Reads ONLY frozen planes (s_pre = the plane's pre-flux
+// snapshot, n_pre = d_nb, the pre-flux bulk N; both dqsum planes) and writes
+// ONLY its own S[i] -> no race, no atomics on S. A donation to a
+// non-participant (vacuum / ring) is the EXPORT, booked by the donor into the
+// plane's vent slot via the unsigned-long-long atomicAdd idiom (integer sums
+// are order-free, so the device total == the CPU sequential sum); inflow from
+// vacuum / ring carries no trace. n_pre is read only at participating cells
+// (the loop gate and the receive guard), so the stale value a solid cell's
+// d_nb may hold is never seen — the CPU holds 0 there, unread.
+__global__ void trace_apply(int32_t* __restrict__ S,
+                            const int32_t* __restrict__ s_pre,
+                            const int64_t* __restrict__ n_pre,
+                            const int64_t* __restrict__ dqsum_e,
+                            const int64_t* __restrict__ dqsum_s,
+                            const bool* __restrict__ solid,
+                            const bool* __restrict__ is_vacuum,
+                            const bool* __restrict__ is_ambient,
+                            unsigned long long* __restrict__ vent,
+                            int h, int w) {
+    const int n = h * w;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += gridDim.x * blockDim.x) {
+        if (!t_part_dev(i, solid, is_vacuum, is_ambient)) continue;
+        const int y = i / w;
+        const int x = i % w;
+        const int64_t s_own = s_pre[i], n_own = n_pre[i];
+        int64_t ds = 0;
+        int64_t vented = 0;
+        if (x < w - 1) {                       // EAST face of i
+            const int64_t q = dqsum_e[i];
+            if (q > 0) {
+                const int64_t phi = (n_own >= 1) ? price_face_dev(q, s_own, n_own) : 0;
+                ds -= phi;
+                if (!t_part_dev(i + 1, solid, is_vacuum, is_ambient)) vented += phi;
+            } else if (q < 0) {
+                ds += !t_part_dev(i + 1, solid, is_vacuum, is_ambient) ? 0
+                    : ((n_pre[i + 1] >= 1)
+                        ? price_face_dev(-q, (int64_t)s_pre[i + 1], n_pre[i + 1]) : 0);
+            }
+        }
+        if (x > 0) {                           // WEST face of i
+            const int64_t q = dqsum_e[i - 1];
+            if (q > 0) {
+                ds += !t_part_dev(i - 1, solid, is_vacuum, is_ambient) ? 0
+                    : ((n_pre[i - 1] >= 1)
+                        ? price_face_dev(q, (int64_t)s_pre[i - 1], n_pre[i - 1]) : 0);
+            } else if (q < 0) {
+                const int64_t phi = (n_own >= 1) ? price_face_dev(-q, s_own, n_own) : 0;
+                ds -= phi;
+                if (!t_part_dev(i - 1, solid, is_vacuum, is_ambient)) vented += phi;
+            }
+        }
+        if (y < h - 1) {                       // SOUTH face of i
+            const int64_t q = dqsum_s[i];
+            if (q > 0) {
+                const int64_t phi = (n_own >= 1) ? price_face_dev(q, s_own, n_own) : 0;
+                ds -= phi;
+                if (!t_part_dev(i + w, solid, is_vacuum, is_ambient)) vented += phi;
+            } else if (q < 0) {
+                ds += !t_part_dev(i + w, solid, is_vacuum, is_ambient) ? 0
+                    : ((n_pre[i + w] >= 1)
+                        ? price_face_dev(-q, (int64_t)s_pre[i + w], n_pre[i + w]) : 0);
+            }
+        }
+        if (y > 0) {                           // NORTH face of i
+            const int64_t q = dqsum_s[i - w];
+            if (q > 0) {
+                ds += !t_part_dev(i - w, solid, is_vacuum, is_ambient) ? 0
+                    : ((n_pre[i - w] >= 1)
+                        ? price_face_dev(q, (int64_t)s_pre[i - w], n_pre[i - w]) : 0);
+            } else if (q < 0) {
+                const int64_t phi = (n_own >= 1) ? price_face_dev(-q, s_own, n_own) : 0;
+                ds -= phi;
+                if (!t_part_dev(i - w, solid, is_vacuum, is_ambient)) vented += phi;
+            }
+        }
+        // §2.4: S >= 0 by construction (Σ_f phi_f <= S_pre: the mass limiter
+        // bounds Σ_f dq_f by the donor's own N_pre, floordiv never rounds up);
+        // the int32 narrow is safe while Σ_map S < 2^31 (host-side tail assert).
+        S[i] = (int32_t)(s_own + ds);
+        if (vented != 0) atomicAdd(vent, (unsigned long long)vented);
+    }
+}
+
+// ---- stage 3c: TRACE wipe, on the POST-flux bulk N (CPU's stage-3c loop) ----
+// A participating cell with less than N_EPS (= 1 raw count) of air has nothing
+// left to carry its trace: destroyed, booked in the plane's wipe slot. `nb_post`
+// is d_nb re-accumulated by stage 4 — the CPU's n_new, the same Σ over the
+// conservative planes. Own-cell write, counter via atomicAdd.
+__global__ void trace_wipe(int32_t* __restrict__ S,
+                           const int64_t* __restrict__ nb_post,
+                           const bool* __restrict__ solid,
+                           const bool* __restrict__ is_vacuum,
+                           const bool* __restrict__ is_ambient,
+                           unsigned long long* __restrict__ wipe, int n) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += gridDim.x * blockDim.x) {
+        if (!t_part_dev(i, solid, is_vacuum, is_ambient)) continue;
+        if (nb_post[i] >= 1) continue;
+        const int32_t s = S[i];
+        if (s == 0) continue;
+        atomicAdd(wipe, (unsigned long long)(int64_t)s);
+        S[i] = 0;
+    }
+}
+
 }  // namespace
 
 void bulk_flux_transport_cached(
@@ -546,12 +674,19 @@ void bulk_flux_energy_transport_device(
         int32_t* d_dq_e, int32_t* d_dq_s, int32_t* d_scale,
         unsigned long long* d_ecnt,
         const bool* d_is_ambient, const int32_t* n_amb_cons,
-        unsigned long long* const* d_rail) {
+        unsigned long long* const* d_rail,
+        int32_t* const* d_trace_planes, int n_trace, int32_t* d_spre,
+        unsigned long long* d_tvent, unsigned long long* d_twipe) {
     const int n = h * w;
     if (n <= 0) return;
     const int block = 256;
     const int grid = (n + block - 1) / block;
     const size_t n8 = (size_t)n * sizeof(int64_t);
+    // Smoke transport v2 (#12): the trace stages run only when the caller hands
+    // trace planes (the chained path its live ones, the resident path all).
+    const bool do_trace = (d_trace_planes != nullptr && n_trace > 0
+                           && d_spre != nullptr && d_tvent != nullptr
+                           && d_twipe != nullptr);
 
     // ---- stage 1: snapshot (E, n_bulk) PRE-flux (arc #54 design §2.7) -----
     // `d_e` is now a PLAIN SNAPSHOT of the live `gas_energy` (D2D copy) —
@@ -583,6 +718,24 @@ void bulk_flux_energy_transport_device(
                                      t_amb_raw, d_ecnt, h, w);
     cuda_check(cudaGetLastError(), "e_apply");
 
+    // ---- stage 3b: TRACE apply (smoke transport v2, design §2.1) -----------
+    // BETWEEN stage 3 and stage 4's `d_nb` memset: d_nb still holds the PRE-flux
+    // bulk N (stage 1's accumulate; stage 2 mutates only the gas planes), which
+    // is the CPU's `n_pre`. One snapshot D2D + one gather launch per live plane;
+    // the kernel boundary is the CPU's loop boundary.
+    if (do_trace) {
+        const size_t n4 = (size_t)n * sizeof(int32_t);
+        for (int k = 0; k < n_trace; ++k) {
+            cuda_check(cudaMemcpy(d_spre, d_trace_planes[k], n4,
+                                  cudaMemcpyDeviceToDevice), "D2D s_pre snapshot");
+            trace_apply<<<grid, block>>>(d_trace_planes[k], d_spre, d_nb,
+                                         d_dqsum_e, d_dqsum_s,
+                                         d_solid, d_is_vacuum, d_is_ambient,
+                                         &d_tvent[k], h, w);
+            cuda_check(cudaGetLastError(), "trace_apply");
+        }
+    }
+
     // ---- stage 4: the mirror refresh (n_bulk POST, T = floordiv(E, n)) ----
     cuda_check(cudaMemset(d_nb, 0, n8), "memset nb (post)");
     for (int k = 0; k < n_cons; ++k) {
@@ -595,6 +748,337 @@ void bulk_flux_energy_transport_device(
                                        t_min_q, t_max_phys_q, t_amb_raw,
                                        d_ecnt, h, w);
     cuda_check(cudaGetLastError(), "e_recover");
+
+    // ---- stage 3c: TRACE wipe (smoke transport v2, design §2.1) ------------
+    // AFTER stage 4: `d_nb` now holds the POST-flux bulk N (stage 4's memset +
+    // re-accumulate) — the CPU's `n_new` — which is exactly why 3c cannot sit
+    // before it and 3b cannot sit after the memset.
+    if (do_trace) {
+        for (int k = 0; k < n_trace; ++k) {
+            trace_wipe<<<grid, block>>>(d_trace_planes[k], d_nb,
+                                        d_solid, d_is_vacuum, d_is_ambient,
+                                        &d_twipe[k], n);
+            cuda_check(cudaGetLastError(), "trace_wipe");
+        }
+    }
+}
+
+// ===========================================================================
+// SMOKE TRANSPORT v2 (#12, design §2.2-§2.4, §5 "Resident") — P2b: THE
+// ONCE-PER-TICK TRACE TAIL, DEVICE-RESIDENT. The kernel-for-loop transcription
+// of trace_tail (bulk_transport.cpp — THE oracle), expression for expression:
+//
+//   K_sink     stranded zeroing (§2.4) on solid ∨ vacuum ∨ ring, booked SINK,
+//              and the Jacobi snapshot S0 of the post-sink plane (the CPU takes
+//              its snapshot after step 1; sink writes only its own cell, so the
+//              fusion changes nothing);
+//   K_diffuse  Jacobi magnitude-truncated face diffusion (§2.2) from S0, each
+//              participant gathering its four faces in the pinned E, W, S, N
+//              order, outflow to a vacuum / ring cell booked VENT;
+//   K_decay    the ceil-rounded decay (§2.3), booked DECAY — its OWN kernel over
+//              the shared per-cell rule (trace_decay.h): a decay-rounding
+//              amendment is one edit there, never a change of this kernel.
+//
+// Born (N, h, w)-shaped (RL-batch habits §A, N == 1 today): every plane is
+// indexed env·(n_gases·n) + gi·n + cell, every mask env·n + cell; the per-env,
+// per-gas folds (is_trace, dd_q, frac_q — dt is a per-env scalar) arrive as a
+// device table read by env index; the books are an (N, n_gases, 3) unsigned-
+// long-long block (integer atomicAdd is order-free, so each total equals the
+// CPU's sequential sum). Every trace plane runs (no host liveness scan): on an
+// all-zero plane every stage is an arithmetic no-op with zero counters, which
+// is what the CPU's skip-after-scan produces. No plane is clamped; nothing
+// here touches the bulk planes, the energy or the air (V5).
+// ===========================================================================
+namespace {
+
+__device__ __forceinline__ size_t tail_off(int env, int gi, int n_gases, int n) {
+    return ((size_t)env * (size_t)n_gases + (size_t)gi) * (size_t)n;
+}
+
+// The face permeability the CPU tail quantizes once per tick (its permE/permS
+// build), for the face (lo, hi), lo the lower linear index: 0 when either side
+// is solid, else min(quantize(min(perm_lo, perm_hi)), ONE) where positive.
+// std::min(a, b) is `(b < a) ? b : a` — transcribed as such, operand order and
+// all; quantize((double)pf) is the FP_HD kit helper (K_L0_faces' argument: an
+// exact float->double, an exact power-of-two multiply, one rounded add).
+__device__ __forceinline__ int32_t tail_face_perm(int lo, int hi,
+                                                  const bool* __restrict__ solid,
+                                                  const float* __restrict__ perm) {
+    if (solid[lo] || solid[hi]) return 0;
+    const float ff = (perm[hi] < perm[lo]) ? perm[hi] : perm[lo];
+    if (!(ff > 0.0f)) return 0;
+    const int32_t q = quantize((double)ff);
+    return (FP_ONE < q) ? FP_ONE : q;
+}
+
+// |F| on a face from the snapshot, positive when the flow is a -> b (a the
+// lower index): the scale_mag idiom — truncate the MAGNITUDE, then sign it, so
+// F(a, b) == −F(b, a) and no drift. trace_tail's face_flux lambda, verbatim.
+__device__ __forceinline__ int64_t tail_face_flux(int32_t s_a, int32_t s_b,
+                                                  int32_t dd_q, int32_t perm_q) {
+    if (perm_q == 0) return 0;
+    const int64_t c = (int64_t)mul_q16(dd_q, perm_q);
+    const int64_t d = (int64_t)s_a - (int64_t)s_b;
+    if (d == 0 || c == 0) return 0;
+    const int64_t mag = (c * (d > 0 ? d : -d)) >> FP_SHIFT;
+    return d > 0 ? mag : -mag;
+}
+
+__global__ void trace_tail_zero(unsigned long long* __restrict__ cnt, int m) {
+    for (int k = blockIdx.x * blockDim.x + threadIdx.x; k < m;
+         k += gridDim.x * blockDim.x)
+        cnt[k] = 0ull;
+}
+
+// Step 1 (§2.4) + the S0 snapshot. One thread per (env, cell); own-cell writes.
+__global__ void trace_tail_sink(int32_t* __restrict__ gas,
+                                int32_t* __restrict__ s0,
+                                const bool* __restrict__ solid,
+                                const bool* __restrict__ is_vacuum,
+                                const bool* __restrict__ is_ambient,
+                                const int32_t* __restrict__ scal,
+                                unsigned long long* __restrict__ cnt,
+                                int n_env, int n_gases, int n) {
+    const long long total = (long long)n_env * n;
+    for (long long t = (long long)blockIdx.x * blockDim.x + threadIdx.x; t < total;
+         t += (long long)gridDim.x * blockDim.x) {
+        const int env = (int)(t / n);
+        const int i = (int)(t - (long long)env * n);
+        const int m = env * n + i;                       // the env's mask index
+        const bool part = t_part_dev(m, solid, is_vacuum, is_ambient);
+        for (int gi = 0; gi < n_gases; ++gi) {
+            const size_t ge = (size_t)env * n_gases + gi;
+            if (scal[ge * TRACE_TAIL_SCAL + 0] == 0) continue;   // not a trace plane
+            const size_t off = tail_off(env, gi, n_gases, n) + i;
+            int32_t s = gas[off];
+            if (s != 0 && !part) {
+                atomicAdd(&cnt[ge * TRACE_TAIL_CNT_SLOTS + TRACE_TAIL_SINK],
+                          (unsigned long long)(int64_t)s);
+                s = 0;
+                gas[off] = 0;
+            }
+            s0[off] = s;
+        }
+    }
+}
+
+// Step 2 (§2.2): Jacobi from S0. A non-participant is never written (step 1
+// left it 0, and the CPU's loop skips it). A (env, gas) with dd_q == 0 is
+// skipped — the CPU skips the whole diffusion step; S already equals S0.
+__global__ void trace_tail_diffuse(int32_t* __restrict__ gas,
+                                   const int32_t* __restrict__ s0,
+                                   const bool* __restrict__ solid,
+                                   const bool* __restrict__ is_vacuum,
+                                   const bool* __restrict__ is_ambient,
+                                   const float* __restrict__ perm,
+                                   const int32_t* __restrict__ scal,
+                                   unsigned long long* __restrict__ cnt,
+                                   int n_env, int n_gases, int h, int w) {
+    const int n = h * w;
+    const long long total = (long long)n_env * n;
+    for (long long t = (long long)blockIdx.x * blockDim.x + threadIdx.x; t < total;
+         t += (long long)gridDim.x * blockDim.x) {
+        const int env = (int)(t / n);
+        const int i = (int)(t - (long long)env * n);
+        const int mb = env * n;                          // the env's mask base
+        if (!t_part_dev(mb + i, solid, is_vacuum, is_ambient)) continue;
+        const int y = i / w;
+        const int x = i - y * w;
+        const bool* sol = solid + mb;
+        const float* pm = perm + mb;
+        // The four face permeabilities (plane-independent), and whether the
+        // neighbour across each face is a non-participant (its outflow is VENT).
+        const int32_t pE = (x < w - 1) ? tail_face_perm(i, i + 1, sol, pm) : 0;
+        const int32_t pW = (x > 0)     ? tail_face_perm(i - 1, i, sol, pm) : 0;
+        const int32_t pS = (y < h - 1) ? tail_face_perm(i, i + w, sol, pm) : 0;
+        const int32_t pN = (y > 0)     ? tail_face_perm(i - w, i, sol, pm) : 0;
+        const bool oE = (x < w - 1) && !t_part_dev(mb + i + 1, solid, is_vacuum, is_ambient);
+        const bool oW = (x > 0)     && !t_part_dev(mb + i - 1, solid, is_vacuum, is_ambient);
+        const bool oS = (y < h - 1) && !t_part_dev(mb + i + w, solid, is_vacuum, is_ambient);
+        const bool oN = (y > 0)     && !t_part_dev(mb + i - w, solid, is_vacuum, is_ambient);
+        for (int gi = 0; gi < n_gases; ++gi) {
+            const size_t ge = (size_t)env * n_gases + gi;
+            if (scal[ge * TRACE_TAIL_SCAL + 0] == 0) continue;
+            const int32_t dd_q = scal[ge * TRACE_TAIL_SCAL + 1];
+            if (dd_q <= 0) continue;
+            const int32_t* S0 = s0 + tail_off(env, gi, n_gases, n);
+            int64_t ds = 0, vented = 0;
+            // pinned face order E, W, S, N (the stage-3b order), CPU verbatim.
+            if (x < w - 1) {
+                const int64_t f = tail_face_flux(S0[i], S0[i + 1], dd_q, pE);
+                ds -= f;
+                if (f > 0 && oE) vented += f;
+            }
+            if (x > 0) {
+                const int64_t f = tail_face_flux(S0[i - 1], S0[i], dd_q, pW);
+                ds += f;
+                if (f < 0 && oW) vented -= f;
+            }
+            if (y < h - 1) {
+                const int64_t f = tail_face_flux(S0[i], S0[i + w], dd_q, pS);
+                ds -= f;
+                if (f > 0 && oS) vented += f;
+            }
+            if (y > 0) {
+                const int64_t f = tail_face_flux(S0[i - w], S0[i], dd_q, pN);
+                ds += f;
+                if (f < 0 && oN) vented -= f;
+            }
+            gas[tail_off(env, gi, n_gases, n) + i] = (int32_t)((int64_t)S0[i] + ds);
+            if (vented != 0)
+                atomicAdd(&cnt[ge * TRACE_TAIL_CNT_SLOTS + TRACE_TAIL_VENT],
+                          (unsigned long long)vented);
+        }
+    }
+}
+
+// Step 3 (§2.3): THE DECAY KERNEL, isolated. Per (env, cell, trace gas) with
+// frac_q > 0 and v > 0: lost = trace_decay::lost(v, frac_q) — the ONE shared
+// rule (trace_decay.h), also called by the CPU's trace_decay_plane.
+__global__ void trace_tail_decay(int32_t* __restrict__ gas,
+                                 const int32_t* __restrict__ scal,
+                                 unsigned long long* __restrict__ cnt,
+                                 int n_env, int n_gases, int n) {
+    const long long total = (long long)n_env * n;
+    for (long long t = (long long)blockIdx.x * blockDim.x + threadIdx.x; t < total;
+         t += (long long)gridDim.x * blockDim.x) {
+        const int env = (int)(t / n);
+        const int i = (int)(t - (long long)env * n);
+        for (int gi = 0; gi < n_gases; ++gi) {
+            const size_t ge = (size_t)env * n_gases + gi;
+            if (scal[ge * TRACE_TAIL_SCAL + 0] == 0) continue;
+            const int32_t frac_q = scal[ge * TRACE_TAIL_SCAL + 2];
+            if (frac_q <= 0) continue;
+            const size_t off = tail_off(env, gi, n_gases, n) + i;
+            const int64_t v = gas[off];
+            if (v <= 0) continue;
+            const int64_t lost = trace_decay::lost(v, frac_q);
+            gas[off] = (int32_t)(v - lost);
+            if (lost != 0)
+                atomicAdd(&cnt[ge * TRACE_TAIL_CNT_SLOTS + TRACE_TAIL_DECAY],
+                          (unsigned long long)lost);
+        }
+    }
+}
+
+}  // namespace
+
+int trace_tail_launch_resident(
+        int n_env, int h, int w, int n_gases,
+        int32_t* d_gas,
+        const bool* d_solid, const bool* d_is_vacuum, const bool* d_is_ambient,
+        const float* d_perm,
+        const int32_t* d_scal,
+        int32_t* d_s0,
+        unsigned long long* d_cnt) {
+    const int n = h * w;
+    if (n_env <= 0 || n <= 0 || n_gases <= 0) return 0;
+    const int block = 256;
+    const long long total = (long long)n_env * n;
+    const int grid = (int)((total + block - 1) / block);
+    const int m = n_env * n_gases * TRACE_TAIL_CNT_SLOTS;
+    trace_tail_zero<<<(m + block - 1) / block, block>>>(d_cnt, m);
+    cuda_check(cudaGetLastError(), "trace_tail_zero");
+    trace_tail_sink<<<grid, block>>>(d_gas, d_s0, d_solid, d_is_vacuum,
+                                     d_is_ambient, d_scal, d_cnt,
+                                     n_env, n_gases, n);
+    cuda_check(cudaGetLastError(), "trace_tail_sink");
+    trace_tail_diffuse<<<grid, block>>>(d_gas, d_s0, d_solid, d_is_vacuum,
+                                        d_is_ambient, d_perm, d_scal, d_cnt,
+                                        n_env, n_gases, h, w);
+    cuda_check(cudaGetLastError(), "trace_tail_diffuse");
+    trace_tail_decay<<<grid, block>>>(d_gas, d_scal, d_cnt, n_env, n_gases, n);
+    cuda_check(cudaGetLastError(), "trace_tail_decay");
+    return 4;
+}
+
+namespace {
+// Persistent scratch for the N == 1 wrapper, keyed (N, h, w, n_gases) (§A
+// habit 5). C++-owned, allocated once, zero cudaMalloc steady-state.
+struct TraceTailResidentScratch {
+    int n_env = 0, h = 0, w = 0, n_gases = 0;
+    int32_t* s0 = nullptr;                 // (N, n_gases, h, w)
+    int32_t* scal = nullptr;               // (N, n_gases, TRACE_TAIL_SCAL)
+    unsigned long long* cnt = nullptr;     // (N, n_gases, TRACE_TAIL_CNT_SLOTS)
+    void free_all() {
+        if (s0) cudaFree(s0);
+        if (scal) cudaFree(scal);
+        if (cnt) cudaFree(cnt);
+        s0 = nullptr; scal = nullptr; cnt = nullptr;
+        n_env = h = w = n_gases = 0;
+    }
+    void ensure(int N, int H, int W, int G) {
+        if (N == n_env && H == h && W == w && G == n_gases && s0) return;
+        free_all();
+        n_env = N; h = H; w = W; n_gases = G;
+        const size_t planes = (size_t)N * G * H * W;
+        cuda_check(cudaMalloc(&s0, planes * sizeof(int32_t)), "tail malloc s0");
+        cuda_check(cudaMalloc(&scal, (size_t)N * G * TRACE_TAIL_SCAL * sizeof(int32_t)),
+                   "tail malloc scal");
+        cuda_check(cudaMalloc(&cnt, (size_t)N * G * TRACE_TAIL_CNT_SLOTS
+                                    * sizeof(unsigned long long)), "tail malloc cnt");
+    }
+};
+TraceTailResidentScratch g_trace_tail_res;
+}  // namespace
+
+void trace_tail_resident(
+        int32_t* d_gas_base,
+        const bool* d_solid, const bool* d_is_vacuum, const bool* d_is_ambient,
+        const float* d_perm,
+        int h, int w, int n_gases,
+        const bool* gas_conservative, const float* gas_diffusion,
+        const float* gas_decay, float dt,
+        int64_t* vent, int64_t* sink, int64_t* decay) {
+    const int n = h * w;
+    if (n <= 0 || n_gases <= 0) return;
+    constexpr int N_ENV = 1;   // §A: the core is (N, h, w); one env today
+    g_trace_tail_res.ensure(N_ENV, h, w, n_gases);
+
+    // The per-env, per-gas folds — the CPU tail's own host folds, called
+    // through the SAME out-of-line definitions (bulk_transport.cpp, on
+    // /fp:strict): dd_q = trace_diffusion_dd_q(d, dt), frac_q =
+    // trace_decay::frac_q(decay, dt). The stability door 4·dd_q <= ONE is
+    // refused at the gases door and at PhysicsRunner's dt binding; a breach of
+    // it here (a mis-wired caller) THROWS — the CPU asserts the same bound.
+    std::vector<int32_t> scal((size_t)N_ENV * n_gases * TRACE_TAIL_SCAL, 0);
+    for (int gi = 0; gi < n_gases; ++gi) {
+        if (gas_conservative[gi]) continue;
+        const int32_t dd_q = ::trace_diffusion_dd_q(gas_diffusion[gi], dt);
+        if (4 * (int64_t)dd_q > (int64_t)FP_ONE) {
+            std::ostringstream os;
+            os << "trace_tail_resident: gas " << gi << " diffusion·dt fold "
+               << dd_q << " breaks the Jacobi stability door 4·dd_q <= ONE";
+            throw std::invalid_argument(os.str());
+        }
+        scal[(size_t)gi * TRACE_TAIL_SCAL + 0] = 1;
+        scal[(size_t)gi * TRACE_TAIL_SCAL + 1] = dd_q;
+        scal[(size_t)gi * TRACE_TAIL_SCAL + 2] = trace_decay::frac_q(gas_decay[gi], dt);
+    }
+    cuda_check(cudaMemcpy(g_trace_tail_res.scal, scal.data(),
+                          scal.size() * sizeof(int32_t), cudaMemcpyHostToDevice),
+               "H2D tail folds");
+
+    trace_tail_launch_resident(N_ENV, h, w, n_gases, d_gas_base,
+                               d_solid, d_is_vacuum, d_is_ambient, d_perm,
+                               g_trace_tail_res.scal, g_trace_tail_res.s0,
+                               g_trace_tail_res.cnt);
+    cuda_check(cudaDeviceSynchronize(), "trace_tail_resident sync");
+
+    // ONE small D2H per tick: the (1, n_gases, 3) book block, ADDED to the
+    // caller's books exactly as the CPU tail accumulates (vent in
+    // boundary_flux_'s trace slots, then sink, decay).
+    std::vector<unsigned long long> c((size_t)n_gases * TRACE_TAIL_CNT_SLOTS, 0);
+    cuda_check(cudaMemcpy(c.data(), g_trace_tail_res.cnt,
+                          c.size() * sizeof(unsigned long long),
+                          cudaMemcpyDeviceToHost), "D2H tail books");
+    for (int gi = 0; gi < n_gases; ++gi) {
+        if (gas_conservative[gi]) continue;
+        const size_t b = (size_t)gi * TRACE_TAIL_CNT_SLOTS;
+        vent[gi]  += (int64_t)c[b + TRACE_TAIL_VENT];
+        sink[gi]  += (int64_t)c[b + TRACE_TAIL_SINK];
+        decay[gi] += (int64_t)c[b + TRACE_TAIL_DECAY];
+    }
 }
 
 namespace {

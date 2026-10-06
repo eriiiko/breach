@@ -1,5 +1,6 @@
 #include "bulk_transport.h"
 #include "fixed_point.h"
+#include "trace_decay.h"   // smoke transport v2: the shared decay rule
 #include <algorithm>
 #include <cassert>
 #include <vector>
@@ -280,6 +281,15 @@ inline int64_t price_face(int64_t dq, int64_t e_i, int64_t n_i) {
     return dq * q + floordiv_q(dq * r, n_i);
 }
 
+// Smoke transport v2 (#12, design §2.1): the TRACE participation predicate,
+// ONE transcription. Wider than e_participates by the thermal-solid (crate)
+// tiles: air seeps through their pores, and the trace goes with it (D3).
+inline bool t_participates(int i, const bool* solid, const bool* is_vacuum,
+                           const bool* is_ambient) {
+    return !solid[i] && !is_vacuum[i]
+           && !(is_ambient != nullptr && is_ambient[i]);
+}
+
 }  // namespace
 
 void bulk_flux_energy_transport_cached(
@@ -293,10 +303,31 @@ void bulk_flux_energy_transport_cached(
         int h, int w,
         int64_t* e_pre, int64_t* n_pre, int64_t* dqsum_e, int64_t* dqsum_s,
         BulkEnergyCounters& cnt,
-        const bool* is_ambient, const int32_t* n_amb, int64_t* boundary_flux) {
+        const bool* is_ambient, const int32_t* n_amb, int64_t* boundary_flux,
+        int32_t* s_pre, int64_t* trace_vent, int64_t* trace_wipe) {
     const int n = h * w;
     if (n <= 0) return;
     const bool* ts = thermal_solid_ts;
+
+    // Smoke transport v2 (#12, design §2.1): which TRACE planes ride this
+    // substep. An all-zero plane stays all zero with all its counters zero, so
+    // skipping it after this host scan is an optimisation only (§2.1 "Plane
+    // skipping"). Scanned BEFORE stage 2, which does not touch trace planes.
+    const bool do_trace = (s_pre != nullptr && trace_vent != nullptr
+                           && trace_wipe != nullptr);
+    constexpr int TRACE_MAX_GASES = 64;
+    bool trace_live[TRACE_MAX_GASES] = {};
+    bool any_trace = false;
+    if (do_trace) {
+        assert(n_gases <= TRACE_MAX_GASES);
+        for (int gi = 0; gi < n_gases && gi < TRACE_MAX_GASES; ++gi) {
+            if (gas_conservative[gi]) continue;
+            const int32_t* S = gas + (size_t)gi * (size_t)n;
+            for (int i = 0; i < n; ++i) {
+                if (S[i] != 0) { trace_live[gi] = true; any_trace = true; break; }
+            }
+        }
+    }
 
     // ---- stage 1: snapshot (E, n_bulk) PRE-flux (design §2.7 row 1) --------
     // Replaces P-E1's `e[i] = n_bulk_pre[i] * T[i]` rebuild: the energy is
@@ -306,9 +337,16 @@ void bulk_flux_energy_transport_cached(
     // are still being read, so both operands of every face price must come
     // from planes nothing in the pass mutates. `n_pre` additionally survives
     // stage 2, which overwrites `gas` in place.
+    //
+    // Smoke transport v2 (#12, design §2.1): `n_pre` is held on every TRACE
+    // participant — the thermal-solid (crate) tiles included, whose pores
+    // carry air and so carry trace. Energy-safe: stage 3 reads `n_pre` only
+    // behind e_participates (its own cell's, and a receiver's through
+    // `receive`), so a crate's n_pre is invisible to the energy books (V5).
+    // The `< 2^30` invariant extends to those cells.
     for (int i = 0; i < n; ++i) {
         e_pre[i] = gas_energy[i];
-        if (!e_participates(i, solid, ts, is_vacuum, is_ambient)) { n_pre[i] = 0; continue; }
+        if (!t_participates(i, solid, is_vacuum, is_ambient)) { n_pre[i] = 0; continue; }
         int64_t nb = 0;
         for (int gi = 0; gi < n_gases; ++gi) {
             if (!gas_conservative[gi]) continue;
@@ -416,6 +454,99 @@ void bulk_flux_energy_transport_cached(
         }
     }
 
+    // ---- stage 3b: TRACE apply, GATHER form (smoke transport v2, #12) -------
+    // Design §2.1. The trace crossing a face is that face's APPLIED bulk dq
+    // priced at the donor's trace-per-air ratio, phi = floordiv(dq·S, N), with
+    // (S, N) both PRE-flux snapshots — the stage-3 energy shape with S in E's
+    // place. Each cell edits ONLY its own S (no atomics on device), face order
+    // PINNED E, W, S, N. The debit and the credit of a face are the SAME int64
+    // from the same triple, so Σ_participants S changes only by what a donor
+    // prices onto a vacuum / ring receiver — booked here as the vent.
+    // Non-negativity: the mass limiter bounds a donor's Σ_f dq_f by its own
+    // pre-flux N, hence Σ_f phi_f ≤ S_pre (floordiv never rounds up).
+    if (any_trace) {
+        for (int gi = 0; gi < n_gases; ++gi) {
+            if (!trace_live[gi]) continue;
+            int32_t* S = gas + (size_t)gi * (size_t)n;
+            for (int i = 0; i < n; ++i) s_pre[i] = S[i];
+            int64_t vent = 0;
+            for (int y = 0; y < h; ++y) {
+                const int row = y * w;
+                for (int x = 0; x < w; ++x) {
+                    const int i = row + x;
+                    if (!t_participates(i, solid, is_vacuum, is_ambient)) continue;
+                    const int64_t s_own = s_pre[i], n_own = n_pre[i];
+                    int64_t ds = 0;
+                    // A donor with no air has dq == 0 on every face (the
+                    // limiter), so the N_EPS guard only keeps the divide legal.
+                    const auto donate = [&](int64_t q) -> int64_t {
+                        return (n_own >= N_EPS_RAW) ? price_face(q, s_own, n_own) : 0;
+                    };
+                    // Inflow from vacuum / ring carries NO trace.
+                    const auto receive = [&](int nb, int64_t q) -> int64_t {
+                        if (!t_participates(nb, solid, is_vacuum, is_ambient)) return 0;
+                        return (n_pre[nb] >= N_EPS_RAW)
+                            ? price_face(q, (int64_t)s_pre[nb], n_pre[nb]) : 0;
+                    };
+                    // A face's other cell is non-solid wherever dq != 0 (the
+                    // coefficient is 0 across a solid face), so a donation to
+                    // a non-participant is a donation to vacuum / ring: the
+                    // EXPORT, booked by the donor (the only participating side).
+                    // EAST face of i: dqsum_e[i], positive = i -> i+1.
+                    if (x < w - 1) {
+                        const int64_t q = dqsum_e[i];
+                        if (q > 0) {
+                            const int64_t phi = donate(q);
+                            ds -= phi;
+                            if (!t_participates(i + 1, solid, is_vacuum, is_ambient)) vent += phi;
+                        } else if (q < 0) {
+                            ds += receive(i + 1, -q);
+                        }
+                    }
+                    // WEST face of i: dqsum_e[i-1], positive = (i-1) -> i.
+                    if (x > 0) {
+                        const int64_t q = dqsum_e[i - 1];
+                        if (q > 0) {
+                            ds += receive(i - 1, q);
+                        } else if (q < 0) {
+                            const int64_t phi = donate(-q);
+                            ds -= phi;
+                            if (!t_participates(i - 1, solid, is_vacuum, is_ambient)) vent += phi;
+                        }
+                    }
+                    // SOUTH face of i: dqsum_s[i], positive = i -> i+w.
+                    if (y < h - 1) {
+                        const int64_t q = dqsum_s[i];
+                        if (q > 0) {
+                            const int64_t phi = donate(q);
+                            ds -= phi;
+                            if (!t_participates(i + w, solid, is_vacuum, is_ambient)) vent += phi;
+                        } else if (q < 0) {
+                            ds += receive(i + w, -q);
+                        }
+                    }
+                    // NORTH face of i: dqsum_s[i-w], positive = (i-w) -> i.
+                    if (y > 0) {
+                        const int64_t q = dqsum_s[i - w];
+                        if (q > 0) {
+                            ds += receive(i - w, q);
+                        } else if (q < 0) {
+                            const int64_t phi = donate(-q);
+                            ds -= phi;
+                            if (!t_participates(i - w, solid, is_vacuum, is_ambient)) vent += phi;
+                        }
+                    }
+                    const int64_t s_new = s_own + ds;
+                    // §2.4: S >= 0 by construction; the int32 narrow is safe
+                    // while Σ_map S < 2^31 (asserted in the tail).
+                    assert(s_new >= 0 && s_new <= (int64_t)INT32_MAX);
+                    S[i] = (int32_t)s_new;
+                }
+            }
+            trace_vent[gi] += vent;
+        }
+    }
+
     // ---- stage 4: the MIRROR REFRESH (arc #54 §2.6/§2.7 row 1) -------------
     // T := floordiv(E, n_bulk_new) − T_AMB_raw. This is no longer the
     // AUTHORITY it was at P-E1 — it is a mirror refresh, so that `p*`, the SL
@@ -483,5 +614,196 @@ void bulk_flux_energy_transport_cached(
             else if (t_new > (int64_t)t_max_phys_q) t_new = (int64_t)t_max_phys_q;
             temperature[i] = (int32_t)t_new;
         }
+    }
+
+    // ---- stage 3c: TRACE wipe (smoke transport v2, #12, design §2.1) --------
+    // After the mirror refresh, on the POST-flux bulk N: a participating cell
+    // with less than N_EPS of air has nothing left to carry its trace, so the
+    // trace is destroyed and booked in the wipe channel (the energy stage's
+    // own N_EPS idiom, applied to the trace).
+    if (any_trace) {
+        for (int i = 0; i < n; ++i) {
+            if (!t_participates(i, solid, is_vacuum, is_ambient)) continue;
+            int64_t n_new = 0;
+            for (int gi = 0; gi < n_gases; ++gi) {
+                if (!gas_conservative[gi]) continue;
+                n_new += (int64_t)gas[(size_t)gi * (size_t)n + (size_t)i];
+            }
+            if (n_new >= N_EPS_RAW) continue;
+            for (int gi = 0; gi < n_gases; ++gi) {
+                if (!trace_live[gi]) continue;
+                int32_t& s = gas[(size_t)gi * (size_t)n + (size_t)i];
+                if (s == 0) continue;
+                trace_wipe[gi] += (int64_t)s;
+                s = 0;
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// Smoke transport v2 (#12, design §2.3) — the tail's DECAY step, isolated.
+// ===========================================================================
+int32_t trace_decay::frac_q(float decay_g, float dt) {
+    // Out of line on purpose (this TU is on /fp:strict) — see trace_decay.h.
+    if (!(decay_g > 0.0f)) return 0;
+    q16 f = quantize((double)decay_g * (double)dt);
+    if (f < 0) f = 0;
+    if (f > FP_ONE) f = FP_ONE;   // decay·dt >= 1 removes it all
+    return f;
+}
+
+int32_t trace_diffusion_dd_q(float d_g, float dt) {
+    // The §2.2 host fold, out of line on /fp:strict (one definition, both
+    // backends — the resident CUDA tail folds through this same function).
+    q16 dd_q = quantize((double)d_g * (double)dt);
+    if (dd_q < 0) dd_q = 0;
+    return dd_q;
+}
+
+int64_t trace_decay_plane(int32_t* S, int n, int32_t frac_q) {
+    if (frac_q <= 0) return 0;
+    int64_t lost_sum = 0;
+    for (int i = 0; i < n; ++i) {
+        const int64_t v = S[i];
+        if (v <= 0) continue;
+        const int64_t lost = trace_decay::lost(v, frac_q);
+        S[i] = (int32_t)(v - lost);
+        lost_sum += lost;
+    }
+    return lost_sum;
+}
+
+// ===========================================================================
+// Smoke transport v2 (#12, design §2.2-§2.4) — the once-per-tick trace tail.
+// Contract and order in bulk_transport.h.
+// ===========================================================================
+void trace_tail(
+        int32_t* gas, const bool* gas_conservative, int n_gases,
+        const float* gas_diffusion, const float* gas_decay, float dt,
+        const bool* solid, const bool* is_vacuum, const bool* is_ambient,
+        const float* dyn_permeability,
+        int h, int w,
+        int64_t* vent, int64_t* sink, int64_t* decay) {
+    const int n = h * w;
+    if (n <= 0) return;
+
+    // Reused scratch (the house thread_local pattern, bulk_flux_transport_cached).
+    // s0: the Jacobi snapshot; cE / cS: the per-tick FACE coefficients (east /
+    // south face of i), plane-independent up to the per-gas dd_q factor, so the
+    // perm quantize is folded once per tick, not once per plane.
+    static thread_local std::vector<int32_t> s0, permE, permS;
+    if ((int)s0.size() != n) { s0.assign(n, 0); permE.assign(n, 0); permS.assign(n, 0); }
+    bool perm_built = false;
+
+    for (int gi = 0; gi < n_gases; ++gi) {
+        if (gas_conservative[gi]) continue;
+        int32_t* S = gas + (size_t)gi * (size_t)n;
+        bool any = false;
+        for (int i = 0; i < n; ++i) { if (S[i] != 0) { any = true; break; } }
+        if (!any) continue;      // all zero stays all zero, counters zero
+
+        // ---- 1. stranded trace (§2.4) --------------------------------------
+        // Trace on a solid ∨ vacuum ∨ ring cell has no air to ride: a breach,
+        // a seal or a deposit put it there. Zeroed, booked as the sink. FIRST,
+        // so every diffusion face below reads 0 on a non-participant.
+        int64_t sunk = 0;
+        for (int i = 0; i < n; ++i) {
+            if (S[i] == 0) continue;
+            if (t_participates(i, solid, is_vacuum, is_ambient)) continue;
+            sunk += (int64_t)S[i];
+            S[i] = 0;
+        }
+        sink[gi] += sunk;
+
+        // ---- 2. diffusion (§2.2): Jacobi, magnitude-truncated ---------------
+        // dd_q = quantize(d·dt), the host fold. Stability (Σ_j c_ij ≤ ONE, hence
+        // exact positivity) needs 4·dd_q ≤ ONE: refused at the gases door and at
+        // PhysicsRunner's dt binding; asserted here.
+        const q16 dd_q = trace_diffusion_dd_q(gas_diffusion[gi], dt);
+        assert(4 * (int64_t)dd_q <= (int64_t)FP_ONE);
+        if (dd_q > 0) {
+            if (!perm_built) {
+                // Face permeability, quantized once per tick and capped at ONE
+                // (a guard of the Σ_j c_ij ≤ ONE positivity bound; every shipped
+                // permeability lies in [0, 1], so the cap never binds). A solid
+                // cell's own permeability is <= 0, so its faces carry 0.
+                for (int y = 0; y < h; ++y) {
+                    const int row = y * w;
+                    for (int x = 0; x < w; ++x) {
+                        const int i = row + x;
+                        permE[i] = 0; permS[i] = 0;
+                        if (solid[i]) continue;
+                        if (x < w - 1 && !solid[i + 1]) {
+                            const float ff = std::min(dyn_permeability[i], dyn_permeability[i + 1]);
+                            if (ff > 0.0f) permE[i] = std::min(quantize((double)ff), FP_ONE);
+                        }
+                        if (y < h - 1 && !solid[i + w]) {
+                            const float ff = std::min(dyn_permeability[i], dyn_permeability[i + w]);
+                            if (ff > 0.0f) permS[i] = std::min(quantize((double)ff), FP_ONE);
+                        }
+                    }
+                }
+                perm_built = true;
+            }
+            for (int i = 0; i < n; ++i) s0[i] = S[i];
+            // |F| on a face from the snapshot: (c · |ΔS|) >> 16, positive when
+            // the flow is lower-index -> higher-index. The scale_mag idiom:
+            // truncate the MAGNITUDE, then sign it, so F(i,j) == −F(j,i).
+            const auto face_flux = [&](int a, int b, q16 perm_q) -> int64_t {
+                if (perm_q == 0) return 0;
+                const int64_t c = (int64_t)mul_q16(dd_q, perm_q);
+                const int64_t d = (int64_t)s0[a] - (int64_t)s0[b];
+                if (d == 0 || c == 0) return 0;
+                const int64_t mag = (c * (d > 0 ? d : -d)) >> FP_SHIFT;
+                return d > 0 ? mag : -mag;
+            };
+            int64_t vented = 0;
+            for (int y = 0; y < h; ++y) {
+                const int row = y * w;
+                for (int x = 0; x < w; ++x) {
+                    const int i = row + x;
+                    if (!t_participates(i, solid, is_vacuum, is_ambient)) continue;
+                    int64_t ds = 0;
+                    // pinned face order E, W, S, N (the stage-3b order).
+                    if (x < w - 1) {
+                        const int64_t f = face_flux(i, i + 1, permE[i]);
+                        ds -= f;
+                        if (f > 0 && !t_participates(i + 1, solid, is_vacuum, is_ambient)) vented += f;
+                    }
+                    if (x > 0) {
+                        const int64_t f = face_flux(i - 1, i, permE[i - 1]);
+                        ds += f;
+                        if (f < 0 && !t_participates(i - 1, solid, is_vacuum, is_ambient)) vented -= f;
+                    }
+                    if (y < h - 1) {
+                        const int64_t f = face_flux(i, i + w, permS[i]);
+                        ds -= f;
+                        if (f > 0 && !t_participates(i + w, solid, is_vacuum, is_ambient)) vented += f;
+                    }
+                    if (y > 0) {
+                        const int64_t f = face_flux(i - w, i, permS[i - w]);
+                        ds += f;
+                        if (f < 0 && !t_participates(i - w, solid, is_vacuum, is_ambient)) vented -= f;
+                    }
+                    const int64_t s_new = (int64_t)s0[i] + ds;
+                    assert(s_new >= 0 && s_new <= (int64_t)INT32_MAX);
+                    S[i] = (int32_t)s_new;
+                }
+            }
+            vent[gi] += vented;
+        }
+
+        // ---- 3. decay (§2.3): ceil rounding, booked -------------------------
+        // Its own function over the shared per-cell rule (trace_decay.h), so a
+        // decay-rounding amendment is one local edit on both backends.
+        decay[gi] += trace_decay_plane(S, n, trace_decay::frac_q(gas_decay[gi], dt));
+
+#ifndef NDEBUG
+        // §2.4: the int32 narrow is safe while Σ_map S < 2^31 per plane.
+        int64_t total = 0;
+        for (int i = 0; i < n; ++i) { assert(S[i] >= 0); total += S[i]; }
+        assert(total < ((int64_t)1 << 31));
+#endif
     }
 }

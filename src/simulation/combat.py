@@ -1373,7 +1373,7 @@ def deposit_spray_cone(gmap, queue, shooter, weapon, ammo,
             queue.enqueue(FieldEdit(
                 field="gas", region=Region.TILE, coords=(y, x),
                 amount=gas_amount / div, mode=EditMode.ADD,
-                clamp=(0.0, 1.0), channel=gas_id,
+                channel=gas_id,   # policy TRACE_CLAMP: additive (D1)
                 source_id=_SRC_SPRAY_GAS,
             ))
 

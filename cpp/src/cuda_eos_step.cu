@@ -141,16 +141,18 @@ EOSHostPrestage eos_host_prestage(
     // fold uses. VELOCITY-CLAMP (P-V1, D4): the cap2 fold below reads it.
     const bool* ts = (thermal_solid != nullptr) ? thermal_solid : solid;
 
-    // The boundary_flux rail (spec §5): zero it each tick in ambient mode; the
-    // per-substep bulk reset accumulates into it on device, copied back later.
-    if (ambient_mode) {
-        if ((int)solver.boundary_flux_.size() != n_gases)
-            solver.boundary_flux_.assign(n_gases, 0);
-        else
-            std::fill(solver.boundary_flux_.begin(), solver.boundary_flux_.end(), (int64_t)0);
-    } else if (!solver.boundary_flux_.empty()) {
-        solver.boundary_flux_.clear();
-    }
+    // The boundary_flux rail (spec §5) + the smoke-transport-v2 trace books
+    // (#12, design §3): the CPU twin's reset block, VERBATIM (EOSSolver::step) —
+    // sized n_gases on EVERY map and zeroed each tick, the three sibling trace
+    // books with it. (Before P2a this path cleared the rail to EMPTY on a space
+    // map while the CPU returned n_gases zeros; the two now agree.) The bulk
+    // slots fill from the device rail below (ambient maps), the trace slots from
+    // the device trace counters; the once-per-tick trace tail adds on the host.
+    solver.ensure_trace_books(n_gases);
+    std::fill(solver.boundary_flux_.begin(), solver.boundary_flux_.end(), (int64_t)0);
+    std::fill(solver.trace_wipe_sum_.begin(), solver.trace_wipe_sum_.end(), (int64_t)0);
+    std::fill(solver.trace_sink_sum_.begin(), solver.trace_sink_sum_.end(), (int64_t)0);
+    std::fill(solver.trace_decay_sum_.begin(), solver.trace_decay_sum_.end(), (int64_t)0);
 
     // ---- step 0: P_prev := P (pure copy) ---------------------------------
     for (int i = 0; i < n; ++i) p_prev[i] = atmosphere[i];
@@ -450,6 +452,35 @@ void eos_step_cuda(
         std::vector<int32_t*> d_gas(cons.size());
         for (size_t k = 0; k < cons.size(); ++k)
             d_gas[k] = (int32_t*)dev_alloc(nb);
+        // Smoke transport v2 (#12, design §5): the LIVE trace planes. A plane
+        // that is all zero at tick entry stays all zero with zero counters
+        // through the whole step (stage 3b prices phi = floordiv(dq*0, N) = 0),
+        // so it is never uploaded — the CPU's host-scan skip, an optimisation
+        // only. Each live plane rides the device for the whole substep loop
+        // (one H2D here, one D2H after it, BEFORE digest_bulk_flux).
+        std::vector<int> trace_gi;
+        for (int gi = 0; gi < n_gases; ++gi) {
+            if (gas_conservative[gi]) continue;
+            const int32_t* S = gas + (size_t)gi * n;
+            for (int i = 0; i < n; ++i) {
+                if (S[i] != 0) { trace_gi.push_back(gi); break; }
+            }
+        }
+        const int n_trace = (int)trace_gi.size();
+        std::vector<int32_t*> d_trace(n_trace, nullptr);
+        for (int k = 0; k < n_trace; ++k)
+            d_trace[k] = (int32_t*)dev_alloc(nb);
+        int32_t* d_spre = n_trace ? (int32_t*)dev_alloc(nb) : nullptr;
+        // [0, n_trace) vent, [n_trace, 2*n_trace) wipe — unsigned long long
+        // atomicAdd slots, memset 0 here (per-tick semantics, the e-counters' idiom).
+        unsigned long long* d_tcnt = nullptr;
+        if (n_trace) {
+            d_tcnt = (unsigned long long*)dev_alloc(
+                2 * (size_t)n_trace * sizeof(unsigned long long));
+            cuda_check(cudaMemset(d_tcnt, 0,
+                                  2 * (size_t)n_trace * sizeof(unsigned long long)),
+                       "memset trace counters");
+        }
         // P-E1 per-plane host side-tables the energy entry reads.
         std::vector<int32_t> n_amb_cons(cons.size(), 0);
         std::vector<unsigned long long*> rail_ptrs(cons.size(), nullptr);
@@ -470,6 +501,9 @@ void eos_step_cuda(
         for (size_t k = 0; k < cons.size(); ++k)
             cuda_check(cudaMemcpy(d_gas[k], gas + (size_t)cons[k] * n, nb,
                                   cudaMemcpyHostToDevice), "H2D gas plane");
+        for (int k = 0; k < n_trace; ++k)
+            cuda_check(cudaMemcpy(d_trace[k], gas + (size_t)trace_gi[k] * n, nb,
+                                  cudaMemcpyHostToDevice), "H2D trace plane");
 
         // BC: upload the ambient ring mask (device) + allocate the per-plane
         // int64 boundary_flux rail (zeroed once; the bulk clamp atomicAdds into
@@ -516,7 +550,11 @@ void eos_step_cuda(
                 d_e, d_nbulk, d_dqsum_e, d_dqsum_s,
                 d_dq_e, d_dq_s, d_scale, d_ecnt,
                 d_amb, n_amb_cons.data(),
-                d_rail ? rail_ptrs.data() : nullptr);
+                d_rail ? rail_ptrs.data() : nullptr,
+                // smoke transport v2 (#12) stages 3b/3c: the trace rides these
+                // very faces (vent -> boundary_flux_'s trace slots, wipe beside).
+                n_trace ? d_trace.data() : nullptr, n_trace, d_spre,
+                d_tcnt, d_tcnt ? d_tcnt + n_trace : nullptr);
             // -- f. zero u on solid: subsumed by the advection kernel (the
             //    proven P6.2 argument; nothing above re-touches u). --------
         }
@@ -532,6 +570,24 @@ void eos_step_cuda(
         for (size_t k = 0; k < cons.size(); ++k)
             cuda_check(cudaMemcpy(gas + (size_t)cons[k] * n, d_gas[k], nb,
                                   cudaMemcpyDeviceToHost), "D2H gas plane");
+        // Smoke transport v2 (#12): the trace planes and their counters back
+        // BEFORE digest_bulk_flux below (it hashes every gas plane from host
+        // memory). The counters equal the CPU's sequential sums (integer
+        // atomicAdd is order-free); boundary_flux_ was zeroed at entry, so these
+        // are plain stores into the trace slots (the bulk slots are the rail's).
+        if (n_trace) {
+            for (int k = 0; k < n_trace; ++k)
+                cuda_check(cudaMemcpy(gas + (size_t)trace_gi[k] * n, d_trace[k], nb,
+                                      cudaMemcpyDeviceToHost), "D2H trace plane");
+            std::vector<unsigned long long> tc(2 * (size_t)n_trace, 0);
+            cuda_check(cudaMemcpy(tc.data(), d_tcnt,
+                                  tc.size() * sizeof(unsigned long long),
+                                  cudaMemcpyDeviceToHost), "D2H trace counters");
+            for (int k = 0; k < n_trace; ++k) {
+                solver.boundary_flux_[trace_gi[k]]  = (int64_t)tc[k];
+                solver.trace_wipe_sum_[trace_gi[k]] = (int64_t)tc[n_trace + k];
+            }
+        }
         // BC: copy the accumulated per-plane rail back into the solver's rail
         // (byte-identical to the CPU: integer sums are order-free, so the
         // device atomicAdd total == the CPU sequential sum).

@@ -5,8 +5,8 @@ What is locked here:
 
   - GAS GRENADES E2E: a smoke/tear/poison grenade order (ammo_name on the
     shipped ORDER_GRENADE flow) detonates into the RIGHT gas slice and the
-    C++ transport carries the cloud on subsequent ticks (all slices are
-    stepped by the per-gas loop — the transport verification of record);
+    C++ transport carries the cloud on subsequent ticks (every trace slice
+    rides the bulk face flux — the transport verification of record);
   - TEARGAS -> BLINDED -> SNAP CONE (the owed P3 can_aim consumer): the
     coupling row applies refresh-stacked BLINDED above the density
     threshold; a blinded unit's AIMED fire order draws from the SNAP cone
@@ -87,9 +87,10 @@ def _fill_footprint(slice_, unit, density):
 def test_gas_grenade_e2e_deposits_and_transports():
     """A smoke grenade through the shipped LOBBED flow: has_grenade
     decrements, the steam slice fills at the target, every other
-    slice stays empty — and the cloud SURVIVES subsequent ticks (the C++
-    per-gas transport loop steps every non-empty slice: verified in code,
-    physics_engine.cpp run_substeps' gi-loop; this is the empirical twin)."""
+    slice stays empty — and the cloud SURVIVES subsequent ticks: every
+    non-empty trace slice rides the air (smoke transport v2, #12 — the EOS
+    substeps' stage 3b in bulk_transport.cpp, then the once-per-tick
+    trace_tail in run_substeps; this is the empirical twin)."""
     sim = Simulation(_level(), seed=SEED, breach_physics=bp,
                      enable_recorder=False)
     m = Unit("M", x=3, y=3, team=0)
@@ -116,8 +117,8 @@ def test_gas_grenade_e2e_deposits_and_transports():
         if g != STEAM:
             assert not sim.gmap.gas[g].any(), f"slice {g} moved on a smoke grenade"
 
-    # Transport: the cloud persists (advects/diffuses, integer-SL gentle
-    # decay — not wiped) across further ticks.
+    # Transport: the cloud persists (rides the air, diffuses, decays at its
+    # configured rate — not wiped) across further ticks.
     for _ in range(6):
         sim.set_paused(False)
         sim.step()

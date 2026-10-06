@@ -205,14 +205,12 @@ class PhysicsRunner:
         self.atmos.absorb_strength = float(
             getattr(CFG.physics, 'wave_absorb_strength', 8.0))
 
-        # SmokeDynamics.
-        self.smoke = self.engine.smoke
-        self.smoke.d_smoke              = float(CFG.physics.d_smoke)
-        self.smoke.advection_rate       = float(CFG.physics.advection_rate)
-        self.smoke.wind_diffusion_scale = float(CFG.physics.wind_diffusion_scale)
-        # (vent_hops / sink_strength binds DELETED — EOS refactor P3,
-        # decisions.md #3: the BFS breach sink-pull is gone; venting is
-        # native to the compressible solver.)
+        # (SmokeDynamics and its three binds -- d_smoke / advection_rate /
+        # wind_diffusion_scale -- are DELETED, smoke transport v2, #12: the
+        # trace planes ride the bulk face flux inside the EOS, and their
+        # diffusion / decay read the [gases.*] table. The dt-bound stability
+        # check of that diffusion is `_check_trace_dt` below.)
+        self._trace_dt_checked = None
 
         # FireSimulation — signed-logistic intensity FEEDBACK (fire_design_proposal
         # §2/§3/§5). Cellular spread is gone: spread is radiation -> heat ->
@@ -850,6 +848,23 @@ class PhysicsRunner:
     # ------------------------------------------------------------------
     # Per-tick step
     # ------------------------------------------------------------------
+    def _check_trace_dt(self, gmap, sim_time):
+        """Refuse a tick whose dt makes the trace diffusion unstable.
+
+        Smoke transport v2 (#12, design §2.2): ``4 * quantize(d * dt) <= ONE``
+        per trace gas, the engine's own integer fold. The gases door checked
+        it at the configured tick rate; this is the re-check where dt is
+        actually bound (a different ``sim_time`` -- warp, a test's own dt --
+        could break it). Cached on (table, dt), so a steady clock pays once."""
+        key = (id(gmap.gases), float(sim_time))
+        if self._trace_dt_checked == key:
+            return
+        from simulation.gases import check_trace_diffusion_stable
+        check_trace_diffusion_stable(gmap.gases.names, gmap.gases.diffusion,
+                                     gmap.gases.conservative, float(sim_time),
+                                     "PhysicsRunner.step")
+        self._trace_dt_checked = key
+
     def step(self, gmap, sim_time, tick=0):
         """Advance all physics by ``sim_time`` seconds.
 
@@ -870,6 +885,9 @@ class PhysicsRunner:
         # MULTIPLIED transfer tax); EOS + combustion + the tail are bracketed
         # (one D2H/H2D each). With residency off this branch is never taken and
         # CuPy is never imported.
+        # Smoke transport v2 (#12, design §2.2): the trace diffusion's
+        # stability, re-checked on the integer at the dt this tick binds.
+        self._check_trace_dt(gmap, sim_time)
         if _RESIDENCY_ENABLED and getattr(self.bp, "HAS_CUDA", False):
             return self._step_resident(gmap, sim_time, tick=tick)
 
@@ -895,8 +913,9 @@ class PhysicsRunner:
         # internal advection-substep loop (self-advect u, advect T, donor-cell
         # O2/N2 flux every substep, substepped compression work), then the
         # Helmholtz solve ONCE per tick, then the velocity correction. The
-        # TRACE gas planes advect ONCE per tick afterward (on the solver's
-        # final wind), inside run_substeps itself. `gmap.wave_p` is now the
+        # TRACE gas planes ride the bulk face flux inside every substep and
+        # get their once-per-tick tail (diffusion, stranded zeroing, decay)
+        # inside run_substeps itself (smoke transport v2, #12). `gmap.wave_p` is now the
         # repurposed P_prev buffer (see eos_solver.h); the smoke breach-sink
         # BFS field is GONE (native venting replaces it — decisions.md #3).
         # dx lazy-binds from the level's tile size every tick (cheap; mirrors
@@ -1307,8 +1326,9 @@ class PhysicsRunner:
         """One GPU-resident tick (S8a: Path B framework + Path A EOS residency).
         Bit-identical to the CPU/per-call tick: the water SUBSTEP loop, the
         whole EOS STAGE (advection substeps, on-device MG build + solve,
-        kick/compression — docs/cuda_s8a_path_a_impl_2026-07-21.md), and the
-        smoke TRACE loop all run resident on persistent device buffers — the
+        kick/compression — docs/cuda_s8a_path_a_impl_2026-07-21.md; the trace
+        planes ride its substeps, smoke transport v2), and the once-per-tick
+        TRACE TAIL all run resident on persistent device buffers — the
         Path-B EOS bracket is GONE (spec §3.3's zero mid-tick transfers, for
         real). Combustion + the tail stay BRACKETED on the mirror (S8c).
         The numpy fields are the authoritative mirror throughout — every EOS
@@ -1437,20 +1457,20 @@ class PhysicsRunner:
             d_gas_energy=dev["gas_energy"],
         )
 
-        # -- 5. TRACE smoke loop + decay RESIDENT (on device) --------------------
-        # Path A: NO from_host here — the device gas/wind are FRESHER than the
-        # mirror (the resident EOS just wrote them, bit-identically), and the
-        # masks/perm rode up in step 4's pre-upload.
-        # advection_rate = 1.0f / max(eos.dx, 1e-3f) — computed in float32 to match
-        # run_substeps' float expression exactly (bit-identity of the SL displacement).
-        adv_rate = np.float32(1.0) / max(np.float32(self.eos.dx), np.float32(1e-3))
-        self.bp.trace_smoke_resident(
-            dev["gas"], dev["wind_x"], dev["wind_y"],
-            dev["solid"], dev["is_vacuum"], dev["dyn_permeability"],
-            dev["is_ambient"] if amb[0] is not None else 0,
-            h, w, gmap.gas.shape[0], self._inert_n2_idx,
+        # -- 5. The TRACE TAIL, RESIDENT (smoke transport v2, #12 P2b) ------------
+        # The trace planes already rode the bulk face flux inside the resident
+        # EOS substeps (stages 3b/3c); what remains once per tick is the tail --
+        # stranded zeroing, Jacobi diffusion, ceil decay -- the device twin of
+        # the tail run_substeps runs on the host, booked into the SAME EOSSolver
+        # books. NO from_host: the device gas is fresher than the mirror (the
+        # resident EOS just wrote it), and the masks/perm rode up in step 4.
+        self.engine.run_trace_tail_resident(
             gmap.gases.conservative, gmap.gases.diffusion, gmap.gases.decay,
-            sim_time, float(adv_rate), 0.0,
+            h, w, sim_time,
+            d_gas=dev["gas"], d_solid=dev["solid"],
+            d_is_vacuum=dev["is_vacuum"],
+            d_is_ambient=dev["is_ambient"] if amb[0] is not None else 0,
+            d_dyn_permeability=dev["dyn_permeability"],
         )
 
         # -- 6. The once-per-tick synced-set D2H (the locked Q4 decision): the

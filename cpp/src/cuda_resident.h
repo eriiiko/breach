@@ -67,43 +67,60 @@ void water_substeps_resident(
     int h, int w, int n_sub, float wdt, float tilt_x, float tilt_y,
     float g, float damping, float dx, float k_p, float v_max, float depth_eps);
 
-// ---- smoke (cuda_smoke.cu) --------------------------------------------------
-// One smoke/trace step, LAUNCH ONLY, in place on d_gas. Mirrors smoke_step's
-// K1..K4 sequence exactly (diffusion Laplacian -> diffuse apply -> D2D post-
-// diffusion snapshot -> SL advect -> clamp). Scratch (d_lap/d_src = h*w int32)
-// is caller-owned + persistent. No malloc/H2D/D2H/sync. d_amb nullable (space).
-void smoke_launch_resident(
+// ---- the trace tail (cuda_bulk_transport.cu) — smoke transport v2 P2b ------
+// (cuda_smoke.cu — smoke_launch_resident / trace_smoke_resident, the resident
+// path's old semi-Lagrangian law — is DELETED: the trace planes ride the bulk
+// face flux inside the EOS substeps, stages 3b/3c, on every path.)
+//
+// The once-per-tick TRACE TAIL's LAUNCH CORE (design §2.2-§2.4, §5
+// "Resident"): stranded zeroing (sink) -> Jacobi magnitude-truncated face
+// diffusion (vent onto vacuum / ring) -> ceil-rounded decay (its own kernel,
+// over the shared rule in trace_decay.h). The kernel-for-loop transcription of
+// trace_tail (bulk_transport.cpp — THE oracle). Born (N, h, w) with N = 1
+// today (RL-batch habits §A): launch only — no malloc, no transfer, no sync;
+// the core zeroes its own book block (its first kernel).
+//
+//   d_gas        : (N, n_gases, h, w) int32 Q16.16, in/out (only the planes
+//                  whose is_trace fold is set are touched)
+//   d_solid, d_is_vacuum : (N, h, w); d_is_ambient (N, h, w) NULLABLE (space)
+//   d_perm       : (N, h, w) float — dyn_permeability (the face quantize is the
+//                  CPU tail's, per face, on device)
+//   d_scal       : (N, n_gases, TRACE_TAIL_SCAL) int32 per-env, per-gas folds
+//                  [is_trace, dd_q, frac_q] (dt is a per-env scalar)
+//   d_s0         : (N, n_gases, h, w) int32 scratch (the Jacobi snapshot)
+//   d_cnt        : (N, n_gases, TRACE_TAIL_CNT_SLOTS) unsigned long long books
+//                  [vent, sink, decay], OVERWRITTEN (integer atomicAdd)
+// Returns the launch count.
+constexpr int TRACE_TAIL_SCAL      = 3;
+constexpr int TRACE_TAIL_CNT_SLOTS = 3;
+constexpr int TRACE_TAIL_VENT  = 0;
+constexpr int TRACE_TAIL_SINK  = 1;
+constexpr int TRACE_TAIL_DECAY = 2;
+int trace_tail_launch_resident(
+    int n_env, int h, int w, int n_gases,
     int32_t* d_gas,
-    const int32_t* d_wind_x, const int32_t* d_wind_y,
-    const bool* d_obstacles, const bool* d_is_wall, const bool* d_is_vacuum,
-    const float* d_perm, const bool* d_is_ambient,
-    int32_t* d_lap, int32_t* d_src,
-    int h, int w, float dt,
-    float d_smoke, float wind_diffusion_scale, float advection_rate);
+    const bool* d_solid, const bool* d_is_vacuum, const bool* d_is_ambient,
+    const float* d_perm,
+    const int32_t* d_scal,
+    int32_t* d_s0,
+    unsigned long long* d_cnt);
 
-// The whole per-tick TRACE-PLANE LOOP, device-resident (S8a Path B FLOOR item 3).
-// For each non-conservative gas plane: smoke_launch_resident (once per tick, on
-// the final corrected wind) + decay (a device kernel, bit-identical to the CPU
-// mul_q16 shrink). P-T0 (energy-books arc, design §2.6 — the trace 0% ruling):
-// the decay->inert_N2 credit this kernel used to pay is DELETED — decayed mass
-// simply VANISHES, same as the CPU twin (physics_engine.cpp's run_substeps
-// trace loop); `inert_n2_idx` stays a parameter for ABI/back-compat. Persistent
-// scratch owned here (lap/src, keyed by (h,w)); one cudaDeviceSynchronize at
-// the end; NO per-plane cudaMalloc/H2D/D2H. The all-zero-plane `.any()` skip is
-// DROPPED — smoke_step on an all-zero plane is an arithmetic no-op (the EOS
-// P6.5 device precedent), so processing every trace plane is bit-identical to
-// the CPU skip. gas_conservative / gas_diffusion / gas_decay are the small
-// (n_gases,) HOST columns (control-flow + the per-plane diffusion/decay
-// scalars, exactly as run_substeps reads them).
-void trace_smoke_resident(
+// The N == 1 driver PhysicsEngine::run_trace_tail_resident calls, with the
+// CPU tail's contract (trace_tail in bulk_transport.h): the per-gas host
+// folds through the SAME out-of-line functions the CPU tail calls
+// (trace_diffusion_dd_q, trace_decay::frac_q), one small H2D of the fold table,
+// the launch core on C++-owned persistent scratch keyed (N, h, w, n_gases),
+// ONE sync, ONE small D2H of the book block, ADDED into vent / sink / decay
+// ((n_gases,) host int64 books, ACCUMULATED — vent is boundary_flux_'s trace
+// slots). Throws std::invalid_argument if a fold breaks 4·dd_q <= ONE.
+void trace_tail_resident(
     int32_t* d_gas_base,
-    const int32_t* d_wind_x, const int32_t* d_wind_y,
-    const bool* d_solid, const bool* d_is_vacuum, const float* d_perm,
-    const bool* d_is_ambient,
-    int h, int w, int n_gases, int inert_n2_idx,
+    const bool* d_solid, const bool* d_is_vacuum, const bool* d_is_ambient,
+    const float* d_perm,
+    int h, int w, int n_gases,
     const bool* gas_conservative, const float* gas_diffusion,
-    const float* gas_decay,
-    float dt, float advection_rate, float wind_diffusion_scale);
+    const float* gas_decay, float dt,
+    int64_t* vent, int64_t* sink, int64_t* decay);
 
 // ---- kick + energy flux (cuda_kick_compression.cu) — S8a Path A ------------
 // The per-tick scalar folds the kick kernel (K1) consumes, factored to ONE

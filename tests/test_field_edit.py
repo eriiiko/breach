@@ -229,20 +229,36 @@ def test_linear_falloff_weights():
 
 
 def test_clamp_ceiling():
+    """PROPERTY: an edit's OWN clamp overrides the field policy's default --
+    the clamp mechanism itself. Exercised on ``fire`` (a bounded field), not
+    on a trace plane: since smoke transport v2 D1 no trace edit carries a
+    ceiling.
+
+    BREAKS IF: an explicit FieldEdit.clamp stops being applied."""
     g = _GMapStub()
-    g.smoke[5, 5] = _smoke_q(0.8)
-    apply_field_edit(g, FieldEdit("smoke", Region.TILE, (5, 5), 0.9,
-                                  EditMode.ADD, clamp=(0.0, 1.0)), _rng())
-    assert abs(_smoke_d(g.smoke[5, 5]) - 1.0) < 1e-4  # 0.8 + 0.9 -> clamped to 1
+    g.fire[5, 5] = _fire_q(0.3)
+    apply_field_edit(g, FieldEdit("fire", Region.TILE, (5, 5), 0.4,
+                                  EditMode.ADD, clamp=(0.0, 0.5)), _rng())
+    assert abs(_fire_d(g.fire[5, 5]) - 0.5) < 1e-4    # 0.3 + 0.4 -> clamped to 0.5
 
 
 def test_policy_default_clamp_applied():
-    # A smoke edit with NO explicit clamp still gets the policy [0,1] ceiling.
+    """PROPERTY (smoke transport v2, design §11 D1, Erik's ruling 2026-10-04:
+    "I want smoke adding to be additive"): a trace edit with no explicit
+    clamp gets the policy's TRACE_CLAMP -- an ADD adds exactly its amount on
+    top of whatever the tile holds (no ceiling at 1), and a REMOVE bottoms
+    out at 0 (the floor stays).
+
+    BREAKS IF: the smoke / gas policy goes back to a [0, 1] ceiling (which
+    cut a compressed tile's existing smoke on every deposit)."""
     g = _GMapStub()
     g.smoke[5, 5] = _smoke_q(0.8)
     apply_field_edit(g, FieldEdit("smoke", Region.TILE, (5, 5), 5.0,
                                   EditMode.ADD), _rng())
-    assert abs(_smoke_d(g.smoke[5, 5]) - 1.0) < 1e-4
+    assert abs(_smoke_d(g.smoke[5, 5]) - 5.8) < 1e-4
+    apply_field_edit(g, FieldEdit("smoke", Region.TILE, (5, 5), 100.0,
+                                  EditMode.REMOVE), _rng())
+    assert int(g.smoke[5, 5]) == 0
 
 
 # ---------------------------------------------------------------------------
