@@ -300,8 +300,12 @@ WAIST = dict(
     outer=(0.66, ((0.65, 0.44), (0.66, -0.55), (0.70, -5.69), (0.74, 0.98), (0.78, 3.89), (0.82, -1.25), (0.86, -3.65), (0.90, -4.56),
                   (0.94, -8.68), (0.98, -13.71), (1.02, -24.51), (1.06, -27.08), (1.10, -14.74), (1.138, 0.18), (1.17, 11.05), (1.20, 23.82),
                   (1.23, 22.58), (1.26, 9.71))),
-    front=(1.04, ((1.03, -3.96), (1.04, -3.33), (1.08, -0.15), (1.11, 2.47), (1.14, -2.80), (1.17, -11.01), (1.20, -10.09), (1.23, -17.09),
-                  (1.26, -0.34))),
+    # the side view's front: the belly's crest (1.08) into the rib cage (1.22) with the turn at the waist spread as far as the
+    # depths allow (at most 0.5 mm from B1f's): at the centre front the glossy reflection's edge across the abdomen is where
+    # this outline's normal passes through the studio's horizon, and its sharpness goes with how fast the outline turns there
+    # (B1f 2.7 deg/cm at 1.146; first round 2.75; now 2.1 at most, 1.5 at the waist)
+    front=(1.04, ((1.03, -3.96), (1.04, -3.34), (1.08, 0.46), (1.11, 1.36), (1.14, -3.18), (1.17, -8.99), (1.20, -11.69), (1.23, -16.66),
+                  (1.26, -1.08))),
     back=(1.04, ((1.03, -21.72), (1.04, -23.58), (1.08, -24.69), (1.11, -14.04), (1.14, -3.55), (1.17, 8.40), (1.20, 18.51), (1.23, 21.64),
                  (1.26, 23.34))),
 )
