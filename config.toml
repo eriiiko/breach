@@ -794,7 +794,12 @@ U_MAX = 1000.0                        # v2.4 defense-in-depth velocity rail (m/s
 # gone, replaced by the conservative face-flux energy step, whose
 # telescoping and donor-only positivity rail do the job structurally.
 # physics_runner raises loudly if this key comes back.
-k_drag = 0.5                          # energy-books arc (design §2.8, NEW patch P-E3).
+k_drag = 0.01                          # energy-books arc (design §2.8, NEW patch P-E3).
+                                      # SHIPPED VALUE 0.01 (Erik, 2026-10-06, #4): tuned by eye in
+                                      # smoke_light_studio (0.333 m tiles, sim_speed 1) with
+                                      # k_drag2 = 0.225 -- the linear term nearly off (100 s
+                                      # e-fold), the quadratic term does the stopping. Vents
+                                      # (#48) were tuned at 0.5 and get retuned. History below.
                                       # SHIPPED VALUE 0.5 (Erik, P-E5 2026-08-17) — a
                                       # starting point, not a tuned value: he ruled that
                                       # real tuning waits until the pressure-transient arc
@@ -828,7 +833,10 @@ k_drag = 0.5                          # energy-books arc (design §2.8, NEW patc
 # Delta(|u|^2) bracket. 0.0014 was the hand-rolled stand-in for exactly
 # that constant (1/c_v_phys ~= 0.0018). physics_runner raises loudly if
 # this key comes back -- see the stale-key guard there.
-k_drag2 = 0.125                         # drag-law v2 (design docs/drag_law_v2_design_
+k_drag2 = 0.225                         # drag-law v2 (design docs/drag_law_v2_design_
+                                      # SHIPPED VALUE 0.225 (Erik, 2026-10-06, #4; was 0.125 from
+                                      # the 1 m explosion studio): a jet loses a factor e over
+                                      # 1/0.225 = 4.4 m. See k_drag above. History below.
                                       # 2026-08-23.md, issue #4 P1): the QUADRATIC
                                       # term of the two-term interior drag law
                                       # F = -k1*u - k2*|u|*u (k1 = k_drag above,

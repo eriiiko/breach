@@ -476,7 +476,29 @@ UNIT_FIELD_LABEL = "__unit_state__"
 #
 # REPRODUCED: both captures run twice, identical both times.
 # (was 6944a29a3a259fc0c05e5bd45879105c605401e394e26efd7744639cbe7718ee)
-GOLDEN_AGGREGATE = "34b6edbe5199eb454b371cb021cbb005e4dd2fdccc5b4396eab6ea665901c68e"
+#
+# DRAG DIALS RE-TUNED (2026-10-06, issue #4). Erik tuned the interior drag by
+# eye in smoke_light_studio (0.333 m tiles, sim_speed 1) on the smoke
+# transport v2 branch: `[physics.eos] k_drag` 0.5 -> 0.01 and `k_drag2`
+# 0.125 -> 0.225. A VALUE move, not a schema move: DIGEST_SPEC_VERSION
+# unchanged. One approved behavioural change: blast flow dies faster (the
+# quadratic term), gentle drift lingers (the linear term nearly off).
+#
+# FIELDS THAT MOVED, first tick: wind_x, wind_y, temperature and gas_energy at
+# tick 0 (the drag acts in the kick, its heat lands the same tick);
+# atmosphere, gas and the marine's position (__unit_pos__, so __unit_state__)
+# at tick 1; wave_p at tick 2. UNMOVED over all 30 ticks: fire, heat,
+# wall_hp, water_depth, flow_vx/vy, dyn_heat_atten_q, dem_acc,
+# ignition_armed, wave_v, wave_source, material, obstacles, is_vacuum and the
+# unit's hp, facing, status and life events.
+#
+# VERIFIED SOLE CAUSE, not assumed: the change's only non-test diff is those
+# two config lines; with them set back to 0.5 / 0.125 on the same build the
+# capture reproduces the PREVIOUS value, 34b6edbe..., exactly.
+#
+# REPRODUCED: captured twice, identical both times.
+# (was 34b6edbe5199eb454b371cb021cbb005e4dd2fdccc5b4396eab6ea665901c68e)
+GOLDEN_AGGREGATE = "f6ba810ebe6083f92bbce82979321cac284844589e77313293d1d29fbaf6ff0d"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs
