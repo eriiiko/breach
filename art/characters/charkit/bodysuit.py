@@ -1206,6 +1206,7 @@ def build_piping(S, body_paths, arm_paths, mat, spec, coll):
             P, N = lo.pn(phu, np.interp(q, u, tt))
             if on == "body":
                 P = P + np.asarray(S.lift(P, N), float)[:, None] * N
+                P, N = midline_cord(S, path, P, N)
             else:
                 P = P + np.asarray(S.arm_lift(P, N), float)[:, None] * N
             closed = abs(path[0][0] - path[-1][0]) < 1e-6 and abs(path[0][1] - path[-1][1]) < 1e-6
@@ -1216,6 +1217,33 @@ def build_piping(S, body_paths, arm_paths, mat, spec, coll):
                 P[:, 0] = np.maximum(P[:, 0], 0.0)  # the half body's cords end on the mid-plane
             mirror(tube("Suit_Piping_%03d" % k, P, normals=N, r=r, closed=closed, n_u=8, mat=mat, coll=coll))
             k += 1
+
+
+def midline_cord(S, path, P, N):
+    """A seam drawn down the centre line (every point at phi +-90: centre front or back) inside the midplane union's
+    region: laid on the union's own crossing of the mid-plane (x = 0), its normal in the plane. On the loft the section's
+    phi -90 point leaves the centre line wherever the section is not centred (below 1.07: the cord ran off over the
+    seat), and the union's lift of a point ON the plane runs away (B1f, review A4: a 3 cm spike out of the lower back,
+    read as a zip pull). Elsewhere the cord is left as it was."""
+    ph = np.array([p for p, _ in path], float)
+    if S.mid is None or not (np.all(np.abs(ph + 90.0) < 1e-6) or np.all(np.abs(ph - 90.0) < 1e-6)):
+        return P, N
+    back = ph[0] < 0.0
+    z = P[:, 2]
+    sel = (z >= S.mid.z0) & (z <= S.mid.z1)
+    if not sel.any():
+        return P, N
+    yf, yb, found = S.mid.crossing(z[sel])
+    y = np.where(found, yb if back else yf, P[sel, 1])
+    P, N = P.copy(), N.copy()
+    P[sel, 0], P[sel, 1] = 0.0, y
+    # the normal: square to the cord's own tangent within the plane, pointing out (back or front)
+    T = np.gradient(P[:, 1:], axis=0)
+    T /= np.maximum(np.linalg.norm(T, axis=1, keepdims=True), 1e-12)
+    n = np.column_stack([np.zeros(len(P)), T[:, 1], -T[:, 0]])
+    n *= np.where((n[:, 1] > 0.0) == back, 1.0, -1.0)[:, None]
+    N[sel] = n[sel]
+    return P, N
 
 
 def build_tape_zip(S, M, CL, coll):
