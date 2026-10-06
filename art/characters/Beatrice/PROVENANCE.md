@@ -208,3 +208,67 @@ No reference added. Kit: only Beatrice's own `bodysuit.py` and `hipsview.py` cha
   2,664,932 evaluated triangles, all closed (the flipped-normal list is B1e's).
 - Reproduce: `--sheet --turn --beauty all --save` (6.5 min), `--hips` (20 min: four builds), `--compare` (13 min), and
   `--beauty shoulder,flank,flank_back,knee,boot,hand`.
+
+## B1g: the waist and the finish (2026-10-06, answers `previews/review_stage6.md` N1-N5, N7)
+
+No reference added. Kit: only Beatrice's own `profiles.py` (added `angle_controls`) and `bodysuit.py` (`_onto_crossing`, the
+zip stop) changed; no shared kit file touched. The side profile, the outer-thigh panel, boots, hands, knee pads, shoulders and
+head are untouched. Shapes added: `b1f` (B1f's default, as `b1e` and `stage4` are kept); `flare_3q` / `flare_full` now
+derive from B1f's pelvis explicitly. `HIPS_BEFORE` = stage 4, B1e, B1f.
+
+- **The waist (N1).** B1f's narrowest waist was where two straight cones met (the rib cage coming down, the hip leaving),
+  turning 11.3 deg/cm in a few mm. The outlines from the hip to under the bust are now authored by their ANGLE to the
+  vertical (`profiles.angle_controls`: theta(z) a C2 cubic through the knots, the outline its integral; tables `WAIST`,
+  `_waist`), the profile region running on from 1.135 to 1.265 through the old waist / waist_top / ribs / chest_low rows (no
+  longer rows of their own; `_rows` takes the three TORSO rows above the region as its upper controls). The waist is one
+  turn spread over about 10 cm. Measured on the built body (1.00-1.25 m; above 1.225 the bust form and the armpit, not part
+  of this): front outer 11.33 -> 3.90 deg/cm (step 1 alone 3.23), side back 6.71 -> 3.40, side front (to 1.20) 3.82 -> 1.81,
+  three-quarter front 8.11 -> 3.23, three-quarter back 8.56 -> 4.21 (at 1.176, the rib cage's turn). Narrowest 90.04 mm at 1.142 -> 90.00 at 1.136;
+  the outline within 1 mm of it over 34-36 mm of height (B1f 18), within 2 mm over 50 (26). Ribs (1.22) 112.0 -> 112.0,
+  chest (1.285) 128.0 -> 128.0; depths at the waist: front -104.0 -> -104.4, back 42.0 -> 42.0 (the lumbar's deepest point
+  6 mm higher). The side view's front (`WAIST["front"]`, a third pass): at the centre front the glossy reflection's edge
+  across the abdomen is where that outline's normal passes through the studio's horizon, and its sharpness goes with how fast
+  the outline turns there, so its turn from the belly's crest into the rib cage is spread as far as the depths allow (at
+  most 0.5 mm from B1f's): 2.7 -> about 1.6 deg/cm at the waist. By eye: the matte waist shows no line in any view; in the
+  gloss the crisp edge of B1f is a soft gradient now (`hero.jpg` clearly, `torso.jpg` less so: light above, dark below, over
+  2-3 cm instead of 1-1.5). Picture: `waist.jpg`.
+- **The flare (N2).** The outer outline is authored by angle from above the knee (0.66): the outer thigh tapers 3 mm toward
+  the knee (0.72) from its widest (0.81) instead of standing as a column; the hip is one convex round up to the steepest flank
+  (27 deg at 1.06) and turns there into the waist's long concave turn. Widest 162.1 at 0.812 (B1f 162.1 at 0.82), hip line
+  (0.893) 157.8 (157.7), waist 90.0. Flare shares at 0.2 / 0.4 / 0.6 / 0.8: 0.127 / 0.471 / 0.772 / 0.921 (B1f 0.206 / 0.478 / 0.722 / 0.899; the
+  full step 0.283 / 0.548 / 0.773 / 0.927; three quarters of the way 0.264 / 0.530 / 0.760 / 0.920). The 0.6 and 0.8 shares
+  reach the three-quarter target; the 0.2 and 0.4 shares can not while the waist turns at most 4 deg/cm: with zero slope at
+  the narrowest point, 4 deg/cm allows about 8 mm of gain in the first 5 cm (share 0.13), and the reference's 0.30 there
+  would need a turn of about 9 deg/cm -- the corner N1 removes. So the hip is rounder and fuller lower down, slimmer than B1f
+  just under the waist (up to 7 mm at 1.08). Front turning over the pelvis band (0.66-1.05) at most 2.93 deg/cm (0.996); the hip pictures' title value (4.5 at 0.608) is the knee's join, B1f's 4.6.
+  Pictures: `hips.jpg`, `hips_before_after.jpg`, `shape_vs_silhouette.jpg`, `shape_vs_concept.jpg`.
+- **The crotch (N3, N4, N5).**
+  - N3, the dark comma at the seam V's tip: the leotard line (and the seat's U behind) runs into the mid-plane inside the
+    midplane union; the lift pushed the union-swallowed points TO the plane along their normal, up to 9 mm under the
+    surface, so the cord's end dived into the suit. `bodysuit._onto_crossing` cuts the swallowed run at a cord's end back to
+    one point on the union's own crossing of the plane: the cord and its mirror meet on the surface (`crotch.jpg` glossy).
+  - N3, the thin bright line from the V's tip down to the gap: cause found, NOT fixed. The groove where the thighs meet is a
+    round of 2-3 mm (faces meeting the plane at |n_x| 0.3-0.5 from 0.865 to 0.88), so a forward-facing strip about 1 mm wide
+    catches the light. A broader fillet (front reach 15 and 20 mm from 0.865 to 0.895, the relax box 22 and 30 mm wide, the
+    march's reach 40 mm) halves those |n_x| and in the gloss lets the belly's highlight run down into the contact as one
+    wedge, with first light unchanged (0.851) -- but it draws horizontal stripes in the matte hollow above the cusp and a hard
+    edge at cusp height in the three-quarter view (five builds); the reach stays B1f's.
+  - N4: from 0.70 to 0.80 the inner outline is authored by angle (`GAP_LEG`, `_gap_leg`). A convex lens can not run straight
+    into the knee's stance (its steepest slope, 0.47, is twice the knee's, 0.24), so the slope now eases back over the whole
+    stretch: the concave part is ONE even taper from 0.705 to 0.78, at most -3.9 /m (0.751; B1f: an -8.7 /m hinge at 0.761; hipsview.lens_measure), the
+    lens convex from 0.78 up (B1f 0.771). First light 0.851, the half-gap from 0.80 up unchanged. `inner_thigh.jpg`.
+  - N5: the 0.80 band in the matte three-quarter front is gone (it went with N4's hinge); the finest crotch rows (0.1 mm,
+    0.845-0.853) grade into the 0.6 mm rows over 6 mm instead of 2, which softens the cusp-height streak; the short streak
+    beside the crotch is still faintly there in the high-pass (`bands_contrast.jpg`). N6 (the needle tip) left.
+- **The zip's foot (N7)**: the stop at the foot of each zip (`zip["stop"]`) is a flat plate 6 x 4.5 x 1.1 mm, 0.4 mm of it
+  sunk, on the figure's own surface; before, a 2.5 mm block floating 0.8 mm off the loft (3.3 mm proud). Nothing else on the
+  zips changed.
+- Sheet IoU (above the waist / waist-knee / knees down): front 0.947 / 0.852 / 0.908, side 0.918 / 0.920 / 0.856, back 0.914 /
+  0.837 / 0.812 (B1f 0.946 / 0.857 / 0.908, 0.918 / 0.921 / 0.856, 0.912 / 0.841 / 0.812). `source/mesh_stats.json`: 60
+  objects, 1,031,688 source / 2,718,684 evaluated triangles. Mesh check: Suit_Body 0 degenerate faces, 0 non-manifold edges;
+  the cuffs' and zip tapes' degenerate counts are B1f's; Suit_Shoulder's non-manifold edges 22 -> 32 (its raglan-cut join with
+  the body rows, which are now 5 mm apart up to 1.265 there).
+- `crimson_hero.jpg` was not re-rendered (the variant run is not part of this set): it shows B1f's body.
+- Reproduce: `--sheet --turn --beauty all --save` (6.6 min), `--beauty shoulder,flank,flank_back,knee,boot,hand` (4.8 min), `--hips`
+  (19.8 min: stage 4, B1e, B1f and the default), `--compare` (13.0 min). `waist.jpg`, `inner_thigh.jpg` and `bands_contrast.jpg` are made
+  from those by scratch scripts (PIL / matplotlib; the waist's matte crops from body-only builds of `b1f` and the default).
