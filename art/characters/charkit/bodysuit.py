@@ -1108,6 +1108,9 @@ def build_suit(S, M, coll="Suit", body_only=False):
         _clean(body)
         S.mid.relax(body)
     mirror(solid(body, g["cloth"], bevel=0.0), merge=True)
+    # B1f: the hidden inner shell offset plainly along the normals: even offset divides by the cosine between a
+    # vertex's faces and blew a sliver at the raglan cut (x 0.118, z 1.32) out by a metre once the pelvis rows shifted
+    body.modifiers["Solidify"].use_even_offset = False
     if body_only:
         return body
 

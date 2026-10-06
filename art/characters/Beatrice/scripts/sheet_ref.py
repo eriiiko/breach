@@ -48,4 +48,7 @@ VIEWS = (("side", SIDE), ("back", BACK))
 # thighs, arms a little out, the earlier high-cut suit): not a sheet, a shape witness (hipsview.silhouette_picture).
 # Measured by hand between the arms and the body where the backdrop shows: centre column 341, outer deltoids 213.5 px
 # (row 480), narrowest waist 128 px (row 760), widest 198.5 px just above the crotch (rows 980-1000) -- half-widths.
-SILHOUETTE = dict(path=os.path.join(ROOT, "good-body-silhouette.jfif"), centre=341.0, shoulder_hw=213.5, waist_row=760.0, waist_z=1.14)
+# B1f: light first shows between its thighs at row 1013 (columns 323-346), 23-26 px under the suit's crotch (rows 987-990);
+# its frame ends at row 1023 (hipsview.lens_picture aligns the model there).
+SILHOUETTE = dict(path=os.path.join(ROOT, "good-body-silhouette.jfif"), centre=341.0, shoulder_hw=213.5, waist_row=760.0, waist_z=1.14,
+                  light_row=1013.0)

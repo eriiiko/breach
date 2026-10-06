@@ -31,6 +31,7 @@ import studio
 DECOR = ("Suit_Piping", "Suit_Mesh", "Suit_Zip", "Suit_Knee_Pad")
 ARMS = ("Suit_Sleeve", "Suit_Cuff")
 BEFORE = (0.20, 0.45, 0.95)   # sRGB: the previous default's outline
+BEFORES = (BEFORE, (0.10, 0.68, 0.30), (0.80, 0.20, 0.70))   # one colour per earlier shape (tables.HIPS_BEFORE, in order)
 AFTER = (1.0, 0.42, 0.05)     # sRGB: the new default's outline (orange, as the drawings' elsewhere)
 
 
@@ -60,14 +61,70 @@ def measure(source, prefix, lo=0.60, hi=1.14):
     z5 = np.round(np.arange(0.70, 0.905 + 1e-9, 0.005), 4)
     g5 = silhouette.outlines(V, E, z5, gap_min=2e-4)["inner"]
     print("half-gap mm:", " ".join("%.3f:%s" % (z, "--" if not np.isfinite(g) else "%.1f" % (1000 * g)) for z, g in zip(z5, g5)))
+    lens = lens_measure(V, E)
+    chords = side_chords(zs, o)
+    print("first light through the leg gap at z %s; inner outline convex (d2 > 0) from there down to z %s" % (lens["first_light"], lens["convex_to"]))
+    print("side chords: thigh front max %.1f mm from the 0.90-0.62 chord at z %.3f; seat %.1f mm from the lumbar(%.3f)-0.70 chord at z %.3f" % (
+        chords["front"]["dev_mm"], chords["front"]["at"], chords["back"]["dev_mm"], chords["back"]["lumbar_z"], chords["back"]["at"]))
     out = dict(worst={k: dict(deg_per_cm=v, z=z) for k, (v, z) in res.items()}, z=zs.tolist(),
                outline={k: [None if not np.isfinite(x) else float(x) for x in a] for k, a in o.items()},
                turning={k: [None if not np.isfinite(x) else float(x) for x in a] for k, a in tr.items()},
                half_gap=dict(z=z5.tolist(), g=[None if not np.isfinite(g) else float(g) for g in g5]),
-               midplane=midplane_normals(), check=mesh_check())
+               lens=lens, chords=chords, midplane=midplane_normals(), check=mesh_check())
     with open(os.path.join(source, prefix + "outline.json"), "w") as f:
         json.dump(out, f)
     return out
+
+
+def lens_measure(V, E, z_lo=0.70, z_hi=0.90, dz=0.001, win=0.006):
+    """The leg gap per mm: the half-gap g(z) (the left half's innermost x, nan where the legs are joined), the
+    first light (the highest open level), and the inner outline's curvature sign: d2 = g'' from a local
+    quadratic fitted over +-win/2 of height; d2 > 0 = convex (the thigh bulging toward the centre).
+    `convex_to` = how far down from the first light d2 stays positive (levels within 1 mm of the first
+    light skipped: the bridge's tip)."""
+    zf = np.round(np.arange(z_lo, z_hi + 1e-9, dz), 4)
+    g = silhouette.outlines(V, E, zf, gap_min=2e-4)["inner"]
+    ok = np.isfinite(g)
+    if not ok.any():
+        return dict(first_light=None, convex_to=None)
+    first = float(zf[ok].max())
+    d2 = np.full(len(zf), np.nan)
+    for i, z in enumerate(zf):
+        m = ok & (np.abs(zf - z) <= 0.5 * win + 1e-9)
+        if m.sum() >= 5 and z <= first - 0.001:
+            d2[i] = 2.0 * np.polyfit(zf[m] - z, g[m], 2)[0]
+    conv = None
+    for z, c in sorted(zip(zf, d2), key=lambda q: -q[0]):
+        if z > first - 0.0015 or not np.isfinite(c):
+            continue
+        if c <= 0.0:
+            break
+        conv = float(z)
+    return dict(first_light=first, convex_to=conv, z=zf.tolist(), g=[None if not np.isfinite(x) else float(x) for x in g],
+                d2=[None if not np.isfinite(x) else float(x) for x in d2])
+
+
+def side_chords(zs, o, front=(0.90, 0.62), back_low=0.70, lumbar=(1.04, 1.16)):
+    """How far the side outline bows away from a straight line: the front outline's largest distance from the chord
+    between its points at front[0] and front[1] (the thigh's swell, + = in front of the chord), and the back
+    outline's from the chord between its lumbar minimum (deepest point within `lumbar`) and its point at back_low
+    (the seat's round, + = behind the chord). mm, measured horizontally (y)."""
+    zs = np.asarray(zs)
+
+    def dev(u, za, zb, sign):
+        m = (zs <= max(za, zb)) & (zs >= min(za, zb)) & np.isfinite(u)
+        ua, ub = np.interp(za, zs, u), np.interp(zb, zs, u)
+        ch = ua + (ub - ua) * (zs[m] - za) / (zb - za)
+        d = sign * (u[m] - ch)
+        j = int(np.argmax(d))
+        return 1000.0 * float(d[j]), float(zs[m][j])
+
+    fy, by = np.asarray(o["front"], float), np.asarray(o["back"], float)
+    f_mm, f_at = dev(fy, front[0], front[1], -1.0)
+    lm = (zs >= lumbar[0]) & (zs <= lumbar[1]) & np.isfinite(by)
+    lz = float(zs[lm][np.argmin(by[lm])])
+    b_mm, b_at = dev(by, lz, back_low, 1.0)
+    return dict(front=dict(dev_mm=f_mm, at=f_at, chord=list(front)), back=dict(dev_mm=b_mm, at=b_at, lumbar_z=lz, chord=[lz, back_low]))
 
 
 def _source_mesh(ob):
@@ -221,17 +278,20 @@ def pictures(tables, sheet_ref, previews, source, args, suitbuild):
     z0, z1 = tables.COMPARE_BAND
     fw, sw = 0.27, 0.20
     F, Sd, Bk = sheet_ref.SHEET, sheet_ref.SIDE, sheet_ref.BACK
-    # --- the previous default: its outlines only
-    report, rig, cam, floor = suitbuild.build(tables, tables.HIPS_BEFORE, "", args.draft, args.samples)
+    # --- the earlier shapes (tables.HIPS_BEFORE: one name or several, oldest first): outlines and measures only
+    befores = tuple(tables.HIPS_BEFORE) if isinstance(tables.HIPS_BEFORE, (tuple, list)) else (tables.HIPS_BEFORE,)
+    now_label = getattr(tables, "NOW_LABEL", "default")
     sil = getattr(sheet_ref, "SILHOUETTE", None)
-    fronts = []
-    suitbuild.matte_figure()
-    hide(DECOR)
-    if sil:  # the matte front view, arms shown (the reference has them), for shape_vs_silhouette.jpg
-        fronts.append((studio.compose(F.render(rig, cam, floor, previews, "silh"), ["front"]), tables.HIPS_BEFORE))
-    hide(DECOR + ARMS, ("Hands",))
-    before = pure_panels(rig, cam, floor, previews, z0, z1)
-    measure(source, tables.HIPS_BEFORE + "_")
+    fronts, before, outs = [], {}, {}
+    for shape in befores:
+        report, rig, cam, floor = suitbuild.build(tables, shape, "", args.draft, args.samples)
+        suitbuild.matte_figure()
+        hide(DECOR)
+        if sil:  # the matte front view, arms shown (the reference has them), for shape_vs_silhouette.jpg
+            fronts.append((studio.compose(F.render(rig, cam, floor, previews, "silh"), ["front"]), shape))
+        hide(DECOR + ARMS, ("Hands",))
+        before[shape] = pure_panels(rig, cam, floor, previews, z0, z1)
+        outs[shape] = measure(source, shape + "_")
     # --- the default
     report, rig, cam, floor = suitbuild.build(tables, "", "", args.draft, args.samples)
     out = measure(source, "")
@@ -239,8 +299,9 @@ def pictures(tables, sheet_ref, previews, source, args, suitbuild):
     suitbuild.matte_figure()
     hide(DECOR)
     if sil:
-        fronts.append((studio.compose(F.render(rig, cam, floor, previews, "silh"), ["front"]), "default (B1e)"))
-        silhouette_picture(tables, sheet_ref, suitbuild, fronts, previews)
+        fronts.append((studio.compose(F.render(rig, cam, floor, previews, "silh"), ["front"]), now_label))
+        m_ref = silhouette_picture(tables, sheet_ref, suitbuild, fronts, previews)
+        lens_picture(tables, sheet_ref, suitbuild, rig, cam, floor, previews, out, m_ref)
     matte = crotch_cells(cam, previews, CROTCH_VIEWS, "matte")
     w = sum(c.shape[1] for c, _ in matte) + 10 * (len(matte) - 1)
     rows = [suitbuild.assemble_row(matte), suitbuild.assemble_row(glossy)]
@@ -264,22 +325,147 @@ def pictures(tables, sheet_ref, previews, source, args, suitbuild):
     # it, matte grey, pure form (arms hidden), front / three-quarter front / side / back, one scale
     hide(ARMS, ("Hands",))
     after = pure_panels(rig, cam, floor, previews, z0, z1)
-    row_b, row_a = [], []
+    cols = {s: BEFORES[i % len(BEFORES)] for i, s in enumerate(befores)}
+    names = {(0.20, 0.45, 0.95): "blue", (0.10, 0.68, 0.30): "green", (0.80, 0.20, 0.70): "magenta"}
+    rows = []
+    for shape in befores:
+        rows.append([(studio.compose(before[shape], [name]), "%s, %s" % (shape, name)) for name, _ in BA_VIEWS])
+    row_a = []
     for name, _ in BA_VIEWS:
-        row_b.append((studio.compose(before, [name]), "%s, %s" % (tables.HIPS_BEFORE, name)))
         p = studio.compose(after, [name]).copy()
-        e = suitbuild.outline(before[name][..., 3] > 0.5, 3)
-        p[e] = (*BEFORE, 1.0)
-        row_a.append((p, "now, %s (blue: %s's outline)" % (name, tables.HIPS_BEFORE)))
+        for shape in befores:
+            p[suitbuild.outline(before[shape][name][..., 3] > 0.5, 3)] = (*cols[shape], 1.0)
+        row_a.append((p, "now, %s" % name))
+    rows.append(row_a)
     w = out["worst"]
-    title = [tables.PREFIX.capitalize() + " - the pelvis before (%s, top) and now (below), matte grey, waist to knee" % tables.HIPS_BEFORE,
-             "worst turn deg/cm now (0.60-1.14 m, the waist included): front %.1f, side front %.1f, side back %.1f" % (
-                 w["outer"]["deg_per_cm"], w["front"]["deg_per_cm"], w["back"]["deg_per_cm"])]
-    top, bot = suitbuild.assemble_row(row_b, title), suitbuild.assemble_row(row_a)
-    suitbuild.save_image(np.concatenate([top, np.ones((10, top.shape[1], 4), np.float32), bot], axis=0),
+    key = ", ".join("%s: %s's outline" % (names.get(tuple(cols[s]), "line"), s) for s in befores)
+    title = [tables.PREFIX.capitalize() + " - the pelvis: %s, then now (%s, bottom row), matte grey, waist to knee" % (", ".join(befores), now_label),
+             "bottom row lines: %s. Worst turn deg/cm now (0.60-1.14 m, the waist included): front %.1f, side front %.1f, side back %.1f" % (
+                 key, w["outer"]["deg_per_cm"], w["front"]["deg_per_cm"], w["back"]["deg_per_cm"])]
+    imgs = [suitbuild.assemble_row(r, title if i == 0 else None) for i, r in enumerate(rows)]
+    gap = np.ones((10, imgs[0].shape[1], 4), np.float32)
+    suitbuild.save_image(np.concatenate(sum(([im, gap] for im in imgs[:-1]), []) + [imgs[-1]], axis=0),
                          os.path.join(previews, "hips_before_after.jpg"))
+    # side_outlines.jpg: the side outlines of every shape and of the side drawing over the default's matte side view
+    side_outlines_picture(tables, sheet_ref, suitbuild, after["side"], z0, z1, outs, out, cols, names, befores, now_label, previews)
     # hips.jpg: pure form, five views, orthographic, waist to knee
     hip_views(tables, suitbuild, rig, cam, floor, previews, z0, z1)
+
+
+def _stamp(img, px, py, col, r=1.6):
+    """Draw a polyline (pixel coordinates, float) onto img, `r` px thick."""
+    h, w = img.shape[:2]
+    pts = np.column_stack([px, py])
+    pts = pts[np.isfinite(pts).all(axis=1)]
+    for (xa, ya), (xb, yb) in zip(pts[:-1], pts[1:]):
+        n = max(2, int(math.hypot(xb - xa, yb - ya) * 2) + 1)
+        for s in np.linspace(0.0, 1.0, n):
+            x, y = xa + s * (xb - xa), ya + s * (yb - ya)
+            x0, x1, y0, y1 = int(max(0, x - r)), int(min(w, x + r + 1)), int(max(0, y - r)), int(min(h, y + r + 1))
+            if x0 < x1 and y0 < y1:
+                yy, xx = np.mgrid[y0:y1, x0:x1]
+                m = (xx - x) ** 2 + (yy - y) ** 2 <= r * r
+                img[y0:y1, x0:x1][m] = (*col, 1.0)
+
+
+DRAWING = (0.15, 0.15, 0.15)  # the side drawing's outline (dark: the other colours are the shapes')
+
+
+def side_outlines_picture(tables, sheet_ref, suitbuild, panel, z0, z1, outs, out, cols, names, befores, now_label, previews,
+                          h_px=1000, half_w=0.24):
+    """side_outlines.jpg: the default's matte side view (pure form, the band z0..z1) with the measured side outlines
+    (front-most and back-most y every 2 mm, from the sliced mesh) of every earlier shape, of the default (orange) and
+    the side drawing's outline (dark grey, its mask's front and back edge); the chord deviations in the title."""
+    mpp = (z1 - z0) / h_px
+    img = studio.compose({"s": panel}, ["s"]).copy()
+    H, W = img.shape[:2]
+    zc = 0.5 * (z0 + z1)
+    alpha = panel[..., 3] > 0.5
+    zs = np.asarray(out["z"])
+    fy = np.array([np.nan if v is None else v for v in out["outline"]["front"]])
+    by = np.array([np.nan if v is None else v for v in out["outline"]["back"]])
+    row = lambda z: (H / 2.0) - (np.asarray(z) - zc) / mpp
+    # which way the rig shows y: the sign that puts the default's measured front on its own silhouette's edge
+    j = int(np.argmin(np.abs(zs - zc)))
+    r = int(round(float(row(zs[j]))))
+    cs = np.flatnonzero(alpha[r])
+    sgn = 1.0
+    if len(cs):
+        left = (cs.min() - W / 2.0) * mpp
+        sgn = 1.0 if abs(left - fy[j]) < abs(left + fy[j]) else -1.0
+    colx = lambda y: W / 2.0 + sgn * np.asarray(y) / mpp
+    band = (zs >= z0) & (zs <= z1)
+    # the drawing: the side sheet's mask edges (front, back) per row, in metres, on the same axes
+    Sd = sheet_ref.SIDE
+    mk = Sd.mask()
+    c0 = Sd.panel_slice("side")[0]
+    dz, dyf, dyb = [], [], []
+    for rr in range(int(Sd.foot_row - z1 / Sd.m_per_px), int(Sd.foot_row - z0 / Sd.m_per_px) + 1):
+        cc = np.flatnonzero(mk[rr])
+        if not len(cc):
+            continue
+        # the run that holds the figure's middle (the arm may stand off it in front or behind)
+        runs = np.split(cc, np.flatnonzero(np.diff(cc) > 1) + 1)
+        best = min(runs, key=lambda q: min(abs(q[0] - c0), abs(q[-1] - c0), 0 if q[0] <= c0 <= q[-1] else 1e9))
+        dz.append((Sd.foot_row - rr) * Sd.m_per_px)
+        dyf.append((best[0] - c0) * Sd.m_per_px)
+        dyb.append((best[-1] + 1 - c0) * Sd.m_per_px)
+    dz, dyf, dyb = np.array(dz), np.array(dyf), np.array(dyb)
+    # the studio shows the side view facing image-left as the drawing does: screen-x = drawing's (col - centre)
+    for yv in (dyf, dyb):
+        _stamp(img, W / 2.0 + yv / mpp, row(dz), DRAWING, 1.4)
+    for s in befores:
+        o = outs[s]["outline"]
+        for k in ("front", "back"):
+            v = np.array([np.nan if q is None else q for q in o[k]])
+            _stamp(img, colx(v[band]), row(zs[band]), cols[s], 1.4)
+    for v in (fy, by):
+        _stamp(img, colx(v[band]), row(zs[band]), AFTER, 1.6)
+    # the largest separation of the default from the first earlier shape that is not stage 4 (else the last one)
+    ref = [s for s in befores if s != "stage4"] or list(befores)
+    o = outs[ref[-1]]["outline"]
+    sep = []
+    for k in ("front", "back"):
+        v = np.array([np.nan if q is None else q for q in o[k]])
+        d = np.abs((fy if k == "front" else by) - v) * 1000.0
+        m = band & np.isfinite(d)
+        i = int(np.nanargmax(np.where(m, d, np.nan)))
+        sep.append((k, float(d[i]), float(zs[i])))
+    ch, chb = out["chords"], {s: outs[s]["chords"] for s in befores}
+    key = "; ".join("%s %s" % (names.get(tuple(cols[s]), "line"), s) for s in befores)
+    title = [tables.PREFIX.capitalize() + " - the side outline, %.2f-%.2f m: %s; orange now (%s); dark grey the side drawing" % (z0, z1, key, now_label),
+             "largest separation of now from %s: front %.1f mm at z %.3f, back %.1f mm at z %.3f. Thigh-front swell from the 0.90-0.62 chord: %s now %.1f mm;"
+             " seat round from the lumbar-0.70 chord: %s now %.1f mm" % (
+                 ref[-1], sep[0][1], sep[0][2], sep[1][1], sep[1][2],
+                 " ".join("%s %.1f," % (s, chb[s]["front"]["dev_mm"]) for s in befores), ch["front"]["dev_mm"],
+                 " ".join("%s %.1f," % (s, chb[s]["back"]["dev_mm"]) for s in befores), ch["back"]["dev_mm"])]
+    suitbuild.save_image(suitbuild.assemble_row([(img, "side, matte (now)")], title), os.path.join(previews, "side_outlines.jpg"))
+    print("side outline: largest separation from %s: %s" % (ref[-1], sep))
+
+
+def lens_picture(tables, sheet_ref, suitbuild, rig, cam, floor, previews, out, m_ref, z0=0.76, z1=0.94, half_w=0.10, h_px=900):
+    """lens.jpg: the leg gap from the front (matte, orthographic, the first 10 cm and more below the crotch) beside the
+    owner's frontal reference (sheet_ref.SILHOUETTE) at ONE scale (its shoulder width = the model's, as in
+    shape_vs_silhouette.jpg), the two aligned where light first shows through between the thighs."""
+    si = sheet_ref.SILHOUETTE
+    mpp = (z1 - z0) / h_px
+    w_px = int(round(2 * half_w / mpp))
+    p = studio.ortho_panels(rig, cam, floor, previews, [("lens", 0.0, w_px)], mpp, h_px, 0.5 * (z0 + z1), "lens")
+    mine = studio.compose(p, ["lens"])
+    fl = out["lens"]["first_light"] or tables.dims()["crotch_z"]
+    k = m_ref / mpp
+    ref = suitbuild.load_scaled(si["path"], k)
+    pan = np.ones((h_px, w_px, 4), np.float32)
+    pan[..., :3] = studio.to_srgb(studio.BACKDROP)
+    oy = int(round(h_px / 2.0 - (fl - 0.5 * (z0 + z1)) / mpp - si["light_row"] * k))
+    ox = int(round(w_px / 2.0 - si["centre"] * k))
+    rh, rw = ref.shape[:2]
+    y0, y1, x0, x1 = max(oy, 0), min(oy + rh, h_px), max(ox, 0), min(ox + rw, w_px)
+    pan[y0:y1, x0:x1, :3] = ref[y0 - oy:y1 - oy, x0 - ox:x1 - ox, :3]
+    cells = [(pan, "the owner's front reference (its frame ends 1 cm under its first light)"), (mine, "now, matte front")]
+    title = [tables.PREFIX.capitalize() + " - the leg gap from the front, %.2f-%.2f m, one scale (shoulder widths equal)" % (z0, z1),
+             "aligned where light first shows between the thighs: the model at z %.3f m" % fl]
+    suitbuild.save_image(suitbuild.assemble_row(cells, title), os.path.join(previews, "lens.jpg"))
 
 
 def silhouette_picture(tables, sheet_ref, suitbuild, fronts, previews, z0=0.80, z1=1.52):
@@ -308,6 +494,7 @@ def silhouette_picture(tables, sheet_ref, suitbuild, fronts, previews, z0=0.80, 
     title = [tables.PREFIX.capitalize() + " - body shape against the owner's frontal reference, matte grey, %.2f-%.2f m" % (z0, z1),
              "one scale: the reference's shoulder width = the model's (%.3f m), its narrowest waist on the model's (%.2f m)" % (prop["shoulder"], si["waist_z"])]
     suitbuild.save_image(suitbuild.assemble_row(cells, title), os.path.join(previews, "shape_vs_silhouette.jpg"))
+    return 0.5 * prop["shoulder"] / si["shoulder_hw"]   # metres per reference pixel at this scale
 
 
 # crotch.jpg: (label, azimuth deg, elevation deg) round the crotch's tip; below = 40 deg under the horizontal

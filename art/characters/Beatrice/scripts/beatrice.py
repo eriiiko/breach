@@ -183,6 +183,41 @@ MIDPLANE = dict(z=(0.80, 1.125), band=0.03, refine=((0.866, 0.898, 0.0006, 0.008
                 relax=(0.874, 0.906, 0.010, 3),
                 reach=((0.800, 0.0, 0.0), (0.840, 0.0065, 0.0065), (0.895, 0.0065, 0.0065), (0.930, 0.016, 0.010),
                        (0.960, 0.020, 0.010), (1.080, 0.020, 0.010), (1.125, 0.0, 0.0)))
+# B1e's pelvis, kept as the shape `b1e` (the owner chooses between stage 4, B1e and the default)
+PELVIS_B1E, MIDPLANE_B1E, SEAT_B1E = PELVIS, MIDPLANE, SEAT
+
+
+# B1f, the gap between the legs: the inner thighs MEET. The half-bodies touch the mid-plane TANGENTIALLY at
+# `contact` (their inner edge g = 0 with zero slope) and reach past it above (they overlap there, the
+# midplane union filling the valley between them: one saddle, no slot); below it the half-gap opens as
+# g = c (contact - z)^2 (convex: the adductor mass bulging toward the centre), a thin lens widening into the
+# knee's stance. The union bridges g < k/4 (k = 2 w), so a SMALL reach under the contact ends the bridge in a
+# near-tangent cusp, not an arch (its tip radius k c dz, its width k); the reach grows above the contact to
+# soften the valley where the thighs meet.
+def _gap(contact, join, over, top, below, step=0.005):
+    """The inner profile: `below`'s controls (B1e's) up to `join`, then g = A (contact - z)^p up to the contact,
+    A and p fixed by meeting `below`'s monotone curve at `join` in value AND slope (p = |g'| (contact - join) / g),
+    so the lens is convex from the contact down and leaves the leg exactly as it was below `join`; above the
+    contact -over (z - contact)^2 up to the first of the `top` controls (where the half-section swings to the
+    centre line). Returns (controls, p, A)."""
+    bz, bv = np.array([b[0] for b in below]), np.array([b[1] for b in below])
+    g = float(profiles.pchip(bz, bv, [join])[0])
+    dg = float(np.diff(profiles.pchip(bz, bv, [join - 5e-4, join + 5e-4]))[0] / 1e-3)
+    p = -dg * (contact - join) / g
+    A = g / (contact - join) ** p
+    zs = np.round(np.arange(join + step, top[0][0] - 1e-9, step), 4)
+    v = np.where(zs <= contact, A * np.clip(contact - zs, 0.0, None) ** p, -over * (zs - contact) ** 2)
+    ctrl = tuple(b for b in below if b[0] <= join + 1e-9) + tuple((float(z), float(x)) for z, x in zip(zs, v)) + tuple(top)
+    return ctrl, p, A
+
+
+GAP = dict(contact=0.866, join=0.78, over=11.8)
+GAP_TOP = ((0.920, -.0345), (0.930, -.0470), (0.940, -.0590), (0.960, -.0800))
+_inner, GAP["p"], GAP["A"] = _gap(GAP["contact"], GAP["join"], GAP["over"], GAP_TOP, PELVIS_B1E["inner"])
+PELVIS = dict(PELVIS_B1E, inner=_inner)
+MIDPLANE = dict(MIDPLANE_B1E, refine=((0.836, 0.876, 0.0006, 0.008), (0.845, 0.853, 0.0001, 0.002)), relax=(0.838, 0.880, 0.010, 3),
+                reach=((0.800, 0.0, 0.0), (0.830, 0.0015, 0.0015), (0.848, 0.0016, 0.0016), (0.868, 0.0065, 0.0065),
+                       (0.886, 0.0085, 0.0075), (0.900, 0.0090, 0.0080), (0.930, 0.016, 0.010), (0.960, 0.020, 0.010), (1.080, 0.020, 0.010), (1.125, 0.0, 0.0)))
 
 # A step of the pelvis (the comparison's "one step slimmer / fuller"): the outer edge (about the inner), the seat's depth
 # behind the section centre and the section's reach past the centre line scaled by k, fully from the
@@ -222,6 +257,8 @@ SHAPES = dict(
     fuller=dict(pelvis=1.07, seat=(0.058, 0.945, "back", 0.056, 0.080, 0.0056)),
     # stage 4's default (before B1e: the half-sections cut at the mid-plane, a fillet down the centre line)
     stage4=dict(spec=PELVIS4, seat=SEAT4, midline=MIDLINE, midplane=None),
+    # B1e's default (the slot between the legs, the first side profile, the half-step front flare)
+    b1e=dict(spec=PELVIS_B1E, seat=SEAT_B1E, midplane=MIDPLANE_B1E),
     # stage 3's default (the previous default, for the before/after comparison)
     stage3=dict(rows=(WAIST3,), seat=(0.058, 0.960, "back", 0.058, 0.062, 0.009)),
     # the front view's own hips and thighs (wider), for comparison by eye
@@ -253,10 +290,11 @@ SHAPES = dict(
 
 # The hips comparison (`--compare`, shape_vs_concept.jpg): (shape, label), slimmest first, and the
 # height band it shows (waist to knee, metres)
-COMPARE = (("slimmer", "one step slimmer"), ("", "default (B1e)"), ("fuller", "one step fuller"))
+COMPARE = (("slimmer", "one step slimmer"), ("", "default (B1f)"), ("fuller", "one step fuller"))
 COMPARE_BAND = (0.56, 1.22)
-# the hip pictures' "before" (`--hips`, hips_before_after.jpg): the previous default
-HIPS_BEFORE = "stage4"
+# the hip pictures' "befores" (`--hips`: hips_before_after.jpg, shape_vs_silhouette.jpg, side_outlines.jpg), oldest first
+HIPS_BEFORE = ("stage4", "b1e")
+NOW_LABEL = "B1f"
 
 # The concept's proportions, measured by hand on `concept.jfif` (three-quarter view, walking,
 # cropped at the crotch). Only the FAR side (her left, image right) shows hip and thigh free of
