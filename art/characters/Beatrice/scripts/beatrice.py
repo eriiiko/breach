@@ -325,6 +325,36 @@ def _waist(base, spec=WAIST):
 
 PELVIS = _waist(PELVIS_B1F)
 
+
+# B1g step 3, the inner thigh below the lens (review N4). B1f's lens (convex, 0.85 -> 0.78) met B1e's leg in a short
+# concave hinge (the outline's second derivative -8 /m at 0.74-0.76) before running straight into the knee: a faint S. A
+# convex lens can not run on straight into the knee's stance (its steepest slope, 0.47, is twice the knee's, 0.24), so
+# the slope eases back over the whole stretch instead: from 0.70 to 0.80 the inner outline is authored by angle, its
+# concave part ONE even taper (-4 /m at most, 0.71-0.77) out of the lens's convex end; the lens above 0.80 and the leg
+# below 0.70 are B1f's (first and last two knots: B1f's own angle there).
+GAP_LEG = (0.70, 0.80, ((0.69, -15.84), (0.70, -14.05), (0.725, -17.15), (0.75, -21.76), (0.775, -25.53), (0.80, -22.91), (0.81, -20.53),
+                        (0.82, -17.79)))
+
+
+def _gap_leg(inner, spec=GAP_LEG):
+    z0, z1, knots = spec
+    u0 = float(profiles.pchip([c[0] for c in inner], [c[1] for c in inner], [z0])[0])
+    mid = profiles.angle_controls(z0, u0, knots, z1, step=0.005)[:-1]
+    return tuple(c for c in inner if c[0] < z0 - 1e-9) + mid + tuple(c for c in inner if c[0] >= z1 - 1e-9)
+
+
+PELVIS["inner"] = _gap_leg(PELVIS_B1F["inner"])
+
+# B1g step 3, the groove where the thighs meet, seen from the front (review N3, the thin bright line from the seam's V
+# down to the gap): its cause is the groove's floor, a round of 2-3 mm whose faces meet the plane at |n_x| 0.3-0.5
+# (0.865-0.88). A broader fillet there (front reach 15-20 mm, relax box 22-30 mm wide) rounds the floor and in the gloss
+# the belly's highlight runs down into the contact as one wedge -- but it draws horizontal stripes in the matte hollow
+# above the cusp and a hard edge at cusp height in the three-quarter view, so the reach stays B1f's (tried and measured:
+# PROVENANCE, B1g). Review N5, the hairline at the cusp's height across the thigh in the matte three-quarter front: the
+# finest rows (0.1 mm, 0.845-0.853) now grade into the 0.6 mm ones over 6 mm, not 2 (an abrupt change of row pitch at
+# one height); first light, the half-gap and the mesh check unchanged.
+MIDPLANE = dict(MIDPLANE_B1F, refine=((0.836, 0.906, 0.0006, 0.008), (0.845, 0.853, 0.0001, 0.006)))
+
 # A step of the pelvis (the comparison's "one step slimmer / fuller"): the outer edge (about the inner), the seat's depth
 # behind the section centre and the section's reach past the centre line scaled by k, fully from the
 # thigh (`full`) to the seat and fading to nothing at the waist and above the knee (`fade`). Table values only.
@@ -516,7 +546,9 @@ def dims(shape=None):
             # the zips, front (collar -> below the navel) and back (collar -> the small of the back): teeth on a
             # dark tape, a slider with its pull lying flat at the collar's top
             zip=dict(bottom_z=1.040, back_bottom_z=1.165, width=0.0030, tape=0.0052, pitch=0.0013, teeth=True,
-                     tooth=(0.0008, 0.0007), pull_scale=0.72),   # stage 3: fine, as drawn
+                     tooth=(0.0008, 0.0007), pull_scale=0.72,   # stage 3: fine, as drawn
+                     # B1g: the stop at the foot of each zip a flat plate (width, length, thickness, sunk), lying on the suit
+                     stop=(0.0060, 0.0045, 0.0011, 0.0004)),
             # stage 3: layered pads on the FRONT of the knee (a pointed shield, a smaller plate over its top);
             # behind the knee only a seam
             knee_pad=dict(layers=(dict(x=.121, z=.612, hs=.0245, ht=.040, offset=.0016, thick=.0016, dome=.0022, n=2.3, inset=.004, point=.010),

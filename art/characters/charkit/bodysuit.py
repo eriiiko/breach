@@ -1205,8 +1205,10 @@ def build_piping(S, body_paths, arm_paths, mat, spec, coll):
             phu = np.interp(q, u, np.unwrap(ph))
             P, N = lo.pn(phu, np.interp(q, u, tt))
             if on == "body":
+                Pl = P
                 P = P + np.asarray(S.lift(P, N), float)[:, None] * N
                 P, N = midline_cord(S, path, P, N)
+                P, N = _onto_crossing(S, path, Pl, P, N)
             else:
                 P = P + np.asarray(S.arm_lift(P, N), float)[:, None] * N
             closed = abs(path[0][0] - path[-1][0]) < 1e-6 and abs(path[0][1] - path[-1][1]) < 1e-6
@@ -1217,6 +1219,43 @@ def build_piping(S, body_paths, arm_paths, mat, spec, coll):
                 P[:, 0] = np.maximum(P[:, 0], 0.0)  # the half body's cords end on the mid-plane
             mirror(tube("Suit_Piping_%03d" % k, P, normals=N, r=r, closed=closed, n_u=8, mat=mat, coll=coll))
             k += 1
+
+
+def _onto_crossing(S, path, Pl, P, N):
+    """B1g (review_stage6 N3): a cord that runs INTO the mid-plane inside the midplane union (the leotard line's V at the
+    crotch, the seat's U behind): the lift pushed the points the union swallows TO the plane along their normal, up to 9 mm
+    under the surface, so the cord's end dived into the suit -- a dark comma at the V's tip. The swallowed run at either end
+    is cut back to its first point, laid on the union's own crossing of the plane (x = 0, the front or back crossing by
+    side), so the cord and its mirror image meet ON the surface; interior swallowed points go onto the crossing too. Pl =
+    the points on the bare loft, P / N lifted. Centre-line seams are midline_cord's."""
+    ph = np.array([q for q, _ in path], float)
+    if S.mid is None or np.all(np.abs(np.abs(ph) - 90.0) < 1e-6):
+        return P, N
+    sel = (Pl[:, 2] >= S.mid.z0) & (Pl[:, 2] <= S.mid.z1)
+    if not sel.any():
+        return P, N
+    sw = np.zeros(len(P), bool)
+    sw[sel] = S.mid.lift(Pl[sel], N[sel])[1]
+    if not sw.any():
+        return P, N
+    keep = np.ones(len(P), bool)
+    for run_end in (slice(None), slice(None, None, -1)):   # a swallowed run at the end, then at the start
+        m = sw[run_end]
+        n = int(np.argmin(m)) if not m.all() else len(m)
+        if n == len(m) or n == 0:
+            continue
+        k = np.arange(len(P))[run_end][:n]       # the run, from the path's end inwards
+        keep[k[:-1]] = False                     # all but the point next to the free part
+    idx = np.flatnonzero(sw & keep)
+    yf, yb, found = S.mid.crossing(P[idx, 2])
+    back = P[idx, 1] > S.mid.cy(P[idx, 2])
+    y = np.where(back, yb, yf)
+    ok = found & np.isfinite(y)
+    P, N = P.copy(), N.copy()
+    i = idx[ok]
+    P[i, 0], P[i, 1] = 0.0, y[ok]
+    N[i] = np.column_stack([np.zeros(len(i)), np.where(back[ok], 1.0, -1.0), np.zeros(len(i))])
+    return P[keep], N[keep]
 
 
 def midline_cord(S, path, P, N):
@@ -1346,7 +1385,16 @@ def build_zips(S, M, CL, coll):
             zip_teeth("Suit_Zip_Teeth_%s%s" % (side, sfx), lo, path, zp["width"], zp["pitch"], 0.0002, M["metal"], coll,
                       tooth=zp.get("tooth", (0.0016, 0.0013)))
         stop = OnLoft(B, phi_c if side == "Back" else front_phi(B, bz(z_end)), bz(z_end))
-        kit.box_at("Suit_Zip_Stop_%s" % side, stop, (0.007, 0.005, 0.0025), sink=-0.0008, bevel=0.0007, seg=2, mat=M["metal"], coll=coll)
+        if "stop" in zp:
+            # B1g (review_stage6 N7): the stop at the zip's foot lies FLAT on the suit, a plate as thin as the teeth are
+            # high, a little of it sunk; on the figure's own surface (the body's lift at that point), not the bare loft.
+            # (Before: a 2.5 mm block floating 0.8 mm off the loft, standing 3.3 mm off the belly's outline.)
+            sw, sl, th, sink = zp["stop"]
+            P0, N0 = B.pn([stop.phi0], [stop.t0])
+            sink = sink - float(np.asarray(S.lift(P0, N0), float).ravel()[0])
+            kit.box_at("Suit_Zip_Stop_%s" % side, stop, (sw, sl, th), sink=sink, bevel=0.3 * th, seg=2, mat=M["metal"], coll=coll)
+        else:
+            kit.box_at("Suit_Zip_Stop_%s" % side, stop, (0.007, 0.005, 0.0025), sink=-0.0008, bevel=0.0007, seg=2, mat=M["metal"], coll=coll)
         zip_pull("Suit_Zip_Pull_%s" % side, CL, phi_c, CL.t_at_z(z_top - 0.007), 0.0002, M["metal"], coll, k=zp.get("pull_scale", 1.0))
 
 
