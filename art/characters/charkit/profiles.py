@@ -67,6 +67,20 @@ def pchip(x, y, xq):
             + (-2 * t ** 3 + 3 * t ** 2) * y[i + 1] + (t ** 3 - t ** 2) * h[i] * m[i + 1])
 
 
+def angle_controls(z0, u0, knots, z1, step=0.01, dz=2e-4):
+    """Controls [(z, u)] of an outline designed by its ANGLE to the vertical, so that how fast it turns -- what the
+    eye reads as a corner or as a round -- is the thing authored: theta(z) in degrees (positive = u grows with z) is
+    the C2 cubic through `knots` [(z, deg)], and u = u0 + the integral of tan(theta) from z0, sampled every `step` from
+    z0 to z1 (z1 included). The outline's turning (deg/cm, silhouette.turning) is then theta's own slope."""
+    kz, kv = np.array([k[0] for k in knots], float), np.array([k[1] for k in knots], float)
+    zf = np.arange(z0, z1 + 0.5 * dz, dz)
+    th = np.radians(natural_cubic(kz, kv, zf))
+    tn = np.tan(th)
+    u = u0 + np.concatenate([[0.0], np.cumsum(0.5 * (tn[1:] + tn[:-1]) * np.diff(zf))])
+    zs = np.round(np.arange(z0, z1 + 1e-9, step), 6)
+    return tuple((float(z), float(v)) for z, v in zip(zs, np.interp(zs, zf, u)))
+
+
 def _edges(row):
     """A table row -> its profile values (outer, inner, front, back, cy, n)."""
     _, z, cx, cy, a, bf, bb, n, _ = row

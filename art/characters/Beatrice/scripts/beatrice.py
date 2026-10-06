@@ -276,6 +276,46 @@ MIDPLANE = dict(MIDPLANE_B1E, refine=((0.836, 0.906, 0.0006, 0.008), (0.845, 0.8
                 core=dict(k0=0.0032, c=12.0, z=(0.851, 0.885)),
                 reach=((0.800, 0.0, 0.0), (0.830, 0.0080, 0.0080), (0.855, 0.0080, 0.0080), (0.880, 0.012, 0.0095), (0.895, 0.012, 0.0095),
                        (0.910, 0.012, 0.0090), (0.930, 0.016, 0.010), (0.960, 0.020, 0.010), (1.080, 0.020, 0.010), (1.125, 0.0, 0.0)))
+# B1f's pelvis, kept as the shape `b1f`
+PELVIS_B1F, MIDPLANE_B1F, SEAT_B1F = PELVIS, MIDPLANE, SEAT
+
+
+# B1g, the waist (review_stage6 N1). B1f's narrowest waist was where two straight cones met -- the rib cage coming down
+# and the hip leaving -- turning 11 deg/cm in a few mm: a hard line across the waist in matte, a belt in the gloss. The
+# outlines from the hip to under the bust are now authored by their ANGLE to the vertical (profiles.angle_controls:
+# theta(z) a smooth curve through the knots, the outline its integral), so the waist is ONE long turn spread over
+# about 10 cm, its narrowest part over several cm, and the profile region runs on up to `top` (the waist, waist_top,
+# ribs and chest_low rows are no longer rows of their own; their widths and depths are kept: ribs, chest, the waist's
+# width, height and depths). Each entry: (z from, knots ((z, deg), ...)); below `z from` the base's own controls, and
+# the first two knots are the base outline's own angle there, so it is left with its slope.
+WAIST = dict(
+    top=1.265,
+    outer=(0.96, ((0.95, -11.24), (0.96, -12.60), (1.00, -21.89), (1.04, -27.75), (1.08, -17.32), (1.11, -7.78), (1.138, 1.00),
+                  (1.17, 13.06), (1.20, 22.04), (1.23, 19.53), (1.26, 11.02))),
+    front=(1.04, ((1.03, -3.96), (1.04, -3.33), (1.08, -0.15), (1.11, 2.47), (1.14, -2.80), (1.17, -11.01), (1.20, -10.09), (1.23, -17.09),
+                  (1.26, -0.34))),
+    back=(1.04, ((1.03, -21.72), (1.04, -23.58), (1.08, -24.69), (1.11, -14.04), (1.14, -3.55), (1.17, 8.40), (1.20, 18.51), (1.23, 21.64),
+                 (1.26, 23.34))),
+)
+
+
+def _waist(base, spec=WAIST):
+    """`base` (a pelvis spec) with its outlines from each entry's z on authored by angle up to spec["top"], and the
+    section centre / exponent run on through the TORSO rows the region now covers."""
+    sp = dict(base, z=(base["z"][0], spec["top"]))
+    for k in ("outer", "front", "back"):
+        if k not in spec:
+            continue
+        z0, knots = spec[k]
+        u0 = float(profiles.natural_cubic([c[0] for c in base[k]], [c[1] for c in base[k]], [z0])[0])
+        sp[k] = tuple(c for c in base[k] if c[0] < z0 - 1e-9) + profiles.angle_controls(z0, u0, knots, spec["top"])
+    covered = [r for r in TORSO if r[1] < spec["top"]]
+    sp["cy"] = tuple(base["cy"]) + tuple((r[1], r[3]) for r in covered)
+    sp["n"] = tuple(base["n"]) + tuple((r[1], r[7]) for r in covered)
+    return sp
+
+
+PELVIS = _waist(PELVIS_B1F)
 
 # A step of the pelvis (the comparison's "one step slimmer / fuller"): the outer edge (about the inner), the seat's depth
 # behind the section centre and the section's reach past the centre line scaled by k, fully from the
@@ -317,9 +357,11 @@ SHAPES = dict(
     stage4=dict(spec=PELVIS4, seat=SEAT4, midline=MIDLINE, midplane=None),
     # B1e's default (the slot between the legs, the first side profile, the half-step front flare)
     b1e=dict(spec=PELVIS_B1E, seat=SEAT_B1E, midplane=MIDPLANE_B1E),
-    # B1f's front flare at a half and three-quarter step (the default takes the full step to the frontal reference)
-    flare_3q=dict(spec=dict(PELVIS, outer=_outer(0.75))),
-    flare_full=dict(spec=dict(PELVIS, outer=_outer(1.0))),
+    # B1f's default (the leg gap that meets, the half-step front flare, the waist where two cones meet)
+    b1f=dict(spec=PELVIS_B1F, seat=SEAT_B1F, midplane=MIDPLANE_B1F),
+    # B1f's front flare at a three-quarter and the full step to the frontal reference (B1f's default took a half)
+    flare_3q=dict(spec=dict(PELVIS_B1F, outer=_outer(0.75)), seat=SEAT_B1F, midplane=MIDPLANE_B1F),
+    flare_full=dict(spec=dict(PELVIS_B1F, outer=_outer(1.0)), seat=SEAT_B1F, midplane=MIDPLANE_B1F),
     # stage 3's default (the previous default, for the before/after comparison)
     stage3=dict(rows=(WAIST3,), seat=(0.058, 0.960, "back", 0.058, 0.062, 0.009)),
     # the front view's own hips and thighs (wider), for comparison by eye
@@ -378,8 +420,9 @@ def _rows(shape=None):
     legs = tuple(r for r in LEGS if r[1] < sp["z"][0])
     # B1f: a profile may run on through the waist (its row stays a control, it is no longer a row of its own: the loft's
     # monotone interpolation flattened the section at that one row, a ledge under it once the hip flares right below)
+    # (B1g: the region may run on past several TORSO rows; the three rows above it join the controls)
     torso = tuple(r for r in TORSO if r[1] > sp["z"][1] + 1e-9)
-    above = TORSO[:3] if sp["z"][1] < TORSO[0][1] else TORSO[:4]
+    above = torso[:3] if sp["z"][1] < TORSO[0][1] or sp["z"][1] > TORSO[1][1] else TORSO[:4]
     return legs + profiles.edge_rows(sp, below=legs[-3:], above=above) + torso
 
 
