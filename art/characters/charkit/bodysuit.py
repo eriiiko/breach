@@ -189,10 +189,13 @@ class Suit:
         P, N = np.asarray(P, float), np.asarray(N, float)
         ax, z = (P[..., 0] if signed else np.abs(P[..., 0])), P[..., 2]
         d = np.zeros(ax.shape)
-        for x0, z0, side, sx, sz, h in self.d.get("forms", ()):
+        for row in self.d.get("forms", ()):
+            x0, z0, side, sx, sz, h = row[:6]
+            # B1f: an optional 7th field, the fall-off BELOW z0 (the seat's under-curve: shorter than above it)
+            szz = np.where(z < z0, row[6], sz) if len(row) > 6 else sz
             facing = np.clip(((-N[..., 1]) if side == "front" else N[..., 1]) - 0.15, 0.0, 0.45) / 0.45
             centre = np.clip((ax - 0.006) / 0.02, 0.0, 1.0) if side == "front" else 1.0
-            d += h * np.exp(-((ax - x0) / sx) ** 2 - ((z - z0) / sz) ** 2) * facing * centre
+            d += h * np.exp(-((ax - x0) / sx) ** 2 - ((z - z0) / szz) ** 2) * facing * centre
         if self.d.get("midline"):
             d += self.midline_fillet(P, N)
         return d

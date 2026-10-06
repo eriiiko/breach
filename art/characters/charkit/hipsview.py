@@ -63,6 +63,9 @@ def measure(source, prefix, lo=0.60, hi=1.14):
     print("half-gap mm:", " ".join("%.3f:%s" % (z, "--" if not np.isfinite(g) else "%.1f" % (1000 * g)) for z, g in zip(z5, g5)))
     lens = lens_measure(V, E)
     chords = side_chords(zs, o)
+    flare = flare_shares(zs, o)
+    print("front flare: waist %.1f mm at z %.3f, hip line (z %.3f) %.1f, widest %.1f at z %.3f; shares of the gain at 0.2/0.4/0.6/0.8: %s" % (
+        flare["waist_mm"], flare["waist_z"], flare["hip_z"], flare["hip_mm"], flare["widest_mm"], flare["widest_z"], flare["shares"]))
     print("first light through the leg gap at z %s; the tip's arch (d2 <= 0) %s mm long; then the inner outline convex (d2 > 0) down to z %s" % (
         lens["first_light"], lens.get("tip_arch_mm"), lens["convex_to"]))
     print("side chords: thigh front max %.1f mm from the 0.90-0.62 chord at z %.3f; seat %.1f mm from the lumbar(%.3f)-0.70 chord at z %.3f" % (
@@ -71,7 +74,7 @@ def measure(source, prefix, lo=0.60, hi=1.14):
                outline={k: [None if not np.isfinite(x) else float(x) for x in a] for k, a in o.items()},
                turning={k: [None if not np.isfinite(x) else float(x) for x in a] for k, a in tr.items()},
                half_gap=dict(z=z5.tolist(), g=[None if not np.isfinite(g) else float(g) for g in g5]),
-               lens=lens, chords=chords, midplane=midplane_normals(), check=mesh_check())
+               lens=lens, chords=chords, flare=flare, midplane=midplane_normals(), check=mesh_check())
     with open(os.path.join(source, prefix + "outline.json"), "w") as f:
         json.dump(out, f)
     return out
@@ -111,6 +114,20 @@ def lens_measure(V, E, z_lo=0.70, z_hi=0.90, dz=0.001, win=0.006):
                 z=zf.tolist(), g=[None if not np.isfinite(x) else float(x) for x in g], d2=[None if not np.isfinite(x) else float(x) for x in d2])
 
 
+def flare_shares(zs, o, hip_z=0.893, waist=(1.08, 1.20), widest=(0.78, 1.10), fr=(0.2, 0.4, 0.6, 0.8)):
+    """The front view's waist-to-hip flare, measured as on the owner's frontal reference: the outer outline's share of
+    its gain from the narrowest waist (min within `waist`) to the hip line at `hip_z` (just above the crotch), at the
+    fractions `fr` of that height; the narrowest and widest half-widths (mm)."""
+    zs, u = np.asarray(zs), np.asarray(o["outer"], float)
+    mw = (zs >= waist[0]) & (zs <= waist[1]) & np.isfinite(u)
+    zw, w = float(zs[mw][np.argmin(u[mw])]), float(u[mw].min())
+    H = float(np.interp(hip_z, zs, u))
+    mx = (zs >= widest[0]) & (zs <= widest[1]) & np.isfinite(u)
+    sh = [round((float(np.interp(zw - f * (zw - hip_z), zs, u)) - w) / (H - w), 3) for f in fr]
+    return dict(waist_mm=1000 * w, waist_z=zw, hip_z=hip_z, hip_mm=1000 * H, widest_mm=1000 * float(u[mx].max()),
+                widest_z=float(zs[mx][np.argmax(u[mx])]), shares=sh)
+
+
 def side_chords(zs, o, front=(0.90, 0.62), back_low=0.70, lumbar=(1.04, 1.16)):
     """How far the side outline bows away from a straight line: the front outline's largest distance from the chord
     between its points at front[0] and front[1] (the thigh's swell, + = in front of the chord), and the back
@@ -131,7 +148,10 @@ def side_chords(zs, o, front=(0.90, 0.62), back_low=0.70, lumbar=(1.04, 1.16)):
     lm = (zs >= lumbar[0]) & (zs <= lumbar[1]) & np.isfinite(by)
     lz = float(zs[lm][np.argmin(by[lm])])
     b_mm, b_at = dev(by, lz, back_low, 1.0)
-    return dict(front=dict(dev_mm=f_mm, at=f_at, chord=list(front)), back=dict(dev_mm=b_mm, at=b_at, lumbar_z=lz, chord=[lz, back_low]))
+    # the same on the thigh alone (groin to above the knee: the 0.62 end sits on the knee, whose taper bows the long chord)
+    t_mm, t_at = dev(fy, 0.88, 0.70, -1.0)
+    return dict(front=dict(dev_mm=f_mm, at=f_at, chord=list(front)), back=dict(dev_mm=b_mm, at=b_at, lumbar_z=lz, chord=[lz, back_low]),
+                thigh_front=dict(dev_mm=t_mm, at=t_at, chord=[0.88, 0.70]))
 
 
 def _source_mesh(ob):
@@ -302,6 +322,11 @@ def pictures(tables, sheet_ref, previews, source, args, suitbuild):
     # --- the default
     report, rig, cam, floor = suitbuild.build(tables, "", "", args.draft, args.samples)
     out = measure(source, "")
+    # the earlier shapes' half-gap tables and lens / chord / flare measures beside the default's, in source/outline.json
+    out["before"] = {s: dict(half_gap=outs[s]["half_gap"], lens={k: outs[s]["lens"].get(k) for k in ("first_light", "tip_arch_mm", "convex_to")},
+                             chords=outs[s]["chords"], flare=outs[s].get("flare")) for s in befores}
+    with open(os.path.join(source, "outline.json"), "w") as f:
+        json.dump(out, f)
     glossy = crotch_cells(cam, previews, CROTCH_GLOSS, "glossy suit")
     suitbuild.matte_figure()
     hide(DECOR)

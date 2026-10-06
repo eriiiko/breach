@@ -214,7 +214,48 @@ def _gap(contact, join, over, top, below, step=0.005):
 GAP = dict(contact=0.866, join=0.78, over=11.8)
 GAP_TOP = ((0.920, -.0345), (0.930, -.0470), (0.940, -.0590), (0.960, -.0800))
 _inner, GAP["p"], GAP["A"] = _gap(GAP["contact"], GAP["join"], GAP["over"], GAP_TOP, PELVIS_B1E["inner"])
-PELVIS = dict(PELVIS_B1E, inner=_inner)
+PELVIS = dict(PELVIS_B1E, inner=_inner,
+              # B1f step 2, the side. The front of the thigh: ONE convex swell (the quadriceps) from the groin crease
+              # (0.905) to above the knee, fullest at 0.80 (6 mm in front of B1e's), easing back into the knee
+              front=((0.70, -.0800), (0.74, -.0922), (0.77, -.0996), (0.80, -.1034), (0.83, -.1034), (0.86, -.1005), (0.88, -.0982),
+                     (0.905, -.0963), (0.93, -.0964), (0.96, -.0978), (0.99, -.0999), (1.02, -.1024), (1.05, -.1043), (1.08, -.1050),
+                     (1.11, -.1045)),
+              # the back: a lumbar hollow 2 mm deeper (1.05-1.09; the waist at 1.12 as it was), a fuller seat rising out of
+              # it, fullest at 0.945, tucking under over 8 cm into a back of the thigh that is slightly full (convex), no notch
+              back=((0.70, .0600), (0.73, .0633), (0.76, .0666), (0.79, .0695), (0.82, .0725), (0.84, .0752), (0.86, .0794),
+                    (0.87, .0821), (0.88, .0847), (0.89, .0870), (0.90, .0888), (0.91, .0900), (0.92, .0909), (0.93, .0917),
+                    (0.94, .0924), (0.95, .0929), (0.96, .0931), (0.98, .0924), (1.00, .0897), (1.02, .0844), (1.04, .0765),
+                    (1.06, .0675), (1.08, .0589), (1.10, .0514), (1.12, .0452), (1.13, .0430)))
+
+
+# B1f step 3, the front: the early flare. The owner's frontal reference (good-body-silhouette.jfif) gains 0.30 / 0.56 /
+# 0.78 / 0.93 of its waist-to-hip width at 0.2 / 0.4 / 0.6 / 0.8 of the height from the narrowest waist to the hip line
+# just above the crotch (here: the narrowest waist, 1.138, to the crotch landmark, 0.893; measured on the outline the same
+# way for every shape, hipsview.flare_shares). `_flare` moves B1e's outer controls in that band `step` of the way to the
+# curve with exactly those shares (waist and the hip at 0.893 fixed, nothing changed at or below 0.893).
+FLARE_REF = ((0.0, 0.0), (0.2, 0.30), (0.4, 0.56), (0.6, 0.78), (0.8, 0.93), (1.0, 1.0))
+
+
+def _flare(outer, step, zw=1.138, zh=0.893, w=0.0900, ref=FLARE_REF):
+    oz, ov = np.array([c[0] for c in outer]), np.array([c[1] for c in outer])
+    H = float(profiles.natural_cubic(oz, ov, [zh])[0])
+    fz, fv = np.array([r[0] for r in ref]), np.array([r[1] for r in ref])
+    out = []
+    for z, v in outer:
+        if zh < z < zw:
+            tgt = w + float(profiles.pchip(fz, fv, [(zw - z) / (zw - zh)])[0]) * (H - w)
+            v = v + step * (tgt - v)
+        out.append((z, float(v)))
+    return tuple(out)
+
+
+FLARE_STEP = 0.0
+# the outer thigh tapering a little from the hip to above the knee (B1e: a parallel column); its widest stays at 0.81-0.84
+TAPER = ()  # B1f step-3 draft: ((0.70, -.0025), (0.74, -.0022), (0.78, -.0010), (0.81, -.0002))
+PELVIS["outer"] = tuple((z, v + dict(TAPER).get(z, 0.0)) for z, v in _flare(PELVIS_B1E["outer"], FLARE_STEP))
+# the seat's two rounds (bodysuit.Suit.forms): taller, a little narrower and lower than B1e's, so the two buttocks read as
+# two lobes with a lower edge of their own in the back views (review A3), not one dome with the lower back
+SEAT = (0.056, 0.938, "back", 0.048, 0.080, 0.0065, 0.062)
 MIDPLANE = dict(MIDPLANE_B1E, refine=((0.836, 0.906, 0.0006, 0.008), (0.845, 0.853, 0.0001, 0.002)), relax=(0.838, 0.925, 0.010, 4),
                 core=dict(k0=0.0032, c=12.0, z=(0.851, 0.885)),
                 reach=((0.800, 0.0, 0.0), (0.830, 0.0080, 0.0080), (0.855, 0.0080, 0.0080), (0.880, 0.012, 0.0095), (0.895, 0.012, 0.0095),
@@ -254,8 +295,8 @@ def pelvis(k=1.0):
 # design's frame (`feature_frame`: the drawing's own figure)
 WAIST3 = ("waist", 1.140, .000, -.027, .094, .077, .069, 2.15, 1)
 SHAPES = dict(
-    slimmer=dict(pelvis=0.93, seat=(0.056, 0.945, "back", 0.052, 0.080, 0.0034)),
-    fuller=dict(pelvis=1.07, seat=(0.058, 0.945, "back", 0.056, 0.080, 0.0056)),
+    slimmer=dict(pelvis=0.93, seat=(0.057, 0.935, "back", 0.048, 0.065, 0.0052)),
+    fuller=dict(pelvis=1.07, seat=(0.059, 0.935, "back", 0.052, 0.065, 0.0078)),
     # stage 4's default (before B1e: the half-sections cut at the mid-plane, a fillet down the centre line)
     stage4=dict(spec=PELVIS4, seat=SEAT4, midline=MIDLINE, midplane=None),
     # B1e's default (the slot between the legs, the first side profile, the half-step front flare)
