@@ -188,12 +188,13 @@ PELVIS_B1E, MIDPLANE_B1E, SEAT_B1E = PELVIS, MIDPLANE, SEAT
 
 
 # B1f, the gap between the legs: the inner thighs MEET. The half-bodies touch the mid-plane TANGENTIALLY at
-# `contact` (their inner edge g = 0 with zero slope) and reach past it above (they overlap there, the
-# midplane union filling the valley between them: one saddle, no slot); below it the half-gap opens as
-# g = c (contact - z)^2 (convex: the adductor mass bulging toward the centre), a thin lens widening into the
-# knee's stance. The union bridges g < k/4 (k = 2 w), so a SMALL reach under the contact ends the bridge in a
-# near-tangent cusp, not an arch (its tip radius k c dz, its width k); the reach grows above the contact to
-# soften the valley where the thighs meet.
+# `contact` (their inner edge g = 0 with zero slope) and reach past it above (they overlap there, the midplane union
+# filling the valley between them: one saddle, no slot); below it the half-gap opens as a convex lens (the adductor
+# mass bulging toward the centre) that meets B1e's leg at `join` in value and slope, so the leg below is B1e's. The
+# union bridges g < k/4, so the reach (k = 2 w sigma) decides where light first shows: MIDPLANE's `core` caps k at the
+# sections' innermost depth (k0 + c dy^2, dy from the section's centre y) up to the tip, where it must stay small (a
+# near-tangent cusp: tip radius k |g'| / 2, width k), while in front of and behind that depth -- the groove where the
+# thighs meet -- the table's broad reach (8-12 mm) rounds the groove (a narrow one is a pinch: a bright line in gloss).
 def _gap(contact, join, top, below, step=0.005):
     """The inner profile: `below`'s controls (B1e's) up to `join`; from there to the contact the cubic
     g = a dz^2 + b dz^3 (dz = contact - z) meeting `below`'s monotone curve at `join` in value AND slope, convex all the

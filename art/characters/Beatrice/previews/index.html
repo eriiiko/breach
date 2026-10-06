@@ -21,7 +21,7 @@
 </head>
 <body>
 <main>
-  <h1>Beatrice — body, suit, hands, boots (B1e: the pelvis, second round)</h1>
+  <h1>Beatrice — body, suit, hands, boots (B1f: the pelvis, third round)</h1>
   <p>Built from Python alone on the shared character kit (<code>charkit/bodysuit.py</code>, Blender 4.5, Cycles) from the tables in
      <code>scripts/beatrice.py</code>, fitted to three drawings: front, side and back. The head is a bald placeholder for the
      face-and-hair stage. Character only, no props. This round answers <code>review_stage2.md</code>: new hands, the shoulder and
@@ -29,6 +29,22 @@
      layered knee pads, thin cuffs, seams that end on other edges. See <code>PROVENANCE.md</code>.
      <b>Stage 4</b> answers <code>review_stage3.md</code> for the pelvis only (waist, hips, seat, upper thighs); everything else is
      unchanged, and the close-ups further down are stage 3's.</p>
+
+  <h2>The pelvis, third round (B1f)</h2>
+  <p>Answers <code>review_stage5.md</code>. <b>The thighs meet:</b> no slot; the half-bodies touch the mid-plane tangentially and
+     overlap above, the union's reach broad where the thighs meet (no pinch, no bright line in gloss) but capped at the sections'
+     innermost depth, so light first shows 42 mm under the crotch landmark (0.851 m; B1e 0.880) in a near-tangent cusp, and the
+     gap opens as a convex lens into B1e's leg. <b>The side:</b> the seat 7 mm fuller and rounder, tucking under over 8 cm, its
+     two lobes and lower edge reading from behind; the front of the thigh one convex swell (+5 mm). <b>The front:</b> the early
+     flare half the remaining way to the owner's reference (the full step pinches the waist into a corner: kept as
+     <code>flare_full</code> for comparison), the outer thigh tapering a little, the shading bands on the thigh gone.
+     <b>The back seam:</b> the "zip tab" sticking out of the lower back was the centre-back seam's cord; it now lies on the
+     centre line. Stage 4, B1e and the full flare are kept as shapes. See <code>PROVENANCE.md</code>.</p>
+  <figure><img src="crotch.jpg" alt="The crotch close up"><figcaption>The crotch close up: matte front, back, three-quarter front, from 40&deg; below front and back; glossy front and three-quarter, with the seams</figcaption></figure>
+  <figure><img src="lens.jpg" alt="The leg gap beside the owner's reference"><figcaption>The leg gap from the front beside the owner's frontal reference, one scale, aligned at the first light</figcaption></figure>
+  <figure><img src="side_outlines.jpg" alt="Side outlines"><figcaption>Side outlines: stage 4, B1e, flare_full, now and the side drawing, with a 2x zoom of the seat and thigh</figcaption></figure>
+  <figure><img src="shape_vs_silhouette.jpg" alt="Against the owner's frontal reference"><figcaption>The owner's frontal body reference beside stage 4, B1e, the full flare step and now, one scale</figcaption></figure>
+  <figure><img src="bands_contrast.jpg" alt="Shading bands, contrast raised"><figcaption>The matte three-quarter front, B1e against now, contrast stretched and high-passed: the horizontal bands across the thigh</figcaption></figure>
 
   <h2>The pelvis, second round (B1e)</h2>
   <p>Answers <code>review_stage4.md</code>, the pelvis only. <b>The gap between the legs:</b> the pelvis is now ONE surface across the
@@ -40,10 +56,8 @@
      of the thigh; a rounder lower belly, a soft groin, the front of the thigh swelling 3 mm into the knee. <b>The front:</b> the hip
      rounds out sooner under the waist and eases off over the hip (half the way towards the owner's frontal reference,
      <code>good-body-silhouette.jfif</code>), waist and widest point unchanged. Stage 4 is kept as the shape <code>stage4</code>.</p>
-  <figure><img src="crotch.jpg" alt="The crotch close up"><figcaption>The crotch close up: matte front, back, three-quarter front, from 40&deg; below front and back; glossy front and three-quarter</figcaption></figure>
-  <figure><img src="shape_vs_silhouette.jpg" alt="Against the owner's frontal reference"><figcaption>The owner's frontal body reference beside stage 4 and the new default, one scale (shoulder widths equal, waists aligned)</figcaption></figure>
 
-  <h2>The hip pictures (now B1e; the text is stage 4&#39;s)</h2>
+  <h2>The hip pictures (now B1f; the text is stage 4&#39;s)</h2>
   <p>The corner at the crotch came from the table: the leg rows held the outer edge upright up to the crotch row and the hand-set hip
      rows ran it in a straight line to the waist, two straight pieces meeting in one row. From above the knee to under the waist the
      trunk is now authored as its outlines (the front view's outer edge and the gap between the legs, the side view's front and back),
@@ -54,7 +68,7 @@
   <figure><img src="hips.jpg" alt="The pelvis in matte grey, five views"><figcaption>Pure form, matte grey, no seams, panels or arms: front, three-quarter front, side, three-quarter back, back</figcaption></figure>
   <div class="grid">
     <figure><img src="hips_vs_drawings.jpg" alt="The pelvis against the drawings"><figcaption>Against the drawings (orange), the concept beside the front</figcaption></figure>
-    <figure><img src="hips_before_after.jpg" alt="Outlines before and after"><figcaption>Stage 4 above, now below with stage 4&#39;s outline in blue</figcaption></figure>
+    <figure><img src="hips_before_after.jpg" alt="Outlines before and after"><figcaption>Stage 4, B1e and the full flare step above, now at the bottom with their outlines (blue, green, magenta)</figcaption></figure>
   </div>
 
   <h2>Hands (the reviewer's first item)</h2>
@@ -81,7 +95,7 @@
 
   <h2>The three drawings vs the model</h2>
   <p id="scores">Silhouette overlap (IoU), default build, per height band (above the waist / waist to knee / knees down):
-     front 0.946 / 0.852 / 0.908 (whole 0.895); side 0.918 / 0.897 / 0.856 (0.893); back 0.912 / 0.833 / 0.813 (0.853).
+     front 0.946 / 0.857 / 0.908 (whole 0.897); side 0.918 / 0.921 / 0.856 (0.902); back 0.912 / 0.841 / 0.812 (0.856) (B1f; B1e 0.853 / 0.907 / 0.833 waist to knee).
      Above the waist and knees down unchanged from stage 3; the waist-to-knee band fell (stage 3: 0.871 / 0.915 / 0.848) with the slimmer hips. The waist-to-knee band is narrower than the drawings on purpose (the owner's slimmer hips). Knees down: the front and
      back drawings place the lower legs apart and draw a high heel; the build splits the difference and wears the low heel asked for.</p>
   <div class="grid">
@@ -95,10 +109,10 @@
     <figure><img src="back_overlay.png" alt="Back overlay"><figcaption>Back overlay</figcaption></figure>
   </div>
 
-  <h2>Hip shapes, side by side (stage 4)</h2>
+  <h2>Hip shapes, side by side (B1f)</h2>
   <p>Three steps of the new pelvis built from table values only (<code>beatrice.pelvis(k)</code>: the hip and seat 7 % either side),
      matte grey, front and side, waist to knee, the drawing's outline in orange.</p>
-  <figure><img src="shape_vs_concept.jpg" alt="Three hip shapes in matte grey, front and side, with the drawing outlines"><figcaption>one step slimmer · default (stage 4) · one step fuller</figcaption></figure>
+  <figure><img src="shape_vs_concept.jpg" alt="Three hip shapes in matte grey, front and side, with the drawing outlines"><figcaption>one step slimmer · default (B1f) · one step fuller</figcaption></figure>
 
   <h2>Turnaround</h2>
   <figure><img src="turnaround.png" alt="Front, side, back, three-quarter"><figcaption>Orthographic front, side, back, three-quarter</figcaption></figure>
