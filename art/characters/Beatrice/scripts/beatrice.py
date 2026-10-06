@@ -194,26 +194,32 @@ PELVIS_B1E, MIDPLANE_B1E, SEAT_B1E = PELVIS, MIDPLANE, SEAT
 # knee's stance. The union bridges g < k/4 (k = 2 w), so a SMALL reach under the contact ends the bridge in a
 # near-tangent cusp, not an arch (its tip radius k c dz, its width k); the reach grows above the contact to
 # soften the valley where the thighs meet.
-def _gap(contact, join, over, top, below, step=0.005):
-    """The inner profile: `below`'s controls (B1e's) up to `join`, then g = A (contact - z)^p up to the contact,
-    A and p fixed by meeting `below`'s monotone curve at `join` in value AND slope (p = |g'| (contact - join) / g),
-    so the lens is convex from the contact down and leaves the leg exactly as it was below `join`; above the
-    contact -over (z - contact)^2 up to the first of the `top` controls (where the half-section swings to the
-    centre line). Returns (controls, p, A)."""
-    bz, bv = np.array([b[0] for b in below]), np.array([b[1] for b in below])
+def _gap(contact, join, top, below, step=0.005):
+    """The inner profile: `below`'s controls (B1e's) up to `join`; from there to the contact the cubic
+    g = a dz^2 + b dz^3 (dz = contact - z) meeting `below`'s monotone curve at `join` in value AND slope, convex all the
+    way (g'' > 0: the lens); above the contact the quartic a dz^2 + c dz^3 + d dz^4 with the SAME curvature at the
+    contact (C2 through it: an infinite or jumping curvature there drew a line across the inner thigh in the
+    three-quarter view) reaching the first `top` control (where the half-section swings to the centre line) in value
+    and slope. Returns (controls, (a, b, c, d))."""
+    bz, bv = np.array([q[0] for q in below]), np.array([q[1] for q in below])
     g = float(profiles.pchip(bz, bv, [join])[0])
-    dg = float(np.diff(profiles.pchip(bz, bv, [join - 5e-4, join + 5e-4]))[0] / 1e-3)
-    p = -dg * (contact - join) / g
-    A = g / (contact - join) ** p
-    zs = np.round(np.arange(join + step, top[0][0] - 1e-9, step), 4)
-    v = np.where(zs <= contact, A * np.clip(contact - zs, 0.0, None) ** p, -over * (zs - contact) ** 2)
-    ctrl = tuple(b for b in below if b[0] <= join + 1e-9) + tuple((float(z), float(x)) for z, x in zip(zs, v)) + tuple(top)
-    return ctrl, p, A
+    dg = -float(np.diff(profiles.pchip(bz, bv, [join - 5e-4, join + 5e-4]))[0] / 1e-3)   # dg/d(dz)
+    d = contact - join
+    a, b_ = np.linalg.solve([[d * d, d ** 3], [2 * d, 3 * d * d]], [g, dg])
+    zt, gt = top[0]
+    gt1 = -(top[1][1] - top[0][1]) / (top[1][0] - top[0][0])                             # dg/d(dz) at the top control
+    e = contact - zt                                                                      # negative
+    c_, d_ = np.linalg.solve([[e ** 3, e ** 4], [3 * e * e, 4 * e ** 3]], [gt - a * e * e, gt1 - 2 * a * e])
+    zs = np.round(np.arange(join + step, zt - 1e-9, step), 4)
+    dz = contact - zs
+    v = np.where(dz >= 0.0, a * dz ** 2 + b_ * dz ** 3, a * dz ** 2 + c_ * dz ** 3 + d_ * dz ** 4)
+    ctrl = tuple(q for q in below if q[0] <= join + 1e-9) + tuple((float(z), float(x)) for z, x in zip(zs, v)) + tuple(top)
+    return ctrl, (float(a), float(b_), float(c_), float(d_))
 
 
-GAP = dict(contact=0.866, join=0.78, over=11.8)
+GAP = dict(contact=0.866, join=0.78)
 GAP_TOP = ((0.920, -.0345), (0.930, -.0470), (0.940, -.0590), (0.960, -.0800))
-_inner, GAP["p"], GAP["A"] = _gap(GAP["contact"], GAP["join"], GAP["over"], GAP_TOP, PELVIS_B1E["inner"])
+_inner, GAP["coef"] = _gap(GAP["contact"], GAP["join"], GAP_TOP, PELVIS_B1E["inner"])
 PELVIS = dict(PELVIS_B1E, inner=_inner,
               # B1f step 2, the side. The front of the thigh: ONE convex swell (the quadriceps) from the groin crease
               # (0.905) to above the knee, fullest at 0.80 (6 mm in front of B1e's), easing back into the knee

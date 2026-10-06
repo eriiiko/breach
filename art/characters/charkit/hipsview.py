@@ -453,9 +453,10 @@ def side_outlines_picture(tables, sheet_ref, suitbuild, panel, z0, z1, outs, out
             _stamp(img, colx(v[band]), row(zs[band]), cols[s], 1.4)
     for v in (fy, by):
         _stamp(img, colx(v[band]), row(zs[band]), AFTER, 1.6)
-    # the largest separation of the default from the first earlier shape that is not stage 4 (else the last one)
-    ref = [s for s in befores if s != "stage4"] or list(befores)
-    o = outs[ref[-1]]["outline"]
+    # the largest separation of the default from the comparison shape (tables.SIDE_REF, else B1e, else the last earlier one)
+    ref = getattr(tables, "SIDE_REF", "b1e")
+    ref = ref if ref in outs else befores[-1]
+    o = outs[ref]["outline"]
     sep = []
     for k in ("front", "back"):
         v = np.array([np.nan if q is None else q for q in o[k]])
@@ -465,14 +466,22 @@ def side_outlines_picture(tables, sheet_ref, suitbuild, panel, z0, z1, outs, out
         sep.append((k, float(d[i]), float(zs[i])))
     ch, chb = out["chords"], {s: outs[s]["chords"] for s in befores}
     key = "; ".join("%s %s" % (names.get(tuple(cols[s]), "line"), s) for s in befores)
-    title = [tables.PREFIX.capitalize() + " - the side outline, %.2f-%.2f m: %s; orange now (%s); dark grey the side drawing" % (z0, z1, key, now_label),
-             "largest separation of now from %s: front %.1f mm at z %.3f, back %.1f mm at z %.3f. Thigh-front swell from the 0.90-0.62 chord: %s now %.1f mm;"
-             " seat round from the lumbar-0.70 chord: %s now %.1f mm" % (
-                 ref[-1], sep[0][1], sep[0][2], sep[1][1], sep[1][2],
+    # a 2x zoom of the seat and thigh beside the whole band
+    zz0, zz1 = 0.78, 1.12
+    r0, r1 = int(round(float(row(zz1)))), int(round(float(row(zz0))))
+    cs_ = np.flatnonzero(alpha[r0:r1].any(axis=0))
+    c0_, c1_ = max(int(cs_.min()) - 40, 0), min(int(cs_.max()) + 40, W)
+    zoom = np.repeat(np.repeat(img[r0:r1, c0_:c1_], 2, axis=0), 2, axis=1)
+    title = [tables.PREFIX.capitalize() + " - the side outline, %.2f-%.2f m, matte (now), measured outlines from the sliced mesh:" % (z0, z1),
+             "%s; orange now (%s); dark grey the side drawing (its arm hangs beside the waist; the drawing is known too full)" % (key, now_label),
+             "largest separation of now from %s: front %.1f mm at z %.3f, back %.1f mm at z %.3f" % (ref, sep[0][1], sep[0][2], sep[1][1], sep[1][2]),
+             "thigh-front swell from the 0.90-0.62 chord: %s now %.1f mm (from the 0.88-0.70 chord, the thigh alone: %s now %.1f mm)" % (
                  " ".join("%s %.1f," % (s, chb[s]["front"]["dev_mm"]) for s in befores), ch["front"]["dev_mm"],
-                 " ".join("%s %.1f," % (s, chb[s]["back"]["dev_mm"]) for s in befores), ch["back"]["dev_mm"])]
-    suitbuild.save_image(suitbuild.assemble_row([(img, "side, matte (now)")], title), os.path.join(previews, "side_outlines.jpg"))
-    print("side outline: largest separation from %s: %s" % (ref[-1], sep))
+                 " ".join("%s %.1f," % (s, chb[s]["thigh_front"]["dev_mm"]) for s in befores), ch["thigh_front"]["dev_mm"]),
+             "seat round from the lumbar-0.70 chord: %s now %.1f mm" % (" ".join("%s %.1f," % (s, chb[s]["back"]["dev_mm"]) for s in befores), ch["back"]["dev_mm"])]
+    suitbuild.save_image(suitbuild.assemble_row([(img, "side, %.2f-%.2f m" % (z0, z1)), (zoom, "the same, %.2f-%.2f m, twice the scale" % (zz0, zz1))], title),
+                         os.path.join(previews, "side_outlines.jpg"))
+    print("side outline: largest separation from %s: %s" % (ref, sep))
 
 
 def lens_picture(tables, sheet_ref, suitbuild, rig, cam, floor, previews, out, m_ref, z0=0.76, z1=0.94, half_w=0.10, h_px=900):
