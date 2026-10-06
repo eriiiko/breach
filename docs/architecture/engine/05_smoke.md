@@ -78,6 +78,9 @@ that every system reads or writes by name.
 >   advection and diffusion, `sink_hop` breach venting, gas damage, visibility and every optical
 >   channel in §5–§6 are untouched. Traces remain fully alive as visual and gameplay fields; they
 >   just stop whispering into pressure.
+>   *(Superseded 2026-10, smoke transport v2, #12: the semi-Lagrangian advection, its diffusion and
+>   the per-tile [0, 1] clamps are gone. Trace planes now ride the bulk face flux conservatively —
+>   `docs/smoke_transport_design_2026-10-04.md`, CLAUDE.md's Trace transport row.)*
 > - **The ex-nihilo source queue closes for physics purposes.** Grenade puffs, explosion smoke and
 >   steam deposits are render-only sources now, and a render-only source cannot pump anything. (The
 >   authoring question — that explosion smoke reads as a flat blob, §4 — is unaffected and still

@@ -29,7 +29,7 @@ intent, not as-built status (canon-fold is deferred by ruling).
 | 17 | Ingress lint | `tests/test_ingress_lint.py` — AST scan of `src/simulation/`; `ingress-exempt:` pragma | The four number-doors are law; exceptions carry an inline why-safe comment |
 | 18 | Float ratchet | `tests/test_no_float_in_sim_tu.py` — per-TU baselines | Counts only go down |
 | 19 | EOS solver | `cpp/src/eos_solver.{h,cpp}` + `cuda_eos_*.cu`, `cuda_mg_solve.cu`, `cuda_kick_compression.cu` | Pressure is derived (`p* = C·N·T_abs`) — never store a second pressure state |
-| 20 | Bulk/trace transport | `cpp/src/bulk_transport.*`, `smoke_dynamics.*`, `sky_exchange.*` + CUDA twins | Add a gas = a `[gases.*]` config row, never a bespoke advection loop |
+| 20 | Bulk/trace transport | `cpp/src/bulk_transport.*` (trace stages 3b/3c), `sky_exchange.*` + CUDA twins (`smoke_dynamics` deleted by smoke transport v2, #12, 2026-10) | Add a gas = a `[gases.*]` config row, never a bespoke advection loop; trace planes ride the bulk face flux only (see CLAUDE.md, Trace transport) |
 | 21 | Fire + combustion | `cpp/src/fire_simulation.*`, `combustion.*`; ignition twin in `combat` | Spread is radiation→heat→ignition; there is no cellular spread rule |
 | 22 | Temperature solver | `cpp/src/temperature_solver.*` + `cuda_temperature.cu` | Heat deposits are Q16.16 saturating adds; SOLIDS' temperature derived here alone — GAS temperature is the energy field's mirror (amended by arc #54 P-G1b; see CLAUDE.md) |
 | 23 | Temperature scale | `src/temperature_scale.py` — `load(cfg)`/`from_toml`; `[physics.temperature_scale]` | The single T_game→Kelvin answer for bake, render, readouts, tools |
