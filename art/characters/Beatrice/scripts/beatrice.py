@@ -249,10 +249,19 @@ def _flare(outer, step, zw=1.138, zh=0.893, w=0.0900, ref=FLARE_REF):
     return tuple(out)
 
 
-FLARE_STEP = 0.0
+FLARE_STEP = 0.5
 # the outer thigh tapering a little from the hip to above the knee (B1e: a parallel column); its widest stays at 0.81-0.84
-TAPER = ()  # B1f step-3 draft: ((0.70, -.0025), (0.74, -.0022), (0.78, -.0010), (0.81, -.0002))
-PELVIS["outer"] = tuple((z, v + dict(TAPER).get(z, 0.0)) for z, v in _flare(PELVIS_B1E["outer"], FLARE_STEP))
+TAPER = ((0.70, -.0015), (0.74, -.0018), (0.78, -.0010), (0.81, -.0003))
+
+
+def _outer(step=FLARE_STEP, taper=TAPER):
+    return tuple((z, v + dict(taper).get(z, 0.0)) for z, v in _flare(PELVIS_B1E["outer"], step))
+
+
+PELVIS["outer"] = _outer()
+# the generated rows start lower, at the knee (0.605; B1e 0.665): their junction with the sparse leg rows was a band across the
+# thigh in the matte three-quarter front (quarter outline turning 2.9 deg/cm at 0.66)
+PELVIS["z"] = (0.605, 1.135)
 # the seat's two rounds (bodysuit.Suit.forms): taller, a little narrower and lower than B1e's, so the two buttocks read as
 # two lobes with a lower edge of their own in the back views (review A3), not one dome with the lower back
 SEAT = (0.056, 0.938, "back", 0.048, 0.080, 0.0065, 0.062)
@@ -301,6 +310,9 @@ SHAPES = dict(
     stage4=dict(spec=PELVIS4, seat=SEAT4, midline=MIDLINE, midplane=None),
     # B1e's default (the slot between the legs, the first side profile, the half-step front flare)
     b1e=dict(spec=PELVIS_B1E, seat=SEAT_B1E, midplane=MIDPLANE_B1E),
+    # B1f's front flare at a half and three-quarter step (the default takes the full step to the frontal reference)
+    flare_3q=dict(spec=dict(PELVIS, outer=_outer(0.75))),
+    flare_full=dict(spec=dict(PELVIS, outer=_outer(1.0))),
     # stage 3's default (the previous default, for the before/after comparison)
     stage3=dict(rows=(WAIST3,), seat=(0.058, 0.960, "back", 0.058, 0.062, 0.009)),
     # the front view's own hips and thighs (wider), for comparison by eye
@@ -335,7 +347,7 @@ SHAPES = dict(
 COMPARE = (("slimmer", "one step slimmer"), ("", "default (B1f)"), ("fuller", "one step fuller"))
 COMPARE_BAND = (0.56, 1.22)
 # the hip pictures' "befores" (`--hips`: hips_before_after.jpg, shape_vs_silhouette.jpg, side_outlines.jpg), oldest first
-HIPS_BEFORE = ("stage4", "b1e")
+HIPS_BEFORE = ("stage4", "b1e", "flare_full")
 NOW_LABEL = "B1f"
 
 # The concept's proportions, measured by hand on `concept.jfif` (three-quarter view, walking,
@@ -357,7 +369,11 @@ def _rows(shape=None):
         return tuple(over.get(r[0], r) for r in LEGS + HIPS + TORSO)
     sp = sh["spec"] if "spec" in sh else pelvis(sh.get("pelvis", 1.0))
     legs = tuple(r for r in LEGS if r[1] < sp["z"][0])
-    return legs + profiles.edge_rows(sp, below=legs[-3:], above=TORSO[:3]) + TORSO
+    # B1f: a profile may run on through the waist (its row stays a control, it is no longer a row of its own: the loft's
+    # monotone interpolation flattened the section at that one row, a ledge under it once the hip flares right below)
+    torso = tuple(r for r in TORSO if r[1] > sp["z"][1] + 1e-9)
+    above = TORSO[:3] if sp["z"][1] < TORSO[0][1] else TORSO[:4]
+    return legs + profiles.edge_rows(sp, below=legs[-3:], above=above) + torso
 
 
 # The sleeve, wrist -> a root ring sunk inside the shoulder: (landmark, centre x, y, z,
