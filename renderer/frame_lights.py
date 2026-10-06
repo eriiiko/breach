@@ -67,7 +67,8 @@ EMITTER_INPUTS = {
                              "at the cursor while paused (mouse)"),
     "cursor":     ("render", "the mouse position (WEGO's cursor lamp)"),
     "transient":  ("render", "the renderer's W6 effect queue (sim events, aged and "
-                             "faded on the wall clock)"),
+                             "faded on the wall clock) -- the jets, the plasma bolts "
+                             "and (#33) the bullets' muzzle flashes"),
     "fire":       ("sim",    "temperature -- the sweep's own thermal emission "
                              "a_c * L°[T], never a row"),
     "sky":        ("sim",    "the level's boundary type + [light.sky] config (the ring)"),
@@ -133,6 +134,94 @@ def transient_specs(transients) -> list:
     return [LightSpec(x=float(t["x"]), y=float(t["y"]), color=tuple(t["color"]),
                       intensity=float(t["intensity"]), angle_spread=6.283,
                       kind="transient", source="render") for t in transients]
+
+
+#: The most light (in light units, per channel) all muzzle flashes of one frame
+#: may carry together: HALF the sweep's cone budget (LIGHT_CONE_BUDGET = 2^44 at
+#: L_FINE_BITS = 37 counts per light unit = 128 light units), so a big volley
+#: dims its flashes instead of tripping ``cone_rows``' refusal and leaves the
+#: other half to the lamps, flashlights and jets.
+MUZZLE_FLASH_MAX_TOTAL = 64.0
+
+
+@dataclass(frozen=True)
+class MuzzleFlash:
+    """``[render.muzzle_flash]`` (#33): the light a bullet's shot gives off at
+    the muzzle. ``intensity`` 0 = no flash at all (the game before #33)."""
+    intensity: float          # peak strength, light units (the flashlight is 2.5)
+    duration_s: float         # wall-clock seconds from full strength to dark
+    color: tuple              # RGB, each in [0, 1]
+
+
+def muzzle_flash_settings(cfg) -> MuzzleFlash:
+    """The ``[render.muzzle_flash]`` settings of a loaded config (``CFG``).
+    Raises ValueError naming the key when the section or a key is missing or
+    out of range -- a flash that silently fell back to a default would hide a
+    typo in config.toml."""
+    section = getattr(getattr(cfg, "render", None), "muzzle_flash", None)
+    if section is None:
+        raise ValueError("config.toml has no [render.muzzle_flash] section")
+    for key in ("intensity", "duration_s", "color"):
+        if not hasattr(section, key):
+            raise ValueError(f"[render.muzzle_flash] is missing {key!r}")
+    intensity = float(section.intensity)
+    duration_s = float(section.duration_s)
+    color = tuple(float(c) for c in section.color)
+    if not (math.isfinite(intensity) and intensity >= 0.0):
+        raise ValueError(f"[render.muzzle_flash] intensity must be >= 0, got {intensity!r}")
+    if not (math.isfinite(duration_s) and duration_s > 0.0):
+        raise ValueError(f"[render.muzzle_flash] duration_s must be > 0, got {duration_s!r}")
+    if len(color) != 3 or any(not (0.0 <= c <= 1.0) for c in color):
+        raise ValueError(f"[render.muzzle_flash] color must be 3 numbers in [0, 1], "
+                         f"got {section.color!r}")
+    return MuzzleFlash(intensity=intensity, duration_s=duration_s, color=color)
+
+
+def muzzle_flash_lights(effects, flash: MuzzleFlash, footprint_of) -> list:
+    """The muzzle flashes implied by the renderer's live ``"tracer"`` effects
+    (#33), as transient-light dicts (x, y, max_range, intensity, color -- the
+    :func:`transient_specs` input; ``max_range`` is not read). PURE: effects
+    in, dicts out.
+
+    A tracer that left the barrel (``launch``) and is younger than
+    ``flash.duration_s`` lights an omni lamp at its MUZZLE: the first cell
+    outside the shooter's footprint along the shot (:func:`flashlight_lens` --
+    the body is stamped light-opaque, so a lamp inside it would light nothing),
+    fading linearly from ``intensity`` to 0 over the duration. One flash per
+    shooter: the bullets of one burst leave the same muzzle together, so the
+    freshest tracer of each shooter sets it (a burst is not N lamps summed --
+    and the frame's cone budget scales with the shooters, not the bullets).
+    ``footprint_of(unit_id)`` gives the shooter's footprint in tiles. A flash
+    lives no longer than its tracer effect (the queue drops it at its life).
+    A volley whose flashes would together pass :data:`MUZZLE_FLASH_MAX_TOTAL`
+    is scaled down as a whole to it."""
+    if flash.intensity <= 0.0:
+        return []
+    best = {}
+    for fx in effects:
+        if fx.get("kind") != "tracer" or not fx.get("launch", True):
+            continue
+        alpha = 1.0 - float(fx["t"]) / flash.duration_s
+        if alpha <= 0.0:
+            continue
+        uid = fx.get("unit")
+        if uid not in best or alpha > best[uid][0]:
+            best[uid] = (alpha, fx)
+    out = []
+    for uid, (alpha, fx) in best.items():
+        (x0, y0), (x1, y1) = fx["from"], fx["to"]
+        dx, dy = float(x1) - float(x0), float(y1) - float(y0)
+        if math.hypot(dx, dy) <= 1e-9:
+            continue
+        lx, ly = flashlight_lens(x0, y0, math.atan2(dy, dx), footprint_of(uid))
+        out.append({"x": lx + 0.5, "y": ly + 0.5, "max_range": 0,
+                    "intensity": flash.intensity * alpha, "color": flash.color})
+    total = sum(d["intensity"] for d in out) * max(flash.color)
+    if total > MUZZLE_FLASH_MAX_TOTAL:
+        k = MUZZLE_FLASH_MAX_TOTAL / total
+        for d in out:
+            d["intensity"] *= k
+    return out
 
 
 @dataclass
@@ -255,6 +344,10 @@ __all__ = [
     "flashlight_specs",
     "cursor_lamp_spec",
     "transient_specs",
+    "MuzzleFlash",
+    "muzzle_flash_settings",
+    "muzzle_flash_lights",
+    "MUZZLE_FLASH_MAX_TOTAL",
     "spec_cone_row",
     "cone_rows",
     "sky_for_level",

@@ -596,5 +596,47 @@
    }
   ],
   "timing_s": 1.6
+ },
+ "retexture": {
+  "asset": "assets/models/worker_female/worker_female.glb",
+  "mesh_skin_clips_unchanged": true,
+  "geometry_digest": {
+   "mesh": {
+    "views": 7,
+    "bytes": 550546,
+    "sha256": "0c7374bcd7db017ccbe5270462048a20487262dbae6c172c73a9eec1d25fd503"
+   },
+   "skin": {
+    "views": 1,
+    "bytes": 3392,
+    "sha256": "457fc465b26213ae02378f0226f6ef5ec194da9a1494608b80300aa257b3cb88"
+   },
+   "animation": {
+    "views": 6412,
+    "bytes": 971816,
+    "sha256": "71663e6cc1aae26d69ecb6754842f65e01ffd0b4666d4e2092bde9fe7357c55a"
+   },
+   "json": "746c3889508e1956adbd93637d4a56b2524108a683b5620a64c85d6972472a6e",
+   "unaccounted_views": 0
+  },
+  "bake": {
+   "missed_fraction_of_covered": 0.00388,
+   "gloss_mean": 0.0022,
+   "gloss_over_0_5": 0.0001,
+   "gloss_0_05_to_0_5": 0.0021,
+   "gloss_matte_under_0_05": 0.9978
+  },
+  "gloss": {
+   "rough_full": 0.05,
+   "rough_matte": 0.85,
+   "power": 3.0
+  },
+  "timing_s": {
+   "bake_normal_s": 3.3,
+   "bake_ao_s": 2.8,
+   "bake_emit_s": 4.0,
+   "bake_gloss_s": 3.5,
+   "total_s": 45.7
+  }
  }
 }

@@ -231,6 +231,8 @@ def mat_plain(name, color, rough=0.6, metallic=0.0, bump_scale=None, bump=0.2, s
 
 
 def mat_visor(name="visor_glass", facing=(0.003, 0.014, 0.006), edge=(0.010, 0.045, 0.018)):
+    """Glossy visor glass. `facing` / `edge` (scene-linear RGB) are its colour seen head-on and at a
+    grazing angle; the defaults are the original dark green glass (the space marine passes amber)."""
     m, t = _new(name)
     lw = t.n("ShaderNodeLayerWeight")
     lw.inputs["Blend"].default_value = 0.35

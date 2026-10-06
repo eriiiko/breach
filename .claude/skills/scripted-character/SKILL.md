@@ -57,7 +57,9 @@ worked; a run may do it differently if its report says what it changed and why.
 Each stage is one implementation agent in the character branch's worktree, one at a time. The
 orchestrator writes the brief, reviews the pictures when the agent reports, and decides the next
 stage. Measured on the workers, each stage took one Opus agent 45–50 minutes and about 400,000
-tokens.
+tokens. *2026-10-05, the guard officer (an ornate uniform, a new family):* the build 56 minutes
+and 500,000 tokens, the reviewer 7 minutes and 150,000, the correction round 49 minutes and
+430,000.
 
 ### 0. Branch and sheet
 Cut `<issue#>-<name>` off the integration line with its worktree under
@@ -102,10 +104,15 @@ One command per character makes the game file:
 `blender -b --factory-startup -P art/characters/<name>/scripts/game.py` (about 3.5 min). It fuses
 the parts into one skin of 10,000 triangles, bakes one 1024-pixel texture, binds the skin to the
 game's one skeleton and converts all 46 animation clips. Output:
-`assets/models/<name>/<name>.glb` and a `LICENSE.txt`.
+`assets/models/<name>/<name>.glb` and a `LICENSE.txt`. The texture's alpha channel is a gloss
+mask baked from the materials' own roughness (a glossy visor near 1, cloth 0), which the game
+draws as the highlight -- so a material's roughness is part of its look in the game.
 
 - `-- --rig-only` redoes only the skeleton step; `-- --variant <name>` bakes another palette onto
-  the same mesh (about 45 s); `-- --evidence-only` redoes the pictures.
+  the same mesh (about 45 s); `-- --evidence-only` redoes the pictures; `-- --retexture` re-bakes
+  only the texture (colour and gloss) onto the shipped file's own mesh and swaps it into the .glb,
+  leaving mesh, skeleton and clips byte for byte (about 45 s; the saved `.blend` files are
+  gitignored and usually absent).
 - Acceptance: the marine's budget (10,000 triangles, 53 bones, 46 clips); pictures of the rigged
   model in idle, walk, pistol, death and crouch poses plus a few extreme ones, from the front
   quarter and from straight above; close-ups of face and hands; the high-resolution and game
@@ -142,6 +149,17 @@ What made the briefs work:
   attempts each. Without a bound an agent can spend its whole budget on a face.
 - The report is a technical record for the orchestrator, with a list of what still looks weak.
   The summary for Erik is the orchestrator's job.
+- *2026-10-05, the guard officer:* **read the sheet from zoomed crops before writing the stage-1
+  brief**, and rule on every place where its views contradict each other or a garment is drawn
+  ambiguously. The orchestrator's first ruling on the slung over-jacket came from the whole sheet
+  at screen size and was too vague to build from; the first build made it a free-standing drum.
+- *Same run:* **say which wins when the outline score and the garment disagree** (the garment).
+  The drum matched the sheet's outline at 0.90 in every view; the corrected over-jacket, lying on
+  the body as drawn, scores 0.89 / 0.88 / 0.91, because the sheet's own outline is a few
+  centimetres fuller there.
+- *Same run:* tell every agent that the Read tool refuses images over 256 KB (most sheets and
+  every PNG render) and how to make viewing copies and zoomed crops; a sheet with a grid, labels
+  or callouts needs its figure mask solved once (`charkit/sheetmask.MaskedSheet`).
 
 ## Lessons
 
@@ -167,6 +185,15 @@ What made the briefs work:
    overall colour; the faces came out doll-like and Erik accepted them. With a tilted camera the
    front of the body counts for more.
 8. **Give absolute-path commands** to whoever will run them from another folder.
+9. **A garment that lies on the body is built from the body's surfaces.** *2026-10-05, the guard
+   officer:* the slung over-jacket as a loft of its own stood off the shoulder as a box; carried
+   onto a smooth union of the jacket's trunk and sleeve lofts (`art/characters/french-imperial-guard/scripts/assemble.py`,
+   `PelisseSurface`) it lies on them by construction. Lying close is also what the game-ready
+   step's 6 mm fusing wants.
+10. **Measure before calling a proportion wrong.** *Same run:* the orchestrator judged the build
+    "too stocky" by eye; the reviewer measured head, shoulders, arms and legs against the sheet
+    and they agreed to a few pixels — the impression came from one bulky garment and crumpled
+    cloth. The reviewer's brief should ask for those measurements, as this one did.
 
 ## What this skill does not cover yet
 

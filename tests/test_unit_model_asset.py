@@ -77,3 +77,49 @@ def test_every_shipped_look_carries_every_clip_the_renderer_names():
         missing = sorted(set(CLIP_MAP.values()) - clips)
         assert not missing, f"{path.name} lacks the clips {missing}"
         assert doc.get("skins"), f"{path.name} has no skin"
+
+
+def _gloss_mask(path: Path):
+    """The ALPHA of a .glb's base-colour texture as floats in [0, 1], or None
+    when that texture has no alpha channel."""
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    data = path.read_bytes()
+    doc = _gltf_json(path)
+    chunk_len = struct.unpack_from("<I", data, 12)[0]
+    off = 20 + chunk_len
+    bin_len = struct.unpack_from("<I", data, off)[0]
+    binary = data[off + 8:off + 8 + bin_len]
+    tex = doc["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]["index"]
+    view = doc["bufferViews"][doc["images"][doc["textures"][tex]["source"]]["bufferView"]]
+    start = view.get("byteOffset", 0)
+    img = Image.open(io.BytesIO(binary[start:start + view["byteLength"]]))
+    if "A" not in img.getbands():
+        return None
+    return np.asarray(img.getchannel("A"), dtype=np.float32) / 255.0
+
+
+def test_every_shipped_look_carries_a_gloss_mask_and_the_flagship_shows_both():
+    """PROPERTY: the colour texture of every model named in the shipped
+    ``[render.unit_looks]`` carries the gloss mask in its alpha channel (the
+    unit shader's #33 contract: alpha is gloss, never coverage), and the
+    flagship's (the space marine's) mask is not uniform -- it has matte texels
+    (gloss <= 0.05: cloth) and glossy ones (gloss >= 0.5: the visor).
+
+    BREAKS IF: a look is regenerated or re-exported without the gloss bake
+    (an RGB albedo: the shader reads alpha 1, every texel full gloss -- or a
+    re-encode drops the channel), or the marine's mask comes out flat (the
+    roughness-to-gloss mapping or the material wiring broken, so the visor
+    and the cloth bake alike).
+    """
+    for path in _shipped_look_paths():
+        gloss = _gloss_mask(path)
+        assert gloss is not None, f"{path.name}: colour texture has no gloss (alpha) channel"
+    flagship = _gloss_mask(_MODEL_PATH)
+    matte = float((flagship <= 0.05).mean())
+    glossy = float((flagship >= 0.5).mean())
+    assert matte > 0.0 and glossy > 0.0, (
+        f"{_MODEL_PATH.name}: gloss mask is uniform (matte {matte:.4f}, glossy {glossy:.4f})")
