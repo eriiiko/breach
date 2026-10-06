@@ -215,9 +215,10 @@ GAP = dict(contact=0.866, join=0.78, over=11.8)
 GAP_TOP = ((0.920, -.0345), (0.930, -.0470), (0.940, -.0590), (0.960, -.0800))
 _inner, GAP["p"], GAP["A"] = _gap(GAP["contact"], GAP["join"], GAP["over"], GAP_TOP, PELVIS_B1E["inner"])
 PELVIS = dict(PELVIS_B1E, inner=_inner)
-MIDPLANE = dict(MIDPLANE_B1E, refine=((0.836, 0.876, 0.0006, 0.008), (0.845, 0.853, 0.0001, 0.002)), relax=(0.838, 0.880, 0.010, 3),
-                reach=((0.800, 0.0, 0.0), (0.830, 0.0015, 0.0015), (0.848, 0.0016, 0.0016), (0.868, 0.0065, 0.0065),
-                       (0.886, 0.0085, 0.0075), (0.900, 0.0090, 0.0080), (0.930, 0.016, 0.010), (0.960, 0.020, 0.010), (1.080, 0.020, 0.010), (1.125, 0.0, 0.0)))
+MIDPLANE = dict(MIDPLANE_B1E, refine=((0.836, 0.906, 0.0006, 0.008), (0.845, 0.853, 0.0001, 0.002)), relax=(0.838, 0.925, 0.010, 4),
+                core=dict(k0=0.0032, c=12.0, z=(0.851, 0.885)),
+                reach=((0.800, 0.0, 0.0), (0.830, 0.0080, 0.0080), (0.855, 0.0080, 0.0080), (0.880, 0.012, 0.0095), (0.895, 0.012, 0.0095),
+                       (0.910, 0.012, 0.0090), (0.930, 0.016, 0.010), (0.960, 0.020, 0.010), (1.080, 0.020, 0.010), (1.125, 0.0, 0.0)))
 
 # A step of the pelvis (the comparison's "one step slimmer / fuller"): the outer edge (about the inner), the seat's depth
 # behind the section centre and the section's reach past the centre line scaled by k, fully from the

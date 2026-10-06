@@ -63,7 +63,8 @@ def measure(source, prefix, lo=0.60, hi=1.14):
     print("half-gap mm:", " ".join("%.3f:%s" % (z, "--" if not np.isfinite(g) else "%.1f" % (1000 * g)) for z, g in zip(z5, g5)))
     lens = lens_measure(V, E)
     chords = side_chords(zs, o)
-    print("first light through the leg gap at z %s; inner outline convex (d2 > 0) from there down to z %s" % (lens["first_light"], lens["convex_to"]))
+    print("first light through the leg gap at z %s; the tip's arch (d2 <= 0) %s mm long; then the inner outline convex (d2 > 0) down to z %s" % (
+        lens["first_light"], lens.get("tip_arch_mm"), lens["convex_to"]))
     print("side chords: thigh front max %.1f mm from the 0.90-0.62 chord at z %.3f; seat %.1f mm from the lumbar(%.3f)-0.70 chord at z %.3f" % (
         chords["front"]["dev_mm"], chords["front"]["at"], chords["back"]["dev_mm"], chords["back"]["lumbar_z"], chords["back"]["at"]))
     out = dict(worst={k: dict(deg_per_cm=v, z=z) for k, (v, z) in res.items()}, z=zs.tolist(),
@@ -93,15 +94,21 @@ def lens_measure(V, E, z_lo=0.70, z_hi=0.90, dz=0.001, win=0.006):
         m = ok & (np.abs(zf - z) <= 0.5 * win + 1e-9)
         if m.sum() >= 5 and z <= first - 0.001:
             d2[i] = 2.0 * np.polyfit(zf[m] - z, g[m], 2)[0]
-    conv = None
+    # going down from the first light: the tip's own arch (d2 <= 0: the bridge's end, how long), then the convex run
+    conv, arch_end = None, None
     for z, c in sorted(zip(zf, d2), key=lambda q: -q[0]):
-        if z > first - 0.0015 or not np.isfinite(c):
+        if not np.isfinite(c):
             continue
+        if arch_end is None:
+            if c > 0.0:
+                arch_end = float(z)
+            else:
+                continue
         if c <= 0.0:
             break
         conv = float(z)
-    return dict(first_light=first, convex_to=conv, z=zf.tolist(), g=[None if not np.isfinite(x) else float(x) for x in g],
-                d2=[None if not np.isfinite(x) else float(x) for x in d2])
+    return dict(first_light=first, tip_arch_mm=None if arch_end is None else round(1000.0 * (first - arch_end), 1), convex_to=conv,
+                z=zf.tolist(), g=[None if not np.isfinite(x) else float(x) for x in g], d2=[None if not np.isfinite(x) else float(x) for x in d2])
 
 
 def side_chords(zs, o, front=(0.90, 0.62), back_low=0.70, lumbar=(1.04, 1.16)):

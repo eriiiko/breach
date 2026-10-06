@@ -538,7 +538,20 @@ class MidUnion:
         kf = 2.0 * np.interp(z, self.rz, self.rf) * sf
         kb = 2.0 * np.interp(z, self.rz, self.rb) * sb
         inside = (z >= self.rz[0]) & (z <= self.rz[-1])
-        return np.where(inside, (1.0 - wb) * kf + wb * kb, 0.0)
+        k = np.where(inside, (1.0 - wb) * kf + wb * kb, 0.0)
+        core = self.sp.get("core")
+        if core:
+            # B1f: between the thighs the bridge first closes at the sections' innermost depth (y = cy), where the
+            # gap's tip must stay a near-tangent cusp (small k); the groove where the thighs meet lies in front of and
+            # behind that depth and wants a broad fillet (large k: a narrow one is a pinch, a bright line in gloss).
+            # So below z_top the table's k is capped by k0 + c dy^2 (dy = y - cy): the cap grows more slowly than the
+            # gap does with depth (about dy^2 / R, R the section's inner radius), so nothing bridges ahead of the tip.
+            k0, c, (zc0, zc1) = core["k0"], core["c"], core["z"]
+            cap = k0 + c * (y - self.cy(z)) ** 2
+            capped = np.maximum(implicit.smin(k, cap, core.get("soft", 0.002)), 0.0)
+            q = _smoothstep((z - zc0) / (zc1 - zc0))
+            k = np.where(inside, (1.0 - q) * np.minimum(capped, k) + q * k, k)
+        return k
 
     def crossing(self, z, level=None, span=0.16, dy=0.0005):
         """Where the surface `F = level` (default the union's, k/4) crosses the mid-plane at each height z:
