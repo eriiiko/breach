@@ -62,17 +62,28 @@ LEGS = (
     # stage 3: ankle and boot 1 mm further out, for the slimmer boot)
     ("leg_end", 0.055, 0.1921, .020, .034, .060, .062, 2.0, 0),
     ("instep", 0.115, 0.1901, .024, .0265, .036, .040, 2.0, 0),       # stage 3: inside the boot, slim (the boot's foot is its own)
-    ("ankle", 0.170, 0.1861, .028, .026, .042, .040, 2.0, 0),
+    # B1h: inside the boot (from 0.10 to its top at 0.232 the boot is this leg plus the leather): the back taken in 4.5 mm (the
+    # Achilles: the back line runs on straight from the visible ankle into the heel cup, not bulging behind the ankle), the
+    # front 2 mm forward (the ankle's front running into the instep); B1g: ("ankle", 0.170, 0.1861, .028, .026, .042, .040)
+    ("ankle", 0.170, 0.1861, .028, .026, .044, .0355, 2.0, 0),
     ("ankle_top", 0.240, 0.1811, .0235, .027, .0385, .0385, 2.0, 0),
     ("shin_low", 0.300, 0.1782, .0265, .031, .0415, .0415, 2.0, 0),
     ("shin", 0.360, 0.1719, .0285, .041, .0495, .0495, 2.0, 0),
     ("calf_low", 0.400, 0.1666, .031, .051, .057, .057, 2.0, 0),
-    ("calf", 0.440, 0.1613, .032, .056, .064, .064, 2.0, 0),
-    ("calf_top", 0.480, 0.1560, .031, .055, .067, .067, 2.0, 0),
+    # B1h (review_stage7 B8): the upper calf's outer and inner swell fuller (back view, 0.46-0.52: -5..-7 % against the back
+    # drawing), its back a little rounder; the ankle and the knee rows as they were (the loft's tangents at the knee unchanged,
+    # so the knee from 0.54 up does not move). B1g: calf (.056, .064, .064), calf_top (.055, .067, .067)
+    ("calf", 0.440, 0.1613, .032, .0570, .064, .0650, 2.0, 0),
+    ("calf_top", 0.480, 0.1560, .031, .0585, .067, .0690, 2.0, 0),
     ("knee_low", 0.540, .1445, .022, .0505, .060, .060, 2.0, 0),
     ("knee", 0.600, .1215, .002, .0505, .063, .063, 2.0, 0),
     ("knee_top", 0.660, .1125, -.006, .0535, .064, .064, 2.0, 0),
 )
+# B1g's leg rows where B1h changed them: the pelvis profiles take the three leg rows under the knee as their lower controls
+# (`_rows`, profiles.edge_rows `below`) and keep B1g's, so the body above the knee is bit-identical
+LEGS_B1G = {"ankle": ("ankle", 0.170, 0.1861, .028, .026, .042, .040, 2.0, 0),
+            "calf": ("calf", 0.440, 0.1613, .032, .056, .064, .064, 2.0, 0),
+            "calf_top": ("calf_top", 0.480, 0.1560, .031, .055, .067, .067, 2.0, 0)}
 # hip -> thigh, CONCEPT proportions in the front view (see CONCEPT below): the outer line runs
 # almost straight from the hip to the knee, the thighs meet just under the crotch. Depths from the
 # SIDE view with the thigh front-to-back and the seat taken in (Erik: a moderate seat, clearly
@@ -465,7 +476,8 @@ def _rows(shape=None):
     # (B1g: the region may run on past several TORSO rows; the three rows above it join the controls)
     torso = tuple(r for r in TORSO if r[1] > sp["z"][1] + 1e-9)
     above = torso[:3] if sp["z"][1] < TORSO[0][1] or sp["z"][1] > TORSO[1][1] else TORSO[:4]
-    return legs + profiles.edge_rows(sp, below=legs[-3:], above=above) + torso
+    below = tuple(LEGS_B1G.get(r[0], r) for r in legs[-3:])   # B1h: the pelvis's lower controls stay B1g's
+    return legs + profiles.edge_rows(sp, below=below, above=above) + torso
 
 
 # The sleeve, wrist -> a root ring sunk inside the shoulder: (landmark, centre x, y, z,
@@ -555,8 +567,13 @@ def dims(shape=None):
                      stop=(0.0060, 0.0045, 0.0011, 0.0004)),
             # stage 3: layered pads on the FRONT of the knee (a pointed shield, a smaller plate over its top);
             # behind the knee only a seam
-            knee_pad=dict(layers=(dict(x=.121, z=.612, hs=.0245, ht=.040, offset=.0016, thick=.0016, dome=.0022, n=2.3, inset=.004, point=.010),
-                                  dict(x=.121, z=.634, hs=.0175, ht=.0225, offset=.0031, thick=.0016, dome=.0016, n=2.2, inset=.0035))),
+            # B1h (review_stage7 B5): ONE domed shield as drawn (bodysuit.build_knee_pads), 0.54 of the knee's width (B1g: 0.43,
+            # two stacked plates whose stitch line showed dashed), its top and point where B1g's were; a piped rim (radius, centre
+            # at this share of the pad's edge height). B1g: layers=(dict(x=.121, z=.612, hs=.0245, ht=.040, offset=.0016,
+            # thick=.0016, dome=.0022, n=2.3, inset=.004, point=.010), dict(x=.121, z=.634, hs=.0175, ht=.0225, offset=.0031,
+            # thick=.0016, dome=.0016, n=2.2, inset=.0035))
+            knee_pad=dict(pad=dict(x=.121, z=.612, hs=.031, ht=.040, offset=.0018, thick=.0018, dome=.0085, n=2.2, point=.010,
+                                   rim=(0.0010, 0.5), res=0.0010)),
             panel_rim="seam",  # mesh panels set IN the suit, edged by the suit's own seams
             seam_style="tube", piping=(0.0009, 0.0001),  # seams are piping cords (radius, centre above the surface)
             # seams as points seen on the front view ("x", x, z), on the back view ("bx", x, z), or by
@@ -576,9 +593,14 @@ def dims(shape=None):
                     # the leotard line: outer hip down to the crotch
                     (("phi", 0, 1.030), ("x", .130, 1.000), ("x", .090, .960), ("x", .050, .925), ("x", .020, .903), ("x", .004, .895)),
                     # from the thigh panel's foot to the knee pad (each end on another edge: no seam stops on the surface)
-                    (("phi", 6, .662), ("x", .139, .641)),
-                    # from under the knee pad down the outer shin into the boot
-                    (("x", .137, .592), ("x", .150, .566), ("x", .172, .520), ("x", .190, .460), ("x", .200, .400), ("x", .200, .320), ("x", .196, .222)),
+                    (("phi", 6, .662), ("x", .139, .641)),   # B1h: its end now under the wider pad
+                    # B1h: the frame below the pad (as drawn): from the outer side, where the arc behind the knee passes, down to a
+                    # point on the shin and up again to the pad's lower inner edge
+                    (("phi", 0, .620), ("phi", 12, .590), ("x", .182, .556), ("x", .165, .524), ("x", .152, .505), ("x", .136, .514),
+                     ("x", .119, .534), ("x", .104, .572)),
+                    # down the outer shin into the boot: B1h from the frame's point (B1g from under the pad: ("x", .137, .592),
+                    # ("x", .150, .566), ("x", .172, .520), then as now from .460), ending on the boot's top seam
+                    (("x", .152, .505), ("x", .174, .482), ("x", .190, .460), ("x", .200, .400), ("x", .200, .320), ("x", .196, .231)),
                     # behind the knee: an arc from under the pad's outer edge round the back to under its inner edge
                     (("x", .141, .602), ("phi", 0, .620), ("phi", -45, .636), ("bx", .124, .642), ("phi", -135, .636), ("phi", -180, .620),
                      ("x", .101, .602)),
@@ -600,7 +622,7 @@ def dims(shape=None):
                     (("phi", -90, 0.898), ("phi", -90, 1.165)),
                     # down the back of the calf from the knee to the boot
                     (("bx", .124, .642), ("bx", .128, .600), ("bx", .138, .540), ("bx", .146, .460), ("bx", .156, .380), ("bx", .170, .300),
-                     ("bx", .180, .222)),
+                     ("bx", .180, .231)),
                 ),
                 body_loops=(),   # stage 3: the knee's loops are gone (pads in front, an arc seam behind)
                 # the sleeve: a chevron at the foot of the deltoid, lowest on the outside of the arm
@@ -658,6 +680,28 @@ def dims(shape=None):
                 top=(0.232, 0.016, 0.95), ease=(0.0022, 0.0048), n=2.8, shaft_low=0.080, k=0.020,
                 sole=(0.0045, 0.012), heel=(0.032, 0.0185, 0.0205, 0.82),
                 suit_end=0.100, res=(0.0009, 0.0020), foot_k=0.012, smooth=12),
+            # B1h (review_stage7 B1): the boot FITTED to the leg (bodysuit.FittedBoot), replacing `implicit` (kept above as
+            # B1g's). In the foot's frame (y forward-negative from the ankle, z up). The shaft is the leg plus the leather,
+            # its top (the drawn height) a seam ridge where it dives under the suit; a heel cup; the foot ONE sweep (rows:
+            # y, half-width on the widest line, top line z, exponent) with a curved instep and an almond toe with a toe box;
+            # a slim welt following the upper; the low block heel (the owner's 3 cm) under the heel seat
+            fitted=dict(
+                top=0.232, top_seam=0.2295, leather=0.0013, sink=(0.004, 0.0006), shaft_low=(0.090, 0.030),
+                heel_cup=((0.0, 0.021, 0.056), (0.0300, 0.037, 0.046), 2.3), k=(0.022, 0.025),
+                foot=((0.000, .0280, 0.150, 2.2), (-0.025, .0292, 0.150, 2.2), (-0.035, .0297, 0.135, 2.2),
+                      (-0.042, .0300, 0.106, 2.2), (-0.050, .0304, 0.086, 2.2), (-0.060, .0309, 0.073, 2.2), (-0.075, .0314, 0.062, 2.2),
+                      (-0.090, .0316, 0.054, 2.2), (-0.105, .0310, 0.048, 2.15), (-0.120, .0285, 0.044, 2.1), (-0.140, .0235, 0.040, 2.0),
+                      (-0.155, .0185, 0.036, 2.0), (-0.170, .0120, 0.030, 2.0)),
+                tip=(-0.171, 0.022), widest=0.004,
+                # the sole's underside: the heel seat (on the heel), the shank, the ball on the floor, the toe sprung
+                sole=dict(line=((0.065, 0.027), (0.000, 0.027), (-0.010, 0.0262), (-0.030, 0.018), (-0.050, 0.007), (-0.070, 0.0012),
+                                (-0.085, 0.0), (-0.110, 0.0), (-0.140, 0.0025), (-0.175, 0.0085)),
+                          thick=0.005, welt=0.0012, into=0.0008),
+                heel=dict(breast=-0.004, inset=0.0006, taper=0.08),
+                toe_cap=(-0.122, 14.0), piping=(0.0009, 0.0002),
+                # the suit leg ends inside the boot at 0.10 as in B1g (0.6 mm inside the boot there; a higher end moved 20 suit
+                # vertices at the shoulder by 0.009 mm: the body build is order-sensitive)
+                suit_end=0.100, res=(0.0009, 0.0020), smooth=6),
         ),
     )
 

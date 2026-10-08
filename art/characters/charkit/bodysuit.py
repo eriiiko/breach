@@ -35,6 +35,7 @@ import garment
 import implicit
 import kit
 import parts
+import profiles
 import wearmat
 from garment import front_phi
 from kit import Loft, OnLoft, band_on, box, loft_mesh, mirror, ribbon_on, seam_attr, solid, tube, unit
@@ -1114,7 +1115,7 @@ def build_suit(S, M, coll="Suit", body_only=False):
     if S.mid is not None:  # the pelvis: welded onto the union's own crossing of the plane (MidUnion)
         snap["post"], snap["drop"] = S.mid.grid_post(snap["post"]), S.mid.grid_drop(snap["drop"])
         rows = S.mid.rows(kit.RES * 0.85)
-    suit_end = d["boot"].get("implicit", {}).get("suit_end")
+    suit_end = d["boot"].get("fitted", d["boot"].get("implicit", {})).get("suit_end")
     if suit_end:  # inside an implicit boot the suit's leg ends (its foot is the boot's)
         drop0 = snap["drop"]
         snap["drop"] = lambda P: drop0(P) | (P[:, 2] < suit_end)
@@ -1171,7 +1172,33 @@ def build_suit(S, M, coll="Suit", body_only=False):
         build_tape_zip(S, M, CL, coll)
 
     build_panels(S, M, coll)
+    build_knee_pads(S, M, coll)
+
+
+def build_knee_pads(S, M, coll="Suit"):
+    """The knee pads. `knee_pad["pad"]` (B1h, review_stage7 B5): ONE domed shield on the front of the knee (garment.patch
+    on the leg's own surface, so it follows the knee; no stitch line: the B1g pads' inset stitch, sampled on the plate's
+    vertex grid, drew as a dashed oval), its edge a piping cord all round (the drawn rim). Older forms: `layers` (stacked
+    plates, B1g) or one plate."""
+    g = S.d["garment"]
+    B, suit = S.B, M["suit"]
     kp = g.get("knee_pad")
+    if kp and "pad" in kp:
+        pd = kp["pad"]
+        ph, t = S.phi_t(("x", pd["x"], pd["z"]))
+        anchor = OnLoft(B, ph, t)
+        hs, ht, n, point = pd["hs"], pd["ht"], pd.get("n", 2.2), pd.get("point", 0.0)
+        mirror(garment.patch("Suit_Knee_Pad", anchor, hs, ht, offset=pd["offset"], thick=pd["thick"], n=n, dome=pd["dome"],
+                             inset=-1.0, point=point, res=pd.get("res", 0.0012), mat=suit, coll=coll))
+        a = np.linspace(0.0, kit.TAU, 241)[:-1]
+        c, sn = np.cos(a), np.sin(a)
+        x = hs * np.sign(c) * np.abs(c) ** (2.0 / n)
+        y = ht * np.sign(sn) * np.abs(sn) ** (2.0 / n)
+        y = y - point * (1.0 - np.abs(x) / hs) * np.clip(-y / ht, 0.0, 1.0)
+        r, up = pd["rim"]
+        P, N = anchor.pn(x, y, pd["offset"] * up)
+        mirror(tube("Suit_Knee_Rim", P, normals=N, r=r, closed=True, n_u=10, mat=suit, coll=coll))
+        return
     if kp and "layers" in kp:  # layered knee pads: thin domed panels stacked over the front of the knee
         for i, ly in enumerate(kp["layers"]):
             ph, t = S.phi_t(("x", ly["x"], ly["z"]))
@@ -1553,6 +1580,230 @@ def build_boots_implicit(S, M, coll="Boots"):
         mirror(kit.new_mesh(name, V, Q, None, M["sole"], coll))
 
 
+# ------------------------------------------------------------------ boots, fitted (B1h)
+def smin3(a, b, k):
+    """C2 smooth minimum (cubic): a fillet of width ~k whose curvature does not jump at its edges. A patent surface
+    shows a curvature jump as a kink in its highlight; the quadratic `implicit.smin` is only C1."""
+    if np.ndim(k) == 0 and k <= 0:
+        return np.minimum(a, b)
+    k = np.maximum(k, 1e-9)
+    h = np.maximum(k - np.abs(a - b), 0.0) / k
+    return np.minimum(a, b) - h ** 3 * k / 6.0
+
+
+def smax3(a, b, k):
+    return -smin3(-a, -b, k)
+
+
+def _ncurve(ctrl, kind="smooth"):
+    """A curve through (x, y) controls -- C2 (profiles.natural_cubic) or monotone (`kind` "pchip": no overshoot) --
+    holding its ends' values beyond them."""
+    x = np.array([c[0] for c in ctrl], float)
+    y = np.array([c[1] for c in ctrl], float)
+    o = np.argsort(x)
+    x, y = x[o], y[o]
+    fn = profiles.pchip if kind == "pchip" else profiles.natural_cubic
+    return lambda q: fn(x, y, np.clip(q, x[0], x[-1]))
+
+
+class FittedBoot:
+    """B1h (review_stage7 B1): the ankle boot as ONE closed surface fitted to the leg, in the foot's frame (BootFrame:
+    x across, y along the foot, forward NEGATIVE, z up; origin the ankle). Built from smooth fields only, so its patent
+    highlights run without a break: no chain of capsules (their rounded ends met at every node in a ring of bumps and
+    dents: the B1g vamp's blotches), every union a C2 fillet (`smin3`).
+
+      shaft     the leg's own surface (`Suit.body_sdf`) lifted by the leather (`leather`); over the top `sink` it dives
+                0.6 mm under the suit, so the boot's top is the line where the two surfaces cross -- a piping cord lies
+                over it (a seam ridge, no rim, no step); it ends smoothly at `shaft_low` (the foot and heel take over)
+      heel cup  a superellipsoid behind and under the ankle (`heel_cup` = centre, radii, exponent), the back line
+                flowing from the Achilles into it
+      foot      ONE sweep along y (`foot` rows: y, half-width at the widest line, top line z, exponent): its sections are
+                superellipses on the widest line (just above the welt), the top half `top - widest`, the bottom flat;
+                the toe closes over `tip` (y of the tip, closure length) as sqrt(1 - t^4), so the almond point and the
+                toe box's nose are round and join the sweep with no curvature jump
+      welt      the sole: a slab `thick` deep under the upper, its outline the upper's widest line pushed out `welt`; the
+                low block heel under the heel seat, its breast flat at `heel["breast"]`, narrower at the floor
+    The upper is cut flat just inside the sole (`sole` line = the sole's underside: heel seat, shank, ball, toe spring)."""
+
+    def __init__(self, S, spec):
+        self.S, self.f = S, spec
+        self.bt = BootFrame(S.d["boot"])
+        f = spec
+        rows = f["foot"]
+        self.W = _ncurve([(r[0], r[1]) for r in rows])
+        self.Zt = _ncurve([(r[0], r[2]) for r in rows])
+        self.N = _ncurve([(r[0], r[3]) for r in rows])
+        self.y_back = max(r[0] for r in rows)
+        self.y_tip, self.r_tip = f["tip"]
+        self.zs = _ncurve(f["sole"]["line"], "pchip")      # the sole's underside (monotone: never below the floor)
+        self.thick = f["sole"]["thick"]
+
+    # frames
+    def local(self, P):
+        q = np.asarray(P, float) - self.bt.ankle
+        return np.column_stack([q @ self.bt.BX, q @ self.bt.BY, q[:, 2]])
+
+    def world(self, L):
+        L = np.asarray(L, float)
+        return self.bt.ankle + L[:, :1] * self.bt.BX + L[:, 1:2] * self.bt.BY + L[:, 2:3] * Z
+
+    def zb(self, y):  # the upper's underside = the sole's top
+        return self.zs(y) + self.thick
+
+    # parts
+    def shaft(self, P):
+        f = self.f
+        P = np.asarray(P, float)
+        z = P[:, 2]
+        top, (sh, sink), lea = f["top"], f["sink"], f["leather"]
+        zl, kl = f["shaft_low"]
+        d = np.full(len(P), 1.0)
+        near = z > zl - 2.0 * kl
+        if near.any():
+            Pa = np.column_stack([np.abs(P[near, 0]), P[near, 1:]])
+            q = np.clip((z[near] - (top - sh)) / sh, 0.0, 1.0)
+            ease = lea - (lea + sink) * q * q * (3.0 - 2.0 * q)
+            d[near] = self.S.body_sdf(Pa) - ease
+        return smax3(d, zl - z, kl)
+
+    def heel_cup(self, L):
+        c, r, n = self.f["heel_cup"]
+        q = (L - np.asarray(c, float)) / np.asarray(r, float)
+        rho = (np.abs(q[:, 0]) ** n + np.abs(q[:, 1]) ** n + np.abs(q[:, 2]) ** n) ** (1.0 / n)
+        return (rho - 1.0) * min(r)
+
+    def closure(self, y):
+        t = np.clip((self.y_tip + self.r_tip - y) / self.r_tip, 0.0, 1.0)
+        return np.sqrt(np.maximum(1.0 - t ** 4, 0.0))
+
+    def foot(self, L):
+        y = np.clip(L[:, 1], self.y_tip, self.y_back)
+        c = self.closure(y)
+        zb = self.zb(y)
+        zw = zb + self.f["widest"]
+        W = np.maximum(self.W(y) * c, 1e-4)
+        Hu = np.maximum((self.Zt(y) - zw) * c, 1e-4)
+        Hd = self.f["widest"] + 0.004
+        n = self.N(y)
+        v = np.where(L[:, 2] >= zw, (L[:, 2] - zw) / Hu, (zw - L[:, 2]) / Hd)
+        rho = (np.abs(L[:, 0] / W) ** n + np.abs(v) ** n) ** (1.0 / n)
+        d = (rho - 1.0) * np.minimum(W, Hu)
+        d = np.where(L[:, 1] < self.y_tip, np.maximum(d, self.y_tip - L[:, 1]), d)
+        return smax3(d, L[:, 1] - self.y_back, 0.006)
+
+    def upper(self, P, L):
+        k_hc, k_f = self.f["k"]
+        u = smin3(self.shaft(P), self.heel_cup(L), k_hc)
+        return smin3(u, self.foot(L), k_f)
+
+    def planform(self, P, L):
+        """The upper's distance in its widest line's plane (the welt's and the heel's outline)."""
+        Lw = L.copy()
+        Lw[:, 2] = self.zb(L[:, 1]) + self.f["widest"]
+        return self.upper(self.world(Lw), Lw)
+
+    def field(self, P):
+        """The upper: cut flat just INSIDE the sole (it stands in the welt, so the two meet in a crisp corner, no gap)."""
+        P = np.asarray(P, float)
+        L = self.local(P)
+        u = smax3(self.upper(P, L), self.zb(L[:, 1]) - self.f["sole"]["into"] - L[:, 2], 0.0004)
+        return np.maximum(u, P[:, 2] - self.f["top"])                            # the top, inside the suit
+
+    def sole_field(self, P):
+        """The welt (the sole: a slab under the upper, its outline the upper's widest line pushed out) and the heel."""
+        P = np.asarray(P, float)
+        L = self.local(P)
+        f = self.f
+        y, z = L[:, 1], L[:, 2]
+        zs = self.zs(y)
+        pf = self.planform(P, L)
+        sole = smax3(pf - f["sole"]["welt"], np.abs(z - (zs + 0.5 * self.thick)) - 0.5 * self.thick, 0.0006)
+        hb = f["heel"]
+        inset = hb["inset"] + hb["taper"] * np.clip(zs - z, 0.0, None)
+        heel = smax3(pf + inset, np.maximum(z - zs - 0.0005, -z), 0.0006)       # floor .. the sole's underside
+        heel = smax3(heel, hb["breast"] - y, 0.0006)                             # the breast, flat
+        heel = np.where(y > hb["breast"] - 0.01, heel, 1.0)
+        return smin3(sole, heel, 0.0008)
+
+    def gradient(self, V, e=2e-4, fld=None):
+        fld = fld or self.field
+        g = np.stack([(fld(V + e * u) - fld(V - e * u)) / (2 * e) for u in np.eye(3)], axis=1)
+        return g / np.maximum(np.linalg.norm(g, axis=1, keepdims=True), 1e-12)
+
+    def onto(self, P0, D, r_max=0.07, iters=40):
+        """Points on the surface along rays P0 + r D (P0 inside), by bisection."""
+        lo, hi = np.zeros(len(P0)), np.full(len(P0), r_max)
+        for _ in range(iters):
+            m = 0.5 * (lo + hi)
+            ins = self.field(P0 + m[:, None] * D) < 0.0
+            lo, hi = np.where(ins, m, lo), np.where(ins, hi, m)
+        return P0 + (0.5 * (lo + hi))[:, None] * D
+
+
+def build_boots_fitted(S, M, coll="Boots"):
+    """B1h: the fitted boot (FittedBoot) as two closed meshes, `Boot` (the upper, boot material) standing `sole["into"]` deep
+    in `Boot_Sole` (the welt and the heel, sole material): they meet in a crisp corner, no gap and no stepped material line;
+    each mesh's shading normals are its field's own gradient (smooth highlights whatever the triangulation). Piping cords
+    (`Boot_Piping_*`) over the shaft's top, where it dives under the suit, and across the toe cap."""
+    fb = FittedBoot(S, S.d["boot"]["fitted"])
+    f = fb.f
+    h = f["res"][0 if kit.RES < 0.006 else 1]
+    corners = fb.world(np.array([[x, y, z] for x in (-0.055, 0.055) for y in (fb.y_tip - 0.01, 0.085)
+                                 for z in (-0.004, f["top"] + 0.004)]))
+    lo, hi = corners.min(axis=0) - 0.004, corners.max(axis=0) + 0.004
+    lo[2], hi[2] = -0.004, f["top"] + 0.004
+    V, Q = implicit.mesh_field(fb.field, lo, hi, h)
+    V = implicit.taubin(V, Q, iters=f.get("smooth", 6))
+    V = implicit.project(fb.field, V, h, iters=3)
+    L = fb.local(V)
+    back = np.clip(L[:, 1] / 0.01, 0.0, 1.0)
+    seam = 1.0 - np.minimum(np.where((back > 0.5) & (L[:, 2] > fb.zb(L[:, 1]) + 0.004), np.abs(L[:, 0]), 1.0),
+                            kit.SEAM_CAP) / kit.SEAM_CAP
+    ob = kit.new_mesh("Boot", V, Q, None, M["boot"], coll, attrs=dict(seam=seam))
+    ob.data.normals_split_custom_set_from_vertices([tuple(n) for n in fb.gradient(V)])
+    mirror(ob)
+    # the welt and heel (sole material), closed
+    hs = min(h, 0.0007)
+    lo2, hi2 = lo.copy(), hi.copy()
+    hi2[2] = float(fb.zs(np.array([0.0]))[0]) + fb.thick + 0.003
+    V, Q = implicit.mesh_field(fb.sole_field, lo2, hi2, hs)
+    V = implicit.taubin(V, Q, iters=2)
+    V = implicit.project(fb.sole_field, V, hs, iters=3)
+    so = kit.new_mesh("Boot_Sole", V, Q, None, M["sole"], coll)
+    so.data.normals_split_custom_set_from_vertices([tuple(n) for n in fb.gradient(V, fld=fb.sole_field)])
+    mirror(so)
+    # piping cords: over the shaft's top (closed), across the toe cap (welt to welt)
+    r, lift = f["piping"]
+    cords = []
+    zt = f["top_seam"]
+    t = S.bz(zt)
+    c = S.B.frames([t])[0][0]
+    th = np.linspace(0.0, kit.TAU, 360, endpoint=False)
+    Dr = np.column_stack([np.cos(th), np.sin(th), np.zeros(len(th))])
+    Pt = fb.onto(np.tile([c[0], c[1], zt], (len(th), 1)), Dr)
+    cords.append((Pt, True))
+    y0, kap = f["toe_cap"]
+    ps = np.radians(np.linspace(-25.0, 205.0, 231))
+    yz = float(fb.zb(np.array([y0]))[0]) + f["widest"]
+    Dl = np.column_stack([np.cos(ps), np.zeros(len(ps)), np.sin(ps)])
+    x = np.zeros(len(ps))
+    for _ in range(3):  # the seam lies where y = y0 + kap x^2 crosses the surface (x from the previous pass)
+        Lp = np.column_stack([np.zeros(len(ps)), y0 + kap * x * x, np.full(len(ps), yz)])
+        Pc = fb.onto(fb.world(Lp), fb.world(Lp + Dl) - fb.world(Lp))
+        x = fb.local(Pc)[:, 0]
+    Lc = fb.local(Pc)
+    Pc = Pc[Lc[:, 2] > fb.zb(Lc[:, 1]) + f["sole"]["welt"] + 0.0012]
+    cords.append((Pc, False))
+    names = []
+    for i, (P, closed) in enumerate(cords):
+        N = fb.gradient(P)
+        name = "Boot_Piping_%d" % i
+        mirror(tube(name, P + (lift - r * 0.0) * N, normals=N, r=r, closed=closed, n_u=8, mat=M["boot"], coll=coll))
+        names.append(name)
+    garment.close_holes([bpy.data.objects[n] for n in names])
+    return fb
+
+
 # ------------------------------------------------------------------------- head
 def build_head(M, head_spec, prefix, coll="Head"):
     """The bald placeholder head: `parts.head` with this figure's spec. Its own collection and
@@ -1582,7 +1833,9 @@ def build(M, dims, head_spec, prefix):
     S = Suit(dims)
     build_suit(S, M)
     build_bare_hands(S.F, M)
-    if "implicit" in S.d["boot"]:
+    if "fitted" in S.d["boot"]:
+        build_boots_fitted(S, M)
+    elif "implicit" in S.d["boot"]:
         build_boots_implicit(S, M)
     else:
         build_boots(S, M)
