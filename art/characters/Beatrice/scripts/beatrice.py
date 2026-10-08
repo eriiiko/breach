@@ -543,7 +543,7 @@ FITTED_HAND = dict(
     pads=(((0.024, 0.0140, -0.0080), (0.022, 0.0110, 0.0090), (0.85, 0.44, -0.30), 0.012),
           ((0.030, -0.0170, -0.0050), (0.024, 0.0090, 0.0080), (1.0, -0.05, 0.0), 0.012)),
     hollow=((0.034, -0.002, -0.0175), (0.018, 0.013, 0.0065), 0.006),
-    nail=dict(len=0.0115, free=0.0012, width=0.72, thumb=1.1, height=0.0002),
+    nail=dict(len=0.0125, free=0.0032, width=0.72, thumb=1.1, height=0.0002),   # the free edge 3 mm short of the tip (the tip skin rounds over it)
     res=(0.0007, 0.0011), smooth=4,
 )
 
