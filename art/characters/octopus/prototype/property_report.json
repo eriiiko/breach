@@ -1,0 +1,17 @@
+{
+  "pose_samples": 181,
+  "segment_length_max_error_m": 1.1102230246251565e-16,
+  "cross_section_area_ratio_min": 0.9924739898744193,
+  "cross_section_area_ratio_max": 1.0000000000006766,
+  "triangle_area_ratio_min": 0.765785011953715,
+  "cup_sphere_clearance_min_m": 0.002746420658478708,
+  "temporal_frame_step_max_rad_at_20hz": 0.18214809702669124,
+  "contact_tip_error_m": 4.296563105299356e-14,
+  "contact_surface_penetration_m": 0.0,
+  "contact_point_m": [
+    0.999999999999957,
+    0.15000000000000005,
+    0.5006523807874935
+  ],
+  "limits": "Checks cover 181 loop poses; 97% minimum section area and 52% minimum triangle area thresholds. Cup spheres prove cup/cup clearance only. No general body self-collision, wall collision, adhesion, arbitrary twist or grasping solver."
+}

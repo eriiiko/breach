@@ -1,0 +1,10 @@
+{
+  "length_m": 1.2,
+  "joints": 33,
+  "deform_segments": 32,
+  "vertices": 8034,
+  "triangles": 15744,
+  "cups": 80,
+  "eight_arms_triangles": 125952,
+  "eight_arms_joints": 264
+}
