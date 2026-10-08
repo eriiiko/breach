@@ -55,7 +55,7 @@ def materials(p, gloss, prefix):
         suit=wearmat.mat_gloss(prefix + "_suit", p["SUIT"], rough=g["rough"], coat=g["coat"], coat_rough=g["coat_rough"],
                                specular=g.get("specular", 0.5), piping=g.get("piping", 0.6)),
         mesh=wearmat.mat_mesh(prefix + "_mesh", p["MESH"], p["SKIN"], cell=g.get("mesh_cell", 0.0032), show=g.get("mesh_show", 0.55),
-                              surface=g.get("mesh_surface", False), coat=g.get("mesh_coat", 0.0)),
+                              surface=g.get("mesh_surface", False), coat=g.get("mesh_coat", 0.0), width=g.get("mesh_width", 0.30)),
         skin=wearmat.mat_skin(prefix + "_skin", p["SKIN"], p["BROW"], p["LIP_TINT"]),
         eye=wearmat.mat_eye(prefix + "_eye", p["SCLERA"], p["IRIS"]),
         boot=wearmat.mat_gloss(prefix + "_boot", p["BOOT"], rough=g.get("boot_rough", 0.20), coat=g.get("boot_coat", 0.8),
@@ -172,9 +172,63 @@ class Suit:
         Q = np.vstack([Q, Q[:1]])
         return [(math.degrees(u / r0), v) for u, v in Q]
 
+    def panel_stretch(self, name, i0, i1, rev=False, step=0.002):
+        """B1k: a stretch of a panel's smoothed outline, from its point i0 forward (in the outline's order) to i1, as
+        [(phi_deg, t), ...] (reversed with `rev`)."""
+        pn = next(p for p in self.d["garment"]["mesh_panels"] if p.get("name") == name)
+        on = pn.get("on", "body")
+        L = self.loop(pn["pts"], on, step=step)[:-1]
+        O = np.array([self.phi_t(p, on) for p in pn["pts"]], float)
+        lo = self.A if on == "arm" else self.B
+        r0 = float(lo.radius([O[:, 0].mean()], [O[:, 1].mean()])[0])
+        ph = np.radians([p for p, _ in L])
+        tt = np.array([t for _, t in L])
+        near = lambda i: int(np.argmin(np.hypot(kit.wrap(ph - O[i, 0]) * r0, tt - O[i, 1])))
+        j0, j1 = near(i0), near(i1)
+        seg = [L[(j0 + k) % len(L)] for k in range((j1 - j0) % len(L) + 1)]
+        return seg[::-1] if rev else seg
+
+    def panel_edge(self, name, step=0.002):
+        """B1k: the stretch of a mesh panel's smoothed outline it shares with a seam (`shared` = (i0, i1), outline
+        indices, in the outline's order) as [(phi_deg, t), ...]: the seam runs exactly along the panel's edge there and
+        the panel's own frame leaves that stretch out (one piped line, not two side by side)."""
+        pn = next(p for p in self.d["garment"]["mesh_panels"] if p.get("name") == name)
+        on = pn.get("on", "body")
+        L = self.loop(pn["pts"], on, step=step)[:-1]
+        O = np.array([self.phi_t(p, on) for p in pn["pts"]], float)
+        lo = self.A if on == "arm" else self.B
+        r0 = float(lo.radius([O[:, 0].mean()], [O[:, 1].mean()])[0])
+        Lr = np.array([(math.radians(p) * r0, t) for p, t in L])
+
+        def near(i):
+            d = np.hypot(kit.wrap(Lr[:, 0] / r0 - O[i, 0]) * r0, Lr[:, 1] - O[i, 1])
+            return int(np.argmin(d))
+
+        j0, j1 = near(pn["shared"][0]), near(pn["shared"][1])
+        idx = [(j0 + k) % len(L) for k in range((j1 - j0) % len(L) + 1)]
+        return [L[k] for k in idx], [L[(j1 + k) % len(L)] for k in range((j0 - j1) % len(L) + 1)]
+
     def path(self, pts, on="body", step=0.004):
         """A polyline of feature points -> [(phi_deg, t), ...] for kit.tape_attr, densified so a
-        long stretch follows the surface, not a chord across it."""
+        long stretch follows the surface, not a chord across it. B1k: a ("panel", name) entry splices in that panel's
+        shared edge (`panel_edge`)."""
+        if any(p[0] == "panel" for p in pts):
+            out, run = [], []
+            for p in pts:
+                if p[0] != "panel":
+                    run.append(p)
+                    continue
+                seg = self.panel_edge(p[1])[0] if len(p) == 2 else self.panel_stretch(p[1], p[2], p[3], rev=len(p) > 4 and p[4] == "rev")
+                (pa, ta), (pb, tb) = seg[0], seg[-1]
+                za = float(self.B.pos([math.radians(pa)], [ta])[0][2])
+                if run:
+                    out += self.path(tuple(run) + (("phi", pa, za),), on, step)[:-1]
+                out += seg
+                zb = float(self.B.pos([math.radians(pb)], [tb])[0][2])
+                run = [("phi", pb, zb)]
+            if len(run) > 1:
+                out += self.path(tuple(run), on, step)[1:]
+            return out
         out = []
         for p0, p1 in zip(pts[:-1], pts[1:]):
             dv = abs(p1[1] - p0[1]) * (0.0015 if p0[0] == "phi" else 1.0) if p0[0] == p1[0] else 0.02
@@ -302,18 +356,215 @@ class Suit:
         return (rho - R) / np.sqrt(1.0 + dR * dR)
 
     def union_field(self, P, parts_=False):
-        """Signed distance (approx., m) to the union of torso and arm, LEFT half (|x|)."""
+        """Signed distance (approx., m) to the union of torso and arm, LEFT half (|x|). B1k (`shoulder["field"]` "c2"):
+        the arm's distance continuous (`arm_field`) and the union a C2 fillet (`smin3`)."""
         P = np.asarray(P, float)
         Pa = np.column_stack([np.abs(P[:, 0]), P[:, 1:]])
         db, da = self.body_sdf(Pa), np.ones(len(Pa))
         near = Pa[:, 0] > self.d["garment"]["shoulder"].get("arm_x", 0.0)  # nearer the neck the arm cannot reach the union
-        da[near] = kit.loft_sdf(self.F.arm, Pa[near], m=500)
-        u = implicit.smin(db, da, self.union_k(Pa[:, 2]))
+        if self.c2:
+            da[near] = self.arm_field(Pa[near])
+        else:
+            da[near] = kit.loft_sdf(self.F.arm, Pa[near], m=500)
+        u = self.smin_u(db, da, Pa[:, 2], Pa)
         return (u, db, da) if parts_ else u
 
+    # --- B1k (review_stage9 items 1-2): the arm as a CONTINUOUS distance -----------------------------
+    # kit.loft_sdf is the distance to the NEAREST of m sampled sections: it steps every L / m along the arm (~0.9 mm at
+    # m 500), and the shoulder patch meshed from it carried those steps as the orange-peel mottle and the streaks in its
+    # gloss (B1i: sleeve_ripples_cause.jpg). Here every point's own section is found continuously (Newton on
+    # (P - c(t)) . T(t) = 0), the union is C2 (smin3), and the arm's own shaping in the patch (a fuller upper arm, a
+    # rounder deltoid, the fold over the elbow seam) is a smooth offset of that distance (`arm_form`).
+    @property
+    def c2(self):
+        sh = self.d["garment"].get("shoulder") or {}
+        return sh.get("field") == "c2"
+
+    def smin_u(self, db, da, z, P=None):
+        """The shoulder's union of body and arm distances: C1 (B1j) or C2 with a fillet `kfac` x wider (B1k: the cubic's
+        bulge at a = b is k/6, the quadratic's k/4: 1.5 keeps B1j's bulge). `kfac` = (in front and at the side, behind,
+        (from, to) the section angle in degrees behind the side over which it changes): behind the arm a narrower fold (the
+        armpit's back fold, broad, reached in under the blade insert, past any line a seam could take)."""
+        if self.c2:
+            kf = self.d["garment"]["shoulder"].get("kfac", 1.5)
+            if isinstance(kf, (tuple, list)):
+                kf = self._kfac(P) if P is not None else kf[0]
+            return smin3(db, da, kf * self.union_k(z))
+        return implicit.smin(db, da, self.union_k(z))
+
+    def arm_proj(self, P, far=0.085, chunk=400000):
+        """(t, phi, d, ok) of points against the sleeve loft, continuous in P: t where P's own section plane lies
+        ((P - c(t)) . T(t) = 0: Newton from the nearest of 160 centre-line samples), phi its section angle, d the radial
+        gap in that plane over the slope of the section's radius along the arm (as body_sdf). Points beyond the loft's
+        ends (`ok` False) get d = 1; points farther than `far` from the centre line a lower bound (they never reach the
+        union's fillet)."""
+        A = self.F.arm
+        P = np.asarray(P, float).reshape(-1, 3)
+        if not hasattr(self, "_arm_cl"):
+            ts = np.linspace(0.0, A.L, 160)
+            self._arm_cl = (ts, A.frames(ts)[0])
+        ts, Cs = self._arm_cl
+        n = len(P)
+        t, ph, d, ok = np.zeros(n), np.zeros(n), np.ones(n), np.zeros(n, bool)
+        h = 2e-5
+        for i in range(0, n, chunk):
+            p = P[i:i + chunk]
+            m = len(p)
+            dist2 = np.full(m, np.inf)
+            tt = np.zeros(m)
+            for j in range(0, len(ts), 20):
+                Dd = p[:, None, :] - Cs[None, j:j + 20]
+                q = np.einsum("nmk,nmk->nm", Dd, Dd)
+                k = np.argmin(q, axis=1)
+                qk = q[np.arange(m), k]
+                take = qk < dist2
+                dist2, tt = np.where(take, qk, dist2), np.where(take, ts[j:j + 20][k], tt)
+            near = dist2 < far * far
+            d[i:i + chunk] = np.where(near, 1.0, np.maximum(np.sqrt(dist2) - 0.045, 0.04))
+            if not near.any():
+                continue
+            pn, tn = p[near], tt[near]
+
+            def g(tq):
+                c, T = A.frames(np.clip(tq, 0.0, A.L))[:2]
+                return np.einsum("ij,ij->i", pn - c, T)
+
+            for _ in range(5):
+                g0 = g(tn)
+                dg = (g(tn + h) - g(tn - h)) / (2.0 * h)
+                tn = tn - g0 / np.where(dg > -0.2, -0.2, dg)
+            inside = (tn >= 0.0) & (tn <= A.L)
+            tc = np.clip(tn, 0.0, A.L)
+            c, _, e1, e2, par = A.frames(tc)
+            q = pn - c
+            x1, x2 = np.einsum("ij,ij->i", q, e1), np.einsum("ij,ij->i", q, e2)
+            phi = np.arctan2(x2, x1)
+            rho = np.hypot(x1, x2)
+            R = Loft._polar(phi, par)[0]
+            hs = 1e-3
+            dR = (Loft._polar(phi, A.frames(np.clip(tc + hs, 0.0, A.L))[4])[0]
+                  - Loft._polar(phi, A.frames(np.clip(tc - hs, 0.0, A.L))[4])[0]) / (2.0 * hs)
+            dd = (rho - R) / np.sqrt(1.0 + dR * dR)
+            sl = np.flatnonzero(near) + i
+            t[sl], ph[sl], ok[sl] = tn, phi, inside
+            d[sl] = np.where(inside, dd, 1.0)
+        return t, ph, d, ok
+
+    def arm_form(self, t, phi):
+        """B1k: the arm's own shaping inside the shoulder patch, an outward offset (m) of its surface at (t, phi) on the
+        sleeve loft (`shoulder["arm_form"]`), every term C2 and 0 at and below the patch's join with the sleeve:
+          swell    the upper arm `frac` x its radius fuller: 0 at z0 (the elbow seam) rising to the full share by z1,
+                   held to z2 and gone by z3 (the shoulder's top, so its width does not move); z = the centre line's height
+          deltoid  a broad round over the deltoid (Gaussian in height round z, `sz`; round the arm ((1 + cos phi) / 2) ** p:
+                   full on the outside, half in front and behind, none towards the body), height h
+          fold     the soft fold over the elbow seam: a ridge h high, dz above the join, sz its half-width, all round `base`,
+                   behind `back` more (the elbow's point: h (base + back max(0, -sin phi)))"""
+        af = self.d["garment"]["shoulder"].get("arm_form")
+        t, phi = np.asarray(t, float), np.asarray(phi, float)
+        out = np.zeros(np.broadcast(t, phi).shape)
+        if not af:
+            return out
+        if not hasattr(self, "_af_t"):
+            self._af_t = {}
+        tz = lambda z: self._af_t.setdefault(z, self.az(z))
+        if "swell" in af:
+            s = af["swell"]
+            z0, z1, z2, z3 = s["z"]
+            w = _smooth01((t - tz(z0)) / (tz(z1) - tz(z0))) * (1.0 - _smooth01((t - tz(z2)) / (tz(z3) - tz(z2))))
+            tt, pp = np.broadcast_arrays(t, phi)
+            R = self.A.radius(pp.ravel(), np.clip(tt.ravel(), 0.0, self.A.L)).reshape(out.shape)
+            out = out + s["frac"] * R * w
+        if "deltoid" in af:
+            s = af["deltoid"]
+            tc, st = tz(s["z"]), tz(s["z"] + s["sz"]) - tz(s["z"])
+            out = out + s["h"] * np.exp(-((t - tc) / st) ** 2) * (0.5 + 0.5 * np.cos(phi)) ** s.get("p", 1.0)
+        if "fold" in af:
+            s = af["fold"]
+            tj = self.t_join(phi)
+            u = (t - tj - s["dz"]) / s["sz"]
+            bump = np.where(np.abs(u) < 1.0, (1.0 - u * u) ** 3, 0.0)     # C2, compact: 0 at the join (dz >= sz)
+            out = out + s["h"] * (s.get("base", 1.0) + s.get("back", 0.0) * np.maximum(-np.sin(phi), 0.0)) * bump
+        return out
+
+    def arm_field(self, P):
+        """The arm's distance inside the shoulder: the continuous loft distance less its own shaping (`arm_form`)."""
+        t, ph, d, ok = self.arm_proj(P)
+        return np.where(ok, d - self.arm_form(t, ph), d)
+
+    def lay(self, P, level=0.0, iters=6):
+        """B1k: pieces laid on the figure (cords, inserts; already on the body with its forms, `level` above it) moved onto
+        the shoulder's surface where it stands out of the body (patch_field < level there), by Newton steps to the nearest
+        point of the surface `level` out; elsewhere left. Returns (points, moved mask)."""
+        P = np.array(P, float)
+        sel = (P[:, 0] > 0.0) & (self.box_depth(P) > -0.006)
+        moved = np.zeros(len(P), bool)
+        if not sel.any():
+            return P, moved
+        f = self.patch_field(P[sel])
+        inside = f < level - 2e-6   # (a micron's deficit is numerical: left as it was)
+        idx = np.flatnonzero(sel)[inside]
+        if len(idx):
+            V = P[idx]
+            e = 1e-4
+            for _ in range(iters):
+                G = np.stack([(self.union_field(V + e * a) - self.union_field(V - e * a)) / (2 * e) for a in np.eye(3)], axis=1)
+                ff = self.patch_field(V, N0=unit(G)) - level
+                st = (ff / np.maximum(np.sum(G * G, axis=1), 1e-12))[:, None] * G
+                n = np.linalg.norm(st, axis=1, keepdims=True)
+                V -= st * np.minimum(1.0, 0.004 / np.maximum(n, 1e-12))
+            P[idx] = V
+            moved[idx] = True
+        return P, moved
+
+    def onto_patch(self, V, h, iters=3):
+        """B1k: points moved onto `patch_field`'s surface: Newton steps along the union's gradient (the forms' normal
+        frozen at each step; a nested gradient of the forms costs seven times as much and moves nothing)."""
+        V = np.array(V, float)
+        e = 1e-4
+        for _ in range(iters):
+            G = np.stack([(self.union_field(V + e * a) - self.union_field(V - e * a)) / (2 * e) for a in np.eye(3)], axis=1)
+            f = self.patch_field(V, N0=unit(G))
+            step = (f / np.maximum(np.sum(G * G, axis=1), 1e-12))[:, None] * G
+            n = np.linalg.norm(step, axis=1, keepdims=True)
+            V -= step * np.minimum(1.0, h / np.maximum(n, 1e-12))
+        return V
+
+    def patch_normals(self, V, e=2e-4):
+        """B1k: the shading normals of the shoulder's surface, `patch_field`'s gradient (the forms' normal frozen)."""
+        V = np.asarray(V, float)
+        G = np.stack([(self.union_field(V + e * a) - self.union_field(V - e * a)) / (2 * e) for a in np.eye(3)], axis=1)
+        N0 = unit(G)
+        return unit(np.stack([(self.patch_field(V + e * a, N0=N0) - self.patch_field(V - e * a, N0=N0)) / (2 * e) for a in np.eye(3)], axis=1))
+
+    def patch_field(self, P, parts_=False, N0=None):
+        """B1k: the shoulder's surface WITH the body's broad forms (bust) where the torso rules, as a field: union less
+        w_body x forms along the union's normal (B1j laid the forms on as a displacement after meshing and lost them again
+        on the cut's re-projection; a field lets the patch be re-projected and its normals be its gradient)."""
+        P = np.asarray(P, float)
+        u, db, da = self.union_field(P, parts_=True)
+        k = 1.5 * self.union_k(P[:, 2])
+        w = _smooth01(0.5 + 0.5 * (da - db) / np.maximum(k, 1e-9))
+        out = u.copy()
+        env = np.zeros(len(P))   # the forms' size whatever the normal: skip the gradient where they are nothing
+        for row in self.d.get("forms", ()):
+            x0, z0, _, sx, sz, hh = row[:6]
+            env = np.maximum(env, hh * np.exp(-((np.abs(P[:, 0]) - x0) / sx) ** 2 - ((P[:, 2] - z0) / max(sz, row[6] if len(row) > 6 else sz)) ** 2))
+        sel = (w > 1e-6) & (env > 1e-8)
+        if sel.any():
+            e = 1e-4
+            p = P[sel]
+            if N0 is None:
+                G = np.stack([(self.union_field(p + e * a) - self.union_field(p - e * a)) / (2 * e) for a in np.eye(3)], axis=1)
+                Nn = unit(G)
+            else:
+                Nn = np.asarray(N0, float)[sel]
+            out[sel] = u[sel] - w[sel] * self.forms(p, Nn)
+        return (out, u, db, da) if parts_ else out
+
     def box_depth(self, P):
-        """How far (m) a point lies inside the shoulder box (negative outside), left half."""
-        lo, hi = (np.asarray(v, float) for v in self.d["garment"]["shoulder"]["box"])
+        """How far (m) a point lies inside the shoulder box (negative outside), left half (B1k: `box_c2` with the C2 field)."""
+        sh = self.d["garment"]["shoulder"]
+        lo, hi = (np.asarray(v, float) for v in sh["box_c2" if self.c2 and "box_c2" in sh else "box"])
         P = np.asarray(P, float)
         Pa = np.concatenate([np.abs(P[..., :1]), P[..., 1:]], axis=-1)
         return np.minimum((Pa - lo).min(axis=-1), (hi - Pa).min(axis=-1))
@@ -335,11 +586,19 @@ class Suit:
         if not sel.any():
             return out.reshape(shp)
         p, n = Pa[sel], Na[sel]
-        other = (lambda Q: kit.loft_sdf(self.F.arm, Q, m=500)) if on == "body" else self.body_sdf
-        k = self.union_k(p[:, 2])
         s_max, step = sh.get("reach", 0.04), sh.get("step", 0.002)
         ss = np.arange(0.0, s_max + 1e-9, step)
-        u = lambda s: implicit.smin(s, other(p + np.reshape(s, (-1, 1)) * n), k)
+        if self.c2:  # B1k: the continuous arm with its own shaping, a C2 union; on the arm the loft point's own offset g
+            g = np.zeros(len(p))
+            if on == "arm":
+                t_, ph_, _, ok_ = self.arm_proj(p)
+                g = np.where(ok_, self.arm_form(t_, ph_), 0.0)
+            other = self.arm_field if on == "body" else self.body_sdf
+            u = lambda s: self.smin_u(s - g, other(p + np.reshape(s, (-1, 1)) * n), p[:, 2], p + np.reshape(s, (-1, 1)) * n)
+        else:
+            other = (lambda Q: kit.loft_sdf(self.F.arm, Q, m=500)) if on == "body" else self.body_sdf
+            k = self.union_k(p[:, 2])
+            u = lambda s: implicit.smin(s, other(p + np.reshape(s, (-1, 1)) * n), k)
         U = np.stack([u(np.full(len(p), s)) for s in ss])
         pos = U > 0.0
         found = pos.any(axis=0)
@@ -361,14 +620,24 @@ class Suit:
         section angle (rad), from `shoulder["join"]` = (z at the outer side, z at the inner side), the
         line running straight between them in |phi| (a V lowest on the outside: the drawing's seam
         at the foot of the deltoid, which a piping cord covers)."""
-        z0, z1 = self.d["garment"]["shoulder"]["join"]
-        a = np.abs(kit.wrap(np.asarray(phi, float))) / math.pi
-        zz = z0 + (z1 - z0) * a
+        sh = self.d["garment"]["shoulder"]
+        if "join_curve" in sh:  # B1k: any smooth closed line round the arm, (phi deg, z) controls (a Fourier fit)
+            zz = _periodic(sh["join_curve"])(np.asarray(phi, float))
+        else:
+            z0, z1 = sh["join"]
+            a = np.abs(kit.wrap(np.asarray(phi, float))) / math.pi
+            zz = z0 + (z1 - z0) * a
         if not hasattr(self, "_az"):
             ts = np.linspace(0.0, self.A.L, 1500)
             self._az = (self.A.frames(ts)[0][:, 2], ts)
         zs, ts = self._az
         return np.interp(zz, zs[::-1], ts[::-1]) if zs[0] > zs[-1] else np.interp(zz, zs, ts)
+
+    def join_path(self, n=72):
+        """B1k: the join round the arm as a closed seam path [(phi_deg, t), ...] (first point repeated last)."""
+        ph = np.linspace(-180.0, 180.0, n, endpoint=False)
+        tj = self.t_join(np.radians(ph))
+        return [(float(p), float(t)) for p, t in zip(ph, tj)] + [(float(ph[0]), float(tj[0]))]
 
     def arm_coords(self, P, m=1500, chunk=2000):
         """(phi, t, distance) of points against the sleeve loft (its nearest section, as kit.loft_sdf)."""
@@ -434,9 +703,133 @@ class Suit:
         (zf, xf), (zb, xb), _ = self._cut_curves()
         return np.where(y < self.centre_y(z), np.interp(z, zf, xf), np.interp(z, zb, xb))
 
+    # --- B1k: the raglan cut as a SECTOR of the body's level sections: between the back line's and the front line's
+    # section angle at each height, above the line under the arm. B1j's test, x past the cut's x at that height, sliced
+    # through the armpit's folds (the torso's side lies at about the cut's x there): a ragged edge of the shoulder's own
+    # mesh, moved onto the cut from far away -- the back armpit's tear and the flap at the front.
+    def _cut_phi(self):
+        if not hasattr(self, "_cphi"):
+            c = self.d["garment"]["shoulder"]["cut"]
+            cur = []
+            for pts in (c["front"], c["back"]):
+                path = self.path(pts, step=0.002)
+                ph = kit.wrap(np.radians([q for q, _ in path]))
+                z = self.B.pos(ph, np.array([t for _, t in path]))[:, 2]
+                o = np.argsort(z)
+                cur.append((z[o], ph[o]))
+            self._cphi = cur
+        return self._cphi
+
+    def body_polar(self, P):
+        """(phi, t, radius of the bare section) of points in the body's level section through them."""
+        P = np.asarray(P, float)
+        Pa = np.column_stack([np.abs(P[:, 0]), P[:, 1:]])
+        zs, ts = self._zt_table()
+        t = np.interp(Pa[:, 2], zs, ts)
+        c, _, e1, e2, par = self.B.frames(t)
+        q = Pa - c
+        ph = np.arctan2(np.einsum("ij,ij->i", q, e2), np.einsum("ij,ij->i", q, e1))
+        return ph, t, Loft._polar(ph, par)[0]
+
+    def _kfac(self, P):
+        """The union's fillet factor per point (`shoulder["kfac"]`, see smin_u)."""
+        kf = self.d["garment"]["shoulder"].get("kfac", 1.5)
+        if not isinstance(kf, (tuple, list)):
+            return np.full(len(P), float(kf))
+        if not hasattr(self, "_cyz"):
+            zs = np.linspace(1.10, 1.50, 401)
+            self._cyz = (zs, self.centre_y(zs))
+        ph = np.degrees(np.arctan2(-(P[:, 1] - np.interp(P[:, 2], *self._cyz)), np.abs(P[:, 0])))
+        a0, a1 = kf[2]
+        return kf[0] + (kf[1] - kf[0]) * _smooth01((-ph - a0) / (a1 - a0))
+
+    def _region(self):
+        """B1k: the shoulder's own surface on the torso, per height above the line under the arm: the section angles from
+        phi_lo to phi_hi, i.e. between the back and the front cut lines AND, beyond either, as far as the union with the arm
+        lifts the torso at all (the arm's distance under the fillet's reach: there the union IS the torso, so the shoulder's
+        mesh and the body loft meet there with no step, no ray lifted into the armpit's back fold, which the arm's back
+        overlaps 4-8 mm behind the raglan line). A table in height (smooth curves), shared by the body and the shoulder."""
+        if not hasattr(self, "_reg"):
+            sh = self.d["garment"]["shoulder"]
+            (zf, pf_), (zb, pb_) = self._cut_phi()
+            zs_t, ts_t = self._zt_table()
+            z_low = sh["cut"]["z_low"]
+            zs = np.arange(z_low - 0.002, np.asarray(sh["box"][1], float)[2] + 0.002, 0.0005)
+            phs = np.radians(np.arange(-110.0, 110.01, 0.25))
+            lo, hi = np.zeros(len(zs)), np.zeros(len(zs))
+            for i, z in enumerate(zs):
+                t = float(np.interp(z, zs_t, ts_t))
+                P = self.B.pos(phs, np.full(len(phs), t))
+                da = np.ones(len(P))
+                near = P[:, 0] > sh.get("arm_x", 0.0)
+                da[near] = self.arm_field(P[near])
+                g = da - self._kfac(P) * self.union_k(P[:, 2])   # < 0: the union lifts the torso there
+                pb, pf = float(np.interp(z, zb, pb_)), float(np.interp(z, zf, pf_))
+                jb = int(np.searchsorted(phs, pb))          # walk back from the back line while the union lifts the torso
+                j = jb
+                while j > 0 and g[j - 1] < 0.0:
+                    j -= 1
+                if j == jb:
+                    lo[i] = pb
+                elif j == 0:
+                    lo[i] = phs[0]
+                else:                                       # where g crosses 0 between samples j-1 and j
+                    lo[i] = phs[j - 1] + (phs[j] - phs[j - 1]) * g[j - 1] / (g[j - 1] - g[j])
+                jf = int(np.searchsorted(phs, pf)) - 1      # and forward from the front line
+                j = jf
+                while j < len(phs) - 1 and g[j + 1] < 0.0:
+                    j += 1
+                if j == jf:
+                    hi[i] = pf
+                elif j == len(phs) - 1:
+                    hi[i] = phs[-1]
+                else:
+                    hi[i] = phs[j] + (phs[j + 1] - phs[j]) * g[j] / (g[j] - g[j + 1])
+                lo[i], hi[i] = min(lo[i], pb), max(hi[i], pf)
+            # smoothed in height (widened over +-4 mm first, then a 2.5 mm Gaussian, never inside the raw curve): the boundary a
+            # smooth curve with no notch where the fold starts to reach the line, and never inside the union's reach (there the
+            # body would have to be lifted into the fold)
+            pbz, pfz = np.interp(zs, zb, pb_), np.interp(zs, zf, pf_)
+            ker = np.exp(-0.5 * (np.arange(-15, 16) / 5.0) ** 2)
+            ker /= ker.sum()
+            sm = lambda v: np.convolve(np.pad(v, 15, mode="edge"), ker, mode="valid")
+            wide = lambda v, f: f(np.stack([np.roll(np.pad(v, 8, mode="edge"), k)[8:-8] for k in range(-8, 9)]), axis=0)
+            dlo, dhi = lo - pbz, hi - pfz   # the extensions beyond the lines (<= 0 behind, >= 0 in front)
+            lo = pbz + np.minimum(np.minimum(sm(wide(dlo, np.min)), 0.0), dlo)
+            hi = pfz + np.maximum(np.maximum(sm(wide(dhi, np.max)), 0.0), dhi)
+            self._reg = (zs, lo, hi)
+        return self._reg
+
+    def region_phi(self, z):
+        zs, lo, hi = self._region()
+        return np.interp(z, zs, lo), np.interp(z, zs, hi)
+
+    def cut_target(self, P, inside):
+        """(phi, t) on the body loft where a point goes onto the cut: a point inside the sector to its nearest line
+        (front, back or the line under the arm), one outside to the line it lies beyond."""
+        zs, ts = self._zt_table()
+        z_low = self.d["garment"]["shoulder"]["cut"]["z_low"]
+        ph, t, r = self.body_polar(P)
+        z = np.asarray(P, float)[:, 2]
+        pb, pf = self.region_phi(z)
+        t_low = float(np.interp(z_low, zs, ts))
+        if inside:
+            d = np.stack([(pf - ph) * r, (ph - pb) * r, z - z_low])
+            k = np.argmin(d, axis=0)
+            return np.where(k == 0, pf, np.where(k == 1, pb, ph)), np.where(k == 2, t_low, t)
+        below = z < z_low
+        zz = np.where(below, z_low, z)
+        pb, pf = self.region_phi(zz)
+        return np.clip(ph, pb, pf), np.where(below, t_low, t)
+
     def in_torso_region(self, P):
         """Torso points (left half) the shoulder's mesh owns under a raglan cut."""
         P = np.asarray(P, float)
+        if self.c2:
+            ph = self.body_polar(P)[0]
+            z = P[:, 2]
+            pb, pf = self.region_phi(z)
+            return (z >= self.d["garment"]["shoulder"]["cut"]["z_low"]) & (ph < pf) & (ph > pb) & (self.box_depth(P) > 0.0)
         x, y, z = np.abs(P[:, 0]), P[:, 1], P[:, 2]
         z_low = self._cut_curves()[2]
         return (z >= z_low) & (x > self.cut_x(y, z)) & (self.box_depth(P) > 0.0)
@@ -450,6 +843,11 @@ class Suit:
         if not ins.any():
             return P
         B = self.B
+        if self.c2:   # B1k: onto the sector's nearest line along the loft
+            ph2, t2 = self.cut_target(P[ins], inside=True)
+            Pn, Nn = B.pn(ph2, t2)
+            P[ins] = Pn + np.asarray(disp(Pn, Nn), float)[:, None] * Nn
+            return P
         zs, ts = self._zt_table()
         p = P[ins]
         t = np.interp(p[:, 2], zs, ts)
@@ -466,6 +864,47 @@ class Suit:
             ph2[i] = phi_where_x(B, t[i], xc[i], back=back) - (2 * math.pi if back else 0.0)
         Pn, Nn = B.pn(ph2, t2)
         P[ins] = Pn + np.asarray(disp(Pn, Nn), float)[:, None] * Nn
+        return P
+
+    def radial_lift(self, P, step=0.0005, level=0.0):
+        """B1k: points on the body (left or mirrored right) moved OUT along their level section's radius onto the
+        shoulder's union, near the shoulder box; a point whose crossing lies beyond `edge_max` counts as buried in the arm
+        and is left. Along the radius, not the normal: a point keeps its section angle, so the body's edge can never cross
+        the cut's line into the shoulder's own surface (lifted along its normal into the armpit's back fold, B1j's and this
+        round's first body loft folded over the line there and tore)."""
+        P = np.array(P, float)
+        sh = self.d["garment"]["shoulder"]
+        sel = (self.box_depth(P) > -0.006) & (P[:, 0] > 0.0)   # the left half (the right is the mirror's)
+        if not sel.any():
+            return P
+        p = P[sel]
+        sg = np.ones(len(p))
+        pa = np.column_stack([np.abs(p[:, 0]), p[:, 1:]])
+        zs, ts = self._zt_table()
+        c = self.B.frames(np.interp(pa[:, 2], zs, ts))[0]
+        u = pa - c
+        u[:, 2] = 0.0
+        u = unit(u)
+        s_max = sh.get("edge_max", 0.008)
+        ss = np.arange(0.0, s_max + 1e-9, step)
+        U = np.stack([self.union_field(pa + s * u) for s in ss]) - level   # `level`: onto the surface that far out
+        pos = U >= 0.0
+        found = pos.any(axis=0)
+        j = np.argmax(pos, axis=0)
+        idx = np.arange(len(pa))
+        s0, s1 = ss[np.maximum(j - 1, 0)], ss[j]
+        u0, u1 = U[np.maximum(j - 1, 0), idx], U[j, idx]
+        for _ in range(4):
+            sm = s0 - u0 * (s1 - s0) / np.where(u1 - u0 == 0, 1e-12, u1 - u0)
+            um = self.union_field(pa + sm[:, None] * u) - level
+            left = um < 0.0
+            s0, u0 = np.where(left, sm, s0), np.where(left, um, u0)
+            s1, u1 = np.where(left, s1, sm), np.where(left, u1, um)
+        s = np.where(j == 0, 0.0, s0 - u0 * (s1 - s0) / np.where(u1 - u0 == 0, 1e-12, u1 - u0))
+        s = np.where(found, np.clip(np.nan_to_num(s), 0.0, s_max), 0.0)
+        d = s[:, None] * u
+        d[:, 0] *= sg
+        P[sel] = p + d
         return P
 
     def give_way(self, P):
@@ -983,6 +1422,8 @@ def build_shoulder(S, mat, coll="Suit"):
     body's broad forms laid on where the torso rules, given the suit's thickness, mirrored."""
     sh = S.d["garment"]["shoulder"]
     h = sh["res"][0 if kit.RES < 0.006 else 1]
+    if S.c2:
+        return _build_shoulder_c2(S, mat, coll)
     lo, hi = (np.asarray(v, float) for v in sh["box"])
     V, Q = implicit.mesh_field(S.union_field, lo, hi, h, border=False)
     # the sampled distances leave a fine ripple that a glossy suit shows: smooth it away (the open
@@ -1048,6 +1489,352 @@ def build_shoulder(S, mat, coll="Suit"):
     return mirror(obj)
 
 
+def _fill_small_holes(obj, max_len=0.04):
+    """B1k: close the small holes `_clean` leaves where it drops a non-manifold fan (surface nets' ambiguous cells at a
+    saddle -- the armpit, where the gap between arm and torso closes): every boundary loop shorter than `max_len` is filled
+    and triangulated with its own vertices (no new ones). Returns the number filled."""
+    import bmesh
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    bnd = {e for e in bm.edges if len(e.link_faces) == 1}
+    loops, seen = [], set()
+    for e0 in bnd:
+        if e0 in seen:
+            continue
+        loop, stack = [], [e0]
+        while stack:
+            e = stack.pop()
+            if e in seen:
+                continue
+            seen.add(e)
+            loop.append(e)
+            for v in e.verts:
+                stack += [f for f in v.link_edges if f in bnd and f not in seen]
+        loops.append(loop)
+    small = [l for l in loops if sum(e.calc_length() for e in l) < max_len]
+    for l in small:
+        res = bmesh.ops.holes_fill(bm, edges=l, sides=0)
+        if res["faces"]:
+            bmesh.ops.triangulate(bm, faces=res["faces"])
+    bm.to_mesh(obj.data)
+    bm.free()
+    obj.data.update()
+    return len(small)
+
+
+def _mesh_banded(field, lo, hi, h, coarse=4, band=8.0, chunk=200000):
+    """implicit.mesh_field (border=False, no projection) evaluating the field exactly only in a band round its zero
+    surface: first on a grid `coarse` x coarser, then on the fine grid only where the coarse values, interpolated, are
+    within `band` fine cells of zero (a distance-like field cannot cross zero farther out); elsewhere the coarse value
+    stands in (only its sign matters to surface nets there). The same surface, a tenth of the evaluations."""
+    lo, hi = np.asarray(lo, float), np.asarray(hi, float)
+    n = np.ceil((hi - lo) / h).astype(int) + 1
+    H = coarse * h
+    nc = np.ceil((n - 1) / coarse).astype(int) + 1
+    gc = [lo[i] + H * np.arange(nc[i]) for i in range(3)]
+    Pc = np.stack(np.meshgrid(*gc, indexing="ij"), axis=-1).reshape(-1, 3)
+    Fc = np.concatenate([field(Pc[i:i + chunk]) for i in range(0, len(Pc), chunk)]).reshape(nc)
+    # the coarse field on the fine grid (trilinear)
+    idx = [np.arange(n[i]) / coarse for i in range(3)]
+    i0 = [np.minimum(np.floor(v).astype(int), nc[k] - 2) for k, v in enumerate(idx)]
+    fr = [v - i0[k] for k, v in enumerate(idx)]
+    F = np.zeros(n)
+    for dx in (0, 1):
+        wx = (fr[0] if dx else 1.0 - fr[0])[:, None, None]
+        for dy in (0, 1):
+            wy = (fr[1] if dy else 1.0 - fr[1])[None, :, None]
+            for dz in (0, 1):
+                wz = (fr[2] if dz else 1.0 - fr[2])[None, None, :]
+                F += wx * wy * wz * Fc[np.ix_(i0[0] + dx, i0[1] + dy, i0[2] + dz)]
+    near = np.abs(F) < band * h
+    gx, gy, gz = (lo[i] + h * np.arange(n[i]) for i in range(3))
+    I = np.argwhere(near)
+    P = np.column_stack([gx[I[:, 0]], gy[I[:, 1]], gz[I[:, 2]]])
+    F[near] = np.concatenate([field(P[i:i + chunk]) for i in range(0, len(P), chunk)]) if len(P) else []
+    return implicit.surface_nets(F, lo, h)
+
+
+def _build_shoulder_c2(S, mat, coll="Suit"):
+    """B1k (review_stage9 items 1-2): the shoulder AND the upper arm down to the elbow seam as one surface, the boot's
+    and the hand's recipe: meshed from the continuous, C2 field (`Suit.patch_field`: torso and arm, the arm's own
+    shaping, the bust where the torso rules) in `mesh_box`, trimmed to the arm above the join (`join_curve`, the elbow
+    seam) and the torso past the raglan cut, its edges laid exactly on those lines, Taubin-smoothed with the edges held,
+    every vertex re-projected onto the field, and the field's gradient as the shading normals (B1j: no re-projection
+    after smoothing, the mesh's own normals, and the arm's distance stepping every 0.9 mm -- the ripples)."""
+    sh = S.d["garment"]["shoulder"]
+    h = sh["res"][0 if kit.RES < 0.006 else 1]
+    import time
+    tm = time.time()
+    lo, hi = (np.asarray(v, float) for v in sh.get("mesh_box", sh["box"]))
+    V, Q = _mesh_banded(S.union_field, lo, hi, h)
+    V = implicit.project(S.union_field, V, h, iters=2)
+    print("shoulder c2: meshed %d verts %.1fs" % (len(V), time.time() - tm))
+    t, ph, _, ok = S.arm_proj(V)
+    _, db, da = S.union_field(V, parts_=True)
+    tj = S.t_join(ph)
+    arm_side = ok & (da < db)   # the arm's half of the surface (and of every fillet): its own above the join
+    ins = np.where(arm_side, t >= tj, S.in_torso_region(V))
+    Q = Q[ins[Q].any(axis=1)]
+    used = np.zeros(len(V), bool)
+    used[Q.ravel()] = True
+    out = used & ~ins
+    arm_mv = out & arm_side
+    V[arm_mv] = S.A.pos(ph[arm_mv], tj[arm_mv])   # on the bare loft: the arm's shaping is 0 at the join
+    rest = np.flatnonzero(out & ~arm_side)
+    fixed = np.zeros(len(V), bool)
+    fixed[arm_mv] = True
+    if len(rest):   # onto the cut's lines exactly as the body's own edge goes there (Suit.body_onto_cut)
+        ph2, t2 = S.cut_target(V[rest], inside=False)
+        Pn, Nn = S.B.pn(ph2, t2)
+        V[rest] = S.radial_lift(Pn + np.asarray(S.forms(Pn, Nn), float)[:, None] * Nn)
+        fixed[rest] = True
+    remap = np.cumsum(used) - 1
+    V, Q, fixed = V[used], remap[Q], fixed[used]
+    fixed |= implicit.boundary_mask(Q, len(V))
+    print("shoulder c2: trimmed to %d verts %.1fs" % (len(V), time.time() - tm))
+    V = implicit.taubin(V, Q, iters=sh.get("smooth", 12), fixed=fixed)
+    free = ~fixed
+    V[free] = S.onto_patch(V[free], h, iters=3)
+    print("shoulder c2: projected %.1fs" % (time.time() - tm))
+    N = S.patch_normals(V)
+    obj = kit.new_mesh("Suit_Shoulder", V, Q, None, mat, coll)
+    _clean(obj)
+    nfill = _fill_small_holes(obj)
+    if nfill:
+        print("shoulder c2: filled %d small holes" % nfill)
+    me = obj.data
+    Vc = np.empty(len(me.vertices) * 3)
+    me.vertices.foreach_get("co", Vc)
+    Vc = Vc.reshape(-1, 3)
+    if len(Vc) != len(V):   # the clean-up welded or dropped something: the normals afresh at what is left
+        N = S.patch_normals(Vc)
+    me.normals_split_custom_set_from_vertices([tuple(n) for n in N])
+    solid(obj, S.d["garment"]["cloth"], bevel=0.0)
+    obj.modifiers["Solidify"].use_even_offset = False
+    return mirror(obj)
+
+
+# ------------------------------------------------------------------ the collar, flared (B1k)
+class CollarFlare:
+    """B1k (review_stage9 item 3, review_stage7 B3): the stand collar as a surface that FLARES into the shoulders with no
+    edge and hugs the neck at the top. In each half-plane through the neck's axis at angle phi (0 her left side, 90 the
+    front) the collar's profile is the smooth union (`smin3`, C2) of two 2-D distances: to the tube (`rings`: z, centre y,
+    half-width, front, back, exponent; natural cubic in z, held below its first ring) and to the BODY's section (the body
+    loft's own level sections, read about the collar's centre), the body's neck above its crossing with the tube taken
+    away (it drops from there at `drop`, so the union does not bulge where the body's neck runs up inside the collar).
+    The fillet width `k` = (side, front, back); the body term sits `under` below the body so the collar lands on it
+    tangentially and dives a hair under. The top rolls in over `roll` onto the neck (its edge inside the neck: no lip).
+    Rows per column from `start` below the landing to the top; a Loft-like surface (`radius`, `pos`, `pn`, `t_at_z`) so
+    the zip and its pull run up it."""
+
+    def __init__(self, S, spec):
+        self.S, self.sp = S, spec
+        R = sorted(spec["rings"], key=lambda r: r[0])
+        self.z_top = float(spec["top"])
+        self.z0 = float(spec.get("z0", 1.40))
+        self.L = self.z_top - self.z0
+        self.front = np.array([0.0, -1.0, 0.0])
+        cols = list(zip(*R))
+        self._rz = np.array(cols[0])
+        self._rings = [np.array(c, float) for c in cols[1:]]   # cy, a, bf, bb, n
+
+    def _tube(self, z):
+        z = np.clip(np.asarray(z, float), self._rz[0], self._rz[-1])
+        if len(self._rz) < 3:
+            return [np.interp(z, self._rz, c) for c in self._rings]
+        return [profiles.natural_cubic(self._rz, c, z) for c in self._rings]
+
+    def _body_r(self, z, phi, cy):
+        """The body loft's section radius at height z along the ray from (0, cy) at angle phi (bisection)."""
+        S = self.S
+        zs, ts = S._zt_table()
+        c, _, e1, e2, par = S.B.frames(np.interp(z, zs, ts))
+        dy = cy - c[:, 1]
+        cs, sn = np.cos(phi), np.sin(phi)
+        lo, hi = np.zeros(len(z)), np.full(len(z), 0.25)
+        a = par[:, 0]
+        for _ in range(40):
+            m = 0.5 * (lo + hi)
+            x, y = m * cs, -m * sn + dy          # her left +x, the front -y (the loft's e2 is the front)
+            ph = np.arctan2(-y, x)
+            rr = Loft._polar(ph, par)[0]
+            inside = np.hypot(x, y) < rr
+            lo, hi = np.where(inside, m, lo), np.where(inside, hi, m)
+        return 0.5 * (lo + hi)
+
+    def _k(self, phi):
+        ks, kf, kb = self.sp["k"]
+        sn = np.sin(phi)
+        return ks + np.where(sn > 0.0, kf - ks, kb - ks) * sn * sn
+
+    def profile(self, phi, z):
+        """The collar's radius r(z) about its centre at angle phi (arrays of equal shape), and the tube's alone."""
+        phi, z = np.broadcast_arrays(np.asarray(phi, float), np.asarray(z, float))
+        shp = z.shape
+        phi, z = phi.ravel(), z.ravel()
+        cy, a, bf, bb, n = self._tube(z)
+        par = np.column_stack([a, bf, bb, n, n])
+        rT = Loft._polar(phi, par)[0]
+        rB = self._body_r(z, phi, cy)
+        # the body's neck runs up inside the collar at about the tube's radius (a union there bulges): from `gap` (m) outside
+        # the tube on, the body's section is replaced by its own continuation -- value, slope and curvature at that height,
+        # the curvature fading out over `bend` (C2) -- a straight line falling away inside the tube
+        zs = self._zs(phi)
+        dz = 2e-4
+        rb = lambda zz: self._body_r(zz, phi, cy)
+        slope = (rb(z + dz) - rb(z - dz)) / (2 * dz)
+        hz = self.sp.get("curv_span", 0.0015)   # the curvature over +-1.5 mm (the loft's own is C1: it jumps at its rows)
+        r0, rp, rm = rb(zs), rb(zs + hz), rb(zs - hz)
+        ss, cs = (rp - rm) / (2 * hz), (rp - 2 * r0 + rm) / (hz * hz)
+        # slope s(u) = ss + cs u (1 - S(u/w)) + (sd - ss) S(u/w), S the quintic step: C2 at zs, falling at sd from w on
+        w = self.sp.get("bend", 0.004)
+        sd = ss if self.sp.get("drop") is None else -self.sp["drop"]   # None: straight on at the body's own slope
+        u = np.clip(z - zs, 0.0, None)
+        q = u / w
+        S_ = _smooth01(q)
+        I1 = np.where(q <= 1.0, q ** 6 - 3 * q ** 5 + 2.5 * q ** 4, q - 0.5)
+        J = np.where(q <= 1.0, 6 * q ** 7 / 7 - 2.5 * q ** 6 + 2 * q ** 5, 5.0 / 14 + 0.5 * (q * q - 1.0))
+        r_up = r0 + ss * u + cs * (0.5 * u * u - w * w * J) + (sd - ss) * w * I1
+        s_up = ss + cs * u * (1.0 - S_) + (sd - ss) * S_
+        rB = np.where(z > zs, r_up, rB)
+        slope = np.where(z > zs, s_up, slope)
+        k = self._k(phi)
+        under = self.sp.get("under", 0.0003)
+        # solve smin3(dB, dT, k) = 0 for r: dB = (r - (rB - under)) / sqrt(1 + slope^2), dT = r - rT (both rise with r)
+        cB = 1.0 / np.sqrt(1.0 + slope * slope)
+        lo, hi = np.minimum(rT, rB - under) - k, np.maximum(rT, rB) + 0.05
+        for _ in range(40):
+            m = 0.5 * (lo + hi)
+            f = smin3((m - (rB - under)) * cB, m - rT, k)
+            lo, hi = np.where(f < 0.0, m, lo), np.where(f < 0.0, hi, m)
+        r = 0.5 * (lo + hi)
+        # the roll at the top: a quarter round of radius `roll` onto the neck
+        rho = self.sp.get("roll", 0.0018)
+        q = np.clip((z - (self.z_top - rho)) / rho, 0.0, 1.0)
+        r = r - rho * (1.0 - np.sqrt(np.maximum(1.0 - q * q, 0.0)))
+        return r.reshape(shp), rT.reshape(shp), rB.reshape(shp), cy.reshape(shp)
+
+    def _smooth_in_phi(self, ph, v, K=6):
+        """A curve round the neck through samples, smoothed: its first K harmonics (no kink, no step anywhere)."""
+        basis = lambda p: np.column_stack([np.ones(len(p))] + [f(k * p) for k in range(1, K + 1) for f in (np.cos, np.sin)])
+        coef = np.linalg.lstsq(basis(ph), v, rcond=None)[0]
+        return lambda p: (basis(np.ravel(p)) @ coef).reshape(np.shape(p))
+
+    def _zs(self, phi):
+        """Per angle, the height where the body's section is `gap` outside the tube (bisection; smooth round the neck)."""
+        phi = np.asarray(phi, float)
+        if not hasattr(self, "_zsf"):
+            ph = np.radians(np.arange(-180.0, 180.0, 2.0))
+            g = self.sp.get("gap", 0.006)   # (side, front, back) or one value: the front's neck runs nearly parallel to the tube
+            if np.ndim(g):
+                sn = np.sin(ph)
+                gap = g[0] + np.where(sn > 0.0, g[1] - g[0], g[2] - g[0]) * sn * sn
+            else:
+                gap = g
+            lo, hi = np.full(len(ph), self.z0), np.full(len(ph), self.z_top)
+            for _ in range(36):
+                m = 0.5 * (lo + hi)
+                cy, a, bf, bb, n = self._tube(m)
+                rT = Loft._polar(ph, np.column_stack([a, bf, bb, n, n]))[0]
+                outside = self._body_r(m, ph, cy) > rT + gap
+                lo, hi = np.where(outside, m, lo), np.where(outside, hi, m)
+            self._zsf = self._smooth_in_phi(ph, 0.5 * (lo + hi))
+        return np.ravel(self._zsf(phi))
+
+    def _crossing(self, phi):
+        return self._zs(phi) + 0.01
+
+    def landing(self, phi):
+        """Per angle, the height where the collar rises out of the body (bisection below the crossing; smooth)."""
+        phi = np.asarray(phi, float)
+        if not hasattr(self, "_zl"):
+            ph = np.radians(np.arange(-180.0, 180.0, 2.0))
+            lo, hi = np.full(len(ph), self.z0), self._crossing(ph)
+            for _ in range(36):
+                m = 0.5 * (lo + hi)
+                r, _, _, cy = self.profile(ph, m)
+                above = r > self._body_r(m, ph, cy)
+                lo, hi = np.where(above, lo, m), np.where(above, m, hi)
+            self._zl = self._smooth_in_phi(ph, 0.5 * (lo + hi))
+        return np.ravel(self._zl(phi))
+
+    # --- the Loft-like surface (t = z - z0) ----------------------------------------
+    def t_at_z(self, z):
+        return float(z) - self.z0
+
+    def radius(self, phi, t):
+        phi = np.atleast_1d(np.asarray(phi, float))
+        t = np.broadcast_to(np.atleast_1d(np.asarray(t, float)), phi.shape)
+        return self.profile(phi, t + self.z0)[0]
+
+    def pos(self, phi, t):
+        phi = np.atleast_1d(np.asarray(phi, float)).ravel()
+        t = np.broadcast_to(np.atleast_1d(np.asarray(t, float)).ravel(), phi.shape)
+        z = t + self.z0
+        r, _, _, cy = self.profile(phi, z)
+        return np.column_stack([r * np.cos(phi), cy - r * np.sin(phi), z])
+
+    def pn(self, phi, t, offset=0.0):
+        phi = np.atleast_1d(np.asarray(phi, float)).ravel()
+        t = np.atleast_1d(np.asarray(t, float)).ravel()
+        if t.size == 1 and phi.size > 1:
+            t = np.full(phi.shape, t[0])
+        P = self.pos(phi, t)
+        hp, ht = 2e-3, 2e-4
+        dphi = self.pos(phi + hp, t) - self.pos(phi - hp, t)
+        dt = self.pos(phi, t + ht) - self.pos(phi, t - ht)
+        N = unit(np.cross(dt, dphi))
+        off = np.asarray(offset, float)
+        return P + (off.ravel()[:, None] if off.ndim else off) * N, N
+
+
+def build_collar_flare(S, M, coll="Suit"):
+    """B1k: the flared collar (CollarFlare) as a full ring: rows per column from `start` below its landing on the body
+    to the rolled top, finer towards the flare and the roll; shading normals the surface's own (finite differences of
+    its profile); 2 mm thick inwards (hidden: the bottom dives under the body, the top edge lies inside the neck)."""
+    col = S.d["garment"]["collar"]
+    sp = col["flare"]
+    cf = CollarFlare(S, sp)
+    res = sp.get("res", 0.0012)
+    nc = int(round(2 * math.pi * 0.05 / res))
+    nc += (-nc) % 4
+    ph = np.linspace(-math.pi, math.pi, nc, endpoint=False)
+    zl = cf.landing(ph) - sp.get("start", 0.004)
+    nr = int(round((cf.z_top - zl.min()) / res)) + 1
+    u = np.linspace(0.0, 1.0, nr)
+    PH, U = np.meshgrid(ph, u)
+    Z = zl[None, :] + U * (cf.z_top - zl[None, :])
+    t = (Z - cf.z0).ravel()
+    P, N = cf.pn(PH.ravel(), t)
+    R, C = PH.shape
+    idx = np.arange(R * C).reshape(R, C)
+    nxt = np.roll(idx, -1, axis=1)
+    faces = np.stack([idx[:-1], nxt[:-1], nxt[1:], idx[1:]], axis=-1).reshape(-1, 4)
+    ob = kit.new_mesh("Suit_Collar", P, faces, None, M["suit"], coll)
+    # outward-facing: the first face's normal against the surface normal
+    me = ob.data
+    me.update()
+    fn = np.empty(len(me.polygons) * 3)
+    me.polygons.foreach_get("normal", fn)
+    if fn[:3] @ N[0] < 0.0:
+        faces = faces[:, ::-1]
+        bpy.data.objects.remove(ob, do_unlink=True)
+        ob = kit.new_mesh("Suit_Collar", P, faces, None, M["suit"], coll)
+    # where it rises out of the body it shades as the body does (the body's own normal, blended into the collar's over
+    # `blend` of height above the body): the two surfaces cross there at a small angle, and a jump in the shading normal
+    # is what a glossy surface would show as an edge
+    r, _, _, cy = cf.profile(PH.ravel(), Z.ravel())
+    gap = r - cf._body_r(Z.ravel(), PH.ravel(), cy)
+    ph_b, t_b, _ = S.body_polar(P)
+    Nb = S.B.pn(ph_b, t_b)[1]
+    wgt = _smooth01(gap / sp.get("blend", 0.0008))[:, None]
+    N = unit((1.0 - wgt) * Nb + wgt * N)
+    ob.data.normals_split_custom_set_from_vertices([tuple(n) for n in N])
+    solid(ob, col.get("flare_thick", 0.002), bevel=0.0)
+    ob.modifiers["Solidify"].use_even_offset = False
+    return cf
+
+
 def pipe_attr(g, paths):
     """`pipe` attribute: SIGNED distance (metric, on the loft's developed surface) to polylines
     [(phi_deg, t), ...], stored as 0.5 + 0.5 * d / SEAM_CAP (clipped). A signed distance
@@ -1078,12 +1865,15 @@ def build_suit(S, M, coll="Suit", body_only=False):
     suit = M["suit"]
     sm = g["seams"]
     body_paths = [S.path(p) for p in sm.get("body", ())]
-    arm_paths = [S.path(p, on="arm") for p in sm.get("arm", ())]
+    # B1k: "join" = the sleeve's join with the shoulder's own mesh (`join_curve`), a closed ring
+    arm_paths = [S.join_path() if isinstance(p, str) and p == "join" else S.path(p, on="arm") for p in sm.get("arm", ())]
     body_paths += [S.loop(p) for p in sm.get("body_loops", ())]
     # a panel set IN the suit (rim "seam") is framed by a seam drawn on the suit round its outline
     for pn in g["mesh_panels"]:
         if pn.get("rim", g.get("panel_rim", "tube")) == "seam":
-            (arm_paths if pn.get("on") == "arm" else body_paths).append(S.loop(pn["pts"], pn.get("on", "body")))
+            # B1k: a panel sharing an edge with a seam is framed only along the rest of its outline (the seam is its frame there)
+            frame = S.panel_edge(pn["name"])[1] if pn.get("shared") else S.loop(pn["pts"], pn.get("on", "body"))
+            (arm_paths if pn.get("on") == "arm" else body_paths).append(frame)
 
     patch = bool(g.get("shoulder"))  # the shoulder is its own mesh: the lofts give way inside its box
     cut = patch and "cut" in g["shoulder"]  # ... or exactly past its raglan cut (seam lines)
@@ -1092,6 +1882,8 @@ def build_suit(S, M, coll="Suit", body_only=False):
         return S.mid.grid_disp(gr) if S.mid is not None else S.forms(gr.P, gr.N)
 
     def disp(gr):
+        if cut and S.c2:  # B1k: the forms only; the union's lift is radial, in the grid's post (Suit.radial_lift)
+            return own(gr)
         if cut:  # on the union near the shoulder; the shoulder's mesh owns what lies past the cut
             return own(gr) + S.edge_lift(gr.P, gr.N)
         if patch:  # sinking under the shoulder's own mesh inside its box; at the box's edge ON the union
@@ -1111,11 +1903,16 @@ def build_suit(S, M, coll="Suit", body_only=False):
     if piping or body_only:  # the seams are their own geometry (piping cords on the surface), not an attribute
         if not body_only:
             build_piping(S, body_paths, arm_paths, suit, g.get("piping", (0.0008, 0.0001)), coll)
+            if sm.get("shoulder"):   # B1k: seams drawn on the shoulder's own surface (the deltoid's)
+                build_shoulder_cords(S, sm["shoulder"], suit, g.get("piping", (0.0008, 0.0001)), coll)
         body_paths, arm_paths = [], []
     snap = dict(CLAMP_SNAP)
     if cut:
         snap["drop"] = lambda P: CLAMP_SNAP["drop"](P) | S.in_torso_region(P)
-        snap["post"] = lambda P: CLAMP_SNAP["post"](S.body_onto_cut(P, lambda Q, Nq: S.forms(Q, Nq) + S.edge_lift(Q, Nq)))
+        if S.c2:
+            snap["post"] = lambda P: CLAMP_SNAP["post"](S.radial_lift(S.body_onto_cut(P, lambda Q, Nq: S.forms(Q, Nq))))
+        else:
+            snap["post"] = lambda P: CLAMP_SNAP["post"](S.body_onto_cut(P, lambda Q, Nq: S.forms(Q, Nq) + S.edge_lift(Q, Nq)))
     elif patch:
         snap["drop"] = lambda P: CLAMP_SNAP["drop"](P) | S.give_way(P)[1]
     if d.get("midline") or S.mid is not None:  # the weld exactly on the section's crossing of the mid-plane, row by row
@@ -1170,10 +1967,13 @@ def build_suit(S, M, coll="Suit", body_only=False):
 
     # the stand collar: a tube round the neck, rising from the neckline to under the jaw
     col = g["collar"]
-    CL = Loft([parts.ring(z, 0.0, cy, a, bf, bb, n, 1) for z, cy, a, bf, bb, n in col["rings"]])
-    collar = loft_mesh("Suit_Collar", CL, res=kit.RES * 0.7, mat=suit, coll=coll,
-                       attrs=dict(seam=lambda gr: seam_attr(gr, ts=[CL.L - col.get("top_seam", 0.006)])))
-    solid(collar, col.get("thick", 0.003), bevel=0.0012)
+    if col.get("flare"):   # B1k: flaring into the shoulders, hugging the neck, its top rolled in (CollarFlare)
+        CL = build_collar_flare(S, M, coll)
+    else:
+        CL = Loft([parts.ring(z, 0.0, cy, a, bf, bb, n, 1) for z, cy, a, bf, bb, n in col["rings"]])
+        collar = loft_mesh("Suit_Collar", CL, res=kit.RES * 0.7, mat=suit, coll=coll,
+                           attrs=dict(seam=lambda gr: seam_attr(gr, ts=[CL.L - col.get("top_seam", 0.006)])))
+        solid(collar, col.get("thick", 0.003), bevel=0.0012)
 
     if g["zip"].get("teeth"):
         build_zips(S, M, CL, coll)
@@ -1259,7 +2059,17 @@ def build_piping(S, body_paths, arm_paths, mat, spec, coll):
             P, N = lo.pn(phu, np.interp(q, u, tt))
             if on == "body":
                 Pl = P
-                P = P + np.asarray(S.lift(P, N), float)[:, None] * N
+                if S.c2 and S.d["garment"].get("shoulder"):   # B1k: the forms along N, the shoulder's union radially
+                    P = P + np.asarray(S.body_lift(P, N), float)[:, None] * N
+                    Pr, mv = S.lay(P)
+                    if mv.any():
+                        e = 1e-4
+                        G = np.stack([(S.union_field(Pr[mv] + e * a) - S.union_field(Pr[mv] - e * a)) / (2 * e) for a in np.eye(3)], axis=1)
+                        N = N.copy()
+                        N[mv] = unit(G)
+                    P = Pr
+                else:
+                    P = P + np.asarray(S.lift(P, N), float)[:, None] * N
                 P, N = midline_cord(S, path, P, N)
                 P, N = _onto_crossing(S, path, Pl, P, N)
             else:
@@ -1272,6 +2082,49 @@ def build_piping(S, body_paths, arm_paths, mat, spec, coll):
                 P[:, 0] = np.maximum(P[:, 0], 0.0)  # the half body's cords end on the mid-plane
             mirror(tube("Suit_Piping_%03d" % k, P, normals=N, r=r, closed=closed, n_u=8, mat=mat, coll=coll))
             k += 1
+
+
+def build_shoulder_cords(S, specs, mat, spec, coll):
+    """B1k: piping cords drawn ON the shoulder's own surface (`Suit.patch_field`), for seams that cross from the torso
+    over the armpit's fold onto the arm (the deltoid's seam, `seams["shoulder"]`): each spec = dict(arm=((phi deg, z),
+    ...) points on the arm (z the centre line's height), front= / back= the height where the seam leaves the raglan
+    cut's front / back line (its cord: the seam ends ON it, inside it)). A smooth curve through those points, laid onto
+    the surface (Newton on the field), its normals the field's gradient."""
+    r, lift = spec
+    cut = S.d["garment"]["shoulder"]["cut"]
+    ends = {}
+    for side in ("front", "back"):
+        path = S.path(cut[side], step=0.002)
+        P, N = S.B.pn(np.radians([q for q, _ in path]), np.array([t for _, t in path]))
+        P = S.lay(P + np.asarray(S.body_lift(P, N), float)[:, None] * N)[0]   # where build_piping lays that line's cord
+        o = np.argsort(P[:, 2])
+        ends[side] = (P[o], P[o, 2])
+    names = []
+    for i, c in enumerate(specs):
+        pts = []
+        if "front" in c:
+            Pf, zf = ends["front"]
+            pts.append([np.interp(c["front"], zf, Pf[:, k]) for k in range(3)])
+        for deg, z in c["arm"]:
+            pts.append(S.A.pos([math.radians(deg)], [S.az(z)])[0])
+        if "back" in c:
+            Pb, zb = ends["back"]
+            pts.append([np.interp(c["back"], zb, Pb[:, k]) for k in range(3)])
+        C = np.array(pts, float)
+        u = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(C, axis=0), axis=1))])
+        q = np.linspace(0.0, u[-1], max(8, int(u[-1] / 0.001) + 1))
+        P = kit.spline(u, C, q)
+        P = S.onto_patch(P, 0.002, iters=6)
+        # even spacing along the laid curve
+        s = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))])
+        q = np.linspace(0.0, s[-1], max(8, int(s[-1] / 0.0015) + 1))
+        P = np.column_stack([np.interp(q, s, P[:, k]) for k in range(3)])
+        P = S.onto_patch(P, 0.002, iters=3)
+        N = S.patch_normals(P)
+        name = "Suit_Piping_Shoulder_%d" % i
+        mirror(tube(name, P + lift * N, normals=N, r=r, closed=False, n_u=8, mat=mat, coll=coll))
+        names.append(name)
+    return names
 
 
 def _onto_crossing(S, path, Pl, P, N):
@@ -1369,9 +2222,20 @@ def build_panels(S, M, coll):
         name = "Suit_Mesh_%s" % pn.get("name", i)
         rim = pn.get("rim", g.get("panel_rim", "tube"))
         lift = None if on == "arm" else S.lift
+        radial = S.c2 and on != "arm" and bool(g.get("shoulder"))
+        if radial:   # B1k: the forms along N, then the shoulder's union radially (Suit.radial_lift), `offset` above it
+            lift = S.body_lift
         if rim == "seam":
-            obj, _ = garment.panel(name, lo, outline, offset=g.get("panel_offset", 0.0003), thick=g.get("panel_thick", 0.0004), lift=lift,
+            off = g.get("panel_offset", 0.0003)
+            obj, _ = garment.panel(name, lo, outline, offset=off, thick=g.get("panel_thick", 0.0004), lift=lift, res=pn.get("res"),
                                    mat=M[pn.get("mat", "mesh")], coll=coll, surface_uv=True)
+            if radial:
+                me = obj.data
+                V = np.empty(len(me.vertices) * 3)
+                me.vertices.foreach_get("co", V)
+                V = S.lay(V.reshape(-1, 3), level=off)[0]
+                me.vertices.foreach_set("co", V.ravel())
+                me.update()
             obj.modifiers["Solidify"].use_even_offset = False  # thin sliver triangles at a tip would spike
             mirror(obj)
             continue
@@ -1417,26 +2281,54 @@ def zip_pull(name, loft, phi, t, lift, mat, coll, k=1.0):
                 mat=mat, coll=coll)]
 
 
+def _cut_above(obj, z, group=None):
+    """B1k: drop an object's faces above height z (with `group`, every vertex group of that size -- a zip tooth -- that
+    reaches above it, whole), and the vertices left without a face; the rest stays vertex for vertex."""
+    import bmesh
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    bm.verts.ensure_lookup_table()
+    zz = np.array([v.co.z for v in bm.verts])
+    if group:
+        up = np.repeat((zz.reshape(-1, group) > z).any(axis=1), group)
+    else:
+        up = zz > z
+    bmesh.ops.delete(bm, geom=[f for f in bm.faces if any(up[v.index] for v in f.verts)], context="FACES")
+    bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context="VERTS")
+    bm.to_mesh(obj.data)
+    bm.free()
+    obj.data.update()
+
+
 def build_zips(S, M, CL, coll):
     """The front zip (collar top -> below the navel) and the back zip (collar top -> the small of
     the back, `back_bottom_z`): a dark tape, metal teeth, a slider with a flat pull at the top."""
     B, bz, g = S.B, S.bz, S.d["garment"]
     zp, col = g["zip"], g["collar"]
     z_neck = B.pos([FRONT], [B.L])[0][2]
-    z_top = col["rings"][-1][0]
+    flare = isinstance(CL, CollarFlare)
+    z_top = col["rings"][-1][0] if not flare else CL.z_top - CL.sp.get("roll", 0.0018) + 0.002
     for side, phi_c, z_end in (("Front", FRONT, zp["bottom_z"]), ("Back", -FRONT, zp.get("back_bottom_z"))):
         if z_end is None:
             continue
+        z_lo = col["rings"][0][0] + 0.004
+        z_cut = None
+        if flare:   # B1k: the body's zip (B1j's, vertex for vertex) cut off where the collar lands on it; the collar's on down under it
+            zl = float(CL.landing([phi_c])[0])
+            z_cut, z_lo = zl + 0.002, zl - 0.003
         zs = np.linspace(z_neck - 0.001, z_end, 90)
         if side == "Front":
             body = [(math.degrees(front_phi(B, bz(z))), bz(z)) for z in zs]
         else:
             body = [(-90.0, bz(z)) for z in zs]
-        neck = [(math.degrees(phi_c), CL.t_at_z(z)) for z in np.linspace(z_top - 0.002, col["rings"][0][0] + 0.004, 16)]
+        neck = [(math.degrees(phi_c), CL.t_at_z(z)) for z in np.linspace(z_top - 0.002, z_lo, 16)]
         for lo, path, sfx in ((B, body, ""), (CL, neck, "_Collar")):
-            ribbon_on("Suit_Zip_Tape_%s%s" % (side, sfx), lo, path, zp["tape"], offset=0.0004, thick=0.0008, mat=M["suit"], coll=coll)
-            zip_teeth("Suit_Zip_Teeth_%s%s" % (side, sfx), lo, path, zp["width"], zp["pitch"], 0.0002, M["metal"], coll,
-                      tooth=zp.get("tooth", (0.0016, 0.0013)))
+            tp = ribbon_on("Suit_Zip_Tape_%s%s" % (side, sfx), lo, path, zp["tape"], offset=0.0004, thick=0.0008, mat=M["suit"], coll=coll)
+            th = zip_teeth("Suit_Zip_Teeth_%s%s" % (side, sfx), lo, path, zp["width"], zp["pitch"], 0.0002, M["metal"], coll,
+                           tooth=zp.get("tooth", (0.0016, 0.0013)))
+            if z_cut is not None and not sfx:
+                _cut_above(tp, z_cut)
+                _cut_above(th, z_cut, group=8)   # whole teeth (8 vertices each)
         stop = OnLoft(B, phi_c if side == "Back" else front_phi(B, bz(z_end)), bz(z_end))
         if "stop" in zp:
             # B1g (review_stage6 N7): the stop at the zip's foot lies FLAT on the suit, a plate as thin as the teeth are
@@ -1835,6 +2727,17 @@ def build_boots_fitted(S, M, coll="Boots"):
 
 
 # ------------------------------------------------------------------ hands, fitted (B1i)
+def _periodic(ctrl):
+    """B1k: a smooth closed curve z(phi) through (phi deg, z) controls round a loft: the Fourier series with as many
+    terms as controls (least squares when they are even in number), so it has no corner anywhere."""
+    ph = np.radians([c[0] for c in ctrl])
+    z = np.array([c[1] for c in ctrl], float)
+    K = (len(ctrl) - 1) // 2
+    basis = lambda p: np.column_stack([np.ones(len(p))] + [f(k * p) for k in range(1, K + 1) for f in (np.cos, np.sin)])
+    coef = np.linalg.lstsq(basis(ph), z, rcond=None)[0]
+    return lambda p: (basis(np.ravel(p)) @ coef).reshape(np.shape(p))
+
+
 def _smooth01(q):
     """C2 step 0 -> 1 over q in [0, 1] (quintic)."""
     q = np.clip(q, 0.0, 1.0)

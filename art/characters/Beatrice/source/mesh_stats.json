@@ -15,23 +15,25 @@
   "evaluated_tris": 316000
  },
  "Suit": {
-  "objects": 51,
-  "source_tris": 489162,
-  "evaluated_tris": 1788284
+  "objects": 52,
+  "source_tris": 551004,
+  "evaluated_tris": 1981100
  },
  "TOTAL": {
-  "objects": 63,
-  "source_tris": 1180138,
-  "evaluated_tris": 3072444
+  "objects": 64,
+  "source_tris": 1241980,
+  "evaluated_tris": 3265260
  },
  "NORMALS": {
   "flipped": [
    "Beatrice_Eye_L",
    "Beatrice_Eye_R",
+   "Suit_Zip_Pull_Back_Tab",
    "Suit_Zip_Pull_Front",
+   "Suit_Zip_Pull_Front_Tab",
    "Suit_Zip_Stop_Front"
   ],
-  "closed": 63,
+  "closed": 64,
   "open": [],
   "undecided": []
  }
