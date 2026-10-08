@@ -511,8 +511,10 @@ SLEEVE_BACK = {"elbow": .0325, "elbow_top": .0300}
 FITTED_HAND = dict(
     # the palm, ONE sweep wrist (inside the cuff) -> knuckles: (l, w centre, b centre, half-width, depth back, depth palm,
     # exponent); the rows above l 0 run up the forearm (sheared along it); it closes round over `palm_end` (l, length).
-    # B1i step 2: shorter (the knuckles 13 mm nearer the wrist), tapering from the knuckles to a slimmer wrist
-    palm=((-0.032, 0.000, 0.0005, 0.0160, 0.0112, 0.0112, 2.2), (-0.016, 0.000, 0.0005, 0.0160, 0.0106, 0.0106, 2.2),
+    # B1i step 2: shorter (the knuckles 13 mm nearer the wrist), tapering from the knuckles to a slimmer wrist; step 4: the
+    # rows inside the cuff round (n 2) and inside the sleeve with a margin (a squarer, wider row poked 0.4 mm through the
+    # sleeve above the cuff), as deep as the wrist where the cuff's underside meets it
+    palm=((-0.026, 0.000, 0.0005, 0.0145, 0.0112, 0.0112, 2.0), (-0.014, 0.000, 0.0005, 0.0152, 0.0112, 0.0112, 2.1),
           (-0.005, 0.000, 0.0004, 0.0160, 0.0099, 0.0100, 2.3), (0.010, 0.0005, 0.0002, 0.0192, 0.0096, 0.0104, 2.5),
           (0.027, 0.0000, -0.0002, 0.0238, 0.0086, 0.0101, 2.5), (0.042, -0.0005, -0.0006, 0.0268, 0.0080, 0.0092, 2.5),
           (0.052, -0.0010, -0.0010, 0.0276, 0.0076, 0.0084, 2.4)),
@@ -594,6 +596,11 @@ def dims(shape=None):
                           cut=dict(front=RAGLAN_FRONT, back=RAGLAN_BACK, z_low=RAGLAN_LOW)),
             armhole_seam=False,
             cuff=(0.937, 0.950), cuff_lift=0.0006, cuff_thick=0.0011,   # stage 3: a thin band, as drawn
+            # B1i (review_stage7 B2): ONE soft band seated on the wrist (bodysuit.build_fitted_cuffs): its top where the band's
+            # was (0.950), its outer face as proud of the sleeve as the band's was (lift + thick), a rolled bottom edge just below
+            # the sleeve's end (B1h: the band from 0.937 and the sleeve's own rim below it, the double ring), the underside in to
+            # the skin (no gap): band, top edge radius, bottom roll radius, how far below the sleeve's end, sink (sleeve, skin)
+            cuff_fit=dict(band=0.0017, top_r=0.0007, roll=0.0013, below=0.0012, sink=(0.0006, 0.0005)),
             # the stand collar's rings (z, centre y, half-width, front, back, exponent), neckline -> just
             # under the jaw (the side view: it stands straight and hugs the neck)
             collar=dict(rings=((1.428, .012, .064, .056, .062, 2.3), (1.445, .012, .052, .049, .055, 2.2), (1.458, .012, .046, .046, .052, 2.1),
@@ -793,7 +800,8 @@ BEAUTY = {
 DEV_VIEWS = {
     "shoulder": (0.0, 30.0, 12.0, 1.1, 1.36, 85.0, (900, 900)),
     "shoulder_back": (180.0, 30.0, 12.0, 1.1, 1.36, 85.0, (900, 900)),
-    "wrist": (0.0, 20.0, 5.0, 0.9, 0.92, 85.0, (900, 900)),
+    # B1i: aimed at her left wrist and cuff (B1h's `wrist` was a rig view aimed at the centre line: it showed the crotch)
+    "wrist": dict(cam=(0.560, -0.360, 1.010), target=(0.303, 0.004, 0.915), lens=85.0, res=(900, 900)),
     "boot": (0.0, 30.0, 12.0, 1.0, 0.12, 85.0, (900, 900)),
     "flank": (0.0, 75.0, 5.0, 1.3, 1.18, 85.0, (900, 900)),
     "flank_back": (180.0, 60.0, 5.0, 1.3, 1.18, 85.0, (900, 900)),

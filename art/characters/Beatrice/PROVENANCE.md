@@ -369,3 +369,14 @@ it was, unused by her now), so no other character was rebuilt. Work in progress;
   nothing at the start drew a jagged crease through the thumb's fillet), and the distance's scale is the same on the back
   and palm halves of a section (a scale that jumped at the halves' seam left the shape whole but drew a dotted line in
   the gradient normals down the side of the palm).
+- **Step 4, the cuff (review B2 "a hard double-ringed tube with a dark gap").** Causes: the band (`band_on`, 0.937-0.950,
+  bevelled) began 2 mm above the sleeve's own open end, whose solidified rim showed below it as the second ring; and the
+  wrist inside was a flat oval (22 x 32 mm) in a round sleeve end (33 x 34), open on the back and palm sides. Now
+  `bodysuit.build_fitted_cuffs` (`garment["cuff_fit"]`): ONE closed ring swept round the sleeve's end, built after the
+  hands -- its top where the band's was (0.950, a flat step diving 0.6 mm under the sleeve, so nothing above it moves),
+  a 0.7 mm rounded top edge, the outer face 1.7 mm proud of the sleeve (the band's lift + thickness), a 1.3 mm rolled
+  bottom edge 1.2 mm below the sleeve's end (covering its rim), and the underside running in to the wrist's skin (found
+  on the hand's own field per angle) and 0.5 mm into it: no gap on any side. The hand's rows inside the cuff are round
+  and inside the sleeve with a margin (a squarer, wider row poked 0.4 mm through the sleeve just above the cuff, the
+  light fleck in B1h's and this round's first front views; now every hand vertex above the cuff lies inside the sleeve).
+  `DEV_VIEWS["wrist"]` is now aimed at the left wrist and cuff (B1h's showed the crotch).

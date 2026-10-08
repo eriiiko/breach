@@ -1156,11 +1156,11 @@ def build_suit(S, M, coll="Suit", body_only=False):
                            drop=lambda P: F.s_arm(P) < 0.0, post=onto_armhole)
     mirror(solid(sleeve, g["cloth"], bevel=0.0))
 
-    # cuff bands at the wrists
+    # cuff bands at the wrists (B1i: `cuff_fit` -- the cuff seated on the hand, built after the hands: build_fitted_cuffs)
     c0, c1 = az(g["cuff"][0]), az(g["cuff"][1])
-    mirror(band_on("Suit_Cuff", A, c0, c1, offset=g.get("cuff_lift", 0.0010), thick=g.get("cuff_thick", 0.0025), mat=suit, coll=coll,
-                   bevel=0.0008,
-                   attrs=dict(seam=lambda gr: seam_attr(gr, ts=[c0 + 0.0018, c1 - 0.0018]))))
+    if not g.get("cuff_fit"):
+        mirror(band_on("Suit_Cuff", A, c0, c1, offset=g.get("cuff_lift", 0.0010), thick=g.get("cuff_thick", 0.0025), mat=suit,
+                       coll=coll, bevel=0.0008, attrs=dict(seam=lambda gr: seam_attr(gr, ts=[c0 + 0.0018, c1 - 0.0018]))))
 
     # the stand collar: a tube round the neck, rising from the neckline to under the jaw
     col = g["collar"]
@@ -2130,6 +2130,83 @@ def build_fitted_hands(F, M, coll="Hands"):
     return fh
 
 
+def build_fitted_cuffs(S, M, fh, coll="Suit"):
+    """B1i (review_stage7 B2): the cuff as ONE soft band seated on the wrist: a closed ring swept round the sleeve's end,
+    its profile (along the arm u, out from the sleeve's surface v) a flat top step diving under the sleeve where the old band
+    began (`garment["cuff"][1]`, so the sleeve above it does not move), a rounded top edge, the outer face `band` proud of
+    the sleeve, a rolled bottom edge (radius `roll`) just below the sleeve's own end (which it covers), and an underside
+    running in to the skin of the wrist and `sink` into it -- so there is no gap between cuff and wrist on any side. The
+    inner return runs hidden inside the skin and the sleeve's cloth. Shading normals are the profile's own (crisp at the
+    two hidden corners, smooth round the visible edges). Mirrored."""
+    g = S.d["garment"]
+    cf = g["cuff_fit"]
+    A = S.A
+    t_top = S.az(g["cuff"][1])
+    band, rt, rr = cf["band"], cf["top_r"], cf["roll"]
+    u_bot = -cf["below"]                                   # the underside, this far below the sleeve's end (t = 0)
+    sink_s, sink_k = cf["sink"]
+    nphi = cf.get("n", 240)
+    phis = np.linspace(0.0, kit.TAU, nphi, endpoint=False)
+    _, T0, _, _, _ = A.frames([0.0])
+    T0 = T0[0]
+
+    def at(u, v):
+        """World points and the frame (T along the arm, N out of the sleeve) at profile coordinates, every phi."""
+        P, N = A.pn(phis, np.full(nphi, max(u, 0.0)))
+        if u < 0.0:
+            P = P + u * T0
+        T = unit(np.cross(N, np.cross(T0, N)))
+        return P + v * N, T, N
+
+    def skin_v(u):
+        """v of the wrist's skin along -N from the sleeve's surface at u (bisection on the hand's field)."""
+        P, _, N = at(u, 0.0)
+        lo, hi = np.full(nphi, -0.025), np.zeros(nphi)     # lo inside the skin, hi outside
+        for _ in range(32):
+            m = 0.5 * (lo + hi)
+            ins = fh.field(P + m[:, None] * N) < 0.0
+            lo, hi = np.where(ins, lo, m), np.where(ins, m, hi)
+        return 0.5 * (lo + hi)
+
+    vk = skin_v(u_bot)
+    v_in = np.minimum(vk, skin_v(t_top)) - 0.002          # the hidden return, inside the skin
+    prof = []                                              # (u, v (scalar or per phi), n_u, n_v)
+    prof.append((t_top + 0.0006, -sink_s, 1.0, 0.0))
+    prof.append((t_top, -sink_s, 1.0, 0.0))
+    prof.append((t_top, 0.0002, 1.0, 0.0))
+    for b_ in np.linspace(0.5 * math.pi, 0.0, 7):          # the top edge, rounded
+        prof.append((t_top - rt + rt * math.sin(b_), band - rt + rt * math.cos(b_), math.sin(b_), math.cos(b_)))
+    nf = max(2, int(round((t_top - rt - (u_bot + rr)) / 0.0010)))
+    for u in np.linspace(t_top - rt, u_bot + rr, nf + 1)[1:-1]:
+        prof.append((u, band, 0.0, 1.0))
+    for a_ in np.linspace(0.0, 0.5 * math.pi, 9):          # the bottom edge, rolled
+        prof.append((u_bot + rr - rr * math.sin(a_), band - rr + rr * math.cos(a_), -math.sin(a_), math.cos(a_)))
+    for q in np.linspace(0.0, 1.0, 9)[1:]:                 # the underside, in to the skin (per phi)
+        prof.append((u_bot, (band - rr) + q * (vk + 0.0003 - (band - rr)), -1.0, 0.0))
+    prof.append((u_bot, vk - sink_k, -1.0, 0.0))
+    prof.append((t_top + 0.0006, v_in, 0.0, -1.0))
+    V, Nrm = [], []
+    for u, v, nu, nv in prof:
+        P, T, N = at(u, 0.0)
+        V.append(P + np.broadcast_to(v, (nphi,))[:, None] * N)
+        Nrm.append(unit(nu * T + nv * N))
+    V, Nrm = np.array(V), np.array(Nrm)                    # (profile, phi, 3)
+    R, C = V.shape[:2]
+    idx = np.arange(R * C).reshape(R, C)
+    nxt_c = np.roll(idx, -1, axis=1)
+    nxt_r = np.roll(idx, -1, axis=0)
+    nxt_rc = np.roll(nxt_c, -1, axis=0)
+    Q = np.stack([idx, nxt_r, nxt_rc, nxt_c], axis=-1).reshape(-1, 4)
+    Vf, Nf = V.reshape(-1, 3), Nrm.reshape(-1, 3)
+    # outward faces: the first face's normal against the profile's
+    f0 = Q[R // 2 * C]
+    if np.cross(Vf[f0[1]] - Vf[f0[0]], Vf[f0[3]] - Vf[f0[0]]) @ Nf[f0[0]] < 0:
+        Q = Q[:, ::-1]
+    ob = kit.new_mesh("Suit_Cuff", Vf, Q, None, M["suit"], coll)
+    ob.data.normals_split_custom_set_from_vertices([tuple(n) for n in Nf])
+    return mirror(ob)
+
+
 # ------------------------------------------------------------------------- head
 def build_head(M, head_spec, prefix, coll="Head"):
     """The bald placeholder head: `parts.head` with this figure's spec. Its own collection and
@@ -2160,7 +2237,9 @@ def build_bare_hands(F, M, coll="Hands"):
 def build(M, dims, head_spec, prefix):
     S = Suit(dims)
     build_suit(S, M)
-    build_bare_hands(S.F, M)
+    fh = build_bare_hands(S.F, M)
+    if S.d["garment"].get("cuff_fit") and isinstance(fh, FittedHand):
+        build_fitted_cuffs(S, M, fh)
     if "fitted" in S.d["boot"]:
         build_boots_fitted(S, M)
     elif "implicit" in S.d["boot"]:
