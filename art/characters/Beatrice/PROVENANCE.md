@@ -434,3 +434,82 @@ it was, unused by her now), so no other character was rebuilt.
   The before/after pictures, the measures and the vertex check are scratch scripts in `C:/tmp/beatrice_b1i/` (`hh.py` hands
   harness, `lh.py` legs harness, `meas.py`, `gaps.py`, `cmp2.py`, `compose_*.py`), run on `Beatrice_b1h_73ab55b.blend` and
   this build.
+
+## B1j: the hands, second pass, and the knee pads' finish (2026-10-08, answers `previews/review_stage9.md` hands, items 7-8)
+
+No reference added. Kit: only Beatrice's own `bodysuit.py` changed (by adding: every new behaviour is keyed on a new table
+entry, and B1i's table, kept as `FITTED_HAND_B1I`, still builds B1i's hand); no shared kit file touched, so no other character
+was rebuilt. `FITTED_HAND` is now B1i's table with the B1j overrides (`beatrice.py`).
+
+- **Step 1, the pose (review 9 "Pose: claw").** The fingers hang close together in a small fan: total curl index / middle / ring /
+  little 0.74 / 0.92 / 1.04 / 1.13 rad (B1i 0.72 / 1.22 / 1.53 / 1.72 -- the cascade turned the ring and little fingers out
+  sideways, nearly horizontal in the front view), spread over the three joints about 0.38 / 0.44 / 0.18; splay 0.06 / 0.015 /
+  -0.03 / -0.075 (B1i 0.17 / 0.07 / -0.04 / -0.09); rolls 0 / 0 / 0.05 / 0.12. The thumb as B1i's, in front. Two attempts: the
+  first (0.55-0.92 rad) hung too straight, a stack of parallel fingers in the front view; the second is the one kept.
+  **Finger gaps** (`C:/tmp/beatrice_b1j/gaps.py`, each digit's own surface to its neighbour's, by arclength from the knuckle):
+  index-middle 0.6-0.7 mm from 9 to 27 mm, 1.9 at 45, 4.2 at 63, 6.3 at 82 (the tip); middle-ring 0.5-0.7 to 29 mm, 2.8 at 49,
+  4.5 at 69, 8.4 at the tip; ring-little 0.5-1.3 to 27 mm, 3.6 at 36, 6.6 at 54, 16.5 at the tip; thumb-index >= 6.8 mm everywhere.
+  The fingers touch along their first phalanx, as drawn (the union's 1.5 mm fillet leaves a hair-line between them). **The
+  game-ready step fuses at about 6 mm, so this pose would come out as a mitten to about two thirds of the fingers' length: the
+  game step will need its own finger pose (a `FITTED_HAND` variant with B1i-like splay, built for the bake only) -- not done
+  here, since this round builds the drawn pose.**
+- **Step 2, the fingers on the hand (review 9 "a ledge", "tubes", "flat and wide").** Cause of the ledge: the palm sweep's back
+  stood 1 mm above the knuckles and closed over them as sqrt(1 - t^4), a blunt dome end overhanging the finger roots. Now the
+  palm's end is sheared (`palm_end_shear` 0.5: the back side ends about 3 mm sooner, the palm side about 4 mm later, under the
+  webbing), closes softer (`palm_end_p` 2.5, over 16 mm), its back lower at the end (depth 6.6 mm, was 7.6), so the knuckle
+  heads (`mcp` 0.10) stand out of it; the hand narrower (knuckles 51.7 mm across, B1i 56; palm rows 0.8-2 mm narrower) and
+  rounder (exponents 2.2-2.3, were 2.4-2.5), with faint extensor tendons from near the wrist to each knuckle
+  (`FittedHand.tendons`: 0.35 mm, a sum of ridges -- a max of them creased where two crossed). The fingers thinner (half-width
+  7.2-7.4 mm at the root, 4.0-4.7 before the tip; B1i 6.4-7.8 / 4.4-5.4), closing into a half-elliptic tip (`tip_p` 2; B1i 4,
+  blunt), with a 7 % width swell and a 6 % back crease (1 mm wide, 0.5 mm past the joint) at each finger joint (`joint`,
+  `crease`). Two attempts: the first (shear, thinner, joints at 5 % / 3.5 %) left the joints invisible and the back flat; the
+  second added the tendons and the stronger joints.
+- **Step 3, the nails.** Each nail is its own small closed shell lying on the finger (`FittedHand.nail_shells`, object
+  `Hand_Nails`, material `beatrice_nail`): an oval (superellipse 2.6) from 11 mm to 2.2 mm before the tip, 0.76 of the
+  finger's half-width where it stands (it narrows into an almond with the tip), 0.30 mm proud at the centre and 0.17 at the
+  edge (a dome on the finger's own curve), its edge a short wall into the finger. B1i's nails were a material assigned per
+  face of the hand's 0.7 mm mesh (a staircase outline) on a 0.2 mm plate; a first B1j try with a domed plate in the field
+  kept the staircase, hence the shells. Colour `PALETTE["NAIL"]` #f2c9c1 (B1i #f1c2bd read mauve end-on), gloss in `GLOSS`
+  `nail_*` (rough 0.20, coat 0.55 at 0.07; the skin is 0.48-0.60). Checked from the front, her left, behind, three-quarter,
+  below and the thumb (`hands_b1j.jpg`, last row).
+- **Step 4, wrist and cuff.** The wrist sat 4-5 mm towards the palm inside the round cuff (under the cuff's lower edge the
+  skin lay 9 mm inside the sleeve's line on the back of the wrist and at it on the palm side; in the front view the cuff
+  overhung the wrist on the outside): the palm rows inside and under the cuff are centred (b +4.2-5.2 mm, w -0.7-1.5 mm), the
+  wrist rounder (depth 23.4-24.4 mm a few mm under the cuff, B1i 20) and its back line eased into the hand. The gap under the
+  cuff's lower edge is now -0.7..5.3 mm (mean 2.4; printed in the build log). The cuff (`cuff_fit["hug"]`): from 2 mm under its
+  top edge the band eases (C1) 35 % of the way in towards the wrist's oval (its first three harmonics: the raw offsets drew a
+  crumpled cuff), and its lower edge rolls onto the skin as a quarter ellipse 2.2 mm tall, as wide as the gap left, ending
+  0.3 mm proud and running on into the skin: no flat underside. Its top, top edge and step under the sleeve are B1i's; the
+  sleeve did not move. Found on the way: the cuff's skin search (`skin_v`) had inside and outside swapped and always returned
+  25 mm in, whatever the wrist, so B1i's underside ran flat right through the wrist (the broad rim the review saw from below);
+  fixed. Measured on `sheet.png` the review's way (per row, pixels differing from the background; her left / right hand):
+  narrowest wrist under the cuff B1i 25 / 25 px, B1j 27 / 28, drawing 30 / 30 (with its outline, about 28 without); cuff /
+  wrist B1i 1.44 / 1.48, B1j 1.33 / 1.29, the drawing 1.27 / 1.23 by the same method (the review's 1.15 was read another way);
+  perpendicular to the forearm on a 4x ortho (`cuffw.py`) B1i 1.47, B1j 1.11. In the front 4x ortho (`meas.py`, skin only) the
+  wrist 0.6 / 4.1 mm under the cuff B1i 27.5 / 30.1 mm, B1j 31.3 / 33.3 (the drawing 33.6 / 34.7): more than the briefed
+  1-2 mm in this view, because most of it is the recentring, which the front view sees in full.
+- **Step 5, the knee pads' finish (review 9 item 8).** `PALETTE["PAD"]` #141418 (B1i #26262c, the grey base), `["PAD_RIM"]`
+  #6c6c76 (was #4a4a52), gloss `GLOSS` `pad_*` rough 0.15, coat 1.0 at 0.07, specular 0.8 (glossier than the boots). The
+  shape is B1i's (both pad objects vertex-identical). In `sheet.png`, grey levels on each knee (pad box / thigh box above,
+  50 x 80 px): mean drawing 51 / 44 and 47 / 43, B1i 39 / 28 and 48 / 35, B1j 35 / 28 and 45 / 35; the pad's median B1i 37 /
+  45, B1j 33 / 36 (the base nearer the suit's); its 95th percentile (the highlight and rim) drawing 115 / 89, B1i 59 / 97,
+  B1j 63 / 110.
+- **Hand measures** (`sheet.png`, the review's way): top skin row to lowest fingertip B1i 130 / 132 px, B1j 134 / 134, drawing
+  128 / 129; the fingertip's row is B1i's (828): the 3-4 px are the cuff's rolled edge, which shows more wrist. Finger share
+  on the table (centre lines along the hand: the knuckle line to the lowest tip, of the cuff's edge to it): B1i 54 %, B1j 54 %
+  (82 of 152 mm). The hand still hangs about 2 cm lower than drawn, with the cuff (review 7 B7, not this round's).
+- **Nothing else moved** (`C:/tmp/beatrice_b1j/cmp2.py`, every evaluated vertex of every object, `Beatrice_b1i_1877dc8.blend`
+  against this build): 60 of B1i's 62 objects identical (max |dP| < 1e-7 m), the knee pads and rims among them; moved
+  `Hand_Hand` and `Suit_Cuff` (its outer face below the top edge, its lower edge and its hidden inner return); new
+  `Hand_Nails`. Sheet IoU front 0.888 -> 0.890, side 0.904, back 0.858 (front hip-knee band 0.840 -> 0.844, back 0.837 ->
+  0.838: the hands). `source/mesh_stats.json`: 63 objects, 1,180,138 source / 3,072,444 evaluated triangles, all closed; the
+  flipped-normal list is B1i's.
+- Pictures: `hands_b1j.jpg` (the drawings, B1i, B1j: front, side and back at the drawings' scale x4; three-quarter and
+  close-up; reflection lines; matte and palm side; the cuff close; the nails), `pads_b1j.jpg`; the full set re-rendered
+  (sheet, turnaround, beauty, every dev view). Not re-rendered: `shape_vs_concept.jpg`, the `--hips` pictures,
+  `crimson_hero.jpg`; `hands_before_after.jpg` stays as B1i's record.
+- Reproduce: `bash charkit/run.sh Beatrice --sheet --turn --save --beauty hero,hero_back,torso,torso_back,legs,side,head,top,elevated,shoulder,shoulder_back,wrist,boot,flank,flank_back,knee,hand,boot_side,armpit_back,top_close,hand_palm`
+  (10.2 min: the build 6.4 min, of it about 2.1 min the hand at 0.7 mm with its nails, 3 s the cuff). The before/after
+  pictures, measures and the vertex check are scratch scripts in `C:/tmp/beatrice_b1j/` (`hh.py` hands harness, `lh.py` legs
+  harness with `--mat`, `meas.py`, `sheetmeas.py`, `cuffw.py`, `gaps.py`, `share.py`, `cmp2.py`, `compose_b1j.py`), run on
+  `Beatrice_b1i_1877dc8.blend` and this build.
