@@ -44,6 +44,8 @@ PALETTE = dict(
     BOOT="#0d0d0f",
     SOLE="#0a0a0b",
     METAL="#8e8e94",         # the zip (stage 3: a darker, finer silver, as drawn)
+    PAD="#26262c",           # B1i: the knee pads, a third lighter than the suit, as drawn
+    PAD_RIM="#4a4a52",       # B1i: the knee pads' piped rim, brighter still
 )
 GLOSS = dict(rough=0.30, coat=0.45, coat_rough=0.20, specular=0.45, piping=0.9,
              boot_rough=0.22, boot_coat=0.7, boot_coat_rough=0.10, mesh_cell=0.0036, mesh_show=0.42, mesh_surface=True, mesh_coat=0.35)
@@ -619,8 +621,11 @@ def dims(shape=None):
             # at this share of the pad's edge height). B1g: layers=(dict(x=.121, z=.612, hs=.0245, ht=.040, offset=.0016,
             # thick=.0016, dome=.0022, n=2.3, inset=.004, point=.010), dict(x=.121, z=.634, hs=.0175, ht=.0225, offset=.0031,
             # thick=.0016, dome=.0016, n=2.2, inset=.0035))
-            knee_pad=dict(pad=dict(x=.121, z=.612, hs=.031, ht=.0425, offset=.0018, thick=.0018, dome=.009, n=2.2, point=.010,
-                                   rim=(0.0010, 0.5), res=0.0010)),
+            # B1i (review_stage8 1): the dome 9 -> 3.6 mm over a 1.4 mm edge (the crest about 5 mm proud of the knee, B1h about 11),
+            # and below 0.2 of its half-height under the centre the edge sinks to 0.25 mm at the point (`lower`): its lower part
+            # runs into the shin, one knee line in the side view; its own lighter finish (`PAD`, `PAD_RIM`)
+            knee_pad=dict(pad=dict(x=.121, z=.612, hs=.031, ht=.0425, offset=.0014, thick=.0018, dome=.0036, n=2.2, point=.010,
+                                   rim=(0.0010, 0.5), res=0.0010, lower=(-0.2, 0.00025))),
             panel_rim="seam",  # mesh panels set IN the suit, edged by the suit's own seams
             seam_style="tube", piping=(0.0009, 0.0001),  # seams are piping cords (radius, centre above the surface)
             # seams as points seen on the front view ("x", x, z), on the back view ("bx", x, z), or by
@@ -746,6 +751,11 @@ def dims(shape=None):
                           thick=0.005, welt=0.0012, into=0.0008),
                 heel=dict(breast=-0.004, inset=0.0006, taper=0.08),
                 toe_cap=(-0.122, 14.0), piping=(0.0009, 0.0002),
+                # B1i (review_stage8 2): the ankle bones under the leather (x on the shaft's surface, y, z, height, radii across,
+                # along, up): the outer lower and further back, the inner higher and further forward; a shallow hollow across the
+                # back above the heel cup (1 mm: the leather is 1.3 mm over the suit there), so the cup rises out of it
+                ankle=((0.0245, 0.003, 0.180, 0.0050, 0.009, 0.013, 0.016), (-0.0320, -0.006, 0.192, 0.0050, 0.009, 0.013, 0.016),
+                       (-0.002, 0.037, 0.115, -0.0010, 0.014, 0.008, 0.018)),
                 # the suit leg ends inside the boot at 0.10 as in B1g (0.6 mm inside the boot there; a higher end moved 20 suit
                 # vertices at the shoulder by 0.009 mm: the body build is order-sensitive)
                 suit_end=0.100, res=(0.0009, 0.0020), smooth=6),

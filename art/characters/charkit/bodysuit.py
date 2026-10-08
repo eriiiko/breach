@@ -62,6 +62,12 @@ def materials(p, gloss, prefix):
                                coat_rough=g.get("boot_coat_rough", 0.08), piping=0.5),
         sole=wearmat.mat_rubber(prefix + "_sole", p["SOLE"], rough=0.55),
         metal=wearmat.mat_metal(prefix + "_metal", p["METAL"], rough=0.25),
+        # B1i: the knee pads' finish, lighter than the suit, and their piped rim (review_stage8 1)
+        **({"pad": wearmat.mat_gloss(prefix + "_pad", p["PAD"], rough=g.get("pad_rough", 0.22), coat=g.get("pad_coat", 0.8),
+                                     coat_rough=g.get("pad_coat_rough", 0.08), specular=g.get("pad_specular", 0.6), piping=0.0),
+            "pad_rim": wearmat.mat_gloss(prefix + "_pad_rim", p["PAD_RIM"], rough=g.get("pad_rough", 0.22), coat=g.get("pad_coat", 0.8),
+                                         coat_rough=g.get("pad_coat_rough", 0.08), specular=g.get("pad_specular", 0.6), piping=0.0)}
+           if "PAD" in p else {}),
         # B1i: the nails (a pale, slightly glossy pink on the hands' own mesh)
         **({"nail": wearmat.mat_gloss(prefix + "_nail", p["NAIL"], rough=g.get("nail_rough", 0.30), coat=g.get("nail_coat", 0.5),
                                       coat_rough=g.get("nail_coat_rough", 0.12), specular=0.5, piping=0.0)} if "NAIL" in p else {}),
@@ -1178,6 +1184,21 @@ def build_suit(S, M, coll="Suit", body_only=False):
     build_knee_pads(S, M, coll)
 
 
+class _SinkingAnchor:
+    """B1i (review_stage8 1): a surface anchor (`kit.OnLoft`) whose offset falls towards the bottom of a pad: below
+    `start` x the pad's half-height (from its centre, negative = below) the offset eases (C2) down to `edge` at the bottom
+    (`bottom` below the centre), so the pad's lower edge runs into the shin instead of standing off it."""
+
+    def __init__(self, anchor, offset, bottom, start, edge):
+        self.a, self.offset, self.bottom, self.start, self.edge = anchor, offset, bottom, start, edge
+
+    def pn(self, s, t, off=0.0):
+        t = np.asarray(t, float)
+        y0 = self.start * self.bottom
+        q = _smooth01((y0 - t) / max(self.bottom + y0, 1e-6))
+        return self.a.pn(s, t, np.asarray(off, float) - (self.offset - self.edge) * q)
+
+
 def build_knee_pads(S, M, coll="Suit"):
     """The knee pads. `knee_pad["pad"]` (B1h, review_stage7 B5): ONE domed shield on the front of the knee (garment.patch
     on the leg's own surface, so it follows the knee; no stitch line: the B1g pads' inset stitch, sampled on the plate's
@@ -1191,8 +1212,10 @@ def build_knee_pads(S, M, coll="Suit"):
         ph, t = S.phi_t(("x", pd["x"], pd["z"]))
         anchor = OnLoft(B, ph, t)
         hs, ht, n, point = pd["hs"], pd["ht"], pd.get("n", 2.2), pd.get("point", 0.0)
+        if pd.get("lower"):  # B1i: the lower part of the pad sinks into the shin (one knee line in the side view)
+            anchor = _SinkingAnchor(anchor, pd["offset"], ht + point, *pd["lower"])
         mirror(garment.patch("Suit_Knee_Pad", anchor, hs, ht, offset=pd["offset"], thick=pd["thick"], n=n, dome=pd["dome"],
-                             inset=-1.0, point=point, res=pd.get("res", 0.0012), mat=suit, coll=coll))
+                             inset=-1.0, point=point, res=pd.get("res", 0.0012), mat=M.get("pad", suit), coll=coll))
         a = np.linspace(0.0, kit.TAU, 241)[:-1]
         c, sn = np.cos(a), np.sin(a)
         x = hs * np.sign(c) * np.abs(c) ** (2.0 / n)
@@ -1200,7 +1223,7 @@ def build_knee_pads(S, M, coll="Suit"):
         y = y - point * (1.0 - np.abs(x) / hs) * np.clip(-y / ht, 0.0, 1.0)
         r, up = pd["rim"]
         P, N = anchor.pn(x, y, pd["offset"] * up)
-        mirror(tube("Suit_Knee_Rim", P, normals=N, r=r, closed=True, n_u=10, mat=suit, coll=coll))
+        mirror(tube("Suit_Knee_Rim", P, normals=N, r=r, closed=True, n_u=10, mat=M.get("pad_rim", suit), coll=coll))
         return
     if kp and "layers" in kp:  # layered knee pads: thin domed panels stacked over the front of the knee
         for i, ly in enumerate(kp["layers"]):
@@ -1697,6 +1720,10 @@ class FittedBoot:
     def upper(self, P, L):
         k_hc, k_f = self.f["k"]
         u = smin3(self.shaft(P), self.heel_cup(L), k_hc)
+        # B1i (review_stage8 2): the ankle under the leather -- smooth Gaussian swells of the field (x, y, z, height, radii;
+        # height > 0 a bone standing out, < 0 a hollow), so the shaft is no longer a perfect tube and its reflections bend
+        for x0, y0, z0, hh, sx, sy, sz in self.f.get("ankle", ()):
+            u = u - hh * np.exp(-(((L[:, 0] - x0) / sx) ** 2 + ((L[:, 1] - y0) / sy) ** 2 + ((L[:, 2] - z0) / sz) ** 2))
         return smin3(u, self.foot(L), k_f)
 
     def planform(self, P, L):

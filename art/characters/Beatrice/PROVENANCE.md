@@ -380,3 +380,16 @@ it was, unused by her now), so no other character was rebuilt. Work in progress;
   and inside the sleeve with a margin (a squarer, wider row poked 0.4 mm through the sleeve just above the cuff, the
   light fleck in B1h's and this round's first front views; now every hand vertex above the cuff lies inside the sleeve).
   `DEV_VIEWS["wrist"]` is now aimed at the left wrist and cuff (B1h's showed the crotch).
+- **Step 5, leg polish (review_stage8 corrections 1 and 2; 3-5 not done, as briefed).**
+  - Knee pad: the dome 9 -> 3.6 mm over a 1.4 mm edge (was 1.8): the crest about 5 mm proud of the knee; below 0.2 of
+    its half-height under the centre its edge eases (C2) down to 0.25 mm at the point (`knee_pad["pad"]["lower"]`, through
+    `bodysuit._SinkingAnchor`, a wrapper round the leg anchor that `garment.patch` reads -- `garment.py` untouched), so its
+    lower part runs into the shin; the rim cord follows the edge (it sinks with it at the bottom). Its own finish:
+    materials `beatrice_pad` / `beatrice_pad_rim` (`PALETTE["PAD"]` #26262c, `["PAD_RIM"]` #4a4a52; gloss in
+    `bodysuit.materials`' `pad_*` GLOSS keys, defaults rough 0.22, coat 0.8, coat rough 0.08, specular 0.6).
+  - Boot shaft: the ankle bones under the leather (`boot["fitted"]["ankle"]`: smooth Gaussian swells of the boot's field,
+    5 mm, the outer at 0.180 m and 3 mm back of the centre, the inner at 0.192 and 6 mm forward) and a 1 mm hollow across
+    the back above the heel cup (the leather is 1.3 mm over the suit there, so the suit cannot show through). The top
+    cord and the heel cup are unchanged (the swells are under 0.02 mm at the cord). Front width in the sheet's frame
+    (sheet px, z 0.16 / 0.17 / 0.18 / 0.19 / 0.20): B1h 49.0 / 48.5 / 48.5 / 48.0 / 48.0, now 49.5 / 50.5 / 53.0 / 53.0 /
+    51.0 (the drawing's 56 at 0.19 is in a high heel).
