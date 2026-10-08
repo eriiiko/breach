@@ -323,3 +323,28 @@ inside the boot (ending it at 0.15 moved 20 suit vertices at the raglan cut by 0
 - Reproduce: `--sheet --turn --beauty all --save` (6.9 min; the boots about 80 s of the build),
   `--beauty shoulder,shoulder_back,wrist,boot,flank,flank_back,knee,hand,boot_side,armpit_back,top_close,hand_palm` (5.8 min).
   The before/after pictures and the measures are made by scratch scripts from `Beatrice_b1g_9b6d9df.blend` and this build.
+
+## B1i: the hands and the cuffs, and a leg polish (2026-10-08, answers `previews/review_stage7.md` B2, `review_stage8.md` 1-2)
+
+No reference added. Kit: only Beatrice's own `bodysuit.py` changed; no shared kit file touched (`parts.bare_hand` stays as
+it was, unused by her now), so no other character was rebuilt. Work in progress; this section grows with each step.
+
+- **Step 1, the surface (review B2 "ring-banded").** Cause found by experiment on the B1h hand (scratch harness, the same
+  field each time, zebra = reflection lines): (a) as built; (b) the same field Taubin-smoothed, re-projected and shaded
+  with the field's own gradient (B1h's boot treatment); (c) (b) with the C2 union everywhere and no knuckle waists. The
+  oval and ring patterns in the reflection lines are the same in all three, so the bands are in the FIELD, not in the
+  mesh or its normals: `parts.bare_hand` builds the palm as one capsule per pair of rows and every finger as a chain of
+  capsules (a node mid-phalanx 6 % thinner), each capsule ending in a rounded cap, unioned with a C1 fillet of 1.2-4 mm,
+  plus three pad ellipsoids -- a ring of bump and dent at every node, the boot vamp's B1g cause. Fix at the cause, with
+  B1h's method: `bodysuit.FittedHand` -- the palm ONE sweep along the hand (rows as C2 splines, closing round under the
+  knuckles, running up the forearm inside the cuff), each finger and the thumb a `_Sweep` along its own bent centre line
+  (the bend a sum of C2 steps at the joints; half-width, depths and exponent C2 splines; knuckles and pads smooth
+  Gaussian swells of the depth, not nodes; a round tip and a round start, no cut face), every union `smin3` (C2), the
+  shading normals the field's gradient, Taubin + re-projection. The hand mesh is built in the hand's frame and its faces
+  turned the right way out before the normals are set (the frame is left-handed: `garment.orient_outward` used to flip
+  the old hand afterwards, which would have inverted custom normals). Nails: the hand's own mesh, material
+  `beatrice_nail` (`PALETTE["NAIL"]`), a plate 0.2 mm proud. The step-1 table (`FITTED_HAND`) is the old hand's layout
+  in the new construction. Two traps met on the way, both fixed in the code: a sweep evaluated only inside its bounding
+  box must have a box larger than the fillet it is unioned with (a 4 mm margin under a 16 mm fillet drew a jagged crease
+  down the thumb side), and a sweep's start must be rounded like its tip (a flat cut face inside the palm showed as a
+  line across the back of the hand).

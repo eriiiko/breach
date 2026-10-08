@@ -62,6 +62,9 @@ def materials(p, gloss, prefix):
                                coat_rough=g.get("boot_coat_rough", 0.08), piping=0.5),
         sole=wearmat.mat_rubber(prefix + "_sole", p["SOLE"], rough=0.55),
         metal=wearmat.mat_metal(prefix + "_metal", p["METAL"], rough=0.25),
+        # B1i: the nails (a pale, slightly glossy pink on the hands' own mesh)
+        **({"nail": wearmat.mat_gloss(prefix + "_nail", p["NAIL"], rough=g.get("nail_rough", 0.30), coat=g.get("nail_coat", 0.5),
+                                      coat_rough=g.get("nail_coat_rough", 0.12), specular=0.5, piping=0.0)} if "NAIL" in p else {}),
         # a second net for panels that show the suit, not skin, through it (`MESH_THIGH` = what shows)
         **({"mesh_thigh": wearmat.mat_mesh(prefix + "_mesh_thigh", p["MESH"], p["MESH_THIGH"], cell=g.get("mesh_thigh_cell", 0.0030),
                                            show=1.0, surface=True, coat=g.get("mesh_coat", 0.0), width=g.get("mesh_thigh_width", 0.42))}
@@ -1804,6 +1807,322 @@ def build_boots_fitted(S, M, coll="Boots"):
     return fb
 
 
+# ------------------------------------------------------------------ hands, fitted (B1i)
+def _smooth01(q):
+    """C2 step 0 -> 1 over q in [0, 1] (quintic)."""
+    q = np.clip(q, 0.0, 1.0)
+    return q * q * q * (q * (q * 6.0 - 15.0) + 10.0)
+
+
+class _Sweep:
+    """A tube swept along a PLANAR curve (a finger, the thumb): the curve starts at `base` heading `e1`, bending in the
+    (e1, e2) plane towards -e2 (the palm side; e2 = the back of the digit, its nail side) by the angle theta(s), a sum
+    of C2 steps (one per joint: arclength, bend in rad, half-width of the bend). Sections are superellipses across it
+    (x along e3 = e1 x e2, y along the curve's in-plane normal), half-width a(s), depth to the back a(s)*bb(s), to the
+    palm a(s)*bp(s), exponent n(s); every profile a C2 spline, so the tube has no node anywhere (the B1h lesson: a
+    chain of capsules is a ring of bump and dent at every node). The tip closes over `r_tip` as sqrt(1 - t^4) (round,
+    no curvature jump); the start (`s0`, inside the palm) is cut flat. Everything in the hand's frame (l, w, b)."""
+
+    def __init__(self, base, e1, e2, joints, s0, s1, a, bb, bp, n, r_tip, r_start=0.006, ds=0.0005, margin=0.03):
+        self.base = np.asarray(base, float)
+        e1 = unit(np.asarray(e1, float))
+        e2 = np.asarray(e2, float)
+        e2 = unit(e2 - (e2 @ e1) * e1)
+        self.E = np.array([e1, e2, np.cross(e1, e2)])
+        self.joints = joints
+        self.s0, self.s1, self.r_tip, self.r_start = s0, s1, r_tip, r_start
+        s = np.arange(s0, s1 + ds, ds)
+        th = self.theta(s)
+        # the curve by integration (trapezoid), s = 0 at the base
+        c, sn = np.cos(th), np.sin(th)
+        X = np.concatenate([[0.0], np.cumsum(0.5 * (c[1:] + c[:-1]) * ds)])
+        Y = np.concatenate([[0.0], np.cumsum(-0.5 * (sn[1:] + sn[:-1]) * ds)])
+        i0 = int(np.argmin(np.abs(s)))
+        self.s, self.X, self.Y, self.th = s, X - X[i0], Y - Y[i0], th
+        self.a, self.bb, self.bp, self.n = (_ncurve(p) for p in (a, bb, bp, n))
+        r = max(v for _, v in a) * max(max(v for _, v in bb), max(v for _, v in bp))
+        pts = self.base + self.X[:, None] * e1 + self.Y[:, None] * e2
+        # beyond this box the field is taken as far (1.0): it must reach past any fillet the tube is unioned with, or
+        # the union jumps where the box ends (a crease)
+        self.lo, self.hi = pts.min(axis=0) - r - margin, pts.max(axis=0) + r + margin
+
+    def theta(self, s):
+        s = np.asarray(s, float)
+        t = np.zeros_like(s)
+        for sj, bend, wj in self.joints:
+            t = t + bend * _smooth01((s - sj + wj) / (2.0 * wj))
+        return t
+
+    def nail_q(self, s, x, y):
+        """The nail's weight (0..1, C2 edges) at sweep coordinates: the back of the last phalanx from `len` before the tip
+        to `free` before it, over the middle `width` of the digit's half-width."""
+        nl = self.nail
+        a = np.maximum(self.a(s), 1e-6)
+        q = _smooth01((s - (self.s1 - nl["len"])) / nl.get("soft", 0.0015)) * (1.0 - _smooth01((s - (self.s1 - nl["free"])) / 0.0008))
+        q = q * (1.0 - _smooth01((np.abs(x) / a - nl["width"]) / 0.18))
+        return q * _smooth01(y / (0.35 * a))
+
+    def points(self, s):
+        """Centre-line points (hand frame) at arclengths s."""
+        X, Y = np.interp(s, self.s, self.X), np.interp(s, self.s, self.Y)
+        return self.base + X[:, None] * self.E[0] + Y[:, None] * self.E[1]
+
+    def coords(self, P):
+        """(s, x across, y towards the back, along beyond the ends) of points P near the tube."""
+        q = (P - self.base) @ self.E.T
+        u, v, x = q[:, 0], q[:, 1], q[:, 2]
+        m = len(self.s)
+        best = np.zeros(len(P), int)
+        k = 8   # coarse samples every k, then the nearest fine sample within +-k of the nearest coarse one
+        Xc, Yc = self.X[::k], self.Y[::k]
+        win = np.arange(-k, k + 1)
+        step = max(1, 4000000 // max(len(Xc) + len(win), 1))
+        for i in range(0, len(P), step):
+            uu, vv = u[i:i + step, None], v[i:i + step, None]
+            bc = np.argmin((uu - Xc[None, :]) ** 2 + (vv - Yc[None, :]) ** 2, axis=1) * k
+            idx = np.clip(bc[:, None] + win[None, :], 0, m - 1)
+            j = np.argmin((uu - self.X[idx]) ** 2 + (vv - self.Y[idx]) ** 2, axis=1)
+            best[i:i + step] = idx[np.arange(len(idx)), j]
+        # refine on the two segments beside the nearest sample
+        sbest, dbest = self.s[best].copy(), np.full(len(P), np.inf)
+        for j0 in (best - 1, best):
+            j0 = np.clip(j0, 0, m - 2)
+            ax, ay = self.X[j0], self.Y[j0]
+            bx, by = self.X[j0 + 1], self.Y[j0 + 1]
+            ex, ey = bx - ax, by - ay
+            t = np.clip(((u - ax) * ex + (v - ay) * ey) / np.maximum(ex * ex + ey * ey, 1e-18), 0.0, 1.0)
+            px, py = ax + t * ex, ay + t * ey
+            dd = (u - px) ** 2 + (v - py) ** 2
+            take = dd < dbest
+            dbest = np.where(take, dd, dbest)
+            sbest = np.where(take, self.s[j0] + t * (self.s[j0 + 1] - self.s[j0]), sbest)
+        s = sbest
+        th = self.theta(s)
+        cx, cy = np.interp(s, self.s, self.X), np.interp(s, self.s, self.Y)
+        du, dv = u - cx, v - cy
+        y = du * np.sin(th) + dv * np.cos(th)          # along the in-plane normal (the back)
+        along = du * np.cos(th) - dv * np.sin(th)      # along the curve (non-zero only beyond its ends)
+        return s, x, y, along
+
+    def field(self, P, extra=None):
+        P = np.asarray(P, float)
+        d = np.full(len(P), 1.0)
+        near = np.all((P > self.lo) & (P < self.hi), axis=1)
+        if not near.any():
+            return d
+        s, x, y, along = self.coords(P[near])
+        t = np.clip((s - (self.s1 - self.r_tip)) / self.r_tip, 0.0, 1.0)
+        c = np.sqrt(np.maximum(1.0 - t ** 4, 0.0))
+        t0 = np.clip((self.s0 + self.r_start - s) / self.r_start, 0.0, 1.0)   # the start rounded too: no cut face
+        c = c * np.sqrt(np.maximum(1.0 - t0 ** 4, 0.0))
+        a = np.maximum(self.a(s) * c, 1e-5)
+        bb, bp = self.bb(s), self.bp(s)
+        if extra is not None:  # per-point depth factors (knuckles, pads), (back, palm)
+            fb, fp = extra(s)
+            bb, bp = bb * fb, bp * fp
+        b = np.maximum(a * np.where(y >= 0.0, bb, bp), 1e-5)
+        n = self.n(s)
+        rho = (np.abs(x / a) ** n + np.abs(y / b) ** n) ** (1.0 / n)
+        dd = (rho - 1.0) * np.minimum(a, b)
+        if getattr(self, "nail", None):  # the nail: a plate standing a hair proud of the last phalanx's back
+            dd = dd - self.nail["height"] * self.nail_q(s, x, y)
+        dd = np.where(s >= self.s1 - 1e-9, np.maximum(dd, along), dd)
+        dd = np.where(s <= self.s0 + 1e-9, np.maximum(dd, -along), dd)
+        d[near] = dd
+        return d
+
+
+class FittedHand:
+    """B1i (review_stage7 B2): the bare hand as ONE closed surface built from smooth fields only (the boot's B1h method):
+    the palm ONE sweep down the hand (rows: l, w and b of the centre, half-width, depth to the back and to the palm,
+    exponent; C2 splines; it runs up the forearm inside the cuff and closes round under the knuckles), each finger and
+    the thumb a `_Sweep` along its own bent centre line, the thumb's ball and the heel of the hand broad ellipsoids, the
+    palm's hollow a smooth subtraction; every union a C2 fillet (`smin3`); shading normals the field's own gradient.
+    In the hand's frame (l down the hand from the wrist point, w towards the thumb, b out of the back). `spec` =
+    `hand["fitted"]` (see beatrice.py)."""
+
+    def __init__(self, wrist, L, B, spec, arm=None):
+        self.f = f = spec
+        L = unit(np.asarray(L, float))
+        B = np.asarray(B, float)
+        B = unit(B - (B @ L) * L)
+        W = np.cross(L, B)
+        self.o, self.M = np.asarray(wrist, float), np.column_stack([L, W, B])
+        rows = [list(r) for r in f["palm"]]
+        if arm is not None:  # the rows inside the sleeve run up the forearm (sheared along it)
+            a_h = np.array([unit(arm) @ L, unit(arm) @ W, unit(arm) @ B])
+            for r in rows:
+                if r[0] < 0.0:
+                    r[1] += r[0] / a_h[0] * a_h[1]
+                    r[2] += r[0] / a_h[0] * a_h[2]
+        self.rows = rows
+        col = lambda i: _ncurve([(r[0], r[i]) for r in rows])
+        self.pw, self.pb, self.pa, self.pbb, self.pbp, self.pn = (col(i) for i in range(1, 7))
+        self.l_top = rows[0][0]
+        self.l_end, self.r_end = f["palm_end"]
+        e_l, e_w, e_b = np.eye(3)
+        self.digits = []
+        nl = f.get("nail")
+        for g in f["fingers"]:
+            self.digits.append((g["name"], self._digit(dict(g, nail=nl) if nl and "nail" not in g else g)))
+        th = f["thumb"]
+        if nl and "nail" not in th:
+            th = dict(th, nail=dict(nl, len=nl["len"] * nl.get("thumb", 1.0)))
+        self.digits.append(("Thumb", self._digit(th)))
+
+    @staticmethod
+    def _digit(g):
+        """A finger or the thumb from its table entry: `root` (its first joint's centre), `dir` (heading, hand frame),
+        `back` (its nail side), phalanx lengths, bends at the joints, half-widths at root / joints / before the tip,
+        depth ratios back / palm, the joint bends' half-width."""
+        lens = g["len"]
+        if "dir" not in g:  # a finger by its splay (towards the thumb), pitch (out of the back) and roll (about itself)
+            sp, pi, ro = g.get("splay", 0.0), g.get("pitch", 0.0), g.get("roll", 0.0)
+            e1 = np.array([math.cos(sp) * math.cos(pi), math.sin(sp) * math.cos(pi), math.sin(pi)])
+            up = np.array([0.0, 0.0, 1.0]) - math.sin(pi) * e1
+            up = unit(up - (up @ e1) * e1)
+            side = np.cross(e1, up)
+            g = dict(g, dir=e1, back=math.cos(ro) * up + math.sin(ro) * side)
+        sj = np.concatenate([[0.0], np.cumsum(lens)])
+        s1 = float(sj[-1])
+        wj = g.get("joint_w", 0.004)
+        joints = [(float(sj[i]), g["bend"][i], wj if i else g.get("root_w", 0.008)) for i in range(len(g["bend"]))]
+        r = g["r"]   # half-widths at the root, then each joint, then the tip's start
+        ctrl_s = [g.get("s0", -0.018)] + list(sj[:-1]) + [s1 - g.get("r_tip", r[-1] * 1.2)]
+        a = list(zip(ctrl_s, [r[0] * g.get("root_taper", 0.75)] + list(r)))
+        db, dp = g.get("depth", (0.88, 0.98))
+        kb, kp = g.get("knuckle", 0.06), g.get("pad", 0.10)
+        # depth to the back: a little fuller over each joint (the knuckles), to the palm over each phalanx's middle (the pads)
+        bb = [(s, db) for s in ctrl_s]
+        bp = [(s, dp) for s in ctrl_s]
+        n = [(ctrl_s[0], g.get("n", 2.2)), (ctrl_s[-1], g.get("n", 2.2))]
+        sw = _Sweep(g["root"], g["dir"], g["back"], joints, ctrl_s[0], s1, a, bb, bp, n, g.get("r_tip", r[-1] * 1.2),
+                    r_start=g.get("r_start", 0.008))
+        mids = [0.5 * (sj[i] + sj[i + 1]) for i in range(len(lens) - 1)] + [s1 - 0.55 * g.get("r_tip", r[-1] * 1.2)]
+        js = list(sj[:-1])
+        sig_k, sig_p = g.get("knuckle_w", 0.0045), g.get("pad_w", 0.0065)
+
+        km = g.get("mcp", kb)
+
+        def extra(s):
+            fb = 1.0 + km * np.exp(-0.5 * (s / g.get("mcp_w", 0.006)) ** 2) + kb * sum(np.exp(-0.5 * ((s - q) / sig_k) ** 2) for q in js[1:])
+            fp = 1.0 + kp * sum(np.exp(-0.5 * ((s - q) / sig_p) ** 2) for q in mids)
+            return fb, fp
+        sw.extra = extra
+        sw.spec = g
+        sw.nail = g.get("nail")
+        sw.sj = sj
+        return sw
+
+    # frames
+    def local(self, P):
+        return (np.asarray(P, float) - self.o) @ self.M
+
+    def world(self, Lp):
+        return self.o + np.asarray(Lp, float) @ self.M.T
+
+    def palm(self, Lp):
+        l, w, b = Lp[:, 0], Lp[:, 1], Lp[:, 2]
+        lc = np.clip(l, self.l_top, self.l_end)
+        t = np.clip((lc - (self.l_end - self.r_end)) / self.r_end, 0.0, 1.0)
+        c = np.sqrt(np.maximum(1.0 - t ** 4, 0.0))
+        a = np.maximum(self.pa(lc) * c, 1e-5)
+        y = b - self.pb(lc)
+        bd = np.maximum(np.where(y >= 0.0, self.pbb(lc), self.pbp(lc)) * c, 1e-5)
+        n = self.pn(lc)
+        rho = (np.abs((w - self.pw(lc)) / a) ** n + np.abs(y / bd) ** n) ** (1.0 / n)
+        d = (rho - 1.0) * np.minimum(a, bd)
+        d = np.maximum(d, l - self.l_end)
+        return np.maximum(d, self.l_top - l)
+
+    def _ell(self, Lp, c, ax, rad):
+        a = unit(np.asarray(ax, float))
+        hint = np.array([0.0, 0.0, 1.0]) if abs(a[2]) < 0.9 else np.array([0.0, 1.0, 0.0])
+        b2 = unit(hint - (hint @ a) * a)
+        a2 = np.cross(b2, a)
+        return implicit.ellipsoid(Lp, c, np.array([a, a2, b2]), rad)
+
+    def field_local(self, Lp, parts_=False):
+        f = self.f
+        d = self.palm(Lp)
+        for c, rad, ax, k in f.get("pads", ()):
+            d = smin3(d, self._ell(Lp, c, ax, rad), k)
+        if f.get("hollow"):
+            hc, hr, hk = f["hollow"]
+            d = smax3(d, -implicit.ellipsoid(Lp, hc, np.eye(3), hr), hk)
+        fingers = None
+        for name, sw in self.digits:
+            if name == "Thumb":
+                continue
+            e = sw.field(Lp, sw.extra)
+            fingers = e if fingers is None else smin3(fingers, e, f.get("finger_finger_k", 0.0015))
+        d = smin3(d, fingers, f["finger_k"])
+        th = self.digits[-1][1]
+        return smin3(d, th.field(Lp, th.extra), f["thumb_k"])
+
+    def field(self, P):
+        return self.field_local(self.local(P))
+
+    def gradient(self, V, e=2e-4):
+        g = np.stack([(self.field(V + e * u) - self.field(V - e * u)) / (2 * e) for u in np.eye(3)], axis=1)
+        return g / np.maximum(np.linalg.norm(g, axis=1, keepdims=True), 1e-12)
+
+    def nail_mask(self, P):
+        """1 on the nails (the back of each digit's last phalanx, short of the tip), 0 elsewhere."""
+        Lp = self.local(P)
+        m = np.zeros(len(P))
+        for name, sw in self.digits:
+            near = np.all((Lp > sw.lo) & (Lp < sw.hi), axis=1)
+            if not near.any():
+                continue
+            if not sw.nail:
+                continue
+            s, x, y, along = sw.coords(Lp[near])
+            m[near] = np.maximum(m[near], sw.nail_q(s, x, y))
+        return m
+
+    def bounds(self):
+        pts = [self.world(np.array([[r[0], r[1], r[2]]])) for r in self.rows]
+        for _, sw in self.digits:
+            pts += [self.world(np.array([sw.lo, sw.hi]))]
+        pts = np.vstack(pts)
+        return pts.min(axis=0) - 0.025, pts.max(axis=0) + 0.025
+
+
+def build_fitted_hands(F, M, coll="Hands"):
+    """B1i: the bare hands as FittedHand surfaces: meshed (surface nets), Taubin-smoothed and re-projected, the field's
+    gradient as shading normals (no faceting from the grid), the nails their own material (`M["nail"]`) on the same
+    closed mesh. Returns the left hand's FittedHand (the cuff is seated on it)."""
+    h = F.d["hand"]
+    w = np.array(F.d["sleeve"][0][1:4], float)
+    L = unit(h["down"])
+    b = np.asarray(h["back"], float)
+    Bv = unit(b - (b @ L) * L)
+    f = h["fitted"]
+    arm = unit(np.array(F.d["sleeve"][1][1:4], float) - w)
+    fh = FittedHand(w + L * h["drop"], L, Bv, f, arm=arm)
+    res = f["res"][0 if kit.RES < 0.006 else 1]
+    lo, hi = fh.bounds()
+    # mesh in the hand's own frame (its grid along the hand), then to the world
+    Lc = fh.local(np.array([[x, y, z] for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])]))
+    llo, lhi = Lc.min(axis=0), Lc.max(axis=0)
+    V, Q = implicit.mesh_field(fh.field_local, llo, lhi, res)
+    V = implicit.taubin(V, Q, iters=f.get("smooth", 4))
+    V = implicit.project(fh.field_local, V, res, iters=3)
+    Vw = fh.world(V)
+    if np.linalg.det(fh.M) < 0.0:  # a left-handed frame turns the faces inside out
+        Q = Q[:, ::-1]
+    ob = kit.new_mesh("Hand_Hand", Vw, Q, None, M["skin"], coll)
+    if "nail" in M:
+        ob.data.materials.append(M["nail"])
+        m = fh.nail_mask(Vw)
+        on = (m[Q].mean(axis=1) > 0.5).astype(np.int32)
+        ob.data.polygons.foreach_set("material_index", on)
+    ob.data.normals_split_custom_set_from_vertices([tuple(n) for n in fh.gradient(Vw)])
+    mirror(ob)
+    return fh
+
+
 # ------------------------------------------------------------------------- head
 def build_head(M, head_spec, prefix, coll="Head"):
     """The bald placeholder head: `parts.head` with this figure's spec. Its own collection and
@@ -1816,6 +2135,8 @@ def build_bare_hands(F, M, coll="Hands"):
     """Bare hands as one implicit surface each (`parts.bare_hand`) when the hand table carries a
     `bare` spec; otherwise the workers' lofted hands (`workwear.build_hands`)."""
     h = F.d["hand"]
+    if "fitted" in h:  # B1i
+        return build_fitted_hands(F, M, coll)
     if "bare" not in h:
         return build_hands(F, M, coll)
     w = np.array(F.d["sleeve"][0][1:4], float)
