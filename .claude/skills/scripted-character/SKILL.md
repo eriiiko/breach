@@ -176,6 +176,22 @@ What made the briefs work:
    overall colour; the faces came out doll-like and Erik accepted them. With a tilted camera the
    front of the body counts for more.
 8. **Give absolute-path commands** to whoever will run them from another folder.
+9. *2026-10-08, Beatrice B1h–B1l:* **on a glossy surface, a field built from nodes shows.** Chains
+   of capsules (boot vamp, hand), a distance taken to the nearest of N sampled sections (the
+   sleeve, `kit.loft_sdf`), a C1 union, or a flat cliff where a field is clamped (the arm past its
+   root) all printed rings, blotches or folds in the reflections whatever the mesh resolution. The
+   cure each time: one continuous sweep, C2 unions (`bodysuit.smin3`), re-projection after
+   smoothing, normals from the field's gradient. **Diagnostic:** switch to the field's own normals
+   — a field fault gets WORSE, a mesh fault goes away. A zebra (reflection-line) render is the
+   proof picture for every surface fix.
+10. *Same run:* **one region per round, a vertex check against the saved previous `.blend`.** Each
+    round copied the last build's `.blend`, listed the objects allowed to move, and proved every
+    other one at max displacement 0; it caught a seam cord moved 0.019 mm and kept the pelvis
+    (waiting on Erik) frozen through five rounds of other work. Rounds cost 75–150 min and
+    390k–720k tokens each; a reviewer 7–20 min and 175k–260k.
+11. *Same run:* **a reviewer every round, and a whole-figure review once each part has had one.**
+    The whole-figure pass caught a regression the builder had called "much better" (a knot at
+    the back armpit) and ranked finish over anatomy as what was left.
 
 ## What this skill does not cover yet
 
