@@ -327,7 +327,7 @@ inside the boot (ending it at 0.15 moved 20 suit vertices at the raglan cut by 0
 ## B1i: the hands and the cuffs, and a leg polish (2026-10-08, answers `previews/review_stage7.md` B2, `review_stage8.md` 1-2)
 
 No reference added. Kit: only Beatrice's own `bodysuit.py` changed; no shared kit file touched (`parts.bare_hand` stays as
-it was, unused by her now), so no other character was rebuilt. Work in progress; this section grows with each step.
+it was, unused by her now), so no other character was rebuilt.
 
 - **Step 1, the surface (review B2 "ring-banded").** Cause found by experiment on the B1h hand (scratch harness, the same
   field each time, zebra = reflection lines): (a) as built; (b) the same field Taubin-smoothed, re-projected and shaded
@@ -393,3 +393,44 @@ it was, unused by her now), so no other character was rebuilt. Work in progress;
     cord and the heel cup are unchanged (the swells are under 0.02 mm at the cord). Front width in the sheet's frame
     (sheet px, z 0.16 / 0.17 / 0.18 / 0.19 / 0.20): B1h 49.0 / 48.5 / 48.5 / 48.0 / 48.0, now 49.5 / 50.5 / 53.0 / 53.0 /
     51.0 (the drawing's 56 at 0.19 is in a high heel).
+- **The B4 question (upper-arm / deltoid gloss ripples): the same family, a different instance, NOT fixed.** On the B1h
+  build, reflection lines on `Suit_Shoulder` (the shoulder patch, meshed from `Suit.union_field`) and `Suit_Sleeve` (a loft):
+  the ripples are on the patch only (the sleeve below the arm seam is clean), and with the patch's own field gradient as
+  shading normals they get WORSE -- so, as on the hand, they are in the field, not the mesh. The field's arm half is
+  `kit.loft_sdf(self.F.arm, ..., m=500)`, the distance to the NEAREST of 500 sampled sections (~0.9 mm apart along the arm),
+  which steps at every section; the union with the body is the C1 `implicit.smin`; Taubin smoothing without re-projection
+  hides part of it. The fix for the next round is the same as the hand's: a continuous arm distance (the arm loft's own
+  centre line projected continuously, as `_Sweep.coords` does), a C2 union, re-projection and the field's gradient as
+  normals. Picture: `previews/sleeve_ripples_cause.jpg`.
+- **Measured** (`C:/tmp/beatrice_b1i/meas.py` on a 4x render of the sheet's front view, her left hand; the drawing the same way
+  at 1x, skin by colour, so the drawing's dark outline is not counted):
+  - Wrist (cuff edge) to fingertip: B1h 147.9 mm, B1i 145.0 mm, drawing 136.6. The fingertip's row is B1h's within 0.3 mm;
+    the 2.9 mm is the cuff's new rolled lower edge, which reads 3 mm lower in this view (along the arm it is 1.2 mm below the
+    sleeve's end, which B1h's band left showing).
+  - Wrist width just under the cuff: 0.6 / 4.1 mm below it, B1h 30.7 / 32.1 mm, B1i 27.5 / 30.1 (-3.2 / -2.0). The drawing
+    measured this way is 33.6 / 34.7 -- wider than both: the review's 30 vs 27 px was read another way (its rows or the drawn
+    outline); by this method B1h's wrist was not thicker than the drawing's. Slimmed as asked.
+  - Finger share of the hand (the knuckle line to the tip along the hand, of the cuff edge to the tip): B1h 44 %
+    (knuckles 83 mm below the cuff edge), B1i 51 % (71 mm; the drawing 52 % by the review). Measured on the model's own
+    table along the hand's axis, which hangs within 6 deg of vertical in this view.
+  - Finger separation (surface to surface): see step 3; past the first finger joint every gap is over 7 mm.
+- **Nothing else moved** (`C:/tmp/beatrice_b1i/cmp2.py`, every evaluated vertex of every object, `Beatrice_b1h_73ab55b.blend`
+  against this build): 56 of the 62 objects are identical (max |dP| < 1e-7 m), the suit's body, sleeves, shoulders, collar,
+  zips, piping, panels and the head among them; moved are `Hand_Hand`, `Suit_Cuff`, `Suit_Knee_Pad`, `Suit_Knee_Rim`, `Boot`
+  (the ankle bones and the hollow, z 0.004-0.232) and `Boot_Piping_0`, the shaft's top cord, by 0.019 mm (it is laid on the
+  boot's surface, and the bones' Gaussian tails reach it at that size). `Boot_Sole` and the toe-cap cord are identical. The
+  suit's own surface did not move anywhere (the pad's sinking edge goes into it; the suit does not give way).
+- Sheet IoU unchanged to the third decimal except front whole 0.887 -> 0.888, knees down front 0.899 -> 0.900, side whole
+  0.902 -> 0.904 (above the waist / waist-knee / knees down: front 0.947 / 0.840 / 0.900, side 0.918 / 0.920 / 0.865, back
+  0.914 / 0.837 / 0.822). `source/mesh_stats.json`: 62 objects, 1,173,166 source / 3,058,500 evaluated triangles, all closed;
+  the flipped-normal list lost `Hand_Hand` (its faces are built the right way out now).
+- Pictures: `hands_before_after.jpg` (the drawings, B1h and B1i in front, side and back views at the drawings' scale x4;
+  three-quarter and close-up; reflection lines; matte from her left; the palm side), `legs_polish_before_after.jpg`,
+  `sleeve_ripples_cause.jpg`; the whole set re-rendered (sheet, turnaround, beauty, every dev view; `wrist.jpg` re-aimed).
+  Not re-rendered: `shape_vs_concept.jpg` (the `--compare` run, 13 min; it still shows B1g's hand), the `--hips` pictures,
+  `crimson_hero.jpg`.
+- Reproduce: `bash charkit/run.sh Beatrice --sheet --turn --save --beauty hero,hero_back,torso,torso_back,legs,side,head,top,elevated,shoulder,shoulder_back,wrist,boot,flank,flank_back,knee,hand,boot_side,armpit_back,top_close,hand_palm`
+  (9.9 min: the build 6.0 min, of it about 1.9 min the hand at 0.7 mm (built once, mirrored), 1 s the cuff, about 1 min the boots and pads).
+  The before/after pictures, the measures and the vertex check are scratch scripts in `C:/tmp/beatrice_b1i/` (`hh.py` hands
+  harness, `lh.py` legs harness, `meas.py`, `gaps.py`, `cmp2.py`, `compose_*.py`), run on `Beatrice_b1h_73ab55b.blend` and
+  this build.
