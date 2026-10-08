@@ -510,35 +510,36 @@ SLEEVE_BACK = {"elbow": .0325, "elbow_top": .0300}
 # frame, metres: l down the hand from the wrist point, w towards the thumb, b out of the back of the hand.
 FITTED_HAND = dict(
     # the palm, ONE sweep wrist (inside the cuff) -> knuckles: (l, w centre, b centre, half-width, depth back, depth palm,
-    # exponent); the rows above l 0 run up the forearm (sheared along it); it closes round over `palm_end` (l, length)
-    palm=((-0.030, 0.000, 0.0005, 0.0150, 0.0110, 0.0110, 2.2), (-0.012, 0.000, 0.0005, 0.0160, 0.0110, 0.0112, 2.3),
-          (0.000, 0.000, 0.0005, 0.0178, 0.0110, 0.0116, 2.4), (0.022, 0.0005, 0.0000, 0.0232, 0.0102, 0.0112, 2.7),
-          (0.045, 0.000, -0.0005, 0.0272, 0.0092, 0.0104, 2.9), (0.062, -0.0008, -0.0010, 0.0285, 0.0085, 0.0095, 2.9)),
-    palm_end=(0.071, 0.012),
+    # exponent); the rows above l 0 run up the forearm (sheared along it); it closes round over `palm_end` (l, length).
+    # B1i step 2: shorter (the knuckles 13 mm nearer the wrist), tapering from the knuckles to a slimmer wrist
+    palm=((-0.032, 0.000, 0.0005, 0.0160, 0.0112, 0.0112, 2.2), (-0.016, 0.000, 0.0005, 0.0160, 0.0106, 0.0106, 2.2),
+          (-0.005, 0.000, 0.0004, 0.0160, 0.0099, 0.0100, 2.3), (0.010, 0.0005, 0.0002, 0.0192, 0.0096, 0.0104, 2.5),
+          (0.027, 0.0000, -0.0002, 0.0240, 0.0089, 0.0101, 2.7), (0.042, -0.0005, -0.0006, 0.0272, 0.0080, 0.0092, 2.8),
+          (0.052, -0.0010, -0.0010, 0.0280, 0.0072, 0.0084, 2.8)),
+    palm_end=(0.061, 0.013),
     # the fingers: root = the knuckle joint's centre (l, w, b); splay towards the thumb, pitch out of the back, roll (rad);
     # phalanx lengths (the last to the very tip); bends at the three joints (rad, towards the palm); half-widths at the
     # knuckle, the two finger joints and where the tip starts to round; depth ratios (back, palm)
     fingers=(
-        dict(name="Index", root=(0.068, 0.0190, -0.0010), splay=0.09, len=(0.034, 0.020, 0.0186), bend=(0.22, 0.30, 0.18),
-             r=(0.0075, 0.0066, 0.0058, 0.0051)),
-        dict(name="Middle", root=(0.071, 0.0062, 0.0004), splay=0.02, len=(0.037, 0.023, 0.0197), bend=(0.28, 0.38, 0.20),
-             r=(0.0077, 0.0068, 0.0059, 0.0052)),
-        dict(name="Ring", root=(0.069, -0.0066, -0.0004), splay=-0.06, len=(0.034, 0.022, 0.0184), bend=(0.32, 0.44, 0.22),
-             r=(0.0071, 0.0063, 0.0055, 0.0049)),
-        dict(name="Pinky", root=(0.063, -0.0182, -0.0030), splay=-0.15, len=(0.026, 0.016, 0.0158), bend=(0.36, 0.50, 0.24),
-             r=(0.0062, 0.0055, 0.0048, 0.0043)),
+        dict(name="Index", root=(0.055, 0.0200, -0.0010), splay=0.10, len=(0.041, 0.025, 0.0215), bend=(0.22, 0.34, 0.20),
+             r=(0.0076, 0.0068, 0.0060, 0.0053)),
+        dict(name="Middle", root=(0.058, 0.0055, 0.0003), splay=0.02, len=(0.045, 0.028, 0.0225), bend=(0.28, 0.42, 0.22),
+             r=(0.0078, 0.0070, 0.0061, 0.0054)),
+        dict(name="Ring", root=(0.056, -0.0088, -0.0005), splay=-0.06, len=(0.042, 0.026, 0.0210), bend=(0.32, 0.48, 0.24),
+             r=(0.0072, 0.0065, 0.0057, 0.0050)),
+        dict(name="Pinky", root=(0.050, -0.0220, -0.0028), splay=-0.14, len=(0.032, 0.020, 0.0185), bend=(0.36, 0.54, 0.26),
+             r=(0.0064, 0.0057, 0.0050, 0.0044)),
     ),
-    # the thumb: from inside the ball of the thumb, its heading and nail side given directly
-    thumb=dict(root=(0.014, 0.0085, -0.0085), dir=(0.86, 0.49, -0.17), back=(0.0, 0.75, 0.66), len=(0.035, 0.0275, 0.030),
-               bend=(0.0, 0.35, 0.20), r=(0.0100, 0.0084, 0.0075, 0.0066), depth=(0.86, 0.86), s0=-0.006),
-    finger_k=0.0075, thumb_k=0.016,
-    # broad forms on the palm side (centre, radii along / across / deep, axis, fillet): the ball of the thumb, the heel
-    # under the little finger, the heel of the hand
-    pads=(((0.032, 0.0120, -0.0095), (0.026, 0.0112, 0.0088), (0.85, 0.48, -0.22), 0.0165),
-          ((0.040, -0.0165, -0.0060), (0.026, 0.0095, 0.0082), (1.0, -0.05, 0.0), 0.0165),
-          ((0.006, 0.0000, -0.0045), (0.012, 0.0165, 0.0095), (1.0, 0.0, 0.0), 0.0165)),
-    hollow=((0.046, -0.002, -0.0205), (0.020, 0.015, 0.0085), 0.006),
-    nail=dict(len=0.011, free=0.0012, width=0.72, thumb=1.1, height=0.0002),
+    # the thumb: from inside the ball of the thumb, its heading and nail side given directly (hand frame)
+    thumb=dict(root=(0.006, 0.0110, -0.0070), dir=(0.85, 0.44, -0.30), back=(0.0, 0.80, 0.60), len=(0.036, 0.027, 0.0255),
+               bend=(0.0, 0.18, 0.26), r=(0.0098, 0.0088, 0.0080, 0.0070), depth=(0.80, 0.92), s0=-0.008),
+    finger_k=0.0065, thumb_k=0.012,
+    # broad forms on the palm side (centre, radii along / across / deep, axis, fillet): the ball of the thumb along its
+    # metacarpal, the heel under the little finger
+    pads=(((0.024, 0.0140, -0.0080), (0.022, 0.0110, 0.0090), (0.85, 0.44, -0.30), 0.012),
+          ((0.030, -0.0170, -0.0050), (0.024, 0.0090, 0.0080), (1.0, -0.05, 0.0), 0.012)),
+    hollow=((0.034, -0.002, -0.0175), (0.018, 0.013, 0.0065), 0.006),
+    nail=dict(len=0.0115, free=0.0012, width=0.72, thumb=1.1, height=0.0002),
     res=(0.0007, 0.0011), smooth=4,
 )
 

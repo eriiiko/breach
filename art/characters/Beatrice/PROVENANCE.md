@@ -348,3 +348,11 @@ it was, unused by her now), so no other character was rebuilt. Work in progress;
   box must have a box larger than the fillet it is unioned with (a 4 mm margin under a 16 mm fillet drew a jagged crease
   down the thumb side), and a sweep's start must be rounded like its tip (a flat cut face inside the palm showed as a
   line across the back of the hand).
+- **Step 2, proportions and form (review B2).** `FITTED_HAND` rewritten: the knuckles 13 mm nearer the wrist (l 0.050-0.058,
+  were 0.063-0.071), the fingers longer to match (index 87.5 mm knuckle to tip, middle 95.5, ring 89, little 70.5), so the
+  wrist-to-fingertip length in the sheet's front view stays 147-148 mm (B1h 147.9); the palm tapers from 56 mm across
+  the knuckles to 32 mm at the wrist, and the wrist is 3-4 mm slimmer in the front view a few mm under the cuff (28.6 mm
+  at 4 mm, B1h 32.1); the thumb's ball (thenar) and the heel under the little finger as broad smooth swells, a palm
+  hollow, knuckles (a 6 % swell of each digit's back over its joints), finger pads (10 % swell of the palm side mid-
+  phalanx), nails. Measured by `C:/tmp/beatrice_b1i/meas.py` on a 4x render of the sheet's front view (numbers in the
+  final B1i record below).
