@@ -602,3 +602,80 @@ already took `width`), so no other character was rebuilt. B1j's tables are kept 
   `C:/tmp/beatrice_b1k/` (`sh.py` suit harness, `ch.py` collar harness, `zb.py` gloss / reflection-line / object-colour views,
   `armw.py`, `meas_b1k.py`, `cmp3.py`, `compose.py`), run on `Beatrice_b1j_8290f51.blend` and this build. Not re-rendered:
   `shape_vs_concept.jpg`, the `--hips` pictures, `crimson_hero.jpg`; `sleeve_ripples_cause.jpg` stays as B1i's record.
+
+## B1l: the finishing round before the full body pass (2026-10-08, answers `previews/review_stage10.md` items 1, 2, 5, 7, 8, 10; item 3 prepared for the owner)
+
+No reference added; the body's shape unchanged. Kit: only Beatrice's own `bodysuit.py` and `suitbuild.py` changed, by adding (every new
+behaviour keyed on a new table entry: `shoulder["root_fade"]`, `["cut_nearest"]`, `["sharp_open_edges"]`, `["region_smooth"]`; a seam spec's
+`back_line`; a knee pad's `profile`; `tables.gloss(variant)` with a variant's `gloss`); no shared kit file touched, so no other character
+was rebuilt. B1k's tables kept where they changed (`RAGLAN_BACK_B1K`, `DELTOID_SEAM_B1K`, the old seams and fold in comments).
+
+- **Step 1, the back-armpit knot (item 1; items 5 and 10's doubled lines).** Three causes, each fixed where it arose.
+  1. *A cliff in the field.* `Suit.arm_proj` gave every point past the sleeve loft's ROOT end (its plane, through (0.104, 0.027, 1.35), comes
+     out of the torso behind the armpit from the fold at 1.30 up beside the blade insert to 1.42) the distance 1: on one side of that line
+     the union lifted the torso 2-4 mm, on the other not at all. The body loft folded over it (dihedrals of 30-55 deg along the shoulder's
+     edge) and the fold's V had a crease through it. Now the arm runs on past its root as the root's own section plus a C2 ramp,
+     w (s / w)^3, w = 25 mm (`root_fade`): the lift fades over about 2 cm, and the shoulder's own surface reaches as far as it does
+     (its edge behind the armpit moved from about -34 to -46 deg of section angle at 1.33).
+  2. *A cut through the saddle.* The shoulder's own surface ended on the torso at a level line at RAGLAN_LOW (1.293) -- inside the
+     union's reach (it lifts the torso down to 1.278; the armpit's saddle is at 1.300), so the fillet's back face ended in a horizontal
+     edge: the flap. It now reaches down to `CUT_LOW` 1.268: every edge of the shoulder's own surface on the torso lies where the union IS
+     the torso, so no join there needs a cord, and the short cord under the arm is gone.
+  3. *The rims in the shading.* Every vertex on an open edge was shaded with the average of its outer face and its solidify rim (45 deg
+     off the surface, measured on the evaluated mesh): a staircase of dark teeth along every join with no cord over it (the patch's
+     edge behind the armpit; B1k's ragged edge and dark notches). `_sharp_open_edges` marks the open edges sharp (off the mid-plane)
+     on the body, the shoulder's own surface, the sleeve and the collar; positions untouched; the teeth gone.
+  - *The cords as drawn.* `BACK_LINE`: ONE line down the blade insert's outer edge, round into the armpit and on down the back past the
+    rib and waist inserts (B1k: the raglan seam ran on straight to 1.293 past the insert's tip while the back seam started beside it at
+    1.326 -- two cords crossing in an X -- and the under-arm cord ran across their feet). The deltoid seam ends ON that line at 1.312
+    (`back_line`; B1k at the insert's tip at 1.330 through a last point in the fold: the hook). The raglan seam meets the blade insert's
+    edge at its middle point at a clear angle (`shared` (2, 4); B1k ran 4-5 mm outside the edge for 3 cm). The back V starts at the
+    insert's upper tip (B1k: from under the collar beside the raglan seam's start, two lines side by side and a hook).
+  - The region's edge smoothed wider in height (`region_smooth` (14, 12), B1k (8, 5)): a sharper turn left a hair gap between the body's
+    3.3 mm rows and the patch's 1.2 mm edge (a dark crack); the patch's edge vertices beyond the lines go to their nearest point on
+    them (`cut_nearest`).
+  - Tried and dropped: relaxing the quads surface nets fold in the fold's deep V (70 -> 38 folded quads, re-folded by the re-projection,
+    no visible gain, 30 s). The crinkles left there come from the arm's section planes fanning on the inside of the arm's bend at the
+    armpit (points 0.5 mm apart find sections 1.4 cm apart along the arm: the arm's distance jumps up to 4 mm) -- a sleeve-field
+    question for a later round; they show only in a close-up of the fold (`armpit_b1l.jpg` "fold, close").
+  - Proof: `armpit_b1l.jpg` (the drawing; hero_back at 2x, close, three-quarter back, straight back, the fold close; reflection lines;
+    the back yoke; the elbow), `armpit_back.jpg`.
+- **Step 2, the knee pads (item 2).** `_DomedAnchor`: the pad a crowned dome, 4.4 mm over the 1.4 mm edge as (1 - r^2)^0.6 (its edge
+  rolls down steeply under the rim, so the highlight runs round it as a streak), plus a 1.5 mm soft ridge down its middle (`profile`).
+  Side-view proudness (the pad's front line minus the suit's, per height, `C:/tmp/beatrice_b1l/kh.py`): B1k max 5.6 mm, B1l max 7.8 mm
+  at 0.58-0.60 (target 6-8, on the drawn knee line). The shape alone did not do it: at the B1j finish (coat 1.0, specular 0.8) the face
+  threw back the backdrop's grey as one sheet whatever its curvature (tested at 8.3 mm); now coat 0.6, specular 0.5. The knee frame's
+  cord ends ON the pad's rim (x .104 at .5685; B1k 1.4 mm inside it, where the pad's lower part sinks: its end cap came up through the
+  pad). Proof: `pads_b1l.jpg`, `knee.jpg`, `legs.jpg`.
+- **Step 3, small polish.** *Elbow (item 7):* the fold over the seam removed (B1k's 0.6 mm ridge 8 mm above the join, mostly behind:
+  the outline bulged just above the seam and stepped in at it); with the sleeve's top edge no longer shaded with its rim, the seam is
+  a plain line (`armpit_b1l.jpg` "elbow"). *Thumb (item 8):* the fingers' joint form and taper (half-widths 9.4 / 8.1 / 6.9 / 5.7 mm,
+  B1j 9.6 / 8.4 / 7.4 / 6.2; joint swell 7 %, a back crease, a knuckle), curled more (bends 0.08 / 0.28 / 0.32, B1j 0 / 0.15 / 0.22)
+  and heading nearer the index (dir (0.94, 0.21, -0.24), B1j (0.91, 0.32, -0.27)): from the front the V between thumb and fingers is
+  narrower. Thumb-index surface gap (`gaps.py`; the game-ready step fuses at about 6 mm): B1j/B1k min 6.8 mm, B1l 7.2 mm (tried closer:
+  4.2 and 6.0 mm, too near). *Collar base (item 10):* the stair-stepped patches left of the zip are the placeholder head's skin
+  reflected in the body loft's 3.3 mm triangles; one attempt (the collar landing 0.2 mm deeper, a wider normal blend) changed nothing
+  visible and was dropped: NOT fixed. *Cuff dent (item 10):* the light patch is the face reflecting the backdrop where the band eases in
+  over the wrist's flat front; one attempt (the face's own normals) changed nothing visible and was dropped: NOT fixed.
+- **Step 4, a look for the owner (item 3).** `VARIANTS["wet"]` (`gloss`: rough 0.30 -> 0.20, coat 0.45 -> 0.85, coat_rough 0.20 -> 0.07,
+  specular 0.45 -> 0.55; the boots are 0.22 / 0.70 / 0.10), `tables.gloss(variant)` read by `suitbuild.build`. The default is unchanged.
+  `gloss_compare.jpg`: default and wet on the same build, same light (hero, hero_back, legs). Suit pixels in fixed boxes (luminance p50 /
+  p95 / p99): hero belly 60 / 92 / 134 vs 61 / 105 / 135; hero_back 68 / 112 / 141 vs 75 / 111 / 139; legs 74 / 112 / 139 vs 86 / 119 / 142.
+  The wet suit's reflections are crisper but not brighter at the top: the studio rig has broad soft lights and a large grey backdrop
+  and no small hot sources, so a glossier suit mirrors more grey instead of throwing the drawing's small hot streaks. The rig is a large
+  part of the satin look; its default is unchanged too.
+- **Nothing else moved** (`C:/tmp/beatrice_b1l/cmp3.py` and `cmp4.py`, `Beatrice_b1k_77ed9b4.blend` against this build): 33 objects
+  identical (max |dP| < 1e-7 m): the head, the boots and their cords, the collar, the sleeve, the knee rims, every mesh insert but the
+  blade's, the zips. Moved as briefed: `Suit_Shoulder` (old vertices off the new surface by > 0.1 mm: 1847 of 129824 -- behind the elbow
+  at z 1.15-1.17 up to 0.69 mm, the fold removed, and in the armpit up to 3.5 mm); `Suit_Body` only between z 1.268 and 1.418 behind and
+  under the armpit, where the shoulder's own surface now reaches (every new vertex on the old surface within 0.015 mm);
+  `Suit_Mesh_Blade` 494 vertices at z 1.359-1.391 by up to 1.6 mm (laid on the shoulder's surface, whose edge moved with the raglan
+  line); the piping (the back's cords, the deltoid seam, the knee frame's end); `Suit_Knee_Pad`; `Hand_Hand` the thumb and its ball
+  (x 0.26-0.30, z 0.83-0.95); `Suit_Cuff` 0.1-0.35 mm on the thumb side (it is seated on the wrist's skin, which moved at the thumb's
+  root). `source/mesh_stats.json`: 62 objects (the under-arm cord and the back seam's second cord gone), 1,247,563 source / 3,292,964
+  evaluated triangles, all closed. Sheet IoU unchanged above the waist (front 0.951, side 0.921, back 0.917).
+- Reproduce: `bash charkit/run.sh Beatrice --sheet --turn --save --beauty hero,hero_back,torso,torso_back,legs,side,head,top,elevated,shoulder,shoulder_back,wrist,boot,flank,flank_back,knee,hand,boot_side,armpit_back,top_close,hand_palm`
+  (9.3 min: the build 5.4 min); the wet look: `--variant wet --beauty hero,hero_back,legs`. Scratch harnesses in `C:/tmp/beatrice_b1l/`
+  (`sh.py` suit, `kh.py` knee pads, `hh.py` hands, `ch.py` collar, `zb.py` gloss / reflection lines / object colours, `wet.py`,
+  `cmp3.py`, `cmp4.py`, `gaps.py`, `compose_b1l.py`; probes `cliff.py`, `fademap.py`, `nrm2.py`, `tjump.py`). Not re-rendered:
+  `shape_vs_concept.jpg`, the `--hips` pictures, `crimson_hero.jpg`.

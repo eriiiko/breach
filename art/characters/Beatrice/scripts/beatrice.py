@@ -775,7 +775,7 @@ def dims(shape=None):
                                    # over the 62 x 95 mm pad read as a flat mirror porthole; a crowned dome, its edge rolling down
                                    # steeply under the rim (p < 1) so the highlight runs round it as a streak, a soft ridge down its
                                    # middle; the side view 7-8 mm proud (B1h 18 mm at a 9 mm dome)
-                                   profile=dict(dome=0.0047, p=0.6, crest=0.0015, w=0.30, cy=0.15, sy=0.9))),
+                                   profile=dict(dome=0.0044, p=0.6, crest=0.0015, w=0.30, cy=0.15, sy=0.9))),
             panel_rim="seam",  # mesh panels set IN the suit, edged by the suit's own seams
             seam_style="tube", piping=(0.0009, 0.0001),  # seams are piping cords (radius, centre above the surface)
             # seams as points seen on the front view ("x", x, z), on the back view ("bx", x, z), or by

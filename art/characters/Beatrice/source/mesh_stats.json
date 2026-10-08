@@ -11,18 +11,18 @@
  },
  "Hands": {
   "objects": 2,
-  "source_tris": 158000,
-  "evaluated_tris": 316000
+  "source_tris": 156864,
+  "evaluated_tris": 313728
  },
  "Suit": {
-  "objects": 52,
-  "source_tris": 551004,
-  "evaluated_tris": 1981100
+  "objects": 50,
+  "source_tris": 557723,
+  "evaluated_tris": 2011076
  },
  "TOTAL": {
-  "objects": 64,
-  "source_tris": 1241980,
-  "evaluated_tris": 3265260
+  "objects": 62,
+  "source_tris": 1247563,
+  "evaluated_tris": 3292964
  },
  "NORMALS": {
   "flipped": [
@@ -33,7 +33,7 @@
    "Suit_Zip_Pull_Front_Tab",
    "Suit_Zip_Stop_Front"
   ],
-  "closed": 64,
+  "closed": 62,
   "open": [],
   "undecided": []
  }
