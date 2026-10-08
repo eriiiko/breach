@@ -44,11 +44,14 @@ PALETTE = dict(
     BOOT="#0d0d0f",
     SOLE="#0a0a0b",
     METAL="#8e8e94",         # the zip (stage 3: a darker, finer silver, as drawn)
-    PAD="#26262c",           # B1i: the knee pads, a third lighter than the suit, as drawn
-    PAD_RIM="#4a4a52",       # B1i: the knee pads' piped rim, brighter still
+    # B1j (review_stage9 item 8): the knee pads suit-dark and GLOSSY (lighter only by their highlight and their bright piped
+    # rim, as drawn); B1i greyed the base (#26262c, rim #4a4a52) and the pads read as grey smoked-glass ovals
+    PAD="#141418",           # the knee pads: the suit's black, a hair lifted
+    PAD_RIM="#6c6c76",       # their piped rim, bright
 )
 GLOSS = dict(rough=0.30, coat=0.45, coat_rough=0.20, specular=0.45, piping=0.9,
              nail_rough=0.20, nail_coat=0.55, nail_coat_rough=0.07,   # B1j: the nails glossier than the skin (0.48-0.60)
+             pad_rough=0.15, pad_coat=1.0, pad_coat_rough=0.07, pad_specular=0.8,   # B1j: the pads glossier than the boots
              boot_rough=0.22, boot_coat=0.7, boot_coat_rough=0.10, mesh_cell=0.0036, mesh_show=0.42, mesh_surface=True, mesh_coat=0.35)
 
 VARIANTS = dict(
