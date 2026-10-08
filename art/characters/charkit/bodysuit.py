@@ -2361,34 +2361,81 @@ def build_fitted_cuffs(S, M, fh, coll="Suit"):
     def skin_v(u):
         """v of the wrist's skin along -N from the sleeve's surface at u (bisection on the hand's field)."""
         P, _, N = at(u, 0.0)
-        lo, hi = np.full(nphi, -0.025), np.zeros(nphi)     # lo inside the skin, hi outside
+        # lo inside the skin, hi outside (B1j: from 6 mm outside the sleeve's surface -- under the cuff's lower edge the
+        # wrist can stand out past the sleeve's line, as it does on the thumb's side)
+        lo, hi = np.full(nphi, -0.025), np.full(nphi, 0.006 if cf.get("hug") else 0.0)
         for _ in range(32):
             m = 0.5 * (lo + hi)
             ins = fh.field(P + m[:, None] * N) < 0.0
-            lo, hi = np.where(ins, lo, m), np.where(ins, m, hi)
+            # B1j: inside -> the surface lies between m and hi (B1i had the two swapped: it converged on lo, 25 mm in,
+            # whatever the wrist, so the underside ran flat right through the wrist and showed as a broad rim below)
+            lo, hi = np.where(ins, m, lo), np.where(ins, hi, m)
         return 0.5 * (lo + hi)
 
     vk = skin_v(u_bot)
     v_in = np.minimum(vk, skin_v(t_top)) - 0.002          # the hidden return, inside the skin
+    hug = cf.get("hug")
+    if hug:  # B1j: the band follows the wrist down to its lower edge, which rests on the skin
+        print("cuff: the skin under the cuff's lower edge lies %.1f..%.1f mm inside the sleeve's surface (mean %.1f)"
+              % (-1000 * vk.max(), -1000 * vk.min(), -1000 * vk.mean()))
+        _, _, Nd = at(u_bot, 0.0)
+        Nl = Nd @ fh.M                                        # in the hand's frame (l, w towards the thumb, b the back)
+        print("cuff: gap by direction (w, b: mm): " + " ".join("(%+.1f,%+.1f):%.1f" % (Nl[i, 1], Nl[i, 2], -1000 * vk[i])
+                                                              for i in range(0, nphi, nphi // 16)))
+        u_w0, u_r = t_top - rt - hug["start"], u_bot + hug["ry"]
+        us = np.linspace(t_top - rt, u_r, max(3, int(round((t_top - rt - u_r) / 0.0005))) + 1)[1:]
+        vks = np.array([skin_v(u) for u in us])
+        v_in = np.full(nphi, -hug.get("v_in", 0.012))     # the hidden return: well inside the wrist on every side
+        # the skin's offset smoothed round the arm (its first `harmonics` only): the band follows the wrist's oval, not
+        # each swell of the hand's field under it (the raw offsets drew a crumpled cuff)
+        F = np.fft.rfft(vks, axis=1)
+        F[:, hug.get("harmonics", 3) + 1:] = 0.0
+        vks_s = np.fft.irfft(F, n=nphi, axis=1)
     prof = []                                              # (u, v (scalar or per phi), n_u, n_v)
     prof.append((t_top + 0.0006, -sink_s, 1.0, 0.0))
     prof.append((t_top, -sink_s, 1.0, 0.0))
     prof.append((t_top, 0.0002, 1.0, 0.0))
     for b_ in np.linspace(0.5 * math.pi, 0.0, 7):          # the top edge, rounded
         prof.append((t_top - rt + rt * math.sin(b_), band - rt + rt * math.cos(b_), math.sin(b_), math.cos(b_)))
-    nf = max(2, int(round((t_top - rt - (u_bot + rr)) / 0.0010)))
-    for u in np.linspace(t_top - rt, u_bot + rr, nf + 1)[1:-1]:
-        prof.append((u, band, 0.0, 1.0))
-    for a_ in np.linspace(0.0, 0.5 * math.pi, 9):          # the bottom edge, rolled
-        prof.append((u_bot + rr - rr * math.sin(a_), band - rr + rr * math.cos(a_), -math.sin(a_), math.cos(a_)))
-    for q in np.linspace(0.0, 1.0, 9)[1:]:                 # the underside, in to the skin (per phi)
-        prof.append((u_bot, (band - rr) + q * (vk + 0.0003 - (band - rr)), -1.0, 0.0))
-    prof.append((u_bot, vk - sink_k, -1.0, 0.0))
-    prof.append((t_top + 0.0006, v_in, 0.0, -1.0))
+    if hug:
+        # the outer face: the sleeve's offset `band` at the top, eased (C1) from `start` under the top edge in towards the
+        # wrist under the lower edge by `share` of the way (the band's lower part follows the wrist's oval a little); then
+        # the lower edge rolls in onto the skin as a quarter ellipse (`ry` tall, as wide as the gap left: a rounded lip,
+        # no flat underside), which meets the skin `lip` proud and runs on into it
+        q = np.clip((u_w0 - us) / (u_w0 - u_r), 0.0, 1.0)
+        W = q * q * (3.0 - 2.0 * q)
+        gap = smin3(vks_s[-1] + hug["thick"] - band, 0.0, hug.get("k", 0.0015))      # <= 0, per phi
+        outer = band + hug.get("share", 1.0) * W[:, None] * gap[None, :]
+        du = np.gradient(us)
+        dv = np.gradient(outer, axis=0)
+        for i, u in enumerate(us):
+            nu, nv = -dv[i] / du[i], np.ones(nphi)
+            nn = np.sqrt(nu * nu + nv * nv)
+            prof.append((u, outer[i], nu / nn, nv / nn))
+        ob_ = outer[-1]
+        ry = hug["ry"]
+        rx = smax3(ob_ - (vks_s[-1] + hug["lip"]), rr, 0.0008)
+        for a_ in np.linspace(0.0, 0.5 * math.pi, 13)[1:]:          # the lower edge, rolled in onto the skin
+            nu, nv = -math.sin(a_) / ry, np.cos(a_) / rx
+            nn = np.sqrt(nu * nu + nv * nv)
+            prof.append((u_r - ry * math.sin(a_), ob_ - rx + rx * math.cos(a_), nu / nn, nv / nn))
+        prof.append((u_r - ry, ob_ - rx - hug["lip"] - sink_k, -1.0, 0.0))
+        prof.append((t_top + 0.0006, v_in, 0.0, -1.0))
+    else:
+        nf = max(2, int(round((t_top - rt - (u_bot + rr)) / 0.0010)))
+        for u in np.linspace(t_top - rt, u_bot + rr, nf + 1)[1:-1]:
+            prof.append((u, band, 0.0, 1.0))
+        for a_ in np.linspace(0.0, 0.5 * math.pi, 9):          # the bottom edge, rolled
+            prof.append((u_bot + rr - rr * math.sin(a_), band - rr + rr * math.cos(a_), -math.sin(a_), math.cos(a_)))
+        for q in np.linspace(0.0, 1.0, 9)[1:]:                 # the underside, in to the skin (per phi)
+            prof.append((u_bot, (band - rr) + q * (vk + 0.0003 - (band - rr)), -1.0, 0.0))
+        prof.append((u_bot, vk - sink_k, -1.0, 0.0))
+        prof.append((t_top + 0.0006, v_in, 0.0, -1.0))
     V, Nrm = [], []
     for u, v, nu, nv in prof:
         P, T, N = at(u, 0.0)
         V.append(P + np.broadcast_to(v, (nphi,))[:, None] * N)
+        nu, nv = np.broadcast_to(nu, (nphi,))[:, None], np.broadcast_to(nv, (nphi,))[:, None]
         Nrm.append(unit(nu * T + nv * N))
     V, Nrm = np.array(V), np.array(Nrm)                    # (profile, phi, 3)
     R, C = V.shape[:2]

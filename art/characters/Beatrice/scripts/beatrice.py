@@ -557,9 +557,12 @@ FITTED_HAND_B1I = dict(
 _FINGER_FORM = dict(tip_p=2.0, joint=(0.07, 0.0035), crease=(0.06, 0.0010, 0.0005), mcp=0.10, knuckle=0.08)
 FITTED_HAND = dict(
     FITTED_HAND_B1I,
-    palm=((-0.026, 0.000, 0.0005, 0.0145, 0.0112, 0.0112, 2.0), (-0.014, 0.000, 0.0005, 0.0152, 0.0112, 0.0112, 2.1),
-          (-0.005, 0.000, 0.0004, 0.0166, 0.0106, 0.0107, 2.3), (0.010, 0.0005, 0.0002, 0.0197, 0.0101, 0.0108, 2.4),
-          (0.027, 0.0000, -0.0002, 0.0230, 0.0084, 0.0100, 2.3), (0.042, -0.0004, -0.0006, 0.0252, 0.0074, 0.0090, 2.25),
+    # the wrist rounder and a little fuller (B1i 32 x 20 mm a few mm under the cuff; the cuff's lower edge rolls onto it),
+    # and centred in the cuff: B1i's sat 4-5 mm towards the palm in it (the gap under the cuff's edge 9 mm on the back of
+    # the wrist, none on the palm side: in the front view the cuff overhung the wrist on the outside)
+    palm=((-0.026, 0.000, 0.0055, 0.0145, 0.0118, 0.0118, 2.0), (-0.014, -0.0007, 0.0057, 0.0152, 0.0122, 0.0122, 2.1),
+          (-0.005, -0.0015, 0.0046, 0.0160, 0.0117, 0.0123, 2.25), (0.010, 0.0005, 0.0022, 0.0197, 0.0110, 0.0114, 2.4),
+          (0.027, 0.0000, 0.0005, 0.0230, 0.0085, 0.0100, 2.3), (0.042, -0.0004, -0.0006, 0.0252, 0.0074, 0.0090, 2.25),
           (0.052, -0.0008, -0.0010, 0.0256, 0.0066, 0.0082, 2.2)),
     palm_end=(0.062, 0.016), palm_end_p=2.5, palm_end_shear=0.5, palm_arc=(0.003, 9.0),
     fingers=(
@@ -633,7 +636,12 @@ def dims(shape=None):
             # was (0.950), its outer face as proud of the sleeve as the band's was (lift + thick), a rolled bottom edge just below
             # the sleeve's end (B1h: the band from 0.937 and the sleeve's own rim below it, the double ring), the underside in to
             # the skin (no gap): band, top edge radius, bottom roll radius, how far below the sleeve's end, sink (sleeve, skin)
-            cuff_fit=dict(band=0.0017, top_r=0.0007, roll=0.0013, below=0.0012, sink=(0.0006, 0.0005)),
+            cuff_fit=dict(band=0.0017, top_r=0.0007, roll=0.0013, below=0.0012, sink=(0.0006, 0.0005),
+                          # B1j (review_stage9 B2 cuff): from `start` under its top edge the band eases `share` of the way in
+                          # towards the wrist (`thick` proud of the skin), and its lower edge rolls in onto the skin as a
+                          # quarter ellipse `ry` tall ending `lip` proud (B1i: a straight tube, its flat underside standing off
+                          # the wrist: cuff 1.4x the wrist in the front view, drawn 1.15x)
+                          hug=dict(start=0.002, thick=0.0016, share=0.35, ry=0.0022, lip=0.0003)),
             # the stand collar's rings (z, centre y, half-width, front, back, exponent), neckline -> just
             # under the jaw (the side view: it stands straight and hugs the neck)
             collar=dict(rings=((1.428, .012, .064, .056, .062, 2.3), (1.445, .012, .052, .049, .055, 2.2), (1.458, .012, .046, .046, .052, 2.1),
