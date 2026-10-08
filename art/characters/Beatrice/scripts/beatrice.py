@@ -36,7 +36,7 @@ PALETTE = dict(
     MESH="#141316",          # the inserts' net
     MESH_THIGH="#5a5a62",    # what shows through the thigh panels' net: a dark grey (the suit's, not skin)
     SKIN="#efcbbb",          # pale, as drawn
-    NAIL="#f1c2bd",          # B1i: the nails, a little pinker than the skin
+    NAIL="#f2c9c1",          # B1j: the nails, a natural light pink a touch lighter than the skin (B1i #f1c2bd read mauve end-on)
     BROW="#4a3a34",
     SCLERA="#e2dcd6",
     IRIS="#6c7488",          # grey-blue, as drawn
@@ -48,6 +48,7 @@ PALETTE = dict(
     PAD_RIM="#4a4a52",       # B1i: the knee pads' piped rim, brighter still
 )
 GLOSS = dict(rough=0.30, coat=0.45, coat_rough=0.20, specular=0.45, piping=0.9,
+             nail_rough=0.20, nail_coat=0.55, nail_coat_rough=0.07,   # B1j: the nails glossier than the skin (0.48-0.60)
              boot_rough=0.22, boot_coat=0.7, boot_coat_rough=0.10, mesh_cell=0.0036, mesh_show=0.42, mesh_surface=True, mesh_coat=0.35)
 
 VARIANTS = dict(
@@ -510,7 +511,7 @@ SLEEVE_BACK = {"elbow": .0325, "elbow_top": .0300}
 # B1i (review_stage7 B2): the bare hand as ONE surface of smooth fields (bodysuit.FittedHand), replacing parts.bare_hand
 # (its capsule chains and pad ellipsoids, unioned with a C1 fillet at every node, were the ring-banding). In the hand's
 # frame, metres: l down the hand from the wrist point, w towards the thumb, b out of the back of the hand.
-FITTED_HAND = dict(
+FITTED_HAND_B1I = dict(
     # the palm, ONE sweep wrist (inside the cuff) -> knuckles: (l, w centre, b centre, half-width, depth back, depth palm,
     # exponent); the rows above l 0 run up the forearm (sheared along it); it closes round over `palm_end` (l, length).
     # B1i step 2: shorter (the knuckles 13 mm nearer the wrist), tapering from the knuckles to a slimmer wrist; step 4: the
@@ -545,6 +546,36 @@ FITTED_HAND = dict(
     hollow=((0.034, -0.002, -0.0175), (0.018, 0.013, 0.0065), 0.006),
     nail=dict(len=0.0125, free=0.0032, width=0.72, thumb=1.1, height=0.0002),   # the free edge 3 mm short of the tip (the tip skin rounds over it)
     res=(0.0007, 0.0011), smooth=4,
+)
+
+# B1j (review_stage9 "Hands" 1-5, item 7): B1i's hand with the fingers HANGING (a gentle graded curl, close together, a
+# small fan; B1i's cascade 0.72-1.72 rad curled the ring and little fingers out sideways like a claw), the back of the hand
+# narrower and rounder and ending ON the knuckles (`palm_end_shear`: the back ends sooner, the palm side later; a softer
+# closing, `palm_end_p`; B1i's rounded end overhung the finger roots, the ledge), the fingers thinner, tapering into a
+# half-elliptic tip (`tip_p` 2), with a soft swell and a faint back crease at each finger joint (`joint`, `crease`), the
+# nails small domed oval plates set in the finger (`nail["shape"]`), the wrist 1-2 mm fuller (the cuff rolls onto it)
+_FINGER_FORM = dict(tip_p=2.0, joint=(0.07, 0.0035), crease=(0.06, 0.0010, 0.0005), mcp=0.10, knuckle=0.08)
+FITTED_HAND = dict(
+    FITTED_HAND_B1I,
+    palm=((-0.026, 0.000, 0.0005, 0.0145, 0.0112, 0.0112, 2.0), (-0.014, 0.000, 0.0005, 0.0152, 0.0112, 0.0112, 2.1),
+          (-0.005, 0.000, 0.0004, 0.0166, 0.0106, 0.0107, 2.3), (0.010, 0.0005, 0.0002, 0.0197, 0.0101, 0.0108, 2.4),
+          (0.027, 0.0000, -0.0002, 0.0230, 0.0084, 0.0100, 2.3), (0.042, -0.0004, -0.0006, 0.0252, 0.0074, 0.0090, 2.25),
+          (0.052, -0.0008, -0.0010, 0.0256, 0.0066, 0.0082, 2.2)),
+    palm_end=(0.062, 0.016), palm_end_p=2.5, palm_end_shear=0.5, palm_arc=(0.003, 9.0),
+    fingers=(
+        dict(_FINGER_FORM, name="Index", root=(0.055, 0.0182, -0.0012), splay=0.06, len=(0.0425, 0.0255, 0.0222),
+             bend=(0.28, 0.32, 0.14), r=(0.0072, 0.0062, 0.0054, 0.0046), r_tip=0.0067),
+        dict(_FINGER_FORM, name="Middle", root=(0.058, 0.0052, -0.0002), splay=0.015, len=(0.046, 0.0283, 0.0232),
+             bend=(0.34, 0.40, 0.18), r=(0.0074, 0.0064, 0.0055, 0.0047), r_tip=0.0068),
+        dict(_FINGER_FORM, name="Ring", root=(0.056, -0.0080, -0.0010), splay=-0.03, roll=0.05, len=(0.0423, 0.026, 0.0212),
+             bend=(0.38, 0.46, 0.20), r=(0.0069, 0.0060, 0.0052, 0.0044), r_tip=0.0064),
+        dict(_FINGER_FORM, name="Pinky", root=(0.050, -0.0202, -0.0030), splay=-0.075, roll=0.12, len=(0.0322, 0.0202, 0.0183),
+             bend=(0.41, 0.50, 0.22), r=(0.0061, 0.0053, 0.0046, 0.0040), r_tip=0.0058),
+    ),
+    thumb=dict(FITTED_HAND_B1I["thumb"], r=(0.0096, 0.0084, 0.0074, 0.0062), tip_p=2.5, r_tip=0.0082, joint=(0.04, 0.004),
+               crease=(0.03, 0.0009, 0.0005)),
+    tendons=dict(h=0.00035, sig=0.0019, start=0.008, spread=0.35, fade=0.014, short=0.006, fade_end=0.004),
+    nail=dict(shape="shell", len=0.0110, free=0.0022, width=0.76, thumb=1.1, height=0.00030, p=2.6, rim=0.55, sink=0.0003),
 )
 
 # the raglan cut (bodysuit.Suit.in_torso_region): front = the start of THE line, back = the raglan seam

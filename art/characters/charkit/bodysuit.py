@@ -1850,8 +1850,9 @@ class _Sweep:
     chain of capsules is a ring of bump and dent at every node). The tip closes over `r_tip` as sqrt(1 - t^4) (round,
     no curvature jump); the start (`s0`, inside the palm) is cut flat. Everything in the hand's frame (l, w, b)."""
 
-    def __init__(self, base, e1, e2, joints, s0, s1, a, bb, bp, n, r_tip, r_start=0.006, ds=0.0005, margin=0.03):
+    def __init__(self, base, e1, e2, joints, s0, s1, a, bb, bp, n, r_tip, r_start=0.006, ds=0.0005, margin=0.03, tip_p=4.0):
         self.base = np.asarray(base, float)
+        self.tip_p = tip_p   # the tip closes as sqrt(1 - t^tip_p): 4 full and blunt (B1i), 2 a half-ellipse (B1j: tapering)
         e1 = unit(np.asarray(e1, float))
         e2 = np.asarray(e2, float)
         e2 = unit(e2 - (e2 @ e1) * e1)
@@ -1880,10 +1881,36 @@ class _Sweep:
             t = t + bend * _smooth01((s - sj + wj) / (2.0 * wj))
         return t
 
+    def closing(self, s):
+        """The tip's closing factor on the half-width (1 before the tip's rounding, 0 at the very tip)."""
+        t = np.clip((s - (self.s1 - self.r_tip)) / self.r_tip, 0.0, 1.0)
+        return np.sqrt(np.maximum(1.0 - t ** self.tip_p, 0.0))
+
+    def nail_shape(self, s, x, y):
+        """B1j: the nail as a small domed plate SET IN the finger (`nail["shape"]`): an oval (a rounded rectangle of
+        exponent `p` in (along, across)) from `len` to `free` before the tip, across `width` of the digit's half-width
+        where it stands (so it narrows with the tip into an almond), its edge soft over `edge` of its size. Returns
+        (weight 0..1, height factor: 1 at the centre, `rim` at the edge -- a dome on the finger's own curve)."""
+        nl = self.nail
+        sa, sb = self.s1 - nl["len"], self.s1 - nl["free"]
+        sc, hl = 0.5 * (sa + sb), 0.5 * (sb - sa)
+        a = np.maximum(self.a(s) * self.closing(s), 1e-6)
+        u = (s - sc) / hl
+        v = x / (nl["width"] * a)
+        p = nl.get("p", 2.6)
+        r = (np.abs(u) ** p + np.abs(v) ** p) ** (1.0 / p)
+        e = nl.get("edge", 0.07)
+        q = 1.0 - _smooth01((r - (1.0 - e)) / (2.0 * e))
+        q = q * _smooth01(y / (0.35 * np.maximum(self.a(s), 1e-6)))
+        dome = 1.0 - (1.0 - nl.get("rim", 0.55)) * np.minimum(r, 1.0) ** 2
+        return q, dome
+
     def nail_q(self, s, x, y):
         """The nail's weight (0..1, C2 edges) at sweep coordinates: the back of the last phalanx from `len` before the tip
         to `free` before it, over the middle `width` of the digit's half-width."""
         nl = self.nail
+        if nl.get("shape"):
+            return self.nail_shape(s, x, y)[0]
         a = np.maximum(self.a(s), 1e-6)
         q = _smooth01((s - (self.s1 - nl["len"])) / nl.get("soft", 0.0015)) * (1.0 - _smooth01((s - (self.s1 - nl["free"])) / 0.0008))
         q = q * (1.0 - _smooth01((np.abs(x) / a - nl["width"]) / 0.18))
@@ -1938,13 +1965,15 @@ class _Sweep:
         if not near.any():
             return d
         s, x, y, along = self.coords(P[near])
-        t = np.clip((s - (self.s1 - self.r_tip)) / self.r_tip, 0.0, 1.0)
-        c = np.sqrt(np.maximum(1.0 - t ** 4, 0.0))
-        a = np.maximum(self.a(s) * c, 1e-5)
+        c = self.closing(s)
+        a = self.a(s)
         bb, bp = self.bb(s), self.bp(s)
-        if extra is not None:  # per-point depth factors (knuckles, pads), (back, palm)
-            fb, fp = extra(s)
-            bb, bp = bb * fb, bp * fp
+        if extra is not None:  # per-point depth factors (knuckles, pads), (back, palm); B1j: and the width (the joints)
+            fx = extra(s)
+            bb, bp = bb * fx[0], bp * fx[1]
+            if len(fx) > 2:
+                a = a * fx[2]
+        a = np.maximum(a * c, 1e-5)
         b = np.maximum(a * np.where(y >= 0.0, bb, bp), 1e-5)
         n = self.n(s)
         # the start (inside the palm) is a rounded cap of length r_start (a superellipsoid end, as a capsule's: its
@@ -1955,8 +1984,12 @@ class _Sweep:
         # the distance's scale must not depend on the side (back / palm): a scale that jumps where the section's two
         # halves meet leaves the shape whole but tears the field's gradient there -- a dotted line in the shading normals
         dd = (rho - 1.0) * np.minimum(np.minimum(a, a * np.minimum(bb, bp)), self.r_start)
-        if getattr(self, "nail", None):  # the nail: a plate standing a hair proud of the last phalanx's back
-            dd = dd - self.nail["height"] * self.nail_q(s, x, y)
+        if getattr(self, "nail", None) and self.nail.get("shape") != "shell":  # the nail: a plate a hair proud of the back
+            if self.nail.get("shape"):   # B1j: a domed plate set in the finger
+                q, dome = self.nail_shape(s, x, y)
+                dd = dd - self.nail["height"] * q * dome
+            else:
+                dd = dd - self.nail["height"] * self.nail_q(s, x, y)
         dd = np.where(s >= self.s1 - 1e-9, np.maximum(dd, along), dd)
         d[near] = dd
         return d
@@ -2027,17 +2060,27 @@ class FittedHand:
         bp = [(s, dp) for s in ctrl_s]
         n = [(ctrl_s[0], g.get("n", 2.2)), (ctrl_s[-1], g.get("n", 2.2))]
         sw = _Sweep(g["root"], g["dir"], g["back"], joints, ctrl_s[0], s1, a, bb, bp, n, g.get("r_tip", r[-1] * 1.2),
-                    r_start=g.get("r_start", 0.008))
+                    r_start=g.get("r_start", 0.008), tip_p=g.get("tip_p", 4.0))
         mids = [0.5 * (sj[i] + sj[i + 1]) for i in range(len(lens) - 1)] + [s1 - 0.55 * g.get("r_tip", r[-1] * 1.2)]
         js = list(sj[:-1])
         sig_k, sig_p = g.get("knuckle_w", 0.0045), g.get("pad_w", 0.0065)
 
         km = g.get("mcp", kb)
 
+        # B1j: the finger joints' form -- a soft swell of the width over each finger joint (`joint` (share, sigma)) and a
+        # faint crease across the back at it (`crease` (depth share, sigma, offset along the finger))
+        kj, sig_j = g.get("joint", (0.0, 0.004))
+        kc, sig_c, off_c = g.get("crease", (0.0, 0.001, 0.0))
+
         def extra(s):
             fb = 1.0 + km * np.exp(-0.5 * (s / g.get("mcp_w", 0.006)) ** 2) + kb * sum(np.exp(-0.5 * ((s - q) / sig_k) ** 2) for q in js[1:])
+            if kc:
+                fb = fb - kc * sum(np.exp(-0.5 * ((s - q - off_c) / sig_c) ** 2) for q in js[1:])
             fp = 1.0 + kp * sum(np.exp(-0.5 * ((s - q) / sig_p) ** 2) for q in mids)
-            return fb, fp
+            if not kj:
+                return fb, fp
+            fa = 1.0 + kj * sum(np.exp(-0.5 * ((s - q) / sig_j) ** 2) for q in js[1:])
+            return fb, fp, fa
         sw.extra = extra
         sw.spec = g
         sw.nail = g.get("nail")
@@ -2056,9 +2099,14 @@ class FittedHand:
         # the palm's end follows the knuckles' arc: `palm_arc` (w of its crown, fall per m^2 across the hand)
         wc, kc = self.f.get("palm_arc", (0.0, 0.0))
         le = self.l_end - kc * (w - wc) ** 2
+        # B1j: the end sheared (`palm_end_shear`): the back of the hand ends sooner (on the knuckles, which then stand
+        # out of it), the palm side later (the webbing under the fingers); closing as sqrt(1 - t^p) (`palm_end_p`; 4 = B1i)
+        es = self.f.get("palm_end_shear", 0.0)
+        if es:
+            le = le - es * (b - self.pb(np.clip(l, self.l_top, self.l_end)))
         lc = np.clip(l, self.l_top, le)
         t = np.clip((lc - (le - self.r_end)) / self.r_end, 0.0, 1.0)
-        c = np.sqrt(np.maximum(1.0 - t ** 4, 0.0))
+        c = np.sqrt(np.maximum(1.0 - t ** self.f.get("palm_end_p", 4.0), 0.0))
         a = np.maximum(self.pa(lc) * c, 1e-5)
         y = b - self.pb(lc)
         bb, bp = self.pbb(lc), self.pbp(lc)
@@ -2076,9 +2124,35 @@ class FittedHand:
         a2 = np.cross(b2, a)
         return implicit.ellipsoid(Lp, c, np.array([a, a2, b2]), rad)
 
+    def tendons(self, Lp):
+        """B1j: the extensor tendons, a faint ridge on the back of the hand from near the wrist to each finger's knuckle
+        (`tendons`: height, sigma across, start l, the fan's share of the knuckles' spread at the start, the ridge's
+        fade-in length and how far short of the knuckle it ends), so the back of the hand is not one flat face."""
+        tn = self.f["tendons"]
+        l, w, b = Lp[:, 0], Lp[:, 1], Lp[:, 2]
+        out = np.zeros(len(Lp))
+        for name, sw in self.digits:
+            if name == "Thumb":
+                continue
+            r = sw.spec["root"]
+            p0 = np.array([tn["start"], r[1] * tn["spread"]])
+            p1 = np.array([r[0] - tn["short"], r[1]])
+            e = p1 - p0
+            ln = float(np.hypot(*e))
+            e = e / ln
+            q = np.column_stack([l - p0[0], w - p0[1]])
+            t = q @ e
+            dist = np.abs(q @ np.array([-e[1], e[0]]))
+            along = _smooth01(t / tn["fade"]) * (1.0 - _smooth01((t - ln) / tn["fade_end"]))
+            out = out + np.exp(-0.5 * (dist / tn["sig"]) ** 2) * along   # a sum, not a max (a max creases where two cross)
+        y = b - self.pb(np.clip(l, self.l_top, self.l_end))
+        return tn["h"] * out * _smooth01(y / 0.004)
+
     def field_local(self, Lp, parts_=False):
         f = self.f
         d = self.palm(Lp)
+        if f.get("tendons"):
+            d = d - self.tendons(Lp)
         for c, rad, ax, k in f.get("pads", ()):
             d = smin3(d, self._ell(Lp, c, ax, rad), k)
         if f.get("hollow"):
@@ -2115,6 +2189,99 @@ class FittedHand:
             m[near] = np.maximum(m[near], sw.nail_q(s, x, y))
         return m
 
+    def nail_shells(self):
+        """B1j: each nail as its OWN small closed shell lying on the finger (`nail["shape"] == "shell"`): an oval (a
+        superellipse of exponent `p` in (along, across), from `len` to `free` before the tip, `width` of the digit's
+        half-width where it stands, so it narrows into an almond with the tip), its top `height` proud of the finger at
+        the centre and `rim` of that at its edge (a dome on the finger's own curve), its edge a short wall down into the
+        finger (`sink`). A shell's outline is smooth wherever the hand's grid lies (a material assigned per face of the
+        hand's mesh drew the outline as a staircase of 0.7 mm steps). Returns (V, quads, triangles, loop normals), in the
+        world."""
+        Vs, Qs, Ns = [], [], []
+        off = 0
+        for name, sw in self.digits:
+            nl = sw.nail
+            if not nl:
+                continue
+            sa, sb = sw.s1 - nl["len"], sw.s1 - nl["free"]
+            sc, hl = 0.5 * (sa + sb), 0.5 * (sb - sa)
+            p = nl.get("p", 2.6)
+            rho = 1.0 - (1.0 - np.linspace(0.0, 1.0, nl.get("rings", 10))) ** 1.6     # denser towards the edge
+            ang = np.linspace(0.0, kit.TAU, nl.get("n", 72), endpoint=False)
+            ca, sa_ = np.cos(ang), np.sin(ang)
+            uu = np.sign(ca) * np.abs(ca) ** (2.0 / p)
+            vv = np.sign(sa_) * np.abs(sa_) ** (2.0 / p)
+            R, A = np.meshgrid(rho, np.arange(len(ang)), indexing="ij")
+            s = sc + hl * (R * uu[A])
+            a = sw.a(s) * sw.closing(s)
+            x = nl["width"] * a * R * vv[A]
+            s, x = s.ravel(), x.ravel()
+            th = sw.theta(s)
+            e1, e2, e3 = sw.E
+            nv = np.sin(th)[:, None] * e1 + np.cos(th)[:, None] * e2      # the section's way to the back (the nail side)
+            C = sw.points(s) + x[:, None] * e3
+            lo, hi = np.zeros(len(s)), np.full(len(s), 0.02)
+            for _ in range(34):   # the hand's own surface along the section's back direction
+                m = 0.5 * (lo + hi)
+                ins = self.field_local(C + m[:, None] * nv) < 0.0
+                lo, hi = np.where(ins, m, lo), np.where(ins, hi, m)
+            P = C + (0.5 * (lo + hi))[:, None] * nv
+            e = 1e-4
+            g = np.stack([(self.field_local(P + e * u) - self.field_local(P - e * u)) / (2 * e) for u in np.eye(3)], axis=1)
+            g /= np.maximum(np.linalg.norm(g, axis=1, keepdims=True), 1e-12)
+            hgt = nl["height"] * (1.0 - (1.0 - nl.get("rim", 0.55)) * R.ravel() ** 2)
+            top = P + hgt[:, None] * g
+            bot = P - nl.get("sink", 0.0003) * g
+            nr, na = len(rho), len(ang)
+            top, bot, g = self.world(top), self.world(bot), g @ self.M.T
+            # vertices: the top's centre (ring 0 is one point) and rings 1.., then the bottom's; a fan round each centre
+            ring = lambda X: X.reshape(nr, na, 3)
+            V = np.vstack([ring(top)[0, :1], ring(top)[1:].reshape(-1, 3), ring(bot)[0, :1], ring(bot)[1:].reshape(-1, 3)])
+            G = np.vstack([ring(g)[0, :1], ring(g)[1:].reshape(-1, 3)])
+            nt = 1 + (nr - 1) * na
+            it = np.arange(1, nt).reshape(nr - 1, na)
+            ib = it + nt
+            nx = np.roll(np.arange(na), -1)
+            Q = []
+            for k in range(nr - 2):
+                Q.append(np.stack([it[k], it[k + 1], it[k + 1][nx], it[k][nx]], axis=1))
+                Q.append(np.stack([ib[k], ib[k][nx], ib[k + 1][nx], ib[k + 1]], axis=1))
+            Q.append(np.stack([it[-1], ib[-1], ib[-1][nx], it[-1][nx]], axis=1))   # the edge wall
+            Q = np.vstack(Q)
+            T = np.vstack([np.stack([np.zeros(na, int), it[0], it[0][nx]], axis=1),      # wound as the quads beside them
+                           np.stack([np.full(na, nt), ib[0][nx], ib[0]], axis=1)])
+            # outward: a top face's normal along the surface normal
+            f0 = Q[0]
+            nf = np.cross(V[f0[1]] - V[f0[0]], V[f0[3]] - V[f0[0]])
+            if nf @ G[f0[0]] < 0.0:
+                Q, T = Q[:, ::-1], T[:, ::-1]
+            # loop normals: the top's smooth (from its own faces), the wall's and the bottom's flat
+            def fnorm(F):
+                n = np.zeros((len(F), 3))
+                for c in range(F.shape[1]):
+                    a_, b_, c_ = V[F[:, c - 1]], V[F[:, c]], V[F[:, (c + 1) % F.shape[1]]]
+                    n += np.cross(c_ - b_, a_ - b_)
+                return n
+            fq, ft = fnorm(Q), fnorm(T)
+            tq, tt = (Q < nt).all(axis=1), (T < nt).all(axis=1)
+            Vn = np.zeros_like(V)
+            for F, fn, on in ((Q, fq, tq), (T, ft, tt)):
+                for c in range(F.shape[1]):
+                    np.add.at(Vn, F[on, c], fn[on])
+            Vn /= np.maximum(np.linalg.norm(Vn, axis=1, keepdims=True), 1e-12)
+            LN = []
+            for F, fn, on in ((Q, fq, tq), (T, ft, tt)):
+                fu = fn / np.maximum(np.linalg.norm(fn, axis=1, keepdims=True), 1e-12)
+                LN.append(np.where(on[:, None, None], Vn[F], fu[:, None, :].repeat(F.shape[1], axis=1)).reshape(-1, 3))
+            Vs.append(V)
+            Qs.append((Q + off, T + off))
+            Ns.append(LN)
+            off += len(V)
+        Q = np.vstack([q for q, _ in Qs])
+        T = np.vstack([t for _, t in Qs])
+        LN = np.vstack([n[0] for n in Ns] + [n[1] for n in Ns])   # new_mesh lays the quads' loops first, then the triangles'
+        return np.vstack(Vs), Q, T, LN
+
     def bounds(self):
         pts = [self.world(np.array([[r[0], r[1], r[2]]])) for r in self.rows]
         for _, sw in self.digits:
@@ -2147,13 +2314,19 @@ def build_fitted_hands(F, M, coll="Hands"):
     if np.linalg.det(fh.M) < 0.0:  # a left-handed frame turns the faces inside out
         Q = Q[:, ::-1]
     ob = kit.new_mesh("Hand_Hand", Vw, Q, None, M["skin"], coll)
-    if "nail" in M:
+    shells = (f.get("nail") or {}).get("shape") == "shell"
+    if "nail" in M and not shells:
         ob.data.materials.append(M["nail"])
         m = fh.nail_mask(Vw)
         on = (m[Q].mean(axis=1) > 0.5).astype(np.int32)
         ob.data.polygons.foreach_set("material_index", on)
     ob.data.normals_split_custom_set_from_vertices([tuple(n) for n in fh.gradient(Vw)])
     mirror(ob)
+    if shells and "nail" in M:  # B1j: the nails their own closed shells on the fingers (`FittedHand.nail_shells`)
+        Vn, Qn, Tn, LN = fh.nail_shells()
+        on = kit.new_mesh("Hand_Nails", Vn, Qn, Tn, M["nail"], coll)
+        on.data.normals_split_custom_set([tuple(n) for n in LN])
+        mirror(on)
     return fh
 
 
