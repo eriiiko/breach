@@ -1913,8 +1913,6 @@ class _Sweep:
         s, x, y, along = self.coords(P[near])
         t = np.clip((s - (self.s1 - self.r_tip)) / self.r_tip, 0.0, 1.0)
         c = np.sqrt(np.maximum(1.0 - t ** 4, 0.0))
-        t0 = np.clip((self.s0 + self.r_start - s) / self.r_start, 0.0, 1.0)   # the start rounded too: no cut face
-        c = c * np.sqrt(np.maximum(1.0 - t0 ** 4, 0.0))
         a = np.maximum(self.a(s) * c, 1e-5)
         bb, bp = self.bb(s), self.bp(s)
         if extra is not None:  # per-point depth factors (knuckles, pads), (back, palm)
@@ -1922,12 +1920,17 @@ class _Sweep:
             bb, bp = bb * fb, bp * fp
         b = np.maximum(a * np.where(y >= 0.0, bb, bp), 1e-5)
         n = self.n(s)
-        rho = (np.abs(x / a) ** n + np.abs(y / b) ** n) ** (1.0 / n)
-        dd = (rho - 1.0) * np.minimum(a, b)
+        # the start (inside the palm) is a rounded cap of length r_start (a superellipsoid end, as a capsule's: its
+        # distance stays a distance, so a fillet reaching it stays smooth; a flat cut showed as a line, a section shrunk
+        # to nothing drew a jagged crease through the fillet)
+        back = np.maximum(-along, 0.0) * (s <= self.s0 + 1e-9)
+        rho = (np.abs(x / a) ** n + np.abs(y / b) ** n + (back / self.r_start) ** n) ** (1.0 / n)
+        # the distance's scale must not depend on the side (back / palm): a scale that jumps where the section's two
+        # halves meet leaves the shape whole but tears the field's gradient there -- a dotted line in the shading normals
+        dd = (rho - 1.0) * np.minimum(np.minimum(a, a * np.minimum(bb, bp)), self.r_start)
         if getattr(self, "nail", None):  # the nail: a plate standing a hair proud of the last phalanx's back
             dd = dd - self.nail["height"] * self.nail_q(s, x, y)
         dd = np.where(s >= self.s1 - 1e-9, np.maximum(dd, along), dd)
-        dd = np.where(s <= self.s0 + 1e-9, np.maximum(dd, -along), dd)
         d[near] = dd
         return d
 
@@ -2023,16 +2026,20 @@ class FittedHand:
 
     def palm(self, Lp):
         l, w, b = Lp[:, 0], Lp[:, 1], Lp[:, 2]
-        lc = np.clip(l, self.l_top, self.l_end)
-        t = np.clip((lc - (self.l_end - self.r_end)) / self.r_end, 0.0, 1.0)
+        # the palm's end follows the knuckles' arc: `palm_arc` (w of its crown, fall per m^2 across the hand)
+        wc, kc = self.f.get("palm_arc", (0.0, 0.0))
+        le = self.l_end - kc * (w - wc) ** 2
+        lc = np.clip(l, self.l_top, le)
+        t = np.clip((lc - (le - self.r_end)) / self.r_end, 0.0, 1.0)
         c = np.sqrt(np.maximum(1.0 - t ** 4, 0.0))
         a = np.maximum(self.pa(lc) * c, 1e-5)
         y = b - self.pb(lc)
-        bd = np.maximum(np.where(y >= 0.0, self.pbb(lc), self.pbp(lc)) * c, 1e-5)
+        bb, bp = self.pbb(lc), self.pbp(lc)
+        bd = np.maximum(np.where(y >= 0.0, bb, bp) * c, 1e-5)
         n = self.pn(lc)
         rho = (np.abs((w - self.pw(lc)) / a) ** n + np.abs(y / bd) ** n) ** (1.0 / n)
-        d = (rho - 1.0) * np.minimum(a, bd)
-        d = np.maximum(d, l - self.l_end)
+        d = (rho - 1.0) * np.minimum(a, np.maximum(np.minimum(bb, bp) * c, 1e-5))   # one scale for both halves (see _Sweep)
+        d = np.maximum(d, l - le)
         return np.maximum(d, self.l_top - l)
 
     def _ell(self, Lp, c, ax, rad):

@@ -356,3 +356,16 @@ it was, unused by her now), so no other character was rebuilt. Work in progress;
   hollow, knuckles (a 6 % swell of each digit's back over its joints), finger pads (10 % swell of the palm side mid-
   phalanx), nails. Measured by `C:/tmp/beatrice_b1i/meas.py` on a 4x render of the sheet's front view (numbers in the
   final B1i record below).
+- **Step 3, the pose (review B2 "no thumb reads", "mannequin").** Relaxed as in `without_hair*.png`: a curl cascade from the
+  index to the little finger (total bend 0.72 / 1.22 / 1.53 / 1.72 rad), the ring and little fingers rolled 0.10 / 0.25 rad
+  so they curl towards the thumb's base (no splayed little finger; in the side view the fingers fan forward as drawn),
+  the thumb hanging in front of the index, slightly flexed, its nail facing forward. The palm's end follows the knuckles'
+  arc (`palm_arc`: 9 mm shorter at the little finger, 5 at the index). Separation for the game-ready step's 6 mm fusing
+  (`C:/tmp/beatrice_b1i/gaps.py`, surface to surface): index-middle >= 7.6 mm from 56 mm along the index (5.9 at 47,
+  14.7 at the tip), middle-ring >= 7.5 from 61 mm (13.8 at the tip), ring-little >= 7.2 from 47 mm (15.8 at the tip),
+  thumb-index >= 7.6 from the thumb's 62 mm (5.7-6.2 at its knuckle, the web, 14.4 at the tip); nearer the knuckles the
+  fingers touch, as drawn. Mirror-symmetric (a separate right hand would cost a second hand build, ~2 min; not done).
+  Two more surface traps fixed in `_Sweep` / the palm: a digit's start is now a superellipsoid cap (a section shrunk to
+  nothing at the start drew a jagged crease through the thumb's fillet), and the distance's scale is the same on the back
+  and palm halves of a section (a scale that jumped at the halves' seam left the shape whole but drew a dotted line in
+  the gradient normals down the side of the palm).
