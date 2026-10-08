@@ -513,3 +513,92 @@ was rebuilt. `FITTED_HAND` is now B1i's table with the B1j overrides (`beatrice.
   pictures, measures and the vertex check are scratch scripts in `C:/tmp/beatrice_b1j/` (`hh.py` hands harness, `lh.py` legs
   harness with `--mat`, `meas.py`, `sheetmeas.py`, `cuffw.py`, `gaps.py`, `share.py`, `cmp2.py`, `compose_b1j.py`), run on
   `Beatrice_b1i_1877dc8.blend` and this build.
+
+## B1k: the upper body's surface -- shoulders, upper arms, collar, armpits, inserts (2026-10-08, answers `previews/review_stage9.md` items 1-6)
+
+No reference added. Kit: only Beatrice's own `bodysuit.py` changed, by adding (every new behaviour keyed on a new table entry:
+`shoulder["field"] = "c2"`, `join_curve`, `mesh_box`, `box_c2`, `arm_form`, `kfac`; `collar["flare"]`; `seams["shoulder"]`;
+a panel's `shared` and `res`; a seam point `("panel", name)`; GLOSS `mesh_width`); no shared kit file touched (`wearmat.mat_mesh`
+already took `width`), so no other character was rebuilt. B1j's tables are kept where they changed (`ARM_SEAM`,
+`RAGLAN_FRONT_B1J`, `RAGLAN_BACK_B1J`; the old collar `rings`).
+
+- **Step 1, the shoulder and upper arm (review 9 items 1-2).** The cause found in B1i, fixed at the cause with the hand's and
+  boot's recipe. `Suit.arm_proj`: the arm's distance continuous -- each point's own section plane found by Newton on
+  (P - c(t)) . T(t) = 0 from the nearest of 160 centre-line samples, the radial gap scaled by the section's slope (B1j:
+  `kit.loft_sdf`, the nearest of 500 sections, stepping every 0.9 mm). The union C2 (`smin3`, the fillet 1.5x wider so its bulge
+  is B1j's). The patch meshed in a band round the surface (`_mesh_banded`), trimmed, its edges laid exactly on the seam lines,
+  Taubin-smoothed with the edges held, every vertex re-projected onto the field (`Suit.patch_field`: the union with the bust's
+  form folded in where the torso rules -- B1j displaced afterwards and lost it on the cut's re-projection), the field's gradient
+  as the shading normals. Two attempts: the first fixed the field (the mottle and the streaks gone, reflection lines in
+  `shoulders_b1k.jpg`); the rest of the round went into the joins it exposed (below).
+  - **The seams as drawn.** The three drawings agree on a V round the upper arm at the foot of the deltoid, lowest on the outside
+    and rising to the armpit front and back (the review read it the other way round); the front and side views differ on its
+    height at the arm's front (1.316 against 1.346): the front view's ruled, as briefed. `DELTOID_SEAM`: on the surface 1.287
+    outside, 1.316 at the arm's front, ending ON the raglan seams' cords in front (1.334) and behind (1.330); drawn on the
+    shoulder's own surface (`build_shoulder_cords`). The elbow seam (`ELBOW_SEAM`, about 1.16, a soft V behind, as drawn) is
+    the patch's lower edge: the shoulder's own surface now runs down to the elbow (`mesh_box`), and B1j's horizontal ring at
+    mid upper arm -- its old lower edge -- is gone. A soft fold over the elbow seam, mostly behind (`arm_form["fold"]`).
+  - **Fuller.** `arm_form`: the upper arm 5 % of its radius fuller from the elbow seam up, gone by the shoulder's top; a rounder
+    deltoid (1 mm, outside). The sleeve below the elbow seam is B1j's loft (the arm loft's rows unchanged). Upper-arm width in
+    the sheets' frames (px, `armw.py`, outermost run of figure pixels per row): front view z 1.198-1.244 B1j 50-52, B1k 53-54,
+    drawing 54-58 (+4..+8 %); back view z 1.198-1.246 B1j 49-51, B1k 52-53, drawing 52-59. The shoulder: front-view half-width
+    at 1.36 178.8 -> 179.4 mm, at 1.34 unchanged (182.9), the widest across the deltoids (1.30) 188.7 -> 189.8 (drawing 186.9;
+    a first pass, swell held to 1.29 and a 1.6 mm deltoid, made it 192.1 -- toned down). Forearm, cuff and hand unmoved.
+    The reflection lines on the deltoid and the back of the upper arm are smooth (`shoulders_b1k.jpg` rows 2-3): the
+    orange-peel and the streaks are gone.
+  - **The armpits** (with step 3): see below.
+- **Step 2, the collar (review 9 item 3, review 7 B3).** `CollarFlare`: in each half-plane through the neck the collar's profile
+  is the C2 smooth union of a tube that hugs the neck (1.5-2.5 mm off the placeholder neck) and the body's own section, the
+  body's neck taken away from 6 mm (side) / 1.5 mm (front) / 3 mm (back) outside the tube on (its own curve continued
+  straight, C2), so the union flares into the trapezius with no edge and does not bulge where the body's neck runs up inside
+  the collar; the fillet 34 / 16 / 24 mm wide at the side / front / back. Its top rolls in onto the neck over 1.8 mm, the edge
+  inside the neck: no lip. Where it rises out of the body it lands tangentially and shades with the body's own normal,
+  blended into its own over 0.8 mm of height (a jump in the shading normal is what showed as the ledge). Height to 1.482 as
+  before; the zip runs up it (the body's zip is B1j's, cut off where the collar lands; the collar's own on the flare). The
+  raglan seams and the back's centre seam start a centimetre up under the flare, so their cords come out from under the
+  collar. Attempts: 9 short harness runs (C1 bends at the body's crossing drew a crease; per-angle steps drew pleats in front;
+  a crossing at 0.3 mm under the body drew a line). Front-view half-width (mm, outline edges / 2): at the top 1.468-1.482
+  drawing 39.9, B1j 42.2-44.0, B1k 42.8-44.0 (the placeholder head's neck is 40-42.5 there: the collar cannot be narrower than
+  the neck it hugs); the flare at 1.454 / 1.447 / 1.440: drawing 48.6 / 59.6 / 75.2, B1j 47.5 / 55.0 / 76.4, B1k 49.8 / 57.9 /
+  76.4. Side view half-depth at 1.454-1.468 B1j 49.3-51.7, B1k 47.6-48.7, drawing 39.3-42.9 (the neck again: 43).
+- **Step 3, armpits, piping, inserts (review 9 items 4-6, review 7 B6).**
+  - *Doubled lines.* Each raglan seam now comes from under the collar higher over the shoulder, 1-2 cm clear of the insert's
+    upper half (as drawn), converges on the insert's outer edge and RUNS ALONG IT to its lower tip (`("panel", name)` splices the
+    insert's own smoothed outline into the seam; the insert's frame leaves that stretch out, `shared`): one piped line, no
+    zigzag. The front and the back alike.
+  - *The back-armpit tear.* Two causes. (1) B1j's region test (x past the cut's x) sliced through the armpit's folds; the
+    shoulder's own surface is now a sector of the body's level sections between the two raglan lines (`Suit.in_torso_region`,
+    `cut_target`), every body vertex inside it moved onto the nearest line along the loft, the patch's ragged edge laid onto
+    the same lines the same way. (2) Behind the arm the arm's back overlaps the torso 4-8 mm beyond the raglan line: the body
+    loft, lifted that far along its normal into the fold, tore (8 mm cap: a trench) or folded over the line (16 mm). Now the
+    shoulder's own surface reaches past either line as far as the union lifts the torso at all (`Suit._region`: the arm's
+    distance under the fillet's reach, a smooth curve in height): beyond it the union IS the torso, so body and patch meet
+    there with no step and the body is never lifted into a fold. A non-manifold saddle of the surface nets where the gap
+    between arm and torso closes left a small hole: filled (`_fill_small_holes`). The box beside the neck from x 0.03 (the
+    patch's ragged edge on the box's face at 0.05 was the teeth over the blade insert's upper tip). Cords and inserts on the
+    shoulder's surface are laid onto it by Newton steps to its nearest point (`Suit.lay`); the shoulder inserts triangulated
+    at 1.5 mm (at 4 mm they sank under the shoulder's own mesh in the fold).
+  - *The mesh.* `GLOSS`: cell 3.6 -> 2.2 mm, thread share (`mesh_width`) 0.30 -> 0.06 of the lattice's ramp (B1j's net was 83 %
+    thread: a dark sheet perforated with light dots), the skin under it 0.42 -> 0.48, the clear coat 0.35 -> 0.10: a fine dark
+    net with warm skin through it. The shapes and places of all inserts kept. Mean sRGB in 7x7 px boxes on the chest inserts in
+    the front sheet: drawing (123, 101, 101) / (120, 103, 102), B1j (81, 75, 74) / (89, 84, 83) grey, B1k (118, 104, 99) /
+    (128, 116, 111).
+- **Nothing else moved** (`C:/tmp/beatrice_b1k/cmp3.py`, every evaluated vertex of every object, `Beatrice_b1j_8290f51.blend`
+  against this build; an object whose vertex count changed is checked by each vertex's distance to the other mesh's surface):
+  22 objects identical (max |dP| < 1e-7 m): the hands and nails, the cuffs, the boots and their cords, the knee pads and rims,
+  the head, the waist, hip, back and thigh inserts, the zip stops. `Suit_Body` changed only between z 1.281 and 1.448 (the
+  armpits, the shoulders and the neck under the collar; below 1.281 vertex for vertex B1j's). `Suit_Sleeve` ends at the elbow
+  seam now: every one of its vertices lies on B1j's sleeve within 0.015 mm (the faceting of B1j's mesh: the same loft surface).
+  The body zips are B1j's vertex for vertex, cut off where the collar lands (the cut row's solidify rim is new); the collar's
+  zips and the pulls moved with the collar. Moved as briefed: the shoulder's own surface, the collar, the two shoulder inserts
+  and the piping (THE line's path now starts higher, so its cord is resampled down to the hip; the lines below the armpit are
+  the same curves). Sheet IoU above the waist: front 0.947 -> 0.951, side 0.918 -> 0.921, back 0.914 -> 0.917; the other bands
+  unchanged. `source/mesh_stats.json`: 64 objects (new `Suit_Piping_Shoulder_0`), 1,241,980 source / 3,265,260 evaluated
+  triangles, all closed; the flipped-normal list gained the two zip pulls' tabs (boxes anchored on the new collar).
+- Pictures: `shoulders_b1k.jpg`, `collar_b1k.jpg`, `inserts_b1k.jpg`; the full set re-rendered.
+- Reproduce: `bash charkit/run.sh Beatrice --sheet --turn --save --beauty hero,hero_back,torso,torso_back,legs,side,head,top,elevated,shoulder,shoulder_back,wrist,boot,flank,flank_back,knee,hand,boot_side,armpit_back,top_close,hand_palm`
+  (9.3 min: the build 5.5 min, of it about 100 s the shoulder and upper arm -- meshed in a band, 43 s; re-projection and
+  normals 50 s -- and 6 s the collar). The before/after sheets, measures and the vertex check are scratch scripts in
+  `C:/tmp/beatrice_b1k/` (`sh.py` suit harness, `ch.py` collar harness, `zb.py` gloss / reflection-line / object-colour views,
+  `armw.py`, `meas_b1k.py`, `cmp3.py`, `compose.py`), run on `Beatrice_b1j_8290f51.blend` and this build. Not re-rendered:
+  `shape_vs_concept.jpg`, the `--hips` pictures, `crimson_hero.jpg`; `sleeve_ripples_cause.jpg` stays as B1i's record.
