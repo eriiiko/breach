@@ -51,7 +51,9 @@ PALETTE = dict(
 )
 GLOSS = dict(rough=0.30, coat=0.45, coat_rough=0.20, specular=0.45, piping=0.9,
              nail_rough=0.20, nail_coat=0.55, nail_coat_rough=0.07,   # B1j: the nails glossier than the skin (0.48-0.60)
-             pad_rough=0.15, pad_coat=1.0, pad_coat_rough=0.07, pad_specular=0.8,   # B1j: the pads glossier than the boots
+             # B1j: the pads glossier than the boots (coat 1.0, specular 0.8); B1l: the coat 0.6 and specular 0.5 (with the domed
+             # shape: at 1.0 / 0.8 the whole face threw back the backdrop's grey as one even sheet -- the porthole -- whatever its shape)
+             pad_rough=0.15, pad_coat=0.6, pad_coat_rough=0.07, pad_specular=0.5,
              boot_rough=0.22, boot_coat=0.7, boot_coat_rough=0.10, mesh_surface=True,
              # B1k (review_stage9 item 6): the inserts' net FINE and DARK with the skin showing warm through it, as drawn (the drawing's
              # chest insert: a warm tan, about #816b6a, a fine dark hatch). B1j's (cell 3.6 mm, thread share of the default
@@ -60,6 +62,10 @@ GLOSS = dict(rough=0.30, coat=0.45, coat_rough=0.20, specular=0.45, piping=0.9,
 
 VARIANTS = dict(
     crimson=dict(palette=dict(SUIT="#4a0b12", BOOT="#1a0a0c", MESH="#22090c", MESH_THIGH="#3a161a", SKIN="#a8775e", BROW="#2a1c16", IRIS="#4a3626")),
+    # B1l (review_stage10 item 3, a look for the owner to choose; NOT the default): "wet" -- the suit as glossy as the patent
+    # boots (review 10 measured the default as satin beside the drawing's wet latex: the brightest torso highlights about
+    # half the drawing's). The first review called B1a's gloss chrome-like and B1b softened it to the default above
+    wet=dict(gloss=dict(rough=0.20, coat=0.85, coat_rough=0.07, specular=0.55)),
 )
 
 # ------------------------------------------------------------------- dimensions
@@ -582,8 +588,11 @@ FITTED_HAND = dict(
         dict(_FINGER_FORM, name="Pinky", root=(0.050, -0.0202, -0.0030), splay=-0.075, roll=0.12, len=(0.0322, 0.0202, 0.0183),
              bend=(0.41, 0.50, 0.22), r=(0.0061, 0.0053, 0.0046, 0.0040), r_tip=0.0058),
     ),
-    thumb=dict(FITTED_HAND_B1I["thumb"], r=(0.0096, 0.0084, 0.0074, 0.0062), tip_p=2.5, r_tip=0.0082, joint=(0.04, 0.004),
-               crease=(0.03, 0.0009, 0.0005)),
+    # B1l (review_stage10 items 7-8): the thumb with the fingers' taper and joint form (B1j: r 9.6 -> 6.2 mm, a joint swell of
+    # 4 %, bends 0 / 0.15 / 0.22 -- a plain straight tube), curled a little more and heading nearer the index (B1j dir (0.91,
+    # 0.32, -0.27)): from the front the thumb and the fingers no longer a pincer with an empty V between them
+    thumb=dict(FITTED_HAND_B1I["thumb"], dir=(0.94, 0.21, -0.24), bend=(0.08, 0.28, 0.32), r=(0.0094, 0.0081, 0.0069, 0.0057),
+               tip_p=2.2, r_tip=0.0076, joint=(0.07, 0.0035), crease=(0.06, 0.0010, 0.0005), knuckle=0.08, mcp=0.06),
     tendons=dict(h=0.00035, sig=0.0019, start=0.008, spread=0.35, fade=0.014, short=0.006, fade_end=0.004),
     nail=dict(shape="shell", len=0.0110, free=0.0022, width=0.76, thumb=1.1, height=0.00030, p=2.6, rim=0.55, sink=0.0003),
 )
@@ -602,9 +611,24 @@ RAGLAN_BACK_B1J = (("bx", .058, 1.426), ("bx", .090, 1.409), ("bx", .106, 1.380)
 # too) a centimetre up under the collar's flare, so its cord comes out from under the collar instead of ending short of it
 RAGLAN_FRONT = (("x", .046, 1.450), ("x", .056, 1.441), ("x", .067, 1.434), ("x", .080, 1.427), ("x", .094, 1.414), ("x", .106, 1.396), ("x", .114, 1.376), ("x", .119, 1.356),
                 ("panel", "Shoulder"), ("x", .1272, 1.305), ("x", .1275, 1.293))
-RAGLAN_BACK = (("bx", .044, 1.444), ("bx", .052, 1.434), ("bx", .062, 1.426), ("bx", .078, 1.419), ("bx", .093, 1.405), ("bx", .1025, 1.388), ("bx", .1075, 1.368),
+RAGLAN_BACK_B1K = (("bx", .044, 1.444), ("bx", .052, 1.434), ("bx", .062, 1.426), ("bx", .078, 1.419), ("bx", .093, 1.405), ("bx", .1025, 1.388),
+                   ("bx", .1075, 1.368), ("panel", "Blade"), ("bx", .1125, 1.312), ("bx", .1125, 1.293))
+# B1l (review_stage10 item 5): B1k's back line ran 4-5 mm outside the blade insert's edge from 1.39 down to 1.35 before joining
+# it (two piped lines side by side for 3 cm): now it meets the edge at a clear angle at the insert's outer middle point
+RAGLAN_BACK = (("bx", .044, 1.444), ("bx", .052, 1.434), ("bx", .062, 1.426), ("bx", .078, 1.419), ("bx", .093, 1.405),
                ("panel", "Blade"), ("bx", .1125, 1.312), ("bx", .1125, 1.293))
 RAGLAN_LOW = 1.293
+# B1l (review_stage10 item 1, the back-armpit knot): the shoulder's own surface reaches down to CUT_LOW under the arm, below
+# the union's reach (it lifts the torso down to 1.278; the armpit's saddle is at 1.300). B1k's bottom line at RAGLAN_LOW cut
+# through the saddle's fillet: the fillet's back face stood off the torso as a flap above a horizontal edge, under a cord.
+# Now every edge of the shoulder's own surface on the torso lies where the union IS the torso (no step, no cord needed)
+CUT_LOW = 1.268
+# B1l: the back's cord from the collar down the blade insert's outer edge, round INTO the armpit and on down the back past the
+# rib and waist inserts to the hip -- one line, as drawn (B1k: the raglan seam ran on straight down to RAGLAN_LOW past the
+# insert's tip and the back seam started beside it at 1.326: two cords crossing in an X at the armpit, and a third, the
+# short seam under the arm at RAGLAN_LOW, across their feet)
+BACK_LINE = (RAGLAN_BACK[:6] + (("bx", .1118, 1.320), ("bx", .1085, 1.300), ("bx", .104, 1.280), ("bx", .090, 1.230), ("bx", .074, 1.190),
+             ("bx", .068, 1.160), ("bx", .076, 1.120), ("bx", .098, 1.070), ("bx", .120, 1.030), ("bx", .131, .996)))
 
 # the seam round the upper arm at the foot of the deltoid (side view: a shallow V, lowest on the outside):
 # z on the outer side, z on the inner side. The shoulder's own mesh meets the sleeve exactly here.
@@ -620,9 +644,14 @@ ELBOW_SEAM = ((0, 1.160), (90, 1.164), (180, 1.161), (-90, 1.155))
 # the armpit front and back; the front view's heights are kept where the side view differs, as briefed: on the surface
 # 1.287 outside, 1.316 at the arm's front, 1.345 at the armpit): (phi deg, centre-line z) round the outside of the arm,
 # and the heights where it leaves the raglan seams in front and behind (it ends ON their cords)
-DELTOID_SEAM = dict(front=1.334, back=1.330,
-                    arm=((112, 1.322), (80, 1.309), (45, 1.293), (15, 1.282), (0, 1.279), (-15, 1.282), (-45, 1.293), (-80, 1.309),
-                         (-112, 1.322)))
+DELTOID_SEAM_B1K = dict(front=1.334, back=1.330,
+                        arm=((112, 1.322), (80, 1.309), (45, 1.293), (15, 1.282), (0, 1.279), (-15, 1.282), (-45, 1.293), (-80, 1.309),
+                             (-112, 1.322)))
+# B1l (review_stage10 item 1): behind, it ends ON the back's one line (BACK_LINE) where that line turns into the armpit, at the
+# height the back drawing shows, from the back of the arm without B1k's last point at -112 deg in the fold (the cord climbed
+# out of the fold to the insert's tip at 1.330 in a hook)
+DELTOID_SEAM = dict(front=1.334, back=1.312, back_line=BACK_LINE,
+                    arm=((112, 1.322), (80, 1.309), (45, 1.293), (15, 1.282), (0, 1.279), (-15, 1.282), (-45, 1.293), (-80, 1.306)))
 
 # broad body forms under the suit (x0, z0, side, sx, sz, height): the bust and the seat's
 # roundness, nothing anatomical beyond them
@@ -662,7 +691,7 @@ def dims(shape=None):
                           # a raglan cut: the shoulder's mesh is bounded by seam lines (front: THE line from the collar
                           # to the armpit; behind: the raglan seam outside the blade insert; under the arm: a short
                           # seam joining them), so every join lies under a piping cord
-                          cut=dict(front=RAGLAN_FRONT, back=RAGLAN_BACK, z_low=RAGLAN_LOW),
+                          cut=dict(front=RAGLAN_FRONT, back=RAGLAN_BACK, z_low=CUT_LOW),   # B1l: B1k z_low=RAGLAN_LOW
                           # B1k (review_stage9 items 1-2): the field continuous and C2 (bodysuit.Suit.arm_proj, smin3: B1j's arm
                           # distance stepped every 0.9 mm -- the ripples), the patch reaching down to the elbow seam (`mesh_box`
                           # the region meshed; `box` still bounds the torso's part), re-projected, its normals the field's own
@@ -673,6 +702,17 @@ def dims(shape=None):
                           # the body's own lift onto the union beyond which a point counts as buried in the arm and is left
                           # (B1j 8 mm; behind the blade insert's inner edge it reaches 6)
                           edge_max=0.010,
+                          # B1l (review_stage10 item 1): the arm's distance runs on past the sleeve loft's root end, fading out of the
+                          # union's reach over about 2.5 cm (bodysuit.Suit.arm_proj); B1k's cut-off was a 2-4 mm cliff in the union
+                          # behind the armpit (the knot)
+                          root_fade=0.025,
+                          # B1l: the patch's ragged edge beyond the cut's lines moved to their nearest point (Suit.cut_target)
+                          cut_nearest=True,
+                          # B1l: the open edges of the body, the shoulder's own surface, the sleeve and the collar marked sharp, so the
+                          # solidify rim never joins their shading (bodysuit._sharp_open_edges: the teeth along the joins)
+                          sharp_open_edges=True,
+                          # B1l: the shoulder's own surface's edge on the torso smoothed wider in height (0.5 mm samples; B1k (8, 5))
+                          region_smooth=(14, 12),
                           # the arm's own shaping in the patch (bodysuit.Suit.arm_form): the upper arm 5 % fuller (review 7 B7:
                           # 8-10 % slimmer than drawn), from the elbow seam up and gone by the shoulder's top; a rounder deltoid;
                           # a soft fold over the elbow seam, more behind (the drawings' elbow)
@@ -680,7 +720,11 @@ def dims(shape=None):
                           # front view 3.4 mm a side wider at 1.30, past the drawing's)
                           arm_form=dict(swell=dict(frac=0.05, z=(1.166, 1.215, 1.272, 1.330)),
                                         deltoid=dict(h=0.0010, z=1.315, sz=0.022, p=1.0),
-                                        fold=dict(h=0.0006, dz=0.0080, sz=0.0070, base=0.15, back=1.0))),
+                                        # B1l (review_stage10 item 7): no ridge over the elbow seam -- B1k's fold (h 0.6 mm, 8 mm above the
+                                        # join, mostly behind) bulged the sleeve's outline just above the seam and stepped in at it: a
+                                        # ring with a shelf. Now the seam is a line and the fold is the cord's own
+                                        # B1k: fold=dict(h=0.0006, dz=0.0080, sz=0.0070, base=0.15, back=1.0)
+                                        )),
             armhole_seam=False,
             cuff=(0.937, 0.950), cuff_lift=0.0006, cuff_thick=0.0011,   # stage 3: a thin band, as drawn
             # B1i (review_stage7 B2): ONE soft band seated on the wrist (bodysuit.build_fitted_cuffs): its top where the band's
@@ -726,7 +770,12 @@ def dims(shape=None):
             # and below 0.2 of its half-height under the centre the edge sinks to 0.25 mm at the point (`lower`): its lower part
             # runs into the shin, one knee line in the side view; its own lighter finish (`PAD`, `PAD_RIM`)
             knee_pad=dict(pad=dict(x=.121, z=.612, hs=.031, ht=.0425, offset=.0014, thick=.0018, dome=.0036, n=2.2, point=.010,
-                                   rim=(0.0010, 0.5), res=0.0010, lower=(-0.2, 0.00025))),
+                                   rim=(0.0010, 0.5), res=0.0010, lower=(-0.2, 0.00025),
+                                   # B1l (review_stage10 item 2): a DOME with a crest (bodysuit._DomedAnchor) -- B1i's 3.6 mm parabola
+                                   # over the 62 x 95 mm pad read as a flat mirror porthole; a crowned dome, its edge rolling down
+                                   # steeply under the rim (p < 1) so the highlight runs round it as a streak, a soft ridge down its
+                                   # middle; the side view 7-8 mm proud (B1h 18 mm at a 9 mm dome)
+                                   profile=dict(dome=0.0047, p=0.6, crest=0.0015, w=0.30, cy=0.15, sy=0.9))),
             panel_rim="seam",  # mesh panels set IN the suit, edged by the suit's own seams
             seam_style="tube", piping=(0.0009, 0.0001),  # seams are piping cords (radius, centre above the surface)
             # seams as points seen on the front view ("x", x, z), on the back view ("bx", x, z), or by
@@ -748,8 +797,10 @@ def dims(shape=None):
                     (("phi", 6, .662), ("x", .139, .641)),   # B1h: its end now under the wider pad
                     # B1h: the frame below the pad (as drawn): from the outer side, where the arc behind the knee passes, down to a
                     # point on the shin and up again to the pad's lower inner edge
+                    # B1l (review_stage10 item 10): its end ON the pad's rim (B1i-B1k at (.104, .572): 1.4 mm inside the rim, where the
+                    # pad's lower part sinks into the shin, the cord's end cap came up through the pad -- the dark dot)
                     (("phi", 0, .620), ("phi", 12, .590), ("x", .182, .556), ("x", .165, .524), ("x", .152, .505), ("x", .136, .514),
-                     ("x", .119, .534), ("x", .104, .572)),
+                     ("x", .119, .534), ("x", .104, .5685)),
                     # down the outer shin into the boot: B1h from the frame's point (B1g from under the pad: ("x", .137, .592),
                     # ("x", .150, .566), ("x", .172, .520), then as now from .460), ending on the boot's top seam
                     (("x", .152, .505), ("x", .174, .482), ("x", .190, .460), ("x", .200, .400), ("x", .200, .320), ("x", .196, .231)),
@@ -757,15 +808,17 @@ def dims(shape=None):
                     (("x", .141, .602), ("phi", 0, .620), ("phi", -45, .636), ("bx", .124, .642), ("phi", -135, .636), ("phi", -180, .620),
                      ("x", .101, .602)),
                     # --- the back (without_hair_back.png): a V from the shoulder blades to the waist's centre
-                    (("bx", .043, 1.441), ("bx", .050, 1.425), ("bx", .046, 1.370), ("bx", .036, 1.300), ("bx", .022, 1.230), ("bx", .008, 1.180),
+                    # B1l (review_stage10 item 5): from the blade insert's upper tip, as drawn (B1k from under the collar at (.043, 1.441), beside
+                    # the raglan seam's start: two lines side by side on the yoke, and a hook where this one bent at (.050, 1.425))
+                    (("bx", .060, 1.414), ("bx", .053, 1.396), ("bx", .047, 1.370), ("bx", .036, 1.300), ("bx", .022, 1.230), ("bx", .008, 1.180),
                      ("bx", .001, 1.166)),
                     # behind: the raglan seam from the collar outside the blade insert to the back of the armpit, and
                     # under the arm the short seam joining it to THE line (the shoulder's own mesh ends on these)
-                    RAGLAN_BACK,
-                    (("bx", .1125, RAGLAN_LOW), ("phi", 0, RAGLAN_LOW), ("x", .1275, RAGLAN_LOW)),
-                    # from the raglan seam at the back of the armpit down past the rib and waist panels, round the hip
-                    (("bx", .1122, 1.326), ("bx", .104, 1.280), ("bx", .090, 1.230), ("bx", .074, 1.190), ("bx", .068, 1.160),
-                     ("bx", .076, 1.120), ("bx", .098, 1.070), ("bx", .120, 1.030), ("bx", .131, .996)),
+                    # B1l: ONE line (BACK_LINE): the raglan seam down the blade insert's edge, into the armpit and on down past the
+                    # rib and waist panels round the hip. B1k: RAGLAN_BACK; (("bx", .1125, RAGLAN_LOW), ("phi", 0, RAGLAN_LOW),
+                    # ("x", .1275, RAGLAN_LOW)) under the arm; and (("bx", .1122, 1.326), ("bx", .104, 1.280), ...) from beside the
+                    # insert's tip -- the knot's three cords
+                    BACK_LINE,
                     # round the seat (stage 4, as the back view draws it): from the hip down the seat's outer side, then
                     # level along its foot to the centre -- a broad U, not the stage-3 diagonal "heart"
                     (("phi", 0, 1.030), ("bx", .131, .990), ("bx", .128, .955), ("bx", .114, .928), ("bx", .090, .913), ("bx", .060, .906),
@@ -799,7 +852,7 @@ def dims(shape=None):
                 # the back of the shoulder: a strip from the yoke down along the shoulder blade to the back of the armpit
                 dict(name="Blade", pts=(("bx", .060, 1.414), ("bx", .084, 1.405), ("bx", .100, 1.378), ("bx", .110, 1.348), ("bx", .112, 1.332),
                                         ("bx", .107, 1.344), ("bx", .088, 1.374), ("bx", .068, 1.400)),
-                     shared=(3, 4), res=0.0015),   # B1k: likewise behind (the raglan seam runs down its outer edge to its lower tip)
+                     shared=(2, 4), res=0.0015),   # B1l: from its outer middle point (B1k (3, 4)); B1k: likewise behind (the raglan seam runs down its outer edge to its lower tip)
                 # the back's sides at the ribs (from the side down and in towards the spine) and at the waist (a lens)
                 dict(name="Back_Rib", drop=dict(a=("phi", -16, 1.268), b=("bx", .058, 1.204), w=0.0100, bow=0.10)),
                 dict(name="Back_Waist", drop=dict(a=("bx", .076, 1.168), b=("bx", .102, 1.098), w=0.0075, bow=0.10, blunt=0.0)),
@@ -941,3 +994,11 @@ def palette(variant=None):
     if variant:
         p.update(VARIANTS[variant].get("palette", {}))
     return p
+
+
+def gloss(variant=None):
+    """B1l: the gloss table for a variant (GLOSS with the variant's `gloss` entries over it)."""
+    g = dict(GLOSS)
+    if variant:
+        g.update(VARIANTS[variant].get("gloss", {}))
+    return g

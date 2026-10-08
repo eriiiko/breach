@@ -397,8 +397,15 @@ class Suit:
         ((P - c(t)) . T(t) = 0: Newton from the nearest of 160 centre-line samples), phi its section angle, d the radial
         gap in that plane over the slope of the section's radius along the arm (as body_sdf). Points beyond the loft's
         ends (`ok` False) get d = 1; points farther than `far` from the centre line a lower bound (they never reach the
-        union's fillet)."""
+        union's fillet).
+        B1l (review_stage10 item 1): with `shoulder["root_fade"]` = w (m), a point past the loft's ROOT end (inside the torso,
+        at (0.104, 0.027, 1.35)) gets the root section's radial gap plus w (s / w)^3, s its distance past the root's plane: the
+        arm's distance runs on continuously (C2) and grows out of the union's reach within a few w. B1k's d = 1 there was a
+        CLIFF in the union where that plane comes out of the torso behind the armpit (from the fold at 1.30 up beside the blade
+        insert to 1.42): the torso lifted 2-4 mm on one side of it and bare on the other -- the back armpit's knot, a fold in the
+        body loft along the shoulder's own surface's edge and a crease through the fold's V."""
         A = self.F.arm
+        fade = (self.d["garment"].get("shoulder") or {}).get("root_fade")
         P = np.asarray(P, float).reshape(-1, 3)
         if not hasattr(self, "_arm_cl"):
             ts = np.linspace(0.0, A.L, 160)
@@ -447,7 +454,13 @@ class Suit:
             dd = (rho - R) / np.sqrt(1.0 + dR * dR)
             sl = np.flatnonzero(near) + i
             t[sl], ph[sl], ok[sl] = tn, phi, inside
-            d[sl] = np.where(inside, dd, 1.0)
+            dn = np.where(inside, dd, 1.0)
+            if fade is not None:   # B1l: past the root, the root's section with a C2 ramp (no cliff)
+                past = tn > A.L
+                if past.any():
+                    sx = np.maximum(q[past] @ A.frames(np.array([A.L]))[1][0], 0.0)   # past the root's plane, along its axis
+                    dn[past] = dd[past] + fade * (sx / fade) ** 3
+            d[sl] = dn
         return t, ph, d, ok
 
     def arm_form(self, t, phi):
@@ -790,10 +803,14 @@ class Suit:
             # smooth curve with no notch where the fold starts to reach the line, and never inside the union's reach (there the
             # body would have to be lifted into the fold)
             pbz, pfz = np.interp(zs, zb, pb_), np.interp(zs, zf, pf_)
-            ker = np.exp(-0.5 * (np.arange(-15, 16) / 5.0) ** 2)
+            # B1l: (widening, Gaussian sigma) in 0.5 mm samples, `region_smooth` (B1k: (8, 5)); a sharper turn in the line left a
+            # hair gap between the body's 3.3 mm rows and the shoulder's 1.2 mm edge, a dark crack behind the armpit
+            nw, sg = sh.get("region_smooth", (8, 5))
+            nk = int(3 * sg)
+            ker = np.exp(-0.5 * (np.arange(-nk, nk + 1) / float(sg)) ** 2)
             ker /= ker.sum()
-            sm = lambda v: np.convolve(np.pad(v, 15, mode="edge"), ker, mode="valid")
-            wide = lambda v, f: f(np.stack([np.roll(np.pad(v, 8, mode="edge"), k)[8:-8] for k in range(-8, 9)]), axis=0)
+            sm = lambda v: np.convolve(np.pad(v, nk, mode="edge"), ker, mode="valid")
+            wide = lambda v, f: f(np.stack([np.roll(np.pad(v, nw, mode="edge"), k)[nw:-nw] for k in range(-nw, nw + 1)]), axis=0)
             dlo, dhi = lo - pbz, hi - pfz   # the extensions beyond the lines (<= 0 behind, >= 0 in front)
             lo = pbz + np.minimum(np.minimum(sm(wide(dlo, np.min)), 0.0), dlo)
             hi = pfz + np.maximum(np.maximum(sm(wide(dhi, np.max)), 0.0), dhi)
@@ -820,6 +837,24 @@ class Suit:
         below = z < z_low
         zz = np.where(below, z_low, z)
         pb, pf = self.region_phi(zz)
+        if self.d["garment"]["shoulder"].get("cut_nearest"):
+            # B1l: a point beyond the front or back line goes to the line's NEAREST point (in the surface's own (phi r, z)),
+            # not across at its own height: where the line runs steeply oblique (the back line's reach behind the armpit) the
+            # meshed patch's ragged edge, moved across, kept its staircase and folded into teeth along the edge
+            ph2, z2 = np.clip(ph, pb, pf), zz.copy()
+            for side, lim in ((0, pb), (1, pf)):
+                m = (ph < lim) if side == 0 else (ph > lim)
+                m &= ~below
+                if not m.any():
+                    continue
+                dz = np.arange(-0.015, 0.0151, 0.00025)
+                Z = np.clip(z[m][:, None] + dz[None, :], z_low, None)
+                L = np.stack(self.region_phi(Z.ravel()))[side].reshape(Z.shape)
+                D = ((ph[m][:, None] - L) * r[m][:, None]) ** 2 + (z[m][:, None] - Z) ** 2
+                j = np.argmin(D, axis=1)
+                k = np.arange(len(j))
+                ph2[m], z2[m] = L[k, j], Z[k, j]
+            return ph2, np.interp(z2, zs, ts)
         return np.clip(ph, pb, pf), np.where(below, t_low, t)
 
     def in_torso_region(self, P):
@@ -1522,6 +1557,29 @@ def _fill_small_holes(obj, max_len=0.04):
     return len(small)
 
 
+def _sharp_open_edges(obj, x_min=1e-4):
+    """B1l (review_stage10 items 1, 7, 10): mark a sheet's OPEN edges sharp (those off the mid-plane, where the mirror
+    merges), so the solidify rim's faces never join the outer surface's smooth fan. Unmarked, every vertex on an open edge
+    shaded with the average of the outer face and the rim face (45 deg off the surface, measured): where two sheets meet
+    edge to edge with no cord over the join (the shoulder's own surface and the body behind the armpit) the gloss drew a
+    staircase of dark teeth along the join, and under a cord a dark seam beside it. Positions are untouched."""
+    from collections import Counter
+    me = obj.data
+    cnt = Counter(k for p in me.polygons for k in p.edge_keys)
+    co = np.empty(len(me.vertices) * 3)
+    me.vertices.foreach_get("co", co)
+    x = np.abs(co.reshape(-1, 3)[:, 0])
+    ev = np.empty(len(me.edges) * 2, np.int64)
+    me.edges.foreach_get("vertices", ev)
+    ev = ev.reshape(-1, 2)
+    sharp = np.array([cnt[(min(a, b), max(a, b))] == 1 for a, b in ev], bool) & (np.minimum(x[ev[:, 0]], x[ev[:, 1]]) > x_min)
+    old = np.zeros(len(me.edges), bool)
+    me.edges.foreach_get("use_edge_sharp", old)
+    me.edges.foreach_set("use_edge_sharp", old | sharp)
+    me.update()
+    return int(sharp.sum())
+
+
 def _mesh_banded(field, lo, hi, h, coarse=4, band=8.0, chunk=200000):
     """implicit.mesh_field (border=False, no projection) evaluating the field exactly only in a band round its zero
     surface: first on a grid `coarse` x coarser, then on the fine grid only where the coarse values, interpolated, are
@@ -1609,6 +1667,8 @@ def _build_shoulder_c2(S, mat, coll="Suit"):
     if len(Vc) != len(V):   # the clean-up welded or dropped something: the normals afresh at what is left
         N = S.patch_normals(Vc)
     me.normals_split_custom_set_from_vertices([tuple(n) for n in N])
+    if sh.get("sharp_open_edges"):
+        _sharp_open_edges(obj)
     solid(obj, S.d["garment"]["cloth"], bevel=0.0)
     obj.modifiers["Solidify"].use_even_offset = False
     return mirror(obj)
@@ -1830,6 +1890,8 @@ def build_collar_flare(S, M, coll="Suit"):
     wgt = _smooth01(gap / sp.get("blend", 0.0008))[:, None]
     N = unit((1.0 - wgt) * Nb + wgt * N)
     ob.data.normals_split_custom_set_from_vertices([tuple(n) for n in N])
+    if (S.d["garment"].get("shoulder") or {}).get("sharp_open_edges"):   # B1l: the rim out of the shading
+        _sharp_open_edges(ob, x_min=-1.0)
     solid(ob, col.get("flare_thick", 0.002), bevel=0.0)
     ob.modifiers["Solidify"].use_even_offset = False
     return cf
@@ -1930,6 +1992,9 @@ def build_suit(S, M, coll="Suit", body_only=False):
     if S.mid is not None:  # the run's vertices share their weld points: merge them (no zero-length edge)
         _clean(body)
         S.mid.relax(body)
+    sharp_open = bool((g.get("shoulder") or {}).get("sharp_open_edges"))
+    if sharp_open:   # B1l: the open edges' rim kept out of the shading (_sharp_open_edges)
+        _sharp_open_edges(body)
     mirror(solid(body, g["cloth"], bevel=0.0), merge=True)
     # B1f: the hidden inner shell offset plainly along the normals: even offset divides by the cosine between a
     # vertex's faces and blew a sliver at the raglan cut (x 0.118, z 1.32) out by a metre once the pelvis rows shifted
@@ -1952,6 +2017,8 @@ def build_suit(S, M, coll="Suit", body_only=False):
 
     if patch:
         sleeve = sleeve_to_join(S, suit, coll)
+        if sharp_open:
+            _sharp_open_edges(sleeve)
         build_shoulder(S, suit, coll)
     else:
         sleeve = loft_mesh("Suit_Sleeve", A, res=kit.RES * 0.85, mat=suit, coll=coll,
@@ -1999,6 +2066,36 @@ class _SinkingAnchor:
         return self.a.pn(s, t, np.asarray(off, float) - (self.offset - self.edge) * q)
 
 
+class _DomedAnchor:
+    """B1l (review_stage10 item 2): a pad's dome as an offset over its anchor, shaped (B1h-B1k: `garment.patch`'s parabolic
+    `dome` over the superellipse's ring index, 3.6 mm over a 62 x 95 mm pad -- in effect flat, so the gloss threw back one
+    broad even reflection, a mirror porthole). `profile` = dict(dome=height at the crest, p=its exponent (1 - r^2)^p: > 1 the
+    curvature gathered towards the crest, the edge easing flat; < 1 a crowned dome whose edge rolls down steeply under the
+    rim, the highlight running round it), crest=an extra ridge height along the pad's
+    vertical centre line, w=its half-width as a share of hs, cy=where the crest is highest (share of ht above the centre),
+    sy=its fall-off along the pad (share of ht)): the highlight has a curved form to follow. r = the pad's own superellipse
+    radius at (s, t) (the chevron's point undone), so the edge (r = 1) is where `patch` puts it."""
+
+    def __init__(self, anchor, hs, ht, n, point, profile):
+        self.a, self.hs, self.ht, self.n, self.point, self.pr = anchor, hs, ht, n, point, profile
+
+    def height(self, s, t):
+        s, t = np.asarray(s, float), np.asarray(t, float)
+        ax = np.clip(np.abs(s) / self.hs, 0.0, 1.0)
+        t0 = np.where(t < 0.0, t / (1.0 + self.point * (1.0 - ax) / self.ht), t)
+        r = (ax ** self.n + np.clip(np.abs(t0) / self.ht, 0.0, 1.0) ** self.n) ** (1.0 / self.n)
+        pr = self.pr
+        q = np.clip(1.0 - r * r, 0.0, 1.0)
+        h = pr["dome"] * q ** pr.get("p", 1.0)
+        if pr.get("crest"):
+            yy = (t0 / self.ht - pr.get("cy", 0.0)) / pr.get("sy", 1.0)
+            h = h + pr["crest"] * np.exp(-(s / (pr.get("w", 0.4) * self.hs)) ** 2) * np.exp(-yy * yy) * q
+        return h
+
+    def pn(self, s, t, off=0.0):
+        return self.a.pn(s, t, np.asarray(off, float) + self.height(s, t))
+
+
 def build_knee_pads(S, M, coll="Suit"):
     """The knee pads. `knee_pad["pad"]` (B1h, review_stage7 B5): ONE domed shield on the front of the knee (garment.patch
     on the leg's own surface, so it follows the knee; no stitch line: the B1g pads' inset stitch, sampled on the plate's
@@ -2014,7 +2111,10 @@ def build_knee_pads(S, M, coll="Suit"):
         hs, ht, n, point = pd["hs"], pd["ht"], pd.get("n", 2.2), pd.get("point", 0.0)
         if pd.get("lower"):  # B1i: the lower part of the pad sinks into the shin (one knee line in the side view)
             anchor = _SinkingAnchor(anchor, pd["offset"], ht + point, *pd["lower"])
-        mirror(garment.patch("Suit_Knee_Pad", anchor, hs, ht, offset=pd["offset"], thick=pd["thick"], n=n, dome=pd["dome"],
+        dome = pd["dome"]
+        if pd.get("profile"):   # B1l: a shaped dome with a crest (_DomedAnchor) in place of patch's parabola
+            anchor, dome = _DomedAnchor(anchor, hs, ht, n, point, pd["profile"]), 0.0
+        mirror(garment.patch("Suit_Knee_Pad", anchor, hs, ht, offset=pd["offset"], thick=pd["thick"], n=n, dome=dome,
                              inset=-1.0, point=point, res=pd.get("res", 0.0012), mat=M.get("pad", suit), coll=coll))
         a = np.linspace(0.0, kit.TAU, 241)[:-1]
         c, sn = np.cos(a), np.sin(a)
@@ -2094,7 +2194,9 @@ def build_shoulder_cords(S, specs, mat, spec, coll):
     cut = S.d["garment"]["shoulder"]["cut"]
     ends = {}
     for side in ("front", "back"):
-        path = S.path(cut[side], step=0.002)
+        # B1l: a spec may name the seam it ends on (`front_line` / `back_line`, seam points) where that is not the cut's line
+        lines = [c.get(side + "_line") for c in specs if c.get(side + "_line")]
+        path = S.path(lines[0] if lines else cut[side], step=0.002)
         P, N = S.B.pn(np.radians([q for q, _ in path]), np.array([t for _, t in path]))
         P = S.lay(P + np.asarray(S.body_lift(P, N), float)[:, None] * N)[0]   # where build_piping lays that line's cord
         o = np.argsort(P[:, 2])

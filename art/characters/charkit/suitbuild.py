@@ -48,7 +48,9 @@ import studio
 def build(tables, shape, variant, draft, samples):
     bpy.ops.wm.read_factory_settings(use_empty=True)
     kit.RES = 0.008 if draft else 0.004
-    M = bodysuit.materials(tables.palette(variant or None), tables.GLOSS, tables.PREFIX)
+    # B1l: a variant may carry its own gloss (tables.gloss), else the table's GLOSS
+    gl = tables.gloss(variant or None) if hasattr(tables, "gloss") else tables.GLOSS
+    M = bodysuit.materials(tables.palette(variant or None), gl, tables.PREFIX)
     bodysuit.build(M, tables.dims(shape or None), tables.HEAD, tables.PREFIX.capitalize())
     report = garment.orient_outward()
     rig, cam, floor = studio.setup(samples=samples or (24 if draft else 96), backdrop=studio.BACKDROP)
