@@ -5,9 +5,9 @@
   "evaluated_tris": 113152
  },
  "Boots": {
-  "objects": 3,
-  "source_tris": 349484,
-  "evaluated_tris": 698968
+  "objects": 4,
+  "source_tris": 426484,
+  "evaluated_tris": 852968
  },
  "Hands": {
   "objects": 1,
@@ -15,14 +15,14 @@
   "evaluated_tris": 291128
  },
  "Suit": {
-  "objects": 50,
-  "source_tris": 431168,
-  "evaluated_tris": 1615436
+  "objects": 51,
+  "source_tris": 463466,
+  "evaluated_tris": 1738460
  },
  "TOTAL": {
-  "objects": 60,
-  "source_tris": 1031688,
-  "evaluated_tris": 2718684
+  "objects": 62,
+  "source_tris": 1140986,
+  "evaluated_tris": 2995708
  },
  "NORMALS": {
   "flipped": [
@@ -32,7 +32,7 @@
    "Suit_Zip_Pull_Front",
    "Suit_Zip_Stop_Front"
   ],
-  "closed": 60,
+  "closed": 62,
   "open": [],
   "undecided": []
  }

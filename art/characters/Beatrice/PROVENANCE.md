@@ -272,3 +272,54 @@ derive from B1f's pelvis explicitly. `HIPS_BEFORE` = stage 4, B1e, B1f.
 - Reproduce: `--sheet --turn --beauty all --save` (6.6 min), `--beauty shoulder,flank,flank_back,knee,boot,hand` (4.8 min), `--hips`
   (19.8 min: stage 4, B1e, B1f and the default), `--compare` (13.0 min). `waist.jpg`, `inner_thigh.jpg` and `bands_contrast.jpg` are made
   from those by scratch scripts (PIL / matplotlib; the waist's matte crops from body-only builds of `b1f` and the default).
+
+## B1h: the legs below the knee (2026-10-08, answers `previews/review_stage7.md` B1, B5, B8)
+
+No reference added. Kit: only Beatrice's own `bodysuit.py` changed (new: `FittedBoot`, `build_boots_fitted`, `smin3` / `smax3`,
+`build_knee_pads`); no shared kit file touched, so no other character was rebuilt. Nothing above the knee pads moved: every
+evaluated vertex of every object above z 0.652 (834,604 of them) lies within 8.3e-8 m (float32 rounding) of a B1g vertex and
+the other way round (`Beatrice_b1g_9b6d9df.blend` against this build). To keep it so, the pelvis profiles' lower controls (the
+three leg rows under the knee, `profiles.edge_rows(below=)`) stay B1g's (`LEGS_B1G`), and the suit's leg still ends at 0.10
+inside the boot (ending it at 0.15 moved 20 suit vertices at the raglan cut by 0.009 mm: the body build is order-sensitive).
+
+- **The boot (B1).** `boot["fitted"]` replaces `boot["implicit"]` (kept, unused). The causes: the shaft was the leg loft
+  eased out 2.2-4.8 mm over a hidden ankle row whose back bulged 6 mm behind the visible ankle (a tube standing off the
+  Achilles); its top was a flat cut (a rim) with a V dip; the foot a chain of eight tapered superellipse capsules unioned at
+  every node, each node's rounded end a ring of bump and dent (the vamp's blotches: the reflection lines in
+  `boots_before_after.jpg` show the rings), smoothed by a quadratic (C1) union; the sole and heel separate plates under a
+  rounded upper edge (the gap line), the sole running back over the heel. Now (heel cup joined at k 35 mm: at 22 a dent showed
+  behind the ankle bone): the shaft is the leg plus 1.3 mm of leather
+  and over its top 4 mm dives 0.6 mm under the suit, the crossing covered by a piping cord (a seam ridge, no rim, no V); the
+  hidden ankle row is taken in at the back 4.5 mm and out at the front 2 mm (the Achilles runs straight into the heel cup;
+  the visible ankle moved at most 0.45 mm, 0.232-0.29 m); a superellipsoid heel cup; the foot ONE sweep (rows of half-width,
+  top line and exponent along the foot, C2 splines) whose top line rises into the shaft front (the instep one long curve),
+  narrowing to an almond toe with a 4 cm toe box, closing as sqrt(1 - t^4); every union a C2 (cubic) smooth minimum; the
+  shading normals the field's own gradient; a welt 1.2 mm proud and 5 mm thick and the 2.7 cm block heel (3.2 cm with the
+  sole) as their own closed mesh, `Boot_Sole`, with the upper standing 0.8 mm into it (a crisp corner, no gap); a toe-cap
+  seam cord. Kept: shaft top 0.232, heel height, foot length (tip -0.171, heel back about 0.058), stance, widths.
+  Shaft surface to the leg loft along its section rays (outer / front / inner / back, mm): at 0.13 B1g 4.8 / 5.1 / 4.8 / 4.7,
+  now 3.2 / 2.8 / 3.5 / 2.3 (the instep and heel cup begin there); at 0.18 4.3 / 4.4 / 4.5 / 4.4 -> 1.7 / 1.3 / 1.5 / 1.3;
+  at 0.215 2.9 / 2.9 / 2.9 / 2.9 -> 1.4 / 1.3 / 1.3 / 1.3 (B1g measured against its own leg). In `side.png` the shaft's depth
+  against the leg at 0.25 m: B1g +8 / +11 / +6 px at 0.13 / 0.17 / 0.21 m (back +7.0 / +9.4 / +4.7 mm), now +2 / +4 / +3 px
+  (back +2.3 / +2.3 / +1.2 mm). `Boots`: 4 objects (Boot, Boot_Sole, two cords), all closed and outward-facing.
+- **The knee pads (B5).** One domed shield (`knee_pad["pad"]`, `bodysuit.build_knee_pads`; dome 9 mm) on the leg's own
+  surface, a piped rim, no stitch line (B1g's inset stitch, sampled on the plate's vertex grid, was the dashed oval); the
+  drawn frame below it as a seam (from the outer side down to a point on the shin and up to the pad's lower inner edge), the
+  outer-shin seam now starting from that point. Front-view width over the knee's width at the pad's widest (geometric): B1g
+  0.447, now 0.56 (drawing 0.54 by the review's pixels); height 101 -> 100 mm; top 0.647 (under 0.652). Value in
+  `sheet.png` (mean grey, pad / thigh above / shin below): B1g 26 / 29 / 39 and 29 / 37 / 33, now 31 / 29 / 40 and 35 / 37 / 32,
+  the drawing 60 / 38 / 35 and 53 / 38 / 38: no longer darker than the suit, still not as bright as drawn (a 12 mm dome got
+  the pad to 35-37 but stood 6 mm proud of the knee in the side view, where the drawing's knee is flat).
+- **The calf (B8).** `calf` and `calf_top` wider (half-width .056 -> .057, .055 -> .0585) and a little deeper behind
+  (.064 -> .065, .067 -> .069); the knee's rows and the loft's tangents at the knee unchanged (nothing moves from 0.54 up), the
+  ankle unchanged. Widths in each sheet's frame, render against drawing: back view 0.46 / 0.48 / 0.50 / 0.52 m B1g -3 / -5 /
+  -7 / -6 %, now +1 / +1 / -3 / -4 %; front +2 / +5 / +4 / +6 % (B1g -3 / 0 / -1 / +3); side +2 / +4 / +3 / -2 % (B1g +1 / +2 /
+  +1 / -2). Measured this way the side was not thin (the review's -7 % side is not reproduced), and the front and back drawings
+  disagree on the upper calf: the widening is the compromise.
+- Sheet IoU knees down: front 0.908 -> 0.899 (the drawing's high-heeled foot), side 0.856 -> 0.862, back 0.812 -> 0.822.
+  `source/mesh_stats.json`: 62 objects, 1,140,986 source / 2,995,708 evaluated triangles, all closed (the flipped-normal list is B1g's).
+- Pictures: `boots_before_after.jpg` (B1g above, now below: front, side, back, three-quarter, the vamp, the shaft's top, and the
+  reflection lines on the vamp and the side), `knees_before_after.jpg`; every dev view re-rendered (`wrist.jpg` new).
+- Reproduce: `--sheet --turn --beauty all --save` (6.9 min; the boots about 80 s of the build),
+  `--beauty shoulder,shoulder_back,wrist,boot,flank,flank_back,knee,hand,boot_side,armpit_back,top_close,hand_palm` (5.8 min).
+  The before/after pictures and the measures are made by scratch scripts from `Beatrice_b1g_9b6d9df.blend` and this build.

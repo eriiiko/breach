@@ -572,7 +572,7 @@ def dims(shape=None):
             # at this share of the pad's edge height). B1g: layers=(dict(x=.121, z=.612, hs=.0245, ht=.040, offset=.0016,
             # thick=.0016, dome=.0022, n=2.3, inset=.004, point=.010), dict(x=.121, z=.634, hs=.0175, ht=.0225, offset=.0031,
             # thick=.0016, dome=.0016, n=2.2, inset=.0035))
-            knee_pad=dict(pad=dict(x=.121, z=.612, hs=.031, ht=.040, offset=.0018, thick=.0018, dome=.0085, n=2.2, point=.010,
+            knee_pad=dict(pad=dict(x=.121, z=.612, hs=.031, ht=.0425, offset=.0018, thick=.0018, dome=.009, n=2.2, point=.010,
                                    rim=(0.0010, 0.5), res=0.0010)),
             panel_rim="seam",  # mesh panels set IN the suit, edged by the suit's own seams
             seam_style="tube", piping=(0.0009, 0.0001),  # seams are piping cords (radius, centre above the surface)
@@ -687,7 +687,7 @@ def dims(shape=None):
             # a slim welt following the upper; the low block heel (the owner's 3 cm) under the heel seat
             fitted=dict(
                 top=0.232, top_seam=0.2295, leather=0.0013, sink=(0.004, 0.0006), shaft_low=(0.090, 0.030),
-                heel_cup=((0.0, 0.021, 0.056), (0.0300, 0.037, 0.046), 2.3), k=(0.022, 0.025),
+                heel_cup=((0.0, 0.021, 0.056), (0.0300, 0.037, 0.046), 2.3), k=(0.035, 0.025),   # k: shaft-heel cup (0.022 left a dent behind the ankle bone), upper-foot
                 foot=((0.000, .0280, 0.150, 2.2), (-0.025, .0292, 0.150, 2.2), (-0.035, .0297, 0.135, 2.2),
                       (-0.042, .0300, 0.106, 2.2), (-0.050, .0304, 0.086, 2.2), (-0.060, .0309, 0.073, 2.2), (-0.075, .0314, 0.062, 2.2),
                       (-0.090, .0316, 0.054, 2.2), (-0.105, .0310, 0.048, 2.15), (-0.120, .0285, 0.044, 2.1), (-0.140, .0235, 0.040, 2.0),
