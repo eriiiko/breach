@@ -65,7 +65,12 @@ class BakeParams:
     are in CELLS PER STEP (the solver's dt is 1 step)."""
     nx: int = 128
     ny: int = 128
-    nz: int = 32
+    nz: int = 64                # the box is 4 x 4 x 4 TILES (see height_tiles):
+                                # a short vertical period smears into streaks
+                                # along the view rays when a tilted ray crosses
+                                # it several times (incident 2026-10-14), so
+                                # the repeat is as tall as the columns get;
+                                # z texels are 2x coarser than x/y
     frames: int = 48            # output frames per loop (T)
     substeps: int = 2           # solver steps per output frame
     warmup_steps: int = 160     # steps before recording (reach stationarity)
@@ -99,7 +104,7 @@ class BakeParams:
     phi_sparsity: float = 0.6   # smoothstep lower edge: higher = patchier fire
     # --- asset metadata -----------------------------------------------------
     period_tiles: float = 4.0
-    height_tiles: float = 1.0
+    height_tiles: float = 4.0
     loop_seconds: float = 4.0
 
     def shape(self) -> Tuple[int, int, int]:
@@ -535,7 +540,10 @@ def bake(p: BakeParams, progress: _Progress = None) -> BakeResult:
                 f"|u|max={max(np.abs(solver.u).max(), np.abs(solver.v).max(), np.abs(solver.w).max()):.2f}  "
                 f"rho std={solver.rho.std():.3f}")
     n_rec = 2 * p.frames
-    rec = np.empty((n_rec,) + p.shape() + (2,), dtype=np.float32)
+    # float16 recording: a 256x256x64 x 2T x 2 bake is 1.6 GB here instead
+    # of 3.2 (the fields are [0,1]; half precision is far below the uint8
+    # the asset ends up as).
+    rec = np.empty((n_rec,) + p.shape() + (2,), dtype=np.float16)
     for k in range(n_rec):
         for _ in range(p.substeps):
             solver.step()

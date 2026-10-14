@@ -1733,7 +1733,9 @@ fovy_deg = 45.0         # vertical field of view
 enabled = true          # the raymarched smoke (off = tilt view with no smoke)
 asset = "smoke_v1"      # assets/volumes/<asset>.npz (tools/bake_smoke_volume.py);
                         # missing -> a procedural fallback volume + a console hint
-steps = 64              # raymarch steps per pixel (the cost dial)
+steps = 256             # CAP on raymarch steps per pixel
+step_texels = 1.5       # step length in volume texels (the real cost dial:
+                        # smaller = sharper detail, more steps up to the cap)
 h_max_tiles = 6.0       # slab height = the tallest smoke column, in tiles
                         # (0.333 m tiles: 6 = a 2 m ceiling)
 tau_h = 3.0             # optical depth at which a column reaches h_max_tiles

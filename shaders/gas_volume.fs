@@ -52,7 +52,8 @@ uniform float u_period_tiles; // volume x/y repeat, in tiles
 uniform float u_height_tiles; // volume z extent, in tiles
 uniform float u_rise_turns;   // vertical scroll per loop, whole heights (seamless)
 
-uniform int   u_steps;
+uniform int   u_steps;        // CAP on the steps per ray
+uniform float u_step_px;      // step length, world px (= step_texels texels)
 uniform float u_h_max;        // slab / max column height, tiles
 uniform float u_tau_h;        // tau at which the column reaches u_h_max
 uniform float u_tau_solid;    // tau at which erosion stops (solid core)
@@ -136,6 +137,8 @@ void main() {
 
     float hmax_px = u_h_max * u_px_per_tile;
     vec3 bmax = vec3(u_world_px.x, hmax_px, u_world_px.y);
+    float inv_tiles = 1.0 / u_px_per_tile;
+    float rise = u_rise_turns * u_phase;
     vec2 th = boxHit(ro, rd, bmax);
     float tn = max(th.x, 0.0);
     float tf = th.y;
@@ -155,15 +158,39 @@ void main() {
         return;
     }
 
-    float ds = (tf - tn) / float(u_steps);
+    // Step length in WORLD PX from the dial in VOLUME TEXELS (u_step_px),
+    // so the march resolves whatever the bake contains; the count follows
+    // the ray's own slab length, capped by u_steps.
+    float seg = tf - tn;
+    int nsteps = int(clamp(ceil(seg / max(u_step_px, 1e-3)), 4.0, float(u_steps)));
+    float ds = seg / float(nsteps);
     float t = tn + hash12(gl_FragCoord.xy) * ds;
+
+    if (u_debug == 2) {
+        // MOVIE ONLY: the whole slab filled with the baked volume under flat
+        // grey light — "show me just the movie", in the game's own view.
+        float trans2 = 1.0;
+        float acc = 0.0;
+        for (int i = 0; i < nsteps; ++i) {
+            vec3 p = ro + rd * t;
+            t += ds;
+            float yt = p.y * inv_tiles;
+            vec2 vol = sampleVolume(p.xz * inv_tiles, yt / u_height_tiles - rise);
+            float d = pow(vol.r, u_detail_gamma);
+            float sigma = u_k_ext * 2.0 * d / max(u_h_max * u_px_per_tile, 1e-3);
+            float a = 1.0 - exp(-sigma * ds);
+            acc += trans2 * a * (0.35 + 0.65 * d);
+            trans2 *= (1.0 - a);
+            if (trans2 < 0.01) break;
+        }
+        finalColor = vec4(vec3(acc), 1.0 - trans2);
+        return;
+    }
 
     vec3 inscatter = vec3(0.0);
     float trans = 1.0;
-    float inv_tiles = 1.0 / u_px_per_tile;
-    float rise = u_rise_turns * u_phase;
 
-    for (int i = 0; i < u_steps; ++i) {
+    for (int i = 0; i < nsteps; ++i) {
         vec3 p = ro + rd * t;
         t += ds;
         vec2 g = p.xz / u_world_px;                  // ground uv

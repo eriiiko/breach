@@ -1661,11 +1661,14 @@ class GameRenderer:
             if self.tilt_on:
                 self._build_tilt_view()
             print(f"[tilt] {'ON' if self.tilt_on else 'OFF'}")
-        # F12: the volume pass's alignment checker (paints the ground hit as
-        # a tile checker — must sit on the floor's own grid). Dev aid.
+        # F12 cycles the volume pass's debug views: 1 = alignment checker
+        # (the ground hit as a tile checker — must sit on the floor's own
+        # grid), 2 = movie only (the whole slab filled with the baked volume
+        # under flat grey light). Dev aid.
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F12) and self.gas_volume is not None:
-            self.gas_volume.debug = not self.gas_volume.debug
-            print(f"[tilt] volume debug {'ON' if self.gas_volume.debug else 'OFF'}")
+            self.gas_volume.debug = (int(self.gas_volume.debug) + 1) % 3
+            print(f"[tilt] volume debug {self.gas_volume.debug} "
+                  f"(0 off, 1 alignment checker, 2 movie only)")
         # T: emissive black-body temperature overlay (over gmap.temperature).
         if rl.is_key_pressed(rl.KeyboardKey.KEY_T):
             self.show_temperature = not self.show_temperature

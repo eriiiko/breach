@@ -58,7 +58,7 @@ class VolumeDials:
     poke them directly."""
 
     DEFAULTS = dict(
-        enabled=True, asset="smoke_v1", steps=64,
+        enabled=True, asset="smoke_v1", steps=256, step_texels=1.5,
         h_max_tiles=6.0, tau_h=3.0, tau_solid=6.0, erode=0.7,
         detail_gamma=1.0, top_var=0.35, k_ext=1.0, k_shadow=0.6,
         albedo_floor=0.25, emit_gain=3.0, emit_pow=2.0, exposure=1.0,
@@ -69,6 +69,7 @@ class VolumeDials:
     enabled: bool
     asset: str
     steps: int
+    step_texels: float
     h_max_tiles: float
     tau_h: float
     tau_solid: float
@@ -116,13 +117,18 @@ class GasVolumePass:
         self.asset_name = ""
         self.vol_z = 1
         self.vol_t = 1
+        self.vol_x = 1
         self.period_tiles = 4.0
         self.height_tiles = 1.0
         self.loop_seconds = 4.0
         self._phase = 0.0
         # Alignment checker (F12 live; BREACH_VOLUME_DEBUG=1 for headless
         # shots): paints the ray's ground hit as a tile checker.
-        self.debug = os.environ.get("BREACH_VOLUME_DEBUG", "") == "1"
+        # 0 = off, 1 = alignment checker, 2 = movie only (flat grey).
+        try:
+            self.debug = int(os.environ.get("BREACH_VOLUME_DEBUG", "0") or 0)
+        except ValueError:
+            self.debug = 0
         self._dials_logged = False
         self._tau_logged = 0
 
@@ -139,7 +145,7 @@ class GasVolumePass:
                      "u_inv_vp",
                      "u_cam_pos", "u_world_px", "u_px_per_tile", "u_vol_zt",
                      "u_phase", "u_period_tiles", "u_height_tiles",
-                     "u_rise_turns", "u_steps", "u_h_max", "u_tau_h",
+                     "u_rise_turns", "u_steps", "u_step_px", "u_h_max", "u_tau_h",
                      "u_tau_solid", "u_erode", "u_detail_gamma", "u_top_var",
                      "u_k_ext", "u_k_shadow", "u_light_from_below",
                      "u_albedo_floor", "u_ambient",
@@ -197,6 +203,7 @@ class GasVolumePass:
             return False
         self.vol_z = int(Z)
         self.vol_t = int(T)
+        self.vol_x = int(vol.shape[3])
         self.period_tiles = float(meta["period_tiles"])
         self.height_tiles = float(meta["height_tiles"])
         self.loop_seconds = float(meta["loop_seconds"])
@@ -223,7 +230,8 @@ class GasVolumePass:
             self.dials.refresh(cfg)
         if not self._dials_logged:
             d = self.dials
-            print(f"[gas_volume] dials: steps={d.steps} h_max={d.h_max_tiles} "
+            print(f"[gas_volume] dials: steps<={d.steps} step={d.step_texels} texels "
+                  f"h_max={d.h_max_tiles} "
                   f"tau_h={d.tau_h} tau_solid={d.tau_solid} erode={d.erode} "
                   f"albedo_floor={d.albedo_floor} emit_gain={d.emit_gain} "
                   f"k_shadow={d.k_shadow} rise={d.rise_turns}")
@@ -297,6 +305,9 @@ class GasVolumePass:
         self._set_f("u_height_tiles", self.height_tiles)
         self._set_f("u_rise_turns", d.rise_turns)
         self._set_i("u_steps", max(4, int(d.steps)))
+        # One volume texel in world px = period / X; the dial is in texels.
+        texel_px = self.period_tiles * self.px_per_tile / max(self.vol_x, 1)
+        self._set_f("u_step_px", max(float(d.step_texels), 0.1) * texel_px)
         self._set_f("u_h_max", d.h_max_tiles)
         self._set_f("u_tau_h", max(d.tau_h, 1e-3))
         self._set_f("u_tau_solid", max(d.tau_solid, 1e-3))
@@ -314,7 +325,7 @@ class GasVolumePass:
         self._set_f("u_emit_pow", max(d.emit_pow, 1e-3))
         self._set_i("u_heat_on", 1 if (heat_on and heat_tex is not None) else 0)
         self._set_f("u_exposure", d.exposure)
-        self._set_i("u_debug", 1 if self.debug else 0)
+        self._set_i("u_debug", int(self.debug))
         # The sampler3D lives on its own unit (raylib never touches it).
         self._set_i("u_volume", gl3d.VOLUME_TEXTURE_UNIT)
         gl3d.bind_texture_3d(self.tex3d, gl3d.VOLUME_TEXTURE_UNIT)
