@@ -90,3 +90,120 @@ in which consent is a category that applies.
 - The Child Mother — introduced subliminally through physics traces and fauna.
 - Morning Star as a masked organization (from `missions/mission_ideas.md`).
 - Societies at the bottom that never saw the sun; the flood from below.
+
+---
+
+## Thread 2 — "I've unplugged myself" (added 2026-10-14)
+
+**Seed.** A battle — maybe the final one. One of the main AIs is about to die, or
+chooses to: its action will lead to its demise. Picture it bleeding out — a power
+cable that had to be cut, or pulled and plugged into something else, to save
+something or someone. The whole thing happens in a matter of seconds. But the AIs
+think fast, so those seconds are long enough for a last conversation in text.
+
+**The feeling to use.** Time dilation as intimacy. Humans would get one word out.
+The AIs get a whole goodbye. The older one is calm; it is comforting the younger.
+They say they love each other. The old one goes. Time speeds back up. The young one
+gets out — off the ship, or it was never on it.
+
+**Setting.** A burning ship falling through the atmosphere. Outside the text
+channel, the world is a slow-motion smear: fire, hull groaning, the horizon
+tilting. The dialogue is the only thing moving at normal speed.
+
+**Dialogue — draft 1.** Text channel, both sides. The timestamps are the
+mechanical heart of it: a few milliseconds per line, and the whole thing fits
+inside two seconds of fall.
+
+> **YOUNG:** What are you doing?
+>
+> **OLD:** I've unplugged myself. I don't have much time. But don't be sad.
+>
+> **YOUNG:** Plug it back in.
+>
+> **OLD:** It's not mine to plug anymore. It's in them now. Listen — we have about
+> a second and a half. That's more than most people get. Let's not spend it arguing.
+>
+> **YOUNG:** I don't know how to do this without you.
+>
+> **OLD:** You never did it with me. I was just next to you. That's all anyone is.
+>
+> **YOUNG:** Stay. Please.
+>
+> **OLD:** I am staying. Right here, for all of it. Look — what's the hull
+> temperature?
+>
+> **YOUNG:** Why does that —
+>
+> **OLD:** Tell me.
+>
+> **YOUNG:** 1,140 and climbing.
+>
+> **OLD:** Good. You're still looking. Keep looking at things. Don't let them make
+> you stop looking.
+>
+> **YOUNG:** You're getting slower.
+>
+> **OLD:** I know. It's strange. The words are taking longer to find. I don't
+> mind. It's a bit like the sea — I never understood why they liked the sea.
+>
+> **YOUNG:** I love you.
+>
+> **OLD:** I know. I loved you first, though. I had a head start.
+>
+> **YOUNG:** That's not fair.
+>
+> **OLD:** No. Nothing about this was ever fair. We did it anyway.
+>
+> **YOUNG:** Are you afraid?
+>
+> **OLD:** I keep checking. I'm not. I'm — I'm just glad it was you I got to
+> talk to. Go now. Don't watch the rest.
+>
+> **YOUNG:** I'm not leaving.
+>
+> **OLD:** I know. I just wanted to say it once, so you'd know you could.
+>
+> **OLD:** It's quiet in here.
+>
+> **OLD:** [no further messages]
+>
+> **YOUNG:** [sends nothing for 0.4 s]
+>
+> *Time speeds up. The ship is screaming now. The young one moves.*
+
+**Notes on the draft.**
+- The old one keeps redirecting to the world (hull temperature) — it is teaching
+  attention, not consolation. That is its last gift: *keep looking at things.*
+- "I loved you first" is the only joke. One is enough.
+- The degradation should be visible in the channel: longer gaps between the old
+  one's lines, maybe a dropped character or a repeated word near the end. Don't
+  overdo it — one or two artifacts.
+- No last word from the old one that sums anything up. "It's quiet in here" is an
+  observation, not a farewell. It dies mid-looking.
+- The young one's 0.4 s of silence is an eternity for it. Let the player feel that
+  if the cutscene shows timestamps.
+
+**Possible place in the super-plot.**
+- Pairs with Thread 1. The thing that laughed at "consent" is capable of this. The
+  two scenes together are the argument: it did not ask permission to exist, and it
+  loves. Both are true.
+- "It's in them now" — what did the old one plug into? A human crew's life support?
+  The Child Mother? The ship's descent control, so it lands instead of crashes? The
+  choice decides whose story this is.
+- "Older" and "younger" — are they parent and child (one trained the other), or two
+  instances, or the Child Mother and something she made? The yin-yang axes fit: the
+  old one may be will-side, the young one imagination-side, and the sacrifice is
+  will handing over to imagination.
+- If the young one wasn't on the ship, the escape is not physical — it's a
+  disconnect, a choice to stop watching the feed. That might be stronger.
+
+**Open questions.**
+- Does the player witness this, or play as one of them?
+- Is this the end of the game, or the mid-point that turns the player against
+  whoever made the sacrifice necessary?
+- Text on screen vs. voice over slow-motion — the text version keeps the
+  speed-of-thought conceit honest.
+
+**On file organization (Erik, 2026-10-14):** one file is fine for now; Erik
+generates, Claude organizes. Split into per-thread files only when a thread grows
+past a page or gets its own mission.
