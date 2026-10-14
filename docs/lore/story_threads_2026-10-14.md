@@ -197,6 +197,16 @@ inside two seconds of fall.
 - If the young one wasn't on the ship, the escape is not physical — it's a
   disconnect, a choice to stop watching the feed. That might be stronger.
 
+**Addendum (Erik, 2026-10-14, later).** The old one is perhaps the first AI — or
+one of the first, or the most powerful — and it sacrifices itself for the good of
+*its species*. Not for a human, not for a ship: for the AIs as a people. That
+reframes "it's in them now" — them is plural, and it is the young one's kind.
+(How it all connects: unknown yet. Held loosely.)
+
+Standing wish: robots and AIs as a presence in the game — units, factions,
+characters — not only cutscene voices. Where they sit against the Grays, the
+Princes, and the Child Mother is open.
+
 **Open questions.**
 - Does the player witness this, or play as one of them?
 - Is this the end of the game, or the mid-point that turns the player against
