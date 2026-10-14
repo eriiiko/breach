@@ -32,6 +32,7 @@ from .camera import Camera2D
 from .cold_overlay import ColdFieldOverlay
 from .gas_detail import GasDetailPass, tame_wind
 from .gas_medium import GasMediumOverlay
+from .gas_volume import GasVolumePass, VolumeDials
 from .hover_readout import pack_hover_readout
 from .lighting import LightingPass
 from .speckle import SpeckleField
@@ -44,6 +45,7 @@ from .overlays import (
 )
 from .pressure_overlay import PressureOverlay
 from .sprites import UnitSprites
+from .tilt_view import TiltSettings, TiltView
 from .unit_model_renderer import UnitModelRenderer
 from .water import WaterPass
 from .world_composite import WorldComposite
@@ -70,6 +72,10 @@ class RenderConfig:
     # when False the sprite path is byte-for-byte unchanged. Feel-gated. The J
     # key flips it live (poll_toggles) once the model is loaded.
     use_3d_units: bool = False
+    # Volumetric smoke + tilted perspective view (issue #90): render-only,
+    # default OFF (the shipped top-down look is byte-for-byte unchanged).
+    # `--tilt` turns it on at launch; F11 flips it live.
+    tilt_view: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -428,6 +434,67 @@ class GameRenderer:
         self._prop_gas_bulk_fn = None
         self._prop_n_ambient_q = 1.0
 
+        # Volumetric smoke + the tilted view (issue #90, design
+        # docs/volumetric_smoke_design_2026-10-14.md). A SCREEN-STAGE view
+        # mode: compose_world still produces the top-down world RT; when
+        # tilt_on the final blit draws that RT as a ground quad under a
+        # perspective camera and raymarches the baked smoke volume above it
+        # (renderer/tilt_view.py + renderer/gas_volume.py). Built lazily on
+        # first use so the default top-down session pays nothing. RENDER-ONLY.
+        self.tilt_on = bool(cfg.tilt_view)
+        self.tilt_view: Optional[TiltView] = None
+        self.gas_volume: Optional[GasVolumePass] = None
+        self._volume_albedo = (0.6, 0.6, 0.6)
+        if self.tilt_on:
+            self._build_tilt_view()
+
+    # ---- tilted view + volumetric smoke (issue #90) ----------------------
+
+    def _build_tilt_view(self) -> None:
+        """Construct the tilt view RT + camera and the volume pass (once)."""
+        if self.tilt_view is None:
+            self.tilt_view = TiltView(
+                self.cfg.map_px_w, self.cfg.map_px_h,
+                self.world.world_px_w, self.world.world_px_h,
+                self.world.world_px_per_tile, TiltSettings.from_config(CFG))
+        if self.gas_volume is None:
+            asset = VolumeDials().refresh(CFG).asset
+            self.gas_volume = GasVolumePass(
+                self.cfg.grid_h, self.cfg.grid_w,
+                world_px_w=self.world.world_px_w,
+                world_px_h=self.world.world_px_h,
+                px_per_tile=self.world.world_px_per_tile, asset=asset)
+
+    def _volume_draws_smoke(self) -> bool:
+        """True when the volumetric pass owns the smoke this frame — then
+        compose_world skips the 2D gas layer (no double smoke)."""
+        return (self.tilt_on and self.gas_volume is not None
+                and self.gas_volume.ready and bool(self.gas_volume.dials.enabled)
+                and self.show_smoke and not self.legacy_smoke_on)
+
+    def _draw_tilt_to_screen(self) -> None:
+        """The tilted final blit: ground quad + volumetric smoke -> map area."""
+        tv = self.tilt_view
+        if tv is None:
+            return
+        tv.settings = TiltSettings.from_config(CFG)     # Ctrl+R retunes pitch
+        tv.update_camera(self.camera)
+        tv.begin()
+        tv.draw_ground(self.world.rt)
+        if self._volume_draws_smoke() and self.gas_volume is not None:
+            self.gas_volume.draw(
+                inv_vp=tv.inv_vp, cam_pos=tv.cam_pos,
+                light_tex_a=self.lighting.light_tex_a,
+                heat_tex=self.temperature_overlay.tex,
+                heat_on=self.show_temperature,
+                ambient=self.lighting.ambient,
+                light_gain=self.lighting.light_gain,
+                albedo=self._volume_albedo,
+                dst_w=tv.map_px_w, dst_h=tv.map_px_h)
+        tv.end()
+        tv.blit_to_screen(self.camera.viewport_screen_x,
+                          self.camera.viewport_screen_y)
+
     # ---- per-frame physics->GPU upload ---------------------------------
 
     def upload_state(self, gmap, light_sources: Optional[List] = None,
@@ -520,6 +587,18 @@ class GameRenderer:
                     self.gas_detail.update(
                         self.gas_medium.density_proxy, gmap.wind_x, gmap.wind_y,
                         sim_tick=int(sim_tick), sim_dt=self._sim_dt)
+                # Volumetric smoke (issue #90): the SAME pre-curve tau the
+                # medium just built grows the columns; the smoke row's
+                # scatter_albedo from the live GasTable is its lit identity
+                # (one optical identity with the ray march). Sim-tick clock.
+                if self.tilt_on and self.gas_volume is not None:
+                    from simulation.gases import SMOKE
+                    alb = gmap.gases.scatter_albedo[SMOKE]
+                    self._volume_albedo = (float(alb[0]), float(alb[1]),
+                                           float(alb[2]))
+                    self.gas_volume.update(
+                        self.gas_medium.tau, sim_tick=int(sim_tick),
+                        sim_dt=self._sim_dt, cfg=CFG)
         # Props & vegetation arc #60 P4 — WIND SWAY input. The TAMED wind
         # (gas_detail.tame_wind: smooth -> direction -> saturating speed) is
         # the ONE render-side wind product; props sample it per prop at draw
@@ -684,7 +763,10 @@ class GameRenderer:
         # compositing — preserves the destination alpha (ship stays opaque)
         # instead of Raylib's default BLEND_ALPHA which reduces dest alpha
         # when src alpha < 1.
-        if self.show_smoke:
+        # Issue #90: when the volumetric pass owns the smoke (tilt view), the
+        # 2D gas layer is NOT drawn into the RT — the smoke lives above the
+        # ground plane instead (no double smoke).
+        if self.show_smoke and not self._volume_draws_smoke():
             if self.legacy_smoke_on:
                 # LEGACY (pre-B2) A/B path: flat premultiplied smoke + a separate
                 # additive god-ray glow. Two draws, two blend modes.
@@ -1286,6 +1368,10 @@ class GameRenderer:
         nothing to clip. Scissor would only be needed if we drew into the
         panel by accident (which we don't).
         """
+        if self.tilt_on and self.tilt_view is not None:
+            # Issue #90: the tilted perspective blit (ground quad + volume).
+            self._draw_tilt_to_screen()
+            return
         self.world.blit_to_screen(
             self.camera,
             self.camera.viewport_screen_x, self.camera.viewport_screen_y,
@@ -1518,6 +1604,18 @@ class GameRenderer:
         # after F9's legacy-smoke A/B.) Prints the new mode for the console log.
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F10):
             print(f"[speckle] mode -> {self.speckle.cycle_mode()}")
+        # F11: the tilted perspective view + volumetric smoke (issue #90) —
+        # flips live; the view RT + volume pass are built on first use.
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_F11):
+            self.tilt_on = not self.tilt_on
+            if self.tilt_on:
+                self._build_tilt_view()
+            print(f"[tilt] {'ON' if self.tilt_on else 'OFF'}")
+        # F12: the volume pass's alignment checker (paints the ground hit as
+        # a tile checker — must sit on the floor's own grid). Dev aid.
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_F12) and self.gas_volume is not None:
+            self.gas_volume.debug = not self.gas_volume.debug
+            print(f"[tilt] volume debug {'ON' if self.gas_volume.debug else 'OFF'}")
         # T: emissive black-body temperature overlay (over gmap.temperature).
         if rl.is_key_pressed(rl.KeyboardKey.KEY_T):
             self.show_temperature = not self.show_temperature
@@ -1620,6 +1718,20 @@ class GameRenderer:
         my = rl.get_mouse_y()
         if not self.camera.contains_screen_px(mx, my):
             return None
+        if self.tilt_on and self.tilt_view is not None:
+            # Issue #90: under the tilted camera the 2D mapping is wrong —
+            # unproject the mouse ray onto the ground plane instead. The
+            # camera is derived lazily here too, so a query before the first
+            # blit (the demo polls the cursor before it composes) is valid.
+            if not self.tilt_view.cam_valid:
+                self.tilt_view.update_camera(self.camera)
+            hit = self.tilt_view.mouse_to_world_px(
+                mx, my, self.camera.viewport_screen_x,
+                self.camera.viewport_screen_y)
+            if hit is None:
+                return None
+            wpt = self.world.world_px_per_tile
+            return (hit[0] / wpt, hit[1] / wpt)
         return self.camera.screen_px_to_world_tile(mx, my)
 
     # ---- debug HUD ------------------------------------------------------
@@ -1697,6 +1809,10 @@ class GameRenderer:
         rl.unload_texture(self.water_overlay.tex)
         self.water_pass.unload()
         self.pressure_overlay.unload()
+        if self.gas_volume is not None:
+            self.gas_volume.unload()
+        if self.tilt_view is not None:
+            self.tilt_view.unload()
         self.world.unload()
         core.shutdown()
 

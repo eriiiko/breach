@@ -1046,6 +1046,8 @@ def main() -> None:
         grid_w=level.width, grid_h=level.height,
         world_px_per_tile=float(getattr(CFG.rendering, "world_px_per_tile",
                                         24.0)),
+        # --tilt (issue #90): the tilted perspective view + volumetric smoke.
+        tilt_view="--tilt" in sys.argv,
     )
 
     fit_zoom = map_px_w / max(level.width, 1)
@@ -1345,6 +1347,12 @@ def main() -> None:
             for tx in range(max(0, cx - 2), min(W, cx + 3)):
                 if not sim.gmap.solid[ty, tx]:
                     sim.gmap.water_depth[ty, tx] = 0.4
+    # --burn (issue #90 look-checks): seed the perf pass's burning scene so a
+    # headless --shot has fire + smoke from frame 1 (tool-side sim writes,
+    # the same pattern as the --auto puddle above).
+    if "--burn" in sys.argv:
+        _seed_burning_scene(sim)
+        print("[lighting_demo] --burn: crate cluster ignited, steam at the pool")
 
     try:
         while not renderer.should_close():

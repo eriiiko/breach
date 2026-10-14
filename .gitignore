@@ -72,3 +72,6 @@ levels/_editor_scratch/
 # OS files
 Thumbs.db
 .DS_Store
+
+# Baked smoke detail volumes (issue #90) — tens of MB; bake with tools/bake_smoke_volume.py
+assets/volumes/*.npz
