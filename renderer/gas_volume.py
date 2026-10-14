@@ -59,8 +59,8 @@ class VolumeDials:
 
     DEFAULTS = dict(
         enabled=True, asset="smoke_v1", steps=256, step_texels=1.5,
-        h_max_tiles=6.0, tau_h=3.0, tau_solid=6.0, erode=0.7,
-        detail_gamma=1.0, top_var=0.35, k_ext=1.0, k_shadow=0.6,
+        h_max_tiles=6.0, tau_h=3.0, tau_solid=6.0, erode=0.5,
+        detail_gamma=1.0, top_var=0.35, k_ext=3.0, k_shadow=0.6,
         albedo_floor=0.25, emit_gain=3.0, emit_pow=2.0, exposure=1.0,
         rise_turns=1.0, light_from_below=True, hybrid_2d=False,
         loop_seconds=0.0,      # 0 = the asset's own loop length
