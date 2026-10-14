@@ -190,6 +190,29 @@ def _parse_tilt_flag() -> bool:
     return "--tilt" in sys.argv
 
 
+def _parse_camera_start():
+    """``--zoom PX_PER_TILE`` / ``--pan X,Y`` (tiles): the initial camera
+    (issue #90 look-checks through tools/e2e_drive.py, which has no mouse or
+    held keys to zoom with). Returns ``(zoom_or_None, (x, y))``; absent flags
+    keep the shipped default framing."""
+    zoom = None
+    pan = (0.0, 0.0)
+    if "--zoom" in sys.argv:
+        i = sys.argv.index("--zoom")
+        try:
+            zoom = float(sys.argv[i + 1])
+        except (IndexError, ValueError):
+            raise SystemExit("--zoom requires screen px per tile, e.g. --zoom 40")
+    if "--pan" in sys.argv:
+        i = sys.argv.index("--pan")
+        try:
+            x, y = (float(s) for s in sys.argv[i + 1].split(","))
+            pan = (x, y)
+        except (IndexError, ValueError):
+            raise SystemExit("--pan requires X,Y tiles, e.g. --pan 10,8")
+    return zoom, pan
+
+
 def _parse_debug_flag() -> bool:
     """``--debug`` — re-arm the diagnostic keys (onephase_wego design §17 +
     Erik's kickoff ruling 2).
@@ -453,8 +476,11 @@ def main():
 
     fit_w_zoom = map_px_w / max(level.width, 1)
     initial_zoom = max(20.0, min(64.0, fit_w_zoom))
+    zoom_override, (pan_x, pan_y) = _parse_camera_start()
+    if zoom_override is not None:
+        initial_zoom = zoom_override
     initial_camera = Camera2D(
-        pos_tile_x=0.0, pos_tile_y=0.0,
+        pos_tile_x=pan_x, pos_tile_y=pan_y,
         zoom_px_per_tile=initial_zoom,
         viewport_px_w=map_px_w, viewport_px_h=map_px_h,
         world_size_tile_w=level.width, world_size_tile_h=level.height,
