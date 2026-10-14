@@ -61,6 +61,7 @@ uniform float u_detail_gamma; // contrast on the smoke channel
 uniform float u_top_var;      // column-top variation by detail [0,1]
 uniform float u_k_ext;        // extinction multiplier (1 = honest tau)
 uniform float u_k_shadow;     // vertical self-shadow strength
+uniform int   u_light_from_below; // 1 = lamps at floor height (bright bases)
 uniform float u_albedo_floor; // artistic floor under the per-tile albedo (soot
                               // is 0.04 in the table — pure black in any light)
 uniform vec3  u_ambient;      // the ship's ambient floor
@@ -198,10 +199,17 @@ void main() {
         // (the light the gas absorbed on the way — the god-ray glow, already
         // albedo-weighted), both under the vertical Beer-Lambert self-shadow
         // (fraction of the column above this sample).
+        // Breach's lamps sit at floor / wall height and the baked field is
+        // what reaches the TILE, so by default the column is lit from BELOW:
+        // the smoke under a sample shadows it (bright bases, dark tops — a
+        // fire's smoke in a dark room). u_light_from_below = 0 flips to the
+        // sky-lit case (bright tops) for planetside scenes.
         vec3 lin = u_ambient + texture(u_light, g).rgb * u_light_gain;
         vec3 glow = texture(u_light_b, g).rgb * u_glow_gain;
-        float above = clamp(1.0 - yt / max(h, 1e-3), 0.0, 1.0);
-        float shadow = exp(-u_k_shadow * tau * above);
+        float frac_h = clamp(yt / max(h, 1e-3), 0.0, 1.0);
+        float above = 1.0 - frac_h;
+        float occl = (u_light_from_below == 1) ? frac_h : above;
+        float shadow = exp(-u_k_shadow * tau * occl);
         vec3 lit = (lin * albedo + glow) * shadow;
 
         // Fire glow from the floor, through the fire channel.

@@ -62,7 +62,7 @@ class VolumeDials:
         h_max_tiles=6.0, tau_h=3.0, tau_solid=6.0, erode=0.7,
         detail_gamma=1.0, top_var=0.35, k_ext=1.0, k_shadow=0.6,
         albedo_floor=0.25, emit_gain=3.0, emit_pow=2.0, exposure=1.0,
-        rise_turns=1.0,
+        rise_turns=1.0, light_from_below=True, hybrid_2d=False,
         loop_seconds=0.0,      # 0 = the asset's own loop length
     )
 
@@ -82,6 +82,8 @@ class VolumeDials:
     emit_pow: float
     exposure: float
     rise_turns: float
+    light_from_below: bool
+    hybrid_2d: bool
     loop_seconds: float
 
     def __init__(self):
@@ -122,6 +124,7 @@ class GasVolumePass:
         # shots): paints the ray's ground hit as a tile checker.
         self.debug = os.environ.get("BREACH_VOLUME_DEBUG", "") == "1"
         self._dials_logged = False
+        self._tau_logged = 0
 
         # --- the per-frame optical-depth texture (R = tau) -----------------
         self.tau_packed = np.zeros((grid_h, grid_w, 4), dtype=np.float16)
@@ -138,7 +141,8 @@ class GasVolumePass:
                      "u_phase", "u_period_tiles", "u_height_tiles",
                      "u_rise_turns", "u_steps", "u_h_max", "u_tau_h",
                      "u_tau_solid", "u_erode", "u_detail_gamma", "u_top_var",
-                     "u_k_ext", "u_k_shadow", "u_albedo_floor", "u_ambient",
+                     "u_k_ext", "u_k_shadow", "u_light_from_below",
+                     "u_albedo_floor", "u_ambient",
                      "u_light_gain", "u_glow_gain", "u_emit_gain", "u_emit_pow",
                      "u_heat_on",
                      "u_exposure", "u_debug"):
@@ -224,6 +228,13 @@ class GasVolumePass:
                   f"albedo_floor={d.albedo_floor} emit_gain={d.emit_gain} "
                   f"k_shadow={d.k_shadow} rise={d.rise_turns}")
             self._dials_logged = True
+        if self._tau_logged < 3:
+            t = np.asarray(tau, dtype=np.float32)
+            nz = t[t > 1e-4]
+            if nz.size:
+                print(f"[gas_volume] tau: tiles>0 {nz.size}  p50 {np.percentile(nz, 50):.2f}  "
+                      f"p90 {np.percentile(nz, 90):.2f}  max {nz.max():.2f}")
+                self._tau_logged += 1
         self.tau_packed[..., 0] = np.asarray(tau, dtype=np.float32).astype(np.float16)
         if albedo_rgb is not None:
             self.tau_packed[..., 1:4] = np.asarray(albedo_rgb,
@@ -294,6 +305,7 @@ class GasVolumePass:
         self._set_f("u_top_var", d.top_var)
         self._set_f("u_k_ext", d.k_ext)
         self._set_f("u_k_shadow", d.k_shadow)
+        self._set_i("u_light_from_below", 1 if d.light_from_below else 0)
         self._set_f("u_albedo_floor", d.albedo_floor)
         self._set_vec3("u_ambient", ambient)
         self._set_f("u_light_gain", light_gain)

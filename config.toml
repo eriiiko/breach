@@ -1749,6 +1749,10 @@ emit_gain = 3.0         # fire glow strength (blackbody overlay x fire channel)
 emit_pow = 2.0          # fire channel contrast
 exposure = 1.0          # inscatter exposure before ACES
 rise_turns = 1.0        # upward scroll per loop, in whole volume heights
+light_from_below = true # lamps sit at floor height: bright bases, dark tops;
+                        # false = sky-lit (bright tops) for planetside scenes
+hybrid_2d = false       # true = ALSO keep the 2D gas layer on the floor under
+                        # the volume (A/B: the beloved god-rays + height)
 loop_seconds = 0.0      # 0 = the asset's own loop length
 
 # Material property table (named-key format, ch.02 — Material System).

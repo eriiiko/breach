@@ -460,6 +460,7 @@ class GameRenderer:
         compose_world skips the 2D gas layer (no double smoke)."""
         return (self.tilt_on and self.gas_volume is not None
                 and self.gas_volume.ready and bool(self.gas_volume.dials.enabled)
+                and not bool(self.gas_volume.dials.hybrid_2d)
                 and self.show_smoke and not self.legacy_smoke_on)
 
     def _draw_tilt_to_screen(self) -> None:
@@ -471,7 +472,10 @@ class GameRenderer:
         tv.update_camera(self.camera)
         tv.begin()
         tv.draw_ground(self.world.rt)
-        if self._volume_draws_smoke() and self.gas_volume is not None:
+        volume_on = (self.gas_volume is not None and self.gas_volume.ready
+                     and bool(self.gas_volume.dials.enabled)
+                     and self.show_smoke and not self.legacy_smoke_on)
+        if volume_on and self.gas_volume is not None:
             self.gas_volume.draw(
                 inv_vp=tv.inv_vp, cam_pos=tv.cam_pos,
                 light_tex_a=self.lighting.light_tex_a,
