@@ -1,0 +1,204 @@
+# Volumetric smoke — a baked, looping 4D detail volume raymarched in a tilted view
+
+> **Status**: prototype arc, issue #90. Render-only, determinism-exempt,
+> HUMAN-TEST gated (Erik plays it before merge). Design critique deferred to
+> the human test by choice: this is an exploration of a new look, not a sim
+> or safety surface. 2026-10-14.
+
+## 1. The idea (Erik, 2026-10-14) and its sharpening
+
+Erik's picture: a smoke "movie" whose frames are played not along time but
+along a spatial axis — a frame of the yz-movie at every x, a frame of the
+xz-movie at every y — the panes transparent except where the sim says there
+is smoke, and the movie also advancing in time. Both movies must loop in space
+and in time.
+
+Sharpened: the two movies are one object. A yz-frame at x and an xz-frame at
+y are both slices of a single periodic 4D field `M(x, y, z, t)`. So we bake
+that field once — a periodic 3D volume evolving in time — and let the GPU
+slice it any way the camera needs, by **raymarching a 3D texture** in a
+fragment shader. No slice stacks, no popping, hardware trilinear filtering,
+wrap-around in every axis for free.
+
+The division of labour is the one `shaders/gas_medium.fs` already uses,
+extended to 3D: **the sim owns the macro shape** (where smoke is, how thick,
+how hot — the per-tile optical depth), **the baked volume owns everything
+below tile scale** (wisps, rolling, vertical structure). Height is invented
+from density: a thick tile grows a tall column, a thin one a low haze.
+
+This is the *look* the 2.5D multi-layer smoke of
+`docs/blackbody_smoke_and_rendering_brainstorm.md` §0.5 reaches for, at zero
+sim cost and zero determinism risk: nothing here reads anything but render-
+side copies of sim fields.
+
+## 2. Architecture
+
+```
+offline                      per frame (render only)
+-------                      ------------------------------------------------
+tools/bake_smoke_volume.py   upload_state: tau (H,W) = gas_optical_depth(...)
+  renderer/volume_bake.py                  -> RGBA16F grid texture (R = tau)
+  periodic-box NS solver     compose_world: as today, MINUS the 2D gas layer
+  -> assets/volumes/*.npz    tilt view: world RT -> textured ground quad under
+     (T, Z, Y, X, 2) uint8              a perspective Camera3D (pitch ~55 deg)
+                             gas volume: fullscreen raymarch above the ground
+renderer/gl3d.py (ctypes)              sampler3D = the baked volume (RG8)
+  GL_TEXTURE_3D upload                 sampler2D = tau, light_tex_a, heat tex
+```
+
+### 2.1 The bake — `renderer/volume_bake.py` (pyray-free) + `tools/bake_smoke_volume.py`
+
+Incompressible Navier-Stokes on a fully periodic box (a torus), Stam's
+stable-fluids splitting:
+
+- **advection**: semi-Lagrangian with MacCormack correction + clamping
+  (Selle et al. 2008) for velocity and scalars — sharp filaments at modest
+  grids; `scipy.ndimage.map_coordinates(mode="grid-wrap")` is the periodic
+  trilinear lookup;
+- **forcing**: a divergence-free low-wavenumber body force (curl of a few
+  slowly-rotating Fourier modes) keeps turbulence alive against the
+  semi-Lagrangian damping; mild buoyancy on the second scalar gives a
+  vertical preference;
+- **vorticity confinement** (Fedkiw, Stam, Jensen 2001) re-injects the
+  small swirls the advection damps;
+- **projection**: exact on the torus via FFT (`u_k -= k (k.u_k)/|k|^2`,
+  Stam 2001 "A Simple Fluid Solver based on the FFT");
+- **scalars**: `rho` (smoke) and `phi` (a sharper "fire" channel) are
+  advected and **relaxed toward slowly drifting low-frequency targets**, so
+  contrast never washes out and the statistics are stationary — a
+  turbulent passive scalar, which is what a detail volume should be.
+
+**Spatial loop**: free — periodic BCs. **Time loop**: the standard crossfade
+of two consecutive periods: with `F(k)` the recorded frames, the output is
+`O(k) = lerp(F(k+T), F(k), s(k/T))`, `s` a smoothstep, so `O(0) == O(T) ==
+F(T)` exactly and the blend is invisible in smoke.
+
+Asset: `assets/volumes/<name>.npz` — `volume` uint8 `(T, Z, Y, X, 2)`
+(R = smoke, G = fire), plus `period_tiles`, `height_tiles`, `loop_seconds`.
+Gitignored (tens of MB); the game falls back to a procedural fBm volume so
+a fresh clone runs. **Starting resolution** 128 x 128 x 32 over 4 x 4 x 1
+tiles (32 texels per tile), 48 frames.
+
+### 2.2 The 3D texture — `renderer/gl3d.py`
+
+raylib has no 3D textures. Three OpenGL entry points via `ctypes` on
+`opengl32.dll` + `wglGetProcAddress` (we are Windows-only on every machine):
+`glTexImage3D`, `glBindTexture(GL_TEXTURE_3D)`, `glActiveTexture`. The
+volume is uploaded once as `(X, Y, (Z+1)*T)` RG8 with slice `Z` of every
+frame a copy of slice 0 (so trilinear wrap in z is exact inside a frame);
+`x`/`y` wrap in hardware (`GL_REPEAT`), `z` and `t` are wrapped in the
+shader (two trilinear fetches, lerped in t). Bound on a high texture unit
+raylib's batch never touches.
+
+### 2.3 The tilted view — `renderer/tilt_view.py`
+
+A **screen-stage** view mode, not a change to the world RT: `compose_world`
+keeps producing the top-down world RT exactly as today (walls, floors,
+lights, 3D marines and props all baked into it). `TiltView` owns an RT the
+size of the map viewport and, in it, draws the world RT as a textured ground
+quad under a perspective `Camera3D` (3D X = x_wpx, Z = y_wpx, Y = up — the
+`lit3d` convention), then runs the volume pass, then blits to the map area
+with the usual y-flip. The camera derives from the existing `Camera2D`:
+target = the visible rect's centre on the ground, distance chosen so the
+visible width at the target matches the 2D zoom, pitch from config. Panning
+and zooming keep their keys. `rlSetClipPlanes` lifts raylib's 1000-unit far
+plane (world RTs are up to 5760 px). Cursor->tile unprojects the mouse ray
+onto the ground plane so ignite/gas keys keep working.
+
+### 2.4 The volume pass — `renderer/gas_volume.py` + `shaders/gas_volume.fs`
+
+Fullscreen quad; per pixel: ray from the inverse view-projection, intersect
+the slab `0 <= y_up <= h_max`, march N jittered steps. Per sample:
+
+- `tau` = bilinear(sim optical depth) at the ground position — **the same
+  number `gas_medium.py` builds** (`gas_optical_depth`, single source of
+  scale); zero -> skip;
+- `d` = trilinear(volume.r), `f` = trilinear(volume.g), looked up at world
+  tiles / `period_tiles`, `y_up / height_tiles`, frame = sim-tick phase;
+- solidity `s = saturate(tau / tau_solid)`; column height
+  `h = h_max * saturate(tau / tau_h)^0.5`; Nubis-style erosion
+  `coverage = saturate((d - erode*(1-s)) / (1 - erode*(1-s)))`; the top of
+  the column fades with `d` so it is wispy, not a lid;
+- extinction `sigma = k_ext * tau * coverage * top_fade`;
+  `T *= exp(-sigma ds)`; inscatter `+= T (1 - exp(-sigma ds)) (L + E)`;
+- `L` = (ambient + light_tex_a.rgb * gain) * albedo * exp(-k_sh * tau *
+  (h - y_up)/h_max) — the baked light field the ship and marines read, with
+  a vertical Beer-Lambert self-shadow (dark bottoms, lit tops);
+- `E` = heat_tex.rgb * heat_tex.a * f^p * (1 - y_up/h)^q * e_gain — the
+  blackbody overlay's colour glowing up from the floor.
+
+Output premultiplied (ACES(inscatter), 1 - T), `BLEND_ALPHA_PREMULTIPLY`
+over the ground, exactly the gas medium's compositing operator. Clock = sim
+tick via `advected_noise.advection_phase` (replays render identically).
+Dials in `[render.gas_volume]`, re-read every frame (Ctrl+R retunes live).
+
+## 3. Scoped OUT of this patch (Erik's request: build the idea only)
+
+Touched imperfectly on purpose, each a later patch:
+
+- **Walls / floors / doors / water** are flat decals on the ground plane in
+  the tilted view (3D walls later).
+- **3D marines and props** stay baked into the top-down RT: flat, no smoke
+  occlusion. Later: redraw them in the tilt camera with a depth texture
+  (`rlLoadTextureDepth`) the raymarch reads.
+- **The 2D smoke detail pass** is simply not drawn in tilt mode; no
+  reconciliation of the two looks.
+- **God rays / raycaster inscatter** (`smoke_glow`) unused by the volume;
+  lamp shadows through smoke are v2.
+- **Per-gas colour within a tile**: v1 lights each tile with its
+  tau-weighted mean albedo (`GasMediumOverlay.albedo_rgb` — steam white, soot
+  dark, poison green at tile level); separating coexisting gases vertically
+  is later.
+- **UI overlays** drawn into the RT appear on the floor; only cursor->tile
+  is unprojected.
+- **Laptop GPU cost** unmeasured; steps/resolution are config dials.
+- **Nothing in the sim, the digests or the goldens moves.**
+
+v2 ideas, in payoff order: advect the lookup by the tamed wind with the
+two-phase flow-map crossfade (bounded distortion, hidden resets — solves
+Erik's continuity worry); a smooth per-tile phase offset from temperature
+(hot regions boil faster, no seams); lamp shadows; depth-composited marines
+and walls; a 256-res "HD" bake to answer "how much resolution do we need".
+
+## 4. Patches
+
+| # | Patch | Mode | Gate |
+|---|---|---|---|
+| P1 | `volume_bake.py` solver + baker CLI + mosaic preview | inline | property tests (periodicity, projection, loop closure) + a look at the mosaic |
+| P2 | `gl3d.py` 3D-texture shim | inline | upload + read-back of a known pattern in the studio |
+| P3 | `gas_volume.py` + `gas_volume.fs` | inline | screenshots in `tools/lighting_demo.py --tilt` |
+| P4 | `tilt_view.py` + renderer/main/demo flags + config | inline | screenshots, cursor unproject property test |
+| P5 | look tuning + perf numbers + CLAUDE.md rows | inline | HUMAN-TEST (Erik) |
+
+## 5. Systems
+
+**Existing canonical systems this design uses**
+
+- Gas medium (`renderer/gas_medium.py::gas_optical_depth`) — THE per-tile
+  optical depth; the volume reads it, never a second density definition.
+- LightingPass / LightFieldCtx (`light_tex_a`, ambient, gain) — the light
+  the volume is lit by; never a second raycast.
+- Blackbody (`renderer/blackbody.py` via `HeatFieldOverlay.tex`) — the
+  single T->colour map, consumed as its packed texture.
+- Sim-tick clock (`renderer/advected_noise.advection_phase`).
+- Camera2D (`renderer/camera.py`) — the tilt camera derives from it.
+- `main.py` `_parse_*` launch flags (`--tilt`).
+- Config `[render.gas_volume]`, `CFG`, Ctrl+R.
+- Lit-3D seam (`renderer/lit3d.py`) — the world-px 3D axis convention
+  (X = x_wpx, Z = y_wpx, Y = up); the tilt camera is a screen-stage camera,
+  not a second copy of `make_camera` (which frames the world RT).
+- Tamed wind (`gas_detail.tame_wind`) — v2's advection input.
+
+**New systems (draft rules, written into CLAUDE.md at P5)**
+
+- Gas volume (`renderer/gas_volume.py` + `shaders/gas_volume.fs`) — the
+  volumetric smoke look for the tilted view; consumes the gas medium's tau,
+  `light_tex_a` and the blackbody overlay; a second raymarcher is the bug.
+- Smoke volume bake (`renderer/volume_bake.py`, `tools/bake_smoke_volume.py`,
+  `assets/volumes/*.npz`) — THE periodic-box fluid baker and its asset
+  contract; a new detail volume (fire, steam, dust) is a bake config, not a
+  new solver.
+- GL 3D texture shim (`renderer/gl3d.py`) — the only raw-GL in the repo;
+  anything else needing a GL feature raylib lacks extends it.
+- Tilt view (`renderer/tilt_view.py`) — the only screen-stage 3D camera;
+  anything drawn in perspective over the world RT goes through it.

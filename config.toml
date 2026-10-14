@@ -1720,6 +1720,37 @@ min_directionality = 0.2  # |net flux| / irradiance (0 = light evenly from
 mode = "soot"              # "off" | "noise" | "soot"  (A/B in studio)
 amp = 0.25
 
+# --- Volumetric smoke + the tilted view (issue #90) ------------------------
+# RENDER-ONLY prototype (docs/volumetric_smoke_design_2026-10-14.md). Active
+# only under `--tilt` (main.py / tools/lighting_demo.py; F11 flips it live).
+# Every dial here is re-read EVERY FRAME, so Ctrl+R retunes the look live —
+# except `asset`, which is restart-bound (the 3D texture uploads once).
+[render.tilt_view]
+pitch_deg = 55.0        # camera pitch above the ground; 90 = straight down
+fovy_deg = 45.0         # vertical field of view
+
+[render.gas_volume]
+enabled = true          # the raymarched smoke (off = tilt view with no smoke)
+asset = "smoke_v1"      # assets/volumes/<asset>.npz (tools/bake_smoke_volume.py);
+                        # missing -> a procedural fallback volume + a console hint
+steps = 64              # raymarch steps per pixel (the cost dial)
+h_max_tiles = 6.0       # slab height = the tallest smoke column, in tiles
+                        # (0.333 m tiles: 6 = a 2 m ceiling)
+tau_h = 3.0             # optical depth at which a column reaches h_max_tiles
+tau_solid = 6.0         # optical depth at which erosion stops (solid core)
+erode = 0.7             # Nubis erosion depth at zero solidity (wispy edges)
+detail_gamma = 1.0      # contrast on the baked smoke channel
+top_var = 0.35          # how much the detail raggeds the column top (0..1)
+k_ext = 1.0             # extinction multiplier (1 = the honest tau)
+k_shadow = 0.6          # vertical self-shadow strength (dark bottoms)
+albedo_floor = 0.25     # floor under the per-tile GasTable albedo (soot = 0.04
+                        # would be pure black in any light); 0 = honest
+emit_gain = 3.0         # fire glow strength (blackbody overlay x fire channel)
+emit_pow = 2.0          # fire channel contrast
+exposure = 1.0          # inscatter exposure before ACES
+rise_turns = 1.0        # upward scroll per loop, in whole volume heights
+loop_seconds = 0.0      # 0 = the asset's own loop length
+
 # Material property table (named-key format, ch.02 — Material System).
 # One [materials.<name>] row per material id; columns indexed into per-id
 # arrays by simulation.materials.MaterialTable.

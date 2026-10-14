@@ -1076,12 +1076,22 @@ def main() -> None:
         grid_w=level.width, grid_h=level.height,
         world_px_per_tile=float(getattr(CFG.rendering, "world_px_per_tile",
                                         24.0)),
+        # --tilt (issue #90): the tilted perspective view + volumetric smoke.
+        tilt_view="--tilt" in sys.argv,
     )
 
     fit_zoom = map_px_w / max(level.width, 1)
     initial_zoom = max(12.0, min(40.0, fit_zoom))
+    # --zoom PX_PER_TILE / --pan X,Y (tiles): start the camera somewhere
+    # specific, so headless --shot look-checks (issue #90) frame the smoke.
+    pan_x = pan_y = 0.0
+    if "--zoom" in sys.argv:
+        initial_zoom = float(sys.argv[sys.argv.index("--zoom") + 1])
+    if "--pan" in sys.argv:
+        pan_x, pan_y = (float(s) for s in
+                        sys.argv[sys.argv.index("--pan") + 1].split(","))
     initial_camera = Camera2D(
-        pos_tile_x=0.0, pos_tile_y=0.0,
+        pos_tile_x=pan_x, pos_tile_y=pan_y,
         zoom_px_per_tile=initial_zoom,
         viewport_px_w=map_px_w, viewport_px_h=map_px_h,
         world_size_tile_w=level.width, world_size_tile_h=level.height,
@@ -1381,6 +1391,12 @@ def main() -> None:
             for tx in range(max(0, cx - 2), min(W, cx + 3)):
                 if not sim.gmap.solid[ty, tx]:
                     sim.gmap.water_depth[ty, tx] = 0.4
+    # --burn (issue #90 look-checks): seed the perf pass's burning scene so a
+    # headless --shot has fire + smoke from frame 1 (tool-side sim writes,
+    # the same pattern as the --auto puddle above).
+    if "--burn" in sys.argv:
+        _seed_burning_scene(sim)
+        print("[lighting_demo] --burn: crate cluster ignited, steam at the pool")
 
     # The light (ray-engine-v2 P6c port): requested for the whole session; the
     # one assembly's cone rows ride each sim tick (demo_light_rows), and a

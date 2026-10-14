@@ -261,6 +261,13 @@ class GasMediumOverlay:
         # (untouched), 0 = wispy edge (eroded). Built from the SAME tau the
         # alpha is, so body and detail can never disagree about "how solid".
         self.density_proxy = np.zeros((grid_h, grid_w), dtype=np.float32)
+        # The UNSATURATED pre-curve tau (H, W) float32, refreshed each
+        # update(): the volumetric smoke pass (renderer/gas_volume.py, issue
+        # #90) reads it to grow its columns — the same number the alpha and
+        # the density_proxy are built from (single source of scale), kept
+        # here so no second definition of "how much smoke" exists.
+        self.tau = np.zeros((grid_h, grid_w), dtype=np.float32)
+        self.albedo_rgb = np.zeros((grid_h, grid_w, 3), dtype=np.float32)
         # Per-gas optics, bound lazily from the GasTable (see _bind_table).
         self._table_id: Optional[int] = None
         self._k_s: Optional[np.ndarray] = None
@@ -321,15 +328,26 @@ class GasMediumOverlay:
         ``self.base_absorb_scale`` (``[smoke] smoke_absorb_scale``)."""
         if self._table_id != id(gas_table):
             self._bind_table(gas_table)
+        assert self._k_s is not None and self._scatter is not None
         # Density solidity for the P3 detail pass: saturate(pre-curve tau) built
         # from the SAME optics + shared base scale as the alpha below (single
         # source of scale). saturate -> tau>=1 reads as a solid core (erosion
         # off), tau<1 as a wispy edge (erosion on). Cheap; the grid is small.
-        self.density_proxy = np.clip(
-            gas_optical_depth(gas_density_trace, self._k_s,
-                              base_absorb_scale=self.base_absorb_scale,
-                              plume_k_scale=self.plume_k_scale),
-            0.0, 1.0).astype(np.float32)
+        tau = gas_optical_depth(gas_density_trace, self._k_s,
+                                base_absorb_scale=self.base_absorb_scale,
+                                plume_k_scale=self.plume_k_scale)
+        self.tau = tau.astype(np.float32)
+        self.density_proxy = np.clip(tau, 0.0, 1.0).astype(np.float32)
+        # tau-weighted mean scatter albedo per tile, (H, W, 3): the medium's
+        # LIT identity at tile level (steam near-white, soot dark, poison
+        # green) from the SAME GasTable rows the ray march uses — the volume
+        # pass's per-sample albedo (issue #90). Zero where there is no gas.
+        w = self._k_s[:, None, None] * np.asarray(gas_density_trace,
+                                                  dtype=np.float32)
+        num = np.tensordot(w, self._scatter, axes=([0], [0]))
+        den = w.sum(axis=0)[..., None]
+        self.albedo_rgb = np.where(den > 1e-9, num / np.maximum(den, 1e-9),
+                                   0.0).astype(np.float32)
         self.packed = pack_gas_medium_rgba(
             gas_density_trace, self._k_s,
             base_absorb_scale=self.base_absorb_scale,

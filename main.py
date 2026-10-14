@@ -183,6 +183,13 @@ def _parse_warp_flag() -> float:
     return s
 
 
+def _parse_tilt_flag() -> bool:
+    """``--tilt``: start in the tilted perspective view with the volumetric
+    smoke (issue #90, render-only; F11 flips it live). Default off = the
+    shipped top-down look, byte-identical."""
+    return "--tilt" in sys.argv
+
+
 def _parse_debug_flag() -> bool:
     """``--debug`` — re-arm the diagnostic keys (onephase_wego design §17 +
     Erik's kickoff ruling 2).
@@ -406,6 +413,7 @@ def main():
         grid_w=level.width, grid_h=level.height,
         world_px_per_tile=float(getattr(CFG.rendering, "world_px_per_tile",
                                         24.0)),
+        tilt_view=_parse_tilt_flag(),
     )
     print(f"  Window: {screen_w}x{screen_h} "
           f"(borderless={BORDERLESS}, world RT "
