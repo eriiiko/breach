@@ -76,8 +76,19 @@ F(T)` exactly and the blend is invisible in smoke.
 Asset: `assets/volumes/<name>.npz` — `volume` uint8 `(T, Z, Y, X, 2)`
 (R = smoke, G = fire), plus `period_tiles`, `height_tiles`, `loop_seconds`.
 Gitignored (tens of MB); the game falls back to a procedural fBm volume so
-a fresh clone runs. **Starting resolution** 128 x 128 x 32 over 4 x 4 x 1
-tiles (32 texels per tile), 48 frames.
+a fresh clone runs. **Resolution** 128 x 128 x 64 over 4 x 4 x 4 tiles
+(32 texels per tile in x/y, 16 in z), 48 frames; `smoke_hd` = 256 x 256 x
+64 over the same box for the "how much do we need" comparison.
+
+**Finding (2026-10-14, the movie-only view):** the first bake repeated
+every 1 tile vertically. A tilted ray through a 6-tile slab crosses that
+repeat several times at slightly shifted x/z, and the sum smears into
+streaks that fan out along the view rays. The vertical period must be as
+tall as the columns get; z texels may be coarser than x/y.
+
+Looking at the movie itself: `tools/view_smoke_volume.py` (black-and-white
+playback, slice / mean / max over z) and F12 → 2 in the game (the slab
+filled with the volume under flat grey light).
 
 ### 2.2 The 3D texture — `renderer/gl3d.py`
 
