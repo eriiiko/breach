@@ -156,6 +156,20 @@ class TiltView:
         self.inv_vp = np.linalg.inv(proj @ view)
         self.cam_valid = True
 
+    def screen_ray(self, u: float, v: float) -> Tuple[np.ndarray, np.ndarray]:
+        """(origin, unit direction) of the view ray through viewport fraction
+        (u, v), (0,0) = top-left — the SAME reconstruction the raymarcher does
+        in GLSL (ndc = (2u-1, 1-2v), inverse view-projection), in float64.
+        raylib's own GetScreenToWorldRayEx is float32 against a 0.01..1000
+        clip range and is ~1e-3 rad off at world-px scale, so it is not used."""
+        ndc = np.array([u * 2.0 - 1.0, 1.0 - v * 2.0])
+        pn = self.inv_vp @ np.array([ndc[0], ndc[1], -1.0, 1.0])
+        pf = self.inv_vp @ np.array([ndc[0], ndc[1], 1.0, 1.0])
+        pn = pn[:3] / pn[3]
+        pf = pf[:3] / pf[3]
+        d = pf - pn
+        return np.asarray(self.cam_pos, dtype=np.float64), d / np.linalg.norm(d)
+
     def mouse_to_world_px(self, mx: float, my: float, viewport_x: int,
                           viewport_y: int) -> Optional[Tuple[float, float]]:
         """Screen px -> ground (x_wpx, y_wpx) through the current camera."""
@@ -163,10 +177,10 @@ class TiltView:
         ly = float(my - viewport_y)
         if not (0 <= lx < self.map_px_w and 0 <= ly < self.map_px_h):
             return None
-        ray = rl.get_screen_to_world_ray_ex(rl.Vector2(lx, ly), self.cam,
-                                            self.map_px_w, self.map_px_h)
-        return ground_hit((ray.position.x, ray.position.y, ray.position.z),
-                          (ray.direction.x, ray.direction.y, ray.direction.z))
+        if not self.cam_valid:
+            return None
+        ro, rd = self.screen_ray(lx / self.map_px_w, ly / self.map_px_h)
+        return ground_hit(ro, rd)
 
     # ---- draw ------------------------------------------------------------
 

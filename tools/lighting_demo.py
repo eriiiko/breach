@@ -1052,8 +1052,16 @@ def main() -> None:
 
     fit_zoom = map_px_w / max(level.width, 1)
     initial_zoom = max(12.0, min(40.0, fit_zoom))
+    # --zoom PX_PER_TILE / --pan X,Y (tiles): start the camera somewhere
+    # specific, so headless --shot look-checks (issue #90) frame the smoke.
+    pan_x = pan_y = 0.0
+    if "--zoom" in sys.argv:
+        initial_zoom = float(sys.argv[sys.argv.index("--zoom") + 1])
+    if "--pan" in sys.argv:
+        pan_x, pan_y = (float(s) for s in
+                        sys.argv[sys.argv.index("--pan") + 1].split(","))
     initial_camera = Camera2D(
-        pos_tile_x=0.0, pos_tile_y=0.0,
+        pos_tile_x=pan_x, pos_tile_y=pan_y,
         zoom_px_per_tile=initial_zoom,
         viewport_px_w=map_px_w, viewport_px_h=map_px_h,
         world_size_tile_w=level.width, world_size_tile_h=level.height,

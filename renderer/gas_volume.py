@@ -23,6 +23,7 @@ replays render identical smoke — the gas_detail precedent.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -115,7 +116,9 @@ class GasVolumePass:
         self.height_tiles = 1.0
         self.loop_seconds = 4.0
         self._phase = 0.0
-        self.debug = False
+        # Alignment checker (F12 live; BREACH_VOLUME_DEBUG=1 for headless
+        # shots): paints the ray's ground hit as a tile checker.
+        self.debug = os.environ.get("BREACH_VOLUME_DEBUG", "") == "1"
 
         # --- the per-frame optical-depth texture (R = tau) -----------------
         self.tau_packed = np.zeros((grid_h, grid_w, 4), dtype=np.float16)
@@ -289,7 +292,16 @@ class GasVolumePass:
         rl.set_shader_value_texture(
             self.shader, self._loc["u_heat"],
             heat_tex if heat_tex is not None else self.tau_tex)
-        rl.draw_rectangle(0, 0, int(dst_w), int(dst_h), rl.WHITE)
+        # Fullscreen quad with fragTexCoord spanning 0..1: draw_texture_pro of
+        # a real texture. NEVER draw_rectangle here — raylib's shapes draw
+        # samples a tiny white rect of whatever "shapes texture" is set (raygui
+        # points it at its font atlas), so its texcoords are ~constant and the
+        # reconstructed rays all point the same way (the bands incident,
+        # 2026-10-14).
+        src = rl.Rectangle(0, 0, float(self.w), float(self.h))
+        dst = rl.Rectangle(0, 0, float(dst_w), float(dst_h))
+        rl.draw_texture_pro(self.tau_tex, src, dst, rl.Vector2(0, 0), 0.0,
+                            rl.WHITE)
         rl.end_shader_mode()
         rl.end_blend_mode()
 

@@ -20,24 +20,33 @@ from renderer import volume_bake as vb
 from renderer.gas_volume import pad_volume_for_gl
 
 
-def _spectral_div_max(u, v, w):
+def _spectral_div_rel(u, v, w):
+    """max |k . u_k| relative to max |k| |u_k| — 0 for a divergence-free
+    field, O(1) for white noise."""
     kz, ky, kx = vb.wavenumbers(u.shape)
-    D = (kx * np.fft.rfftn(u) + ky * np.fft.rfftn(v) + kz * np.fft.rfftn(w))
-    return float(np.abs(D).max())
+    U, V, W = np.fft.rfftn(u), np.fft.rfftn(v), np.fft.rfftn(w)
+    D = kx * U + ky * V + kz * W
+    kmag = np.sqrt(kx * kx + ky * ky + kz * kz)
+    scale = float((kmag * np.sqrt(np.abs(U) ** 2 + np.abs(V) ** 2
+                                  + np.abs(W) ** 2)).max())
+    return float(np.abs(D).max()) / max(scale, 1e-12)
 
 
 # ---------------------------------------------------------------------------
-# Projection: the torus pressure solve removes ALL divergence (spectrally) and
-# is idempotent. Breaks if the k=0 guard, the wavenumber layout or the rfftn
-# axes drift.
+# Projection: the torus pressure solve removes ALL divergence (spectrally,
+# with the Nyquist modes treated as k = 0 — the derivative of a Nyquist mode
+# aliases to zero) and is idempotent. On a NON-cubic grid, so an axis mix-up
+# cannot pass. Breaks if the k=0/Nyquist guards, the wavenumber layout or the
+# rfftn axes drift (the 2026-10-14 incident: a live Nyquist k made irfftn
+# silently undo the projection on that plane).
 # ---------------------------------------------------------------------------
 def test_project_removes_spectral_divergence_and_is_idempotent():
     rng = np.random.default_rng(1)
     shape = (8, 12, 16)
     u, v, w = (rng.normal(size=shape).astype(np.float32) for _ in range(3))
-    assert _spectral_div_max(u, v, w) > 1.0          # the input IS divergent
+    assert _spectral_div_rel(u, v, w) > 0.1          # the input IS divergent
     pu, pv, pw = vb.project(u, v, w)
-    assert _spectral_div_max(pu, pv, pw) < 1e-3
+    assert _spectral_div_rel(pu, pv, pw) < 1e-4
     qu, qv, qw = vb.project(pu, pv, pw)
     assert np.allclose(qu, pu, atol=1e-5)
     assert np.allclose(qv, pv, atol=1e-5)
@@ -46,16 +55,17 @@ def test_project_removes_spectral_divergence_and_is_idempotent():
 
 # ---------------------------------------------------------------------------
 # Forcing: the solenoidal ModeSet is divergence-free BY CONSTRUCTION (each
-# mode's polarisation is perpendicular to its wavevector). Breaks if the
-# polarisation projection or the axis order (z, y, x) is wrong.
+# mode's polarisation is perpendicular to its PHYSICAL wavevector). On a
+# non-cubic grid, so polarising against the integer index vector (the
+# 2026-10-14 bug) fails. Breaks if the polarisation or the axis order drift.
 # ---------------------------------------------------------------------------
 def test_solenoidal_forcing_is_divergence_free():
     rng = np.random.default_rng(2)
-    shape = (8, 16, 16)
+    shape = (8, 16, 24)
     ms = vb.ModeSet(rng, shape, n=6, kmax=2, rate=0.1, amp=1.0, solenoidal=True)
     fx, fy, fz = ms.vector(t=3.0)
     assert np.abs(fx).max() > 0.05
-    assert _spectral_div_max(fx, fy, fz) < 1e-3 * np.abs(fx).max() * fx.size ** 0.5
+    assert _spectral_div_rel(fx, fy, fz) < 1e-4
 
 
 # ---------------------------------------------------------------------------

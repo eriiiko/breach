@@ -85,18 +85,17 @@ class BakeParams:
                                      # smokier); True = sharper filaments
     scalar_diffusion: float = 0.12   # per-step blend toward the 3x3x3 mean
                                      # (kills grid-scale salt)
-    # --- smoke scalar (rho) -------------------------------------------------
+    # --- smoke scalar (rho): target = SpectralNoise (full band, no lattice) --
     rho_relax: float = 0.02     # per-step relaxation toward the target
-    rho_modes: int = 28         # many modes + a red spectrum = fBm-like, no lattice
-    rho_kmax: int = 4
-    rho_rate: float = 0.012     # target phase drift, rad/step
-    rho_spectrum: float = -1.7  # target mode amplitude ~ |k|^spectrum
+    rho_kmax: float = 8.0       # band limit in box wavenumbers (box / 8 = the
+                                # smallest target feature; advection adds finer)
+    rho_rate: float = 0.015     # target phase drift, rad/step (at kmax)
+    rho_spectrum: float = -1.6  # amplitude ~ |k|^spectrum (-1.5 = fBm-like)
     # --- fire scalar (phi) --------------------------------------------------
     phi_relax: float = 0.05
-    phi_modes: int = 28
-    phi_kmax: int = 6
-    phi_rate: float = 0.04
-    phi_spectrum: float = -1.4
+    phi_kmax: float = 12.0
+    phi_rate: float = 0.05
+    phi_spectrum: float = -1.3
     phi_sparsity: float = 0.6   # smoothstep lower edge: higher = patchier fire
     # --- asset metadata -----------------------------------------------------
     period_tiles: float = 4.0
@@ -139,10 +138,20 @@ def wavenumbers(shape: Tuple[int, int, int]):
     """Angular wavenumbers (kz, ky, kx) broadcastable over the rfftn layout
     (last axis half-spectrum). Cell spacing is 1."""
     nz, ny, nx = shape
-    kz = (2.0 * np.pi * np.fft.fftfreq(nz)).astype(np.float32)[:, None, None]
-    ky = (2.0 * np.pi * np.fft.fftfreq(ny)).astype(np.float32)[None, :, None]
-    kx = (2.0 * np.pi * np.fft.rfftfreq(nx)).astype(np.float32)[None, None, :]
-    return kz, ky, kx
+    kz = (2.0 * np.pi * np.fft.fftfreq(nz)).astype(np.float32)
+    ky = (2.0 * np.pi * np.fft.fftfreq(ny)).astype(np.float32)
+    kx = (2.0 * np.pi * np.fft.rfftfreq(nx)).astype(np.float32)
+    # The Nyquist mode's derivative aliases to zero on the grid (its sign is
+    # ambiguous), so derivative operators treat it as k = 0 — otherwise the
+    # projected half-spectrum is no longer Hermitian-consistent on that plane
+    # and irfftn silently undoes the projection there.
+    if nz % 2 == 0:
+        kz[nz // 2] = 0.0
+    if ny % 2 == 0:
+        ky[ny // 2] = 0.0
+    if nx % 2 == 0:
+        kx[-1] = 0.0
+    return kz[:, None, None], ky[None, :, None], kx[None, None, :]
 
 
 def project(u: np.ndarray, v: np.ndarray, w: np.ndarray,
@@ -159,7 +168,9 @@ def project(u: np.ndarray, v: np.ndarray, w: np.ndarray,
     V = np.fft.rfftn(v)
     W = np.fft.rfftn(w)
     k2 = kx * kx + ky * ky + kz * kz
-    k2[0, 0, 0] = 1.0                       # avoid /0; the DC term is zeroed below
+    # k = 0 at the DC term AND at every pure-Nyquist mode (wavenumbers() zeroes
+    # those): k.u is 0 there too, so any non-zero divisor leaves them alone.
+    k2 = np.where(k2 > 0.0, k2, 1.0)
     kdotu = (kx * U + ky * V + kz * W) / k2
     U = U - kx * kdotu
     V = V - ky * kdotu
@@ -299,10 +310,15 @@ class ModeSet:
         # forcing; ~-1.7 for the scalar targets = fBm-like, no visible lattice).
         self.amp = (amp * np.power(kmag, spectrum)).astype(np.float32)
         if solenoidal:
+            # Polarisation perpendicular to the PHYSICAL wavevector
+            # 2*pi*(m_z/nz, m_y/ny, m_x/nx) — not the integer index vector,
+            # which differs from it whenever the grid is not a cube.
+            n_axis = np.array([nz, ny, nx], dtype=np.float64)
             pol = []
             for kk in self.k:
+                kp = kk.astype(np.float64) / n_axis
                 r = rng.normal(size=3)
-                r -= kk * (r @ kk) / (kk @ kk)
+                r -= kp * (r @ kp) / (kp @ kp)
                 pol.append(r / np.linalg.norm(r))
             self.pol = np.array(pol, dtype=np.float32)       # (n, 3) in (z,y,x)
         # Angular position of every cell for each mode: 2*pi*k.x/N per axis.
@@ -335,6 +351,38 @@ class ModeSet:
         return fx, fy, fz
 
 
+class SpectralNoise:
+    """Band-limited PERIODIC noise with EVERY mode ``0 < |k| <= kmax`` present
+    (a sparse sum of plane waves shows a lattice; the full band does not),
+    amplitude ``|k|^spectrum`` (-1.5 = equal energy per octave, fBm-like;
+    more negative = smoother) and random phases drifting at random rates
+    (faster for small scales), so the field evolves smoothly in time. One
+    irfftn per evaluation. The scalar targets' generator."""
+
+    def __init__(self, rng: np.random.Generator, shape, kmax: float,
+                 rate: float, spectrum: float):
+        nz, ny, nx = shape
+        self.shape = shape
+        kz = np.fft.fftfreq(nz) * nz
+        ky = np.fft.fftfreq(ny) * ny
+        kx = np.fft.rfftfreq(nx) * nx
+        K = np.sqrt(kz[:, None, None] ** 2 + ky[None, :, None] ** 2
+                    + kx[None, None, :] ** 2)
+        mask = (K > 0.5) & (K <= float(kmax))
+        with np.errstate(divide="ignore"):
+            amp = np.where(mask, np.power(np.maximum(K, 1e-6), spectrum), 0.0)
+        self.amp = amp.astype(np.float32)
+        half = self.amp.shape
+        self.phase0 = rng.uniform(0, 2 * np.pi, half).astype(np.float32)
+        sign = rng.choice([-1.0, 1.0], size=half).astype(np.float32)
+        self.rate = (sign * rate * np.sqrt(np.maximum(K, 1e-6) / max(kmax, 1.0))
+                     ).astype(np.float32)
+
+    def scalar(self, t: float) -> np.ndarray:
+        spec = self.amp * np.exp(1j * (self.phase0 + self.rate * float(t)))
+        return np.fft.irfftn(spec, s=self.shape, axes=(0, 1, 2)).astype(np.float32)
+
+
 def _smoothstep(e0: float, e1: float, x: np.ndarray) -> np.ndarray:
     t = np.clip((x - e0) / (e1 - e0), 0.0, 1.0)
     return t * t * (3.0 - 2.0 * t)
@@ -365,12 +413,10 @@ class PeriodicSmokeSolver:
         self.force = ModeSet(self.rng, shape, p.force_modes, p.force_kmax,
                              p.force_rate, p.force_amp, solenoidal=True,
                              spectrum=p.force_spectrum)
-        self.rho_target = ModeSet(self.rng, shape, p.rho_modes, p.rho_kmax,
-                                  p.rho_rate, 1.0, solenoidal=False,
-                                  spectrum=p.rho_spectrum)
-        self.phi_target = ModeSet(self.rng, shape, p.phi_modes, p.phi_kmax,
-                                  p.phi_rate, 1.0, solenoidal=False,
-                                  spectrum=p.phi_spectrum)
+        self.rho_target = SpectralNoise(self.rng, shape, p.rho_kmax,
+                                        p.rho_rate, p.rho_spectrum)
+        self.phi_target = SpectralNoise(self.rng, shape, p.phi_kmax,
+                                        p.phi_rate, p.phi_spectrum)
         self.rho = _unit_target(self.rho_target.scalar(0.0))
         self.phi = _smoothstep(p.phi_sparsity, 1.0,
                                _unit_target(self.phi_target.scalar(0.0)))
@@ -589,7 +635,7 @@ def load_volume(path) -> Tuple[np.ndarray, dict]:
 
 __all__ = [
     "VOLUME_FORMAT_VERSION", "BakeParams", "BakeResult",
-    "PeriodicSmokeSolver", "Advector", "ModeSet",
+    "PeriodicSmokeSolver", "Advector", "ModeSet", "SpectralNoise",
     "wavenumbers", "project", "divergence", "curl", "vorticity_confinement",
     "close_loop", "quantize", "bake", "procedural_volume",
     "mosaic", "mosaic_z", "save_volume", "load_volume",
