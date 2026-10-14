@@ -33,8 +33,12 @@
 in vec2 fragTexCoord;
 in vec4 fragColor;
 
-uniform sampler2D u_tau;      // RGBA16F grid-res: R = optical depth (pre-curve)
+uniform sampler2D u_tau;      // RGBA16F grid-res: R = optical depth (pre-curve),
+                              // GBA = tau-weighted scatter albedo of the tile
 uniform sampler2D u_light;    // light_tex_a RGBA16F: rgb = incoming light (HDR)
+uniform sampler2D u_light_b;  // light_tex_b RGBA16F: rgb = the ray march's
+                              // inscatter deposit (smoke_glow: the light the
+                              // gas ABSORBED, per channel, already x albedo)
 uniform sampler2D u_heat;     // HeatFieldOverlay RGBA8: rgb hue, a intensity
 uniform sampler3D u_volume;   // RG8 (X, Y, (Z+1)*T): r = smoke, g = fire
 
@@ -57,9 +61,12 @@ uniform float u_detail_gamma; // contrast on the smoke channel
 uniform float u_top_var;      // column-top variation by detail [0,1]
 uniform float u_k_ext;        // extinction multiplier (1 = honest tau)
 uniform float u_k_shadow;     // vertical self-shadow strength
-uniform vec3  u_albedo;       // smoke scatter albedo (GasTable row)
+uniform float u_albedo_floor; // artistic floor under the per-tile albedo (soot
+                              // is 0.04 in the table — pure black in any light)
 uniform vec3  u_ambient;      // the ship's ambient floor
 uniform float u_light_gain;   // the ship's master exposure on the light field
+uniform float u_glow_gain;    // [render.gas_medium] glow_gain — the SAME dial
+                              // the 2D medium exposes its inscatter with
 uniform float u_emit_gain;    // fire glow strength
 uniform float u_emit_pow;     // fire channel contrast
 uniform int   u_heat_on;      // 0 when the blackbody overlay is off
@@ -159,8 +166,10 @@ void main() {
         vec3 p = ro + rd * t;
         t += ds;
         vec2 g = p.xz / u_world_px;                  // ground uv
-        float tau = texture(u_tau, g).r;
+        vec4 tau4 = texture(u_tau, g);
+        float tau = tau4.r;
         if (tau <= 1e-4) continue;
+        vec3 albedo = max(tau4.gba, vec3(u_albedo_floor));
 
         float yt = p.y * inv_tiles;                  // height in tiles
         float s = clamp(tau / u_tau_solid, 0.0, 1.0);            // solidity
@@ -184,12 +193,16 @@ void main() {
         float sigma = u_k_ext * tau * dens / max(h * u_px_per_tile, 1e-3);
         float a = 1.0 - exp(-sigma * ds);
 
-        // Lighting: the baked field + vertical Beer-Lambert self-shadow
+        // Lighting: the baked field (what reaches the tile THROUGH the gas)
+        // times the tile's albedo, PLUS the ray march's inscatter deposit
+        // (the light the gas absorbed on the way — the god-ray glow, already
+        // albedo-weighted), both under the vertical Beer-Lambert self-shadow
         // (fraction of the column above this sample).
         vec3 lin = u_ambient + texture(u_light, g).rgb * u_light_gain;
+        vec3 glow = texture(u_light_b, g).rgb * u_glow_gain;
         float above = clamp(1.0 - yt / max(h, 1e-3), 0.0, 1.0);
         float shadow = exp(-u_k_shadow * tau * above);
-        vec3 lit = lin * u_albedo * shadow;
+        vec3 lit = (lin * albedo + glow) * shadow;
 
         // Fire glow from the floor, through the fire channel.
         vec3 emis = vec3(0.0);

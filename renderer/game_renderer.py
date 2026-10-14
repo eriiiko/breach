@@ -444,7 +444,6 @@ class GameRenderer:
         self.tilt_on = bool(cfg.tilt_view)
         self.tilt_view: Optional[TiltView] = None
         self.gas_volume: Optional[GasVolumePass] = None
-        self._volume_albedo = (0.6, 0.6, 0.6)
         if self.tilt_on:
             self._build_tilt_view()
 
@@ -485,11 +484,12 @@ class GameRenderer:
             self.gas_volume.draw(
                 inv_vp=tv.inv_vp, cam_pos=tv.cam_pos,
                 light_tex_a=self.lighting.light_tex_a,
+                light_tex_b=self.lighting.light_tex_b,
                 heat_tex=self.temperature_overlay.tex,
                 heat_on=self.show_temperature,
                 ambient=self.lighting.ambient,
                 light_gain=self.lighting.light_gain,
-                albedo=self._volume_albedo,
+                glow_gain=self.gas_medium.glow_gain,
                 dst_w=tv.map_px_w, dst_h=tv.map_px_h)
         tv.end()
         tv.blit_to_screen(self.camera.viewport_screen_x,
@@ -588,17 +588,13 @@ class GameRenderer:
                         self.gas_medium.density_proxy, gmap.wind_x, gmap.wind_y,
                         sim_tick=int(sim_tick), sim_dt=self._sim_dt)
                 # Volumetric smoke (issue #90): the SAME pre-curve tau the
-                # medium just built grows the columns; the smoke row's
-                # scatter_albedo from the live GasTable is its lit identity
-                # (one optical identity with the ray march). Sim-tick clock.
+                # medium just built grows the columns, and its tau-weighted
+                # per-tile albedo (the GasTable rows the ray march uses) is
+                # the lit identity -- one optical identity. Sim-tick clock.
                 if self.tilt_on and self.gas_volume is not None:
-                    from simulation.gases import SMOKE
-                    alb = gmap.gases.scatter_albedo[SMOKE]
-                    self._volume_albedo = (float(alb[0]), float(alb[1]),
-                                           float(alb[2]))
                     self.gas_volume.update(
-                        self.gas_medium.tau, sim_tick=int(sim_tick),
-                        sim_dt=self._sim_dt, cfg=CFG)
+                        self.gas_medium.tau, self.gas_medium.albedo_rgb,
+                        sim_tick=int(sim_tick), sim_dt=self._sim_dt, cfg=CFG)
         # Props & vegetation arc #60 P4 — WIND SWAY input. The TAMED wind
         # (gas_detail.tame_wind: smooth -> direction -> saturating speed) is
         # the ONE render-side wind product; props sample it per prop at draw

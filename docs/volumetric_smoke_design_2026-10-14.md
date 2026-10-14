@@ -145,7 +145,10 @@ Touched imperfectly on purpose, each a later patch:
   reconciliation of the two looks.
 - **God rays / raycaster inscatter** (`smoke_glow`) unused by the volume;
   lamp shadows through smoke are v2.
-- **Per-gas colour** (poison green, steam white): v1 uses one albedo.
+- **Per-gas colour within a tile**: v1 lights each tile with its
+  tau-weighted mean albedo (`GasMediumOverlay.albedo_rgb` — steam white, soot
+  dark, poison green at tile level); separating coexisting gases vertically
+  is later.
 - **UI overlays** drawn into the RT appear on the floor; only cursor->tile
   is unprojected.
 - **Laptop GPU cost** unmeasured; steps/resolution are config dials.

@@ -58,10 +58,11 @@ class VolumeDials:
     poke them directly."""
 
     DEFAULTS = dict(
-        enabled=True, asset="smoke_v1", steps=40,
-        h_max_tiles=1.6, tau_h=3.0, tau_solid=6.0, erode=0.7,
+        enabled=True, asset="smoke_v1", steps=64,
+        h_max_tiles=6.0, tau_h=3.0, tau_solid=6.0, erode=0.7,
         detail_gamma=1.0, top_var=0.35, k_ext=1.0, k_shadow=0.6,
-        emit_gain=1.5, emit_pow=2.0, exposure=1.0, rise_turns=1.0,
+        albedo_floor=0.25, emit_gain=3.0, emit_pow=2.0, exposure=1.0,
+        rise_turns=1.0,
         loop_seconds=0.0,      # 0 = the asset's own loop length
     )
 
@@ -76,6 +77,7 @@ class VolumeDials:
     top_var: float
     k_ext: float
     k_shadow: float
+    albedo_floor: float
     emit_gain: float
     emit_pow: float
     exposure: float
@@ -119,6 +121,7 @@ class GasVolumePass:
         # Alignment checker (F12 live; BREACH_VOLUME_DEBUG=1 for headless
         # shots): paints the ray's ground hit as a tile checker.
         self.debug = os.environ.get("BREACH_VOLUME_DEBUG", "") == "1"
+        self._dials_logged = False
 
         # --- the per-frame optical-depth texture (R = tau) -----------------
         self.tau_packed = np.zeros((grid_h, grid_w, 4), dtype=np.float16)
@@ -129,13 +132,15 @@ class GasVolumePass:
             str(SHADERS_DIR / "lighting.vs"),
             str(SHADERS_DIR / "gas_volume.fs"))
         self._loc = {}
-        for name in ("u_tau", "u_light", "u_heat", "u_volume", "u_inv_vp",
+        for name in ("u_tau", "u_light", "u_light_b", "u_heat", "u_volume",
+                     "u_inv_vp",
                      "u_cam_pos", "u_world_px", "u_px_per_tile", "u_vol_zt",
                      "u_phase", "u_period_tiles", "u_height_tiles",
                      "u_rise_turns", "u_steps", "u_h_max", "u_tau_h",
                      "u_tau_solid", "u_erode", "u_detail_gamma", "u_top_var",
-                     "u_k_ext", "u_k_shadow", "u_albedo", "u_ambient",
-                     "u_light_gain", "u_emit_gain", "u_emit_pow", "u_heat_on",
+                     "u_k_ext", "u_k_shadow", "u_albedo_floor", "u_ambient",
+                     "u_light_gain", "u_glow_gain", "u_emit_gain", "u_emit_pow",
+                     "u_heat_on",
                      "u_exposure", "u_debug"):
             loc = rl.get_shader_location(self.shader, name)
             if loc == -1:
@@ -200,16 +205,31 @@ class GasVolumePass:
 
     # ---- per frame -------------------------------------------------------
 
-    def update(self, tau: np.ndarray, *, sim_tick: int, sim_dt: float,
-               cfg=None) -> None:
-        """Upload this frame's optical depth and advance the loop phase.
+    def update(self, tau: np.ndarray, albedo_rgb: Optional[np.ndarray] = None,
+               *, sim_tick: int, sim_dt: float, cfg=None) -> None:
+        """Upload this frame's optical depth (+ per-tile albedo) and advance
+        the loop phase.
 
         ``tau`` : (H, W) float — the gas medium's pre-curve optical depth
-        (``GasMediumOverlay.tau``). ``sim_tick`` is the monotonic sim tick (the
-        smoke clock). ``cfg`` re-reads the dials (Ctrl+R)."""
+        (``GasMediumOverlay.tau``). ``albedo_rgb`` : (H, W, 3) float — its
+        tau-weighted scatter albedo (``GasMediumOverlay.albedo_rgb``; None =
+        a neutral 1). ``sim_tick`` is the monotonic sim tick (the smoke
+        clock). ``cfg`` re-reads the dials (Ctrl+R)."""
         if cfg is not None:
             self.dials.refresh(cfg)
+        if not self._dials_logged:
+            d = self.dials
+            print(f"[gas_volume] dials: steps={d.steps} h_max={d.h_max_tiles} "
+                  f"tau_h={d.tau_h} tau_solid={d.tau_solid} erode={d.erode} "
+                  f"albedo_floor={d.albedo_floor} emit_gain={d.emit_gain} "
+                  f"k_shadow={d.k_shadow} rise={d.rise_turns}")
+            self._dials_logged = True
         self.tau_packed[..., 0] = np.asarray(tau, dtype=np.float32).astype(np.float16)
+        if albedo_rgb is not None:
+            self.tau_packed[..., 1:4] = np.asarray(albedo_rgb,
+                                                   dtype=np.float32).astype(np.float16)
+        else:
+            self.tau_packed[..., 1:4] = np.float16(1.0)
         core.update_rgba16f_texture(self.tau_tex, self.tau_packed)
         loop_s = (float(self.dials.loop_seconds)
                   if float(self.dials.loop_seconds) > 0 else self.loop_seconds)
@@ -248,8 +268,9 @@ class GasVolumePass:
         rl.set_shader_value_matrix(self.shader, self._loc[name], mat)
 
     def draw(self, *, inv_vp: np.ndarray, cam_pos, light_tex_a: rl.Texture,
-             heat_tex: Optional[rl.Texture], heat_on: bool, ambient,
-             light_gain: float, albedo, dst_w: int, dst_h: int) -> None:
+             light_tex_b: rl.Texture, heat_tex: Optional[rl.Texture],
+             heat_on: bool, ambient, light_gain: float, glow_gain: float,
+             dst_w: int, dst_h: int) -> None:
         """ONE premultiplied fullscreen raymarch over the (already drawn)
         ground. Call inside the tilt view's RT, after its ground quad."""
         if not self.ready or not self.dials.enabled or self.tex3d is None:
@@ -273,9 +294,10 @@ class GasVolumePass:
         self._set_f("u_top_var", d.top_var)
         self._set_f("u_k_ext", d.k_ext)
         self._set_f("u_k_shadow", d.k_shadow)
-        self._set_vec3("u_albedo", albedo)
+        self._set_f("u_albedo_floor", d.albedo_floor)
         self._set_vec3("u_ambient", ambient)
         self._set_f("u_light_gain", light_gain)
+        self._set_f("u_glow_gain", glow_gain)
         self._set_f("u_emit_gain", d.emit_gain)
         self._set_f("u_emit_pow", max(d.emit_pow, 1e-3))
         self._set_i("u_heat_on", 1 if (heat_on and heat_tex is not None) else 0)
@@ -289,6 +311,7 @@ class GasVolumePass:
         rl.begin_shader_mode(self.shader)
         rl.set_shader_value_texture(self.shader, self._loc["u_tau"], self.tau_tex)
         rl.set_shader_value_texture(self.shader, self._loc["u_light"], light_tex_a)
+        rl.set_shader_value_texture(self.shader, self._loc["u_light_b"], light_tex_b)
         rl.set_shader_value_texture(
             self.shader, self._loc["u_heat"],
             heat_tex if heat_tex is not None else self.tau_tex)
