@@ -213,3 +213,80 @@ and walls; a 256-res "HD" bake to answer "how much resolution do we need".
   anything else needing a GL feature raylib lacks extends it.
 - Tilt view (`renderer/tilt_view.py`) — the only screen-stage 3D camera;
   anything drawn in perspective over the world RT goes through it.
+
+## 6. Day 2 (2026-10-15): periodicity, the phase field, directional light
+
+Erik's first look (the tilted west hall, `sls_west_v7_mid.png`): "this
+definitely looks cool", number-one issue **periodicity** — lingering smoke
+shows the 4-tile repeat of the asset.
+
+**Diagnosis.** Not resolution, and not the initial conditions (the warm-up
+forgets them). Two choices made every box hold one or two box-sized blobs,
+which the eye reads as "same blob every 4 tiles": the forcing drove only
+wavelengths one box and half a box (`force_kmax = 2`), and the density
+target's steep red spectrum put most of its energy there too. Where the sim
+is busy the macro shape hides it; on a uniform floor the asset shows naked.
+`q_base` vs `q_mid25` mosaics (scratchpad `bake/`) show it directly.
+
+**Fixes landed (commits 34f0fce, fed04f9):**
+
+1. **The phase field** (`renderer/volume_phase.py`, Erik's idea): each tile
+   reads the movie at its own moment of the loop; the GPU's bilinear fetch
+   interpolates the phase between tile centres, so it is continuous over the
+   floor and, the movie being periodic in time, seamless. Uploaded as
+   (cos, sin) so the interpolation crosses the wrap on the short arc.
+   `offset` mode: phase = clock + static world-space noise + sim sources
+   (temperature, pressure above the room median, tamed wind speed), all
+   bounded. `speed` mode: each tile integrates its own rate deviation with a
+   leak (`phase_relax_loops`) so the temporal shear between a hot tile and a
+   quiet neighbour stays finite. Dials `phase_*`. Result: the repeat is
+   clearly weaker (`cmp_off_d2.png` vs `cmp_on_d2.png`) but a lattice
+   remains — a time offset cannot hide a structure that persists through
+   the whole loop, which the box-scale modes do. Hence:
+2. **Band floor on the bake** (`force_kmin`, `rho_kmin`, `phi_kmin`): the
+   forcing now drives wavelengths 3–5 per box and the targets cut
+   `|k| <= kmin`. `q_mid25` (kmin 2.5) is homogeneous with no visible repeat
+   at all; `q_mid15` keeps bigger billows with a faint residual order. The
+   128-res bakes `smoke_mid15` / `smoke_mid25` are the candidates.
+3. **Directional light**: lamp direction = gradient of the baked light field
+   at the ray's ground hit (per pixel, lamps are far against a column),
+   smoke normal = gradient of the baked density (three extra samples per
+   lit sample, only when `dir_light > 0`); wrap-lit N·L brightens the
+   lamp-facing side and darkens the back, a Henyey-Greenstein term gives the
+   halo when the lamp sits behind the smoke. Debug 3 paints the direction
+   field. Subtle on dark soot (its look is mostly transmittance), visible
+   on lit plumes; dials `dir_light`, `dir_eps_texels`, `hg_g`, `hg_mix`.
+
+**Still open about the volume's box:** it wraps in z too (the FFT pressure
+solve needs it) — a non-wrapped z with a real floor needs a sine transform
+in z and would give honest rising plumes (candidate for the bake sweep). A
+bigger box costs quadratically (8 tiles = the 256-res `smoke_hd`); the
+shader tricks cost three fetches.
+
+### 6.1 TODO (Erik, 2026-10-15 — keep on the list)
+
+- **Stochastic tiling** in the shader (Heitz & Neyret 2018; Deliot & Heitz
+  2019): per-cell random rotation / flip / time offset, three nearest cells
+  blended histogram-preserving; plus a slow world-space domain warp; plus a
+  dial fading detail amplitude where the local tau is uniform ("homogeneous
+  asset, fade where you shouldn't see it"). Can go on top of the phase
+  field, whole or in parts.
+- **Bake sweep** at 64-res on a small parameter grid (band floor, period 2
+  vs 4 vs 8, non-wrapped z, forcing band), judged on the viewer mosaic and
+  a movie-only shot, winner rebaked at 128 and locked in.
+- **Directional light** refinements: apply the N·L term to the glow
+  (inscatter deposit) too; per-lamp direction from `frame_lights` instead
+  of the field gradient where several lamps overlap.
+- **Speed mode** judged live (a still cannot show it): the shear along
+  shockwaves Erik is curious about.
+- Earlier list (§3): 3D walls, depth-composited marines, lamp shadows
+  through smoke, flow-map wind advection, laptop GPU cost.
+
+### 6.2 Systems (additions)
+
+- Phase field (`renderer/volume_phase.py`) — THE per-tile phase-offset
+  state for a looping detail asset; a second "local clock" for another
+  looping texture (water surface is a candidate, Erik 2026-10-15) extends
+  this module rather than re-deriving the cos/sin upload.
+- Tamed wind (`gas_detail.tame_wind`) is now consumed by the volume pass as
+  a phase source — still the one render wind seam.
