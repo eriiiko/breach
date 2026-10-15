@@ -77,6 +77,9 @@ class BakeParams:
     seed: int = 7
     # --- velocity forcing ---------------------------------------------------
     force_modes: int = 8        # number of solenoidal low-k modes
+    force_kmin: int = 1         # |k| floor: >= 3 keeps the box-scale modes
+                                # (the ones that read as "one blob per tile
+                                # period" in the game) out of the forcing
     force_kmax: int = 2         # per-axis integer wavenumber ceiling
     force_amp: float = 0.025    # acceleration, cells/step^2 (per mode, peak)
     force_rate: float = 0.03    # phase drift, rad/step (random per mode)
@@ -92,12 +95,15 @@ class BakeParams:
                                      # (kills grid-scale salt)
     # --- smoke scalar (rho): target = SpectralNoise (full band, no lattice) --
     rho_relax: float = 0.02     # per-step relaxation toward the target
+    rho_kmin: float = 0.5       # band floor: modes |k| <= kmin are cut (2.5 =
+                                # nothing larger than a third of the box)
     rho_kmax: float = 8.0       # band limit in box wavenumbers (box / 8 = the
                                 # smallest target feature; advection adds finer)
     rho_rate: float = 0.015     # target phase drift, rad/step (at kmax)
     rho_spectrum: float = -1.6  # amplitude ~ |k|^spectrum (-1.5 = fBm-like)
     # --- fire scalar (phi) --------------------------------------------------
     phi_relax: float = 0.05
+    phi_kmin: float = 0.5
     phi_kmax: float = 12.0
     phi_rate: float = 0.05
     phi_spectrum: float = -1.3
@@ -295,14 +301,15 @@ class ModeSet:
 
     def __init__(self, rng: np.random.Generator, shape, n: int, kmax: int,
                  rate: float, amp: float, solenoidal: bool,
-                 spectrum: float = -0.5):
+                 spectrum: float = -0.5, kmin: int = 1):
         nz, ny, nx = shape
         self.shape = shape
         self.solenoidal = solenoidal
         ks = []
         while len(ks) < n:
             k = rng.integers(-kmax, kmax + 1, size=3)
-            if not np.any(k) or np.linalg.norm(k) > kmax + 0.5:
+            kn = np.linalg.norm(k)
+            if not np.any(k) or kn > kmax + 0.5 or kn < kmin - 0.5:
                 continue
             ks.append(k)
         self.k = np.array(ks, dtype=np.float32)            # (n, 3) in (z,y,x)
@@ -365,7 +372,7 @@ class SpectralNoise:
     irfftn per evaluation. The scalar targets' generator."""
 
     def __init__(self, rng: np.random.Generator, shape, kmax: float,
-                 rate: float, spectrum: float):
+                 rate: float, spectrum: float, kmin: float = 0.5):
         nz, ny, nx = shape
         self.shape = shape
         kz = np.fft.fftfreq(nz) * nz
@@ -373,7 +380,7 @@ class SpectralNoise:
         kx = np.fft.rfftfreq(nx) * nx
         K = np.sqrt(kz[:, None, None] ** 2 + ky[None, :, None] ** 2
                     + kx[None, None, :] ** 2)
-        mask = (K > 0.5) & (K <= float(kmax))
+        mask = (K > max(float(kmin), 0.5)) & (K <= float(kmax))
         with np.errstate(divide="ignore"):
             amp = np.where(mask, np.power(np.maximum(K, 1e-6), spectrum), 0.0)
         self.amp = amp.astype(np.float32)
@@ -417,11 +424,13 @@ class PeriodicSmokeSolver:
         self.w = np.zeros(shape, np.float32)
         self.force = ModeSet(self.rng, shape, p.force_modes, p.force_kmax,
                              p.force_rate, p.force_amp, solenoidal=True,
-                             spectrum=p.force_spectrum)
+                             spectrum=p.force_spectrum, kmin=p.force_kmin)
         self.rho_target = SpectralNoise(self.rng, shape, p.rho_kmax,
-                                        p.rho_rate, p.rho_spectrum)
+                                        p.rho_rate, p.rho_spectrum,
+                                        kmin=p.rho_kmin)
         self.phi_target = SpectralNoise(self.rng, shape, p.phi_kmax,
-                                        p.phi_rate, p.phi_spectrum)
+                                        p.phi_rate, p.phi_spectrum,
+                                        kmin=p.phi_kmin)
         self.rho = _unit_target(self.rho_target.scalar(0.0))
         self.phi = _smoothstep(p.phi_sparsity, 1.0,
                                _unit_target(self.phi_target.scalar(0.0)))

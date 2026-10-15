@@ -1772,6 +1772,15 @@ phase_press_ref = 0.05  #   atm above/below the room median that saturates
 phase_wind_amp = 0.0    #   (tamed wind speed / its saturation speed, 0..1)
 phase_relax_loops = 2.0 # speed mode: the drift leaks back over this many loops
 phase_seed = 11
+# Directional light (Erik 2026-10-15): lamp direction = gradient of the baked
+# light field at the ray's ground hit; smoke normal = gradient of the baked
+# density. Lamp-facing billows brighten, their backs darken; a forward-
+# scatter halo when the lamp sits behind the smoke. No new raycast.
+dir_light = 0.6         # facing side x(1+a), back x(1-a); 0 = off (no extra
+                        # volume samples either)
+dir_eps_texels = 2.0    # normal finite-difference step, in volume texels
+hg_g = 0.5              # Henyey-Greenstein asymmetry (0 = isotropic)
+hg_mix = 0.4            # how much of the phase function is applied (0..1)
 
 # Material property table (named-key format, ch.02 — Material System).
 # One [materials.<name>] row per material id; columns indexed into per-id

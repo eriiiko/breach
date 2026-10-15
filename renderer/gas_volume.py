@@ -77,6 +77,11 @@ class VolumeDials:
         phase_wind_amp=0.0,
         phase_relax_loops=2.0, # speed mode: drift leak time, loops
         phase_seed=11,
+        # --- directional light ---------------------------------------------
+        dir_light=0.6,         # lamp-facing side x(1+a), back x(1-a); 0 = off
+        dir_eps_texels=2.0,    # normal finite-difference step, volume texels
+        hg_g=0.5,              # Henyey-Greenstein asymmetry (forward halo)
+        hg_mix=0.4,            # phase-function weight (0 = isotropic)
     )
 
     enabled: bool
@@ -109,6 +114,10 @@ class VolumeDials:
     phase_wind_amp: float
     phase_relax_loops: float
     phase_seed: int
+    dir_light: float
+    dir_eps_texels: float
+    hg_g: float
+    hg_mix: float
 
     def __init__(self):
         for k, v in self.DEFAULTS.items():
@@ -184,7 +193,8 @@ class GasVolumePass:
                      "u_albedo_floor", "u_ambient",
                      "u_light_gain", "u_glow_gain", "u_emit_gain", "u_emit_pow",
                      "u_heat_on",
-                     "u_exposure", "u_debug"):
+                     "u_exposure", "u_debug",
+                     "u_dir_light", "u_dir_eps", "u_hg_g", "u_hg_mix"):
             loc = rl.get_shader_location(self.shader, name)
             if loc == -1:
                 print(f"[gas_volume] WARN: uniform '{name}' not found")
@@ -409,6 +419,10 @@ class GasVolumePass:
         self._set_i("u_heat_on", 1 if (heat_on and heat_tex is not None) else 0)
         self._set_f("u_exposure", d.exposure)
         self._set_i("u_debug", int(self.debug))
+        self._set_f("u_dir_light", max(d.dir_light, 0.0))
+        self._set_f("u_dir_eps", max(d.dir_eps_texels, 0.25) * texel_px / self.px_per_tile)
+        self._set_f("u_hg_g", min(max(d.hg_g, -0.95), 0.95))
+        self._set_f("u_hg_mix", min(max(d.hg_mix, 0.0), 1.0))
         # The sampler3D lives on its own unit (raylib never touches it).
         self._set_i("u_volume", gl3d.VOLUME_TEXTURE_UNIT)
         gl3d.bind_texture_3d(self.tex3d, gl3d.VOLUME_TEXTURE_UNIT)

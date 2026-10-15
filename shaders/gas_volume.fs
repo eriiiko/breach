@@ -78,6 +78,15 @@ uniform float u_emit_gain;    // fire glow strength
 uniform float u_emit_pow;     // fire channel contrast
 uniform int   u_heat_on;      // 0 when the blackbody overlay is off
 uniform float u_exposure;     // final inscatter exposure before ACES
+// Directional light (Erik 2026-10-15): the lamp DIRECTION is the gradient of
+// the baked light field at the ray's ground hit (per pixel; lamps are far
+// against a column), the smoke NORMAL is the gradient of the baked density
+// (three extra volume samples per lit sample). No new raycast.
+uniform float u_dir_light;    // lamp-facing side brightens (1+a), the back
+                              // darkens (1-a); 0 = off (and no extra samples)
+uniform float u_dir_eps;      // normal finite-difference step, in TILES
+uniform float u_hg_g;         // Henyey-Greenstein asymmetry (0 = isotropic)
+uniform float u_hg_mix;       // how much of the phase function is applied
 uniform int   u_debug;        // 1 = paint the ground hit (alignment check)
 
 out vec4 finalColor;
@@ -89,6 +98,14 @@ vec3 aces_tonemap(vec3 x) {
     const float d = 0.59;
     const float e = 0.14;
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+float lum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+// Henyey-Greenstein relative to isotropic: 1 at g = 0.
+float hg_phase(float g, float cos_t) {
+    float g2 = g * g;
+    return (1.0 - g2) / pow(max(1.0 + g2 - 2.0 * g * cos_t, 1e-4), 1.5);
 }
 
 float hash12(vec2 p) {
@@ -203,6 +220,44 @@ void main() {
         return;
     }
 
+    // --- lamp direction at the ground hit (once per pixel) -----------------
+    // The light field's relative gradient over one tile: its direction is
+    // where the lamp is, its size (against the local level) says how
+    // directional the light is at all (0 in flat ambient -> the term fades).
+    vec3 L = vec3(0.0, 1.0, 0.0);
+    float Lw = 0.0;
+    if (u_dir_light > 0.0 || u_hg_mix > 0.0) {
+        float tg = (abs(rd.y) > 1e-5) ? (0.0 - ro.y) / rd.y : tn;
+        vec3 gp = ro + rd * clamp(tg, tn, tf);
+        vec2 g0 = gp.xz / u_world_px;
+        vec2 du = vec2(u_px_per_tile) / u_world_px;
+        float lc = lum(texture(u_light, g0).rgb);
+        float lx = lum(texture(u_light, g0 + vec2(du.x, 0.0)).rgb)
+                 - lum(texture(u_light, g0 - vec2(du.x, 0.0)).rgb);
+        float lz = lum(texture(u_light, g0 + vec2(0.0, du.y)).rgb)
+                 - lum(texture(u_light, g0 - vec2(0.0, du.y)).rgb);
+        vec2 grad = vec2(lx, lz) * 0.5;              // per tile
+        float gl = length(grad);
+        Lw = clamp(gl / max(lc, 1e-4) * 1.5, 0.0, 1.0);
+        if (gl > 1e-6) {
+            vec2 lxz = grad / gl;
+            float ly = (u_light_from_below == 1) ? -0.4 : 0.4;
+            L = normalize(vec3(lxz.x, ly, lxz.y));
+        }
+    }
+    if (u_debug == 3) {
+        // LAMP DIRECTION: rg = the direction toward the lamp (x, z) mapped
+        // to 0..1, brightness = how directional the light is here (Lw).
+        finalColor = vec4((L.x * 0.5 + 0.5) * Lw, (L.z * 0.5 + 0.5) * Lw, 0.0, 0.85);
+        return;
+    }
+    float hg = 1.0;
+    if (u_hg_mix > 0.0) {
+        // light travels lamp -> sample (-L), then sample -> camera (-rd):
+        // cos(theta) between the two propagation directions = dot(L, rd).
+        hg = mix(1.0, hg_phase(u_hg_g, dot(L, rd)), u_hg_mix * Lw);
+    }
+
     vec3 inscatter = vec3(0.0);
     float trans = 1.0;
 
@@ -255,7 +310,29 @@ void main() {
         float above = 1.0 - frac_h;
         float occl = (u_light_from_below == 1) ? frac_h : above;
         float shadow = exp(-u_k_shadow * tau * occl);
-        vec3 lit = (lin * albedo + glow) * shadow;
+
+        // Directional shading: the baked density's gradient is the billow's
+        // normal; the lamp-facing side brightens, the back darkens (wrap-lit
+        // so thin smoke never goes black), faded by how directional the
+        // light is here (Lw).
+        float dshade = 1.0;
+        if (u_dir_light > 0.0 && Lw > 0.0) {
+            float hz = yt / u_height_tiles - rise;
+            float e = u_dir_eps;
+            float eh = e / u_height_tiles;
+            float dx = sampleVolume(txy + vec2(e, 0.0), hz, ph).r - vol.r;
+            float dzz = sampleVolume(txy + vec2(0.0, e), hz, ph).r - vol.r;
+            float dh = sampleVolume(txy, hz + eh, ph).r - vol.r;
+            vec3 grad_d = vec3(dx, dh, dzz);
+            float gm = length(grad_d);
+            if (gm > 1e-5) {
+                vec3 n = -grad_d / gm;                 // dense -> thin
+                float ndl = dot(n, L);
+                float wrap = clamp((ndl + 0.5) / 1.5, 0.0, 1.0);
+                dshade = mix(1.0, mix(1.0 - u_dir_light, 1.0 + u_dir_light, wrap), Lw);
+            }
+        }
+        vec3 lit = (lin * albedo * dshade * hg + glow) * shadow;
 
         // Fire glow from the floor, through the fire channel.
         vec3 emis = vec3(0.0);

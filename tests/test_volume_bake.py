@@ -157,3 +157,28 @@ def test_tiny_bake_runs_and_is_finite(seed):
     assert res.volume.shape == (2, 4, 8, 8, 2)
     assert np.isfinite(res.stats["div_max"])
     assert res.volume.max() > 0
+
+
+def test_band_floor_cuts_the_box_scale_modes():
+    """PROPERTY: `kmin` removes every mode with |k| <= kmin from the scalar
+    target and from the forcing — the box-scale blobs that read as "one blob
+    per tile period" in the game (Erik, 2026-10-15) are absent by
+    construction, while the band above kmin is untouched.
+    BREAKS IF: the mask drops `kmin`, or ModeSet stops rejecting |k| < kmin."""
+    rng = np.random.default_rng(0)
+    shape = (16, 32, 32)
+    noise = vb.SpectralNoise(rng, shape, kmax=8.0, rate=0.01, spectrum=-1.5,
+                             kmin=2.5)
+    spec = np.abs(np.fft.rfftn(noise.scalar(0.0)))
+    kz, ky, kx = (np.fft.fftfreq(16) * 16, np.fft.fftfreq(32) * 32,
+                  np.fft.rfftfreq(32) * 32)
+    K = np.sqrt(kz[:, None, None] ** 2 + ky[None, :, None] ** 2
+                + kx[None, None, :] ** 2)
+    low = spec[(K > 0.5) & (K <= 2.5)]
+    band = spec[(K > 2.5) & (K <= 8.0)]
+    assert low.max() < 1e-3 * band.max()
+    assert band.max() > 0.0
+    modes = vb.ModeSet(rng, shape, 12, kmax=5, rate=0.01, amp=1.0,
+                       solenoidal=True, spectrum=-0.5, kmin=3)
+    kn = np.linalg.norm(modes.k, axis=1)
+    assert np.all(kn >= 2.5) and np.all(kn <= 5.5)
