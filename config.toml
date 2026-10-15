@@ -1765,11 +1765,11 @@ phase_mode = "offset"   # off | offset (phase = clock + sources, bounded)
                         #     | speed (each tile integrates its own rate, leaky)
 phase_noise_amp = 0.5   # loops of static world-space phase noise (de-tiling)
 phase_noise_tiles = 6.0 # its wavelength in tiles
-phase_temp_amp = 0.0    # offset: loops per saturated source; speed: rate
+phase_temp_amp = 0.2    # offset: loops per saturated source; speed: rate
 phase_temp_ref = 200.0  #   game dT at which the temperature source saturates
-phase_press_amp = 0.0
-phase_press_ref = 0.05  #   atm above/below the room median that saturates
-phase_wind_amp = 0.0    #   (tamed wind speed / its saturation speed, 0..1)
+phase_press_amp = 0.22
+phase_press_ref = 3.0   #   atm above/below the room median that saturates
+phase_wind_amp = 0.05   #   (tamed wind speed / its saturation speed, 0..1)
 phase_relax_loops = 2.0 # speed mode: the drift leaks back over this many loops
 phase_seed = 11
 # Directional light (Erik 2026-10-15): lamp direction = gradient of the baked
