@@ -57,6 +57,12 @@ GL_NO_ERROR = 0
 
 # Unit the volume sampler lives on (see module header).
 VOLUME_TEXTURE_UNIT = 7
+# raylib's SetShaderValueTexture hands out sampler slots 1..4 only (rlgl
+# MAX_BATCH_ACTIVE_TEXTURES); a FIFTH sampler silently stays on unit 0 = the
+# quad's own texture (incident 2026-10-15: u_heat read the tau texture and
+# painted every smoky tile red once the soot albedo rose). Extra 2D samplers
+# therefore get their own units here, below the volume's.
+FIELD_TEXTURE_UNIT = 6
 
 _FORMATS = {1: (GL_R8, GL_RED), 2: (GL_RG8, GL_RG), 3: (GL_RGB8, GL_RGB),
             4: (GL_RGBA8, GL_RGBA)}
@@ -186,11 +192,21 @@ def bind_texture_3d(tex_id: int, unit: int = VOLUME_TEXTURE_UNIT) -> None:
     g.glActiveTexture(GL_TEXTURE0)
 
 
+def bind_texture_2d(tex_id: int, unit: int = FIELD_TEXTURE_UNIT) -> None:
+    """Bind a raylib 2D texture id as GL_TEXTURE_2D on texture unit ``unit``
+    (for a shader's 5th+ sampler, which raylib's own binder cannot place)."""
+    g = gl()
+    g.glActiveTexture(GL_TEXTURE0 + int(unit))
+    g.glBindTexture(GL_TEXTURE_2D, int(tex_id))
+    g.glActiveTexture(GL_TEXTURE0)
+
+
 def delete_texture(tex_id: int) -> None:
     g = gl()
     tex = ctypes.c_uint(int(tex_id))
     g.glDeleteTextures(1, ctypes.byref(tex))
 
 
-__all__ = ["GLUnavailable", "VOLUME_TEXTURE_UNIT", "available",
+__all__ = ["GLUnavailable", "VOLUME_TEXTURE_UNIT", "FIELD_TEXTURE_UNIT",
+           "bind_texture_2d", "available",
            "create_texture_3d", "bind_texture_3d", "delete_texture", "gl"]

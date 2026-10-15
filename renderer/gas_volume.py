@@ -63,7 +63,7 @@ class VolumeDials:
         enabled=True, asset="smoke_mid15", steps=256, step_texels=1.5,
         h_max_tiles=6.0, tau_h=3.0, tau_solid=6.0, erode=0.5,
         detail_gamma=1.0, top_var=0.35, k_ext=3.0, k_shadow=0.6,
-        albedo_floor=0.25, emit_gain=3.0, emit_pow=2.0, exposure=1.0,
+        albedo_floor=0.0, emit_gain=3.0, emit_pow=2.0, exposure=1.0,
         rise_turns=1.0, light_from_below=True, hybrid_2d=False,
         loop_seconds=0.0,      # 0 = the asset's own loop length
         # --- the phase field (renderer/volume_phase.py) ----------------------
@@ -82,6 +82,7 @@ class VolumeDials:
         dir_eps_texels=2.0,    # normal finite-difference step, volume texels
         hg_g=0.5,              # Henyey-Greenstein asymmetry (forward halo)
         hg_mix=0.4,            # phase-function weight (0 = isotropic)
+        glow_scale=1.0,        # volume-side factor on the sweep's glow deposit
     )
 
     enabled: bool
@@ -118,6 +119,7 @@ class VolumeDials:
     dir_eps_texels: float
     hg_g: float
     hg_mix: float
+    glow_scale: float
 
     def __init__(self):
         for k, v in self.DEFAULTS.items():
@@ -194,7 +196,8 @@ class GasVolumePass:
                      "u_light_gain", "u_glow_gain", "u_emit_gain", "u_emit_pow",
                      "u_heat_on",
                      "u_exposure", "u_debug",
-                     "u_dir_light", "u_dir_eps", "u_hg_g", "u_hg_mix"):
+                     "u_dir_light", "u_dir_eps", "u_hg_g", "u_hg_mix",
+                     "u_glow_scale"):
             loc = rl.get_shader_location(self.shader, name)
             if loc == -1:
                 print(f"[gas_volume] WARN: uniform '{name}' not found")
@@ -423,16 +426,21 @@ class GasVolumePass:
         self._set_f("u_dir_eps", max(d.dir_eps_texels, 0.25) * texel_px / self.px_per_tile)
         self._set_f("u_hg_g", min(max(d.hg_g, -0.95), 0.95))
         self._set_f("u_hg_mix", min(max(d.hg_mix, 0.0), 1.0))
-        # The sampler3D lives on its own unit (raylib never touches it).
+        self._set_f("u_glow_scale", max(d.glow_scale, 0.0))
+        # The sampler3D lives on its own unit (raylib never touches it), and
+        # so does the phase field: raylib's set_shader_value_texture places
+        # only FOUR samplers (slots 1..4); a fifth silently reads unit 0 = the
+        # quad's own texture (the red-smoke incident, 2026-10-15).
         self._set_i("u_volume", gl3d.VOLUME_TEXTURE_UNIT)
         gl3d.bind_texture_3d(self.tex3d, gl3d.VOLUME_TEXTURE_UNIT)
+        self._set_i("u_field", gl3d.FIELD_TEXTURE_UNIT)
+        gl3d.bind_texture_2d(self.field_tex.id, gl3d.FIELD_TEXTURE_UNIT)
 
         rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
         rl.begin_shader_mode(self.shader)
         rl.set_shader_value_texture(self.shader, self._loc["u_tau"], self.tau_tex)
         rl.set_shader_value_texture(self.shader, self._loc["u_light"], light_tex_a)
         rl.set_shader_value_texture(self.shader, self._loc["u_light_b"], light_tex_b)
-        rl.set_shader_value_texture(self.shader, self._loc["u_field"], self.field_tex)
         rl.set_shader_value_texture(
             self.shader, self._loc["u_heat"],
             heat_tex if heat_tex is not None else self.tau_tex)

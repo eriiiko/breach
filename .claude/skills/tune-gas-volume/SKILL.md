@@ -22,7 +22,8 @@ Design and history: `docs/volumetric_smoke_design_2026-10-14.md`.
 3. **F12** cycles the debug views: 0 normal, 1 tile checker on the floor
    (camera alignment), 2 the movie alone in flat grey (judge the bake and
    the repeat here, not in the lit view), 3 the lamp-direction field
-   (brightness = how directional the light is).
+   (brightness = how directional the light is), 4 the heat input (the
+   blackbody overlay the fire glow multiplies).
 4. Keep a reproducible before/after: `tools/e2e_drive.py --level
    smoke_light_studio --control gamepad --warp 3.0 --tilt --zoom 40 --pan
    2,14 --frames 30 --shot west.png@25` (writes into the CWD; the env var
@@ -46,9 +47,9 @@ Design and history: `docs/volumetric_smoke_design_2026-10-14.md`.
   sharpness/cost sweet spot; `steps` is only the cap.
 
 **Light**
-- `albedo_floor`: the per-gas albedo (soot 0.04 = black in any light) is
-  floored here; 0.25 reads as charcoal, 0.4 as grey. Steam/poison keep
-  their table colour above the floor.
+- The smoke's lit colour is the `[gases.smoke] scatter_albedo` row (0.22
+  since #91: soot's real single-scattering albedo, charcoal-grey when lit).
+  `albedo_floor` (0 = honest) only lifts darker gases artistically.
 - `k_shadow` vertical self-shadow (dark bottoms when lamps are low);
   `light_from_below` = lamps at floor height (bright bases) vs sky-lit.
 - `dir_light` lamp-facing side ×(1+a), back ×(1−a); `dir_eps_texels` the
@@ -94,3 +95,6 @@ Design and history: `docs/volumetric_smoke_design_2026-10-14.md`.
 - Never judge the repeat in the lit view: the sim's macro shape hides it.
 - The directional light costs three extra volume samples per lit sample;
   `dir_light = 0` removes them (laptop).
+- A new 2D sampler in the shader must get its own GL unit through
+  `gl3d.bind_texture_2d`: raylib places only four samplers, a fifth
+  silently reads the quad's own texture (the red-smoke incident, #91).

@@ -290,3 +290,21 @@ shader tricks cost three fetches.
   this module rather than re-deriving the cos/sin upload.
 - Tamed wind (`gas_detail.tame_wind`) is now consumed by the volume pass as
   a phase source — still the one render wind seam.
+
+### 6.3 Smoke colour (#91) and the fifth-sampler incident
+
+Erik's ruling: the `[gases.smoke] scatter_albedo` row is the one truth for
+the lit colour; 0.04 -> 0.22 (soot's real visible single-scattering albedo),
+`albedo_floor` 0 so the volume shows the row. The 2D view is unchanged
+(its glow coefficient saturates in dense tiles; the flat shots are
+pixel-identical). The volume's glow deposit gets its own `glow_scale`.
+
+**Incident:** raising the row turned every smoky tile red in the tilt view.
+Not the sim (the temperature probe was identical) and not the glow: raylib's
+`set_shader_value_texture` places only four samplers (rlgl's batch slots
+1..4); the phase field had become the fourth, so `u_heat`, now the fifth,
+silently stayed on unit 0 = the quad's own texture (the tau texture, RGB =
+tau and the albedo), and the fire-glow term multiplied tau by the new
+albedo. Fix: `gl3d.bind_texture_2d` on `FIELD_TEXTURE_UNIT` 6, the same
+pattern as the volume on 7; debug view 4 paints the heat input so this is
+visible next time. Rule in the skill and in `gl3d.py`.

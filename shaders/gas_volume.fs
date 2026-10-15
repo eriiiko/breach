@@ -74,6 +74,8 @@ uniform vec3  u_ambient;      // the ship's ambient floor
 uniform float u_light_gain;   // the ship's master exposure on the light field
 uniform float u_glow_gain;    // [render.gas_medium] glow_gain — the SAME dial
                               // the 2D medium exposes its inscatter with
+uniform float u_glow_scale;   // the volume's own factor on top of it (the
+                              // deposit is per tile, the column spreads it)
 uniform float u_emit_gain;    // fire glow strength
 uniform float u_emit_pow;     // fire channel contrast
 uniform int   u_heat_on;      // 0 when the blackbody overlay is off
@@ -245,6 +247,15 @@ void main() {
             L = normalize(vec3(lxz.x, ly, lxz.y));
         }
     }
+    if (u_debug == 4) {
+        // HEAT INPUT: the blackbody overlay's colour x intensity at the
+        // ground hit (what the emission term multiplies the fire channel by).
+        float tg4 = (abs(rd.y) > 1e-5) ? (0.0 - ro.y) / rd.y : tn;
+        vec3 gp4 = ro + rd * clamp(tg4, tn, tf);
+        vec4 h4 = texture(u_heat, gp4.xz / u_world_px);
+        finalColor = vec4(h4.rgb * h4.a, 0.9);
+        return;
+    }
     if (u_debug == 3) {
         // LAMP DIRECTION: rg = the direction toward the lamp (x, z) mapped
         // to 0..1, brightness = how directional the light is here (Lw).
@@ -305,7 +316,7 @@ void main() {
         // fire's smoke in a dark room). u_light_from_below = 0 flips to the
         // sky-lit case (bright tops) for planetside scenes.
         vec3 lin = u_ambient + texture(u_light, g).rgb * u_light_gain;
-        vec3 glow = texture(u_light_b, g).rgb * u_glow_gain;
+        vec3 glow = texture(u_light_b, g).rgb * u_glow_gain * u_glow_scale;
         float frac_h = clamp(yt / max(h, 1e-3), 0.0, 1.0);
         float above = 1.0 - frac_h;
         float occl = (u_light_from_below == 1) ? frac_h : above;
