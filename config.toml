@@ -1731,7 +1731,7 @@ fovy_deg = 45.0         # vertical field of view
 
 [render.gas_volume]
 enabled = true          # the raymarched smoke (off = tilt view with no smoke)
-asset = "smoke_v1"      # assets/volumes/<asset>.npz (tools/bake_smoke_volume.py);
+asset = "smoke_mid15"   # assets/volumes/<asset>.npz (tools/bake_smoke_volume.py);
                         # missing -> a procedural fallback volume + a console hint
 steps = 256             # CAP on raymarch steps per pixel
 step_texels = 1.5       # step length in volume texels (the real cost dial:
