@@ -33,6 +33,8 @@ import pyray as rl
 from . import core
 from . import gl3d
 from .advected_noise import advection_phase
+from .gas_detail import tame_wind
+from .volume_phase import PhaseField, encode_phase_rg, normalise_sources
 from .volume_bake import load_volume, procedural_volume
 
 SHADERS_DIR = Path(__file__).resolve().parent.parent / "shaders"
@@ -64,6 +66,17 @@ class VolumeDials:
         albedo_floor=0.25, emit_gain=3.0, emit_pow=2.0, exposure=1.0,
         rise_turns=1.0, light_from_below=True, hybrid_2d=False,
         loop_seconds=0.0,      # 0 = the asset's own loop length
+        # --- the phase field (renderer/volume_phase.py) ----------------------
+        phase_mode="offset",   # off | offset | speed
+        phase_noise_amp=0.5,   # loops of static world-space phase noise
+        phase_noise_tiles=6.0, # its wavelength, tiles
+        phase_temp_amp=0.0,    # loops (offset) / rate (speed) per unit source
+        phase_temp_ref=200.0,  # game dT at which the temp source saturates
+        phase_press_amp=0.0,
+        phase_press_ref=0.05,  # atm above/below the room median
+        phase_wind_amp=0.0,
+        phase_relax_loops=2.0, # speed mode: drift leak time, loops
+        phase_seed=11,
     )
 
     enabled: bool
@@ -86,6 +99,16 @@ class VolumeDials:
     light_from_below: bool
     hybrid_2d: bool
     loop_seconds: float
+    phase_mode: str
+    phase_noise_amp: float
+    phase_noise_tiles: float
+    phase_temp_amp: float
+    phase_temp_ref: float
+    phase_press_amp: float
+    phase_press_ref: float
+    phase_wind_amp: float
+    phase_relax_loops: float
+    phase_seed: int
 
     def __init__(self):
         for k, v in self.DEFAULTS.items():
@@ -135,6 +158,16 @@ class GasVolumePass:
         # --- the per-frame optical-depth texture (R = tau) -----------------
         self.tau_packed = np.zeros((grid_h, grid_w, 4), dtype=np.float16)
         self.tau_tex = core.create_dynamic_rgba16f_texture(grid_w, grid_h)
+        # --- the per-tile PHASE field (RG = cos/sin of the phase offset) ----
+        # renderer/volume_phase.py: each tile's own moment in the loop, the
+        # GPU interpolating it between tile centres (Erik's idea 2026-10-15).
+        self.field_packed = np.zeros((grid_h, grid_w, 4), dtype=np.float16)
+        encode_phase_rg(np.zeros((grid_h, grid_w), np.float32), self.field_packed)
+        self.field_tex = core.create_dynamic_rgba16f_texture(grid_w, grid_h)
+        core.update_rgba16f_texture(self.field_tex, self.field_packed)
+        self.phase_field = PhaseField(grid_h, grid_w, seed=self.dials.phase_seed)
+        self._last_tick: Optional[int] = None
+        self._loop_ticks = 0.0
 
         # --- shader ---------------------------------------------------------
         self.shader = core.load_shader_with_fallback(
@@ -142,7 +175,7 @@ class GasVolumePass:
             str(SHADERS_DIR / "gas_volume.fs"))
         self._loc = {}
         for name in ("u_tau", "u_light", "u_light_b", "u_heat", "u_volume",
-                     "u_inv_vp",
+                     "u_field", "u_inv_vp",
                      "u_cam_pos", "u_world_px", "u_px_per_tile", "u_vol_zt",
                      "u_phase", "u_period_tiles", "u_height_tiles",
                      "u_rise_turns", "u_steps", "u_step_px", "u_h_max", "u_tau_h",
@@ -217,15 +250,25 @@ class GasVolumePass:
     # ---- per frame -------------------------------------------------------
 
     def update(self, tau: np.ndarray, albedo_rgb: Optional[np.ndarray] = None,
-               *, sim_tick: int, sim_dt: float, cfg=None) -> None:
-        """Upload this frame's optical depth (+ per-tile albedo) and advance
-        the loop phase.
+               *, sim_tick: int, sim_dt: float, cfg=None,
+               temperature: Optional[np.ndarray] = None,
+               atmosphere: Optional[np.ndarray] = None,
+               wind_x: Optional[np.ndarray] = None,
+               wind_y: Optional[np.ndarray] = None) -> None:
+        """Upload this frame's optical depth (+ per-tile albedo), advance
+        the loop phase and step the per-tile PHASE FIELD.
 
         ``tau`` : (H, W) float — the gas medium's pre-curve optical depth
         (``GasMediumOverlay.tau``). ``albedo_rgb`` : (H, W, 3) float — its
         tau-weighted scatter albedo (``GasMediumOverlay.albedo_rgb``; None =
         a neutral 1). ``sim_tick`` is the monotonic sim tick (the smoke
-        clock). ``cfg`` re-reads the dials (Ctrl+R)."""
+        clock). ``cfg`` re-reads the dials (Ctrl+R).
+
+        Phase-field sources, all RAW Q16.16 sim planes dequantised HERE (the
+        render-read convention): ``temperature`` (game dT), ``atmosphere``
+        (atm) and the wind planes (tamed through ``gas_detail.tame_wind`` —
+        THE render wind seam; never read raw). Any of them None = that
+        source off."""
         if cfg is not None:
             self.dials.refresh(cfg)
         if not self._dials_logged:
@@ -253,7 +296,47 @@ class GasVolumePass:
         loop_s = (float(self.dials.loop_seconds)
                   if float(self.dials.loop_seconds) > 0 else self.loop_seconds)
         tps = 1.0 / float(sim_dt) if sim_dt > 0 else 0.0
-        self._phase = advection_phase(int(sim_tick), loop_s, tps).phase
+        ap = advection_phase(int(sim_tick), loop_s, tps)
+        self._phase = ap.phase
+        self._loop_ticks = ap.tau_ticks
+        self._step_phase_field(int(sim_tick), temperature, atmosphere,
+                               wind_x, wind_y)
+
+    def _step_phase_field(self, sim_tick: int, temperature, atmosphere,
+                          wind_x, wind_y) -> None:
+        d = self.dials
+        if self._last_tick is None:
+            dticks = 0
+        else:
+            dticks = max(int(sim_tick) - self._last_tick, 0)
+        self._last_tick = int(sim_tick)
+        dt_loops = (dticks / self._loop_ticks) if self._loop_ticks > 0 else 0.0
+        if int(d.phase_seed) != self.phase_field.seed:
+            self.phase_field = PhaseField(self.h, self.w, seed=int(d.phase_seed))
+        mode = str(d.phase_mode).strip().lower()
+        if mode not in ("off", "offset", "speed"):
+            mode = "offset"
+        wind_speed = None
+        if wind_x is not None and wind_y is not None and d.phase_wind_amp != 0.0:
+            tamed = tame_wind(wind_x, wind_y)
+            wind_speed = np.hypot(tamed[..., 0], tamed[..., 1])
+        sources = normalise_sources(
+            temperature=(np.asarray(temperature, np.float64) / 65536.0
+                         if temperature is not None and d.phase_temp_amp != 0.0
+                         else None),
+            atmosphere=(np.asarray(atmosphere, np.float64) / 65536.0
+                        if atmosphere is not None and d.phase_press_amp != 0.0
+                        else None),
+            wind_speed=wind_speed,
+            temp_ref=d.phase_temp_ref, press_ref=d.phase_press_ref)
+        offset = self.phase_field.step(
+            mode=mode, dt_loops=dt_loops, sources=sources,
+            amps={"temp": d.phase_temp_amp, "press": d.phase_press_amp,
+                  "wind": d.phase_wind_amp},
+            noise_amp=d.phase_noise_amp, noise_tiles=d.phase_noise_tiles,
+            relax_loops=d.phase_relax_loops)
+        encode_phase_rg(offset, self.field_packed)
+        core.update_rgba16f_texture(self.field_tex, self.field_packed)
 
     # ---- draw ------------------------------------------------------------
 
@@ -335,6 +418,7 @@ class GasVolumePass:
         rl.set_shader_value_texture(self.shader, self._loc["u_tau"], self.tau_tex)
         rl.set_shader_value_texture(self.shader, self._loc["u_light"], light_tex_a)
         rl.set_shader_value_texture(self.shader, self._loc["u_light_b"], light_tex_b)
+        rl.set_shader_value_texture(self.shader, self._loc["u_field"], self.field_tex)
         rl.set_shader_value_texture(
             self.shader, self._loc["u_heat"],
             heat_tex if heat_tex is not None else self.tau_tex)
@@ -354,6 +438,7 @@ class GasVolumePass:
     def unload(self) -> None:
         rl.unload_shader(self.shader)
         rl.unload_texture(self.tau_tex)
+        rl.unload_texture(self.field_tex)
         if self.tex3d is not None:
             try:
                 gl3d.delete_texture(self.tex3d)

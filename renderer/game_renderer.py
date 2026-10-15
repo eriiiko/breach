@@ -562,7 +562,10 @@ class GameRenderer:
                 if self.tilt_on and self.gas_volume is not None:
                     self.gas_volume.update(
                         self.gas_medium.tau, self.gas_medium.albedo_rgb,
-                        sim_tick=int(sim_tick), sim_dt=self._sim_dt, cfg=CFG)
+                        sim_tick=int(sim_tick), sim_dt=self._sim_dt, cfg=CFG,
+                        temperature=gmap.temperature,
+                        atmosphere=gmap.atmosphere,
+                        wind_x=gmap.wind_x, wind_y=gmap.wind_y)
         # Props & vegetation arc #60 P4 — WIND SWAY input. The TAMED wind
         # (gas_detail.tame_wind: smooth -> direction -> saturating speed) is
         # the ONE render-side wind product; props sample it per prop at draw

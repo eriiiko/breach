@@ -1758,6 +1758,20 @@ light_from_below = true # lamps sit at floor height: bright bases, dark tops;
 hybrid_2d = false       # true = ALSO keep the 2D gas layer on the floor under
                         # the volume (A/B: the beloved god-rays + height)
 loop_seconds = 0.0      # 0 = the asset's own loop length
+# The PHASE FIELD (renderer/volume_phase.py, Erik 2026-10-15): every tile reads
+# the movie at its own moment of the loop, interpolated between tile centres
+# (continuous -> no seams) so the asset's spatial repeat decorrelates.
+phase_mode = "offset"   # off | offset (phase = clock + sources, bounded)
+                        #     | speed (each tile integrates its own rate, leaky)
+phase_noise_amp = 0.5   # loops of static world-space phase noise (de-tiling)
+phase_noise_tiles = 6.0 # its wavelength in tiles
+phase_temp_amp = 0.0    # offset: loops per saturated source; speed: rate
+phase_temp_ref = 200.0  #   game dT at which the temperature source saturates
+phase_press_amp = 0.0
+phase_press_ref = 0.05  #   atm above/below the room median that saturates
+phase_wind_amp = 0.0    #   (tamed wind speed / its saturation speed, 0..1)
+phase_relax_loops = 2.0 # speed mode: the drift leaks back over this many loops
+phase_seed = 11
 
 # Material property table (named-key format, ch.02 — Material System).
 # One [materials.<name>] row per material id; columns indexed into per-id

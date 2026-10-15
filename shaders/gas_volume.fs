@@ -41,6 +41,11 @@ uniform sampler2D u_light_b;  // light_tex_b RGBA16F: rgb = the ray march's
                               // gas ABSORBED, per channel, already x albedo)
 uniform sampler2D u_heat;     // HeatFieldOverlay RGBA8: rgb hue, a intensity
 uniform sampler3D u_volume;   // RG8 (X, Y, (Z+1)*T): r = smoke, g = fire
+uniform sampler2D u_field;    // RGBA16F grid-res: RG = (cos, sin) of the tile's
+                              // PHASE OFFSET (renderer/volume_phase.py) — the
+                              // bilinear fetch interpolates it between tile
+                              // centres, so every pixel has its own moment in
+                              // the loop and the movie's repeat decorrelates
 
 uniform mat4  u_inv_vp;       // inverse (projection * view) of the tilt camera
 uniform vec3  u_cam_pos;      // world px (X = x_wpx, Y = up, Z = y_wpx)
@@ -92,16 +97,26 @@ float hash12(vec2 p) {
     return fract((p3.x + p3.y) * p3.z);
 }
 
-// Trilinear + wrap sample of the volume at tile position (tx, ty) and height
-// hz in volume-height units; z and t wrap in the shader (each frame carries a
-// duplicate top slice so the in-frame trilinear wrap is exact).
-vec2 sampleVolume(vec2 txy, float hz) {
+// The LOCAL loop phase at ground uv g: the global sim-tick clock plus the
+// tile field's interpolated offset (unit-vector encoded so the interpolation
+// crosses the wrap on the short arc). Continuous over the floor -> no seams.
+float localPhase(vec2 g) {
+    vec2 cs = texture(u_field, g).rg;
+    float off = atan(cs.y, cs.x) * 0.15915494309;  // / 2 pi
+    return fract(u_phase + off);
+}
+
+// Trilinear + wrap sample of the volume at tile position (tx, ty), height
+// hz in volume-height units and loop phase `phase`; z and t wrap in the
+// shader (each frame carries a duplicate top slice so the in-frame trilinear
+// wrap is exact).
+vec2 sampleVolume(vec2 txy, float hz, float phase) {
     float Z = u_vol_zt.x;
     float T = u_vol_zt.y;
     float D = (Z + 1.0) * T;
     vec2 st = txy / u_period_tiles;                // GL_REPEAT in hardware
     float z01 = fract(hz);
-    float f = u_phase * T;
+    float f = phase * T;
     float f0 = floor(f);
     float fw = f - f0;
     float f1 = mod(f0 + 1.0, T);
@@ -138,7 +153,6 @@ void main() {
     float hmax_px = u_h_max * u_px_per_tile;
     vec3 bmax = vec3(u_world_px.x, hmax_px, u_world_px.y);
     float inv_tiles = 1.0 / u_px_per_tile;
-    float rise = u_rise_turns * u_phase;
     vec2 th = boxHit(ro, rd, bmax);
     float tn = max(th.x, 0.0);
     float tf = th.y;
@@ -175,7 +189,9 @@ void main() {
             vec3 p = ro + rd * t;
             t += ds;
             float yt = p.y * inv_tiles;
-            vec2 vol = sampleVolume(p.xz * inv_tiles, yt / u_height_tiles - rise);
+            float ph = localPhase(p.xz / u_world_px);
+            float rise = u_rise_turns * ph;        // whole heights per loop: seamless
+            vec2 vol = sampleVolume(p.xz * inv_tiles, yt / u_height_tiles - rise, ph);
             float d = pow(vol.r, u_detail_gamma);
             float sigma = u_k_ext * 2.0 * d / max(u_h_max * u_px_per_tile, 1e-3);
             float a = 1.0 - exp(-sigma * ds);
@@ -205,7 +221,9 @@ void main() {
         if (yt > h * (1.0 + u_top_var)) continue;
 
         vec2 txy = p.xz * inv_tiles;
-        vec2 vol = sampleVolume(txy, yt / u_height_tiles - rise);
+        float ph = localPhase(g);
+        float rise = u_rise_turns * ph;            // whole heights per loop: seamless
+        vec2 vol = sampleVolume(txy, yt / u_height_tiles - rise, ph);
         float d = pow(vol.r, u_detail_gamma);
 
         // Nubis-style erosion: cores keep coverage, edges get carved.
