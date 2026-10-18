@@ -468,3 +468,26 @@ as an A/B toggle until G1 is blessed, then goes.
    with B's trigger re-checked afterwards.)
 
 Rulings land here with a date.
+
+### 9.1 Rulings
+
+**2026-10-18 — Erik: YES to all seven, as recommended.** In force from this
+date:
+
+1. Top-down is the canonical camera; tilt (`#90`) is an optional cinematic
+   mode on the shared smoke model (§2.4), never a schedule driver.
+2. Hot soot is a ceiling layer drawn above units; steam, teargas and poison
+   are floor layers drawn below units.
+3. G0 (one HDR world RT, one tone-map) goes first; no further look tuning
+   until it is merged.
+4. `#88` smoke-unit rescale is a physics session scheduled before G1 is
+   *judged* (G1 may be built before it).
+5. `#52` fire VFX moves ahead of the fire-tuning lid (G3).
+6. Bloom stays off; the warm halo comes from HDR + the ray engine's
+   inscatter.
+7. The synthetic 30 cm–1 m billow band (§2.5 A) is allowed, render-only,
+   gated by τ and advected by the real wind; §2.5 B's trigger is re-checked
+   on plumes in motion once A is in.
+
+Next action: hand §8.1 (the G0 kickoff) to Opus on a fresh worktree branch
+off `main`; this branch carries only the doc and merges first.
