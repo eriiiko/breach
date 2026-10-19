@@ -17,6 +17,8 @@
 //               tile's incoming light at the one exposure. Thick smoke shows
 //               its lit SURFACE, thin smoke the sweep's own in-scatter: blended
 //               by the column's opacity 1 - exp(-tau_ext K)
+//   shadow    a horizon march toward the light through h: a crest between
+//               the pixel and the lamp, above the ray, shades it
 //
 // OUTPUT: premultiplied LINEAR HDR (inscatter, 1 - T) into the RGBA16F scene
 // RT, blended out = src.rgb + dst * (1 - src.a). Never a tone-map here: the
@@ -257,8 +259,32 @@ void main() {
     float shade = wrapNL / wrapFlat;
     if (u_debug == 3) { finalColor = vec4(vec3(0.5 * shade), 1.0); return; }
 
+    // --- self-shadow: a horizon march toward the light ---------------------
+    // SHADOW_STEPS taps along the light's planar direction, out to
+    // u_shadow_len tiles; the ray climbs at the lamp's elevation. Any crest
+    // that stands above the ray (by u_shadow_soft for a full shadow) shades
+    // this pixel's direct light -- lamp-facing crests stay bright, the
+    // crevices behind them go dark. Overhead light (no planar direction)
+    // casts nothing.
+    const int SHADOW_STEPS = 6;
+    float lit = 1.0;
+    float dlen = length(dir2d);
+    if (u_shadow > 0.0 && dlen > 0.05 && h > 0.0) {
+        vec2 d = dir2d / dlen;
+        float rise = L.z / max(length(L.xy), 1e-3);   // tan(elevation)
+        float occ = 0.0;
+        for (int k = 1; k <= SHADOW_STEPS; ++k) {
+            float sk = u_shadow_len * float(k) / float(SHADOW_STEPS);
+            float hq = heightAt(tp + d * sk, grad);
+            occ = max(occ, clamp((hq - (h + sk * rise))
+                                 / max(u_shadow_soft, 1e-4), 0.0, 1.0));
+        }
+        lit = 1.0 - u_shadow * occ;
+    }
+    if (u_debug == 4) { finalColor = vec4(vec3(lit), 1.0); return; }
+
     vec3 albedo = max(cov.rgb, vec3(0.0));
-    vec3 surface = albedo * (u_ambient + E * shade);
+    vec3 surface = albedo * (u_ambient + E * shade * lit);
 
     // The cut keeps a HAZE share of the depth outside the edge: thin smoke
     // around a plume (and a room of it) still dims the floor, and the edge
