@@ -32,6 +32,7 @@ from .camera import Camera2D
 from .cold_overlay import ColdFieldOverlay
 from .gas_detail import GasDetailPass, tame_wind
 from .gas_medium import GasMediumOverlay
+from .gas_relief import GasReliefPass
 from .hover_readout import pack_hover_readout
 from .lighting import LightingPass
 from .speckle import SpeckleField
@@ -235,6 +236,12 @@ class GameRenderer:
         # density_proxy, writes only its own textures. sim_dt is the crossfade
         # clock's tick length (the noise rides the sim tick, never wall time).
         self.gas_detail = GasDetailPass.from_config(cfg.grid_h, cfg.grid_w, CFG)
+        # Graphics G1 -- the smoke RELIEF (renderer/gas_relief.py): smoke seen
+        # from above as a lit height field, in the gas medium's slot, in two
+        # species layers (floor haze under the units, ceiling soot above
+        # them). [render.gas_relief] is re-read every frame (Ctrl+R live);
+        # enabled = false falls back to the B2 erosion look above.
+        self.gas_relief = GasReliefPass.from_config(cfg.grid_h, cfg.grid_w, CFG)
         self._sim_dt = 1.0 / float(getattr(
             getattr(CFG, "clock", None), "ticks_per_second", 24))
         self.pressure_overlay = PressureOverlay(cfg.grid_h, cfg.grid_w)
@@ -464,9 +471,31 @@ class GameRenderer:
             # even when show_lighting (hence the cast) is off.
             from simulation import gas_fixed
             from simulation.gases import N_TRACE_GASES
+            self.gas_relief.refresh_settings(CFG)
             if self.legacy_smoke_on:
                 self.smoke_overlay.update(gas_fixed.dequantize_f32(gmap.smoke))
                 self.glow_overlay.update(glow_field)
+            elif self.gas_relief.enabled:
+                # G1 relief: both species groups' tile inputs, the TAMED wind
+                # (gas_detail.tame_wind, THE wind seam) and the temperature
+                # for the boil clock. The B2 medium texture is not packed:
+                # nothing draws it while the relief is on.
+                trace = gas_fixed.dequantize_f32(gmap.gas[:N_TRACE_GASES])
+                gm, gd = self.gas_medium, self.gas_detail
+                tps = 1.0 / self._sim_dt
+                tamed = tame_wind(gmap.wind_x, gmap.wind_y,
+                                  tile_size_m=gmap.tile_size_m,
+                                  ticks_per_second=tps,
+                                  v_ref=gd.wind_v_ref, v_sens=gd.wind_v_sens)
+                from .blackbody import TEMP_SCALE
+                self.gas_relief.update(
+                    trace, glow_field, gmap.gases, tamed,
+                    np.asarray(gmap.temperature, dtype=np.float32) / TEMP_SCALE,
+                    sim_tick=int(sim_tick), ticks_per_second=tps,
+                    cycle_seconds=gd.cycle_seconds, adv_gain=gd.adv_gain,
+                    tau_curve_a=gm.tau_curve_a, tau_curve_b=gm.tau_curve_b,
+                    glow_gain=gm.glow_gain,
+                    effect_gas_floor=gm.effect_gas_floor)
             else:
                 # k_s (per-gas mean extinction) is read from gmap.gases — the
                 # SAME optics table the light channels use — and scaled by
@@ -678,7 +707,14 @@ class GameRenderer:
         # wisps), same premult blend; enabled=false bypasses the shader for the
         # plain P2 draw. Both own their blend. (The LEGACY smoke A/B path is a
         # display-referred grey and draws after the resolve, below.)
-        if self.show_smoke and not self.legacy_smoke_on:
+        relief_on = (self.show_smoke and not self.legacy_smoke_on
+                     and self.gas_relief.enabled)
+        if relief_on:
+            # G1: the FLOOR species layer (steam, teargas, poison, fuel
+            # vapour) -- below the water and the units, so marines wade in it.
+            self.gas_relief.draw("floor", self.lighting,
+                                 self.world.world_px_w, self.world.world_px_h)
+        elif self.show_smoke and not self.legacy_smoke_on:
             if self.gas_detail.enabled:
                 self.gas_detail.draw(
                     self.gas_medium.tex,
@@ -705,6 +741,11 @@ class GameRenderer:
         # 5. 3D units + props (+ projected shadows): the shared 3D pass.
         drew_units_3d = self._draw_units_3d_world(units_marines, units_zombies,
                                                   props)
+        # 6. G1: the CEILING species layer (hot soot) -- ABOVE the units and
+        # props (Erik's ruling 2, 2026-10-18), still in the linear scene.
+        if relief_on:
+            self.gas_relief.draw("ceiling", self.lighting,
+                                 self.world.world_px_w, self.world.world_px_h)
 
         # ======= the ONE tone-map: ACES + encode + dither (resolve) =======
         self.world.resolve(encode_srgb=self.lighting.srgb_decode)
@@ -1783,6 +1824,7 @@ class GameRenderer:
         rl.unload_texture(self.glow_overlay.tex)
         rl.unload_texture(self.gas_medium.tex)
         self.gas_detail.unload()
+        self.gas_relief.unload()
         rl.unload_texture(self.temperature_overlay.tex)
         rl.unload_texture(self.cold_overlay.tex)
         rl.unload_texture(self.water_overlay.tex)
