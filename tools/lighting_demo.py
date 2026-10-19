@@ -91,6 +91,14 @@ Headless flags (no human at the keyboard):
                      develop, then measure N (default 300) rendered frames of
                      the NEW gas-medium path and again with legacy_smoke_on,
                      printing mean/95th-percentile ms/frame for both.
+    --shots [A,B]   graphics G0 P3: render the named LOOK SHOTS of
+                     tools/look_shots.toml (all, or the comma-separated
+                     subset) to scratchpad/look/<name>_<git-sha>.png, one
+                     fresh demo process per shot (fixed level, camera, seed,
+                     tick count, scripted actions; the studio's CODE defaults,
+                     never a saved preset). The PNG is the map viewport only.
+                     Every graphics patch renders these before and after.
+    --shots-out DIR write the look shots to DIR instead of scratchpad/look/
 """
 from __future__ import annotations
 
@@ -660,6 +668,112 @@ def _parse_shot_path() -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Look shots (graphics arc G0 P3, docs/graphics_direction_2026-10-18.md §7):
+# the named shot set of tools/look_shots.toml. The PARENT (`--shots`) spawns
+# one child process per shot (`--look-shot NAME --look-out PATH`, internal
+# flags), so no shot inherits another's sim or GL state; the child is this
+# same demo under --auto with the shot's level, camera, frame count and
+# scripted tool actions, capturing the map viewport right after the world
+# blit (before the HUD and the panel).
+# ---------------------------------------------------------------------------
+
+def _argv_value(flag: str) -> Optional[str]:
+    """The token after ``flag`` (None when the flag is absent or bare)."""
+    if flag not in sys.argv:
+        return None
+    i = sys.argv.index(flag)
+    if i + 1 < len(sys.argv) and not sys.argv[i + 1].startswith("--"):
+        return sys.argv[i + 1]
+    return None
+
+
+def _run_look_shots() -> int:
+    """``--shots [A,B]``: render the look shots, one subprocess each. Returns
+    the number of shots that failed (the exit code)."""
+    import subprocess
+    from tools.look_shots import (DEFAULT_OUT_DIR, git_tag, level_exists,
+                                  load_shots, shot_path)
+    table = load_shots()
+    wanted = _argv_value("--shots")
+    names = ([n.strip() for n in wanted.split(",") if n.strip()] if wanted
+             else [s.name for s in table.shots])
+    for n in names:
+        table.by_name(n)          # unknown name -> KeyError before any window
+    out_dir = Path(_argv_value("--shots-out") or DEFAULT_OUT_DIR)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tag = git_tag()
+    failed = 0
+    for n in names:
+        shot = table.by_name(n)
+        if not level_exists(shot.level):
+            print(f"[look] {n}: level {shot.level!r} not found -- skipped")
+            failed += 1
+            continue
+        out = shot_path(out_dir, n, tag)
+        t0 = time.perf_counter()
+        rc = subprocess.run([sys.executable, str(Path(__file__).resolve()),
+                             "--look-shot", n, "--look-out", str(out)],
+                            cwd=str(ROOT)).returncode
+        ok = rc == 0 and out.is_file()
+        failed += 0 if ok else 1
+        print(f"[look] {n:22s} {'OK  ' if ok else 'FAIL'} "
+              f"{(time.perf_counter() - t0):5.1f} s  -> {out}")
+    print(f"[look] {len(names) - failed}/{len(names)} shots in {out_dir} "
+          f"(tag {tag})")
+    return failed
+
+
+def _parse_look_shot():
+    """Child mode: ``--look-shot NAME --look-out PATH`` -> (ShotTable,
+    LookShot, out_path), or None outside a look-shot child."""
+    name = _argv_value("--look-shot")
+    if name is None:
+        return None
+    from tools.look_shots import load_shots
+    table = load_shots()
+    out = _argv_value("--look-out")
+    if out is None:
+        raise SystemExit("--look-shot needs --look-out PATH (use --shots)")
+    return table, table.by_name(name), out
+
+
+def _look_camera(shot, level, map_px_w: int, map_px_h: int) -> Camera2D:
+    """The shot's fixed camera: centre + zoom, or the whole map fitted."""
+    if shot.zoom is None:
+        zoom = min(map_px_w / max(level.width, 1), map_px_h / max(level.height, 1))
+    else:
+        zoom = shot.zoom
+    cx, cy = shot.center if shot.center is not None else (
+        level.width / 2.0, level.height / 2.0)
+    cam = Camera2D(
+        pos_tile_x=cx - (map_px_w / zoom) / 2.0,
+        pos_tile_y=cy - (map_px_h / zoom) / 2.0,
+        zoom_px_per_tile=zoom,
+        viewport_px_w=map_px_w, viewport_px_h=map_px_h,
+        world_size_tile_w=level.width, world_size_tile_h=level.height,
+    )
+    cam.clamp_to_world()
+    return cam
+
+
+def _capture_map_viewport(renderer, out_path: str) -> None:
+    """Read the back buffer right after the world blit (no HUD, no panel)
+    and save the map viewport alone. ``take_screenshot`` would drop the
+    directory (raylib writes to its own base path) and include the panel."""
+    cam = renderer.camera
+    img = rl.load_image_from_screen()
+    try:
+        crop = rl.Rectangle(float(cam.viewport_screen_x),
+                            float(cam.viewport_screen_y),
+                            float(cam.viewport_px_w), float(cam.viewport_px_h))
+        rl.image_crop(img, crop)
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        rl.export_image(img, str(Path(out_path).resolve()))
+    finally:
+        rl.unload_image(img)
+
+
+# ---------------------------------------------------------------------------
 # Detonation — the CANONICAL path (arc #60 P4r)
 # ---------------------------------------------------------------------------
 # R arms detonate-mode; a left click then detonates a frag grenade at the
@@ -1030,11 +1144,18 @@ def _run_perf_bench(renderer, sim, lights_in, light_sky,
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    # ---- 0. Look shots (G0 P3): the parent spawns one child per shot ----
+    if "--shots" in sys.argv:
+        raise SystemExit(1 if _run_look_shots() else 0)
+    look = _parse_look_shot()          # (table, shot, out) in a child, else None
+    look_shot = look[1] if look else None
+
     # ---- 1. Load level + build sim ----
     # --level overrides config for one launch (the studio runs
-    # --level fire_studio); default stays [display] level.
-    level_name = _parse_level_arg() or getattr(CFG.display, "level",
-                                               "playground")
+    # --level fire_studio); default stays [display] level. A look shot names
+    # its own level.
+    level_name = (look_shot.level if look_shot else None) or \
+        _parse_level_arg() or getattr(CFG.display, "level", "playground")
     level = load_level(level_name)
     print(f"[lighting_demo] Level: {level.name}  {level.width}x{level.height} tiles")
 
@@ -1060,11 +1181,15 @@ def main() -> None:
     # Borderless at the real monitor resolution by default (same pattern as
     # main.py): open the window first, then query the actual size and lay the
     # panel/map out to fit. `--windowed` falls back to the old fixed 1280x720.
-    BORDERLESS = "--windowed" not in sys.argv
+    BORDERLESS = "--windowed" not in sys.argv and look is None
     if BORDERLESS:
         rcore.init_window(0, 0, title="Breach — Lighting Demo",
                           borderless=True)
         screen_w, screen_h = rcore.get_monitor_size()
+    elif look is not None:
+        # A look shot's window is part of the shot (tools/look_shots.toml
+        # [window]) -- the same pixels on every machine and monitor.
+        screen_w, screen_h = look[0].window_w, look[0].window_h
     else:
         screen_w, screen_h = 1280, 720
     panel_px_w = PANEL_W
@@ -1086,6 +1211,8 @@ def main() -> None:
         viewport_px_w=map_px_w, viewport_px_h=map_px_h,
         world_size_tile_w=level.width, world_size_tile_h=level.height,
     )
+    if look_shot is not None:
+        initial_camera = _look_camera(look_shot, level, map_px_w, map_px_h)
 
     # GameRenderer attaches to the already-open window in borderless mode
     # (or creates the fixed one in --windowed).
@@ -1175,7 +1302,7 @@ def main() -> None:
         renderer.camera.pos_tile_y = float(garden_tile[1]) - \
             (map_px_h / renderer.camera.zoom_px_per_tile) / 2.0
         renderer.camera.clamp_to_world()
-    if prop_renderer.ready:
+    if prop_renderer.ready and look_shot is None:   # a look shot has no garden
         # Warm the cache up front: generation is a Python loop (~0.1-0.3 s per
         # distinct look), so building on first draw would hitch the frame the
         # garden is switched on. Prints the MEASURED tri / VRAM / gen-time
@@ -1199,11 +1326,30 @@ def main() -> None:
     state = PanelState()
     state.props_on = "--props" in sys.argv
 
-    # Apply default preset from file if it exists
-    saved = load_preset("default")
+    # Apply default preset from file if it exists. A look shot never does:
+    # the demo rewrites the preset on Save, and a shot must stay the same
+    # picture -- it runs on the CODE defaults (DEFAULTS + the config mirrors
+    # below), plus its own row.
+    saved = load_preset("default") if look_shot is None else None
     if saved:
         state.apply_dict(saved)
         print("[lighting_demo] Loaded preset 'default' from lighting_presets.toml")
+    if look_shot is not None:
+        state.lamps_on = look_shot.lamps
+        state.beacon_on = look_shot.beacon
+        if look_shot.flashlight is not None:
+            state.set("flash_intensity", look_shot.flashlight.intensity)
+            state.set("flash_angle_spread", look_shot.flashlight.spread)
+        # "game" = the game's own exposure ([render.lighting] master_gain,
+        # bound by LightingPass), for levels tuned in main.py.
+        if look_shot.light_gain == "game":
+            state.set("light_gain", renderer.lighting.light_gain)
+        elif look_shot.light_gain is not None:
+            state.set("light_gain", float(look_shot.light_gain))
+        # The pressure colormap is a debug instrument the studio panel opens
+        # ON; a look shot shows the look, so it follows the game's default
+        # ([render] pressure_overlay_on, bound by the renderer).
+        state.set("show_pressure", renderer.show_pressure)
 
     # The flat FLOOR opens where [render.lighting] floor sits (the config
     # mirrors below win over a saved preset's stale copy, same rule): a saved
@@ -1339,15 +1485,21 @@ def main() -> None:
     # --auto: render a fixed number of frames then exit 0 (smoke test; no input
     # injection). Mirrors test_main_smoke / align_level_art's --auto tails.
     shot_path = _parse_shot_path()
-    auto = "--auto" in sys.argv or shot_path is not None
-    AUTO_FRAMES = _parse_shot_frames(120)
+    auto = ("--auto" in sys.argv or shot_path is not None
+            or look_shot is not None)
+    AUTO_FRAMES = (look_shot.frames if look_shot is not None
+                   else _parse_shot_frames(120))
     frames = 0
 
     # HEADLESS cursor (P4r): a fixed tile standing in for the mouse under
     # --auto — the viewport centre, so the flashlight lands in shot and the
     # hover readout prints the same text every run. None = use the real mouse.
+    # A look shot pins the flashlight where its row says, or has none.
     auto_cursor = None
-    if auto:
+    if look_shot is not None:
+        auto_cursor = (look_shot.flashlight.pos
+                       if look_shot.flashlight is not None else None)
+    elif auto:
         auto_cursor = (
             renderer.camera.pos_tile_x
             + (map_px_w / renderer.camera.zoom_px_per_tile) / 2.0,
@@ -1357,9 +1509,12 @@ def main() -> None:
 
     # --detonate-at-tick X,Y,F (P4r): one scripted blast for headless
     # verification, resolved here so a signed X/Y reads as an offset from the
-    # garden anchor. Consumed (set to None) when it fires.
+    # garden anchor. Consumed (set to None) when it fires. A look shot's
+    # `detonate` row rides the same script, in absolute tiles.
     _det = _parse_detonate_at()
     det_script = None
+    if look_shot is not None and look_shot.detonate is not None:
+        det_script = look_shot.detonate
     if _det is not None:
         dx, dy, dframe, rel_x, rel_y = _det
         det_script = (garden_tile[0] + dx if rel_x else dx,
@@ -1373,8 +1528,17 @@ def main() -> None:
     # puddle directly: this drives the water pass OFF its dormant early-out so
     # the new additive-glint + alpha-ramp branch is actually exercised (and the
     # per-frame WaterPass setters run against a live pass). Direct in-place
-    # write — same pattern as the U-key pour below.
-    if auto:
+    # write — same pattern as the U-key pour below. A look shot is its own
+    # scene: no puddle, but its scripted ignite / smoke / steam land here,
+    # before tick 1 (the same tool-side writes as the I / J / K keys).
+    if look_shot is not None:
+        for _t in look_shot.ignite:
+            _inject_fire(sim, _t)
+        for _t in look_shot.smoke:
+            _inject_gas(sim, _t, SMOKE)
+        for _t in look_shot.steam:
+            _inject_gas(sim, _t, STEAM)
+    elif auto:
         H, W = sim.gmap.material.shape
         cy, cx = H // 2, W // 2
         for ty in range(max(0, cy - 2), min(H, cy + 3)):
@@ -1739,6 +1903,10 @@ def main() -> None:
 
             renderer.draw_background_to_screen()
             renderer.blit_world_to_screen()
+            # Look shot (G0 P3): capture the LAST frame's map viewport now,
+            # after the world blit and before the HUD / panel draw over it.
+            if look is not None and frames + 1 >= AUTO_FRAMES:
+                _capture_map_viewport(renderer, look[2])
 
             # ---- HUD ----
             _draw_hud(renderer, sim.gmap, state, now, cursor=auto_cursor)
