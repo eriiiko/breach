@@ -107,6 +107,7 @@ class ReliefSettings:
     lamp_z_ceiling: float         # lamp elevation (z of unnormalized L) for the
     lamp_z_floor: float           #   ceiling / floor group
     top_light_tiles: int          # reach of the light over a column's top, tiles
+    top_light_falloff: float      # its weight per tile of distance, (0, 1]
     top_light_ceiling: float      # how much of it lights the top, [0, 1],
     top_light_floor: float        #   per group
     wrap: float                   # wrap lighting: N.L floor for thin smoke
@@ -160,7 +161,7 @@ def relief_settings(cfg) -> ReliefSettings:
     positive = ("billow_cell_tiles", "drift_cap_tiles", "cov_tau_ceiling",
                 "cov_tau_floor", "cov_edge_tiles", "cov_soft_ceiling",
                 "cov_soft_floor",
-                "height_tau", "boil_speedup")
+                "height_tau", "boil_speedup", "top_light_falloff")
     bad = [k for k in positive if getattr(s, k) <= 0]
     if bad or s.boil_t1 <= s.boil_t0:
         raise ValueError(f"[render.gas_relief] needs {', '.join(positive)} > 0 "
@@ -279,11 +280,15 @@ def relief_group_layers(gas_density: np.ndarray, optics: TraceGasOptics,
     return medium, cover
 
 
-def top_light_field(light_rgb: np.ndarray, radius_tiles: int) -> np.ndarray:
+def top_light_field(light_rgb: np.ndarray, radius_tiles: int,
+                    falloff: float = 1.0) -> np.ndarray:
     """The light over a smoke column's TOP, (H, W, 3) float32, per channel:
-    the brightest incoming light within ``radius_tiles`` (a square max
-    filter), then 3x3 box passes to soften its plateaus (one pass left the
-    filter's tile-square steps visible as quadrants on a lit puff).
+    the brightest incoming light within ``radius_tiles``, each neighbour
+    weighted ``falloff ** distance`` (tiles) -- an attenuated max filter --
+    then 3x3 box passes to soften its plateaus (one pass left the filter's
+    tile-square steps visible as quadrants on a lit puff). Without the
+    falloff a fire tile's own (enormous) light was carried two tiles out
+    undiminished and lit the soot over a burning crate like a lamp would.
 
     Why: the sweep is planar, so inside a thick soot plume the tile's own
     light is what crossed the plume sideways -- almost nothing (pre-#88 soot
@@ -303,7 +308,8 @@ def top_light_field(light_rgb: np.ndarray, radius_tiles: int) -> np.ndarray:
     out = e.copy()
     for dy in range(2 * r + 1):
         for dx in range(2 * r + 1):
-            np.maximum(out, p[dy:dy + h, dx:dx + w], out=out)
+            wgt = float(falloff) ** float(np.hypot(dy - r, dx - r))
+            np.maximum(out, wgt * p[dy:dy + h, dx:dx + w], out=out)
     for _ in range(_TOP_LIGHT_SMOOTH_PASSES):
         p = np.pad(out, ((1, 1), (1, 1), (0, 0)), mode="edge")
         hz = (p[:, :-2] + p[:, 1:-1] + p[:, 2:]) / 3.0
@@ -455,7 +461,8 @@ class GasReliefPass:
                 self._core.update_rgba16f_texture(self.medium_tex[g], medium)
                 self._core.update_rgba16f_texture(self.cover_tex[g], cover)
         self._top_packed[..., :3] = np.clip(
-            top_light_field(light_rgb, s.top_light_tiles), 0.0, _F16_MAX)
+            top_light_field(light_rgb, s.top_light_tiles,
+                            s.top_light_falloff), 0.0, _F16_MAX)
         self._core.update_rgba16f_texture(self.top_tex, self._top_packed)
         boil = boil_field(temperature_game, s.boil_t0, s.boil_t1)
         self._core.update_rgba16f_texture(

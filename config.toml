@@ -1641,6 +1641,8 @@ lamp_z_floor = 1.5          # ... over a FLOOR layer (lit from above)
 top_light_tiles = 2         # the light over a column's TOP: the brightest light
                             # within this many tiles (the planar sweep's light
                             # inside a soot plume is what crossed it sideways)
+top_light_falloff = 0.5     # ... each tile of distance weighted by this (an
+                            # undiminished max carried a fire's light 2 tiles)
 top_light_ceiling = 1.0     # share of that top light on a ceiling layer [0, 1]
 top_light_floor = 0.0       # ... on a floor layer (haze AT the floor: the sweep's
                             # own light is right there; 0.5 flattened a beam)
