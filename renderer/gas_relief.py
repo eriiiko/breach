@@ -117,6 +117,7 @@ class ReliefSettings:
     ao: float                     # crevice darkening from the height Laplacian
     rim: float                    # silver-lining strength
     rim_g: float                  # Henyey-Greenstein forward anisotropy (0,1)
+    glow_texture: float           # billow texture on the in-scatter, [0, 1]
     debug_view: int               # 0 = off; 1 coverage, 2 height, 3 N.L,
                                   #   4 self-shadow, 5 AO, 6 boil
 
@@ -350,7 +351,7 @@ class GasReliefPass:
         "u_jitter_wl", "u_cov_tau", "u_cov_edge", "u_cov_soft", "u_cov_push", "u_haze", "u_height",
         "u_height_tau", "u_billow_amp", "u_lamp_z", "u_wrap", "u_light_gain",
         "u_ambient", "u_shadow", "u_shadow_len", "u_shadow_soft", "u_powder",
-        "u_ao", "u_rim", "u_rim_g", "u_debug", "u_toplight", "u_top_light",
+        "u_ao", "u_rim", "u_rim_g", "u_debug", "u_toplight", "u_top_light", "u_glow_texture",
     )
 
     def __init__(self, grid_h: int, grid_w: int, settings: ReliefSettings):
@@ -533,6 +534,7 @@ class GasReliefPass:
         self._f("u_ao", s.ao)
         self._f("u_rim", s.rim)
         self._f("u_rim_g", s.rim_g)
+        self._f("u_glow_texture", s.glow_texture)
         self._i("u_debug", s.debug_view)
 
         rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)

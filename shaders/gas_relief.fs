@@ -24,6 +24,8 @@
 //               peaking at an optical depth near 1/2 -- fluffy bright edges
 //   rim       the silver lining: light passing THROUGH a thin edge that faces
 //               away from the lamp, forward-scattered (Henyey-Greenstein)
+//   inscatter the sweep's glow (god rays) laid where the smoke IS: times the
+//               coverage, and textured by the billow field inside the body
 //
 // OUTPUT: premultiplied LINEAR HDR (inscatter, 1 - T) into the RGBA16F scene
 // RT, blended out = src.rgb + dst * (1 - src.a). Never a tone-map here: the
@@ -84,6 +86,7 @@ uniform float u_powder;
 uniform float u_ao;
 uniform float u_rim;
 uniform float u_rim_g;
+uniform float u_glow_texture; // how much the billows texture the in-scatter, [0,1]
 uniform int   u_debug;
 
 out vec4 finalColor;
@@ -307,7 +310,12 @@ void main() {
     float alpha = 1.0 - exp(-tau_abs * K);
     // Thick smoke shows its surface, thin smoke the sweep's in-scatter.
     float thick = 1.0 - exp(-tau_ext * K);
-    vec3 rgb = surface * thick + glow * u_light_gain * K * (1.0 - thick);
+    // In-scatter where the smoke is: the coverage K, and inside it the
+    // billow field's sub-tile density D (mean ~1 over a tile), so a beam
+    // through haze is textured by the smoke it crosses, not a flat tile.
+    float D = max(1.0 + u_glow_texture * (B - u_billow_mean)
+                  / max(1.0 - u_billow_mean, 1e-3), 0.0);
+    vec3 rgb = surface * thick + glow * u_light_gain * K * D * (1.0 - thick);
     float sig = tau_ext * K;
     // Rim (silver lining): where the surface faces AWAY from the light and
     // the smoke is thin, light crosses the edge and leaves along N, forward-

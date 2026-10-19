@@ -1652,6 +1652,8 @@ powder = 0.5                # multi-scatter brightening of thin parts
 ao = 0.5                    # crevice darkening from the height Laplacian
 rim = 1.5                   # silver lining where a lamp is behind a thin edge
 rim_g = 0.6                 # its Henyey-Greenstein forward anisotropy, [0, 1)
+glow_texture = 0.6          # how much the billows texture the sweep's in-scatter
+                            # (god rays) inside the smoke, [0, 1]
 debug_view = 0              # 0 off; 1 coverage, 2 height, 3 N.L, 4 self-shadow,
                             # 5 AO, 6 boil (dev only)
 
