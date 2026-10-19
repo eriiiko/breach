@@ -1,5 +1,10 @@
 # Ship interior texture library — 2026-10-19
 
+Normal-map follow-up: [version 2 catalogue](normal-v2/README.md) and
+[review report](normal-v2/REPORT.md). This version preserves smoothing precision
+and includes moving-light views, repeat checks and Laigter comparisons.
+Original maps below remain preserved for comparison.
+
 Generated incrementally with the built-in imagegen tool for Erik's texture exploration.
 29 colour surfaces, each accompanied by a generated relief source, processed
 16-bit height map and mathematically derived normal map. Browse [the catalogue](CATALOG.md).

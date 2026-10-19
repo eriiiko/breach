@@ -1,0 +1,65 @@
+[
+  {
+    "asset": "02-engine-room/realistic/floor.png",
+    "command": [
+      "C:\\Users\\steen\\projects\\laigter\\dist_win\\laigter_app\\laigter-windows\\laigter.exe",
+      "--no-gui",
+      "-d",
+      "C:\\Users\\steen\\projects\\breach\\.claude\\worktrees\\texture-normal-review\\art\\textures\\2026-10-19\\02-engine-room\\realistic\\floor.png",
+      "-n",
+      "--flatten",
+      "-l",
+      "C:\\Users\\steen\\projects\\breach\\.claude\\worktrees\\texture-normal-review\\art\\textures\\2026-10-19\\normal-review\\laigter-baseline\\02-engine-room\\realistic"
+    ],
+    "returncode": 0,
+    "baseline_size": [
+      1254,
+      1254
+    ],
+    "green_flip_applied": false,
+    "note": "Installed defaults; no profile tuning. Interpret orientation separately from geometry.",
+    "normal_z_min": 0.2549020051956177
+  },
+  {
+    "asset": "03-wood-quarters/realistic/floor-oak.png",
+    "command": [
+      "C:\\Users\\steen\\projects\\laigter\\dist_win\\laigter_app\\laigter-windows\\laigter.exe",
+      "--no-gui",
+      "-d",
+      "C:\\Users\\steen\\projects\\breach\\.claude\\worktrees\\texture-normal-review\\art\\textures\\2026-10-19\\03-wood-quarters\\realistic\\floor-oak.png",
+      "-n",
+      "--flatten",
+      "-l",
+      "C:\\Users\\steen\\projects\\breach\\.claude\\worktrees\\texture-normal-review\\art\\textures\\2026-10-19\\normal-review\\laigter-baseline\\03-wood-quarters\\realistic"
+    ],
+    "returncode": 0,
+    "baseline_size": [
+      1254,
+      1254
+    ],
+    "green_flip_applied": false,
+    "note": "Installed defaults; no profile tuning. Interpret orientation separately from geometry.",
+    "normal_z_min": 0.3176470994949341
+  },
+  {
+    "asset": "10-washrooms/realistic/floor-hex.png",
+    "command": [
+      "C:\\Users\\steen\\projects\\laigter\\dist_win\\laigter_app\\laigter-windows\\laigter.exe",
+      "--no-gui",
+      "-d",
+      "C:\\Users\\steen\\projects\\breach\\.claude\\worktrees\\texture-normal-review\\art\\textures\\2026-10-19\\10-washrooms\\realistic\\floor-hex.png",
+      "-n",
+      "--flatten",
+      "-l",
+      "C:\\Users\\steen\\projects\\breach\\.claude\\worktrees\\texture-normal-review\\art\\textures\\2026-10-19\\normal-review\\laigter-baseline\\10-washrooms\\realistic"
+    ],
+    "returncode": 0,
+    "baseline_size": [
+      1254,
+      1254
+    ],
+    "green_flip_applied": false,
+    "note": "Installed defaults; no profile tuning. Interpret orientation separately from geometry.",
+    "normal_z_min": 0.24705886840820312
+  }
+]

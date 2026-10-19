@@ -51,3 +51,12 @@ def test_transparent_rug_keeps_albedo_coverage(tmp_path):
                      "--alpha-from", str(albedo))
     assert np.array_equal(normal[..., 3], rgba[..., 3])
     assert np.all(normal[:3, :, :3] == (128, 128, 255))
+
+
+def test_smoothing_preserves_relief_smaller_than_one_eight_bit_step(tmp_path):
+    """A uint8 intermediate must fail: it erases this shallow 16-bit ramp."""
+    height = np.tile(np.arange(32, dtype=np.uint16) + 30000, (16, 1))
+    convert(tmp_path, height, "--blur", "0.8")
+    saved = np.asarray(Image.open(tmp_path / "height.png"))
+    assert np.all(np.diff(saved[8, 4:-4].astype(np.int64)) > 0)
+    assert np.max(np.abs(saved[8, 4:-4].astype(np.int64) - height[8, 4:-4])) <= 1

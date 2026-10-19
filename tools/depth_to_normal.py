@@ -29,9 +29,33 @@ import argparse
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image
 
 MODEL = "depth-anything/Depth-Anything-V2-Small-hf"
+
+
+def smooth_height(height: np.ndarray, sigma: float, tileable: bool) -> np.ndarray:
+    """Separable Gaussian smoothing without an intermediate 8-bit image.
+
+    A uint8 PIL blur discarded shallow relief even for 16-bit input. Keep the
+    scalar field in float64 until the one final 16-bit PNG quantization.
+    """
+    radius = int(np.ceil(4 * sigma))
+    offsets = np.arange(-radius, radius + 1, dtype=np.float64)
+    weights = np.exp(-0.5 * (offsets / sigma) ** 2)
+    weights /= weights.sum()
+    result = height.astype(np.float64)
+    for axis in (0, 1):
+        padding = [(0, 0), (0, 0)]
+        padding[axis] = (radius, radius)
+        padded = np.pad(result, padding, mode="wrap" if tileable else "edge")
+        blurred = np.zeros_like(result)
+        for index, weight in enumerate(weights):
+            sel = [slice(None), slice(None)]
+            sel[axis] = slice(index, index + result.shape[axis])
+            blurred += weight * padded[tuple(sel)]
+        result = blurred
+    return result
 
 
 def main() -> None:
@@ -71,14 +95,7 @@ def main() -> None:
         else:
             hf = np.asarray(source.convert("L"), dtype=np.float32) / 255.0
         if args.blur:
-            # Wrapped padding keeps smoothing periodic too. The normal kit then
-            # receives a one-pixel halo so its central differences wrap exactly.
-            pad = int(np.ceil(4 * args.blur)) + 1
-            mode = "wrap" if args.tileable else "edge"
-            padded = np.pad(hf, pad, mode=mode)
-            smooth = Image.fromarray((np.clip(padded, 0, 1) * 255 + 0.5).astype(np.uint8))
-            smooth = smooth.filter(ImageFilter.GaussianBlur(args.blur))
-            hf = np.asarray(smooth, dtype=np.float32)[pad:-pad, pad:-pad] / 255.0
+            hf = smooth_height(hf, args.blur, args.tileable)
         target = (args.out_w or source.width, args.out_h or source.height)
         hi = Image.fromarray((np.clip(hf, 0, 1) * 65535 + 0.5).astype(np.uint16))
         if hi.size != target:
