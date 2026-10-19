@@ -21,7 +21,7 @@
 </head>
 <body>
 <main>
-  <h1>Beatrice — body, suit, hands, boots (B1l: the finishing round before the full body pass)</h1>
+  <h1>Beatrice — body, suit, hands, boots (B1m: the wet gloss and the concept pose)</h1>
   <p>Built from Python alone on the shared character kit (<code>charkit/bodysuit.py</code>, Blender 4.5, Cycles) from the tables in
      <code>scripts/beatrice.py</code>, fitted to three drawings: front, side and back. The head is a bald placeholder for the
      face-and-hair stage. Character only, no props. This round answers <code>review_stage2.md</code>: new hands, the shoulder and
@@ -29,6 +29,17 @@
      layered knee pads, thin cuffs, seams that end on other edges. See <code>PROVENANCE.md</code>.
      <b>Stage 4</b> answers <code>review_stage3.md</code> for the pelvis only (waist, hips, seat, upper thighs); everything else is
      unchanged, and the close-ups further down are stage 3's.</p>
+
+  <h2>The wet gloss and the concept pose (B1m)</h2>
+  <p>The owner chose the glossier look: B1l's "wet" gloss is now the default (the satin of B1b&ndash;B1l is the variant "satin") and
+     every picture on this page below is re-rendered in it; the body's shape is unchanged. The body is also shown in the pose of the
+     original artwork, so the hips and the seat can be judged in a natural stance: the saved build posed on a copy with a skeleton of
+     our own and one smooth weight field (<code>scripts/posed.py</code>, <code>charkit/suitpose.py</code>): weight on her right leg,
+     the pelvis shifted and tilted over it, the shoulders tilted against it, the left leg free. The camera is matched to the concept
+     (chest height, 90 mm, the shoulder line and the crotch at the concept's heights). See <code>PROVENANCE.md</code>.</p>
+  <figure><img src="posed_vs_concept.jpg" alt="The concept beside the posed render"><figcaption>The concept, the posed render in the default look at the same framing, and the render's outline over the concept</figcaption></figure>
+  <figure><img src="posed_full.jpg" alt="The pose, full figure"><figcaption>The same pose, full figure: front, front three-quarter, side (her right), back three-quarter</figcaption></figure>
+  <figure><img src="posed_hotlight.jpg" alt="The pose under a hotter light"><figcaption>The concept framing under the studio rig and under an optional light setup with narrow hot strips ("hot"), which the gloss throws back as thin streaks</figcaption></figure>
 
   <h2>The finishing round before the full body pass (B1l)</h2>
   <p>Answers <code>review_stage10.md</code> items 1, 2, 5, 7, 8, 10 and prepares item 3 for the owner. The body's shape is unchanged.

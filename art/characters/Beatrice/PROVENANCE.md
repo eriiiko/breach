@@ -691,3 +691,55 @@ before finalising, a model in the concept's pose. The body's GEOMETRY does not c
   values. The full picture set regenerated (`--sheet --turn --save --beauty` with every beauty and dev view, B1l's command:
   9.8 min, the build 5.8 min). `source/mesh_stats.json` unchanged (byte for byte); `sheet_scores.json` moves in the fifth decimal
   (the glossier edges' alpha). The studio rig is unchanged.
+- **Step 2, the concept pose.** A render-time step on a COPY of the saved build: `scripts/posed.py` opens
+  `source/Beatrice.blend`, poses it and renders; the build file is never written (its mtime unchanged). Mechanism
+  `charkit/suitpose.py` (new, Beatrice's own like `suitbuild.py`; no shared kit file touched, so no other character was
+  rebuilt); the tables `beatrice.POSE` (joints, weight bands, rigid parts, the pose, the shots, the optional light setup);
+  the sheets `scripts/posed_sheets.py` (plain Python + PIL).
+  - *Route: a skeleton of our own*, not the game rig. `rig.py` binds the fused ~10k-triangle game skin by bone heat after
+    a voxel remesh (`gameready.py`); the high-resolution set is 62 closed parts with 3.3 M evaluated triangles, half of them
+    mirrored, and the brief only needs stills, so the cleaner route was 17 bones with world-aligned rest frames (pelvis,
+    spine, chest, neck, head; per side upper arm, forearm, hand, thigh, shin, foot; the fingers keep the hand's modelled
+    curl) and our own forward kinematics and linear-blend skinning in numpy. Every part's modifier stack is applied first
+    (`new_from_object`, every layer kept: the custom normals follow the deformation, the piping and net attributes too).
+  - *Weights: ONE smooth field of position* (C2 ramps), evaluated at every vertex of every part, so a cord, the zip, an
+    insert or a cuff moves exactly as the suit under it and nothing can float off or sink in: the trunk shared by height
+    (pelvis/spine 1.00-1.10, spine/chest 1.16-1.28, chest/neck 1.41-1.46, neck/head 1.48-1.53); an arm owns what lies within
+    5-8.5 cm of its own polyline (shoulder-elbow-wrist-knuckle-fingertip) past a ramp across the shoulder joint, the fade
+    widened to 16 cm where the arm still meets the trunk; a leg owns what lies below a ±5 cm ramp across the hip joint's plane,
+    faded to nothing at the mid-plane over 5 cm (the crotch moves with the pelvis); ramps across the elbow, wrist, knee and
+    ankle planes. Rigid (`rigid`): the knee pads and their rims, the zip pulls and stops, each side whole at the field's value
+    at its centre. The boots and soles follow the field (the sole lies wholly under the ankle ramp, so it turns with the foot).
+  - *The pose* (`POSE["poses"]["concept"]`, world rotations): weight on her RIGHT leg, the pelvis 6 cm to her right, tilted
+    9 deg (right hip up) and turned 5 deg; the spine bending back 8 deg, the shoulders tilted 5 deg the other way (the right one
+    lower); the left leg free (thigh 22 deg forward, knee about 40 deg, heel lifted); the right arm a little forward and out,
+    the left hanging close beside the hip (3 cm from the hip at the nearest); the head nearly level. The figure is lowered so
+    the right sole is on the floor (10 mm), the free sole ends 0.1 mm above it. Nearest gaps on the posed mesh
+    (`C:/tmp/beatrice_b1m/gaps.py`): left hand to hip 30 mm, right hand 53 mm, legs 52 mm, boots 84 mm.
+  - *Camera* (`shots.concept`): 10 deg to her right, at 1.25 m (chest height), 2.6 m away, 90 mm, 1024 x 1536 like the
+    concept, framed by the body's own landmarks (the shoulder line and the crotch at the concept's heights). The concept's
+    head is drawn far larger (hair to the frame's top): the render's crown sits about 130 px lower.
+  - *Two attempts*, judged beside the concept at the same size with the render's outline drawn over it. 1: the right arm
+    hung too close (its hand 70 px out from the hip against the concept's 140), the pelvis's sideways shift weaker, the
+    shoulders level. 2 (kept): the right arm further out and forward, the pelvis 1 cm further over, the shoulders tilted,
+    the right thigh a little further out, the left leg stepping. A fold under the right armpit in attempt 2's first render
+    (the flank dragged by the arm through a 3 cm fade) was fixed with the wider fade near the trunk.
+  - *Lights*: the default studio rig for `posed_vs_concept.jpg` and `posed_full.jpg`. `posed_hotlight.jpg` adds the optional
+    setup `POSE["lights"]["hot"]` (`--lights hot`): the studio's broad lights at 0.45, the world at 0.8, and three narrow
+    rectangles (a 6 cm x 0.9 m key strip front right, a 5 cm x 1 m strip at her left, a 12 cm square above) that the gloss
+    throws back as thin hot streaks on a darker suit, nearer the concept's latex. The default rig is unchanged.
+  - Proof: `posed_vs_concept.jpg` (concept | render | the render's outline over the concept), `posed_full.jpg` (front, front
+    three-quarter, side from her right, back three-quarter), `posed_hotlight.jpg` (concept | studio rig | hot). Close-ups for
+    checking the deformation are dev shots (`--views hips,seat,armpit,armpit_r,knee`), not committed.
+  - Measured on `posed_vs_concept.jpg`'s render (alpha) and the concept (edges read by eye, about ±10 px), full-size pixels,
+    same vertical scale: shoulders with the arms render 543 / concept 630; waist 308 / about 352; hips (widest, 1300-1400)
+    458 / about 505; hips / shoulders 0.84 / 0.80; hips / waist 1.49 / 1.43; the crotch's offset from the chest's centre
+    59 / about 115 px (the concept's sway is about twice the render's).
+- Reproduce (from `art/characters`, about 1.3 min):
+
+      "C:/Program Files/Blender Foundation/Blender 4.5/blender.exe" -b --factory-startup -P Beatrice/scripts/posed.py
+      "C:/Program Files/Blender Foundation/Blender 4.5/blender.exe" -b --factory-startup -P Beatrice/scripts/posed.py -- --views concept --lights hot
+      python Beatrice/scripts/posed_sheets.py
+
+  (58 s for the five shots, 15 s the hot one; freezing and posing 4 s.) `--draft` for a quarter-size loop (about 6 s).
+  The raw RGBA renders go to `$TEMP/Beatrice_posed`.

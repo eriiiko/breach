@@ -1005,3 +1005,62 @@ def gloss(variant=None):
     if variant:
         g.update(VARIANTS[variant].get("gloss", {}))
     return g
+
+
+# ----------------------------------------------------------------------- posing
+# B1m: the build posed for stills on a copy (`scripts/posed.py`, `charkit/suitpose.py`; the build never changes). Joints in
+# metres (her LEFT side; the right is the mirror), measured on the B1l/B1m build: the hip on the thigh's axis (the sections'
+# centres at 0.80 and 0.66 m, the inner thigh's fullness discounted), the knee and the ankle from LEGS, the arm from SLEEVE and
+# the hand's own frame. Weight bands are (from, to) of a C2 ramp in metres: `trunk` the four heights where the pelvis hands over
+# to the spine, the spine to the chest, the chest to the neck, the neck to the head; along a limb the ramp's span across the
+# joint's plane; `arm_radius` how far from the arm's own chain a point still moves with the arm; `leg_mid` the fade to the
+# mid-plane (the crotch moves with the pelvis). A pose gives bones their WORLD rotation, degrees about X (+: the top of an
+# upright bone tips forward, a hanging one swings back), Y (+: her left side down; a hanging bone's end swings to her right),
+# Z (+: the front turns to her left), applied in that order; an unlisted bone turns with its parent.
+POSE = dict(
+    joints=dict(pelvis=(0.0, -0.005, 0.98), spine=(0.0, -0.020, 1.08), chest=(0.0, -0.020, 1.22), neck=(0.0, 0.012, 1.44),
+                head=(0.0, 0.000, 1.50),
+                shoulder=(0.150, 0.032, 1.335), elbow=(0.198, 0.031, 1.140), wrist=(0.296, 0.007, 0.945),
+                knuckle=(0.295, 0.008, 0.885), fingertip=(0.278, 0.010, 0.790),
+                hip=(0.080, -0.005, 0.925), knee=(0.122, 0.010, 0.590), ankle=(0.188, 0.030, 0.115)),
+    weights=dict(trunk=((1.00, 1.10), (1.16, 1.28), (1.41, 1.46), (1.48, 1.53)),
+                 arm_root=(-0.02, 0.05), arm_radius=(0.05, 0.085), arm_radius_near=(0.16, 0.06, 0.16), arm_side=(0.04, 0.07), elbow=(-0.03, 0.03), wrist=(-0.015, 0.015),
+                 leg_root=(-0.05, 0.05), leg_mid=(0.0, 0.05), knee=(-0.04, 0.04), ankle=(-0.025, 0.02)),
+    # parts that turn whole, each side at the field's value at its centre
+    rigid=("Suit_Knee_Pad", "Suit_Knee_Rim", "Suit_Zip_Pull*", "Suit_Zip_Stop*"),
+    poses=dict(
+        # concept.jfif: walking towards the camera, the weight on her RIGHT leg (its hip up and out, the pelvis shifted over it),
+        # the left leg free (knee bent and forward, heel lifted), the shoulders tilted against the pelvis (the right one lower),
+        # the right arm a little out and forward, the left hanging close beside the body, the head a little tilted
+        concept=dict(
+            offset=(-0.060, 0.0, 0.0), stand=("Boot_Sole", "R"), free=("Boot_Sole", "L"),
+            rot={"pelvis": (0.0, 9.0, 5.0), "spine": (0.0, 8.0, 2.0), "chest": (0.0, -5.0, 0.0), "neck": (0.0, 0.0, 0.0),
+                 "head": (0.0, 1.0, -2.0),
+                 "upper_arm.L": (0.0, 3.0, 0.0), "forearm.L": (0.0, 20.0, 0.0),
+                 "upper_arm.R": (-4.0, -2.0, 0.0), "forearm.R": (-12.0, -2.0, 0.0),
+                 "thigh.R": (0.0, 1.0, 0.0), "shin.R": (0.0, -11.0, 0.0), "foot.R": (0.0, 0.0, -6.0),
+                 "thigh.L": (-22.0, 8.0, -6.0), "shin.L": (18.0, 10.0, 0.0), "foot.L": (9.0, 0.0, 6.0)}),
+    ),
+    # shots: the camera in the world (x her left, -y her front); `rig` turns the studio rig (its lights) first
+    shots=dict(
+        concept=dict(cam=(-0.451, -2.560, 1.25), target=(-0.045, 0.0, 1.28), lens=90.0, res=(1024, 1536)),
+        front=dict(cam=(0.0, -4.489, 1.174), target=(0.0, 0.0, 0.86), lens=85.0, res=(900, 1500)),
+        front34=dict(cam=(-2.245, -3.888, 1.174), target=(0.0, 0.0, 0.86), lens=85.0, res=(900, 1500)),
+        side=dict(cam=(-4.489, 0.0, 1.174), target=(0.0, 0.0, 0.86), lens=85.0, res=(900, 1500)),
+        back34=dict(cam=(-2.245, 3.888, 1.174), target=(0.0, 0.0, 0.86), lens=85.0, res=(900, 1500), rig=180.0),
+        # close-ups for checking the deformation, rendered on request only (`--views hips,seat`)
+        hips=dict(cam=(-0.25, -1.55, 1.00), target=(-0.03, 0.0, 0.93), lens=85.0, res=(900, 900), dev=True),
+        seat=dict(cam=(-0.55, 1.45, 1.00), target=(-0.03, 0.0, 0.92), lens=85.0, res=(900, 900), rig=180.0, dev=True),
+        armpit=dict(cam=(0.75, -1.05, 1.25), target=(0.10, 0.0, 1.20), lens=85.0, res=(900, 900), dev=True),
+        armpit_r=dict(cam=(-0.80, -0.95, 1.22), target=(-0.13, 0.0, 1.22), lens=85.0, res=(900, 900), dev=True),
+        knee=dict(cam=(0.85, -1.15, 0.55), target=(0.05, -0.03, 0.45), lens=85.0, res=(900, 900), dev=True),
+    ),
+    # optional extra light setups (`--lights NAME`): the studio's broad lights scaled, plus narrow rectangles (name, location,
+    # target, size, energy W, colour) that a glossy suit throws back as small hot streaks, as the concept's latex does
+    lights=dict(
+        hot=dict(studio_scale=0.45, world_scale=0.8, areas=(
+            ("HotKey", (-1.6, -2.2, 2.2), (0.0, 0.0, 1.2), (0.06, 0.9), 45.0, (1.0, 0.98, 0.95)),
+            ("HotSide", (2.0, -1.2, 1.4), (0.0, 0.0, 1.1), (0.05, 1.0), 40.0, (0.95, 0.97, 1.0)),
+            ("HotTop", (0.3, -1.5, 2.8), (0.0, 0.0, 1.3), (0.12, 0.12), 25.0, (1.0, 1.0, 1.0)))),
+    ),
+)
