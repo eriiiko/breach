@@ -491,6 +491,7 @@ class GameRenderer:
                 self.gas_relief.update(
                     trace, glow_field, gmap.gases, tamed,
                     np.asarray(gmap.temperature, dtype=np.float32) / TEMP_SCALE,
+                    self.lighting.light_rgb,
                     sim_tick=int(sim_tick), ticks_per_second=tps,
                     cycle_seconds=gd.cycle_seconds, adv_gain=gd.adv_gain,
                     tau_curve_a=gm.tau_curve_a, tau_curve_b=gm.tau_curve_b,

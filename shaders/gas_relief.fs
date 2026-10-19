@@ -11,6 +11,12 @@
 //               field B -> a narrow, billowed edge
 //   height    h = H sqrt(sat(tau / tau_h)) (1 - a + a B) C, tiles: thick
 //               columns stand tall, the billows bulge their tops
+//   light     N from central differences of h; L = the light field's own
+//               direction (toward the light) lifted by a lamp height; the
+//               surface = albedo x (floor + E x wrap(N.L) / wrap(flat)), E the
+//               tile's incoming light at the one exposure. Thick smoke shows
+//               its lit SURFACE, thin smoke the sweep's own in-scatter: blended
+//               by the column's opacity 1 - exp(-tau_ext K)
 //
 // OUTPUT: premultiplied LINEAR HDR (inscatter, 1 - T) into the RGBA16F scene
 // RT, blended out = src.rgb + dst * (1 - src.a). Never a tone-map here: the
@@ -34,6 +40,7 @@ in vec4 fragColor;
 uniform sampler2D texture0;   // the group's MEDIUM: rgb = glow share, a = tau' (occlusion)
 uniform sampler2D u_cover;    // rgb = surface albedo, a = extinction depth
 uniform sampler2D u_dyn;      // rg = tamed wind (tiles/tick), b = boil weight
+uniform sampler2D u_toplight; // rgb = the light over a column's top (gas_relief.top_light_field)
 uniform sampler2D u_light_a;  // rgb = incoming light, a = light_dir.x (toward the light)
 uniform sampler2D u_light_b;  // rgb = glow (unused here), a = light_dir.y
 uniform sampler2D u_billow;   // R = billow B, GB = warp, A = fine domes (REPEAT)
@@ -59,6 +66,7 @@ uniform float u_height;       // tallest column, tiles
 uniform float u_height_tau;   // depth of a full-height column
 uniform float u_billow_amp;   // share of the height the billows carve
 uniform float u_lamp_z;       // lamp elevation (z of the unnormalised L)
+uniform float u_top_light;    // share of the top light that reaches the surface
 uniform float u_wrap;         // wrap lighting floor
 uniform float u_light_gain;   // the one exposure ([render.lighting] master_gain)
 uniform vec3  u_ambient;      // the flat floor term (LightingPass.ambient)
@@ -137,10 +145,15 @@ const float GRAD_MAX = 8.0;          // |grad ln tau| clamp, e-folds per tile
 float lnTauAt(vec2 p) {
     return log(max(textureBicubic(u_cover, p / u_grid, u_grid).a, 1e-6));
 }
-float coverageOf(float ln_tau, float grad, float b) {
+// Returns (C, C_h): the coverage, and the softer coverage the HEIGHT rides
+// (H_SOFT x wider) -- a cloud's rim is rounded; a height that fell as sharply
+// as C cut near-vertical walls that read as black creases.
+const float H_SOFT = 3.0;
+vec2 coverageOf(float ln_tau, float grad, float b) {
     float q = ln_tau - log(u_cov_tau) + u_cov_push * grad * (b - u_billow_mean);
     float w = max(u_cov_edge * grad, u_cov_soft);
-    return smoothstep(-0.5 * w, 0.5 * w, q);
+    return vec2(smoothstep(-0.5 * w, 0.5 * w, q),
+                smoothstep(-0.5 * H_SOFT * w, 0.5 * H_SOFT * w, q));
 }
 
 // The RELIEF HEIGHT at p (tiles), given the local |grad ln tau| (taken at
@@ -148,7 +161,7 @@ float coverageOf(float ln_tau, float grad, float b) {
 float heightAt(vec2 p, float grad) {
     float t = max(textureBicubic(u_cover, p / u_grid, u_grid).a, 0.0);
     float b = billowRaw(p);
-    float c = coverageOf(log(max(t, 1e-6)), grad, b);
+    float c = coverageOf(log(max(t, 1e-6)), grad, b).y;
     return u_height * sqrt(clamp(t / u_height_tau, 0.0, 1.0))
          * (1.0 - u_billow_amp + u_billow_amp * b) * c;
 }
@@ -200,27 +213,61 @@ void main() {
             / (2.0 * GE);
     float grad = min(length(g2), GRAD_MAX);
     float B = billowRaw(tp);
-    float C = coverageOf(ln_tau, grad, B);
+    vec2 CC = coverageOf(ln_tau, grad, B);
+    float C = CC.x;
 
     vec4 med = textureBicubic(texture0, uv, u_grid);
     float tau_abs = max(med.a, 0.0);
     vec3 glow = max(med.rgb, vec3(0.0));
+
+    if (u_debug == 1) { finalColor = vec4(vec3(C), 1.0); return; }
+
+    // --- the relief height ---------------------------------------------------
+    float h = u_height * sqrt(clamp(tau_ext / u_height_tau, 0.0, 1.0))
+            * (1.0 - u_billow_amp + u_billow_amp * B) * CC.y;
+    if (u_debug == 2) {
+        finalColor = vec4(vec3(h / max(u_height, 1e-6)), 1.0); return;
+    }
+
+    // --- N from the height field (central differences, NE tiles apart) ----
+    const float NE = 1.0 / 16.0;
+    float hxp = heightAt(tp + vec2(NE, 0.0), grad);
+    float hxm = heightAt(tp - vec2(NE, 0.0), grad);
+    float hyp = heightAt(tp + vec2(0.0, NE), grad);
+    float hym = heightAt(tp - vec2(0.0, NE), grad);
+    vec3 N = normalize(vec3(-(hxp - hxm), -(hyp - hym), 2.0 * NE));
+
+    // --- L: the light field's direction, lifted by the lamp height --------
+    vec4 la = texture(u_light_a, uv);
+    vec4 lb = texture(u_light_b, uv);
+    vec2 dir2d = vec2(la.a, lb.a);                 // toward the light, |.| <= 1
+    vec3 L = normalize(vec3(dir2d, u_lamp_z));
+    // E: the light on the surface. The tile's own light is what crossed
+    // the smoke sideways; a column's top also sees the light passing over
+    // it (the top-light field), by u_top_light.
+    vec3 E_tile = max(la.rgb, vec3(0.0));
+    vec3 E_top = max(texture(u_toplight, uv).rgb, E_tile);
+    vec3 E = mix(E_tile, E_top, u_top_light) * u_light_gain;
+
+    // Wrap lighting, normalised to a FLAT top: a level smoke deck under a
+    // lamp reads albedo x E, crests facing the lamp brighter, the far
+    // flanks darker -- the shading moves light around, it does not add any.
+    float wrapNL = max((dot(N, L) + u_wrap) / (1.0 + u_wrap), 0.0);
+    float wrapFlat = max((L.z + u_wrap) / (1.0 + u_wrap), 1e-3);
+    float shade = wrapNL / wrapFlat;
+    if (u_debug == 3) { finalColor = vec4(vec3(0.5 * shade), 1.0); return; }
+
+    vec3 albedo = max(cov.rgb, vec3(0.0));
+    vec3 surface = albedo * (u_ambient + E * shade);
 
     // The cut keeps a HAZE share of the depth outside the edge: thin smoke
     // around a plume (and a room of it) still dims the floor, and the edge
     // reads as the step from haze to body.
     float K = u_haze + (1.0 - u_haze) * C;
     float alpha = 1.0 - exp(-tau_abs * K);
-    vec3 rgb = glow * K;
-
-    if (u_debug == 1) { finalColor = vec4(vec3(C), 1.0); return; }
-
-    // --- the relief height ---------------------------------------------------
-    float h = u_height * sqrt(clamp(tau_ext / u_height_tau, 0.0, 1.0))
-            * (1.0 - u_billow_amp + u_billow_amp * B) * C;
-    if (u_debug == 2) {
-        finalColor = vec4(vec3(h / max(u_height, 1e-6)), 1.0); return;
-    }
+    // Thick smoke shows its surface, thin smoke the sweep's in-scatter.
+    float thick = 1.0 - exp(-tau_ext * K);
+    vec3 rgb = surface * thick + glow * u_light_gain * K * (1.0 - thick);
 
     finalColor = vec4(max(rgb, vec3(0.0)), clamp(alpha, 0.0, 1.0));
 }

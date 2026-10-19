@@ -68,6 +68,10 @@ GROUPS = ("floor", "ceiling")
 # times (renderer/noise_bake.BASE_CELLS): the shader's texture period in
 # tiles is BASE_CELLS x billow_cell_tiles.
 _BILLOW_SIZE = 256
+# The pass binds its samplers on texture units from here up: raylib's batch
+# owns units 0..4 (texture0 + RL_DEFAULT_BATCH_MAX_TEXTURE_UNITS = 4).
+_FIRST_UNIT = 5
+_TOP_LIGHT_SMOOTH_PASSES = 3
 # The crossfade's phase-jitter field: one period of the billow bake's smooth
 # fBm channel spans this many tiles (coarse -> neighbours share a phase).
 _JITTER_WL_TILES = 24.0
@@ -102,6 +106,9 @@ class ReliefSettings:
     billow_amp: float             # share of the height the billows carve [0,1]
     lamp_z_ceiling: float         # lamp elevation (z of unnormalized L) for the
     lamp_z_floor: float           #   ceiling / floor group
+    top_light_tiles: int          # reach of the light over a column's top, tiles
+    top_light_ceiling: float      # how much of it lights the top, [0, 1],
+    top_light_floor: float        #   per group
     wrap: float                   # wrap lighting: N.L floor for thin smoke
     shadow: float                 # self-shadow strength [0,1]
     shadow_len_tiles: float       # horizon march length, tiles
@@ -185,6 +192,23 @@ def group_members(names: Sequence[str], ceiling_gases: Sequence[str]
 _F16_MAX = float(np.finfo(np.float16).max)
 
 
+def bulk_reflectance(single_scatter_albedo: np.ndarray) -> np.ndarray:
+    """Diffuse reflectance of an optically THICK, isotropically scattering
+    medium from its single-scatter albedo ``w``:
+    ``R = (1 - s) / (1 + s)``, ``s = sqrt(1 - w)`` (the two-stream /
+    diffusion result; Hapke's isotropic-scatterer reflectance). A smoke
+    deck is many scatterings deep, so its surface returns far less than one
+    scatter does when ``w`` is small: soot (0.22) reads 0.06 -- charcoal --
+    while steam (0.92) reads 0.56. Monotone, R(0) = 0, R(1) = 1.
+
+    Credit: Bruce Hapke, "Bidirectional reflectance spectroscopy 1.
+    Theory", J. Geophys. Res. 86 (1981) -- the isotropic-scatterer
+    reflectance; Kubelka & Munk (1931) for the two-stream form."""
+    w = np.clip(np.asarray(single_scatter_albedo, dtype=np.float64), 0.0, 1.0)
+    s = np.sqrt(1.0 - w)
+    return (1.0 - s) / (1.0 + s)
+
+
 def relief_group_layers(gas_density: np.ndarray, optics: TraceGasOptics,
                         glow: np.ndarray, member: np.ndarray, *,
                         tau_curve_a: float, tau_curve_b: float,
@@ -204,8 +228,11 @@ def relief_group_layers(gas_density: np.ndarray, optics: TraceGasOptics,
                 ``gas_optical_depth`` over the group's gases, through the
                 shared ``tau_curve`` -- so ``1 - exp(-tau')`` is exactly the
                 B2 layer's alpha for that group.
-    cover.rgb   the group's surface ALBEDO: the table's ``scatter_albedo``,
-                weighted by each gas's share of the extinction.
+    cover.rgb   the group's surface REFLECTANCE: the table's single-scatter
+                ``scatter_albedo``, weighted by each gas's share of the
+                extinction, turned into what a THICK cloud of it reflects
+                (:func:`bulk_reflectance`: soot 0.22 -> 0.06, steam 0.92 ->
+                0.56) -- the surface is lit as a body, not as one scatter.
     cover.a     the EXTINCTION depth ``Σ (k_s + mean k_scat[s]) ρ_s``: how
                 much stuff is in the column -- absorbers AND scatterers, so a
                 white steam cloud has a body even though it barely absorbs.
@@ -239,6 +266,7 @@ def relief_group_layers(gas_density: np.ndarray, optics: TraceGasOptics,
                                     dtype=np.float64).T, ext_s,
                          axes=([1], [0]))                          # (3, H, W)
     albedo = np.where(tau_ext > 0.0, alb_w / np.maximum(tau_ext, 1e-30), 0.0)
+    albedo = bulk_reflectance(albedo)
 
     h, w = tau.shape
     medium = np.empty((h, w, 4), dtype=np.float16)
@@ -248,6 +276,38 @@ def relief_group_layers(gas_density: np.ndarray, optics: TraceGasOptics,
     cover[..., :3] = np.clip(np.moveaxis(albedo, 0, -1), 0.0, 1.0)
     cover[..., 3] = np.clip(tau_ext, 0.0, _F16_MAX)
     return medium, cover
+
+
+def top_light_field(light_rgb: np.ndarray, radius_tiles: int) -> np.ndarray:
+    """The light over a smoke column's TOP, (H, W, 3) float32, per channel:
+    the brightest incoming light within ``radius_tiles`` (a square max
+    filter), then 3x3 box passes to soften its plateaus (one pass left the
+    filter's tile-square steps visible as quadrants on a lit puff).
+
+    Why: the sweep is planar, so inside a thick soot plume the tile's own
+    light is what crossed the plume sideways -- almost nothing (pre-#88 soot
+    absorbs ~138 per unit density per tile). Seen from above, a ceiling
+    layer's top is lit by lamps whose light passes OVER the plume, i.e. by
+    roughly the light the room has around it. The max filter is that
+    estimate: the unattenuated light at the plume's lamp-side edge carried
+    ``radius_tiles`` inward. It is a filtered READ of LightingPass's field
+    (the one light), never a second light path. Known limit: it reaches
+    across a wall thinner than the radius."""
+    e = np.asarray(light_rgb, dtype=np.float32)
+    r = max(int(radius_tiles), 0)
+    if r == 0:
+        return e.copy()
+    h, w, _ = e.shape
+    p = np.pad(e, ((r, r), (r, r), (0, 0)), mode="edge")
+    out = e.copy()
+    for dy in range(2 * r + 1):
+        for dx in range(2 * r + 1):
+            np.maximum(out, p[dy:dy + h, dx:dx + w], out=out)
+    for _ in range(_TOP_LIGHT_SMOOTH_PASSES):
+        p = np.pad(out, ((1, 1), (1, 1), (0, 0)), mode="edge")
+        hz = (p[:, :-2] + p[:, 1:-1] + p[:, 2:]) / 3.0
+        out = (hz[:-2] + hz[1:-1] + hz[2:]) / 3.0
+    return out.astype(np.float32)
 
 
 def boil_field(temperature_game: np.ndarray, t0: float, t1: float
@@ -290,7 +350,7 @@ class GasReliefPass:
         "u_jitter_wl", "u_cov_tau", "u_cov_edge", "u_cov_soft", "u_cov_push", "u_haze", "u_height",
         "u_height_tau", "u_billow_amp", "u_lamp_z", "u_wrap", "u_light_gain",
         "u_ambient", "u_shadow", "u_shadow_len", "u_shadow_soft", "u_powder",
-        "u_ao", "u_rim", "u_rim_g", "u_debug",
+        "u_ao", "u_rim", "u_rim_g", "u_debug", "u_toplight", "u_top_light",
     )
 
     def __init__(self, grid_h: int, grid_w: int, settings: ReliefSettings):
@@ -314,6 +374,8 @@ class GasReliefPass:
         self.cover_tex = {g: core.create_dynamic_rgba16f_texture(grid_w, grid_h)
                           for g in GROUPS}
         self.dyn_tex = core.create_dynamic_rgba16f_texture(grid_w, grid_h)
+        self.top_tex = core.create_dynamic_rgba16f_texture(grid_w, grid_h)
+        self._top_packed = np.zeros((grid_h, grid_w, 4), dtype=np.float16)
         self._has = {g: False for g in GROUPS}
         self._baked_octaves = None
         self.billow_tex = None
@@ -362,7 +424,8 @@ class GasReliefPass:
 
     def update(self, gas_density_trace: np.ndarray, glow: np.ndarray,
                gas_table, tamed_wind: np.ndarray,
-               temperature_game: np.ndarray, *, sim_tick: int,
+               temperature_game: np.ndarray, light_rgb: np.ndarray, *,
+               sim_tick: int,
                ticks_per_second: float, cycle_seconds: float,
                adv_gain: float, tau_curve_a: float, tau_curve_b: float,
                glow_gain: float, effect_gas_floor: float) -> None:
@@ -390,6 +453,9 @@ class GasReliefPass:
             if self._has[g]:
                 self._core.update_rgba16f_texture(self.medium_tex[g], medium)
                 self._core.update_rgba16f_texture(self.cover_tex[g], cover)
+        self._top_packed[..., :3] = np.clip(
+            top_light_field(light_rgb, s.top_light_tiles), 0.0, _F16_MAX)
+        self._core.update_rgba16f_texture(self.top_tex, self._top_packed)
         boil = boil_field(temperature_game, s.boil_t0, s.boil_t1)
         self._core.update_rgba16f_texture(
             self.dyn_tex, pack_relief_dynamics(tamed_wind, boil))
@@ -455,6 +521,8 @@ class GasReliefPass:
         self._f("u_height_tau", s.height_tau)
         self._f("u_billow_amp", s.billow_amp)
         self._f("u_lamp_z", s.lamp_z_ceiling if ceiling else s.lamp_z_floor)
+        self._f("u_top_light", s.top_light_ceiling if ceiling
+                else s.top_light_floor)
         self._f("u_wrap", s.wrap)
         self._f("u_light_gain", lighting.light_gain)
         self._v("u_ambient", *lighting.ambient)
@@ -469,18 +537,32 @@ class GasReliefPass:
 
         rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
         rl.begin_shader_mode(self.shader)
-        sv = rl.set_shader_value_texture
-        sv(self.shader, self._loc["u_cover"], self.cover_tex[group])
-        sv(self.shader, self._loc["u_dyn"], self.dyn_tex)
-        sv(self.shader, self._loc["u_light_a"], lighting.light_tex_a)
-        sv(self.shader, self._loc["u_light_b"], lighting.light_tex_b)
-        sv(self.shader, self._loc["u_billow"], self.billow_tex)
+        # SIX samplers besides texture0, and raylib's batch binds at most four
+        # (RL_DEFAULT_BATCH_MAX_TEXTURE_UNITS): set_shader_value_texture
+        # silently drops the fifth on, which read as an all-zero billow field.
+        # So the pass binds its own units above raylib's (0..4) through rlgl,
+        # and puts the active unit back to 0 before raylib draws anything.
+        extra = (("u_cover", self.cover_tex[group]), ("u_dyn", self.dyn_tex),
+                 ("u_toplight", self.top_tex),
+                 ("u_light_a", lighting.light_tex_a),
+                 ("u_light_b", lighting.light_tex_b),
+                 ("u_billow", self.billow_tex))
+        for i, (name, tex) in enumerate(extra):
+            unit = _FIRST_UNIT + i
+            rl.rl_active_texture_slot(unit)
+            rl.rl_enable_texture(tex.id)
+            self._i(name, unit)
+        rl.rl_active_texture_slot(0)
         src = rl.Rectangle(0, 0, float(self.w), float(self.h))
         dst = rl.Rectangle(0, 0, float(dst_w), float(dst_h))
         # texture0 = the group's medium texture (glow share + occlusion depth)
         rl.draw_texture_pro(self.medium_tex[group], src, dst,
                             rl.Vector2(0, 0), 0.0, rl.WHITE)
-        rl.end_shader_mode()
+        rl.end_shader_mode()                 # flushes the batch: draws now
+        for i in range(len(extra)):
+            rl.rl_active_texture_slot(_FIRST_UNIT + i)
+            rl.rl_disable_texture()
+        rl.rl_active_texture_slot(0)
         rl.end_blend_mode()
 
     def unload(self) -> None:
@@ -489,11 +571,12 @@ class GasReliefPass:
         for t in list(self.medium_tex.values()) + list(self.cover_tex.values()):
             rl.unload_texture(t)
         rl.unload_texture(self.dyn_tex)
+        rl.unload_texture(self.top_tex)
         rl.unload_texture(self.billow_tex)
 
 
 __all__ = [
     "GROUPS", "ReliefSettings", "relief_settings", "group_members",
-    "relief_group_layers", "boil_field", "pack_relief_dynamics",
+    "bulk_reflectance", "relief_group_layers", "top_light_field", "boil_field", "pack_relief_dynamics",
     "GasReliefPass",
 ]

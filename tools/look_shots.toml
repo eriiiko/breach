@@ -157,3 +157,16 @@ beacon = false
 detonate = [24, 16, 24]
 hide = ["heat"]
 note = "explosion_t40 without the heat layer: the blast's hanging soot and the marines it should cover (ceiling layer above the units)."
+
+[[shot]]
+name = "steam_flashlight_game"
+level = "fire_studio"
+frames = 24
+center = [22.0, 22.0]
+zoom = 40.0
+lamps = false
+beacon = false
+flashlight = { pos = [14.5, 22.5], intensity = 2.5, spread = 0.6 }
+steam = [[19, 22], [22, 22], [25, 22]]
+light_gain = "game"
+note = "steam_flashlight at the GAME exposure ([render.lighting] master_gain). The relief lights the steam's surface at the one exposure; the studio's light_gain 10 (steam_flashlight) over-exposes it, while the pre-G1 glow was never exposed by the studio gain at all."

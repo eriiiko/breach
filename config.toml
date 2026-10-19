@@ -1637,6 +1637,12 @@ billow_amp = 0.6            # share of the height the billows carve, [0, 1]
 lamp_z_ceiling = 0.8        # lamp elevation over a CEILING layer (lit from above
                             # and the side); larger = more overhead
 lamp_z_floor = 1.5          # ... over a FLOOR layer (lit from above)
+top_light_tiles = 2         # the light over a column's TOP: the brightest light
+                            # within this many tiles (the planar sweep's light
+                            # inside a soot plume is what crossed it sideways)
+top_light_ceiling = 1.0     # share of that top light on a ceiling layer [0, 1]
+top_light_floor = 0.0       # ... on a floor layer (haze AT the floor: the sweep's
+                            # own light is right there; 0.5 flattened a beam)
 wrap = 0.3                  # wrap lighting: thin smoke never goes black
 shadow = 0.8                # self-shadow strength, [0, 1]
 shadow_len_tiles = 0.8      # horizon march length, tiles
