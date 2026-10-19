@@ -19,6 +19,9 @@
 //               by the column's opacity 1 - exp(-tau_ext K)
 //   shadow    a horizon march toward the light through h: a crest between
 //               the pixel and the lamp, above the ray, shades it
+//   AO        the lanes between billows (low B) darken, crests do not
+//   powder    multiple scattering brightens THIN smoke: (1 - e^-2s) e^-s,
+//               peaking at an optical depth near 1/2 -- fluffy bright edges
 //
 // OUTPUT: premultiplied LINEAR HDR (inscatter, 1 - T) into the RGBA16F scene
 // RT, blended out = src.rgb + dst * (1 - src.a). Never a tone-map here: the
@@ -283,8 +286,17 @@ void main() {
     }
     if (u_debug == 4) { finalColor = vec4(vec3(lit), 1.0); return; }
 
+    // --- AO: the lanes between billows ---------------------------------------
+    // The billow field already says where the crevices are: B below its
+    // mean is a lane between lumps, the deeper the darker. (A Laplacian of
+    // h at the normal taps' scale caught the Worley cells' crease LINES and
+    // drew a cracked-mud net over the smoke -- G1 step 5's first shot.)
+    float lane = clamp((u_billow_mean - B) / max(u_billow_mean, 1e-3), 0.0, 1.0);
+    float ao = 1.0 - u_ao * lane * u_billow_amp;
+    if (u_debug == 5) { finalColor = vec4(vec3(ao), 1.0); return; }
+
     vec3 albedo = max(cov.rgb, vec3(0.0));
-    vec3 surface = albedo * (u_ambient + E * shade * lit);
+    vec3 surface = albedo * (u_ambient + E * shade * lit) * ao;
 
     // The cut keeps a HAZE share of the depth outside the edge: thin smoke
     // around a plume (and a room of it) still dims the floor, and the edge
@@ -294,6 +306,12 @@ void main() {
     // Thick smoke shows its surface, thin smoke the sweep's in-scatter.
     float thick = 1.0 - exp(-tau_ext * K);
     vec3 rgb = surface * thick + glow * u_light_gain * K * (1.0 - thick);
+    // Powder: multiple scattering lifts thin smoke (Schneider & Vos's
+    // powder, used here as a brightening of the thin edge, §2.2); the
+    // bump (1 - e^-2s) e^-s peaks at 0.385 near s = ln(3)/2.
+    float sig = tau_ext * K;
+    float powder = (1.0 - exp(-2.0 * sig)) * exp(-sig) / 0.385;
+    rgb *= 1.0 + u_powder * powder;
 
     finalColor = vec4(max(rgb, vec3(0.0)), clamp(alpha, 0.0, 1.0));
 }

@@ -1614,7 +1614,8 @@ warp_px = 3.0               # sampling-UV domain warp
 enabled = true
 ceiling_gases = ["smoke"]   # drawn ABOVE the units (Erik's ruling 2, 2026-10-18);
                             # every other trace gas is a floor layer below them
-billow_cell_tiles = 0.75    # coarsest billow cell, tiles (finer octaves /2, /4)
+billow_cell_tiles = 1.5     # coarsest billow cell, tiles (finer octaves /2, /4);
+                            # 0.75 read as crumpled rock, 1.5 as billow masses
 billow_octaves = 3          # bake-time, 1..3 (rebaked on change)
 warp_tiles = 0.15           # domain warp of the billow lookup, tiles
 boil_t0 = 50.0              # game temperature where hot smoke starts to churn
