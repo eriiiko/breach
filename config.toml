@@ -1618,8 +1618,10 @@ billow_cell_tiles = 1.5     # coarsest billow cell, tiles (finer octaves /2, /4)
                             # 0.75 read as crumpled rock, 1.5 as billow masses
 billow_octaves = 3          # bake-time, 1..3 (rebaked on change)
 warp_tiles = 0.15           # domain warp of the billow lookup, tiles
-boil_t0 = 50.0              # game temperature where hot smoke starts to churn
-boil_t1 = 600.0             # ... and churns at boil_speedup x the base clock
+boil_t0 = 600.0             # game temperature where hot smoke starts to churn
+boil_t1 = 2400.0            # ... and churns at boil_speedup x the base clock
+                            # (smoke_light_studio at tick 72: the soot sits at
+                            # T 670-2800, hall air median 776; 50/600 saturated)
 boil_speedup = 3.0
 drift_cap_tiles = 1.5       # most a noise layer drifts in one clock cycle, tiles:
                             # fast (blast) air drifts at this cap instead of

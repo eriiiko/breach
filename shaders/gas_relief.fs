@@ -247,6 +247,7 @@ void main() {
     vec3 glow = max(med.rgb, vec3(0.0));
 
     if (u_debug == 1) { finalColor = vec4(vec3(C), 1.0); return; }
+    if (u_debug == 6) { finalColor = vec4(vec3(g_boil), 1.0); return; }
 
     // --- the relief height ---------------------------------------------------
     float h = u_height * sqrt(clamp(tau_ext / u_height_tau, 0.0, 1.0))
