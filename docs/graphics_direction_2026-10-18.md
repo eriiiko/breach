@@ -542,6 +542,19 @@ HUMAN-TEST. `main` gets it when `fire-12` merges, and that is Erik's call.
   valley along `v_ref/v_sens` ~0.35-0.5. Smears at blast speeds (the
   crossfade cycle was sized for 0.08) are a HUMAN-TEST item; `cycle_seconds`
   is the dial.
+- **2026-10-19, G0 review (fire scenes).** With every layer linear, the fire
+  scenes lost the pre-G0 look: the orange around fires went beige (chroma
+  0.219 -> 0.166 on fire_plume), crate halos widened. A linear gain on the
+  heat layer cannot carry the old display-space knee, and even an exact
+  display->scene conversion adds far less over a lit floor in linear light
+  than on screen, so saturation still faded (0.179). Resolution: the
+  black-body heat stays a **legacy display-space layer until G3** (its pre-G0
+  pack byte for byte, drawn after the resolve; the one named exception in
+  `tests/test_one_tonemap.py`), and the smoke's old display-space darkening
+  is migrated as `[render.gas_medium] tau_curve_a = 1.6` (fitted; 2.2 would
+  be the pure power-law equivalent). Fire shots now match pre-G0 in hue,
+  chroma and bright-area radius within 1-4 %. Heat now draws above water and
+  3D units. God-rays in steam stay linear and read brighter (HUMAN-TEST).
 
 ### 10.1 Systems (G0)
 

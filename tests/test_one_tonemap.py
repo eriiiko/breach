@@ -69,12 +69,42 @@ def test_the_resolve_is_the_one_place_that_does_all_three():
         assert pat.search(code), f"world_resolve.fs lacks {what}"
 
 
+# The ONE named exception (graphics G0 review): the LEGACY HEAT LAYER keeps
+# its pre-G0 display-space look -- ACES-shaped display colour, added on screen
+# AFTER the resolve -- until the G3 fire arc replaces it, because its hue,
+# saturation and halo were tuned as a display colour and no linear-scene
+# conversion keeps them (blackbody.pack_emissive_rgba explains). It shapes
+# its colour with the resolve's own curve, through a CPU twin that lives in
+# that one module.
+CPU_TWIN_HOME = {"blackbody.py": "legacy heat layer, display space, "
+                                 "until G3 fire"}
+
+
 def test_no_cpu_side_tone_map_in_the_renderer():
-    """Property: no renderer module defines a CPU tone-map function (the
-    pre-G0 ``blackbody.aces_tonemap`` fed the heat and gas packs). Breaks if
-    a CPU-packed layer starts compressing its own light again."""
+    """Property: the only CPU tone-map in renderer/ is the resolve's CPU twin
+    inside the allow-listed legacy heat layer's module, and no other module
+    uses it. Breaks if a CPU-packed layer starts compressing its own light
+    again (the pre-G0 ``blackbody.aces_tonemap`` fed the heat AND the gas
+    packs), or a second module starts using the twin."""
     defs = re.compile(r"^\s*def\s+\w*(tone_?map|aces)\w*\s*\(",
                       re.IGNORECASE | re.MULTILINE)
-    bad = [p.name for p in sorted((ROOT / "renderer").glob("*.py"))
-           if defs.search(p.read_text(encoding="utf-8"))]
-    assert not bad, f"CPU tone-map defined in: {bad}"
+    uses = re.compile(r"\baces_curve\b")
+    bad = []
+    for p in sorted((ROOT / "renderer").glob("*.py")):
+        src = p.read_text(encoding="utf-8")
+        if p.name not in CPU_TWIN_HOME and defs.search(src):
+            bad.append(f"{p.name} defines a tone-map")
+        if p.name not in CPU_TWIN_HOME and uses.search(src):
+            bad.append(f"{p.name} uses the CPU twin")
+    assert not bad, "; ".join(bad)
+
+
+def test_the_cpu_twin_is_the_resolves_curve():
+    """Property: the CPU ACES twin carries the resolve shader's exact
+    constants. Breaks if either side is retuned alone (the legacy heat layer
+    would then be shaped by a different curve than the world)."""
+    from renderer.blackbody import ACES_ABCDE
+    code = _code(RESOLVE.read_text(encoding="utf-8"))
+    consts = [float(v) for v in re.findall(
+        r"const float [abcde] = ([0-9.]+);", code)]
+    assert tuple(consts) == ACES_ABCDE

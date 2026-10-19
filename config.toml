@@ -1442,17 +1442,6 @@ height_floor = 0.3
 # colormap (F7) now ships OFF by default (it washed the scene out — Erik's
 # call) but is one keypress away when you want to see shockwaves.
 blackbody_overlay_on = true
-# The black-body overlay's emissive WEIGHT in the linear HDR scene (graphics
-# G0 P1). A layer weight, not an exposure (the one exposure is
-# [render.lighting] master_gain). Before G0 the overlay ACES'd its emissive
-# into 8 bits and added it, never gamma-encoded, onto the encoded floor with a
-# 220/255 ceiling; composited in linear light that same emissive reads far
-# brighter in its dim range (hot air glowed across whole rooms). 0.28 is the
-# MIGRATION value: the linear weight whose new display best matches the
-# pre-G0 display over a dark floor (least squares over intensity 0.02..8,
-# rms 0.054 of full scale; a pure gain fit best, exponent 1.0). Look-neutral
-# at G0; Erik retunes from here.
-heat_glow_weight = 0.28
 fire_overlay_on = false
 pressure_overlay_on = false
 cold_overlay_on = false    # P-W2 blue cold tier — the #8 cold-blast instrument.
@@ -1584,7 +1573,17 @@ sun_spread_deg = 10.0
 # light column for every other gas) under the same Beer-Lambert law, so a tile
 # that looks black is a tile light does not cross -- one number, no render scale.
 # The look of smoke is tuned at its source (soot_yield, the blast-smoke deposit).
-tau_curve_a = 1.0           # tau' = a*tau^b — artistic remap IN tau-SPACE
+# tau_curve_a 1.6 = graphics G0's MIGRATION of the smoke's look (#93 review).
+# Before G0 the medium darkened the floor in DISPLAY space (out = inscatter +
+# (1 - a) * floor, on 8-bit sRGB); in the linear HDR scene the same (1 - a)
+# darkens far less once encoded (in a pure power law (1 - a)^2.2 would match,
+# a = 2.2; ACES's toe makes the measured equivalent smaller). 1.6 is the value
+# whose look shots match the pre-G0 picture: fire_plume chroma 0.219 -> 0.217,
+# hue 27.6 -> 27.5 deg, bright-area radii within 1-4 %; at 1.0 the thinner
+# smoke let 13 % more lit floor through around the fires. 1.0 is the honest
+# "plume opacity == the light engine's extinction" (#12 handle 2) -- Erik's
+# call which to keep.
+tau_curve_a = 1.6           # tau' = a*tau^b — artistic remap IN tau-SPACE
 tau_curve_b = 1.0           #   (b>1 steepens edges; 1/1 = fully honest)
 glow_gain = 1.0             # re-match the beloved god-ray brightness (tune)
 effect_gas_floor = 0.0      # NON-PHYSICAL legibility floor, poison/teargas

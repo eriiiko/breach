@@ -219,8 +219,7 @@ def test_from_config_missing_section_uses_defaults():
 
 
 # ---------------------------------------------------------------------------
-# the pack_emissive_rgba intensity_mod seam (B1 overlay stays byte-identical;
-# since graphics G0 P1 the pack is linear HDR, brightness in RGB)
+# the pack_emissive_rgba intensity_mod seam (B1 overlay stays byte-identical)
 # ---------------------------------------------------------------------------
 def test_intensity_mod_none_is_byte_identical_to_b1():
     r = BlackbodyRamp()
@@ -235,19 +234,17 @@ def test_intensity_mod_changes_the_pack_on_hot_tiles():
     temps = _field([[3000, 3000], [3000, 3000]])        # all hot -> all glow
     base = pack_emissive_rgba(r, temps)
     dim = pack_emissive_rgba(r, temps, intensity_mod=np.full((2, 2), 0.5))
-    # A 0.5x intensity mod dims the emissive (RGB, linear) on hot tiles.
-    b = base[..., :3].astype(np.float32)
-    d = dim[..., :3].astype(np.float32)
-    assert np.all(d <= b)
-    assert np.any(d < b)
+    # A 0.5x intensity mod dims the tone-mapped brightness (alpha) on hot tiles.
+    assert np.all(dim[..., 3] <= base[..., 3])
+    assert np.any(dim[..., 3] < base[..., 3])
 
 
 def test_intensity_mod_leaves_cold_tiles_invisible():
     r = BlackbodyRamp()
     temps = _field([[0, 0], [0, 0]])                    # cold -> intensity 0
-    # Even a huge mod cannot resurrect a cold tile (0 * mod = 0 -> RGB 0).
+    # Even a huge mod cannot resurrect a cold tile (0 * mod = 0 -> alpha 0).
     packed = pack_emissive_rgba(r, temps, intensity_mod=np.full((2, 2), 5.0))
-    assert np.all(packed[..., :3] == 0)
+    assert np.all(packed[..., 3] == 0)
 
 
 def test_field_modulation_does_not_mutate_inputs():

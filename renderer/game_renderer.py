@@ -247,9 +247,7 @@ class GameRenderer:
         # [render] blackbody_overlay_on).
         self.blackbody_ramp = BlackbodyRamp.from_config(CFG)
         self.temperature_overlay = HeatFieldOverlay(
-            cfg.grid_h, cfg.grid_w, self.blackbody_ramp,
-            weight=float(getattr(getattr(CFG, "render", None),
-                                 "heat_glow_weight", 0.28)))
+            cfg.grid_h, cfg.grid_w, self.blackbody_ramp)
         # T_abs compression-work arc, P-W2 (design D-7/B-F13/C12): the cold
         # tier. HeatFieldOverlay above is additive-emissive and structurally
         # cannot show T_rel < 0 (additive blending only adds light) — this is
@@ -688,12 +686,8 @@ class GameRenderer:
             else:
                 self.gas_medium.draw(
                     0, 0, self.world.world_px_w, self.world.world_px_h)
-        # 3. Black-body heat (engine/06): ADDITIVE linear emissive over
-        # gmap.temperature, drawn BEFORE units so they stay readable on top of
-        # the heat glow. Off-by-toggle (T).
-        if self.show_temperature:
-            self.temperature_overlay.draw(
-                0, 0, self.world.world_px_w, self.world.world_px_h)
+        # 3. (The black-body heat is the LEGACY HEAT LAYER: display space,
+        # drawn after the resolve below -- the one named G0 exception.)
         # 4. Water OPTICS pass (graphics/water_rendering.md §5): the GLSL
         # Fresnel/GGX/refraction pass, after the field layers, before units
         # (the squad reads over the water; the lit ship beneath is the floor
@@ -746,10 +740,19 @@ class GameRenderer:
                 self.world.world_px_w, self.world.world_px_h
             )
         # Cold tier (P-W2, D-7): the diverging blue ramp, same toggle as the
-        # heat. T_rel is never both cold and hot at once per pixel, so its
-        # place after the heat is about draw order, not overlap.
+        # heat, drawn UNDER it (as before G0). T_rel is never both cold and hot
+        # at once per pixel, so "under" is about draw order, not overlap.
         if self.show_temperature and self.show_cold:
             self.cold_overlay.draw(
+                0, 0, self.world.world_px_w, self.world.world_px_h)
+        # Black-body heat (engine/06) -- the LEGACY HEAT LAYER, display space,
+        # until G3 (graphics G0's one named exception to the one-tone-map
+        # rule, blackbody.pack_emissive_rgba): its look was tuned as a display
+        # colour added on screen, and only display-space addition keeps its
+        # hue, saturation and halo. ADDITIVE, RGB-only. It now sits ABOVE the
+        # water and the 3D units (before G0 it was under both). Toggle (T).
+        if self.show_temperature:
+            self.temperature_overlay.draw(
                 0, 0, self.world.world_px_w, self.world.world_px_h)
 
         # 7. A6 dev door draw (a6 doors design §14, N4 honest-minimal):
