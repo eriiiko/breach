@@ -134,12 +134,16 @@ def bust_form(P, sp):
     breasts (`bust_dome`, the right one mirrored) as ONE C2 smooth maximum across the centre (`kv`: the valley at the zip is
     their fillet, so the suit neither bridges flat nor dives into a cleavage), the chest wall's smooth maximum with them
     (`k` = (k_low, k_up, z, w): the fold under the breasts at k_low, k_up over them, across z +-w), plus the wall's own change
-    (`bust_wall`)."""
+    (`bust_wall`); all of it on the FRONT only (`front` = (y0, y1): full in front of y0, nothing behind y1 -- a field of the front
+    view's x and z alone also swelled the back: attempt 1's notch behind the shoulder in the posed side view)."""
     P = np.asarray(P, float)
     x, z = P[..., 0], P[..., 2]
     e = smax3(bust_dome(x, z, sp), bust_dome(-x, z, sp), sp["kv"])
     kl, ku, kz, kw = sp["k"]
-    return smax3(np.zeros_like(e), e, _across(kl, ku, z - kz, kw)) + bust_wall(x, z, sp)
+    d = smax3(np.zeros_like(e), e, _across(kl, ku, z - kz, kw)) + bust_wall(x, z, sp)
+    # the front only (the field is a function of the front view's x and z): full in front of y0, nothing behind y1 (C2)
+    y0, y1 = sp.get("front", (-0.05, -0.01))
+    return d * _smooth01((y1 - P[..., 1]) / (y1 - y0))
 
 
 def bust_reach(P, sp):
@@ -149,7 +153,7 @@ def bust_reach(P, sp):
     x, z = np.abs(P[..., 0]), P[..., 2]
     win = sp.get("wall", {}).get("win", (zc, 0.0, zc, 0.0))
     return ((x < max(xc + 1.6 * a_out, sp.get("wall", {}).get("x", 0.0))) & (z > min(zc - 1.6 * b_lo, win[0]))
-            & (z < max(zc + 1.6 * b_up, win[2])))
+            & (z < max(zc + 1.6 * b_up, win[2])) & (P[..., 1] < sp.get("front", (-0.05, -0.01))[1]))
 
 
 class _FormsLoft:
@@ -1039,7 +1043,8 @@ class Suit:
         neg = np.zeros(len(pa))
         for row in self.d.get("forms", ()):
             if isinstance(row, dict):
-                neg += bust_wall(pa[:, 0], pa[:, 2], row)
+                y0, y1 = row.get("front", (-0.05, -0.01))
+                neg += bust_wall(pa[:, 0], pa[:, 2], row) * _smooth01((y1 - pa[:, 1]) / (y1 - y0))
         level = level + neg
         U = np.stack([self.union_field(pa + s * u) for s in ss]) - level   # `level`: onto the surface that far out
         pos = U >= 0.0

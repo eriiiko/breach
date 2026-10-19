@@ -670,9 +670,15 @@ BUST = dict(
     # each breast a dome: its apex (x, z) in the front view, half-widths inwards / outwards (blended over +-w), half-heights
     # below / above (blended over +-w), height T over the wall and fullness c (the lower curve's roundness), the bell above
     # from dz on (p, w, dz): the upper slope
-    apex=(0.072, 1.287), a=(0.080, 0.058, 0.02), b=(0.050, 0.095, 0.03), h=(0.017, 0.7), upper=(3.0, 0.025, 0.03),
+    # (attempt 1: apex (0.072, 1.287), a (0.080, 0.058), b (0.050, 0.095), h (0.017, 0.7), kv 0.012 -- v2's profile within 3.6 mm,
+    # but in the level sections the most forward point only 44 mm out and the valley at the zip 9 mm deep: from the front still
+    # close-set, one broad mass. Attempt 2: the domes 4 mm further out and stopping at the centre line (a_in = xc), a narrower
+    # union there (kv): the apex 49 mm out, the valley 15 mm; their outer side 2 mm fuller, the profile kept)
+    apex=(0.076, 1.288), a=(0.072, 0.060, 0.02), b=(0.048, 0.095, 0.03), h=(0.0172, 0.7), upper=(3.0, 0.025, 0.03),
     # the wall's fillet with them: the fold under (k_low), the upper slope over (k_up), across z +-w; their union at the centre
-    k=(0.005, 0.008, 1.29, 0.04), kv=0.012,
+    k=(0.005, 0.008, 1.29, 0.04), kv=0.010,
+    # on the front only: full in front of y -0.05, nothing behind -0.01 (the body's centre is at about -0.02 here)
+    front=(-0.05, -0.01),
     # the chest wall taken back between and above the breasts (B1m's rows stood out as a shelf: 125 mm at the centre at 1.28,
     # the breasts 151): depth by height inside the window (z0, ramp, z1, ramp), faded to nothing across by x = X. Nothing
     # under 1.185 nor over 1.405 (the collar is laid on the plain loft from 1.40) moves; under the fold
@@ -814,10 +820,15 @@ def dims(shape=None):
                     # slit), round the side of the bust, past the waist crescent, out to the hip
                     RAGLAN_FRONT + (("x", .123, 1.270), ("x", .112, 1.240), ("x", .098, 1.208), ("x", .086, 1.178), ("x", .079, 1.150),
                      ("x", .080, 1.122), ("x", .091, 1.098), ("x", .114, 1.072), ("x", .143, 1.046), ("phi", 0, 1.030)),
-                    # under the bust, from the side to the zip
-                    (("x", .118, 1.262), ("x", .100, 1.240), ("x", .075, 1.232), ("x", .046, 1.238), ("x", .024, 1.250), ("x", .003, 1.254)),
-                    # princess lines, under the bust down to the waist and out into the side seam above the hip
-                    (("x", .066, 1.234), ("x", .060, 1.196), ("x", .055, 1.158), ("x", .058, 1.122), ("x", .070, 1.100), ("x", .086, 1.091),
+                    # under the bust, from the side to the zip. B1n: IN the new bust's fold, 2 mm under it, as drawn (the concept's
+                    # seam traces each breast's lower curve and meets the other at the zip); B1b-B1m: (.118, 1.262) (.100, 1.240)
+                    # (.075, 1.232) (.046, 1.238) (.024, 1.250) (.003, 1.254) -- 4-8 mm under the fold, a corner at each point
+                    (("x", .1165, 1.252), ("x", .108, 1.2445), ("x", .100, 1.2422), ("x", .090, 1.2394), ("x", .075, 1.2382),
+                     ("x", .060, 1.2394), ("x", .046, 1.2424), ("x", .036, 1.2462), ("x", .028, 1.2512), ("x", .020, 1.2565),
+                     ("x", .012, 1.2620), ("x", .003, 1.2660)),
+                    # princess lines, under the bust down to the waist and out into the side seam above the hip (B1n: from the
+                    # seam's new place; B1b-B1m from (.066, 1.234))
+                    (("x", .066, 1.2386), ("x", .060, 1.196), ("x", .055, 1.158), ("x", .058, 1.122), ("x", .070, 1.100), ("x", .086, 1.091),
                      ("x", .100, 1.088)),
                     # the leotard line: outer hip down to the crotch
                     (("phi", 0, 1.030), ("x", .130, 1.000), ("x", .090, .960), ("x", .050, .925), ("x", .020, .903), ("x", .004, .895)),
