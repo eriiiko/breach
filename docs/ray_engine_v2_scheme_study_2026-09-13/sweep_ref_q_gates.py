@@ -2680,7 +2680,9 @@ T_BURN_GAME = T_SRC_GAME                   # a burning crate's plateau (1263 gam
 # table, count for count).
 LIGHT_ABSORB = [[LQ(120.66), LQ(134.29), LQ(158.89)],
                 [LQ(0.10 * 1.4), LQ(0.10 * 1.4), LQ(0.10 * 1.4)], [0, 0, 0], [0, 0, 0]]
-LIGHT_GLOW = [[LQ(0.04)] * 3, [LQ(0.92), LQ(0.92), LQ(0.95)], [0, 0, 0], [0, 0, 0]]
+# Soot's albedo 0.04 -> 0.22 (#91, Erik 2026-10-15; ported with graphics G0):
+# the glow column is render-only (never in the books), re-derived here.
+LIGHT_GLOW = [[LQ(0.22)] * 3, [LQ(0.92), LQ(0.92), LQ(0.95)], [0, 0, 0], [0, 0, 0]]
 
 
 def _config_row(section, name):

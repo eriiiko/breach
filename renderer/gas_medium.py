@@ -2,9 +2,13 @@
 Beauty arc, B2 P2). Replaces the flat-grey ``smoke_overlay`` + additive
 ``glow_overlay`` pair with a single premultiplied-over layer built per frame:
 alpha = the medium's OCCLUSION (Beer-Lambert extinction over all five trace
-gases), RGB = the medium's LIT half (the in-scattered glow, tone-mapped -- since
+gases), RGB = the medium's LIT half (the in-scattered glow -- since
 ray-engine-v2 P6b the radiation sweep's ``light_glow``, read through
-``simulation.light_field.read_light`` and calibrated by LightingPass).
+``simulation.light_field.read_light`` and calibrated by LightingPass), in
+LINEAR HDR: since graphics arc G0 P1 the layer is an RGBA16F upload drawn into
+the RGBA16F scene RT, and the ONE tone-map runs at the world resolve
+(``WorldComposite.resolve``). Before G0 this pass ACES'd its own inscatter
+into 8 bits, so a god-ray was tone-mapped twice-over against the floor.
 
 Design: docs/fire_b2_smoke_honesty_design_2026-07-21.md §3. RENDER-ONLY,
 determinism-EXEMPT: pure float math on read-only copies of sim fields
@@ -52,9 +56,6 @@ Credit (repo rule — cite what a file implements):
     Frostbite", SIGGRAPH 2015.
   - Premultiplied-alpha "over" compositing:
     Inigo Quilez, "Premultiplied alpha" (iquilezles.org/articles/premultipliedalpha).
-  - ACES filmic tone-map (Narkowicz approximation): reused from
-    renderer.blackbody.aces_tonemap (the SAME curve shaders/lighting.fs and the
-    B1 HeatFieldOverlay apply — one tone-map across every render layer).
 """
 from __future__ import annotations
 
@@ -64,7 +65,6 @@ import numpy as np
 import pyray as rl
 
 from . import core
-from .blackbody import aces_tonemap
 from simulation.gases import N_TRACE_GASES
 
 # Gameplay ("effect") gases that receive the non-physical emissive legibility
@@ -132,7 +132,8 @@ def gas_medium_layer(
         ``scatter_albedo`` colour summed density-weighted and multiplied by the
         local light, i.e. the species' LIT identity (steam near-white, soot
         barely). Read, never written.
-    glow_gain : render exposure on the inscatter before the tone-map.
+    glow_gain : the inscatter's gain relative to the floor's light (a layer
+        weight; the one exposure is u_light_gain, applied to the light field).
     effect_gas_floor : NON-PHYSICAL emissive legibility floor for gameplay gases
         (design override; default 0.0 = honest/off). When > 0 the HUD flags it.
     effect_gas_mask : (S,) bool — which gases receive the floor.
@@ -140,7 +141,8 @@ def gas_medium_layer(
 
     Returns
     -------
-    rgb : (H, W, 3) float32 in [0,1] — the premultiplied additive lit half.
+    rgb : (H, W, 3) float32 >= 0, LINEAR HDR (unbounded above) — the
+        premultiplied additive lit half, never tone-mapped here (G0 P1).
     alpha : (H, W) float32 in [0,1] — the occlusion (1 - transmittance).
     """
     gas_density = np.asarray(gas_density, dtype=np.float32)
@@ -149,9 +151,8 @@ def gas_medium_layer(
     # --- optical depth (panchromatic), on the shared base scale --------------
     # tau = base_absorb_scale * plume_k_scale * Σ_s ( k_s · ρ_s ), the density-
     # weighted mean-extinction sum. Done in float64 so `1 - exp(-tau)` below has
-    # no catastrophic cancellation at tiny tau (the thin-smoke limit); the uint8
-    # pack is byte-identical to float32 for any visible smoke, this only keeps
-    # the linearization accurate. Extracted to gas_optical_depth so the P3 detail
+    # no catastrophic cancellation at tiny tau (the thin-smoke limit); it only
+    # keeps the linearization accurate. Extracted to gas_optical_depth so the P3 detail
     # pass reads the SAME tau for its erosion-solidity field.
     tau = gas_optical_depth(gas_density, k_s,
                             base_absorb_scale=base_absorb_scale,
@@ -164,14 +165,14 @@ def gas_medium_layer(
     tau_p = float(tau_curve_a) * np.power(tau, float(tau_curve_b))
     alpha = 1.0 - np.exp(-tau_p)
 
-    # --- the lit half: tone-mapped inscatter (premultiplied additive RGB) ----
+    # --- the lit half: LINEAR inscatter (premultiplied additive RGB) ---------
     glow = np.array(glow, dtype=np.float32) * float(glow_gain)
     if (effect_gas_floor > 0.0 and effect_gas_mask is not None
             and scatter_albedo is not None):
         # Add a faint self-emission for gameplay gases, tinted by their own
         # scatter_albedo and present where the gas is (density-weighted, bounded
-        # to [0,1] so a dense cloud cannot blow the floor up). Added BEFORE the
-        # tone-map so it stays ACES-consistent with the rest of the layer.
+        # to [0,1] so a dense cloud cannot blow the floor up). Linear light,
+        # like the rest of the layer; the world resolve tone-maps it (G0 P1).
         emask = np.asarray(effect_gas_mask, dtype=bool)
         alb = np.asarray(scatter_albedo, dtype=np.float32)
         for s in range(gas_density.shape[0]):
@@ -180,12 +181,18 @@ def gas_medium_layer(
                 glow = glow + (float(effect_gas_floor)
                                * d[..., None] * alb[s][None, None, :])
 
-    rgb = aces_tonemap(glow)                                         # [0,1]
+    rgb = np.maximum(glow, 0.0)                     # linear HDR, never ACES'd
     return rgb.astype(np.float32), alpha.astype(np.float32)
 
 
+# Largest finite float16 -- an HDR value past it would upload as +inf.
+_F16_MAX = float(np.finfo(np.float16).max)
+
+
 def pack_premult_rgba(rgb: np.ndarray, alpha: np.ndarray) -> np.ndarray:
-    """(rgb (H,W,3) [0,1], alpha (H,W) [0,1]) -> (H,W,4) uint8 premultiplied.
+    """(rgb (H,W,3) linear HDR >= 0, alpha (H,W) [0,1]) -> (H,W,4) float16
+    premultiplied, for the RGBA16F layer texture (G0 P1: it was uint8 with
+    a tone-mapped RGB; the HDR RGB now reaches the scene RT intact).
 
     RGB carries the inscatter (the ADDITIVE lit half) DIRECTLY — it is NOT
     multiplied by alpha, because the premult-over blend composites
@@ -194,12 +201,9 @@ def pack_premult_rgba(rgb: np.ndarray, alpha: np.ndarray) -> np.ndarray:
     representable: RGB is deliberately NOT bounded by alpha. Do not "fix" that.
     """
     h, w = alpha.shape
-    packed = np.empty((h, w, 4), dtype=np.uint8)
-    rgb = np.clip(rgb, 0.0, 1.0)
-    packed[..., 0] = (rgb[..., 0] * 255.0).astype(np.uint8)
-    packed[..., 1] = (rgb[..., 1] * 255.0).astype(np.uint8)
-    packed[..., 2] = (rgb[..., 2] * 255.0).astype(np.uint8)
-    packed[..., 3] = (np.clip(alpha, 0.0, 1.0) * 255.0).astype(np.uint8)
+    packed = np.empty((h, w, 4), dtype=np.float16)
+    packed[..., :3] = np.clip(rgb, 0.0, _F16_MAX)
+    packed[..., 3] = np.clip(alpha, 0.0, 1.0)
     return packed
 
 
@@ -217,7 +221,8 @@ def pack_gas_medium_rgba(
     effect_gas_mask: Optional[np.ndarray] = None,
     scatter_albedo: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """gas_medium_layer + pack -> (H, W, 4) uint8 premultiplied RGBA (pyray-free)."""
+    """gas_medium_layer + pack -> (H, W, 4) float16 premultiplied RGBA, linear
+    HDR (pyray-free)."""
     rgb, alpha = gas_medium_layer(
         gas_density, k_s, base_absorb_scale=base_absorb_scale,
         plume_k_scale=plume_k_scale, tau_curve_a=tau_curve_a,
@@ -253,8 +258,10 @@ class GasMediumOverlay:
         self.tau_curve_b = float(tau_curve_b)
         self.glow_gain = float(glow_gain)
         self.effect_gas_floor = float(effect_gas_floor)
-        self.tex = core.create_dynamic_rgba_texture(grid_w, grid_h)
-        self.packed = np.zeros((grid_h, grid_w, 4), dtype=np.uint8)
+        # RGBA16F (G0 P1): the inscatter is linear HDR, tone-mapped once at
+        # the world resolve -- an 8-bit layer would clip and band it.
+        self.tex = core.create_dynamic_rgba16f_texture(grid_w, grid_h)
+        self.packed = np.zeros((grid_h, grid_w, 4), dtype=np.float16)
         # Density SOLIDITY field (H, W) float32 in [0,1] = saturate(pre-curve
         # tau), refreshed each update(). The P3 detail pass (renderer/
         # gas_detail.py) reads it as the erosion weight: 1 = solid core
@@ -338,7 +345,7 @@ class GasMediumOverlay:
             glow=glow, glow_gain=self.glow_gain,
             effect_gas_floor=self.effect_gas_floor,
             effect_gas_mask=self._effect_mask, scatter_albedo=self._scatter)
-        core.update_rgba_texture(self.tex, self.packed)
+        core.update_rgba16f_texture(self.tex, self.packed)
 
     def draw(self, dst_x: int, dst_y: int, dst_w: int, dst_h: int) -> None:
         """ONE premult-over draw (C = inscatter + T·bg). BLEND_ALPHA_PREMULTIPLY

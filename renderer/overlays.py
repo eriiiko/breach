@@ -332,17 +332,20 @@ class HeatFieldOverlay:
     with the physical black-body primitive (:class:`renderer.blackbody.
     BlackbodyRamp`): temperature -> pseudo-Kelvin -> normalized chroma * a
     separate T⁴ HDR intensity. The HDR emissive (``chroma * intensity``, which
-    runs past 1) is ACES tone-mapped — the SAME curve the lighting shader uses —
-    so a bright warm core reads white-hot instead of clipping to flat orange, and
-    the colour reads the physics by eye (a fire yellows with O2, reddens as it
-    starves).
+    runs past 1) is shaped by the ACES curve -- the SAME curve the world
+    resolve uses -- so a bright warm core reads white-hot instead of clipping
+    to flat orange, and the colour reads the physics by eye (a fire yellows
+    with O2, reddens as it starves).
 
-    Drawn ADDITIVELY: the tone-mapped colour is split into a peak-normalized hue
+    LEGACY HEAT LAYER, display space, until G3 (graphics G0, the one named
+    exception to the one-tone-map rule; see ``blackbody.pack_emissive_rgba``):
+    its look was tuned as a display colour added on screen, so it is drawn
+    AFTER the world resolve, into the display RT, with its pre-G0 packing.
+
+    Drawn ADDITIVELY: the display colour is split into a peak-normalized hue
     (packed RGB) and a brightness weight (packed alpha), so the additive result
-    ``rgb * alpha`` reconstructs the tone-mapped emissive. Alpha carries the
-    intensity/brightness curve, so cold tiles stay invisible and hot tiles glow.
-    draw() uses RGB-only separate blend factors so destination alpha is never
-    written (see ``_begin_additive_rgb_only_blend``).
+    ``rgb * alpha`` reconstructs it. Cold tiles stay invisible. draw() uses RGB-only separate blend factors so destination
+    alpha is never written (see ``_begin_additive_rgb_only_blend``).
     """
 
     def __init__(self, grid_h: int, grid_w: int, ramp: BlackbodyRamp,
@@ -353,6 +356,7 @@ class HeatFieldOverlay:
         # [render.blackbody]). Render-only tuning; never touches the sim.
         self.ramp = ramp
         self.max_alpha = int(max_alpha)
+        # RGBA8 display colour: the legacy heat layer is display-referred.
         self.tex = core.create_dynamic_rgba_texture(grid_w, grid_h)
         self.packed = np.zeros((grid_h, grid_w, 4), dtype=np.uint8)
 
@@ -360,8 +364,9 @@ class HeatFieldOverlay:
                intensity_mod: Optional[np.ndarray] = None) -> None:
         """temperature: (H, W) Q16.16 int32 — ΔT above ambient (0 = cold).
 
-        Map through the black-body ramp, ACES tone-map the HDR emissive, and
-        pack to an additive RGBA texture. RENDER-ONLY: `temperature` is read,
+        Map through the black-body ramp, shape the HDR emissive with the
+        ACES curve into its display colour, and pack to an additive RGBA8
+        texture (the legacy heat layer, display space). RENDER-ONLY: `temperature` is read,
         never written. The packing math lives in renderer.blackbody
         (pyray-free / headless-testable); here we only upload it.
 

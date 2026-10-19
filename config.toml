@@ -1164,7 +1164,7 @@ heat_absorb    = 0.0                  # ACCEPTED GAP (P5c): a BAND absorber (H2O
 
 [gases.smoke]            # combustion soot (== today's generic smoke)
 absorption     = [0.88, 0.90, 0.93]   # near-neutral, slight blue tilt: thin soot reads warm/brown
-scatter_albedo = [0.04, 0.04, 0.04]   # soot barely scatters — it is the dark gas
+scatter_albedo = [0.22, 0.22, 0.22]   # soot single-scattering albedo ~0.2 in the visible: lit smoke reads charcoal-grey, not black (#91, Erik 2026-10-15; was 0.04)
 diffusion      = 0.10                 # heavier, clings
 decay          = 0.008                # lingers — soot settles slowly
 glow           = 0.0                  # cold soot does NOT glow; hot soot via emits_when_hot
@@ -1573,7 +1573,17 @@ sun_spread_deg = 10.0
 # light column for every other gas) under the same Beer-Lambert law, so a tile
 # that looks black is a tile light does not cross -- one number, no render scale.
 # The look of smoke is tuned at its source (soot_yield, the blast-smoke deposit).
-tau_curve_a = 1.0           # tau' = a*tau^b — artistic remap IN tau-SPACE
+# tau_curve_a 1.6 = graphics G0's MIGRATION of the smoke's look (#93 review).
+# Before G0 the medium darkened the floor in DISPLAY space (out = inscatter +
+# (1 - a) * floor, on 8-bit sRGB); in the linear HDR scene the same (1 - a)
+# darkens far less once encoded (in a pure power law (1 - a)^2.2 would match,
+# a = 2.2; ACES's toe makes the measured equivalent smaller). 1.6 is the value
+# whose look shots match the pre-G0 picture: fire_plume chroma 0.219 -> 0.217,
+# hue 27.6 -> 27.5 deg, bright-area radii within 1-4 %; at 1.0 the thinner
+# smoke let 13 % more lit floor through around the fires. 1.0 is the honest
+# "plume opacity == the light engine's extinction" (#12 handle 2) -- Erik's
+# call which to keep.
+tau_curve_a = 1.6           # tau' = a*tau^b — artistic remap IN tau-SPACE
 tau_curve_b = 1.0           #   (b>1 steepens edges; 1/1 = fully honest)
 glow_gain = 1.0             # re-match the beloved god-ray brightness (tune)
 effect_gas_floor = 0.0      # NON-PHYSICAL legibility floor, poison/teargas
@@ -1587,7 +1597,8 @@ adv_gain = 1.0              # k_adv: wind -> UV advection rate
 cycle_seconds = 2.5         # tau, from the 1/3-distortion rule
 erode_strength = 0.6        # low-density erosion depth
 warp_px = 3.0               # sampling-UV domain warp
-dither_on = true
+# (dither_on RETIRED at graphics G0 P1: the layer is RGBA16F and the world's
+#  ONE dither runs at the resolve, renderer/world_composite.py)
 
 [render.props]
 # 3D props & vegetation — WIND SWAY (arc #60 P4, design §4.3 "Sway (P4)").
@@ -1614,9 +1625,13 @@ idle_wind = 0.0          # floor on the wind fraction (0..1). ERIK'S RULING
                          # atmosphere motion (blast front, breach, vent), never
                          # ambient decoration. The dial stays for experiments
                          # (a planetside scene); >0 makes calm air breathe.
-wind_ref = 0.08          # tamed speed (tiles/tick) that counts as FULL sway;
-                         # = gas_detail's saturation ceiling (its largest
-                         # possible output), so the fraction lands in 0..1
+wind_ref = 0.08          # tamed speed (tiles/tick) that counts as FULL sway.
+                         # Was = gas_detail's saturation ceiling (its largest
+                         # output) until #51 (graphics G0 P2) put the tamed
+                         # wind on the honest m/s scale with a 1.4 ceiling;
+                         # kept at 0.08, full sway now arrives at ~1.4 m/s of
+                         # air (near the old curve's knee). The props' feel
+                         # call, not re-tuned by G0.
 
 # P4r2 — SWAY SCALES WITH GAS DENSITY (Erik's vented-room ruling, 2026-09-07):
 # "he vented a room to near-vacuum; the tamed wind velocity stayed large (the

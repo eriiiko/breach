@@ -1,0 +1,119 @@
+# tools/look_shots.toml — THE named look-shot set (graphics arc G0 P3;
+# docs/graphics_direction_2026-10-18.md §7, §8.1, §10).
+#
+# Every graphics patch renders this set BEFORE and AFTER and the implementer
+# looks at the PNGs before claiming the patch works. Erik judges the same
+# shots live (HUMAN-TEST). Never a second screenshot harness: add a row here.
+#
+#   C:/Users/steen/anaconda3/envs/data/python.exe tools/lighting_demo.py --shots
+#   ... --shots fire_plume,dark_corridor_lamp      (a subset, comma-separated)
+#   ... --shots --shots-out <dir>                  (default scratchpad/look/)
+#
+# Output: <dir>/<name>_<git-sha>.png (sha gets "+dirty" when tracked files
+# differ from HEAD). One fresh demo process per shot. A shot is fixed by
+# construction: one sim tick per rendered frame, seed 42, the studio panel's
+# CODE defaults (never a saved preset), the camera below, the HUD and panel
+# left out of the picture (the PNG is the map viewport only).
+#
+# Row keys:
+#   name, level, frames        frames = rendered frames = sim ticks
+#   center = [x, y], zoom      camera centre (tiles) + screen px per tile;
+#                              omit both to fit the whole map
+#   lamps, beacon              the level's lamp group / rotating beacons
+#   flashlight = {pos, intensity, spread}   the studio's cursor lamp pinned
+#                              at a tile, aimed east (+x); spread = full cone
+#                              width in radians. Omit = no flashlight.
+#   ignite / smoke / steam     tiles (3x3 patches) written before tick 1
+#   detonate = [x, y, frame]   the canonical frag grenade, before that frame
+#   light_gain                 override the studio's exposure: a number, or
+#                              "game" = [render.lighting] master_gain
+#   hide = ["heat", ...]       switch layers off to isolate the rest
+#                              (heat / smoke / water)
+#
+# Shots the §7 list asks for that this set does NOT have yet: none missing as
+# a scene, but "steam in a flashlight beam" is composed from studio actions
+# (a steam puff in a narrow pinned flashlight) rather than an authored room.
+
+[window]
+width = 1600          # the map viewport is width - the studio panel (340 px)
+height = 900
+
+# --- §7: dark corridor with one lamp ------------------------------------
+[[shot]]
+name = "dark_corridor_lamp"
+level = "fire_studio"
+frames = 24
+center = [10.5, 27.0]
+zoom = 48.0
+lamps = true
+beacon = false
+note = "fire_studio's walled corridor (x 3..18, y 26..28), its one cool lamp at the far end; the hall above it lit only by spill. The dark-scene reference: must match within dither across a tone-map change."
+
+# --- §7: fire + plume ----------------------------------------------------
+[[shot]]
+name = "fire_plume"
+level = "smoke_light_studio"
+frames = 72
+center = [14.5, 28.0]
+zoom = 48.0
+lamps = true
+beacon = true
+light_gain = "game"
+note = "the smoke-light studio's west hall 3 s in (= --warp 3.0): the large charge has just lit the crates, which burn white-hot in their own soot and warm the hall air. The clipping reference. (fire_studio's tool-ignited crate cluster only reaches T ~30 on this line -- too weak to judge a flame by.)"
+
+# --- §7: steam in a flashlight beam --------------------------------------
+[[shot]]
+name = "steam_flashlight"
+level = "fire_studio"
+frames = 24
+center = [22.0, 22.0]
+zoom = 40.0
+lamps = false
+beacon = false
+flashlight = { pos = [14.5, 22.5], intensity = 2.5, spread = 0.6 }
+steam = [[19, 22], [22, 22], [25, 22]]
+note = "lamps and beacon off; a narrow east-pointing flashlight through three steam puffs. The inscatter (god-ray) reference."
+
+# --- §7: explosion at +4 / +12 / +40 ticks -------------------------------
+[[shot]]
+name = "explosion_t04"
+level = "fire_studio"
+frames = 28
+center = [24.0, 16.0]
+zoom = 32.0
+lamps = true
+beacon = false
+detonate = [24, 16, 24]
+note = "frag grenade mid-hall at frame 24, shot 4 ticks later."
+
+[[shot]]
+name = "explosion_t12"
+level = "fire_studio"
+frames = 36
+center = [24.0, 16.0]
+zoom = 32.0
+lamps = true
+beacon = false
+detonate = [24, 16, 24]
+note = "same blast, 12 ticks later."
+
+[[shot]]
+name = "explosion_t40"
+level = "fire_studio"
+frames = 64
+center = [24.0, 16.0]
+zoom = 32.0
+lamps = true
+beacon = false
+detonate = [24, 16, 24]
+note = "same blast, 40 ticks later: the hanging smoke."
+
+# --- §10: the smoke-light studio -----------------------------------------
+[[shot]]
+name = "smoke_light_studio"
+level = "smoke_light_studio"
+frames = 72
+lamps = true
+beacon = true
+light_gain = "game"
+note = "the #12 still-picture level at tick 72 (= main.py --warp 3.0): three charges have fired, nine lights against the lying smoke. Whole map."

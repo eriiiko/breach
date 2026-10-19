@@ -141,7 +141,8 @@ def test_gas_table_values():
 
     # Scatter albedo (§6.2).
     assert np.allclose(tbl.scatter_albedo[STEAM], [0.92, 0.92, 0.95])
-    assert np.allclose(tbl.scatter_albedo[SMOKE], [0.04, 0.04, 0.04])
+    # soot 0.04 -> 0.22: Erik's #91 ruling (2026-10-15), ported with graphics G0.
+    assert np.allclose(tbl.scatter_albedo[SMOKE], [0.22, 0.22, 0.22])
     assert np.allclose(tbl.scatter_albedo[TEARGAS],     [0.88, 0.90, 0.92])
 
     # Per-gas diffusion + decay (§6.2) — the first 5 (trace) rows.

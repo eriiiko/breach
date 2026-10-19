@@ -234,6 +234,23 @@ def test_pack_brightness_monotone_in_temperature():
     assert np.all(np.diff(alpha) >= 0), f"alpha not monotone: {alpha.tolist()}"
 
 
+def test_pack_shapes_its_display_colour_with_the_resolves_curve():
+    """Property (graphics G0, the legacy heat layer's named exception): the
+    heat overlay adds ``max_alpha/255 * ACES(emissive)`` on screen, with
+    ACES = the world resolve's own curve (``blackbody.aces_curve``, the CPU
+    twin of shaders/world_resolve.fs). Breaks if the heat layer's curve and
+    the world's tone-map drift apart, or the pack stops being that display
+    colour (hue in RGB, brightness in alpha)."""
+    aces_curve = blackbody.aces_curve
+    r = BlackbodyRamp()
+    temps = _field([[900, 1500, 2500], [4000, 9000, 12000]])
+    packed = pack_emissive_rgba(r, temps).astype(np.float64)
+    shown = packed[..., :3] / 255.0 * packed[..., 3:4] / 255.0
+    rgb, inten = r.chroma_intensity(temps)
+    want = (220.0 / 255.0) * aces_curve(rgb * inten[..., None])
+    assert np.allclose(shown, want, atol=2.5 / 255.0)
+
+
 def test_pack_does_not_mutate_field():
     r = BlackbodyRamp()
     field = _field([[0, 3000], [6000, 12000]])
