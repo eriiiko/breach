@@ -714,7 +714,8 @@ class GameRenderer:
             # G1: the FLOOR species layer (steam, teargas, poison, fuel
             # vapour) -- below the water and the units, so marines wade in it.
             self.gas_relief.draw("floor", self.lighting,
-                                 self.world.world_px_w, self.world.world_px_h)
+                                 self.world.world_px_w, self.world.world_px_h,
+                                 tile_rect=self._relief_view_rect())
         elif self.show_smoke and not self.legacy_smoke_on:
             if self.gas_detail.enabled:
                 self.gas_detail.draw(
@@ -746,7 +747,8 @@ class GameRenderer:
         # props (Erik's ruling 2, 2026-10-18), still in the linear scene.
         if relief_on:
             self.gas_relief.draw("ceiling", self.lighting,
-                                 self.world.world_px_w, self.world.world_px_h)
+                                 self.world.world_px_w, self.world.world_px_h,
+                                 tile_rect=self._relief_view_rect())
 
         # ======= the ONE tone-map: ACES + encode + dither (resolve) =======
         self.world.resolve(encode_srgb=self.lighting.srgb_decode)
@@ -925,6 +927,17 @@ class GameRenderer:
         dst = rl.Rectangle(0, 0, float(self.world.world_px_w),
                            float(self.world.world_px_h))
         rl.draw_texture_pro(field_tex, src, dst, rl.Vector2(0, 0), 0.0, rl.WHITE)
+
+    def _relief_view_rect(self):
+        """The camera's view in tiles, plus a margin, for the relief pass
+        (graphics G1): its shader costs per world-RT pixel, so it draws only
+        what the one viewport can show. The margin covers a pan between this
+        compose and the blit."""
+        cam = self.camera
+        vw, vh = cam.visible_tiles()
+        m = 2.0
+        return (cam.pos_tile_x - m, cam.pos_tile_y - m,
+                cam.pos_tile_x + vw + m, cam.pos_tile_y + vh + m)
 
     def _draw_units_3d_world(self, marines: Sequence, zombies: Sequence,
                              props: Sequence = ()) -> bool:

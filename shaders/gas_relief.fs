@@ -48,8 +48,11 @@ in vec4 fragColor;
 
 uniform sampler2D texture0;   // the group's MEDIUM: rgb = glow share, a = tau' (occlusion)
 uniform sampler2D u_cover;    // rgb = surface albedo, a = extinction depth
-uniform sampler2D u_dyn;      // rg = tamed wind (tiles/tick), b = boil weight
-uniform sampler2D u_toplight; // rgb = the light over a column's top (gas_relief.top_light_field)
+uniform sampler2D u_dyn;      // rg = tamed wind (tiles/tick), b = boil weight,
+                              // a = FLOOR group's "smoke within 2 tiles" mask
+uniform sampler2D u_toplight; // rgb = the light over a column's top (gas_relief.top_light_field),
+                              // a = CEILING group's "smoke within 2 tiles" mask
+uniform int   u_group;        // 0 = floor, 1 = ceiling (which mask to read)
 uniform sampler2D u_light_a;  // rgb = incoming light, a = light_dir.x (toward the light)
 uniform sampler2D u_light_b;  // rgb = glow (unused here), a = light_dir.y
 uniform sampler2D u_billow;   // R = billow B, GB = warp, A = fine domes (REPEAT)
@@ -152,8 +155,8 @@ float billowRaw(vec2 p) {                     // p in tiles -> B in [0,1]
 // nothing and the width falls back to u_cov_soft e-folds: an even haze, never
 // a leopard of flecks (G1's first plume shots cut exactly that).
 const float GRAD_MAX = 8.0;          // |grad ln tau| clamp, e-folds per tile
-float lnTauAt(vec2 p) {
-    return log(max(textureBicubic(u_cover, p / u_grid, u_grid).a, 1e-6));
+float lnTauAt(vec2 p) {          // bilinear: the gradient is tile-scale
+    return log(max(texture(u_cover, p / u_grid).a, 1e-6));
 }
 // Returns (C, C_h): the coverage, and the softer coverage the HEIGHT rides
 // (H_SOFT x wider) -- a cloud's rim is rounded; a height that fell as sharply
@@ -168,26 +171,39 @@ vec2 coverageOf(float ln_tau, float grad, float b) {
 
 // The RELIEF HEIGHT at p (tiles), given the local |grad ln tau| (taken at
 // the pixel: the field is tile-scale, the taps sub-tile).
-float heightAt(vec2 p, float grad) {
-    float t = max(textureBicubic(u_cover, p / u_grid, u_grid).a, 0.0);
+float heightOf(float t, vec2 p, float grad) {
+    t = max(t, 0.0);
     float b = billowRaw(p);
     float c = coverageOf(log(max(t, 1e-6)), grad, b).y;
     return u_height * sqrt(clamp(t / u_height_tau, 0.0, 1.0))
          * (1.0 - u_billow_amp + u_billow_amp * b) * c;
+}
+// Bicubic depth for the normal taps (they must agree with the pixel's own
+// reconstruction), bilinear for the shadow march (soft by nature).
+float heightAt(vec2 p, float grad) {
+    return heightOf(textureBicubic(u_cover, p / u_grid, u_grid).a, p, grad);
+}
+float heightAtFast(vec2 p, float grad) {
+    return heightOf(texture(u_cover, p / u_grid).a, p, grad);
 }
 
 void main() {
     vec2 uv = fragTexCoord;
     vec2 tp = uv * u_grid;
 
+    // Early out on the group's mask (1 where this group has smoke within two
+    // tiles, CPU-dilated past the bicubic's reach): one bilinear tap, and
+    // an empty stretch of ship costs nothing more.
+    vec4 dyn = texture(u_dyn, uv);
+    vec4 top = texture(u_toplight, uv);
+    if ((u_group == 1 ? top.a : dyn.a) <= 0.0) discard;
+
     vec4 cov = textureBicubic(u_cover, uv, u_grid);
     float tau_ext = max(cov.a, 0.0);
-    // Early out: no smoke at all (the empty ship costs one bicubic tap).
     if (tau_ext <= 1e-5) discard;
     float ln_tau = log(max(tau_ext, 1e-6));
 
     // --- per-pixel clock state (Vlachos two-layer crossfade, two clocks) ---
-    vec4 dyn = texture(u_dyn, uv);
     vec2 wind = dyn.rg;                                   // tiles / tick
     g_boil = clamp(dyn.b, 0.0, 1.0);
     // Phase jitter: a smooth periodic fBm (the bake's B channel) at a coarse
@@ -256,7 +272,7 @@ void main() {
     // the smoke sideways; a column's top also sees the light passing over
     // it (the top-light field), by u_top_light.
     vec3 E_tile = max(la.rgb, vec3(0.0));
-    vec3 E_top = max(texture(u_toplight, uv).rgb, E_tile);
+    vec3 E_top = max(top.rgb, E_tile);
     vec3 E = mix(E_tile, E_top, u_top_light) * u_light_gain;
 
     // Wrap lighting, normalised to a FLAT top: a level smoke deck under a
@@ -283,7 +299,7 @@ void main() {
         float occ = 0.0;
         for (int k = 1; k <= SHADOW_STEPS; ++k) {
             float sk = u_shadow_len * float(k) / float(SHADOW_STEPS);
-            float hq = heightAt(tp + d * sk, grad);
+            float hq = heightAtFast(tp + d * sk, grad);
             occ = max(occ, clamp((hq - (h + sk * rise))
                                  / max(u_shadow_soft, 1e-4), 0.0, 1.0));
         }

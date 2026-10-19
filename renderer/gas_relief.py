@@ -328,16 +328,48 @@ def boil_field(temperature_game: np.ndarray, t0: float, t1: float
     return x * x * (3.0 - 2.0 * x)
 
 
-def pack_relief_dynamics(tamed_wind: np.ndarray, boil: np.ndarray
+def clip_tile_rect(tile_rect, grid_w: int, grid_h: int
+                   ) -> Tuple[int, int, int, int]:
+    """``tile_rect`` (x0, y0, x1, y1) clamped to the grid, as ints (floor
+    of the start, ceiling of the end); None -> the whole grid."""
+    if tile_rect is None:
+        return 0, 0, int(grid_w), int(grid_h)
+    x0, y0, x1, y1 = tile_rect
+    return (max(0, int(np.floor(x0))), max(0, int(np.floor(y0))),
+            min(int(grid_w), int(np.ceil(x1))),
+            min(int(grid_h), int(np.ceil(y1))))
+
+
+def presence_mask(tau_ext: np.ndarray, reach_tiles: int = 2) -> np.ndarray:
+    """(H, W) float32: 1 where the group has ANY extinction within
+    ``reach_tiles`` tiles (a square dilation), else 0. The shader discards a
+    pixel whose (bilinear) mask is exactly 0 before any other read, so the
+    reach must cover the bicubic reconstruction's support (2 texels) -- a
+    pixel it discards can see no smoke."""
+    m = np.asarray(tau_ext) > 0.0
+    r = int(reach_tiles)
+    h, w = m.shape
+    p = np.pad(m, r, mode="constant")
+    out = np.zeros_like(m)
+    for dy in range(2 * r + 1):
+        for dx in range(2 * r + 1):
+            out |= p[dy:dy + h, dx:dx + w]
+    return out.astype(np.float32)
+
+
+def pack_relief_dynamics(tamed_wind: np.ndarray, boil: np.ndarray,
+                         floor_mask: Optional[np.ndarray] = None
                          ) -> np.ndarray:
     """(H, W, 4) float16: RG = the tamed wind in tiles/tick (from
     ``gas_detail.tame_wind``, THE wind seam -- never re-derived here),
-    B = boil weight, A = 0."""
+    B = boil weight, A = the floor group's presence mask (0 if None)."""
     h, w = boil.shape
     out = np.zeros((h, w, 4), dtype=np.float16)
     out[..., 0] = tamed_wind[..., 0]
     out[..., 1] = tamed_wind[..., 1]
     out[..., 2] = boil
+    if floor_mask is not None:
+        out[..., 3] = floor_mask
     return out
 
 
@@ -357,7 +389,8 @@ class GasReliefPass:
         "u_jitter_wl", "u_cov_tau", "u_cov_edge", "u_cov_soft", "u_cov_push", "u_haze", "u_height",
         "u_height_tau", "u_billow_amp", "u_lamp_z", "u_wrap", "u_light_gain",
         "u_ambient", "u_shadow", "u_shadow_len", "u_shadow_soft", "u_powder",
-        "u_ao", "u_rim", "u_rim_g", "u_debug", "u_toplight", "u_top_light", "u_glow_texture",
+        "u_ao", "u_rim", "u_rim_g", "u_debug", "u_toplight", "u_top_light",
+        "u_glow_texture", "u_group",
     )
 
     def __init__(self, grid_h: int, grid_w: int, settings: ReliefSettings):
@@ -451,22 +484,26 @@ class GasReliefPass:
             self._members = (s.ceiling_gases,
                              group_members(self._optics.names, s.ceiling_gases))
         members = self._members[1]
+        masks = {}
         for g in GROUPS:
             medium, cover = relief_group_layers(
                 gas_density_trace, self._optics, glow, members[g],
                 tau_curve_a=tau_curve_a, tau_curve_b=tau_curve_b,
                 glow_gain=glow_gain, effect_gas_floor=effect_gas_floor)
             self._has[g] = bool((cover[..., 3] > 0).any())
+            masks[g] = presence_mask(cover[..., 3].astype(np.float32))
             if self._has[g]:
                 self._core.update_rgba16f_texture(self.medium_tex[g], medium)
                 self._core.update_rgba16f_texture(self.cover_tex[g], cover)
         self._top_packed[..., :3] = np.clip(
             top_light_field(light_rgb, s.top_light_tiles,
                             s.top_light_falloff), 0.0, _F16_MAX)
+        self._top_packed[..., 3] = masks["ceiling"]
         self._core.update_rgba16f_texture(self.top_tex, self._top_packed)
         boil = boil_field(temperature_game, s.boil_t0, s.boil_t1)
         self._core.update_rgba16f_texture(
-            self.dyn_tex, pack_relief_dynamics(tamed_wind, boil))
+            self.dyn_tex, pack_relief_dynamics(tamed_wind, boil,
+                                               masks["floor"]))
         base = advection_phase(int(sim_tick), cycle_seconds, ticks_per_second)
         hot = advection_phase(int(sim_tick), cycle_seconds / s.boil_speedup,
                               ticks_per_second)
@@ -500,9 +537,15 @@ class GasReliefPass:
                             rl.ffi.new("int[1]", [int(v)]),
                             rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
 
-    def draw(self, group: str, lighting, dst_w: int, dst_h: int) -> None:
+    def draw(self, group: str, lighting, dst_w: int, dst_h: int,
+             tile_rect: Optional[Tuple[int, int, int, int]] = None) -> None:
         """Draw one species layer over the world RT, premultiplied
-        (``out = src.rgb + dst * (1 - src.a)``, the volume operator)."""
+        (``out = src.rgb + dst * (1 - src.a)``, the volume operator).
+
+        ``tile_rect = (x0, y0, x1, y1)`` (tiles, end-exclusive) limits the
+        quad to that part of the world -- the camera's view: the shader costs
+        per world-RT pixel, and a big level's RT is several times a 1080p
+        screen. None draws the whole world."""
         if not self._has[group]:
             return
         rl, s = self._rl, self.settings
@@ -543,6 +586,7 @@ class GasReliefPass:
         self._f("u_rim_g", s.rim_g)
         self._f("u_glow_texture", s.glow_texture)
         self._i("u_debug", s.debug_view)
+        self._i("u_group", 1 if ceiling else 0)
 
         rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
         rl.begin_shader_mode(self.shader)
@@ -562,8 +606,14 @@ class GasReliefPass:
             rl.rl_enable_texture(tex.id)
             self._i(name, unit)
         rl.rl_active_texture_slot(0)
-        src = rl.Rectangle(0, 0, float(self.w), float(self.h))
-        dst = rl.Rectangle(0, 0, float(dst_w), float(dst_h))
+        x0, y0, x1, y1 = clip_tile_rect(tile_rect, self.w, self.h)
+        if x1 <= x0 or y1 <= y0:
+            rl.end_shader_mode()
+            rl.end_blend_mode()
+            return
+        ppx, ppy = float(dst_w) / self.w, float(dst_h) / self.h
+        src = rl.Rectangle(float(x0), float(y0), float(x1 - x0), float(y1 - y0))
+        dst = rl.Rectangle(x0 * ppx, y0 * ppy, (x1 - x0) * ppx, (y1 - y0) * ppy)
         # texture0 = the group's medium texture (glow share + occlusion depth)
         rl.draw_texture_pro(self.medium_tex[group], src, dst,
                             rl.Vector2(0, 0), 0.0, rl.WHITE)
@@ -586,6 +636,7 @@ class GasReliefPass:
 
 __all__ = [
     "GROUPS", "ReliefSettings", "relief_settings", "group_members",
-    "bulk_reflectance", "relief_group_layers", "top_light_field", "boil_field", "pack_relief_dynamics",
+    "bulk_reflectance", "relief_group_layers", "top_light_field",
+    "boil_field", "presence_mask", "clip_tile_rect", "pack_relief_dynamics",
     "GasReliefPass",
 ]
