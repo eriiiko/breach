@@ -477,26 +477,30 @@ class GameRenderer:
                 # (single source of scale).
                 trace = gas_fixed.dequantize_f32(gmap.gas[:N_TRACE_GASES])
                 self.gas_medium.update(trace, glow_field, gmap.gases)
-                # P3 detail: upload the TAMED wind (raw -grad(P) is fire-spiked +
-                # unusable as a velocity — see gas_detail.py) + the P2 density
-                # solidity, and advance the crossfade phase on the SIM clock
-                # (sim_tick, never wall time — replays render identically). Only
-                # when the pass is enabled (else the plain P2 layer draws).
+                # P3 detail: upload the TAMED wind (the m/s velocity planes on
+                # the honest tiles/tick scale, smoothed + saturated — see
+                # gas_detail.py, #51) + the P2 density solidity, and advance the
+                # crossfade phase on the SIM clock (sim_tick, never wall time —
+                # replays render identically). Only when the pass is enabled
+                # (else the plain P2 layer draws).
                 if self.gas_detail.enabled:
                     self.gas_detail.update(
                         self.gas_medium.density_proxy, gmap.wind_x, gmap.wind_y,
-                        sim_tick=int(sim_tick), sim_dt=self._sim_dt)
+                        sim_tick=int(sim_tick), sim_dt=self._sim_dt,
+                        tile_size_m=gmap.tile_size_m)
         # Props & vegetation arc #60 P4 — WIND SWAY input. The TAMED wind
         # (gas_detail.tame_wind: smooth -> direction -> saturating speed) is
         # the ONE render-side wind product; props sample it per prop at draw
-        # time. Raw gmap.wind_x/y is fire-spiked -grad(P) and never reaches a
-        # prop. Computed here because upload_state is where the renderer reads
+        # time. Raw gmap.wind_x/y (m/s, spiked at blast/fire cells) never
+        # reaches a prop. Computed here because upload_state is where the renderer reads
         # the sim (dequantize-at-the-render-read; nothing is written back), and
         # ONLY when the level actually placed props — the smoke path keeps its
         # own call inside GasDetailPass.update, so a prop-free ship is exactly
         # as expensive as it was before this patch.
         if self._props_seen and self.prop_renderer.ready:
-            self._prop_wind = tame_wind(gmap.wind_x, gmap.wind_y)
+            self._prop_wind = tame_wind(
+                gmap.wind_x, gmap.wind_y, tile_size_m=gmap.tile_size_m,
+                ticks_per_second=1.0 / self._sim_dt)
             self._prop_clock_s = float(sim_tick) * self._sim_dt
             # P4r2 (Erik's vented-room ruling 2026-09-07): sway is a momentum
             # flux, not a velocity — an evacuated room's fast residual gas

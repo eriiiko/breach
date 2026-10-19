@@ -1626,9 +1626,13 @@ idle_wind = 0.0          # floor on the wind fraction (0..1). ERIK'S RULING
                          # atmosphere motion (blast front, breach, vent), never
                          # ambient decoration. The dial stays for experiments
                          # (a planetside scene); >0 makes calm air breathe.
-wind_ref = 0.08          # tamed speed (tiles/tick) that counts as FULL sway;
-                         # = gas_detail's saturation ceiling (its largest
-                         # possible output), so the fraction lands in 0..1
+wind_ref = 0.08          # tamed speed (tiles/tick) that counts as FULL sway.
+                         # Was = gas_detail's saturation ceiling (its largest
+                         # output) until #51 (graphics G0 P2) put the tamed
+                         # wind on the honest m/s scale with a 1.4 ceiling;
+                         # kept at 0.08, full sway now arrives at ~1.4 m/s of
+                         # air (near the old curve's knee). The props' feel
+                         # call, not re-tuned by G0.
 
 # P4r2 — SWAY SCALES WITH GAS DENSITY (Erik's vented-room ruling, 2026-09-07):
 # "he vented a room to near-vacuum; the tamed wind velocity stayed large (the

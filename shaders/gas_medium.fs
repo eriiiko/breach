@@ -35,12 +35,12 @@
 // CLOCK = SIM TICK (u_phase is frac(tick / tau_ticks), computed CPU-side in
 // float64 — never a wall clock), so replays/spectators render identical smoke.
 //
-// WIND UNITS (critique finding): u_dynamics.rg is the wind ALREADY converted to
-// tiles-per-tick on the CPU: dequantize(gmap.wind Q16.16) * advection_rate * dt
-// (advection_rate = 900 == [physics].advection_rate, the SAME coefficient +
-// convention SmokeDynamics::step / the gas-T solver use). A layer's age is in
+// WIND UNITS (#51, graphics G0 P2): u_dynamics.rg is the TAMED wind ALREADY in
+// tiles-per-tick, from the CPU (renderer/gas_detail.py::tame_wind): the EOS
+// velocity planes (Q16.16 m/s) / tile_size_m / ticks_per_second, smoothed and
+// saturated against the plume's measured centroid drift. A layer's age is in
 // TICKS (phase * tau_ticks), so wind[tiles/tick] * age[ticks] is a tile
-// displacement that tracks the plume's own drift BY CONSTRUCTION.
+// displacement on the same scale as the plume's own drift.
 //
 // Credit (repo rule — cite what a file implements):
 //   - Alex Vlachos, "Water Flow in Portal 2", SIGGRAPH 2010 — two-layer flow-map
@@ -59,7 +59,7 @@ in vec4 fragColor;
 // draw texture here implicitly; we also bind it by name for the bicubic taps.
 uniform sampler2D u_layer;
 // Per-frame gas DYNAMICS (RGBA16F, grid res, BILINEAR+CLAMP):
-//   R,G = wind in TILES/TICK (dequantized * advection_rate * dt)
+//   R,G = the tamed wind in TILES/TICK (gas_detail.tame_wind)
 //   B   = density SOLIDITY in [0,1] (saturate of the pre-curve optical depth) —
 //         the erosion-weight field: 1 = solid core (untouched), 0 = wispy edge.
 uniform sampler2D u_dynamics;

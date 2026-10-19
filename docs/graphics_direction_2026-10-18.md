@@ -529,6 +529,20 @@ Base: G0 is cut from `fire-12` on branch `93-g0-foundations`
 (tracker #93) and merges back into `fire-12` `--no-ff` after Erik's
 HUMAN-TEST. `main` gets it when `fire-12` merges, and that is Erik's call.
 
+- **2026-10-19, G0 P2 (#51), the wind measurement.** `tame_wind` now reads
+  the planes as m/s and converts with `v / tile_size_m / tps` (0.333 m,
+  24 tps: 1 m/s = 0.125 tiles/tick). `tools/wind_drift_probe.py` on the
+  smoke-light studio (ticks 0-168) and a fire_studio frag blast (ticks
+  24-120): the plume's tau-weighted centroid drifts **0.12-0.78 tiles/tick
+  while a blast moves the air and ~0.01 once it settles**; the plume-weighted
+  honest speed is 0.5-4.6 (blast) and 0.07-0.4 (settled sloshing). The old
+  dials capped the visual drift at 0.08, ~10x too slow in a blast (median
+  |log(visual/centroid)| 0.81 over 215 source-free 6-tick windows). Retuned to
+  `v_ref 1.4, v_sens 3.0` tiles/tick: median 0.25, mean 0.40, a broad
+  valley along `v_ref/v_sens` ~0.35-0.5. Smears at blast speeds (the
+  crossfade cycle was sized for 0.08) are a HUMAN-TEST item; `cycle_seconds`
+  is the dial.
+
 ### 10.1 Systems (G0)
 
 **(a) Existing canonical systems G0 must use:**
