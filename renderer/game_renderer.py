@@ -247,7 +247,9 @@ class GameRenderer:
         # [render] blackbody_overlay_on).
         self.blackbody_ramp = BlackbodyRamp.from_config(CFG)
         self.temperature_overlay = HeatFieldOverlay(
-            cfg.grid_h, cfg.grid_w, self.blackbody_ramp)
+            cfg.grid_h, cfg.grid_w, self.blackbody_ramp,
+            weight=float(getattr(getattr(CFG, "render", None),
+                                 "heat_glow_weight", 0.28)))
         # T_abs compression-work arc, P-W2 (design D-7/B-F13/C12): the cold
         # tier. HeatFieldOverlay above is additive-emissive and structurally
         # cannot show T_rel < 0 (additive blending only adds light) — this is
@@ -608,12 +610,25 @@ class GameRenderer:
                       doors: Sequence = (),
                       props: Sequence = (),
                       overlay_fn=None) -> None:
-        """Draw every world-space layer into the world RT.
+        """Draw every world-space layer into the world render targets.
 
-        Order: lit ship (diffuse + normal + light), smoke, fire, units,
-        projectiles, waypoints, visual effects, grid. Each is drawn at
-        world-pixel coordinates inside the RT — no camera math; the RT
-        IS the world.
+        Two stages (graphics arc G0 P1, renderer/world_composite.py):
+
+        * SCENE -- linear HDR into the RGBA16F scene RT: lit ship (diffuse +
+          normal + light), the gas medium, the black-body heat, the water,
+          then the 3D units + props (+ their shadows) in one shared 3D pass.
+          No layer here tone-maps or encodes.
+        * ``world.resolve()`` -- the ONE ACES + gamma encode + dither, into
+          the RGBA8 display RT.
+        * DISPLAY -- authored display-sRGB colours, blended in display space:
+          the debug/legacy colormaps (legacy smoke + glow, the flat-orange
+          fire, pressure, cold), the dev doors, waypoints, sprite units (the
+          2D fallback), projectiles, effects, the grid, then ``overlay_fn``.
+          These sit ABOVE the 3D units now (before G0, doors, waypoints and
+          the debug maps were drawn under them).
+
+        Each is drawn at world-pixel coordinates inside the RT — no camera
+        math; the RT IS the world.
 
         Clear color is fully transparent so vacuum/breach areas (where the
         shader discards) show through to the screen-fixed background.
@@ -630,12 +645,17 @@ class GameRenderer:
         ``renderer.static_props.placements_from_entities(sim.entities, ...)``.
         Drawn in the SAME shared 3D pass as the units (one batch flush, one
         depth buffer); zero cost when empty.
+
+        ``overlay_fn(world_px_per_tile)`` draws in the DISPLAY stage: it is
+        for UI in authored colours. Lit 3D geometry goes in through
+        ``props`` (it must reach the scene RT, before the tone-map).
         """
         # #9: re-blit the tiles whose topology changed (drained in
         # upload_state) before the lit ship samples the art.
         if self._pending_tile_patches:
             self._apply_tile_patches()
 
+        # ================= SCENE: linear HDR (RGBA16F) =================
         self.world.begin(clear_color=(0, 0, 0, 0))
 
         # 1. Lit ship — covers the entire world RT
@@ -647,40 +667,68 @@ class GameRenderer:
                 world_px_h=self.world.world_px_h,
             )
 
-        # 2. Smoke + fire overlays — stretched to world RT bounds.
-        # Smoke is packed with PREMULTIPLIED alpha (see FieldOverlay.update),
-        # so we draw it with BLEND_ALPHA_PREMULTIPLY for correct Porter-Duff
-        # compositing — preserves the destination alpha (ship stays opaque)
-        # instead of Raylib's default BLEND_ALPHA which reduces dest alpha
-        # when src alpha < 1.
-        if self.show_smoke:
-            if self.legacy_smoke_on:
-                # LEGACY (pre-B2) A/B path: flat premultiplied smoke + a separate
-                # additive god-ray glow. Two draws, two blend modes.
-                rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
-                self._draw_overlay_to_world(self.smoke_overlay.tex)
-                rl.end_blend_mode()
-                # GlowOverlay.draw sets its own RGB-only additive blend (dstA is
-                # never written, else vacuum tiles saturate opaque under the
-                # premultiplied blit — overlays._begin_additive_rgb_only_blend).
-                self.glow_overlay.draw(
+        # 2. B2 physical gas medium: ONE premult-over layer (C = inscatter +
+        # T·bg), linear HDR inscatter. Occlusion (alpha) and inscatter (RGB)
+        # composite in a single BLEND_ALPHA_PREMULTIPLY draw — no double-
+        # count, and the real per-tile alpha leaves vacuum tiles untouched (no
+        # additive alpha-saturation hazard). P3: when the detail shader is
+        # enabled the layer is drawn THROUGH it (bicubic + advected-noise
+        # wisps), same premult blend; enabled=false bypasses the shader for the
+        # plain P2 draw. Both own their blend. (The LEGACY smoke A/B path is a
+        # display-referred grey and draws after the resolve, below.)
+        if self.show_smoke and not self.legacy_smoke_on:
+            if self.gas_detail.enabled:
+                self.gas_detail.draw(
+                    self.gas_medium.tex,
                     0, 0, self.world.world_px_w, self.world.world_px_h)
             else:
-                # B2 physical gas medium: ONE premult-over layer (C = inscatter +
-                # T·bg). Occlusion (alpha) and inscatter (RGB) composite in a
-                # single BLEND_ALPHA_PREMULTIPLY draw — no double-count, and the
-                # real per-tile alpha leaves vacuum tiles untouched (no additive
-                # alpha-saturation hazard). P3: when the detail shader is enabled
-                # the layer is drawn THROUGH it (bicubic + advected-noise wisps),
-                # same premult blend; enabled=false bypasses the shader for the
-                # plain P2 draw (byte-for-byte the P2 look). Both own their blend.
-                if self.gas_detail.enabled:
-                    self.gas_detail.draw(
-                        self.gas_medium.tex,
-                        0, 0, self.world.world_px_w, self.world.world_px_h)
-                else:
-                    self.gas_medium.draw(
-                        0, 0, self.world.world_px_w, self.world.world_px_h)
+                self.gas_medium.draw(
+                    0, 0, self.world.world_px_w, self.world.world_px_h)
+        # 3. Black-body heat (engine/06): ADDITIVE linear emissive over
+        # gmap.temperature, drawn BEFORE units so they stay readable on top of
+        # the heat glow. Off-by-toggle (T).
+        if self.show_temperature:
+            self.temperature_overlay.draw(
+                0, 0, self.world.world_px_w, self.world.world_px_h)
+        # 4. Water OPTICS pass (graphics/water_rendering.md §5): the GLSL
+        # Fresnel/GGX/refraction pass, after the field layers, before units
+        # (the squad reads over the water; the lit ship beneath is the floor
+        # sample). It binds the lighting pass's light textures + the level
+        # diffuse and draws premultiplied, linear; the shader emits alpha 0 on
+        # dry tiles so this is a no-op with no standing water (dormant-safe).
+        # Off-by-toggle (V).
+        if self.show_water and self.textures.diffuse:
+            self.water_pass.draw(
+                self.textures.diffuse,
+                self.lighting.light_tex_a, self.lighting.light_tex_b,
+                world_px_w=self.world.world_px_w,
+                world_px_h=self.world.world_px_h,
+                anim_t=time.perf_counter() - self._anim_t0)
+        # 5. 3D units + props (+ projected shadows): the shared 3D pass.
+        drew_units_3d = self._draw_units_3d_world(units_marines, units_zombies,
+                                                  props)
+
+        # ======= the ONE tone-map: ACES + encode + dither (resolve) =======
+        self.world.resolve(encode_srgb=self.lighting.srgb_decode)
+
+        # ============ DISPLAY: authored sRGB colours (RGBA8) ============
+        # 6. Debug / legacy colormaps. Their colours are display values (a
+        # flat grey smoke, a red-blue pressure ramp), so they blend over the
+        # tone-mapped picture exactly as they did over the old 8-bit world.
+        if self.show_smoke and self.legacy_smoke_on:
+            # LEGACY (pre-B2) A/B path: flat premultiplied smoke + a separate
+            # additive god-ray glow. Two draws, two blend modes. Smoke is packed
+            # PREMULTIPLIED (FieldOverlay.update), drawn with
+            # BLEND_ALPHA_PREMULTIPLY so the ship's destination alpha stays
+            # opaque.
+            rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
+            self._draw_overlay_to_world(self.smoke_overlay.tex)
+            rl.end_blend_mode()
+            # GlowOverlay.draw sets its own RGB-only additive blend (dstA is
+            # never written, else vacuum tiles saturate opaque under the
+            # premultiplied blit — overlays._begin_additive_rgb_only_blend).
+            self.glow_overlay.draw(
+                0, 0, self.world.world_px_w, self.world.world_px_h)
         if self.show_fire:
             rl.begin_blend_mode(rl.BlendMode.BLEND_ADDITIVE)
             self._draw_overlay_to_world(self.fire_overlay.tex)
@@ -693,36 +741,14 @@ class GameRenderer:
             self.pressure_overlay.draw_into_world_rt(
                 self.world.world_px_w, self.world.world_px_h
             )
-        # Debug temperature overlay (engine/06): additive black-body ramp over
-        # gmap.temperature. Drawn AFTER the field overlays but BEFORE units so
-        # units stay readable on top of the heat glow. Off-by-toggle (T).
-        if self.show_temperature:
-            # Cold tier FIRST (P-W2, D-7): alpha-blended UNDER the additive
-            # heat pass, same toggle. T_rel is never both cold and hot at once
-            # per pixel, so "under" is about draw order, not overlap — this
-            # pass paints sub-ambient cells blue before the heat pass adds its
-            # (zero, for those same cells) emissive contribution on top.
-            if self.show_cold:
-                self.cold_overlay.draw(
-                    0, 0, self.world.world_px_w, self.world.world_px_h)
-            self.temperature_overlay.draw(
+        # Cold tier (P-W2, D-7): the diverging blue ramp, same toggle as the
+        # heat. T_rel is never both cold and hot at once per pixel, so its
+        # place after the heat is about draw order, not overlap.
+        if self.show_temperature and self.show_cold:
+            self.cold_overlay.draw(
                 0, 0, self.world.world_px_w, self.world.world_px_h)
-        # Water OPTICS pass (graphics/water_rendering.md §5): the GLSL
-        # Fresnel/GGX/refraction pass, in the slot the CPU WaterFieldOverlay
-        # used to draw (after the field overlays, before units — the squad
-        # reads over the water; the lit ship beneath is the floor sample). It
-        # binds the lighting pass's light textures + the level diffuse and
-        # draws premultiplied; the shader emits alpha 0 on dry tiles so this is
-        # a no-op with no standing water (dormant-safe). Off-by-toggle (V).
-        if self.show_water and self.textures.diffuse:
-            self.water_pass.draw(
-                self.textures.diffuse,
-                self.lighting.light_tex_a, self.lighting.light_tex_b,
-                world_px_w=self.world.world_px_w,
-                world_px_h=self.world.world_px_h,
-                anim_t=time.perf_counter() - self._anim_t0)
 
-        # 2b. A6 dev door draw (a6 doors design §14, N4 honest-minimal):
+        # 7. A6 dev door draw (a6 doors design §14, N4 honest-minimal):
         # closed door tiles get a flat amber fill, open spans a thin
         # outline (something to aim the O key at), destroyed doors
         # nothing. Render-read only — `doors` is the sim's DoorRuntime
@@ -730,10 +756,12 @@ class GameRenderer:
         if doors:
             self._draw_doors_world(doors)
 
-        # 3. Units, waypoints, projectiles, effects, grid — drawn in world-pixel space
+        # 8. Waypoints, sprite units (the 2D fallback when the 3D pass did not
+        # draw the units), projectiles, effects, grid — world-pixel space.
         if orders_phase1 or orders_phase2:
             self._draw_orders_world(orders_phase1, orders_phase2, current_phase)
-        self._draw_units_world(units_marines, units_zombies, props)
+        if not drew_units_3d:
+            self._draw_unit_sprites_world(units_marines, units_zombies)
         if projectiles:
             self._draw_projectiles_world(projectiles)
         # Visual effects (tracers, explosions, hit splats) — driven by
@@ -744,9 +772,10 @@ class GameRenderer:
 
         # World-space overlay hook. A control scheme with its own interface
         # (OnePhaseWEGO's ui/ package — teal paths, holograms, cones, marks)
-        # draws here, INSIDE the world RT, so the camera transforms it exactly
-        # like everything else. ``None`` (every shipped caller) costs one
-        # falsy check, and the renderer never learns what the callback draws.
+        # draws here, INSIDE the world RT (display stage), so the camera
+        # transforms it exactly like everything else. ``None`` (every shipped
+        # caller) costs one falsy check, and the renderer never learns what
+        # the callback draws.
         if overlay_fn is not None:
             overlay_fn(self.world.world_px_per_tile)
 
@@ -848,25 +877,17 @@ class GameRenderer:
                            float(self.world.world_px_h))
         rl.draw_texture_pro(field_tex, src, dst, rl.Vector2(0, 0), 0.0, rl.WHITE)
 
-    def _draw_units_world(self, marines: Sequence, zombies: Sequence,
-                          props: Sequence = ()) -> None:
+    def _draw_units_3d_world(self, marines: Sequence, zombies: Sequence,
+                             props: Sequence = ()) -> bool:
+        """The SCENE-stage unit/prop draw: the shared 3D pass (lit 3D units,
+        props, projected shadows), linear HDR into the scene RT. Returns True
+        when the 3D units were drawn -- False means the caller draws the 2D
+        sprite fallback (:meth:`_draw_unit_sprites_world`) in the display
+        stage (graphics G0 P1 split the old ``_draw_units_world``)."""
         wpt = self.world.world_px_per_tile
         lmap = self.lighting.light_map
         H, W = lmap.shape
-        # Same ambient floor the lit-ship shader uses (lighting.fs does
-        # diffuse * (ambient + incoming_rgb * ndotl)). light_map is the
-        # render-side scalar brightness (max over the RGB channels). Without
-        # this, units in unlit rooms are pitch-black while the ship around
-        # them still shows a faint ambient baseline — visually mismatched.
         amb = self.lighting.ambient
-        amb_floor = (amb[0] + amb[1] + amb[2]) / 3.0
-        def light_at(u):
-            # Sample at the unit's center tile (footprint // 2 offset).
-            fp = int(getattr(u, "footprint", 3))
-            cx = int(u.x) + fp // 2
-            cy = int(u.y) + fp // 2
-            base = float(lmap[cy, cx]) if (0 <= cx < W and 0 <= cy < H) else 0.0
-            return amb_floor + base
 
         # Patch 0 — per-channel RGB provider for the 3D marines. Sample the SAME
         # baked RGB light field the ship shader reads (self.lighting.light_rgb,
@@ -964,8 +985,30 @@ class GameRenderer:
                         n_ambient_q=self._prop_n_ambient_q)
             finally:
                 rl.end_mode_3d()
-            if draw_units_3d:
-                return
+        return draw_units_3d
+
+    def _draw_unit_sprites_world(self, marines: Sequence,
+                                 zombies: Sequence) -> None:
+        """The DISPLAY-stage 2D sprite fallback (no 3D units): sprites in
+        authored sRGB, dimmed by the CPU light scalar, drawn after the
+        resolve."""
+        wpt = self.world.world_px_per_tile
+        lmap = self.lighting.light_map
+        H, W = lmap.shape
+        # Same ambient floor the lit-ship shader uses (lighting.fs does
+        # diffuse * (ambient + incoming_rgb * ndotl)). light_map is the
+        # render-side scalar brightness (max over the RGB channels). Without
+        # this, units in unlit rooms are pitch-black while the ship around
+        # them still shows a faint ambient baseline — visually mismatched.
+        amb = self.lighting.ambient
+        amb_floor = (amb[0] + amb[1] + amb[2]) / 3.0
+        def light_at(u):
+            # Sample at the unit's center tile (footprint // 2 offset).
+            fp = int(getattr(u, "footprint", 3))
+            cx = int(u.x) + fp // 2
+            cy = int(u.y) + fp // 2
+            base = float(lmap[cy, cx]) if (0 <= cx < W and 0 <= cy < H) else 0.0
+            return amb_floor + base
 
         for m in marines:
             if not getattr(m, "alive", True):

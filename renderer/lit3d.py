@@ -5,11 +5,15 @@ the marine's skinned glTF body; next: static props/vegetation; later: 3D
 walls) shares three things, extracted here so a second 3D consumer never
 forks them:
 
-  * ``_COMMON_GLSL`` — the sRGB decode/encode + ACES tone-map GLSL helpers,
-    string-concatenated into a consumer's fragment shader. Kept numerically
-    identical to ``shaders/lighting.fs`` (which keeps its OWN inline copies —
-    golden-gated, never touched by this module) so every 3D-lit thing
-    tone-maps and gamma-matches the 2D ship exactly.
+  * ``_COMMON_GLSL`` — the sRGB DECODE GLSL helper, string-concatenated into
+    a consumer's fragment shader. Kept numerically identical to
+    ``shaders/lighting.fs`` (which keeps its OWN inline copy) so every
+    3D-lit thing decodes its albedo exactly as the 2D ship does. Since
+    graphics arc G0 P1 a 3D consumer writes LINEAR, un-tone-mapped HDR into
+    the RGBA16F scene RT, like every world layer: the ONE tone-map + encode
+    runs at ``WorldComposite.resolve()`` (``shaders/world_resolve.fs``), so
+    this block carries no tone-map and no encode -- a consumer that adds
+    either is the bug (``tests/test_one_tonemap.py``).
   * ``LightFieldCtx`` — the ship's baked light field (``light_tex_a`` /
     ``light_tex_b`` + world dims + ambient/gain), built once per frame by
     ``game_renderer`` from its ``LightingPass`` + ``WorldComposite`` (single
@@ -42,24 +46,14 @@ from dataclasses import dataclass
 
 import pyray as rl
 
-# Shared helpers — string-concatenated into a consumer's fragment shader. Kept
-# numerically identical to shaders/lighting.fs so every 3D-lit thing
-# tone-maps and gamma-matches the ship exactly, without forking the
-# golden-gated file.
+# Shared helper — string-concatenated into a consumer's fragment shader. Kept
+# numerically identical to shaders/lighting.fs so every 3D-lit thing decodes
+# its albedo as the ship does. No tone-map, no encode: the world resolve owns
+# both (G0 P1).
 _COMMON_GLSL = """
-// Cheap sRGB <-> linear (gamma 2.2), matching shaders/lighting.fs.
+// Cheap sRGB -> linear (gamma 2.2), matching shaders/lighting.fs. Output stays
+// linear HDR: WorldComposite.resolve() tone-maps and encodes, once.
 vec3 srgb_to_linear(vec3 c) { return pow(c, vec3(2.2)); }
-vec3 linear_to_srgb(vec3 c) { return pow(c, vec3(1.0 / 2.2)); }
-
-// ACES filmic tone-map (Narkowicz), identical to shaders/lighting.fs.
-vec3 aces_tonemap(vec3 x) {
-    const float a = 2.51;
-    const float b = 0.03;
-    const float c = 2.43;
-    const float d = 0.59;
-    const float e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-}
 """
 
 

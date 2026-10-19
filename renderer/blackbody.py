@@ -55,58 +55,46 @@ from simulation.fire_fixed import FP_ONE_F as TEMP_SCALE
 # ray-engine-v2 P6c deleted it).
 
 
-def aces_tonemap(x: np.ndarray) -> np.ndarray:
-    """ACES filmic tone-map (Narkowicz approximation), per-channel.
-
-    Compresses HDR emissive (chroma * intensity, which runs past 1) toward
-    [0, 1] while staying punchy/saturated, instead of per-channel clipping that
-    would hue-shift a bright warm glow toward white. Same constants as
-    shaders/lighting.fs :func:`aces_tonemap`, so the CPU heat overlay and the
-    GPU-lit scene share one tone-map curve. Render-layer, determinism-exempt.
-    """
-    a, b, c, d, e = 2.51, 0.03, 2.43, 0.59, 0.14
-    x = np.asarray(x, dtype=np.float32)
-    return np.clip((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0)
+# Largest finite float16 -- an HDR value past it would upload as +inf.
+_F16_MAX = float(np.finfo(np.float16).max)
 
 
 def pack_emissive_rgba(ramp: "BlackbodyRamp", temperature: np.ndarray,
-                       max_alpha: int = 220,
+                       weight: float = 1.0,
                        intensity_mod: "Optional[np.ndarray]" = None
                        ) -> np.ndarray:
-    """Q16.16 temperature field -> additive RGBA8 texture bytes (H, W, 4).
+    """Q16.16 temperature field -> additive LINEAR-HDR RGBA16F texels (H, W, 4).
 
     The pure-numpy packing behind :class:`renderer.overlays.HeatFieldOverlay`,
     factored out here (pyray-free) so it is headless-testable without a GL
-    context. Maps temperature through the black-body ramp, ACES tone-maps the
-    HDR emissive (``chroma * intensity``), then splits the tone-mapped colour
-    into a peak-normalized hue (RGB) and a brightness weight (alpha) so the
-    RGB-only additive draw's ``rgb * alpha`` reconstructs the tone-mapped
-    emissive. Cold tiles -> brightness ~0 -> alpha 0 -> invisible. RENDER-ONLY:
-    ``temperature`` is read, never written.
+    context. Maps temperature through the black-body ramp to the HDR
+    emissive ``chroma * intensity`` (which runs past 1) and packs it as
+    LINEAR light: RGB = emissive * ``weight`` (the overlay's emissive weight,
+    ``[render] heat_glow_weight``), A = 1, so the RGB-only additive draw
+    (``SRC_ALPHA, ONE``) adds exactly that RGB into the scene RT. Cold tiles
+    -> intensity 0 -> RGB 0 -> invisible. RENDER-ONLY: ``temperature`` is
+    read, never written.
+
+    Graphics arc G0 P1: this used to ACES-tone-map the emissive into 8 bits
+    and split it into a hue (RGB) and a brightness (alpha); added onto an
+    already tone-mapped floor, the sum re-clipped to white (#74). Now the
+    emissive reaches the RGBA16F scene RT intact and the ONE tone-map runs at
+    the world resolve, on the floor and the fire together.
 
     ``intensity_mod`` (Fire & Heat Beauty B2 P4, the dirty-Planck speckle seam):
     an optional (H, W) multiplicative field applied to the black-body INTENSITY
-    BEFORE the tone-map — the honest spot for a sooty flame (a dirtier flame
-    radiates less; ACES then compresses the mottle more in the white-hot core,
-    more visible at the cooler edges). ``None`` (the B1 default) is a strict
-    no-op: the pack is byte-for-byte identical to before. Because it scales the
-    intensity, a cold tile (intensity 0) stays invisible regardless of the mod.
-    See :mod:`renderer.speckle`.
+    (a dirtier flame radiates less). ``None`` (the B1 default) is a strict
+    no-op. Because it scales the intensity, a cold tile (intensity 0) stays
+    invisible regardless of the mod. See :mod:`renderer.speckle`.
     """
     rgb, inten = ramp.chroma_intensity(temperature)
     if intensity_mod is not None:
         inten = inten * np.asarray(intensity_mod, dtype=inten.dtype)
     emissive = rgb * inten[..., None]              # HDR linear (can exceed 1)
-    tm = aces_tonemap(emissive)                    # (h,w,3) 0..1 — the add colour
-    bright = tm.max(axis=-1)                        # (h,w) 0..1 brightness
-    denom = np.where(bright > 1e-6, bright, 1.0)
-    rgb_disp = tm / denom[..., None]                # hue at peak = 1
-    h, w = bright.shape
-    packed = np.empty((h, w, 4), dtype=np.uint8)
-    packed[..., 0] = (rgb_disp[..., 0] * 255.0).astype(np.uint8)
-    packed[..., 1] = (rgb_disp[..., 1] * 255.0).astype(np.uint8)
-    packed[..., 2] = (rgb_disp[..., 2] * 255.0).astype(np.uint8)
-    packed[..., 3] = (bright * float(max_alpha)).astype(np.uint8)
+    h, w = inten.shape
+    packed = np.empty((h, w, 4), dtype=np.float16)
+    packed[..., :3] = np.clip(emissive * float(weight), 0.0, _F16_MAX)
+    packed[..., 3] = 1.0
     return packed
 
 

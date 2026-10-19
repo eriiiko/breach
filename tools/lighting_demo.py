@@ -133,10 +133,7 @@ from simulation.gases import STEAM, SMOKE
 from level_lights import LightSpec, monotonic_total_tick, partition_lights
 from renderer import frame_lights
 from renderer.hover_readout import pack_hover_readout
-from renderer.gas_detail import tame_wind
-from renderer.lit3d import LightFieldCtx, make_camera
-from renderer.static_props import (PropPlacement, StaticPropRenderer,
-                                   SwaySettings)
+from renderer.static_props import PropPlacement, SwaySettings
 
 # ---------------------------------------------------------------------------
 # Preset file location
@@ -196,7 +193,6 @@ DEFAULTS = {
     "gd_cycle_seconds": 2.5,
     "gd_erode_strength": 0.6,
     "gd_warp_px": 3.0,
-    "gd_dither_on": True,
     "speckle_mode": 2.0,     # stepped slider: 0=off 1=noise 2=soot
     "speckle_amp": 0.25,
     "soot_yield": 0.3,       # mirror of [physics.combustion]; LIVE-wired, P5
@@ -1282,17 +1278,15 @@ def main() -> None:
           "(O intentionally unused)")
 
     # ---- 3b. Props & vegetation (arc #60 P2) ----
-    # StaticPropRenderer owns the model cache + the prop shader; the garden is
-    # a hardcoded placement list (P3 brings the real prop entity + loader
-    # plumbing). Built here, AFTER the GL context exists and after the --perf
-    # early-return so the perf pass is unaffected.
-    prop_renderer = StaticPropRenderer(cfg.world_px_per_tile,
-                                       level.tile_size_m)
-    prop_renderer.load()
+    # The garden is a hardcoded placement list drawn by the RENDERER'S OWN
+    # StaticPropRenderer through compose_world(props=...) -- the game's path
+    # (one shared 3D pass with the units, the renderer's tamed wind and its
+    # gas-density sway). Graphics G0 P1 made that the only honest path: a lit
+    # prop must reach the HDR scene RT before the one tone-map, and
+    # compose_world's overlay_fn hook now runs AFTER it (display stage, UI).
+    prop_renderer = renderer.prop_renderer
     demo_garden, garden_tile = build_demo_garden(level, sim.gmap,
                                                  cfg.world_px_per_tile)
-    prop_cam3d = make_camera(renderer.world.world_px_w,
-                             renderer.world.world_px_h)
     if "--props" in sys.argv:
         # Park the 2D camera on the garden so it is on screen at frame 1
         # (this is the HUMAN-TEST vehicle; hunting for the trees is not part
@@ -1447,7 +1441,6 @@ def main() -> None:
         state.set("gd_erode_strength",
                   float(getattr(_gd, "erode_strength", 0.6)))
         state.set("gd_warp_px", float(getattr(_gd, "warp_px", 3.0)))
-        state.set("gd_dither_on", bool(getattr(_gd, "dither_on", True)))
     if _sp is not None:
         _mode_idx = {"off": 0.0, "noise": 1.0, "soot": 2.0}.get(
             str(getattr(_sp, "mode", "soot")), 2.0)
@@ -1775,7 +1768,6 @@ def main() -> None:
             gd.cycle_seconds = float(state.get("gd_cycle_seconds"))
             gd.erode_strength = float(state.get("gd_erode_strength"))
             gd.warp_px = float(state.get("gd_warp_px"))
-            gd.dither_on = bool(state.get("gd_dither_on"))
 
             # ---- Sync the B2 dirty-Planck speckle amp LIVE (P4) ----
             # The `amp` slider drives the flame-mottle depth immediately (render-
@@ -1866,44 +1858,20 @@ def main() -> None:
             )
 
             # ---- Draw ----
-            # Props ride compose_world's world-space overlay hook: the callback
-            # runs INSIDE the open world RT, so the props are drawn into the
-            # same target, at the same world-pixel coordinates, through the
-            # same tone-map as everything else — which is exactly the honest
-            # HUMAN-TEST condition. (P3 gives compose_world a real `props=`
-            # keyword; this tool needs no engine change to exercise P2.)
-            def _draw_props(_wpt: float) -> None:
-                # P4r sway. The wind is the TAMED product
-                # (gas_detail.tame_wind) and NOTHING ELSE — the same seam the
-                # real path uses, computed here from the demo's own live sim.
-                # No demo breeze, no floor: still air, still leaves (Erik's
-                # spaceship ruling). Detonate (R + click) to make wind. Dials
-                # are re-read from CFG every frame: edit [render.props] and hit
-                # Ctrl+R to retune live.
-                t_sway = float(total_tick) * sim_time_per_tick
-                wind = tame_wind(sim.gmap.wind_x, sim.gmap.wind_y)
-                prop_renderer.sway = SwaySettings.from_config(CFG)
-                prop_renderer.draw_props(
-                    demo_garden, prop_cam3d,
-                    time_s=t_sway, wind_field=wind,
-                    ctx=LightFieldCtx(
-                        tex_a=renderer.lighting.light_tex_a,
-                        tex_b=renderer.lighting.light_tex_b,
-                        world_px_w=float(renderer.world.world_px_w),
-                        world_px_h=float(renderer.world.world_px_h),
-                        ambient=renderer.lighting.ambient,
-                        light_gain=renderer.lighting.light_gain,
-                        normal_y_sign=(-1.0 if renderer.normal_y_flipped
-                                       else 1.0),
-                    ))
-
+            # Props go in through compose_world(props=...): the renderer's own
+            # shared 3D pass, lit by the real light field into the HDR scene
+            # RT, through the one tone-map -- the honest HUMAN-TEST condition.
+            # P4r sway rides the renderer's TAMED wind (gas_detail.tame_wind,
+            # refreshed in upload_state) and NOTHING ELSE: still air, still
+            # leaves (Erik's spaceship ruling); detonate (R + click) to make
+            # wind. [render.props] is re-read from CFG every frame (Ctrl+R).
             renderer.begin_frame()
             renderer.compose_world(
                 units_marines=sim.marines(),
                 units_zombies=sim.zombies(),
                 projectiles=sim.projectiles,
-                overlay_fn=(_draw_props if (state.props_on
-                                            and prop_renderer.ready) else None),
+                props=(demo_garden if (state.props_on
+                                       and prop_renderer.ready) else ()),
             )
 
             renderer.draw_background_to_screen()
@@ -1940,8 +1908,8 @@ def main() -> None:
                 # its live setters are actually exercised (not just dormant).
                 break
     finally:
-        # GL resources must go while the context is still alive.
-        prop_renderer.unload()
+        # GL resources must go while the context is still alive (the
+        # renderer unloads its own prop renderer).
         renderer.shutdown()
 
     if auto:
@@ -2104,7 +2072,6 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     y = _slider(state, "gd_cycle_seconds", "Cycle s", 0.5, 6.0, x, y)
     y = _slider(state, "gd_erode_strength", "Erode", 0.0, 1.0, x, y)
     y = _slider(state, "gd_warp_px", "Warp px", 0.0, 8.0, x, y)
-    y = _checkbox(state, "gd_dither_on", "Dither", x, y)
     y = _slider(state, "speckle_mode", "Speckle F10", 0.0, 2.0, x, y)
     y = _slider(state, "speckle_amp", "Speckle amp", 0.0, 1.0, x, y)
 

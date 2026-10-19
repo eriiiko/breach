@@ -359,8 +359,7 @@ void main() {
     float rim = pow(1.0 - max(0.0, dot(N, u_view_dir)), u_rim_power);
     lit += u_rim_strength * rim * (u_ambient + incoming_rgb * u_light_gain);
 
-    lit = aces_tonemap(lit);
-    if (u_srgb_decode == 1) lit = linear_to_srgb(lit);
+    // Linear HDR out (G0 P1): the world resolve tone-maps and encodes, once.
 
     // alpha = 1.0: the world RT is blitted premultiplied, and the vertex
     // alpha carries flutter DATA, not transparency.

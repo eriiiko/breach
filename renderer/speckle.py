@@ -257,8 +257,9 @@ class SpeckleField:
 
         ``mod = clip(1 + amplitude · signed_noise, 0, inf)`` — a signed mottle
         around 1.0: bright grains where incandescent soot glows, dark grains where
-        it self-absorbs. Multiplied onto the black-body intensity BEFORE the ACES
-        tone-map (the honest spot: a dirtier flame radiates less), so cold tiles
+        it self-absorbs. Multiplied onto the black-body intensity (the honest
+        spot: a dirtier flame radiates less; the world resolve tone-maps the
+        result, graphics G0 P1), so cold tiles
         (intensity 0) stay invisible regardless of the speckle."""
         if self.mode == "off" or self.amp <= 0.0:
             return None

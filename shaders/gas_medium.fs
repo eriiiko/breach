@@ -27,9 +27,10 @@
 //    tile lattice.
 //  - BICUBIC reconstruction (cubic B-spline via 4 bilinear taps, Sigg-Hadwiger)
 //    of the low-res layer + density textures kills the bilinear diamond-stars.
-//  - DITHER of the thin-gradient range against 8-bit banding (jitter texture is
-//    the dither source), gated on u_dither_on, masked to where the layer has
-//    content so vacuum tiles stay clean.
+//  - OUTPUT is LINEAR HDR into the RGBA16F scene RT (graphics G0 P1): no
+//    clamp to 1, no dither -- the ONE tone-map + dither is the world resolve
+//    (shaders/world_resolve.fs). The 8-bit-banding dither that lived here
+//    went with the 8-bit layer.
 //
 // CLOCK = SIM TICK (u_phase is frac(tick / tau_ticks), computed CPU-side in
 // float64 — never a wall clock), so replays/spectators render identical smoke.
@@ -54,7 +55,7 @@
 in vec2 fragTexCoord;
 in vec4 fragColor;
 
-// texture0: the P2 premultiplied layer (RGBA8, BILINEAR+CLAMP). raylib binds the
+// texture0: the P2 premultiplied layer (RGBA16F linear HDR, BILINEAR+CLAMP). raylib binds the
 // draw texture here implicitly; we also bind it by name for the bicubic taps.
 uniform sampler2D u_layer;
 // Per-frame gas DYNAMICS (RGBA16F, grid res, BILINEAR+CLAMP):
@@ -64,7 +65,8 @@ uniform sampler2D u_layer;
 uniform sampler2D u_dynamics;
 // Tiling fBm noise (RGBA8, REPEAT+BILINEAR): R = coverage noise, GB = warp vec.
 uniform sampler2D u_fbm;
-// Static white-noise jitter (RGBA8, REPEAT+POINT): R = phase jitter, G = dither.
+// Static white-noise jitter (RGBA8, REPEAT+POINT): R = phase jitter (G unused
+// since the dither moved to the world resolve, G0 P1).
 uniform sampler2D u_jitter;
 
 uniform vec2  u_grid;         // (grid_w, grid_h) — fragTexCoord * u_grid = tiles
@@ -74,10 +76,7 @@ uniform float u_phase;        // crossfade phase in [0,1) (frac(tick/tau_ticks))
 uniform float u_tau_ticks;    // cycle length in ticks (cycle_seconds * tps)
 uniform float u_erode;        // erode_strength: low-density erosion depth [0,1]
 uniform float u_warp_tiles;   // domain-warp magnitude in tiles (warp_px / 24)
-uniform int   u_dither_on;    // 1 = dither the thin-gradient range
-uniform float u_dither_amp;   // dither amplitude (~1.5/255)
 uniform float u_jitter_wl;    // phase-jitter sample wavelength in tiles (coarse)
-uniform float u_dither_scale; // dither sample scale (fine, per-pixel-ish)
 
 out vec4 finalColor;
 
@@ -163,15 +162,7 @@ void main() {
     // coverage, so an eroded gap loses its glow AND its shadow together.
     vec4 outc = layer * coverage;
 
-    // --- DITHER the thin-gradient range (break 8-bit banding) ----------------
-    // Masked by the layer's content (alpha or glow) so fully-empty vacuum tiles
-    // stay exactly transparent-black (no tint leak).
-    if (u_dither_on == 1) {
-        float lum = max(layer.a, max(layer.r, max(layer.g, layer.b)));
-        float mask = smoothstep(0.0, 0.02, lum);
-        float d = (texture(u_jitter, uv * u_dither_scale).g - 0.5) * u_dither_amp;
-        outc += vec4(d) * mask;
-    }
-
-    finalColor = clamp(outc, 0.0, 1.0);
+    // Linear HDR out (G0 P1): the inscatter may exceed 1 (the resolve
+    // tone-maps it); only the occlusion is a fraction.
+    finalColor = vec4(max(outc.rgb, vec3(0.0)), clamp(outc.a, 0.0, 1.0));
 }

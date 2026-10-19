@@ -188,6 +188,9 @@ def test_from_config_missing_section_uses_defaults():
 
 
 # ---- P2: the overlay packing (headless, no GL) -------------------------
+# Graphics G0 P1: the pack is LINEAR HDR float16 (RGB = emissive * weight,
+# A = 1) for the RGBA16F overlay texture; the one tone-map runs at the world
+# resolve. Brightness lives in RGB now, not in alpha.
 
 pack_emissive_rgba = blackbody.pack_emissive_rgba
 
@@ -197,16 +200,20 @@ def _field(t_game_grid):
 
 
 def test_pack_shape_and_dtype():
+    """Property: the pack is (H, W, 4) float16 -- the RGBA16F upload. Breaks if
+    the overlay goes back to an 8-bit pack (which cannot carry HDR)."""
     r = BlackbodyRamp()
     packed = pack_emissive_rgba(r, _field([[0, 100], [3000, 9000]]))
     assert packed.shape == (2, 2, 4)
-    assert packed.dtype == np.uint8
+    assert packed.dtype == np.float16
 
 
 def test_pack_cold_is_transparent():
+    """Property: a cold tile adds no light (RGB 0 under the additive draw).
+    Breaks if the pack adds a floor/bias to cold tiles."""
     r = BlackbodyRamp()
     packed = pack_emissive_rgba(r, np.zeros((4, 4), dtype=np.int32))
-    assert np.all(packed[..., 3] == 0)      # alpha 0 everywhere -> invisible
+    assert np.all(packed[..., :3] == 0)     # adds nothing -> invisible
 
 
 def test_pack_warm_tile_is_warm_and_visible():
@@ -218,20 +225,34 @@ def test_pack_warm_tile_is_warm_and_visible():
     # blue-white (test_chroma_desaturates_with_temperature), which isn't what
     # this test is checking.
     packed = pack_emissive_rgba(r, _field([[1500]]))
-    px = packed[0, 0]
-    assert px[3] > 0                        # visible
-    assert int(px[0]) >= int(px[2])         # red >= blue (warm)
-    assert px[:3].max() == 255              # peak-normalized hue
+    px = packed[0, 0].astype(np.float32)
+    assert px[:3].max() > 0                 # visible (adds light)
+    assert px[0] >= px[2]                   # red >= blue (warm)
 
 
 def test_pack_brightness_monotone_in_temperature():
+    """Property: hotter never packs dimmer (peak RGB channel non-decreasing
+    in T). Breaks if the emissive's intensity ramp is inverted or clipped
+    non-monotonically."""
     r = BlackbodyRamp()
-    # Alpha (brightness) is non-decreasing with temperature across a ramp of
-    # tiles spanning cold -> extreme.
     temps = [0, 300, 800, 1500, 3000, 6000, 12000]
     packed = pack_emissive_rgba(r, _field([temps]))
-    alpha = packed[0, :, 3].astype(np.int32)
-    assert np.all(np.diff(alpha) >= 0), f"alpha not monotone: {alpha.tolist()}"
+    peak = packed[0, :, :3].astype(np.float32).max(axis=-1)
+    assert np.all(np.diff(peak) >= 0), f"not monotone: {peak.tolist()}"
+
+
+def test_pack_is_linear_hdr_not_tone_mapped():
+    """Property (G0 P1, the one-tone-map rule): the pack is the LINEAR
+    emissive -- RGB scales exactly with the weight and runs past 1.0 on hot
+    tiles. Breaks if a tone-map (ACES or any compressive curve) creeps back
+    into the pack: a tone-mapped value can never exceed 1 and doubling the
+    weight would not double it."""
+    r = BlackbodyRamp()
+    temps = _field([[1500, 3000, 9000]])
+    one = pack_emissive_rgba(r, temps, 1.0).astype(np.float32)[..., :3]
+    two = pack_emissive_rgba(r, temps, 2.0).astype(np.float32)[..., :3]
+    np.testing.assert_allclose(two, 2.0 * one, rtol=2e-3)
+    assert one.max() > 1.0                  # HDR: a white-hot tile exceeds 1
 
 
 def test_pack_does_not_mutate_field():

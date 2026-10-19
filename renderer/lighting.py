@@ -233,7 +233,10 @@ class LightingPass:
 
     def set_srgb_decode(self, on: bool):
         """When True, treat the diffuse texture as sRGB-encoded and do lighting
-        math in linear space, re-encoding on output."""
+        math in linear space. The matching re-encode is no longer this
+        shader's: it runs once, at WorldComposite.resolve(), which reads
+        ``self.srgb_decode`` (graphics G0 P1 -- one tone-map, one encode)."""
+        self.srgb_decode = bool(on)
         val = rl.ffi.new("int[1]", [1 if on else 0])
         rl.set_shader_value(self.shader, self._loc_srgb_decode, val,
                             rl.ShaderUniformDataType.SHADER_UNIFORM_INT)

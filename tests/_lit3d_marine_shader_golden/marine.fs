@@ -1,7 +1,8 @@
 #version 330
 // Lit-marine fragment shader — samples the ship's baked light field on the
 // marine's TRUE mesh normals. Mirrors shaders/lighting.fs's field unpack +
-// composite + tone-map, adapted to a Y-up 3D mesh with half-Lambert + rim.
+// composite, adapted to a Y-up 3D mesh with half-Lambert + rim. Writes linear
+// HDR into the scene RT; the world resolve tone-maps (G0 P1).
 in vec2 fragTexCoord;
 in vec3 fragWorldPos;
 in vec3 fragWorldNormal;
@@ -32,19 +33,9 @@ uniform float u_normal_strength;   // P2 perturbation strength (feel knob)
 out vec4 finalColor;
 
 
-// Cheap sRGB <-> linear (gamma 2.2), matching shaders/lighting.fs.
+// Cheap sRGB -> linear (gamma 2.2), matching shaders/lighting.fs. Output stays
+// linear HDR: WorldComposite.resolve() tone-maps and encodes, once.
 vec3 srgb_to_linear(vec3 c) { return pow(c, vec3(2.2)); }
-vec3 linear_to_srgb(vec3 c) { return pow(c, vec3(1.0 / 2.2)); }
-
-// ACES filmic tone-map (Narkowicz), identical to shaders/lighting.fs.
-vec3 aces_tonemap(vec3 x) {
-    const float a = 2.51;
-    const float b = 0.03;
-    const float c = 2.43;
-    const float d = 0.59;
-    const float e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-}
 
 
 // Tangent-free TBN from screen-space derivatives of world-pos + UV (Schüler,
@@ -135,8 +126,7 @@ void main() {
     vec3 rim_col = mix(vec3(1.0), albedo, u_rim_albedo);
     lit += u_rim_strength * rim * rim_col * (u_ambient + incoming_rgb * u_light_gain);
 
-    lit = aces_tonemap(lit);
-    if (u_srgb_decode == 1) lit = linear_to_srgb(lit);
+    // Linear HDR out (G0 P1): the world resolve tone-maps and encodes, once.
 
     // alpha = 1.0: the world RT is blitted premultiplied; a translucent marine
     // would bleed the background through (design v2 §Bugs). The texture's

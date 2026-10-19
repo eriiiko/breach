@@ -14,4 +14,7 @@ is needed. From the repo root:
 
 Re-captures: 2026-09-06 (#60 P1, the oracle); 2026-10-04 (#33, the rim takes the albedo,
 `u_rim_albedo`); 2026-10-04 (#33, the gloss highlight: the albedo's alpha is the gloss mask,
-`u_gloss_strength` / `u_gloss_shininess`).
+`u_gloss_strength` / `u_gloss_shininess`); 2026-10-19
+(#93 graphics G0 P1, one HDR world RT + one tone-map: the marine writes linear HDR into the
+RGBA16F scene RT; its `aces_tonemap` + `linear_to_srgb` output lines and the two helpers left
+`_COMMON_GLSL` for `WorldComposite.resolve()`).

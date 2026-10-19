@@ -1442,6 +1442,17 @@ height_floor = 0.3
 # colormap (F7) now ships OFF by default (it washed the scene out — Erik's
 # call) but is one keypress away when you want to see shockwaves.
 blackbody_overlay_on = true
+# The black-body overlay's emissive WEIGHT in the linear HDR scene (graphics
+# G0 P1). A layer weight, not an exposure (the one exposure is
+# [render.lighting] master_gain). Before G0 the overlay ACES'd its emissive
+# into 8 bits and added it, never gamma-encoded, onto the encoded floor with a
+# 220/255 ceiling; composited in linear light that same emissive reads far
+# brighter in its dim range (hot air glowed across whole rooms). 0.28 is the
+# MIGRATION value: the linear weight whose new display best matches the
+# pre-G0 display over a dark floor (least squares over intensity 0.02..8,
+# rms 0.054 of full scale; a pure gain fit best, exponent 1.0). Look-neutral
+# at G0; Erik retunes from here.
+heat_glow_weight = 0.28
 fire_overlay_on = false
 pressure_overlay_on = false
 cold_overlay_on = false    # P-W2 blue cold tier — the #8 cold-blast instrument.
@@ -1587,7 +1598,8 @@ adv_gain = 1.0              # k_adv: wind -> UV advection rate
 cycle_seconds = 2.5         # tau, from the 1/3-distortion rule
 erode_strength = 0.6        # low-density erosion depth
 warp_px = 3.0               # sampling-UV domain warp
-dither_on = true
+# (dither_on RETIRED at graphics G0 P1: the layer is RGBA16F and the world's
+#  ONE dither runs at the resolve, renderer/world_composite.py)
 
 [render.props]
 # 3D props & vegetation — WIND SWAY (arc #60 P4, design §4.3 "Sway (P4)").

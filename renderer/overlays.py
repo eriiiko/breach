@@ -332,36 +332,40 @@ class HeatFieldOverlay:
     with the physical black-body primitive (:class:`renderer.blackbody.
     BlackbodyRamp`): temperature -> pseudo-Kelvin -> normalized chroma * a
     separate T⁴ HDR intensity. The HDR emissive (``chroma * intensity``, which
-    runs past 1) is ACES tone-mapped — the SAME curve the lighting shader uses —
-    so a bright warm core reads white-hot instead of clipping to flat orange, and
-    the colour reads the physics by eye (a fire yellows with O2, reddens as it
-    starves).
+    runs past 1) is uploaded as LINEAR light into an RGBA16F texture and added
+    into the RGBA16F scene RT (graphics G0 P1); the world resolve's ONE ACES
+    then tone-maps the floor and the fire together, so a bright warm core
+    reads white-hot instead of clipping to flat orange, and the colour reads
+    the physics by eye (a fire yellows with O2, reddens as it starves).
 
-    Drawn ADDITIVELY: the tone-mapped colour is split into a peak-normalized hue
-    (packed RGB) and a brightness weight (packed alpha), so the additive result
-    ``rgb * alpha`` reconstructs the tone-mapped emissive. Alpha carries the
-    intensity/brightness curve, so cold tiles stay invisible and hot tiles glow.
-    draw() uses RGB-only separate blend factors so destination alpha is never
-    written (see ``_begin_additive_rgb_only_blend``).
+    Drawn ADDITIVELY: RGB = the emissive, A = 1, so the RGB-only additive
+    blend adds exactly the emissive; cold tiles pack RGB 0 and stay
+    invisible. draw() uses RGB-only separate blend factors so destination
+    alpha is never written (see ``_begin_additive_rgb_only_blend``).
     """
 
     def __init__(self, grid_h: int, grid_w: int, ramp: BlackbodyRamp,
-                 max_alpha: int = 220):
+                 weight: float = 1.0):
         self.h = grid_h
         self.w = grid_w
         # The shared black-body primitive (built once in the renderer from
         # [render.blackbody]). Render-only tuning; never touches the sim.
         self.ramp = ramp
-        self.max_alpha = int(max_alpha)
-        self.tex = core.create_dynamic_rgba_texture(grid_w, grid_h)
-        self.packed = np.zeros((grid_h, grid_w, 4), dtype=np.uint8)
+        # The emissive's weight in the linear scene ([render] heat_glow_weight,
+        # read by the renderer) -- this layer's own dial, NOT an exposure: the
+        # one exposure is u_light_gain.
+        self.weight = float(weight)
+        # RGBA16F (G0 P1): the emissive is linear HDR, tone-mapped once at
+        # the world resolve.
+        self.tex = core.create_dynamic_rgba16f_texture(grid_w, grid_h)
+        self.packed = np.zeros((grid_h, grid_w, 4), dtype=np.float16)
 
     def update(self, temperature: np.ndarray,
                intensity_mod: Optional[np.ndarray] = None) -> None:
         """temperature: (H, W) Q16.16 int32 — ΔT above ambient (0 = cold).
 
-        Map through the black-body ramp, ACES tone-map the HDR emissive, and
-        pack to an additive RGBA texture. RENDER-ONLY: `temperature` is read,
+        Map through the black-body ramp and pack the HDR emissive, linear, to
+        an additive RGBA16F texture. RENDER-ONLY: `temperature` is read,
         never written. The packing math lives in renderer.blackbody
         (pyray-free / headless-testable); here we only upload it.
 
@@ -371,9 +375,9 @@ class HeatFieldOverlay:
         byte-for-byte as before — the ``off`` speckle mode + the game/harness
         that never built a SpeckleField both leave this None.
         """
-        self.packed = pack_emissive_rgba(self.ramp, temperature, self.max_alpha,
+        self.packed = pack_emissive_rgba(self.ramp, temperature, self.weight,
                                          intensity_mod=intensity_mod)
-        core.update_rgba_texture(self.tex, self.packed)
+        core.update_rgba16f_texture(self.tex, self.packed)
 
     def draw(self, dst_x: int, dst_y: int, dst_w: int, dst_h: int) -> None:
         # Additive passes must not write destination alpha (BLEND_ADDITIVE

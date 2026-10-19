@@ -16,7 +16,8 @@ Texture units bound (4; ``WaterPass`` proves 5 works here):
   0 u_layer     - the P2 premultiplied RGBA8 layer (the draw texture; BILINEAR)
     u_dynamics  - per-frame RGBA16F: RG = wind tiles/tick, B = density solidity
     u_fbm       - baked tiling fBm (REPEAT+BILINEAR): R coverage, GB warp
-    u_jitter    - baked white noise (REPEAT+POINT): R phase jitter, G dither
+    u_jitter    - baked white noise (REPEAT+POINT): R phase jitter (G unused --
+                  the dither moved to the world resolve, graphics G0 P1)
 
 WIND UNITS — the critique's premise was EMPIRICALLY WRONG, corrected here.
 ``gmap.wind_x`` / ``wind_y`` are int32 Q16.16 planes of raw ``-grad(P)``. The
@@ -70,7 +71,6 @@ _FP_ONE_F = float(1 << 16)
 _FBM_SIZE = 256
 _JITTER_SIZE = 64
 _FBM_PERSISTENCE = 0.56           # Kolmogorov-flavoured roll-off (design §6)
-_DITHER_AMP = 1.5 / 255.0         # ~half an 8-bit step, breaks banding
 
 # Wind TAMING (see module header): the raw -grad(P) is fire-spiked + unusable as
 # a velocity, so we smooth it, take the direction, and give a small saturating
@@ -149,7 +149,7 @@ class GasDetailPass:
                  enabled: bool = True, noise_octaves: int = 4,
                  noise_wavelength_tiles: float = 3.0, adv_gain: float = 1.0,
                  cycle_seconds: float = 2.5, erode_strength: float = 0.6,
-                 warp_px: float = 3.0, dither_on: bool = True):
+                 warp_px: float = 3.0):
         self.h = grid_h
         self.w = grid_w
         # Live-tunable dials (plain attributes, mutated by the harness sliders —
@@ -162,7 +162,6 @@ class GasDetailPass:
         self.cycle_seconds = float(cycle_seconds)
         self.erode_strength = float(erode_strength)
         self.warp_px = float(warp_px)
-        self.dither_on = bool(dither_on)
         # Wind-taming calibration (not a config dial — the user dial is adv_gain,
         # which multiplies the drift in the shader). See the module header.
         self.wind_v_ref = _WIND_VREF
@@ -171,8 +170,6 @@ class GasDetailPass:
         # Domain-warp is authored in "screen px at the reference 24 px/tile"
         # (design), converted to tiles here so the shader stays resolution-clean.
         self._px_per_tile_ref = 24.0
-        # Dither granularity: a few cells per tile after the bicubic upscale.
-        self._dither_scale = float(max(grid_w, grid_h)) * 3.0
         # Phase-jitter sample wavelength (tiles): coarse -> spatially smooth, so
         # it desyncs the crossfade across the screen without adding shimmer.
         self._jitter_wl = 2.0
@@ -193,10 +190,7 @@ class GasDetailPass:
         self._loc_tau_ticks = self._lookup("u_tau_ticks")
         self._loc_erode     = self._lookup("u_erode")
         self._loc_warp      = self._lookup("u_warp_tiles")
-        self._loc_dither_on = self._lookup("u_dither_on")
-        self._loc_dither_amp = self._lookup("u_dither_amp")
         self._loc_jitter_wl = self._lookup("u_jitter_wl")
-        self._loc_dither_scale = self._lookup("u_dither_scale")
 
         # --- per-frame dynamics texture (RG wind tiles/tick, B density) ------
         self.dyn_packed = np.zeros((grid_h, grid_w, 4), dtype=np.float16)
@@ -231,7 +225,6 @@ class GasDetailPass:
             cycle_seconds=float(gi("cycle_seconds", 2.5)),
             erode_strength=float(gi("erode_strength", 0.6)),
             warp_px=float(gi("warp_px", 3.0)),
-            dither_on=bool(gi("dither_on", True)),
         )
 
     # ---- texture helpers ------------------------------------------------
@@ -350,10 +343,7 @@ class GasDetailPass:
         self._set_f(self._loc_tau_ticks, self._tau_ticks)
         self._set_f(self._loc_erode, self.erode_strength)
         self._set_f(self._loc_warp, self.warp_px / self._px_per_tile_ref)
-        self._set_i(self._loc_dither_on, 1 if self.dither_on else 0)
-        self._set_f(self._loc_dither_amp, _DITHER_AMP)
         self._set_f(self._loc_jitter_wl, self._jitter_wl)
-        self._set_f(self._loc_dither_scale, self._dither_scale)
 
         rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
         rl.begin_shader_mode(self.shader)

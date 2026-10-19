@@ -35,7 +35,8 @@
 //   u_r0                   Fresnel reflectance at normal incidence (~0.02)
 //   u_water_color          deep-water tint colour (the volume colour at depth)
 //   u_light_z              light-direction z (shared with lighting.fs)
-//   u_srgb_decode          1 = decode sRGB diffuse to linear, re-encode out
+//   u_srgb_decode          1 = decode sRGB diffuse to linear (output stays
+//                          linear HDR: the world resolve encodes, G0 P1)
 //   u_ripple_scale         metres-of-ripple -> normal-slope gain
 //   u_texel                1/grid (x,y): neighbour tap offset for the gradient
 //   u_art_uv_rect          art-UV subrect (matches lighting.fs; default 0,0,1,1)
@@ -153,7 +154,6 @@ uniform float u_height_floor;
 out vec4 finalColor;
 
 vec3 srgb_to_linear(vec3 c) { return pow(c, vec3(2.2)); }
-vec3 linear_to_srgb(vec3 c) { return pow(c, vec3(1.0 / 2.2)); }
 
 // Ambient sine lattice (ported from overlays.py:183-185 _WAVES) — three
 // directions so the idle shimmer never reads as stripes. Returns a height
@@ -423,9 +423,8 @@ void main() {
         finalColor = vec4(0.0);
         return;
     }
-    if (u_srgb_decode == 1) {
-        base  = linear_to_srgb(base);
-        glint = linear_to_srgb(glint);
-    }
+    // Linear HDR out (G0 P1): the world resolve tone-maps and encodes, once,
+    // for the water and the floor together -- before G0 the water encoded
+    // here but skipped the floor's ACES, so the two disagreed on exposure.
     finalColor = vec4(base * alpha + glint, alpha);
 }
