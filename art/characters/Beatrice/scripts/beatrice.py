@@ -658,8 +658,33 @@ DELTOID_SEAM = dict(front=1.334, back=1.312, back_line=BACK_LINE,
 
 # broad body forms under the suit (x0, z0, side, sx, sz, height): the bust and the seat's
 # roundness, nothing anatomical beyond them
-FORMS = ((0.060, 1.286, "front", 0.044, 0.040, 0.035),
+# B1b-B1m's bust (kept as the shape `b1m`): one Gaussian a side on the chest rows' own shelf -- one flat shelf across the chest
+# in front, a cone with a high apex in the side view, 20 mm further forward than the owner's profile reference
+BUST_B1M = (0.060, 1.286, "front", 0.044, 0.040, 0.035)
+# B1n (the owner, 2026-10-19: "the breasts could use some more work"; the profile reference concept-upper-body-side-v2.png,
+# "do not go larger"): the bust as a DESIGNED field (bodysuit.bust_form), two natural volumes in a soft valley at the zip. Every
+# length in metres, front-view x (her left) and height z. Measured target (PROVENANCE B1n): v2 scaled by the collar's base and
+# the front waist -- apex 131 mm in front of the body's centre at about 1.28, the lower curve round and tucking into a fold at
+# about 1.24, the upper slope 118 / 100 / 79 mm at 1.32 / 1.34 / 1.36
+BUST = dict(
+    # each breast a dome: its apex (x, z) in the front view, half-widths inwards / outwards (blended over +-w), half-heights
+    # below / above (blended over +-w), height T over the wall and fullness c (the lower curve's roundness), the bell above
+    # from dz on (p, w, dz): the upper slope
+    apex=(0.072, 1.287), a=(0.080, 0.058, 0.02), b=(0.050, 0.095, 0.03), h=(0.017, 0.7), upper=(3.0, 0.025, 0.03),
+    # the wall's fillet with them: the fold under (k_low), the upper slope over (k_up), across z +-w; their union at the centre
+    k=(0.005, 0.008, 1.29, 0.04), kv=0.012,
+    # the chest wall taken back between and above the breasts (B1m's rows stood out as a shelf: 125 mm at the centre at 1.28,
+    # the breasts 151): depth by height inside the window (z0, ramp, z1, ramp), faded to nothing across by x = X. Nothing
+    # under 1.185 nor over 1.405 (the collar is laid on the plain loft from 1.40) moves; under the fold
+    # it eases in over 5 cm (at most 1.4 mm under 1.21): a window starting AT the fold left B1m's convex underbust as a ridge
+    # over a dish (a ring in the reflections under the zip's valley)
+    wall=dict(z=((1.20, -0.002), (1.22, -0.004), (1.24, -0.007), (1.26, -0.009), (1.29, -0.009), (1.32, -0.008), (1.35, -0.007),
+                 (1.38, -0.005)),
+              win=(1.185, 0.05, 1.405, 0.03), x=0.11),
+)
+FORMS = (BUST,
          SEAT)
+SHAPES["b1m"] = dict(bust=BUST_B1M)   # B1n: the before (`--shape b1m`)
 
 
 def dims(shape=None):
@@ -680,7 +705,7 @@ def dims(shape=None):
                   # the bare hand (charkit/parts.py::bare_hand): its defaults are her slender hand (B1h and before; kept, unused)
                   bare=dict(),
                   fitted=FITTED_HAND),
-        forms=(FORMS[0], sh.get("seat", FORMS[1])) + FORMS[2:],
+        forms=(sh.get("bust", FORMS[0]), sh.get("seat", FORMS[1])) + FORMS[2:],
         midline=None if "rows" in sh else sh.get("midline"),
         midplane=None if "rows" in sh else sh.get("midplane", MIDPLANE),
         garment=dict(

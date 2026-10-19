@@ -743,3 +743,48 @@ before finalising, a model in the concept's pose. The body's GEOMETRY does not c
 
   (58 s for the five shots, 15 s the hot one; freezing and posing 4 s.) `--draft` for a quarter-size loop (about 6 s).
   The raw RGBA renders go to `$TEMP/Beatrice_posed`.
+
+## B1n: the bust, and the profile (2026-10-19, the owner's words of 2026-10-19)
+
+The owner on `posed_vs_concept.jpg`: "the breasts could use some more work"; the original concept's look natural, the A-pose
+drawings' (`without_hair*.png`) "too much" (not a bust reference). References added (supplied by Erik, 1024 x 1536 each, side
+views of the upper body in the concept's style; their high-cut suit is ignored, the full-length suit stays):
+`concept-upper-body-side-v2.png` (THE profile reference, "the better version"; SHA-256
+`6188478674b00e08251d66f59cd583d3a71fdbdc318d0f2484e54cf0c3a58783`) and `concept-upper-body-side-v1.png` (bust "perhaps a
+little large", "hips are pretty good"; SHA-256 `cf77784a2806c6b11bfbf531ba7f7adce21ff56e05127c9e372cdc262904d6a9`).
+
+### Step 1, the target (measured before building)
+
+- **Method.** v2's front outline extracted per pixel row (the last pixel differing from its flat grey backdrop by more than 60
+  in summed RGB). The model's side silhouette from the B1m build (`Beatrice_b1m_922fc39.blend`, unposed): the front edge of
+  every level section of Suit_Body / Shoulder / Collar / Sleeve restricted to |x| < 0.125 (the arms out), every 1 mm. The two
+  put in one frame by the similarity that takes two landmarks onto the model's: the collar's base (v2 row 486, the front
+  outline's least x between the collar and the chest) onto the neck-base row (1.437 m, y -0.0367), and the front waist (row
+  1007, the front outline's least x between the bust and the belly) onto the model's (1.122, y -0.1040): 1650 px/m, a 0.9 deg
+  turn. The waist landmark is the front outline's own narrowest point (the front view's waist is 1.138). The vertical
+  registration is good to about +-5 mm (where the collar's base is on each); on the upper slope (about 1 mm forward per mm of
+  height) that is +-5 mm of depth, on the apex and the fold it is not.
+- **v2 (the target)**, mm in front of the body's centre line: the apex 131.3 at 1.277 m, the plateau within 1.5 mm of it from
+  1.271 to 1.297 (its middle 1.284); the lower curve full (125.0 at 1.256, 6 mm behind the apex 28 mm under it) and then
+  tucking steeply into the fold at 1.240 (114.9; 1.240-1.250 m: 6.7 mm in 10 mm); under the fold the ribs stand straight at
+  113-114 from 1.20 to 1.24. The upper slope 129.7 / 117.9 / 100.4 / 78.5 / 58.8 / 47.5 at 1.30 / 1.32 / 1.34 / 1.36 / 1.38 /
+  1.40 -- about 45 deg from 1.31 to 1.37, concave into the collar's base above that. v1 by the same method (its own landmarks):
+  apex 142.3 at 1.287.
+- **B1m (the model)**: apex 151.2 at 1.285 -- 20 mm in front of v2 (and 9 mm in front of v1, which the owner found "a little
+  large"); 128.7 at 1.24 (v2's fold: 14 mm in front), 147.9 / 130.6 / 106.5 / 86.1 / 68.2 / 52.9 on the upper slope (8-18 mm in
+  front of v2 from 1.30 to 1.38): a cone, its upper and lower slopes nearly straight, no fold. Level sections: at 1.28 the
+  centre (the zip) 125 mm, the breasts' front flat at 143-150 from x 30 to 80 mm -- the shelf -- and the valley a 30 mm wide
+  V at the zip (the old centre clip, x 6-26 mm).
+- **The concept, front three-quarter, through the posed overlay** (`posed_vs_concept.jpg`'s framing: the shoulder line and
+  the crotch at the concept's heights): each breast its own round volume reaching from the zip out to the torso's outline,
+  its apex about half way (her right: outer edge x 337 px, zip 579; her left: zip 590, outer edge about 790), the lower curves
+  lowest at about 925 px (her right) and 905 (her left), each with its own shadow; the zip in a shallow valley between them.
+  The render: the outer edges at about 345 / 735 (with the inserts), the underbust seam lowest at 850 / 845 (825 at the zip),
+  no separate volumes. So in the concept's own framing its breasts sit 55-75 px LOWER than the model's underbust seam, not
+  higher -- but v2 (its own landmarks) puts the fold exactly at the model's seam (1.232-1.254); the concept draws the torso
+  longer under the shoulders (its shoulders with the arms 630 px against the render's 543). The height of the fold stays the
+  seam's (v2); the volumes go a little wider (apex x 60 -> 72 mm) and become two.
+- **Target, as numbers**: the side silhouette within a few mm of v2's from the fold to the upper slope (1.22-1.37 m): apex about
+  131 mm at 1.27-1.30, the fold at 1.24 with the lower curve round above it, the upper slope 118 / 100 / 79 at 1.32 / 1.34 /
+  1.36. Above 1.39 (the collar's base, where v2's registration is weakest and the collar is laid on the plain loft) nothing
+  changes. In front: two volumes with a soft valley at the zip (10-15 mm deep at the apex's height), the apex about 72 mm out.

@@ -78,6 +78,109 @@ def materials(p, gloss, prefix):
     )
 
 
+# ------------------------------------------------------------------- the bust (B1n)
+# B1b-B1m's bust was one Gaussian per side (x0 1.286, 35 mm high, sx 44 / sz 40 mm) laid on a chest whose rows already stood
+# out like a shelf, and cut to nothing over the centre front by a clip (x 6-26 mm): ONE flat shelf across the chest in the
+# front view, a cone with its apex high in the side view, 20 mm further forward than the owner's profile reference
+# (`concept-upper-body-side-v2.png`), and two hard lines either side of the zip in the reflections. Now the bust is a
+# DESIGNED field, a dims["forms"] row given as a dict (`bust_form`): two breasts, each a smooth dome with a round lower curve,
+# a fold under it and a long upper slope, united across the centre in a soft valley, on a chest wall taken back between and
+# above them -- everything C2 (no line in the gloss), compact (nothing outside its reach moves).
+def _across(lo, hi, q, w):
+    """lo for q <= -w, hi for q >= w, C2 between."""
+    return lo + (hi - lo) * _smooth01(0.5 + 0.5 * q / w)
+
+
+def _bump(u):
+    """(1 - u^2)^3 inside |u| < 1, 0 outside: C2, compact."""
+    return np.clip(1.0 - u * u, 0.0, None) ** 3
+
+
+def bust_dome(x, z, sp):
+    """One breast's height over the chest wall (m), x on its own side: T f(r^2), r the elliptic radius from the apex with
+    the half-axes changing (C2) across it (`a` = (inwards, outwards, blend), `b` = (below, above, blend)). Below the apex
+    f = (1 - r^2)(1 + c r^2) (`h` = (T, c); a polynomial: smooth everywhere, fuller than a paraboloid for c > 0 -- the round
+    lower curve, its fold's slope 2T(1 + c) / b); from `upper` = (p, w, dz) on, blended over +-w about zc + dz, the bell
+    (1 - r^2)^p (p >= 3: C2 at its edge) -- the upper slope easing out of the wall. Negative outside the footprint, so the
+    wall's smooth maximum leaves no trace there."""
+    (xc, zc), (a_in, a_out, wa), (b_lo, b_up, wb), (T, c) = sp["apex"], sp["a"], sp["b"], sp["h"]
+    dx, dz = x - xc, z - zc
+    a = _across(a_in, a_out, dx, wa)
+    b = _across(b_lo, b_up, dz, wb)
+    r2 = (dx / a) ** 2 + (dz / b) ** 2
+    f = (1.0 - r2) * (1.0 + c * r2)
+    if sp.get("upper"):
+        p, w, z1 = (tuple(sp["upper"]) + (0.0,))[:3]
+        q = 1.0 - r2
+        f = _across(f, np.sign(q) * np.abs(q) ** p, dz - z1, w)
+    return T * f
+
+
+def bust_wall(x, z, sp):
+    """The chest wall taken back (m, <= 0) between the breasts and above them: the depth by height a natural cubic through
+    `wall["z"]` ((z, depth), ...) inside a C2 window (`win` = (z0, ramp, z1, ramp): nothing below z0 or above z1), times a C2
+    compact fade across, (1 - (x / X)^2)^3 with X = `wall["x"]`."""
+    w = sp.get("wall")
+    if not w:
+        return np.zeros(np.broadcast(x, z).shape)
+    kz = w["z"]
+    z0, r0, z1, r1 = w["win"]
+    d = profiles.natural_cubic([q[0] for q in kz], [q[1] for q in kz], z) * _smooth01((z - z0) / r0) * _smooth01((z1 - z) / r1)
+    return d * _bump(x / w["x"])
+
+
+def bust_form(P, sp):
+    """B1n: the bust's displacement (m, along the body loft's normal) at loft points P (..., 3), symmetric in x: the two
+    breasts (`bust_dome`, the right one mirrored) as ONE C2 smooth maximum across the centre (`kv`: the valley at the zip is
+    their fillet, so the suit neither bridges flat nor dives into a cleavage), the chest wall's smooth maximum with them
+    (`k` = (k_low, k_up, z, w): the fold under the breasts at k_low, k_up over them, across z +-w), plus the wall's own change
+    (`bust_wall`)."""
+    P = np.asarray(P, float)
+    x, z = P[..., 0], P[..., 2]
+    e = smax3(bust_dome(x, z, sp), bust_dome(-x, z, sp), sp["kv"])
+    kl, ku, kz, kw = sp["k"]
+    return smax3(np.zeros_like(e), e, _across(kl, ku, z - kz, kw)) + bust_wall(x, z, sp)
+
+
+def bust_reach(P, sp):
+    """Where `bust_form` can be non-zero: a box round both footprints and the wall's window."""
+    P = np.asarray(P, float)
+    (xc, zc), (a_in, a_out, _), (b_lo, b_up, _) = sp["apex"], sp["a"], sp["b"]
+    x, z = np.abs(P[..., 0]), P[..., 2]
+    win = sp.get("wall", {}).get("win", (zc, 0.0, zc, 0.0))
+    return ((x < max(xc + 1.6 * a_out, sp.get("wall", {}).get("x", 0.0))) & (z > min(zc - 1.6 * b_lo, win[0]))
+            & (z < max(zc + 1.6 * b_up, win[2])))
+
+
+class _FormsLoft:
+    """B1n: a loft seen through the body's displacement (`lift(P, N)` along N): `pn` gives the displaced surface's points and
+    its own normals (finite differences, as Loft.pn), `radius` the loft's. For pieces laid on the plain loft that must ride the
+    forms (the front zip over the bust's valley)."""
+
+    def __init__(self, loft, lift):
+        self.loft, self.lift, self.L = loft, lift, loft.L
+
+    def radius(self, phi, t):
+        return self.loft.radius(phi, t)
+
+    def pos(self, phi, t):
+        P, N = self.loft.pn(phi, t)
+        return P + np.asarray(self.lift(P, N), float).reshape(-1)[:, None] * N
+
+    def pn(self, phi, t, offset=0.0):
+        phi = np.atleast_1d(np.asarray(phi, float)).ravel()
+        t = np.clip(np.atleast_1d(np.asarray(t, float)).ravel(), 0.0, self.L)
+        if t.size == 1 and phi.size > 1:
+            t = np.full(phi.shape, t[0])
+        P = self.pos(phi, t)
+        hp, ht = 2e-3, min(1e-3, 0.01 * self.L)
+        dphi = self.pos(phi + hp, t) - self.pos(phi - hp, t)
+        dt = self.pos(phi, np.clip(t + ht, 0, self.L)) - self.pos(phi, np.clip(t - ht, 0, self.L))
+        N = unit(np.cross(dt, dphi))
+        off = np.asarray(offset, float)
+        return P + (off.ravel()[:, None] if off.ndim else off) * N, N
+
+
 # ------------------------------------------------------------------- the frame
 class Frame:
     """Front-view edges of a trunk table: at each height the inner and outer x of the left
@@ -254,6 +357,11 @@ class Suit:
         ax, z = (P[..., 0] if signed else np.abs(P[..., 0])), P[..., 2]
         d = np.zeros(ax.shape)
         for row in self.d.get("forms", ()):
+            if isinstance(row, dict):   # B1n: a designed field (`bust_form`), symmetric in x (so `signed` changes nothing)
+                sel = bust_reach(P, row)
+                if sel.any():
+                    d[sel] += bust_form(P[sel], row)
+                continue
             x0, z0, side, sx, sz, h = row[:6]
             # B1f: an optional 7th field, the fall-off BELOW z0 (the seat's under-curve: shorter than above it)
             szz = np.where(z < z0, row[6], sz) if len(row) > 6 else sz
@@ -560,6 +668,9 @@ class Suit:
         out = u.copy()
         env = np.zeros(len(P))   # the forms' size whatever the normal: skip the gradient where they are nothing
         for row in self.d.get("forms", ()):
+            if isinstance(row, dict):   # B1n: the designed bust field, wherever it can be non-zero
+                env = np.maximum(env, np.where(bust_reach(P, row), 1.0, 0.0))
+                continue
             x0, z0, _, sx, sz, hh = row[:6]
             env = np.maximum(env, hh * np.exp(-((np.abs(P[:, 0]) - x0) / sx) ** 2 - ((P[:, 2] - z0) / max(sz, row[6] if len(row) > 6 else sz)) ** 2))
         sel = (w > 1e-6) & (env > 1e-8)
@@ -922,6 +1033,14 @@ class Suit:
         u = unit(u)
         s_max = sh.get("edge_max", 0.008)
         ss = np.arange(0.0, s_max + 1e-9, step)
+        # B1n: where a designed bust field takes the wall BACK (negative), the body point lies that far inside the union by
+        # design: it is lifted onto the union that far in, not out onto the plain union (which pulled the upper chest's points
+        # inside the box back out by up to the wall's depth -- a jagged fold along the box's face at x 0.03)
+        neg = np.zeros(len(pa))
+        for row in self.d.get("forms", ()):
+            if isinstance(row, dict):
+                neg += bust_wall(pa[:, 0], pa[:, 2], row)
+        level = level + neg
         U = np.stack([self.union_field(pa + s * u) for s in ss]) - level   # `level`: onto the surface that far out
         pos = U >= 0.0
         found = pos.any(axis=0)
@@ -2424,7 +2543,10 @@ def build_zips(S, M, CL, coll):
         else:
             body = [(-90.0, bz(z)) for z in zs]
         neck = [(math.degrees(phi_c), CL.t_at_z(z)) for z in np.linspace(z_top - 0.002, z_lo, 16)]
-        for lo, path, sfx in ((B, body, ""), (CL, neck, "_Collar")):
+        # B1n: over a designed bust field (non-zero at the centre front: the valley, the wall taken back) the body's zip rides
+        # the forms; where they are nothing it is the plain loft's, vertex for vertex
+        Bz = _FormsLoft(B, S.forms) if any(isinstance(r, dict) for r in S.d.get("forms", ())) else B
+        for lo, path, sfx in ((Bz, body, ""), (CL, neck, "_Collar")):
             tp = ribbon_on("Suit_Zip_Tape_%s%s" % (side, sfx), lo, path, zp["tape"], offset=0.0004, thick=0.0008, mat=M["suit"], coll=coll)
             th = zip_teeth("Suit_Zip_Teeth_%s%s" % (side, sfx), lo, path, zp["width"], zp["pitch"], 0.0002, M["metal"], coll,
                            tooth=zp.get("tooth", (0.0016, 0.0013)))
