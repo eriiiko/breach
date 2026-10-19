@@ -1164,7 +1164,7 @@ heat_absorb    = 0.0                  # ACCEPTED GAP (P5c): a BAND absorber (H2O
 
 [gases.smoke]            # combustion soot (== today's generic smoke)
 absorption     = [0.88, 0.90, 0.93]   # near-neutral, slight blue tilt: thin soot reads warm/brown
-scatter_albedo = [0.04, 0.04, 0.04]   # soot barely scatters — it is the dark gas
+scatter_albedo = [0.22, 0.22, 0.22]   # soot single-scattering albedo ~0.2 in the visible: lit smoke reads charcoal-grey, not black (#91, Erik 2026-10-15; was 0.04)
 diffusion      = 0.10                 # heavier, clings
 decay          = 0.008                # lingers — soot settles slowly
 glow           = 0.0                  # cold soot does NOT glow; hot soot via emits_when_hot
