@@ -24,7 +24,7 @@ import subprocess
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional, Union
 
 ROOT = Path(__file__).resolve().parent.parent
 SHOTS_TOML = Path(__file__).resolve().parent / "look_shots.toml"
@@ -60,8 +60,8 @@ class LookShot:
     smoke: tuple = ()                 # tiles puffed with soot before tick 1
     steam: tuple = ()                 # tiles puffed with steam before tick 1
     detonate: Optional[tuple] = None  # (x, y, frame): frag grenade
-    light_gain: object = None         # None = studio default, float, or
-                                      # "game" = [render.lighting] master_gain
+    # None = studio default, a number, or "game" = [render.lighting] master_gain
+    light_gain: Union[float, Literal["game"], None] = None
     hide: tuple = ()                  # layers switched off (HIDEABLE_LAYERS)
     note: str = ""
 
@@ -132,9 +132,12 @@ def parse_shot(d: dict) -> LookShot:
     if bad:
         raise ValueError(f"shot {name}: cannot hide {sorted(bad)} "
                          f"(hideable: {sorted(HIDEABLE_LAYERS)})")
-    gain = d.get("light_gain")
-    if gain is not None and gain != "game":
-        gain = float(gain)
+    raw_gain = d.get("light_gain")
+    gain: Union[float, Literal["game"], None]
+    if raw_gain is None or raw_gain == "game":
+        gain = raw_gain
+    else:
+        gain = float(raw_gain)
     return LookShot(
         name=name, level=level, frames=frames,
         center=_tile(d["center"], f"shot {name} center") if "center" in d else None,

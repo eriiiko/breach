@@ -1338,8 +1338,8 @@ def main() -> None:
         # bound by LightingPass), for levels tuned in main.py.
         if look_shot.light_gain == "game":
             state.set("light_gain", renderer.lighting.light_gain)
-        elif look_shot.light_gain is not None:
-            state.set("light_gain", float(look_shot.light_gain))
+        elif isinstance(look_shot.light_gain, float):
+            state.set("light_gain", look_shot.light_gain)
         # The pressure colormap is a debug instrument the studio panel opens
         # ON; a look shot shows the look, so it follows the game's default
         # ([render] pressure_overlay_on, bound by the renderer).
