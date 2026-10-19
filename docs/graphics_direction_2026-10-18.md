@@ -490,4 +490,69 @@ date:
    on plumes in motion once A is in.
 
 Next action: hand §8.1 (the G0 kickoff) to Opus on a fresh worktree branch
-off `main`; this branch carries only the doc and merges first.
+off `main`; this branch carries only the doc and merges first. (Superseded: see §10, G0 runs on `fire-12`.)
+
+---
+
+## 10. Rebase note: G0 runs on `fire-12`, not `main` (2026-10-19)
+
+This doc was written against `main`'s renderer. In this repo the live line
+is `fire-12`: about 460 commits ahead of `main`, never merged back, and
+Erik's #12 line. Only `main` has the old light path that §0 describes.
+On `fire-12`, ray-engine v2 (closed 2026-09-30, tag `ray-engine-v2`)
+**deleted** `raycaster.cpp`, `cuda_raycaster.cu` and `fire_lights.py`.
+Light now rides the radiation sweep (`cpp/src/radiation_sweep.*`,
+`cuda_radiation_sweep.*`, P6a–P6d). So, where §0 and §7 disagree with
+`fire-12`, the code wins:
+
+- §0's "Ray engine" and "`fire_lights.py`" rows describe `main`. On
+  `fire-12`, the light field, its direction and the inscatter (`smoke_glow`)
+  come from the sweep. Re-read the renderer's light inputs on this tree
+  before G1 builds on them.
+- §7's "`fire_lights` `heat = 0.0` pin" precedent no longer exists as a
+  file. The render-only principle it illustrated still stands.
+- **G0's spec (§8.1) holds unchanged on `fire-12`.** Checked on
+  2026-10-19: the same layers call `aces_tonemap` (`lighting.fs`,
+  `lit3d.py`, `marine_shader.py`, `static_props.py`, `gas_medium.py`,
+  `blackbody.py`). `WorldComposite` still makes an RGBA8 RT with
+  `rl.load_render_texture` and applies no tone-map. `fire_studio` and
+  `tools/lighting_demo.py` exist. #51 is still open.
+- Read §8.1's "ported to main" (the #91 albedo) as "ported to this branch".
+  It comes from `90-volumetric-smoke-fire12` (`fd8a6f5`).
+- **#90 is not merged** (it waits on HUMAN-TEST). Its `gas_volume.fs` calls
+  `aces_tonemap` too. Whichever of G0 and #90 lands second removes that call
+  as part of its merge. G0 does not pull in #90.
+- `smoke_light_studio` (on `fire-12` only) is the better smoke shot. Add it
+  to the §7 shot set.
+
+Base: G0 is cut from `fire-12` on branch `93-g0-foundations`
+(tracker #93) and merges back into `fire-12` `--no-ff` after Erik's
+HUMAN-TEST. `main` gets it when `fire-12` merges, and that is Erik's call.
+
+### 10.1 Systems (G0)
+
+**(a) Existing canonical systems G0 must use:**
+- GameRenderer + WorldComposite: the one world RT, made HDR here.
+- LightingPass: `light_tex_a/b`, never a second light path.
+- Gas medium: the only smoke look.
+- Tamed wind (`tame_wind`): rescaled by #51, never re-derived. Correct its
+  CLAUDE.md row in the same patch (#51's ruling).
+- Blackbody: the one ΔT→colour map.
+- Lit-3D seam (`lit3d.py`): its tone-map is removed here. The marine
+  byte-identity gate `test_lit3d_extraction.py` must be re-baselined in
+  the same commit, with written rationale.
+- The dequantize convention.
+- `tools/lighting_demo.py`: the studio harness, extended rather than
+  copied.
+- Config, via `CFG`.
+
+**(b) New systems G0 creates, with draft rules** (they go into CLAUDE.md
+at implementation, pointing at the real code):
+- **One tone-map**: "Every world layer writes linear HDR into the RGBA16F
+  world RT. `WorldComposite`'s final blit is the ONLY place ACES and the
+  dither run, and `u_light_gain` is the only exposure. A layer that
+  tone-maps itself is the bug."
+- **Look shots**: "`tools/look_shots.toml` holds the named shot set. Every
+  graphics patch renders it before and after with `--shots`, and the
+  implementer looks at the PNGs before claiming the patch works. Never a
+  second screenshot harness."
