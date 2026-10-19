@@ -1350,6 +1350,11 @@ def main() -> None:
         # ON; a look shot shows the look, so it follows the game's default
         # ([render] pressure_overlay_on, bound by the renderer).
         state.set("show_pressure", renderer.show_pressure)
+        # `hide` isolates layers (the renderer's own toggles, set once; the
+        # studio never touches them per frame).
+        renderer.show_temperature &= "heat" not in look_shot.hide
+        renderer.show_smoke &= "smoke" not in look_shot.hide
+        renderer.show_water &= "water" not in look_shot.hide
 
     # The flat FLOOR opens where [render.lighting] floor sits (the config
     # mirrors below win over a saved preset's stale copy, same rule): a saved

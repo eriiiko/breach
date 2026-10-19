@@ -70,3 +70,15 @@ def test_output_is_named_by_shot_and_tag(tmp_path):
     p = shot_path(tmp_path, "fire_plume", "abc123")
     assert p.parent == tmp_path
     assert p.name.startswith("fire_plume_") and "abc123" in p.name
+
+
+def test_hide_accepts_only_renderer_layers():
+    """Property: ``hide`` names only layers the renderer can switch off (heat /
+    smoke / water). Breaks if an unknown name is silently ignored -- a typo
+    would render the layer the author meant to isolate away."""
+    s = parse_shot({"name": "x", "level": "fire_studio", "frames": 1,
+                    "hide": ["heat"]})
+    assert s.hide == ("heat",)
+    with pytest.raises(ValueError, match="cannot hide"):
+        parse_shot({"name": "x", "level": "fire_studio", "frames": 1,
+                    "hide": ["heta"]})

@@ -25,7 +25,10 @@
 #                              width in radians. Omit = no flashlight.
 #   ignite / smoke / steam     tiles (3x3 patches) written before tick 1
 #   detonate = [x, y, frame]   the canonical frag grenade, before that frame
-#   light_gain                 override the studio's exposure (rarely)
+#   light_gain                 override the studio's exposure: a number, or
+#                              "game" = [render.lighting] master_gain
+#   hide = ["heat", ...]       switch layers off to isolate the rest
+#                              (heat / smoke / water)
 #
 # Shots the §7 list asks for that this set does NOT have yet: none missing as
 # a scene, but "steam in a flashlight beam" is composed from studio actions

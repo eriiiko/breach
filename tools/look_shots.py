@@ -32,6 +32,9 @@ DEFAULT_OUT_DIR = ROOT / "scratchpad" / "look"
 LEVELS_DIR = ROOT / "levels"
 
 _NAME_RE = re.compile(r"^[a-z0-9_]+$")
+# Layers a shot may switch off to isolate the rest (the renderer's own
+# toggles: show_temperature / show_smoke / show_water).
+HIDEABLE_LAYERS = frozenset(("heat", "smoke", "water"))
 
 
 @dataclass(frozen=True)
@@ -59,6 +62,7 @@ class LookShot:
     detonate: Optional[tuple] = None  # (x, y, frame): frag grenade
     light_gain: object = None         # None = studio default, float, or
                                       # "game" = [render.lighting] master_gain
+    hide: tuple = ()                  # layers switched off (HIDEABLE_LAYERS)
     note: str = ""
 
 
@@ -123,6 +127,11 @@ def parse_shot(d: dict) -> LookShot:
         if not 0 <= detonate[2] < frames:
             raise ValueError(f"shot {name}: detonate frame {detonate[2]} "
                              f"must fall inside the shot's {frames} frames")
+    hide = tuple(str(x) for x in d.get("hide", []))
+    bad = set(hide) - HIDEABLE_LAYERS
+    if bad:
+        raise ValueError(f"shot {name}: cannot hide {sorted(bad)} "
+                         f"(hideable: {sorted(HIDEABLE_LAYERS)})")
     gain = d.get("light_gain")
     if gain is not None and gain != "game":
         gain = float(gain)
@@ -137,6 +146,7 @@ def parse_shot(d: dict) -> LookShot:
         steam=_tiles(d.get("steam"), f"shot {name} steam"),
         detonate=detonate,
         light_gain=gain,
+        hide=hide,
         note=str(d.get("note", "")))
 
 
