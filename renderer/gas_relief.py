@@ -280,41 +280,59 @@ def relief_group_layers(gas_density: np.ndarray, optics: TraceGasOptics,
     return medium, cover
 
 
+def _window_max(a: np.ndarray, r: int, axis: int,
+                weights: Optional[np.ndarray] = None) -> np.ndarray:
+    """Max over a (2r+1)-wide window along ``axis`` (0 or 1, edge-padded),
+    each tap times ``weights[k]`` (2r+1,) if given."""
+    n = a.shape[axis]
+    pad = [(0, 0)] * a.ndim
+    pad[axis] = (r, r)
+    p = np.pad(a, pad, mode="edge")
+    out = None
+    for k in range(2 * r + 1):
+        tap = p[k:k + n] if axis == 0 else p[:, k:k + n]
+        if weights is not None:
+            tap = tap * weights[k]
+        out = tap.copy() if out is None else np.maximum(out, tap, out=out)
+    return out
+
+
+def _box3(a: np.ndarray) -> np.ndarray:
+    """One separable 3x3 box pass over axes 0, 1 (edge-padded)."""
+    p = np.pad(a, ((1, 1), (1, 1)) + ((0, 0),) * (a.ndim - 2), mode="edge")
+    hz = p[:, :-2] + p[:, 1:-1] + p[:, 2:]
+    return (hz[:-2] + hz[1:-1] + hz[2:]) * (1.0 / 9.0)
+
+
 def top_light_field(light_rgb: np.ndarray, radius_tiles: int,
                     falloff: float = 1.0) -> np.ndarray:
     """The light over a smoke column's TOP, (H, W, 3) float32, per channel:
     the brightest incoming light within ``radius_tiles``, each neighbour
-    weighted ``falloff ** distance`` (tiles) -- an attenuated max filter --
-    then 3x3 box passes to soften its plateaus (one pass left the filter's
-    tile-square steps visible as quadrants on a lit puff). Without the
-    falloff a fire tile's own (enormous) light was carried two tiles out
-    undiminished and lit the soot over a burning crate like a lamp would.
+    weighted ``falloff ** (|dx| + |dy|)`` (tiles) -- an attenuated max
+    filter, separable because the weight is a product -- then 3x3 box
+    passes to soften its plateaus (one pass left the filter's tile-square
+    steps visible as quadrants on a lit puff). Without the falloff a fire
+    tile's own (enormous) light was carried two tiles out undiminished and
+    lit the soot over a burning crate like a lamp would.
 
     Why: the sweep is planar, so inside a thick soot plume the tile's own
     light is what crossed the plume sideways -- almost nothing (pre-#88 soot
     absorbs ~138 per unit density per tile). Seen from above, a ceiling
     layer's top is lit by lamps whose light passes OVER the plume, i.e. by
     roughly the light the room has around it. The max filter is that
-    estimate: the unattenuated light at the plume's lamp-side edge carried
+    estimate: the light at the plume's lamp-side edge carried
     ``radius_tiles`` inward. It is a filtered READ of LightingPass's field
     (the one light), never a second light path. Known limit: it reaches
     across a wall thinner than the radius."""
-    e = np.asarray(light_rgb, dtype=np.float32)
+    out = np.asarray(light_rgb, dtype=np.float32)
     r = max(int(radius_tiles), 0)
-    if r == 0:
-        return e.copy()
-    h, w, _ = e.shape
-    p = np.pad(e, ((r, r), (r, r), (0, 0)), mode="edge")
-    out = e.copy()
-    for dy in range(2 * r + 1):
-        for dx in range(2 * r + 1):
-            wgt = float(falloff) ** float(np.hypot(dy - r, dx - r))
-            np.maximum(out, wgt * p[dy:dy + h, dx:dx + w], out=out)
-    for _ in range(_TOP_LIGHT_SMOOTH_PASSES):
-        p = np.pad(out, ((1, 1), (1, 1), (0, 0)), mode="edge")
-        hz = (p[:, :-2] + p[:, 1:-1] + p[:, 2:]) / 3.0
-        out = (hz[:-2] + hz[1:-1] + hz[2:]) / 3.0
-    return out.astype(np.float32)
+    if r > 0:
+        w = float(falloff) ** np.abs(np.arange(-r, r + 1, dtype=np.float32))
+        out = _window_max(out, r, 1, w)
+        out = _window_max(out, r, 0, w)
+        for _ in range(_TOP_LIGHT_SMOOTH_PASSES):
+            out = _box3(out)
+    return np.ascontiguousarray(out, dtype=np.float32)
 
 
 def boil_field(temperature_game: np.ndarray, t0: float, t1: float
@@ -326,6 +344,12 @@ def boil_field(temperature_game: np.ndarray, t0: float, t1: float
     x = np.clip((np.asarray(temperature_game, dtype=np.float64) - t0)
                 / max(t1 - t0, 1e-9), 0.0, 1.0)
     return x * x * (3.0 - 2.0 * x)
+
+
+def _crc(a: np.ndarray) -> int:
+    """CRC32 of an array's bytes (a cheap content key for repacking)."""
+    import zlib
+    return zlib.crc32(np.ascontiguousarray(a).view(np.uint8))
 
 
 def clip_tile_rect(tile_rect, grid_w: int, grid_h: int
@@ -346,15 +370,11 @@ def presence_mask(tau_ext: np.ndarray, reach_tiles: int = 2) -> np.ndarray:
     pixel whose (bilinear) mask is exactly 0 before any other read, so the
     reach must cover the bicubic reconstruction's support (2 texels) -- a
     pixel it discards can see no smoke."""
-    m = np.asarray(tau_ext) > 0.0
+    m = (np.asarray(tau_ext) > 0.0).astype(np.float32)
     r = int(reach_tiles)
-    h, w = m.shape
-    p = np.pad(m, r, mode="constant")
-    out = np.zeros_like(m)
-    for dy in range(2 * r + 1):
-        for dx in range(2 * r + 1):
-            out |= p[dy:dy + h, dx:dx + w]
-    return out.astype(np.float32)
+    if r > 0:
+        m = _window_max(_window_max(m, r, 1), r, 0)
+    return m
 
 
 def pack_relief_dynamics(tamed_wind: np.ndarray, boil: np.ndarray,
@@ -417,6 +437,9 @@ class GasReliefPass:
         self.top_tex = core.create_dynamic_rgba16f_texture(grid_w, grid_h)
         self._top_packed = np.zeros((grid_h, grid_w, 4), dtype=np.float16)
         self._has = {g: False for g in GROUPS}
+        self._masks = {g: np.zeros((grid_h, grid_w), np.float32)
+                       for g in GROUPS}
+        self._pack_key = None
         self._baked_octaves = None
         self.billow_tex = None
         self._billow_mean = 0.5
@@ -484,22 +507,31 @@ class GasReliefPass:
             self._members = (s.ceiling_gases,
                              group_members(self._optics.names, s.ceiling_gases))
         members = self._members[1]
-        masks = {}
-        for g in GROUPS:
-            medium, cover = relief_group_layers(
-                gas_density_trace, self._optics, glow, members[g],
-                tau_curve_a=tau_curve_a, tau_curve_b=tau_curve_b,
-                glow_gain=glow_gain, effect_gas_floor=effect_gas_floor)
-            self._has[g] = bool((cover[..., 3] > 0).any())
-            masks[g] = presence_mask(cover[..., 3].astype(np.float32))
-            if self._has[g]:
-                self._core.update_rgba16f_texture(self.medium_tex[g], medium)
-                self._core.update_rgba16f_texture(self.cover_tex[g], cover)
-        self._top_packed[..., :3] = np.clip(
-            top_light_field(light_rgb, s.top_light_tiles,
-                            s.top_light_falloff), 0.0, _F16_MAX)
-        self._top_packed[..., 3] = masks["ceiling"]
-        self._core.update_rgba16f_texture(self.top_tex, self._top_packed)
+        # The tile inputs change once per sim tick (or on a relight, a tool
+        # write, a dial): repack only when their CONTENT changed -- a CRC of
+        # the arrays plus the dials is ~0.05 ms against ~1 ms of packing,
+        # and a paused or 60-fps-over-24-tps frame repacks nothing.
+        key = (_crc(gas_density_trace), _crc(glow), _crc(light_rgb), s,
+               float(tau_curve_a), float(tau_curve_b), float(glow_gain),
+               float(effect_gas_floor), id(self._optics))
+        if key != self._pack_key:
+            self._pack_key = key
+            for g in GROUPS:
+                medium, cover = relief_group_layers(
+                    gas_density_trace, self._optics, glow, members[g],
+                    tau_curve_a=tau_curve_a, tau_curve_b=tau_curve_b,
+                    glow_gain=glow_gain, effect_gas_floor=effect_gas_floor)
+                self._has[g] = bool((cover[..., 3] > 0).any())
+                self._masks[g] = presence_mask(cover[..., 3].astype(np.float32))
+                if self._has[g]:
+                    self._core.update_rgba16f_texture(self.medium_tex[g], medium)
+                    self._core.update_rgba16f_texture(self.cover_tex[g], cover)
+            self._top_packed[..., :3] = np.clip(
+                top_light_field(light_rgb, s.top_light_tiles,
+                                s.top_light_falloff), 0.0, _F16_MAX)
+            self._top_packed[..., 3] = self._masks["ceiling"]
+            self._core.update_rgba16f_texture(self.top_tex, self._top_packed)
+        masks = self._masks
         boil = boil_field(temperature_game, s.boil_t0, s.boil_t1)
         self._core.update_rgba16f_texture(
             self.dyn_tex, pack_relief_dynamics(tamed_wind, boil,
