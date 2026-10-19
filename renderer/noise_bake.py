@@ -62,6 +62,8 @@ BASE_CELLS = 4
 _WORLEY_WEIGHTS = (0.625, 0.25, 0.125)
 # How deep the Perlin clustering erodes the domes (billow_field step 4).
 _EROSION_K = 0.5
+# Smooth-min width of the billow cells' creases, in cells (worley_f1).
+_CREASE_SMOOTH = 0.12
 
 
 def _fade(t: np.ndarray) -> np.ndarray:
@@ -127,17 +129,24 @@ def perlin_fbm(coords: np.ndarray, base_period: int, octaves: int,
 # Periodic cellular (Worley F1) noise, inverted into domes
 # ---------------------------------------------------------------------------
 
-def worley_f1(coords: np.ndarray, cells: int, rng: np.random.Generator
-              ) -> np.ndarray:
+def worley_f1(coords: np.ndarray, cells: int, rng: np.random.Generator,
+              smooth: float = 0.0) -> np.ndarray:
     """Periodic Worley F1 at ``coords`` (..., dim): the distance to the
     nearest feature point, in CELL units (one jittered point per cell; the
-    point table wraps modulo ``cells``, so ``f(x + 1) == f(x)``)."""
+    point table wraps modulo ``cells``, so ``f(x + 1) == f(x)``).
+
+    ``smooth > 0`` takes a SMOOTH minimum, ``-k log(sum exp(-d / k))``
+    (Quilez's smooth Voronoi): where two cells meet, the hard min has a
+    crease -- under a low lamp each one drew a dark line between billows
+    ("brain folds", G1 step 6) -- and the smooth min rounds it over ``k``
+    cells."""
     coords = np.asarray(coords, dtype=np.float64)
     dim = coords.shape[-1]
     pts = rng.random(size=(cells,) * dim + (dim,))       # in-cell offsets
     p = coords * cells
     i0 = np.floor(p).astype(np.int64)
     best = np.full(coords.shape[:-1], np.inf)
+    acc = np.zeros(coords.shape[:-1])
     rng_offs = np.array(np.meshgrid(*([[-1, 0, 1]] * dim), indexing="ij")
                         ).reshape(dim, -1).T
     for offs in rng_offs:
@@ -145,12 +154,18 @@ def worley_f1(coords: np.ndarray, cells: int, rng: np.random.Generator
         idx = tuple(cell[..., a] % cells for a in range(dim))
         feat = cell + pts[idx]                            # (..., dim)
         d2 = np.sum((feat - p) ** 2, axis=-1)
-        np.minimum(best, d2, out=best)
+        if smooth > 0.0:
+            acc += np.exp(-np.sqrt(d2) / smooth)
+        else:
+            np.minimum(best, d2, out=best)
+    if smooth > 0.0:
+        return np.maximum(-smooth * np.log(np.maximum(acc, 1e-300)), 0.0)
     return np.sqrt(best)
 
 
 def worley_domes(coords: np.ndarray, base_cells: int, octaves: int,
-                 rng: np.random.Generator) -> np.ndarray:
+                 rng: np.random.Generator, smooth: float = 0.0
+                 ) -> np.ndarray:
     """Inverted Worley as DOMES, octave-summed, in [0, 1].
 
     Each octave is ``sqrt(1 - min(F1, 1)^2)``: a hemisphere over every
@@ -160,7 +175,8 @@ def worley_domes(coords: np.ndarray, base_cells: int, octaves: int,
     weights = _WORLEY_WEIGHTS[:max(1, int(octaves))]
     acc = np.zeros(np.asarray(coords).shape[:-1], dtype=np.float64)
     for o, wgt in enumerate(weights):
-        f1 = np.minimum(worley_f1(coords, base_cells * (2 ** o), rng), 1.0)
+        f1 = np.minimum(worley_f1(coords, base_cells * (2 ** o), rng,
+                                  smooth), 1.0)
         acc += wgt * np.sqrt(np.maximum(1.0 - f1 * f1, 0.0))
     return acc / sum(weights)
 
@@ -196,7 +212,7 @@ def billow_field(coords: np.ndarray, *, seed: int = BILLOW_SEED,
         warped[..., a] = coords[..., a] + warp * perlin_fbm(
             coords, base_cells, 2, rng_w)
     rng_c = np.random.default_rng(int(seed))
-    w = worley_domes(warped, base_cells, octaves, rng_c)
+    w = worley_domes(warped, base_cells, octaves, rng_c, _CREASE_SMOOTH)
     rng_p = np.random.default_rng(int(seed) + _PERLIN_SEED_OFFSET)
     p01 = np.clip(0.5 + perlin_fbm(coords, base_cells, 3, rng_p) * 1.4,
                   0.0, 1.0)

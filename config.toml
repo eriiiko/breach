@@ -1650,7 +1650,7 @@ shadow_len_tiles = 0.8      # horizon march length, tiles
 shadow_soft_tiles = 0.1    # occluder height for a full shadow, tiles
 powder = 0.5                # multi-scatter brightening of thin parts
 ao = 0.5                    # crevice darkening from the height Laplacian
-rim = 0.6                   # silver lining where a lamp is behind a thin edge
+rim = 1.5                   # silver lining where a lamp is behind a thin edge
 rim_g = 0.6                 # its Henyey-Greenstein forward anisotropy, [0, 1)
 debug_view = 0              # 0 off; 1 coverage, 2 height, 3 N.L, 4 self-shadow,
                             # 5 AO, 6 boil (dev only)

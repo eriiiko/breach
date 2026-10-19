@@ -22,6 +22,8 @@
 //   AO        the lanes between billows (low B) darken, crests do not
 //   powder    multiple scattering brightens THIN smoke: (1 - e^-2s) e^-s,
 //               peaking at an optical depth near 1/2 -- fluffy bright edges
+//   rim       the silver lining: light passing THROUGH a thin edge that faces
+//               away from the lamp, forward-scattered (Henyey-Greenstein)
 //
 // OUTPUT: premultiplied LINEAR HDR (inscatter, 1 - T) into the RGBA16F scene
 // RT, blended out = src.rgb + dst * (1 - src.a). Never a tone-map here: the
@@ -306,10 +308,23 @@ void main() {
     // Thick smoke shows its surface, thin smoke the sweep's in-scatter.
     float thick = 1.0 - exp(-tau_ext * K);
     vec3 rgb = surface * thick + glow * u_light_gain * K * (1.0 - thick);
+    float sig = tau_ext * K;
+    // Rim (silver lining): where the surface faces AWAY from the light and
+    // the smoke is thin, light crosses the edge and leaves along N, forward-
+    // scattered: Henyey-Greenstein at cos = dot(-L, N), normalised to 1 at
+    // full forward. Its strength is the SINGLE-scatter albedo w (inverted
+    // from the bulk reflectance in u_cover), so soot barely glows, steam
+    // does; thin = 4 e^-s (1 - e^-s), 1 at s = ln 2.
+    float sR = (1.0 - albedo.g) / (1.0 + albedo.g);
+    float w_ss = 1.0 - sR * sR;
+    float g = u_rim_g;
+    float hg = pow(1.0 - g, 3.0)
+             / pow(max(1.0 + g * g - 2.0 * g * dot(-L, N), 1e-4), 1.5);
+    float thin = 4.0 * exp(-sig) * (1.0 - exp(-sig));
+    rgb += u_rim * w_ss * hg * thin * lit * E;
     // Powder: multiple scattering lifts thin smoke (Schneider & Vos's
     // powder, used here as a brightening of the thin edge, §2.2); the
     // bump (1 - e^-2s) e^-s peaks at 0.385 near s = ln(3)/2.
-    float sig = tau_ext * K;
     float powder = (1.0 - exp(-2.0 * sig)) * exp(-sig) / 0.385;
     rgb *= 1.0 + u_powder * powder;
 
