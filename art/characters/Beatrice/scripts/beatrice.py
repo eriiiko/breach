@@ -49,7 +49,8 @@ PALETTE = dict(
     PAD="#141418",           # the knee pads: the suit's black, a hair lifted
     PAD_RIM="#6c6c76",       # their piped rim, bright
 )
-GLOSS = dict(rough=0.30, coat=0.45, coat_rough=0.20, specular=0.45, piping=0.9,
+# B1m (the owner, 2026-10-19: "going very glossy is fine"): B1l's "wet" look is the default; B1b-B1l's satin is VARIANTS["satin"]
+GLOSS = dict(rough=0.20, coat=0.85, coat_rough=0.07, specular=0.55, piping=0.9,
              nail_rough=0.20, nail_coat=0.55, nail_coat_rough=0.07,   # B1j: the nails glossier than the skin (0.48-0.60)
              # B1j: the pads glossier than the boots (coat 1.0, specular 0.8); B1l: the coat 0.6 and specular 0.5 (with the domed
              # shape: at 1.0 / 0.8 the whole face threw back the backdrop's grey as one even sheet -- the porthole -- whatever its shape)
@@ -62,10 +63,12 @@ GLOSS = dict(rough=0.30, coat=0.45, coat_rough=0.20, specular=0.45, piping=0.9,
 
 VARIANTS = dict(
     crimson=dict(palette=dict(SUIT="#4a0b12", BOOT="#1a0a0c", MESH="#22090c", MESH_THIGH="#3a161a", SKIN="#a8775e", BROW="#2a1c16", IRIS="#4a3626")),
-    # B1l (review_stage10 item 3, a look for the owner to choose; NOT the default): "wet" -- the suit as glossy as the patent
-    # boots (review 10 measured the default as satin beside the drawing's wet latex: the brightest torso highlights about
-    # half the drawing's). The first review called B1a's gloss chrome-like and B1b softened it to the default above
+    # B1l (review_stage10 item 3): "wet" -- the suit as glossy as the patent boots (review 10 measured B1l's satin default
+    # beside the drawing's wet latex: the brightest torso highlights about half the drawing's). B1m: the owner chose it, so it
+    # is GLOSS itself now; the name stays (it rebuilds the default) so B1l's commands still run
     wet=dict(gloss=dict(rough=0.20, coat=0.85, coat_rough=0.07, specular=0.55)),
+    # B1m: B1b-B1l's default, kept to be rebuilt (the first review called B1a's gloss chrome-like; B1b softened it to this)
+    satin=dict(gloss=dict(rough=0.30, coat=0.45, coat_rough=0.20, specular=0.45)),
 )
 
 # ------------------------------------------------------------------- dimensions

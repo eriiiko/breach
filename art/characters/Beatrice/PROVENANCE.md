@@ -679,3 +679,15 @@ was rebuilt. B1k's tables kept where they changed (`RAGLAN_BACK_B1K`, `DELTOID_S
   (`sh.py` suit, `kh.py` knee pads, `hh.py` hands, `ch.py` collar, `zb.py` gloss / reflection lines / object colours, `wet.py`,
   `cmp3.py`, `cmp4.py`, `gaps.py`, `compose_b1l.py`; probes `cliff.py`, `fademap.py`, `nrm2.py`, `tjump.py`). Not re-rendered:
   `shape_vs_concept.jpg`, the `--hips` pictures, `crimson_hero.jpg`.
+
+## B1m: the body accepted -- wet gloss and the concept pose (2026-10-19, the owner's words of 2026-10-19)
+
+The owner: "going very glossy is fine"; the hips "look pretty cool for me now, but it's really hard to tell from these poses";
+before finalising, a model in the concept's pose. The body's GEOMETRY does not change in this round.
+
+- **Step 1, the wet gloss is the default.** `GLOSS` takes B1l's `"wet"` values (rough 0.20, coat 0.85, coat_rough 0.07,
+  specular 0.55); B1b-B1l's default is `VARIANTS["satin"]` (0.30 / 0.45 / 0.20 / 0.45), rebuilt with `--variant satin`;
+  `"wet"` stays as a name (it now rebuilds the default) so B1l's commands still run. The boots, pads and nails keep their own
+  values. The full picture set regenerated (`--sheet --turn --save --beauty` with every beauty and dev view, B1l's command:
+  9.8 min, the build 5.8 min). `source/mesh_stats.json` unchanged (byte for byte); `sheet_scores.json` moves in the fifth decimal
+  (the glossier edges' alpha). The studio rig is unchanged.
