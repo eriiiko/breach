@@ -688,9 +688,14 @@ BUST = dict(
                  (1.38, -0.005)),
               win=(1.185, 0.05, 1.405, 0.03), x=0.11),
 )
+# B1n step 3, the seat in profile: v2's arm and hand hang over its seat, so its back outline is hidden; the skin it shows
+# reaches back to the arm's front edge, so the drawn seat is AT LEAST that deep: 8-17 mm behind B1m's back outline from 0.88 to
+# 0.96 m (v1 the same), with the front matching within 3-7 mm -- clearly fuller. Moved at most half way, by the seat's own two
+# rounds only (no profile, no width: the back view's outline, the hip width and the leg gap stay): their height 6.5 -> 12 mm
+SEAT_B1N = SEAT[:5] + (0.012,) + SEAT[6:]
 FORMS = (BUST,
-         SEAT)
-SHAPES["b1m"] = dict(bust=BUST_B1M)   # B1n: the before (`--shape b1m`)
+         SEAT_B1N)
+SHAPES["b1m"] = dict(bust=BUST_B1M, seat=SEAT)   # B1n: the before (`--shape b1m`)
 
 
 def dims(shape=None):
