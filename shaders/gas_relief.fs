@@ -9,6 +9,8 @@
 //
 //   coverage  C = smoothstep over ln(extinction depth), pushed by the billow
 //               field B -> a narrow, billowed edge
+//   height    h = H sqrt(sat(tau / tau_h)) (1 - a + a B) C, tiles: thick
+//               columns stand tall, the billows bulge their tops
 //
 // OUTPUT: premultiplied LINEAR HDR (inscatter, 1 - T) into the RGBA16F scene
 // RT, blended out = src.rgb + dst * (1 - src.a). Never a tone-map here: the
@@ -141,6 +143,16 @@ float coverageOf(float ln_tau, float grad, float b) {
     return smoothstep(-0.5 * w, 0.5 * w, q);
 }
 
+// The RELIEF HEIGHT at p (tiles), given the local |grad ln tau| (taken at
+// the pixel: the field is tile-scale, the taps sub-tile).
+float heightAt(vec2 p, float grad) {
+    float t = max(textureBicubic(u_cover, p / u_grid, u_grid).a, 0.0);
+    float b = billowRaw(p);
+    float c = coverageOf(log(max(t, 1e-6)), grad, b);
+    return u_height * sqrt(clamp(t / u_height_tau, 0.0, 1.0))
+         * (1.0 - u_billow_amp + u_billow_amp * b) * c;
+}
+
 void main() {
     vec2 uv = fragTexCoord;
     vec2 tp = uv * u_grid;
@@ -202,6 +214,13 @@ void main() {
     vec3 rgb = glow * K;
 
     if (u_debug == 1) { finalColor = vec4(vec3(C), 1.0); return; }
+
+    // --- the relief height ---------------------------------------------------
+    float h = u_height * sqrt(clamp(tau_ext / u_height_tau, 0.0, 1.0))
+            * (1.0 - u_billow_amp + u_billow_amp * B) * C;
+    if (u_debug == 2) {
+        finalColor = vec4(vec3(h / max(u_height, 1e-6)), 1.0); return;
+    }
 
     finalColor = vec4(max(rgb, vec3(0.0)), clamp(alpha, 0.0, 1.0));
 }
