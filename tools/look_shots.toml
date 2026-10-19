@@ -170,3 +170,16 @@ flashlight = { pos = [14.5, 22.5], intensity = 2.5, spread = 0.6 }
 steam = [[19, 22], [22, 22], [25, 22]]
 light_gain = "game"
 note = "steam_flashlight at the GAME exposure ([render.lighting] master_gain). The relief lights the steam's surface at the one exposure; the studio's light_gain 10 (steam_flashlight) over-exposes it, while the pre-G1 glow was never exposed by the studio gain at all."
+
+[[shot]]
+name = "smoke_over_squad"
+level = "fire_studio"
+frames = 12
+center = [17.5, 17.5]
+zoom = 48.0
+lamps = true
+beacon = true
+smoke = [[11, 17], [12, 18]]
+steam = [[23, 17], [24, 18]]
+hide = ["heat"]
+note = "the species layers (ruling 2): soot laid over Alpha (west) is a CEILING layer and must hide the marine; steam laid over Cobra (east) is a FLOOR layer and the marine must stand in it, drawn over it; Bravo (middle) clear for reference. 12 ticks, the beacon sweeping."
