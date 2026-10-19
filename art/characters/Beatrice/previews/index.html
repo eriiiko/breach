@@ -21,7 +21,7 @@
 </head>
 <body>
 <main>
-  <h1>Beatrice — body, suit, hands, boots (B1m: the wet gloss and the concept pose)</h1>
+  <h1>Beatrice — body, suit, hands, boots (B1n: the bust, and the profile)</h1>
   <p>Built from Python alone on the shared character kit (<code>charkit/bodysuit.py</code>, Blender 4.5, Cycles) from the tables in
      <code>scripts/beatrice.py</code>, fitted to three drawings: front, side and back. The head is a bald placeholder for the
      face-and-hair stage. Character only, no props. This round answers <code>review_stage2.md</code>: new hands, the shoulder and
@@ -30,16 +30,30 @@
      <b>Stage 4</b> answers <code>review_stage3.md</code> for the pelvis only (waist, hips, seat, upper thighs); everything else is
      unchanged, and the close-ups further down are stage 3's.</p>
 
+  <h2>The bust, and the profile (B1n)</h2>
+  <p>The owner: "the breasts could use some more work", and two side views in the concept's style, v2 the profile reference
+     (<code>concept-upper-body-side-v2.png</code>, "do not go larger"). Measured first: scaled to the model by the collar's base and
+     the front waist, v2's bust stands 131 mm in front of the body's centre with a round lower curve tucking into a fold at 1.24 m;
+     B1m's stood 151 mm out (20 mm more, a cone with no fold) on a chest that was one flat shelf. The bust is now a designed smooth
+     field: two breasts, each with a round lower curve, a fold and a long upper slope, in a soft valley at the zip (15 mm), on a chest
+     wall taken back between and above them; the side silhouette lies within 3.4 mm of v2's from 1.20 to 1.36 m. The seam under the
+     bust now lies in the fold. The seat (step 3): v2's arm hides its back outline, but its skin shows the seat is at least 8-17 mm
+     deeper than B1m's; it moved half way at its crown (+5.4 mm), width and leg gap unchanged. See <code>PROVENANCE.md</code>.</p>
+  <figure><img src="bust_profile.jpg" alt="The bust's side profile against v2"><figcaption>v2's front outline with B1m's (red) and B1n's (blue) side silhouettes mapped onto it (left) and in the model's frame (right)</figcaption></figure>
+  <figure><img src="bust_b1n.jpg" alt="The bust before and after"><figcaption>B1m above, B1n below: front, three-quarter, side, from below, the fold close, the concept's framing (posed), and reflection lines; at the bottom the concept beside both in its framing</figcaption></figure>
+  <figure><img src="seat_profile.jpg" alt="The seat against v2"><figcaption>The seat: v2 with the model's back outlines (unposed and posed); v2's skin edge (yellow) is a lower bound on its seat's depth</figcaption></figure>
+  <figure><img src="posed_vs_concept.jpg" alt="The concept beside the posed render"><figcaption>The concept, the posed render (B1n) at the same framing, and the render's outline over the concept</figcaption></figure>
+  <figure><img src="posed_full.jpg" alt="The pose, full figure"><figcaption>The pose, full figure (B1n): front, front three-quarter, side (her right), back three-quarter</figcaption></figure>
+  <figure><img src="posed_hotlight.jpg" alt="The pose under a hotter light"><figcaption>The concept framing under the studio rig and the optional "hot" light setup (B1n)</figcaption></figure>
+
   <h2>The wet gloss and the concept pose (B1m)</h2>
   <p>The owner chose the glossier look: B1l's "wet" gloss is now the default (the satin of B1b&ndash;B1l is the variant "satin") and
      every picture on this page below is re-rendered in it; the body's shape is unchanged. The body is also shown in the pose of the
      original artwork, so the hips and the seat can be judged in a natural stance: the saved build posed on a copy with a skeleton of
      our own and one smooth weight field (<code>scripts/posed.py</code>, <code>charkit/suitpose.py</code>): weight on her right leg,
      the pelvis shifted and tilted over it, the shoulders tilted against it, the left leg free. The camera is matched to the concept
-     (chest height, 90 mm, the shoulder line and the crotch at the concept's heights). See <code>PROVENANCE.md</code>.</p>
-  <figure><img src="posed_vs_concept.jpg" alt="The concept beside the posed render"><figcaption>The concept, the posed render in the default look at the same framing, and the render's outline over the concept</figcaption></figure>
-  <figure><img src="posed_full.jpg" alt="The pose, full figure"><figcaption>The same pose, full figure: front, front three-quarter, side (her right), back three-quarter</figcaption></figure>
-  <figure><img src="posed_hotlight.jpg" alt="The pose under a hotter light"><figcaption>The concept framing under the studio rig and under an optional light setup with narrow hot strips ("hot"), which the gloss throws back as thin streaks</figcaption></figure>
+     (chest height, 90 mm, the shoulder line and the crotch at the concept's heights). See <code>PROVENANCE.md</code>. (The posed
+     pictures are re-rendered with each round: they show B1n now, above.)</p>
 
   <h2>The finishing round before the full body pass (B1l)</h2>
   <p>Answers <code>review_stage10.md</code> items 1, 2, 5, 7, 8, 10 and prepares item 3 for the owner. The body's shape is unchanged.

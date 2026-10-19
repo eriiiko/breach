@@ -788,3 +788,91 @@ little large", "hips are pretty good"; SHA-256 `cf77784a2806c6b11bfbf531ba7f7adc
   131 mm at 1.27-1.30, the fold at 1.24 with the lower curve round above it, the upper slope 118 / 100 / 79 at 1.32 / 1.34 /
   1.36. Above 1.39 (the collar's base, where v2's registration is weakest and the collar is laid on the plain loft) nothing
   changes. In front: two volumes with a soft valley at the zip (10-15 mm deep at the apex's height), the apex about 72 mm out.
+
+### Step 2, the bust rebuilt (three attempts)
+
+- **Mechanism** (`charkit/bodysuit.py`, Beatrice's own; no shared kit file touched, so no other character was rebuilt): a
+  `dims["forms"]` row given as a dict is a DESIGNED field, `bust_form` (B1b-B1m's tuple rows -- the seat, the old bust -- build as
+  before). Two breasts, each `bust_dome`: T (1 - r^2)(1 + c r^2) below the apex (a polynomial in the elliptic radius r -- smooth
+  everywhere, negative outside its footprint, fuller than a paraboloid: the round lower curve), blended (C2) above it into the bell
+  (1 - r^2)^3 (the long upper slope easing out of the chest), the half-axes changing C2 across the apex (inwards / outwards, below /
+  above); the two united across the centre by a C2 smooth maximum (`kv`: the valley at the zip is their fillet); the chest wall's
+  C2 smooth maximum with them (`k`: 5 mm under the breasts -- the fold -- 8 mm over them); plus `bust_wall`, the wall taken back
+  between and above them (a natural cubic in height inside a C2 window from 1.185 to 1.405 m, times (1 - (x/X)^2)^3 across, X
+  0.11); all of it on the front only (a C2 ramp from y -0.05 to -0.01). Every piece is C2 and compact: no line in the reflections,
+  nothing outside its reach moves. `Suit.forms` and `Suit.patch_field` (the shoulder's own surface, where the torso rules) read it;
+  `_FormsLoft` lays the front zip (tape and teeth) on the displaced surface (it lay on the plain loft, where B1m's forms were cut
+  to zero over the centre front; where the field is zero it is the loft vertex for vertex); `Suit.radial_lift` lifts a body point
+  near the shoulder box onto the union only past the wall's own depth (it pulled the upper chest's points inside the box back out:
+  a jagged fold along the box's face at x 0.03 in attempt 1's first build). Tables: `beatrice.BUST`; B1m's Gaussian is
+  `BUST_B1M`, the shape `b1m` (`--shape b1m`).
+- **The design loop**: the plain body loft dumped once over the chest (points, normals), the field evaluated in plain numpy on it
+  (side silhouette against v2's, level sections, a crude shaded and reflection-line view) -- a second per candidate; then a
+  body-only rebuild on the B1m build (35 s) and full builds (5.5 min) judged in close-ups, reflection lines and the posed concept
+  view. Shapes tried on the way (numpy only): an ellipsoid cap (its edge's infinite slope drew a line round each breast in the
+  reflection lines), the bell all round (hanging teardrops with a crease under them), a short paraboloid (two flat buns with a
+  ledge on top).
+- **Attempt 1** (apex (72, 1287) mm, half-axes 80 / 58 across, 50 / 95 high, T 17 mm, c 0.7, kv 12 mm): the side silhouette within
+  3.6 mm of v2's from 1.20 to 1.36; two volumes, a fold, the upper slope easing out -- but in the level sections the most forward
+  point only 44 mm out and the valley at the zip 9 mm: close-set, one broad mass from the front. Its first build also swelled the
+  BACK (the field was a function of x and z alone: a notch behind the shoulder in the posed side view) and showed the radial-lift
+  fold above: both fixed in the code.
+- **Attempt 2** (apex (76, 1288), inwards 72 = stopping at the centre line, outwards 60, below 48, T 17.2, kv 10): the apex 49 mm
+  out, the valley 15 mm, the profile kept. Kept.
+- **Attempt 3**: the seam under the bust laid IN the new fold (2 mm under it, 12 points: a smooth curve under each breast meeting
+  the other at the zip, as the concept draws it; B1m's six points ran 4-8 mm under the fold with a corner at each point) and the
+  princess lines started from it. Kept.
+- **Achieved** (the built mesh, the same measures as step 1): apex 131.3 mm at 1.278 m (v2 131.3 at 1.277; B1m 151.2 at 1.285); the
+  side silhouette within 3.4 mm of v2's from 1.20 to 1.36 m (B1m up to 20 mm); 117.0 / 122.6 / 128.4 at 1.24 / 1.25 / 1.26 (v2
+  114.9 / 121.6 / 126.7), 127.6 / 117.8 / 99.1 / 80.8 at 1.30 / 1.32 / 1.34 / 1.36 (v2 129.7 / 117.9 / 100.4 / 78.5); above, in the
+  collar's base, it stays B1m's (64.0 / 52.7 at 1.38 / 1.40, v2 58.8 / 47.5: 5 mm, inside the registration's +-5 mm). Level sections
+  at 1.27 / 1.28 / 1.29: the zip 117.0 / 116.5 / 115.0 mm in front of the centre, the breast 130.8 / 131.2 / 129.9 at x 49-50 mm: a
+  valley 14-15 mm deep and broad (B1m: 125 at the zip, the breasts 147-151 at x 56-58 behind a narrow V at the zip). The body's outer
+  x at 1.27-1.31 (the breasts' outer side, under the arm) 4.9-6.8 mm a side wider than B1m's; at 1.26 and below and at 1.33 and above
+  within 0.5 mm.
+- Sheet IoU: side above the waist 0.921 -> 0.901 (the A-pose side drawing's bust, "too much" by the owner, is the larger one), front
+  above the waist 0.951 -> 0.951, back unchanged; whole side 0.905 -> 0.898.
+
+### Step 3, the seat in profile
+
+v2's (and v1's) arm and hand hang over the seat from the waist to below the buttock, so their back outline is not drawn. The skin
+they show reaches back to the arm's front edge, so the drawn seat is AT LEAST that deep (the high-cut suit's leg line bounds the skin
+above 0.99 m, so only 0.88-0.98 counts). Same landmark scaling as the bust; behind the body's centre, mm: at 0.88 / 0.91 / 0.94 / 0.96
+v2's skin edge 104.7 / 111.8 / 109.9 / 106.5, B1m 87.3 / 95.4 / 98.8 / 98.5 (v1 by its own landmarks the same within 2 mm); the
+fronts agree within 3-7 mm. So the seat is clearly fuller in the drawing (by 8-17 mm at least; uncertainty about 5). Moved toward it
+by the seat's own two rounds only (`SEAT_B1N`: height 6.5 -> 12 mm; no profile control, no width): back outline 89.2 / 99.4 / 104.2 /
+103.5 (+2.2 / +4.0 / +5.4 / +5.0 mm): half way at the crown, less on the under-curve. Hip width (front view, every 2 cm from 0.80 to
+1.10) and the leg gap identical to 0.01 mm. Posed (the standing side, her right): 103.7 / 108.8 at 0.88 / 0.92 (B1m 98.4 / 103.5).
+B1m's seat is kept in the shape `b1m`. Picture: `seat_profile.jpg`.
+
+### Nothing else moved (`C:/tmp/beatrice_b1n/cmp3.py`, `cmpz.py`; `Beatrice_b1m_922fc39.blend` against this build)
+
+27 objects identical (max |dP| < 1e-7 m): the head, hands and nails, cuffs, boots and their cords, knee pads and rims, the sleeve, the
+collar, the blade insert, the zip pulls, the front zip's stop and both collar zips. Moved:
+- `Suit_Body` (each new vertex's distance to B1m's surface): the front from 1.18 to 1.40 m (the bust; 0.5 mm at 1.18, 3.1 at 1.20 --
+  B1m's Gaussian reached down there and is gone, and the wall eases in from 1.185 -- 9.8 at 1.22, up to 21 mm at 1.28, 3.6 at 1.38,
+  0.75 at 1.40); the back from 0.80 to 1.08 (the seat, up to 5.5 mm at 0.92-0.94). Nothing else over 0.1 mm.
+- `Suit_Shoulder`: its torso part beside the bust, x 0.125-0.133 at 1.26-1.30 in front, up to 6.8 mm (the breast's outer side; the
+  shoulder's own surface carries the forms where the torso rules); behind the side under the arm at 1.28-1.32 up to 2.4 mm; along the
+  raglan line and the shoulder insert at 1.32-1.40 (x 0.10-0.14) up to 1.9 mm. The deltoid and the arm (x > 0.146) did not move by
+  0.1 mm.
+- Riding on those: the front zip's tape and teeth (1.19-1.41, up to 9.3 mm), the piping (the chest seams and the seat's U), the
+  shoulder insert (1.2 mm), the waist insert (0.11 mm), the thigh net (0.18 mm, the seat round's tail), the back-waist insert
+  (0.05 mm), the back zip (0.001 mm).
+- `source/mesh_stats.json`: 62 objects, 1,247,524 source / 3,292,804 evaluated triangles (B1m 1,247,563 / 3,292,964), all closed;
+  the flipped-normal list unchanged.
+
+### Pictures, reproduce
+
+- `bust_profile.jpg` (v2 with B1m's and B1n's side silhouettes, and in the model's frame), `bust_b1n.jpg` (B1m above, B1n below:
+  front, three-quarter, side, from below, the fold close, the concept framing, reflection lines; the concept beside both),
+  `seat_profile.jpg`; `posed_vs_concept.jpg`, `posed_full.jpg`, `posed_hotlight.jpg` regenerated; the full set (sheet, turnaround,
+  every beauty and dev view). Not re-rendered: `shape_vs_concept.jpg`, the `--hips` pictures, `crimson_hero.jpg`, the earlier
+  rounds' before/after sheets.
+- Build times: the build 5.4 min (`built in 324 s`), the full set 9.2 min; posing all shots 53 s, the hot shot 15 s.
+- Reproduce: `bash charkit/run.sh Beatrice --sheet --turn --save --beauty hero,hero_back,torso,torso_back,legs,side,head,top,elevated,shoulder,shoulder_back,wrist,boot,flank,flank_back,knee,hand,boot_side,armpit_back,top_close,hand_palm`,
+  then `posed.py` (all shots, and `-- --views concept --lights hot`) and `posed_sheets.py` as in B1m. The before: `--shape b1m`.
+  Scratch in `C:/tmp/beatrice_b1n/`: `m_outline.py` (silhouettes and sections of a build), `prof.py` (v2's outline, the landmark
+  similarity, `bust_profile.jpg`), `dump_loft.py` + `bustform.py` + `design.py` / `quick.py` / `lev.py` (the numpy design loop),
+  `bh.py` + `zb_render.py` (body-only rebuild and chest close-ups: gloss, reflection lines, object ids), `seat.py`, `gapw.py`,
+  `cmp3.py`, `cmpz.py`, `compose_b1n.py`.
