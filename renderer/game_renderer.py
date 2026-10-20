@@ -242,6 +242,9 @@ class GameRenderer:
         # them). [render.gas_relief] is re-read every frame (Ctrl+R live);
         # enabled = false falls back to the B2 erosion look above.
         self.gas_relief = GasReliefPass.from_config(cfg.grid_h, cfg.grid_w, CFG)
+        # G2: the smoke cast shadow's inputs this frame (_smoke_cast_inputs)
+        self._smoke_cast = (None, (1.0, 1.0), (0.0, 0.0, 0.0, 0.0),
+                            (0.0, 0.0, 0.0, 0.0))
         self._sim_dt = 1.0 / float(getattr(
             getattr(CFG, "clock", None), "ticks_per_second", 24))
         self.pressure_overlay = PressureOverlay(cfg.grid_h, cfg.grid_w)
@@ -687,6 +690,17 @@ class GameRenderer:
         if self._pending_tile_patches:
             self._apply_tile_patches()
 
+        # 0. Graphics G2: the relief's CAST PRODUCT (occlusion + height per
+        # texel, both species layers), rendered into its own target BEFORE the
+        # scene RT is bound; the floor, the 3D units and props (the smoke's
+        # cast shadow) and the heat layer (glow-through) read it below.
+        relief_on = (self.show_smoke and not self.legacy_smoke_on
+                     and self.gas_relief.enabled)
+        self.gas_relief.render_product(self.lighting, relief_on,
+                                       tile_rect=self._relief_view_rect())
+        self._smoke_cast = self._smoke_cast_inputs(relief_on)
+        self.lighting.set_smoke_shadow(*self._smoke_cast)
+
         # ================= SCENE: linear HDR (RGBA16F) =================
         self.world.begin(clear_color=(0, 0, 0, 0))
 
@@ -708,8 +722,6 @@ class GameRenderer:
         # wisps), same premult blend; enabled=false bypasses the shader for the
         # plain P2 draw. Both own their blend. (The LEGACY smoke A/B path is a
         # display-referred grey and draws after the resolve, below.)
-        relief_on = (self.show_smoke and not self.legacy_smoke_on
-                     and self.gas_relief.enabled)
         if relief_on:
             # G1: the FLOOR species layer (steam, teargas, poison, fuel
             # vapour) -- below the water and the units, so marines wade in it.
@@ -928,6 +940,18 @@ class GameRenderer:
                            float(self.world.world_px_h))
         rl.draw_texture_pro(field_tex, src, dst, rl.Vector2(0, 0), 0.0, rl.WHITE)
 
+    def _smoke_cast_inputs(self, relief_on: bool):
+        """Graphics G2: ``(product texture or None, grid, cast, cast2)`` --
+        what every receiver of the smoke's cast shadow is handed this frame
+        (the floor through LightingPass, the 3D units and props through
+        LightFieldCtx). None when the relief drew nothing."""
+        from .gas_relief import cast_uniforms
+        gr = self.gas_relief
+        live = bool(relief_on and gr.product_live)
+        cast, cast2 = cast_uniforms(gr.settings, live)
+        return (gr.product_texture if live else None,
+                (float(gr.w), float(gr.h)), cast, cast2)
+
     def _relief_view_rect(self):
         """The camera's view in tiles, plus a margin, for the relief pass
         (graphics G1): its shader costs per world-RT pixel, so it draws only
@@ -1013,6 +1037,10 @@ class GameRenderer:
                 ambient=self.lighting.ambient,
                 light_gain=self.lighting.light_gain,
                 normal_y_sign=(-1.0 if self.normal_y_flipped else 1.0),
+                smoke_cover=self._smoke_cast[0],
+                smoke_grid=self._smoke_cast[1],
+                smoke_cast=self._smoke_cast[2],
+                smoke_cast2=self._smoke_cast[3],
             )
             rl.begin_mode_3d(self._world_cam3d)
             try:

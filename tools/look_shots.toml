@@ -24,6 +24,8 @@
 #                              at a tile, aimed east (+x); spread = full cone
 #                              width in radians. Omit = no flashlight.
 #   ignite / smoke / steam     tiles (3x3 patches) written before tick 1
+#   gas_amount                 the smoke / steam puffs' density, share of a
+#                              full puff (0, 1]; default 1 (graphics G2)
 #   detonate = [x, y, frame]   the canonical frag grenade, before that frame
 #   light_gain                 override the studio's exposure: a number, or
 #                              "game" = [render.lighting] master_gain
@@ -183,3 +185,45 @@ smoke = [[11, 17], [12, 18]]
 steam = [[23, 17], [24, 18]]
 hide = ["heat"]
 note = "the species layers (ruling 2): soot laid over Alpha (west) is a CEILING layer and must hide the marine; steam laid over Cobra (east) is a FLOOR layer and the marine must stand in it, drawn over it; Bravo (middle) clear for reference. 12 ticks, the beacon sweeping."
+
+# --- graphics G2: shadows and glow-through (§2.3) ------------------------------
+[[shot]]
+name = "smoke_shadow_squad"
+level = "fire_studio"
+frames = 12
+center = [11.0, 17.5]
+zoom = 56.0
+lamps = false
+beacon = false
+flashlight = { pos = [4.5, 17.5], intensity = 3.0, spread = 1.0 }
+smoke = [[8, 16]]
+hide = ["heat"]
+note = "a soot puff between a low flashlight (west) and Alpha: the column's cast shadow thrown east across the floor and over the marine. Lamps and beacon off, so the flashlight is the one light."
+
+[[shot]]
+name = "steam_shadow_squad"
+level = "fire_studio"
+frames = 12
+center = [11.0, 17.5]
+zoom = 56.0
+lamps = false
+beacon = false
+flashlight = { pos = [4.5, 17.5], intensity = 3.0, spread = 1.0 }
+steam = [[8, 16]]
+light_gain = "game"
+hide = ["heat"]
+note = "smoke_shadow_squad with a STEAM puff (a floor layer the light sweep barely attenuates in the plane): the cast shadow on its own, thrown east toward Alpha. At the game exposure."
+
+[[shot]]
+name = "thin_smoke_shadow_squad"
+level = "fire_studio"
+frames = 12
+center = [11.0, 17.5]
+zoom = 56.0
+lamps = false
+beacon = false
+flashlight = { pos = [4.5, 17.5], intensity = 3.0, spread = 1.0 }
+smoke = [[8, 16], [8, 19]]
+gas_amount = 0.003
+hide = ["heat"]
+note = "smoke_shadow_squad with THIN soot (1 % of a full puff, two puffs): the light sweep passes part of the flashlight through it in the plane, as it will through soot after #88, so the column's own cast shadow shows on the floor and on Alpha."

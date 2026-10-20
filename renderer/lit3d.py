@@ -50,11 +50,68 @@ import pyray as rl
 # numerically identical to shaders/lighting.fs so every 3D-lit thing decodes
 # its albedo as the ship does. No tone-map, no encode: the world resolve owns
 # both (G0 P1).
+# The SMOKE CAST SHADOW (graphics G2, docs/graphics_direction_2026-10-18.md
+# §2.3, §12): THE one copy of the GLSL every receiver of the smoke's shadow
+# runs -- the floor (shaders/lighting.fs, spliced in at its
+# "// <SMOKE_SHADOW>" marker by LightingPass) and every lit-3D consumer (via
+# _COMMON_GLSL below, called from _FIELD_SAMPLE_GLSL). It reads the relief's
+# CAST PRODUCT (renderer/gas_relief.py ``GasReliefPass.product_texture``:
+# r = ceiling-layer alpha, g = its relief height, b/a = the floor layer's,
+# heights in tiles), never a second smoke model.
+#
+# Geometry: a receiver at height z (tiles) looks toward the light along the
+# light field's own planar direction (``light_dir_2d``, toward the light),
+# rising one tile per ``parallax`` tiles of run. The CEILING layer is a slab
+# from ``lift`` up to ``lift + h(q)``; the FLOOR layer a slab from 0 up to
+# h(q). Three taps across each slab's window of run find where the ray is
+# inside it; the shadow is the strongest occlusion alpha met there, and the
+# light is multiplied by (1 - strength * shadow) per layer. The planar light
+# sweep already attenuates light THROUGH smoke in the plane; this adds the
+# vertical shadow it cannot know about (the column's shape thrown across the
+# floor and over the squad). Strengths 0 (relief off, smoke hidden) return
+# 1 before any texture read.
+_SMOKE_SHADOW_GLSL = """
+// --- smoke cast shadow (graphics G2; renderer/lit3d.py _SMOKE_SHADOW_GLSL) ---
+uniform sampler2D u_smoke_cover; // the relief's cast product: r,g = ceiling
+                                 // (alpha, height), b,a = floor; tiles
+uniform vec2  u_smoke_grid;      // (grid_w, grid_h), tiles
+uniform vec4  u_smoke_cast;      // (ceiling strength, floor strength,
+                                 //  parallax: run per tile of rise, ceiling lift)
+uniform vec4  u_smoke_cast2;     // (tallest column, tiles; unused x3)
+vec4 smokeCoverAt(vec2 world_uv) {
+    // a RenderTexture's rows run bottom-up
+    return texture(u_smoke_cover, vec2(world_uv.x, 1.0 - world_uv.y));
+}
+float smokeShadow(vec2 world_uv, vec2 to_light, float z_tiles) {
+    if (u_smoke_cast.x + u_smoke_cast.y <= 0.0) return 1.0;
+    vec2 step_uv = to_light / u_smoke_grid;      // world uv per tile of run
+    float k = u_smoke_cast.z;
+    float hmax = max(u_smoke_cast2.x, 1e-3);
+    float shC = 0.0;
+    float shF = 0.0;
+    for (int i = 0; i < 3; ++i) {
+        float f = (float(i) + 0.5) / 3.0;
+        // ceiling slab [lift, lift + h]: the ray is in it for run s with
+        // z + s / k in that band
+        float sC = (max(u_smoke_cast.w - z_tiles, 0.0) + f * hmax) * k;
+        vec4 c = smokeCoverAt(world_uv + step_uv * sC);
+        float topC = u_smoke_cast.w + c.g - (z_tiles + sC / max(k, 1e-3));
+        shC = max(shC, c.r * smoothstep(0.0, 0.25 * hmax, topC));
+        // floor slab [0, h]
+        float sF = f * max(hmax - z_tiles, 0.0) * k;
+        vec4 q = smokeCoverAt(world_uv + step_uv * sF);
+        float topF = q.a - (z_tiles + sF / max(k, 1e-3));
+        shF = max(shF, q.b * smoothstep(0.0, 0.25 * hmax, topF));
+    }
+    return (1.0 - u_smoke_cast.x * shC) * (1.0 - u_smoke_cast.y * shF);
+}
+"""
+
 _COMMON_GLSL = """
 // Cheap sRGB -> linear (gamma 2.2), matching shaders/lighting.fs. Output stays
 // linear HDR: WorldComposite.resolve() tone-maps and encodes, once.
 vec3 srgb_to_linear(vec3 c) { return pow(c, vec3(2.2)); }
-"""
+""" + _SMOKE_SHADOW_GLSL
 
 
 # The light-field SAMPLE + unpack block, shared verbatim by every 3D consumer's
@@ -88,7 +145,12 @@ _FIELD_SAMPLE_GLSL = """\
     // u_light_z -> Y (up), dir.y -> Z. Same vector the ship builds as
     // vec3(dir, light_z), reordered because the ship's tangent frame is Z-up.
     vec3 L = normalize(vec3(light_dir_2d.x, u_light_z, light_dir_2d.y));
-    vec3 N = normalize(fragWorldNormal);"""
+    vec3 N = normalize(fragWorldNormal);
+
+    // Graphics G2: the smoke's cast shadow on this fragment, at its own
+    // height (world px -> tiles), through the one shared GLSL above.
+    incoming_rgb *= smokeShadow(world_uv, light_dir_2d,
+                                fragWorldPos.y * u_smoke_grid.x / u_world_px.x);"""
 
 
 @dataclass
@@ -104,6 +166,50 @@ class LightFieldCtx:
     ambient: tuple
     light_gain: float
     normal_y_sign: float = 1.0
+    # Graphics G2: the smoke cast shadow -- the relief's cast product
+    # (GasReliefPass.product_texture; None = no shadow), the grid in tiles
+    # and gas_relief.cast_uniforms' two vec4s. Strength 0 = no shadow.
+    smoke_cover: object = None
+    smoke_grid: tuple = (1.0, 1.0)
+    smoke_cast: tuple = (0.0, 0.0, 0.0, 0.0)
+    smoke_cast2: tuple = (0.0, 0.0, 0.0, 0.0)
+
+
+def set_smoke_shadow_uniforms(shader, grid, cast, cast2) -> None:
+    """Push the cast-shadow uniforms of :data:`_SMOKE_SHADOW_GLSL` to
+    ``shader`` (safe outside begin_shader_mode: SetShaderValue self-enables
+    the program). The sampler ``u_smoke_cover`` is the caller's to bind (a
+    3D consumer through a material map, the floor on its own unit). A
+    location of -1 (the program compiled the block out) is skipped."""
+    for name, vals in (("u_smoke_grid", grid), ("u_smoke_cast", cast),
+                       ("u_smoke_cast2", cast2)):
+        loc = rl.get_shader_location(shader, name)
+        if loc < 0:
+            continue
+        n = len(vals)
+        kind = {2: rl.ShaderUniformDataType.SHADER_UNIFORM_VEC2,
+                4: rl.ShaderUniformDataType.SHADER_UNIFORM_VEC4}[n]
+        rl.set_shader_value(shader, loc,
+                            rl.ffi.new(f"float[{n}]", [float(v) for v in vals]),
+                            kind)
+
+
+def bind_smoke_cover_map(shader, materials, ctx: "LightFieldCtx") -> None:
+    """Wire the cast product into a lit-3D consumer: its sampler
+    ``u_smoke_cover`` on the OCCLUSION material-map slot (unit 4, a free
+    slot: albedo 0, light textures 1/2, normal map 3), so DrawMesh binds it
+    every draw like the light textures, plus the per-frame uniforms. With
+    no product (``ctx.smoke_cover`` None) the strengths go to 0 and nothing
+    is sampled."""
+    MM = rl.MaterialMapIndex
+    shader.locs[rl.ShaderLocationIndex.SHADER_LOC_MAP_OCCLUSION] = \
+        rl.get_shader_location(shader, "u_smoke_cover")
+    cast = ctx.smoke_cast if ctx.smoke_cover is not None else (
+        0.0, 0.0, 0.0, 0.0)
+    if ctx.smoke_cover is not None:
+        for mat in materials:
+            mat.maps[MM.MATERIAL_MAP_OCCLUSION].texture = ctx.smoke_cover
+    set_smoke_shadow_uniforms(shader, ctx.smoke_grid, cast, ctx.smoke_cast2)
 
 
 # Top-down camera height above the floor, in world px. Ortho => this does NOT
@@ -139,4 +245,5 @@ def make_camera(world_px_w: int, world_px_h: int) -> rl.Camera3D:
 
 
 __all__ = ["LightFieldCtx", "make_camera", "_COMMON_GLSL",
-           "_FIELD_SAMPLE_GLSL", "_CAM_HEIGHT"]
+           "_FIELD_SAMPLE_GLSL", "_SMOKE_SHADOW_GLSL", "_CAM_HEIGHT",
+           "set_smoke_shadow_uniforms", "bind_smoke_cover_map"]

@@ -270,6 +270,23 @@ def load_shader_with_fallback(vs_path: str, fs_path: str) -> rl.Shader:
         return rl.load_shader(rl.ffi.NULL, rl.ffi.NULL)
 
 
+def load_shader_from_source(vs_path: str, fs_source: str) -> rl.Shader:
+    """Load a shader from a vertex-shader FILE and a fragment source held
+    in memory (a file with text spliced in, e.g. ``lighting.fs`` + the smoke
+    cast shadow's shared GLSL, graphics G2). Falls back to raylib's default
+    shader like :func:`load_shader_with_fallback`."""
+    if not os.path.isfile(vs_path):
+        print(f"[renderer] WARN: vertex shader not found: {vs_path}, using default")
+        return rl.load_shader(rl.ffi.NULL, rl.ffi.NULL)
+    try:
+        with open(vs_path, encoding="utf-8") as f:
+            vs_source = f.read()
+        return rl.load_shader_from_memory(vs_source, fs_source)
+    except Exception as e:
+        print(f"[renderer] WARN: shader load failed ({e}); falling back to default")
+        return rl.load_shader(rl.ffi.NULL, rl.ffi.NULL)
+
+
 __all__ = [
     "init_window", "shutdown", "should_close",
     "TextureSet", "load_texture_from_path", "load_level_textures",
@@ -277,5 +294,5 @@ __all__ = [
     "create_dynamic_rgba16f_texture", "update_rgba16f_texture",
     "load_render_texture_rgba16f",
     "begin_frame", "end_frame", "draw_fps",
-    "load_shader_with_fallback",
+    "load_shader_with_fallback", "load_shader_from_source",
 ]

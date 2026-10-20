@@ -1658,8 +1658,19 @@ rim = 1.5                   # silver lining where a lamp is behind a thin edge
 rim_g = 0.6                 # its Henyey-Greenstein forward anisotropy, [0, 1)
 glow_texture = 0.6          # how much the billows texture the sweep's in-scatter
                             # (god rays) inside the smoke, [0, 1]
+# --- graphics G2: the smoke's CAST SHADOW (doc §2.3, §12) on the floor and on
+# the 3D units and props, from the relief's own cast product. A receiver at
+# height z looks toward the light (the light field's direction) rising one
+# tile per cast_parallax tiles of run; the ceiling layer is a slab from
+# cast_lift_ceiling up by its relief height, the floor layer one from 0.
+cast_shadow_ceiling = 0.8   # how much light the ceiling layer's shadow takes, [0, 1]
+cast_shadow_floor = 0.5     # ... the floor layer's, [0, 1]
+cast_parallax = 0.5         # tiles of shadow offset per tile of height (a low
+                            # lamp throws a long shadow)
+cast_lift_ceiling = 7.0     # the ceiling layer's underside above the floor, tiles
 debug_view = 0              # 0 off; 1 coverage, 2 height, 3 N.L, 4 self-shadow,
-                            # 5 AO, 6 boil (dev only)
+                            # 5 AO, 6 boil, 7 the cast shadow on the floor
+                            # (dev only)
 
 [render.props]
 # 3D props & vegetation — WIND SWAY (arc #60 P4, design §4.3 "Sway (P4)").

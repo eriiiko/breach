@@ -90,6 +90,9 @@ class FakeCore:
     def load_shader_with_fallback(self, vs_path, fs_path):
         return object()  # opaque shader handle; never inspected
 
+    def load_shader_from_source(self, vs_path, fs_source):
+        return object()  # (graphics G2: lighting.fs is spliced, then loaded)
+
 
 class _LightingCfg:
     def __init__(self, bilinear):

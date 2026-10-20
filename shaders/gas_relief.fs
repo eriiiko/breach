@@ -91,6 +91,11 @@ uniform float u_rim;
 uniform float u_rim_g;
 uniform float u_glow_texture; // how much the billows texture the in-scatter, [0,1]
 uniform int   u_debug;
+uniform int   u_mode;         // 0 = draw the layer; 1 = write the CAST PRODUCT
+                              // (graphics G2, renderer/gas_relief.py): the
+                              // layer's occlusion alpha and relief height,
+                              // ceiling -> (a, h, 0, 0), floor -> (0, 0, a, h),
+                              // summed into the product RT (BLEND_ADD_COLORS)
 
 out vec4 finalColor;
 
@@ -254,6 +259,21 @@ void main() {
             * (1.0 - u_billow_amp + u_billow_amp * B) * CC.y;
     if (u_debug == 2) {
         finalColor = vec4(vec3(h / max(u_height, 1e-6)), 1.0); return;
+    }
+
+    // --- the CAST PRODUCT (G2, doc §2.3): this pixel's extinction and
+    // height, from the SAME C and h the layer draw below composites (one
+    // smoke model), for the passes that receive the smoke's shadow (lighting.fs,
+    // the lit3d seam) and the heat layer's glow-through. No lighting.
+    if (u_mode == 1) {
+        // The shadow is EXTINCTION: light scattered out of a beam is gone
+        // from that beam too (a white cloud throws a shadow), so a steam
+        // column shades the floor although it barely absorbs.
+        float Kp = u_haze + (1.0 - u_haze) * C;
+        float ap = clamp(1.0 - exp(-tau_ext * Kp), 0.0, 1.0);
+        finalColor = (u_group == 1) ? vec4(ap, h, 0.0, 0.0)
+                                    : vec4(0.0, 0.0, ap, h);
+        return;
     }
 
     // --- N from the height field (central differences, NE tiles apart) ----
