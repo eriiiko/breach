@@ -876,3 +876,58 @@ collar, the blade insert, the zip pulls, the front zip's stop and both collar zi
   similarity, `bust_profile.jpg`), `dump_loft.py` + `bustform.py` + `design.py` / `quick.py` / `lev.py` (the numpy design loop),
   `bh.py` + `zb_render.py` (body-only rebuild and chest close-ups: gloss, reflection lines, object ids), `seat.py`, `gapw.py`,
   `cmp3.py`, `cmpz.py`, `compose_b1n.py`.
+
+## B2a: the head, round 1 -- the face test (2026-10-20)
+
+The owner: "i'd like to have her face very nice ... we should try to make her face as good as we can"; "if we're gonna have
+her, she must look as good as in the picture". The style (the orchestrator's, vetoable by the owner): a STYLISED anime-style
+3D face, as modern anime 3D games build them. References added (the owner's, 1254 x 1254, 2026-10-19): `concept-face-front-v1.png`
+(SHA-256 `c165cc1ebd223beb21f97ce06fd6a4bc0d3e70d49033ff01e03107d921e63501`) and `concept-face-side-v1.png` (SHA-256
+`8b30b341610d8e20936882a542efc1a2b7b309efffeec43c13fcb565c0f983dc`). The body is frozen; the before is
+`source/Beatrice_b1n_adddc04.blend` (gitignored).
+
+### Step 1, measured and planned (before building)
+
+- **Frames.** The bald A-pose drawings in their sheet frames (`sheet_ref.py`): front `without_hair.png` 1.1574 mm/px (centre
+  column 511.5), side `without_hair_side.png` 1.1744 mm/px (y = 0 at column 518, facing image-left). The close-ups are scaled by
+  the A-pose front's eye line (1.5626 m, the pupils' row 155) to chin (1.478, row 228): 84.6 mm, i.e. 0.2074 mm/px on the front
+  close-up (eye row 597, midline column 653) and 0.2115 mm/px on the side close-up (eye row 567; its nose tip, column 938, put at
+  y -0.104, where the A-pose forehead (-0.101 at 1.596) and the close-up's nasion 13 mm behind the tip agree).
+- **The head's size (built: the A-pose drawing's).** Chin to crown: A-pose front 202 mm (rows 53.5-228), side 200 mm (rows
+  36.5-207); built 1.476 to 1.680 = 204 mm (the placeholder's mesh: 183). Cranium 150 mm wide at 1.60 (A-pose front, ears
+  excluded) and 184 mm deep (side: -0.101 to +0.083). Cheeks 124-128 mm wide at 1.545 (the front close-up: the locks over its
+  cheeks hide the edge, read by eye; the A-pose 135). Neck: drawn 70-73 mm wide just above the collar (both); built 76 mm at
+  1.50, but the placeholder's rings kept up to the collar's top (1.474-1.482: 84 mm), because the collar was flared round them
+  and rolls in onto the neck -- the collar is NOT changed.
+- **The concept's ratio differs by more than 5 %.** On `posed_vs_concept.jpg`'s framing (1482 px/m at the figure; the shoulder
+  line and the crotch at the concept's heights): eye-to-chin concept 158 px against the model's 125 (x 1.26, against the torso's
+  length); against the shoulders with the arms (630 / 543 px) x 1.09; the cheeks' width x 1.30. So a named variant with the head
+  scaled x 1.20 about the chin's height on the neck's axis (the neck itself unchanged in the collar): `--head concept`.
+- **The face, front close-up** (mm from the midline / the eye line, her left eye): pupils 70.7 apart (the A-pose 73); the eye
+  opening from the inner corner (16.6, -3.9) to the outer (57.4, +1.9) -- 41 mm wide, tilted up 8 deg outwards -- 18.5 mm high
+  (upper lid's top +8.5, lower lid's bottom -10.4); the iris 19.5 mm across, its centre 33.4 out, its top under the upper lid,
+  its bottom touching the lower one; the pupil 5 mm; the big highlight up and outwards of the pupil, a small one beside it.
+  Brows 17 mm above the pupils, mostly under the fringe. Nose tip 26 mm under the eye line (both close-ups), the nostrils 36
+  (-> 1.5263), 6 mm apart. Mouth 26 mm wide at 55 mm under the eye line (1.5074; both close-ups and the A-pose agree). The jaw
+  (the drawn edge against the shadowed neck): half-widths 51.5 / 47.6 / 43.5 / 39.5 / 34.9 / 29.8 / 24.2 / 18.3 / 12.0 / 5.0 mm at
+  1.5226 / 1.514 / 1.508 / 1.504 / 1.500 / 1.4956 / 1.4915 / 1.487 / 1.483 / 1.479: a narrow, softly pointed V. Ears 1.577-1.535.
+- **The profile, side close-up** (mm behind the nose tip at 1.5366): nasion 13.1 at 1.547, the bridge straight up to the tip, the
+  underside sloping back to the subnasale (9 behind at 1.52: upturned), the upper lip 9.9 (1.513-1.518), the mouth line 16.1
+  (1.507), the lower lip 15.7 (1.505), the chin receding smoothly 20.5 / 23.7 / 25.6 at 1.4964 / 1.4879 / 1.4795, its underside
+  at 1.476 running back and up about 11 deg to the neck. The ear 1.575-1.528, its front edge 105 mm behind the tip.
+- **Where the two disagree, and what was done.** The A-pose side has almost no nose (its tip level with the forehead); the
+  close-up's projects 15 mm: the profile rules depths, so the close-up's nose, lips and chin. The A-pose's face is wider (cheeks
+  135 against about 126 mm) and its ear 18 mm further back (124 mm behind the nose tip against 106): the front close-up rules
+  widths (the face built 126 mm), the ear placed between (front edge 2 mm behind the head's centre, about 110 mm behind the tip).
+  The skull outside the face (crown, back, cranium width) is the A-pose's, which alone draws it; the hair hides it.
+- **The plan.** One implicit surface for skull, face and neck (the B1h-B1n recipe: C2 unions, a banded mesh projected onto the
+  field, the field's own normals; zebra proof). Eyes: NOT eyeballs (a 41 mm almond would need a 22 mm ball); the opening is carved
+  through the skin over the drawn almond (front projection), its margin rounded C2 into a lid; behind it an eye SURFACE that is the
+  skin's own surface set back 1.2 mm (deeper to the corners: a gentle dome), on which the iris, pupil, lid shadow and highlights are
+  PAINTED along the view axis (attributes `iu`, `iv`, `lid`), so the front reads exactly as drawn and the iris foreshortens like a
+  drawing on a curved face as the head turns; the heavy upper lash line a swept dark band with an outer flick (geometry: it stands
+  off the lid in three-quarter and profile); the lower lash line, the lid crease and the brows painted. Nose and mouth: small forms
+  (shape) with the drawing's tip highlight and the mouth line carried by shading and paint. Skin: the hands' base, subsurface and
+  gloss without pores; blush, lip tint, mouth line, lash line, nostrils as `PALETTE` entries. Hair: a blockout -- a cap following the
+  skull, diving under the skin below the hairline, and smooth locks (fringe, crown, the locks in front of the ears, over the
+  shoulders, the mass down the back) as swept ribbons, the hanging parts dropped as ropes kept clear of the head and the suit.
