@@ -21,7 +21,7 @@
 </head>
 <body>
 <main>
-  <h1>Beatrice — body, suit, hands, boots, and the head's first round (B2a: the face test)</h1>
+  <h1>Beatrice — body, suit, hands, boots, the head (B2a), and the anime look (B2b)</h1>
   <p>Built from Python alone on the shared character kit (<code>charkit/bodysuit.py</code>, Blender 4.5, Cycles) from the tables in
      <code>scripts/beatrice.py</code>, fitted to three drawings: front, side and back. The head is a bald placeholder for the
      face-and-hair stage. Character only, no props. This round answers <code>review_stage2.md</code>: new hands, the shoulder and
@@ -30,17 +30,31 @@
      <b>Stage 4</b> answers <code>review_stage3.md</code> for the pelvis only (waist, hips, seat, upper thighs); everything else is
      unchanged, and the close-ups further down are stage 3's.</p>
 
+  <h2>The anime look, the face's form and the eyes (B2b)</h2>
+  <p>The owner's decisions of 2026-10-20: an anime / toon look for the whole character in her high-resolution pictures, and the
+     concept's head-to-body ratio (x 1.20) as the default head. The look is render-time only (<code>charkit/toonlook.py</code>,
+     EEVEE: Shader-to-RGB ramps per material, crisp streaks on the latex, the hair's highlight band, inverted-hull outlines sized in
+     pixels per shot); the face is shaded as a simple head and casts as one. The physically-lit look of B1a-B2a is kept as
+     <code>--look pbr</code>. The eyes were re-traced on the drawn opening (rounder, level, a short flick), the nose's root set
+     deeper. Every picture in this section and the turnaround, studio views and close-ups below are in the toon look unless
+     labelled pbr; the sheet's overlap pictures stay plain. See <code>PROVENANCE.md</code> (B2b).</p>
+  <figure><img src="look_compare.jpg" alt="The pbr and the toon look side by side"><figcaption>The same shots in the pbr look (B2a's) and the toon look: face front, 30 degrees, the posed concept framing, full figure</figcaption></figure>
+  <figure><img src="posed_vs_concept.jpg" alt="The concept beside the posed render, toon look"><figcaption>The concept, the posed render in the toon look at the same framing, and the render's outline over the concept</figcaption></figure>
+  <figure><img src="posed_full.jpg" alt="The pose, full figure, toon look"><figcaption>The pose, full figure, toon look: front, front three-quarter, side (her right), back three-quarter</figcaption></figure>
+  <figure><img src="posed_hotlight.jpg" alt="The concept framing in both looks"><figcaption>The concept framing: pbr under the studio rig, pbr under the optional "hot" setup, the toon look</figcaption></figure>
+  <figure><img src="face_vs_art.jpg" alt="The face against the close-ups, both looks"><figcaption>The close-ups and the model in their frames: toon with and without hair, and one pbr row; drawing, render, the render's outline (red) over the drawing</figcaption></figure>
+  <figure><img src="face_turn.jpg" alt="The head turning, toon look"><figcaption>The head at 0, 30, 60, 90, 135 and 180 degrees in the toon look, and a pbr row at 0, 30 and 90</figcaption></figure>
+  <figure><img src="face_closeup.jpg" alt="Eyes, nose and mouth close, toon look"><figcaption>Eyes, an eye in three-quarter, nose and mouth, the mouth from the side (toon), beside crops of the drawing; the pbr eyes below</figcaption></figure>
+  <figure><img src="face_zebra.jpg" alt="Reflection lines on the face"><figcaption>Reflection lines on the skin and ears (B2b's surface): front, three-quarter, side</figcaption></figure>
+  <figure><img src="head_size.jpg" alt="The head size"><figcaption>The default head (x 1.20, the concept's ratio) against B2a's A-pose size (<code>--head apose</code>), each framed on its own head (the body's size shows the ratio), front and 30 degrees, and the concept</figcaption></figure>
+
   <h2>The head, round 1: the face test (B2a)</h2>
   <p>Her real head replaces the bald placeholder: a stylised anime-style 3D face (<code>charkit/animehead.py</code>) at the A-pose
      drawing's size (chin to crown 204 mm), its widths and eyes from the front close-up and its depths from the profile close-up;
      the eyes are carved openings over the drawn almond with a painted eye surface behind and a swept lash band; the hair is a
      blockout (<code>charkit/animehair.py</code>): a cap and smooth locks falling clear of the suit. A variant at the original
-     concept's head-to-body ratio (x 1.20) is in <code>head_size.jpg</code>. See <code>PROVENANCE.md</code> (B2a).</p>
-  <figure><img src="face_vs_art.jpg" alt="The face against the close-ups"><figcaption>The close-ups and the model in their frames, with hair and without: drawing, render, the render's outline (red) over the drawing</figcaption></figure>
-  <figure><img src="face_turn.jpg" alt="The head turning"><figcaption>The head at 0, 30, 60, 90, 135 and 180 degrees under the portrait light (soft key, fill, rim)</figcaption></figure>
-  <figure><img src="face_closeup.jpg" alt="Eyes, nose and mouth close"><figcaption>Eyes, an eye in three-quarter, nose and mouth, the mouth from the side, beside crops of the drawing</figcaption></figure>
-  <figure><img src="face_zebra.jpg" alt="Reflection lines on the face"><figcaption>Reflection lines on the skin and ears: front, three-quarter, side</figcaption></figure>
-  <figure><img src="head_size.jpg" alt="The head size variant"><figcaption>The built head (the A-pose drawing's size) against the concept-ratio variant (x 1.20), front and 30 degrees, and the concept</figcaption></figure>
+     concept's head-to-body ratio (x 1.20) is in <code>head_size.jpg</code>. See <code>PROVENANCE.md</code> (B2a). B2a's face
+     pictures were regenerated by B2b (above); B2a's look survives as their pbr rows.</p>
 
   <h2>The bust, and the profile (B1n)</h2>
   <p>The owner: "the breasts could use some more work", and two side views in the concept's style, v2 the profile reference
@@ -54,9 +68,9 @@
   <figure><img src="bust_profile.jpg" alt="The bust's side profile against v2"><figcaption>v2's front outline with B1m's (red) and B1n's (blue) side silhouettes mapped onto it (left) and in the model's frame (right)</figcaption></figure>
   <figure><img src="bust_b1n.jpg" alt="The bust before and after"><figcaption>B1m above, B1n below: front, three-quarter, side, from below, the fold close, the concept's framing (posed), and reflection lines; at the bottom the concept beside both in its framing</figcaption></figure>
   <figure><img src="seat_profile.jpg" alt="The seat against v2"><figcaption>The seat: v2 with the model's back outlines (unposed and posed); v2's skin edge (yellow) is a lower bound on its seat's depth</figcaption></figure>
-  <figure><img src="posed_vs_concept.jpg" alt="The concept beside the posed render"><figcaption>The concept, the posed render (B2a: with the head) at the same framing, and the render's outline over the concept</figcaption></figure>
-  <figure><img src="posed_full.jpg" alt="The pose, full figure"><figcaption>The pose, full figure (B2a): front, front three-quarter, side (her right), back three-quarter</figcaption></figure>
-  <figure><img src="posed_hotlight.jpg" alt="The pose under a hotter light"><figcaption>The concept framing under the studio rig and the optional "hot" light setup (B2a)</figcaption></figure>
+  <figure><img src="posed_vs_concept.jpg" alt="The concept beside the posed render"><figcaption>The concept, the posed render (now B2b's toon look) at the same framing, and the render's outline over the concept</figcaption></figure>
+  <figure><img src="posed_full.jpg" alt="The pose, full figure"><figcaption>The pose, full figure (now B2b's toon look): front, front three-quarter, side (her right), back three-quarter</figcaption></figure>
+  <figure><img src="posed_hotlight.jpg" alt="The pose under a hotter light"><figcaption>The concept framing in the pbr look under the studio rig and the optional "hot" setup, and the toon look (now B2b's)</figcaption></figure>
 
   <h2>The wet gloss and the concept pose (B1m)</h2>
   <p>The owner chose the glossier look: B1l's "wet" gloss is now the default (the satin of B1b&ndash;B1l is the variant "satin") and

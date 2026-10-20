@@ -1087,7 +1087,7 @@ FACE = dict(
     paint=dict(blush=((0.038, 1.5475), (0.016, 0.0072)), mouth_line=(1.5075, 0.0125, 0.00045),
                low_lash=(0.024, 0.0515, 0.0006, 0.00035), crease=(0.021, 0.050, 0.0030, 0.00035),
                brow=(0.012, 0.052, 1.5795, 0.0025, 0.0014), nostril=(0.0040, 1.5240, (0.0012, 0.0007)),
-               nose_tip=(1.5370, (0.0034, 0.0032))),
+               nose_tip=(1.5380, (0.0042, 0.0045))),
     # the ear (her left; mirrored) as a field (`animehead.Ear`): in the ear's own axes (up, back, out), metres; 47 mm high,
     # 27 wide, its top level with the brow's foot and its lobe with the nose's base, as both close-ups draw it
     ear=dict(centre=(0.066, 0.017, 1.553), tilt=12.0, flare=20.0, res=0.0004,
@@ -1241,7 +1241,7 @@ _SKIN_RAMP = ((0.00, (0.80, 0.62, 0.62)), (0.36, (0.82, 0.63, 0.62)), (0.44, (0.
 _LATEX = dict(ramp=((0.00, (1.0, 1.0, 1.0)), (0.40, (1.2, 1.2, 1.25)), (0.60, (2.2, 2.2, 2.4)), (1.30, (2.8, 2.8, 3.0))),
               bump=0.5,
               # a broad soft sheen (the latex's grey lit side), then the crisp streaks
-              spec=(dict(rough=0.30, lo=0.35, hi=0.85, colour="SUIT_RIM", amount=0.42),
+              spec=(dict(rough=0.30, lo=0.35, hi=0.85, colour="SUIT_RIM", amount=0.32),
                     dict(rough=0.08, lo=0.95, hi=1.10, colour="SHINE", amount=0.92)),
               rim=dict(lo=0.55, hi=0.85, blend=0.35, colour="SUIT_RIM", amount=0.55, lit=0.7))
 LOOK_TOON = dict(
@@ -1251,7 +1251,7 @@ LOOK_TOON = dict(
     # the light rig: a key from her upper front right (the art's), a rim from behind her left, two narrow strips and a small
     # top light that only the gloss sees (streaks); (name, kind, location, target, size or sun angle, energy, colour, options)
     lights=(("ToonKey", "SUN", (-0.85, -2.3, 3.3), (0.0, 0.0, 1.2), 2.5, 3.1416, (1.0, 0.98, 0.95), dict(filter=2.0)),
-            ("ToonRim", "SUN", (1.6, 2.4, 1.9), (0.0, 0.0, 1.2), 4.0, 1.6, (0.92, 0.96, 1.0), dict(shadow=False)),
+            ("ToonRim", "SUN", (1.6, 2.4, 1.9), (0.0, 0.0, 1.2), 4.0, 1.6, (0.92, 0.96, 1.0), dict(shadow=False, diffuse=0.35)),
             ("ToonStripKey", "AREA", (-1.6, -2.2, 2.2), (0.0, 0.0, 1.2), (0.06, 0.9), 70.0, (1.0, 1.0, 1.0), dict(diffuse=0.0)),
             ("ToonStripSide", "AREA", (2.0, -1.2, 1.4), (0.0, 0.0, 1.1), (0.05, 1.0), 55.0, (1.0, 1.0, 1.0), dict(diffuse=0.0)),
             ("ToonStripTop", "AREA", (0.3, -1.5, 2.8), (0.0, 0.0, 1.3), (0.04, 0.30), 22.0, (1.0, 1.0, 1.0), dict(diffuse=0.0))),

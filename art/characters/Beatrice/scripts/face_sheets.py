@@ -146,8 +146,8 @@ sheet.save(os.path.join(PREV, "face_closeup.jpg"), quality=90)
 # --- head_size: the default (x 1.20) against B2a's A-pose size
 if has("apose_turn_000.png"):
     C = Image.open(os.path.join(ROOT, "concept.jfif")).convert("RGB")
-    cells = [label(raw("apose_turn_000.png").convert("RGB").resize((540, 675), Image.LANCZOS), "A-pose size (variant apose)"),
-             label(raw("turn_000.png").convert("RGB").resize((540, 675), Image.LANCZOS), "concept ratio x 1.20 (default)"),
+    cells = [label(raw("apose_turn_000.png").convert("RGB").resize((540, 675), Image.LANCZOS), "A-pose size (apose), framed on the head"),
+             label(raw("turn_000.png").convert("RGB").resize((540, 675), Image.LANCZOS), "x 1.20 (default), framed on the head"),
              label(raw("apose_turn_030.png").convert("RGB").resize((540, 675), Image.LANCZOS), "A-pose size, 30 deg"),
              label(raw("turn_030.png").convert("RGB").resize((540, 675), Image.LANCZOS), "x 1.20 (default), 30 deg"),
              label(C.resize((450, 675), Image.LANCZOS), "concept")]

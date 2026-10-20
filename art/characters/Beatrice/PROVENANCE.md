@@ -1048,3 +1048,171 @@ hair is attached wholly to the head bone (`POSE["attach"]`, new in `suitpose.def
 6. **The ears** are simple and pale (no helix fold, no inner shading; `face_turn.jpg` 90 deg).
 7. **The head's size**: built at the A-pose drawing's 204 mm, it reads small against the concept (`posed_vs_concept.jpg`); the x 1.20
    variant (`head_size.jpg`) is much closer to the concept's feel -- a choice for the owner.
+
+## B2b: the anime look, the face's form and the eyes (2026-10-20)
+
+The owner's decisions of 2026-10-20 (not reopened): an anime / toon look for the WHOLE character in her high-resolution renders
+(promo, cutscenes, our pictures; the game's top-down renderer untouched); the x 1.20 head (the concept's ratio) as the default,
+the A-pose size kept as a named variant; on the B2a face: "some more work on the eyes angle ... and the facial form too ... it's
+getting pretty close". The before is `source/Beatrice_b2a_0d9d90f.blend` (gitignored).
+
+### Step 1, the x 1.20 head by default
+
+`beatrice.HEAD` is the anime head at `HEAD_SCALE = 1.20` (scaled about `animehead.Head`'s pivot, the chin's height on the neck's
+axis; the neck stays in the collar); `HEADS`: `anime` = `concept` = the default, `apose` = B2a's head (204 mm chin to crown),
+`placeholder` the bald one. The skin's meshing box now grows with the scale (`Head.box`): B2a's fixed box would have cut the
+x 1.20 crown flat at 1.692 m and clipped the nose's tip by 0.8 mm. The face pictures' frames (`FACE_SHOTS`) are in head space
+and are placed and sized by the scale (`face_views.py`), so the close-up overlays still lie on the drawings.
+- **The neck and the collar**: the neck rings are not scaled, so nothing in or at the collar moved (vertex check below: the
+  collar identical); at x 1.20 the neck reads slimmer under the larger jaw, as the concept draws it (`face_turn.jpg`,
+  `posed_vs_concept.jpg`). No change to the collar's neck edge was needed.
+- **The hair against the suit** (B2a's `hairgap.py`, the suit's outer surfaces incl. piping and zip): the locks' nearest points
+  touch the piping (6 vertices at -0.02 mm, B2a: 14 at -0.06), none inside the suit; the cap's lowest ring now reaches 2.4 mm
+  behind the collar's outer surface at the nape (20 vertices; B2a: 0.9 mm clear) -- inside the neck and the collar, hidden in
+  every picture (`hero_back.jpg`, `torso_back.jpg`, `face_turn.jpg` 135 / 180 deg).
+- **Sheet scores** fall with the larger head against the bald A-pose drawings: above the waist front 0.889 -> 0.837, side
+  0.829 -> 0.747, back 0.869 -> 0.817; the bands below the waist unchanged. (The drawings are the A-pose size by design; the
+  concept is the reference for the ratio.)
+
+### Step 2, the face's form and the eyes (measured first)
+
+Measured on the close-ups in B2a's frames (`concept-face-front-v1.png` 0.2074 mm/px, eye line 1.5626 at row 597;
+`concept-face-side-v1.png` 0.2115 mm/px), head space (the A-pose size; the default is the same shape x 1.20). Tools:
+`C:/tmp/beatrice_b2b/tools/eyegrid.py` / `eyecheck.py` (the drawn eye on a 1 mm grid with the tables' curves over it),
+`profile_cmp.py` (the drawn facial profile, the right-most skin pixel per row, against the field's mid-plane profile),
+`eggcurv.py` (the egg's curvature along the elevation), `jaw.py` (the front's occluding contour), `nosehole.py`.
+
+- **The eyes' angle and shape** (her left eye, mm from the midline / the eye line):
+
+  | | B2a | drawn | B2b |
+  |---|---|---|---|
+  | opening, inner -> outer | 16.6 -> 59.0 (42 mm) | 18 -> 52.5 (35 mm) | 18.0 -> 52.4 (34.4 mm) |
+  | inner corner / outer end | -3.9 / +0.4, a raised point | -2.6 / -2 .. +2, round and blunt | -2.6 / +0.2, round |
+  | corner-to-corner slope | about 6 deg up (8 by B2a's points) | about 4-5 deg | 4.7 deg |
+  | upper lid's top | +8.5 at 33-41, then a long slope to the point | +7.2 .. +7.4 held to 42, then a round drop | +7.4 held to 41, then the drop |
+  | lower lid's bottom | -10.0 | -9.7 at 36 | -9.6 at 35 |
+  | lash flick | to 65 mm, 6 mm over the corner (a long wing) | ends about 57 mm, nearly level | to 56.8 mm at +5.6 |
+  | iris centre / radii | 33.4, -0.4 / 10.0 x 11.2 (its bottom 2 mm under the lid) | 33.7, +0.2 / 9.7 x 10.0 (bottom on the lid) | 33.7, +0.2 / 9.7 x 10.0 |
+  | pupil | 6.0 x 7.2 | 4.9 x 6.2 | 4.9 x 6.2 (`iris["pupil"]`) |
+  | gaze | straight | straight at the viewer | straight |
+
+  The cat-eye of B2a was the long pointed outer corner and the long raised wing; the drawn eye is a rounder, heavier, nearly
+  level arch with a blunt outer end and a short flick. The lash band follows the new lid to 50.5 mm, then a short flick; it covers
+  the opening's top by 0.6 mm (B2a 1.3: the lid is now traced on the drawn one). The lower lash line, crease and lid shadow are
+  stronger, the sclera whiter, the iris deeper with a lighter ring round the pupil and a soft glow low on the far side (palette
+  and `animehead.materials`). **Three-quarter**: the face is rounder across the eyes (`n_front` 2.6 -> 2.35 at the eyes) and the
+  eye surface's dome deeper towards the corners (`curve` 2.5 -> 3.5 mm), so the eyes sit on a face that curves away
+  (`face_closeup.jpg`, three-quarter) rather than on a flat mask. Attempts: one on the eye tables (the traced shape held);
+  the paint and colours were tuned twice in the toon look.
+- **The face's form**:
+  - *The nose's root* (profile): B2a's stood 4-6 mm in front of the drawn one between 1.549 and 1.564, so its bridge read short and
+    scooped. A midline dent (a Gaussian, -6.5 mm at 1.5585) and the bridge's root moved 4 mm back: now within 2.6 mm (1.5514
+    -2.5, 1.5535 -1.9, 1.5556 -1.0, 1.5577 -0.4 mm; + = model behind); tip, lips and chin unchanged (within 1.5 mm, as B2a).
+    Attempts: 1 (the dent at -4.2 mm, the root 1.5 mm back: 2-3.5 mm forward still), 2 (kept).
+  - *A tunnel through the nose*: B2a's "dark diamond" under the bridge in profile was the BACKGROUND seen through the nose -- the
+    bridge, tip and column made an arch with nothing under it once the alae were shrunk to nothing (144 uncovered cells of 0.5 mm
+    between face and nose, 1.529-1.540). A filler on the midline under the bridge (`nose["alae"]`) closes it (0 cells); the profile
+    is unchanged.
+  - *Bands across the cheeks*: the egg used the PROFILE's front radius at every azimuth, so the profile's own dents (under the nose,
+    the lip, the chin) printed as concave horizontal bands across the cheeks (curvature along the elevation at 45 deg round:
+    -5 and -7 /m at -45 and -25 deg) -- the stripes on B2a's profile cheek. Now away from the midline the front radius is a smoothed
+    copy (`egg["front_smooth"]` = 12 deg along the elevation, blended in over 14 deg round the head; the midline keeps the drawn
+    profile exactly): no concavity below -2 /m off the midline.
+  - *The jaw's curve into the chin* (front, half-widths drawn / B2a / B2b, mm): 1.5226 51.5 / 50.8 / 50.8; 1.514 47.6 / 46.1 / 45.7;
+    1.504 39.5 / 38.3 / 37.5; 1.4956 29.8 / 31.1 / 28.4; 1.4915 24.2 / 27.4 / 21.8; 1.487 18.3 / 22.7 / 15.5; 1.483 12.0 / 17.9 / 11.4;
+    1.479 5.0 / 11.6 / 7.5 -- B2a's chin was blunt by 5-6 mm, B2b's within 3 mm everywhere (a by-product of the smoothing).
+  - *Unchanged, measured*: the cheeks 123 mm wide at 1.545 (the front close-up 124-128 behind the locks; the A-pose 135); the
+    midface (the nose tip 26 mm under the eye line, as drawn), the mouth (55 mm under, as drawn), the lips' profile (within 1.3 mm).
+  - *From the front*, the nose as a long dark ridge was SHADING, not form: the toon look shades the face as a simple head and
+    leaves the nose's lines out when seen from the front (step 3), so it now reads as the drawn tip highlight and two nostril marks.
+
+### Step 3, the anime look
+
+**Technique (chosen for quality first): EEVEE (Blender 4.5) with Shader-to-RGB**, render-time only (`charkit/toonlook.py`, the
+mechanism, character-free; `charkit/suitlook.py`, her tables to it; tables `LOOKS` / `LOOK` and the new `PALETTE` entries in
+`beatrice.py`). Why: the look needs the light as a number a material can ramp (a two- or three-tone terminator, a highlight that is
+either there or not) AND real cast shadows (the fringe on the forehead, the chin on the neck); Shader-to-RGB gives exactly that,
+Cycles cannot (a ramp on a hand-made N.L has no shadows). Lines: an **inverted hull** per object (a flipped Solidify shell,
+back-face culled, invisible to shadows, its colour per material from the palette, its width set per shot in PIXELS at the
+subject); Freestyle and Line Art cost minutes a frame on 4.8 M evaluated triangles and draw noisy creases on surface-net meshes.
+The hull draws the silhouette and every overlap (the chin on the neck, the hair on the face, an arm over the body), as the art
+inks them. The B1a-B2a look is `--look pbr` everywhere (Cycles, unchanged).
+
+- **Materials** (each rebuilt round what fed its Principled BSDF's Base Color and Normal, so the painted masks, nets and piping
+  stay): L = Shader-to-RGB of a white Diffuse (1 = square to the key), colour = own colour x a `ramp` over L (EASE), + highlight
+  layers (Shader-to-RGB of a Glossy through `lo`..`hi`: crisp), + a facing `rim`, + the hair's band; emitted as is. Ambient
+  occlusion in the base colours is switched off (it printed soft dirt gradients).
+  - *Skin*: a warm three-tone ramp (shadow a warm tan, a saturated warm terminator, lit); the hands' ramp sharper, the face's
+    lit nearly whole (its shadow only at the far edge). **The face is shaded as a simple head** (`Head.toon_normals`): custom normals
+    blended to the egg's (no forms, nose, lips or cuts), tipped forward (`bias`) and, over the jaw's side, up (`lift`, so the jaw
+    reads lit to its edge over the shadowed neck); **and it casts as one** (`Head.shadow_proxy`: the egg and neck shrunk 9 mm, a
+    shadow-only mesh; the skin and the hair's cap do not cast): no nose, lid or socket shadow falls on the face, the fringe's and
+    the chin's still do. **Lines left out from the front** (`Head.line_mask`, `toonlook.line_group`): the hull's width over the
+    nose and lips scales with how frontal the view is, so the front shows the drawn tip and the mouth line only and the profile
+    keeps the nose's outline.
+  - *Eyes*: painted, barely lit (`flat` 0.85): the layered iris (dark top and rim, a lighter ring round the pupil, the glow low on
+    the far side, the two highlights), the lid's shadow; the lash band flat dark.
+  - *Hair*: dark brown, a soft two-tone ramp, normals blended towards the head's centre above the jaw (`toonlook.radial_normals`)
+    so it shades as one mass and the slabs' edges do not each carry a terminator; the "angel ring" a jagged band of elevation round
+    the head (`toonlook.ring_attr`, 42 deg, `HAIR_RING`) on the lit side.
+  - *Suit, boots, pads* (`_LATEX`): a near-black base lifted where lit, a broad soft grey sheen (Glossy 0.30), crisp white streaks
+    (Glossy 0.08 through 0.95..1.10) thrown by narrow strip lights that light nothing diffusely, a cool rim; the piping's relief kept
+    (bump x 0.5). Inserts: the net over the skin, ramped; the zip metal ramped with a highlight.
+- **The light rig** (`LOOK_TOON["lights"]`, parented to the studio rig so a back view is lit as a front view): a sun key above her
+  right front (42 deg up, 20 deg round), a rim sun behind her left (diffuse x 0.35), three strip / small area lights with no
+  diffuse part for the latex's streaks; a flat ambient world, the backdrop for camera rays; a toon floor (the backdrop, darkened
+  under the key's shadow; alpha = the shadow in transparent renders).
+- **Where it is used**: the default for the turnaround, beauty and dev views (`run.sh ... --look NAME`, default `LOOK`), the face
+  pictures (`face_views.py`), the posing (`posed.py`). The sheet's overlap pictures are rendered plain (Cycles) before the look is
+  applied, so their scores compare with B2a's. Raw renders of a non-default look get a `<look>_` prefix.
+- **Cost**: EEVEE, 64 samples, RTX 3070: a face shot (720 x 900 to 1254 x 1254) 3-4 s, a posed shot (1024 x 1536) 6-8 s, the
+  first shot of a process 10-40 s more (shader compilation); applying the look 7-13 s (the face's normals and the proxy from the
+  fields). The same posed set in pbr (Cycles, 96 samples) about 11-12 s a shot. The build is unchanged (8.1 min); the full set
+  with every beauty and dev view 11.3 min.
+
+### Pictures, checks, reproduce
+
+- `look_compare.jpg` (pbr | toon: face front, 30 deg, the posed concept framing, the posed full figure), `face_vs_art.jpg` (toon
+  with and without hair, one pbr row), `face_turn.jpg` (toon 0-180 deg, a pbr row at 0 / 30 / 90), `face_closeup.jpg` (toon, the
+  drawing's crops, the pbr eyes), `face_zebra.jpg` (reflection lines on the B2b skin and ears: front, three-quarter, side),
+  `head_size.jpg` (the default against `apose`, each framed on its own head, so the BODY's size shows the ratio), `posed_vs_concept.jpg`, `posed_full.jpg` (toon), `posed_hotlight.jpg` (pbr studio,
+  pbr hot, toon); the full standard set (sheet, turnaround, every beauty and dev view) -- the sheet plain, everything else toon.
+- **Nothing else moved** (`C:/tmp/beatrice_b2b/tools/cmp.py`, B2a's `cmp3.py` with the Head collection listed, not compared;
+  `Beatrice_b2a_0d9d90f.blend` against this build): 35 objects identical (max |dP| < 1e-7 m) -- every suit part including the
+  collar, the hands and nails, the boots. Changed: the Head collection only (skin 383,694 -> 518,386 vertices at x 1.20, eye, hair).
+- `source/mesh_stats.json`: 62 objects, all closed.
+- Reproduce (from `art/characters`):
+
+      bash charkit/run.sh Beatrice --sheet --turn --save --beauty hero,hero_back,torso,torso_back,legs,side,head,top,elevated,shoulder,shoulder_back,wrist,boot,flank,flank_back,knee,hand,boot_side,armpit_back,top_close,hand_palm
+      "C:/Program Files/Blender Foundation/Blender 4.5/blender.exe" -b --factory-startup -P Beatrice/scripts/face_views.py
+      "C:/Program Files/Blender Foundation/Blender 4.5/blender.exe" -b --factory-startup -P Beatrice/scripts/face_views.py -- --look pbr
+      "C:/Program Files/Blender Foundation/Blender 4.5/blender.exe" -b --factory-startup -P Beatrice/scripts/face_views.py -- --head apose --only turn
+      "C:/Program Files/Blender Foundation/Blender 4.5/blender.exe" -b --factory-startup -P Beatrice/scripts/posed.py
+      "C:/Program Files/Blender Foundation/Blender 4.5/blender.exe" -b --factory-startup -P Beatrice/scripts/posed.py -- --look pbr
+      "C:/Program Files/Blender Foundation/Blender 4.5/blender.exe" -b --factory-startup -P Beatrice/scripts/posed.py -- --look pbr --views concept --lights hot
+      python Beatrice/scripts/posed_sheets.py
+      python Beatrice/scripts/face_sheets.py
+
+  The head loop: `C:/tmp/beatrice_b2b/tools/hb2.py` (the head rebuilt on the B2a build, the look applied, close-ups; 2.5 min, 35 s
+  with `--keep` on a saved head).
+
+### What still looks wrong (worst first)
+
+1. **The latex's highlights in close shots** (`face_turn.jpg` 0-60 deg, `head.jpg`, `look_compare.jpg` face cells): the key strip
+   reflects in the nearly flat upper chest as large, ragged white blobs; at full figure (`posed_full.jpg`, `hero.jpg`) the same
+   streaks read well. Needs the streak threshold and the strips' sizes per shot distance (or a narrower highlight core), and the
+   collar's own reflections.
+2. **The far cheek in three-quarter** (`face_turn.jpg` 30 and 60 deg, `face_closeup.jpg` three-quarter): the face's warm terminator
+   band, then the rim's light at the edge, read as a dent running from the eye to the jaw. A softer face ramp, or a face that
+   ignores the rim sun, would take it out.
+3. **The hair** is still B2a's blockout (as briefed): a comb of identical spikes for the fringe, flat slab ends at the side locks
+   (`face_vs_art.jpg` profile), a bald crown seam at the parting, a narrow back curtain; the toon look hides the slabs' edges
+   (the radial normals) and gives the drawn highlight band, but the band is one smooth wave, not the drawn broken highlights.
+4. **The mouth** (`face_closeup.jpg`): the upper lip's tint still reads as a pale lozenge above a hard line; the drawing's soft
+   upper-lip line and glossy lower lip are not there (paint only; no lower-lip highlight yet).
+5. **The nose tip** reads as a round pale dot (`face_closeup.jpg`); the drawing's highlight is a larger soft triangle with two
+   curved nostril strokes (ours: two dots).
+6. **The eyes**: close to the drawing in shape and angle now; still missing the lash band's broken upper edge (lash clumps), the
+   drawing's lower lid thickness and its soft pink inner corner; the iris's layers are simpler than drawn (`face_closeup.jpg`).
+7. **Sheet scores** above the waist are lower with the larger head (above); expected, the drawings are at the A-pose size.
+8. **The head's interior**: the hair cap's lowest ring passes 2.4 mm behind the collar's surface at the nape (hidden).
