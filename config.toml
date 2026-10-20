@@ -1665,14 +1665,19 @@ glow_texture = 0.6          # how much the billows texture the sweep's in-scatte
 # cast_lift_ceiling up by its relief height, the floor layer one from 0.
 cast_shadow_ceiling = 0.8   # how much light the ceiling layer's shadow takes, [0, 1]
 cast_shadow_floor = 0.5     # ... the floor layer's, [0, 1]
-cast_parallax = 0.5         # tiles of shadow offset per tile of height (a low
-                            # lamp throws a long shadow)
+cast_parallax = 0.15        # tiles of shadow offset per tile of height: the light
+                            # field has a direction but no distance, so a steep
+                            # (near-overhead) light is assumed -- at 0.5 the
+                            # soot's shadow landed ~3.5 tiles off, detached and
+                            # on the far side of a lamp (smoke_lamp_puff)
 cast_lift_ceiling = 7.0     # the ceiling layer's underside above the floor, tiles
                             # (above the 6-tile marines' heads)
 # --- graphics G2: FIRE GLOW-THROUGH. The heat layer (display space until G3)
-# is dimmed by the extinction of the smoke over it, from the same cast
+# is dimmed by the occlusion of the smoke over it, from the same cast
 # product: under a thin or ragged edge the fire glows through, under a solid
-# core it does not, so the soot mottles the flame.
+# core it does not, so the soot mottles the flame. Only the glow BELOW the
+# smoke is dimmed -- a body's (crate, wall) beyond what the hot gas around it
+# emits by itself (gas_relief.glow_below_fraction); hot gas is #95's.
 glow_through_ceiling = 1.0  # how much the ceiling layer (soot) hides it, [0, 1]
 glow_through_floor = 0.3    # ... the floor layer (steam scatters the glow
                             #   rather than blocking it), [0, 1]
@@ -1680,6 +1685,17 @@ own_light_cut = 1.0         # share of a glowing tile's own light taken off the
                             # smoke surface over it, [0, 1]: a fire lights its
                             # smoke from below (= the glow-through), never as
                             # a lamp on the cloud's top
+# --- graphics G2: the synthetic LOW BAND (doc §2.5 A, Erik's ruling 7): a
+# coarse billow octave for the 30 cm - 1 m band the sim's transport smooths
+# away. Render-only, rides the real wind on the relief's clock, gated: only
+# inside plumes (tau / cov_tau from low_band_tau0 to low_band_tau1) and only
+# where the field changes (it moves the edge by |grad ln tau| x push).
+# low_band_push_tiles = 0 and low_band_height = 0 switch it off (the A/B).
+low_band_tiles = 3.0        # lump size, tiles (~1 m at 0.333 m tiles)
+low_band_push_tiles = 1.0   # how far it moves a plume's edge in and out, tiles
+low_band_height = 0.3       # share of the column height it carves, [0, 1]
+low_band_tau0 = 0.3         # gate in at tau = 0.3 x cov_tau ...
+low_band_tau1 = 1.0         # ... full at the coverage edge's depth and inside
 debug_view = 0              # 0 off; 1 coverage, 2 height, 3 N.L, 4 self-shadow,
                             # 5 AO, 6 boil, 7 the cast shadow on the floor
                             # (dev only)
