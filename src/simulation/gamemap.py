@@ -2975,8 +2975,9 @@ class GameMap:
         floor, no float divide), with the fractional shortfall (< len(holdings))
         cascaded in PINNED index order to slots with remaining headroom, so
         ``sum(take) == want`` EXACTLY. Pure — no bounds/overflow/zero-clamp of
-        its own; callers own the array they're splitting (a tile's ``gas``
-        column via :meth:`extract_gas_n_vec`, or a duct plenum's holdings list
+        its own; callers own the array they're splitting (a tile's bulk
+        O2/N2 pair via :meth:`extract_gas_n_vec` -- #88 P0, trace is priced
+        by air there, never split -- or a duct plenum's holdings list
         via the vent runtime) and apply the zero-clamp store themselves.
 
         Extracted from the original ``extract_gas_n`` body (D10) so the ONE
@@ -3057,58 +3058,73 @@ class GameMap:
         self.gas_energy_refresh_cell(fy, fx)
 
     def extract_gas_n(self, fy, fx, delta_n):
-        """Remove up to ``delta_n`` (Q16.16 gas mass) at tile ``(fy, fx)``,
-        PROPORTIONAL to the tile's current composition across ALL gas slices,
-        zero-clamped so no slice can go negative (§6, D10 extract half). Returns
-        the total mass actually withdrawn.
+        """Remove up to ``delta_n`` (Q16.16 BULK gas mass) at tile ``(fy, fx)``
+        and return the BULK total actually withdrawn (#88 P0).
 
-        The withdrawn total is ``min(delta_n, N_total)`` — the aggregate
-        zero-clamp (a near-empty tile clamps at 0 and NEVER over-withdraws). The
-        per-slice split is :meth:`gas_proportional_split` (a floor, no float
-        divide, no dequantize) with the shortfall cascaded in PINNED slice-id
-        order to slices with remaining holdings, so ``sum(remove_g) == want``
-        EXACTLY (mirrors the seal-tiles remainder rule and unseal's balanced-
-        then-greedy withdrawal). The explicit ``max(0, ...)`` per-slice
-        zero-clamp before the store guarantees N can NEVER go negative into
-        the Helmholtz solver. ``delta_n <= 0`` / an empty tile is a no-op.
-
-        Thin wrapper over :meth:`extract_gas_n_vec` (§3 extension, vent design)
-        — the SAME withdrawal, this call just collapses it to the scalar total
-        pump_system.py has always consumed.
+        Thin wrapper over :meth:`extract_gas_n_vec` -- the SAME withdrawal,
+        collapsed to the scalar pump_system.py consumes. The returned total is
+        the bulk part only (O2 + N2): the trace the withdrawal takes with it is
+        priced by air and is not part of the budget (see the vector form).
         """
-        return int(sum(self.extract_gas_n_vec(fy, fx, delta_n)))
+        remove = self.extract_gas_n_vec(fy, fx, delta_n)
+        return int(remove[O2]) + int(remove[INERT_N2])
 
     def extract_gas_n_vec(self, fy, fx, delta_n):
-        """§3 extension (docs/vent_system_design_2026-08-23.md): the SAME
-        withdrawal :meth:`extract_gas_n` performs, returning the per-slice
-        withdrawal as a length-``N_GASES`` list instead of collapsing it to a
-        scalar — so a caller (the vent circulation sweep) can credit each bulk
-        plane separately and apply the per-species filter, rather than
-        re-deriving proportions the primitive already computed. ``delta_n <= 0``
-        or an empty tile returns an all-zero vector (never negative slices).
+        """§3 extension (docs/vent_system_design_2026-08-23.md), re-priced by
+        #88 P0 (docs/smoke_unit_rescale_design_2026-10-20.md §2.2): withdraw
+        ``delta_n`` of AIR at ``(fy, fx)`` and return the per-slice withdrawal
+        as a length-``N_GASES`` list, so a caller (the vent circulation sweep)
+        can credit each plane separately and apply the per-species filter.
+
+        - **The budget is bulk only.** ``want = min(delta_n, N_bulk)`` with
+          ``N_bulk = O2 + N2``, split over the two bulk planes by
+          :meth:`gas_proportional_split` (the pinned floor-split-with-cascade,
+          O2 before N2), so ``remove[O2] + remove[INERT_N2] == want`` EXACTLY.
+          Trace counts are never spent as if they were air (they are in their
+          own currency once #88 flips the trace scale).
+        - **Each trace plane leaves at the cell's air ratio**,
+          ``take_t = floor(want * S_t / N_bulk)`` -- the stage-3b ``price_face``
+          law and the vent supply side's ``share * trace / n_bulk``, so it is
+          scale-invariant and ``take_t <= S_t`` (``want <= N_bulk``).
+        - **No air, nothing taken (A5):** a tile with ``N_bulk < N_EPS_RAW``
+          (``cpp/src/gas_energy.h``, == 1, the 3b donor guard) returns all
+          zeros, whatever trace it holds -- no divide by zero, no raise.
+        - ``delta_n <= 0`` returns all zeros. No slice ever goes negative.
+
+        The pump DESTROYS the trace this returns (it discards the vector):
+        ACCEPTED GAP G6, issue #98 -- unbooked, exactly as before P0. The vents
+        credit it to their plenum (``trace_raw`` + ``sink``).
         """
         h, w = self._h, self._w
         if not (0 <= fy < h and 0 <= fx < w):
             raise ValueError(f"extract_gas_n_vec: tile ({fy}, {fx}) out of bounds")
         dn = int(delta_n)
+        remove = [0] * N_GASES
         if dn <= 0:
-            return [0] * N_GASES
-        holdings = [int(self.gas[g][fy, fx]) for g in range(N_GASES)]
-        n_total = sum(holdings)
-        if n_total <= 0:
-            return [0] * N_GASES            # empty tile — zero-clamp, nothing to take
-        want = dn if dn < n_total else n_total          # aggregate zero-clamp
-        remove = self.gas_proportional_split(holdings, want)
+            return remove
+        o2 = int(self.gas[O2][fy, fx])
+        n2 = int(self.gas[INERT_N2][fy, fx])
+        n_bulk = (o2 if o2 > 0 else 0) + (n2 if n2 > 0 else 0)
+        if n_bulk < 1:                      # N_EPS_RAW -- no air to price by (A5)
+            return remove
+        want = dn if dn < n_bulk else n_bulk            # aggregate zero-clamp
+        remove[O2], remove[INERT_N2] = self.gas_proportional_split(
+            [o2 if o2 > 0 else 0, n2 if n2 > 0 else 0], want)
+        for g in range(N_GASES):
+            if g == O2 or g == INERT_N2:
+                continue
+            s_t = int(self.gas[g][fy, fx])
+            if s_t > 0:
+                remove[g] = (want * s_t) // n_bulk      # priced by air
         # arc #54 P-G1b (design §2.7 pump row): the withdrawn mass takes
-        # `ΔN · T_abs(cell)` with it — read BEFORE the slices move, and
+        # `ΔN · T_abs(cell)` with it -- read BEFORE the slices move, and
         # counted over the CONSERVATIVE bulk slices only (the books' N).
         t_abs = self.gas_t_abs_at(fy, fx)
         for g in range(N_GASES):
-            new = holdings[g] - remove[g]
-            self.gas[g][fy, fx] = new if new > 0 else 0   # explicit zero-clamp
-        dn_bulk = int(remove[O2]) + int(remove[INERT_N2])
-        if dn_bulk and self.gas_is_accountable(fy, fx):
-            de = dn_bulk * t_abs
+            if remove[g]:
+                self.gas[g][fy, fx] = int(self.gas[g][fy, fx]) - remove[g]
+        if self.gas_is_accountable(fy, fx):
+            de = want * t_abs
             self.gas_energy[fy, fx] = int(self.gas_energy[fy, fx]) - de
             self._gas_energy_book("pump_extract", -de)
             self.gas_energy_refresh_cell(fy, fx)

@@ -21,7 +21,8 @@ machine-identical — the serializer's own order, §3):
 
 1. Every RETURN vent extracts up to its own per-tick Bresenham-accrued flux
    quantum (``extract_gas_n_vec`` — zero-clamped by the aperture's actual
-   content). The MEASURED per-slice withdrawal vector credits the plenum:
+   content). The quantum is AIR (bulk O2+N2); the trace leaves with it at
+   the aperture's air ratio ``S/N_bulk`` (#88 P0). The MEASURED per-slice withdrawal vector credits the plenum:
    bulk (o2/n2) verbatim, trace species through the duct's filter (§4:
    scrubbed mass -> the counted sink). The ENERGY credit is BULK-ONLY —
    ``(removed[O2]+removed[INERT_N2]) * t_tile`` — per the engine's own P-T0
@@ -387,6 +388,9 @@ def _duct_sweep(gmap, duct, return_vents, supply_vents, t_min_q, t_max_phys_q):
         if emit <= 0:
             continue
         t_tile = int(gmap.temperature[fy, fx])       # honest pre-edit read
+        # `emit` is an AIR budget: the bulk part of `removed` sums to
+        # min(emit, N_bulk) and the trace rides at the tile's S/N_bulk (#88
+        # P0), so all of it lands in the plenum (trace_raw + sink) below.
         removed = gmap.extract_gas_n_vec(fy, fx, emit)
         total_removed = sum(removed)
         if total_removed == 0:

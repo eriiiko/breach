@@ -110,6 +110,8 @@ class PumpRuntime:
         inject = aggregate_input(bus, self.inject_slots, INPUT_HELD) != 0
         extract = aggregate_input(bus, self.extract_slots, INPUT_HELD) != 0
         if extract:                        # extract beats inject (safe state)
+            # delta_n_q of AIR; the trace it takes (priced by air, #88 P0) is
+            # destroyed, unbooked -- ACCEPTED GAP G6, issue #98.
             gmap.extract_gas_n(self.port_y, self.port_x, self.delta_n_q)
         elif inject:
             gmap.inject_gas_n(self.port_y, self.port_x, self.delta_n_q)
