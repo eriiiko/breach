@@ -50,17 +50,27 @@ PALETTE = dict(
     PAD_RIM="#6c6c76",       # their piped rim, bright
     # B2a, the face (sampled on `concept-face-front-v1.png`, then judged on the renders)
     BLUSH="#e89a8e",         # the cheeks' blush, the nose tip's warmth
+    LIP_AMOUNT=0.28,         # B2b: how much of LIP the lips take (B2a's default 0.45 read as a pink lozenge in the toon look)
     LIP="#e2a096",           # the lips, a soft rose
     LIP_LINE="#b8706a",      # the mouth line, the nostrils
     CREASE="#c99a8e",        # the lid crease
     LASH="#2a1b19",          # the upper lash band
-    LASH_LOW="#9c6a60",      # the lower lash line, lighter
+    LASH_LOW="#7e5048",      # the lower lash line, lighter (B2b: darker, #9c6a60 vanished in the toon look)
     SCLERA_SHADE="#b9aeb0",  # the sclera under the upper lid's shadow
     IRIS_DARK="#2c2a3c",     # the iris's top and rim
     IRIS_GLOW="#9aa6c8",     # its lit lower part
     PUPIL="#16141c",
     HAIR="#241a19",          # dark brown
     HAIR_LIGHT="#3e302d",    # its streaks
+    # B2b, the toon look (`LOOKS`): its absolute colours -- highlights, rims, the hair's band and the inked lines
+    SHINE="#eef1f8",         # the latex's crisp streaks
+    SUIT_RIM="#59606e",      # the latex's rim, a cool grey
+    SKIN_RIM="#ffe2d6",      # the skin's rim, warm
+    HAIR_RING="#8c7b77",     # the hair's highlight band ("angel ring"), a grey-beige as drawn
+    LINE_SKIN="#7a3d36",     # the face's and hands' line, a dark red-brown as inked
+    LINE_HAIR="#120b0a",
+    LINE_SUIT="#020203",
+    LINE_EYE="#2a1b19",
 )
 # B1m (the owner, 2026-10-19: "going very glossy is fine"): B1l's "wet" look is the default; B1b-B1l's satin is VARIANTS["satin"]
 GLOSS = dict(rough=0.20, coat=0.85, coat_rough=0.07, specular=0.55, piping=0.9,
@@ -1037,6 +1047,8 @@ FACE = dict(
         # B2b: rounder across the eyes and cheeks (B2a: 2.6, a flat mask on which the eyes read printed at 30-60 deg)
         n_front=((90, 2.0), (60, 2.2), (30, 2.3), (5, 2.35), (-10, 2.35), (-25, 2.2), (-40, 2.0), (-55, 1.8), (-70, 2.0), (-90, 2.0)),
         n_back=((90, 2.0), (40, 2.2), (0, 2.3), (-40, 2.2), (-90, 2.0)),
+        # B2b: the profile's dents kept to the midline (`animehead.Egg`): smoothed along the elevation, blended round the head
+        front_smooth=(12.0, 14.0),
     ),
     # the neck: the placeholder's rings inside the collar (it is fitted round them), slimmer above it as drawn
     neck=((1.404, .012, .040, .044, .044, 2.0), (1.443, .010, .040, .042, .044, 2.0), (1.474, .010, .040, .040, .046, 2.0),
@@ -1069,7 +1081,7 @@ FACE = dict(
     # width), nostrils ((x, z), sigmas), the nose tip's highlight (z, sigmas)
     paint=dict(blush=((0.044, 1.5445), (0.014, 0.0075)), mouth_line=(1.5075, 0.0125, 0.00045),
                low_lash=(0.024, 0.0515, 0.0006, 0.00035), crease=(0.021, 0.050, 0.0030, 0.00035),
-               brow=(0.012, 0.052, 1.5795, 0.0025, 0.0022), nostril=(0.0040, 1.5240, (0.0012, 0.0007)),
+               brow=(0.012, 0.052, 1.5795, 0.0025, 0.0014), nostril=(0.0040, 1.5240, (0.0012, 0.0007)),
                nose_tip=(1.5370, (0.0030, 0.0030))),
     # the ear (her left; mirrored) as a field (`animehead.Ear`): in the ear's own axes (up, back, out), metres; 47 mm high,
     # 27 wide, its top level with the brow's foot and its lobe with the nose's base, as both close-ups draw it
@@ -1210,6 +1222,76 @@ def gloss(variant=None):
     if variant:
         g.update(VARIANTS[variant].get("gloss", {}))
     return g
+
+
+# ------------------------------------------------------------------------ looks
+# B2b (the owner, 2026-10-20): her high-resolution pictures in an anime / toon look, the whole character (`charkit/toonlook.py`,
+# EEVEE); `pbr` is the physically-lit look of B1a-B2a (Cycles), kept to compare. Render-time only: the build never changes.
+# Per material (its name less the prefix): `ramp` ((L, multiplier of the material's own colour), ...) over the light L (1 = a
+# white surface square to the key), `interp` the ramp's blend; `spec` the streaks (a Glossy's light through `lo`..`hi`);
+# `rim` (facing through `lo`..`hi`; `lit`: only on the lit side); `flat` how far the light is ignored (painted); `bump` scales
+# the material's own relief. Colours by PALETTE name.
+_SKIN_RAMP = ((0.00, (0.80, 0.62, 0.62)), (0.36, (0.82, 0.63, 0.62)), (0.44, (0.95, 0.70, 0.64)), (0.52, (1.0, 0.97, 0.96)),
+              (1.20, (1.04, 1.03, 1.02)))
+_LATEX = dict(ramp=((0.00, (1.0, 1.0, 1.0)), (0.40, (1.3, 1.3, 1.35)), (0.60, (3.4, 3.4, 3.7)), (1.30, (4.2, 4.2, 4.6))),
+              # a broad soft sheen (the latex's grey lit side), then the crisp streaks
+              spec=(dict(rough=0.32, lo=0.20, hi=0.75, colour="SUIT_RIM", amount=0.45),
+                    dict(rough=0.08, lo=0.95, hi=1.10, colour="SHINE", amount=0.92)),
+              rim=dict(lo=0.55, hi=0.85, blend=0.35, colour="SUIT_RIM", amount=0.55, lit=0.7))
+LOOK_TOON = dict(
+    engine=dict(samples=64, filter=1.2, shadow_rays=3, shadow_steps=12),
+    world=dict(ambient=(0.92, 0.95, 1.0), strength=0.22),
+    calib=1.0,
+    # the light rig: a key from her upper front right (the art's), a rim from behind her left, two narrow strips and a small
+    # top light that only the gloss sees (streaks); (name, kind, location, target, size or sun angle, energy, colour, options)
+    lights=(("ToonKey", "SUN", (-0.85, -2.3, 3.3), (0.0, 0.0, 1.2), 2.5, 3.1416, (1.0, 0.98, 0.95), dict(filter=2.0)),
+            ("ToonRim", "SUN", (1.6, 2.4, 1.9), (0.0, 0.0, 1.2), 4.0, 1.6, (0.92, 0.96, 1.0), dict(shadow=False)),
+            ("ToonStripKey", "AREA", (-1.6, -2.2, 2.2), (0.0, 0.0, 1.2), (0.06, 0.9), 70.0, (1.0, 1.0, 1.0), dict(diffuse=0.0)),
+            ("ToonStripSide", "AREA", (2.0, -1.2, 1.4), (0.0, 0.0, 1.1), (0.05, 1.0), 55.0, (1.0, 1.0, 1.0), dict(diffuse=0.0)),
+            ("ToonStripTop", "AREA", (0.3, -1.5, 2.8), (0.0, 0.0, 1.3), (0.04, 0.30), 22.0, (1.0, 1.0, 1.0), dict(diffuse=0.0))),
+    materials=dict(
+        # the face lit nearly whole, as drawn: its shadow only where the simple head turns away from the key
+        face=dict(ramp=((0.00, (0.82, 0.64, 0.63)), (0.20, (0.83, 0.65, 0.63)), (0.27, (0.95, 0.72, 0.66)), (0.34, (1.0, 0.97, 0.96)),
+                        (1.20, (1.03, 1.02, 1.01)))),
+        skin=dict(ramp=_SKIN_RAMP, bump=0.2, rim=dict(lo=0.6, hi=0.9, colour="SKIN_RIM", amount=0.35, lit=1.0)),
+        nail=dict(ramp=_SKIN_RAMP, spec=dict(rough=0.2, lo=0.6, hi=0.8, colour="SHINE", amount=0.5)),
+        eyes=dict(ramp=((0.0, (0.80, 0.80, 0.84)), (0.5, (1.0, 1.0, 1.0))), flat=0.85),
+        lash=dict(ramp=((0.0, (1.0, 1.0, 1.0)), (1.0, (1.0, 1.0, 1.0))), flat=1.0),
+        hair=dict(ramp=((0.00, (0.95, 0.95, 0.95)), (0.38, (1.0, 1.0, 1.0)), (0.55, (1.7, 1.6, 1.6)), (1.30, (1.9, 1.8, 1.8))),
+                  bump=0.0, ring=dict(colour="HAIR_RING", lo=0.3, hi=0.6, amount=0.8)),
+        suit=_LATEX, boot=_LATEX, pad=_LATEX,
+        pad_rim=dict(_LATEX, ramp=((0.0, (0.8, 0.8, 0.8)), (0.6, (1.3, 1.3, 1.3)))),
+        sole=dict(ramp=((0.0, (1.0, 1.0, 1.0)), (0.6, (2.0, 2.0, 2.0)))),
+        metal=dict(ramp=((0.0, (0.45, 0.45, 0.48)), (0.5, (1.0, 1.0, 1.0)), (1.2, (1.3, 1.3, 1.3))),
+                   spec=dict(rough=0.15, lo=0.6, hi=0.8, colour="SHINE", amount=0.8)),
+        mesh=dict(ramp=((0.0, (0.75, 0.62, 0.62)), (0.45, (0.80, 0.66, 0.65)), (0.6, (1.15, 1.08, 1.05))),
+                  spec=dict(rough=0.15, lo=0.85, hi=1.05, colour="SHINE", amount=0.5)),
+        mesh_thigh=dict(ramp=((0.0, (0.8, 0.8, 0.8)), (0.6, (1.3, 1.3, 1.3))),
+                        spec=dict(rough=0.15, lo=0.85, hi=1.05, colour="SHINE", amount=0.5)),
+    ),
+    # the face shaded as a simple head (`animehead.Head.toon_normals`): the egg's normals over the face's front, the nose
+    # tip keeping some of its own
+    face_normals=dict(weight=0.92, front=(-0.060, -0.015), z=(1.478, 1.492, 1.600, 1.625), tip=((0.0, 1.5362), (0.004, 0.004), 0.5),
+                      lift=(0.35, 1.500, 1.535)),
+    # the face casts as its simple shape (`animehead.Head.shadow_proxy`, shrunk 6 mm): the chin still shades the neck
+    # (the hair's cap is also kept from casting: below the hairline it runs 9 mm inside the face, and its cut edge threw a
+    # hard straight shadow across the cheek; the locks still cast the fringe's shadow on the forehead)
+    shadow_proxy=dict(shrink=0.009, h=0.002, casters_off=("*_Head", "*_Hair_Cap")),
+    # the outline over the nose and the lips left out when seen from the front (`animehead.Head.line_mask`, the amount;
+    # `outline["front"]` how frontal): from the front the art draws no nose but its tip's shading, and the mouth as a line
+    face_lines=dict(nose=(1.0, (1.530, 1.562)), lips=(0.7, (1.498, 1.520), 0.016)),
+    # the hair shaded as one mass (`toonlook.radial_normals`): its normals towards the head's centre above the jaw
+    hair_normals=dict(weight=0.75, z=(1.50, 1.58)),
+    # the hair's highlight band (`toonlook.ring_attr`, degrees about the head's centre)
+    ring=dict(objects=("*_Hair_Cap", "*_Hair_Locks"), beta=(40.0, 5.0, 4.0), jag=3.0, freq=11.0, back=170.0),
+    floor=dict(lo=0.35, hi=0.55, amount=0.45, colour=(0.05, 0.05, 0.06)),
+    # inked lines: an inverted hull `px` pixels wide at the subject; never on the eyes, lashes, piping, zip or nails
+    outline=dict(px=1.6, exclude=("*_Eye", "*_Lash", "*_Piping*", "Suit_Zip_*", "Hand_Nails", "Suit_Knee_Rim"),
+                 colours=dict(face="LINE_SKIN", skin="LINE_SKIN", hair="LINE_HAIR", suit="LINE_SUIT", boot="LINE_SUIT",
+                              sole="LINE_SUIT", pad="LINE_SUIT", mesh="LINE_SUIT", mesh_thigh="LINE_SUIT", metal="LINE_SUIT")),
+)
+LOOKS = dict(toon=LOOK_TOON, pbr=None)
+LOOK = "toon"
 
 
 # ----------------------------------------------------------------------- posing

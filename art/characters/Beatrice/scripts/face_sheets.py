@@ -1,16 +1,21 @@
-"""Lay out Beatrice's face pictures (B2a) from `face_views.py`'s raw renders (plain Python + PIL, from art/characters):
+"""Lay out Beatrice's face pictures (B2a, B2b) from `face_views.py`'s raw renders (plain Python + PIL, from art/characters):
 
-    python Beatrice/scripts/face_sheets.py [--raw DIR]
+    python Beatrice/scripts/face_sheets.py [--raw DIR] [--posed DIR]
 
-face_vs_art.jpg   the close-ups and the model in their frames, with hair and without: drawing | render | the render's outline
-                  (red) over the drawing, front and profile
-face_turn.jpg     the head at 0, 30, 60, 90, 135, 180 deg under the portrait light
-face_closeup.jpg  eyes, an eye in three-quarter, nose and mouth, the mouth from the side; the drawing's eyes and mouth beside
-head_size.jpg     (when `--head concept` was rendered) the A-pose-size head against the concept-ratio variant, and the concept
+B2b: the default look is the toon look; the raw renders of `face_views.py -- --look pbr` (prefix `pbr_`) give the comparison
+rows, those of `-- --head apose` (prefix `apose_`) the head-size picture, and `posed.py`'s raw renders (default and
+`-- --look pbr`) the posed cells of look_compare.jpg.
+
+face_vs_art.jpg   the close-ups and the model in their frames: drawing | render | the render's outline (red) over the drawing,
+                  front and profile; rows: toon with hair, toon without hair, pbr with hair (B2a's look, for comparison)
+face_turn.jpg     the head at 0, 30, 60, 90, 135, 180 deg in the toon look, and a pbr row at 0, 30, 90
+face_closeup.jpg  eyes, an eye in three-quarter, nose and mouth, the mouth from the side (toon); the drawing's eyes and mouth
+                  beside; the pbr eyes and three-quarter eye
+head_size.jpg     the default head (x 1.20, the concept's ratio) against B2a's A-pose size (`apose`), and the concept
+look_compare.jpg  the same shots in the pbr and the toon look: face front, three-quarter, the posed concept framing, full figure
 """
 import argparse
 import os
-import sys
 import tempfile
 
 import numpy as np
@@ -20,9 +25,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, ".."))
 ap = argparse.ArgumentParser()
 ap.add_argument("--raw", default=os.path.join(tempfile.gettempdir(), "Beatrice_face"))
+ap.add_argument("--posed", default=os.path.join(tempfile.gettempdir(), "Beatrice_posed"))
 args = ap.parse_args()
 PREV = os.path.join(ROOT, "previews")
 BG = (203, 205, 212)
+BACK = (161, 164, 171)   # studio.BACKDROP in sRGB
 
 
 def font(n=26):
@@ -41,8 +48,12 @@ def label(im, text, n=26):
     return im
 
 
-def raw(name):
-    return Image.open(os.path.join(args.raw, name)).convert("RGBA")
+def has(name, d=None):
+    return os.path.exists(os.path.join(d or args.raw, name))
+
+
+def raw(name, d=None):
+    return Image.open(os.path.join(d or args.raw, name)).convert("RGBA")
 
 
 def on_bg(im, bg=BG):
@@ -72,63 +83,73 @@ def over(ref, im):
     return Image.fromarray(r)
 
 
+def grid(cells, cols, w, h):
+    sheet = Image.new("RGB", (w * cols, h * ((len(cells) + cols - 1) // cols)), (255, 255, 255))
+    for i, c in enumerate(cells):
+        sheet.paste(c, ((i % cols) * w, (i // cols) * h))
+    return sheet
+
+
 P = 420
 # --- face_vs_art
 rows = []
-for hair in ("", "_nohair"):
+for pre, hair, what in (("", "", "toon, with hair"), ("", "_nohair", "toon, without hair"), ("pbr_", "", "pbr (B2a's look), with hair")):
+    if not has("%sart_front%s.png" % (pre, hair)):
+        continue
     cells = []
     for view, ref in (("front", "concept-face-front-v1.png"), ("profile", "concept-face-side-v1.png")):
         R = Image.open(os.path.join(ROOT, ref)).convert("RGB")
-        im = raw("art_%s%s.png" % (view, hair))
-        what = "with hair" if not hair else "without hair"
+        im = raw("%sart_%s%s.png" % (pre, view, hair))
         cells += [label(R.resize((P, P), Image.LANCZOS), "drawing, %s" % view),
                   label(on_bg(im).resize((P, P), Image.LANCZOS), "model, %s, %s" % (view, what)),
                   label(over(R, im).resize((P, P), Image.LANCZOS), "model's outline over it")]
-    row = Image.new("RGB", (P * len(cells), P), (255, 255, 255))
-    for i, c in enumerate(cells):
-        row.paste(c, (i * P, 0))
-    rows.append(row)
-sheet = Image.new("RGB", (rows[0].width, P * 2), (255, 255, 255))
+    rows.append(grid(cells, 6, P, P))
+sheet = Image.new("RGB", (rows[0].width, P * len(rows)), (255, 255, 255))
 for i, r in enumerate(rows):
     sheet.paste(r, (0, i * P))
 sheet.save(os.path.join(PREV, "face_vs_art.jpg"), quality=90)
 
 # --- face_turn
 az = (0, 30, 60, 90, 135, 180)
-ims = [label(raw("turn_%03d.png" % a).convert("RGB").resize((540, 675), Image.LANCZOS), "%d deg" % a) for a in az]
-sheet = Image.new("RGB", (540 * 3, 675 * 2), (255, 255, 255))
-for i, im in enumerate(ims):
-    sheet.paste(im, ((i % 3) * 540, (i // 3) * 675))
-sheet.save(os.path.join(PREV, "face_turn.jpg"), quality=90)
+cells = [label(raw("turn_%03d.png" % a).convert("RGB").resize((540, 675), Image.LANCZOS), "toon, %d deg" % a) for a in az]
+cells += [label(raw("pbr_turn_%03d.png" % a).convert("RGB").resize((540, 675), Image.LANCZOS), "pbr (B2a's look), %d deg" % a)
+          for a in (0, 30, 90) if has("pbr_turn_%03d.png" % a)]
+grid(cells, 3, 540, 675).save(os.path.join(PREV, "face_turn.jpg"), quality=90)
 
 # --- face_closeup
 F = Image.open(os.path.join(ROOT, "concept-face-front-v1.png")).convert("RGB")
 S = Image.open(os.path.join(ROOT, "concept-face-side-v1.png")).convert("RGB")
-cells = [(raw("close_eyes.png").convert("RGB").resize((1000, 500), Image.LANCZOS), "eyes"),
+cells = [(raw("close_eyes.png").convert("RGB").resize((1000, 500), Image.LANCZOS), "eyes (toon)"),
          (F.crop((300, 450, 1000, 800)).resize((1000, 500), Image.LANCZOS), "drawing: eyes"),
-         (raw("close_eye_q.png").convert("RGB").resize((667, 500), Image.LANCZOS), "her left eye, three-quarter"),
-         (raw("close_nose_mouth.png").convert("RGB").resize((667, 500), Image.LANCZOS), "nose and mouth"),
-         (raw("close_mouth_side.png").convert("RGB").resize((667, 500), Image.LANCZOS), "mouth, from her right"),
+         (raw("close_eye_q.png").convert("RGB").resize((667, 500), Image.LANCZOS), "her left eye, three-quarter (toon)"),
+         (raw("close_nose_mouth.png").convert("RGB").resize((667, 500), Image.LANCZOS), "nose and mouth (toon)"),
+         (raw("close_mouth_side.png").convert("RGB").resize((667, 500), Image.LANCZOS), "mouth, from her right (toon)"),
          (F.crop((480, 660, 830, 935)).resize((636, 500), Image.LANCZOS), "drawing: nose and mouth"),
          (S.crop((700, 600, 1000, 1000)).transpose(Image.FLIP_LEFT_RIGHT).resize((375, 500), Image.LANCZOS), "drawing: profile")]
+if has("pbr_close_eyes.png"):
+    cells += [(raw("pbr_close_eyes.png").convert("RGB").resize((1000, 500), Image.LANCZOS), "eyes (pbr, B2a's look)"),
+              (raw("pbr_close_eye_q.png").convert("RGB").resize((667, 500), Image.LANCZOS), "three-quarter (pbr)")]
 W = 2000
-sheet = Image.new("RGB", (W, 1500), (255, 255, 255))
-x = y = 0
 rowh = 500
+x = y = 0
+places = []
 for im, t in cells:
     if x + im.width > W:
         x, y = 0, y + rowh
-    sheet.paste(label(im.copy(), t), (x, y))
+    places.append((im, t, x, y))
     x += im.width
+sheet = Image.new("RGB", (W, y + rowh), (255, 255, 255))
+for im, t, x, y in places:
+    sheet.paste(label(im.copy(), t), (x, y))
 sheet.save(os.path.join(PREV, "face_closeup.jpg"), quality=90)
 
-# --- head_size (the variant)
-if os.path.exists(os.path.join(args.raw, "concept_turn_000.png")):
+# --- head_size: the default (x 1.20) against B2a's A-pose size
+if has("apose_turn_000.png"):
     C = Image.open(os.path.join(ROOT, "concept.jfif")).convert("RGB")
-    cells = [label(raw("turn_000.png").convert("RGB").resize((540, 675), Image.LANCZOS), "A-pose size (built)"),
-             label(raw("concept_turn_000.png").convert("RGB").resize((540, 675), Image.LANCZOS), "concept ratio, x 1.20"),
-             label(raw("turn_030.png").convert("RGB").resize((540, 675), Image.LANCZOS), "A-pose size, 30 deg"),
-             label(raw("concept_turn_030.png").convert("RGB").resize((540, 675), Image.LANCZOS), "concept ratio, 30 deg"),
+    cells = [label(raw("apose_turn_000.png").convert("RGB").resize((540, 675), Image.LANCZOS), "A-pose size (variant apose)"),
+             label(raw("turn_000.png").convert("RGB").resize((540, 675), Image.LANCZOS), "concept ratio x 1.20 (default)"),
+             label(raw("apose_turn_030.png").convert("RGB").resize((540, 675), Image.LANCZOS), "A-pose size, 30 deg"),
+             label(raw("turn_030.png").convert("RGB").resize((540, 675), Image.LANCZOS), "x 1.20 (default), 30 deg"),
              label(C.resize((450, 675), Image.LANCZOS), "concept")]
     sheet = Image.new("RGB", (540 * 4 + 450, 675), (255, 255, 255))
     x = 0
@@ -136,4 +157,36 @@ if os.path.exists(os.path.join(args.raw, "concept_turn_000.png")):
         sheet.paste(c, (x, 0))
         x += c.width
     sheet.save(os.path.join(PREV, "head_size.jpg"), quality=90)
+
+
+# --- look_compare: pbr | toon, the same shots
+def flat(im):
+    return on_bg(im, BACK)
+
+
+H = 760
+pairs = [("face, front", "pbr_turn_000.png", "turn_000.png", args.raw),
+         ("face, 30 deg", "pbr_turn_030.png", "turn_030.png", args.raw),
+         ("posed, the concept's framing", "pbr_concept_concept.png", "concept_concept.png", args.posed),
+         ("posed, full figure", "pbr_concept_front.png", "concept_front.png", args.posed)]
+cells = []
+for what, a, b, d in pairs:
+    if not (has(a, d) and has(b, d)):
+        continue
+    for name, look in ((a, "pbr"), (b, "toon")):
+        im = flat(raw(name, d))
+        im = im.resize((int(im.width * H / im.height), H), Image.LANCZOS)
+        cells.append(label(im, "%s: %s" % (look, what), 22))
+if cells:
+    rows = [cells[i:i + 4] for i in range(0, len(cells), 4)]
+    width = max(sum(c.width for c in r) + 8 * (len(r) - 1) for r in rows)
+    sheet = Image.new("RGB", (width, (H + 8) * len(rows)), (255, 255, 255))
+    y = 0
+    for r in rows:
+        x = 0
+        for c in r:
+            sheet.paste(c, (x, y))
+            x += c.width + 8
+        y += H + 8
+    sheet.save(os.path.join(PREV, "look_compare.jpg"), quality=90)
 print("sheets ->", PREV)

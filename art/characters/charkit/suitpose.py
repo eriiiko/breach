@@ -9,7 +9,9 @@ tables module, whose `POSE` table holds everything about her (joints, weight ban
     --pose NAME      a pose in tables.POSE["poses"] (default: the first)
     --views a,b,..   shots in tables.POSE["shots"] (default: every shot not marked `dev`); `rest:<shot>` renders the
                      unposed (frozen) build in that shot
-    --lights NAME    an extra light setup from tables.POSE["lights"] for every shot (default: the studio rig)
+    --lights NAME    an extra light setup from tables.POSE["lights"] for every shot (default: the studio rig; the pbr look only)
+    --look NAME      B2b: the look (tables.LOOKS; default tables.LOOK, the toon look, `charkit/suitlook.py`); the raw
+                     renders of another look get a `<look>_` prefix (`--look pbr`: the physically-lit Cycles look)
     --draft          quarter resolution, few samples (the working loop)
     --samples N      Cycles samples (default 96)
     --blend PATH     the build to pose (default source/<name>.blend)
@@ -261,7 +263,7 @@ def add_lights(spec, rig):
                 n.inputs["To Max"].default_value *= spec["world_scale"]
 
 
-def shoot(cam, rig, shot, path, scale=1.0, transparent=False):
+def shoot(cam, rig, shot, path, scale=1.0, transparent=False, look=None):
     """A shot: dict(cam=(x, y, z), target=(x, y, z), lens=mm, res=(w, h)[, rig=deg]) -- the camera placed
     in the world; `rig` turns the studio rig (its lights) about the vertical first."""
     rig.rotation_euler = (0.0, 0.0, math.radians(shot.get("rig", 0.0)))
@@ -273,8 +275,11 @@ def shoot(cam, rig, shot, path, scale=1.0, transparent=False):
     cam.data.clip_start, cam.data.clip_end = 0.05, 60.0
     cam.location = shot["cam"]
     studio._look_at(cam, shot["target"])
-    res = shot["res"]
-    studio.render(path, (int(res[0] * scale), int(res[1] * scale)), transparent=transparent)
+    res = (int(shot["res"][0] * scale), int(shot["res"][1] * scale))
+    if look:   # B2b: the outlines' width for this shot
+        import suitlook
+        suitlook.width(look, cam, shot["target"], res)
+    studio.render(path, res, transparent=transparent)
     rig.rotation_euler = (0.0, 0.0, 0.0)
 
 
@@ -309,6 +314,7 @@ def run(root, name, tables):
     ap.add_argument("--blend", default="")
     ap.add_argument("--save", default="")
     ap.add_argument("--out", default="")
+    ap.add_argument("--look", default="")
     args = ap.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else [])
     T = tables.POSE
     t0 = time.time()
@@ -317,6 +323,9 @@ def run(root, name, tables):
     sc.cycles.samples = args.samples or (16 if args.draft else 96)
     print("render device:", use_gpu())
     rig, cam = bpy.data.objects["StudioRig"], bpy.data.objects["Cam"]
+    import suitlook   # B2b: the look's geometry-level data first, so it is frozen and posed with the parts
+    lname = suitlook.name_of(tables, args.look)
+    look = suitlook.prepare(tables, lname)
     obs = freeze()
     t1 = time.time()
     print("frozen in %.1fs" % (t1 - t0))
@@ -331,16 +340,19 @@ def run(root, name, tables):
         dz = drop_to_floor(obs, P["stand"])
         print("posed '%s' in %.1fs (lowered %.1f mm; the free foot's sole %.1f mm above the floor)" % (
             pose_name, time.time() - t1, -dz * 1000, lowest(obs, P["free"]) * 1000))
-    if args.lights:
+    suitlook.apply(tables, look, rig, cam)
+    if look:
+        sc.eevee.taa_render_samples = args.samples or (16 if args.draft else look.get("engine", {}).get("samples", 64))
+    if args.lights and not look:
         add_lights(T["lights"][args.lights], rig)
     out = args.out or os.path.join(tempfile.gettempdir(), name + "_posed")  # raw RGBA renders; the sheets are laid out from here
     os.makedirs(out, exist_ok=True)
-    tag = pose_name + ("_" + args.lights if args.lights else "")
+    tag = ("" if lname == suitlook.name_of(tables) else lname + "_") + pose_name + ("_" + args.lights if args.lights and not look else "")
     for v in views:
         shot = T["shots"][v.split(":")[1] if v.startswith("rest:") else ("concept" if v == "rest" else v)]
         t2 = time.time()
         path = os.path.join(out, "%s_%s.png" % ("rest" if rest else tag, v.replace("rest:", "")))
-        shoot(cam, rig, shot, path, 0.25 if args.draft else 1.0, transparent=True)
+        shoot(cam, rig, shot, path, 0.25 if args.draft else 1.0, transparent=True, look=look)
         print("shot %s in %.1fs -> %s" % (v, time.time() - t2, path))
     if args.save:
         bpy.ops.wm.save_as_mainfile(filepath=args.save)

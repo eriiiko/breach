@@ -2,9 +2,10 @@
 
     python Beatrice/scripts/posed_sheets.py [raw dir]      (default $TEMP/Beatrice_posed)
 
-posed_vs_concept.jpg  the concept | the render at the same framing | the render's outline over the concept
-posed_full.jpg        the pose full figure: front, front three-quarter, side, back three-quarter
-posed_hotlight.jpg    the concept | the concept-framed render under the studio rig | under the `hot` light setup
+posed_vs_concept.jpg  the concept | the render at the same framing | the render's outline over the concept (B2b: the toon look)
+posed_full.jpg        the pose full figure: front, front three-quarter, side, back three-quarter (the toon look)
+posed_hotlight.jpg    the concept | the concept-framed render in the pbr look under the studio rig | under the `hot` light
+                      setup | the toon look (B2b; the pbr renders are `posed.py -- --look pbr [--lights hot]`, prefix `pbr_`)
 """
 import os
 import sys
@@ -81,7 +82,7 @@ def main(raw):
     prev = os.path.join(ROOT, "previews")
     r = os.path.join(raw, "%s_concept.png" % pose)
     render = flat(r, size)
-    row([label(concept, "concept.jfif"), label(render, "B2a posed, studio rig (default look)"),
+    row([label(concept, "concept.jfif"), label(render, "B2b posed, the toon look (default)"),
          label(outline_over(concept, alpha(r, size)), "the render's outline over the concept")]
         ).save(os.path.join(prev, "posed_vs_concept.jpg"), quality=90)
     cells = []
@@ -91,9 +92,11 @@ def main(raw):
             cells.append(label(flat(p), txt))
     if cells:
         row(cells).save(os.path.join(prev, "posed_full.jpg"), quality=90)
-    h = os.path.join(raw, "%s_hot_concept.png" % pose)
-    if os.path.exists(h):
-        row([label(concept, "concept.jfif"), label(render, "studio rig"), label(flat(h, size), "the 'hot' light setup (B1m, optional)")]
+    h = os.path.join(raw, "pbr_%s_hot_concept.png" % pose)
+    p = os.path.join(raw, "pbr_%s_concept.png" % pose)
+    if os.path.exists(h) and os.path.exists(p):
+        row([label(concept, "concept.jfif"), label(flat(p, size), "pbr look, studio rig"),
+             label(flat(h, size), "pbr look, the 'hot' light setup (B1m)"), label(render, "toon look (B2b, default)")]
             ).save(os.path.join(prev, "posed_hotlight.jpg"), quality=90)
     print("written to", prev)
 

@@ -3594,7 +3594,7 @@ def build_head(M, head_spec, prefix, coll="Head", palette=None):
     (`parts.head`: `<prefix>_Head`, `_Eye_*`, `_Ear`)."""
     if head_spec.get("kind") == "anime":
         import animehead
-        mats = animehead.materials(prefix.lower(), palette)
+        mats = animehead.materials(prefix.lower(), palette, head_spec.get("eyes"))
         h = head_spec.get("res_draft", 0.0012) if kit.RES > 0.006 else head_spec.get("res", 0.0007)
         head, _ = animehead.build(prefix, head_spec["face"], head_spec["eyes"], mats, coll, h=h, hair=head_spec.get("hair"),
                                   scale=head_spec.get("scale", 1.0))

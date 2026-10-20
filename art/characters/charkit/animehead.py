@@ -131,6 +131,21 @@ class Egg:
         nf, nb = zip(*sp["n_front"]), zip(*sp["n_back"])
         nf, nb = [np.asarray(v, float) for v in nf], [np.asarray(v, float) for v in nb]
         self.nf, self.nb = Curve(np.radians(nf[0]), nf[1]), Curve(np.radians(nb[0]), nb[1])
+        # B2b: `front_smooth` = (sigma along the elevation, sigma round the head, degrees): away from the midline the
+        # profile's front radius is a SMOOTHED copy (a Gaussian along the elevation), blended in round the head, so the
+        # profile's own dents (under the nose, the lip, the chin) stay on the midline and do not print as horizontal
+        # bands across the cheeks (B2a: concave bands at -45 and -25 deg elevation, 45 deg round)
+        self.rf_s, self.sig_a = None, None
+        if sp.get("front_smooth"):
+            sb, sa = sp["front_smooth"]
+            bb = np.radians(np.arange(-90.0, 90.01, 0.5))
+            r = self.rf(bb)
+            k = np.arange(-int(4 * sb / 0.5), int(4 * sb / 0.5) + 1)
+            g = np.exp(-0.5 * (k * 0.5 / sb) ** 2)
+            g /= g.sum()
+            rp = np.concatenate([r[len(k) // 2:0:-1], r, r[-2:-len(k) // 2 - 2:-1]])
+            self.rf_s = Curve(bb, np.convolve(rp, g, mode="same")[len(k) // 2:len(k) // 2 + len(bb)])
+            self.sig_a = math.radians(sa)
 
     def __call__(self, P):
         d = P - self.c
@@ -145,7 +160,11 @@ class Egg:
         hh = np.maximum(np.hypot(hx, hy), 1e-9)
         sa, ca = hx / hh, -hy / hh
         front = ca >= 0.0
-        rfb = np.where(front, self.rf(beta), self.rb(beta))
+        rf = self.rf(beta)
+        if self.rf_s is not None:
+            w = np.exp(-(np.arctan2(sa, np.maximum(ca, 1e-9)) / self.sig_a) ** 2)
+            rf = self.rf_s(beta) + (rf - self.rf_s(beta)) * w
+        rfb = np.where(front, rf, self.rb(beta))
         n = np.where(front, self.nf(beta), self.nb(beta))
         return ((sa / self.rs(beta)) ** n + (np.abs(ca) / rfb) ** n) ** (-1.0 / n)
 
@@ -268,6 +287,49 @@ class Head:
         w = np.maximum(w, k_lip * _ramp(z, lz0, lz0 + 0.002) * _ramp(lz1 - z, 0.0, 0.002) * _ramp(lx - x, 0.0, 0.004) * _ramp(-y, 0.080, 0.084))
         return unit(N * (1.0 - w)[:, None] + Np * w[:, None])
 
+    def toon_normals(self, V, sp):
+        """B2b, for the toon look (`charkit/toonlook.py`): per vertex (world) the skin's field normals blended towards the
+        EGG's -- the head's simple shape without the forms, the nose, the lips or the cuts -- as anime-style 3D faces are
+        shaded, so the light falls on the face as on a smooth head (no nose, socket or cheek shadows; the profile keeps the
+        nose's outline). `sp`: `weight` over the face, `front` (y0, y1) head space (full in front of y0, none behind y1),
+        `z` (z0, z1, z2, z3) (none below z0, full z1-z2, none above z3), `tip` = ((x, z), (rx, rz), keep) the nose tip keeping
+        `keep` of its own normal; `lift` = (amount, z0, z1): over the lower face (full below z0, none above z1) the normal is
+        tipped up by `amount` (renormalised), so the jaw's side reads lit down to its edge and only its underside turns
+        dark, as the art draws the jaw (a clean edge over the shadowed neck)."""
+        N = unit(self.grad(self, V))
+        Ne = unit(self.grad(lambda P: self.egg(self.to_head(P)), V))
+        Q = self.to_head(V)
+        y0, y1 = sp["front"]
+        z0, z1, z2, z3 = sp["z"]
+        w = sp["weight"] * _ramp(y1 - Q[:, 1], 0.0, y1 - y0) * _ramp(Q[:, 2], z0, z1) * _ramp(z3 - Q[:, 2], 0.0, z3 - z2)
+        if sp.get("tip"):
+            (tx, tz), (rx, rz), keep = sp["tip"]
+            tip = np.exp(-((Q[:, 0] - tx) / rx) ** 2 - ((Q[:, 2] - tz) / rz) ** 2) * _ramp(-Q[:, 1], 0.090, 0.097)
+            w = w * (1.0 - keep * tip)
+        N = unit(N * (1.0 - w)[:, None] + Ne * w[:, None])
+        if sp.get("lift"):
+            a, lz0, lz1 = sp["lift"]
+            k = a * _ramp(lz1 - Q[:, 2], 0.0, lz1 - lz0) * _ramp(Q[:, 2], sp["z"][0], sp["z"][1]) * _ramp(y1 - Q[:, 1], 0.0, y1 - y0)
+            N = unit(N + np.column_stack([np.zeros(len(N)), np.zeros(len(N)), k]))
+        return N
+
+    def line_mask(self, V, sp):
+        """B2b, for the toon look's inked outline (`toonlook.line_group`): per vertex (world) how much of the line the
+        drawn face leaves out when seen from the front -- over the nose (`nose` = (amount, (z0, z1))) and the lips (`lips` =
+        (amount, (z0, z1), half-width)); 0 elsewhere. The profile keeps every line."""
+        Q = self.to_head(V)
+        x, y, z = np.abs(Q[:, 0]), Q[:, 1], Q[:, 2]
+        m = np.zeros(len(V))
+        if sp.get("nose"):
+            k, (z0, z1) = sp["nose"]
+            m = np.maximum(m, k * _ramp(z, z0, z0 + 0.002) * _ramp(z1 - z, 0.0, 0.003) * _ramp(0.014 - x, 0.0, 0.004)
+                           * _ramp(-y, 0.078, 0.084))
+        if sp.get("lips"):
+            k, (z0, z1), hw = sp["lips"]
+            m = np.maximum(m, k * _ramp(z, z0, z0 + 0.002) * _ramp(z1 - z, 0.0, 0.002) * _ramp(hw - x, 0.0, 0.004)
+                           * _ramp(-y, 0.078, 0.083))
+        return m
+
     def _cut(self, Q, d):
         m = self.F["mouth"]
         d = smax3(d, -ellipsoid(Q, *m["slot"]), m["slot_k"])
@@ -287,6 +349,22 @@ class Head:
         return smin3(d, self.neck(P), self.F["neck_k"])
 
     # --- helpers
+    def box(self):
+        """The skin's meshing box (world): B2a's head-space box, grown with the head-size scale (B2b: at x 1.20 the fixed box
+        cut the crown flat at 1.692 and clipped the nose's tip)."""
+        lo, hi = np.array([-0.095, -0.125, 1.395]), np.array([0.095, 0.100, 1.692])
+        return np.minimum(lo, self.world(lo)), np.maximum(hi, self.world(hi))
+
+    def shadow_proxy(self, h=0.002, shrink=0.006):
+        """B2b, for the toon look: the head's SIMPLE shape (the egg and the neck, no forms, nose, lips or cuts) shrunk by
+        `shrink`, meshed coarsely -- a shadow caster standing in for the skin (`toonlook.shadow_proxy`), so the chin still
+        shades the neck and the head the hair, but no nose, lid or socket shadow falls on the face. Returns (verts, quads)."""
+        def f(P):
+            P = np.asarray(P, float)
+            return smin3(self.egg(self.to_head(P)) * self.s, self.neck(P), self.F["neck_k"]) + shrink
+        lo, hi = self.box()
+        return mesh_banded(f, lo, hi, h)
+
     def grad(self, f, V, e=2e-5):
         return np.stack([(f(V + e * u) - f(V - e * u)) / (2 * e) for u in np.eye(3)], axis=1)
 
@@ -483,7 +561,7 @@ def face_masks(head, V):
 
 
 # ------------------------------------------------------------------------------------------------ materials (bpy)
-def materials(prefix, p):
+def materials(prefix, p, eyes=None):
     """The head's own materials, every colour from the palette `p`: `<prefix>_face` (the skin with its painted masks;
     the same base, subsurface and gloss as the hands' `<prefix>_skin`, no pore bump: the drawn skin is clean),
     `_eyes` (sclera, the drawn iris and its highlights from the eye surface's `iu`/`iv`/`lid`), `_lash`, `_hair`."""
@@ -509,7 +587,9 @@ def materials(prefix, p):
     col = t.mix(t.math("MULTIPLY", t.attr("crease"), 0.55), col, lin(p["CREASE"]))
     col = t.mix(t.math("MULTIPLY", t.attr("lowlash"), 0.75), col, lin(p["LASH_LOW"]))
     strands = t.ramp(t.noise(300.0, 2.0, 0.5, 0.0, "FBM", stretch=(1.0, 1.0, 0.3)), 0.3, 0.65)
-    col = t.mix(t.math("MULTIPLY", t.attr("brow"), t.math("ADD", t.math("MULTIPLY", strands, 0.3), 0.65), clamp=True), col, lin(p["BROW"]))
+    # B2b: the brow's band sharpened (a ramp on its mask): B2a's Gaussian read as a blurred smudge in the toon look
+    col = t.mix(t.math("MULTIPLY", t.ramp(t.attr("brow"), 0.25, 0.6), t.math("ADD", t.math("MULTIPLY", strands, 0.25), 0.72), clamp=True),
+                col, lin(p["BROW"]))
     col = t.mix(t.math("MULTIPLY", t.attr("nostril"), 0.35), col, lin(p["LIP_LINE"]))
     col = t.mix(t.math("MULTIPLY", t.attr("mouthline"), 0.85), col, lin(p["LIP_LINE"]))
     ao = t.ramp(t.ao(0.02), 0.2, 0.95)
@@ -541,7 +621,13 @@ def materials(prefix, p):
     streak = t.noise(3.0, 3.0, 0.6, 0.0, "FBM", vec=cx.outputs[0])
     irc = t.mix(t.math("MULTIPLY", t.ramp(streak, 0.35, 0.7), 0.35), irc, (ir_glow[0], ir_glow[1], ir_glow[2], 1.0))
     irc = t.mix(t.ramp(r, 0.70, 0.97), irc, (ir_dark[0] * 0.7, ir_dark[1] * 0.7, ir_dark[2] * 0.7, 1.0))
-    pup = dist(0.0, 0.02, 0.30, 0.36)
+    # B2b: the pupil's size from the eye table (`iris["pupil"]`, half-axes in iris radii; B2a's 0.30 x 0.36), a lighter ring
+    # round it and a soft glow low on the far side, as the drawing layers its iris
+    pr = (eyes or {}).get("iris", {}).get("pupil", (0.30, 0.36))
+    pup = dist(0.0, 0.02, pr[0], pr[1])
+    irc = t.mix(t.math("MULTIPLY", t.ramp(pup, 1.0, 1.25), t.ramp(pup, 2.2, 1.6)), irc,
+                (ir_glow[0] * 0.8, ir_glow[1] * 0.8, ir_glow[2] * 0.85, 1.0))
+    irc = t.mix(t.math("MULTIPLY", t.ramp(dist(0.25, -0.45, 0.55, 0.35), 1.0, 0.3), 0.55), irc, (ir_glow[0] * 1.25, ir_glow[1] * 1.25, ir_glow[2] * 1.2, 1.0))
     irc = t.mix(t.ramp(pup, 1.08, 0.88), irc, lin(p["PUPIL"]))
     col = t.mix(t.ramp(r, 1.03, 0.97), col, irc)
     # the lid's shadow over the iris's top as well
@@ -604,7 +690,7 @@ def _mesh(name, V, Q, mat, coll, tris=None, attrs=None, normals=None):
 def build_skin(head, mats, prefix, coll, h):
     import time
     t0 = time.time()
-    lo, hi = np.array([-0.095, -0.125, 1.395]), np.array([0.095, 0.100, 1.692])
+    lo, hi = head.box()
     V, Q = mesh_banded(head, lo, hi, h)
     N = head.shading_normals(V)
     attrs = face_masks(head, head.to_head(V))

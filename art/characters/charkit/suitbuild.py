@@ -25,6 +25,9 @@ module and its `sheet_ref`, call `run(...)`:
     --samples N      Cycles samples (default 96, draft 24)
     --save           write source/<name>.blend and source/mesh_stats.json
     --head NAME      a head (tables.head(NAME), B2a: `placeholder` the bald one); outputs get a NAME_ prefix
+    --look NAME      B2b: the look of the turnaround, beauty and dev views (tables.LOOKS; default tables.LOOK, the toon look,
+                     `charkit/suitlook.py`); another look's renders get a NAME_ prefix (`--look pbr`: the physically-lit
+                     Cycles look of B1a-B2a). The sheet's overlap pictures are always rendered plain (Cycles), before it
     --outline        slice the built body and print its outlines' worst direction change per cm, waist
                      to knee, per view (`hipsview.measure`; source/<prefix>outline.json)
     --hips           the hip pictures (hips.jpg, hips_vs_drawings.jpg, hips_before_after.jpg; needs
@@ -176,6 +179,7 @@ def run(root, name, tables, sheet_ref):
     ap.add_argument("--outline", action="store_true")
     ap.add_argument("--hips", action="store_true")
     ap.add_argument("--head", default="")
+    ap.add_argument("--look", default="")
     args = ap.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else [])
 
     t0 = time.time()
@@ -217,19 +221,32 @@ def run(root, name, tables, sheet_ref):
                                             not args.quiet)
         with open(os.path.join(source, prefix + "sheet_scores.json"), "w") as f:
             json.dump(res, f, indent=1)
-    if args.turn:
-        studio.turnaround(rig, cam, floor, previews, tables.HEIGHT, tag=prefix + "turnaround")
     names = list(tables.BEAUTY) if args.beauty == "all" else [n for n in args.beauty.split(",") if n]
+    look = None
+    if args.turn or names:   # B2b: the look (after the sheet, which stays plain); only a non-default look prefixes its renders
+        import suitlook
+        lname = suitlook.name_of(tables, args.look)
+        if lname != suitlook.name_of(tables):
+            prefix += lname + "_"
+        look = suitlook.prepare(tables, lname, args.head or None)
+        suitlook.apply(tables, look, rig, cam)
+    if args.turn:
+        if look:
+            suitlook.width_mpp(look, tables.HEIGHT * 1.12 / 1100)   # studio.turnaround's scale
+        studio.turnaround(rig, cam, floor, previews, tables.HEIGHT, tag=prefix + "turnaround")
     for n in names:
         view = tables.BEAUTY[n] if n in tables.BEAUTY else tables.DEV_VIEWS[n]  # DEV_VIEWS: close-ups on request, never in `all`
         if isinstance(view, dict):
-            render_aimed(cam, view, prefix + n, previews, args.scale)
+            render_aimed(cam, view, prefix + n, previews, args.scale, look)
         else:
+            if look:
+                res = view[6]
+                suitlook.width_mpp(look, view[3] * cam.data.sensor_width / view[5] / (max(res) * args.scale))
             studio.render_beauty(rig, cam, view, prefix + n, previews, args.scale)
     print("done in %.1fs" % (time.time() - t0))
 
 
-def render_aimed(cam, view, name, out_dir, scale=1.0):
+def render_aimed(cam, view, name, out_dir, scale=1.0, look=None):
     """A close-up aimed at any point (studio.render_beauty always aims at the centre line):
     view = dict(cam=(x, y, z), target=(x, y, z), lens=mm, res=(w, h)); the studio's lights
     stay where they are."""
@@ -239,7 +256,11 @@ def render_aimed(cam, view, name, out_dir, scale=1.0):
     cam.location = view["cam"]
     studio._look_at(cam, view["target"])
     res = view.get("res", (900, 900))
-    studio.render(os.path.join(out_dir, name + ".jpg"), (int(res[0] * scale), int(res[1] * scale)))
+    res = (int(res[0] * scale), int(res[1] * scale))
+    if look:
+        import suitlook
+        suitlook.width(look, cam, view["target"], res)
+    studio.render(os.path.join(out_dir, name + ".jpg"), res)
 
 
 def compare(tables, sheet_ref, previews, args):
