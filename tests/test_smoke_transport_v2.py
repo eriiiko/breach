@@ -191,11 +191,14 @@ def test_v2_expanding_air_thins_its_smoke_instead_of_multiplying_it():
         sub_total += eos.dbg_last_n_sub
         n_bulk = sum(g.gas[b].astype(np.int64) for b in bulk)
         n_min = min(n_min, int(n_bulk[open_].min()))
-        ratio = g.gas[SMOKE][open_].astype(np.float64) / n_bulk[open_]
+        # the ratio of trace to air in ONE currency (#88: the bulk lifted)
+        ratio = (g.gas[SMOKE][open_].astype(np.float64)
+                 / gas_fixed.trace_from_bulk(n_bulk[open_]))
         dev = float(np.abs(ratio - r).max())
         max_dev = max(max_dev, dev)
-        # initial rounding (N mod 4)/4 counts, then 4 faces per substep
-        bound = (4 * sub_total + 1) / n_min
+        # initial rounding (N mod 4)/4 bulk counts, then 4 faces per substep,
+        # each floor one TRACE count (2^-TRACE_FINE_BITS of a bulk count)
+        bound = (1 + 4 * sub_total / (gas_fixed.TRACE_ONE // gas_fixed.BULK_ONE)) / n_min
         assert dev <= bound, (dev, bound, sub_total, n_min)
     assert sub_total > 48, "the blast never needed a second substep"
 

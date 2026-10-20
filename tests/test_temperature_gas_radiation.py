@@ -271,7 +271,7 @@ def _thin_smoke_shield():
     its cap once the sweep's per-ordinate floors are resolved -- the P5c
     binding there was that artifact -- so the clamp's non-vacuity needs a scene
     where radiation really carries a cell past its ceiling)."""
-    sc = G._shield_scene(R.quant(0.2))[0]
+    sc = G._shield_scene(R.quant_trace(0.2))[0]
     for y in range(len(sc.T)):
         for x in range(len(sc.T[0])):
             if sc.gas[0][y][x] > 0:
@@ -281,10 +281,10 @@ def _thin_smoke_shield():
 
 
 def _scenes():
-    return {"sealed smoky room": (G._sealed_smoky_room(7, 9, smoke_q=R.quant(0.06),
+    return {"sealed smoky room": (G._sealed_smoky_room(7, 9, smoke_q=R.quant_trace(0.06),
                                                        hq=R.quant(5.0),
                                                        T_smoke_game=G.T_SRC_GAME), 24),
-            "smoke shield": (G._shield_scene(R.quant(0.2))[0], 24),
+            "smoke shield": (G._shield_scene(R.quant_trace(0.2))[0], 24),
             "thin smoke shield": (_thin_smoke_shield(), 24)}
 
 
@@ -461,8 +461,13 @@ def _breached_room(boundary, *, smoke=0.3, T_game=800, fire=False, n2_absorb=0.0
         g.temperature[blk] = fire_fixed.quantize_scalar(
             float(g.materials.ignition_temp[FURN]))
     if n2_absorb:
+        # Set PAST the gases door, which refuses a bulk absorber (#88 V10,
+        # ACCEPTED GAP G3): the sweep finishes its density sum in the TRACE
+        # currency, and this bulk plane is Q16, so the fixture's coefficient
+        # carries the trace currency's extra bits (TRACE_ONE / BULK_ONE) to mean
+        # the same n2_absorb per real unit at any TRACE_FINE_BITS.
         t = g.gases.heat_absorb_q16.copy()
-        t[INERT_N2] = int(round(n2_absorb * ONE))
+        t[INERT_N2] = int(round(n2_absorb * ONE)) * (gas_fixed.TRACE_ONE // gas_fixed.BULK_ONE)
         g.gases.heat_absorb_q16 = np.ascontiguousarray(t)
     g.destroy_wall(h // 2, w - 2)
     return sim
