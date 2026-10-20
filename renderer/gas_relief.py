@@ -133,6 +133,12 @@ class ReliefSettings:
     own_light_cut: float          # G2: how much of a glowing tile's own light
                                   #   is taken off the smoke surface over it,
                                   #   [0, 1] (it shows as glow-through instead)
+    low_band_tiles: float         # G2 synthetic low band (§2.5 A): lump size,
+                                  #   tiles
+    low_band_push_tiles: float    # how far it moves a plume's edge, tiles
+    low_band_height: float        # share of the height it carves, [0, 1]
+    low_band_tau0: float          # gate: in from tau / cov_tau = tau0 ...
+    low_band_tau1: float          #   ... full at tau1 (inside plumes only)
     debug_view: int               # 0 = off; 1 coverage, 2 height, 3 N.L,
                                   #   4 self-shadow, 5 AO, 6 boil, 7 the
                                   #   cast shadow on the floor (G2)
@@ -185,8 +191,13 @@ def relief_settings(cfg) -> ReliefSettings:
         raise ValueError("[render.gas_relief] rim_g must be in [0, 1)")
     unit = [k for k in ("cast_shadow_ceiling", "cast_shadow_floor",
                         "glow_through_ceiling", "glow_through_floor",
-                        "own_light_cut")
+                        "own_light_cut", "low_band_height")
             if not 0.0 <= getattr(s, k) <= 1.0]
+    if (s.low_band_tiles <= 0.0 or s.low_band_push_tiles < 0.0
+            or not 0.0 <= s.low_band_tau0 < s.low_band_tau1):
+        raise ValueError("[render.gas_relief] needs low_band_tiles > 0, "
+                         "low_band_push_tiles >= 0 and "
+                         "0 <= low_band_tau0 < low_band_tau1")
     if unit or s.cast_parallax < 0.0 or s.cast_lift_ceiling < 0.0:
         raise ValueError("[render.gas_relief] cast_shadow_*, glow_through_* "
                          "and own_light_cut must be in [0, 1] "
@@ -499,6 +510,7 @@ class GasReliefPass:
         "u_ambient", "u_shadow", "u_shadow_len", "u_shadow_soft", "u_powder",
         "u_ao", "u_rim", "u_rim_g", "u_debug", "u_toplight", "u_top_light",
         "u_glow_texture", "u_group", "u_mode", "u_below", "u_own_cut",
+        "u_low_tiles", "u_low_push", "u_low_height", "u_low_gate",
     )
 
     def __init__(self, grid_h: int, grid_w: int, settings: ReliefSettings):
@@ -784,6 +796,10 @@ class GasReliefPass:
         self._f("u_rim_g", s.rim_g)
         self._f("u_glow_texture", s.glow_texture)
         self._f("u_own_cut", s.own_light_cut)
+        self._f("u_low_tiles", s.low_band_tiles)
+        self._f("u_low_push", s.low_band_push_tiles)
+        self._f("u_low_height", s.low_band_height)
+        self._v("u_low_gate", s.low_band_tau0, s.low_band_tau1)
         self._i("u_debug", s.debug_view if mode == 0 else 0)
         self._i("u_group", 1 if ceiling else 0)
         self._i("u_mode", int(mode))

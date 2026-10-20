@@ -60,6 +60,12 @@ uniform sampler2D u_below;    // R = how strongly the tile GLOWS from below (the
                               // heat layer's brightness, 3x3-dilated; G2)
 uniform float u_own_cut;      // share of a glowing tile's own light taken off
                               // the surface over it (G2: it glows THROUGH)
+uniform float u_low_tiles;    // G2 synthetic LOW BAND (doc §2.5 A): its lump
+                              // size, tiles (period = BASE_CELLS x this)
+uniform float u_low_push;     // how far it moves a plume's edge, tiles
+uniform float u_low_height;   // share of the height it carves, [0, 1]
+uniform vec2  u_low_gate;     // (t0, t1): gated in by tau / cov_tau -- only
+                              // inside plumes, never in thin haze
 
 uniform vec2  u_grid;         // (grid_w, grid_h): uv * u_grid = tiles
 uniform float u_phase;        // base clock phase [0,1)
@@ -142,6 +148,11 @@ vec4 textureBicubic(sampler2D tex, vec2 texCoords, vec2 texSize) {
 // neighbour taps of the height field reuse them (they lie within a tile).
 vec2 g_o0, g_o1, g_h0, g_h1, g_warp;
 float g_w0, g_wh0, g_boil;
+// G2 low band: this pixel's edge displacement (tiles) and height factor,
+// set once in main() -- the band is >= 2 tiles, so every tap of this
+// pixel (normals, shadow march) shares it.
+float g_low_d = 0.0;
+float g_low_h = 1.0;
 
 float billowRaw(vec2 p) {                     // p in tiles -> B in [0,1]
     vec2 q = (p + g_warp) / u_billow_tiles;
@@ -172,7 +183,8 @@ float lnTauAt(vec2 p) {          // bilinear: the gradient is tile-scale
 // as C cut near-vertical walls that read as black creases.
 const float H_SOFT = 3.0;
 vec2 coverageOf(float ln_tau, float grad, float b) {
-    float q = ln_tau - log(u_cov_tau) + u_cov_push * grad * (b - u_billow_mean);
+    float q = ln_tau - log(u_cov_tau) + u_cov_push * grad * (b - u_billow_mean)
+            + grad * g_low_d;
     float w = max(u_cov_edge * grad, u_cov_soft);
     return vec2(smoothstep(-0.5 * w, 0.5 * w, q),
                 smoothstep(-0.5 * H_SOFT * w, 0.5 * H_SOFT * w, q));
@@ -185,7 +197,7 @@ float heightOf(float t, vec2 p, float grad) {
     float b = billowRaw(p);
     float c = coverageOf(log(max(t, 1e-6)), grad, b).y;
     return u_height * sqrt(clamp(t / u_height_tau, 0.0, 1.0))
-         * (1.0 - u_billow_amp + u_billow_amp * b) * c;
+         * (1.0 - u_billow_amp + u_billow_amp * b) * g_low_h * c;
 }
 // Bicubic depth for the normal taps (they must agree with the pixel's own
 // reconstruction), bilinear for the shadow march (soft by nature).
@@ -240,6 +252,27 @@ void main() {
     g_h1 = -v_hot * (fract(phh + 0.5) * u_tau_ticks_hot) / u_billow_tiles;
     g_warp = (texture(u_billow, tp / (u_billow_tiles * 2.0)).gb - 0.5)
            * 2.0 * u_warp_tiles;
+
+    // --- G2: the synthetic LOW BAND (doc §2.5 A, Erik's ruling 7) ----------
+    // A coarse billow octave (u_low_tiles lumps, the 30 cm - 1 m band the
+    // sim's diffusive transport cannot carry), RENDER-ONLY, riding the same
+    // real wind on the same two-phase clock, and GATED: only inside plumes
+    // (tau / cov_tau through u_low_gate) and only where the field changes
+    // (it moves the coverage contour by grad * displacement, so a flat field
+    // is not touched). It moves a plume's silhouette in and out by up to
+    // u_low_push tiles and carves u_low_height of its height.
+    if (u_low_push > 0.0 || u_low_height > 0.0) {
+        float P = 4.0 * max(u_low_tiles, 1e-3);     // BASE_CELLS x lump size
+        float sc = u_billow_tiles / P;               // offsets -> this period
+        vec2 ql = (tp + g_warp) / P + vec2(0.31, 0.57);
+        float L = mix(texture(u_billow, ql + g_o1 * sc + vec2(0.5)).r,
+                      texture(u_billow, ql + g_o0 * sc).r, g_w0) - u_billow_mean;
+        float gate = smoothstep(u_low_gate.x, u_low_gate.y,
+                                tau_ext / max(u_cov_tau, 1e-6));
+        g_low_d = u_low_push * L * gate;
+        g_low_h = 1.0 + u_low_height * gate
+                * clamp(L / max(1.0 - u_billow_mean, 1e-3), -1.0, 1.0);
+    }
 
     // --- coverage: the sharp, billowed edge --------------------------------
     const float GE = 0.25;           // gradient step, tiles (tile-scale field)
