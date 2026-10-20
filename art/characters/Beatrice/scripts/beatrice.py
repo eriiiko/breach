@@ -1179,15 +1179,16 @@ def _fall(z, a, spread=((0.0, 1.0), (1.0, 1.0)), **kw):
 HAIR_B2C = dict(
     kind="clumps", pole_guard=True, seed=11, step=0.0018, body_z=0.95, body_clear=0.005, skin_clear=0.0012, ring_jit=0.5, skin_floor=1.43,
     body=("Suit_Body", "Suit_Shoulder", "Suit_Collar*", "Suit_Sleeve", "Suit_Mesh_Blade", "Suit_Mesh_Shoulder"),
-    cap=dict(line=((0, 1.640), (40, 1.630), (60, 1.605), (80, 1.585), (95, 1.590), (115, 1.594), (128, 1.560), (145, 1.530), (180, 1.515)),
+    # the hairline down over the ear's top (B2a's stood 13-17 mm over it: bare skin between the locks read as a pointed elf ear)
+    cap=dict(line=((0, 1.640), (40, 1.630), (60, 1.600), (78, 1.578), (95, 1.574), (115, 1.574), (128, 1.556), (145, 1.530), (180, 1.515)),
              thick=(0.006, 0.012, 0.013), fade=0.006, under=0.009, res=0.0012, shade=0.6),
     # the outer silhouette (z, half-width, front, back from the head's axis), fuller than an ellipse (n) so the hair behind
     # the ears stands as wide as the front close-up draws it (the mean of her two sides: 111 mm at the eye line, 123 at the
     # chin) while the ears stay clear in profile; then onto the shoulders
     envelope=dict(n=3.0, rows=((1.700, 0.030, 0.030, 0.030), (1.660, 0.084, 0.092, 0.100), (1.620, 0.106, 0.100, 0.108),
-                               (1.600, 0.113, 0.104, 0.109), (1.5626, 0.120, 0.104, 0.109), (1.540, 0.124, 0.104, 0.109),
-                               (1.520, 0.128, 0.104, 0.108), (1.500, 0.130, 0.104, 0.107), (1.478, 0.132, 0.105, 0.107),
-                               (1.450, 0.133, 0.110, 0.107), (1.420, 0.140, 0.120, 0.114), (1.380, 0.148, 0.130, 0.120),
+                               (1.600, 0.117, 0.104, 0.109), (1.5626, 0.127, 0.104, 0.109), (1.540, 0.136, 0.104, 0.109),
+                               (1.520, 0.142, 0.104, 0.108), (1.500, 0.145, 0.104, 0.107), (1.478, 0.148, 0.105, 0.107),
+                               (1.450, 0.150, 0.110, 0.107), (1.420, 0.152, 0.120, 0.114), (1.380, 0.148, 0.130, 0.120),
                                (1.330, 0.146, 0.140, 0.126), (1.250, 0.120, 0.140, 0.130), (1.150, 0.080, 0.140, 0.130))),
     locks=(
         # the fringe, unmirrored, from her right to her left: the outer clumps over the brows' outer ends, a gap of forehead
@@ -1208,16 +1209,16 @@ HAIR_B2C = dict(
                        width=_taper(0.009, mid=0.8, end=0.45), thick=_thick(0.0025), curl=0.2, ring=[0.5, -0.5, 1.0])),
         # over the temples: from the part, over the temple and the ear's top, falling behind the ear: the silhouette at the
         # temples and the eye line in front
-        ("temple", dict(n=2, root=[(84, 18), (82, 32)], mid=[(44, 70), (38, 84)], leave=[(10, 118), (5, 126)],
+        ("temple", dict(n=2, root=[(84, 18), (82, 32)], mid=[(46, 74), (40, 88)], leave=[(16, 128), (12, 136)],
                         off=(0.001, 0.007), bulge=0.010, clear=0.004,
-                        fall=[_fall(1.36, 122, add=_FLARE, wave=(0.008, 0.8), z_jit=0.01), _fall(1.35, 130, add=_FLARE, wave=(0.008, 0.9), z_jit=0.01)],
+                        fall=[_fall(1.36, 130, add=_FLARE, wave=(0.008, 0.8), z_jit=0.01), _fall(1.35, 138, add=_FLARE, wave=(0.008, 0.9), z_jit=0.01)],
                         width=[_taper(0.036), _taper(0.036)], thick=_thick(0.006), curl=0.25, ring=[0.5, -1.0])),
         # the crown: from the part over the top and back, down behind the ears onto the shoulders
         ("crown", dict(n=4, root=[(86, 45), (85, 70), (84, 95), (83, 120)],
                        mid=[(52, 100), (50, 115), (48, 130), (46, 145)],
-                       leave=[(14, 122), (10, 132), (6, 142), (2, 152)],
+                       leave=[(14, 128), (10, 137), (6, 146), (2, 155)],
                        off=(0.001, 0.005), bulge=[0.008, 0.010, 0.007, 0.009], clear=0.004,
-                       fall=[_fall(1.35, 126, add=_FLARE, wave=(0.010, 0.8), z_jit=0.012), _fall(1.34, 136, add=_FLARE, wave=(0.010, 0.7), z_jit=0.012),
+                       fall=[_fall(1.35, 132, add=_FLARE, wave=(0.010, 0.8), z_jit=0.012), _fall(1.34, 141, add=_FLARE, wave=(0.010, 0.7), z_jit=0.012),
                              _fall(1.33, 146, add=_FLARE, wave=(0.010, 0.9), z_jit=0.012), _fall(1.32, 156, add=_FLARE, wave=(0.010, 0.8), z_jit=0.012)],
                        width=[_taper(0.038), _taper(0.038), _taper(0.038), _taper(0.036)],
                        thick=_thick(0.006), curl=0.25, ring=[0.0, 0.8, -0.5, 1.0])),
@@ -1238,9 +1239,9 @@ HAIR_B2C = dict(
                              ((0.0, 0.008), (0.15, 0.015), (0.45, 0.015), (0.70, 0.024), (0.90, 0.015), (0.975, 0.003), (1.0, 0.0004))],
                       thick=_thick(0.0045), curl=0.30, ring=[1.0, -1.0])),
         # under the outer layer, darker: fills between the neck and the outer hair, behind the ears
-        ("under", dict(n=3, root=[(40, 112), (35, 132), (30, 152)], leave=[(-12, 118), (-16, 136), (-20, 154)],
+        ("under", dict(n=3, root=[(40, 112), (35, 132), (30, 152)], leave=[(-12, 126), (-16, 140), (-20, 156)],
                        off=(-0.001, 0.0), clear=0.003, shade=1.0,
-                       fall=[_fall(1.36, 112, ((0.0, 0.3), (1.0, 0.6))), _fall(1.34, 132, ((0.0, 0.3), (1.0, 0.7))),
+                       fall=[_fall(1.36, 122, ((0.0, 0.3), (1.0, 0.6))), _fall(1.34, 132, ((0.0, 0.3), (1.0, 0.7))),
                              _fall(1.31, 152, ((0.0, 0.3), (1.0, 0.8)))],
                        width=_taper(0.040), thick=_thick(0.006), curl=0.2)),
         # loose thin strands framing the face
@@ -1272,7 +1273,7 @@ def head(name=None):
 FACE_SHOTS = dict(
     art=dict(front=dict(centre=(-0.0054, 1.5564), width=0.2601, side="front", ref="concept-face-front-v1.png"),
              profile=dict(centre=(-0.0382, 1.5499), width=0.2652, side="right", ref="concept-face-side-v1.png")),
-    turn=dict(azimuths=(0, 30, 60, 90, 135, 180), dist=1.15, lens=100.0, target=(0.0, -0.015, 1.560), elev=3.0, res=(720, 900)),
+    turn=dict(azimuths=(0, 30, 60, 90, 135, 180, 225), dist=1.15, lens=100.0, target=(0.0, -0.015, 1.560), elev=3.0, res=(720, 900)),
     close=dict(eyes=dict(cam=(0.0, -0.55, 1.565), target=(0.0, -0.08, 1.561), lens=135.0, res=(1200, 600)),
                eye_q=dict(cam=(0.30, -0.42, 1.570), target=(0.032, -0.075, 1.562), lens=135.0, res=(800, 600)),
                nose_mouth=dict(cam=(-0.08, -0.48, 1.53), target=(0.0, -0.09, 1.522), lens=135.0, res=(800, 600)),
