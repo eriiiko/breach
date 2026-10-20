@@ -370,6 +370,33 @@ def below_glow_field(heat_brightness: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(_box3(e), dtype=np.float32)
 
 
+def glow_below_fraction(heat_brightness: np.ndarray, body: np.ndarray
+                        ) -> np.ndarray:
+    """(H, W) float32 in [0, 1]: the share of each tile's heat glow that
+    lies BELOW the smoke (graphics G2) -- the part the smoke over it hides
+    (the heat layer's glow-through) and the part whose light must not light
+    the smoke's top (the relief's own-light cut).
+
+    A BODY tile (solid / thermal solid: a burning crate, a hot wall) glows
+    under the smoke, but the smoke over it is the gas of its neighbours, and
+    a hot smoke glows by itself -- an emitting slab is not hidden by its own
+    depth. So only the body's glow ABOVE the brightest gas glow around it is
+    below: ``f = 1 - max_gas_nb / bright`` on a body tile (a crate burning in
+    cool soot -> 1, hidden; one inside an equally hot cloud -> 0, no dark
+    hole). A gas tile's glow is the gas itself (0); whether hot gas should
+    glow at all is #95's question. Then dilated by one tile onto gas tiles:
+    the heat layer is bilinear, so a body's glow spills half a tile into
+    its neighbours and would otherwise escape as a bright frame."""
+    bright = np.clip(np.asarray(heat_brightness, dtype=np.float32), 0.0, 1.0)
+    b = np.asarray(body, dtype=bool)
+    gas = np.where(b, 0.0, bright).astype(np.float32)
+    nb = _window_max(_window_max(gas, 1, 1), 1, 0)
+    f = np.where(b & (bright > 1e-4),
+                 np.clip(1.0 - nb / np.maximum(bright, 1e-4), 0.0, 1.0), 0.0)
+    spill = _window_max(_window_max(f.astype(np.float32), 1, 1), 1, 0)
+    return np.ascontiguousarray(np.where(b, f, spill), dtype=np.float32)
+
+
 def boil_field(temperature_game: np.ndarray, t0: float, t1: float
                ) -> np.ndarray:
     """Per-tile BOIL weight in [0, 1] from the game temperature (ΔT above
@@ -810,6 +837,7 @@ __all__ = [
     "GROUPS", "ReliefSettings", "relief_settings", "group_members",
     "bulk_reflectance", "relief_group_layers", "top_light_field",
     "boil_field", "presence_mask", "clip_tile_rect", "pack_relief_dynamics",
-    "cast_uniforms", "below_glow_field", "glow_through_weights",
+    "cast_uniforms", "below_glow_field", "glow_below_fraction",
+    "glow_through_weights",
     "PRODUCT_PX_PER_TILE", "GasReliefPass",
 ]

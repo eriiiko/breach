@@ -265,16 +265,17 @@ void main() {
         finalColor = vec4(vec3(h / max(u_height, 1e-6)), 1.0); return;
     }
 
-    // --- the CAST PRODUCT (G2, doc §2.3): this pixel's extinction and
-    // height, from the SAME C and h the layer draw below composites (one
+    // --- the CAST PRODUCT (G2, doc §2.3): this pixel's occlusion alpha and
+    // height, the SAME C, h and alpha the layer draw below composites (one
     // smoke model), for the passes that receive the smoke's shadow (lighting.fs,
     // the lit3d seam) and the heat layer's glow-through. No lighting.
     if (u_mode == 1) {
-        // The shadow is EXTINCTION: light scattered out of a beam is gone
-        // from that beam too (a white cloud throws a shadow), so a steam
-        // column shades the floor although it barely absorbs.
+        // The alpha is the LAYER's own (the occlusion it composites): the
+        // heat layer's glow-through must hide a fire exactly as much as the
+        // drawn smoke hides the floor. (An extinction alpha, tried first,
+        // hid a burning crate under smoke that was not drawn there.)
         float Kp = u_haze + (1.0 - u_haze) * C;
-        float ap = clamp(1.0 - exp(-tau_ext * Kp), 0.0, 1.0);
+        float ap = clamp(1.0 - exp(-tau_abs * Kp), 0.0, 1.0);
         finalColor = (u_group == 1) ? vec4(ap, h, 0.0, 0.0)
                                     : vec4(0.0, 0.0, ap, h);
         return;

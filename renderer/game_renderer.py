@@ -949,15 +949,31 @@ class GameRenderer:
         rl.draw_texture_pro(field_tex, src, dst, rl.Vector2(0, 0), 0.0, rl.WHITE)
 
     def _heat_brightness(self, gmap) -> np.ndarray:
-        """Graphics G2: the legacy heat layer's per-tile display brightness
-        in [0, 1], from the layer's own pack (``pack_emissive_rgba``, without
+        """Graphics G2: how strongly each tile glows from BELOW the smoke,
+        in [0, 1]: the legacy heat layer's display brightness times the share
+        of it below the smoke (``gas_relief.glow_below_fraction``), from the
+        layer's own pack (``pack_emissive_rgba``, without
         the speckle mottle) on this tick's temperature -- packed here, not
         read from the overlay, so the relief's own-light cut neither lags a
         tick nor depends on the T toggle."""
         from .blackbody import pack_emissive_rgba
         ov = self.temperature_overlay
-        return (pack_emissive_rgba(ov.ramp, gmap.temperature, ov.max_alpha)
-                [..., 3].astype(np.float32) / float(max(ov.max_alpha, 1)))
+        from .gas_relief import glow_below_fraction
+        bright = (pack_emissive_rgba(ov.ramp, gmap.temperature, ov.max_alpha)
+                  [..., 3].astype(np.float32) / float(max(ov.max_alpha, 1)))
+        # Only the glow BELOW the smoke (a body's, beyond the hot gas
+        # around it; see glow_below_fraction) is hidden by the smoke and
+        # kept off its top; a hot gas tile's own light is the gas's (#95).
+        frac = glow_below_fraction(bright, self._body_mask(gmap))
+        ov.set_below_fraction(frac)
+        return bright * frac
+
+    @staticmethod
+    def _body_mask(gmap) -> np.ndarray:
+        """Graphics G2: BODY tiles (solid or thermal solid) -- what burns
+        or glows UNDER the smoke, as opposed to the gas it fills."""
+        return (np.asarray(gmap.solid, dtype=bool)
+                | np.asarray(gmap.thermal_solid, dtype=bool))
 
     def _smoke_cast_inputs(self, relief_on: bool):
         """Graphics G2: ``(product texture or None, grid, cast, cast2)`` --

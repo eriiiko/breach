@@ -110,3 +110,64 @@ def test_product_mode_writes_the_layers_own_coverage():
     body = m.group(1)
     assert "C;" in body and ", h," in body
     assert "vec4(ap, h, 0.0, 0.0)" in body and "vec4(0.0, 0.0, ap, h)" in body
+
+
+# --- fire glow-through (G2) ----------------------------------------------------
+
+def test_glow_below_is_only_a_bodys_glow_beyond_the_hot_gas_around_it():
+    """Property: the share of a tile's glow that lies BELOW the smoke is 0 on
+    a gas tile (a hot smoke glows by itself, #95's question is untouched),
+    1 on a body burning alone in cool gas, 0 on a body inside an equally hot
+    cloud (no dark hole where the crate was), and always in [0, 1]. Breaks
+    if the glow-through starts hiding hot gas under its own depth, or
+    punches holes into a glowing cloud."""
+    import numpy as np
+    body = np.zeros((7, 7), bool)
+    body[3, 3] = True
+    alone = np.zeros((7, 7), np.float32)
+    alone[3, 3] = 0.9
+    f = gr.glow_below_fraction(alone, body)
+    assert f[3, 3] == pytest.approx(1.0)
+    assert f.min() >= 0.0 and f.max() <= 1.0
+    cloud = np.full((7, 7), 0.9, np.float32)
+    assert gr.glow_below_fraction(cloud, body)[3, 3] == pytest.approx(0.0)
+    no_body = gr.glow_below_fraction(cloud, np.zeros((7, 7), bool))
+    assert np.all(no_body == 0.0)
+
+
+def test_glow_below_spills_onto_the_bodys_neighbours_only():
+    """Property: the below share reaches one tile past a glowing body (the
+    heat layer is bilinear, so the body's glow spills half a tile; without
+    it a hidden crate wore a bright frame) and no further. Breaks if the
+    spill is dropped or widened."""
+    import numpy as np
+    body = np.zeros((7, 7), bool)
+    body[3, 3] = True
+    bright = np.zeros((7, 7), np.float32)
+    bright[3, 3] = 0.8
+    f = gr.glow_below_fraction(bright, body)
+    assert f[3, 4] == pytest.approx(1.0) and f[2, 2] == pytest.approx(1.0)
+    assert f[3, 5] == 0.0 and f[0, 0] == 0.0
+
+
+def test_inactive_relief_lets_the_heat_glow_through_untouched():
+    """Property: with the relief off (or no product) the glow-through
+    weights are 0 -- the heat layer draws exactly as before G2. Breaks if a
+    stale product could hide fires while the relief is not drawn."""
+    s = _settings(glow_through_ceiling=1.0, glow_through_floor=0.5)
+    assert gr.glow_through_weights(s, active=False) == (0.0, 0.0)
+    assert gr.glow_through_weights(_settings(enabled=False), True) == (0.0, 0.0)
+    assert gr.glow_through_weights(s, active=True) == (1.0, 0.5)
+
+
+def test_glow_through_scales_only_the_heat_layers_weight():
+    """Property: the glow-through keeps the heat layer DISPLAY-SPACE (G0's
+    named exception until G3): its shader passes the layer's colour through
+    and scales only the additive weight (alpha), with no tone-map or
+    linearisation. Breaks if the layer is converted (G0 measured that
+    losing the fire's hue) or tone-mapped a second time."""
+    from renderer.overlays import glow_through_fs
+    src = glow_through_fs()
+    assert "finalColor = vec4(c.rgb, c.a *" in src
+    low = src.lower()
+    assert "aces" not in low and "pow(" not in low and "srgb" not in low

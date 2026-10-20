@@ -227,3 +227,28 @@ smoke = [[8, 16], [8, 19]]
 gas_amount = 0.003
 hide = ["heat"]
 note = "smoke_shadow_squad with THIN soot (1 % of a full puff, two puffs): the light sweep passes part of the flashlight through it in the plane, as it will through soot after #88, so the column's own cast shadow shows on the floor and on Alpha."
+
+[[shot]]
+name = "fire_thin_smoke"
+level = "smoke_light_studio"
+frames = 72
+center = [14.5, 28.0]
+zoom = 48.0
+lamps = true
+beacon = true
+light_gain = "game"
+smoke = [[10, 25], [19, 25], [10, 30], [19, 30]]
+gas_amount = 0.02
+note = "fire_plume with a THIN soot haze laid around both crates before tick 1 (2 % of a full puff): the fires should glow through it, mottled by its billows (G2 glow-through)."
+
+[[shot]]
+name = "fire_thick_smoke"
+level = "smoke_light_studio"
+frames = 72
+center = [14.5, 28.0]
+zoom = 48.0
+lamps = true
+beacon = true
+light_gain = "game"
+smoke = [[10, 25], [19, 25], [10, 30], [19, 30]]
+note = "fire_thin_smoke with FULL soot puffs: under a solid core the glow is hidden, at the ragged edges it leaks through."

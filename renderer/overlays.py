@@ -333,15 +333,23 @@ def glow_through_fs() -> str:
 in vec2 fragTexCoord;
 in vec4 fragColor;
 uniform sampler2D texture0;     // the heat layer (display hue + weight)
+uniform sampler2D u_below;      // R = the share of the glow that lies BELOW
+                                // the smoke (gas_relief.glow_below_fraction)
 uniform vec2 u_glow_through;    // (ceiling, floor): how much each hides it
 out vec4 finalColor;
 """ + _SMOKE_SHADOW_GLSL + """
 void main() {
     vec4 c = texture(texture0, fragTexCoord) * fragColor;
     vec4 cov = smokeCoverAt(fragTexCoord);
+    // Only the glow BELOW the smoke is hidden: a body's (a burning crate, a
+    // hot wall) beyond what the hot gas around it emits by itself. A hot GAS
+    // tile's glow is the gas itself -- an emitting slab is not hidden by its
+    // own depth -- and whether hot gas should glow at all is #95's question,
+    // so it draws as before.
+    float below = clamp(texture(u_below, fragTexCoord).r, 0.0, 1.0);
     float t = (1.0 - u_glow_through.x * clamp(cov.r, 0.0, 1.0))
             * (1.0 - u_glow_through.y * clamp(cov.b, 0.0, 1.0));
-    finalColor = vec4(c.rgb, c.a * t);
+    finalColor = vec4(c.rgb, c.a * mix(1.0, t, below));
 }
 """
 
@@ -387,6 +395,22 @@ class HeatFieldOverlay:
         self.tex = core.create_dynamic_rgba_texture(grid_w, grid_h)
         self.packed = np.zeros((grid_h, grid_w, 4), dtype=np.uint8)
         self._glow_shader = None          # G2 glow-through, built on first use
+        # G2: the share of each tile's glow lying BELOW the smoke
+        # (gas_relief.glow_below_fraction), R channel; set_below_fraction
+        self.body_tex = core.create_dynamic_rgba_texture(grid_w, grid_h)
+        rl.set_texture_filter(self.body_tex,
+                              rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
+        self._below_img = np.zeros((grid_h, grid_w, 4), dtype=np.uint8)
+        self._below_img[..., 3] = 255
+
+    def set_below_fraction(self, frac: np.ndarray) -> None:
+        """Graphics G2: per tile, the share of the glow that lies below the
+        smoke, which the glow-through dims (``gas_relief.
+        glow_below_fraction``). Uploaded every sim tick (48 x 32 bytes)."""
+        self._below_img[..., 0] = np.clip(
+            np.asarray(frac, dtype=np.float32) * 255.0 + 0.5, 0, 255
+        ).astype(np.uint8)
+        core.update_rgba_texture(self.body_tex, self._below_img)
 
     @property
     def brightness(self) -> np.ndarray:
@@ -437,6 +461,8 @@ class HeatFieldOverlay:
                                 rl.ShaderUniformDataType.SHADER_UNIFORM_VEC2)
             rl.set_shader_value_texture(
                 sh, rl.get_shader_location(sh, "u_smoke_cover"), smoke_cover)
+            rl.set_shader_value_texture(
+                sh, rl.get_shader_location(sh, "u_below"), self.body_tex)
         src = rl.Rectangle(0, 0, float(self.w), float(self.h))
         dst = rl.Rectangle(float(dst_x), float(dst_y), float(dst_w), float(dst_h))
         rl.draw_texture_pro(self.tex, src, dst, rl.Vector2(0, 0), 0.0, rl.WHITE)
@@ -451,6 +477,7 @@ class HeatFieldOverlay:
         return self._glow_shader
 
     def unload_shader(self) -> None:
+        rl.unload_texture(self.body_tex)
         if self._glow_shader is not None:
             rl.unload_shader(self._glow_shader)
             self._glow_shader = None
