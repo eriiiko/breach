@@ -48,6 +48,19 @@ PALETTE = dict(
     # rim, as drawn); B1i greyed the base (#26262c, rim #4a4a52) and the pads read as grey smoked-glass ovals
     PAD="#141418",           # the knee pads: the suit's black, a hair lifted
     PAD_RIM="#6c6c76",       # their piped rim, bright
+    # B2a, the face (sampled on `concept-face-front-v1.png`, then judged on the renders)
+    BLUSH="#e89a8e",         # the cheeks' blush, the nose tip's warmth
+    LIP="#e2a096",           # the lips, a soft rose
+    LIP_LINE="#b8706a",      # the mouth line, the nostrils
+    CREASE="#c99a8e",        # the lid crease
+    LASH="#2a1b19",          # the upper lash band
+    LASH_LOW="#9c6a60",      # the lower lash line, lighter
+    SCLERA_SHADE="#b9aeb0",  # the sclera under the upper lid's shadow
+    IRIS_DARK="#2c2a3c",     # the iris's top and rim
+    IRIS_GLOW="#9aa6c8",     # its lit lower part
+    PUPIL="#16141c",
+    HAIR="#241a19",          # dark brown
+    HAIR_LIGHT="#3e302d",    # its streaks
 )
 # B1m (the owner, 2026-10-19: "going very glossy is fine"): B1l's "wet" look is the default; B1b-B1l's satin is VARIANTS["satin"]
 GLOSS = dict(rough=0.20, coat=0.85, coat_rough=0.07, specular=0.55, piping=0.9,
@@ -996,6 +1009,122 @@ HEAD = dict(
     ),
     ear=dict(z=1.536, y=-0.004, h=0.048, w=0.026, tilt=14.0, flare=30.0, sink=0.002),
 )
+HEAD_PLACEHOLDER = HEAD
+
+# B2a, the face test: her real head, a stylised anime-style 3D face (`charkit/animehead.py`), at the A-pose drawings' size
+# (chin 1.476 to crown 1.680 = 204 mm, cranium 150 mm wide; PROVENANCE B2a step 1). Points are (y, z) for the profile's
+# front and back, (x, z) for the front view's side, in metres; they are hand-picked from the traced outlines: the cranium and
+# the back of the head from the bald A-pose drawings (`without_hair.png`, `without_hair_side.png`), the face below the brow
+# from the close-ups (`concept-face-front-v1.png` widths and eyes, `concept-face-side-v1.png` depths), both scaled so the
+# eye line (1.5626) to the chin (1.476) is the A-pose drawing's.
+FACE = dict(
+    egg=dict(
+        centre=(0.0, -0.005, 1.575),
+        front=((-0.005, 1.680), (-0.027, 1.6759), (-0.0528, 1.6665), (-0.0728, 1.6524), (-0.0857, 1.6383), (-0.0940, 1.6242),
+               (-0.0990, 1.6101), (-0.1010, 1.5960), (-0.1005, 1.5840), (-0.0975, 1.5720), (-0.0935, 1.5600), (-0.0910, 1.5480),
+               (-0.0905, 1.5380), (-0.0915, 1.5280), (-0.0925, 1.5190), (-0.0905, 1.5100), (-0.0880, 1.5020), (-0.0840, 1.4960),
+               (-0.0810, 1.4900), (-0.0795, 1.4840), (-0.0770, 1.4790), (-0.0700, 1.4762), (-0.0600, 1.4770), (-0.0480, 1.4810),
+               (-0.0380, 1.4870), (-0.0280, 1.4960), (-0.005, 1.505)),
+        back=((-0.005, 1.680), (0.0211, 1.6759), (0.0435, 1.6665), (0.0575, 1.6571), (0.0646, 1.6477), (0.0728, 1.6383),
+              (0.0763, 1.6289), (0.0810, 1.6195), (0.0830, 1.6050), (0.0830, 1.5920), (0.0815, 1.5780), (0.0775, 1.5660),
+              (0.0716, 1.5540), (0.0640, 1.5440), (0.0560, 1.5350), (0.0480, 1.5250), (0.0380, 1.5150), (0.0250, 1.5070),
+              (-0.005, 1.505)),
+        side=((0.0, 1.680), (0.0272, 1.6748), (0.0446, 1.6655), (0.0550, 1.6563), (0.0619, 1.6470), (0.0666, 1.6378),
+              (0.0700, 1.6285), (0.0723, 1.6192), (0.0740, 1.6100), (0.0750, 1.6007), (0.0745, 1.5900), (0.0730, 1.5800),
+              (0.0705, 1.5700), (0.0670, 1.5600), (0.0630, 1.5500), (0.0590, 1.5400), (0.0545, 1.5300), (0.0500, 1.5200),
+              (0.0450, 1.5120), (0.0380, 1.5040), (0.0280, 1.4970), (0.0, 1.505)),
+        # superellipse exponents round the head by elevation (deg): flat across the eyes, a V at the chin
+        n_front=((90, 2.0), (60, 2.2), (30, 2.4), (5, 2.6), (-10, 2.6), (-25, 2.3), (-40, 2.0), (-55, 1.8), (-70, 2.0), (-90, 2.0)),
+        n_back=((90, 2.0), (40, 2.2), (0, 2.3), (-40, 2.2), (-90, 2.0)),
+    ),
+    # the neck: the placeholder's rings inside the collar (it is fitted round them), slimmer above it as drawn
+    neck=((1.404, .012, .040, .044, .044, 2.0), (1.443, .010, .040, .042, .044, 2.0), (1.474, .010, .040, .040, .046, 2.0),
+          (1.482, .009, .0420, .0425, .0485, 2.05), (1.494, .008, .0378, .0365, .0460, 2.0), (1.510, .007, .0360, .0350, .0450, 2.0),
+          (1.540, .004, .0360, .0350, .0420, 2.0), (1.570, .000, .0340, .0340, .0400, 2.0)),
+    neck_k=0.010,
+    # Gaussian displacements (centre (x >= 0, mirrored), sigmas, height m): the socket, the brow, the cheeks, the chin
+    bumps=(((0.036, -0.088, 1.5625), (0.016, 0.012, 0.009), -0.0020),
+           ((0.030, -0.096, 1.5775), (0.018, 0.010, 0.0045), 0.0012),
+           ((0.044, -0.080, 1.5370), (0.014, 0.012, 0.011), 0.0020),
+           ((0.000, -0.080, 1.4870), (0.009, 0.008, 0.006), 0.0012),
+           ((0.000, -0.086, 1.4985), (0.010, 0.006, 0.0025), -0.0008)),
+    # the nose: small, slightly upturned; mostly its tip (front view: a highlight)
+    nose=dict(bridge=((0.0, -0.0870, 1.552), (0.0, -0.0955, 1.5395), 0.0018, 0.0030, 0.8),
+              tip=((0.0, -0.0995, 1.5360), (0.0036, 0.0045, 0.0040)),
+              column=((0.0, -0.0990, 1.5335), (0.0, -0.0925, 1.5220), 0.0026, 0.0032, 1.0),
+              alae=((0.0040, -0.0885, 1.5262), (0.0022, 0.0022, 0.0020)),
+              k_tip=0.003, k_col=0.0025, k_alae=0.003, k=0.0060),
+    mouth=dict(upper=((0.0, -0.0898, 1.5130), (0.0100, 0.0032, 0.0030)), lower=((0.0, -0.0852, 1.5040), (0.0082, 0.0030, 0.0028)),
+               k_between=0.001, k=0.0040, slot=((0.0, -0.0915, 1.5075), (0.0128, 0.0055, 0.00045)), slot_k=0.0006),
+    # painted on the skin (front-projected): blush (centre (x, z), sigmas), mouth line (z, half-width, height), lower lash
+    # line (x from, x to, below the lid, width), lid crease (x from, x to, above the lid, width), brow (x from, x to, z, arch,
+    # width), nostrils ((x, z), sigmas), the nose tip's highlight (z, sigmas)
+    paint=dict(blush=((0.044, 1.5445), (0.014, 0.0075)), mouth_line=(1.5075, 0.0125, 0.00045),
+               low_lash=(0.026, 0.0565, 0.0007, 0.00045), crease=(0.022, 0.050, 0.0030, 0.00035),
+               brow=(0.012, 0.052, 1.5795, 0.0025, 0.0022), nostril=(0.0040, 1.5240, (0.0012, 0.0007)),
+               nose_tip=(1.5370, (0.0030, 0.0030))),
+    # the ear (her left; mirrored) as a field (`animehead.Ear`): in the ear's own axes (up, back, out), metres; 47 mm high,
+    # 27 wide, its top level with the brow's foot and its lobe with the nose's base, as both close-ups draw it
+    ear=dict(centre=(0.066, 0.017, 1.553), tilt=12.0, flare=20.0, res=0.0004,
+             plates=(((0.005, 0.0, 0.002), (0.019, 0.0135, 0.0035)), ((-0.014, -0.002, 0.001), (0.009, 0.0085, 0.003))), plate_k=0.006,
+             cuts=(((0.003, 0.001, 0.0045), (0.0155, 0.0105, 0.0035), 0.0015), ((-0.004, -0.004, 0.003), (0.007, 0.006, 0.0035), 0.0015)),
+             adds=(((0.005, 0.003, 0.0015), (0.010, 0.0025, 0.002), 0.002), ((-0.004, -0.0125, 0.002), (0.004, 0.0025, 0.0025), 0.002))),
+)
+
+# The eyes (her left; mirrored), in the front view: the lid curves (x, z) traced on the close-up, the iris, the eye
+# surface's dome, the upper lash band.
+EYES = dict(
+    upper=((0.0166, 1.5587), (0.0201, 1.5651), (0.0232, 1.5682), (0.0280, 1.5703), (0.0336, 1.5711), (0.0409, 1.5711),
+           (0.0473, 1.5699), (0.0521, 1.5680), (0.0568, 1.5651), (0.0590, 1.5630)),
+    lower=((0.0166, 1.5587), (0.0225, 1.5554), (0.0297, 1.5531), (0.0361, 1.5526), (0.0440, 1.5535), (0.0504, 1.5554),
+           (0.0552, 1.5587), (0.0585, 1.5635)),
+    corner_k=0.0008, depth=0.005, depth_k=0.002, lid_k=0.0012,
+    dome=dict(centre=(0.037, 1.5618), axes=(0.021, 0.0095), inset=0.0012, curve=0.0025, thick=0.0008, margin=0.0018),
+    iris=dict(centre=(0.0334, 1.5622), radii=(0.0100, 0.0112), lid_shadow=0.006),
+    lash=dict(x=(0.0172, 0.0585), flick=(0.0645, 1.5685), width=((0.0, 0.0008), (0.3, 0.0020), (0.7, 0.0032), (0.88, 0.0030), (1.0, 0.0005)),
+              thick=0.0009, below=0.0009, out=0.0004),
+)
+
+# The hair BLOCKOUT (`charkit/animehair.py`): a cap over the skull and swept locks. Angles about the egg's centre: beta the
+# elevation, alpha the azimuth from the front (0) towards her left (90) and the back (180); every row mirrored. As drawn
+# (`concept-face-*`, `with_hair*.png`, `concept.jfif`): a straight fringe to the brows, parted at the centre, its middle
+# clumps dipping between the eyes; locks hanging in front of the ears (the ears showing behind them) down in front of the
+# shoulders; the mass behind falling down the back to a V at about 1.20 m (the drawings: 1.17-1.23).
+HAIR = dict(
+    seed=5, body_z=0.95, body=("Suit_Body", "Suit_Shoulder", "Suit_Collar*", "Suit_Sleeve", "Suit_Mesh_Blade", "Suit_Mesh_Shoulder"),
+    # the cap: hairline (alpha, z), thickness (front, crown, back), its fade, how deep it dives below the hairline
+    cap=dict(line=((0, 1.640), (40, 1.630), (60, 1.605), (80, 1.585), (95, 1.590), (115, 1.594), (128, 1.560), (145, 1.530), (180, 1.515)),
+             thick=(0.006, 0.012, 0.009), fade=0.006, under=0.009, res=0.0012),
+    locks=(
+        ("fringe", dict(n=6, b=(70.0,), a=(4.0, 50.0), ae=(3.0, 46.0), b_end=(-4.5, -2.0, 0.5, 1.5, 4.5, 9.0), off=0.0015, lift=0.004,
+                        width=((0.0, 0.020), (0.6, 0.017), (0.85, 0.011), (1.0, 0.0005)), thick=((0.0, 0.005), (0.7, 0.0042), (1.0, 0.0008)))),
+        ("crown", dict(n=5, b=(82.0,), a=(10.0, 150.0), ae=(70.0, 160.0), b_end=(30.0, 25.0, 20.0, 5.0, -10.0), off=0.0012,
+                       width=((0.0, 0.030), (0.7, 0.028), (1.0, 0.004)), thick=((0.0, 0.004), (1.0, 0.002)))),
+        ("side", dict(n=3, b=(55.0,), a=(50.0, 68.0), ae=(78.0, 88.0), b_end=(-14.0, -12.0, -10.0), off=0.0015, lift=0.003, hang=(0.25, 0.23, 0.20),
+                      leave=(0.15, -0.35, -0.6), clear=0.005, len_jit=0.06,
+                      width=((0.0, 0.026), (0.3, 0.025), (0.8, 0.015), (1.0, 0.0005)), thick=((0.0, 0.006), (0.5, 0.005), (1.0, 0.0010)))),
+        # behind the ears, brought forward over the shoulders (the concept: locks in front of both shoulders)
+        ("shoulder", dict(n=2, b=(60.0,), a=(96.0, 112.0), ae=(118.0, 126.0), b_end=(-14.0, -18.0), off=0.0015, hang=(0.24, 0.22),
+                          leave=(0.55, -0.9, -0.3), clear=0.006, len_jit=0.05,
+                          width=((0.0, 0.026), (0.4, 0.025), (0.85, 0.014), (1.0, 0.0006)), thick=((0.0, 0.006), (0.6, 0.005), (1.0, 0.0010)))),
+        # the mass behind: the outer locks leave the skull at its widest and fall over the shoulder blades, the middle ones
+        # from the nape to the V's point
+        ("back_outer", dict(n=4, b=(66.0,), a=(112.0, 140.0), ae=(128.0, 146.0), b_end=(-14.0, -18.0, -22.0, -26.0), off=0.0015,
+                            hang=(0.20, 0.23, 0.25, 0.27), leave=(0.45, 0.7, -0.3), clear=0.006, len_jit=0.04, jitter=1.0,
+                            width=((0.0, 0.030), (0.5, 0.028), (0.85, 0.016), (1.0, 0.0008)), thick=((0.0, 0.007), (0.6, 0.006), (1.0, 0.0012)))),
+        ("back", dict(n=5, b=(74.0,), a=(146.0, 177.0), ae=(150.0, 177.0), b_end=(-28.0, -32.0, -36.0, -38.0, -40.0), off=0.0015,
+                      hang=(0.27, 0.29, 0.30, 0.31, 0.32), leave=(0.15, 1.2, -0.3), clear=0.006, len_jit=0.03, jitter=1.0,
+                      width=((0.0, 0.030), (0.5, 0.028), (0.85, 0.016), (1.0, 0.0008)), thick=((0.0, 0.007), (0.6, 0.006), (1.0, 0.0012)))),
+    ),
+)
+
+# The head table the build reads: the anime head (FACE, EYES, HAIR), or the placeholder (`--head placeholder`)
+HEAD = dict(kind="anime", face=FACE, eyes=EYES, hair=HAIR)
+HEADS = dict(anime=HEAD, placeholder=HEAD_PLACEHOLDER)
+
+
+def head(name=None):
+    return HEADS[name] if name else HEAD
 
 # Beauty views: (rig azimuth, camera azimuth within the rig, elevation, distance, target height, lens mm, resolution)
 BEAUTY = {
@@ -1069,6 +1198,8 @@ POSE = dict(
                  leg_root=(-0.05, 0.05), leg_mid=(0.0, 0.05), knee=(-0.04, 0.04), ankle=(-0.025, 0.02)),
     # parts that turn whole, each side at the field's value at its centre
     rigid=("Suit_Knee_Pad", "Suit_Knee_Rim", "Suit_Zip_Pull*", "Suit_Zip_Stop*"),
+    # B2a: parts moving wholly with one bone -- the hair rigid with the head this round
+    attach={"Beatrice_Hair*": "head"},
     poses=dict(
         # concept.jfif: walking towards the camera, the weight on her RIGHT leg (its hip up and out, the pelvis shifted over it),
         # the left leg free (knee bent and forward, heel lifted), the shoulders tilted against the pelvis (the right one lower),
@@ -1103,5 +1234,11 @@ POSE = dict(
             ("HotKey", (-1.6, -2.2, 2.2), (0.0, 0.0, 1.2), (0.06, 0.9), 45.0, (1.0, 0.98, 0.95)),
             ("HotSide", (2.0, -1.2, 1.4), (0.0, 0.0, 1.1), (0.05, 1.0), 40.0, (0.95, 0.97, 1.0)),
             ("HotTop", (0.3, -1.5, 2.8), (0.0, 0.0, 1.3), (0.12, 0.12), 25.0, (1.0, 1.0, 1.0)))),
+        # B2a: a portrait light for the face pictures (`face_turn.jpg`): a big soft key above and to her right, a soft fill
+        # from her left, a narrow rim behind her left shoulder
+        portrait=dict(studio_scale=0.35, world_scale=0.8, areas=(
+            ("PortraitKey", (-0.95, -1.35, 2.15), (0.0, -0.03, 1.57), (0.9, 0.9), 22.0, (1.0, 0.97, 0.94)),
+            ("PortraitFill", (1.30, -1.10, 1.45), (0.0, -0.03, 1.57), (0.7, 0.7), 6.0, (0.95, 0.97, 1.0)),
+            ("PortraitRim", (0.75, 1.05, 1.95), (0.0, 0.0, 1.57), (0.25, 0.9), 40.0, (0.92, 0.96, 1.0)))),
     ),
 )

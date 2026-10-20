@@ -3587,9 +3587,18 @@ def build_fitted_cuffs(S, M, fh, coll="Suit"):
 
 
 # ------------------------------------------------------------------------- head
-def build_head(M, head_spec, prefix, coll="Head"):
-    """The bald placeholder head: `parts.head` with this figure's spec. Its own collection and
-    objects (`<prefix>_Head`, `_Eye_*`, `_Ear`), so a later stage can replace it whole."""
+def build_head(M, head_spec, prefix, coll="Head", palette=None):
+    """The head, in its own collection and objects. B2a: a spec with `kind` "anime" is the stylised head
+    (`charkit/animehead.py`: skin, eyes, lashes, ears; `charkit/animehair.py`: the hair blockout, falling onto the suit
+    built before it) with its own materials (`<prefix>_face`, `_eyes`, `_lash`, `_hair`); otherwise the bald placeholder
+    (`parts.head`: `<prefix>_Head`, `_Eye_*`, `_Ear`)."""
+    if head_spec.get("kind") == "anime":
+        import animehead
+        mats = animehead.materials(prefix.lower(), palette)
+        h = head_spec.get("res_draft", 0.0012) if kit.RES > 0.006 else head_spec.get("res", 0.0007)
+        head, _ = animehead.build(prefix, head_spec["face"], head_spec["eyes"], mats, coll, h=h, hair=head_spec.get("hair"),
+                                  scale=head_spec.get("scale", 1.0))
+        return head
     loft, _ = parts.head(prefix, head_spec, dict(skin=M["skin"], eye=M["eye"]), coll=coll)
     return loft
 
@@ -3613,7 +3622,7 @@ def build_bare_hands(F, M, coll="Hands"):
     return parts.bare_hand("Hand", w + L * h["drop"], L, Bv, M["skin"], coll, spec=spec, arm=arm)
 
 
-def build(M, dims, head_spec, prefix):
+def build(M, dims, head_spec, prefix, palette=None):
     S = Suit(dims)
     build_suit(S, M)
     fh = build_bare_hands(S.F, M)
@@ -3625,6 +3634,6 @@ def build(M, dims, head_spec, prefix):
         build_boots_implicit(S, M)
     else:
         build_boots(S, M)
-    build_head(M, head_spec, prefix)
+    build_head(M, head_spec, prefix, palette=palette)
     garment.close_holes([o for o in bpy.data.objects if o.name.startswith(("Suit_Zip_Stop", "Suit_Piping"))])
     return S

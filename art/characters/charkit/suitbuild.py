@@ -24,6 +24,7 @@ module and its `sheet_ref`, call `run(...)`:
     --scale S        beauty resolution scale (default 1.0)
     --samples N      Cycles samples (default 96, draft 24)
     --save           write source/<name>.blend and source/mesh_stats.json
+    --head NAME      a head (tables.head(NAME), B2a: `placeholder` the bald one); outputs get a NAME_ prefix
     --outline        slice the built body and print its outlines' worst direction change per cm, waist
                      to knee, per view (`hipsview.measure`; source/<prefix>outline.json)
     --hips           the hip pictures (hips.jpg, hips_vs_drawings.jpg, hips_before_after.jpg; needs
@@ -45,13 +46,15 @@ import sheetfit
 import studio
 
 
-def build(tables, shape, variant, draft, samples):
+def build(tables, shape, variant, draft, samples, head=None):
     bpy.ops.wm.read_factory_settings(use_empty=True)
     kit.RES = 0.008 if draft else 0.004
     # B1l: a variant may carry its own gloss (tables.gloss), else the table's GLOSS
     gl = tables.gloss(variant or None) if hasattr(tables, "gloss") else tables.GLOSS
     M = bodysuit.materials(tables.palette(variant or None), gl, tables.PREFIX)
-    bodysuit.build(M, tables.dims(shape or None), tables.HEAD, tables.PREFIX.capitalize())
+    # B2a: `--head NAME` picks a head (tables.head(name): the anime head by default, `placeholder` the bald one)
+    head_spec = tables.head(head or None) if hasattr(tables, "head") else tables.HEAD
+    bodysuit.build(M, tables.dims(shape or None), head_spec, tables.PREFIX.capitalize(), palette=tables.palette(variant or None))
     report = garment.orient_outward()
     rig, cam, floor = studio.setup(samples=samples or (24 if draft else 96), backdrop=studio.BACKDROP)
     return report, rig, cam, floor
@@ -172,13 +175,14 @@ def run(root, name, tables, sheet_ref):
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--outline", action="store_true")
     ap.add_argument("--hips", action="store_true")
+    ap.add_argument("--head", default="")
     args = ap.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else [])
 
     t0 = time.time()
     previews, source = os.path.join(root, "previews"), os.path.join(root, "source")
     os.makedirs(previews, exist_ok=True)
     os.makedirs(source, exist_ok=True)
-    prefix = (args.shape + "_" if args.shape else "") + (args.variant + "_" if args.variant else "")
+    prefix = (args.shape + "_" if args.shape else "") + (args.variant + "_" if args.variant else "") + (args.head + "_" if args.head else "")
 
     if args.hips:
         import hipsview
@@ -190,7 +194,7 @@ def run(root, name, tables, sheet_ref):
         print("done in %.1fs" % (time.time() - t0))
         return
 
-    report, rig, cam, floor = build(tables, args.shape, args.variant, args.draft, args.samples)
+    report, rig, cam, floor = build(tables, args.shape, args.variant, args.draft, args.samples, args.head)
     print("built in %.1fs" % (time.time() - t0))
     if args.outline:
         import hipsview

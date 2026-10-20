@@ -184,11 +184,15 @@ def _co(ob):
     return co.reshape(-1, 3)
 
 
-def deform(obs, sk, posed, W, rigid=()):
-    """Linear-blend skinning of every part (world-space vertices, see `freeze`)."""
+def deform(obs, sk, posed, W, rigid=(), attach=None):
+    """Linear-blend skinning of every part (world-space vertices, see `freeze`). `attach` = {pattern: bone}: parts that
+    move wholly with one bone (B2a: the hair with the head)."""
     for ob in obs:
         P = _co(ob)
-        if any(fnmatch.fnmatch(ob.name, pat) for pat in rigid):
+        bone = next((b for pat, b in (attach or {}).items() if fnmatch.fnmatch(ob.name, pat)), None)
+        if bone is not None:
+            w = {b: (np.ones(len(P)) if b == bone else np.zeros(len(P))) for b in sk.names}
+        elif any(fnmatch.fnmatch(ob.name, pat) for pat in rigid):
             # each side whole (a mirrored part is one object holding both), at the field's value at that side's centre
             w = {b: np.zeros(len(P)) for b in sk.names}
             for m in (P[:, 0] >= 0.0, P[:, 0] < 0.0):
@@ -323,7 +327,7 @@ def run(root, name, tables):
         P = T["poses"][pose_name]
         sk = Skeleton(T["joints"])
         posed = sk.pose(P["rot"], P.get("offset", (0.0, 0.0, 0.0)))
-        deform(obs, sk, posed, T["weights"], T.get("rigid", ()))
+        deform(obs, sk, posed, T["weights"], T.get("rigid", ()), T.get("attach"))
         dz = drop_to_floor(obs, P["stand"])
         print("posed '%s' in %.1fs (lowered %.1f mm; the free foot's sole %.1f mm above the floor)" % (
             pose_name, time.time() - t1, -dz * 1000, lowest(obs, P["free"]) * 1000))
