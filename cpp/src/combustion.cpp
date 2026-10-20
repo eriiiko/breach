@@ -174,7 +174,8 @@ void CombustionSolver::step(
         int32_t t_amb_q,              // T_AMB_K raw (born-at-ambient rule)
         const int32_t* fire_T_ext_plane,          // R3: PER-MATERIAL T_ext (nullable)
         const int32_t* fuel_per_o2_plane,         // R14: PER-MATERIAL fuel rate
-        const int32_t* atmosphere) const {        // #7: the pressure factor's input (nullable)
+        const int32_t* atmosphere,                // #7: the pressure factor's input (nullable)
+        int64_t* trace_mint, int64_t* trace_clip, int64_t* trace_neg) const {  // #88 P2
 
     if (h <= 0 || w <= 0 || dt <= 0.0f) return;
     if (o2_idx < 0 || o2_idx >= n_gases) return;
@@ -973,6 +974,9 @@ void CombustionSolver::step(
     // cell (see Pass B's split rule), and O2[s]/N2[s] hold exactly the values
     // the shipped in-line deposit read, so this pass is byte-identical there.
     // ======================================================================
+    // #88 P2: the soot mint's books, summed over the pass and handed out once
+    // at its end (the caller's pointers, if any).
+    int64_t soot_mint = 0, soot_clip = 0, soot_neg = 0;
     for (int y = 0; y < h; ++y) {
         const int row = y * w;
         for (int x = 0; x < w; ++x) {
@@ -1003,9 +1007,14 @@ void CombustionSolver::step(
             const q16 soot = narrow_round(mul_wide((q16)burn_dep, soot_yield_q));
             // #88: `soot` is a BULK-count mass (it leaves N2 and e_shed in bulk
             // counts, so the Dalton split and the energy books stay exact); it
-            // ENTERS the smoke plane in the trace currency. (P2 replaces this
-            // narrow with the counted saturation, trace_add_sat.)
-            SOOT[s] = (q16)((int64_t)SOOT[s] + fixedpoint::trace_from_bulk((int64_t)soot));
+            // ENTERS the smoke plane in the trace currency, booked at its
+            // ATTEMPTED amount in the mint book and narrowed by the counted
+            // saturation (P2), whose excess lands in the clip book.
+            {
+                const int64_t mint = fixedpoint::trace_from_bulk((int64_t)soot);
+                soot_mint += mint;
+                SOOT[s] = fixedpoint::trace_add_sat(SOOT[s], mint, &soot_clip, &soot_neg);
+            }
             N2[s]   += (q16)(burn_dep - (int64_t)soot);
 
             // ---- arc #54 P-G1b: THE PARCEL LANDS (design §2.7, R3-#8/#9) ---
@@ -1180,4 +1189,7 @@ void CombustionSolver::step(
             }
         }
     }
+    if (trace_mint != nullptr) *trace_mint += soot_mint;
+    if (trace_clip != nullptr) *trace_clip += soot_clip;
+    if (trace_neg != nullptr)  *trace_neg  += soot_neg;
 }

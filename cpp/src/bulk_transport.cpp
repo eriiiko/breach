@@ -304,7 +304,8 @@ void bulk_flux_energy_transport_cached(
         int64_t* e_pre, int64_t* n_pre, int64_t* dqsum_e, int64_t* dqsum_s,
         BulkEnergyCounters& cnt,
         const bool* is_ambient, const int32_t* n_amb, int64_t* boundary_flux,
-        int32_t* s_pre, int64_t* trace_vent, int64_t* trace_wipe) {
+        int32_t* s_pre, int64_t* trace_vent, int64_t* trace_wipe,
+        int64_t* trace_clip, int64_t* trace_neg) {
     const int n = h * w;
     if (n <= 0) return;
     const bool* ts = thermal_solid_ts;
@@ -469,7 +470,7 @@ void bulk_flux_energy_transport_cached(
             if (!trace_live[gi]) continue;
             int32_t* S = gas + (size_t)gi * (size_t)n;
             for (int i = 0; i < n; ++i) s_pre[i] = S[i];
-            int64_t vent = 0;
+            int64_t vent = 0, clip = 0, neg = 0;
             for (int y = 0; y < h; ++y) {
                 const int row = y * w;
                 for (int x = 0; x < w; ++x) {
@@ -536,14 +537,19 @@ void bulk_flux_energy_transport_cached(
                             if (!t_participates(i - w, solid, is_vacuum, is_ambient)) vent += phi;
                         }
                     }
-                    const int64_t s_new = s_own + ds;
-                    // §2.4: S >= 0 by construction; the int32 narrow is safe
-                    // while Σ_map S < 2^31 (asserted in the tail).
-                    assert(s_new >= 0 && s_new <= (int64_t)INT32_MAX);
-                    S[i] = (int32_t)s_new;
+                    // §2.4: S >= 0 by construction (the limiter bounds a
+                    // donor's Σ_f phi_f by S_pre). #88 P2: the int32 narrow is
+                    // the counted saturation, ONCE per cell on the NET (never
+                    // per face, A4): a receiver whose gathered inflow cannot
+                    // be represented stores TRACE_CELL_MAX and books the
+                    // excess; a negative net is counted (and asserted).
+                    assert(s_own + ds >= 0);
+                    S[i] = fixedpoint::trace_add_sat((int32_t)s_own, ds, &clip, &neg);
                 }
             }
             trace_vent[gi] += vent;
+            if (trace_clip != nullptr) trace_clip[gi] += clip;
+            if (trace_neg != nullptr)  trace_neg[gi]  += neg;
         }
     }
 
@@ -800,10 +806,11 @@ void trace_tail(
         decay[gi] += trace_decay_plane(S, n, trace_decay::frac_q(gas_decay[gi], dt));
 
 #ifndef NDEBUG
-        // §2.4: the int32 narrow is safe while Σ_map S < 2^31 per plane.
-        int64_t total = 0;
-        for (int i = 0; i < n; ++i) { assert(S[i] >= 0); total += S[i]; }
-        assert(total < ((int64_t)1 << 31));
+        // §2.4: the tail never makes a cell negative. (#88 P2: the old
+        // `Σ_map S < 2^31` assert is DELETED, not re-derived -- it is false in
+        // legal play at the fine currency; the counted saturation at every
+        // adding site is the argument for the int32 narrow now.)
+        for (int i = 0; i < n; ++i) { assert(S[i] >= 0); }
 #endif
     }
 }

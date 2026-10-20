@@ -1187,7 +1187,10 @@ PYBIND11_MODULE(breach_physics, m) {
              // #7 THE PRESSURE FACTOR: the materialized pressure plane (None ->
              // g == FP_ONE) + its two edges (Q16.16 atm; 0 / 0 == dormant).
              py::object atmosphere,
-             int32_t p_ext_q, int32_t p_full_q) -> py::tuple {
+             int32_t p_ext_q, int32_t p_full_q,
+             // #88 P2: the EOSSolver whose per-gas trace books the soot mint
+             // writes (the CPU CombustionSolver.step's `eos=` twin). OPTIONAL.
+             py::object eos) -> py::tuple {
               auto gv = gas.mutable_unchecked<3>();
               int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
               const int n_gases = static_cast<int>(gv.shape(0));
@@ -1261,6 +1264,14 @@ PYBIND11_MODULE(breach_physics, m) {
               }
               int64_t heat_floor_hits = 0, t_max_phys_hits = 0;
               int64_t e_deposit_drop_sum = 0;   // P-E2b
+              int64_t* t_mint = nullptr; int64_t* t_clip = nullptr; int64_t* t_neg = nullptr;
+              if (!eos.is_none() && black_smoke_idx >= 0 && black_smoke_idx < n_gases) {
+                  const EOSSolver& es = eos.cast<const EOSSolver&>();
+                  es.ensure_trace_books(n_gases);
+                  t_mint = &es.trace_mint_sum_[black_smoke_idx];
+                  t_clip = &es.trace_clip_sum_[black_smoke_idx];
+                  t_neg  = &es.trace_neg_hits_[black_smoke_idx];
+              }
               breach_cuda::combustion_step(
                   gas_ptr, n_gases, o2_idx, inert_n2_idx, black_smoke_idx,
                   temp, whp, f, fl, sol, vac, ign, h, w, dt, c_v, n_floor_heat,
@@ -1272,7 +1283,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   tsol, hshift, heat_ptr, H_BED_M, H_BED_SHIFT, dacc_ptr,
                   draw_r, perm_ptr, max_claimants,
                   fire_T_ext, fire_T_span, hotf_cap, tep, fpo,
-                  atm_ptr, p_ext_q, p_full_q);
+                  atm_ptr, p_ext_q, p_full_q, t_mint, t_clip, t_neg);
               return py::make_tuple(heat_floor_hits, t_max_phys_hits,
                                     e_deposit_drop_sum);
           },
@@ -1307,6 +1318,7 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("atmosphere") = py::none(),
           py::arg("p_ext_q") = 0,
           py::arg("p_full_q") = 0,
+          py::arg("eos") = py::none(),   // #88 P2: the soot mint's trace books
           "P6.9b isolated: run ONE GPU combustion step (the two-gather "
           "reformulation, continuous-O2 proportional demand) in place on the "
           "three gas planes + temperature + wall_hp (bit-identical to "
@@ -1873,6 +1885,17 @@ PYBIND11_MODULE(breach_physics, m) {
     m.attr("TRACE_FINE_BITS") = fixedpoint::TRACE_FINE_BITS;
     m.attr("TRACE_SHIFT") = fixedpoint::TRACE_SHIFT;
     m.attr("TRACE_CELL_MAX") = fixedpoint::TRACE_CELL_MAX;
+    m.def("fp_trace_add_sat",
+          [](int32_t s, int64_t add) {
+              int64_t clip = 0, neg = 0;
+              const int32_t stored = fixedpoint::trace_add_sat(s, add, &clip, &neg);
+              return py::make_tuple(stored, clip, neg);
+          },
+          py::arg("s"), py::arg("add"),
+          "fixed_point.h trace_add_sat (#88 P2): the counted int32 saturation, "
+          "from above only. Returns (stored, clip, neg_hits): a sum above "
+          "TRACE_CELL_MAX stores it and returns the excess as clip; a negative "
+          "sum is COUNTED (neg_hits = 1) and stored unclamped.");
     m.def("fp_quantize_trace",
           [](double v) { return fixedpoint::quantize_trace(v); },
           py::arg("v"),
@@ -3018,6 +3041,34 @@ PYBIND11_MODULE(breach_physics, m) {
             for (int64_t v : s.trace_decay_sum_) out.append(v);
             return out;
         })
+        // #88 P2 (design §5.1/§5.3): the counted saturation's books and the
+        // mint book, per gas, int64, in each plane's own currency, all >= 0.
+        // Their per-tick window is PhysicsRunner.step's (reset by
+        // reset_trace_sat_books at its head; W5/W3 write them before
+        // EOSSolver.step runs), so with the four books above and
+        // GameMap.trace_deposit_books / trace_clip_books:
+        //   Σ S(after) − Σ S(before) == mint + deposit − vent − wipe − sink
+        //                               − decay − clip    (− G6, unbooked)
+        .def("trace_clip_sum", [](const EOSSolver& s) {
+            py::list out;
+            for (int64_t v : s.trace_clip_sum_) out.append(v);
+            return out;
+        })
+        .def("trace_mint_sum", [](const EOSSolver& s) {
+            py::list out;
+            for (int64_t v : s.trace_mint_sum_) out.append(v);
+            return out;
+        })
+        .def("trace_neg_hits", [](const EOSSolver& s) {
+            py::list out;
+            for (int64_t v : s.trace_neg_hits_) out.append(v);
+            return out;
+        })
+        .def("reset_trace_sat_books", [](const EOSSolver& s, int n_gases) {
+            s.reset_trace_sat_books(n_gases);
+        }, py::arg("n_gases"),
+           "#88 P2: zero trace_clip_sum / trace_mint_sum / trace_neg_hits "
+           "(sized n_gases) -- PhysicsRunner's per-tick reset.")
         .def_readonly("digest_advect",      &EOSSolver::digest_advect)
         .def_readonly("digest_bulk_flux",   &EOSSolver::digest_bulk_flux)
         .def_readonly("digest_pstar",       &EOSSolver::digest_pstar)
@@ -3454,7 +3505,12 @@ PYBIND11_MODULE(breach_physics, m) {
                         // pressure plane `atmosphere` (Q16.16 atm). OPTIONAL —
                         // None -> nullptr -> g == FP_ONE, the pre-#7 law (the
                         // edges are the solver's own p_ext_q / p_full_q).
-                        py::object atmosphere) {
+                        py::object atmosphere,
+                        // #88 P2: the EOSSolver whose per-gas trace books the
+                        // soot mint writes (mint attempted, saturation clip,
+                        // negative hits, all at black_smoke_idx). OPTIONAL --
+                        // None -> unreported (the saturation still never wraps).
+                        py::object eos) {
             auto gv = gas.mutable_unchecked<3>();
             int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
             const int n_gases = static_cast<int>(gv.shape(0));
@@ -3541,11 +3597,20 @@ PYBIND11_MODULE(breach_physics, m) {
                 auto av = atm_arr.unchecked<2>();
                 atm_ptr = av.data(0, 0);
             }
+            int64_t* t_mint = nullptr; int64_t* t_clip = nullptr; int64_t* t_neg = nullptr;
+            if (!eos.is_none() && black_smoke_idx >= 0 && black_smoke_idx < n_gases) {
+                const EOSSolver& es = eos.cast<const EOSSolver&>();
+                es.ensure_trace_books(n_gases);
+                t_mint = &es.trace_mint_sum_[black_smoke_idx];
+                t_clip = &es.trace_clip_sum_[black_smoke_idx];
+                t_neg  = &es.trace_neg_hits_[black_smoke_idx];
+            }
             self.step(gas_ptr, n_gases, o2_idx, inert_n2_idx, black_smoke_idx,
                      temp, whp, f, fl, sol, vac, ign, h, w, dt, c_v, n_floor_heat,
                      tsol, hshift, heat_ptr, dacc_ptr,
                      draw_r, perm_ptr, max_claimants,
-                     gen_ptr, amb_ptr, t_amb_q, tep, fpo, atm_ptr);
+                     gen_ptr, amb_ptr, t_amb_q, tep, fpo, atm_ptr,
+                     t_mint, t_clip, t_neg);
         }, py::arg("gas"), py::arg("o2_idx"), py::arg("inert_n2_idx"),
            py::arg("black_smoke_idx"), py::arg("temperature"), py::arg("wall_hp"),
            py::arg("fire"), py::arg("flammable"), py::arg("solid"),
@@ -3563,7 +3628,8 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("t_amb_q") = 0,               // arc #54 T_AMB_K raw
            py::arg("fire_T_ext_plane") = py::none(),   // R3 per-material T_ext
            py::arg("fuel_per_o2_plane") = py::none(),  // R14 per-material fuel
-           py::arg("atmosphere") = py::none());        // #7 pressure factor input
+           py::arg("atmosphere") = py::none(),         // #7 pressure factor input
+           py::arg("eos") = py::none());               // #88 P2 trace mint books
 
     // --- WaterSolver (pipe model: damped velocity + donor-cell upwind flux;
     //     engine/07 §2, water_implementation_plan Step W1) ---

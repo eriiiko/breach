@@ -74,6 +74,9 @@ inline void cuda_check(cudaError_t e, const char* what) {
 long long g_eos_resident_calls = 0;
 
 constexpr int MG_MAX_LEVELS_RES = 9;   // == eos_solver.cpp's level-count cap
+// #88 P2: the resident trace book block is 4 (n_gases)-wide blocks: vent, wipe,
+// clip, neg hits (the last two APPENDED; see EOSResidentScratch::tcnt).
+constexpr int RESIDENT_TRACE_CNT_BLOCKS = 4;
 
 // ---- solid-mirror neighbor read (eos_solver.cpp mirror_idx, verbatim) -------
 __device__ __forceinline__ int mirror_idx_dev_r(
@@ -588,7 +591,11 @@ struct EOSResidentScratch {
     // snapshot (one plane, reused plane by plane — the chained path's d_spre);
     // `tcnt` the (2·n_gases) unsigned-long-long book block indexed by the
     // trace's position k in the per-tick trace list: [0, n_gases) vent,
-    // [n_gases, 2·n_gases) wipe. Zeroed every tick (the PER-TICK ZERO RULE).
+    // [n_gases, 2·n_gases) wipe; #88 P2 APPENDS (never inserts) [2·n_gases,
+    // 3·n_gases) stage 3b's saturation CLIP and [3·n_gases, 4·n_gases) its
+    // NEGATIVE-net hits, both >= 0 (RESIDENT_TRACE_CNT_BLOCKS blocks). Zeroed
+    // every tick (the PER-TICK ZERO RULE); the clip/neg slots are ADDED to the
+    // solver's books at D2H (their per-tick reset is PhysicsRunner's).
     int32_t* spre = nullptr;
     unsigned long long* tcnt = nullptr;
     // MG hierarchy
@@ -666,7 +673,8 @@ struct EOSResidentScratch {
         // Smoke transport v2 (#12, P2b): the trace S_pre snapshot + book block.
         a32(&spre, n, "res malloc spre");
         if (NG > 0)
-            cuda_check(cudaMalloc(&tcnt, (size_t)2 * NG * 8), "res malloc tcnt");
+            cuda_check(cudaMalloc(&tcnt, (size_t)RESIDENT_TRACE_CNT_BLOCKS * NG * 8),
+                       "res malloc tcnt");
         int lh = H, lw = W;
         for (int l = 0; l < NL; ++l) {
             DevLevel& L = lv[l];
@@ -808,7 +816,9 @@ void eos_step_resident(
     }
     const int n_trace = (int)trace_gi.size();
     if (n_trace > 0)
-        cuda_check(cudaMemset(S.tcnt, 0, (size_t)2 * n_gases * 8), "memset tcnt");
+        cuda_check(cudaMemset(S.tcnt, 0,
+                              (size_t)RESIDENT_TRACE_CNT_BLOCKS * n_gases * 8),
+                   "memset tcnt");
 
     // ---- step 0 on device: P_prev := P (D2D — same bytes the host copy
     //      just wrote to the mirror wave_p). ------------------------------
@@ -857,7 +867,9 @@ void eos_step_resident(
             // vent -> boundary_flux_'s trace slots, wipe -> trace_wipe_sum_.
             n_trace ? trace_planes.data() : nullptr, n_trace, S.spre,
             n_trace ? S.tcnt : nullptr,
-            n_trace ? S.tcnt + n_gases : nullptr);
+            n_trace ? S.tcnt + n_gases : nullptr,
+            n_trace ? S.tcnt + 2 * n_gases : nullptr,    // #88 P2 clip
+            n_trace ? S.tcnt + 3 * n_gases : nullptr);   // #88 P2 neg hits
     }
 
     // ---- DEVICE MID-STAGE: div(u*), Dalton N, p* (per-cell, verbatim). ---
@@ -935,12 +947,14 @@ void eos_step_resident(
     // sums. The once-per-tick resident trace tail (trace_tail_resident) then
     // ADDS its vent / sink / decay on top, exactly as the CPU tail does.
     if (n_trace > 0) {
-        std::vector<unsigned long long> tc((size_t)2 * n_gases, 0);
+        std::vector<unsigned long long> tc((size_t)RESIDENT_TRACE_CNT_BLOCKS * n_gases, 0);
         cuda_check(cudaMemcpy(tc.data(), S.tcnt, tc.size() * 8,
                               cudaMemcpyDeviceToHost), "D2H trace counters");
         for (int k = 0; k < n_trace; ++k) {
             solver.boundary_flux_[trace_gi[k]]  = (int64_t)tc[k];
             solver.trace_wipe_sum_[trace_gi[k]] = (int64_t)tc[n_gases + k];
+            solver.trace_clip_sum_[trace_gi[k]] += (int64_t)tc[2 * n_gases + k];
+            solver.trace_neg_hits_[trace_gi[k]] += (int64_t)tc[3 * n_gases + k];
         }
     }
     if (use_rail) {

@@ -153,6 +153,10 @@ void bulk_flux_plane_device(
 // d_tvent/d_twipe: n_trace unsigned-long-long device slots EACH, ACCUMULATED
 //                  into (caller memsets per tick): vent = what a donor prices
 //                  onto a vacuum / ring receiver, wipe = the N_EPS wipe.
+// d_tclip/d_tneg: #88 P2, n_trace slots EACH, ACCUMULATED like the two above:
+//                  stage 3b's counted saturation (fixedpoint::trace_add_sat,
+//                  once per cell on the net) -- the excess it could not store,
+//                  and the cells whose net went negative. Both >= 0.
 // n_trace == 0 (or any nullptr) -> the trace stages do not run. The chained
 // path hands its LIVE planes (host scan); the RESIDENT path (P2b) hands EVERY
 // trace plane of its resident gas block (no host scan, RL habits §A).
@@ -180,7 +184,9 @@ void bulk_flux_energy_transport_device(
     int32_t* const* d_trace_planes = nullptr, int n_trace = 0,
     int32_t* d_spre = nullptr,
     unsigned long long* d_tvent = nullptr,
-    unsigned long long* d_twipe = nullptr);
+    unsigned long long* d_twipe = nullptr,
+    unsigned long long* d_tclip = nullptr,
+    unsigned long long* d_tneg = nullptr);
 
 // Backend selection (P6.1 gate). EOS P6.5: now CONSUMED by the engine
 // dispatch — PhysicsEngine::run_substeps routes eos.step to the GPU

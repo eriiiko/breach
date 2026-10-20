@@ -495,6 +495,7 @@ __global__ void combustion_pass_c(
         const int32_t* __restrict__ dep_site,
         int* __restrict__ d_heat_floor_hits, int* __restrict__ d_t_max_phys_hits,
         unsigned long long* __restrict__ d_dep_drop,
+        unsigned long long* __restrict__ d_tsoot,   // #88 P2: [mint, clip, neg]
         int h, int w, int32_t soot_yield_q,
         int32_t H_fuel_m_q, int H_fuel_shift,   // T5a: the SPLIT gas-side yield
         int64_t recip_cv,
@@ -517,8 +518,17 @@ __global__ void combustion_pass_c(
 
         const q16 soot = narrow_round(mul_wide((q16)burn_dep, soot_yield_q));
         // #88: a bulk-count mass entering the smoke plane in the trace currency
-        // (the CPU twin's line; P2 replaces the narrow with trace_add_sat).
-        SOOT[s] = (q16)((int64_t)SOOT[s] + fixedpoint::trace_from_bulk((int64_t)soot));
+        // (the CPU twin's lines): the ATTEMPTED mint booked, then the counted
+        // saturation, its excess and any negative hit booked (all >= 0, so
+        // the unsigned-long-long atomicAdd is the plain, order-free sum).
+        {
+            const int64_t mint = fixedpoint::trace_from_bulk((int64_t)soot);
+            int64_t c = 0, ng = 0;
+            SOOT[s] = fixedpoint::trace_add_sat(SOOT[s], mint, &c, &ng);
+            if (mint != 0) atomicAdd(&d_tsoot[0], (unsigned long long)mint);
+            if (c != 0)    atomicAdd(&d_tsoot[1], (unsigned long long)c);
+            if (ng != 0)   atomicAdd(&d_tsoot[2], (unsigned long long)ng);
+        }
         N2[s]   += (q16)(burn_dep - (int64_t)soot);
 
         // ONE aggregate heat deposit against the POST-burn N_total (delta delta).
@@ -604,7 +614,8 @@ void combustion_step(
         const int32_t* fire_T_ext_plane,
         const int32_t* fuel_per_o2_plane,
         const int32_t* atmosphere,              // #7: pressure factor input (nullable)
-        int32_t p_ext_q, int32_t p_full_q) {    // #7: its edges, Q16.16 atm
+        int32_t p_ext_q, int32_t p_full_q,      // #7: its edges, Q16.16 atm
+        int64_t* trace_mint, int64_t* trace_clip, int64_t* trace_neg) {   // #88 P2
 
     // --- Guards + load-time scalar precompute (VERBATIM of combustion.cpp:65-91,
     //     in double). A guarded early-return leaves ALL fields untouched (no
@@ -699,6 +710,7 @@ void combustion_step(
     // safe in int32; this is a VALUE sum and needs the wider type, the
     // cuda_temperature.cu `d_cnt` idiom).
     unsigned long long* d_dep_drop = nullptr;
+    unsigned long long* d_tsoot = nullptr;   // #88 P2: [mint, clip, neg], APPENDED
 
     cuda_check(cudaMalloc(&d_O2, nb), "malloc O2");
     cuda_check(cudaMalloc(&d_N2, nb), "malloc N2");
@@ -714,6 +726,7 @@ void combustion_step(
     cuda_check(cudaMalloc(&d_vac, nbool), "malloc is_vacuum");
     cuda_check(cudaMalloc(&d_counters, 2 * sizeof(int)), "malloc counters");
     cuda_check(cudaMalloc(&d_dep_drop, sizeof(unsigned long long)), "malloc dep_drop");
+    cuda_check(cudaMalloc(&d_tsoot, 3 * sizeof(unsigned long long)), "malloc tsoot");
 
     cuda_check(cudaMemcpy(d_O2, O2_h, nb, cudaMemcpyHostToDevice), "H2D O2");
     cuda_check(cudaMemcpy(d_N2, N2_h, nb, cudaMemcpyHostToDevice), "H2D N2");
@@ -819,6 +832,7 @@ void combustion_step(
     cuda_check(cudaMemset(d_dep, 0, (size_t)5 * nb), "memset dep_site");
     cuda_check(cudaMemset(d_counters, 0, 2 * sizeof(int)), "memset counters");
     cuda_check(cudaMemset(d_dep_drop, 0, sizeof(unsigned long long)), "memset dep_drop");
+    cuda_check(cudaMemset(d_tsoot, 0, 3 * sizeof(unsigned long long)), "memset tsoot");
 
     const int block = 256;
     const int grid = (n + block - 1) / block;
@@ -880,7 +894,7 @@ void combustion_step(
     // debit is settled before Pass C reads O2 for the gas divisor).
     combustion_pass_c<<<grid, block>>>(
         d_O2, d_N2, d_SOOT, d_temp, d_solid, d_vac, d_dep,
-        d_counters + 0, d_counters + 1, d_dep_drop,
+        d_counters + 0, d_counters + 1, d_dep_drop, d_tsoot,
         h, w, soot_yield_q, H_fuel_m_q, H_fuel_shift, recip_cv,
         n_floor_q, t_max_phys_q,
         d_tsol, d_shift);
@@ -907,6 +921,12 @@ void combustion_step(
     cuda_check(cudaMemcpy(&dep_drop, d_dep_drop, sizeof(unsigned long long),
                           cudaMemcpyDeviceToHost), "D2H dep_drop");
     if (e_deposit_drop_sum) *e_deposit_drop_sum += (int64_t)dep_drop;
+    unsigned long long tsoot[3] = {0, 0, 0};
+    cuda_check(cudaMemcpy(tsoot, d_tsoot, sizeof(tsoot), cudaMemcpyDeviceToHost),
+               "D2H tsoot");
+    if (trace_mint) *trace_mint += (int64_t)tsoot[0];
+    if (trace_clip) *trace_clip += (int64_t)tsoot[1];
+    if (trace_neg)  *trace_neg  += (int64_t)tsoot[2];
 
     cudaFree(d_O2);
     cudaFree(d_N2);
@@ -922,6 +942,7 @@ void combustion_step(
     cudaFree(d_vac);
     cudaFree(d_counters);
     cudaFree(d_dep_drop);
+    cudaFree(d_tsoot);
     if (d_tsol)  cudaFree(d_tsol);
     if (d_shift) cudaFree(d_shift);
     if (d_heat)  cudaFree(d_heat);

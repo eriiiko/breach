@@ -259,7 +259,14 @@ void bulk_flux_energy_transport_cached(
     // smoke transport v2 (#12) stages 3b/3c — see the block above.
     int32_t* s_pre = nullptr,
     int64_t* trace_vent = nullptr,
-    int64_t* trace_wipe = nullptr);
+    int64_t* trace_wipe = nullptr,
+    // #88 P2: stage 3b's counted int32 saturation (fixedpoint::trace_add_sat,
+    // applied ONCE per cell on the net `s_own + ds`): the excess it could not
+    // store, and the cells whose net went negative (counted, never clamped).
+    // (n_gases,) int64, ACCUMULATED. nullptr -> a local book (the excess is
+    // still never wrapped; it is only unreported, for a direct caller).
+    int64_t* trace_clip = nullptr,
+    int64_t* trace_neg = nullptr);
 
 // ===========================================================================
 // SMOKE TRANSPORT v2 (#12, design §2.2-§2.4): THE ONCE-PER-TICK TRACE TAIL.

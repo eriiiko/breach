@@ -355,6 +355,8 @@ void EOSSolver::step(
     std::fill(trace_wipe_sum_.begin(), trace_wipe_sum_.end(), (int64_t)0);
     std::fill(trace_sink_sum_.begin(), trace_sink_sum_.end(), (int64_t)0);
     std::fill(trace_decay_sum_.begin(), trace_decay_sum_.end(), (int64_t)0);
+    // #88 P2: trace_clip_sum_ / trace_mint_sum_ / trace_neg_hits_ are NOT
+    // reset here (reset_trace_sat_books, at the head of PhysicsRunner.step).
 
     // P-E0 (energy-books design §2.5): the law-independent bracket sum
     // S = Σ n_bulk·T over the step-4c skip-set complement (!solid, !ts,
@@ -864,7 +866,11 @@ void EOSSolver::step(
                 boundary_flux_.data(),
                 // smoke transport v2 (#12) stages 3b/3c: the trace rides
                 // these very faces; vent into the rail, wipe beside it.
-                s_pre_.data(), boundary_flux_.data(), trace_wipe_sum_.data());
+                s_pre_.data(), boundary_flux_.data(), trace_wipe_sum_.data(),
+                // #88 P2: the counted saturation's books (ACCUMULATED; their
+                // per-tick reset is PhysicsRunner's, not this step's -- the
+                // W5/W3 sites write them before step() runs).
+                trace_clip_sum_.data(), trace_neg_hits_.data());
             e_ts_residual     += ec.e_ts_residual;
             e_wipe_sum        += ec.e_wipe_sum;
             e_floor_sum       += ec.e_floor_sum;

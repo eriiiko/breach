@@ -998,6 +998,11 @@ void PhysicsEngine::step_water_tail(
     // to the ONE canonical form the rest of the arc uses.
     const bool energy_mode = (gas_energy != nullptr && gas_conservative != nullptr);
     e_water_evac_export_sum = 0;
+    // #88 P2: the W5 puff and the W3 receiver add write the EOS's per-gas
+    // trace books (mint, clip, neg) -- this runs BEFORE EOSSolver::step, which
+    // is why those books are reset at the head of PhysicsRunner.step and never
+    // at step() entry.
+    this->eos.ensure_trace_books(n_gases);
     const auto evac_accountable = [&](int i) -> bool {
         return !solid[i]
             && !(thermal_solid != nullptr && thermal_solid[i])
@@ -1042,10 +1047,14 @@ void PhysicsEngine::step_water_tail(
                 water_depth[i] -= boiled_q;                    // exact (>=0 by min)
                 const float boiled_m = (float)((double)boiled_q / Q);  // DEQUANTIZE
                 // #88: the puff is a TRACE amount -- quantized at the trace
-                // currency, int64, never narrowed before the add (A3; P2
-                // replaces this narrow with the counted saturation).
+                // currency, int64, never narrowed before the add (A3). P2:
+                // booked at its ATTEMPTED amount in the mint book, then the
+                // counted saturation narrows it, its excess in the clip book.
                 const int64_t puff_q = fixedpoint::quantize_trace((double)(steam_yield_f * boiled_m));
-                gas_slice[i] = (int32_t)((int64_t)gas_slice[i] + puff_q);   // steam puff
+                this->eos.trace_mint_sum_[steam_idx] += puff_q;
+                gas_slice[i] = fixedpoint::trace_add_sat(              // steam puff
+                    gas_slice[i], puff_q, &this->eos.trace_clip_sum_[steam_idx],
+                    &this->eos.trace_neg_hits_[steam_idx]);
             }
         }
     }
@@ -1130,7 +1139,17 @@ void PhysicsEngine::step_water_tail(
                             const q16 share = (k == cnt - 1)
                                 ? (q16)(evac - distributed)   // remainder -> exact conservation
                                 : mul_q16(evac, quantize((double)(wts[k] / wsum)));
-                            plane[nbs[k]] += share;
+                            if (gas_conservative != nullptr && !gas_conservative[gi]) {
+                                // #88 P2: a TRACE receiver takes the counted
+                                // saturation; the donor still loses the whole
+                                // share, so what cannot land is the clip book's.
+                                plane[nbs[k]] = fixedpoint::trace_add_sat(
+                                    plane[nbs[k]], (int64_t)share,
+                                    &this->eos.trace_clip_sum_[gi],
+                                    &this->eos.trace_neg_hits_[gi]);
+                            } else {
+                                plane[nbs[k]] += share;
+                            }
                             distributed += share;
                             if (carries && share != 0) {
                                 // MOVED mass carries its source's T_abs.

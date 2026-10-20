@@ -35,6 +35,7 @@
 // All helpers are header-only inline / constexpr so they fold into the /fp:strict
 // water TU with zero call overhead and no float (these are pure integer ops).
 
+#include <cassert>
 #include <cstdint>
 
 // ---- host/device portability (CUDA-S0) -------------------------------------
@@ -498,6 +499,43 @@ FP_HD inline int64_t trace_from_bulk(int64_t q) {
 // negative density to 0), so the arithmetic shift is an exact floor.
 FP_HD inline int64_t trace_density_shr(int64_t s) {
     return s >> TRACE_SHIFT;
+}
+
+// THE COUNTED int32 SATURATION (#88 P2, design §5.3; critique A3/A4/B1/C7).
+// `t = s + add` exactly in int64. The int32 trace plane can hold at most
+// TRACE_CELL_MAX: an addition that cannot be represented stores TRACE_CELL_MAX
+// and adds the excess `t − TRACE_CELL_MAX` to `*clip` -- booked, never wrapped,
+// never raised. It saturates FROM ABOVE ONLY, so it never cuts trace already on
+// the cell (`min(s + add, MAX) >= s` for `s <= MAX`): D1's option (b) at the
+// representability limit, not a density ceiling.
+//
+// A NEGATIVE `t` is a contract violation, never clamped (clamping would mint
+// unbooked mass, A4): with `neg_hits` given it is COUNTED (the CUDA idiom, and
+// the CPU 3b mirrors it so the two backends book the same counter); without it
+// the host asserts. The stored value is then `t` itself, unclamped (narrowed at
+// INT32_MIN only to keep the conversion defined), so the violation stays
+// visible on the plane. Every site applies this ONCE per cell on its net
+// change (stage 3b: `s_own + ds`, never per face). Pure integer, FP_HD: the
+// same bits on CPU and device; each caller owns its cell, so it is order-free.
+// `clip` must be non-null (a site with no book passes a local).
+FP_HD inline int32_t trace_add_sat(int32_t s, int64_t add, int64_t* clip,
+                                   int64_t* neg_hits = nullptr) {
+    const int64_t t = (int64_t)s + add;
+    if (t > (int64_t)TRACE_CELL_MAX) {
+        *clip += t - (int64_t)TRACE_CELL_MAX;
+        return TRACE_CELL_MAX;
+    }
+    if (t < 0) {
+        if (neg_hits != nullptr) {
+            *neg_hits += 1;
+        } else {
+#if !defined(__CUDA_ARCH__)
+            assert(t >= 0 && "trace_add_sat: negative trace (contract violation)");
+#endif
+        }
+        return (t < (int64_t)INT32_MIN) ? INT32_MIN : (int32_t)t;
+    }
+    return (int32_t)t;
 }
 
 // A real trace density -> the trace currency, round-half-away-from-zero (the
