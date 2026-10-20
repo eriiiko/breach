@@ -1122,10 +1122,14 @@ HAIR = dict(
     ),
 )
 
-# The head table the build reads: the anime head (FACE, EYES, HAIR), or the placeholder (`--head placeholder`)
-HEAD = dict(kind="anime", face=FACE, eyes=EYES, hair=HAIR)
-# `concept`: the head at the original concept's ratio to the body (x 1.20, PROVENANCE B2a step 1), for the owner to compare
-HEADS = dict(anime=HEAD, placeholder=HEAD_PLACEHOLDER, concept=dict(HEAD, scale=1.20))
+# The head table the build reads: the anime head (FACE, EYES, HAIR) at the concept's ratio, or a named variant (`--head NAME`).
+# B2b (the owner, 2026-10-20): the x 1.20 head (the original concept's ratio to the body, PROVENANCE B2a step 1) is the
+# default, scaled about the chin's height on the neck's axis (`animehead.Head`'s pivot, the neck left in the collar); `apose` is
+# B2a's head at the A-pose drawings' size (chin to crown 204 mm); `placeholder` the bald one of B1a-B1n
+HEAD_SCALE = 1.20
+HEAD_APOSE = dict(kind="anime", face=FACE, eyes=EYES, hair=HAIR)
+HEAD = dict(HEAD_APOSE, scale=HEAD_SCALE)
+HEADS = dict(anime=HEAD, concept=HEAD, apose=HEAD_APOSE, placeholder=HEAD_PLACEHOLDER)
 
 
 def head(name=None):
