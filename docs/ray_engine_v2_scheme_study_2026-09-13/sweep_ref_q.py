@@ -31,6 +31,10 @@ WHAT TRANSCRIBES WHAT
                         ceiling
   gas_extinction_q   <- design v3 section 6.3 (P5a): the density law and the
                         N_EPS floor -- smoke's heat extinction on a GAS cell
+  TRACE_FINE_BITS /  <- cpp/src/fixed_point.h (#88): the TRACE planes'
+  trace_density_shr     currency, 2^(16+TRACE_FINE_BITS) counts per real unit,
+                        and the ONE shift that turns a density sum over them
+                        (coefficients Q16 per real unit) into a Q16 fraction
   reciprocal_q16     <- cpp/src/fixed_point.h reciprocal_q16 (4 Newton trips)
   make_recip         <- cpp/src/fixed_point.h make_recip (one double divide)
   deposit_dT_wide_i64 <- cpp/src/fixed_point.h, the STAGED wide chain (2.8)
@@ -82,8 +86,10 @@ SMOKE ABSORBS HEAT -- THE MECHANISM, DORMANT (P5a, 2026-09-24; design v3 6.3).
 A GAS cell (not a thermal solid) takes its material extinction from the gas it
 holds:
 
-    a_gas = min(ONE, sum_g heat_absorb_q[g] * max(0, N_g) >> 16),
+    a_gas = min(ONE, sum_g heat_absorb_q[g] * max(0, N_g) >> TRACE_SHIFT),
             0 where N_bulk < N_EPS_RAW
+
+(N_g in the TRACE currency, TRACE_SHIFT = 16 + TRACE_FINE_BITS, #88)
 
 and the sweep reads `a = max(heat_atten_q, a_gas)`, `d = max(dyn_heat_atten_q,
 a)` there (stamps are MAX, never sums). A thermal solid keeps its material
@@ -365,6 +371,17 @@ FINE_BITS = 11
 # The largest currency the reference will bake: the boundary counters' exact
 # left shift rn << (16 - k) needs k <= 16. (The ENGINE admits [0, E_FINE_BITS].)
 FINE_BITS_MAX = 16
+# THE TRACE CURRENCY (#88, docs/smoke_unit_rescale_design_2026-10-20.md §4): the
+# five trace planes hold 2^(16 + TRACE_FINE_BITS) counts per real unit of
+# density; the bulk pair (O2, N2) stays Q16.16. The engine's ONE constant is
+# cpp/src/fixed_point.h TRACE_FINE_BITS (twin: src/simulation/gas_fixed.py);
+# tests/test_trace_currency.py holds this LITERAL equal to both. The gas
+# coefficients stay Q16 per REAL unit, so the density laws absorb the extra
+# bits in their one shift, trace_density_shr -- and since every term of the
+# sum is >= 0 and the floor commutes with a power of two, the laws are
+# bit-identical on S_old * 2^k (§15).
+TRACE_FINE_BITS = 0
+TRACE_SHIFT = 16 + TRACE_FINE_BITS
 K_AMB = 293                      # config.toml:813   kelvin_ambient (integer-valued)
 K_SLOPE = 1                      # config.toml:814   k_temp_to_kelvin (G12: the x1 map)
 E_TABLE_SIZE = 4000              # raycaster.h:203   T_game in [0, 16000)
@@ -620,6 +637,38 @@ def quant(x: float) -> int:
     """The Q16 ingress door (round-half-away-from-zero), for scene setup only."""
     s = x * ONE
     return int(s + 0.5) if s >= 0 else int(s - 0.5)
+
+
+TRACE_ONE = 1 << TRACE_SHIFT     # one real unit of trace density (#88)
+
+
+def quant_trace(x: float) -> int:
+    """The TRACE planes' ingress door (#88): a real density -> the trace currency,
+    round-half-away-from-zero at 2^TRACE_SHIFT (gas_fixed.quantize_trace_scalar),
+    for scene setup only. At TRACE_FINE_BITS = 0 it is `quant`."""
+    s = x * TRACE_ONE
+    return int(s + 0.5) if s >= 0 else int(s - 0.5)
+
+
+def trace_from_bulk(q: int) -> int:
+    """A bulk-count (Q16) mass entering a trace plane: q * 2^TRACE_FINE_BITS
+    (fixed_point.h trace_from_bulk, #88). Non-negative by contract."""
+    if q < 0:
+        raise ValueError(f"trace_from_bulk: negative mass {q}")
+    return q * (1 << TRACE_FINE_BITS)
+
+
+def trace_fine_draw(rng, v: int) -> int:
+    """A gate's trace-plane draw in the FINE currency (#88 A8): a Q16 value v
+    moved to the trace currency, plus a random low part on a non-zero draw so the
+    gate sees counts that are not multiples of 2^TRACE_FINE_BITS (and can tell
+    the one shift from a rounding variant). A negative v keeps its sign. At
+    TRACE_FINE_BITS = 0 it is v itself and consumes NO random draw, so the
+    gates' streams are today's."""
+    if TRACE_FINE_BITS == 0 or v == 0:
+        return v
+    lo = rng.randrange(1 << TRACE_FINE_BITS)
+    return trace_from_bulk(v) + lo if v > 0 else -(trace_from_bulk(-v) + lo)
 
 
 def quant_f(x: float) -> int:
@@ -1058,14 +1107,24 @@ def gas_density_sum(densities, heat_absorb_q) -> int:
     return s
 
 
+def trace_density_shr(s: int) -> int:
+    """sum_g coef_q16[g] * S_g (S in the TRACE currency) -> a Q16 fraction:
+    s >> TRACE_SHIFT (fixed_point.h trace_density_shr, #88). The sum is never
+    negative (gas_density_sum clamps each term at 0), so the floor is exact."""
+    if s < 0:
+        raise ValueError(f"trace_density_shr: negative density sum {s}")
+    return s >> TRACE_SHIFT
+
+
 def gas_extinction_q(densities, heat_absorb_q, n_bulk_raw: int) -> int:
     """a_gas for ONE cell, design 6.3's density law and N_EPS floor:
 
-        a_gas = min(ONE, sum_g heat_absorb_q[g] * max(0, N_g) >> 16)
+        a_gas = min(ONE, trace_density_shr(sum_g heat_absorb_q[g] * max(0, N_g)))
               = 0                     if N_bulk_raw < N_EPS_RAW
 
-    `densities` are the cell's gas planes (Q16.16 raw, ONE = one ambient air
-    cell's worth), `heat_absorb_q` the per-gas Q16 column, `n_bulk_raw` the
+    `densities` are the cell's gas planes (a TRACE plane in the trace currency,
+    2^TRACE_SHIFT per real unit, #88; a bulk plane's coefficient is 0 by the
+    gases door), `heat_absorb_q` the per-gas Q16 column, `n_bulk_raw` the
     cell's BULK (O2 + N2) count -- the same N the energy books divide by.
 
     Absorption proportional to the number of absorbers IS the density law, and
@@ -1075,7 +1134,7 @@ def gas_extinction_q(densities, heat_absorb_q, n_bulk_raw: int) -> int:
     its emission vanish together, with the canonical value."""
     if n_bulk_raw < N_EPS_RAW:
         return 0
-    a = gas_density_sum(densities, heat_absorb_q) >> 16
+    a = trace_density_shr(gas_density_sum(densities, heat_absorb_q))
     return ONE if a > ONE else a
 
 
@@ -1115,10 +1174,11 @@ def exp_neg_q16(x_q: int) -> int:
 
 def gas_extinction_exp_q(densities, absorb_q, n_bulk_raw: int) -> int:
     """a_gas for ONE cell under the LIGHT law: ONE - exp_neg_q16(tau), tau =
-    the same density sum >> 16 as gas_extinction_q, the same N_EPS floor."""
+    the same density sum, finished by trace_density_shr, as gas_extinction_q,
+    the same N_EPS floor."""
     if n_bulk_raw < N_EPS_RAW:
         return 0
-    return ONE - exp_neg_q16(gas_density_sum(densities, absorb_q) >> 16)
+    return ONE - exp_neg_q16(trace_density_shr(gas_density_sum(densities, absorb_q)))
 
 
 def validate_gas(gas, heat_absorb_q, n_bulk, ts, h, w):
