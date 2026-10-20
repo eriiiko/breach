@@ -665,6 +665,7 @@ to read. It does not cut any value the game can show.
 |---|---|---|
 | arithmetic, overflow, determinism (Opus, 2026-10-20) | PASS WITH FIXES | none. 3 MAJOR to fix before P1/P3 (A1 the teargas gate is not reader-invariant, so V3 as written fails; A2 numpy 1.26 on Windows accumulates int32 sums in int32; A3 `quantize_trace` narrows to int32 before the rail can see the excess). 9 MINOR. See §15 |
 | conservation, books, behavioural semantics (Opus, 2026-10-20) | PASS WITH FIXES | none. 4 MAJOR to fix before P0/P2 (B1 the §5.1 "deposits" term has no book, so a clip at a deposit site is invisible to the identity; B2 the pump's extracted trace and FieldEdit REMOVE destroy trace unbooked today, and P0 rewrites the pump lines without saying where its trace goes; B3 the rail IS D1's rejected option (b) at the representability limit, and §12's CLAUDE.md amendment leaves "additive with no ceiling (D1)" and "already-booked systems" standing; B4 two golden re-baselines break the branch's own gate-h precedent, and P0 cannot lawfully move the golden at all). 5 MINOR (B5-B9). See §16 |
+| inventory, systems reuse, patch & verification plan (Opus, 2026-10-20) | PASS WITH FIXES | none. 4 MAJOR to fix before P1 (C1 the test fixtures have no inventory, and the silent ones bypass V1's lint: a local `Q = 65536`, `fire_fixed` on a trace plane, and the second reference vocabulary `random_gas`; C2 V3 tests reader functions, so a trace call site renamed to a `bulk_*` name passes V1, V2 and V3; C3 P1's oracle is blind by construction, and the plan defers the misses into the flip patch; C4 a CUDA gate SKIPS green when the worktree's `cpp/build_cuda` is missing or stale, and "worktree subagent" is ambiguous). 9 MINOR (C5-C13). See §17 |
 
 ## 15. Critique — arithmetic lens
 
@@ -1105,3 +1106,284 @@ V5 checks the bulk equality and the ratio bound. Add:
 The delegation covers the decision. The rail still bounds a ruling Erik made in his own
 words, so the sentence should say: "the rail bounds D1 at 128 units; reported in the
 #88 comment".
+
+## 17. Critique — inventory & plan lens
+
+Scope: an independent sweep of every reader and writer of the trace planes, read in the
+code at `00e8019`. It covers `src/`, `cpp/src`, `renderer/`, `tools/`, `tests/`,
+`main.py`, levels, the recorder, saves, the entity serializer and the integer reference.
+It then checks the Systems section, the patch plan and the build path on the Home Desktop.
+
+**Confirmed sound (no finding):**
+- **C++ inventory is complete.** These are the only TUs that take the gas array:
+  `bulk_transport`, `combustion`, `physics_engine`, `eos_solver`, `radiation_sweep`,
+  `sky_exchange`, `bindings` and their CUDA twins (`cuda_bulk_transport`,
+  `cuda_combustion`, `cuda_eos_step`, `cuda_eos_resident`, `cuda_kick_compression`,
+  `cuda_radiation_sweep`).
+  - Every density shift on a trace value goes through the FP_HD finishes
+    `gas_extinction_finish` / `gas_extinction_exp_finish` (`radiation_sweep.h:248-277`).
+    The CPU sweep, the CUDA pre-pass (`cuda_radiation_sweep.cu:262-318`, glow included)
+    and the hover binding all call them, so changing those two bodies converts every
+    sweep site on both backends at once.
+  - `fire_simulation.cpp:98` and `cuda_fire.cu` take `smoke` and never touch it. The
+    binding comment "emission scatter" at `bindings.cpp:1037` is stale but harmless.
+  - The other `>> FP_SHIFT` sites in the trace TUs are rate shifts on a count, so they
+    are scale-free: diffusion `bulk_transport.cpp:758`, `cuda_bulk_transport.cu:823`,
+    decay `trace_decay.h:44`, and W3's `mul_q16` at `physics_engine.cpp:1120-1129`.
+  - No hidden `65536` is applied to a trace value in C++.
+- **Saves, levels, replay.** No save system exists: `SimState` holds references
+  (`simulation.py:154-175`), and the only gas copy is the hot-reload round trip
+  (`gamemap.py:1792-1796`). No `levels/*/level.toml` stores a trace amount. The vent
+  entity serializes authoring fields plus the plenum ledger as `<q`
+  (`entities/vents.py:72, 117-120`).
+- **Old recordings.** The recorder records `smoke` only, dequantized to real units
+  (`recorder.py:189-194`), and no caller passes a custom `fields` list that includes
+  `gas`. Old `.npz` files stay valid, which agrees with §2.4.
+- **Python gameplay readers** are the ones §2 names. All gas-amount writers
+  (`payloads.emit_gas`, `combat.py:1357-1375` spray, `physics.py` smoke disc and clear)
+  go through FieldEdit, and FieldEdit refuses a conservative slice
+  (`field_edit.py:614-625`).
+- **Systems reuse** is right in its main lines:
+  - the FieldEdit door stays the one door;
+  - the recorder keeps the real-unit float contract, so the DTYPE rule does not trigger;
+  - the digest takes a version bump;
+  - the gates run through the CUDA harness;
+  - coefficients stay Q16, so the gases door's headroom argument is untouched.
+  No parallel system is created.
+- **Build path.** `cpp/build_cpu_home.bat` and `cpp/build_cuda.bat` both `cd /d
+  "%~dp0\.."`, so they build into the worktree that holds the script. The suite and
+  `cuda_harness` resolve `ROOT/cpp/build/Release` and `ROOT/cpp/build_cuda` relative to
+  the test file. This worktree already holds both modules (built 2026-10-20 07:40).
+
+### C1. MAJOR: the test fixtures have no inventory, and the silent ones bypass V1's lint
+
+- **Evidence.**
+  - P3's row says "about 50 files, §2.4's test list in the inventory". §2.4 has no test
+    list.
+  - 85 test files touch a trace plane, and 43 write one directly.
+  - The dangerous writers are the ones V1's deleted-name lint cannot see: they get
+    256 times thinner at k = 8 and keep passing.
+- **The three silent classes**, each with one example:
+  1. **Local literals.** `Q = 65536` in `test_smoke_transport_v2.py:48` and
+     `cuda_trace_smoke_check.py:69` (the v2 transport's own gates), and
+     `FP_ONE = 1 << 16` in `tools/fire_timing_harness.py:98`, whose smoke "mass" at
+     `:504-506` keeps a `mass > 1.0` raw-count threshold.
+  2. **The wrong boundary module.** `test_light_field.py:71` seeds `g.smoke` with
+     `fire_fixed.quantize_scalar(0.4)`. `fire_fixed` keeps Q16, so nothing breaks
+     loudly.
+  3. **A second reference vocabulary.** `tests/_radiation_sweep_harness.py:114-132`
+     `random_gas` draws its trace densities in Q16 (`Q(0.27)`, `ONE`). Its users are
+     gate 0 (`test_radiation_sweep_reference.py`), `cuda_radiation_sweep_check.py`,
+     `_cones_check`, `_light_check`, `test_radiation_sweep_light.py`,
+     `test_radiation_sweep_cones_sky.py` and `test_sweep_fine_currency.py`. §7 and A8
+     fix only `sweep_ref_q_gates._gas_planes`. At k = 8, `random_gas` makes gate 0 and
+     the CUDA sweep checks compare two near-transparent media: equal, and vacuous.
+- **Fix.**
+  - Commit the fixture inventory as a list in §2: file, line, class, conversion.
+  - Move every fixture to `quantize_trace` / `TRACE_ONE` in **P1, at k = 0**, where the
+    move is an identity. Any test whose outcome changes at k = 0 has then been
+    rewritten wrongly, which is a real oracle for the rewrite.
+  - `random_gas` takes the A8 treatment: `trace_from_bulk(v) + r` on its trace planes,
+    with the bulk pair untouched. Every gate that uses it prints its count of absorbing
+    cells, as §7 demands of the reference's own gates.
+  - Add a standing lint (V1): any assignment or `+=` into a trace slice
+    (`gas[<trace id>]`, `.smoke`, `gas[:N_TRACE_GASES]`) whose right-hand side does
+    not come from a `trace_*` name fails. The lint covers `tests/` and `tools/` as well
+    as `src/` and `renderer/`.
+- **Also a mixed-currency oracle in tests.** It belongs in §2.2's table.
+  - `test_ps1_smoke_roundtrip.py:119-122` asserts that `Σ` over ALL planes never rises.
+  - At k = 8 the soot mint takes `soot` bulk counts from N2 and adds `soot << 8` to
+    smoke, so the total rises by `255·soot` and the test fails at P3. The tempting
+    "fix" is to bend it.
+  - The right property: `Σ bulk` never rises, and the trace planes close by their books
+    (V6).
+
+### C2. MAJOR: V3 tests reader functions, so a trace site renamed to a bulk name passes V1, V2 and V3
+
+- **The mutation.** Deleting the ambiguous names forces a choice at every call site,
+  but a mechanical rename can make the wrong one, e.g.
+  `game_renderer.py:486 gas_fixed.dequantize_f32(gmap.gas[:N_TRACE_GASES])` →
+  `dequantize_bulk_f32(...)`.
+- **Why every gate misses it.**
+  - V1 sees no deleted name.
+  - V2 is an identity at k = 0.
+  - V3 as written checks the conversions (`dequantize_trace_f32`, `trace_density_shr`,
+    …) on hand-built planes, not the sites that should call them.
+  - The same hole exists at `hover_readout.py:161-164` (the mixed dict),
+    `game_renderer.py:479, 510, 578-579`, `sensor_accessor.py:130-132`,
+    `exchange.py:625, 670`, `combat.py:1157` and `recorder.py:190-194`.
+- **Fix.**
+  - V3 drives the **public entry points** on a real GameMap:
+    `pack_hover_readout`, the sensor accessor's `sample` and `area`, the teargas and
+    poison rows of `exchange`, `fire_beam`, `PhysicsRecorder.record`, the engine's
+    sweep (one tick, reading `a_eff` / light / glow through the binding), and the
+    renderer's trace dequantize.
+  - Fold the renderer's four trace-dequantize sites into one helper (C9), so V3 can
+    call it without raylib.
+  - V3's readers are a **registry table** in the test. A subset lint asserts that every
+    `src/` / `renderer/` module that reads a trace slice (the C1 regex) appears in it.
+    This is a classification check, not a count: a new reader fails until it is
+    registered, and the registry may grow freely.
+  - Add a one-line lint: no `bulk_*` / `quantize_bulk*` / `dequantize_bulk*` call takes
+    a trace slice.
+
+### C3. MAJOR: P1's oracle is blind by construction, and the plan pushes the misses into the flip patch
+
+- **Evidence.**
+  - P1's tier note admits that "the oracle cannot see a missed conversion at k = 0,
+    hence V3 in P3".
+  - So every missed conversion surfaces in P3 and is fixed there.
+  - That breaks §6's "the flip is one constant", and with it the VERIFIED-SOLE-CAUSE
+    argument the re-baseline rests on.
+  - The golden scenario also never exercises poison, teargas, the laser, sensors, vents,
+    pumps or W5 (`field_ab_harness.py:120-151`). Even a k ≠ 0 golden would leave those
+    readers dark.
+- **Fix: a "dry flip" in P1's gate.**
+  1. After the k = 0 golden reproduces, the P1 agent builds the same tree at
+     `TRACE_FINE_BITS = 8` locally, uncommitted, on CPU and CUDA.
+  2. It runs V3, V4, the C1 lints and every reference / `random_gas` gate's
+     absorbing-cell count.
+  3. Any failure is a P1 bug, fixed in P1, and the dry flip is re-run.
+- **Result.**
+  - P3's diff becomes literally the four twins, spec v7, the golden entry, and P5's
+    one line if B4's fold is taken.
+  - The full suite at k = 8 stays P3's gate. Its failures are then behaviour changes
+    (decay, diffusion), never conversion misses.
+  - **P1's gate gets a real mutation-catcher:** a deleted kit call at any registered
+    reader fails the dry-flip V3.
+
+### C4. MAJOR: CUDA gates SKIP green when the worktree build is missing, and they pass on a stale build
+
+- **Evidence.**
+  - Every `test_cuda_*` wrapper is `pytest.mark.skipif(not cuda_available())`
+    (`test_cuda_trace_smoke.py:34`).
+  - `cuda_available()` only checks that `cpp/build_cuda/breach_physics*.pyd` exists
+    (`cuda_harness.py:43-87`).
+- **Two ways a gate goes vacuous.**
+  - A failed or absent CUDA build makes every CUDA gate in §8 and §11 (P1 "every CUDA
+    check", P2's rail test, P4) **skip**, and `pytest tests -q` reports green.
+  - A C++ change rebuilt only on CPU leaves `build_cuda`'s module stale. That module
+    carries its own copy of the CPU code too, so "GPU == CPU at tol 0" compares stale
+    with stale and passes.
+- **Ambiguity in the plan.** The "mode" column says "worktree subagent", but §11 says
+  "every patch runs in this branch's worktree".
+  - An `isolation: "worktree"` agent is cut off MAIN (the memory note
+    `feedback_agent_worktree_base_branch`).
+  - That worktree also has no `cpp/build` and no `cpp/build_cuda`, so it is the skip
+    case above.
+- **Fix: state in §11, for every C++-touching patch:**
+  1. It runs in `C:\Users\steen\projects\breach\.claude\worktrees\88-smoke-unit-rescale`
+     itself, with no `isolation`, one writer at a time.
+  2. It runs `cpp\build_cpu_home.bat` (which is `--fresh`, so it is a full rebuild) and
+     `cpp\build_cuda.bat` (Ninja, incremental; CUDA_PATH is v12.4 on this box), and
+     records both `BUILD_EXIT=0` lines in the report.
+  3. It checks that both `.pyd` files are newer than the newest `cpp/src` file.
+  4. It runs the CUDA gates with `pytest tests -q -rs -k cuda` and reports **zero
+     skips**. A skip is a gate failure.
+- **And make V1 bite on the GPU module:** run the twin guard inside `run_cuda_script`
+  against the CUDA module as well. A stale `build_cuda` then fails V1 at the flip.
+
+### C5. MINOR: the "#78 pattern" is misquoted; the literal Python twin is right, so say why
+
+- `optics_fixed.py:85-110` holds **no copy** of `E_FINE_BITS`: it reads `fine_bits` from
+  the bound engine, and returns **0 when no engine is bound**.
+- Copying that pattern for the trace currency would be a trap. GameMaps without an engine
+  (level load, most unit tests, the tools) would silently read the trace planes at
+  k = 0.
+- **Fix.** §4 says "a literal twin, unlike #78's read-through, because `gas_fixed` is
+  import-light and serves engine-less GameMaps". V1 holds the twin equal on both
+  modules (C4).
+
+### C6. MINOR: the digest spec's CHANGE PROCEDURE must name the currency
+
+- `field_digest_spec.toml:6-9` triggers a version bump on "dtype/shape/membership/order"
+  only.
+- v7 adds `trace_fine_bits`, but the next rescale (k = 9, or a bulk change) would
+  follow the written procedure and skip the bump.
+- **Fix.** P3 amends that comment: "…or a field's integer CURRENCY (`trace_fine_bits`)".
+
+### C7. MINOR: "rail" collides with the gas-energy rails
+
+- CLAUDE.md's Gas energy recovery row and the resident code already use "rail" for the
+  recovery's write-back (`e_rail_sum`, the "rail" book block at
+  `cuda_eos_resident.cu:38, 933`).
+- A second meaning in the neighbouring Trace transport row invites a counter in the
+  wrong block.
+- **Fix.** Use the name the books already carry: kit `trace_add_sat`, books
+  `trace_clip_*`, and "the counted int32 saturation" in the rule. Or, at minimum,
+  "trace rail" everywhere and never a bare "rail".
+
+### C8. MINOR: inventory misses outside §2
+
+All of these are bulk or scale-free. The `gas_fixed` users among them fail loudly at P1
+under the deletion, but P1's scope should count them:
+- **`vent_system.py`.**
+  - `:322` the vent rate, a bulk count.
+  - `:371` `t_min` / `t_max`, which are temperatures (A12's Q16 name).
+- **`hover_readout.py`.**
+  - `:176-179` `bulk_n` through `_GAS_FP_ONE_F`.
+  - The `gas_energy` display divides by `_GAS_FP_ONE_F ** 2` (docstring `:45`). It
+    must become `BULK_ONE ** 2`, never `TRACE_ONE`.
+- **`gamemap.py:2644`**: a non-zero test, scale-free (add it to §2.5).
+- **Tools.**
+  - `tools/plot_sealedbox_70.py:40` and `tools/sky_exchange_bench.py:44`: bulk.
+  - `tools/bench_two_room.py:96-97`: raw smoke bytes, scale-free.
+  - `tools/fire_timing_harness.py:504-506`: C1 class 1.
+- **Tests that mix currencies but stay exact** (no change, listed so that P3 does not
+  "fix" them): `test_vent_mechanism.py:81-87` and `test_b4_pump.py:386-389`.
+
+### C9. MINOR: one renderer seam for the trace dequantize
+
+- `game_renderer.py:479, 486, 510, 578-579` each dequantize a trace slice inline.
+- The Dequantize-convention rule wants that done once at `upload_state`.
+- **Fix.** Add one `_trace_floats(gmap)` (the `(N_TRACE, h, w)` float32 block) that the
+  four sites slice. It is the call site V3 drives (C2) and the single place a future
+  resident gather swaps in.
+
+### C10. MINOR: V6 must enumerate the rail sites, per backend
+
+- §5.3 lists seven rail sites. V6's composite scenario hits only three: FieldEdit, 3b
+  and the soot mint.
+- The CUDA rail test covers 3b only.
+- **Fix.** Parametrize over §5.3's rows on CPU: FieldEdit, 3b, mint, W5, the W3
+  receiver, `seal_tiles`, `_inject_gas_n_core`. On CUDA: 3b chained, 3b resident, and
+  the mint. Each case asserts plane ≤ `TRACE_CELL_MAX`, plane ≥ 0, and `clip` = the
+  exact excess. *Breaks if* any single site wraps, raises or drops unbooked. The
+  composite cannot say which.
+
+### C11. MINOR: the patch order, tiers and splits
+
+- **Merge P4 into P3.** After P3 re-baselines `GOLDEN_AGGREGATE` on CPU, every CUDA
+  consumer listed in §8 is red until P4, so the branch carries a known-red state.
+  The same writer already holds both builds. With B4's fold, that gives one flip patch:
+  k 0→8, decay ceil→nearest, CPU and CUDA, one lineage entry.
+- **P2 → Opus, not Sonnet.** Its oracles see only the planted scenarios (C10). The
+  placement calls are judgement: once per cell on the net, not per face (A4); the book
+  windows (B7); appended CUDA slots; the raise-free mutation pass in `seal_tiles`
+  (`gamemap.py:2751-2755`); B1's mint and deposit books.
+- **P3 tier.** With C1 and C3 taken, P3 is a mechanical flip under oracles, and Sonnet
+  fits. Without them, keep Opus.
+- **P0 → Opus and P1 → Opus** are right.
+
+### C12. MINOR: each gate's mutation, caught and missed
+
+| gate | catches | misses (and the fix) |
+|---|---|---|
+| P0 V5 | trace inside the bulk budget; trace priced against `N_total` instead of `N_bulk` (the bound names `N_bulk`) | the taken trace landing in no book (B8); the `N_bulk == 0` divide (A5) |
+| P1 V2 (golden at k = 0) | any semantic change at k = 0: FieldEdit's float path, the door refusing a shipped row, the reference's arithmetic | every missed or doubled conversion; a trace site renamed to bulk (C2, C3) |
+| P1 V1 | a twin moved alone; a deleted name used again | a wrong-currency choice (C2); a stale CUDA module (C4) |
+| P2 V6 + golden | a wrap or raise at the planted sites; a rail binding below the limit (the golden would move) | the sites not planted (C10); a clip with no closed identity to stand on (B1) |
+| P3 V3 / V4 | as specified: a mis-scaled conversion function | a call site that skips the function (C2); a fixture gone thin (C1) |
+| P4 V9 | GPU ≠ CPU | a mis-scaling inside a shared FP_HD kit function, which is identical on both backends by construction: only V3 sees it. Say so in §8 |
+| P5 V7 | a rounding regression back to the linear regime | nothing in its lens (B6 adds the `frac_q = 0` case) |
+
+### C13. MINOR: verification wording against the test standard
+
+- **V1's "the four §2.4 INLINE C++ sites call the kit"** pins a hand list. Assert the
+  property instead: the two `radiation_sweep.h` finishes contain no `FP_SHIFT` and do
+  call `trace_density_shr`. Every C++ trace reader reaches the shift through them (see
+  "Confirmed sound").
+- **V2 is a report, not a standing test.** That is correct, and it needs no "breaks if"
+  line.
+- **The remaining V-items** name a property and the change that breaks it. None of them
+  pins a count or a set.
