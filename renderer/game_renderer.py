@@ -242,6 +242,9 @@ class GameRenderer:
         # them). [render.gas_relief] is re-read every frame (Ctrl+R live);
         # enabled = false falls back to the B2 erosion look above.
         self.gas_relief = GasReliefPass.from_config(cfg.grid_h, cfg.grid_w, CFG)
+        # G2: the smoke cast shadow's inputs this frame (_smoke_cast_inputs)
+        self._smoke_cast = (None, (1.0, 1.0), (0.0, 0.0, 0.0, 0.0),
+                            (0.0, 0.0, 0.0, 0.0))
         self._sim_dt = 1.0 / float(getattr(
             getattr(CFG, "clock", None), "ticks_per_second", 24))
         self.pressure_overlay = PressureOverlay(cfg.grid_h, cfg.grid_w)
@@ -496,7 +499,8 @@ class GameRenderer:
                     cycle_seconds=gd.cycle_seconds, adv_gain=gd.adv_gain,
                     tau_curve_a=gm.tau_curve_a, tau_curve_b=gm.tau_curve_b,
                     glow_gain=gm.glow_gain,
-                    effect_gas_floor=gm.effect_gas_floor)
+                    effect_gas_floor=gm.effect_gas_floor,
+                    heat_brightness=self._heat_brightness(gmap))
             else:
                 # k_s (per-gas mean extinction) is read from gmap.gases — the
                 # SAME optics table the light channels use — and scaled by
@@ -646,16 +650,27 @@ class GameRenderer:
 
         Two stages (graphics arc G0 P1, renderer/world_composite.py):
 
-        * SCENE -- linear HDR into the RGBA16F scene RT: lit ship (diffuse +
-          normal + light), the gas medium, the black-body heat, the water,
-          then the 3D units + props (+ their shadows) in one shared 3D pass.
-          No layer here tone-maps or encodes.
+        * (graphics G2) first, outside the scene RT: the smoke relief's CAST
+          PRODUCT (both species layers' occlusion + height), read below by
+          the floor and the 3D pass (the smoke's cast shadow) and by the
+          heat layer (glow-through).
+        * SCENE -- linear HDR into the RGBA16F scene RT, bottom to top: lit
+          ship (diffuse + normal + light, shadowed by the smoke), the water
+          (the floor's surface), the FLOOR smoke layer (steam, teargas,
+          poison: haze lying on the floor and the water), the 3D units +
+          props (+ their projected shadows) in one shared 3D pass, the
+          CEILING smoke layer (soot, above the units). No layer here
+          tone-maps or encodes.
         * ``world.resolve()`` -- the ONE ACES + gamma encode + dither, into
           the RGBA8 display RT.
         * DISPLAY -- authored display-sRGB colours, blended in display space:
           the debug/legacy colormaps (legacy smoke + glow, the flat-orange
-          fire, pressure, cold), the dev doors, waypoints, sprite units (the
-          2D fallback), projectiles, effects, the grid, then ``overlay_fn``.
+          fire, pressure, cold), the black-body HEAT layer (G0's named
+          display-space exception until G3; since G2 drawn THROUGH the smoke
+          over it, so it sits above the ceiling soot but only glows through
+          where the soot is thin), the dev doors, waypoints, sprite units
+          (the 2D fallback), projectiles, effects, the grid, then
+          ``overlay_fn``.
           These sit ABOVE the 3D units now (before G0, doors, waypoints and
           the debug maps were drawn under them).
 
@@ -687,6 +702,17 @@ class GameRenderer:
         if self._pending_tile_patches:
             self._apply_tile_patches()
 
+        # 0. Graphics G2: the relief's CAST PRODUCT (occlusion + height per
+        # texel, both species layers), rendered into its own target BEFORE the
+        # scene RT is bound; the floor, the 3D units and props (the smoke's
+        # cast shadow) and the heat layer (glow-through) read it below.
+        relief_on = (self.show_smoke and not self.legacy_smoke_on
+                     and self.gas_relief.enabled)
+        self.gas_relief.render_product(self.lighting, relief_on,
+                                       tile_rect=self._relief_view_rect())
+        self._smoke_cast = self._smoke_cast_inputs(relief_on)
+        self.lighting.set_smoke_shadow(*self._smoke_cast)
+
         # ================= SCENE: linear HDR (RGBA16F) =================
         self.world.begin(clear_color=(0, 0, 0, 0))
 
@@ -699,7 +725,22 @@ class GameRenderer:
                 world_px_h=self.world.world_px_h,
             )
 
-        # 2. B2 physical gas medium: ONE premult-over layer (C = inscatter +
+        # 2. Water OPTICS pass (graphics/water_rendering.md §5): the GLSL
+        # Fresnel/GGX/refraction pass, ON the floor, under the floor haze and
+        # the units (G2: the water is the floor's surface, the haze lies on
+        # it; the lit ship beneath is the floor sample). It binds the
+        # lighting pass's light textures + the level diffuse and draws
+        # premultiplied, linear; the shader emits alpha 0 on dry tiles so
+        # this is a no-op with no standing water (dormant-safe).
+        # Off-by-toggle (V).
+        if self.show_water and self.textures.diffuse:
+            self.water_pass.draw(
+                self.textures.diffuse,
+                self.lighting.light_tex_a, self.lighting.light_tex_b,
+                world_px_w=self.world.world_px_w,
+                world_px_h=self.world.world_px_h,
+                anim_t=time.perf_counter() - self._anim_t0)
+        # 3. B2 physical gas medium: ONE premult-over layer (C = inscatter +
         # T·bg), linear HDR inscatter. Occlusion (alpha) and inscatter (RGB)
         # composite in a single BLEND_ALPHA_PREMULTIPLY draw — no double-
         # count, and the real per-tile alpha leaves vacuum tiles untouched (no
@@ -708,11 +749,10 @@ class GameRenderer:
         # wisps), same premult blend; enabled=false bypasses the shader for the
         # plain P2 draw. Both own their blend. (The LEGACY smoke A/B path is a
         # display-referred grey and draws after the resolve, below.)
-        relief_on = (self.show_smoke and not self.legacy_smoke_on
-                     and self.gas_relief.enabled)
         if relief_on:
             # G1: the FLOOR species layer (steam, teargas, poison, fuel
-            # vapour) -- below the water and the units, so marines wade in it.
+            # vapour) -- on the water (G2), below the units, so marines wade
+            # in it.
             self.gas_relief.draw("floor", self.lighting,
                                  self.world.world_px_w, self.world.world_px_h,
                                  tile_rect=self._relief_view_rect())
@@ -724,22 +764,9 @@ class GameRenderer:
             else:
                 self.gas_medium.draw(
                     0, 0, self.world.world_px_w, self.world.world_px_h)
-        # 3. (The black-body heat is the LEGACY HEAT LAYER: display space,
-        # drawn after the resolve below -- the one named G0 exception.)
-        # 4. Water OPTICS pass (graphics/water_rendering.md §5): the GLSL
-        # Fresnel/GGX/refraction pass, after the field layers, before units
-        # (the squad reads over the water; the lit ship beneath is the floor
-        # sample). It binds the lighting pass's light textures + the level
-        # diffuse and draws premultiplied, linear; the shader emits alpha 0 on
-        # dry tiles so this is a no-op with no standing water (dormant-safe).
-        # Off-by-toggle (V).
-        if self.show_water and self.textures.diffuse:
-            self.water_pass.draw(
-                self.textures.diffuse,
-                self.lighting.light_tex_a, self.lighting.light_tex_b,
-                world_px_w=self.world.world_px_w,
-                world_px_h=self.world.world_px_h,
-                anim_t=time.perf_counter() - self._anim_t0)
+        # 4. (The black-body heat is the LEGACY HEAT LAYER: display space,
+        # drawn after the resolve below -- the one named G0 exception -- and
+        # since G2 THROUGH the smoke over it, from the cast product.)
         # 5. 3D units + props (+ projected shadows): the shared 3D pass.
         drew_units_3d = self._draw_units_3d_world(units_marines, units_zombies,
                                                   props)
@@ -796,8 +823,15 @@ class GameRenderer:
         # hue, saturation and halo. ADDITIVE, RGB-only. It now sits ABOVE the
         # water and the 3D units (before G0 it was under both). Toggle (T).
         if self.show_temperature:
+            # G2: drawn THROUGH the smoke over it (the relief's cast product):
+            # thin or ragged smoke lets the glow through, a solid core hides
+            # it, so the soot mottles the flame. Still display space.
+            from .gas_relief import glow_through_weights
             self.temperature_overlay.draw(
-                0, 0, self.world.world_px_w, self.world.world_px_h)
+                0, 0, self.world.world_px_w, self.world.world_px_h,
+                smoke_cover=self._smoke_cast[0],
+                glow_through=glow_through_weights(
+                    self.gas_relief.settings, self._smoke_cast[0] is not None))
 
         # 7. A6 dev door draw (a6 doors design §14, N4 honest-minimal):
         # closed door tiles get a flat amber fill, open spans a thin
@@ -928,6 +962,54 @@ class GameRenderer:
                            float(self.world.world_px_h))
         rl.draw_texture_pro(field_tex, src, dst, rl.Vector2(0, 0), 0.0, rl.WHITE)
 
+    def _heat_brightness(self, gmap) -> np.ndarray:
+        """Graphics G2: how strongly each tile glows from BELOW the smoke,
+        in [0, 1]: the legacy heat layer's display brightness times the share
+        of it below the smoke (``gas_relief.glow_below_fraction``), from the
+        layer's own pack (``pack_emissive_rgba``, without
+        the speckle mottle) on this tick's temperature -- packed here, not
+        read from the overlay, so the relief's own-light cut neither lags a
+        tick nor depends on the T toggle."""
+        import zlib
+        from .blackbody import pack_emissive_rgba
+        from .gas_relief import glow_below_fraction
+        ov = self.temperature_overlay
+        body = self._body_mask(gmap)
+        # ~1 ms of numpy on 48 x 48: redone only when the temperature or the
+        # bodies changed (once per sim tick), not every rendered frame.
+        key = (zlib.crc32(np.ascontiguousarray(gmap.temperature).view(np.uint8)),
+               zlib.crc32(np.packbits(body)), id(ov.ramp), ov.max_alpha)
+        if key != getattr(self, "_heat_below_key", None):
+            bright = (pack_emissive_rgba(ov.ramp, gmap.temperature, ov.max_alpha)
+                      [..., 3].astype(np.float32) / float(max(ov.max_alpha, 1)))
+            # Only the glow BELOW the smoke (a body's, beyond the hot gas
+            # around it; see glow_below_fraction) is hidden by the smoke and
+            # kept off its top; a hot gas tile's own light is the gas's (#95).
+            frac = glow_below_fraction(bright, body)
+            ov.set_below_fraction(frac)
+            self._heat_below_key = key
+            self._heat_below = bright * frac
+        return self._heat_below
+
+    @staticmethod
+    def _body_mask(gmap) -> np.ndarray:
+        """Graphics G2: BODY tiles (solid or thermal solid) -- what burns
+        or glows UNDER the smoke, as opposed to the gas it fills."""
+        return (np.asarray(gmap.solid, dtype=bool)
+                | np.asarray(gmap.thermal_solid, dtype=bool))
+
+    def _smoke_cast_inputs(self, relief_on: bool):
+        """Graphics G2: ``(product texture or None, grid, cast, cast2)`` --
+        what every receiver of the smoke's cast shadow is handed this frame
+        (the floor through LightingPass, the 3D units and props through
+        LightFieldCtx). None when the relief drew nothing."""
+        from .gas_relief import cast_uniforms
+        gr = self.gas_relief
+        live = bool(relief_on and gr.product_live)
+        cast, cast2 = cast_uniforms(gr.settings, live)
+        return (gr.product_texture if live else None,
+                (float(gr.w), float(gr.h)), cast, cast2)
+
     def _relief_view_rect(self):
         """The camera's view in tiles, plus a margin, for the relief pass
         (graphics G1): its shader costs per world-RT pixel, so it draws only
@@ -1013,6 +1095,10 @@ class GameRenderer:
                 ambient=self.lighting.ambient,
                 light_gain=self.lighting.light_gain,
                 normal_y_sign=(-1.0 if self.normal_y_flipped else 1.0),
+                smoke_cover=self._smoke_cast[0],
+                smoke_grid=self._smoke_cast[1],
+                smoke_cast=self._smoke_cast[2],
+                smoke_cast2=self._smoke_cast[3],
             )
             rl.begin_mode_3d(self._world_cam3d)
             try:
@@ -1840,6 +1926,7 @@ class GameRenderer:
         self.gas_detail.unload()
         self.gas_relief.unload()
         rl.unload_texture(self.temperature_overlay.tex)
+        self.temperature_overlay.unload_shader()
         rl.unload_texture(self.cold_overlay.tex)
         rl.unload_texture(self.water_overlay.tex)
         self.water_pass.unload()

@@ -59,6 +59,8 @@ class LookShot:
     ignite: tuple = ()                # tiles ignited before the first tick
     smoke: tuple = ()                 # tiles puffed with soot before tick 1
     steam: tuple = ()                 # tiles puffed with steam before tick 1
+    gas_amount: float = 1.0           # the puffs' density, share of full (G2:
+                                      # thin soot stands in for post-#88 soot)
     detonate: Optional[tuple] = None  # (x, y, frame): frag grenade
     # None = studio default, a number, or "game" = [render.lighting] master_gain
     light_gain: Union[float, Literal["game"], None] = None
@@ -132,6 +134,9 @@ def parse_shot(d: dict) -> LookShot:
     if bad:
         raise ValueError(f"shot {name}: cannot hide {sorted(bad)} "
                          f"(hideable: {sorted(HIDEABLE_LAYERS)})")
+    gas_amount = float(d.get("gas_amount", 1.0))
+    if not 0.0 < gas_amount <= 1.0:
+        raise ValueError(f"shot {name}: gas_amount must be in (0, 1]")
     raw_gain = d.get("light_gain")
     gain: Union[float, Literal["game"], None]
     if raw_gain is None or raw_gain == "game":
@@ -147,6 +152,7 @@ def parse_shot(d: dict) -> LookShot:
         ignite=_tiles(d.get("ignite"), f"shot {name} ignite"),
         smoke=_tiles(d.get("smoke"), f"shot {name} smoke"),
         steam=_tiles(d.get("steam"), f"shot {name} steam"),
+        gas_amount=gas_amount,
         detonate=detonate,
         light_gain=gain,
         hide=hide,

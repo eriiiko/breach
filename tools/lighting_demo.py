@@ -913,8 +913,9 @@ def _inject_fire(sim, tile) -> None:
     gmap.fire[y0:y1, x0:x1] = fire_fixed.quantize_scalar(1.0)
 
 
-def _inject_gas(sim, tile, species: int) -> None:
-    """Puff a 3x3 blob of ``species`` at full density at the cursor tile."""
+def _inject_gas(sim, tile, species: int, amount: float = 1.0) -> None:
+    """Puff a 3x3 blob of ``species`` at ``amount`` x full density (1.0 =
+    the I/J/K keys' full puff) at the cursor tile."""
     if tile is None:
         return
     fx, fy = tile
@@ -925,7 +926,8 @@ def _inject_gas(sim, tile, species: int) -> None:
     y0, y1 = max(0, fy - 1), min(h, fy + 2)
     x0, x1 = max(0, fx - 1), min(w, fx + 2)
     from simulation import gas_fixed
-    gmap.gas[species, y0:y1, x0:x1] = gas_fixed.SMOKE_MAX_Q
+    gmap.gas[species, y0:y1, x0:x1] = int(round(gas_fixed.SMOKE_MAX_Q
+                                                * float(amount)))
 
 
 def _toggle_door(sim, tile) -> None:
@@ -1549,9 +1551,9 @@ def main() -> None:
         for _t in look_shot.ignite:
             _inject_fire(sim, _t)
         for _t in look_shot.smoke:
-            _inject_gas(sim, _t, SMOKE)
+            _inject_gas(sim, _t, SMOKE, look_shot.gas_amount)
         for _t in look_shot.steam:
-            _inject_gas(sim, _t, STEAM)
+            _inject_gas(sim, _t, STEAM, look_shot.gas_amount)
     elif auto:
         H, W = sim.gmap.material.shape
         cy, cx = H // 2, W // 2

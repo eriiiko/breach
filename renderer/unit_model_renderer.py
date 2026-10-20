@@ -47,7 +47,7 @@ import pyray as rl
 
 from config import CFG
 
-from .lit3d import LightFieldCtx, make_camera
+from .lit3d import LightFieldCtx, bind_smoke_cover_map, make_camera
 from .marine_shader import (MARINE_NORMAL_MAP_FILENAME, UNIT_NORMAL_Y_SIGN,
                             load_marine_shader)
 from .unit_looks import (ROLES, LookAssigner, all_look_names, look_path,
@@ -542,11 +542,15 @@ class UnitModelRenderer:
         if self._shader is not None and self._marine_shader is not None \
                 and light_ctx is not None:
             MM = rl.MaterialMapIndex
+            mats = []
             for look in self._looks.values():
                 for mi in self._live_materials(look.model):
                     mat = look.model.materials[mi]
                     mat.maps[MM.MATERIAL_MAP_METALNESS].texture = light_ctx.tex_a
                     mat.maps[MM.MATERIAL_MAP_NORMAL].texture = light_ctx.tex_b
+                    mats.append(mat)
+            # Graphics G2: the smoke's cast shadow (lit3d's one GLSL copy).
+            bind_smoke_cover_map(self._shader, mats, light_ctx)
             self._marine_shader.set_frame_uniforms(
                 light_ctx.ambient, light_ctx.light_gain,
                 light_ctx.world_px_w, light_ctx.world_px_h,

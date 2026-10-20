@@ -24,6 +24,8 @@
 #                              at a tile, aimed east (+x); spread = full cone
 #                              width in radians. Omit = no flashlight.
 #   ignite / smoke / steam     tiles (3x3 patches) written before tick 1
+#   gas_amount                 the smoke / steam puffs' density, share of a
+#                              full puff (0, 1]; default 1 (graphics G2)
 #   detonate = [x, y, frame]   the canonical frag grenade, before that frame
 #   light_gain                 override the studio's exposure: a number, or
 #                              "game" = [render.lighting] master_gain
@@ -183,3 +185,143 @@ smoke = [[11, 17], [12, 18]]
 steam = [[23, 17], [24, 18]]
 hide = ["heat"]
 note = "the species layers (ruling 2): soot laid over Alpha (west) is a CEILING layer and must hide the marine; steam laid over Cobra (east) is a FLOOR layer and the marine must stand in it, drawn over it; Bravo (middle) clear for reference. 12 ticks, the beacon sweeping."
+
+# --- graphics G2: shadows and glow-through (§2.3) ------------------------------
+[[shot]]
+name = "smoke_shadow_squad"
+level = "fire_studio"
+frames = 12
+center = [11.0, 17.5]
+zoom = 56.0
+lamps = false
+beacon = false
+flashlight = { pos = [4.5, 17.5], intensity = 3.0, spread = 1.0 }
+smoke = [[8, 16]]
+hide = ["heat"]
+note = "a soot puff between a low flashlight (west) and Alpha: the column's cast shadow thrown east across the floor and over the marine. Lamps and beacon off, so the flashlight is the one light."
+
+[[shot]]
+name = "steam_shadow_squad"
+level = "fire_studio"
+frames = 12
+center = [11.0, 17.5]
+zoom = 56.0
+lamps = false
+beacon = false
+flashlight = { pos = [4.5, 17.5], intensity = 3.0, spread = 1.0 }
+steam = [[8, 16]]
+light_gain = "game"
+hide = ["heat"]
+note = "smoke_shadow_squad with a STEAM puff (a floor layer the light sweep barely attenuates in the plane): the cast shadow on its own, thrown east toward Alpha. At the game exposure."
+
+[[shot]]
+name = "thin_smoke_shadow_squad"
+level = "fire_studio"
+frames = 12
+center = [11.0, 17.5]
+zoom = 56.0
+lamps = false
+beacon = false
+flashlight = { pos = [4.5, 17.5], intensity = 3.0, spread = 1.0 }
+smoke = [[8, 16], [8, 19]]
+gas_amount = 0.003
+hide = ["heat"]
+note = "smoke_shadow_squad with THIN soot (1 % of a full puff, two puffs): the light sweep passes part of the flashlight through it in the plane, as it will through soot after #88, so the column's own cast shadow shows on the floor and on Alpha."
+
+[[shot]]
+name = "fire_thin_smoke"
+level = "smoke_light_studio"
+frames = 72
+center = [14.5, 28.0]
+zoom = 48.0
+lamps = true
+beacon = true
+light_gain = "game"
+smoke = [[10, 25], [19, 25], [10, 30], [19, 30]]
+gas_amount = 0.02
+note = "fire_plume with a THIN soot haze laid around both crates before tick 1 (2 % of a full puff): the fires should glow through it, mottled by its billows (G2 glow-through)."
+
+[[shot]]
+name = "fire_thick_smoke"
+level = "smoke_light_studio"
+frames = 72
+center = [14.5, 28.0]
+zoom = 48.0
+lamps = true
+beacon = true
+light_gain = "game"
+smoke = [[10, 25], [19, 25], [10, 30], [19, 30]]
+note = "fire_thin_smoke with FULL soot puffs: under a solid core the glow is hidden, at the ragged edges it leaks through."
+
+[[shot]]
+name = "steam_over_pool"
+level = "fire_studio"
+frames = 16
+center = [33.0, 26.5]
+zoom = 56.0
+lamps = true
+beacon = false
+flashlight = { pos = [27.5, 26.5], intensity = 2.5, spread = 1.2 }
+steam = [[33, 27], [35, 26]]
+light_gain = "game"
+note = "steam puffs over the fire studio's water pool, a flashlight from the west: the draw order -- the floor haze lies ON the water (water, then the floor layer, then units, then the ceiling soot; G2)."
+
+[[shot]]
+name = "plume_motion_t48"
+level = "smoke_light_studio"
+frames = 48
+center = [24.0, 24.0]
+zoom = 26.0
+lamps = true
+beacon = true
+light_gain = "game"
+hide = ["heat"]
+note = "the smoke-light studio, most of the map (both doorways, where the west hall's plumes pour east), at tick 48: one frame of a plume TRAVELLING (the t48..t96 rows are the sequence). G2 judges the synthetic low band (§2.5 A) and, for Erik, whether §2.5 B's trigger fires: does the plume lose its silhouette while it travels?"
+
+[[shot]]
+name = "plume_motion_t60"
+level = "smoke_light_studio"
+frames = 60
+center = [24.0, 24.0]
+zoom = 26.0
+lamps = true
+beacon = true
+light_gain = "game"
+hide = ["heat"]
+note = "the smoke-light studio, most of the map (both doorways, where the west hall's plumes pour east), at tick 60: one frame of a plume TRAVELLING (the t48..t96 rows are the sequence). G2 judges the synthetic low band (§2.5 A) and, for Erik, whether §2.5 B's trigger fires: does the plume lose its silhouette while it travels?"
+
+[[shot]]
+name = "plume_motion_t72"
+level = "smoke_light_studio"
+frames = 72
+center = [24.0, 24.0]
+zoom = 26.0
+lamps = true
+beacon = true
+light_gain = "game"
+hide = ["heat"]
+note = "the smoke-light studio, most of the map (both doorways, where the west hall's plumes pour east), at tick 72: one frame of a plume TRAVELLING (the t48..t96 rows are the sequence). G2 judges the synthetic low band (§2.5 A) and, for Erik, whether §2.5 B's trigger fires: does the plume lose its silhouette while it travels?"
+
+[[shot]]
+name = "plume_motion_t84"
+level = "smoke_light_studio"
+frames = 84
+center = [24.0, 24.0]
+zoom = 26.0
+lamps = true
+beacon = true
+light_gain = "game"
+hide = ["heat"]
+note = "the smoke-light studio, most of the map (both doorways, where the west hall's plumes pour east), at tick 84: one frame of a plume TRAVELLING (the t48..t96 rows are the sequence). G2 judges the synthetic low band (§2.5 A) and, for Erik, whether §2.5 B's trigger fires: does the plume lose its silhouette while it travels?"
+
+[[shot]]
+name = "plume_motion_t96"
+level = "smoke_light_studio"
+frames = 96
+center = [24.0, 24.0]
+zoom = 26.0
+lamps = true
+beacon = true
+light_gain = "game"
+hide = ["heat"]
+note = "the smoke-light studio, most of the map (both doorways, where the west hall's plumes pour east), at tick 96: one frame of a plume TRAVELLING (the t48..t96 rows are the sequence). G2 judges the synthetic low band (§2.5 A) and, for Erik, whether §2.5 B's trigger fires: does the plume lose its silhouette while it travels?"

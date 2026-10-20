@@ -92,6 +92,10 @@ layers. Tune in that order: a later stage cannot fix an earlier one.
   `rim_g` (silver lining against a lamp) and `glow_texture` (billow texture on the god rays).
 - **Layers:** `ceiling_gases` are drawn above the units; every other gas is a floor layer below
   them (Erik's ruling, 2026-10-18).
+- **Shadows and glow-through (G2):** `cast_shadow_*`, `cast_parallax`, `cast_lift_ceiling` (the
+  smoke's shadow on the floor and the units; `debug_view` 7 shows it), `glow_through_*` and
+  `own_light_cut` (the fire under the smoke), `low_band_*` (the synthetic ~1 m band; height carve
+  off). Doc §12 says what each try looked like.
 - **Soot brightness:** the surface uses thick-cloud reflectance from the gas's
   `scatter_albedo` (soot 0.22 → about 0.06, steam 0.92 → about 0.56). "Soot looks too pale or
   too dark when lit" is therefore either `[gases.smoke] scatter_albedo` (physics, Erik) or the
@@ -138,3 +142,4 @@ beside it, and is demoted the same way. The skill stays PROVISIONAL until three 
 needed no amendment.
 
 - 2026-10-20: written from G1's build; not yet used by a tuning session.
+- 2026-10-20 (G2 build): followed §3 for every step (one `--shots-out` folder per try, every judged try committed). Learned: give each A/B its own folder by flipping the dial in config, not a git stash (a stash also hid the new look-shot rows); a long Python edit goes through a script file (Bash truncates past ~8 KB); a `str.replace` with an empty match once corrupted config.toml -- check `git diff config.toml` after every scripted edit. Pre-#88 soot hides most of G2's cast shadow: judge it after #88.

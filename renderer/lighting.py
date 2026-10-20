@@ -84,6 +84,18 @@ def pack_light_view(view, gain: float, light_rgb: np.ndarray, light_dx: np.ndarr
         glow_rgb[...] = glow
 
 
+def load_lighting_fs() -> str:
+    """``shaders/lighting.fs`` with the smoke cast shadow's GLSL
+    (``lit3d._SMOKE_SHADOW_GLSL``, the ONE copy every receiver runs; graphics
+    G2) spliced in at its ``// <SMOKE_SHADOW>`` marker. Pure text, no GL."""
+    from .lit3d import _SMOKE_SHADOW_GLSL
+    src = (SHADERS_DIR / "lighting.fs").read_text(encoding="utf-8")
+    if src.count("// <SMOKE_SHADOW>") != 1:
+        raise RuntimeError("shaders/lighting.fs lost its // <SMOKE_SHADOW> "
+                           "marker")
+    return src.replace("// <SMOKE_SHADOW>", _SMOKE_SHADOW_GLSL)
+
+
 class LightingPass:
     """Owns the lighting shader and the dynamic light-field texture."""
 
@@ -141,10 +153,10 @@ class LightingPass:
             rl.set_texture_filter(self.light_tex_a, point)
             rl.set_texture_filter(self.light_tex_b, point)
 
-        self.shader = core.load_shader_with_fallback(
-            str(SHADERS_DIR / "lighting.vs"),
-            str(SHADERS_DIR / "lighting.fs"),
-        )
+        # Graphics G2: the smoke cast shadow's GLSL is lit3d's ONE copy,
+        # spliced in at lighting.fs's marker (see load_lighting_fs).
+        self.shader = core.load_shader_from_source(
+            str(SHADERS_DIR / "lighting.vs"), load_lighting_fs())
         # Look up uniform locations once. Warn (but continue) on any -1.
         self._loc_normal_tex      = self._lookup("u_normal")
         self._loc_light_tex_a     = self._lookup("u_light_a")
@@ -158,6 +170,9 @@ class LightingPass:
         self._loc_light_z         = self._lookup("u_light_z")
         self._loc_light_gain      = self._lookup("u_light_gain")
         self._loc_art_uv_rect     = self._lookup("u_art_uv_rect")
+        self._loc_smoke_cover     = self._lookup("u_smoke_cover")
+        # G2: the cast product + its uniforms (set_smoke_shadow; None = none)
+        self.smoke_cover = None
 
         # Cached state (for HUD display + bound checks)
         self.light_z = 0.5            # default — overhead lamp feel
@@ -328,6 +343,16 @@ class LightingPass:
 
     # ---- drawing --------------------------------------------------------
 
+    def set_smoke_shadow(self, cover_tex, grid, cast, cast2) -> None:
+        """Graphics G2: the smoke's cast shadow on the floor -- the relief's
+        cast product (``GasReliefPass.product_texture``; None = no shadow)
+        and ``gas_relief.cast_uniforms``' two vec4s, set once per frame."""
+        from .lit3d import set_smoke_shadow_uniforms
+        self.smoke_cover = cover_tex
+        if cover_tex is None:
+            cast = (0.0, 0.0, 0.0, 0.0)
+        set_smoke_shadow_uniforms(self.shader, grid, cast, cast2)
+
     def draw_lit_world(self, diffuse: rl.Texture, normal: Optional[rl.Texture],
                        world_px_w: int, world_px_h: int) -> None:
         """Draw the lit diffuse over the full world render target.
@@ -374,10 +399,25 @@ class LightingPass:
         rl.set_shader_value_texture(self.shader, self._loc_light_tex_b, self.light_tex_b)
         rl.set_shader_value_texture(self.shader, self._loc_vacuum_tex, self.vacuum_tex)
         self._set_art_uv_rect(uv_rect)
+        # G2: the cast product is the FIFTH sampler, and raylib's batch binds
+        # at most four (the G1 trap): bind it on its own unit through rlgl.
+        smoke_unit = 5
+        if self.smoke_cover is not None and self._loc_smoke_cover >= 0:
+            rl.rl_active_texture_slot(smoke_unit)
+            rl.rl_enable_texture(self.smoke_cover.id)
+            rl.set_shader_value(self.shader, self._loc_smoke_cover,
+                                rl.ffi.new("int[1]", [smoke_unit]),
+                                rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
+            rl.rl_active_texture_slot(0)
 
         dst = rl.Rectangle(0, 0, float(world_px_w), float(world_px_h))
         rl.draw_texture_pro(diffuse, src, dst, rl.Vector2(0, 0), 0.0, rl.WHITE)
         rl.end_shader_mode()
+        if self.smoke_cover is not None and self._loc_smoke_cover >= 0:
+            rl.rl_active_texture_slot(smoke_unit)
+            rl.rl_disable_texture()
+            rl.rl_active_texture_slot(0)
 
 
-__all__ = ["LightingPass", "art_src_and_uv_rect", "pack_light_view"]
+__all__ = ["LightingPass", "art_src_and_uv_rect", "pack_light_view",
+           "load_lighting_fs"]

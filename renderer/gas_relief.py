@@ -75,6 +75,10 @@ _TOP_LIGHT_SMOOTH_PASSES = 3
 # The crossfade's phase-jitter field: one period of the billow bake's smooth
 # fBm channel spans this many tiles (coarse -> neighbours share a phase).
 _JITTER_WL_TILES = 24.0
+# The CAST PRODUCT's resolution (graphics G2): texels per tile. The shadow it
+# casts is soft and the billows are >= 1.5 tiles, so 8 carries their shape
+# at ~1/36 of the world RT's pixels (48 px per tile).
+PRODUCT_PX_PER_TILE = 8
 
 
 # ---------------------------------------------------------------------------
@@ -119,8 +123,25 @@ class ReliefSettings:
     rim: float                    # silver-lining strength
     rim_g: float                  # Henyey-Greenstein forward anisotropy (0,1)
     glow_texture: float           # billow texture on the in-scatter, [0, 1]
+    cast_shadow_ceiling: float    # G2: how much the ceiling layer's cast
+    cast_shadow_floor: float      #   shadow takes from the light, [0, 1]
+    cast_parallax: float          # tiles of shadow offset per tile of height
+    cast_lift_ceiling: float      # the ceiling layer's underside, tiles above
+                                  #   the floor
+    glow_through_ceiling: float   # G2: how much each layer's extinction hides
+    glow_through_floor: float     #   the heat glow beneath it, [0, 1]
+    own_light_cut: float          # G2: how much of a glowing tile's own light
+                                  #   is taken off the smoke surface over it,
+                                  #   [0, 1] (it shows as glow-through instead)
+    low_band_tiles: float         # G2 synthetic low band (§2.5 A): lump size,
+                                  #   tiles
+    low_band_push_tiles: float    # how far it moves a plume's edge, tiles
+    low_band_height: float        # share of the height it carves, [0, 1]
+    low_band_tau0: float          # gate: in from tau / cov_tau = tau0 ...
+    low_band_tau1: float          #   ... full at tau1 (inside plumes only)
     debug_view: int               # 0 = off; 1 coverage, 2 height, 3 N.L,
-                                  #   4 self-shadow, 5 AO, 6 boil
+                                  #   4 self-shadow, 5 AO, 6 boil, 7 the
+                                  #   cast shadow on the floor (G2)
 
 
 _KINDS = {f.name: f.type for f in fields(ReliefSettings)}
@@ -168,6 +189,20 @@ def relief_settings(cfg) -> ReliefSettings:
                          f"and boil_t1 > boil_t0 (bad: {bad})")
     if not 0.0 <= s.rim_g < 1.0:
         raise ValueError("[render.gas_relief] rim_g must be in [0, 1)")
+    unit = [k for k in ("cast_shadow_ceiling", "cast_shadow_floor",
+                        "glow_through_ceiling", "glow_through_floor",
+                        "own_light_cut", "low_band_height")
+            if not 0.0 <= getattr(s, k) <= 1.0]
+    if (s.low_band_tiles <= 0.0 or s.low_band_push_tiles < 0.0
+            or not 0.0 <= s.low_band_tau0 < s.low_band_tau1):
+        raise ValueError("[render.gas_relief] needs low_band_tiles > 0, "
+                         "low_band_push_tiles >= 0 and "
+                         "0 <= low_band_tau0 < low_band_tau1")
+    if unit or s.cast_parallax < 0.0 or s.cast_lift_ceiling < 0.0:
+        raise ValueError("[render.gas_relief] cast_shadow_*, glow_through_* "
+                         "and own_light_cut must be in [0, 1] "
+                         "and cast_parallax, cast_lift_ceiling >= 0 "
+                         f"(bad: {unit})")
     return s
 
 
@@ -335,6 +370,44 @@ def top_light_field(light_rgb: np.ndarray, radius_tiles: int,
     return np.ascontiguousarray(out, dtype=np.float32)
 
 
+def below_glow_field(heat_brightness: np.ndarray) -> np.ndarray:
+    """(H, W) float32 in [0, 1]: how strongly each tile GLOWS from below a
+    smoke layer (graphics G2) -- the legacy heat layer's own display
+    brightness (``blackbody.pack_emissive_rgba``'s alpha / its ceiling),
+    taken as a max over the 3x3 neighbourhood and softened once, so the
+    cut reaches the bilinear seam around a burning tile. Pure numpy."""
+    e = np.clip(np.asarray(heat_brightness, dtype=np.float32), 0.0, 1.0)
+    e = _window_max(_window_max(e, 1, 1), 1, 0)
+    return np.ascontiguousarray(_box3(e), dtype=np.float32)
+
+
+def glow_below_fraction(heat_brightness: np.ndarray, body: np.ndarray
+                        ) -> np.ndarray:
+    """(H, W) float32 in [0, 1]: the share of each tile's heat glow that
+    lies BELOW the smoke (graphics G2) -- the part the smoke over it hides
+    (the heat layer's glow-through) and the part whose light must not light
+    the smoke's top (the relief's own-light cut).
+
+    A BODY tile (solid / thermal solid: a burning crate, a hot wall) glows
+    under the smoke, but the smoke over it is the gas of its neighbours, and
+    a hot smoke glows by itself -- an emitting slab is not hidden by its own
+    depth. So only the body's glow ABOVE the brightest gas glow around it is
+    below: ``f = 1 - max_gas_nb / bright`` on a body tile (a crate burning in
+    cool soot -> 1, hidden; one inside an equally hot cloud -> 0, no dark
+    hole). A gas tile's glow is the gas itself (0); whether hot gas should
+    glow at all is #95's question. Then dilated by one tile onto gas tiles:
+    the heat layer is bilinear, so a body's glow spills half a tile into
+    its neighbours and would otherwise escape as a bright frame."""
+    bright = np.clip(np.asarray(heat_brightness, dtype=np.float32), 0.0, 1.0)
+    b = np.asarray(body, dtype=bool)
+    gas = np.where(b, 0.0, bright).astype(np.float32)
+    nb = _window_max(_window_max(gas, 1, 1), 1, 0)
+    f = np.where(b & (bright > 1e-4),
+                 np.clip(1.0 - nb / np.maximum(bright, 1e-4), 0.0, 1.0), 0.0)
+    spill = _window_max(_window_max(f.astype(np.float32), 1, 1), 1, 0)
+    return np.ascontiguousarray(np.where(b, f, spill), dtype=np.float32)
+
+
 def boil_field(temperature_game: np.ndarray, t0: float, t1: float
                ) -> np.ndarray:
     """Per-tile BOIL weight in [0, 1] from the game temperature (ΔT above
@@ -393,6 +466,32 @@ def pack_relief_dynamics(tamed_wind: np.ndarray, boil: np.ndarray,
     return out
 
 
+def cast_uniforms(s: ReliefSettings, active: bool = True
+                  ) -> Tuple[Tuple[float, float, float, float],
+                             Tuple[float, float, float, float]]:
+    """The two vec4 uniforms the cast-shadow RECEIVERS read (graphics G2;
+    ``lit3d._SMOKE_SHADOW_GLSL``): ``u_smoke_cast = (ceiling strength,
+    floor strength, parallax, ceiling lift)`` and ``u_smoke_cast2 =
+    (tallest column, debug flag, 0, 0)``, tiles; the flag (``debug_view``
+    7) makes the floor show the shadow factor itself. ``active`` False (the relief off,
+    smoke hidden) zeroes both strengths, which the GLSL reads as "no shadow"
+    before it samples anything."""
+    on = 1.0 if (active and s.enabled) else 0.0
+    return ((s.cast_shadow_ceiling * on, s.cast_shadow_floor * on,
+             s.cast_parallax, s.cast_lift_ceiling),
+            (s.height_tiles, 1.0 if s.debug_view == 7 else 0.0, 0.0, 0.0))
+
+
+def glow_through_weights(s: ReliefSettings, active: bool = True
+                         ) -> Tuple[float, float]:
+    """(ceiling, floor): how much each layer's cast-product extinction
+    hides the heat glow beneath it (graphics G2, the heat layer's
+    glow-through). Both 0 when the product is inactive -- the heat layer
+    then draws exactly as before G2."""
+    on = 1.0 if (active and s.enabled) else 0.0
+    return (s.glow_through_ceiling * on, s.glow_through_floor * on)
+
+
 # ---------------------------------------------------------------------------
 # The GL pass
 # ---------------------------------------------------------------------------
@@ -410,7 +509,8 @@ class GasReliefPass:
         "u_height_tau", "u_billow_amp", "u_lamp_z", "u_wrap", "u_light_gain",
         "u_ambient", "u_shadow", "u_shadow_len", "u_shadow_soft", "u_powder",
         "u_ao", "u_rim", "u_rim_g", "u_debug", "u_toplight", "u_top_light",
-        "u_glow_texture", "u_group",
+        "u_glow_texture", "u_group", "u_mode", "u_below", "u_own_cut",
+        "u_low_tiles", "u_low_push", "u_low_height", "u_low_gate",
     )
 
     def __init__(self, grid_h: int, grid_w: int, settings: ReliefSettings):
@@ -435,6 +535,10 @@ class GasReliefPass:
                           for g in GROUPS}
         self.dyn_tex = core.create_dynamic_rgba16f_texture(grid_w, grid_h)
         self.top_tex = core.create_dynamic_rgba16f_texture(grid_w, grid_h)
+        # G2: the glow BELOW the smoke (below_glow_field), R channel
+        self.below_tex = core.create_dynamic_rgba16f_texture(grid_w, grid_h)
+        self._below_packed = np.zeros((grid_h, grid_w, 4), dtype=np.float16)
+        self._below = np.zeros((grid_h, grid_w), dtype=np.float32)
         self._top_packed = np.zeros((grid_h, grid_w, 4), dtype=np.float16)
         self._has = {g: False for g in GROUPS}
         self._masks = {g: np.zeros((grid_h, grid_w), np.float32)
@@ -451,6 +555,17 @@ class GasReliefPass:
         self._optics: Optional[TraceGasOptics] = None
         self._members = None
         self.last_pack_ms = 0.0
+        # The CAST PRODUCT (G2): the relief's own occlusion + height per
+        # PRODUCT_PX_PER_TILE texels, rendered once per frame before the
+        # scene (render_product) and read by the shadow receivers and the
+        # heat layer's glow-through. ONE product, never a second smoke model.
+        self.product_rt = core.load_render_texture_rgba16f(
+            grid_w * PRODUCT_PX_PER_TILE, grid_h * PRODUCT_PX_PER_TILE)
+        rl.set_texture_filter(self.product_rt.texture,
+                              rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
+        rl.set_texture_wrap(self.product_rt.texture,
+                            rl.TextureWrap.TEXTURE_WRAP_CLAMP)
+        self.product_live = False
 
     @classmethod
     def from_config(cls, grid_h: int, grid_w: int, cfg) -> "GasReliefPass":
@@ -491,9 +606,17 @@ class GasReliefPass:
                sim_tick: int,
                ticks_per_second: float, cycle_seconds: float,
                adv_gain: float, tau_curve_a: float, tau_curve_b: float,
-               glow_gain: float, effect_gas_floor: float) -> None:
+               glow_gain: float, effect_gas_floor: float,
+               heat_brightness: Optional[np.ndarray] = None) -> None:
         """Pack and upload both groups' textures and the dynamics, and
-        advance the two noise clocks on the SIM tick (never wall time)."""
+        advance the two noise clocks on the SIM tick (never wall time).
+
+        ``heat_brightness`` (G2): the legacy heat layer's per-tile display
+        brightness in [0, 1] (None = nothing glows). Where a tile glows, its
+        own light is taken off the smoke surface over it (``own_light_cut``)
+        -- from the tile light in the shader and from the top-light field
+        here -- because a fire lights smoke from BELOW, which shows as the
+        heat layer's glow-through, not as a lamp on the cloud's top."""
         import time
         from .advected_noise import advection_phase
         from .gas_medium import trace_gas_optics
@@ -511,7 +634,11 @@ class GasReliefPass:
         # write, a dial): repack only when their CONTENT changed -- a CRC of
         # the arrays plus the dials is ~0.05 ms against ~1 ms of packing,
         # and a paused or 60-fps-over-24-tps frame repacks nothing.
+        below = (below_glow_field(heat_brightness)
+                 if heat_brightness is not None
+                 else np.zeros((self.h, self.w), np.float32))
         key = (_crc(gas_density_trace), _crc(glow), _crc(light_rgb), s,
+               _crc(below),
                float(tau_curve_a), float(tau_curve_b), float(glow_gain),
                float(effect_gas_floor), id(self._optics))
         if key != self._pack_key:
@@ -526,9 +653,17 @@ class GasReliefPass:
                 if self._has[g]:
                     self._core.update_rgba16f_texture(self.medium_tex[g], medium)
                     self._core.update_rgba16f_texture(self.cover_tex[g], cover)
+            # The light over a column's top, with the glowing tiles' own
+            # light taken off first (it lights the smoke from below).
+            src = np.asarray(light_rgb, dtype=np.float32) * (
+                1.0 - s.own_light_cut * below)[..., None]
             self._top_packed[..., :3] = np.clip(
-                top_light_field(light_rgb, s.top_light_tiles,
+                top_light_field(src, s.top_light_tiles,
                                 s.top_light_falloff), 0.0, _F16_MAX)
+            self._below = below
+            self._below_packed[..., 0] = below
+            self._core.update_rgba16f_texture(self.below_tex,
+                                              self._below_packed)
             self._top_packed[..., 3] = self._masks["ceiling"]
             self._core.update_rgba16f_texture(self.top_tex, self._top_packed)
         masks = self._masks
@@ -580,6 +715,49 @@ class GasReliefPass:
         screen. None draws the whole world."""
         if not self._has[group]:
             return
+        self._rl.begin_blend_mode(self._rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
+        self._draw_group(group, lighting, dst_w, dst_h, tile_rect, mode=0)
+        self._rl.end_blend_mode()
+
+    def render_product(self, lighting, active: bool,
+                       tile_rect: Optional[Tuple[int, int, int, int]] = None
+                       ) -> None:
+        """Render the CAST PRODUCT (graphics G2) into ``product_rt``: per
+        texel the ceiling layer's (alpha, height) in RG and the floor
+        layer's in BA -- the same coverage, height and occlusion the layer
+        draws composite, from the same shader (``u_mode`` 1). Cleared to 0
+        (no smoke) first; ``active`` False leaves it cleared. Must run
+        OUTSIDE any other texture mode (it binds its own target): the
+        renderer calls it before the scene RT is begun."""
+        rl = self._rl
+        rl.begin_texture_mode(self.product_rt)
+        rl.clear_background(rl.Color(0, 0, 0, 0))
+        self.product_live = bool(active and self.enabled
+                                 and (self._has["ceiling"]
+                                      or self._has["floor"]))
+        if self.product_live:
+            pw = self.w * PRODUCT_PX_PER_TILE
+            ph = self.h * PRODUCT_PX_PER_TILE
+            # (r, g, b, a) sums: the groups write disjoint channels.
+            rl.begin_blend_mode(rl.BlendMode.BLEND_ADD_COLORS)
+            for g in GROUPS:
+                if self._has[g]:
+                    self._draw_group(g, lighting, pw, ph, tile_rect, mode=1)
+            rl.end_blend_mode()
+        rl.end_texture_mode()
+
+    @property
+    def product_texture(self):
+        """The cast product's texture (a raylib RenderTexture's colour
+        attachment: rows run bottom-up, so a reader samples
+        ``(u, 1 - v)``; ``lit3d._SMOKE_SHADOW_GLSL`` does)."""
+        return self.product_rt.texture
+
+    def _draw_group(self, group: str, lighting, dst_w: int, dst_h: int,
+                    tile_rect, mode: int) -> None:
+        """Set the uniforms, bind the samplers and draw one group's quad in
+        ``mode`` (0 = the layer, 1 = the cast product). The caller owns the
+        blend mode and the target."""
         rl, s = self._rl, self.settings
         self._v("u_grid", self.w, self.h)
         self._f("u_phase", self._phase[0])
@@ -617,10 +795,15 @@ class GasReliefPass:
         self._f("u_rim", s.rim)
         self._f("u_rim_g", s.rim_g)
         self._f("u_glow_texture", s.glow_texture)
-        self._i("u_debug", s.debug_view)
+        self._f("u_own_cut", s.own_light_cut)
+        self._f("u_low_tiles", s.low_band_tiles)
+        self._f("u_low_push", s.low_band_push_tiles)
+        self._f("u_low_height", s.low_band_height)
+        self._v("u_low_gate", s.low_band_tau0, s.low_band_tau1)
+        self._i("u_debug", s.debug_view if mode == 0 else 0)
         self._i("u_group", 1 if ceiling else 0)
+        self._i("u_mode", int(mode))
 
-        rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
         rl.begin_shader_mode(self.shader)
         # SIX samplers besides texture0, and raylib's batch binds at most four
         # (RL_DEFAULT_BATCH_MAX_TEXTURE_UNITS): set_shader_value_texture
@@ -631,7 +814,7 @@ class GasReliefPass:
                  ("u_toplight", self.top_tex),
                  ("u_light_a", lighting.light_tex_a),
                  ("u_light_b", lighting.light_tex_b),
-                 ("u_billow", self.billow_tex))
+                 ("u_billow", self.billow_tex), ("u_below", self.below_tex))
         for i, (name, tex) in enumerate(extra):
             unit = _FIRST_UNIT + i
             rl.rl_active_texture_slot(unit)
@@ -639,22 +822,20 @@ class GasReliefPass:
             self._i(name, unit)
         rl.rl_active_texture_slot(0)
         x0, y0, x1, y1 = clip_tile_rect(tile_rect, self.w, self.h)
-        if x1 <= x0 or y1 <= y0:
-            rl.end_shader_mode()
-            rl.end_blend_mode()
-            return
-        ppx, ppy = float(dst_w) / self.w, float(dst_h) / self.h
-        src = rl.Rectangle(float(x0), float(y0), float(x1 - x0), float(y1 - y0))
-        dst = rl.Rectangle(x0 * ppx, y0 * ppy, (x1 - x0) * ppx, (y1 - y0) * ppy)
-        # texture0 = the group's medium texture (glow share + occlusion depth)
-        rl.draw_texture_pro(self.medium_tex[group], src, dst,
-                            rl.Vector2(0, 0), 0.0, rl.WHITE)
+        if x1 > x0 and y1 > y0:
+            ppx, ppy = float(dst_w) / self.w, float(dst_h) / self.h
+            src = rl.Rectangle(float(x0), float(y0), float(x1 - x0),
+                               float(y1 - y0))
+            dst = rl.Rectangle(x0 * ppx, y0 * ppy, (x1 - x0) * ppx,
+                               (y1 - y0) * ppy)
+            # texture0 = the group's medium texture (glow share + occlusion)
+            rl.draw_texture_pro(self.medium_tex[group], src, dst,
+                                rl.Vector2(0, 0), 0.0, rl.WHITE)
         rl.end_shader_mode()                 # flushes the batch: draws now
         for i in range(len(extra)):
             rl.rl_active_texture_slot(_FIRST_UNIT + i)
             rl.rl_disable_texture()
         rl.rl_active_texture_slot(0)
-        rl.end_blend_mode()
 
     def unload(self) -> None:
         rl = self._rl
@@ -663,12 +844,16 @@ class GasReliefPass:
             rl.unload_texture(t)
         rl.unload_texture(self.dyn_tex)
         rl.unload_texture(self.top_tex)
+        rl.unload_texture(self.below_tex)
         rl.unload_texture(self.billow_tex)
+        rl.unload_render_texture(self.product_rt)
 
 
 __all__ = [
     "GROUPS", "ReliefSettings", "relief_settings", "group_members",
     "bulk_reflectance", "relief_group_layers", "top_light_field",
     "boil_field", "presence_mask", "clip_tile_rect", "pack_relief_dynamics",
-    "GasReliefPass",
+    "cast_uniforms", "below_glow_field", "glow_below_fraction",
+    "glow_through_weights",
+    "PRODUCT_PX_PER_TILE", "GasReliefPass",
 ]

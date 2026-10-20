@@ -129,7 +129,8 @@ from .gas_detail import WIND_V_REF
 # [render.props] wind_ref. A sway choice of its own since #51 (it was the
 # taming ceiling, 0.08, before the wind moved to the honest m/s scale).
 SWAY_WIND_REF = 0.08
-from .lit3d import _COMMON_GLSL, _FIELD_SAMPLE_GLSL, LightFieldCtx, make_camera
+from .lit3d import (_COMMON_GLSL, _FIELD_SAMPLE_GLSL, LightFieldCtx,
+                    bind_smoke_cover_map, make_camera)
 from .propgen import GENERATORS
 
 # ---------------------------------------------------------------------------
@@ -861,11 +862,15 @@ class StaticPropRenderer:
         # binds them every draw and never clobbers our texture units. Rebound
         # per frame because the LightingPass may swap its ping-pong targets.
         MM = rl.MaterialMapIndex
+        mats = []
         for entry in self._cache.values():
             for mi in range(entry.model.materialCount):
                 mat = entry.model.materials[mi]
                 mat.maps[MM.MATERIAL_MAP_METALNESS].texture = ctx.tex_a
                 mat.maps[MM.MATERIAL_MAP_NORMAL].texture = ctx.tex_b
+                mats.append(mat)
+        # Graphics G2: the smoke's cast shadow (lit3d's one GLSL copy).
+        bind_smoke_cover_map(self._shader, mats, ctx)
         self.set_frame_uniforms(ctx)
 
         # Sway uniforms that are the same for every prop this frame (the dials
