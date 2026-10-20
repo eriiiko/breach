@@ -121,6 +121,13 @@ These were set on a field that goes opaque and then vanishes; retune them once #
 recheck the boil range after #12's fire tuning. Doc: `docs/graphics_direction_2026-10-18.md`
 §11.
 
+**#88 landed 2026-10-20: this retune is now DUE.** Smoke now thins along the configured
+decay (125 s e-fold for soot) and diffuses at visible densities, so plumes live roughly ten
+times longer than the field these dials were set on. Re-shoot `plume_motion_t48..t96` for
+the §2.5 B call. The density is still in real units (only its resolution changed), so
+absorption coefficients and the gas door's numbers keep their meaning; raw trace counts
+are 256x larger: read them through `gas_fixed.trace_*`, never `/65536`.
+
 ## 7. Landing a tuning
 
 - Dials only: commit `config.toml` with each changed value's reason in its comment (what it
@@ -143,3 +150,4 @@ needed no amendment.
 
 - 2026-10-20: written from G1's build; not yet used by a tuning session.
 - 2026-10-20 (G2 build): followed §3 for every step (one `--shots-out` folder per try, every judged try committed). Learned: give each A/B its own folder by flipping the dial in config, not a git stash (a stash also hid the new look-shot rows); a long Python edit goes through a script file (Bash truncates past ~8 KB); a `str.replace` with an empty match once corrupted config.toml -- check `git diff config.toml` after every scripted edit. Pre-#88 soot hides most of G2's cast shadow: judge it after #88.
+- 2026-10-20 (#88, not a tuning run): §6 marked due; raw trace counts are now 2^24 per unit.
