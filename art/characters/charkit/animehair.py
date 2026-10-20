@@ -56,6 +56,13 @@ class Hair:
 
     def cap_field(self, P):
         Q = self.h.to_head(P)
+        if self.sp.get("pole_guard"):
+            # B2c: on the egg's vertical axis its radius is 0^(-1/n) = infinite (`Egg.rho`, the direction's azimuth undefined):
+            # a grid column landing exactly there meshed a thin spike standing on the crown (B2a/B2b's "antenna")
+            on = (np.abs(Q[:, 0]) < 1e-6) & (np.abs(Q[:, 1] - self.egg.c[1]) < 1e-6)
+            if on.any():
+                Q = Q.copy()
+                Q[on, 0] = 1e-6
         m = self.cover(Q)
         T = self.thick(Q) * m - self.sp["cap"]["under"] * (1.0 - m)
         return (self.egg(Q) - T) * self.h.s
@@ -216,6 +223,8 @@ def build(head, spec, mats, prefix, coll="Head", body_objects=None):
     import bpy
     from mathutils.bvhtree import BVHTree
     import kit
+    if spec.get("kind") == "clumps":   # B2c: the layered clumps (below); B2a's blockout otherwise
+        return build_clumps(head, spec, mats, prefix, coll, body_objects)
     t0 = time.time()
     hair = Hair(head, spec)
     objs = []
@@ -300,3 +309,322 @@ def build(head, spec, mats, prefix, coll="Head", body_objects=None):
                              attrs=dict(hv=np.concatenate(allhv), hu=np.concatenate(allhu))))
     print("anime hair: %d locks in %.1fs" % (k, time.time() - t0))
     return objs
+
+
+# ================================================================================================ B2c: layered clumps
+# B2c ("the hair"): the blockout's rows replaced by LOCKS GIVEN ONE BY ONE (per-lock lists in the table), each a tapered
+# clump with its own curve, laid in layers, the hanging hair placed on a traced ENVELOPE instead of dropped as ropes:
+#
+#   on the head  root (beta, alpha) -> optional `mid` (beta, alpha) -> `leave` (beta, alpha), or `tip` = a front-view
+#                target (x, z) on the face (the fringe's tips, traced on the close-up); offset off the cap `off` = (at the
+#                root, at the end) plus `bulge` x sin(pi t) (the crown's volume), the root sunk into the cap
+#   falling      from the leave point down to `z` (head space) at azimuth `alpha`, its horizontal distance from the head's
+#                axis r = r_skin + spread x (r_env - r_skin): `spread` 0 lies on the skin (a lock along the cheek), 1 on
+#                the envelope (the outer silhouette, `envelope` = half-width W(z), front F(z), back B(z), traced on the
+#                close-ups and the A-pose drawings); `spread` is keyed along the fall ((s, v), ...)
+#   then         pushed off the skin, the ears, the cap and the suit (world), smoothed, re-pushed
+#   section      a lens `width` x `thick` (profiles along the whole lock) whose edges `curl` towards what it lies on, so a
+#                clump reads round with its edges tucked in, never a slab
+#
+# Every key of a lock row is either one value for all its locks or a LIST with one entry per lock (`n` of them).
+
+def _pick(row, key, i, default=None):
+    v = row.get(key, default)
+    return v[i] if isinstance(v, list) else v
+
+
+def _prof(p, t):
+    p = np.asarray(p, float)
+    return np.interp(t, p[:, 0], p[:, 1])
+
+
+def _ang(Q, c):
+    d = Q - c
+    r = np.linalg.norm(d, axis=-1)
+    beta = np.degrees(np.arcsin(np.clip(d[..., 2] / np.maximum(r, 1e-9), -1.0, 1.0)))
+    alpha = np.degrees(np.arctan2(d[..., 0], -d[..., 1]))
+    return beta, alpha
+
+
+class Clumps:
+    """The B2c hair's fields and paths (head space unless said)."""
+
+    def __init__(self, head, spec):
+        self.h, self.sp = head, spec
+        self.hair = Hair(head, spec)
+        self.c = head.egg.c
+        ev = spec["envelope"]
+        self.ez = np.asarray([r[0] for r in ev["rows"]], float)
+        self.eW, self.eF, self.eB = (np.asarray([r[k] for r in ev["rows"]], float) for k in (1, 2, 3))
+        self.en = ev.get("n", 2.2)
+        self.ear = ah.Ear(head.F["ear"]) if "plates" in head.F.get("ear", {}) else None
+
+    def r_env(self, alpha, z):
+        o = np.argsort(self.ez)
+        W = np.interp(z, self.ez[o], self.eW[o])
+        F = np.interp(z, self.ez[o], self.eF[o])
+        B = np.interp(z, self.ez[o], self.eB[o])
+        a = np.radians(alpha)
+        sa, ca = np.abs(np.sin(a)), np.cos(a)
+        D = np.where(ca >= 0.0, F, B)
+        n = self.en
+        return ((sa / W) ** n + (np.abs(ca) / D) ** n) ** (-1.0 / n)
+
+    def r_skin(self, alpha, z):
+        """The skin's horizontal distance from the head's axis (0, cy) along azimuth alpha at height z (head space; the
+        skin and neck without cuts, no ears); below `skin_floor` the value there (the neck's, inside the collar)."""
+        alpha, z = np.broadcast_arrays(np.asarray(alpha, float), np.asarray(z, float))
+        a = np.radians(alpha.ravel())
+        zz = np.maximum(z.ravel(), self.sp.get("skin_floor", 1.43))
+        lo, hi = np.zeros(len(a)), np.full(len(a), 0.16)
+        cy = self.c[1]
+        for _ in range(36):
+            m = 0.5 * (lo + hi)
+            Q = np.column_stack([m * np.sin(a), cy - m * np.cos(a), zz])
+            ins = self.h.base_h(Q) < 0.0
+            lo, hi = np.where(ins, m, lo), np.where(ins, hi, m)
+        return (0.5 * (lo + hi)).reshape(alpha.shape)
+
+    def collide_w(self, P):
+        """World: the head's solid for the hair to keep off (skin, ears, the cap)."""
+        h = self.h
+        d = np.minimum(self.hair.cap_field(P), h.base(P))
+        if self.ear is not None:
+            d = np.minimum(d, self.ear(h.to_head(P)) * h.s)
+        return d
+
+    def push_head(self, P, clear):
+        f = self.collide_w(P)
+        bad = f < clear
+        if bad.any():
+            g = ah.unit(self.h.grad(self.collide_w, P[bad]))
+            P = P.copy()
+            P[bad] -= (f[bad] - clear)[:, None] * g
+        return P
+
+    def tip_angles(self, x, z):
+        """A front-view target (x, z) on the face -> (beta, alpha) about the egg's centre."""
+        y = float(self.h.hit_front(self.h.base_h, [x], [z])[0])
+        b, a = _ang(np.array([x, y, z]), self.c)
+        return float(b), float(a)
+
+    def path(self, row, i, rng, body):
+        h = self.h
+        hair = self.hair
+        m = 48
+        t = np.linspace(0.0, 1.0, m)
+        b0, a0 = _pick(row, "root", i)
+        if _pick(row, "tip", i) is not None:
+            b1, a1 = self.tip_angles(*_pick(row, "tip", i))
+        else:
+            b1, a1 = _pick(row, "leave", i)
+        mid = _pick(row, "mid", i)
+        if mid is not None:   # a quadratic Bezier passing through the mid point's angles at t = 0.5
+            bm, am = 2 * mid[0] - 0.5 * (b0 + b1), 2 * mid[1] - 0.5 * (a0 + a1)
+            bb = (1 - t) ** 2 * b0 + 2 * t * (1 - t) * bm + t * t * b1
+            aa = (1 - t) ** 2 * a0 + 2 * t * (1 - t) * am + t * t * a1
+        else:
+            bb = b0 + (b1 - b0) * t
+            aa = a0 + (a1 - a0) * t ** _pick(row, "a_curve", i, 1.0)
+        o0, o1 = _pick(row, "off", i, (0.001, 0.002))
+        pw = _pick(row, "off_pow", i, 2.0)
+        off = (o0 + (o1 - o0) * t ** pw + _pick(row, "bulge", i, 0.0) * np.sin(np.pi * t)
+               - _pick(row, "sink", i, 0.004) * (1.0 - t) ** 8)
+        Qh = h.to_head(hair.on_head(bb, aa, off))
+        fall = _pick(row, "fall", i)
+        if fall is not None:
+            zl = Qh[-1, 2]
+            zt = fall["z"]
+            L = abs(zl - zt)
+            k = max(16, int(L / 0.004))
+            s = np.linspace(0.0, 1.0, k)
+            al_end = fall.get("alpha", aa[-1])
+            sa = s * s * (3 - 2 * s) if fall.get("ease", True) else s
+            al = aa[-1] + (al_end - aa[-1]) * sa
+            z = zl + (zt - zl) * s
+            rs = self.r_skin(al, z)
+            re = self.r_env(al, z)
+            sp = _prof(fall.get("spread", ((0.0, 1.0), (1.0, 1.0))), s)
+            r = rs + sp * (re - rs) + _prof(fall.get("add", ((0.0, 0.0), (1.0, 0.0))), s)
+            cy = self.c[1]
+            F = np.column_stack([r * np.sin(np.radians(al)), cy - r * np.cos(np.radians(al)), z])
+            F += np.asarray(fall.get("shift", (0.0, 0.0, 0.0)), float)[None, :] * s[:, None] ** 1.5
+            # join: the fall starts where the head part ends, the difference faded out over its first `join` (fraction)
+            d0 = Qh[-1] - F[0]
+            jn = fall.get("join", 0.3)
+            q = np.clip(s / jn, 0.0, 1.0)
+            F += d0[None, :] * (1.0 - q * q * (3 - 2 * q))[:, None]
+            Qh = np.vstack([Qh, F[1:]])
+        P = h.world(Qh)
+        clear = _pick(row, "clear", i, 0.003)
+        fix = 4
+        for it in range(3):
+            P[fix:] = self.push_head(P[fix:], clear)
+            if body is not None and fall is not None:
+                P[fix:] = hair.push(P[fix:], self.sp.get("body_clear", 0.004), body)
+            P = _smooth(P, 3, fix=fix)
+        P[fix:] = self.push_head(P[fix:], clear)
+        P, L = _resample(P, max(30, int(L_of(P) / 0.003)))
+        return P
+
+    def mesh(self, P, row, i, k, rng):
+        """The clump along P: a lens section (`width` x `thick` over t), its edges curled by `curl` x half-width towards what
+        it lies on (-N). Returns verts, quads, tris and the attributes."""
+        h = self.h
+        m = len(P)
+        t = np.linspace(0.0, 1.0, m)
+        w = _prof(_pick(row, "width", i), t) * _pick(row, "w", i, 1.0) * h.s
+        th = _prof(_pick(row, "thick", i), t) * h.s
+        c = h.world(self.c)
+        radial = ah.unit(P - c)
+        axis = ah.unit(P - np.column_stack([np.zeros(m), np.full(m, 0.01), P[:, 2]]))
+        blend = np.clip((c[2] - 0.05 * h.s - P[:, 2]) / (0.05 * h.s), 0.0, 1.0)[:, None]
+        N = ah.unit(radial * (1.0 - blend) + axis * blend)
+        T = ah.unit(np.gradient(P, axis=0))
+        S = ah.unit(np.cross(T, N))
+        tw = _pick(row, "twist", i, 0.0)
+        if tw:
+            ang = np.radians(tw) * np.sin(np.pi * t)
+            S = ah.unit(S * np.cos(ang)[:, None] + N * np.sin(ang)[:, None])
+        N = ah.unit(np.cross(S, T))
+        nu = 14
+        al = np.linspace(0.0, 2 * math.pi, nu, endpoint=False)
+        ca, sa = np.cos(al), np.sin(al)
+        curl = _pick(row, "curl", i, 0.25)
+        hw, hth = np.maximum(w * 0.5, 1e-4), np.maximum(th * 0.5, 1e-4)
+        V = (P[:, None, :] + (hw[:, None] * ca[None, :])[:, :, None] * S[:, None, :]
+             + (hth[:, None] * sa[None, :] - curl * hw[:, None] * ca[None, :] ** 2)[:, :, None] * N[:, None, :])
+        V = V.reshape(-1, 3)
+        idx = np.arange(m * nu).reshape(m, nu)
+        nx = np.roll(idx, -1, axis=1)
+        Q = np.stack([idx[:-1], nx[:-1], nx[1:], idx[1:]], axis=-1).reshape(-1, 4)
+        a, b = len(V), len(V) + 1
+        V = np.vstack([V, P[0] - 1e-5 * T[0], P[-1] + 1e-5 * T[-1]])
+        tris = np.vstack([np.stack([np.full(nu, a), nx[0], idx[0]], axis=-1), np.stack([np.full(nu, b), idx[-1], nx[-1]], axis=-1)])
+        f = Q[len(Q) // 2]
+        nrm = np.cross(V[f[1]] - V[f[0]], V[f[3]] - V[f[0]])
+        if nrm @ (V[f[0]] - P[len(Q) // 2 // nu]) < 0:
+            Q, tris = Q[:, ::-1], tris[:, ::-1]
+        across = np.concatenate([np.tile(ca, m), [0.0, 0.0]])
+        s = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))])
+        hu = np.concatenate([np.repeat(s, nu), [0.0, s[-1]]])
+        hv = across * np.concatenate([np.repeat(hw, nu), [0.0, 0.0]]) + 0.013 * k
+        ht = np.concatenate([np.repeat(t, nu), [0.0, 1.0]])
+        n = len(V)
+        attrs = dict(hv=hv, hu=hu, hw=across, ht=ht,
+                     ring_off=np.full(n, _pick(row, "ring", i, 0.0) + rng.normal(0.0, self.sp.get("ring_jit", 0.0))),
+                     hshade=np.full(n, float(_pick(row, "shade", i, 0.0))))
+        return V, Q, tris, attrs
+
+
+def build_clumps(head, spec, mats, prefix, coll="Head", body_objects=None):
+    """The B2c hair (see `Clumps`): the cap (as B2a's, its own table) and the locks, one object each."""
+    import time
+    t0 = time.time()
+    C = Clumps(head, spec)
+    hair = C.hair
+    objs = []
+    lo, hi = np.array([-0.10, -0.125, 1.49]), np.array([0.10, 0.11, 1.72])
+    lo, hi = head.world(lo), head.world(hi)
+    V, Q = ah.mesh_banded(hair.cap_field, lo, hi, spec["cap"].get("res", 0.0012))
+    N = head.grad(hair.cap_field, V)
+    nv = len(V)
+    objs.append(ah._mesh(prefix + "_Hair_Cap", V, Q, mats["hair"], coll, normals=N,
+                         attrs=dict(hv=V[:, 0] * 0.6 + V[:, 1] * 0.2, hu=V[:, 2], hw=np.zeros(nv), ht=np.zeros(nv),
+                                    ring_off=np.zeros(nv), hshade=np.full(nv, spec["cap"].get("shade", 0.5)))))
+    body = None
+    if body_objects is None and "body" in spec:
+        body_objects = body_parts(spec["body"])
+    if body_objects:
+        body = _body_bvh(body_objects, spec.get("body_z", 0.95))
+    rng = np.random.default_rng(spec.get("seed", 3))
+    k = 0
+    allV, allQ, allT, allA, voff = [], [], [], [], 0
+    for gname, row in spec["locks"]:
+        n = row.get("n", 1)
+        for side in ((1.0, -1.0) if row.get("mirror", True) else (1.0,)):
+            r = _mirror_row(row) if side < 0 else row
+            for i in range(n):
+                P = C.path(r, i, rng, body)
+                V, Q, T, A = C.mesh(P, r, i, k, rng)
+                allV.append(V)
+                allQ.append(Q + voff)
+                allT.append(T + voff)
+                allA.append(A)
+                voff += len(V)
+                k += 1
+    Vall = np.vstack(allV)
+    if body is not None:
+        clear = spec.get("skin_clear", 0.0012)
+        moved = 0
+        for i in np.where(Vall[:, 2] < head.world(head.egg.c)[2] - 0.04)[0]:
+            co, nrm, _, _ = body.find_nearest(tuple(Vall[i]))
+            if co is None:
+                continue
+            co, nrm = np.array(co), np.array(nrm)
+            g = (Vall[i] - co) @ nrm
+            if g < clear:
+                Vall[i] += nrm * (clear - g)
+                moved += 1
+        print("anime hair: %d lock vertices lifted clear of the suit" % moved)
+    attrs = {key: np.concatenate([a[key] for a in allA]) for key in allA[0]}
+    objs.append(ah._mesh(prefix + "_Hair_Locks", Vall, np.vstack(allQ), mats["hair"], coll, tris=np.vstack(allT), attrs=attrs))
+    print("anime hair (clumps): %d locks in %.1fs" % (k, time.time() - t0))
+    return objs
+
+
+def _mirror_row(row):
+    """Her right side: every azimuth negated (root, mid, leave, fall alpha, shift x), every front-view x negated (tip)."""
+    r = dict(row)
+
+    def neg(v, f):
+        return [f(x) if x is not None else None for x in v] if isinstance(v, list) else (f(v) if v is not None else None)
+
+    def fneg(f):
+        g = dict(f)
+        if "alpha" in g:
+            g["alpha"] = -g["alpha"]
+        if "shift" in g:
+            g["shift"] = (-g["shift"][0], g["shift"][1], g["shift"][2])
+        return g
+    for key in ("root", "mid", "leave"):
+        if key in r:
+            r[key] = neg(r[key], lambda p: (p[0], -p[1]))
+    if "tip" in r:
+        r["tip"] = neg(r["tip"], lambda p: (-p[0], p[1]))
+    if "fall" in r:
+        r["fall"] = neg(r["fall"], fneg)
+    if "twist" in r:
+        r["twist"] = neg(r["twist"], lambda a: -a)
+    return r
+
+
+def _body_bvh(body_objects, body_z):
+    """The suit's OUTER surfaces above `body_z` as a BVH (Solidify muted: a rope inside would stay inside its inner wall)."""
+    import bpy
+    from mathutils.bvhtree import BVHTree
+    muted = [m for ob in body_objects for m in ob.modifiers if m.type == "SOLIDIFY" and m.show_viewport]
+    for m in muted:
+        m.show_viewport = False
+    dg = bpy.context.evaluated_depsgraph_get()
+    dg.update()
+    Vs, Fs, off = [], [], 0
+    for ob in body_objects:
+        ev = ob.evaluated_get(dg)
+        me = ev.to_mesh()
+        co = np.empty(len(me.vertices) * 3)
+        me.vertices.foreach_get("co", co)
+        co = co.reshape(-1, 3) @ np.array(ob.matrix_world)[:3, :3].T + np.array(ob.matrix_world)[:3, 3]
+        me.calc_loop_triangles()
+        tri = np.empty(len(me.loop_triangles) * 3, np.int32)
+        me.loop_triangles.foreach_get("vertices", tri)
+        keep = co[:, 2] > body_z
+        tri = tri.reshape(-1, 3)
+        tri = tri[keep[tri].all(axis=1)]
+        Vs.append(co)
+        Fs.append(tri + off)
+        off += len(co)
+        ev.to_mesh_clear()
+    for m in muted:
+        m.show_viewport = True
+    return BVHTree.FromPolygons([tuple(v) for v in np.vstack(Vs)], [tuple(f) for f in np.vstack(Fs)], epsilon=0.0)

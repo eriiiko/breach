@@ -107,6 +107,8 @@ def lights(specs, rig):
         li.use_shadow = opt.get("shadow", True)
         li.use_shadow_jitter = opt.get("jitter", True)
         li.shadow_filter_radius = opt.get("filter", 1.0)
+        if "res" in opt:   # B2c: the shadow map's finest texel (m); a crisp toon shadow from a lock 10 mm off the skin
+            li.shadow_maximum_resolution = opt["res"]
         ob = bpy.data.objects.new(name, li)
         ob.location = loc
         studio._look_at(ob, target)
@@ -354,9 +356,22 @@ def ring_attr(obs, centre, spec):
         b0, hw, soft = spec["beta"]
         jag = spec.get("jag", 0.0) * np.sin(np.radians(alpha) * spec.get("freq", 9.0)) \
             + 0.5 * spec.get("jag", 0.0) * np.sin(np.radians(alpha) * spec.get("freq", 9.0) * 2.3 + 1.1)
+        lock = spec.get("per_lock")
+        if lock and me.attributes.get("ring_off") is not None and me.attributes.get("hw") is not None:
+            # B2c: a band PER LOCK, broken between locks as drawn: each lock's band shifted by its own `ring_off` (deg),
+            # bowed across the lock (`sag` deg x across^2), its edges serrated along the strands (`saw` deg, `teeth` per
+            # lock width) and narrowing to nothing at the lock's edges (`edge`: the across-position where it is gone)
+            ro, hwv = np.empty(len(me.vertices)), np.empty(len(me.vertices))
+            me.attributes["ring_off"].data.foreach_get("value", ro)
+            me.attributes["hw"].data.foreach_get("value", hwv)
+            jag = ro + lock.get("sag", 0.0) * hwv ** 2 + lock.get("saw", 0.0) * np.abs(np.sin(hwv * np.pi * lock.get("teeth", 2.0) + ro))
+            hwv_w = np.clip((lock.get("edge", 1.0) - np.abs(hwv)) / 0.25, 0.0, 1.0)
+            b0, hw, soft = lock.get("beta", spec["beta"])
+        else:
+            hwv_w = 1.0
         q = np.abs(beta - b0 - jag)
         band = np.clip((hw + soft - q) / max(soft, 1e-6), 0.0, 1.0)
-        band = band * band * (3 - 2 * band)
+        band = band * band * (3 - 2 * band) * hwv_w
         bk = spec.get("back", 150.0)
         band *= np.clip((bk - alpha) / 25.0, 0.0, 1.0)
         a = me.attributes.get("toon_ring") or me.attributes.new("toon_ring", "FLOAT", "POINT")

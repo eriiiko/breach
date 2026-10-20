@@ -64,6 +64,7 @@ PALETTE = dict(
     PUPIL="#16141c",
     HAIR="#241a19",          # dark brown
     HAIR_LIGHT="#3e302d",    # its streaks
+    HAIR_DEEP="#120c0c",     # B2c: the under layer (`hshade`)
     # B2b, the toon look (`LOOKS`): its absolute colours -- highlights, rims, the hair's band and the inked lines
     SHINE="#eef1f8",         # the latex's crisp streaks
     SUIT_RIM="#59606e",      # the latex's rim, a cool grey
@@ -1152,14 +1153,99 @@ HAIR = dict(
     ),
 )
 
+# B2c, the hair (`charkit/animehair.py`, `build_clumps`): layered, tapered clumps given lock by lock, the hanging hair on an
+# envelope traced on the close-ups (PROVENANCE B2c step 1). Head space (the A-pose size; the default head is x 1.20). Angles
+# about the egg's centre: beta the elevation, alpha the azimuth from the front towards her left (rows mirrored unless
+# `mirror=False`); `tip` a front-view target (x, z) on the face; lengths in metres. Per-lock values are lists.
+def _taper(w, root=0.55, mid=0.92, end=0.55, at=(0.14, 0.70, 0.90)):
+    """A clump's width along it: narrow at the root (it dives under the others), wide down most of its length, then a
+    short point."""
+    return ((0.0, root * w), (at[0], w), (at[1], mid * w), (at[2], end * w), (0.975, 0.14 * w), (1.0, 0.02 * w))
+
+
+def _thick(th, end=0.30):
+    return ((0.0, th), (0.6, 0.85 * th), (0.9, end * th), (1.0, 0.0004))
+
+
+def _fall(z, a, spread=((0.0, 1.0), (1.0, 1.0)), **kw):
+    return dict(z=z, alpha=a, spread=spread, **kw)
+
+
+HAIR_B2C = dict(
+    kind="clumps", pole_guard=True, seed=11, body_z=0.95, body_clear=0.005, skin_clear=0.0012, ring_jit=1.5, skin_floor=1.43,
+    body=("Suit_Body", "Suit_Shoulder", "Suit_Collar*", "Suit_Sleeve", "Suit_Mesh_Blade", "Suit_Mesh_Shoulder"),
+    cap=dict(line=((0, 1.640), (40, 1.630), (60, 1.605), (80, 1.585), (95, 1.590), (115, 1.594), (128, 1.560), (145, 1.530), (180, 1.515)),
+             thick=(0.006, 0.016, 0.014), fade=0.006, under=0.009, res=0.0012, shade=0.6),
+    # the outer silhouette (z, half-width, front, back from the head's axis), fuller than an ellipse (n) so the hair behind
+    # the ears stands as wide as the front close-up draws it (the mean of her two sides: 111 mm at the eye line, 123 at the
+    # chin) while the ears stay clear in profile; then onto the shoulders
+    envelope=dict(n=3.0, rows=((1.700, 0.030, 0.030, 0.030), (1.660, 0.084, 0.092, 0.100), (1.620, 0.106, 0.100, 0.108),
+                               (1.600, 0.113, 0.104, 0.109), (1.5626, 0.120, 0.104, 0.109), (1.540, 0.124, 0.104, 0.109),
+                               (1.520, 0.128, 0.104, 0.108), (1.500, 0.130, 0.104, 0.107), (1.478, 0.132, 0.105, 0.107),
+                               (1.450, 0.133, 0.110, 0.107), (1.420, 0.130, 0.120, 0.110), (1.380, 0.132, 0.130, 0.115),
+                               (1.330, 0.128, 0.140, 0.120), (1.250, 0.110, 0.140, 0.125), (1.150, 0.080, 0.140, 0.130))),
+    locks=(
+        # the fringe, unmirrored, from her right to her left: the outer clumps over the brows' outer ends, a gap of forehead
+        # each side, the central mass in five overlapping clumps, its middle one to the lash line between the eyes; parted a
+        # little to her right of the midline; the tips stand off the face as drawn in profile
+        ("fringe", dict(n=9, mirror=False,
+                        root=[(66, -46), (72, -32), (80, -18), (83, -10), (85, -3), (83, 5), (80, 13), (72, 30), (66, 44)],
+                        tip=[(-0.050, 1.5790), (-0.040, 1.5815), (-0.019, 1.5735), (-0.010, 1.5675), (-0.002, 1.5636),
+                             (0.007, 1.5690), (0.015, 1.5745), (0.039, 1.5890), (0.049, 1.5845)],
+                        off=(0.0005, 0.010), off_pow=1.3, bulge=0.002, clear=0.003,
+                        width=[_taper(0.024), _taper(0.026), _taper(0.024), _taper(0.022), _taper(0.024), _taper(0.022),
+                               _taper(0.024), _taper(0.026), _taper(0.022)],
+                        thick=_thick(0.005), curl=0.30, ring=[1.0, -1.5, 2.0, -1.0, 1.5, -2.0, 0.5, -1.0, 2.0])),
+        # over the temples: from the part, over the temple and the ear's top, falling behind the ear: the silhouette at the
+        # temples and the eye line in front
+        ("temple", dict(n=2, root=[(84, 18), (82, 32)], mid=[(44, 70), (38, 84)], leave=[(10, 118), (5, 126)],
+                        off=(0.001, 0.007), bulge=0.010, clear=0.004,
+                        fall=[_fall(1.36, 122), _fall(1.35, 130)],
+                        width=[_taper(0.036), _taper(0.036)], thick=_thick(0.006), curl=0.25, ring=[0.5, -1.0])),
+        # the crown: from the part over the top and back, down behind the ears onto the shoulders
+        ("crown", dict(n=4, root=[(86, 45), (85, 70), (84, 95), (83, 120)],
+                       mid=[(52, 100), (50, 115), (48, 130), (46, 145)],
+                       leave=[(14, 122), (10, 132), (6, 142), (2, 152)],
+                       off=(0.001, 0.005), bulge=0.006, clear=0.004,
+                       fall=[_fall(1.35, 126), _fall(1.34, 136), _fall(1.33, 146), _fall(1.32, 156)],
+                       width=[_taper(0.038), _taper(0.038), _taper(0.038), _taper(0.036)],
+                       thick=_thick(0.006), curl=0.25, ring=[0.0, 1.5, -1.0, 2.0])),
+        # the back: from the crown's back down to a V at the middle of the back (the drawings: 1.17-1.23 m)
+        ("back", dict(n=5, root=[(80, 135), (78, 148), (76, 160), (74, 170), (72, 178)],
+                      leave=[(-6, 150), (-10, 158), (-14, 165), (-18, 172), (-22, 178)],
+                      off=(0.001, 0.004), bulge=0.004, clear=0.004,
+                      fall=[_fall(1.31, 156), _fall(1.29, 163), _fall(1.275, 169), _fall(1.26, 174), _fall(1.246, 179)],
+                      width=[_taper(0.036), _taper(0.036), _taper(0.036), _taper(0.036), _taper(0.034)],
+                      thick=_thick(0.006), curl=0.25)),
+        # in front of the ears: from the temple down along the cheek, over the jaw's corner, onto the chest
+        ("side", dict(n=2, root=[(60, 26), (56, 40)], mid=[(16, 62), (12, 74)], leave=[(-20, 72), (-22, 84)],
+                      off=(0.001, 0.003), clear=0.003,
+                      fall=[_fall(1.31, 42, ((0.0, 0.02), (0.35, 0.10), (1.0, 0.55))), _fall(1.33, 58, ((0.0, 0.02), (0.35, 0.15), (1.0, 0.7)))],
+                      width=[_taper(0.013), _taper(0.015)], thick=_thick(0.0045), curl=0.30, ring=[1.0, -1.0])),
+        # under the outer layer, darker: fills between the neck and the outer hair, behind the ears
+        ("under", dict(n=3, root=[(40, 112), (35, 132), (30, 152)], leave=[(-12, 118), (-16, 136), (-20, 154)],
+                       off=(-0.001, 0.0), clear=0.003, shade=1.0,
+                       fall=[_fall(1.36, 112, ((0.0, 0.3), (1.0, 0.6))), _fall(1.34, 132, ((0.0, 0.3), (1.0, 0.7))),
+                             _fall(1.31, 152, ((0.0, 0.3), (1.0, 0.8)))],
+                       width=_taper(0.040), thick=_thick(0.006), curl=0.2)),
+        # loose thin strands framing the face
+        ("loose", dict(n=2, root=[(52, 30), (45, 48)], mid=[(5, 58), (0, 68)], leave=[(-25, 64), (-30, 74)],
+                       off=(0.002, 0.005), clear=0.004,
+                       fall=[_fall(1.40, 50, ((0.0, 0.15), (1.0, 0.8))), _fall(1.38, 62, ((0.0, 0.2), (1.0, 0.9)))],
+                       width=_taper(0.004, root=0.8, mid=0.9, end=0.6), thick=_thick(0.0016, end=0.5), curl=0.0)),
+    ),
+)
+
 # The head table the build reads: the anime head (FACE, EYES, HAIR) at the concept's ratio, or a named variant (`--head NAME`).
 # B2b (the owner, 2026-10-20): the x 1.20 head (the original concept's ratio to the body, PROVENANCE B2a step 1) is the
 # default, scaled about the chin's height on the neck's axis (`animehead.Head`'s pivot, the neck left in the collar); `apose` is
 # B2a's head at the A-pose drawings' size (chin to crown 204 mm); `placeholder` the bald one of B1a-B1n
+# B2c: the hair is the layered clumps (`HAIR_B2C`); `hair_b2a` is the default head with B2a's blockout (before/after)
 HEAD_SCALE = 1.20
-HEAD_APOSE = dict(kind="anime", face=FACE, eyes=EYES, hair=HAIR)
+HEAD_APOSE = dict(kind="anime", face=FACE, eyes=EYES, hair=HAIR_B2C)
 HEAD = dict(HEAD_APOSE, scale=HEAD_SCALE)
-HEADS = dict(anime=HEAD, concept=HEAD, apose=HEAD_APOSE, placeholder=HEAD_PLACEHOLDER)
+HEAD_HAIR_B2A = dict(HEAD, hair=HAIR)
+HEADS = dict(anime=HEAD, concept=HEAD, apose=HEAD_APOSE, hair_b2a=HEAD_HAIR_B2A, placeholder=HEAD_PLACEHOLDER)
 
 
 def head(name=None):
@@ -1250,7 +1336,7 @@ LOOK_TOON = dict(
     calib=1.0,
     # the light rig: a key from her upper front right (the art's), a rim from behind her left, two narrow strips and a small
     # top light that only the gloss sees (streaks); (name, kind, location, target, size or sun angle, energy, colour, options)
-    lights=(("ToonKey", "SUN", (-0.85, -2.3, 3.3), (0.0, 0.0, 1.2), 2.5, 3.1416, (1.0, 0.98, 0.95), dict(filter=2.0)),
+    lights=(("ToonKey", "SUN", (-0.85, -2.3, 3.3), (0.0, 0.0, 1.2), 2.5, 3.1416, (1.0, 0.98, 0.95), dict(filter=0.6, res=0.0002)),
             ("ToonRim", "SUN", (1.6, 2.4, 1.9), (0.0, 0.0, 1.2), 4.0, 1.6, (0.92, 0.96, 1.0), dict(shadow=False, diffuse=0.35)),
             ("ToonStripKey", "AREA", (-1.6, -2.2, 2.2), (0.0, 0.0, 1.2), (0.06, 0.9), 70.0, (1.0, 1.0, 1.0), dict(diffuse=0.0)),
             ("ToonStripSide", "AREA", (2.0, -1.2, 1.4), (0.0, 0.0, 1.1), (0.05, 1.0), 55.0, (1.0, 1.0, 1.0), dict(diffuse=0.0)),
@@ -1263,7 +1349,7 @@ LOOK_TOON = dict(
         nail=dict(ramp=_SKIN_RAMP, spec=dict(rough=0.2, lo=0.6, hi=0.8, colour="SHINE", amount=0.5)),
         eyes=dict(ramp=((0.0, (0.80, 0.80, 0.84)), (0.5, (1.0, 1.0, 1.0))), flat=0.85),
         lash=dict(ramp=((0.0, (1.0, 1.0, 1.0)), (1.0, (1.0, 1.0, 1.0))), flat=1.0),
-        hair=dict(ramp=((0.00, (0.95, 0.95, 0.95)), (0.38, (1.0, 1.0, 1.0)), (0.55, (1.7, 1.6, 1.6)), (1.30, (1.9, 1.8, 1.8))),
+        hair=dict(ramp=((0.00, (0.95, 0.95, 0.95)), (0.38, (1.05, 1.0, 1.0)), (0.55, (2.0, 1.88, 1.82)), (1.30, (3.2, 3.0, 2.9))),
                   bump=0.0, ring=dict(colour="HAIR_RING", lo=0.3, hi=0.6, amount=0.8)),
         suit=_LATEX, boot=_LATEX, pad=_LATEX,
         pad_rim=dict(_LATEX, ramp=((0.0, (0.8, 0.8, 0.8)), (0.6, (1.3, 1.3, 1.3)))),
@@ -1289,7 +1375,9 @@ LOOK_TOON = dict(
     # the hair shaded as one mass (`toonlook.radial_normals`): its normals towards the head's centre above the jaw
     hair_normals=dict(weight=0.75, z=(1.50, 1.58)),
     # the hair's highlight band (`toonlook.ring_attr`, degrees about the head's centre)
-    ring=dict(objects=("*_Hair_Cap", "*_Hair_Locks"), beta=(42.0, 3.0, 3.0), jag=2.5, freq=13.0, back=170.0),
+    ring=dict(objects=("*_Hair_Cap", "*_Hair_Locks"), beta=(42.0, 3.0, 3.0), jag=2.5, freq=13.0, back=170.0,
+              # B2c: on a hair whose locks carry `ring_off` / `hw` (the clumps), a band per lock (`toonlook.ring_attr`)
+              per_lock=dict(beta=(44.0, 1.6, 1.4), sag=-5.0, saw=2.5, teeth=1.5, edge=0.85)),
     floor=dict(lo=0.35, hi=0.55, amount=0.45, colour=(0.05, 0.05, 0.06)),
     # inked lines: an inverted hull `px` pixels wide at the subject; never on the eyes, lashes, piping, zip or nails
     outline=dict(px=1.6, exclude=("*_Eye", "*_Lash", "*_Piping*", "Suit_Zip_*", "Hand_Nails", "Suit_Knee_Rim"),
