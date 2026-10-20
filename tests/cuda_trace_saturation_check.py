@@ -46,8 +46,8 @@ import breach_physics as bp
 from simulation import gas_fixed
 from simulation.gases import INERT_N2, N_GASES, O2, SMOKE
 
-TMAX = gas_fixed.TRACE_CELL_MAX
-CEIL_UNITS = TMAX / gas_fixed.TRACE_ONE
+TRACE_MAX = gas_fixed.TRACE_CELL_MAX
+CEIL_UNITS = TRACE_MAX / gas_fixed.TRACE_ONE
 HULL, AIR, FURNITURE = 1, 0, 6
 
 _EOS_SETTERS = ("set_sl_advection_backend", "set_bulk_flux_backend",
@@ -138,7 +138,7 @@ def _scn_composite():
     tm = _box(22, 30)
 
     def setup(sim):
-        sim.gmap.gas[SMOKE][1:-1, 1:-1] = int(0.9 * TMAX)
+        sim.gmap.gas[SMOKE][1:-1, 1:-1] = int(0.9 * TRACE_MAX)
 
     def action(tick, sim):
         _fe_smoke(sim, 11, 6 + (tick % 18), 0.3 * CEIL_UNITS, 500 + tick)
@@ -160,7 +160,7 @@ def _scn_fire():
 
     def setup(sim):
         open_ = ~sim.gmap.solid
-        sim.gmap.gas[SMOKE][open_] = TMAX - 64
+        sim.gmap.gas[SMOKE][open_] = TRACE_MAX - 64
         ignite_ring(sim.gmap, sim.edit_queue, 8, 10, 2.5, 1.0)
 
     def action(tick, sim):
@@ -217,7 +217,7 @@ def _run(name, builder, resident, parity=True):
             print(f"  [{tag}] tick {tick}: GPU identity residual {res}")
         for gid in _trace_ids(gg):
             p = gg.gas[gid]
-            if int(p.max()) > TMAX or int(p.min()) < 0:
+            if int(p.max()) > TRACE_MAX or int(p.min()) < 0:
                 bad += 1
                 print(f"  [{tag}] tick {tick}: gas {gid} out of [0, MAX]")
             if bg["neg"][gid] != 0:
@@ -267,7 +267,7 @@ def part2_resident() -> bool:
     return _run("COMPOSITE", _scn_composite, resident=True)
 
 
-def _comb_scene(soot_q):
+def _comb_scene(soot_trace_q):
     h = w = 5
     gas = np.zeros((N_GASES, h, w), dtype=np.int32)
     gas[INERT_N2][:] = gas_fixed.quantize_bulk_scalar(0.79)
@@ -280,7 +280,7 @@ def _comb_scene(soot_q):
               fire=np.where(solid, 65536, 0).astype(np.int32),
               ignition_temp_q16=np.where(solid, 500 * 65536, 0).astype(np.int32),
               temperature=np.where(solid, 900 * 65536, 0).astype(np.int32))
-    st["gas"][SMOKE][~solid] = soot_q
+    st["gas"][SMOKE][~solid] = soot_trace_q
     return st
 
 
@@ -289,9 +289,9 @@ DIALS = dict(burn_rate=1.0, o2_thresh_burn=0.03, H_FUEL_M=4.0, H_FUEL_SHIFT=0,
              o2_frac_full=0.21, T_MAX_PHYS=16000.0)
 
 
-def _burn_pair(soot_q):
+def _burn_pair(soot_trace_q):
     d = DIALS
-    c = _comb_scene(soot_q)
+    c = _comb_scene(soot_trace_q)
     comb = bp.CombustionSolver()
     for k, v in d.items():
         setattr(comb, k, v)
@@ -299,7 +299,7 @@ def _burn_pair(soot_q):
     comb.step(c["gas"], O2, INERT_N2, SMOKE, c["temperature"], c["wall_hp"],
               c["fire"], c["flammable"], c["solid"], c["is_vacuum"],
               c["ignition_temp_q16"], 0.25, 0.0076849, 0.05, eos=eos_c)
-    g = _comb_scene(soot_q)
+    g = _comb_scene(soot_trace_q)
     eos_g = bp.EOSSolver()
     bp.cuda_combustion_step(
         g["gas"], O2, INERT_N2, SMOKE, g["temperature"], g["wall_hp"], g["fire"],
@@ -319,7 +319,7 @@ def part3_mint() -> bool:
     books = lambda e: (e.trace_mint_sum()[SMOKE], e.trace_clip_sum()[SMOKE],
                        e.trace_neg_hits()[SMOKE])
     c0, ec0, g0, eg0 = _burn_pair(0)
-    c1, ec1, g1, eg1 = _burn_pair(TMAX - 1)
+    c1, ec1, g1, eg1 = _burn_pair(TRACE_MAX - 1)
     for tag, c, ec, g, eg in (("free", c0, ec0, g0, eg0), ("full", c1, ec1, g1, eg1)):
         for k in ("gas", "temperature", "wall_hp"):
             if not np.array_equal(c[k], g[k]):
@@ -337,11 +337,11 @@ def part3_mint() -> bool:
         ok = False
         print(f"  full plane: mint {mint1} clip {clip1} neg {neg1} "
               f"(want mint == {mint0}, clip > 0, neg 0)")
-    if int(g1["gas"][SMOKE].max()) > TMAX:
+    if int(g1["gas"][SMOKE].max()) > TRACE_MAX:
         ok = False
         print("  full plane: a cell above TRACE_CELL_MAX")
     d = int(g1["gas"][SMOKE].astype(np.int64).sum()) - int(
-        _comb_scene(TMAX - 1)["gas"][SMOKE].astype(np.int64).sum())
+        _comb_scene(TRACE_MAX - 1)["gas"][SMOKE].astype(np.int64).sum())
     if d != mint1 - clip1:
         ok = False
         print(f"  full plane: Δ S {d} != mint − clip {mint1 - clip1}")

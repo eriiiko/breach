@@ -54,9 +54,9 @@ from simulation.payloads import ignite_ring  # noqa: E402
 from simulation.ruleset import ContinuousRealtime  # noqa: E402
 from config import CFG  # noqa: E402
 
-TMAX = gas_fixed.TRACE_CELL_MAX
+TRACE_MAX = gas_fixed.TRACE_CELL_MAX
 T_ONE = gas_fixed.TRACE_ONE
-CEIL_UNITS = TMAX / T_ONE                       # the cell ceiling, real units
+CEIL_UNITS = TRACE_MAX / T_ONE                       # the cell ceiling, real units
 OVER = 200.0 * 2.0 ** (8 - gas_fixed.TRACE_FINE_BITS)   # 1.5625 × the ceiling
 HULL, AIR, FURNITURE = 1, 0, 6                  # v2 codes == material ids
 
@@ -110,7 +110,7 @@ def _assert_tick_closes(sim, before, tag):
     eos = sim.physics_runner.engine.eos
     for gid in _trace_ids(g):
         plane = g.gas[gid]
-        assert int(plane.max()) <= TMAX and int(plane.min()) >= 0, (tag, gid)
+        assert int(plane.max()) <= TRACE_MAX and int(plane.min()) >= 0, (tag, gid)
         assert eos.trace_neg_hits()[gid] == 0, (tag, gid)
         d = _tot(g, gid) - before[gid]
         assert d == _net_books(sim, gid), (
@@ -147,15 +147,15 @@ def test_the_saturation_twins_agree_and_saturate_from_above_only():
     BREAKS IF: either twin clamps from below, cuts a representable sum, books
     a wrong excess, wraps, or the two drift apart.
     """
-    cases = [(0, 0), (0, 1), (0, TMAX), (0, TMAX + 1), (1, TMAX),
-             (TMAX, 0), (TMAX, 1), (TMAX - 7, 7), (TMAX - 7, 8),
-             (12345, -12345), (12345, -1), (0, 1 << 40), (TMAX, 1 << 62)]
+    cases = [(0, 0), (0, 1), (0, TRACE_MAX), (0, TRACE_MAX + 1), (1, TRACE_MAX),
+             (TRACE_MAX, 0), (TRACE_MAX, 1), (TRACE_MAX - 7, 7), (TRACE_MAX - 7, 8),
+             (12345, -12345), (12345, -1), (0, 1 << 40), (TRACE_MAX, 1 << 62)]
     for s, add in cases:
         stored_c, clip_c, neg_c = bp.fp_trace_add_sat(s, add)
         stored_p, clip_p = gas_fixed.trace_add_sat(s, add)
         t = s + add
         assert (stored_c, clip_c, neg_c) == (stored_p, clip_p, 0), (s, add)
-        assert stored_p == min(t, TMAX) and clip_p == max(0, t - TMAX), (s, add)
+        assert stored_p == min(t, TRACE_MAX) and clip_p == max(0, t - TRACE_MAX), (s, add)
         if add >= 0:
             assert stored_p >= s, (s, add)            # never cuts the cell
     stored_c, clip_c, neg_c = bp.fp_trace_add_sat(5, -9)
@@ -181,29 +181,29 @@ def test_fieldedit_books_its_attempt_and_clips_the_excess(mode):
     sim = _sim(_box(12, 12))
     g = sim.gmap
     g.reset_trace_books()
-    near = TMAX - 1000
-    g.gas[SMOKE][4, 4] = near
+    near_trace = TRACE_MAX - 1000
+    g.gas[SMOKE][4, 4] = near_trace
     # ADD: a quarter-ceiling on a nearly full cell; MAX: a target above it.
     amount = 0.25 * CEIL_UNITS if mode == EditMode.ADD else 1.25 * CEIL_UNITS
     apply_field_edit(g, FieldEdit(field="gas", channel=SMOKE, region=Region.TILE,
                                   coords=(4, 4), amount=amount, mode=mode), sim.rng)
     want = gas_fixed.quantize_trace_scalar(
-        (amount if mode == EditMode.MAX else gas_fixed.dequantize_trace(near) + amount))
-    attempt = want - near
+        (amount if mode == EditMode.MAX else gas_fixed.dequantize_trace(near_trace) + amount))
+    attempt = want - near_trace
     assert attempt > 1000
-    assert int(g.gas[SMOKE][4, 4]) == TMAX
+    assert int(g.gas[SMOKE][4, 4]) == TRACE_MAX
     assert g.trace_deposit_books[SMOKE] == attempt
-    assert g.trace_clip_books[SMOKE] == near + attempt - TMAX
+    assert g.trace_clip_books[SMOKE] == near_trace + attempt - TRACE_MAX
 
     # A3: an over-ceiling amount into an EMPTY cell.
     g.reset_trace_books()
     apply_field_edit(g, FieldEdit(field="gas", channel=SMOKE, region=Region.TILE,
                                   coords=(6, 6), amount=OVER, mode=mode), sim.rng)
     q = gas_fixed.quantize_trace_scalar(OVER)
-    assert q > TMAX
-    assert int(g.gas[SMOKE][6, 6]) == TMAX
+    assert q > TRACE_MAX
+    assert int(g.gas[SMOKE][6, 6]) == TRACE_MAX
     assert g.trace_deposit_books[SMOKE] == q
-    assert g.trace_clip_books[SMOKE] == q - TMAX
+    assert g.trace_clip_books[SMOKE] == q - TRACE_MAX
 
 
 def test_fieldedit_remove_books_nothing_and_a_representable_add_is_exact():
@@ -240,13 +240,13 @@ def test_seal_tiles_saturates_a_full_receiver_instead_of_refusing():
     g = sim.gmap
     g.reset_trace_books()
     t = (5, 5)
-    g.gas[SMOKE][t] = 5_000_000
+    g.gas[SMOKE][t] = 5_000_000   # raw trace counts: scale-free (#88)
     for r in ((4, 5), (6, 5), (5, 4), (5, 6)):
-        g.gas[SMOKE][r] = TMAX - 3
+        g.gas[SMOKE][r] = TRACE_MAX - 3
     s_before = _tot(g, SMOKE)
     bulk_before = _tot(g, O2) + _tot(g, INERT_N2)
     g.seal_tiles([t], HULL)
-    assert int(g.gas[SMOKE].max()) <= TMAX
+    assert int(g.gas[SMOKE].max()) <= TRACE_MAX
     assert int(g.gas[SMOKE][t]) == 0
     assert g.trace_deposit_books[SMOKE] == 0
     assert g.trace_clip_books[SMOKE] == 5_000_000 - 4 * 3
@@ -266,14 +266,14 @@ def test_the_vent_supply_inject_saturates_its_trace_slices():
     sim = _sim(_box(10, 10))
     g = sim.gmap
     g.reset_trace_books()
-    g.gas[SMOKE][4, 4] = TMAX - 10
+    g.gas[SMOKE][4, 4] = TRACE_MAX - 10
     add = [0] * N_GASES
     add[SMOKE] = 1_000_000
     add[O2] = 100
     add[INERT_N2] = 300
     o2_0, n2_0 = int(g.gas[O2][4, 4]), int(g.gas[INERT_N2][4, 4])
     g.inject_gas_n_vec(4, 4, add, 0, -(1 << 30), 1 << 30)
-    assert int(g.gas[SMOKE][4, 4]) == TMAX
+    assert int(g.gas[SMOKE][4, 4]) == TRACE_MAX
     assert g.trace_clip_books[SMOKE] == 1_000_000 - 10
     assert g.trace_deposit_books[SMOKE] == 0
     assert int(g.gas[O2][4, 4]) == o2_0 + 100
@@ -293,7 +293,7 @@ def test_stage_3b_saturates_once_per_cell_under_blast_compression():
     """
     sim = _sim(_box(20, 28))
     g = sim.gmap
-    g.gas[SMOKE][1:-1, 1:-1] = TMAX
+    g.gas[SMOKE][1:-1, 1:-1] = TRACE_MAX
     clipped = 0
     for tick in range(24):
         if tick % 6 == 0:
@@ -304,9 +304,9 @@ def test_stage_3b_saturates_once_per_cell_under_blast_compression():
     assert clipped > 0, "the scenario never compressed a full cell: vacuous"
 
 
-def _combustion_scene(soot_q):
+def _combustion_scene(soot_trace_q):
     """A 5x5 grid: one lit, hot, fuelled wood source at (2, 2); air around it
-    with O2 to burn; the smoke plane at ``soot_q`` on every air cell."""
+    with O2 to burn; the smoke plane at ``soot_trace_q`` on every air cell."""
     h = w = 5
     gas = np.zeros((N_GASES, h, w), dtype=np.int32)
     gas[INERT_N2][:] = gas_fixed.quantize_bulk_scalar(0.79)
@@ -323,7 +323,7 @@ def _combustion_scene(soot_q):
     ign[2, 2] = 500 * 65536
     temperature = np.zeros((h, w), dtype=np.int32)
     temperature[2, 2] = 900 * 65536
-    gas[SMOKE][~solid] = soot_q
+    gas[SMOKE][~solid] = soot_trace_q
     return dict(gas=gas, temperature=temperature, wall_hp=wall_hp, fire=fire,
                 flammable=flammable, solid=solid, is_vacuum=is_vacuum,
                 ignition_temp_q16=ign)
@@ -365,11 +365,11 @@ def test_the_soot_mint_books_its_attempt_and_clips_the_excess():
     assert int(free["gas"][SMOKE].astype(np.int64).sum()) - s0 == mint
     assert eos_free.trace_clip_sum()[SMOKE] == 0
 
-    full = _combustion_scene(TMAX - 1)
+    full = _combustion_scene(TRACE_MAX - 1)
     s0 = int(full["gas"][SMOKE].astype(np.int64).sum())
     eos_full = _burn(full)
     assert eos_full.trace_mint_sum()[SMOKE] == mint
-    assert int(full["gas"][SMOKE].max()) <= TMAX
+    assert int(full["gas"][SMOKE].max()) <= TRACE_MAX
     d = int(full["gas"][SMOKE].astype(np.int64).sum()) - s0
     assert d == mint - eos_full.trace_clip_sum()[SMOKE]
     assert eos_full.trace_clip_sum()[SMOKE] > 0
@@ -422,10 +422,10 @@ def test_an_over_ceiling_w5_puff_lands_at_the_ceiling_and_books_the_rest():
     st["atmosphere"][1, 1] = 0               # below boil_p_thresh
     _water_tail(engine, st, steam_yield=OVER)
     puff_q = bp.fp_quantize_trace(OVER)
-    assert puff_q > TMAX
-    assert int(st["gas"][STEAM][1, 1]) == TMAX
+    assert puff_q > TRACE_MAX
+    assert int(st["gas"][STEAM][1, 1]) == TRACE_MAX
     assert engine.eos.trace_mint_sum()[STEAM] == puff_q
-    assert engine.eos.trace_clip_sum()[STEAM] == puff_q - TMAX
+    assert engine.eos.trace_clip_sum()[STEAM] == puff_q - TRACE_MAX
     assert engine.eos.trace_neg_hits()[STEAM] == 0
 
 
@@ -445,11 +445,11 @@ def test_the_w3_receiver_saturates_and_the_donor_loses_its_whole_share():
     st["dyn_permeability"][1, 2] = 1.0
     st["water_depth"][1, 1] = 65536          # 1.0 m rising from 0: ratio 2
     st["gas"][SMOKE][1, 1] = 1 << 30
-    st["gas"][SMOKE][1, 2] = TMAX - 5
+    st["gas"][SMOKE][1, 2] = TRACE_MAX - 5
     s0 = int(st["gas"][SMOKE].astype(np.int64).sum())
     _water_tail(engine, st, steam_yield=0.0)
     clip = engine.eos.trace_clip_sum()[SMOKE]
-    assert int(st["gas"][SMOKE][1, 2]) == TMAX
+    assert int(st["gas"][SMOKE][1, 2]) == TRACE_MAX
     assert clip > 0
     assert int(st["gas"][SMOKE].astype(np.int64).sum()) - s0 == -clip
     assert engine.eos.trace_neg_hits()[SMOKE] == 0
@@ -472,7 +472,7 @@ def test_the_composite_abuse_grenade_spam_under_blast_compression_closes():
     """
     sim = _sim(_box(22, 30))
     g = sim.gmap
-    g.gas[SMOKE][1:-1, 1:-1] = int(0.9 * TMAX)
+    g.gas[SMOKE][1:-1, 1:-1] = int(0.9 * TRACE_MAX)
     fe_clip = eng_clip = 0
     for tick in range(30):
         sim.edit_queue.enqueue(FieldEdit(
