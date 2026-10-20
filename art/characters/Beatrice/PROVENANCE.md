@@ -1216,3 +1216,43 @@ inks them. The B1a-B2a look is `--look pbr` everywhere (Cycles, unchanged).
    drawing's lower lid thickness and its soft pink inner corner; the iris's layers are simpler than drawn (`face_closeup.jpg`).
 7. **Sheet scores** above the waist are lower with the larger head (above); expected, the drawings are at the A-pose size.
 8. **The head's interior**: the hair cap's lowest ring passes 2.4 mm behind the collar's surface at the nape (hidden).
+
+## B2c: the hair (2026-10-20, answers `previews/review_stage11.md` section 6 and items 1, 7, 9)
+
+The before is `source/Beatrice_b2b_3292a4c.blend` (gitignored). Only the `Head` collection's hair objects change.
+
+### Step 1, the art read (traced before the build; this record written right after the first build's commit)
+
+Tools: `C:/tmp/beatrice_b2c/tools/trace.py` (the hair's outer silhouette per row on the close-ups: pixels differing from the
+backdrop by more than 45 summed RGB) and `trace2.py` (the same on the A-pose drawings), crops on a 10 mm grid
+(`C:/tmp/beatrice_b2c/v/fringe_grid.jpg`). Head space (A-pose units, mm; the default head is x 1.20), the close-ups in B2a's
+frames (front 0.2074 mm/px, eye line 1.5626 at row 597; profile 0.2115 mm/px).
+
+- **Outer silhouette, front close-up** (her right / her left edge from the midline, width): crown 1.676: -72 / +66 (138);
+  1.6449: -90 / +82 (172); 1.6035: -106 / +96 (202); **eye line 1.5626: -116 / +107 (222)**; 1.5205: -128 / +111 (239);
+  **chin 1.478: -132 / +114 (246)**, the left edge then clipped by the frame; 1.4375: at least 254. The hair stands 26 mm off
+  the skull at the temples (the skull's half-width 75 at 1.60), 44 mm at the eye line; the drawing is a little wider on her
+  right. The crown runs out of the frame at the top (above 1.686); the A-pose drawing `with_hair.png` agrees on the widths
+  (1.64: 186, 1.60: 222, 1.563: 235) and draws the crown about 15-20 mm over the skull.
+- **Profile close-up**: the fringe stands well off the face -- its front 120 mm in front of the head's centre at 1.598, where
+  the forehead is at 101: about 17-20 mm off at the brows, the tips hanging in front of the eye (-112 at the eye line); the back
+  is out of the frame behind 94 mm. **The ear shows whole** in profile: one narrow lock passes in front of it (between the eye
+  and the ear, from the temple down past the jaw), the mass behind starts right behind the ear and falls straight down.
+- **The part**: a little to her right of the midline (about -4 mm at the crown's front, a pale whorl), the fringe sweeping from it.
+- **The fringe** (tips, x / z above the eye line, mm): an outer clump over her right brow's outer end (x -55..-36, tips at
+  +16..+18); a **gap of forehead** at x -36..-23 from +51 down to the brow; the central mass x -23..+19, five clumps with pointed
+  tips at (-19, +11), (-11, +5), (**-2, +1: the middle one to the lash line between the eyes**), (+7, +6), (+15, +12); a second
+  gap at x +19..+32 (+52 to +20); an outer clump over her left brow (x +32..+50, tips at +22..+26). The outer clumps blend into
+  the side locks.
+- **Side locks**: from the temples, in front of the ears, close to the cheek, over the jaw's corners and on past the chin onto
+  the collar and chest; in the front view they hide most of her right ear and the front of her left one (her left ear shows at
+  the face's edge, against the darker mass behind).
+- **Loose strands**: a few thin strands crossing the cheeks' outer edges (her left: from the side lock in towards the mouth's
+  corner height), and flyaways from the outer mass.
+- **The mass and the back** (`with_hair*.png`, `concept.jfif`, `concept-upper-body-side-v2.png`): wider than the head from the
+  cheeks down, flaring onto the shoulders, locks in front of both shoulders onto the chest; in profile the hair falls behind the
+  shoulder; the back is widest at the shoulder blades and ends in a V of separate, slightly wavy, tapered tips at about mid-back
+  (B2a measured 1.17-1.23 m).
+
+### Step 2, the build
+
