@@ -365,13 +365,13 @@ def ring_attr(obs, centre, spec):
             me.attributes["ring_off"].data.foreach_get("value", ro)
             me.attributes["hw"].data.foreach_get("value", hwv)
             jag = ro + lock.get("sag", 0.0) * hwv ** 2 + lock.get("saw", 0.0) * np.abs(np.sin(hwv * np.pi * lock.get("teeth", 2.0) + ro))
-            hwv_w = np.clip((lock.get("edge", 1.0) - np.abs(hwv)) / 0.25, 0.0, 1.0)
             b0, hw, soft = lock.get("beta", spec["beta"])
-        else:
-            hwv_w = 1.0
+            # a lens per lock: the band's half-width shrinks to nothing towards the lock's edges
+            lens = np.clip(1.0 - (hwv / lock.get("edge", 1.0)) ** 2, 0.0, 1.0)
+            hw, soft = hw * lens, np.maximum(soft * lens, 0.2)
         q = np.abs(beta - b0 - jag)
-        band = np.clip((hw + soft - q) / max(soft, 1e-6), 0.0, 1.0)
-        band = band * band * (3 - 2 * band) * hwv_w
+        band = np.clip((hw + soft - q) / np.maximum(soft, 1e-6), 0.0, 1.0)
+        band = band * band * (3 - 2 * band)
         bk = spec.get("back", 150.0)
         band *= np.clip((bk - alpha) / 25.0, 0.0, 1.0)
         a = me.attributes.get("toon_ring") or me.attributes.new("toon_ring", "FLOAT", "POINT")

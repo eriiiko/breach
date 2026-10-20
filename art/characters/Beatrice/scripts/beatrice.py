@@ -65,6 +65,7 @@ PALETTE = dict(
     HAIR="#241a19",          # dark brown
     HAIR_LIGHT="#3e302d",    # its streaks
     HAIR_DEEP="#120c0c",     # B2c: the under layer (`hshade`)
+    HAIR_STREAK=0.30,        # B2c: how much of HAIR_LIGHT the streaks along the locks carry (B2a: 0.6, busy stripes)
     # B2b, the toon look (`LOOKS`): its absolute colours -- highlights, rims, the hair's band and the inked lines
     SHINE="#eef1f8",         # the latex's crisp streaks
     SUIT_RIM="#59606e",      # the latex's rim, a cool grey
@@ -1110,6 +1111,7 @@ EYES = dict(
            (0.0350, 1.5530), (0.0390, 1.5531), (0.0420, 1.5536), (0.0450, 1.5547), (0.0480, 1.5560), (0.0500, 1.5574),
            (0.0514, 1.5591), (0.0522, 1.5609), (0.0524, 1.5628)),
     corner_k=0.0008, depth=0.005, depth_k=0.002, lid_k=0.0012,
+    front_only=-0.03,   # B2c: the opening cut only in front of y -0.03 (B2a/B2b also dented the back of the skull)
     dome=dict(centre=(0.0352, 1.5615), axes=(0.0180, 0.0090), inset=0.0012, curve=0.0035, thick=0.0008, margin=0.0018),
     # B2b: the drawn iris is round, 19.4 x 20 mm, its centre 0.2 mm over the eye line (B2a: 1.5622, 20 x 22.4 mm: its
     # bottom sank 2 mm under the lower lid); the pupil 4.9 x 6.2 mm (`pupil`: half-axes in iris radii), straight ahead
@@ -1167,23 +1169,26 @@ def _thick(th, end=0.30):
     return ((0.0, th), (0.6, 0.85 * th), (0.9, end * th), (1.0, 0.0004))
 
 
+_FLARE = ((0.0, 0.0), (0.6, 0.0), (1.0, 0.012))   # the hanging tips flaring a little outwards
+
+
 def _fall(z, a, spread=((0.0, 1.0), (1.0, 1.0)), **kw):
     return dict(z=z, alpha=a, spread=spread, **kw)
 
 
 HAIR_B2C = dict(
-    kind="clumps", pole_guard=True, seed=11, body_z=0.95, body_clear=0.005, skin_clear=0.0012, ring_jit=1.5, skin_floor=1.43,
+    kind="clumps", pole_guard=True, seed=11, step=0.0018, body_z=0.95, body_clear=0.005, skin_clear=0.0012, ring_jit=0.5, skin_floor=1.43,
     body=("Suit_Body", "Suit_Shoulder", "Suit_Collar*", "Suit_Sleeve", "Suit_Mesh_Blade", "Suit_Mesh_Shoulder"),
     cap=dict(line=((0, 1.640), (40, 1.630), (60, 1.605), (80, 1.585), (95, 1.590), (115, 1.594), (128, 1.560), (145, 1.530), (180, 1.515)),
-             thick=(0.006, 0.016, 0.014), fade=0.006, under=0.009, res=0.0012, shade=0.6),
+             thick=(0.006, 0.012, 0.013), fade=0.006, under=0.009, res=0.0012, shade=0.6),
     # the outer silhouette (z, half-width, front, back from the head's axis), fuller than an ellipse (n) so the hair behind
     # the ears stands as wide as the front close-up draws it (the mean of her two sides: 111 mm at the eye line, 123 at the
     # chin) while the ears stay clear in profile; then onto the shoulders
     envelope=dict(n=3.0, rows=((1.700, 0.030, 0.030, 0.030), (1.660, 0.084, 0.092, 0.100), (1.620, 0.106, 0.100, 0.108),
                                (1.600, 0.113, 0.104, 0.109), (1.5626, 0.120, 0.104, 0.109), (1.540, 0.124, 0.104, 0.109),
                                (1.520, 0.128, 0.104, 0.108), (1.500, 0.130, 0.104, 0.107), (1.478, 0.132, 0.105, 0.107),
-                               (1.450, 0.133, 0.110, 0.107), (1.420, 0.130, 0.120, 0.110), (1.380, 0.132, 0.130, 0.115),
-                               (1.330, 0.128, 0.140, 0.120), (1.250, 0.110, 0.140, 0.125), (1.150, 0.080, 0.140, 0.130))),
+                               (1.450, 0.133, 0.110, 0.107), (1.420, 0.140, 0.120, 0.114), (1.380, 0.148, 0.130, 0.120),
+                               (1.330, 0.146, 0.140, 0.126), (1.250, 0.120, 0.140, 0.130), (1.150, 0.080, 0.140, 0.130))),
     locks=(
         # the fringe, unmirrored, from her right to her left: the outer clumps over the brows' outer ends, a gap of forehead
         # each side, the central mass in five overlapping clumps, its middle one to the lash line between the eyes; parted a
@@ -1195,33 +1200,43 @@ HAIR_B2C = dict(
                         off=(0.0005, 0.010), off_pow=1.3, bulge=0.002, clear=0.003,
                         width=[_taper(0.024), _taper(0.026), _taper(0.024), _taper(0.022), _taper(0.024), _taper(0.022),
                                _taper(0.024), _taper(0.026), _taper(0.022)],
-                        thick=_thick(0.005), curl=0.30, ring=[1.0, -1.5, 2.0, -1.0, 1.5, -2.0, 0.5, -1.0, 2.0])),
+                        thick=_thick(0.005), curl=0.30, ring=[0.5, -0.8, 1.0, -0.5, 0.8, -1.0, 0.3, -0.5, 1.0])),
+        # thin wisps between the fringe's clumps, a little longer, as the drawing breaks its tips
+        ("wisps", dict(n=3, mirror=False, root=[(80, -22), (84, 0), (78, 20)],
+                       tip=[(-0.027, 1.5760), (0.004, 1.5680), (0.026, 1.5810)],
+                       off=(0.0008, 0.0105), off_pow=1.3, bulge=0.002, clear=0.003,
+                       width=_taper(0.009, mid=0.8, end=0.45), thick=_thick(0.0025), curl=0.2, ring=[0.5, -0.5, 1.0])),
         # over the temples: from the part, over the temple and the ear's top, falling behind the ear: the silhouette at the
         # temples and the eye line in front
         ("temple", dict(n=2, root=[(84, 18), (82, 32)], mid=[(44, 70), (38, 84)], leave=[(10, 118), (5, 126)],
                         off=(0.001, 0.007), bulge=0.010, clear=0.004,
-                        fall=[_fall(1.36, 122), _fall(1.35, 130)],
+                        fall=[_fall(1.36, 122, add=_FLARE, wave=(0.008, 0.8), z_jit=0.01), _fall(1.35, 130, add=_FLARE, wave=(0.008, 0.9), z_jit=0.01)],
                         width=[_taper(0.036), _taper(0.036)], thick=_thick(0.006), curl=0.25, ring=[0.5, -1.0])),
         # the crown: from the part over the top and back, down behind the ears onto the shoulders
         ("crown", dict(n=4, root=[(86, 45), (85, 70), (84, 95), (83, 120)],
                        mid=[(52, 100), (50, 115), (48, 130), (46, 145)],
                        leave=[(14, 122), (10, 132), (6, 142), (2, 152)],
-                       off=(0.001, 0.005), bulge=0.006, clear=0.004,
-                       fall=[_fall(1.35, 126), _fall(1.34, 136), _fall(1.33, 146), _fall(1.32, 156)],
+                       off=(0.001, 0.005), bulge=[0.008, 0.010, 0.007, 0.009], clear=0.004,
+                       fall=[_fall(1.35, 126, add=_FLARE, wave=(0.010, 0.8), z_jit=0.012), _fall(1.34, 136, add=_FLARE, wave=(0.010, 0.7), z_jit=0.012),
+                             _fall(1.33, 146, add=_FLARE, wave=(0.010, 0.9), z_jit=0.012), _fall(1.32, 156, add=_FLARE, wave=(0.010, 0.8), z_jit=0.012)],
                        width=[_taper(0.038), _taper(0.038), _taper(0.038), _taper(0.036)],
-                       thick=_thick(0.006), curl=0.25, ring=[0.0, 1.5, -1.0, 2.0])),
+                       thick=_thick(0.006), curl=0.25, ring=[0.0, 0.8, -0.5, 1.0])),
         # the back: from the crown's back down to a V at the middle of the back (the drawings: 1.17-1.23 m)
         ("back", dict(n=5, root=[(80, 135), (78, 148), (76, 160), (74, 170), (72, 178)],
                       leave=[(-6, 150), (-10, 158), (-14, 165), (-18, 172), (-22, 178)],
                       off=(0.001, 0.004), bulge=0.004, clear=0.004,
-                      fall=[_fall(1.31, 156), _fall(1.29, 163), _fall(1.275, 169), _fall(1.26, 174), _fall(1.246, 179)],
-                      width=[_taper(0.036), _taper(0.036), _taper(0.036), _taper(0.036), _taper(0.034)],
+                      fall=[_fall(1.31, 156, wave=(0.014, 0.8), z_jit=0.012), _fall(1.29, 163, wave=(0.014, 0.9), z_jit=0.012),
+                            _fall(1.275, 169, wave=(0.014, 0.8), z_jit=0.012), _fall(1.26, 174, wave=(0.014, 0.7), z_jit=0.012),
+                            _fall(1.246, 179, wave=(0.012, 0.8), z_jit=0.008)],
+                      width=[_taper(w, mid=0.8, end=0.40, at=(0.14, 0.60, 0.86)) for w in (0.036, 0.036, 0.036, 0.036, 0.034)],
                       thick=_thick(0.006), curl=0.25)),
         # in front of the ears: from the temple down along the cheek, over the jaw's corner, onto the chest
         ("side", dict(n=2, root=[(60, 26), (56, 40)], mid=[(16, 62), (12, 74)], leave=[(-20, 72), (-22, 84)],
                       off=(0.001, 0.003), clear=0.003,
-                      fall=[_fall(1.31, 42, ((0.0, 0.02), (0.35, 0.10), (1.0, 0.55))), _fall(1.33, 58, ((0.0, 0.02), (0.35, 0.15), (1.0, 0.7)))],
-                      width=[_taper(0.013), _taper(0.015)], thick=_thick(0.0045), curl=0.30, ring=[1.0, -1.0])),
+                      fall=[_fall(1.31, 54, ((0.0, 0.02), (0.35, 0.10), (1.0, 0.65)), wave=(0.004, 0.6)), _fall(1.33, 68, ((0.0, 0.02), (0.35, 0.15), (1.0, 0.8)), wave=(0.004, 0.6))],
+                      width=[((0.0, 0.007), (0.15, 0.013), (0.45, 0.013), (0.70, 0.021), (0.90, 0.013), (0.975, 0.003), (1.0, 0.0004)),
+                             ((0.0, 0.008), (0.15, 0.015), (0.45, 0.015), (0.70, 0.024), (0.90, 0.015), (0.975, 0.003), (1.0, 0.0004))],
+                      thick=_thick(0.0045), curl=0.30, ring=[1.0, -1.0])),
         # under the outer layer, darker: fills between the neck and the outer hair, behind the ears
         ("under", dict(n=3, root=[(40, 112), (35, 132), (30, 152)], leave=[(-12, 118), (-16, 136), (-20, 154)],
                        off=(-0.001, 0.0), clear=0.003, shade=1.0,
@@ -1231,7 +1246,7 @@ HAIR_B2C = dict(
         # loose thin strands framing the face
         ("loose", dict(n=2, root=[(52, 30), (45, 48)], mid=[(5, 58), (0, 68)], leave=[(-25, 64), (-30, 74)],
                        off=(0.002, 0.005), clear=0.004,
-                       fall=[_fall(1.40, 50, ((0.0, 0.15), (1.0, 0.8))), _fall(1.38, 62, ((0.0, 0.2), (1.0, 0.9)))],
+                       fall=[_fall(1.47, 56, ((0.0, 0.10), (1.0, 0.45)), wave=(0.002, 0.5)), _fall(1.455, 66, ((0.0, 0.12), (1.0, 0.55)), wave=(0.002, 0.5))],
                        width=_taper(0.004, root=0.8, mid=0.9, end=0.6), thick=_thick(0.0016, end=0.5), curl=0.0)),
     ),
 )
@@ -1377,7 +1392,7 @@ LOOK_TOON = dict(
     # the hair's highlight band (`toonlook.ring_attr`, degrees about the head's centre)
     ring=dict(objects=("*_Hair_Cap", "*_Hair_Locks"), beta=(42.0, 3.0, 3.0), jag=2.5, freq=13.0, back=170.0,
               # B2c: on a hair whose locks carry `ring_off` / `hw` (the clumps), a band per lock (`toonlook.ring_attr`)
-              per_lock=dict(beta=(44.0, 1.6, 1.4), sag=-5.0, saw=2.5, teeth=1.5, edge=0.85)),
+              per_lock=dict(beta=(44.0, 2.4, 1.0), sag=-3.0, saw=2.2, teeth=5.0, edge=0.95)),
     floor=dict(lo=0.35, hi=0.55, amount=0.45, colour=(0.05, 0.05, 0.06)),
     # inked lines: an inverted hull `px` pixels wide at the subject; never on the eyes, lashes, piping, zip or nails
     outline=dict(px=1.6, exclude=("*_Eye", "*_Lash", "*_Piping*", "Suit_Zip_*", "Hand_Nails", "Suit_Knee_Rim"),

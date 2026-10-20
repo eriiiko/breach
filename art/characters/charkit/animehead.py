@@ -339,6 +339,10 @@ class Head:
         m = self.F["mouth"]
         d = smax3(d, -ellipsoid(Q, *m["slot"]), m["slot_k"])
         cut = smax3(self.almond(Q), -(self.egg(Q) - self.bumps(Q)) - self.E["depth"], self.E["depth_k"])
+        if self.E.get("front_only") is not None:
+            # B2c: the opening's prism runs along the view axis through the whole head, so it ALSO cut an eye-shaped dent into
+            # the back of the skull (hidden under the hair; review 11's "ghost ear" in the hairless profile): kept to the front
+            cut = smax3(cut, Q[:, 1] - self.E["front_only"], 0.002)
         return smax3(d, -cut, self.E["lid_k"])
 
     def base(self, P):
@@ -657,7 +661,7 @@ def materials(prefix, p, eyes=None):
     t.put(cx.inputs[1], t.math("MULTIPLY", t.attr("hu"), 1.5))
     streak = t.noise(4.0, 4.0, 0.6, 0.0, "FBM", vec=cx.outputs[0])
     hl = lin(p["HAIR_LIGHT"])
-    col = t.mix(t.math("MULTIPLY", t.ramp(streak, 0.35, 0.75), 0.6), hc, hl)
+    col = t.mix(t.math("MULTIPLY", t.ramp(streak, 0.35, 0.75), p.get("HAIR_STREAK", 0.6)), hc, hl)
     if "HAIR_DEEP" in p:   # B2c: the under layer and the cap darker (`hshade`, per lock), the depth under the outer locks
         col = t.mix(t.math("MULTIPLY", t.attr("hshade"), p.get("HAIR_DEEP_AMOUNT", 0.6)), col, lin(p["HAIR_DEEP"]))
     t.set(Base_Color=col, Roughness=0.42, Specular_IOR_Level=0.40, Coat_Weight=0.10, Coat_Roughness=0.30,

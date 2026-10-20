@@ -434,7 +434,7 @@ class Clumps:
         fall = _pick(row, "fall", i)
         if fall is not None:
             zl = Qh[-1, 2]
-            zt = fall["z"]
+            zt = fall["z"] + rng.normal(0.0, fall.get("z_jit", 0.0))
             L = abs(zl - zt)
             k = max(16, int(L / 0.004))
             s = np.linspace(0.0, 1.0, k)
@@ -449,6 +449,11 @@ class Clumps:
             cy = self.c[1]
             F = np.column_stack([r * np.sin(np.radians(al)), cy - r * np.cos(np.radians(al)), z])
             F += np.asarray(fall.get("shift", (0.0, 0.0, 0.0)), float)[None, :] * s[:, None] ** 1.5
+            if fall.get("wave"):   # a soft S across the fall (round the head's axis), growing towards the tip
+                amp, cyc = fall["wave"]
+                ph = rng.uniform(0.0, 2 * np.pi)
+                tang = np.column_stack([np.cos(np.radians(al)), np.sin(np.radians(al)), np.zeros(len(al))])
+                F += tang * (amp * np.sin(2 * np.pi * cyc * s + ph) * s)[:, None]
             # join: the fall starts where the head part ends, the difference faded out over its first `join` (fraction)
             d0 = Qh[-1] - F[0]
             jn = fall.get("join", 0.3)
@@ -464,7 +469,7 @@ class Clumps:
                 P[fix:] = hair.push(P[fix:], self.sp.get("body_clear", 0.004), body)
             P = _smooth(P, 3, fix=fix)
         P[fix:] = self.push_head(P[fix:], clear)
-        P, L = _resample(P, max(30, int(L_of(P) / 0.003)))
+        P, L = _resample(P, max(30, int(L_of(P) / self.sp.get("step", 0.003))))
         return P
 
     def mesh(self, P, row, i, k, rng):
