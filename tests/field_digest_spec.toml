@@ -12,6 +12,12 @@ version = 6                    # v6 (2026-09-20, T5b step 9): +dyn_heat_atten_q 
 hash = "blake2b-256"
 byte_order = "little"          # x86 + CUDA; big-endian dtypes are refused
 serialization = "per-field: ascii header 'name|dtype.str|shape' then C-order raw bytes"
+# The TRACE planes' integer currency (#88, docs/smoke_unit_rescale_design_
+# 2026-10-20.md §6.1): the five trace planes of `gas` hold 2^(16 +
+# trace_fine_bits) counts per real unit. A twin of cpp/src/fixed_point.h
+# TRACE_FINE_BITS, held equal by tests/test_trace_currency.py; two digests of
+# the same world at different currencies are not comparable.
+trace_fine_bits = 0
 
 # The integer/bool SYNCED fields hashed into the digest, IN THIS ORDER.
 # `gas` is the 3D (n_gas, h, w) multi-gas stack (smoke is a view into it).

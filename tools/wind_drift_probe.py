@@ -75,7 +75,7 @@ def probe(level: str, ticks: int, detonate=None, v_ref=WIND_V_REF,
             sim.set_paused(False)
         sim.step()
         g = sim.gmap
-        trace = gas_fixed.dequantize(g.gas[:N_TRACE_GASES])
+        trace = gas_fixed.dequantize_trace(g.gas[:N_TRACE_GASES])
         tau = gas_optical_depth(trace, _k_s(g.gases), base_absorb_scale=1.0,
                                 plume_k_scale=1.0)
         m = float(tau.sum())

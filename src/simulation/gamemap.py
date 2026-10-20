@@ -878,7 +878,7 @@ class GameMap:
             open_air = (~self.solid) & (~self.is_vacuum) & (~self.is_ambient)
             p = np.asarray(air_seed_q)[open_air].astype(np.int64)
             o2_frac = self._ambient.o2_frac if self._ambient is not None else 0.21
-            o2_frac_q = _gas_fx.quantize_scalar(o2_frac)   # 13763 at 0.21 (P1 calib)
+            o2_frac_q = _gas_fx.quantize_q16_scalar(o2_frac)   # 13763 at 0.21 (P1 calib)
             o2 = (p * o2_frac_q + (1 << 15)) >> 16      # round-half-up
             self.atmosphere[open_air] = p.astype(np.int32)
             self.gas[O2][open_air] = o2.astype(np.int32)
@@ -924,7 +924,7 @@ class GameMap:
         import temperature_scale
         from simulation import gas_fixed as _gas_fx
         t_amb_k = temperature_scale.load(CFG).eos_t_amb_k
-        return max(1, _gas_fx.quantize_scalar(t_amb_k))
+        return max(1, _gas_fx.quantize_q16_scalar(t_amb_k))
 
     def refresh_gas_energy(self):
         """Recompute ``gas_energy := N_raw * (temperature_raw + T_AMB_K_raw)``
@@ -1386,8 +1386,8 @@ class GameMap:
         if amb is not None:
             return (int(amb.n_total_q), int(amb.n_o2_q), int(amb.n_n2_q),
                     int(amb.pin_q))
-        o2_q = int(_gas_fx.quantize_scalar(0.21))
-        n2_q = int(_gas_fx.quantize_scalar(0.79))
+        o2_q = int(_gas_fx.quantize_bulk_scalar(0.21))
+        n2_q = int(_gas_fx.quantize_bulk_scalar(0.79))
         return (o2_q + n2_q, o2_q, n2_q, int(_atm_fx.FP_ONE))
 
     # ------------------------------------------------------------------
@@ -3039,10 +3039,10 @@ class GameMap:
         if dn <= 0:
             return
         from simulation import gas_fixed as _gas_fx
-        # 0.21 O2 by mole fraction (Earth-normal) — quantize_scalar(0.21) == 13763,
+        # 0.21 O2 by mole fraction (Earth-normal) — quantize_q16_scalar(0.21) == 13763,
         # the P1 calibration constant the ambient air seed uses (13763 + 51773 ==
         # FP_ONE), so an inject reproduces calibrated air composition to the LSB.
-        o2_frac_q = _gas_fx.quantize_scalar(0.21)
+        o2_frac_q = _gas_fx.quantize_q16_scalar(0.21)
         o2_add = (dn * o2_frac_q + (1 << 15)) >> 16      # round-half-up (air seed)
         n2_add = dn - o2_add                              # exact remainder
         add_vec = [0] * N_GASES

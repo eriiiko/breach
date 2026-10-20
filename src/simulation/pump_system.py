@@ -146,7 +146,7 @@ def _delta_n_quantum(rate_atm_per_s, tps):
     ct = float(DEFAULT_C) * float(DEFAULT_T_AMB_K)         # == 1.0 at defaults
     delta_n_mass = delta_p_atm / ct if ct > 0 else delta_p_atm
     return (_atm_fx.quantize_scalar(delta_p_atm),
-            _gas_fx.quantize_scalar(delta_n_mass))
+            _gas_fx.quantize_bulk_scalar(delta_n_mass))     # a bulk N count
 
 
 def build_pumps(sim) -> list:

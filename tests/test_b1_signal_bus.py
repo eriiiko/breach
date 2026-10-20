@@ -39,7 +39,7 @@ from level_loader import (  # noqa: E402
 )
 from level_lib import (MANAGED_FAMILIES, format_wire_lines,  # noqa: E402
                        write_managed_blocks)
-from simulation import Simulation  # noqa: E402
+from simulation import Simulation, gas_fixed  # noqa: E402
 from simulation.entities import door as door_mod  # noqa: E402
 from simulation.entities.serialize import entity_carrier  # noqa: E402
 from simulation.gamemap import GameMap, N_GASES  # noqa: E402
@@ -404,7 +404,9 @@ class _FakeGmap:
 def test_accessor_sample_reads_mirror_no_dequantize():
     g = _FakeGmap()
     g.atmosphere[1, 2] = 65536            # 1.0 atm in Q16.16 — returned RAW
-    g.gas[SMOKE][1, 2] = 4242
+    # A Q16 signal of 4242 counts, seeded in the smoke plane's TRACE currency
+    # (#88 A7: the sensor channel converts back to Q16 at _channel_array).
+    g.gas[SMOKE][1, 2] = gas_fixed.trace_from_bulk(4242)
     g.gas[O2][1, 2] = 13107
     g.temperature[3, 3] = 777
     g.fire[0, 0] = 55

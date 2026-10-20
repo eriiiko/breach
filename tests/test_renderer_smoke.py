@@ -46,7 +46,7 @@ def main():
     g.obstacles = g.solid.copy()       # no units in this test
 
     # Drop some smoke and fire for visual test
-    g.smoke[60:80, 20:30] = 0.7
+    g.smoke[60:80, 20:30] = 0.7  # real units, not counts (#88)
     g.fire[110:115, 25:30] = 1.0
 
     # Render config: window size = map area + panel

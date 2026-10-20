@@ -232,14 +232,14 @@ def test_gas_deposit_exact_q16_falloff_clamp_skip_and_slice():
 
     ws = gmap.gas[STEAM]
     # Centre: weight 1.0 -> 1.5 exactly (no ceiling, D1) -> 98304 counts.
-    assert int(ws[10, 11]) == gas_fixed.quantize_scalar(1.5)
-    # On-axis d=2: weight 0.5 -> 0.75 -> 49152 counts exactly (hand: .75*2^16).
-    assert int(ws[10, 9]) == 49152
+    assert int(ws[10, 11]) == gas_fixed.quantize_trace_scalar(1.5)
+    # On-axis d=2: weight 0.5 -> 0.75 exactly (hand: .75 * TRACE_ONE, #88).
+    assert int(ws[10, 9]) == gas_fixed.quantize_trace_scalar(0.75) == (3 * gas_fixed.TRACE_ONE) // 4
     # Diagonal d=sqrt(5) (dy=1,dx=2): the float falloff chain, quantized once.
     w = _disc_weight(1, 2, 4.0)
-    assert int(ws[11, 13]) == gas_fixed.quantize_scalar(1.5 * w)
-    # d=3 on-axis: weight 0.25 -> 0.375 -> 24576 counts.
-    assert int(ws[13, 11]) == 24576
+    assert int(ws[11, 13]) == gas_fixed.quantize_trace_scalar(1.5 * w)
+    # d=3 on-axis: weight 0.25 -> 0.375 exactly (3/8 of TRACE_ONE).
+    assert int(ws[13, 11]) == (3 * gas_fixed.TRACE_ONE) // 8
     # The solid tile inside the disc: SKIPPED (gas does not enter walls).
     assert int(ws[10, 13]) == 0
     # Outside the strict disc (d=4 exactly on-axis): untouched.
@@ -265,14 +265,14 @@ def test_gas_deposit_is_additive_with_saturation_guard():
         queue.flush(gmap, rng)
     tg = gmap.gas[GAS_TEARGAS]
     # Centre: 2 x 0.3 = 0.6 (below clamp) -> quantize(0.3)+combine(0.3) —
-    # the combine dequantizes exactly (n/65536), so twice = quantize(0.6).
-    assert int(tg[10, 11]) == gas_fixed.quantize_scalar(0.6)
+    # the combine dequantizes exactly (n/TRACE_ONE), so twice = quantize(0.6).
+    assert int(tg[10, 11]) == gas_fixed.quantize_trace_scalar(0.6)
     # Above 1: a 1.5-amount deposit twice holds 3.0 at its centre.
     gmap2 = _room()
     for _ in range(2):
         emit_gas(gmap2, queue, 10, 11, "poison", 1.5, 3)
         queue.flush(gmap2, rng)
-    assert int(gmap2.gas[GAS_POISON][10, 11]) == gas_fixed.quantize_scalar(3.0)
+    assert int(gmap2.gas[GAS_POISON][10, 11]) == gas_fixed.quantize_trace_scalar(3.0)
 
 
 def test_gas_payload_species_route_to_their_slices():

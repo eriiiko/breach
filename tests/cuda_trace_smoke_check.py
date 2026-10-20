@@ -66,7 +66,8 @@ import numpy as np
 # field_ab_harness (which inserts cpp/build/Release on sys.path) imports it.
 import breach_physics as bp
 
-Q = 65536
+from simulation import gas_fixed as _gas_fx   # src is on sys.path (cuda_harness preamble)
+T_ONE = _gas_fx.TRACE_ONE                    # one real unit of TRACE density (#88)
 HULL, AIR, FURNITURE, SPACE = 1, 0, 6, 9     # v2 codes == material ids
 
 # The four EOS kernel-surface flags the chained dispatch ANDs.
@@ -127,12 +128,12 @@ def _scn_blast():
 
     def setup(sim):
         g = sim.gmap
-        g.gas[SMOKE][8:12, 4:10] = Q // 2
-        g.gas[SMOKE][12, 6] = 2 * Q          # above the old [0, 1] ceiling
-        g.gas[POISON][5:9, 22:28] = Q // 3
-        g.gas[TEARGAS][14:18, 6:12] = Q // 5
-        g.gas[STEAM][2:5, 2:6] = Q // 4
-        g.gas[FUEL_GAS][17:22, 24:30] = Q // 6
+        g.gas[SMOKE][8:12, 4:10] = T_ONE // 2
+        g.gas[SMOKE][12, 6] = 2 * T_ONE          # above the old [0, 1] ceiling
+        g.gas[POISON][5:9, 22:28] = T_ONE // 3
+        g.gas[TEARGAS][14:18, 6:12] = T_ONE // 5
+        g.gas[STEAM][2:5, 2:6] = T_ONE // 4
+        g.gas[FUEL_GAS][17:22, 24:30] = T_ONE // 6
         # The pocket: open (participating) but with NO air, holding trace ->
         # stage 3c's N_EPS wipe is live from the first substep.
         py, px = pocket
@@ -141,8 +142,8 @@ def _scn_blast():
                 g.gas[b][py, px] = 0
         g.gas_energy[py, px] = 0
         g.temperature[py, px] = 0
-        g.gas[SMOKE][py, px] = Q // 2
-        g.gas[POISON][py, px] = Q // 8
+        g.gas[SMOKE][py, px] = T_ONE // 2
+        g.gas[POISON][py, px] = T_ONE // 8
         _heat_blast(sim, 12, 8, amount=3600.0, radius=5.0)
 
     def action(tick, sim):
@@ -160,9 +161,9 @@ def _scn_breach():
 
     def setup(sim):
         g = sim.gmap
-        g.gas[SMOKE][8:13, 22:28] = 2 * Q
-        g.gas[POISON][5:9, 5:9] = Q // 3
-        g.gas[STEAM][14:18, 20:26] = Q // 3
+        g.gas[SMOKE][8:13, 22:28] = 2 * T_ONE
+        g.gas[POISON][5:9, 5:9] = T_ONE // 3
+        g.gas[STEAM][14:18, 20:26] = T_ONE // 3
         _heat_blast(sim, 10, 12, amount=3000.0, radius=5.0)
 
     def action(tick, sim):
@@ -173,8 +174,8 @@ def _scn_breach():
         if tick == 30:
             vac = np.argwhere(g.is_vacuum & ~g.solid)
             y, x = (int(v) for v in vac[0])
-            g.gas[SMOKE][y, x] += Q // 4     # stranded: trace on a vacuum tile
-            g.gas[POISON][y, x] += Q // 8
+            g.gas[SMOKE][y, x] += T_ONE // 4     # stranded: trace on a vacuum tile
+            g.gas[POISON][y, x] += T_ONE // 8
 
     return tm, setup, action, 60
 
@@ -188,9 +189,9 @@ def _scn_crates():
 
     def setup(sim):
         g = sim.gmap
-        g.gas[SMOKE][1:-1, 1:17] = Q // 2
-        g.gas[TEARGAS][3:15, 19:23] = Q // 5
-        g.gas[POISON][3:9, 3:8] = Q // 4
+        g.gas[SMOKE][1:-1, 1:17] = T_ONE // 2
+        g.gas[TEARGAS][3:15, 19:23] = T_ONE // 5
+        g.gas[POISON][3:9, 3:8] = T_ONE // 4
         _heat_blast(sim, 9, 6, amount=3200.0, radius=4.0)
 
     def action(tick, sim):
@@ -294,7 +295,7 @@ def _run_scenario(name, builder, resident: bool = False) -> bool:
         print(f"  [{tag}] scenario too tame: the EOS never needed a 2nd substep")
     if name == "CRATES":
         from simulation.gases import SMOKE
-        if not int(gg.gas[SMOKE][1:-1, 18:-1].sum()) > 0:
+        if not int(gg.gas[SMOKE][1:-1, 18:-1].astype(np.int64).sum()) > 0:
             ok = False
             print(f"  [{tag}] no smoke crossed the crate wall")
     if ok:

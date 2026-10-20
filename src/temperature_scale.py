@@ -30,7 +30,7 @@ import tomllib
 from pathlib import Path
 from typing import NamedTuple, Optional
 
-from simulation.gas_fixed import quantize_scalar
+from simulation.gas_fixed import quantize_q16_scalar
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.toml"
 
@@ -104,11 +104,11 @@ def _build(d: dict) -> TemperatureScale:
 
 
 def _assert_invariants(ts: TemperatureScale) -> None:
-    """Load-time asserts, via the EXISTING ``gas_fixed.quantize_scalar`` —
+    """Load-time asserts, via the EXISTING ``gas_fixed.quantize_q16_scalar`` —
     no third hand-rolled rounding convention (design §2, the 139b/A8
     hazard). phi_exp is value-frozen this arc: the quantized EOS slope must
     land on exactly 65536 (== 1.0 in Q16.16)."""
-    q = quantize_scalar(ts.eos_slope)
+    q = quantize_q16_scalar(ts.eos_slope)
     assert q == 65536, (
         f"[physics.temperature_scale] eos_slope (phi_exp * k_temp_to_kelvin) "
         f"quantizes to {q}, not 65536 (== 1.0 Q16.16). phi_exp is "

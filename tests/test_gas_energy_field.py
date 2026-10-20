@@ -56,7 +56,7 @@ def _t_amb_k_raw() -> int:
     import temperature_scale
     from simulation import gas_fixed as _gas_fx
     t_amb_k = temperature_scale.load(CFG).eos_t_amb_k
-    return max(1, _gas_fx.quantize_scalar(t_amb_k))
+    return max(1, _gas_fx.quantize_q16_scalar(t_amb_k))
 
 
 def _books_identity_holds(gmap, runner) -> tuple[bool, int, int]:

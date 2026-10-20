@@ -42,7 +42,7 @@ sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 
 import breach_physics as bp
 from level_loader import LevelData, load as load_level
-from simulation import Simulation
+from simulation import Simulation, gas_fixed
 from simulation.gamemap import GameMap
 from simulation.gases import (
     GasTable,
@@ -106,15 +106,15 @@ def test_smoke_is_black_smoke_view():
     # S2b: gas is int32 Q16.16 — write raw counts (the view aliasing is what's
     # under test, not the units, so plain integer counts are fine here).
     # Writing smoke is visible in the smoke slice.
-    g.smoke[3, 4] = 42
+    g.smoke[3, 4] = 42  # raw trace counts: scale-free (#88)
     assert g.gas[SMOKE][3, 4] == 42
 
     # Writing the smoke slice is visible in smoke.
-    g.gas[SMOKE][5, 6] = 77
+    g.gas[SMOKE][5, 6] = 77  # raw trace counts: scale-free (#88)
     assert g.smoke[5, 6] == 77
 
     # Other gas slices are independent of smoke.
-    g.gas[POISON][3, 4] = 90
+    g.gas[POISON][3, 4] = 90  # raw trace counts: scale-free (#88)
     assert g.smoke[3, 4] == 42, "poison leaked into the smoke view"
 
 
@@ -173,10 +173,13 @@ def test_gas_table_from_dict():
     """
     names = ["steam", "smoke", "poison", "teargas", "fuel_gas",
              "o2", "inert_n2"]
+    bulk = ("o2", "inert_n2")
+    # (#88 V10: a conservative bulk row carries no optical coefficient -- the
+    # gases door refuses one, so the fixture's bulk rows are optically zero.)
     rows = {
         name: {
-            "absorption": [0.1, 0.2, 0.3],
-            "scatter_albedo": [0.4, 0.5, 0.6],
+            "absorption": [0.0] * 3 if name in bulk else [0.1, 0.2, 0.3],
+            "scatter_albedo": [0.0] * 3 if name in bulk else [0.4, 0.5, 0.6],
             "diffusion": 0.1 * (i + 1),
             "decay": 0.01 * (i + 1),
             "glow": 0.0,
@@ -222,9 +225,9 @@ def test_poison_transports_through_per_gas_loop():
     runner = PhysicsRunner(bp)
     interior = (~g.solid) & (~g.is_vacuum)
     g.gas[POISON][:] = 0
-    g.gas[POISON][5:11, 6:10] = 65536
+    g.gas[POISON][5:11, 6:10] = gas_fixed.TRACE_ONE
     g.gas[POISON][~interior] = 0
-    assert g.smoke.sum() == 0
+    assert g.smoke.astype(np.int64).sum() == 0
 
     def _com_x(field):
         f = field.astype(np.float64)
@@ -234,9 +237,9 @@ def test_poison_transports_through_per_gas_loop():
     _heat_push(g, 8, 2)
     for _ in range(12):
         runner.step(g, 1.0 / 24.0)
-    assert g.gas[POISON].sum() > 0, "poison vanished entirely"
+    assert g.gas[POISON].astype(np.int64).sum() > 0, "poison vanished entirely"
     assert _com_x(g.gas[POISON]) > cx0 + 0.25, "poison did not ride the blast right"
-    assert g.smoke.sum() == 0, "poison transport polluted the smoke slice"
+    assert g.smoke.astype(np.int64).sum() == 0, "poison transport polluted the smoke slice"
 
 
 # --------------------------------------------------------------------------
@@ -259,9 +262,9 @@ def test_black_smoke_matches_pre_refactor_reference():
     g.gases.decay[POISON] = g.gases.decay[SMOKE]
     rng = np.random.default_rng(SEED)
     interior = (~g.solid) & (~g.is_vacuum)
-    deposit = np.where(interior, (rng.random(g.smoke.shape) * 65536 * 1.5), 0)
-    g.gas[SMOKE][:] = deposit.astype(np.int32)
-    g.gas[POISON][:] = deposit.astype(np.int32)
+    deposit_trace = np.where(interior, (rng.random(g.smoke.shape) * gas_fixed.TRACE_ONE * 1.5), 0)
+    g.gas[SMOKE][:] = deposit_trace.astype(np.int32)
+    g.gas[POISON][:] = deposit_trace.astype(np.int32)
     _heat_push(g, 7, 4)
     for _ in range(24):
         runner.step(g, 1.0 / 24.0)
@@ -324,11 +327,11 @@ def test_renderer_overlay_reads_smoke():
     from renderer.overlays import FieldOverlay  # import path must resolve
     from simulation import gas_fixed
     g = _make_gmap()
-    g.smoke[4:8, 4:8] = gas_fixed.quantize_scalar(0.5)
+    g.smoke[4:8, 4:8] = gas_fixed.quantize_trace_scalar(0.5)
     # The smoke view is a (h, w) int32 field; the renderer dequantizes it.
     assert g.smoke.ndim == 2 and g.smoke.dtype == np.int32
-    assert g.smoke[5, 5] == gas_fixed.quantize_scalar(0.5)
-    smoke_f = gas_fixed.dequantize_f32(g.smoke)
+    assert g.smoke[5, 5] == gas_fixed.quantize_trace_scalar(0.5)
+    smoke_f = gas_fixed.dequantize_trace_f32(g.smoke)
     assert smoke_f.dtype == np.float32
     assert abs(float(smoke_f[5, 5]) - 0.5) < 1e-4
 

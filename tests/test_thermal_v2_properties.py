@@ -72,7 +72,7 @@ def _hot_gas_room(ticks, c_v=None):
     if c_v is not None:
         sim.physics_runner.engine.temperature.c_v = c_v
     interior = (~g.solid) & (~g.is_vacuum)
-    g.seed_gas_temperature(interior, gas_fixed.quantize_scalar(300.0))
+    g.seed_gas_temperature(interior, gas_fixed.quantize_q16_scalar(300.0))
     sim.set_paused(False)
     for _ in range(ticks):
         sim.step()

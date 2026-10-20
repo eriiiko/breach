@@ -460,8 +460,8 @@ def _combine_atmosphere_to_N(old_o2_q: int, old_n2_q: int, contribution: float,
     is split by the ambient fraction BEFORE combining, and any clamp is
     likewise fraction-scaled so a `(0, 2.0)` atmosphere clamp still bounds the
     TOTAL N the same way a total-pressure clamp would have."""
-    old_o2 = float(old_o2_q) / gas_fixed.FP_ONE_F
-    old_n2 = float(old_n2_q) / gas_fixed.FP_ONE_F
+    old_o2 = float(gas_fixed.dequantize_bulk(old_o2_q))
+    old_n2 = float(gas_fixed.dequantize_bulk(old_n2_q))
     o2_clamp = None
     n2_clamp = None
     if clamp is not None:
@@ -470,7 +470,7 @@ def _combine_atmosphere_to_N(old_o2_q: int, old_n2_q: int, contribution: float,
         n2_clamp = (lo * _N2_FRACTION, hi * _N2_FRACTION)
     new_o2 = _combine_float(old_o2, contribution * _O2_FRACTION, mode, o2_clamp)
     new_n2 = _combine_float(old_n2, contribution * _N2_FRACTION, mode, n2_clamp)
-    return gas_fixed.quantize_scalar(new_o2), gas_fixed.quantize_scalar(new_n2)
+    return gas_fixed.quantize_bulk_scalar(new_o2), gas_fixed.quantize_bulk_scalar(new_n2)
 
 
 def _combine_temperature(old_q: int, contribution: float, mode: EditMode,
@@ -498,16 +498,17 @@ def _combine_temperature(old_q: int, contribution: float, mode: EditMode,
 
 def _combine_gas(old_q: int, contribution: float, mode: EditMode,
                  clamp: Optional[Tuple[float, float]]) -> int:
-    """Q16.16 combine for the `smoke` / gas fields (S2b). The stored value is an
-    int32 in Q16.16 density; dequantize to real density, combine with the float
+    """The TRACE-currency combine for the `smoke` / gas fields (S2b; #88). The
+    stored value is an int32 in the trace currency (gas_fixed.TRACE_ONE per real
+    unit); dequantize to real density (exact in float64 for any int32 tile), combine with the float
     path's exact +=/-=/max semantics (and the policy's TRACE_CLAMP: additive,
     floor 0 — smoke transport v2 D1), re-quantize round-to-nearest. Keeps the
     explosion smoke deposit / clear authored in real density
     while the field stays integer/deterministic (the same idiom as
     `_combine_wave` / `_combine_water`)."""
-    old_v = float(old_q) / gas_fixed.FP_ONE_F
+    old_v = float(gas_fixed.dequantize_trace(old_q))
     new_v = _combine_float(old_v, contribution, mode, clamp)
-    return gas_fixed.quantize_scalar(new_v)
+    return gas_fixed.quantize_trace_scalar(new_v)
 
 
 def _combine_fire(old_q: int, contribution: float, mode: EditMode,

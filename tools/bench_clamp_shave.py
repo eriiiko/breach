@@ -113,6 +113,7 @@ import breach_physics as bp  # noqa: E402
 import sweep_ref_q as R  # noqa: E402
 from config import CFG  # noqa: E402
 from simulation import optics_fixed as _optics_fx  # noqa: E402  (#78: the one door)
+from simulation import gas_fixed as _gas_fx  # noqa: E402  (#88: the trace currency)
 
 TPS = 24
 STOP_E_INV_GAME = 20          # brief §4: the unlit environment's radiation temperature
@@ -457,7 +458,7 @@ def run(scene_name, seconds=None, dump=None, meter_cls=ShaveMeter, fine_bits=Non
             sim.set_paused(False)
             sim.step()
             meter.after_tick()
-            smoke_peak = max(smoke_peak, float(sim.gmap.gas[SMOKE].max()) / 65536.0)
+            smoke_peak = max(smoke_peak, float(_gas_fx.dequantize_trace(sim.gmap.gas[SMOKE].max())))
     finally:
         meter.close()
     j = _j_per_count()

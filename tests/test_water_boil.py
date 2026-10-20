@@ -68,8 +68,9 @@ from simulation import gas_fixed  # noqa: E402  (S2b: gas Q16.16 dequantize)
 
 
 def _gas_mass(plane):
-    """Total real-density mass of a gas plane (S2b: int32 Q16.16 -> /65536)."""
-    return float(plane.astype(np.float64).sum()) / gas_fixed.FP_ONE_F
+    """Total real-density mass of a TRACE gas plane (#88: the trace currency),
+    summed in int64 then dequantized once."""
+    return float(gas_fixed.dequantize_trace(int(plane.astype(np.int64).sum())))
 
 
 def _step_puffed(sim, g):
@@ -87,7 +88,7 @@ def _step_puffed(sim, g):
     after = int(g.gas[STEAM].astype(np.int64).sum())
     booked = (eos.boundary_flux()[STEAM] + eos.trace_wipe_sum()[STEAM]
               + eos.trace_sink_sum()[STEAM] + eos.trace_decay_sum()[STEAM])
-    return (after - before + booked) / gas_fixed.FP_ONE_F
+    return float(gas_fixed.dequantize_trace(after - before + booked))
 
 # S1: water_depth is int32 Q16.16 (~1.5e-5 m granularity). The W5 boil is a
 # FLOAT BRIDGE (it dequantizes depth, boils in float, re-quantizes the removed

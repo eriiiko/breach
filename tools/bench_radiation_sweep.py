@@ -124,7 +124,9 @@ def _smoke_group(h, w, rng, ts, T):
     (gas, hq, n_bulk)."""
     gas = np.zeros((7, h, w), dtype=np.int32)
     air = ~ts
-    gas[1][air] = rng.choice([1966, 6554, 17695, ONE], size=int(air.sum()))
+    from simulation import gas_fixed as _gas_fx    # #88: a TRACE plane, its own currency
+    gas[1][air] = _gas_fx.trace_from_bulk(
+        rng.choice([1966, 6554, 17695, ONE], size=int(air.sum())))
     gas[5][:] = 13763
     gas[6][:] = 51773
     hq = np.zeros(7, dtype=np.int32)

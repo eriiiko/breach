@@ -165,7 +165,11 @@ def debug_spawn_gas(sim, renderer, gas_id: int) -> None:
     y0, y1 = max(0, fy - 1), min(h, fy + 2)
     x0, x1 = max(0, fx - 1), min(w, fx + 2)
     from simulation import gas_fixed
-    gmap.gas[gas_id, y0:y1, x0:x1] = gas_fixed.SMOKE_MAX_Q
+    from simulation.gases import N_TRACE_GASES
+    # One real unit of the gas, in ITS plane's currency (#88): a trace plane in
+    # the trace currency, a bulk plane (O2 / N2) in Q16.
+    one = gas_fixed.TRACE_ONE if gas_id < N_TRACE_GASES else gas_fixed.BULK_ONE
+    gmap.gas[gas_id, y0:y1, x0:x1] = one
 
 
 def debug_pour_water(sim, renderer) -> None:

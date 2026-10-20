@@ -68,6 +68,13 @@ import numpy as np
 Q16 = 65536
 
 
+def _trace_real(q):
+    """A TRACE plane (scalar or array) -> real density, through the trace
+    currency's own helper (#88) -- never the Q16 literal above."""
+    from simulation import gas_fixed
+    return gas_fixed.dequantize_trace(q)
+
+
 def q16(x: float) -> int:
     return int(round(float(x) * Q16))
 
@@ -224,7 +231,8 @@ def spec_b3_breach_vent():
 
     def setup(eng, gmap):
         interior = (~gmap.solid) & (~gmap.is_vacuum)
-        gmap.gas[eng.gases.SMOKE][interior] = q16(0.85)
+        from simulation import gas_fixed
+        gmap.gas[eng.gases.SMOKE][interior] = gas_fixed.quantize_trace_scalar(0.85)
 
     def ev(eng, gmap, queue, rng):
         for y in range(55, 60):
@@ -234,7 +242,7 @@ def spec_b3_breach_vent():
         name="B3_breach_vacuum_vent", ticks=150, engines=("old", "new"), frame_stride=1,
         build=build, setup=setup, events={15: ev},
         trace={"P_room": lambda g: float(g.atmosphere[60, 45]) / Q16,
-               "smoke_room": lambda g: float(g.gas[1, 60, 45]) / Q16},
+               "smoke_room": lambda g: _trace_real(g.gas[1, 60, 45])},
         caption=("THE sink_hop-vs-native comparison: a smoky sealed room breached to true "
                   "vacuum. Old engine vents via the geometric sink_hop BFS hack; new engine "
                   "vents natively off -grad(P) toward N=0. Watch how the outflow shapes."),
@@ -282,14 +290,15 @@ def spec_b5_water_pushes_smoke():
 
     def setup(eng, gmap):
         interior = (~gmap.solid) & (~gmap.is_vacuum)
-        gmap.gas[eng.gases.SMOKE][interior] = q16(0.5)
+        from simulation import gas_fixed
+        gmap.gas[eng.gases.SMOKE][interior] = gas_fixed.quantize_trace_scalar(0.5)
         gmap.water_sources.append((43, 43, 1.8))
 
     return dict(
         name="B5_water_displaces_smoke", ticks=220, engines=("old", "new"), frame_stride=1,
         build=build, setup=setup, events={},
         trace={"water_far": lambda g: float(g.water_depth[60, 60]) / Q16,
-               "smoke_far": lambda g: float(g.gas[1, 60, 60]) / Q16},
+               "smoke_far": lambda g: _trace_real(g.gas[1, 60, 60])},
         caption=("A water source held in one corner floods the room; rising water "
                   "evacuates its cell's air into neighbours (new engine: the v2.1 "
                   "occupancy-transition rule, no field multiply) pushing smoke ahead "
@@ -418,7 +427,7 @@ def render_frame(gmap, crop, px, water_ref=0.5, smoke_ref=1.0) -> np.ndarray:
     water_frac = np.clip(water_depth.astype(np.float64) / Q16 / water_ref, 0.0, 1.0)
     rgb += (COLOR_WATER * water_frac[..., None].astype(np.float32)) * open_air[..., None]
 
-    smoke_frac = np.clip(smoke.astype(np.float64) / Q16 / smoke_ref, 0.0, 1.0)
+    smoke_frac = np.clip(_trace_real(smoke) / smoke_ref, 0.0, 1.0)
     rgb += (COLOR_SMOKE * smoke_frac[..., None].astype(np.float32)) * open_air[..., None]
 
     fire_i = fire.astype(np.float64) / Q16

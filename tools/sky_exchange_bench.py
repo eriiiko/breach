@@ -41,7 +41,7 @@ FP_ONE = 65536
 H, W = 40, 84                      # sponge-safe interior (≥ 80×36; sponge_width 8)
 SINK = (slice(18, 22), slice(40, 44))     # central 4×4 O2 sink (the "crate")
 FAR = (20, 12)                     # far-field probe: interior, ≥ sponge_width+few
-SINK_O2_PER_TICK = gas_fixed.quantize_scalar(0.6)   # combustion-proxy draw/tick
+SINK_O2_PER_TICK = gas_fixed.quantize_bulk_scalar(0.6)   # combustion-proxy draw/tick
 
 
 def _build(sky_tau_s):

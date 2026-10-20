@@ -1284,7 +1284,7 @@ class PhysicsRunner:
         # recip_P_span). sim_time IS the tick dt. Same Q16 quantize (round-to-
         # nearest) the ring N-split uses. λ == 0 (τ ≫ one tick and tiny dt) → no-op.
         from simulation import gas_fixed
-        lambda_q = int(gas_fixed.quantize_scalar(float(sim_time) / tau))
+        lambda_q = int(gas_fixed.quantize_q16_scalar(float(sim_time) / tau))   # a Q16 fraction
         if lambda_q == 0:
             return
         # FIXED tick-order rebuild point (Erik's determinism caveat): the mask is
@@ -1833,7 +1833,7 @@ class PhysicsRunner:
         override reaches every consumer of the gas-energy seam together.
         """
         from simulation import gas_fixed as _gas_fx
-        return max(1, _gas_fx.quantize_scalar(float(self.eos.T_AMB_K)))
+        return max(1, _gas_fx.quantize_q16_scalar(float(self.eos.T_AMB_K)))
 
     @property
     def rad_amb_vacuum_q(self):

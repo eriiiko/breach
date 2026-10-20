@@ -411,7 +411,7 @@ def _sealed_hot_smoky_room(*, smoke=0.06, T_game=1263, hq=None, h_in=8, w_in=12)
     g = sim.gmap
     inner = g._gas_energy_accountable()
     if smoke:
-        g.gas[SMOKE][inner] = gas_fixed.quantize_scalar(smoke)
+        g.gas[SMOKE][inner] = gas_fixed.quantize_trace_scalar(smoke)
     g.seed_gas_temperature(inner, T_game << 16)
     if hq is not None:
         t = g.gases.heat_absorb_q16.copy()
@@ -454,7 +454,7 @@ def _breached_room(boundary, *, smoke=0.3, T_game=800, fire=False, n2_absorb=0.0
     sim = Simulation(lvl, seed=1, breach_physics=bp, enable_recorder=False)
     g = sim.gmap
     inner = g._gas_energy_accountable()
-    g.gas[SMOKE][inner] = gas_fixed.quantize_scalar(smoke)
+    g.gas[SMOKE][inner] = gas_fixed.quantize_trace_scalar(smoke)
     g.seed_gas_temperature(inner, T_game << 16)
     if fire:
         g.fire[blk] = fire_fixed.quantize_scalar(float(CFG.physics.fire.ignition_seed))
@@ -742,7 +742,7 @@ def _shield_room(smoke):
     layer[1:h_in + 1, 6:11] = True
     layer &= g._gas_energy_accountable()
     if smoke:
-        g.gas[SMOKE][layer] = gas_fixed.quantize_scalar(smoke)
+        g.gas[SMOKE][layer] = gas_fixed.quantize_trace_scalar(smoke)
     sim.add_unit(Unit("M1", x=13, y=2, team=0))
     return sim, emitter, (4, 14), (2, 13)
 

@@ -46,7 +46,8 @@ from simulation.gases import (FUEL_GAS, INERT_N2, N_GASES, O2, POISON,  # noqa: 
                               SMOKE, STEAM, TEARGAS)
 from simulation.materials import MAT_AIR, MAT_WOOD, MATERIAL_NAMES  # noqa: E402
 from simulation.fire_fixed import FP_ONE_F as FIRE_FP_ONE_F  # noqa: E402
-from simulation.gas_fixed import FP_ONE_F as GAS_FP_ONE_F  # noqa: E402
+from simulation import gas_fixed  # noqa: E402  (#88: each gas plane in its own currency)
+GAS_BULK_ONE_F = float(gas_fixed.BULK_ONE)
 from simulation.atmosphere_fixed import FP_ONE_F as ATMO_FP_ONE_F  # noqa: E402
 from simulation.water_fixed import FP_ONE_F as WATER_FP_ONE_F  # noqa: E402
 from simulation.wall_fixed import FP_ONE_F as WALL_FP_ONE_F  # noqa: E402
@@ -107,13 +108,13 @@ def test_packs_all_fields_dequantized():
     g.material[ty, tx] = MAT_WOOD
     g.temperature[ty, tx] = int(round(300.0 * TEMP_SCALE))
     g.fire[ty, tx] = int(round(0.5 * FIRE_FP_ONE_F))
-    g.gas[STEAM, ty, tx] = int(round(0.25 * GAS_FP_ONE_F))
-    g.gas[SMOKE, ty, tx] = int(round(0.50 * GAS_FP_ONE_F))
-    g.gas[POISON, ty, tx] = int(round(0.10 * GAS_FP_ONE_F))
-    g.gas[TEARGAS, ty, tx] = int(round(0.05 * GAS_FP_ONE_F))
-    g.gas[FUEL_GAS, ty, tx] = int(round(0.15 * GAS_FP_ONE_F))
-    g.gas[O2, ty, tx] = int(round(0.21 * GAS_FP_ONE_F))
-    g.gas[INERT_N2, ty, tx] = int(round(0.70 * GAS_FP_ONE_F))
+    g.gas[STEAM, ty, tx] = gas_fixed.quantize_trace_scalar(0.25)
+    g.gas[SMOKE, ty, tx] = gas_fixed.quantize_trace_scalar(0.50)
+    g.gas[POISON, ty, tx] = gas_fixed.quantize_trace_scalar(0.10)
+    g.gas[TEARGAS, ty, tx] = gas_fixed.quantize_trace_scalar(0.05)
+    g.gas[FUEL_GAS, ty, tx] = gas_fixed.quantize_trace_scalar(0.15)
+    g.gas[O2, ty, tx] = gas_fixed.quantize_bulk_scalar(0.21)
+    g.gas[INERT_N2, ty, tx] = gas_fixed.quantize_bulk_scalar(0.70)
     g.atmosphere[ty, tx] = int(round(1.05 * ATMO_FP_ONE_F))
     g.wind_x[ty, tx] = int(round(2.5 * ATMO_FP_ONE_F))
     g.wind_y[ty, tx] = int(round(-1.25 * ATMO_FP_ONE_F))
@@ -140,7 +141,7 @@ def test_packs_all_fields_dequantized():
     # Phase-2 fields: pressure/wind/bulk-N via atmosphere_fixed/gas_fixed,
     # water via water_fixed, wall_hp/fuel-fraction via wall_fixed + the
     # material's own hp (wood 60 -> half-hp wall_hp 30 -> F == 0.5), and
-    # gas_energy as raw/FP_ONE_F**2.
+    # gas_energy as raw/BULK_ONE**2 (#88 C8: never the trace currency).
     assert r.pressure == pytest.approx(1.05, abs=1e-4)
     assert r.bulk_n == pytest.approx(0.21 + 0.70, abs=1e-4)
     assert r.wind_vx == pytest.approx(2.5, abs=1e-4)
@@ -148,7 +149,7 @@ def test_packs_all_fields_dequantized():
     assert r.water_depth == pytest.approx(0.4, abs=1e-4)
     assert r.wall_hp == pytest.approx(30.0, abs=1e-3)
     assert r.fuel_frac == pytest.approx(0.5, abs=1e-4)
-    assert r.gas_energy == pytest.approx(123456789 / (GAS_FP_ONE_F ** 2), rel=1e-9)
+    assert r.gas_energy == pytest.approx(123456789 / (GAS_BULK_ONE_F ** 2), rel=1e-9)
 
     # Ray-engine-v2 P1: Phi / a / d dequantized through the temperature and
     # optics scales; f, E_inv(Phi) and the clamp's ceiling are nan on a stub
@@ -369,7 +370,7 @@ def test_a_gas_cell_shows_the_extinction_and_f_the_sweep_actually_uses():
     ys, xs = np.nonzero(air)
     y, x = int(ys[len(ys) // 2]), int(xs[len(xs) // 2])
     y2, x2 = int(ys[len(ys) // 3]), int(xs[len(xs) // 3])
-    g.gas[SMOKE][y, x] = gas_fixed.quantize_scalar(0.02)
+    g.gas[SMOKE][y, x] = gas_fixed.quantize_trace_scalar(0.02)
     sel = np.zeros_like(air)
     sel[y, x] = True
     g.seed_gas_temperature(sel, 3000 << 16)                  # hot: the arm damps it

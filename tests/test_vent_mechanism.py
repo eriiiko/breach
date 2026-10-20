@@ -133,9 +133,9 @@ def test_bulk_and_trace_mass_conserved_exactly_every_tick():
     sim = Simulation(_level(_tm(), ents), seed=1, breach_physics=None,
                      enable_recorder=False)
     ry, rx = sim._vents[0].aperture_y, sim._vents[0].aperture_x
-    sim.gmap.gas[SMOKE][ry, rx] = 30000
-    sim.gmap.gas[POISON][ry, rx] = 15000
-    sim.gmap.gas[STEAM][ry, rx] = 7000
+    sim.gmap.gas[SMOKE][ry, rx] = 30000  # raw trace counts: scale-free (#88)
+    sim.gmap.gas[POISON][ry, rx] = 15000  # raw trace counts: scale-free (#88)
+    sim.gmap.gas[STEAM][ry, rx] = 7000  # raw trace counts: scale-free (#88)
 
     total0 = _grid_total_all(sim.gmap)
     assert total0 > 0
@@ -180,8 +180,8 @@ def test_energy_conserved_exactly_with_trace_and_filtering_present():
     # and the pump primitives price their withdrawal off that field.
     sim.gmap.seed_gas_temperature(np.s_[:, :], 5000)
     sim.gmap.seed_gas_temperature((ry, rx), 20000)   # hot return tile
-    sim.gmap.gas[SMOKE][ry, rx] = 40000       # heavy smoke — scrubbed by hepa_basic
-    sim.gmap.gas[POISON][ry, rx] = 25000      # poison — passes hepa_basic untouched
+    sim.gmap.gas[SMOKE][ry, rx] = 40000       # heavy smoke — scrubbed by hepa_basic -- raw trace counts: scale-free (#88)
+    sim.gmap.gas[POISON][ry, rx] = 25000      # poison — passes hepa_basic untouched -- raw trace counts: scale-free (#88)
     e0 = _bulk_energy_total(sim.gmap)
     for _ in range(200):
         _step(sim)
@@ -209,8 +209,8 @@ def _instrumented_vent_sim(seed, smoke, filter_name):
                      enable_recorder=False)
     g = sim.gmap
     ry, rx = sim._vents[0].aperture_y, sim._vents[0].aperture_x
-    g.gas[SMOKE][ry, rx] = smoke
-    g.gas[POISON][ry, rx] = smoke // 3
+    g.gas[SMOKE][ry, rx] = smoke  # raw trace counts: scale-free (#88)
+    g.gas[POISON][ry, rx] = smoke // 3  # raw trace counts: scale-free (#88)
     log = {"ext": [], "inj": []}
     real_ext, real_inj = g.extract_gas_n_vec, g.inject_gas_n_vec
 
@@ -393,8 +393,8 @@ def test_poison_recirculates_smoke_scrubbed_hepa_filter():
                      enable_recorder=False)
     ry, rx = sim._vents[0].aperture_y, sim._vents[0].aperture_x
     sy, sx = sim._vents[1].aperture_y, sim._vents[1].aperture_x
-    sim.gmap.gas[POISON][ry, rx] = 50000
-    sim.gmap.gas[SMOKE][ry, rx] = 50000
+    sim.gmap.gas[POISON][ry, rx] = 50000  # raw trace counts: scale-free (#88)
+    sim.gmap.gas[SMOKE][ry, rx] = 50000  # raw trace counts: scale-free (#88)
 
     for _ in range(300):
         _step(sim)

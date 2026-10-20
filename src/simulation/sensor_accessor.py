@@ -128,8 +128,13 @@ class EntityFieldAccessor:
         if channel is Channel.PRESSURE:
             return g.atmosphere
         if channel is Channel.SMOKE:
+            # The smoke plane is in the TRACE currency (#88); the sensor signal
+            # contract and every authored KIND_Q16 threshold are Q16, so the
+            # channel converts HERE, once, where both `sample` and `area` see
+            # it (critique A7). Floor: invariant on S_old << TRACE_FINE_BITS.
+            from simulation import gas_fixed
             from simulation.gases import SMOKE
-            return g.gas[SMOKE]
+            return gas_fixed.trace_to_q16(g.gas[SMOKE])
         if channel is Channel.WATER_DEPTH:
             return g.water_depth
         if channel is Channel.TEMPERATURE:

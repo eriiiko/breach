@@ -114,7 +114,7 @@ def test_inject_splits_standard_mix_exactly():
     n2 = int(g.gas[INERT_N2][5, 5])
     # Exact injected mass == ΔN (the remainder rule); mix ≈ 0.21 O2.
     assert o2 + n2 == dn
-    o2_frac_q = gas_fixed.quantize_scalar(0.21)
+    o2_frac_q = gas_fixed.quantize_q16_scalar(0.21)
     assert o2 == (dn * o2_frac_q + (1 << 15)) >> 16       # the air-seed idiom
     assert abs(o2 / dn - 0.21) < 1e-3
     # Only the two bulk slices moved.
@@ -144,7 +144,7 @@ def test_inject_then_extract_roundtrips_bulk_n_exactly_populated_tile():
     _zero_tile(g, 5, 5)
     g.gas[O2][5, 5] = 1000
     g.gas[INERT_N2][5, 5] = 3000
-    g.gas[SMOKE][5, 5] = 500
+    g.gas[SMOKE][5, 5] = 500  # raw trace counts: scale-free (#88)
     bulk0 = 4000
     dn = 20_000
     g.inject_gas_n(5, 5, dn)
@@ -180,7 +180,7 @@ def test_extract_bulk_split_conserves_requested_dn_exactly():
     _zero_tile(g, 5, 5)
     g.gas[O2][5, 5] = 100
     g.gas[INERT_N2][5, 5] = 300
-    g.gas[SMOKE][5, 5] = 200                         # N_bulk 400
+    g.gas[SMOKE][5, 5] = 200                         # N_bulk 400 -- raw trace counts: scale-free (#88)
     before = [int(g.gas[gg][5, 5]) for gg in range(N_GASES)]
     removed = g.extract_gas_n(5, 5, 150)
     after = [int(g.gas[gg][5, 5]) for gg in range(N_GASES)]
@@ -219,7 +219,7 @@ _V5_SMOKE = (0, 500, 4_870_000)
 def _v5_tile(g, smoke, fy=5, fx=5):
     _zero_tile(g, fy, fx)
     g.gas[O2][fy, fx], g.gas[INERT_N2][fy, fx] = _V5_BULK
-    g.gas[SMOKE][fy, fx] = smoke
+    g.gas[SMOKE][fy, fx] = smoke  # raw trace counts: scale-free (#88)
     g.reseed_gas_energy(np.s_[fy, fx])
     assert g.gas_is_accountable(fy, fx)     # the energy book is not vacuous
 
@@ -258,7 +258,7 @@ def test_v5_trace_leaves_at_the_cell_air_ratio(dn, smoke):
     Breaks if trace is priced against N_total, or rounded other than floor."""
     g = _bare_gmap()
     _v5_tile(g, smoke)
-    g.gas[POISON][5, 5] = 7 * smoke + 3        # a second plane, its own ratio
+    g.gas[POISON][5, 5] = 7 * smoke + 3        # a second plane, its own ratio -- raw trace counts: scale-free (#88)
     n_bulk = sum(_V5_BULK)
     s_before = {SMOKE: smoke, POISON: 7 * smoke + 3}
     got = g.extract_gas_n(5, 5, dn)
@@ -280,8 +280,8 @@ def test_v5_tile_without_air_takes_no_trace_and_raises_nothing():
     spent as if it were air again."""
     g = _bare_gmap()
     _zero_tile(g, 5, 5)
-    g.gas[SMOKE][5, 5] = 40_000
-    g.gas[POISON][5, 5] = 9
+    g.gas[SMOKE][5, 5] = 40_000  # raw trace counts: scale-free (#88)
+    g.gas[POISON][5, 5] = 9  # raw trace counts: scale-free (#88)
     before = [int(g.gas[gg][5, 5]) for gg in range(N_GASES)]
     books0 = dict(g.gas_energy_books)
     assert g.extract_gas_n_vec(5, 5, 10_000) == [0] * N_GASES
@@ -444,7 +444,7 @@ def test_build_pumps_ok_and_marker():
     assert len(sim._pumps) == 1
     rt = sim._pumps[0]
     # rate 1.0 atm/s / 24 tps = 0.041666 atm/tick → q = quantize(0.041666).
-    assert rt.delta_n_q == gas_fixed.quantize_scalar(1.0 / TPS)
+    assert rt.delta_n_q == gas_fixed.quantize_bulk_scalar(1.0 / TPS)
     # Port resolved to the OPEN tile left of the wall (mount is on the wall).
     assert (rt.port_y, rt.port_x) == (5, 5)
     # The pump instance was REPLACED by its runtime wrapper (§8 at_target row).

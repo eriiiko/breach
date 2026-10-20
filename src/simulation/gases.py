@@ -256,6 +256,44 @@ class GasTable:
         # where a gas does not carry it (#12 handle 1) -- see the light door.
         self.light_absorb = self._load_rgb_optional(rows, "light_absorb")
 
+        # THE TWO-CURRENCY DOOR (#88, docs/smoke_unit_rescale_design_2026-10-20.md
+        # §2.2 / V10). The gas array holds two currencies: the trace planes
+        # (ids < N_TRACE_GASES) in the trace currency, the conservative bulk
+        # pair in Q16. Every optical density sum (the sweep's heat and light
+        # terms, the glow, the laser) is finished by ONE trace-currency shift,
+        # so it may only ever see trace planes:
+        #   * the conservative rows are exactly the bulk ids (the layout every
+        #     per-plane currency choice keys on);
+        #   * a conservative row carries NO optical coefficient -- heat_absorb,
+        #     absorption (which the light and beam columns derive from),
+        #     light_absorb, scatter_albedo all 0. A bulk absorber would need a
+        #     second, bulk-currency partial sum in the sweep and the laser
+        #     (ACCEPTED GAP G3).
+        for g, name in enumerate(self.names):
+            want_bulk = g >= N_TRACE_GASES
+            if bool(self.conservative[g]) != want_bulk:
+                raise ValueError(
+                    f"gases.{name}.conservative = {bool(self.conservative[g])}: the "
+                    f"conservative (bulk, Q16) rows must be exactly the ids >= "
+                    f"N_TRACE_GASES ({N_TRACE_GASES}) -- the trace planes and the "
+                    f"bulk planes are in different currencies (#88)")
+            if not want_bulk:
+                continue
+            optics = [("heat_absorb", float(self.heat_absorb[g]))]
+            optics += [(f"absorption[{c}]", float(self.absorption[g, c])) for c in range(3)]
+            optics += [(f"scatter_albedo[{c}]", float(self.scatter_albedo[g, c]))
+                       for c in range(3)]
+            if not np.isnan(self.light_absorb[g, 0]):
+                optics += [(f"light_absorb[{c}]", float(self.light_absorb[g, c]))
+                           for c in range(3)]
+            for what, v in optics:
+                if v != 0.0:
+                    raise ValueError(
+                        f"gases.{name}.{what} = {v!r}: a conservative (bulk) gas row "
+                        f"may carry no optical coefficient -- every optical density "
+                        f"sum is in the TRACE currency, and a bulk plane is Q16 "
+                        f"(#88, design §2.2; a bulk absorber is ACCEPTED GAP G3)")
+
         # beam_absorb_q16: per-gas Q16.16 BEAM-absorption coefficient for the
         # HITSCAN laser (mechanics/03 §5, W2). DERIVATION OF RECORD, computed
         # ONCE at table build: the arithmetic MEAN of the gas's RGB absorption
