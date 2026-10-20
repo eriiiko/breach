@@ -664,6 +664,7 @@ to read. It does not cut any value the game can show.
 | lens | verdict | blockers |
 |---|---|---|
 | arithmetic, overflow, determinism (Opus, 2026-10-20) | PASS WITH FIXES | none. 3 MAJOR to fix before P1/P3 (A1 the teargas gate is not reader-invariant, so V3 as written fails; A2 numpy 1.26 on Windows accumulates int32 sums in int32; A3 `quantize_trace` narrows to int32 before the rail can see the excess). 9 MINOR. See §15 |
+| conservation, books, behavioural semantics (Opus, 2026-10-20) | PASS WITH FIXES | none. 4 MAJOR to fix before P0/P2 (B1 the §5.1 "deposits" term has no book, so a clip at a deposit site is invisible to the identity; B2 the pump's extracted trace and FieldEdit REMOVE destroy trace unbooked today, and P0 rewrites the pump lines without saying where its trace goes; B3 the rail IS D1's rejected option (b) at the representability limit, and §12's CLAUDE.md amendment leaves "additive with no ceiling (D1)" and "already-booked systems" standing; B4 two golden re-baselines break the branch's own gate-h precedent, and P0 cannot lawfully move the golden at all). 5 MINOR (B5-B9). See §16 |
 
 ## 15. Critique — arithmetic lens
 
@@ -868,3 +869,239 @@ side, the only mixed sites are the ones §2.2 already names.
   bounds against `Q16_ONE`.
 - Also: `unseal_tiles` needs no rail. `target = Σ avail // (k+1) < max(avail)`
   (`gamemap.py:2898`), so §5.3's row can drop it.
+
+## 16. Critique — books & semantics lens
+
+Scope: every trace book and every gameplay reader, read in the code at `b7425b8`.
+The question for each: does it stay exact, and does any behaviour change that the doc
+does not list?
+
+**Confirmed sound (no finding):**
+- **Engine books** (`eos_solver.cpp:348-357`). The four per-tick trace books (vent
+  slots of `boundary_flux_`, wipe, sink, decay) are reset at `EOSSolver::step` entry
+  and are per gas. No consumer sums `boundary_flux()` across gases: every reader in
+  `tests/` indexes a gas or compares lists slot by slot (`test_air_boundary.py:826`,
+  `cuda_trace_smoke_check.py:109`). So "each plane in its own currency" mixes nothing.
+- **Every `N_EPS` gate is a bulk gate**: the 3b donor guard (`bulk_transport.cpp:483,
+  488`), the 3c wipe (`:632`, CUDA `:360`) and the sweep's floor
+  (`radiation_sweep.h:249, 275`). None compares a trace count to a threshold, so the
+  rescale moves none of them, and P5's floor-1 decay meets none of them.
+- **Vent plenum ledger.** `trace_raw` and `sink` are Python ints, serialized as
+  `<q` (`entities/serialize.py:88-95`). ×2^8 is far from int64 limits. The filter
+  scrub `(r·eff_q) >> 16` (`vent_system.py:400`) is a fraction of a count, so the
+  sink book stays exact. Supply-side trace is `share·trace_raw // n_bulk`
+  (`:478`), which is scale-free.
+- **W3** (`physics_engine.cpp:1112-1135`) moves trace with the remainder to the last
+  neighbour, so it conserves `Σ S` at any scale.
+- **`seal_tiles`** (`gamemap.py:2766-2780`) uses divmod and conserves exactly. The
+  rail goes inside the "raise-free by construction" mutation pass (`:2751-2755`),
+  which fits that pin better than today's pre-check `OverflowError`.
+- **`destroy_wall`**: trace is left to the tail's booked sink. Unchanged.
+- **Soot mint**: the Dalton split and `e_shed` keep the bulk-count `soot`
+  (`combustion.cpp:1003-1005`), so the energy and bulk books are bit-identical.
+- **No vision reader.** No sim module outside the listed readers touches a trace
+  plane. I grepped `src/simulation/*.py`: only `combat`, `exchange`, `field_edit`,
+  `gamemap`, `gas_fixed`, `gases`, `physics`, `physics_runner`, `recorder`,
+  `sensor_accessor`, `simulation` and `weapons` match, and all are in §2. Smoke does
+  not block sight, so the rescale cannot change line of sight.
+- **P0 is in scope and is required.** It is not smuggled.
+  - Without P0, at k = 8 a tile holding real-max smoke (0.29 units = 4.87 M counts)
+    over ambient bulk (65 536) splits a pump's budget 98.7 % trace, 1.3 % air
+    (`gamemap.py:3097-3101`). An airlock pump in smoke would stall about 77×, and a
+    duct would move smoke about 77× faster.
+  - The all-slices split is D10's July rule (`docs/archive/arc_b_impl_2026-07-21.md`
+    §6). D10 predates P-T0, which retired trace mass (`n_total == n_bulk`). P0 is
+    P-T0's unfinished consequence on one primitive, and stage 3b and the vent supply
+    side already follow it.
+- **P5 leaves no residue.** `max(1, …)` capped at `v` reaches 0 in at most `v`
+  ticks below the linear edge. Above it, nearest rounding is unbiased, where ceil is
+  biased by +½ count a tick. That is the better reading of Erik's 2026-10-05 ruling.
+
+### B1. MAJOR: the §5.1 "deposits" term has no book, so a clip at a deposit site is invisible to the identity
+
+- **Evidence.**
+  - FieldEdit's trace combine (`field_edit.py:499-510`) books nothing.
+  - The soot mint `SOOT[s] += soot` (`combustion.cpp:1004`) has an energy counter
+    (`e_soot_shed_sum`) but no mass counter.
+  - The W5 puff `gas_slice[i] += puff_q` (`physics_engine.cpp:1045`) books nothing.
+  - So today's identity is a *bracket*. `test_water_boil.py:74-90` measures the puff
+    as `Δ Σ S + vent + wipe + sink + decay`, and v2's identity tests run only
+    deposit-free scenarios (`test_smoke_transport_v2.py:91-92`: "No soot").
+- **Consequence.**
+  - Under a bracket, "deposits" means whatever the residual is.
+  - A rail at a deposit site that clips without booking, books twice, or books into
+    the wrong gas reads as "a smaller deposit", and the identity still closes.
+  - These are exactly the sites where §5.3 says the rail binds (A10: grenade spam
+    under compression; G4: the closet).
+  - So V6's "`clip` books exactly the excess" has no closed identity to stand on.
+    It can only be asserted per cell, against hand-computed expectations.
+- **Fix (P2).** Book every mint at its attempted amount, before the rail:
+  - `trace_mint_sum[g]`, per tick, for the soot mint and the W5 puff, on both
+    backends. On CUDA, append it to the counter block beside `clip`.
+  - `GameMap.trace_deposit_books[g]` for the FieldEdit net (ADD positive, REMOVE
+    negative) and for any Python-side insertion.
+  - §5.1 then becomes a closed identity with no residual:
+    `Δ Σ S == mint + deposit − vent − wipe − sink − decay − pump − clip`.
+  - V6 asserts that identity on the rail scenario. `test_water_boil.py` can then read
+    the puff from its book instead of from the bracket.
+
+### B2. MAJOR: the pump and FieldEdit REMOVE destroy trace with no book; P0 rewrites the pump lines and says nothing about where its trace goes
+
+- **Evidence.**
+  - `pump_system.py:113` calls `gmap.extract_gas_n(...)` and discards the result.
+  - `extract_gas_n_vec` zeroes the trace slices it takes (`gamemap.py:3106-3108`).
+    The only book it writes is the bulk energy book `pump_extract` (`:3109-3113`).
+  - The explosion's smoke clear is a FieldEdit REMOVE-to-0 over the inner 40 % of the
+    radius (`physics.py:69, 98`). It is also unbooked.
+  - CLAUDE.md's Trace transport row says these movers are "separate,
+    already-booked systems". For the pump and the clear, that is false today.
+- **Why this lens cares now.**
+  - P0 changes how much trace the pump takes: priced by air, up to (N+S)/N more.
+  - The doc's own claim is that "every loss is booked" (§12 b).
+  - At k = 8 these sites are also where a mis-scaled conversion would hide, because
+    nothing counts them.
+- **Fix (P0).**
+  - The rewritten `extract_gas_n_vec` returns the per-slice vector as today. The pump
+    books the trace part in `GameMap.trace_pump_books[g]` (a Python int, the
+    `pump` term in B1's identity). The vents keep crediting their plenum.
+  - FieldEdit REMOVE books its net into B1's deposit book.
+  - If this is judged out of scope, record it as **ACCEPTED GAP G6** ("pump
+    extraction and FieldEdit REMOVE destroy trace unbooked") and correct CLAUDE.md's
+    "already-booked" sentence. Leaving the sentence as it is would be the stale-rule
+    failure the master CLAUDE.md names.
+
+### B3. MAJOR: the rail is D1's rejected option (b) at a different value, and §12's amendment leaves CLAUDE.md contradicting the code
+
+- **Evidence.**
+  - D1 as put to Erik (`smoke_transport_design_2026-10-04.md` §11): "(b) Keep the
+    ceiling, counted as destruction". Erik ruled (a): "a deposit adds exactly its
+    amount, with no upper clamp".
+  - §5.3's `trace_add_rail` at FieldEdit is (b) with the ceiling at 128 units
+    instead of 1.
+  - §5.3 says "It is NOT a ceiling in the sense of D1". It is: an upper clamp on a
+    deposit, counted as destruction.
+  - CLAUDE.md line 79 says "trace ADD edits through FieldEdit are additive with no
+    ceiling (D1)". §12(b)'s amendment edits only the neighbouring clause ("No trace
+    plane is clamped…"), so after P6 the row states both "no ceiling" and "bar the
+    rail".
+- **Is the rail justified?** Yes. The alternatives are a wrap, which turns a cell
+  negative so the sweep reads it as clear and poison as nothing (an RL exploit), or
+  a mid-tick raise. At 128 units it is 440× the real maximum. And it honours the half
+  of D1 that mattered to Erik ("never cut the tile"): `min(s + add, MAX) ≥ s` for
+  `s ≤ MAX`, so existing smoke is never cut.
+- **Fix.**
+  - In §5.3, replace "It is NOT a ceiling in the sense of D1" with: "It is D1's
+    option (b) at the int32 representability limit, 128 units, 440× the real
+    maximum. It never cuts smoke already on the tile, which was the substance of
+    Erik's (a). It caps only an addition that cannot be represented, and books it."
+  - P6 replaces the whole row sentence with: "No trace plane is clamped anywhere
+    outside a reader, bar the counted int32 rail (`TRACE_CELL_MAX`, #88) at every
+    site that adds to a cell; trace ADD edits through FieldEdit are additive up to
+    that rail and never cut the tile (D1). Every loss is booked: vent in the trace
+    slots of `boundary_flux_`, wipe, sink, decay, clip, and on the Python side
+    `trace_pump_books` / `trace_deposit_books`. Other movers (vent plenum ledger, W3,
+    `destroy_wall`/`seal_tiles`) conserve or book through those." Drop
+    "already-booked" unless B2 is fixed.
+  - The **Gas pump primitives** row gains: "trace is priced by air (#88 P0): the
+    split runs over the bulk planes; each trace plane leaves at the cell's
+    `S/N_bulk`."
+  - The #88 closing comment says in one line that D1's cap now exists at 128 units,
+    as information for Erik, not a question. His ruling is the one being bounded.
+
+### B4. MAJOR: the re-baseline plan. Two golden events break the branch's own gate-h precedent, and P0 cannot lawfully move the golden at all
+
+- **Evidence, P0.** The canonical scenario has no pump, vent or duct
+  (`field_ab_harness.py:120-151`: smoke, fire, water, a wave, one marine, one breach).
+  P0 changes only `extract_gas_n_vec` and its callers, so the golden cannot move. P0's
+  row ("If the golden moves, re-baseline once with rationale") pre-authorizes an
+  unexplained move.
+- **Evidence, P3 + P5.**
+  - The lineage in `tests/_xarch_perfield_digest.py:100-101, 111-112, 145` folds a
+    branch's changes into "ONE re-baseline for the whole branch (the gate-h rule)",
+    with every cause named in the one entry.
+  - P3's value (k = 8 with ceil decay) is a state that never ships.
+  - Reordering does not save a move: at k = 0, nearest and ceil already differ on the
+    scenario's 0.6 seed (39 322 · 22 / 2^16 = 13.2, so ceil gives 14 and nearest 13).
+- **Fix.**
+  - P0's gate: **`GOLDEN_AGGREGATE` reproduced; a move is a bug.**
+  - Fold P5 into P3: one flip patch, "`TRACE_FINE_BITS` 0 → 8 and decay ceil →
+    nearest", with ONE golden event whose rationale carries the two-stage sole-cause
+    proof:
+    1. the k = 0 + ceil tree reproduces `f6ba810e…`;
+    2. k = 8 + ceil gives an intermediate X, recorded in the entry and not committed
+       as the golden;
+    3. k = 8 + nearest gives the committed Y.
+  - Each stage is reproduced twice. This keeps both sole-cause checks the doc wants,
+    with one lineage event. If P3 and P5 must stay separate patches for the
+    one-writer cadence, P3 may carry X on the branch, but the lineage entry is
+    written once, at P5, naming both causes.
+
+### B5. MINOR: list the gameplay changes with their numbers, not as "timing follows"
+
+§6's "allowed to differ" table ends with "poison/teargas timing … follows from the rows
+above". These are RL-visible, and each one should be a row with its size:
+- **Poison's lethal window at the dose edge grows about 1.7×.**
+  - Today, poison at 0.06 (3932 counts, `frac_q` 11) loses `ceil(0.66) = 1` count a
+    tick. It reaches the 0.05 threshold (3277) in 655 ticks = 27 s.
+  - At k = 8 it decays at the configured e-fold: `ln(1.2)/0.004` = 46 s.
+  - This is intended (Erik's ruling), but it lengthens every thin poison cloud's
+    damage time.
+- **Teargas BLINDED near its threshold lasts about 20 % longer.** At 0.15 (9830
+  counts, `frac_q` 27) today removes `ceil(4.05) = 5` counts a tick, against 4.05
+  exact.
+- **P0's pump and vent rates in smoke.**
+  - Today a pump in smoke takes air at `want·N/(N+S)`; after P0 it takes the full
+    `want`.
+  - In the densest real smoke on ambient air (0.29 units over 1.0), that is +29 %
+    air pumped and +29 % smoke removed.
+  - Airlock `at_target` latches sooner in smoky rooms. Compressed tiles see less
+    change.
+  - This replaces D-A's "slightly".
+- **D-B's diffusion change.** It is confined for poison and teargas: their
+  densities are large in counts, so diffusion already acts above 240 old counts =
+  0.0037 units per tile. The newly-live band sits below every dose threshold. Say so,
+  so that a P3 reviewer does not look for a footprint change that should not exist.
+
+### B6. MINOR: P5's floor of 1 makes the `frac_q == 0` skip load-bearing; put it in the kit
+
+- Today `lost(v, 0) = (0 + 65535) >> 16 = 0` by itself.
+- With `max(1, …)`, `lost(v, 0) = 1`, so a non-decaying trace gas would decay by one
+  count a tick.
+- Both callers skip it (`bulk_transport.cpp:665`, `cuda_bulk_transport.cu:951`), but
+  the header only says "callers skip".
+- **Fix:** `if (frac_q <= 0) return 0;` inside `trace_decay::lost`, plus a V7 case
+  with decay = 0.
+- **Also:** v2's V8 test (`test_smoke_transport_v2.py:401-424`) loops `range(v + 1)`
+  ticks. At k = 8 that is 10^6 iterations as an upper bound, and the actual
+  extinction of 0.06 poison takes about 38 000 ticks (1460 s exponential + 124 s
+  linear). P5 rewrites the bound from the law (exponential to the linear edge, plus
+  that many ticks), not from `v`.
+
+### B7. MINOR: specify the clip books' window and sign
+
+- `EOSSolver` books reset at `step` entry (`eos_solver.cpp:353-357`).
+- Combustion runs after `run_substeps` (`physics_runner.py:939, 976`), so a
+  `trace_clip_sum` written by the soot mint falls inside the same tick window. That
+  holds only because of the order.
+- `GameMap.trace_clip_books` is described as "Python ints", without saying whether
+  it is per tick or cumulative.
+- **Fix:** both books are per tick, reset at the same point, and signed ≥ 0. The doc
+  names the window as the one `sim.step()` brackets, the window v2's identity tests
+  already use. CUDA's slot is appended, never inserted (the P5c slot-12/13/14
+  precedent).
+
+### B8. MINOR: V5 should pin P0's books, not only its ratio
+
+V5 checks the bulk equality and the ratio bound. Add:
+- the pump's `gas_energy` book `pump_extract` equals `want·T_abs` exactly in smoke as
+  in clear air;
+- the vent plenum `trace_raw + sink` grows by exactly the trace removed;
+- with B2: `trace_pump_books` equals the trace removed.
+
+*Breaks if* the priced-by-air trace leaves the tile without landing in any book.
+
+### B9. MINOR: §13 "Nothing here needs Erik" should carry B3's one line
+
+The delegation covers the decision. The rail still bounds a ruling Erik made in his own
+words, so the sentence should say: "the rail bounds D1 at 128 units; reported in the
+#88 comment".
