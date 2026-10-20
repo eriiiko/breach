@@ -230,13 +230,43 @@ class Head:
         dl = (self.L(x) - z) / np.sqrt(1.0 + self.L.d(x) ** 2)
         return smax3(du, dl, self.E["corner_k"])
 
-    def _forms(self, Q):
+    def _forms(self, Q, nose=True, lips=True):
         """Head space, no neck, no cuts: egg + forms."""
         d = self.egg(Q) - self.bumps(Q)
-        nd, nk = self.nose(Q)
-        d = smin3(d, nd, nk)
-        ld, lk = self.lips(Q)
-        return smin3(d, ld, lk)
+        if nose:
+            nd, nk = self.nose(Q)
+            d = smin3(d, nd, nk)
+        if lips:
+            ld, lk = self.lips(Q)
+            d = smin3(d, ld, lk)
+        return d
+
+    def shade_proxy(self, P):
+        """World: the skin without the nose and with the lips flattened -- the surface whose normals the nose's bridge
+        and sides and the lips are SHADED with (`shading` in the face table), as anime-style 3D faces are: the profile
+        keeps the nose, the front view sees only its tip, as drawn."""
+        P = np.asarray(P, float)
+        Q = self.to_head(P)
+        d = self._cut(Q, self._forms(Q, nose=False, lips=False)) * self.s
+        return smin3(d, self.neck(P), self.F["neck_k"])
+
+    def shading_normals(self, V):
+        """Per vertex (world): the field's normals, blended towards the proxy's over the nose (all but its tip) and the
+        lips by the face table's `shading` weights."""
+        N = unit(self.grad(self, V))
+        sh = self.F.get("shading")
+        if not sh:
+            return N
+        Np = unit(self.grad(self.shade_proxy, V))
+        Q = self.to_head(V)
+        x, y, z = np.abs(Q[:, 0]), Q[:, 1], Q[:, 2]
+        (z0, z1), sx, tip_c, tip_r, k_nose = sh["nose"]
+        w = _ramp(z, z0, z0 + 0.003) * _ramp(z1 - z, 0.0, 0.003) * np.exp(-(x / sx) ** 2) * _ramp(-y, 0.080, 0.086)
+        tip = np.exp(-((Q[:, 0] - tip_c[0]) / tip_r[0]) ** 2 - ((z - tip_c[1]) / tip_r[1]) ** 2)
+        w = k_nose * w * (1.0 - tip)
+        (lz0, lz1), lx, k_lip = sh["lips"]
+        w = np.maximum(w, k_lip * _ramp(z, lz0, lz0 + 0.002) * _ramp(lz1 - z, 0.0, 0.002) * _ramp(lx - x, 0.0, 0.004) * _ramp(-y, 0.080, 0.084))
+        return unit(N * (1.0 - w)[:, None] + Np * w[:, None])
 
     def _cut(self, Q, d):
         m = self.F["mouth"]
@@ -437,7 +467,7 @@ def face_masks(head, V):
     x0, x1, off, w = pm["low_lash"]
     zl = head.L(x) - off
     span = _ramp(x, x0, x0 + 0.006) * _ramp(x1 - x, 0.0, 0.003)
-    spikes = 0.55 + 0.45 * np.cos(x * 2 * math.pi / 0.0024)
+    spikes = 0.85 + 0.15 * np.cos(x * 2 * math.pi / 0.0024)
     out["lowlash"] = _band(z, zl, w) * span * front * spikes
     x0, x1, off, w = pm["crease"]
     out["crease"] = _band(z, head.U(x) + off, w) * _ramp(x, x0, x0 + 0.006) * _ramp(x1 - x, 0.0, 0.006) * front
@@ -475,12 +505,12 @@ def materials(prefix, p):
     col = t.mix(t.math("MULTIPLY", t.ramp(t.noise(14.0, 2.0, 0.5), 0.35, 0.75), 0.25), s, (s[0] * 1.03, s[1] * 0.93, s[2] * 0.90, 1.0))
     col = t.mix(t.math("MULTIPLY", t.attr("blush"), p.get("BLUSH_AMOUNT", 0.55)), col, lin(p["BLUSH"]))
     col = t.mix(t.math("MULTIPLY", t.attr("nosetip"), 0.35), col, lin(p["BLUSH"]))
-    col = t.mix(t.math("MULTIPLY", t.attr("lips"), 0.75), col, lin(p["LIP"]))
+    col = t.mix(t.math("MULTIPLY", t.attr("lips"), p.get("LIP_AMOUNT", 0.45)), col, lin(p["LIP"]))
     col = t.mix(t.math("MULTIPLY", t.attr("crease"), 0.55), col, lin(p["CREASE"]))
     col = t.mix(t.math("MULTIPLY", t.attr("lowlash"), 0.75), col, lin(p["LASH_LOW"]))
     strands = t.ramp(t.noise(300.0, 2.0, 0.5, 0.0, "FBM", stretch=(1.0, 1.0, 0.3)), 0.3, 0.65)
     col = t.mix(t.math("MULTIPLY", t.attr("brow"), t.math("ADD", t.math("MULTIPLY", strands, 0.3), 0.65), clamp=True), col, lin(p["BROW"]))
-    col = t.mix(t.math("MULTIPLY", t.attr("nostril"), 0.6), col, lin(p["LIP_LINE"]))
+    col = t.mix(t.math("MULTIPLY", t.attr("nostril"), 0.35), col, lin(p["LIP_LINE"]))
     col = t.mix(t.math("MULTIPLY", t.attr("mouthline"), 0.85), col, lin(p["LIP_LINE"]))
     ao = t.ramp(t.ao(0.02), 0.2, 0.95)
     col = t.mix(t.math("MULTIPLY", t.math("SUBTRACT", 1.0, ao), 0.25), col, (s[0] * 0.55, s[1] * 0.40, s[2] * 0.38, 1.0))
@@ -576,7 +606,7 @@ def build_skin(head, mats, prefix, coll, h):
     t0 = time.time()
     lo, hi = np.array([-0.095, -0.125, 1.395]), np.array([0.095, 0.100, 1.692])
     V, Q = mesh_banded(head, lo, hi, h)
-    N = head.grad(head, V)
+    N = head.shading_normals(V)
     attrs = face_masks(head, head.to_head(V))
     ob = _mesh(prefix + "_Head", V, Q, mats["face"], coll, attrs=attrs, normals=N)
     print("anime head: skin %d verts in %.1fs" % (len(V), time.time() - t0))

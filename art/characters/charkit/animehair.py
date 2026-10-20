@@ -155,7 +155,8 @@ def lock_paths(hair, row, body, rng):
         t = np.linspace(0.0, 1.0, m)
         bb = b_r + (b_e - b_r) * t
         aa = a_root + (a_end - a_root) * t ** row.get("a_curve", 1.0)
-        off = row.get("off", 0.002) + row.get("lift", 0.0) * t ** 2
+        # the root dives into the cap (no end showing where the lock starts), the tip lifts off
+        off = row.get("off", 0.002) + row.get("lift", 0.0) * t ** 2 - row.get("sink", 0.004) * (1.0 - t) ** 8
         P = hair.on_head(bb, aa, off)
         hl = row.get("hang", 0.0)
         if isinstance(hl, (tuple, list)):
