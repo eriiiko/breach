@@ -138,14 +138,25 @@ class Egg:
         self.rf_s, self.sig_a = None, None
         if sp.get("front_smooth"):
             sb, sa = sp["front_smooth"]
-            bb = np.radians(np.arange(-90.0, 90.01, 0.5))
-            r = self.rf(bb)
-            k = np.arange(-int(4 * sb / 0.5), int(4 * sb / 0.5) + 1)
-            g = np.exp(-0.5 * (k * 0.5 / sb) ** 2)
-            g /= g.sum()
-            rp = np.concatenate([r[len(k) // 2:0:-1], r, r[-2:-len(k) // 2 - 2:-1]])
-            self.rf_s = Curve(bb, np.convolve(rp, g, mode="same")[len(k) // 2:len(k) // 2 + len(bb)])
+            self.rf_s = self._smoothed(self.rf, sb)
             self.sig_a = math.radians(sa)
+        if sp.get("side_smooth"):
+            # B2d: the front view's side radius smoothed along the elevation too (degrees): the traced cheek-to-chin outline is
+            # nearly straight, and its spline's small wiggles were CONCAVE along the elevation (-3..-5 /m at -21 and -38 deg),
+            # which printed as grooves round the cheek from below the eye to the jaw's corner (review 11 item 5); at 6 deg the
+            # outline moves 0.44 mm at most and nowhere is it concave
+            self.rs = self._smoothed(self.rs, sp["side_smooth"])
+
+    @staticmethod
+    def _smoothed(cv, sb):
+        """A copy of the polar curve `cv` smoothed by a Gaussian of `sb` degrees along the elevation."""
+        bb = np.radians(np.arange(-90.0, 90.01, 0.5))
+        r = cv(bb)
+        k = np.arange(-int(4 * sb / 0.5), int(4 * sb / 0.5) + 1)
+        g = np.exp(-0.5 * (k * 0.5 / sb) ** 2)
+        g /= g.sum()
+        rp = np.concatenate([r[len(k) // 2:0:-1], r, r[-2:-len(k) // 2 - 2:-1]])
+        return Curve(bb, np.convolve(rp, g, mode="same")[len(k) // 2:len(k) // 2 + len(bb)])
 
     def __call__(self, P):
         d = P - self.c
@@ -566,14 +577,226 @@ def face_masks(head, V):
     out["nostril"] = np.exp(-((x - nx) / nr[0]) ** 2 - ((z - nz) / nr[1]) ** 2) * _ramp(-y, 0.085, 0.090)
     tz, tr = pm["nose_tip"]
     out["nosetip"] = np.exp(-(V[:, 0] / tr[0]) ** 2 - ((z - tz) / tr[1]) ** 2) * _ramp(-y, 0.095, 0.100)
+    if pm.get("blush_bridge"):   # B2d: the blush across the nose's bridge, as drawn (one band under the eyes)
+        (bz, (sx, sz)), k = pm["blush_bridge"]
+        out["blush"] = np.maximum(out["blush"], k * np.exp(-(x / sx) ** 2 - ((z - bz) / sz) ** 2) * front)
+    art = F.get("art")
+    if art:   # B2d: where the drawn layer (`face_art`) lies on the skin: its image coordinates, its weight
+        x1, z0, z1 = art["frame"]
+        out["art_u"] = x / x1
+        out["art_v"] = (z - z0) / (z1 - z0)
+        out["art_w"] = _ramp(-y, *art.get("front", (0.040, 0.055)))
     return out
 
 
+# ------------------------------------------------------------------------------------------------ the drawn layer (B2d)
+def _srgb(c):
+    h = c.lstrip("#")
+    return np.array([int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4)], np.float32)
+
+
+class Canvas:
+    """A front-projected paint layer in head space (B2d): columns |x| from 0 to `x1`, rows z from `z1` down to `z0` at
+    pitch `px` (m); straight-alpha RGBA, composited layer by layer ('over'), every edge anti-aliased by its distance."""
+
+    def __init__(self, x1, z0, z1, px):
+        self.px, self.x1, self.z0, self.z1 = px, x1, z0, z1
+        self.W, self.H = int(math.ceil(x1 / px)), int(math.ceil((z1 - z0) / px))
+        self.rgb = np.zeros((self.H, self.W, 3), np.float32)
+        self.a = np.zeros((self.H, self.W), np.float32)
+
+    def window(self, lo, hi):
+        j0, j1 = max(0, int(lo[0] / self.px) - 1), min(self.W, int(hi[0] / self.px) + 2)
+        i0, i1 = max(0, int((self.z1 - hi[1]) / self.px) - 1), min(self.H, int((self.z1 - lo[1]) / self.px) + 2)
+        xs = (np.arange(j0, j1) + 0.5) * self.px
+        zs = self.z1 - (np.arange(i0, i1) + 0.5) * self.px
+        return (i0, i1, j0, j1), xs, zs
+
+    def over(self, win, cov, colour, alpha=1.0):
+        i0, i1, j0, j1 = win
+        a = np.clip(cov * alpha, 0.0, 1.0).astype(np.float32)
+        if a.size == 0:
+            return
+        A, C = self.a[i0:i1, j0:j1], self.rgb[i0:i1, j0:j1]
+        na = a + A * (1.0 - a)
+        C[...] = (np.asarray(colour, np.float32)[None, None, :] * a[..., None] + C * (A * (1.0 - a))[..., None]) \
+            / np.maximum(na, 1e-6)[..., None]
+        A[...] = na
+
+    def field(self, fn, lo, hi, colour, alpha=1.0):
+        """A soft shape: `fn`(X, Z) -> coverage 0..1 over the box lo..hi."""
+        win, xs, zs = self.window(lo, hi)
+        if len(xs) and len(zs):
+            X, Z = np.meshgrid(xs, zs)
+            self.over(win, fn(X, Z), colour, alpha)
+
+    def stroke(self, pts, w, colour, alpha=1.0, soft=1.0):
+        """A polyline (n, 2) of widths `w` (n,) (a taper), its edge `soft` pixels wide."""
+        pts = np.asarray(pts, float)
+        w = np.broadcast_to(np.asarray(w, float), (len(pts),))
+        pad = w.max() / 2 + (2 + soft) * self.px
+        win, xs, zs = self.window(pts.min(0) - pad, pts.max(0) + pad)
+        if not (len(xs) and len(zs)):
+            return
+        X, Z = np.meshgrid(xs, zs)
+        P = np.stack([X.ravel(), Z.ravel()], 1)
+        best = np.full(len(P), -1e9)
+        for k in range(len(pts) - 1):
+            a, ab = pts[k], pts[k + 1] - pts[k]
+            t = np.clip(((P - a) @ ab) / max(ab @ ab, 1e-18), 0.0, 1.0)
+            d = np.linalg.norm(P - (a + t[:, None] * ab), axis=1)
+            best = np.maximum(best, ((w[k] + (w[k + 1] - w[k]) * t) / 2 - d) / (self.px * soft) + 0.5)
+        self.over(win, np.clip(best, 0.0, 1.0).reshape(X.shape), colour, alpha)
+
+    def image(self, name):
+        """The layer as a packed Blender image (sRGB, straight alpha)."""
+        import bpy
+        img = bpy.data.images.new(name, self.W, self.H, alpha=True)
+        img.alpha_mode = "STRAIGHT"
+        px = np.concatenate([self.rgb, self.a[..., None]], axis=2)[::-1]      # Blender's rows run bottom to top
+        img.pixels.foreach_set(np.ascontiguousarray(px, np.float32).ravel())
+        img.pack()
+        return img
+
+
+def _lash(start, ang, length, bend, n=8):
+    """A drawn lash: from `start` at `ang` deg from vertical (+ outwards), curving by `bend` deg along it."""
+    pts = [np.asarray(start, float)]
+    for k in range(1, n + 1):
+        a = math.radians(ang + bend * (k / n) ** 2)
+        pts.append(pts[-1] + (length / n) * np.array([math.sin(a), math.cos(a)]))
+    return np.array(pts)
+
+
+def face_art(head, art, p):
+    """B2d: the face's DRAWN layer -- what the close-ups ink and paint rather than model -- as one front-projected canvas
+    (head space, |x|: both sides alike), every shape from the `art` table and every colour from the palette `p`:
+    the upper lash MASS (the band's core, a soft brown fill and feathered lash strokes along its top, the clumped lashes
+    fanning out at the outer end), the double-lid crease, the lower lid's light rim, its lash line and lower lashes, the
+    inner corner's pink, the brows (a soft body and hair strokes), the nose's highlight (a soft teardrop and a glint) and
+    nostril strokes, the mouth line, the lower lip's tint and gloss. Returns the Canvas."""
+    rng = np.random.default_rng(art.get("seed", 1))
+    x1, z0, z1 = art["frame"]
+    cv = Canvas(x1, z0, z1, art["px"])
+    c = lambda k: _srgb(p[k])
+    U, Lw = head.U, head.L
+    # --- the inner corner and the lower lid (under the lashes)
+    if art.get("inner"):
+        (ix, iz), (sx, sz), a = art["inner"]
+        cv.field(lambda X, Z: np.exp(-((X - ix) / sx) ** 2 - ((Z - iz) / sz) ** 2), (ix - 3 * sx, iz - 3 * sz),
+                 (ix + 3 * sx, iz + 3 * sz), c("INNER_CORNER"), a)
+    lo = art.get("lower")
+    if lo:
+        xs = np.linspace(lo["x"][0], lo["x"][1], 50)
+        uu = (xs - xs[0]) / (xs[-1] - xs[0])
+        r0, r1, ra = lo["rim"]          # the lid's light rim: from r0 to r1 under the lid line
+        xr = np.linspace(lo["x"][0], lo.get("rim_x", lo["x"][1]), 50)
+        ur = (xr - xr[0]) / (xr[-1] - xr[0])
+        cv.stroke(np.column_stack([xr, Lw(xr) - 0.5 * (r0 + r1)]), (r1 - r0) * np.sin(np.pi * np.clip(ur, 0.02, 0.98)) ** 0.3,
+                  c("LID_RIM"), ra, soft=2.0)
+        off, lw, la = lo["line"]       # the lower lash line, fading in from the inner end
+        cv.stroke(np.column_stack([xs, Lw(xs) - off]), lw * np.interp(uu, *zip(*lo["taper"])), c("LASH_LOW"), la, soft=1.5)
+        for xr, ln, ang, wr in lo.get("lashes", ()):
+            cv.stroke(_lash((xr, float(Lw(xr)) - off), 180.0 - ang, ln, -lo.get("bend", 8.0), 6),
+                      np.linspace(wr, wr * 0.2, 7), c("LASH_LOW"), la, soft=1.2)
+    if art.get("outer"):   # the outer corner's walls inked dark: the white tucks under the lids there, as drawn
+        pts, wd, oa = art["outer"]
+        cv.stroke(np.asarray(pts, float), np.interp(np.linspace(0, 1, len(pts)), *zip(*wd)), c("LASH"), oa, soft=1.5)
+    # --- the crease above the lid
+    cr = art.get("crease")
+    if cr:
+        xs = np.linspace(cr["x"][0], cr["x"][1], 50)
+        uu = (xs - xs[0]) / (xs[-1] - xs[0])
+        cv.stroke(np.column_stack([xs, U(xs) + np.interp(uu, *zip(*cr["off"]))]), cr["width"] * np.sin(np.pi * uu) ** 0.5,
+                  c("CREASE"), cr.get("alpha", 1.0), soft=1.5)
+    # --- the upper lash mass
+    la = art.get("lash")
+    if la:
+        X, Zc, w, u = lash_path(head)
+        grow = la.get("grow", 1.0)
+        pad = la.get("pad", 0.0)
+        core = w * grow + (np.interp(u, *zip(*pad)) if isinstance(pad, (tuple, list)) else pad)
+        top = np.column_stack([X, Zc + core / 2])
+        f_w, f_a = la["fill"]          # the soft brown above the core (the strokes' roots)
+        cv.stroke(np.column_stack([X, Zc + core / 2 + f_w * 0.25]), np.full(len(X), f_w) * np.sin(np.pi * np.clip(u, 0.03, 0.97)) ** 0.5,
+                  c("LASH_SOFT"), f_a, soft=f_w / art["px"] * 0.35)
+        cv.stroke(np.column_stack([X, Zc]), core, c("LASH"), 1.0, soft=1.2)
+        st = la["strokes"]
+        u_s = np.arange(st["u"][0], st["u"][1], st["pitch"])
+        u_s = np.clip(u_s + rng.uniform(-0.4, 0.4, len(u_s)) * st["pitch"], 0.0, 1.0)
+        for us in u_s:
+            root = np.array([np.interp(us, u, top[:, 0]), np.interp(us, u, top[:, 1]) - 0.35 * np.interp(us, u, core)])
+            ln = np.interp(us, *zip(*st["length"])) * rng.uniform(0.65, 1.25)
+            ang = np.interp(us, *zip(*st["angle"])) + rng.uniform(-8.0, 8.0)
+            wd = st["width"][0] * rng.uniform(0.8, 1.2)
+            cv.stroke(_lash(root, ang, ln + 0.35 * np.interp(us, u, core), st.get("bend", 10.0)),
+                      np.linspace(wd, st["width"][1], 9), c("LASH"), 1.0, soft=1.2)
+        for us, ln, ang, bend, wd in la.get("clumps", ()):   # the outer lashes, drawn one by one
+            root = np.array([np.interp(us, u, X), np.interp(us, u, Zc)])
+            cv.stroke(_lash(root, ang, ln, bend, 12), np.linspace(wd, wd * 0.15, 13), c("LASH"), 1.0, soft=1.2)
+    # --- the brows: a soft body and hair strokes along it
+    br = art.get("brow")
+    if br:
+        pts = np.asarray(br["pts"], float)
+        s = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(pts, axis=0), axis=1))])
+        ss = np.linspace(0.0, s[-1], 60)
+        line = np.column_stack([np.interp(ss, s, pts[:, 0]), np.interp(ss, s, pts[:, 1])])
+        uu = ss / s[-1]
+        wb = np.interp(uu, *zip(*br["width"]))
+        cv.stroke(line, wb, c("BROW"), br.get("body", 0.85), soft=2.5)
+        hs = br["hairs"]
+        n = int(hs["n"])
+        for k in range(n):
+            q = rng.uniform(0.0, 0.97)
+            i = int(q * (len(line) - 1))
+            d = line[min(i + 1, len(line) - 1)] - line[max(i - 1, 0)]
+            ang = math.degrees(math.atan2(d[0], d[1])) - hs.get("lift", 12.0) * (1.0 - q) + rng.uniform(-6.0, 6.0)
+            across = rng.uniform(-0.5, 0.5) * np.interp(q, uu, wb)
+            nrm = np.array([-d[1], d[0]]) / max(np.linalg.norm(d), 1e-9)
+            root = line[i] + across * nrm - 0.5 * hs["length"] * d / max(np.linalg.norm(d), 1e-9)
+            cv.stroke(_lash(root, ang, hs["length"] * rng.uniform(0.6, 1.1), 0.0, 4), np.linspace(hs["width"], hs["width"] * 0.3, 5),
+                      c("BROW"), 0.9, soft=1.2)
+    # --- the nose: a soft teardrop highlight (narrow at the top), its glint, the nostril strokes
+    no = art.get("nose")
+    if no:
+        zt, zb, hw, edge, a = no["hi"]
+
+        def tear(X, Z):
+            t = np.clip((zt - Z) / (zt - zb), 0.0, 1.0)
+            half = hw * np.sin(np.pi * np.clip(t, 0.0, 1.0) ** 0.42) ** 0.55
+            inside = np.clip((half - X) / edge + 0.5, 0.0, 1.0)
+            return inside * np.clip((zt - Z) / edge + 0.5, 0, 1) * np.clip((Z - zb) / edge + 0.5, 0, 1)
+        cv.field(tear, (0.0, zb - edge), (hw + edge, zt + edge), c("NOSE_HI"), a)
+        (gx, gz), (gsx, gsz), ga = no["glint"]
+        cv.field(lambda X, Z: np.clip(1.5 - np.sqrt(((X - gx) / gsx) ** 2 + ((Z - gz) / gsz) ** 2) * 1.5, 0, 1),
+                 (0.0, gz - gsz * 2), (gx + gsx * 2, gz + gsz * 2), c("NOSE_GLINT"), ga)
+        pts, wd, na = no["nostril"]
+        pts = np.asarray(pts, float)
+        cv.stroke(pts, np.interp(np.linspace(0, 1, len(pts)), *zip(*wd)), c("NOSTRIL" if "NOSTRIL" in p else "LIP_LINE"), na, soft=1.5)
+    # --- the mouth: the lower lip's tint and gloss, the line
+    mo = art.get("mouth")
+    if mo:
+        (tz, (tsx, tsz)), ta = mo["tint"]
+        cv.field(lambda X, Z: np.exp(-(X / tsx) ** 4 - ((Z - tz) / tsz) ** 2), (0.0, tz - 3 * tsz), (tsx * 1.6, tz + 3 * tsz), c("LIP"), ta)
+        if mo.get("upper"):   # the upper lip's faint tint over the line
+            (uz, (usx, usz)), ua = mo["upper"]
+            cv.field(lambda X, Z: np.exp(-(X / usx) ** 4 - ((Z - uz) / usz) ** 2), (0.0, uz - 3 * usz), (usx * 1.6, uz + 3 * usz), c("LIP"), ua)
+        for (gx, gz), (gsx, gsz), ga in mo.get("gloss", ()):
+            cv.field(lambda X, Z: np.exp(-((X - gx) / gsx) ** 2 - ((Z - gz) / gsz) ** 2), (0.0, gz - 3 * gsz),
+                     (gx + 3 * gsx, gz + 3 * gsz), c("LIP_GLOSS"), ga)
+        pts = np.asarray(mo["line"], float)
+        cv.stroke(pts, np.interp(np.linspace(0, 1, len(pts)), *zip(*mo["width"])), c("MOUTH_LINE" if "MOUTH_LINE" in p else "LIP_LINE"),
+                  mo.get("alpha", 0.9), soft=mo.get("soft", 2.0))
+    return cv
+
+
 # ------------------------------------------------------------------------------------------------ materials (bpy)
-def materials(prefix, p, eyes=None):
+def materials(prefix, p, eyes=None, face=None):
     """The head's own materials, every colour from the palette `p`: `<prefix>_face` (the skin with its painted masks;
     the same base, subsurface and gloss as the hands' `<prefix>_skin`, no pore bump: the drawn skin is clean),
-    `_eyes` (sclera, the drawn iris and its highlights from the eye surface's `iu`/`iv`/`lid`), `_lash`, `_hair`."""
+    `_eyes` (sclera, the drawn iris and its highlights from the eye surface's `iu`/`iv`/`lid`), `_lash`, `_hair`.
+    B2d: with `face` carrying an `art` table, the skin wears the drawn layer (`face_art`, an image over `art_u`/`art_v`)
+    in place of B2a/B2b's painted brow, crease, lower lash line, nostrils, mouth line and nose highlight."""
     from studio import NT
     from wearmat import lin
     import bpy
@@ -591,18 +814,29 @@ def materials(prefix, p, eyes=None):
     s = lin(p["SKIN"])
     col = t.mix(t.math("MULTIPLY", t.ramp(t.noise(14.0, 2.0, 0.5), 0.35, 0.75), 0.25), s, (s[0] * 1.03, s[1] * 0.93, s[2] * 0.90, 1.0))
     col = t.mix(t.math("MULTIPLY", t.attr("blush"), p.get("BLUSH_AMOUNT", 0.55)), col, lin(p["BLUSH"]))
-    col = t.mix(t.math("MULTIPLY", t.attr("nosetip"), 0.35), col, lin(p["BLUSH"]))
-    if "NOSE_HI" in p:   # B2b: the drawn tip highlight (a pale soft shape) over the tip's warmth
+    col = t.mix(t.math("MULTIPLY", t.attr("nosetip"), p.get("NOSE_WARM", 0.35)), col, lin(p["BLUSH"]))
+    art = (face or {}).get("art")
+    if "NOSE_HI" in p and not art:   # B2b: the drawn tip highlight (a pale soft shape) over the tip's warmth
         col = t.mix(t.math("MULTIPLY", t.ramp(t.attr("nosetip"), 0.25, 0.8), 0.75), col, lin(p["NOSE_HI"]))
     col = t.mix(t.math("MULTIPLY", t.attr("lips"), p.get("LIP_AMOUNT", 0.45)), col, lin(p["LIP"]))
-    col = t.mix(t.math("MULTIPLY", t.attr("crease"), p.get("CREASE_AMOUNT", 0.55)), col, lin(p["CREASE"]))
-    col = t.mix(t.math("MULTIPLY", t.attr("lowlash"), 0.75), col, lin(p["LASH_LOW"]))
-    strands = t.ramp(t.noise(300.0, 2.0, 0.5, 0.0, "FBM", stretch=(1.0, 1.0, 0.3)), 0.3, 0.65)
-    # B2b: the brow's band sharpened (a ramp on its mask): B2a's Gaussian read as a blurred smudge in the toon look
-    col = t.mix(t.math("MULTIPLY", t.ramp(t.attr("brow"), 0.25, 0.6), t.math("ADD", t.math("MULTIPLY", strands, 0.25), 0.72), clamp=True),
-                col, lin(p["BROW"]))
-    col = t.mix(t.math("MULTIPLY", t.attr("nostril"), p.get("NOSTRIL_AMOUNT", 0.35)), col, lin(p["LIP_LINE"]))
-    col = t.mix(t.math("MULTIPLY", t.attr("mouthline"), 0.85), col, lin(p["LIP_LINE"]))
+    if art:   # B2d: the drawn layer (`face_art`) over the skin
+        img = face_art(Head(face, eyes), art, p).image(prefix + "_face_art")
+        tex = t.n("ShaderNodeTexImage")
+        tex.image, tex.interpolation, tex.extension = img, "Linear", "CLIP"
+        uv = t.n("ShaderNodeCombineXYZ")
+        t.put(uv.inputs[0], t.attr("art_u"))
+        t.put(uv.inputs[1], t.attr("art_v"))
+        t.put(tex.inputs["Vector"], uv.outputs[0])
+        col = t.mix(t.math("MULTIPLY", tex.outputs["Alpha"], t.attr("art_w")), col, tex.outputs["Color"])
+    else:
+        col = t.mix(t.math("MULTIPLY", t.attr("crease"), p.get("CREASE_AMOUNT", 0.55)), col, lin(p["CREASE"]))
+        col = t.mix(t.math("MULTIPLY", t.attr("lowlash"), 0.75), col, lin(p["LASH_LOW"]))
+        strands = t.ramp(t.noise(300.0, 2.0, 0.5, 0.0, "FBM", stretch=(1.0, 1.0, 0.3)), 0.3, 0.65)
+        # B2b: the brow's band sharpened (a ramp on its mask): B2a's Gaussian read as a blurred smudge in the toon look
+        col = t.mix(t.math("MULTIPLY", t.ramp(t.attr("brow"), 0.25, 0.6), t.math("ADD", t.math("MULTIPLY", strands, 0.25), 0.72), clamp=True),
+                    col, lin(p["BROW"]))
+        col = t.mix(t.math("MULTIPLY", t.attr("nostril"), p.get("NOSTRIL_AMOUNT", 0.35)), col, lin(p["LIP_LINE"]))
+        col = t.mix(t.math("MULTIPLY", t.attr("mouthline"), 0.85), col, lin(p["LIP_LINE"]))
     ao = t.ramp(t.ao(0.02), 0.2, 0.95)
     col = t.mix(t.math("MULTIPLY", t.math("SUBTRACT", 1.0, ao), 0.25), col, (s[0] * 0.55, s[1] * 0.40, s[2] * 0.38, 1.0))
     rough = t.mixf(t.attr("lips"), 0.45, 0.28)
@@ -621,17 +855,32 @@ def materials(prefix, p, eyes=None):
 
     r = dist(0.0, 0.0)
     sc = lin(p["SCLERA"])
-    col = t.mix(t.math("SUBTRACT", 1.0, t.ramp(t.attr("lid"), 0.0, 0.55)), sc, lin(p["SCLERA_SHADE"]))
+    ep = (eyes or {}).get("paint")   # B2d: the drawn eye's layers (None: B2b's)
+    if ep:
+        # the sclera: grey under the upper lid's shadow (a soft band from the lid down), greyer still where it tucks under
+        # the lids at the corners (`ec`, the opening's distance in mm), the inner corner pink (`ex` 0 at the inner end)
+        s0, s1 = ep["sclera_shadow"]
+        col = t.mix(t.math("SUBTRACT", 1.0, t.ramp(t.attr("lid"), s0, s1)), sc, lin(p["SCLERA_SHADE"]))
+        c0, c1, ca = ep["corner"]
+        col = t.mix(t.math("MULTIPLY", t.ramp(t.attr("ec"), c0, c1), ca), col, lin(p["SCLERA_SHADE"]))
+        i0, i1, ia = ep["inner"]
+        col = t.mix(t.math("MULTIPLY", t.ramp(t.attr("ex"), i1, i0), ia), col, lin(p["INNER_CORNER"]))
+    else:
+        col = t.mix(t.math("SUBTRACT", 1.0, t.ramp(t.attr("lid"), 0.0, 0.55)), sc, lin(p["SCLERA_SHADE"]))
     ir_dark, ir_mid, ir_glow = lin(p["IRIS_DARK"]), lin(p["IRIS"]), lin(p["IRIS_GLOW"])
-    irc = t.mix(t.ramp(iv, -0.05, 0.55), ir_mid, ir_dark)
-    irc = t.mix(t.ramp(iv, -0.15, -0.80), irc, ir_glow)
+    top = ep["top"] if ep else (-0.05, 0.55)
+    irc = t.mix(t.ramp(iv, *top), ir_mid, ir_dark)
+    low = ep["low"] if ep else (-0.15, -0.80)
+    irc = t.mix(t.ramp(iv, *low), irc, ir_glow)
     cx = t.n("ShaderNodeCombineXYZ")
     t.put(cx.inputs[0], t.math("MULTIPLY", t.math("DIVIDE", iu, t.math("ADD", r, 0.02)), 6.0))
     t.put(cx.inputs[1], t.math("MULTIPLY", t.math("DIVIDE", iv, t.math("ADD", r, 0.02)), 6.0))
     t.put(cx.inputs[2], t.math("MULTIPLY", r, 1.5))
     streak = t.noise(3.0, 3.0, 0.6, 0.0, "FBM", vec=cx.outputs[0])
-    irc = t.mix(t.math("MULTIPLY", t.ramp(streak, 0.35, 0.7), 0.35), irc, (ir_glow[0], ir_glow[1], ir_glow[2], 1.0))
-    irc = t.mix(t.ramp(r, 0.70, 0.97), irc, (ir_dark[0] * 0.7, ir_dark[1] * 0.7, ir_dark[2] * 0.7, 1.0))
+    irc = t.mix(t.math("MULTIPLY", t.ramp(streak, 0.35, 0.7), ep.get("streak", 0.35) if ep else 0.35), irc,
+                (ir_glow[0], ir_glow[1], ir_glow[2], 1.0))
+    rim = ep["rim"] if ep else (0.70, 0.97, 0.7)
+    irc = t.mix(t.ramp(r, rim[0], rim[1]), irc, (ir_dark[0] * rim[2], ir_dark[1] * rim[2], ir_dark[2] * rim[2], 1.0))
     # B2b: the pupil's size from the eye table (`iris["pupil"]`, half-axes in iris radii; B2a's 0.30 x 0.36), a lighter ring
     # round it and a soft glow low on the far side, as the drawing layers its iris
     pr = (eyes or {}).get("iris", {}).get("pupil", (0.30, 0.36))
@@ -642,8 +891,15 @@ def materials(prefix, p, eyes=None):
     irc = t.mix(t.ramp(pup, 1.08, 0.88), irc, lin(p["PUPIL"]))
     col = t.mix(t.ramp(r, 1.03, 0.97), col, irc)
     # the lid's shadow over the iris's top as well
-    col = t.mix(t.math("MULTIPLY", t.math("SUBTRACT", 1.0, t.ramp(t.attr("lid"), 0.0, 0.30)), p.get("LID_SHADOW", 0.55)), col, lin(p["IRIS_DARK"]))
-    hl = t.math("MAXIMUM", t.ramp(dist(0.20, 0.40), 0.17, 0.13), t.ramp(dist(-0.07, 0.17), 0.075, 0.05))
+    sh = ep["iris_shadow"] if ep else (0.0, 0.30)
+    col = t.mix(t.math("MULTIPLY", t.math("SUBTRACT", 1.0, t.ramp(t.attr("lid"), *sh)), p.get("LID_SHADOW", 0.55)), col, lin(p["IRIS_DARK"]))
+    if ep:   # B2d: the highlights as drawn -- (u, v, radius, softness) in iris radii, the first the big one
+        hl = None
+        for hu, hv_, hr, hs in ep["highlights"]:
+            h1 = t.ramp(dist(hu, hv_), hr + hs, hr)
+            hl = h1 if hl is None else t.math("MAXIMUM", hl, h1)
+    else:
+        hl = t.math("MAXIMUM", t.ramp(dist(0.20, 0.40), 0.17, 0.13), t.ramp(dist(-0.07, 0.17), 0.075, 0.05))
     col = t.mix(hl, col, (1.0, 1.0, 1.0, 1.0))
     t.set(Base_Color=col, Roughness=0.25, Specular_IOR_Level=0.35, Coat_Weight=0.4, Coat_Roughness=0.08,
           Emission_Color=(1.0, 1.0, 1.0, 1.0), Emission_Strength=t.math("MULTIPLY", hl, 2.0))
@@ -718,8 +974,9 @@ def build_eyes(head, mats, prefix, coll, h):
     import kit
     E = head.E
     D = E["dome"]
-    x0, x1 = E["upper"][0][0] - 0.003, E["lower"][-1][0] + 0.003
-    z0, z1 = min(p[1] for p in E["lower"]) - 0.003, max(p[1] for p in E["upper"]) + 0.003
+    ext = D.get("extent", 0.003)   # B2d: how far the grid runs past the opening (it carries the margin under the lids)
+    x0, x1 = E["upper"][0][0] - ext, E["lower"][-1][0] + ext
+    z0, z1 = min(p[1] for p in E["lower"]) - ext, max(p[1] for p in E["upper"]) + ext
     nu, nv = int(round((x1 - x0) / h)) + 1, int(round((z1 - z0) / h)) + 1
     X, Z = np.meshgrid(np.linspace(x0, x1, nu), np.linspace(z0, z1, nv), indexing="ij")
     Y = head.hit_front(head.base_h, X, Z).reshape(X.shape)
@@ -744,18 +1001,21 @@ def build_eyes(head, mats, prefix, coll, h):
     iu = (V[:, 0] - ic[0]) / ir[0]
     iv = (V[:, 2] - ic[1]) / ir[1]
     lid = np.clip((head.U(np.abs(V[:, 0])) - V[:, 2]) / E["iris"]["lid_shadow"], 0.0, 1.0)
+    attrs = dict(iu=iu, iv=iv, lid=lid)
+    if E.get("paint"):   # B2d: the opening's distance (mm, negative inside) and the position along the eye (0 inner, 1 outer)
+        attrs["ec"] = head.almond(V) * 1000.0
+        attrs["ex"] = (np.abs(V[:, 0]) - E["upper"][0][0]) / (E["upper"][-1][0] - E["upper"][0][0])
     V = head.world(V)
-    ob = _mesh(prefix + "_Eye", V, Qa, mats["eyes"], coll, attrs=dict(iu=iu, iv=iv, lid=lid))
+    ob = _mesh(prefix + "_Eye", V, Qa, mats["eyes"], coll, attrs=attrs)
     kit.solid(ob, D["thick"], bevel=0.0, seg=1)
     ob.modifiers["Solidify"].use_even_offset = False
     kit.mirror(ob)
     return ob
 
 
-def build_lashes(head, mats, prefix, coll):
-    """The upper lash band: swept along the upper lid on the skin, widening towards the outer corner, ending in a
-    flick past it."""
-    import kit
+def lash_path(head):
+    """The upper lash band's centre line in the front view (head space): x, z, the band's width and the parameter u 0..1
+    from the inner end to the flick's tip (shared by the band's geometry and the drawn lash mass, `face_art`)."""
     L = head.E["lash"]
     xs = np.linspace(L["x"][0], L["x"][1], 60)
     zs = head.U(xs)
@@ -765,7 +1025,15 @@ def build_lashes(head, mats, prefix, coll):
     X, Z = np.concatenate([xs, xf]), np.concatenate([zs, zf])
     u = np.linspace(0.0, 1.0, len(X))
     w = np.interp(u, *zip(*L["width"]))
-    Zc = Z + w * 0.5 - L["below"]
+    return X, Z + w * 0.5 - L["below"], w, u
+
+
+def build_lashes(head, mats, prefix, coll):
+    """The upper lash band: swept along the upper lid on the skin, widening towards the outer corner, ending in a
+    flick past it."""
+    import kit
+    L = head.E["lash"]
+    X, Zc, w, u = lash_path(head)
     Y = head.hit_front(head.fh, X, Zc + 0.0004) - L["out"]
     P = np.column_stack([X, Y, Zc])
     N = unit(head.grad(head.base_h, P))
@@ -838,8 +1106,10 @@ def build_ears(head, spec, mats, prefix, coll):
     return objs
 
 
-def build(prefix, face, eyes, mats, coll="Head", h=0.0007, hair=None, body_objects=None, scale=1.0):
-    """The whole head (`scale`: the head-size variant, see `Head`). Returns the Head (fields) and the objects."""
+def build(prefix, face, eyes, mats, coll="Head", h=0.0007, hair=None, body_objects=None, scale=1.0, hair_face=None):
+    """The whole head (`scale`: the head-size variant, see `Head`). Returns the Head (fields) and the objects.
+    `hair_face` (B2d): the face table the hair is laid on (its fields: the skin without cuts, the ears), when the face has
+    moved on since the hair was fitted -- so the hair stays as built; default the face itself."""
     head = Head(face, eyes, scale)
     objs = [build_skin(head, mats, prefix, coll, h)]
     objs.append(build_eyes(head, mats, prefix, coll, 0.00035))
@@ -847,5 +1117,6 @@ def build(prefix, face, eyes, mats, coll="Head", h=0.0007, hair=None, body_objec
     objs += build_ears(head, face["ear"], mats, prefix, coll)
     if hair is not None:
         import animehair
-        objs += animehair.build(head, hair, mats, prefix, coll, body_objects)
+        hh = Head(hair_face, eyes, scale) if hair_face is not None else head
+        objs += animehair.build(hh, hair, mats, prefix, coll, body_objects)
     return head, objs

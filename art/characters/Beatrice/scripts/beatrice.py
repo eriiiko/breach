@@ -37,8 +37,8 @@ PALETTE = dict(
     MESH_THIGH="#5a5a62",    # what shows through the thigh panels' net: a dark grey (the suit's, not skin)
     SKIN="#efcbbb",          # pale, as drawn
     NAIL="#f2c9c1",          # B1j: the nails, a natural light pink a touch lighter than the skin (B1i #f1c2bd read mauve end-on)
-    BROW="#3a2a26",          # B2b: darker (#4a3a34 read as a grey smudge in the toon look)
-    SCLERA="#efebea",        # B2b: whiter, as drawn (#e2dcd6)
+    BROW="#2c1f1b",          # B2d: darker still, as drawn (B2b #3a2a26; #4a3a34 read as a grey smudge in the toon look)
+    SCLERA="#e6e1e0",        # B2d: a touch greyer, as drawn (B2b #efebea; B2a #e2dcd6)
     IRIS="#5f6880",          # grey-blue, as drawn (B2b: deeper; #6c7488 read periwinkle in the toon look)
     LIP_TINT=(0.97, 0.80, 0.80),
     BOOT="#0d0d0f",
@@ -50,15 +50,17 @@ PALETTE = dict(
     PAD_RIM="#6c6c76",       # their piped rim, bright
     # B2a, the face (sampled on `concept-face-front-v1.png`, then judged on the renders)
     BLUSH="#e89a8e",         # the cheeks' blush, the nose tip's warmth
-    LIP_AMOUNT=0.16,         # B2b: how much of LIP the lips take (B2a's default 0.45 read as a pink lozenge in the toon look)
+    LIP_AMOUNT=0.04,         # B2b: how much of LIP the lips take (B2a's default 0.45 read as a pink lozenge in the toon look; B2b 0.16;
+                             # B2d: the lower lip's tint is drawn (`FACE["art"]["mouth"]`), the upper lip keeps only a hint)
     NOSE_HI="#fff1ea",       # B2b: the nose tip's highlight, as drawn (a pale, soft triangle)
-    CREASE_AMOUNT=0.8, NOSTRIL_AMOUNT=0.7, LID_SHADOW=0.7,   # B2b: the paint's strengths (B2a: 0.55, 0.35, 0.55)
-    LIP="#e2a096",           # the lips, a soft rose
+    CREASE_AMOUNT=0.8, NOSTRIL_AMOUNT=0.7, LID_SHADOW=0.85,  # B2b: the paint's strengths (B2a: 0.55, 0.35, 0.55; B2d: the lid's
+                                                             # shadow over the iris 0.7 -> 0.85, as dark as drawn)
+    LIP="#de958b",           # the lips, a soft rose (B2d: a touch deeper, #e2a096)
     LIP_LINE="#b8706a",      # the mouth line, the nostrils
     CREASE="#b4807a",        # the lid crease (B2b: darker, #c99a8e vanished)
     LASH="#2a1b19",          # the upper lash band
     LASH_LOW="#7e5048",      # the lower lash line, lighter (B2b: darker, #9c6a60 vanished in the toon look)
-    SCLERA_SHADE="#b9aeb0",  # the sclera under the upper lid's shadow
+    SCLERA_SHADE="#aaa0a4",  # the sclera under the upper lid's shadow (B2d: darker, B2b #b9aeb0)
     IRIS_DARK="#262838",     # the iris's top and rim
     IRIS_GLOW="#8c98b8",     # its lit lower part (B2b: #9aa6c8 read too light and saturated)
     PUPIL="#16141c",
@@ -75,6 +77,15 @@ PALETTE = dict(
     LINE_HAIR="#120b0a",
     LINE_SUIT="#020203",
     LINE_EYE="#2a1b19",
+    # B2d, the face's drawn layer (`animehead.face_art`) and the eyes' paint
+    LASH_SOFT="#5c3a33",     # the soft brown under the lash strokes (the drawn mass's feathered top)
+    LID_RIM="#f4d2c6",       # the lower lid's light rim (its thickness, as drawn)
+    INNER_CORNER="#e3968c",  # the eye's inner corner, pink
+    NOSE_GLINT="#ffffff",    # the glint in the nose's highlight
+    LIP_GLOSS="#fde9e4",     # the lower lip's gloss
+    MOUTH_LINE="#8a403b",    # the drawn mouth line, a dark rose-brown
+    NOSTRIL="#8e5047",       # the nostril strokes
+    BLUSH_AMOUNT=0.8,        # B2d: wider and stronger than B2b's (0.55 by default; review 11: ~40 % of the drawing's)
 )
 # B1m (the owner, 2026-10-19: "going very glossy is fine"): B1l's "wet" look is the default; B1b-B1l's satin is VARIANTS["satin"]
 GLOSS = dict(rough=0.20, coat=0.85, coat_rough=0.07, specular=0.55, piping=0.9,
@@ -1086,10 +1097,53 @@ FACE = dict(
     # line (x from, x to, below the lid, width), lid crease (x from, x to, above the lid, width), brow (x from, x to, z, arch,
     # width), nostrils ((x, z), sigmas), the nose tip's highlight (z, sigmas)
     # B2b: the blush higher and further in, across the cheeks under the eyes as drawn (B2a: (0.044, 1.5445), (0.014, 0.0075))
-    paint=dict(blush=((0.038, 1.5475), (0.016, 0.0072)), mouth_line=(1.5075, 0.0125, 0.00045),
+    # B2d: the blush wider (B2b: (0.038, 1.5475), (0.016, 0.0072)) and across the nose's bridge, as drawn
+    paint=dict(blush=((0.037, 1.5455), (0.019, 0.0105)), blush_bridge=((1.5490, (0.011, 0.0060)), 0.6), mouth_line=(1.5075, 0.0125, 0.00045),
                low_lash=(0.024, 0.0515, 0.0006, 0.00035), crease=(0.021, 0.050, 0.0030, 0.00035),
                brow=(0.012, 0.052, 1.5795, 0.0025, 0.0014), nostril=(0.0040, 1.5240, (0.0012, 0.0007)),
                nose_tip=(1.5380, (0.0042, 0.0045))),
+    # B2d: the DRAWN layer (`animehead.face_art`): what the close-ups ink and paint, drawn on one front-projected canvas (|x| 0..
+    # `frame`[0], z `frame`[1]..[2], pitch `px`), traced on `concept-face-front-v1.png` (PROVENANCE B2d step 1); it replaces
+    # B2a/B2b's per-vertex brow, crease, lower lash line, nostrils, mouth line and nose highlight (kept above for other heads)
+    art=dict(
+        frame=(0.066, 1.495, 1.592), px=0.00004, seed=11, front=(0.040, 0.055),
+        inner=((0.0187, 1.5597), (0.0015, 0.0012), 0.55),
+        # the lower lid: its light rim from 0.6 mm inside the opening to 0.7 under it, the lash line 1.1 mm under the lid
+        # (fading in from the inner end), short lower lashes over the outer half (x, length, angle out from straight down, width)
+        lower=dict(x=(0.0205, 0.0528), rim=(-0.0006, 0.0007, 0.75), rim_x=0.0505, line=(0.0011, 0.00042, 0.85),
+                   taper=((0.0, 0.15), (0.25, 0.75), (0.55, 1.0), (1.0, 0.9)), bend=6.0,
+                   lashes=((0.0330, 0.0009, 12.0, 0.00022), (0.0372, 0.0011, 16.0, 0.00024), (0.0410, 0.0012, 20.0, 0.00025),
+                           (0.0442, 0.0014, 26.0, 0.00026), (0.0470, 0.0015, 32.0, 0.00026), (0.0494, 0.0016, 40.0, 0.00026),
+                           (0.0512, 0.0014, 50.0, 0.00024))),
+        # the outer corner's walls: inked, so the white tucks under the lids
+        outer=(((0.0496, 1.5672), (0.0510, 1.5662), (0.0519, 1.5646), (0.0522, 1.5628), (0.0519, 1.5610), (0.0510, 1.5592),
+                (0.0497, 1.5578)), ((0.0, 0.0012), (0.4, 0.0010), (1.0, 0.0003)), 0.85),
+        # the double-lid crease: over the lid by `off` along it (0 inner .. 1 outer)
+        crease=dict(x=(0.0230, 0.0470), off=((0.0, 0.0036), (0.5, 0.0050), (1.0, 0.0058)), width=0.00038, alpha=0.8),
+        # the upper lash MASS on the lash band's line (`animehead.lash_path`): its core the band's width (`grow` x) + `pad`, a
+        # soft brown fill above (width, alpha), feathered strokes rooted along its top (u along the band, angle from vertical,
+        # + outwards), and the outer lashes drawn one by one (u, length, angle, bend, width)
+        lash=dict(grow=1.0, pad=((0.0, 0.0), (0.15, 0.0001), (0.3, 0.0004)), fill=(0.0014, 0.55),
+                  strokes=dict(u=(0.03, 0.90), pitch=0.011, length=((0.0, 0.0006), (0.4, 0.0011), (0.75, 0.0017), (0.9, 0.0021)),
+                               angle=((0.0, -28.0), (0.35, 0.0), (0.7, 30.0), (0.9, 55.0)), width=(0.00032, 0.00004), bend=14.0),
+                  clumps=((0.74, 0.0026, 40.0, 25.0, 0.00034), (0.80, 0.0030, 52.0, 28.0, 0.00036), (0.86, 0.0032, 64.0, 28.0, 0.00038),
+                          (0.91, 0.0030, 76.0, 24.0, 0.00036), (0.95, 0.0026, 88.0, 20.0, 0.00032), (0.985, 0.0021, 100.0, 14.0, 0.00026))),
+        # the brows: short, thick and dark, the inner end lower (traced on the overlay `art_over`: centre +18.0 mm over the eye
+        # line at 16.5 mm out, +20.6 at 40), a soft body and hair strokes
+        brow=dict(pts=((0.0165, 1.5806), (0.0220, 1.5813), (0.0300, 1.5824), (0.0400, 1.5832), (0.0480, 1.5831)),
+                  width=((0.0, 0.0027), (0.15, 0.0028), (0.6, 0.0024), (0.85, 0.0016), (1.0, 0.0003)), body=0.92,
+                  hairs=dict(n=90, length=0.0024, width=0.00022, lift=28.0)),
+        # the nose: a soft teardrop highlight, narrow at the top (z top, z bottom, half-width, edge, alpha), its glint ((x, z),
+        # radii, alpha), the nostril strokes (points, width along, alpha) -- traced, centred on the midline
+        nose=dict(hi=(1.5434, 1.5304, 0.0062, 0.0026, 0.85), glint=((0.0, 1.5330), (0.0009, 0.0013), 0.9),
+                  nostril=(((0.0029, 1.5241), (0.0031, 1.5258), (0.0035, 1.5270), (0.0044, 1.5274), (0.0052, 1.5268)),
+                           ((0.0, 0.0011), (0.35, 0.0008), (1.0, 0.0002)), 0.9)),
+        # the mouth: the lower lip's tint ((z, (half-width, sigma)), alpha), its gloss, the soft line (a gentle bow, darker corners)
+        mouth=dict(tint=((1.5058, (0.0110, 0.0017)), 0.85), upper=((1.5086, (0.0105, 0.0010)), 0.55),
+                   gloss=(((0.0028, 1.5052), (0.0015, 0.00050), 0.9),),
+                   line=((0.0, 1.5073), (0.0035, 1.5077), (0.0075, 1.5079), (0.0105, 1.5076), (0.0128, 1.5071), (0.0136, 1.5068)),
+                   width=((0.0, 0.0008), (0.5, 0.0009), (0.85, 0.0011), (1.0, 0.0003)), alpha=0.85, soft=3.5),
+    ),
     # the ear (her left; mirrored) as a field (`animehead.Ear`): in the ear's own axes (up, back, out), metres; 47 mm high,
     # 27 wide, its top level with the brow's foot and its lobe with the nose's base, as both close-ups draw it
     ear=dict(centre=(0.066, 0.017, 1.553), tilt=12.0, flare=20.0, res=0.0004,
@@ -1097,6 +1151,19 @@ FACE = dict(
              cuts=(((0.003, 0.001, 0.0062), (0.0150, 0.0100, 0.0030), 0.0015), ((-0.004, -0.004, 0.0050), (0.0065, 0.0055, 0.0030), 0.0015)),
              adds=(((0.005, 0.003, 0.0040), (0.010, 0.0025, 0.002), 0.002), ((-0.004, -0.0125, 0.0035), (0.004, 0.0025, 0.0025), 0.002))),
 )
+
+# B2d: the face's field, smoothed where it printed grooves and islands (review 11 item 5; PROVENANCE B2d step 3, `tools/curv.py`'s
+# principal-curvature maps). The front view's side radius smoothed 6 deg along the elevation (`egg["side_smooth"]`: its traced
+# outline's wiggles were concave, -3..-5 /m, round the whole cheek at -21 and -38 deg); the eye socket's dent (-2.0 -> -1.5 mm)
+# and the cheek's form (+2.0 -> +1.3 mm) wider and softer (their rings made closed islands under the eyes). The hair stays laid
+# on the B2c face (`hair_face`), so it does not move.
+FACE_B2C = FACE
+FACE = dict(FACE, egg=dict(FACE["egg"], side_smooth=6.0),
+            bumps=(((0.036, -0.088, 1.5625), (0.018, 0.013, 0.010), -0.0015),) + FACE["bumps"][1:2]
+            + (((0.044, -0.080, 1.5370), (0.018, 0.015, 0.014), 0.0013),) + FACE["bumps"][3:],
+            # the ear's top rounder (B2c read slightly pointed at 30-60 deg): the upper plate 2 mm lower and 1.5 mm wider
+            # backwards (B2c: centre (0.005, 0, 0), radii (0.019, 0.0135, 0.006))
+            ear=dict(FACE["ear"], plates=(((0.004, 0.0012, 0.0), (0.0180, 0.0150, 0.0060)),) + FACE["ear"]["plates"][1:]))
 
 # The eyes (her left; mirrored), in the front view: the lid curves (x, z) traced on the close-up, the iris, the eye
 # surface's dome, the upper lash band.
@@ -1112,13 +1179,21 @@ EYES = dict(
            (0.0514, 1.5591), (0.0522, 1.5609), (0.0524, 1.5628)),
     corner_k=0.0008, depth=0.005, depth_k=0.002, lid_k=0.0012,
     front_only=-0.03,   # B2c: the opening cut only in front of y -0.03 (B2a/B2b also dented the back of the skull)
-    dome=dict(centre=(0.0352, 1.5615), axes=(0.0180, 0.0090), inset=0.0012, curve=0.0035, thick=0.0008, margin=0.0018),
+    # B2d: the eye surface carried further under the lids (B2b: margin 1.8 mm, the grid 3 mm past the opening)
+    dome=dict(centre=(0.0352, 1.5615), axes=(0.0180, 0.0090), inset=0.0012, curve=0.0035, thick=0.0008, margin=0.0030, extent=0.0045),
     # B2b: the drawn iris is round, 19.4 x 20 mm, its centre 0.2 mm over the eye line (B2a: 1.5622, 20 x 22.4 mm: its
     # bottom sank 2 mm under the lower lid); the pupil 4.9 x 6.2 mm (`pupil`: half-axes in iris radii), straight ahead
-    iris=dict(centre=(0.0337, 1.5628), radii=(0.0097, 0.0100), lid_shadow=0.006, pupil=(0.25, 0.31)),
+    iris=dict(centre=(0.0337, 1.5628), radii=(0.0097, 0.0100), lid_shadow=0.012, pupil=(0.25, 0.31)),
+    # B2d: the drawn eye's paint (`animehead.materials`): the sclera grey under the upper lid (over `lid`, now the lid's distance
+    # / 12 mm; B2b 6 mm), greyer where it tucks under the lids (`ec` mm), the inner corner pink (`ex`); the iris darker on top,
+    # lighter below, its rim darker; the upper lid's shadow over the iris's top half, as drawn; the highlights (u, v, r, soft)
+    paint=dict(sclera_shadow=(0.20, 0.70), corner=(-1.6, 0.2, 0.55), inner=(0.0, 0.10, 0.75), top=(-0.10, 0.60), low=(-0.10, -0.80),
+               streak=0.35, rim=(0.74, 0.95, 0.55), iris_shadow=(0.50, 0.70),
+               highlights=((0.16, 0.44, 0.13, 0.035), (-0.10, 0.20, 0.045, 0.02), (0.52, -0.50, 0.035, 0.02))),
     # B2b: the band along the new lid to 50.5 mm out, then a SHORT, nearly level flick to 56.8 mm (B2a: a long upswept wing
     # to 65 mm); heaviest over the outer third, as drawn; it covers the opening's top by 0.6 mm (the lid now traced on it)
-    lash=dict(x=(0.0182, 0.0505), flick=(0.0568, 1.5682), width=((0.0, 0.0010), (0.3, 0.0030), (0.7, 0.0042), (0.88, 0.0040), (1.0, 0.0008)),
+    # B2d: its inner end thinner (B2b: 1.0 mm at the corner, 3.0 at 0.3: it hooked steeply down to the lower lid)
+    lash=dict(x=(0.0182, 0.0505), flick=(0.0568, 1.5682), width=((0.0, 0.0005), (0.12, 0.0011), (0.3, 0.0026), (0.7, 0.0042), (0.88, 0.0040), (1.0, 0.0008)),
               thick=0.0010, below=0.0006, out=0.0004),
 )
 
@@ -1258,7 +1333,7 @@ HAIR_B2C = dict(
 # B2a's head at the A-pose drawings' size (chin to crown 204 mm); `placeholder` the bald one of B1a-B1n
 # B2c: the hair is the layered clumps (`HAIR_B2C`); `hair_b2a` is the default head with B2a's blockout (before/after)
 HEAD_SCALE = 1.20
-HEAD_APOSE = dict(kind="anime", face=FACE, eyes=EYES, hair=HAIR_B2C)
+HEAD_APOSE = dict(kind="anime", face=FACE, eyes=EYES, hair=HAIR_B2C, hair_face=FACE_B2C)
 HEAD = dict(HEAD_APOSE, scale=HEAD_SCALE)
 HEAD_HAIR_B2A = dict(HEAD, hair=HAIR)
 HEADS = dict(anime=HEAD, concept=HEAD, apose=HEAD_APOSE, hair_b2a=HEAD_HAIR_B2A, placeholder=HEAD_PLACEHOLDER)

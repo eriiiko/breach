@@ -192,9 +192,21 @@ def convert(m, spec, calib, palette=None):
         mult = t.mix(spec["flat"], mult, (1.0, 1.0, 1.0, 1.0))
     col = t.mix(1.0, base, mult, "MULTIPLY")
     sps = spec.get("spec") or ()
+    sheen = spec.get("sheen")
+    if sheen:   # B2d: a broad soft sheen under the streaks (see `sheen_lobe`), only where the key reaches
+        sh = t.ramp(sheen_lobe(g, normal, sheen["dir"]), sheen["lo"], sheen["hi"])
+        sh = t.math("MULTIPLY", sh, t.ramp(L, *sheen.get("lit", (0.15, 0.45))))
+        if sheen.get("curv"):   # and more of it on the rounder forms
+            sh = t.math("MULTIPLY", sh, t.ramp(t.attr("toon_curv"), *sheen["curv"][:2], out_lo=sheen["curv"][2]))
+        col = t.mix(t.math("MULTIPLY", sh, sheen.get("amount", 1.0)), col, _lin(_col(sheen["colour"], palette)))
     for sp in ((sps,) if isinstance(sps, dict) else sps):   # one or more highlight layers (a broad sheen, then the streaks)
         s = g.lit("glossy", normal, sp["rough"])
         hl = t.ramp(s, sp["lo"], sp["hi"])
+        if sp.get("curv"):   # B2d: the crisp white kept to the rounder forms (`curvature_attr`): no blobs on the flat upper chest
+            hl = t.math("MULTIPLY", hl, t.ramp(t.attr("toon_curv"), *sp["curv"]))
+        if sp.get("break"):  # B2d: long streaks broken along their length (the flank's "racing stripe")
+            scale, lo_b, hi_b = sp["break"]
+            hl = t.math("MULTIPLY", hl, t.ramp(t.noise(scale, 2.0, 0.5), lo_b, hi_b))
         hl = t.math("MULTIPLY", hl, sp.get("amount", 1.0))
         col = t.mix(hl, col, _lin(_col(sp["colour"], palette)), "ADD" if sp.get("add", False) else "MIX")
     rim = spec.get("rim")
@@ -220,6 +232,66 @@ def convert(m, spec, calib, palette=None):
     nt.links.new(em.outputs[0], out.inputs["Surface"])
     m.use_backface_culling = spec.get("cull", False)
     return base
+
+
+def sheen_lobe(g, normal, direction):
+    """B2d: a broad sheen as a reflection lobe in CAMERA space (a matcap): the cosine between the view reflected about the
+    normal and a fixed `direction` (camera space: x right, y up, z towards the viewer). No light is needed, so the sheen keeps
+    its size at any distance (a lit glossy on a sun or a strip is a speck or a flood) and stays with the view as the look's
+    lights stay with the rig; the caller gates it by the key's light so shadowed sides keep no sheen."""
+    geo = g.n("ShaderNodeNewGeometry")
+    n = normal if normal is not None else geo.outputs["Normal"]
+    inc = geo.outputs["Incoming"]
+    neg = g.n("ShaderNodeVectorMath", operation="SCALE")
+    g.put(neg.inputs[0], inc)
+    neg.inputs["Scale"].default_value = -1.0
+    ref = g.n("ShaderNodeVectorMath", operation="REFLECT")
+    g.put(ref.inputs[0], neg.outputs[0])
+    g.put(ref.inputs[1], n)
+    vt = g.n("ShaderNodeVectorTransform", vector_type="VECTOR", convert_from="WORLD", convert_to="CAMERA")
+    g.put(vt.inputs[0], ref.outputs[0])
+    d = np.asarray(direction, float)
+    d = d / np.linalg.norm(d)
+    # Blender's camera space looks down -z: the lobe's (x, y, z towards the viewer) is (x, y, -z) there
+    dot = g.n("ShaderNodeVectorMath", operation="DOT_PRODUCT")
+    g.put(dot.inputs[0], vt.outputs[0])
+    dot.inputs[1].default_value = (float(d[0]), float(d[1]), float(-d[2]))
+    return dot.outputs["Value"]
+
+
+def curvature_attr(obs, spec):
+    """B2d: a point attribute `toon_curv` (1/m) on each object: how round the surface is -- per vertex the largest normal
+    curvature over its edges, (n_i - n_j).(p_i - p_j) / |p_i - p_j|^2, smoothed `smooth` times over the neighbours (a
+    plate reads ~0, a breast or an arm 15-30). The streak layers read it (`spec["curv"]`) so the crisp white stays on the
+    rounder forms, as the art paints latex, and a broad flat area (the upper chest) never floods white."""
+    for ob in obs:
+        me = ob.data
+        n = len(me.vertices)
+        if n == 0 or len(me.edges) == 0:
+            continue
+        P = np.empty(n * 3)
+        me.vertices.foreach_get("co", P)
+        P = P.reshape(-1, 3)
+        N = np.empty(n * 3)
+        me.vertices.foreach_get("normal", N)
+        N = N.reshape(-1, 3)
+        E = np.empty(len(me.edges) * 2, np.int64)
+        me.edges.foreach_get("vertices", E)
+        E = E.reshape(-1, 2)
+        dp = P[E[:, 0]] - P[E[:, 1]]
+        k = np.sum((N[E[:, 0]] - N[E[:, 1]]) * dp, axis=1) / np.maximum(np.sum(dp * dp, axis=1), 1e-12)
+        kv = np.full(n, -1e9)
+        np.maximum.at(kv, E[:, 0], k)
+        np.maximum.at(kv, E[:, 1], k)
+        kv = np.where(kv < -1e8, 0.0, kv) * spec.get("scale", 1.0)
+        cnt = np.bincount(E.ravel(), minlength=n).astype(float) + 1.0
+        for _ in range(spec.get("smooth", 4)):
+            acc = kv.copy()
+            np.add.at(acc, E[:, 0], kv[E[:, 1]])
+            np.add.at(acc, E[:, 1], kv[E[:, 0]])
+            kv = acc / cnt
+        a = me.attributes.get("toon_curv") or me.attributes.new("toon_curv", "FLOAT", "POINT")
+        a.data.foreach_set("value", kv.astype(np.float32))
 
 
 def _col(c, palette):
@@ -471,6 +543,10 @@ def prepare(look, normals=None, ring_centre=None, hair=None, proxies=(), lines=N
         ring_attr(hair_obs, ring_centre, R)
     for name, V, Q, off in proxies:
         shadow_proxy(name, V, Q, off)
+    cu = look.get("curvature")
+    if cu:   # B2d: how round each surface is, for the latex's streaks (`curvature_attr`)
+        curvature_attr([o for o in bpy.data.objects if o.type == "MESH"
+                        and any(fnmatch.fnmatch(o.name, p) for p in cu["objects"])], cu)
     for ob_name, f in (lines or {}).items():   # f(world verts) -> the mask of lines left out from the front
         ob = bpy.data.objects.get(ob_name)
         if ob is not None:

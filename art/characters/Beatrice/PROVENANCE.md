@@ -1373,3 +1373,9 @@ frames (front 0.2074 mm/px, eye line 1.5626 at row 597; profile 0.2115 mm/px).
    plate), not the hair now.
 7. The face round's items (the eyes' lashes and lid shadow, the brows, the latex blobs on the upper chest) are untouched; the
    under-chin shadow was not deepened.
+
+## B2d: the face finish and the latex sheen (2026-10-20, answers `previews/review_stage11.md` items 2-6 and 10)
+
+The before is `source/Beatrice_b2c_e9e4b19.blend` (gitignored). Only the `Head` collection's face parts (skin, eyes, lashes,
+ears) and the look change; the body and the hair stay (the hair is now laid on the frozen B2c face table, `FACE_B2C` /
+`HEAD["hair_face"]`, so the face's field can move under it without moving it). Record in progress; completed below.
