@@ -21,7 +21,7 @@
 </head>
 <body>
 <main>
-  <h1>Beatrice — body, suit, hands, boots, the head (B2a), and the anime look (B2b)</h1>
+  <h1>Beatrice — body, suit, hands, boots, the head (B2a), the anime look (B2b) and the hair (B2c)</h1>
   <p>Built from Python alone on the shared character kit (<code>charkit/bodysuit.py</code>, Blender 4.5, Cycles) from the tables in
      <code>scripts/beatrice.py</code>, fitted to three drawings: front, side and back. The head is a bald placeholder for the
      face-and-hair stage. Character only, no props. This round answers <code>review_stage2.md</code>: new hands, the shoulder and
@@ -29,6 +29,18 @@
      layered knee pads, thin cuffs, seams that end on other edges. See <code>PROVENANCE.md</code>.
      <b>Stage 4</b> answers <code>review_stage3.md</code> for the pelvis only (waist, hips, seat, upper thighs); everything else is
      unchanged, and the close-ups further down are stage 3's.</p>
+
+  <h2>The hair (B2c)</h2>
+  <p>The blockout replaced by layered, tapered clumps given lock by lock (<code>charkit/animehair.py</code>, <code>build_clumps</code>;
+     table <code>HAIR_B2C</code>): a fringe of nine clumps traced on the front close-up (the middle one to the lash line, the two
+     drawn gaps of forehead), side locks in front of the ears onto the bust's edge, temple and crown locks falling behind the ears,
+     a back to a V at mid-back, a darker under layer, loose strands; the hanging hair on an envelope traced at the drawn widths
+     (eye line 208 mm against the drawing's 222, chin 234 against 246; B2b's 151 and 152). In the toon look a highlight band per
+     lock, a crisp fringe shadow, lighter ash-brown lit hair. B2a's blockout builds as <code>--head hair_b2a</code> (the "before"
+     columns). The "ghost ear" of the hairless profile was the eye opening's cut dented into the back of the skull: fixed. The face,
+     turn, close-up, posed and standard pictures below are regenerated with the B2c hair. See <code>PROVENANCE.md</code> (B2c).</p>
+  <figure><img src="hair_vs_art.jpg" alt="The hair against the close-ups"><figcaption>The close-ups' framing: drawing, the B2c hair, its outline over the drawing, B2a/B2b's hair and its outline (before)</figcaption></figure>
+  <figure><img src="hair_back.jpg" alt="The hair from behind"><figcaption>The A-pose back drawing, the hair straight from behind and three-quarter behind (both sides), B2a/B2b's back (before)</figcaption></figure>
 
   <h2>The anime look, the face's form and the eyes (B2b)</h2>
   <p>The owner's decisions of 2026-10-20: an anime / toon look for the whole character in her high-resolution pictures, and the

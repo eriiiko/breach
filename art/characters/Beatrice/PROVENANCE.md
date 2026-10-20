@@ -1256,3 +1256,120 @@ frames (front 0.2074 mm/px, eye line 1.5626 at row 597; profile 0.2115 mm/px).
 
 ### Step 2, the build
 
+
+- **Mechanism** (`charkit/animehair.py`, new `Clumps` / `build_clumps`, chosen by `kind="clumps"`; B2a's blockout path is untouched
+  and builds as `--head hair_b2a`). Each lock is ONE row entry (per-lock lists in `HAIR_B2C`, `beatrice.py`), not a row spread by
+  rule: an on-head part laid over the cap from a root (beta, alpha) through an optional `mid` to a `leave` point -- or, for the
+  fringe, to a front-view `tip` (x, z) traced on the close-up and found on the face by a ray from the front -- its offset off the
+  cap growing from `off[0]` to `off[1]` plus a `bulge` (the crown's volume), the root sunk into the cap; then a FALLING part on a
+  traced ENVELOPE (`envelope`: half-width, front and back from the head's axis per height, a superellipse round the head): from
+  the leave point down to `z` at azimuth `alpha`, its distance from the axis `r_skin + spread x (r_env - r_skin)` (`spread` keyed
+  along the fall: 0 lies on the cheek, 1 on the outer silhouette), plus a flare at the tips (`add`), a soft S round the head
+  (`wave`) and a ragged length (`z_jit`). The path is pushed off the skin, the ears and the cap (fields) and off the suit's outer
+  surfaces (B2a's BVH), smoothed and re-pushed, resampled every 1.8 mm. The section is a lens (`width` x `thick` along the whole
+  lock, every width profile tapered to a point) whose edges curl towards what it lies on (`curl` x half-width), so a clump reads
+  round with tucked edges, never a slab. Attributes per vertex: `hv`/`hu` (streaks), `hw` (across, -1..1), `ht` (along),
+  `ring_off` (the lock's own highlight shift), `hshade` (the layer's darkening).
+- **The layout** (48 locks, head space, the default head x 1.20): `fringe` 9 clumps unmirrored, from her right to her left, tips at
+  the traced points (the middle one to the lash line between the eyes at 1.5636, the outer ones over the brows' ends at 1.579-1.589,
+  a gap of forehead between the outer clumps and the central mass on each side), roots at the part a little to her right; `wisps`
+  3 thin strands between them, a little longer; `temple` 2 a side from the part over the temple, above the ear, falling behind
+  it; `crown` 4 a side over the top and back, down behind the ears onto the shoulders (the outer silhouette); `back` 5 a side
+  to a V at mid-back (tips 1.246-1.31 head space = 1.17-1.24 m); `side` 2 a side in front of the ears, down the cheek, over the
+  jaw's corner, onto the bust's outer edge; `under` 3 a side, darker, between the neck and the outer hair; `loose` 2 a side, thin
+  strands crossing the cheek's edge to the collar. The cap (B2a's) thinner on the crown (16 -> 12 mm), now behind everything.
+- **Traced widths, front close-up framing** (head mm, the outer silhouette; the drawing / B2b / B2c final): 1.6026 (40 mm over the
+  eye line) 202 / 174 / 190; 1.5826 210 / 163 / 188; **eye line 222 / 151 (68 %) / 208 (94 %)**; 1.5406 231 / 150 / 228;
+  1.5206 239 / 149 / 235; **chin 246 (clipped by the frame) / 152 (62 %) / 234 (95 %)**; 1.4526 >= 251 / 156 / 237. The first build
+  reached 247 at the chin (100 %); moving the locks behind the ears (below) cost 5 %, the envelope was widened to win most of it back.
+  The temples (1.58-1.60) stay 7-10 % narrow: the drawing's hair stands 26 mm off the skull there.
+- **Shading in the toon look** (`charkit/toonlook.py`, additive; `LOOK_TOON` in `beatrice.py`): the highlight band is now PER
+  LOCK on a hair that carries `ring_off`/`hw` (`ring["per_lock"]`): each lock's piece is shifted by its own offset, bowed across
+  it, serrated along the strands (`saw`, `teeth`) and narrowing to nothing at the lock's edges (a lens), so the "angel ring" reads
+  broken lock by lock with sawtooth edges; B2a's single wave stays for a hair without the attributes. The lit hair is lighter and
+  warmer (the ramp's top 1.9 -> 3.2 x, an ash brown), the under layer and the cap darker (`HAIR_DEEP`, by `hshade`), the
+  streaks along the locks calmer (`HAIR_STREAK` 0.6 -> 0.3: B2a's read as busy stripes). Outlines: the hull now inks every lock
+  standing off the one under it.
+- **The fringe's shadow** (review item 7): crisp, one step, the clumps' points printed on the forehead and the upper lids --
+  the key's shadow map at 0.2 mm texels and filter 2.0 -> 0.6 (`lights` option `res`, new in `toonlook.lights`). It applies to
+  every cast shadow of the key (the chin on the neck, the arms on the body): all crisper, as the toon look wants. The under-chin
+  shadow was not deepened (not cheap without a new mask; left).
+- **The crown's spike** (B2a/B2b's "antenna" standing on the crown in every turn): the egg's radius is 0^(-1/n) = infinite on its
+  vertical axis (`Egg.rho`), and a column of the cap's grid landed exactly there; the cap's field nudges points off the axis
+  (`pole_guard`, B2c's table only; B2a's hair kept as built).
+- **The "ghost ear"** (review item 9): GEOMETRY, not a picture artefact, and not an ear: the eye opening's cut is a prism along the
+  view axis through the whole head, limited only to "near the egg's surface", so it also cut an eye-shaped dent into the BACK of the
+  skull at the eyes' (x, z) (the skull's radius at 1.575 m stepped 5 mm between 130 and 170 deg round). Found by ray casts (only the
+  skin there) and renders with the ear, eyes, lashes, outlines, shadow proxy and the key's shadow switched off one by one (it stayed
+  in all). The cut is now kept to the front (`EYES["front_only"]` = y < -0.03 head space, `Head._cut`): the skull is smooth there
+  (radius 0.0825-0.0842 from 130 to 160 deg). The **ragged terracotta band** in the hairless profile is NOT the hidden hair's
+  shadow: it stays with the key's shadow off -- it is the skin ramp's warm terminator on the bald skull (the face is shaded as a
+  simple head only over the face); the hairless pictures are for the face, the skull is never seen.
+- **Three worst defects after the first build, two attempts each** (harness renders `C:/tmp/beatrice_b2c/o/a1..a10`):
+  1. *The hanging hair read as straight parallel cords and a flat curtain* (front: dangling noodles onto the chest; back: a wall).
+     Attempt 1: a soft S per lock (`wave`), tips flaring out (`add`), ragged lengths (`z_jit`), the loose strands shortened to
+     the collar. Attempt 2: the side locks wider below the jaw and moved out over the bust's edge, the back's tips pointed earlier
+     and more waved. Better: a mass with separated waved ends, the front locks lie over the bust's edge; still straighter and more
+     regular than the drawing's flyaway strands.
+  2. *The fringe read as a comb of separate spikes* (a1: narrow teeth with skin between). Attempt 1: clumps 1.5x wider, kept wide
+     down to 70 % of their length then a short point; the central five overlap as one mass with gaps only where drawn. Attempt 2:
+     thin wisps between the clumps, calmer streaks. Now a mass with points and the two drawn gaps; the tips are still a little
+     regular (similar triangles) next to the drawing's longer, finer points.
+  3. *The crown read as a helmet with a blocky highlight* (B2a's smooth wave, then per-lock blocks). Attempt 1: the band per lock
+     as a lens narrowing to the edges. Attempt 2: a near-continuous ring with serrated edges along the strands (smaller per-lock
+     offsets, more teeth), the step along the locks 3 -> 1.8 mm. The ring reads as drawn anime hair; the dome's outline is still
+     rounder and the part less visible than the drawing's.
+- **After the first standard set: the elf ear** (`face_turn.jpg` 30-135 deg, `head.jpg`): a pale pointed tab above each ear -- a
+  temple lock crossed the ear's top-back and cut its round top into a point, with bare skin between B2a's hairline (13-17 mm over
+  the ear) and the locks. The temple, crown and under locks now leave the head 8-10 deg further back and fall behind the ear, the
+  cap's hairline comes down to the ear's top (1.574), and the ear shows whole in profile as drawn, the hair starting right
+  behind it. Two attempts (the hairline alone at 1.566 hid the ear's top half in profile; then 1.574 with the locks moved).
+
+### Pictures, checks, reproduce
+
+- `hair_vs_art.jpg` (new: the close-ups' framing -- drawing, the B2c hair, its outline over the drawing, B2a/B2b's hair and its
+  outline, front and profile), `hair_back.jpg` (new: `with_hair_back.png` beside the hair straight from behind, three-quarter
+  behind from both sides, and B2a/B2b's back), `face_vs_art.jpg`, `face_turn.jpg`, `face_closeup.jpg`, `head_size.jpg`,
+  `look_compare.jpg`, `posed_vs_concept.jpg`, `posed_full.jpg`, `posed_hotlight.jpg`, and the full standard set (sheet, turnaround,
+  every beauty and dev view) regenerated with the B2c hair. `face_turn` renders a 225 deg view too (`FACE_SHOTS`; the sheet keeps
+  its six). `face_zebra.jpg` is B2b's (the face's surface did not change in front).
+- **Nothing else moved** (`C:/tmp/beatrice_b2c/tools/cmp.py`, B2b's with the head skin compared by surface distance;
+  `Beatrice_b2b_3292a4c.blend` against this build): 38 objects identical (max |dP| < 1e-7 m) -- every suit part including the
+  collar, the hands and nails, the boots, and the head's ears, eyes and lashes. Rebuilt: `Beatrice_Hair_Cap` (162,800 -> 166,946
+  vertices), `Beatrice_Hair_Locks` (58,456 -> 151,380). Changed: `Beatrice_Head` (the skin) ONLY behind the ears, y 0.050-0.090 m,
+  z 1.567-1.590, up to 5.8 mm -- the eye-shaped dent at the back of the skull filled (the ghost-ear fix); everything in front of
+  y 0.050 identical to 10 um.
+- **The hair against the suit**: every lock's path is pushed 5 mm off the suit's outer surfaces (`body_clear`), then every lock
+  vertex below the head lifted 1.2 mm clear along the suit's normal (`skin_clear`; about 2,000 vertices a build). Posed (the hair
+  rigid with the head bone, `POSE["attach"]` unchanged): no lock shows through the body or the collar in `posed_full.jpg`,
+  `posed_vs_concept.jpg` or the harness's posed front34 / back34 / side; the locks on the bust's edge lie on it.
+- **Sheet scores** fall again with the wide hair against the BALD A-pose drawings (expected): above the waist front 0.837 -> 0.753,
+  side 0.747 -> 0.680, back 0.817 -> 0.740; the bands below unchanged (side hip-knee 0.920 -> 0.922: the back's longest tips).
+- `source/mesh_stats.json`: 62 objects, all closed, the flipped-normal list unchanged; the head 1.80 M evaluated triangles
+  (B2b 1.61 M).
+- Times: the build 8.4 min (the hair 20 s of it), the full set 12 min; the face views 1.5 min each (toon, pbr), the `hair_b2a` and
+  `apose` variants 2-3 min each (their heads rebuilt), posing 1-1.5 min each; the hair loop
+  `C:/tmp/beatrice_b2c/tools/hh.py` (the hair rebuilt on the B2b build, the look applied, the close-up framings and turns
+  rendered) 50-70 s, `mont.py` the drawing / render / outline sheet and the traced widths.
+- Reproduce (from `art/characters`): as B2b, plus `face_views.py -- --head hair_b2a --only art,turn` (the before columns) before
+  `python Beatrice/scripts/face_sheets.py`.
+
+### What still looks wrong in the hair (worst first)
+
+1. **The crown reads as a rounded helmet** (`face_turn.jpg` 0 deg, `hair_vs_art.jpg` front, `posed_vs_concept.jpg`): the top's
+   outline is a smooth dome with an inked rim, the temples flare round like a bonnet; the drawing's crown is narrower at the top,
+   the part visible as a pale whorl with locks sweeping from it, and the sides fall in long flat curves. No part line reads.
+2. **The hanging hair is too regular and too straight** (`hair_back.jpg`, `face_turn.jpg` 135/180, `posed_full.jpg`): a dense
+   curtain of parallel clumps with even waves; the drawing's back is wider at the shoulder blades, layered, with separated
+   flyaway strands and a clearer V. Its ends still stand a few cm off the upper back in profile (`turnaround.png` side).
+3. **The fringe's tips are similar triangles** (`face_closeup.jpg` eyes, `hair_vs_art.jpg`): the drawing's clumps end in longer,
+   finer, uneven points and fine single strands; ours are a row of short broad points. The fringe also stands well off the face
+   in profile as drawn, which in three-quarter reads a little visor-like.
+4. **Colour and lines**: the lit hair is a warmer, lighter brown now, but the drawing's lit side goes to a pale ash-beige and its
+   strands carry fine dark lines; ours is one dark brown with a soft streak and outlines only on the clumps' edges.
+5. **The side locks onto the chest** read as two dark cords in the concept framing (`posed_vs_concept.jpg`); the drawing's front
+   strands are thinner and fade.
+6. **The ear** still reads slightly pointed at 30-60 deg (`face_turn.jpg`): the ear's own field (tilted back, its top a narrow
+   plate), not the hair now.
+7. The face round's items (the eyes' lashes and lid shadow, the brows, the latex blobs on the upper chest) are untouched; the
+   under-chin shadow was not deepened.
