@@ -931,3 +931,120 @@ her, she must look as good as in the picture". The style (the orchestrator's, ve
   gloss without pores; blush, lip tint, mouth line, lash line, nostrils as `PALETTE` entries. Hair: a blockout -- a cap following the
   skull, diving under the skin below the hairline, and smooth locks (fringe, crown, the locks in front of the ears, over the
   shoulders, the mass down the back) as swept ribbons, the hanging parts dropped as ropes kept clear of the head and the suit.
+
+### Step 2, the face
+
+- **Mechanism** (`charkit/animehead.py`, new; a later anime-style character is a set of tables on it). The skin is ONE field
+  (head space = the tables' frame): an `Egg` -- per elevation about the centre (0, -0.005, 1.575) the profile's front and back
+  radii and the front view's side radius, each a natural cubic through the hand-picked outline points of step 1 converted to
+  polar, blended round the head by superellipse exponents (front 2.6 across the eyes, 1.8 at the chin: the V) -- minus Gaussian
+  forms (socket -2.0 mm, brow +1.2, cheeks +2.0, chin +1.2, the dent under the lip -0.8), C2-united (`smin3`) with the nose
+  (bridge capsule, tip and column, small alae) and the lips (two ellipsoids), cut by the mouth line (a 0.9 mm slot) and the eye
+  openings (the drawn lid curves in the front view, a prism along the view axis, only within 5 mm of the egg, its margin rounded
+  C2 over 1.2 mm: the lid), C2-united with the neck (`Rings`; the placeholder's rings up to the collar's top, slimmer above).
+  Meshed by surface nets on a banded grid (only blocks near the surface sampled finely; memory scales with the surface), every
+  vertex projected onto the field, shaded with the field's normals -- except the nose's bridge and sides and the lips, which are
+  shaded with the normals of the face WITHOUT them (`shading`): the anime-3D trick that leaves the profile's nose and shows the
+  front only its tip. Painted masks per vertex from the front-projected position (`blush`, `lips`, `mouthline`, `lowlash`,
+  `crease`, `brow`, `nostril`, `nosetip`) read by the new `beatrice_face` material (the hands' skin base, subsurface and gloss, no
+  pores). The head-size variant is the same tables scaled about the chin's height on the neck's axis with the neck left in the
+  collar (`Head(scale=)`).
+- **The eyes.** Not eyeballs: an eye SURFACE per side, the uncut skin's own surface set 1.2 mm back behind the opening (2.5 mm
+  more towards the corners: a gentle dome), kept only over the opening and a 1.8 mm margin, 0.8 mm thick; on it the drawing is
+  PAINTED along the view axis (`iu`, `iv`, `lid` attributes; material `beatrice_eyes`): sclera shaded under the upper lid, an iris
+  10.0 x 11.2 mm half-axes, dark at the top, a lit glow at the bottom, radial streaks, a dark rim, a 3 x 3.6 mm pupil, the two
+  highlights (emissive) up and outwards. The heavy upper lash line is geometry (`beatrice_lash`): a dark band swept along the upper
+  lid on the skin, 1 mm at the inner corner widening to 4.2 mm over the outer third, its lower edge 1.3 mm over the opening (it
+  covers the iris's top as drawn), ending in a flick 6.5 mm past the outer corner. The lower lash line, the lid crease and the
+  brows are painted. Turning: from the front the eye is the drawing (the iris's top under the band, its bottom on the lower
+  lid); in three-quarter the painted iris foreshortens with the face's curve and the band stands off the lid with its flick; in
+  profile the eye shows as the drawn convention does -- a narrow sliver of iris behind the band and flick -- because the eye
+  surface follows the face's curvature (`face_turn.jpg`, `face_closeup.jpg`).
+- **The ears** (`animehead.Ear`): a field each in its own axes (tilted back 12 deg, flared 20 deg): two plates (the auricle and
+  the lobe), the bowl and the concha taken from the outer face leaving the helix, an antihelix and a tragus; 47 x 27 mm, top
+  1.577, lobe 1.53, as both close-ups draw them.
+- **The three worst defects after the first full build, two attempts each** (scratch renders `C:/tmp/beatrice_b2a/o_a0..a7`):
+  1. *The nose read long and realistic from the front* (a lit ridge and nostril wings; the drawing: only a tip highlight).
+     Attempt 1: the bridge narrowed (3.2 -> 2.4 mm), the tip smaller, the alae shrunk and pulled back, a wider fillet: still a
+     ridge with nostril shading. Attempt 2: the bridge and sides shaded with the face-without-nose normals (tip kept): from the
+     front a soft shadow down one side and the tip, the profile unchanged. Better; in the close-up it still reads as a smudge
+     rather than a crisp drawn shadow.
+  2. *The eyes read wide-open, startled* (a thin lid line, the iris floating in white). Attempt 1: the iris larger and lower, the
+     lash band wider and lowered over the opening. Attempt 2: the band heavier still and further over the iris, the flick longer.
+     Now the drawing's heavy upper line; still missing the lash band's broken upper edge (separate lash clumps) and the drawing's
+     soft lid shadow on the iris.
+  3. *The ears*: the shared lofted ear (`parts.ear`) came out pointed, an elf's, in profile. Attempt 1: an ear as a field -- the
+     bowl cut through the too-thin plates and left a hollow ring. Attempt 2: plates 12 mm thick at the centre, a shallower bowl: a
+     solid small ear of the right size and place; simple (no helix fold or antihelix Y worth the name).
+
+### Step 3, the hair blockout
+
+`charkit/animehair.py` (new), table `HAIR`: a cap -- the egg offset outwards 6 / 12 / 9 mm (front / crown / back) above a
+hairline (alpha, z) and 9 mm inside the head below it, so the visible hairline is a clean intersection (above the ears, the
+ears exposed; the nape at 1.515) -- and 50 locks in six mirrored rows, each a closed swept ribbon (lens section, tapering to a
+point) laid on the cap along a path in the head's angles: the fringe (12, parted at the centre, the middle tips at 1.567 between
+the eyes, the outer ones higher, standing 4 mm off the forehead), the crown (10), the locks in front of the ears (6, down in front
+of the shoulders), over the shoulders from behind the ears (4), the outer back (8, leaving the skull at its widest), the back (10,
+to the V's point at about 1.20). The hanging parts fall as ropes under gravity (position-based: lengths, a bending limit, pinned
+roots) kept 4-6 mm off the cap and off the suit's OUTER surfaces (a BVH of Suit_Body, Shoulder, Collar, Sleeve, the blade and
+shoulder inserts with their Solidify muted -- with it, a rope that started inside the body stayed inside against the inner wall).
+Material `beatrice_hair`: dark brown, streaks across each lock (`hv`), roughness 0.42, a little coat and sheen. In the posing the
+hair is attached wholly to the head bone (`POSE["attach"]`, new in `suitpose.deform`).
+
+### Pictures, checks, reproduce
+
+- `face_vs_art.jpg` (the close-ups and the model in their own frames, orthographic, with hair and without: drawing | render | the
+  render's outline over the drawing, front and profile), `face_turn.jpg` (0 / 30 / 60 / 90 / 135 / 180 deg, the optional
+  `portrait` light: a soft key above her right, a fill, a rim; the default studio rig is unchanged), `face_closeup.jpg` (eyes, an
+  eye in three-quarter, nose and mouth, the mouth from her right, beside crops of the drawings), `face_zebra.jpg` (reflection
+  lines on skin and ears: front, three-quarter, side -- smooth bands, no rings or seams; the bands bend gently over the cheek's and
+  socket's Gaussian forms and are busier round the nose and mouth), `head_size.jpg` (the built head against the concept-ratio
+  variant, front and 30 deg, beside the concept); `posed_vs_concept.jpg`, `posed_full.jpg`, `posed_hotlight.jpg` regenerated (the
+  head joins the posing by the existing weight field; the hair attached wholly to the head bone); the full standard set (sheet,
+  turnaround, every beauty and dev view).
+- **Sheet scores** move because the drawings are bald and the model now has hair: front above the waist 0.951 -> 0.889, side
+  0.901 -> 0.829, back 0.918 -> 0.869; the bands below the waist unchanged.
+- **Nothing else moved** (`C:/tmp/beatrice_b1n/cmp3.py`, `Beatrice_b1n_adddc04.blend` against this build): 35 objects identical
+  (max |dP| < 1e-7 m) -- every suit part including the collar, the hands and nails, the boots. Changed: the `Head` collection only
+  (`Beatrice_Head`, `_Ear`; new `_Eye`, `_Lash`, `_Hair_Cap`, `_Hair_Locks`; gone the placeholder's `_Eye_L/R` and their lids).
+  The neck inside the collar keeps the placeholder's rings up to 1.474 (and the collar's hug at 1.482), so the collar did not move.
+- `source/mesh_stats.json`: 62 objects (the Head collection 6, as before), all closed, the flipped-normal list unchanged; the
+  head 1.16 M source triangles (the skin at 0.7 mm: 384 k vertices).
+- Reproduce (from `art/characters`): the build and the standard set as in B1n (`bash charkit/run.sh Beatrice --sheet --turn --save
+  --beauty ...`); `--head placeholder` builds the bald placeholder, `--head concept` the x 1.20 variant; the face pictures:
+
+      "C:/Program Files/Blender Foundation/Blender 4.5/blender.exe" -b --factory-startup -P Beatrice/scripts/face_views.py
+      "C:/Program Files/Blender Foundation/Blender 4.5/blender.exe" -b --factory-startup -P Beatrice/scripts/face_views.py -- --head concept --only turn
+      python Beatrice/scripts/face_sheets.py
+
+  then `posed.py` (all shots, and `-- --views concept --lights hot`) and `posed_sheets.py` as in B1m.
+- Times: the build 7.8-9.3 min (the head 95 s of it: the skin at 0.7 mm; the hair 11 s), the full set 11.8-13.5 min (another Blender process shared the machine during the first); the face views
+  1.5 min, the variant 3 min (its head rebuilt), posing 1.1 min + 0.3. The design loop: `C:/tmp/beatrice_b2a/tools/design.py`
+  (numpy: the profile and silhouettes against the drawings, 30 s), `hb.py` (the head rebuilt on the B1n build and rendered, about
+  1.5 min), `hairgap.py` (the hair's signed gap to the suit's outer surface).
+- **The hair against the suit** (`hairgap.py`, the suit's outer surfaces incl. piping and zips): the ropes keep each lock's centre
+  4-6 mm off; a ribbon's edges dipped up to 3.7 mm into the shoulders' curve (599 vertices), so every lock vertex below the head
+  is lifted 1.2 mm clear along the suit's normal (1338 vertices moved): now 14 vertices touch (-0.06 mm, on piping), none inside
+  the suit; the cap 0.9 mm off at the nearest. Unposed only; posed, the hair is rigid with the head and not re-checked. The back's
+  tips reach 1.08-1.25 m (the V's point lower than the drawings' 1.17-1.23: the ropes stretch as they settle).
+
+### What still looks wrong (worst first)
+
+1. **The face reads as a doll, not as the drawing** (`face_vs_art.jpg`, `face_turn.jpg`): the drawing's look is mostly PAINTING --
+   soft shadow under the fringe and lids, a warm gradient, inked lid lines, translucent iris layers, glossy lip highlight -- and
+   the render has flat, bright, evenly lit skin. Needs a toon/anime shading layer (shadow ramp, lid and fringe shadows painted or
+   ramped, rim tint) rather than more geometry.
+2. **The nose** (`face_closeup.jpg`): from the front a smudge down one side instead of the drawn tip highlight; in three-quarter
+   a dark diamond between the tip, column and alae. The normal-transfer route is right; it needs a cleaner proxy (a smooth front
+   plane), the alae and column removed from the geometry, and the nostrils and tip highlight painted.
+3. **The eyes** are the strongest part but still graphic-flat: the lash band is a solid tube with no lash clumps on its upper edge
+   and no lower-lid thickness; the iris lacks the drawing's layered glow; the lower lash line is a thin painted line; the eyes sit
+   a touch too round and wide-open compared with the drawing's narrower, heavy-lidded look (`face_closeup.jpg`, `eyes`).
+4. **The hair** is a blockout: thick slab ribbons with visible edges, a comb-like fringe of identical spikes, a seam where the
+   fringe's roots meet the crown locks, a narrow back curtain (the drawing's hair spreads wider over the shoulders and frames the
+   face with loose strands); too glossy-plastic (`face_turn.jpg` 135 / 180 deg).
+5. **The mouth** (`face_closeup.jpg`): two pink bands with a groove; the drawing's soft upper-lip line and glossy lower lip need
+   paint and a gentler form. The profile's lips sit about right.
+6. **The ears** are simple and pale (no helix fold, no inner shading; `face_turn.jpg` 90 deg).
+7. **The head's size**: built at the A-pose drawing's 204 mm, it reads small against the concept (`posed_vs_concept.jpg`); the x 1.20
+   variant (`head_size.jpg`) is much closer to the concept's feel -- a choice for the owner.

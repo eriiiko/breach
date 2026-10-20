@@ -1,8 +1,8 @@
 {
  "Head": {
   "objects": 6,
-  "source_tris": 105472,
-  "evaluated_tris": 113152
+  "source_tris": 1161930,
+  "evaluated_tris": 1246712
  },
  "Boots": {
   "objects": 4,
@@ -21,13 +21,11 @@
  },
  "TOTAL": {
   "objects": 62,
-  "source_tris": 1247524,
-  "evaluated_tris": 3292804
+  "source_tris": 2303982,
+  "evaluated_tris": 4426364
  },
  "NORMALS": {
   "flipped": [
-   "Beatrice_Eye_L",
-   "Beatrice_Eye_R",
    "Suit_Zip_Pull_Back_Tab",
    "Suit_Zip_Pull_Front",
    "Suit_Zip_Pull_Front_Tab",

@@ -278,6 +278,23 @@ def build(head, spec, mats, prefix, coll="Head", body_objects=None):
                 allhu.append(hu)
                 voff += len(V)
                 k += 1
+    if allV and body is not None:
+        # the ropes keep each lock's CENTRE line clear; a wide ribbon's edges can still dip into a curved shoulder: every
+        # vertex below the head is lifted to `skin_clear` off the suit's outer surface along its normal
+        Vall = np.vstack(allV)
+        clear = spec.get("skin_clear", 0.0012)
+        moved = 0
+        for i in np.where(Vall[:, 2] < head.world(head.egg.c)[2] - 0.04)[0]:
+            co, nrm, _, _ = body.find_nearest(tuple(Vall[i]))
+            if co is None:
+                continue
+            co, nrm = np.array(co), np.array(nrm)
+            g = (Vall[i] - co) @ nrm
+            if g < clear:
+                Vall[i] += nrm * (clear - g)
+                moved += 1
+        print("anime hair: %d lock vertices lifted clear of the suit" % moved)
+        allV = [Vall]
     if allV:
         objs.append(ah._mesh(prefix + "_Hair_Locks", np.vstack(allV), np.vstack(allQ), mats["hair"], coll, tris=np.vstack(allT),
                              attrs=dict(hv=np.concatenate(allhv), hu=np.concatenate(allhu))))

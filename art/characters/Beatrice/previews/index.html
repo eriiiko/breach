@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Beatrice — body and suit</title>
+<title>Beatrice — body, suit and head</title>
 <style>
   :root { color-scheme: dark; --bg: #1c1e22; --panel: #26292f; --ink: #e6e3dc; --dim: #9aa0a8; --line: #3a3e46; }
   body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, "Segoe UI", sans-serif; }
@@ -21,7 +21,7 @@
 </head>
 <body>
 <main>
-  <h1>Beatrice — body, suit, hands, boots (B1n: the bust, and the profile)</h1>
+  <h1>Beatrice — body, suit, hands, boots, and the head's first round (B2a: the face test)</h1>
   <p>Built from Python alone on the shared character kit (<code>charkit/bodysuit.py</code>, Blender 4.5, Cycles) from the tables in
      <code>scripts/beatrice.py</code>, fitted to three drawings: front, side and back. The head is a bald placeholder for the
      face-and-hair stage. Character only, no props. This round answers <code>review_stage2.md</code>: new hands, the shoulder and
@@ -29,6 +29,18 @@
      layered knee pads, thin cuffs, seams that end on other edges. See <code>PROVENANCE.md</code>.
      <b>Stage 4</b> answers <code>review_stage3.md</code> for the pelvis only (waist, hips, seat, upper thighs); everything else is
      unchanged, and the close-ups further down are stage 3's.</p>
+
+  <h2>The head, round 1: the face test (B2a)</h2>
+  <p>Her real head replaces the bald placeholder: a stylised anime-style 3D face (<code>charkit/animehead.py</code>) at the A-pose
+     drawing's size (chin to crown 204 mm), its widths and eyes from the front close-up and its depths from the profile close-up;
+     the eyes are carved openings over the drawn almond with a painted eye surface behind and a swept lash band; the hair is a
+     blockout (<code>charkit/animehair.py</code>): a cap and smooth locks falling clear of the suit. A variant at the original
+     concept's head-to-body ratio (x 1.20) is in <code>head_size.jpg</code>. See <code>PROVENANCE.md</code> (B2a).</p>
+  <figure><img src="face_vs_art.jpg" alt="The face against the close-ups"><figcaption>The close-ups and the model in their frames, with hair and without: drawing, render, the render's outline (red) over the drawing</figcaption></figure>
+  <figure><img src="face_turn.jpg" alt="The head turning"><figcaption>The head at 0, 30, 60, 90, 135 and 180 degrees under the portrait light (soft key, fill, rim)</figcaption></figure>
+  <figure><img src="face_closeup.jpg" alt="Eyes, nose and mouth close"><figcaption>Eyes, an eye in three-quarter, nose and mouth, the mouth from the side, beside crops of the drawing</figcaption></figure>
+  <figure><img src="face_zebra.jpg" alt="Reflection lines on the face"><figcaption>Reflection lines on the skin and ears: front, three-quarter, side</figcaption></figure>
+  <figure><img src="head_size.jpg" alt="The head size variant"><figcaption>The built head (the A-pose drawing's size) against the concept-ratio variant (x 1.20), front and 30 degrees, and the concept</figcaption></figure>
 
   <h2>The bust, and the profile (B1n)</h2>
   <p>The owner: "the breasts could use some more work", and two side views in the concept's style, v2 the profile reference
@@ -42,9 +54,9 @@
   <figure><img src="bust_profile.jpg" alt="The bust's side profile against v2"><figcaption>v2's front outline with B1m's (red) and B1n's (blue) side silhouettes mapped onto it (left) and in the model's frame (right)</figcaption></figure>
   <figure><img src="bust_b1n.jpg" alt="The bust before and after"><figcaption>B1m above, B1n below: front, three-quarter, side, from below, the fold close, the concept's framing (posed), and reflection lines; at the bottom the concept beside both in its framing</figcaption></figure>
   <figure><img src="seat_profile.jpg" alt="The seat against v2"><figcaption>The seat: v2 with the model's back outlines (unposed and posed); v2's skin edge (yellow) is a lower bound on its seat's depth</figcaption></figure>
-  <figure><img src="posed_vs_concept.jpg" alt="The concept beside the posed render"><figcaption>The concept, the posed render (B1n) at the same framing, and the render's outline over the concept</figcaption></figure>
-  <figure><img src="posed_full.jpg" alt="The pose, full figure"><figcaption>The pose, full figure (B1n): front, front three-quarter, side (her right), back three-quarter</figcaption></figure>
-  <figure><img src="posed_hotlight.jpg" alt="The pose under a hotter light"><figcaption>The concept framing under the studio rig and the optional "hot" light setup (B1n)</figcaption></figure>
+  <figure><img src="posed_vs_concept.jpg" alt="The concept beside the posed render"><figcaption>The concept, the posed render (B2a: with the head) at the same framing, and the render's outline over the concept</figcaption></figure>
+  <figure><img src="posed_full.jpg" alt="The pose, full figure"><figcaption>The pose, full figure (B2a): front, front three-quarter, side (her right), back three-quarter</figcaption></figure>
+  <figure><img src="posed_hotlight.jpg" alt="The pose under a hotter light"><figcaption>The concept framing under the studio rig and the optional "hot" light setup (B2a)</figcaption></figure>
 
   <h2>The wet gloss and the concept pose (B1m)</h2>
   <p>The owner chose the glossier look: B1l's "wet" gloss is now the default (the satin of B1b&ndash;B1l is the variant "satin") and

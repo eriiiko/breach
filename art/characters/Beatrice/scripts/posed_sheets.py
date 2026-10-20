@@ -81,7 +81,7 @@ def main(raw):
     prev = os.path.join(ROOT, "previews")
     r = os.path.join(raw, "%s_concept.png" % pose)
     render = flat(r, size)
-    row([label(concept, "concept.jfif"), label(render, "B1n posed, studio rig (default look)"),
+    row([label(concept, "concept.jfif"), label(render, "B2a posed, studio rig (default look)"),
          label(outline_over(concept, alpha(r, size)), "the render's outline over the concept")]
         ).save(os.path.join(prev, "posed_vs_concept.jpg"), quality=90)
     cells = []
