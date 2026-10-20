@@ -111,6 +111,10 @@ def _books(sim):
         "wipe": list(eos.trace_wipe_sum()),
         "sink": list(eos.trace_sink_sum()),
         "decay": list(eos.trace_decay_sum()),
+        # #88 P2: the counted saturation's books (appended CUDA slots).
+        "clip": list(eos.trace_clip_sum()),
+        "mint": list(eos.trace_mint_sum()),
+        "neg": list(eos.trace_neg_hits()),
     }
 
 
