@@ -295,7 +295,9 @@ class Head:
         `z` (z0, z1, z2, z3) (none below z0, full z1-z2, none above z3), `tip` = ((x, z), (rx, rz), keep) the nose tip keeping
         `keep` of its own normal; `lift` = (amount, z0, z1): over the lower face (full below z0, none above z1) the normal is
         tipped up by `amount` (renormalised), so the jaw's side reads lit down to its edge and only its underside turns
-        dark, as the art draws the jaw (a clean edge over the shadowed neck)."""
+        dark, as the art draws the jaw (a clean edge over the shadowed neck); `bias` = ((x, y, z), amount): over the face the
+        normal is tipped towards that direction (head space) by `amount` and renormalised -- the anime face lit nearly
+        whole by a key from the front, its shadow only at the far edge."""
         N = unit(self.grad(self, V))
         Ne = unit(self.grad(lambda P: self.egg(self.to_head(P)), V))
         Q = self.to_head(V)
@@ -307,6 +309,9 @@ class Head:
             tip = np.exp(-((Q[:, 0] - tx) / rx) ** 2 - ((Q[:, 2] - tz) / rz) ** 2) * _ramp(-Q[:, 1], 0.090, 0.097)
             w = w * (1.0 - keep * tip)
         N = unit(N * (1.0 - w)[:, None] + Ne * w[:, None])
+        if sp.get("bias"):
+            d, a = sp["bias"]
+            N = unit(N + (a * w)[:, None] * unit(np.asarray(d, float))[None, :])
         if sp.get("lift"):
             a, lz0, lz1 = sp["lift"]
             k = a * _ramp(lz1 - Q[:, 2], 0.0, lz1 - lz0) * _ramp(Q[:, 2], sp["z"][0], sp["z"][1]) * _ramp(y1 - Q[:, 1], 0.0, y1 - y0)
@@ -583,14 +588,16 @@ def materials(prefix, p, eyes=None):
     col = t.mix(t.math("MULTIPLY", t.ramp(t.noise(14.0, 2.0, 0.5), 0.35, 0.75), 0.25), s, (s[0] * 1.03, s[1] * 0.93, s[2] * 0.90, 1.0))
     col = t.mix(t.math("MULTIPLY", t.attr("blush"), p.get("BLUSH_AMOUNT", 0.55)), col, lin(p["BLUSH"]))
     col = t.mix(t.math("MULTIPLY", t.attr("nosetip"), 0.35), col, lin(p["BLUSH"]))
+    if "NOSE_HI" in p:   # B2b: the drawn tip highlight (a pale soft shape) over the tip's warmth
+        col = t.mix(t.math("MULTIPLY", t.ramp(t.attr("nosetip"), 0.25, 0.8), 0.75), col, lin(p["NOSE_HI"]))
     col = t.mix(t.math("MULTIPLY", t.attr("lips"), p.get("LIP_AMOUNT", 0.45)), col, lin(p["LIP"]))
-    col = t.mix(t.math("MULTIPLY", t.attr("crease"), 0.55), col, lin(p["CREASE"]))
+    col = t.mix(t.math("MULTIPLY", t.attr("crease"), p.get("CREASE_AMOUNT", 0.55)), col, lin(p["CREASE"]))
     col = t.mix(t.math("MULTIPLY", t.attr("lowlash"), 0.75), col, lin(p["LASH_LOW"]))
     strands = t.ramp(t.noise(300.0, 2.0, 0.5, 0.0, "FBM", stretch=(1.0, 1.0, 0.3)), 0.3, 0.65)
     # B2b: the brow's band sharpened (a ramp on its mask): B2a's Gaussian read as a blurred smudge in the toon look
     col = t.mix(t.math("MULTIPLY", t.ramp(t.attr("brow"), 0.25, 0.6), t.math("ADD", t.math("MULTIPLY", strands, 0.25), 0.72), clamp=True),
                 col, lin(p["BROW"]))
-    col = t.mix(t.math("MULTIPLY", t.attr("nostril"), 0.35), col, lin(p["LIP_LINE"]))
+    col = t.mix(t.math("MULTIPLY", t.attr("nostril"), p.get("NOSTRIL_AMOUNT", 0.35)), col, lin(p["LIP_LINE"]))
     col = t.mix(t.math("MULTIPLY", t.attr("mouthline"), 0.85), col, lin(p["LIP_LINE"]))
     ao = t.ramp(t.ao(0.02), 0.2, 0.95)
     col = t.mix(t.math("MULTIPLY", t.math("SUBTRACT", 1.0, ao), 0.25), col, (s[0] * 0.55, s[1] * 0.40, s[2] * 0.38, 1.0))
@@ -631,7 +638,7 @@ def materials(prefix, p, eyes=None):
     irc = t.mix(t.ramp(pup, 1.08, 0.88), irc, lin(p["PUPIL"]))
     col = t.mix(t.ramp(r, 1.03, 0.97), col, irc)
     # the lid's shadow over the iris's top as well
-    col = t.mix(t.math("MULTIPLY", t.math("SUBTRACT", 1.0, t.ramp(t.attr("lid"), 0.0, 0.30)), 0.55), col, lin(p["IRIS_DARK"]))
+    col = t.mix(t.math("MULTIPLY", t.math("SUBTRACT", 1.0, t.ramp(t.attr("lid"), 0.0, 0.30)), p.get("LID_SHADOW", 0.55)), col, lin(p["IRIS_DARK"]))
     hl = t.math("MAXIMUM", t.ramp(dist(0.20, 0.40), 0.17, 0.13), t.ramp(dist(-0.07, 0.17), 0.075, 0.05))
     col = t.mix(hl, col, (1.0, 1.0, 1.0, 1.0))
     t.set(Base_Color=col, Roughness=0.25, Specular_IOR_Level=0.35, Coat_Weight=0.4, Coat_Roughness=0.08,

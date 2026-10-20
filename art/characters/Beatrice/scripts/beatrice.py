@@ -37,9 +37,9 @@ PALETTE = dict(
     MESH_THIGH="#5a5a62",    # what shows through the thigh panels' net: a dark grey (the suit's, not skin)
     SKIN="#efcbbb",          # pale, as drawn
     NAIL="#f2c9c1",          # B1j: the nails, a natural light pink a touch lighter than the skin (B1i #f1c2bd read mauve end-on)
-    BROW="#4a3a34",
-    SCLERA="#e2dcd6",
-    IRIS="#6c7488",          # grey-blue, as drawn
+    BROW="#3a2a26",          # B2b: darker (#4a3a34 read as a grey smudge in the toon look)
+    SCLERA="#efebea",        # B2b: whiter, as drawn (#e2dcd6)
+    IRIS="#5f6880",          # grey-blue, as drawn (B2b: deeper; #6c7488 read periwinkle in the toon look)
     LIP_TINT=(0.97, 0.80, 0.80),
     BOOT="#0d0d0f",
     SOLE="#0a0a0b",
@@ -50,15 +50,17 @@ PALETTE = dict(
     PAD_RIM="#6c6c76",       # their piped rim, bright
     # B2a, the face (sampled on `concept-face-front-v1.png`, then judged on the renders)
     BLUSH="#e89a8e",         # the cheeks' blush, the nose tip's warmth
-    LIP_AMOUNT=0.28,         # B2b: how much of LIP the lips take (B2a's default 0.45 read as a pink lozenge in the toon look)
+    LIP_AMOUNT=0.16,         # B2b: how much of LIP the lips take (B2a's default 0.45 read as a pink lozenge in the toon look)
+    NOSE_HI="#fff1ea",       # B2b: the nose tip's highlight, as drawn (a pale, soft triangle)
+    CREASE_AMOUNT=0.8, NOSTRIL_AMOUNT=0.7, LID_SHADOW=0.7,   # B2b: the paint's strengths (B2a: 0.55, 0.35, 0.55)
     LIP="#e2a096",           # the lips, a soft rose
     LIP_LINE="#b8706a",      # the mouth line, the nostrils
-    CREASE="#c99a8e",        # the lid crease
+    CREASE="#b4807a",        # the lid crease (B2b: darker, #c99a8e vanished)
     LASH="#2a1b19",          # the upper lash band
     LASH_LOW="#7e5048",      # the lower lash line, lighter (B2b: darker, #9c6a60 vanished in the toon look)
     SCLERA_SHADE="#b9aeb0",  # the sclera under the upper lid's shadow
-    IRIS_DARK="#2c2a3c",     # the iris's top and rim
-    IRIS_GLOW="#9aa6c8",     # its lit lower part
+    IRIS_DARK="#262838",     # the iris's top and rim
+    IRIS_GLOW="#8c98b8",     # its lit lower part (B2b: #9aa6c8 read too light and saturated)
     PUPIL="#16141c",
     HAIR="#241a19",          # dark brown
     HAIR_LIGHT="#3e302d",    # its streaks
@@ -66,7 +68,7 @@ PALETTE = dict(
     SHINE="#eef1f8",         # the latex's crisp streaks
     SUIT_RIM="#59606e",      # the latex's rim, a cool grey
     SKIN_RIM="#ffe2d6",      # the skin's rim, warm
-    HAIR_RING="#8c7b77",     # the hair's highlight band ("angel ring"), a grey-beige as drawn
+    HAIR_RING="#9c8b86",     # the hair's highlight band ("angel ring"), a grey-beige as drawn
     LINE_SKIN="#7a3d36",     # the face's and hands' line, a dark red-brown as inked
     LINE_HAIR="#120b0a",
     LINE_SUIT="#020203",
@@ -1068,7 +1070,9 @@ FACE = dict(
     nose=dict(bridge=((0.0, -0.0830, 1.5540), (0.0, -0.0960, 1.5395), 0.0018, 0.0030, 0.8),   # B2b: its root 4 mm back
               tip=((0.0, -0.0995, 1.5360), (0.0036, 0.0045, 0.0040)),
               column=((0.0, -0.0990, 1.5335), (0.0, -0.0925, 1.5220), 0.0026, 0.0032, 1.0),
-              alae=((0.0030, -0.0880, 1.5262), (0.0012, 0.0012, 0.0012)),   # B2a: next to nothing (a dark diamond under the tip)
+              # B2a: the alae next to nothing -- which left a TUNNEL under the bridge (seen through in profile: B2a's "dark diamond");
+              # B2b: a filler on the midline under the bridge closes it (inside the drawn profile, shaded with the face's normals)
+              alae=((0.0015, -0.0925, 1.5335), (0.0035, 0.0045, 0.0070)),
               k_tip=0.003, k_col=0.0025, k_alae=0.003, k=0.0060),
     # shading: the nose's bridge and sides (z from, to; across sigma; its tip (x, z) and radii kept; weight) and the lips (z
     # from, to; half-width; weight) shaded with the normals of the face without them (`Head.shading_normals`)
@@ -1079,10 +1083,11 @@ FACE = dict(
     # painted on the skin (front-projected): blush (centre (x, z), sigmas), mouth line (z, half-width, height), lower lash
     # line (x from, x to, below the lid, width), lid crease (x from, x to, above the lid, width), brow (x from, x to, z, arch,
     # width), nostrils ((x, z), sigmas), the nose tip's highlight (z, sigmas)
-    paint=dict(blush=((0.044, 1.5445), (0.014, 0.0075)), mouth_line=(1.5075, 0.0125, 0.00045),
+    # B2b: the blush higher and further in, across the cheeks under the eyes as drawn (B2a: (0.044, 1.5445), (0.014, 0.0075))
+    paint=dict(blush=((0.038, 1.5475), (0.016, 0.0072)), mouth_line=(1.5075, 0.0125, 0.00045),
                low_lash=(0.024, 0.0515, 0.0006, 0.00035), crease=(0.021, 0.050, 0.0030, 0.00035),
                brow=(0.012, 0.052, 1.5795, 0.0025, 0.0014), nostril=(0.0040, 1.5240, (0.0012, 0.0007)),
-               nose_tip=(1.5370, (0.0030, 0.0030))),
+               nose_tip=(1.5370, (0.0034, 0.0032))),
     # the ear (her left; mirrored) as a field (`animehead.Ear`): in the ear's own axes (up, back, out), metres; 47 mm high,
     # 27 wide, its top level with the brow's foot and its lobe with the nose's base, as both close-ups draw it
     ear=dict(centre=(0.066, 0.017, 1.553), tilt=12.0, flare=20.0, res=0.0004,
@@ -1233,9 +1238,10 @@ def gloss(variant=None):
 # the material's own relief. Colours by PALETTE name.
 _SKIN_RAMP = ((0.00, (0.80, 0.62, 0.62)), (0.36, (0.82, 0.63, 0.62)), (0.44, (0.95, 0.70, 0.64)), (0.52, (1.0, 0.97, 0.96)),
               (1.20, (1.04, 1.03, 1.02)))
-_LATEX = dict(ramp=((0.00, (1.0, 1.0, 1.0)), (0.40, (1.3, 1.3, 1.35)), (0.60, (3.4, 3.4, 3.7)), (1.30, (4.2, 4.2, 4.6))),
+_LATEX = dict(ramp=((0.00, (1.0, 1.0, 1.0)), (0.40, (1.2, 1.2, 1.25)), (0.60, (2.2, 2.2, 2.4)), (1.30, (2.8, 2.8, 3.0))),
+              bump=0.5,
               # a broad soft sheen (the latex's grey lit side), then the crisp streaks
-              spec=(dict(rough=0.32, lo=0.20, hi=0.75, colour="SUIT_RIM", amount=0.45),
+              spec=(dict(rough=0.30, lo=0.35, hi=0.85, colour="SUIT_RIM", amount=0.42),
                     dict(rough=0.08, lo=0.95, hi=1.10, colour="SHINE", amount=0.92)),
               rim=dict(lo=0.55, hi=0.85, blend=0.35, colour="SUIT_RIM", amount=0.55, lit=0.7))
 LOOK_TOON = dict(
@@ -1272,18 +1278,18 @@ LOOK_TOON = dict(
     # the face shaded as a simple head (`animehead.Head.toon_normals`): the egg's normals over the face's front, the nose
     # tip keeping some of its own
     face_normals=dict(weight=0.92, front=(-0.060, -0.015), z=(1.478, 1.492, 1.600, 1.625), tip=((0.0, 1.5362), (0.004, 0.004), 0.5),
-                      lift=(0.35, 1.500, 1.535)),
+                      lift=(0.35, 1.500, 1.535), bias=((0.0, -1.0, 0.25), 0.45)),
     # the face casts as its simple shape (`animehead.Head.shadow_proxy`, shrunk 6 mm): the chin still shades the neck
     # (the hair's cap is also kept from casting: below the hairline it runs 9 mm inside the face, and its cut edge threw a
     # hard straight shadow across the cheek; the locks still cast the fringe's shadow on the forehead)
     shadow_proxy=dict(shrink=0.009, h=0.002, casters_off=("*_Head", "*_Hair_Cap")),
     # the outline over the nose and the lips left out when seen from the front (`animehead.Head.line_mask`, the amount;
     # `outline["front"]` how frontal): from the front the art draws no nose but its tip's shading, and the mouth as a line
-    face_lines=dict(nose=(1.0, (1.530, 1.562)), lips=(0.7, (1.498, 1.520), 0.016)),
+    face_lines=dict(nose=(1.0, (1.521, 1.562)), lips=(0.7, (1.498, 1.520), 0.016)),
     # the hair shaded as one mass (`toonlook.radial_normals`): its normals towards the head's centre above the jaw
     hair_normals=dict(weight=0.75, z=(1.50, 1.58)),
     # the hair's highlight band (`toonlook.ring_attr`, degrees about the head's centre)
-    ring=dict(objects=("*_Hair_Cap", "*_Hair_Locks"), beta=(40.0, 5.0, 4.0), jag=3.0, freq=11.0, back=170.0),
+    ring=dict(objects=("*_Hair_Cap", "*_Hair_Locks"), beta=(42.0, 3.0, 3.0), jag=2.5, freq=13.0, back=170.0),
     floor=dict(lo=0.35, hi=0.55, amount=0.45, colour=(0.05, 0.05, 0.06)),
     # inked lines: an inverted hull `px` pixels wide at the subject; never on the eyes, lashes, piping, zip or nails
     outline=dict(px=1.6, exclude=("*_Eye", "*_Lash", "*_Piping*", "Suit_Zip_*", "Hand_Nails", "Suit_Knee_Rim"),
