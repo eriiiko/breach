@@ -148,7 +148,18 @@ def random_gas(rng, h, w, n_trace=3):
     y, x = rng.randrange(h), rng.randrange(w)
     o2[y][x], n2[y][x] = 0, R.N_EPS_RAW                      # the floor's edge
     n_bulk = [[o2[y][x] + n2[y][x] for x in range(w)] for y in range(h)]
-    return trace + [o2, n2], hq, n_bulk
+    gas = trace + [o2, n2]
+    # Non-vacuity (#88 §7): the draw must hold ABSORBING cells (the density law
+    # above zero after the trace currency's shift, bulk above the floor) -- so a
+    # mis-scaled vocabulary (Q16 densities read in the trace currency) cannot
+    # quietly turn every gate that uses it into two transparent media compared.
+    n_abs = sum(1 for y in range(h) for x in range(w)
+                if R.gas_extinction_q([gas[g][y][x] for g in range(len(gas))], hq,
+                                      n_bulk[y][x]) > 0)
+    print(f"  random_gas {h}x{w}: {n_abs} absorbing cells")
+    if n_abs <= 0:
+        raise AssertionError(f"random_gas {h}x{w}: no absorbing cell -- vacuous draw")
+    return gas, hq, n_bulk
 
 
 def smoke_feature_scene():
