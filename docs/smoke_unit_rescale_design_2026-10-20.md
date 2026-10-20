@@ -1,171 +1,285 @@
-# Smoke-unit rescale: a finer trace currency (design v1, 2026-10-20)
+# Smoke-unit rescale: a finer trace currency (design v2, 2026-10-20)
 
 **Issue:** #88. **Branch:** `88-smoke-unit-rescale`, cut off `fire-12` at `c8cf9da`.
-**Status:** v1, for critique. Erik delegated #88 to Claude end to end on
-2026-10-20 ("you can design it as well as I, and it doesn't need any human
-test"), so every decision below is made here, with its reason.
+**Status:** v2. Three critique lenses have been run (§15 arithmetic, §16 books
+and semantics, §17 inventory and plan), all PASS WITH FIXES with no blockers.
+Every finding is resolved below (§14.1 maps each one to where); the orchestrator
+ruled B1–B4 on 2026-10-20. Erik delegated #88 to Claude end to end on 2026-10-20
+("you can design it as well as I, and it doesn't need any human test").
 **Out of scope** (Erik's word): the soot AMOUNT (`soot_yield`, the studio's
-2–4 m visibility). Erik revisits it after #88.
+2–4 m visibility), revisited after #88.
 **Depends on:** `docs/smoke_transport_design_2026-10-04.md` (v2 transport,
 D1–D6) and `cpp/src/trace_decay.h`.
 
+**Changelog v1 → v2.**
+- **Books.** The deposit and mint books are added, written at the attempted
+  amount before the saturation, so the identity closes with no residual (B1).
+  The pump, FieldEdit REMOVE and the explosion clear stay unbooked, as a
+  labelled ACCEPTED GAP G6 with CLAUDE.md's false "already-booked" corrected in
+  P6 (B2, orchestrator's ruling).
+- **The saturation.** The rail is renamed: the counted int32 saturation, kit
+  `trace_add_sat`, books `trace_clip_*` (C7). It is described as what it is,
+  D1's option (b) at the representability limit (B3). It is expected to bind in
+  reachable abuse (A10), saturates from above only (A4), and its every site is
+  gated per backend (C10).
+- **Conversions.** `quantize_trace` returns int64 and only the saturation
+  narrows (A3). A third name, `q16_*`, covers Q16 fractions and temperatures
+  (A12). Thresholds move by less than one old count (A1). The sensor converts in
+  `_channel_array` (A7). The renderer gets one trace-dequantize helper (C9).
+  int64 accumulators are linted (A2).
+- **Verification.** V3 drives public entry points through a reader registry
+  (C2). A fixture inventory is committed (§2.7, C1), with a write lint. P1 gets
+  a "dry flip" at k = 8 (C3).
+- **Plan.** ONE golden event for the whole branch: the flip (k 0→8), the decay
+  rounding (ceil→nearest) and CUDA land as one gated patch P3, with a
+  three-stage sole-cause proof (B4, C11). P0 may not move the golden (B4).
+  C4's build discipline is a MUST in every C++ patch. The patches are re-tiered.
+- **Text.** An intended-behaviour-changes table is added (§6.4, B5), plus the
+  smaller corrections A5, A6, A8, A9, A11, B6–B9, C5, C6, C8, C12 and C13.
+
 ## 0. Summary
 
-- The five trace planes (steam, smoke, poison, teargas, fuel_gas) get
-  **`TRACE_FINE_BITS = 8`** more fractional bits: one unit of trace density
-  becomes `2^24` counts instead of `2^16`. The int32 storage, the transport
-  law, every config value and every reader's output in real units stay as they
-  are. Only the integer currency of the trace planes changes. The bulk planes
-  (O2, inert_N2) keep Q16.16.
-- The factor is the measured compromise between two needs (§3). It gives
-  128 units of per-cell headroom, which is 440 times the largest real per-cell
-  value and 3.3 times the worst legal abuse measured. Decay then follows the
-  configured exponential down to the edge of visibility.
-- Three things the rescale exposes are fixed in their own patches:
-  1. The pump/vent extraction split mixes trace counts with bulk counts (P0).
-  2. Every trace int32 narrow either raises or silently wraps once a cell can
-     reach `INT32_MAX`; a counted rail replaces that (P2).
-  3. The ceil decay rounding biases the faint end; it is amended to
-     nearest-with-a-floor-of-1 (P5).
-- One constant, one owner per language, and twins held equal by a test. The
-  ambiguous `gas_fixed.quantize` / `dequantize` / `FP_ONE` / `SMOKE_MAX_Q` names
-  are **deleted** and replaced by `bulk_*` and `trace_*` names, so a Python
-  site that was missed fails loudly rather than being silently 256 times off.
-- Proof that the change is ONLY the rescale: the whole code is written in
-  terms of `TRACE_FINE_BITS`, and at `TRACE_FINE_BITS = 0` the tree reproduces
-  today's `GOLDEN_AGGREGATE` (`f6ba810e…`) bit for bit, on CPU and CUDA (P1).
-  Flipping the constant to 8 (P3) is then the only change behind the
-  re-baseline.
+- **The rescale.** The five trace planes (steam, smoke, poison, teargas,
+  fuel_gas) get **`TRACE_FINE_BITS = 8`** more fractional bits: one unit of
+  trace density becomes `2^24` counts instead of `2^16`. Unchanged: the int32
+  storage, the transport law, every config value, and every reader's output in
+  real units. Only the integer currency of the trace planes changes. The bulk
+  planes (O2, inert_N2) keep Q16.16.
+- **Why 8.** It is the measured compromise (§3). It gives 128 units of
+  per-cell headroom: 440 times the largest real per-cell value, and 3.3 times
+  the worst single measured abuse. With the nearest-rounded decay, the
+  configured exponential holds down to the edge of visibility.
+- **What the rescale exposes**, each fixed in its own place:
+  - the pump/vent extraction split mixes trace counts with bulk counts (P0);
+  - an int32 narrow raises or silently wraps once a cell can reach `INT32_MAX`
+    (P2: the counted saturation, with the mint and deposit books that let its
+    identity close);
+  - the ceil decay rounding biases the faint end (amended to nearest with a
+    floor of 1, inside the flip, P3).
+- **One constant, one owner per language, twins held equal by a test.** The
+  ambiguous `gas_fixed` names are **deleted** and replaced by `bulk_*`,
+  `trace_*` and `q16_*` names, so a missed Python site fails loudly. Two lints
+  catch the silent classes: a write lint on trace slices and a no-bulk-name-on-
+  trace lint.
+- **ONE golden event, with a three-stage sole-cause proof** (§6.2):
+  1. P1/P2's tree at `TRACE_FINE_BITS = 0` with ceil decay reproduces today's
+     `GOLDEN_AGGREGATE` (`f6ba810e…`) bit for bit, on CPU and CUDA;
+  2. the flip to 8 with ceil gives an intermediate value X, recorded and never
+     committed as the golden;
+  3. nearest rounding gives the committed Y.
 
 ## 1. The problem, restated with numbers
 
-Visible smoke lives in the bottom ~11 bits of the int32 plane. One Q16 count
-of smoke is τ = 134.29 / 65536 ≈ 0.0020 per tile (green, `[gases.smoke]
-light_absorb`), so "faintly visible" (τ ≈ 0.01) to "black" (τ ≈ 4) is 5 to
-2000 counts. At that resolution, three laws break:
+One Q16 count of smoke is τ = 134.29 / 65536 ≈ 0.0020 per tile (green,
+`[gases.smoke] light_absorb`). So "faintly visible" (τ ≈ 0.01) to "black"
+(τ ≈ 4) is 5 to 2000 counts: visible smoke lives in the bottom ~11 bits of
+the int32 plane. At that resolution, three laws break:
 
 | law | integer form | threshold at Q16 | effect at Q16 |
 |---|---|---|---|
 | decay | `lost = ceil(v·frac_q / 2^16)`, `frac_q = 22` (0.008/s at 24 tps) | exponential needs `v ≫ 2979` counts, i.e. τ ≫ 6 | every visible tile loses 1 count a tick: a straight line to zero. Opaque, then gone at once (Erik's report) |
-| diffusion | `|F| = (c·|ΔS|) >> 16`, `c = dd_q = quantize(0.10/24) = 273` | `|ΔS| ≥ 240` counts, i.e. Δτ ≥ 0.49 per tile | still-air spreading is DEAD across almost the whole visible range |
-| poison near its threshold | the same decay | `poison_min_density = 0.05` = 3277 counts, under poison's own exponential threshold (5958) | poison at the dose edge decays linearly, twice its configured rate |
+| diffusion | `|F| = (c·|ΔS|) >> 16`, `c = dd_q = quantize(0.10/24) = 273` | `|ΔS| ≥ 240` counts, i.e. Δτ ≥ 0.49 per tile | still-air spreading of smoke is DEAD across almost the whole visible range |
+| poison near its threshold | the same decay | `poison_min_density = 0.05` = 3277 counts, under poison's own exponential threshold (5958) | poison at the dose edge decays linearly, about 1.7 times its configured rate (§6.4) |
 
 Erik's ruling (2026-10-05): the configured decay (`[gases.smoke] decay`, a
 125 s e-fold) is the rate the game must actually show.
 
 ## 2. Inventory: every writer and reader of the trace planes
 
-Collected by grep over the worktree, 2026-10-20. "Converts" says what the
-site must do after the rescale. **INLINE** marks a site that today applies
-`>> 16`, `/ 65536` or `FP_ONE` to a trace value; after #88 every such site goes
-through a kit function (§4).
+Collected by grep over the worktree, 2026-10-20, and re-swept independently by
+lens 3 (§17, "confirmed sound": the C++ list is complete; no saves exist; old
+recordings stay valid). "After #88" says what the site must do. **INLINE**
+marks a site that today applies `>> 16`, `/ 65536` or `FP_ONE` to a trace
+value. After #88 every such site goes through a kit function (§4).
 
 ### 2.1 Cross-cutting facts
 
-- `GameMap.gas` is one `(N_GASES, h, w)` int32 array (`gamemap.py:360`):
-  trace ids 0..4, bulk ids 5..6. `gmap.smoke` is a view (`:381`). After #88
-  the array holds **two currencies**. That is the main hazard, so every site
-  that treats all seven planes as one unit is listed in §2.2 and removed
-  first.
-- `gas_fixed.py` serves BOTH the trace planes and the bulk planes, and other
-  systems too:
-  - O2/N2 seeding (`gamemap.py:873-885`, `:1384-1395`, `:3040-3045`)
-  - `field_edit._combine_atmosphere_to_N` (`:463-473`)
-  - the T_AMB fold (`gamemap.py:925`, `physics_runner.py:1835`)
-  - the pump ΔN (`pump_system.py:142-147`)
-  - filter fractions (`vent_system.py:120-128`)
-  - the sky λ (`physics_runner.py:1287`)
-  - `ambient.py`, `temperature_scale.py:33`
+- **Two currencies in one array.** `GameMap.gas` is one `(N_GASES, h, w)`
+  int32 array (`gamemap.py:360`): trace ids 0..4, bulk ids 5..6.
+  `gmap.smoke` is a view (`:381`). After #88 the array holds two currencies.
+  That is the main hazard, so every site that treats all seven planes as one
+  unit is listed in §2.2, and removed or guarded before the flip.
+- **`gas_fixed.py` has three kinds of user.** Its constants and functions
+  serve:
+  - the trace planes;
+  - the bulk planes: O2/N2 seeding (`gamemap.py:873-885`, `:1384-1395`,
+    `:3040-3045`), `field_edit._combine_atmosphere_to_N` (`:463-473`), the
+    pump ΔN (`pump_system.py:142-147`), the vent rate (`vent_system.py:322`),
+    `bulk_n` in the readout (`hover_readout.py:176-179`);
+  - **Q16 fractions and temperatures**: filter efficiencies and their
+    validator (`vent_system.py:120-128`), `t_min` / `t_max`
+    (`vent_system.py:371`), the T_AMB fold (`gamemap.py:925`,
+    `physics_runner.py:1835`), the sky λ (`physics_runner.py:1287`),
+    `ambient.py`, `temperature_scale.py:33`, the O2 fraction.
 
-  Its constant cannot simply change; it must split (§4).
-- numpy is 2.4.6 on this machine, so `int32_array.sum()` accumulates in int64.
-  An explicit `dtype=np.int32` accumulator anywhere is a bug after #88; P3
-  greps for it.
+  It splits into three names accordingly (§4, A12).
+- **int64 accumulation is a requirement, not an accident.** This machine runs
+  numpy 2.4.6, which reduces int32 in int64. But `docs/lenovo_dev_setup.md:147`
+  records numpy 1.26.4, which on Windows reduces int32 in 32-bit `long`, and
+  wraps an out-of-range Python int assigned into int32 with only a warning. At
+  k = 8 a plane above 128 units total overflows int32 (the miasma room holds
+  2062).
+  - So **every sum over a trace plane uses an explicit int64 accumulator**,
+    the repo's `.astype(np.int64).sum()` idiom (`gamemap.py:2295`,
+    `test_a5_seal_evacuation.py:62`).
+  - It is linted (V1, A2), in `src/`, `renderer/`, `tools/` and `tests/`
+    (e.g. `cuda_trace_smoke_check.py:297`'s bare `.sum()`).
+  - Every Python saturation returns a Python int, range-checked before it is
+    stored.
 
-### 2.2 Sites that MIX trace and bulk counts (must be removed before the flip)
+### 2.2 Sites that MIX trace and bulk counts (removed or guarded before the flip)
 
 | site | what it does | fix |
 |---|---|---|
-| `gamemap.py:3081-3115` `extract_gas_n_vec`, and its callers `extract_gas_n` (`pump_system.py:113`) and `vent_system.py:390-391` | splits a bulk budget `want` over the holdings of **all seven** planes (`gas_proportional_split`), so trace counts are spent as if they were air | **P0**: the split runs over the bulk planes only; each trace plane leaves **priced by air**, `take_t = floordiv(bulk_taken · S_t, N_bulk)`. That is the ratio law stage 3b and the vent supply side (`vent_system.py:476`) already use, so it is scale-invariant. The scalar `extract_gas_n` returns the bulk total |
-| `gamemap.py:3151` `inject_gas_n_vec` `dn_total = sum(add_vec)` | a `> 0` gate only | harmless, but sums the bulk slices only (P0) |
+| `gamemap.py:3081-3115` `extract_gas_n_vec`, and its callers `extract_gas_n` (`pump_system.py:113`) and `vent_system.py:390-391` | splits a bulk budget `want` over the holdings of **all seven** planes (`gas_proportional_split`), so trace counts are spent as if they were air. At k = 8, a tile of real-max smoke (0.29 units = 4.87 M counts) on ambient air (65 536) would split a pump's budget 98.7 % trace (§16 "P0 is required") | **P0**: the split runs over the bulk planes only. Each trace plane leaves **priced by air**, `take_t = floordiv(bulk_taken · S_t, N_bulk)`, the ratio law stage 3b and the vent supply side (`vent_system.py:476`) already use, so it is scale-invariant. **Guarded by `N_bulk < N_EPS_RAW → no trace taken`** (the 3b donor guard, A5). The scalar `extract_gas_n` returns the bulk total. What the pump does with the trace it takes is unchanged: it is destroyed, unbooked, as today (G6, orchestrator's B2 ruling) |
+| `gamemap.py:3151` `inject_gas_n_vec` `sum(add_vec) > 0` | a `> 0` gate. Every slice is ≥ 0, so it is already currency-free | **left as it is** (A6). A bulk-only gate would skip a trace-only injection unbooked |
 | `combat.py:1131-1163` `fire_beam` | loops over all `N_GASES`, `(absorb[g]·S) >> 16` | loops over the trace ids; the shift goes through the kit (P1) |
-| radiation sweep, `radiation_sweep.cpp:507-522, 595-606, 664-677` (+ CUDA `:175, 263-265, 311-318, 956-975`) | the density sums run over every gas with a non-zero coefficient | **the gases door refuses a non-zero `heat_absorb`, `absorption`-derived light/beam coefficient or `scatter_albedo` on a conservative (bulk) row** (P1). The sums therefore only ever see trace planes and are in the trace currency. Every shipped bulk row is 0 today, so nothing ships differently (ACCEPTED GAP G3) |
-| `hover_readout.py:161-164` | dequantizes STEAM..FUEL_GAS **and O2** through one `_GAS_FP_ONE_F` | a per-plane currency: trace ids through `dequantize_trace`, O2 through `dequantize_bulk` |
-| `hover_readout.py:241-245` | all seven planes go to `gas_extinction_q16` | unchanged, because the door makes the bulk coefficients 0 |
-| `src/debug_keys.py:155-168` `debug_spawn_gas` | writes `SMOKE_MAX_Q` into any gas id, bulk included | writes `TRACE_ONE` on a trace id and `BULK_ONE` on a bulk id |
-| `gamemap.py:2662-2670` (`_seal_blockers`), `:3010-3017` (`_inject_gas_n_core`) | `limit = 2^31` OverflowError per slice | the trace slices take the rail (§5.3); the bulk slices keep the error |
+| radiation sweep, `radiation_sweep.cpp:507-522, 595-606, 664-677` (+ CUDA `:175, 263-265, 311-318, 956-975`) | the density sums run over every gas with a non-zero coefficient | **the gases door refuses a non-zero `heat_absorb`, `absorption`-derived light/beam coefficient or `scatter_albedo` on a conservative (bulk) row** (P1). The sums then only ever see trace planes, and are in the trace currency. Every shipped bulk row is 0, so nothing ships differently (G3) |
+| `hover_readout.py:161-164` | dequantizes STEAM..FUEL_GAS **and O2** through one `_GAS_FP_ONE_F` | per plane: trace ids through `dequantize_trace`, O2 through `dequantize_bulk`. `bulk_n` (`:176-179`) through `dequantize_bulk`; the `gas_energy` display's `_GAS_FP_ONE_F ** 2` becomes `BULK_ONE ** 2`, never `TRACE_ONE` (C8) |
+| `hover_readout.py:241-245` | all seven planes go to `gas_extinction_q16` | unchanged: the door makes the bulk coefficients 0 |
+| `src/debug_keys.py:155-168` `debug_spawn_gas` | writes `SMOKE_MAX_Q` into any gas id, bulk included | `TRACE_ONE` on a trace id, `BULK_ONE` on a bulk id |
+| `gamemap.py:2662-2670` (`_seal_blockers`), `:3010-3017` (`_inject_gas_n_core`) | a `limit = 2^31` OverflowError per slice | trace slices take the counted saturation inside the raise-free mutation pass (`gamemap.py:2751-2755`, §5.3); the bulk slices keep the error |
+| **test** `test_ps1_smoke_roundtrip.py:119-122` | asserts that `Σ` over ALL planes never rises. At k = 8 the soot mint takes `soot` bulk counts from N2 and adds `soot << 8` to smoke, so the total rises (C1) | rewritten in P1 as the right property: `Σ bulk` never rises, and the trace planes close by their books (V6). Never bent to green |
+
+**Mixed but exact (no change; listed so that nobody "fixes" them, C8):**
+`test_vent_mechanism.py:81-87`, `test_b4_pump.py:386-389`.
 
 ### 2.3 Writers
 
+The saturation sites are the ones `§5.3` names.
+
 | writer | where (CPU / CUDA) | today | after #88 |
 |---|---|---|---|
-| FieldEdit trace ADD/REMOVE/MAX, the door for `emit_gas`, `add_explosion_smoke`, `blast_smoke_peak`, spray cones, `physics.py` smoke clear | `field_edit.py:499-510` `_combine_gas` (**INLINE** `/ FP_ONE_F`, `quantize_scalar`) | dequantize the tile, add in float, re-quantize | the same combine (dequantize the tile through `dequantize_trace`, combine in float64 under the mode's semantics, re-quantize through `quantize_trace_scalar`), then the rail (§5.3). This is exact in float64 for any int32 tile at 2^24 (|v| < 2^31 ≪ 2^53), so k = 0 is the old code path verbatim. The real-unit amounts are unchanged; deposits round 256 times finer |
-| combustion soot mint | `combustion.cpp:1003-1005`, `cuda_combustion.cu:518-520` | `soot = narrow_round(burn·soot_yield_q)`, then `SOOT += soot`. `soot` is in **bulk** counts and is also subtracted from N2 and `e_shed` | `SOOT += trace_from_bulk(soot)` (`<< TRACE_FINE_BITS`), then the rail. The Dalton split and `e_shed` keep the bulk-count `soot`, so the bulk and energy books are bit-identical and the minted smoke is exactly the old × 2^8 |
-| W5 steam puff | `physics_engine.cpp:1044-1045` (the resident path runs this CPU tail) | `puff_q = quantize(steam_yield·boiled_m)` | `quantize_trace(...)`, then the rail |
-| W3 water evacuation | `physics_engine.cpp:1073-1140` | `evac = mul_q16(plane, frac_q)`, shared to neighbours | scale-invariant (a fraction of a trace count). The receiver add takes the rail |
-| stage 3b advection | `bulk_transport.cpp:457-548`; `cuda_bulk_transport.cu:403-476` `trace_apply` (chained and resident) | gather; int32 narrow with `assert` (CPU) / no check (CUDA) | `price_face` is a ratio, so unchanged. The narrow takes the rail |
+| FieldEdit trace ADD / MAX / REMOVE: the door for `emit_gas`, `add_explosion_smoke`, `blast_smoke_peak`, spray cones, the `physics.py` smoke clear | `field_edit.py:499-510` `_combine_gas` (**INLINE** `/ FP_ONE_F`, `quantize_scalar`) | dequantize the tile, combine in float, re-quantize | the same combine under the mode's semantics (`dequantize_trace` → float64 → `quantize_trace_scalar`, a Python int), then the saturation. Exact in float64 for any int32 tile at 2^24. The positive change (ADD, MAX) is booked at its attempted amount in `trace_deposit_books` (§5.1); REMOVE books nothing (G6). At k = 0 this is the old code path verbatim |
+| combustion soot mint | `combustion.cpp:1003-1005`, `cuda_combustion.cu:518-520` | `soot = narrow_round(burn·soot_yield_q)`, then `SOOT += soot`. `soot` is in **bulk** counts, and is also subtracted from N2 and `e_shed` | `SOOT = trace_add_sat(SOOT, trace_from_bulk(soot), &clip)`, with the attempted `trace_from_bulk(soot)` booked in `trace_mint_sum`. The Dalton split and `e_shed` keep the bulk-count `soot`, so the bulk and energy books are bit-identical and the mint is exactly the old × 2^8 |
+| W5 steam puff | `physics_engine.cpp:1044-1045` (the resident path runs this CPU tail) | `puff_q = quantize(steam_yield·boiled_m)` | `quantize_trace(...)` (int64), booked in `trace_mint_sum`, then the saturation |
+| W3 water evacuation | `physics_engine.cpp:1073-1140` | `evac = mul_q16(plane, frac_q)`, shared to neighbours with the remainder to the last | scale-invariant and conserving (§16). The receiver add takes the saturation |
+| stage 3b advection | `bulk_transport.cpp:457-548`; `cuda_bulk_transport.cu:403-476` `trace_apply` (chained and resident) | gather; int32 narrow with `assert` (CPU) / unchecked (CUDA) | `price_face` is a ratio, so unchanged. The saturation is applied ONCE per cell, on the net `s_own + ds`, never per face (A4) |
 | stage 3c wipe | `bulk_transport.cpp:619-641`; `cuda_bulk_transport.cu:483-498` | sub-N_EPS cells zeroed, booked | unchanged |
-| trace tail: sink, diffusion, decay | `bulk_transport.cpp:681-809`; resident `cuda_bulk_transport.cu:834-962` | sink zeroes; Jacobi `(c·|ΔS|) >> 16`; ceil decay | unchanged in form. `>> 16` there is a rate shift on a count, so it is scale-invariant. Diffusion is a convex combination (`Σ c ≤ ONE`), so it cannot exceed the plane's max and needs no rail. Decay rounding amended in P5 |
-| vents (plenum extract / supply inject) | `vent_system.py:390-520` | priced by air on supply; mixed split on extract | P0 split; supply inject through `inject_gas_n_vec` takes the rail |
-| `seal_tiles` / `unseal_tiles` redistribution | `gamemap.py:2769-2780`, `:2896-2917` | divmod per slice, scale-invariant, overflow → error | the trace slices take the rail |
+| trace tail: sink, diffusion, decay | `bulk_transport.cpp:681-809`; resident `cuda_bulk_transport.cu:834-962` | sink zeroes; Jacobi `(c·|ΔS|) >> 16`; ceil decay | `>> 16` there is a rate shift on a count, scale-invariant. Diffusion is convex (`s_new ≤ max(neighbours)`, §15), so it needs no saturation, and its asserts stay. The decay rounding is amended inside P3 |
+| vents (plenum extract / supply inject) | `vent_system.py:390-520` | priced by air on supply; mixed split on extract | P0 split; the supply inject through `inject_gas_n_vec` → `_inject_gas_n_core` takes the saturation |
+| `seal_tiles` redistribution | `gamemap.py:2769-2780` | divmod per slice, scale-invariant, overflow → error | the trace slices take the saturation inside the mutation pass |
+| `unseal_tiles` | `gamemap.py:2896-2917` | `target = Σ avail // (k+1) < max(avail)` | **no saturation needed** (A12): it cannot exceed an existing cell |
 | `destroy_wall` | `gamemap.py:2298+` | bulk only; the trace on the tile is sunk by the tail | unchanged |
-| debug spawn | `src/debug_keys.py:155-168` | `= SMOKE_MAX_Q` | `= TRACE_ONE` (§2.2) |
-| level load / hot reload | `gamemap.py:884-885`, `:1574-1575`, `:1793-1796` | no level authors trace gas; reload copies the array | unchanged. No shipped level carries trace values |
-| tools that seed trace | `tools/lighting_demo.py:916-930` (`SMOKE_MAX_Q·amount`), `tools/eos_p5_bake.py:68-71, 227, 285` (**INLINE** `q16()`), `tools/bench_radiation_sweep.py:127-133` (raw Q16 fixture) | Q16 | through `quantize_trace` |
+| debug spawn | `src/debug_keys.py:155-168` | `= SMOKE_MAX_Q` | §2.2 |
+| level load / hot reload | `gamemap.py:884-885`, `:1574-1575`, `:1793-1796` | no level authors trace gas; reload copies the array | unchanged |
+| tools that seed trace | `tools/lighting_demo.py:916-930` (`SMOKE_MAX_Q·amount`), `tools/eos_p5_bake.py:68-71, 227, 285` (**INLINE** `q16()`), `tools/bench_radiation_sweep.py:127-133` (raw Q16 fixture) | Q16 | through `quantize_trace` (int64), narrowed by the saturation |
 
 ### 2.4 Readers
 
 | reader | where | today | after #88 |
 |---|---|---|---|
-| sweep heat term `a_gas` | `radiation_sweep.h:248-252` `gas_extinction_finish` (**INLINE** `sum >> FP_SHIFT`); call sites CPU `:604`, CUDA `:265`, binding `bindings.cpp:2650-2680` | `min(ONE, Σ hq·S >> 16)` | `min(ONE, trace_density_shr(Σ hq·S))` = `>> (16 + TRACE_FINE_BITS)`. With `S_new = S_old·2^8` the result is **bit-identical**: `⌊c·S·2^k / 2^(16+k)⌋ = ⌊c·S / 2^16⌋` |
-| sweep light term + glow coefficient | `radiation_sweep.h:274-277` `gas_extinction_exp_finish` (**INLINE**); CPU `:664-677`, CUDA `:311-318` | the same density sum `>> 16` | the same kit shift. The glow `mul128_shr(light_q, g_c, 16)` reads the fraction `g_c`, so it is unchanged |
-| integer reference | `sweep_ref_q.py:1047-1121` `gas_density_sum`, `gas_extinction_q`, `gas_extinction_exp_q` (**INLINE** `>> 16`); `:2019` glow | spec | changed FIRST (§7) |
-| laser | `combat.py:1157` (**INLINE** `>> FP_SHIFT`) | per-gas floored term | `trace_density_shr(absorb·S)` per term. Bit-identical on `S_old·2^k` |
-| poison dose | `exchange.py:670, 681` (**INLINE** `/ 65536.0`) | `quantize_scalar(threshold)`; `dps·S/65536·dt` | `quantize_trace(threshold)`; `dps·dequantize_trace(S)·dt`. The float is identical on `S_old·2^k` (division by a power of two is exact) |
-| teargas BLINDED | `exchange.py:625` | `quantize_scalar(0.15)` | `quantize_trace(0.15)` |
-| smoke sensor | `sensor_accessor.py:130-132` → `sensor_system.py:86-92` → decider `KIND_Q16` thresholds (`entities/nodes.py:94`) | raw Q16 counts published | the accessor converts once, `trace_to_q16(S) = S >> TRACE_FINE_BITS` (floor). The signal contract stays Q16 density, so authored decider thresholds keep their meaning. No shipped level wires a smoke sensor |
-| recorder | `recorder.py:190-194` (**INLINE** `/ 65536.0`), float32 ring of `smoke` | real units | `dequantize_trace_f32`. The recorded float is still real units, so the frozen `.npz` contract and old recordings are unchanged |
-| renderer | `game_renderer.py:479, 486, 510, 578-579` (`dequantize_f32` of trace planes) → `gas_medium`, `gas_relief`, `gas_detail`, speckle, overlays, `lighting`, `lit3d` | float units | `dequantize_trace_f32`. Everything downstream already works in floats |
-| `gas_medium.py:101-104` | `light_absorb_q16 / 65536` | a COEFFICIENT, not a density | unchanged: coefficients stay Q16 per real unit (§4) |
-| hover readout | `hover_readout.py:161-164, 241-245` | §2.2 | §2.2 |
-| books | `bindings.cpp:2966-2993` `boundary_flux()` (trace slots in trace counts beside bulk slots), `trace_wipe_sum`, `trace_sink_sum`, `trace_decay_sum` | counts | **counts in each plane's own currency**; documented on the binding |
-| vent entity digest | `entities/vents.py:117-120` `trace_{i}` / `sink_{i}` rows | trace counts, Python ints | values move ×2^8 (ENTITY_SECT bytes move; no format change). P3 checks whether `serialize.py` persists the plenum; if it does, the serialized form records the currency |
-| tools / benches | **INLINE**: `tools/bench_clamp_shave.py:460`, `tools/storm_ledger.py:132-145`, `tools/eos_p5_bake.py:237, 292, 399, 421`; via `gas_fixed`: `tools/wind_drift_probe.py:78`; coefficient only: `tools/smoke_tau_histogram.py:63` | Q16 | converted through the kit; the coefficient-only one is unchanged |
-| not readers (checked) | `fire_simulation.cpp:95-98` / `cuda_fire.cu:356` (smoke `(void)`), `temperature_solver` (reads the sweep's `rad_net`), `sky_exchange.cpp`, `water_solver`, `light_field.py`, `status.py`, `vision.py`, `ai_zombie.py` | — | — |
+| sweep heat term `a_gas` | `radiation_sweep.h:248-252` `gas_extinction_finish` (**INLINE** `sum >> FP_SHIFT`). Every CPU, CUDA and binding call site goes through this one FP_HD finish (§17) | `min(ONE, Σ hq·S >> 16)` | `min(ONE, trace_density_shr(Σ hq·S))`, i.e. `>> (16 + TRACE_FINE_BITS)`. Bit-identical on `S_old·2^8`: every term is ≥ 0 and the floor commutes (§15) |
+| sweep light term + glow coefficient | `radiation_sweep.h:274-277` `gas_extinction_exp_finish` (**INLINE**) and `gas_extinction_finish` for `g_c` | the same density sum `>> 16` | the same kit shift. `mul128_shr(light_q, g_c, 16)` reads the fraction `g_c`, so it is unchanged |
+| integer reference | `sweep_ref_q.py:1047-1121`, `:2019` | spec | changed FIRST (§7) |
+| laser | `combat.py:1157` (**INLINE**) | per-gas floored term | `trace_density_shr(absorb·S)` per term over the trace ids; bit-identical on `S_old·2^k` |
+| poison dose | `exchange.py:670, 681` (**INLINE** `/ 65536.0`) | `quantize_scalar(threshold)`; `dps·S/65536·dt` | `quantize_trace_scalar(threshold)`; `dps·dequantize_trace(S)·dt`. The float is identical on `S_old·2^k`. The threshold moves by less than one old count (§6.3, A1) |
+| teargas BLINDED | `exchange.py:625, 631` | `quantize_scalar(0.15)` = 9830 | `quantize_trace_scalar(0.15)` = 2516582. That is NOT `9830·256 = 2516480`: the gate moves by 0.4 old counts toward the real value (A1) |
+| smoke sensor | `sensor_accessor.py:130-132`, `:146-175` (`sample`, `area`) → `sensor_system.py:86-92` → decider `KIND_Q16` thresholds (`entities/nodes.py:94`) | raw Q16 counts | `_channel_array` returns `trace_to_q16(gas[SMOKE])` (an array `>> TRACE_FINE_BITS`, floor), so `sample` and `area` both read Q16 (A7). The signal contract and authored thresholds keep their meaning |
+| recorder | `recorder.py:190-194` (**INLINE** `/ 65536.0`) | real units | `dequantize_trace_f32`. The frozen `.npz` contract and old recordings are unchanged |
+| renderer | `game_renderer.py:479, 486, 510, 578-579` | float units | ONE helper, `_trace_floats(gmap)` (the `(N_TRACE, h, w)` float32 block through `dequantize_trace_f32`) at `upload_state`, which the four sites slice (C9). It is V3's renderer entry point and the place a resident gather later swaps in |
+| `gas_medium.py:101-104` | `light_absorb_q16 / 65536` | a COEFFICIENT | unchanged: coefficients stay Q16 per real unit |
+| hover readout | §2.2 | | |
+| books | `bindings.cpp:2966-2993` | counts | **counts in each plane's own currency**, documented on the binding. No consumer sums across gases (§16) |
+| vent entity digest | `entities/vents.py:117-120` (`<q`, `serialize.py:88-95`) | trace counts | values ×2^8; ENTITY_SECT bytes move, format unchanged |
+| tools / benches | **INLINE**: `tools/bench_clamp_shave.py:460`, `tools/storm_ledger.py:132-145`, `tools/eos_p5_bake.py:237, 292, 399, 421`, `tools/fire_timing_harness.py:98, 504-506` (local `FP_ONE`, a `mass > 1.0` raw-count threshold); via `gas_fixed`: `tools/wind_drift_probe.py:78`; coefficient only: `tools/smoke_tau_histogram.py:63`; bulk / scale-free: `tools/plot_sealedbox_70.py:40`, `tools/sky_exchange_bench.py:44`, `tools/bench_two_room.py:96-97` | Q16 | converted through the kit. Coefficient-only and scale-free sites are unchanged |
+| not readers (checked) | `fire_simulation.cpp:95-98` / `cuda_fire.cu:356` (smoke `(void)`; the `bindings.cpp:1037` comment is stale), `temperature_solver`, `sky_exchange.cpp`, `water_solver`, `light_field.py`, `status.py`, `vision.py`, `ai_zombie.py` | — | — |
 
 ### 2.5 Scale-free sites (confirmed, no change)
 
-- `price_face(dq, S, N)`: a ratio, `dq·S < 2^30·2^31 = 2^61`.
-- `trace_diffusion_dd_q` and its stability door; `trace_decay::frac_q`: rates.
-- Vent filter scrub `(r·filter_eff_q) >> 16`: a fraction of a count.
-- `vent_system.py:476`: priced by air.
-- `seal_tiles` divmod; W3 `mul_q16(plane, frac_q)`.
+- **`price_face(dq, S, N) = dq·floordiv(S,N) + floordiv(dq·r, N)`.** The
+  products are `dq·q ≤ S < 2^31` and `dq·r < N²` (A11: v1's "`dq·S < 2^61`"
+  described a product the code never forms).
+- **Rates.** `trace_diffusion_dd_q` and its stability door;
+  `trace_decay::frac_q`.
+- **Fractions of a count.** The vent filter scrub `(r·filter_eff_q) >> 16`;
+  W3 `mul_q16(plane, frac_q)`.
+- **Priced by air.** `vent_system.py:476`.
+- **Divmod.** `seal_tiles`.
+- **Non-zero tests.** `gamemap.py:2644`.
 
 ### 2.6 Config keys denominated in trace density
 
-These are all REAL units, unchanged by #88, converted at the doors above:
-- every `gas_amount` (`config.toml:2808, 2825, 2907, 2976, 3012, 3029, 3115, 3120, 3125`)
-- `[payloads.*] soot_yield` (g/g), through `smoke_units_of_soot`
-- `[physics.combustion] soot_yield`
-- `[physics.water] steam_yield`
-- `teargas_blind_density`, `poison_min_density`, `poison_dps`
-- the `[gases.*]` `absorption` / `heat_absorb` / `light_absorb` / `scatter_albedo`
-  columns, which are per real unit
+All of these are REAL units, unchanged by #88, and converted at the doors
+above:
+- every `gas_amount`;
+- `[payloads.*] soot_yield` (g/g) through `smoke_units_of_soot`;
+- `[physics.combustion] soot_yield`;
+- `[physics.water] steam_yield`;
+- `teargas_blind_density`, `poison_min_density`, `poison_dps`;
+- the `[gases.*]` `absorption` / `heat_absorb` / `light_absorb` /
+  `scatter_albedo` columns, which are per real unit.
 
 So `soot_g_per_smoke_unit`, `smoke_units_of_soot`, `test_gas_heat_absorb.py`
-and `test_gas_light_absorb.py` do **not** change. The issue's list of
-"everything denominated in smoke units" was written for a rescale of the UNIT
-(×100/×1000 meaning). A rescale of the CURRENCY by a power of two leaves the
-unit's meaning alone, which is why the factor is a power of two.
+and `test_gas_light_absorb.py` do **not** change.
+
+The issue's list of "everything denominated in smoke units" was written for a
+rescale of the UNIT (×100/×1000 changes its meaning). A power-of-two rescale
+of the CURRENCY leaves the unit's meaning alone, which is why the factor is a
+power of two.
+
+### 2.7 Test and tool fixture inventory (C1)
+
+**How it was produced.** A grep over `tests/*.py` and `tools/*.py` (the
+scratchpad's `fixtures.txt`) for every assignment or `+=` into a trace slice
+(`gas[<trace id or name>]`, `.smoke`, `gas[:N_TRACE_GASES]`), classified by
+its right-hand side. It found 150 lines in 47 files; the false positives are
+dropped below. Every fixture moves in **P1, at k = 0**, where the move is an
+identity, so a test whose outcome changes at k = 0 has been rewritten wrongly
+(C1's oracle). The standing write lint (V1) then keeps the list closed.
+
+The classes, by how they fail at k = 8 if left alone:
+
+| class | how it fails | conversion |
+|---|---|---|
+| **N, name** | a deleted `gas_fixed` name: it fails LOUDLY at P1 | `quantize_trace*` / `TRACE_ONE` |
+| **Q, local literal** | **SILENT**: 256× thinner | `TRACE_ONE` / `quantize_trace*` |
+| **W, wrong module** | **SILENT** | `quantize_trace*` |
+| **H, derived from a trace-currency quantity** (a threshold, a coefficient shift, a helper) | follows its source; **SILENT** if the source is a literal | convert the source |
+| **R, raw counts for a scale-free property** (conservation, divmod, splits, digests) | the property holds at any scale | **left raw, with a one-line `# raw trace counts: scale-free (#88)` note**. A raw count meant as a DENSITY moves to `quantize_trace` |
+
+The list:
+
+| file:line | class | what to do |
+|---|---|---|
+| `tests/cuda_trace_smoke_check.py:69` (`Q = 65536`), `:130-135, 144-145, 163-165, 176-177, 191-193`; its `.sum()` at `:297` | Q | `TRACE_ONE`; int64 accumulator |
+| `tests/test_smoke_transport_v2.py:48` (`Q = 65536`), `:117, 147, 222-223, 245, 282-283, 315, 351, 377, 478, 486` | Q | `TRACE_ONE` |
+| `tests/test_smoke_transport_v2.py:378, 415, 452-453` | R / H | `:378` (uniform thin field) R; `:415` the V8 loop is re-bounded from the law (B6); `:452-453` follow `q` |
+| `tests/test_smoke_transport_v2.py:181` (`n_bulk >> 2`) | H (a ratio from bulk) | `trace_from_bulk(n_bulk >> 2)`, ratio 1/4 |
+| `tests/test_multigas_structure.py:225` (`= 65536`), `:262` (`* 65536 * 1.5`) | Q | `TRACE_ONE` |
+| `tests/test_multigas_structure.py:109, 113, 117, 224, 226, 263-264, 327` | R (identity / view checks) and N (`:327`) | R kept; `:327` → `quantize_trace_scalar` |
+| `tests/test_light_field.py:71` (`fire_fixed.quantize_scalar(0.4)`) | W | `quantize_trace_scalar` |
+| `tests/field_ab_harness.py:136`, `tests/test_stamp_units_cpp_ab.py:76`, `tests/cool_shift_axis_gate_a_capture.py:84`, `tests/cuda_thermal_mass_gate_a_capture.py:66`, `tests/test_eos_p4_combustion.py:282`, `tests/test_hover_readout.py:372`, `tests/test_temperature_gas_radiation.py:414, 457, 745`, `tests/test_water_displacement.py:320` (`SMOKE_MAX_Q`) | N | `quantize_trace_scalar` / `TRACE_ONE` |
+| `tests/cuda_p6d_light_transport_check.py:75-76`, `tests/cuda_radiation_sweep_check.py:1271-1272`, `tests/test_light_transport_setting.py:122-123`, `tests/test_radiation_sweep_gas_fleck.py:162-163`, `tests/test_radiation_sweep_smoke_wiring.py:119-120` (`dens = gas_fixed.quantize(...)`) | N | `quantize_trace` |
+| `tests/_radiation_sweep_harness.py:114-132` `random_gas` (`Q(0.27)`, `ONE`). Users: gate 0 `test_radiation_sweep_reference.py`, `cuda_radiation_sweep_check.py`, `_cones_check`, `_light_check`, `test_radiation_sweep_light.py`, `test_radiation_sweep_cones_sky.py`, `test_sweep_fine_currency.py` | Q (a second reference vocabulary) | the A8 treatment: `trace_from_bulk(v) + rng.randrange(256)` on non-zero trace cells, bulk pair untouched. Every user prints its count of absorbing cells, which must be > 0 (§7) |
+| `tests/test_hover_readout.py:110-114` (`round(x * GAS_FP_ONE_F)`) | H (a local alias) | `quantize_trace_scalar`; O2 rows via `quantize_bulk_scalar` |
+| `tests/test_field_edit.py:49` `_smoke_q` and its users `:131, 139, 255`; the float reference `:479-496` | H | `_smoke_q` → `quantize_trace_scalar`; the float reference in real units is unchanged |
+| `tests/test_laser.py:141, 174` (`density_q` derived as `(32768 << 16) // absorb_q`) | H (a coefficient shift) | the shift becomes `TRACE_SHIFT` |
+| `tests/test_gas_weapons.py:161-170, 305-317` (`thresh_q ± 1`) | H (a threshold) | `thresh_q = quantize_trace_scalar(...)`: the A1 property (gate ⇔ S ≥ threshold) |
+| `tests/test_b1_signal_bus.py:407`, `tests/test_b3_sensors.py:152` (`= 4242`) | R as a density → sensor | they meant a Q16 signal: seed `4242 << TRACE_FINE_BITS` via `trace_from_bulk` (A7) |
+| `tests/test_a5_seal_evacuation.py:113-115, 186, 203-205, 386-387, 435` | R (divmod) | kept raw |
+| `tests/test_vent_mechanism.py:136-138, 183-184, 317-318, 341`, `tests/test_vent_determinism_and_serialize.py:70-72, 128`, `tests/test_vent_guards_and_load.py:92, 160, 199, 222` | R (splits, scrub, serialization) | kept raw, re-checked against P0's new split |
+| `tests/test_b4_pump.py:95, 143, 173` | R | re-checked against P0 |
+| `tests/test_eos_p1_species_transport.py:149` | R | kept raw |
+| `tests/test_explosion_smoke_noise.py:76`, `tests/test_destroy_wall_conserves_mass.py:101`, `tools/repro_destroy_wall_mint.py:84`, `tools/velocity_clamp_pv2_measure.py:79` | R (zeroing / scaling every plane) | kept |
+| `tests/test_entity_digest.py:383`, `tests/test_fire_feedback.py:129`, `tests/test_recorder_dump.py:34`, `tests/test_field_edit.py:88` (fake maps' `self.smoke = zeros`), `tests/test_renderer_smoke.py:40, 49` (a float plane) | R | kept |
+| `tools/bench_radiation_sweep.py:127` (`rng.choice([1966, 6554, 17695, ONE])`) | Q | `trace_from_bulk(...)` |
+| `tools/lighting_demo.py:916-930`, `tools/eos_p5_bake.py`, `tools/fire_timing_harness.py:98, 504-506`, `tools/bench_clamp_shave.py:460`, `tools/storm_ledger.py:145`, `tools/wind_drift_probe.py:78` | Q / N | §2.3, §2.4 |
+| **false positives** (local bulk arrays named `gas`): `tests/cuda_bulk_flux_check.py:240-242`, `tests/cuda_kick_check.py:322-326`, `tests/cuda_kick_drag2_timing_check.py:133-134`, `tests/test_drag2_*`, `tests/test_p_e3_drag.py`, `tests/test_velocity_clamp_property.py:105-106` | — | the P1 agent confirms each local layout. `cuda_kick_check.py:324` calls its plane 2 "trace opacity": if it feeds the engine as a trace plane, it is class N |
+
+**Reads.** The fixtures above are writes. Raw-count READS against a local `Q`
+(e.g. `assert ... <= Q`, totals divided by `Q`) are in the same two Q-class
+files. The P1 agent converts them in the same pass, and the write lint's
+sibling (V1) flags any `Q`/`65536` literal compared with a trace slice.
 
 ## 3. The factor, chosen by measurement
 
 ### 3.1 What real scenarios produce
 
-Measured 2026-10-20 on this worktree's CPU build (`fire-12` `c8cf9da`), with
-the script `measure_trace.py` in the session scratchpad. Each tick the script
-records every trace plane's per-cell max and grid total, plus the bulk-N max.
-Fires are lit with `debug_ignite`'s own law on every flammable tile.
+Measured 2026-10-20 on this worktree's CPU build (`fire-12` `c8cf9da`) by the
+scratchpad script `measure_trace.py`. Each tick it records every trace plane's
+per-cell max and grid total, plus the bulk-N max. Fires are lit with
+`debug_ignite`'s own law on every flammable tile.
 
 | scenario | sim time | per-cell max (units) | grid total max (units) | bulk N max (× ambient) |
 |---|---|---|---|---|
@@ -179,485 +293,672 @@ Fires are lit with `debug_ignite`'s own law on every flammable tile.
 | **abuse:** 10 smoke_screen grenades on one tile, 1 s apart, sealed 18×26 room | 60 s | **10.95** | 242 | 1.0 |
 | **abuse:** a Miasma Vent's 0.35/tick held on ONE tile of a sealed 18×26 room | 1500 s (equilibrium) | **38.85** | 2062 | 1.0 |
 
-Reading the table:
-- Real play stays below 0.3 units per cell, and grid totals stay below 10
-  units.
-- Fire makes very little smoke at today's yield. If Erik raises it, the
-  combustion fraction is capped at 1.0, i.e. at most twice today's.
-- The two abuse cases are legal, and RL agents will find them.
-- The miasma equilibrium is `rate / decay` = `0.35·24 / 0.004` ≈ 2100 units
-  in the room. In a 3×3 closet that would be about 230 units per cell. Bulk N
-  reaches 18 times ambient in a blast, and stage 3b's ratio-preserving
-  transport compresses the trace with it. So **no factor above about 4 bits
-  is safe from int32 overflow under abuse. A counted rail is required at any
-  useful factor (§5.3).** The factor only decides how far beyond real play
-  the rail sits.
+What the measurements say:
+- **Real play** stays below 0.3 units per cell and 10 units per grid. Fire
+  makes very little smoke at today's yield. The combustion fraction is capped
+  at 1.0, so if Erik raises it, at most twice today's.
+- **The abuse cases are legal**, and RL agents will find them.
+- **The miasma equilibrium** is `rate / decay ≈ 2100` units in the room, and
+  about 230 units per cell in a 3×3 closet.
+- **Abuse composes with compression.** Stage 3b preserves the trace-per-air
+  ratio, so a blast's 18× bulk compression compresses the trace with it.
+  Grenade spam under that compression gives about 197 units (A10).
+- **So the saturation WILL bind in reachable abuse at k = 8**, and at any
+  factor above about 4 bits. It is a primary mechanism, gated as one (V6),
+  not a corner case. The factor only decides how far beyond real play it sits.
 
 ### 3.2 What the visible range needs
 
-Here is the decay law on one smoke cell (`decay_law.py` in the scratchpad):
-an integer cell started at τ = 4 per tile, against the configured e-fold. The
-table gives the times to cross each τ band, in seconds; "10 % band" is the τ
-above which every value's per-tick loss is within 10 % of the exact
-exponential.
+The decay law on one smoke cell (scratchpad `decay_law.py`, re-derived
+independently by lens 1): an integer cell started at τ = 4 per tile, against
+the configured e-fold. The table gives the time to cross each τ band, in
+seconds. "10 % band" is the τ above which every value's per-tick loss is within
+10 % of the exact exponential.
 
 | k | rounding | 4→1 | 1→0.1 | 0.1→0.03 | 0.03→0.01 | 0.01→0 | 10 % band from τ |
 |---|---|---|---|---|---|---|---|
 | — | **configured exponential** | 173 | 288 | 150 | 137 | ∞ | — |
 | 0 | ceil (today) | 61 | 18 | 1 | 0 | 0 | 55 |
 | 8 | ceil | 171 | 273 | 123 | 88 | 52 | 0.22 |
-| 8 | **nearest, floor 1 (P5)** | 172 | 286 | 155 | 104 | 52 | 0.11 |
+| 8 | **nearest, floor 1 (shipped by P3)** | 172 | 286 | 155 | 104 | 52 | 0.11 |
 | 9 | nearest, floor 1 | 172 | 286 | 149 | 145 | 104 | 0.054 |
 | 10 | nearest, floor 1 | 172 | 286 | 150 | 137 | 197 | 0.027 |
 | 12 | nearest, floor 1 | 172 | 286 | 149 | 136 | 370 | 0.0068 |
 
 Today's law takes 80 s from black to nothing, against about 750 s configured
-before the last trace. That is the reported "opaque, then gone".
+before the last trace.
 
 ### 3.3 Headroom per factor
 
-The per-cell int32 ceiling is `2^31 / 2^(16+k)` units:
+The per-cell int32 ceiling is `2^31 / 2^(16+k)` units.
 
 | k | ceiling (units) | × real max (0.29) | × grenade spam (11) | × miasma equilibrium (39) |
 |---|---|---|---|---|
 | 8 | 128 | 440 | 11.7 | 3.3 |
 | 9 | 64 | 220 | 5.8 | 1.6 |
-| 10 | 32 | 110 | 2.9 | **0.8: the rail binds in measured legal play** |
+| 10 | 32 | 110 | 2.9 | **0.8** |
 | 12 | 8 | 28 | **0.7** | **0.2** |
 
 ### 3.4 Decision: `TRACE_FINE_BITS = 8`
 
-- **A power of two**, so the unit's meaning never changes, every reader's
-  result on `S_old·2^k` is bit-identical (§2.4), and `k = 0` IS today's
-  engine (§6).
-- **k = 8** keeps the rail out of every measured legal case, including 25
-  minutes of a Miasma Vent held on one tile, with a 3.3× margin. k = 9 halves
-  that margin to 1.6×. k ≥ 10 lets the rail bind in measured legal play.
-- With P5's rounding, **k = 8 follows the configured decay within 3 % from
-  black down to τ = 0.03 per tile** (3 % opacity per tile), and within 25 % to
-  τ = 0.01 (1 %). The last 1 % haze then leaves in 52 s instead of never.
-  Nothing a player can see goes opaque-then-gone.
-- k = 9 would buy the 0.01–0.03 band (1–3 % opacity per tile, the edge of
-  visibility) at the cost of half the abuse headroom. The headroom is worth
-  more in an RL environment.
-- **The arithmetic of the issue, redone at k = 8:**
-  - A just-visible tile (τ = 0.01) holds 1250 counts and loses 0.42 counts a
-    tick exactly. Nearest rounding with a floor of 1 removes 1: the edge of
-    the linear regime.
-  - At τ = 0.03 it holds 3750 counts, the loss is 1.26, and the rounding
-    removes 1 (−21 % instantaneous, averaging out over the band).
-  - At τ = 0.1 it holds 12 500 counts, the loss is 4.2, and the rounding
-    removes 4.
-  - Diffusion acts from |Δτ| ≥ 0.0019 per tile, against 0.49 today.
-  - Poison at its 0.05 dose threshold holds 838 861 counts. Its loss is 141
-    counts a tick: fully exponential.
+**Why a power of two.** The unit's meaning never changes. Every integer
+reader's result on `S_old·2^k` is bit-identical (§2.4). And `k = 0` IS
+today's engine (§6.2).
+
+**Why k = 8:**
+- **Headroom.** k = 8 keeps every single measured case below the saturation
+  with at least a 3.3× margin. k = 9 halves that margin. k ≥ 10 saturates in a
+  single measured legal case. No k keeps composed abuse below it (§3.1).
+- **Decay.** With nearest rounding, k = 8 follows the configured decay within
+  3 % from black down to τ = 0.03 per tile (3 % opacity per tile), and within
+  25 % to τ = 0.01 (1 %). The last 1 % haze then leaves in 52 s instead of
+  never. Nothing a player can see goes opaque-then-gone.
+- **What k = 9 would buy.** Only the 0.01–0.03 band (1–3 % opacity per tile,
+  the edge of visibility), at half the headroom. The headroom is worth more in
+  an RL environment.
+
+**The issue's arithmetic, redone at k = 8:**
+
+| τ per tile | counts | exact loss per tick | removed by nearest rounding, floor 1 |
+|---|---|---|---|
+| 0.01 (just visible) | 1250 | 0.42 | 1: the edge of the linear regime |
+| 0.03 | 3750 | 1.26 | 1 (averages out over the band) |
+| 0.1 | 12 500 | 4.2 | 4 |
+
+- Diffusion acts from |Δτ| ≥ 0.0019 per tile, against 0.49 today.
+- Poison at its 0.05 dose threshold holds 838 861 counts and loses 141 counts
+  a tick: fully exponential.
 
 ## 4. Where the scale lives
 
-**One constant, one owner per language, twins held equal by a test**, in the
-pattern of #78's `E_FINE_BITS`.
+**One constant, one owner per language, twins held equal by a test.**
+
+**The Python twin is a literal, not #78's read-through.** `optics_fixed.py`
+reads `fine_bits` from the bound engine and returns 0 without one. That would
+be a trap here: GameMaps without an engine (level load, most unit tests, the
+tools) would silently read the trace planes at k = 0. `gas_fixed` is
+import-light and serves engine-less GameMaps, so it carries its own literal,
+held equal to the engine's by V1 (C5).
 
 **C++** (`cpp/src/fixed_point.h`, namespace `fixedpoint`, FP_HD, the one kit
 both backends compile):
 
 ```
-constexpr int TRACE_FINE_BITS = 8;                      // #88: the trace planes' currency
-constexpr int TRACE_SHIFT     = FP_SHIFT + TRACE_FINE_BITS;   // 24
-constexpr int32_t TRACE_CELL_MAX = INT32_MAX;           // the counted rail (§5.3)
-FP_HD int64_t trace_from_bulk(int64_t q);               // q << TRACE_FINE_BITS (a bulk-count mass entering a trace plane: the soot mint)
-FP_HD int64_t trace_density_shr(int64_t sum);           // sum >> TRACE_SHIFT  (Σ coef_q16 · S  ->  Q16 fraction; sweep, laser, readout)
-FP_HD int32_t trace_add_rail(int32_t s, int64_t add, int64_t* clip);  // saturating add, excess booked
-quantize_trace(double)                                  // round-half-away at 2^TRACE_SHIFT (the W5 puff); host only
+constexpr int TRACE_FINE_BITS = 8;                          // #88: the trace planes' currency
+constexpr int TRACE_SHIFT     = FP_SHIFT + TRACE_FINE_BITS; // 24
+constexpr int32_t TRACE_CELL_MAX = INT32_MAX;               // the counted saturation (§5.3)
+FP_HD int64_t trace_from_bulk(int64_t q);   // q * (1 << TRACE_FINE_BITS), assert(q >= 0): a bulk-count mass entering a trace plane (the soot mint)
+FP_HD int64_t trace_density_shr(int64_t s); // s >> TRACE_SHIFT, s >= 0: Σ coef_q16 · S -> a Q16 fraction (sweep finishes, laser, readout)
+FP_HD int32_t trace_add_sat(int32_t s, int64_t add, int64_t* clip);  // §5.3
+int64_t quantize_trace(double v);           // round-half-away at 2^TRACE_SHIFT, returns INT64, never narrows (A3); host only
 ```
 
 Every C++ site in §2 calls these. No `<< 8`, `>> 24` or `>> FP_SHIFT` on a
-trace value is written anywhere else. `/fp:strict` already covers
-`fixed_point.h`'s users, and the kit adds no float in a sim TU except
-`quantize_trace`, whose door-2 idiom matches `quantize`'s. Bound by the
-binding as `breach_physics.TRACE_FINE_BITS`.
+trace value is written anywhere else. In particular, the two
+`radiation_sweep.h` finishes contain no `FP_SHIFT`, and every C++ trace
+reader reaches the shift through them (C13).
 
-**Python** (`src/simulation/gas_fixed.py`, the Q16 boundary module for gas):
-- `TRACE_FINE_BITS = 8`, `TRACE_SHIFT`, `TRACE_ONE = 1 << 24`,
-  `TRACE_CELL_MAX`.
-- `quantize_trace`, `quantize_trace_scalar`, `dequantize_trace`,
-  `dequantize_trace_f32`, `trace_density_shr`, `trace_to_q16`, `trace_add_rail`.
-- The bulk side: `BULK_ONE`, `quantize_bulk`, `quantize_bulk_scalar`,
-  `dequantize_bulk`, `dequantize_bulk_f32`.
-- **Deleted:** `FP_ONE`, `FP_ONE_F`, `SMOKE_MAX_Q`, `quantize`,
-  `quantize_scalar`, `dequantize`, `dequantize_f32`. Every caller (§2.1's
-  bulk users included) is moved to the name of its own currency, and a missed
-  one raises `AttributeError`.
+`quantize_trace` is the one float in the kit, in `quantize`'s door-2 idiom:
+- the double → int64 conversion is range-checked, since an out-of-range
+  double → int is UB in C++;
+- a value at or beyond int64 saturates to the int64 limit, after which the
+  int32 saturation books it.
 
-**Reference** (`sweep_ref_q.py`): `TRACE_FINE_BITS` and
-`trace_density_shr`, guarded equal to the engine's (§7).
+Bound by the binding as `breach_physics.TRACE_FINE_BITS`.
 
-**Digest spec** (`tests/field_digest_spec.toml`): `trace_fine_bits = 8`
-(§6).
+**Python** (`src/simulation/gas_fixed.py`, the Q16 boundary module for gas),
+three currencies, three name families:
+- **trace**: `TRACE_FINE_BITS = 8`, `TRACE_SHIFT`, `TRACE_ONE = 1 << 24`,
+  `TRACE_CELL_MAX`, `quantize_trace` (int64 array), `quantize_trace_scalar`
+  (Python int), `dequantize_trace`, `dequantize_trace_f32`,
+  `trace_density_shr`, `trace_to_q16`, `trace_from_bulk`, `trace_add_sat`;
+- **bulk**: `BULK_ONE`, `quantize_bulk`, `quantize_bulk_scalar`,
+  `dequantize_bulk`, `dequantize_bulk_f32`;
+- **Q16 fractions and temperatures** (A12): `Q16_ONE`, `quantize_q16_scalar`,
+  `dequantize_q16`. Filter efficiencies are validated against `Q16_ONE` (V1);
+- **deleted**: `FP_ONE`, `FP_ONE_F`, `SMOKE_MAX_Q`, `quantize`,
+  `quantize_scalar`, `dequantize`, `dequantize_f32`. Every caller moves to the
+  name of its own currency, and a missed one raises `AttributeError`.
 
-**Coefficients stay Q16 per REAL unit**: `heat_absorb_q16`,
-`light_absorb_q16`, `light_glow_q16`, `beam_absorb_q16`. The density laws
-absorb the extra bits in their one shift (`trace_density_shr`), not in the
-coefficient. That way:
+**Reference** (`sweep_ref_q.py`): `TRACE_FINE_BITS` and `trace_density_shr`,
+guarded equal to the engine's (§7).
+
+**Digest spec** (`tests/field_digest_spec.toml`): `trace_fine_bits` (§6.1).
+
+**Coefficients stay Q16 per REAL unit** (`heat_absorb_q16`,
+`light_absorb_q16`, `light_glow_q16`, `beam_absorb_q16`). The density laws
+absorb the extra bits in their one shift, `trace_density_shr`. That way:
 1. the coefficients keep their full precision (a Q16 `light_glow` of
-   0.22 / 256 would be 56 counts, a 1.8 % rounding);
+   0.22 / 256 would be 56 counts, a 0.57 % rounding, A11);
 2. the door's `HEAT_ABSORB_MAX` headroom argument is untouched (each term
    `< 2^28 · 2^31 = 2^59`, 16 terms `< 2^63`; S is still int32);
 3. `gas_medium.py`'s `/65536` on a coefficient stays correct.
 
-**Guard test** (P1): `breach_physics.TRACE_FINE_BITS ==
-gas_fixed.TRACE_FINE_BITS == sweep_ref_q.TRACE_FINE_BITS == spec
-trace_fine_bits`. It also lints that no `src/`, `renderer/` or `tools/`
-file references the deleted names, and that the four §2.4 INLINE C++ sites
-call the kit.
-
 ## 5. Conservation and books
 
-### 5.1 The identity, extended by one channel
+### 5.1 The identity, closed with no residual
 
-Today (v2 §3), per tick and plane, exactly in int64:
+Design v2 §3's identity was a bracket: its "deposits" term had no book
+(§16 B1). After #88, per tick and per plane, exactly in int64, in the plane's
+own currency:
 
-    Σ S(after) − Σ S(before) == deposits − vent − wipe − sink − decay
+    Σ S(after) − Σ S(before) ==  mint + deposit
+                                − vent − wipe − sink − decay − clip
+                                − [pump extraction + FieldEdit REMOVE + explosion clear]
 
-After #88, in each plane's own currency (trace counts for the trace planes):
+The bracketed term is ACCEPTED GAP G6: those three destroy trace with no book
+(today, and after #88). An identity test therefore runs in scenarios without
+them, and then closes with **no residual**.
 
-    Σ S(after) − Σ S(before) == deposits − vent − wipe − sink − decay − clip
+**The two new books** (orchestrator's B1 ruling), both written at the
+ATTEMPTED amount, before the saturation:
 
-`clip` is the new rail channel (§5.3), and it is zero in every measured
-legal scenario.
+| book | home | written by | sign |
+|---|---|---|---|
+| `trace_mint_sum[g]` | engine side, beside the trace books (`EOSSolver`, CUDA counter block, slot APPENDED) | the soot mint (CPU + CUDA) and the W5 puff | ≥ 0 |
+| `trace_deposit_books[g]` | `GameMap` (Python ints) | the FieldEdit combine: the positive change an ADD or MAX edit attempts, `quantize(old + contribution) − old` when positive; any other Python-side insertion | ≥ 0 |
+
+**The window (B7).** Every trace book (vent, wipe, sink, decay, clip, mint,
+deposit) is **per tick, reset at the head of `Simulation.step()`'s physics
+slot**: the window `sim.step()` brackets, which the v2 identity tests already
+use.
+- The engine books are reset at `EOSSolver::step` entry
+  (`eos_solver.cpp:351-357`). The soot mint (combustion, after `run_substeps`,
+  `physics_runner.py:939, 976`) and W5 fall inside the same tick's window. That
+  order is now documented on the books and pinned by V6.
+- The Python books are reset by `Simulation.step()` at the same point.
+- CUDA slots are APPENDED to the counter block, never inserted (the P5c
+  slot-12/13/14 precedent).
 
 ### 5.2 Why every existing book stays exact
 
 | channel | law | exact after #88 because |
 |---|---|---|
-| advection (3b) | debit and credit of a face are the SAME `price_face` int64 | unchanged law; S is still int32, products `< 2^61` |
+| advection (3b) | the debit and credit of a face are the SAME `price_face` int64 | unchanged law; S still int32 |
 | vent | the donor books what it prices or diffuses onto vacuum/ring | the same int64, now in trace counts |
-| wipe (3c) | the whole S of a sub-N_EPS cell | unchanged |
-| sink | the whole S of a stranded cell | unchanged |
-| diffusion | `F(i,j) = −F(j,i)`, magnitude-truncated, `c·|ΔS| < 2^47` | unchanged |
-| decay | `Σ lost`, `v·frac < 2^47` | unchanged in form (P5 changes the rounding, not the booking) |
-| books' range | reset every tick (`eos_solver.cpp:351-357`); worst case a full map at `INT32_MAX` | `2^15` cells × `2^31` = `2^46` per tick, far below `2^63` |
-| bulk/energy books | the soot mint's Dalton split and `e_shed` keep the bulk-count `soot` | bit-identical (§2.3) |
+| wipe (3c), sink | the whole S of the cell | unchanged |
+| diffusion | `F(i,j) = −F(j,i)`, magnitude-truncated, `c·|ΔS| < 2^45` | unchanged |
+| decay | `Σ lost`, `v·frac < 2^47` | unchanged in form; P3's rounding changes the amount, not the booking |
+| mint, deposit, clip | §5.1, §5.3 | new; attempted − landed == clip, per site |
+| books' range | per tick; worst case a full map at `INT32_MAX` | `2^15` cells × `2^31` = `2^46` per tick, far below `2^63` |
+| bulk and energy books | the soot mint keeps the bulk-count `soot`; P0 keeps the bulk split's `want` | bit-identical (V4, V5) |
+| CUDA books | the `unsigned long long` `atomicAdd` of signed values is two's-complement modular | order-free (§15) |
 
-The tail's debug-only assert `Σ_map S < 2^31` (`bulk_transport.cpp:802-807`)
+**The tail's debug-only assert `Σ_map S < 2^31`** (`bulk_transport.cpp:802-807`)
 is **deleted**, not re-derived. At k = 8 it is false in measured legal play
-(the miasma room holds 2062 units, against 128 at 2^31). It stopped being the
-bound when D1 made deposits unbounded, and the rail replaces it as the
+(the miasma room holds 2062 units). The counted saturation replaces it as the
 argument for the narrow.
 
-### 5.3 The rail: a counted saturation at `TRACE_CELL_MAX = INT32_MAX`
+### 5.3 The counted int32 saturation, `TRACE_CELL_MAX = INT32_MAX`
 
 **Why it exists.**
-- Today's narrows `assert` in Debug and wrap in Release
-  (`cuda_bulk_transport.cu:473` does not even assert). The Python guards raise
-  `OverflowError` mid-tick (`seal_tiles` would refuse to close a door on a
-  smoky tile).
-- At k = 8 a cell can legally pass `2^31`: abuse deposits, compressed
-  18 times by a blast.
-- A wrapped trace cell goes negative: the sweep reads it as clear and the
+- Today's narrows `assert` in Debug and wrap in Release. The CUDA one does not
+  even assert (`cuda_bulk_transport.cu:473`). The Python guards raise
+  `OverflowError` mid-tick, so `seal_tiles` would refuse to close a door on a
+  smoky tile.
+- At k = 8 a cell reaches `2^31` in reachable abuse (§3.1).
+- A wrapped trace cell goes negative: the sweep reads it as clear, and the
   poison dose as nothing. For an RL environment that is a found exploit.
 
-**What it is.** One kit function per language, `trace_add_rail(s, add,
+**What it is.** One kit function per language, `trace_add_sat(s, add,
 &clip)`:
-- `s' = min(s + add, TRACE_CELL_MAX)` computed in int64;
-- the excess goes into a per-gas int64 `clip` book;
-- it never produces a negative;
-- it is pure integer and FP_HD, so it is identical on CPU and CUDA.
+- Compute `t = s + add` in int64.
+- **It saturates from above only.** If `t > TRACE_CELL_MAX`, it stores
+  `TRACE_CELL_MAX` and adds `t − TRACE_CELL_MAX` to `clip`.
+- A negative `t` is a **contract violation, never clamped** (A4: clamping
+  would mint unbooked mass). The CPU keeps its `assert`, and Python raises.
+  CUDA counts it in an appended diagnostic slot `trace_neg_hits`, which every
+  CUDA gate asserts is 0.
+- At stage 3b it is applied ONCE per cell, on the net `s_own + ds`, never per
+  face.
+- It is pure integer and FP_HD, identical on CPU and CUDA. The soot mint and
+  3b each write only their own cell, so it is order-free on the device (§15).
 
 **Where it sits.** Every site that can add to a trace cell:
 
-| site | rail |
+| site | clip book |
 |---|---|
-| FieldEdit trace ADD | `field_edit._combine_gas`, booked in `GameMap.trace_clip_books[g]` (Python ints) |
-| stage 3b narrow | `bulk_transport.cpp:540-543`, `cuda_bulk_transport.cu:473`, booked in `EOSSolver.trace_clip_sum` (CUDA: the unsigned-long-long `atomicAdd` idiom, beside the existing trace counters) |
-| soot mint | CPU + CUDA → `trace_clip_sum`, through a pointer PhysicsEngine wires, as it does `boundary_flux_` |
-| W5 puff and the W3 receiver add | → `trace_clip_sum` |
-| `seal_tiles` / `unseal_tiles` / `_inject_gas_n_core` (vents' supply inject) on trace slices | → `GameMap.trace_clip_books` |
+| FieldEdit trace ADD/MAX (`field_edit._combine_gas`) | `GameMap.trace_clip_books[g]` |
+| stage 3b narrow (`bulk_transport.cpp:540-543`, `cuda_bulk_transport.cu:473`) | `EOSSolver.trace_clip_sum` (CUDA: appended slot) |
+| soot mint (CPU + CUDA), W5 puff, the W3 receiver add | `trace_clip_sum` (through the pointer PhysicsEngine wires, as it wires `boundary_flux_`) |
+| `seal_tiles` and `_inject_gas_n_core` (the vents' supply inject) on trace slices, inside the raise-free mutation pass | `GameMap.trace_clip_books[g]` |
 
-Diffusion is convex and decay only removes, so neither needs the rail; their
-asserts stay.
+Diffusion is convex and decay only removes, so they need no saturation.
+`unseal_tiles` cannot exceed an existing cell (§2.3).
 
-**Its relation to the rules.**
-- It is NOT a ceiling in the sense of D1 or the Trace transport rule ("no
-  trace plane is clamped anywhere outside a reader"). It is the
-  representability limit of the int32 plane, 128 units, 440 times the real
-  maximum, and it books every count it drops.
-- The Trace transport rule is amended to name it (§11).
-- Erik's D1 intent, "smoke adding is additive", holds for every value the game
-  can show.
+**What it is, against D1** (B3's wording). It is D1's option (b) at the int32
+representability limit, 128 units, 440× the real maximum. It never cuts smoke
+already on the tile, which was the substance of Erik's (a): `min(s + add, MAX) ≥
+s` for `s ≤ MAX`. It caps only an addition that cannot be represented, and it
+books it. The orchestrator has put it to Erik as a vetoable statement; the #88
+closing comment says so in one line (B9).
 
 ## 6. Determinism and goldens
 
-**What moves at k = 8.**
-- **The field digest's `gas` bytes**, in every scenario with trace. It
-  carries the trace planes (`field_digest.py:102`).
-- **`GOLDEN_AGGREGATE`.** Its canonical scenario seeds smoke 0.6
-  (`field_ab_harness.py:136`), and the 0.6 now quantizes at 2^24:
-  `10066330 ≠ 39322·256`. Through `a_gas`, `temperature` and `gas_energy`
-  can move with it. The re-baseline note names the fields that moved and
-  their first tick, in the standing format.
-- Every CUDA check that reads `GOLDEN_AGGREGATE`.
-- The vent ENTITY_SECT rows.
-- **Nothing else**: no float field and no unit state move unless the smoke
-  reaches them.
+### 6.1 What moves, and the spec
 
-**Spec version → 7.** The spec's procedure names dtype, shape, membership and
-order. None of those move, but a v6 and a v7 digest of the same world are not
-comparable. That is exactly what the version exists to refuse.
-- So v7 adds `trace_fine_bits = 8` to the spec.
-- `field_digest.py` asserts it equals `gas_fixed.TRACE_FINE_BITS` at import.
-  Any later change of the currency is then forced through a version bump.
+**What moves at the flip:**
+- the field digest's `gas` bytes, in every scenario with trace;
+- **`GOLDEN_AGGREGATE`**. Its canonical scenario seeds smoke 0.6
+  (`field_ab_harness.py:136`), and 0.6 quantizes at 2^24 to
+  `10066330 ≠ 39322·256`. Through `a_gas`, `temperature` and `gas_energy` can
+  move too. The decay rounding moves it as well: at the 0.6 seed, ceil
+  removes 14 counts and nearest 13 (§16 B4);
+- every CUDA check that reads `GOLDEN_AGGREGATE`;
+- the vent ENTITY_SECT rows.
+
+No float field and no unit state moves unless the smoke reaches it.
+
+**Spec version → 7.**
+- Dtype, shape, membership and order are unchanged, but a v6 and a v7 digest of
+  the same world are not comparable. That is what the version exists to refuse.
+- So v7 adds `trace_fine_bits = 8`, and `field_digest.py` asserts it equals
+  `gas_fixed.TRACE_FINE_BITS` at import.
+- The spec's CHANGE PROCEDURE comment (`field_digest_spec.toml:6-9`) is amended
+  to "…if a field's dtype/shape/membership/order, or its integer CURRENCY
+  (`trace_fine_bits`), changes" (C6).
 - The serialization is unchanged.
 
-**Proof that the change is ONLY the rescale (P1 → P3):**
-1. **k = 0 is today's engine, bit for bit.** P1 lands every conversion,
-   the kit, the deleted names, the door restriction and the reference change
-   with `TRACE_FINE_BITS = 0` in all twins. That build must reproduce
-   `GOLDEN_AGGREGATE` = `f6ba810e…` exactly, and the whole CPU suite and
-   every CUDA check must be green. This holds unless P0 moved the golden, in
-   which case P1 reproduces P0's value.
-   - At k = 0 every kit function is the old expression: `<< 0`, `>> 16`, and
-     quantize at 2^16.
-   - FieldEdit keeps its float64 round-trip, only renamed (§2.3).
-   - P2's rail does not bind.
-   - So any difference at k = 0 is a refactor bug.
-2. **The flip is one constant.** P3 changes `TRACE_FINE_BITS` from 0 to 8 in
-   the four twins, plus the test fixtures that wrote raw Q16 trace. The
-   re-baseline's VERIFIED-SOLE-CAUSE paragraph is then the standing one: the
-   same tree at 0 reproduces the previous value.
-3. **Reader invariance**, a standing test (V3, §10): a plane seeded with
-   `S_old << k` gives bit-identical outputs from every integer reader (`a_gas`,
-   light `a`, glow coefficient, laser transmittance, BLINDED gate, sensor
-   signal) and identical floats from the float readers (poison dose, recorder,
-   render dequantize) to the pre-#88 law evaluated on `S_old`. This catches
-   any reader that missed its conversion, which k = 0 cannot see.
+### 6.2 ONE golden event, with the three-stage sole-cause proof
 
-**Where new is ALLOWED to differ from old × 2^8, and why:**
+There is one re-baseline for the whole branch, in the gate-h lineage of
+`tests/_xarch_perfield_digest.py`. It lands in **P3**, which takes the flip
+(k 0→8), the decay rounding (ceil→nearest) and the CUDA re-greening together as
+one gated patch: one writer, both builds, one lineage entry.
+
+**This is my choice, made against two alternatives:**
+- **Merging three patches** removes the known-red window C11 flags. That window
+  would be CUDA red after a CPU-only re-baseline, plus an intermediate golden
+  that never ships.
+- **Ordering the rounding change before the flip** would still move the golden
+  twice, since rounding alone moves it at k = 0.
+- So one patch it is.
+
+**P0, P1 and P2 may not move the golden.** P0 touches no system the canonical
+scenario exercises. The scenario has no pump, vent or duct
+(`field_ab_harness.py:120-151`). P1 and P2 run at k = 0 with ceil decay. **A
+move in any of them is a bug** (B4).
+
+**The proof, written into the lineage entry,** each stage reproduced twice:
+1. **k = 0, ceil** (the P2 tree). It reproduces `f6ba810e…` on CPU and CUDA.
+2. **k = 8, ceil.** It gives an intermediate value **X**, recorded in the entry
+   with the fields that moved and their first tick, and **not committed as the
+   golden**.
+3. **k = 8, nearest.** It gives **Y**, the committed golden, again with the
+   fields that moved relative to X.
+
+The VERIFIED-SOLE-CAUSE paragraph names two causes, each with its own diff
+(the constant; the one-line rounding). Both are reversible on the same tree.
+
+**Reader invariance (V3).** It catches any reader that missed its
+conversion, which k = 0 cannot see. P1's dry flip (§11) runs it before the
+constant ever moves.
+
+### 6.3 Where new is ALLOWED to differ from old × 2^8
 
 | difference | why it is allowed |
 |---|---|
-| FieldEdit, W5 and the reference's seeds quantize at 2^24 | finer rounding of the same real amount, `|new − old·2^8| ≤ 2^7` counts per edit |
-| `price_face`, diffusion and W3 floors | each floors at the fine currency, so they lose up to 2^8 times less |
-| decay | the purpose of #88 (the old law is linear in the whole visible range) |
-| diffusion acting where it was dead (|ΔS| < 240 old counts) | the same law, now resolved; a visible behaviour change: smoke spreads in still air at visible densities (D-B) |
-| everything downstream of those through `a_gas` (temperature, gas_energy), the light, and poison/teargas timing | follows from the rows above |
+| FieldEdit, W5 and the fixtures' seeds quantize at 2^24 | finer rounding of the same real amount: `|new − old·2^8| ≤ 2^7` counts per edit |
+| **door thresholds** (`teargas_blind_density`, `poison_min_density`) quantize at 2^24 | each gate moves by less than one old count, toward the real-unit value (teargas: 0.4 old counts; poison by luck: 0) (A1) |
+| the `price_face`, diffusion and W3 floors | they floor at the fine currency, so they lose up to 2^8 times less |
+| decay | the purpose of #88 |
+| diffusion acting where it was dead (|ΔS| < 240 old counts) | the same law, now resolved (D-B) |
+| downstream of those: `a_gas` → temperature → `gas_energy`, light, poison and teargas timing | §6.4 sizes each one |
 
-Bulk N, wind and `gas_energy` stay bit-identical with or without trace
-(design v2's V5), unchanged, because the trace still never touches the air.
+**Unchanged, restricted correctly (A9).** Bulk N and wind stay bit-identical
+with or without trace, as do `gas_energy` and temperature when the sweep's gas
+term is off (`heat_absorb = 0`). Since P5c, smoke-absorbed radiation lands in
+`gas_energy`, so with the term on, the air sees the smoke through heat, by
+design.
+
+### 6.4 Intended behaviour changes (B5)
+
+These are RL-visible, each with its size. All are intended; none needs a
+HUMAN-TEST (Erik, 2026-10-20).
+
+| change | size | cause |
+|---|---|---|
+| smoke thins gradually instead of opaque-then-gone | black → last trace: 80 s today, ~770 s after (§3.2); the configured e-fold within 3 % down to τ = 0.03 per tile | decay resolved, nearest rounding |
+| smoke spreads in still air at visible densities | d = 0.10 tile²/s: about 4.5 tiles over 100 s, where today it barely moves below Δτ 0.49 | diffusion resolved (D-B) |
+| **poison's lethal window at the dose edge** | about **1.7×** longer: from 0.06 down to the 0.05 threshold takes 27 s today (linear, 1 count a tick) and 46 s after (`ln(1.2)/0.004`) | decay resolved |
+| poison and teargas diffusion | **no footprint change**: their counts were already above the 240-count diffusion edge (0.0037 units), so the newly-live band sits below every dose threshold | — |
+| **teargas BLINDED near its threshold** | about 20 % longer: at 0.15 today removes `ceil(4.05) = 5` counts a tick, against 4.05 exact | decay rounding |
+| the teargas gate's threshold | 0.4 old counts lower in real units (closer to 0.15 exactly) | A1 |
+| **pumps and vents in smoke (P0)** | in the densest real smoke on ambient air (0.29 units over 1.0), **+29 %** air pumped and +29 % smoke removed. An airlock's `at_target` latches sooner in smoky rooms; compressed tiles see less change | trace leaves the bulk budget |
+| radiation through smoke (`a_gas`) | rounding only: `a_gas` is bit-identical on equal smoke; it differs through the different smoke field | follows the rows above |
+| the counted saturation | binds only in abuse (≥ 128 units in a cell) | §5.3 |
 
 ## 7. The integer reference
 
 The sweep's gas term reads the trace planes, so per the reference's rule
-`sweep_ref_q.py` changes FIRST, in P1, before the C++:
+`sweep_ref_q.py` changes FIRST, in P1, before the C++.
+
+**What changes:**
 - `TRACE_FINE_BITS` and `trace_density_shr` are added.
 - `gas_extinction_q` and `gas_extinction_exp_q` shift by `16 +
-  TRACE_FINE_BITS`.
-- The glow coefficient follows: it is `gas_extinction_q` over `light_glow_q`.
-- `gas_density_sum`'s term bound is unchanged, because S is still int32.
-- **The gates' scenes must stay non-vacuous.** G13, G14, G15, G18 and G19
-  draw random smoke "from none to thick" in Q16 counts. At k = 8, Q16-sized
-  densities would make `a_gas` 256 times smaller, and the gates would quietly
-  stop exercising absorbing cells. So `_gas_planes` draws in the trace
-  currency (`trace_from_bulk` of today's draw), and each gate keeps its
-  printed count of absorbing cells, which must stay above zero.
-- Gates re-run in P1 at k = 0 (identical output) and in P3 at k = 8 (all PASS).
-- `tests/test_radiation_sweep_reference.py` (gate 0, C++ == reference bit for
-  bit) and `tests/test_temperature_gas_radiation.py` follow.
-- A guard asserts the reference's `TRACE_FINE_BITS` equals the engine's (§4).
+  TRACE_FINE_BITS`. The glow coefficient follows.
+- `gas_density_sum`'s term bound is unchanged.
+
+**The gates must stay non-vacuous and must see fine counts** (A8).
+`sweep_ref_q_gates._gas_planes` (`:104-106`) and the harness's `random_gas`
+(`tests/_radiation_sweep_harness.py:114-132`, C1) draw
+`trace_from_bulk(v) + rng.randrange(256)` on non-zero **trace** cells (smoke,
+steam), with the bulk pair and `n_bulk` untouched. So gate 0 sees low bits that
+are not multiples of 256, and can tell `>> 24` from a rounding variant.
+
+**How the gates run:**
+- Every gate prints its count of absorbing cells, which must be > 0.
+- They re-run at k = 0 in P1, with identical results, and again in P1's dry
+  flip and P3 at k = 8 (all PASS, non-vacuous).
+- `tests/test_radiation_sweep_reference.py` (gate 0) and
+  `tests/test_temperature_gas_radiation.py` follow.
+- A guard asserts the reference's `TRACE_FINE_BITS` equals the engine's.
 
 ## 8. CUDA
 
-- **One kernel serves both chained and resident** for stage 3b/3c
-  (`bulk_flux_energy_transport_device`). The resident tail
-  (`trace_tail_sink` / `_diffuse` / `_decay`) needs no unit change, only the
-  P5 rounding through `trace_decay.h`.
-- The soot mint (`cuda_combustion.cu:518-520`) and the sweep's gas terms
-  (`cuda_radiation_sweep.cu:263-265, 311-318`) call the same FP_HD kit
-  functions as the CPU.
-- The rail's book is one more per-gas slot in the existing trace counter
-  block (`cuda_eos_resident.cu:930-943`, `cuda_eos_step.cu:144-155`), D2H'd
-  with the others.
-- **Gates at tolerance 0** through the CUDA harness (`run_cuda_script`, never
-  importing the CUDA .pyd into pytest): `tests/cuda_trace_smoke_check.py`
-  (chained and resident, every plane and counter including clip),
-  `cuda_combustion_check.py`, `cuda_radiation_sweep_check.py` (light
-  included), `cuda_s8a_check.py`, and the thermal-mass-eos resident leg.
-  Every `GOLDEN_AGGREGATE` CUDA consumer is re-greened at P1 (unchanged value)
-  and at P3 (new value).
-- **A CUDA rail test:** a cell seeded at `INT32_MAX − 10` receiving inflow
-  gives GPU == CPU on the plane and on `clip`.
+**What changes on the device:**
+- **Stage 3b/3c.** One kernel (`bulk_flux_energy_transport_device`) serves
+  both chained and resident.
+- **The resident tail** (`trace_tail_sink` / `_diffuse` / `_decay`) needs only
+  P3's rounding, through `trace_decay.h`.
+- **The soot mint and the sweep's gas terms** call the same FP_HD kit as the
+  CPU.
+- **The new books.** `trace_clip_sum`, `trace_mint_sum` and `trace_neg_hits`
+  are APPENDED slots in the trace counter block (`cuda_eos_resident.cu:930-943`,
+  `cuda_eos_step.cu:144-155`), D2H'd with the others.
+
+**What V9 cannot see** (C12). A mis-scaling inside a shared FP_HD kit function
+is identical on both backends by construction, so GPU == CPU passes. Only V3
+sees it.
+
+**Gates at tolerance 0** through the CUDA harness (`run_cuda_script`, never
+importing the CUDA .pyd into pytest):
+- `cuda_trace_smoke_check.py`: chained and resident, every plane and every
+  counter including clip, mint and neg_hits;
+- `cuda_combustion_check.py`, `cuda_radiation_sweep_check.py` (light included)
+  and `cuda_s8a_check.py`;
+- the thermal-mass-eos resident leg;
+- the saturation cases of V6 on CUDA (3b chained, 3b resident, mint).
+
+Every `GOLDEN_AGGREGATE` CUDA consumer is green at P1 and P2 with an unchanged
+value, and at P3 with Y.
+
+**The V1 twin guard also runs inside `run_cuda_script` against the CUDA
+module**, so a stale `build_cuda` fails V1 at the flip (C4).
 
 ## 9. Look-side consequences (render only: listed, not tuned)
 
 The renderer reads dequantized floats, so its inputs keep their units. What
-changes is the field it is shown: smoke now thins gradually and spreads in
-still air. The smoke-tuning skill's §6 list stands. Retune once #88 is in:
-- `cov_tau_*`, `cov_soft_*`, `haze_*`, `height_tau` and `top_light_*`
-  (possibly to 0), all set on a field that went opaque and then vanished.
-- Recheck the boil range after #12's fire tuning.
-- Two additions for that list:
-  - **the speckle and `gas_relief` clips**, which saw only coarse 2^-16 steps
-    at thin densities;
-  - **`effect_gas_floor`**, the poison/teargas legibility floor, because
-    poison now lingers at its configured rate near the dose threshold.
+changes is the field it is shown (§6.4). The smoke-tuning skill's §6 list
+stands, retuned once #88 is in:
+- `cov_tau_*`, `cov_soft_*`, `haze_*`, `height_tau`, `top_light_*` (possibly
+  to 0);
+- the boil range, rechecked after #12's fire tuning;
+- **added by #88:**
+  - the speckle and `gas_relief` clips, which saw only coarse 2^-16 steps at
+    thin densities;
+  - `effect_gas_floor`, the poison/teargas legibility floor, since poison now
+    lingers at its configured rate near the threshold;
+  - **the smoke shadow and glow-through** (#93 G2), which were tuned on a
+    field that went opaque and then vanished.
 
-The doc for the list stays `docs/graphics_direction_2026-10-18.md` §11. P6
-adds a dated line to the skill.
+Doc for the list: `docs/graphics_direction_2026-10-18.md` §11. P6 adds a dated
+line to the skill.
 
 ## 10. Verification plan (properties)
 
-Each item names the property and the change that must break it. Nothing pins
-a count, a set of gases, or a snapshot value.
+Each item names the property and the change that must break it. Nothing pins a
+count, a set of gases, or a snapshot value.
 
-- **V1, twins agree.** C++, Python, the reference and the digest spec name the
-  same `TRACE_FINE_BITS`, and the deleted `gas_fixed` names are referenced
-  nowhere. *Breaks if* one twin moves alone or an ambiguous name returns.
-- **V2, k = 0 is today (P1's report, not a standing test).** The P1 tree at
-  `TRACE_FINE_BITS = 0` reproduces the previous `GOLDEN_AGGREGATE` on CPU and
-  CUDA. *Breaks if* any conversion is not the old expression at k = 0.
-- **V3, reader invariance.** Seed every trace plane with `S_old << k` for a
-  sweep of `S_old`. This covers: densities at, below and above each threshold;
-  the ONE cap of `a_gas`; and a negative cell, which the sweep treats as 0.
-  - Integer readers (`a_gas`, light `a_c`, glow `g_c`, laser `trans_q`, the
-    BLINDED gate, the sensor signal) are bit-identical to the pre-#88 integer
-    law on `S_old`. That law is written into the test as the documented
-    expression.
-  - Float readers (poison dose, recorder, `dequantize_trace_f32`) are
-    float-identical.
-  - *Breaks if* any reader skips or doubles its conversion, or reads a trace
-    plane through a bulk name.
-- **V4, writer scale.** The soot mint into an empty cell writes exactly
-  `trace_from_bulk(soot)`, with the bulk N2 and `e_shed` bit-identical to
-  the shift-free computation. A FieldEdit ADD of amount `a` onto a tile holding `v ≥ 0`
-  leaves `quantize_trace_scalar(dequantize_trace(v) + a·w)`, i.e. `v +
-  quantize_trace(a·w)`. *Breaks if* a writer mints in the bulk
-  currency, or the soot split moves the bulk books.
-- **V5, no mixed currency (P0).** A pump or vent extraction from a smoky tile
-  removes the same bulk N as from a clear tile with equal bulk. The trace
-  removed satisfies `take_t·N ≤ bulk_taken·S_t < (take_t + 1)·N`. *Breaks
-  if* trace counts enter a bulk budget again.
-- **V6, the books close with clip.** The §5.1 identity is exact per tick per
-  plane, on the v2 scenarios (sealed blast, seal-then-breach, vent) and on a
-  rail scenario: a cell seeded near `TRACE_CELL_MAX` takes a deposit, a blast
-  compression and a soot mint. The cell never exceeds the rail, never goes
-  negative, and `clip > 0` books exactly the excess. *Breaks if* any
-  narrowing site wraps, raises, or drops without booking.
-- **V7, the decay is the configured exponential where visible (P5).** A
-  smoke cell from τ = 1 to τ = 0.03 per tile reaches each τ within 5 % of
-  `ln(τ0/τ)/decay`, and reaches 0 in bounded time (design v2 V8's property,
-  kept). Poison at `poison_min_density` decays at its configured rate within
-  5 %. *Breaks if* the resolution is lost (a shift back to Q16), or the
-  rounding reverts to the linear regime.
+- **V1, the currency is closed.**
+  - **The twins agree.** `breach_physics.TRACE_FINE_BITS` (the CPU module and,
+    inside `run_cuda_script`, the CUDA module), `gas_fixed.TRACE_FINE_BITS`,
+    `sweep_ref_q.TRACE_FINE_BITS` and the spec's `trace_fine_bits` are all equal.
+  - **Lints over `src/`, `renderer/`, `tools/` and `tests/`:**
+    - the deleted `gas_fixed` names are referenced nowhere;
+    - **the write lint:** any assignment or `+=` into a trace slice
+      (`gas[<trace id>]`, `.smoke`, `gas[:N_TRACE_GASES]`) whose right-hand
+      side takes no `trace_*` name and is not a `# raw trace counts:
+      scale-free (#88)` fixture fails;
+    - no `bulk_*` / `quantize_bulk*` / `dequantize_bulk*` call takes a trace
+      slice;
+    - no sum over a trace slice runs without an int64 accumulator (A2);
+    - the filter validator bounds against `Q16_ONE`;
+    - the two `radiation_sweep.h` finishes contain no `FP_SHIFT` and call
+      `trace_density_shr` (C13).
+  - *Breaks if* a twin moves alone, an ambiguous name returns, a trace slice is
+    written or read in another currency, or a CUDA module is stale.
+- **V2, k = 0 is today.** A report, not a standing test: the P1 and P2 trees
+  reproduce `f6ba810e…` on CPU and CUDA, and stage 1 of §6.2's proof restates
+  it.
+- **V3, reader invariance, through the public entry points** (C2). The test
+  holds a **reader registry**:
+  - **the registered readers:** `pack_hover_readout`; the sensor accessor's
+    `sample` and `area`; `exchange`'s teargas and poison rows; `fire_beam`;
+    `PhysicsRecorder.record`; the engine's sweep (one tick, reading `a_eff`,
+    light `a_c` and glow `g_c` through the binding); and the renderer's
+    `_trace_floats`.
+  - **the subset lint:** every `src/` / `renderer/` module that reads a trace
+    slice (V1's regex) appears in the registry. This is a classification check,
+    not a count, so the registry grows freely.
+  - **the seeding:** each reader runs on a real GameMap whose trace planes are
+    seeded with `S_old << k`, over a sweep of `S_old` that covers each
+    threshold, the ONE cap, and a negative cell.
+  - **what it asserts:**
+    - integer readers are bit-identical to the pre-#88 integer law on `S_old`,
+      written into the test as the documented expression;
+    - float readers are float-identical;
+    - the two **gates** are asserted by their real-unit law instead (A1):
+      `gate(S) ⇔ S ≥ quantize_trace_scalar(threshold)`, monotone in S.
+  - *Breaks if* any call site skips, doubles or mis-names its conversion, or a
+    new trace reader is unregistered.
+- **V4, writer scale.**
+  - The soot mint into an empty cell writes exactly `trace_from_bulk(soot)`,
+    with the bulk N2 and `e_shed` bit-identical to the shift-free computation.
+  - A FieldEdit ADD of amount `a` onto a tile holding `v ≥ 0` changes it by
+    `quantize_trace_scalar(a·w)`, within one count (A11: float64 ties near .5
+    may differ by one).
+  - *Breaks if* a writer mints in the bulk currency, or the soot split moves the
+    bulk books.
+- **V5, no mixed currency (P0).**
+  - An extraction from a smoky tile removes the same bulk N as from a clear tile
+    with equal bulk, and the bulk-energy book `pump_extract` equals
+    `want·T_abs` exactly in both (B8).
+  - The trace taken satisfies `take_t·N ≤ bulk_taken·S_t < (take_t + 1)·N`.
+  - A tile with `N_bulk == 0` and `S > 0` takes no trace and raises nothing (A5).
+  - For a vent, the plenum's `trace_raw + sink` grows by exactly the trace
+    taken (B8).
+  - *Breaks if* trace counts enter a bulk budget again, are priced against
+    `N_total`, or the divide is unguarded.
+- **V6, the books close, and the saturation holds at every site, per backend**
+  (B1, C10, A3, A10).
+  - **The identity.** On the v2 scenarios (sealed blast, seal-then-breach,
+    vent supply) **plus a soot-minting fire and a W5 boil**, the §5.1 identity
+    without G6's terms is exact per tick per plane, with no residual.
+    `test_water_boil.py` reads its puff from `trace_mint_sum`, not from the
+    bracket.
+  - **The saturation, parametrized over §5.3's sites.**
+    - CPU: FieldEdit, 3b, mint, W5, the W3 receiver, `seal_tiles`,
+      `_inject_gas_n_core`.
+    - CUDA: 3b chained, 3b resident, mint.
+    - Plus one deliberate overflow at a conversion: a 200-unit W5 puff, and a
+      200-unit FieldEdit, into an empty cell.
+  - **Each case asserts:** the plane is ≤ `TRACE_CELL_MAX` and ≥ 0; `clip`
+    equals the exact excess; `trace_neg_hits` is 0; and the identity closes.
+  - **The composite abuse** (grenade spam under a blast's compression) is a
+    primary case, not a corner.
+  - *Breaks if* any single site wraps, raises, narrows before the saturation,
+    clamps a negative, or drops without booking.
+- **V7, the configured decay where visible (P3).**
+  - A smoke cell from τ = 1 to τ = 0.03 per tile reaches each τ within 5 % of
+    `ln(τ0/τ)/decay`.
+  - Poison at `poison_min_density` decays at its configured rate within 5 %.
+  - A gas with `decay = 0` loses nothing: `lost(v, 0) == 0` inside the kit
+    (B6).
+  - Every cell reaches 0 in bounded time. Design v2 V8's test is re-bounded from
+    the law (exponential to the linear edge, plus that many ticks), not from
+    `range(v + 1)` (B6).
+  - *Breaks if* the resolution is lost, the rounding reverts to the linear
+    regime, or the floor of 1 decays a non-decaying gas.
 - **V8, diffusion resolves visible gradients.** In still air, a blob at
   τ = 0.3 per tile has a growing second moment within 10 s, conserves `Σ S`
-  exactly, and keeps a uniform field uniform. *Breaks if* the trace currency
-  is coarsened back.
-- **V9, CPU == CUDA at tolerance 0**, chained and resident, on every trace
-  plane and every counter including clip.
+  exactly, and keeps a uniform field uniform. *Breaks if* the currency is
+  coarsened back.
+- **V9, CPU == CUDA at tolerance 0**, chained and resident, on every trace plane
+  and every counter including clip, mint and neg_hits, **with zero skips under
+  `pytest -rs`** (C4). *Breaks if* a backend diverges or a gate goes vacuous.
 - **V10, the door.** A config giving a conservative row a non-zero
-  `heat_absorb`, `absorption` or `scatter_albedo` is refused with a message
+  `heat_absorb`, `absorption` or `scatter_albedo` is refused, with a message
   naming #88. *Breaks if* a bulk plane could enter a trace-currency density
   sum.
-- **Carried over unchanged:** design v2's V1–V9 (conservation, no expansion
-  mint, venting closes, non-negativity, the air does not see the smoke, and
-  the rest). Their fixtures move to `quantize_trace`.
+- **Carried over unchanged:** design v2's V1–V9, their fixtures moved per
+  §2.7. V5's "air does not see the smoke" is restricted per §6.3 (A9).
+
+**What each gate catches and misses** (C12, folded):
+
+| gate | catches | its known blind spot, and what covers it |
+|---|---|---|
+| V5 | trace in the bulk budget; pricing against `N_total` | the taken trace landing in no book: G6, recorded |
+| V2 (k = 0) | any semantic change at k = 0 | missed conversions: P1's dry-flip V3 |
+| V1 | twin drift, deleted names, wrong-currency calls, stale CUDA module | — |
+| V6 | wrap, raise, early narrow or unbooked drop at each site | — |
+| V3 | a skipped, doubled or mis-named conversion at a registered reader | an unregistered reader: the subset lint |
+| V9 | GPU ≠ CPU | a shared FP_HD mis-scaling: V3 |
+| V7 | the linear regime returning; decay of a non-decaying gas | — |
 
 ## 11. Patch plan
 
-The order is fixed: each patch's gate is the previous patch's state. CPU builds
-use `cpp/build_cpu_home.bat` and CUDA builds `cpp/build_cuda.bat`
-(`docs/dev_setup.md`, Home Desktop), run in the worktree. Python is
-`C:/Users/steen/anaconda3/python.exe`; tests are `pytest tests -q`. Every patch
-runs in this branch's worktree with exactly one writer at a time. No patch is
-HUMAN-TEST (Erik, 2026-10-20).
+**Rules for every patch:**
+- **Where it runs.** In
+  `C:\Users\steen\projects\breach\.claude\worktrees\88-smoke-unit-rescale`
+  itself, **with no `isolation`** (an isolated agent worktree is cut off MAIN
+  and holds no builds), one writer at a time.
+- **Tests.** Python is `C:/Users/steen/anaconda3/python.exe`; tests are
+  `pytest tests -q`.
+- **HUMAN-TEST.** None (Erik, 2026-10-20).
+- **Critics** ran one at a time before P0 (§14).
 
-| # | content | gate (oracle) | mode | tier |
-|---|---|---|---|---|
-| **P0** | Trace leaves the bulk split: `extract_gas_n_vec` splits over bulk planes only and prices trace by air; `extract_gas_n` returns the bulk total; `inject_gas_n_vec`'s gate over bulk. Vent/pump tests re-greened as properties. If the golden moves, re-baseline once with rationale | V5; the vent and pump suites; golden reproduced, or re-baselined with a sole-cause check | worktree subagent | Opus (vent tests may pin values; judgement on rewrites) |
-| **P1** | The currency at **k = 0**: the C++ kit (§4) and the binding; the `gas_fixed` split with the deleted names, every caller moved (§2, including the bulk users); the reference FIRST (§7) with its gates re-run; the sweep / laser / readout / sensor / recorder / renderer / tools conversions; the door restriction (V10); the guard (V1). CPU and CUDA built | **V2: `GOLDEN_AGGREGATE` unchanged on CPU and every CUDA check**; full suite green; V1, V10 | worktree subagent | Opus (wide, many files; the oracle cannot see a missed conversion at k = 0, hence V3 in P3) |
-| **P2** | The rail: `trace_add_rail` at every §5.3 site on CPU and CUDA; `trace_clip_sum` / `trace_clip_books` and their bindings; the Σ_map assert deleted; the Python OverflowErrors on trace slices replaced | V6 (rail scenario); golden unchanged; CUDA rail test GPU == CPU | worktree subagent | Sonnet (tol-0 and golden-unchanged oracles) |
-| **P3** | **The flip: `TRACE_FINE_BITS = 8`** in the four twins. Test fixtures that wrote raw Q16 trace move to `quantize_trace` (about 50 files, §2.4's test list in the inventory). Reference gates at k = 8 non-vacuous. Spec v7. **`GOLDEN_AGGREGATE` re-baselined ONCE** with the written rationale: the fields that moved, the VERIFIED-SOLE-CAUSE paragraph (the same tree at 0 reproduces the previous value), and reproduced twice | V3, V4, V8; v2's V1–V9; full CPU suite | worktree subagent | Opus (judgement on ~50 test rewrites: properties, never bent to green) |
-| **P4** | CUDA lockstep at k = 8: every `GOLDEN_AGGREGATE` CUDA consumer re-greened, chained and resident | V9 | worktree subagent | Sonnet (tol-0 oracle) |
-| **P5** | Decay rounding amendment in `trace_decay.h` (one edit, both backends): `lost = min(v, max(1, (v·frac_q + 2^15) >> 16))`. The header comment and design v2 §2.3 / D4 cross-referenced. A second golden re-baseline with its own sole cause (ceil restored reproduces P3's value) | V7; v2's V8; CPU suite; CUDA trace check at tol 0 | worktree subagent | Sonnet |
-| **P6** | Close: the CLAUDE.md rows (below), survey row, the smoke-tuning skill's §6 dated line, the #88 comment, the Roadmap #46 order, merge `--no-ff` into fire-12 on green | suite green | inline | — |
+**The C++ build discipline. MUST, in every patch that touches C++ (P1, P2,
+P3)** (C4; incident: a CUDA gate SKIPS green when `cpp/build_cuda` is
+missing, and passes on a stale module):
+1. Run `cpp\build_cpu_home.bat` (`--fresh`, a full rebuild) and
+   `cpp\build_cuda.bat` (Ninja, CUDA 12.4), and record both `BUILD_EXIT=0`
+   lines in the report.
+2. Check that both `.pyd` files are newer than the newest `cpp/src` file, and
+   report the timestamps.
+3. Run `pytest tests -q -rs`. The report shows **zero skips** among the CUDA
+   gates (`-k cuda`). A skip is a gate failure.
 
-Critics run one at a time before P0, each verdict written into §14 before the
-next spawns, on Opus.
+| # | content | gate (oracle) | tier |
+|---|---|---|---|
+| **P0** | Trace leaves the bulk split (§2.2): `extract_gas_n_vec` splits over the bulk planes only, prices trace by air with the `N_EPS` guard, and keeps today's destroy-on-extract (G6); `extract_gas_n` returns the bulk total; the `inject_gas_n_vec` gate stays. The vent and pump tests are re-checked as properties (§2.7 class R). Python only | V5; the vent and pump suites; **`GOLDEN_AGGREGATE` reproduced: a move is a bug** | **Opus** (the vent tests may pin values: rewrites need judgement) |
+| **P1** | The currency **at k = 0**. The C++ kit and binding (§4); the `gas_fixed` split into trace / bulk / Q16 names with the deleted names; every caller moved (§2, the bulk and Q16 users included); the reference FIRST (§7), with its gates re-run and A8's draws; every reader conversion (§2.4) including `_trace_floats` and the sensor's `_channel_array`; the door (V10); the fixture inventory moved (§2.7) and `test_ps1_smoke_roundtrip` rewritten; V1's guard and lints; the V3 registry test. **The DRY FLIP** (C3): after the golden reproduces, build the same tree at `TRACE_FINE_BITS = 8` locally, uncommitted, on CPU and CUDA, and run V1, V3, V4 and every reference / `random_gas` gate's absorbing-cell count. A failure is a P1 bug, fixed in P1, and the dry flip is re-run. Then revert to 0 | **V2: golden unchanged on CPU and every CUDA check**; full suite green at k = 0; V1, V10; the dry flip's V3/V4/V1 green at k = 8; build discipline | **Opus** (wide; the call-site choices are judgement, and the dry flip is the mutation catcher) |
+| **P2** | The counted saturation at k = 0: `trace_add_sat` at every §5.3 site on CPU and CUDA, applied once per cell on the net and from above only (A4); the books `trace_clip_*`, `trace_mint_sum`, `trace_deposit_books`, `trace_neg_hits` with their per-tick window (§5.1), CUDA slots appended, bindings; the `Σ_map` assert deleted; the Python OverflowErrors on trace slices replaced inside the mutation pass | V6 (every site, both backends, the composite abuse); **golden unchanged**; build discipline | **Opus** (the placement and window calls are judgement, and the oracles see only the planted cases, C11) |
+| **P3** | **THE FLIP, one gated unit** (§6.2): `TRACE_FINE_BITS` 0 → 8 in the four twins; `trace_decay::lost` → `min(v, max(1, (v·frac_q + 2^15) >> 16))` with `frac_q <= 0 → 0` inside the kit (B6), and the header plus design v2 §2.3 / D4 cross-referenced; spec v7 and its procedure comment (C6); CUDA re-greened, chained and resident; **the ONE `GOLDEN_AGGREGATE` re-baseline** with the three-stage proof (X recorded, Y committed, each reproduced twice) and the fields-moved paragraphs; V7, V8; design v2's V1–V9 at k = 8 | the full CPU suite and every CUDA gate at k = 8; V7, V8, V9; the lineage entry's two sole-cause diffs; build discipline | **Sonnet** (after P1's dry flip the diff is the constant, one line of rounding, and the spec: mechanical under strong oracles. Any test that goes red at the flip is a behaviour change to report against §6.4, never bent) |
+| **P4** | Close: the CLAUDE.md rows (§12 b), including the corrected "already-booked" sentence (G6) and the Gas pump row; the survey row; the smoke-tuning skill's §6 dated line (§9); the #88 comment (the saturation as one line for Erik, B9); Roadmap #46; `git merge --no-ff` into fire-12 on green | suite green | inline (orchestrator) |
 
 ## 12. Systems
 
 **(a) Existing canonical systems this design uses:**
-- **Trace transport** (stage 3b/3c, the tail, `trace_decay.h`): law unchanged,
-  narrow railed, decay rounding amended.
-- **Fixed-point kit** (`fixed_point.h` / `cuda_fixedpoint_device.cuh`): the
-  trace currency lives there.
-- **Q16 boundary modules**: `gas_fixed.py` splits into bulk and trace names.
-- **FieldEdit**: the one trace deposit door; integer add and the rail.
-- **Gas pump primitives**, **vent / duct system**: P0 removes the mixed split.
-- **Material / gas tables**: the door's new bulk-coefficient refusal.
-- **Radiation sweep**, **extinction planes** (the gas term), the **integer
-  reference** (changed first), and the **light accessor** (reads unchanged
-  floats).
-- **Recorder** (contract unchanged: real-unit floats).
-- **Field digest / GOLDEN_AGGREGATE** (v7, one re-baseline per approved
-  change), the **CUDA harness**, the **tile inspector**, and the **sensor
-  accessor**.
+- **Trace transport**: the law unchanged, the narrow saturated and counted, the
+  decay rounding amended.
+- **The fixed-point kit**: the trace currency lives there.
+- **The Q16 boundary modules**: `gas_fixed.py` splits into trace, bulk and Q16
+  names.
+- **FieldEdit**: the one trace deposit door, now booked.
+- **Gas pump primitives** and the **vent / duct system**: P0 removes the mixed
+  split.
+- **Material / gas tables**: the door's bulk-coefficient refusal.
+- **The radiation sweep**, the **extinction planes** (the gas term), and the
+  **integer reference**, which changes first.
+- **The light accessor**: it reads unchanged floats.
+- **The recorder**: contract unchanged.
+- **The field digest / GOLDEN_AGGREGATE**: spec v7, one re-baseline.
+- **The CUDA harness**, the **tile inspector**, the **sensor accessor**, the
+  **dequantize convention** (the renderer's one `_trace_floats`).
 
-**(b) New, each with a draft CLAUDE.md rule:**
-- **Trace currency** (`fixed_point.h` `TRACE_FINE_BITS` + the kit, twin
-  `gas_fixed.py` `trace_*`). Draft rule: "The five trace planes are int32 in
-  the TRACE currency, `2^(16+TRACE_FINE_BITS)` counts per real unit (#88);
-  the bulk planes in the same `gas` array stay Q16. Every trace read or write
-  converts ONCE through the kit (`trace_from_bulk`, `trace_density_shr`,
-  `quantize_trace`, `trace_add_rail`) or `gas_fixed.trace_*`, never an inline
-  shift and never a bulk name. Coefficients stay Q16 per real unit. A sum
-  never mixes the two currencies: trace is priced by air, and the gases door
-  refuses an optical coefficient on a bulk row. The twins and the digest
-  spec's `trace_fine_bits` are held equal by a test."
-- **The trace rail** (`trace_add_rail`, books `EOSSolver.trace_clip_sum` and
-  `GameMap.trace_clip_books`). Folded into the Trace transport row as its
-  amendment: "...No trace plane is clamped anywhere outside a reader, bar the
-  counted int32 rail `TRACE_CELL_MAX` at every site that adds to a cell
-  (deposits, 3b narrow, soot mint, W3/W5, seal/inject), booked in `clip`.
-  Every loss is booked: vent, wipe, sink, decay, clip."
-- **Amended rows**:
-  - Extinction planes: "the density sum is in the trace currency, finished
-    by `trace_density_shr`".
-  - Integer reference: names `TRACE_FINE_BITS`.
+No parallel system is created (§17 confirmed).
+
+**(b) New systems, and the CLAUDE.md wording P4 writes:**
+
+- **Trace currency** (a new row; `fixed_point.h` `TRACE_FINE_BITS` + kit, twin
+  `gas_fixed.py` `trace_*`): "The five trace planes are int32 in the TRACE
+  currency, `2^(16+TRACE_FINE_BITS)` counts per real unit (#88); the bulk
+  planes in the same `gas` array stay Q16, and Q16 fractions/temperatures have
+  their own `q16_*` names. Every trace read or write converts ONCE through the
+  kit (`trace_from_bulk`, `trace_density_shr`, `quantize_trace`,
+  `trace_add_sat`) or `gas_fixed.trace_*`, never an inline shift and never a
+  bulk name; sums over a trace plane accumulate in int64. Coefficients stay Q16
+  per real unit. No sum mixes the two currencies: trace is priced by air, and
+  the gases door refuses an optical coefficient on a bulk row. The twins and the
+  digest spec's `trace_fine_bits` are held equal by a test (`gas_fixed` keeps a
+  LITERAL twin — it serves engine-less GameMaps)."
+- **Trace transport** (the row's clamp/books sentence is REPLACED; B3's
+  wording, adapted to the B2 ruling): "No trace plane is clamped anywhere
+  outside a reader, bar the counted int32 saturation (`TRACE_CELL_MAX`, #88) at
+  every site that adds to a cell; trace ADD edits through FieldEdit are
+  additive up to that saturation and never cut the tile (D1). Every loss is
+  booked: vent in the trace slots of `boundary_flux_`, wipe, sink, decay,
+  clip; every gain is booked: `trace_mint_sum` (soot, W5),
+  `trace_deposit_books` (FieldEdit). Other movers (vent plenum ledger, W3,
+  `destroy_wall`/`seal_tiles`) conserve or book through those. **Pump
+  extraction, FieldEdit REMOVE and the explosion's smoke clear destroy trace
+  UNBOOKED (ACCEPTED GAP, #88 G6)**." The old "separate, already-booked
+  systems" clause is deleted: it was false for the pump and the clear.
+- **Gas pump primitives** (a clause added, B3): "trace is priced by air
+  (#88 P0): the split runs over the bulk planes; each trace plane leaves at
+  the cell's `S/N_bulk`, and the pump destroys what it takes, unbooked (G6)."
+- **Extinction planes** (amended): "the density sum is in the trace currency,
+  finished by `trace_density_shr`; the door refuses a bulk row's optical
+  coefficient".
+- **Integer reference** (amended): names `TRACE_FINE_BITS`, and the gates draw
+  fine counts.
+- **Field digest** (amended): "…or its integer currency (`trace_fine_bits`)".
 
 ## 13. ACCEPTED GAPs and decisions
 
-- **ACCEPTED GAP G1, the decay fraction's own resolution.** `frac_q =
-  quantize(decay·dt)` in Q16 is off by +0.7 % for smoke (22 vs 21.85), poison
-  and steam, −1.1 % for teargas and −2.3 % for fuel_gas. A finer fraction
-  (Q24) would fix it, but it is a different change to the law. Recorded, not
-  fixed (one system at a time).
-- **ACCEPTED GAP G2, the faint tail is linear.** Below τ ≈ 0.01 per tile (1 %
-  opacity) decay removes 1 count a tick, so the last haze leaves in about 52 s
-  instead of never. This is the D4 bounded-time property, kept on purpose.
-- **ACCEPTED GAP G3, no bulk absorber.** The door refuses optical
-  coefficients on the bulk rows, so a future "burnt products absorb" row on
-  inert_N2 (already an ACCEPTED GAP of P5c) needs a second, bulk-currency
-  partial sum in the sweep and the laser.
-- **ACCEPTED GAP G4, the rail binds under sustained abuse in a closet.** A
-  Miasma Vent held in a 3×3 room reaches about 230 units per cell at
-  equilibrium. The rail books the excess, and the dose is already lethal there.
-- **ACCEPTED GAP G5, the soot mint is not finer.** Soot is minted in bulk
-  counts and shifted (`soot << 8`), so the mint's resolution is unchanged. A
-  finer mint would break the exact Dalton split with N2 and `e_shed`.
-- **Decision D-A (P0):** trace is priced by air on extraction, which changes
-  vent and pump behaviour in smoke slightly. It is required: without it the
-  rescale would let trace eat 256 times more of a bulk budget.
-- **Decision D-B:** diffusion becoming live at visible densities is accepted as
-  part of the rescale, not split off. It is the same law and dials, resolved.
-  Design v2 D6 ("diffusion stays, with today's dials") assumed a diffusion it
-  never measured working.
-- **Decision D-C (P5):** the decay rounding is amended alongside the rescale.
-  It is the issue's own goal (Erik's 2026-10-05 ruling), it is one edit in the
-  header made for it, and it gets its own re-baseline.
+**ACCEPTED GAPs:**
+- **G1, the decay fraction's own resolution.** `frac_q = quantize(decay·dt)` in
+  Q16 is off by +0.7 % for smoke (22 vs 21.85), poison and steam, −1.1 % for
+  teargas and −2.3 % for fuel_gas. A Q24 fraction would fix it, but that is a
+  different change to the law. Recorded, not fixed.
+- **G2, the faint tail is linear.** Below τ ≈ 0.01 per tile (1 % opacity),
+  decay removes 1 count a tick, so the last haze leaves in about 52 s instead
+  of never. This is D4's bounded-time property, kept.
+- **G3, no bulk absorber.** The door refuses optical coefficients on the bulk
+  rows. A future "burnt products absorb" row on inert_N2 (already a P5c ACCEPTED
+  GAP) needs a second, bulk-currency partial sum in the sweep and the laser.
+- **G4, the saturation binds in reachable abuse.** Two cases measured or
+  composed: a Miasma Vent held in a closet (~230 units per cell), and grenade
+  spam under a blast's compression (~197). It books the excess, and the dose is
+  lethal there anyway.
+- **G5, the soot mint is not finer.** It is minted in bulk counts and shifted,
+  to keep the Dalton split with N2 and `e_shed` exact.
+- **G6, unbooked trace destruction** (orchestrator's B2 ruling). Pump
+  extraction (`pump_system.py:113` discards the trace `extract_gas_n_vec`
+  takes), FieldEdit REMOVE and the explosion's smoke clear (`physics.py:69,
+  98`) destroy trace with no book, today and after #88. P0 re-prices the pump's
+  take, and keeps the destroy. Booking them is another system: the orchestrator
+  files the issue. P4 corrects CLAUDE.md's false "already-booked" sentence, so
+  the rule matches the code.
 
-**Nothing here needs Erik** under his delegation. The one call that touches
-his earlier ruling is the rail beside D1. It is stated in §5.3 and §12 for him
-to read. It does not cut any value the game can show.
+**Decisions:**
+- **D-A (P0):** trace is priced by air on extraction. The sizes are in §6.4.
+  It is required: without it, trace would eat 98.7 % of a pump's budget in
+  smoke at k = 8.
+- **D-B:** diffusion becoming live at visible densities is part of the rescale:
+  the same law and dials, now resolved. Design v2 D6 assumed a diffusion it
+  never measured working.
+- **D-C:** the decay rounding is amended inside the flip patch (§6.2). It is the
+  issue's own goal (Erik's 2026-10-05 ruling), and it needs one golden event,
+  not two.
+- **D-D:** P3 bundles the flip, the rounding and CUDA into one patch, so that
+  exactly one golden event exists and no known-red window does (§6.2).
+
+**Erik.** Nothing needs his decision under the delegation. The counted
+saturation bounds his D1 ruling at 128 units, and never cuts the tile. The
+orchestrator has told him as a vetoable statement, and the #88 comment repeats
+it in one line (B9).
 
 ## 14. Critique rounds
 
@@ -666,6 +967,48 @@ to read. It does not cut any value the game can show.
 | arithmetic, overflow, determinism (Opus, 2026-10-20) | PASS WITH FIXES | none. 3 MAJOR to fix before P1/P3 (A1 the teargas gate is not reader-invariant, so V3 as written fails; A2 numpy 1.26 on Windows accumulates int32 sums in int32; A3 `quantize_trace` narrows to int32 before the rail can see the excess). 9 MINOR. See §15 |
 | conservation, books, behavioural semantics (Opus, 2026-10-20) | PASS WITH FIXES | none. 4 MAJOR to fix before P0/P2 (B1 the §5.1 "deposits" term has no book, so a clip at a deposit site is invisible to the identity; B2 the pump's extracted trace and FieldEdit REMOVE destroy trace unbooked today, and P0 rewrites the pump lines without saying where its trace goes; B3 the rail IS D1's rejected option (b) at the representability limit, and §12's CLAUDE.md amendment leaves "additive with no ceiling (D1)" and "already-booked systems" standing; B4 two golden re-baselines break the branch's own gate-h precedent, and P0 cannot lawfully move the golden at all). 5 MINOR (B5-B9). See §16 |
 | inventory, systems reuse, patch & verification plan (Opus, 2026-10-20) | PASS WITH FIXES | none. 4 MAJOR to fix before P1 (C1 the test fixtures have no inventory, and the silent ones bypass V1's lint: a local `Q = 65536`, `fire_fixed` on a trace plane, and the second reference vocabulary `random_gas`; C2 V3 tests reader functions, so a trace call site renamed to a `bulk_*` name passes V1, V2 and V3; C3 P1's oracle is blind by construction, and the plan defers the misses into the flip patch; C4 a CUDA gate SKIPS green when the worktree's `cpp/build_cuda` is missing or stale, and "worktree subagent" is ambiguous). 9 MINOR (C5-C13). See §17 |
+
+### 14.1 Resolutions (v2)
+
+All findings were accepted. B1–B4 follow the orchestrator's rulings of
+2026-10-20, and the A- and C-findings were accepted as the critics proposed.
+
+| finding | resolved in |
+|---|---|
+| A1 the thresholds are not reader-invariant | §2.4 teargas and poison rows; §6.3 "door thresholds"; §6.4; V3 asserts the gates' real-unit law |
+| A2 numpy 1.26 accumulates in int32 | §2.1 int64 requirement; V1 lint; §12(b) rule |
+| A3 `quantize_trace` narrows before the saturation | §4: int64 return, range-checked, `trace_from_bulk` multiply + assert; only `trace_add_sat` narrows; V6 200-unit cases |
+| A4 the negative-result semantics | §5.3: from above only; negative = contract violation (assert / raise / `trace_neg_hits`); once per cell on the net |
+| A5 P0's N_EPS guard | §2.2 extraction row; V5 |
+| A6 keep the `inject_gas_n_vec` gate | §2.2 row: left as it is |
+| A7 the sensor conversion point | §2.4 sensor row (`_channel_array`) |
+| A8 the reference gates never see a fine count | §7: `trace_from_bulk(v) + randrange(256)` on trace planes only |
+| A9 the `gas_energy` contradiction | §6.3 "Unchanged, restricted correctly" |
+| A10 the headroom claim | §3.1 (composed abuse ~197 units), §3.4, G4; V6 primary case |
+| A11 the arithmetic slips | §4 (0.57 %), §2.5 (`price_face` bound), V4 (within one count) |
+| A12 the Q16 fraction names; `unseal_tiles` | §2.1, §4 `q16_*` names, V1 filter-validator lint; §2.3 `unseal_tiles` row |
+| B1 the deposits had no book | §5.1: `trace_mint_sum` and `trace_deposit_books`, written at the attempted amount before the saturation; the identity closes with no residual; V6 |
+| B2 pump / REMOVE / clear destroy trace unbooked | **ACCEPTED GAP G6** (orchestrator's ruling: not built in #88); §5.1 bracketed term; P0 keeps destroy-on-extract, re-priced only; P4 corrects CLAUDE.md's "already-booked" |
+| B3 the rail is D1's option (b) | §5.3 wording replaced; renamed per C7; §12(b) Trace transport and Gas pump rows in the critic's wording, adapted to G6 |
+| B4 two golden events; P0 cannot move the golden | §6.2: ONE event in P3, three-stage proof; P0/P1/P2 "a move is a bug"; D-C, D-D |
+| B5 behaviour changes with sizes | §6.4 table |
+| B6 the floor of 1 at `frac_q == 0`; the V8 loop bound | P3's row (`frac_q <= 0 → 0` in the kit); V7 |
+| B7 the book window and sign | §5.1 window paragraph |
+| B8 V5 pins the books | V5 (`pump_extract`, plenum `trace_raw + sink`) |
+| B9 the line for Erik | §5.3 last paragraph; §13 "Erik"; P4 |
+| C1 the fixture inventory; the silent classes; `random_gas`; `test_ps1_smoke_roundtrip` | §2.7 (inventory, classes, conversions); §2.2 test row; V1 write lint; §7 |
+| C2 V3 tested functions, not call sites | V3 registry through public entry points, subset lint; V1 no-bulk-name lint |
+| C3 P1's oracle was blind | P1's dry flip at k = 8 |
+| C4 CUDA gates skip on a missing or stale build | §11 build discipline (MUST, with the incident); §8 twin guard on the CUDA module; V9 zero skips |
+| C5 the #78 pattern misquoted | §4 "a literal, not #78's read-through" |
+| C6 the spec procedure | §6.1; P3 |
+| C7 "rail" collides | renamed throughout: the counted int32 saturation, `trace_add_sat`, `trace_clip_*` |
+| C8 inventory misses | §2.1, §2.2 (hover `bulk_n`, `gas_energy` display), §2.4 tools row, §2.5 |
+| C9 one renderer seam | §2.4 renderer row (`_trace_floats`) |
+| C10 V6 per site and per backend | V6 parametrization |
+| C11 order, tiers, splits | §11: P3 bundles flip + rounding + CUDA; P2 → Opus; P3 → Sonnet after C1/C3; P0, P1 Opus |
+| C12 each gate's mutation | §10 table |
+| C13 the V1 hand list | V1 lint on the finishes' property |
 
 ## 15. Critique — arithmetic lens
 
