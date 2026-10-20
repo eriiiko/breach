@@ -3,12 +3,14 @@
 # of tests/field_digest.py's DIGEST_FIELDS. Two machines (Ampere / Ada / Turing)
 # only produce comparable digests if they agree on this exact spec.
 #
-# CHANGE PROCEDURE: if a field's dtype/shape/membership/order changes, bump
+# CHANGE PROCEDURE: if a field's dtype/shape/membership/order, or its integer
+# CURRENCY (`trace_fine_bits`, #88), changes, bump
 # `version`, update `fields` here AND DIGEST_FIELDS in field_digest.py to match,
 # and regenerate every committed golden/digest in the SAME commit (plan §7.6
 # gate-7 — CI must reject a stale digest tag).
 
-version = 6                    # v6 (2026-09-20, T5b step 9): +dyn_heat_atten_q (int32)
+version = 7                    # v7 (2026-10-20, #88): trace currency 2^16 -> 2^24, trace_fine_bits = 8 (no field change)
+# v6 (2026-09-20, T5b step 9): +dyn_heat_atten_q (int32)
 hash = "blake2b-256"
 byte_order = "little"          # x86 + CUDA; big-endian dtypes are refused
 serialization = "per-field: ascii header 'name|dtype.str|shape' then C-order raw bytes"
@@ -17,7 +19,7 @@ serialization = "per-field: ascii header 'name|dtype.str|shape' then C-order raw
 # trace_fine_bits) counts per real unit. A twin of cpp/src/fixed_point.h
 # TRACE_FINE_BITS, held equal by tests/test_trace_currency.py; two digests of
 # the same world at different currencies are not comparable.
-trace_fine_bits = 0
+trace_fine_bits = 8
 
 # The integer/bool SYNCED fields hashed into the digest, IN THIS ORDER.
 # `gas` is the 3D (n_gas, h, w) multi-gas stack (smoke is a view into it).

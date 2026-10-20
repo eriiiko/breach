@@ -478,7 +478,7 @@ FP_HD inline int32_t sat_add_q16_i64(int32_t a, int64_t b) {
 // absorbs the extra bits in its one shift, trace_density_shr. Every term of such
 // a sum is >= 0, so the floor commutes with the power of two: the laws are
 // bit-identical on S_old * 2^k (design §15).
-constexpr int TRACE_FINE_BITS = 0;
+constexpr int TRACE_FINE_BITS = 8;
 constexpr int TRACE_SHIFT     = FP_SHIFT + TRACE_FINE_BITS;
 // The int32 storage's representability limit: the counted saturation (§5.3).
 constexpr int32_t TRACE_CELL_MAX = INT32_MAX;

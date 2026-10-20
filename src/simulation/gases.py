@@ -19,7 +19,7 @@ SMOKE TRANSPORT v2 (#12, docs/smoke_transport_design_2026-10-04.md): the trace
 planes RIDE THE AIR — each EOS substep moves them on the bulk planes' applied
 face flux, priced at the donor's trace-per-air ratio, and once a tick they get
 a conservative face diffusion (``diffusion``, stability-checked at this door),
-stranded zeroing and ceil-rounded ``decay``. Nothing clamps them to [0, 1]: a
+stranded zeroing and nearest-rounded ``decay`` (floor of one count; ceil until #88). Nothing clamps them to [0, 1]: a
 compressed pocket can hold more than 1.
 
 EOS refactor P1 (docs/eos_refactor_design.md §1/§2, decisions log #11) appends

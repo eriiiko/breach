@@ -5,7 +5,7 @@ The five trace planes (steam, smoke, poison, teargas, fuel_gas) move on the
 bulk planes' APPLIED face flux, priced at the donor's trace-per-air ratio
 (``bulk_transport.cpp`` stage 3b), lose what no air is left to carry (3c),
 and once a tick get stranded zeroing, a conservative magnitude-truncated
-Jacobi diffusion and ceil-rounded decay (``trace_tail``). Every loss is
+Jacobi diffusion and nearest-rounded decay (``trace_tail``; ceil until #88). Every loss is
 booked: vent in the trace slots of ``EOSSolver.boundary_flux()``, then
 ``trace_wipe_sum`` / ``trace_sink_sum`` / ``trace_decay_sum``.
 
@@ -407,7 +407,7 @@ def test_v8_thin_poison_decays_to_zero_in_bounded_time():
     """PROPERTY (V8): a thin uniform poison field (0.06 — below the old
     decay floor, where ``mul_q16(v, frac)`` rounded every tick's loss to 0,
     yet above the lethal ``poison_min_density``) decays to exactly 0 within
-    ``v`` ticks (ceil rounding removes at least one count a tick), every
+    ``v`` ticks (the floor of one count removes at least one a tick; nearest rounding since #88), every
     lost count booked as decay. The bound is the LAW's, not ``v`` (#88 B6):
     the exponential phase down to the linear edge ``E = ONE / frac_q``, plus
     ``E`` ticks of one count each -- which is ``v + 1`` whenever v <= E.

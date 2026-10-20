@@ -43,7 +43,7 @@ default-scenario golden.
 Part 3, V6-RESIDENT (P2b): the same three scenarios, CPU vs the RESIDENT tick
 (``physics_runner.set_residency(True)`` + the four EOS flags: stages 3b/3c ride
 the resident EOS substeps on every trace plane, and the once-per-tick trace
-tail -- stranded zeroing, Jacobi diffusion, ceil decay -- runs as the device
+tail -- stranded zeroing, Jacobi diffusion, nearest decay (#88) -- runs as the device
 launch ``PhysicsEngine.run_trace_tail_resident``). Per tick at tol 0: every gas
 plane, E, wind, T, P and the four trace books. Fired-proof via
 ``eos_resident_calls``. (``digest_bulk_flux`` is an accepted telemetry gap on

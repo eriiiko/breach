@@ -380,7 +380,7 @@ FINE_BITS_MAX = 16
 # bits in their one shift, trace_density_shr -- and since every term of the
 # sum is >= 0 and the floor commutes with a power of two, the laws are
 # bit-identical on S_old * 2^k (§15).
-TRACE_FINE_BITS = 0
+TRACE_FINE_BITS = 8
 TRACE_SHIFT = 16 + TRACE_FINE_BITS
 K_AMB = 293                      # config.toml:813   kelvin_ambient (integer-valued)
 K_SLOPE = 1                      # config.toml:814   k_temp_to_kelvin (G12: the x1 map)

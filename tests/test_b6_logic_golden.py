@@ -128,8 +128,16 @@ from simulation.entities.registry import registry_content_hash  # noqa: E402
 # tests/_xarch_perfield_digest.py, same commit. Sole cause: the old dials on
 # the same build reproduce the previous value. Captured twice: identical.
 # (was b0c89a70ed0e11091a1a088b5057e67170cd08cd3c9320f190d15e29b46c5343)
+# #88 RE-BASELINE (2026-10-20, smoke-unit rescale): a PURE SCHEMA move.
+# This loop runs live physics but holds no smoke, so neither the trace currency (2^16 -> 2^24) nor the decay
+# rounding reaches it; what moves the bytes is DIGEST_SPEC_VERSION 6 -> 7
+# alone (the currency is a bump trigger, C6): the version string is hashed
+# into every per-field digest. VERIFIED: with only DIGEST_SPEC_VERSION set
+# back to 6 on the same build (8 bits, nearest decay) this test reproduces
+# the previous value exactly. Full rationale beside GOLDEN_AGGREGATE in
+# tests/_xarch_perfield_digest.py, same commit. (was 412bcbf51a002cb8995c276fb15664b4a2438d3ef8e9a4adf0b2d0503d49e5b3)
 LOOP_GOLDEN_TRAJ_DIGEST = \
-    "412bcbf51a002cb8995c276fb15664b4a2438d3ef8e9a4adf0b2d0503d49e5b3"
+    "10671f68656389ba23b0609b20154d1907a5cac45562870e80225b9dcf3c5967"
 LOOP_GOLDEN_STEPS = 30
 LOOP_GOLDEN_SEED = 1
 

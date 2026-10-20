@@ -125,8 +125,16 @@ def _step(sim, n=1):
 # plane is present at load. That is the same mechanism the P-G3 and G12 notes
 # above describe. Full enumeration beside GOLDEN_AGGREGATE in
 # tests/_xarch_perfield_digest.py. (was 08c962ec444e301cc86a1c8a28ded651a9db2f41172dcdfb5d0d69c1637f331f)
+# #88 RE-BASELINE (2026-10-20, smoke-unit rescale): a PURE SCHEMA move.
+# physics=None and no smoke here, so neither the trace currency (2^16 -> 2^24) nor the decay
+# rounding reaches it; what moves the bytes is DIGEST_SPEC_VERSION 6 -> 7
+# alone (the currency is a bump trigger, C6): the version string is hashed
+# into every per-field digest. VERIFIED: with only DIGEST_SPEC_VERSION set
+# back to 6 on the same build (8 bits, nearest decay) this test reproduces
+# the previous value exactly. Full rationale beside GOLDEN_AGGREGATE in
+# tests/_xarch_perfield_digest.py, same commit. (was 08c962ec444e301cc86a1c8a28ded651a9db2f41172dcdfb5d0d69c1637f331f)
 DOORTEST_NOPHYS_TRAJ_DIGEST = \
-    "08c962ec444e301cc86a1c8a28ded651a9db2f41172dcdfb5d0d69c1637f331f"
+    "a534f0f20bbcdd24fc63a71a65e1406ed1c16784be30d328612907dc283551a8"
 
 
 def test_dormancy_door_present_wire_free_digest_byte_identical():

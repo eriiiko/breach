@@ -1472,7 +1472,7 @@ class PhysicsRunner:
         # -- 5. The TRACE TAIL, RESIDENT (smoke transport v2, #12 P2b) ------------
         # The trace planes already rode the bulk face flux inside the resident
         # EOS substeps (stages 3b/3c); what remains once per tick is the tail --
-        # stranded zeroing, Jacobi diffusion, ceil decay -- the device twin of
+        # stranded zeroing, Jacobi diffusion, nearest decay (#88) -- the device twin of
         # the tail run_substeps runs on the host, booked into the SAME EOSSolver
         # books. NO from_host: the device gas is fresher than the mirror (the
         # resident EOS just wrote it), and the masks/perm rode up in step 4.

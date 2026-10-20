@@ -49,7 +49,7 @@ _BULK_ONE_F = float(BULK_ONE)
 # ---- the TRACE planes (#88) -----------------------------------------------
 # The trace currency's extra fractional bits. THE twin of fixed_point.h
 # TRACE_FINE_BITS (a literal, see the module docstring).
-TRACE_FINE_BITS = 0
+TRACE_FINE_BITS = 8
 TRACE_SHIFT = 16 + TRACE_FINE_BITS
 # One unit of trace density. NOT a ceiling: smoke transport v2 (#12) deleted
 # every trace clamp outside a reader, so a compressed pocket can hold more.
