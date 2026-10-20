@@ -970,17 +970,26 @@ class GameRenderer:
         the speckle mottle) on this tick's temperature -- packed here, not
         read from the overlay, so the relief's own-light cut neither lags a
         tick nor depends on the T toggle."""
+        import zlib
         from .blackbody import pack_emissive_rgba
-        ov = self.temperature_overlay
         from .gas_relief import glow_below_fraction
-        bright = (pack_emissive_rgba(ov.ramp, gmap.temperature, ov.max_alpha)
-                  [..., 3].astype(np.float32) / float(max(ov.max_alpha, 1)))
-        # Only the glow BELOW the smoke (a body's, beyond the hot gas
-        # around it; see glow_below_fraction) is hidden by the smoke and
-        # kept off its top; a hot gas tile's own light is the gas's (#95).
-        frac = glow_below_fraction(bright, self._body_mask(gmap))
-        ov.set_below_fraction(frac)
-        return bright * frac
+        ov = self.temperature_overlay
+        body = self._body_mask(gmap)
+        # ~1 ms of numpy on 48 x 48: redone only when the temperature or the
+        # bodies changed (once per sim tick), not every rendered frame.
+        key = (zlib.crc32(np.ascontiguousarray(gmap.temperature).view(np.uint8)),
+               zlib.crc32(np.packbits(body)), id(ov.ramp), ov.max_alpha)
+        if key != getattr(self, "_heat_below_key", None):
+            bright = (pack_emissive_rgba(ov.ramp, gmap.temperature, ov.max_alpha)
+                      [..., 3].astype(np.float32) / float(max(ov.max_alpha, 1)))
+            # Only the glow BELOW the smoke (a body's, beyond the hot gas
+            # around it; see glow_below_fraction) is hidden by the smoke and
+            # kept off its top; a hot gas tile's own light is the gas's (#95).
+            frac = glow_below_fraction(bright, body)
+            ov.set_below_fraction(frac)
+            self._heat_below_key = key
+            self._heat_below = bright * frac
+        return self._heat_below
 
     @staticmethod
     def _body_mask(gmap) -> np.ndarray:

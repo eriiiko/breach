@@ -198,3 +198,47 @@ def test_compose_world_draws_by_height():
     pos = [src.index(k) for k in order]
     assert pos == sorted(pos), [k for k, _ in sorted(zip(order, pos),
                                                        key=lambda t: t[1])]
+
+
+# --- the synthetic low band (G2, doc §2.5 A) -----------------------------------
+
+@pytest.mark.parametrize("over", [
+    {"low_band_tiles": 0.0},
+    {"low_band_push_tiles": -0.5},
+    {"low_band_height": 1.5},
+    {"low_band_tau0": 1.0, "low_band_tau1": 0.5},
+])
+def test_low_band_dials_are_refused_out_of_range(over):
+    """Property: a non-positive lump size, a negative push, a carve outside
+    [0, 1] or an inverted gate is REFUSED at the settings door. Breaks if
+    the door stops checking the low band's dials."""
+    from config import CFG
+    section = dict(vars(CFG.render.gas_relief))
+    section.update(over)
+
+    class NS:
+        pass
+    cfg, render, rel = NS(), NS(), NS()
+    for k, v in section.items():
+        setattr(rel, k, v)
+    render.gas_relief = rel
+    cfg.render = render
+    with pytest.raises(ValueError):
+        gr.relief_settings(cfg)
+
+
+def test_low_band_is_gated_and_acts_through_the_coverage_edge():
+    """Property: the low band is render-only structure that (a) is skipped
+    entirely at push 0 and carve 0 (the A/B), (b) is gated by tau over the
+    coverage depth (only inside plumes), (c) moves the coverage contour by
+    |grad ln tau| x its displacement (a flat field is untouched, Erik's
+    ruling 7: only where the field changes), and (d) rides the relief's own
+    two-phase clock offsets (the real wind, one noise clock). Breaks if the
+    band is applied ungated, outside the coverage contour, or on a clock of
+    its own."""
+    src = (ROOT / "shaders" / "gas_relief.fs").read_text(encoding="utf-8")
+    assert "if (u_low_push > 0.0 || u_low_height > 0.0)" in src
+    assert re.search(r"smoothstep\(u_low_gate\.x,\s*u_low_gate\.y,\s*"
+                     r"tau_ext\s*/\s*max\(u_cov_tau", src)
+    assert "+ grad * g_low_d;" in src
+    assert "g_o1 * sc" in src and "g_o0 * sc" in src and "g_w0" in src
