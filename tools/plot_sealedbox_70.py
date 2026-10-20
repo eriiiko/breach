@@ -37,7 +37,8 @@ from matplotlib.patches import Rectangle  # noqa: E402
 # The Q16.16 unit comes from the canonical boundary module, never a literal
 # (CLAUDE.md: Q16 boundary modules). gas_fixed is an import-light leaf.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from simulation.gas_fixed import FP_ONE_F as Q  # noqa: E402
+from simulation.gas_fixed import BULK_ONE as _BULK_ONE  # noqa: E402
+Q = float(_BULK_ONE)       # the bulk N / temperature Q16 unit (#88: never the trace one)
 
 TPS = 24
 T_AMB_K = 293.0

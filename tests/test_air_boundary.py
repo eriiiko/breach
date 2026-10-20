@@ -590,7 +590,7 @@ def test_ambient_explicit_dials_parse_and_derive(tmp_path):
     a = _load_silent(_ambient_level(tmp_path, body=body)).ambient
     assert a.p_amb == 0.6 and a.o2_frac == 0.3
     # N-primary: N_total = quantize(0.6); split by 0.3; pin via the sim chain.
-    n_total = _amb._gas_fx.quantize_scalar(0.6)
+    n_total = _amb._gas_fx.quantize_bulk_scalar(0.6)
     assert a.n_total_q == n_total
     assert a.pin_q == _amb.effective_pin(n_total)
 

@@ -473,12 +473,19 @@ void eos_step_cuda(
         int32_t* d_spre = n_trace ? (int32_t*)dev_alloc(nb) : nullptr;
         // [0, n_trace) vent, [n_trace, 2*n_trace) wipe — unsigned long long
         // atomicAdd slots, memset 0 here (per-tick semantics, the e-counters' idiom).
+        // #88 P2, APPENDED (never inserted -- the P5c slot precedent):
+        // [2*n_trace, 3*n_trace) stage 3b's saturation CLIP, [3*n_trace,
+        // 4*n_trace) its NEGATIVE-net hits. Both >= 0; zeroed here per call and
+        // ADDED to the solver's books at D2H (the books' per-tick reset is
+        // PhysicsRunner's -- W5/W3 write them before this step runs).
+        constexpr int TRACE_CNT_BLOCKS = 4;
         unsigned long long* d_tcnt = nullptr;
         if (n_trace) {
             d_tcnt = (unsigned long long*)dev_alloc(
-                2 * (size_t)n_trace * sizeof(unsigned long long));
+                TRACE_CNT_BLOCKS * (size_t)n_trace * sizeof(unsigned long long));
             cuda_check(cudaMemset(d_tcnt, 0,
-                                  2 * (size_t)n_trace * sizeof(unsigned long long)),
+                                  TRACE_CNT_BLOCKS * (size_t)n_trace
+                                      * sizeof(unsigned long long)),
                        "memset trace counters");
         }
         // P-E1 per-plane host side-tables the energy entry reads.
@@ -554,7 +561,9 @@ void eos_step_cuda(
                 // smoke transport v2 (#12) stages 3b/3c: the trace rides these
                 // very faces (vent -> boundary_flux_'s trace slots, wipe beside).
                 n_trace ? d_trace.data() : nullptr, n_trace, d_spre,
-                d_tcnt, d_tcnt ? d_tcnt + n_trace : nullptr);
+                d_tcnt, d_tcnt ? d_tcnt + n_trace : nullptr,
+                d_tcnt ? d_tcnt + 2 * n_trace : nullptr,     // #88 P2 clip
+                d_tcnt ? d_tcnt + 3 * n_trace : nullptr);    // #88 P2 neg hits
             // -- f. zero u on solid: subsumed by the advection kernel (the
             //    proven P6.2 argument; nothing above re-touches u). --------
         }
@@ -579,13 +588,15 @@ void eos_step_cuda(
             for (int k = 0; k < n_trace; ++k)
                 cuda_check(cudaMemcpy(gas + (size_t)trace_gi[k] * n, d_trace[k], nb,
                                       cudaMemcpyDeviceToHost), "D2H trace plane");
-            std::vector<unsigned long long> tc(2 * (size_t)n_trace, 0);
+            std::vector<unsigned long long> tc(TRACE_CNT_BLOCKS * (size_t)n_trace, 0);
             cuda_check(cudaMemcpy(tc.data(), d_tcnt,
                                   tc.size() * sizeof(unsigned long long),
                                   cudaMemcpyDeviceToHost), "D2H trace counters");
             for (int k = 0; k < n_trace; ++k) {
                 solver.boundary_flux_[trace_gi[k]]  = (int64_t)tc[k];
                 solver.trace_wipe_sum_[trace_gi[k]] = (int64_t)tc[n_trace + k];
+                solver.trace_clip_sum_[trace_gi[k]] += (int64_t)tc[2 * n_trace + k];
+                solver.trace_neg_hits_[trace_gi[k]] += (int64_t)tc[3 * n_trace + k];
             }
         }
         // BC: copy the accumulated per-plane rail back into the solver's rail

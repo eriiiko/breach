@@ -1047,8 +1047,8 @@ def test_combustion_deposit_converts_via_heat_inv_shift_on_a_thermal_solid():
     # to pin. Every other O2 fixture in the suite already uses quantize_scalar.
     # This is the "a divergent copy makes a GATE quietly wrong rather than red"
     # hazard in its concrete form.
-    gas0 = np.stack([np.full((h, w), gas_fixed.quantize_scalar(0.21)),
-                     np.full((h, w), gas_fixed.quantize_scalar(0.79)),
+    gas0 = np.stack([np.full((h, w), gas_fixed.quantize_bulk_scalar(0.21)),
+                     np.full((h, w), gas_fixed.quantize_bulk_scalar(0.79)),
                      np.zeros((h, w))]).astype(np.int32)
     fire = _q32(np.where(flam, int(0.8 * FP_ONE), 0))
     wall_hp = _q32(np.where(flam, 30 * FP_ONE, 0))

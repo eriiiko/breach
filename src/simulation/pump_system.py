@@ -110,6 +110,8 @@ class PumpRuntime:
         inject = aggregate_input(bus, self.inject_slots, INPUT_HELD) != 0
         extract = aggregate_input(bus, self.extract_slots, INPUT_HELD) != 0
         if extract:                        # extract beats inject (safe state)
+            # delta_n_q of AIR; the trace it takes (priced by air, #88 P0) is
+            # destroyed, unbooked -- ACCEPTED GAP G6, issue #98.
             gmap.extract_gas_n(self.port_y, self.port_x, self.delta_n_q)
         elif inject:
             gmap.inject_gas_n(self.port_y, self.port_x, self.delta_n_q)
@@ -144,7 +146,7 @@ def _delta_n_quantum(rate_atm_per_s, tps):
     ct = float(DEFAULT_C) * float(DEFAULT_T_AMB_K)         # == 1.0 at defaults
     delta_n_mass = delta_p_atm / ct if ct > 0 else delta_p_atm
     return (_atm_fx.quantize_scalar(delta_p_atm),
-            _gas_fx.quantize_scalar(delta_n_mass))
+            _gas_fx.quantize_bulk_scalar(delta_n_mass))     # a bulk N count
 
 
 def build_pumps(sim) -> list:

@@ -435,7 +435,7 @@ def test_plume_raises_own_atmosphere_wind_points_outward():
         # O2-suction transient that otherwise dominates early (see module
         # note above).
         for (dy, dx) in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-            gmap.gas[O2][cy + dy, cx + dx] = gas_fixed.quantize_scalar(2.0)
+            gmap.gas[O2][cy + dy, cx + dx] = gas_fixed.quantize_bulk_scalar(2.0)
         _step_tick(pr, gmap)
         if t >= OUTWARD_FROM:
             out_n = -float(gmap.wind_y[cy - 1, cx])

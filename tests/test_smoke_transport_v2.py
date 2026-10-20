@@ -5,7 +5,7 @@ The five trace planes (steam, smoke, poison, teargas, fuel_gas) move on the
 bulk planes' APPLIED face flux, priced at the donor's trace-per-air ratio
 (``bulk_transport.cpp`` stage 3b), lose what no air is left to carry (3c),
 and once a tick get stranded zeroing, a conservative magnitude-truncated
-Jacobi diffusion and ceil-rounded decay (``trace_tail``). Every loss is
+Jacobi diffusion and nearest-rounded decay (``trace_tail``; ceil until #88). Every loss is
 booked: vent in the trace slots of ``EOSSolver.boundary_flux()``, then
 ``trace_wipe_sum`` / ``trace_sink_sum`` / ``trace_decay_sum``.
 
@@ -16,6 +16,7 @@ number; feel-adjacent readings are made in dequantized units.
 """
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -45,7 +46,8 @@ from simulation.ruleset import ContinuousRealtime  # noqa: E402
 from simulation.status import BLINDED  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 
-Q = 65536
+Q = 65536                     # Q16: wind, fire, rates
+T_ONE = gas_fixed.TRACE_ONE   # one real unit of TRACE density (#88)
 HULL, AIR, FURNITURE, SPACE = 1, 0, 6, 9     # v2 codes == material ids
 
 
@@ -114,7 +116,7 @@ def test_v1_a_sealed_blast_conserves_the_trace_to_the_count():
     sim = _sim(_box(24, 32))
     g = sim.gmap
     g.gases.decay[:] = 0.0
-    g.gas[SMOKE][12, 20] = 2 * Q
+    g.gas[SMOKE][12, 20] = 2 * T_ONE
     _heat_blast(sim, 12, 10)
     total0 = _tot(g, SMOKE)
     wipe = 0
@@ -129,7 +131,7 @@ def test_v1_a_sealed_blast_conserves_the_trace_to_the_count():
     # Non-vacuous: the blast really moved the air, and the seed really moved.
     assert max_wind > 2 * Q, "the blast never drove a wind of 2 m/s"
     assert max_nsub > 1, "the EOS never needed more than one substep"
-    assert int(g.gas[SMOKE][12, 20]) < 2 * Q
+    assert int(g.gas[SMOKE][12, 20]) < 2 * T_ONE
     assert int(np.count_nonzero(g.gas[SMOKE])) > 20
 
 
@@ -144,13 +146,13 @@ def test_v1_a_tile_above_one_survives_a_burning_fire_step():
     sim = _sim(_box(16, 24))
     g = sim.gmap
     g.gases.decay[:] = 0.0
-    g.gas[SMOKE][8, 18] = 2 * Q
+    g.gas[SMOKE][8, 18] = 2 * T_ONE
     # The fire only has to EXIST so the fire step does not early-out; it is
     # not an igniter (no gameplay reads it), so a bare fire value is enough.
     g.fire[8, 4] = Q // 2
     sim.step()
     assert int(g.fire.max()) > 0, "the fire step must have run with a fire"
-    assert int(g.gas[SMOKE].max()) > Q, \
+    assert int(g.gas[SMOKE].max()) > T_ONE, \
         "a compressed tile was cut back to 1 (a [0, 1] clamp is back)"
 
 
@@ -178,7 +180,7 @@ def test_v2_expanding_air_thins_its_smoke_instead_of_multiplying_it():
     g.gases.decay[:] = 0.0
     open_ = ~g.solid
     n_bulk = sum(g.gas[b].astype(np.int64) for b in bulk)
-    g.gas[SMOKE][open_] = (n_bulk[open_] >> 2).astype(np.int32)   # r = 1/4
+    g.gas[SMOKE][open_] = gas_fixed.trace_from_bulk(n_bulk[open_] >> 2).astype(np.int32)   # r = 1/4 (trace per bulk)
     r = 0.25
     _heat_blast(sim, 10, 8)
     sub_total = 0
@@ -189,11 +191,14 @@ def test_v2_expanding_air_thins_its_smoke_instead_of_multiplying_it():
         sub_total += eos.dbg_last_n_sub
         n_bulk = sum(g.gas[b].astype(np.int64) for b in bulk)
         n_min = min(n_min, int(n_bulk[open_].min()))
-        ratio = g.gas[SMOKE][open_].astype(np.float64) / n_bulk[open_]
+        # the ratio of trace to air in ONE currency (#88: the bulk lifted)
+        ratio = (g.gas[SMOKE][open_].astype(np.float64)
+                 / gas_fixed.trace_from_bulk(n_bulk[open_]))
         dev = float(np.abs(ratio - r).max())
         max_dev = max(max_dev, dev)
-        # initial rounding (N mod 4)/4 counts, then 4 faces per substep
-        bound = (4 * sub_total + 1) / n_min
+        # initial rounding (N mod 4)/4 bulk counts, then 4 faces per substep,
+        # each floor one TRACE count (2^-TRACE_FINE_BITS of a bulk count)
+        bound = (1 + 4 * sub_total / (gas_fixed.TRACE_ONE // gas_fixed.BULK_ONE)) / n_min
         assert dev <= bound, (dev, bound, sub_total, n_min)
     assert sub_total > 48, "the blast never needed a second substep"
 
@@ -219,8 +224,8 @@ def test_v3_seal_then_breach_closes_the_identity_every_tick():
     sim = _sim(tm)
     g = sim.gmap
     traces = _trace_ids(g)
-    g.gas[SMOKE][8:12, 20:25] = 2 * Q
-    g.gas[POISON][5:8, 5:8] = Q // 3
+    g.gas[SMOKE][8:12, 20:25] = 2 * T_ONE
+    g.gas[POISON][5:8, 5:8] = T_ONE // 3
     seen = {k: 0 for k in ("vent", "sink", "decay")}
 
     def tick():
@@ -242,11 +247,11 @@ def test_v3_seal_then_breach_closes_the_identity_every_tick():
         tick()
     vac = np.argwhere(g.is_vacuum & ~g.solid)
     y, x = (int(v) for v in vac[0])
-    g.gas[SMOKE][y, x] += Q // 4       # stranded: trace on a vacuum tile
+    g.gas[SMOKE][y, x] += T_ONE // 4   # stranded: trace on a vacuum tile
     for _ in range(4):
         tick()
     assert seen["vent"] > 0, "the breach never vented any trace"
-    assert seen["sink"] >= Q // 4, "stranded trace was not sunk and booked"
+    assert seen["sink"] >= T_ONE // 4, "stranded trace was not sunk and booked"
     assert seen["decay"] > 0
     assert not g.gas[SMOKE][g.is_vacuum].any()
 
@@ -279,8 +284,8 @@ def test_v4_no_trace_cell_is_ever_negative_across_the_blasts():
     tm[4:14, 15] = FURNITURE
     sim = _sim(tm)
     g = sim.gmap
-    g.gas[SMOKE][3:15, 3:12] = Q // 2
-    g.gas[TEARGAS][3:15, 17:24] = Q // 5
+    g.gas[SMOKE][3:15, 3:12] = T_ONE // 2
+    g.gas[TEARGAS][3:15, 17:24] = T_ONE // 5
     _heat_blast(sim, 9, 7, radius=4.0)
     for _ in range(48):
         sim.step()
@@ -312,7 +317,7 @@ def test_v5_the_air_is_bit_identical_with_or_without_trace():
         if populate:
             open_ = ~g.solid
             for k, t in enumerate(_trace_ids(g)):
-                g.gas[t][open_] = (k + 1) * (Q // 7)
+                g.gas[t][open_] = (k + 1) * (T_ONE // 7)
         _heat_blast(sim, 9, 6, radius=4.0)
         for _ in range(36):
             sim.step()
@@ -348,11 +353,11 @@ def test_v5_trace_rides_through_crate_pores():
     for t in _trace_ids(g):
         g.gases.diffusion[t] = 0.0       # the ride alone, no diffusion
     g.gases.heat_absorb_q16[:] = 0
-    g.gas[SMOKE][1:-1, 1:12] = Q // 2
+    g.gas[SMOKE][1:-1, 1:12] = T_ONE // 2
     _heat_blast(sim, 6, 4, radius=3.0)
     for _ in range(36):
         sim.step()
-    assert int(g.gas[SMOKE][1:-1, 13:-1].sum()) > 0, \
+    assert int(g.gas[SMOKE][1:-1, 13:-1].astype(np.int64).sum()) > 0, \
         "no smoke crossed the crate wall"
 
 
@@ -374,8 +379,8 @@ def test_v7_still_air_diffusion_conserves_spreads_and_stays_symmetric():
     g = sim.gmap
     g.gases.heat_absorb_q16[:] = 0        # still air stays still
     g.gases.decay[:] = 0.0
-    g.gas[SMOKE][7:10, 8:11] = 3 * Q
-    g.gas[POISON][1:-1, 1:-1] = 37        # a uniform thin field (raw counts)
+    g.gas[SMOKE][7:10, 8:11] = 3 * T_ONE
+    g.gas[POISON][1:-1, 1:-1] = 37        # raw trace counts: scale-free (#88) -- a uniform thin field
     total0 = _tot(g, SMOKE)
     yy, xx = np.mgrid[0:17, 0:19]
 
@@ -402,20 +407,31 @@ def test_v8_thin_poison_decays_to_zero_in_bounded_time():
     """PROPERTY (V8): a thin uniform poison field (0.06 — below the old
     decay floor, where ``mul_q16(v, frac)`` rounded every tick's loss to 0,
     yet above the lethal ``poison_min_density``) decays to exactly 0 within
-    ``v`` ticks (ceil rounding removes at least one count a tick), every
-    lost count booked as decay.
+    ``v`` ticks (the floor of one count removes at least one a tick; nearest rounding since #88), every
+    lost count booked as decay. The bound is the LAW's, not ``v`` (#88 B6):
+    the exponential phase down to the linear edge ``E = ONE / frac_q``, plus
+    ``E`` ticks of one count each -- which is ``v + 1`` whenever v <= E.
 
     BREAKS IF: the decay floor returns (the field would sit at 0.06 forever:
     permanent haze, here permanent lethal poison).
     """
     sim = _sim(_box(6, 6))
     g = sim.gmap
-    v = gas_fixed.quantize_scalar(0.06)
-    assert v >= gas_fixed.quantize_scalar(float(CFG.exchange.poison_min_density))
-    g.gas[POISON][1:-1, 1:-1] = v
+    v_trace = gas_fixed.quantize_trace_scalar(0.06)
+    assert v_trace >= gas_fixed.quantize_trace_scalar(float(CFG.exchange.poison_min_density))
+    g.gas[POISON][1:-1, 1:-1] = v_trace
     total0 = _tot(g, POISON)
     booked = 0
-    for k in range(v + 1):
+    dt = 1.0 / float(CFG.clock.ticks_per_second)
+    frac_lo = max(1, gas_fixed.quantize_q16_scalar(
+        float(np.float32(g.gases.decay[POISON])) * float(np.float32(dt))) - 1)
+    edge = -(-gas_fixed.Q16_ONE // frac_lo)            # ceil(ONE / frac): the linear edge
+    if v_trace <= edge:
+        bound = v_trace + 1
+    else:
+        bound = (int(math.ceil(math.log(v_trace / edge) / -math.log1p(-frac_lo / gas_fixed.Q16_ONE)))
+                 + edge + 2)
+    for k in range(bound):
         if not g.gas[POISON].any():
             break
         sim.step()
@@ -447,10 +463,10 @@ def test_v9_poison_dose_and_teargas_blind_are_defined_at_density_two():
         u = Unit("M", x=8, y=8, team=0)
         u.id = 1
         u.current_hp = 1000.0
-        q = gas_fixed.quantize_scalar(density)
+        q_trace = gas_fixed.quantize_trace_scalar(density)
         for (tx, ty) in u.occupied_tiles():
-            g.gas[POISON][ty, tx] = q
-            g.gas[TEARGAS][ty, tx] = q
+            g.gas[POISON][ty, tx] = q_trace
+            g.gas[TEARGAS][ty, tx] = q_trace
         apply_poison_dose([u], g, tps, events=[])
         dose[density] = 1000.0 - u.current_hp
         apply_teargas_blind([u], g)
@@ -475,7 +491,7 @@ def test_d1_a_trace_deposit_adds_exactly_and_never_cuts_the_tile():
                     tile_size_m=1.0, diffuse_path=Path("."))
     from simulation.gamemap import GameMap
     g = GameMap(lvl)
-    g.gas[SMOKE][5, 5] = int(1.7 * Q)
+    g.gas[SMOKE][5, 5] = int(1.7 * T_ONE)
     q = EditQueue()
     q.enqueue(FieldEdit(field="gas", channel=SMOKE, region=Region.TILE,
                         coords=(5, 5), amount=0.75, mode=EditMode.ADD))
@@ -483,10 +499,10 @@ def test_d1_a_trace_deposit_adds_exactly_and_never_cuts_the_tile():
                         amount=1.5, mode=EditMode.ADD))
     q.enqueue(FieldEdit(field="smoke", region=Region.TILE, coords=(3, 3),
                         amount=5.0, mode=EditMode.REMOVE))
-    g.gas[SMOKE][3, 3] = Q // 3
+    g.gas[SMOKE][3, 3] = T_ONE // 3
     q.flush(g, np.random.default_rng(0))
-    assert int(g.gas[SMOKE][5, 5]) == int(1.7 * Q) + gas_fixed.quantize_scalar(0.75)
-    assert int(g.gas[SMOKE][4, 4]) == gas_fixed.quantize_scalar(1.5)
+    assert int(g.gas[SMOKE][5, 5]) == int(1.7 * T_ONE) + gas_fixed.quantize_trace_scalar(0.75)
+    assert int(g.gas[SMOKE][4, 4]) == gas_fixed.quantize_trace_scalar(1.5)
     assert int(g.gas[SMOKE][3, 3]) == 0
 
 

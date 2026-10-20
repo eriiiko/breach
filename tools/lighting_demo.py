@@ -926,8 +926,16 @@ def _inject_gas(sim, tile, species: int, amount: float = 1.0) -> None:
     y0, y1 = max(0, fy - 1), min(h, fy + 2)
     x0, x1 = max(0, fx - 1), min(w, fx + 2)
     from simulation import gas_fixed
-    gmap.gas[species, y0:y1, x0:x1] = int(round(gas_fixed.SMOKE_MAX_Q
-                                                * float(amount)))
+    from simulation.gases import N_TRACE_GASES
+    # In the plane's own currency (#88): trace in the trace currency (an int64
+    # quantize, range-checked before the int32 store), bulk in Q16.
+    if species < N_TRACE_GASES:
+        q = gas_fixed.quantize_trace_scalar(float(amount))
+        if not (0 <= q <= gas_fixed.TRACE_CELL_MAX):
+            raise ValueError(f"_inject_gas: {amount} units does not fit a trace cell")
+    else:
+        q = gas_fixed.quantize_bulk_scalar(float(amount))
+    gmap.gas[species, y0:y1, x0:x1] = q
 
 
 def _toggle_door(sim, tile) -> None:

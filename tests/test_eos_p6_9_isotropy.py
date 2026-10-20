@@ -87,7 +87,7 @@ def _plus_scene(center_o2_raw, outer_o2=0.21, hp=60.0, h=9, w=9):
     temperature = np.zeros((h, w), dtype=np.int32)
 
     cy, cx = h // 2, w // 2
-    gas[INERT_N2][~solid] = gas_fixed.quantize_scalar(0.79)   # symmetric ambient
+    gas[INERT_N2][~solid] = gas_fixed.quantize_bulk_scalar(0.79)   # symmetric ambient
 
     # The four flammable sources (the arms of the plus), all identical + hot.
     for _name, (dy, dx), _outer in ARMS:
@@ -100,7 +100,7 @@ def _plus_scene(center_o2_raw, outer_o2=0.21, hp=60.0, h=9, w=9):
         fire[sy, sx] = fire_fixed.quantize_scalar(0.6)   # identical at all 4 arms
         # each arm's private outer burn-site
         oy, ox = cy + _outer[0], cx + _outer[1]
-        gas[O2][oy, ox] = gas_fixed.quantize_scalar(outer_o2)
+        gas[O2][oy, ox] = gas_fixed.quantize_bulk_scalar(outer_o2)
 
     gas[O2][cy, cx] = int(center_o2_raw)             # the shared contested cell
     return gas, solid, is_vacuum, flammable, wall_hp, fire, ign, temperature, (cy, cx)
@@ -163,7 +163,7 @@ def test_isotropy_bit_exact_zero_remainder():
     for _ in range(10):
         gas[O2][cy, cx] = 40000                       # refill the contested cell
         for _name, _s, (oy_d, ox_d) in ARMS:          # refill each private site
-            gas[O2][cy + oy_d, cx + ox_d] = gas_fixed.quantize_scalar(0.21)
+            gas[O2][cy + oy_d, cx + ox_d] = gas_fixed.quantize_bulk_scalar(0.21)
         _step(comb, scene)
         r = _arm_readouts(scene)
         base = r["N"]
@@ -200,7 +200,7 @@ def test_isotropy_bounded_bias_nonzero_remainder():
     for _ in range(10):
         gas[O2][cy, cx] = 40002
         for _name, (dy, dx), (oy_d, ox_d) in ARMS:
-            gas[O2][cy + oy_d, cx + ox_d] = gas_fixed.quantize_scalar(0.21)
+            gas[O2][cy + oy_d, cx + ox_d] = gas_fixed.quantize_bulk_scalar(0.21)
             wall_hp[cy + dy, cx + dx] = hp_uniform   # re-level so we read 1 tick
         _step(comb, scene)
         r = _arm_readouts(scene)

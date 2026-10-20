@@ -622,7 +622,9 @@ def apply_teargas_blind(units, gmap):
     if not bool(slice_.any()):
         return                              # dormant plane: no teargas anywhere
     cfg = CFG.exchange
-    thresh_q = gas_fixed.quantize_scalar(float(cfg.teargas_blind_density))
+    # The threshold is quantized at the TRACE currency (#88 A1): the gate is
+    # density >= the real-unit value, to within one fine count.
+    thresh_q = gas_fixed.quantize_trace_scalar(float(cfg.teargas_blind_density))
     duration = int(cfg.teargas_blind_ticks)
     for u in units:
         if not u.alive:
@@ -643,7 +645,7 @@ def apply_poison_dose(units, gmap, ticks_per_second, events=None):
     float64 chain on the door-1 field read and door-2 constants, quantized
     once at the HP boundary::
 
-        density = density_q / 65536                    # exact 2^-16 dequantize
+        density = dequantize_trace(density_q)          # exact 2^-TRACE_SHIFT
         amount  = poison_dps * density * (1 / tps)     # pure IEEE * (door 3)
         applied = dequantize(quantize(mitigated))      # apply_packet's
                                                        # quantize_hp_delta:
@@ -667,7 +669,7 @@ def apply_poison_dose(units, gmap, ticks_per_second, events=None):
     if not bool(slice_.any()):
         return                              # dormant plane: no poison anywhere
     cfg = CFG.exchange
-    thresh_q = gas_fixed.quantize_scalar(float(cfg.poison_min_density))
+    thresh_q = gas_fixed.quantize_trace_scalar(float(cfg.poison_min_density))   # #88 A1
     dps = float(cfg.poison_dps)
     dt_tick = 1.0 / float(ticks_per_second)
     for u in units:
@@ -678,7 +680,7 @@ def apply_poison_dose(units, gmap, ticks_per_second, events=None):
             continue
         if mitigation_for(u).resist_mult[POISON] == 0.0:
             continue                        # immune: no packet, no event (lazy)
-        amount = dps * (density_q / 65536.0) * dt_tick
+        amount = dps * float(gas_fixed.dequantize_trace(density_q)) * dt_tick
         apply_packet(u,
                      DamagePacket(amount=amount, dtype=POISON, source_id=None),
                      events, source="poison_gas")

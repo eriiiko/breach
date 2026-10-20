@@ -30,7 +30,7 @@ import breach_physics as bp  # noqa: E402
 
 from config import CFG  # noqa: E402
 from level_loader import LevelData, load as load_level  # noqa: E402
-from simulation import Simulation, fire_fixed, light_field  # noqa: E402
+from simulation import Simulation, fire_fixed, gas_fixed, light_field  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 
 TURN = 65536
@@ -68,7 +68,7 @@ def _lit_playground(ticks=6):
     g.fire[y0, x0] = fire_fixed.quantize_scalar(0.8)
     air = np.argwhere(~g.solid & ~g.is_vacuum)
     cy, cx = (int(v) for v in air[len(air) // 2])
-    g.smoke[max(0, cy - 3):cy + 3, max(0, cx - 3):cx + 3] = fire_fixed.quantize_scalar(0.4)
+    g.smoke[max(0, cy - 3):cy + 3, max(0, cx - 3):cx + 3] = gas_fixed.quantize_trace_scalar(0.4)
     lights_in, _off = partition_lights(level.lights, w, h)
     extra = [fl.LightSpec(x=cx + 0.5, y=cy + 0.5, color=(1.0, 0.9, 0.8), intensity=2.0,
                           angle_center=0.7, angle_spread=1.9, kind="flashlight",

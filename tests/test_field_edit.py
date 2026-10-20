@@ -46,12 +46,12 @@ from simulation import fire_fixed    # S3a: fire Q16.16 helpers
 # ---------------------------------------------------------------------------
 # S2b: smoke is int32 Q16.16 — the "gas" field-edit dtype combines in real
 # density, stores quantized. Helpers to author/read smoke in density units.
-def _smoke_q(v):
-    return gas_fixed.quantize_scalar(v)
+def _smoke_trace_q(v):
+    return gas_fixed.quantize_trace_scalar(v)      # the TRACE currency (#88)
 
 
 def _smoke_d(q):
-    return float(q) / gas_fixed.FP_ONE_F
+    return float(gas_fixed.dequantize_trace(q))
 
 
 # S2c: atmosphere is int32 Q16.16 — the "atmosphere" field-edit dtype combines in
@@ -128,7 +128,7 @@ def test_mode_add():
     # "smoke" (an unaffected float-combine field; wide clamp to keep the
     # original unclamped-value assertion honest).
     g = _GMapStub()
-    g.smoke[5, 5] = _smoke_q(1.0)
+    g.smoke[5, 5] = _smoke_trace_q(1.0)
     apply_field_edit(g, FieldEdit("smoke", Region.TILE, (5, 5), 0.25,
                                   EditMode.ADD, clamp=(0.0, 10.0)), _rng())
     assert abs(_smoke_d(g.smoke[5, 5]) - 1.25) < 1e-4
@@ -136,7 +136,7 @@ def test_mode_add():
 
 def test_mode_remove_clamps_to_floor():
     g = _GMapStub()
-    g.smoke[5, 5] = _smoke_q(0.3)
+    g.smoke[5, 5] = _smoke_trace_q(0.3)
     # REMOVE a large amount -> clamped to the smoke policy floor (0).
     apply_field_edit(g, FieldEdit("smoke", Region.TILE, (5, 5), 10.0,
                                   EditMode.REMOVE, clamp=(0.0, 1.0)), _rng())
@@ -165,7 +165,7 @@ def test_region_tile():
     apply_field_edit(g, FieldEdit("smoke", Region.TILE, (3, 4), 1.0,
                                   EditMode.ADD, clamp=(0.0, 10.0)), _rng())
     assert _smoke_d(g.smoke[3, 4]) == 1.0
-    assert _smoke_d(g.smoke.sum()) == 1.0  # only that one tile
+    assert _smoke_d(g.smoke.astype(np.int64).sum()) == 1.0  # only that one tile
 
 
 def test_region_disc_flat():
@@ -184,7 +184,7 @@ def test_region_rect():
     apply_field_edit(g, FieldEdit("smoke", Region.RECT, (2, 3, 4, 6), 1.0,
                                   EditMode.ADD, clamp=(0.0, 10.0)), _rng())
     # The inclusive box [2..4] x [3..6] = 3 rows x 4 cols = 12 tiles.
-    assert _smoke_d(g.smoke.sum()) == 12.0
+    assert _smoke_d(g.smoke.astype(np.int64).sum()) == 12.0
     assert _smoke_d(g.smoke[2, 3]) == 1.0
     assert _smoke_d(g.smoke[4, 6]) == 1.0
     assert _smoke_d(g.smoke[1, 3]) == 0.0  # outside
@@ -196,7 +196,7 @@ def test_region_beam():
     apply_field_edit(g, FieldEdit("smoke", Region.BEAM, (5, 1, 5, 9, 0.0),
                                   1.0, EditMode.ADD, clamp=(0.0, 10.0)), _rng())
     row = g.smoke[5, 1:10]
-    assert np.all(row == _smoke_q(1.0)), f"beam centre row not fully covered: {row}"
+    assert np.all(row == _smoke_trace_q(1.0)), f"beam centre row not fully covered: {row}"
     # Nothing off the beam line.
     assert _smoke_d(g.smoke[4, 5]) == 0.0
     assert _smoke_d(g.smoke[6, 5]) == 0.0
@@ -252,7 +252,7 @@ def test_policy_default_clamp_applied():
     BREAKS IF: the smoke / gas policy goes back to a [0, 1] ceiling (which
     cut a compressed tile's existing smoke on every deposit)."""
     g = _GMapStub()
-    g.smoke[5, 5] = _smoke_q(0.8)
+    g.smoke[5, 5] = _smoke_trace_q(0.8)
     apply_field_edit(g, FieldEdit("smoke", Region.TILE, (5, 5), 5.0,
                                   EditMode.ADD), _rng())
     assert abs(_smoke_d(g.smoke[5, 5]) - 5.8) < 1e-4
@@ -431,7 +431,7 @@ def test_skipped_tile_draws_no_noise():
     g_clean = _GMapStub()
     rng_clean = _CountingRng(seed=3)
     apply_field_edit(g_clean, e, rng_clean)
-    n_survivors = int((g_clean.smoke > 0).sum())
+    n_survivors = int(np.count_nonzero(g_clean.smoke > 0))
     # Every surviving tile drew exactly once (LINEAR weight > 0 inside the disc).
     assert rng_clean.draws == n_survivors, \
         f"draws {rng_clean.draws} != surviving tiles {n_survivors}"
@@ -488,8 +488,8 @@ def test_add_explosion_smoke_equivalence():
                 if dist < radius:
                     base = 0.8 * (1 - dist / radius)
                     mult = float(rng_ref.uniform(low, 1.0))
-                    ref_f.smoke[ny, nx] = min(1.0, ref_f.smoke[ny, nx] + base * mult)
-    ref_q = gas_fixed.quantize(ref_f.smoke)
+                    ref_f.smoke[ny, nx] = min(1.0, ref_f.smoke[ny, nx] + base * mult)  # real units, not counts (#88)
+    ref_q = gas_fixed.quantize_trace(ref_f.smoke)
 
     # Migrated path through the queue, same seed (int32 Q16.16 field).
     got = _open_gmap()
@@ -523,8 +523,8 @@ def test_apply_explosion_atmosphere_equivalence():
     h, w = ref.material.shape
     o2_0 = ref.gas[O2].copy()
     n2_0 = ref.gas[INERT_N2].copy()
-    ref_o2 = gas_fixed.dequantize(ref.gas[O2])
-    ref_n2 = gas_fixed.dequantize(ref.gas[INERT_N2])
+    ref_o2 = gas_fixed.dequantize_bulk(ref.gas[O2])
+    ref_n2 = gas_fixed.dequantize_bulk(ref.gas[INERT_N2])
     for dy in range(-radius, radius + 1):
         for dx in range(-radius, radius + 1):
             ny, nx = cy + dy, cx + dx
@@ -540,8 +540,8 @@ def test_apply_explosion_atmosphere_equivalence():
     apply_explosion(got, q, cy, cx, radius, pressure, wall_damage)
     q.flush(got, np.random.default_rng(0))
 
-    got_o2 = gas_fixed.dequantize(got.gas[O2])
-    got_n2 = gas_fixed.dequantize(got.gas[INERT_N2])
+    got_o2 = gas_fixed.dequantize_bulk(got.gas[O2])
+    got_n2 = gas_fixed.dequantize_bulk(got.gas[INERT_N2])
     assert np.allclose(ref_o2, got_o2, atol=1e-4), \
         "migrated apply_explosion O2 deposit diverged from the 21% split"
     assert np.allclose(ref_n2, got_n2, atol=1e-4), \

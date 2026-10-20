@@ -518,10 +518,10 @@ def test_smoke_tints_by_its_rgb_absorption_and_dims_with_density():
         return engine(sc, light, gas=planes, hq=[0] * N_GASES, n_bulk=nb)[6]["light_q"][:, yc, n - 1]
 
     clear = run(POISON, 0).astype(np.float64)
-    pois = run(POISON, Q(0.5)).astype(np.float64)
+    pois = run(POISON, R.quant_trace(0.5)).astype(np.float64)   # a trace density (#88)
     assert pois[1] / pois[0] > clear[1] / clear[0]
     assert pois[2] / pois[0] < clear[2] / clear[0]
-    curve = np.array([run(SMOKE, Q(v / 20)) for v in range(21)])
+    curve = np.array([run(SMOKE, R.quant_trace(v / 20)) for v in range(21)])
     assert np.all(np.diff(curve, axis=0) <= 0), "denser smoke let more light through"
     for c in range(3):
         zero_at = int(np.argmax(curve[:, c] == 0)) if np.any(curve[:, c] == 0) else 21

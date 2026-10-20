@@ -212,7 +212,7 @@ def test_falloff_pinned_exact_deposits_and_nozzle_rule():
     assert int(gmap.heat[10, 13]) == 52428800
     assert int(gmap.heat[10, 14]) == 39321600
     assert int(gmap.heat[11, 14]) == 39321600
-    assert int(gmap.gas[FUEL_GAS][10, 12]) == gas_fixed.quantize_scalar(0.075)
+    assert int(gmap.gas[FUEL_GAS][10, 12]) == gas_fixed.quantize_trace_scalar(0.075)
     # Nozzle rule: the shooter's own footprint tiles take no deposit.
     for (tx, ty) in u.occupied_tiles():
         assert int(gmap.heat[ty, tx]) == 0

@@ -46,7 +46,9 @@ def test_light_uses_beer_lambert_and_heat_keeps_the_thin_law():
     BREAKS IF: the light term falls back to the thin law, or the heat term is
     moved onto Beer-Lambert (that would move the sim and its golden).
     """
-    dens, absorb, n_bulk = [ONE // 64], [64 * ONE], ONE        # tau = 1.0 exactly
+    # the density is a TRACE plane (#88: R.TRACE_ONE per real unit), the
+    # coefficient Q16 per real unit, the bulk Q16
+    dens, absorb, n_bulk = [R.TRACE_ONE // 64], [64 * ONE], ONE   # tau = 1.0 exactly
     a_light = R.gas_extinction_exp_q(dens, absorb, n_bulk)
     a_heat = R.gas_extinction_q(dens, absorb, n_bulk)
     assert a_heat == ONE

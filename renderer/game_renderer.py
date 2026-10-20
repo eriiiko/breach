@@ -78,6 +78,20 @@ class RenderConfig:
 # Fire & Heat Beauty B2 P5 (design §7 P5): the active render-state cluster
 # ---------------------------------------------------------------------------
 
+def _trace_floats(gmap) -> np.ndarray:
+    """THE renderer's one trace dequantize (#88, critique C9): the
+    ``(N_TRACE_GASES, h, w)`` float32 block of real trace densities, through the
+    trace currency's own helper (``gas_fixed.dequantize_trace_f32``). Every
+    render site that draws a trace plane slices THIS (the legacy smoke overlay,
+    the relief and medium inputs, the speckle's soot and steam) -- never a
+    second dequantize, never a bulk name. Fresh float copies, never written
+    back. It is the call site the reader-invariance test drives, and the single
+    place a resident gather later swaps in."""
+    from simulation import gas_fixed
+    from simulation.gases import N_TRACE_GASES
+    return gas_fixed.dequantize_trace_f32(gmap.gas[:N_TRACE_GASES])
+
+
 def render_state_lines(*, legacy_smoke_on: bool, detail_enabled: bool,
                        speckle_mode: str, effect_gas_floor: float
                        ) -> List[Tuple[str, Tuple[int, int, int, int]]]:
@@ -472,18 +486,17 @@ class GameRenderer:
             # the render overlays (render-only FLOAT BRIDGE; one source of truth
             # = the int field). Recomputed each frame so the overlay is correct
             # even when show_lighting (hence the cast) is off.
-            from simulation import gas_fixed
-            from simulation.gases import N_TRACE_GASES
+            from simulation.gases import SMOKE as _SMOKE
             self.gas_relief.refresh_settings(CFG)
             if self.legacy_smoke_on:
-                self.smoke_overlay.update(gas_fixed.dequantize_f32(gmap.smoke))
+                self.smoke_overlay.update(_trace_floats(gmap)[_SMOKE])
                 self.glow_overlay.update(glow_field)
             elif self.gas_relief.enabled:
                 # G1 relief: both species groups' tile inputs, the TAMED wind
                 # (gas_detail.tame_wind, THE wind seam) and the temperature
                 # for the boil clock. The B2 medium texture is not packed:
                 # nothing draws it while the relief is on.
-                trace = gas_fixed.dequantize_f32(gmap.gas[:N_TRACE_GASES])
+                trace = _trace_floats(gmap)
                 gm, gd = self.gas_medium, self.gas_detail
                 tps = 1.0 / self._sim_dt
                 tamed = tame_wind(gmap.wind_x, gmap.wind_y,
@@ -507,7 +520,7 @@ class GameRenderer:
                 # [smoke] smoke_absorb_scale (the shared base, held by the
                 # overlay), so plume body and god-rays track by construction
                 # (single source of scale).
-                trace = gas_fixed.dequantize_f32(gmap.gas[:N_TRACE_GASES])
+                trace = _trace_floats(gmap)
                 self.gas_medium.update(trace, glow_field, gmap.gases)
                 # P3 detail: upload the TAMED wind (the m/s velocity planes on
                 # the honest tiles/tick scale, smoothed + saturated — see
@@ -573,10 +586,9 @@ class GameRenderer:
             # dequantized into fresh float copies, never written.
             speckle_mod = None
             if self.speckle.mode != "off":
-                from simulation import gas_fixed
                 from simulation.gases import SMOKE, STEAM
-                soot = gas_fixed.dequantize_f32(gmap.gas[SMOKE])
-                steam = gas_fixed.dequantize_f32(gmap.gas[STEAM])
+                trace = _trace_floats(gmap)
+                soot, steam = trace[SMOKE], trace[STEAM]
                 speckle_mod = self.speckle.modulation(
                     soot, steam, sim_tick=int(sim_tick))
             self.temperature_overlay.update(gmap.temperature, speckle_mod)

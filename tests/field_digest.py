@@ -39,7 +39,7 @@ import hashlib
 import numpy as np
 
 # Bump this (and regenerate every golden) whenever DIGEST_FIELDS changes shape,
-# order, dtype, or membership. The version is hashed into the digest so a stale
+# order, dtype, or membership, or a field's integer CURRENCY changes (v7). The version is hashed into the digest so a stale
 # golden compared against a new spec fails loudly instead of mismatching opaquely.
 # v2 (2026-07-24): +ignition_armed — the edge-triggered ignition arm bool
 # (combat.apply_temperature_ignition; Fable zombie-smolder ruling) is synced state.
@@ -84,7 +84,29 @@ import numpy as np
 # projection of `material` through the material table, and `material` is
 # already in the digest, so it carries no state of its own. `dyn_heat_atten_q`
 # does -- it carries where the UNITS are.
-DIGEST_SPEC_VERSION = 6
+# v7 (2026-10-20, #88, the smoke-unit rescale): NO field changes -- dtype,
+# shape, membership and order are as in v6. The five TRACE planes of `gas`
+# change their integer CURRENCY: 2^(16 + 8) counts per real unit instead of
+# 2^16 (cpp/src/fixed_point.h TRACE_FINE_BITS 0 -> 8). The same world's v6 and
+# v7 digests are not comparable, and the version exists to refuse exactly that
+# comparison (design docs/smoke_unit_rescale_design_2026-10-20.md sec 6.1, C6).
+# The spec's `trace_fine_bits` is held equal to gas_fixed.TRACE_FINE_BITS by the
+# assert below, at import: moving the currency without this spec fails loudly.
+DIGEST_SPEC_VERSION = 7
+DIGEST_TRACE_FINE_BITS = 8
+
+try:
+    from simulation import gas_fixed as _gas_fixed
+except ImportError:                              # standalone use: add src/
+    import sys as _sys
+    from pathlib import Path as _Path
+    _sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / "src"))
+    from simulation import gas_fixed as _gas_fixed
+assert DIGEST_TRACE_FINE_BITS == _gas_fixed.TRACE_FINE_BITS, (
+    f"digest spec v{DIGEST_SPEC_VERSION} names trace_fine_bits="
+    f"{DIGEST_TRACE_FINE_BITS} but gas_fixed.TRACE_FINE_BITS="
+    f"{_gas_fixed.TRACE_FINE_BITS}: a trace-currency change is a digest-spec "
+    f"bump (tests/field_digest_spec.toml CHANGE PROCEDURE)")
 
 # The frozen (name, dtype-string) contract — the integer/bool SYNCED fields, in a
 # fixed order. `gas` is the 3D (5,h,w) multi-gas stack (covers `smoke`, a view).

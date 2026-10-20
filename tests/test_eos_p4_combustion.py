@@ -225,8 +225,8 @@ def test_combustion_pass_conserves_o2_n2_soot_exactly():
     fire[cy, cx] = fire_fixed.quantize_scalar(0.6)
     # Open-air ring around the fuel tile, ambient O2/N2.
     open_air = ~solid
-    gas[O2][open_air] = gas_fixed.quantize_scalar(0.21)
-    gas[INERT_N2][open_air] = gas_fixed.quantize_scalar(0.79)
+    gas[O2][open_air] = gas_fixed.quantize_bulk_scalar(0.21)
+    gas[INERT_N2][open_air] = gas_fixed.quantize_bulk_scalar(0.79)
 
     comb = bp.CombustionSolver()
     comb.burn_rate = 2.0
@@ -234,9 +234,18 @@ def test_combustion_pass_conserves_o2_n2_soot_exactly():
     comb.H_FUEL_M = 4.0
     comb.soot_yield = 0.3
 
-    total0 = (int(gas[O2].astype(np.int64).sum())
-              + int(gas[INERT_N2].astype(np.int64).sum())
-              + int(gas[SMOKE].astype(np.int64).sum()))
+    # In ONE currency (#88): the bulk pair lifted into the trace currency
+    # (trace_from_bulk, exact) plus the smoke plane as it is -- the soot mint
+    # takes `soot` bulk counts and adds trace_from_bulk(soot) trace counts, so
+    # a raw three-plane sum would rise at TRACE_FINE_BITS > 0 with nothing
+    # minted (the C1 class of mixed-currency oracle).
+    def _total(gas):
+        bulk = (int(gas[O2].astype(np.int64).sum())
+                + int(gas[INERT_N2].astype(np.int64).sum()))
+        return (int(gas_fixed.trace_from_bulk(bulk))
+                + int(gas[SMOKE].astype(np.int64).sum()))
+
+    total0 = _total(gas)
     assert total0 > 0, "test setup produced no O2/N2 mass — vacuous"
 
     any_burn = False
@@ -244,12 +253,10 @@ def test_combustion_pass_conserves_o2_n2_soot_exactly():
         comb.step(gas, O2, INERT_N2, SMOKE, temperature, wall_hp, fire,
                   flammable, solid, is_vacuum, ignition_temp_q16,
                   SEED_TICK_DT, 1.0, 0.05)
-        total = (int(gas[O2].astype(np.int64).sum())
-                 + int(gas[INERT_N2].astype(np.int64).sum())
-                 + int(gas[SMOKE].astype(np.int64).sum()))
+        total = _total(gas)
         assert total == total0, (
             f"combustion transaction leaked/fabricated mass: {total} != {total0}")
-        if int(gas[SMOKE].sum()) > 0:
+        if int(gas[SMOKE].astype(np.int64).sum()) > 0:
             any_burn = True
     assert any_burn, "the scenario never actually burned — the gate is vacuous"
 
@@ -279,7 +286,7 @@ def test_trace_decay_credits_nothing_to_inert_n2():
     from simulation.gases import TEARGAS
     gmap.gases.diffusion[TEARGAS] = 0.0
     interior = (~gmap.solid) & (~gmap.is_vacuum)
-    gmap.gas[TEARGAS][interior] = gas_fixed.quantize_scalar(0.5)
+    gmap.gas[TEARGAS][interior] = gas_fixed.quantize_trace_scalar(0.5)
     assert np.all(gmap.wind_x == 0) and np.all(gmap.wind_y == 0)
 
     trace0 = int(gmap.gas[TEARGAS].astype(np.int64).sum())
@@ -616,7 +623,7 @@ def test_e2e_3_o2_rich_pocket_intensifies_burn():
             # headroom (design §8 P1 note), leaving N_total/N2 untouched
             # (the spike is EXTRA O2, not a species swap).
             for (dy, dx) in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                gmap.gas[O2][4 + dy, 4 + dx] = gas_fixed.quantize_scalar(3.0)
+                gmap.gas[O2][4 + dy, 4 + dx] = gas_fixed.quantize_bulk_scalar(3.0)
         _ignite(gmap, (4, 4), intensity=0.3, temp_mult=1.05)
         peak = 0.0
         for _ in range(15):
@@ -658,7 +665,7 @@ def test_e2e_4_inert_flood_smothers_fire():
             for (dy, dx) in ((-1, 0), (1, 0), (0, -1), (0, 1)):
                 y, x = 4 + dy, 4 + dx
                 gmap.gas[O2][y, x] = 0
-                gmap.gas[INERT_N2][y, x] = gas_fixed.quantize_scalar(4.0)
+                gmap.gas[INERT_N2][y, x] = gas_fixed.quantize_bulk_scalar(4.0)
         for _ in range(ticks):
             _step_tick(pr, gmap)   # game-faithful tick (v2.4 harness-fidelity fix)
         return float(gmap.fire[4, 4]) / 65536.0
@@ -682,7 +689,7 @@ def _digest_after(ticks):
     pr = _runner()
     _ignite(gmap, (4, 4), intensity=0.6, temp_mult=1.5)
     for (dy, dx) in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-        gmap.gas[O2][4 + dy, 4 + dx] = gas_fixed.quantize_scalar(2.0)
+        gmap.gas[O2][4 + dy, 4 + dx] = gas_fixed.quantize_bulk_scalar(2.0)
     h = hashlib.sha256()
     for _ in range(ticks):
         pr.step(gmap, SEED_TICK_DT)
@@ -754,7 +761,7 @@ def _payoff_intensities(perturb_absorb=None, ticks=400):
             for (dy, dx) in ((-1, 0), (1, 0), (0, -1), (0, 1)):
                 y, x = 4 + dy, 4 + dx
                 gmap.gas[O2][y, x] = 0
-                gmap.gas[INERT_N2][y, x] = gas_fixed.quantize_scalar(4.0)
+                gmap.gas[INERT_N2][y, x] = gas_fixed.quantize_bulk_scalar(4.0)
         for _ in range(ticks):
             _step_tick(pr, gmap)
         return float(gmap.fire[4, 4]) / 65536.0

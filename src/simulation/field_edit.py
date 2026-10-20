@@ -59,6 +59,7 @@ from simulation import wave_fixed     # S2a: wave_source Q16.16 quantize helpers
 from simulation import gas_fixed      # S2b: smoke/gas Q16.16 quantize helpers
 from simulation import atmosphere_fixed  # S2c: atmosphere Q16.16 quantize helpers
 from simulation import fire_fixed      # S3a: fire Q16.16 quantize helpers
+from simulation import gases as _gas_ids  # #88 P2: the SMOKE id a "smoke" edit books under
 
 # Q16.16 fixed-point scale for the `heat` field — MUST match the C++
 # fixed_point.h HEAT_SCALE (the heat-domain kit; raycaster.h until P6c) and
@@ -460,8 +461,8 @@ def _combine_atmosphere_to_N(old_o2_q: int, old_n2_q: int, contribution: float,
     is split by the ambient fraction BEFORE combining, and any clamp is
     likewise fraction-scaled so a `(0, 2.0)` atmosphere clamp still bounds the
     TOTAL N the same way a total-pressure clamp would have."""
-    old_o2 = float(old_o2_q) / gas_fixed.FP_ONE_F
-    old_n2 = float(old_n2_q) / gas_fixed.FP_ONE_F
+    old_o2 = float(gas_fixed.dequantize_bulk(old_o2_q))
+    old_n2 = float(gas_fixed.dequantize_bulk(old_n2_q))
     o2_clamp = None
     n2_clamp = None
     if clamp is not None:
@@ -470,7 +471,7 @@ def _combine_atmosphere_to_N(old_o2_q: int, old_n2_q: int, contribution: float,
         n2_clamp = (lo * _N2_FRACTION, hi * _N2_FRACTION)
     new_o2 = _combine_float(old_o2, contribution * _O2_FRACTION, mode, o2_clamp)
     new_n2 = _combine_float(old_n2, contribution * _N2_FRACTION, mode, n2_clamp)
-    return gas_fixed.quantize_scalar(new_o2), gas_fixed.quantize_scalar(new_n2)
+    return gas_fixed.quantize_bulk_scalar(new_o2), gas_fixed.quantize_bulk_scalar(new_n2)
 
 
 def _combine_temperature(old_q: int, contribution: float, mode: EditMode,
@@ -498,16 +499,17 @@ def _combine_temperature(old_q: int, contribution: float, mode: EditMode,
 
 def _combine_gas(old_q: int, contribution: float, mode: EditMode,
                  clamp: Optional[Tuple[float, float]]) -> int:
-    """Q16.16 combine for the `smoke` / gas fields (S2b). The stored value is an
-    int32 in Q16.16 density; dequantize to real density, combine with the float
+    """The TRACE-currency combine for the `smoke` / gas fields (S2b; #88). The
+    stored value is an int32 in the trace currency (gas_fixed.TRACE_ONE per real
+    unit); dequantize to real density (exact in float64 for any int32 tile), combine with the float
     path's exact +=/-=/max semantics (and the policy's TRACE_CLAMP: additive,
     floor 0 — smoke transport v2 D1), re-quantize round-to-nearest. Keeps the
     explosion smoke deposit / clear authored in real density
     while the field stays integer/deterministic (the same idiom as
     `_combine_wave` / `_combine_water`)."""
-    old_v = float(old_q) / gas_fixed.FP_ONE_F
+    old_v = float(gas_fixed.dequantize_trace(old_q))
     new_v = _combine_float(old_v, contribution, mode, clamp)
-    return gas_fixed.quantize_scalar(new_v)
+    return gas_fixed.quantize_trace_scalar(new_v)
 
 
 def _combine_fire(old_q: int, contribution: float, mode: EditMode,
@@ -632,6 +634,20 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
     # ``ch`` was resolved above: None for scalar fields (incl. a gas SLICE,
     # already sliced out), 0/1/2 for the RGB channel of an (h, w, 3) field.
 
+    # #88 P2 (design §5.1/§5.3, critique B1): a trace edit's books. The
+    # ATTEMPTED positive change lands in `trace_deposit_books[g]` BEFORE the
+    # counted saturation, whose excess lands in `trace_clip_books[g]`, so the
+    # trace identity closes with no residual. A test double without the books
+    # (the stubs in tests/test_field_edit.py) skips the booking, never the
+    # saturation.
+    gas_book_id = None
+    dep_books = clip_books = None
+    if is_gas:
+        gas_book_id = (int(edit.channel) if edit.field == "gas"
+                       else int(_gas_ids.SMOKE))
+        dep_books = getattr(gmap, "trace_deposit_books", None)
+        clip_books = getattr(gmap, "trace_clip_books", None)
+
     for (r, c, weight) in _iter_region(edit.region, edit.coords,
                                        edit.falloff, shape):
         # Skip-mask veto FIRST — a skipped tile draws no RNG (order preserved).
@@ -682,8 +698,25 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
                 gmap.gas_energy_deposit(r, c, int(contribution),
                                         "field_edit")
         elif is_gas:
-            arr[r, c] = _combine_gas(int(arr[r, c]), contribution,
-                                     edit.mode, clamp)
+            old_q = int(arr[r, c])
+            new_q = _combine_gas(old_q, contribution, edit.mode, clamp)
+            d = new_q - old_q
+            if d > 0:
+                # An insertion (ADD, MAX, or any positive change): booked at
+                # its ATTEMPTED amount, then narrowed by the counted int32
+                # saturation, which never cuts the tile (D1) and books what
+                # cannot be represented.
+                if dep_books is not None:
+                    dep_books[gas_book_id] += d
+                stored, clip = gas_fixed.trace_add_sat(old_q, d)
+                if clip and clip_books is not None:
+                    clip_books[gas_book_id] += clip
+                arr[r, c] = stored
+            else:
+                # A removal (REMOVE, the explosion's clear) or no change:
+                # floored at 0 by TRACE_CLAMP; destroyed UNBOOKED (ACCEPTED
+                # GAP G6, #98).
+                arr[r, c] = new_q
         elif is_atmosphere:
             # EOS refactor P3: bulk-N deposit split 21/79 across O2/inert_N2
             # (o2_arr/n2_arr resolved above), not a direct P write.

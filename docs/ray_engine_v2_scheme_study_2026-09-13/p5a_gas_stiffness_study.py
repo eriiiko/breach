@@ -210,7 +210,7 @@ def section4_density_does_and_does_not_cancel():
     print(f"   {'N_bulk':>8}{'h = 1: a_gas':>14}{'g':>10}{'h = 20: a_gas':>15}{'g':>10}")
     for n_bulk in (1.0, 0.5, 0.2, 0.05, 0.01, 0.002):
         n_q = R.quant(n_bulk)
-        soot_q = R.quant(0.2 * n_bulk)
+        soot_q = R.quant_trace(0.2 * n_bulk)   # a trace density (#88)
         out = []
         for h in (1.0, 20.0):
             a_gas = R.gas_extinction_q([soot_q], [R.quant(h)], n_q)

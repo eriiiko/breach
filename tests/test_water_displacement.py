@@ -317,7 +317,7 @@ def _corridor_sim(with_water: bool):
         sim.physics_runner.water.k_p = 0.0
     # S2b: gas is int32 Q16.16 — seed the source side at FULL density (the old
     # `= 10.0` float was clamped to 1.0 by the solver anyway). FP_ONE counts.
-    g.gas[SMOKE][1, 1:LINE_X] = gas_fixed.SMOKE_MAX_Q
+    g.gas[SMOKE][1, 1:LINE_X] = gas_fixed.TRACE_ONE
     # EOS P3: the source-side overpressure must live in the REAL state (P is
     # solver-materialized) — scale the bulk N on the left; the P_prev paint
     # is kept only as a same-tick seed. SCENE RE-TUNED 1.3 -> 1.1: under the
@@ -350,7 +350,7 @@ def _far_side_gas(g) -> float:
     # S2b: gas is int32 Q16.16 — dequantize to real density so the float
     # thresholds (< 1e-12 sealed / > 1e-12 crossed) stay meaningful.
     return float(g.gas[SMOKE][1, LINE_X + 1:].astype(np.float64).sum()) \
-        / gas_fixed.FP_ONE_F
+        / float(gas_fixed.TRACE_ONE)
 
 
 def test_flooded_line_seals_corridor_gas_and_wind():
@@ -378,7 +378,7 @@ def test_flooded_line_seals_corridor_gas_and_wind():
     # ... and non-vacuously so: the source side still holds its gas. S2b:
     # dequantize to real density (the source was seeded at full density).
     gas_near = float(g.gas[SMOKE][1, 1:LINE_X].astype(np.float64).sum()) \
-        / gas_fixed.FP_ONE_F
+        / float(gas_fixed.TRACE_ONE)
     assert gas_near > 1.0, "source-side gas vanished (vacuous one-sidedness)"
 
 

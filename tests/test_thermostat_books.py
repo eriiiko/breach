@@ -63,7 +63,7 @@ def _sealed_hot_room_sim():
                      enable_recorder=False)
     g = sim.gmap
     interior = (~g.solid) & (~g.is_vacuum)
-    g.seed_gas_temperature(interior, gas_fixed.quantize_scalar(300.0))
+    g.seed_gas_temperature(interior, gas_fixed.quantize_q16_scalar(300.0))
     sim.set_paused(False)
     return sim
 

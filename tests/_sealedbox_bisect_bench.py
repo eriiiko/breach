@@ -123,7 +123,8 @@ from simulation import Simulation  # noqa: E402
 from simulation import materials  # noqa: E402
 from simulation import optics_fixed as _optics_fx  # noqa: E402  (#78: the one door)
 from simulation.payloads import ignite_ring  # noqa: E402
-from simulation.gas_fixed import FP_ONE_F as _Q, FP_SHIFT as _SH  # noqa: E402  (#70)
+from simulation.gas_fixed import Q16_ONE as _Q16_ONE, Q16_SHIFT as _SH  # noqa: E402  (#70)
+_Q = float(_Q16_ONE)   # the bulk N / temperature Q16 unit (#88: never the trace one)
 
 if _USE_CUDA:
     enable_all_backends(bp)
@@ -334,12 +335,12 @@ class _Trace70:
         self.t_amb = int(g._gas_energy_t_amb_raw())
         self.no_face = int(self.tsol.no_face)
         # The SAME quantizations TemperatureSolver::step makes of its float
-        # dials (fixed_point.h quantize == gas_fixed.quantize_scalar: round
+        # dials (fixed_point.h quantize == gas_fixed.quantize_q16_scalar: round
         # half away from zero; the pybind float reads back the float32 value).
         self.c_v = float(self.tsol.c_v)
-        self.c_v_q = gas_fixed.quantize_scalar(self.c_v if self.c_v > 0 else 1.0)
-        self.n_floor_q = gas_fixed.quantize_scalar(float(self.tsol.n_floor_heat))
-        self.t_max_q = gas_fixed.quantize_scalar(float(self.tsol.T_MAX_PHYS))
+        self.c_v_q = gas_fixed.quantize_q16_scalar(self.c_v if self.c_v > 0 else 1.0)
+        self.n_floor_q = gas_fixed.quantize_q16_scalar(float(self.tsol.n_floor_heat))
+        self.t_max_q = gas_fixed.quantize_q16_scalar(float(self.tsol.T_MAX_PHYS))
         v_tile = float(g.tile_size_m) ** 2 * float(CFG.physics.water.ceiling_h)
         self.J_heat = THERMAL_MASS_UNIT * v_tile / _Q ** 2
         self.J_books = self.c_v * self.J_heat

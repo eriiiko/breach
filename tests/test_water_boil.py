@@ -40,8 +40,8 @@ space), and the steam puff must land in ordinary interior air. The sealed
 cell also makes the pipe-model substeps a no-op on the water (nowhere to
 flow). The puff itself does not survive in the held cell: it has no air
 (bulk N == 0), so smoke transport v2's N_EPS wipe destroys it the tick it
-lands, booked — the tests read the DEPOSIT by bracketing against the trace
-books (``_step_puffed``), the design's measure for every deposit (#12 §3).
+lands, booked — the tests read the DEPOSIT from its mint book
+(``_step_puffed``, #88 P2), and assert the trace books close around it.
 
 Run:
     C:/Users/steen/anaconda3/python.exe -m pytest tests/test_water_boil.py -q
@@ -68,26 +68,32 @@ from simulation import gas_fixed  # noqa: E402  (S2b: gas Q16.16 dequantize)
 
 
 def _gas_mass(plane):
-    """Total real-density mass of a gas plane (S2b: int32 Q16.16 -> /65536)."""
-    return float(plane.astype(np.float64).sum()) / gas_fixed.FP_ONE_F
+    """Total real-density mass of a TRACE gas plane (#88: the trace currency),
+    summed in int64 then dequantized once."""
+    return float(gas_fixed.dequantize_trace(int(plane.astype(np.int64).sum())))
 
 
 def _step_puffed(sim, g):
     """One sim tick; returns the STEAM the tick DEPOSITED, in real density,
-    measured by BRACKETING (smoke transport v2, #12, design §3): the change
-    in total steam plus everything the trace transport booked away this tick
-    (vent + wipe + sink + decay). The bracket, not the plane, is the puff's
-    measure because the boiling cell is HELD at bulk N == 0 (the vacuum hold
-    below): with no air to carry it, the trace transport's N_EPS wipe (stage
-    3c) destroys the puff the same tick it lands -- booked, so the bracket
-    still reads it to the count."""
+    read from its BOOK (#88 P2, design §5.1 / critique B1): the W5 puff is
+    booked at its attempted amount in ``EOSSolver.trace_mint_sum``. The plane
+    is not the measure because the boiling cell is HELD at bulk N == 0 (the
+    vacuum hold below): with no air to carry it, the trace transport's N_EPS
+    wipe (stage 3c) destroys the puff the same tick it lands -- booked. So the
+    tick also asserts the §5.1 identity on the steam plane, with NO residual:
+    ``Δ S == mint − clip − vent − wipe − sink − decay`` (the bracket the puff
+    used to be inferred from now has to close against the book)."""
     eos = sim.physics_runner.engine.eos
     before = int(g.gas[STEAM].astype(np.int64).sum())
     sim.step()
     after = int(g.gas[STEAM].astype(np.int64).sum())
-    booked = (eos.boundary_flux()[STEAM] + eos.trace_wipe_sum()[STEAM]
-              + eos.trace_sink_sum()[STEAM] + eos.trace_decay_sum()[STEAM])
-    return (after - before + booked) / gas_fixed.FP_ONE_F
+    mint = eos.trace_mint_sum()[STEAM]
+    lost = (eos.boundary_flux()[STEAM] + eos.trace_wipe_sum()[STEAM]
+            + eos.trace_sink_sum()[STEAM] + eos.trace_decay_sum()[STEAM]
+            + eos.trace_clip_sum()[STEAM] + g.trace_clip_books[STEAM])
+    assert after - before == mint + g.trace_deposit_books[STEAM] - lost, (
+        f"steam books do not close: Δ={after - before} mint={mint} lost={lost}")
+    return float(gas_fixed.dequantize_trace(mint))
 
 # S1: water_depth is int32 Q16.16 (~1.5e-5 m granularity). The W5 boil is a
 # FLOAT BRIDGE (it dequantizes depth, boils in float, re-quantizes the removed

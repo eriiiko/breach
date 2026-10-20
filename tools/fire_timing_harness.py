@@ -94,6 +94,7 @@ from level_loader import LevelData                # noqa: E402
 from simulation import Simulation                 # noqa: E402
 from simulation import fire_fixed                 # noqa: E402
 from simulation.gases import SMOKE, O2, INERT_N2  # noqa: E402
+from simulation import gas_fixed                  # noqa: E402  (#88: the trace currency)
 
 FP_ONE = 1 << 16
 
@@ -501,9 +502,12 @@ def _run_one_inner(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
         ntot_room = float(_ntm.mean()) / FP_ONE
         o2room_x = float(np.divide(_o2m, _ntm, out=np.zeros_like(_o2m),
                                    where=_ntm > 0).mean())
-        smoke = gmap.gas[SMOKE].astype(np.float64)
+        # Smoke in REAL units through the trace currency (#88); the old
+        # one-raw-Q16-count threshold kept as a real amount (1 / FP_ONE).
+        smoke = gas_fixed.dequantize_trace(gmap.gas[SMOKE])
         mass = float(smoke.sum())
-        cxc = float((smoke * xgrid).sum() / mass) if mass > 1.0 else float("nan")
+        cxc = (float((smoke * xgrid).sum() / mass) if mass > 1.0 / FP_ONE
+               else float("nan"))
         for key, val in (("t", t), ("I", I), ("T", T), ("hp", hp), ("o2", o2),
                          ("gate", gate), ("o2far", o2far), ("cx", cxc), ("mass", mass),
                          ("o2far_x", xfar), ("o2room", o2room), ("o2room_x", o2room_x),
@@ -587,7 +591,7 @@ def _run_one_inner(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
     drift_tiles = drift_ms = float("nan")
     valid = ~np.isnan(rec["cx"])
     idx = np.nonzero(valid)[0]
-    idx = idx[(rec["cx"][idx] < (interior_w * 0.70)) & (rec["mass"][idx] > 50.0)
+    idx = idx[(rec["cx"][idx] < (interior_w * 0.70)) & (rec["mass"][idx] > 50.0 / FP_ONE)
               & (t_arr[idx] <= 6.0)]
     if idx.size >= 6:
         idx = idx[2:]
@@ -652,7 +656,7 @@ def write_timeseries_csv(m, path):
             w.writerow([f"{rec['t'][i]:.4f}", f"{rec['t'][i] / 60.0:.6f}",
                         f"{rec['I'][i]:.6f}", f"{rec['T'][i]:.3f}", f"{rec['hp'][i]:.6f}",
                         f"{rec['o2'][i]:.6f}", f"{rec['gate'][i]:.4f}",
-                        f"{rec['o2far'][i]:.6f}", f"{rec['mass'][i] / FP_ONE:.4f}",
+                        f"{rec['o2far'][i]:.6f}", f"{rec['mass'][i]:.4f}",
                         f"{rec['o2far_x'][i]:.6f}", f"{rec['o2room'][i]:.6f}",
                         f"{rec['o2room_x'][i]:.6f}", f"{rec['ntot_room'][i]:.6f}",
                         f"{rec['tfar'][i]:.4f}",
@@ -730,7 +734,7 @@ def _print_run(m):
         tag = "  <- final" if i == len(rec["t"]) - 1 else ""
         print(f"  {rec['t'][i]:6.1f}  {rec['I'][i]:5.3f}  {rec['T'][i]:8.1f}  "
               f"{rec['hp'][i]:7.3f}  {rec['o2'][i]:6.4f}  {rec['gate'][i]:4.2f}  "
-              f"{rec['o2far'][i]:6.4f}  {rec['mass'][i]/FP_ONE:8.1f}{tag}")
+              f"{rec['o2far'][i]:6.4f}  {rec['mass'][i]:8.1f}{tag}")
     print()
 
 

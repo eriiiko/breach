@@ -409,6 +409,8 @@ __global__ void trace_apply(int32_t* __restrict__ S,
                             const bool* __restrict__ is_vacuum,
                             const bool* __restrict__ is_ambient,
                             unsigned long long* __restrict__ vent,
+                            unsigned long long* __restrict__ clip,
+                            unsigned long long* __restrict__ neg,
                             int h, int w) {
     const int n = h * w;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
@@ -468,10 +470,17 @@ __global__ void trace_apply(int32_t* __restrict__ S,
             }
         }
         // §2.4: S >= 0 by construction (Σ_f phi_f <= S_pre: the mass limiter
-        // bounds Σ_f dq_f by the donor's own N_pre, floordiv never rounds up);
-        // the int32 narrow is safe while Σ_map S < 2^31 (host-side tail assert).
-        S[i] = (int32_t)(s_own + ds);
+        // bounds Σ_f dq_f by the donor's own N_pre, floordiv never rounds up).
+        // #88 P2: the int32 narrow is the counted saturation, the CPU twin's
+        // call ONCE per cell on the net (A4): the excess a receiver cannot
+        // store is booked in `clip`, a negative net counted in `neg` (never
+        // clamped; every CUDA gate asserts 0). Both slots are >= 0, so the
+        // unsigned-long-long atomicAdd is the plain sum.
+        int64_t c = 0, ng = 0;
+        S[i] = fixedpoint::trace_add_sat((int32_t)s_own, ds, &c, &ng);
         if (vented != 0) atomicAdd(vent, (unsigned long long)vented);
+        if (c != 0)  atomicAdd(clip, (unsigned long long)c);
+        if (ng != 0) atomicAdd(neg, (unsigned long long)ng);
     }
 }
 
@@ -676,7 +685,8 @@ void bulk_flux_energy_transport_device(
         const bool* d_is_ambient, const int32_t* n_amb_cons,
         unsigned long long* const* d_rail,
         int32_t* const* d_trace_planes, int n_trace, int32_t* d_spre,
-        unsigned long long* d_tvent, unsigned long long* d_twipe) {
+        unsigned long long* d_tvent, unsigned long long* d_twipe,
+        unsigned long long* d_tclip, unsigned long long* d_tneg) {
     const int n = h * w;
     if (n <= 0) return;
     const int block = 256;
@@ -686,7 +696,8 @@ void bulk_flux_energy_transport_device(
     // trace planes (the chained path its live ones, the resident path all).
     const bool do_trace = (d_trace_planes != nullptr && n_trace > 0
                            && d_spre != nullptr && d_tvent != nullptr
-                           && d_twipe != nullptr);
+                           && d_twipe != nullptr && d_tclip != nullptr
+                           && d_tneg != nullptr);
 
     // ---- stage 1: snapshot (E, n_bulk) PRE-flux (arc #54 design §2.7) -----
     // `d_e` is now a PLAIN SNAPSHOT of the live `gas_energy` (D2D copy) —
@@ -731,7 +742,8 @@ void bulk_flux_energy_transport_device(
             trace_apply<<<grid, block>>>(d_trace_planes[k], d_spre, d_nb,
                                          d_dqsum_e, d_dqsum_s,
                                          d_solid, d_is_vacuum, d_is_ambient,
-                                         &d_tvent[k], h, w);
+                                         &d_tvent[k], &d_tclip[k], &d_tneg[k],
+                                         h, w);
             cuda_check(cudaGetLastError(), "trace_apply");
         }
     }

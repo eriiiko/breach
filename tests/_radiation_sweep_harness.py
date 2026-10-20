@@ -36,6 +36,7 @@ import sweep_ref_q as R              # noqa: E402  (the executable spec)
 
 ONE = R.ONE
 F_ONE = R.F_ONE
+T_ONE = R.TRACE_ONE          # one real unit of TRACE density (#88)
 T_AMB_Q = R.K_AMB << 16              # 293 game in Q16.16 (G12: slope 1)
 TRANSPORTS = {"step": bp.RadiationSweep.STEP, "shear": bp.RadiationSweep.SHEAR}
 
@@ -128,8 +129,11 @@ def random_gas(rng, h, w, n_trace=3):
     Returns (gas planes, hq list, n_bulk plane)."""
     Q = R.quant
     dens = [0, 0, 1, Q(0.001), Q(0.06), Q(0.27), ONE, -Q(0.05)]
-    trace = [[[rng.choice(dens) for _ in range(w)] for _ in range(h)]
-             for _ in range(n_trace)]
+    # The trace planes are drawn in the FINE trace currency (#88 A8): today's
+    # Q16 choice moved by R.trace_fine_draw (an identity, consuming no draw, at
+    # TRACE_FINE_BITS = 0); the bulk pair below stays Q16.
+    trace = [[[R.trace_fine_draw(rng, rng.choice(dens)) for _ in range(w)]
+              for _ in range(h)] for _ in range(n_trace)]
     hq_pool = [0, Q(0.3), Q(0.9), Q(5.0), Q(37.5), R.HEAT_ABSORB_Q_MAX]
     hq = [0] + [rng.choice(hq_pool[1:]) for _ in range(n_trace - 1)] + [0, 0]
     o2 = [[13763] * w for _ in range(h)]
@@ -144,7 +148,18 @@ def random_gas(rng, h, w, n_trace=3):
     y, x = rng.randrange(h), rng.randrange(w)
     o2[y][x], n2[y][x] = 0, R.N_EPS_RAW                      # the floor's edge
     n_bulk = [[o2[y][x] + n2[y][x] for x in range(w)] for y in range(h)]
-    return trace + [o2, n2], hq, n_bulk
+    gas = trace + [o2, n2]
+    # Non-vacuity (#88 §7): the draw must hold ABSORBING cells (the density law
+    # above zero after the trace currency's shift, bulk above the floor) -- so a
+    # mis-scaled vocabulary (Q16 densities read in the trace currency) cannot
+    # quietly turn every gate that uses it into two transparent media compared.
+    n_abs = sum(1 for y in range(h) for x in range(w)
+                if R.gas_extinction_q([gas[g][y][x] for g in range(len(gas))], hq,
+                                      n_bulk[y][x]) > 0)
+    print(f"  random_gas {h}x{w}: {n_abs} absorbing cells")
+    if n_abs <= 0:
+        raise AssertionError(f"random_gas {h}x{w}: no absorbing cell -- vacuous draw")
+    return gas, hq, n_bulk
 
 
 def smoke_feature_scene():
@@ -165,16 +180,17 @@ def smoke_feature_scene():
     a[3][10] = d[3][10] = Q(0.9)                        # a cold receiver
     a[5][6] = d[5][6] = Q(0.5)                          # a thermal solid ...
     ts = ts_from_a(a)
+    TQ = R.quant_trace                                  # trace densities (#88)
     smoke = R.plane(h, w, 0)
-    zero_g = R.plane(h, w, Q(0.5))                      # coefficient 0: never read
+    zero_g = R.plane(h, w, TQ(0.5))                     # coefficient 0: never read
     o2 = R.plane(h, w, 13763)
     n2 = R.plane(h, w, 51773)
     cells = {"thin": (1, 3), "saturated": (2, 4), "hot": (3, 5), "floored": (4, 3),
              "at_floor": (4, 4), "body_thin": (1, 7), "body_opaque": (2, 7),
              "negative": (6, 2)}
     for key, (y, x) in cells.items():
-        smoke[y][x] = {"thin": Q(0.06), "negative": -Q(0.4)}.get(key, ONE)
-    smoke[5][6] = ONE                                   # ... full of smoke it ignores
+        smoke[y][x] = {"thin": TQ(0.06), "negative": -TQ(0.4)}.get(key, T_ONE)
+    smoke[5][6] = T_ONE                                 # ... full of smoke it ignores
     T[3][5] = 5000 << 16                                # hot smoke radiates
     y, x = cells["floored"]
     o2[y][x] = n2[y][x] = 0
@@ -183,7 +199,7 @@ def smoke_feature_scene():
     for key in ("body_thin", "body_opaque"):
         y, x = cells[key]
         d[y][x] = ONE
-    smoke[1][7] = Q(0.06)
+    smoke[1][7] = TQ(0.06)
     gas = [zero_g, smoke, o2, n2]
     hq = [0, Q(5.0), 0, 0]
     n_bulk = [[o2[y][x] + n2[y][x] for x in range(w)] for y in range(h)]
@@ -222,21 +238,21 @@ def gas_fleck_scene():
     smoke = R.plane(h, w, 0)
     inert = R.plane(h, w, 0)                            # coefficient 0: never absorbs
     n2 = R.plane(h, w, ONE)                             # the bulk count, one plane
-    smoke[6][9] = ONE                                   # ... full of smoke it ignores
-    # name: (y, x, smoke density, bulk N, T game)
+    smoke[6][9] = T_ONE                                 # ... full of smoke it ignores
+    # name: (y, x, smoke density (TRACE currency, #88), bulk N, T game)
     spec = {
-        "hot_N1":          (1, 3, ONE, ONE, 3000),
-        "hot_top":         (1, 5, ONE, ONE, 15996),
-        "hot_isobaric":    (1, 7, ONE, isobaric_n_q(5000), 5000),
-        "hot_floor":       (2, 3, ONE, R.N_FLOOR_Q_LIVE, 1263),
-        "hot_below_floor": (2, 5, ONE, 200, 800),
-        "hot_eps":         (2, 7, ONE, R.N_EPS_RAW, 400),
-        "mix_hot":         (3, 3, Q(0.04), ONE, 8000),   # a_gas = 5.0 x 0.04 = 0.2
-        "cool":            (3, 5, ONE, ONE, 150),
-        "sub_ambient":     (3, 7, ONE, ONE, -100),
-        "hot_no_bulk":     (4, 3, ONE, 0, 5000),
+        "hot_N1":          (1, 3, T_ONE, ONE, 3000),
+        "hot_top":         (1, 5, T_ONE, ONE, 15996),
+        "hot_isobaric":    (1, 7, T_ONE, isobaric_n_q(5000), 5000),
+        "hot_floor":       (2, 3, T_ONE, R.N_FLOOR_Q_LIVE, 1263),
+        "hot_below_floor": (2, 5, T_ONE, 200, 800),
+        "hot_eps":         (2, 7, T_ONE, R.N_EPS_RAW, 400),
+        "mix_hot":         (3, 3, R.quant_trace(0.04), ONE, 8000),   # a_gas = 5.0 x 0.04 = 0.2
+        "cool":            (3, 5, T_ONE, ONE, 150),
+        "sub_ambient":     (3, 7, T_ONE, ONE, -100),
+        "hot_no_bulk":     (4, 3, T_ONE, 0, 5000),
         "hot_inert_only":  (4, 5, 0, ONE, 5000),
-        "body_hot":        (4, 7, ONE, ONE, 5000),
+        "body_hot":        (4, 7, T_ONE, ONE, 5000),
     }
     cells = {}
     for name, (y, x, dens, n_q, T_game) in spec.items():
@@ -244,7 +260,7 @@ def gas_fleck_scene():
         n2[y][x] = n_q
         T[y][x] = T_game << 16
         cells[name] = (y, x)
-    inert[4][5] = ONE
+    inert[4][5] = T_ONE
     y, x = cells["body_hot"]
     d[y][x] = ONE                                       # a marine standing in hot smoke
     gas = [inert, smoke, n2]

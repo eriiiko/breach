@@ -103,19 +103,22 @@ def test_two_gases_in_one_cell_mix_as_the_density_weighted_sum():
     # its strongest channel: the sum stays below the cap whatever the shipped
     # coefficients are (soot's derived light_absorb is ~100x the old dial
     # product -- #12 handle 1 -- and a fixed density would cap).
-    dP = (3 * ONE * ONE) // (10 * int(max(lab[POISON])))
-    dS = (3 * ONE * ONE) // (10 * int(max(lab[SMOKE])))
+    # (#88: the densities are TRACE planes, R.TRACE_ONE per real unit; the
+    # coefficients Q16 per real unit; the sum finishes by R.trace_density_shr.)
+    dP = (3 * ONE * R.TRACE_ONE) // (10 * int(max(lab[POISON])))
+    dS = (3 * ONE * R.TRACE_ONE) // (10 * int(max(lab[SMOKE])))
+    shr = R.trace_density_shr
     y, xp, xs, xm = 4, 3, 5, 7
     _lq, _gl, a_eff, gco = _run({(y, xp): {POISON: dP}, (y, xs): {SMOKE: dS},
                                  (y, xm): {POISON: dP, SMOKE: dS}}, tbl)
     for c in range(3):
-        want_a = ONE - R.exp_neg_q16((int(lab[POISON][c]) * dP + int(lab[SMOKE][c]) * dS) >> 16)
-        want_g = min(ONE, (int(lgl[POISON][c]) * dP + int(lgl[SMOKE][c]) * dS) >> 16)
+        want_a = ONE - R.exp_neg_q16(shr(int(lab[POISON][c]) * dP + int(lab[SMOKE][c]) * dS))
+        want_g = min(ONE, shr(int(lgl[POISON][c]) * dP + int(lgl[SMOKE][c]) * dS))
         assert want_a < ONE, "the scene must stay below the cap to test the sum"
         assert int(a_eff[c, y, xm]) == want_a, (c, int(a_eff[c, y, xm]), want_a)
         assert int(gco[c, y, xm]) == want_g, (c, int(gco[c, y, xm]), want_g)
-        assert int(a_eff[c, y, xp]) == ONE - R.exp_neg_q16((int(lab[POISON][c]) * dP) >> 16)
-        assert int(a_eff[c, y, xs]) == ONE - R.exp_neg_q16((int(lab[SMOKE][c]) * dS) >> 16)
+        assert int(a_eff[c, y, xp]) == ONE - R.exp_neg_q16(shr(int(lab[POISON][c]) * dP))
+        assert int(a_eff[c, y, xs]) == ONE - R.exp_neg_q16(shr(int(lab[SMOKE][c]) * dS))
         assert int(a_eff[c, y, xm]) > max(int(a_eff[c, y, xp]), int(a_eff[c, y, xs]))
 
 
@@ -137,5 +140,5 @@ def test_an_empty_gas_stack_is_optically_nothing():
     assert not np.any(gl_air) and not np.any(gl_none)
     assert not np.any(a_air[:, :, 1:]) and not np.any(g_air)
     assert np.any(lq_air[:, :, 1:] > 0), "the room must be lit for this to mean anything"
-    lq_s, gl_s, a_s, g_s = _run({(4, 4): {SMOKE: Q(0.05)}}, tbl)
+    lq_s, gl_s, a_s, g_s = _run({(4, 4): {SMOKE: R.quant_trace(0.05)}}, tbl)   # trace (#88)
     assert np.all(a_s[:, 4, 4] > 0) and np.all(gl_s[:, 4, 4] > 0)

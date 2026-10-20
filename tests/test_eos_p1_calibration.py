@@ -70,8 +70,8 @@ def test_eos_C_calibration_reproduces_ambient_one_atm():
     t_amb_k = float(ts.eos_t_amb_k)
     N_amb = 1.0
 
-    lhs_q = gas_fixed.quantize_scalar(C * N_amb * t_amb_k)
-    rhs_q = gas_fixed.quantize_scalar(1.0)
+    lhs_q = gas_fixed.quantize_q16_scalar(C * N_amb * t_amb_k)
+    rhs_q = gas_fixed.quantize_q16_scalar(1.0)
     assert abs(lhs_q - rhs_q) <= 1, (
         f"C*N_amb*T_amb_k calibration off by {abs(lhs_q - rhs_q)} counts "
         f"(C={C!r}, t_amb_k={t_amb_k!r}, lhs_q={lhs_q}, rhs_q={rhs_q})")
@@ -99,7 +99,7 @@ def test_eos_effective_pin_is_65632_not_65536():
     docstring; tests/test_air_boundary.py:548 pins the same constant
     independently — updated alongside this one, see spec §5.6)."""
     ts = _load_ts()
-    n_total_q = gas_fixed.quantize_scalar(1.0)
+    n_total_q = gas_fixed.quantize_bulk_scalar(1.0)
     assert n_total_q == 65536
     pin = ambient.effective_pin(n_total_q, c=ts.C, t_amb_k=ts.eos_t_amb_k)
     assert pin == 65632
@@ -119,9 +119,9 @@ def test_ambient_o2_plus_n2_equals_legacy_atmosphere_scale():
     just close. This is the concrete Q16.16-level twin of the C-calibration
     witness above: quantize(0.21) + quantize(0.79) == quantize(1.0) exactly,
     because the two roundings' fractional remainders (.56 and .44) sum to 1.0."""
-    o2_q = gas_fixed.quantize_scalar(0.21)
-    n2_q = gas_fixed.quantize_scalar(0.79)
-    assert o2_q + n2_q == gas_fixed.FP_ONE == gas_fixed.quantize_scalar(1.0)
+    o2_q = gas_fixed.quantize_bulk_scalar(0.21)
+    n2_q = gas_fixed.quantize_bulk_scalar(0.79)
+    assert o2_q + n2_q == gas_fixed.BULK_ONE == gas_fixed.quantize_bulk_scalar(1.0)
 
 
 def test_o2_tank_spike_fits_q16_16_with_headroom():
@@ -140,11 +140,11 @@ def test_o2_tank_spike_fits_q16_16_with_headroom():
         f"O2-tank spike {spike} leaves < {HEADROOM_FACTOR}x headroom under the "
         f"Q16.16 ceiling {Q16_16_MAX_REAL}")
 
-    spike_q = gas_fixed.quantize_scalar(spike)
+    spike_q = gas_fixed.quantize_bulk_scalar(spike)
     # Representable as int32 (the storage type) ...
     assert -(1 << 31) < spike_q < (1 << 31)
     # ... and nowhere near even the FORMAT's own +-32768 overflow edge.
-    assert abs(spike_q) < gas_fixed.FP_ONE * Q16_16_MAX_REAL / HEADROOM_FACTOR
+    assert abs(spike_q) < gas_fixed.BULK_ONE * Q16_16_MAX_REAL / HEADROOM_FACTOR
 
 
 if __name__ == "__main__":

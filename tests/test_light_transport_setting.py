@@ -119,8 +119,8 @@ def _burning_smoky_playground(*, transport, seed=5):
     air = (~g.thermal_solid) & (~g.solid) & (~g.is_vacuum)
     yy, xx = np.mgrid[0:g.material.shape[0], 0:g.material.shape[1]]
     cloud = air & (np.abs(yy - y0) <= 4) & (np.abs(xx - x0) <= 4)
-    dens = gas_fixed.quantize(np.where((yy + xx) % 3 == 0, 0.27, 0.06))
-    g.gas[SMOKE][cloud] = dens[cloud]
+    dens_trace = gas_fixed.quantize_trace(np.where((yy + xx) % 3 == 0, 0.27, 0.06))
+    g.gas[SMOKE][cloud] = dens_trace[cloud]
     sim.set_light(True)
     sim.physics_runner.engine.light_transport = transport
     return sim, pick

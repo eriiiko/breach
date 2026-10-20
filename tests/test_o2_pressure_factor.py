@@ -187,7 +187,7 @@ def _claim_gate_g(p_q, p_ext_q=P_EXT_Q, p_full_q=P_FULL_Q):
     the demand IS g, and with O2 to spare the air cell is debited exactly g."""
     h, w = 1, 3
     gas = np.zeros((N_GASES, h, w), dtype=np.int32)
-    gas[O2][0, 1] = gas_fixed.quantize_scalar(2.0)
+    gas[O2][0, 1] = gas_fixed.quantize_bulk_scalar(2.0)
     solid = np.array([[True, False, True]])
     flammable = np.array([[True, False, False]])
     is_vacuum = np.zeros((h, w), dtype=bool)
@@ -261,9 +261,9 @@ def _fire_state(rng, h, w, p_lo_q, p_hi_q):
     return dict(
         fire=fire,
         atmosphere=rng.integers(p_lo_q, p_hi_q + 1, size=(h, w), dtype=np.int32),
-        n_o2=gas_fixed.quantize(frac * total).astype(np.int32),
-        n_total=gas_fixed.quantize(total).astype(np.int32),
-        smoke=gas_fixed.quantize(rng.random((h, w)) * 0.3).astype(np.int32),
+        n_o2=gas_fixed.quantize_bulk(frac * total).astype(np.int32),
+        n_total=gas_fixed.quantize_bulk(total).astype(np.int32),
+        smoke=gas_fixed.quantize_trace(rng.random((h, w)) * 0.3).astype(np.int32),
         wall_hp=wall_fixed.quantize(rng.random((h, w)) * 60.0).astype(np.int32),
         temperature=np.array([[quantize_q16(v) for v in row] for row in temps],
                              dtype=np.int32),
@@ -294,8 +294,8 @@ def _comb_state(rng, h, w, p_lo_q, p_hi_q):
     is_vacuum = (~solid) & (rng.random((h, w)) < 0.1)
     air = (~solid) & (~is_vacuum)
     gas = np.zeros((N_GASES, h, w), dtype=np.int32)
-    gas[O2] = np.where(air, gas_fixed.quantize(rng.random((h, w)) * 0.5), 0)
-    gas[INERT_N2] = np.where(air, gas_fixed.quantize_scalar(0.79), 0)
+    gas[O2] = np.where(air, gas_fixed.quantize_bulk(rng.random((h, w)) * 0.5), 0)
+    gas[INERT_N2] = np.where(air, gas_fixed.quantize_bulk_scalar(0.79), 0)
     temps = rng.random((h, w)) * 1400.0 - 100.0
     return dict(
         gas=gas,
@@ -513,8 +513,8 @@ def _one_fire(atm_nbr, n_total_nbr, x_nbr=0.21, solid_nbrs=(), vacuum_nbrs=()):
     st["temperature"][2, 2] = quantize_q16(700.0)
     st["wall_hp"][2, 2] = wall_fixed.quantize_scalar(60.0)
     st["atmosphere"][:] = atmosphere_fixed.quantize_scalar(atm_nbr)
-    st["n_total"][:] = gas_fixed.quantize_scalar(n_total_nbr)
-    st["n_o2"][:] = gas_fixed.quantize_scalar(x_nbr * n_total_nbr)
+    st["n_total"][:] = gas_fixed.quantize_bulk_scalar(n_total_nbr)
+    st["n_o2"][:] = gas_fixed.quantize_bulk_scalar(x_nbr * n_total_nbr)
     for c in solid_nbrs:
         st["is_wall"][c] = True
         st["atmosphere"][c] = 0
@@ -564,7 +564,7 @@ def _claim_gate_g_with_far_vacuum():
     vacuum pressure: only the air cell's own reading may count."""
     h, w = 1, 3
     gas = np.zeros((N_GASES, h, w), dtype=np.int32)
-    gas[O2][0, 1] = gas_fixed.quantize_scalar(2.0)
+    gas[O2][0, 1] = gas_fixed.quantize_bulk_scalar(2.0)
     solid = np.array([[True, False, True]])
     flammable = np.array([[True, False, False]])
     wall_hp = np.zeros((h, w), dtype=np.int32)

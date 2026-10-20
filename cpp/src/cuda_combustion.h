@@ -137,7 +137,14 @@ void combustion_step(
     // FP_HD o2_pressure::factor the CPU pass calls, at the same air cell j.
     // nullptr / 0 / 0 -> g == FP_ONE, the pre-#7 law bit-for-bit.
     const int32_t* atmosphere = nullptr,
-    int32_t p_ext_q = 0, int32_t p_full_q = 0);
+    int32_t p_ext_q = 0, int32_t p_full_q = 0,
+    // #88 P2: the soot mint's books (the CPU CombustionSolver::step's
+    // trace_mint / trace_clip / trace_neg twins), ADDED to (+=), nullable.
+    // On device an APPENDED unsigned-long-long block of 3 slots beside
+    // d_dep_drop -- [0] mint attempted, [1] saturation clip, [2] negative
+    // hits -- all >= 0, zeroed per call.
+    int64_t* trace_mint = nullptr, int64_t* trace_clip = nullptr,
+    int64_t* trace_neg = nullptr);
 
 // Backend flag: when ON, PhysicsRunner's combustion pass dispatches to
 // combustion_step on the GPU instead of the CPU CombustionSolver::step.
