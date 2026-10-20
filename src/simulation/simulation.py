@@ -1370,6 +1370,11 @@ class Simulation:
 
         # 1. Fresh event buffer.
         self.tick_events.clear()
+        # #88 P2 (design §5.1, critique B7): the Python trace books (FieldEdit
+        # deposits, the saturation's clips at the Python sites) are per tick,
+        # over the window this step brackets -- reset BEFORE the 6b flush that
+        # writes them. (The engine's twins reset at the head of physics.)
+        self.gmap.reset_trace_books()
 
         # Round-clock head (control-modularity P1, §3a): tick-0-only work
         # (DET_START_PHASE1, path-offset reset, initial unit stamp under

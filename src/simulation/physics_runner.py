@@ -888,6 +888,13 @@ class PhysicsRunner:
         # Smoke transport v2 (#12, design §2.2): the trace diffusion's
         # stability, re-checked on the integer at the dt this tick binds.
         self._check_trace_dt(gmap, sim_time)
+        # #88 P2 (design §5.1, critique B7): the counted saturation's books and
+        # the trace mint book are PER TICK, reset HERE -- at the head of the
+        # physics step, before the W5 puff / W3 receiver add (_step_water) that
+        # write them, which run BEFORE EOSSolver.step (whose entry resets only
+        # vent / wipe / sink / decay). Both the normal and the resident tick
+        # pass through this line.
+        self.eos.reset_trace_sat_books(int(gmap.gas.shape[0]))
         if _RESIDENCY_ENABLED and getattr(self.bp, "HAS_CUDA", False):
             return self._step_resident(gmap, sim_time, tick=tick)
 
@@ -1182,6 +1189,8 @@ class PhysicsRunner:
                 atmosphere=gmap.atmosphere,
                 p_ext_q=self.combustion.p_ext_q,
                 p_full_q=self.combustion.p_full_q,
+                # #88 P2: the soot mint books into the EOS's trace books.
+                eos=self.eos,
             )
         else:
             self.combustion.step(
@@ -1257,6 +1266,9 @@ class PhysicsRunner:
                 # tick — the resident path D2H's `atmosphere` first). The edges
                 # are the solver's own p_ext_q / p_full_q, bound at init.
                 gmap.atmosphere,
+                # #88 P2: the soot mint books into the EOS's trace books
+                # (attempted mint, saturation clip, negative hits).
+                eos=self.eos,
             )
 
     # ------------------------------------------------------------------

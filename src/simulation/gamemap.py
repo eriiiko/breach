@@ -654,6 +654,25 @@ class GameMap:
         # exist yet reads 0 (`.get`), so a new seam is one `_gas_energy_book`
         # call and nothing else.
         self.gas_energy_books = {}
+        # #88 P2 (docs/smoke_unit_rescale_design_2026-10-20.md §5.1/§5.3): THE
+        # PYTHON-SIDE TRACE BOOKS, per gas id, Python ints, each in its plane's
+        # own currency (no consumer sums across gases), all >= 0:
+        #   trace_deposit_books[g]  the ATTEMPTED positive change every Python
+        #                           insertion makes (FieldEdit ADD/MAX's
+        #                           `quantize(old + contribution) − old` when
+        #                           positive), written BEFORE the saturation;
+        #   trace_clip_books[g]     the excess the counted saturation
+        #                           (gas_fixed.trace_add_sat) could not store at
+        #                           a Python site: FieldEdit, seal_tiles,
+        #                           _inject_gas_n_core.
+        # Per tick: reset by Simulation.step at its head (:meth:`reset_trace_
+        # books`), so the window is the one sim.step() brackets. With the
+        # engine's books (EOSSolver.trace_*), per tick and plane, exactly:
+        #   Σ S(after) − Σ S(before) == mint + deposit − vent − wipe − sink
+        #                               − decay − clip    (− G6, unbooked)
+        # Not synced, not digested — telemetry, like gas_energy_books.
+        self.trace_deposit_books = [0] * N_GASES
+        self.trace_clip_books = [0] * N_GASES
         # Per-tile inverse-thermal-mass SHIFT cache (engine/06 §1.2): the
         # precomputed log2(thermal_mass) per tile, so the conversion is a pure
         # arithmetic right shift `temperature += heat >> heat_inv_shift` (no
@@ -985,6 +1004,31 @@ class GameMap:
         if delta:
             self.gas_energy_books[channel] = (
                 self.gas_energy_books.get(channel, 0) + int(delta))
+
+    def reset_trace_books(self):
+        """#88 P2: zero the per-tick Python trace books (deposit, clip).
+        Called by Simulation.step at its head."""
+        self.trace_deposit_books = [0] * N_GASES
+        self.trace_clip_books = [0] * N_GASES
+
+    def _trace_slice(self, g):
+        """True iff gas slice ``g`` is a TRACE plane (non-conservative), i.e.
+        in the trace currency and under the counted saturation (#88 P2)."""
+        return not bool(self.gases.conservative[int(g)])
+
+    def trace_store_sat(self, g, fy, fx, add):
+        """#88 P2: add ``add`` (trace counts, a Python int) to trace slice
+        ``g`` at ``(fy, fx)`` through the counted saturation
+        (``gas_fixed.trace_add_sat``), booking any excess in
+        ``trace_clip_books[g]``. Raises only on a NEGATIVE result (a contract
+        violation, never clamped). Books no deposit: the caller decides whether
+        the addition is an insertion (FieldEdit) or a move (seal, vent supply)."""
+        from simulation import gas_fixed as _gas_fx
+        stored, clip = _gas_fx.trace_add_sat(int(self.gas[g][fy, fx]), int(add))
+        self.gas[g][fy, fx] = stored
+        if clip:
+            self.trace_clip_books[g] += clip
+        return stored
 
     def gas_energy_seam_net(self):
         """The NET change every Python seam made to `Σ_accountable gas_energy`
@@ -2661,6 +2705,12 @@ class GameMap:
                 rec_donors[r].append(t)
         limit = 2 ** 31
         for g in range(N_GASES):
+            # #88 P2: a TRACE slice takes the counted saturation inside the
+            # raise-free mutation pass (booked, never wrapped) — so a smoky
+            # tile can still be sealed; only the BULK (conserved N) slices
+            # keep the loud pre-mutation refusal.
+            if self._trace_slice(g):
+                continue
             for r in rec_order:
                 bound = int(self.gas[g][r]) + sum(
                     int(self.gas[g][t]) for t in rec_donors[r])
@@ -2774,7 +2824,12 @@ class GameMap:
                 for j, (ny, nx) in enumerate(rs):
                     share = q + (1 if j < r else 0)
                     if share:
-                        self.gas[g][ny, nx] = int(self.gas[g][ny, nx]) + share
+                        if self._trace_slice(g):
+                            # #88 P2: the counted saturation (a MOVE, so no
+                            # deposit is booked; an excess is a clip).
+                            self.trace_store_sat(g, ny, nx, share)
+                        else:
+                            self.gas[g][ny, nx] = int(self.gas[g][ny, nx]) + share
                         if g in (O2, INERT_N2):
                             bulk_share[(ny, nx)] += share
                 self.gas[g][fy, fx] = 0
@@ -3012,13 +3067,21 @@ class GameMap:
         cur = [int(self.gas[g][fy, fx]) for g in range(N_GASES)]
         new = [cur[g] + int(add_vec[g]) for g in range(N_GASES)]
         for g in range(N_GASES):
+            # #88 P2: only the BULK slices keep the loud pre-mutation guard; a
+            # TRACE slice takes the counted saturation below (the vent supply
+            # moves plenum trace in, so an excess is a clip, not a deposit).
+            if self._trace_slice(g):
+                continue
             if new[g] >= limit:
                 raise OverflowError(
                     f"inject_gas_n: tile ({fy}, {fx}) would overflow int32 "
                     f"on slice {g} ({cur[g]}+{add_vec[g]})")
         for g in range(N_GASES):
             if add_vec[g]:
-                self.gas[g][fy, fx] = new[g]
+                if self._trace_slice(g):
+                    self.trace_store_sat(g, fy, fx, int(add_vec[g]))
+                else:
+                    self.gas[g][fy, fx] = new[g]
 
     def inject_gas_n(self, fy, fx, delta_n):
         """Add ``delta_n`` (Q16.16 gas mass) at tile ``(fy, fx)``, split at the

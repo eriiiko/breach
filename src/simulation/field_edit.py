@@ -59,6 +59,7 @@ from simulation import wave_fixed     # S2a: wave_source Q16.16 quantize helpers
 from simulation import gas_fixed      # S2b: smoke/gas Q16.16 quantize helpers
 from simulation import atmosphere_fixed  # S2c: atmosphere Q16.16 quantize helpers
 from simulation import fire_fixed      # S3a: fire Q16.16 quantize helpers
+from simulation import gases as _gas_ids  # #88 P2: the SMOKE id a "smoke" edit books under
 
 # Q16.16 fixed-point scale for the `heat` field — MUST match the C++
 # fixed_point.h HEAT_SCALE (the heat-domain kit; raycaster.h until P6c) and
@@ -633,6 +634,20 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
     # ``ch`` was resolved above: None for scalar fields (incl. a gas SLICE,
     # already sliced out), 0/1/2 for the RGB channel of an (h, w, 3) field.
 
+    # #88 P2 (design §5.1/§5.3, critique B1): a trace edit's books. The
+    # ATTEMPTED positive change lands in `trace_deposit_books[g]` BEFORE the
+    # counted saturation, whose excess lands in `trace_clip_books[g]`, so the
+    # trace identity closes with no residual. A test double without the books
+    # (the stubs in tests/test_field_edit.py) skips the booking, never the
+    # saturation.
+    gas_book_id = None
+    dep_books = clip_books = None
+    if is_gas:
+        gas_book_id = (int(edit.channel) if edit.field == "gas"
+                       else int(_gas_ids.SMOKE))
+        dep_books = getattr(gmap, "trace_deposit_books", None)
+        clip_books = getattr(gmap, "trace_clip_books", None)
+
     for (r, c, weight) in _iter_region(edit.region, edit.coords,
                                        edit.falloff, shape):
         # Skip-mask veto FIRST — a skipped tile draws no RNG (order preserved).
@@ -683,8 +698,25 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
                 gmap.gas_energy_deposit(r, c, int(contribution),
                                         "field_edit")
         elif is_gas:
-            arr[r, c] = _combine_gas(int(arr[r, c]), contribution,
-                                     edit.mode, clamp)
+            old_q = int(arr[r, c])
+            new_q = _combine_gas(old_q, contribution, edit.mode, clamp)
+            d = new_q - old_q
+            if d > 0:
+                # An insertion (ADD, MAX, or any positive change): booked at
+                # its ATTEMPTED amount, then narrowed by the counted int32
+                # saturation, which never cuts the tile (D1) and books what
+                # cannot be represented.
+                if dep_books is not None:
+                    dep_books[gas_book_id] += d
+                stored, clip = gas_fixed.trace_add_sat(old_q, d)
+                if clip and clip_books is not None:
+                    clip_books[gas_book_id] += clip
+                arr[r, c] = stored
+            else:
+                # A removal (REMOVE, the explosion's clear) or no change:
+                # floored at 0 by TRACE_CLAMP; destroyed UNBOOKED (ACCEPTED
+                # GAP G6, #98).
+                arr[r, c] = new_q
         elif is_atmosphere:
             # EOS refactor P3: bulk-N deposit split 21/79 across O2/inert_N2
             # (o2_arr/n2_arr resolved above), not a direct P write.
