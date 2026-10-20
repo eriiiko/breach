@@ -1034,7 +1034,8 @@ FACE = dict(
               (0.0705, 1.5700), (0.0670, 1.5600), (0.0630, 1.5500), (0.0590, 1.5400), (0.0545, 1.5300), (0.0500, 1.5200),
               (0.0450, 1.5120), (0.0380, 1.5040), (0.0280, 1.4970), (0.0, 1.505)),
         # superellipse exponents round the head by elevation (deg): flat across the eyes, a V at the chin
-        n_front=((90, 2.0), (60, 2.2), (30, 2.4), (5, 2.6), (-10, 2.6), (-25, 2.3), (-40, 2.0), (-55, 1.8), (-70, 2.0), (-90, 2.0)),
+        # B2b: rounder across the eyes and cheeks (B2a: 2.6, a flat mask on which the eyes read printed at 30-60 deg)
+        n_front=((90, 2.0), (60, 2.2), (30, 2.3), (5, 2.35), (-10, 2.35), (-25, 2.2), (-40, 2.0), (-55, 1.8), (-70, 2.0), (-90, 2.0)),
         n_back=((90, 2.0), (40, 2.2), (0, 2.3), (-40, 2.2), (-90, 2.0)),
     ),
     # the neck: the placeholder's rings inside the collar (it is fitted round them), slimmer above it as drawn
@@ -1047,9 +1048,12 @@ FACE = dict(
            ((0.030, -0.096, 1.5775), (0.018, 0.010, 0.0045), 0.0012),
            ((0.044, -0.080, 1.5370), (0.014, 0.012, 0.011), 0.0020),
            ((0.000, -0.080, 1.4870), (0.009, 0.008, 0.006), 0.0012),
-           ((0.000, -0.086, 1.4985), (0.010, 0.006, 0.0025), -0.0008)),
+           ((0.000, -0.086, 1.4985), (0.010, 0.006, 0.0025), -0.0008),
+           # B2b: the nose's root set deeper (the profile: B2a's nasion stood 4-6 mm in front of the drawn one at 1.549-1.564,
+           # so the bridge read short and scooped; drawn, it runs straight from a deep root to the tip)
+           ((0.000, -0.092, 1.5585), (0.0075, 0.010, 0.0065), -0.0065)),
     # the nose: small, slightly upturned; mostly its tip (front view: a highlight)
-    nose=dict(bridge=((0.0, -0.0870, 1.552), (0.0, -0.0955, 1.5395), 0.0018, 0.0030, 0.8),
+    nose=dict(bridge=((0.0, -0.0830, 1.5540), (0.0, -0.0960, 1.5395), 0.0018, 0.0030, 0.8),   # B2b: its root 4 mm back
               tip=((0.0, -0.0995, 1.5360), (0.0036, 0.0045, 0.0040)),
               column=((0.0, -0.0990, 1.5335), (0.0, -0.0925, 1.5220), 0.0026, 0.0032, 1.0),
               alae=((0.0030, -0.0880, 1.5262), (0.0012, 0.0012, 0.0012)),   # B2a: next to nothing (a dark diamond under the tip)
@@ -1064,7 +1068,7 @@ FACE = dict(
     # line (x from, x to, below the lid, width), lid crease (x from, x to, above the lid, width), brow (x from, x to, z, arch,
     # width), nostrils ((x, z), sigmas), the nose tip's highlight (z, sigmas)
     paint=dict(blush=((0.044, 1.5445), (0.014, 0.0075)), mouth_line=(1.5075, 0.0125, 0.00045),
-               low_lash=(0.026, 0.0565, 0.0006, 0.00035), crease=(0.022, 0.050, 0.0030, 0.00035),
+               low_lash=(0.024, 0.0515, 0.0006, 0.00035), crease=(0.021, 0.050, 0.0030, 0.00035),
                brow=(0.012, 0.052, 1.5795, 0.0025, 0.0022), nostril=(0.0040, 1.5240, (0.0012, 0.0007)),
                nose_tip=(1.5370, (0.0030, 0.0030))),
     # the ear (her left; mirrored) as a field (`animehead.Ear`): in the ear's own axes (up, back, out), metres; 47 mm high,
@@ -1078,15 +1082,24 @@ FACE = dict(
 # The eyes (her left; mirrored), in the front view: the lid curves (x, z) traced on the close-up, the iris, the eye
 # surface's dome, the upper lash band.
 EYES = dict(
-    upper=((0.0166, 1.5587), (0.0201, 1.5651), (0.0232, 1.5682), (0.0280, 1.5703), (0.0336, 1.5711), (0.0409, 1.5711),
-           (0.0473, 1.5699), (0.0521, 1.5680), (0.0568, 1.5651), (0.0590, 1.5630)),
-    lower=((0.0166, 1.5587), (0.0225, 1.5554), (0.0297, 1.5531), (0.0361, 1.5526), (0.0440, 1.5535), (0.0504, 1.5554),
-           (0.0552, 1.5587), (0.0585, 1.5635)),
+    # B2b: re-traced on the front close-up's drawn opening (the sclera's edge, her left eye; PROVENANCE B2b step 2): 35 mm wide
+    # (B2a: 42), nearly level (inner corner 2.6 mm under the eye line, the outer end round and blunt at 52 mm out, B2a's
+    # pointed, raised corner at 59 mm made the cat-eye), the upper lid a heavier, rounder arch (+7.3 mm over 30-42 mm out)
+    upper=((0.0180, 1.5600), (0.0200, 1.5630), (0.0220, 1.5658), (0.0240, 1.5679), (0.0270, 1.5693), (0.0310, 1.5699),
+           (0.0360, 1.5700), (0.0410, 1.5698), (0.0450, 1.5692), (0.0480, 1.5684), (0.0500, 1.5675), (0.0512, 1.5664),
+           (0.0520, 1.5649), (0.0524, 1.5628)),
+    lower=((0.0180, 1.5600), (0.0200, 1.5586), (0.0220, 1.5573), (0.0250, 1.5556), (0.0280, 1.5541), (0.0310, 1.5534),
+           (0.0350, 1.5530), (0.0390, 1.5531), (0.0420, 1.5536), (0.0450, 1.5547), (0.0480, 1.5560), (0.0500, 1.5574),
+           (0.0514, 1.5591), (0.0522, 1.5609), (0.0524, 1.5628)),
     corner_k=0.0008, depth=0.005, depth_k=0.002, lid_k=0.0012,
-    dome=dict(centre=(0.037, 1.5618), axes=(0.021, 0.0095), inset=0.0012, curve=0.0025, thick=0.0008, margin=0.0018),
-    iris=dict(centre=(0.0334, 1.5622), radii=(0.0100, 0.0112), lid_shadow=0.006),
-    lash=dict(x=(0.0172, 0.0585), flick=(0.0650, 1.5690), width=((0.0, 0.0010), (0.3, 0.0028), (0.7, 0.0042), (0.88, 0.0038), (1.0, 0.0006)),
-              thick=0.0010, below=0.0013, out=0.0004),
+    dome=dict(centre=(0.0352, 1.5615), axes=(0.0180, 0.0090), inset=0.0012, curve=0.0035, thick=0.0008, margin=0.0018),
+    # B2b: the drawn iris is round, 19.4 x 20 mm, its centre 0.2 mm over the eye line (B2a: 1.5622, 20 x 22.4 mm: its
+    # bottom sank 2 mm under the lower lid); the pupil 4.9 x 6.2 mm (`pupil`: half-axes in iris radii), straight ahead
+    iris=dict(centre=(0.0337, 1.5628), radii=(0.0097, 0.0100), lid_shadow=0.006, pupil=(0.25, 0.31)),
+    # B2b: the band along the new lid to 50.5 mm out, then a SHORT, nearly level flick to 56.8 mm (B2a: a long upswept wing
+    # to 65 mm); heaviest over the outer third, as drawn; it covers the opening's top by 0.6 mm (the lid now traced on it)
+    lash=dict(x=(0.0182, 0.0505), flick=(0.0568, 1.5682), width=((0.0, 0.0010), (0.3, 0.0030), (0.7, 0.0042), (0.88, 0.0040), (1.0, 0.0008)),
+              thick=0.0010, below=0.0006, out=0.0004),
 )
 
 # The hair BLOCKOUT (`charkit/animehair.py`): a cap over the skull and swept locks. Angles about the egg's centre: beta the
