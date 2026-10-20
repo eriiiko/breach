@@ -583,3 +583,114 @@ at implementation, pointing at the real code):
   graphics patch renders it before and after with `--shots`, and the
   implementer looks at the PNGs before claiming the patch works. Never a
   second screenshot harness."
+
+## 11. G1 Smoke relief: what was built (2026-10-19)
+
+Branch `93-g1-smoke-relief`, cut from `fire-12` at G0 (`4e092bf`). HUMAN-TEST
+before merge. `[render.gas_relief] enabled = false` gives back the B2 erosion
+look for A/B.
+
+Where the build departs from §2.1–§2.2, and why (each judged on the look
+shots):
+
+- **Coverage is a displaced level set of ln(extinction depth).** §2.1 wrote
+  `C = smoothstep(t0, t1, tau' + k_b (B − 0.5))`. On this field tau spans
+  four decades and most of a room sits near any threshold, so the literal
+  form cut uniform haze into flecks. The edge is now the contour
+  `ln(tau / cov_tau) = 0`, moved by the billow field at most
+  `cov_push_tiles` along its normal (the push scales with |∇ ln tau|). Where
+  the field has a gradient the edge is `cov_edge_tiles` wide; where it is
+  flat it falls back to `cov_soft_*` e-folds, an even haze. A `haze_*` share
+  of the depth is kept outside the edge, so thin smoke still dims the floor.
+- **Coverage and height ride the EXTINCTION depth**, absorption plus the
+  sweep's own in-scatter coefficient (`light_glow_q16`). With absorption alone,
+  steam (0.14 per unit density) had no body.
+- **The surface reflectance is a thick cloud's**, `R = (1 − s)/(1 + s)` with
+  `s = √(1 − ω)` from the table's single-scatter albedo. This gives soot
+  0.22 → 0.06 and steam 0.92 → 0.56. The raw albedo lit soot near-white.
+- **The light over a column's top.** The planar sweep's light inside a soot
+  plume is whatever crossed it sideways, which pre-#88 is about nothing. A
+  ceiling layer's top also sees the brightest light within `top_light_tiles`,
+  attenuated `top_light_falloff` per tile (`gas_relief.top_light_field`, a
+  filtered read of LightingPass's field). Floor layers use their own tile
+  light: `top_light_floor = 0`, because 0.5 flattened a flashlight beam.
+- **Billow scale 1.5 tiles** (the coarsest cell; octaves at /2 and /4), not
+  §2.1's quarter tile. At 0.75 the lit relief read as crumpled rock. The
+  Worley cells meet through a smooth minimum (k = 0.12 cell): under a low
+  lamp, the hard creases drew dark "brain folds".
+- **AO comes from the billow lanes** (B below its mean), not the Laplacian of
+  h. At the normal taps' scale the Laplacian caught the cell creases as a
+  cracked-mud net.
+- **The lamp elevation is low.** `lamp_z_ceiling` is 0.45; at 0.8 the
+  horizon march cast almost no self-shadow.
+- **Exposure: the glow is under `u_light_gain` too** (G0's one exposure). The
+  B2 medium never applied the studio's `light_gain` 10 to its glow, so the
+  studio's `steam_flashlight` now over-exposes the steam. At the game's
+  exposure (`steam_flashlight_game`, a new shot) it matches the pre-G1
+  brightness, with form.
+- **Drift cap.** A noise layer drifts at most `drift_cap_tiles` per clock
+  cycle. G0's honest wind (up to 1.4 tiles/tick in a blast) times the 60-tick
+  cycle sheared the billows into streaks and rings. The phase jitter is a
+  smooth field. The B2 shader's per-pixel jitter turns its crossfade into
+  grain, which is visible in the pre-G1 steam shots.
+- **Not built in G1:** §2.5 A's synthetic low band (G2's row), fire
+  glow-through and the cast shadow (§2.3, G2), and the tilt integrator (G6;
+  the 3D bake exists).
+
+**Perf.** Measured on the RTX 3070 with `GL_TIME_ELAPSED` around each layer
+draw, inside the demo's `--perf` bench (fire_studio burning, world RT
+2304×1536 = 3.5 Mpx):
+
+- The burning scene costs about 0.42 ms (floor layer only; this fire makes
+  steam).
+- The worst case, with the whole hall filled with both soot and steam, costs
+  1.15 + 1.15 ms. That is about 0.33 ms per Mpx per layer, so a fully smoked
+  1080p view in both layers costs about 1.35 ms.
+- The pass draws only the camera's view (plus 2 tiles). Empty pixels cost
+  one tap (a CPU presence mask).
+- CPU packing takes about 1.2–1.5 ms per sim tick on 48×32 tiles, and is
+  skipped when the inputs' content has not changed (a CRC key).
+
+**After #88** (smoke unit rescale), retune `cov_tau_*`, `cov_soft_*` and
+`haze_*` (they were set on a field that goes opaque and then vanishes),
+`height_tau`, and `top_light_*`. Pre-#88 soot absorbs about 138 per unit
+density per tile; the top light exists because the sweep's light dies inside
+it. Also check the coverage driver's in-scatter term against the rescaled
+soot. Then judge §2.5 B's trigger on plumes in motion.
+
+**Seen, not fixed (outside the smoke look):**
+
+- Soot directly over a burning tile is lit by that tile's own light as if
+  from above. Fire light should reach smoke as glow-through (§2.3, G2).
+- The glow column (`light_glow_q16 = scatter_albedo × density`) and the
+  derived soot absorption (about 138 per unit density) give soot an
+  effective single-scatter albedo near 0.002 in the sweep, not the table's
+  0.22. That is a physics/optics-table question.
+
+### 11.1 Systems (G1)
+
+**(a) Existing canonical systems G1 uses:**
+
+- Gas medium: its one tau (`gas_optical_depth` + the new shared `tau_curve`)
+  and its one optics binding (the new `trace_gas_optics`, which B2 now calls
+  too).
+- LightingPass `light_tex_a/b`: light and direction.
+- Tamed wind (`tame_wind`).
+- `advected_noise`: the two-phase clock and `advection_phase`.
+- One tone-map: the relief writes linear premultiplied HDR. Its source is
+  scanned by `test_one_tonemap.py`.
+- Look shots: five new rows (`smoke_plume_noheat`, `smoke_lamp_puff`,
+  `explosion_t40_noheat`, `steam_flashlight_game`, `smoke_over_squad`). A
+  look-shot child now takes no keyboard or mouse input, because a stray wheel
+  turn moved the camera mid-shot.
+- Config via `CFG`, read every frame.
+
+**(b) New systems, with their rules (now rows in CLAUDE.md's Render/UI
+table):**
+
+- **Smoke relief** (`renderer/gas_relief.py` + `shaders/gas_relief.fs`) is
+  THE smoke look. It has two species layers: floor below the units, ceiling
+  after them. A new smoke term goes in this shader, never in a second smoke
+  pass.
+- **Billow noise bake** (`renderer/noise_bake.py`) is THE billow noise,
+  periodic and seeded, 2D plus 3D. A new noise shape is a function here.

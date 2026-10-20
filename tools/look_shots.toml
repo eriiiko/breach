@@ -117,3 +117,69 @@ lamps = true
 beacon = true
 light_gain = "game"
 note = "the #12 still-picture level at tick 72 (= main.py --warp 3.0): three charges have fired, nine lights against the lying smoke. Whole map."
+
+# --- graphics G1: the smoke relief (§2) ------------------------------------
+# The heat layer is hidden in these: the smoke's own shape and shading is
+# what is judged, and the display-space heat glow sits on top of it.
+[[shot]]
+name = "smoke_plume_noheat"
+level = "smoke_light_studio"
+frames = 72
+center = [14.5, 28.0]
+zoom = 48.0
+lamps = true
+beacon = true
+light_gain = "game"
+hide = ["heat"]
+note = "fire_plume without the heat layer: the crates' own soot against the hall lamps -- the relief's silhouette, lit side and crevices."
+
+[[shot]]
+name = "smoke_lamp_puff"
+level = "fire_studio"
+frames = 16
+center = [11.0, 8.0]
+zoom = 64.0
+lamps = true
+beacon = false
+flashlight = { pos = [4.5, 10.5], intensity = 3.0, spread = 1.2 }
+smoke = [[9, 7], [12, 9], [14, 6]]
+hide = ["heat"]
+note = "three soot puffs 16 ticks after they were laid, a flashlight low from the west-south-west and the hall lamp (8.5, 4.5) above: a ceiling layer lit from the side -- N.L, self-shadow, rim."
+
+[[shot]]
+name = "explosion_t40_noheat"
+level = "fire_studio"
+frames = 64
+center = [24.0, 16.0]
+zoom = 32.0
+lamps = true
+beacon = false
+detonate = [24, 16, 24]
+hide = ["heat"]
+note = "explosion_t40 without the heat layer: the blast's hanging soot and the marines it should cover (ceiling layer above the units)."
+
+[[shot]]
+name = "steam_flashlight_game"
+level = "fire_studio"
+frames = 24
+center = [22.0, 22.0]
+zoom = 40.0
+lamps = false
+beacon = false
+flashlight = { pos = [14.5, 22.5], intensity = 2.5, spread = 0.6 }
+steam = [[19, 22], [22, 22], [25, 22]]
+light_gain = "game"
+note = "steam_flashlight at the GAME exposure ([render.lighting] master_gain). The relief lights the steam's surface at the one exposure; the studio's light_gain 10 (steam_flashlight) over-exposes it, while the pre-G1 glow was never exposed by the studio gain at all."
+
+[[shot]]
+name = "smoke_over_squad"
+level = "fire_studio"
+frames = 12
+center = [17.5, 17.5]
+zoom = 48.0
+lamps = true
+beacon = true
+smoke = [[11, 17], [12, 18]]
+steam = [[23, 17], [24, 18]]
+hide = ["heat"]
+note = "the species layers (ruling 2): soot laid over Alpha (west) is a CEILING layer and must hide the marine; steam laid over Cobra (east) is a FLOOR layer and the marine must stand in it, drawn over it; Bravo (middle) clear for reference. 12 ticks, the beacon sweeping."

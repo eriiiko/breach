@@ -733,6 +733,20 @@ def _parse_look_shot():
     return table, table.by_name(name), out
 
 
+def _deafen_input() -> None:
+    """A look-shot child takes NO keyboard or mouse input. Its window pops up
+    (and takes focus) on a desktop someone may be using, and a stray wheel
+    turn or key press moved the camera or flipped a layer mid-shot (graphics
+    G1 rendered one shot three times and got three cameras). The demo and
+    the renderer read input through these pyray calls; in a child they read
+    nothing."""
+    rl.is_key_pressed = lambda *_a: False
+    rl.is_key_down = lambda *_a: False
+    rl.is_mouse_button_pressed = lambda *_a: False
+    rl.is_mouse_button_down = lambda *_a: False
+    rl.get_mouse_wheel_move = lambda *_a: 0.0
+
+
 def _look_camera(shot, level, map_px_w: int, map_px_h: int) -> Camera2D:
     """The shot's fixed camera: centre + zoom, or the whole map fitted."""
     if shot.zoom is None:
@@ -1145,6 +1159,8 @@ def main() -> None:
         raise SystemExit(1 if _run_look_shots() else 0)
     look = _parse_look_shot()          # (table, shot, out) in a child, else None
     look_shot = look[1] if look else None
+    if look_shot is not None:
+        _deafen_input()
 
     # ---- 1. Load level + build sim ----
     # --level overrides config for one launch (the studio runs

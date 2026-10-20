@@ -59,7 +59,7 @@ Credit (repo rule — cite what a file implements):
 """
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import NamedTuple, Optional, Tuple
 
 import numpy as np
 import pyray as rl
@@ -73,6 +73,48 @@ from simulation.gases import N_TRACE_GASES
 # Keyed off the GasTable ``effect`` tag so it stays data-driven (poison ->
 # "damage_over_time", teargas -> "area_denial").
 _EFFECT_GAS_TAGS = frozenset(("damage_over_time", "area_denial"))
+
+
+class TraceGasOptics(NamedTuple):
+    """The trace gases' render optics, read from the live GasTable -- THE one
+    binding both smoke integrators use (the B2 medium and the G1 relief,
+    ``renderer/gas_relief.py``), so neither can disagree about a gas.
+
+    k_s           (S,)   mean over R/G/B of ``light_absorb_q16`` / ONE: the
+                         light engine's own absorption per unit density per
+                         tile (#12 handle 2, one optical identity)
+    k_scat        (S,3)  ``light_glow_q16`` / ONE: the sweep's in-scatter
+                         coefficient per channel (what makes the glow)
+    scatter_albedo (S,3) the table's ``scatter_albedo`` (the species' colour)
+    effect_mask   (S,)   gameplay gases that take the legibility floor
+    names         (S,)   gas names, for config-side grouping"""
+    k_s: np.ndarray
+    k_scat: np.ndarray
+    scatter_albedo: np.ndarray
+    effect_mask: np.ndarray
+    names: tuple
+
+
+def trace_gas_optics(gas_table) -> TraceGasOptics:
+    """Bind :class:`TraceGasOptics` from a GasTable's trace-gas rows."""
+    n = N_TRACE_GASES
+    k_s = (np.asarray(gas_table.light_absorb_q16[:n], dtype=np.float64)
+           .mean(axis=1) / 65536.0).astype(np.float32)
+    k_scat = (np.asarray(gas_table.light_glow_q16[:n], dtype=np.float64)
+              / 65536.0).astype(np.float32)
+    return TraceGasOptics(
+        k_s=k_s, k_scat=k_scat,
+        scatter_albedo=np.asarray(gas_table.scatter_albedo[:n],
+                                  dtype=np.float32),
+        effect_mask=np.array([str(e) in _EFFECT_GAS_TAGS
+                              for e in gas_table.effect[:n]], dtype=bool),
+        names=tuple(str(x) for x in list(gas_table.names)[:n]))
+
+
+def tau_curve(tau: np.ndarray, a: float, b: float) -> np.ndarray:
+    """THE artistic remap in tau-space, ``tau' = a * tau**b`` (1/1 = honest).
+    Shared by the medium's alpha and the relief's occlusion."""
+    return float(a) * np.power(tau, float(b))
 
 
 def gas_optical_depth(
@@ -162,7 +204,7 @@ def gas_medium_layer(
     # Doing the curve on tau (not on alpha) keeps the thin limit linear and the
     # thick limit saturating; b=1,a=1 is fully honest. This REPLACES the retired
     # smoke_render_gamma (which curved the alpha directly).
-    tau_p = float(tau_curve_a) * np.power(tau, float(tau_curve_b))
+    tau_p = tau_curve(tau, tau_curve_a, tau_curve_b)
     alpha = 1.0 - np.exp(-tau_p)
 
     # --- the lit half: LINEAR inscatter (premultiplied additive RGB) ---------
@@ -307,14 +349,10 @@ class GasMediumOverlay:
         OWN extinction per unit density per tile, collapsed over R/G/B (the
         layer has one alpha). One optical identity (#12 handle 2): a tile this
         pass draws opaque is a tile the sweep's light does not cross."""
-        n = N_TRACE_GASES
-        self._k_s = (np.asarray(gas_table.light_absorb_q16[:n], dtype=np.float64)
-                     .mean(axis=1) / 65536.0).astype(np.float32)
-        self._scatter = np.asarray(gas_table.scatter_albedo[:n],
-                                   dtype=np.float32)
-        self._effect_mask = np.array(
-            [str(e) in _EFFECT_GAS_TAGS for e in gas_table.effect[:n]],
-            dtype=bool)
+        optics = trace_gas_optics(gas_table)
+        self._k_s = optics.k_s
+        self._scatter = optics.scatter_albedo
+        self._effect_mask = optics.effect_mask
         self._table_id = id(gas_table)
 
     def update(self, gas_density_trace: np.ndarray, glow: np.ndarray,
@@ -362,6 +400,6 @@ class GasMediumOverlay:
 
 
 __all__ = [
-    "gas_optical_depth", "gas_medium_layer", "pack_premult_rgba",
+    "TraceGasOptics", "trace_gas_optics", "tau_curve", "gas_optical_depth", "gas_medium_layer", "pack_premult_rgba",
     "pack_gas_medium_rgba", "GasMediumOverlay",
 ]
