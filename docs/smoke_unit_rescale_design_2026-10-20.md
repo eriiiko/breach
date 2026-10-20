@@ -172,7 +172,7 @@ Fires are lit with `debug_ignite`'s own law on every flammable tile.
 | smoke_light_studio, 3 charges | 40 s | 0.256 | 8.66 | 10.7 |
 | explosion_studio, 4 charges every 5 s | 180 s | 0.291 | 9.04 | 18.0 |
 | playground, every flammable tile lit | 400 s | 0.025 | 3.61 | 18.0 |
-| test_level (256×128, the largest map), every flammable tile lit | 180 s (peaked by 30 s) | 0.034 | 7.93 | — |
+| test_level (256×128, the largest map), every flammable tile lit | 400 s (peaked by 30 s) | 0.034 | 7.93 | 3.0 |
 | fire_studio, all lit | 300 s | 0.025 | 0.34 | 1.2 |
 | fire_tuning, all lit | 300 s | 0.019 | 0.54 | 1.3 |
 | smoke_screen grenade core (by its row) | — | 1.5 | — | — |
