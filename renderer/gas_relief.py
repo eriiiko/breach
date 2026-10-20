@@ -128,6 +128,11 @@ class ReliefSettings:
     cast_parallax: float          # tiles of shadow offset per tile of height
     cast_lift_ceiling: float      # the ceiling layer's underside, tiles above
                                   #   the floor
+    glow_through_ceiling: float   # G2: how much each layer's extinction hides
+    glow_through_floor: float     #   the heat glow beneath it, [0, 1]
+    own_light_cut: float          # G2: how much of a glowing tile's own light
+                                  #   is taken off the smoke surface over it,
+                                  #   [0, 1] (it shows as glow-through instead)
     debug_view: int               # 0 = off; 1 coverage, 2 height, 3 N.L,
                                   #   4 self-shadow, 5 AO, 6 boil, 7 the
                                   #   cast shadow on the floor (G2)
@@ -178,10 +183,13 @@ def relief_settings(cfg) -> ReliefSettings:
                          f"and boil_t1 > boil_t0 (bad: {bad})")
     if not 0.0 <= s.rim_g < 1.0:
         raise ValueError("[render.gas_relief] rim_g must be in [0, 1)")
-    unit = [k for k in ("cast_shadow_ceiling", "cast_shadow_floor")
+    unit = [k for k in ("cast_shadow_ceiling", "cast_shadow_floor",
+                        "glow_through_ceiling", "glow_through_floor",
+                        "own_light_cut")
             if not 0.0 <= getattr(s, k) <= 1.0]
     if unit or s.cast_parallax < 0.0 or s.cast_lift_ceiling < 0.0:
-        raise ValueError("[render.gas_relief] cast_shadow_* must be in [0, 1] "
+        raise ValueError("[render.gas_relief] cast_shadow_*, glow_through_* "
+                         "and own_light_cut must be in [0, 1] "
                          "and cast_parallax, cast_lift_ceiling >= 0 "
                          f"(bad: {unit})")
     return s
@@ -351,6 +359,17 @@ def top_light_field(light_rgb: np.ndarray, radius_tiles: int,
     return np.ascontiguousarray(out, dtype=np.float32)
 
 
+def below_glow_field(heat_brightness: np.ndarray) -> np.ndarray:
+    """(H, W) float32 in [0, 1]: how strongly each tile GLOWS from below a
+    smoke layer (graphics G2) -- the legacy heat layer's own display
+    brightness (``blackbody.pack_emissive_rgba``'s alpha / its ceiling),
+    taken as a max over the 3x3 neighbourhood and softened once, so the
+    cut reaches the bilinear seam around a burning tile. Pure numpy."""
+    e = np.clip(np.asarray(heat_brightness, dtype=np.float32), 0.0, 1.0)
+    e = _window_max(_window_max(e, 1, 1), 1, 0)
+    return np.ascontiguousarray(_box3(e), dtype=np.float32)
+
+
 def boil_field(temperature_game: np.ndarray, t0: float, t1: float
                ) -> np.ndarray:
     """Per-tile BOIL weight in [0, 1] from the game temperature (ΔT above
@@ -425,6 +444,16 @@ def cast_uniforms(s: ReliefSettings, active: bool = True
             (s.height_tiles, 1.0 if s.debug_view == 7 else 0.0, 0.0, 0.0))
 
 
+def glow_through_weights(s: ReliefSettings, active: bool = True
+                         ) -> Tuple[float, float]:
+    """(ceiling, floor): how much each layer's cast-product extinction
+    hides the heat glow beneath it (graphics G2, the heat layer's
+    glow-through). Both 0 when the product is inactive -- the heat layer
+    then draws exactly as before G2."""
+    on = 1.0 if (active and s.enabled) else 0.0
+    return (s.glow_through_ceiling * on, s.glow_through_floor * on)
+
+
 # ---------------------------------------------------------------------------
 # The GL pass
 # ---------------------------------------------------------------------------
@@ -442,7 +471,7 @@ class GasReliefPass:
         "u_height_tau", "u_billow_amp", "u_lamp_z", "u_wrap", "u_light_gain",
         "u_ambient", "u_shadow", "u_shadow_len", "u_shadow_soft", "u_powder",
         "u_ao", "u_rim", "u_rim_g", "u_debug", "u_toplight", "u_top_light",
-        "u_glow_texture", "u_group", "u_mode",
+        "u_glow_texture", "u_group", "u_mode", "u_below", "u_own_cut",
     )
 
     def __init__(self, grid_h: int, grid_w: int, settings: ReliefSettings):
@@ -467,6 +496,10 @@ class GasReliefPass:
                           for g in GROUPS}
         self.dyn_tex = core.create_dynamic_rgba16f_texture(grid_w, grid_h)
         self.top_tex = core.create_dynamic_rgba16f_texture(grid_w, grid_h)
+        # G2: the glow BELOW the smoke (below_glow_field), R channel
+        self.below_tex = core.create_dynamic_rgba16f_texture(grid_w, grid_h)
+        self._below_packed = np.zeros((grid_h, grid_w, 4), dtype=np.float16)
+        self._below = np.zeros((grid_h, grid_w), dtype=np.float32)
         self._top_packed = np.zeros((grid_h, grid_w, 4), dtype=np.float16)
         self._has = {g: False for g in GROUPS}
         self._masks = {g: np.zeros((grid_h, grid_w), np.float32)
@@ -534,9 +567,17 @@ class GasReliefPass:
                sim_tick: int,
                ticks_per_second: float, cycle_seconds: float,
                adv_gain: float, tau_curve_a: float, tau_curve_b: float,
-               glow_gain: float, effect_gas_floor: float) -> None:
+               glow_gain: float, effect_gas_floor: float,
+               heat_brightness: Optional[np.ndarray] = None) -> None:
         """Pack and upload both groups' textures and the dynamics, and
-        advance the two noise clocks on the SIM tick (never wall time)."""
+        advance the two noise clocks on the SIM tick (never wall time).
+
+        ``heat_brightness`` (G2): the legacy heat layer's per-tile display
+        brightness in [0, 1] (None = nothing glows). Where a tile glows, its
+        own light is taken off the smoke surface over it (``own_light_cut``)
+        -- from the tile light in the shader and from the top-light field
+        here -- because a fire lights smoke from BELOW, which shows as the
+        heat layer's glow-through, not as a lamp on the cloud's top."""
         import time
         from .advected_noise import advection_phase
         from .gas_medium import trace_gas_optics
@@ -554,7 +595,11 @@ class GasReliefPass:
         # write, a dial): repack only when their CONTENT changed -- a CRC of
         # the arrays plus the dials is ~0.05 ms against ~1 ms of packing,
         # and a paused or 60-fps-over-24-tps frame repacks nothing.
+        below = (below_glow_field(heat_brightness)
+                 if heat_brightness is not None
+                 else np.zeros((self.h, self.w), np.float32))
         key = (_crc(gas_density_trace), _crc(glow), _crc(light_rgb), s,
+               _crc(below),
                float(tau_curve_a), float(tau_curve_b), float(glow_gain),
                float(effect_gas_floor), id(self._optics))
         if key != self._pack_key:
@@ -569,9 +614,17 @@ class GasReliefPass:
                 if self._has[g]:
                     self._core.update_rgba16f_texture(self.medium_tex[g], medium)
                     self._core.update_rgba16f_texture(self.cover_tex[g], cover)
+            # The light over a column's top, with the glowing tiles' own
+            # light taken off first (it lights the smoke from below).
+            src = np.asarray(light_rgb, dtype=np.float32) * (
+                1.0 - s.own_light_cut * below)[..., None]
             self._top_packed[..., :3] = np.clip(
-                top_light_field(light_rgb, s.top_light_tiles,
+                top_light_field(src, s.top_light_tiles,
                                 s.top_light_falloff), 0.0, _F16_MAX)
+            self._below = below
+            self._below_packed[..., 0] = below
+            self._core.update_rgba16f_texture(self.below_tex,
+                                              self._below_packed)
             self._top_packed[..., 3] = self._masks["ceiling"]
             self._core.update_rgba16f_texture(self.top_tex, self._top_packed)
         masks = self._masks
@@ -703,6 +756,7 @@ class GasReliefPass:
         self._f("u_rim", s.rim)
         self._f("u_rim_g", s.rim_g)
         self._f("u_glow_texture", s.glow_texture)
+        self._f("u_own_cut", s.own_light_cut)
         self._i("u_debug", s.debug_view if mode == 0 else 0)
         self._i("u_group", 1 if ceiling else 0)
         self._i("u_mode", int(mode))
@@ -717,7 +771,7 @@ class GasReliefPass:
                  ("u_toplight", self.top_tex),
                  ("u_light_a", lighting.light_tex_a),
                  ("u_light_b", lighting.light_tex_b),
-                 ("u_billow", self.billow_tex))
+                 ("u_billow", self.billow_tex), ("u_below", self.below_tex))
         for i, (name, tex) in enumerate(extra):
             unit = _FIRST_UNIT + i
             rl.rl_active_texture_slot(unit)
@@ -747,6 +801,7 @@ class GasReliefPass:
             rl.unload_texture(t)
         rl.unload_texture(self.dyn_tex)
         rl.unload_texture(self.top_tex)
+        rl.unload_texture(self.below_tex)
         rl.unload_texture(self.billow_tex)
         rl.unload_render_texture(self.product_rt)
 
@@ -755,5 +810,6 @@ __all__ = [
     "GROUPS", "ReliefSettings", "relief_settings", "group_members",
     "bulk_reflectance", "relief_group_layers", "top_light_field",
     "boil_field", "presence_mask", "clip_tile_rect", "pack_relief_dynamics",
-    "cast_uniforms", "PRODUCT_PX_PER_TILE", "GasReliefPass",
+    "cast_uniforms", "below_glow_field", "glow_through_weights",
+    "PRODUCT_PX_PER_TILE", "GasReliefPass",
 ]

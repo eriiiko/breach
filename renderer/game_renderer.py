@@ -499,7 +499,8 @@ class GameRenderer:
                     cycle_seconds=gd.cycle_seconds, adv_gain=gd.adv_gain,
                     tau_curve_a=gm.tau_curve_a, tau_curve_b=gm.tau_curve_b,
                     glow_gain=gm.glow_gain,
-                    effect_gas_floor=gm.effect_gas_floor)
+                    effect_gas_floor=gm.effect_gas_floor,
+                    heat_brightness=self._heat_brightness(gmap))
             else:
                 # k_s (per-gas mean extinction) is read from gmap.gases — the
                 # SAME optics table the light channels use — and scaled by
@@ -808,8 +809,15 @@ class GameRenderer:
         # hue, saturation and halo. ADDITIVE, RGB-only. It now sits ABOVE the
         # water and the 3D units (before G0 it was under both). Toggle (T).
         if self.show_temperature:
+            # G2: drawn THROUGH the smoke over it (the relief's cast product):
+            # thin or ragged smoke lets the glow through, a solid core hides
+            # it, so the soot mottles the flame. Still display space.
+            from .gas_relief import glow_through_weights
             self.temperature_overlay.draw(
-                0, 0, self.world.world_px_w, self.world.world_px_h)
+                0, 0, self.world.world_px_w, self.world.world_px_h,
+                smoke_cover=self._smoke_cast[0],
+                glow_through=glow_through_weights(
+                    self.gas_relief.settings, self._smoke_cast[0] is not None))
 
         # 7. A6 dev door draw (a6 doors design §14, N4 honest-minimal):
         # closed door tiles get a flat amber fill, open spans a thin
@@ -939,6 +947,17 @@ class GameRenderer:
         dst = rl.Rectangle(0, 0, float(self.world.world_px_w),
                            float(self.world.world_px_h))
         rl.draw_texture_pro(field_tex, src, dst, rl.Vector2(0, 0), 0.0, rl.WHITE)
+
+    def _heat_brightness(self, gmap) -> np.ndarray:
+        """Graphics G2: the legacy heat layer's per-tile display brightness
+        in [0, 1], from the layer's own pack (``pack_emissive_rgba``, without
+        the speckle mottle) on this tick's temperature -- packed here, not
+        read from the overlay, so the relief's own-light cut neither lags a
+        tick nor depends on the T toggle."""
+        from .blackbody import pack_emissive_rgba
+        ov = self.temperature_overlay
+        return (pack_emissive_rgba(ov.ramp, gmap.temperature, ov.max_alpha)
+                [..., 3].astype(np.float32) / float(max(ov.max_alpha, 1)))
 
     def _smoke_cast_inputs(self, relief_on: bool):
         """Graphics G2: ``(product texture or None, grid, cast, cast2)`` --
@@ -1868,6 +1887,7 @@ class GameRenderer:
         self.gas_detail.unload()
         self.gas_relief.unload()
         rl.unload_texture(self.temperature_overlay.tex)
+        self.temperature_overlay.unload_shader()
         rl.unload_texture(self.cold_overlay.tex)
         rl.unload_texture(self.water_overlay.tex)
         self.water_pass.unload()

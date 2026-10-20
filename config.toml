@@ -1668,6 +1668,18 @@ cast_shadow_floor = 0.5     # ... the floor layer's, [0, 1]
 cast_parallax = 0.5         # tiles of shadow offset per tile of height (a low
                             # lamp throws a long shadow)
 cast_lift_ceiling = 7.0     # the ceiling layer's underside above the floor, tiles
+                            # (above the 6-tile marines' heads)
+# --- graphics G2: FIRE GLOW-THROUGH. The heat layer (display space until G3)
+# is dimmed by the extinction of the smoke over it, from the same cast
+# product: under a thin or ragged edge the fire glows through, under a solid
+# core it does not, so the soot mottles the flame.
+glow_through_ceiling = 1.0  # how much the ceiling layer (soot) hides it, [0, 1]
+glow_through_floor = 0.3    # ... the floor layer (steam scatters the glow
+                            #   rather than blocking it), [0, 1]
+own_light_cut = 1.0         # share of a glowing tile's own light taken off the
+                            # smoke surface over it, [0, 1]: a fire lights its
+                            # smoke from below (= the glow-through), never as
+                            # a lamp on the cloud's top
 debug_view = 0              # 0 off; 1 coverage, 2 height, 3 N.L, 4 self-shadow,
                             # 5 AO, 6 boil, 7 the cast shadow on the floor
                             # (dev only)

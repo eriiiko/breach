@@ -56,6 +56,10 @@ uniform int   u_group;        // 0 = floor, 1 = ceiling (which mask to read)
 uniform sampler2D u_light_a;  // rgb = incoming light, a = light_dir.x (toward the light)
 uniform sampler2D u_light_b;  // rgb = glow (unused here), a = light_dir.y
 uniform sampler2D u_billow;   // R = billow B, GB = warp, A = fine domes (REPEAT)
+uniform sampler2D u_below;    // R = how strongly the tile GLOWS from below (the
+                              // heat layer's brightness, 3x3-dilated; G2)
+uniform float u_own_cut;      // share of a glowing tile's own light taken off
+                              // the surface over it (G2: it glows THROUGH)
 
 uniform vec2  u_grid;         // (grid_w, grid_h): uv * u_grid = tiles
 uniform float u_phase;        // base clock phase [0,1)
@@ -293,6 +297,11 @@ void main() {
     // the smoke sideways; a column's top also sees the light passing over
     // it (the top-light field), by u_top_light.
     vec3 E_tile = max(la.rgb, vec3(0.0));
+    // G2: a burning tile lights the smoke over it from BELOW: its light is
+    // not a lamp on the cloud's top (G1 saw that soot lit by its own fire
+    // as if from above). Taken off here, it shows as the heat layer's
+    // glow-through instead (renderer/overlays.py HeatFieldOverlay).
+    E_tile *= 1.0 - u_own_cut * clamp(texture(u_below, uv).r, 0.0, 1.0);
     vec3 E_top = max(top.rgb, E_tile);
     vec3 E = mix(E_tile, E_top, u_top_light) * u_light_gain;
 
