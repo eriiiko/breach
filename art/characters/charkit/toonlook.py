@@ -545,8 +545,11 @@ def prepare(look, normals=None, ring_centre=None, hair=None, proxies=(), lines=N
         shadow_proxy(name, V, Q, off)
     cu = look.get("curvature")
     if cu:   # B2d: how round each surface is, for the latex's streaks (`curvature_attr`)
+        def short(m):
+            return (m.name.split("_", 1)[1] if "_" in m.name else m.name).split(".")[0] if m else ""
         curvature_attr([o for o in bpy.data.objects if o.type == "MESH"
-                        and any(fnmatch.fnmatch(o.name, p) for p in cu["objects"])], cu)
+                        and (any(fnmatch.fnmatch(o.name, p) for p in cu.get("objects", ()))
+                             or any(short(s.material) in cu.get("materials", ()) for s in o.material_slots))], cu)
     for ob_name, f in (lines or {}).items():   # f(world verts) -> the mask of lines left out from the front
         ob = bpy.data.objects.get(ob_name)
         if ob is not None:

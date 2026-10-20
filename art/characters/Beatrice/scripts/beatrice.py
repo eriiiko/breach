@@ -71,6 +71,7 @@ PALETTE = dict(
     # B2b, the toon look (`LOOKS`): its absolute colours -- highlights, rims, the hair's band and the inked lines
     SHINE="#eef1f8",         # the latex's crisp streaks
     SUIT_RIM="#59606e",      # the latex's rim, a cool grey
+    SUIT_SHEEN="#8e898f",    # B2d: the latex's broad soft sheen, a warm mid grey (the concept's bust)
     SKIN_RIM="#ffe2d6",      # the skin's rim, warm
     HAIR_RING="#9c8b86",     # the hair's highlight band ("angel ring"), a grey-beige as drawn
     LINE_SKIN="#7a3d36",     # the face's and hands' line, a dark red-brown as inked
@@ -1415,11 +1416,19 @@ def gloss(variant=None):
 # the material's own relief. Colours by PALETTE name.
 _SKIN_RAMP = ((0.00, (0.80, 0.62, 0.62)), (0.36, (0.82, 0.63, 0.62)), (0.44, (0.95, 0.70, 0.64)), (0.52, (1.0, 0.97, 0.96)),
               (1.20, (1.04, 1.03, 1.02)))
-_LATEX = dict(ramp=((0.00, (1.0, 1.0, 1.0)), (0.40, (1.2, 1.2, 1.25)), (0.60, (2.2, 2.2, 2.4)), (1.30, (2.8, 2.8, 3.0))),
+# B2d (review 11 item 4): the concept paints latex as a warm charcoal base, a BROAD soft sheen over the forms facing the light
+# (its bust: a quarter of the pixels at luminance 96-200) and small white spots; B2b's look had two dark steps and white flecks,
+# nothing between 65 and 230, and its hard white flooded the flat upper chest in ragged blobs. Now: the base lifted and warmed
+# (B2b: 1.0 / 1.2 / 2.2 / 2.8, a touch blue); the broad sheen a reflection lobe in camera space (`toonlook.sheen_lobe`: the
+# same size at any distance), gated by the key and fuller on the rounder forms; the crisp white only where the surface is
+# round (`toon_curv`, `toonlook.curvature_attr`), so the upper chest keeps a soft sheen and no blobs.
+_LATEX = dict(ramp=((0.00, (1.6, 1.5, 1.45)), (0.40, (2.0, 1.85, 1.8)), (0.60, (2.8, 2.6, 2.55)), (1.30, (3.4, 3.15, 3.1))),
               bump=0.5,
-              # a broad soft sheen (the latex's grey lit side), then the crisp streaks
-              spec=(dict(rough=0.30, lo=0.35, hi=0.85, colour="SUIT_RIM", amount=0.32),
-                    dict(rough=0.08, lo=0.95, hi=1.10, colour="SHINE", amount=0.92)),
+              sheen=dict(dir=(-0.30, 0.90, 0.30), lo=0.74, hi=0.98, colour="SUIT_SHEEN", amount=0.8, lit=(0.15, 0.45),
+                         curv=(6.0, 16.0, 0.12)),
+              # a soft grey glint, then the crisp streaks
+              spec=(dict(rough=0.30, lo=0.35, hi=0.85, colour="SUIT_RIM", amount=0.20),
+                    dict(rough=0.08, lo=0.95, hi=1.10, colour="SHINE", amount=0.92, curv=(9.0, 16.0))),
               rim=dict(lo=0.55, hi=0.85, blend=0.35, colour="SUIT_RIM", amount=0.55, lit=0.7))
 LOOK_TOON = dict(
     engine=dict(samples=64, filter=1.2, shadow_rays=3, shadow_steps=12),
@@ -1442,7 +1451,9 @@ LOOK_TOON = dict(
         lash=dict(ramp=((0.0, (1.0, 1.0, 1.0)), (1.0, (1.0, 1.0, 1.0))), flat=1.0),
         hair=dict(ramp=((0.00, (0.95, 0.95, 0.95)), (0.38, (1.05, 1.0, 1.0)), (0.55, (2.0, 1.88, 1.82)), (1.30, (3.2, 3.0, 2.9))),
                   bump=0.0, ring=dict(colour="HAIR_RING", lo=0.3, hi=0.6, amount=0.8)),
-        suit=_LATEX, boot=_LATEX, pad=_LATEX,
+        # B2d: the knee pads' dome lit as a dome (review 11 item 10): their own sheen facing the camera, fuller
+        suit=_LATEX, boot=_LATEX,
+        pad=dict(_LATEX, sheen=dict(dir=(-0.25, 0.45, 0.86), lo=0.80, hi=0.995, colour="SUIT_SHEEN", amount=0.9, lit=(0.1, 0.4))),
         pad_rim=dict(_LATEX, ramp=((0.0, (0.8, 0.8, 0.8)), (0.6, (1.3, 1.3, 1.3)))),
         sole=dict(ramp=((0.0, (1.0, 1.0, 1.0)), (0.6, (2.0, 2.0, 2.0)))),
         metal=dict(ramp=((0.0, (0.45, 0.45, 0.48)), (0.5, (1.0, 1.0, 1.0)), (1.2, (1.3, 1.3, 1.3))),
@@ -1470,6 +1481,8 @@ LOOK_TOON = dict(
               # B2c: on a hair whose locks carry `ring_off` / `hw` (the clumps), a band per lock (`toonlook.ring_attr`)
               per_lock=dict(beta=(44.0, 2.4, 1.0), sag=-3.0, saw=2.2, teeth=5.0, edge=0.95)),
     floor=dict(lo=0.35, hi=0.55, amount=0.45, colour=(0.05, 0.05, 0.06)),
+    # B2d: how round each latex surface is (`toonlook.curvature_attr`, 1/m), for the sheen and the streaks above
+    curvature=dict(materials=("suit", "boot", "pad", "pad_rim"), smooth=6),
     # inked lines: an inverted hull `px` pixels wide at the subject; never on the eyes, lashes, piping, zip or nails
     outline=dict(px=1.6, exclude=("*_Eye", "*_Lash", "*_Piping*", "Suit_Zip_*", "Hand_Nails", "Suit_Knee_Rim"),
                  colours=dict(face="LINE_SKIN", skin="LINE_SKIN", hair="LINE_HAIR", suit="LINE_SUIT", boot="LINE_SUIT",
