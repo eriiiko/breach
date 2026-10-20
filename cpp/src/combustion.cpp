@@ -1001,7 +1001,11 @@ void CombustionSolver::step(
             // they leave behind is what draws fresh air in), and is exactly
             // what makes the hot-air visuals follow the fire again.
             const q16 soot = narrow_round(mul_wide((q16)burn_dep, soot_yield_q));
-            SOOT[s] += soot;
+            // #88: `soot` is a BULK-count mass (it leaves N2 and e_shed in bulk
+            // counts, so the Dalton split and the energy books stay exact); it
+            // ENTERS the smoke plane in the trace currency. (P2 replaces this
+            // narrow with the counted saturation, trace_add_sat.)
+            SOOT[s] = (q16)((int64_t)SOOT[s] + fixedpoint::trace_from_bulk((int64_t)soot));
             N2[s]   += (q16)(burn_dep - (int64_t)soot);
 
             // ---- arc #54 P-G1b: THE PARCEL LANDS (design §2.7, R3-#8/#9) ---

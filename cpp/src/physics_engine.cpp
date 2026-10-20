@@ -1041,8 +1041,11 @@ void PhysicsEngine::step_water_tail(
                 const q16 boiled_q = std::min(water_depth[i], boil_amount_q);
                 water_depth[i] -= boiled_q;                    // exact (>=0 by min)
                 const float boiled_m = (float)((double)boiled_q / Q);  // DEQUANTIZE
-                const q16 puff_q = quantize((double)(steam_yield_f * boiled_m));
-                gas_slice[i] += puff_q;                        // steam puff (Q16.16)
+                // #88: the puff is a TRACE amount -- quantized at the trace
+                // currency, int64, never narrowed before the add (A3; P2
+                // replaces this narrow with the counted saturation).
+                const int64_t puff_q = fixedpoint::quantize_trace((double)(steam_yield_f * boiled_m));
+                gas_slice[i] = (int32_t)((int64_t)gas_slice[i] + puff_q);   // steam puff
             }
         }
     }

@@ -516,7 +516,9 @@ __global__ void combustion_pass_c(
         if (burn_dep == 0) continue;
 
         const q16 soot = narrow_round(mul_wide((q16)burn_dep, soot_yield_q));
-        SOOT[s] += soot;
+        // #88: a bulk-count mass entering the smoke plane in the trace currency
+        // (the CPU twin's line; P2 replaces the narrow with trace_add_sat).
+        SOOT[s] = (q16)((int64_t)SOOT[s] + fixedpoint::trace_from_bulk((int64_t)soot));
         N2[s]   += (q16)(burn_dep - (int64_t)soot);
 
         // ONE aggregate heat deposit against the POST-burn N_total (delta delta).

@@ -461,6 +461,62 @@ FP_HD inline int32_t sat_add_q16_i64(int32_t a, int64_t b) {
     return (int32_t)s;
 }
 
+// ---- THE TRACE CURRENCY (#88) ---------------------------------------------
+// docs/smoke_unit_rescale_design_2026-10-20.md §4. The five TRACE planes of the
+// gas array (steam, smoke, poison, teargas, fuel_gas) are int32 in a currency
+// 2^TRACE_FINE_BITS finer than Q16: one real unit of trace density is
+// 2^TRACE_SHIFT counts. The BULK planes (O2, inert_N2) in the same array stay
+// Q16.16. Every C++ trace read or write converts through these and nothing else
+// -- no `<< TRACE_FINE_BITS`, `>> TRACE_SHIFT` or `>> FP_SHIFT` on a trace value
+// is written anywhere else. Twins: src/simulation/gas_fixed.py (a LITERAL,
+// serving engine-less GameMaps), sweep_ref_q.py, the digest spec; held equal by
+// tests/test_trace_currency.py on the CPU and the CUDA module.
+//
+// The gas COEFFICIENTS (heat_absorb_q16, light_absorb_q16, light_glow_q16,
+// beam_absorb_q16) stay Q16 per REAL unit; a density law over the trace planes
+// absorbs the extra bits in its one shift, trace_density_shr. Every term of such
+// a sum is >= 0, so the floor commutes with the power of two: the laws are
+// bit-identical on S_old * 2^k (design §15).
+constexpr int TRACE_FINE_BITS = 0;
+constexpr int TRACE_SHIFT     = FP_SHIFT + TRACE_FINE_BITS;
+// The int32 storage's representability limit: the counted saturation (§5.3).
+constexpr int32_t TRACE_CELL_MAX = INT32_MAX;
+static_assert(TRACE_FINE_BITS >= 0 && TRACE_FINE_BITS <= 14,
+              "trace currency: the density sum's int64 headroom (2^28 * 2^31 per "
+              "term) is argued with S an int32; TRACE_SHIFT must stay < 31");
+
+// A bulk-count (Q16) mass entering a trace plane -- the soot mint's `soot`,
+// which also leaves N2 and e_shed in bulk counts, so the Dalton split and the
+// energy books stay exact (G5). Written as a multiply, never a shift of a
+// signed value; the mass is non-negative by contract.
+FP_HD inline int64_t trace_from_bulk(int64_t q) {
+    return q * ((int64_t)1 << TRACE_FINE_BITS);
+}
+
+// Σ coef_q16 · max(0, S) over trace planes (S in trace counts) -> a Q16
+// fraction. The sum is non-negative by construction (every term clamps a
+// negative density to 0), so the arithmetic shift is an exact floor.
+FP_HD inline int64_t trace_density_shr(int64_t s) {
+    return s >> TRACE_SHIFT;
+}
+
+// A real trace density -> the trace currency, round-half-away-from-zero (the
+// `quantize` door-2 idiom), returned as INT64 and never narrowed (critique A3):
+// only the counted saturation may narrow to the int32 plane, so an amount that
+// cannot be represented is SEEN, never wrapped. The double -> int64 conversion
+// is range-checked (an out-of-range double -> int is UB): a value at or beyond
+// int64 saturates to the int64 limit. A NaN amount has no meaning and lands as
+// 0. Host only (the one float in this block).
+inline int64_t quantize_trace(double v) {
+    const double scaled = v * (double)((int64_t)1 << TRACE_SHIFT);
+    if (!(scaled == scaled)) return 0;                       // NaN
+    const double r = (scaled >= 0.0) ? (scaled + 0.5) : (scaled - 0.5);
+    const double LIM = 9223372036854775808.0;                // 2^63, exact
+    if (r >= LIM) return INT64_MAX;
+    if (r <= -LIM) return INT64_MIN;
+    return (int64_t)r;
+}
+
 // ---- symmetric round-toward-0 shift ---------------------------------------
 // `x >> s` rounds toward -inf for negative x. For a symmetric divide-by-2^s
 // (so +x and -x lose magnitude equally) use this (temperature_solver's cooling

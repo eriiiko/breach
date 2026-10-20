@@ -1865,6 +1865,29 @@ PYBIND11_MODULE(breach_physics, m) {
           "deposit_dT_wide_q16 on int32-range deposits. #78: fine_bits is the "
           "currency of a deposit in the sweep's fine heat currency, converted at "
           "the chain's final narrow (0: whole heat counts).");
+    // #88: THE TRACE CURRENCY, its constant and its kit, exposed so the Python
+    // twins (gas_fixed.TRACE_FINE_BITS / quantize_trace / trace_from_bulk /
+    // trace_density_shr, sweep_ref_q's) are held to the engine's value for value
+    // (tests/test_trace_currency.py, on the CPU module and -- inside
+    // run_cuda_script -- the CUDA one, so a stale build_cuda fails it).
+    m.attr("TRACE_FINE_BITS") = fixedpoint::TRACE_FINE_BITS;
+    m.attr("TRACE_SHIFT") = fixedpoint::TRACE_SHIFT;
+    m.attr("TRACE_CELL_MAX") = fixedpoint::TRACE_CELL_MAX;
+    m.def("fp_quantize_trace",
+          [](double v) { return fixedpoint::quantize_trace(v); },
+          py::arg("v"),
+          "fixed_point.h quantize_trace (#88): a real trace density -> the trace "
+          "currency, round-half-away, INT64 (never narrowed), range-checked.");
+    m.def("fp_trace_from_bulk",
+          [](int64_t q) { return fixedpoint::trace_from_bulk(q); },
+          py::arg("q"),
+          "fixed_point.h trace_from_bulk (#88): a bulk-count mass entering a "
+          "trace plane, q * 2^TRACE_FINE_BITS.");
+    m.def("fp_trace_density_shr",
+          [](int64_t s) { return fixedpoint::trace_density_shr(s); },
+          py::arg("s"),
+          "fixed_point.h trace_density_shr (#88): a density sum over trace planes "
+          "(coefficients Q16 per real unit) -> a Q16 fraction, s >> TRACE_SHIFT.");
     // #78: THE ONE CONVERSION out of the sweep's fine heat currency, exposed so
     // its Python twins (sweep_ref_q.fine_heat_shr, optics_fixed.fine_heat_shr)
     // are held to it value for value (tests/test_sweep_fine_currency.py).
@@ -2977,6 +3000,9 @@ PYBIND11_MODULE(breach_physics, m) {
         // its three siblings. Per tick (reset at step() entry, the trace tail
         // adds after it), int64, never digested. Tests check the identity
         //   Σ S(after) − Σ S(before) == deposits − vent − wipe − sink − decay.
+        // CURRENCY (#88): every slot is in ITS OWN plane's currency -- a trace
+        // gas's in trace counts (2^TRACE_SHIFT per real unit), a bulk gas's in
+        // Q16. No consumer may sum these (or boundary_flux()) across gases.
         .def("trace_wipe_sum", [](const EOSSolver& s) {
             py::list out;
             for (int64_t v : s.trace_wipe_sum_) out.append(v);
