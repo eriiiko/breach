@@ -663,4 +663,208 @@ to read. It does not cut any value the game can show.
 
 | lens | verdict | blockers |
 |---|---|---|
-| | | |
+| arithmetic, overflow, determinism (Opus, 2026-10-20) | PASS WITH FIXES | none. 3 MAJOR to fix before P1/P3 (A1 the teargas gate is not reader-invariant, so V3 as written fails; A2 numpy 1.26 on Windows accumulates int32 sums in int32; A3 `quantize_trace` narrows to int32 before the rail can see the excess). 9 MINOR. See §15 |
+
+## 15. Critique — arithmetic lens
+
+Scope: every arithmetic site that touches a trace value, on CPU, chained CUDA and
+resident CUDA, read in the code at `3d83503`. Grep over `cpp/src` for every loop over
+`n_gases`: every C++ N-total sum is gated on `gas_conservative` (`eos_solver.cpp:294,
+570, 937, 2327`; `physics_engine.cpp:186, 644`; `cuda_eos_step.cu:249, 667`;
+`cuda_eos_resident.cu:146`; `cuda_kick_compression.cu:706`; `sky_exchange.cpp` is
+bulk only). So §2.2's mixed-currency list is complete on the C++ side. On the Python
+side, the only mixed sites are the ones §2.2 already names.
+
+**Confirmed sound (no finding):**
+- **Sweep heat, light and glow terms** (`radiation_sweep.h:242-277`, CPU
+  `radiation_sweep.cpp:600-676`, CUDA `cuda_radiation_sweep.cu:262-318`, binding
+  `bindings.cpp:2672-2674`). They are `floor(Σ c·max(0,S) / 2^16)` with every term
+  ≥ 0, so `(Σ c·S·2^k) >> (16+k) == (Σ c·S) >> 16` exactly, including at the ONE cap
+  and in `exp_neg_q16`'s argument. Fleck's gas arm reads only the capped `a_gas`.
+  The int64 headroom is unchanged (2^28 · 2^31 per term).
+- **Laser** (`combat.py:1153-1157`). It floors each term, Python ints, and skips
+  `density_q > 0`, so it is invariant term by term.
+- **Poison dose** (`exchange.py:681`). It divides by a power of two in float64, so
+  it is exact. The poison threshold is invariant **by luck** (see A1).
+- **Recorder** (`recorder.py:190-194`), **render** and **`gas_fixed.dequantize_f32`**.
+  float64 `/2^k` and then a float32 cast commutes with the power-of-two rescale, so
+  the floats are identical.
+- **Stage 3b `price_face`** (`bulk_transport.cpp:278-282`, CUDA
+  `cuda_bulk_transport.cu:229`). The products are `dq·q ≤ S < 2^31` (since
+  `dq ≤ N`) and `dq·r < N²`. No new overflow at k = 8. §2.5's
+  "`dq·S < 2^61`" describes a product the code never forms; the real bound is
+  better.
+- **Diffusion** (`bulk_transport.cpp:752-760`, resident `cuda_bulk_transport.cu:817-825`).
+  `c ≤ 2^14` and `|ΔS| < 2^31`, so the product is `< 2^45`. The magnitude-truncated
+  Jacobi gives `s_new ≤ max(neighbours)`, so the claim that no rail is needed holds.
+- **Decay** (`trace_decay.h:42-47`). The product is `< 2^47`. The P5 formula is
+  correct at `frac_q = ONE`.
+- **Decay table §3.2, §1 thresholds and §3.3 ceilings.** I re-derived them
+  independently: every row of §3.2 reproduces to the second.
+- **Soot mint** (`combustion.cpp:1003-1005`, `cuda_combustion.cu:518-520`). It writes
+  its own cell with no atomics, so a per-cell rail is order-free on the device.
+- **CUDA books.** The `unsigned long long` `atomicAdd` of signed values is
+  two's-complement modular, so it is order-free. A clip slot in the same idiom is fine.
+- **The `GOLDEN_AGGREGATE` arithmetic.** `quantize(0.6)·256 = 10066432 ≠ 10066330`
+  checks out.
+
+### A1. MAJOR: the teargas BLINDED gate is NOT reader-invariant, so V3 fails as specified
+
+- **Evidence.** `exchange.py:625, 631` compares `density_q < quantize_scalar(0.15)`.
+  - Old threshold: `round(0.15·2^16) = 9830`.
+  - New threshold: `round(0.15·2^24) = 2516582`, while `9830·256 = 2516480`.
+  - At `S_old = 9830` the old gate blinds (9830 ≥ 9830), but the new gate does not
+    (2516480 < 2516582).
+- **Why poison escapes.** Poison (`poison_min_density = 0.05`) is invariant only
+  because its old quantization rounded *up* (3276.8 → 3277).
+- **The general rule.** Any threshold quantized at the finer currency moves the gate
+  by up to one old count when the old quantization rounded down.
+- **Consequence.** §6 and V3 list "the BLINDED gate" as bit-identical on `S_old << k`.
+  The V3 test would fail on teargas, and the next implementer would be tempted to
+  bend it.
+- **Fix.** Add a row to §6's "allowed to differ" table: "door thresholds
+  (`teargas_blind_density`, `poison_min_density`) quantize at 2^24: the gate moves by
+  less than one old count, toward the real-unit value". Take both gates out of V3's
+  bit-identical list. In their place, V3 asserts the real-unit law:
+  `gate(S) ⇔ S ≥ quantize_trace(th)`, and the gate is monotone in S.
+  (The alternative, `quantize_bulk(th) << k`, keeps the old coarse threshold for no
+  reason.)
+
+### A2. MAJOR: "int32 `.sum()` accumulates in int64" holds only on numpy 2, and the repo documents a numpy 1.26.4 environment
+
+- **Evidence.**
+  - §2.1 rests on "numpy is 2.4.6 on this machine".
+  - `docs/lenovo_dev_setup.md:147` records numpy 1.26.4 runs.
+  - On Windows, numpy < 2 reduces int32 in the platform `long`, which is 32-bit.
+- **Consequence.** At k = 8, one unit is 2^24, so a plane total above 128 units
+  wraps. The miasma room in §3.1 is 2062 units, which is 2^35 counts. The V6 books
+  identity, the §3.1 measurements and existing checks such as
+  `tests/cuda_trace_smoke_check.py:297` (a bare `int(gg.gas[SMOKE][...].sum())`) would
+  silently wrap on that environment.
+- **The same hazard on assignment.** numpy 1.26 wraps an out-of-range Python int
+  assigned into int32 with only a DeprecationWarning, where numpy 2 raises.
+- **Fix.** P3 lints for any `.sum()` over a trace plane without an explicit int64
+  accumulator, using the repo's own idiom `.astype(np.int64).sum()` (as
+  `gamemap.py:2295` and `test_a5_seal_evacuation.py:62` already do). This replaces
+  §2.1's "grep for `dtype=np.int32`". Every Python rail returns a Python int that is
+  range-checked before it is stored.
+
+### A3. MAJOR: `quantize_trace` narrows before the rail can see the excess, and the C++ `quantize` it copies does not saturate
+
+- **Evidence, C++.** `fixed_point.h:92-95` is
+  `quantize(double v) { return (q16)(scaled ± 0.5); }`. This is a direct
+  double → int32 cast with no saturation, which is UB out of range. At k = 8,
+  "out of range" drops from 32768 units to 128 units.
+- **Evidence, Python.** `gas_fixed.py:43-52` ends in `out.astype(np.int32)`, which
+  wraps silently (or gives INT32_MIN) for values of 128 units or more.
+- **Where this bites.**
+  - §4 types `quantize_trace(double)` as "the door-2 idiom matching `quantize`'s",
+    and §5.3 promises a rail at every adding site.
+  - A W5 puff, or an array seed (`tools/lighting_demo.py:916-930`, test fixtures)
+    of 128 units or more, wraps inside the conversion before `trace_add_rail` runs.
+  - The same applies to `trace_from_bulk(q) = q << 8` on a negative `int64`, which is
+    UB before C++20. It is safe today because `soot ≥ 0`, but the kit should not
+    rely on that.
+- **Fix.**
+  - `quantize_trace` returns **int64** (C++) or a Python int / int64 array (Python),
+    never int32.
+  - `trace_from_bulk` is written as `q * (1 << TRACE_FINE_BITS)`, with
+    `assert(q >= 0)`.
+  - Only `trace_add_rail` narrows to int32.
+  - V6 adds one case: a W5 puff, or a FieldEdit, of 200 units into an empty cell
+    lands at `TRACE_CELL_MAX` with exactly the excess in `clip`.
+
+### A4. MINOR: the rail's negative-result semantics are unspecified
+
+- "It never produces a negative" can be read as "clamps a negative result to 0".
+  That would mint mass without booking it.
+- At stage 3b, `ds` is a net and can be negative. `s + ds ≥ 0` holds by the limiter,
+  and today it is asserted (`bulk_transport.cpp:542`).
+- **Fix.** Specify that the rail clamps only from above. A negative `s + add` is a
+  contract violation: keep the `assert` (CPU), and on CUDA count it in a
+  diagnostic slot rather than clamp it. Apply the rail once per cell, on the net
+  `s_own + ds`, never per face.
+
+### A5. MINOR: P0's priced-by-air extraction needs an N_EPS guard
+
+- **Evidence.** `extract_gas_n_vec` (`gamemap.py:3096-3099`) today returns zeros
+  when the all-planes `n_total ≤ 0`.
+- With the split over bulk only, a tile with `N_bulk == 0` and `S > 0` makes
+  `take_t = floordiv(bulk_taken·S_t, N_bulk)` divide by zero. Such a tile is
+  possible: a deposit before the tail's sink or 3c wipe runs.
+- **Fix.** Guard with `N_bulk < N_EPS_RAW → take nothing` (the 3b donor guard), and
+  add the case to V5.
+
+### A6. MINOR: do not change `inject_gas_n_vec`'s `> 0` gate to bulk only
+
+- `gamemap.py:3151-3152` gates on `sum(add_vec) > 0`. Every slice is ≥ 0, so the gate
+  is already currency-free.
+- Gating on bulk alone would silently skip a trace-only `add_vec`, a mass loss with
+  no book. §2.2 marks the gate "harmless", and P0's row says "`inject_gas_n_vec`'s
+  gate over bulk".
+- **Fix.** Leave the gate as it is.
+
+### A7. MINOR: the sensor conversion must sit where both `sample` and `area` see it
+
+- `sensor_accessor.py:146-175`: `sample` returns the array cell, and `area` returns a
+  raw `(sum, n)` that `sensor_system.py:92` floors as `total // n`.
+- Converting only the scalar return leaves area sensors 256 times off.
+- **Fix.** Apply `trace_to_q16` in `_channel_array` for `Channel.SMOKE` (an array
+  `>> TRACE_FINE_BITS`). Both paths then read Q16. This is invariant on
+  `S_old << k`.
+
+### A8. MINOR: the reference gates and gate 0 never see a fine count
+
+- `sweep_ref_q_gates.py:104-106` draws smoke and steam from a fixed set of Q16
+  values. "`trace_from_bulk` of today's draw" makes every drawn density a multiple
+  of 256.
+- Gate 0 (C++ == reference) then cannot tell a `>> 24` from a rounding variant on
+  non-multiples, nor test the shift's low bits.
+- **Fix.** Draw `trace_from_bulk(v) + rng.randrange(256)` on non-zero trace cells.
+  Shift **only the trace planes** (`smoke`, `steam`); the bulk pair and `n_bulk`
+  stay bulk.
+
+### A9. MINOR: §6 contradicts itself on `gas_energy`
+
+- Line ~395 says `temperature` and `gas_energy` move through `a_gas`. Line ~444 says
+  "Bulk N, wind and `gas_energy` stay bit-identical with or without trace".
+- Since P5c the gas fold lands smoke-absorbed radiation in `gas_energy`, so the
+  second statement is false whenever smoke absorbs.
+- **Fix.** Restrict v2's V5 to "bulk N and wind; `gas_energy` too when the sweep's
+  gas term is off (`heat_absorb = 0`)".
+
+### A10. MINOR: the headroom claim is weaker than §3.4 states
+
+- §3.4 says k = 8 "keeps the rail out of every measured legal case". That is true of
+  each row alone, but two measured legal effects compose: §3.1's grenade spam
+  (10.95 units) under §3.1's own 18× blast compression gives about 197 units, above
+  the 128 ceiling. G4 already admits the closet case.
+- This does not change the decision, since k = 9 is worse. But the rail should be
+  presented as **expected to bind in reachable abuse**, not as "zero in every
+  measured legal scenario" (§5.1). V6's rail scenario is therefore a primary gate,
+  not a corner case.
+
+### A11. MINOR: arithmetic slips in the text
+
+- §4 point 1: `0.22·2^16/256 = 56.32 → 56` is a 0.57 % rounding, not 1.8 %. The
+  argument still holds.
+- §2.5's `dq·S` bound: see "Confirmed sound" above.
+- V4's identity `quantize_trace_scalar(dequantize_trace(v) + x) == v + quantize_trace(x)`
+  is not a theorem in float64: a tie within about 2^-21 counts of .5 can differ.
+  State it as a property within one count, or draw `x` off ties.
+
+### A12. MINOR: name the Q16 fractions that are neither bulk nor trace
+
+- §4 offers only `bulk_*` and `trace_*` names, but `gas_fixed.quantize_scalar` also
+  quantizes Q16 *fractions and temperatures*: filter efficiencies
+  (`vent_system.py:121-122`, validated against `FP_ONE`), `t_min` / `t_max`
+  (`:371`), the sky λ, and the O2 fraction.
+- A filter efficiency is "per trace gas", so an implementer may move it to
+  `quantize_trace`. That gives `eff_q` up to 2^24, `scrub = (r·eff_q) >> 16` then
+  scrubs 256 times the removed mass, and the validator, renamed to `TRACE_ONE`,
+  would pass it.
+- **Fix.** Add a `quantize_q16_scalar` / `Q16_ONE` name for fractions (or point those
+  callers at the shared fixed-point kit). V1's lint asserts that the filter validator
+  bounds against `Q16_ONE`.
+- Also: `unseal_tiles` needs no rail. `target = Σ avail // (k+1) < max(avail)`
+  (`gamemap.py:2898`), so §5.3's row can drop it.
