@@ -1692,8 +1692,11 @@ own_light_cut = 1.0         # share of a glowing tile's own light taken off the
 # where the field changes (it moves the edge by |grad ln tau| x push).
 # low_band_push_tiles = 0 and low_band_height = 0 switch it off (the A/B).
 low_band_tiles = 3.0        # lump size, tiles (~1 m at 0.333 m tiles)
-low_band_push_tiles = 1.0   # how far it moves a plume's edge in and out, tiles
-low_band_height = 0.3       # share of the column height it carves, [0, 1]
+low_band_push_tiles = 1.5   # how far it moves a plume's edge in and out, tiles
+                            # (1.0 barely showed on plume_motion_*; 2.0 no worse)
+low_band_height = 0.0       # share of the column height it carves, [0, 1]: 0.3
+                            # spotted the lit plumes with dark leopard blotches
+                            # (self-shadow on its steep slopes), so it is off
 low_band_tau0 = 0.3         # gate in at tau = 0.3 x cov_tau ...
 low_band_tau1 = 1.0         # ... full at the coverage edge's depth and inside
 debug_view = 0              # 0 off; 1 coverage, 2 height, 3 N.L, 4 self-shadow,
