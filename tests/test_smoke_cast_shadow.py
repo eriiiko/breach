@@ -171,3 +171,30 @@ def test_glow_through_scales_only_the_heat_layers_weight():
     assert "finalColor = vec4(c.rgb, c.a *" in src
     low = src.lower()
     assert "aces" not in low and "pow(" not in low and "srgb" not in low
+
+
+# --- draw order (G2) -----------------------------------------------------------
+
+def test_compose_world_draws_by_height():
+    """Property: GameRenderer.compose_world draws bottom to top -- the cast
+    product before the scene RT is bound, then floor, water (the floor's
+    surface), the FLOOR smoke layer (haze lying on the water), the 3D units,
+    the CEILING smoke layer (Erik's ruling 2), the resolve, and the heat
+    layer after it (display space, glow-through). Breaks if a layer is moved
+    out of its height (water over the haze, soot under the marines, the
+    product rendered inside the scene RT)."""
+    import inspect
+    from renderer.game_renderer import GameRenderer
+    src = inspect.getsource(GameRenderer.compose_world)
+    order = ["self.gas_relief.render_product(",
+             "self.world.begin(",
+             "self.lighting.draw_lit_world(",
+             "self.water_pass.draw(",
+             'self.gas_relief.draw("floor"',
+             "self._draw_units_3d_world(",
+             'self.gas_relief.draw("ceiling"',
+             "self.world.resolve(",
+             "self.temperature_overlay.draw("]
+    pos = [src.index(k) for k in order]
+    assert pos == sorted(pos), [k for k, _ in sorted(zip(order, pos),
+                                                       key=lambda t: t[1])]

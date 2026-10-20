@@ -252,3 +252,16 @@ beacon = true
 light_gain = "game"
 smoke = [[10, 25], [19, 25], [10, 30], [19, 30]]
 note = "fire_thin_smoke with FULL soot puffs: under a solid core the glow is hidden, at the ragged edges it leaks through."
+
+[[shot]]
+name = "steam_over_pool"
+level = "fire_studio"
+frames = 16
+center = [33.0, 26.5]
+zoom = 56.0
+lamps = true
+beacon = false
+flashlight = { pos = [27.5, 26.5], intensity = 2.5, spread = 1.2 }
+steam = [[33, 27], [35, 26]]
+light_gain = "game"
+note = "steam puffs over the fire studio's water pool, a flashlight from the west: the draw order -- the floor haze lies ON the water (water, then the floor layer, then units, then the ceiling soot; G2)."

@@ -650,16 +650,27 @@ class GameRenderer:
 
         Two stages (graphics arc G0 P1, renderer/world_composite.py):
 
-        * SCENE -- linear HDR into the RGBA16F scene RT: lit ship (diffuse +
-          normal + light), the gas medium, the black-body heat, the water,
-          then the 3D units + props (+ their shadows) in one shared 3D pass.
-          No layer here tone-maps or encodes.
+        * (graphics G2) first, outside the scene RT: the smoke relief's CAST
+          PRODUCT (both species layers' occlusion + height), read below by
+          the floor and the 3D pass (the smoke's cast shadow) and by the
+          heat layer (glow-through).
+        * SCENE -- linear HDR into the RGBA16F scene RT, bottom to top: lit
+          ship (diffuse + normal + light, shadowed by the smoke), the water
+          (the floor's surface), the FLOOR smoke layer (steam, teargas,
+          poison: haze lying on the floor and the water), the 3D units +
+          props (+ their projected shadows) in one shared 3D pass, the
+          CEILING smoke layer (soot, above the units). No layer here
+          tone-maps or encodes.
         * ``world.resolve()`` -- the ONE ACES + gamma encode + dither, into
           the RGBA8 display RT.
         * DISPLAY -- authored display-sRGB colours, blended in display space:
           the debug/legacy colormaps (legacy smoke + glow, the flat-orange
-          fire, pressure, cold), the dev doors, waypoints, sprite units (the
-          2D fallback), projectiles, effects, the grid, then ``overlay_fn``.
+          fire, pressure, cold), the black-body HEAT layer (G0's named
+          display-space exception until G3; since G2 drawn THROUGH the smoke
+          over it, so it sits above the ceiling soot but only glows through
+          where the soot is thin), the dev doors, waypoints, sprite units
+          (the 2D fallback), projectiles, effects, the grid, then
+          ``overlay_fn``.
           These sit ABOVE the 3D units now (before G0, doors, waypoints and
           the debug maps were drawn under them).
 
@@ -714,7 +725,22 @@ class GameRenderer:
                 world_px_h=self.world.world_px_h,
             )
 
-        # 2. B2 physical gas medium: ONE premult-over layer (C = inscatter +
+        # 2. Water OPTICS pass (graphics/water_rendering.md §5): the GLSL
+        # Fresnel/GGX/refraction pass, ON the floor, under the floor haze and
+        # the units (G2: the water is the floor's surface, the haze lies on
+        # it; the lit ship beneath is the floor sample). It binds the
+        # lighting pass's light textures + the level diffuse and draws
+        # premultiplied, linear; the shader emits alpha 0 on dry tiles so
+        # this is a no-op with no standing water (dormant-safe).
+        # Off-by-toggle (V).
+        if self.show_water and self.textures.diffuse:
+            self.water_pass.draw(
+                self.textures.diffuse,
+                self.lighting.light_tex_a, self.lighting.light_tex_b,
+                world_px_w=self.world.world_px_w,
+                world_px_h=self.world.world_px_h,
+                anim_t=time.perf_counter() - self._anim_t0)
+        # 3. B2 physical gas medium: ONE premult-over layer (C = inscatter +
         # T·bg), linear HDR inscatter. Occlusion (alpha) and inscatter (RGB)
         # composite in a single BLEND_ALPHA_PREMULTIPLY draw — no double-
         # count, and the real per-tile alpha leaves vacuum tiles untouched (no
@@ -725,7 +751,8 @@ class GameRenderer:
         # display-referred grey and draws after the resolve, below.)
         if relief_on:
             # G1: the FLOOR species layer (steam, teargas, poison, fuel
-            # vapour) -- below the water and the units, so marines wade in it.
+            # vapour) -- on the water (G2), below the units, so marines wade
+            # in it.
             self.gas_relief.draw("floor", self.lighting,
                                  self.world.world_px_w, self.world.world_px_h,
                                  tile_rect=self._relief_view_rect())
@@ -737,22 +764,9 @@ class GameRenderer:
             else:
                 self.gas_medium.draw(
                     0, 0, self.world.world_px_w, self.world.world_px_h)
-        # 3. (The black-body heat is the LEGACY HEAT LAYER: display space,
-        # drawn after the resolve below -- the one named G0 exception.)
-        # 4. Water OPTICS pass (graphics/water_rendering.md §5): the GLSL
-        # Fresnel/GGX/refraction pass, after the field layers, before units
-        # (the squad reads over the water; the lit ship beneath is the floor
-        # sample). It binds the lighting pass's light textures + the level
-        # diffuse and draws premultiplied, linear; the shader emits alpha 0 on
-        # dry tiles so this is a no-op with no standing water (dormant-safe).
-        # Off-by-toggle (V).
-        if self.show_water and self.textures.diffuse:
-            self.water_pass.draw(
-                self.textures.diffuse,
-                self.lighting.light_tex_a, self.lighting.light_tex_b,
-                world_px_w=self.world.world_px_w,
-                world_px_h=self.world.world_px_h,
-                anim_t=time.perf_counter() - self._anim_t0)
+        # 4. (The black-body heat is the LEGACY HEAT LAYER: display space,
+        # drawn after the resolve below -- the one named G0 exception -- and
+        # since G2 THROUGH the smoke over it, from the cast product.)
         # 5. 3D units + props (+ projected shadows): the shared 3D pass.
         drew_units_3d = self._draw_units_3d_world(units_marines, units_zombies,
                                                   props)
