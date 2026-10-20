@@ -89,14 +89,32 @@ def _code_lines(text: str):
     return ["".join(r) for r in out], raw
 
 
+def _git_tracked():
+    """The repo's TRACKED files (absolute, resolved), or None outside a git
+    checkout. The lint judges tracked code only: the working tree carries
+    untracked notes, prototypes and frozen pre-#88 harnesses on purpose
+    (CLAUDE.md: never `git add -A`), and a lint that read them would fail in
+    the main checkout while passing in a fresh worktree."""
+    import subprocess
+    try:
+        out = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT,
+                             capture_output=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return {(ROOT / f).resolve() for f in out.decode("utf-8").split("\0") if f}
+
+
 def iter_sources(dirs=SCAN_DIRS):
-    """Every tracked-looking .py under the scanned dirs (vendored trees and
-    caches excluded), as (path, code_lines, raw_lines)."""
+    """Every TRACKED .py under the scanned dirs (vendored trees and caches
+    excluded), as (path, code_lines, raw_lines)."""
+    tracked = _git_tracked()
     for d in dirs:
         base = ROOT / d
         if not base.is_dir():
             continue
         for p in sorted(base.rglob("*.py")):
+            if tracked is not None and p.resolve() not in tracked:
+                continue
             s = str(p)
             if "__pycache__" in s or "realesrgan" in s or "site-packages" in s:
                 continue
