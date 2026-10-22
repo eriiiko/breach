@@ -80,7 +80,7 @@ VENTS = (  # (id, x, y, role, facing) -- wall mounts in the hull's side walls,
     ("vent_supply", studio.X0, FIRE_ROW_Y, "supply", "e"),
     ("vent_return", studio.X1, FIRE_ROW_Y, "return", "w"),
 )
-Q_CIRC = 8.0
+Q_CIRC = 16.0
 
 PALETTE = dict(still.PALETTE)
 AIR_ALT = still.AIR_ALT

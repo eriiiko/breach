@@ -111,7 +111,7 @@ mount = "wall"
 facing = "e"
 role = "supply"
 duct = "duct_studio"
-q_circ = 8.0
+q_circ = 16.0
 
 [[entity]]
 id = "vent_return"
@@ -122,4 +122,4 @@ mount = "wall"
 facing = "w"
 role = "return"
 duct = "duct_studio"
-q_circ = 8.0
+q_circ = 16.0
