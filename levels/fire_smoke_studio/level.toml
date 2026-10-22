@@ -3,7 +3,7 @@
 # five burning furniture tiles and one lone burning tile,
 # lit at 0.5 s by one timed charge per tile; the squad north of the
 # fire; no lamps (the fire is the light); one HEPA vent loop (supply W,
-# return E) draws a current over the fire.
+# return E, in the side walls) draws a current over the fire.
 #
 # v2 codes ARE canon material ids (src/simulation/materials.py):
 #   0=air 1=hull 6=furniture 9=SPACE
@@ -105,8 +105,10 @@ filter = "hepa_basic"
 [[entity]]
 id = "vent_supply"
 class = "vent"
-x = 18
+x = 4
 y = 22
+mount = "wall"
+facing = "e"
 role = "supply"
 duct = "duct_studio"
 q_circ = 4.0
@@ -114,8 +116,10 @@ q_circ = 4.0
 [[entity]]
 id = "vent_return"
 class = "vent"
-x = 32
+x = 51
 y = 22
+mount = "wall"
+facing = "w"
 role = "return"
 duct = "duct_studio"
 q_circ = 4.0

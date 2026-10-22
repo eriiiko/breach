@@ -75,9 +75,10 @@ IGNITERS = tuple((f"ignite_{x}_{y}", x, y, "studio_ignite", IGNITE_AT_S)
 # does not fill up. q_circ is the playground's value, untuned (#48: vents get
 # retuned after the 2026-10-06 drag change).
 DUCT = ("duct_studio", "hepa_basic")
-VENTS = (  # (id, x, y, role)
-    ("vent_supply", 18, FIRE_ROW_Y, "supply"),
-    ("vent_return", 32, FIRE_ROW_Y, "return"),
+VENTS = (  # (id, x, y, role, facing) -- wall mounts in the hull's side walls,
+    #          level with the fire row (Erik: "move the vents to the walls")
+    ("vent_supply", studio.X0, FIRE_ROW_Y, "supply", "e"),
+    ("vent_return", studio.X1, FIRE_ROW_Y, "return", "w"),
 )
 Q_CIRC = 4.0
 
@@ -93,8 +94,8 @@ def build_tilemap() -> np.ndarray:
     tm[LONE[1], LONE[0]] = MAT_FURNITURE
     for (_id, x, y, _payload, _first) in IGNITERS:
         assert tm[y, x] == MAT_FURNITURE, f"{_id} is not on its fuel"
-    for (_id, x, y, _role) in VENTS:
-        assert tm[y, x] == MAT_AIR, f"{_id} is not on floor"
+    for (_id, x, y, _role, _facing) in VENTS:
+        assert tm[y, x] == MAT_HULL, f"{_id} is not in a wall"
     for (_n, x, y) in SPAWNS:
         assert (tm[y:y + 3, x:x + 3] == MAT_AIR).all(), f"{_n} is not on floor"
     return tm
@@ -123,12 +124,12 @@ def build_vents() -> list:
     did, filt = DUCT
     ents = [EntityInstance(id=did, class_name="duct", ordinal=0,
                            fields={"filter": filt}, authored_keys=("filter",))]
-    keys = ("x", "y", "role", "duct", "q_circ")
-    for i, (vid, x, y, role) in enumerate(VENTS, start=1):
+    keys = ("x", "y", "mount", "facing", "role", "duct", "q_circ")
+    for i, (vid, x, y, role, facing) in enumerate(VENTS, start=1):
         ents.append(EntityInstance(
             id=vid, class_name="vent", ordinal=i,
-            fields={"x": x, "y": y, "role": role, "duct": did,
-                    "q_circ": Q_CIRC},
+            fields={"x": x, "y": y, "mount": "wall", "facing": facing,
+                    "role": role, "duct": did, "q_circ": Q_CIRC},
             authored_keys=keys))
     return ents
 
@@ -144,7 +145,7 @@ HEADER_COMMENTS = (
     "five burning furniture tiles and one lone burning tile,",
     "lit at 0.5 s by one timed charge per tile; the squad north of the",
     "fire; no lamps (the fire is the light); one HEPA vent loop (supply W,",
-    "return E) draws a current over the fire.",
+    "return E, in the side walls) draws a current over the fire.",
     "",
     "v2 codes ARE canon material ids (src/simulation/materials.py):",
     "  0=air 1=hull 6=furniture 9=SPACE",
