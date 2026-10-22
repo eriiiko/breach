@@ -62,13 +62,20 @@ _FLAT = dict(ramp=((0.0, (1.0, 1.0, 1.0)), (1.0, (1.0, 1.0, 1.0))), flat=1.0, al
 _EYE = dict(ramp=((0.0, (0.86, 0.86, 0.90)), (0.5, (1.0, 1.0, 1.0))), flat=0.85, alpha=True)
 _HAIR = dict(ramp=((0.00, (0.80, 0.78, 0.80)), (0.30, (0.84, 0.82, 0.84)), (0.42, (1.20, 1.17, 1.15)), (1.20, (1.38, 1.33, 1.30))),
              bump=0.0, rim=dict(lo=0.55, hi=0.85, blend=0.3, colour="HAIR_EDGE", amount=0.25, lit=1.0), alpha=True)
+# B's hair with B2e's PAINTED light (`toonlook.normal_lobe`, its side / world / view gates, `beatrice.LOOK_TOON` hair): the
+# outer mass on her right, seen from the front, ash to pale (the concept's); a cool gloss band (the ring) on top. Multipliers
+# of the recoloured VRoid texture (its mid ~#45363a), not of B2e's flat base
+_HAIR_LIT = dict(_HAIR, ramp=((0.00, (0.80, 0.78, 0.80)), (0.30, (0.86, 0.84, 0.86)), (0.44, (1.9, 1.75, 1.7)),
+                              (0.66, (3.6, 3.2, 3.0)), (1.05, (4.6, 4.2, 4.0))),
+                 lobe=dict(beatrice.LOOK_TOON["materials"]["hair"]["lobe"], per_lock=False),
+                 ring=dict(colour="HAIR_RING", lo=0.2, hi=0.7, amount=0.8, add=True, lit_floor=0.45))
 LOOK_VROID = dict(
     {k: v for k, v in beatrice.LOOK_TOON.items() if k in ("engine", "world", "calib", "lights", "floor")},
     materials=dict(
         face=dict(beatrice.LOOK_TOON["materials"]["face"]),
         skin=dict(beatrice.LOOK_TOON["materials"]["skin"], bump=1.0),
         eye_white=_EYE, iris=_EYE, eye_hi=_FLAT, eye_extra=_FLAT, eyeline=_FLAT, lash=_FLAT, brow=_FLAT, mouth=_FLAT,
-        hair=_HAIR, hair_back=_HAIR,
+        hair=_HAIR_LIT, hair_back=_HAIR_LIT,
         cloth=dict(ramp=((0.0, (0.70, 0.70, 0.74)), (0.40, (0.74, 0.74, 0.78)), (0.5, (1.0, 1.0, 1.0)), (1.2, (1.1, 1.1, 1.1))),
                    alpha=True),
         suit=dict(beatrice.LOOK_TOON["materials"]["suit"], alpha=True),
@@ -76,6 +83,9 @@ LOOK_VROID = dict(
         metal=dict(beatrice.LOOK_TOON["materials"]["metal"]),
     ),
     curvature=dict(materials=("suit",), smooth=6),
+    # the hair's band and its side attribute (`toonlook.ring_attr`, `toon_x` for the lobe's side gate), its normals as one mass
+    ring=dict(objects=("Vroid_Hair*",), beta=(40.0, 3.0, 3.0), jag=2.5, freq=13.0, back=170.0),
+    hair_normals=dict(weight=0.75, z=(1.42, 1.50), hang=0.8),
     outline=dict(px=1.6, exclude=("*_FaceLayers", "*_Zip*"), masks=dict(suit="suit", mesh="insert"),
                  colours=dict(face="LINE_SKIN", skin="LINE_SKIN", hair="LINE_HAIR", hair_back="LINE_HAIR", cloth="LINE_SUIT",
                               suit="LINE_SUIT", mesh="LINE_SUIT", metal="LINE_SUIT")),
@@ -264,10 +274,10 @@ FRAMES = dict(
 )
 FACE_VIEWS = (0, 30, 60, 90)
 SHOTS.update(
-    p_front=dict(cam=(0.0, -6.0, 0.85), target=(0.0, 0.0, 0.82), lens=85.0, res=(700, 1100)),
-    p_34=dict(cam=(-3.0, -5.2, 0.95), target=(0.0, 0.0, 0.82), lens=85.0, res=(700, 1100)),
-    p_side=dict(cam=(-6.0, 0.0, 0.85), target=(0.0, 0.0, 0.82), lens=85.0, res=(700, 1100)),
-    p_back=dict(cam=(0.0, 6.0, 0.85), target=(0.0, 0.0, 0.82), lens=85.0, res=(700, 1100)),
+    p_front=dict(cam=(0.0, -4.4, 0.85), target=(0.0, 0.0, 0.82), lens=85.0, res=(700, 1100)),
+    p_34=dict(cam=(-2.2, -3.81, 0.95), target=(0.0, 0.0, 0.82), lens=85.0, res=(700, 1100)),
+    p_side=dict(cam=(-4.4, 0.0, 0.85), target=(0.0, 0.0, 0.82), lens=85.0, res=(700, 1100)),
+    p_back=dict(cam=(0.0, 4.4, 0.85), target=(0.0, 0.0, 0.82), lens=85.0, res=(700, 1100)),
 )
 # the face views (B2e's `face_turn` framing: 100 mm, portrait), on the posed eyes' midpoint
 FACE_SHOT = dict(azimuths=FACE_VIEWS, dist=1.30, lens=100.0, up=0.0, back=-0.015, elev=3.0, res=(720, 900), transparent=True)
@@ -283,3 +293,6 @@ SHOTS["t_face"] = dict(cam=(-0.30, -0.74, 1.47), target=(0.0, 0.0, 1.455), lens=
 # (licence "Other", not CC0: PROVENANCE). Sendagaya Shino's is the long, straight, dark hairstyle closest to the drawings; it
 # shows what a proper long VRoid hairstyle (e.g. one the owner makes in VRoid Studio's hair editor) would give.
 WHATIF = dict(shino=dict(path="sendagaya_shino/x/Sendagaya Shino.vrm"))
+
+# the head's centre (from the head bone, rest) for the hair's band and normals
+HEAD_CENTRE = (0.0, -0.005, 0.095)

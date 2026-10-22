@@ -1772,11 +1772,14 @@ driver `scripts/vroid.py` (new). `beatrice.py` is only read (its palette, `LOOK_
 - **Proportions** (`SCALES`): only the bust, 1.28 (the base's is small; both drawings draw it fuller). The VRoid body's
   slimness and leg length are kept (the owner's verdict). Height 1.63 m (the base's), not scaled.
 - **The toon look**: `toonlook.apply` with its own table `LOOK_VROID` (`beatrice.LOOK_TOON`'s engine, world, lights and floor;
-  its face, skin, latex and net specs; flat painted specs for the face's layers; a simple two-tone hair ramp). Two additive
+  its face, skin, latex and net specs; flat painted specs for the face's layers; the hair's ramp with B2e's painted light,
+  `normal_lobe` with its side / world / view gates but not per lock, a cool gloss band, the hair's normals as one mass --
+  one attempt: the effect is faint on the VRoid hair). `toonlook.prepare` runs on the opened build before posing (the
+  hair's band and side attribute, the latex's curvature for the streaks). Two additive
   paths in `toonlook.py` (defaults reproduce today's output): `spec["alpha"]` (a cut-out / see-through layer: the Principled's
   Alpha between a Transparent BSDF and the emitted colour, dithered, transparent shadows) and `outline["masks"]` (a hull
-  shown only where a point attribute is > 0, so a cut layer draws no line where it is cut away). Not ported: B2e's painted
-  hair light (`normal_lobe`, `ring`), the face's simple-head normals, the shadow proxy.
+  shown only where a point attribute is > 0, so a cut layer draws no line where it is cut away). Not ported: the face's
+  simple-head normals and shadow proxy (the VRoid face's own normals are already smooth).
 - **Posing** (`POSE_B`, `vrmbase.world_pose`, `vroid.pose_b`): the VRM skeleton posed by ABSOLUTE world rotations in
   `beatrice.POSE`'s convention, so the concept pose carries over (the arms brought down from the T-pose about Y first; the
   left thigh's inward swing reduced 8 -> 2 deg, as VRoid's legs stand closer); fingers relaxed; the standing foot put on the
@@ -1788,6 +1791,7 @@ driver `scripts/vroid.py` (new). `beatrice.py` is only read (its palette, `LOOK_
 
 ### Pictures and times
 
+Timed end to end: the build 29 s, every B / what-if picture 75 s (five Blender runs), the sheets a few seconds.
 `vroid.py --open B --pose concept --shots concept --tag P` (6 s) and `--open B --pose stand --shots
 side_v2,art_front,art_side,face,p_front,p_34,p_side,p_back --tag S` (12 s), then `python Beatrice/scripts/vroid_sheets.py`:
 `vroid_vs_concept.jpg`, `vroid_face.jpg`, `vroid_full.jpg`, `vroid_candidates.jpg`, `vroid_whatif_hair.jpg` (the what-if:
@@ -1807,10 +1811,10 @@ the RTX 3070: 0.5-1 s a shot after the first.
    smooth to the back. Shino's hair (the what-if) is smooth there but has a blunt hime fringe, not the drawn pointed one.
 3. **The side locks hide the face in profile** (`vroid_face.jpg`, the profile framing): the lengthened face-framing locks
    hang over the cheek; the drawing keeps one narrow lock in front of the ear.
-4. **No painted light on the hair**: B2e's ash-pale lit side (her right, from the front) is not ported (`vroid_vs_concept.jpg`:
-   the concept's outer hair is pale beige).
-5. **The latex is flatter than drawn** (`vroid_vs_concept.jpg`): a broad sheen and few crisp highlights; the concept's latex is
-   wet with bright streaks (B2e's is closer: its curvature-gated streaks run on a 3 M-vertex surface; here the strips light
-   a smoother, sparser body). The piping is only on the cut edges (no princess seams).
+4. **The hair's painted light is faint**: B2e's lobe is on, but the concept's ash-pale outer hair on her right barely shows
+   (`vroid_vs_concept.jpg`); it needs B2e's per-lock share, which VRoid's cards do not carry.
+5. **The latex**: wet, with crisp streaks on the rounder forms (once `toonlook.prepare` computed the latex's curvature --
+   the first pictures skipped it and the streaks were gated to nothing); still fewer and smaller highlights than the concept's
+   bust and arms, and the piping only on the cut edges (no princess seams).
 6. **A lip highlight reads as a fang** in the concept framing (the VRoid face texture's lower-lip gloss).
 7. **Hands**: VRoid's simple hands, fingers relaxed by a fixed curl; fine at full figure, plain in close-up.

@@ -419,6 +419,9 @@ if args.open:
     vrmbase.enable()
     if args.whatif:
         whatif_hair(args.whatif)
+    _arm = bpy.data.objects["Vroid_Armature"]
+    _c = np.asarray(_arm.matrix_world @ _arm.data.bones["J_Bip_C_Head"].head_local) + np.asarray(T.HEAD_CENTRE)
+    toonlook.prepare(T.LOOK_VROID, ring_centre=tuple(_c))   # before posing: the hair's band, side attribute and normals
     if args.pose:
         pose_b(args.pose)
     LOOK = T.LOOK_VROID
