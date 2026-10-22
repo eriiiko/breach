@@ -164,20 +164,24 @@ def test_hotter_is_brighter_and_colour_warms_to_white(checked_in, ramp):
 
 
 def test_the_faintest_glow_the_ramp_shows_is_resolved(checked_in, ramp):
-    """PROPERTY (decision 4, the second floor -- the one that SETS L_FINE_BITS):
-    the faintest glow blackbody.py's ramp ever shows -- the smallest non-zero
-    intensity its public per-frame map returns (its LUT's first step, 7.2e-8 of
-    the reference level) -- lands >= 2^8 counts per ordinate on an opaque cell
-    at the S16 weight: I_min * 2^k / 16 >= 256. And every bucket the ramp shows
-    at least that bright is resolved to >= 2^8 per ordinate in the table itself.
+    """PROPERTY (decision 4, the resolution floor): the faintest glow
+    blackbody.py's ramp ever shows -- the smallest non-zero intensity its public
+    per-frame map returns (its LUT's first step) -- lands >= 2^8 counts per
+    ordinate on an opaque cell at the S16 weight: I_min * 2^k / 16 >= 256. And
+    every bucket the ramp shows at least that bright is resolved to >= 2^8 per
+    ordinate in the table itself.
 
-    PAIR (the criterion binds): two bits coarser (k - 2) the same glow lands
-    below 2^8, so the currency is not over-provisioned by accident -- k = 36
-    would clear it by 2^0.28, k = 37 by 2^1.28.
+    PAIR (what SETS L_FINE_BITS since 2026-10-22): the table's TOP. At the #12
+    fire + smoke session's ramp (anchor 1300 K, exponent 2, cap 64) the faintest
+    glow clears 2^8 by ~2^17, so it no longer binds; k is the FINEST currency
+    whose top stays under the 2^44 door -- one bit finer and the top reaches it
+    (gen_light_table and emissive_table.cpp's static_assert refuse that). Before
+    that session (anchor 3000 K, exponent 4, cap 8) the faintest glow bound k
+    with k - 2 falling below 2^8.
 
-    BREAKS IF: L_FINE_BITS drops below 36, the ramp's glow floor or exponent
-    moves so its faintest step dims by 2x, or the table's rounding eats the
-    first glowing buckets.
+    BREAKS IF: L_FINE_BITS or the ramp moves so the faintest shown glow lands
+    below 2^8, the currency is left coarser than the door allows, or the
+    table's rounding eats the first glowing buckets.
     """
     k, table = checked_in
     t_q = ((4 * np.arange(GEN.E_TABLE_SIZE) + 2) << 16).astype(np.int64)
@@ -186,7 +190,8 @@ def test_the_faintest_glow_the_ramp_shows_is_resolved(checked_in, ramp):
     i_min = float(shown.min())
     per_ord = i_min * float(1 << k) / 16.0
     assert per_ord >= 256.0, (i_min, per_ord)
-    assert i_min * float(1 << (k - 2)) / 16.0 < 256.0
+    top = int(table.max())
+    assert top < (1 << 44) <= 2 * top, (k, top)       # finest under the door
     _c, inten = ramp.emission_at_kelvin(GEN.bucket_kelvin())
     bright = inten >= i_min
     assert bright.sum() > 3000

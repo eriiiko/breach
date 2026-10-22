@@ -129,6 +129,11 @@ static constexpr int32_t E_CEILING_TOP_Q = ((4 * E_TABLE_SIZE) << 16) - 1;
 //     is <= 2^36.4, every plain int64 product of the light loop <= 2^54 (the
 //     flux term, 3 channels x 2^16), the per-cell light_q <= 2^40 -- 2^4 below
 //     the design's 2^58 product line; G18 measures it over-driven.
+// SINCE 2026-10-22 (#12 fire + smoke session: kelvin_ref 3000 -> 1300 K,
+// exponent 4 -> 2, intensity_max 8 -> 64) the ramp is far brighter, both floors
+// above clear 2^8 by ~2^17 and more, and 37 is set by the TOP instead: 64 · 2^37
+// = 2^43, the finest currency under L_TABLE_TOP_MAX (G18 (g) measures the
+// over-driven loop at it: products <= 2^56.8, light_q <= 2^43).
 // A table carries its currency (LightEmissionTable::fine_bits, the
 // EmissiveTable::fine_bits pattern) and the generated data records the currency
 // it was generated at (L_TABLE_GEN_FINE_BITS, static_asserted equal to this):

@@ -1166,7 +1166,9 @@ heat_absorb    = 0.0                  # ACCEPTED GAP (P5c): a BAND absorber (H2O
 absorption     = [0.88, 0.90, 0.93]   # near-neutral, slight blue tilt: thin soot reads warm/brown
 scatter_albedo = [0.22, 0.22, 0.22]   # soot single-scattering albedo ~0.2 in the visible: lit smoke reads charcoal-grey, not black (#91, Erik 2026-10-15; was 0.04)
 diffusion      = 0.10                 # heavier, clings
-decay          = 0.008                # lingers — soot settles slowly
+decay          = 0.001                # lingers — soot settles slowly. Erik, 2026-10-22 (#12 fire + smoke session):
+                                     # 0.008 -> 0.001 (a ~17 min e-fold; real soot hangs in a room for many minutes),
+                                     # so a fire's smoke trails all the way to the vent that draws it
 glow           = 0.0                  # cold soot does NOT glow; hot soot via emits_when_hot
 flammable      = false                # the soot itself is spent fuel
 emits_when_hot = true                 # black-body emission driven by heat buffer (M2/M3)
@@ -1476,9 +1478,14 @@ kelvin_ref = 1300.0        # exposure reference temperature (Macklin): the tempe
                            # lit nothing). Only brightness moves; the colour stays black-body. Erik: "rich
                            # deepness ... looks really really great". The sweep's light table is derived from
                            # this: retune => tools/gen_light_table.py --write + a C++ rebuild.
-intensity_exponent = 4.0   # Stefan-Boltzmann flavour (T⁴)
+intensity_exponent = 2.0   # brightness = ((K - glow_min)/(ref - glow_min))^exponent. 4 -> 2, Erik 2026-10-22
+                           # ("the eye works like that"): hotter is always brighter, but compressed --
+                           # 3000 K is 19x a 1300 K fire, 4500 K 55x (at 4 with cap 64 it went flat above
+                           # ~2200 K); embers at 1000 K glow at 0.16 of a fire instead of 0.03
 intensity_max = 64.0       # HDR headroom pre-tonemap (16F pipeline + ACES; NO bloom). 8 -> 64 with the anchor
-                           # move (2026-10-22): at 8 everything above ~1650 K would clip to one brightness
+                           # move (2026-10-22); with exponent 2 the ramp reaches it at ~4800 K. It also SETS
+                           # the light currency: 64 * 2^L_FINE_BITS(37) = 2^43, the finest under the
+                           # table's 2^44 door (cpp/src/emissive_table.h)
 
 # (The [render.fire_lights] section -- B1's brightest-K fire lights for the old
 # render march -- is DELETED at ray-engine-v2 P6c with renderer/fire_lights.py:
@@ -1633,13 +1640,15 @@ boil_speedup = 3.0
 drift_cap_tiles = 1.5       # most a noise layer drifts in one clock cycle, tiles:
                             # fast (blast) air drifts at this cap instead of
                             # shearing the billows into streaks
-cov_tau_ceiling = 1.0       # extinction depth at the coverage edge: soot's edge
+cov_tau_ceiling = 0.8       # extinction depth at the coverage edge: soot's edge
+                            # (1.0 -> 0.8, Erik 2026-10-22, the owed post-#88 retune: the thin trail
+                            #  a vent draws from a fire was in the sim but not drawn)
 cov_tau_floor = 0.15        #   sits where it is opaque; haze shows thin
 cov_edge_tiles = 0.08       # edge width across a plume's edge, tiles (sharp)
 cov_soft_ceiling = 1.0      # least edge width, e-folds of depth: where the field
 cov_soft_floor = 2.5        #   is flat (uniform haze) the edge stays this soft
 cov_push_tiles = 0.6        # how far the billows move the edge in and out, tiles
-haze_ceiling = 0.25         # share of the depth kept OUTSIDE the coverage edge:
+haze_ceiling = 0.3          # share of the depth kept OUTSIDE the coverage edge (0.25 -> 0.3, same session):
 haze_floor = 0.4            #   thin smoke around a plume still dims the floor
 height_tiles = 0.8          # tallest column, tiles
 height_tau = 4.0            # extinction depth of a full-height column
@@ -1685,7 +1694,8 @@ cast_lift_ceiling = 7.0     # the ceiling layer's underside above the floor, til
 # core it does not, so the soot mottles the flame. Only the glow BELOW the
 # smoke is dimmed -- a body's (crate, wall) beyond what the hot gas around it
 # emits by itself (gas_relief.glow_below_fraction); hot gas is #95's.
-glow_through_ceiling = 1.0  # how much the ceiling layer (soot) hides it, [0, 1]
+glow_through_ceiling = 0.2  # how much the ceiling layer (soot) hides it, [0, 1]. 1.0 -> 0.2, Erik
+                            # 2026-10-22: the fire's own smoke closed over it and it went dark
 glow_through_floor = 0.3    # ... the floor layer (steam scatters the glow
                             #   rather than blocking it), [0, 1]
 own_light_cut = 1.0         # share of a glowing tile's own light taken off the

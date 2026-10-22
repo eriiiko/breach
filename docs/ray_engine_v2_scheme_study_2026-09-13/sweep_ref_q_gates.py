@@ -2784,7 +2784,8 @@ def gate18_light_channels(fast=False):
       (h) THE RESOLUTION FLOOR (decision 4): one burning tile (the shipped
           furniture row, 1263 game) in clear air carries >= 2^8 counts in its
           brightest ordinate at EVERY cell 16 tiles away. PAIR: the same scene
-          on a table 2^14 coarser (k = 23) does not.
+          on a table coarser by this floor's margin (2^14 before the 2026-10-22
+          ramp, ~2^22 after) does not.
 
     Breaks if: a light share is booked by one side only (a); the light code
     writes a heat integer (b); the ring stops being dark or a cold cell emits
@@ -2792,7 +2793,7 @@ def gate18_light_channels(fast=False):
     smoke term drops a channel or the glow reaches a solid (d); the emission
     bypasses the table or its per-ordinate split (e); the flux reads the stream
     with the wrong sign or floors instead of the symmetric shift (f); the light
-    currency grows by 2^5 (g) or shrinks by 2^14 (h). Each variant above was run.
+    currency grows by 2^5 (g) or shrinks by this floor's margin (h). Each variant above was run.
     """
     lines, ok = [], True
     lg2 = lambda v: math.log2(max(abs(v), 1))  # noqa: E731
@@ -3125,10 +3126,12 @@ def gate18_light_channels(fast=False):
 
     lo, hi, n_ring = _floor(R.L_LIVE)
     # the PAIR: the coarsest currency this criterion ALONE admits, and one bit
-    # past it -- so the measurement can fail, and the report says which of the
-    # brief's two floors sets L_FINE_BITS (the faintest-glow one does:
-    # tests/test_light_table.py, which needs blackbody.py's own LUT).
-    drop = 14                       # 2^21.8 of margin at k = 37: k = 23 must fail
+    # past it -- so the measurement can fail. Neither floor sets L_FINE_BITS
+    # since the #12 fire + smoke session (2026-10-22: anchor 1300 K, exponent
+    # 2) brightened the ramp: the table's TOP does, k the finest currency under
+    # the 2^44 door (tests/test_light_table.py). The drop is the margin this
+    # floor has at the live table, so the coarse variant lands just below 2^8.
+    drop = max(1, int(math.floor(math.log2(lo))) - 7)
     coarse = R.LTable([[v >> drop for v in ch] for ch in R.L_LIVE],
                       fine_bits=R.L_FINE_BITS - drop)
     lo_c, _hi_c, _n = _floor(coarse)
@@ -3140,7 +3143,7 @@ def gate18_light_channels(fast=False):
                  f"dimmest bearing (2^{lg2(hi):.2f} on the brightest); >= 2^8 required. "
                  f"PAIR: a table 2^{drop} coarser (k = {R.L_FINE_BITS - drop}) falls to "
                  f"2^{lg2(lo_c):.2f} -- this floor alone admits k >= "
-                 f"{R.L_FINE_BITS - drop + 1}; the faintest-glow floor sets k  "
+                 f"{R.L_FINE_BITS - drop + 1}; the table top's 2^44 door sets k  "
                  f"{'OK' if good else 'FAIL'}")
     return ok, lines
 
