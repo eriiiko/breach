@@ -166,10 +166,10 @@ def split_face(vrm):
         vrm.parts["face_layers"] = lay
 
 
-def drop(vrm, kinds=("cloth",)):
-    """Delete every face whose material is of `kinds` (the sample's clothes) from the body and hair."""
+def drop(vrm, kinds=("cloth",), roles=("body", "hair")):
+    """Delete every face whose material is of `kinds` (the sample's clothes) from the parts `roles`."""
     import bmesh
-    for role in ("body", "hair"):
+    for role in roles:
         ob = vrm.parts.get(role)
         if ob is None:
             continue
@@ -231,12 +231,15 @@ def image_stats(img, mask_alpha=0.5):
 
 
 def _recolour(t, tex_col, img, spec):
-    """The lit texture's colour recoloured (returns a colour socket):
+    """The lit texture's colour recoloured (returns a colour socket): `flat` (hex): one colour;
     `tint` (hex): multiplied so the opaque pixels' mean becomes this colour (the painting's detail kept);
     `ramp` ((pos, hex), ...): the luminance, normalised to the image's 5..95 percentile, mapped onto these colours;
     `keep` (0..1): how much of the original stays (mixed back)."""
     if not spec:
         return tex_col
+    if "flat" in spec:   # one colour, the painting ignored (a VRoid body texture paints underwear)
+        c = _hex(spec["flat"])
+        return (float(c[0]), float(c[1]), float(c[2]), 1.0)
     st = image_stats(img)
     out = tex_col
     if "tint" in spec:
@@ -333,23 +336,45 @@ def pose_bones(vrm, rot=None, scale=None, isolate=True):
 
 
 def world_pose(vrm, rot):
-    """Pose bones by WORLD-axis rotations (degrees about world X, Y, Z, applied in that order, as `suitpose` reads a pose):
-    each bone's rotation is converted into its own frame, parents first."""
+    """Pose bones by ABSOLUTE world rotations from their rest, as `suitpose` reads a pose: {bone: (x, y, z[, order])} in
+    degrees about the world axes (default order "XYZ": X first; "YXZ" turns about Y first -- a T-posed arm brought down,
+    then swung). An unlisted bone turns with its parent. Parents are posed first."""
     from mathutils import Euler, Matrix
     arm = vrm.arm
     pb = arm.pose.bones
-    order = [b for b in pb if any(b.name in (k, "J_Bip_" + k) for k in rot)]
-    order.sort(key=lambda b: len(b.parent_recursive))
+    keys = {}
+    for k in rot:
+        b = pb.get(k) or pb.get("J_Bip_" + k)
+        if b is None:
+            raise KeyError(k)
+        keys[b.name] = rot[k]
+    order = sorted((pb[n] for n in keys), key=lambda b: len(b.parent_recursive))
+    Aw = arm.matrix_world
     for b in order:
-        key = next(k for k in rot if b.name in (k, "J_Bip_" + k))
-        rx, ry, rz = (math.radians(v) for v in rot[key])
-        R = (Euler((rx, ry, rz), "XYZ").to_matrix()).to_4x4()
+        r = keys[b.name]
+        R = Euler(tuple(math.radians(v) for v in r[:3]), r[3] if len(r) > 3 else "XYZ").to_matrix().to_4x4()
         bpy.context.view_layer.update()
-        M = arm.matrix_world @ b.matrix          # the bone's current world matrix
-        head = M.translation.copy()
-        Mn = Matrix.Translation(head) @ R @ Matrix.Translation(-head) @ M
-        b.matrix = arm.matrix_world.inverted() @ Mn
+        head = (Aw @ b.matrix).translation.copy()
+        rest = (Aw @ b.bone.matrix_local).to_3x3().to_4x4()
+        b.matrix = Aw.inverted() @ (Matrix.Translation(head) @ R @ rest)
     bpy.context.view_layer.update()
+
+
+def remap_z(ob, f):
+    """Move every vertex (and every shape key's copy of it, so the expressions keep working) to z = f(world position):
+    a face slider by script (e.g. a longer lower face)."""
+    M = np.asarray(ob.matrix_world)
+    Mi = np.linalg.inv(M)
+    blocks = ob.data.shape_keys.key_blocks if ob.data.shape_keys else None
+    targets = [kb.data for kb in blocks] if blocks else [ob.data.vertices]
+    for data in targets:
+        L = np.empty(len(data) * 3)
+        data.foreach_get("co", L)
+        L = L.reshape(-1, 3)
+        W = L @ M[:3, :3].T + M[:3, 3]
+        W[:, 2] = f(W)
+        data.foreach_set("co", ((W - M[:3, 3]) @ Mi[:3, :3].T).ravel())
+    ob.data.update()
 
 
 def evaluated_verts(ob):
@@ -398,6 +423,9 @@ def shell(vrm, name, mat, offset, fields=None):
     ob = bpy.data.objects.new(name, me)
     for c in body.users_collection:
         c.objects.link(ob)
+    # parented as the body is (moving the armature object moves its children; the modifier alone would not)
+    ob.parent, ob.parent_type = body.parent, body.parent_type
+    ob.matrix_parent_inverse = body.matrix_parent_inverse.copy()
     ob.matrix_world = body.matrix_world
     for md in body.modifiers:
         if md.type == "ARMATURE":
@@ -415,11 +443,17 @@ def shell(vrm, name, mat, offset, fields=None):
     for p in me.polygons:
         p.material_index = 0
     me.update()
-    V = rest_verts(ob)
-    N = np.empty(len(me.vertices) * 3)
-    me.vertices.foreach_get("normal", N)
-    N = N.reshape(-1, 3)
-    me.vertices.foreach_set("co", (V + N * offset - np.asarray(ob.matrix_world)[:3, 3]).ravel())
+    L = np.empty(len(me.vertices) * 3)
+    me.vertices.foreach_get("co", L)
+    L = L.reshape(-1, 3)
+    Nl = np.empty(len(me.vertices) * 3)
+    me.vertices.foreach_get("normal", Nl)
+    Nl = Nl.reshape(-1, 3)
+    M = np.asarray(ob.matrix_world)[:3, :3]
+    V = rest_verts(ob)                                   # world, before the offset: the fields are the body's
+    N = Nl @ M.T
+    N /= np.maximum(np.linalg.norm(N, axis=1, keepdims=True), 1e-9)
+    me.vertices.foreach_set("co", (L + Nl * offset).ravel())
     me.update()
     for k, f in (fields or {}).items():
         set_attr(ob, k, f(V, N))
@@ -433,3 +467,258 @@ def _is_skin(me, idx):
         return False
     src = m.get("vroid_source", m.name)
     return kind_of(src) == "skin" or m.name.split(".")[0].endswith("_skin")
+
+
+# ------------------------------------------------------------------------------------------------ hair
+def loose_parts(ob):
+    """The mesh's connected pieces (a VRoid hair is one card per lock, front and back faces as two pieces): a list of
+    vertex index arrays."""
+    me = ob.data
+    E = np.empty(len(me.edges) * 2, np.int64)
+    me.edges.foreach_get("vertices", E)
+    E = E.reshape(-1, 2)
+    n = len(me.vertices)
+    parent = np.arange(n)
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+    for a, b in E:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+    roots = np.array([find(i) for i in range(n)])
+    order = np.argsort(roots, kind="stable")
+    cuts = np.flatnonzero(np.diff(roots[order])) + 1
+    return np.split(order, cuts)
+
+
+def dominant_group(ob, idx):
+    """The vertex group holding most weight over the vertices `idx`."""
+    names = {g.index: g.name for g in ob.vertex_groups}
+    acc = {}
+    for i in idx:
+        for g in ob.data.vertices[int(i)].groups:
+            acc[g.group] = acc.get(g.group, 0.0) + g.weight
+    return names.get(max(acc, key=acc.get)) if acc else None
+
+
+def delete_verts(ob, idx):
+    import bmesh
+    bm = bmesh.new()
+    bm.from_mesh(ob.data)
+    bm.verts.ensure_lookup_table()
+    bmesh.ops.delete(bm, geom=[bm.verts[int(i)] for i in idx], context="VERTS")
+    bm.to_mesh(ob.data)
+    bm.free()
+    ob.data.update()
+
+
+def drape(ob, parts, body, spec, seed=0):
+    """Lengthen hanging hair cards (rest pose, world space): every vertex of a card below `z0` is moved down so the card's
+    lowest point reaches its target end (`end` = (z, jitter)), the drop growing linearly with the distance below `z0`
+    (the texture stretches along the lock); then `flare` (m per m of drop) moves it away from the head's vertical axis
+    through `axis` (x, y), limited to `max_r`, and it is pushed out of the `body` to `clear` metres (nearest surface, the
+    push smoothed down the card so a lock bends instead of kinking)."""
+    from mathutils.bvhtree import BVHTree
+    rng = np.random.default_rng(seed)
+    V = rest_verts(ob)
+    z0, (z_end, jit) = spec["z0"], spec["end"]
+    ax = np.asarray(spec.get("axis", (0.0, 0.0)), float)
+    for idx in parts:
+        P = V[idx]
+        zmin = P[:, 2].min()
+        if zmin >= z0 - 1e-4:
+            continue
+        target = z_end + rng.uniform(-jit, jit)
+        k = (z0 - target) / max(z0 - zmin, 1e-4)
+        below = P[:, 2] < z0
+        drop = np.where(below, (z0 - P[:, 2]) * (k - 1.0), 0.0)
+        P[:, 2] -= drop
+        if spec.get("flare"):
+            R = P[:, :2] - ax
+            r = np.linalg.norm(R, axis=1, keepdims=True)
+            u = R / np.maximum(r, 1e-6)
+            grow = spec["flare"] * drop[:, None]
+            r2 = np.minimum(r + grow, spec.get("max_r", 1.0))
+            P[:, :2] = np.where(below[:, None], ax + u * np.maximum(r, r2), P[:, :2])
+        V[idx] = P
+    # push out of the body (its rest surface)
+    bv = rest_verts(body)
+    bm_tris = [tuple(p.vertices) for p in body.data.polygons]
+    tree = BVHTree.FromPolygons([tuple(v) for v in bv], bm_tris)
+    clear = spec.get("clear", 0.006)
+    zc = spec.get("push_below", 10.0)
+    for idx in parts:
+        P = V[idx]
+        push = np.zeros_like(P)
+        for j, p in enumerate(P):
+            if p[2] > zc:
+                continue
+            loc, nrm, _, dist = tree.find_nearest(tuple(p))
+            if loc is None:
+                continue
+            d = np.asarray(p) - np.asarray(loc)
+            n = np.asarray(nrm)
+            sd = float(d @ n)
+            if sd < clear:
+                push[j] = n * (clear - sd)
+        if np.any(push):
+            # carry the largest push down the card (below the pushed point), so the lock hangs clear instead of folding back
+            order = np.argsort(-P[:, 2])
+            run = np.zeros(3)
+            for j in order:
+                if np.linalg.norm(push[j]) > np.linalg.norm(run):
+                    run = push[j]
+                push[j] = run if np.linalg.norm(run) > np.linalg.norm(push[j]) else push[j]
+            P = P + push
+        V[idx] = P
+    M = np.asarray(ob.matrix_world)
+    ob.data.vertices.foreach_set("co", ((V - M[:3, 3]) @ np.linalg.inv(M[:3, :3]).T).ravel())
+    ob.data.update()
+
+
+def trunk_weights(ob, vrm, bands, only=None):
+    """Re-weight hair to the trunk by height (rest z), as `suitpose` attaches B2e's hair: rigid with the head above the jaw,
+    moving as the neck and chest below. `bands` = ((bone, z where it starts to take over), ...) from the top down, each
+    handing over over `blend` metres. Only the vertices `only` (default all) change; every other group is cleared there."""
+    V = rest_verts(ob)
+    idx = np.arange(len(V)) if only is None else np.asarray(only)
+    z = V[idx, 2]
+    names = [b for b, _ in bands]
+    W = np.zeros((len(idx), len(bands)))
+    W[:, 0] = 1.0
+    for i in range(1, len(bands)):
+        zt, blend = bands[i][1]
+        t = np.clip((zt - z) / blend, 0.0, 1.0)
+        t = t * t * (3 - 2 * t)
+        W[:, i] = t
+        W[:, :i] *= (1.0 - t)[:, None]
+    for g in list(ob.vertex_groups):
+        g.remove([int(i) for i in idx])
+    for j, b in enumerate(names):
+        bn = b if vrm.arm.data.bones.get(b) else "J_Bip_" + b
+        g = ob.vertex_groups.get(bn) or ob.vertex_groups.new(name=bn)
+        for w in np.unique(np.round(W[:, j], 3)):
+            if w <= 0:
+                continue
+            g.add([int(i) for i in idx[np.round(W[:, j], 3) == w]], float(w), "REPLACE")
+
+
+# ------------------------------------------------------------------------------------------------ cut layers (a suit as material)
+def cut_material(name, colour, show, lines=(), aa=0.0004, net=None):
+    """A Principled material for a layer cut by signed fields (point attributes, metres, + inside), what toonlook converts:
+    `show` = attribute names (or (name, sign) pairs: -1 keeps where the field is NEGATIVE), all must hold for the layer to
+    show (the Principled's Alpha, crisp to `aa`); `lines` = ((attribute, half-width, hex[, offset]), ...): the colour where
+    |field - offset| < half-width (piping along a cut, a zip); `net` = (thread hex, cell m, thread share): a diagonal net over
+    the colour on the rest position `rest` (a vector attribute) -- the mesh inserts."""
+    import studio
+    m = bpy.data.materials.new(name)
+    m.use_nodes = True
+    t = studio.NT(m)
+    c = _hex(colour)
+    col = (float(c[0]), float(c[1]), float(c[2]), 1.0)
+    if net is not None:
+        thread, cell, share = net
+        rest = t.n("ShaderNodeAttribute", attribute_name="rest", attribute_type="GEOMETRY").outputs["Vector"]
+        bands = []
+        for ang in (45.0, -45.0):
+            w = t.n("ShaderNodeTexWave", wave_type="BANDS", bands_direction="X", wave_profile="SAW")
+            mp = t.n("ShaderNodeMapping")
+            t.put(mp.inputs["Vector"], rest)
+            mp.inputs["Rotation"].default_value = (0.0, math.radians(ang), 0.0)
+            mp.inputs["Scale"].default_value = (1.0 / cell, 1.0 / cell, 1.0 / cell)
+            t.put(w.inputs["Vector"], mp.outputs[0])
+            w.inputs["Scale"].default_value = 1.0
+            # a saw 0..1 per cell: the thread where it is within `share` of the cell's edge
+            bands.append(t.math("LESS_THAN", w.outputs["Fac"], share))
+        th = t.math("MAXIMUM", bands[0], bands[1])
+        tc = _hex(thread)
+        col = t.mix(th, col, (float(tc[0]), float(tc[1]), float(tc[2]), 1.0))
+    for ln in lines:
+        attr, hw, hexc = ln[:3]
+        off = ln[3] if len(ln) > 3 else 0.0
+        d = t.math("ABSOLUTE", t.math("SUBTRACT", t.attr(attr), off))
+        k = t.math("SUBTRACT", 1.0, t.ramp(d, hw - aa, hw + aa))
+        lc = _hex(hexc)
+        col = t.mix(k, col, (float(lc[0]), float(lc[1]), float(lc[2]), 1.0))
+    a = 1.0
+    for s_ in show:
+        attr, sign = (s_, 1.0) if isinstance(s_, str) else s_
+        f = t.math("MULTIPLY", t.attr(attr), sign)
+        a = t.math("MULTIPLY", a, t.ramp(f, -aa, aa))
+    t.put(t.bsdf.inputs["Base Color"], col)
+    t.put(t.bsdf.inputs["Alpha"], a)
+    m.surface_render_method = "DITHERED"
+    m.use_transparent_shadow = True
+    return m
+
+
+def rest_attr(ob):
+    """The rest position (world) as a vector attribute `rest` (moves with the mesh when posed: a pattern stays put)."""
+    set_attr(ob, "rest", rest_verts(ob), "FLOAT_VECTOR")
+
+
+def collar(vrm, name, mat, z0, z1, gap, flare=0.0, front_drop=0.0, segs=48, rows=8, thick=0.0015, fields=None, bones=None):
+    """A stand collar round the neck (rest pose): rings from `z0` to `z1` (world z), each `gap` metres off the neck's own
+    cross-section at that height (sampled from the body, per angle), widening by `flare` towards the bottom; the top edge
+    `front_drop` lower at the front; solidified `thick`. Rigged as the neck (`bones` = (top bone, bottom bone), blended
+    by height), parented as the body. `fields` as `shell` (on its vertices, normals)."""
+    body = vrm.parts["body"]
+    B = rest_verts(body)
+    neck = vrm.bone("C_Neck")
+    ax = np.array([neck[0], neck[1]])
+    sel = (B[:, 2] > z0 - 0.01) & (B[:, 2] < z1 + 0.01) & (np.linalg.norm(B[:, :2] - ax, axis=1) < 0.075)
+    P = B[sel]
+    ang = np.arctan2(P[:, 1] - ax[1], P[:, 0] - ax[0])
+    rad = np.linalg.norm(P[:, :2] - ax, axis=1)
+    th = np.linspace(-np.pi, np.pi, segs, endpoint=False)
+    V = []
+    for i in range(rows + 1):
+        t = i / rows
+        z = z0 + (z1 - z0) * t
+        near = np.abs(P[:, 2] - z) < 0.006
+        for a in th:
+            da = np.abs((ang - a + np.pi) % (2 * np.pi) - np.pi)
+            m = near & (da < 0.20)
+            r = rad[m].max() if m.any() else rad[near].mean()
+            r = r + gap + flare * (1.0 - t)
+            front = max(0.0, -np.sin(a))          # 1 at the front (-y)
+            zz = z - front_drop * front ** 2 * t
+            V.append((ax[0] + r * np.cos(a), ax[1] + r * np.sin(a), zz))
+    V = np.asarray(V)
+    Q = [(i * segs + j, i * segs + (j + 1) % segs, (i + 1) * segs + (j + 1) % segs, (i + 1) * segs + j)
+         for i in range(rows) for j in range(segs)]
+    me = bpy.data.meshes.new(name)
+    Mi = np.linalg.inv(np.asarray(body.matrix_world))
+    me.from_pydata([tuple(v) for v in (V @ Mi[:3, :3].T + Mi[:3, 3])], [], Q)
+    me.polygons.foreach_set("use_smooth", np.ones(len(Q), bool))
+    me.update()
+    me.materials.append(mat)
+    ob = bpy.data.objects.new(name, me)
+    for c in body.users_collection:
+        c.objects.link(ob)
+    ob.parent, ob.parent_type = body.parent, body.parent_type
+    ob.matrix_parent_inverse = body.matrix_parent_inverse.copy()
+    ob.matrix_world = body.matrix_world
+    top, bot = bones or ("C_Neck", "C_UpperChest")
+    zn = (V[:, 2] - z0) / max(z1 - z0, 1e-6)
+    for bn, w in ((top, np.clip(zn * 1.4 - 0.2, 0.0, 1.0)), (bot, 1.0 - np.clip(zn * 1.4 - 0.2, 0.0, 1.0))):
+        bname = bn if vrm.arm.data.bones.get(bn) else "J_Bip_" + bn
+        g = ob.vertex_groups.new(name=bname)
+        for k, wk in enumerate(w):
+            if wk > 0:
+                g.add([k], float(wk), "REPLACE")
+    a = ob.modifiers.new("Armature", "ARMATURE")
+    a.object = vrm.arm
+    if thick:
+        so = ob.modifiers.new("Thick", "SOLIDIFY")
+        so.thickness, so.offset = thick, -1.0
+    N = V - np.array([ax[0], ax[1], 0.0])
+    N[:, 2] = 0.0
+    N /= np.maximum(np.linalg.norm(N, axis=1, keepdims=True), 1e-9)
+    for k, f in (fields or {}).items():
+        set_attr(ob, k, f(V, N))
+    return ob

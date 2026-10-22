@@ -271,6 +271,7 @@ def convert(m, spec, calib, palette=None):
         nt.links.new(em.outputs[0], mx.inputs[2])
         nt.links.new(mx.outputs[0], out.inputs["Surface"])
         m.surface_render_method = "DITHERED"
+        m.use_transparent_shadow = True
     else:
         nt.links.new(em.outputs[0], out.inputs["Surface"])
     m.use_backface_culling = spec.get("cull", False)
@@ -368,8 +369,9 @@ def _col(c, palette):
     return palette[c] if (isinstance(c, str) and palette and c in palette) else c
 
 
-def hull_material(name, colour):
-    """The outline shell's material: a flat colour on the back faces only, invisible to shadows."""
+def hull_material(name, colour, mask=None):
+    """The outline shell's material: a flat colour on the back faces only, invisible to shadows. `mask` (VRoid spike): a
+    point attribute; the hull shows only where it is > 0 (a layer cut by a signed field draws no line where it is cut away)."""
     m = bpy.data.materials.new(name)
     m.use_nodes = True
     nt = m.node_tree
@@ -384,6 +386,20 @@ def hull_material(name, colour):
     nt.links.new(em.outputs[0], mix.inputs[1])
     nt.links.new(tr.outputs[0], mix.inputs[2])
     nt.links.new(mix.outputs[0], out.inputs["Surface"])
+    if mask:
+        at = nt.nodes.new("ShaderNodeAttribute")
+        at.attribute_name = mask
+        gt = nt.nodes.new("ShaderNodeMath")
+        gt.operation = "GREATER_THAN"
+        gt.inputs[1].default_value = 0.0
+        nt.links.new(at.outputs["Fac"], gt.inputs[0])
+        m2 = nt.nodes.new("ShaderNodeMixShader")
+        tr2 = nt.nodes.new("ShaderNodeBsdfTransparent")
+        nt.links.new(gt.outputs[0], m2.inputs[0])
+        nt.links.new(tr2.outputs[0], m2.inputs[1])
+        nt.links.new(mix.outputs[0], m2.inputs[2])
+        nt.links.new(m2.outputs[0], out.inputs["Surface"])
+        m.surface_render_method = "DITHERED"
     m.use_backface_culling = True
     m.use_backface_culling_shadow = True
     m.use_transparent_shadow = True
@@ -440,7 +456,7 @@ def outlines(spec, palette=None):
                 short = (key.split("_", 1)[1] if "_" in key else key).split(".")[0]
                 c = spec.get("colours", {}).get(short)
                 colour = _lin(_col(c, palette)) if c is not None else (0.02, 0.02, 0.02, 1.0)
-                made[key] = hull_material("hull_" + key, colour)
+                made[key] = hull_material("hull_" + key, colour, spec.get("masks", {}).get(short))
             ob.data.materials.append(made[key])
         md = ob.modifiers.new(HULL, "SOLIDIFY")
         md.thickness = 0.001
