@@ -1,0 +1,15 @@
+HairSample_Female.vrm -- a VRoid Studio sample model by the VRoid Project (pixiv Inc.), released under CC0 1.0
+(public domain dedication): https://creativecommons.org/publicdomain/zero/1.0/
+
+Source: "vroid studio cc0 models" on OpenGameArt.org, https://opengameart.org/content/vroid-studio-cc0-models
+(submitted by hecko, 2024-12-24; licence field "CC0"; author "VRoid Project"), file hairsample_female.zip
+(sha256 e00fc6618d37e03c501025a34fe599a0f0c9a3d2260415c26b194197def5bbe4), exported from VRoid Studio 0.14.0.
+
+The licensor's own statement (read 2026-10-22): VRoid's help article "Do VRoid Studio's sample models come with
+conditions of use?", https://vroid.pixiv.help/hc/en-us/articles/4402614652569 -- "CC0 license models: The VRoid Studio
+models listed below are CC0 licensed. Copyright is waived, and there is no particular limit when using them. (However,
+please refrain from doing anything that might harm or disturb other people.)" -- listing the base models and
+"HairSample_Female". The file's own VRM meta agrees: licenseName "CC0", author "VRoidプロジェクト".
+
+File: HairSample_Female.vrm, sha256 d9ef39f04e54b3684d31a8db47efe4c2537b80f1bc15dedce3ae3d1d2acebda2 (unchanged; every
+change to the model is made by script at build time, art/characters/Beatrice/scripts/vroid.py).

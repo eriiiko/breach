@@ -1663,3 +1663,49 @@ through the suit, the collar or the face.
    bridge, as in B2d (the drawn layer is now the softer glow under it); the toon look, the default, is right.
 7. The face round's items (the lash mass, the blush a fifth too strong, the skin a touch light, the under-chin) and the latex's
    sheen are unchanged.
+
+## VRoid spike: Beatrice on a free anime base (2026-10-22, branch `33-beatrice-vroid`)
+
+The owner's verdict on the merged B2e build: the toon look is "great", the shapes "too hard"; asked for a remake on a free
+base (faces, hairstyles). During the spike (2026-10-22): the scratch body is "acceptable, but far from what I wished for --
+I think the VRoid figure is better", so **variant B (the whole VRoid figure) is the main build** and A (the VRoid head on the
+scratch body) is demoted; and **only four references count**: `concept.jfif`, `concept-face-front-v1.png`,
+`concept-face-side-v1.png`, `concept-upper-body-side-v2.png` -- the A-pose sheets (`with_hair*`, `without_hair*`) are not
+used (no fitting, measuring or comparing against them).
+
+### Downloads and licences (checked 2026-10-22)
+
+- **The page**: https://opengameart.org/content/vroid-studio-cc0-models -- licence field "CC0", author "VRoid Project",
+  submitted by hecko 2024-12-24. Its text: "These models come from the alpha versions of VRoid Studio and were explicitly
+  released by VRoid under CC0. They were downloaded from here where possible: https://vroid.pixiv.help/hc/en-us/articles/4402614652569
+  ... (AvatarSamples A through C are missing because they were released under different, more restrictive terms.
+  AvatarSamples D through G are unrelated to the samples with the same names in the current version.) AvatarSample_D_Darkness,
+  the bases, and the hair samples were exported from VRoid Studio 0.14.0."
+- **The licensor's page** (VRoid help, read 2026-10-22): "CC0 license models ... Base models; Sample models: HairSample_Male,
+  HairSample_Female, beta Ver AvatarSample_1 .. _4" (each beta sample's own article: "The CC license for this model is CC0 ...
+  pixiv Inc. has waived all copyright"). Beta AvatarSample_1 is Sendagaya Shibu (bob, P hairpin; a Darkness version); her
+  sister Sendagaya Shino and cousin Sakurada Fumiriya are NOT on the CC0 list.
+- **The files' own VRM meta** (`licenseName`) -- the deciding check, because it disagrees with the page for most files:
+
+  | zip (sha256) | .vrm (sha256) | VRM title / exporter | meta licence | status |
+  |---|---|---|---|---|
+  | base_female.zip `bf2717cf...68eb3` | Base_Female.vrm `1995f174...8149b` | Base_Female / VRoid 0.14.0 | CC0 | CC0 by both |
+  | hairsample_female.zip `e00fc661...bbe4` | HairSample_Female.vrm `d9ef39f0...ebda2` | HairSample_Female / VRoid 0.14.0 | CC0 | **CC0 by both -- USED, committed** |
+  | avatarsample_d_darkness.zip `330ab409...7fa1` | AvatarSample_D_Darkness.vrm `037951ea...2a` | AvatarSample_D / VRoid 0.14.0 | CC0 | CC0 by both |
+  | avatarsample_d_0.zip `311a383b...3167` | AvatarSample_D.vrm `9adf1b44...f9b7` | 千駄ヶ谷渋 (Shibu) / UniVRM 0.44 | Other (VRoid Hub terms) | CC0 by VRoid's page only |
+  | avatarsample_e.zip `3b6808e2...b6b1` | AvatarSample_E.vrm `aea824cc...7911` | ビビ / UniVRM 0.44 | Other | not CC0-confirmed |
+  | avatarsample_f.zip `e187569e...bd1` | AvatarSample_F.vrm `d8eff1ed...21bb` | ヴィータ / UniVRM 0.44 | Other | not CC0-confirmed |
+  | avatarsample_g.zip `3dc643aa...1b34` | AvatarSample_G.vrm `ad5750ce...c0` | ヴィクトリア・ルービン / UniVRM 0.44 | Other | not CC0-confirmed |
+  | sendagaya_shino.zip `ff85ff42...a3696` | Sendagaya Shino.vrm `f11b2648...d2a9` | 千駄ヶ谷篠 / UniVRM 0.44 | Other | not CC0 (not on VRoid's list) |
+  | sakurada_fumiriya.zip `f3c53eea...fc66` | Sakurada Fumiriya.vrm `a36e91b8...83f3` | 桜田史利矢 / UniVRM 0.44 | Other | not CC0; a MALE model |
+
+  Full hashes: `C:/tmp/beatrice_vroid/` (scratch) and `vroid/LICENSE.txt` for the committed file. The "Other" files carry the
+  VRoid Hub licence URL (everyone may use, modify, redistribute, commercially, no credit) -- permissive, but not CC0, so by the
+  brief's rule none of them enters the repo; they were downloaded, imported and rendered for the candidate picture only.
+- **The importer**: "VRM format" add-on v4.10.2 by saturday06 (Isamu Mogi; maintainer field; copyright 2020 Isamu Mogi, 2018
+  iCyP), extensions.blender.org, licence SPDX MIT + GPL-3.0-or-later, `add-on-vrm-v4.10.2.zip` sha256
+  `228e622d158fbbf070b1b49547708f360a223873f00fa81a42170794492e6db9` (matches the extensions API's `archive_hash`), Blender
+  4.2-5.3. Read before installing: Python, five .blend shader libraries and docs; no network, subprocess or ctypes use (urllib
+  only for glTF URI parsing, base64 for glTF data URIs). Installed with Blender 4.5.10's own command line:
+  `blender --command extension install-file -r user_default --no-prefs add-on-vrm-v4.10.2.zip` (the user's preferences left
+  read-only; `vrmbase.enable()` turns it on per process under `--factory-startup`).

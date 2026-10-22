@@ -260,7 +260,19 @@ def convert(m, spec, calib, palette=None):
     em = g.n("ShaderNodeEmission")
     g.put(em.inputs["Color"], col)
     em.inputs["Strength"].default_value = 1.0
-    nt.links.new(em.outputs[0], out.inputs["Surface"])
+    if spec.get("alpha"):   # VRoid spike: a cut-out / see-through layer (a VRM's lashes, brows, eye cards, a cut suit):
+        # the Principled's Alpha (its source kept) between a Transparent BSDF and the emitted colour, dithered
+        ain = bsdf.inputs["Alpha"]
+        a = ain.links[0].from_socket if ain.is_linked else ain.default_value
+        tr = g.n("ShaderNodeBsdfTransparent")
+        mx = g.n("ShaderNodeMixShader")
+        g.put(mx.inputs[0], a)
+        nt.links.new(tr.outputs[0], mx.inputs[1])
+        nt.links.new(em.outputs[0], mx.inputs[2])
+        nt.links.new(mx.outputs[0], out.inputs["Surface"])
+        m.surface_render_method = "DITHERED"
+    else:
+        nt.links.new(em.outputs[0], out.inputs["Surface"])
     m.use_backface_culling = spec.get("cull", False)
     return base
 
