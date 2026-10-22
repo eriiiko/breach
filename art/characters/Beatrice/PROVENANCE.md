@@ -1840,7 +1840,7 @@ the RTX 3070: 0.5-1 s a shot after the first.
 ### Recommendation
 
 Continue on the VRoid route (B), and make the head in VRoid Studio rather than by script. The script-side route works and is
-cheap: one CC0 file plus about 1,000 lines (kit + tables + driver) rebuild the whole figure in 30 s, and every change is a
+cheap: one CC0 file plus about 1,450 lines (kit 724 + tables 298 + driver 438; the picture sheets 222 more) rebuild the whole figure in 30 s, and every change is a
 table entry; the body, the suit-as-layers, the posing and the toon look carry over to any VRoid export. What a script cannot do
 well from the samples is exactly what is left: the face's shape (VRoid's face sliders -- eye size and shape, chin, face
 length -- are GUI-only and baked into the export) and a hairstyle (the samples' hair is a fixed set of cards; lengthening
