@@ -30,6 +30,24 @@
      <b>Stage 4</b> answers <code>review_stage3.md</code> for the pelvis only (waist, hips, seat, upper thighs); everything else is
      unchanged, and the close-ups further down are stage 3's.</p>
 
+  <h2>VRoid spike: Beatrice on a free anime base (2026-10-22, branch 33-beatrice-vroid)</h2>
+  <p>The question: does a Beatrice built on VRoid Studio's CC0 sample models beat the scratch-built one, in the toon look,
+     against the concept? Variant <b>B</b> -- the whole VRoid figure -- is the main build (the owner, during the spike: the VRoid
+     figure is better than the scratch body). Built by one command from one committed CC0 file, <code>vroid/HairSample_Female.vrm</code>
+     (<code>scripts/vroid.py</code>, <code>scripts/vroid_tables.py</code>, <code>charkit/vrmbase.py</code>): the cat ears and twin tails
+     removed, the back and face-framing locks lengthened and draped by script; the bodysuit as cut layers over the VRoid body
+     (a high-cut leotard with long sleeves, glossy thigh-high stockings, mesh inserts, a zip) plus a stand collar; the face's
+     lower part lengthened and its expression set with VRoid's own shape keys; the hair, skin and irises recoloured to the drawn
+     palette; the toon look (<code>charkit/toonlook.py</code>) as for B2e. Judged only against the four references the owner named
+     (<code>concept.jfif</code>, <code>concept-face-front-v1.png</code>, <code>concept-face-side-v1.png</code>,
+     <code>concept-upper-body-side-v2.png</code>). Variant A (the VRoid head on the scratch body) was not built. See
+     <code>PROVENANCE.md</code>, "VRoid spike".</p>
+  <figure><img src="vroid_vs_concept.jpg" alt="B against the concept and the side drawing"><figcaption>concept.jfif and concept-upper-body-side-v2.png | B in each drawing's framing (solved on the eyes and the crotch) | B's outline over the drawing | the merged scratch build (B2e)</figcaption></figure>
+  <figure><img src="vroid_face.jpg" alt="The face"><figcaption>The close-up drawings | B in their framings, outline over them | B2e the same (face_vs_art) | B at 0 / 30 / 60 / 90 deg | B2e at 0 / 30 / 60 / 90 deg (face_turn)</figcaption></figure>
+  <figure><img src="vroid_full.jpg" alt="The whole figure"><figcaption>B standing: front, front three-quarter, side, back | B2e (posed_full, the concept pose)</figcaption></figure>
+  <figure><img src="vroid_whatif_hair.jpg" alt="What-if: a real long VRoid hairstyle"><figcaption>B as built (HairSample_Female's hair, lengthened) | a WHAT-IF with Sendagaya Shino's long hair (licence not CC0: rendered from the download folder, never committed)</figcaption></figure>
+  <figure><img src="vroid_candidates.jpg" alt="The candidates"><figcaption>Every female candidate's head, front and 30 deg, as imported (Cycles) and in the toon look, with each file's licence status</figcaption></figure>
+
   <h2>The hair's colour, crown and silhouette, the nose, the head's pose (B2e)</h2>
   <p>The hair painted as the close-ups and the concept paint it: dark brown, except the outer layer of her right side seen from
      the front, which goes warm ash to a pale ash-beige (<code>toonlook.normal_lobe</code>: the light as PAINTED, not a lamp --

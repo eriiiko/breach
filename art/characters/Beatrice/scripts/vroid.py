@@ -34,6 +34,7 @@ ap.add_argument("--only", default="")
 ap.add_argument("--open", default="", help="open a saved build (B) instead of building")
 ap.add_argument("--face-test", action="store_true")
 ap.add_argument("--pose", default="")
+ap.add_argument("--whatif", default="", help="a WHAT-IF render: B with another VRoid model's hair (vroid_tables.WHATIF)")
 ap.add_argument("--tag", default="B")
 ap.add_argument("--out", default="")
 args = ap.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else [])
@@ -278,6 +279,45 @@ def framed_shot(path, F):
     studio.render(path, F["res"], transparent=True)
 
 
+def whatif_hair(src):
+    """A WHAT-IF, not the build: B with another VRoid model's hair (`vroid_tables.WHATIF[src]`, read from the download
+    folder, never committed -- its licence is not CC0). The hair is taken off its own skeleton, shifted to B's eyes, recoloured
+    as B's, weighted to B's trunk by height and rigged to B's armature; B's own hair hidden."""
+    W = T.WHATIF[src]
+    vrm = opened()
+    before = set(bpy.data.objects)
+    other = vrmbase.load(os.path.join(T.DOWNLOADS, W["path"]), "Other")
+    eye_o = (other.bone("J_Adj_L_FaceEye") + other.bone("J_Adj_R_FaceEye")) / 2.0
+    hair = other.parts["hair"]
+    keep = {hair}
+    for o in [o for o in bpy.data.objects if o not in before and o not in keep]:
+        bpy.data.objects.remove(o, do_unlink=True)
+    # rest-space shift so its head meets B's (both are VRoid's default female head)
+    arm = vrm.arm
+    eye_b = sum((np.asarray(arm.matrix_world @ arm.data.bones[n].head_local) for n in ("J_Adj_L_FaceEye", "J_Adj_R_FaceEye"))) / 2.0
+    hair.parent = None
+    V = vrmbase.rest_verts(hair) + (eye_b - eye_o)
+    hair.matrix_world = vrm.parts["body"].matrix_world.copy()
+    Mi = np.linalg.inv(np.asarray(hair.matrix_world))
+    hair.data.vertices.foreach_set("co", (V @ Mi[:3, :3].T + Mi[:3, 3]).ravel())
+    hair.data.update()
+    for md in list(hair.modifiers):
+        hair.modifiers.remove(md)
+    hair.parent, hair.parent_type = vrm.parts["body"].parent, vrm.parts["body"].parent_type
+    hair.matrix_parent_inverse = vrm.parts["body"].matrix_parent_inverse.copy()
+    hair.matrix_world = vrm.parts["body"].matrix_world.copy()
+    a = hair.modifiers.new("Armature", "ARMATURE")
+    a.object = arm
+    vrmbase.trunk_weights(hair, vrm, T.HAIR_B["trunk"])
+    tmp = vrmbase.Vrm(arm, {"hair": hair}, "Other")
+    vrmbase.materials(tmp, T.PREFIX, T.recolour())
+    for o in bpy.data.objects:
+        if o.name.startswith("Vroid_Hair"):
+            o.hide_render = True
+    hair.name = "Vroid_HairWhatif"
+    print("what-if hair from %s: %d vertices, shifted %s m" % (src, len(hair.data.vertices), np.round(eye_b - eye_o, 4)))
+
+
 def suit_b(vrm, S):
     """The leotard, stockings, zip and mesh inserts as two layers over the (subdivided) body, cut by `vroid_tables.suit_fields`."""
     body = vrm.parts["body"]
@@ -377,6 +417,8 @@ if args.candidates:
 if args.open:
     bpy.ops.wm.open_mainfile(filepath=os.path.join(T.ROOT, "source", "Beatrice_vroid_%s.blend" % args.open))
     vrmbase.enable()
+    if args.whatif:
+        whatif_hair(args.whatif)
     if args.pose:
         pose_b(args.pose)
     LOOK = T.LOOK_VROID

@@ -278,3 +278,8 @@ FACE_TESTS = dict(m0=dict(_E, Fcl_MTH_Neutral=1.0), m1=dict(_E, Fcl_MTH_Neutral=
                   m2=dict(_E, Fcl_MTH_Neutral=0.7, Fcl_MTH_Angry=0.3), m3=dict(_E, Fcl_MTH_Sorrow=0.6),
                   m4=dict(_E, Fcl_MTH_Neutral=0.6, Fcl_MTH_Down=0.4), m5=dict(_E, Fcl_MTH_Neutral=1.0, Fcl_BRW_Sorrow=0.3))
 SHOTS["t_face"] = dict(cam=(-0.30, -0.74, 1.47), target=(0.0, 0.0, 1.455), lens=100.0, res=(600, 700))
+
+# WHAT-IF renders (not the build): B wearing another VRoid sample's hair, read from the download folder and never committed
+# (licence "Other", not CC0: PROVENANCE). Sendagaya Shino's is the long, straight, dark hairstyle closest to the drawings; it
+# shows what a proper long VRoid hairstyle (e.g. one the owner makes in VRoid Studio's hair editor) would give.
+WHATIF = dict(shino=dict(path="sendagaya_shino/x/Sendagaya Shino.vrm"))

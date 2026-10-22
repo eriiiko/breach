@@ -184,6 +184,20 @@ def full(raw):
     col(rows).save(os.path.join(PREV, "vroid_full.jpg"), quality=88)
 
 
+def whatif(raw):
+    """vroid_whatif_hair.jpg: B as built (the CC0 HairSample_Female's hair, lengthened) against a WHAT-IF with Sendagaya
+    Shino's long hair (licence 'Other', not committed, read from the download folder): the concept framing and 0 / 60 / 90 deg."""
+    cell, tall = (512, 768), (400, 500)
+    rows = []
+    for tag, txt in (("P", "B as built: HairSample_Female's hair (CC0), lengthened by script"),
+                     ("W", "WHAT-IF: Sendagaya Shino's hair (NOT CC0 -- not committed; shows a real long VRoid hairstyle)")):
+        cells = [label(flat(os.path.join(raw, "%s_concept.png" % tag), cell), "concept framing")]
+        ft = "S" if tag == "P" else "W"
+        cells += [label(flat(os.path.join(raw, "%s_face_%03d.png" % (ft, a)), tall), "%d deg" % a) for a in (0, 60, 90)]
+        rows.append(label(row(cells), txt, 30, 18))
+    col(rows).save(os.path.join(PREV, "vroid_whatif_hair.jpg"), quality=88)
+
+
 def main(raw, only):
     if "candidates" in only:
         candidates(raw)
@@ -193,6 +207,8 @@ def main(raw, only):
         face(raw)
     if "full" in only:
         full(raw)
+    if "whatif" in only:
+        whatif(raw)
     print("written to", PREV)
 
 

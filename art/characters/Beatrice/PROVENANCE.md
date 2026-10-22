@@ -1709,3 +1709,108 @@ used (no fitting, measuring or comparing against them).
   only for glTF URI parsing, base64 for glTF data URIs). Installed with Blender 4.5.10's own command line:
   `blender --command extension install-file -r user_default --no-prefs add-on-vrm-v4.10.2.zip` (the user's preferences left
   read-only; `vrmbase.enable()` turns it on per process under `--factory-startup`).
+
+### Step 1, the candidates (`previews/vroid_candidates.jpg`)
+
+Every female candidate imported (`vroid.py --candidates`, 3 min 52 s for eight, Sakurada Fumiriya left out: a male model),
+its head rendered front and 30 deg as imported (Cycles, the studio rig) and in the toon look (the VRM's MToon materials rebuilt
+as Principled on their lit texture, `vrmbase.materials`, then `toonlook.apply` with `LOOK_VROID`), beside the two close-ups and
+concept.jfif.
+
+- **The faces**: Base_Female, HairSample_Female and AvatarSample_D/D_Darkness share VRoid 0.14's default female face (the
+  same 2,054-vertex mesh); the samples differ in the painted eyes. D_Darkness has elf ears and pink-white skin; E/F/G are
+  stylised (big jewel eyes, odd colours); Shino's is the default face with amber eyes. None is as mature as the drawings
+  (smaller, narrower eyes; a longer lower face); the default face with its eyes recoloured is the closest, and it comes with
+  the CC0 files.
+- **The hair**: Sendagaya Shino's (long, straight, dark, a blunt fringe, side locks to the chest) is by far the closest
+  silhouette, but its file is not CC0. Of the CC0 files only HairSample_Female has a usable fringe -- pointed clumps to the
+  lashes with a lock between the eyes, as drawn -- on a short back with cat ears and twin tails; Base_Female has only a skull
+  cap, D_Darkness a pink bob.
+- **Chosen**: face, body AND hair from ONE file, `HairSample_Female.vrm` (CC0 by both statements): the face for being the
+  default face with the best fringe over it, the hair because its fringe is the drawn one and its back cards can be lengthened
+  by script (step 2). Committed as `vroid/HairSample_Female.vrm` (17.9 MB, unchanged) with `vroid/LICENSE.txt`.
+
+### Step 2, variant B: the whole VRoid figure (`scripts/vroid.py --build B`)
+
+One command rebuilds it from the committed file: `"C:/Program Files/Blender Foundation/Blender 4.5/blender.exe" -b
+--factory-startup -P Beatrice/scripts/vroid.py -- --build B` (from `art/characters`; 26-34 s, saves
+`source/Beatrice_vroid_B.blend`, gitignored). Mechanism `charkit/vrmbase.py` (new), tables `scripts/vroid_tables.py` (new),
+driver `scripts/vroid.py` (new). `beatrice.py` is only read (its palette, `LOOK_TOON`'s lights and latex), never changed.
+
+- **Import and tidy** (`vrmbase.load`, `split_face`, `drop`): the add-on's spring-bone colliders and MToon outline modifiers
+  removed; the face's painted layers (eye whites, irises, highlights, lashes, eyelines, brows) split off into their own object
+  (`Vroid_FaceLayers`) so the inked outline never rings a transparent card; the sample's clothes deleted (VRoid exports the
+  body whole under them); the mouth's inside cards left out (the closed mouth showed a tooth through them).
+- **The hair** (`HAIR_B`, `vroid.hair_b`, `vrmbase.drape` / `trunk_weights`): the 79 hair pieces (one card per lock, front
+  and back faces) classified -- 38 removed (the cat ears and their inner cards: above 1.655 m or the ears' material; the twin
+  tails: hanging below 1.385 m off the midline), 18 back and 27 face-framing pieces lengthened: each card's part below 1.50 m
+  (back) / 1.47 m (sides) stretched down so its end reaches 1.12 +- 0.035 m (mid-back) / 1.21 +- 0.02 m (the chest), flared
+  away from the head's axis and pushed out of the body (12 / 10 mm, the push carried down the lock so it bends instead of
+  folding); the texture stretches along the strands, which hides it. Then the whole hair is re-weighted to the trunk by height
+  (head above 1.43 m, neck, upper chest, chest), the B2e lesson: hair rigid with the head goes into the body on a nod.
+- **The face** (`face_b`, `vrmbase.remap_z`): the lower face 10 % longer (every face vertex below the eye line moved down
+  in proportion to its depth below it, every expression shape key moved the same way); the expression from VRoid's own keys
+  (`EXPRESSION`, chosen from two rounds of trials, `FACE_TESTS_1` / `FACE_TESTS`): mouth neutral 0.7 + angry 0.3 (a level
+  mouth -- the neutral VRoid mouth turns up at the corners), eyes angry 0.25 + close 0.16 (heavier lids), brows angry 0.3,
+  the eye highlight half hidden. The painted eyes, brows and lashes are VRoid's own, recoloured.
+- **The colours** (`RECOLOUR`, `vrmbase._recolour`): the face's painting tinted so its mean is the drawn skin (#f2d0c2); the
+  body one flat skin colour (its texture paints underwear, which the leotard's high cut would show); the hair's luminance,
+  normalised to its own 5-95 percentiles, mapped onto the drawn dark brown (#221a1b -> #45363a -> #76625e); the irises
+  onto the drawn blue-grey (#2c3346 -> #5f6f8c -> #a4b2cc).
+- **The suit** (`SUIT_B`, `suit_fields`, `vrmbase.shell` / `cut_material` / `collar`): what the four references draw -- a
+  glossy black leotard with long sleeves, a stand collar and a zip to the lower belly, cut high over the hips (bare hip and
+  outer thigh), glossy black thigh-high stockings, mesh inserts showing the skin (collarbone to armpit, and the side of the
+  ribs down towards the waist), thin piping. NB this is NOT the merged build's full-length suit with knee pads and boots, which
+  followed the A-pose sheet; with the four references only, the leotard is the drawn design. Built as two layers over the
+  body (subdivided twice, 107,678 vertices): copies of the skin pushed out 1.6 mm (latex) and 1.0 mm (net), rigged as the
+  body, cut by signed fields (metres, from the skeleton's landmarks, in the rest T-pose: the sleeve's end, the collar line,
+  the leg openings' curves front and back, the stockings' top, the inserts as capsules in the front projection with a facing
+  test, the zip strip) that the material thresholds crisply and draws the piping along; the stand collar is real geometry
+  (`vrmbase.collar`: rings sampled off the neck's own cross-section, 6 mm off it, flaring 10 mm at the base, the front 12 mm
+  lower, 1.8 mm thick). **Left out**: boots and knee pads (the references crop above the knee: the stockings run to the
+  toes), heels.
+- **Proportions** (`SCALES`): only the bust, 1.28 (the base's is small; both drawings draw it fuller). The VRoid body's
+  slimness and leg length are kept (the owner's verdict). Height 1.63 m (the base's), not scaled.
+- **The toon look**: `toonlook.apply` with its own table `LOOK_VROID` (`beatrice.LOOK_TOON`'s engine, world, lights and floor;
+  its face, skin, latex and net specs; flat painted specs for the face's layers; a simple two-tone hair ramp). Two additive
+  paths in `toonlook.py` (defaults reproduce today's output): `spec["alpha"]` (a cut-out / see-through layer: the Principled's
+  Alpha between a Transparent BSDF and the emitted colour, dithered, transparent shadows) and `outline["masks"]` (a hull
+  shown only where a point attribute is > 0, so a cut layer draws no line where it is cut away). Not ported: B2e's painted
+  hair light (`normal_lobe`, `ring`), the face's simple-head normals, the shadow proxy.
+- **Posing** (`POSE_B`, `vrmbase.world_pose`, `vroid.pose_b`): the VRM skeleton posed by ABSOLUTE world rotations in
+  `beatrice.POSE`'s convention, so the concept pose carries over (the arms brought down from the T-pose about Y first; the
+  left thigh's inward swing reduced 8 -> 2 deg, as VRoid's legs stand closer); fingers relaxed; the standing foot put on the
+  floor. **Found on the way**: a layer copied from the body must be PARENTED to the armature as the body is -- with the
+  armature modifier alone, lowering the armature object to the floor left the suit 6 cm above the body.
+- **The framings** (`FRAMES`, `vroid.framed_camera`): each drawing's camera solved on the posed model -- direction fixed, distance
+  and aim iterated until two landmarks land on the drawing's pixels (concept.jfif: the eyes' midpoint and the crotch, residual
+  9 px; the side drawing and the profile close-up: the height fitted on two marks, the aim on the eye / the nose's tip).
+
+### Pictures and times
+
+`vroid.py --open B --pose concept --shots concept --tag P` (6 s) and `--open B --pose stand --shots
+side_v2,art_front,art_side,face,p_front,p_34,p_side,p_back --tag S` (12 s), then `python Beatrice/scripts/vroid_sheets.py`:
+`vroid_vs_concept.jpg`, `vroid_face.jpg`, `vroid_full.jpg`, `vroid_candidates.jpg`, `vroid_whatif_hair.jpg` (the what-if:
+`--open B --whatif shino --pose concept --shots concept --tag W` and `--pose stand --shots face,p_back --tag W`, 10 s each,
+reading Shino's file from the download folder). The B2e cells are cut from the merged build's own previews
+(`posed_vs_concept.jpg`, `face_vs_art.jpg`, `face_turn.jpg`, `posed_full.jpg`), not re-rendered. Renders EEVEE 64 samples on
+the RTX 3070: 0.5-1 s a shot after the first.
+
+### What still looks wrong in B (worst first)
+
+1. **The face is VRoid's child face, not the drawings' woman** (`vroid_face.jpg`): eyes too big and round under heavy lids,
+   no blush, a pointed V chin, the nose a dot; the drawings' eyes are smaller, almond, with a soft pink blush, a fuller lower
+   face. The lower-face stretch and the expression keys moved it a little; the face shape of an export is baked, and VRoid's
+   face sliders (eye size and shape, chin, face length) exist only in VRoid Studio's editor.
+2. **The hair's crown and back from 60-120 deg** (`vroid_face.jpg` 60 / 90, `vroid_whatif_hair.jpg`): the sample's back cards
+   converge on a whorl at the back of the crown (built for the twin tails), read as a bun in profile; the drawings' crown is
+   smooth to the back. Shino's hair (the what-if) is smooth there but has a blunt hime fringe, not the drawn pointed one.
+3. **The side locks hide the face in profile** (`vroid_face.jpg`, the profile framing): the lengthened face-framing locks
+   hang over the cheek; the drawing keeps one narrow lock in front of the ear.
+4. **No painted light on the hair**: B2e's ash-pale lit side (her right, from the front) is not ported (`vroid_vs_concept.jpg`:
+   the concept's outer hair is pale beige).
+5. **The latex is flatter than drawn** (`vroid_vs_concept.jpg`): a broad sheen and few crisp highlights; the concept's latex is
+   wet with bright streaks (B2e's is closer: its curvature-gated streaks run on a 3 M-vertex surface; here the strips light
+   a smoother, sparser body). The piping is only on the cut edges (no princess seams).
+6. **A lip highlight reads as a fang** in the concept framing (the VRoid face texture's lower-lip gloss).
+7. **Hands**: VRoid's simple hands, fingers relaxed by a fixed curl; fine at full figure, plain in close-up.
