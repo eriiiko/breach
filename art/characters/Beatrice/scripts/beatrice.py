@@ -1350,6 +1350,7 @@ HAIR_B2C = dict(
 # at the temples, the back's waist and notch), the fringe's outer clumps to the lash line with uneven tips, the chest locks flat
 # and tapered, the hanging ends varied, the loose "wire" strands gone; each lock's share of the painted light (`lit`, along it).
 _FRINGE_LIT = ((0.0, 0.9), (0.2, 0.6), (0.45, 0.0), (1.0, 0.0))
+_FRINGE_LIT_R = ((0.0, 1.0), (0.3, 1.0), (0.5, 0.3), (0.6, 0.0), (1.0, 0.0))
 HAIR_B2E = dict(
     HAIR_B2C, seed=12,
     # the part, 5 deg to her right of the midline (the drawn whorl 3 mm right of the face's midline at the crown's front): the
@@ -1370,26 +1371,30 @@ HAIR_B2E = dict(
                                (1.330, 0.145, 0.140, 0.126), (1.250, 0.122, 0.140, 0.130), (1.150, 0.082, 0.140, 0.130))),
     locks=(
         # the fringe, from the part: the outer clumps now to the lash line (B2c: the brows), the tips uneven (each its own
-        # point length and end), the forehead's two gaps kept
+        # point length and end), the forehead's two gaps kept; rooted along the part's two sides over the front of the crown
+        # (all at the whorl, the first build's fringe fanned out from one point like a broom), the central five wider (one
+        # mass with points, as drawn; the first build showed skin between narrow spikes)
         ("fringe", dict(n=9, mirror=False,
-                        proot=[(83, -7), (85, -5), (86, -3), (86, -2), (86, -1), (86, 2), (86, 3), (85, 5), (83, 7)],
+                        proot=[(76, -32), (79, -24), (82, -15), (84, -9), (86, -3), (86, 3), (84, 10), (80, 20), (77, 28)],
                         tip=[(-0.051, 1.5702), (-0.041, 1.5742), (-0.019, 1.5712), (-0.010, 1.5655), (-0.002, 1.5628),
                              (0.007, 1.5672), (0.016, 1.5722), (0.039, 1.5738), (0.050, 1.5698)],
-                        off=(0.0010, 0.010), off_pow=1.3, bulge=0.004, clear=0.003, lit=_FRINGE_LIT,
+                        off=(0.0010, 0.010), off_pow=1.3, bulge=0.004, clear=0.003,
+                        # her right of the part the crown is lit as drawn: those clumps take the light further down
+                        lit=[_FRINGE_LIT_R] * 4 + [_FRINGE_LIT] * 5,
                         width=[_taper(0.024, end=0.30, at=(0.14, 0.58, 0.84)), _taper(0.026, end=0.45, at=(0.14, 0.66, 0.88)),
-                               _taper(0.024, end=0.35, at=(0.14, 0.62, 0.85)), _taper(0.022, end=0.50, at=(0.14, 0.70, 0.90)),
-                               _taper(0.024, end=0.40, at=(0.14, 0.64, 0.86)), _taper(0.022, end=0.30, at=(0.14, 0.60, 0.84)),
-                               _taper(0.024, end=0.50, at=(0.14, 0.70, 0.90)), _taper(0.026, end=0.35, at=(0.14, 0.60, 0.85)),
+                               _taper(0.030, end=0.35, at=(0.14, 0.62, 0.85)), _taper(0.028, end=0.50, at=(0.14, 0.70, 0.90)),
+                               _taper(0.030, end=0.40, at=(0.14, 0.64, 0.86)), _taper(0.028, end=0.30, at=(0.14, 0.60, 0.84)),
+                               _taper(0.030, end=0.50, at=(0.14, 0.70, 0.90)), _taper(0.026, end=0.35, at=(0.14, 0.60, 0.85)),
                                _taper(0.022, end=0.30, at=(0.14, 0.58, 0.83))],
                         thick=_thick(0.005), curl=0.30, ring=[0.5, -0.8, 1.0, -0.5, 0.8, -1.0, 0.3, -0.5, 1.0])),
         # thin wisps between the clumps, longer: the fringe's tips break into strands, as drawn
-        ("wisps", dict(n=4, mirror=False, proot=[(85, -4), (86, -2), (86, 1), (85, 4)],
+        ("wisps", dict(n=4, mirror=False, proot=[(80, -20), (85, -6), (85, 6), (80, 17)],
                        tip=[(-0.030, 1.5690), (-0.006, 1.5612), (0.012, 1.5650), (0.028, 1.5712)],
                        off=(0.0012, 0.0105), off_pow=1.3, bulge=0.004, clear=0.003, lit=_FRINGE_LIT,
                        width=_taper(0.008, mid=0.8, end=0.35), thick=_thick(0.0022), curl=0.2, ring=[0.5, -0.5, 1.0, 0.0])),
         # over the temples: from the part, standing off the temple (the drawing's hair 26 mm off the skull there; B2c's
         # hugged it and curved back over the ear's top: the hood's rim), down behind the ear
-        ("temple", dict(n=2, proot=[(84, 9), (83, 15)], mid=[(56, 70), (50, 84)], leave=[(24, 118), (20, 128)],
+        ("temple", dict(n=2, proot=[(82, 9), (80, 15)], mid=[(54, 72), (48, 86)], leave=[(24, 118), (20, 128)],
                         off=(0.002, 0.010), off_pow=1.0, bulge=0.008, clear=0.004, lit=1.0,
                         fall=[_fall(1.35, 127, add=_FLARE, wave=(0.008, 0.8), z_jit=0.025), _fall(1.33, 135, add=_FLARE, wave=(0.010, 0.9), z_jit=0.025)],
                         width=[_taper(0.038, end=0.40), _taper(0.038, end=0.30)], thick=_thick(0.006), curl=0.22, ring=[0.5, -1.0])),
@@ -1417,7 +1422,7 @@ HAIR_B2E = dict(
         # in front of the ears onto the chest: FLAT, wide and tapered (B2c's read as cords: 21 mm wide, 4.5 thick, curled); rooted lower,
         # under the temple and the fringe's outer clump (B2c's root on the temple showed as a grey loop there)
         ("side", dict(n=2, root=[(50, 32), (46, 44)], mid=[(14, 62), (10, 74)], leave=[(-20, 72), (-22, 84)],
-                      off=(-0.0005, 0.003), clear=0.003, lit=0.15,
+                      off=(-0.0005, 0.003), clear=0.003, lit=((0.0, 0.8), (0.3, 0.15), (1.0, 0.15)),
                       fall=[_fall(1.31, 54, ((0.0, 0.02), (0.35, 0.10), (1.0, 0.65)), wave=(0.004, 0.6)), _fall(1.34, 68, ((0.0, 0.02), (0.35, 0.15), (1.0, 0.8)), wave=(0.005, 0.7))],
                       width=[((0.0, 0.008), (0.15, 0.016), (0.45, 0.020), (0.70, 0.030), (0.86, 0.022), (0.96, 0.006), (1.0, 0.0004)),
                              ((0.0, 0.009), (0.15, 0.018), (0.45, 0.022), (0.70, 0.032), (0.88, 0.020), (0.97, 0.005), (1.0, 0.0004))],
@@ -1558,12 +1563,14 @@ LOOK_TOON = dict(
         # B2e: the drawn hair's values (PROVENANCE B2e step 1): shadow (52, 40, 40) -> mid (95, 73, 69) -> a warm ash (165, 135,
         # 126) -> the pale edge, as multipliers of the dark-brown base (B2c: 0.95 .. 3.2, one dark brown everywhere); the light
         # as PAINTED (`toonlook.normal_lobe`): the mass's side turned to the viewer's upper left goes ash to pale -- on her right
-        # (`side`, `world`), seen from the front (`view`), on the outer layer (`per_lock`: each lock's `lit`) -- the rest the
-        # dark brown, as the close-ups and the concept paint it (the side and back drawings: dark all over)
+        # (`side`, `world`), seen from the front or from her right (`view`: from her left that side is the far one, and lit
+        # there it read as a pale bun behind the dark crown in the first build's head.jpg), on the outer layer (`per_lock`:
+        # each lock's `lit`) -- the rest the dark brown, as the close-ups and the concept paint it (the side and back drawings:
+        # dark all over)
         hair=dict(ramp=((0.00, (1.95, 2.06, 2.19)), (0.28, (2.05, 2.12, 2.25)), (0.44, (6.5, 6.5, 6.1)), (0.66, (21.0, 22.5, 21.0)),
                         (1.05, (30.0, 36.0, 35.0))),
-                  lobe=dict(dir=(-0.72, 0.50, 0.15), map=(0.05, 0.85, 0.0, 1.05), weight=0.85, side=(0.01, -0.05),
-                            world=((-0.8, 0.0, 0.6), 0.1, 0.6), view=((0.0, -1.0, 0.0), 0.55, 0.85), per_lock=True),
+                  lobe=dict(dir=(-0.72, 0.50, 0.15), map=(0.05, 0.85, 0.0, 1.05), weight=0.85, side=(0.0, -0.02),
+                            world=((-0.8, 0.0, 0.6), 0.1, 0.6), view=((-0.35, -0.94, 0.0), 0.72, 0.93), per_lock=True),
                   # the angel ring ADDED, broken along the strands, a little of it on the shadow side (the drawn cool sheen)
                   bump=0.0, ring=dict(colour="HAIR_RING", lo=0.2, hi=0.7, amount=1.0, add=True, lit_floor=0.45,
                                       strands=((260.0, 4.0), 0.42, 0.62)),
@@ -1682,3 +1689,6 @@ POSE = dict(
             ("PortraitRim", (0.75, 1.05, 1.95), (0.0, 0.0, 1.57), (0.25, 0.9), 40.0, (0.92, 0.96, 1.0)))),
     ),
 )
+# B2e: the concept pose with B2d's head (upright, no gaze), for the before/after in `posed_vs_concept.jpg`
+POSE["poses"]["concept_b2d"] = dict(POSE["poses"]["concept"], gaze=None,
+                                    rot=dict(POSE["poses"]["concept"]["rot"], head=(0.0, 1.0, -2.0)))

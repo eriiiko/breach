@@ -82,9 +82,12 @@ def main(raw):
     prev = os.path.join(ROOT, "previews")
     r = os.path.join(raw, "%s_concept.png" % pose)
     render = flat(r, size)
-    row([label(concept, "concept.jfif"), label(render, "posed, the toon look (default)"),
-         label(outline_over(concept, alpha(r, size)), "the render's outline over the concept")]
-        ).save(os.path.join(prev, "posed_vs_concept.jpg"), quality=90)
+    cells = [label(concept, "concept.jfif"), label(render, "posed, the toon look (default)"),
+             label(outline_over(concept, alpha(r, size)), "the render's outline over the concept")]
+    before = os.path.join(raw, "%s_b2d_concept.png" % pose)   # B2e: the same with B2d's head pose (`--pose concept_b2d`)
+    if os.path.exists(before):
+        cells.append(label(flat(before, size), "before: B2d's head pose (upright, no gaze)"))
+    row(cells).save(os.path.join(prev, "posed_vs_concept.jpg"), quality=90)
     cells = []
     for v, txt in (("front", "front"), ("front34", "front three-quarter"), ("side", "side (her right)"), ("back34", "back three-quarter")):
         p = os.path.join(raw, "%s_%s.png" % (pose, v))
@@ -96,7 +99,7 @@ def main(raw):
     p = os.path.join(raw, "pbr_%s_concept.png" % pose)
     if os.path.exists(h) and os.path.exists(p):
         row([label(concept, "concept.jfif"), label(flat(p, size), "pbr look, studio rig"),
-             label(flat(h, size), "pbr look, the 'hot' light setup (B1m)"), label(render, "toon look (B2b, default)")]
+             label(flat(h, size), "pbr look, the 'hot' light setup (B1m)"), label(render, "toon look (default)")]
             ).save(os.path.join(prev, "posed_hotlight.jpg"), quality=90)
     print("written to", prev)
 

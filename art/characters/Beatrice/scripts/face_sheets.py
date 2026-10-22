@@ -13,7 +13,7 @@ face_closeup.jpg  eyes, an eye in three-quarter, nose and mouth, the mouth from 
                   beside; the pbr eyes and three-quarter eye
 head_size.jpg     the default head (x 1.20, the concept's ratio) against B2a's A-pose size (`apose`), and the concept
 look_compare.jpg  the same shots in the pbr and the toon look: face front, three-quarter, the posed concept framing, full figure
-hair_vs_art.jpg   B2c: the close-ups' framing with the B2c hair and B2a's blockout (`face_views.py -- --head hair_b2a`), outlines
+hair_vs_art.jpg   B2c: the close-ups' framing with the hair and the one before (B2e: `--head hair_b2c`; B2c: `hair_b2a`), outlines
 hair_back.jpg     B2c: the hair from behind and three-quarter behind (turn 180, 135, 225), the A-pose back drawing, B2a's back
 """
 import argparse
@@ -191,29 +191,34 @@ if cells:
             x += c.width + 8
         y += H + 8
     sheet.save(os.path.join(PREV, "look_compare.jpg"), quality=90)
-# --- B2c: hair_vs_art -- the close-ups' framing, the B2c hair and B2a's blockout (`face_views.py -- --head hair_b2a --only art,turn`)
-if has("hair_b2a_art_front.png"):
+# --- hair_vs_art -- the close-ups' framing, the current hair and the one before it (B2e: B2c's, `face_views.py -- --head
+# hair_b2c --only art,turn`; B2c: B2a's blockout, `--head hair_b2a`)
+NOW = "B2e"
+BEFORE = next(((p, n) for p, n in (("hair_b2c_", "B2c hair (before), the B2e look"), ("hair_b2a_", "B2a/B2b hair (before)"))
+               if has(p + "art_front.png")), None)
+if BEFORE:
     rows = []
     for view, ref in (("front", "concept-face-front-v1.png"), ("profile", "concept-face-side-v1.png")):
         R = Image.open(os.path.join(ROOT, ref)).convert("RGB")
-        now, b2a = raw("art_%s.png" % view), raw("hair_b2a_art_%s.png" % view)
+        now, bef = raw("art_%s.png" % view), raw("%sart_%s.png" % (BEFORE[0], view))
         cells = [label(R.resize((P, P), Image.LANCZOS), "drawing, %s" % view),
-                 label(on_bg(now).resize((P, P), Image.LANCZOS), "B2c hair, %s" % view),
-                 label(over(R, now).resize((P, P), Image.LANCZOS), "B2c outline over the drawing"),
-                 label(on_bg(b2a).resize((P, P), Image.LANCZOS), "B2a/B2b hair (before)"),
-                 label(over(R, b2a).resize((P, P), Image.LANCZOS), "before: outline over the drawing")]
+                 label(on_bg(now).resize((P, P), Image.LANCZOS), "%s hair, %s" % (NOW, view)),
+                 label(over(R, now).resize((P, P), Image.LANCZOS), "%s outline over the drawing" % NOW),
+                 label(on_bg(bef).resize((P, P), Image.LANCZOS), BEFORE[1]),
+                 label(over(R, bef).resize((P, P), Image.LANCZOS), "before: outline over the drawing")]
         rows.append(grid(cells, 5, P, P))
     sheet = Image.new("RGB", (rows[0].width, P * len(rows)), (255, 255, 255))
     for i, r in enumerate(rows):
         sheet.paste(r, (0, i * P))
     sheet.save(os.path.join(PREV, "hair_vs_art.jpg"), quality=90)
 
-# --- B2c: hair_back -- straight back and three-quarter back (both sides), the A-pose back drawing beside, B2a's before
+# --- hair_back -- straight back and three-quarter back (both sides), the A-pose back drawing beside, the hair before
 if has("turn_180.png"):
     Bk = Image.open(os.path.join(ROOT, "with_hair_back.png")).convert("RGB").crop((262, 0, 762, 625))
     cells = [label(Bk.resize((540, 675), Image.LANCZOS), "drawing: with_hair_back.png")]
-    for name, t in (("turn_180.png", "B2c, straight back"), ("turn_135.png", "B2c, three-quarter back (her left)"),
-                    ("turn_225.png", "B2c, three-quarter back (her right)"), ("hair_b2a_turn_180.png", "B2a/B2b (before), back")):
+    bp = BEFORE[0] if BEFORE else "hair_b2a_"
+    for name, t in (("turn_180.png", NOW + ", straight back"), ("turn_135.png", NOW + ", three-quarter back (her left)"),
+                    ("turn_225.png", NOW + ", three-quarter back (her right)"), (bp + "turn_180.png", "before (%s), back" % bp[5:8].upper())):
         if has(name):
             cells.append(label(raw(name).convert("RGB").resize((540, 675), Image.LANCZOS), t))
     sheet = Image.new("RGB", (540 * len(cells), 675), (255, 255, 255))
