@@ -413,7 +413,11 @@ class Clumps:
         hair = self.hair
         m = 48
         t = np.linspace(0.0, 1.0, m)
-        b0, a0 = _pick(row, "root", i)
+        if _pick(row, "proot", i) is not None:   # B2e: rooted on the PART (`spec["part"]`, deg azimuth): (beta, offset from it)
+            b0, da = _pick(row, "proot", i)
+            a0 = self.sp.get("part", 0.0) + da
+        else:
+            b0, a0 = _pick(row, "root", i)
         if _pick(row, "tip", i) is not None:
             b1, a1 = self.tip_angles(*_pick(row, "tip", i))
         else:
@@ -519,6 +523,9 @@ class Clumps:
         attrs = dict(hv=hv, hu=hu, hw=across, ht=ht,
                      ring_off=np.full(n, _pick(row, "ring", i, 0.0) + rng.normal(0.0, self.sp.get("ring_jit", 0.0))),
                      hshade=np.full(n, float(_pick(row, "shade", i, 0.0))))
+        lit = _pick(row, "lit", i)
+        if lit is not None:   # B2e: how much of the painted light (`toonlook.normal_lobe`) the lock takes, along it (t, v)
+            attrs["hlit"] = _prof(lit, ht) if isinstance(lit, (tuple, list)) else np.full(n, float(lit))
         return V, Q, tris, attrs
 
 
@@ -572,6 +579,10 @@ def build_clumps(head, spec, mats, prefix, coll="Head", body_objects=None):
                 Vall[i] += nrm * (clear - g)
                 moved += 1
         print("anime hair: %d lock vertices lifted clear of the suit" % moved)
+    if any("hlit" in a for a in allA):   # B2e: a lock without `lit` takes the painted light whole
+        for a in allA:
+            a.setdefault("hlit", np.ones(len(a["ht"])))
+        objs[0].data.attributes.new("hlit", "FLOAT", "POINT").data.foreach_set("value", np.full(nv, spec["cap"].get("lit", 1.0), np.float32))
     attrs = {key: np.concatenate([a[key] for a in allA]) for key in allA[0]}
     objs.append(ah._mesh(prefix + "_Hair_Locks", Vall, np.vstack(allQ), mats["hair"], coll, tris=np.vstack(allT), attrs=attrs))
     print("anime hair (clumps): %d locks in %.1fs" % (k, time.time() - t0))
@@ -592,7 +603,7 @@ def _mirror_row(row):
         if "shift" in g:
             g["shift"] = (-g["shift"][0], g["shift"][1], g["shift"][2])
         return g
-    for key in ("root", "mid", "leave"):
+    for key in ("root", "mid", "leave", "proot"):
         if key in r:
             r[key] = neg(r[key], lambda p: (p[0], -p[1]))
     if "tip" in r:

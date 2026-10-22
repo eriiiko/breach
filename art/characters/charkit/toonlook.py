@@ -187,6 +187,33 @@ def convert(m, spec, calib, palette=None):
     if spec.get("bump", 1.0) != 1.0 and normal is not None and normal.node.type == "BUMP":
         normal.node.inputs["Strength"].default_value *= spec["bump"]
     L = t.math("DIVIDE", g.lit("diffuse", normal), calib)
+    lobe = spec.get("lobe")
+    if lobe:   # B2e: the light as PAINTED -- a lobe of the normal in camera space (see `normal_lobe`), mixed into L
+        lb = t.ramp(normal_lobe(g, normal, lobe["dir"]), *lobe.get("map", (-0.2, 1.0, 0.0, 1.0)))
+        if lobe.get("side"):   # only on one side of the head (`toon_x`, see `ring_attr`): (x where it starts, x where full)
+            x0, x1 = lobe["side"]
+            sgn = 1.0 if x1 > x0 else -1.0
+            lb = t.math("MULTIPLY", lb, t.ramp(t.math("MULTIPLY", t.attr("toon_x"), sgn), sgn * x0, sgn * x1))
+        if lobe.get("world"):   # and only where the surface faces that side in the WORLD (axis, from, to): seen from that
+            # side (the profile) the hair facing the camera stays dark, as the profile close-up paints it
+            ax, w0, w1 = lobe["world"]
+            geo = g.n("ShaderNodeNewGeometry")
+            dw = g.n("ShaderNodeVectorMath", operation="DOT_PRODUCT")
+            g.put(dw.inputs[0], normal if normal is not None else geo.outputs["Normal"])
+            dw.inputs[1].default_value = tuple(float(v) for v in ax)
+            lb = t.math("MULTIPLY", lb, t.ramp(dw.outputs["Value"], w0, w1))
+        if lobe.get("view"):   # and only while the camera looks at the head from that way (world axis, from, to): the
+            # close-ups paint the lit side seen from the front, the side and back views the whole mass dark
+            ax, v0, v1 = lobe["view"]
+            vt = g.n("ShaderNodeVectorTransform", vector_type="VECTOR", convert_from="CAMERA", convert_to="WORLD")
+            vt.inputs[0].default_value = (0.0, 0.0, -1.0)   # camera space looks down +z here: -z points back at the camera
+            dv = g.n("ShaderNodeVectorMath", operation="DOT_PRODUCT")
+            g.put(dv.inputs[0], vt.outputs[0])
+            dv.inputs[1].default_value = tuple(float(v) for v in ax)
+            lb = t.math("MULTIPLY", lb, t.ramp(dv.outputs["Value"], v0, v1))
+        if lobe.get("per_lock"):   # and only as much as each lock takes (its `hlit`: the outer layer, not the fringe)
+            lb = t.math("MULTIPLY", lb, t.attr("hlit"))
+        L = t.mixf(lobe.get("weight", 1.0), L, lb)
     mult = g.colour_ramp(L, spec["ramp"], spec.get("interp", "EASE"))
     if spec.get("flat"):
         mult = t.mix(spec["flat"], mult, (1.0, 1.0, 1.0, 1.0))
@@ -223,15 +250,46 @@ def convert(m, spec, calib, palette=None):
     ring = spec.get("ring")
     if ring:
         band = t.attr("toon_ring")
-        r = t.math("MULTIPLY", band, t.ramp(L, ring.get("lo", 0.3), ring.get("hi", 0.7)))
+        if ring.get("strands"):   # B2e: the band broken along the strands (the drawn gloss: streaks, not a block)
+            sc_, lo_s, hi_s = ring["strands"]
+            band = t.math("MULTIPLY", band, t.ramp(_strand_noise(g, sc_), lo_s, hi_s))
+        lit_lo = ring.get("lit_floor", 0.0)   # B2e: some of the band on the shadow side (the drawing's cool sheen there)
+        r = t.math("MULTIPLY", band, t.ramp(L, ring.get("lo", 0.3), ring.get("hi", 0.7), out_lo=lit_lo))
         r = t.math("MULTIPLY", r, ring.get("amount", 1.0))
-        col = t.mix(r, col, _lin(_col(ring["colour"], palette)))
+        col = t.mix(r, col, _lin(_col(ring["colour"], palette)), "ADD" if ring.get("add", False) else "MIX")
     em = g.n("ShaderNodeEmission")
     g.put(em.inputs["Color"], col)
     em.inputs["Strength"].default_value = 1.0
     nt.links.new(em.outputs[0], out.inputs["Surface"])
     m.use_backface_culling = spec.get("cull", False)
     return base
+
+
+def _strand_noise(g, scale):
+    """B2e: a noise stretched along a hair lock (its `hv` across and `hu` along, metres): `scale` = (features per metre
+    across, per metre along) -- long thin streaks that follow each lock."""
+    cx = g.n("ShaderNodeCombineXYZ")
+    g.put(cx.inputs[0], g.t.math("MULTIPLY", g.t.attr("hv"), scale[0]))
+    g.put(cx.inputs[1], g.t.math("MULTIPLY", g.t.attr("hu"), scale[1]))
+    return g.t.noise(1.0, 3.0, 0.55, 0.0, "FBM", vec=cx.outputs[0])
+
+
+def normal_lobe(g, normal, direction):
+    """B2e: the cosine between the shading normal in CAMERA space and a fixed `direction` (x right, y up, z towards the
+    viewer): the light as the art PAINTS it on anime hair -- the side of the mass turned towards the picture's light (the
+    close-up's and the concept's: the viewer's left, a little above) goes ash to pale, the parts facing the viewer stay the
+    dark brown -- whichever way the head is seen; a real light from her right would light the profile too, which the profile
+    close-up paints dark."""
+    geo = g.n("ShaderNodeNewGeometry")
+    n = normal if normal is not None else geo.outputs["Normal"]
+    vt = g.n("ShaderNodeVectorTransform", vector_type="NORMAL", convert_from="WORLD", convert_to="CAMERA")
+    g.put(vt.inputs[0], n)
+    d = np.asarray(direction, float)
+    d = d / np.linalg.norm(d)
+    dot = g.n("ShaderNodeVectorMath", operation="DOT_PRODUCT")
+    g.put(dot.inputs[0], vt.outputs[0])
+    dot.inputs[1].default_value = (float(d[0]), float(d[1]), float(-d[2]))
+    return dot.outputs["Value"]
 
 
 def sheen_lobe(g, normal, direction):
@@ -448,6 +506,9 @@ def ring_attr(obs, centre, spec):
         band *= np.clip((bk - alpha) / 25.0, 0.0, 1.0)
         a = me.attributes.get("toon_ring") or me.attributes.new("toon_ring", "FLOAT", "POINT")
         a.data.foreach_set("value", band.astype(np.float32))
+        # B2e: the head-relative sideways position (m, + her left), written before any posing so it moves with the hair
+        a = me.attributes.get("toon_x") or me.attributes.new("toon_x", "FLOAT", "POINT")
+        a.data.foreach_set("value", d[:, 0].astype(np.float32))
 
 
 # ------------------------------------------------------------------------------------------------ the whole look
@@ -472,7 +533,15 @@ def radial_normals(obs, centre, spec):
         R = V - c
         R /= np.maximum(np.linalg.norm(R, axis=1, keepdims=True), 1e-9)
         q = np.clip((V[:, 2] - z0) / (z1 - z0), 0.0, 1.0)
-        w = spec["weight"] * q * q * (3 - 2 * q)
+        q = q * q * (3 - 2 * q)
+        w = spec["weight"] * q
+        if spec.get("hang"):   # B2e: the hanging hair shaded as one mass too -- towards the horizontal from the head's
+            # vertical axis below z0 (weight `hang`), so a curtain's sides read as the mass's sides, not ribbon by ribbon
+            A = (V - c) * np.array([1.0, 1.0, 0.0])
+            A /= np.maximum(np.linalg.norm(A, axis=1, keepdims=True), 1e-9)
+            R = R * q[:, None] + A * (1.0 - q)[:, None]
+            R /= np.maximum(np.linalg.norm(R, axis=1, keepdims=True), 1e-9)
+            w = w + spec["hang"] * (1.0 - q)
         M = N * (1 - w)[:, None] + R * w[:, None]
         M /= np.maximum(np.linalg.norm(M, axis=1, keepdims=True), 1e-9)
         me.normals_split_custom_set_from_vertices([tuple(n) for n in M])

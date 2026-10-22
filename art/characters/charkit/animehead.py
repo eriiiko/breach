@@ -918,6 +918,16 @@ def materials(prefix, p, eyes=None, face=None):
     streak = t.noise(4.0, 4.0, 0.6, 0.0, "FBM", vec=cx.outputs[0])
     hl = lin(p["HAIR_LIGHT"])
     col = t.mix(t.math("MULTIPLY", t.ramp(streak, 0.35, 0.75), p.get("HAIR_STREAK", 0.6)), hc, hl)
+    if "HAIR_LINE" in p:   # B2e: the drawn strand lines -- thin dark lines along each lock (the isolines of a noise
+        # stretched along it: `HAIR_LINE_SCALE` = (per metre across, along), `HAIR_LINE_W` their width in noise units)
+        sx, sy = p.get("HAIR_LINE_SCALE", (400.0, 6.0))
+        lx = t.n("ShaderNodeCombineXYZ")
+        t.put(lx.inputs[0], t.math("MULTIPLY", hv, sx))
+        t.put(lx.inputs[1], t.math("MULTIPLY", t.attr("hu"), sy))
+        nz = t.noise(1.0, 2.0, 0.5, 0.0, "FBM", vec=lx.outputs[0])
+        wl = p.get("HAIR_LINE_W", 0.025)
+        line = t.ramp(t.math("ABSOLUTE", t.math("SUBTRACT", nz, 0.5)), wl, 0.0)
+        col = t.mix(t.math("MULTIPLY", line, p.get("HAIR_LINE_AMOUNT", 0.7)), col, lin(p["HAIR_LINE"]))
     if "HAIR_DEEP" in p:   # B2c: the under layer and the cap darker (`hshade`, per lock), the depth under the outer locks
         col = t.mix(t.math("MULTIPLY", t.attr("hshade"), p.get("HAIR_DEEP_AMOUNT", 0.6)), col, lin(p["HAIR_DEEP"]))
     t.set(Base_Color=col, Roughness=0.42, Specular_IOR_Level=0.40, Coat_Weight=0.10, Coat_Roughness=0.30,
