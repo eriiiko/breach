@@ -192,7 +192,16 @@ def deform(obs, sk, posed, W, rigid=(), attach=None):
     for ob in obs:
         P = _co(ob)
         bone = next((b for pat, b in (attach or {}).items() if fnmatch.fnmatch(ob.name, pat)), None)
-        if bone is not None:
+        if bone == "trunk":
+            # B2e: the trunk's height bands only (`weights`' pelvis .. head, no limbs): the part moves as the skin and the
+            # suit at its height -- the hair rigid with the head above the jaw, its hanging part with the neck and chest.
+            # Rigid with the head bone to its tips, B2e's nod swung the chest locks 4 cm into the suit, and a head-rigid
+            # lock along the jaw stood in front of the chin (the chin, below the head band, does not nod)
+            z = P[:, 2]
+            sb = [smoother(z, *W["trunk"][i]) for i in range(4)]
+            tr = {"pelvis": 1.0 - sb[0], "spine": sb[0] - sb[1], "chest": sb[1] - sb[2], "neck": sb[2] - sb[3], "head": sb[3]}
+            w = {b: tr.get(b, np.zeros(len(P))) for b in sk.names}
+        elif bone is not None:
             w = {b: (np.ones(len(P)) if b == bone else np.zeros(len(P))) for b in sk.names}
         elif any(fnmatch.fnmatch(ob.name, pat) for pat in rigid):
             # each side whole (a mirrored part is one object holding both), at the field's value at that side's centre
@@ -261,6 +270,25 @@ def add_lights(spec, rig):
             if n.type == "MAP_RANGE":
                 n.inputs["To Min"].default_value *= spec["world_scale"]
                 n.inputs["To Max"].default_value *= spec["world_scale"]
+
+
+def gaze(pose, pattern="*_Eye"):
+    """B2e: the eyes' gaze as a pose parameter -- `pose["gaze"]` = (out, up) in iris radii: the painted iris (the eye
+    surfaces' `iu` / `iv`, see `animehead.build_eyes`) moved within the opening; the lids and their shadow stay. (0, 0) or
+    absent: as built. `out` is towards each eye's outer corner (both eyes alike)."""
+    g = pose.get("gaze")
+    if not g:
+        return
+    for ob in bpy.data.objects:
+        if ob.type != "MESH" or not fnmatch.fnmatch(ob.name, pattern):
+            continue
+        for key, d in (("iu", g[0]), ("iv", g[1])):
+            a = ob.data.attributes.get(key)
+            if a is None or not d:
+                continue
+            v = np.empty(len(a.data))
+            a.data.foreach_get("value", v)
+            a.data.foreach_set("value", (v - d).astype(np.float32))
 
 
 def shoot(cam, rig, shot, path, scale=1.0, transparent=False, look=None):
@@ -338,6 +366,7 @@ def run(root, name, tables):
         posed = sk.pose(P["rot"], P.get("offset", (0.0, 0.0, 0.0)))
         deform(obs, sk, posed, T["weights"], T.get("rigid", ()), T.get("attach"))
         dz = drop_to_floor(obs, P["stand"])
+        gaze(P)
         print("posed '%s' in %.1fs (lowered %.1f mm; the free foot's sole %.1f mm above the floor)" % (
             pose_name, time.time() - t1, -dz * 1000, lowest(obs, P["free"]) * 1000))
     suitlook.apply(tables, look, rig, cam)

@@ -1631,15 +1631,23 @@ POSE = dict(
     # parts that turn whole, each side at the field's value at its centre
     rigid=("Suit_Knee_Pad", "Suit_Knee_Rim", "Suit_Zip_Pull*", "Suit_Zip_Stop*"),
     # B2a: parts moving wholly with one bone -- the hair rigid with the head this round
-    attach={"Beatrice_Hair*": "head"},
+    # B2e: the hair by the trunk's height bands (`suitpose.deform`, "trunk"): rigid with the head above the jaw, its hanging
+    # part moving as the neck, collar and suit at its height. B2a-B2d: rigid with the head to its tips -- with B2e's nod the
+    # chest locks went 4 cm into the suit and a lock along the jaw stood in front of the chin
+    attach={"Beatrice_Hair*": "trunk"},
     poses=dict(
         # concept.jfif: walking towards the camera, the weight on her RIGHT leg (its hip up and out, the pelvis shifted over it),
         # the left leg free (knee bent and forward, heel lifted), the shoulders tilted against the pelvis (the right one lower),
         # the right arm a little out and forward, the left hanging close beside the body, the head a little tilted
         concept=dict(
             offset=(-0.060, 0.0, 0.0), stand=("Boot_Sole", "R"), free=("Boot_Sole", "L"),
+            # B2e: the eyes' gaze (`suitpose.gaze`, iris radii out, up): the iris raised under the upper lid, to the camera
+            gaze=(0.0, 0.10),
             rot={"pelvis": (0.0, 9.0, 5.0), "spine": (0.0, 8.0, 2.0), "chest": (0.0, -5.0, 0.0), "neck": (0.0, 0.0, 0.0),
-                 "head": (0.0, 1.0, -2.0),
+                 # B2e (review 12 item 6): the head as the concept draws it -- tilted to her right shoulder (her right eye
+                 # 23 px lower over the eyes' 143 px: 9 deg; B1m's head read 1.5 deg the other way) and the chin down, so she
+                 # looks up from under the brows (B1m: (0, 1, -2), upright)
+                 "head": (10.0, -9.5, -2.0),
                  "upper_arm.L": (0.0, 3.0, 0.0), "forearm.L": (0.0, 20.0, 0.0),
                  "upper_arm.R": (-4.0, -2.0, 0.0), "forearm.R": (-12.0, -2.0, 0.0),
                  "thigh.R": (0.0, 1.0, 0.0), "shin.R": (0.0, -11.0, 0.0), "foot.R": (0.0, 0.0, -6.0),
