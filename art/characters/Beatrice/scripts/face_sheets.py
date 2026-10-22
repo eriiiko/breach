@@ -218,7 +218,7 @@ if has("turn_180.png"):
     cells = [label(Bk.resize((540, 675), Image.LANCZOS), "drawing: with_hair_back.png")]
     bp = BEFORE[0] if BEFORE else "hair_b2a_"
     for name, t in (("turn_180.png", NOW + ", straight back"), ("turn_135.png", NOW + ", three-quarter back (her left)"),
-                    ("turn_225.png", NOW + ", three-quarter back (her right)"), (bp + "turn_180.png", "before (%s), back" % bp[5:8].upper())):
+                    ("turn_225.png", NOW + ", three-quarter back (her right)"), (bp + "turn_180.png", "before (%s), back" % (bp[5:7].upper() + bp[7]))):
         if has(name):
             cells.append(label(raw(name).convert("RGB").resize((540, 675), Image.LANCZOS), t))
     sheet = Image.new("RGB", (540 * len(cells), 675), (255, 255, 255))

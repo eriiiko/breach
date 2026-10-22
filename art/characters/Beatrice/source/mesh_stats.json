@@ -1,8 +1,8 @@
 {
  "Head": {
   "objects": 6,
-  "source_tris": 1726478,
-  "evaluated_tris": 1812648
+  "source_tris": 1720550,
+  "evaluated_tris": 1806720
  },
  "Boots": {
   "objects": 4,
@@ -21,8 +21,8 @@
  },
  "TOTAL": {
   "objects": 62,
-  "source_tris": 2868530,
-  "evaluated_tris": 4992300
+  "source_tris": 2862602,
+  "evaluated_tris": 4986372
  },
  "NORMALS": {
   "flipped": [

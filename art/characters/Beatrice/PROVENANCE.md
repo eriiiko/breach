@@ -1491,3 +1491,175 @@ not changed.
 5. **The mouth in profile**: no pout was modelled (paint only); the profile runs nose to chin as before (`face_closeup.jpg`).
 6. **The ear's top** still meets the hairline in a corner at 60 deg (the hair's).
 7. The skin's light tone and the fringe's soft shadow streaks on the forehead (review 11 item 7, the hair round's) are unchanged.
+
+## B2e: the hair's colour, crown and silhouette, the nose, the head's pose (2026-10-22, answers `previews/review_stage12.md` items 1, 2, 3, 6, 7)
+
+The before is `source/Beatrice_b2d_09b46cb.blend` (gitignored). Only the `Head` collection's hair objects change in the
+build; the face's paint (the nose layer), the look and the posing change at render time.
+
+### Step 1, the drawn colours (read first)
+
+Sampled on `concept-face-front-v1.png` (boxes in its 1254 px frame, luminance percentiles of the hair pixels; tool
+`C:/tmp/beatrice_b2e/tools/mont.py`, `colour_sheet.py`) and `concept.jfif`:
+
+| | drawing (front close-up) | concept.jfif | B2d model |
+|---|---|---|---|
+| lit side, her right, outer layer (p50 / p75) | (184, 154, 145) / (203, 178, 169) | (166, 143, 138) / (207, 194, 190) | (43, 31, 29) / (68, 50, 47) |
+| pale edge (p95 of the lit side) | (212-216, 190-215, 180-220) | up to (254, 254, 254) | (74, 55, 52) |
+| mid tone, her right low (p50) | (138, 109, 101) | -- | (42, 31, 29) |
+| shadow: the fringe (p50) | (66, 51, 50) | -- | (72, 54, 50) |
+| shadow: her left side (p50) | (56, 45, 45) | (52, 46, 50) | (48, 35, 33) |
+| strand lines (p5 of the lit side) | (64, 47, 45); darkest (20, 12, 12) | (46, 30, 29) | (25, 17, 16) |
+| angel ring / gloss on the dark side (p95, crown her left) | (77, 71, 79), a cool violet grey | -- | (144, 127, 122), flat blocks |
+| lit crown, her right of the part (p50 / p95) | (199, 172, 164) / (234, 216, 209) | (204, 183, 176) p75 | (73, 54, 51) / (144, 127, 123) |
+
+What the drawings do (and the model now does): the hair is the dark brown everywhere EXCEPT the outer layer of her right side
+seen from the front, which goes warm ash to a pale ash-beige towards its edge, with dark strand lines along it; the fringe and
+the face-framing locks stay dark even on her lit side; the side (`concept-face-side-v1.png`, `with_hair_side.png`) and back
+(`with_hair_back.png`) drawings are dark brown all over with soft glossy bands. A real light cannot do both (a light from her
+right lights the profile too), so the light on the hair is PAINTED.
+
+The part: the drawn whorl is at column 635 of the front close-up, the face's midline at 648-653 (the irises' midpoint 648, the
+model's midline 653): 3 mm to her right -- B2c's reading (-4 mm) confirmed; the reviewer's "just right of centre" is the
+viewer's right of the image's centre, the same place.
+
+### Step 2, the hair's colour: the light as painted (`charkit/toonlook.py`, `charkit/animehead.py`, `charkit/animehair.py`, additive)
+
+- **The tone** (`LOOK_TOON["materials"]["hair"]`): the ramp now runs from the drawn shadow (52, 40, 40) through the mid tone
+  (95, 73, 69) and the warm ash (165, 135, 126) to the pale edge, as multipliers of the dark-brown base (B2c: 0.95 .. 3.2, so
+  every lit part stayed a dark brown). What drives it is no longer the key light alone: **`toonlook.normal_lobe`** -- the
+  shading normal in CAMERA space against a fixed direction (the viewer's upper left, as the art's light), mixed into L (weight
+  0.85), gated by (a) `side`: only on her right of the head (`toon_x`, written by `ring_attr` before posing), (b) `world`: only
+  where the surface faces her right / up in the world (seen from her right, the profile, the camera-facing side stays dark,
+  as the profile close-up paints it), (c) `view`: only while the camera looks from the front or her right (from her left,
+  the lit side is the far one and read as a pale bun behind the crown), (d) `per_lock`: each lock's `lit` share along it (new
+  per-vertex attribute `hlit`, row key `lit`: the outer layer -- temple, crown, back, the under layer -- takes it; the fringe only
+  at its roots on her right of the part; the face-framing side locks and the cap not). The hanging hair is shaded as one mass for
+  this (`toonlook.radial_normals` `hang`: below the jaw the normals blend to the horizontal from the head's axis), so a curtain's
+  side reads as the mass's side, not ribbon by ribbon. A real light was tried first (a hair-only key via light linking, which
+  EEVEE 4.5 supports): it lit the profile too and the inner faces of her left curtain, neither of which the drawings do.
+- **Strand lines** (`animehead.materials`, palette `HAIR_LINE`, `_SCALE`, `_W`, `_AMOUNT`): thin dark lines along each lock,
+  the isolines of a noise stretched along it (380 per metre across, 5 along: 2-3 mm apart, long).
+- **The angel ring**: now ADDED to the tone (`ring["add"]`, `HAIR_RING` a cool grey #6e6670, B2c mixed to a flat grey-beige
+  #9c8b86), broken along the strands (`ring["strands"]`, the same stretched noise) and a little of it kept on the shadow side
+  (`lit_floor` 0.45: the drawing's cool violet sheen on her dark left).
+- **The pale edge**: a facing rim on the lit side, `HAIR_EDGE` #d8c8c0.
+
+### Step 3, the crown, the part and the silhouette (`HAIR_B2E`; `animehair` `proot`, `part`)
+
+- **The part** (`HAIR_B2E["part"]` = -5 deg, her right): the fringe, temple, crown and back locks are rooted ON it (`proot`:
+  beta, azimuth from the part; mirrored rows take the opposite offset), so they spring away from it on both sides; her right of
+  it lit (the drawn pale side of the part), the fringe and her left dark. The fringe's nine clumps root along the part's two
+  sides over the front of the crown (rooted all at the whorl in the first build, they fanned out like a broom).
+- **The temples** (review: 88 % of the drawing at brow level, a rounded rim): the temple and crown locks stand off the skull
+  (offset to 10 mm at the leave point plus an 8-10 mm bulge; B2c 5-7 mm and 0.007 at the end) and leave the head higher (beta
+  20-30, B2c 2-16), so the mass widens steadily from the crown down; the envelope re-traced at 1.58-1.62. Traced widths, front
+  close-up framing (head mm, drawing / B2c / B2e): 1.6026 202 / 190 / 198; 1.5826 210 / 188 / 213; **eye line 222 / 208 / 230**;
+  1.5406 231 / 228 / 243; 1.5206 239 / 235 / 249; **chin 246 / 234 / 252**; 1.4526 >= 251 / 237 / 254 -- at the brows 101 %
+  (B2c 90 %), at the eye line 104 % (94 %), at the chin 102 % (95 %).
+- **The back** (review: a waist where the crown's shell met the hanging hair, a V notch): the back locks root at the crown's
+  back from the part (no gap at 180 deg) and leave the skull at beta 8 .. -8 (B2c -6 .. -22, at the nape), the envelope's back
+  depth kept from 1.60 down (0.114-0.117); `hair_back.jpg`.
+- **The fringe**: its outer clumps now to the lash line (tips 1.5698-1.5742, B2c 1.5790-1.5890: the brows), every clump its own
+  point length and end width (`_taper(at=, end=)`), the central five 25 % wider (one mass with points), four wisps between.
+- **The chest locks** (review: cords): flat and wide -- 2.4 mm thick (B2c 4.5), up to 30-32 mm wide (21-24), curl 0.10 (0.30),
+  a longer taper.
+- **The hanging ends**: length jitter 20-30 mm (B2c 8-12), the back's tips at different heights and taper points.
+- **The "wires" at the chin**: B2c's two thin `loose` strands a side are left out (at 30-60 deg they stood off the chin).
+- **The ear** (review item 7): the cap's hairline arcs over the ear 3-5 mm above its round top (B2c's line at 1.574 cut the top
+  flat and its thick edge crossed it on a diagonal at 60-90 deg), the edge tapered over 10 mm (6: a brim); the side locks root
+  lower, under the temple lock. In profile the ear now shows its round top; a thin strip of skin shows between it and the hair.
+
+### Step 4, the nose (review item 3; `animehead.nose_art`, `FACE["art"]["nose"]["view"]`)
+
+The drawn highlight, measured on the front close-up: a soft round glow with a slightly pointed top, 12.9 mm wide, z
+1.5305-1.5423, centred about 4-5 mm to her RIGHT of the nostrils (the lit side of the tip), near-white at the core (253, 247,
+243) going warm at the edge (250, 230, 220), a small glint low on its left; a faint warm shade round its foot. B2d's: a flat
+hard-edged trapezoid on the midline. Now the highlight is its own layer (a second front-projected canvas with SIGNED x -- the
+skin gets a new attribute `art_x`, its vertices unchanged), soft-edged (`hi`: centre (-3.5 mm, 1.5368), radii 4.7 x 5.4 mm,
+35 % of the radius soft), with a 0.6 x 0.9 mm glint and a warm `halo`; the material thresholds its intensity by how square the
+view is to the face (the shading normal against the view, `fade` = 0.55 .. 0.95, 0.60): the whole glow from the front, its
+core at three-quarter from her right, nothing on the flank at 30-60 deg from her left or by 60 deg from her right. The
+nostrils a touch lighter (`NOSTRIL` #9a5a50). Two attempts at the fade (0.82 .. 0.98, then 0.55 .. 0.95; from her left at 30 deg the glow lies on the far side of the
+tip either way, so it is simply not seen there). `face_closeup.jpg`, `face_turn.jpg`, `face_vs_art.jpg`.
+
+### Step 5, the head's pose in the concept framing (review item 6; `POSE`, `charkit/suitpose.py`)
+
+Measured on `concept.jfif`: the irises at (427, 340) and (570, 317) -- her right eye 23 px lower over 143 px, a 9 deg tilt to
+her right shoulder; the brows low over the eyes and the face short from eyes to mouth (0.72 of the eyes' spacing; the model's
+straight-on 0.82): the chin down. The B2d render's eyes: (474, 323) and (597, 326) -- 1.5 deg the other way. Now `head` =
+(10, -9.5, -2) deg (chin down 10, her right side down 9.5; B2d (0, 1, -2)): the render's eyes (460, 363) and (581, 345), 8.7
+deg. **The gaze** is a pose parameter (`POSE["poses"][...]["gaze"]` = (out, up) in iris radii, `suitpose.gaze` moves the eye
+surfaces' `iu`/`iv` after posing; the lids and their shadow stay): (0, 0.10), the iris raised under the upper lid, so she
+looks up at the camera from under the brows. `concept_b2d` is the same pose with B2d's head, for the before/after.
+**The hair with the head** -- done differently from the brief: rigid with the head bone to its tips (B2a-B2d), the 10 deg nod
+swung the chest locks about 4 cm back into the suit (the locks hang 25 cm below the head's pivot) and a lock along the jaw
+stood in front of the chin (the chin lies below the head's weight band and does not nod). A head-to-chest blend by height was
+tried and still crossed the chin. Now the hair moves by the trunk's height bands, exactly as the skin, collar and suit at its
+height (`attach={"Beatrice_Hair*": "trunk"}`): rigid with the head above the jaw (above 1.53 m), with the neck and chest
+below. In `posed_full.jpg`, `posed_vs_concept.jpg` and the harness's posed front / front34 / side / back34 no lock shows
+through the suit, the collar or the face.
+
+### The three worst defects after the first full build (two attempts each)
+
+1. *The lit side read as a separate pale patch* -- from 22 deg to her left (`head.jpg`) the far, lit side stood behind the dark
+   crown like a pale bun. Attempt 1: the temple locks' roots and mid points lower; attempt 2: the painted light only while the
+   camera looks from the front or her right (`view` axis (-0.35, -0.94, 0)): from her left that side is the far one. Fixed.
+2. *The fringe fanned from one point like a broom* (all nine clumps rooted at the whorl), skin showing between narrow spikes.
+   Attempt 1: rooted along the part's two sides over the front of the crown (beta 76-86, azimuth -32 .. +28 from the part);
+   attempt 2: the central five 25 % wider, the wisps rooted with them. Now one mass with points and the two drawn gaps.
+3. *Her right of the part dark* (the drawn pale side of the part missing: crown box p50 59 against the drawing's 199). Attempt
+   1: the side gate narrowed to the head's midline (x 0 .. -20 mm; the crown's top lies within 10 mm of it); attempt 2: her
+   right fringe clumps take the light further down from their roots (`_FRINGE_LIT_R`). p50 131, p75 184 (drawing 199, 215).
+   Also the side locks' roots take the light of the mass round them (`lit` (0, 0.8) -> (0.3, 0.15)).
+
+### Pictures, checks, reproduce
+
+- New: `hair_colour_b2e.jpg` (the drawing's, B2e's and B2d's hair sampled in the same boxes of the front close-up framing --
+  lit side, pale edge, mid tone, the fringe's and her left's shadow, strand lines, gloss -- then front crops: drawing, B2e, B2d,
+  concept.jfif, B2e at 30 deg; the drawing's "pale edge" sample catches its backdrop, the B2d crop its sheet label).
+  Regenerated: `hair_vs_art.jpg` (B2e against B2c's hair in the B2e look, `--head hair_b2c`), `hair_back.jpg`,
+  `face_vs_art.jpg`, `face_turn.jpg`, `face_closeup.jpg`, `head_size.jpg`, `look_compare.jpg` (the nose and hair changed them),
+  `posed_vs_concept.jpg` (now with B2d's head pose as a fourth panel, `--pose concept_b2d`), `posed_full.jpg`,
+  `posed_hotlight.jpg` (its toon panel no longer labelled "B2b"), and the full standard set. `eyes_b2d.jpg`, `face_zebra.jpg`,
+  `latex_b2d.jpg` are B2d's (unchanged parts).
+- **Colours, the front close-up framing** (drawing / B2e / B2d, `hair_colour_b2e.jpg`): lit side (192, 163, 154) / (183, 157,
+  149) / (66, 49, 46); pale edge -- / (208, 182, 174) / (74, 57, 54); mid tone (136, 107, 100) / (99, 77, 72) / (42, 31, 29);
+  fringe shadow (66, 51, 50) / (56, 43, 43) / (72, 53, 49); her left (53, 43, 43) / (53, 41, 41) / (41, 29, 28); strand lines
+  (62, 45, 43) / (37, 28, 28) / (27, 17, 15); gloss (78, 72, 80) / (78, 66, 70) / (144, 127, 123).
+- **Nothing else moved** (`C:/tmp/beatrice_b2e/tools/cmp.py`, B2d's; `Beatrice_b2d_09b46cb.blend` against this build): 39
+  objects identical (max |dP| < 1e-7 m) -- every suit part, the hands and nails, the boots, AND the head's skin, ears, eyes and
+  lashes. Changed: `Beatrice_Hair_Cap` (166,946 -> 165,084 vertices: the hairline over the ear, the 10 mm fade) and
+  `Beatrice_Hair_Locks` (151,380 -> 150,268; 45 locks, B2c 48).
+- **The hair against the suit and skin** (`C:/tmp/beatrice_b2e/tools/gap.py`: lock vertices below 1.50 m within 20 mm of the
+  suit's surfaces or the skin, every third, signed along the nearest normal): at rest 4,308 checked, 2 more than 0.5 mm inside
+  (one 2.1 mm, at the nape under the collar, hidden); in the concept pose 4,394, one 0.51 mm inside, none deeper. 2,240 lock
+  vertices lifted clear of the suit at build (B2c's pass).
+- **Sheet scores** (the BALD A-pose drawings): above the waist front 0.753 -> 0.734, side 0.680 -> 0.651, back 0.740 -> 0.722
+  (the wider temples and crown); the bands below unchanged.
+- `source/mesh_stats.json`: 62 objects, all closed.
+- **Times**: the build 484 s (8.1 min; the hair 18 s), the full set 685 s (11.4 min); face views toon 88 s, pbr 90 s,
+  `hair_b2c` 236 s, `apose` 166 s; posed toon 62 s, pbr 59 s, hot 17 s, `concept_b2d` 34 s; the hair harness
+  `C:/tmp/beatrice_b2e/tools/hh.py` (the hair rebuilt on the B2d build, `--face` the face's material, `--pose` posed) 60-110 s.
+- Reproduce (from `art/characters`): `bash charkit/run.sh Beatrice --sheet --turn --save --beauty <B2b's list>`, then
+  `C:/tmp/beatrice_b2e/tools/pics.sh` (face views toon / pbr / `--head hair_b2c --only art,turn` / `--head apose --only turn`,
+  posed toon / pbr / pbr hot / `--pose concept_b2d --views concept`, `posed_sheets.py`, `face_sheets.py`), then
+  `colour_sheet.py $TEMP/Beatrice_face <B2d's face_vs_art.jpg> previews/hair_colour_b2e.jpg`.
+
+### What still looks wrong (worst first)
+
+1. **The lit side is lock-by-lock**: where a lit lock meets a dark one the step is hard and follows the lock's edge (`face_turn.jpg`
+   0 deg, `hair_vs_art.jpg` front); the drawing grades from ash to dark across the mass, and its lit locks carry darker strands
+   inside them. The strand lines are finer and fainter than drawn on the lit side.
+2. **In the concept framing the lit side is smaller than painted** (`posed_vs_concept.jpg`): the concept's whole outer mass on her
+   right is pale beige to the chest; ours is ash at the top and mid-brown below.
+3. **The crown's gloss on the dark side** is a row of small blocks across the fringe's top (`hair_vs_art.jpg` front, `face_turn.jpg`
+   30 deg); the drawing paints one broad, curved, glossy band.
+4. **The ear at 60-90 deg from her left** (`face_turn.jpg` 60, 90): its top is round now, but the hair's edge behind it still meets it
+   in a corner, and in profile a thin strip of skin shows between the ear and the hairline.
+5. **The hanging hair is still a fairly even curtain** (`hair_back.jpg`): ends at varied lengths now, but the drawing's separated,
+   wavy, flyaway strands are not there.
+6. **The pbr look's nose** (`look_compare.jpg`, `face_closeup.jpg` pbr): Cycles' own highlight still makes a pale strip down the
+   bridge, as in B2d (the drawn layer is now the softer glow under it); the toon look, the default, is right.
+7. The face round's items (the lash mass, the blush a fifth too strong, the skin a touch light, the under-chin) and the latex's
+   sheen are unchanged.

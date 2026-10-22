@@ -193,6 +193,13 @@ What made the briefs work:
     The whole-figure pass caught a regression the builder had called "much better" (a knot at
     the back armpit) and ranked finish over anatomy as what was left.
 
+12. *2026-10-22, Beatrice B2e:* **anime hair's light is painted, not lit.** The drawings light her right side's outer hair
+    pale from the front and paint the same hair dark in profile and from behind; no lamp does both. A camera-space normal lobe
+    gated by side, world facing, view and a per-lock share (`toonlook.normal_lobe`) did, where a hair-only key light (light
+    linking) lit the profile too. Posing: hair rigid with the head bone to its tips goes into the body on any nod -- move it by
+    the trunk's height bands (`suitpose` attach `"trunk"`). Round cost: about 4.5 h, two full builds (8 min each) and the
+    picture set (15 min).
+
 ## What this skill does not cover yet
 
 - Animations beyond the 46 clips of the shared skeleton (rifle holds, zombie gait, operating a
