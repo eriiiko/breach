@@ -66,12 +66,12 @@ def emit_gas(gmap, queue, fy, fx, gas_species, gas_amount, gas_radius):
     deposit: a flat deterministic cloud; per-tile texture can come later as a
     dial). The slice is int32 Q16.16 (S2b): the edit is authored in real
     density and the FieldEdit "gas" combine quantizes ONCE at the write
-    boundary (round-half-away — door 2), with the [0, 1] policy clamp as the
-    saturation guard and the solid skip-mask (gas does not enter walls).
+    boundary (round-half-away — door 2), ADDITIVE with no ceiling (the trace
+    policy's floor-0 TRACE_CLAMP — smoke transport v2 D1, Erik 2026-10-04) and
+    the solid skip-mask (gas does not enter walls).
     Traversal is the flush's fixed row-major region order. A ``gas_amount``
-    above 1.0 (e.g. smoke_screen's 1.5) saturates the cloud's core to full
-    density and feathers the edge — the clamp makes that authoring shape
-    safe.
+    above 1.0 (e.g. smoke_screen's 1.5) now puts exactly that density in the
+    cloud's core (D1: deposits add, nothing cuts a tile back to 1).
 
     ``gas_species`` resolves BY NAME through the map's gas table
     (``gmap.gases.name_to_id`` — gases.py is the single source of truth;
@@ -84,7 +84,7 @@ def emit_gas(gmap, queue, fy, fx, gas_species, gas_amount, gas_radius):
     queue.enqueue(FieldEdit(
         field="gas", region=Region.DISC, coords=(fy, fx, float(gas_radius)),
         amount=float(gas_amount), mode=EditMode.ADD, falloff=Falloff.LINEAR,
-        clamp=(0.0, 1.0), channel=gas_id, source_id=_SRC_PAYLOAD_GAS,
+        channel=gas_id, source_id=_SRC_PAYLOAD_GAS,   # policy TRACE_CLAMP (D1)
     ))
 
 
@@ -198,8 +198,8 @@ def blast_smoke_peak(gmap, fy, fx, radius, soot_g, noise=None):
     The sum walks the SAME disc the FieldEdit flush walks
     (field_edit._iter_region) and skips the smoke policy's solid tiles, so
     smoke is not budgeted onto walls. 0 for no soot (an RDX/C4 charge) or a
-    disc with no open tile. The per-tile [0, 1] clamp still applies at the
-    flush; at physical charge masses no tile comes near it."""
+    disc with no open tile. Nothing clamps the deposit from above (smoke
+    transport v2 D1): it adds exactly its soot onto whatever the tile holds."""
     if radius <= 0 or soot_g <= 0.0:
         return 0.0
     from simulation.field_edit import _iter_region, Region, Falloff

@@ -51,7 +51,8 @@ from simulation.damage import KINETIC, DamagePacket, apply_packet
 from simulation.events import (
     LaserFiredEvent, ProjectileGlowEvent, ShotFiredEvent, SprayJetEvent,
 )
-from simulation.gases import N_GASES
+from simulation.gases import N_TRACE_GASES
+from simulation import gas_fixed
 from simulation.field_edit import EditMode, FieldEdit, Region
 from simulation.orders import (
     ORDER_EXPLOSIVE, ORDER_MOVE_ATTACK,
@@ -1127,10 +1128,13 @@ def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
         base_angle = float(aim_angle)
     shooter_id = getattr(shooter, "id", -1)
     h, w = gmap.material.shape
-    # Per-gas Q16.16 absorption (once-at-build constants; plain ints).
+    # Per-gas Q16.16 absorption (once-at-build constants; plain ints), Q16 per
+    # REAL unit of density. Only the TRACE planes absorb (the gases door refuses
+    # an optical coefficient on a bulk row, #88 V10), and each term finishes
+    # through the trace currency's one shift, trace_density_shr.
     absorb = getattr(getattr(gmap, "gases", None), "beam_absorb_q16", None)
     gas = getattr(gmap, "gas", None)
-    n_gases = N_GASES if (absorb is not None and gas is not None) else 0
+    n_gases = N_TRACE_GASES if (absorb is not None and gas is not None) else 0
     one = unit_fixed.FP_ONE
 
     for _ in range(int(weapon.shots_per_trigger)):
@@ -1154,8 +1158,8 @@ def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
                 for g in range(n_gases):
                     density_q = int(gas[g, iy, ix])
                     if density_q > 0:
-                        total_absorb += (int(absorb[g]) * density_q) \
-                            >> unit_fixed.FP_SHIFT
+                        total_absorb += gas_fixed.trace_density_shr(
+                            int(absorb[g]) * density_q)
                 if total_absorb > 0:
                     trans_q = one - total_absorb
                     if trans_q <= 0:
@@ -1373,7 +1377,7 @@ def deposit_spray_cone(gmap, queue, shooter, weapon, ammo,
             queue.enqueue(FieldEdit(
                 field="gas", region=Region.TILE, coords=(y, x),
                 amount=gas_amount / div, mode=EditMode.ADD,
-                clamp=(0.0, 1.0), channel=gas_id,
+                channel=gas_id,   # policy TRACE_CLAMP: additive (D1)
                 source_id=_SRC_SPRAY_GAS,
             ))
 

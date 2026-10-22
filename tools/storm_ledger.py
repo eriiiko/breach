@@ -63,6 +63,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "tools",
         sys.path.insert(0, str(_p))
 
 import breach_physics as bp                      # noqa: E402
+from simulation import gas_fixed as _gas_fx      # noqa: E402  (#88: trace currency)
 from config import CFG                           # noqa: E402
 from simulation import Simulation                # noqa: E402
 from simulation import fire_fixed                # noqa: E402
@@ -142,7 +143,7 @@ def measure_state(gmap, masks):
         "t_obj": float(gmap.temperature[obj].astype(np.int64).sum() / f),
         "t_solid": float(gmap.temperature[gmap.solid].astype(np.int64).sum() / f),
         "n_bulk": float(nbf.sum()), "n_o2": float(o2.sum() / f),
-        "n_smoke": float(gmap.smoke[flow].astype(np.int64).sum() / f),
+        "n_smoke": float(_gas_fx.dequantize_trace(gmap.smoke[flow].astype(np.int64).sum())),
         "p_sum": float(gmap.atmosphere[flow].astype(np.int64).sum() / f),
         "t_min_gas": float(t.min() / f) if t.size else 0.0,
         "t_max_gas": float(t.max() / f) if t.size else 0.0,

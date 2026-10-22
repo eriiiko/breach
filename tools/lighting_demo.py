@@ -91,6 +91,14 @@ Headless flags (no human at the keyboard):
                      develop, then measure N (default 300) rendered frames of
                      the NEW gas-medium path and again with legacy_smoke_on,
                      printing mean/95th-percentile ms/frame for both.
+    --shots [A,B]   graphics G0 P3: render the named LOOK SHOTS of
+                     tools/look_shots.toml (all, or the comma-separated
+                     subset) to scratchpad/look/<name>_<git-sha>.png, one
+                     fresh demo process per shot (fixed level, camera, seed,
+                     tick count, scripted actions; the studio's CODE defaults,
+                     never a saved preset). The PNG is the map viewport only.
+                     Every graphics patch renders these before and after.
+    --shots-out DIR write the look shots to DIR instead of scratchpad/look/
 """
 from __future__ import annotations
 
@@ -125,10 +133,7 @@ from simulation.gases import STEAM, SMOKE
 from level_lights import LightSpec, monotonic_total_tick, partition_lights
 from renderer import frame_lights
 from renderer.hover_readout import pack_hover_readout
-from renderer.gas_detail import tame_wind
-from renderer.lit3d import LightFieldCtx, make_camera
-from renderer.static_props import (PropPlacement, StaticPropRenderer,
-                                   SwaySettings)
+from renderer.static_props import PropPlacement, SwaySettings
 
 # ---------------------------------------------------------------------------
 # Preset file location
@@ -188,7 +193,6 @@ DEFAULTS = {
     "gd_cycle_seconds": 2.5,
     "gd_erode_strength": 0.6,
     "gd_warp_px": 3.0,
-    "gd_dither_on": True,
     "speckle_mode": 2.0,     # stepped slider: 0=off 1=noise 2=soot
     "speckle_amp": 0.25,
     "soot_yield": 0.3,       # mirror of [physics.combustion]; LIVE-wired, P5
@@ -660,6 +664,126 @@ def _parse_shot_path() -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Look shots (graphics arc G0 P3, docs/graphics_direction_2026-10-18.md §7):
+# the named shot set of tools/look_shots.toml. The PARENT (`--shots`) spawns
+# one child process per shot (`--look-shot NAME --look-out PATH`, internal
+# flags), so no shot inherits another's sim or GL state; the child is this
+# same demo under --auto with the shot's level, camera, frame count and
+# scripted tool actions, capturing the map viewport right after the world
+# blit (before the HUD and the panel).
+# ---------------------------------------------------------------------------
+
+def _argv_value(flag: str) -> Optional[str]:
+    """The token after ``flag`` (None when the flag is absent or bare)."""
+    if flag not in sys.argv:
+        return None
+    i = sys.argv.index(flag)
+    if i + 1 < len(sys.argv) and not sys.argv[i + 1].startswith("--"):
+        return sys.argv[i + 1]
+    return None
+
+
+def _run_look_shots() -> int:
+    """``--shots [A,B]``: render the look shots, one subprocess each. Returns
+    the number of shots that failed (the exit code)."""
+    import subprocess
+    from tools.look_shots import (DEFAULT_OUT_DIR, git_tag, level_exists,
+                                  load_shots, shot_path)
+    table = load_shots()
+    wanted = _argv_value("--shots")
+    names = ([n.strip() for n in wanted.split(",") if n.strip()] if wanted
+             else [s.name for s in table.shots])
+    for n in names:
+        table.by_name(n)          # unknown name -> KeyError before any window
+    out_dir = Path(_argv_value("--shots-out") or DEFAULT_OUT_DIR)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tag = git_tag()
+    failed = 0
+    for n in names:
+        shot = table.by_name(n)
+        if not level_exists(shot.level):
+            print(f"[look] {n}: level {shot.level!r} not found -- skipped")
+            failed += 1
+            continue
+        out = shot_path(out_dir, n, tag)
+        t0 = time.perf_counter()
+        rc = subprocess.run([sys.executable, str(Path(__file__).resolve()),
+                             "--look-shot", n, "--look-out", str(out)],
+                            cwd=str(ROOT)).returncode
+        ok = rc == 0 and out.is_file()
+        failed += 0 if ok else 1
+        print(f"[look] {n:22s} {'OK  ' if ok else 'FAIL'} "
+              f"{(time.perf_counter() - t0):5.1f} s  -> {out}")
+    print(f"[look] {len(names) - failed}/{len(names)} shots in {out_dir} "
+          f"(tag {tag})")
+    return failed
+
+
+def _parse_look_shot():
+    """Child mode: ``--look-shot NAME --look-out PATH`` -> (ShotTable,
+    LookShot, out_path), or None outside a look-shot child."""
+    name = _argv_value("--look-shot")
+    if name is None:
+        return None
+    from tools.look_shots import load_shots
+    table = load_shots()
+    out = _argv_value("--look-out")
+    if out is None:
+        raise SystemExit("--look-shot needs --look-out PATH (use --shots)")
+    return table, table.by_name(name), out
+
+
+def _deafen_input() -> None:
+    """A look-shot child takes NO keyboard or mouse input. Its window pops up
+    (and takes focus) on a desktop someone may be using, and a stray wheel
+    turn or key press moved the camera or flipped a layer mid-shot (graphics
+    G1 rendered one shot three times and got three cameras). The demo and
+    the renderer read input through these pyray calls; in a child they read
+    nothing."""
+    rl.is_key_pressed = lambda *_a: False
+    rl.is_key_down = lambda *_a: False
+    rl.is_mouse_button_pressed = lambda *_a: False
+    rl.is_mouse_button_down = lambda *_a: False
+    rl.get_mouse_wheel_move = lambda *_a: 0.0
+
+
+def _look_camera(shot, level, map_px_w: int, map_px_h: int) -> Camera2D:
+    """The shot's fixed camera: centre + zoom, or the whole map fitted."""
+    if shot.zoom is None:
+        zoom = min(map_px_w / max(level.width, 1), map_px_h / max(level.height, 1))
+    else:
+        zoom = shot.zoom
+    cx, cy = shot.center if shot.center is not None else (
+        level.width / 2.0, level.height / 2.0)
+    cam = Camera2D(
+        pos_tile_x=cx - (map_px_w / zoom) / 2.0,
+        pos_tile_y=cy - (map_px_h / zoom) / 2.0,
+        zoom_px_per_tile=zoom,
+        viewport_px_w=map_px_w, viewport_px_h=map_px_h,
+        world_size_tile_w=level.width, world_size_tile_h=level.height,
+    )
+    cam.clamp_to_world()
+    return cam
+
+
+def _capture_map_viewport(renderer, out_path: str) -> None:
+    """Read the back buffer right after the world blit (no HUD, no panel)
+    and save the map viewport alone. ``take_screenshot`` would drop the
+    directory (raylib writes to its own base path) and include the panel."""
+    cam = renderer.camera
+    img = rl.load_image_from_screen()
+    try:
+        crop = rl.Rectangle(float(cam.viewport_screen_x),
+                            float(cam.viewport_screen_y),
+                            float(cam.viewport_px_w), float(cam.viewport_px_h))
+        rl.image_crop(img, crop)
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        rl.export_image(img, str(Path(out_path).resolve()))
+    finally:
+        rl.unload_image(img)
+
+
+# ---------------------------------------------------------------------------
 # Detonation — the CANONICAL path (arc #60 P4r)
 # ---------------------------------------------------------------------------
 # R arms detonate-mode; a left click then detonates a frag grenade at the
@@ -789,8 +913,9 @@ def _inject_fire(sim, tile) -> None:
     gmap.fire[y0:y1, x0:x1] = fire_fixed.quantize_scalar(1.0)
 
 
-def _inject_gas(sim, tile, species: int) -> None:
-    """Puff a 3x3 blob of ``species`` at full density at the cursor tile."""
+def _inject_gas(sim, tile, species: int, amount: float = 1.0) -> None:
+    """Puff a 3x3 blob of ``species`` at ``amount`` x full density (1.0 =
+    the I/J/K keys' full puff) at the cursor tile."""
     if tile is None:
         return
     fx, fy = tile
@@ -801,7 +926,16 @@ def _inject_gas(sim, tile, species: int) -> None:
     y0, y1 = max(0, fy - 1), min(h, fy + 2)
     x0, x1 = max(0, fx - 1), min(w, fx + 2)
     from simulation import gas_fixed
-    gmap.gas[species, y0:y1, x0:x1] = gas_fixed.SMOKE_MAX_Q
+    from simulation.gases import N_TRACE_GASES
+    # In the plane's own currency (#88): trace in the trace currency (an int64
+    # quantize, range-checked before the int32 store), bulk in Q16.
+    if species < N_TRACE_GASES:
+        q = gas_fixed.quantize_trace_scalar(float(amount))
+        if not (0 <= q <= gas_fixed.TRACE_CELL_MAX):
+            raise ValueError(f"_inject_gas: {amount} units does not fit a trace cell")
+    else:
+        q = gas_fixed.quantize_bulk_scalar(float(amount))
+    gmap.gas[species, y0:y1, x0:x1] = q
 
 
 def _toggle_door(sim, tile) -> None:
@@ -1030,11 +1164,20 @@ def _run_perf_bench(renderer, sim, lights_in, light_sky,
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    # ---- 0. Look shots (G0 P3): the parent spawns one child per shot ----
+    if "--shots" in sys.argv:
+        raise SystemExit(1 if _run_look_shots() else 0)
+    look = _parse_look_shot()          # (table, shot, out) in a child, else None
+    look_shot = look[1] if look else None
+    if look_shot is not None:
+        _deafen_input()
+
     # ---- 1. Load level + build sim ----
     # --level overrides config for one launch (the studio runs
-    # --level fire_studio); default stays [display] level.
-    level_name = _parse_level_arg() or getattr(CFG.display, "level",
-                                               "playground")
+    # --level fire_studio); default stays [display] level. A look shot names
+    # its own level.
+    level_name = (look_shot.level if look_shot else None) or \
+        _parse_level_arg() or getattr(CFG.display, "level", "playground")
     level = load_level(level_name)
     print(f"[lighting_demo] Level: {level.name}  {level.width}x{level.height} tiles")
 
@@ -1060,11 +1203,15 @@ def main() -> None:
     # Borderless at the real monitor resolution by default (same pattern as
     # main.py): open the window first, then query the actual size and lay the
     # panel/map out to fit. `--windowed` falls back to the old fixed 1280x720.
-    BORDERLESS = "--windowed" not in sys.argv
+    BORDERLESS = "--windowed" not in sys.argv and look is None
     if BORDERLESS:
         rcore.init_window(0, 0, title="Breach — Lighting Demo",
                           borderless=True)
         screen_w, screen_h = rcore.get_monitor_size()
+    elif look is not None:
+        # A look shot's window is part of the shot (tools/look_shots.toml
+        # [window]) -- the same pixels on every machine and monitor.
+        screen_w, screen_h = look[0].window_w, look[0].window_h
     else:
         screen_w, screen_h = 1280, 720
     panel_px_w = PANEL_W
@@ -1086,6 +1233,8 @@ def main() -> None:
         viewport_px_w=map_px_w, viewport_px_h=map_px_h,
         world_size_tile_w=level.width, world_size_tile_h=level.height,
     )
+    if look_shot is not None:
+        initial_camera = _look_camera(look_shot, level, map_px_w, map_px_h)
 
     # GameRenderer attaches to the already-open window in borderless mode
     # (or creates the fixed one in --windowed).
@@ -1155,17 +1304,15 @@ def main() -> None:
           "(O intentionally unused)")
 
     # ---- 3b. Props & vegetation (arc #60 P2) ----
-    # StaticPropRenderer owns the model cache + the prop shader; the garden is
-    # a hardcoded placement list (P3 brings the real prop entity + loader
-    # plumbing). Built here, AFTER the GL context exists and after the --perf
-    # early-return so the perf pass is unaffected.
-    prop_renderer = StaticPropRenderer(cfg.world_px_per_tile,
-                                       level.tile_size_m)
-    prop_renderer.load()
+    # The garden is a hardcoded placement list drawn by the RENDERER'S OWN
+    # StaticPropRenderer through compose_world(props=...) -- the game's path
+    # (one shared 3D pass with the units, the renderer's tamed wind and its
+    # gas-density sway). Graphics G0 P1 made that the only honest path: a lit
+    # prop must reach the HDR scene RT before the one tone-map, and
+    # compose_world's overlay_fn hook now runs AFTER it (display stage, UI).
+    prop_renderer = renderer.prop_renderer
     demo_garden, garden_tile = build_demo_garden(level, sim.gmap,
                                                  cfg.world_px_per_tile)
-    prop_cam3d = make_camera(renderer.world.world_px_w,
-                             renderer.world.world_px_h)
     if "--props" in sys.argv:
         # Park the 2D camera on the garden so it is on screen at frame 1
         # (this is the HUMAN-TEST vehicle; hunting for the trees is not part
@@ -1175,7 +1322,7 @@ def main() -> None:
         renderer.camera.pos_tile_y = float(garden_tile[1]) - \
             (map_px_h / renderer.camera.zoom_px_per_tile) / 2.0
         renderer.camera.clamp_to_world()
-    if prop_renderer.ready:
+    if prop_renderer.ready and look_shot is None:   # a look shot has no garden
         # Warm the cache up front: generation is a Python loop (~0.1-0.3 s per
         # distinct look), so building on first draw would hitch the frame the
         # garden is switched on. Prints the MEASURED tri / VRAM / gen-time
@@ -1199,11 +1346,35 @@ def main() -> None:
     state = PanelState()
     state.props_on = "--props" in sys.argv
 
-    # Apply default preset from file if it exists
-    saved = load_preset("default")
+    # Apply default preset from file if it exists. A look shot never does:
+    # the demo rewrites the preset on Save, and a shot must stay the same
+    # picture -- it runs on the CODE defaults (DEFAULTS + the config mirrors
+    # below), plus its own row.
+    saved = load_preset("default") if look_shot is None else None
     if saved:
         state.apply_dict(saved)
         print("[lighting_demo] Loaded preset 'default' from lighting_presets.toml")
+    if look_shot is not None:
+        state.lamps_on = look_shot.lamps
+        state.beacon_on = look_shot.beacon
+        if look_shot.flashlight is not None:
+            state.set("flash_intensity", look_shot.flashlight.intensity)
+            state.set("flash_angle_spread", look_shot.flashlight.spread)
+        # "game" = the game's own exposure ([render.lighting] master_gain,
+        # bound by LightingPass), for levels tuned in main.py.
+        if look_shot.light_gain == "game":
+            state.set("light_gain", renderer.lighting.light_gain)
+        elif isinstance(look_shot.light_gain, float):
+            state.set("light_gain", look_shot.light_gain)
+        # The pressure colormap is a debug instrument the studio panel opens
+        # ON; a look shot shows the look, so it follows the game's default
+        # ([render] pressure_overlay_on, bound by the renderer).
+        state.set("show_pressure", renderer.show_pressure)
+        # `hide` isolates layers (the renderer's own toggles, set once; the
+        # studio never touches them per frame).
+        renderer.show_temperature &= "heat" not in look_shot.hide
+        renderer.show_smoke &= "smoke" not in look_shot.hide
+        renderer.show_water &= "water" not in look_shot.hide
 
     # The flat FLOOR opens where [render.lighting] floor sits (the config
     # mirrors below win over a saved preset's stale copy, same rule): a saved
@@ -1296,7 +1467,6 @@ def main() -> None:
         state.set("gd_erode_strength",
                   float(getattr(_gd, "erode_strength", 0.6)))
         state.set("gd_warp_px", float(getattr(_gd, "warp_px", 3.0)))
-        state.set("gd_dither_on", bool(getattr(_gd, "dither_on", True)))
     if _sp is not None:
         _mode_idx = {"off": 0.0, "noise": 1.0, "soot": 2.0}.get(
             str(getattr(_sp, "mode", "soot")), 2.0)
@@ -1339,15 +1509,21 @@ def main() -> None:
     # --auto: render a fixed number of frames then exit 0 (smoke test; no input
     # injection). Mirrors test_main_smoke / align_level_art's --auto tails.
     shot_path = _parse_shot_path()
-    auto = "--auto" in sys.argv or shot_path is not None
-    AUTO_FRAMES = _parse_shot_frames(120)
+    auto = ("--auto" in sys.argv or shot_path is not None
+            or look_shot is not None)
+    AUTO_FRAMES = (look_shot.frames if look_shot is not None
+                   else _parse_shot_frames(120))
     frames = 0
 
     # HEADLESS cursor (P4r): a fixed tile standing in for the mouse under
     # --auto — the viewport centre, so the flashlight lands in shot and the
     # hover readout prints the same text every run. None = use the real mouse.
+    # A look shot pins the flashlight where its row says, or has none.
     auto_cursor = None
-    if auto:
+    if look_shot is not None:
+        auto_cursor = (look_shot.flashlight.pos
+                       if look_shot.flashlight is not None else None)
+    elif auto:
         auto_cursor = (
             renderer.camera.pos_tile_x
             + (map_px_w / renderer.camera.zoom_px_per_tile) / 2.0,
@@ -1357,9 +1533,12 @@ def main() -> None:
 
     # --detonate-at-tick X,Y,F (P4r): one scripted blast for headless
     # verification, resolved here so a signed X/Y reads as an offset from the
-    # garden anchor. Consumed (set to None) when it fires.
+    # garden anchor. Consumed (set to None) when it fires. A look shot's
+    # `detonate` row rides the same script, in absolute tiles.
     _det = _parse_detonate_at()
     det_script = None
+    if look_shot is not None and look_shot.detonate is not None:
+        det_script = look_shot.detonate
     if _det is not None:
         dx, dy, dframe, rel_x, rel_y = _det
         det_script = (garden_tile[0] + dx if rel_x else dx,
@@ -1373,8 +1552,17 @@ def main() -> None:
     # puddle directly: this drives the water pass OFF its dormant early-out so
     # the new additive-glint + alpha-ramp branch is actually exercised (and the
     # per-frame WaterPass setters run against a live pass). Direct in-place
-    # write — same pattern as the U-key pour below.
-    if auto:
+    # write — same pattern as the U-key pour below. A look shot is its own
+    # scene: no puddle, but its scripted ignite / smoke / steam land here,
+    # before tick 1 (the same tool-side writes as the I / J / K keys).
+    if look_shot is not None:
+        for _t in look_shot.ignite:
+            _inject_fire(sim, _t)
+        for _t in look_shot.smoke:
+            _inject_gas(sim, _t, SMOKE, look_shot.gas_amount)
+        for _t in look_shot.steam:
+            _inject_gas(sim, _t, STEAM, look_shot.gas_amount)
+    elif auto:
         H, W = sim.gmap.material.shape
         cy, cx = H // 2, W // 2
         for ty in range(max(0, cy - 2), min(H, cy + 3)):
@@ -1606,7 +1794,6 @@ def main() -> None:
             gd.cycle_seconds = float(state.get("gd_cycle_seconds"))
             gd.erode_strength = float(state.get("gd_erode_strength"))
             gd.warp_px = float(state.get("gd_warp_px"))
-            gd.dither_on = bool(state.get("gd_dither_on"))
 
             # ---- Sync the B2 dirty-Planck speckle amp LIVE (P4) ----
             # The `amp` slider drives the flame-mottle depth immediately (render-
@@ -1697,48 +1884,28 @@ def main() -> None:
             )
 
             # ---- Draw ----
-            # Props ride compose_world's world-space overlay hook: the callback
-            # runs INSIDE the open world RT, so the props are drawn into the
-            # same target, at the same world-pixel coordinates, through the
-            # same tone-map as everything else — which is exactly the honest
-            # HUMAN-TEST condition. (P3 gives compose_world a real `props=`
-            # keyword; this tool needs no engine change to exercise P2.)
-            def _draw_props(_wpt: float) -> None:
-                # P4r sway. The wind is the TAMED product
-                # (gas_detail.tame_wind) and NOTHING ELSE — the same seam the
-                # real path uses, computed here from the demo's own live sim.
-                # No demo breeze, no floor: still air, still leaves (Erik's
-                # spaceship ruling). Detonate (R + click) to make wind. Dials
-                # are re-read from CFG every frame: edit [render.props] and hit
-                # Ctrl+R to retune live.
-                t_sway = float(total_tick) * sim_time_per_tick
-                wind = tame_wind(sim.gmap.wind_x, sim.gmap.wind_y)
-                prop_renderer.sway = SwaySettings.from_config(CFG)
-                prop_renderer.draw_props(
-                    demo_garden, prop_cam3d,
-                    time_s=t_sway, wind_field=wind,
-                    ctx=LightFieldCtx(
-                        tex_a=renderer.lighting.light_tex_a,
-                        tex_b=renderer.lighting.light_tex_b,
-                        world_px_w=float(renderer.world.world_px_w),
-                        world_px_h=float(renderer.world.world_px_h),
-                        ambient=renderer.lighting.ambient,
-                        light_gain=renderer.lighting.light_gain,
-                        normal_y_sign=(-1.0 if renderer.normal_y_flipped
-                                       else 1.0),
-                    ))
-
+            # Props go in through compose_world(props=...): the renderer's own
+            # shared 3D pass, lit by the real light field into the HDR scene
+            # RT, through the one tone-map -- the honest HUMAN-TEST condition.
+            # P4r sway rides the renderer's TAMED wind (gas_detail.tame_wind,
+            # refreshed in upload_state) and NOTHING ELSE: still air, still
+            # leaves (Erik's spaceship ruling); detonate (R + click) to make
+            # wind. [render.props] is re-read from CFG every frame (Ctrl+R).
             renderer.begin_frame()
             renderer.compose_world(
                 units_marines=sim.marines(),
                 units_zombies=sim.zombies(),
                 projectiles=sim.projectiles,
-                overlay_fn=(_draw_props if (state.props_on
-                                            and prop_renderer.ready) else None),
+                props=(demo_garden if (state.props_on
+                                       and prop_renderer.ready) else ()),
             )
 
             renderer.draw_background_to_screen()
             renderer.blit_world_to_screen()
+            # Look shot (G0 P3): capture the LAST frame's map viewport now,
+            # after the world blit and before the HUD / panel draw over it.
+            if look is not None and frames + 1 >= AUTO_FRAMES:
+                _capture_map_viewport(renderer, look[2])
 
             # ---- HUD ----
             _draw_hud(renderer, sim.gmap, state, now, cursor=auto_cursor)
@@ -1767,8 +1934,8 @@ def main() -> None:
                 # its live setters are actually exercised (not just dormant).
                 break
     finally:
-        # GL resources must go while the context is still alive.
-        prop_renderer.unload()
+        # GL resources must go while the context is still alive (the
+        # renderer unloads its own prop renderer).
         renderer.shutdown()
 
     if auto:
@@ -1931,7 +2098,6 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     y = _slider(state, "gd_cycle_seconds", "Cycle s", 0.5, 6.0, x, y)
     y = _slider(state, "gd_erode_strength", "Erode", 0.0, 1.0, x, y)
     y = _slider(state, "gd_warp_px", "Warp px", 0.0, 8.0, x, y)
-    y = _checkbox(state, "gd_dither_on", "Dither", x, y)
     y = _slider(state, "speckle_mode", "Speckle F10", 0.0, 2.0, x, y)
     y = _slider(state, "speckle_amp", "Speckle amp", 0.0, 1.0, x, y)
 

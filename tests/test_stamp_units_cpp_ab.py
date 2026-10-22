@@ -73,7 +73,7 @@ def _make_sim() -> Simulation:
     # that quietly stopped meaning what it said). The A/B property under test is
     # unit stamping, which these fields only decorate, so the comparison stayed
     # valid — but it was comparing two blank scenes. Quantize properly.
-    g.smoke[interior] = gas_fixed.quantize_scalar(0.6)
+    g.smoke[interior] = gas_fixed.quantize_trace_scalar(0.6)
     g.fire[10, 10] = fire_fixed.quantize_scalar(0.8)
     g.fire[10, 11] = fire_fixed.quantize_scalar(0.5)
     g.water_depth[12, 12] = water_fixed.quantize_scalar(0.3)

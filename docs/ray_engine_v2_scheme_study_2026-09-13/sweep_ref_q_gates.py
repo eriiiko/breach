@@ -30,6 +30,8 @@ import sweep_ref_q as R  # noqa: E402
 ONE = R.ONE
 F_ONE = R.F_ONE
 Q = R.quant
+TQ = R.quant_trace          # a TRACE-plane density (#88): the trace currency
+T_ONE = R.TRACE_ONE
 QF = R.quant_f            # the Q24 door, for an f a gate FORCES
 
 # the scene constants the whole arc uses
@@ -101,9 +103,13 @@ def _gas_planes(rng, h, w, ts):
     thin, and the ONE cap), steam, the ambient bulk pair -- and some cells with NO
     bulk (below N_EPS_RAW: a breached cell) and one at EXACTLY N_EPS_RAW (the floor's
     edge, which must still absorb)."""
-    smoke = [[rng.choice([0, 0, Q(0.001), Q(0.02), Q(0.06), Q(0.27), ONE, 3 * ONE])
+    # Trace planes are drawn in the FINE trace currency (#88 A8): today's Q16
+    # choice moved by trace_fine_draw, the bulk pair untouched.
+    smoke = [[R.trace_fine_draw(rng, rng.choice([0, 0, Q(0.001), Q(0.02), Q(0.06),
+                                                 Q(0.27), ONE, 3 * ONE]))
               for _ in range(w)] for _ in range(h)]
-    steam = [[rng.choice([0, 0, Q(0.5)]) for _ in range(w)] for _ in range(h)]
+    steam = [[R.trace_fine_draw(rng, rng.choice([0, 0, Q(0.5)])) for _ in range(w)]
+             for _ in range(h)]
     o2 = [[O2_AMB] * w for _ in range(h)]
     n2 = [[N2_AMB] * w for _ in range(h)]
     for _ in range(max(1, (h * w) // 10)):
@@ -353,7 +359,7 @@ def gate2b_isothermal_box(fast=False):
     o2 = R.plane(n, n, 0)
     n2 = R.plane(n, n, 0)
     T_f = [row[:] for row in T]
-    dens = (Q(0.02), Q(0.06), Q(0.27), ONE)
+    dens = (TQ(0.02), TQ(0.06), TQ(0.27), T_ONE)
     for y in range(2, n - 2):
         for x in range(2, n - 2):
             smoke[y][x] = dens[(y + x) % len(dens)]
@@ -1209,7 +1215,7 @@ def gate11_headroom(fast=False):
     # and a smoke-filled room at the table top: a gas cell at a_gas = ONE is, to the
     # stream, an a = 1 solid, so the per-cell bounds above must hold unchanged.
     ts = R.plane(h, w, 0)
-    smoke = R.plane(h, w, 3 * ONE)
+    smoke = R.plane(h, w, 3 * T_ONE)
     o2 = R.plane(h, w, O2_AMB)
     n2 = R.plane(h, w, N2_AMB)
     n_bulk = [[o2[y][x] + n2[y][x] for x in range(w)] for y in range(h)]
@@ -1481,7 +1487,7 @@ def gate13_gas_extinction(fast=False):
     lines, ok = [], True
     hq = [Q(0.9), Q(0.3)]
     # (a) the density law, as arithmetic
-    base = Q(0.013)
+    base = TQ(0.013)
     a1 = R.gas_extinction_q([base, 0], hq, ONE)
     prop = True
     for kk in (2, 3, 5, 8):
@@ -1489,13 +1495,13 @@ def gate13_gas_extinction(fast=False):
         prop &= (0 <= ak - kk * a1 <= kk - 1)
     mono = True
     prev = -1
-    for n_s in range(0, 2 * ONE, ONE // 37):
-        v = R.gas_extinction_q([n_s, Q(0.4)], hq, ONE)
+    for n_s in range(0, 2 * T_ONE, T_ONE // 37):
+        v = R.gas_extinction_q([n_s, TQ(0.4)], hq, ONE)
         mono &= (v >= prev)
         prev = v
-    capped = R.gas_extinction_q([10 * ONE, 10 * ONE], hq, ONE) == ONE
-    neg = (R.gas_extinction_q([-ONE, Q(0.4)], hq, ONE)
-           == R.gas_extinction_q([0, Q(0.4)], hq, ONE))
+    capped = R.gas_extinction_q([10 * T_ONE, 10 * T_ONE], hq, ONE) == ONE
+    neg = (R.gas_extinction_q([-T_ONE, TQ(0.4)], hq, ONE)
+           == R.gas_extinction_q([0, TQ(0.4)], hq, ONE))
     good = prop and mono and capped and neg and a1 > 0
     ok &= good
     lines.append(f"  (a) a_gas(k x N) - k x a_gas(N) in [0, k-1] for k = 2,3,5,8 (a_gas(N) = "
@@ -1503,7 +1509,7 @@ def gate13_gas_extinction(fast=False):
                  f"a negative density absorbs nothing: {neg}  {'OK' if good else 'FAIL'}")
     # (b) transmission through a smoke column
     got = []
-    for dens in (0, Q(0.05), Q(0.2), Q(0.5), 2 * ONE):
+    for dens in (0, TQ(0.05), TQ(0.2), TQ(0.5), 2 * T_ONE):
         a, d, k, T, gkw, rcv = _smoke_row_scene(dens)
         res = R.sweep_q(a, d, k, T, **gkw)
         smoke_net = sum(res.rad_net[y][4] for y in range(len(a)))
@@ -1518,7 +1524,7 @@ def gate13_gas_extinction(fast=False):
     ok &= good
     lines.append(f"  (b) a cold absorber behind a smoke column, source {T_SRC_GAME} game:")
     for dens, a_g, rn, sn, _i in got:
-        lines.append(f"        smoke density {dens / ONE:5.2f} (a_gas {a_g / ONE:.4f}): "
+        lines.append(f"        smoke density {dens / T_ONE:5.2f} (a_gas {a_g / ONE:.4f}): "
                      f"absorber rad_net {rn:>9d}   smoke column books {sn:>9d}")
     lines.append(f"      strictly less behind thicker smoke: {strictly};  opaque cold smoke "
                  f"is a perfect shield (absorber books 0): {shield};  the smoke books a "
@@ -1527,13 +1533,13 @@ def gate13_gas_extinction(fast=False):
     # (c) the N_EPS floor
     a, d, k, T, gkw0, rcv = _smoke_row_scene(0)
     clear = R.sweep_q(a, d, k, T, **gkw0)
-    a, d, k, T_hot, gkw_v, rcv = _smoke_row_scene(2 * ONE, bulk=R.N_EPS_RAW - 1,
+    a, d, k, T_hot, gkw_v, rcv = _smoke_row_scene(2 * T_ONE, bulk=R.N_EPS_RAW - 1,
                                                   T_smoke=5000)
     vac = R.sweep_q(a, d, k, T_hot, **gkw_v)
     silent = all(vac.rad_net[y][4] == 0 for y in range(len(a)))
     invisible = all(getattr(vac, p) == getattr(clear, p)
                     for p in ("rad_net", "rad_flux", "rad_amb", "rad_fluence"))
-    a, d, k, T_hot, gkw_e, rcv = _smoke_row_scene(2 * ONE, bulk=R.N_EPS_RAW, T_smoke=5000)
+    a, d, k, T_hot, gkw_e, rcv = _smoke_row_scene(2 * T_ONE, bulk=R.N_EPS_RAW, T_smoke=5000)
     edge = R.sweep_q(a, d, k, T_hot, **gkw_e)
     edge_live = edge.a_eff[0][4] == ONE and edge.rad_net[0][4] != 0
     good = invisible and silent and edge_live
@@ -1553,7 +1559,7 @@ def gate13_gas_extinction(fast=False):
                 d[y][x] = max(d[y][x], a[y][x])
     ts = [[1] * 8 for _ in range(7)]
     k = R.plane(7, 8, K_LEAK)
-    smoke = R.plane(7, 8, 2 * ONE)
+    smoke = R.plane(7, 8, 2 * T_ONE)
     nb = R.plane(7, 8, ONE)
     plain = R.sweep_q(a, d, k, T, f_plane=f)
     pores = R.sweep_q(a, d, k, T, f_plane=f, gas=[smoke], heat_absorb_q=[Q(0.9)],
@@ -1576,7 +1582,7 @@ def gate13_gas_extinction(fast=False):
                  f"{'OK' if good else 'FAIL'}")
     # (e) a body in smoke: the stamped total is a MAX
     fl = []
-    for dens in (Q(0.05), 2 * ONE):
+    for dens in (TQ(0.05), 2 * T_ONE):
         a, d, k, T, gkw, rcv = _smoke_row_scene(dens)
         d[2][4] = ONE                               # a marine standing in the smoke
         res = R.sweep_q(a, d, k, T, **gkw)
@@ -1585,7 +1591,7 @@ def gate13_gas_extinction(fast=False):
     opaque_ok = fl[1][3] == 0 and fl[1][1] == ONE and fl[1][2] == ONE
     # a PARTIAL body (d = 0.5, a small drone) in thin smoke is where a MAX and a
     # capped SUM part ways: the stamped total stays 0.5, the body keeps 0.5 - a_gas
-    a, d, k, T, gkw, rcv = _smoke_row_scene(Q(0.05))
+    a, d, k, T, gkw, rcv = _smoke_row_scene(TQ(0.05))
     d[2][4] = Q(0.5)
     res = R.sweep_q(a, d, k, T, **gkw)
     part_ok = (res.d_eff[2][4] == Q(0.5) and res.a_eff[2][4] == fl[0][1]
@@ -1612,7 +1618,7 @@ def gate13_gas_extinction(fast=False):
     worst_rel, worst_tol, cancels = 0.0, 0.0, True
     for T_game in (300, 1263, 5000, 15996):
         for n_b in (ONE, Q(0.5), Q(0.2)):
-            soot = Q(0.2) * n_b // ONE
+            soot = TQ(0.2) * n_b // ONE      # a trace density, per bulk
             L1 = R.fleck_L_gas_q(T_game << 16, R.gas_extinction_q([soot], [Q(0.9)], n_b),
                                  n_b, c_v_q=c_v_q, n_floor_q=n_floor_q)
             for kk in (2, 4):
@@ -1811,7 +1817,7 @@ def gate14_gas_fleck_arm(fast=False):
     # (d) the ingress
     a2, T2 = R.plane(2, 2, 0), R.plane(2, 2, 300 << 16)
     ts2 = R.plane(2, 2, 0)
-    grp = dict(gas=[R.plane(2, 2, ONE)], heat_absorb_q=[Q(0.9)], n_bulk=R.plane(2, 2, ONE))
+    grp = dict(gas=[R.plane(2, 2, T_ONE)], heat_absorb_q=[Q(0.9)], n_bulk=R.plane(2, 2, ONE))
     R.fleck_prepass(T2, a2, 3, ts=ts2, **grp)                        # legal: no raise
     rejected = []
     for bad_name, kw in (("c_v_q = 0", dict(c_v_q=0)), ("c_v_q < 0", dict(c_v_q=-504)),
@@ -2142,8 +2148,8 @@ def gate15_gas_fold(fast=False):
     # (d) hot smoke cools in a sealed room, the whole tick, live table
     hh, ww = (7, 9) if fast else (9, 12)
     ticks = 24 if fast else 72
-    sc = _sealed_smoky_room(hh, ww, smoke_q=Q(0.06), hq=Q(5.0), T_smoke_game=T_SRC_GAME)
-    off = _sealed_smoky_room(hh, ww, smoke_q=Q(0.06), hq=Q(5.0), T_smoke_game=T_SRC_GAME)
+    sc = _sealed_smoky_room(hh, ww, smoke_q=TQ(0.06), hq=Q(5.0), T_smoke_game=T_SRC_GAME)
+    off = _sealed_smoky_room(hh, ww, smoke_q=TQ(0.06), hq=Q(5.0), T_smoke_game=T_SRC_GAME)
     off.gas_fold = False
     interior = [(y, x) for y in range(hh) for x in range(ww) if not sc.ts[y][x]]
     walls = [(y, x) for y in range(hh) for x in range(ww) if sc.ts[y][x]]
@@ -2210,7 +2216,7 @@ def gate15_gas_fold(fast=False):
     # (e) smoke shields, with the fold live
     ticks_e = 24 if fast else 96
     runs = {}
-    for name, dens in (("clear", 0), ("thin", Q(0.02)), ("thick", Q(0.2))):
+    for name, dens in (("clear", 0), ("thin", TQ(0.02)), ("thick", TQ(0.2))):
         s, tgt = _shield_scene(dens)
         series = []
         for _t in range(ticks_e):
@@ -2680,7 +2686,9 @@ T_BURN_GAME = T_SRC_GAME                   # a burning crate's plateau (1263 gam
 # table, count for count).
 LIGHT_ABSORB = [[LQ(120.66), LQ(134.29), LQ(158.89)],
                 [LQ(0.10 * 1.4), LQ(0.10 * 1.4), LQ(0.10 * 1.4)], [0, 0, 0], [0, 0, 0]]
-LIGHT_GLOW = [[LQ(0.04)] * 3, [LQ(0.92), LQ(0.92), LQ(0.95)], [0, 0, 0], [0, 0, 0]]
+# Soot's albedo 0.04 -> 0.22 (#91, Erik 2026-10-15; ported with graphics G0):
+# the glow column is render-only (never in the books), re-derived here.
+LIGHT_GLOW = [[LQ(0.22)] * 3, [LQ(0.92), LQ(0.92), LQ(0.95)], [0, 0, 0], [0, 0, 0]]
 
 
 def _config_row(section, name):
@@ -2975,12 +2983,12 @@ def gate18_light_channels(fast=False):
 
     poison = [LQ(0.45 * 1.4), LQ(0.10 * 1.4), LQ(0.80 * 1.4)]
     rc_ = _smoke(poison, 0)
-    rp_ = _smoke(poison, LQ(0.5))
+    rp_ = _smoke(poison, TQ(0.5))
     rc = [rc_.light_q[ch][yc][n - 1] for ch in range(3)]
     rp = [rp_.light_q[ch][yc][n - 1] for ch in range(3)]
     tint = (rp[1] / rp[0] > rc[1] / rc[0]) and (rp[2] / rp[0] < rc[2] / rc[0])
     soot = LIGHT_ABSORB[0]
-    dens_steps = [LQ(v / 20) for v in range(21)]
+    dens_steps = [TQ(v / 20) for v in range(21)]
     curve = [[_smoke(soot, dd).light_q[ch][yc][n - 1] for ch in range(3)]
              for dd in dens_steps]
     mono = all(curve[i + 1][ch] <= curve[i][ch] for i in range(20) for ch in range(3))
@@ -3007,7 +3015,7 @@ def gate18_light_channels(fast=False):
     only_gas = all(rp_.light_glow[ch][y][x] == 0 for ch in range(3)
                    for y in range(n) for x in range(n) if x != xw)
     glows = all(rp_.light_glow[ch][y][xw] > 0 for ch in range(3) for y in range(n))
-    rh_ = _smoke(poison, LQ(0.25))
+    rh_ = _smoke(poison, TQ(0.25))
     prop = all(abs(rp_.light_glow[ch][y][xw] / rp_.light_q[ch][y][xw]
                    - 2.0 * rh_.light_glow[ch][y][xw] / rh_.light_q[ch][y][xw]) <= 2.0 / ONE
                for ch in range(3) for y in range(n))

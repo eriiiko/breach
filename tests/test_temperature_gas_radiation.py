@@ -271,7 +271,7 @@ def _thin_smoke_shield():
     its cap once the sweep's per-ordinate floors are resolved -- the P5c
     binding there was that artifact -- so the clamp's non-vacuity needs a scene
     where radiation really carries a cell past its ceiling)."""
-    sc = G._shield_scene(R.quant(0.2))[0]
+    sc = G._shield_scene(R.quant_trace(0.2))[0]
     for y in range(len(sc.T)):
         for x in range(len(sc.T[0])):
             if sc.gas[0][y][x] > 0:
@@ -281,10 +281,10 @@ def _thin_smoke_shield():
 
 
 def _scenes():
-    return {"sealed smoky room": (G._sealed_smoky_room(7, 9, smoke_q=R.quant(0.06),
+    return {"sealed smoky room": (G._sealed_smoky_room(7, 9, smoke_q=R.quant_trace(0.06),
                                                        hq=R.quant(5.0),
                                                        T_smoke_game=G.T_SRC_GAME), 24),
-            "smoke shield": (G._shield_scene(R.quant(0.2))[0], 24),
+            "smoke shield": (G._shield_scene(R.quant_trace(0.2))[0], 24),
             "thin smoke shield": (_thin_smoke_shield(), 24)}
 
 
@@ -411,7 +411,7 @@ def _sealed_hot_smoky_room(*, smoke=0.06, T_game=1263, hq=None, h_in=8, w_in=12)
     g = sim.gmap
     inner = g._gas_energy_accountable()
     if smoke:
-        g.gas[SMOKE][inner] = gas_fixed.quantize_scalar(smoke)
+        g.gas[SMOKE][inner] = gas_fixed.quantize_trace_scalar(smoke)
     g.seed_gas_temperature(inner, T_game << 16)
     if hq is not None:
         t = g.gases.heat_absorb_q16.copy()
@@ -454,15 +454,20 @@ def _breached_room(boundary, *, smoke=0.3, T_game=800, fire=False, n2_absorb=0.0
     sim = Simulation(lvl, seed=1, breach_physics=bp, enable_recorder=False)
     g = sim.gmap
     inner = g._gas_energy_accountable()
-    g.gas[SMOKE][inner] = gas_fixed.quantize_scalar(smoke)
+    g.gas[SMOKE][inner] = gas_fixed.quantize_trace_scalar(smoke)
     g.seed_gas_temperature(inner, T_game << 16)
     if fire:
         g.fire[blk] = fire_fixed.quantize_scalar(float(CFG.physics.fire.ignition_seed))
         g.temperature[blk] = fire_fixed.quantize_scalar(
             float(g.materials.ignition_temp[FURN]))
     if n2_absorb:
+        # Set PAST the gases door, which refuses a bulk absorber (#88 V10,
+        # ACCEPTED GAP G3): the sweep finishes its density sum in the TRACE
+        # currency, and this bulk plane is Q16, so the fixture's coefficient
+        # carries the trace currency's extra bits (TRACE_ONE / BULK_ONE) to mean
+        # the same n2_absorb per real unit at any TRACE_FINE_BITS.
         t = g.gases.heat_absorb_q16.copy()
-        t[INERT_N2] = int(round(n2_absorb * ONE))
+        t[INERT_N2] = int(round(n2_absorb * ONE)) * (gas_fixed.TRACE_ONE // gas_fixed.BULK_ONE)
         g.gases.heat_absorb_q16 = np.ascontiguousarray(t)
     g.destroy_wall(h // 2, w - 2)
     return sim
@@ -594,9 +599,10 @@ def test_closure_identity_and_total_ledger_close_with_gas_radiation_live(name):
     is a #54 term -- neither touches gas_energy -- which (1) proves by closing
     without them. Non-vacuous: the gas branch booked; sealed -- the smoke
     cooled and the walls warmed; vented -- the floor's remainder moved; ring --
-    the export moved; and on both breached rooms the boundary WITHOUT the new
+    the export moved; and on the ring room the boundary WITHOUT the new
     counters (P5c's state) breaks 8.4's declared bound on some tick, i.e. what
-    they count is not a rounding (the reproduction, kept as a gate).
+    they count is not a rounding (the reproduction, kept as a gate; the vented
+    room lost that reproduction to smoke transport v2 -- see its branch).
 
     BREAKS IF: the gas branch writes gas_energy without booking it, books it
     into a new counter the identities do not sum, or books a WITHHELD or
@@ -664,7 +670,16 @@ def test_closure_identity_and_total_ledger_close_with_gas_radiation_live(name):
         assert int(g.temperature[walls].astype(np.int64).sum()) > T_wall0
     elif name == "vented to space":
         assert moved["floor"] > 0, "no cell below n_floor absorbed: vacuous"
-        assert over_bound_at_p5c > 0, "the floor's remainder never beat a rounding"
+        # (The reproduction clause `over_bound_at_p5c > 0` is NOT asserted on
+        # this scene since smoke transport v2, #12: the trace now rides its
+        # air, so a cell whose bulk N falls below n_floor_heat holds smoke in
+        # proportion to that air, and its unlanded remainder stays inside the
+        # declared rounding bound -- measured 0 over-bound ticks at smoke
+        # seeds of 0.3, 1.0 and 3.0. Under the old semi-Lagrangian step a
+        # draining cell kept its smoke while its air left, which is what made
+        # this remainder beat a rounding. The floor counter is still exact and
+        # still moves (asserted above); its necessity needs a new scene.
+        # Recorded as a finding of the smoke-transport patch.)
     else:
         assert moved["export"] > 0, "the ring never took radiation: vacuous"
         assert over_bound_at_p5c > 0, "the ring's export never beat a rounding"
@@ -732,7 +747,7 @@ def _shield_room(smoke):
     layer[1:h_in + 1, 6:11] = True
     layer &= g._gas_energy_accountable()
     if smoke:
-        g.gas[SMOKE][layer] = gas_fixed.quantize_scalar(smoke)
+        g.gas[SMOKE][layer] = gas_fixed.quantize_trace_scalar(smoke)
     sim.add_unit(Unit("M1", x=13, y=2, team=0))
     return sim, emitter, (4, 14), (2, 13)
 

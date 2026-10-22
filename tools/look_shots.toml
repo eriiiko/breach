@@ -1,0 +1,327 @@
+# tools/look_shots.toml — THE named look-shot set (graphics arc G0 P3;
+# docs/graphics_direction_2026-10-18.md §7, §8.1, §10).
+#
+# Every graphics patch renders this set BEFORE and AFTER and the implementer
+# looks at the PNGs before claiming the patch works. Erik judges the same
+# shots live (HUMAN-TEST). Never a second screenshot harness: add a row here.
+#
+#   C:/Users/steen/anaconda3/envs/data/python.exe tools/lighting_demo.py --shots
+#   ... --shots fire_plume,dark_corridor_lamp      (a subset, comma-separated)
+#   ... --shots --shots-out <dir>                  (default scratchpad/look/)
+#
+# Output: <dir>/<name>_<git-sha>.png (sha gets "+dirty" when tracked files
+# differ from HEAD). One fresh demo process per shot. A shot is fixed by
+# construction: one sim tick per rendered frame, seed 42, the studio panel's
+# CODE defaults (never a saved preset), the camera below, the HUD and panel
+# left out of the picture (the PNG is the map viewport only).
+#
+# Row keys:
+#   name, level, frames        frames = rendered frames = sim ticks
+#   center = [x, y], zoom      camera centre (tiles) + screen px per tile;
+#                              omit both to fit the whole map
+#   lamps, beacon              the level's lamp group / rotating beacons
+#   flashlight = {pos, intensity, spread}   the studio's cursor lamp pinned
+#                              at a tile, aimed east (+x); spread = full cone
+#                              width in radians. Omit = no flashlight.
+#   ignite / smoke / steam     tiles (3x3 patches) written before tick 1
+#   gas_amount                 the smoke / steam puffs' density, share of a
+#                              full puff (0, 1]; default 1 (graphics G2)
+#   detonate = [x, y, frame]   the canonical frag grenade, before that frame
+#   light_gain                 override the studio's exposure: a number, or
+#                              "game" = [render.lighting] master_gain
+#   hide = ["heat", ...]       switch layers off to isolate the rest
+#                              (heat / smoke / water)
+#
+# Shots the §7 list asks for that this set does NOT have yet: none missing as
+# a scene, but "steam in a flashlight beam" is composed from studio actions
+# (a steam puff in a narrow pinned flashlight) rather than an authored room.
+
+[window]
+width = 1600          # the map viewport is width - the studio panel (340 px)
+height = 900
+
+# --- §7: dark corridor with one lamp ------------------------------------
+[[shot]]
+name = "dark_corridor_lamp"
+level = "fire_studio"
+frames = 24
+center = [10.5, 27.0]
+zoom = 48.0
+lamps = true
+beacon = false
+note = "fire_studio's walled corridor (x 3..18, y 26..28), its one cool lamp at the far end; the hall above it lit only by spill. The dark-scene reference: must match within dither across a tone-map change."
+
+# --- §7: fire + plume ----------------------------------------------------
+[[shot]]
+name = "fire_plume"
+level = "smoke_light_studio"
+frames = 72
+center = [14.5, 28.0]
+zoom = 48.0
+lamps = true
+beacon = true
+light_gain = "game"
+note = "the smoke-light studio's west hall 3 s in (= --warp 3.0): the large charge has just lit the crates, which burn white-hot in their own soot and warm the hall air. The clipping reference. (fire_studio's tool-ignited crate cluster only reaches T ~30 on this line -- too weak to judge a flame by.)"
+
+# --- §7: steam in a flashlight beam --------------------------------------
+[[shot]]
+name = "steam_flashlight"
+level = "fire_studio"
+frames = 24
+center = [22.0, 22.0]
+zoom = 40.0
+lamps = false
+beacon = false
+flashlight = { pos = [14.5, 22.5], intensity = 2.5, spread = 0.6 }
+steam = [[19, 22], [22, 22], [25, 22]]
+note = "lamps and beacon off; a narrow east-pointing flashlight through three steam puffs. The inscatter (god-ray) reference."
+
+# --- §7: explosion at +4 / +12 / +40 ticks -------------------------------
+[[shot]]
+name = "explosion_t04"
+level = "fire_studio"
+frames = 28
+center = [24.0, 16.0]
+zoom = 32.0
+lamps = true
+beacon = false
+detonate = [24, 16, 24]
+note = "frag grenade mid-hall at frame 24, shot 4 ticks later."
+
+[[shot]]
+name = "explosion_t12"
+level = "fire_studio"
+frames = 36
+center = [24.0, 16.0]
+zoom = 32.0
+lamps = true
+beacon = false
+detonate = [24, 16, 24]
+note = "same blast, 12 ticks later."
+
+[[shot]]
+name = "explosion_t40"
+level = "fire_studio"
+frames = 64
+center = [24.0, 16.0]
+zoom = 32.0
+lamps = true
+beacon = false
+detonate = [24, 16, 24]
+note = "same blast, 40 ticks later: the hanging smoke."
+
+# --- §10: the smoke-light studio -----------------------------------------
+[[shot]]
+name = "smoke_light_studio"
+level = "smoke_light_studio"
+frames = 72
+lamps = true
+beacon = true
+light_gain = "game"
+note = "the #12 still-picture level at tick 72 (= main.py --warp 3.0): three charges have fired, nine lights against the lying smoke. Whole map."
+
+# --- graphics G1: the smoke relief (§2) ------------------------------------
+# The heat layer is hidden in these: the smoke's own shape and shading is
+# what is judged, and the display-space heat glow sits on top of it.
+[[shot]]
+name = "smoke_plume_noheat"
+level = "smoke_light_studio"
+frames = 72
+center = [14.5, 28.0]
+zoom = 48.0
+lamps = true
+beacon = true
+light_gain = "game"
+hide = ["heat"]
+note = "fire_plume without the heat layer: the crates' own soot against the hall lamps -- the relief's silhouette, lit side and crevices."
+
+[[shot]]
+name = "smoke_lamp_puff"
+level = "fire_studio"
+frames = 16
+center = [11.0, 8.0]
+zoom = 64.0
+lamps = true
+beacon = false
+flashlight = { pos = [4.5, 10.5], intensity = 3.0, spread = 1.2 }
+smoke = [[9, 7], [12, 9], [14, 6]]
+hide = ["heat"]
+note = "three soot puffs 16 ticks after they were laid, a flashlight low from the west-south-west and the hall lamp (8.5, 4.5) above: a ceiling layer lit from the side -- N.L, self-shadow, rim."
+
+[[shot]]
+name = "explosion_t40_noheat"
+level = "fire_studio"
+frames = 64
+center = [24.0, 16.0]
+zoom = 32.0
+lamps = true
+beacon = false
+detonate = [24, 16, 24]
+hide = ["heat"]
+note = "explosion_t40 without the heat layer: the blast's hanging soot and the marines it should cover (ceiling layer above the units)."
+
+[[shot]]
+name = "steam_flashlight_game"
+level = "fire_studio"
+frames = 24
+center = [22.0, 22.0]
+zoom = 40.0
+lamps = false
+beacon = false
+flashlight = { pos = [14.5, 22.5], intensity = 2.5, spread = 0.6 }
+steam = [[19, 22], [22, 22], [25, 22]]
+light_gain = "game"
+note = "steam_flashlight at the GAME exposure ([render.lighting] master_gain). The relief lights the steam's surface at the one exposure; the studio's light_gain 10 (steam_flashlight) over-exposes it, while the pre-G1 glow was never exposed by the studio gain at all."
+
+[[shot]]
+name = "smoke_over_squad"
+level = "fire_studio"
+frames = 12
+center = [17.5, 17.5]
+zoom = 48.0
+lamps = true
+beacon = true
+smoke = [[11, 17], [12, 18]]
+steam = [[23, 17], [24, 18]]
+hide = ["heat"]
+note = "the species layers (ruling 2): soot laid over Alpha (west) is a CEILING layer and must hide the marine; steam laid over Cobra (east) is a FLOOR layer and the marine must stand in it, drawn over it; Bravo (middle) clear for reference. 12 ticks, the beacon sweeping."
+
+# --- graphics G2: shadows and glow-through (§2.3) ------------------------------
+[[shot]]
+name = "smoke_shadow_squad"
+level = "fire_studio"
+frames = 12
+center = [11.0, 17.5]
+zoom = 56.0
+lamps = false
+beacon = false
+flashlight = { pos = [4.5, 17.5], intensity = 3.0, spread = 1.0 }
+smoke = [[8, 16]]
+hide = ["heat"]
+note = "a soot puff between a low flashlight (west) and Alpha: the column's cast shadow thrown east across the floor and over the marine. Lamps and beacon off, so the flashlight is the one light."
+
+[[shot]]
+name = "steam_shadow_squad"
+level = "fire_studio"
+frames = 12
+center = [11.0, 17.5]
+zoom = 56.0
+lamps = false
+beacon = false
+flashlight = { pos = [4.5, 17.5], intensity = 3.0, spread = 1.0 }
+steam = [[8, 16]]
+light_gain = "game"
+hide = ["heat"]
+note = "smoke_shadow_squad with a STEAM puff (a floor layer the light sweep barely attenuates in the plane): the cast shadow on its own, thrown east toward Alpha. At the game exposure."
+
+[[shot]]
+name = "thin_smoke_shadow_squad"
+level = "fire_studio"
+frames = 12
+center = [11.0, 17.5]
+zoom = 56.0
+lamps = false
+beacon = false
+flashlight = { pos = [4.5, 17.5], intensity = 3.0, spread = 1.0 }
+smoke = [[8, 16], [8, 19]]
+gas_amount = 0.003
+hide = ["heat"]
+note = "smoke_shadow_squad with THIN soot (1 % of a full puff, two puffs): the light sweep passes part of the flashlight through it in the plane, as it will through soot after #88, so the column's own cast shadow shows on the floor and on Alpha."
+
+[[shot]]
+name = "fire_thin_smoke"
+level = "smoke_light_studio"
+frames = 72
+center = [14.5, 28.0]
+zoom = 48.0
+lamps = true
+beacon = true
+light_gain = "game"
+smoke = [[10, 25], [19, 25], [10, 30], [19, 30]]
+gas_amount = 0.02
+note = "fire_plume with a THIN soot haze laid around both crates before tick 1 (2 % of a full puff): the fires should glow through it, mottled by its billows (G2 glow-through)."
+
+[[shot]]
+name = "fire_thick_smoke"
+level = "smoke_light_studio"
+frames = 72
+center = [14.5, 28.0]
+zoom = 48.0
+lamps = true
+beacon = true
+light_gain = "game"
+smoke = [[10, 25], [19, 25], [10, 30], [19, 30]]
+note = "fire_thin_smoke with FULL soot puffs: under a solid core the glow is hidden, at the ragged edges it leaks through."
+
+[[shot]]
+name = "steam_over_pool"
+level = "fire_studio"
+frames = 16
+center = [33.0, 26.5]
+zoom = 56.0
+lamps = true
+beacon = false
+flashlight = { pos = [27.5, 26.5], intensity = 2.5, spread = 1.2 }
+steam = [[33, 27], [35, 26]]
+light_gain = "game"
+note = "steam puffs over the fire studio's water pool, a flashlight from the west: the draw order -- the floor haze lies ON the water (water, then the floor layer, then units, then the ceiling soot; G2)."
+
+[[shot]]
+name = "plume_motion_t48"
+level = "smoke_light_studio"
+frames = 48
+center = [24.0, 24.0]
+zoom = 26.0
+lamps = true
+beacon = true
+light_gain = "game"
+hide = ["heat"]
+note = "the smoke-light studio, most of the map (both doorways, where the west hall's plumes pour east), at tick 48: one frame of a plume TRAVELLING (the t48..t96 rows are the sequence). G2 judges the synthetic low band (§2.5 A) and, for Erik, whether §2.5 B's trigger fires: does the plume lose its silhouette while it travels?"
+
+[[shot]]
+name = "plume_motion_t60"
+level = "smoke_light_studio"
+frames = 60
+center = [24.0, 24.0]
+zoom = 26.0
+lamps = true
+beacon = true
+light_gain = "game"
+hide = ["heat"]
+note = "the smoke-light studio, most of the map (both doorways, where the west hall's plumes pour east), at tick 60: one frame of a plume TRAVELLING (the t48..t96 rows are the sequence). G2 judges the synthetic low band (§2.5 A) and, for Erik, whether §2.5 B's trigger fires: does the plume lose its silhouette while it travels?"
+
+[[shot]]
+name = "plume_motion_t72"
+level = "smoke_light_studio"
+frames = 72
+center = [24.0, 24.0]
+zoom = 26.0
+lamps = true
+beacon = true
+light_gain = "game"
+hide = ["heat"]
+note = "the smoke-light studio, most of the map (both doorways, where the west hall's plumes pour east), at tick 72: one frame of a plume TRAVELLING (the t48..t96 rows are the sequence). G2 judges the synthetic low band (§2.5 A) and, for Erik, whether §2.5 B's trigger fires: does the plume lose its silhouette while it travels?"
+
+[[shot]]
+name = "plume_motion_t84"
+level = "smoke_light_studio"
+frames = 84
+center = [24.0, 24.0]
+zoom = 26.0
+lamps = true
+beacon = true
+light_gain = "game"
+hide = ["heat"]
+note = "the smoke-light studio, most of the map (both doorways, where the west hall's plumes pour east), at tick 84: one frame of a plume TRAVELLING (the t48..t96 rows are the sequence). G2 judges the synthetic low band (§2.5 A) and, for Erik, whether §2.5 B's trigger fires: does the plume lose its silhouette while it travels?"
+
+[[shot]]
+name = "plume_motion_t96"
+level = "smoke_light_studio"
+frames = 96
+center = [24.0, 24.0]
+zoom = 26.0
+lamps = true
+beacon = true
+light_gain = "game"
+hide = ["heat"]
+note = "the smoke-light studio, most of the map (both doorways, where the west hall's plumes pour east), at tick 96: one frame of a plume TRAVELLING (the t48..t96 rows are the sequence). G2 judges the synthetic low band (§2.5 A) and, for Erik, whether §2.5 B's trigger fires: does the plume lose its silhouette while it travels?"

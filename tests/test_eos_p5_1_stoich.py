@@ -529,7 +529,7 @@ def test_lifecycle_ember_reignite_charout():
     def drip(o2v=0.035):
         """Feed the EMBER WINDOW: one site above o2_thresh_burn (0.03),
         sisters re-zeroed so the ignition MEAN stays pinned < 0.01."""
-        gmap.gas[O2][C - 1, C] = gas_fixed.quantize_scalar(o2v)
+        gmap.gas[O2][C - 1, C] = gas_fixed.quantize_bulk_scalar(o2v)
         for dy, dx in ((1, 0), (0, -1), (0, 1)):
             gmap.gas[O2][C + dy, C + dx] = 0
 
@@ -592,7 +592,7 @@ def test_lifecycle_ember_reignite_charout():
 
     # ---- Phase C: O2 inflow -> a PROPER flame (ignition path) -------------
     for dy, dx in N4:
-        gmap.gas[O2][C + dy, C + dx] = gas_fixed.quantize_scalar(0.3)
+        gmap.gas[O2][C + dy, C + dx] = gas_fixed.quantize_bulk_scalar(0.3)
     hp_c0 = int(gmap.wall_hp[C, C])
     i_peak = 0
     for _ in range(25):

@@ -20,6 +20,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 
 from config import CFG  # noqa: E402
 from level_loader import LevelData  # noqa: E402
+from simulation import gas_fixed  # noqa: E402
 from simulation.field_edit import EditQueue  # noqa: E402
 from simulation.gamemap import GameMap  # noqa: E402
 from simulation.gases import SMOKE, smoke_units_of_soot  # noqa: E402
@@ -73,10 +74,12 @@ def test_a_blast_deposits_exactly_its_charges_soot():
     try:
         for p, want in ((frag, smoke_units_of_soot(soot_g)), (c4, 0.0)):
             g, q = _room(), EditQueue()
-            before = g.gas[SMOKE].astype(np.float64).sum()
+            before = int(g.gas[SMOKE].astype(np.int64).sum())
             execute_payload(g, q, [], 12, 12, p, np.random.default_rng(1))
             q.flush(g, np.random.default_rng(1))
-            got = (g.gas[SMOKE].astype(np.float64).sum() - before) / 65536.0
+            # in real units through the trace currency (#88)
+            got = float(gas_fixed.dequantize_trace(
+                int(g.gas[SMOKE].astype(np.int64).sum()) - before))
             assert abs(got - want) <= 1e-3 * max(want, 1.0), (p.name, got, want)
     finally:
         CFG.physics.explosion_smoke_noise = old_noise

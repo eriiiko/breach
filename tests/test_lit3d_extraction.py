@@ -44,7 +44,12 @@ def test_lit3d_exposes_shared_seam_members():
     assert hasattr(lit3d, "make_camera")
     assert hasattr(lit3d, "_COMMON_GLSL")
     assert callable(lit3d.make_camera)
-    assert isinstance(lit3d._COMMON_GLSL, str) and "aces_tonemap" in lit3d._COMMON_GLSL
+    assert isinstance(lit3d._COMMON_GLSL, str) and "srgb_to_linear" in lit3d._COMMON_GLSL
+    # Graphics G0 P1 (one tone-map): the shared seam decodes albedo but never
+    # tone-maps or encodes -- that is WorldComposite.resolve()'s alone. Breaks
+    # if ACES or the gamma encode returns to the 3D consumers' common block.
+    assert "aces" not in lit3d._COMMON_GLSL.lower()
+    assert "linear_to_srgb" not in lit3d._COMMON_GLSL
 
 
 def test_marine_shader_common_glsl_is_the_lit3d_instance():

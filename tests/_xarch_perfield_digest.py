@@ -450,7 +450,94 @@ UNIT_FIELD_LABEL = "__unit_state__"
 #
 # REPRODUCED: captured twice, identical both times.
 # (was 2739f7431cebb7c7f8f73ce2cdc6bea625e72e4409713d75e471acfa6a6e6a86)
-GOLDEN_AGGREGATE = "6944a29a3a259fc0c05e5bd45879105c605401e394e26efd7744639cbe7718ee"
+#
+# SMOKE TRANSPORT v2 (2026-10-04, issue #12, patch P1 --
+# docs/smoke_transport_design_2026-10-04.md, approved by Erik with D1 ruled
+# (a)). A VALUE move, not a schema move: DIGEST_SPEC_VERSION unchanged -- no
+# field added, removed or retyped. One approved behavioural change: the five
+# TRACE gas planes stop moving by the semi-Lagrangian SmokeDynamics step (which
+# minted smoke wherever air expanded and destroyed it at high CFL) and RIDE
+# THE AIR instead: each EOS substep moves them on the bulk planes' applied face
+# dq priced at the donor's trace-per-air ratio, and once a tick a conservative
+# magnitude-truncated diffusion, stranded zeroing and ceil-rounded decay run;
+# the fire step's smoke clamp and the FieldEdit trace ceiling are gone (D1:
+# deposits are additive).
+#
+# FIELDS THAT MOVED, first tick: `gas` at tick 0 -- only its trace planes; the
+# bulk O2 / inert_N2 planes ride exactly as before. UNMOVED over all 30 ticks:
+# every other field, temperature, gas_energy, atmosphere, wind_x / wind_y and
+# wave_p included, and the unit's position, hp, facing, status and life events
+# -- the canonical scenario's air does not see its smoke (design V5).
+#
+# VERIFIED SOLE CAUSE, not assumed: the pre-patch tree (c4eb330, exported and
+# built clean beside this one) reproduces the PREVIOUS value, 6944a29a...,
+# exactly; this patch's build gives this one. The per-field diff of the two
+# captures is the FIELDS THAT MOVED paragraph above.
+#
+# REPRODUCED: both captures run twice, identical both times.
+# (was 6944a29a3a259fc0c05e5bd45879105c605401e394e26efd7744639cbe7718ee)
+#
+# DRAG DIALS RE-TUNED (2026-10-06, issue #4). Erik tuned the interior drag by
+# eye in smoke_light_studio (0.333 m tiles, sim_speed 1) on the smoke
+# transport v2 branch: `[physics.eos] k_drag` 0.5 -> 0.01 and `k_drag2`
+# 0.125 -> 0.225. A VALUE move, not a schema move: DIGEST_SPEC_VERSION
+# unchanged. One approved behavioural change: blast flow dies faster (the
+# quadratic term), gentle drift lingers (the linear term nearly off).
+#
+# FIELDS THAT MOVED, first tick: wind_x, wind_y, temperature and gas_energy at
+# tick 0 (the drag acts in the kick, its heat lands the same tick);
+# atmosphere, gas and the marine's position (__unit_pos__, so __unit_state__)
+# at tick 1; wave_p at tick 2. UNMOVED over all 30 ticks: fire, heat,
+# wall_hp, water_depth, flow_vx/vy, dyn_heat_atten_q, dem_acc,
+# ignition_armed, wave_v, wave_source, material, obstacles, is_vacuum and the
+# unit's hp, facing, status and life events.
+#
+# VERIFIED SOLE CAUSE, not assumed: the change's only non-test diff is those
+# two config lines; with them set back to 0.5 / 0.125 on the same build the
+# capture reproduces the PREVIOUS value, 34b6edbe..., exactly.
+#
+# REPRODUCED: captured twice, identical both times.
+# (was 34b6edbe5199eb454b371cb021cbb005e4dd2fdccc5b4396eab6ea665901c68e)
+#
+# SMOKE-UNIT RESCALE (2026-10-20, issue #88; design
+# docs/smoke_unit_rescale_design_2026-10-20.md §6.2). The branch's ONE golden
+# event. Two approved changes land together in P3, plus the spec bump they
+# force: (a) TRACE_FINE_BITS 0 -> 8 -- the five trace planes of `gas` hold
+# 2^24 counts per real unit instead of 2^16 (cpp/src/fixed_point.h and its
+# three Python / spec twins); (b) the trace decay rounds to NEAREST with a
+# floor of one count and the frac_q <= 0 guard inside the kit
+# (cpp/src/trace_decay.h::lost) instead of ceil; (c) DIGEST_SPEC_VERSION
+# 6 -> 7 (the currency is a bump trigger, C6) -- the version string is hashed
+# into every digest, so it moves the value by itself and is a THIRD, purely
+# nominal, contributor to the move below.
+#
+# THE THREE-STAGE SOLE-CAUSE PROOF, every stage captured twice, identical both
+# times, spec held at v6 for stages 1-3 so the version string is not a cause:
+#   1. k = 0, ceil   (P2 tree)  f6ba810ebe6083f9...6ff0d  = the previous golden
+#   2. k = 8, ceil              X = cfb2b8fbdbe193adb844a65b8211986f72bdb58e894fae7d97a0e11aba796e2c
+#      (not committed; it equals P1's dry-flip value, so P2 moved nothing)
+#   3. k = 8, nearest           Y6 = 7cbbd9c20cb4c237647dc315299683b34b825f4ad391f380c24f7e2798b7c13b
+#   committed: stage 3 + spec v7  = Y7 = the value below. The version bump
+#   alone (v6 -> v7 on the identical stage-3 tree) is the only difference
+#   between Y6 and Y7: reversible by setting DIGEST_SPEC_VERSION back to 6.
+# Both causes are one-line diffs, each reversible on the same tree: the
+# constant (stage 1 <-> 2) and the rounding (stage 2 <-> 3).
+#
+# FIELDS THAT MOVED, first tick: stage 1 -> 2 (the constant): `gas` at tick 0
+# only -- its trace planes (the canonical scenario seeds smoke 0.6, which
+# quantizes at 2^24 to 10066330 rather than 39322 * 256, then rides, diffuses
+# and decays at the finer scale); the bulk O2 / inert_N2 planes ride as
+# before. Stage 2 -> 3 (the rounding): `gas` at tick 0 only (ceil removes 14
+# counts of the seeded 0.6, nearest 13, design §16 B4). UNMOVED over all 30
+# ticks, at both steps: every other field -- temperature, gas_energy,
+# atmosphere, wind_x / wind_y, wave_p, fire, heat -- and the unit's position,
+# hp, facing, status and life events: the canonical scenario's air does not
+# see its smoke over the 30 ticks (design V5), measured, not assumed.
+#
+# REPRODUCED: every capture run twice, identical both times; the CUDA checks
+# that read GOLDEN_AGGREGATE are green at 8 bits on a fresh CUDA build.
+# (was f6ba810ebe6083f92bbce82979321cac284844589e77313293d1d29fbaf6ff0d)
+GOLDEN_AGGREGATE = "2673bd3381636e4b901b76e0d541a6172853145dc319752537a65137f0fdd84d"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs

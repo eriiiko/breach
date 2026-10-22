@@ -88,17 +88,21 @@ def test_the_door_rejects_a_negative_non_finite_or_oversized_heat_absorb(bad):
 
 def test_the_door_accepts_both_edges_of_its_range():
     """PROPERTY (the rejections' control): 0.0 and exactly HEAT_ABSORB_MAX pass
-    the door on every gas row at once, so the refusals above are about range and
-    not about some other broken field.
+    the door on every TRACE gas row at once, so the refusals above are about range
+    and not about some other broken field. (The conservative bulk rows stay 0:
+    since #88 the door refuses any optical coefficient on them, V10 -- tested in
+    tests/test_trace_currency.py.)
 
     BREAKS IF: a bound becomes exclusive, or the table refuses a legal value.
     """
     for edge in (0.0, HEAT_ABSORB_MAX):
         rows = _config_rows()
         for row in rows.values():
-            row["heat_absorb"] = edge
+            if not row["conservative"]:
+                row["heat_absorb"] = edge
         tbl = GasTable(rows)
-        assert np.all(tbl.heat_absorb_q16 == unit_fixed.quantize_scalar(edge))
+        want = np.where(tbl.conservative.astype(bool), 0, unit_fixed.quantize_scalar(edge))
+        assert np.array_equal(tbl.heat_absorb_q16, want)
 
 
 def test_a_row_without_heat_absorb_is_a_load_error():

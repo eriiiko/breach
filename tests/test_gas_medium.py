@@ -146,7 +146,7 @@ def test_all_zero_gas_and_glow_is_transparent_black():
     packed = pack_gas_medium_rgba(g, K_S, glow=_zero_glow(6, 6),
                                   **_base_kw())
     assert packed.shape == (6, 6, 4)
-    assert packed.dtype == np.uint8
+    assert packed.dtype == np.float16   # RGBA16F layer (graphics G0 P1)
     assert np.all(packed == 0)      # transparent black: RGBA all zero
 
 
@@ -163,10 +163,29 @@ def test_additive_limit_zero_tau_nonzero_glow():
     assert np.all(rgb > 0.0)                # but the inscatter is visible
     # The premultiplied pack keeps RGB > alpha here (additive case).
     packed = pack_premult_rgba(rgb, alpha)
-    assert np.all(packed[..., 3] == 0)      # alpha byte 0
-    assert np.all(packed[..., 0] > 0)       # RGB bytes nonzero — RGB NOT <= alpha
+    assert np.all(packed[..., 3] == 0)      # alpha 0
+    assert np.all(packed[..., 0] > 0)       # RGB nonzero — RGB NOT <= alpha
     assert np.all(packed[..., 1] > 0)
     assert np.all(packed[..., 2] > 0)
+
+
+# ---------------------------------------------------------------------------
+# Graphics G0 P1 (one tone-map): the inscatter is LINEAR HDR -- never
+# tone-mapped in the layer, never clipped to 1 by the pack.
+# ---------------------------------------------------------------------------
+def test_inscatter_is_linear_and_survives_hdr_packing():
+    """Property: the layer's RGB is the glow times glow_gain, unbounded above,
+    and the float16 pack keeps values past 1.0. Breaks if a tone-map (ACES or
+    any compressive curve) or an 8-bit clamp creeps back into the layer --
+    the world resolve is the ONE place light is compressed."""
+    g = np.zeros((N_TRACE_GASES, 2, 2), dtype=np.float32)
+    glow = np.full((2, 2, 3), 0.75, dtype=np.float32)
+    rgb1, alpha = gas_medium_layer(g, K_S, glow=glow, **_base_kw(glow_gain=1.0))
+    rgb4, _ = gas_medium_layer(g, K_S, glow=glow, **_base_kw(glow_gain=4.0))
+    np.testing.assert_allclose(rgb1, 0.75, rtol=1e-6)
+    np.testing.assert_allclose(rgb4, 4.0 * rgb1, rtol=1e-6)
+    packed = pack_premult_rgba(rgb4, alpha).astype(np.float32)
+    assert np.allclose(packed[..., :3], 3.0, rtol=1e-3)   # 3.0 > 1 kept
 
 
 # ---------------------------------------------------------------------------

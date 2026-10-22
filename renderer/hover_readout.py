@@ -36,13 +36,14 @@ testable with a plain lambda).
 Every field is dequantized through ITS OWN ``simulation/*_fixed.py`` boundary
 module (CLAUDE.md rule — never an inline ``/65536`` or a hardcoded scale):
 pressure + wind via ``atmosphere_fixed`` (the atmosphere module's own doc says
-wind shares its scale/helpers — one boundary, two consumers), bulk N via
-``gas_fixed`` (same scale as the trace gases already read here), water via
+wind shares its scale/helpers — one boundary, two consumers), the gas planes via
+``gas_fixed`` IN EACH PLANE'S OWN CURRENCY (#88: a trace plane through
+``dequantize_trace``, O2 and bulk N through ``dequantize_bulk``), water via
 ``water_fixed``, wall_hp via ``wall_fixed``. ``gas_energy`` has no dedicated
 ``*_fixed`` module (design `docs/gas_energy_conservation_design_2026-08-29.md`
 §2.2: it is the RAW product ``N_raw * T_abs_raw`` of two already-Q16.16
 quantities, "Q32 raw; no >>16") — displayed here by dividing by
-``gas_fixed.FP_ONE_F ** 2`` (the same named Q16.16 unit, reused twice rather
+``gas_fixed.BULK_ONE ** 2`` (the bulk Q16.16 unit, reused twice rather
 than a second hardcoded constant) into the design doc's own unit label,
 "N·K" (§2.1: "energy == N·T, atm-equivalent x game-deg"; T_abs is Kelvin under
 the G12 one-frame map, so N (real, dimensionless bulk-gas count) times K is
@@ -61,9 +62,9 @@ from simulation import optics_fixed as _optics_fx
 from simulation import wall_fixed as _wall_fx
 from simulation import water_fixed as _water_fx
 from simulation.fire_fixed import FP_ONE_F as _FIRE_FP_ONE_F
-from simulation.gas_fixed import FP_ONE_F as _GAS_FP_ONE_F
-from simulation.gases import (FUEL_GAS, GAS_NAMES, INERT_N2, O2, POISON,
-                              SMOKE, STEAM, TEARGAS)
+from simulation import gas_fixed as _gas_fx
+from simulation.gases import (FUEL_GAS, GAS_NAMES, INERT_N2, N_TRACE_GASES, O2,
+                              POISON, SMOKE, STEAM, TEARGAS)
 from simulation.materials import MATERIAL_NAMES
 
 # Q16.16 temperature scale — matches materials.TEMP_SCALE / renderer.blackbody
@@ -158,8 +159,12 @@ def pack_hover_readout(gmap, tx: int, ty: int,
     kelvin = float(kelvin_fn(t_game))
     kelvin_label = "K"
     fire = float(gmap.fire[ty, tx]) / _FIRE_FP_ONE_F
+    # Each plane in its own currency (#88): the trace ids through the trace
+    # dequantize, O2 (a bulk plane) through the bulk one -- never one scale.
     gases = {
-        GAS_NAMES[g]: float(gmap.gas[g][ty, tx]) / _GAS_FP_ONE_F
+        GAS_NAMES[g]: float(_gas_fx.dequantize_trace(gmap.gas[g][ty, tx])
+                            if g < N_TRACE_GASES
+                            else _gas_fx.dequantize_bulk(gmap.gas[g][ty, tx]))
         for g in _READOUT_GAS_IDS
     }
 
@@ -173,10 +178,9 @@ def pack_hover_readout(gmap, tx: int, ty: int,
     # Bulk N — the Dalton N_total the EOS derives pressure from: o2 +
     # inert_n2, the two CONSERVATIVE bulk gas planes (gamemap._gas_bulk_n_raw
     # sums the same pair; not re-derived here, just the two named ids read
-    # through the same gas_fixed scale already used for the trace gases
-    # above).
-    bulk_n = (float(gmap.gas[O2][ty, tx]) + float(gmap.gas[INERT_N2][ty, tx])) \
-        / _GAS_FP_ONE_F
+    # through the BULK currency's dequantize, #88).
+    bulk_n = float(_gas_fx.dequantize_bulk(
+        int(gmap.gas[O2][ty, tx]) + int(gmap.gas[INERT_N2][ty, tx])))
 
     # Water depth, metres — its own boundary module.
     water_depth = _water_fx.dequantize(gmap.water_depth[ty, tx]).item()
@@ -193,8 +197,9 @@ def pack_hover_readout(gmap, tx: int, ty: int,
 
     # gas_energy — raw N_raw * T_abs_raw (Q32 raw, no dedicated *_fixed
     # module; see the module docstring for the unit choice). Divide by the
-    # SAME named Q16.16 unit twice rather than a second hardcoded 65536.
-    gas_energy = float(gmap.gas_energy[ty, tx]) / (_GAS_FP_ONE_F ** 2)
+    # SAME named BULK Q16.16 unit twice rather than a second hardcoded 65536
+    # (#88 C8: N is a bulk count, never the trace currency).
+    gas_energy = float(gmap.gas_energy[ty, tx]) / (float(_gas_fx.BULK_ONE) ** 2)
 
     # Ray-engine-v2 P1 (design v3 §4.2): the shadow sweep's per-tile rows.
     # Phi (rad_fluence) is in the heat/temperature Q16.16 currency, so it is

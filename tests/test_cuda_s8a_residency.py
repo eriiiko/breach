@@ -5,12 +5,14 @@ runs tests/cuda_s8a_check.py in an isolated CUDA subprocess (cuda_harness):
 
   PART 1 — a >=30-tick full-engine A/B (detonations / water / fire / a scripted
   structural edit) driven through PhysicsRunner.step, residency ON (water
-  substeps + smoke traces resident; EOS/combustion/tail bracketed) vs the CPU
-  path, asserting byte-for-byte identity (tol 0) of every synced field including
-  host-path heat/ripple/ripple_v.
+  substeps + the whole EOS stage + the trace tail resident; combustion/tail
+  bracketed) vs the CPU path, asserting byte-for-byte identity (tol 0) of every
+  synced field including host-path heat/ripple/ripple_v, and of the four trace
+  books (smoke transport v2).
 
-  PART 2 — a CPU vs per-call-GPU vs resident benchmark at two grid sizes proving
-  the substep-/plane-MULTIPLIED transfer tax is gone (resident beats per-call GPU).
+  PART 2 — benchmarks proving the substep-MULTIPLIED transfer tax is gone
+  (water, the EOS stage: resident beats per-call GPU) and that the resident
+  trace tail moves no plane across the bus (cheaper than one gas round-trip).
 
 A non-zero exit or a missing PASS marker fails the test.
 """

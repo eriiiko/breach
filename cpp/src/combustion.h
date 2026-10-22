@@ -731,6 +731,17 @@ public:
         // which runs before this pass). The claim gate reads it at the SAME air
         // cell j as X_j. OPTIONAL: nullptr -> g == FP_ONE, i.e. the pre-#7 law
         // bit for bit for every direct-binding caller.
-        const int32_t* atmosphere = nullptr
+        const int32_t* atmosphere = nullptr,
+        // #88 P2 (design §5.1/§5.3): the SOOT MINT's books, scalars for the
+        // smoke plane (black_smoke_idx), ACCUMULATED: `trace_mint` the
+        // ATTEMPTED mint `trace_from_bulk(soot)` summed BEFORE the counted
+        // saturation, `trace_clip` the excess it could not store, `trace_neg`
+        // the negative-result hits (never expected; counted, never clamped).
+        // The live caller points them at EOSSolver's per-gas books (the
+        // binding's `eos=`); nullptr -> unreported (the saturation still
+        // never wraps).
+        int64_t* trace_mint = nullptr,
+        int64_t* trace_clip = nullptr,
+        int64_t* trace_neg = nullptr
     ) const;
 };

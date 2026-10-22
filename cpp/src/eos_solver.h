@@ -115,6 +115,7 @@
 
 #include <cstdint>
 #include <vector>
+#include <algorithm>
 
 // THERMAL-MASS AXIS: does the thermal medium actually DIVERGE from the gas
 // medium anywhere on this map — i.e. is some tile thermally solid AND a LIVE
@@ -514,8 +515,68 @@ public:
     // Sized n_gases in ambient mode, empty otherwise. PUBLIC mutable (the
     // digest/counter telemetry pattern) so the CUDA path (eos_step_cuda) writes
     // it exactly as the CPU step() does; the getter gives the read-only view.
+    //
+    // Smoke transport v2 (#12, docs/smoke_transport_design_2026-10-04.md §3):
+    // the rail is sized n_gases on EVERY map now (space maps included; the
+    // bulk slots stay 0 there, since only the ring reset writes them), and its
+    // TRACE slots carry the trace VENT channel — everything stage 3b prices
+    // onto a vacuum / ring receiver plus everything the trace tail diffuses
+    // onto one. Three sibling per-gas int64 books sit next to it:
+    //   trace_wipe_sum_   stage 3c's N_EPS wipe (no air left to carry it);
+    //   trace_sink_sum_   stranded trace zeroed on solid ∨ vacuum ∨ ring (§2.4);
+    //   trace_decay_sum_  the tail's ceil-rounded decay (§2.3).
+    // All reset at step() entry, accumulated through the tick (the trace tail
+    // in PhysicsEngine::run_substeps adds after step() returns), diagnostics
+    // only, never digested. The identity, exact in int64 per tick and plane:
+    //   Σ S(after) − Σ S(before) == deposits − vent − wipe − sink − decay.
     mutable std::vector<int64_t> boundary_flux_;
     const std::vector<int64_t>& boundary_flux() const { return boundary_flux_; }
+    mutable std::vector<int64_t> trace_wipe_sum_;
+    mutable std::vector<int64_t> trace_sink_sum_;
+    mutable std::vector<int64_t> trace_decay_sum_;
+    // #88 P2 (design §5.1/§5.3, critique B1/B7): THE COUNTED SATURATION'S BOOKS
+    // and the MINT book, per gas, int64, each in its plane's own currency:
+    //   trace_clip_sum_  the excess `trace_add_sat` could not represent, at
+    //                    every ENGINE site that adds to a trace cell (stage
+    //                    3b's net, the soot mint, the W5 puff, the W3
+    //                    receiver add), >= 0;
+    //   trace_mint_sum_  the ATTEMPTED mint, written BEFORE the saturation
+    //                    (the soot mint, the W5 puff), >= 0 -- so the landed
+    //                    amount is `mint − clip` and the identity closes with
+    //                    no residual;
+    //   trace_neg_hits_  cells whose net went NEGATIVE (a contract violation,
+    //                    counted, never clamped; every gate asserts 0).
+    // THEIR WINDOW IS NOT step()'s: the W5 puff and the W3 receiver add run in
+    // PhysicsEngine::step_water BEFORE EOSSolver::step, so a reset at step()
+    // entry would drop them. They are reset by `reset_trace_sat_books` at the
+    // head of PhysicsRunner.step / _step_resident (the window Simulation.step
+    // brackets); EOSSolver::step and both CUDA EOS paths ADD to them.
+    // With the four books above, per tick and plane, exactly:
+    //   Σ S(after) − Σ S(before) == mint + deposit − vent − wipe − sink
+    //                               − decay − clip   (− G6's unbooked terms)
+    // where `deposit` and the Python sites' clip are GameMap.trace_*_books.
+    mutable std::vector<int64_t> trace_clip_sum_;
+    mutable std::vector<int64_t> trace_mint_sum_;
+    mutable std::vector<int64_t> trace_neg_hits_;
+    // Size all per-gas books to n_gases (zeros), leaving correctly-sized
+    // ones untouched — for a caller (the trace tail) that may run after a path
+    // which did not size them.
+    void ensure_trace_books(int n_gases) const {
+        if ((int)boundary_flux_.size()  != n_gases) boundary_flux_.assign(n_gases, 0);
+        if ((int)trace_wipe_sum_.size()  != n_gases) trace_wipe_sum_.assign(n_gases, 0);
+        if ((int)trace_sink_sum_.size()  != n_gases) trace_sink_sum_.assign(n_gases, 0);
+        if ((int)trace_decay_sum_.size() != n_gases) trace_decay_sum_.assign(n_gases, 0);
+        if ((int)trace_clip_sum_.size()  != n_gases) trace_clip_sum_.assign(n_gases, 0);
+        if ((int)trace_mint_sum_.size()  != n_gases) trace_mint_sum_.assign(n_gases, 0);
+        if ((int)trace_neg_hits_.size()  != n_gases) trace_neg_hits_.assign(n_gases, 0);
+    }
+    // The per-tick reset of the three saturation books (see above).
+    void reset_trace_sat_books(int n_gases) const {
+        ensure_trace_books(n_gases);
+        std::fill(trace_clip_sum_.begin(), trace_clip_sum_.end(), (int64_t)0);
+        std::fill(trace_mint_sum_.begin(), trace_mint_sum_.end(), (int64_t)0);
+        std::fill(trace_neg_hits_.begin(), trace_neg_hits_.end(), (int64_t)0);
+    }
 
     // ---- one multigrid level (v2.2 D-B) ---------------------------------
     // (EOS P6.3: struct made public — unchanged fields — so the CUDA binding
@@ -647,6 +708,8 @@ private:
     // arc #54 §2.7 row 1: the transport's PRE-flux bulk-N denominator plane
     // (e_scratch_ becomes its energy sibling — see bulk_transport.h).
     mutable std::vector<int64_t> n_pre_;
+    // Smoke transport v2 (#12): stage 3b's per-plane pre-flux trace snapshot.
+    mutable std::vector<int32_t> s_pre_;
     // arc #54 P-G1a scratch (design §2.4/§2.5). All rebuilt every tick, never
     // synced, never digested. RL-batch habits: CPU keeps (h,w); the device
     // twin (P-G2) allocates (N,h,w) with N=1.

@@ -23,9 +23,10 @@
 //   P2  logistic feedback  fire += dt*(grow-die); snap-extinguish (own-tile; O2 gate
 //                          reads n_o2 neighbour mean — read-only field)
 //   P5  wall burn-through  wall_hp[i] -= dmg; collect destroyed; fire[i]=0
-//   P6  final clamp        fire, smoke -> [0, FP_ONE]               (own-tile;
-//                          `smoke` is READ-mostly here since P-S1 — no pass
-//                          writes it, only clamps whatever combustion wrote)
+//   P6  final clamp        fire -> [0, FP_ONE]                      (own-tile;
+//                          `smoke` is neither read nor written here: the
+//                          smoke clamp was DELETED with smoke transport v2,
+//                          #12 design §2.4 — see fire_clamp below)
 //
 // Pass order P2 → P5 → P6 matters: P5 reads the P2-updated `fire` (frozen
 // between launches) and zeroes it on destroyed cells; P6 clamps last. P2
@@ -332,17 +333,18 @@ __global__ void fire_burn(int32_t* __restrict__ fire,
     }
 }
 
-// ---- P6: final clamp (fire_simulation.cpp ~260-264) --------------------------
-// fire clamps to [0, FP_ONE]; smoke clamps the same. Own-cell, in-place.
-__global__ void fire_clamp(int32_t* __restrict__ fire,
-                           int32_t* __restrict__ smoke, int n) {
+// ---- P6: final clamp (fire_simulation.cpp, the final clamp) -------------------
+// fire clamps to [0, FP_ONE]. Own-cell, in-place. The SMOKE clamp that stood
+// here ([0, FP_ONE] on every tile, every tick) is DELETED, mirroring the CPU
+// (smoke transport v2, #12, design §2.4): it cut every compressed tile back to
+// 1 each tick, silently undoing the trace's conservation. No trace plane is
+// clamped anywhere outside a reader. `smoke` therefore never reaches the
+// device from this entry any more (it stays in the signature for back-compat,
+// the CPU's `(void)smoke` idiom).
+__global__ void fire_clamp(int32_t* __restrict__ fire, int n) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         fire[i] = clamp01_q_dev(fire[i]);
-        int32_t s = smoke[i];
-        if (s < 0) s = 0;
-        else if (s > FP_ONE) s = FP_ONE;
-        smoke[i] = s;
     }
 }
 
@@ -430,7 +432,6 @@ std::vector<std::pair<int, int>> fire_step(
     const size_t nbool = (size_t)n * sizeof(bool);
 
     int32_t *d_fire = nullptr, *d_n_o2 = nullptr, *d_n_total = nullptr,
-            *d_smoke = nullptr,
             *d_whp = nullptr, *d_temp = nullptr, *d_wx = nullptr, *d_wy = nullptr;
     bool *d_wall = nullptr, *d_vac = nullptr, *d_flam = nullptr;
     int *d_counter = nullptr, *d_destroyed_idx = nullptr;
@@ -448,7 +449,6 @@ std::vector<std::pair<int, int>> fire_step(
     cuda_check(cudaMalloc(&d_fire, nb), "malloc fire");
     cuda_check(cudaMalloc(&d_n_o2, nb), "malloc n_o2");
     cuda_check(cudaMalloc(&d_n_total, nb), "malloc n_total");
-    cuda_check(cudaMalloc(&d_smoke, nb), "malloc smoke");
     cuda_check(cudaMalloc(&d_whp, nb), "malloc wall_hp");
     cuda_check(cudaMalloc(&d_temp, nb), "malloc temperature");
     cuda_check(cudaMalloc(&d_wx, nb), "malloc wind_x");
@@ -463,7 +463,6 @@ std::vector<std::pair<int, int>> fire_step(
     cuda_check(cudaMemcpy(d_fire, fire, nb, cudaMemcpyHostToDevice), "H2D fire");
     cuda_check(cudaMemcpy(d_n_o2, n_o2, nb, cudaMemcpyHostToDevice), "H2D n_o2");
     cuda_check(cudaMemcpy(d_n_total, n_total, nb, cudaMemcpyHostToDevice), "H2D n_total");
-    cuda_check(cudaMemcpy(d_smoke, smoke, nb, cudaMemcpyHostToDevice), "H2D smoke");
     cuda_check(cudaMemcpy(d_whp, wall_hp, nb, cudaMemcpyHostToDevice), "H2D wall_hp");
     cuda_check(cudaMemcpy(d_temp, temperature, nb, cudaMemcpyHostToDevice), "H2D temperature");
     cuda_check(cudaMemcpy(d_wx, wind_x, nb, cudaMemcpyHostToDevice), "H2D wind_x");
@@ -518,17 +517,16 @@ std::vector<std::pair<int, int>> fire_step(
                                temp_is_identity, recip_temp_scale, n);
     cuda_check(cudaGetLastError(), "burn launch");
 
-    // P6 final clamp (in-place on d_fire / d_smoke).
-    fire_clamp<<<grid, block>>>(d_fire, d_smoke, n);
+    // P6 final clamp (in-place on d_fire).
+    fire_clamp<<<grid, block>>>(d_fire, n);
     cuda_check(cudaGetLastError(), "clamp launch");
 
     cuda_check(cudaDeviceSynchronize(), "sync");
 
-    // D2H the 4 mutated fields (fire, smoke, wall_hp, temperature). n_o2/wind/masks
+    // D2H the 3 mutated fields (fire, wall_hp, temperature). n_o2/wind/masks
     // are read-only — not copied back. (atmosphere is read-only — uploaded for
     // the #7 pressure factor, never returned.)
     cuda_check(cudaMemcpy(fire, d_fire, nb, cudaMemcpyDeviceToHost), "D2H fire");
-    cuda_check(cudaMemcpy(smoke, d_smoke, nb, cudaMemcpyDeviceToHost), "D2H smoke");
     cuda_check(cudaMemcpy(wall_hp, d_whp, nb, cudaMemcpyDeviceToHost), "D2H wall_hp");
     cuda_check(cudaMemcpy(temperature, d_temp, nb, cudaMemcpyDeviceToHost), "D2H temperature");
 
@@ -570,7 +568,6 @@ std::vector<std::pair<int, int>> fire_step(
     cudaFree(d_fire);
     cudaFree(d_n_o2);
     cudaFree(d_n_total);
-    cudaFree(d_smoke);
     cudaFree(d_whp);
     cudaFree(d_temp);
     cudaFree(d_wx);

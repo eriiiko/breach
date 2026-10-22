@@ -46,8 +46,10 @@ _SRC_EXPLOSION = 1
 _SRC_EXPLOSION_SMOKE = 2
 
 # A "set this tile to 0" REMOVE needs an amount large enough to drive any
-# in-range value below the clamp floor; smoke lives in [0, 1] so 1.0 suffices,
-# but we use a generous margin to be unambiguous (clamp catches the rest).
+# in-range value below the clamp floor. Smoke has no ceiling since smoke
+# transport v2 (a compressed tile can exceed 1), but the whole map's smoke
+# stays far below 1e6, so this margin still clears any tile (the policy's
+# floor-0 clamp catches the rest).
 _SMOKE_CLEAR_AMOUNT = 1e6
 
 
@@ -92,14 +94,14 @@ def apply_explosion(gmap, queue, fy, fx, radius, pressure, wall_damage):
     ))
 
     # Smoke clear over the inner 40 percent — a REMOVE-to-0 (large amount, the
-    # smoke policy's [0, 1] clamp drives it to exactly 0). FLAT so every inner
-    # tile is fully cleared, matching the old ``smoke[...] = 0.0``.
+    # smoke policy's floor-0 TRACE_CLAMP drives it to exactly 0). FLAT so every
+    # inner tile is fully cleared, matching the old ``smoke[...] = 0.0``.
     inner = float(radius) * 0.4
     if inner > 0.0:
         queue.enqueue(FieldEdit(
             field="smoke", region=Region.DISC, coords=(fy, fx, inner),
             amount=_SMOKE_CLEAR_AMOUNT, mode=EditMode.REMOVE, falloff=Falloff.FLAT,
-            clamp=(0.0, 1.0), source_id=_SRC_EXPLOSION,
+            source_id=_SRC_EXPLOSION,   # policy TRACE_CLAMP: floor 0
         ))
 
     for dy in range(-radius, radius + 1):
@@ -165,9 +167,10 @@ def add_explosion_smoke(gmap, queue, fy, fx, radius, noise=None, amount=0.8):
     When ``noise`` is ``None`` it is read from ``CFG.physics.explosion_smoke_noise``
     so the look is config-tunable; callers (e.g. the demo dial) may override it.
 
-    The smoke policy supplies the skip-mask (``solid``) and the [0, 1] clamp, so
-    a deposited tile reproduces the old ``min(1, smoke + base*mult)`` and a solid
-    tile is skipped (and draws no RNG — the per-tile draw order matches the
+    The smoke policy supplies the skip-mask (``solid``) and the floor-0
+    TRACE_CLAMP, so a deposited tile gets exactly ``smoke + base*mult`` (no
+    ceiling since smoke transport v2 D1 -- the old ``min(1, ...)`` cut smoke
+    already on the tile) and a solid tile is skipped (and draws no RNG — the per-tile draw order matches the
     legacy nested-loop order, keeping the deposit bit-identical for a fixed seed).
     """
     if noise is None:
@@ -177,5 +180,5 @@ def add_explosion_smoke(gmap, queue, fy, fx, radius, noise=None, amount=0.8):
     queue.enqueue(FieldEdit(
         field="smoke", region=Region.DISC, coords=(fy, fx, float(radius)),
         amount=float(amount), mode=EditMode.ADD, falloff=Falloff.LINEAR,
-        clamp=(0.0, 1.0), noise=noise, source_id=_SRC_EXPLOSION_SMOKE,
+        noise=noise, source_id=_SRC_EXPLOSION_SMOKE,   # policy TRACE_CLAMP (D1)
     ))

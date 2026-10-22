@@ -42,7 +42,7 @@ from simulation.gamemap import GameMap  # noqa: E402
 from simulation.gases import INERT_N2, O2  # noqa: E402
 
 FP_ONE = 1 << 16
-O2_FRAC_Q = int(gas_fixed.quantize_scalar(0.21))    # 13763 — one truth w/ the ring
+O2_FRAC_Q = int(gas_fixed.quantize_q16_scalar(0.21))    # 13763 — one truth w/ the ring
 SPACE = 9                                            # v2 SPACE tile code
 HULL = 1
 AIR = 0
@@ -121,7 +121,7 @@ def _rand_scene(rng, h=12, w=10, n_gases=7):
 def test_binding_matches_oracle(seed):
     rng = np.random.default_rng(seed)
     gas, mask = _rand_scene(rng)
-    lam = int(gas_fixed.quantize_scalar((1.0 / 24.0) / 60.0))   # τ=60 @ 24 Hz
+    lam = int(gas_fixed.quantize_q16_scalar((1.0 / 24.0) / 60.0))   # τ=60 @ 24 Hz
     got = gas.copy()
     flux = _run(got, mask, O2_FRAC_Q, lam)
     exp, exp_flux = _ref_sky_step(gas, O2, INERT_N2, mask, O2_FRAC_Q, lam)
@@ -134,7 +134,7 @@ def test_multi_tick_matches_oracle():
     host call, so this is also the CPU==CUDA lockstep reference)."""
     rng = np.random.default_rng(99)
     gas, mask = _rand_scene(rng, h=20, w=16)
-    lam = int(gas_fixed.quantize_scalar((1.0 / 24.0) / 45.0))
+    lam = int(gas_fixed.quantize_q16_scalar((1.0 / 24.0) / 45.0))
     got = gas.copy()
     ref = gas.copy()
     for _ in range(200):
@@ -172,7 +172,7 @@ def test_empty_mask_is_noop():
 def test_n_total_invariant_per_tile(seed):
     rng = np.random.default_rng(seed)
     gas, mask = _rand_scene(rng)
-    lam = int(gas_fixed.quantize_scalar((1.0 / 24.0) / 60.0))
+    lam = int(gas_fixed.quantize_q16_scalar((1.0 / 24.0) / 60.0))
     tot_before = gas[O2].astype(np.int64) + gas[INERT_N2].astype(np.int64)
     _run(gas, mask, O2_FRAC_Q, lam)
     tot_after = gas[O2].astype(np.int64) + gas[INERT_N2].astype(np.int64)
@@ -183,7 +183,7 @@ def test_n_total_invariant_per_tile(seed):
 def test_rail_is_exact_and_a_pure_transfer(seed):
     rng = np.random.default_rng(seed + 10)
     gas, mask = _rand_scene(rng)
-    lam = int(gas_fixed.quantize_scalar((1.0 / 24.0) / 30.0))
+    lam = int(gas_fixed.quantize_q16_scalar((1.0 / 24.0) / 30.0))
     o2_before = gas[O2].astype(np.int64).copy()
     flux = _run(gas, mask, O2_FRAC_Q, lam)
     applied = (gas[O2].astype(np.int64) - o2_before).sum()
@@ -196,7 +196,7 @@ def test_rail_is_exact_and_a_pure_transfer(seed):
 def test_only_o2_and_inert_planes_move():
     rng = np.random.default_rng(7)
     gas, mask = _rand_scene(rng, n_gases=7)
-    lam = int(gas_fixed.quantize_scalar((1.0 / 24.0) / 60.0))
+    lam = int(gas_fixed.quantize_q16_scalar((1.0 / 24.0) / 60.0))
     others = [p for p in range(gas.shape[0]) if p not in (O2, INERT_N2)]
     before = {p: gas[p].copy() for p in others}
     flux = _run(gas, mask, O2_FRAC_Q, lam)
@@ -229,7 +229,7 @@ def test_relaxes_into_the_ambient_deadband():
     n_tot = FP_ONE
     target = _mul_q16_floor(O2_FRAC_Q, n_tot)         # 13763
     gas, mask = _one_tile(0, n_tot)
-    lam = int(gas_fixed.quantize_scalar((1.0 / 24.0) / 60.0))   # 46
+    lam = int(gas_fixed.quantize_q16_scalar((1.0 / 24.0) / 60.0))   # 46
     prev = -1
     for _ in range(20000):                            # ≫ enough to hit the floor
         _run(gas, mask, O2_FRAC_Q, lam)
@@ -251,7 +251,7 @@ def test_time_constant_is_about_tau():
     gas, mask = _one_tile(0, n_tot)
     dt = 1.0 / 24.0
     tau = 60.0
-    lam = int(gas_fixed.quantize_scalar(dt / tau))
+    lam = int(gas_fixed.quantize_q16_scalar(dt / tau))
     n_steps = int(round(tau / dt))                    # one time-constant
     for _ in range(n_steps):
         _run(gas, mask, O2_FRAC_Q, lam)

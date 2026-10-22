@@ -161,6 +161,40 @@ def create_dynamic_rgba16f_texture(width: int, height: int) -> rl.Texture:
     return tex
 
 
+def load_render_texture_rgba16f(width: int, height: int) -> rl.RenderTexture:
+    """An RGBA16F (half-float) render texture with a depth renderbuffer.
+
+    raylib's ``load_render_texture`` hard-codes RGBA8. This is the same
+    construction raylib 5.5's ``LoadRenderTexture`` performs (rcore.c:
+    ``rlLoadFramebuffer`` + ``rlLoadTexture`` + ``rlLoadTextureDepth`` +
+    two ``rlFramebufferAttach``), through raylib's own rlgl layer, with the
+    colour format swapped to ``PIXELFORMAT_UNCOMPRESSED_R16G16B16A16`` (rlgl
+    maps it to GL_RGBA16F / GL_HALF_FLOAT, colour-renderable and blendable
+    under GL 3.3). No raw GL: the returned struct is an ordinary raylib
+    ``RenderTexture`` -- ``begin_texture_mode`` / ``unload_render_texture``
+    work on it unchanged. Graphics arc G0 P1: the world's scene RT, so every
+    layer can write linear HDR and ONE tone-map runs at the resolve.
+    """
+    fmt = rl.PixelFormat.PIXELFORMAT_UNCOMPRESSED_R16G16B16A16
+    fbo = rl.rl_load_framebuffer()
+    if fbo == 0:
+        raise RuntimeError("rlLoadFramebuffer failed (no GL context?)")
+    rl.rl_enable_framebuffer(fbo)
+    tex_id = rl.rl_load_texture(rl.ffi.NULL, int(width), int(height), fmt, 1)
+    depth_id = rl.rl_load_texture_depth(int(width), int(height), True)
+    rl.rl_framebuffer_attach(fbo, tex_id, rl.RL_ATTACHMENT_COLOR_CHANNEL0,
+                             rl.RL_ATTACHMENT_TEXTURE2D, 0)
+    rl.rl_framebuffer_attach(fbo, depth_id, rl.RL_ATTACHMENT_DEPTH,
+                             rl.RL_ATTACHMENT_RENDERBUFFER, 0)
+    complete = rl.rl_framebuffer_complete(fbo)
+    rl.rl_disable_framebuffer()
+    if not complete or tex_id == 0:
+        raise RuntimeError(f"RGBA16F framebuffer {width}x{height} incomplete")
+    # depth format 19 = what LoadRenderTexture records for its renderbuffer
+    return rl.RenderTexture(fbo, rl.Texture(tex_id, width, height, 1, fmt),
+                            rl.Texture(depth_id, width, height, 1, 19))
+
+
 def update_rgba16f_texture(tex: rl.Texture, pixels_rgba: np.ndarray) -> None:
     """Upload an (H, W, 4) float16 RGBA array to an RGBA16F texture.
 
@@ -236,11 +270,29 @@ def load_shader_with_fallback(vs_path: str, fs_path: str) -> rl.Shader:
         return rl.load_shader(rl.ffi.NULL, rl.ffi.NULL)
 
 
+def load_shader_from_source(vs_path: str, fs_source: str) -> rl.Shader:
+    """Load a shader from a vertex-shader FILE and a fragment source held
+    in memory (a file with text spliced in, e.g. ``lighting.fs`` + the smoke
+    cast shadow's shared GLSL, graphics G2). Falls back to raylib's default
+    shader like :func:`load_shader_with_fallback`."""
+    if not os.path.isfile(vs_path):
+        print(f"[renderer] WARN: vertex shader not found: {vs_path}, using default")
+        return rl.load_shader(rl.ffi.NULL, rl.ffi.NULL)
+    try:
+        with open(vs_path, encoding="utf-8") as f:
+            vs_source = f.read()
+        return rl.load_shader_from_memory(vs_source, fs_source)
+    except Exception as e:
+        print(f"[renderer] WARN: shader load failed ({e}); falling back to default")
+        return rl.load_shader(rl.ffi.NULL, rl.ffi.NULL)
+
+
 __all__ = [
     "init_window", "shutdown", "should_close",
     "TextureSet", "load_texture_from_path", "load_level_textures",
     "create_dynamic_rgba_texture", "update_rgba_texture",
     "create_dynamic_rgba16f_texture", "update_rgba16f_texture",
+    "load_render_texture_rgba16f",
     "begin_frame", "end_frame", "draw_fps",
-    "load_shader_with_fallback",
+    "load_shader_with_fallback", "load_shader_from_source",
 ]

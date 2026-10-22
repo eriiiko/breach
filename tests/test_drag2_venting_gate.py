@@ -16,7 +16,7 @@ instruction to define it concretely):
     the hull ring and the true-vacuum band/breach itself), sampled once per
     tick (tick 0 = post-construction, pre-step).
 
-    The BASELINE leg (k2=0, shipped k_drag) is run for TICKS ticks; Nhalf :=
+    The BASELINE leg (k2=0, k_drag = GATE_K_DRAG) is run for TICKS ticks; Nhalf :=
     N0 - 0.5*(N0 - Nfinal) where N0/Nfinal are the baseline's own tick-0/
     tick-TICKS values. tick_50 for ANY leg (baseline or otherwise) is the
     first tick at which that leg's OWN N_total trace is <= Nhalf (Nhalf is
@@ -104,6 +104,14 @@ TICKS = 120
 SWEEP_K2 = (0.25, 0.5, 1.0)          # design §6 leg 2's set
 QUAD_NEG_CONTROL_K2 = 10.0           # design §6 leg 3
 LIN_NEG_CONTROL_KDRAG = 10.0         # design §6 leg 4 (k2=0)
+# The linear dial every other leg runs at. PINNED HERE, not read from
+# config.toml (#4, 2026-10-06): the bands below were MEASURED at k_drag =
+# 0.5, and leg 5's ratios divide by the baseline's linear-drag heat, which
+# scales with k_drag. When Erik moved the shipped k_drag to 0.01 the
+# baseline's heat fell ~50x and leg 5 read 3446x for a k2 property that had
+# not changed. The gate is about k2 at a fixed k1; which k1 ships is not
+# its business.
+GATE_K_DRAG = 0.5
 BOUND_RATIO = 1.5                    # design §6's shared bound, all legs
 # RESTATED arc #54 P-G3, 2026-08-30: leg 4's own crossing ratio moved from
 # ~1.60x (pre-arc) to a measured 1.4706x -- the honest energy books (stored
@@ -244,7 +252,7 @@ def legs():
     """Runs every leg ONCE (module-scoped) -- baseline + the k2 sweep + both
     negative controls -- and derives the shared 50%-equalization threshold
     from the baseline leg alone (design §6 leg 1)."""
-    baseline = _run_leg(TICKS, k_drag2=0.0)
+    baseline = _run_leg(TICKS, k_drag2=0.0, k_drag=GATE_K_DRAG)
     N0 = baseline["n_trace"][0]
     Nfinal = baseline["n_trace"][-1]
     Nhalf = N0 - 0.5 * (N0 - Nfinal)
@@ -255,12 +263,12 @@ def legs():
 
     sweep = {}
     for k2 in SWEEP_K2:
-        r = _run_leg(TICKS, k_drag2=k2)
+        r = _run_leg(TICKS, k_drag2=k2, k_drag=GATE_K_DRAG)
         r["tick50"] = _tick_50(r["n_trace"], Nhalf)
         r["ratio"] = (r["tick50"] / tick50_base) if r["tick50"] > 0 else float("inf")
         sweep[k2] = r
 
-    quad = _run_leg(TICKS, k_drag2=QUAD_NEG_CONTROL_K2)
+    quad = _run_leg(TICKS, k_drag2=QUAD_NEG_CONTROL_K2, k_drag=GATE_K_DRAG)
     quad["tick50"] = _tick_50(quad["n_trace"], Nhalf)
     quad["ratio"] = (quad["tick50"] / tick50_base) if quad["tick50"] > 0 else float("inf")
 
@@ -274,10 +282,10 @@ def legs():
 
 
 # ---------------------------------------------------------------------------
-# Leg 1 -- regression fence at shipped dials (k2=0)
+# Leg 1 -- regression fence at the gate's pinned k_drag (k2=0)
 # ---------------------------------------------------------------------------
 def test_leg1_regression_fence_baseline_capture(legs):
-    """Design §6 leg 1: k2=0 at shipped dials (k_drag=0.5) -- capture the
+    """Design §6 leg 1: k2=0 at the gate's pinned k_drag (GATE_K_DRAG = 0.5) -- capture the
     50%-equalization profile. Establishes Nhalf/tick50_base; every other
     leg's bound is a RATIO to this same-run number, never a frozen N."""
     b = legs["baseline"]
@@ -417,7 +425,7 @@ def test_leg5_blast_heat_watch(legs):
     # be clipped at all, which is the point (D5) -- the T_MAX_PHYS rail is
     # the once-per-tick recovery's, and `t_max_phys_hits` is still reported.
     assert b["e_heat_sum"] > 0, (
-        "baseline (k_drag=0.5 shipped, k2=0) must already show some linear "
+        "baseline (k_drag=GATE_K_DRAG, k2=0) must already show some linear "
         "drag heat deposit -- else the ratios below are meaningless")
 
     ratio_dep_k2_1 = k2_1["e_heat_sum"] / b["e_heat_sum"]

@@ -5,8 +5,8 @@ What is locked here:
 
   - GAS GRENADES E2E: a smoke/tear/poison grenade order (ammo_name on the
     shipped ORDER_GRENADE flow) detonates into the RIGHT gas slice and the
-    C++ transport carries the cloud on subsequent ticks (all slices are
-    stepped by the per-gas loop — the transport verification of record);
+    C++ transport carries the cloud on subsequent ticks (every trace slice
+    rides the bulk face flux — the transport verification of record);
   - TEARGAS -> BLINDED -> SNAP CONE (the owed P3 can_aim consumer): the
     coupling row applies refresh-stacked BLINDED above the density
     threshold; a blinded unit's AIMED fire order draws from the SNAP cone
@@ -75,7 +75,7 @@ def _room(h=24, w=24, edits=()):
 
 
 def _fill_footprint(slice_, unit, density):
-    q = gas_fixed.quantize_scalar(density)
+    q = gas_fixed.quantize_trace_scalar(density)     # a TRACE plane (#88)
     for (tx, ty) in unit.occupied_tiles():
         slice_[ty, tx] = q
     return q
@@ -87,9 +87,10 @@ def _fill_footprint(slice_, unit, density):
 def test_gas_grenade_e2e_deposits_and_transports():
     """A smoke grenade through the shipped LOBBED flow: has_grenade
     decrements, the steam slice fills at the target, every other
-    slice stays empty — and the cloud SURVIVES subsequent ticks (the C++
-    per-gas transport loop steps every non-empty slice: verified in code,
-    physics_engine.cpp run_substeps' gi-loop; this is the empirical twin)."""
+    slice stays empty — and the cloud SURVIVES subsequent ticks: every
+    non-empty trace slice rides the air (smoke transport v2, #12 — the EOS
+    substeps' stage 3b in bulk_transport.cpp, then the once-per-tick
+    trace_tail in run_substeps; this is the empirical twin)."""
     sim = Simulation(_level(), seed=SEED, breach_physics=bp,
                      enable_recorder=False)
     m = Unit("M", x=3, y=3, team=0)
@@ -116,8 +117,8 @@ def test_gas_grenade_e2e_deposits_and_transports():
         if g != STEAM:
             assert not sim.gmap.gas[g].any(), f"slice {g} moved on a smoke grenade"
 
-    # Transport: the cloud persists (advects/diffuses, integer-SL gentle
-    # decay — not wiped) across further ticks.
+    # Transport: the cloud persists (rides the air, diffuses, decays at its
+    # configured rate — not wiped) across further ticks.
     for _ in range(6):
         sim.set_paused(False)
         sim.step()
@@ -157,16 +158,16 @@ def test_teargas_row_applies_refresh_stacked_blinded():
     u = Unit("M", x=8, y=8, team=0)
     u.id = 1
     # Below threshold: nothing (threshold edge — one count under).
-    thresh_q = gas_fixed.quantize_scalar(float(CFG.exchange.teargas_blind_density))
+    thresh_trace_q = gas_fixed.quantize_trace_scalar(float(CFG.exchange.teargas_blind_density))
     for (tx, ty) in u.occupied_tiles():
-        gmap.gas[GAS_TEARGAS][ty, tx] = thresh_q - 1
+        gmap.gas[GAS_TEARGAS][ty, tx] = thresh_trace_q - 1
     apply_teargas_blind([u], gmap)
     assert not getattr(u, "statuses", [])
 
     # At threshold: BLINDED lands with the config duration; composed
     # can_aim goes False; everything else stays permitted.
     for (tx, ty) in u.occupied_tiles():
-        gmap.gas[GAS_TEARGAS][ty, tx] = thresh_q
+        gmap.gas[GAS_TEARGAS][ty, tx] = thresh_trace_q
     apply_teargas_blind([u], gmap)
     assert len(u.statuses) == 1
     st = u.statuses[0]
@@ -262,7 +263,7 @@ def test_teargas_blinds_through_the_simulation_tick():
 # ---------------------------------------------------------------------------
 def test_poison_dose_exact_per_tick_amounts():
     """The heat row's idiom, pinned: applied = quantize_hp_delta(
-    poison_dps x (density_q / 65536) x (1 / tps)) — round-half-away onto
+    poison_dps x dequantize_trace(density_q) x (1 / tps)) — round-half-away onto
     the Q16.16 grid. Full density at the standard values (dps 6, 24 tps)
     is EXACTLY 0.25 HP/tick (16384 counts): 6 HP/s."""
     tps = int(CFG.clock.ticks_per_second)
@@ -277,7 +278,7 @@ def test_poison_dose_exact_per_tick_amounts():
         events = []
         apply_poison_dose([u], gmap, tps, events=events)
         expected = unit_fixed.quantize_hp_delta(
-            dps * (q / 65536.0) * (1.0 / tps))
+            dps * float(gas_fixed.dequantize_trace(q)) * (1.0 / tps))
         assert u.current_hp == 1000.0 - expected
         hits = [e for e in events if isinstance(e, UnitHitEvent)]
         assert len(hits) == 1
@@ -301,22 +302,23 @@ def test_poison_threshold_edge():
     """One count below quantize(poison_min_density): NOTHING (no packet, no
     event). At the threshold exactly: the packet lands."""
     tps = int(CFG.clock.ticks_per_second)
-    thresh_q = gas_fixed.quantize_scalar(float(CFG.exchange.poison_min_density))
+    thresh_trace_q = gas_fixed.quantize_trace_scalar(float(CFG.exchange.poison_min_density))
 
     gmap = _room()
     u = Unit("M", x=8, y=8, team=0)
     u.current_hp = 1000.0
     for (tx, ty) in u.occupied_tiles():
-        gmap.gas[GAS_POISON][ty, tx] = thresh_q - 1
+        gmap.gas[GAS_POISON][ty, tx] = thresh_trace_q - 1
     events = []
     apply_poison_dose([u], gmap, tps, events=events)
     assert u.current_hp == 1000.0 and events == []
 
     for (tx, ty) in u.occupied_tiles():
-        gmap.gas[GAS_POISON][ty, tx] = thresh_q
+        gmap.gas[GAS_POISON][ty, tx] = thresh_trace_q
     apply_poison_dose([u], gmap, tps, events=events)
     expected = unit_fixed.quantize_hp_delta(
-        float(CFG.exchange.poison_dps) * (thresh_q / 65536.0) * (1.0 / tps))
+        float(CFG.exchange.poison_dps) * float(gas_fixed.dequantize_trace(thresh_trace_q))
+        * (1.0 / tps))
     assert expected > 0
     assert u.current_hp == 1000.0 - expected
     assert len(events) == 1

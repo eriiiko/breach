@@ -74,7 +74,7 @@ def test_fire_tune_plot_kelvin_map_matches_real_config():
 def test_eos_slope_quantizes_to_65536_while_phi_exp_is_value_frozen():
     ts = temperature_scale.load()
     assert ts.eos_slope == 1.0
-    assert gas_fixed.quantize_scalar(ts.eos_slope) == 65536
+    assert gas_fixed.quantize_q16_scalar(ts.eos_slope) == 65536
 
 
 def test_C_is_reciprocal_of_eos_t_amb_k():

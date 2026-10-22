@@ -2,8 +2,9 @@
 
 The marine samples the SAME baked light field the 2D ship is lit by
 (``LightingPass.light_tex_a`` / ``light_tex_b``) and does real N·L against its
-true glTF mesh normals — so it inherits the ship's colour, occlusion, falloff
-and tone-map while gaining genuine 3D directional shading. See the design doc
+true glTF mesh normals — so it inherits the ship's colour, occlusion and
+falloff (and, since graphics G0 P1, the ONE world tone-map at the resolve)
+while gaining genuine 3D directional shading. See the design doc
 ``docs/marine_shader_foundation_design_2026-07-20.md`` (v2 hardened plan) and
 the evidence in ``docs/research/marine_shader_foundation_2026-07-20_raw/``.
 
@@ -22,7 +23,8 @@ STATIC 6.0.1.0):
 
 Shared GLSL lives in ``renderer/lit3d.py`` (the shared lit-3D-in-world-RT
 seam, extracted 2026-09 for the props & vegetation arc #60): ``_COMMON_GLSL``
-(srgb decode/encode, ACES) at P1, and ``_FIELD_SAMPLE_GLSL`` (the light-field
+(the srgb decode; its encode + ACES moved to the world resolve at graphics G0
+P1) at P1, and ``_FIELD_SAMPLE_GLSL`` (the light-field
 sample/unpack + L/N setup) at P2 when ``static_props.py`` became the second
 consumer. Both are concatenated into the fragment source here — the composed
 ``MARINE_FS`` stays byte-identical (``tests/test_lit3d_extraction.py``) and is
@@ -105,7 +107,8 @@ void main() {
 _MARINE_FS_BODY = """#version 330
 // Lit-marine fragment shader — samples the ship's baked light field on the
 // marine's TRUE mesh normals. Mirrors shaders/lighting.fs's field unpack +
-// composite + tone-map, adapted to a Y-up 3D mesh with half-Lambert + rim.
+// composite, adapted to a Y-up 3D mesh with half-Lambert + rim. Writes linear
+// HDR into the scene RT; the world resolve tone-maps (G0 P1).
 in vec2 fragTexCoord;
 in vec3 fragWorldPos;
 in vec3 fragWorldNormal;
@@ -208,8 +211,7 @@ void main() {
     vec3 rim_col = mix(vec3(1.0), albedo, u_rim_albedo);
     lit += u_rim_strength * rim * rim_col * (u_ambient + incoming_rgb * u_light_gain);
 
-    lit = aces_tonemap(lit);
-    if (u_srgb_decode == 1) lit = linear_to_srgb(lit);
+    // Linear HDR out (G0 P1): the world resolve tone-maps and encodes, once.
 
     // alpha = 1.0: the world RT is blitted premultiplied; a translucent marine
     // would bleed the background through (design v2 §Bugs). The texture's

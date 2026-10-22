@@ -39,7 +39,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "tests", ROOT / "cpp" / "build" / "Release
 
 import level_loader  # noqa: E402
 from level_loader import EntityInstance, LevelData, Wire  # noqa: E402
-from simulation import Simulation  # noqa: E402
+from simulation import Simulation, gas_fixed  # noqa: E402
 from simulation.entities import REGISTRY  # noqa: E402
 from simulation.entities import sensors as sensors_mod  # noqa: E402
 from simulation.gamemap import N_GASES  # noqa: E402
@@ -149,7 +149,8 @@ def test_body_channels_read_solid_while_faced_air_reads_zero():
 def test_air_channels_read_air_tile_no_dequantize():
     g = _FakeGmap()
     g.atmosphere[1, 3] = 65536                # 1.0 atm Q16.16 — returned RAW
-    g.gas[SMOKE][1, 3] = 4242
+    # A Q16 signal of 4242, in the smoke plane's TRACE currency (#88 A7).
+    g.gas[SMOKE][1, 3] = gas_fixed.trace_from_bulk(4242)
     g.gas[O2][1, 3] = 13107
     g.water_depth[1, 3] = 999
     sim = _fake_sim(_sensor_accessor=EntityFieldAccessor(g))

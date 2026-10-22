@@ -590,7 +590,7 @@ def test_ambient_explicit_dials_parse_and_derive(tmp_path):
     a = _load_silent(_ambient_level(tmp_path, body=body)).ambient
     assert a.p_amb == 0.6 and a.o2_frac == 0.3
     # N-primary: N_total = quantize(0.6); split by 0.3; pin via the sim chain.
-    n_total = _amb._gas_fx.quantize_scalar(0.6)
+    n_total = _amb._gas_fx.quantize_bulk_scalar(0.6)
     assert a.n_total_q == n_total
     assert a.pin_q == _amb.effective_pin(n_total)
 
@@ -1020,10 +1020,13 @@ def test_ambient_udamp_grid_matches_sigma_band_geometry():
 @pytest.mark.skipif(bp is None, reason="needs the compiled breach_physics")
 def test_ambient_gate4_traces_absorbed_at_the_ring():
     """GATE 4 (spec §1, Erik B5 follow-up): the ambient ring is a TRACE SINK.
-    Smoke/trace planes advected toward the sky ring are reset to 0 there
-    (absorbed), the vacuum-breach idiom verbatim — so a trace cloud vents out
-    the open boundary instead of piling up against an invisible wall. Exercises
-    the SmokeDynamics::step is_ambient widening threaded from run_substeps."""
+    Trace riding (or diffusing) toward the sky ring EXPORTS there — booked in
+    the vent channel, never landing on the ring — and anything stranded on a
+    ring cell is zeroed and booked as the sink, so the ring holds no trace at
+    any tick and a trace cloud vents out the open boundary instead of piling
+    up against an invisible wall. Exercises smoke transport v2's ring
+    predicate (stage 3b + trace_tail, #12; was the SL step's is_ambient
+    widening)."""
     from simulation.physics_runner import PhysicsRunner
     g = _ambient_gmap(30, 30)
     runner = PhysicsRunner(bp)

@@ -92,6 +92,10 @@ std::vector<std::pair<int, int>> FireSimulation::step(
 ) const {
     const int n = h * w;
     const auto& p = params;
+    // smoke transport v2 (#12): the last use of `smoke` here (the [0, 1]
+    // clamp) is deleted; the parameter stays for signature back-compat (the
+    // `obstacles` idiom of run_substeps).
+    (void)smoke;
 
     // Early exit if no fire (mirrors the old behaviour). max_fire is an ORDER-FREE
     // integer max reduction; the threshold is a pinned Q16.16 compare.
@@ -398,12 +402,13 @@ std::vector<std::pair<int, int>> FireSimulation::step(
         }
     }
 
-    // --- Final clamp (fire and smoke only — atmosphere is unclamped) ---
-    // fire clamps to [0, FP_ONE] (Q16.16 [0,1]); smoke clamps the same.
+    // --- Final clamp (fire only — atmosphere is unclamped) ---
+    // fire clamps to [0, FP_ONE] (Q16.16 [0,1]). The SMOKE clamp that stood
+    // here is DELETED (smoke transport v2, #12, design §2.4): it cut every
+    // compressed tile back to 1 each tick, silently undoing the trace's
+    // conservation. No trace plane is clamped anywhere outside a reader.
     for (int i = 0; i < n; ++i) {
         fire[i] = clamp01_q(fire[i]);
-        if (smoke[i] < 0) smoke[i] = 0;
-        else if (smoke[i] > fp::FP_ONE) smoke[i] = fp::FP_ONE;
     }
 
     return destroyed;

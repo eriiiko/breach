@@ -187,9 +187,15 @@ class PhysicsRecorder:
             # state. (`smoke` is the SMOKE int32 view; all share the 2^16
             # scale.) The dtype guard makes this a no-op for any field that stays
             # float, so the same code is safe across the migration.
-            if name in ("wave_p", "wave_v", "wave_source", "smoke",
-                        "atmosphere", "wind_x", "wind_y", "fire",
-                        "temperature", "gas_o2") and \
+            # (#88: `smoke` is a TRACE plane, dequantized through its own
+            # currency; the rest stay Q16. The frozen .npz contract -- real
+            # units -- is unchanged.)
+            if name == "smoke" and arr.dtype == np.int32:
+                from simulation import gas_fixed
+                arr = gas_fixed.dequantize_trace(arr)
+            elif name in ("wave_p", "wave_v", "wave_source",
+                          "atmosphere", "wind_x", "wind_y", "fire",
+                          "temperature", "gas_o2") and \
                     arr.dtype == np.int32:
                 arr = arr.astype(np.float64) / 65536.0
             self.buffers[name][i] = arr

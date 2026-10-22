@@ -3,7 +3,6 @@
 #include <pybind11/stl.h>
 #include <array>
 #include "atmosphere_solver.h"
-#include "smoke_dynamics.h"
 #include "fire_simulation.h"
 #include "temperature_solver.h"
 #include "water_solver.h"
@@ -13,14 +12,13 @@
 #include "physics_engine.h"
 #include "bulk_transport.h"  // EOS refactor P1: expose bulk_flux_transport for direct unit test
 #include "sky_exchange.h"    // sky-exchange: planetside volumetric O2 replenishment (per-tick host pass)
-#include "fixed_point.h"   // Bedrock cliff-patch: expose smoke_cliff_count for unit test
+#include "fixed_point.h"   // the Q16.16 kit (quantize, make_recip, the trig kit, ...)
 #ifdef BREACH_HAS_CUDA
 #include "cuda_hello.h"        // CUDA-S0: hello-world map kernel + device info
 #include "cuda_spike.h"        // CUDA-S8a: residency spike (raw device pointer in)
-#include "cuda_resident.h"     // CUDA-S8a Path B: water/smoke resident launch cores
+#include "cuda_resident.h"     // CUDA-S8a Path B: water resident launch cores (+ the trace tail)
 #include "cuda_temperature.h"  // CUDA-S1: GPU temperature solver + backend flag
 #include "cuda_water.h"        // CUDA-S3: GPU water solver + backend flag
-#include "cuda_smoke.h"        // CUDA-S4a: GPU smoke solver + backend flag
 #include "cuda_fire.h"         // CUDA-S6: GPU fire solver + backend flag
 #include "cuda_sl_advection.h" // EOS P6.2: fused 3-field SL advection + backend flag
 #include "cuda_bulk_transport.h"  // EOS P6.1: GPU bulk donor-cell flux + backend flag
@@ -391,38 +389,9 @@ PYBIND11_MODULE(breach_physics, m) {
           "S8a Path B: water substep loop resident on device buffers (no per-substep "
           "transfer). Device pointers are CuPy .data.ptr uintptr_t.");
 
-    m.def("trace_smoke_resident",
-          [](std::uintptr_t d_gas_base, std::uintptr_t d_wx, std::uintptr_t d_wy,
-             std::uintptr_t d_solid, std::uintptr_t d_vac, std::uintptr_t d_perm,
-             std::uintptr_t d_amb,
-             int h, int w, int n_gases, int inert_n2_idx,
-             py::array_t<bool> gas_conservative,
-             py::array_t<float> gas_diffusion,
-             py::array_t<float> gas_decay,
-             float dt, float advection_rate, float wind_diffusion_scale) {
-              auto gc = gas_conservative.unchecked<1>();
-              auto gd = gas_diffusion.unchecked<1>();
-              auto gdc = gas_decay.unchecked<1>();
-              breach_cuda::trace_smoke_resident(
-                  reinterpret_cast<int32_t*>(d_gas_base),
-                  reinterpret_cast<const int32_t*>(d_wx),
-                  reinterpret_cast<const int32_t*>(d_wy),
-                  reinterpret_cast<const bool*>(d_solid),
-                  reinterpret_cast<const bool*>(d_vac),
-                  reinterpret_cast<const float*>(d_perm),
-                  reinterpret_cast<const bool*>(d_amb),
-                  h, w, n_gases, inert_n2_idx,
-                  gc.data(0), gd.data(0), gdc.data(0),
-                  dt, advection_rate, wind_diffusion_scale);
-          },
-          py::arg("d_gas_base"), py::arg("d_wx"), py::arg("d_wy"),
-          py::arg("d_solid"), py::arg("d_vac"), py::arg("d_perm"), py::arg("d_amb"),
-          py::arg("h"), py::arg("w"), py::arg("n_gases"), py::arg("inert_n2_idx"),
-          py::arg("gas_conservative"), py::arg("gas_diffusion"), py::arg("gas_decay"),
-          py::arg("dt"), py::arg("advection_rate"), py::arg("wind_diffusion_scale"),
-          "S8a Path B: per-tick trace-plane smoke loop + decay resident on device "
-          "(no per-plane transfer). gas_conservative/diffusion/decay are host (N,) "
-          "columns; field pointers are CuPy .data.ptr uintptr_t.");
+    // (`trace_smoke_resident` -- the resident path's old semi-Lagrangian trace
+    // loop -- is DELETED with cuda_smoke.cu, smoke transport v2 #12 P2b: the
+    // resident trace tail is PhysicsEngine.run_trace_tail_resident below.)
 
     // S8a Path A: resident-EOS telemetry (the gate's vacuousness guard) + the
     // TEST-ONLY device-MG-build parity probe (gate PART 1c).
@@ -1034,53 +1003,11 @@ PYBIND11_MODULE(breach_physics, m) {
           "S3 isolated: run the GPU water solver in place on water_depth/flow_vx/"
           "flow_vy (bit-identical to WaterSolver.step).");
 
-    // CUDA-S4a: the GPU smoke solver. The backend flag switches PhysicsEngine::
-    // run_substeps's per-gas smoke transport between the CPU SmokeDynamics::step
-    // and the GPU smoke_step (the live CPU fallback stays). cuda_smoke_step runs
-    // the 4-pass solver IN PLACE on `smoke` (one gas plane) for the isolated
-    // GPU-vs-CPU bit-identity gate. The solver's scalar dials (d_smoke /
-    // wind_diffusion_scale / advection_rate) are passed explicitly since
-    // smoke_step is a free function — mirroring the live SmokeDynamics.step
-    // binding's array args plus those scalars.
-    // (The S4b sink_hop half of this banner went with the pass — A9, 2026-08-04.)
-    m.def("set_smoke_backend",
-          [](bool use_cuda) { breach_cuda::set_smoke_backend_cuda(use_cuda); },
-          py::arg("use_cuda"),
-          "Switch PhysicsEngine's smoke pass to the GPU (True) "
-          "or CPU (False).");
-    m.def("get_smoke_backend",
-          []() { return breach_cuda::smoke_backend_is_cuda(); },
-          "True if the smoke pass currently runs on the GPU.");
-    m.def("cuda_smoke_step",
-          [](py::array_t<int32_t> smoke,        // Q16.16 int32 (one gas plane)
-             py::array_t<int32_t> wind_x,       // Q16.16 int32
-             py::array_t<int32_t> wind_y,       // Q16.16 int32
-             py::array_t<bool>  obstacles,
-             py::array_t<bool>  is_wall,
-             py::array_t<bool>  is_vacuum,
-             py::array_t<float> permeability,
-             float dt, float d_smoke,
-             float wind_diffusion_scale, float advection_rate) {
-              auto [sm, h, w]    = get_2d(smoke);
-              auto [wx, h2, w2]  = get_2d_const(wind_x);
-              auto [wy, h3, w3]  = get_2d_const(wind_y);
-              auto [obs, h4, w4] = get_2d_const(obstacles);
-              auto [wl, h5, w5]  = get_2d_const(is_wall);
-              auto [vac, h6, w6] = get_2d_const(is_vacuum);
-              auto [perm, h7, w7] = get_2d_const(permeability);
-              breach_cuda::smoke_step(sm, wx, wy, obs, wl, vac, perm, h, w, dt,
-                                      d_smoke, wind_diffusion_scale, advection_rate);
-          },
-          py::arg("smoke"), py::arg("wind_x"), py::arg("wind_y"),
-          py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
-          py::arg("permeability"), py::arg("dt"), py::arg("d_smoke"),
-          py::arg("wind_diffusion_scale"), py::arg("advection_rate"),
-          "S4a isolated: run the GPU smoke solver in place on one gas plane "
-          "(bit-identical to SmokeDynamics.step).");
-    // (cuda_smoke_sink_hop DELETED — audit Patch A / A9, 2026-08-04. It
-    // exposed breach_cuda::smoke_sink_hop, an orphaned GPU port whose CPU
-    // twin SmokeDynamics::sink_hop went with EOS refactor P3. No Python
-    // caller existed; the kernel is deleted in cuda_smoke.cu.)
+    // (CUDA-S4a's set_smoke_backend / get_smoke_backend / cuda_smoke_step are
+    // DELETED -- smoke transport v2, #12 P2a: the trace planes ride the bulk face
+    // flux inside the EOS substeps, so there is no per-call GPU smoke step to
+    // switch to or test in isolation; the resident path's old SL loop,
+    // `trace_smoke_resident`, went at P2b.)
 
     // CUDA-S5 (set_wave_backend / get_wave_backend / cuda_wave_substep) RETIRED
     // in EOS P6.0: the wave_substep solver it mirrored was deleted in P3 (the
@@ -1260,7 +1187,10 @@ PYBIND11_MODULE(breach_physics, m) {
              // #7 THE PRESSURE FACTOR: the materialized pressure plane (None ->
              // g == FP_ONE) + its two edges (Q16.16 atm; 0 / 0 == dormant).
              py::object atmosphere,
-             int32_t p_ext_q, int32_t p_full_q) -> py::tuple {
+             int32_t p_ext_q, int32_t p_full_q,
+             // #88 P2: the EOSSolver whose per-gas trace books the soot mint
+             // writes (the CPU CombustionSolver.step's `eos=` twin). OPTIONAL.
+             py::object eos) -> py::tuple {
               auto gv = gas.mutable_unchecked<3>();
               int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
               const int n_gases = static_cast<int>(gv.shape(0));
@@ -1334,6 +1264,14 @@ PYBIND11_MODULE(breach_physics, m) {
               }
               int64_t heat_floor_hits = 0, t_max_phys_hits = 0;
               int64_t e_deposit_drop_sum = 0;   // P-E2b
+              int64_t* t_mint = nullptr; int64_t* t_clip = nullptr; int64_t* t_neg = nullptr;
+              if (!eos.is_none() && black_smoke_idx >= 0 && black_smoke_idx < n_gases) {
+                  const EOSSolver& es = eos.cast<const EOSSolver&>();
+                  es.ensure_trace_books(n_gases);
+                  t_mint = &es.trace_mint_sum_[black_smoke_idx];
+                  t_clip = &es.trace_clip_sum_[black_smoke_idx];
+                  t_neg  = &es.trace_neg_hits_[black_smoke_idx];
+              }
               breach_cuda::combustion_step(
                   gas_ptr, n_gases, o2_idx, inert_n2_idx, black_smoke_idx,
                   temp, whp, f, fl, sol, vac, ign, h, w, dt, c_v, n_floor_heat,
@@ -1345,7 +1283,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   tsol, hshift, heat_ptr, H_BED_M, H_BED_SHIFT, dacc_ptr,
                   draw_r, perm_ptr, max_claimants,
                   fire_T_ext, fire_T_span, hotf_cap, tep, fpo,
-                  atm_ptr, p_ext_q, p_full_q);
+                  atm_ptr, p_ext_q, p_full_q, t_mint, t_clip, t_neg);
               return py::make_tuple(heat_floor_hits, t_max_phys_hits,
                                     e_deposit_drop_sum);
           },
@@ -1380,6 +1318,7 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("atmosphere") = py::none(),
           py::arg("p_ext_q") = 0,
           py::arg("p_full_q") = 0,
+          py::arg("eos") = py::none(),   // #88 P2: the soot mint's trace books
           "P6.9b isolated: run ONE GPU combustion step (the two-gather "
           "reformulation, continuous-O2 proportional demand) in place on the "
           "three gas planes + temperature + wall_hp (bit-identical to "
@@ -1729,19 +1668,8 @@ PYBIND11_MODULE(breach_physics, m) {
     m.attr("WATER_FP_SHIFT") = 16;
     m.attr("WATER_FP_ONE") = 65536;
 
-    // Bedrock cliff-patch: expose the integer smoke-CFL substep-count helper so a
-    // unit test (tests/test_bedrock_cliff_counts.py) can verify the SHIPPED C++
-    // (the real 128-bit / _umul128 path) against the Python reference mirror — not
-    // just a re-implementation. Args are the quantized Q16.16 cliff constants +
-    // the Q.32 integer max|wind|^2 (exactly what run_substeps feeds the engine).
-    m.def("smoke_cliff_count",
-          [](int32_t c4st_q, int32_t dsmoke_q, int32_t wds_q, int64_t mws_q32) {
-              return fixedpoint::smoke_cliff_count(c4st_q, dsmoke_q, wds_q, mws_q32);
-          },
-          py::arg("c4st_q"), py::arg("dsmoke_q"), py::arg("wds_q"),
-          py::arg("mws_q32"),
-          "Bedrock: integer smoke-CFL substep count "
-          "n=ceil(4*sim_time*d_smoke_max*(1+wds*max_wind_sq)) from quantized inputs.");
+    // (smoke_cliff_count — the integer smoke-CFL substep-count helper — is
+    //  DELETED with the n_smoke kit, smoke transport v2, #12.)
 
     // EOS refactor P1 (docs/eos_refactor_design.md §2.2): expose
     // bulk_flux_transport directly (not just via PhysicsEngine::run_substeps)
@@ -1949,6 +1877,40 @@ PYBIND11_MODULE(breach_physics, m) {
           "deposit_dT_wide_q16 on int32-range deposits. #78: fine_bits is the "
           "currency of a deposit in the sweep's fine heat currency, converted at "
           "the chain's final narrow (0: whole heat counts).");
+    // #88: THE TRACE CURRENCY, its constant and its kit, exposed so the Python
+    // twins (gas_fixed.TRACE_FINE_BITS / quantize_trace / trace_from_bulk /
+    // trace_density_shr, sweep_ref_q's) are held to the engine's value for value
+    // (tests/test_trace_currency.py, on the CPU module and -- inside
+    // run_cuda_script -- the CUDA one, so a stale build_cuda fails it).
+    m.attr("TRACE_FINE_BITS") = fixedpoint::TRACE_FINE_BITS;
+    m.attr("TRACE_SHIFT") = fixedpoint::TRACE_SHIFT;
+    m.attr("TRACE_CELL_MAX") = fixedpoint::TRACE_CELL_MAX;
+    m.def("fp_trace_add_sat",
+          [](int32_t s, int64_t add) {
+              int64_t clip = 0, neg = 0;
+              const int32_t stored = fixedpoint::trace_add_sat(s, add, &clip, &neg);
+              return py::make_tuple(stored, clip, neg);
+          },
+          py::arg("s"), py::arg("add"),
+          "fixed_point.h trace_add_sat (#88 P2): the counted int32 saturation, "
+          "from above only. Returns (stored, clip, neg_hits): a sum above "
+          "TRACE_CELL_MAX stores it and returns the excess as clip; a negative "
+          "sum is COUNTED (neg_hits = 1) and stored unclamped.");
+    m.def("fp_quantize_trace",
+          [](double v) { return fixedpoint::quantize_trace(v); },
+          py::arg("v"),
+          "fixed_point.h quantize_trace (#88): a real trace density -> the trace "
+          "currency, round-half-away, INT64 (never narrowed), range-checked.");
+    m.def("fp_trace_from_bulk",
+          [](int64_t q) { return fixedpoint::trace_from_bulk(q); },
+          py::arg("q"),
+          "fixed_point.h trace_from_bulk (#88): a bulk-count mass entering a "
+          "trace plane, q * 2^TRACE_FINE_BITS.");
+    m.def("fp_trace_density_shr",
+          [](int64_t s) { return fixedpoint::trace_density_shr(s); },
+          py::arg("s"),
+          "fixed_point.h trace_density_shr (#88): a density sum over trace planes "
+          "(coefficients Q16 per real unit) -> a Q16 fraction, s >> TRACE_SHIFT.");
     // #78: THE ONE CONVERSION out of the sweep's fine heat currency, exposed so
     // its Python twins (sweep_ref_q.fine_heat_shr, optics_fixed.fine_heat_shr)
     // are held to it value for value (tests/test_sweep_fine_currency.py).
@@ -2104,35 +2066,8 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
            py::arg("permeability"), py::arg("dt"));
 
-    // --- SmokeDynamics (uses precomputed wind from AtmosphereSolver) ---
-    py::class_<SmokeDynamics>(m, "SmokeDynamics")
-        .def(py::init<>())
-        .def_readwrite("d_smoke",               &SmokeDynamics::d_smoke)
-        .def_readwrite("advection_rate",         &SmokeDynamics::advection_rate)
-        .def_readwrite("wind_diffusion_scale",   &SmokeDynamics::wind_diffusion_scale)
-        // (sink_strength / vent_hops / sink_hop DELETED — EOS refactor P3,
-        // decisions.md #3: native venting replaces the BFS sink-pull.)
-        .def("step", [](const SmokeDynamics& self,
-                        py::array_t<int32_t> smoke,        // S2b: Q16.16 int32
-                        py::array_t<int32_t> wind_x,       // S2c: Q16.16 int32
-                        py::array_t<int32_t> wind_y,       // S2c: Q16.16 int32
-                        py::array_t<bool>  obstacles,
-                        py::array_t<bool>  is_wall,
-                        py::array_t<bool>  is_vacuum,
-                        py::array_t<float> permeability,
-                        float dt) {
-            auto [sm, h, w] = get_2d(smoke);
-            auto [wx, h2, w2] = get_2d_const(wind_x);
-            auto [wy, h3, w3] = get_2d_const(wind_y);
-            auto [obs, h4, w4] = get_2d_const(obstacles);
-            auto [wl, h5, w5] = get_2d_const(is_wall);
-            auto [vac, h6, w6] = get_2d_const(is_vacuum);
-            auto [perm, h7, w7] = get_2d_const(permeability);
-            self.step(sm, wx, wy, obs, wl, vac, perm, h, w, dt);
-        }, py::arg("smoke"), py::arg("wind_x"), py::arg("wind_y"),
-           py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
-           py::arg("permeability"),
-           py::arg("dt"));
+    // (--- SmokeDynamics binding DELETED — smoke transport v2, #12: the trace
+    //  planes ride the bulk face flux inside the EOS; no SL step remains.)
 
     // --- FireSimulation (signed-logistic feedback; fire_design_proposal §2/§3) ---
     py::class_<FireParams>(m, "FireParams")
@@ -3083,6 +3018,57 @@ PYBIND11_MODULE(breach_physics, m) {
             for (int64_t v : s.boundary_flux()) out.append(v);
             return out;
         })
+        // Smoke transport v2 (#12, design §3): the per-gas TRACE books, READ
+        // ONLY. The vent channel is boundary_flux()'s trace slots; these are
+        // its three siblings. Per tick (reset at step() entry, the trace tail
+        // adds after it), int64, never digested. Tests check the identity
+        //   Σ S(after) − Σ S(before) == deposits − vent − wipe − sink − decay.
+        // CURRENCY (#88): every slot is in ITS OWN plane's currency -- a trace
+        // gas's in trace counts (2^TRACE_SHIFT per real unit), a bulk gas's in
+        // Q16. No consumer may sum these (or boundary_flux()) across gases.
+        .def("trace_wipe_sum", [](const EOSSolver& s) {
+            py::list out;
+            for (int64_t v : s.trace_wipe_sum_) out.append(v);
+            return out;
+        })
+        .def("trace_sink_sum", [](const EOSSolver& s) {
+            py::list out;
+            for (int64_t v : s.trace_sink_sum_) out.append(v);
+            return out;
+        })
+        .def("trace_decay_sum", [](const EOSSolver& s) {
+            py::list out;
+            for (int64_t v : s.trace_decay_sum_) out.append(v);
+            return out;
+        })
+        // #88 P2 (design §5.1/§5.3): the counted saturation's books and the
+        // mint book, per gas, int64, in each plane's own currency, all >= 0.
+        // Their per-tick window is PhysicsRunner.step's (reset by
+        // reset_trace_sat_books at its head; W5/W3 write them before
+        // EOSSolver.step runs), so with the four books above and
+        // GameMap.trace_deposit_books / trace_clip_books:
+        //   Σ S(after) − Σ S(before) == mint + deposit − vent − wipe − sink
+        //                               − decay − clip    (− G6, unbooked)
+        .def("trace_clip_sum", [](const EOSSolver& s) {
+            py::list out;
+            for (int64_t v : s.trace_clip_sum_) out.append(v);
+            return out;
+        })
+        .def("trace_mint_sum", [](const EOSSolver& s) {
+            py::list out;
+            for (int64_t v : s.trace_mint_sum_) out.append(v);
+            return out;
+        })
+        .def("trace_neg_hits", [](const EOSSolver& s) {
+            py::list out;
+            for (int64_t v : s.trace_neg_hits_) out.append(v);
+            return out;
+        })
+        .def("reset_trace_sat_books", [](const EOSSolver& s, int n_gases) {
+            s.reset_trace_sat_books(n_gases);
+        }, py::arg("n_gases"),
+           "#88 P2: zero trace_clip_sum / trace_mint_sum / trace_neg_hits "
+           "(sized n_gases) -- PhysicsRunner's per-tick reset.")
         .def_readonly("digest_advect",      &EOSSolver::digest_advect)
         .def_readonly("digest_bulk_flux",   &EOSSolver::digest_bulk_flux)
         .def_readonly("digest_pstar",       &EOSSolver::digest_pstar)
@@ -3519,7 +3505,12 @@ PYBIND11_MODULE(breach_physics, m) {
                         // pressure plane `atmosphere` (Q16.16 atm). OPTIONAL —
                         // None -> nullptr -> g == FP_ONE, the pre-#7 law (the
                         // edges are the solver's own p_ext_q / p_full_q).
-                        py::object atmosphere) {
+                        py::object atmosphere,
+                        // #88 P2: the EOSSolver whose per-gas trace books the
+                        // soot mint writes (mint attempted, saturation clip,
+                        // negative hits, all at black_smoke_idx). OPTIONAL --
+                        // None -> unreported (the saturation still never wraps).
+                        py::object eos) {
             auto gv = gas.mutable_unchecked<3>();
             int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
             const int n_gases = static_cast<int>(gv.shape(0));
@@ -3606,11 +3597,20 @@ PYBIND11_MODULE(breach_physics, m) {
                 auto av = atm_arr.unchecked<2>();
                 atm_ptr = av.data(0, 0);
             }
+            int64_t* t_mint = nullptr; int64_t* t_clip = nullptr; int64_t* t_neg = nullptr;
+            if (!eos.is_none() && black_smoke_idx >= 0 && black_smoke_idx < n_gases) {
+                const EOSSolver& es = eos.cast<const EOSSolver&>();
+                es.ensure_trace_books(n_gases);
+                t_mint = &es.trace_mint_sum_[black_smoke_idx];
+                t_clip = &es.trace_clip_sum_[black_smoke_idx];
+                t_neg  = &es.trace_neg_hits_[black_smoke_idx];
+            }
             self.step(gas_ptr, n_gases, o2_idx, inert_n2_idx, black_smoke_idx,
                      temp, whp, f, fl, sol, vac, ign, h, w, dt, c_v, n_floor_heat,
                      tsol, hshift, heat_ptr, dacc_ptr,
                      draw_r, perm_ptr, max_claimants,
-                     gen_ptr, amb_ptr, t_amb_q, tep, fpo, atm_ptr);
+                     gen_ptr, amb_ptr, t_amb_q, tep, fpo, atm_ptr,
+                     t_mint, t_clip, t_neg);
         }, py::arg("gas"), py::arg("o2_idx"), py::arg("inert_n2_idx"),
            py::arg("black_smoke_idx"), py::arg("temperature"), py::arg("wall_hp"),
            py::arg("fire"), py::arg("flammable"), py::arg("solid"),
@@ -3628,7 +3628,8 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("t_amb_q") = 0,               // arc #54 T_AMB_K raw
            py::arg("fire_T_ext_plane") = py::none(),   // R3 per-material T_ext
            py::arg("fuel_per_o2_plane") = py::none(),  // R14 per-material fuel
-           py::arg("atmosphere") = py::none());        // #7 pressure factor input
+           py::arg("atmosphere") = py::none(),         // #7 pressure factor input
+           py::arg("eos") = py::none());               // #88 P2 trace mint books
 
     // --- WaterSolver (pipe model: damped velocity + donor-cell upwind flux;
     //     engine/07 §2, water_implementation_plan Step W1) ---
@@ -3752,9 +3753,6 @@ PYBIND11_MODULE(breach_physics, m) {
              "cell in (P5b).")
         .def_property_readonly("atmos",
             [](PhysicsEngine& e) -> AtmosphereSolver& { return e.atmos; },
-            py::return_value_policy::reference_internal)
-        .def_property_readonly("smoke",
-            [](PhysicsEngine& e) -> SmokeDynamics& { return e.smoke; },
             py::return_value_policy::reference_internal)
         .def_property_readonly("fire",
             [](PhysicsEngine& e) -> FireSimulation& { return e.fire; },
@@ -4382,6 +4380,39 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("d_thermal_solid") = 0,
            // arc #54 §2.2 (P-G2): the conserved gas energy field's device ptr.
            py::arg("d_gas_energy") = 0)
+        // Smoke transport v2 (#12, P2b): the resident trace TAIL (stranded
+        // zeroing -> Jacobi diffusion -> ceil decay) on the persistent device
+        // gas planes, booked into this engine's EOSSolver books exactly as the
+        // CPU tail in run_substeps books them. Host (n_gases,) columns +
+        // CuPy .data.ptr device pointers. Bound on every build — throws
+        // without CUDA.
+        .def("run_trace_tail_resident", [](PhysicsEngine& self,
+                                py::array_t<bool> gas_conservative,
+                                py::array_t<float> gas_diffusion,
+                                py::array_t<float> gas_decay,
+                                int h, int w, float sim_time,
+                                std::uintptr_t d_gas,
+                                std::uintptr_t d_solid,
+                                std::uintptr_t d_is_vacuum,
+                                std::uintptr_t d_is_ambient,
+                                std::uintptr_t d_dyn_permeability) {
+            auto gc = gas_conservative.unchecked<1>();
+            auto gd = gas_diffusion.unchecked<1>();
+            auto gdc = gas_decay.unchecked<1>();
+            const int n_gases = static_cast<int>(gc.shape(0));
+            if (gd.shape(0) != n_gases || gdc.shape(0) != n_gases)
+                throw std::invalid_argument(
+                    "run_trace_tail_resident: gas_conservative / gas_diffusion / "
+                    "gas_decay must all be (n_gases,)");
+            self.run_trace_tail_resident(
+                n_gases, gc.data(0), gd.data(0), gdc.data(0),
+                h, w, sim_time, d_gas, d_solid, d_is_vacuum,
+                d_is_ambient, d_dyn_permeability);
+        }, py::arg("gas_conservative"), py::arg("gas_diffusion"),
+           py::arg("gas_decay"), py::arg("h"), py::arg("w"),
+           py::arg("sim_time"), py::arg("d_gas"), py::arg("d_solid"),
+           py::arg("d_is_vacuum"), py::arg("d_is_ambient"),
+           py::arg("d_dyn_permeability"))
         // --- Patch 1 S4c: the water-layer array arithmetic ------------------
         // step_water moves the array-op body of PhysicsRunner._step_water into
         // C++ (substep loop + W5 flash-boil + W3 displacement/seal + the final

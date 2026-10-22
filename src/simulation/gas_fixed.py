@@ -1,66 +1,177 @@
-"""Q16.16 fixed-point helpers for the smoke + 5 gas planes (S2b).
+"""Fixed-point boundary helpers for the gas planes: THREE currencies, three names.
 
-The synced smoke/gas state — ``gmap.gas`` (the (N, h, w) density planes) and its
-``gmap.smoke`` view (SMOKE slice) — is int32 Q16.16, scale 2^16 == 65536,
-the SAME scale as water/heat/wave (so the whole fixed-point sim shares one
-domain). The gases are [0,1]-clamped tracers: 0 == clear, FP_ONE (65536) == fully
-opaque/saturated.
+``gmap.gas`` is ONE ``(N_GASES, h, w)`` int32 array holding two currencies
+(#88, docs/smoke_unit_rescale_design_2026-10-20.md §4):
 
-Unlike the conserved fields (water/atmosphere), smoke/gas are advected by an
-INTEGER semi-Lagrangian whose >>16 truncation is a deliberate gentle decay — so
-they are NON-conservative but DETERMINISTIC (Q-S2-1, docs/s2_fixed_point_plan.md
-§S2b). Integer +/-/* are exact + associative, so the transport is bit-identical
-cross-machine — that determinism, not conservation, is the contract.
+* the five TRACE planes (steam, smoke, poison, teargas, fuel_gas; ids
+  ``0 .. N_TRACE_GASES - 1``) are in the TRACE currency, ``TRACE_ONE =
+  2^(16 + TRACE_FINE_BITS)`` counts per real unit of density;
+* the two BULK planes (O2, inert_N2) stay Q16.16, ``BULK_ONE = 2^16`` counts
+  per real unit (one ambient air cell's worth of molecules is ~1.0).
 
-These helpers convert real density <-> Q16.16 at the boundaries (field edits, the
-recorder/render dequantize, tests). Mirrors C++
-``fixed_point.h`` exactly:
-  * quantize  — round-to-nearest (round-half-away-from-zero), matching
-    ``fixedpoint::quantize`` so a value written Python-side and one written
-    C++-side land on the same integer.
-  * dequantize — exact /65536.
+A third family, ``q16_*``, names the Q16 FRACTIONS and TEMPERATURES that used to
+borrow this module's ambiguous names (filter efficiencies, the O2 fraction,
+``t_min`` / ``t_max``, the sky lambda, the T_AMB fold): they are neither bulk
+nor trace, and must never move with the trace currency (critique A12).
 
-GPU note (Q-S2-6, frozen): the 5 [0,1]-clamped gas planes are recorded as
-int16(Q1.15) in the format-version tag for the eventual CUDA bandwidth win; we
-ship int32 on CPU now. The scale here (FP_ONE == 65536) is the int32 CPU form.
+The old ambiguous names (``FP_ONE``, ``FP_ONE_F``, ``SMOKE_MAX_Q``,
+``quantize``, ``quantize_scalar``, ``dequantize``, ``dequantize_f32``) are
+DELETED, so a site that was not moved to its own currency fails loudly with an
+AttributeError (V1's lint keeps them gone).
 
-Same scale as ``water_fixed`` / ``wave_fixed``; a separate module so each system
-names its own boundary helpers (no cross-import implying smoke "is" water/wave).
+``TRACE_FINE_BITS`` is a LITERAL twin of ``cpp/src/fixed_point.h``'s, not #78's
+read-through of the bound engine: this module is import-light and serves
+GameMaps that have no engine (level load, most unit tests, the tools), which a
+read-through would silently read at 0 bits (critique C5). The twins, the
+integer reference's and the digest spec's are held equal by
+``tests/test_trace_currency.py``.
+
+Rounding matches ``fixedpoint::quantize`` exactly: round-half-away-from-zero, so
+a value written Python-side and one written C++-side land on the same integer.
+Coefficients (``heat_absorb_q16``, ``light_absorb_q16``, ...) stay Q16 per REAL
+unit; a density law over the trace planes absorbs the extra bits in its one
+shift, ``trace_density_shr``.
 """
 from __future__ import annotations
 
 import numpy as np
 
-FP_SHIFT = 16
-FP_ONE = 1 << FP_SHIFT          # 65536
-FP_ONE_F = float(FP_ONE)
-# [0,1] tracer saturation ceiling in Q16.16 (the integer clamp the solver applies).
-SMOKE_MAX_Q = FP_ONE
+# ---- Q16 fractions and temperatures (A12) ---------------------------------
+Q16_SHIFT = 16
+Q16_ONE = 1 << Q16_SHIFT                 # 65536: a Q16 fraction's 1.0
+_Q16_ONE_F = float(Q16_ONE)
+
+# ---- the BULK planes (O2, inert_N2): Q16.16 --------------------------------
+BULK_SHIFT = 16
+BULK_ONE = 1 << BULK_SHIFT               # 65536 counts per real unit
+_BULK_ONE_F = float(BULK_ONE)
+
+# ---- the TRACE planes (#88) -----------------------------------------------
+# The trace currency's extra fractional bits. THE twin of fixed_point.h
+# TRACE_FINE_BITS (a literal, see the module docstring).
+TRACE_FINE_BITS = 8
+TRACE_SHIFT = 16 + TRACE_FINE_BITS
+# One unit of trace density. NOT a ceiling: smoke transport v2 (#12) deleted
+# every trace clamp outside a reader, so a compressed pocket can hold more.
+TRACE_ONE = 1 << TRACE_SHIFT
+_TRACE_ONE_F = float(TRACE_ONE)
+# The int32 storage's representability limit (the counted saturation, §5.3).
+TRACE_CELL_MAX = (1 << 31) - 1
 
 
-def quantize(value):
-    """Real density (scalar or array) -> Q16.16 int32, round-half-away-from-zero.
-
-    Matches ``fixedpoint::quantize``: a positive value adds 0.5 before
-    truncation, a negative subtracts 0.5. Computed in float64 (exact for the
-    in-range [0,1] densities).
-    """
-    arr = np.asarray(value, dtype=np.float64) * FP_ONE_F
-    out = np.where(arr >= 0.0, np.floor(arr + 0.5), np.ceil(arr - 0.5))
-    return out.astype(np.int32)
+def _round_half_away(scaled):
+    """float64 array -> float64 array of integers, round-half-away-from-zero
+    (``fixedpoint::quantize``'s +/-0.5 then truncate)."""
+    return np.where(scaled >= 0.0, np.floor(scaled + 0.5), np.ceil(scaled - 0.5))
 
 
-def quantize_scalar(value: float) -> int:
-    """Scalar density -> Q16.16 int (round-half-away-from-zero)."""
-    v = float(value) * FP_ONE_F
+def _round_half_away_scalar(v: float) -> int:
     return int(np.floor(v + 0.5) if v >= 0.0 else np.ceil(v - 0.5))
 
 
-def dequantize(q):
-    """Q16.16 int32 (scalar or array) -> float64 (exact /65536)."""
-    return np.asarray(q, dtype=np.float64) / FP_ONE_F
+# ---- Q16 fractions / temperatures ----------------------------------------
+def quantize_q16_scalar(value: float) -> int:
+    """A Q16 fraction or temperature -> its Q16 int (round-half-away)."""
+    return _round_half_away_scalar(float(value) * _Q16_ONE_F)
 
 
-def dequantize_f32(q):
-    """Q16.16 int32 -> float32 (the renderer/recorder float bridge)."""
-    return (np.asarray(q, dtype=np.float64) / FP_ONE_F).astype(np.float32)
+def dequantize_q16(q):
+    """Q16 int (scalar or array) -> float64, exact /2^16."""
+    return np.asarray(q, dtype=np.float64) / _Q16_ONE_F
+
+
+# ---- bulk -----------------------------------------------------------------
+def quantize_bulk(value):
+    """Real bulk density (scalar or array) -> Q16.16 int32, round-half-away."""
+    arr = np.asarray(value, dtype=np.float64) * _BULK_ONE_F
+    return _round_half_away(arr).astype(np.int32)
+
+
+def quantize_bulk_scalar(value: float) -> int:
+    """Scalar bulk density -> Q16.16 Python int (round-half-away)."""
+    return _round_half_away_scalar(float(value) * _BULK_ONE_F)
+
+
+def dequantize_bulk(q):
+    """Bulk Q16.16 (scalar or array) -> float64, exact /2^16."""
+    return np.asarray(q, dtype=np.float64) / _BULK_ONE_F
+
+
+def dequantize_bulk_f32(q):
+    """Bulk Q16.16 -> float32 (the render float bridge)."""
+    return (np.asarray(q, dtype=np.float64) / _BULK_ONE_F).astype(np.float32)
+
+
+# ---- trace ----------------------------------------------------------------
+def quantize_trace(value):
+    """Real trace density (scalar or array) -> the trace currency as an INT64
+    array, round-half-away. It never narrows (critique A3): only the counted
+    saturation narrows to the int32 plane, so an out-of-range seed is seen,
+    never wrapped. Exact in float64 for any int32-representable result."""
+    arr = np.asarray(value, dtype=np.float64) * _TRACE_ONE_F
+    return _round_half_away(arr).astype(np.int64)
+
+
+def quantize_trace_scalar(value: float) -> int:
+    """Scalar trace density -> the trace currency, a Python int (round-half-
+    away). A gate's threshold is quantized here, at the trace currency (A1)."""
+    return _round_half_away_scalar(float(value) * _TRACE_ONE_F)
+
+
+def dequantize_trace(q):
+    """Trace counts (scalar or array) -> float64 real density, exact
+    /2^TRACE_SHIFT (a power of two: float-identical on S_old * 2^k)."""
+    return np.asarray(q, dtype=np.float64) / _TRACE_ONE_F
+
+
+def dequantize_trace_f32(q):
+    """Trace counts -> float32 real density (the renderer / recorder bridge)."""
+    return (np.asarray(q, dtype=np.float64) / _TRACE_ONE_F).astype(np.float32)
+
+
+def trace_density_shr(s: int) -> int:
+    """sum_g coef_q16[g] * S_g (S in trace counts, coef Q16 per real unit) ->
+    a Q16 fraction: ``s >> TRACE_SHIFT`` (fixed_point.h trace_density_shr).
+    The sum is never negative (each term clamps a negative density to 0)."""
+    s = int(s)
+    if s < 0:
+        raise ValueError(f"trace_density_shr: negative density sum {s}")
+    return s >> TRACE_SHIFT
+
+
+def trace_to_q16(s):
+    """Trace counts (scalar or array) -> Q16 counts, floor (``>>
+    TRACE_FINE_BITS``): the smoke sensor's signal currency (critique A7). An
+    array stays int32 (the shift only narrows); a scalar is a Python int."""
+    if np.isscalar(s) and not isinstance(s, np.ndarray):
+        return int(s) >> TRACE_FINE_BITS
+    return np.right_shift(np.asarray(s), TRACE_FINE_BITS)
+
+
+def trace_from_bulk(q):
+    """A bulk-count (Q16) mass entering a trace plane: ``q * 2^TRACE_FINE_BITS``
+    (fixed_point.h trace_from_bulk: the soot mint). Non-negative by contract;
+    an array comes back int64 (never narrowed), a scalar as a Python int."""
+    if np.isscalar(q) and not isinstance(q, np.ndarray):
+        q = int(q)
+        if q < 0:
+            raise ValueError(f"trace_from_bulk: negative mass {q}")
+        return q * (1 << TRACE_FINE_BITS)
+    arr = np.asarray(q, dtype=np.int64)
+    if (arr < 0).any():
+        raise ValueError("trace_from_bulk: negative mass")
+    return arr * (1 << TRACE_FINE_BITS)
+
+
+def trace_add_sat(s: int, add: int):
+    """The counted int32 saturation (§5.3), the twin of fixed_point.h
+    trace_add_sat: ``t = s + add`` exactly; above TRACE_CELL_MAX it stores
+    TRACE_CELL_MAX and returns the excess as ``clip``. It saturates from ABOVE
+    ONLY: a negative ``t`` is a contract violation and raises (clamping it would
+    mint unbooked mass, critique A4). Returns ``(stored, clip)`` as Python ints."""
+    t = int(s) + int(add)
+    if t < 0:
+        raise ValueError(f"trace_add_sat: negative result {t} (s={s}, add={add})")
+    if t > TRACE_CELL_MAX:
+        return TRACE_CELL_MAX, t - TRACE_CELL_MAX
+    return t, 0

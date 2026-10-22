@@ -226,8 +226,9 @@ FP_HD inline int64_t fleck_L_gas_q(int64_t ex, int32_t a_gas, int32_t n_bulk,
 // ---- the GAS extinction (ray-engine-v2 P5a, design v3 §6.3; FP_HD: the
 // CUDA twin's pre-pass calls these very functions) ---------------------------
 // Smoke absorbs heat by the DENSITY LAW, on a GAS cell (not a thermal solid):
-//     a_gas = min(ONE, Σ_g heat_absorb_q16[g] · max(0, N_g) >> 16)
+//     a_gas = min(ONE, trace_density_shr(Σ_g heat_absorb_q16[g] · max(0, N_g)))
 //           = 0                      where N_bulk < gas_energy::N_EPS_RAW
+// (N_g in the TRACE currency, 2^(16 + TRACE_FINE_BITS) per real unit, #88)
 // Absorption proportional to the number of absorbers IS the density law, and
 // what thin smoke does not absorb continues down the stream. The floor is the
 // canonical one ("ONE value, every file"): a sub-N_EPS cell is DEFINED to read
@@ -244,10 +245,12 @@ FP_HD inline int64_t gas_density_term(int32_t hq, int32_t n_g) {
     return (n_g > 0) ? (int64_t)hq * (int64_t)n_g : (int64_t)0;
 }
 
-// The law's finish: the bulk floor, then one shift and the ONE cap.
+// The law's finish: the bulk floor, then one shift and the ONE cap. The sum is
+// over TRACE planes (the gases door refuses an optical coefficient on a bulk
+// row, #88 V10), so the shift is the trace currency's own, trace_density_shr.
 FP_HD inline int32_t gas_extinction_finish(int64_t sum, int32_t n_bulk) {
     if ((int64_t)n_bulk < gas_energy::N_EPS_RAW) return 0;
-    const int64_t a = sum >> fixedpoint::FP_SHIFT;
+    const int64_t a = fixedpoint::trace_density_shr(sum);
     return (a > (int64_t)fixedpoint::FP_ONE) ? fixedpoint::FP_ONE : (int32_t)a;
 }
 
@@ -273,7 +276,7 @@ FP_HD inline int32_t exp_neg_q16(int64_t x_q) {
 
 FP_HD inline int32_t gas_extinction_exp_finish(int64_t sum, int32_t n_bulk) {
     if ((int64_t)n_bulk < gas_energy::N_EPS_RAW) return 0;
-    return fixedpoint::FP_ONE - exp_neg_q16(sum >> fixedpoint::FP_SHIFT);
+    return fixedpoint::FP_ONE - exp_neg_q16(fixedpoint::trace_density_shr(sum));
 }
 
 // The two planes the sweep then READS on every cell (design §2.3's a_i, d_i):
