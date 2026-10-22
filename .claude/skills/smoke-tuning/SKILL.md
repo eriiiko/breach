@@ -17,6 +17,9 @@ The smoke you see is two things stacked:
   from above. This decides how it LOOKS.
 
 Tuning the look means the second. Touch the first only in one of Erik's physics sessions.
+A session about FIRE and its smoke together (brightness, glow through smoke, smoke
+lifetime, vents) starts from the `fire-smoke-tuning` skill, which routes here for the
+relief dials.
 
 ## 1. Which dial is which: render or physics
 
