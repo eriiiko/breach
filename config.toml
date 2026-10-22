@@ -1469,9 +1469,16 @@ kelvin_floor = 800.0       # LUT low end (K)
 kelvin_ceil = 10000.0      # LUT high end (K)
 lut_size = 256             # LUT entries
 kelvin_glow_min = 800.0    # below this: no visible glow (intensity 0)
-kelvin_ref = 1300.0        # exposure reference temperature (Macklin)
+kelvin_ref = 1300.0        # exposure reference temperature (Macklin): the temperature that reads as
+                           # intensity 1. Erik's ruling 2026-10-22 (#12 fire + smoke session): 3000 -> 1300 K,
+                           # a wood fire's temperature, so a fire reads bright the way an eye adapted to a dark
+                           # room sees it (at 3000 K a 1300 K tile drew at 0.003 and the fire was invisible and
+                           # lit nothing). Only brightness moves; the colour stays black-body. Erik: "rich
+                           # deepness ... looks really really great". The sweep's light table is derived from
+                           # this: retune => tools/gen_light_table.py --write + a C++ rebuild.
 intensity_exponent = 4.0   # Stefan-Boltzmann flavour (T⁴)
-intensity_max = 64.0       # HDR headroom pre-tonemap (16F pipeline + ACES; NO bloom)
+intensity_max = 64.0       # HDR headroom pre-tonemap (16F pipeline + ACES; NO bloom). 8 -> 64 with the anchor
+                           # move (2026-10-22): at 8 everything above ~1650 K would clip to one brightness
 
 # (The [render.fire_lights] section -- B1's brightest-K fire lights for the old
 # render march -- is DELETED at ray-engine-v2 P6c with renderer/fire_lights.py:
