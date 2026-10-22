@@ -51,11 +51,11 @@ TILE_SIZE_M = studio.TILE_SIZE_M
 DEFAULT_OUT_DIR = ROOT / "levels" / LEVEL_NAME
 
 # The marines' 3x3 footprints (top-left tile), side by side north of the fire.
-SPAWNS = (("Alpha", 19, 20), ("Bravo", 24, 20), ("Cobra", 29, 20))
+SPAWNS = (("Alpha", 19, 12), ("Bravo", 24, 12), ("Cobra", 29, 12))
 
-FIRE_ROW_Y = 30
+FIRE_ROW_Y = 22
 FIRE_ROW_X = (23, 27)          # inclusive: five tiles, centred under Bravo
-LONE = (38, 38)                # the lone burning tile
+LONE = (37, 27)                # the lone burning tile
 
 IGNITE_AT_S = 0.5
 # (id, x, y, payload, first_at_s) -- the explosion studio's charge tuple. Each
