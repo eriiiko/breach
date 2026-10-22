@@ -1818,3 +1818,36 @@ the RTX 3070: 0.5-1 s a shot after the first.
    bust and arms, and the piping only on the cut edges (no princess seams).
 6. **A lip highlight reads as a fang** in the concept framing (the VRoid face texture's lower-lip gloss).
 7. **Hands**: VRoid's simple hands, fingers relaxed by a fixed curl; fine at full figure, plain in close-up.
+
+### B against the merged scratch build (B2e), against the four references (worst first)
+
+- **Face** (`vroid_face.jpg`): B2e is closer to the drawings in its features -- the eye shape and size, the blush, the nose's
+  glow, the fuller lower face were traced off the close-ups; B is VRoid's younger face (big round eyes, a V chin, no blush).
+  B is smoother and cleaner (no hard shapes), and its painted eyes and lashes read as drawn anime; at the drawings' framing its
+  face is the larger one for the same eye-to-chin height (a child's proportions).
+- **Hair** (`vroid_whatif_hair.jpg`, `vroid_face.jpg`): from the front B's is closer (one soft mass, the drawn pointed fringe
+  to the lashes with a lock between the eyes, straight locks to the chest); from 60-120 deg B2e's is better (B shows the
+  sample's whorl at the back of the crown). A real long VRoid hairstyle (the what-if) is smooth all round -- the editor's
+  output is the quality the drawings want; the sample's does not have the drawn fringe.
+- **Body** (`vroid_full.jpg`, `vroid_vs_concept.jpg`): B is closer -- slim, long-legged, soft anime forms; B2e is heavier
+  (thick thighs, broad hips, muscular calves) and its surfaces read "hard", as the owner judged.
+- **Suit**: B follows the four references' design (high-cut leotard, bare hips, thigh-high stockings, stand collar, zip to the
+  belly); B2e wears the A-pose sheet's full-length suit with knee pads and boots. B2e's latex has more wet highlights and its
+  piping and seams are modelled; B's are a material (piping on the cut edges only).
+- **Whole figure in the concept framing** (`vroid_vs_concept.jpg`): B reads closer to concept.jfif as a whole (proportions,
+  silhouette, suit), B2e closer in the face.
+
+### Recommendation
+
+Continue on the VRoid route (B), and make the head in VRoid Studio rather than by script. The script-side route works and is
+cheap: one CC0 file plus about 1,000 lines (kit + tables + driver) rebuild the whole figure in 30 s, and every change is a
+table entry; the body, the suit-as-layers, the posing and the toon look carry over to any VRoid export. What a script cannot do
+well from the samples is exactly what is left: the face's shape (VRoid's face sliders -- eye size and shape, chin, face
+length -- are GUI-only and baked into the export) and a hairstyle (the samples' hair is a fixed set of cards; lengthening
+them by script works from the front, not round the crown). So the next round: the owner makes Beatrice's head in VRoid Studio
+(the base female, the face sliders to the close-ups, the hair editor for the drawn fringe and the long straight back, her
+colours) and exports a VRM (his own work, no licence question); this script then takes that file in place of
+`HairSample_Female.vrm` (`BASE_B`; `HAIR_B`'s lengthening switched off) and keeps the suit, the posing and the look. Script
+work for that round: B2e's per-lock hair light on VRoid cards (a per-card share from their UVs), princess seams in the
+suit's fields, boots and heels if the owner wants them, the lip highlight. Variant A (the VRoid head on the scratch body) is
+not worth building given the owner's verdict on the scratch body.
