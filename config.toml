@@ -1469,9 +1469,9 @@ kelvin_floor = 800.0       # LUT low end (K)
 kelvin_ceil = 10000.0      # LUT high end (K)
 lut_size = 256             # LUT entries
 kelvin_glow_min = 800.0    # below this: no visible glow (intensity 0)
-kelvin_ref = 3000.0        # exposure reference temperature (Macklin)
+kelvin_ref = 1300.0        # exposure reference temperature (Macklin)
 intensity_exponent = 4.0   # Stefan-Boltzmann flavour (T⁴)
-intensity_max = 8.0        # HDR headroom pre-tonemap (16F pipeline + ACES; NO bloom)
+intensity_max = 64.0       # HDR headroom pre-tonemap (16F pipeline + ACES; NO bloom)
 
 # (The [render.fire_lights] section -- B1's brightest-K fire lights for the old
 # render march -- is DELETED at ray-engine-v2 P6c with renderer/fire_lights.py:
