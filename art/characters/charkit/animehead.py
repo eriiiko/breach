@@ -586,6 +586,8 @@ def face_masks(head, V):
         out["art_u"] = x / x1
         out["art_v"] = (z - z0) / (z1 - z0)
         out["art_w"] = _ramp(-y, *art.get("front", (0.040, 0.055)))
+        if (art.get("nose") or {}).get("view"):   # B2e: the signed x (m), for the nose's own layer (`nose_art`)
+            out["art_x"] = V[:, 0].copy()
     return out
 
 
@@ -758,7 +760,11 @@ def face_art(head, art, p):
                       c("BROW"), 0.9, soft=1.2)
     # --- the nose: a soft teardrop highlight (narrow at the top), its glint, the nostril strokes
     no = art.get("nose")
-    if no:
+    if no and no.get("view"):   # B2e: the highlight is its own layer (`nose_art`), faded by the view; the nostrils stay here
+        pts, wd, na = no["nostril"]
+        pts = np.asarray(pts, float)
+        cv.stroke(pts, np.interp(np.linspace(0, 1, len(pts)), *zip(*wd)), c("NOSTRIL" if "NOSTRIL" in p else "LIP_LINE"), na, soft=1.5)
+    elif no:
         zt, zb, hw, edge, a = no["hi"]
 
         def tear(X, Z):
@@ -787,6 +793,37 @@ def face_art(head, art, p):
         pts = np.asarray(mo["line"], float)
         cv.stroke(pts, np.interp(np.linspace(0, 1, len(pts)), *zip(*mo["width"])), c("MOUTH_LINE" if "MOUTH_LINE" in p else "LIP_LINE"),
                   mo.get("alpha", 0.9), soft=mo.get("soft", 2.0))
+    return cv
+
+
+def nose_art(art, p):
+    """B2e: the nose's highlight as its OWN layer (signed x: the drawn highlight sits on the lit side of the tip, not on the
+    midline), its alpha an INTENSITY the material thresholds by the view (`materials`): seen from the front the whole soft
+    glow, at three-quarter only its core on the tip, gone by 60 deg -- B2d's front-projected highlight landed on the nose's
+    flank at 30-60 deg as a flat white patch. Shapes from `art["nose"]["view"]`: `frame` (half-width x, z0, z1), `hi` = ((x, z)
+    centre, (rx, rz), edge (soft share of the radius), alpha, taper (narrower towards the top)), `glint` ((x, z), (rx, rz),
+    alpha), `halo` ((x, z), (rx, rz), alpha: the warm shade round it). Returns the Canvas (columns from x = -frame[0])."""
+    v = art["nose"]["view"]
+    nx, z0, z1 = v["frame"]
+    cv = Canvas(2 * nx, z0, z1, art["px"])
+    c = lambda k: _srgb(p[k])
+
+    def blob(cx, cz, rx, rz, edge, taper=0.0):
+        def f(X, Z):
+            zz = (Z - cz) / rz
+            rxe = rx * np.clip(1.0 - taper * zz, 0.4, 2.0)
+            d = np.sqrt(((X - nx - cx) / rxe) ** 2 + zz ** 2)
+            q = np.clip((d - (1.0 - edge)) / (2.0 * edge), 0.0, 1.0)
+            return 1.0 - q * q * (3 - 2 * q)
+        return f
+    full = ((0.0, z0), (2 * nx, z1))
+    if v.get("halo"):
+        (hx, hz), (hrx, hrz), ha = v["halo"]
+        cv.field(blob(hx, hz, hrx, hrz, 0.5), *full, c("BLUSH"), ha)
+    (cx, cz), (rx, rz), edge, a, taper = v["hi"]
+    cv.field(blob(cx, cz, rx, rz, edge, taper), *full, c("NOSE_HI"), a)
+    (gx, gz), (grx, grz), ga = v["glint"]
+    cv.field(blob(gx, gz, grx, grz, 0.6), *full, c("NOSE_GLINT"), ga)
     return cv
 
 
@@ -828,6 +865,29 @@ def materials(prefix, p, eyes=None, face=None):
         t.put(uv.inputs[1], t.attr("art_v"))
         t.put(tex.inputs["Vector"], uv.outputs[0])
         col = t.mix(t.math("MULTIPLY", tex.outputs["Alpha"], t.attr("art_w")), col, tex.outputs["Color"])
+        nv = (art.get("nose") or {}).get("view")
+        if nv:   # B2e: the nose's highlight layer (`nose_art`), its intensity thresholded by how square the view is to the face
+            # (the shading normal against the view: the toon look's simple-head normals, so the whole tip turns as one)
+            nx, nz0, nz1 = nv["frame"]
+            x1, z0, z1 = art["frame"]
+            nimg = nose_art(art, p).image(prefix + "_nose_art")
+            ntex = t.n("ShaderNodeTexImage")
+            ntex.image, ntex.interpolation, ntex.extension = nimg, "Linear", "CLIP"
+            nuv = t.n("ShaderNodeCombineXYZ")
+            t.put(nuv.inputs[0], t.math("DIVIDE", t.math("ADD", t.attr("art_x"), nx), 2 * nx))
+            zz = t.math("ADD", t.math("MULTIPLY", t.attr("art_v"), z1 - z0), z0)
+            t.put(nuv.inputs[1], t.math("DIVIDE", t.math("SUBTRACT", zz, nz0), nz1 - nz0))
+            t.put(ntex.inputs["Vector"], nuv.outputs[0])
+            geo = t.n("ShaderNodeNewGeometry")
+            dot = t.n("ShaderNodeVectorMath", operation="DOT_PRODUCT")
+            t.put(dot.inputs[0], geo.outputs["Normal"])
+            t.put(dot.inputs[1], geo.outputs["Incoming"])
+            c0, c1, thr = nv["fade"]
+            vf = t.ramp(dot.outputs["Value"], c0, c1)
+            th = t.math("MULTIPLY", t.math("SUBTRACT", 1.0, vf), thr)
+            na = t.math("DIVIDE", t.math("SUBTRACT", ntex.outputs["Alpha"], th), t.math("SUBTRACT", 1.0, th), clamp=True)
+            na = t.math("MULTIPLY", na, t.math("SQRT", vf))
+            col = t.mix(t.math("MULTIPLY", na, t.attr("art_w")), col, ntex.outputs["Color"])
     else:
         col = t.mix(t.math("MULTIPLY", t.attr("crease"), p.get("CREASE_AMOUNT", 0.55)), col, lin(p["CREASE"]))
         col = t.mix(t.math("MULTIPLY", t.attr("lowlash"), 0.75), col, lin(p["LASH_LOW"]))

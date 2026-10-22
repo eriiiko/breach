@@ -89,7 +89,7 @@ PALETTE = dict(
     NOSE_GLINT="#ffffff",    # the glint in the nose's highlight
     LIP_GLOSS="#fde9e4",     # the lower lip's gloss
     MOUTH_LINE="#8a403b",    # the drawn mouth line, a dark rose-brown
-    NOSTRIL="#8e5047",       # the nostril strokes
+    NOSTRIL="#9a5a50",       # the nostril strokes (B2e: a touch lighter, review 12: "a little dark"; B2d #8e5047)
     BLUSH_AMOUNT=0.8,        # B2d: wider and stronger than B2b's (0.55 by default; review 11: ~40 % of the drawing's)
 )
 # B1m (the owner, 2026-10-19: "going very glossy is fine"): B1l's "wet" look is the default; B1b-B1l's satin is VARIANTS["satin"]
@@ -1169,6 +1169,17 @@ FACE = dict(FACE, egg=dict(FACE["egg"], side_smooth=6.0),
             # the ear's top rounder (B2c read slightly pointed at 30-60 deg): the upper plate 2 mm lower and 1.5 mm wider
             # backwards (B2c: centre (0.005, 0, 0), radii (0.019, 0.0135, 0.006))
             ear=dict(FACE["ear"], plates=(((0.004, 0.0012, 0.0), (0.0180, 0.0150, 0.0060)),) + FACE["ear"]["plates"][1:]))
+
+# B2e (review 12 item 3): the nose's highlight a soft-edged, warm, smaller glow with a small glint, on the lit side of the tip as
+# drawn (the close-up's: centred 4-5 mm to her right of the nostrils, 12.9 mm wide, z 1.5305-1.5423; B2d's sat on the midline,
+# a flat trapezoid with a hard edge), on its own layer whose intensity is thresholded by the view (`animehead.nose_art`): the
+# whole glow from the front, its core on the tip at three-quarter, nothing on the flank by 60 deg. `frame` (half-width, z0,
+# z1), `hi` ((x, z), (rx, rz), soft share, alpha, taper), `glint`, `halo` (the warm shade round it), `fade` (N.V from, to;
+# how much of the glow the turned view drops)
+FACE = dict(FACE, art=dict(FACE["art"], nose=dict(FACE["art"]["nose"], view=dict(
+    frame=(0.014, 1.520, 1.552), hi=((-0.0035, 1.5368), (0.0047, 0.0054), 0.35, 0.85, 0.15),
+    glint=((-0.0012, 1.5330), (0.0006, 0.0009), 0.95), halo=((-0.0020, 1.5345), (0.0085, 0.0075), 0.18),
+    fade=(0.55, 0.95, 0.60)))))
 
 # The eyes (her left; mirrored), in the front view: the lid curves (x, z) traced on the close-up, the iris, the eye
 # surface's dome, the upper lash band.
