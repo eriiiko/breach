@@ -424,7 +424,7 @@ def build_hands(F, M, coll="Hands"):
     Bv = unit(b - (b @ L) * L)
     wrist = w + L * h["drop"]
     parts.hand("Hand", wrist, L, Bv, M["skin"], coll, scale=h["scale"], curl=h["curl"], girth=h["girth"], palm_girth=h["palm_girth"],
-               palm=h["palm"])
+               palm=h["palm"], **{k: h[k] for k in ("thumb_dir", "fan", "knuckle", "finger_len") if k in h})
     garment.close_holes([o for o in bpy.data.objects if o.name.startswith("Hand_")])
 
 

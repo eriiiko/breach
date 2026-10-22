@@ -38,6 +38,23 @@ def row_runs(row, min_len=3, max_gap=2):
     return [(a, b) for a, b in runs if b - a >= min_len]
 
 
+def fill_enclosed(mask):
+    """The mask with every hole it encloses filled: background is what connects to the border."""
+    bg = np.zeros_like(mask)
+    bg[0, :], bg[-1, :], bg[:, 0], bg[:, -1] = ~mask[0, :], ~mask[-1, :], ~mask[:, 0], ~mask[:, -1]
+    free = ~mask
+    while True:
+        g = bg.copy()
+        g[1:] |= bg[:-1]
+        g[:-1] |= bg[1:]
+        g[:, 1:] |= bg[:, :-1]
+        g[:, :-1] |= bg[:, 1:]
+        g &= free
+        if (g == bg).all():
+            return ~bg
+        bg = g
+
+
 def fmt_runs(runs):
     return "  ".join("[%+.3f %+.3f]" % r for r in runs) if runs else "-"
 
@@ -47,8 +64,15 @@ class Sheet:
     from VIEW_AZIMUTH; `foot_row` / `top_row` are the pixel rows of the soles and the
     top of the head; `cut_row` blanks everything below it (labels, floor shadows)."""
 
-    def __init__(self, path, foot_row, top_row, height_m, panels, thr=0.075, cut_row=None, bg_cols=(8, 40), azimuth=None):
+    def __init__(self, path, foot_row, top_row, height_m, panels, thr=0.075, cut_row=None, bg_cols=(8, 40), azimuth=None,
+                 fill_holes=False, floor=None):
         self.path, self.foot_row, self.top_row, self.height_m = path, float(foot_row), float(top_row), height_m
+        # fill_holes: backdrop-coloured pixels the figure encloses (highlights on a glossy black
+        # suit read as backdrop) count as figure; only backdrop connected to the image border stays out
+        self.fill_holes = fill_holes
+        # floor = (row, thr): below that row a pixel must differ by `thr` to count (the drawing's
+        # soft floor shadows round the feet are not the figure); None keeps one threshold
+        self.floor = floor
         self.panels, self.thr, self.cut_row, self.bg_cols = panels, thr, cut_row, bg_cols
         # the side view's azimuth decides which way the profile faces: -90 shows the
         # character facing right, +90 facing left
@@ -72,9 +96,15 @@ class Sheet:
         rgb = self.image()[..., :3]
         a, b = self.bg_cols
         row_bg = np.median(rgb[:, a:b], axis=1)[:, None, :]
-        m = np.abs(rgb - row_bg).max(axis=2) > self.thr
+        diff = np.abs(rgb - row_bg).max(axis=2)
+        m = diff > self.thr
+        if self.floor is not None:
+            r, thr = self.floor
+            m[int(r):] = diff[int(r):] > thr
         if self.cut_row is not None:
             m[int(self.cut_row):, :] = False
+        if self.fill_holes:
+            m = fill_enclosed(m)
         return m
 
     def panel_slice(self, name):

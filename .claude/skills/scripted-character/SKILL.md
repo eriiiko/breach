@@ -164,9 +164,13 @@ What made the briefs work:
 ## Lessons
 
 1. **A fresh pair of eyes on the pictures.** The agents' numbers were accurate every time; their
-   reports were soft on looks (stage 2's incident). Whether a separate Opus reviewer given only
-   the pictures and the sheet catches as much as the orchestrator did is untested: try it on the
-   next character and compare the two lists.
+   reports were soft on looks (stage 2's incident). *2026-10-04, Beatrice:* tested once — a
+   separate Opus reviewer, given the pictures, the references and the owner's decisions, found
+   everything the orchestrator found and more (it opened all twelve renders, the orchestrator
+   four); both lists are in `art/characters/Beatrice/previews/review_stage1.md`. So the default
+   for stage 2 is now: the reviewer writes the defect list first, the orchestrator checks the top
+   items against the pictures and adds what only it knows (the owner's steer, presentation). One
+   character is one data point; keep comparing for the next two.
 2. **Put the first of a family in the real game before building the rest.** Two things only
    showed there: the navy coverall read light grey from above (the unit shader added an edge
    glow on top of the colour), and every model was drawn at the same height whatever its size.
@@ -194,6 +198,32 @@ What made the briefs work:
     "too stocky" by eye; the reviewer measured head, shoulders, arms and legs against the sheet
     and they agreed to a few pixels — the impression came from one bulky garment and crumpled
     cloth. The reviewer's brief should ask for those measurements, as this one did.
+11. *2026-10-08, Beatrice B1h–B1l:* **on a glossy surface, a field built from nodes shows.** Chains
+   of capsules (boot vamp, hand), a distance taken to the nearest of N sampled sections (the
+   sleeve, `kit.loft_sdf`), a C1 union, or a flat cliff where a field is clamped (the arm past its
+   root) all printed rings, blotches or folds in the reflections whatever the mesh resolution. The
+   cure each time: one continuous sweep, C2 unions (`bodysuit.smin3`), re-projection after
+   smoothing, normals from the field's gradient. **Diagnostic:** switch to the field's own normals
+   — a field fault gets WORSE, a mesh fault goes away. A zebra (reflection-line) render is the
+   proof picture for every surface fix.
+12. *Same run:* **one region per round, a vertex check against the saved previous `.blend`.** Each
+    round copied the last build's `.blend`, listed the objects allowed to move, and proved every
+    other one at max displacement 0; it caught a seam cord moved 0.019 mm and kept the pelvis
+    (waiting on Erik) frozen through five rounds of other work. Rounds cost 75–150 min and
+    390k–720k tokens each; a reviewer 7–20 min and 175k–260k.
+13. *Same run:* **a reviewer every round, and a whole-figure review once each part has had one.**
+    The whole-figure pass caught a regression the builder had called "much better" (a knot at
+    the back armpit) and ranked finish over anatomy as what was left.
+14. *2026-10-22, Beatrice B2e:* **anime hair's light is painted, not lit.** The drawings light her right side's outer hair
+    pale from the front and paint the same hair dark in profile and from behind; no lamp does both. A camera-space normal lobe
+    gated by side, world facing, view and a per-lock share (`toonlook.normal_lobe`) did, where a hair-only key light (light
+    linking) lit the profile too. Posing: hair rigid with the head bone to its tips goes into the body on any nod -- move it by
+    the trunk's height bands (`suitpose` attach `"trunk"`). Round cost: about 4.5 h, two full builds (8 min each) and the
+    picture set (15 min).
+15. *2026-10-22, Beatrice merged after B2e -- Erik's verdict:* the toon look (`charkit/toonlook.py`) is "great" and
+    stays; the modelled shapes are "too hard" -- not the quality hoped for after ~17 rounds of implicit-field modelling
+    (B1a-B2e). For the next hero character, look first for a base to start from (a free/licensed base body, face or
+    hairstyle mesh) before building every surface from fields; a helmet instead of modelled hair is on the table.
 
 ## What this skill does not cover yet
 
