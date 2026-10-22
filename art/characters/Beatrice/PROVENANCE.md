@@ -1378,4 +1378,116 @@ frames (front 0.2074 mm/px, eye line 1.5626 at row 597; profile 0.2115 mm/px).
 
 The before is `source/Beatrice_b2c_e9e4b19.blend` (gitignored). Only the `Head` collection's face parts (skin, eyes, lashes,
 ears) and the look change; the body and the hair stay (the hair is now laid on the frozen B2c face table, `FACE_B2C` /
-`HEAD["hair_face"]`, so the face's field can move under it without moving it). Record in progress; completed below.
+`HEAD["hair_face"]`, so the face's field can move under it without moving it).
+
+### Step 1, the eyes, brows, nose, mouth and blush: a drawn layer
+
+Tools (scratch, `C:/tmp/beatrice_b2d/tools/`): `hd.py` (the face parts rebuilt on the B2c build -- eyes and lashes always, the
+skin and ears on request, else their masks and materials re-made on the saved meshes -- the look applied, renders: art frames,
+turns, eye close-ups at 0/30/60/90 deg, beauty views, `--zebra`; 55-65 s, 3.5 min with the skin), `art_over.py` (the canvas's
+edges laid over the front close-up in its frame: the trace check), `grid.py` (the close-up on a 2 mm grid), `cmp_eyes.py`,
+`curv.py` (principal-curvature maps of the skin field), `curvstat.py`, `cmp.py` (the vertex check), `sheets_b2d.py`.
+
+- **Mechanism** (`charkit/animehead.py`, additive): `face_art` draws what the close-ups ink and paint on ONE front-projected canvas
+  (head space, |x| 0..66 mm, z 1.495..1.592, 0.04 mm a pixel, straight-alpha RGBA; `Canvas.stroke` / `.field`, every edge
+  anti-aliased by its distance), every shape from the new `FACE["art"]` table, every colour from the palette; the face material
+  samples it over two new point attributes `art_u` / `art_v` (and `art_w`, the front-facing weight) and the image is packed into
+  the .blend (`Canvas.image`). It REPLACES B2a/B2b's per-vertex brow, crease, lower lash line, nostrils, mouth line and nose
+  highlight (those stay for a face without `art`): a vertex mask at 0.84 mm cannot draw a lash 0.3 mm wide. The upper lash band's
+  centre line is now one function (`lash_path`) shared by the geometry and the drawn mass. The eye material reads a new `paint`
+  table (`EYES["paint"]`) and two new eye-surface attributes, `ec` (the opening's distance, mm) and `ex` (along the eye).
+- **Traced** (`art_over.py`, `grid.py`; head mm, x from the midline, z over the eye line): solid lash +6.6..+9.7 at 33.6 mm out,
+  its strokes to +11.0, the crease +12.2 (4.9 over the lid); the outer mass reaches 57.6 mm at +5.2 (the geometry flick's end,
+  kept); lower lash line about 1 mm under the lid; brows centre +18.0 at 16.5 mm out rising to +20.6 at 40 (B2b painted them
+  2.5 mm higher), 2.3-2.5 mm thick; nose highlight -19.5..-32, 12-13 mm wide, glint at -30; nostrils -35..-38.5, 2.9-5.2 mm out;
+  the mouth line -55.5..-56.5 with the lower lip tinted right under it, two gloss spots 3 mm either side.
+- **Iris**: the brief asks 10 % larger; on the front close-up the width measures EQUAL (18.3 mm at the eye line on both the drawing
+  and the B2c render, luminance runs), so review 11's 33 vs 37 px is not reproduced; the concept's three-quarter face does draw it
+  fuller, so it was enlarged as asked (10.7 x 11.0 mm half-axes, B2b 9.7 x 10.0). The lid's shadow: on the drawing the visible
+  iris's top half is 50-90 luminance, its lower half 115-160; B2c's top was 121-127; now 76-78 (`lid` over 12 mm, LID_SHADOW 0.85).
+- **Corners**: the eye surface carried 3 mm under the lids (margin 1.8 -> 3.0 mm, its grid 4.5 mm past the opening); the inner end
+  of the lash band thinner (it hooked down to the lower lid); the outer corner's walls inked (`art["outer"]`), the lower rim stops
+  short of the corner (`rim_x`); the sclera greyer where it tucks under the lids (`ec`), the inner corner pink (`ex`).
+- **Blush**: measured on the front frame (7x7 means): the drawing's cheek (227, 162, 149), B2c (236, 176, 161), B2d (234, 164, 150)
+  -- the green drop now as drawn; wider and lower (`blush` sigma 19 x 10.5 mm) and across the nose's bridge (`blush_bridge`).
+- **Attempts**: the eyes three (a1: the layer; a2: the inner wedge, greyer sclera, the brows lowered to the trace; a3: the iris
+  shadow darker, nostrils, mouth), the nose highlight two plus one dropped (a per-vertex mask by the normal's sideways component,
+  to keep the highlight off the nose's flanks in three-quarter, broke the front's highlight into streaks and erased the nostrils:
+  removed), the mouth two.
+
+### Step 2, the cheek groove (review 11 item 5)
+
+`curv.py` mapped the skin field's smallest principal curvature over azimuth 0-100 x elevation -70..+25 deg. Cause: the front view's
+side radius (`egg["side"]`, the traced cheek-to-chin outline) is nearly straight, and its spline's small wiggles were CONCAVE along
+the elevation (-3..-5 /m at -21 and -38 deg), all the way round the side of the face -- the groove from below the eye to the jaw's
+corner; and the socket's -2 mm dent and the cheek's +2 mm form had rings that made closed islands under the eyes. Fix (attempt 1,
+kept): `egg["side_smooth"]` = 6 deg (the side radius smoothed along the elevation, `Egg._smoothed`, shared with `front_smooth`):
+nowhere concave (min +1.2 /m), the outline moved 0.44 mm at most; the socket -1.5 mm and the cheek +1.3 mm, both wider. In the
+cheek box (az 25-80, el -45..-5) the 5th-percentile k_min went -6.8 -> -2.5 /m, the side bands are gone; what is left concave is
+next to the nose (the subnasal region, drawn so). `face_zebra.jpg` (B2c above, B2d below): at 30 deg B2c's reflection lines kink
+into a V along the groove, B2d's run through; at 60 deg the far-cheek band is gone. **The hair is laid on the B2c face**
+(`FACE_B2C`, `HEAD["hair_face"]`, new `animehead.build(..., hair_face=)`), so it did not move.
+
+### Step 3, the ear
+
+The ear's upper plate 2 mm lower and 1.5 mm wider backwards (`FACE["ear"]["plates"][0]`): a rounder top-back. At 30-60 deg it reads
+less like a point, but the hair's hairline still crosses its top and makes a corner there (`face_turn.jpg` 60 deg) -- the hair's,
+not changed.
+
+### Step 4, the latex sheen and the knee pads (`charkit/toonlook.py`, additive; `LOOK_TOON` / `_LATEX` in `beatrice.py`)
+
+- **The base** lifted and warmed (ramp 1.6 / 2.0 / 2.8 / 3.4, red over blue; B2b 1.0 / 1.2 / 2.2 / 2.8, blue).
+- **A broad sheen** (`sheen`, `toonlook.sheen_lobe`): the view reflected about the normal against a fixed direction in CAMERA space
+  (up and to the viewer's left, like the key) -- a matcap lobe: no light is needed, so it keeps its size at any distance (a lit
+  glossy is a speck on a sun or a flood on a strip), and it turns with the view as the look's lights turn with the rig; gated by the
+  key's light (no sheen in shadow) and fuller on rounder forms. Colour `SUIT_SHEEN` (a warm mid grey).
+- **The crisp white kept to round surfaces**: `toonlook.curvature_attr` writes `toon_curv` (1/m, per vertex the largest normal
+  curvature over its edges, smoothed) on the latex objects at prepare time (measured: upper chest 2-6, bust 9-25, flank 9-13, thigh
+  9-21, sleeve 29-60); the streak layer is multiplied by its ramp 9..16. The upper chest's ragged blobs are gone (`head.jpg`,
+  `face_turn.jpg` 0-60 deg), the flank's long white stripe is greyer and thinner (not broken).
+- **Knee pads**: their own sheen facing the camera (`LOOK_TOON["materials"]["pad"]`): a soft graded highlight on the dome under the
+  bright rim (`knee.jpg`).
+- **Measured** (luminance percentiles 25/50/75/90/95/99, the bust box of the posed concept framing, background masked): the
+  concept 32/45/113/201/213/251; B2c 27/32/58/61/75/232; B2d 30/45/56/89/117/216. The mid tones exist now and the median is the
+  concept's, but the concept's sheen is far brighter and broader (90th 201 against 89). A second attempt (lobe threshold 0.74 ->
+  0.66, the sheen colour lighter) gave 30/48/63/95/122/220: little more; reverted to keep the rendered set consistent. To reach the
+  art the sheen needs to be a shape painted per form (a soft band along each breast's upper half, a gradient over the shoulders),
+  not one lobe for the whole suit.
+
+### Pictures, checks, reproduce
+
+- New: `eyes_b2d.jpg` (the art's eyes -- front close-up, concept.jfif's three-quarter for 30 and 60, the side close-up -- B2c, B2d at
+  front / 30 / 60 / profile), `latex_b2d.jpg` (B2c | B2d: portrait framing, the posed concept framing, full figure, knee; the B2c
+  hero was rendered without the floor), `face_zebra.jpg` (now B2c | B2d). Regenerated: `face_vs_art.jpg`, `face_turn.jpg`,
+  `face_closeup.jpg`, `head_size.jpg`, `look_compare.jpg`, `hair_vs_art.jpg`, `hair_back.jpg` (the face changed in them, the hair
+  not), `posed_vs_concept.jpg`, `posed_full.jpg`, `posed_hotlight.jpg`, the full standard set.
+- **Nothing else moved** (`C:/tmp/beatrice_b2d/tools/cmp.py`, B2c's with the hair compared by index; `Beatrice_b2c_e9e4b19.blend`
+  against this build): 37 objects identical (max |dP| < 1e-7 m) -- every suit part, the hands and nails, the boots, AND
+  `Beatrice_Hair_Cap` / `_Hair_Locks`. Changed, the Head collection's face parts only: `Beatrice_Head` (the skin, up to 1.41 mm: the
+  socket, cheek and side smoothing), `_Ear` (up to 3.3 mm, its top), `_Eye` (carried further under the lids; 20,680 -> 25,076
+  vertices), `_Lash` (its inner end thinner, up to 0.65 mm).
+- **Sheet scores** unchanged from B2c (above the waist front 0.753, side 0.680, back 0.740; below unchanged).
+- `source/mesh_stats.json`: 62 objects, all closed.
+- **Times**: the build 494.5 s (8.2 min; the canvas about 8 s of it), the full set 692.8 s (11.5 min); face views toon 84 s, pbr
+  89 s, `apose` 166 s; posed toon 61 s, pbr 58 s, hot 18 s; `hd.py` 55-65 s (3.5 min with the skin).
+- Reproduce: as B2c (`run.sh ... --sheet --turn --save --beauty <the list>`, `face_views.py` toon / `--look pbr` / `--head apose
+  --only turn`, `posed.py` toon / `--look pbr` / `--look pbr --views concept --lights hot`, `posed_sheets.py`, `face_sheets.py`),
+  then `C:/tmp/beatrice_b2d/tools/hd.py -- --blend <Beatrice.blend> --tag b2d --keepall --views e0,e30,e60,e90` and
+  `-- --tag z_b2d --keepall --zebra --nohair --views t0,t30,t60` (and the same on the B2c .blend for the before columns), then
+  `sheets_b2d.py`.
+
+### What still looks wrong (worst first)
+
+1. **The nose in three-quarter** (`face_turn.jpg` 30-60 deg, `face_closeup.jpg` three-quarter, `head.jpg`): the front-projected
+   highlight lands on the nose's flank as a large white patch, and one nostril stroke shows as a comma on the side. The front view is
+   right. It needs the highlight to be view-aware (a separate layer faded by the view's angle to the face) -- not done.
+2. **The latex sheen is weaker than painted** (`posed_vs_concept.jpg`, `latex_b2d.jpg`; numbers above): mid tones now, but the
+   concept's bust is half grey sheen; the flank streak is still one long line.
+3. **The blush reads strong at portrait distance** (`face_turn.jpg` 0 deg, `head.jpg`): it matches the drawing's colour measured at
+   the cheek, but the drawing's skin is darker overall (229, 186, 171 against our 241, 203, 185), so ours reads redder against it.
+4. **The eyes**: the lash mass is right in shape and weight from the front; its strokes are finer and more comb-like than the drawn
+   soft brown feathering, and the outer flick is still a solid wedge (`eyes_b2d.jpg`). The iris lacks the drawing's layered
+   texture. In profile the eye is the drawn convention but small.
+5. **The mouth in profile**: no pout was modelled (paint only); the profile runs nose to chin as before (`face_closeup.jpg`).
+6. **The ear's top** still meets the hairline in a corner at 60 deg (the hair's).
+7. The skin's light tone and the fringe's soft shadow streaks on the forehead (review 11 item 7, the hair round's) are unchanged.

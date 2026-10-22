@@ -1132,11 +1132,11 @@ FACE = dict(
         # the brows: short, thick and dark, the inner end lower (traced on the overlay `art_over`: centre +18.0 mm over the eye
         # line at 16.5 mm out, +20.6 at 40), a soft body and hair strokes
         brow=dict(pts=((0.0165, 1.5806), (0.0220, 1.5813), (0.0300, 1.5824), (0.0400, 1.5832), (0.0480, 1.5831)),
-                  width=((0.0, 0.0027), (0.15, 0.0028), (0.6, 0.0024), (0.85, 0.0016), (1.0, 0.0003)), body=0.92,
+                  width=((0.0, 0.0030), (0.15, 0.0031), (0.6, 0.0027), (0.85, 0.0018), (1.0, 0.0004)), body=0.92,
                   hairs=dict(n=90, length=0.0024, width=0.00022, lift=28.0)),
         # the nose: a soft teardrop highlight, narrow at the top (z top, z bottom, half-width, edge, alpha), its glint ((x, z),
         # radii, alpha), the nostril strokes (points, width along, alpha) -- traced, centred on the midline
-        nose=dict(hi=(1.5434, 1.5304, 0.0062, 0.0026, 0.85), glint=((0.0, 1.5330), (0.0009, 0.0013), 0.9),
+        nose=dict(hi=(1.5418, 1.5304, 0.0062, 0.0026, 0.85), glint=((0.0, 1.5330), (0.0009, 0.0013), 0.9),
                   nostril=(((0.0029, 1.5241), (0.0031, 1.5258), (0.0035, 1.5270), (0.0044, 1.5274), (0.0052, 1.5268)),
                            ((0.0, 0.0011), (0.35, 0.0008), (1.0, 0.0002)), 0.9)),
         # the mouth: the lower lip's tint ((z, (half-width, sigma)), alpha), its gloss, the soft line (a gentle bow, darker corners)
@@ -1184,7 +1184,9 @@ EYES = dict(
     dome=dict(centre=(0.0352, 1.5615), axes=(0.0180, 0.0090), inset=0.0012, curve=0.0035, thick=0.0008, margin=0.0030, extent=0.0045),
     # B2b: the drawn iris is round, 19.4 x 20 mm, its centre 0.2 mm over the eye line (B2a: 1.5622, 20 x 22.4 mm: its
     # bottom sank 2 mm under the lower lid); the pupil 4.9 x 6.2 mm (`pupil`: half-axes in iris radii), straight ahead
-    iris=dict(centre=(0.0337, 1.5628), radii=(0.0097, 0.0100), lid_shadow=0.012, pupil=(0.25, 0.31)),
+    # B2d: the iris 10 % larger (review 11; on the front close-up its width measures equal, 18.3 mm at the eye line, but the
+    # concept's three-quarter face draws it fuller and the brief asks it): 10.7 x 11.0 mm half-axes (B2b 9.7 x 10.0)
+    iris=dict(centre=(0.0337, 1.5628), radii=(0.0107, 0.0110), lid_shadow=0.012, pupil=(0.25, 0.31)),
     # B2d: the drawn eye's paint (`animehead.materials`): the sclera grey under the upper lid (over `lid`, now the lid's distance
     # / 12 mm; B2b 6 mm), greyer where it tucks under the lids (`ec` mm), the inner corner pink (`ex`); the iris darker on top,
     # lighter below, its rim darker; the upper lid's shadow over the iris's top half, as drawn; the highlights (u, v, r, soft)

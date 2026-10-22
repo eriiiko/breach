@@ -48,9 +48,9 @@ if args.head:
     spec = beatrice.head(args.head)
     for ob in list(bpy.data.collections["Head"].objects):
         bpy.data.objects.remove(ob, do_unlink=True)
-    mats = animehead.materials("beatrice", beatrice.palette(), spec["eyes"])
+    mats = animehead.materials("beatrice", beatrice.palette(), spec["eyes"], spec["face"])
     animehead.build("Beatrice", spec["face"], spec["eyes"], mats, "Head", h=spec.get("res", 0.0007), hair=spec.get("hair"),
-                    scale=spec.get("scale", 1.0))
+                    scale=spec.get("scale", 1.0), hair_face=spec.get("hair_face"))
 head = animehead.Head(spec["face"], spec["eyes"], spec.get("scale", 1.0))
 W = head.world
 out = args.out or os.path.join(tempfile.gettempdir(), "Beatrice_face")

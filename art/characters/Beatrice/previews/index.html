@@ -21,7 +21,7 @@
 </head>
 <body>
 <main>
-  <h1>Beatrice — body, suit, hands, boots, the head (B2a), the anime look (B2b) and the hair (B2c)</h1>
+  <h1>Beatrice — body, suit, hands, boots, the head (B2a), the anime look (B2b), the hair (B2c) and the face finish (B2d)</h1>
   <p>Built from Python alone on the shared character kit (<code>charkit/bodysuit.py</code>, Blender 4.5, Cycles) from the tables in
      <code>scripts/beatrice.py</code>, fitted to three drawings: front, side and back. The head is a bald placeholder for the
      face-and-hair stage. Character only, no props. This round answers <code>review_stage2.md</code>: new hands, the shoulder and
@@ -29,6 +29,19 @@
      layered knee pads, thin cuffs, seams that end on other edges. See <code>PROVENANCE.md</code>.
      <b>Stage 4</b> answers <code>review_stage3.md</code> for the pelvis only (waist, hips, seat, upper thighs); everything else is
      unchanged, and the close-ups further down are stage 3's.</p>
+
+  <h2>The face finish and the latex sheen (B2d)</h2>
+  <p>The face's drawn layer (<code>animehead.face_art</code>, a front-projected canvas traced on the front close-up): the upper lash
+     mass with feathered strokes and the clumped outer lashes, the double-lid crease, the lower lid's light rim, lash line and lower
+     lashes, the pink inner corner; the upper lid's shadow over the iris's top half and the sclera, a greyer white, the iris 10 %
+     larger with a darker rim and top; brows thicker, darker, shorter, the inner end lower, at the traced height; the nose a soft
+     teardrop highlight with a glint and two nostril strokes; a soft mouth line, the lower lip tinted with gloss; the blush wider
+     and stronger. The cheek's groove and the islands under the eyes smoothed in the field (the zebra below). The latex: a warm
+     charcoal base, a broad soft sheen (a camera-space reflection lobe) and the crisp white kept to round forms, so no blobs on the
+     upper chest; the knee pads' dome sheen. Body and hair unchanged (vertex check). See <code>PROVENANCE.md</code> (B2d).</p>
+  <figure><img src="eyes_b2d.jpg" alt="The eyes against the art"><figcaption>The art's eyes (front close-up; concept.jfif's three-quarter for 30 and 60 deg; the side close-up), B2c, B2d: front, 30, 60 deg, profile</figcaption></figure>
+  <figure><img src="face_zebra.jpg" alt="Reflection lines"><figcaption>Reflection lines on the skin, B2c above, B2d below: front, 30, 60 deg</figcaption></figure>
+  <figure><img src="latex_b2d.jpg" alt="The latex before and after"><figcaption>The latex, B2c | B2d: portrait framing, the posed concept framing, full figure, the knee</figcaption></figure>
 
   <h2>The hair (B2c)</h2>
   <p>The blockout replaced by layered, tapered clumps given lock by lock (<code>charkit/animehair.py</code>, <code>build_clumps</code>;
