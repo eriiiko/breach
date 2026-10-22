@@ -27,12 +27,12 @@ with open(ROOT / "config.toml", "rb") as _fh:
 
 def test_every_igniter_fires_once_onto_fuel_south_of_the_squad():
     """PROPERTY: the studio burns without anyone lighting it -- each timed
-    charge fires ONCE (`period_s == 0`), its payload has an ignition ring, at
-    least one flammable tile lies inside that ring -- and every marine spawn
+    charge fires ONCE (`period_s == 0`), its payload ignites or heats, at
+    least one flammable tile lies inside the disc it lights or heats -- and every marine spawn
     stands north of all the fuel, so the fire throws their shadows north.
 
-    BREAKS IF: an igniter is moved off its fuel, its payload loses its
-    ignition ring, a charge is given a repeat period, or the squad is placed
+    BREAKS IF: an igniter is moved off its fuel, its payload stops
+    igniting or heating, a charge is given a repeat period, or the squad is placed
     level with or south of the fire.
     """
     lvl = level_loader.load("fire_smoke_studio", levels_dir=LEVELS)
@@ -50,8 +50,11 @@ def test_every_igniter_fires_once_onto_fuel_south_of_the_squad():
     for e in charges:
         assert float(e.fields.get("period_s", 0.0)) == 0.0
         row = CFG["payloads"][e.fields["payload"]]
-        r = float(row.get("ignite_radius", 0.0))
-        assert r > 0, f"{e.id}'s payload lights nothing"
+        # a fire is started by delivering heat (CLAUDE.md "Starting a fire"):
+        # an ignition ring, or heat alone that apply_temperature_ignition lights
+        r = max(float(row.get("ignite_radius", 0.0)) if row.get("ignite_radius", 0.0) else 0.0,
+                float(row.get("heat_radius", 0.0)) if row.get("heat_amount", 0.0) else 0.0)
+        assert r > 0, f"{e.id}'s payload delivers no ignition and no heat"
         near = (xs - e.fields["x"]) ** 2 + (ys - e.fields["y"]) ** 2 <= r * r
         assert (near & fuel).any(), f"{e.id} has no fuel inside its ring"
     fuel_top = int(np.nonzero(fuel.any(axis=1))[0].min())

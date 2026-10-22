@@ -3129,6 +3129,12 @@ gas_radius = 3
 ignite_radius = 2.5                   # tiles; flammable tiles only (fire policy skip-mask)
 ignite_intensity = 0.5                # seed intensity at the centre; never lowers a bigger fire
 
+[payloads.studio_ignite]              # fire_smoke_studio (#12, 2026-10-22): heats ONE tile -- the one it stands on -- past
+heat_amount = 300.0                   # its ignition_temp, and apply_temperature_ignition lights it a tick later (the
+heat_radius = 0.5                     # heat-only way, CLAUDE.md "Starting a fire"). Not an ignite ring: ignite_ring's
+                                      # IGNITE_HEAT put a thin furniture tile at ~11 000 units and its radiant heat killed
+                                      # a squad 8 tiles away within a second (measured 2026-10-22)
+
 [payloads.demolition_c4]              # "bigger bombs" (mechanics/03 §5): C4 satchel warhead
 radius = 8
 pressure = 25.0
