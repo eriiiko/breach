@@ -27,6 +27,7 @@ Each check names the PROPERTY it protects and the change that must break it:
   region_clear -- a tile that leaves the active region is zero in BOTH
       buffers of both fields afterwards, while the live fire's flame is not.
       Breaks if the clear-once rule is lost (a stale flame would reappear).
+  realloc_on_grid_change -- a live m / m_u change reallocates zeroed fields.
   no_fire_no_passes -- with no fire, update+simulate issue zero texture-mode
       passes. Breaks if the active-region gate is lost.
   one_tamed_wind_and_render_only -- the real renderer on fire_smoke_studio
@@ -355,6 +356,36 @@ def check_no_fire():
     vfx.unload()
 
 
+@check("realloc_on_grid_change")
+def check_realloc():
+    """Property: changing [render.fire_vfx] m / m_u (live config) reallocates
+    the fields at the new resolution, zeroed; disabling empties the plan.
+    Breaks if a resolution change keeps the old RTs or stale data."""
+    from config import CFG
+    from renderer import core
+    from renderer.blackbody import BlackbodyRamp
+    from renderer.fire_vfx import FireVFXPass
+    v = FireVFXPass.from_config(10, 12, CFG, BlackbodyRamp.from_config(CFG))
+    try:
+        m0 = v.settings.m
+        core.update_rgba32f_texture(
+            v.flame.front, np.ones((10 * m0, 12 * m0, 4), np.float32))
+        CFG.render.fire_vfx.m = max(2, m0 // 2)
+        CFG.render.fire_vfx.m_u = max(2, m0 // 2)
+        v.refresh_settings(CFG)
+        m1 = v.settings.m
+        assert (v.flame.width, v.flame.height) == (12 * m1, 10 * m1)
+        assert v.vel.width == 12 * v.settings.m_u
+        assert not core.read_texture_rgba32f(v.flame.front).any()
+        CFG.render.fire_vfx.enabled = False
+        v.refresh_settings(CFG)
+        assert v._plan == [] and v.simulate() == 0
+    finally:
+        CFG.reload()
+        v.unload()
+    return f"m {m0} -> {m1}"
+
+
 @check("one_tamed_wind_and_render_only")
 def check_one_wind_and_digest():
     import breach_physics as bp
@@ -423,7 +454,7 @@ def main() -> int:
     rl.init_window(320, 240, "gl_fire_vfx_check")
     try:
         for fn in (check_pingpong, check_upload, check_lut, check_parity,
-                   check_region_clear, check_no_fire,
+                   check_region_clear, check_no_fire, check_realloc,
                    check_one_wind_and_digest):
             fn()
     finally:
