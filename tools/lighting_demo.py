@@ -1564,6 +1564,9 @@ def main() -> None:
         renderer.show_temperature &= "heat" not in look_shot.hide
         renderer.show_smoke &= "smoke" not in look_shot.hide
         renderer.show_water &= "water" not in look_shot.hide
+        # graphics G3 F2: a shot may open a flame VFX debug view (F11's cycle)
+        if look_shot.fire_debug:
+            renderer.fire_vfx.debug_override = look_shot.fire_debug
 
     # The flat FLOOR opens where [render.lighting] floor sits (the config
     # mirrors below win over a saved preset's stale copy, same rule): a saved

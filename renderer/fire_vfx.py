@@ -485,10 +485,12 @@ class TilePack:
     def rebase(self, t_base: float) -> None:
         """Re-anchor the puffing phases at ``t_base`` (same function of t;
         keeps the GPU's float32 ``tau = t - t_base`` small)."""
-        th0, th1, th2, _, _ = ref.puff_phases(self.hz, self.phase, t_base)
-        self.puff[..., 1] = th0
-        self.puff[..., 2] = th1
-        self.puff[..., 3] = th2
+        sel = self.hz > 0.0
+        th0, th1, th2, _, _ = ref.puff_phases(self.hz[sel], self.phase[sel],
+                                               t_base)
+        self.puff[sel, 1] = th0
+        self.puff[sel, 2] = th1
+        self.puff[sel, 3] = th2
         self.t_base = float(t_base)
 
 
@@ -517,22 +519,25 @@ def pack_tile_inputs(fire, t_game, solid, flammable, vacuum, wind_tamed, *,
                             tile_size_m=tile_size_m, dials=dials,
                             origin=(y0, x0), map_w=W)
     h, w = tk.shape
-    th0, th1, th2, g1, g2 = ref.puff_phases(src.puff_hz, src.puff_phase, t_base)
+    # the puffing only where a source puffs (the cost scales with the fire)
+    sel = src.puff_hz > 0.0
+    th0, th1, th2, g1, g2 = ref.puff_phases(src.puff_hz[sel],
+                                            src.puff_phase[sel], t_base)
     a = np.zeros((h, w, 4), dtype=np.float32)
     a[..., 0] = src.s
     a[..., 1] = src.q
     a[..., 2] = src.t_src_k
     a[..., 3] = src.cover
     b = np.zeros((h, w, 4), dtype=np.float32)
-    b[..., 0] = g1
-    b[..., 1] = g2
+    b[sel, 0] = g1
+    b[sel, 1] = g2
     b[..., 2] = tk
     b[..., 3] = solid_w * FLAG_SOLID + vac_w * FLAG_VACUUM
     pf = np.zeros((h, w, 4), dtype=np.float32)
     pf[..., 0] = src.puff_hz
-    pf[..., 1] = th0
-    pf[..., 2] = th1
-    pf[..., 3] = th2
+    pf[sel, 1] = th0
+    pf[sel, 2] = th1
+    pf[sel, 3] = th2
     wd = np.zeros((h, w, 4), dtype=np.float32)
     if wind_tamed is not None:
         wt = np.asarray(wind_tamed, dtype=np.float64)[sl] * float(tps)

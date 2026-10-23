@@ -35,6 +35,9 @@ _NAME_RE = re.compile(r"^[a-z0-9_]+$")
 # Layers a shot may switch off to isolate the rest (the renderer's own
 # toggles: show_temperature / show_smoke / show_water).
 HIDEABLE_LAYERS = frozenset(("heat", "smoke", "water"))
+# renderer/fire_vfx.py DEBUG_VIEWS: 1 sources, 2 flame R, 3 flame T_vfx,
+# 4 velocity u, 5 pressure p (kept literal: this module is pyray-free)
+FIRE_DEBUG_MAX = 5
 
 
 @dataclass(frozen=True)
@@ -65,6 +68,8 @@ class LookShot:
     # None = studio default, a number, or "game" = [render.lighting] master_gain
     light_gain: Union[float, Literal["game"], None] = None
     hide: tuple = ()                  # layers switched off (HIDEABLE_LAYERS)
+    fire_debug: int = 0               # the flame VFX debug view (G3 F2; 0 = off,
+                                      # renderer.fire_vfx.DEBUG_VIEWS index)
     note: str = ""
 
 
@@ -137,6 +142,9 @@ def parse_shot(d: dict) -> LookShot:
     gas_amount = float(d.get("gas_amount", 1.0))
     if not 0.0 < gas_amount <= 1.0:
         raise ValueError(f"shot {name}: gas_amount must be in (0, 1]")
+    fire_debug = int(d.get("fire_debug", 0))
+    if not 0 <= fire_debug <= FIRE_DEBUG_MAX:
+        raise ValueError(f"shot {name}: fire_debug must be 0..{FIRE_DEBUG_MAX}")
     raw_gain = d.get("light_gain")
     gain: Union[float, Literal["game"], None]
     if raw_gain is None or raw_gain == "game":
@@ -156,6 +164,7 @@ def parse_shot(d: dict) -> LookShot:
         detonate=detonate,
         light_gain=gain,
         hide=hide,
+        fire_debug=fire_debug,
         note=str(d.get("note", "")))
 
 

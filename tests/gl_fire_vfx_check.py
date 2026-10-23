@@ -446,46 +446,14 @@ def _proto_scenes(scales, which):
     return proto.build_scenes(scales, which)
 
 
-class _GLScene:
-    """One F0b scene run through the GL loop (the whole scene = one box)."""
-
-    def __init__(self, scene, scales, dials=None):
-        from renderer.fire_vfx import FireVFXSettings, pack_tile_inputs
-        from renderer.blackbody import BlackbodyRamp
-        from renderer.fire_vfx import FireVFXPass
-        from config import CFG
-        from renderer import fire_vfx_ref as ref
-        h, w = scene.fire.shape
-        s = FireVFXSettings(dials=dials or ref.FireVFXDials())
-        self.vfx = FireVFXPass(h, w, s, BlackbodyRamp.from_config(CFG))
-        self.d = self.vfx.settings.dials
-        self.t = 0.0
-        pack = pack_tile_inputs(scene.fire, scene.t_game, scene.solid,
-                                scene.flammable, scene.vacuum, scene.wind,
-                                tps=scene.tps, tile_size_m=scene.tile_size_m,
-                                scales=scales, dials=self.d, t_base=0.0)
-        self.vfx.upload_pack(pack)
-        _set_boxes(self.vfx, [(0, 0, w, h)])
-        self.tick = scene.tick(scales, self.d)
-
-    def run(self, n):
-        from renderer.fire_vfx import plan_frame
-        k = 0
-        while k < n:
-            b = min(64, n - k)
-            times = [self.t + (j + 1) * self.d.dt_s for j in range(b)]
-            self.vfx._run_plan(plan_frame(self.vfx.region.boxes, [], times,
-                                          self.d.n_jacobi))
-            self.t = times[-1]
-            k += b
-
-    def fields(self):
-        v = _read(self.vfx.vel.front)
-        f = _read(self.vfx.flame.front)
-        return v, f
-
-    def close(self):
-        self.vfx.unload()
+def _GLScene(scene, scales, dials=None):
+    """The proto tool's GL runner (``tools/fire_vfx_proto.GLScene``: the
+    whole scene = one box), plus the twin's tick for the invariants."""
+    import fire_vfx_proto as proto
+    from renderer import fire_vfx_ref as ref
+    g = proto.GLScene(scene, scales, dials or ref.FireVFXDials())
+    g.tick = scene.tick(scales, g.d)
+    return g
 
 
 def _invariants(v, f, tick, d, label):

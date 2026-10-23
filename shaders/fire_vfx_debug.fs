@@ -7,7 +7,8 @@
 //              opacity by the source rate s;
 //   u_mode 2 = the flame density R (grey, opacity by R / u_r_vis);
 //   u_mode 3 = the flame temperature T_vfx = RT / R through the blackbody
-//              LUT's chroma, brightness from u_t_lo..u_t_hi, opacity by R;
+//              LUT's chroma, brightness from u_t_lo..u_t_hi, opacity by R
+//              (as mode 2, so the faint cooled tail fades out);
 //   u_mode 4 = the velocity u: hue = direction, value = |u| / u_u_vis;
 //   u_mode 5 = the pressure p: red > 0, blue < 0, |p| / u_p_vis.
 // The quad covers the whole world with fragTexCoord (0,0) at the north-west
@@ -67,7 +68,7 @@ void main() {
         } else {
             float T = v.y / v.x;
             float b = clamp((T - u_t_lo) / (u_t_hi - u_t_lo), 0.0, 1.0);
-            finalColor = vec4(lut_chroma(T) * (0.15 + 0.85 * b), max(op, 0.6));
+            finalColor = vec4(lut_chroma(T) * (0.15 + 0.85 * b), op);
         }
     } else if (u_mode == 4) {
         vec4 v = texelFetch(u_vel, c, 0);

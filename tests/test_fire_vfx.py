@@ -562,3 +562,18 @@ def test_m_u_runs_at_m():
     sec = SimpleNamespace(m=8, m_u=4)
     s = fx.settings_from_config(SimpleNamespace(render=SimpleNamespace(fire_vfx=sec)))
     assert s.m_u == s.m == 8
+
+
+def test_look_shot_fire_debug_names_a_real_view():
+    """Property: a look shot's ``fire_debug`` (tools/look_shots.py, kept
+    pyray-free with a literal bound) can name exactly the flame VFX's debug
+    views and nothing past them. Breaks if a debug view is added or removed
+    without the shot schema following, or the bound check is lost."""
+    sys.path.insert(0, str(ROOT / "tools"))
+    import look_shots as ls
+    assert ls.FIRE_DEBUG_MAX == len(fx.DEBUG_VIEWS) - 1
+    row = {"name": "x", "level": "fire_smoke_studio", "frames": 1}
+    assert ls.parse_shot({**row, "fire_debug": ls.FIRE_DEBUG_MAX}).fire_debug \
+        == ls.FIRE_DEBUG_MAX
+    with pytest.raises(ValueError):
+        ls.parse_shot({**row, "fire_debug": ls.FIRE_DEBUG_MAX + 1})

@@ -30,6 +30,7 @@ centroid's offset from its source along the wind (the "lean").
 Run:
     C:/Users/steen/anaconda3/envs/data/python.exe tools/fire_vfx_proto.py --out <dir>
     ... --scenes ac --seconds 3
+    ... --gl          the same strips from the REAL GL loop (G3 F2)
 """
 from __future__ import annotations
 
@@ -190,11 +191,62 @@ def lean(state, tick, scene, dials, scales):
     return along, float(np.hypot(cx - sx, cy - sy))
 
 
-def run_scene(scene, scales, dials, seconds, frames_at, scale_px):
+class GLScene:
+    """One scene run through the REAL GL loop (``renderer.fire_vfx``, the
+    whole scene = one active box, a hidden-window GL context required) --
+    the ``--gl`` backend of this tool and the GL check's long-run runner.
+    :meth:`step` advances one substep like ``fire_vfx_ref.substep``;
+    :meth:`state` reads the fields back as a ``FireVFXState``."""
+
+    def __init__(self, scene, scales, dials):
+        from config import CFG
+        from renderer.blackbody import BlackbodyRamp
+        from renderer.fire_vfx import (FireVFXPass, FireVFXSettings,
+                                       boxes_mask, pack_tile_inputs)
+        h, w = scene.fire.shape
+        self.vfx = FireVFXPass(h, w, FireVFXSettings(dials=dials, m_u=dials.m),
+                               BlackbodyRamp.from_config(CFG))
+        self.d = self.vfx.settings.dials
+        self.t = 0.0
+        self.vfx.upload_pack(pack_tile_inputs(
+            scene.fire, scene.t_game, scene.solid, scene.flammable,
+            scene.vacuum, scene.wind, tps=scene.tps,
+            tile_size_m=scene.tile_size_m, scales=scales, dials=self.d,
+            t_base=0.0))
+        self.vfx.region.boxes = [(0, 0, w, h)]
+        self.vfx.region.domain = boxes_mask(self.vfx.region.boxes, (h, w))
+
+    def run(self, n: int) -> None:
+        from renderer.fire_vfx import plan_frame
+        k = 0
+        while k < n:
+            b = min(64, n - k)
+            times = [self.t + j * self.d.dt_s for j in range(b)]
+            self.vfx._run_plan(plan_frame(self.vfx.region.boxes, [], times,
+                                          self.d.n_jacobi))
+            self.t = times[-1] + self.d.dt_s
+            k += b
+
+    def fields(self):
+        from renderer import core
+        return (core.read_texture_rgba32f(self.vfx.vel.front).astype(np.float64),
+                core.read_texture_rgba32f(self.vfx.flame.front).astype(np.float64))
+
+    def state(self) -> "fv.FireVFXState":
+        v, f = self.fields()
+        return fv.FireVFXState(u=v[..., :2], p=v[..., 2], R=f[..., 0],
+                               RT=f[..., 1], t=self.t)
+
+    def close(self) -> None:
+        self.vfx.unload()
+
+
+def run_scene(scene, scales, dials, seconds, frames_at, scale_px, gl=False):
     tick = scene.tick(scales, dials)
     modes = fv.curl_noise_modes(dials)
     H, W = tick.s.shape
     st = fv.FireVFXState.zeros(H, W)
+    runner = GLScene(scene, scales, dials) if gl else None
     n = int(round(seconds / dials.dt_s))
     want = {int(round(t / dials.dt_s)): t for t in frames_at}
     rows = {"A": [], "B": [], "R": []}
@@ -202,7 +254,11 @@ def run_scene(scene, scales, dials, seconds, frames_at, scale_px):
     tsrc_max = float(tick.t_src_k.max())
     t0 = time.time()
     for k in range(1, n + 1):
-        st = fv.substep(st, tick, dials, modes)
+        if runner is None:
+            st = fv.substep(st, tick, dials, modes)
+        else:
+            runner.run(1)
+            st = runner.state()
         pmax = max(pmax, float(np.abs(st.p).max()))
         T = st.temperature(dials.r_eps)
         tmax = max(tmax, float(T[st.R > 1e-4].max()) if (st.R > 1e-4).any() else 0.0)
@@ -215,6 +271,8 @@ def run_scene(scene, scales, dials, seconds, frames_at, scale_px):
             r = np.clip(st.R / max(dials.r1 * 2, 1e-6), 0, 1)
             rows["R"].append(np.repeat(r[..., None] ** 0.6, 3, axis=-1))
     el = time.time() - t0
+    if runner is not None:
+        runner.close()
     gap = np.ones((H, 2, 3))
     strip = []
     for key in ("A", "B", "R"):
@@ -241,6 +299,9 @@ def main():
     ap.add_argument("--scenes", default="abcfde")
     ap.add_argument("--seconds", type=float, default=2.6)
     ap.add_argument("--px", type=int, default=3, help="screen px per cell")
+    ap.add_argument("--gl", action="store_true",
+                    help="run the REAL GL loop (renderer.fire_vfx, a hidden "
+                    "window) instead of the numpy twin -- F2's look check")
     ap.add_argument("--set", action="append", default=[],
                     help="dial override name=value (repeatable)")
     a = ap.parse_args()
@@ -254,8 +315,13 @@ def main():
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     frames = [a.seconds - 0.5 + 0.1 * i for i in range(6)]
+    if a.gl:
+        import pyray as rl
+        rl.set_trace_log_level(rl.TraceLogLevel.LOG_WARNING)
+        rl.set_config_flags(rl.ConfigFlags.FLAG_WINDOW_HIDDEN)
+        rl.init_window(320, 240, "fire_vfx_proto --gl")
     for sc in build_scenes(scales, a.scenes):
-        img, s = run_scene(sc, scales, dials, a.seconds, frames, a.px)
+        img, s = run_scene(sc, scales, dials, a.seconds, frames, a.px, gl=a.gl)
         p = out / f"{sc.name}.png"
         img.save(p)
         print(f"{sc.name:26s} |p|max {s['pmax']:8.2f}  T {s['tmax']:6.0f} <= {s['tsrc_max']:6.0f}"

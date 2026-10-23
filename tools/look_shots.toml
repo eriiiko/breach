@@ -31,6 +31,8 @@
 #                              "game" = [render.lighting] master_gain
 #   hide = ["heat", ...]       switch layers off to isolate the rest
 #                              (heat / smoke / water)
+#   fire_debug = N             open the flame VFX debug view N (G3 F2:
+#                              1 sources, 2 flame R, 3 T_vfx, 4 u, 5 p)
 #
 # Shots the §7 list asks for that this set does NOT have yet: none missing as
 # a scene, but "steam in a flashlight beam" is composed from studio actions
@@ -373,3 +375,40 @@ lamps = false
 beacon = false
 light_gain = "game"
 note = "downstream of the row toward the return vent (51, 22): the row's east end, the lone tile and the current carrying smoke to the vent. Flames should lean east here."
+
+[[shot]]
+name = "fss_close_flame_r"
+level = "fire_smoke_studio"
+frames = 120
+center = [25.5, 22.5]
+zoom = 96.0
+lamps = false
+beacon = false
+light_gain = "game"
+fire_debug = 2
+note = "G3 F2's loop, seen before F3 draws it: the flame density R over the five-tile row (debug view 2, white = R). Tongues must leave the fuel, curl, and lean with the vent current."
+
+[[shot]]
+name = "fss_close_flame_t"
+level = "fire_smoke_studio"
+frames = 120
+center = [25.5, 22.5]
+zoom = 96.0
+lamps = false
+beacon = false
+light_gain = "game"
+fire_debug = 3
+note = "the same row's flame temperature T_vfx through the blackbody LUT (debug view 3): hottest at the fuel, cooling along each tongue, never above the tile."
+
+[[shot]]
+name = "fss_windy_flame_t"
+level = "fire_smoke_studio"
+frames = 120
+center = [33.0, 24.0]
+zoom = 56.0
+lamps = false
+beacon = false
+light_gain = "game"
+fire_debug = 3
+note = "the row's east end and the lone tile, T_vfx (debug view 3), in the vent current toward the return vent. That current is only ~0.35 tiles/s at the fires: F2 measured their mean lean ~0 +- 0.1 tile in GL and in the twin alike -- a real lean needs the jet's ~2 tiles/s (the F0b c/f strips)."
+
