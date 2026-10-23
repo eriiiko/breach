@@ -212,6 +212,203 @@ def update_rgba16f_texture(tex: rl.Texture, pixels_rgba: np.ndarray) -> None:
     rl.update_texture(tex, rl.ffi.cast("void *", buf))
 
 
+def create_dynamic_rgba32f_texture(width: int, height: int) -> rl.Texture:
+    """Create an RGBA32F (float) texture updated each tick/frame, POINT
+    filtered and clamped (data textures read with ``texelFetch``; set a
+    bilinear filter yourself for a LUT). Graphics G3 F1: the flame VFX's
+    per-tile source / flags / wind textures and the blackbody GPU LUT, where
+    fp16's 11-bit mantissa would round a 1300 K source to the nearest 1 K and
+    break the GL-vs-twin parity checks."""
+    fmt = rl.PixelFormat.PIXELFORMAT_UNCOMPRESSED_R32G32B32A32
+    tex_id = rl.rl_load_texture(rl.ffi.NULL, int(width), int(height), fmt, 1)
+    if tex_id == 0:
+        raise RuntimeError(f"RGBA32F texture {width}x{height} failed")
+    tex = rl.Texture(tex_id, int(width), int(height), 1, fmt)
+    rl.set_texture_filter(tex, rl.TextureFilter.TEXTURE_FILTER_POINT)
+    rl.set_texture_wrap(tex, rl.TextureWrap.TEXTURE_WRAP_CLAMP)
+    return tex
+
+
+def update_rgba32f_texture(tex: rl.Texture, pixels_rgba: np.ndarray) -> None:
+    """Upload an (H, W, 4) float32 RGBA array to an RGBA32F texture
+    (zero-copy, the :func:`update_rgba_texture` contract). Array row 0 lands
+    in GL row 0 -- the first row a shader's ``texelFetch(t, ivec2(x, 0))``
+    reads."""
+    assert pixels_rgba.dtype == np.float32, \
+        f"expected float32, got {pixels_rgba.dtype}"
+    assert pixels_rgba.ndim == 3 and pixels_rgba.shape[2] == 4, \
+        f"expected (H,W,4), got {pixels_rgba.shape}"
+    contig = np.ascontiguousarray(pixels_rgba)
+    buf = rl.ffi.from_buffer("float[]", contig)
+    rl.update_texture(tex, rl.ffi.cast("void *", buf))
+
+
+def read_texture_rgba32f(tex: rl.Texture) -> np.ndarray:
+    """Read an RGBA32F texture back as an (H, W, 4) float32 array, GL row 0
+    first (tests and debug only -- it stalls the pipeline)."""
+    fmt = rl.PixelFormat.PIXELFORMAT_UNCOMPRESSED_R32G32B32A32
+    w, h = int(tex.width), int(tex.height)
+    ptr = rl.rl_read_texture_pixels(tex.id, w, h, fmt)
+    if ptr == rl.ffi.NULL:
+        raise RuntimeError("rlReadTexturePixels returned NULL")
+    try:
+        out = np.frombuffer(rl.ffi.buffer(ptr, w * h * 16),
+                            dtype=np.float32).reshape(h, w, 4).copy()
+    finally:
+        rl.mem_free(ptr)
+    return out
+
+
+class PingPong:
+    """THE double-buffered render-target helper for iterative GPU passes
+    (graphics arc G3 F1, docs/g3_fire_design_2026-10-23.md §9, §13.11). A
+    pass reads the FRONT texture and writes the BACK target; ``end_pass``
+    swaps. Never hand-roll a second FBO pair.
+
+    Built through raylib's own rlgl layer (the ``load_render_texture_rgba16f``
+    construction): RGBA32F when the FBO is complete with it (``fp32=True``,
+    rlgl maps R32G32B32A32 to GL_RGBA32F), else RGBA16F (``self.fp32`` says
+    which you got). Both buffers are cleared to 0 at creation. ``front`` /
+    ``back`` are ordinary raylib ``Texture`` / ``RenderTexture`` structs.
+
+    THE TRAPS (each one cost a G-arc time; the GL check covers them):
+
+    * **Blending.** raylib's default ``BLEND_ALPHA`` would mix the shader's
+      output into the old texel and corrupt simulation data (and raylib's
+      ``BLEND_ADD_COLORS`` is ONE/ONE, not a replace). ``begin_pass`` turns
+      blending OFF after ``begin_texture_mode`` has flushed the batch, and
+      ``end_pass`` turns it back on only after ``end_texture_mode`` has
+      flushed this pass's quads -- so the quads draw replace-only and no
+      other draw is affected. rlgl's blend switches do NOT flush the batch
+      themselves, which is why the order matters.
+    * **Y flip / texel space.** Drawing into a render texture flips Y
+      relative to raylib's screen coordinates. The ONE convention: shaders
+      address texels with ``gl_FragCoord`` (``texelFetch(front,
+      ivec2(gl_FragCoord.xy))``), never ``fragTexCoord``, and GL texel row j
+      is DATA row j (for the fire VFX: cell row j from the north, the same
+      orientation a numpy array uploaded with ``update_*_texture`` has).
+      :meth:`draw_cell_rects` takes rects in those texel coordinates and
+      does the one flip into raylib's projection. A reader outside the
+      passes (a debug view, a composite) samples with ``(cell + 0.5) /
+      size`` the same way -- no ``1 - v``.
+    * **Depth.** No depth attachment: an iterative pass never depth-tests,
+      and the renderbuffer would only cost VRAM.
+    * **Precision.** fp16 pressure loses convergence; ask for ``fp32``.
+    * **Sampler units.** Bind extra samplers from ``_FIRST_UNIT`` (5) up
+      through rlgl, as ``GasReliefPass`` does: raylib's batch binds at most 4
+      and silently drops the rest.
+    * **Partial passes.** A pass that draws only some rects leaves the back
+      buffer's other texels as they were TWO passes ago. The caller must keep
+      everything outside its rects identical in both buffers (the fire VFX
+      clears a region that leaves the domain in both, with
+      :meth:`clear_rects`, and starts from zero).
+    * **Reallocation.** A resolution change means a new PingPong (zeroed);
+      ``unload`` the old one first.
+    """
+
+    def __init__(self, width: int, height: int, *, fp32: bool = True):
+        self.width, self.height = int(width), int(height)
+        self.fp32 = False
+        self._rts = None
+        for want32 in ((True, False) if fp32 else (False,)):
+            try:
+                self._rts = [self._make(want32), self._make(want32)]
+                self.fp32 = want32
+                break
+            except RuntimeError:
+                if not want32:
+                    raise
+        self._front = 0
+        self.clear()
+
+    def _make(self, fp32: bool) -> rl.RenderTexture:
+        fmt = (rl.PixelFormat.PIXELFORMAT_UNCOMPRESSED_R32G32B32A32 if fp32
+               else rl.PixelFormat.PIXELFORMAT_UNCOMPRESSED_R16G16B16A16)
+        w, h = self.width, self.height
+        fbo = rl.rl_load_framebuffer()
+        if fbo == 0:
+            raise RuntimeError("rlLoadFramebuffer failed (no GL context?)")
+        rl.rl_enable_framebuffer(fbo)
+        tex_id = rl.rl_load_texture(rl.ffi.NULL, w, h, fmt, 1)
+        rl.rl_framebuffer_attach(fbo, tex_id, rl.RL_ATTACHMENT_COLOR_CHANNEL0,
+                                 rl.RL_ATTACHMENT_TEXTURE2D, 0)
+        complete = rl.rl_framebuffer_complete(fbo)
+        rl.rl_disable_framebuffer()
+        if not complete or tex_id == 0:
+            if tex_id:
+                rl.rl_unload_texture(tex_id)
+            rl.rl_unload_framebuffer(fbo)
+            raise RuntimeError(f"PingPong {w}x{h} fp32={fp32} incomplete")
+        tex = rl.Texture(tex_id, w, h, 1, fmt)
+        rl.set_texture_filter(tex, rl.TextureFilter.TEXTURE_FILTER_POINT)
+        rl.set_texture_wrap(tex, rl.TextureWrap.TEXTURE_WRAP_CLAMP)
+        return rl.RenderTexture(fbo, tex, rl.Texture(0, 0, 0, 0, 0))
+
+    @property
+    def front(self) -> rl.Texture:
+        """The texture the next pass reads (the latest result)."""
+        return self._rts[self._front].texture
+
+    @property
+    def back_target(self) -> rl.RenderTexture:
+        return self._rts[1 - self._front]
+
+    @property
+    def vram_bytes(self) -> int:
+        return 2 * self.width * self.height * (16 if self.fp32 else 8)
+
+    def clear(self) -> None:
+        """Both buffers to 0 everywhere (outside any texture mode)."""
+        for rt in self._rts:
+            rl.begin_texture_mode(rt)
+            rl.clear_background(rl.Color(0, 0, 0, 0))
+            rl.end_texture_mode()
+
+    def begin_pass(self) -> None:
+        """Bind the BACK target, blending off (see the class traps). Then:
+        ``begin_shader_mode``, uniforms + samplers (the front among them),
+        :meth:`draw_cell_rects`, ``end_shader_mode``, :meth:`end_pass`."""
+        rl.begin_texture_mode(self.back_target)   # flushes pending draws
+        rl.rl_disable_color_blend()
+
+    def end_pass(self) -> None:
+        """Flush this pass's quads (blend still off), restore blending,
+        swap: the target just written becomes the front."""
+        rl.end_texture_mode()
+        rl.rl_enable_color_blend()
+        self._front = 1 - self._front
+
+    def draw_cell_rects(self, rects) -> None:
+        """Quads over texel rects ``(x0, y0, x1, y1)`` (end-exclusive, GL
+        texel rows -- the class convention), clipped to the target. The one
+        place the render-texture Y flip is applied."""
+        h = self.height
+        for x0, y0, x1, y1 in rects:
+            x0, x1 = max(0, int(x0)), min(self.width, int(x1))
+            y0, y1 = max(0, int(y0)), min(h, int(y1))
+            if x1 > x0 and y1 > y0:
+                rl.draw_rectangle_rec(
+                    rl.Rectangle(float(x0), float(h - y1), float(x1 - x0),
+                                 float(y1 - y0)), rl.Color(0, 0, 0, 0))
+
+    def clear_rects(self, rects) -> None:
+        """Write 0 into ``rects`` of BOTH buffers (no read, no swap): a
+        region that leaves the domain is cleared once, everywhere."""
+        if not rects:
+            return
+        for rt in self._rts:
+            rl.begin_texture_mode(rt)
+            rl.rl_disable_color_blend()
+            self.draw_cell_rects(rects)
+            rl.end_texture_mode()
+            rl.rl_enable_color_blend()
+
+    def unload(self) -> None:
+        for rt in self._rts or ():
+            rl.unload_render_texture(rt)
+        self._rts = None
+
+
 def update_rgba_texture(tex: rl.Texture, pixels_rgba: np.ndarray) -> None:
     """Upload an (H, W, 4) uint8 RGBA array to a texture.
 
@@ -293,6 +490,8 @@ __all__ = [
     "create_dynamic_rgba_texture", "update_rgba_texture",
     "create_dynamic_rgba16f_texture", "update_rgba16f_texture",
     "load_render_texture_rgba16f",
+    "create_dynamic_rgba32f_texture", "update_rgba32f_texture",
+    "read_texture_rgba32f", "PingPong",
     "begin_frame", "end_frame", "draw_fps",
     "load_shader_with_fallback", "load_shader_from_source",
 ]

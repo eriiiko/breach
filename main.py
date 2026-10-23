@@ -634,8 +634,14 @@ def main():
                 sim.turn_number, ticks_per_round, sim.tick)
 
             # ----- Upload + draw -----
+            # alpha = the sub-tick fraction of the accumulator (graphics G3
+            # §13.3): the flame VFX runs on (tick + alpha) / tps. A pure read
+            # of this loop's own pacing state; the renderer clamps it to
+            # [0, 1). paused = the sim clock stopped (the flame may idle).
             renderer.upload_state(sim.gmap, sim_tick=total_tick,
-                                  light_serial=sim.light_serial if new_light else None)
+                                  light_serial=sim.light_serial if new_light else None,
+                                  alpha=tick_accum / sim_time_per_tick,
+                                  paused=sim.is_paused())
             renderer.begin_frame()
 
             # Fog of war (§8) is visibility GATING: an enemy the team cannot

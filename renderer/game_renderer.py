@@ -30,6 +30,7 @@ from . import core
 from .blackbody import BlackbodyRamp
 from .camera import Camera2D
 from .cold_overlay import ColdFieldOverlay
+from .fire_vfx import FireVFXPass
 from .gas_detail import GasDetailPass, tame_wind
 from .gas_medium import GasMediumOverlay
 from .gas_relief import GasReliefPass
@@ -279,6 +280,20 @@ class GameRenderer:
         # heat pass on the SAME toggle (show_temperature / T key). Placeholder
         # constants, explicitly provisional (renderer/cold_overlay.py).
         self.cold_overlay = ColdFieldOverlay(cfg.grid_h, cfg.grid_w)
+        # Graphics G3 "Fire", F1 -- the FLAME VFX substrate
+        # (renderer/fire_vfx.py, docs/g3_fire_design_2026-10-23.md): a
+        # render-only 2D fluid per tile column fed by `fire`, the burning
+        # tile's temperature and the frame's ONE tamed wind; whole-map field
+        # RTs, the per-tile source textures, the blackbody GPU LUT, the
+        # active region and the sim-clock substeps. F1 draws nothing into the
+        # picture (only its debug view, F11). [render.fire_vfx] is re-read
+        # every frame (Ctrl+R live).
+        from temperature_scale import load as _load_tscale
+        from .fire_vfx_ref import CanonicalScales
+        self.fire_vfx = FireVFXPass.from_config(
+            cfg.grid_h, cfg.grid_w, CFG, self.blackbody_ramp)
+        self._fire_scales = CanonicalScales(tscale=_load_tscale(CFG),
+                                            ramp=self.blackbody_ramp)
         # Fire & Heat Beauty B2 P4 — dirty-Planck speckle (renderer/speckle.py).
         # A CPU-side, pyray-free field that mottles the black-body overlay's
         # intensity at PACK TIME (the intensity_mod seam) so the flame reads as
@@ -446,7 +461,19 @@ class GameRenderer:
     # ---- per-frame physics->GPU upload ---------------------------------
 
     def upload_state(self, gmap, sim_tick: int = 0,
-                     light_serial: Optional[int] = None) -> None:
+                     light_serial: Optional[int] = None, *,
+                     alpha: Optional[float] = None,
+                     paused: bool = False) -> None:
+        """Read the sim into the render layers (dequantize at the render
+        read; nothing is written back).
+
+        ``alpha`` (graphics G3, design §13.3) is the sub-tick fraction of the
+        caller's tick accumulator (``tick_accum / sim_time_per_tick``): the
+        flame VFX's clock is ``(sim_tick + alpha) / tps``, clamped to [0, 1)
+        there and never stepping back. ``paused`` is whether the sim clock is
+        stopped this frame (the flame then idles on wall time when
+        ``[render.fire_vfx] idle_when_paused``). Both are pure reads of the
+        caller's loop state: no sim state, no determinism."""
         t_start = time.perf_counter()
 
         # #9: THE topology -> render seam. Drain the tiles every topology
@@ -474,6 +501,24 @@ class GameRenderer:
         # through the accessor, calibrated by LightingPass.
         glow_field = self.lighting.glow_rgb
 
+        # THE TAMED WIND of this frame (gas_detail.tame_wind, THE wind seam;
+        # graphics G3 design §13.13): computed ONCE, with the relief's dials,
+        # the first time a consumer asks -- the relief, the props' sway, the
+        # flame VFX -- and every consumer takes this one array. Never a
+        # second tame_wind call with other dials. Nobody asks -> not computed.
+        tps = 1.0 / self._sim_dt
+        _wind = []
+
+        def frame_tamed_wind():
+            if not _wind:
+                gd = self.gas_detail
+                _wind.append(tame_wind(gmap.wind_x, gmap.wind_y,
+                                       tile_size_m=gmap.tile_size_m,
+                                       ticks_per_second=tps,
+                                       v_ref=gd.wind_v_ref,
+                                       v_sens=gd.wind_v_sens))
+            return _wind[0]
+
         # Smoke medium. Fire & Heat Beauty B2 P2: the physical gas-medium pass
         # (renderer/gas_medium.py) replaces the flat-grey smoke_overlay + additive
         # glow_overlay pair with ONE premultiplied-over layer — alpha = Beer-
@@ -498,11 +543,7 @@ class GameRenderer:
                 # nothing draws it while the relief is on.
                 trace = _trace_floats(gmap)
                 gm, gd = self.gas_medium, self.gas_detail
-                tps = 1.0 / self._sim_dt
-                tamed = tame_wind(gmap.wind_x, gmap.wind_y,
-                                  tile_size_m=gmap.tile_size_m,
-                                  ticks_per_second=tps,
-                                  v_ref=gd.wind_v_ref, v_sens=gd.wind_v_sens)
+                tamed = frame_tamed_wind()
                 from .blackbody import TEMP_SCALE
                 self.gas_relief.update(
                     trace, glow_field, gmap.gases, tamed,
@@ -537,15 +578,13 @@ class GameRenderer:
         # (gas_detail.tame_wind: smooth -> direction -> saturating speed) is
         # the ONE render-side wind product; props sample it per prop at draw
         # time. Raw gmap.wind_x/y (m/s, spiked at blast/fire cells) never
-        # reaches a prop. Computed here because upload_state is where the renderer reads
+        # reaches a prop. Taken here because upload_state is where the renderer reads
         # the sim (dequantize-at-the-render-read; nothing is written back), and
-        # ONLY when the level actually placed props — the smoke path keeps its
-        # own call inside GasDetailPass.update, so a prop-free ship is exactly
-        # as expensive as it was before this patch.
+        # ONLY when the level actually placed props. G3 §13.13: it is the
+        # frame's ONE tamed wind (the relief's dials, which equal the props'
+        # former default dials), not a second call.
         if self._props_seen and self.prop_renderer.ready:
-            self._prop_wind = tame_wind(
-                gmap.wind_x, gmap.wind_y, tile_size_m=gmap.tile_size_m,
-                ticks_per_second=1.0 / self._sim_dt)
+            self._prop_wind = frame_tamed_wind()
             self._prop_clock_s = float(sim_tick) * self._sim_dt
             # P4r2 (Erik's vented-room ruling 2026-09-07): sway is a momentum
             # flux, not a velocity — an evacuated room's fast residual gas
@@ -556,6 +595,26 @@ class GameRenderer:
             # samples the CURRENT tick's gas state, never a stale snapshot.
             self._prop_gas_bulk_fn = gmap.gas_bulk_n_at
             self._prop_n_ambient_q = float(gmap.ambient_seed()[0])
+
+        # Graphics G3 F1 -- the flame VFX substrate: clock, per-tick sources,
+        # active region, uploads and this frame's pass plan (CPU). The
+        # passes run in compose_world, before the scene RT is bound.
+        # RENDER-ONLY: every sim array goes in through a writeable=False view
+        # of a dequantized copy or of the mask itself.
+        self.fire_vfx.refresh_settings(CFG)
+        if self.fire_vfx.enabled:
+            from simulation import fire_fixed
+            from .blackbody import TEMP_SCALE
+            self.fire_vfx.upload_lut(self.blackbody_ramp)
+            self.fire_vfx.update(
+                fire=fire_fixed.dequantize_f32(gmap.fire),
+                t_game=np.asarray(gmap.temperature, dtype=np.float32)
+                / TEMP_SCALE,
+                solid=gmap.solid, flammable=gmap.flammable,
+                vacuum=gmap.is_vacuum, wind_fn=frame_tamed_wind,
+                sim_tick=int(sim_tick), alpha=alpha, paused=bool(paused),
+                tps=tps, tile_size_m=gmap.tile_size_m,
+                scales=self._fire_scales)
 
         # Fire still gets the vacuum mask: combustion requires oxygen, so
         # fire physically cannot exist in vacuum. Keep this until the fire
@@ -720,6 +779,10 @@ class GameRenderer:
         # cast shadow) and the heat layer (glow-through) read it below.
         relief_on = (self.show_smoke and not self.legacy_smoke_on
                      and self.gas_relief.enabled)
+        # Graphics G3 F1: the flame VFX's substeps (its own targets, so
+        # outside the scene RT too). No fire -> no passes.
+        if self.fire_vfx.enabled:
+            self.fire_vfx.simulate()
         self.gas_relief.render_product(self.lighting, relief_on,
                                        tile_rect=self._relief_view_rect())
         self._smoke_cast = self._smoke_cast_inputs(relief_on)
@@ -844,6 +907,13 @@ class GameRenderer:
                 smoke_cover=self._smoke_cast[0],
                 glow_through=glow_through_weights(
                     self.gas_relief.settings, self._smoke_cast[0] is not None))
+
+        # Graphics G3 F1: the flame VFX's DEBUG view (F11 / [render.fire_vfx]
+        # debug_view): its sources or its R field + the active boxes, display
+        # space like the debug colormaps above. Off = nothing drawn.
+        if self.fire_vfx.enabled:
+            self.fire_vfx.draw_debug(self.world.world_px_w,
+                                     self.world.world_px_h)
 
         # 7. A6 dev door draw (a6 doors design §14, N4 honest-minimal):
         # closed door tiles get a flat amber fill, open spans a thin
@@ -1672,6 +1742,7 @@ class GameRenderer:
             ("F5 normal map",  self.show_normal_map),
             ("F6 coords",      self.show_debug_coords),
             ("F7 pressure",    self.show_pressure),
+            ("F11 flame debug", self.fire_vfx.debug_view != 0),
             ("T  temperature", self.show_temperature),
             ("O  water optics", self.show_water),
             ("G  sRGB",        self.srgb_decode),
@@ -1764,6 +1835,13 @@ class GameRenderer:
         # taken by the physics-recorder dump in input_handler.py — F9 is free.)
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F9):
             self.legacy_smoke_on = not self.legacy_smoke_on
+        # F11: the flame VFX debug view (graphics G3 F1) -- off -> sources ->
+        # flame R -> off, each with the active boxes outlined. (F11 was free:
+        # F1-F7 + F9/F10 are here, F8 is the recorder dump.)
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_F11):
+            mode = self.fire_vfx.cycle_debug_view()
+            print(f"[fire_vfx] debug view -> "
+                  f"{('off', 'sources', 'flame R')[mode]}")
         # F10: dirty-Planck speckle A/B (Fire & Heat Beauty B2 P4) — cycles the
         # black-body flame mottle off -> noise -> soot so Erik picks by eye in the
         # studio. (Keymap audited: in-game F1-F7 + F9 are poll_toggles, F8 is the
@@ -1937,6 +2015,7 @@ class GameRenderer:
         rl.unload_texture(self.gas_medium.tex)
         self.gas_detail.unload()
         self.gas_relief.unload()
+        self.fire_vfx.unload()
         rl.unload_texture(self.temperature_overlay.tex)
         self.temperature_overlay.unload_shader()
         rl.unload_texture(self.cold_overlay.tex)

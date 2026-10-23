@@ -1117,8 +1117,10 @@ def _run_perf_bench(renderer, sim, lights_in, light_sky,
 
             total_tick = monotonic_total_tick(sim.turn_number, ticks_per_round,
                                               sim.tick)
+            # --perf steps one tick per frame (alpha = 0, never paused).
             renderer.upload_state(sim.gmap, sim_tick=total_tick,
-                                  light_serial=sim.light_serial)
+                                  light_serial=sim.light_serial,
+                                  alpha=0.0, paused=False)
             renderer.begin_frame()
             renderer.compose_world(units_marines=sim.marines(),
                                    units_zombies=sim.zombies(),
@@ -1869,8 +1871,14 @@ def main() -> None:
             # ---- Upload physics state ----
             # total_tick (the MONOTONIC sim clock above) drives the P3 gas-detail
             # crossfade too — sim tick, never wall time (replay-identical smoke).
+            # alpha (graphics G3 §13.3): headless shots step exactly one
+            # tick per frame, so alpha = 0 and every frame runs the same 5
+            # flame substeps as a 24 tps game; interactive = the accumulator's
+            # sub-tick fraction. A paused demo idles the flame on wall time.
             renderer.upload_state(sim.gmap, sim_tick=total_tick,
-                                  light_serial=sim.light_serial)
+                                  light_serial=sim.light_serial,
+                                  alpha=0.0 if auto else tick_accum / sim_dt,
+                                  paused=bool(state.paused))
             renderer.consume_events(sim.tick_events)
             renderer._advance_effects(dt)
 
