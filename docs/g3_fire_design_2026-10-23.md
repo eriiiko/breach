@@ -34,8 +34,16 @@ cheap things that sell fire: embers, heat shimmer, flicker.
 5. **No reference board up front.** Erik judges by reacting to look shots of
    the real fire in `fire_smoke_studio`, as in G1/G2.
 
-**Open for Erik — flicker (§6.3):** recommendation A, flame flickers, room
-light stays the sim's steady light; room-light flicker goes to #95.
+6. **Flicker = option A (§6.3), Erik 2026-10-23:** the flame, embers and
+   glow flicker; the room light stays the sim's steady light. G3 does not
+   touch the sim, which decides it (C would have been his other pick). The
+   related darkness under smoke is #100, not G3 (below).
+
+**Related ruling, not G3 (Erik, 2026-10-23):** smoke over a fire swallowing
+all of its room light is a physics gap. The direction is #100's option 3,
+stratified smoke inside the sweep (hot soot fills from the ceiling down;
+light at occupant height sees only the part that has come down). It is for a
+later physics session and is out of scope here.
 
 ## 2. What the code does today (facts, `cfcba40`)
 
@@ -222,7 +230,7 @@ air wobble. Strength and threshold are in `[render.fire_vfx.shimmer]`. Budget
 ≤ 0.3 ms. Every later screen-space distortion (blast shockwave, G4) is a term
 in this pass, never a second pass.
 
-### 6.3 Flicker — DECISION FOR ERIK
+### 6.3 Flicker — RULED: A (Erik, 2026-10-23)
 
 Room light comes from the radiation sweep as one combined field per tick
 (§2), so the fire's share of the light on the floor cannot be separated from
