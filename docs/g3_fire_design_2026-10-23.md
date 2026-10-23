@@ -44,10 +44,13 @@ adds the three cheap things that sell fire: embers, heat shimmer and flicker.
    - then merge. One branch, `93-g3-fire`.
 5. **No reference board.** Erik judges the look shots of the real fire in
    `fire_smoke_studio`.
-6. **Flicker = A** (§6.3): the flame flickers and the room light stays the
-   sim's steady light. G3 does not touch the sim. *The critique showed a
-   cheaper option D that the menu Erik ruled on did not include. It goes back
-   to him before F4 (§6.3); F1–F3 do not depend on it.*
+6. **Flicker = D** (§6.3), Erik 2026-10-23, superseding his A from earlier
+   the same day, which was ruled on a wrong menu: the fire's own room light
+   flickers through a light-only multiplier, with no heat and no digest.
+   Erik: "happy to try it". His two worries go into the F4 gate:
+   - fires must **not flicker in sync**;
+   - a single tile flickers the same in every direction (isotropic), which
+     may look flat. Larger fires vary naturally.
 
 **Standing look rulings G3 honours:**
 - `glow_through_ceiling = 0.2` (Erik, 2026-10-22: "the fire's own smoke
@@ -361,7 +364,7 @@ resolve samples the scene RT, so there is no read-while-write.
 **Rule:** "every screen-space distortion is a term in the resolve's distortion
 block (shimmer now, the G4 shockwave next), never a second pass."
 
-### 6.3 Flicker — RULED A; option D goes back to Erik before F4
+### 6.3 Flicker — RULED D (Erik, 2026-10-23)
 
 The critique corrected v1's menu:
 - the sweep's **light channels move no heat**;
@@ -387,9 +390,31 @@ The corrected options:
 v1's option C ("heat flickers, the golden moves") was only the expensive way
 to do it.
 
-**Lead's recommendation to Erik: D.** It touches the sweep's code but not the
-simulation's state. Erik's reason for A was "G3 does not touch the sim". He
-rules again before F4 starts; until then A stands.
+**RULED: D (Erik, 2026-10-23).** It touches the sweep's code but not the
+simulation's state.
+
+**Design notes for D (Erik's two worries):**
+- **No sync.** Each burning tile's multiplier comes from its **own** local
+  flame (the VFX's R and T around that tile), not from a shared clock.
+  Neighbouring tiles' flames are separate turbulent patches, so they
+  decorrelate by construction.
+  - **Gate:** the correlation between two burning tiles' multiplier time
+    series is low (|ρ| < 0.3) for tiles three or more apart. A property test
+    on the F0b twin.
+- **Direction.** v1 of D is **isotropic per tile**: the multiplier scales
+  the tile's emission equally in every sweep ordinate. A lone tile then
+  pulses in place, while a row of tiles flickers unevenly across the room.
+- **Possible follow-up, D2 (directional):** weight the per-ordinate emission
+  by the flame's lean, i.e. the offset of R's centroid within the tile. A
+  tongue leaning east would then light east a little more, and nearby
+  shadows would sway.
+  - Only if HUMAN-TEST 2 finds lone fires flat.
+  - The sweep already resolves ordinates, so it is an extension, not a new
+    system.
+- **Clamp:** keep the multiplier mean-preserving over a second (mean ≈ 1),
+  so the fire's average room light still equals the physics' light. Erik's
+  1300 K exposure anchor and the brightness he tuned on 2026-10-22 stay
+  true.
 
 ## 7. Patches and gates
 
