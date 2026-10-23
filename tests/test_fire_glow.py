@@ -71,49 +71,22 @@ def test_glow_share_is_zero_when_cold_and_monotone_in_temperature():
 
 # --- the cover weight (design §13.4) -------------------------------------------
 
-def test_cover_weight_is_zero_below_the_glow_floor_and_full_100k_above():
-    """Property: an emitter at or below ``kelvin_glow_min`` covers nothing,
-    one ``COVER_RAMP_K`` above covers fully, monotone between. Breaks if a
-    cool flame tip starts covering (dark tips over a lit floor) or the ramp
-    is moved off the ONE glow floor."""
+def test_cover_weight_is_the_emission_capped_at_the_reference():
+    """Property (§13.4, as F3 measured it): an emitter at or below
+    ``kelvin_glow_min`` covers nothing, one at or above ``kelvin_ref`` (the
+    exposure reference) covers fully, and between them the cover never
+    exceeds the ramp's own intensity -- a dim emitter hides little. Breaks
+    if a cool flame tip starts covering more than it glows (dark tips over a
+    lit floor) or the cover moves off the ONE ramp."""
     r = _ramp()
-    g = r.kelvin_glow_min
-    k = np.linspace(g - 300.0, g + 400.0, 701)
+    g, ref_k = r.kelvin_glow_min, r.kelvin_ref
+    k = np.linspace(g - 300.0, ref_k + 400.0, 1401)
     w = r.cover_weight(k)
+    _, inten = r.emission_at_kelvin(k)
     assert np.all(w[k <= g] == 0.0)
-    assert np.all(w[k >= g + bb.COVER_RAMP_K] == 1.0)
+    assert np.all(w[k >= ref_k] == 1.0)
+    assert np.all(w <= inten + 1e-12)
     assert np.all(np.diff(w) >= 0.0)
-
-
-# --- the heat layer's linear pack (design §3.6, §13.8) -------------------------
-
-def test_pack_glow_linear_splits_the_one_ramp_into_two_shares():
-    """Property: the body share plus the gas share is exactly the ramp's
-    emission ``chroma * intensity`` (times the speckle when given) -- the
-    split never adds or loses glow; the body's cover is its own emission's
-    cover weight times its share; a cold tile packs zeros; no tone-map
-    (values above 1 survive). Breaks if a share double-counts, the cover
-    decouples from the tile's own temperature, or the pack curves its
-    light."""
-    r = _ramp()
-    rng = np.random.default_rng(3)
-    kelvin = rng.uniform(250.0, 5000.0, size=(12, 14))
-    q = _q16_from_kelvin(r, kelvin)
-    f = rng.uniform(0.0, 1.0, size=q.shape).astype(np.float32)
-    mod = rng.uniform(0.5, 1.5, size=q.shape)
-    body, gas = bb.pack_glow_linear(r, q, f, intensity_mod=mod)
-    rgb, inten = r.chroma_intensity(q)
-    le = rgb * (inten * mod)[..., None]
-    np.testing.assert_allclose(body[..., :3] + gas[..., :3], le, rtol=1e-5,
-                               atol=1e-6)
-    np.testing.assert_allclose(body[..., :3], le * f[..., None], rtol=1e-5,
-                               atol=1e-6)
-    eps = r.cover_weight(r._kelvin_from_tgame(q / TEMP_SCALE))
-    np.testing.assert_allclose(body[..., 3], eps * f, rtol=1e-5, atol=1e-6)
-    assert np.all(gas[..., 3] == 0.0)
-    cold = kelvin <= r.kelvin_glow_min
-    assert np.all(body[cold] == 0.0) and np.all(gas[cold] == 0.0)
-    assert le.max() > 1.0 and max(body[..., :3].max(), gas[..., :3].max()) > 1.0
 
 
 # --- the flame's emission law on the spec twin (design §3.5, §13.4) ------------
@@ -260,15 +233,17 @@ def test_emission_config_is_refused_to_the_two_laws():
     assert fv.EMISSION_CYCLE[-1] == "off"
 
 
-# --- the draw order (design §13.7) ---------------------------------------------
+# --- the draw order (design §13.7, §13.8 fallback) ----------------------------
 
 def test_compose_world_draws_the_fire_in_the_ruled_order():
     """Property: ``compose_world`` draws, bottom to top: floor, water, the
-    floor gas, the BODY glow, the FLAME, the units / props, the ceiling soot,
-    the COMPENSATION, the GAS glow -- and all of them before the one
-    resolve (design §13.7; Erik's rulings: units above the glow, soot above
-    the units, hot gas not hidden by its own soot). Breaks if a fire stage
-    slips past the resolve (back into display space) or out of its height."""
+    floor gas, the FLAME, the units / props, the ceiling soot, the flame's
+    COMPENSATION -- all in the linear scene, before the one resolve -- and
+    the display-space HEAT layer after it (design §13.7; §13.8's fallback:
+    the heat layer stays G0's named display exception). Erik's rulings:
+    units above the flame, soot above the units. Breaks if the flame slips
+    past the resolve (into display space) or out of its height, or the heat
+    layer is drawn somewhere else than the one fire shader's display stage."""
     from renderer.game_renderer import GameRenderer
     src = inspect.getsource(GameRenderer.compose_world)
     order = ["self.gas_relief.render_product(",
@@ -276,16 +251,55 @@ def test_compose_world_draws_the_fire_in_the_ruled_order():
              "self.lighting.draw_lit_world(",
              "self.water_pass.draw(",
              'self.gas_relief.draw("floor"',
-             'fx.draw_glow("body"',
              'fx.draw_glow("flame"',
              "self._draw_units_3d_world(",
              'self.gas_relief.draw("ceiling"',
              'fx.draw_glow("compensation"',
-             'fx.draw_glow("gas"',
-             "self.world.resolve("]
+             "self.world.resolve(",
+             'fx.draw_glow("heat"']
     pos = [src.index(k) for k in order]
     assert pos == sorted(pos), [k for k, _ in sorted(zip(order, pos),
                                                        key=lambda t: t[1])]
     after = src[src.index("self.world.resolve("):]
-    assert "draw_glow(" not in after
-    assert "temperature_overlay.draw" not in src
+    assert 'draw_glow("flame"' not in after
+    assert 'draw_glow("compensation"' not in after
+    assert "temperature_overlay.draw(" not in src
+
+
+def _glow_stage(src: str, n: int) -> str:
+    body = src[src.index("void main()"):]
+    key = f"u_stage == {n}"
+    if key in body:
+        return body[body.index(key):].split("} else", 1)[0]
+    return body[body.rindex("} else {"):]
+
+
+def test_the_heat_stage_scales_only_the_display_layers_weight():
+    """Property (G2's glow-through, re-homed in G3 F3's one fire shader): the
+    display-space heat stage passes the layer's colour through and scales
+    only its additive weight -- by the glow-through and by ``1 - eps`` of the
+    flame over it -- with no tone-map or linearisation. Breaks if the heat
+    layer is converted (G0 and F3 measured that losing the fire's hue) or
+    stops yielding to the flame (double counting, M4)."""
+    from renderer.fire_vfx import GLOW_STAGES, compose_glow_source
+    src = compose_glow_source()
+    heat = _glow_stage(src, GLOW_STAGES["heat"])
+    assert "finalColor = vec4(c.rgb * wgt, 0.0)" in heat
+    assert "(1.0 - flame_at(uv).a)" in heat
+    assert "u_glow_through" in heat
+    low = heat.lower()
+    assert "aces" not in low and "pow(" not in low and "srgb" not in low
+
+
+def test_the_flame_covers_by_its_emission_and_compensation_adds():
+    """Property: the flame stage writes premultiplied ``(Le E, E w(T))`` --
+    its cover IS its emission's opacity times the cover weight -- and the
+    compensation re-adds only the flame, weighted by the ceiling alpha times
+    ``1 - glow_through_ceiling``. Breaks if the cover decouples from the
+    emission (dark tips) or the compensation stops honouring Erik's 0.2."""
+    from renderer.fire_vfx import GLOW_STAGES, compose_glow_source
+    src = compose_glow_source()
+    assert "return vec4(c.rgb * c.a * E, E * min(c.a, 1.0));" in src
+    comp = _glow_stage(src, GLOW_STAGES["compensation"])
+    assert "(1.0 - u_glow_through.x)" in comp and "cov.r" in comp
+    assert "flame_at(uv).rgb * wgt" in comp

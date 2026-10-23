@@ -180,7 +180,8 @@ def test_compose_world_draws_by_height():
              'self.gas_relief.draw("floor"',
              "self._draw_units_3d_world(",
              'self.gas_relief.draw("ceiling"',
-             "self.world.resolve("]
+             "self.world.resolve(",
+             'fx.draw_glow("heat"']
     pos = [src.index(k) for k in order]
     assert pos == sorted(pos), [k for k, _ in sorted(zip(order, pos),
                                                        key=lambda t: t[1])]

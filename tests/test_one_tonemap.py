@@ -83,13 +83,17 @@ def test_the_resolve_is_the_one_place_that_does_all_three():
 
 # The ONE named exception (graphics G0 review): the LEGACY HEAT LAYER keeps
 # its pre-G0 display-space look -- ACES-shaped display colour, added on screen
-# AFTER the resolve -- until the G3 fire arc replaces it, because its hue,
-# saturation and halo were tuned as a display colour and no linear-scene
-# conversion keeps them (blackbody.pack_emissive_rgba explains). It shapes
-# its colour with the resolve's own curve, through a CPU twin that lives in
-# that one module.
-CPU_TWIN_HOME = {"blackbody.py": "legacy heat layer, display space, "
-                                 "until G3 fire"}
+# AFTER the resolve -- because its hue, saturation and halo were tuned as a
+# display colour and no linear-scene conversion keeps them
+# (blackbody.pack_emissive_rgba explains). G3 F3 RE-JUSTIFIED it (design
+# §13.14 minor 6): the hue gate (tools/fire_look_gate.py) measured the move
+# into the linear scene failing, so the exception stays until its own
+# retirement patch; the same module's glow_share uses the curve as the
+# relief's 0-1 own-light share (not a drawn colour). It shapes its colour
+# with the resolve's own curve, through a CPU twin that lives in that one
+# module.
+CPU_TWIN_HOME = {"blackbody.py": "legacy heat layer, display space (kept "
+                                 "by G3 F3's hue gate) + glow_share"}
 
 
 def test_no_cpu_side_tone_map_in_the_renderer():

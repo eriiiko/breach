@@ -1788,7 +1788,7 @@ emission = "mask"           # the A/B (Erik judges at HUMAN-TEST 1; F3 cycles it
 kappa = 2.5                 # B: E = 1 - exp(-kappa R)
 r0 = 0.10                   # A: E = smoothstep(r0, r1, R)
 r1 = 0.60
-e_min = 0.04                # emission threshold: E below it draws nothing (faint
+e_min = 0.08                # emission threshold: E below it draws nothing (faint
                             # R fills the active boxes; B's tail never reaches 0)
 edge_noise_amp = 0.8        # how deep the flame noise tears the edge (0 = none)
 edge_noise_tiles = 4.0      # tiles per repeat of the noise grain (filaments ~1/8)

@@ -669,14 +669,29 @@ def plan_frame(boxes: Sequence[Box], left_rects: Sequence[Box],
 _GLOW_FS = "fire_glow.fs"
 _SMOKE_MARKER = "// <SMOKE_SHADOW>"
 
-# shaders/fire_glow.fs u_stage, in the order compose_world draws them (§13.7)
-GLOW_STAGES = {"body": 1, "flame": 2, "compensation": 3, "gas": 4}
+# shaders/fire_glow.fs u_stage, in the order compose_world draws them:
+# the flame and its compensation in the linear scene (§13.7), the heat layer
+# in display space after the resolve (§13.8 FALLBACK -- the hue gate failed
+# on its linear move; tools/fire_look_gate.py)
+GLOW_STAGES = {"flame": 1, "compensation": 2, "heat": 3}
 
 # sampler units of the draw (above raylib's batch units 0..3)
-_GLOW_UNIT = {"u_body": 5, "u_gas": 6, "u_flame": 7, "u_vel": 8,
+_GLOW_UNIT = {"u_heat": 5, "u_below": 6, "u_flame": 7, "u_vel": 8,
               "u_noise": 9, "u_lut": 10, "u_smoke_cover": 11}
 
 NOISE_SIZE = 128
+# The e-fold (tiles) of the flame's brightness ceiling toward its active
+# box's edge, exp(d / BOX_FADE_TILES) - 1 (shaders/fire_glow.fs
+# box_ceiling): the box is its fluid domain's open boundary, and a
+# white-hot fire's flame still glows there at intensity ~60 -- F3 saw it cut
+# in a straight, saturated line (fire_thin_smoke). 0.7: an intensity-1
+# flame is untouched beyond half a tile from the edge, an intensity-60 one
+# fades over the whole 3-tile margin.
+BOX_FADE_TILES = 0.7
+# ... and the width (tiles) of the ragged window that fades the faint flame
+# in front of the same edge (B's translucent fringe reached it on fss_close
+# and ended on one straight line).
+BOX_WINDOW_TILES = 0.9
 
 
 def compose_glow_source() -> str:
@@ -779,11 +794,12 @@ class FireVFXPass:
                  "u_vort_eps", "u_curl_amp", "u_modes", "u_mode_phase",
                  "u_n_modes", "u_screen", "u_lifetime", "u_cool_rate",
                  "u_r_eps", "u_r_cut", "u_maccormack")
-    _GLOW_UNIFORMS = ("u_stage", "u_grid", "u_body", "u_gas", "u_heat_on",
+    _GLOW_UNIFORMS = ("u_stage", "u_grid", "u_heat", "u_below",
                       "u_glow_through", "u_flame", "u_vel", "u_noise",
                       "u_lut", "u_m", "u_flame_on", "u_lut_k", "u_lut_n",
-                      "u_glow_min", "u_cover_ramp", "u_emission", "u_law",
+                      "u_emission", "u_law",
                       "u_noise_a", "u_noise_ph", "u_noise_off",
+                      "u_fboxes", "u_box_fade",
                       "u_smoke_cover", "u_smoke_grid", "u_smoke_cast",
                       "u_smoke_cast2")
     _DEBUG_UNIFORMS = ("u_grid", "u_m", "u_mode", "u_src_a", "u_src_b",
@@ -819,7 +835,7 @@ class FireVFXPass:
         self._dloc = {u: rl.get_shader_location(self.debug_shader, u)
                       for u in self._DEBUG_UNIFORMS}
         self._ucache: Dict[Tuple[str, str], object] = {}
-        # the draw (F3): one shader, four stages (shaders/fire_glow.fs)
+        # the draw (F3): one shader, three stages (shaders/fire_glow.fs)
         self.glow_shader = core.load_shader_from_source(
             vs, compose_glow_source())
         self._gloc = {u: rl.get_shader_location(self.glow_shader, u)
@@ -1222,19 +1238,24 @@ class FireVFXPass:
 
     def draw_glow(self, stage: str, rects: Sequence[Box], *,
                   world_px_w: float, world_px_h: float, heat=None,
-                  heat_on: bool = False, smoke_cast=None,
+                  smoke_cast=None,
                   glow_through: Tuple[float, float] = (0.0, 0.0),
                   flame_on: Optional[bool] = None) -> int:
-        """Draw one stage of THE fire's light (``shaders/fire_glow.fs``)
-        into the bound SCENE RT (linear HDR), on ``rects`` (tiles) only:
-        ``"body"`` / ``"flame"`` as emitter covers (premultiplied over),
-        ``"compensation"`` / ``"gas"`` added; every stage keeps the
-        destination alpha. ``heat`` = the heat layer
-        (:class:`renderer.overlays.HeatFieldOverlay`: its ``body_tex`` /
-        ``gas_tex``); ``smoke_cast`` = the renderer's ``_smoke_cast``
-        (product texture or None, grid, cast, cast2); ``glow_through`` =
-        (ceiling, floor), zero without a product. Returns the quads drawn
-        (0 = nothing issued)."""
+        """Draw one stage of THE fire's light (``shaders/fire_glow.fs``) on
+        ``rects`` (tiles) only, into whatever target is bound:
+
+          ``"flame"``        SCENE RT (linear HDR), an emitter cover
+                             (premultiplied over), under the units;
+          ``"compensation"`` SCENE RT, after the ceiling soot, added;
+          ``"heat"``         DISPLAY RT, after the resolve: the heat layer
+                             (``heat`` = :class:`renderer.overlays.
+                             HeatFieldOverlay`) through the glow-through and
+                             the flame's cover, added.
+
+        Every stage keeps the destination alpha. ``smoke_cast`` = the
+        renderer's ``_smoke_cast`` (product texture or None, grid, cast,
+        cast2); ``glow_through`` = (ceiling, floor), zero without a product.
+        Returns the quads drawn (0 = nothing issued)."""
         if not rects:
             return 0
         rl = self._rl
@@ -1250,7 +1271,7 @@ class FireVFXPass:
         ph0, ph1, offs = noise_phases(self.clock.t_noise,
                                       s.edge_noise_cycle_s,
                                       s.edge_noise_tiles, d.seed)
-        over = st in (1, 2)
+        over = st == GLOW_STAGES["flame"]
         rl.rl_set_blend_factors_separate(
             rl.RL_ONE, rl.RL_ONE_MINUS_SRC_ALPHA if over else rl.RL_ONE,
             rl.RL_ZERO, rl.RL_ONE, rl.RL_FUNC_ADD, rl.RL_FUNC_ADD)
@@ -1260,28 +1281,33 @@ class FireVFXPass:
         g("u_stage", int(st))
         g("u_grid", float(self.w), float(self.h))
         g("u_m", float(s.m))
-        g("u_heat_on", int(bool(heat_on and heat is not None)))
         g("u_flame_on", int(bool(flame_on)))
         g("u_glow_through", float(glow_through[0]), float(glow_through[1]))
         g("u_lut_k", self.ramp.kelvin_floor, self.ramp.kelvin_ceil)
         g("u_lut_n", float(LUT_SIZE))
-        g("u_glow_min", float(self.ramp.kelvin_glow_min))
-        from .blackbody import COVER_RAMP_K
-        g("u_cover_ramp", float(COVER_RAMP_K))
         g("u_emission", int(EMISSION_LAWS[law]))
         g("u_law", d.r0, d.r1, d.kappa, d.e_min)
         g("u_noise_a", s.edge_noise_amp, s.edge_noise_tiles,
           s.edge_streak_s, s.edge_speed_cap)
         g("u_noise_ph", ph0, ph1, s.edge_noise_cycle_s, s.edge_contrast)
         g("u_noise_off", *offs)
+        g("u_box_fade", float(BOX_FADE_TILES), float(BOX_WINDOW_TILES))
+        fb = boxes_uniform(self.region.boxes, 1)
+        loc = self._gloc.get("u_fboxes", -1)
+        if loc >= 0 and self._gcache.get("u_fboxes") != tuple(fb):
+            self._gcache["u_fboxes"] = tuple(fb)
+            rl.set_shader_value_v(self.glow_shader, loc,
+                                  rl.ffi.new("float[16]", fb),
+                                  rl.ShaderUniformDataType.SHADER_UNIFORM_VEC4,
+                                  MAX_BOXES)
         if smoke_cast is not None:
             g("u_smoke_grid", *(float(x) for x in smoke_cast[1]))
             g("u_smoke_cast", *(float(x) for x in smoke_cast[2]))
             g("u_smoke_cast2", *(float(x) for x in smoke_cast[3]))
         fallback = self.src_a_tex.id
         samplers = (
-            ("u_body", heat.body_tex.id if heat is not None else fallback),
-            ("u_gas", heat.gas_tex.id if heat is not None else fallback),
+            ("u_heat", heat.tex.id if heat is not None else fallback),
+            ("u_below", heat.body_tex.id if heat is not None else fallback),
             ("u_flame", self.flame.front_id),
             ("u_vel", self.vel.front_id),
             ("u_noise", self.noise_tex.id),

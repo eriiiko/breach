@@ -939,8 +939,8 @@ def flame_emission(state: FireVFXState, ramp, mode: str,
     only: ``smoothstep(r0, r1, R)``) or 'B' (temperature + thickness:
     ``1 - exp(-kappa R)``), clipped by the emission threshold
     (:func:`emission_clip`), and ``cover = E * w(T)`` the §13.4 emitter-cover
-    weight (w = ``BlackbodyRamp.cover_weight``: smoothstep from the glow
-    floor to +100 K, so a flame too cool to glow covers nothing). The GL
+    weight (w = ``BlackbodyRamp.cover_weight``: the ramp's intensity
+    capped at 1, so a dim flame covers little, a cold one nothing). The GL
     draw (``shaders/fire_glow.fs``) is this law on the upsampled, edge-
     eroded field."""
     T = state.temperature(dials.r_eps)

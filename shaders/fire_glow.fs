@@ -6,28 +6,30 @@
 // (renderer/lit3d.py _SMOKE_SHADOW_GLSL, smokeCoverAt) is spliced in at the
 // marker line below.
 //
-// One shader, five STAGES (u_stage), drawn by GameRenderer.compose_world in
-// the §13.7 order. Stages 1-4 write LINEAR HDR into the scene RT, before the
-// one tone-map (shaders/world_resolve.fs); none tone-maps, encodes or
-// dithers. Every stage keeps the destination alpha (the blend's alpha
-// factors are ZERO, ONE).
+// One shader, three STAGES (u_stage), drawn by GameRenderer.compose_world.
+// Every stage keeps the destination alpha (the blend's alpha factors are
+// ZERO, ONE).
 //
-//   1 BODY   -- the heat layer's BODY share (the glow below the smoke: a
-//               burning crate's, a hot wall's), an EMITTER COVER over the
-//               floor, the water and the floor gas, dimmed by the floor gas
-//               over it:  out = k (Le_b + ...) , premultiplied
-//               (Le_b k, eps_b k), k = 1 - glow_through_floor * cov.b.
-//   2 FLAME  -- the flame VFX, an emitter cover with opacity tied to its
-//               emission (§13.4):  rgb = Le(T_vfx) E, a = E w(T_vfx).
-//   3 COMPENSATION -- after the ceiling soot: a second evaluation of
-//               (body under the flame) + flame, ADDED with weight
-//               alpha_ceil (1 - glow_through_ceiling), alpha_ceil = the
-//               ceiling layer's own alpha from the cast product -- so the
-//               soot hides the glow below it by glow_through_ceiling only
-//               (Erik's 0.2), never by its full alpha (§13.7).
-//   4 GAS    -- the heat layer's GAS share (a hot gas tile's own glow),
-//               ADDED, undimmed: an emitting slab is not hidden by its own
-//               depth (graphics G2 rule).
+//   1 FLAME  -- SCENE (linear HDR, before the one tone-map), under the
+//               units: the flame VFX as an EMITTER COVER with opacity tied
+//               to its emission (§13.4), premultiplied over:
+//               rgb = Le(T_vfx) E, a = eps = E w(T_vfx), w = the ramp's
+//               intensity capped at 1 (BlackbodyRamp.cover_weight).
+//   2 COMPENSATION -- SCENE, right after the ceiling soot: the flame again,
+//               ADDED with weight alpha_ceil (1 - glow_through_ceiling),
+//               alpha_ceil = the ceiling layer's own alpha from the cast
+//               product -- so the soot hides the flame below it by
+//               glow_through_ceiling only (Erik's 0.2), never by its full
+//               alpha (§13.7).
+//   3 HEAT   -- DISPLAY space, after the resolve: the black-body heat
+//               layer, G0's named exception (§13.8 FALLBACK: the hue gate
+//               failed on its linear move, tools/fire_look_gate.py), its
+//               ACES-shaped display colour ADDED, weighted by G2's
+//               glow-through (only the share below the smoke is dimmed:
+//               t = (1 - gt.x cov.r)(1 - gt.y cov.b), mixed by the below
+//               fraction) and by (1 - eps) of the flame over it -- the flame
+//               COVERS its burning tile, nothing is counted twice (M4).
+//               Colour passes through; only the weight is scaled.
 //
 // THE FLAME (§3.5): the flame field (R, R*T at m cells per tile) is
 // reconstructed with a cubic B-spline (no texel blocks at the world RT's
@@ -49,13 +51,12 @@ in vec2 fragTexCoord;      // world uv: (0, 0) = the map's north-west corner
 in vec4 fragColor;
 
 uniform sampler2D texture0;     // the quad's carrier (unused)
-uniform int   u_stage;          // 1 body, 2 flame, 3 compensation, 4 gas
+uniform int   u_stage;          // 1 flame, 2 compensation, 3 heat (display)
 uniform vec2  u_grid;           // the map, tiles (W, H)
 
-// heat layer (per tile, linear; renderer/blackbody.py pack_glow_linear)
-uniform sampler2D u_body;       // rgb = Le * f (body share), a = eps * f
-uniform sampler2D u_gas;        // rgb = Le * (1 - f) (gas share)
-uniform int   u_heat_on;        // 0 = the T toggle hid the heat layer
+// the heat layer (per tile, display; renderer/overlays.py HeatFieldOverlay)
+uniform sampler2D u_heat;       // rgb = display hue (peak 1), a = weight
+uniform sampler2D u_below;      // r = the share of the glow BELOW the smoke
 uniform vec2  u_glow_through;   // (ceiling, floor), 0 when no cast product
 
 // flame (renderer/fire_vfx.py fields; cells, north row first)
@@ -67,13 +68,14 @@ uniform float u_m;              // flame cells per tile
 uniform int   u_flame_on;
 uniform vec2  u_lut_k;          // the LUT's Kelvin domain (floor, ceil)
 uniform float u_lut_n;          // its size
-uniform float u_glow_min;       // kelvin_glow_min
-uniform float u_cover_ramp;     // blackbody.COVER_RAMP_K
 uniform int   u_emission;       // 0 = A "mask", 1 = B "thickness"
 uniform vec4  u_law;            // (r0, r1, kappa, e_min)
 uniform vec4  u_noise_a;        // (amp, grain tiles, streak s, speed cap tiles/s)
 uniform vec4  u_noise_ph;       // (phase 0, phase 1, cycle s, contrast)
 uniform vec4  u_noise_off;      // per-phase grain offsets (xy, zw), tiles
+uniform vec4  u_fboxes[4];      // the flame's active boxes, tiles (x0, y0, x1, y1)
+uniform vec2  u_box_fade;       // at a box's edge, tiles: (e-fold of the
+                                // brightness ceiling, ragged window width)
 
 out vec4 finalColor;
 
@@ -111,14 +113,9 @@ vec4 textureBicubic(sampler2D tex, vec2 texCoords, vec2 texSize) {
 }
 
 // --- the one ramp -----------------------------------------------------------
-vec3 Le(float kelvin) {
+vec4 lut(float kelvin) {                    // rgb chroma, a intensity
     float x = clamp((kelvin - u_lut_k.x) / (u_lut_k.y - u_lut_k.x), 0.0, 1.0);
-    vec4 c = texture(u_lut, vec2((x * (u_lut_n - 1.0) + 0.5) / u_lut_n, 0.5));
-    return c.rgb * c.a;
-}
-
-float cover_weight(float kelvin) {          // blackbody.BlackbodyRamp.cover_weight
-    return smoothstep(u_glow_min, u_glow_min + u_cover_ramp, kelvin);
+    return texture(u_lut, vec2((x * (u_lut_n - 1.0) + 0.5) / u_lut_n, 0.5));
 }
 
 float emission_clip(float E) {              // fire_vfx_ref.emission_clip
@@ -154,6 +151,31 @@ float flame_noise(vec2 p, vec2 u) {
     return clamp(0.5 + (n - 0.55) * u_noise_ph.w, 0.0, 1.0);
 }
 
+// The distance (tiles) to the edge of the active box holding p, 0 outside
+// every box. The box is the flame's fluid domain (an open boundary): flame
+// still standing there must not end in a straight cut (F3).
+float box_dist(vec2 p) {
+    for (int i = 0; i < 4; ++i) {
+        vec4 b = u_fboxes[i];
+        if (p.x >= b.x && p.y >= b.y && p.x < b.z && p.y < b.w)
+            return min(min(p.x - b.x, b.z - p.x), min(p.y - b.y, b.w - p.y));
+    }
+    return 0.0;
+}
+
+// The flame's fade toward its box edge, as a factor on E: a RAGGED window
+// (the flame noise moves its start by +-half its width, so faint tongues
+// end at different depths, not on one line) times a BRIGHTNESS CEILING
+// exp(d / e-fold) - 1 on the intensity L = I E, 0 at the edge and rising
+// exponentially -- a white-hot flame (intensity ~60) fades over its own
+// tone-mapped range instead of saturating to a straight cut.
+float edge_fade(float d, float n, float L) {
+    float win = smoothstep(0.0, 1.0, (d + (n - 0.5) * u_box_fade.y)
+                                     / u_box_fade.y);
+    float cap = exp(min(d / u_box_fade.x, 30.0)) - 1.0;
+    return win * min(1.0, cap / max(L, 1e-6));
+}
+
 // (premultiplied flame radiance Le E, its cover eps = E w(T)) at world uv
 vec4 flame_at(vec2 uv) {
     if (u_flame_on == 0) return vec4(0.0);
@@ -169,32 +191,33 @@ vec4 flame_at(vec2 uv) {
     float E = (u_emission == 0) ? smoothstep(u_law.x, u_law.y, Re)
                                 : 1.0 - exp(-u_law.z * Re);
     E *= emission_clip(E);
-    return vec4(Le(T) * E, E * cover_weight(T));
+    // Le = chroma * intensity; the cover weight is the intensity capped at
+    // 1 (blackbody.BlackbodyRamp.cover_weight): tied to the emission
+    vec4 c = lut(T);
+    E *= edge_fade(box_dist(uv * u_grid), n, c.a * E);
+    return vec4(c.rgb * c.a * E, E * min(c.a, 1.0));
 }
 
 void main() {
     vec2 uv = fragTexCoord;
     if (u_stage == 1) {
-        if (u_heat_on == 0) { finalColor = vec4(0.0); return; }
-        vec4 cov = smokeCoverAt(uv);
-        float k = 1.0 - u_glow_through.y * clamp(cov.b, 0.0, 1.0);
-        vec4 b = texture(u_body, uv);
-        finalColor = vec4(b.rgb * k, clamp(b.a, 0.0, 1.0) * k);
-    } else if (u_stage == 2) {
         finalColor = flame_at(uv);
-    } else if (u_stage == 3) {
+    } else if (u_stage == 2) {
         vec4 cov = smokeCoverAt(uv);
         float wgt = clamp(cov.r, 0.0, 1.0) * (1.0 - u_glow_through.x);
-        if (wgt <= 0.0) { finalColor = vec4(0.0); return; }
-        vec4 fl = flame_at(uv);
-        vec3 body = vec3(0.0);
-        if (u_heat_on != 0) {
-            float k = 1.0 - u_glow_through.y * clamp(cov.b, 0.0, 1.0);
-            body = texture(u_body, uv).rgb * k * (1.0 - fl.a);
-        }
-        finalColor = vec4((body + fl.rgb) * wgt, 0.0);
+        finalColor = wgt > 0.0 ? vec4(flame_at(uv).rgb * wgt, 0.0)
+                               : vec4(0.0);
     } else {
-        if (u_heat_on == 0) { finalColor = vec4(0.0); return; }
-        finalColor = vec4(texture(u_gas, uv).rgb, 0.0);
+        vec4 c = texture(u_heat, uv);
+        vec4 cov = smokeCoverAt(uv);
+        // Only the glow BELOW the smoke is hidden: a body's (a burning
+        // crate, a hot wall) beyond what the hot gas around it emits by
+        // itself. A hot GAS tile's glow is the gas itself -- an emitting
+        // slab is not hidden by its own depth (#95's question).
+        float below = clamp(texture(u_below, uv).r, 0.0, 1.0);
+        float t = (1.0 - u_glow_through.x * clamp(cov.r, 0.0, 1.0))
+                * (1.0 - u_glow_through.y * clamp(cov.b, 0.0, 1.0));
+        float wgt = c.a * mix(1.0, t, below) * (1.0 - flame_at(uv).a);
+        finalColor = vec4(c.rgb * wgt, 0.0);
     }
 }

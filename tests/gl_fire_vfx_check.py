@@ -1,4 +1,4 @@
-"""GL checks of the flame VFX pass (graphics arc G3, patches F1 + F2;
+"""GL checks of the flame VFX pass (graphics arc G3, patches F1 + F2 + F3;
 docs/g3_fire_design_2026-10-23.md §8, §9, §13.1, §13.3, §13.9-§13.11, §13.13).
 
 Runs in ITS OWN PROCESS with a hidden raylib window (a GL context), never
@@ -51,6 +51,18 @@ Each check names the PROPERTY it protects and the change that must break it:
       dial is cached past a reload.
   no_fire_no_passes -- with no fire, update+simulate issue zero passes and
       open no GL block. Breaks if the active-region gate is lost.
+  flame_draw_cover_and_bound -- (F3) the flame stage of shaders/fire_glow.fs
+      on a live field over a dim lit floor: the destination alpha is never
+      written; no pixel outshines the feeder's Le(T_src) (round 1's M4);
+      the floor is never darkened by more than 10 % (the cover is tied to
+      the emission, §13.4); A "mask" and B "thickness" differ by > 5 % of
+      the flame's RGB (§8). Breaks
+      if the cover decouples from emission (dark tips), the flame
+      double-counts over its fuel, a stage writes alpha, or the A/B goes
+      meaningless.
+  no_fire_no_flame_draws -- (F3) no fire -> no flame draw rects and no
+      draw issued; a burnt-out fire stops drawing after its linger. Breaks
+      if the draw ignores the active region.
   one_tamed_wind_and_render_only -- the real renderer on fire_smoke_studio
       (relief + props + flame all consuming the wind) calls ``tame_wind`` at
       most once per frame, and the field digest of every tick is identical
@@ -752,6 +764,111 @@ def check_no_fire():
     finally:
         core.DirectPasses.__enter__ = orig
     assert not calls, f"{len(calls)} GL blocks without fire"
+    vfx.unload()
+
+
+# ---------------------------------------------------------------------------
+# the draw (F3): shaders/fire_glow.fs through FireVFXPass.draw_glow
+# ---------------------------------------------------------------------------
+
+_UNDER = (8, 6, 5, 128)          # a dim lit floor (8-bit), half coverage
+
+
+def _draw_flame(vfx, rt, law, px_per_tile, stage="flame"):
+    """Clear ``rt`` to the floor, draw one fire-glow stage under ``law``
+    (A "mask" / B "thickness"), read it back (float, GL row order)."""
+    from renderer import core
+    vfx.emission_override = law
+    rl.begin_texture_mode(rt)
+    rl.clear_background(rl.Color(*_UNDER))
+    n = vfx.draw_glow(stage, vfx.flame_rects(None),
+                      world_px_w=vfx.w * px_per_tile,
+                      world_px_h=vfx.h * px_per_tile)
+    rl.end_texture_mode()
+    return n, core.read_texture_rgba32f(rt.texture).astype(np.float64)
+
+
+def _burning_row(vfx, scales, h, w, frames=48):
+    fr = _Frames(vfx, scales, h, w)
+    fire = np.zeros((h, w))
+    fire[h // 2, w // 2 - 2:w // 2 + 1] = 1.0
+    for _ in range(frames):
+        fr.frame(fire)
+    return fr
+
+
+@check("flame_draw_cover_and_bound")
+def check_flame_draw():
+    """The flame stage on a live field over a dim lit floor: it never
+    writes the destination alpha, never shows a pixel brighter than its
+    feeder's ``Le(T_src)`` (M4), never darkens the floor by more than a
+    tolerance (eps tied to emission, §13.4), and A != B."""
+    from renderer import core
+    scales = _scales()
+    h, w, ppt = 16, 16, 8
+    vfx = _vfx(h, w)
+    fr = _burning_row(vfx, scales, h, w)
+    rt = core.load_render_texture_rgba16f(w * ppt, h * ppt)
+    under = np.array(_UNDER[:3]) / 255.0
+    lum_w = np.array([0.2126, 0.7152, 0.0722])
+    t_src = 1250.0
+    ch, it = scales.ramp.emission_at_kelvin(np.array([t_src]))
+    le_src = (ch * it[:, None])[0]
+    out = {}
+    for law in ("mask", "thickness"):
+        n, img = _draw_flame(vfx, rt, law, ppt)
+        assert n > 0, f"{law}: no flame quad drawn with a fire burning"
+        a = img[..., 3]
+        assert np.allclose(a, _UNDER[3] / 255.0, atol=2e-3),             f"{law}: destination alpha changed ({a.min():.4f}..{a.max():.4f})"
+        rgb = img[..., :3]
+        cap = np.maximum(under, le_src) * 1.01 + 2e-3
+        assert np.all(rgb <= cap), (f"{law}: a pixel outshines its feeder: "
+                                    f"max {rgb.max(axis=(0, 1))} > {cap}")
+        lum = rgb @ lum_w
+        lu = under @ lum_w
+        dark = (lu - lum) / lu
+        assert dark.max() <= 0.10, (f"{law}: the flame darkens the floor by "
+                                    f"{100 * dark.max():.1f} % somewhere")
+        lit = lum > lu * 1.5
+        assert lit.sum() > 200, f"{law}: almost no flame drawn ({lit.sum()} px)"
+        out[law] = (rgb, dark.max(), lit.sum())
+    diff = np.abs(out["mask"][0] - out["thickness"][0]).sum(axis=-1)
+    shown = (out["mask"][0] @ lum_w > (under @ lum_w) * 1.5) |             (out["thickness"][0] @ lum_w > (under @ lum_w) * 1.5)
+    md = float(diff[shown].mean())
+    mean_rgb = float(np.maximum(out["mask"][0], out["thickness"][0])
+                     .sum(axis=-1)[shown].mean())
+    rel = md / max(mean_rgb, 1e-9)
+    assert rel > 0.05, (f"A and B look alike on a burning row (mean |dRGB| "
+                        f"{md:.3f} = {100 * rel:.1f} % of the flame's RGB)")
+    rl.unload_render_texture(rt)
+    vfx.unload()
+    return (f"A: max darken {100 * out['mask'][1]:.2f} %, {out['mask'][2]} px "
+            f"lit; B: {100 * out['thickness'][1]:.2f} %, "
+            f"{out['thickness'][2]} px; |A-B| {100 * rel:.1f} % of RGB")
+
+
+@check("no_fire_no_flame_draws")
+def check_no_fire_draws():
+    """With no fire the flame has no draw rects and draw_glow issues
+    nothing, and a fire that burned out stops drawing after its linger."""
+    scales = _scales()
+    h, w = 16, 16
+    vfx = _vfx(h, w)
+    fr = _Frames(vfx, scales, h, w)
+    for _ in range(5):
+        fr.frame(np.zeros((h, w)))
+    assert vfx.flame_rects(None) == [], vfx.flame_rects(None)
+    assert vfx.draw_glow("flame", vfx.flame_rects(None), world_px_w=128,
+                         world_px_h=128) == 0
+    fire = np.zeros((h, w))
+    fire[8, 8] = 1.0
+    for _ in range(24):
+        fr.frame(fire)
+    assert vfx.flame_rects(None), "a burning tile drew no flame rects"
+    from renderer.fire_vfx import linger_s
+    for _ in range(int(24 * (linger_s(vfx.settings.dials) + 1.0))):
+        fr.frame(np.zeros((h, w)))
+    assert vfx.flame_rects(None) == [], "a burnt-out fire still draws"
     vfx.unload()
 
 

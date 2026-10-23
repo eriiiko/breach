@@ -26,7 +26,9 @@ deterministic per shot, so the META of the ``--after`` run masks both runs
 
 Gates (``--gate``):
   hue    |hue shift| <= 5 deg and chroma within +-4 % of before, on every
-         shot with a fire region (design §13.8: G0's tolerance);
+         shot with a fire region (design §13.8: G0's tolerance); a region
+         that is achromatic before (mean C* < 2: a clipped white core) has
+         no hue to keep -- there chroma must stay within 1 unit of C*;
   lum    masked luminance within +-4 % (§13.7's compensation gate: run it on
          ``fire_thin_smoke`` / ``fire_thick_smoke`` with the flame off).
 
@@ -36,7 +38,7 @@ two runs of the SAME commit (before vs DIR) and prints that floor beside each
 row, so a gate that fails by less than its own noise is visible as such.
 
     python tools/fire_look_gate.py --before A --after B [--shots a,b]
-        [--noise A2] [--gate hue|lum] [--csv out.csv]
+        [--noise A2] [--gate hue|lum] [--meta DIR] [--csv out.csv]
 
 Pure numpy + Pillow; no window. Credit: CIELAB / sRGB conversion per CIE
 15:2004 and IEC 61966-2-1 (the standard D65 formulas).
@@ -69,6 +71,12 @@ TWIN["fire_plume"] = "smoke_plume_noheat"
 
 HUE_TOL_DEG = 5.0
 REL_TOL = 0.04
+# An ACHROMATIC region (a clipped white core: fire_plume's crates) has no
+# hue to keep, and a relative chroma change of ~0 is noise: below this mean
+# C* the gate compares chroma ABSOLUTELY (within ACHROMA_TOL units of C*)
+# and does not gate the hue.
+CHROMA_MIN = 2.0
+ACHROMA_TOL = 1.0
 I_MIN = 0.01                    # [render.fire_vfx] i_min: "burning"
 HALO_FRAC = 0.10
 
@@ -246,16 +254,32 @@ class Row:
     def rel(self, key: str) -> float:
         return self.after[key] / max(self.before[key], 1e-9) - 1.0
 
+    @property
+    def achromatic(self) -> bool:
+        return self.before["chroma"] < CHROMA_MIN
+
+    def hue_ok(self) -> bool:
+        if self.achromatic:
+            return abs(self.after["chroma"] - self.before["chroma"]) <= ACHROMA_TOL
+        return (abs(self.d_hue) <= HUE_TOL_DEG
+                and abs(self.rel("chroma")) <= REL_TOL)
+
 
 def measure(before: Path, after: Path, names: Sequence[str],
-            noise: Optional[Path] = None) -> List[Row]:
+            noise: Optional[Path] = None,
+            meta_dir: Optional[Path] = None) -> List[Row]:
     rows = []
     for n in names:
         pa, pb = find_png(after, n), find_png(before, n)
         if pa is None or pb is None:
             print(f"[gate] {n}: missing PNG (before {pb}, after {pa}) -- skipped")
             continue
-        meta = Meta.load(pa)
+        pm = find_png(meta_dir, n) if meta_dir is not None else pa
+        if pm is None or not meta_path(pm).is_file():
+            print(f"[gate] {n}: no META beside {pm} (render it with this "
+                  f"tree's lighting_demo, or pass --meta) -- skipped")
+            continue
+        meta = Meta.load(pm)
         tiles, kind = fire_tiles(meta)
         if not tiles.any():
             print(f"[gate] {n}: no fire region -- skipped")
@@ -300,8 +324,9 @@ def report(rows: Sequence[Row], gate: Optional[str]) -> bool:
             nz = f"{nh:+.1f}/{100 * nc:+.1f}/{100 * nl:+.1f}"
         verdict = ""
         if gate == "hue":
-            good = abs(r.d_hue) <= HUE_TOL_DEG and abs(r.rel("chroma")) <= REL_TOL
-            verdict = "PASS" if good else "FAIL"
+            good = r.hue_ok()
+            verdict = ("PASS" if good else "FAIL") + (
+                " (achromatic: |dC*| <= 1)" if r.achromatic else "")
             ok &= good
         elif gate == "lum":
             good = abs(r.rel("lum")) <= REL_TOL
@@ -324,10 +349,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--shots", default=",".join(GATED))
     ap.add_argument("--noise", type=Path, default=None)
     ap.add_argument("--gate", choices=("hue", "lum"), default=None)
+    ap.add_argument("--meta", type=Path, default=None,
+                    help="the folder whose <png>.meta.npz masks the shots "
+                         "(default: --after)")
     ap.add_argument("--csv", type=Path, default=None)
     a = ap.parse_args(argv)
     names = [n.strip() for n in a.shots.split(",") if n.strip()]
-    rows = measure(a.before, a.after, names, a.noise)
+    rows = measure(a.before, a.after, names, a.noise, a.meta)
     ok = report(rows, a.gate)
     if a.csv is not None:
         keys = ("hue", "chroma", "lum", "L")
