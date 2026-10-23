@@ -842,3 +842,69 @@ the design above turned out wrong or was decided by a measurement.*
   `--fire-vfx-perf`):** fire VFX incl. embers CPU 1.38 ms mean (embers
   0.20 update + 0.14 draw, ~17 alive); flame + embers GPU 0.62 ms (embers
   0.012); shimmer GPU 0.05 ms, its CPU pack 0.10 ms.
+
+## 16. F4b as built (2026-10-23) — the room-light flicker (D)
+
+*Implementation record of patch F4b, for HUMAN-TEST 2 (with F4a). Code and
+the commit messages are the source of truth; this lists only where the design
+above turned out wrong or was decided by a measurement.*
+
+- **How it crosses.** A per-cell EMISSION MULTIPLIER on the sweep's light
+  group (`LightChannels.emit_mult`, rows `(y, x, mult_q)` Q16): the cell's
+  thermal light emission becomes `(em·mult_q) >> 16` in every ordinate —
+  heat never reads it, a cone in the cell is not scaled, ONE is the identity
+  and no rows is the pre-F4b sweep. Door: in the grid, `[0, 2·ONE]` (one bit
+  of the over-driven headroom), one row per cell. The CPU sweep, the CUDA
+  twin (per-call and `(N, h, w)` launch core) and the reference
+  (`sweep_ref_q.LightGroup.emit_mult`) agree at tol 0. Python side: the rows
+  are render state handed with the cone rows (`Simulation.set_light(...,
+  emit_mult=)` → `PhysicsRunner.set_light_emit_mult`), converted from floats
+  once at `frame_lights.emit_mult_rows`.
+- **"The VFX's local R and T" was not the driver.** R lives on the GPU and a
+  readback is out (M11), so the multiplier is built from the flame's CPU
+  state: each burning tile's own cluster PUFFING (`fire_vfx_ref.puff_theta`,
+  the pulse the flame injects with) plus a per-tile turbulence (8 sinusoids
+  hashed from 0.8–5 Hz). `m = 1 + a·clip(z/2, −1, 1)`, `a = 0.3`.
+- **No-sync and "follow the puffing" pull against each other.** The puffing
+  is shared by every tile of a cluster, so two tiles of one fire correlate at
+  about the puffing's share of the variance; the §6.3 gate (|ρ| < 0.3 for
+  tiles ≥ 3 apart) holds only with a small share — `puff_share = 0.1`
+  (a dial; above ~0.25 one fire's tiles begin to move together).
+- **Chance correlation sets the oscillator count.** Two independent
+  narrow-band signals still correlate by chance over a short window: with 3
+  strongly pink sinusoids per tile ~10 % of tile pairs passed |ρ| = 0.3 over
+  10 s. Eight flatter ones (amplitude ∝ f^−1/4) pass on every pair of the
+  test layout (a 2×9 fire, a 3×3 fire, five equal lone tiles) over 30 s with
+  max |ρ| < 0.3 and mean |ρ| ≈ 0.1; the gate is measured over 30 s (≥ 10 s).
+- **`fire_vfx_ref._hash01` is weak** (no first xor-shift: map keys 572 / 574
+  hash to 0.3282 / 0.3276). The flicker uses its own full splitmix64. The
+  FLAME's puffing phases still come from `_hash01`, so two equal-sized fires
+  can draw nearly the same puffing phase and puff in step — F0b's law, not
+  changed here (a finding for the arc, one line).
+- **Paused.** The flicker rides the flame's VFX clock (`t_noise`), so it
+  idles with the flame; main.py relights a paused frame at the TICK rate
+  whenever the flicker rows moved (the 4 Hz paused relight would step it
+  visibly) — the cost of a running tick's sweep. With `idle_when_paused` off
+  the rows freeze and the 4 Hz cadence returns. Without the flame VFX there
+  are no rows. `lighting_demo` hands the rows per tick but keeps its 4 Hz
+  paused relight.
+- **Look: the flicker is real in the field and nearly invisible on screen at
+  the shipped tuning.** `main.py --level fire_smoke_studio`, 10 s from 1.5 s,
+  flicker on vs off (same sim, cursor lamp excluded):
+  - field `light_q`, floor 2–4 tiles from the fire, high-passed (2 s):
+    CV 1.4 % → 6.1 % (lone tile 1.0 % → 11 %); the region series west /
+    east of the row / around the lone tile go from ρ 0.97–0.99 (they only
+    follow the fire's slow growth) to 0.39–0.67 — uneven, never in sync;
+    means equal within 0.8 %;
+  - SCREEN floor luminance 1.5–4 tiles from the flame: mean 18.1 vs 17.0
+    (8-bit) far away — the fire adds ~1 level to the visible floor — so the
+    flicker is 0.11 levels RMS frame to frame (0.6 %) against 0.014 off:
+    below what the eye resolves. The floor right next to the fire, where its
+    light is strong, is under the flame draw. No strobe, no whole-room pulse
+    — and at this exposure, no visible breathing. Making it read is the fire's
+    room-light brightness (master / sweep gain, #100's smoke), Erik's call at
+    HUMAN-TEST 2, not this patch's.
+- **Measured cost (this machine, RTX 3060).** Flicker + door per tick: 0.13 ms
+  (6 tiles), 0.23 ms (200), 0.62 ms (1000). CPU sweep (relight, 56×56): 2.11
+  vs 2.11 ms (noise); GPU per-call sweep 3.21 → 3.29 ms (+ the plane's
+  build and one int32 upload).
