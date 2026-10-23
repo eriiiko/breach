@@ -160,19 +160,6 @@ def test_inactive_relief_lets_the_heat_glow_through_untouched():
     assert gr.glow_through_weights(s, active=True) == (1.0, 0.5)
 
 
-def test_glow_through_scales_only_the_heat_layers_weight():
-    """Property: the glow-through keeps the heat layer DISPLAY-SPACE (G0's
-    named exception until G3): its shader passes the layer's colour through
-    and scales only the additive weight (alpha), with no tone-map or
-    linearisation. Breaks if the layer is converted (G0 measured that
-    losing the fire's hue) or tone-mapped a second time."""
-    from renderer.overlays import glow_through_fs
-    src = glow_through_fs()
-    assert "finalColor = vec4(c.rgb, c.a *" in src
-    low = src.lower()
-    assert "aces" not in low and "pow(" not in low and "srgb" not in low
-
-
 # --- draw order (G2) -----------------------------------------------------------
 
 def test_compose_world_draws_by_height():
@@ -193,8 +180,7 @@ def test_compose_world_draws_by_height():
              'self.gas_relief.draw("floor"',
              "self._draw_units_3d_world(",
              'self.gas_relief.draw("ceiling"',
-             "self.world.resolve(",
-             "self.temperature_overlay.draw("]
+             "self.world.resolve("]
     pos = [src.index(k) for k in order]
     assert pos == sorted(pos), [k for k, _ in sorted(zip(order, pos),
                                                        key=lambda t: t[1])]

@@ -13,7 +13,7 @@ import numpy as np
 import pyray as rl
 
 from . import core
-from .blackbody import BlackbodyRamp, pack_emissive_rgba
+from .blackbody import BlackbodyRamp, pack_glow_linear
 from .coords import tile_to_world_px
 
 
@@ -39,7 +39,7 @@ class FieldOverlay:
         # (ch.05 §6.1 step 5 "smoke^gamma"). RENDER-ONLY — never touches the sim
         # field. gamma > 1 crushes thin smoke toward transparent and sharpens
         # wispy edges (filmic); 1.0 = identity (linear opacity, the default for
-        # the base class so FireOverlay and any other field is untouched).
+        # the base class so any other field is untouched).
         # The LEGACY smoke overlay bakes gamma=1.5 as a frozen constant
         # (game_renderer._LEGACY_SMOKE_GAMMA) — Fire & Heat Beauty B2 P2 DELETED
         # the [smoke] smoke_render_gamma config dial, the gas-medium tau-curve
@@ -93,28 +93,6 @@ class FieldOverlay:
         src = rl.Rectangle(0, 0, float(self.w), float(self.h))
         dst = rl.Rectangle(float(dst_x), float(dst_y), float(dst_w), float(dst_h))
         rl.draw_texture_pro(self.tex, src, dst, rl.Vector2(0, 0), 0.0, rl.WHITE)
-
-
-class FireOverlay(FieldOverlay):
-    """Fire-specific: orange/yellow tint, additive blend."""
-
-    def __init__(self, grid_h: int, grid_w: int):
-        super().__init__(grid_h, grid_w, tint=(255, 140, 30), max_alpha=220)
-
-    def update(self, fire: np.ndarray) -> None:
-        # Slight color modulation by intensity (hotter = more white).
-        # Fire is its own light source.
-        v = np.clip(fire, 0.0, 1.0)
-        self.packed[..., 0] = 255
-        self.packed[..., 1] = (140 + (255 - 140) * v * 0.5).astype(np.uint8)
-        self.packed[..., 2] = (30 + (180 - 30) * v * 0.5).astype(np.uint8)
-        self.packed[..., 3] = (v * self.max_alpha).astype(np.uint8)
-        core.update_rgba_texture(self.tex, self.packed)
-
-    def draw(self, dst_x: int, dst_y: int, dst_w: int, dst_h: int) -> None:
-        rl.begin_blend_mode(rl.BlendMode.BLEND_ADDITIVE)
-        super().draw(dst_x, dst_y, dst_w, dst_h)
-        rl.end_blend_mode()
 
 
 class WaterFieldOverlay(FieldOverlay):
@@ -319,168 +297,82 @@ def _begin_additive_rgb_only_blend() -> None:
     rl.begin_blend_mode(rl.BlendMode.BLEND_CUSTOM_SEPARATE)
 
 
-# Graphics G2 -- FIRE GLOW-THROUGH: the heat layer drawn through this shader
-# is dimmed by the extinction of the smoke over each pixel, read from the
-# relief's cast product (renderer/gas_relief.py) through the lit3d seam's own
-# sampler helper (smokeCoverAt, the one copy of the product's convention). It
-# only scales the layer's brightness weight (alpha): the heat stays the
-# display-space layer it is until G3 (graphics G0's named exception), never
-# converted to linear -- G0 measured that conversion losing the fire's hue.
-def glow_through_fs() -> str:
-    """The heat layer's glow-through fragment source (pure text)."""
-    from .lit3d import _SMOKE_SHADOW_GLSL
-    return """#version 330
-in vec2 fragTexCoord;
-in vec4 fragColor;
-uniform sampler2D texture0;     // the heat layer (display hue + weight)
-uniform sampler2D u_below;      // R = the share of the glow that lies BELOW
-                                // the smoke (gas_relief.glow_below_fraction)
-uniform vec2 u_glow_through;    // (ceiling, floor): how much each hides it
-out vec4 finalColor;
-""" + _SMOKE_SHADOW_GLSL + """
-void main() {
-    vec4 c = texture(texture0, fragTexCoord) * fragColor;
-    vec4 cov = smokeCoverAt(fragTexCoord);
-    // Only the glow BELOW the smoke is hidden: a body's (a burning crate, a
-    // hot wall) beyond what the hot gas around it emits by itself. A hot GAS
-    // tile's glow is the gas itself -- an emitting slab is not hidden by its
-    // own depth -- and whether hot gas should glow at all is #95's question,
-    // so it draws as before.
-    float below = clamp(texture(u_below, fragTexCoord).r, 0.0, 1.0);
-    float t = (1.0 - u_glow_through.x * clamp(cov.r, 0.0, 1.0))
-            * (1.0 - u_glow_through.y * clamp(cov.b, 0.0, 1.0));
-    finalColor = vec4(c.rgb, c.a * mix(1.0, t, below));
-}
-"""
-
-
 class HeatFieldOverlay:
-    """Emissive temperature overlay — physical black-body glow over a Q16.16 field.
+    """The black-body HEAT LAYER -- the glow of every hot tile over
+    ``gmap.temperature`` (Fire & Heat Beauty B1; G2 glow-through; graphics G3
+    F3: linear HDR, design §3.6, §13.7, §13.8). It owns the layer's DATA: two
+    per-tile RGBA16F textures (bilinear) packed by
+    :func:`renderer.blackbody.pack_glow_linear` from the ONE ramp --
 
-    Fire & Heat Beauty arc, B1 (design
-    docs/fire_b1_blackbody_fire_lights_design_2026-07-21.md §2). Render-time view
-    of ``gmap.temperature`` (Q16.16 int32 ΔT above ambient, 0 = cold); it NEVER
-    mutates the field. This is the tier-1, ray-free glow: the whole plume glows
-    for a LUT read per tile, no rays.
+      ``body_tex`` = the share BELOW the smoke (``gas_relief.
+                     glow_below_fraction``: a burning crate's, a hot wall's),
+                     rgb = Le * f, a = its cover weight eps * f;
+      ``gas_tex``  = the rest, a hot gas tile's own glow, rgb = Le (1 - f)
 
-    It replaces the old 5-stop hand-tuned ramp AND the ``temp_display_max`` knob
-    with the physical black-body primitive (:class:`renderer.blackbody.
-    BlackbodyRamp`): temperature -> pseudo-Kelvin -> normalized chroma * a
-    separate T⁴ HDR intensity. The HDR emissive (``chroma * intensity``, which
-    runs past 1) is shaped by the ACES curve -- the SAME curve the world
-    resolve uses -- so a bright warm core reads white-hot instead of clipping
-    to flat orange, and the colour reads the physics by eye (a fire yellows
-    with O2, reddens as it starves).
+    -- and the tiles each share glows on (``body_rect`` / ``gas_rect``, one
+    box each, dilated by a tile for the bilinear spill; None = nothing to
+    draw). It DRAWS nothing itself: THE fire's light is one shader
+    (``shaders/fire_glow.fs``, ``FireVFXPass.draw_glow``) that draws the body
+    share as an emitter cover under the units, the flame over it, the
+    compensation under the ceiling soot and the gas share last, all in the
+    linear scene before the one tone-map (``GameRenderer.compose_world``).
 
-    LEGACY HEAT LAYER, display space, until G3 (graphics G0, the one named
-    exception to the one-tone-map rule; see ``blackbody.pack_emissive_rgba``):
-    its look was tuned as a display colour added on screen, so it is drawn
-    AFTER the world resolve, into the display RT, with its pre-G0 packing.
-
-    Drawn ADDITIVELY: the display colour is split into a peak-normalized hue
-    (packed RGB) and a brightness weight (packed alpha), so the additive result
-    ``rgb * alpha`` reconstructs it. Cold tiles stay invisible. draw() uses RGB-only separate blend factors so destination
-    alpha is never written (see ``_begin_additive_rgb_only_blend``).
+    Until F3 this layer was the one named display-space exception to the
+    one-tone-map rule (an ACES-shaped display colour added after the
+    resolve); the hue gate (``tools/fire_look_gate.py``) measured the move.
+    RENDER-ONLY: ``temperature`` is read, never written.
     """
 
-    def __init__(self, grid_h: int, grid_w: int, ramp: BlackbodyRamp,
-                 max_alpha: int = 220):
+    def __init__(self, grid_h: int, grid_w: int, ramp: BlackbodyRamp):
         self.h = grid_h
         self.w = grid_w
         # The shared black-body primitive (built once in the renderer from
         # [render.blackbody]). Render-only tuning; never touches the sim.
         self.ramp = ramp
-        self.max_alpha = int(max_alpha)
-        # RGBA8 display colour: the legacy heat layer is display-referred.
-        self.tex = core.create_dynamic_rgba_texture(grid_w, grid_h)
-        self.packed = np.zeros((grid_h, grid_w, 4), dtype=np.uint8)
-        self._glow_shader = None          # G2 glow-through, built on first use
-        # G2: the share of each tile's glow lying BELOW the smoke
-        # (gas_relief.glow_below_fraction), R channel; set_below_fraction
-        self.body_tex = core.create_dynamic_rgba_texture(grid_w, grid_h)
-        rl.set_texture_filter(self.body_tex,
-                              rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
-        self._below_img = np.zeros((grid_h, grid_w, 4), dtype=np.uint8)
-        self._below_img[..., 3] = 255
+        self.body_tex = core.create_dynamic_rgba16f_texture(grid_w, grid_h)
+        self.gas_tex = core.create_dynamic_rgba16f_texture(grid_w, grid_h)
+        self.body_rect = None
+        self.gas_rect = None
+        self._below = np.zeros((grid_h, grid_w), dtype=np.float32)
 
     def set_below_fraction(self, frac: np.ndarray) -> None:
         """Graphics G2: per tile, the share of the glow that lies below the
-        smoke, which the glow-through dims (``gas_relief.
-        glow_below_fraction``). Uploaded every sim tick (48 x 32 bytes)."""
-        self._below_img[..., 0] = np.clip(
-            np.asarray(frac, dtype=np.float32) * 255.0 + 0.5, 0, 255
-        ).astype(np.uint8)
-        core.update_rgba_texture(self.body_tex, self._below_img)
-
-    @property
-    def brightness(self) -> np.ndarray:
-        """(H, W) float32 in [0, 1]: the layer's display brightness per tile
-        (the packed weight over its ceiling) -- how strongly each tile glows
-        (graphics G2: the smoke over it is lit from below by this)."""
-        return self.packed[..., 3].astype(np.float32) / float(max(self.max_alpha, 1))
+        smoke (``gas_relief.glow_below_fraction``) -- the body share. Read by
+        the next :meth:`update` (set once per sim tick)."""
+        self._below = np.asarray(frac, dtype=np.float32)
 
     def update(self, temperature: np.ndarray,
                intensity_mod: Optional[np.ndarray] = None) -> None:
-        """temperature: (H, W) Q16.16 int32 — ΔT above ambient (0 = cold).
+        """temperature: (H, W) Q16.16 int32 -- ΔT above ambient (0 = cold).
 
-        Map through the black-body ramp, shape the HDR emissive with the
-        ACES curve into its display colour, and pack to an additive RGBA8
-        texture (the legacy heat layer, display space). RENDER-ONLY: `temperature` is read,
-        never written. The packing math lives in renderer.blackbody
-        (pyray-free / headless-testable); here we only upload it.
+        Pack both shares as linear HDR (:func:`renderer.blackbody.
+        pack_glow_linear`) and upload them. ``intensity_mod`` (Fire & Heat
+        Beauty B2 P4): the dirty-Planck speckle field (renderer.speckle) that
+        mottles the black-body intensity; None = unmodulated."""
+        body, gas = pack_glow_linear(self.ramp, temperature, self._below,
+                                     intensity_mod=intensity_mod)
+        f16 = np.float16
+        core.update_rgba16f_texture(self.body_tex, body.astype(f16))
+        core.update_rgba16f_texture(self.gas_tex, gas.astype(f16))
+        self.body_rect = _glow_box(body.max(axis=-1) > 0.0)
+        self.gas_rect = _glow_box(gas[..., :3].max(axis=-1) > 0.0)
 
-        ``intensity_mod`` (Fire & Heat Beauty B2 P4): an optional (H, W)
-        dirty-Planck speckle field (renderer.speckle) that mottles the
-        black-body intensity at pack time. ``None`` (the B1 default) packs
-        byte-for-byte as before — the ``off`` speckle mode + the game/harness
-        that never built a SpeckleField both leave this None.
-        """
-        self.packed = pack_emissive_rgba(self.ramp, temperature, self.max_alpha,
-                                         intensity_mod=intensity_mod)
-        core.update_rgba_texture(self.tex, self.packed)
-
-    def draw(self, dst_x: int, dst_y: int, dst_w: int, dst_h: int,
-             smoke_cover=None, glow_through=(0.0, 0.0)) -> None:
-        """Draw the layer additively. ``smoke_cover`` (graphics G2: the
-        relief's cast product texture) with ``glow_through`` (ceiling, floor)
-        weights > 0 draws it through the glow-through shader: the smoke's
-        extinction over each pixel dims the glow (thin or ragged smoke lets
-        it through, a solid core hides it). Without them it draws as before."""
-        # Additive passes must not write destination alpha (BLEND_ADDITIVE
-        # touches dstA; this erases the backdrop under the premultiplied
-        # blit) — see _begin_additive_rgb_only_blend.
-        through = (smoke_cover is not None
-                   and (glow_through[0] > 0.0 or glow_through[1] > 0.0))
-        _begin_additive_rgb_only_blend()
-        if through:
-            sh = self._glow_through_shader()
-            rl.begin_shader_mode(sh)
-            rl.set_shader_value(sh, rl.get_shader_location(sh, "u_glow_through"),
-                                rl.ffi.new("float[2]", [float(glow_through[0]),
-                                                        float(glow_through[1])]),
-                                rl.ShaderUniformDataType.SHADER_UNIFORM_VEC2)
-            rl.set_shader_value_texture(
-                sh, rl.get_shader_location(sh, "u_smoke_cover"), smoke_cover)
-            rl.set_shader_value_texture(
-                sh, rl.get_shader_location(sh, "u_below"), self.body_tex)
-        src = rl.Rectangle(0, 0, float(self.w), float(self.h))
-        dst = rl.Rectangle(float(dst_x), float(dst_y), float(dst_w), float(dst_h))
-        rl.draw_texture_pro(self.tex, src, dst, rl.Vector2(0, 0), 0.0, rl.WHITE)
-        if through:
-            rl.end_shader_mode()
-        rl.end_blend_mode()
-
-    def _glow_through_shader(self):
-        if self._glow_shader is None:
-            self._glow_shader = rl.load_shader_from_memory(rl.ffi.NULL,
-                                                           glow_through_fs())
-        return self._glow_shader
-
-    def unload_shader(self) -> None:
+    def unload(self) -> None:
         rl.unload_texture(self.body_tex)
-        if self._glow_shader is not None:
-            rl.unload_shader(self._glow_shader)
-            self._glow_shader = None
+        rl.unload_texture(self.gas_tex)
+
+
+def _glow_box(mask: np.ndarray):
+    """The bounding box (x0, y0, x1, y1; tiles, end-exclusive) of ``mask``
+    dilated by one tile and clipped to the grid -- the only area a heat
+    share's stage draws -- or None when nothing glows."""
+    rows = np.flatnonzero(mask.any(axis=1))
+    if rows.size == 0:
+        return None
+    cols = np.flatnonzero(mask.any(axis=0))
+    h, w = mask.shape
+    return (max(0, int(cols[0]) - 1), max(0, int(rows[0]) - 1),
+            min(w, int(cols[-1]) + 2), min(h, int(rows[-1]) + 2))
 
 
 class GlowOverlay:
@@ -654,7 +546,7 @@ def draw_panel_background(x: int, y: int, w: int, h: int, color=(20, 20, 28, 240
 
 
 __all__ = [
-    "FieldOverlay", "FireOverlay", "GlowOverlay", "HeatFieldOverlay",
+    "FieldOverlay", "GlowOverlay", "HeatFieldOverlay",
     "WaterFieldOverlay",
     "draw_unit", "draw_waypoint_line",
     "draw_grid", "draw_text", "draw_panel_background",

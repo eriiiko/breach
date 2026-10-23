@@ -1442,12 +1442,12 @@ height_floor = 0.3
 [render]
 # Default overlay visibility (the shipped look; each stays a live in-game
 # toggle). Fire & Heat Beauty B1 (Erik feel-check 2026-07-21): the physical
-# black-body emissive overlay (T) ships ON — it IS the fire/heat view; the
-# legacy flat-orange FireOverlay (F3) stays OFF (superseded); the pressure
+# black-body emissive overlay (T) ships ON — it IS the fire/heat view (the
+# legacy flat-orange FireOverlay and its fire_overlay_on key are deleted at
+# graphics G3 F3: the flame VFX is the fire's look, F3 its A/B); the pressure
 # colormap (F7) now ships OFF by default (it washed the scene out — Erik's
 # call) but is one keypress away when you want to see shockwaves.
 blackbody_overlay_on = true
-fire_overlay_on = false
 pressure_overlay_on = false
 cold_overlay_on = false    # P-W2 blue cold tier — the #8 cold-blast instrument.
                            # OFF in normal play (Erik 2026-08-25: cold reads
@@ -1733,10 +1733,10 @@ debug_view = 0              # 0 off; 1 coverage, 2 height, 3 N.L, 4 self-shadow,
 # missing-key fallback (tests/test_fire_vfx.py: every dial must be named here).
 # Render-only: no sim state, no digest, no golden.
 #
-# F1 + F2 (the substrate and the loop) draw NOTHING into the picture yet
-# (F3 draws the flame) -- the loop runs and the debug views show it.
-# enabled = true ships because with nothing drawn it is look-neutral, and it
-# is the only way the loop is exercised in play; no fire costs zero passes.
+# F1 + F2 built the substrate and the loop; F3 DRAWS the flame (and the heat
+# layer, linear) in the scene through shaders/fire_glow.fs. enabled = false
+# turns the flame off (the heat layer still draws); no fire costs zero passes
+# and zero flame draws.
 # Budget (F2, RTX 3070, fire_smoke_studio at 60 fps): ~0.6 ms GPU, ~1.1 ms
 # CPU per frame for 2 substeps x (5 + n_jacobi) direct-GL passes.
 enabled = true
@@ -1780,10 +1780,22 @@ lifetime_s = 0.3            # e-fold time of the flame density R
 cool_rate = 0.9             # 1/s, T_vfx relaxes toward the local gas T (never up)
 r_eps = 1e-6                # R below this has no defined temperature
 r_cut = 1e-3                # R below this is cleared to exactly 0 (no stale flame)
-# --- drawing (§3.5; F3 tunes) ---
+# --- drawing (§3.5, §13.4; F3) -- shaders/fire_glow.fs ---
+emission = "mask"           # the A/B (Erik judges at HUMAN-TEST 1; F3 cycles it
+                            # live: mask -> thickness -> off): "mask" = A, glow
+                            # by temperature only; "thickness" = B, temperature
+                            # and how much flame stands in the column
 kappa = 2.5                 # B: E = 1 - exp(-kappa R)
 r0 = 0.10                   # A: E = smoothstep(r0, r1, R)
 r1 = 0.60
+e_min = 0.04                # emission threshold: E below it draws nothing (faint
+                            # R fills the active boxes; B's tail never reaches 0)
+edge_noise_amp = 0.8        # how deep the flame noise tears the edge (0 = none)
+edge_noise_tiles = 4.0      # tiles per repeat of the noise grain (filaments ~1/8)
+edge_streak_s = 0.30        # streak length: how far the flow carries the grain in this time
+edge_noise_cycle_s = 0.6    # the flow map's phase cycle, s (VFX clock)
+edge_speed_cap = 3.0        # tiles/s: the noise drift / streak speed cap
+edge_contrast = 1.8         # restores the grain's contrast after the line integral
 seed = 1234                 # curl-noise modes and puffing phases
 
 [render.props]

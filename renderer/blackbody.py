@@ -125,6 +125,65 @@ def pack_emissive_rgba(ramp: "BlackbodyRamp", temperature: np.ndarray,
     return packed
 
 
+# The glow floor's cover ramp (graphics G3, design §13.4): an emitter cooler
+# than ``kelvin_glow_min`` covers nothing; it covers fully this much above it.
+COVER_RAMP_K = 100.0
+
+
+def glow_share(ramp: "BlackbodyRamp", temperature: np.ndarray) -> np.ndarray:
+    """(H, W) float32 in [0, 1]: how strongly each tile glows, as a SHARE --
+    the brightness the smoke relief's own-light cut has always used
+    (graphics G2, ``gas_relief.glow_below_fraction`` / ``below_glow_field``),
+    a named function since G3 F3 (design §13.14 round-2 M3).
+
+    It is the ramp's emission ``chroma * intensity`` through the resolve's
+    ACES knee (:func:`aces_curve`), its brightest channel: 0 for a cold
+    tile, rising with T and saturating at 1 -- a dimensionless 0-1 share,
+    never a drawn colour (the heat layer itself is linear HDR since F3 and
+    goes through the one tone-map like every other layer). It equals what
+    the display-space heat pack's alpha carried before F3 (``max_c ACES``
+    over its ceiling), so the relief's cut keeps its tuning. RENDER-ONLY;
+    ``temperature`` (Q16.16 ΔT) is read, never written."""
+    rgb, inten = ramp.chroma_intensity(temperature)
+    return aces_curve(rgb * inten[..., None]).max(axis=-1).astype(np.float32)
+
+
+def pack_glow_linear(ramp: "BlackbodyRamp", temperature: np.ndarray,
+                     below_fraction: np.ndarray,
+                     intensity_mod: "Optional[np.ndarray]" = None):
+    """The heat layer as LINEAR HDR (graphics G3 F3, design §3.6, §13.7,
+    §13.8): Q16.16 temperature -> two (H, W, 4) float32 per-tile textures.
+
+    ``body`` = (Le * f, eps * f): the share of the glow lying BELOW the smoke
+        (``f`` = ``gas_relief.glow_below_fraction``: a burning crate's, a hot
+        wall's), drawn EARLY in the scene as an EMITTER COVER -- premultiplied
+        ``out = Le f + under (1 - eps f)`` -- with ``eps`` its own emission's
+        cover weight (:meth:`BlackbodyRamp.cover_weight`: 0 below the glow
+        floor, 1 a 100 K above it), so a glowing body shows its own colour
+        instead of washing toward white over a lit floor (§13.8).
+    ``gas``  = (Le * (1 - f), 0): the rest, the hot gas's own glow, added
+        late and undimmed (an emitting slab is not hidden by its own depth).
+
+    ``Le = chroma * intensity`` is the ONE ramp (``chroma_intensity``, the
+    LUT the old layer used), times ``intensity_mod`` (the dirty-Planck
+    speckle, B2 P4) when given. No tone-map: the resolve owns it. Cold tiles
+    pack zeros. RENDER-ONLY; every input is read, never written."""
+    rgb, inten = ramp.chroma_intensity(temperature)
+    if intensity_mod is not None:
+        inten = inten * np.asarray(intensity_mod, dtype=inten.dtype)
+    le = (rgb * inten[..., None]).astype(np.float32)
+    t_game = np.asarray(temperature, dtype=np.float64) / TEMP_SCALE
+    eps = ramp.cover_weight(ramp._kelvin_from_tgame(t_game)).astype(np.float32)
+    f = np.clip(np.asarray(below_fraction, dtype=np.float32), 0.0, 1.0)
+    h, w = f.shape
+    body = np.zeros((h, w, 4), dtype=np.float32)
+    gas = np.zeros((h, w, 4), dtype=np.float32)
+    body[..., :3] = le * f[..., None]
+    body[..., 3] = eps * f
+    gas[..., :3] = le * (1.0 - f)[..., None]
+    return body, gas
+
+
 def _tanner_helland_chroma(kelvin: np.ndarray) -> np.ndarray:
     """Vectorized Tanner Helland / Bartlett Kelvin -> normalized RGB chroma.
 
@@ -275,6 +334,17 @@ class BlackbodyRamp:
                     self.kelvin_floor, self.kelvin_ceil)
         return _tanner_helland_chroma_f64(k), np.asarray(
             self._intensity_curve(k), dtype=np.float64)
+
+    def cover_weight(self, kelvin):
+        """How much an emitter at ``kelvin`` COVERS what lies under it
+        (graphics G3, design §13.4): 0 at or below ``kelvin_glow_min``, 1 at
+        ``kelvin_glow_min + COVER_RAMP_K``, smoothstep between -- an emitter
+        too cool to glow hides nothing (no dark flame tips). The flame
+        (``fire_vfx_ref.flame_emission``, ``shaders/fire_glow.fs``) and the
+        heat layer's body share (:func:`pack_glow_linear`) both use it."""
+        z = np.clip((np.asarray(kelvin, dtype=np.float64)
+                     - self.kelvin_glow_min) / COVER_RAMP_K, 0.0, 1.0)
+        return z * z * (3.0 - 2.0 * z)
 
     def _kelvin_from_tgame(self, t_game):
         """Dequantized game ΔT -> pseudo-Kelvin (the honest 'white for extremes'

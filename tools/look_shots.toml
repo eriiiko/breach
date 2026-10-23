@@ -30,7 +30,7 @@
 #   light_gain                 override the studio's exposure: a number, or
 #                              "game" = [render.lighting] master_gain
 #   hide = ["heat", ...]       switch layers off to isolate the rest
-#                              (heat / smoke / water)
+#                              (heat / smoke / water / flame; G3 F3)
 #   fire_debug = N             open the flame VFX debug view N (G3 F2:
 #                              1 sources, 2 flame R, 3 T_vfx, 4 u, 5 p)
 #
@@ -134,7 +134,7 @@ zoom = 48.0
 lamps = true
 beacon = true
 light_gain = "game"
-hide = ["heat"]
+hide = ["heat", "flame"]
 note = "fire_plume without the heat layer: the crates' own soot against the hall lamps -- the relief's silhouette, lit side and crevices."
 
 [[shot]]
@@ -159,7 +159,7 @@ zoom = 32.0
 lamps = true
 beacon = false
 detonate = [24, 16, 24]
-hide = ["heat"]
+hide = ["heat", "flame"]
 note = "explosion_t40 without the heat layer: the blast's hanging soot and the marines it should cover (ceiling layer above the units)."
 
 [[shot]]
@@ -412,3 +412,106 @@ light_gain = "game"
 fire_debug = 3
 note = "the row's east end and the lone tile, T_vfx (debug view 3), in the vent current toward the return vent. That current is only ~0.35 tiles/s at the fires: F2 measured their mean lean ~0 +- 0.1 tile in GL and in the twin alike -- a real lean needs the jet's ~2 tiles/s (the F0b c/f strips)."
 
+
+# --- graphics G3 F3: the hue gate's HALO TWINS (tools/fire_look_gate.py,
+# design §13.8): each gated fire shot without the fire's own light (the heat
+# layer and the flame). fire_plume's twin is smoke_plume_noheat, explosion_t40's
+# is explosion_t40_noheat (both above; since F3 they hide the flame too: the
+# crates in fire_plume burn, and "no heat" means none of the fire's own light).
+
+[[shot]]
+name = "fss_overview_noheat"
+level = "fire_smoke_studio"
+frames = 120
+lamps = false
+beacon = false
+light_gain = "game"
+note = "fss_overview without the fire's own glow (heat layer + flame): the G3 F3 hue gate's halo twin (tools/fire_look_gate.py)."
+hide = ["heat", "flame"]
+
+[[shot]]
+name = "fss_close_noheat"
+level = "fire_smoke_studio"
+frames = 120
+center = [25.5, 22.5]
+zoom = 96.0
+lamps = false
+beacon = false
+light_gain = "game"
+note = "fss_close without the fire's own glow (heat layer + flame): the G3 F3 hue gate's halo twin (tools/fire_look_gate.py)."
+hide = ["heat", "flame"]
+
+[[shot]]
+name = "fss_lone_noheat"
+level = "fire_smoke_studio"
+frames = 120
+center = [37.5, 27.5]
+zoom = 128.0
+lamps = false
+beacon = false
+light_gain = "game"
+note = "fss_lone without the fire's own glow (heat layer + flame): the G3 F3 hue gate's halo twin (tools/fire_look_gate.py)."
+hide = ["heat", "flame"]
+
+[[shot]]
+name = "fss_windy_noheat"
+level = "fire_smoke_studio"
+frames = 120
+center = [40.0, 24.0]
+zoom = 40.0
+lamps = false
+beacon = false
+light_gain = "game"
+note = "fss_windy without the fire's own glow (heat layer + flame): the G3 F3 hue gate's halo twin (tools/fire_look_gate.py)."
+hide = ["heat", "flame"]
+
+[[shot]]
+name = "fire_thin_smoke_noheat"
+level = "smoke_light_studio"
+frames = 72
+center = [14.5, 28.0]
+zoom = 48.0
+lamps = true
+beacon = true
+light_gain = "game"
+smoke = [[10, 25], [19, 25], [10, 30], [19, 30]]
+gas_amount = 0.02
+note = "fire_thin_smoke without the fire's own glow (heat layer + flame): the G3 F3 hue gate's halo twin (tools/fire_look_gate.py)."
+hide = ["heat", "flame"]
+
+[[shot]]
+name = "fire_thick_smoke_noheat"
+level = "smoke_light_studio"
+frames = 72
+center = [14.5, 28.0]
+zoom = 48.0
+lamps = true
+beacon = true
+light_gain = "game"
+smoke = [[10, 25], [19, 25], [10, 30], [19, 30]]
+note = "fire_thick_smoke without the fire's own glow (heat layer + flame): the G3 F3 hue gate's halo twin (tools/fire_look_gate.py)."
+hide = ["heat", "flame"]
+
+[[shot]]
+name = "explosion_t04_noheat"
+level = "fire_studio"
+frames = 28
+center = [24.0, 16.0]
+zoom = 32.0
+lamps = true
+beacon = false
+detonate = [24, 16, 24]
+note = "explosion_t04 without the fire's own glow (heat layer + flame): the G3 F3 hue gate's halo twin (tools/fire_look_gate.py)."
+hide = ["heat", "flame"]
+
+[[shot]]
+name = "explosion_t12_noheat"
+level = "fire_studio"
+frames = 36
+center = [24.0, 16.0]
+zoom = 32.0
+lamps = true
+beacon = false
+detonate = [24, 16, 24]
+note = "explosion_t12 without the fire's own glow (heat layer + flame): the G3 F3 hue gate's halo twin (tools/fire_look_gate.py)."
+hide = ["heat", "flame"]

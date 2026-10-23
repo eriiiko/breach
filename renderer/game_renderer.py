@@ -41,7 +41,7 @@ from .tile_art import TileArtSeam, patch_block
 from .static_props import (DEFAULT_TILE_SIZE_M, StaticPropRenderer,
                            SwaySettings)
 from .overlays import (
-    FieldOverlay, FireOverlay, GlowOverlay, HeatFieldOverlay,
+    FieldOverlay, GlowOverlay, HeatFieldOverlay,
     WaterFieldOverlay,
     draw_unit, draw_waypoint_line, draw_grid, draw_text, draw_panel_background,
 )
@@ -227,7 +227,6 @@ class GameRenderer:
         self.smoke_overlay = FieldOverlay(cfg.grid_h, cfg.grid_w,
                                           tint=(190, 195, 210), max_alpha=180,
                                           gamma=_LEGACY_SMOKE_GAMMA)
-        self.fire_overlay = FireOverlay(cfg.grid_h, cfg.grid_w)
         # God-ray / lit-smoke glow (ch.05): additive shaft from the in-scattered
         # glow (the sweep's, through LightingPass). LEGACY (pre-B2) path — the
         # new gas medium below folds occlusion + inscatter into ONE
@@ -263,21 +262,21 @@ class GameRenderer:
         self._sim_dt = 1.0 / float(getattr(
             getattr(CFG, "clock", None), "ticks_per_second", 24))
         self.pressure_overlay = PressureOverlay(cfg.grid_h, cfg.grid_w)
-        # Emissive temperature overlay (Fire & Heat Beauty B1): the physical
-        # black-body glow over gmap.temperature (engine/06). Built from the
-        # shared black-body primitive ([render.blackbody]) — temperature ->
-        # pseudo-Kelvin -> chroma * T⁴ intensity, ACES tone-mapped. This
-        # supersedes the old 5-stop ramp + temp_display_max knob. RENDER-ONLY —
-        # never mutates the field. Toggled with T (default from
-        # [render] blackbody_overlay_on).
+        # The black-body HEAT LAYER (Fire & Heat Beauty B1; graphics G3 F3:
+        # linear HDR): the glow of every hot tile over gmap.temperature, from
+        # the shared black-body primitive ([render.blackbody]) -- temperature
+        # -> pseudo-Kelvin -> chroma * intensity, split into the share below
+        # the smoke (bodies) and the gas's own; drawn by the fire's one
+        # shader in compose_world. RENDER-ONLY -- never mutates the field.
+        # Toggled with T (default from [render] blackbody_overlay_on).
         self.blackbody_ramp = BlackbodyRamp.from_config(CFG)
         self.temperature_overlay = HeatFieldOverlay(
             cfg.grid_h, cfg.grid_w, self.blackbody_ramp)
         # T_abs compression-work arc, P-W2 (design D-7/B-F13/C12): the cold
-        # tier. HeatFieldOverlay above is additive-emissive and structurally
-        # cannot show T_rel < 0 (additive blending only adds light) — this is
-        # the minimal second instrument, a diverging blue ramp drawn UNDER the
-        # heat pass on the SAME toggle (show_temperature / T key). Placeholder
+        # tier. HeatFieldOverlay above is emissive and structurally cannot
+        # show T_rel < 0 (emission only adds light) — this is the minimal
+        # second instrument, a diverging blue ramp (display space, after the
+        # resolve) on the SAME toggle (show_temperature / T key). Placeholder
         # constants, explicitly provisional (renderer/cold_overlay.py).
         self.cold_overlay = ColdFieldOverlay(cfg.grid_h, cfg.grid_w)
         # Graphics G3 "Fire", F1 -- the FLAME VFX substrate
@@ -285,9 +284,10 @@ class GameRenderer:
         # render-only 2D fluid per tile column fed by `fire`, the burning
         # tile's temperature and the frame's ONE tamed wind; whole-map field
         # RTs, the per-tile source textures, the blackbody GPU LUT, the
-        # active region and the sim-clock substeps. F1 draws nothing into the
-        # picture (only its debug view, F11). [render.fire_vfx] is re-read
-        # every frame (Ctrl+R live).
+        # active region and the sim-clock substeps; since F3 it DRAWS the
+        # flame and the heat layer (shaders/fire_glow.fs) in the linear
+        # scene, with the A/B law on F3 and its debug views on F11.
+        # [render.fire_vfx] is re-read every frame (Ctrl+R live).
         from temperature_scale import load as _load_tscale
         from .fire_vfx_ref import CanonicalScales
         self.fire_vfx = FireVFXPass.from_config(
@@ -351,13 +351,9 @@ class GameRenderer:
         # old vs new in one session. RENDER-ONLY.
         self.legacy_smoke_on = bool(getattr(
             getattr(CFG, "render", None), "legacy_smoke_on", False))
-        # Fire & Heat Beauty B1 (human-test A/B): the flat-orange FireOverlay is
-        # demoted to default-OFF so the physical black-body overlay (T) is the
-        # blessed look Erik compares against. Toggle F3 on live to A/B. Default
-        # from [render] fire_overlay_on so the shipped default can be set from
-        # config after the feel-check without a code change.
-        self.show_fire = bool(getattr(
-            getattr(CFG, "render", None), "fire_overlay_on", False))
+        # (The legacy flat-orange FireOverlay, B1's F3 A/B, is deleted at
+        # graphics G3 F3: the flame VFX is the fire's look; F3 now cycles the
+        # flame's A/B law, hover_readout still reads `fire`.)
         self.show_lighting = True
         self.show_normal_map = True
         self.normal_y_flipped = False
@@ -616,25 +612,17 @@ class GameRenderer:
                 tps=tps, tile_size_m=gmap.tile_size_m,
                 scales=self._fire_scales)
 
-        # Fire still gets the vacuum mask: combustion requires oxygen, so
-        # fire physically cannot exist in vacuum. Keep this until the fire
-        # sim is taught to extinguish at vacuum tiles directly.
-        if self.show_fire:
-            # S3a: gmap.fire is int32 Q16.16 — dequantize to real [0,1] for the
-            # overlay (render-only boundary).
-            from simulation import fire_fixed
-            fire_real = fire_fixed.dequantize_f32(gmap.fire)
-            fire_view = np.where(gmap.is_vacuum, 0.0, fire_real)
-            self.fire_overlay.update(fire_view)
         # Pressure colormap: refresh the per-tile texture from the current
         # atmosphere + wave_p fields. Skipped when toggled off to save the
         # numpy work.
         if self.show_pressure:
             self.pressure_overlay.update(gmap)
-        # Debug temperature overlay: refresh the black-body texture from the
-        # Q16.16 temperature field. Skipped when toggled off to save the work.
+        # The heat layer: refresh its two linear shares from the Q16.16
+        # temperature field (the body share's below-the-smoke fraction from
+        # _heat_brightness, per sim tick). Skipped when toggled off.
         # Render-only — gmap.temperature is read, never written.
         if self.show_temperature:
+            self._heat_brightness(gmap)
             # Fire & Heat Beauty B2 P4 — dirty-Planck speckle. Modulate the
             # black-body intensity at PACK TIME with the moving mottle. In `soot`
             # mode the amplitude is seeded by the REAL local soot density (smoke,
@@ -839,18 +827,52 @@ class GameRenderer:
             else:
                 self.gas_medium.draw(
                     0, 0, self.world.world_px_w, self.world.world_px_h)
-        # 4. (The black-body heat is the LEGACY HEAT LAYER: display space,
-        # drawn after the resolve below -- the one named G0 exception -- and
-        # since G2 THROUGH the smoke over it, from the cast product.)
-        # 5. 3D units + props (+ projected shadows): the shared 3D pass.
+        # 4-5. Graphics G3 F3 -- THE FIRE'S OWN LIGHT, in the linear scene
+        # (design §13.7; shaders/fire_glow.fs through fire_vfx.draw_glow):
+        # 4. the heat layer's BODY share (the glow below the smoke) as an
+        #    emitter cover, dimmed by the floor gas over it
+        #    (glow_through_floor); 5. the FLAME as an emitter cover with
+        #    opacity tied to its emission (§13.4) -- both UNDER the units.
+        view = self._relief_view_rect()
+        fx = self.fire_vfx
+        fx.glow_draws_last_frame = 0
+        heat = self.temperature_overlay
+        heat_on = bool(self.show_temperature)
+        from .gas_relief import glow_through_weights
+        gt = glow_through_weights(self.gas_relief.settings,
+                                  self._smoke_cast[0] is not None)
+        glow_kw = dict(world_px_w=self.world.world_px_w,
+                       world_px_h=self.world.world_px_h, heat=heat,
+                       heat_on=heat_on, smoke_cast=self._smoke_cast,
+                       glow_through=gt)
+        from .fire_vfx import clip_rects
+        body_rects = (clip_rects([heat.body_rect], view)
+                      if heat_on and heat.body_rect is not None else [])
+        flame_rects = fx.flame_rects(view)
+        fx.draw_glow("body", body_rects, **glow_kw)
+        fx.draw_glow("flame", flame_rects, **glow_kw)
+        # 6. 3D units + props (+ projected shadows): the shared 3D pass --
+        # since G3 F3 ABOVE the fire's glow.
         drew_units_3d = self._draw_units_3d_world(units_marines, units_zombies,
                                                   props)
-        # 6. G1: the CEILING species layer (hot soot) -- ABOVE the units and
+        # 7. G1: the CEILING species layer (hot soot) -- ABOVE the units and
         # props (Erik's ruling 2, 2026-10-18), still in the linear scene.
         if relief_on:
             self.gas_relief.draw("ceiling", self.lighting,
                                  self.world.world_px_w, self.world.world_px_h,
                                  tile_rect=self._relief_view_rect())
+            # 8. COMPENSATION (§13.7): the soot just hid the body glow and the
+            # flame below it by its full alpha; add back alpha_ceil * (1 -
+            # glow_through_ceiling) of them, so the net occlusion is Erik's
+            # glow_through_ceiling (0.2), never the soot's own 1.0.
+            if gt[0] < 1.0 and self._smoke_cast[0] is not None:
+                fx.draw_glow("compensation",
+                             _merge_rects(body_rects + flame_rects),
+                             **glow_kw)
+        # 9. the heat layer's GAS share, added undimmed: a hot gas tile's
+        # glow is the gas itself, not hidden by its own soot (G2 rule).
+        if heat_on and heat.gas_rect is not None:
+            fx.draw_glow("gas", clip_rects([heat.gas_rect], view), **glow_kw)
 
         # ======= the ONE tone-map: ACES + encode + dither (resolve) =======
         self.world.resolve(encode_srgb=self.lighting.srgb_decode)
@@ -873,10 +895,6 @@ class GameRenderer:
             # premultiplied blit — overlays._begin_additive_rgb_only_blend).
             self.glow_overlay.draw(
                 0, 0, self.world.world_px_w, self.world.world_px_h)
-        if self.show_fire:
-            rl.begin_blend_mode(rl.BlendMode.BLEND_ADDITIVE)
-            self._draw_overlay_to_world(self.fire_overlay.tex)
-            rl.end_blend_mode()
         # Pressure colormap (white shockwave + coloured radiating bands at
         # explosions). Off-by-toggle F7. The overlay was updated in
         # upload_state alongside smoke/fire to keep all per-frame work in
@@ -886,27 +904,12 @@ class GameRenderer:
                 self.world.world_px_w, self.world.world_px_h
             )
         # Cold tier (P-W2, D-7): the diverging blue ramp, same toggle as the
-        # heat, drawn UNDER it (as before G0). T_rel is never both cold and hot
-        # at once per pixel, so "under" is about draw order, not overlap.
+        # heat, display space (a debug instrument; the heat layer itself is
+        # in the linear scene since G3 F3). T_rel is never both cold and hot
+        # at once per pixel, so the two never overlap.
         if self.show_temperature and self.show_cold:
             self.cold_overlay.draw(
                 0, 0, self.world.world_px_w, self.world.world_px_h)
-        # Black-body heat (engine/06) -- the LEGACY HEAT LAYER, display space,
-        # until G3 (graphics G0's one named exception to the one-tone-map
-        # rule, blackbody.pack_emissive_rgba): its look was tuned as a display
-        # colour added on screen, and only display-space addition keeps its
-        # hue, saturation and halo. ADDITIVE, RGB-only. It now sits ABOVE the
-        # water and the 3D units (before G0 it was under both). Toggle (T).
-        if self.show_temperature:
-            # G2: drawn THROUGH the smoke over it (the relief's cast product):
-            # thin or ragged smoke lets the glow through, a solid core hides
-            # it, so the soot mottles the flame. Still display space.
-            from .gas_relief import glow_through_weights
-            self.temperature_overlay.draw(
-                0, 0, self.world.world_px_w, self.world.world_px_h,
-                smoke_cover=self._smoke_cast[0],
-                glow_through=glow_through_weights(
-                    self.gas_relief.settings, self._smoke_cast[0] is not None))
 
         # Graphics G3 F1: the flame VFX's DEBUG view (F11 / [render.fire_vfx]
         # debug_view): its sources or its R field + the active boxes, display
@@ -1046,24 +1049,23 @@ class GameRenderer:
 
     def _heat_brightness(self, gmap) -> np.ndarray:
         """Graphics G2: how strongly each tile glows from BELOW the smoke,
-        in [0, 1]: the legacy heat layer's display brightness times the share
-        of it below the smoke (``gas_relief.glow_below_fraction``), from the
-        layer's own pack (``pack_emissive_rgba``, without
-        the speckle mottle) on this tick's temperature -- packed here, not
-        read from the overlay, so the relief's own-light cut neither lags a
-        tick nor depends on the T toggle."""
+        in [0, 1]: the glow's brightness share (``blackbody.glow_share``,
+        without the speckle mottle -- G3 F3 named it) times the share of it
+        below the smoke (``gas_relief.glow_below_fraction``), on this tick's
+        temperature -- computed here, not read from the overlay, so the
+        relief's own-light cut neither lags a tick nor depends on the T
+        toggle. Also hands the heat layer its body share."""
         import zlib
-        from .blackbody import pack_emissive_rgba
+        from .blackbody import glow_share
         from .gas_relief import glow_below_fraction
         ov = self.temperature_overlay
         body = self._body_mask(gmap)
         # ~1 ms of numpy on 48 x 48: redone only when the temperature or the
         # bodies changed (once per sim tick), not every rendered frame.
         key = (zlib.crc32(np.ascontiguousarray(gmap.temperature).view(np.uint8)),
-               zlib.crc32(np.packbits(body)), id(ov.ramp), ov.max_alpha)
+               zlib.crc32(np.packbits(body)), id(ov.ramp))
         if key != getattr(self, "_heat_below_key", None):
-            bright = (pack_emissive_rgba(ov.ramp, gmap.temperature, ov.max_alpha)
-                      [..., 3].astype(np.float32) / float(max(ov.max_alpha, 1)))
+            bright = glow_share(ov.ramp, gmap.temperature)
             # Only the glow BELOW the smoke (a body's, beyond the hot gas
             # around it; see glow_below_fraction) is hidden by the smoke and
             # kept off its top; a hot gas tile's own light is the gas's (#95).
@@ -1737,7 +1739,8 @@ class GameRenderer:
         for label, on in [
             ("F1 grid",        self.show_grid),
             ("F2 smoke",       self.show_smoke),
-            ("F3 fire",        self.show_fire),
+            (f"F3 flame: {self.fire_vfx.emission}",
+             self.fire_vfx.emission != "off"),
             ("F4 light",       self.show_lighting),
             ("F5 normal map",  self.show_normal_map),
             ("F6 coords",      self.show_debug_coords),
@@ -1819,8 +1822,12 @@ class GameRenderer:
             self.show_grid = not self.show_grid
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F2):
             self.show_smoke = not self.show_smoke
+        # F3: the flame's A/B (graphics G3 F3, design §1 decision 3) -- A
+        # "mask" (glow by temperature only) -> B "thickness" (temperature +
+        # flame thickness) -> off -> A. (F3 was the legacy flat-orange fire
+        # overlay, deleted with it.)
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F3):
-            self.show_fire = not self.show_fire
+            print(f"[fire_vfx] flame law -> {self.fire_vfx.cycle_emission()}")
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F4):
             self.show_lighting = not self.show_lighting
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F5):
@@ -2011,20 +2018,40 @@ class GameRenderer:
         rl.unload_texture(self.lighting.light_tex_b)
         rl.unload_texture(self.lighting.vacuum_tex)
         rl.unload_texture(self.smoke_overlay.tex)
-        rl.unload_texture(self.fire_overlay.tex)
         rl.unload_texture(self.glow_overlay.tex)
         rl.unload_texture(self.gas_medium.tex)
         self.gas_detail.unload()
         self.gas_relief.unload()
         self.fire_vfx.unload()
-        rl.unload_texture(self.temperature_overlay.tex)
-        self.temperature_overlay.unload_shader()
+        self.temperature_overlay.unload()
         rl.unload_texture(self.cold_overlay.tex)
         rl.unload_texture(self.water_overlay.tex)
         self.water_pass.unload()
         self.pressure_overlay.unload()
         self.world.unload()
         core.shutdown()
+
+
+def _merge_rects(rects):
+    """Draw rects (tiles) for a stage that covers several layers' areas:
+    the overlapping ones merged into their union, so no pixel is drawn
+    twice by an ADDITIVE stage (G3 F3's compensation)."""
+    out = [tuple(r) for r in rects]
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(out)):
+            for j in range(i + 1, len(out)):
+                a, b = out[i], out[j]
+                if a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]:
+                    out[i] = (min(a[0], b[0]), min(a[1], b[1]),
+                              max(a[2], b[2]), max(a[3], b[3]))
+                    del out[j]
+                    merged = True
+                    break
+            if merged:
+                break
+    return out
 
 
 __all__ = ["GameRenderer", "RenderConfig", "render_state_lines"]

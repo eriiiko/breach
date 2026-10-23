@@ -159,6 +159,10 @@ class FireVFXDials:
     kappa: float = 2.5              # B: E = 1 - exp(-kappa * R)
     r0: float = 0.10                # A: E = smoothstep(r0, r1, R)
     r1: float = 0.60
+    e_min: float = 0.04             # emission threshold: E below e_min draws
+    #                                 nothing, full from 2 e_min (F3: faint R
+    #                                 fills the margin boxes, and B's tail
+    #                                 1 - exp(-kappa R) never reaches 0)
 
     seed: int = 1234
 
@@ -933,9 +937,12 @@ def flame_emission(state: FireVFXState, ramp, mode: str,
     chroma times its intensity at T_vfx (``BlackbodyRamp.emission_at_kelvin``
     -- no second T->colour map), E the opacity for mode 'A' (temperature
     only: ``smoothstep(r0, r1, R)``) or 'B' (temperature + thickness:
-    ``1 - exp(-kappa R)``), and ``cover = E * w(T)`` the §13.4 emitter-cover
-    weight (w: smoothstep from the glow floor to +100 K, so a flame too
-    cool to glow covers nothing)."""
+    ``1 - exp(-kappa R)``), clipped by the emission threshold
+    (:func:`emission_clip`), and ``cover = E * w(T)`` the §13.4 emitter-cover
+    weight (w = ``BlackbodyRamp.cover_weight``: smoothstep from the glow
+    floor to +100 K, so a flame too cool to glow covers nothing). The GL
+    draw (``shaders/fire_glow.fs``) is this law on the upsampled, edge-
+    eroded field."""
     T = state.temperature(dials.r_eps)
     chroma, inten = ramp.emission_at_kelvin(np.where(T > 0, T, ramp.kelvin_floor))
     inten = np.where(T > 0, inten, 0.0)
@@ -948,7 +955,17 @@ def flame_emission(state: FireVFXState, ramp, mode: str,
         E = 1.0 - np.exp(-dials.kappa * R)
     else:
         raise ValueError(f"mode must be 'A' or 'B', not {mode!r}")
-    g = ramp.kelvin_glow_min
-    zw = np.clip((T - g) / 100.0, 0.0, 1.0)
-    cover = E * zw * zw * (3.0 - 2.0 * zw)
+    E = E * emission_clip(E, dials.e_min)
+    cover = E * ramp.cover_weight(np.where(T > 0, T, 0.0))
     return Le, E, cover
+
+
+def emission_clip(E, e_min: float):
+    """The emission threshold (F3): a weight that is 0 for ``E <= e_min``,
+    1 for ``E >= 2 e_min``, smoothstep between -- faint flame density draws
+    nothing (B's ``1 - exp(-kappa R)`` tail would otherwise fill the active
+    boxes with a faint glow). ``shaders/fire_glow.fs`` applies the same."""
+    if e_min <= 0.0:
+        return np.ones_like(np.asarray(E, dtype=np.float64))
+    z = np.clip((np.asarray(E, dtype=np.float64) - e_min) / e_min, 0.0, 1.0)
+    return z * z * (3.0 - 2.0 * z)

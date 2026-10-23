@@ -106,6 +106,15 @@ class FireVFXSettings:
     margin_tiles: int = 3           # active-region dilation (F0b: R spreads ~3 tiles)
     idle_when_paused: bool = True   # substeps keep running on frozen sources (§3.4)
     debug_view: int = 0             # 0 off, see DEBUG_VIEWS
+    # --- the draw (F3, design §3.5): the A/B law and the edge noise ----------
+    emission: str = "mask"          # "mask" (A: E by temperature only) or
+    #                                 "thickness" (B: by temperature + R)
+    edge_noise_amp: float = 0.8     # how deep the flame noise tears the edge
+    edge_noise_tiles: float = 2.0   # tiles per repeat of the noise grain
+    edge_streak_s: float = 0.15     # streak length = the flow's travel in this time
+    edge_noise_cycle_s: float = 0.6 # the flow map's phase cycle (VFX clock)
+    edge_speed_cap: float = 3.0     # tiles/s: the drift / streak speed cap
+    edge_contrast: float = 2.2      # restores the grain's contrast after the integral
     dials: FireVFXDials = field(default_factory=FireVFXDials)
 
     @property
@@ -113,7 +122,14 @@ class FireVFXSettings:
         return int(self.dials.m)
 
 
-_OWN_KEYS = ("enabled", "m_u", "margin_tiles", "idle_when_paused", "debug_view")
+_OWN_KEYS = ("enabled", "m_u", "margin_tiles", "idle_when_paused", "debug_view",
+             "emission", "edge_noise_amp", "edge_noise_tiles", "edge_streak_s",
+             "edge_noise_cycle_s", "edge_speed_cap", "edge_contrast")
+
+# The A/B (design §1 decision 3, §3.5): config value -> the shader's law id.
+EMISSION_LAWS = {"mask": 0, "thickness": 1}
+# What the live A/B key cycles through ("off" = the flame not drawn).
+EMISSION_CYCLE = ("mask", "thickness", "off")
 
 # the F11 cycle (fire_vfx_debug.fs u_mode)
 DEBUG_VIEWS = ("off", "sources", "flame R", "flame T_vfx", "velocity u",
@@ -146,6 +162,11 @@ def settings_from_config(cfg) -> FireVFXSettings:
         dials = dials.with_(curl_modes=MAX_CURL_MODES)
     base = FireVFXSettings()
     own = {k: get(k, getattr(base, k)) for k in _OWN_KEYS}
+    if own["emission"] not in EMISSION_LAWS:
+        _warn_once("emission", f"[render.fire_vfx] emission "
+                   f"{own['emission']!r} is not one of {sorted(EMISSION_LAWS)}"
+                   f": drawing 'mask'")
+        own["emission"] = "mask"
     if own["m_u"] != dials.m:
         _warn_once("m_u", f"[render.fire_vfx] m_u {own['m_u']} != m "
                    f"{dials.m}: the loop runs both at m (G3 accepted gap)")
@@ -642,6 +663,80 @@ def plan_frame(boxes: Sequence[Box], left_rects: Sequence[Box],
 
 
 # ---------------------------------------------------------------------------
+# The draw (F3): pure helpers
+# ---------------------------------------------------------------------------
+
+_GLOW_FS = "fire_glow.fs"
+_SMOKE_MARKER = "// <SMOKE_SHADOW>"
+
+# shaders/fire_glow.fs u_stage, in the order compose_world draws them (§13.7)
+GLOW_STAGES = {"body": 1, "flame": 2, "compensation": 3, "gas": 4}
+
+# sampler units of the draw (above raylib's batch units 0..3)
+_GLOW_UNIT = {"u_body": 5, "u_gas": 6, "u_flame": 7, "u_vel": 8,
+              "u_noise": 9, "u_lut": 10, "u_smoke_cover": 11}
+
+NOISE_SIZE = 128
+
+
+def compose_glow_source() -> str:
+    """``shaders/fire_glow.fs`` with the smoke cast product's shared GLSL
+    (``lit3d._SMOKE_SHADOW_GLSL``: ``smokeCoverAt``) spliced in at its
+    marker -- the one copy of that convention (also what
+    tests/test_one_tonemap scans)."""
+    from .lit3d import _SMOKE_SHADOW_GLSL
+    src = (SHADERS_DIR / _GLOW_FS).read_text(encoding="utf-8")
+    if _SMOKE_MARKER not in src:
+        raise ValueError(f"{_GLOW_FS} lacks '{_SMOKE_MARKER}'")
+    return src.replace(_SMOKE_MARKER, _SMOKE_SHADOW_GLSL)
+
+
+def noise_phases(t: float, cycle_s: float, grain_tiles: float,
+                 seed: int) -> Tuple[float, float, Tuple[float, ...]]:
+    """The flame noise's two-phase flow map at VFX-clock time ``t`` (float64
+    here, so the GPU only ever sees phases in [0, 1) and offsets in [0,
+    grain)): ``(phase0, phase1, (off0x, off0y, off1x, off1y))``. Phase k
+    restarts every ``cycle_s`` (phase 1 half a cycle later), each restart
+    drawing a fresh grain offset from a hash of its cycle index -- so the
+    pattern never repeats with the cycle."""
+    c = max(float(cycle_s), 1e-3)
+    out = []
+    offs: List[float] = []
+    for k in (0, 1):
+        x = float(t) / c + 0.5 * k
+        out.append(x - math.floor(x))
+        idx = (int(math.floor(x)) * 2 + k) & 0x7FFFFFFF
+        h = ref._hash01(np.array([idx]), int(seed) + 77)
+        h2 = ref._hash01(np.array([idx]), int(seed) + 91)
+        offs += [float(h[0]) * grain_tiles, float(h2[0]) * grain_tiles]
+    return out[0], out[1], tuple(offs)
+
+
+def clip_rects(rects: Sequence[Box], view) -> List[Box]:
+    """``rects`` (tiles, end-exclusive) intersected with ``view`` ((x0, y0,
+    x1, y1) tiles, floats allowed; None = no clip); empty ones dropped --
+    the draw is clipped to active ∩ view (§13.10)."""
+    out: List[Box] = []
+    for x0, y0, x1, y1 in rects:
+        if view is not None:
+            vx0, vy0, vx1, vy1 = view
+            x0 = max(x0, int(math.floor(vx0)))
+            y0 = max(y0, int(math.floor(vy0)))
+            x1 = min(x1, int(math.ceil(vx1)))
+            y1 = min(y1, int(math.ceil(vy1)))
+        if x1 > x0 and y1 > y0:
+            out.append((int(x0), int(y0), int(x1), int(y1)))
+    return out
+
+
+def glow_rects(mask: np.ndarray) -> List[Box]:
+    """The tiles a heat-layer share glows on (``mask``), dilated by one tile
+    (the per-tile texture is bilinear: a glow spills half a tile), as at most
+    :data:`MAX_BOXES` boxes -- the only area its stage draws."""
+    return cut_boxes(np.asarray(mask, dtype=bool), 1)
+
+
+# ---------------------------------------------------------------------------
 # The GL pass
 # ---------------------------------------------------------------------------
 
@@ -684,6 +779,13 @@ class FireVFXPass:
                  "u_vort_eps", "u_curl_amp", "u_modes", "u_mode_phase",
                  "u_n_modes", "u_screen", "u_lifetime", "u_cool_rate",
                  "u_r_eps", "u_r_cut", "u_maccormack")
+    _GLOW_UNIFORMS = ("u_stage", "u_grid", "u_body", "u_gas", "u_heat_on",
+                      "u_glow_through", "u_flame", "u_vel", "u_noise",
+                      "u_lut", "u_m", "u_flame_on", "u_lut_k", "u_lut_n",
+                      "u_glow_min", "u_cover_ramp", "u_emission", "u_law",
+                      "u_noise_a", "u_noise_ph", "u_noise_off",
+                      "u_smoke_cover", "u_smoke_grid", "u_smoke_cast",
+                      "u_smoke_cast2")
     _DEBUG_UNIFORMS = ("u_grid", "u_m", "u_mode", "u_src_a", "u_src_b",
                        "u_wind", "u_puff", "u_vel", "u_flame", "u_lut",
                        "u_lut_k", "u_lut_n", "u_strip", "u_s_vis", "u_r_vis",
@@ -717,6 +819,21 @@ class FireVFXPass:
         self._dloc = {u: rl.get_shader_location(self.debug_shader, u)
                       for u in self._DEBUG_UNIFORMS}
         self._ucache: Dict[Tuple[str, str], object] = {}
+        # the draw (F3): one shader, four stages (shaders/fire_glow.fs)
+        self.glow_shader = core.load_shader_from_source(
+            vs, compose_glow_source())
+        self._gloc = {u: rl.get_shader_location(self.glow_shader, u)
+                      for u in self._GLOW_UNIFORMS}
+        self._gcache: Dict[str, object] = {}
+        from .noise_bake import bake_flame_noise_rgba
+        self.noise_tex = core.create_dynamic_rgba_texture(NOISE_SIZE,
+                                                          NOISE_SIZE)
+        core.update_rgba_texture(self.noise_tex,
+                                 bake_flame_noise_rgba(NOISE_SIZE))
+        rl.set_texture_wrap(self.noise_tex,
+                            rl.TextureWrap.TEXTURE_WRAP_REPEAT)
+        self.emission_override: Optional[str] = None
+        self.glow_draws_last_frame = 0
         self._static_key: Dict[str, object] = {}
         # per-tile textures (texelFetch -> the filter never matters)
         self.src_a_tex = core.create_dynamic_rgba32f_texture(self.w, self.h)
@@ -754,6 +871,10 @@ class FireVFXPass:
             self.flame.unload()
         self.vel = core.PingPong(self.w * s.m, self.h * s.m, fp32=True)
         self.flame = core.PingPong(self.w * s.m, self.h * s.m, fp32=True)
+        # the draw reconstructs both with texture() (bicubic from bilinear
+        # taps); the passes use texelFetch, which no filter touches
+        self.vel.set_filter(True)
+        self.flame.set_filter(True)
         self._grid_key = (s.m, s.m_u)
         self.region = ActiveRegion((self.h, self.w))
         self._uploaded_window = None
@@ -781,6 +902,33 @@ class FireVFXPass:
     def debug_view(self) -> int:
         return int(self.debug_override if self.debug_override is not None
                    else self.settings.debug_view)
+
+    @property
+    def emission(self) -> str:
+        """The flame's draw law this frame: "mask" (A), "thickness" (B) or
+        "off" -- the live A/B key's override, else ``[render.fire_vfx]
+        emission``."""
+        return (self.emission_override if self.emission_override is not None
+                else self.settings.emission)
+
+    def cycle_emission(self) -> str:
+        """The live A/B key (F3): A "mask" -> B "thickness" -> "off" -> A."""
+        i = EMISSION_CYCLE.index(self.emission)
+        self.emission_override = EMISSION_CYCLE[(i + 1) % len(EMISSION_CYCLE)]
+        return self.emission_override
+
+    @property
+    def flame_drawn(self) -> bool:
+        """Whether the flame is drawn this frame (on, not "off", and a fire
+        region exists -- no fire, no flame draws)."""
+        return (self.enabled and self.emission != "off"
+                and self.region.active)
+
+    def flame_rects(self, view) -> List[Box]:
+        """The flame's draw rects: the active boxes ∩ the view (§13.10)."""
+        if not self.flame_drawn:
+            return []
+        return clip_rects(self.region.boxes, view)
 
     def cycle_debug_view(self) -> int:
         self.debug_override = (self.debug_view + 1) % len(DEBUG_VIEWS)
@@ -1050,6 +1198,120 @@ class FireVFXPass:
         self.last_simulate_ms = (time.perf_counter() - t0) * 1000.0
         return len(plan)
 
+    # ---- the draw (scene stage, F3) ----------------------------------------
+
+    def _gset(self, name: str, *v) -> None:
+        """Set a uniform of the glow shader when its value changed (a GL
+        program keeps its uniforms; F2's CPU budget lesson)."""
+        rl = self._rl
+        loc = self._gloc.get(name, -1)
+        if loc < 0 or self._gcache.get(name) == v:
+            return
+        self._gcache[name] = v
+        if len(v) == 1 and isinstance(v[0], int) and not isinstance(v[0], bool):
+            rl.set_shader_value(self.glow_shader, loc,
+                                rl.ffi.new("int[1]", [int(v[0])]),
+                                rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
+            return
+        kind = {1: rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT,
+                2: rl.ShaderUniformDataType.SHADER_UNIFORM_VEC2,
+                4: rl.ShaderUniformDataType.SHADER_UNIFORM_VEC4}[len(v)]
+        rl.set_shader_value(self.glow_shader, loc,
+                            rl.ffi.new(f"float[{len(v)}]",
+                                       [float(x) for x in v]), kind)
+
+    def draw_glow(self, stage: str, rects: Sequence[Box], *,
+                  world_px_w: float, world_px_h: float, heat=None,
+                  heat_on: bool = False, smoke_cast=None,
+                  glow_through: Tuple[float, float] = (0.0, 0.0),
+                  flame_on: Optional[bool] = None) -> int:
+        """Draw one stage of THE fire's light (``shaders/fire_glow.fs``)
+        into the bound SCENE RT (linear HDR), on ``rects`` (tiles) only:
+        ``"body"`` / ``"flame"`` as emitter covers (premultiplied over),
+        ``"compensation"`` / ``"gas"`` added; every stage keeps the
+        destination alpha. ``heat`` = the heat layer
+        (:class:`renderer.overlays.HeatFieldOverlay`: its ``body_tex`` /
+        ``gas_tex``); ``smoke_cast`` = the renderer's ``_smoke_cast``
+        (product texture or None, grid, cast, cast2); ``glow_through`` =
+        (ceiling, floor), zero without a product. Returns the quads drawn
+        (0 = nothing issued)."""
+        if not rects:
+            return 0
+        rl = self._rl
+        st = GLOW_STAGES[stage]
+        s = self.settings
+        d = s.dials
+        if flame_on is None:
+            flame_on = self.flame_drawn
+        law = self.emission if self.emission != "off" else s.emission
+        product = smoke_cast[0] if smoke_cast is not None else None
+        if product is None:
+            glow_through = (0.0, 0.0)
+        ph0, ph1, offs = noise_phases(self.clock.t_noise,
+                                      s.edge_noise_cycle_s,
+                                      s.edge_noise_tiles, d.seed)
+        over = st in (1, 2)
+        rl.rl_set_blend_factors_separate(
+            rl.RL_ONE, rl.RL_ONE_MINUS_SRC_ALPHA if over else rl.RL_ONE,
+            rl.RL_ZERO, rl.RL_ONE, rl.RL_FUNC_ADD, rl.RL_FUNC_ADD)
+        rl.begin_blend_mode(rl.BlendMode.BLEND_CUSTOM_SEPARATE)
+        rl.begin_shader_mode(self.glow_shader)
+        g = self._gset
+        g("u_stage", int(st))
+        g("u_grid", float(self.w), float(self.h))
+        g("u_m", float(s.m))
+        g("u_heat_on", int(bool(heat_on and heat is not None)))
+        g("u_flame_on", int(bool(flame_on)))
+        g("u_glow_through", float(glow_through[0]), float(glow_through[1]))
+        g("u_lut_k", self.ramp.kelvin_floor, self.ramp.kelvin_ceil)
+        g("u_lut_n", float(LUT_SIZE))
+        g("u_glow_min", float(self.ramp.kelvin_glow_min))
+        from .blackbody import COVER_RAMP_K
+        g("u_cover_ramp", float(COVER_RAMP_K))
+        g("u_emission", int(EMISSION_LAWS[law]))
+        g("u_law", d.r0, d.r1, d.kappa, d.e_min)
+        g("u_noise_a", s.edge_noise_amp, s.edge_noise_tiles,
+          s.edge_streak_s, s.edge_speed_cap)
+        g("u_noise_ph", ph0, ph1, s.edge_noise_cycle_s, s.edge_contrast)
+        g("u_noise_off", *offs)
+        if smoke_cast is not None:
+            g("u_smoke_grid", *(float(x) for x in smoke_cast[1]))
+            g("u_smoke_cast", *(float(x) for x in smoke_cast[2]))
+            g("u_smoke_cast2", *(float(x) for x in smoke_cast[3]))
+        fallback = self.src_a_tex.id
+        samplers = (
+            ("u_body", heat.body_tex.id if heat is not None else fallback),
+            ("u_gas", heat.gas_tex.id if heat is not None else fallback),
+            ("u_flame", self.flame.front_id),
+            ("u_vel", self.vel.front_id),
+            ("u_noise", self.noise_tex.id),
+            ("u_lut", self.lut_tex.id),
+            ("u_smoke_cover", product.id if product is not None else fallback))
+        for name, tex_id in samplers:
+            rl.rl_active_texture_slot(_GLOW_UNIT[name])
+            rl.rl_enable_texture(tex_id)
+            g(name, _GLOW_UNIT[name])
+        rl.rl_active_texture_slot(0)
+        ppx = float(world_px_w) / self.w
+        ppy = float(world_px_h) / self.h
+        carrier = self.src_a_tex
+        for x0, y0, x1, y1 in rects:
+            rl.draw_texture_pro(
+                carrier,
+                rl.Rectangle(float(x0), float(y0), float(x1 - x0),
+                             float(y1 - y0)),
+                rl.Rectangle(x0 * ppx, y0 * ppy, (x1 - x0) * ppx,
+                             (y1 - y0) * ppy),
+                rl.Vector2(0, 0), 0.0, rl.WHITE)
+        rl.end_shader_mode()
+        for name, _ in samplers:
+            rl.rl_active_texture_slot(_GLOW_UNIT[name])
+            rl.rl_disable_texture()
+        rl.rl_active_texture_slot(0)
+        rl.end_blend_mode()
+        self.glow_draws_last_frame += len(rects)
+        return len(rects)
+
     # ---- debug (display stage) -------------------------------------------
 
     def _dset(self, name: str, *v) -> None:
@@ -1129,6 +1391,8 @@ class FireVFXPass:
         for sh in self.shaders.values():
             rl.unload_shader(sh)
         rl.unload_shader(self.debug_shader)
+        rl.unload_shader(self.glow_shader)
+        rl.unload_texture(self.noise_tex)
         for t in (self.src_a_tex, self.src_b_tex, self.puff_tex,
                   self.wind_tex, self.lut_tex):
             rl.unload_texture(t)
@@ -1144,5 +1408,7 @@ __all__ = [
     "PASS_FIELD", "substep_passes", "PassItem", "plan_frame",
     "boxes_uniform", "compose_shader_source", "FireVFXPass", "DEBUG_VIEWS",
     "LUT_SIZE", "MAX_BOXES", "SUBSTEP_CAP", "MAX_CURL_MODES",
-    "FLAG_SOLID", "FLAG_VACUUM",
+    "FLAG_SOLID", "FLAG_VACUUM", "EMISSION_LAWS", "EMISSION_CYCLE",
+    "GLOW_STAGES", "compose_glow_source", "noise_phases", "clip_rects",
+    "glow_rects", "NOISE_SIZE",
 ]

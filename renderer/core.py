@@ -568,6 +568,17 @@ class PingPong:
                         gl.Clear(_GL_COLOR_BUFFER_BIT)
             gl.Disable(_GL_SCISSOR_TEST)        # raylib's state between calls
 
+    def set_filter(self, linear: bool) -> None:
+        """Both buffers' sampling filter for READERS outside the passes (a
+        composite that reconstructs the field with ``texture()``, G3 F3's
+        flame draw): ``linear`` = BILINEAR, else POINT (the default). The
+        passes address texels with ``texelFetch``, which no filter touches,
+        so this never changes a pass's result."""
+        f = (rl.TextureFilter.TEXTURE_FILTER_BILINEAR if linear
+             else rl.TextureFilter.TEXTURE_FILTER_POINT)
+        for rt in self._rts:
+            rl.set_texture_filter(rt.texture, f)
+
     def clear(self) -> None:
         """Both buffers to 0 everywhere (outside any texture mode)."""
         self._clear_direct([(0, 0, self.width, self.height)])

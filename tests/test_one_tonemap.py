@@ -51,6 +51,11 @@ def _layer_shader_sources():
     for st in fire_vfx.STAGES + ("debug",):
         out.append((f"fire_vfx.{st} (composed)",
                     _code(fire_vfx.compose_shader_source(st))))
+    # graphics G3 F3 (design §13.14 minor 6): THE fire's draw -- the flame,
+    # its compensation under the ceiling soot -- as COMPOSED (fire_glow.fs
+    # with the smoke cast product's shared GLSL spliced in)
+    out.append(("fire_vfx.fire_glow (composed)",
+                _code(fire_vfx.compose_glow_source())))
     return out
 
 

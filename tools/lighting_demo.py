@@ -774,10 +774,13 @@ def _look_camera(shot, level, map_px_w: int, map_px_h: int) -> Camera2D:
     return cam
 
 
-def _capture_map_viewport(renderer, out_path: str) -> None:
+def _capture_map_viewport(renderer, out_path: str, gmap=None) -> None:
     """Read the back buffer right after the world blit (no HUD, no panel)
     and save the map viewport alone. ``take_screenshot`` would drop the
-    directory (raylib writes to its own base path) and include the panel."""
+    directory (raylib writes to its own base path) and include the panel.
+    With ``gmap``, also writes the shot's META beside it
+    (``tools.look_shots.write_shot_meta``: the camera and the hot / burning
+    tiles -- what a metric over the PNG needs to project a tile mask)."""
     cam = renderer.camera
     img = rl.load_image_from_screen()
     try:
@@ -789,6 +792,9 @@ def _capture_map_viewport(renderer, out_path: str) -> None:
         rl.export_image(img, str(Path(out_path).resolve()))
     finally:
         rl.unload_image(img)
+    if gmap is not None:
+        from tools.look_shots import write_shot_meta
+        write_shot_meta(out_path, cam, gmap, renderer.blackbody_ramp)
 
 
 # ---------------------------------------------------------------------------
@@ -1483,7 +1489,7 @@ def main() -> None:
           "P/Shift+P=tilt ship +/-2 deg")
     print("[lighting_demo] KEYS -- shared render toggles (poll_toggles, "
           "same in the main game):")
-    print("[lighting_demo]   F1=grid  F2=smoke  F3=fire(legacy overlay)  "
+    print("[lighting_demo]   F1=grid  F2=smoke  F3=flame A/B (mask/thickness/off)  "
           "F4=lighting  F5=normal-map  F6=debug coords  F7=pressure")
     print("[lighting_demo]   F9=legacy smoke A/B  F10=speckle A/B "
           "(off/noise/soot)  T=temperature")
@@ -1564,6 +1570,10 @@ def main() -> None:
         renderer.show_temperature &= "heat" not in look_shot.hide
         renderer.show_smoke &= "smoke" not in look_shot.hide
         renderer.show_water &= "water" not in look_shot.hide
+        # graphics G3 F3: the flame is its own layer (the heat layer is
+        # "heat"); a shot may hide it
+        if "flame" in look_shot.hide:
+            renderer.fire_vfx.emission_override = "off"
         # graphics G3 F2: a shot may open a flame VFX debug view (F11's cycle)
         if look_shot.fire_debug:
             renderer.fire_vfx.debug_override = look_shot.fire_debug
@@ -2103,7 +2113,7 @@ def main() -> None:
             # Look shot (G0 P3): capture the LAST frame's map viewport now,
             # after the world blit and before the HUD / panel draw over it.
             if look is not None and frames + 1 >= AUTO_FRAMES:
-                _capture_map_viewport(renderer, look[2])
+                _capture_map_viewport(renderer, look[2], sim.gmap)
 
             # ---- HUD ----
             _draw_hud(renderer, sim.gmap, state, now, cursor=auto_cursor)
