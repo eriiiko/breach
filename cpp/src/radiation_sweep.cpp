@@ -304,6 +304,28 @@ void RadiationSweep::build_cone_injection(const int64_t* cones, int n_cones, int
     }
 }
 
+void RadiationSweep::build_emit_mult(const int64_t* rows, int n_rows, int h, int w,
+                                     std::vector<int32_t>& out) {
+    // G3 F4b: the multiplier rows scattered onto a per-cell Q16 plane, ONE
+    // (the identity) wherever no row names the cell. A second row for a cell
+    // is refused: the flicker is ONE factor per burning cell, and "which row
+    // wins" must never depend on the order the renderer emitted them.
+    const size_t n = (size_t)h * (size_t)w;
+    out.assign(n, (int32_t)fixedpoint::FP_ONE);
+    std::vector<uint8_t> seen((size_t)n_rows > 0 ? n : 0, 0);
+    for (int r = 0; r < n_rows; ++r) {
+        const int64_t* row = rows + (size_t)r * EMIT_MULT_ROW_WIDTH;
+        const size_t i = (size_t)row[0] * (size_t)w + (size_t)row[1];
+        if (seen[i]) {
+            throw std::invalid_argument(
+                "RadiationSweep: two emission-multiplier rows for one cell (G3 F4b "
+                "emit_mult door: one factor per cell)");
+        }
+        seen[i] = 1;
+        out[i] = (int32_t)row[2];
+    }
+}
+
 void RadiationSweep::validate_light_group(const LightChannels& light, int n_ordinates,
                                           const int32_t* gas, const int32_t* n_bulk,
                                           int n_gases, int h, int w) {
@@ -396,6 +418,25 @@ void RadiationSweep::validate_light_group(const LightChannels& light, int n_ordi
                     "RadiationSweep: a sky value outside [0, LIGHT_SKY_MAX = 2^40] "
                     "(P6b sky door)");
             }
+        }
+    }
+    // G3 F4b: THE EMISSION-MULTIPLIER DOOR (sweep_ref_q.validate_emit_mult);
+    // the one-row-per-cell clause is build_emit_mult's.
+    if (light.n_emit_mult < 0 || (light.n_emit_mult > 0 && light.emit_mult == nullptr)) {
+        throw std::invalid_argument(
+            "RadiationSweep: n_emit_mult > 0 needs the multiplier rows (G3 F4b)");
+    }
+    for (int r = 0; r < light.n_emit_mult; ++r) {
+        const int64_t* row = light.emit_mult + (size_t)r * EMIT_MULT_ROW_WIDTH;
+        if (row[0] < 0 || row[0] >= h || row[1] < 0 || row[1] >= w) {
+            throw std::invalid_argument(
+                "RadiationSweep: an emission multiplier outside the grid (G3 F4b "
+                "emit_mult door)");
+        }
+        if (row[2] < 0 || row[2] > LIGHT_EMIT_MULT_MAX) {
+            throw std::invalid_argument(
+                "RadiationSweep: an emission multiplier outside [0, "
+                "LIGHT_EMIT_MULT_MAX = 2 ONE] (G3 F4b emit_mult door: the headroom)");
         }
     }
 }
@@ -534,6 +575,11 @@ void RadiationSweep::run(const int32_t* temperature,
     const OrdinateDir* dirs = nullptr;
     if (light_on) {
         validate_light_group(*light, n_ordinates, gas, n_bulk, n_gases, h, w);
+        // G3 F4b: the multiplier plane, built (and its last door clause
+        // checked) before any output is touched
+        if (light->n_emit_mult > 0) {
+            build_emit_mult(light->emit_mult, light->n_emit_mult, h, w, emit_mult_);
+        }
         ltbl = ordinate_table(n_ordinates, light->transport);
         dirs = ordinate_dirs(n_ordinates);
         if (light->light_absorb_q16 != nullptr) {
@@ -647,9 +693,12 @@ void RadiationSweep::run(const int32_t* temperature,
         const int32_t* la_in = light->light_atten_q;
         const int32_t* ld_in = light->dyn_light_atten_q;
         const int64_t* ltab = light->l_table;
+        // G3 F4b: the fire's light flicker (nullptr: no rows, the pre-F4b loop)
+        const int32_t* emult = (light->n_emit_mult > 0) ? emit_mult_.data() : nullptr;
         for (int i = 0; i < n; ++i) {
             const int b = e_bucket_of(temperature[i]);
             const bool gas_cell = (n_lact > 0 && !thermal_solid[i]);
+            const int64_t mult = (emult != nullptr) ? (int64_t)emult[i] : (int64_t)FP_ONE;
             for (int c = 0; c < 3; ++c) {
                 const size_t ic = (size_t)i * 3 + (size_t)c;
                 int32_t a = la_in[ic];
@@ -679,7 +728,9 @@ void RadiationSweep::run(const int32_t* temperature,
                 l_d_[ic] = d;
                 l_g_[ic] = g_c;
                 const int64_t src = (ltab[(size_t)c * E_TABLE_SIZE + (size_t)b] * w_m) >> FP_SHIFT;
-                const int64_t em = (src * (int64_t)a) >> FP_SHIFT;
+                // G3 F4b: the THERMAL emission times the cell's flicker, the
+                // same integer in every ordinate (isotropic); ONE is exact
+                const int64_t em = (((src * (int64_t)a) >> FP_SHIFT) * mult) >> FP_SHIFT;
                 l_emit_[ic] = em;
                 l_emit_tot[c] += em;
             }

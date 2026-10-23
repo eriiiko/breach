@@ -1620,6 +1620,33 @@ def validate_sky(sky, n_ord: int):
                 raise ValueError(f"a sky value {v} outside [0, {LIGHT_SKY_MAX}]")
 
 
+# ---------------------------------------------------------------------------
+# G3 F4b: THE FIRE'S LIGHT FLICKER (docs/g3_fire_design_2026-10-23.md §6.3,
+# RULED D). An EMISSION MULTIPLIER row (y, x, mult_q) scales that cell's
+# THERMAL light emission -- every ordinate, every channel (isotropic):
+#     emitted' = (emitted * mult_q) >> 16
+# Nothing else reads it: heat never does (light moves no heat), a cone in the
+# same cell is not scaled, and the books close on the scaled emission. A cell
+# without a row keeps ONE -- the identity integer for integer. THE DOOR: every
+# row inside the grid, 0 <= mult_q <= LIGHT_EMIT_MULT_MAX (2 ONE: at most
+# double the thermal emission, one bit of the headroom), one row per cell.
+# ---------------------------------------------------------------------------
+LIGHT_EMIT_MULT_MAX = 2 * ONE
+
+
+def validate_emit_mult(rows, h: int, w: int):
+    """The emission-multiplier door, as raises (radiation_sweep.cpp mirrors it)."""
+    seen = set()
+    for i, (y, x, mq) in enumerate(rows):
+        if not (0 <= y < h and 0 <= x < w):
+            raise ValueError(f"emit_mult {i} at ({y},{x}) is outside the {h}x{w} grid")
+        if not (0 <= mq <= LIGHT_EMIT_MULT_MAX):
+            raise ValueError(f"emit_mult {i}: {mq} outside [0, {LIGHT_EMIT_MULT_MAX}]")
+        if (y, x) in seen:
+            raise ValueError(f"emit_mult {i}: a second row for cell ({y},{x})")
+        seen.add((y, x))
+
+
 def cone_injection(cones, n_ord: int = 16):
     """{(y, x): [n_ord][3]} -- every cone's per-ordinate emission summed per cell
     (the order the rows come in is irrelevant: integer addition)."""
@@ -1655,6 +1682,8 @@ class LightGroup:
              spread_q) (the section above); None or [] is none
       sky   -- P6b: THE SKY, [n_ord][3] -- the virtual ring's outflow per
              ordinate and channel; None is the dark ring (P6a's 0)
+      emit_mult -- G3 F4b: the fire's light flicker, rows (y, x, mult_q) (the
+             section above); None or [] is none
     """
     la: list
     ld: list
@@ -1665,6 +1694,7 @@ class LightGroup:
     record_streams: bool = False
     cones: list = None
     sky: list = None
+    emit_mult: list = None
 
 
 def validate_light(lg: LightGroup, h: int, w: int, n_gases: int):
@@ -1858,6 +1888,13 @@ def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
                             n_bulk[y][x])
         l_emit = [[[(((lt[c][e_bucket_of(T[y][x])] * w_m) >> 16) * la_eff[c][y][x]) >> 16
                     for x in range(w)] for y in range(h)] for c in range(L_CHANNELS)]
+        # G3 F4b: the fire's light flicker scales the THERMAL emission only
+        emit_mult = light.emit_mult or []
+        if validate:
+            validate_emit_mult(emit_mult, h, w)
+        for (y, x, mq) in emit_mult:
+            for c in range(L_CHANNELS):
+                l_emit[c][y][x] = (l_emit[c][y][x] * mq) >> 16
         # P6b: the cone emitters, projected and summed per cell, and the sky.
         cones = light.cones or []
         if validate:

@@ -129,6 +129,7 @@ struct LightGroupArgs {
     py::array_t<int32_t, py::array::c_style> la_arr, ld_arr, lab_arr, lgl_arr;
     py::array_t<int64_t, py::array::c_style> lq_arr, lf_arr, lg_arr, tbl_arr;
     py::array_t<int64_t, py::array::c_style> cones_arr, sky_arr;   // P6b
+    py::array_t<int64_t, py::array::c_style> emit_mult_arr;        // G3 F4b
     LightChannels lc;
     bool on = false;
 };
@@ -176,7 +177,9 @@ static LightGroupArgs light_group_args(const char* who_c,
                                        // P6b: the cone rows and the sky (optional)
                                        const py::object& light_cones,
                                        const py::object& light_sky,
-                                       int n_ordinates) {
+                                       int n_ordinates,
+                                       // G3 F4b: the fire's light flicker rows (optional)
+                                       const py::object& light_emit_mult = py::none()) {
     LightGroupArgs g;
     const std::string who = who_c;
     const int n_given = (int)!light_atten_q.is_none() + (int)!dyn_light_atten_q.is_none() +
@@ -184,9 +187,10 @@ static LightGroupArgs light_group_args(const char* who_c,
                         (int)!light_glow.is_none();
     if (n_given == 0) {
         if (!light_absorb_q16.is_none() || !light_glow_q16.is_none() || !light_table.is_none() ||
-            !light_cones.is_none() || !light_sky.is_none()) {
-            throw py::value_error(who + ": light smoke columns, a light table, cones or a sky "
-                                  "without the light planes (the light group is given as a whole)");
+            !light_cones.is_none() || !light_sky.is_none() || !light_emit_mult.is_none()) {
+            throw py::value_error(who + ": light smoke columns, a light table, cones, a sky "
+                                  "or emission multipliers without the light planes (the "
+                                  "light group is given as a whole)");
         }
         return g;
     }
@@ -237,6 +241,21 @@ static LightGroupArgs light_group_args(const char* who_c,
     if (!light_sky.is_none()) {
         g.sky_arr = light_arr<int64_t>(who, "light_sky", light_sky, false, {n_ordinates, 3});
         g.lc.sky = g.sky_arr.data();
+    }
+    // G3 F4b: the emission-multiplier rows (n, EMIT_MULT_ROW_WIDTH) int64,
+    // dtype-checked; the sweep's own door refuses an illegal row.
+    if (!light_emit_mult.is_none()) {
+        if (!py::isinstance<py::array_t<int64_t>>(light_emit_mult)) {
+            throw py::type_error(who + ": light_emit_mult must be an int64 numpy array "
+                                 "(n, 3) -- dtype-checked, never converted (G3 F4b)");
+        }
+        g.emit_mult_arr = light_emit_mult.cast<py::array_t<int64_t, py::array::c_style>>();
+        if (g.emit_mult_arr.ndim() != 2 || g.emit_mult_arr.shape(1) != EMIT_MULT_ROW_WIDTH) {
+            throw py::value_error(who + ": light_emit_mult must be (n, 3) rows (y, x, "
+                                  "mult_q) (G3 F4b)");
+        }
+        g.lc.emit_mult = g.emit_mult_arr.data();
+        g.lc.n_emit_mult = static_cast<int>(g.emit_mult_arr.shape(0));
     }
     g.lc.light_atten_q = g.la_arr.data();
     g.lc.dyn_light_atten_q = g.ld_arr.data();
@@ -713,7 +732,8 @@ PYBIND11_MODULE(breach_physics, m) {
              py::object light_q, py::object light_flux_q, py::object light_glow,
              py::object light_absorb_q16, py::object light_glow_q16,
              py::object light_table, int light_transport,
-             py::object light_cones, py::object light_sky) -> py::tuple {
+             py::object light_cones, py::object light_sky,
+             py::object light_emit_mult) -> py::tuple {
               auto [T, h, w]      = get_2d_const(temperature);
               auto [aq, h2, w2]   = get_2d_const(heat_atten_q);
               auto [dq, h3, w3]   = get_2d_const(dyn_heat_atten_q);
@@ -785,7 +805,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   "cuda_radiation_sweep_run", light_atten_q, dyn_light_atten_q,
                   light_q, light_flux_q, light_glow, light_absorb_q16,
                   light_glow_q16, light_table, light_transport, h, w, gg.n,
-                  light_cones, light_sky, n_ordinates);
+                  light_cones, light_sky, n_ordinates, light_emit_mult);
               int64_t s_min = 0, s_max = 0;
               int64_t lbooks[12] = {0};
               int64_t ls_min = 0, ls_max = 0;
@@ -822,6 +842,7 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("light_table") = py::none(),
           py::arg("light_transport") = (int)RadiationSweep::TRANSPORT_STEP,
           py::arg("light_cones") = py::none(), py::arg("light_sky") = py::none(),   // P6b
+          py::arg("light_emit_mult") = py::none(),                                  // G3 F4b
           "P4 isolated: ONE radiation sweep on the GPU (the per-call path "
           "PhysicsEngine.step_tail dispatches), bit-identical to "
           "RadiationSweep.run on the same arguments. amb_level None + is_vacuum "
@@ -880,6 +901,9 @@ PYBIND11_MODULE(breach_physics, m) {
                   ld.d_sky        = reinterpret_cast<const int64_t*>(ptr("d_sky"));
                   ld.d_cone_index = reinterpret_cast<const int32_t*>(ptr("d_cone_index"));
                   ld.d_cone_inj   = reinterpret_cast<const int64_t*>(ptr("d_cone_inj"));
+                  // G3 F4b: the emission-multiplier plane (N, h, w) Q16 --
+                  // optional key (0 / absent: no flicker)
+                  ld.d_emit_mult  = reinterpret_cast<const int32_t*>(ptr("d_emit_mult"));
               }
               return breach_cuda::radiation_sweep_launch_resident(
                   n_env, h, w,
@@ -2610,6 +2634,9 @@ PYBIND11_MODULE(breach_physics, m) {
              [](py::object) { return LIGHT_CONE_BUDGET; })
         .def_property_readonly_static("LIGHT_SKY_MAX",
              [](py::object) { return LIGHT_SKY_MAX; })
+        // G3 F4b: the emission-multiplier door's bound (Q16, 2·ONE)
+        .def_property_readonly_static("LIGHT_EMIT_MULT_MAX",
+             [](py::object) { return LIGHT_EMIT_MULT_MAX; })
         // P6a: the light books of the last run that carried the light group
         // (either backend), per channel, and its light-stream telemetry.
         .def_property_readonly("light_books", [](const RadiationSweep& s) {
@@ -2803,7 +2830,8 @@ PYBIND11_MODULE(breach_physics, m) {
                        py::object light_glow,
                        py::object light_absorb_q16, py::object light_glow_q16,
                        py::object light_table, int light_transport,
-                       py::object light_cones, py::object light_sky) {
+                       py::object light_cones, py::object light_sky,
+                       py::object light_emit_mult) {
             auto [T, h, w]      = get_2d_const(temperature);
             auto [aq, h2, w2]   = get_2d_const(heat_atten_q);
             auto [dq, h3, w3]   = get_2d_const(dyn_heat_atten_q);
@@ -2849,7 +2877,7 @@ PYBIND11_MODULE(breach_physics, m) {
                 "RadiationSweep.run", light_atten_q, dyn_light_atten_q, light_q,
                 light_flux_q, light_glow, light_absorb_q16, light_glow_q16,
                 light_table, light_transport, h, w, gg.n,
-                light_cones, light_sky, n_ordinates);
+                light_cones, light_sky, n_ordinates, light_emit_mult);
             self.run(T, aq, dq, his, ts, e_table.table(), e_table.fine_bits,
                      amb, t_amb_q, k_leak_q,
                      transport, n_ordinates, h, w, rn, rf, ra, rl, fleck_enabled,
@@ -2879,6 +2907,7 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("light_transport") = (int)RadiationSweep::TRANSPORT_STEP,
            // P6b: the cone emitters and the sky (None = none / the dark ring)
            py::arg("light_cones") = py::none(), py::arg("light_sky") = py::none(),
+           py::arg("light_emit_mult") = py::none(),   // G3 F4b
            "One tick of the sweep over all ordinates. It OVERWRITES the four "
            "int64 planes — zeroed here before the first ordinate, so they hold "
            "the last run's values until the next run and the tile inspector can "
@@ -3894,7 +3923,8 @@ PYBIND11_MODULE(breach_physics, m) {
                              py::object gas_light_absorb_q16,
                              py::object gas_light_glow_q16,
                              // P6b: the cone rows and the sky (optional)
-                             py::object light_cones, py::object light_sky) -> py::list {
+                             py::object light_cones, py::object light_sky,
+                             py::object light_emit_mult) -> py::list {
             // ripple group
             auto [rip, h, w]    = get_2d(ripple);
             auto [ripv, h2, w2] = get_2d(ripple_v);
@@ -4002,7 +4032,7 @@ PYBIND11_MODULE(breach_physics, m) {
                 "PhysicsEngine.step_tail", light_atten_q, dyn_light_atten_q, light_q,
                 light_flux_q, light_glow, gas_light_absorb_q16, gas_light_glow_q16,
                 py::none(), (int)RadiationSweep::TRANSPORT_STEP, h, w, n_gases,
-                light_cones, light_sky, 16);
+                light_cones, light_sky, 16, light_emit_mult);
 
             auto destroyed = self.step_tail(
                 rip, ripv, wd, wp, sol,
@@ -4020,7 +4050,9 @@ PYBIND11_MODULE(breach_physics, m) {
                 lg.on ? lg.lc.light_glow_q16 : nullptr,
                 lg.on ? lg.lc.cones : nullptr,
                 lg.on ? lg.lc.n_cones : 0,
-                lg.on ? lg.lc.sky : nullptr);
+                lg.on ? lg.lc.sky : nullptr,
+                lg.on ? lg.lc.emit_mult : nullptr,
+                lg.on ? lg.lc.n_emit_mult : 0);
             py::list result;
             for (const auto& [dy, dx] : destroyed) {
                 result.append(py::make_tuple(dy, dx));
@@ -4058,7 +4090,9 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("gas_light_absorb_q16") = py::none(),
            py::arg("gas_light_glow_q16") = py::none(),
            // P6b: the cone emitters and the sky (None = none / the dark ring)
-           py::arg("light_cones") = py::none(), py::arg("light_sky") = py::none())
+           py::arg("light_cones") = py::none(), py::arg("light_sky") = py::none(),
+           // G3 F4b: the fire's light flicker rows (None = none)
+           py::arg("light_emit_mult") = py::none())
         // ---- ray-engine-v2 P6b: RELIGHT (physics_engine.h) -- the light field
         // on the CURRENT state without a tick, the heat outputs into the
         // engine's own scratch. The light group is REQUIRED here (it is the
@@ -4079,7 +4113,8 @@ PYBIND11_MODULE(breach_physics, m) {
                            py::object light_glow,
                            py::object gas_light_absorb_q16,
                            py::object gas_light_glow_q16,
-                           py::object light_cones, py::object light_sky) {
+                           py::object light_cones, py::object light_sky,
+                           py::object light_emit_mult) {
             auto [T, h, w]      = get_2d_const(temperature);
             auto [aq, h2, w2]   = get_2d_const(heat_atten_q);
             auto [dq, h3, w3]   = get_2d_const(dyn_heat_atten_q);
@@ -4104,7 +4139,7 @@ PYBIND11_MODULE(breach_physics, m) {
                 "PhysicsEngine.relight", light_atten_q, dyn_light_atten_q, light_q,
                 light_flux_q, light_glow, gas_light_absorb_q16, gas_light_glow_q16,
                 py::none(), (int)RadiationSweep::TRANSPORT_STEP, h, w, n_gases,
-                light_cones, light_sky, 16);
+                light_cones, light_sky, 16, light_emit_mult);
             if (!lg.on) {
                 throw py::value_error("PhysicsEngine.relight: the light planes are "
                                       "required (relight computes nothing else)");
@@ -4115,7 +4150,8 @@ PYBIND11_MODULE(breach_physics, m) {
                          lg.lc.light_atten_q, lg.lc.dyn_light_atten_q,
                          lg.lc.light_q, lg.lc.light_flux_q, lg.lc.light_glow,
                          lg.lc.light_absorb_q16, lg.lc.light_glow_q16,
-                         lg.lc.cones, lg.lc.n_cones, lg.lc.sky);
+                         lg.lc.cones, lg.lc.n_cones, lg.lc.sky,
+                         lg.lc.emit_mult, lg.lc.n_emit_mult);
         }, py::arg("temperature").noconvert(), py::arg("heat_atten_q").noconvert(),
            py::arg("dyn_heat_atten_q").noconvert(), py::arg("heat_inv_shift").noconvert(),
            py::arg("thermal_solid").noconvert(), py::arg("is_vacuum").noconvert(),
@@ -4127,6 +4163,7 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("gas_light_absorb_q16") = py::none(),
            py::arg("gas_light_glow_q16") = py::none(),
            py::arg("light_cones") = py::none(), py::arg("light_sky") = py::none(),
+           py::arg("light_emit_mult") = py::none(),   // G3 F4b
            "P6b: recompute the light field on the CURRENT state without a tick "
            "(the paused renderer's path): the one sweep invocation step_tail "
            "uses, light always on, its heat outputs into the engine's own "

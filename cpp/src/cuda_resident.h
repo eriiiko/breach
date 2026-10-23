@@ -304,6 +304,10 @@ struct RadiationLightDev {
     const int64_t* d_sky        = nullptr;         // (N, n_ordinates, 3), nullable
     const int32_t* d_cone_index = nullptr;         // (N, h, w), nullable
     const int64_t* d_cone_inj   = nullptr;         // (n_slots, n_ordinates, 3)
+    // G3 F4b: THE FIRE'S LIGHT FLICKER as the host-built per-cell Q16 plane
+    // (RadiationSweep::build_emit_mult -- ONE where no row names the cell),
+    // PER ENV; nullable (no flicker: the pre-F4b pre-pass, integer for integer).
+    const int32_t* d_emit_mult  = nullptr;         // (N, h, w), nullable
     // scratch
     int64_t* d_l_outflow = nullptr;                // (N, n_ordinates, h, w, 3)
     int64_t* d_l_emit    = nullptr;                // (N, h, w, 3)
