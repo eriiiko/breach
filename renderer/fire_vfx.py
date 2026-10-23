@@ -680,6 +680,8 @@ _GLOW_UNIT = {"u_heat": 5, "u_below": 6, "u_flame": 7, "u_vel": 8,
               "u_noise": 9, "u_lut": 10, "u_smoke_cover": 11}
 
 NOISE_SIZE = 128
+_GL_TEXTURE0 = 0x84C0
+_GL_TEXTURE_2D = 0x0DE1
 # The e-fold (tiles) of the flame's brightness ceiling toward its active
 # box's edge, exp(d / BOX_FADE_TILES) - 1 (shaders/fire_glow.fs
 # box_ceiling): the box is its fluid domain's open boundary, and a
@@ -721,10 +723,24 @@ def noise_phases(t: float, cycle_s: float, grain_tiles: float,
         x = float(t) / c + 0.5 * k
         out.append(x - math.floor(x))
         idx = (int(math.floor(x)) * 2 + k) & 0x7FFFFFFF
-        h = ref._hash01(np.array([idx]), int(seed) + 77)
-        h2 = ref._hash01(np.array([idx]), int(seed) + 91)
-        offs += [float(h[0]) * grain_tiles, float(h2[0]) * grain_tiles]
+        offs += [_hash01(idx, int(seed) + 77) * grain_tiles,
+                 _hash01(idx, int(seed) + 91) * grain_tiles]
     return out[0], out[1], tuple(offs)
+
+
+_M64 = (1 << 64) - 1
+
+
+def _hash01(key: int, salt: int) -> float:
+    """A scalar integer hash -> [0, 1): the same splitmix finaliser as the
+    twin's vectorised ``fire_vfx_ref._hash01`` (bit for bit), in plain
+    Python ints -- the draw calls it every frame, where numpy's per-call
+    overhead cost ~25 us each."""
+    x = (key * 0x9E3779B97F4A7C15 + salt * 0xBF58476D1CE4E5B9) & _M64
+    x ^= x >> 31
+    x = (x * 0x94D049BB133111EB) & _M64
+    x ^= x >> 29
+    return (x >> 11) / float(1 << 53)
 
 
 def clip_rects(rects: Sequence[Box], view) -> List[Box]:
@@ -850,6 +866,8 @@ class FireVFXPass:
                             rl.TextureWrap.TEXTURE_WRAP_REPEAT)
         self.emission_override: Optional[str] = None
         self.glow_draws_last_frame = 0
+        self._gstatic_key = None
+        self._gnoise_key = None
         self._static_key: Dict[str, object] = {}
         # per-tile textures (texelFetch -> the filter never matters)
         self.src_a_tex = core.create_dynamic_rgba32f_texture(self.w, self.h)
@@ -1268,9 +1286,12 @@ class FireVFXPass:
         product = smoke_cast[0] if smoke_cast is not None else None
         if product is None:
             glow_through = (0.0, 0.0)
-        ph0, ph1, offs = noise_phases(self.clock.t_noise,
-                                      s.edge_noise_cycle_s,
-                                      s.edge_noise_tiles, d.seed)
+        nkey = (self.clock.t_noise, s.edge_noise_cycle_s, s.edge_noise_tiles,
+                d.seed)
+        if getattr(self, "_noise_key", None) != nkey:
+            self._noise_key = nkey
+            self._noise_ph = noise_phases(*nkey)
+        ph0, ph1, offs = self._noise_ph
         over = st == GLOW_STAGES["flame"]
         rl.rl_set_blend_factors_separate(
             rl.RL_ONE, rl.RL_ONE_MINUS_SRC_ALPHA if over else rl.RL_ONE,
@@ -1279,48 +1300,68 @@ class FireVFXPass:
         rl.begin_shader_mode(self.glow_shader)
         g = self._gset
         g("u_stage", int(st))
-        g("u_grid", float(self.w), float(self.h))
-        g("u_m", float(s.m))
-        g("u_flame_on", int(bool(flame_on)))
-        g("u_glow_through", float(glow_through[0]), float(glow_through[1]))
-        g("u_lut_k", self.ramp.kelvin_floor, self.ramp.kelvin_ceil)
-        g("u_lut_n", float(LUT_SIZE))
-        g("u_emission", int(EMISSION_LAWS[law]))
-        g("u_law", d.r0, d.r1, d.kappa, d.e_min)
-        g("u_noise_a", s.edge_noise_amp, s.edge_noise_tiles,
-          s.edge_streak_s, s.edge_speed_cap)
-        g("u_noise_ph", ph0, ph1, s.edge_noise_cycle_s, s.edge_contrast)
-        g("u_noise_off", *offs)
-        g("u_box_fade", float(BOX_FADE_TILES), float(BOX_WINDOW_TILES))
-        fb = boxes_uniform(self.region.boxes, 1)
-        loc = self._gloc.get("u_fboxes", -1)
-        if loc >= 0 and self._gcache.get("u_fboxes") != tuple(fb):
-            self._gcache["u_fboxes"] = tuple(fb)
-            rl.set_shader_value_v(self.glow_shader, loc,
-                                  rl.ffi.new("float[16]", fb),
-                                  rl.ShaderUniformDataType.SHADER_UNIFORM_VEC4,
-                                  MAX_BOXES)
-        if smoke_cast is not None:
-            g("u_smoke_grid", *(float(x) for x in smoke_cast[1]))
-            g("u_smoke_cast", *(float(x) for x in smoke_cast[2]))
-            g("u_smoke_cast2", *(float(x) for x in smoke_cast[3]))
+        # The frame's STATIC uniforms (the same for every stage, kept by the
+        # program) only when their key changed; the noise clock once per
+        # frame. (CPU budget: ~20 uniform checks per stage cost ~40 us.)
+        sc = tuple(smoke_cast[1:]) if smoke_cast is not None else None
+        skey = (law, bool(flame_on), tuple(glow_through), sc, d, s,
+                tuple(self.region.boxes), self.w, self.h, self._lut_key)
+        if skey != self._gstatic_key:
+            self._gstatic_key = skey
+            g("u_grid", float(self.w), float(self.h))
+            g("u_m", float(s.m))
+            g("u_flame_on", int(bool(flame_on)))
+            g("u_glow_through", float(glow_through[0]), float(glow_through[1]))
+            g("u_lut_k", self.ramp.kelvin_floor, self.ramp.kelvin_ceil)
+            g("u_lut_n", float(LUT_SIZE))
+            g("u_emission", int(EMISSION_LAWS[law]))
+            g("u_law", d.r0, d.r1, d.kappa, d.e_min)
+            g("u_noise_a", s.edge_noise_amp, s.edge_noise_tiles,
+              s.edge_streak_s, s.edge_speed_cap)
+            g("u_box_fade", float(BOX_FADE_TILES), float(BOX_WINDOW_TILES))
+            fb = boxes_uniform(self.region.boxes, 1)
+            loc = self._gloc.get("u_fboxes", -1)
+            if loc >= 0 and self._gcache.get("u_fboxes") != tuple(fb):
+                self._gcache["u_fboxes"] = tuple(fb)
+                rl.set_shader_value_v(
+                    self.glow_shader, loc, rl.ffi.new("float[16]", fb),
+                    rl.ShaderUniformDataType.SHADER_UNIFORM_VEC4, MAX_BOXES)
+            if sc is not None:
+                g("u_smoke_grid", *(float(x) for x in sc[0]))
+                g("u_smoke_cast", *(float(x) for x in sc[1]))
+                g("u_smoke_cast2", *(float(x) for x in sc[2]))
+        if self._gnoise_key != nkey:
+            self._gnoise_key = nkey
+            g("u_noise_ph", ph0, ph1, s.edge_noise_cycle_s, s.edge_contrast)
+            g("u_noise_off", *offs)
+        # bind only what this stage samples (each bind is two rlgl calls)
         fallback = self.src_a_tex.id
-        samplers = (
-            ("u_heat", heat.tex.id if heat is not None else fallback),
-            ("u_below", heat.body_tex.id if heat is not None else fallback),
-            ("u_flame", self.flame.front_id),
-            ("u_vel", self.vel.front_id),
-            ("u_noise", self.noise_tex.id),
-            ("u_lut", self.lut_tex.id),
-            ("u_smoke_cover", product.id if product is not None else fallback))
+        samplers = []
+        if st == GLOW_STAGES["heat"]:
+            samplers += [("u_heat", heat.tex.id if heat is not None else fallback),
+                         ("u_below", heat.body_tex.id if heat is not None
+                          else fallback)]
+        if st != GLOW_STAGES["flame"]:
+            samplers.append(("u_smoke_cover", product.id if product is not None
+                             else fallback))
+        if flame_on:
+            samplers += [("u_flame", self.flame.front_id),
+                         ("u_vel", self.vel.front_id),
+                         ("u_noise", self.noise_tex.id),
+                         ("u_lut", self.lut_tex.id)]
+        # sampler binds straight through THE ctypes GL loader (rlgl's
+        # rlActiveTextureSlot / rlEnableTexture are exactly these two GL
+        # calls, at ~3x the Python cost; the batch keeps unit 0 its own)
+        gl = self._gl
         for name, tex_id in samplers:
-            rl.rl_active_texture_slot(_GLOW_UNIT[name])
-            rl.rl_enable_texture(tex_id)
+            gl.ActiveTexture(_GL_TEXTURE0 + _GLOW_UNIT[name])
+            gl.BindTexture(_GL_TEXTURE_2D, tex_id)
             g(name, _GLOW_UNIT[name])
-        rl.rl_active_texture_slot(0)
+        gl.ActiveTexture(_GL_TEXTURE0)
         ppx = float(world_px_w) / self.w
         ppy = float(world_px_h) / self.h
         carrier = self.src_a_tex
+        origin = rl.Vector2(0, 0)
         for x0, y0, x1, y1 in rects:
             rl.draw_texture_pro(
                 carrier,
@@ -1328,12 +1369,12 @@ class FireVFXPass:
                              float(y1 - y0)),
                 rl.Rectangle(x0 * ppx, y0 * ppy, (x1 - x0) * ppx,
                              (y1 - y0) * ppy),
-                rl.Vector2(0, 0), 0.0, rl.WHITE)
-        rl.end_shader_mode()
+                origin, 0.0, rl.WHITE)
+        rl.end_shader_mode()                 # flushes the batch: drawn now
         for name, _ in samplers:
-            rl.rl_active_texture_slot(_GLOW_UNIT[name])
-            rl.rl_disable_texture()
-        rl.rl_active_texture_slot(0)
+            gl.ActiveTexture(_GL_TEXTURE0 + _GLOW_UNIT[name])
+            gl.BindTexture(_GL_TEXTURE_2D, 0)
+        gl.ActiveTexture(_GL_TEXTURE0)
         rl.end_blend_mode()
         self.glow_draws_last_frame += len(rects)
         return len(rects)

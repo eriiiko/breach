@@ -96,7 +96,9 @@ Headless flags (no human at the keyboard):
                      tools/gl_timer.py; starved and queued) measured
                      SEPARATELY over N (600) frames at the 60 fps game
                      cadence of the current --level after a 5 s warm-up, plus
-                     the VRAM of its fields. fire_smoke_studio lights itself;
+                     the VRAM of its fields, and (G3 F3) the fire DRAW's
+                     CPU / GPU ms per stage-call sum (shaders/fire_glow.fs)
+                     and the loop + draw totals. fire_smoke_studio lights itself;
                      elsewhere add --perf-ignite "X,Y;X,Y" (the heat-only
                      [payloads.studio_ignite] at each tile).
     --shots [A,B]   graphics G0 P3: render the named LOOK SHOTS of
@@ -1275,6 +1277,30 @@ def _run_fire_vfx_perf(renderer, sim, lights_in, light_sky,
         return n
 
     vfx.simulate = timed_simulate
+    # G3 F3: THE fire draw (shaders/fire_glow.fs, FireVFXPass.draw_glow) --
+    # each stage call timed on the CPU in the starved half (no GPU query:
+    # its two ctypes calls cost ~35 us a stage) and on the GPU, with its own
+    # query, in the queued half (one raylib batch flush per stage, so the
+    # stage's GPU work is inside; the busy fill keeps the GPU behind)
+    draw_fn = vfx.draw_glow
+    draw_timers = {}
+    draw_frame = {"cpu": 0.0, "stages": []}
+
+    def timed_draw(stage, rects, **kw):
+        if not mode["queued"]:
+            t0 = time.perf_counter()
+            n = draw_fn(stage, rects, **kw)
+            draw_frame["cpu"] += (time.perf_counter() - t0) * 1000.0
+            draw_frame["stages"].append(stage)
+            return n
+        t = draw_timers.setdefault(stage, GLTimer())
+        t.begin()
+        n = draw_fn(stage, rects, **kw)
+        t.end()
+        draw_frame["stages"].append(stage)
+        return n
+
+    vfx.draw_glow = timed_draw
     spt = 1.0 / float(CFG.clock.ticks_per_second)
     accum = 0.0
     rows = []
@@ -1290,6 +1316,7 @@ def _run_fire_vfx_perf(renderer, sim, lights_in, light_sky,
             renderer.upload_state(sim.gmap, sim_tick=total_tick,
                                   light_serial=sim.light_serial,
                                   alpha=accum / spt, paused=False)
+            draw_frame["cpu"], draw_frame["stages"] = 0.0, []
             renderer.begin_frame()
             renderer.compose_world(units_marines=sim.marines(),
                                    units_zombies=sim.zombies(),
@@ -1298,14 +1325,21 @@ def _run_fire_vfx_perf(renderer, sim, lights_in, light_sky,
             renderer.blit_world_to_screen()
             renderer.end_frame()
             g = timer.result_ms()
+            g_draw = (sum(draw_timers[st].result_ms()
+                          for st in draw_frame["stages"])
+                      if mode["queued"] else 0.0)
             if i >= PERF_WARMUP_FRAMES:
                 cells = sum((x1 - x0) * (y1 - y0)
                             for x0, y0, x1, y1 in vfx.region.boxes)
                 rows.append((vfx.last_update_ms, vfx.last_simulate_ms, g,
                              vfx.passes_last_frame, vfx.substeps_last_frame,
-                             cells, float(mode["queued"])))
+                             cells, float(mode["queued"]), draw_frame["cpu"],
+                             g_draw, len(draw_frame["stages"])))
     finally:
         vfx.simulate = sim_fn
+        vfx.draw_glow = draw_fn
+        for t in draw_timers.values():
+            t.delete()
         timer.delete()
         busy.unload()
         rl.unload_shader(busy_sh)
@@ -1335,6 +1369,14 @@ def _run_fire_vfx_perf(renderer, sim, lights_in, light_sky,
     print(f"[fire_vfx perf] GPU simulate, starved (GL_TIME_ELAPSED) ms {stat(a, 2)}")
     print(f"[fire_vfx perf] GPU simulate, queued (pure) ms           {stat(q, 2)}")
     sub = max(a[:, 4].mean(), 1e-9)
+    print(f"[fire_vfx perf] DRAW (F3, fire_glow.fs, {a[:, 9].mean():.1f} "
+          f"stages/frame) CPU ms {stat(a, 7)}")
+    print(f"[fire_vfx perf] DRAW GPU ms (queued: pure, the GPU still behind "
+          f"the busy fill) {stat(q, 8)}")
+    tot_cpu = cpu + a[:, 7]
+    print(f"[fire_vfx perf] TOTAL loop + draw: CPU ms mean {tot_cpu.mean():6.3f}"
+          f"  p95 {np.percentile(tot_cpu, 95):6.3f} ; GPU (queued sim + "
+          f"draw) ms mean {(q[:, 2] + q[:, 8]).mean():6.3f}")
     print(f"[fire_vfx perf] per substep: CPU submit {a[:, 1].mean() / sub:.3f} ms, "
           f"GPU starved {a[:, 2].mean() / sub:.4f} ms, GPU queued "
           f"{q[:, 2].mean() / max(q[:, 4].mean(), 1e-9):.4f} ms")
