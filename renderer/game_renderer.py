@@ -1835,13 +1835,14 @@ class GameRenderer:
         # taken by the physics-recorder dump in input_handler.py — F9 is free.)
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F9):
             self.legacy_smoke_on = not self.legacy_smoke_on
-        # F11: the flame VFX debug view (graphics G3 F1) -- off -> sources ->
-        # flame R -> off, each with the active boxes outlined. (F11 was free:
-        # F1-F7 + F9/F10 are here, F8 is the recorder dump.)
+        # F11: the flame VFX debug views (graphics G3 F1/F2) -- off ->
+        # sources -> flame R -> flame T_vfx -> velocity u -> pressure p ->
+        # off, each with the active boxes outlined. (F11 was free: F1-F7 +
+        # F9/F10 are here, F8 is the recorder dump.)
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F11):
+            from .fire_vfx import DEBUG_VIEWS
             mode = self.fire_vfx.cycle_debug_view()
-            print(f"[fire_vfx] debug view -> "
-                  f"{('off', 'sources', 'flame R')[mode]}")
+            print(f"[fire_vfx] debug view -> {DEBUG_VIEWS[mode]}")
         # F10: dirty-Planck speckle A/B (Fire & Heat Beauty B2 P4) — cycles the
         # black-body flame mottle off -> noise -> soot so Erik picks by eye in the
         # studio. (Keymap audited: in-game F1-F7 + F9 are poll_toggles, F8 is the

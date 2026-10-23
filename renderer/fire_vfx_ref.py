@@ -8,13 +8,22 @@ heats, 13.6 vacuum).
 WHAT THIS IS. A float64 reference implementation of the flame layer's loop
 ("Layer B": a render-only 2D fluid per tile column, seen from straight
 above). F1/F2 port it to GLSL ping-pong passes; F2 checks the GL loop against
-this file ONE STAGE AT A TIME (§13.9), so every stage is its own function with
-the same inputs and outputs a shader pass has:
+this file ONE PASS AT A TIME (§13.9), so every stage is its own function with
+the same inputs and outputs a shader has:
 
     advect_velocity -> follow_wind -> confine -> divergence -> jacobi_sweep
     (x n) -> project -> advect_flame -> inject -> decay_cool
 
-and :func:`substep` is nothing but those calls in that order.
+and :func:`substep` is nothing but those calls in that order. F2's GL passes
+are named compositions of these (``renderer/fire_vfx.py`` PASSES: e.g. the
+"flame" pass = advect_flame -> inject -> decay_cool); a test asserts the
+compositions in pass order ARE :func:`substep`, bit for bit.
+
+GPU PRECISION (F2). The shaders never see the absolute game time: the
+puffing is evaluated from phases wrapped at a base time
+(:func:`puff_phases`, :func:`puff_factor_rebased`) and the curl noise from
+per-mode phases wrapped in float64 (:func:`curl_mode_phases`) -- the same
+functions of t, exact after hours of play.
 
 RENDER-ONLY. Reads dequantized read-only copies of sim fields (fire I, the
 game temperature, the TAMED wind, the solid/vacuum masks), writes nothing
@@ -262,13 +271,25 @@ def _clusters(burning: np.ndarray) -> np.ndarray:
 def flame_sources(fire: np.ndarray, t_kelvin: np.ndarray, solid: np.ndarray,
                   flammable: np.ndarray, vacuum: np.ndarray, *,
                   t_amb_k: float, glow_min_k: float, tile_size_m: float,
-                  dials: FireVFXDials = FireVFXDials()) -> FlameSources:
+                  dials: FireVFXDials = FireVFXDials(),
+                  origin: Tuple[int, int] = (0, 0),
+                  map_w: Optional[int] = None) -> FlameSources:
     """THE source law, per tile, pure numpy. All inputs are (h, w) tile
     arrays, read only: ``fire`` = dequantized intensity I, ``t_kelvin`` =
     the tile temperature through the canonical map, ``solid`` /
     ``flammable`` / ``vacuum`` = the GameMap masks (``vacuum`` may carry
     any other "nothing burns or flows here" tiles). ``t_amb_k`` and
     ``glow_min_k`` come from :class:`CanonicalScales` -- never literals.
+
+    CROPPING (F2). The inputs may be a WINDOW of the map whose north-west
+    tile is ``origin = (y0, x0)`` on a map ``map_w`` tiles wide (default: the
+    inputs ARE the map). Cluster keys and ``feeder`` are then MAP linear
+    indices, so a cropped call gives every tile exactly the puffing phase and
+    frequency of the full-map call -- provided the window holds every
+    burning tile's whole cluster and its four neighbours (the caller's
+    contract: crop to the burning tiles' bounding box dilated by >= 1).
+    The cost then scales with the fire, not the map (F1 measured ~2.3 ms per
+    tick full-map on 128 x 256).
     """
     fire = np.asarray(fire, dtype=np.float64)
     tk = np.asarray(t_kelvin, dtype=np.float64)
@@ -282,6 +303,15 @@ def flame_sources(fire: np.ndarray, t_kelvin: np.ndarray, solid: np.ndarray,
     rate = dials.s0 * i_eff
     expansion = dials.q0 * i_eff * np.maximum(tk / t_amb_k - 1.0, 0.0)
 
+    oy, ox = int(origin[0]), int(origin[1])
+    mw = w if map_w is None else int(map_w)
+
+    def to_map(lin):
+        """Window linear index -> map linear index (row-major order kept,
+        so the smallest member of a cluster is the same tile either way)."""
+        lin = np.asarray(lin, dtype=np.int64)
+        return (lin // w + oy) * mw + (lin % w + ox)
+
     # Puffing per cluster (Cetegen & Ahmed): D = equivalent diameter, m.
     lab = _clusters(burning)
     puff_hz = np.zeros((h, w))
@@ -289,7 +319,7 @@ def flame_sources(fire: np.ndarray, t_kelvin: np.ndarray, solid: np.ndarray,
     # per cluster on the burning tiles' own indices (F1: never a full-map
     # mask per cluster -- the cost scales with the fire, not the map)
     by, bx = np.nonzero(lab >= 0)
-    keys = lab[by, bx]
+    keys = to_map(lab[by, bx])
     for key in np.unique(keys):
         sel = keys == key
         d_m = np.sqrt(4.0 * sel.sum() / np.pi) * tile_size_m
@@ -312,7 +342,7 @@ def flame_sources(fire: np.ndarray, t_kelvin: np.ndarray, solid: np.ndarray,
             s[ty, tx] = r
             q[ty, tx] = expansion[fy, fx]
             tsrc[ty, tx] = tk[fy, fx]
-            feeder[ty, tx] = fy * w + fx
+            feeder[ty, tx] = (fy + oy) * mw + (fx + ox)
             out_hz[ty, tx] = puff_hz[fy, fx]
             out_ph[ty, tx] = puff_phase[fy, fx]
         cover[ty, tx] |= bits
@@ -356,6 +386,41 @@ def puff_factor(hz: np.ndarray, phase: np.ndarray, t: float,
     return np.where(hz > 0.0, 1.0 + dials.puff_amp * np.sin(theta), 1.0)
 
 
+def puff_phases(hz: np.ndarray, phase: np.ndarray, t_base: float):
+    """The puffing's three phases at ``t_base``, wrapped to [0, 2 pi) in
+    float64, plus its two wobble rates: ``(theta0, theta1, theta2, g1, g2)``
+    with ``theta0 = 2 pi f t_base + phase``, ``theta1 = 2 pi g1 t_base + 1.7
+    phase``, ``theta2 = 2 pi g2 t_base + 2.9 phase`` (see
+    :func:`puff_factor`). F2's per-tile puff texture carries them, so the
+    GPU evaluates :func:`puff_factor_rebased` at the SMALL ``tau = t -
+    t_base`` -- a float32 ``2 pi f t`` at hours of play would have lost the
+    phase (F1 open item 3)."""
+    hz = np.asarray(hz, dtype=np.float64)
+    phase = np.asarray(phase, dtype=np.float64)
+    u = phase / (2.0 * np.pi)
+    g1 = hz * (0.17 + 0.22 * np.mod(u * 13.0, 1.0))
+    g2 = hz * (0.41 + 0.22 * np.mod(u * 29.0, 1.0))
+    tb = float(t_base)
+    two_pi = 2.0 * np.pi
+    # f * t_base is reduced mod 1 BEFORE the 2 pi
+    th0 = np.mod(two_pi * np.mod(hz * tb, 1.0) + phase, two_pi)
+    th1 = np.mod(two_pi * np.mod(g1 * tb, 1.0) + 1.7 * phase, two_pi)
+    th2 = np.mod(two_pi * np.mod(g2 * tb, 1.0) + 2.9 * phase, two_pi)
+    return th0, th1, th2, g1, g2
+
+
+def puff_factor_rebased(hz, th0, th1, th2, g1, g2, tau, dials: FireVFXDials):
+    """:func:`puff_factor` at ``t = t_base + tau`` from :func:`puff_phases`
+    at ``t_base`` -- the same function, re-anchored (what F2's shaders
+    evaluate)."""
+    two_pi = 2.0 * np.pi
+    theta = (th0 + two_pi * hz * tau
+             + dials.puff_wobble * (np.sin(th1 + two_pi * g1 * tau)
+                                    + np.sin(th2 + two_pi * g2 * tau)))
+    return np.where(np.asarray(hz) > 0.0,
+                    1.0 + dials.puff_amp * np.sin(theta), 1.0)
+
+
 def rasterize_sources(src: FlameSources, m: int, strip_frac: float):
     """Per-tile sources -> per-cell (H, W) arrays (s, q, t_src_k, puff_hz,
     puff_phase): nearest per tile, masked by the ``cover`` rule. F1's shader
@@ -383,11 +448,19 @@ def local_intensity(i_eff: np.ndarray, sigma_tiles: float) -> np.ndarray:
     h, w = i_eff.shape
     r = int(np.ceil(2.0 * sigma_tiles))
     out = np.zeros((h, w))
-    pad = np.pad(i_eff, r)
-    for dy in range(-r, r + 1):
-        for dx in range(-r, r + 1):
-            wgt = np.exp(-(dx * dx + dy * dy) / (2.0 * sigma_tiles ** 2))
-            out = np.maximum(out, wgt * pad[r + dy:r + dy + h, r + dx:r + dx + w])
+    ys, xs = np.nonzero(i_eff > 0.0)
+    if ys.size == 0:
+        return out
+    # scattered from the burning tiles only (F2: the cost scales with the
+    # fire, not the map; the same max as shifting the whole map)
+    dy, dx = np.mgrid[-r:r + 1, -r:r + 1]
+    dy, dx = dy.reshape(-1), dx.reshape(-1)
+    wgt = np.exp(-(dx * dx + dy * dy) / (2.0 * sigma_tiles ** 2))
+    ty = ys[:, None] + dy[None, :]
+    tx = xs[:, None] + dx[None, :]
+    val = i_eff[ys, xs][:, None] * wgt[None, :]
+    ok = (ty >= 0) & (ty < h) & (tx >= 0) & (tx < w)
+    np.maximum.at(out, (ty[ok], tx[ok]), val[ok])
     return out
 
 
@@ -641,6 +714,17 @@ def curl_noise_modes(dials: FireVFXDials):
     return kx, ky, omega, phase, amp
 
 
+def curl_mode_phases(modes, t: float) -> np.ndarray:
+    """Each mode's temporal phase ``(omega t + phase) mod 2 pi`` in float64
+    (the cycle count reduced mod 1 first): F2 uploads these per substep, so
+    the shader's float32 argument stays small however long the game runs
+    (F1 open item 3)."""
+    _, _, om, ph, _ = modes
+    two_pi = 2.0 * np.pi
+    cyc = np.mod(np.asarray(om, dtype=np.float64) / two_pi * float(t), 1.0)
+    return np.mod(two_pi * cyc + np.asarray(ph, dtype=np.float64), two_pi)
+
+
 def curl_noise(h: int, w: int, m: int, t: float, modes) -> np.ndarray:
     """(H, W, 2) divergence-free noise ``(d psi/dy, -d psi/dx)`` (Bridson
     2007) at cell centres, positions in tiles."""
@@ -650,8 +734,9 @@ def curl_noise(h: int, w: int, m: int, t: float, modes) -> np.ndarray:
     yy, xx = np.meshgrid(y, x, indexing="ij")
     cx = np.zeros((h, w))
     cy = np.zeros((h, w))
+    phase_t = curl_mode_phases(modes, t)
     for i in range(len(kx)):
-        c = amp[i] * np.cos(kx[i] * xx + ky[i] * yy + om[i] * t + ph[i])
+        c = amp[i] * np.cos(kx[i] * xx + ky[i] * yy + phase_t[i])
         cx += ky[i] * c
         cy -= kx[i] * c
     return np.stack([cx, cy], axis=-1)

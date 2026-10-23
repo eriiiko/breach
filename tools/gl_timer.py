@@ -8,8 +8,9 @@ rlgl draw calls are asynchronous, so the CPU span of a pass chain says what
 the Python + driver submission costs and nothing about the shaders.
 
 raylib exposes no query objects, so this reaches the GL entry points through
-the current context with ctypes (``wglGetProcAddress``; Windows only, like the
-rest of the toolchain). Dev-only: never imported by the game.
+the current context with ctypes -- the renderer's one loader,
+``renderer.core.GLDirect`` (``wglGetProcAddress``; Windows only, like the rest
+of the toolchain). Dev-only: never imported by the game.
 
     t = GLTimer()
     t.begin(); ...GL work...; t.end()
@@ -27,33 +28,20 @@ GL_QUERY_RESULT = 0x8866
 
 
 class _GL:
-    _inst = None
-
-    def __init__(self):
-        gl = ctypes.WinDLL("opengl32")
-        get = gl.wglGetProcAddress
-        get.restype = ctypes.c_void_p
-        get.argtypes = [ctypes.c_char_p]
-
-        def fn(name, *argtypes):
-            addr = get(name.encode("ascii"))
-            if not addr:
-                raise RuntimeError(f"{name} unavailable (no GL context?)")
-            return ctypes.WINFUNCTYPE(None, *argtypes)(addr)
-
-        u32 = ctypes.c_uint
-        self.gen = fn("glGenQueries", ctypes.c_int, ctypes.POINTER(u32))
-        self.delete = fn("glDeleteQueries", ctypes.c_int, ctypes.POINTER(u32))
-        self.begin = fn("glBeginQuery", u32, u32)
-        self.end = fn("glEndQuery", u32)
-        self.get_u64 = fn("glGetQueryObjectui64v", u32, u32,
-                          ctypes.POINTER(ctypes.c_uint64))
+    """The query entry points, from THE ctypes GL loader
+    (``renderer.core.GLDirect``, graphics G3 F2) -- never a second one."""
 
     @classmethod
-    def get(cls) -> "_GL":
-        if cls._inst is None:
-            cls._inst = _GL()
-        return cls._inst
+    def get(cls):
+        from renderer.core import GLDirect
+        g = GLDirect.get()
+        if not hasattr(g, "gen"):
+            g.gen = g.GenQueries
+            g.delete = g.DeleteQueries
+            g.begin = g.BeginQuery
+            g.end = g.EndQuery
+            g.get_u64 = g.GetQueryObjectui64v
+        return g
 
 
 class GLTimer:

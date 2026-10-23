@@ -1733,22 +1733,27 @@ debug_view = 0              # 0 off; 1 coverage, 2 height, 3 N.L, 4 self-shadow,
 # missing-key fallback (tests/test_fire_vfx.py: every dial must be named here).
 # Render-only: no sim state, no digest, no golden.
 #
-# F1 (substrate) draws NOTHING into the picture yet -- the fields, sources,
-# active region and clock run, and the debug view shows them. enabled = true
-# ships because with nothing drawn it is look-neutral, and it is the only
-# way the substrate is exercised in play; no fire costs zero passes.
+# F1 + F2 (the substrate and the loop) draw NOTHING into the picture yet
+# (F3 draws the flame) -- the loop runs and the debug views show it.
+# enabled = true ships because with nothing drawn it is look-neutral, and it
+# is the only way the loop is exercised in play; no fire costs zero passes.
+# Budget (F2, RTX 3070, fire_smoke_studio at 60 fps): ~0.6 ms GPU, ~1.1 ms
+# CPU per frame for 2 substeps x (5 + n_jacobi) direct-GL passes.
 enabled = true
 m = 8                       # flame cells per tile (M); reallocates on change
-m_u = 8                     # velocity / pressure cells per tile (M_u; laptop 4)
+m_u = 8                     # velocity / pressure cells per tile: MUST equal m
+                            # in G3 (one grid; laptop tier m = m_u = 4)
 margin_tiles = 3            # active region = burning tiles dilated by this
                             # (F0b: the flame R spreads ~3 tiles)
 idle_when_paused = true     # a paused game keeps the flame moving on its frozen
                             # sources, on wall time (never the sim clock);
                             # HUMAN-TEST 1 judges it (design §3.4, §13.3)
-debug_view = 0              # 0 off; 1 the source texture, 2 the flame R the
-                            # passes made -- both with the active boxes (F11
-                            # cycles it live; dev only)
-dt_s = 0.008333333333333333 # fixed substep, s (1/120: a 24 tps tick = 5 substeps)
+debug_view = 0              # 0 off; 1 sources, 2 flame R, 3 flame T_vfx,
+                            # 4 velocity u, 5 pressure p -- each with the
+                            # active boxes (F11 cycles it live; dev only)
+dt_s = 0.008333333333333333 # fixed substep, s (1/120: a 24 tps tick = 5 substeps;
+                            # F2 measured max|u| ~15 tiles/s = CFL ~1 cell per
+                            # substep at m = 8 -- do not raise it)
 # --- sources (design §3.3, §13.2, §13.4) ---
 s0 = 8.0                    # flame density injected per second at I = 1
 q0 = 8.0                    # LOOK DIAL, 1/s: expansion per unit I*(T_src/T_amb-1),

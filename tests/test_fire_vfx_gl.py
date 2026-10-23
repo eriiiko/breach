@@ -1,4 +1,5 @@
-"""G3 F1 gate (pytest) -- the flame VFX substrate's GL checks.
+"""G3 F1/F2 gate (pytest) -- the flame VFX pass's GL checks (substrate, per-pass
+parity with the twin, long-run invariants, region and reload).
 
 Runs ``tests/gl_fire_vfx_check.py`` in an ISOLATED subprocess with a hidden
 raylib window (a GL context never enters the pytest process -- the

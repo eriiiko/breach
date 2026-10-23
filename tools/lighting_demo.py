@@ -91,10 +91,11 @@ Headless flags (no human at the keyboard):
                      develop, then measure N (default 300) rendered frames of
                      the NEW gas-medium path and again with legacy_smoke_on,
                      printing mean/95th-percentile ms/frame for both.
-    --fire-vfx-perf [N]  graphics G3 F1: the FLAME VFX pass chain's CPU ms
+    --fire-vfx-perf [N]  graphics G3 F1/F2: the FLAME VFX loop's CPU ms
                      (update; pass submission) and GPU ms (GL_TIME_ELAPSED,
-                     tools/gl_timer.py) measured SEPARATELY over N (300)
-                     frames of the current --level after a 5 s warm-up, plus
+                     tools/gl_timer.py; starved and queued) measured
+                     SEPARATELY over N (600) frames at the 60 fps game
+                     cadence of the current --level after a 5 s warm-up, plus
                      the VRAM of its fields. fire_smoke_studio lights itself;
                      elsewhere add --perf-ignite "X,Y;X,Y" (the heat-only
                      [payloads.studio_ignite] at each tile).
@@ -1169,24 +1170,37 @@ def _run_perf_bench(renderer, sim, lights_in, light_sky,
 
 
 # ---------------------------------------------------------------------------
-# Graphics G3 F1 -- the FLAME VFX perf pass (design §4, §13.10): CPU and GPU
-# time of the flame pass chain measured SEPARATELY, plus the VRAM of its
-# fields, on the current --level. One tick per frame (= 5 substeps, the shot
-# cadence and the worst frame the 6-substep cap allows short of a catch-up).
+# Graphics G3 F1/F2 -- the FLAME VFX perf pass (design §4, §13.10): CPU and
+# GPU time of the flame pass chain measured SEPARATELY, plus the VRAM of its
+# fields, on the current --level, AT THE GAME'S CADENCE: frames at 60 fps of
+# virtual time, the sim stepping at its tps through main.py's accumulator
+# (alpha passed), so a frame runs the substeps a 60 fps game frame runs
+# (~2.5 at dt 1/120) and the per-tick repack lands on ~40 % of frames.
 # ---------------------------------------------------------------------------
 
 FIRE_VFX_PERF_WARMUP_TICKS = 120   # fire_smoke_studio lights itself at 0.5 s
+FIRE_VFX_PERF_FPS = 60.0
+
+_BUSY_FS = """#version 330
+out vec4 finalColor;
+void main() {
+    vec2 p = gl_FragCoord.xy;
+    float a = 0.0;
+    for (int i = 0; i < 8; ++i) a += sin(p.x * 0.01 + float(i)) * cos(p.y * 0.01);
+    finalColor = vec4(a);
+}
+"""
 
 
 def _parse_fire_vfx_perf() -> Optional[int]:
-    """``--fire-vfx-perf [N]`` -- measure N frames (default 300)."""
+    """``--fire-vfx-perf [N]`` -- measure N frames (default 600)."""
     if "--fire-vfx-perf" not in sys.argv:
         return None
     v = _argv_value("--fire-vfx-perf")
     try:
-        return max(1, int(v)) if v and not v.startswith("--") else 300
+        return max(1, int(v)) if v and not v.startswith("--") else 600
     except ValueError:
-        return 300
+        return 600
 
 
 def _parse_perf_ignite() -> list:
@@ -1224,7 +1238,6 @@ def _run_fire_vfx_perf(renderer, sim, lights_in, light_sky,
 
     timer = GLTimer()
     sim_fn = vfx.simulate
-    gpu = []
     # GL_TIME_ELAPSED spans GPU time between the two query points -- if the
     # GPU drains the chain faster than Python submits it, the span includes
     # the GPU WAITING for the next pass ("starved", what a frame costs the
@@ -1233,13 +1246,19 @@ def _run_fire_vfx_perf(renderer, sim, lights_in, light_sky,
     # before the GPU reaches it and the span is pure execution (shaders + FBO
     # switches). Both are reported.
     busy = rcore.PingPong(2048, 2048, fp32=True)
+    busy_sh = rcore.load_pass_shader(_BUSY_FS)
+    gl = rcore.GLDirect.get()
     mode = {"queued": False}
 
     def _busy_gpu():
-        busy.begin_pass()
-        for _ in range(12):
-            busy.draw_cell_rects([(0, 0, 2048, 2048)])
-        busy.end_pass()
+        with rcore.DirectPasses() as gp:
+            gp.use(busy_sh)
+            gl.Uniform4fv(rl.get_shader_location(busy_sh, "u_boxes"), 4,
+                          gl.floats([0, 0, 2048, 2048] * 4))
+            gl.Uniform2f(rl.get_shader_location(busy_sh, "u_target"),
+                         2048.0, 2048.0)
+            for _ in range(3):
+                busy.direct_pass(gp, 4)
 
     def timed_simulate():
         if mode["queued"]:
@@ -1250,17 +1269,21 @@ def _run_fire_vfx_perf(renderer, sim, lights_in, light_sky,
         return n
 
     vfx.simulate = timed_simulate
+    spt = 1.0 / float(CFG.clock.ticks_per_second)
+    accum = 0.0
     rows = []
-    queued = []
     try:
         for i in range(PERF_WARMUP_FRAMES + 2 * frames):
             mode["queued"] = i >= PERF_WARMUP_FRAMES + frames
-            _lit_step()
+            accum += 1.0 / FIRE_VFX_PERF_FPS
+            while accum >= spt:
+                accum -= spt
+                _lit_step()
             total_tick = monotonic_total_tick(sim.turn_number, ticks_per_round,
                                               sim.tick)
             renderer.upload_state(sim.gmap, sim_tick=total_tick,
                                   light_serial=sim.light_serial,
-                                  alpha=0.0, paused=False)
+                                  alpha=accum / spt, paused=False)
             renderer.begin_frame()
             renderer.compose_world(units_marines=sim.marines(),
                                    units_zombies=sim.zombies(),
@@ -1269,42 +1292,46 @@ def _run_fire_vfx_perf(renderer, sim, lights_in, light_sky,
             renderer.blit_world_to_screen()
             renderer.end_frame()
             g = timer.result_ms()
-            if mode["queued"]:
-                queued.append(g / max(vfx.substeps_last_frame, 1))
-            elif i >= PERF_WARMUP_FRAMES:
+            if i >= PERF_WARMUP_FRAMES:
                 cells = sum((x1 - x0) * (y1 - y0)
                             for x0, y0, x1, y1 in vfx.region.boxes)
                 rows.append((vfx.last_update_ms, vfx.last_simulate_ms, g,
                              vfx.passes_last_frame, vfx.substeps_last_frame,
-                             cells))
-                gpu.append(g)
+                             cells, float(mode["queued"])))
     finally:
         vfx.simulate = sim_fn
         timer.delete()
         busy.unload()
-    a = np.asarray(rows, dtype=np.float64)
-    q = np.asarray(queued, dtype=np.float64)
+        rl.unload_shader(busy_sh)
+    a_all = np.asarray(rows, dtype=np.float64)
+    a = a_all[a_all[:, 6] == 0]          # starved: the game's own timeline
+    q = a_all[a_all[:, 6] == 1]          # queued: pure GPU execution
 
-    def stat(col):
-        return f"mean {a[:, col].mean():6.3f}  p95 {np.percentile(a[:, col], 95):6.3f}"
+    def stat(arr, col):
+        return (f"mean {arr[:, col].mean():6.3f}  p95 "
+                f"{np.percentile(arr[:, col], 95):6.3f}")
 
     burning = int(vfx._pack.burning.sum()) if vfx._pack is not None else 0
-    print(f"[fire_vfx perf] level {sim.gmap.solid.shape[1]}x{sim.gmap.solid.shape[0]} "
-          f"tiles, {frames} frames (+{PERF_WARMUP_FRAMES} warm-up, "
-          f"+{FIRE_VFX_PERF_WARMUP_TICKS} ticks), one tick/frame")
+    cpu = a[:, 0] + a[:, 1]
+    print(f"[fire_vfx perf] level {grid_w}x{grid_h} tiles, {frames} frames x2 "
+          f"at {FIRE_VFX_PERF_FPS:.0f} fps game cadence (+{PERF_WARMUP_FRAMES} "
+          f"warm-up, +{FIRE_VFX_PERF_WARMUP_TICKS} ticks)")
     print(f"[fire_vfx perf] burning tiles {burning}, boxes {vfx.region.boxes}, "
-          f"active tiles mean {a[:, 5].mean():.0f}, m={vfx.settings.m} "
-          f"m_u={vfx.settings.m_u}, fields fp32={vfx.flame.fp32}")
+          f"active tiles mean {a[:, 5].mean():.0f}, m={vfx.settings.m}, "
+          f"n_jacobi={vfx.settings.dials.n_jacobi}, dt_s="
+          f"{vfx.settings.dials.dt_s:.5f}, fields fp32={vfx.flame.fp32}")
     print(f"[fire_vfx perf] passes/frame {a[:, 3].mean():.1f}, "
           f"substeps/frame {a[:, 4].mean():.2f}")
-    print(f"[fire_vfx perf] CPU update (clock+pack+region+upload) ms  {stat(0)}")
-    print(f"[fire_vfx perf] CPU simulate (pass submission) ms        {stat(1)}")
-    print(f"[fire_vfx perf] GPU simulate, starved (GL_TIME_ELAPSED) ms {stat(2)}")
+    print(f"[fire_vfx perf] CPU update (clock+pack+region+upload) ms  {stat(a, 0)}")
+    print(f"[fire_vfx perf] CPU simulate (pass submission) ms        {stat(a, 1)}")
+    print(f"[fire_vfx perf] CPU total ms                             mean "
+          f"{cpu.mean():6.3f}  p95 {np.percentile(cpu, 95):6.3f}")
+    print(f"[fire_vfx perf] GPU simulate, starved (GL_TIME_ELAPSED) ms {stat(a, 2)}")
+    print(f"[fire_vfx perf] GPU simulate, queued (pure) ms           {stat(q, 2)}")
     sub = max(a[:, 4].mean(), 1e-9)
     print(f"[fire_vfx perf] per substep: CPU submit {a[:, 1].mean() / sub:.3f} ms, "
-          f"GPU starved {a[:, 2].mean() / sub:.4f} ms, GPU queued (pure) "
-          f"mean {q.mean():.4f} p95 {np.percentile(q, 95):.4f} ms "
-          f"-> {q.mean() * 2.5:.3f} ms/frame at 60 fps (2.5 substeps)")
+          f"GPU starved {a[:, 2].mean() / sub:.4f} ms, GPU queued "
+          f"{q[:, 2].mean() / max(q[:, 4].mean(), 1e-9):.4f} ms")
     print(f"[fire_vfx perf] VRAM: fields {(vfx.vel.vram_bytes + vfx.flame.vram_bytes) / 2**20:.1f} MiB "
           f"(vel {vfx.vel.width}x{vfx.vel.height}, flame "
           f"{vfx.flame.width}x{vfx.flame.height}, x2 buffers), "
