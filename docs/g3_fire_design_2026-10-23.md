@@ -799,3 +799,46 @@ design above turned out wrong or was decided by a gate.*
 - **Look risk for Erik:** the flame reads as tongues, but at the studio's
   overview zoom the row is an even radial "sunburst" (F2's dynamics, not the
   draw); and the colour after ACES is yellow-orange (as F0b's strips).
+
+## 15. F4a as built (2026-10-23) — embers and heat shimmer
+
+*Implementation record of patch F4a, for HUMAN-TEST 2 (with F4b's flicker).
+Code and the commit messages are the source of truth; this lists only where
+the design above turned out wrong or was decided by a measurement.*
+
+- **The embers vanished under their own fire's soot.** §6.1 put them after
+  the flame and before the units, i.e. under the ceiling soot, and the
+  studio fire's own soot covers the area its sparks fly through: in the
+  first shots no spark showed outside the flame. They keep §6.1's height
+  and get the flame's §13.7 COMPENSATION: a second sprite stage after the
+  ceiling soot adds back `α_ceil·(1 − glow_through_ceiling)` of them
+  (`smokeCoverAt`), so their net occlusion is Erik's 0.2, exactly the
+  flame's.
+- **Cooling had to be slow for a spark to leave its flame.** With a ~1 s
+  e-fold a 1250 K ember reached the 800 K glow floor (where it shows
+  nothing) while still inside the flame's ±3-tile extent. `cool_s = 5`,
+  `kick_speed = 3.5` tiles/s, `drag = 1/s`: a spark is ~1070 K after 1 s,
+  dark by ~3 s, 2–4 tiles out. Sparks born `≤ T_src` keep the flame's
+  colour (deep orange to yellow after ACES); they read as sparks by being
+  points ~10× brighter per pixel than the surface (`brightness`), not
+  hotter.
+- **raylib culls back faces.** The direct-GL sprite quads (built from
+  `gl_VertexID`, like `pass_quad.vs`) drew nothing until wound
+  counter-clockwise after the y-down → NDC flip. The trap is noted in
+  `shaders/particle_sprite.vs`.
+- **The shimmer's cost follows the heat.** The resolve covers the whole
+  world RT (2688² px on the studio), so the term first cost 0.21 ms GPU
+  even for two small fires; it now skips every pixel outside the hot
+  tiles' bbox (+1 tile) before any fetch: 0.05 ms on `fire_smoke_studio`,
+  ~0.21 ms when the whole world is hot (`fire_plume`'s hall).
+- **Config homes.** `[render.embers]` and `[render.shimmer]` are their own
+  sections, not sub-tables of `[render.fire_vfx]` (whose test holds that
+  section to exactly the flame's dials); the shimmer is a resolve term for
+  any hot gas, not only the flame's.
+- **Accepted gap:** the shimmer's noise runs on the flame's VFX clock; with
+  `[render.fire_vfx] enabled = false` that clock stops and the shimmer
+  pattern freezes (still shifted, no longer moving).
+- **Measured (fire_smoke_studio, RTX 3070, 600 frames at 60 fps,
+  `--fire-vfx-perf`):** fire VFX incl. embers CPU 1.38 ms mean (embers
+  0.20 update + 0.14 draw, ~17 alive); flame + embers GPU 0.62 ms (embers
+  0.012); shimmer GPU 0.05 ms, its CPU pack 0.10 ms.
