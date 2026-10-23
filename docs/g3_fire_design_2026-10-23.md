@@ -754,3 +754,48 @@ it, and the change is checked in the prop-sway shots.
 
 F0b must show the sealed room stays bounded, and tongues forming under the
 real wind, before F1 starts.
+
+## 14. F3 as built (2026-10-23) — what the measurements changed
+
+*Implementation record of patch F3 (the look), for HUMAN-TEST 1. Code and
+the commit messages are the source of truth; this lists only where the
+design above turned out wrong or was decided by a gate.*
+
+- **The hue gate failed on the heat layer's linear move → the §13.8
+  fallback ships.** `tools/fire_look_gate.py` (CIELAB, chroma-weighted hue,
+  masks from the shot's own META) on F3's first commit (`2fe0589`, the
+  linear §13.7 order) against `cfcba40`: the heat-only blasts gained
+  +51 % / +62 % / +142 % masked luminance (`explosion_t40/t12/t04`), chroma
+  −28 … +18 %, `explosion_t04` shifted hue +17.5°, and the rim went hard and
+  blocky (bilinear per-tile linear radiance saturates through ACES right up
+  to the tile edge). So the heat layer stays G0's display-space exception,
+  drawn by the one fire shader's "heat" stage through G2's glow-through and
+  under the flame's cover (`glow·(1−ε)`); with the flame off it matches
+  `cfcba40` within the run-to-run noise on every gated shot, and the §13.7
+  compensation gate (flame off, `fire_thin/thick_smoke`) passes at −0.3 % /
+  +0.0 %. The body-glow-before-units / units-above-the-glow change is
+  deferred with it; the FLAME is linear, under the units, with its
+  compensation after the ceiling soot. The exception's retirement is its own
+  patch (start from `2fe0589`).
+- **With the flame on, "chroma within ±4 %" cannot hold on the fss shots:**
+  the old look there is a thin glowing line; the flame fills the burning
+  tiles' region with a saturated body (chroma +450 … +860 %, i.e. the
+  opposite of G0's wash), while the hue stays within 3.1° (A) / 0.4° (B).
+  The gate as written measures the heat layer's move; it is reported, not
+  bent.
+- **§13.4's cover weight was wrong.** `w = smoothstep(glow_min, +100 K)`
+  let 850–950 K tongues darken a lit floor by up to 42 % (GL check). The
+  cover is now the ramp's own intensity capped at 1
+  (`BlackbodyRamp.cover_weight`: 0 at the glow floor, 1 at `kelvin_ref`);
+  measured darkening 0.00 %.
+- **A white-hot flame fills its active box.** At ~60× intensity even faint R
+  saturates, and `fire_thin_smoke` showed the box as a straight white cut.
+  The draw fades the flame toward its box edge (a ragged window + an
+  exponential brightness ceiling, `fire_glow.fs` `edge_fade`); B's faint
+  fringe also needed `e_min` 0.04 → 0.08.
+- **A vs B differ, but modestly** (6.7 % of the flame's RGB on the GL
+  check's row; on `fss_close` A is crisp and opaque, B soft and
+  translucent). Not retuned: it is Erik's call at HUMAN-TEST 1.
+- **Look risk for Erik:** the flame reads as tongues, but at the studio's
+  overview zoom the row is an even radial "sunburst" (F2's dynamics, not the
+  draw); and the colour after ACES is yellow-orange (as F0b's strips).
