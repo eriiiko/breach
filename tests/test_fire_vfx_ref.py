@@ -281,7 +281,7 @@ def test_flame_tiles_flicker_out_of_step(scales):
             lum = st.R * np.where(st.R > d.r_eps, inten, 0.0)
             for x in series:
                 series[x].append(lum[2 * m:5 * m, (x - 1) * m:(x + 2) * m].sum())
-    _run(tick, d, 120 + 5 * 140, each=acc)
+    _run(tick, d, 120 + 5 * 240, each=acc)             # 10 s of ticks
     a, b = (np.asarray(series[x]) for x in (3, 7))
     assert a.std() > 0 and b.std() > 0
     rho = np.corrcoef(a, b)[0, 1]

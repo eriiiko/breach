@@ -134,7 +134,7 @@ class FireVFXDials:
     curl_amp: float = 200.0          # tiles/s^2 of curl-noise forcing at local I = 1
     curl_wavelength_tiles: float = 0.6   # dominant noise wavelength
     curl_rate_hz: float = 1.2       # how fast the noise pattern changes
-    curl_modes: int = 12            # random Fourier modes in the stream function
+    curl_modes: int = 32            # random Fourier modes in the stream function
     i_local_sigma_tiles: float = 1.25    # reach of "local I" around a burning tile
     n_jacobi: int = 20              # sweeps per substep, warm-started
     screen_len_tiles: float = 3.0   # l of the screened solve (§13.1)
@@ -333,13 +333,22 @@ def flame_sources(fire: np.ndarray, t_kelvin: np.ndarray, solid: np.ndarray,
 
 def puff_factor(hz: np.ndarray, phase: np.ndarray, t: float,
                 dials: FireVFXDials) -> np.ndarray:
-    """``1 + a sin(theta)``, theta = 2 pi f t + phase + wobble(t): the pool
-    fire's puffing (Cetegen & Ahmed 1993) with a slow per-cluster phase
-    wobble at an incommensurate rate, so two equal-sized fires drift out of
-    step. Evaluated per substep (cells without a source get 1)."""
+    """``1 + a sin(theta)``: the pool fire's puffing (Cetegen & Ahmed 1993),
+    evaluated per substep (cells without a source get 1).
+
+    ``theta = 2 pi f t + phase + b [sin(2 pi g1 t + 1.7 phase)
+    + sin(2 pi g2 t + 2.9 phase)]``: a phase WOBBLE of amplitude ``b``
+    (``puff_wobble``) at two slow rates ``g1, g2`` that are themselves
+    hashed from the cluster's phase -- each cluster wanders on its own
+    clock, so two equal fires (same f) do not stay in step (§6.3 no-sync).
+    Everything derives from the per-tile ``(f, phase)`` pair, so F1's
+    texture needs no third channel."""
+    u = phase / (2.0 * np.pi)
+    g1 = hz * (0.17 + 0.22 * np.mod(u * 13.0, 1.0))
+    g2 = hz * (0.41 + 0.22 * np.mod(u * 29.0, 1.0))
     theta = (2.0 * np.pi * hz * t + phase
-             + dials.puff_wobble * np.sin(2.0 * np.pi * 0.29 * hz * t
-                                          + 1.7 * phase))
+             + dials.puff_wobble * (np.sin(2.0 * np.pi * g1 * t + 1.7 * phase)
+                                    + np.sin(2.0 * np.pi * g2 * t + 2.9 * phase)))
     return np.where(hz > 0.0, 1.0 + dials.puff_amp * np.sin(theta), 1.0)
 
 
