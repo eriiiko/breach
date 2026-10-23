@@ -39,7 +39,7 @@ from level_loader import (  # noqa: E402
 )
 from level_lib import (MANAGED_FAMILIES, format_wire_lines,  # noqa: E402
                        write_managed_blocks)
-from simulation import Simulation  # noqa: E402
+from simulation import Simulation, gas_fixed  # noqa: E402
 from simulation.entities import door as door_mod  # noqa: E402
 from simulation.entities.serialize import entity_carrier  # noqa: E402
 from simulation.gamemap import GameMap, N_GASES  # noqa: E402
@@ -110,8 +110,31 @@ def _step(sim, n=1):
 # other field is untouched (this is still the dormancy gate for everything
 # BUT the new field's own initial value). (was
 # d256de5eb8094e03877e300e98dbe8a19746ce89df73299922a68bed3d7b993e)
+# G12 GOLDEN REBASE (2026-08-31, fire session #12 Phase 1,
+# docs/fire_g12_one_map_patch_2026-08-31.md). Same mechanism as the P-G3
+# rebase note above: physics=None so no EOS step ever runs, but the
+# level-load `gas_energy` seed folds T_AMB_K (eos_t_amb_k 290 -> 293) and
+# the ambient atmosphere seed folds C = 1/eos_t_amb_k (1/290 -> 1/293), so
+# the ONE-TIME seeded planes' bytes move on this dormant, unstepped-EOS
+# scenario. (was 76ba6dc1c2800eae16f9f98f27abd1646c656e4068773a8150e94465e614cc35)
+# T5b RE-BASELINE (2026-09-20, issue #12, THE FLIP): a PURE SCHEMA move on this
+# scenario. physics=None here, so no solver ever runs and not one of the ten
+# behavioural changes in the T5b re-baseline can reach it -- what moves the
+# bytes is DIGEST_SPEC_VERSION 5 -> 6 alone (+dyn_heat_atten_q, design v3 row
+# 28): the version string is hashed into every per-field digest, and the new
+# plane is present at load. That is the same mechanism the P-G3 and G12 notes
+# above describe. Full enumeration beside GOLDEN_AGGREGATE in
+# tests/_xarch_perfield_digest.py. (was 08c962ec444e301cc86a1c8a28ded651a9db2f41172dcdfb5d0d69c1637f331f)
+# #88 RE-BASELINE (2026-10-20, smoke-unit rescale): a PURE SCHEMA move.
+# physics=None and no smoke here, so neither the trace currency (2^16 -> 2^24) nor the decay
+# rounding reaches it; what moves the bytes is DIGEST_SPEC_VERSION 6 -> 7
+# alone (the currency is a bump trigger, C6): the version string is hashed
+# into every per-field digest. VERIFIED: with only DIGEST_SPEC_VERSION set
+# back to 6 on the same build (8 bits, nearest decay) this test reproduces
+# the previous value exactly. Full rationale beside GOLDEN_AGGREGATE in
+# tests/_xarch_perfield_digest.py, same commit. (was 08c962ec444e301cc86a1c8a28ded651a9db2f41172dcdfb5d0d69c1637f331f)
 DOORTEST_NOPHYS_TRAJ_DIGEST = \
-    "76ba6dc1c2800eae16f9f98f27abd1646c656e4068773a8150e94465e614cc35"
+    "a534f0f20bbcdd24fc63a71a65e1406ed1c16784be30d328612907dc283551a8"
 
 
 def test_dormancy_door_present_wire_free_digest_byte_identical():
@@ -389,7 +412,9 @@ class _FakeGmap:
 def test_accessor_sample_reads_mirror_no_dequantize():
     g = _FakeGmap()
     g.atmosphere[1, 2] = 65536            # 1.0 atm in Q16.16 — returned RAW
-    g.gas[SMOKE][1, 2] = 4242
+    # A Q16 signal of 4242 counts, seeded in the smoke plane's TRACE currency
+    # (#88 A7: the sensor channel converts back to Q16 at _channel_array).
+    g.gas[SMOKE][1, 2] = gas_fixed.trace_from_bulk(4242)
     g.gas[O2][1, 2] = 13107
     g.temperature[3, 3] = 777
     g.fire[0, 0] = 55

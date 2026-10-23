@@ -7,7 +7,7 @@ Public interface:
     renderer = GameRenderer(level_data, breach_physics, cfg, initial_camera=cam)
 
 Each frame:
-    renderer.upload_state(gmap, light_sources=...)
+    renderer.upload_state(gmap, sim_tick=..., light_serial=...)
     renderer.begin_frame()
     renderer.compose_world(units_marines=..., units_zombies=...,
                            orders_per_unit=...)

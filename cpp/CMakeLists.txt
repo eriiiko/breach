@@ -75,15 +75,17 @@ find_package(pybind11 REQUIRED)
 # The physics module
 set(BREACH_SOURCES
     src/atmosphere_solver.cpp
-    src/smoke_dynamics.cpp
     src/fire_simulation.cpp
     src/temperature_solver.cpp
-    src/raycaster.cpp
+    # (raycaster.cpp -- the old render march -- DELETED at ray-engine-v2 P6c;
+    #  the radiation sweep's light channels light the game since P6b.)
     src/water_solver.cpp
     src/bulk_transport.cpp
     src/sky_exchange.cpp
     src/eos_solver.cpp
     src/combustion.cpp
+    src/emissive_table.cpp   # ray-engine-v2 P1: the E° bake, out of line (strict)
+    src/radiation_sweep.cpp  # ray-engine-v2 P1: the radiation sweep (integer)
     src/physics_engine.cpp
     src/bindings.cpp
 )
@@ -92,9 +94,13 @@ if(BREACH_CUDA)
         src/cuda_hello.cu          # S0 hello-world kernel
         src/cuda_spike.cu          # S8a residency spike (raw device pointer in)
         src/cuda_temperature.cu    # S1 temperature solver
-        src/cuda_raycaster.cu      # S2 raycaster march (heat bit-identical)
+        # (S2 cuda_raycaster.cu DELETED at ray-engine-v2 P4 -- its heat march
+        #  died with cast_fire_heat at T6; cuda_radiation_sweep.cu below is
+        #  the radiative transport's GPU path now.)
         src/cuda_water.cu          # S3 water solver (pipe model, bit-identical)
-        src/cuda_smoke.cu          # S4a smoke solver (diffusion + SL advection)
+        # (S4a cuda_smoke.cu DELETED at smoke transport v2 P2b, #12 -- the trace
+        #  planes ride the bulk flux in cuda_bulk_transport.cu, which also holds
+        #  the resident trace tail.)
         src/cuda_fire.cu           # S6 fire solver (logistic + plume + smoke scatter + burn)
         src/cuda_sl_advection.cu   # EOS P6.2 fused 3-field SL advection (u self + gas T)
         src/cuda_bulk_transport.cu # EOS P6.1 bulk donor-cell flux (water K3-K8 pattern)
@@ -102,7 +108,12 @@ if(BREACH_CUDA)
         src/cuda_mg_solve.cu       # EOS P6.3 multigrid pressure solve (RB-GS + fused tail)
         src/cuda_eos_step.cu       # EOS P6.5 chained full-eos.step dispatch (the big flip)
         src/cuda_eos_resident.cu   # S8a Path A: fully device-resident EOS tick + device MG build
-        src/cuda_combustion.cu)    # EOS P6.9b two-gather combustion (closes P6)
+        src/cuda_combustion.cu     # EOS P6.9b two-gather combustion (closes P6)
+        # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
+        # pure integer; it takes the target-wide determinism device flags
+        # below (--fmad=false, no fast math, the strict host floor) like
+        # every other .cu, which is all an integer kernel needs.
+        src/cuda_radiation_sweep.cu)
     # S5 cuda_wave.cu / S7 cuda_atmosphere.cu RETIRED in EOS P6.0 — their CPU
     # solvers (wave_substep / diffuse_solve) were replaced by the compressible
     # EOS solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
@@ -145,15 +156,9 @@ endif()
 # here for consistency). The wave_solver.cpp and the pure-glue bindings.cpp are
 # NOT sim state and keep the global /fp:fast for speed.
 #
-# raycaster.cpp WAS in that render-only /fp:fast set, but the pure-density
-# redesign (engine/08, CUDA-S2) makes its directional march deposit `heat` — a
-# Q16.16 SYNCED gameplay field (feeds temperature -> unit damage). For the CUDA
-# heat bit-identity gate (CPU reference must match the GPU's --fmad=false /fp:strict
-# device math) the CPU heat path needs the SAME determinism floor: no FMA
-# contraction, no reordering. So raycaster.cpp moves onto /fp:strict here. The
-# render channels (light_rgb/dir/smoke_glow) ride along — they are float and a
-# sub-ULP shift is cosmetically irrelevant (feel-gated). The CPU render-cast loses
-# some fast-math speed, but the raycaster's perf answer is the GPU port itself.
+# raycaster.cpp WAS on this list (from CUDA-S2, when its march deposited the
+# synced `heat` field) until ray-engine-v2 P6c deleted the file with the old
+# render march; its radiative job is the radiation sweep's below.
 #
 # These are PER-SOURCE COMPILE_OPTIONS, which CMake appends AFTER the global
 # /fp:fast from add_compile_options() above; MSVC honours the LAST /fp: switch on
@@ -175,7 +180,6 @@ endif()
 # "/fp:strict" there. Verified by digest: goldens unmoved (A3 gate).
 set_source_files_properties(
     src/atmosphere_solver.cpp
-    src/smoke_dynamics.cpp
     src/fire_simulation.cpp
     src/water_solver.cpp
     src/bulk_transport.cpp
@@ -184,7 +188,13 @@ set_source_files_properties(
     src/combustion.cpp
     src/temperature_solver.cpp
     src/physics_engine.cpp
-    src/raycaster.cpp
+    # Ray-engine-v2 P1 (design v3 §8.1): the sweep TU (pure integer, pinned
+    # 0/0/0 on the ratchet) and the E° bake TU — the bake's `k4 * scale + 0.5`
+    # is a multiply feeding an add that /fp:fast may contract (critique 3
+    # §5a); a header-inline bake would have compiled under bindings.cpp's
+    # /fp:fast, so the body is out of line here on the floor.
+    src/emissive_table.cpp
+    src/radiation_sweep.cpp
     PROPERTIES COMPILE_OPTIONS "${BREACH_FP_STRICT}")
 
 target_include_directories(breach_physics PRIVATE src)

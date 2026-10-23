@@ -512,9 +512,9 @@ TUNE = {
     #    H_bed = H_BED_M * 2^H_BED_SHIFT: 2.023e5 -> 2.900e5) and the gate wall. --
     "physics.combustion.H_BED_M": 18125.0,   # P-F1b: 25290 -> 18125 (mantissa)
     "physics.combustion.H_BED_SHIFT": 4,     # P-F1b: 3 -> 4
-    "T_emit_gate": 310.0,    # P-F1b: 180 -> 310 — who CASTS radiation (the gate wall;
-                             # at 180 a receiver became an emitter too early and its
-                             # ceiling collapsed to E_s/15 — spread stalled)
+    # T6 (issue #12): "T_emit_gate" row dropped -- the old cast's warm-emitter
+    # gate is deleted with the cast (config.toml no longer carries the key,
+    # and this dict is applied by name -- a stale row would raise).
 
     # -- ANCHORED — verify, don't tune (see §9.3 for the paper trail) --
     "physics.combustion.burn_rate": 0.02,     # Huggett 1980 — THE O2-draw dial
@@ -714,7 +714,7 @@ def scorecard(m):
         from fire_tune_plot import kelvin_map   # (tools/ is sys.path[0])
         amb, slope = kelvin_map()
     except Exception:
-        amb, slope = 293.0, 3.0  # [physics.temperature_scale] defaults
+        amb, slope = 293.0, 1.0  # [physics.temperature_scale] defaults (G12)
     print(f"{'flame plateau T (game)':<26}{m['flame_T']:>16.0f}   "
           f"{T['flameT_lo']:.0f}-{T['flameT_hi']:.0f}  "
           f"(= {amb+slope*T['flameT_lo']:.0f}-{amb+slope*T['flameT_hi']:.0f} K)  "

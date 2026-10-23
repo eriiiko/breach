@@ -1,26 +1,29 @@
-"""EOS P6.7 gate (pytest) — the GPU trace-smoke advection bit-identity proof.
+"""Smoke transport v2 (#12) V6 gate (pytest): both GPU paths -- the chained GPU
+EOS (V6-chained, P2a) and the device-RESIDENT tick (V6-resident, P2b) -- carry
+the trace planes exactly as the CPU does.
 
-The P6.7 per-kernel P6 digest gate (docs/eos_p6_gpu_alignment_review.md §4, P6.7
-row: trace-smoke re-port at the new once-per-tick cadence; resolves the P3
-``physics_engine.cpp`` cadence assert). Gated by
-``cuda_available(kernel="trace_smoke")`` — the P6.0 pending-set contract: this
-test SKIPS without a CUDA build / runtime, and RUNS (never pinned-skips) now that
-P6.7 has removed the "trace_smoke" key from ``EOS_P6_PENDING_KERNELS``.
+SKIPS cleanly without a CUDA build / device. When the GPU build is present, runs
+``cuda_trace_smoke_check`` in an isolated GPU subprocess (cuda_harness): three
+real-Simulation scenarios (a sealed blast with an air-less pocket, a breach to
+space with a stranded deposit, a crate wall in a blast), each run on two
+independently built worlds -- CPU vs the chained GPU orchestration (PART 1),
+then CPU vs the resident tick with the resident trace tail (PART 3) --
+asserting per-tick bit-identity of every gas plane (bulk AND trace), the gas
+energy, wind, temperature, pressure, and every trace book (vent in
+``boundary_flux()``'s trace slots, wipe, sink, decay; the EOS bulk-flux digest on
+the chained leg); plus the CPU-path golden (PART 2). A non-zero exit or a
+missing PASS marker fails the test.
 
-When it runs, it executes the trace-smoke check in an isolated GPU subprocess
-(cuda_harness): the isolated all-branch GPU-vs-CPU synthetic A/B (the diffusion
-Laplacian + wind^2 fold + the INTEGER semi-Lagrangian back-trace with NEGATIVE-
-displacement + DDA wall-clip + WSUM-near-floor renorm, plus 1xN/Nx1, all-solid,
-all-vacuum, near-empty edge configs) AND the 120-tick blast+venting multi-room
-REAL-engine trajectory (CPU smoke backend vs GPU smoke backend, per-tick byte-
-compare on every gas plane + wind + T) AND the CPU-path golden. A non-zero exit
-or a missing PASS marker fails the test.
+PROPERTY: GPU-int == CPU-int on the trace law (bulk_transport stages 3b/3c +
+trace_tail, and their device twins in cuda_bulk_transport.cu). BREAKS IF: a
+device stage-3b/3c or tail arithmetic, face order or participation predicate
+differs from the CPU's; stage 3b/3c move across stage 4's d_nb
+re-accumulation; the trace D2H lands after digest_bulk_flux; a trace counter is
+not reset per tick; the resident tail is dropped, reordered, or books onto the
+wrong channel.
 
-THE RE-DERIVATION FINDING: the EOS refactor changed only the trace CADENCE (once
-per tick on the corrected wind, not n_smoke-substepped); SmokeDynamics::step's
-per-pass arithmetic is unchanged, so cuda_smoke.cu's smoke_step is bit-identical
-at the new cadence — P6.7 wires the dispatch and re-proves it. This is the
-trace-smoke path's cross-GPU determinism gate: GPU-int == CPU-int.
+(This file once gated the per-call GPU semi-Lagrangian smoke step of P6.7; that
+step and its law are gone -- smoke transport v2, #12.)
 """
 from __future__ import annotations
 
@@ -41,6 +44,6 @@ def test_trace_smoke_bit_identity():
     )
     out = proc.stdout + "\n" + proc.stderr
     assert "TRACE_SMOKE_RESULT: PASS" in out, (
-        f"EOS P6.7 trace-smoke did not pass.\nreturncode={proc.returncode}\n{out}"
+        f"V6-chained trace transport did not pass.\nreturncode={proc.returncode}\n{out}"
     )
     assert proc.returncode == 0, f"subprocess exit {proc.returncode}\n{out}"

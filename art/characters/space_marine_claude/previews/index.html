@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Space marine — scripted Blender model (Claude)</title>
+<style>
+  :root { color-scheme: dark; --bg: #1c1e22; --panel: #26292f; --ink: #e6e3dc; --dim: #9aa0a8; --line: #3a3e46; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, "Segoe UI", sans-serif; }
+  main { max-width: 1500px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 36px 0 10px; padding-top: 14px; border-top: 1px solid var(--line); }
+  p { color: var(--dim); margin: 4px 0 12px; max-width: 80ch; }
+  figure { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  figure img { display: block; width: 100%; height: auto; }
+  figcaption { padding: 8px 12px; color: var(--dim); font-size: 13px; }
+  .stack { display: grid; gap: 14px; }
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  code { background: var(--panel); padding: 1px 5px; border-radius: 3px; font-size: 13px; }
+  table { border-collapse: collapse; font-size: 14px; }
+  td, th { padding: 4px 14px 4px 0; text-align: left; }
+  th { color: var(--dim); font-weight: 500; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Space marine — scripted Blender model</h1>
+  <p>Built from Python alone (<code>scripts/build.py</code>, Blender 4.5.10 LTS, Cycles). No sculpting, no downloaded
+     assets. Every image below is a render of the saved <code>source/space_marine.blend</code>.</p>
+
+  <h2>Turnaround: artwork vs model</h2>
+  <p>The model is re-shot with orthographic cameras in the reference sheet's own framing, so the two can be read row for row.</p>
+  <div class="stack">
+    <figure><img src="../../Space%20Marine%20Turnaround%20Sheet.png" alt="Reference turnaround sheet"><figcaption>Reference artwork (Erik)</figcaption></figure>
+    <figure><img src="sheet.png" alt="Model turnaround"><figcaption>Model: front, side, back</figcaption></figure>
+    <figure><img src="sheet_overlay.png" alt="Silhouette overlay"><figcaption>Silhouette overlay. Grey: both agree. Red: artwork only (mostly its floor shadow, and the taller backpack of its side view). Blue: model only.</figcaption></figure>
+  </div>
+  <table>
+    <tr><th>View</th><th>Silhouette IoU</th></tr>
+    <tr><td>Front</td><td>0.923</td></tr>
+    <tr><td>Side</td><td>0.937</td></tr>
+    <tr><td>Back</td><td>0.922</td></tr>
+  </table>
+
+  <h2>Studio views</h2>
+  <div class="grid">
+    <figure><img src="hero.jpg" alt="Three-quarter front"><figcaption>Three-quarter front</figcaption></figure>
+    <figure><img src="hero_back.jpg" alt="Three-quarter back"><figcaption>Three-quarter back</figcaption></figure>
+    <figure><img src="closeup.jpg" alt="Helmet and chest"><figcaption>Helmet, collar, chest</figcaption></figure>
+    <figure><img src="closeup_back.jpg" alt="Backpack and helmet rear"><figcaption>Backpack, helmet rear</figcaption></figure>
+    <figure><img src="legs.jpg" alt="Legs and boots"><figcaption>Trousers, knee pads, boots, gloves</figcaption></figure>
+    <figure><img src="elevated.jpg" alt="Elevated view"><figcaption>Elevated (tilted game-camera angle)</figcaption></figure>
+    <figure><img src="top.jpg" alt="Top-down view"><figcaption>Straight top-down (current game camera)</figcaption></figure>
+  </div>
+
+  <h2>What this is not yet</h2>
+  <p>A high-resolution source model: 106 separate parts, about 0.69 M source / 1.64 M evaluated triangles. No UVs, no rig,
+     no skin weights, no export. Materials are procedural Cycles node graphs. See <code>../PROVENANCE.md</code>.</p>
+</main>
+</body>
+</html>

@@ -11,7 +11,7 @@ S-step gates): it captures one trajectory with the Python ``stamp_units`` and on
 with the C++ ``stamp_units`` on the SAME seed + the SAME deterministic unit
 driver, and asserts per-FIELD per-CELL equality (0-ULP) over the whole trajectory
 — for ``obstacles`` / ``dyn_permeability`` / ``dyn_wave_absorb`` /
-``dyn_light_atten`` AND every downstream field (the ``dyn_*`` fields feed the
+``dyn_heat_atten_q`` / ``dyn_light_atten_q`` AND every downstream field (the ``dyn_*`` fields feed the
 solvers, so a stamp slip shows up everywhere).
 
 CRUCIALLY the scenario has units whose footprints MOVE and DIE tick-to-tick (a
@@ -37,6 +37,7 @@ import pytest
 import breach_physics as bp
 from level_loader import LevelData
 from simulation import Simulation
+from simulation import fire_fixed, gas_fixed, water_fixed, wave_fixed
 from simulation.unit import Unit
 
 from field_ab_harness import SIM_FIELDS, diff_trajectories
@@ -66,14 +67,40 @@ def _make_sim() -> Simulation:
                      enable_recorder=False)
     g = sim.gmap
     interior = (~g.solid) & (~g.is_vacuum)
-    g.smoke[interior] = 0.6
-    g.fire[10, 10] = 0.8
-    g.fire[10, 11] = 0.5
-    g.water_depth[12, 12] = 0.3
-    g.water_depth[12, 13] = 0.3
-    g.wave_source[5, 5] = 8.0
-    sim.add_unit(Unit("M1", x=4, y=4, team=0))
-    sim.add_unit(Unit("M2", x=14, y=14, team=0))
+    # These fields are all int32 Q16.16, so a bare float assignment TRUNCATES
+    # to 0 — every seed here was silently landing on an empty map (found in the
+    # 2026-09-12 fixture sweep; unrelated to R3, just the same class of fixture
+    # that quietly stopped meaning what it said). The A/B property under test is
+    # unit stamping, which these fields only decorate, so the comparison stayed
+    # valid — but it was comparing two blank scenes. Quantize properly.
+    g.smoke[interior] = gas_fixed.quantize_trace_scalar(0.6)
+    g.fire[10, 10] = fire_fixed.quantize_scalar(0.8)
+    g.fire[10, 11] = fire_fixed.quantize_scalar(0.5)
+    g.water_depth[12, 12] = water_fixed.quantize_scalar(0.3)
+    g.water_depth[12, 13] = water_fixed.quantize_scalar(0.3)
+    g.wave_source[5, 5] = wave_fixed.quantize_scalar(8.0)
+    m1 = Unit("M1", x=4, y=4, team=0)
+    m2 = Unit("M2", x=14, y=14, team=0)
+    # Ray-engine-v2 P1: one marine keeps the default heat extinction (1.0, an
+    # opaque body), the other declares a partial one — so the fourth stamp
+    # output exercises BOTH the quantize-at-the-boundary and the MAX (a 0.5
+    # body over air stamps 32768; over a wall it must not lower the wall's ONE).
+    m2.heat_atten = 0.5
+    # Ray-engine-v2 P6a: M2 also declares a TINTED light extinction, so the
+    # fifth stamp output's per-channel MAX sees a partial triple as well as the
+    # default opaque one (and the float stamp beside it the same triple).
+    m2.light_atten = (0.25, 0.5, 1.0)
+    # ... and a GLASS tile under M2's early path (its footprint covers (5, 15)
+    # at ticks 1-3): a PARTIAL body over a PARTIAL material is the one place a
+    # MAX stamp and a (capped) SUM part -- light 0.1 vs M2's tint, heat 0.3 vs
+    # M2's 0.5 -- so the 0-ULP match below can see a stamp that sums. Over air
+    # the two coincide (validated: a summing C++ light stamp passed the old
+    # air-only scenario). Sealed through the topology seam, never a bare
+    # `material[...] =` write.
+    from simulation.materials import MAT_GLASS
+    g.seal_tiles([(5, 15)], MAT_GLASS)
+    sim.add_unit(m1)
+    sim.add_unit(m2)
     g.destroy_wall(10, 0)            # hull breach -> vacuum (venting)
     sim.set_paused(False)
     return sim
@@ -132,16 +159,52 @@ def test_stamp_units_cpp_matches_python_0ulp():
 def test_stamp_changes_tick_to_tick():
     """Guard the gate itself: confirm the scenario's stamp is NON-trivial — the
     dyn_* fields and obstacles must actually change as units move/die, else the
-    0-ULP match above would be vacuous."""
+    0-ULP match above would be vacuous.
+
+    P6a: the scenario also stands M2's PARTIAL tint on a PARTIAL material
+    (glass), the one cell where a per-channel MAX and a capped SUM part. BREAKS
+    IF either stamp path sums instead of taking the MAX (validated: a summing C++
+    light stamp stayed green on the air-only scenario and goes red on this one).
+    """
     traj = _capture(use_cpp_stamp=True)
     # dyn_permeability must differ between an early and a late tick (units moved).
     assert not np.array_equal(traj[2]["dyn_permeability"],
                               traj[18]["dyn_permeability"]), \
         "dyn_permeability never changed — scenario units are not moving"
-    # dyn_light_atten must also vary (the per-channel MAX stamp).
-    assert not np.array_equal(traj[2]["dyn_light_atten"],
-                              traj[18]["dyn_light_atten"]), \
-        "dyn_light_atten never changed — stamp is trivial"
+    # Ray-engine-v2 P1: the fourth output, the Q16 heat-extinction plane, must
+    # vary too, carry BOTH unit values (M1's opaque 65536 and M2's partial
+    # 32768 over air), and never fall below the static material plane (MAX).
+    assert not np.array_equal(traj[2]["dyn_heat_atten_q"],
+                              traj[18]["dyn_heat_atten_q"]), \
+        "dyn_heat_atten_q never changed — the heat stamp is trivial"
+    early = traj[2]["dyn_heat_atten_q"]
+    static = traj[2]["heat_atten_q"]
+    assert np.any(early == 32768) and np.any(early == 65536)
+    assert np.all(early >= static), "a body lowered a material's extinction"
+    assert np.all(early <= 65536)
+    # after M2 dies (tick 20) no 32768 stamp remains
+    late = traj[30]["dyn_heat_atten_q"]
+    assert not np.any(late == 32768)
+    # Ray-engine-v2 P6a: the FIFTH output, the Q16 light twin (h, w, 3), must
+    # vary, carry M2's tint per channel (16384, 32768, 65536 over air) and M1's
+    # opaque triple, never fall below the static plane (MAX), and lose the tint
+    # once M2 is dead -- so the 0-ULP match above covers a real integer stamp.
+    lq_early = traj[2]["dyn_light_atten_q"]
+    lq_static = traj[2]["light_atten_q"]
+    assert lq_early.shape[-1] == 3
+    assert not np.array_equal(lq_early, traj[18]["dyn_light_atten_q"]), \
+        "dyn_light_atten_q never changed — the integer light stamp is trivial"
+    tint = np.all(lq_early == np.array([16384, 32768, 65536]), axis=-1)
+    assert np.any(tint), "M2's tinted light extinction was never stamped"
+    assert np.any(np.all(lq_early == 65536, axis=-1) & ~np.all(lq_static == 65536, axis=-1))
+    assert np.all(lq_early >= lq_static), "a body lowered a material's light extinction"
+    assert not np.any(np.all(traj[30]["dyn_light_atten_q"]
+                             == np.array([16384, 32768, 65536]), axis=-1))
+    # the glass tile under M2 at tick 2: the stamp is the per-channel MAX of
+    # glass's 0.1 (6554) and M2's tint -- never their sum
+    assert list(traj[2]["light_atten_q"][5, 15]) == [6554, 6554, 6554]
+    assert list(traj[2]["dyn_light_atten_q"][5, 15]) == [16384, 32768, 65536]
+    assert int(traj[2]["dyn_heat_atten_q"][5, 15]) == 32768     # max(0.3, 0.5)
 
 
 if __name__ == "__main__":

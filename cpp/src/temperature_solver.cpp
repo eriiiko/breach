@@ -3,10 +3,12 @@
 // contract.
 
 #include "temperature_solver.h"
-#include "raycaster.h"     // HEAT_SCALE, heat_saturating_add (shared Q16.16 domain)
-#include "fixed_point.h"   // S3c: quantize() for the o2_vacuum_thresh integer compare
+#include "fixed_point.h"   // S3c: quantize() for the o2_vacuum_thresh integer compare;
+                           // HEAT_SCALE, heat_saturating_add (the heat-domain kit, P6c)
 #include "gas_energy.h"    // arc #54 P-G1b: THE gas energy seam (design §2.7)
+#include "emissive_table.h" // ray-engine-v2 P1 / P5d: e_ceiling_q, the Pass-1 clamp's ceiling
 #include <algorithm>        // P-E2b: std::clamp on the wide deposit-divide result
+#include <stdexcept>        // #78: the rad_fine_bits door
 
 // Direction order for the per-tile face_shift cache (MUST match the Python
 // bake in GameMap: index 0=N, 1=S, 2=E, 3=W).
@@ -54,13 +56,23 @@ void TemperatureSolver::step(
     float dt,                    // P2: tick's elapsed seconds; <= 0 skips Pass 0
     const bool* is_ambient,      // BC: ambient ring mask (nullptr = space map)
     const bool* thermal_solid,   // thermal-mass axis: medium mask (nullptr -> solid)
-    const int32_t* cool_shift_grid, // cool-shift axis: per-tile ambient-decay
-                                     // shift (nullptr -> the `cool_shift` scalar)
-    const int32_t* rad_net,         // P-R4: SIGNED radiation accumulator
+    // T5b step 7 / R1: `cool_shift_grid` stood here. Pass 3 is deleted and the
+    // parameter with it -- see the Pass-3 tombstone below.
+    const int64_t* rad_net,         // P-R4: SIGNED radiation accumulator (int64 since P3a-1)
     int64_t* gas_energy,            // arc #54 P-G1b: the conserved gas energy
-    int32_t t_amb_q                 // T_AMB_K raw (only read with gas_energy)
+    int32_t t_amb_q,                // T_AMB_K raw (only read with gas_energy)
+    const int64_t* rad_fluence,     // ray-engine-v2 P1: the sweep's Φ (clamp)
+    const int64_t* e_table,         // ray-engine-v2 P1: E° (clamp); both null = no clamp
+    int rad_fine_bits               // #78: the currency rad_net is in (see the header)
 ) const {
     const int n = h * w;
+    // #78: the currency the sweep's planes are in; [0, E_FINE_BITS] is what the
+    // conversions' headroom argument covers (emissive_table.h).
+    if (rad_fine_bits < 0 || rad_fine_bits > E_FINE_BITS) {
+        throw std::invalid_argument(
+            "TemperatureSolver::step: rad_fine_bits outside [0, E_FINE_BITS] -- "
+            "the currency of the sweep's rad_net (#78, emissive_table.h)");
+    }
     const bool ambient_mode = (is_ambient != nullptr);   // BC: dormancy by branch
 
     // --- THERMAL-MEDIUM mask (docs/thermal_mass_axis_design_2026-07-25.md) ---
@@ -114,12 +126,20 @@ void TemperatureSolver::step(
         (c_v > 0.0f) ? (double)c_v : 1.0);
     cap_used_.resize(n);
     cap_real_.resize(n);
+    no_cond_.resize(n);
     for (int i = 0; i < n; ++i) {
         // The SAME N source Pass 1's deposit divides by: the real bulk sum when
         // the engine supplies it, else the P2 atmosphere density proxy.
         const int32_t n_raw = (n_bulk != nullptr) ? n_bulk[i] : atmosphere[i];
         conduction::cell_capacity_q(ts[i], heat_inv_shift[i], n_raw, n_floor_q,
                                     c_v_q, &cap_used_[i], &cap_real_[i]);
+        // T5b / ledger 7b: the VACUUM CONDUCTION MASK. A cell with no gas in
+        // it is not a thermal medium and owns no conduction face — full
+        // rationale (and why it is a mask, not a density law for kappa) in the
+        // header at `no_cond_`. Built here because it reads `cap_real_`, which
+        // this loop has just produced; all three terms are frozen inputs, so
+        // the mask is as pass-invariant as the capacities are.
+        no_cond_[i] = (uint8_t)(!ts[i] && (is_vacuum[i] || cap_real_[i] == 0));
     }
 
     // ---- Pass 0: gas-T zero-at-vacuum + semi-Lagrangian advection (P2, §4) ----
@@ -130,8 +150,9 @@ void TemperatureSolver::step(
     // mask flipped. GUARD: the `!ts[i]` test is load-bearing here — a THERMAL
     // SOLID cell that is ALSO flagged vacuum (the intact hull's own
     // space-exposure flag; gamemap.py: "an intact hull is vacuum AND solid") is
-    // NOT a breach, it is a wall radiating to space via cool_shift_vacuum
-    // (Pass 3) — its T is real solid-thermal-mass state and must survive across
+    // NOT a breach, it is a wall radiating to space through the SWEEP (T5b
+    // step 7 deleted Pass 3's cool_shift_vacuum, which used to say this) —
+    // its T is real solid-thermal-mass state and must survive across
     // ticks. Without this guard every space-facing hull tile would be wiped to
     // 0 before Pass 1 could deposit onto it, which is wrong (and was caught by
     // the sealed-room energy E2E's vacuum-exposed-hull scenario). MEDIUM-TEST
@@ -212,8 +233,19 @@ void TemperatureSolver::step(
     // irrelevant there — Pass 0 already zeroed their T).
     {
         using namespace fixedpoint;
-        const double c_v_safe = (c_v > 0.0f) ? (double)c_v : 1.0;
-        const int64_t recip_cv = make_recip(c_v_safe);            // 1/c_v, once per step
+        // T5b / report_t2.md §10.2: `c_v` has exactly ONE integer representation
+        // in this engine -- `c_v_q`, the Q16.16 MULTIPLIER the conduction
+        // capacity is built from (hoisted to the top of step(), where the
+        // `c_v <= 0` guard already lives). This deposit's divisor is its EXACT
+        // inverse, NOT a second quantization of the same config scalar:
+        // `make_recip(c_v)` and `1/quantize(c_v)` agree only at c_v == 1 and
+        // differ by 0.0724 % at the shipped 0.0076849, which would make a gas
+        // cell's deposit and its conduction face disagree about what one heat
+        // count is worth. Bit-identical at c_v == 1 (65536/65536 is the very
+        // same value), so the change was free at the old dial.
+        // The local `c_v_safe` this line used to read is DELETED with it -- the
+        // guard is `c_v_q`'s now, and one guard is the point.
+        const int64_t recip_cv = make_recip((double)c_v_q / 65536.0);  // 1/c_v_q
         // (`n_floor_q` — the §4.3 deposit floor — is hoisted to the top of
         //  step() at P-E2a and shared with the conduction capacity build.)
         // v2.4 T_MAX_PHYS rail (temperature_solver.h; full rationale in
@@ -239,27 +271,78 @@ void TemperatureSolver::step(
             // clamp at the T_MAX_PHYS rail, so the order is observable there
             // and the CUDA twin pins the identical order.
             //
-            // THERMAL SOLIDS ONLY: only a tile with heat_atten > 0 can ever
-            // accumulate a nonzero rad_net (air neither absorbs nor emits), and
-            // in the shipped material table every such tile is a thermal solid;
-            // the mask test is belt-and-braces so a hypothetical absorbing gas
-            // cell can never take the solid bit-shift path.
+            // THE SOLID BRANCH: a thermal solid converts its rad_net through its
+            // own `>> heat_inv_shift`. Since P5c a GAS cell has a branch of its
+            // own below (its smoke term makes it absorb and emit, design v3
+            // §6.3); the mask keeps the two from ever crossing — a gas cell
+            // never takes the bit-shift path, a solid never the seam.
             if (rad_net != nullptr && ts[i]) {
-                const int32_t rn = rad_net[i];
+                const int64_t rn = rad_net[i];
                 if (rn != 0) {
                     // arc #54 P-G5: booked as the cell's ACTUAL applied ΔT
                     // (post every clamp below) × its real capacity — see the
                     // header block's rationale for why this needs no separate
                     // rail counter.
                     const int32_t t_before_rad = temperature[i];
-                    const int32_t dTr = shr_round0(rn, heat_inv_shift[i]);
-                    // SYMMETRIC saturating add: raycaster.h's
+                    // P3a-1: the int64 twins of the SAME two functions. On
+                    // every int32-range `rn` they return exactly what
+                    // shr_round0/sat_add_q16 returned (gated by
+                    // tests/test_fixed_point_i64_twins.py), which is what makes
+                    // the widening byte-identical; beyond it they are correct
+                    // where the narrow forms could not be.
+                    // M1: SIGNED in the exponent. `heat_inv_shift` may be
+                    // NEGATIVE (a row lighter than one thermal_mass unit), and
+                    // a negative `>>` is UB. On every non-negative exponent
+                    // this returns exactly what shr_round0_i64 returned, so no
+                    // shipped row moves; the negative branch is EXACT (a left
+                    // shift loses nothing where the right shift truncates).
+                    // #78: rn is in the sweep's FINE currency, so the ONE
+                    // conversion is the kit's fine_heat_shr at his — a single
+                    // symmetric shift by his + k, i.e. the landing loses under
+                    // one temperature LSB (the field's own resolution), never a
+                    // whole heat count first (rad_fine_bits == 0: the old line).
+                    const int64_t dTr =
+                        fine_heat_shr(rn, heat_inv_shift[i], rad_fine_bits);
+                    // SYMMETRIC saturating add: the kit's
                     // heat_saturating_add early-returns on delta <= 0 (its
                     // accumulator is contractually non-negative), which would
                     // drop exactly the radiative losses this fold exists to
                     // deliver. sat_add_q16 is the kit's signed twin, built for
                     // temperature for precisely this reason (fixed_point.h).
-                    temperature[i] = sat_add_q16(temperature[i], dTr);
+                    temperature[i] = sat_add_q16_i64(temperature[i], dTr);
+                    // ---- THE MAXIMUM-PRINCIPLE CLAMP (ray-engine-v2 P1,
+                    // design v3 §2.8, in its CORRECT form, row 21) ------------
+                    //   T_new = min(T_after, max(T_before, e_ceiling_q(Φ)))
+                    // It binds only when radiation would RAISE the cell past
+                    // the top of the first E° bucket that out-emits the fluence
+                    // it absorbed (P5d, Erik's ruling of 2026-09-24: one bucket
+                    // of headroom over the black body in equilibrium with it —
+                    // the resolution the emission itself works at; E°⁻¹(Φ), a
+                    // bucket short, pinned every undamped cell below its
+                    // balance and withheld its whole surplus); a cell already
+                    // above that (a burning crate, heated by combustion) keeps
+                    // T_before as its ceiling and may only cool; a cooling step
+                    // is never clipped. Its home
+                    // is HERE — between the saturating add and the rails and
+                    // BEFORE the applied-ΔT booking — so the P-G5 solid ledger
+                    // books the clipped landing with no extra counter. Dormant
+                    // unless both planes are supplied (see the header); the
+                    // engagement count is `rad_clamp_hits`. This is the
+                    // transcription of sweep_ref_q.py::fold_pass1_solid.
+                    if (rad_fluence != nullptr && e_table != nullptr) {
+                        const int32_t t_cap = e_ceiling_q(e_table, rad_fluence[i]);
+                        const int32_t ceiling =
+                            (t_cap > t_before_rad) ? t_cap : t_before_rad;
+                        if (temperature[i] > ceiling) {
+                            // P5c (design v3 §2.8 / §8.4): the energy the clamp
+                            // WITHHOLDS, priced at the cell's real capacity —
+                            // the same capacity the landing below is booked at,
+                            // so landing + drop is the unclamped step exactly.
+                            e_rad_clamp_drop_sum +=
+                                ((int64_t)temperature[i] - ceiling) * cap_real_[i];
+                            temperature[i] = ceiling; ++rad_clamp_hits;
+                        }
+                    }
                     if (temperature[i] > t_max_phys_q) {
                         temperature[i] = t_max_phys_q; ++t_max_phys_hits;
                     }
@@ -298,6 +381,119 @@ void TemperatureSolver::step(
                         ((int64_t)temperature[i] - t_before_rad) * cap_real_[i];
                 }
             }
+            // ---- P5c: THE GAS BRANCH OF THE RADIATION FOLD ----------------
+            // Design v3 §2.8 / §6.3; the transcription of sweep_ref_q.py::
+            // fold_pass1_gas (gate G15), held to it bit for bit by
+            // tests/test_temperature_gas_radiation.py. An ACCOUNTABLE gas cell
+            // whose smoke term made the sweep book a nonzero rad_net takes it
+            // into the conserved field, in order:
+            //   dT       = sign(rn) · deposit_dT_wide_i64(|rn|, recip_N, recip_cv)
+            //   T_before = mirror_q(E, N)            (the STORED energy's mirror)
+            //   T_target = min(sat(T_before + dT), max(T_before, e_ceiling_q(Φ)))
+            //              (P5d's ceiling — the solid branch above has the why)
+            //   dE       = N · (T_target − T_before)
+            //   deposit_railed(dE), e_gas_deposit_sum += dE
+            // * THE CONVERSION is §2.8's STAGED chain — magnitude then sign, so
+            //   +x and −x lose equal magnitude (the shr_round0 symmetry idiom) —
+            //   in this pass's OWN gas currency: N floored at n_floor_q exactly
+            //   as the heat deposit below floors it, the per-cell Newton
+            //   reciprocal, and `recip_cv`, c_v's one exact inverse. It is the
+            //   SAME chain the sweep's Fleck gas arm prices this cell's loss in
+            //   (radiation_sweep.h fleck_L_gas_q, PhysicsEngine::gas_capacity_q),
+            //   so the damping and the landing are one arithmetic.
+            // * NO min(N, N_AMB)/N_AMB factor (design §6.3): the density law
+            //   already lives in a_gas, so rad_net IS the absorbed amount —
+            //   applying the heat deposit's factor as well would debit the
+            //   stream in full and destroy the un-absorbed remainder.
+            // * THE CLAMP IN ITS ENERGY FORM (§2.8): never `temperature[i] =`
+            //   (CLAUDE.md "Gas temperature is a mirror": a bare write moves no
+            //   books and goes VACUOUS). N·(T_target − T_before) lands the
+            //   mirror EXACTLY on T_target, because the mirror is a floor-division
+            //   of E by N. The design's letter, N·(T_target + t_amb) − E, lands on
+            //   the same mirror but also DRAINS the cell's sub-LSB residual E mod
+            //   N (up to N − 1 raw counts) on every clamped tick — the drip class
+            //   arc #54 exists to kill — so this form keeps it: the clamp only
+            //   ever WITHHOLDS part of a radiative gain, dE is never negative on
+            //   a clamped cell. G15 (a) measures both forms.
+            // * THE WITHHELD STEP IS COUNTED (§8.4) in `e_rad_clamp_drop_sum`,
+            //   priced at cap_real_ like the solid branch above: a whole number
+            //   of temperature LSBs times the real capacity, so it is exact.
+            // * Cooling below ambient is not railed here: the once-per-tick
+            //   recovery rails (eos_solver.cpp step 7) own T_MIN, and radiation
+            //   alone cannot drive a cell below ambient (§6.3; gate 14 pins it
+            //   for the Fleck-damped step).
+            // * A cell with rn == 0 is untouched — not even its mirror — so a
+            //   smoke-free scene (a_gas == 0, hence rn == 0, on every gas cell)
+            //   folds bit-identically to the pre-P5c pass.
+            // * NOTHING LEAVES THE BOUNDARY UNCOUNTED (P5c follow-up, design
+            //   §8.4 "bounded AND counted"; sweep_ref_q's module docstring and
+            //   gate G15 (g)). Two exits are neither a landing nor a truncation,
+            //   so §8.4's one-LSB bound does not cover them, and both are counted
+            //   in e_rad_clamp_drop_sum's heat currency (rn in heat counts, ×
+            //   FP_ONE), SIGNED, as COUNTERS ONLY — no landing moves:
+            //   - `e_rad_boundary_export_sum`: rad_net on a gas cell OUTSIDE the
+            //     accountable set (the ambient ring, an open breach). It is never
+            //     landed — the cell's energy is not in the books, and Pass 0 pins
+            //     it to ambient every tick — so it leaves with the boundary: the
+            //     radiative twin of the face flux's vacuum/ring OUTFLOW export.
+            //   - `e_rad_floor_drop_sum`: on an accountable cell whose bulk N is
+            //     below n_floor_q the chain divides by the floor and lands only
+            //     ~N/n_floor of rn; the conversion's whole unlanded remainder,
+            //     rn·FP_ONE − (T_after − T_before)·cap_real, is booked there — the
+            //     radiative twin of Pass 2's e_cond_cap_sum.
+            //   #78: "rn·FP_ONE" is rn in the Q16 heat currency, formed from the
+            //   sweep's fine rn by the kit's ONE helper, fine_heat_shr(rn,
+            //   -FP_SHIFT, rad_fine_bits) = rn << (16 - k) — exact. The chain
+            //   above converts at its final narrow (deposit_dT_wide_i64's
+            //   fine_bits), where the Fleck gas arm converts too.
+            //   Neither is a term of the #54 identity: neither touches gas_energy,
+            //   so a term there would break it by exactly its own amount.
+            // Energy form only: with gas_energy == nullptr (the pre-#54 direct
+            // binding path) a gas cell's rad_net is not folded, as before P5c.
+            if (rad_net != nullptr && e_on && !ts[i] && !acct(i)) {
+                const int64_t rn = rad_net[i];
+                if (rn != 0) {
+                    e_rad_boundary_export_sum +=
+                        fine_heat_shr(rn, -FP_SHIFT, rad_fine_bits);
+                }
+            }
+            if (rad_net != nullptr && e_on && !ts[i] && acct(i)) {
+                const int64_t rn = rad_net[i];
+                if (rn != 0) {
+                    const int64_t nb = n_books(i);                 // the books' N
+                    const int32_t N_raw = (n_bulk != nullptr) ? n_bulk[i] : atmosphere[i];
+                    const bool floored = (N_raw < n_floor_q);      // the chain's floor
+                    const int32_t N_q = floored ? n_floor_q : N_raw;
+                    const int32_t recip_N_q = reciprocal_q16(N_q);
+                    const int64_t mag = deposit_dT_wide_i64(
+                        (rn < 0) ? -rn : rn, recip_N_q, recip_cv, rad_fine_bits);
+                    const int64_t dT = (rn < 0) ? -mag : mag;
+                    const int32_t t_before =
+                        gas_energy::mirror_q(gas_energy[i], nb, t_amb_q);
+                    int32_t t_target = sat_add_q16_i64(t_before, dT);
+                    if (floored) {
+                        e_rad_floor_drop_sum +=
+                            fine_heat_shr(rn, -FP_SHIFT, rad_fine_bits)
+                            - ((int64_t)t_target - (int64_t)t_before) * cap_real_[i];
+                    }
+                    if (rad_fluence != nullptr && e_table != nullptr) {
+                        const int32_t t_cap = e_ceiling_q(e_table, rad_fluence[i]);
+                        const int32_t ceiling =
+                            (t_cap > t_before) ? t_cap : t_before;
+                        if (t_target > ceiling) {
+                            e_rad_clamp_drop_sum +=
+                                ((int64_t)t_target - ceiling) * cap_real_[i];
+                            t_target = ceiling; ++rad_clamp_hits;
+                        }
+                    }
+                    const int64_t dE = nb * ((int64_t)t_target - (int64_t)t_before);
+                    gas_energy::deposit_railed(
+                        gas_energy, temperature, i, dE, nb,
+                        t_amb_q, t_max_phys_q, &e_gas_rail_sum,
+                        &t_max_phys_hits);
+                    e_gas_deposit_sum += dE;
+                }
+            }
             int32_t deposit = heat[i];
             if (deposit <= 0) continue;       // nothing to convert this tick
             // MEDIUM-TEST SITE 5/6: the heat->T convert branch. A thermal
@@ -305,9 +501,21 @@ void TemperatureSolver::step(
             // thermal_mass)); gas takes the N-divided radiative deposit below.
             if (ts[i]) {
                 const int32_t t_before_dep = temperature[i];  // arc #54 P-G5
-                int shift = heat_inv_shift[i];    // log2(thermal_mass), >= 0
-                int32_t gain = deposit >> shift;  // Q16.16 / 2^shift, still Q16.16
-                heat_saturating_add(&temperature[i], gain);
+                // M1: WIDE and SIGNED. `heat_inv_shift` may be NEGATIVE now
+                // (a row lighter than one thermal_mass unit), and that turns
+                // this divide into a MULTIPLY -- which is the one real
+                // overflow risk of the whole change: `deposit << 4` leaves
+                // int32 above 2^27, and `deposit` is a Q16.16 heat
+                // accumulator that routinely carries far more than that.
+                // Route through int64 and let the kit's saturating adder be
+                // the only narrowing, exactly as the radiation fold above
+                // does. `deposit > 0` here, so the round-toward-zero branch is
+                // a plain `>>` and every non-negative exponent is bit-identical
+                // to the shipped `deposit >> shift`.
+                const int shift = heat_inv_shift[i];   // log2(thermal_mass)
+                const int64_t gain =
+                    shr_round0_signed_i64((int64_t)deposit, shift);
+                temperature[i] = sat_add_q16_i64(temperature[i], (gain > 0) ? gain : 0);
                 if (temperature[i] > t_max_phys_q) {
                     temperature[i] = t_max_phys_q; ++t_max_phys_hits;
                 }
@@ -436,6 +644,14 @@ void TemperatureSolver::step(
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             const int i = y * w + x;
+            // T5b / ledger 7b: a vacuum cell owns no face at all (header:
+            // `no_cond_`). Applied per CELL rather than per face, from both
+            // ends, so it is symmetric by construction and can never produce a
+            // one-sided face.
+            if (no_cond_[i]) {
+                temp_new[i] = temperature[i];
+                continue;
+            }
             const int32_t* fs = &face_shift[i * 4];  // [N,S,E,W] for this tile
             const int64_t ti = (int64_t)temperature[i];
             const int64_t cap_i = cap_used_[i];
@@ -449,6 +665,7 @@ void TemperatureSolver::step(
                 // guard anyway for robustness against a mis-baked cache.
                 if (ny < 0 || ny >= h || nx < 0 || nx >= w) continue;
                 const int j = ny * w + nx;
+                if (no_cond_[j]) continue;           // the other end of the mask
                 // The NEIGHBOUR's facing entry, read so the face is skipped and
                 // rated identically from both ends BY CONSTRUCTION. The shipped
                 // harmonic-mean table is symmetric, so `max` picks the common
@@ -465,15 +682,40 @@ void TemperatureSolver::step(
                 continue;
             }
             // ---- arc #54 P-G1b (design §2.7 row 3): THE ENDPOINT DIVIDE IS
-            // DELETED FOR GAS. An accountable gas cell's four-face sum IS its
-            // energy change — `de` is already in the books' currency (a face
-            // quantum is |ΔT|·C with C = N·c_v, and the books' capacity IS N)
-            // — so it goes to the seam with no Q16 truncation of ΔT, which is
-            // what the deleted divide cost. This also retires this cell's
-            // `e_cond_trunc_sum` contribution: with no divide there is no
-            // truncation residual to count. The SOLIDS side (and any
-            // non-accountable gas cell — ring, vacuum) keeps the T-form law
-            // below, unchanged (D2).
+            // DELETED FOR GAS. An accountable gas cell's four-face sum goes to
+            // the seam with no Q16 truncation of ΔT, which is what the deleted
+            // divide cost. This also retires this cell's `e_cond_trunc_sum`
+            // contribution: with no divide there is no truncation residual to
+            // count. The SOLIDS side (and any non-accountable gas cell — ring,
+            // vacuum) keeps the T-form law below, unchanged (D2).
+            //
+            // ---- T5a: `de` IS NOT ALREADY IN THE BOOKS' CURRENCY -----------
+            // What stood here until 2026-09-19 claimed it was: *"`de` is
+            // already in the books' currency (a face quantum is |ΔT|·C with
+            // C = N·c_v, and the books' capacity IS N)"*. Read it twice — it
+            // names the two capacities in one breath and then equates them.
+            // A face quantum is priced at `C = N·c_v`; the books' capacity is
+            // `N`. They differ by exactly `c_v`, so booking `de` unconverted
+            // gave the gas `c_v ×` the energy the faces moved.
+            //
+            // At the shipped `c_v = 1` the two coincide BY ACCIDENT, which is
+            // why this survived arc #54, its closure identity and every golden.
+            // T2 §3.1 measured the ratio on a live sim as `c_v` to eight
+            // figures: at the derived physical `c_v = 0.0076849`, **99.23 % of
+            // every joule conducted into air is destroyed at the face**. The
+            // #54 closure identity closes 0/40 ticks bad in BOTH cases (T2
+            // §5.1) — it books what was deposited, not what should have been,
+            // so it is structurally blind to this and must never be cited as
+            // evidence that the currency is sound.
+            //
+            // Two consequences worth keeping in the file, because they decide
+            // the shape of the flip: (1) turning `c_v` alone would NOT fix the
+            // conduction path — its gas ΔT was `de/N`, which has no `c_v` in
+            // it — so a config-only flip ships an engine half-corrected in the
+            // worst way, deposit path at the real capacity and conduction path
+            // still at the convention; (2) the conversion below is provably
+            // bit-identical at `c_v = 1`, which is why it lands as its own
+            // patch, gated by unmoved goldens, BEFORE the dial moves.
             //
             // THE CAPACITY FLOOR STILL APPLIES, and it is load-bearing.
             // `cap_used` is `max(N, n_floor_heat)·c_v`; where that floor binds
@@ -492,17 +734,46 @@ void TemperatureSolver::step(
             // (`e_cond_cap_sum`: "the cell moved ΔT through cap_used while
             // really owning cap_real").
             //
-            // The multiply is int64-safe BECAUSE the floor binds: when it
-            // does, `cap_used == n_floor·c_v` (~655 raw at the shipped dial)
-            // bounds every face's `cmin`, so `|de| <= 4·2^31·655 < 2^43` and
-            // `|de·cap_real| < 2^53`. In the common case the branch is not
-            // taken at all and `de` passes through untouched.
+            // The product is int64-safe because `muldiv_floor_q` divides
+            // FIRST — see its header. The shipped form's `de·cap_real` was
+            // safe only because it ran ONLY when the floor bound; the
+            // conversion below runs on every accountable gas cell, and the
+            // naive `de·N` leaves int64 at N = 2 atm.
             if (e_on && acct(i)) {
-                int64_t de_books = de;
-                if (cap_real_[i] != cap_i && cap_i > 0) {
-                    de_books = fixedpoint::floordiv_q(de * cap_real_[i], cap_i);
-                    e_cond_cap_sum += de - de_books;
-                }
+                // T5a (T2 §4.5, §10.2): the conversion from HEAT COUNTS to the
+                // books' N·T currency, written as the EXACT INVERSE OF THE
+                // CAPACITY THE FACE QUANTUM WAS BUILT FROM. `de` is `ΔT·cap`,
+                // so `N·ΔT` is "divide by the SAME cap, multiply by N" —
+                // self-inverting to the LSB, and `c_v` never appears in it.
+                // That last part is the point: `c_v` has TWO integer
+                // representations in this TU (`c_v_q`, Q16.16, which built the
+                // capacity; `recip_cv`, Q.32, which Pass 1 divides by) and they
+                // agree ONLY at `c_v == 1`. Re-dividing here by the second one
+                // would be permanently off by their disagreement; inverting
+                // `cap` cannot be.
+                const int64_t nb = n_books(i);           // real N, unfloored
+                const int64_t de_books =
+                    conduction::muldiv_floor_q(de, nb, cap_i);        // cap_USED
+                // What this cell WOULD have booked at its real (unfloored,
+                // unclamped) capacity. Their difference is exactly the capacity
+                // floor's — or the ceiling's — contribution, which is what
+                // `e_cond_cap_sum` has always named; it is now denominated in
+                // the BOOKS' currency rather than in heat counts, so it keeps
+                // meaning the same thing once `c_v` stops being 1.
+                //
+                // THE `cap_real == 0` CORNER is `N == 0`: the real books delta
+                // is 0 and the WHOLE of `de` is the floor's fiction. Convert it
+                // through the only capacity left — `c_v` itself, in the SAME
+                // Q16.16 representation the `cap` planes were built from, never
+                // through `recip_cv` (§10.2 again; `recip_mul` would also
+                // narrow `de` to int32 on the way in).
+                const int64_t de_full = (cap_real_[i] > 0)
+                    ? conduction::muldiv_floor_q(de, nb, cap_real_[i])
+                    : conduction::muldiv_floor_q(
+                          de, (int64_t)fixedpoint::FP_ONE,
+                          (c_v_q > 0) ? (int64_t)c_v_q
+                                      : (int64_t)fixedpoint::FP_ONE);
+                e_cond_cap_sum += de_full - de_books;
                 de_gas_[i] = de_books;
                 e_gas_cond_sum += de_books;
                 temp_new[i] = (int32_t)ti;           // mirror refreshed post-swap
@@ -548,114 +819,30 @@ void TemperatureSolver::step(
     // DEBUG probe (temporary): T after Pass 2 (conduction).
     if (dbg_probe_idx >= 0 && dbg_probe_idx < n) dbg_T_post_conduction = temperature[dbg_probe_idx];
 
-    // ---- Pass 3: ambient cooling (proposal §3) ----
-    // The LAST thermal pass (§3.5): runs AFTER conduction so this tick's fresh
-    // deposit is spread across the metal BEFORE any of it is shed, and BEFORE
-    // consumers so thresholds test the net post-loss temperature (the burn-out
-    // mechanism). Temperature stores ΔT above ambient, so T_ambient == 0 and
-    // cooling relaxes toward 0 with no subtraction:  T -= T >> shift.
+    // ---- Pass 3 is DELETED (thermal model v2 R1, T5b step 7) ------------
+    // What stood here was `T -= T >> cool_shift`, a Newtonian relaxation of
+    // every thermal solid toward ambient, with a 4x-faster variant for a
+    // vacuum-facing tile. Its own comment called it what it was: a hand-rolled
+    // stand-in for radiative loss. The sweep computes the real one now
+    // (`rad_net_sweep`, folded in Pass 1, with `k_leak` carrying the
+    // out-of-plane share), so keeping this would count the same physics
+    // TWICE -- and the hand-rolled copy is the one with no ledger, no
+    // geometry and no temperature dependence.
     //
-    // Vacuum-exposure (§3.3): a solid tile sheds 4× faster if ANY in-bounds
-    // 4-neighbour is space-facing — `is_vacuum[n]` OR `atmosphere[n] <
-    // o2_vacuum_thresh`. S3c: atmosphere is Q16.16 int32 now, so the threshold
-    // compare is a pure INTEGER compare against `quantize(o2_vacuum_thresh)` —
-    // this TU's LAST float input is gone (it is fully integer). This reuses the
-    // SAME geometric N,S,E,W gather the
-    // conduction pass walks (the four neighbour cells are already in hand),
-    // independent of the conduction face_shift (a wall facing vacuum has a
-    // NO_FACE conduction face there, but is still exposed for cooling). Ties to
-    // the existing is_vacuum/atmosphere fields — no new field/buffer — so a
-    // freshly-breached, now-space-facing wall flips to the fast shift instantly.
+    // Deleted with it: the `cool_shift` / `cool_shift_vacuum` /
+    // `cool_shift_floor` dials, the per-material `cool_shift` column and its
+    // `cool_shift_grid` plane, and BOTH counters this pass fed --
+    // `e_cool_sum` and `e_thermostat_sum`. The #54 closure identity now
+    // closes with the thermostat TERM REMOVED, not zeroed: there is no
+    // channel left to book. (design v2 R1 / section 7.3; the ambient
+    // thermostat that Erik's 2026-08-30 ruling made a deliberate modelling
+    // boundary was exactly this pass's solid side, and it goes with it.)
     //
-    // Solid tiles only (air is already 0 and skipped, staying bit-exactly 0).
-    // The signed arithmetic right shift is pinned to round toward 0 symmetrically
-    // (`x<0 ? -((-x)>>s) : x>>s`) so it is deterministic / identical
-    // cross-machine. The residual DEAD-BAND is intentional and preserved: the
-    // last (1<<shift)-1 counts above ambient shift to 0 and never decay -> an
-    // exact, jitter-free resting state at ambient (NO "+1 if nonzero" nudge).
-    // Since the shifted magnitude is always <= |T|, a single isolated tile
-    // relaxes toward 0 and never crosses below ambient.
-    // Quantize the o2_vacuum_thresh config dial ONCE per step (round-to-nearest,
-    // the load/boundary cast) — the exposure test is then a Q16.16 integer compare
-    // against the int32 atmosphere field. No per-cell float.
-    const int32_t thresh_q = fixedpoint::quantize((double)o2_vacuum_thresh);
-    // COOL-SHIFT AXIS (2026-07-30) — the per-tile decay shift, and the ONE
-    // global rule that turns it into the vacuum-exposed shift.
-    //
-    // WHY PER-TILE: this used to be a single global (config COOL_SHIFT). The
-    // thermal-mass arc routed furniture into the solid thermal regime, and
-    // furniture carries conductivity 0 (NO_FACE both ways), so this decay is a
-    // crate's ONE loss channel. At 24 Hz, shift 5 is an e-fold of 2^5/24 =
-    // 1.3 s — right for thin hull plate, absurd for a wooden crate; shift 12
-    // (171 s) is right for the crate and absurd for plate. One number cannot
-    // serve both, exactly as one global heat divisor could not express "steel
-    // heats slower than wood" on the gain side.
-    //
-    // WHY THE VACUUM RATE IS AN OFFSET, NOT A SECOND COLUMN: the shipped pair
-    // (5 interior / 3 exposed) encodes "space sheds 4x faster", a property of
-    // the BOUNDARY, not of the material. Keeping it as the DIFFERENCE
-    // `cool_shift - cool_shift_vacuum` applies that one physical rule to every
-    // material and leaves each material with exactly ONE dial — the point of
-    // the axis. A per-material `cool_shift_vacuum` column would be two dials
-    // that can silently drift out of the 4x relationship.
-    // Computed ONCE per step (not per cell); at the seeded config it is 2, so
-    // a uniform grid of 5 gives interior 5 / exposed 3 bit-exactly.
-    const int vac_offset = cool_shift - cool_shift_vacuum;
-    for (int y = 0; y < h; ++y) {
-        for (int x = 0; x < w; ++x) {
-            const int i = y * w + x;
-            // MEDIUM-TEST SITE 6/6: COOL_SHIFT ambient decay is the solid
-            // thermal regime's loss channel. furniture's conductivity is 0
-            // (NO_FACE both ways -> no conduction in or out), so with the crate
-            // now inside this pass COOL_SHIFT is its ONE loss channel — a
-            // single clean dial (design §2.2), and since the cool-shift axis
-            // (2026-07-30) that dial is PER MATERIAL (`cool_shift_grid`).
-            if (!ts[i]) continue;             // gas medium: already 0
-            const int32_t t = temperature[i];
-            if (t == 0) continue;             // exact rest: nothing to shed
-
-            // Vacuum-exposure: same geometric 4-neighbour gather as conduction.
-            bool exposed = false;
-            for (int d = 0; d < 4; ++d) {
-                const int ny = y + DY[d];
-                const int nx = x + DX[d];
-                if (ny < 0 || ny >= h || nx < 0 || nx >= w) continue;
-                const int ni = ny * w + nx;
-                if (is_vacuum[ni] || atmosphere[ni] < thresh_q) {  // Q16.16 int compare
-                    exposed = true;
-                    break;
-                }
-            }
-            // COOL-SHIFT AXIS: the per-tile base, then the global vacuum
-            // offset with its floor. Pure integer end to end — a shift count
-            // is an `int`, never a real (no libm, no divide, no widening).
-            const int base_shift =
-                (cool_shift_grid != nullptr) ? (int)cool_shift_grid[i] : cool_shift;
-            int shift = base_shift;
-            if (exposed) {
-                shift = base_shift - vac_offset;
-                if (shift < cool_shift_floor) shift = cool_shift_floor;
-            }
-
-            // Signed arithmetic right shift, pinned to round toward 0 (portable,
-            // deterministic). The dead-band (loss == 0 for |t| < (1<<shift))
-            // gives an exact resting state at ambient.
-            const int32_t loss = (t < 0) ? -((-t) >> shift) : (t >> shift);
-            temperature[i] = t - loss;
-            // P-E2a (L3-6): the LAW is unchanged — this is instrumentation.
-            // Pass 3 is a SIGNED channel, not a sink: it relaxes T toward 0
-            // from BOTH sides, so on a sub-ambient tile (t < 0, loss < 0) it
-            // CREATES energy. Naming it signed is the whole point of the
-            // finding — an "ambient cooling" counter that only ever went one
-            // way would hide the creator half of the same line of code.
-            e_cool_sum -= (int64_t)loss * cap_real_[i];
-            // arc #54 P-G5 (Erik's ruling 2026-08-30): the SAME quantity,
-            // under the closure identity's canonical name — the two-way
-            // "thermostat" (positive == energy entering from it, e.g. a
-            // sub-ambient wall being warmed back toward ambient).
-            e_thermostat_sum -= (int64_t)loss * cap_real_[i];
-        }
-    }
+    // NOTHING RELAXES TO AMBIENT ANY MORE. A solid's temperature changes only
+    // through a booked channel: the Pass-1 radiation fold, the Pass-1 heat
+    // deposit, Pass-2 conduction, and combustion's own object-site write.
+    // (design v2 section 6 item 7, gated by
+    // tests/test_no_relax_to_ambient.py.)
 
     // DEBUG probe (temporary): T after Pass 3 (ambient cooling).
     if (dbg_probe_idx >= 0 && dbg_probe_idx < n) dbg_T_post_cooling = temperature[dbg_probe_idx];

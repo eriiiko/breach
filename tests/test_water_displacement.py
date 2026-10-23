@@ -317,7 +317,7 @@ def _corridor_sim(with_water: bool):
         sim.physics_runner.water.k_p = 0.0
     # S2b: gas is int32 Q16.16 — seed the source side at FULL density (the old
     # `= 10.0` float was clamped to 1.0 by the solver anyway). FP_ONE counts.
-    g.gas[SMOKE][1, 1:LINE_X] = gas_fixed.SMOKE_MAX_Q
+    g.gas[SMOKE][1, 1:LINE_X] = gas_fixed.TRACE_ONE
     # EOS P3: the source-side overpressure must live in the REAL state (P is
     # solver-materialized) — scale the bulk N on the left; the P_prev paint
     # is kept only as a same-tick seed. SCENE RE-TUNED 1.3 -> 1.1: under the
@@ -350,7 +350,7 @@ def _far_side_gas(g) -> float:
     # S2b: gas is int32 Q16.16 — dequantize to real density so the float
     # thresholds (< 1e-12 sealed / > 1e-12 crossed) stay meaningful.
     return float(g.gas[SMOKE][1, LINE_X + 1:].astype(np.float64).sum()) \
-        / gas_fixed.FP_ONE_F
+        / float(gas_fixed.TRACE_ONE)
 
 
 def test_flooded_line_seals_corridor_gas_and_wind():
@@ -378,7 +378,7 @@ def test_flooded_line_seals_corridor_gas_and_wind():
     # ... and non-vacuously so: the source side still holds its gas. S2b:
     # dequantize to real density (the source was seeded at full density).
     gas_near = float(g.gas[SMOKE][1, 1:LINE_X].astype(np.float64).sum()) \
-        / gas_fixed.FP_ONE_F
+        / float(gas_fixed.TRACE_ONE)
     assert gas_near > 1.0, "source-side gas vanished (vacuous one-sidedness)"
 
 
@@ -448,9 +448,33 @@ def test_wet_static_pool_atmosphere_bit_identical():
     # A/B: live displacement vs whole-step no-op — bit-identical atmosphere.
     assert np.array_equal(g_a.atmosphere, g_b.atmosphere), (
         "atmosphere diverged between live and no-op water on a SETTLED pool")
-    # And the live tick left atmosphere bit-untouched vs its own pre-tick
-    # copy (ratio == 1 everywhere -> the multiply was exact identity).
-    assert np.array_equal(g_a.atmosphere, pre_a), (
-        "the ratio==1 displacement path modified atmosphere")
+    # And the live tick left atmosphere UNIFORM vs its own pre-tick copy (the
+    # ratio == 1 displacement path is still an exact identity — this is not
+    # a water/displacement effect, see the G12 note below).
+    #
+    # G12 NOTE (2026-08-31, issue #12, docs/fire_g12_one_map_patch_2026-08-31.md
+    # §6 point 1): pre-G12 this was bit-IDENTICAL (65536 -> 65536) because the
+    # old EOS pressure calibration (C = 1/290, T_amb_abs = 290) is an EXACT
+    # reciprocal pair in this quantized chain, so a cell seeded at N =
+    # quantize(1.0) = 65536 solved straight back to itself. Under G12
+    # (C = 1/293, T_amb_abs = 293) the SAME real-valued identity holds
+    # (1/293 * 293 == 1.0), but the Q16.16 rounding of C = 1/293 no longer
+    # lands on an exact reciprocal of 293 in the solver's own chain, so the
+    # EOS's ordinary equilibrium solve now settles to 65635 raw (~0.15% high,
+    # ~1.001 atm) instead of 65536 -- confirmed uniform across every interior
+    # cell (measured 2026-08-31) and confirmed NOT water-related (the
+    # live-vs-no-op-water assertion just above is unaffected). This is the
+    # SAME calibration shift as tests/test_eos_p1_calibration.py's
+    # effective_pin (65536 -> 65632, a related but not identical quantized
+    # chain) and tests/test_air_boundary.py's PIN_DEFAULT, not a new bug.
+    interior_mask = pre_a != 0
+    assert np.array_equal(g_a.atmosphere[interior_mask],
+                          np.full(int(interior_mask.sum()), 65635)), (
+        "the settled-pool interior equilibrium pressure moved off the "
+        "measured G12 value (65635 raw) -- either a real regression or "
+        "this pin needs re-measuring")
+    assert np.array_equal(g_a.atmosphere[~interior_mask],
+                          pre_a[~interior_mask]), (
+        "non-interior (solid/border) cells moved -- unexpected")
     # No seal: a 0.4 m pool leaves 2.1 m of air, far above flood_eps.
     assert float(g_a.dyn_permeability[4, 4]) == 1.0

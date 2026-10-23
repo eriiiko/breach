@@ -78,13 +78,26 @@ SYNCED_UNIT_FIELDS = (
 # is_vacuum / wall_hp catch any topology-path change. `ignition_armed` is the
 # edge-trigger arm bool (combat.apply_temperature_ignition) — synced state, so it
 # must ride the snapshot (field_digest v2 hashes it). Render-only buffers
-# (light_rgb, light_dir, smoke_glow) are intentionally EXCLUDED — they are not
-# sim state and may legitimately differ between machines/builds.
+# (light_rgb, light_dir) are intentionally EXCLUDED — they are not sim state and
+# may legitimately differ between machines/builds. (The float
+# `dyn_light_atten` stamp output and the `smoke_glow` buffer rode here / were
+# excluded here until ray-engine-v2 P6c deleted both with the render march.)
 SIM_FIELDS = (
     "atmosphere", "wave_p", "wave_v", "wave_source", "wind_x", "wind_y",
     "gas", "fire", "water_depth", "flow_vx", "flow_vy",
     "heat", "temperature", "ripple", "ripple_v",
-    "dyn_permeability", "dyn_wave_absorb", "obstacles", "dyn_light_atten",
+    "dyn_permeability", "dyn_wave_absorb", "obstacles",
+    # Ray-engine-v2 P1 (design v3 §3, §8.3): the two Q16 extinction planes the
+    # radiation sweep reads — `heat_atten_q` (static projection) and
+    # `dyn_heat_atten_q` (the fourth stamp_units output). SIM_FIELDS only:
+    # `dyn_heat_atten_q` enters DIGEST_FIELDS at P3 (row 28), never before.
+    "heat_atten_q", "dyn_heat_atten_q",
+    # Ray-engine-v2 P6a (design v3 §8.3; the P6a brief, decision 7): the two Q16
+    # LIGHT extinction planes the sweep's light channels read, beside the heat
+    # ones -- `light_atten_q` (static projection) and `dyn_light_atten_q` (the
+    # fifth stamp_units output; since P6c the only dynamic light plane).
+    # SIM_FIELDS only: nothing light-side enters DIGEST_FIELDS before P7.
+    "light_atten_q", "dyn_light_atten_q",
     "wall_hp", "material", "is_vacuum", "ignition_armed",
     # P-R4 D1 (digest spec v3): the combustion demand accumulator —
     # persistent synced state (see tests/field_digest.py).
@@ -120,7 +133,7 @@ def default_scenario_sim() -> Simulation:
     # S2b: smoke is int32 Q16.16 — quantize the seed (a raw `= 0.6` would store 0
     # counts ~ no smoke). 0.6 density -> 0.6*65536 = 39322 counts. This exercises
     # the integer-SL advection + diffusion + venting on a real cloud.
-    g.smoke[interior] = gas_fixed.quantize_scalar(0.6)  # smoke transport (gas[SMOKE] view)
+    g.smoke[interior] = gas_fixed.quantize_trace_scalar(0.6)  # smoke transport (gas[SMOKE] view)
     # S3a: fire is int32 Q16.16 — quantize the seed (a raw `= 0.8` would store 0
     # counts ~ no fire, leaving the fire feedback + its smoke emission DORMANT).
     # 0.8 intensity -> 0.8*65536 = 52429 counts. This exercises the fire feedback
@@ -508,7 +521,12 @@ if __name__ == "__main__":
     # Q16.48-style multiply chain), and flips wall_hp to int32 Q16.16 too. Assert the
     # dtype + bit-identity run-to-run (np.array_equal is exact on int32). This is the
     # S3b P1 gate; the discrete extinguish-flip + burn-through determinism is in
-    # tests/test_s3b_fire_determinism.py, the logistic feel-A/B in _s3b_firestorm_feel.py.
+    # tests/test_s3b_fire_determinism.py. (The logistic feel-A/B harnesses
+    # _s3_firestorm_feelcheck.py / _s3b_firestorm_feel.py and their float
+    # goldens were RETIRED 2026-09-12: untouched since 2026-06-27, they
+    # predated the Q16.16 migration, the EOS refactor, arc #54 and R1-R4,
+    # and their fixtures seeded fire on ambient wood so post-R3 they ran
+    # inert. Erik's ruling: retire rather than recapture.)
     assert a[-1]["fire"].dtype == np.int32, \
         f"fire should be int32 Q16.16 (S3b), got {a[-1]['fire'].dtype}"
     assert a[-1]["wall_hp"].dtype == np.int32, \

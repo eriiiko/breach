@@ -1,0 +1,5 @@
+Generated with the built-in image_gen tool.
+Edit target: concept-upper-body-side-v1.png
+Proportion reference: concept.jfif
+
+Use case: identity-preserve. Edit image 1 (the side-profile Beatrice illustration). Image 2 is the original front-view concept, used only as a proportion reference. Make a subtle localized correction: reduce the fully clothed adult character's breast volume slightly and reduce their forward projection by roughly 10 percent, with a softer, less spherical contour matching the original concept more closely. Keep a natural shape and smooth transition into the ribcage. Preserve everything else from image 1: exact side-view pose, framing, face, hair, shoulders, ribcage, waist, hips, arm, opaque zipped black suit design and mesh inserts, lighting, gray background and polished anime illustration style. Adjust suit seams and highlights locally to follow the slightly smaller shape. This is a clothed 3D character modelling reference. No other redesign, no text.

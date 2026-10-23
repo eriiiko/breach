@@ -52,6 +52,25 @@ SEED = 20260624
 N_STEPS = 36
 DEATH_TICK = 22
 
+# THE TWO EXPOSURES, in kW/m2 (re-anchored at M3, 2026-09-23). They were bare
+# `phi` 60 ("mild") and 400 ("hard"), authored when `phi` came off the retired
+# cast's fitted scale and meant nothing physical. T5b step 6 derived the unit
+# burn band (report_t5b.md §6.2, `heat_flux_to_temp` 8 -> 4701.2): `phi` is now
+# absorbed heat counts per tick, and phi = 1 is 224.775 kW/m2 -- so the "mild"
+# 60 was 13.5 MW/m2 and killed BOTH marines on tick 0 (HP -349.5 each), the
+# digest froze after one tick, and every property below went vacuous. This
+# scenario injects `heat` directly (no fire), so M3's H_bed cannot reach it;
+# the cause is T5b's currency, and the fix is the one T5b made in
+# tests/test_unit_heat_damage.py: state the fixtures in kW/m2.
+KW_M2_PER_PHI = 224.775          # T5b §6.2; the same constant test_unit_heat_damage uses
+MILD_KW_M2 = 5.0                 # "blistering in ~30 s": T_felt 100, 3 HP/s -- M1 survives
+HARD_KW_M2 = 50.0                # "inside the flame": T_felt 820, 39 HP/s -- 0.5 HP dies in a tick
+
+
+def phi_of(kw_m2):
+    """Irradiance in kW/m2 -> the `phi` the driver injects (T5b §6.2)."""
+    return float(kw_m2) / KW_M2_PER_PHI
+
 
 def _scenario_level() -> LevelData:
     """A 20x20 hull-walled room with a carved interior — room for two 3x3
@@ -100,7 +119,7 @@ def _drive(sim, tick, kill_m2_at=DEATH_TICK):
         if m1.alive:
             m1.x = float(2 + (tick % 14))
             m1.y = float(2 + ((tick // 2) % 14))
-            _inject_heat(sim, m1, 60.0)         # mild, survivable burn each tick
+            _inject_heat(sim, m1, phi_of(MILD_KW_M2))   # mild, survivable burn each tick
     if len(units) >= 2:
         m2 = units[1]
         if m2.alive:
@@ -108,7 +127,7 @@ def _drive(sim, tick, kill_m2_at=DEATH_TICK):
             m2.y = float(3 + (tick % 12))
             if tick == kill_m2_at - 1:
                 m2.current_hp = 0.5             # set up the kill
-            phi = 400.0 if tick >= kill_m2_at else 60.0
+            phi = phi_of(HARD_KW_M2) if tick >= kill_m2_at else phi_of(MILD_KW_M2)
             _inject_heat(sim, m2, phi)
 
 

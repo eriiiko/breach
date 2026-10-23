@@ -193,12 +193,16 @@ def part1_isolated() -> bool:
             ref_args = dict(dt=1.0 / 24.0, cap2_plane=cap2,
                              c_max=300.0, dx=1.0 / 3.0, adiabatic_index=1.4,
                              absorb_strength=8.0, n_floor_solver=1e-3,
-                             t_min=-289.0, t_max_phys=16000.0, u_max=1000.0,
-                             t_amb_k=290.0)
+                             # G12 (issue #12): config's T_MIN/eos_t_amb_k,
+                             # -289/290 -> -292/293. Explicit CPU/GPU parity
+                             # params, not tied to the (unchanged) C++ struct
+                             # defaults.
+                             t_min=-292.0, t_max_phys=16000.0, u_max=1000.0,
+                             t_amb_k=293.0)
             gpu_args = dict(dt=1.0 / 24.0, cap2_plane=cap2,
                              c_max=300.0, dx=1.0 / 3.0, adiabatic_index=1.4,
                              absorb_strength=8.0, n_floor_solver=1e-3,
-                             u_max=1000.0, t_amb_k=290.0)
+                             u_max=1000.0, t_amb_k=293.0)
             n_cfg += 1
             ge0 = _c((_q(rng.uniform(200.0, 400.0, size=(h, w))).astype(np.int64)) << 16)
             A = (wx.copy(), wy.copy(), t.copy(), ge0.copy())
@@ -270,7 +274,26 @@ def part1_isolated() -> bool:
             wall_hp = _c(_q(np.where(flam, 30.0, 0.0)))
             fire = _c(_q(np.where(flam, 0.7, 0.0)))
             ign = _c(_q(np.where(flam, 280.0, 0.0)))
-            t0 = _q(np.full((h, w), 400.0))     # everything above ignition
+            # R3 (fire session #12, docs/fire_3c_design_2026-09-01.md "Ruling
+            # R3"): "above ignition" is NO LONGER ENOUGH to make a fire do
+            # anything. The demand is scaled by
+            #     hotf = clamp((T - fire_T_ext) / fire_T_span, 0, hotf_cap)
+            # and the original 400.0 gives hotf = (400-350)/180 = 0.28, which
+            # shrank the deposit until it truncated away entirely. MEASURED
+            # 2026-09-12: at 400.0, ZERO cells moved temperature in EITHER
+            # path, so the two paths agreed trivially and this control went
+            # VACUOUS — it proved nothing. (It was invisible until the R4
+            # golden re-baseline stopped failing the whole gate first.)
+            #
+            # Seed at hotf == 1 instead, read off the solver so this tracks the
+            # C++ defaults rather than restating them. Measured at that seed:
+            # 48 cells differ between the object path and the gas fallback, so
+            # the control has teeth again.
+            t_hotf1 = float(solver.fire_T_ext) + float(solver.fire_T_span)
+            assert t_hotf1 > 280.0, (
+                f"hotf==1 seed ({t_hotf1}) fell below the fixture's ignition "
+                f"temperature (280) — the burn sites would change regime")
+            t0 = _q(np.full((h, w), t_hotf1))
             shift = np.where(tsol, 3, 0).astype(np.int32)
             n_cfg += 1
             outs = {}
@@ -289,7 +312,9 @@ def part1_isolated() -> bool:
                     gas_g, o2, n2, soot, t_g, whp_g, fire, flam, solid, vac, ign,
                     dt=1.0 / 24.0, c_v=1.0, n_floor_heat=0.05,
                     burn_rate=solver.burn_rate, o2_thresh_burn=solver.o2_thresh_burn,
-                    H_fuel=solver.H_fuel, soot_yield=solver.soot_yield,
+                    H_FUEL_M=solver.H_FUEL_M,
+                    H_FUEL_SHIFT=solver.H_FUEL_SHIFT,
+                    soot_yield=solver.soot_yield,
                     fuel_per_o2=solver.fuel_per_o2,
                     o2_frac_ext=solver.o2_frac_ext, o2_frac_full=solver.o2_frac_full,
                     T_MAX_PHYS=solver.T_MAX_PHYS,
@@ -322,8 +347,8 @@ _EOS_BACKENDS = ("set_bulk_flux_backend", "set_sl_advection_backend",
                  "set_mg_solve_backend", "set_kick_compression_backend",
                  "set_combustion_backend")
 _ALL_BACKENDS = ("set_temperature_backend", "set_water_backend",
-                 "set_smoke_backend", "set_fire_backend",
-                 "set_raycaster_backend") + _EOS_BACKENDS
+                 "set_fire_backend",
+                 "set_radiation_backend") + _EOS_BACKENDS   # P4: was set_raycaster_backend
 
 _FIELDS = ("atmosphere", "wave_p", "wind_x", "wind_y", "temperature", "heat",
            "fire", "wall_hp", "water_depth", "flow_vx", "flow_vy", "gas",

@@ -85,7 +85,7 @@ def _deposit(noise: float, radius: int = 8):
     queue.flush(g, rng)
     # S2b: smoke is int32 Q16.16 — DEQUANTIZE to real density for the noise
     # multiplier reconstruction (deposit/base) and the texture stats below.
-    smoke = gas_fixed.dequantize(g.smoke)
+    smoke = gas_fixed.dequantize_trace(g.smoke)
 
     # Reconstruct base per tile to recover the noise multiplier deposit/base.
     yy, xx = np.indices((h, w))

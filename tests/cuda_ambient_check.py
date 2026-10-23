@@ -32,14 +32,15 @@ _EOS_SETTERS = ("set_sl_advection_backend", "set_bulk_flux_backend",
 
 
 def _set_backends(on: bool) -> None:
-    """Flip the four EOS kernel flags, the temperature flag, AND the smoke flag
-    together, so the GPU run exercises the whole ambient GPU surface: EOS
-    shift/reset/widenings/u-damping/rail + the temperature Pass-0 wipe + the
-    smoke/trace ring-sink widening (the Erik follow-up)."""
+    """Flip the four EOS kernel flags and the temperature flag together, so the
+    GPU run exercises the whole ambient GPU surface: EOS shift/reset/widenings/
+    u-damping/rail + the temperature Pass-0 wipe. The trace planes' ring sink is
+    the EOS's own now (stage 3b prices a donor onto a ring receiver as the vent;
+    the host trace tail zeroes stranded trace) -- there is no separate smoke flag
+    (smoke transport v2, #12)."""
     for name in _EOS_SETTERS:
         getattr(bp, name)(bool(on))
     bp.set_temperature_backend(bool(on))
-    bp.set_smoke_backend(bool(on))
 
 
 # Ring-adjacent hull stub we breach mid-run (joins-ambient twin coverage).
@@ -165,6 +166,13 @@ def run_lockstep() -> bool:
             print(f"  tick {tick}: boundary_flux mismatch cpu={rc} gpu={rg}")
         if any(v != 0 for v in rg):
             rail_seen_nonzero = True
+        # Smoke transport v2 (#12): the three sibling trace books too (the vent
+        # rides boundary_flux's trace slots, checked just above).
+        for book in ("trace_wipe_sum", "trace_sink_sum", "trace_decay_sum"):
+            bc_, bg_ = list(getattr(eos_cpu, book)()), list(getattr(eos_gpu, book)())
+            if bc_ != bg_:
+                bad += 1
+                print(f"  tick {tick}: {book} mismatch cpu={bc_} gpu={bg_}")
         if bad >= 10:
             print("  aborting after 10 divergences")
             break

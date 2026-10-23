@@ -19,7 +19,12 @@
 //   u_normal_strength - 0 disables normal map, 1 = full strength
 //   u_use_normal      - bool toggle (0/1) for normal mapping
 //   u_normal_y_sign   - +1 for OpenGL Y-up normals, -1 for DirectX Y-down
-//   u_srgb_decode     - 1 = decode sRGB diffuse to linear, re-encode on output
+//   u_srgb_decode     - 1 = decode sRGB diffuse to linear (the matching
+//                       encode runs once, at the world resolve)
+//
+// OUTPUT: LINEAR, un-tone-mapped HDR into the RGBA16F scene RT (graphics arc
+// G0 P1). The ONE tone-map + encode + dither is shaders/world_resolve.fs, run
+// by WorldComposite.resolve(); this shader must never tone-map or encode.
 //
 // Pyray sends texture0 as u_diffuse implicitly (Raylib convention).
 // Additional samplers are bound by name via SetShaderValueTexture.
@@ -60,22 +65,16 @@ uniform vec4  u_art_uv_rect;       // art-UV subrect drawn over the world RT
 
 out vec4 finalColor;
 
-// Cheap sRGB <-> linear approximations (gamma 2.2). Adequate for game
-// lighting; not strict sRGB which uses a piecewise function near zero.
-vec3 srgb_to_linear(vec3 c) { return pow(c, vec3(2.2)); }
-vec3 linear_to_srgb(vec3 c) { return pow(c, vec3(1.0 / 2.2)); }
+// Graphics G2: the smoke cast shadow -- renderer/lit3d.py _SMOKE_SHADOW_GLSL
+// (the ONE copy every receiver runs) is spliced in at the marker below by
+// LightingPass, this file's only loader (raw, without the splice, it does
+// not compile: smokeShadow is undefined).
+// <SMOKE_SHADOW>
 
-// ACES filmic tone-map (Narkowicz approximation): compresses HDR over-bright
-// colour toward [0,1] while staying punchy/saturated, instead of per-channel
-// clipping that hue-shifts bright warm light toward white. ch.05 §Tone-mapping.
-vec3 aces_tonemap(vec3 x) {
-    const float a = 2.51;
-    const float b = 0.03;
-    const float c = 2.43;
-    const float d = 0.59;
-    const float e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-}
+// Cheap sRGB -> linear approximation (gamma 2.2). Adequate for game
+// lighting; not strict sRGB which uses a piecewise function near zero. The
+// inverse (the encode) lives in shaders/world_resolve.fs alone.
+vec3 srgb_to_linear(vec3 c) { return pow(c, vec3(2.2)); }
 
 void main() {
     // World-space UV (0..1 over the world RT / grid). With the default
@@ -109,6 +108,11 @@ void main() {
     vec3 incoming_rgb = tex_a.rgb;      // total light colour reaching this tile
     // light_dir is stored signed in 16F — reconstruct directly (no decode).
     vec2 light_dir_2d = vec2(tex_a.a, tex_b.a);
+    // G2: the smoke's shadow on the floor (z = 0). Debug view 7 shows the
+    // factor itself ([render.gas_relief] debug_view; u_smoke_cast2.y).
+    float smoke_sh = smokeShadow(world_uv, light_dir_2d, 0.0);
+    if (u_smoke_cast2.y > 0.5) { finalColor = vec4(vec3(smoke_sh), 1.0); return; }
+    incoming_rgb *= smoke_sh;
 
     float ndotl = 1.0;  // default: flat (no normal map)
     if (u_use_normal == 1) {
@@ -131,12 +135,7 @@ void main() {
     // Diffuse: albedo x incoming RGB (a red lamp lights surfaces red).
     // ndotl modulates the directional contribution; ambient is a flat floor.
     vec3 lit = diffuse * (u_ambient + incoming_rgb * u_light_gain * ndotl);
-    // ACES filmic tone-map on the linear HDR value (ch.05 §Tone-mapping):
-    // tames over-bright coloured light without per-channel clip / hue-shift.
-    lit = aces_tonemap(lit);
-    if (u_srgb_decode == 1) {
-        // Encode back to sRGB for the default framebuffer.
-        lit = linear_to_srgb(lit);
-    }
+    // Linear HDR out: the world resolve tone-maps (ACES) and encodes, once,
+    // for every layer together (G0 P1).
     finalColor = vec4(lit, 1.0);
 }

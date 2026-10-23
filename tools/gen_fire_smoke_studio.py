@@ -1,0 +1,184 @@
+r"""tools/gen_fire_smoke_studio.py — generates levels/fire_smoke_studio/, the
+level for the fire + smoke session (#12; Erik, 2026-10-22).
+
+Erik's brief: a room where fire burns FROM THE START, so the session looks at
+burning and its smoke at once, without lighting anything by hand:
+
+  * a WALL OF FIRE: a row of burning furniture tiles in the middle of the room;
+  * one LONE burning furniture tile further south-east, a small fire beside
+    the big one;
+  * the marine squad NORTH of the fire, so the fire throws their shadows
+    toward the camera's top, and the fire sits mid-screen, clear of the
+    readouts in the top-left corner;
+  * no lamps: the fire is the light. A light grey floor (the smoke-light
+    studio's backdrop and its tile-seam normal map) so light, shadow and smoke
+    read against it; no water.
+
+THE IGNITION is the canonical one: ``timed_charge`` entities, one on each
+fuel tile, firing ``[payloads.studio_ignite]`` (``payloads.ignite_ring``: the
+flame AND the heat that lighting implies, CLAUDE.md "Starting a fire") once,
+half a second in. Never a ``fire`` plane written by the level.
+
+The hull, the vacuum band and the 0.333 m tile are the explosion studio's
+(imported, never copied). One sealed room: it has about 650 m^3 of air, far
+more oxygen than six furniture tiles can burn.
+
+ONE WRITER, LEVEL_LIB ONLY (CLAUDE.md "Level generators"). DETERMINISTIC.
+
+Run:
+    C:/Users/steen/anaconda3/python.exe tools/gen_fire_smoke_studio.py
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+for _p in (ROOT, ROOT / "src", ROOT / "tools"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
+import level_lib  # noqa: E402
+import gen_explosion_studio as studio  # noqa: E402
+import gen_smoke_light_studio as still  # noqa: E402
+import numpy as np  # noqa: E402
+from PIL import Image  # noqa: E402
+from level_loader import EntityInstance, SpawnEntry  # noqa: E402
+from simulation.materials import MAT_AIR, MAT_FURNITURE, MAT_HULL  # noqa: E402
+
+LEVEL_NAME = "fire_smoke_studio"
+TILE_SIZE_M = studio.TILE_SIZE_M
+DEFAULT_OUT_DIR = ROOT / "levels" / LEVEL_NAME
+
+# The marines' 3x3 footprints (top-left tile), side by side north of the fire.
+SPAWNS = (("Alpha", 19, 12), ("Bravo", 24, 12), ("Cobra", 29, 12))
+
+FIRE_ROW_Y = 22
+FIRE_ROW_X = (23, 27)          # inclusive: five tiles, centred under Bravo
+LONE = (37, 27)                # the lone burning tile
+
+IGNITE_AT_S = 0.5
+# (id, x, y, payload, first_at_s) -- the explosion studio's charge tuple. ONE
+# igniter ON each fuel tile, firing [payloads.studio_ignite] (radius 0.5: that
+# tile only). Not incendiary_splash: its heat is FLAT over its 2.5-tile disc,
+# air included, and heating ~20 air tiles made a fireball that killed the
+# squad 8 tiles away within a second (measured 2026-10-22).
+FUEL_TILES = tuple((x, FIRE_ROW_Y) for x in range(FIRE_ROW_X[0], FIRE_ROW_X[1] + 1)) + (LONE,)
+IGNITERS = tuple((f"ignite_{x}_{y}", x, y, "studio_ignite", IGNITE_AT_S)
+                 for (x, y) in FUEL_TILES)
+
+# ONE VENT LOOP (Erik, 2026-10-22: the smoke settled on the fire and hid it;
+# "I'm very curious to see the smoke move"): a supply vent on the west floor and
+# a return vent on the east floor, the row of fire between them, so the
+# circulation draws a cross-room current over the fire and carries its smoke
+# east. The duct's HEPA filter takes the smoke out at the return, so the room
+# does not fill up. q_circ is the playground's value, untuned (#48: vents get
+# retuned after the 2026-10-06 drag change).
+DUCT = ("duct_studio", "hepa_basic")
+VENTS = (  # (id, x, y, role, facing) -- wall mounts in the hull's side walls,
+    #          level with the fire row (Erik: "move the vents to the walls")
+    ("vent_supply", studio.X0, FIRE_ROW_Y, "supply", "e"),
+    ("vent_return", studio.X1, FIRE_ROW_Y, "return", "w"),
+)
+Q_CIRC = 16.0
+
+PALETTE = dict(still.PALETTE)
+AIR_ALT = still.AIR_ALT
+
+
+def build_tilemap() -> np.ndarray:
+    tm = np.full((studio.H, studio.W), studio.SPACE_CODE, dtype=np.int32)
+    tm[studio.Y0:studio.Y1 + 1, studio.X0:studio.X1 + 1] = MAT_HULL
+    tm[studio.Y0 + 1:studio.Y1, studio.X0 + 1:studio.X1] = MAT_AIR
+    tm[FIRE_ROW_Y, FIRE_ROW_X[0]:FIRE_ROW_X[1] + 1] = MAT_FURNITURE
+    tm[LONE[1], LONE[0]] = MAT_FURNITURE
+    for (_id, x, y, _payload, _first) in IGNITERS:
+        assert tm[y, x] == MAT_FURNITURE, f"{_id} is not on its fuel"
+    for (_id, x, y, _role, _facing) in VENTS:
+        assert tm[y, x] == MAT_HULL, f"{_id} is not in a wall"
+    for (_n, x, y) in SPAWNS:
+        assert (tm[y:y + 3, x:x + 3] == MAT_AIR).all(), f"{_n} is not on floor"
+    return tm
+
+
+def build_diffuse(tm: np.ndarray) -> Image.Image:
+    """Flat colour-coded tiles with darkened seams, the studios' render art --
+    without the explosion studio's room labels or charge markers (an igniter
+    is not an object in the room)."""
+    px = studio.PX
+    img = np.zeros((studio.H * px, studio.W * px, 3), dtype=np.uint8)
+    for ty in range(studio.H):
+        for tx in range(studio.W):
+            code = int(tm[ty, tx])
+            c = PALETTE.get(code, (200, 40, 200))     # loud magenta = bug
+            if code == MAT_AIR and (tx + ty) % 2:
+                c = AIR_ALT
+            img[ty * px:(ty + 1) * px, tx * px:(tx + 1) * px] = c
+    img[::px, :, :] = (img[::px, :, :] * 0.82).astype(np.uint8)
+    img[:, ::px, :] = (img[:, ::px, :] * 0.82).astype(np.uint8)
+    return Image.fromarray(img)
+
+
+def build_vents() -> list:
+    """The duct and its two vents, as level entities (the playground's form)."""
+    did, filt = DUCT
+    ents = [EntityInstance(id=did, class_name="duct", ordinal=0,
+                           fields={"filter": filt}, authored_keys=("filter",))]
+    keys = ("x", "y", "mount", "facing", "role", "duct", "q_circ")
+    for i, (vid, x, y, role, facing) in enumerate(VENTS, start=1):
+        ents.append(EntityInstance(
+            id=vid, class_name="vent", ordinal=i,
+            fields={"x": x, "y": y, "mount": "wall", "facing": facing,
+                    "role": role, "duct": did, "q_circ": Q_CIRC},
+            authored_keys=keys))
+    return ents
+
+
+def build_spawns() -> list:
+    return [SpawnEntry(name=n, team=0, x=x, y=y, footprint=3)
+            for (n, x, y) in SPAWNS]
+
+
+HEADER_COMMENTS = (
+    "FIRE + SMOKE STUDIO — the level for the fire + smoke session (#12).",
+    "GENERATED by tools/gen_fire_smoke_studio.py through level_lib: a row of",
+    "five burning furniture tiles and one lone burning tile,",
+    "lit at 0.5 s by one timed charge per tile; the squad north of the",
+    "fire; no lamps (the fire is the light); one HEPA vent loop (supply W,",
+    "return E, in the side walls) draws a current over the fire.",
+    "",
+    "v2 codes ARE canon material ids (src/simulation/materials.py):",
+    "  0=air 1=hull 6=furniture 9=SPACE",
+)
+
+
+def main(out_dir: Path = DEFAULT_OUT_DIR) -> None:
+    out_dir = Path(out_dir)
+    for name in ("level.toml", "tilemap.csv", "diffuse.png", "normal.png"):
+        p = out_dir / name
+        if p.exists():
+            p.unlink()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    toml_path = level_lib.write_level_header(
+        out_dir, name="Fire + Smoke Studio", tile_size_m=TILE_SIZE_M,
+        normal_rel="normal.png", comment_lines=HEADER_COMMENTS)
+    level_lib.write_boundary_field(toml_path, "space")
+    tm = build_tilemap()
+    level_lib.write_tilemap_csv(out_dir, tm, csv_bak=False)
+    build_diffuse(tm).save(out_dir / "diffuse.png")
+    still.build_normal(tm).save(out_dir / "normal.png")
+    igniters = studio.build_charges(IGNITERS, period_s=0.0) + build_vents()
+    spawns = build_spawns()
+    level_lib.write_managed_blocks(
+        toml_path,
+        {"spawn": lambda nl: level_lib.format_spawn_lines(spawns, nl),
+         "entity": lambda nl: level_lib.format_entity_lines(igniters, nl)})
+
+    print(f"wrote {out_dir}  ({studio.W}x{studio.H} tiles)")
+    for (cid, x, y, payload, first) in IGNITERS:
+        print(f"  {cid:12s} ({x},{y})  {payload}  once at {first} s")
+
+
+if __name__ == "__main__":
+    main()

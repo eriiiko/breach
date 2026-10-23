@@ -99,7 +99,9 @@ def build_env(env: str, material_id: int):
     """Return ``(level, cy, cx)`` (full-grid tile coords) for one of the
     three named environments, with ``material_id``'s tile already placed."""
     if env == "open_arena":
-        level = build_level(ARENA_W, ARENA_H, ARENA_CRATE_XY, ARENA_TILE_M)
+        # FURN explicitly (M2): this sweep's arena is calibrated on the crate.
+        level = build_level(ARENA_W, ARENA_H, ARENA_CRATE_XY, ARENA_TILE_M,
+                            fuel_mat=FURN)
         cx, cy = ARENA_CRATE_XY
         level.tilemap[cy, cx] = material_id
         return level, cy, cx

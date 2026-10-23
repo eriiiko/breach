@@ -5,7 +5,13 @@ What is locked here:
   - GL-6 DETONATE-AT-STOP, all three stop classes: first SOLID (the blast
     centres on the wall tile, like a charge on a door), first UNIT FOOTPRINT
     (the entry tile — and NO direct-hit packet: the ONLY unit damage is the
-    blast), and MAX RANGE (mid-air airburst at the march's final tile);
+    blast), and MAX RANGE (mid-air airburst at the march's final tile). The
+    three stop-class tests fire a GL-6 round whose payload is rebound to
+    ``tests/_test_charge.py``'s ``TEST_CHARGE`` (Erik's 2026-10-03 ruling:
+    tests must never break on retuning a config row — ``frag_standard``,
+    the 40 mm round's shipped payload, is a live tunable) — they assert
+    WHERE the round detonates and TEST_CHARGE's own falloff, never a
+    literal copied from config;
   - MAG / RELOAD CADENCE: 6 triggers on a mag, emptying starts the
     auto-reload stall (reload_seconds exactly), the gate blocks mid-reload,
     the first trigger past the stall refills and fires — proven at the gate
@@ -44,6 +50,8 @@ from simulation.orders import ORDER_FIRE, Order  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 from simulation.weapons import get_tables  # noqa: E402
 from simulation import weapons as weapons_mod  # noqa: E402
+
+from _test_charge import install_test_charge  # noqa: E402
 
 SEED = 20260705
 
@@ -99,11 +107,14 @@ def _explosions(events):
 # ---------------------------------------------------------------------------
 # GL-6 detonate-at-stop — the three stop classes
 # ---------------------------------------------------------------------------
-def test_gl6_detonates_on_the_stopping_wall():
-    """The round stops ON the east hull tile and the frag_standard blast
-    centres there: kind='shell', the wall eats the payload's 200 x falloff
+def test_gl6_detonates_on_the_stopping_wall(monkeypatch):
+    """The round stops ON the east hull tile and TEST_CHARGE's blast centres
+    there: kind='shell', the wall eats TEST_CHARGE's wall_damage x falloff
     (NOT bullet chew — 40 mm wall_damage is 0), inner-radius neighbours chew
-    with exact Q16.16 falloff."""
+    with exact Q16.16 falloff. Breaks if the GL-6 round stops short of, or
+    past, the wall tile, or if the executor's falloff arithmetic changes —
+    never if Erik retunes [payloads.frag_standard]."""
+    charge = install_test_charge(monkeypatch)
     gmap = _room()
     shooter = Unit("S", x=2, y=8, team=0)
     shooter.id = 1
@@ -118,25 +129,33 @@ def test_gl6_detonates_on_the_stopping_wall():
 
     ex = _explosions(events)
     assert len(ex) == 1
-    assert ex[0].kind == "shell" and ex[0].radius == 5
+    assert ex[0].kind == "shell" and ex[0].radius == charge.radius
     assert ex[0].pos == (23, 9)                    # the wall tile itself
     queue.flush(gmap, rng)
-    # The stopped-on hull tile: falloff 1.0 -> exactly quantize(200) off 300.
+    # The stopped-on hull tile: falloff 1.0 -> exactly quantize(wall_damage)
+    # off the hull's 300 HP.
     q300 = wall_fixed.quantize_scalar(300.0)
-    assert int(gmap.wall_hp[9, 23]) == q300 - wall_fixed.quantize_scalar(200.0)
-    assert int(gmap.material[9, 23]) == MAT_HULL   # 100 HP left — standing
-    # A border tile 3 up the wall: falloff 1 - 3/5 = 0.4 -> quantize(80).
-    assert int(gmap.wall_hp[12, 23]) == q300 - wall_fixed.quantize_scalar(80.0)
-    # The blast deposited a wave (the disc skips solids; interior cells got it).
-    # EOS P3 (design §6): the explosion's "wave_source" FieldEdit now lands
-    # as a `temperature` energy deposit — wave_source is retired.
+    assert int(gmap.wall_hp[9, 23]) == q300 - \
+        wall_fixed.quantize_scalar(float(charge.wall_damage))
+    assert int(gmap.material[9, 23]) == MAT_HULL   # some HP left — standing
+    # A border tile 3 up the wall: falloff 1 - 3/radius, TEST_CHARGE's own.
+    falloff = 1.0 - 3.0 / charge.radius
+    assert int(gmap.wall_hp[12, 23]) == q300 - \
+        wall_fixed.quantize_scalar(float(charge.wall_damage) * falloff)
+    # The blast deposited energy (the disc skips solids; interior cells got
+    # it) — TEST_CHARGE carries nonzero pressure, so the "wave_source"
+    # FieldEdit lands as a `temperature` energy deposit (EOS P3 design §6).
     assert gmap.temperature.any()
 
 
-def test_gl6_detonates_on_unit_footprint_no_direct_hit_packet():
+def test_gl6_detonates_on_unit_footprint_no_direct_hit_packet(monkeypatch):
     """The round detonates at the FOOTPRINT ENTRY tile: the target takes
     ONLY blast damage (source 'explosion' — never a 0-damage direct-hit
-    packet), computed by the exact apply_blast_damage falloff."""
+    packet), computed by the exact apply_blast_damage falloff over
+    TEST_CHARGE's own radius/unit_damage. Breaks if the round starts direct-
+    hitting the unit it marches onto, or if the blast falloff formula
+    changes — never if Erik retunes [payloads.frag_standard]."""
+    charge = install_test_charge(monkeypatch)
     gmap = _room()
     shooter = Unit("S", x=2, y=8, team=0)
     target = Unit("T", x=14, y=8, team=0)
@@ -158,20 +177,21 @@ def test_gl6_detonates_on_unit_footprint_no_direct_hit_packet():
     assert hits, "the blast must reach the target"
     assert all(h.source == "explosion" for h in hits)   # NO 'bullet' packet
     # Exact blast amount at the target's centre (the apply_blast_damage form).
-    frag = get_tables().payloads.by_name["frag_standard"]
     dist = float(np.sqrt((target.center_tile_x() - det_x) ** 2
                          + (target.center_tile_y() - det_y) ** 2))
-    expected = int(frag.unit_damage * (1.0 - dist / frag.radius))
+    expected = int(charge.unit_damage * (1.0 - dist / charge.radius))
     assert expected >= CFG.combat.blast_damage_threshold
     target_hits = [h for h in hits if h.unit_id == 2]
     assert len(target_hits) == 1 and target_hits[0].damage == float(expected)
     assert target.current_hp == 1e9 - expected
 
 
-def test_gl6_airbursts_at_max_range():
+def test_gl6_airbursts_at_max_range(monkeypatch):
     """No wall, no unit for 40+ tiles: the round expires at its range cap
-    and the payload executes mid-air at the march's final tile (origin x 3
-    + 40 exact 1.0-steps east = x 43)."""
+    and TEST_CHARGE executes mid-air at the march's final tile (origin x 3
+    + 40 exact 1.0-steps east = x 43). Breaks if the round detonates before
+    or after its range cap — never if Erik retunes [payloads.frag_standard]."""
+    charge = install_test_charge(monkeypatch)
     gmap = _room(h=20, w=60)
     shooter = Unit("S", x=2, y=8, team=0)
     shooter.id = 1
@@ -183,9 +203,11 @@ def test_gl6_airbursts_at_max_range():
     _advance_to_detonation(gmap, [shooter], bullets, queue, rng, events, shots)
     ex = _explosions(events)
     assert len(ex) == 1 and ex[0].kind == "shell"
+    assert ex[0].radius == charge.radius
     assert ex[0].pos == (43, 9)                     # 3 + range 40, exact steps
     queue.flush(gmap, rng)
-    # EOS P3 (design §6): the airburst's energy deposit lands in `temperature`.
+    # EOS P3 (design §6): the airburst's energy deposit lands in
+    # `temperature` — TEST_CHARGE carries nonzero pressure, so it deposits.
     assert gmap.temperature.any()                   # the airburst deposited
 
 

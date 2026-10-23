@@ -1,0 +1,36 @@
+{
+ "Boots": {
+  "objects": 17,
+  "source_tris": 146736,
+  "evaluated_tris": 348688
+ },
+ "Coverall": {
+  "objects": 26,
+  "source_tris": 365546,
+  "evaluated_tris": 1456316
+ },
+ "Hands": {
+  "objects": 6,
+  "source_tris": 21492,
+  "evaluated_tris": 42984
+ },
+ "Head": {
+  "objects": 7,
+  "source_tris": 189134,
+  "evaluated_tris": 240860
+ },
+ "TOTAL": {
+  "objects": 56,
+  "source_tris": 722908,
+  "evaluated_tris": 2088848
+ },
+ "NORMALS": {
+  "flipped": [
+   "Worker_Eye_L",
+   "Worker_Eye_R"
+  ],
+  "closed": 56,
+  "open": [],
+  "undecided": []
+ }
+}

@@ -22,9 +22,14 @@ precedent).
 
 Kelvin-frame note (design D-7, for the brief): this overlay reads game-deg
 T_rel directly (the honest sub-ambient number), NOT the canonical render
-Kelvin map (K = 293 + 3*T_game) — that map is misleading below ambient
-(-96.67 game-deg reads as "3 K" through it, not the physically meaningful
-193 K in the EOS's own T_abs frame).
+Kelvin map. AT THE TIME this was written the map was ×3 (K = 293 + 3*T_game)
+and misleading below ambient (-96.67 game-deg read as "3 K" through it, not
+the physically meaningful 193 K in the EOS's own T_abs frame) — G12 (issue
+#12, docs/fire_g12_one_map_patch_2026-08-31.md) collapsed the canonical map
+onto the EOS frame (K = 293 + T_game), which IS valid all the way to the
+T_MIN floor now. This overlay still reads raw T_rel by design (a diverging
+cold/hot instrument wants signed game-deg, not a floor-clamped absolute
+Kelvin reading), not because the Kelvin map is unsafe any more.
 
 The mapping function (``pack_cold_rgba``) is pyray-free and pure numpy, so it
 is headless-unit-testable in isolation, exactly like ``renderer.blackbody.

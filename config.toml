@@ -92,16 +92,12 @@ wave_damping = 3.0                    # wave velocity damping (1/s)
 wave_transfer = 0.5                   # wave_p -> atmosphere transfer rate (1/s)
 source_feed_rate = 200.0              # wave_source -> wave_p feed rate (1/s)
 d_atm = 200.0                         # atmosphere diffusion (IMEX = no CFL limit!)
-# Patch 2b (2026-06-22): smoke now moves on the REAL dt (the double-applied
-# smoke_dt_scale=3.0 -> 9× fudge is GONE). advection_rate was bumped ×9 (100->900)
-# to preserve the visible wind-ride; the smoke DIFFUSION is now ~9× weaker than
-# the shipped build, so d_smoke (and the per-gas [gases.*] diffusion table) WANT A
-# RE-TUNE by eye. "Tuning isn't sacred" — these are sensible defaults, not final.
-d_smoke = 0.1                          # FLAG: ~9× weaker effective diffusion now (dt_scale removed) — re-tune
-advection_rate = 900.0                # smoke wind-ride coefficient on the real dt (was 100 × dt_scale²=9)
+# (d_smoke / advection_rate / wind_diffusion_scale RETIRED -- smoke transport
+# v2, #12, docs/smoke_transport_design_2026-10-04.md: the semi-Lagrangian smoke
+# step they tuned is deleted; trace gases ride the bulk face flux, and their
+# diffusion / decay are the [gases.*] columns.)
 breach_rate = 5.0                     # relaxation rate toward vacuum at hull breaches (1/s)
 max_source_per_step = 10.0             # max wave energy fed per substep (IMEX handles big spikes)
-wind_diffusion_scale = 50.0            # wind-dependent diffusion: D = d_smoke * (1 + scale * |wind|)
 smoke_sink_strength = 2.0              # smoke-side sink-pull toward nearest breach (cells/hop along the breach-ward gradient, capped at 1 to follow the BFS path). 0 = off (sealed-room behaviour); >=1 = full per-hop pull. Sealed room always untouched. Binds at PhysicsRunner construction (restart, not Ctrl+R).
 smoke_vent_hops = 16                   # Patch 2b: K = vent hops/tick — how many 1-cell breach-sink passes run each tick, decoupled from the wave CFL. Default ≈ the old n_wave so venting starts where it was. Erik tunes by eye (more = faster drain).
 explosion_smoke_noise = 0.85           # per-tile contrast of the explosion smoke deposit (add_explosion_smoke). The per-tile multiplier is drawn uniform in [1 - noise, 1.0]: noise=0 => flat blob (no texture); noise=0.6 => the old [0.4,1.0] look; noise=0.85 (default) drops the floor to 0.15 so some tiles read near-empty (ragged holes / missing patches) giving the cloud visible initial texture for advection to grab; noise=1.0 => full contrast ([0.0,1.0], maximal holes). Seeded RNG => deterministic.
@@ -120,40 +116,88 @@ physics_substeps = 8              # 8 * 1ms = 8ms physics per game tick
 # divide) -> deterministic / bit-identical cross-machine.
 [physics.thermal]
 TEMP_SCALE   = 65536    # Q16.16, = HEAT_SCALE (shared temperature/heat domain)
-SHIFT_AT_REF = 2        # metal self-rate = 1/4 (fastest stable on a 4-nbr grid)
 SHIFT_MIN    = 2        # rate floor / stability bound: 4 faces * 1/4 = 1 (convex)
-KAPPA_REF    = 50.0     # reference conductivity (hull) for the log bucket
 NO_FACE      = 63       # sentinel: kappa==0 face / grid edge -> zero conduction
-# Ambient cooling (engine/06 §3, proposal §3.3). Newtonian decay toward ambient
-# (T_ambient == 0, since temperature stores ΔT above a reference): T -= T >> shift.
-# Interior tiles use COOL_SHIFT; a tile whose 4-neighbourhood touches vacuum (or
-# atmosphere < o2_vacuum_thresh) sheds via the smaller COOL_SHIFT_VACUUM, so a
-# space-facing breached wall cools 4× faster. Pure signed-add + arithmetic right
-# shift -> deterministic. These are the burn-out tuning dials.
+# SHIFT_AT_REF = 2 and KAPPA_REF = 50.0 stood here until T5b. They were the CFL
+# STABILITY ANCHOR -- "hull conducts a quarter of the gap per tick", the fastest
+# an explicit 4-neighbour stencil is stable at -- and R10 (thermal model v2,
+# Erik 2026-09-19) RETIRED them: a rate anchor with no capacity, no tile size
+# and no timestep in it could not have been right by construction, and it ran
+# solid-solid conduction 65 000-130 000x too fast. The three constants below
+# set the absolute rate now, and they are physics rather than dials.
+# See simulation/materials.py::_build_conduction_tables and report_t3.md D2/D3.
 #
-# COOL-SHIFT AXIS (2026-07-30): the decay shift is now a PER-MATERIAL column
-# (`cool_shift` on every [materials.*] row) — one global number cannot serve a
-# thin hull plate and a wooden crate at once. These two globals are KEPT and
-# still do two jobs:
-#   * COOL_SHIFT is the DEFAULT for a material row that omits `cool_shift`
-#     (and the solver's own fallback when no per-tile grid is supplied);
-#   * the PAIR defines the VACUUM OFFSET: a vacuum-exposed tile cools at
-#     max(SHIFT_MIN, cool_shift[tile] - (COOL_SHIFT - COOL_SHIFT_VACUUM)),
-#     i.e. "two shifts faster == 4x" stays one rule for every material. With
-#     every row seeded at 5 that reproduces 5/3 exactly.
-COOL_SHIFT        = 5    # interior decay: T -= T >> 5 (~1/32 per tick, ~32-tick e-fold)
-COOL_SHIFT_VACUUM = 3    # space-exposed decay: T -= T >> 3 (~1/8 per tick, 4× faster)
+# h_conv -- the SOLID|GAS boundary, which is CONVECTION, not conduction. A
+# sub-tile boundary layer, not a half-tile of still air. Churchill & Chu (1975),
+# "Correlating equations for laminar and turbulent free convection from a
+# vertical plate", Int. J. Heat Mass Transfer 18, 1323-1329; Incropera & DeWitt
+# eq. 9.26, air properties at the film temperature from Table A.4, L = 2.5 m
+# deck height. h is nearly FLAT over the fire-relevant band -- 5.68 at dT = 100 K,
+# 7.23 at 700 K, 6.93 at 1300 K, +/-12 % about 6.4 -- and every value in
+# [4.8, 9.6] rounds to the same shift, so ONE number is honest here.
+# ACCEPTED GAP: this is NATURAL convection. A fire plume moving past a surface
+# gives h = 10-100 (forced), and the face law has no velocity term.
+h_conv = 6.0
+#
+# tile_size_ref_m -- the dx the conduction table is built at. Under R10 the
+# table IS tile-size dependent (solid faces go as 1/dx^2, gas faces as 1/dx)
+# while the material table is GLOBAL and tile_size_m is per level. 0.333 is the
+# shipped-level value, the same reference rad_scale_derived is calibrated at.
+# On a 1.0 m level (airlock_demo) every solid face is 3 shifts too fast and
+# every gas face 2. Deriving the table per level instead is T3 section 8 q9 --
+# Erik's open question, deliberately not answered here.
+tile_size_ref_m = 0.333
+# T5b step 7 / thermal model v2 R1: COOL_SHIFT = 5 and COOL_SHIFT_VACUUM = 3
+# stood here, with the block explaining the per-material axis and its vacuum
+# offset. They are DELETED with the temperature solver's Pass 3 -- the
+# radiation sweep computes the real radiative loss now, and keeping a
+# hand-rolled `T -= T >> cool_shift` beside it counted the same physics twice.
+# NOTHING RELAXES TO AMBIENT ANY MORE: a solid's temperature changes only
+# through a booked channel (the Pass-1 radiation fold, the Pass-1 heat deposit,
+# Pass-2 conduction, combustion's object-site write).
+# o2_vacuum_thresh SURVIVES -- Pass 0's open-vacuum wipe still asks whether a
+# cell is a thermal medium at all, which is a different question.
 o2_vacuum_thresh  = 0.3  # atmosphere below which a 4-neighbour counts as vacuum-exposed
 
 # EOS refactor P2 — unified temperature, gas-T dials (docs/eos_refactor_design.md
 # §4, §9). TUNING DIALS (feel-gated, first real pass at P5); sane starting points.
-gas_advection_rate = 900.0  # gas-T wind->displacement scale; SAME convention/value
-                             # as [physics].advection_rate (smoke) — hot air rides the
-                             # wind at smoke's visual rate until P3 makes `wind` a real
-                             # velocity, at which point this dial goes away.
-c_v               = 1.0     # gas heat capacity for the radiation deposit
-                             # ΔT = ΔE/(N·c_v) (§4.3). 1.0 = neutral scale (ΔT≈ΔE at
-                             # ambient N=1.0); no real-gas anchor yet (P3 territory).
+gas_advection_rate = 900.0  # gas-T wind->displacement scale (inert: the gas-T
+                             # SL pre-pass it fed is gone; the retired smoke
+                             # advection_rate shared its value).
+c_v         = 0.0076849     # THE GAS HALF OF THE HEAT-COUNT CURRENCY — derived, not
+                             # dialled (thermal model v2 ledger item 4, R13;
+                             # report_t2.md §2.1-2.2). It is the ONE exchange rate
+                             # between `gas_energy = N·T_abs` and the heat-count
+                             # currency every SOLID capacity is denominated in; it is
+                             # applied at every crossing and nowhere else.
+                             #
+                             # DERIVATION. `cell_capacity_q` prices a gas tile at
+                             # `N·c_v` in the SAME unit `thermal_mass` is in, so c_v
+                             # is simply air's ρc_v expressed in that unit:
+                             #     c_v = ρc_v(air) / THERMAL_MASS_UNIT
+                             #         = 864.548 / 112500 = 0.0076849
+                             # THERMAL_MASS_UNIT = 112500 J/(m³·K) is R13's pin (wood
+                             # at 12 % MC, 0.9 MJ/(m³·K), IS thermal_mass 8).
+                             # ρc_v comes from the engine's OWN EOS constants, not a
+                             # table: it is the residue of eos_solver's k_work
+                             # derivation, ρc_v = p/((γ−1)·T) = 101325/(0.4·293) =
+                             # 864.548 J/(m³·K) — which agrees with tabulated air
+                             # (1.2047 · 717.6, the [materials.air] row) to 0.004 %.
+                             # V_tile cancels out of the ratio, so unlike rad_scale
+                             # this number carries NO tile-size and no molar-mass
+                             # dependence.
+                             #
+                             # WAS 1.0 — a placeholder its own comment called "no
+                             # real-gas anchor yet". It made an ambient air tile
+                             # 130.13× too heavy thermally (c_v=1 at N=1 IS
+                             # thermal_mass 1.0, i.e. a solid), so a wall bled 130×
+                             # the energy it should into the air beside it.
+                             #
+                             # ONE REPRESENTATION. `c_v_q = quantize(c_v)` (Q16.16)
+                             # is the only integer form; every deposit reciprocal is
+                             # `make_recip(c_v_q/65536)`, its EXACT inverse — never
+                             # `make_recip(c_v)`, which differs by 0.0724 % here
+                             # (report_t2.md §10.2, report_t5a.md §6.6).
 n_floor_heat      = 0.01    # floor on the per-tile N divisor (the real bulk N_total
                              # since P3) for the SAME deposit divide, SHARED by BOTH
                              # deposit sites — this Pass-1 gas branch AND combustion's
@@ -212,29 +256,36 @@ o2_threshold  = 0.01  # RETIRED — see o2_frac_ext (fire feedback block below)
 # --- Signed-logistic fire FEEDBACK (fire_design_proposal §2/§3/§5) ------------
 # Cellular spread is DELETED: spread is now radiation -> heat -> temperature ->
 # ignition (apply_temperature_ignition above). The fire step is purely the
-# life/death of an already-lit tile. Per burning tile of intensity I in [0,1]:
+# life/death of an already-lit tile. Per burning tile of intensity I in [0,1]
+# (R1 RENORMALIZATION, fire session #12, docs/fire_3c_design_2026-09-01.md
+# "Ruling R1" -- see the o2_frac_ext/amb/o2f_cap block below for the full
+# derivation):
 #   T     = temperature[i] / TEMP_SCALE              (game units; ignition_temp=300 wood)
 #   F     = clamp01(wall_hp[i] / hp_of_THIS_tile)    (fuel fraction remaining, per
 #           MATERIAL — the [materials.*] hp column, via GameMap.fuel_recip; see the
 #           fuel_ref tombstone below)
-#   O2    = mean REAL gas[o2] over open (non-solid,non-vacuum) 4-neighbours
-#           (EOS refactor P4 — was the atmosphere/P proxy; design §6, item 3)
+#   X     = Σn_o2/Σn_total over open (non-solid,non-vacuum) 4-neighbours (the local
+#           O2 MOLE FRACTION -- EOS refactor P4 + the continuous-O2 law, design §6/§2.1)
 #   W     = |wind| from the SHARED wind field (= -grad p, incl. shockwaves)
 #   hot   = clamp01((T - fire_T_ext) / fire_T_span)
-#   o2    = smoothstep(P_min, P_full, O2)            (the REAL local O2 gate)
-#   avail = F * o2
-#   grow  = k_grow * avail * hot * I*(1-I) * (1 + k_wind_fan*W)   (logistic, wind-fanned)
-#   die   = k_die*(1 - avail*hot)*I + k_wind_strip*W*(1-I)*I      (decay + wind blow-out)
+#   hotf  = clamp((T - fire_T_ext) / fire_T_span, 0, hotf_cap)
+#           (R3, fire session #12, docs/fire_3c_design_2026-09-01.md "Ruling R3":
+#           the SAME ramp as `hot`, ceiling hotf_cap instead of 1 -- read ONLY by
+#           combustion.cpp's demand + this file's wall-burn RATE, never the I-ODE)
+#   o2f   = clamp((X - o2_frac_ext) / (o2_frac_amb - o2_frac_ext), 0, o2f_cap)
+#           (R1: renormalized to AMBIENT, not pure O2 -- ambient air reads o2f==1)
+#   avail = F * o2f                                  (can exceed 1 under O2 enrichment)
+#   gap   = avail*hot - I/I_cap_per_avail             (SIGNED capacity law, P-R3)
+#   grow  = k_grow * I * gap * (1 + k_wind_fan*W)
+#   die   = k_die * max(0, 1 - avail*hot) * I  +  k_wind_strip*W*(1-I)*I
+#           (R1 DIE-TERM SIGN FIX: avail*hot can now exceed 1, so the max(0,.)
+#           floor keeps enrichment from going ANTI-DEATH)
 #   I    += dt*(grow - die);  clamp01;  if I < I_min -> 0 (snap-extinguish)
-# Plume: temperature[i] += the plume->T shim deposit (fire_pressure_gain-scaled,
-#   self-limiting on `atmosphere[i]/p_expand_ref` — unchanged by P4, still reads
-#   REAL pressure, not O2) -> p* rises -> wind points OUTWARD -> smoke pushed away.
-# A sealed-room fire over-pressurises -> may pop a weak wall (find_burst_walls) -> vents
-# -> P falls -> starves; ALSO now (P4) the room's REAL O2 depletes as it burns ->
-# o2 -> 0 -> starves even in a wall that never bursts. Both emergent. Erik tunes
-# all of these live.
+# Plume: DELETED (P-R2) -- see p_expand_ref's tombstone below. A sealed-room
+# fire's REAL O2 depletes as it burns -> o2f -> 0 -> starves near o2_frac_ext.
+# Erik tunes all of these live.
 k_grow            = 0.5    # logistic growth gain (1/s) — TEMPO only since P-R3. P-K0: promoted from TUNE (P-F1b 4.0->2.0, Erik 2026-08-13 2.0->0.5, slower ramp)
-k_die             = 0.008  # decay rate when starved/cold (1/s). P-K0: promoted from TUNE (P-F1b 2.0->0.008 — the death wall; puts extinction at X=0.1335, just above o2_frac_ext=0.13, so the oxygen limit is binding)
+k_die             = 0.008  # decay rate when starved/cold (1/s). P-K0: promoted from TUNE (P-F1b 2.0->0.008 — the death wall). R1 RE-DERIVATION (2026-09-01): under the renormalized o2f span (o2_frac_amb-anchored, not pure-O2), the logistic wall now sits at X ≈ 0.131 — the comment's "just above o2_frac_ext=0.13" claim, which was DEAD (the old pure-O2 normalization put the wall at X=0.1944, per fire_simulation.h's history) is now TRUE.
 # THE CAPACITY LAW (P-R3, 2026-07-31 — docs/radiation_raycaster_extinction_
 # ruling_2026-07-31.md A3, on Erik's ruling R-b). The growth term's carrying
 # capacity used to be the hardwired constant 1 (the `(1-I)` factor); it is now
@@ -250,7 +301,37 @@ k_die             = 0.008  # decay rate when starved/cold (1/s). P-K0: promoted 
 # because the logistic wall bit first at X = 0.1944. Now each dial has one job:
 # `I_cap_per_avail` = SIZE, `k_grow` = TEMPO, `k_die` = where the death wall
 # sits. `<= 0` legally means "capacity ceiling OFF" (unbounded growth).
-I_cap_per_avail   = 14.0   # capacity per unit availability: I_cap = c·a — the SIZE dial; ruling 2026-07-31 A3. P-K0: promoted from TUNE (P-F1b 2.53->14.0, SIZE)
+# R1 RE-SIZE (fire session #12, 2026-09-01, docs/fire_3c_design_2026-09-01.md
+# "Ruling R1" item 4): `a = avail*hot` moved from `~= 0.092` at ambient (the
+# old pure-O2-normalized o2f) to `~= 1.0` at ambient (o2f renormalized to
+# o2_frac_amb) — roughly a 10.9x jump in the raw operating point of
+# `I_eq ~= c*a`, though the die-term sign fix (item 3) also moves the
+# fixed-point algebra, so the two effects are not cleanly separable. 14.0 was
+# tuned to the OLD ~0.092-scale plateau; left unchanged it would badly
+# saturate I at the new ~1.0 scale. The sizing criterion (locked): hold the
+# open-control ambient plateau where 3a/prebench measured it (I≈0.75, T≈460
+# game — docs/fire_3c_prebench_2026-09-01.md).
+#
+# FIRST PASS (14.0 -> 0.75) assumed the ambient-plateau `a ~= 1.0` (the
+# text-book value AT X = o2_frac_amb exactly). Re-running the b1 open-control
+# bench post-patch measured the ACTUAL plateau at X_plateau = 0.1935, not
+# 0.2100 — the fire's own O2 draw (real consumption, not the idealized
+# textbook point) holds local O2 a hair below ambient even in the open,
+# sky-fed scenario. That gives a MEASURED `a`, not the assumed one:
+#     a = (X_plateau - o2_frac_ext) / (o2_frac_amb - o2_frac_ext)
+#       = (0.1935 - 0.13) / (0.21 - 0.13) = 0.0635 / 0.08 = 0.7935
+# (Erik's own note: "my 0.75 assumed a≈1 at plateau"; this run corrects it
+# with the measured a=0.79.) Plugging the MEASURED a into the exact fixed
+# point (not the `I_eq ~= c*a` approximation) with r = k_die/k_grow = 0.016:
+#     I_eq = c*(a - r*(1-a)) = c*(0.7935 - 0.016*0.2065) = c*0.7902
+# Solving I_eq = 0.75 (the locked criterion) for c:
+#     c = 0.75 / 0.7902 = 0.9492  ~=  0.95
+# CLOSED-FORM RE-SIZE (0.75 -> 0.95): re-ran the b1 open-control bench a THIRD
+# time at c=0.95 to confirm (raw artifacts: tests/_phase3a_artifacts/
+# b1_open_inf_fuel_summary.json, untracked/reproducible per that file's own
+# appendix). Phase 4 owns any further taste re-pass on top of this mechanical
+# fix.
+I_cap_per_avail   = 0.95   # capacity per unit availability: I_cap = c·a — the SIZE dial; ruling 2026-07-31 A3. R1 re-size 2026-09-01: 14.0->0.75 (first pass, assumed a~=1)->0.95 (closed-form, measured a=0.79 at the real open-control plateau — see the derivation above). P-K0: promoted from TUNE (P-F1b 2.53->14.0, SIZE)
 # fire_T_ext: SUPERSEDED as the extinction floor (P-R3, ruling A3 ride-along).
 # It is a PER-MATERIAL quantity — it sits on the same physical axis as the
 # per-material `ignition_temp` — and this global, at 350, exceeded BOTH shipped
@@ -260,7 +341,7 @@ I_cap_per_avail   = 14.0   # capacity per unit availability: I_cap = c·a — th
 # (furniture 280-100 = 180, wood 300-100 = 200), baked into
 # GameMap.fire_T_ext_plane, which makes `fire_T_ext < ignition_temp` STRUCTURAL
 # instead of a rule a config author has to remember. KEPT (like fuel_ref /
-# o2_frac_amb below) because the solver still uses it as the FALLBACK when a
+# o2_frac_full below) because the solver still uses it as the FALLBACK when a
 # caller supplies no per-tile plane; the live engine always supplies one, so
 # this value no longer affects the game. Editing it will NOT move the fire —
 # edit the material's `ignition_temp`, or the Δ below.
@@ -278,7 +359,7 @@ fire_T_span       = 180.0  # width of the `hot` ramp above fire_T_ext (STAYS glo
 # still died). Lowering this global is NOT the fix — at 30, wood (hp 60) would sit
 # clamped at F = 1 until it had already lost half its mass, destroying its
 # burn-down curve. The divisor is now baked per material from [materials.*].hp
-# into GameMap.fuel_recip. KEPT (like o2_frac_amb / o2_threshold above) because
+# into GameMap.fuel_recip. KEPT (like o2_frac_full / o2_threshold above) because
 # the solver still uses it as the FALLBACK divisor when a caller supplies no
 # per-tile plane; the live engine always supplies one, so this value no longer
 # affects the game. Editing it will NOT move the fire — edit the material's hp.
@@ -309,31 +390,78 @@ fuel_ref          = 60.0   # FALLBACK wall_hp normaliser (inert in the live engi
 # Ordering preserved, still bit-stable under the 1e-5 dial perturbation gate
 # (test_payoff_orderings_perturbation_robust).
 # Continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md): the O2 sustain
-# factor is now LINEAR in the local O2 MOLE FRACTION X = Σn_o2/Σn_total over open
-# neighbours, with an extinction limit — o2f = clamp01((X - X_ext)/(X_amb - X_ext)).
-# This REPLACES the smoothstep(P_min, P_full) on ABSOLUTE n_o2 below. The fraction
-# is invariant under thermal expansion, so the v2.4 hot-zone-equilibrium rescale
-# saga (the whole P_min/P_full recalibration note above) is CLOSED — only true
-# vitiation (products displacing O2), not hot thin gas, starves a fire.
-#   o2_frac_ext  = X_ext  (flame-extinction limit; 0 => Erik's pure X/X_full proportional)
-#   o2_frac_full = X_full (the FULL-RESPONSE reference: the O2 mole fraction at which
-#                          o2f reaches 1. This is NOT the ambient atmosphere.)
-#   o2_frac_amb  = X_amb  (what the ambient atmosphere IS; per-map, reads the level's
-#                          [ambient] o2_frac. NO LONGER read by the fire/combustion laws.)
-# FULL-RESPONSE REFERENCE SPLIT (2026-07-30): the denominator used to be X_amb, so
-# ambient air always gave o2f = 1 and the clamp01 made AMBIENT the ceiling — every
-# enrichment route (O2 reservoirs, leaks, wind delivery) was invisible BY CONSTRUCTION
-# (at X = 0.30 the raw ratio 2.125 clamped straight back to 1.0). Normalizing by PURE
-# O2 makes o2f a true physical fraction — "O2 above extinction, normalized to pure
-# oxygen" — the clamp effectively never binds, and headroom always exists. Ambient air
-# now lands at (0.21 - 0.13)/(1 - 0.13) = 0.092. This is a NORMALIZATION FIX, not a new
-# feature: setting o2_frac_full = o2_frac_amb reproduces the pre-split law exactly.
-# RE-TUNE PENDING (design §5): X_ext is a feel dial re-fit jointly with k_grow/k_die/
-# wall_damage/burn_rate AFTER this + the sky-exchange build merge. The split rescales
-# the whole avail axis by ~10x, so k_die/k_grow moves with it — Erik's loop, not here.
+# factor is LINEAR in the local O2 MOLE FRACTION X = Σn_o2/Σn_total over open
+# neighbours, with an extinction limit. This REPLACES the smoothstep(P_min,
+# P_full) on ABSOLUTE n_o2 below. The fraction is invariant under thermal
+# expansion, so the v2.4 hot-zone-equilibrium rescale saga (the whole
+# P_min/P_full recalibration note above) is CLOSED — only true vitiation
+# (products displacing O2), not hot thin gas, starves a fire.
+# R1 O2f-RENORMALIZATION (fire session #12, 2026-09-01, docs/fire_3c_design_
+# 2026-09-01.md "Ruling R1" — SUPERSEDES the 2026-07-30 FULL-RESPONSE REFERENCE
+# SPLIT below, SUSTAIN side only):
+#   o2f = clamp((X - o2_frac_ext) / (o2_frac_amb - o2_frac_ext), 0, o2f_cap)
+#   o2_frac_ext  = X_ext  (flame-extinction limit; UNCHANGED — 0 => pure X/X_amb
+#                          proportional)
+#   o2_frac_amb  = X_amb  (what the ambient atmosphere IS; per-map, reads the
+#                          level's [ambient] o2_frac. R1: NOW LIVE as the
+#                          SUSTAIN span's upper reference — ambient air reads
+#                          o2f == 1.0 by construction.)
+#   o2f_cap      = the enrichment-flare ceiling (NEW dial, R1). o2f is no
+#                          longer clamped to [0,1] — a raw pure-O2 tile would
+#                          reach (1-0.13)/(0.21-0.13) = 10.875, capped at 5.0
+#                          (Erik's choice).
+# WHY (the pre-bench diagnosis, docs/fire_3c_prebench_2026-09-01.md): under the
+# OLD pure-O2 normalization, ambient air read o2f == 0.092 (every other dial —
+# I_cap_per_avail, k_die — was secretly compensating for that near-zero
+# baseline), so a mild local O2 dip (0.21->0.165) HALVED an already-tiny o2f,
+# collapsing heat deposit and killing fires by COLD (T-gate) with 35% O2
+# headroom still left before o2_frac_ext — measured X_death 0.176, rising, far
+# from the physical 0.13 limit. Renormalizing to ambient keeps o2f ~= 1 at
+# modest depletion, so heat deposit holds T up and fires die NEAR the O2 gate
+# instead. `o2_frac_full` below is RETIRED from THIS (sustain) law — it stays
+# live only on the DEMAND side (combustion.cpp's o2f_j, unchanged by R1).
 o2_frac_ext       = 0.13   # X_ext — physical flame-extinction O2 mole fraction (~13%)
-o2_frac_full      = 1.0    # X_full — o2f reaches 1 at PURE O2. NOT ambient, NOT per-map.
-o2_frac_amb       = 0.21   # X_amb — what the ambient atmosphere IS (overridden per-map by [ambient] o2_frac)
+# THE PRESSURE FACTOR (issue #7 "vacuum kills fire", Erik's ruling 2026-09-23;
+# docs/fire_vacuum_pressure_factor_brief_2026-09-23.md). The fraction law above
+# is MULTIPLIED, at both of its reads (the fire ODE's o2f and combustion's
+# claim gate o2f_j), by
+#   g = clamp01((p - p_ext_atm) / (p_full_atm - p_ext_atm))
+# where p is the MATERIALIZED pressure `atmosphere` (atm) over the same air the
+# fraction reads. Venting removes O2 and N2 together, so X stays ~0.21 down to
+# zero molecules; only pressure sees the room empty. PRESSURE, not density:
+# hot air at ambient pressure is thin but keeps g == 1 (the July density-trap
+# fix, continuous_o2_law_design §2.1, survives). Authored in atm, quantized ONCE
+# at load by PhysicsRunner through atmosphere_fixed (the pressure field's own
+# Q16 door) into FireParams/CombustionSolver p_ext_q/p_full_q. GLOBAL (flame
+# and air), not a material column. Must satisfy 0 <= p_ext_atm < p_full_atm.
+p_ext_atm         = 0.1    # no fire at or below this pressure (atm). Literature: flaming spread over thin cellulose (paper) in reduced-pressure air is a NEAR-LIMIT regime, its limiting O2 concentration rising as pressure falls — measured across 4-45 kPa by He, X., Wang, J. & Fang, J., "Flammability limits and near-limit chemistry controlled flame spread over thermally thin paper under sub-atmospheric pressure", Fire Safety Journal 120:103042 (2021), doi:10.1016/j.firesaf.2020.103042 (paywalled; see docs/papers/continuous_o2_law_citations.md for what was and was not verified).
+p_full_atm        = 0.5    # no pressure effect at or above this pressure (atm). Literature: NASA WSTF self-extinguishment thresholds (NASA-STD-6001 Test 1) show "little relation to total pressures above 41 kPa (6 psia)", pressure "highly influential" below it — Harper, S.A., Juarez, A., Perez, H., Hirsch, D.B. & Beeson, H.D., "Oxygen Partial Pressure and Oxygen Concentration Flammability: Can They Be Correlated?", J. ASTM International (2016), NASA NTRS 20160001047; and near-flat thresholds over 48.2-101.3 kPa in Hirsch, D., Williams, J. & Beeson, H., "Pressure Effects on Oxygen Concentration Flammability Thresholds of Materials for Aerospace Applications", J. Testing and Evaluation (2006), NASA NTRS 20070005041. Both archived under docs/papers/.
+o2f_cap           = 5.0    # NEW (R1): enrichment ceiling on the renormalized o2f ratio
+# hotf_cap (R3, fire session #12, 2026-09-06, docs/fire_3c_design_2026-09-01.md
+# "Ruling R3" — Erik's "hot-burns-faster" catch: `hot` clamps at 1, so above
+# ~fire_T_ext+fire_T_span extra heat bought ZERO extra burn/demand rate). hotf is
+# the SAME (T-fire_T_ext)/fire_T_span ramp, allowed to keep climbing past 1, capped
+# here instead — read ONLY at the two RATE sites (combustion.cpp's demand,
+# fire_simulation.cpp's wall-burn); `hot` itself is UNCHANGED and stays the [0,1]
+# I-ODE sustain gate.
+# WHY LINEAR, NOT ARRHENIUS (the load-bearing stability argument, R2's finding
+# above: radiation carries ~99.6% of an emitter's losses, T^4 vs hotf's T^1). A
+# LINEAR hotf can NEVER outrun T^4 losses, so an equilibrium always exists BY
+# CONSTRUCTION — the system is self-limiting on its own, and this cap (paired
+# with o2f_cap) is a SECOND, independent, gameplay-flavoured ceiling on an
+# already-stable feedback, not what keeps it stable. An exponential (Arrhenius)
+# hotf eventually beats T^4, making stability depend on O2 starving the fire
+# first — fragile exactly where oxygen is generous (breach airflow, enriched
+# rooms) and Erik's O2 cap alone could no longer be trusted as the backstop.
+hotf_cap          = 10.0   # NEW (R3): ceiling on the uncapped-at-1 hotf ramp
+# o2_frac_full: RETIRED from the SUSTAIN law by R1 (2026-09-01) — was the
+# 2026-07-30 FULL-RESPONSE REFERENCE SPLIT's pure-O2 upper reference. Kept
+# because combustion.cpp's DEMAND-side o2f_j (unchanged by R1, "how fast it
+# drinks") still reads it, and old configs/bindings that still set it should
+# not hard-error. Editing it moves the DEMAND law, NOT the sustain law above
+# (which now reads o2_frac_amb).
+o2_frac_full      = 1.0    # X_full — DEMAND-side (combustion.cpp) pure-O2 reference only.
+o2_frac_amb       = 0.21   # X_amb — what the ambient atmosphere IS (overridden per-map by [ambient] o2_frac). R1: NOW LIVE — the sustain law's span upper reference.
 P_min             = 0.01   # RETIRED (see o2_frac_ext/amb above) — smoothstep low edge on absolute n_o2
 P_full            = 0.03   # RETIRED — smoothstep full edge on absolute n_o2
 I_min             = 0.02   # snap-to-zero extinguish floor
@@ -348,132 +476,168 @@ p_expand_ref      = 1.30   # self-limiting plume saturation ceiling (atm + therm
 # ([physics.combustion] soot_yield) is now the ONE fire-smoke source. Unlike
 # the other TOMBSTONEs on this page, leaving this key set is a LOUD load-time
 # error (src/simulation/physics_runner.py), not a silent no-op.
-wall_damage       = 0.03   # wall HP lost per second per unit intensity (KEPT — the burn-out brake). P-K0: promoted from TUNE (P-F1b 0.4->0.03, BURN DURATION: 8 min kindling / 24 min furniture)
+# R3 re-size HISTORY: the first landing anchored "neutral" at the MEASURED
+# post-R1 plateau (f_ref = (452.9-80)/180 = 2.0717 -> 0.01448). MEASURED WRONG
+# (docs/fire_3c_r3_report_2026-09-06.md §4-5): fires are born at IGNITION
+# (hotf = Δ/span = 1.1111 there, for EVERY material — the Δ cancels), so the
+# plateau anchor starved young fires (54% O2 draw) and produced bright-but-cold.
+# R4+DURATION LANDING (Erik's rulings 2026-09-06, fire tuning lab session,
+# tools/fire_tuning_lab.py): this dial is now sized by the DURATION TARGET, not
+# by neutrality — Erik: the smallest fuel unit (a 30-hp furniture crate) burns
+# out in ~3 minutes and FUEL is the killer (hp -> 0 -> destroyed; the true
+# burn-away ending). Measured in the lab at H_bed x8 + burn_rate 0.018:
+#     wall_damage 0.36 -> FUEL burnout at 180-182 s, robust to ignition
+#     strength (margins 10-100) and to k_grow 0.382-0.5.
+# The fuel-vs-T-gate RACE needs the H_bed x8 deposit (H_BED_SHIFT 7): weaker
+# deposits heat-collapse with 20-50% char before hp can reach 0 (I_cap ∝ F, so
+# the drain fades with the fuel — measured across x1/x2/x4).
+wall_damage       = 0.36   # wall HP lost per second per unit intensity, TIMES hotf since R3 (the burn-out brake -> now the DURATION dial). History: 0.4 -> 0.03 (P-F1b) -> 0.01448 (R3, bad anchor) -> 0.36 (Erik's 3-min fuel-out ruling 2026-09-06, derivation above)
 
 # --- K2: fire as a sim-side heat ray source (proposal §1, fire_design_notes) --
-# Each burning tile (fire > 0) becomes a short-range heat `LightSource` cast IN
-# THE SIM at the START of the physics step, BEFORE the TemperatureSolver, so this
-# tick's fire heat converts to temperature this same tick. The cast deposits ONLY
-# into `gmap.heat` (Q16.16, saturating-add, attenuated by `heat_atten` per K1) —
-# the render-side light glow is a separate later step. DETERMINISTIC: fixed ray
-# count, fixed angles (no RNG), fixed row-major source order, integer add.
+# TOMBSTONE (T6, issue #12, 2026-09-23): the whole per-tile fire-plane heat
+# cast this section configured (`cast_fire_heat` / `Raycaster::
+# cast_from_fire_plane` / `cuda_raycaster_cast_from_fire_plane`, ruling A1's
+# antisymmetric net-T⁴ exchange, the 8-ray fan, the emitter gate) is DELETED.
+# Since the flip (T5b step 6, 2026-09-23) fire's radiant heat is the
+# radiation sweep (radiation_sweep.h, step 2b of PhysicsEngine::step_tail) —
+# one exact-integer traversal per ordinate over the whole grid every tick,
+# no per-source fan, no emitter gate, no reach dial. Its own emission
+# calibration is `[physics.radiation] rad_scale_derived` below, DERIVED
+# (report_p2b.md), not fitted. `k_fire_heat` was ALREADY a tombstone before
+# this (P-R4, 2026-08-01) — see docs/radiation_raycaster_extinction_ruling_
+# 2026-07-31.md A1. The keys this section used to carry — `rad_scale`
+# (fitted, 5.1427e-5), `T_emit_gate` (930.0), `RADIATION_RANGE` (320.0),
+# `fire_ray_count` (8), `range_base`/`range_per_intensity` (2.0/3.0),
+# `intensity_base`/`intensity_per_intensity` (0.3/0.7), `color`
+# ([1.0, 0.45, 0.12]) — are REMOVED, not tombstoned as dead comments: nothing
+# in physics_runner.py binds them any more (unlike k_fire_heat, whose comment
+# above is kept so an old config doesn't hard-error on a genuinely-dead key
+# nobody reads; these keys have no reader to protect against erroring at
+# all). `coarse_cluster` (below) was the PRECEDENT for this same tombstone
+# vs. removal call at P-R1 — it stays a dead-key comment because raycaster.cpp
+# no longer has the surrounding section this note was anchored to reference.
+# coarse_cluster TOMBSTONE (P-R1, 2026-07-31): dead key — Raycaster::coarse_cluster and the orphaned update_from_fire path it only ever fed (no production caller) were both deleted when the fire source build moved into C++ (cast_from_fire_plane, itself deleted at T6, 2026-09-23); see docs/radiation_raycaster_extinction_ruling_2026-07-31.md A4.2.
+
+# Ray-engine-v2 (docs/ray_engine_v2_design_v3_2026-09-15.md) — THE RADIATION
+# SWEEP: the directional-sweep radiation solver (cpp/src/radiation_sweep.*)
+# runs every tick as step 2b of the physics tail into rad_net_sweep /
+# rad_flux_sweep / rad_amb_sweep / rad_fluence, and — since the flip (T5b
+# step 6) — the temperature fold reads THESE planes; the old fire-plane cast
+# that used to feed the fold is deleted (T6, issue #12). Its own E° bake
+# reads `rad_scale_derived` below and [physics.temperature_scale] for the
+# game<->Kelvin map (the ONE map, shared with every other emission table).
+[physics.radiation]
+# k_leak — the UNIFORM out-of-plane leak coefficient (design §2.3, §2.7): the
+# fraction of each ordinate's stream that leaves the deck plane per cell (the
+# floor and ceiling at ambient), booked into rad_amb with the ceiling's ambient
+# return so its fixed point is exact. Range [0, 1]; quantized once at load
+# (Q16) by PhysicsRunner through simulation/optics_fixed.py.
 #
-# Per burning tile of intensity I (fire value in [0,1]):
-#   heat       = k_fire_heat * I                 (the gameplay payload — energy)
-#   max_range  = range_base + range_per_I * I    (tiles; hotter fire reaches farther)
-#   intensity  = intensity_base + intensity_per_I * I   (ray light weight; ~render)
-#   ray_count  = fire_ray_count  (FIXED 8, no auto, no jitter)
-#   color      = warm orange (render-only tint; heat is the sim payload)
+# LIVE at the DERIVED value since T1 (thermal model v2 R2, 2026-09-19). It was
+# dormant at 0.0 through P1-P2. Erik's ruling: with `cool_shift` deleted (R1)
+# the out-of-plane path is load-bearing — at k_leak = 0 a sealed interior room
+# is radiatively ADIABATIC, because every ordinate that leaves a cell arrives
+# at another cell in the same plane. 0.10 is the fit of the exact slab law
+# S(r) = a/sqrt(a² + r²) for a 2.5 m deck, max 8.2 % error over r = 1..12 tiles
+# (docs/ray_engine_v2_reach_and_papers_2026-09-13.md §2, table at :135).
+# UNIFORM by ruling: a per-tile authored leak (a floor grate, open sky) needs
+# level data and editor support and is a named extension point, not v1.
+# Set at T1 while the sweep was still in shadow, so it moved no golden then;
+# T5b's flip made it load-bearing — k_leak now actively cools sealed rooms.
+k_leak = 0.10
+
+# vacuum_ambient_K — the temperature of SPACE, in Kelvin, for the PER-TILE
+# ambient the sweep radiates against (thermal model v2 R3, 2026-09-19).
 #
-# k_fire_heat is tuned (proposal §1 target): a lone burning tile (I=0.8) self-
-# heats its own wood cell and conducts toward an adjacent wood wall's ignition_temp
-# (300) so the neighbour crosses it over a FEW SECONDS (~1.5 s here — toward but
-# not instantly past), while the existing cellular fire spread (spread_rate 0.3,
-# neighbour ignition in a few ticks) still DOMINATES the spread. The heat path
-# mainly adds unit damage + a slow secondary heat-ignition; it does NOT firestorm
-# the map in a couple of ticks. Erik tunes this live. (`temperature` is ΔT in
-# game units above a 20° reference, not literal Celsius — a fire reads hot.)
-# PURE-DENSITY RE-TUNE (engine/08 §Falloff is density, 2026-06-28): the raycaster
-# now divides each source's emitted power by its ray count (energy = power/N), so
-# `heat` here is the burning tile's TOTAL heat power, no longer a per-ray amount.
-# The old per-ray value (200) summed to ~8× at the source over the 8 fixed rays;
-# to preserve the same deposited energy (and ignition/kill behaviour) it is scaled
-# by fire_ray_count -> 1600. (Heat now radiates with a physical 1/r reach instead
-# of the old steep 1/(1+d²) — slightly longer reach is the intended improvement.)
-# k_fire_heat TOMBSTONE (P-R4, 2026-08-01): dead key — THE PAINTER IS GONE. The
-# one-way `heat = k_fire_heat * I` deposit violated the arc's one rule twice (it
-# deposited the same per-ray energy at EVERY marched cell — a 5-cell ray
-# deposited 5x its payload — and nothing was ever debited from the source), and
-# it is replaced by an antisymmetric net-T⁴ EXCHANGE whose magnitude comes from
-# the emitters' own temperatures through `rad_scale` below. Nothing reads this
-# key; it is left as a comment so an old config does not hard-error.
-# See docs/radiation_raycaster_extinction_ruling_2026-07-31.md A1.
+# The sweep's ambient is an EMISSIVE LEVEL, not a temperature: E°'s domain
+# starts AT ambient (e_bucket_of floors at bucket 0), so no temperature the
+# table can be asked about maps below E°[0], and "0 K outside the hull" is
+# exactly such an ambient. PhysicsRunner therefore bakes this Kelvin value
+# through the SAME exact chain the E° table uses — K⁴ by repeated int64
+# multiplication, one rad_scale_derived boundary multiply, round half up — and
+# hands the engine the resulting LEVEL. The engine selects it per cell from the
+# `is_vacuum` plane it already has (RadiationSweep::derive_ambient); no
+# material column, no level-data field, nothing authored per tile.
 #
-# --- P-R4: the net-T⁴ radiation exchange (ruling A1) --------------------------
-# For every (emitter s, absorbing marched cell r) pair the ray march enumerates:
-#   net       = a_s * a_r * tau * w * (E°[T_s] - E°[T_r])   (signed, Q16.16 counts)
-#   rad_net[r] += net;   rad_net[s] -= net                   (the SAME integer)
-#   survival  *= (1 - a_r)                                   (AFTER the deposit)
-# with a_x = the material's `heat_atten` (absorptivity == emissivity, Kirchhoff),
-# tau the running material transmittance, w = 1/fire_ray_count, and E° the baked
-# black-body table E°(T) = rad_scale * (293 + 3*T_game)^4 — the canonical
-# game-T -> Kelvin map now lives in [physics.temperature_scale]
-# (kelvin_ambient=293, k_temp_to_kelvin=3); this is the SAME map baked into
-# the raycaster's E° table, render blackbody, and the tuning tools (P-K2,
-# docs/temperature_scale_unification_design_2026-08-13.md §2/§3a-b).
+# The DEFAULT 295 is bucket 0's own midpoint, kelvin_ambient + 2·k_temp_to_kelvin
+# — i.e. exactly E°[0], space at room temperature. That is thermal v2 R4
+# ("most of the playing will take place inside the space ships"), it makes the
+# derived plane UNIFORM, and it keeps the sweep bit-identical to the scalar era.
+# Set it to 0.0 for Erik's cold sky: a hull cell then radiates into 0 K and a
+# breach genuinely chills the tiles that see it.
+# Must be integer-valued (the exact-bake precondition) and must not bake ABOVE
+# E°[0] — a hotter-than-room ambient would make a cell's emission excess
+# negative, which the excess-form Fleck factor rests on being non-negative.
+vacuum_ambient_K = 295.0
+
+# rad_scale_derived — THE SWEEP'S EMISSION CALIBRATION, DERIVED (P2b, design
+# v3 §9; full derivation + sensitivities in
+# docs/ray_engine_v2_scheme_study_2026-09-13/report_p2b.md).
 #
-# rad_scale — THE EMISSION CALIBRATION. It folds sigma, the 0.833 m² tile face,
-# the per-tick dt and the game->Kelvin mapping into one number: heat counts per
-# K^4. RE-ANCHORED AT P-K2 for the ×3 map (was 1.0e-5, derived under the old
-# ×2 map 293 + 2*T_game): the value is chosen to PRESERVE EMITTED FLUX at the
-# P-F1b plateau anchor T_a = 300 game, which reads K=893 under the old map and
-# K=1193 under the new one —
-#     rad_scale' = 1.0e-5 * (893/1193)^4 = 1.0e-5 * 0.313938 = 3.1394e-6
-# (the ONE shipped literal — exactly one so two machines syncing config.toml
-# via git can't diverge). Flux is IDENTICAL at the plateau; E'/E ratio vs. the
-# old map: 0.31 @ T=0, 0.87 @ 200, 1.00 @ 300 (the anchor), 1.09 @ 400,
-# 1.21 @ 600, 1.34 @ 1000, asymptote 1.59 — never exceeds 2x.
+# Was the twin of a FITTED `[physics.fire] rad_scale` through the P2b-P3c
+# transition window (two owners, two keys, on purpose: the sweep's E° table
+# baked from THIS key while the old cast's fed the live fold from the fitted
+# one, so the live game and every golden stayed bit-unchanged while the sweep
+# ran on real physics in the shadow). T6 (issue #12) deletes the old cast and
+# its `rad_scale` key with it — this is the only emission-calibration key
+# now, and PhysicsEngine.emissive is its only owner (the old Raycaster's
+# vestigial second copy of the bake went with the class at ray-engine-v2 P6c).
 #
-# The config's own two-tile ignition inequality, RE-DERIVED under the ×3
-# anchors (was: furniture a=0.5, his=3, cool_shift=9, a 443-game emitter
-# K_s=1179, the 280-game ignition point K_r=853, needing rad_scale >= 6.5e-6
-# at two tiles, ×1.54 margin under the shipped 1.0e-5):
-#     T_r/2^cool_shift = a_s*a_r*(n_rays/8)*rad_scale*(K_s^4 - K_r^4) / 2^his
-# with the SAME furniture a=0.5, his=3, cool_shift=9 but K_s = 293+3*443 =
-# 1622 and K_r = 293+3*280 = 1133, the required rad_scale for ignition at two
-# tiles is ~1.73e-6; the shipped 3.1394e-6 clears it with ×1.82 margin (up
-# from ×1.54 — the steeper ×3 map makes ignition EASIER at a given rad_scale,
-# not harder). RE-TUNE AT P-R5 with cool_shift (the two multiply).
-rad_scale            = 3.1394e-6 # heat counts per K^4 in the baked E° table
-# T_emit_gate — who CASTS. Emitters are burning tiles UNION thermal solids at or
-# above this temperature. RECEIVERS ARE FREE: the net form accounts a cold tile
-# fully on the flame's own rays, so a crate never needs to emit to be heated
-# correctly. This gate only decides who can radiatively LOSE heat and warm
-# others. 180 game = 653 K (Erik, 2026-07-31). LOWER = the FEEL lever (warm
-# objects gently toasting their surroundings) and costs emitter count; HIGHER =
-# the COST lever and costs post-fire glow. Ruling A1.8.
-# P-K0: promoted from TUNE (P-F1b 180->310 — at 180 a receiver became an
-# emitter too early and its ceiling collapsed to E_s/15, stalling spread).
-T_emit_gate          = 310.0  # game units; below it a hot solid does not cast
-# --- P-F1a / v7 rule 4: RADIATION_RANGE --------------------------------------
-# The reach of an EMISSION ray, in tiles. A STABILITY-CLASS CONSTANT, NOT A FEEL
-# DIAL — do not tune it for look.
+#   rad_scale_derived = sigma * A_rad * dt / J_per_count            [counts/K^4]
 #
-# WHY IT EXISTS. Under P-R4 an emission ray died at `range_base +
-# range_per_intensity * I` (~2-5 tiles), so "the ray ran out of reach" and "the
-# ray left the world" were different events and the books could not tell them
-# apart. That is the CORRIDOR LEAK: a fire in a long room lost less than the
-# same fire in a short one, because its rays expired mid-air and were charged to
-# nobody. Setting the range at or above the GRID DIAGONAL makes reach-termination
-# structurally unreachable before the world edge, so "genuinely escapes" ==
-# "left the world", map-independent — which is what lets rule 4's sky term be
-# the ONLY ledger entry and lets gate (ii) close exactly.
+#   sigma       = 5.670374419e-8 W/m^2/K^4        (Stefan-Boltzmann, CODATA 2018)
+#   A_rad       = 4 * 0.333 * 2.5 = 3.33 m^2      the cell column's FOUR lateral
+#                 faces. E° is the cell's TOTAL emission per tick (§2.3: the
+#                 ordinate weights sum to ONE), so A_rad is the whole in-plane
+#                 radiating surface, not one face. The floor/ceiling faces are
+#                 the SEPARATE out-of-plane channel `k_leak` above — folding
+#                 them in here would double-count it. tile_size_m 0.333 is the
+#                 shipped-level value (levels/*/level.toml); deck height 2.5 m
+#                 is [physics.water] ceiling_h.
+#   dt          = 1/24 s                          ([clock] ticks_per_second)
+#   J_per_count = rho_c * V_tile / (8 * 65536) = 0.4759 J
+#                 THE CURRENCY PIN, at R13's ruled value (Erik, 2026-09-19:
+#                 "0.9 it is"). One heat count raises a thermal_mass = 1 tile by
+#                 1/65536 K (temperature_solver.cpp, `gain = deposit >>
+#                 log2(thermal_mass)`; kelvin_ambient 293 and k_temp_to_kelvin 1
+#                 make one game degree one kelvin). Pinned on the furniture row
+#                 (thermal_mass = 8) with rho_c = 0.9 MJ/(m^3 K) -- wood at
+#                 ~12 % moisture content, which is what the [materials.wood]
+#                 row's own authored density (555) and specific_heat (1620)
+#                 multiply to, 0.899 -- and V_tile = 0.333^2 * 2.5 = 0.277223
+#                 m^3, the FULL solid column: the same filled block that
+#                 radiates from 4*s*H must store in s^2*H. C_tile = 249.5 kJ/K
+#                 (~154 kg of wood).
+#                 T5b: this block used to read 0.37013197 J / 0.7 MJ/(m^3 K) /
+#                 194.06 kJ/K / ~139 kg -- the PROVISIONAL pin that R13
+#                 superseded. The key's own value below was already moved to
+#                 R13's; the derivation above it had not been (report_t2.md D3
+#                 site 23).
 #
-# THE FLOOR. The largest shipping level is 128 x 256 => diagonal
-# sqrt(128^2 + 256^2) = 286.22 => the floor is 287. 320 carries ~12% headroom for
-# a larger level without a law change. RAISING it is always safe; LOWERING it
-# below the diagonal of any shipped level reopens the leak.
+# ASSUMPTIONS, both multiplicative, both reported in the report's §3:
+#   * one face instead of four          -> 5.3141e-9  (x1/4)
+#   * a fill fraction phi < 1 in V_tile -> scale / phi (phi = 0.216 for a column
+#     of stacked 12 mm plywood crates -> 9.84e-8)
+#   * rho_c across the wood literature band 0.52..0.90 -> 2.86e-8 .. 1.65e-8
 #
-# THE COST, and what pays for it. A long ray costs march STEPS, not deposits —
-# an air cell is one DDA step and a bounds test. What makes that affordable is
-# the MANDATORY PURE-RADIATION FAST PATH: emission rays skip ALL RGB, direction
-# and gas-optics work (no exp anywhere), doing only the integer exchange terms
-# and the heat_atten survival. Fire's VISIBLE LIGHT is a SEPARATE, SHORT second
-# cast that still uses `range_base`/`range_per_intensity` below and the unchanged
-# light machinery — so the render output is untouched.
-RADIATION_RANGE      = 320.0  # tiles; MUST be >= the largest level's diagonal (287)
-fire_ray_count       = 8      # FIXED rays per burning tile (no auto-count, no RNG dither)
-# range_base / range_per_intensity: RENDER + LEGACY duty only since P-F1a. They
-# set (a) the short visible-light cast's reach and (b) D3's `damage_range` — the
-# deterministic distance guard on the rad_flux SENSOR write, which keeps unit
-# radiant damage at exactly its old reach (v7.1 item 4) even though the emission
-# ray now crosses the map. They do NOT bound an emission ray.
-range_base           = 2.0    # max_range = range_base + range_per_intensity * I  (tiles)
-range_per_intensity  = 3.0
-intensity_base       = 0.3    # ray light intensity = intensity_base + intensity_per_I * I
-intensity_per_intensity = 0.7
-color                = [1.0, 0.45, 0.12]   # warm orange (render-only; heat is colourless)
-# coarse_cluster TOMBSTONE (P-R1, 2026-07-31): dead key — Raycaster::coarse_cluster and the orphaned update_from_fire path it only ever fed (no production caller) were both deleted when the fire source build moved into C++ (cast_from_fire_plane); see docs/radiation_raycaster_extinction_ruling_2026-07-31.md A4.2.
+# CONSEQUENCE worth knowing before reading a sweep plane: across the FIRE
+# range (fires plateau at 285-300 game, M3) f == 2^24 on every shipped row —
+# no damping where it matters for combat. Damping does engage above any fire,
+# though, on the thinner rows: measured (fleck_f_solid_q24) at wood/foliage
+# 4868 game, kindling 5988, furniture 7620 (hull/steel/glass/door never reach
+# g > 1 inside the table). A physically heavy tile cannot radiate an
+# appreciable share of its own heat in 1/24 s. The fitted key above is 2419x
+# larger, i.e. it behaves as if a furniture tile held 80 J/K — 65 grams of
+# wood — instead of 194 kJ/K.
+rad_scale_derived = 1.6533e-08  # heat counts per K^4 in the SWEEP's E° table
+                                # R13 [Erik, 2026-09-19]: the currency pin is
+                                # 0.9 MJ/(m^3 K), wood at ~12% MC, so
+                                # J_per_count = 0.4759 J. The 2.125632e-08 that
+                                # stood here was the provisional 0.7 pin, -22.2%.
+                                # Caught by T3. LIVE since T6: the sweep's E°
+                                # table bakes from this key alone now (T6
+                                # deletes the old cast's separate
+                                # [physics.fire] rad_scale).
 
 # Water pipe model (engine/07 §2, water plan W2). The C++ WaterSolver advances
 # gmap.water_depth (metres of standing water) each tick: damped velocity kick +
@@ -507,11 +671,14 @@ k_amp = 0.5       # ripple amplitude clamp |ripple| <= k_amp*depth — waves no 
 k_splash = 2.0    # wave_p -> ripple_v splash gain (W6a) — PURE FEEL DIAL, awaiting Erik's eyeball with W6b
 
 [smoke]
-# Ray-engine smoke optics (ch.05 §6.1 §6 — decoupled per-channel absorption vs
-# glow). Two INDEPENDENT budgets, NOT constrained to absorb + glow = 1:
-#
-#   transmission:  tau_c = absorption[c] * density * absorb_scale; trans_c = exp(-tau_c)
-#   scatter/glow:  smoke_glow[c] += local_light[c] * scatter_albedo[c] * density   (additive)
+# Smoke optics (ch.05 §6.1 §6 — decoupled per-channel absorption vs glow). Two
+# INDEPENDENT budgets, NOT constrained to absorb + glow = 1. ONE owner: these
+# dials are folded ONCE into the radiation sweep's light columns at the gases
+# door (GasTable.light_absorb_q16 = absorption x smoke_absorption x
+# smoke_absorb_scale; light_glow_q16 = scatter_albedo x smoke_scatter_albedo,
+# ray-engine-v2 P6a), and the gas-medium render pass reads smoke_absorb_scale
+# as its base scale (renderer/gas_medium.py). (They were the old render
+# march's Beer-Lambert exp and god-ray glow until P6c deleted the march.)
 #
 # smoke_absorb_scale is the global "beam reach" dial. Dial it DOWN for the
 # long-beam "flashlight travels far through smoke and still glows" look Erik
@@ -523,6 +690,8 @@ k_splash = 2.0    # wave_p -> ripple_v splash gain (W6a) — PURE FEEL DIAL, awa
 smoke_absorption = [1.0, 1.0, 1.0]       # Beer-Lambert per-channel absorption (R,G,B)
 smoke_scatter_albedo = [1.0, 1.0, 1.0]   # additive god-ray/glow gain (R,G,B), decoupled from absorption
 smoke_absorb_scale = 1.4                 # beam-reach dial: LOW = long beam (flashlight travels far), HIGH = beam dies fast
+                                         # (#12, 2026-10-04: no longer touches SMOKE's light -- smoke carries a
+                                         #  derived [gases.smoke] light_absorb; still the render medium's base)
 # NOTE (Fire & Heat Beauty B2 §3/§6): the old `smoke_render_gamma` render-
 # contrast dial was DELETED here — the physical gas-medium pass's tau-curve
 # ([render.gas_medium] tau_curve_a / tau_curve_b) subsumes it (contrast now
@@ -538,28 +707,26 @@ smoke_absorb_scale = 1.4                 # beam-reach dial: LOW = long beam (fla
 # diffusion, decay, flags) + a name->index map.
 #
 # Columns (research-approved values, §6.2):
-#   absorption     [R,G,B] per-unit-density Beer-Lambert absorption (subtractive
-#                  tint of transmitted light). M2 sums these density-weighted
-#                  across coexisting gases in the raycaster; M1 only loads them.
+#   absorption     [R,G,B] per-unit-density absorption (subtractive tint of
+#                  transmitted light), summed density-weighted across
+#                  coexisting gases by the sweep's light channels (P6a).
 #   scatter_albedo [R,G,B] additive god-ray/glow gain (decoupled from absorption,
 #                  NOT constrained to absorb+glow=1).
-#   diffusion      per-gas base diffusion coefficient (the per-gas d_smoke the
-#                  transport loop binds before stepping that slice).
-#   decay          per-tick decay rate (LOADED for M2/M3; NOT yet applied in
-#                  transport — the M1 solver has no decay term, so applying it
-#                  would break behaviour preservation; see physics_runner).
+#   diffusion      per-gas diffusion coefficient (1/s, per tile^2) of the trace
+#                  tail's conservative face diffusion (smoke transport v2, #12);
+#                  the gases door refuses diffusion * dt > 0.25 (stability).
+#   decay          per-second decay rate, applied once a tick by the trace tail
+#                  (ceil-rounded: thin gas reaches 0; smoke transport v2, #12).
 #   flammable      ignites where density > threshold (fuel_gas only) — read M3.
 #   emits_when_hot black-body emission driven by the heat buffer — read M2/M3.
 #   effect         per-gas gameplay tag, read unit-side in mechanics (not here).
 #   conservative   EOS refactor P1 (docs/eos_refactor_design.md §2.1/§2.2):
 #                  true ONLY for the bulk pair (o2 / inert_n2) below — routes
 #                  that plane to donor-cell CONSERVATIVE flux transport
-#                  (bulk_transport.cpp) instead of this per-gas semi-Lagrangian
-#                  loop. False for every trace gas (unchanged behaviour).
+#                  (bulk_transport.cpp). False for every trace gas, which RIDES
+#                  that flux priced by air (smoke transport v2, #12).
 #
-# smoke is combustion soot — what fire and explosions emit. Its diffusion
-# (0.10) matches today's d_smoke (0.1), so mapping the EXISTING generic smoke to
-# the smoke slice is behaviour-preserving (engine/05 §6.2; M1).
+# smoke is combustion soot — what fire and explosions emit (engine/05 §6.2; M1).
 
 # EOS refactor P1 calibration constants (docs/eos_refactor_design.md §2.1).
 # Pressure is derived as P = C * N_total * T (Kelvin) once the compressible
@@ -614,7 +781,7 @@ CFL_ADV = 0.5                         # advection CFL number
 N_FLOOR_SOLVER = 0.001                # solver-internal N floor (gameplay N unfloored)
 adiabatic_index = 1.4                 # ideal-gas adiabatic index (compression work); TUNING DIAL
 absorb_strength = 8.0                 # dyn_wave_absorb scale in the velocity-correction damping
-T_MIN = -289.0                        # floor on the ambient-relative T field (T_abs >= ~1 K)
+T_MIN = -292.0                        # floor on the ambient-relative T field (T_abs >= 1 K; G12: 293-292=1)
 U_MAX = 1000.0                        # v2.4 defense-in-depth velocity rail (m/s): the step-4
                                       # store clamp caps |u| at min(c_LOCAL, U_MAX); counted.
                                       # Far above any legit game wind (ambient c=300); exists
@@ -627,7 +794,12 @@ U_MAX = 1000.0                        # v2.4 defense-in-depth velocity rail (m/s
 # gone, replaced by the conservative face-flux energy step, whose
 # telescoping and donor-only positivity rail do the job structurally.
 # physics_runner raises loudly if this key comes back.
-k_drag = 0.5                          # energy-books arc (design §2.8, NEW patch P-E3).
+k_drag = 0.01                          # energy-books arc (design §2.8, NEW patch P-E3).
+                                      # SHIPPED VALUE 0.01 (Erik, 2026-10-06, #4): tuned by eye in
+                                      # smoke_light_studio (0.333 m tiles, sim_speed 1) with
+                                      # k_drag2 = 0.225 -- the linear term nearly off (100 s
+                                      # e-fold), the quadratic term does the stopping. Vents
+                                      # (#48) were tuned at 0.5 and get retuned. History below.
                                       # SHIPPED VALUE 0.5 (Erik, P-E5 2026-08-17) — a
                                       # starting point, not a tuned value: he ruled that
                                       # real tuning waits until the pressure-transient arc
@@ -661,7 +833,10 @@ k_drag = 0.5                          # energy-books arc (design §2.8, NEW patc
 # Delta(|u|^2) bracket. 0.0014 was the hand-rolled stand-in for exactly
 # that constant (1/c_v_phys ~= 0.0018). physics_runner raises loudly if
 # this key comes back -- see the stale-key guard there.
-k_drag2 = 0.0                         # drag-law v2 (design docs/drag_law_v2_design_
+k_drag2 = 0.225                         # drag-law v2 (design docs/drag_law_v2_design_
+                                      # SHIPPED VALUE 0.225 (Erik, 2026-10-06, #4; was 0.125 from
+                                      # the 1 m explosion studio): a jet loses a factor e over
+                                      # 1/0.225 = 4.4 m. See k_drag above. History below.
                                       # 2026-08-23.md, issue #4 P1): the QUADRATIC
                                       # term of the two-term interior drag law
                                       # F = -k1*u - k2*|u|*u (k1 = k_drag above,
@@ -691,24 +866,31 @@ k_drag2 = 0.0                         # drag-law v2 (design docs/drag_law_v2_des
                                       # both signs), so it cannot rectify
                                       # oscillation or open this window either.
 
-# Canonical game-T -> Kelvin map (temperature_scale_unification_design_
-# 2026-08-13 §2). The ONE place these constants are defined — radiation bake,
+# Canonical game-T -> Kelvin map. G12 (issue #12, ruling 2026-08-31,
+# docs/fire_g12_one_map_patch_2026-08-31.md): ONE affine map everywhere —
+# K = 293 + T_game — collapsing the canonical bake/render/tools map (formerly
+# ×3, temperature_scale_unification_design_2026-08-13 §2) onto the EOS
+# absolute frame the conserved thermodynamics already lives in. Supersedes
+# ruling 6's eos_t_amb_k exception below: there is no longer a second frame
+# to except FROM. The ONE place these constants are defined — radiation bake,
 # render blackbody, and tuning tools all read this section (accessor:
-# src/temperature_scale.py). eos_t_amb_k below (derived C = 1/eos_t_amb_k) is
-# a DELIBERATE exception to kelvin_ambient (ruling 6): T_game is a ΔT, EOS
-# pressure calibration doesn't care what "0" means in Kelvin, and 290 is
-# Q16.16-near-optimal where 293 would add 92 extra quantization counts to
-# every ambient cell. [physics.eos] no longer carries t_amb_k/C — a stale key
-# there hard-errors at load (migration guard, src/temperature_scale.py).
+# src/temperature_scale.py). eos_t_amb_k below (derived C = 1/eos_t_amb_k)
+# now EQUALS kelvin_ambient — 293 is no longer Q16.16-suboptimal to except
+# for, since eos_t_amb_k WAS the target frame all along. [physics.eos] no
+# longer carries t_amb_k/C — a stale key there hard-errors at load
+# (migration guard, src/temperature_scale.py).
 [physics.temperature_scale]
 kelvin_ambient = 293.0                 # absolute K at T_game = 0 (~20 C) — THE map ambient
-k_temp_to_kelvin = 3.0                 # game-dT -> Kelvin slope (Erik's k_calibr, blessed 2026-08-13)
-phi_exp = 0.3333333333333333           # EOS expansion fraction of the Kelvin excess.
+k_temp_to_kelvin = 1.0                 # game-dT -> Kelvin slope. G12 (2026-08-31): 3->1, THE COLLAPSE
+phi_exp = 1.0                          # EOS expansion fraction of the Kelvin excess.
 # VALUE-FROZEN this arc: phi_exp * k_temp_to_kelvin == 1.0 exactly
-# (0.3333333333333333 parses to double(1/3); 3.0*double(1/3) == 1.0, a
-# round-to-even tie landing on 1.0 — verified). Retuning phi_exp is the storm
-# session's ruling, not this one.
-eos_t_amb_k = 290.0                    # EOS absolute-ambient (pressure calibration) — see note above
+# (1.0*1.0 == 1.0 exact — no round-to-even tie to verify, unlike the old
+# 0.3333333333333333*3.0 case). Retuning phi_exp is the storm session's
+# ruling, not this one.
+eos_t_amb_k = 293.0                    # EOS absolute-ambient (pressure calibration). G12: 290->293,
+                                        # now the SAME ambient as kelvin_ambient (ruling 6's exception
+                                        # is dissolved — one frame, one ambient). C = 1/293 (was 1/290,
+                                        # ~1% pressure-calibration shift — golden change, see G12 doc).
 
 # EOS refactor P4 — combustion on real O2 (docs/eos_refactor_design.md §5,
 # decisions log #12). Own pass, once per tick, after the EOS solver
@@ -724,9 +906,15 @@ eos_t_amb_k = 290.0                    # EOS absolute-ambient (pressure calibrat
 # Sane defaults; feel-tuned at P5 like every other fire/thermal dial.
 [physics.combustion]
 # Continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md §2.3): the O2
-# demand is now PROPORTIONAL — demand = burn_rate * I * o2f * dt (per claimant),
-# where o2f is LINEAR in the air cell's O2 mole fraction (the SAME o2_frac_ext/
-# o2_frac_full law the fire logistic uses, bound from [physics.fire]). burn_rate
+# demand is now PROPORTIONAL — demand = burn_rate * I * o2f_j * dt (per claimant),
+# where o2f_j is LINEAR in the air cell's O2 mole fraction, span o2_frac_ext/
+# o2_frac_full (bound from [physics.fire]). R1 (2026-09-01, docs/fire_3c_
+# design_2026-09-01.md "Ruling R1"): this DEMAND-side o2f_j is deliberately
+# UNCHANGED and no longer the SAME law the fire logistic (sustain) uses — the
+# sustain law's span was renormalized to o2_frac_ext/o2_frac_amb (+ the o2f_cap
+# ceiling); this one still reads o2_frac_ext/o2_frac_full (pure O2), "how fast
+# it drinks" vs "how well it thrives" (two roles, two shapes, by ruling).
+# burn_rate
 # drops from the retired uniform-gated 1.0 to the ceiling_h-anchored physical
 # value ~1/50: at ceiling_h=2.5 m the per-unit-O2 heat/fuel budget that keeps a
 # room-scale flame bounded and Q16.16-safe lands here (Huggett 1980 oxygen-
@@ -734,11 +922,77 @@ eos_t_amb_k = 290.0                    # EOS absolute-ambient (pressure calibrat
 # of k_grow/k_die/wall_damage/X_ext vs this rate happens AFTER this + the sky-
 # exchange build both merge (design §5) — burn_rate is FIXED at 0.02 for that
 # re-tune and "never touched again without a real reason" (Erik).
-burn_rate         = 0.02   # N_O2 per second per burn site AT I=1, o2f=1 (was 1.0)
+# R3 RE-ANCHOR (fire session #12, 2026-09-06, docs/fire_3c_r3_report_2026-09-06
+# .md §6.1, Erik-blessed): demand is burn_rate*I*o2f_j*hotf*W_hop*w_path (see
+# [physics.fire]'s hotf/hotf_cap block). The first landing divided by f_ref =
+# 2.0717 (hotf at the measured PLATEAU) — measured wrong: fires are BORN at
+# ignition, where hotf = Δ/span = 200/180 = 1.1111 for EVERY material (the
+# per-material Δ cancels: hotf(ign[mat]) = (ign - (ign - Δ))/span = Δ/span).
+# Anchoring there makes the bootstrap exactly pre-R3-neutral — no starved young
+# fire — while everything hotter burns faster (the whole point of R3):
+#     f_ref = Δ/span = 1.1111  ->  burn_rate 0.02 / 1.1111 = 0.018
+# If ignition_to_ext_delta or fire_T_span move, this dial re-sizes with them
+# (burn_rate = 0.02·span/Δ) or the anchor bug returns.
+burn_rate         = 0.018  # N_O2 per second per burn site AT I=1, o2f=1, hotf=1 (was 1.0 -> 0.02 -> 0.00965 (R3, bad plateau anchor) -> 0.018 (ignition re-anchor, f_ref=1.1111))
 o2_thresh_burn    = 0.03   # RETIRED as the burn gate (the o2f law is the throttle);
                             # kept ONLY as an epsilon skip-floor (O2 <= this -> the
                             # air cell is treated as fully starved and skipped)
-H_fuel            = 4.0    # heat yield (T-scale ΔT) per unit N_O2 burned
+# --- H_fuel — THE GAS-SIDE HEAT YIELD, per unit N_O2 burned -------------------
+# ONE LOGICAL CONSTANT, SPLIT (T5a, 2026-09-19): H_fuel = H_FUEL_M · 2^H_FUEL_SHIFT,
+# exactly the shape H_BED_M/H_BED_SHIFT below has carried since P-R4.
+#
+# WHY THE SPLIT EXISTS. It used to be a bare `H_fuel = 4.0`, quantized into a
+# Q16.16 int32 — so its ceiling is 32 768. T3 §6.3 derives the plume's share of
+# Huggett 1980's 4.831 MJ per unit N_O2 (a 25/75 flame-to-surface feedback split,
+# Drysdale ch. 5) at 7.614e+06 counts, two and a half orders of magnitude past
+# what the format can hold. The derived value was not blocked by a tuning
+# decision; it was unrepresentable. T5a landed the schema carrying EXACTLY
+# today's number so the goldens could gate it as a pure refactor.
+#
+# THE DERIVED VALUE IS *NOT* APPLIED, AND T5b MEASURED WHY.
+# T3 derives H_FUEL_M = 14870, H_FUEL_SHIFT = 9 (14870 · 512 = 7.613e+06
+# counts = 3.62 MJ), the 75 % PLUME share of Huggett's 4.831 MJ per unit N_O2.
+# Applying it makes the gas run away and THREE pre-existing gates say so:
+#
+#   test_e1_hot_rail::test_no_rail_hits            T_MAX_PHYS engaged 17 206x
+#                                                  against a budget of 8
+#   test_eos_p4_combustion::test_thermal_spike_..  peak 15 992 game, i.e. the
+#                                                  gas pinned at T_MAX_PHYS
+#   test_ps1_smoke_roundtrip::..never_exceed_start bulk gas mass MINTED
+#
+# and they are not loose: bisected on this branch, even a 2x H_fuel (8.0)
+# trips the first of them. The shipped 4.0 is already AT the ceiling, so the
+# derived value is 1.9 MILLION times what the gas side can absorb.
+#
+# THE REASON IS STRUCTURAL, NOT NUMERIC. Design v2 §3.1 states it itself:
+# "gas is heated only by combustion until P5 gives it radiative absorption".
+# A gas cell has NO radiative loss channel at all in this model -- it can be
+# heated, advected and expanded, and that is the whole list. Handing a medium
+# with no loss channel 75 % of a real fire's heat release is the same defect
+# R12 fixed for foliage (an energy ratchet), and the missing physics is the
+# same too: a real plume dumps its heat by RADIATING and by ENTRAINING ~30
+# tile-volumes of cold air per second, while our deposit lands in one cell and
+# its open faces.
+#
+# So the plume share stays UNMODELLED until P5, and the engine releases only
+# H_bed's 25 % fuel-surface share (1.208 MJ per unit N_O2, derived below).
+# Raising H_fuel before P5 would be tuning a dial to paper over a missing
+# channel, which is what this whole arc exists to stop doing.
+# See report_t5b.md §5 for the measurement and the open question.
+#
+# Keep the mantissa as large as the format allows (|H_FUEL_M| < 32768) and take
+# the rest in the shift: a claimant's per-tick burn is only a few raw Q16.16
+# counts, so mul_q16's truncation is coarse unless the mantissa carries the
+# magnitude.
+H_FUEL_M          = 4.0    # mantissa (< 32768, the Q16.16 range)
+H_FUEL_SHIFT      = 0      # H_fuel = H_FUEL_M * 2^H_FUEL_SHIFT = 4.0
+# UNCHANGED at T5b -- see the block above for the measurement that blocked the
+# derived value, and report_t5b.md §5 for the open question it leaves Erik.
+# One thing that DID change: this dial now HAS an automated backstop. T5a §6.4
+# found that doubling it left all 2557 tests green; at the corrected `c_v` the
+# gas is 130x lighter, so the same deposit makes 130x the temperature, and a
+# 2x move now trips test_e1_hot_rail. The currency fix gave the gas-side yield
+# the gate it was missing.
 # --- o2_potency — THE SIZING RULING's preserved option (Erik, 2026-08-02) -----
 # A LOAD-TIME MULTIPLIER on the baked heat-per-O2 constants (the H_fuel /
 # H_BED_M chain above and below). Erik's sizing ruling shipped PACKAGE A —
@@ -772,6 +1026,16 @@ soot_yield        = 0.5    # fraction of consumed O2 -> smoke (rest -> inert_N2)
 # default, but in play THE ember-lifetime dial: smaller -> embers glow for
 # minutes awaiting oxygen; larger -> they char out fast.
 fuel_per_o2       = 0.7
+# T5b / R14: THIS SCALAR IS NOW ONLY THE FALLBACK. The live engine passes a
+# per-tile `GameMap.fuel_per_o2_plane` derived from each material's own
+# combustible mass (`hp[mat] * KG_FUEL_PER_N_O2 / (density[mat] * V_tile)`,
+# simulation/materials.py), because a single global made a tile's FUEL STORE
+# `hp / fuel_per_o2` -- proportional to its structural integrity rather than to
+# how much wood is in it. A massive wood tile is 154 kg; 0.7 implied 31.9 kg.
+# The derived rates are wood/foliage 0.1449, furniture 0.0725, kindling 0.0193,
+# i.e. tiles burn 4.8x / 9.7x / 36x longer than at this scalar. The scalar
+# survives for direct-binding callers (the `fuel_ref` / `o2_frac_amb` tombstone
+# precedent) and moving it no longer affects the game.
 # --- P-O2b: THE EXTENDED OXYGEN DRAW (Erik's Option 2b) ----------------------
 # docs/fire_realism_design_2026-08-01.md v5.2 "F-O2b" + the v4 ruling batch
 # item (1). A burning tile no longer draws oxygen only from its four open
@@ -846,8 +1110,42 @@ max_claimants     = 12
 # but NOT Huggett-VALUED: thermal_mass = 8 already lumps the ~130x surface-layer
 # factor, so no J/mol anchor survives the conversion. Do not read it as an
 # enthalpy. RE-TUNE AT P-R5 alongside cool_shift.
-H_BED_M           = 18125.0  # mantissa (< 32768, the Q16.16 range). P-K0: promoted from TUNE (P-F1b 25290->18125)
-H_BED_SHIFT       = 4        # H_bed = H_BED_M * 2^H_BED_SHIFT = 2.900e5. P-K0: promoted from TUNE (P-F1b 3->4)
+# H_BED x8 (Erik's fuel-out ruling 2026-09-06, fire tuning lab session — SHIFT
+# 4 -> 7, docs/fire_3c_r3_report_2026-09-06.md continues into the lab logs on
+# issue #12): the R2 fourth-root law said G1 needs deposit x~9, and the lab
+# measured the OTHER reason: fuel-governed death (hp -> 0 before the T-gate)
+# is only reachable at x8 — weaker deposits heat-collapse leaving 20-50% char
+# because I_cap ∝ F makes the drain fade with the fuel. x8 + burn_rate 0.018 +
+# wall_damage 0.36 = FUEL burnout at ~181 s for the 30-hp crate (Erik's ~3-min
+# target). Plateau at slow-burn dials measured 917 K (still short of G1's
+# 1300 K — Phase 4 continues; the shift ladder was measured x1/x2/x4/x8 =
+# 296(dead)/683/769/917 K, the fourth-root law visible end to end).
+H_BED_M           = 38.73    # mantissa (< 32768, the Q16.16 range). M3: the DERIVED value, see below.
+# M3 (2026-09-23, report_m3.md) -- THE TRANSCRIPTION FIXED. T5b derived the
+# right number and wrote it into the dial in the wrong unit (report_t5b.md
+# §6.3). The engine pays `mul_q16(burn_raw, H_BED_M) << H_BED_SHIFT` heat counts
+# for a claimant's RAW Q16.16 burn count, so H_bed is heat counts per RAW count
+# of N_O2. 19827 * 2^7 = 2.538e+06 was the value per UNIT of N_O2 -- exactly
+# 2^16 too big -- and the fitted old-cast emission scale (3110x the derived one)
+# had been balancing it until the flip removed that half of the pair. Per raw
+# count, from cited constants only:
+#   0.25            fuel-surface share (Drysdale ch.5 burning-rate balance:
+#                   flame-to-surface feedback is 20-40 % of total release)
+#   * 13.1 MJ/kg    Huggett 1980, per kg of O2 consumed (+/- 5 %)
+#   * 0.36878 kg    one atmosphere of O2 in one tile (p*V/(R*T) at ambient),
+#     / 65536       ... per raw count
+#   / 0.4759 J      J_per_count, R13's currency pin (materials.py)
+#   = 38.73 heat counts   (V_tile cancels; 38.72-38.74 across 293-293.15 K)
+# i.e. 16384 raw burned (0.0922 kg O2) pays 302 kJ into the fuel bed, not 19.8
+# GJ. o2_potency (below, 1.0) folds into this mantissa at load, so 38.73 IS the
+# solver's value: tests/test_m3_derived_h_bed.py measures it on the solver.
+# History: P-F1b 25290*2^3 -> P-K0 18125*2^4 (tuned by FEEL) -> x8 (fuel-out
+# ruling 2026-09-06) -> T5b 19827*2^7 (derived, mis-transcribed) -> M3 38.73.
+# NOTE the other 75 %, the plume share, is NOT released: H_fuel above stays at
+# 4.0 because a gas cell has no loss channel before P5. So a fire currently
+# releases 25 % of its real heat, all of it into the fuel bed, and the split is
+# a derivation with one half deliberately dormant -- not half a split.
+H_BED_SHIFT       = 0        # H_bed = H_BED_M * 2^H_BED_SHIFT = 38.73 (M3: the derived value fits the mantissa). History: 3 -> 4 (P-K0) -> 7 (x8, Erik's fuel-out + G1 ruling 2026-09-06) -> 0 (M3)
 # Unit-side suffocation mechanics (LATER arc, design §5): defined here so the
 # constant lives at the right layer; nothing reads it yet.
 o2_thresh_breathe = 0.08   # min local N_O2 a unit needs to breathe (NOT wired yet)
@@ -861,20 +1159,88 @@ glow           = 0.0                  # no self-glow (but scatters local light b
 flammable      = false
 emits_when_hot = false
 effect         = "vision_block"       # pure concealment; clears on decompression
-conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
+conservative   = false                # trace gas — rides the bulk face flux (smoke transport v2)
+heat_absorb    = 0.0                  # ACCEPTED GAP (P5c): a BAND absorber (H2O), not modelled -- only soot absorbs, grey (see [gases.smoke])
 
 [gases.smoke]            # combustion soot (== today's generic smoke)
 absorption     = [0.88, 0.90, 0.93]   # near-neutral, slight blue tilt: thin soot reads warm/brown
-scatter_albedo = [0.04, 0.04, 0.04]   # soot barely scatters — it is the dark gas
-diffusion      = 0.10                 # heavier, clings; matches today's d_smoke=0.1 (behaviour-preserving)
-decay          = 0.008                # lingers — soot settles slowly
+scatter_albedo = [0.22, 0.22, 0.22]   # soot single-scattering albedo ~0.2 in the visible: lit smoke reads charcoal-grey, not black (#91, Erik 2026-10-15; was 0.04)
+diffusion      = 0.10                 # heavier, clings
+decay          = 0.0011               # lingers — soot settles slowly. Erik, 2026-10-22 (#12 fire + smoke session):
+                                     # 0.008 -> 0.001 (real soot hangs in a room for many minutes), so a fire's smoke
+                                     # trails all the way to the vent that draws it; written as 0.0011 (a ~15 min
+                                     # e-fold) because the per-tick decay is Q16 (trace_decay::frac_q): at 24 Hz the
+                                     # representable rates near here are 0.00073 / 0.0011 / 0.00146 per s, and 0.001
+                                     # rounded to 0.0011 anyway (tests/test_trace_resolution.py V7 caught the 10 %)
 glow           = 0.0                  # cold soot does NOT glow; hot soot via emits_when_hot
 flammable      = false                # the soot itself is spent fuel
 emits_when_hot = true                 # black-body emission driven by heat buffer (M2/M3)
 effect         = "vision_block_heavy" # near-opaque concealment at density
-conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
+conservative   = false                # trace gas — rides the bulk face flux (smoke transport v2)
+heat_absorb    = 25.36                # HEAT extinction per unit smoke density (ray-engine-v2 P5a/P5c,
+                                     # design v3 6.3): on a GAS cell the sweep reads a_gas = min(1,
+                                     # sum_g heat_absorb * N_g), 0 below gas_energy.h's N_EPS_RAW
+                                     # bulk; the temperature fold's gas branch (P5c) lands what the
+                                     # smoke absorbs in gas_energy. Door [0, 4096] (gases.py
+                                     # HEAT_ABSORB_MAX -- the sweep's int64 headroom, not physics).
+# DERIVED, not fitted (P5c, 2026-09-24): the optical depth ONE unit of smoke density puts
+# across one tile, tau = sigma_P * M / (tile_w * ceiling_h):
+#  * sigma_P -- soot's mass-specific extinction, Planck-mean over the fire's own black body.
+#    Widmann, Yang, Smith, Manzello & Mulholland, "Measurement of the optical extinction
+#    coefficients of post-flame soot in the infrared", Combust. Flame 134 (2003) 119-129
+#    (NIST, public domain; docs/papers/widmann2003_post_flame_soot_ir_extinction_nist.pdf):
+#    K_e = 8.0-9.0 over 2.8-4.1 um for well-ventilated soot -- the band that carries fire
+#    heat, where scattering is negligible (a pure absorber, as this engine's gas is) -- at
+#    rho_soot = 1.86 g/cm3. K_e flat in lambda is the Rayleigh 1/lambda law, whose Planck
+#    mean is 360 zeta(5)/pi^4 * T/C2 = 3.8322 T/C2 (Modest, Radiative Heat Transfer, ch. 11).
+#    At the arc's 1263-game fire plateau (1556 K): sigma_P = 8.5 * 3.8322 * 1556 /
+#    (0.014388 m.K * 1.86e6 g/m3) = 1.894 m2/g. Cross-check: Mulholland & Croarkin,
+#    "Specific extinction coefficient of flame generated smoke", Fire Mater. 24 (2000)
+#    227-230 give 8.7 +/- 1.1 m2/g at 632.8 nm across 29 fuels; the same 1/lambda law takes
+#    it to 2.28 m2/g at 1556 K -- 20 % higher, the visible scattering albedo (~0.19) that
+#    the IR measurement does not carry.
+#  * M -- the soot mass ONE unit of smoke density holds, through the engine's own
+#    bookkeeping: combustion mints `soot_yield` (0.5) units of smoke per unit of N_O2
+#    burned, and one unit of N_O2 burns KG_FUEL_PER_N_O2 = 0.3716 kg of wood (materials.py:
+#    Huggett's 13.1 MJ/kg O2 over wood's effective 13 MJ/kg), which sheds y_s = 0.015 g of
+#    soot per g (red oak, well ventilated: Tewarson, SFPE Handbook of Fire Protection
+#    Engineering, "Generation of heat and chemical compounds in fires"). M = 0.015 * 371.6
+#    g / 0.5 = 11.15 g per tile.
+#  * tile_w * ceiling_h = 0.333 m * 2.5 m: the stream crosses one tile width through the
+#    tile volume, so tau = sigma M L / V = sigma M / (tile_w * ceiling_h).
+#  => heat_absorb = 1.894 * 11.15 / 0.8325 = 25.36. tests/test_gas_heat_absorb.py re-derives
+#     it from these constants and the LIVE dials: if soot_yield, the fuel constant or the
+#     tile geometry moves, it goes red until this is re-derived.
+# What it means: the measured in-game smoke (docs/smoke_tau_diagnostic_2026-08-25.md, rho
+# p50 0.021 / p90 0.060) is a_gas = 0.53 per tile at the median and heat-opaque from rho
+# 0.039. The same M through M&C's VISIBLE 8.7 m2/g gives tau = 116.5 per unit density --
+# within 3.3x of the renderer's hand-tuned plume opacity (379 per unit density, same doc):
+# smoke is correctly more transparent to fire heat than to the eye.
+# ACCEPTED GAPS: soot is treated as a GREY absorber at the fire's temperature (a cooler
+# soot cell's real Planck mean is lower, sigma_P ~ T); the density law is the optically-
+# thin min(1, tau), not 1 - exp(-tau) (design 6.3); and the combustion soot yield is the
+# visibility dial `soot_yield` -- if it moves, this value moves inversely.
+light_absorb   = [120.66, 134.29, 158.89]   # VISIBLE extinction per unit smoke density, R/G/B
+# DERIVED, not tuned (#12 smoke x light, handle 1, 2026-10-04): the heat_absorb derivation
+# above with soot's VISIBLE extinction in place of its IR Planck mean, one value per light
+# channel. tau_c = sigma_c * M / (tile_w * ceiling_h), the same M = 11.15 g and the same
+# 0.333 m * 2.5 m face:
+#  * sigma at 632.8 nm = 8.7 m2/g -- Mulholland & Croarkin, "Specific extinction
+#    coefficient of flame generated smoke", Fire Mater. 24 (2000) 227-230 (29 fuels,
+#    +/- 1.1). EXTINCTION, i.e. absorption + scattering: what leaves the beam (soot's visible
+#    scattering albedo is ~0.2; the light it scatters is the medium's glow, scatter_albedo).
+#  * per channel by the same Rayleigh 1/lambda law the heat value uses, at the dominant
+#    wavelengths of the sRGB primaries, 611 / 549 / 464 nm: sigma = 9.01 / 10.03 / 11.86 m2/g.
+#  => light_absorb = sigma_c * 11.15 / 0.8325 = 120.66 / 134.29 / 158.89 (116.5 at 632.8 nm).
+# A row that carries light_absorb is PHYSICS: the gases door hands it to the light channels
+# as is, and the [smoke] smoke_absorption / smoke_absorb_scale dials no longer touch smoke's
+# light (they still scale every gas WITHOUT this key). tests/test_gas_light_absorb.py
+# re-derives it from the live dials. What it means: at the measured p50 density 0.021 one
+# 0.333 m tile is optically 2.5-3.3 thick for the eye -- smoke stops light within a tile.
+# ACCEPTED GAPS: the 1/lambda exponent (real soot is 0.9-1.3); one wavelength per channel
+# instead of a band integral; soot only (steam, poison, teargas, fuel gas keep the dials).
 
-[gases.poison]                 # chlorine (Cl2), yellow-green
+[gases.poison]                # chlorine (Cl2), yellow-green
 absorption     = [0.45, 0.10, 0.80]   # B absorbed hardest, R moderate, G passes -> yellow-green tint
 scatter_albedo = [0.10, 0.30, 0.06]   # faint green inscatter
 diffusion      = 0.12                 # creeps and pools (heavier-than-air feel)
@@ -883,7 +1249,8 @@ glow           = 0.0
 flammable      = false
 emits_when_hot = false
 effect         = "damage_over_time"   # lethal cloud; saturates to iconic green at mid-high density
-conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
+conservative   = false                # trace gas — rides the bulk face flux (smoke transport v2)
+heat_absorb    = 0.0                  # ACCEPTED GAP (P5c): not modelled -- only soot absorbs, grey (see [gases.smoke])
 
 [gases.teargas]                # CS aerosol, pale near-white (ambiguous vs steam)
 absorption     = [0.12, 0.16, 0.30]   # low overall, B ~2x R -> faint warm/yellow only in thick plumes
@@ -894,7 +1261,8 @@ glow           = 0.0
 flammable      = false
 emits_when_hot = false
 effect         = "area_denial"        # forces units out of the area; non-lethal
-conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
+conservative   = false                # trace gas — rides the bulk face flux (smoke transport v2)
+heat_absorb    = 0.0                  # ACCEPTED GAP (P5c): not modelled -- only soot absorbs, grey (see [gases.smoke])
 
 [gases.fuel_gas]               # combustible vapour, faint, FLAMMABLE
 absorption     = [0.08, 0.10, 0.16]   # very faint, slight blue tilt — nearly invisible haze
@@ -905,7 +1273,8 @@ glow           = 0.0
 flammable      = true                 # IGNITES -> spawns heat + smoke; the only flammable gas
 emits_when_hot = true                 # while burning it glows via the black-body curve
 effect         = "ignition_hazard"    # invisible-ish until lit; then a fireball
-conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
+conservative   = false                # trace gas — rides the bulk face flux (smoke transport v2)
+heat_absorb    = 0.0                  # ACCEPTED GAP (P5c): a BAND absorber (C-H), not modelled -- only soot absorbs, grey (see [gases.smoke])
 
 # EOS refactor P1 — the two BULK species (docs/eos_refactor_design.md §1/§2.1).
 # Together they ARE "air": ambient splits 21/79 (O2/inert_N2 by mole fraction,
@@ -926,6 +1295,7 @@ flammable      = false
 emits_when_hot = false
 effect         = ""                   # no gameplay tag (unit-side suffocation reads N directly, later)
 conservative   = true                 # EOS P1: donor-cell flux transport, not semi-Lagrangian
+heat_absorb    = 0.0                  # P5a: 0.0 is PHYSICAL -- homonuclear diatomics do not absorb in the IR (report_p2b.md)
 
 [gases.inert_n2]                # nitrogen + "burnt products" — bulk air, inert half
 absorption     = [0.0, 0.0, 0.0]
@@ -937,6 +1307,7 @@ flammable      = false
 emits_when_hot = false
 effect         = ""                   # no gameplay tag
 conservative   = true                 # EOS P1: donor-cell flux transport, not semi-Lagrangian
+heat_absorb    = 0.0                  # 0.0 is PHYSICAL for N2; ACCEPTED GAP (P5c): the burnt products lumped here (CO2, H2O) are BAND absorbers, not modelled
 
 # ---------------------------------------------------------------------------
 # Duct filter table (vent system PATCH 1, issue #48 — docs/vent_system_
@@ -966,6 +1337,9 @@ fuel_gas = 0.0
 [display]
 panel_width = 250
 level = "playground"              # folder under levels/ to load on startup (the standard-values sandbox; ship prototypes retired to prototypes/)
+sim_speed = 1.0                   # playback speed: 1.0 = real time, 0.25 = quarter-speed slow motion (a tuning aid,
+                                  # 2026-10-04). Wall-clock pacing ONLY -- the sim steps the same ticks, so nothing
+                                  # physical changes. Range (0, 4]. Restart to apply.
 # Water overlay v2 look knobs (water W6b; canon engine/07 §6 — the tasteful
 # placeholder, not the shipped optics pass). RENDER-ONLY and RESTART-BOUND:
 # GameRenderer binds them once at construction (the water_display_max
@@ -1059,9 +1433,9 @@ height_floor = 0.3
 
 # =============================================================================
 # Render-layer beauty config (Fire & Heat Beauty arc, B1). ALL keys here are
-# RENDER-ONLY and determinism-EXEMPT: they drive renderer/blackbody.py +
-# renderer/fire_lights.py, which read gmap.temperature and write only render
-# structures. NOTHING here touches the sim, the digest, or a golden. Every
+# RENDER-ONLY and determinism-EXEMPT: they drive renderer/blackbody.py (and,
+# until ray-engine-v2 P6c deleted it, renderer/fire_lights.py), which read
+# gmap.temperature and write only render structures. NOTHING here touches the sim, the digest, or a golden. Every
 # value is a tune-by-eye dial (Erik), never a gated constant.
 # =============================================================================
 
@@ -1100,34 +1474,108 @@ kelvin_floor = 800.0       # LUT low end (K)
 kelvin_ceil = 10000.0      # LUT high end (K)
 lut_size = 256             # LUT entries
 kelvin_glow_min = 800.0    # below this: no visible glow (intensity 0)
-kelvin_ref = 3000.0        # exposure reference temperature (Macklin)
-intensity_exponent = 4.0   # Stefan-Boltzmann flavour (T⁴)
-intensity_max = 8.0        # HDR headroom pre-tonemap (16F pipeline + ACES; NO bloom)
+kelvin_ref = 1300.0        # exposure reference temperature (Macklin): the temperature that reads as
+                           # intensity 1. Erik's ruling 2026-10-22 (#12 fire + smoke session): 3000 -> 1300 K,
+                           # a wood fire's temperature, so a fire reads bright the way an eye adapted to a dark
+                           # room sees it (at 3000 K a 1300 K tile drew at 0.003 and the fire was invisible and
+                           # lit nothing). Only brightness moves; the colour stays black-body. Erik: "rich
+                           # deepness ... looks really really great". The sweep's light table is derived from
+                           # this: retune => tools/gen_light_table.py --write + a C++ rebuild.
+intensity_exponent = 2.0   # brightness = ((K - glow_min)/(ref - glow_min))^exponent. 4 -> 2, Erik 2026-10-22
+                           # ("the eye works like that"): hotter is always brighter, but compressed --
+                           # 3000 K is 19x a 1300 K fire, 4500 K 55x (at 4 with cap 64 it went flat above
+                           # ~2200 K); embers at 1000 K glow at 0.16 of a fire instead of 0.03
+intensity_max = 64.0       # HDR headroom pre-tonemap (16F pipeline + ACES; NO bloom). 8 -> 64 with the anchor
+                           # move (2026-10-22); with exponent 2 the ramp reaches it at ~4800 K. It also SETS
+                           # the light currency: 64 * 2^L_FINE_BITS(37) = 2^43, the finest under the
+                           # table's 2^44 door (cpp/src/emissive_table.h)
 
-# Fire light sources (renderer/fire_lights.py; design §3). Tier 2 of the fire
-# glow: the brightest-K hot tiles become omni ray-traced light sources so fire
-# lights rooms, walls, and marines (the marine shader samples the same light
-# field). Candidates (T_game >= t_light_min) -> 3x3 non-max suppression ->
-# brightest max_lights by temperature. RENDER-ONLY: these NEVER write the synced
-# heat channel (heat is cast separately in the sim). Cost = sum over sources of
-# ceil(2π·range) rays, so max_lights (not range) is the budget lever — range is
-# LONG on purpose (geometry caps it; big-room illumination is the point).
-[render.fire_lights]
-enabled = true             # master on/off for fire lights
-t_light_min = 250.0        # game-ΔT candidate threshold
-nms_window = 3             # non-max-suppression window (3 or 5; widen if oversubscribed)
-max_lights = 16            # brightest-K cap (the budget lever)
-light_range = 18.0         # omni reach in tiles (LONG on purpose — Erik ruling)
-light_gain = 1.0           # multiplies the black-body intensity into light weight
+# (The [render.fire_lights] section -- B1's brightest-K fire lights for the old
+# render march -- is DELETED at ray-engine-v2 P6c with renderer/fire_lights.py:
+# every burning cell lights the world through the sweep's own thermal emission,
+# a_c * L°[T], design v3 §7.3.)
 
 # --- Lighting pass (master exposure) ---------------------------------------
 [render.lighting]
-master_gain = 2.0          # ONE master display-exposure dial on the light field
+master_gain = 1.0         # ONE master display-exposure dial on the light field
                            # (LightingPass u_light_gain). Was hardcoded 1.0 in
                            # the game while the demo harness tunes at ~10 — the
                            # "too dark everywhere" gap. TRIAL 2.0 (Erik
                            # 2026-08-25, "just double it"); reconcile with the
                            # demo's regime in the pre-tuning instrument pass.
+# ray-engine-v2 P6b (docs/ray_engine_v2_p6b_lit_world_brief_2026-09-25.md): the
+# light is the radiation sweep's light channels, read through the one accessor
+# (src/simulation/light_field.py). Both dials below are RENDER dials, applied
+# at the render read, never written back; the integer field is not tuned (brief
+# decision 2). (P6b's `new_light` A/B switch is gone with the old march, P6c.)
+sweep_gain = 1.0           # light units -> the old march's field scale. MEASURED
+                           # 1:1 against the old path in a clear room (old/new,
+                           # summed over r = 2..12 tiles): a 1.0 lamp 0.996, the
+                           # 110-degree flashlight 1.05, a 1263-game crate 0.83
+                           # (the old fire light was dimmed by its own cell).
+floor = [0.03, 0.03, 0.03] # the NEW path's small FLAT FLOOR (design v3 §2.7:
+                           # a separate dial, never a substitute for the sky).
+                           # A sealed room with no lights reads exactly this.
+                           # The old path's flat ambient was (0.10, 0.10, 0.13)
+                           # everywhere (main.py) -- this is the tune-by-eye dial.
+bilinear = true            # bilinear (true) vs nearest (false) filtering on the
+                           # light texture, read ONCE at LightingPass construction
+                           # (#59: was a live B-key toggle -- collided with
+                           # ORDER_EXPLOSIVE's B binding, confounding every look
+                           # judgement with explosives armed all session; Erik's
+                           # ruling 2026-09-29, fewer shortcut keys, a switch is a
+                           # config.toml setting). Default true = today's shipped
+                           # state; edit + restart to change.
+
+# --- ray-engine-v2 P6b: THE SKY (the light ring) ---------------------------
+# The light channels' boundary (design v3 §2.7): the virtual ring carries one RGB
+# per ordinate. Chosen PER BOUNDARY TYPE -- the level's own `boundary` ("space"
+# or "ambient", the fact the EOS boundary already keys on) picks the table, so
+# no level data or editor field is added (the smallest honest source: space IS
+# dark, open air IS lit). Read ONCE at level load by renderer/frame_lights.py
+# sky_for_level, quantized into L°'s currency there. LIGHT UNITS (1.0 = the
+# blackbody ramp's intensity 1.0), not render units: the rules field (P7) sees
+# these integers, so they never depend on an exposure dial.
+#   overcast         the IRRADIANCE a clear boundary cell receives from a uniform
+#                    sky (split evenly over the 16 ordinates; a uniform sky
+#                    carries exactly this into every clear cell)
+#   sun              a sun's irradiance, light units, travelling along
+#   sun_bearing_deg  (screen convention: 0 = toward +x/east, 90 = toward +y/
+#                    south) inside sun_spread_deg -- "a few ordinates"
+# --- ray-engine-v2 P6d: the light channels' TRANSPORT ----------------------
+# docs/ray_engine_v2_p6d_light_transport_setting_brief_2026-09-29.md decision
+# 1. "shear for heat, step for light" (design v3 section 2.4) was Erik's
+# original per-channel choice, not a physical law -- the sweep already
+# carries BOTH as a parameter on light (gate 18), so trying shear here is one
+# edit + a restart, never a C++ rebuild or a key (Erik's ruling 2026-09-29:
+# "I try to get away from all these shortcut keys" -- decision 2, no key).
+# step (the default) reproduces every shipped light golden and scene exactly
+# as before P6d. shear carries ~0.90 of a corridor's exact throughput against
+# step's ~0.52 (the scheme study, report.md "What the heat schemes look
+# like") but paints its own visible sixteen-pointed star artifact on a point
+# source where step paints a four-pointed cross. Heat's own transport is NOT
+# this key -- it stays TRANSPORT_SHEAR, unconditionally.
+# AVAILABLE TRANSPORTS (the full list -- anything else is refused at config
+# load; the authority is _LIGHT_TRANSPORTS in physics_runner.py, door 2: a new
+# transport is added THERE first, then listed here):
+#   "step"   theta = 0, the shipped default. Each cell rebuilt from its side + down
+#            neighbours, split by the direction cosines: beams smear like
+#            sqrt(distance); a point source paints a four-pointed cross.
+#   "shear"  theta = 1, heat's transport. A full cell along the dominant axis,
+#            split only transversally: beams keep their heading and barely
+#            smear; a point source paints a sixteen-pointed star.
+[light]
+transport = "shear"
+
+[light.sky.space]
+overcast = [0.0, 0.0, 0.0]         # space is dark: a breach lets NO light in
+[light.sky.ambient]
+overcast = [0.05, 0.05, 0.065]     # = the old flat ambient (0.10, 0.10, 0.13) at
+                                   # master_gain 2.0 x sweep_gain 1.0, on a clear
+                                   # boundary cell -- the planetside daylight
+sun = [0.0, 0.0, 0.0]              # dormant; try e.g. [0.3, 0.28, 0.22]
+sun_bearing_deg = 35.0
+sun_spread_deg = 10.0
 
 # --- Fire & Heat Beauty B2 gas-medium render pass -------------------------
 # P1 PLUMBING ONLY: these blocks have NO consumers yet — renderer/gas_medium.py
@@ -1136,14 +1584,23 @@ master_gain = 2.0          # ONE master display-exposure dial on the light field
 # the honest / identity values (design §6). RENDER-ONLY, tuned by eye with Erik,
 # never gated. (docs/fire_b2_smoke_honesty_design_2026-07-21.md §3-§6.)
 [render.gas_medium]
-plume_k_scale = 50.0        # RELATIVE multiplier on the shared smoke_absorb_scale base
-                            # 2026-08-25 #6 diagnostic (docs/smoke_tau_diagnostic_2026-08-25.md):
-                            # the 300.0 hack was calibrated on the old ~0.002-peak soot
-                            # regime; real fire sessions live at rho 0.02-0.3, so 300 put
-                            # 60-100% of visible smoke past alpha 0.98 (flat black). 50
-                            # puts the black knee at the measured p90 density. TRIAL value,
-                            # Erik's eye decides; final band placement after #48's drift.
-tau_curve_a = 1.0           # tau' = a*tau^b — artistic remap IN tau-SPACE
+# plume_k_scale RETIRED (#12 smoke x light, handle 2, 2026-10-04; was 31.5, Erik's
+# by-eye value from the 2026-10-02 session). The plume's opacity is now the light
+# engine's OWN extinction ([gases.smoke] light_absorb, derived; the gases door's
+# light column for every other gas) under the same Beer-Lambert law, so a tile
+# that looks black is a tile light does not cross -- one number, no render scale.
+# The look of smoke is tuned at its source (soot_yield, the blast-smoke deposit).
+# tau_curve_a 1.6 = graphics G0's MIGRATION of the smoke's look (#93 review).
+# Before G0 the medium darkened the floor in DISPLAY space (out = inscatter +
+# (1 - a) * floor, on 8-bit sRGB); in the linear HDR scene the same (1 - a)
+# darkens far less once encoded (in a pure power law (1 - a)^2.2 would match,
+# a = 2.2; ACES's toe makes the measured equivalent smaller). 1.6 is the value
+# whose look shots match the pre-G0 picture: fire_plume chroma 0.219 -> 0.217,
+# hue 27.6 -> 27.5 deg, bright-area radii within 1-4 %; at 1.0 the thinner
+# smoke let 13 % more lit floor through around the fires. 1.0 is the honest
+# "plume opacity == the light engine's extinction" (#12 handle 2) -- Erik's
+# call which to keep.
+tau_curve_a = 1.6           # tau' = a*tau^b — artistic remap IN tau-SPACE
 tau_curve_b = 1.0           #   (b>1 steepens edges; 1/1 = fully honest)
 glow_gain = 1.0             # re-match the beloved god-ray brightness (tune)
 effect_gas_floor = 0.0      # NON-PHYSICAL legibility floor, poison/teargas
@@ -1157,7 +1614,114 @@ adv_gain = 1.0              # k_adv: wind -> UV advection rate
 cycle_seconds = 2.5         # tau, from the 1/3-distortion rule
 erode_strength = 0.6        # low-density erosion depth
 warp_px = 3.0               # sampling-UV domain warp
-dither_on = true
+# (dither_on RETIRED at graphics G0 P1: the layer is RGBA16F and the world's
+#  ONE dither runs at the resolve, renderer/world_composite.py)
+
+# --- graphics G1: the smoke RELIEF (renderer/gas_relief.py, shaders/
+# gas_relief.fs; docs/graphics_direction_2026-10-18.md §2) --------------------
+# Smoke seen from above as a lit height field, in the gas medium's slot. Read
+# EVERY FRAME (Ctrl+R retunes live); a missing or mistyped key is refused.
+# enabled = false draws the B2 erosion look above ([render.gas_detail]) -- the
+# A/B fallback until G1 is blessed. The noise clock and its advection gain are
+# [render.gas_detail]'s cycle_seconds / adv_gain (one noise clock); the
+# occlusion is [render.gas_medium]'s tau curve (one tau).
+# Smoke amounts are pre-#88: plumes go opaque, then vanish. The coverage and
+# height dials below were set on that field and want a look after #88.
+[render.gas_relief]
+enabled = true
+ceiling_gases = ["smoke"]   # drawn ABOVE the units (Erik's ruling 2, 2026-10-18);
+                            # every other trace gas is a floor layer below them
+billow_cell_tiles = 1.5     # coarsest billow cell, tiles (finer octaves /2, /4);
+                            # 0.75 read as crumpled rock, 1.5 as billow masses
+billow_octaves = 3          # bake-time, 1..3 (rebaked on change)
+warp_tiles = 0.15           # domain warp of the billow lookup, tiles
+boil_t0 = 600.0             # game temperature where hot smoke starts to churn
+boil_t1 = 2400.0            # ... and churns at boil_speedup x the base clock
+                            # (smoke_light_studio at tick 72: the soot sits at
+                            # T 670-2800, hall air median 776; 50/600 saturated)
+boil_speedup = 3.0
+drift_cap_tiles = 1.5       # most a noise layer drifts in one clock cycle, tiles:
+                            # fast (blast) air drifts at this cap instead of
+                            # shearing the billows into streaks
+cov_tau_ceiling = 0.8       # extinction depth at the coverage edge: soot's edge
+                            # (1.0 -> 0.8, Erik 2026-10-22, the owed post-#88 retune: the thin trail
+                            #  a vent draws from a fire was in the sim but not drawn)
+cov_tau_floor = 0.15        #   sits where it is opaque; haze shows thin
+cov_edge_tiles = 0.08       # edge width across a plume's edge, tiles (sharp)
+cov_soft_ceiling = 1.0      # least edge width, e-folds of depth: where the field
+cov_soft_floor = 2.5        #   is flat (uniform haze) the edge stays this soft
+cov_push_tiles = 0.6        # how far the billows move the edge in and out, tiles
+haze_ceiling = 0.3          # share of the depth kept OUTSIDE the coverage edge (0.25 -> 0.3, same session):
+haze_floor = 0.4            #   thin smoke around a plume still dims the floor
+height_tiles = 0.8          # tallest column, tiles
+height_tau = 4.0            # extinction depth of a full-height column
+billow_amp = 0.6            # share of the height the billows carve, [0, 1]
+lamp_z_ceiling = 0.45        # lamp elevation over a CEILING layer (lit from above
+                            # and the side); larger = more overhead
+lamp_z_floor = 1.5          # ... over a FLOOR layer (lit from above)
+top_light_tiles = 2         # the light over a column's TOP: the brightest light
+                            # within this many tiles (the planar sweep's light
+                            # inside a soot plume is what crossed it sideways)
+top_light_falloff = 0.5     # ... each tile of distance weighted by this (an
+                            # undiminished max carried a fire's light 2 tiles)
+top_light_ceiling = 1.0     # share of that top light on a ceiling layer [0, 1]
+top_light_floor = 0.0       # ... on a floor layer (haze AT the floor: the sweep's
+                            # own light is right there; 0.5 flattened a beam)
+wrap = 0.3                  # wrap lighting: thin smoke never goes black
+shadow = 0.65                # self-shadow strength, [0, 1]
+shadow_len_tiles = 0.8      # horizon march length, tiles
+shadow_soft_tiles = 0.1    # occluder height for a full shadow, tiles
+powder = 0.5                # multi-scatter brightening of thin parts
+ao = 0.5                    # crevice darkening from the height Laplacian
+rim = 1.5                   # silver lining where a lamp is behind a thin edge
+rim_g = 0.6                 # its Henyey-Greenstein forward anisotropy, [0, 1)
+glow_texture = 0.6          # how much the billows texture the sweep's in-scatter
+                            # (god rays) inside the smoke, [0, 1]
+# --- graphics G2: the smoke's CAST SHADOW (doc §2.3, §12) on the floor and on
+# the 3D units and props, from the relief's own cast product. A receiver at
+# height z looks toward the light (the light field's direction) rising one
+# tile per cast_parallax tiles of run; the ceiling layer is a slab from
+# cast_lift_ceiling up by its relief height, the floor layer one from 0.
+cast_shadow_ceiling = 0.8   # how much light the ceiling layer's shadow takes, [0, 1]
+cast_shadow_floor = 0.5     # ... the floor layer's, [0, 1]
+cast_parallax = 0.15        # tiles of shadow offset per tile of height: the light
+                            # field has a direction but no distance, so a steep
+                            # (near-overhead) light is assumed -- at 0.5 the
+                            # soot's shadow landed ~3.5 tiles off, detached and
+                            # on the far side of a lamp (smoke_lamp_puff)
+cast_lift_ceiling = 7.0     # the ceiling layer's underside above the floor, tiles
+                            # (above the 6-tile marines' heads)
+# --- graphics G2: FIRE GLOW-THROUGH. The heat layer (display space until G3)
+# is dimmed by the occlusion of the smoke over it, from the same cast
+# product: under a thin or ragged edge the fire glows through, under a solid
+# core it does not, so the soot mottles the flame. Only the glow BELOW the
+# smoke is dimmed -- a body's (crate, wall) beyond what the hot gas around it
+# emits by itself (gas_relief.glow_below_fraction); hot gas is #95's.
+glow_through_ceiling = 0.2  # how much the ceiling layer (soot) hides it, [0, 1]. 1.0 -> 0.2, Erik
+                            # 2026-10-22: the fire's own smoke closed over it and it went dark
+glow_through_floor = 0.3    # ... the floor layer (steam scatters the glow
+                            #   rather than blocking it), [0, 1]
+own_light_cut = 1.0         # share of a glowing tile's own light taken off the
+                            # smoke surface over it, [0, 1]: a fire lights its
+                            # smoke from below (= the glow-through), never as
+                            # a lamp on the cloud's top
+# --- graphics G2: the synthetic LOW BAND (doc §2.5 A, Erik's ruling 7): a
+# coarse billow octave for the 30 cm - 1 m band the sim's transport smooths
+# away. Render-only, rides the real wind on the relief's clock, gated: only
+# inside plumes (tau / cov_tau from low_band_tau0 to low_band_tau1) and only
+# where the field changes (it moves the edge by |grad ln tau| x push).
+# low_band_push_tiles = 0 and low_band_height = 0 switch it off (the A/B).
+low_band_tiles = 3.0        # lump size, tiles (~1 m at 0.333 m tiles)
+low_band_push_tiles = 1.5   # how far it moves a plume's edge in and out, tiles
+                            # (1.0 barely showed on plume_motion_*; 2.0 no worse)
+low_band_height = 0.0       # share of the column height it carves, [0, 1]: 0.3
+                            # spotted the lit plumes with dark leopard blotches
+                            # (self-shadow on its steep slopes), so it is off
+low_band_tau0 = 0.3         # gate in at tau = 0.3 x cov_tau ...
+low_band_tau1 = 1.0         # ... full at the coverage edge's depth and inside
+debug_view = 0              # 0 off; 1 coverage, 2 height, 3 N.L, 4 self-shadow,
+                            # 5 AO, 6 boil, 7 the cast shadow on the floor
+                            # (dev only)
 
 [render.props]
 # 3D props & vegetation — WIND SWAY (arc #60 P4, design §4.3 "Sway (P4)").
@@ -1184,9 +1748,13 @@ idle_wind = 0.0          # floor on the wind fraction (0..1). ERIK'S RULING
                          # atmosphere motion (blast front, breach, vent), never
                          # ambient decoration. The dial stays for experiments
                          # (a planetside scene); >0 makes calm air breathe.
-wind_ref = 0.08          # tamed speed (tiles/tick) that counts as FULL sway;
-                         # = gas_detail's saturation ceiling (its largest
-                         # possible output), so the fraction lands in 0..1
+wind_ref = 0.08          # tamed speed (tiles/tick) that counts as FULL sway.
+                         # Was = gas_detail's saturation ceiling (its largest
+                         # output) until #51 (graphics G0 P2) put the tamed
+                         # wind on the honest m/s scale with a 1.4 ceiling;
+                         # kept at 0.08, full sway now arrives at ~1.4 m/s of
+                         # air (near the old curve's knee). The props' feel
+                         # call, not re-tuned by G0.
 
 # P4r2 — SWAY SCALES WITH GAS DENSITY (Erik's vented-room ruling, 2026-09-07):
 # "he vented a room to near-vacuum; the tamed wind velocity stayed large (the
@@ -1205,8 +1773,89 @@ density_max = 2.0        # clamp ceiling on frac: overpressure can push sway
                          # up to 2x; vacuum (frac == 0) always zeroes it
                          # regardless of this dial or the exponent above.
 
+[render.unit_looks]
+# Which model each unit is drawn with; a name is assets/models/<name>/<name>.glb.
+# Units of a role are dealt the role's list round-robin in ascending unit id
+# (the k-th unit gets entry k mod n). A unit keeps the look it was first given:
+# a player who turns zombie mid-match keeps his model (#33). Render-only --
+# read once when the renderer loads (restart to change), never on Unit, no
+# digest. All looks share the space marine's scale, so each is drawn at its own
+# true height relative to him (renderer/unit_model_renderer.py).
+player = ["space_marine"]
+zombie = ["worker_male", "worker_female"]
+
+[render.unit_shading]
+# The 3D units' edge glow (renderer/marine_shader.py rim term). Read every
+# frame, so Ctrl+R retunes it live.
+rim_albedo = 0.9    # how much the rim takes the surface's own colour:
+                    # 0 = white rim (pre-#33: the workers' navy coverall read
+                    # light grey from above -- seen top-down, most of a
+                    # figure is grazing surface), 1 = fully albedo-tinted.
+                    # 0.9: the navy reads navy and keeps a faint lighter edge;
+                    # the light marine armour keeps a near-white edge (its
+                    # albedo is light). 0.75 still left the sleeves grey.
+# The highlight (#33): the local light's own colour, reflected where the
+# surface turns halfway between the light and the eye, scaled AND tightened by
+# each texel's gloss (the albedo texture's alpha, baked from the materials'
+# roughness: the marine's visor ~1, armour a little, cloth and skin ~0).
+gloss_strength = 2.0    # 0 = no highlight (the picture before #33). 2: the
+                        # marine's armour (gloss ~0.05-0.15) gets a soft sheen
+                        # on the helmet dome and plates under a near lamp; at
+                        # 1.0 it hardly shows. The workers' skin and hair bake
+                        # the SAME low gloss (roughness 0.48-0.60, the armour's
+                        # range), and on dark hair a sheen shows more: 3 made
+                        # their heads look oiled. A gloss-1 visor peaks at 2x
+                        # the lamp (tone-mapped near white) where it catches it.
+gloss_shininess = 48.0  # the highlight's exponent at gloss 1 (higher = tighter):
+                        # a visor's spot ~10 deg wide; armour, at low gloss,
+                        # stays broad (exponent ~4 + 44 x gloss)
+# Each look's own normal map, baked into its .glb from the high-res model
+# (panel lines, seams, folds).
+normal_map = true       # false = the mesh's own smooth normals
+normal_strength = 1.0   # 0 = no tilt .. 1 = the map as baked
+blob_shadow = true      # the round dark disc under each unit; false = none
+
+[render.muzzle_flash]
+# A bullet's muzzle flash (#33): a short omni lamp on the first cell outside
+# the shooter's footprint along the shot, through the sweep like every other
+# light (renderer/frame_lights.py muzzle_flash_lights; render state, never sim
+# state, no digest). One flash per shooter per shot, however many bullets the
+# burst carries. Read every frame, so F5 retunes it live.
+intensity = 12.0        # peak, in light units (a flashlight is 2.5, but aimed:
+                        # an omni lamp spreads over all 16 directions). 0 = no
+                        # flash. In the playground at 0.333 m tiles: 6 lit only
+                        # the shooter's hands; 12 throws a warm pool ~2 m
+                        # round the muzzle and catches the shooter's armour
+                        # without whiting out the floor; 24 lit half the room.
+                        # Four marines firing together at 12 = 48 light units,
+                        # inside the volley cap (64, MUZZLE_FLASH_MAX_TOTAL).
+duration_s = 0.1        # fades linearly to dark in this long (wall clock):
+                        # ~2-3 sim ticks at 24 tps -- a pop, never a lamp. The
+                        # tracer it rides lives 0.18 s, so longer is cut there
+color = [1.0, 0.82, 0.55]   # warm white, a little yellower than the flashlight
+
+[render.unit_shadow]
+# The 3D units' SHARP projected shadows (#33, tier 1;
+# renderer/unit_shadow.py): each unit's posed model drawn once more, flattened
+# onto the floor and slid away from the light, as one flat see-through dark
+# shape. Independent of blob_shadow above. Read every frame (Ctrl+R). Every
+# key is required; a missing or mistyped one raises, naming it.
+enabled = true          # false = exactly the picture without them
+length = 0.75           # shadow length as a multiple of the unit's height:
+                        # ONE elevation for every light (tier 1)
+strength = 0.35         # the most the floor darkens (0..1) under a strong,
+                        # one-sided light
+# The shadow fades in with the light around the unit: 0 at or below each
+# threshold, full strength at twice it (the two multiply).
+min_brightness = 0.05   # the light's brightness in the ship shader's units
+                        # (incoming x sweep_gain x master_gain): a dark tile
+                        # casts nothing
+min_directionality = 0.2  # |net flux| / irradiance (0 = light evenly from
+                          # all sides, 1 = one beam): balanced light casts
+                          # nothing, so the direction never flickers
+
 [render.speckle]
-mode = "soot"               # "off" | "noise" | "soot"  (A/B in studio)
+mode = "soot"              # "off" | "noise" | "soot"  (A/B in studio)
 amp = 0.25
 
 # Material property table (named-key format, ch.02 — Material System).
@@ -1223,11 +1872,31 @@ amp = 0.25
 #   light_atten   [R,G,B] per-channel optic attenuation (1=opaque, 0=clear)
 #   heat_atten    heat-ray attenuation
 #   conductivity  thermal: high = heat spreads fast (metal)
-#   thermal_mass  heat-units to raise one tile 1 degree (the analogue of
-#                 volumetric heat capacity rho*c). POWER OF TWO (it sits on a
-#                 divide: temperature += heat >> log2(thermal_mass)). Anchored
-#                 to real rho*c (~5x metal:wood spread): steel/hull 32, glass
-#                 16, wood/door/furniture 8, air 1 (engine/06 §1, proposal §1.1).
+#   density       REAL bulk density, kg/m3. A base material tile is MASSIVE --
+#                 a filled block (R14); a thin variant is its OWN row, never a
+#                 fill fraction on a massive one.
+#   specific_heat REAL specific heat capacity, J/(kg.K). c_p for solids; c_v for
+#                 the gas row (the field stores N*T_abs, constant volume -- the
+#                 expansion work is charged separately by the EOS; design v2
+#                 §3.2). Authored separately from `density` because they are two
+#                 independent measured facts AND because T5's fuel mass needs
+#                 the mass (density * V_tile) on its own.
+#   thermal_mass  DERIVED, NOT AUTHORED (R14, thermal model v2 design
+#                 2026-09-19). Heat-units to raise one tile 1 degree; the
+#                 analogue of volumetric heat capacity rho*c, in units of
+#                 THERMAL_MASS_UNIT = 112 500 J/(m3.K) -- R13's pin (wood at
+#                 ~12 % MC, rho*c = 0.9 MJ/(m3.K)) divided by the column value
+#                 that pin carries (8). So
+#                     thermal_mass = pow2_snap(density * specific_heat / 112500)
+#                 computed at load in simulation.materials.derive_thermal_mass,
+#                 and a POWER OF TWO because it sits on a shift (temperature +=
+#                 heat >> log2(thermal_mass)) -- R5. The tile volume CANCELS
+#                 (it is a ratio of two capacities on the same tile), which is
+#                 what makes the table resolution-independent: authoring the
+#                 density stops baking tile_size_m into the material table.
+#                 The ONLY legal authored value is 0 on the gas row -- see
+#                 [materials.air]. Derivation + citations: report_t3.md D1 and
+#                 report_t3b.md.
 #   ignition_temp catches fire at this temperature (0 = non-flammable)
 #   wave_absorb   per-cell velocity-damping weight in the EOS correction
 #                 (dyn_wave_absorb x absorb_strength). NOT a transmission
@@ -1259,43 +1928,40 @@ flammable = false
 mobility = 1000
 light_atten = [0.0, 0.0, 0.0]
 heat_atten = 0.0
-# EOS refactor P2 (docs/eos_refactor_design.md §4, §8 patch P2): air gets a
-# small NONZERO conductivity so the EXISTING whole-grid conduction pass
-# (temperature_solver.cpp, no solid/air branch) does air<->air AND the
-# solid<->air interface exchange for free — the sealed-room energy sink.
-# Chosen so the derived face_shift_table[air][air] == 11: THREE steps
-# slower than wood's face_shift_table[wood][wood] == 8 (the §9 "2-4 steps
-# slower than wood" bound), comfortably inside [SHIFT_MIN=2, NO_FACE=63].
-# Derivation (materials.py._build_conduction_tables, harmonic-mean face,
-# shift = round(-log2(hm/KAPPA_REF)), KAPPA_REF=50):
-#   face[air,air] = round(-log2(0.024/50)) = round(11.02) = 11
-# The air<->solid interface shifts (harmonic mean, dominated by the more
-# resistive material = air) land at ~10 for every solid — a hair FASTER
-# than air-air (11) but far slower than any solid-solid face (hull/steel
-# self-face == 2, wood-wood == 8): the physically-expected "air is the
-# bottleneck resistor" ordering. furniture keeps conductivity=0.0
-# (unaffected — NO_FACE either side, unchanged).
-conductivity = 0.024
-thermal_mass = 0     # air: 0 == the GAS thermal regime (thermal-mass axis design
-                     # §2.1). The derived `thermal_solid` mask (thermal_mass > 0)
-                     # IS the guard now, so no 0-shift placeholder is needed: air
-                     # never reaches the >>shift convert path at all.
-# COOL-SHIFT AXIS (2026-07-30) — the LOSS-side twin of `thermal_mass`. The
-# per-tick Newtonian decay toward ambient on a THERMAL-SOLID tile:
-#       T -= T >> cool_shift          (T is ΔT above ambient, so T_amb == 0)
-# At the 24 Hz tick the e-fold time is 2^cool_shift / 24 seconds:
-#       5 -> 1.3 s     8 -> 10.7 s    10 -> 43 s    12 -> 171 s   14 -> 11 min
-# It was ONE global ([physics.thermal] COOL_SHIFT) until the thermal-mass arc
-# made furniture a thermal solid whose ONLY loss channel is this dial
-# (conductivity = 0 -> NO_FACE both ways -> no conduction face). A number fast
-# enough for thin hull plate is absurd for a wooden crate and vice versa, so it
-# is now a PER-MATERIAL FEEL DIAL — the same argument the gain side won with
-# `thermal_mass`. Legal range [SHIFT_MIN=2, 20]; 0 would mean `T -= T`, an
-# instant total wipe, and is rejected by the loader. A vacuum-exposed tile
-# takes the offset form documented at [physics.thermal] COOL_SHIFT above.
-# EVERY ROW IS SEEDED AT THE OLD GLOBAL (5) — this column is byte-identical on
-# arrival; moving a row is a deliberate, HUMAN-TESTED feel change.
-cool_shift = 5       # air: unused (the cooling pass is thermal-solid only), sane value
+# T5b (T3 D6 §7.2, ledger 6): the REAL thermal conductivity of air, Incropera
+# & DeWitt Table A.4 interpolated to 293 K. WAS 0.024, a value REVERSE-ENGINEERED
+# at EOS refactor P2 to make the old log-bucket land on face[air][air] == 11
+# ("chosen so the derived face_shift_table[air][air] == 11" — the old note,
+# struck). Under R10 no face shift is chosen any more: they are all
+# round(log2(rho_c_min * dx^2 / (kappa_hm * dt))), so this column states matter
+# and the table follows. `air` is the ONE row whose conductivity still builds a
+# real face both ways — air|air (molecular conduction between two gas cells) and,
+# via the solid-gas branch, nothing at all: a solid|gas face is governed by the
+# CONVECTION coefficient h_conv, not by kappa_air (T3 D3 / ledger 7a).
+conductivity = 0.0257
+density = 1.2047       # kg/m3 -- dry air at the engine's own ambient, p/(R*T)
+                       # with p = 101325 Pa, R_specific = 287.05 J/(kg.K),
+                       # T = 293 K (the gas-energy seam's T_AMB).
+specific_heat = 717.6  # J/(kg.K) -- c_v = R_specific/(gamma-1) at the engine's
+                       # own gamma = 1.4. NOT c_p: the gas field stores N*T_abs
+                       # (constant volume) and the EOS charges the expansion
+                       # work separately as k_work -- design v2 §3.2, and c_p
+                       # here would double-count it.
+                       # rho*c_v = 864.5 J/(m3.K), which reproduces report_t2.md
+                       # §2.1's EOS-derived 864.548 to 0.004 %.
+thermal_mass = 0       # THE ONE LEGAL AUTHORED `thermal_mass` (R14): a GAS-
+                       # THERMAL-REGIME DECLARATION, not a capacity. Air's real
+                       # rho*c_v above is 0.0077 column units -- SEVEN doublings
+                       # below the column's floor of 1 -- because a gas tile's
+                       # capacity is not a smaller number in this column but a
+                       # DIFFERENT REPRESENTATION, `N * c_v` on the gas field.
+                       # The derived `thermal_solid` mask (thermal_mass > 0) IS
+                       # the guard: air never reaches the >>shift convert path
+                       # at all (thermal-mass axis design §2.1).
+# T5b step 7 / R1: the COOL-SHIFT AXIS block stood here -- the per-material
+# ambient-decay column, its vacuum offset and its bounds. Deleted with the
+# temperature solver's Pass 3; see [physics.thermal] above.
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 0.0
 # FORBIDDEN BAND (storm audit 2026-08-14 §5, row d/d', §5B; energy-books
 # design §2.8): wave_absorb in the OPEN interval (0, 0.02) WHILE
@@ -1316,11 +1982,16 @@ hp = 300
 flammable = false
 mobility = 0
 light_atten = [1.0, 1.0, 1.0]
-heat_atten = 1.0
+heat_atten = 0.85   # EMISSIVITY (T3 D6 §7.3 / ledger 9): Incropera & DeWitt\n                    # Table A.11, painted / lightly-oxidised mild steel, 0.78-0.96.\n                    # WAS 1.0 -- a perfect black body, which no real surface is.
 conductivity = 50.0
-thermal_mass = 32    # steel (real rho*c ~3.8): heats slowly per ray (heat >> 5)
-cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
-                     # THE OLD GLOBAL — see the axis note on [materials.air]
+density = 7850.0       # kg/m3 -- structural steel (EN 1993-1-1 3.2.6; Incropera
+                       # & DeWitt Table A.1 gives 7832 for AISI 1010).
+specific_heat = 460.0  # J/(kg.K) -- mild/structural steel near 300 K (Incropera
+                       # Table A.1: AISI 1010 c_p = 434 at 300 K, 487 at 400 K;
+                       # structural-steel handbooks quote 460-490).
+                       # rho*c = 3.611 MJ/(m3.K); thermal_mass DERIVED =
+                       # pow2_snap(32.10) = 32 (heat >> 5).
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 0.0
 wave_absorb = 0.1
 blast_resist = 0.0
@@ -1332,13 +2003,43 @@ hp = 60
 flammable = true
 mobility = 0
 light_atten = [1.0, 1.0, 1.0]
-heat_atten = 1.0
-conductivity = 0.15
-thermal_mass = 8     # softwood (real rho*c ~0.7): heats fast & locally (heat >> 3)
-cool_shift = 13      # ambient decay T -= T>>13 (e-fold 2^13/24 = 341.3 s). P-K0:
-                     # promoted from TUNE (P-F1b 9->13, THE SPREAD DIAL; wood
-                     # moves with furniture — both cellulosic, both thermal_mass 8)
-ignition_temp = 300.0
+heat_atten = 0.90   # EMISSIVITY (T3 D6 §7.3 / ledger 9): Incropera & DeWitt\n                    # Table A.11, planed wood 0.82-0.92. WAS 1.0.
+conductivity = 0.12  # W/(m.K) -- Wood Handbook FPL-GTR-190 ch.4, TRANSVERSE\n                     # at 12 % MC (k = G(B + C*M) + A, G = 0.51); band 0.10-0.16.\n                     # WAS 0.15. Face shift unchanged (24) (T3 D6 §7.2).
+density = 555.0        # kg/m3 -- softwood construction lumber at 12 % MC.
+                       # Wood Handbook FPL-GTR-190 Table 5-3 specific gravities
+                       # (Douglas-fir coast 0.48 -> 538, loblolly pine 0.51 ->
+                       # 571, both at 12 % MC); 555 is mid-band. THE MATERIAL's
+                       # real density -- M2 states how much of it is there with
+                       # `thickness_m`, never by smearing this number.
+specific_heat = 1620.0 # J/(kg.K) -- Wood Handbook FPL-GTR-190 ch.4, the moist-
+                       # wood formula evaluated at 12 % MC and 293 K:
+                       # c_dry = 0.1031 + 0.003867*T = 1236 J/(kg.K), then the
+                       # MC mix + A_c correction -> 1620.
+                       # rho*c = 0.899 MJ/(m3.K) == R13's ruled pin (0.90) to
+                       # 0.1 %, from two independently cited numbers.
+# M2 (docs/thin_material_rows_design_2026-09-20.md §6, Erik's number): this row
+# is A 0.5 CM PANEL -- a plywood/board partition -- not the massive structural
+# wall R14 made it. THE NAME IS KEPT: "wood" claims a MATERIAL, not a thickness,
+# and a 5 mm plywood partition is wood; renaming would churn the config key, the
+# editor palette, the benches and the docs, and would orphan the row's git
+# history, which IS its calibration record (R13's pin, T3 D6's Wood Handbook
+# citations). The id stays 2 either way -- levels store numeric codes.
+#   DERIVED at tile_size_ref_m = 0.333, ceiling_h = 2.5 (V_tile = 0.2772 m3):
+#     fill_fraction = 0.005 / 0.333          = 0.01502   (1.50 % of the tile)
+#     mass          = 555 * 0.005 * 0.333*2.5 = 2.31 kg  (was 153.9 kg)
+#     thermal_mass  = pow2_snap(899100 * 0.01502 / 112500)
+#                   = pow2_snap(0.1200)      = 2^-3 = 0.125  (+4.2 % snap cost)
+#     capacity      = 0.125 * 112500 * 0.2772 = 3.90 kJ/K
+#   => ~66 s to a 300 K rise at the fuel-bed self-heat, inside the 30-70 s
+#      literature band for piloted ignition of wood, with nothing tuned.
+# WHY THIS ROW EXISTS AT ALL: it has ALWAYS declared `flammable = true,
+# ignition_temp = 300` while being a block a 17.7 kW fire warms at 0.07 K/s. It
+# was declaring itself fuel and unable to deliver.
+thickness_m = 0.005
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
+ignition_temp = 300.0  # G12 review (spec §4): reads 593 K under the honest map (was
+                        # 1193 K under ×3) — realistic for wood (real ignition ~573-673
+                        # K). Reviewed, kept.
 wave_absorb = 0.4
 blast_resist = 0.0
 burst_threshold = 2.0
@@ -1353,11 +2054,21 @@ hp = 40
 flammable = false
 mobility = 1000
 light_atten = [1.0, 1.0, 1.0]
-heat_atten = 1.0
-conductivity = 0.3
-thermal_mass = 8     # wood-like door: heats fast (heat >> 3)
-cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
-                     # THE OLD GLOBAL — see the axis note on [materials.air]
+heat_atten = 0.90   # it is wood -- Incropera A.11 (painted wood 0.90-0.96).
+conductivity = 0.12  # it is wood -- FPL-GTR-190 ch.4, transverse at 12 % MC.\n                     # WAS 0.30, which had no source at all (T3 D6 §7.2).
+density = 555.0        # kg/m3 -- softwood construction lumber at 12 % MC.
+                       # Wood Handbook FPL-GTR-190 Table 5-3 specific gravities
+                       # (Douglas-fir coast 0.48 -> 538, loblolly pine 0.51 ->
+                       # 571, both at 12 % MC); 555 is mid-band.
+specific_heat = 1620.0 # J/(kg.K) -- Wood Handbook FPL-GTR-190 ch.4, the moist-
+                       # wood formula evaluated at 12 % MC and 293 K:
+                       # c_dry = 0.1031 + 0.003867*T = 1236 J/(kg.K), then the
+                       # MC mix + A_c correction -> 1620.
+                       # rho*c = 0.899 MJ/(m3.K) == R13's ruled pin (0.90) to
+                       # 0.1 %, from two independently cited numbers.
+                       # thermal_mass DERIVED = pow2_snap(7.992) = 8.
+                       # A wooden door: the [materials.wood] numbers.
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 280.0
 wave_absorb = 0.4
 blast_resist = 0.0
@@ -1369,11 +2080,16 @@ hp = 200
 flammable = false
 mobility = 0
 light_atten = [1.0, 1.0, 1.0]
-heat_atten = 1.0
-conductivity = 45.0
-thermal_mass = 32    # steel (real rho*c ~3.8): heats slowly per ray (heat >> 5)
-cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
-                     # THE OLD GLOBAL — see the axis note on [materials.air]
+heat_atten = 0.85   # as hull -- Incropera & DeWitt Table A.11 (T3 D6 §7.3).
+conductivity = 50.0  # W/(m.K) -- Incropera & DeWitt Table A.1, ship-plate\n                     # mild / HSLA steel, band 45-64. WAS 45.0, below the band's\n                     # centre and inconsistent with the identical `hull` row.\n                     # The face shift is unchanged (18) -- this is a table-\n                     # consistency fix, not a rate change (T3 D6 §7.2).
+density = 7850.0       # kg/m3 -- structural steel (EN 1993-1-1 3.2.6; Incropera
+                       # & DeWitt Table A.1 gives 7832 for AISI 1010).
+specific_heat = 460.0  # J/(kg.K) -- mild/structural steel near 300 K (Incropera
+                       # Table A.1: AISI 1010 c_p = 434 at 300 K, 487 at 400 K;
+                       # structural-steel handbooks quote 460-490).
+                       # rho*c = 3.611 MJ/(m3.K); thermal_mass DERIVED =
+                       # pow2_snap(32.10) = 32 (heat >> 5).
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 0.0
 wave_absorb = 0.1
 blast_resist = 0.8
@@ -1386,10 +2102,14 @@ flammable = false
 mobility = 0
 light_atten = [0.1, 0.1, 0.1]
 heat_atten = 0.3
-conductivity = 1.0
-thermal_mass = 16    # glass (real rho*c ~2.1): half metal's mass (heat >> 4)
-cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
-                     # THE OLD GLOBAL — see the axis note on [materials.air]
+conductivity = 1.40  # W/(m.K) -- Incropera & DeWitt Table A.3, soda-lime\n                     # plate glass at 300 K; band 1.0-1.4. WAS 1.0, the bottom\n                     # of the band. Face shift unchanged (22) (T3 D6 §7.2).
+density = 2500.0       # kg/m3 -- soda-lime plate glass (Incropera & DeWitt
+                       # Table A.3, "Glass, plate (soda lime)" at 300 K).
+specific_heat = 750.0  # J/(kg.K) -- same Incropera Table A.3 entry.
+                       # rho*c = 1.875 MJ/(m3.K); thermal_mass DERIVED =
+                       # pow2_snap(16.67) = 16 (heat >> 4). The -4.0 % snap is
+                       # the table's worst, well inside R5's accepted band.
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 0.0
 wave_absorb = 0.1
 blast_resist = 0.0
@@ -1398,6 +2118,17 @@ cover_exposure = 1.0   # solid pane: stops the march physically (until it shatte
 
 # Furniture: crates/shelving/bunks (editor proposal Q2 — dedicated material
 # row: lower hp, partial permeability so smoke drifts past crates, flammable).
+#
+# THIS ROW IS A PLACEHOLDER TEST CRATE, NOT "ALL FURNITURE" (Erik, 2026-09-13).
+# It is the fixture the fire-tuning sessions burn in isolation, and several of
+# its numbers are chosen to make THAT measurement clean rather than to describe
+# a class of objects — `conductivity = 0.0` most of all, which exists so a lone
+# crate's heat stays on the crate while its burn curve is being read.
+# Real objects get their own rows and their own conduction as they are authored,
+# and so does each tree species; do NOT generalise from this row, and do not
+# design a physics law around its quirks. (The radiation arc did exactly that
+# once: "furniture has no conduction, so radiation must be its only loss
+# channel" is an argument about this fixture, not about furniture.)
 [materials.furniture]
 hp = 30              # burns out / breaks fast; fuel for fire = wall_hp
 flammable = true
@@ -1406,13 +2137,40 @@ permeability = 0.5   # partial: smoke/air drift past crates (sealed walls omit t
 light_atten = [0.55, 0.55, 0.55]   # partial occlusion: a crate stack leaks some light
 heat_atten = 0.5
 conductivity = 0.0   # kappa 0 = no conduction face (like air); fire eats it via flammability instead
-thermal_mass = 8     # wood-like (real rho*c ~0.7): heats fast & locally (heat >> 3)
-cool_shift = 13      # THE dial for a crate: conductivity = 0 means the ambient
-                     # decay above is furniture's ONE loss channel (thermal-mass
-                     # design §2.2), so this alone sets how long a burning crate
-                     # stays hot. e-fold 2^13/24 = 341.3 s. P-K0: promoted from
-                     # TUNE (P-F1b 9->13, THE SPREAD DIAL).
-ignition_temp = 280.0   # wood-like; slightly easier to light than a solid wood wall (300)
+density = 555.0        # kg/m3 -- softwood construction lumber at 12 % MC.
+                       # Wood Handbook FPL-GTR-190 Table 5-3 specific gravities
+                       # (Douglas-fir coast 0.48 -> 538, loblolly pine 0.51 ->
+                       # 571, both at 12 % MC); 555 is mid-band.
+specific_heat = 1620.0 # J/(kg.K) -- Wood Handbook FPL-GTR-190 ch.4, the moist-
+                       # wood formula evaluated at 12 % MC and 293 K:
+                       # c_dry = 0.1031 + 0.003867*T = 1236 J/(kg.K), then the
+                       # MC mix + A_c correction -> 1620.
+                       # rho*c = 0.899 MJ/(m3.K) == R13's ruled pin (0.90) to
+                       # 0.1 %, from two independently cited numbers.
+                       # THE MATERIAL's real density: a crate is made of solid
+                       # cellulosic stock. How much of it is in the tile is
+                       # `thickness_m`, below -- M2 reverses R14's "base rows
+                       # are MASSIVE" rather than faking a bulk density.
+# M2 (design section 6): ~5 kg, roughly a few crates' worth of 1 cm board.
+#   DERIVED at tile_size_ref_m = 0.333, ceiling_h = 2.5:
+#     fill_fraction = 0.0108 / 0.333          = 0.03243  (3.24 % of the tile)
+#     mass          = 555 * 0.0108 * 0.333*2.5 = 4.99 kg (was 153.9 kg)
+#     thermal_mass  = pow2_snap(899100 * 0.03243 / 112500)
+#                   = pow2_snap(0.2596)       = 2^-2 = 0.25  (-3.7 % snap cost)
+#     capacity      = 0.25 * 112500 * 0.2772  = 7.80 kJ/K   => ~132 s to +300 K
+# lumped-exempt: AT 10.8 MM THIS ROW IS OUTSIDE THE SECTION 3 LUMPED CRITERION
+# (THIN_LIMIT_M = 6 mm) and is carried as a named exemption in
+# `simulation.materials.LUMPED_CRITERION_EXEMPT`. ACCEPTED GAP, Erik's ruling
+# 2026-09-21, with its reason: the error is CONSERVATIVE (a too-thick lump
+# spreads incident heat through more mass than really participates, so it
+# ignites SLOWER than reality, never faster), it is the heaviest row still
+# defensible as one node, and cover the player hides behind should not catch as
+# eagerly as a thin panel. Do NOT thin this row to close the gap.
+thickness_m = 0.0108
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
+ignition_temp = 280.0   # wood-like; slightly easier to light than a solid wood wall (300).
+                         # G12 review (spec §4): reads 573 K under the honest map (was
+                         # 1133 K under ×3) — realistic for cellulosic fuel. Reviewed, kept.
 wave_absorb = 0.5    # soft stuff soaks blasts
 blast_resist = 0.0
 burst_threshold = 2.0   # overpressure can topple/burst furniture (door-equal; TUNING DIAL)
@@ -1431,11 +2189,21 @@ hp = 40
 flammable = false
 mobility = 0
 light_atten = [1.0, 1.0, 1.0]
-heat_atten = 1.0
-conductivity = 0.3
-thermal_mass = 8     # wood-like door: heats fast (heat >> 3)
-cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
-                     # THE OLD GLOBAL — see the axis note on [materials.air]
+heat_atten = 0.90   # it is wood -- Incropera A.11 (painted wood 0.90-0.96).
+conductivity = 0.12  # it is wood -- FPL-GTR-190 ch.4. WAS 0.30, unsourced.
+density = 555.0        # kg/m3 -- softwood construction lumber at 12 % MC.
+                       # Wood Handbook FPL-GTR-190 Table 5-3 specific gravities
+                       # (Douglas-fir coast 0.48 -> 538, loblolly pine 0.51 ->
+                       # 571, both at 12 % MC); 555 is mid-band.
+specific_heat = 1620.0 # J/(kg.K) -- Wood Handbook FPL-GTR-190 ch.4, the moist-
+                       # wood formula evaluated at 12 % MC and 293 K:
+                       # c_dry = 0.1031 + 0.003867*T = 1236 J/(kg.K), then the
+                       # MC mix + A_c correction -> 1620.
+                       # rho*c = 0.899 MJ/(m3.K) == R13's ruled pin (0.90) to
+                       # 0.1 %, from two independently cited numbers.
+                       # thermal_mass DERIVED = pow2_snap(7.992) = 8.
+                       # A wooden door: the [materials.wood] numbers.
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 280.0
 wave_absorb = 0.4
 blast_resist = 0.0
@@ -1466,12 +2234,38 @@ light_atten = [0.55, 0.55, 0.55]   # copied from furniture (partial occlusion)
 heat_atten = 0.5      # spec value (== furniture's)
 conductivity = 0.0    # spec value: crate-conduction lands with the law
                        # patches (P-F1a/P-F3), not here
-thermal_mass = 8       # spec value (== furniture's; wood-like, heat >> 3)
-cool_shift = 13        # P-K0: promoted from TUNE (P-F1b 9->13, matches
-                       # furniture/wood — all three cellulosic materials moved
-                       # together). e-fold 2^13/24 = 341.3 s.
+density = 555.0        # kg/m3 -- softwood construction lumber at 12 % MC.
+                       # Wood Handbook FPL-GTR-190 Table 5-3 specific gravities
+                       # (Douglas-fir coast 0.48 -> 538, loblolly pine 0.51 ->
+                       # 571, both at 12 % MC); 555 is mid-band.
+specific_heat = 1620.0 # J/(kg.K) -- Wood Handbook FPL-GTR-190 ch.4, the moist-
+                       # wood formula evaluated at 12 % MC and 293 K:
+                       # c_dry = 0.1031 + 0.003867*T = 1236 J/(kg.K), then the
+                       # MC mix + A_c correction -> 1620.
+                       # rho*c = 0.899 MJ/(m3.K) == R13's ruled pin (0.90) to
+                       # 0.1 %, from two independently cited numbers.
+                       # THE MATERIAL's real density; the OBJECT's size is
+                       # `thickness_m`, below.
+# M2 (design section 6): kindling is RESTORED TO ITS OWN DECLARED INTENT. This
+# row's header has always read "the CAMPFIRE REFERENCE OBJECT -- a 1-3 kg
+# effective-class fuel row"; R14's uniform rho = 555 at full fill flattened that
+# to 153.9 kg and left the intent alive only in `hp = 8`. A separate
+# `10_kg_bonfire` row was considered and DROPPED: the material id budget is full
+# (ids 0-9, MAT_FOLIAGE must stay last, id 9 numerically equals the CSV
+# SPACE_CODE) and no new id is needed -- kindling already IS that row.
+#   DERIVED at tile_size_ref_m = 0.333, ceiling_h = 2.5:
+#     fill_fraction = 0.0043 / 0.333          = 0.01291  (1.29 % of the tile)
+#     mass          = 555 * 0.0043 * 0.333*2.5 = 1.99 kg
+#     thermal_mass  = pow2_snap(899100 * 0.01291 / 112500)
+#                   = pow2_snap(0.1032)       = 2^-3 = 0.125  (+21 % snap cost)
+#     capacity      = 0.125 * 112500 * 0.2772 = 3.90 kJ/K    => ~66 s to +300 K
+# Inside THIN_LIMIT_M = 6 mm: a genuine small-Biot lump, no exemption needed.
+thickness_m = 0.0043
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 280.0  # spec value: furniture's, PER THE ROW CONVENTIONS —
                        # do NOT import literature values (~250 C) raw here.
+                       # G12 review (spec §4): reads 573 K under the honest map
+                       # (== furniture's). Reviewed, kept.
 wave_absorb = 0.5      # copied from furniture
 blast_resist = 0.0     # copied from furniture
 burst_threshold = 2.0  # copied from furniture
@@ -1492,14 +2286,35 @@ flammable = true
 mobility = 1000       # fully walkable — no movement penalty (unlike furniture's 400)
 permeability = 1.0    # explicit: no wind interaction (a walk-through canopy)
 light_atten = [0.0, 0.0, 0.0]   # explicit: no vision interaction (see straight through)
-heat_atten = 0.0      # no interaction beyond burning
+heat_atten = 0.90   # R12 (thermal model v2), superseding design v3 row 6's 0.0.\n                    # THE LOSS-CHANNEL INVARIANT: with cool_shift deleted and\n                    # conduction at real rates, IN-PLANE RADIATION IS THE ONLY\n                    # WAY A FLAMMABLE THERMAL SOLID CAN LOSE HEAT. At 0.0 a\n                    # burning foliage tile was strictly adiabatic -- combustion\n                    # wrote into it and nothing could take the energy out, so it\n                    # ratcheted to T_MAX_PHYS and re-lit its neighbours forever.\n                    # 0.90 is also simply the real number: leaf emissivity is\n                    # 0.94-0.99 (Monteith & Unsworth Table A.3) and a canopy\n                    # tile's Beer-Lambert opacity is 0.39-0.78 at LAI 1-3.\n                    # This does NOT author tree behaviour; it stops foliage\n                    # being radiatively invisible. The materials door now\n                    # REFUSES flammable && thermal_solid && heat_atten == 0.
 conductivity = 0.0    # kappa 0 = no conduction face (like furniture/kindling);
                        # fire eats it via flammability instead
-thermal_mass = 8       # wood-like (cellulosic), heats fast & locally (heat >> 3)
-cool_shift = 13        # THE dial: conductivity = 0 means the ambient decay is
-                       # foliage's ONE loss channel, same as furniture/wood/
-                       # kindling (all cellulosic materials move together).
-                       # e-fold 2^13/24 = 341.3 s.
+density = 555.0        # kg/m3 -- softwood construction lumber at 12 % MC.
+                       # Wood Handbook FPL-GTR-190 Table 5-3 specific gravities
+                       # (Douglas-fir coast 0.48 -> 538, loblolly pine 0.51 ->
+                       # 571, both at 12 % MC); 555 is mid-band.
+specific_heat = 1620.0 # J/(kg.K) -- Wood Handbook FPL-GTR-190 ch.4, the moist-
+                       # wood formula evaluated at 12 % MC and 293 K:
+                       # c_dry = 0.1031 + 0.003867*T = 1236 J/(kg.K), then the
+                       # MC mix + A_c correction -> 1620.
+                       # rho*c = 0.899 MJ/(m3.K) == R13's ruled pin (0.90) to
+                       # 0.1 %, from two independently cited numbers.
+                       # THE MATERIAL reading (solid cellulose) is the right
+                       # one and it STAYS: report_t3.md D1's open question 2 --
+                       # "a canopy's bulk rho*c wants 0.5, which the column
+                       # cannot express" -- is answered by M2, and not by a fake
+                       # density. The canopy is mostly AIR, so it is the
+                       # GEOMETRY that is thin, and M1 made the column able to
+                       # hold the result.
+# M2 (design section 6): a canopy is mostly air; follows kindling.
+#   DERIVED at tile_size_ref_m = 0.333, ceiling_h = 2.5:
+#     fill_fraction = 0.0043 / 0.333          = 0.01291  (1.29 % of the tile)
+#     mass          = 555 * 0.0043 * 0.333*2.5 = 1.99 kg
+#     thermal_mass  = pow2_snap(0.1032)        = 2^-3 = 0.125
+#     capacity      = 0.125 * 112500 * 0.2772 = 3.90 kJ/K   => ~66 s to +300 K
+# Inside THIN_LIMIT_M = 6 mm: a genuine small-Biot lump, no exemption needed.
+thickness_m = 0.0043
+# T5b step 7 / R1: this row's `cool_shift` is deleted with Pass 3.
 ignition_temp = 280.0  # wood-like, matches furniture/kindling
 wave_absorb = 0.0      # no interaction beyond burning (not a blast damper)
 blast_resist = 0.0
@@ -2129,6 +2944,42 @@ speed_tiles_per_tick = 1.25
 wall_damage = 0
 payload = "incendiary_splash"
 
+# ---------------------------------------------------------------------------
+# [explosives.*] -- what a charge is MADE of (#12 smoke x light, handle 3,
+# 2026-10-04). A blast's smoke is the soot its explosive leaves: a payload row
+# that emits blast smoke names its `explosive` and `explosive_kg`, and the
+# executor deposits explosive_kg x 1000 x soot_yield grams of soot as smoke
+# (gases.smoke_units_of_soot: 11.15 g per unit of smoke density). PHYSICS, not
+# a dial -- the look of blast smoke follows from the charge.
+#
+# soot_yield = grams of soot per gram of explosive, unconfined, in open air:
+#  * TNT 0.193 -- Ornellas' calorimetry of 25 g TNT detonated in vacuum
+#    (LLNL 1961-82), as quoted by Kuhl, Forbes, Chandler, Oppenheim, Spektor &
+#    Ferguson, "Confined combustion of TNT explosion products in air",
+#    UCRL-K-131748 (1998): C7H5N3O6 -> ... + 3.65 C(s) + ..., i.e. 3.65 x 12.011
+#    / 227.13 = 0.193 g of carbon per g ("rich (~20% each) in carbon dust and
+#    carbon monoxide"). An UPPER BOUND: it is the no-afterburn yield; a small
+#    charge in the open burns little of it ("freezes"), a big fireball burns more.
+#  * RDX 0.0 -- Pitz & Westbrook, "A detailed chemical kinetic model for TNT",
+#    UCRL-CONF-209023 (2005): no C-C bonds, so no soot precursors; "RDX is
+#    found to produce little or no soot when burned or detonated in the open
+#    atmosphere".
+#  * Composition B = 60 RDX / 40 TNT by mass (the M67 grenade's fill):
+#    0.4 x 0.193 + 0.6 x 0.0 = 0.077.
+#  * C4 = 91 % RDX + 9 % plasticiser: 0.0. ACCEPTED GAP: the hydrocarbon binder
+#    may soot a little; dust and debris (the grey cloud of a real C4 blast) are
+#    not soot and are not modelled.
+# tests/test_blast_smoke.py re-derives Composition B and holds the executor to
+# the mass.
+[explosives.tnt]
+soot_yield = 0.193
+[explosives.rdx]
+soot_yield = 0.0
+[explosives.comp_b]
+soot_yield = 0.077
+[explosives.c4]
+soot_yield = 0.0
+
 # The W1-finding smoke boolean SPLIT (mechanics/03 §8, wired W3): clear_smoke
 # documents apply_explosion's built-in inner-radius (40%) smoke clearing — v1
 # keeps that clear INSIDE apply_explosion, so the column is data-of-record,
@@ -2136,9 +2987,9 @@ payload = "incendiary_splash"
 # emit_blast_smoke is LIVE: the payload executor (simulation.payloads) gates
 # add_explosion_smoke (the noisy textured cloud) on it. BOTH must be true on
 # frag_standard AND breach_focus or the door charge silently loses its smoke.
-[payloads.frag_standard]              # the shipped grenade blast, byte-for-byte
-radius = 5                            # was blast_radius
-pressure = 10.0
+[payloads.frag_standard]              # the frag grenade (hand + 40 mm): Erik's by-eye tuning, 2026-10-03 -- expect retuning
+radius = 2                            # was blast_radius (5 until 2026-10-03)
+pressure = 0.0
 wall_damage = 200
 unit_damage = 60
 gas_species = ""
@@ -2148,6 +2999,120 @@ ignite_radius = 0.0
 ignite_intensity = 0.0
 clear_smoke = true                    # data-of-record: the inner clear lives in apply_explosion (v1)
 emit_blast_smoke = true               # LIVE: the executor's add_explosion_smoke gate (W3)
+explosive = "comp_b"  # #12 handle 3: what the charge is made of ([explosives.*])
+explosive_kg = 0.184  # the M67 hand grenade: 6.5 oz (184 g) of Composition B (the 40 mm shares the row)
+heat_amount = 3200.0                  # PROVISIONAL — see note below
+heat_radius = 1.5
+
+# --- #79 proxy rows: ignition now rides delivered heat, not a bare fire=max
+# edit (apply_explosion's heatless ignite block is DELETED; see CLAUDE.md
+# "Starting a fire" and physics.py::apply_explosion). These sit beside
+# frag_standard as a heat-only and a mass+heat variant. (frag_standard was the
+# mass-only control until Erik retuned it on 2026-10-03: the cold mass-only
+# blast is out of the picture; frag_heat is the ignition grenade.)
+#
+# heat_amount / heat_radius here are PROVISIONAL PLACEHOLDERS (Erik, #79):
+# 3200.0 follows the same plasma-splash derivation above (centre jump 400,
+# wood ignites instantly). Note for the later explosion design session
+# (#31), not acted on here: a gas tile's heat capacity is N*c_v ~= 0.0077 in
+# the same unit — about 130x less than wood's — so this SAME deposit also
+# rails the air at the centre (to T_MAX_PHYS, the excess counted, never
+# lost); whether a heat deposit should split between gas and solids, and in
+# what proportion, is that session's question, not this patch's.
+#
+# To switch the grenade between variants, edit ONE line:
+# [ammo.grenade_frag]'s `payload` column (frag_standard | frag_heat |
+# frag_hot_mass) — do not change it here.
+[payloads.frag_heat]                  # heat-only proxy: no blast pressure, delivered heat instead
+radius = 5
+pressure = 0.0
+wall_damage = 200
+unit_damage = 60
+gas_species = ""
+gas_amount = 0.0
+gas_radius = 0
+ignite_radius = 0.0
+ignite_intensity = 0.0
+clear_smoke = true
+emit_blast_smoke = true
+explosive = "comp_b"  # #12 handle 3: what the charge is made of ([explosives.*])
+explosive_kg = 0.184  # the frag proxy: one M67 fill
+heat_amount = 3200.0                  # PROVISIONAL — see note above
+heat_radius = 5.0                     # PROVISIONAL — see note above
+
+[payloads.frag_hot_mass]              # mass AND heat proxy: frag_standard's blast plus the same heat deposit
+radius = 5
+pressure = 10.0
+wall_damage = 200
+unit_damage = 60
+gas_species = ""
+gas_amount = 0.0
+gas_radius = 0
+ignite_radius = 0.0
+ignite_intensity = 0.0
+clear_smoke = true
+emit_blast_smoke = true
+explosive = "comp_b"  # #12 handle 3: what the charge is made of ([explosives.*])
+explosive_kg = 0.184  # the frag proxy: one M67 fill
+heat_amount = 3200.0                  # PROVISIONAL — see note above
+heat_radius = 5.0                     # PROVISIONAL — see note above
+
+# --- #31 explosion-studio rows (levels/explosion_studio, fired by its
+# timed_charge entities). ALL PROVISIONAL — Erik edits them at the "explosion
+# + air" session. studio_small|medium|large are frag_heat at 1x / 2x / 4x its
+# heat_amount, with radius 4 / 5 / 6 applied to BOTH `radius` (the blast
+# disc: wall damage, smoke) and `heat_radius` (the heat disc) — frag_heat
+# keeps the two equal, and so do these. studio_hull is the breach charge:
+# demolition_c4's wall_damage (800) plus studio_small's heat, on the heat-only
+# family's pressure = 0; radius 4 blows a ~5-tile hole in the 1-tile hull
+# (hull hp 300: tiles closer than 0.625*radius go) so the room vents to vacuum.
+[payloads.studio_small]
+radius = 2
+pressure = 1.0
+wall_damage = 200
+unit_damage = 60
+clear_smoke = true
+emit_blast_smoke = true
+explosive = "comp_b"  # #12 handle 3: what the charge is made of ([explosives.*])
+explosive_kg = 0.184  # 1x frag
+heat_amount = 5000.0                  # PROVISIONAL — Erik's studio tuning, 2026-10-03
+heat_radius = 2                     # PROVISIONAL
+
+[payloads.studio_medium]
+radius = 5
+pressure = 3.0
+wall_damage = 200
+unit_damage = 60
+clear_smoke = true
+emit_blast_smoke = true
+explosive = "comp_b"  # #12 handle 3: what the charge is made of ([explosives.*])
+explosive_kg = 0.368  # 2x frag
+heat_amount = 6400.0                  # PROVISIONAL — 2x frag_heat
+heat_radius = 5.0                     # PROVISIONAL
+
+[payloads.studio_large]
+radius = 6
+pressure = 10.0
+wall_damage = 200
+unit_damage = 60
+clear_smoke = true
+emit_blast_smoke = true
+explosive = "comp_b"  # #12 handle 3: what the charge is made of ([explosives.*])
+explosive_kg = 0.736  # 4x frag
+heat_amount = 12800.0                 # PROVISIONAL — 4x frag_heat
+heat_radius = 6.0                     # PROVISIONAL
+
+[payloads.studio_hull]
+radius = 4
+pressure = 0.0
+wall_damage = 800                     # PROVISIONAL — demolition_c4's wall_damage
+unit_damage = 60
+clear_smoke = true
+emit_blast_smoke = true
+explosive = "c4"      # #12 handle 3: what the charge is made of ([explosives.*])
+explosive_kg = 0.567  # one M112 demolition block (1.25 lb of C4)
+heat_amount = 3200.0                  # PROVISIONAL — 1x frag_heat
+heat_radius = 4.0                     # PROVISIONAL
 
 [payloads.breach_focus]               # the shipped door charge, byte-for-byte
 radius = 3
@@ -2156,6 +3121,8 @@ wall_damage = 500
 unit_damage = 60
 clear_smoke = true                    # data-of-record (see frag_standard)
 emit_blast_smoke = true               # LIVE: the door charge keeps its smoke (W1 finding)
+explosive = "c4"      # #12 handle 3: what the charge is made of ([explosives.*])
+explosive_kg = 0.25   # a door breaching charge, PROVISIONAL
 
 # --- W3 payload rows (mechanics/03 §6) — STANDARD VALUES for Erik's tuning --
 # Gas payloads put gas IN THE AIR (a deterministic radial deposit into the
@@ -2182,6 +3149,12 @@ gas_radius = 3
 ignite_radius = 2.5                   # tiles; flammable tiles only (fire policy skip-mask)
 ignite_intensity = 0.5                # seed intensity at the centre; never lowers a bigger fire
 
+[payloads.studio_ignite]              # fire_smoke_studio (#12, 2026-10-22): heats ONE tile -- the one it stands on -- past
+heat_amount = 300.0                   # its ignition_temp, and apply_temperature_ignition lights it a tick later (the
+heat_radius = 0.5                     # heat-only way, CLAUDE.md "Starting a fire"). Not an ignite ring: ignite_ring's
+                                      # IGNITE_HEAT put a thin furniture tile at ~11 000 units and its radiant heat killed
+                                      # a squad 8 tiles away within a second (measured 2026-10-22)
+
 [payloads.demolition_c4]              # "bigger bombs" (mechanics/03 §5): C4 satchel warhead
 radius = 8
 pressure = 25.0
@@ -2189,6 +3162,8 @@ wall_damage = 800
 unit_damage = 150
 clear_smoke = true
 emit_blast_smoke = true
+explosive = "c4"      # #12 handle 3: what the charge is made of ([explosives.*])
+explosive_kg = 2.27   # four M112 blocks (5 lb), PROVISIONAL
 
 # --- W6 plasma splashes ------------------------------------------------------
 # Small-radius HEAT/IGNITE + modest wall damage (the launch-note spec). The
@@ -2347,7 +3322,39 @@ crit_behind_mult = 4.0
 # environmental_damage_rate / temperature_max come from each unit's
 # EnvironmentProfile (config keys below are the global fallback if absent).
 # dt_tick = 1/ticks_per_second keeps the real DPS tick-rate independent.
-heat_flux_to_temp = 8.0          # felt-degrees per absorbed heat-unit (k_flux_to_temp)
+# T5b step 6 (design v3 §6.2, row 3): heat_flux_to_temp is DERIVED now, against
+# the physical currency, and anchored on the literature rather than on play.
+#
+#   Phi is the body's absorbed energy per tick in heat counts (rad_flux_sweep,
+#   the sweep's body channel), so the irradiance on the body is
+#       Phi * 65536 * J_per_count * ticks_per_second / A_rad
+#     = Phi * 224.8 kW/m2
+#   with J_per_count = 0.4759 J (R13's pin) and A_rad = 4*0.333*2.5 = 3.33 m2,
+#   the same four lateral faces the emission scale is denominated over.
+#
+# THE ANCHOR: 2.5 kW/m2 is the standard human pain / firefighter-exposure
+# threshold (SFPE Handbook; Drysdale ch. 2's tenability table), so it is placed
+# exactly at the EDGE of the survivable band -- `T_felt == temperature_max`,
+# over == 0, no damage. Everything else falls out:
+#
+#   k = (temperature_max - heat_ambient_ref)
+#       / (Phi(2.5 kW/m2) * unit_absorption * (1 - unit_reflectivity))
+#     = 40 / (0.011122 * 0.765) = 4701.2
+#
+# and the resulting band, at the shipped environmental_damage_rate = 1.0 and
+# heat_overtemp_scale = 0.05, on a 100 HP unit:
+#
+#    1 kW/m2  (solar)                 T_felt  36   no damage
+#    2.5      (pain in ~10 s)         T_felt  60   the band edge, no damage
+#    5        (blistering in ~30 s)   T_felt 100    3 HP/s -> 33 s
+#   10        (2nd-degree in ~10 s)   T_felt 180    7 HP/s -> 14 s
+#   20        (untenable)             T_felt 340   15 HP/s ->  6.7 s
+#   50        (in the flame)          T_felt 820   39 HP/s ->  2.6 s
+#
+# WAS 8.0 -- a play-tuned number against the OLD `rad_flux`, whose scale came
+# from the retired cast's FITTED `rad_scale` (2419x the derived one). The dial
+# had to move by roughly that factor for a marine to keep burning at all.
+heat_flux_to_temp = 4701.2       # felt-degrees per absorbed heat-unit (k_flux_to_temp)
 heat_ambient_ref = 20.0          # baseline felt temperature, no beam (T_ambient_ref)
 heat_overtemp_scale = 0.05       # damage ramp above the band (k_over), small +ve
 temperature_max = 60.0           # global fallback band ceiling if a unit has no EnvironmentProfile

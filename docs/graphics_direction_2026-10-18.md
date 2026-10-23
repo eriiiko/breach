@@ -490,4 +490,364 @@ date:
    on plumes in motion once A is in.
 
 Next action: hand §8.1 (the G0 kickoff) to Opus on a fresh worktree branch
-off `main`; this branch carries only the doc and merges first.
+off `main`; this branch carries only the doc and merges first. (Superseded: see §10, G0 runs on `fire-12`.)
+
+---
+
+## 10. Rebase note: G0 runs on `fire-12`, not `main` (2026-10-19)
+
+This doc was written against `main`'s renderer. In this repo the live line
+is `fire-12`: about 460 commits ahead of `main`, never merged back, and
+Erik's #12 line. Only `main` has the old light path that §0 describes.
+On `fire-12`, ray-engine v2 (closed 2026-09-30, tag `ray-engine-v2`)
+**deleted** `raycaster.cpp`, `cuda_raycaster.cu` and `fire_lights.py`.
+Light now rides the radiation sweep (`cpp/src/radiation_sweep.*`,
+`cuda_radiation_sweep.*`, P6a–P6d). So, where §0 and §7 disagree with
+`fire-12`, the code wins:
+
+- §0's "Ray engine" and "`fire_lights.py`" rows describe `main`. On
+  `fire-12`, the light field, its direction and the inscatter (`smoke_glow`)
+  come from the sweep. Re-read the renderer's light inputs on this tree
+  before G1 builds on them.
+- §7's "`fire_lights` `heat = 0.0` pin" precedent no longer exists as a
+  file. The render-only principle it illustrated still stands.
+- **G0's spec (§8.1) holds unchanged on `fire-12`.** Checked on
+  2026-10-19: the same layers call `aces_tonemap` (`lighting.fs`,
+  `lit3d.py`, `marine_shader.py`, `static_props.py`, `gas_medium.py`,
+  `blackbody.py`). `WorldComposite` still makes an RGBA8 RT with
+  `rl.load_render_texture` and applies no tone-map. `fire_studio` and
+  `tools/lighting_demo.py` exist. #51 is still open.
+- Read §8.1's "ported to main" (the #91 albedo) as "ported to this branch".
+  It comes from `90-volumetric-smoke-fire12` (`fd8a6f5`).
+- **#90 is not merged** (it waits on HUMAN-TEST). Its `gas_volume.fs` calls
+  `aces_tonemap` too. Whichever of G0 and #90 lands second removes that call
+  as part of its merge. G0 does not pull in #90.
+- `smoke_light_studio` (on `fire-12` only) is the better smoke shot. Add it
+  to the §7 shot set.
+
+Base: G0 is cut from `fire-12` on branch `93-g0-foundations`
+(tracker #93) and merges back into `fire-12` `--no-ff` after Erik's
+HUMAN-TEST. `main` gets it when `fire-12` merges, and that is Erik's call.
+
+- **2026-10-19, G0 P2 (#51), the wind measurement.** `tame_wind` now reads
+  the planes as m/s and converts with `v / tile_size_m / tps` (0.333 m,
+  24 tps: 1 m/s = 0.125 tiles/tick). `tools/wind_drift_probe.py` on the
+  smoke-light studio (ticks 0-168) and a fire_studio frag blast (ticks
+  24-120): the plume's tau-weighted centroid drifts **0.12-0.78 tiles/tick
+  while a blast moves the air and ~0.01 once it settles**; the plume-weighted
+  honest speed is 0.5-4.6 (blast) and 0.07-0.4 (settled sloshing). The old
+  dials capped the visual drift at 0.08, ~10x too slow in a blast (median
+  |log(visual/centroid)| 0.81 over 215 source-free 6-tick windows). Retuned to
+  `v_ref 1.4, v_sens 3.0` tiles/tick: median 0.25, mean 0.40, a broad
+  valley along `v_ref/v_sens` ~0.35-0.5. Smears at blast speeds (the
+  crossfade cycle was sized for 0.08) are a HUMAN-TEST item; `cycle_seconds`
+  is the dial.
+- **2026-10-19, G0 review (fire scenes).** With every layer linear, the fire
+  scenes lost the pre-G0 look: the orange around fires went beige (chroma
+  0.219 -> 0.166 on fire_plume), crate halos widened. A linear gain on the
+  heat layer cannot carry the old display-space knee, and even an exact
+  display->scene conversion adds far less over a lit floor in linear light
+  than on screen, so saturation still faded (0.179). Resolution: the
+  black-body heat stays a **legacy display-space layer until G3** (its pre-G0
+  pack byte for byte, drawn after the resolve; the one named exception in
+  `tests/test_one_tonemap.py`), and the smoke's old display-space darkening
+  is migrated as `[render.gas_medium] tau_curve_a = 1.6` (fitted; 2.2 would
+  be the pure power-law equivalent). Fire shots now match pre-G0 in hue,
+  chroma and bright-area radius within 1-4 %. Heat now draws above water and
+  3D units. God-rays in steam stay linear and read brighter (HUMAN-TEST).
+
+### 10.1 Systems (G0)
+
+**(a) Existing canonical systems G0 must use:**
+- GameRenderer + WorldComposite: the one world RT, made HDR here.
+- LightingPass: `light_tex_a/b`, never a second light path.
+- Gas medium: the only smoke look.
+- Tamed wind (`tame_wind`): rescaled by #51, never re-derived. Correct its
+  CLAUDE.md row in the same patch (#51's ruling).
+- Blackbody: the one ΔT→colour map.
+- Lit-3D seam (`lit3d.py`): its tone-map is removed here. The marine
+  byte-identity gate `test_lit3d_extraction.py` must be re-baselined in
+  the same commit, with written rationale.
+- The dequantize convention.
+- `tools/lighting_demo.py`: the studio harness, extended rather than
+  copied.
+- Config, via `CFG`.
+
+**(b) New systems G0 creates, with draft rules** (they go into CLAUDE.md
+at implementation, pointing at the real code):
+- **One tone-map**: "Every world layer writes linear HDR into the RGBA16F
+  world RT. `WorldComposite`'s final blit is the ONLY place ACES and the
+  dither run, and `u_light_gain` is the only exposure. A layer that
+  tone-maps itself is the bug."
+- **Look shots**: "`tools/look_shots.toml` holds the named shot set. Every
+  graphics patch renders it before and after with `--shots`, and the
+  implementer looks at the PNGs before claiming the patch works. Never a
+  second screenshot harness."
+
+## 11. G1 Smoke relief: what was built (2026-10-19)
+
+Branch `93-g1-smoke-relief`, cut from `fire-12` at G0 (`4e092bf`). HUMAN-TEST
+before merge. `[render.gas_relief] enabled = false` gives back the B2 erosion
+look for A/B.
+
+Where the build departs from §2.1–§2.2, and why (each judged on the look
+shots):
+
+- **Coverage is a displaced level set of ln(extinction depth).** §2.1 wrote
+  `C = smoothstep(t0, t1, tau' + k_b (B − 0.5))`. On this field tau spans
+  four decades and most of a room sits near any threshold, so the literal
+  form cut uniform haze into flecks. The edge is now the contour
+  `ln(tau / cov_tau) = 0`, moved by the billow field at most
+  `cov_push_tiles` along its normal (the push scales with |∇ ln tau|). Where
+  the field has a gradient the edge is `cov_edge_tiles` wide; where it is
+  flat it falls back to `cov_soft_*` e-folds, an even haze. A `haze_*` share
+  of the depth is kept outside the edge, so thin smoke still dims the floor.
+- **Coverage and height ride the EXTINCTION depth**, absorption plus the
+  sweep's own in-scatter coefficient (`light_glow_q16`). With absorption alone,
+  steam (0.14 per unit density) had no body.
+- **The surface reflectance is a thick cloud's**, `R = (1 − s)/(1 + s)` with
+  `s = √(1 − ω)` from the table's single-scatter albedo. This gives soot
+  0.22 → 0.06 and steam 0.92 → 0.56. The raw albedo lit soot near-white.
+- **The light over a column's top.** The planar sweep's light inside a soot
+  plume is whatever crossed it sideways, which pre-#88 is about nothing. A
+  ceiling layer's top also sees the brightest light within `top_light_tiles`,
+  attenuated `top_light_falloff` per tile (`gas_relief.top_light_field`, a
+  filtered read of LightingPass's field). Floor layers use their own tile
+  light: `top_light_floor = 0`, because 0.5 flattened a flashlight beam.
+- **Billow scale 1.5 tiles** (the coarsest cell; octaves at /2 and /4), not
+  §2.1's quarter tile. At 0.75 the lit relief read as crumpled rock. The
+  Worley cells meet through a smooth minimum (k = 0.12 cell): under a low
+  lamp, the hard creases drew dark "brain folds".
+- **AO comes from the billow lanes** (B below its mean), not the Laplacian of
+  h. At the normal taps' scale the Laplacian caught the cell creases as a
+  cracked-mud net.
+- **The lamp elevation is low.** `lamp_z_ceiling` is 0.45; at 0.8 the
+  horizon march cast almost no self-shadow.
+- **Exposure: the glow is under `u_light_gain` too** (G0's one exposure). The
+  B2 medium never applied the studio's `light_gain` 10 to its glow, so the
+  studio's `steam_flashlight` now over-exposes the steam. At the game's
+  exposure (`steam_flashlight_game`, a new shot) it matches the pre-G1
+  brightness, with form.
+- **Drift cap.** A noise layer drifts at most `drift_cap_tiles` per clock
+  cycle. G0's honest wind (up to 1.4 tiles/tick in a blast) times the 60-tick
+  cycle sheared the billows into streaks and rings. The phase jitter is a
+  smooth field. The B2 shader's per-pixel jitter turns its crossfade into
+  grain, which is visible in the pre-G1 steam shots.
+- **Not built in G1:** §2.5 A's synthetic low band (G2's row), fire
+  glow-through and the cast shadow (§2.3, G2), and the tilt integrator (G6;
+  the 3D bake exists).
+
+**Perf.** Measured on the RTX 3070 with `GL_TIME_ELAPSED` around each layer
+draw, inside the demo's `--perf` bench (fire_studio burning, world RT
+2304×1536 = 3.5 Mpx):
+
+- The burning scene costs about 0.42 ms (floor layer only; this fire makes
+  steam).
+- The worst case, with the whole hall filled with both soot and steam, costs
+  1.15 + 1.15 ms. That is about 0.33 ms per Mpx per layer, so a fully smoked
+  1080p view in both layers costs about 1.35 ms.
+- The pass draws only the camera's view (plus 2 tiles). Empty pixels cost
+  one tap (a CPU presence mask).
+- CPU packing takes about 1.2–1.5 ms per sim tick on 48×32 tiles, and is
+  skipped when the inputs' content has not changed (a CRC key).
+
+**After #88** (smoke unit rescale), retune `cov_tau_*`, `cov_soft_*` and
+`haze_*` (they were set on a field that goes opaque and then vanishes),
+`height_tau`, and `top_light_*`. Pre-#88 soot absorbs about 138 per unit
+density per tile; the top light exists because the sweep's light dies inside
+it. Also check the coverage driver's in-scatter term against the rescaled
+soot. Then judge §2.5 B's trigger on plumes in motion.
+
+**Seen, not fixed (outside the smoke look):**
+
+- Soot directly over a burning tile is lit by that tile's own light as if
+  from above. Fire light should reach smoke as glow-through (§2.3, G2).
+- The glow column (`light_glow_q16 = scatter_albedo × density`) and the
+  derived soot absorption (about 138 per unit density) give soot an
+  effective single-scatter albedo near 0.002 in the sweep, not the table's
+  0.22. That is a physics/optics-table question.
+
+### 11.1 Systems (G1)
+
+**(a) Existing canonical systems G1 uses:**
+
+- Gas medium: its one tau (`gas_optical_depth` + the new shared `tau_curve`)
+  and its one optics binding (the new `trace_gas_optics`, which B2 now calls
+  too).
+- LightingPass `light_tex_a/b`: light and direction.
+- Tamed wind (`tame_wind`).
+- `advected_noise`: the two-phase clock and `advection_phase`.
+- One tone-map: the relief writes linear premultiplied HDR. Its source is
+  scanned by `test_one_tonemap.py`.
+- Look shots: five new rows (`smoke_plume_noheat`, `smoke_lamp_puff`,
+  `explosion_t40_noheat`, `steam_flashlight_game`, `smoke_over_squad`). A
+  look-shot child now takes no keyboard or mouse input, because a stray wheel
+  turn moved the camera mid-shot.
+- Config via `CFG`, read every frame.
+
+**(b) New systems, with their rules (now rows in CLAUDE.md's Render/UI
+table):**
+
+- **Smoke relief** (`renderer/gas_relief.py` + `shaders/gas_relief.fs`) is
+  THE smoke look. It has two species layers: floor below the units, ceiling
+  after them. A new smoke term goes in this shader, never in a second smoke
+  pass.
+- **Billow noise bake** (`renderer/noise_bake.py`) is THE billow noise,
+  periodic and seeded, 2D plus 3D. A new noise shape is a function here.
+
+## 12. G2 Shadows and glow-through: what was built (2026-10-20)
+
+Branch `93-g2-shadows-glow`, cut from `fire-12` at G1's merge (`89ddf83`).
+HUMAN-TEST before merge. Every G2 effect has a dial in `[render.gas_relief]`
+that switches it off (strength 0), read every frame.
+
+**One cast product.** The relief shader gained a product mode (`u_mode` 1):
+per texel (8 per tile) it writes each species layer's occlusion alpha and
+relief height, from the same coverage, height and alpha the layer draw
+composites: ceiling in RG, floor in BA. `GasReliefPass.render_product` draws
+it into its own RGBA16F target before the scene RT is bound, for the camera's
+view only. The shadow receivers and the heat layer read it. There is no second
+smoke model.
+
+Where the build departs from §2.3, and why (each judged on the look shots):
+
+- **The cast shadow is a march through two slabs, not one offset tap.**
+  §2.3's `p − L_xy · h(p) · k_parallax` reads the height at the receiver, so
+  a floor pixel beside a column (h = 0 there) never sees its shadow. Instead,
+  each receiver at height z looks toward the light along the light field's own
+  direction, rising one tile per `cast_parallax` tiles of run, and takes 3 taps
+  per slab: ceiling `[cast_lift_ceiling, lift + h]`, floor `[0, h]`. The light
+  is multiplied by `1 − strength · alpha` per layer. The GLSL is one copy,
+  `lit3d._SMOKE_SHADOW_GLSL`. `lighting.fs` gets it spliced in at a marker
+  (its sampler binds on unit 5, past raylib's four). The marine and prop
+  shaders carry it through `_COMMON_GLSL` and read the product on the
+  OCCLUSION material slot. `debug_view` 7 shows the floor's shadow factor.
+- **The lift is above the marines and the parallax is steep.**
+  `cast_lift_ceiling` 7 tiles puts the soot's underside above the 6-tile
+  marines, so a marine under a column is in its shadow. The light field has a
+  direction but no distance to its source. At `cast_parallax` 0.5 the soot's
+  shadow landed about 3.5 tiles away, as detached patches, and on the far side
+  of the hall lamp (`smoke_lamp_puff`, debug view 7). At 0.15, a near-overhead
+  light, it is a fringe of at most about 1.2 tiles on the column's lee side.
+- **Pre-#88, the cast shadow barely shows.** Soot opaque enough for the relief
+  to draw a body (τ ≳ 1 per tile) is just as opaque to the light sweep. So the
+  floor down-light of a plume is already dark from the sweep's planar shadow,
+  and the cast shadow lands on that same floor. It shows as the billowed
+  fringe round a column, and on thinner smoke. Two more issues: it multiplies
+  on top of the sweep's own attenuation, so thin smoke's shadow is counted
+  twice; and steam casts only by its occlusion alpha (see the next item).
+  Judge it after #88. `thin_smoke_shadow_squad` (1 % soot) and
+  `steam_shadow_squad` are the probes.
+- **The product carries the LAYER's alpha (absorption), not extinction.** The
+  first try used extinction (so a white steam cloud would cast a shadow). It
+  hid a burning crate under smoke that was not drawn there. The glow-through
+  must hide a fire exactly as much as the drawn smoke hides the floor.
+- **Glow-through hides only the glow BELOW the smoke.** Masking every tile
+  turned a hot soot cloud dark (`fire_thick_smoke`): a hot smoke glows by
+  itself, and an emitting slab is not hidden by its own depth. Masking only
+  body tiles (solid, thermal solid) punched dark holes where a crate sat
+  inside an equally hot cloud. It also left a bright frame where the bilinear
+  heat spilled past the mask.
+  - Kept: `gas_relief.glow_below_fraction`. On a body it is the share of the
+    glow above the brightest gas glow around it. It is 0 on gas, so #95's
+    hot-gas question is untouched. It spills one tile onto the neighbours.
+  - The heat layer stays display space (G0's exception). A small shader
+    scales only its additive weight by `1 − g · alpha` on that share
+    (`glow_through_ceiling` 1.0, `glow_through_floor` 0.3: steam scatters the
+    glow rather than hiding it).
+  - Result: on `fire_plume` and `fire_thin_smoke`, the crates' glow is
+    mottled by the soot's ragged edge. `fire_thick_smoke` keeps its glowing
+    cloud.
+- **G1's "soot lit by its own fire" is fixed** by `own_light_cut` 1.0. The
+  same below-glow share comes off the tile light in the shader (`u_below`)
+  and off the top-light field on the CPU. A fire lights its smoke from below,
+  and that shows as the glow-through.
+- **Draw order, final** (`compose_world`, held by a test). Before the scene:
+  the cast product. Scene, bottom to top: lit floor (smoke-shadowed), water
+  (the floor's surface), the FLOOR smoke layer, the 3D units and props, the
+  CEILING smoke layer. Then the resolve. Display stage: debug colormaps, the
+  heat layer (above the ceiling soot, but drawn through it), doors, sprites,
+  effects, UI. The change: water used to be drawn over the floor haze, so
+  steam over the pool sat inside the water (`steam_over_pool`).
+- **The low band (§2.5 A) acts through the coverage edge only.** It is a
+  billow lump field at `low_band_tiles` 3 (about 1 m), on the relief's
+  two-phase clock and real wind. It is gated by `τ / cov_tau` from
+  `low_band_tau0` 0.3 to `low_band_tau1` 1.0, so it only works inside plumes.
+  It moves the coverage contour by `|∇ ln τ| ·` its displacement
+  (`low_band_push_tiles` 1.5), so a flat field is untouched. The height carve
+  (`low_band_height`) is shipped at 0: at 0.3 its steep slopes self-shadowed
+  into dark leopard blotches on lit plumes. The effect is modest on these
+  shots. Pre-#88 plumes are far above the edge depth, and G1's billow push
+  already shapes the edge.
+
+**§2.5 B material for Erik (not a ruling).** `plume_motion_t48..t96` is the
+smoke-light studio, most of the map, heat hidden, low band on. The same shots
+with the band off are in `scratchpad/look/g2_s4f_off`. What the frames show
+on this pre-#88 field:
+
+- A plume appears and is gone within about 12–24 ticks (0.5–1 s). The west
+  hall is filled white at t60 and nearly clear at t72; by t84 to t96 only a
+  dark room haze is left.
+- What does travel (the jets through the two doorways at t60–t72) keeps a
+  streak silhouette with billowed edges.
+- So a plume never travels long enough here to lose its shape in transport.
+  The trigger ("plumes lose silhouette while travelling") cannot be judged on
+  this field. It needs #88's thinning first, then the same shots again.
+
+**Perf.** RTX 3070, `GL_TIMESTAMP` queries around 20 back-to-back repeats of
+each piece inside the look-shot child (single-frame timings swung 0.04–0.7 ms
+with the GPU's clocks), divided by 20:
+
+| piece | `plume_motion_t60` (the whole 48×48 map in view, soot) | `fire_thick_smoke` |
+|---|---|---|
+| cast product (both layers, 8 px/tile, the view) | 0.028 ms | 0.021 ms |
+| floor shadow: `lighting.fs` with vs without (the whole 5.3 Mpx world RT) | +0.105 ms | +0.079 ms |
+| heat glow-through shader vs plain | +0.024 ms | +0.023 ms |
+| low band in the ceiling layer | +0.022 ms | +0.013 ms |
+
+That is about 0.18 ms in the worst case, against G1's ≤ 2 ms smoke budget.
+The 3D units' shadow taps are 6 product reads per fragment, lost in the
+noise. CPU: the heat pack plus `glow_below_fraction`, about 1 ms on 48×48
+(0.4 + 0.6 ms), redone only when the temperature or the bodies change (a CRC
+key, so once per sim tick, not per frame). The product is redrawn every
+frame.
+
+**Seen, not fixed (outside G2):**
+
+- The water pass (`water.fs`) reads the light textures itself and does not
+  receive the smoke's cast shadow.
+- The heat layer's glow is not occluded by the 3D units: a marine in front of
+  a fire is glowed over.
+- Thin smoke's shadow is counted twice (the sweep's planar attenuation and
+  the cast shadow).
+
+### 12.1 Systems (G2)
+
+**(a) Existing canonical systems G2 uses:**
+
+- Smoke relief: the product is its own shader in a second mode, with the same
+  C, h and alpha. The low band is a term in that shader, not a second pass.
+- Lit-3D seam: the shadow GLSL is one copy in `lit3d.py`. The marine oracle
+  (`tests/_lit3d_marine_shader_golden`) was re-captured with its reason in
+  the README.
+- LightingPass: the floor's shadow uses the light field's own direction,
+  never a second light.
+- One tone-map: the heat layer stays G0's one display-space exception. The
+  glow-through scales only its weight.
+- Blackbody: the below-glow weight is the heat layer's own pack
+  (`pack_emissive_rgba`).
+- Look shots: new rows `smoke_shadow_squad`, `steam_shadow_squad`,
+  `thin_smoke_shadow_squad`, `fire_thin_smoke`, `fire_thick_smoke`,
+  `steam_over_pool`, `plume_motion_t48..t96`, and a `gas_amount` key.
+- Config via `CFG`, read every frame, refused if missing, mistyped or out of
+  range.
+
+**(b) New systems, with their rules (now a row in CLAUDE.md's Render/UI
+table):**
+
+- **Smoke cast product** (`GasReliefPass.product_texture` +
+  `lit3d._SMOKE_SHADOW_GLSL` + `gas_relief.glow_below_fraction`). THE
+  smoke's occlusion and height as one texture, for every pass that receives
+  the smoke's shadow or is hidden by it. A receiver reads it through the
+  lit3d block (`smokeCoverAt` / `smokeShadow`), never through a second smoke
+  model or an inline copy of the shadow function.

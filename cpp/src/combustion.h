@@ -49,6 +49,9 @@
 //       ONE aggregate deposit T[j] += burn_j*H_fuel/(c_v*max(N_total[j],
 //       n_floor_heat)) against the POST-burn N_total (delta delta), T_MAX_PHYS
 //       clamp + PER-CELL counter. Each alloc_i is filed on a per-face buffer.
+//       (`H_fuel` is the LOGICAL constant `H_FUEL_M * 2^H_FUEL_SHIFT` since
+//       T5a — see the field declarations; every formula in this file names
+//       the logical value, never the mantissa.)
 //
 //   Pass B — for each flammable source i (single writer of wall_hp[i]): sum the
 //     <=4 incoming face allocations burn_i, pay wall_hp[i] -= round(fuel_per_o2
@@ -161,8 +164,10 @@
 // also what makes W_hop[1] * w_path == 1 exactly at R = 1.)
 //
 // THE DEMAND, per (burning tile i, reachable cell j):
-//     dem = burn_cap_q * I_i * o2f_j * W_hop[d(j)] * w_path
-// with W_hop a BAKED integer table, shipped as quantize(1/(1+d)) NORMALIZED so
+//     dem = burn_cap_q * I_i * o2f_j * hotf_i * W_hop[d(j)] * w_path
+// (hotf_i is R3's hot-burns-faster factor, added after this design landed —
+// see the R3 block further below for its law) with W_hop a BAKED integer
+// table, shipped as quantize(1/(1+d)) NORMALIZED so
 // that W_hop[1] == FP_ONE:  W_hop[d] = quantize(2/(1+d)) = 1, 2/3, 1/2. At
 // R = 1 every reachable cell has d == 1 and w_path == 1, so the weight is
 // exactly FP_ONE and the demand is BIT-IDENTICAL to the shipped law.
@@ -182,6 +187,22 @@
 // (fire_simulation.cpp) still reads the burning tile's own 4-neighbour ring.
 // 2b raises DELIVERY (fuel throughput, HRR); it does NOT widen the local
 // sensor, so knee / extinction / smother semantics keep their meaning.
+//
+// R3 hot-burns-faster (fire session #12, docs/fire_3c_design_2026-09-01.md
+// "Ruling R3"): the DEMAND becomes
+//     demand_k = burn_cap * I_k * o2f_j * hotf_k * W_hop[d_k] * w_path_k
+// hotf_k = clamp((Tsnap[k] - T_ext_k)/fire_T_span, 0, hotf_cap) — the SAME
+// ramp fire_simulation.cpp's `hot` uses, read from the SAME per-material
+// `fire_T_ext_plane` (nullable, falls back to the scalar `fire_T_ext` below),
+// but UNCAPPED AT 1 (ceiling `hotf_cap` instead) since it is a RATE factor
+// here, not the sustain gate. T source is Tsnap — the SAME pass-entry
+// snapshot the claim gate above reads, preserving "a source can't heat AND
+// ignite/accelerate a neighbour's demand the same tick". hotf_k joins the
+// PINNED left-fold immediately after o2f_j (folded together via one mul_q16
+// into `o2f_hotf` before the wide product forms — see combustion.cpp for the
+// overflow bound this keeps). Fuel DRAIN needs no separate term:
+// `fuel_cost ∝ O2 drawn` already, so a hotter fire that draws more O2 already
+// pays proportionally more fuel — verified, not re-derived, in combustion.cpp.
 
 #include <cstdint>
 
@@ -310,6 +331,9 @@ public:
     //   demand_i = burn_rate * I_i * o2f_j * dt      (was: burn_rate * dt, gated)
     // where o2f_j is LINEAR in the air cell's O2 MOLE FRACTION X = O2/(O2+N2):
     //   o2f = clamp01((X - o2_frac_ext) / (o2_frac_full - o2_frac_ext))
+    // times, since issue #7, the PRESSURE FACTOR g(p_j) at the same cell (see
+    // p_ext_q / p_full_q below and o2_pressure_factor.h): a vented cell below
+    // p_ext offers no O2 to any claimant, whatever its mole fraction.
     // burn_rate drops to the ceiling_h-anchored physical value (~1/50). A choked
     // (low-o2f) or low-intensity fire draws less O2 -> less heat -> "a choked
     // fire is a cool fire". o2_thresh_burn is RETIRED as a gate (below).
@@ -341,7 +365,29 @@ public:
                                       //  skip-floor — an air cell with O2 <= this
                                       //  is treated as fully starved and skipped
                                       //  (a cheap early-out, no behavioral gate)
-    float H_fuel           = 4.0f;   // heat yield (T-scale) per unit N_O2 burned
+    // The GAS-side heat yield per unit N_O2 burned — SPLIT into mantissa and
+    // shift at T5a, exactly as `H_BED_M`/`H_BED_SHIFT` below already are, and
+    // for the same reason: `H_fuel = H_FUEL_M · 2^H_FUEL_SHIFT`.
+    //
+    // WHY THE SPLIT, BEFORE THE VALUE NEEDS IT. This entered the solver as a
+    // plain `quantize((double)H_fuel)`, i.e. a Q16.16 int32, so its ceiling is
+    // **32 768**. T3 §6.3 derives the plume's share of Huggett's 4.831 MJ per
+    // unit N_O2 at a 25/75 surface-feedback split and gets **7.614e+06** — two
+    // and a half orders of magnitude past what the format can hold. What was
+    // blocked was never a value edit; it was a schema.
+    //
+    // T5a lands the schema carrying EXACTLY today's number (`M = 4.0`,
+    // `SHIFT = 0`) and nothing moves. The derived value (`H_FUEL_M = 14870`,
+    // `H_FUEL_SHIFT = 9` -> 7.613e+06) is a 1.9-million-fold increase in the
+    // heat combustion puts into the air and is squarely a HUMAN-TEST feel
+    // change — it belongs to the flip, not here.
+    //
+    // Keep the mantissa as large as the format allows (|H_FUEL_M| < 32768) and
+    // take the rest in the shift: a claimant's per-tick burn is only a few raw
+    // Q16.16 counts, so `mul_q16`'s truncation is relatively coarse unless the
+    // mantissa carries most of the magnitude (the `H_BED_M` argument, verbatim).
+    float H_FUEL_M         = 4.0f;   // mantissa (real units), quantized per step
+    int   H_FUEL_SHIFT     = 0;      // H_fuel = H_FUEL_M * 2^H_FUEL_SHIFT = 4.0
     float soot_yield       = 0.3f;   // fraction of consumed O2 -> black_smoke
                                       // (remainder -> inert_N2, decisions #12)
     float fuel_per_o2      = 0.7f;   // v2.5 (P5.1): wall_hp consumed per unit
@@ -352,6 +398,35 @@ public:
                                       // awaiting oxygen; larger -> they char
                                       // out fast. Quantized once per step like
                                       // every other per-step scalar.
+
+    // --- R3 hot-burns-faster (fire session #12, docs/fire_3c_design_2026-09-
+    // 01.md "Ruling R3") — the DEMAND-side twin of FireParams::hotf_cap/
+    // fire_T_ext/fire_T_span. See the header block above for the law; see
+    // combustion.cpp for the per-claimant computation. fire_T_ext/fire_T_span
+    // MIRROR FireParams' own fields of the same name (physics_runner.py binds
+    // both solvers from the SAME [physics.fire] keys, one source of truth) —
+    // fire_T_ext is the FALLBACK only (the live per-material read is the
+    // `fire_T_ext_plane` step() parameter below; a uniform plane holding
+    // quantize(fire_T_ext) is byte-identical to passing no plane at all,
+    // same nullable-plane idiom as fuel_recip/fire_T_ext_plane elsewhere).
+    float fire_T_ext       = 350.0f; // FALLBACK extinction temperature (no plane)
+    float fire_T_span      = 180.0f; // width of the hotf ramp above T_ext (GLOBAL)
+    // hotf_cap: the SAME dial value as FireParams::hotf_cap (one enrichment/
+    // overheat ceiling, bound to both solvers from ONE config key) — the
+    // ceiling on hotf, which is NOT capped at 1 the way `hot` is.
+    float hotf_cap         = 10.0f;  // NEW (R3): ceiling on the demand-side hotf ramp
+
+    // --- THE PRESSURE FACTOR (issue #7, Erik's ruling 2026-09-23) --------
+    // The claim gate's o2f_j is multiplied by g(p_j) = clamp01((p_j - p_ext) /
+    // (p_full - p_ext)), p_j the materialized pressure `atmosphere` at the SAME
+    // air cell j whose mole fraction X_j it reads (o2_pressure_factor.h — the
+    // one FP_HD law both sites and both backends call). The SAME two values as
+    // FireParams::p_ext_q / p_full_q (Q16.16 atm), bound by physics_runner.py
+    // from the SAME [physics.fire] keys — one law, two reads. DEFAULT 0 / 0 ==
+    // DORMANT (g == FP_ONE), and a step() without an `atmosphere` plane is
+    // dormant too, so every direct-binding caller keeps the pre-#7 law.
+    int32_t p_ext_q        = 0;      // extinction pressure, Q16.16 atm (0 = dormant)
+    int32_t p_full_q       = 0;      // full-effect pressure, Q16.16 atm (0 = dormant)
 
     // ---- P-R4: H_bed — the FUEL-BED deposit ------------------------------
     // (docs/radiation_raycaster_extinction_ruling_2026-07-31.md A1, "Where the
@@ -479,7 +554,8 @@ public:
     // without it, `tests/_sealedbox_bisect_bench.py`'s TOTAL ledger identity
     // is BROKEN on every tick with live fire. Folds into the SOLID side's
     // closure identity (temperature_solver.h) alongside `e_solid_deposit_sum`
-    // / `e_solid_cond_sum` / `e_thermostat_sum`.
+    // / `e_solid_cond_sum` (T5b step 7 deletes the identity's third term,
+    // `e_thermostat_sum`, with Pass 3 -- REMOVED, not folded in here).
     mutable int64_t e_comb_solid_heat_sum = 0;
 
     // gas                : (n_gases, h, w) Q16.16 density planes, mutated
@@ -627,6 +703,45 @@ public:
         //               transport uses for a non-participating donor).
         int64_t* gas_energy = nullptr,
         const bool* is_ambient = nullptr,
-        int32_t t_amb_q = 0
+        int32_t t_amb_q = 0,
+        // R3 hot-burns-faster (see the header block + fire_T_ext/fire_T_span/
+        // hotf_cap above): PER-MATERIAL EXTINCTION TEMPERATURE, int32 (h,w)
+        // Q16.16, OPTIONAL — the SAME plane FireSimulation::step reads
+        // (GameMap.fire_T_ext_plane: ignition_temp[mat] - ignition_to_ext_
+        // delta, baked once at load). nullptr -> the scalar `fire_T_ext`
+        // fallback above, i.e. the pre-R3-plane law bit-for-bit (every
+        // legacy/direct-binding caller that does not pass one is unmoved).
+        const int32_t* fire_T_ext_plane = nullptr,
+        // R14's FUEL HALF (thermal model v2, T5b): PER-MATERIAL FUEL EXCHANGE
+        // RATE, int32 (h,w) Q16.16, OPTIONAL -- `GameMap.fuel_per_o2_plane`,
+        // `hp[mat] * KG_FUEL_PER_N_O2 / (density[mat] * V_tile)`, baked once at
+        // load. nullptr -> the scalar `fuel_per_o2` fallback above, i.e. the
+        // pre-R14 law bit-for-bit for every direct-binding caller.
+        //
+        // WHY IT IS PER-MATERIAL. The scalar made a tile's FUEL STORE
+        // `hp / fuel_per_o2`, i.e. proportional to structural integrity. A
+        // massive wood tile is 154 kg but `hp = 60` at 0.7 implies 31.9 kg of
+        // fuel (4.8x short); furniture is 9.7x short. Deriving the rate from
+        // the row's own mass makes the store physical while leaving `hp` alone
+        // -- which is exactly R14's "fuel separates from hp; hp stays
+        // structural".
+        const int32_t* fuel_per_o2_plane = nullptr,
+        // THE PRESSURE FACTOR's input (issue #7): int32 (h,w) Q16.16 atm, READ
+        // — `atmosphere`, the engine's one materialized pressure P (EOS step 5,
+        // which runs before this pass). The claim gate reads it at the SAME air
+        // cell j as X_j. OPTIONAL: nullptr -> g == FP_ONE, i.e. the pre-#7 law
+        // bit for bit for every direct-binding caller.
+        const int32_t* atmosphere = nullptr,
+        // #88 P2 (design §5.1/§5.3): the SOOT MINT's books, scalars for the
+        // smoke plane (black_smoke_idx), ACCUMULATED: `trace_mint` the
+        // ATTEMPTED mint `trace_from_bulk(soot)` summed BEFORE the counted
+        // saturation, `trace_clip` the excess it could not store, `trace_neg`
+        // the negative-result hits (never expected; counted, never clamped).
+        // The live caller points them at EOSSolver's per-gas books (the
+        // binding's `eos=`); nullptr -> unreported (the saturation still
+        // never wraps).
+        int64_t* trace_mint = nullptr,
+        int64_t* trace_clip = nullptr,
+        int64_t* trace_neg = nullptr
     ) const;
 };

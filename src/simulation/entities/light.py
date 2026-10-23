@@ -34,7 +34,7 @@ class light(Entity):
         Field("range", KIND_FLOAT_RENDER, default=12.0, minimum=0.0,
               doc="tiles"),
         Field("kind", KIND_ENUM, default="static",
-              choices=("static", "beacon")),
+              choices=("static", "beacon", "spot")),
         Field("period_s", KIND_FLOAT_RENDER, default=2.0, minimum=0.0,
               doc="beacon: seconds per full rotation"),
         Field("beam_deg", KIND_FLOAT_RENDER, default=30.0, minimum=0.0,
@@ -42,7 +42,7 @@ class light(Entity):
         Field("phase", KIND_FLOAT_RENDER, default=0.0, minimum=0.0,
               maximum=1.0,
               doc="beacon: fraction of a turn; a red/blue cop-car pair = "
-                  "two beacons, phase 0.0 / 0.5"),
+                  "two beacons, phase 0.0 / 0.5; spot: its fixed aim"),
     )
     # No inputs, no class signals in v1 — a light emits only the free
     # `alive` and is driven by nothing until Arc B wires exist.

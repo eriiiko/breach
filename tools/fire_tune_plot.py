@@ -66,8 +66,9 @@ def kelvin_map():
     via the standalone accessor entry point, so the plot follows the
     k_temp_to_kelvin dial without pulling in the full game config. NARROW
     except: only a missing/stale/unreadable config falls back (printed
-    warning + the design's own default (293.0, 3.0)) — anything else
-    (a real bug in the accessor) is not swallowed."""
+    warning + the design's own default (293.0, 1.0) — G12, issue #12,
+    docs/fire_g12_one_map_patch_2026-08-31.md) — anything else (a real bug in
+    the accessor) is not swallowed."""
     ROOT = Path(__file__).resolve().parent.parent
     for _p in (ROOT, ROOT / "src"):
         if str(_p) not in sys.path:
@@ -76,8 +77,8 @@ def kelvin_map():
     try:
         ts = from_toml()
     except (FileNotFoundError, RuntimeError, KeyError) as exc:
-        print(f"[fire_tune_plot] kelvin_map(): {exc} — falling back to (293.0, 3.0)")
-        return 293.0, 3.0
+        print(f"[fire_tune_plot] kelvin_map(): {exc} — falling back to (293.0, 1.0)")
+        return 293.0, 1.0
     return ts.kelvin_ambient, ts.k_temp_to_kelvin
 
 

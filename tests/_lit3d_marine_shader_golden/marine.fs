@@ -1,7 +1,8 @@
 #version 330
 // Lit-marine fragment shader — samples the ship's baked light field on the
 // marine's TRUE mesh normals. Mirrors shaders/lighting.fs's field unpack +
-// composite + tone-map, adapted to a Y-up 3D mesh with half-Lambert + rim.
+// composite, adapted to a Y-up 3D mesh with half-Lambert + rim. Writes linear
+// HDR into the scene RT; the world resolve tone-maps (G0 P1).
 in vec2 fragTexCoord;
 in vec3 fragWorldPos;
 in vec3 fragWorldNormal;
@@ -11,7 +12,7 @@ uniform sampler2D texture1;   // light_tex_a: RGB incoming light, A = dir.x
 uniform sampler2D texture2;   // light_tex_b: RGB smoke_glow, A = dir.y
 uniform sampler2D texture3;   // P2 marine normal map (MATERIAL_MAP_ROUGHNESS
                               // slot — a FREE slot; light textures own 1 & 2)
-uniform vec4  colDiffuse;     // group tint (draw color): marines / zombies
+uniform vec4  colDiffuse;     // draw colour (white since #33: looks are models)
 
 uniform vec3  u_ambient;       // ship's ambient floor (single source of truth)
 uniform float u_light_gain;    // ship's render exposure
@@ -22,6 +23,9 @@ uniform vec2  u_world_px;      // (world_px_w, world_px_h) for the field UV
 uniform vec3  u_view_dir;      // direction toward the eye (ortho ~ (0,1,0))
 uniform float u_rim_strength;
 uniform float u_rim_power;
+uniform float u_rim_albedo;    // #33: rim colour = mix(white, albedo, this)
+uniform float u_gloss_strength;  // #33: highlight strength (0 = no highlight)
+uniform float u_gloss_shininess; // #33: highlight exponent at gloss 1
 uniform int   u_srgb_decode;
 uniform int   u_use_normal_marine; // P2 guard: 0 = inert (N unchanged), 1 = on
 uniform float u_normal_strength;   // P2 perturbation strength (feel knob)
@@ -29,18 +33,43 @@ uniform float u_normal_strength;   // P2 perturbation strength (feel knob)
 out vec4 finalColor;
 
 
-// Cheap sRGB <-> linear (gamma 2.2), matching shaders/lighting.fs.
+// Cheap sRGB -> linear (gamma 2.2), matching shaders/lighting.fs. Output stays
+// linear HDR: WorldComposite.resolve() tone-maps and encodes, once.
 vec3 srgb_to_linear(vec3 c) { return pow(c, vec3(2.2)); }
-vec3 linear_to_srgb(vec3 c) { return pow(c, vec3(1.0 / 2.2)); }
 
-// ACES filmic tone-map (Narkowicz), identical to shaders/lighting.fs.
-vec3 aces_tonemap(vec3 x) {
-    const float a = 2.51;
-    const float b = 0.03;
-    const float c = 2.43;
-    const float d = 0.59;
-    const float e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+// --- smoke cast shadow (graphics G2; renderer/lit3d.py _SMOKE_SHADOW_GLSL) ---
+uniform sampler2D u_smoke_cover; // the relief's cast product: r,g = ceiling
+                                 // (alpha, height), b,a = floor; tiles
+uniform vec2  u_smoke_grid;      // (grid_w, grid_h), tiles
+uniform vec4  u_smoke_cast;      // (ceiling strength, floor strength,
+                                 //  parallax: run per tile of rise, ceiling lift)
+uniform vec4  u_smoke_cast2;     // (tallest column, tiles; unused x3)
+vec4 smokeCoverAt(vec2 world_uv) {
+    // a RenderTexture's rows run bottom-up
+    return texture(u_smoke_cover, vec2(world_uv.x, 1.0 - world_uv.y));
+}
+float smokeShadow(vec2 world_uv, vec2 to_light, float z_tiles) {
+    if (u_smoke_cast.x + u_smoke_cast.y <= 0.0) return 1.0;
+    vec2 step_uv = to_light / u_smoke_grid;      // world uv per tile of run
+    float k = u_smoke_cast.z;
+    float hmax = max(u_smoke_cast2.x, 1e-3);
+    float shC = 0.0;
+    float shF = 0.0;
+    for (int i = 0; i < 3; ++i) {
+        float f = (float(i) + 0.5) / 3.0;
+        // ceiling slab [lift, lift + h]: the ray is in it for run s with
+        // z + s / k in that band
+        float sC = (max(u_smoke_cast.w - z_tiles, 0.0) + f * hmax) * k;
+        vec4 c = smokeCoverAt(world_uv + step_uv * sC);
+        float topC = u_smoke_cast.w + c.g - (z_tiles + sC / max(k, 1e-3));
+        shC = max(shC, c.r * smoothstep(0.0, 0.25 * hmax, topC));
+        // floor slab [0, h]
+        float sF = f * max(hmax - z_tiles, 0.0) * k;
+        vec4 q = smokeCoverAt(world_uv + step_uv * sF);
+        float topF = q.a - (z_tiles + sF / max(k, 1e-3));
+        shF = max(shF, q.b * smoothstep(0.0, 0.25 * hmax, topF));
+    }
+    return (1.0 - u_smoke_cast.x * shC) * (1.0 - u_smoke_cast.y * shF);
 }
 
 
@@ -85,6 +114,11 @@ void main() {
     vec3 L = normalize(vec3(light_dir_2d.x, u_light_z, light_dir_2d.y));
     vec3 N = normalize(fragWorldNormal);
 
+    // Graphics G2: the smoke's cast shadow on this fragment, at its own
+    // height (world px -> tiles), through the one shared GLSL above.
+    incoming_rgb *= smokeShadow(world_uv, light_dir_2d,
+                                fragWorldPos.y * u_smoke_grid.x / u_world_px.x);
+
     // P2 normal map (guarded — zero cost when off). Reconstruct a tangent frame
     // from screen-space derivatives, sample the map as LINEAR data (never sRGB-
     // decode a normal map — its RGB are directions), unpack, apply the marine's
@@ -104,22 +138,38 @@ void main() {
     // top-down token (design v2 §Bugs).
     float ndotl = dot(N, L) * 0.5 + 0.5;
 
-    vec3 albedo = texture(texture0, fragTexCoord).rgb;
+    vec4 albedo_gloss = texture(texture0, fragTexCoord);
+    vec3 albedo = albedo_gloss.rgb;
+    float gloss = albedo_gloss.a;  // #33: the bake's gloss mask (0 matte .. 1 glossiest)
     if (u_srgb_decode == 1) albedo = srgb_to_linear(albedo);  // else double-dark
-    albedo *= colDiffuse.rgb;                                  // group identity
+    albedo *= colDiffuse.rgb;                                  // draw colour
 
     vec3 lit = albedo * (u_ambient + incoming_rgb * u_light_gain * ndotl);
 
+    // #33 highlight (Blinn-Phong): the LOCAL light's own colour, never the
+    // ambient (a dark room puts no shine on a visor), scaled AND tightened by
+    // the texel's gloss -- a visor gets a small bright spot, a plate a broad
+    // faint sheen, cloth nothing. Faded out where the surface turns away from
+    // the light (dot(N, L) < 0) so the lobe never lights a back face.
+    vec3 H = normalize(L + u_view_dir);
+    float shininess = mix(4.0, u_gloss_shininess, gloss);
+    float spec = u_gloss_strength * gloss
+               * pow(max(dot(N, H), 0.0), shininess)
+               * clamp(dot(N, L) * 4.0, 0.0, 1.0);
+    lit += spec * incoming_rgb * u_light_gain;
+
     // Rim: Fresnel-ish silhouette term, tinted by the LOCAL light so it never
     // brightens a marine the room around it can't (dark room -> faint ambient
-    // rim only).
+    // rim only), and by the surface's own colour (#33, u_rim_albedo) so dark
+    // cloth keeps a dark edge instead of reading light grey from above.
     float rim = pow(1.0 - max(0.0, dot(N, u_view_dir)), u_rim_power);
-    lit += u_rim_strength * rim * (u_ambient + incoming_rgb * u_light_gain);
+    vec3 rim_col = mix(vec3(1.0), albedo, u_rim_albedo);
+    lit += u_rim_strength * rim * rim_col * (u_ambient + incoming_rgb * u_light_gain);
 
-    lit = aces_tonemap(lit);
-    if (u_srgb_decode == 1) lit = linear_to_srgb(lit);
+    // Linear HDR out (G0 P1): the world resolve tone-maps and encodes, once.
 
     // alpha = 1.0: the world RT is blitted premultiplied; a translucent marine
-    // would bleed the background through (design v2 §Bugs).
+    // would bleed the background through (design v2 §Bugs). The texture's
+    // alpha is the gloss mask (#33), never coverage.
     finalColor = vec4(lit, 1.0);
 }

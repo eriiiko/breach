@@ -81,15 +81,56 @@ FUEL_FLOOR = 1
 # exactly; the shipped 1.0 default is swept separately (see the module docstring).
 # o2_frac_amb is carried only to be SET on the CPU solver: the law no longer
 # reads it, and it is not passed to the GPU at all.
-DIALS = dict(burn_rate=1.0, o2_thresh_burn=0.03, H_fuel=4.0, soot_yield=0.3,
+DIALS = dict(burn_rate=1.0, o2_thresh_burn=0.03, H_FUEL_M=4.0, H_FUEL_SHIFT=0,
+             soot_yield=0.3,
              fuel_per_o2=0.7, o2_frac_ext=0.13, o2_frac_full=0.21,
              o2_frac_amb=0.21, T_MAX_PHYS=16000.0)
-C_V = 1.0
+C_V = 0.0076849   # T5b: the shipped derived gas heat capacity (report_t2.md §2.2)
 N_FLOOR_HEAT = 0.05
 
 # The material ignition threshold used throughout (any positive Q16.16 works —
 # CPU and GPU read the SAME array; the exact value is not load-bearing).
 IGN_Q = int(round(500.0 * FP_ONE))
+
+# R3 (fire session #12, 2026-09-01, docs/fire_3c_design_2026-09-01.md
+# "Ruling R3") inserted a temperature factor into the DEMAND:
+#     hotf = clamp((T - fire_T_ext) / fire_T_span, 0, hotf_cap)
+# so a source's temperature is no longer a free choice — it sets how hard that
+# source draws. Every PART-1 edge expectation in this file is built on
+# "demand_k == burn_cap_q EXACTLY" (see _add_source's docstring), and that
+# premise now additionally requires hotf == 1.
+#
+# The fixtures predate R3 and seeded IGN_Q*2 (1000 game units), which at the
+# shipped fallback dials gives hotf = (1000-350)/180 = 3.61 — so the sources
+# drew ~3.6x burn_cap and the exact-arithmetic edge checks stopped holding.
+# CPU and GPU never disagreed; only the fixture's premise died. (Found
+# 2026-09-12, when the R4 golden re-baseline stopped masking it.)
+#
+# Seed at T_ext + span, READ OFF THE SOLVER so this tracks the C++ defaults
+# rather than restating them — if those defaults move, this moves with them.
+_HOTF_REF = bp.CombustionSolver()
+HOTF1_T = float(_HOTF_REF.fire_T_ext) + float(_HOTF_REF.fire_T_span)
+# ...plus ONE RAW COUNT. `hotf` is computed as
+#     mul_q16(T_q - fire_T_ext_q, recip_T_span)
+# with `recip_T_span` a LOAD-TIME reciprocal and the multiply TRUNCATING TOWARD
+# ZERO (the fixed-point kit's pinned direction). At the nominal temperature the
+# true ratio is exactly 1.0, so truncation lands the product on FP_ONE - 1 and
+# an uncontested source draws burn_cap - 1 — measured, not guessed. One raw
+# count of temperature (1/65536 of a game unit) lifts it onto exactly FP_ONE.
+# This is the minimal exact lift, and it is stable as long as the kit's
+# truncation direction stays pinned.
+#
+# IF A DIAL MOVES AND THIS BREAKS: the offset is re-derivable by scanning raw
+# counts upward from `quantize(fire_T_ext + fire_T_span)` for the first value
+# at which the PART-1 uncontested case draws exactly burn_cap.
+HOTF1_TRUNCATION_LIFT = 1
+HOTF1_Q = int(round(HOTF1_T * FP_ONE)) + HOTF1_TRUNCATION_LIFT
+# Sources must also stay at/above their own ignition temperature, or the claim
+# gate's not-yet-alight hysteresis branch would change what these edge cases
+# exercise. Assert rather than assume.
+assert HOTF1_Q > IGN_Q, (
+    f"hotf==1 temperature ({HOTF1_T}) fell below the fixture ignition point "
+    f"({IGN_Q / FP_ONE}) — the edge fixtures would change regime")
 
 
 def _quantize(x):
@@ -104,7 +145,8 @@ def _mk_solver(**over):
     d.update(over)
     c.burn_rate = d["burn_rate"]
     c.o2_thresh_burn = d["o2_thresh_burn"]
-    c.H_fuel = d["H_fuel"]
+    c.H_FUEL_M = d["H_FUEL_M"]
+    c.H_FUEL_SHIFT = int(d["H_FUEL_SHIFT"])
     c.soot_yield = d["soot_yield"]
     c.fuel_per_o2 = d["fuel_per_o2"]
     c.o2_frac_ext = d["o2_frac_ext"]
@@ -119,18 +161,28 @@ def _contig(state):
             for k, v in state.items()}
 
 
-def run_pair(state, dt, dials_over=None, c_v=C_V, n_floor_heat=N_FLOOR_HEAT):
+def run_pair(state, dt, dials_over=None, c_v=C_V, n_floor_heat=N_FLOOR_HEAT,
+             fuel_per_o2_plane=None):
     """Run CPU CombustionSolver.step + GPU cuda_combustion_step on identical
-    copies of `state`. Returns (cpu_dict, cpu_rails, gpu_dict, gpu_rails)."""
+    copies of `state`. Returns (cpu_dict, cpu_rails, gpu_dict, gpu_rails).
+
+    T5b / R14: `fuel_per_o2_plane` is the per-material fuel exchange rate the
+    live engine always supplies. None exercises the scalar fallback (what every
+    pre-T5b case here did); an array exercises the plane on BOTH backends, and
+    the two must agree bit for bit.
+    """
     dials_over = dials_over or {}
     comb, d = _mk_solver(**dials_over)
+    fpo = (np.ascontiguousarray(fuel_per_o2_plane, dtype=np.int32)
+           if fuel_per_o2_plane is not None else None)
 
     c = {k: (v.copy() if isinstance(v, np.ndarray) else v) for k, v in state.items()}
     # CPU: fresh solver has zeroed rail counters -> post-step members == this
     # step's per-cell counts.
     comb.step(c["gas"], O2, INERT_N2, SMOKE, c["temperature"], c["wall_hp"],
               c["fire"], c["flammable"], c["solid"], c["is_vacuum"],
-              c["ignition_temp_q16"], dt, c_v, n_floor_heat)
+              c["ignition_temp_q16"], dt, c_v, n_floor_heat,
+              fuel_per_o2_plane=fpo)
     cpu_rails = (int(comb.heat_floor_hits), int(comb.t_max_phys_hits),
                  int(comb.e_deposit_drop_sum))
 
@@ -139,8 +191,10 @@ def run_pair(state, dt, dials_over=None, c_v=C_V, n_floor_heat=N_FLOOR_HEAT):
         g["gas"], O2, INERT_N2, SMOKE, g["temperature"], g["wall_hp"], g["fire"],
         g["flammable"], g["solid"], g["is_vacuum"], g["ignition_temp_q16"],
         dt, c_v, n_floor_heat,
-        d["burn_rate"], d["o2_thresh_burn"], d["H_fuel"], d["soot_yield"],
-        d["fuel_per_o2"], d["o2_frac_ext"], d["o2_frac_full"], d["T_MAX_PHYS"])
+        d["burn_rate"], d["o2_thresh_burn"], d["H_FUEL_M"],
+        int(d["H_FUEL_SHIFT"]), d["soot_yield"],
+        d["fuel_per_o2"], d["o2_frac_ext"], d["o2_frac_full"], d["T_MAX_PHYS"],
+        fuel_per_o2_plane=fpo)
     gpu_rails = (int(hf), int(tm), int(dd))
     return c, cpu_rails, g, gpu_rails
 
@@ -190,15 +244,22 @@ def _add_source(st, y, x, hp=60.0, temp_q=None, fire_i=1.0):
     fixture that expects to actually burn must seed `fire` at the source.
     `fire_i` defaults to FULL intensity (I=1.0 exactly): with o2f_j also
     clamped to exactly 1.0 (the fixtures below keep the local O2 mole
-    fraction comfortably above the span top), demand_k == burn_cap_q exactly
-    (mul_q16(x, FP_ONE) == x, no rounding) — i.e. the OLD uniform-demand
-    arithmetic these fixtures were built against is reproduced bit-for-bit.
+    fraction comfortably above the span top), AND hotf == 1.0 (the default
+    temperature is HOTF1_Q — see its derivation above), demand_k == burn_cap_q
+    exactly (mul_q16(x, FP_ONE) == x, no rounding) — i.e. the OLD
+    uniform-demand arithmetic these fixtures were built against is reproduced
+    bit-for-bit.
+
+    R3 (2026-09-12): the hotf == 1 seed is what keeps that last sentence true.
+    Before R3 the temperature was free and these fixtures used IGN_Q*2; that
+    value now means hotf = 3.61 and the exact-demand premise fails. Pass
+    `temp_q` explicitly to exercise a different hotf on purpose.
     """
     st["solid"][y, x] = True
     st["flammable"][y, x] = True
     st["wall_hp"][y, x] = int(round(hp * FP_ONE))
     st["ignition_temp_q16"][y, x] = IGN_Q
-    st["temperature"][y, x] = IGN_Q * 2 if temp_q is None else temp_q
+    st["temperature"][y, x] = HOTF1_Q if temp_q is None else temp_q
     st["fire"][y, x] = _quantize(fire_i)[()]
 
 
@@ -343,7 +404,8 @@ def part1_isolated() -> bool:
     st["gas"][O2][2, 3] = _quantize(1.2)
     st["temperature"][2, 3] = _quantize(90.0)      # already near the low ceiling
     st = _contig(st)
-    c, cr, g, gr = run_pair(st, dt, dials_over=dict(T_MAX_PHYS=100.0, H_fuel=4000.0))
+    c, cr, g, gr = run_pair(st, dt,
+                            dials_over=dict(T_MAX_PHYS=100.0, H_FUEL_M=4000.0))
     ok &= compare("T_MAX_PHYS rail", c, cr, g, gr)
     if cr[1] == 0:
         ok = False
@@ -411,6 +473,38 @@ def part1_isolated() -> bool:
             ok &= compare(f"fuzz(X_full=1.0) {h}x{w} dt={dtt:.3f}", c, cr, g, gr)
             if not np.array_equal(c0["gas"], c["gas"]):
                 n_moved += 1
+
+    # (k3) T5b / R14: THE PER-MATERIAL FUEL-RATE PLANE, the path the live engine
+    #      always takes. Every case above passes `fuel_per_o2_plane = None`, i.e.
+    #      the scalar fallback — so without this block the plane's device code
+    #      would be entirely ungated, which is exactly the shape of blind gate
+    #      this arc keeps finding. Same fuzz states, a NON-UNIFORM plane, and a
+    #      NON-VACUOUSNESS control: the plane result must differ from the scalar
+    #      one, or "CPU == GPU" would be proving nothing about the new argument.
+    n_cfg3 = 0
+    n_moved3 = 0
+    for (h, w) in ((16, 16), (24, 32), (31, 17), (40, 40), (8, 8)):
+        for dtt in (0.25, 1.0 / 24.0, 0.6):
+            n_cfg3 += 1
+            st = _random_state(rng, h, w)
+            # A deliberately non-uniform plane: a checkerboard of the derived
+            # `wood` and `kindling` rates (Q16.16 9497 / 1266), so a kernel that
+            # read cell 0's value, or hoisted the load, is caught.
+            yy, xx = np.indices((h, w))
+            plane = np.where(((yy + xx) & 1) == 0, 9497, 1266).astype(np.int32)
+            c0, _, _, _ = run_pair(st, dtt)                       # scalar fallback
+            c, cr, g, gr = run_pair(st, dtt, fuel_per_o2_plane=plane)
+            ok &= compare(f"fuel-plane {h}x{w} dt={dtt:.3f}", c, cr, g, gr)
+            if not np.array_equal(c0["wall_hp"], c["wall_hp"]):
+                n_moved3 += 1
+    if n_moved3 == 0:
+        ok = False
+        print("  VACUOUS: the fuel_per_o2 plane changed no wall_hp on any fuzz "
+              "state — the argument is inert and the CPU==GPU check proves "
+              "nothing about it")
+    else:
+        print(f"  fuel-rate plane: {n_cfg3} configs bit-identical CPU vs GPU, "
+              f"{n_moved3}/{n_cfg3} of which moved wall_hp vs the scalar")
     if n_moved == 0:
         ok = False
         print("  VACUOUS: o2_frac_full made no difference on any fuzz state — "
@@ -493,7 +587,8 @@ def part2_trajectory(x_full=None, burn_rate=None) -> bool:
             gpu["gas"], O2, INERT_N2, SMOKE, gpu["temperature"],
             gpu["wall_hp"], gpu["fire"], gpu["flammable"], gpu["solid"],
             gpu["is_vacuum"], gpu["ignition_temp_q16"], dt, C_V, N_FLOOR_HEAT,
-            d["burn_rate"], d["o2_thresh_burn"], d["H_fuel"], d["soot_yield"],
+            d["burn_rate"], d["o2_thresh_burn"], d["H_FUEL_M"],
+            int(d["H_FUEL_SHIFT"]), d["soot_yield"],
             d["fuel_per_o2"], d["o2_frac_ext"], d["o2_frac_full"], d["T_MAX_PHYS"])
         gpu_rails = (int(hf), int(tm), int(dd))
 

@@ -6,10 +6,16 @@ The fire pass changed in the EOS refactor and the S6 kernel was STALE:
     `n_total` (continuous-O2 law, docs/continuous_o2_law_design_2026-07-24.md):
     the sustain factor is LINEAR in the local O2 MOLE FRACTION
     X = Σn_o2/Σn_total over open neighbours, clamped between an extinction
-    limit (o2_frac_ext) and the FULL-RESPONSE reference (o2_frac_full, pure O2
-    — the 2026-07-30 split; it is NOT the ambient dial o2_frac_amb, which the
-    law no longer reads) — NOT the old absolute-density smoothstep(P_min,
-    P_full).
+    limit (o2_frac_ext) and an upper reference — NOT the old absolute-density
+    smoothstep(P_min, P_full).
+  * R1 O2f-RENORMALIZATION (fire session #12, 2026-09-01, docs/fire_3c_
+    design_2026-09-01.md "Ruling R1"): the SUSTAIN law's upper reference is now
+    o2_frac_amb (ambient, 0.21) instead of o2_frac_full (pure O2, the
+    2026-07-30 split) — ambient air reads o2f == 1.0 by construction. The
+    clamp's upper edge is the NEW `o2f_cap` dial (5.0), not FP_ONE, so
+    above-ambient enrichment can register, bounded. o2_frac_full stays live
+    only on the DEMAND side (combustion.cpp's o2f_j), which this file does not
+    exercise (FireSimulation only).
 This gate re-proves the re-derived kernel (cuda_fire.cu) bit-identical to the
 CURRENT CPU FireSimulation::step.
 
@@ -84,35 +90,41 @@ FP_ONE = 65536
 MUT = ("fire", "temperature", "smoke", "wall_hp")
 
 # GPU dial kwargs, matching bindings.cpp cuda_fire_step's py::arg names EXACTLY
-# (P_min/P_full RETIRED from the O2 gate, REPLACED by o2_frac_ext/o2_frac_full —
-# the continuous-O2 law's mole-fraction span). P-R2 (docs/radiation_raycaster_
-# extinction_ruling_2026-07-31.md A2): fire_pressure_gain/temp_gain_scale/
-# T_FLAME_MAX DROPPED — the plume->T shim they fed no longer exists, and
-# cuda_fire_step's signature no longer takes them.
+# (P_min/P_full RETIRED from the O2 gate, REPLACED by o2_frac_ext/o2_frac_amb —
+# the continuous-O2 law's mole-fraction span, R1-renormalized). P-R2 (docs/
+# radiation_raycaster_extinction_ruling_2026-07-31.md A2): fire_pressure_gain/
+# temp_gain_scale/T_FLAME_MAX DROPPED — the plume->T shim they fed no longer
+# exists, and cuda_fire_step's signature no longer takes them.
 # P-R3 (ruling A3): `I_cap_per_avail` JOINS the gated set — it is the capacity
 # law's size dial, and its load-time reciprocal INV_C = quantize(1/c) is baked
 # separately on each side, so a divergence there is exactly what tol 0 exists to
 # catch. `fire_T_ext` stays in the list as the plane's FALLBACK.
+# R1 (fire session #12, docs/fire_3c_design_2026-09-01.md "Ruling R1"):
+# `o2_frac_amb` and `o2f_cap` JOIN the gated set — o2_frac_amb is now the
+# sustain span's LIVE upper reference (was tombstoned pre-R1) and o2f_cap is
+# the NEW enrichment ceiling; both must round-trip identically CPU vs GPU.
 DIALS = ("k_grow", "k_die", "fire_T_ext", "fire_T_span", "fuel_ref",
          "o2_frac_ext", "o2_frac_full", "I_min", "k_wind_fan", "k_wind_strip",
-         "wall_damage", "temp_scale", "I_cap_per_avail")
+         "wall_damage", "temp_scale", "I_cap_per_avail",
+         "o2_frac_amb", "o2f_cap")
 # smoke_emission DROPPED from DIALS at P-S1 (2026-08-15): the field it named
 # no longer exists on FireParams and cuda_fire_step no longer takes it — the
 # ex-nihilo smoke scatter both sides drove is deleted (docs/
 # smoke_single_source_asbuilt_2026-08-15.md). Joins the p_expand_ref/P_min/
-# P_full/o2_frac_amb tombstoned group below (set on the CPU object, never
-# passed to the GPU) — except this one is gone from BOTH sides, not merely
-# unpassed.
+# P_full tombstoned group below (set on the CPU object, never passed to the
+# GPU) — except this one is gone from BOTH sides, not merely unpassed.
 
 # The full FireParams surface (incl. the vestigial p_expand_ref/P_min/P_full,
 # set on the CPU object but not passed to the GPU — all three are unread by
 # both paths now, kept only so old configs/bindings don't hard-error).
-# o2_frac_amb joined that tombstoned group on 2026-07-30 (the full-response
-# reference split): it is set on the CPU object and NOT passed to the GPU, which
-# is itself part of the proof it no longer participates in the law.
+# o2_frac_full stays in this tombstoned-from-GPU-call-but-set-on-CPU sense too
+# — R1 retired it from the SUSTAIN law (o2_frac_amb replaces it there), but it
+# is STILL passed to cuda_fire_step (DIALS above) because the free function's
+# signature still carries it (the DEMAND-side dial, unread by this kernel) —
+# unlike p_expand_ref/P_min/P_full it is not literally dropped from the call.
 _PARAM_DEFAULTS = dict(
     k_grow=4.0, k_die=2.0, fire_T_ext=350.0, fire_T_span=150.0, fuel_ref=60.0,
-    o2_frac_ext=0.13, o2_frac_full=1.0, o2_frac_amb=0.21,
+    o2_frac_ext=0.13, o2_frac_full=1.0, o2_frac_amb=0.21, o2f_cap=5.0,
     I_min=0.02, k_wind_fan=0.5,
     k_wind_strip=0.5, p_expand_ref=1.30,
     wall_damage=0.4, temp_scale=float(FP_ONE),
@@ -345,9 +357,10 @@ def part1_isolated() -> bool:
         c, dc, g, dg = run_pair(st, fp, dials, 1.0 / 24.0)
         ok &= compare(tag, c, dc, g, dg)
 
-    # (g) x_degenerate: o2_frac_full <= o2_frac_ext -> the linear-law STEP branch
-    #     (mirrors the old P_degenerate smoothstep-step branch).
-    fp_deg, dials_deg = make_params(o2_frac_ext=0.21, o2_frac_full=0.21)
+    # (g) x_degenerate: o2_frac_amb <= o2_frac_ext -> the linear-law STEP branch
+    #     (mirrors the old P_degenerate smoothstep-step branch). R1: the span's
+    #     upper reference is o2_frac_amb now, not o2_frac_full.
+    fp_deg, dials_deg = make_params(o2_frac_ext=0.21, o2_frac_amb=0.21)
     st = _make_random_state(rng, 20, 20, 2.0)
     c, dc, g, dg = run_pair(st, fp_deg, dials_deg, 1.0 / 24.0)
     ok &= compare("x_degenerate (linear-law step)", c, dc, g, dg)
@@ -504,10 +517,13 @@ def part2_trajectory() -> bool:
     # Air room full of O2: n_total is a FIXED ambient baseline (1.0, never
     # touched by the external driver below — the "O2 converts to inert gas,
     # total roughly conserved" shape); n_o2 = 0.30, i.e. X = 0.30 — ENRICHED
-    # relative to ambient 0.21. Under the full-response reference split that is
-    # o2f = (0.30-0.13)/(1-0.13) = 0.195, i.e. STRICTLY INSIDE the linear ramp
-    # rather than clamped at 1.0 — so the trajectory now genuinely exercises the
-    # recip_mul divide on both backends instead of the saturated fast value.
+    # relative to ambient 0.21. R1 renormalization: o2f = (0.30-0.13)/
+    # (0.21-0.13) = 2.125 -- ABOVE 1 (enrichment territory), unclamped since
+    # o2f_cap=5.0, so the trajectory exercises the recip_mul divide on both
+    # backends at a genuinely enriched, unsaturated value (not the old
+    # pure-O2-normalized 0.195 mid-ramp reading). As the external driver below
+    # depletes n_o2 each tick, the trajectory sweeps down through the cap-off
+    # region, past ambient (o2f==1), through the linear ramp, to extinction.
     # A central block of flammable-wall fire tiles.
     st["n_total"][:] = _quantize(1.0)
     st["n_o2"][:] = _quantize(0.30)

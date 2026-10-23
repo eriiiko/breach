@@ -1,16 +1,27 @@
 """arc #54 P-G5 — the SOLID-side / thermostat books gate.
 
-Design: ``docs/gas_energy_thermostat_ledger_2026-08-30.md``. Erik's ruling
-(2026-08-30): walls decaying to ambient (``cool_shift``, TemperatureSolver
-Pass 3, solids only) is a deliberate modelling boundary — "the ship's heating
-system, not simulated further" — and a TWO-WAY thermostat: it also warms a
-sub-ambient wall back up. This patch adds the SOLID side's own books
-(``solid_energy_books_sum``) and the three counters that close them
-(``e_solid_deposit_sum``, ``e_solid_cond_sum``, ``e_thermostat_sum``), so the
-TOTAL ledger — gas books (arc #54's own truth) PLUS solid books — closes
-exactly against every named external channel. COUNTER ONLY: no physics
-changed, so every field trajectory must stay byte-identical to the base
-commit (45050f3, pre-P-G5) — see ``test_thermostat_books_byte_identical``.
+Design: ``docs/gas_energy_thermostat_ledger_2026-08-30.md``, as amended by
+thermal model v2 R1.
+
+**T5b step 7 — THE THERMOSTAT TERM IS REMOVED, NOT ZEROED.** Erik's 2026-08-30
+ruling made the walls' relax-to-ambient (``cool_shift``, TemperatureSolver
+Pass 3, solids only) a deliberate modelling boundary, counted by name as
+``e_thermostat_sum``. R1 DELETES that pass: the radiation sweep computes the
+real radiative loss, and a hand-rolled Newtonian relaxation beside it counted
+the same physics twice. So the solid-side identity loses a term rather than
+gaining a zero:
+
+    Δ solid_energy_books_sum == e_solid_deposit_sum + e_solid_cond_sum
+
+and that is design v2 §6 item 7 — *nothing relaxes to ambient* — as an
+arithmetic identity. A solid's temperature now changes ONLY through the Pass-1
+radiation fold, the Pass-1 heat deposit, Pass-2 conduction, and combustion's
+own object-site write. If a fifth channel ever appears, THIS test goes red.
+
+The SOLID side's books (``solid_energy_books_sum``) and the two counters that
+now close them are unchanged, so the TOTAL ledger — gas books (arc #54's own
+truth) PLUS solid books — still closes exactly against every named external
+channel.
 
 Scenario: a small sealed hull room (``field_ab_harness``'s canonical 16x16
 box — hull border, carved-out air interior, NO breach), gas seeded well
@@ -52,7 +63,7 @@ def _sealed_hot_room_sim():
                      enable_recorder=False)
     g = sim.gmap
     interior = (~g.solid) & (~g.is_vacuum)
-    g.seed_gas_temperature(interior, gas_fixed.quantize_scalar(300.0))
+    g.seed_gas_temperature(interior, gas_fixed.quantize_q16_scalar(300.0))
     sim.set_paused(False)
     return sim
 
@@ -88,7 +99,7 @@ def _terms(g, eos, tsolver, comb, engine):
         # object-site fuel deposit that bypasses TemperatureSolver's Pass 1
         # entirely (combustion.cpp writes `temperature[s]` directly).
         int(tsolver.e_solid_deposit_sum) + int(tsolver.e_solid_cond_sum)
-        + int(tsolver.e_thermostat_sum) + int(comb.e_comb_solid_heat_sum),
+        + int(comb.e_comb_solid_heat_sum),   # T5b: no thermostat term
     )
 
 
@@ -133,21 +144,23 @@ def test_thermostat_books_close_and_decay():
         f"P-G5 total ledger broken on {bad}/{TICKS} ticks, "
         f"worst |resid|={worst} @ tick {worst_tick}")
 
-    # (b) a hot-seeded sealed room with no fire only ever pushes its walls
-    # ABOVE ambient (the gas warms them via conduction), so Pass 3's
-    # relax-to-ambient is a pure SINK here: e_thermostat_sum must be negative
-    # (energy leaving to the thermostat), and the room's total (gas+solid)
-    # energy must decay monotonically toward ambient — the thermostat is the
-    # only channel with anywhere to put net energy in this closed, fireless
-    # scenario.
-    assert int(tsolver.e_thermostat_sum) < 0, (
-        "e_thermostat_sum should be negative (heat leaving to the "
-        "thermostat) in a hot-seeded sealed room with no sub-ambient cells")
-    diffs = np.diff(np.array(totals, dtype=object))
-    bad_rises = [(i + 1, int(d)) for i, d in enumerate(diffs) if d > 0]
-    assert not bad_rises, (
-        f"room energy (gas+solid) must decay monotonically toward ambient; "
-        f"rose on {len(bad_rises)} tick(s), first {bad_rises[:5]}")
+    # (b) T5b step 7 / design v2 §6 item 7 — NOTHING RELAXES TO AMBIENT.
+    # This used to assert `e_thermostat_sum < 0` and a monotone decay of the
+    # room's total: the thermostat was "the only channel with anywhere to put
+    # net energy" in this closed, fireless scenario. Pass 3 is deleted, so the
+    # counter does not exist and the claim is now the OPPOSITE one, and a
+    # stronger statement: with no fire, no breach and (in this fixture) the
+    # sweep's own loss the only way out, the identity in (a) accounts for every
+    # count, so any relax-to-ambient channel sneaking back in would break it.
+    assert not hasattr(tsolver, "e_thermostat_sum"), (
+        "TemperatureSolver still exposes e_thermostat_sum -- R1 deletes the "
+        "pass, so the term must be REMOVED from the identity, not zeroed")
+    assert not hasattr(tsolver, "e_cool_sum"), (
+        "TemperatureSolver still exposes e_cool_sum -- same channel, same "
+        "deletion")
+    # ...and the books did move, so (a) is not closing a row of zeros.
+    assert totals[0] != totals[-1], (
+        "the room's total ledger never moved -- this gate would be vacuous")
 
 
 def test_thermostat_books_byte_identical_to_base():
@@ -155,13 +168,37 @@ def test_thermostat_books_byte_identical_to_base():
     (fire + water + wave + smoke + a real breach — the same trajectory every
     other A/B gate in this repo uses) must still be byte-identical to a
     capture taken on the base commit (45050f3), BEFORE this patch's C++
-    edits landed. Counters are not fields, so nothing here may move."""
+    edits landed. Counters are not fields, so nothing here may move.
+
+    G12 NOTE (2026-08-31, issue #12, docs/fire_g12_one_map_patch_2026-08-31.md):
+    this gate's job was always narrow and point-in-time — prove P-G5's OWN
+    diff (1c4550d, counters only) was behavior-preserving relative to ITS
+    immediate parent, 45050f3. That proof is complete and stands in git
+    history; it does not claim "no physics changes ever again." G12 is the
+    first physics-moving patch to land since P-G5 closed (EOS pressure
+    calibration C = 1/290 -> 1/293, the gas_energy T_abs offset, the
+    radiation reshape, the T floor — spec §6), so this frozen-base comparison
+    now diverges by design, the same way every GOLDEN_AGGREGATE importer and
+    the b1/b6 dormancy goldens legitimately moved this patch. Re-capturing
+    BASE_TRAJECTORY at HEAD would erase what it actually proves (P-G5 vs its
+    own parent), so instead of re-baselining a frozen historical snapshot,
+    this assertion is skipped from here forward with the divergence on
+    record (measured 2026-08-31: atmosphere/gas_energy/temperature/wind_x/
+    wind_y/unit-position cells move, all downstream of the pressure/T_abs
+    shift — no combustion-side or ignition-side delta, consistent with
+    spec §6's expected-delta list). FUTURE: if this scenario needs an
+    ongoing counter-only regression gate again, capture a FRESH base at the
+    commit immediately before the next such patch, per the docstring's own
+    regeneration recipe."""
     if not BASE_TRAJECTORY.exists():
         import pytest
         pytest.skip(
             f"base trajectory fixture missing: {BASE_TRAJECTORY} "
             "(regenerate from 45050f3 with field_ab_harness.capture_trajectory "
             "+ save_trajectory before editing, per the P-G5 patch note)")
-    base = fab.load_trajectory(str(BASE_TRAJECTORY))
-    new = fab.capture_trajectory(n_steps=len(base))
-    fab.assert_trajectories_match(base, new, tol=0.0)
+    import pytest
+    pytest.skip(
+        "G12 (issue #12) is the first physics-moving patch since P-G5 closed "
+        "-- this frozen-45050f3-base comparison diverges by design (see the "
+        "docstring's G12 NOTE); P-G5's own counter-only claim vs its parent "
+        "already passed and stands in git history.")

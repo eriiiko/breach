@@ -212,7 +212,7 @@ def test_falloff_pinned_exact_deposits_and_nozzle_rule():
     assert int(gmap.heat[10, 13]) == 52428800
     assert int(gmap.heat[10, 14]) == 39321600
     assert int(gmap.heat[11, 14]) == 39321600
-    assert int(gmap.gas[FUEL_GAS][10, 12]) == gas_fixed.quantize_scalar(0.075)
+    assert int(gmap.gas[FUEL_GAS][10, 12]) == gas_fixed.quantize_trace_scalar(0.075)
     # Nozzle rule: the shooter's own footprint tiles take no deposit.
     for (tx, ty) in u.occupied_tiles():
         assert int(gmap.heat[ty, tx]) == 0
@@ -240,25 +240,42 @@ def test_heat_lands_on_solid_wood_but_gas_does_not():
 # ---------------------------------------------------------------------------
 # 4. Ignition end-to-end (CPU backend): heat -> temperature -> fire
 # ---------------------------------------------------------------------------
-def test_dragon_ignites_wood_within_the_derived_tick_count():
-    """The config derivation of record (ammo.fuel_standard, the W6 2400
-    rescale): at dist 2 the wood tile crosses ignition_temp 300 at ~2
-    ticks (T_inf 4650), dist 3 at ~3 (T_inf 3100), dist 8 — near the old
-    full range — at ~9 (T_inf 1162): the whole near cone catches
-    near-instantly and the reach tracks the new 10 m range. Whole-engine
+def test_dragon_ignites_wood_inside_its_reach_and_nothing_outside_it():
+    """PROPERTY: the flamethrower lights every wood tile INSIDE its authored
+    reach, and no wood tile outside it — however long you wait. Whole-engine
     path: FieldEdit heat -> C++ TemperatureSolver convert ->
     apply_temperature_ignition.
 
-    EOS refactor P4 (merged from main, design §6 item 3): the ignition O2
-    gate now reads the REAL local N_O2 mean instead of the atmosphere/P
-    proxy — the spray's own heat expands the local air (p* rises ->
-    outward wind), transiently thinning REAL O2 before donor-cell flux
-    resupplies it, so ignition can land a few ticks later than the pure
-    temperature crossing (main widened its pre-W6 dist-3 window for the
-    same reason). Upper bounds here carry the same slack over the W6
-    temperature-crossing estimates; measured deterministic across
-    reruns."""
-    for dist, tick_lo, tick_hi in ((2, 0, 16), (3, 1, 24), (8, 3, 44)):
+    The REACH is the weapon's (`range_m = 10` at this fixture's 1.0 m tiles);
+    the tiles probed straddle it, so the assertion is about `dragon_7`'s row and
+    not about what it is pointed at.
+
+    THIS TEST WAS `test_dragon_ignites_wood_within_the_derived_tick_count`, and
+    it pinned a per-distance TICK WINDOW (dist 2 in [0, 16], dist 3 in [1, 24],
+    dist 8 in [3, 44]) derived from how long a 153.9 kg wood tile takes to cross
+    `ignition_temp`. M2 re-authors `wood` as a 0.5 cm panel with 1/64 of that
+    capacity, and MEASURED (M2, 2026-09-21) every in-reach distance now ignites
+    on tick 0 — 2, 3 and 8 alike.
+
+    That is the design working, not a regression: a flamethrower is precisely the
+    thing that lights a thin wooden panel instantly. But it makes the old test's
+    real content — that ignition time GROWS with distance — unmeasurable at tick
+    resolution, because the whole cone now crosses ignition inside one tick. The
+    window is therefore not re-baselined to `[0, 0]`, which would pin the
+    engine's current behaviour without pinning a reason and would go red on any
+    harmless timing change. What is asserted instead is the half that is still a
+    statement about the weapon.
+
+    RECORDED FINDING for whoever restores the distance discrimination: it needs
+    a sub-tick observable (the temperature the deposit lands, per distance),
+    not a tick count.
+
+    BREAKS IF: the spray's reach stops tracking `range_m`, the heat->ignition
+    path is severed at any of its three hops, or the cone stops falling off with
+    distance at all (an out-of-reach tile igniting).
+    """
+    IN_REACH, OUT_OF_REACH = (2, 3, 8), (11, 13)
+    for dist in IN_REACH + OUT_OF_REACH:
         wood_x = 6 + dist
         sim = Simulation(_level(edits=[(10, wood_x, 2)]), seed=SEED,
                          breach_physics=bp, enable_recorder=False)
@@ -272,10 +289,14 @@ def test_dragon_ignites_wood_within_the_derived_tick_count():
             if sim.gmap.fire[10, wood_x] > 0:
                 ignite_tick = i
                 break
-        assert ignite_tick is not None, f"dist {dist}: wood never ignited"
-        assert tick_lo <= ignite_tick <= tick_hi, (
-            f"dist {dist}: ignited at tick {ignite_tick}, expected "
-            f"[{tick_lo}, {tick_hi}]")
+        if dist in IN_REACH:
+            assert ignite_tick is not None, (
+                f"dist {dist} is inside dragon_7's reach and the wood never "
+                f"ignited")
+        else:
+            assert ignite_tick is None, (
+                f"dist {dist} is beyond dragon_7's reach but the wood ignited "
+                f"at tick {ignite_tick} — the spray cone has no reach limit")
 
 
 # ---------------------------------------------------------------------------
@@ -350,10 +371,18 @@ def test_marine_in_flames_loses_hp_via_the_existing_heat_row():
 # ---------------------------------------------------------------------------
 def test_miasma_sustained_poison_drains_a_marine():
     """The vent paints the near cone past poison_min_density within a few
-    ticks and HOLDS it (sustained emission vs the grenade's one-shot);
-    damage rides the W3 gas[poison] row (source 'poison_gas'). Only the
-    poison slice moves — a vent is not a flamethrower (no heat, no fire,
-    no blindness: poison is not teargas)."""
+    ticks and HOLDS it (sustained emission vs the grenade's one-shot): the
+    victim is dosed on EVERY tick of the window; damage rides the W3
+    gas[poison] row (source 'poison_gas'). Only the poison slice moves — a
+    vent is not a flamethrower (no heat, no fire, no blindness: poison is
+    not teargas).
+
+    Smoke transport v2 (#12): the clause "every poison hit lands on the
+    victim" is GONE. Deposits are additive now (D1) and the trace is
+    conserved, so the sustained cloud builds past 1 at the aim point and,
+    late in the window, its conservative spread reaches the shooter's own
+    tiles above poison_min_density — the operator is dosed by his own cloud
+    (recorded for Erik's HUMAN-TEST, not asserted either way here)."""
     sim = Simulation(_level(), seed=SEED, breach_physics=bp,
                      enable_recorder=False)
     s = _shooter("miasma_vent")
@@ -363,15 +392,15 @@ def test_miasma_sustained_poison_drains_a_marine():
     hp_v = victim.current_hp
     assert sim.apply_action(sid, Order(
         ORDER_FIRE, target_fx=12, target_fy=10, phase=0))
-    poison_hits = []
+    victim_hit_every_tick = True
     for _ in range(16):
         _step(sim)
-        poison_hits += [e for e in sim.tick_events
-                        if isinstance(e, UnitHitEvent)
-                        and e.source == "poison_gas"]
+        victim_hit_every_tick &= any(
+            isinstance(e, UnitHitEvent) and e.source == "poison_gas"
+            and e.unit_id == victim.id for e in sim.tick_events)
     assert sim.gmap.gas[GAS_POISON].any()
     assert victim.current_hp < hp_v
-    assert poison_hits and all(h.unit_id == victim.id for h in poison_hits)
+    assert victim_hit_every_tick, "the vent did not HOLD the victim in its cloud"
     # Poison ONLY: no heat deposit, no fire, no other TRACE gas slice touched
     # (the bulk O2/inert_N2 pair, EOS refactor P1, always carries ambient air).
     assert not sim.gmap.fire.any()

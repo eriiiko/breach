@@ -1,7 +1,23 @@
-"""Headless single-crate FIRE-TIMING harness (Fire & Heat tuning, §5.2 bench).
+"""Headless single-object FIRE-TIMING harness (Fire & Heat tuning, §5.2 bench).
 
-A tuning INSTRUMENT: it measures, in SECONDS, how long one furniture crate takes
-to ramp up and burn out. It is DIAGNOSTIC ONLY -- it does NOT change any game
+A tuning INSTRUMENT: it measures, in SECONDS, how long one fuel object takes
+to ramp up and burn out.
+
+RE-ANCHORED ON A THIN ROW (M2, thin_material_rows_design_2026-09-20 §8, Erik's
+ruling 2026-09-21): *"this is a problem with the massive fire at such a big
+tile... We should measure on the thin wall instead. Or the bonfire or whatever
+it's called."* The default fuel is `--mat kindling` — THE CAMPFIRE REFERENCE
+OBJECT, a ~2 kg / 4.3 mm lump inside the §3 lumped-validity criterion. It was
+`furniture`, and every fire number in this arc (the 17.7 kW fuel-bed self-heat,
+the 12 kW cross-gap flux, the burn durations) was quoted against that row when
+it was a 153.9 kg block — precisely the object the arc concluded cannot burn.
+
+Kindling is the drop-in replacement rather than `wood` because it keeps the two
+properties that made the crate a clean measurement — `conductivity = 0.0` (no
+conduction face, so the burn curve stays ON the object) and `ignition_temp =
+280` — so the ONLY thing that changed between the old bench and the new one is
+the fuel's MASS. `--mat wood` measures the 0.5 cm panel instead; `--mat
+furniture` reproduces the historical scenario on the re-authored crate. It is DIAGNOSTIC ONLY -- it does NOT change any game
 mechanic. It instruments and DRIVES the EXISTING fire model (config.toml
 [physics.fire]/[physics.combustion]/[physics.thermal]) via allowed debug field
 writes, and can PATCH config dials at runtime (--k-grow/--k-die/--set) so we tune
@@ -23,8 +39,8 @@ SCENARIO (isolates fire from O2 starvation, per Erik):
     room stay O2-fed. NOTE: a hand-built LevelData with ambient=None makes GameMap
     synthesize derive_ambient() with ALL DEFAULTS (sky_tau_s=0 == DORMANT); we
     must pass an explicit AmbientConfig to turn the pass on.
-  * ONE furniture crate (material `furniture`: hp 30, ignition_temp 280,
-    flammable). With sky exchange ON the crate is placed DEEP in the room
+  * ONE fuel object (`--mat`, default `kindling`: hp 8, ignition_temp 280,
+    flammable, ~2 kg). With sky exchange ON the object is placed DEEP in the room
     (default x=12, y=centre), SPONGE-SAFE (>= sponge_width + a few tiles from
     EVERY ring). The old ring-adjacent placement (x=1) was a workaround for the
     pre-sky-exchange O2-starvation of a deep crate; the sky refill now keeps the
@@ -78,6 +94,7 @@ from level_loader import LevelData                # noqa: E402
 from simulation import Simulation                 # noqa: E402
 from simulation import fire_fixed                 # noqa: E402
 from simulation.gases import SMOKE, O2, INERT_N2  # noqa: E402
+from simulation import gas_fixed                  # noqa: E402  (#88: the trace currency)
 
 FP_ONE = 1 << 16
 
@@ -216,10 +233,15 @@ def restore_overrides(restore):
 # function builds, and every knob it exposes, is UNCHANGED by P-F4a.
 # ---------------------------------------------------------------------------
 def build_level(interior_w, interior_h, crate_xy, tile_size_m,
-                sky_tau_s=60.0, sponge_width=8):
+                sky_tau_s=60.0, sponge_width=8, fuel_mat=KIND):
     """A synthetic planetside bench: a 1-tile SPACE ring (-> is_ambient reservoir)
-    around an open AIR interior with ONE furniture crate. No hull, so the interior
+    around an open AIR interior with ONE fuel object. No hull, so the interior
     air is directly bounded by the ambient sky (open field).
+
+    ``fuel_mat`` is the material id painted at ``crate_xy``. M2 re-anchored the
+    DEFAULT from ``FURN`` to ``KIND`` (design §8); callers that are calibrated on
+    a different row pass theirs explicitly, so no instrument's fuel changes by
+    accident.
 
     SKY-EXCHANGE AWARE: the LevelData carries an EXPLICIT AmbientConfig (via
     simulation.ambient.derive_ambient) so the per-tick sky-exchange pass is ACTIVE
@@ -236,7 +258,7 @@ def build_level(interior_w, interior_h, crate_xy, tile_size_m,
     tm[:, 0] = SPACE
     tm[:, w - 1] = SPACE
     cx, cy = crate_xy
-    tm[cy, cx] = FURN
+    tm[cy, cx] = int(fuel_mat)
     ambient = derive_ambient(sky_tau_s=float(sky_tau_s),
                              sponge_width=int(sponge_width))
     return LevelData(
@@ -256,11 +278,13 @@ class WindForcer:
     """Monkeypatch a PhysicsRunner instance so the fire (and smoke transport) sees
     a STEADY UNIFORM +x wind of magnitude ``wind_q`` (Q16.16) each tick.
 
-    Tick order (physics_runner.PhysicsRunner.step): cast_fire_heat -> _step_water
-    -> eos.run_substeps (WRITES wind_x/wind_y, advects smoke on its output wind)
-    -> _run_combustion -> step_tail (the FIRE logistic READS |wind| here). Two
-    seams, both pure ``gmap.wind_*`` writes: top-of-step() seeds the transport
-    wind so smoke rides ~W; _run_combustion re-forces so the fire reads exactly W.
+    Tick order (physics_runner.PhysicsRunner.step): _step_water -> eos.
+    run_substeps (WRITES wind_x/wind_y, advects smoke on its output wind)
+    -> _run_combustion -> step_tail (the radiation sweep, then the FIRE
+    logistic READS |wind| here). Two seams, both pure ``gmap.wind_*`` writes:
+    top-of-step() seeds the transport wind so smoke rides ~W; _run_combustion
+    re-forces so the fire reads exactly W. (T6, issue #12: cast_fire_heat,
+    which used to open this order, is deleted.)
     """
 
     def __init__(self, runner, wind_q: int):
@@ -326,7 +350,8 @@ def _far_probes(interior_w, interior_h, sponge_width):
 
 def run_one(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
             max_seconds, tail_seconds, overrides=None, seed=12345, verbose=True,
-            snapshot_times_s=None, sky_tau_s=60.0, sponge_width=8):
+            snapshot_times_s=None, sky_tau_s=60.0, sponge_width=8,
+            fuel_mat=KIND):
     """Run one single-crate burn. ``wind_dq == 0`` -> NATURAL wind (no forcing);
     ``wind_dq != 0`` -> FORCED constant +x wind. ``overrides`` patches CFG dials
     (restored afterwards). ``sky_tau_s`` / ``sponge_width`` -> the [ambient]
@@ -342,17 +367,19 @@ def run_one(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
             tile_size_m=tile_size_m, max_seconds=max_seconds, tail_seconds=tail_seconds,
             overrides=overrides or {}, seed=seed, verbose=verbose,
             snapshot_times_s=snapshot_times_s,
-            sky_tau_s=sky_tau_s, sponge_width=sponge_width)
+            sky_tau_s=sky_tau_s, sponge_width=sponge_width, fuel_mat=fuel_mat)
     finally:
         restore_overrides(restore)
 
 
 def _run_one_inner(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
                    max_seconds, tail_seconds, overrides, seed, verbose,
-                   snapshot_times_s=None, sky_tau_s=60.0, sponge_width=8):
+                   snapshot_times_s=None, sky_tau_s=60.0, sponge_width=8,
+                   fuel_mat=KIND):
     forced = (float(wind_dq) != 0.0)
     level = build_level(interior_w, interior_h, crate_xy, tile_size_m,
-                        sky_tau_s=sky_tau_s, sponge_width=sponge_width)
+                        sky_tau_s=sky_tau_s, sponge_width=sponge_width,
+                        fuel_mat=fuel_mat)
     sim = Simulation(level, seed=seed, breach_physics=bp, enable_recorder=False)
     gmap = sim.gmap
     cx, cy = crate_xy
@@ -366,9 +393,16 @@ def _run_one_inner(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
     # Game-faithful seed (Fable 2026-07-25): in-engine a tile only ignites
     # BECAUSE its T crossed ignition_temp — a cold-started seed (T=ambient)
     # is an unphysical bootstrap race the game never runs (it made the
-    # k_fire_heat sweeps look chaotic). Seed the crate tile at furniture's
-    # ignition_temp (280) so the bench starts where real ignition starts.
-    gmap.temperature[cy, cx] = fire_fixed.quantize_scalar(280.0)
+    # k_fire_heat sweeps look chaotic). Seed the object tile at ITS OWN
+    # ignition_temp so the bench starts where real ignition starts.
+    #
+    # M2: read from the material table instead of the literal 280.0 that was
+    # furniture's. The bench's fuel is a parameter now, and a hardcoded seed
+    # would silently mis-start any row whose ignition_temp differs -- exactly
+    # the CLAUDE.md `Starting a fire` failure ("a flame seeded on an ambient
+    # tile draws no O2, burns no fuel and does not even go out").
+    ign_temp = float(gmap.materials.ignition_temp[int(fuel_mat)])
+    gmap.temperature[cy, cx] = fire_fixed.quantize_scalar(ign_temp)
 
     p_min = float(getattr(CFG.physics.fire, "P_min", 0.01))
     p_full = float(getattr(CFG.physics.fire, "P_full", 0.03))
@@ -468,9 +502,12 @@ def _run_one_inner(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
         ntot_room = float(_ntm.mean()) / FP_ONE
         o2room_x = float(np.divide(_o2m, _ntm, out=np.zeros_like(_o2m),
                                    where=_ntm > 0).mean())
-        smoke = gmap.gas[SMOKE].astype(np.float64)
+        # Smoke in REAL units through the trace currency (#88); the old
+        # one-raw-Q16-count threshold kept as a real amount (1 / FP_ONE).
+        smoke = gas_fixed.dequantize_trace(gmap.gas[SMOKE])
         mass = float(smoke.sum())
-        cxc = float((smoke * xgrid).sum() / mass) if mass > 1.0 else float("nan")
+        cxc = (float((smoke * xgrid).sum() / mass) if mass > 1.0 / FP_ONE
+               else float("nan"))
         for key, val in (("t", t), ("I", I), ("T", T), ("hp", hp), ("o2", o2),
                          ("gate", gate), ("o2far", o2far), ("cx", cxc), ("mass", mass),
                          ("o2far_x", xfar), ("o2room", o2room), ("o2room_x", o2room_x),
@@ -554,7 +591,7 @@ def _run_one_inner(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
     drift_tiles = drift_ms = float("nan")
     valid = ~np.isnan(rec["cx"])
     idx = np.nonzero(valid)[0]
-    idx = idx[(rec["cx"][idx] < (interior_w * 0.70)) & (rec["mass"][idx] > 50.0)
+    idx = idx[(rec["cx"][idx] < (interior_w * 0.70)) & (rec["mass"][idx] > 50.0 / FP_ONE)
               & (t_arr[idx] <= 6.0)]
     if idx.size >= 6:
         idx = idx[2:]
@@ -580,6 +617,9 @@ def _run_one_inner(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
         hp_end=float(hp_arr[-1]) if hp_arr.size else float("nan"),
         drift_tiles=drift_tiles, drift_ms=drift_ms,
         n_ticks=len(t_arr), rec=rec, nbrs=len(nbrs),
+        fuel_mat=int(fuel_mat),
+        fuel_mat_name=str(gmap.materials.names[int(fuel_mat)]),
+        fuel_mass_kg=float(gmap.materials.mass_kg[int(fuel_mat)]),
         interior_w=interior_w, interior_h=interior_h, crate_xy=tuple(crate_xy),
         tile_size_m=tile_size_m, o2_snapshots=o2_snaps,
         sky_tau_s=float(sky_tau_s), sponge_width=int(sponge_width),
@@ -616,7 +656,7 @@ def write_timeseries_csv(m, path):
             w.writerow([f"{rec['t'][i]:.4f}", f"{rec['t'][i] / 60.0:.6f}",
                         f"{rec['I'][i]:.6f}", f"{rec['T'][i]:.3f}", f"{rec['hp'][i]:.6f}",
                         f"{rec['o2'][i]:.6f}", f"{rec['gate'][i]:.4f}",
-                        f"{rec['o2far'][i]:.6f}", f"{rec['mass'][i] / FP_ONE:.4f}",
+                        f"{rec['o2far'][i]:.6f}", f"{rec['mass'][i]:.4f}",
                         f"{rec['o2far_x'][i]:.6f}", f"{rec['o2room'][i]:.6f}",
                         f"{rec['o2room_x'][i]:.6f}", f"{rec['ntot_room'][i]:.6f}",
                         f"{rec['tfar'][i]:.4f}",
@@ -641,6 +681,8 @@ def _print_run(m):
           + (f"   overrides: {m['overrides']}" if m["overrides"] else ""))
     _sky = (f"sky_tau_s={m.get('sky_tau_s', 0.0):g}s"
             + (" DORMANT" if m.get('sky_tau_s', 0.0) <= 0 else ""))
+    print(f"  fuel: {m['fuel_mat_name']} (id {m['fuel_mat']}), "
+          f"{m['fuel_mass_kg']:.2f} kg/tile -- the M2 derived mass")
     print(f"  scenario: interior {m['interior_w']}x{m['interior_h']}, crate at "
           f"{m['crate_xy']} (deep), tile {m['tile_size_m']} m; PLANETSIDE O2=0.21; "
           f"{_sky}, sponge_width={m.get('sponge_width', 0)}")
@@ -692,7 +734,7 @@ def _print_run(m):
         tag = "  <- final" if i == len(rec["t"]) - 1 else ""
         print(f"  {rec['t'][i]:6.1f}  {rec['I'][i]:5.3f}  {rec['T'][i]:8.1f}  "
               f"{rec['hp'][i]:7.3f}  {rec['o2'][i]:6.4f}  {rec['gate'][i]:4.2f}  "
-              f"{rec['o2far'][i]:6.4f}  {rec['mass'][i]/FP_ONE:8.1f}{tag}")
+              f"{rec['o2far'][i]:6.4f}  {rec['mass'][i]:8.1f}{tag}")
     print()
 
 
@@ -770,6 +812,10 @@ def main(argv=None):
                     help="crate column; default 12 = DEEP in the room, >= sponge_width"
                          "+few from every ring (sky exchange keeps it O2-fed)")
     ap.add_argument("--crate-y", type=int, default=-1, help="default = interior vertical centre")
+    ap.add_argument("--mat", default="kindling",
+                    choices=("kindling", "wood", "furniture", "foliage"),
+                    help="the fuel row to burn (M2 re-anchor, design section 8); "
+                         "default kindling = the campfire reference object")
     ap.add_argument("--tile-size-m", type=float, default=0.333)
     ap.add_argument("--max-seconds", type=float, default=90.0)
     ap.add_argument("--tail-seconds", type=float, default=3.0)
@@ -797,10 +843,13 @@ def main(argv=None):
 
     crate_y = args.crate_y if args.crate_y >= 0 else (args.interior_h // 2 + 1)
     crate_xy = (args.crate_x, crate_y)
+    from simulation.materials import MATERIAL_NAMES as _MN
+    fuel_mat = next(i for i, n in _MN.items() if n == args.mat)
     common = dict(interior_w=args.interior_w, interior_h=args.interior_h,
                   crate_xy=crate_xy, tile_size_m=args.tile_size_m,
                   max_seconds=args.max_seconds, tail_seconds=args.tail_seconds,
-                  sky_tau_s=args.sky_tau_s, sponge_width=args.sponge_width)
+                  sky_tau_s=args.sky_tau_s, sponge_width=args.sponge_width,
+                  fuel_mat=fuel_mat)
 
     if args.k_sweep:
         # Erik's 2:1 pairs (§3). Natural wind. Longer window: slow ramps + ~tens-of-s burnout.

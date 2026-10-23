@@ -235,7 +235,10 @@ def test_light_exemplar_schema_shape():
     assert fields["color"].kind == KIND_COLOR_RGB
     assert fields["color"].default == (255, 255, 255)
     assert fields["kind"].kind == KIND_ENUM
-    assert fields["kind"].choices == ("static", "beacon")
+    # the schema's kinds MIRROR the loader's (a set designed to grow: "spot"
+    # joined 2026-10-04) -- breaks if one side gains a kind the other lacks
+    from level_loader import LIGHT_KINDS
+    assert tuple(fields["kind"].choices) == tuple(LIGHT_KINDS)
     # defaults mirror LightEntry (level_loader.py)
     assert fields["intensity"].default == 1.0
     assert fields["range"].default == 12.0

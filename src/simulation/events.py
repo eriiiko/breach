@@ -45,11 +45,18 @@ class ShotFiredEvent:
     ``hit_target_id`` is the ID of the unit hit (or ``None`` for a miss /
     wall-stop). Useful for the renderer to attach a hit spark at the
     target end vs. just fading the tracer.
+
+    ``launch`` is True on the segment a round LEAVES THE BARREL on (its first
+    advance); a slow marching round (plasma bolt, 40 mm) emits one event per
+    tick it flies, and only the first is a shot at the muzzle. The renderer's
+    muzzle flash (#33) keys on it. Render-only, like the whole event -- not in
+    the synced event digest.
     """
     unit_id: int                    # the shooter's unit id
     from_tile: tuple                # (fx, fy) — bullet origin
     to_tile: tuple                  # (fx, fy) — where the bullet ended up
     hit_target_id: Optional[int] = None
+    launch: bool = True             # this segment starts at the muzzle
 
 
 @dataclass
@@ -62,8 +69,8 @@ class LaserFiredEvent:
     (heavy laser, cutting beam). Render-only — NOT part of the synced event
     digest (the damage it caused rides UnitHitEvent as usual).
 
-    The beam-as-light-source hookup (its glow feeding the raycaster as a
-    transient source) is explicitly DEFERRED to the explosion-light pass
+    The beam-as-light-source hookup (its glow feeding the light sweep as a
+    transient cone emitter, renderer/frame_lights.py) is explicitly DEFERRED to the explosion-light pass
     (mechanics/03 §8 status note).
     """
     unit_id: int                    # the shooter's unit id
