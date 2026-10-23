@@ -30,7 +30,8 @@
 #   light_gain                 override the studio's exposure: a number, or
 #                              "game" = [render.lighting] master_gain
 #   hide = ["heat", ...]       switch layers off to isolate the rest
-#                              (heat / smoke / water / flame; G3 F3)
+#                              (heat / smoke / water / flame; G3 F3;
+#                              embers / shimmer; G3 F4a)
 #   fire_debug = N             open the flame VFX debug view N (G3 F2:
 #                              1 sources, 2 flame R, 3 T_vfx, 4 u, 5 p)
 #
@@ -515,3 +516,16 @@ beacon = false
 detonate = [24, 16, 24]
 note = "explosion_t12 without the fire's own glow (heat layer + flame): the G3 F3 hue gate's halo twin (tools/fire_look_gate.py)."
 hide = ["heat", "flame"]
+
+# --- G3 F4a: embers + heat shimmer ------------------------------------------
+[[shot]]
+name = "fss_lone_plain"
+level = "fire_smoke_studio"
+frames = 120
+center = [37.5, 27.5]
+zoom = 128.0
+lamps = false
+beacon = false
+light_gain = "game"
+note = "fss_lone without the F4a extras (embers, heat shimmer): their A/B twin -- the sparks and the wobble of the floor beside the flame are the difference."
+hide = ["embers", "shimmer"]

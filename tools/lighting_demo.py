@@ -98,7 +98,10 @@ Headless flags (no human at the keyboard):
                      cadence of the current --level after a 5 s warm-up, plus
                      the VRAM of its fields, and (G3 F3) the fire DRAW's
                      CPU / GPU ms per stage-call sum (shaders/fire_glow.fs)
-                     and the loop + draw totals. fire_smoke_studio lights itself;
+                     and the loop + draw totals, and (G3 F4a) the EMBERS
+                     (CPU update + draw, GPU draw) and the heat SHIMMER (CPU
+                     pack; GPU = the resolve with it on minus off, forced to
+                     full strength). fire_smoke_studio lights itself;
                      elsewhere add --perf-ignite "X,Y;X,Y" (the heat-only
                      [payloads.studio_ignite] at each tile).
     --shots [A,B]   graphics G0 P3: render the named LOOK SHOTS of
@@ -1301,6 +1304,53 @@ def _run_fire_vfx_perf(renderer, sim, lights_in, light_sky,
         return n
 
     vfx.draw_glow = timed_draw
+    # G3 F4a: the EMBERS (CPU update from the embers' own clock; the draw,
+    # both stages, CPU in the starved half, GPU in the queued half) and the
+    # heat SHIMMER (its CPU pack; its GPU cost = the resolve's GPU time with
+    # the shimmer on minus off, alternated frame by frame in the queued
+    # half). The shimmer is forced to full strength at any zoom for the
+    # measurement (the perf camera may sit below [render.shimmer]
+    # zoom_full), and restored after.
+    sh_cfg = CFG.render.shimmer
+    sh_saved = (sh_cfg.zoom_zero, sh_cfg.zoom_full)
+    sh_cfg.zoom_zero, sh_cfg.zoom_full = 0.0, 1e-3
+    emb_fn = renderer._draw_embers
+    emb_timer = GLTimer()
+    emb_frame = {"cpu": 0.0, "gpu": 0.0}
+
+    def timed_embers(*a, **kw):
+        if not mode["queued"]:
+            t0 = time.perf_counter()
+            n = emb_fn(*a, **kw)
+            emb_frame["cpu"] += (time.perf_counter() - t0) * 1000.0
+            return n
+        emb_timer.begin()
+        n = emb_fn(*a, **kw)
+        emb_timer.end()
+        emb_frame["gpu"] += emb_timer.result_ms()
+        return n
+
+    renderer._draw_embers = timed_embers
+    res_fn = renderer.world.resolve
+    res_timer = GLTimer()
+    res_frame = {"gpu": 0.0, "shimmer": 0.0, "active": 0.0}
+
+    def timed_resolve(*a, **kw):
+        if not mode["queued"]:
+            return res_fn(*a, **kw)
+        on = (len(rows) % 2) == 0
+        if not on:
+            kw["shimmer"] = None
+        res_frame["shimmer"] = float(on)
+        res_frame["active"] = float(renderer.shimmer.active(
+            renderer.world.world_px_per_tile))
+        res_timer.begin()
+        out = res_fn(*a, **kw)
+        res_timer.end()
+        res_frame["gpu"] = res_timer.result_ms()
+        return out
+
+    renderer.world.resolve = timed_resolve
     spt = 1.0 / float(CFG.clock.ticks_per_second)
     accum = 0.0
     rows = []
@@ -1317,6 +1367,8 @@ def _run_fire_vfx_perf(renderer, sim, lights_in, light_sky,
                                   light_serial=sim.light_serial,
                                   alpha=accum / spt, paused=False)
             draw_frame["cpu"], draw_frame["stages"] = 0.0, []
+            emb_frame["cpu"] = emb_frame["gpu"] = 0.0
+            res_frame["gpu"] = 0.0
             renderer.begin_frame()
             renderer.compose_world(units_marines=sim.marines(),
                                    units_zombies=sim.zombies(),
@@ -1334,10 +1386,20 @@ def _run_fire_vfx_perf(renderer, sim, lights_in, light_sky,
                 rows.append((vfx.last_update_ms, vfx.last_simulate_ms, g,
                              vfx.passes_last_frame, vfx.substeps_last_frame,
                              cells, float(mode["queued"]), draw_frame["cpu"],
-                             g_draw, len(draw_frame["stages"])))
+                             g_draw, len(draw_frame["stages"]),
+                             renderer.embers.last_update_ms, emb_frame["cpu"],
+                             emb_frame["gpu"], float(renderer.embers.p.n),
+                             renderer.shimmer.last_update_ms,
+                             res_frame["gpu"], res_frame["shimmer"],
+                             res_frame["active"]))
     finally:
         vfx.simulate = sim_fn
         vfx.draw_glow = draw_fn
+        renderer._draw_embers = emb_fn
+        renderer.world.resolve = res_fn
+        sh_cfg.zoom_zero, sh_cfg.zoom_full = sh_saved
+        emb_timer.delete()
+        res_timer.delete()
         for t in draw_timers.values():
             t.delete()
         timer.delete()
@@ -1377,6 +1439,25 @@ def _run_fire_vfx_perf(renderer, sim, lights_in, light_sky,
     print(f"[fire_vfx perf] TOTAL loop + draw: CPU ms mean {tot_cpu.mean():6.3f}"
           f"  p95 {np.percentile(tot_cpu, 95):6.3f} ; GPU (queued sim + "
           f"draw) ms mean {(q[:, 2] + q[:, 8]).mean():6.3f}")
+    # G3 F4a: the embers and the shimmer
+    emb_cpu = a[:, 10] + a[:, 11]
+    print(f"[fire_vfx perf] EMBERS alive mean {a[:, 13].mean():.1f} (max "
+          f"{a[:, 13].max():.0f}); CPU update ms {stat(a, 10)}; CPU draw ms "
+          f"{stat(a, 11)}")
+    print(f"[fire_vfx perf] EMBERS GPU draw ms (queued) {stat(q, 12)}")
+    tot_emb = tot_cpu + emb_cpu
+    print(f"[fire_vfx perf] TOTAL fire VFX incl. embers: CPU ms mean "
+          f"{tot_emb.mean():6.3f}  p95 {np.percentile(tot_emb, 95):6.3f} ; "
+          f"GPU flame + embers ms mean "
+          f"{(q[:, 2] + q[:, 8] + q[:, 12]).mean():6.3f}")
+    on, off = q[q[:, 16] == 1], q[q[:, 16] == 0]
+    print(f"[fire_vfx perf] SHIMMER CPU pack ms {stat(a, 14)} ; active in "
+          f"{100 * on[:, 17].mean():.0f} % of its frames")
+    print(f"[fire_vfx perf] RESOLVE GPU ms: shimmer on {stat(on, 15)} ; off "
+          f"{stat(off, 15)} ; SHIMMER GPU = on - off = "
+          f"{on[:, 15].mean() - off[:, 15].mean():6.3f} ms "
+          f"(world RT {renderer.world.world_px_w}x"
+          f"{renderer.world.world_px_h})")
     print(f"[fire_vfx perf] per substep: CPU submit {a[:, 1].mean() / sub:.3f} ms, "
           f"GPU starved {a[:, 2].mean() / sub:.4f} ms, GPU queued "
           f"{q[:, 2].mean() / max(q[:, 4].mean(), 1e-9):.4f} ms")
@@ -1533,6 +1614,8 @@ def main() -> None:
           "same in the main game):")
     print("[lighting_demo]   F1=grid  F2=smoke  F3=flame A/B (mask/thickness/off)  "
           "F4=lighting  F5=normal-map  F6=debug coords  F7=pressure")
+    print("[lighting_demo]   Shift+F3=embers on/off  Ctrl+F3=heat shimmer "
+          "on/off (G3 F4a)")
     print("[lighting_demo]   F9=legacy smoke A/B  F10=speckle A/B "
           "(off/noise/soot)  T=temperature")
     print("[lighting_demo]   V=water optics  M=3D units  B=bilinear  "
@@ -1616,6 +1699,12 @@ def main() -> None:
         # "heat"); a shot may hide it
         if "flame" in look_shot.hide:
             renderer.fire_vfx.emission_override = "off"
+        # graphics G3 F4a: the embers and the heat shimmer (Shift+F3 /
+        # Ctrl+F3's toggles), each hideable on its own
+        if "embers" in look_shot.hide:
+            renderer.embers.enabled_override = False
+        if "shimmer" in look_shot.hide:
+            renderer.shimmer.enabled_override = False
         # graphics G3 F2: a shot may open a flame VFX debug view (F11's cycle)
         if look_shot.fire_debug:
             renderer.fire_vfx.debug_override = look_shot.fire_debug

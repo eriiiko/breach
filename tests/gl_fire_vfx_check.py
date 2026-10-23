@@ -1,4 +1,4 @@
-"""GL checks of the flame VFX pass (graphics arc G3, patches F1 + F2 + F3;
+"""GL checks of the flame VFX pass (graphics arc G3, patches F1 + F2 + F3 + F4a;
 docs/g3_fire_design_2026-10-23.md §8, §9, §13.1, §13.3, §13.9-§13.11, §13.13).
 
 Runs in ITS OWN PROCESS with a hidden raylib window (a GL context), never
@@ -64,10 +64,27 @@ Each check names the PROPERTY it protects and the change that must break it:
       draw issued; a burnt-out fire stops drawing after its linger. Breaks
       if the draw ignores the active region.
   one_tamed_wind_and_render_only -- the real renderer on fire_smoke_studio
-      (relief + props + flame all consuming the wind) calls ``tame_wind`` at
-      most once per frame, and the field digest of every tick is identical
-      with the flame VFX on and off. Breaks if a consumer re-tames the wind
-      or any VFX code writes sim state.
+      (relief + props + flame + embers + shimmer all consuming the wind)
+      calls ``tame_wind`` at most once per frame, and the field digest of
+      every tick is identical with the flame VFX, its embers and the heat
+      shimmer on and off; the embers really flew and the shimmer really ran
+      in the "on" run. Breaks if a consumer re-tames the wind or any VFX
+      code writes sim state.
+  ember_draw_additive -- (F4a) THE particle primitive's sprite draw over a
+      lit floor: the destination alpha is never written, light is only ever
+      ADDED, it lands where the particle is (world px, y down -- the scene
+      RT's raylib space) and nowhere else, and its core never outshines
+      ``Le(T) x weight`` (the one ramp, through the LUT). Breaks if the
+      quad's winding is culled (nothing drawn), the y axis flips, the blend
+      writes alpha, or the colour leaves the LUT.
+  no_fire_no_ember_draws -- (F4a) no fire -> no ember, no sprite, no draw
+      call; a fire makes embers that draw. Breaks if the embers spawn from
+      anything but the flame VFX's sources or draw with nothing to draw.
+  shimmer_zero_where_cold -- (F4a) the resolve with the heat shimmer on: a
+      cold map resolves BIT-IDENTICAL to the shimmer off; one hot tile
+      changes pixels only within its 2x2 bilinear footprint (+ the offset),
+      and does change some there. Breaks if the shimmer leaks to cold areas,
+      shifts the whole screen, or a zero offset stops being the plain fetch.
 
 Run alone:
     C:/Users/steen/anaconda3/envs/data/python.exe tests/gl_fire_vfx_check.py
@@ -872,6 +889,175 @@ def check_no_fire_draws():
     vfx.unload()
 
 
+# ---------------------------------------------------------------------------
+# F4a: the particle primitive (embers) and the heat shimmer
+# ---------------------------------------------------------------------------
+
+def _lut_tex(ramp):
+    from renderer import core
+    from renderer.fire_vfx import LUT_SIZE, blackbody_lut_data
+    lut = core.create_dynamic_rgba32f_texture(LUT_SIZE, 1)
+    rl.set_texture_filter(lut, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
+    core.update_rgba32f_texture(lut, blackbody_lut_data(ramp))
+    return lut
+
+
+@check("ember_draw_additive")
+def check_ember_draw():
+    """Sprites over a lit floor: alpha kept, light only added, at the right
+    place, never brighter than Le(T) x weight."""
+    from renderer import core
+    from renderer.fire_vfx import LUT_SIZE
+    from renderer.particles import ParticleDraw, ember_radiance
+    scales = _scales()
+    ramp = scales.ramp
+    lut = _lut_tex(ramp)
+    W, H = 256, 128
+    rt = core.load_render_texture_rgba16f(W, H)
+    pd = ParticleDraw(8)
+    spr = np.zeros((2, 2, 4), np.float32)
+    spr[0, 0] = (64.0, 32.0, 0.0, 0.0)          # still, upper left
+    spr[0, 1] = (180.0, 96.0, -400.0, 0.0)      # fast, moving west
+    spr[1, 0] = (1250.0, 5.0, 6.0, 0.06)
+    spr[1, 1] = (1000.0, 5.0, 4.0, 0.06)
+    rl.begin_texture_mode(rt)
+    rl.clear_background(rl.Color(*_UNDER))
+    n = pd.draw(spr, world_px_w=W, world_px_h=H, lut_tex=lut,
+                lut_k=(ramp.kelvin_floor, ramp.kelvin_ceil), lut_n=LUT_SIZE)
+    rl.end_texture_mode()
+    img = core.read_texture_rgba32f(rt.texture).astype(np.float64)
+    under = np.array(_UNDER) / 255.0
+    assert n == 1, f"{n} draw calls for one sprite batch"
+    assert np.allclose(img[..., 3], under[3], atol=2e-3), "alpha written"
+    assert np.all(img[..., :3] >= under[:3] - 2e-3), "a sprite darkened"
+    added = (img[..., :3] - under[:3]).sum(axis=-1)
+    # GL rows run up: world y -> GL row H - y
+    lit = np.argwhere(added > 1e-3)
+    rows_world = H - 1 - lit[:, 0]
+    a = (np.abs(lit[:, 1] - 64) <= 7) & (np.abs(rows_world - 32) <= 7)
+    # the moving one (west at 400 px/s, streak 0.06 s): its 24 px trail
+    # lies BEHIND it, to the east
+    b = ((lit[:, 1] >= 180 - 5) & (lit[:, 1] <= 180 + 24 + 5)
+         & (np.abs(rows_world - 96) <= 5))
+    assert a.any() and b.any(), "a sprite did not land where it is"
+    assert np.all(a | b), "light added away from every sprite"
+    cols_b = lit[b][:, 1]
+    assert cols_b.min() >= 175 and cols_b.max() > 195,         "the motion trail is not behind the moving sprite"
+    le = ember_radiance(np.array([1250.0]), np.array([5.0]), ramp)[0]
+    assert np.all(img[..., :3] - under[:3] <= le * 1.02 + 2e-3), \
+        "a sprite outshines Le(T) x weight"
+    rl.unload_render_texture(rt)
+    rl.unload_texture(lut)
+    pd.unload()
+    return f"{len(lit)} px lit, peak {added.max():.2f}"
+
+
+@check("no_fire_no_ember_draws")
+def check_no_fire_embers():
+    """No fire -> no ember, no sprite, no draw call; a fire -> embers."""
+    from renderer.particles import (EmberSystem, ParticleDraw, pack_sprites,
+                                    settings_from_config)
+    from renderer.fire_vfx import LUT_SIZE
+    from config import CFG
+    scales = _scales()
+    h, w = 16, 16
+    vfx = _vfx(h, w)
+    fr = _Frames(vfx, scales, h, w)
+    es = EmberSystem(settings_from_config(CFG), t_amb_k=scales.t_amb_k,
+                     glow_min_k=scales.glow_min_k)
+    pd = ParticleDraw(64)
+    lut = _lut_tex(scales.ramp)
+    blocked = np.zeros((h, w), bool)
+
+    def step(fire):
+        fr.frame(fire)
+        pk = vfx.pack
+        es.update(t=vfx.clock.t_noise,
+                  sources=pk.sources if pk is not None else None,
+                  origin=(pk.window[1], pk.window[0]) if pk else (0, 0),
+                  s0=vfx.settings.dials.s0,
+                  strip_frac=vfx.settings.dials.strip_frac,
+                  wind_fn=lambda: fr.wind, tps=24.0, blocked=blocked)
+        spr = pack_sprites(es.p, None, 8.0, es.settings)
+        return pd.draw(spr, world_px_w=w * 8, world_px_h=h * 8,
+                       lut_tex=lut, lut_k=(scales.ramp.kelvin_floor,
+                                           scales.ramp.kelvin_ceil),
+                       lut_n=LUT_SIZE)
+
+    for _ in range(48):
+        assert step(np.zeros((h, w))) == 0
+        assert es.p.n == 0
+    fire = np.zeros((h, w))
+    fire[8, 6:10] = 1.0
+    drew = sum(step(fire) for _ in range(72))
+    assert es.p.n > 0 and drew > 0, "a burning row made no ember draw"
+    rl.unload_texture(lut)
+    pd.unload()
+    vfx.unload()
+    return f"{es.p.n} embers alive, {drew} draws over 3 s of fire"
+
+
+@check("shimmer_zero_where_cold")
+def check_shimmer():
+    """The resolve with the shimmer: cold -> bit-identical; one hot tile
+    -> changes only inside its footprint, and some there."""
+    from renderer import core
+    from renderer.heat_shimmer import HeatShimmer, ShimmerSettings
+    from renderer.world_composite import WorldComposite
+    h, w, ppt = 12, 16, 16
+    wc = WorldComposite(w, h, ppt)
+    st = ShimmerSettings(amp_tiles=0.2, zoom_zero=0.0, zoom_full=1e-3)
+    sh = HeatShimmer(h, w, st)
+    rng = np.random.default_rng(3)
+    floor = (rng.random((h * ppt, w * ppt, 4)) * 0.8).astype(np.float32)
+    floor[..., 3] = 1.0
+    tex = core.create_dynamic_rgba32f_texture(w * ppt, h * ppt)
+    core.update_rgba32f_texture(tex, floor)
+    z = np.zeros((h, w), bool)
+
+    def frame(tk, shimmer):
+        sh.update(t_kelvin_fn=lambda: tk, t_game=tk, solid=z, vacuum=z,
+                  wind_fn=lambda: np.zeros((h, w, 2), np.float32), tps=24.0,
+                  t_noise=1.37, zoom_px_per_tile=64.0)
+        wc.begin(clear_color=(0, 0, 0, 0))
+        rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
+        rl.draw_texture(tex, 0, 0, rl.WHITE)
+        rl.end_blend_mode()
+        wc.resolve(shimmer=sh if shimmer else None)
+        wc.end()
+        img = rl.load_image_from_texture(wc.rt.texture)
+        n = img.width * img.height * 4
+        a = np.frombuffer(rl.ffi.buffer(img.data, n), np.uint8).reshape(
+            img.height, img.width, 4).copy()
+        rl.unload_image(img)
+        return a
+
+    cold = np.full((h, w), 293.0)
+    off = frame(cold, False)
+    on = frame(cold, True)
+    assert sh.active(ppt) is False and not sh.hot
+    assert np.array_equal(off, on), "a cold map resolved differently"
+    hot = cold.copy()
+    hot[6, 9] = 900.0
+    on = frame(hot, True)
+    assert sh.active(ppt)
+    diff = np.abs(on.astype(int) - off.astype(int)).sum(axis=-1) > 0
+    ys, xs = np.nonzero(diff)
+    assert len(ys) > 50, f"the hot tile shimmered only {len(ys)} px"
+    # GL rows run up; the footprint is the 2x2 tile block around the hot
+    # tile's centre (8 px/tile..), plus the offset (0.2 tiles)
+    wy = h * ppt - 1 - ys
+    cx, cy = 9.5 * ppt, 6.5 * ppt
+    reach = ppt * 1.0 + st.amp_tiles * ppt + 1.0
+    assert np.all(np.abs(xs + 0.5 - cx) <= reach)
+    assert np.all(np.abs(wy + 0.5 - cy) <= reach), "shimmer leaked away"
+    rl.unload_texture(tex)
+    sh.unload()
+    wc.unload()
+    return f"cold bit-identical; hot tile moved {len(ys)} px, all local"
+
+
+
 @check("one_tamed_wind_and_render_only")
 def check_one_wind_and_digest():
     import breach_physics as bp
@@ -900,9 +1086,13 @@ def check_one_wind_and_digest():
     n_ticks = 40                         # fires light at 0.5 s = tick 12
     digests = {}
     passes = 0
+    embers = 0
+    shimmer_hot = False
     try:
         for on in (True, False):
             CFG.render.fire_vfx.enabled = on
+            CFG.render.embers.enabled = on
+            CFG.render.shimmer.enabled = on
             sim = Simulation(level, seed=42, breach_physics=bp,
                              enable_recorder=False)
             sim.set_paused(False)
@@ -919,6 +1109,8 @@ def check_one_wind_and_digest():
                 renderer.end_frame()
                 if on:
                     passes += renderer.fire_vfx.passes_last_frame
+                    embers = max(embers, renderer.embers.p.n)
+                    shimmer_hot |= renderer.shimmer.hot
                 trail.append(field_digest(_snapshot(sim.gmap, SIM_FIELDS),
                                           strict=False))
             digests[on] = trail
@@ -929,9 +1121,11 @@ def check_one_wind_and_digest():
     assert max(counts) <= 1, f"tame_wind called {max(counts)}x in one frame"
     assert min(counts) == 1, "a frame with consumers computed no wind"
     assert passes > 0, "the flame VFX never ran a pass on a burning studio"
+    assert embers > 0, "no ember flew on a burning studio"
+    assert shimmer_hot, "the shimmer never saw hot gas on a burning studio"
     assert digests[True] == digests[False], "field digests differ VFX on/off"
     return (f"{n_ticks} ticks, tame_wind {min(counts)}..{max(counts)}/frame, "
-            f"{passes} VFX passes, digests equal")
+            f"{passes} VFX passes, {embers} embers max, digests equal")
 
 
 
