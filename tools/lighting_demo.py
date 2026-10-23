@@ -91,6 +91,13 @@ Headless flags (no human at the keyboard):
                      develop, then measure N (default 300) rendered frames of
                      the NEW gas-medium path and again with legacy_smoke_on,
                      printing mean/95th-percentile ms/frame for both.
+    --fire-vfx-perf [N]  graphics G3 F1: the FLAME VFX pass chain's CPU ms
+                     (update; pass submission) and GPU ms (GL_TIME_ELAPSED,
+                     tools/gl_timer.py) measured SEPARATELY over N (300)
+                     frames of the current --level after a 5 s warm-up, plus
+                     the VRAM of its fields. fire_smoke_studio lights itself;
+                     elsewhere add --perf-ignite "X,Y;X,Y" (the heat-only
+                     [payloads.studio_ignite] at each tile).
     --shots [A,B]   graphics G0 P3: render the named LOOK SHOTS of
                      tools/look_shots.toml (all, or the comma-separated
                      subset) to scratchpad/look/<name>_<git-sha>.png, one
@@ -1162,6 +1169,150 @@ def _run_perf_bench(renderer, sim, lights_in, light_sky,
 
 
 # ---------------------------------------------------------------------------
+# Graphics G3 F1 -- the FLAME VFX perf pass (design §4, §13.10): CPU and GPU
+# time of the flame pass chain measured SEPARATELY, plus the VRAM of its
+# fields, on the current --level. One tick per frame (= 5 substeps, the shot
+# cadence and the worst frame the 6-substep cap allows short of a catch-up).
+# ---------------------------------------------------------------------------
+
+FIRE_VFX_PERF_WARMUP_TICKS = 120   # fire_smoke_studio lights itself at 0.5 s
+
+
+def _parse_fire_vfx_perf() -> Optional[int]:
+    """``--fire-vfx-perf [N]`` -- measure N frames (default 300)."""
+    if "--fire-vfx-perf" not in sys.argv:
+        return None
+    v = _argv_value("--fire-vfx-perf")
+    try:
+        return max(1, int(v)) if v and not v.startswith("--") else 300
+    except ValueError:
+        return 300
+
+
+def _parse_perf_ignite() -> list:
+    """``--perf-ignite "X,Y;X,Y"`` -- tiles lit before the warm-up with the
+    canonical heat-only igniter ``[payloads.studio_ignite]`` (CLAUDE.md
+    "Starting a fire"; a fire the sim makes hot, so the flame source law --
+    which needs the tile above the glow floor -- sees it)."""
+    v = _argv_value("--perf-ignite")
+    if not v:
+        return []
+    return [tuple(int(c) for c in p.split(",")) for p in v.split(";") if p]
+
+
+def _run_fire_vfx_perf(renderer, sim, lights_in, light_sky,
+                       sim_time_per_tick: float, ticks_per_round: int,
+                       frames: int, ignite: list) -> None:
+    from gl_timer import GLTimer
+    rl.set_target_fps(0)
+    vfx = renderer.fire_vfx
+    grid_h, grid_w = sim.gmap.solid.shape
+    if ignite:
+        payload = sim.weapons_tables.payloads.by_name["studio_ignite"]
+        for (x, y) in ignite:
+            execute_payload(sim.gmap, sim.edit_queue, sim.units, y, x,
+                            payload, sim.rng, events=[], kind="charge")
+
+    def _lit_step():
+        total = monotonic_total_tick(sim.turn_number, ticks_per_round, sim.tick)
+        sim.set_light(True, demo_light_rows(lights_in, total, sim_time_per_tick,
+                                            grid_w, grid_h), light_sky)
+        _step_keep_running(sim)
+
+    for _ in range(FIRE_VFX_PERF_WARMUP_TICKS):
+        _lit_step()
+
+    timer = GLTimer()
+    sim_fn = vfx.simulate
+    gpu = []
+    # GL_TIME_ELAPSED spans GPU time between the two query points -- if the
+    # GPU drains the chain faster than Python submits it, the span includes
+    # the GPU WAITING for the next pass ("starved", what a frame costs the
+    # GPU timeline as the game runs it). The "queued" measurement first gives
+    # the GPU a few ms of dummy fill work, so the whole chain is submitted
+    # before the GPU reaches it and the span is pure execution (shaders + FBO
+    # switches). Both are reported.
+    busy = rcore.PingPong(2048, 2048, fp32=True)
+    mode = {"queued": False}
+
+    def _busy_gpu():
+        busy.begin_pass()
+        for _ in range(12):
+            busy.draw_cell_rects([(0, 0, 2048, 2048)])
+        busy.end_pass()
+
+    def timed_simulate():
+        if mode["queued"]:
+            _busy_gpu()
+        timer.begin()
+        n = sim_fn()
+        timer.end()
+        return n
+
+    vfx.simulate = timed_simulate
+    rows = []
+    queued = []
+    try:
+        for i in range(PERF_WARMUP_FRAMES + 2 * frames):
+            mode["queued"] = i >= PERF_WARMUP_FRAMES + frames
+            _lit_step()
+            total_tick = monotonic_total_tick(sim.turn_number, ticks_per_round,
+                                              sim.tick)
+            renderer.upload_state(sim.gmap, sim_tick=total_tick,
+                                  light_serial=sim.light_serial,
+                                  alpha=0.0, paused=False)
+            renderer.begin_frame()
+            renderer.compose_world(units_marines=sim.marines(),
+                                   units_zombies=sim.zombies(),
+                                   projectiles=sim.projectiles)
+            renderer.draw_background_to_screen()
+            renderer.blit_world_to_screen()
+            renderer.end_frame()
+            g = timer.result_ms()
+            if mode["queued"]:
+                queued.append(g / max(vfx.substeps_last_frame, 1))
+            elif i >= PERF_WARMUP_FRAMES:
+                cells = sum((x1 - x0) * (y1 - y0)
+                            for x0, y0, x1, y1 in vfx.region.boxes)
+                rows.append((vfx.last_update_ms, vfx.last_simulate_ms, g,
+                             vfx.passes_last_frame, vfx.substeps_last_frame,
+                             cells))
+                gpu.append(g)
+    finally:
+        vfx.simulate = sim_fn
+        timer.delete()
+        busy.unload()
+    a = np.asarray(rows, dtype=np.float64)
+    q = np.asarray(queued, dtype=np.float64)
+
+    def stat(col):
+        return f"mean {a[:, col].mean():6.3f}  p95 {np.percentile(a[:, col], 95):6.3f}"
+
+    burning = int(vfx._pack.burning.sum()) if vfx._pack is not None else 0
+    print(f"[fire_vfx perf] level {sim.gmap.solid.shape[1]}x{sim.gmap.solid.shape[0]} "
+          f"tiles, {frames} frames (+{PERF_WARMUP_FRAMES} warm-up, "
+          f"+{FIRE_VFX_PERF_WARMUP_TICKS} ticks), one tick/frame")
+    print(f"[fire_vfx perf] burning tiles {burning}, boxes {vfx.region.boxes}, "
+          f"active tiles mean {a[:, 5].mean():.0f}, m={vfx.settings.m} "
+          f"m_u={vfx.settings.m_u}, fields fp32={vfx.flame.fp32}")
+    print(f"[fire_vfx perf] passes/frame {a[:, 3].mean():.1f}, "
+          f"substeps/frame {a[:, 4].mean():.2f}")
+    print(f"[fire_vfx perf] CPU update (clock+pack+region+upload) ms  {stat(0)}")
+    print(f"[fire_vfx perf] CPU simulate (pass submission) ms        {stat(1)}")
+    print(f"[fire_vfx perf] GPU simulate, starved (GL_TIME_ELAPSED) ms {stat(2)}")
+    sub = max(a[:, 4].mean(), 1e-9)
+    print(f"[fire_vfx perf] per substep: CPU submit {a[:, 1].mean() / sub:.3f} ms, "
+          f"GPU starved {a[:, 2].mean() / sub:.4f} ms, GPU queued (pure) "
+          f"mean {q.mean():.4f} p95 {np.percentile(q, 95):.4f} ms "
+          f"-> {q.mean() * 2.5:.3f} ms/frame at 60 fps (2.5 substeps)")
+    print(f"[fire_vfx perf] VRAM: fields {(vfx.vel.vram_bytes + vfx.flame.vram_bytes) / 2**20:.1f} MiB "
+          f"(vel {vfx.vel.width}x{vfx.vel.height}, flame "
+          f"{vfx.flame.width}x{vfx.flame.height}, x2 buffers), "
+          f"total {vfx.vram_bytes / 2**20:.1f} MiB")
+    print("OK — fire VFX perf pass complete (--fire-vfx-perf)")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1274,6 +1425,15 @@ def main() -> None:
         try:
             _run_perf_bench(renderer, sim, lights_in, light_sky,
                             sim_time_per_tick, ticks_per_round, perf_frames)
+        finally:
+            renderer.shutdown()
+        return
+    fire_perf_frames = _parse_fire_vfx_perf()
+    if fire_perf_frames is not None:
+        try:
+            _run_fire_vfx_perf(renderer, sim, lights_in, light_sky,
+                               sim_time_per_tick, ticks_per_round,
+                               fire_perf_frames, _parse_perf_ignite())
         finally:
             renderer.shutdown()
         return

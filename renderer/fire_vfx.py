@@ -265,8 +265,11 @@ def cut_boxes(live: np.ndarray, margin_tiles: int,
     lab = ref._clusters(live)
     r = int(margin_tiles)
     boxes = []
-    for key in np.unique(lab[lab >= 0]):
-        ys, xs = np.nonzero(lab == key)
+    ly, lx = np.nonzero(live)
+    keys = lab[ly, lx]
+    for key in np.unique(keys):
+        sel = keys == key
+        ys, xs = ly[sel], lx[sel]
         boxes.append(_clip_box((int(xs.min()) - r, int(ys.min()) - r,
                                 int(xs.max()) + 1 + r, int(ys.max()) + 1 + r),
                                w, h))
@@ -298,8 +301,11 @@ def mask_rects(mask: np.ndarray) -> List[Box]:
     next row has the same run (few quads for the clear pass)."""
     mask = np.asarray(mask, dtype=bool)
     out: List[Box] = []
+    if not mask.any():
+        return out
+    rows = np.nonzero(mask.any(axis=1))[0]
     open_runs = {}
-    for y in range(mask.shape[0] + 1):
+    for y in range(int(rows[0]), int(rows[-1]) + 2):
         runs = set()
         if y < mask.shape[0] and mask[y].any():
             row = np.concatenate([[False], mask[y], [False]]).astype(np.int8)
@@ -343,6 +349,10 @@ class ActiveRegion:
         burning = np.asarray(burning, dtype=bool)
         self.last_burn[burning] = t
         live = (t - self.last_burn) <= linger
+        key = (int(margin_tiles), live.tobytes())
+        if key == getattr(self, "_cut_key", None):
+            return np.zeros(self.shape, dtype=bool)   # nothing moved
+        self._cut_key = key
         self.boxes = cut_boxes(live, margin_tiles)
         new_domain = boxes_mask(self.boxes, self.shape)
         left = self.domain & ~new_domain
@@ -540,6 +550,7 @@ class FireVFXPass:
         vs = str(SHADERS_DIR / "lighting.vs")
         self.shaders = {}
         self._loc = {}
+        self._uniform_cache = {}
         for name in STAGES + ("debug",):
             sh = core.load_shader_from_source(vs, compose_shader_source(name))
             self.shaders[name] = sh
@@ -686,10 +697,15 @@ class FireVFXPass:
     # ---- per frame (GPU) -------------------------------------------------
 
     def _set(self, sh: str, name: str, *v) -> None:
+        """Set a uniform -- only when its value changed: a GL program keeps
+        its uniforms, and each cffi set costs CPU per pass (F1 perf)."""
         rl = self._rl
         loc = self._loc[sh][name]
         if loc < 0:
             return
+        if self._uniform_cache.get((sh, name)) == v:
+            return
+        self._uniform_cache[(sh, name)] = v
         if isinstance(v[0], int) and not isinstance(v[0], bool) and len(v) == 1:
             rl.set_shader_value(self.shaders[sh], loc,
                                 rl.ffi.new("int[1]", [int(v[0])]),

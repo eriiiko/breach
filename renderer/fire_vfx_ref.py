@@ -286,12 +286,16 @@ def flame_sources(fire: np.ndarray, t_kelvin: np.ndarray, solid: np.ndarray,
     lab = _clusters(burning)
     puff_hz = np.zeros((h, w))
     puff_phase = np.zeros((h, w))
-    for key in np.unique(lab[lab >= 0]):
-        sel = lab == key
+    # per cluster on the burning tiles' own indices (F1: never a full-map
+    # mask per cluster -- the cost scales with the fire, not the map)
+    by, bx = np.nonzero(lab >= 0)
+    keys = lab[by, bx]
+    for key in np.unique(keys):
+        sel = keys == key
         d_m = np.sqrt(4.0 * sel.sum() / np.pi) * tile_size_m
         jit = 1.0 + dials.puff_freq_jitter * (2.0 * _hash01(key, dials.seed) - 1.0)
-        puff_hz[sel] = dials.puff_c / np.sqrt(max(d_m, 1e-3)) * jit
-        puff_phase[sel] = 2.0 * np.pi * _hash01(key, dials.seed + 7)
+        puff_hz[by[sel], bx[sel]] = dials.puff_c / np.sqrt(max(d_m, 1e-3)) * jit
+        puff_phase[by[sel], bx[sel]] = 2.0 * np.pi * _hash01(key, dials.seed + 7)
 
     s = np.zeros((h, w))
     q = np.zeros((h, w))
