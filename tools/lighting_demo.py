@@ -1916,6 +1916,11 @@ def main() -> None:
         return demo_light_rows(lights_in, total, sim_time_per_tick, grid_w,
                                grid_h, state=state, mouse_f=mouse_f)
 
+    # graphics G3 F4b: the fire's light flicker rows (main.py's rule: handed
+    # with the cone rows each tick; None = none)
+    def _flicker_now():
+        return renderer.fire_light_flicker_rows(grid_w, grid_h)
+
     try:
         while not renderer.should_close():
             now = time.perf_counter()
@@ -2046,7 +2051,7 @@ def main() -> None:
                     # future headless look-check). The --perf pass already
                     # steps this way for the same reason.
                     lit_rows = _light_rows_now(mouse_f)
-                    sim.set_light(True, lit_rows, light_sky)
+                    sim.set_light(True, lit_rows, light_sky, _flicker_now())
                     sim.step()
                     stepped = True
                 else:
@@ -2054,7 +2059,7 @@ def main() -> None:
                     steps = 0
                     while tick_accum >= sim_dt and steps < max_catch_up:
                         lit_rows = _light_rows_now(mouse_f)
-                        sim.set_light(True, lit_rows, light_sky)
+                        sim.set_light(True, lit_rows, light_sky, _flicker_now())
                         sim.step()
                         stepped = True
                         tick_accum -= sim_dt
@@ -2063,7 +2068,7 @@ def main() -> None:
                 rows = _light_rows_now(mouse_f)
                 if (lit_rows is None or not np.array_equal(rows, lit_rows)
                         or now - last_relight > 0.25):
-                    sim.set_light(True, rows, light_sky)
+                    sim.set_light(True, rows, light_sky, _flicker_now())
                     sim.relight()
                     lit_rows, last_relight = rows, now
 

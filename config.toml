@@ -1855,6 +1855,31 @@ zoom_zero = 14.0            # screen px per tile at and below which it is off
 zoom_full = 32.0            # ... full strength from here up
 seed = 2718                 # the flow map's per-cycle offsets and boil directions
 
+[render.flicker]
+# Graphics G3 F4b -- the FIRE'S ROOM-LIGHT FLICKER (renderer/fire_flicker.py;
+# design 6.3, RULED D, Erik 2026-10-23): each burning tile's LIGHT emission in
+# the sweep is multiplied per tick by m = 1 + amplitude * clip(z / 2, -1, 1),
+# z = sqrt(puff_share) * (the flame's own cluster puffing) + sqrt(1 -
+# puff_share) * (the tile's own turbulence: 8 sinusoids hashed from the band).
+# Mean-preserving (the average room light stays the physics' light), per tile
+# (fires never flicker in sync: two tiles of one fire correlate at about
+# puff_share, separate fires not at all), isotropic (one factor per tile, every
+# direction). LIGHT ONLY: the heat, the digest and the golden never see it;
+# lamps never flicker. Rides the flame's VFX clock (needs [render.fire_vfx]
+# enabled); while paused it idles with the flame. Re-read every frame (Ctrl+R);
+# Alt+F3 toggles it. Render-only: no sim state, no digest, no golden.
+enabled = true
+amplitude = 0.3             # the most a tile's light leaves 1: m in [0.7, 1.3];
+                            # RMS swing ~ amplitude / 2. In [0, 1]
+puff_share = 0.1            # share of the swing's variance that is the fire's own
+                            # puffing (pulses WITH the flame; shared by the fire's
+                            # tiles). Above ~0.25 one fire's tiles begin to move
+                            # together (the no-sync gate is |rho| < 0.3)
+band_lo_hz = 0.8            # the tile's own flicker band, Hz: slow breathing ...
+band_hi_hz = 5.0            # ... to fast flutter (<= 10: the 24 Hz tick's Nyquist
+                            # is 12 Hz, and a higher band would alias to a strobe)
+seed = 8086                 # the per-tile frequencies and phases
+
 [render.props]
 # 3D props & vegetation — WIND SWAY (arc #60 P4, design §4.3 "Sway (P4)").
 # Read EVERY FRAME by renderer/static_props.py (via SwaySettings.from_config),

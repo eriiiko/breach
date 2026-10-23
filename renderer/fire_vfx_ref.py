@@ -231,6 +231,12 @@ class FlameSources:
     feeder: np.ndarray
     burning: np.ndarray          # the tiles that feed a flame (I, glow floor, not vacuum)
     i_eff: np.ndarray            # their I (0 elsewhere): the "local I" basis
+    # G3 F4b: each BURNING tile's own cluster puffing (0 elsewhere) -- the
+    # light flicker's shared term (renderer/fire_flicker.py). ``puff_hz``
+    # above is per SOURCE tile (a wood fire's open neighbour); these are on
+    # the burning tile itself, where the sweep emits the fire's light.
+    burn_hz: Optional[np.ndarray] = None
+    burn_phase: Optional[np.ndarray] = None
 
 
 def _hash01(key: np.ndarray, salt: int) -> np.ndarray:
@@ -366,7 +372,21 @@ def flame_sources(fire: np.ndarray, t_kelvin: np.ndarray, solid: np.ndarray,
     cover = np.where(cover & COVER_FULL, COVER_FULL, cover).astype(np.uint8)
     return FlameSources(s=s, q=q, t_src_k=tsrc, cover=cover, puff_hz=out_hz,
                         puff_phase=out_ph, feeder=feeder, burning=burning,
+                        burn_hz=puff_hz, burn_phase=puff_phase,
                         i_eff=i_eff)
+
+
+def puff_theta(hz: np.ndarray, phase: np.ndarray, t: float,
+               dials: FireVFXDials) -> np.ndarray:
+    """The puffing's phase ``theta`` (:func:`puff_factor`'s argument), on its
+    own: the light flicker (G3 F4b, ``renderer/fire_flicker.py``) follows the
+    SAME pulse the flame injects with."""
+    u = phase / (2.0 * np.pi)
+    g1 = hz * (0.17 + 0.22 * np.mod(u * 13.0, 1.0))
+    g2 = hz * (0.41 + 0.22 * np.mod(u * 29.0, 1.0))
+    return (2.0 * np.pi * hz * t + phase
+            + dials.puff_wobble * (np.sin(2.0 * np.pi * g1 * t + 1.7 * phase)
+                                   + np.sin(2.0 * np.pi * g2 * t + 2.9 * phase)))
 
 
 def puff_factor(hz: np.ndarray, phase: np.ndarray, t: float,
@@ -381,12 +401,7 @@ def puff_factor(hz: np.ndarray, phase: np.ndarray, t: float,
     clock, so two equal fires (same f) do not stay in step (§6.3 no-sync).
     Everything derives from the per-tile ``(f, phase)`` pair, so F1's
     texture needs no third channel."""
-    u = phase / (2.0 * np.pi)
-    g1 = hz * (0.17 + 0.22 * np.mod(u * 13.0, 1.0))
-    g2 = hz * (0.41 + 0.22 * np.mod(u * 29.0, 1.0))
-    theta = (2.0 * np.pi * hz * t + phase
-             + dials.puff_wobble * (np.sin(2.0 * np.pi * g1 * t + 1.7 * phase)
-                                    + np.sin(2.0 * np.pi * g2 * t + 2.9 * phase)))
+    theta = puff_theta(hz, phase, t, dials)
     return np.where(hz > 0.0, 1.0 + dials.puff_amp * np.sin(theta), 1.0)
 
 
