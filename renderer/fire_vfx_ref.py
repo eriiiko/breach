@@ -746,6 +746,19 @@ def curl_noise(h: int, w: int, m: int, t: float, modes) -> np.ndarray:
     return np.stack([cx, cy], axis=-1)
 
 
+def curl_noise_at(x: np.ndarray, y: np.ndarray, t: float,
+                  modes) -> np.ndarray:
+    """:func:`curl_noise` at arbitrary POINTS ``(x, y)`` in tiles -> (N, 2):
+    the same stream function's curl, evaluated where a particle is
+    (graphics G3 F4a: the embers ride it -- ``renderer/particles.py``).
+    ``curl_noise`` at cell centres equals this at those centres."""
+    kx, ky, _, _, amp = modes
+    xy = np.column_stack((np.ravel(x), np.ravel(y))).astype(np.float64)
+    c = np.cos(xy @ np.array([kx, ky], dtype=np.float64)
+               + curl_mode_phases(modes, t)) * amp
+    return c @ np.array([ky, np.negative(kx)], dtype=np.float64).T
+
+
 def confine(u: np.ndarray, i_local: np.ndarray, solid: np.ndarray, t: float,
             dt: float, dials: FireVFXDials, modes) -> np.ndarray:
     """Stage 2: vorticity confinement (Fedkiw, Stam & Jensen 2001) plus curl

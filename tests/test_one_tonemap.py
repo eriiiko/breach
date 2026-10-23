@@ -56,6 +56,12 @@ def _layer_shader_sources():
     # with the smoke cast product's shared GLSL spliced in)
     out.append(("fire_vfx.fire_glow (composed)",
                 _code(fire_vfx.compose_glow_source())))
+    # graphics G3 F4a: THE particle primitive's sprite (the embers), its
+    # fragment as COMPOSED with the smoke cast product's shared GLSL
+    from renderer import particles
+    vs, fs = particles.sprite_shader_sources()
+    out.append(("particles.sprite.vs", _code(vs)))
+    out.append(("particles.sprite.fs (composed)", _code(fs)))
     return out
 
 

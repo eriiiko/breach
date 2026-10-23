@@ -26,7 +26,8 @@ Two stages, two targets (graphics arc G0 P1, docs/graphics_direction_
 Benefits:
   - Every shader samples fragTexCoord 0..1 over the world — no camera UVs.
   - Adding a new layer is one more draw call inside compose(), not a shader.
-  - Post-FX (heat shimmer, refraction) is one more pass over the scene RT.
+  - Screen-space distortion (heat shimmer, G3 F4a; refraction, shockwaves)
+    is a TERM of the resolve's distortion block, never another pass.
   - Multiple cameras (security cam, split screen, replay) = re-blit same RT.
 
 Cost: two world-sized RTs. For the playground (100x70 tiles at 48 wpx/tile,
@@ -90,6 +91,9 @@ class WorldComposite:
                                                   "u_encode_srgb")
         self._loc_dither = rl.get_shader_location(self.resolve_shader,
                                                   "u_dither_amp")
+        # The DISTORTION BLOCK's inputs (graphics G3 F4a: heat shimmer).
+        self._dloc = {}
+        self._dcache = {}
         self._stage = None         # None | "scene" | "display"
 
     # ---- Compose-phase lifecycle ----------------------------------------
@@ -100,13 +104,21 @@ class WorldComposite:
         rl.clear_background(rl.Color(*clear_color))
         self._stage = "scene"
 
-    def resolve(self, encode_srgb: bool = True) -> None:
-        """The ONE tone-map: scene RT -> ACES -> gamma encode -> dither ->
-        display RT, which is left BOUND for the display-referred layers.
+    def resolve(self, encode_srgb: bool = True, shimmer=None) -> None:
+        """The ONE tone-map: scene RT -> [distortion block] -> ACES ->
+        gamma encode -> dither -> display RT, which is left BOUND for the
+        display-referred layers.
 
         ``encode_srgb`` is the output half of the G toggle (LightingPass's
         sRGB flag): off, the resolve skips the encode exactly as the layers
-        used to when it was off."""
+        used to when it was off.
+
+        ``shimmer`` (graphics G3 F4a) = the frame's
+        :class:`renderer.heat_shimmer.HeatShimmer`, the first term of the
+        shader's DISTORTION BLOCK (``world_resolve.fs`` ``distortion_px``):
+        every screen-space distortion is a term there, read while the
+        resolve samples the scene RT -- never a second pass. None (or
+        inactive) = the term is off and the read is the plain point fetch."""
         if self._stage != "scene":
             raise RuntimeError("WorldComposite.resolve() outside begin()")
         rl.end_texture_mode()
@@ -122,13 +134,51 @@ class WorldComposite:
         # premultiplied resolve output (alpha included).
         rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
         rl.begin_shader_mode(self.resolve_shader)
+        bound = self._set_distortion(shimmer)
         rl.draw_texture_rec(
             self.scene_rt.texture,
             rl.Rectangle(0, 0, float(self.world_px_w), -float(self.world_px_h)),
             rl.Vector2(0, 0), rl.WHITE)
-        rl.end_shader_mode()
+        rl.end_shader_mode()                 # flushes: drawn now
+        if bound is not None:
+            bound.unbind()
         rl.end_blend_mode()
         self._stage = "display"
+
+    def _set_distortion(self, shimmer):
+        """Set the distortion block's uniforms (only those that changed)
+        and bind its samplers; returns what to unbind after the draw."""
+        from .heat_shimmer import HeatShimmer, SAMPLER_UNITS
+        if not self._dloc:
+            self._dloc = {u: rl.get_shader_location(self.resolve_shader, u)
+                          for u in HeatShimmer.UNIFORMS}
+            for name, unit in SAMPLER_UNITS.items():
+                self._dset(name, (int(unit),))
+        on = shimmer is not None and shimmer.active(self.world_px_per_tile)
+        if not on:
+            self._dset("u_shimmer_on", (0,))
+            return None
+        for name, v in shimmer.uniforms(self.world_px_per_tile).items():
+            self._dset(name, v)
+        shimmer.bind()
+        return shimmer
+
+    def _dset(self, name: str, v: tuple) -> None:
+        loc = self._dloc.get(name, -1)
+        if loc < 0 or self._dcache.get(name) == v:
+            return
+        self._dcache[name] = v
+        if len(v) == 1 and isinstance(v[0], int):
+            rl.set_shader_value(self.resolve_shader, loc,
+                                rl.ffi.new("int[1]", [int(v[0])]),
+                                rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
+            return
+        kind = {1: rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT,
+                2: rl.ShaderUniformDataType.SHADER_UNIFORM_VEC2,
+                4: rl.ShaderUniformDataType.SHADER_UNIFORM_VEC4}[len(v)]
+        rl.set_shader_value(self.resolve_shader, loc,
+                            rl.ffi.new(f"float[{len(v)}]",
+                                       [float(x) for x in v]), kind)
 
     def end(self) -> None:
         """Unbind. A caller that never resolved still gets a tone-mapped

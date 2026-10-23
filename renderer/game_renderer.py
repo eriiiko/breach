@@ -31,6 +31,7 @@ from .blackbody import BlackbodyRamp
 from .camera import Camera2D
 from .cold_overlay import ColdFieldOverlay
 from .fire_vfx import FireVFXPass
+from .fire_vfx import read_only as fire_vfx_read_only
 from .gas_detail import GasDetailPass, tame_wind
 from .gas_medium import GasMediumOverlay
 from .gas_relief import GasReliefPass
@@ -295,6 +296,24 @@ class GameRenderer:
             cfg.grid_h, cfg.grid_w, CFG, self.blackbody_ramp)
         self._fire_scales = CanonicalScales(tscale=_load_tscale(CFG),
                                             ramp=self.blackbody_ramp)
+        # Graphics G3 F4a -- EMBERS, the first consumer of THE particle
+        # primitive (renderer/particles.py): spawned on the CPU from the
+        # flame VFX's per-tick sources, riding the frame's one tamed wind +
+        # curl noise on the VFX clock, cooling down the one ramp, drawn as
+        # additive linear-HDR sprites after the flame, under the units.
+        # And HEAT SHIMMER (renderer/heat_shimmer.py), the first term of the
+        # resolve's DISTORTION BLOCK. [render.embers] / [render.shimmer] are
+        # re-read every frame (Ctrl+R live); Shift+F3 / Ctrl+F3 toggle them.
+        from . import particles as _particles
+        from . import heat_shimmer as _shimmer
+        _es = _particles.settings_from_config(CFG)
+        self.embers = _particles.EmberSystem(
+            _es, t_amb_k=self._fire_scales.t_amb_k,
+            glow_min_k=self._fire_scales.glow_min_k)
+        self.ember_draw = _particles.ParticleDraw(_es.cap)
+        self._ember_sprites = None       # this frame's pack (both stages)
+        self.shimmer = _shimmer.HeatShimmer(
+            cfg.grid_h, cfg.grid_w, _shimmer.settings_from_config(CFG))
         # Fire & Heat Beauty B2 P4 — dirty-Planck speckle (renderer/speckle.py).
         # A CPU-side, pyray-free field that mottles the black-body overlay's
         # intensity at PACK TIME (the intensity_mod seam) so the flame reads as
@@ -612,6 +631,38 @@ class GameRenderer:
                 sim_tick=int(sim_tick), alpha=alpha, paused=bool(paused),
                 tps=tps, tile_size_m=gmap.tile_size_m,
                 scales=self._fire_scales)
+        # Graphics G3 F4a -- the embers step on the flame's VFX clock and
+        # spawn from its current per-tick sources (CPU, never a GPU
+        # readback); no fire -> no source -> no ember.
+        from . import particles as _particles
+        self.embers.refresh_settings(_particles.settings_from_config(CFG))
+        if not self.fire_vfx.enabled:
+            self.embers.p.clear()            # no VFX clock, no sources
+        else:
+            pack = self.fire_vfx.pack
+            d = self.fire_vfx.settings.dials
+            self.embers.update(
+                t=self.fire_vfx.clock.t_noise,
+                sources=pack.sources if pack is not None else None,
+                origin=((pack.window[1], pack.window[0])
+                        if pack is not None else (0, 0)),
+                s0=d.s0, strip_frac=d.strip_frac, wind_fn=frame_tamed_wind,
+                tps=tps, blocked=self._ember_blocked(gmap))
+        # ... and the heat shimmer's per-tile hot-gas strength + the wind it
+        # is advected by (re-packed only when the temperature changed).
+        from . import heat_shimmer as _shimmer
+        self.shimmer.refresh_settings(_shimmer.settings_from_config(CFG))
+        if self.shimmer.enabled:
+            from .blackbody import TEMP_SCALE
+            t_game = fire_vfx_read_only(gmap.temperature)
+            self.shimmer.update(
+                t_kelvin_fn=lambda: self._fire_scales.to_kelvin(
+                    np.asarray(t_game, dtype=np.float64) / TEMP_SCALE),
+                t_game=t_game, solid=gmap.solid, vacuum=gmap.is_vacuum,
+                wind_fn=frame_tamed_wind, tps=tps,
+                t_noise=self.fire_vfx.clock.t_noise,
+                zoom_px_per_tile=self.camera.zoom_px_per_tile,
+                sim_tick=int(sim_tick), paused=bool(paused))
 
         # Pressure colormap: refresh the per-tile texture from the current
         # atmosphere + wave_p fields. Skipped when toggled off to save the
@@ -848,6 +899,11 @@ class GameRenderer:
                        smoke_cast=self._smoke_cast, glow_through=gt)
         flame_rects = fx.flame_rects(view)
         fx.draw_glow("flame", flame_rects, **glow_kw)
+        # 4b. Graphics G3 F4a -- EMBERS (THE particle primitive): additive
+        # linear-HDR sparks over the flame, under the units, clipped to the
+        # view; coloured only through the blackbody GPU LUT. No ember, no
+        # draw.
+        self._draw_embers(view)
         # 5. 3D units + props (+ projected shadows): the shared 3D pass --
         # ABOVE the flame.
         drew_units_3d = self._draw_units_3d_world(units_marines, units_zombies,
@@ -865,9 +921,16 @@ class GameRenderer:
             # own smoke.
             if gt[0] < 1.0 and self._smoke_cast[0] is not None:
                 fx.draw_glow("compensation", flame_rects, **glow_kw)
+                # ... and the embers' own compensation (G3 F4a): their net
+                # occlusion under the soot is the flame's, Erik's 0.2
+                self._draw_embers(view, stage="compensation",
+                                  glow_through_ceil=gt[0])
 
         # ======= the ONE tone-map: ACES + encode + dither (resolve) =======
-        self.world.resolve(encode_srgb=self.lighting.srgb_decode)
+        # (G3 F4a: with the heat SHIMMER, the first term of the resolve's
+        # distortion block -- never a second pass over the scene.)
+        self.world.resolve(encode_srgb=self.lighting.srgb_decode,
+                           shimmer=self.shimmer)
 
         # ============ DISPLAY: authored sRGB colours (RGBA8) ============
         # 6. Debug / legacy colormaps. Their colours are display values (a
@@ -1097,6 +1160,44 @@ class GameRenderer:
         cast, cast2 = cast_uniforms(gr.settings, live)
         return (gr.product_texture if live else None,
                 (float(gr.w), float(gr.h)), cast, cast2)
+
+    @staticmethod
+    def _ember_blocked(gmap) -> np.ndarray:
+        """Where an ember dies on entry: solid tiles and vacuum (read
+        only; a fresh mask, nothing written back)."""
+        return np.asarray(gmap.solid, bool) | np.asarray(gmap.is_vacuum, bool)
+
+    def _draw_embers(self, view, stage: str = "scene",
+                     glow_through_ceil: float = 1.0) -> int:
+        """Draw the embers into the scene RT (G3 F4a): ``stage`` "scene"
+        (after the flame, under the units and the soot) packs and draws;
+        "compensation" (after the ceiling soot) re-adds what the soot hid
+        beyond ``glow_through_ceil``, as the flame's compensation does.
+        Returns the draw calls issued (0: no ember in view, or embers
+        off)."""
+        from .particles import pack_sprites
+        from .fire_vfx import LUT_SIZE
+        em = self.embers
+        if stage == "scene":
+            self._ember_sprites = None
+            if not em.enabled or em.p.n == 0:
+                self.ember_draw.draws_last_frame = 0
+                self.ember_draw.sprites_last_frame = 0
+                return 0
+            self._ember_sprites = pack_sprites(
+                em.p, view, self.world.world_px_per_tile, em.settings,
+                screen_px_per_world_px=(self.camera.zoom_px_per_tile
+                                        / self.world.world_px_per_tile))
+        sprites = self._ember_sprites
+        if sprites is None:
+            return 0
+        ramp = self.fire_vfx.ramp
+        return self.ember_draw.draw(
+            sprites, world_px_w=self.world.world_px_w,
+            world_px_h=self.world.world_px_h, lut_tex=self.fire_vfx.lut_tex,
+            lut_k=(ramp.kelvin_floor, ramp.kelvin_ceil), lut_n=LUT_SIZE,
+            stage=stage, smoke_cover=self._smoke_cast[0],
+            glow_through_ceil=glow_through_ceil)
 
     def _relief_view_rect(self):
         """The camera's view in tiles, plus a margin, for the relief pass
@@ -1745,6 +1846,10 @@ class GameRenderer:
             ("F2 smoke",       self.show_smoke),
             (f"F3 flame: {self.fire_vfx.emission}",
              self.fire_vfx.emission != "off"),
+            (f"Shift+F3 embers: {'on' if self.embers.enabled else 'off'}",
+             self.embers.enabled),
+            (f"Ctrl+F3 shimmer: {'on' if self.shimmer.enabled else 'off'}",
+             self.shimmer.enabled),
             ("F4 light",       self.show_lighting),
             ("F5 normal map",  self.show_normal_map),
             ("F6 coords",      self.show_debug_coords),
@@ -1830,8 +1935,20 @@ class GameRenderer:
         # "mask" (glow by temperature only) -> B "thickness" (temperature +
         # flame thickness) -> off -> A. (F3 was the legacy flat-orange fire
         # overlay, deleted with it.)
+        # Graphics G3 F4a (HUMAN-TEST 2): Shift+F3 toggles the EMBERS,
+        # Ctrl+F3 the heat SHIMMER -- every fire toggle on the F3 key.
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F3):
-            print(f"[fire_vfx] flame law -> {self.fire_vfx.cycle_emission()}")
+            shift = (rl.is_key_down(rl.KeyboardKey.KEY_LEFT_SHIFT)
+                     or rl.is_key_down(rl.KeyboardKey.KEY_RIGHT_SHIFT))
+            ctrl = (rl.is_key_down(rl.KeyboardKey.KEY_LEFT_CONTROL)
+                    or rl.is_key_down(rl.KeyboardKey.KEY_RIGHT_CONTROL))
+            if shift:
+                print(f"[embers] -> {'on' if self.embers.toggle() else 'off'}")
+            elif ctrl:
+                print(f"[shimmer] -> {'on' if self.shimmer.toggle() else 'off'}")
+            else:
+                print(f"[fire_vfx] flame law -> "
+                      f"{self.fire_vfx.cycle_emission()}")
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F4):
             self.show_lighting = not self.show_lighting
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F5):
@@ -2027,6 +2144,8 @@ class GameRenderer:
         self.gas_detail.unload()
         self.gas_relief.unload()
         self.fire_vfx.unload()
+        self.ember_draw.unload()
+        self.shimmer.unload()
         self.temperature_overlay.unload()
         rl.unload_texture(self.cold_overlay.tex)
         rl.unload_texture(self.water_overlay.tex)

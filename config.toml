@@ -1798,6 +1798,63 @@ edge_speed_cap = 3.0        # tiles/s: the noise drift / streak speed cap
 edge_contrast = 1.8         # restores the grain's contrast after the line integral
 seed = 1234                 # curl-noise modes and puffing phases
 
+[render.embers]
+# Graphics G3 F4a -- EMBERS, the first consumer of THE particle primitive
+# (renderer/particles.py; docs/g3_fire_design_2026-10-23.md §6.1). Spawned on
+# the CPU from the flame VFX's per-tick source tiles (THE source law; never a
+# GPU readback), on the flame's VFX clock (sim time + alpha; idle while paused
+# with the flame). They ride the frame's one tamed wind (x tps, tiles/s) plus
+# curl noise, cool down the ONE blackbody ramp (Newton, closed form: never
+# re-heat), fade, and die past their lifetime, below the glow floor, or in a
+# wall / vacuum. Drawn additive, linear HDR, after the flame and under the
+# units (shaders/particle_sprite.*). Re-read every frame (Ctrl+R live);
+# Shift+F3 toggles them. Render-only: no sim state, no digest, no golden.
+enabled = true
+rate = 4.0                  # embers per second per source tile at I = 1: sparse
+                            # (the studio's 5-tile row at I ~ 0.5 makes ~12 a second)
+cap = 256                   # never more alive at once (a fair subset spawns)
+lifetime_s = 3.0            # the longest an ember lives; each draws 60-100 % of it
+cool_s = 5.0                # e-fold of (T - T_amb), Newton: a 1250 K spark is ~1070 K
+                            # after 1 s, ~930 K after 2 s, dark at the 800 K glow floor
+                            # by ~3 s (faster and they died inside their own flame)
+t_birth_jitter = 0.08       # born at T_src x (1 - U(0, this)): never hotter than its fuel
+kick_speed = 3.5            # tiles/s it leaves the fuel with (x U(0.4, 1); wood:
+                            # away from the wall): thrown clear of the flame
+drag = 1.0                  # 1/s: how fast it takes up the air's velocity (the wind)
+curl = 1.4                  # tiles/s of curl-noise drift (the wandering)
+curl_wavelength_tiles = 2.0 # the drift's swirl size
+curl_rate_hz = 0.7          # how fast the swirls change
+curl_modes = 8              # Fourier modes of the drift's stream function
+size_tiles = 0.05           # sprite radius (a tile is 48 world px: ~2.4 px)
+min_screen_px = 1.0         # zoomed out, the radius never drops below this many
+                            # SCREEN px (the same light spread: no popping)
+streak_s = 0.06             # motion stretch: the trail is |v| x this long
+brightness = 10.0           # x the ramp's Le(T): a spark is a point, far brighter
+                            # per pixel than the surface it came from
+seed = 4321                 # the spawn RNG and the drift's modes
+
+[render.shimmer]
+# Graphics G3 F4a -- HEAT SHIMMER, the first term of the resolve's DISTORTION
+# BLOCK (renderer/heat_shimmer.py, shaders/world_resolve.fs distortion_px;
+# design §6.2, §13.12): the floor seen through hot gas wobbles. A UV offset
+# inside the one resolve -- never a second pass; the HUD / UI are never
+# distorted. offset = advected fBm x smoothstep(S) x amp, S = the gas
+# temperature's strength per tile (0 at t0_k, 1 at t1_k, gas tiles only),
+# upsampled bilinearly: cold gas (all four nearest tiles at or below t0_k)
+# gets exactly no offset. Re-read every frame; Ctrl+F3 toggles it.
+enabled = true
+t0_k = 380.0                # gas at or below this (K) does not shimmer at all
+t1_k = 700.0                # full strength from this gas temperature (the studio's
+                            # hottest gas beside a fire runs 457-761 K)
+amp_tiles = 0.03            # the largest offset, tiles (~1.4 world px): subtle
+grain_tiles = 0.6           # tiles per repeat of the noise grain
+cycle_s = 0.45              # the flow map's phase cycle, s (VFX clock)
+boil_tiles_s = 0.8          # the grain's own drift, tiles/s (the hot air's boil)
+zoom_zero = 14.0            # screen px per tile at and below which it is off
+                            # (zoomed out, a sub-pixel wobble only swims)
+zoom_full = 32.0            # ... full strength from here up
+seed = 2718                 # the flow map's per-cycle offsets and boil directions
+
 [render.props]
 # 3D props & vegetation — WIND SWAY (arc #60 P4, design §4.3 "Sway (P4)").
 # Read EVERY FRAME by renderer/static_props.py (via SwaySettings.from_config),

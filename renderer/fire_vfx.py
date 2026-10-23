@@ -964,6 +964,14 @@ class FireVFXPass:
             return []
         return clip_rects(self.region.boxes, view)
 
+    @property
+    def pack(self) -> Optional[TilePack]:
+        """The current tick's per-tile pack (None = nothing burns): its
+        ``sources`` -- THE source law's output on its ``window`` -- are what
+        the embers spawn from (G3 F4a, ``renderer/particles.py``; CPU, never
+        a GPU readback)."""
+        return self._pack
+
     def cycle_debug_view(self) -> int:
         self.debug_override = (self.debug_view + 1) % len(DEBUG_VIEWS)
         return self.debug_override
