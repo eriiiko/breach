@@ -1166,9 +1166,12 @@ heat_absorb    = 0.0                  # ACCEPTED GAP (P5c): a BAND absorber (H2O
 absorption     = [0.88, 0.90, 0.93]   # near-neutral, slight blue tilt: thin soot reads warm/brown
 scatter_albedo = [0.22, 0.22, 0.22]   # soot single-scattering albedo ~0.2 in the visible: lit smoke reads charcoal-grey, not black (#91, Erik 2026-10-15; was 0.04)
 diffusion      = 0.10                 # heavier, clings
-decay          = 0.001                # lingers — soot settles slowly. Erik, 2026-10-22 (#12 fire + smoke session):
-                                     # 0.008 -> 0.001 (a ~17 min e-fold; real soot hangs in a room for many minutes),
-                                     # so a fire's smoke trails all the way to the vent that draws it
+decay          = 0.0011               # lingers — soot settles slowly. Erik, 2026-10-22 (#12 fire + smoke session):
+                                     # 0.008 -> 0.001 (real soot hangs in a room for many minutes), so a fire's smoke
+                                     # trails all the way to the vent that draws it; written as 0.0011 (a ~15 min
+                                     # e-fold) because the per-tick decay is Q16 (trace_decay::frac_q): at 24 Hz the
+                                     # representable rates near here are 0.00073 / 0.0011 / 0.00146 per s, and 0.001
+                                     # rounded to 0.0011 anyway (tests/test_trace_resolution.py V7 caught the 10 %)
 glow           = 0.0                  # cold soot does NOT glow; hot soot via emits_when_hot
 flammable      = false                # the soot itself is spent fuel
 emits_when_hot = true                 # black-body emission driven by heat buffer (M2/M3)

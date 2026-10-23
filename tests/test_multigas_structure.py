@@ -147,7 +147,7 @@ def test_gas_table_values():
 
     # Per-gas diffusion + decay (§6.2) — the first 5 (trace) rows.
     assert np.allclose(tbl.diffusion[:5], [0.18, 0.10, 0.12, 0.15, 0.22])
-    assert np.allclose(tbl.decay[:5],     [0.020, 0.008, 0.004, 0.010, 0.006])
+    assert np.allclose(tbl.decay[:5],     [0.020, 0.0011, 0.004, 0.010, 0.006])  # smoke: #12 session 2026-10-22
 
     # (The "smoke diffusion == [physics] d_smoke" anchor is gone with the key:
     # smoke transport v2, #12, retired d_smoke with the SL smoke step.)

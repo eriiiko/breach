@@ -537,7 +537,19 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # REPRODUCED: every capture run twice, identical both times; the CUDA checks
 # that read GOLDEN_AGGREGATE are green at 8 bits on a fresh CUDA build.
 # (was f6ba810ebe6083f92bbce82979321cac284844589e77313293d1d29fbaf6ff0d)
-GOLDEN_AGGREGATE = "2673bd3381636e4b901b76e0d541a6172853145dc319752537a65137f0fdd84d"
+#
+# 2026-10-22 -- #12 FIRE + SMOKE SESSION (Erik at the screen): `[gases.smoke]
+# decay` 0.008 -> 0.0011 per s (Erik set 0.001; the per-tick Q16 frac_q rounds
+# both to 3 counts, so 0.0011 is what runs and the two give the same digest).
+# SOLE CAUSE, verified on the same build: the tree with decay back at 0.008
+# reproduces 2673bd33... exactly; 0.001 and 0.0011 both give the value below.
+# The session's other changes are render-side or undigested light ([render.
+# blackbody] anchor / exponent / cap and the regenerated light table, the smoke
+# relief dials, the fire studio level and its payload row) and moved nothing.
+# MOVED: the smoke trace plane of `gas` (the canonical scenario's seeded 0.6
+# smoke decays slower). Nothing else is expected to move with a decay rate.
+# (was 2673bd3381636e4b901b76e0d541a6172853145dc319752537a65137f0fdd84d)
+GOLDEN_AGGREGATE = "7b60c8006bd0dcefd38aba68559f5ce1c50d6ae844681414bcfe208faf972ffd"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs
