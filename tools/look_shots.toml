@@ -325,3 +325,51 @@ beacon = true
 light_gain = "game"
 hide = ["heat"]
 note = "the smoke-light studio, most of the map (both doorways, where the west hall's plumes pour east), at tick 96: one frame of a plume TRAVELLING (the t48..t96 rows are the sequence). G2 judges the synthetic low band (§2.5 A) and, for Erik, whether §2.5 B's trigger fires: does the plume lose its silhouette while it travels?"
+
+# --- graphics G3 "Fire" (docs/g3_fire_design_2026-10-23.md §3.6, §7 F1):
+# the FIRE + SMOKE studio, where fire burns from the start (one timed charge
+# per fuel tile at 0.5 s; a five-tile furniture row at y 22, x 23..27, a lone
+# tile at (37, 27); a HEPA vent loop supply W (4, 22) -> return E (51, 22)
+# draws a current over the row). The flame arc's own judging set: F1 added
+# the rows only (today's heat-layer look), F3 draws the flame into them.
+[[shot]]
+name = "fss_overview"
+level = "fire_smoke_studio"
+frames = 120
+lamps = false
+beacon = false
+light_gain = "game"
+note = "the whole studio 5 s in (fires lit at 0.5 s): the row and the lone tile burning, their smoke drawn east by the vent current. G3's overview: flame shape against the room light it makes."
+
+[[shot]]
+name = "fss_close"
+level = "fire_smoke_studio"
+frames = 120
+center = [25.5, 22.5]
+zoom = 96.0
+lamps = false
+beacon = false
+light_gain = "game"
+note = "close on the five-tile row: the tongues, their lean in the vent current, and (F3) the A/B of glow by temperature vs temperature + thickness (design §8 'A != B' is measured here)."
+
+[[shot]]
+name = "fss_lone"
+level = "fire_smoke_studio"
+frames = 120
+center = [37.5, 27.5]
+zoom = 128.0
+lamps = false
+beacon = false
+light_gain = "game"
+note = "close on the lone burning tile: the smallest fire the flame must still read on (M_u = 8 is chosen so one tile is not an orange blob, M12)."
+
+[[shot]]
+name = "fss_windy"
+level = "fire_smoke_studio"
+frames = 120
+center = [40.0, 24.0]
+zoom = 40.0
+lamps = false
+beacon = false
+light_gain = "game"
+note = "downstream of the row toward the return vent (51, 22): the row's east end, the lone tile and the current carrying smoke to the vent. Flames should lean east here."
