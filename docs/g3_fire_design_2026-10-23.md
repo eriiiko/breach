@@ -13,7 +13,12 @@ approval, 2026-10-23).*
 | Round | Doc | Lens | Verdict | File |
 |---|---|---|---|---|
 | 1 | v1 | all (facts, physics, composite, GPU risk, systems, tests, flicker, look) | REVISE: 3 blockers, 12 major, 13 minor; all folded in or answered in §12 | `docs/g3_fire_design_critique_2026-10-23.md` |
-| 2 | v2 | resolution check: are round 1's blockers and majors actually resolved, and did the fixes create new ones? | *pending* | `docs/g3_fire_design_critique2_2026-10-23.md` |
+| 2 | v2 | resolution check: are round 1's blockers and majors actually resolved, and did the fixes create new ones? | APPROVE-WITH-FIXES: 1 new blocker, 7 new majors, 8 minors, all doc-level, none needing Erik. Folded in as §13; no third round needed | `docs/g3_fire_design_critique2_2026-10-23.md` |
+
+***v3 = v2 + §13.** §13 is binding and OVERRIDES the earlier sections
+wherever they differ. Implementers read §13 before §3–§9.*
+
+***APPROVED, v3, by Claude as lead designer (2026-10-23).** F0b may start.*
 
 ---
 
@@ -573,3 +578,179 @@ These go into the helper's docstring and are covered by its test.
   (`idle_when_paused = true`, render-only) because the planning phases are
   paused most of the time, and a frozen flame reads as a still picture. It is
   on the HUMAN-TEST 1 checklist.
+
+## 13. Round-2 amendments (binding; they override §3–§9)
+
+Each item names the round-2 finding it answers.
+
+**13.1 The pressure solve is screened (N-B1).** Solve
+`(∇² − 1/ℓ²) p = ∇·u* − q`, with `ℓ = screen_len_tiles` (a dial, ~3 tiles).
+The screening term is the plume leaving the plane upward (§3.3).
+- A sealed room inside a box, or a box with closed doors, then has a unique
+  bounded solution. With the old pure-Neumann problem and Σq > 0, warm-started
+  Jacobi grows p until it overflows.
+- The active-region edge keeps `p = 0`.
+- **F0b gates:**
+  - a sealed-room scene (a fire in a closed 6×6 room inside the box);
+  - `max|p|` stays bounded over 10⁴ substeps.
+
+**13.2 Velocity scales and structure sources (N-M5).**
+- Wind enters as `u_wind = tamed · tps`. `tame_wind` returns tiles **per
+  tick**; `u_vfx` is in tiles/s.
+- `q = q₀ · I · (T_src/T_amb − 1)`, with `q₀` in 1/s.
+  - **`q₀` is a look dial**, about 100× the physical in-plane expansion.
+  - Physical in-plane expansion is ~0.2 tiles/s at the tile edge, which is
+    too weak for tongues. The dial is honest about that.
+  - Tongues 1–2 tiles long within ~0.4 s need `q` ≈ 20–30 /s.
+- The projection removes the wind's divergent part every substep, so wind and
+  expansion do not fight on divergence; they compete only in magnitude.
+- **The structure sources, named honestly.** Expansion and pressure-driven
+  wind are both irrotational, so vorticity confinement only amplifies what
+  these two seed:
+  - **curl noise** scaled by local `I` (Bridson 2007);
+  - **pool-fire puffing**: `s` and `q` pulse at `f ≈ 1.5/√D` Hz, with D the
+    fire's extent in m (Cetegen & Ahmed, *Combust. Flame* 1993), each fire
+    cluster at its own phase.
+- F0b's "with wind" scene is driven by the **real** tamed-wind field, dumped
+  from `fire_smoke_studio` with the vents running, not by a constant.
+
+**13.3 The clock (N-M1, minor 8).**
+- `upload_state(..., alpha=)` is a new keyword.
+  - Both glues pass it: `main.py`'s accumulator and
+    `tools/lighting_demo.py` (the `--auto` shots, its own accumulator, and
+    `--perf`).
+  - The render side clamps it to [0, 1).
+  - `t_vfx` never steps backward.
+- The substep is `dt_s = 1/120 s`. The cap is **6 per frame** (≥
+  `ceil(1/(tps·dt_s)) + 1`), so a shot frame (one tick) runs exactly 5,
+  the same as the game.
+  - **Test:** substeps per tick are equal in shot mode and at 60 fps. *Breaks
+    if* the cap drops below 5.
+- `idle_when_paused` runs on its own wall-dt counter `t_idle`, never written
+  into `t_vfx`.
+  - Curl-noise and edge-noise phases key on `t_vfx + t_idle`, not on the
+    tick-locked `advection_phase`, so the noise never freezes on a moving
+    flame.
+  - Shots never pause (`lighting_demo` un-pauses every frame), so they stay
+    reproducible.
+  - The game's VFX state after a pause depends on wall time. It is
+    **ACCEPTED GAP: not replay-reproducible**, which is fine for a render-only
+    layer.
+
+**13.4 Flame opacity is tied to emission (N-M7, the M4 bound).**
+- The cover weight is `ε = E(R) · w(T_vfx)`, with `w` a smoothstep from 0 at
+  `kelvin_glow_min` to 1 at `kelvin_glow_min + 100 K`. A flame cooler than
+  the glow floor covers nothing, so there are no dark tips.
+- No source is injected where `T_src < kelvin_glow_min`.
+  - The ~300 K air fires of the look-shot injector (probe: 283–306 K while
+    `fire` → 0.10) therefore make no flame.
+  - That is honest: the sim says the patch is not hot.
+  - Those shots keep the heat layer's look.
+- **Tests:**
+  - *the flame pass never lowers masked luminance below the flame-off
+    render by more than a tolerance* (breaks if ε decouples from emission);
+  - *flame radiance at a pixel never exceeds `Le(T_src)` of its feeding
+    tile* (round 1's M4 bound).
+
+**13.5 Cooling never heats (minor 1).** `T_vfx ← min(T_vfx, relax(T_vfx,
+T_gas_local))`.
+
+**13.6 Vacuum (minor 2).** `R = 0` in vacuum tiles, as in solids, after
+every substep. Every VFX draw keeps the destination alpha.
+
+**13.7 Draw order and occlusion, exact (N-M2, N-M3).** The §3.6 order is
+replaced by:
+
+```
+floor → water → floor gas layer → BODY glow · (1 − glow_through_floor·cov.b) →
+flame (ε-cover) → units/props → ceiling soot (relief) →
+COMPENSATION (a second evaluation of body glow + flame, additive,
+              weight α_ceil·(1 − glow_through_ceiling) from smokeCoverAt;
+              below_flame = 1, body uses glow_below_fraction) →
+GAS glow (undimmed) → [resolve: ACES + shimmer]
+```
+
+- **The body glow draws after the floor gas** with G2's own floor factor.
+  That is exact: the floor relief's composite would otherwise hide it fully.
+- **The compensation is approximate.** The cast product is 8 px/tile, the
+  drawn soot 48 px/tile. **Gate:** on `fire_thin_smoke` and
+  `fire_thick_smoke`, the masked fire-region luminance with the flame off is
+  within ±4 % of `cfcba40` (G0's tolerance).
+- **If it fails:** the term moves inside the ceiling relief shader, which
+  knows its own α, with the glow passed as a texture.
+
+**13.8 The hue gate tests what ships (N-M4).**
+- The gated configuration is the **flame on**, covering the body tiles.
+- The body share also uses the over operator, with ε from its own emission,
+  so it keeps chroma the way the flame does.
+- **Metric:**
+  - CIELAB on the shot PNGs;
+  - hue = atan2 of the **chroma-weighted** mean (a\*, b\*);
+  - mask = the burning tiles, dilated by 1 and projected through the shot's
+    camera, the same for both runs;
+  - halo = the radius at which luminance falls to 10 %, against a
+    `hide = ["heat"]` twin row;
+  - pass if the hue shift is ≤ 5° and chroma is within G0's ±4 %.
+- **Fallback keeps M4.** If the gate fails, the heat layer stays display-space
+  after the resolve, but its shader samples the flame's ε texture and draws
+  `glow · (1 − ε)`, so the flame still covers the tile and nothing is counted
+  twice. The draw order and units-above-glow changes are then deferred with
+  it, and the reason is written down.
+
+**13.9 GL parity is per operator (N-M6).**
+- F2 compares GL with the twin **one stage at a time**: upload the same
+  state, run one stage (advect, confine, divergence, Jacobi sweep, project,
+  inject, decay/cool), read back, compare within fp16/fp32 tolerance.
+- Over long runs, only invariants and statistics are checked: `R ≥ 0`,
+  `T ≤ T_src`, total R within 10 % of the twin's.
+- Trajectory parity is dropped; the loop is chaotic by design.
+
+**13.10 Budget and memory (M6 gaps).**
+- **Substeps run on the active boxes only.** Off-screen fires keep
+  simulating, which is cheap. **Draws are clipped to active ∩ view.** v2's
+  "view ∪ active" was wrong.
+- **All boxes share one pass per stage:** up to 4 quads inside one
+  `begin/end_texture_mode`. The pass count is independent of the box count.
+- **VRAM:** whole-map RTs at M = 8 on the largest level (128×256) are about
+  300 MB. That is acceptable on the 3070's 8 GB, and about 75 MB on the
+  laptop tier at M = 4. F1 measures it.
+
+**13.11 Ping-pong blend (M8 correction).** Every simulation pass draws with
+**blending disabled**, or a custom ONE/ZERO blend, so the shader's output
+replaces the texel. raylib's `BLEND_ADD_COLORS` is ONE/ONE, which v2
+mis-stated. Composite passes choose their blend explicitly.
+
+**13.12 Shimmer sampling (M10 note).** The scene RT is point-filtered, so
+the resolve's shimmer offset does its own bilinear tap.
+
+**13.13 One tamed wind (minor 3).** `upload_state` computes **one** tamed-wind
+product per frame, with the relief's dials, whenever any consumer needs it:
+the relief, props or the flame. Every consumer takes that array; no second
+`tame_wind` call with other dials. Props' current default-dial call joins
+it, and the change is checked in the prop-sway shots.
+
+**13.14 Smaller items.**
+- **Speckle (minor 4):** keeps modulating the body glow's intensity in the
+  linear path.
+- **Cold overlay (minor 5):** stays display-space; F3 checks halo overlap in
+  the shots.
+- **`test_one_tonemap` (minor 6):** add every Python-composed fire,
+  compensation and body-glow shader string to its scan. Remove
+  `CPU_TWIN_HOME`, or re-justify it if M3's own-light input still uses
+  `aces_curve`.
+- **The own-light input (round-2 M3):** a named function in `blackbody.py`,
+  `glow_share(temp)`, the 0–1 brightness share the relief's cut has always
+  used, with its own test. It is not "as today" by implication.
+- **Source upload (minor 7):** `src` and `solid` are uploaded per tile and
+  sampled nearest. No CPU upsampling.
+- **LUT (M5 note):** the 1024-entry GPU LUT is built from
+  `BlackbodyRamp.emission_at_kelvin`; `lut_size` is not raised.
+
+**Work order by patch:**
+- **F0b:** 13.1, 13.2, 13.5.
+- **F1:** 13.3, 13.10, 13.11, 13.13.
+- **F2:** 13.9.
+- **F3:** 13.4, 13.7, 13.8, 13.14.
+
+F0b must show the sealed room stays bounded, and tongues forming under the
+real wind, before F1 starts.
