@@ -411,7 +411,7 @@ def _upsample_bilinear(a: np.ndarray, m: int) -> np.ndarray:
     ty = (np.arange(h)[:, None] + c[None, :]).reshape(-1)
     tx = (np.arange(w)[:, None] + c[None, :]).reshape(-1)
     yy, xx = np.meshgrid(ty, tx, indexing="ij")
-    return _bilinear(a, xx, yy, "clamp")[0]
+    return _bilinear(a, xx, yy, "clamp")
 
 
 def prepare_tick(fire, t_game, solid, flammable, vacuum, wind_tamed, *,
@@ -473,40 +473,75 @@ class FireVFXState:
 # Sampling helpers (texel-space, cell centre i at coordinate i)
 # ---------------------------------------------------------------------------
 
-def _bilinear(f: np.ndarray, x: np.ndarray, y: np.ndarray, mode: str):
-    """Bilinear sample of ``f`` at continuous cell coords (x, y).
+class _Taps(NamedTuple):
+    """The four texel taps of a bilinear lookup at continuous cell coords:
+    flat indices (edge-clamped), in-domain flags and the weights. Built once
+    per trace, shared by every field sampled along it."""
+    idx: tuple
+    ok: tuple
+    fx: np.ndarray
+    fy: np.ndarray
 
-    ``mode`` 'clamp' = edge texels extend (velocity, tile fields);
-    'zero' = outside the domain is empty (flame scalars: nothing flows in
-    from beyond the active region). Returns (value, corner_min, corner_max)
-    -- the corners are the Selle limiter's stencil."""
-    h, w = f.shape
+
+def _taps(x: np.ndarray, y: np.ndarray, h: int, w: int) -> _Taps:
     x0 = np.floor(x).astype(np.int64)
     y0 = np.floor(y).astype(np.int64)
-    fx = x - x0
-    fy = y - y0
-    vals = []
+    idx, ok = [], []
     for dy in (0, 1):
         for dx in (0, 1):
             xi, yi = x0 + dx, y0 + dy
-            if mode == "clamp":
-                v = f[np.clip(yi, 0, h - 1), np.clip(xi, 0, w - 1)]
-            else:
-                ok = (xi >= 0) & (xi < w) & (yi >= 0) & (yi < h)
-                v = np.where(ok, f[np.clip(yi, 0, h - 1), np.clip(xi, 0, w - 1)], 0.0)
-            vals.append(v)
+            ok.append((xi >= 0) & (xi < w) & (yi >= 0) & (yi < h))
+            idx.append(np.minimum(np.maximum(yi, 0), h - 1) * w
+                       + np.minimum(np.maximum(xi, 0), w - 1))
+    return _Taps(tuple(idx), tuple(ok), x - x0, y - y0)
+
+
+def _sample(f: np.ndarray, taps: _Taps, mode: str, stencil: bool = False):
+    """Bilinear sample of ``f`` through ``taps``.
+
+    ``mode`` 'clamp' = edge texels extend (velocity, tile fields);
+    'zero' = outside the domain is empty (flame scalars: nothing flows in
+    from beyond the active region). With ``stencil`` also returns the four
+    taps' min and max -- the Selle limiter's stencil."""
+    flat = f.reshape(-1)
+    vals = [flat[i] if mode == "clamp" else np.where(o, flat[i], 0.0)
+            for i, o in zip(taps.idx, taps.ok)]
     v00, v10, v01, v11 = vals
+    fx, fy = taps.fx, taps.fy
     val = ((v00 * (1 - fx) + v10 * fx) * (1 - fy)
            + (v01 * (1 - fx) + v11 * fx) * fy)
-    stack = np.stack(vals)
-    return val, stack.min(axis=0), stack.max(axis=0)
+    if not stencil:
+        return val
+    lo = np.minimum(np.minimum(v00, v10), np.minimum(v01, v11))
+    hi = np.maximum(np.maximum(v00, v10), np.maximum(v01, v11))
+    return val, lo, hi
 
 
-def _backtrace(u: np.ndarray, dt: float, m: int):
+def _bilinear(f: np.ndarray, x: np.ndarray, y: np.ndarray, mode: str):
+    """One-off bilinear sample (value only) at continuous cell coords."""
+    return _sample(f, _taps(x, y, *f.shape), mode)
+
+
+_GRID_CACHE: dict = {}
+
+
+def _cell_grid(h: int, w: int):
+    """(jj, ii) cell-index coordinate planes, cached per shape (read only)."""
+    g = _GRID_CACHE.get((h, w))
+    if g is None:
+        jj, ii = np.meshgrid(np.arange(h, dtype=np.float64),
+                             np.arange(w, dtype=np.float64), indexing="ij")
+        jj.flags.writeable = False
+        ii.flags.writeable = False
+        g = _GRID_CACHE[(h, w)] = (jj, ii)
+    return g
+
+
+def _backtrace(u: np.ndarray, dt: float, m: int) -> _Taps:
+    """Taps at ``x - u dt`` (in cells) for every cell centre."""
     h, w = u.shape[:2]
-    jj, ii = np.meshgrid(np.arange(h, dtype=np.float64),
-                         np.arange(w, dtype=np.float64), indexing="ij")
-    return ii - u[..., 0] * dt * m, jj - u[..., 1] * dt * m
+    jj, ii = _cell_grid(h, w)
+    return _taps(ii - u[..., 0] * dt * m, jj - u[..., 1] * dt * m, h, w)
 
 
 def _nb(a: np.ndarray, dy: int, dx: int, edge: str, fill=0.0):
@@ -535,15 +570,35 @@ def _nb_mask(mask: np.ndarray, dy: int, dx: int) -> np.ndarray:
     return _nb(np.asarray(mask, dtype=bool), dy, dx, "const", False)
 
 
+_SOLID_NB_CACHE: dict = {}
+
+
+def _solid_nb(solid: np.ndarray):
+    """{(dy, dx): neighbour-is-solid} for the four faces, plus the count of
+    open neighbours -- a pure function of the solid mask, memoised on its
+    bytes (the mask changes per tick at most; the solve runs it ~20x per
+    substep). F1's shader reads the solid texture's neighbours instead."""
+    solid = np.asarray(solid, dtype=bool)
+    key = (solid.shape, solid.tobytes())
+    hit = _SOLID_NB_CACHE.get(key)
+    if hit is None:
+        nb = {d: _nb_mask(solid, *d) for d in ((0, 1), (0, -1), (1, 0), (-1, 0))}
+        n_open = sum((~v).astype(np.float64) for v in nb.values())
+        if len(_SOLID_NB_CACHE) > 32:
+            _SOLID_NB_CACHE.clear()
+        hit = _SOLID_NB_CACHE[key] = (nb, n_open)
+    return hit
+
+
 # ---------------------------------------------------------------------------
 # The stages (§3.4 + §13) -- one function per GL pass
 # ---------------------------------------------------------------------------
 
 def advect_velocity(u: np.ndarray, dt: float, m: int) -> np.ndarray:
     """Stage 1a: semi-Lagrangian self-advection of u (Stam 1999)."""
-    x, y = _backtrace(u, dt, m)
-    ux = _bilinear(u[..., 0], x, y, "clamp")[0]
-    uy = _bilinear(u[..., 1], x, y, "clamp")[0]
+    taps = _backtrace(u, dt, m)
+    ux = _sample(u[..., 0], taps, "clamp")
+    uy = _sample(u[..., 1], taps, "clamp")
     return np.stack([ux, uy], axis=-1)
 
 
@@ -621,10 +676,11 @@ def divergence(u: np.ndarray, solid: np.ndarray, m: int) -> np.ndarray:
     no flow); beyond the domain edge the velocity extends (open outflow)."""
     hc = 1.0 / m
     ux, uy = u[..., 0], u[..., 1]
-    ue = np.where(_nb_mask(solid, 0, 1), -ux, _nb(ux, 0, 1, "replicate"))
-    uw = np.where(_nb_mask(solid, 0, -1), -ux, _nb(ux, 0, -1, "replicate"))
-    vs = np.where(_nb_mask(solid, 1, 0), -uy, _nb(uy, 1, 0, "replicate"))
-    vn = np.where(_nb_mask(solid, -1, 0), -uy, _nb(uy, -1, 0, "replicate"))
+    nb, _ = _solid_nb(solid)
+    ue = np.where(nb[(0, 1)], -ux, _nb(ux, 0, 1, "replicate"))
+    uw = np.where(nb[(0, -1)], -ux, _nb(ux, 0, -1, "replicate"))
+    vs = np.where(nb[(1, 0)], -uy, _nb(uy, 1, 0, "replicate"))
+    vn = np.where(nb[(-1, 0)], -uy, _nb(uy, -1, 0, "replicate"))
     d = ((ue - uw) + (vs - vn)) / (2 * hc)
     return np.where(solid, 0.0, d)
 
@@ -641,13 +697,11 @@ def jacobi_sweep(p: np.ndarray, rhs: np.ndarray, solid: np.ndarray,
     a sealed room's warm-started p cannot grow without limit."""
     hc2 = (1.0 / m) ** 2
     scr = hc2 / (screen_len_tiles ** 2)
+    nb, n_open = _solid_nb(solid)
     acc = np.zeros_like(p)
-    n = np.zeros_like(p)
-    for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
-        nb_solid = _nb_mask(solid, dy, dx)
+    for (dy, dx), nb_solid in nb.items():
         acc += np.where(nb_solid, 0.0, _nb(p, dy, dx, "const", 0.0))
-        n += np.where(nb_solid, 0.0, 1.0)
-    new = (acc - hc2 * rhs) / (n + scr)
+    new = (acc - hc2 * rhs) / (n_open + scr)
     return np.where(solid | vacuum, 0.0, new)
 
 
@@ -657,18 +711,19 @@ def project(u: np.ndarray, p: np.ndarray, solid: np.ndarray,
     sweep), then enforce no-through: no velocity component points into a
     solid neighbour; solid cells at rest."""
     hc = 1.0 / m
+    nb, _ = _solid_nb(solid)
 
     def pn(dy, dx):
-        return np.where(_nb_mask(solid, dy, dx), p, _nb(p, dy, dx, "const", 0.0))
+        return np.where(nb[(dy, dx)], p, _nb(p, dy, dx, "const", 0.0))
 
     gx = (pn(0, 1) - pn(0, -1)) / (2 * hc)
     gy = (pn(1, 0) - pn(-1, 0)) / (2 * hc)
     ux = u[..., 0] - gx
     uy = u[..., 1] - gy
-    ux = np.where(_nb_mask(solid, 0, 1), np.minimum(ux, 0.0), ux)
-    ux = np.where(_nb_mask(solid, 0, -1), np.maximum(ux, 0.0), ux)
-    uy = np.where(_nb_mask(solid, 1, 0), np.minimum(uy, 0.0), uy)
-    uy = np.where(_nb_mask(solid, -1, 0), np.maximum(uy, 0.0), uy)
+    ux = np.where(nb[(0, 1)], np.minimum(ux, 0.0), ux)
+    ux = np.where(nb[(0, -1)], np.maximum(ux, 0.0), ux)
+    uy = np.where(nb[(1, 0)], np.minimum(uy, 0.0), uy)
+    uy = np.where(nb[(-1, 0)], np.maximum(uy, 0.0), uy)
     out = np.stack([ux, uy], axis=-1)
     return np.where(solid[..., None], 0.0, out)
 
@@ -686,15 +741,15 @@ def advect_flame(R: np.ndarray, RT: np.ndarray, u: np.ndarray, dt: float,
     together give R >= 0 and no new temperature maxima (the
     ``T_vfx <= T_src`` invariant)."""
     m = dials.m
-    x, y = _backtrace(u, dt, m)
+    taps = _backtrace(u, dt, m)
     T_old = np.where(R > dials.r_eps, RT / np.maximum(R, dials.r_eps), 0.0)
-    _, _, t_max = _bilinear(T_old, x, y, "zero")
+    _, _, t_max = _sample(T_old, taps, "zero", stencil=True)
+    taps_fwd = _backtrace(u, -dt, m) if dials.maccormack else None
     out = []
     for phi in (R, RT):
-        fwd, lo, hi = _bilinear(phi, x, y, "zero")
+        fwd, lo, hi = _sample(phi, taps, "zero", stencil=True)
         if dials.maccormack:
-            xf, yf = _backtrace(u, -dt, m)
-            back = _bilinear(fwd, xf, yf, "zero")[0]
+            back = _sample(fwd, taps_fwd, "zero")
             mc = fwd + 0.5 * (phi - back)
             fwd = np.where((mc < lo) | (mc > hi), fwd, mc)
         out.append(np.maximum(fwd, 0.0))
