@@ -44,6 +44,13 @@ def _layer_shader_sources():
     from renderer import marine_shader, static_props
     out.append(("marine_shader.MARINE_FS", _code(marine_shader.MARINE_FS)))
     out.append(("static_props.PROP_FS", _code(static_props.PROP_FS)))
+    # graphics G3: the flame VFX passes as COMPOSED in Python (each stage
+    # .fs with shaders/fire_vfx_common.glsl spliced in -- the .glsl part is
+    # not a *.[fv]s file, so the composed source is what must be clean)
+    from renderer import fire_vfx
+    for st in fire_vfx.STAGES + ("debug",):
+        out.append((f"fire_vfx.{st} (composed)",
+                    _code(fire_vfx.compose_shader_source(st))))
     return out
 
 
