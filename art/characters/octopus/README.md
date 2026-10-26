@@ -1,3 +1,161 @@
+# Whole octopus — 2026-10-27
+
+Built on the one-arm proof below; its files are unchanged and still reproduce
+it. Open [index.html](index.html) for the pictures and
+[CONTROLS.md](CONTROLS.md) for the per-limb control layout. This is a
+HUMAN-TEST handoff: render-only, nothing pushed or merged, no game or
+simulation file touched.
+
+## What it is
+
+- `scripts/octopus_math.py` holds the controls, `pose_octopus`, the body/crown
+  geometry, the skin weights and the demo cycles. It is pure NumPy and imports
+  `arm_math`:
+  - the hero arm IS `arm_math.geometry()` cut at junction ring 20 (s = 0.156);
+  - the taper is `arm_math.radius`, the per-vertex blend is `weights_at`'s
+    two-joint rule, and the runtime quaternion is `arm_math.quaternion`.
+- **Junction.** The body, crown and web are one structured grid, with two
+  sheets (dorsal and oral) whose boundary is exactly the eight arm junction
+  rings plus the web rims. Those ring vertices are shared, so the whole
+  surface is one closed manifold with no cut cylinders. Grid vertices are
+  ray-cast onto an implicit smooth union (mantle, head, eye bumps, eight arm
+  roots, a scalloped web slab, an oral disc). Near each ring a "collar" makes
+  the crown follow the tube's own surface lines (G1 on the crest), a seam snap
+  removes the blend's inflation, and a short relaxation removes shear folds.
+- **Rig form.** A bone chain per arm, as in the proof. Hero: 33 joints per arm.
+  Game: every 2nd joint of the SAME curve (17 per arm), plus 6 body bones
+  (body, mantle, three translation-only squeeze walls, siphon). The pose is a
+  discrete fixed-length rod: per joint a bend increment about a material axis
+  set by `bend_dir`, plus twist; root lift and swing are bent in over the first
+  6 joints. A chain was chosen over "fewer bones + curve in the skin" because
+  the game skins on the CPU through raylib bones only: a curve-in-skin path
+  would mean a parallel skinning path, which the renderer seam forbids. Halving
+  the joints costs at most 12.3 mm against the hero rig across random
+  full-range poses.
+- **Game LOD.** 12-sector arm tubes and a coarser crown, with no modelled cups.
+  The suckers, mottling and eyes are baked from the hero in Blender
+  (selected-to-active: diffuse colour, tangent normal, roughness) into a
+  2048² albedo, with gloss = 1 − roughness/0.65 in ALPHA (skin ≈ 0.32, cups
+  ≈ 0.45, eye ≈ 0.9), spliced in by `charkit.glbtex.replace_image`, plus the
+  normal map.
+
+## Numbers (prototype/octopus/*.json)
+
+| | hero (.blend) | game (.glb) |
+|---|---:|---:|
+| triangles | 132,512 | **12,200** |
+| vertices | 67,512 | 6,108 authored / 8,471 loaded |
+| joints | 270 | **142** |
+| modelled suckers | 624 | 0 (baked) |
+
+Runtime, measured through the loaded GLB and raylib's native CPU skinning
+(`runtime_octopus.py --benchmark`, 120 samples, methodology as for the arm).
+These are CPU timings, NOT whole-game FPS:
+
+| CPU per frame | 1 octopus median (p95) | 4 octopi median |
+|---|---:|---:|
+| controls + `pose_octopus` | 3.14 ms (3.38) | 12.3 ms |
+| write 142 joint transforms | 0.69 ms | 2.73 ms |
+| raylib skin + upload | 0.17 ms | 0.66 ms |
+| **total** | **4.01 ms (4.28)** | **15.7 ms** |
+
+The skinning itself is cheap. The cost is the pure-Python pose and write; the
+first optimisation would be to batch the 8 arm recursions, since a scalar loop
+per arm is not needed.
+
+Loaded raylib skin vs the NumPy reference: ≤ 5.7 µm over 36 poses (10 µm
+gate). Blender's evaluated hero skin vs the reference: ≤ 1.4 µm.
+
+Property checks (`verify_octopus.py`, report in
+`prototype/octopus/property_report.json`):
+
+- out-of-range controls are refused;
+- the pose is deterministic and every frame is an exact rotation;
+- segment length error ≤ 4.7e-16 m (300 random poses), and game joints are
+  bit-identical to the even hero joints;
+- arm independence: in 60 trials, moving arm j never moves arm i, and
+  mantle/siphon controls never move an arm;
+- continuity: sweeping every control across its full range in 400 steps, the
+  worst max/median step is 2.10 and the worst frame step is 0.032 rad;
+  `bend_dir` ±1 give the same pose;
+- both meshes are closed manifolds, the junction rings are stitched, weights
+  are normalised with ≤ 4 influences, and the bind skin reproduces the mesh.
+
+Deformation:
+
+- **Shown poses:** arm triangle-area ratio ≥ 0.84, crown ≥ 0.029, at most 8
+  inverted slivers out of 12k.
+- **Random full-range poses:** arm tubes ≥ 0.58, hero arm sections 0.95–1.00,
+  but the crown/web is ≥ 0.003 with up to 72 inverted slivers (a known
+  limit, see CONTROLS.md).
+
+## Rebuild
+
+```powershell
+$o = 'C:/Users/steen/projects/breach/.claude/worktrees/33-octopus-concept/art/characters/octopus'
+$breach = 'C:/Users/steen/projects/breach'      # read-only root, main at cfcba40
+$py = 'C:/Users/steen/anaconda3/python.exe'
+$blender = 'C:/Program Files/Blender Foundation/Blender 4.5/blender.exe'
+& $py "$o/scripts/verify_octopus.py"
+& $blender -b --factory-startup -P "$o/scripts/build_octopus.py" -- --root $breach --stage all
+& $py "$o/scripts/package_octopus.py"
+& $py "$o/scripts/runtime_octopus.py" --root $breach --benchmark
+& $py "$o/scripts/runtime_octopus.py" --root $breach --shots "$o/previews/octopus/game/game" --frames 80,170 --focus 20:28:0 -- --level playground
+& $py "$o/scripts/runtime_octopus.py" --root $breach -- --level playground
+```
+
+The steps, in order:
+
+1. `verify_octopus.py`: the properties, about 2.5 min.
+2. `build_octopus.py --stage all`: the .blend, the bake, the GLB and the
+   renders, about 6 min on the GPU. `--stage swim` re-renders only the swim
+   stills and the GIF frames.
+3. `package_octopus.py`: the GIF and the comparison sheets.
+4. `runtime_octopus.py --benchmark`: parity and timings.
+5. `runtime_octopus.py --shots`: the game screenshots.
+6. `runtime_octopus.py` with no flags: play it, with live posing.
+
+`--shots` needs an ABSOLUTE prefix: the tool changes into the root checkout
+before main.py runs.
+
+## Weak, bluntly
+
+- **The arms read too thin and too straight next to the concept.** The sheet's
+  arms are about twice as thick at the base, with strongly hooked tips. The
+  1.2 m proof arm was kept as instructed. An arm-girth multiplier for the
+  octopus, and a stronger rest `tip_curl`, would be the first look fix
+  (Erik's call).
+- The mottling is uniform and low in contrast, with no papillae or pale
+  spots; the concept is darker and richer. The underside is close to white.
+- **Eyes** are glass beads in small bumps, not turrets with lids. The
+  **siphon** exists and is rigged, but it is hidden by the arm-root blend in
+  every view. The mouth is a dark dot with no lip or beak.
+- **Junction.** It is continuous and the webbing reads, but a faint crease
+  remains where the crest collar hands over to the web side columns (visible
+  in the close-up, right arm). Folds appear in extreme root pitch.
+- Everything lies flat: the side profile does not stand on its arms like the
+  sheet's.
+- **No collision of any kind.** Arms pass through the floor in swim and walk,
+  and through each other.
+- **The GLB is 8.3 MB.** The normal map is exported as a 16-bit PNG; making it
+  8-bit would roughly halve that.
+- The game preview draws every unit as an octopus at the marine's scale, so
+  each is about 9 tiles wide; the size is Erik's call, set by
+  `OCTOPUS_SCALE`. The demo loop switches from walk to swim without a blend.
+
+## Systems
+
+Reused: `UnitModelRenderer` (live posing through its CPU-skin seam),
+`marine_shader`, `lit3d`, projected shadows, `charkit.glbtex.replace_image`,
+`charkit/preview_in_game.py` and `tools/e2e_drive.py` (read-only from root),
+and `arm_math` (the proof's arm, taper, blend and quaternion). New and
+prototype-local: `octopus_math` (the octopus controller and its geometry) and
+its skeleton, a new body plan as approved by
+docs/reference/adding_character_models.md §1. No renderer, shader, simulation,
+config or production file changed.
+
+---
+
 # One-arm feasibility proof — 2026-10-08
 
 Open [index.html](index.html) for the local animation player, three posed views,

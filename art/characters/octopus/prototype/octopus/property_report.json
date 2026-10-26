@@ -1,0 +1,90 @@
+{
+  "controls": {
+    "random_poses": 300,
+    "segment_length_max_error_m": 4.718447854656915e-16,
+    "rotation_orthonormality_max_error": 5.440092820663267e-15
+  },
+  "independence": "60 random trials: changing arm j never moves arm i != j; mantle/siphon controls never move arms",
+  "continuity": {
+    "arm.curl": {
+      "max_over_median_step": 1.667,
+      "max_frame_step_rad": 0.01277
+    },
+    "arm.bend_dir": {
+      "max_over_median_step": 1.093,
+      "max_frame_step_rad": 0.03174
+    },
+    "arm.twist": {
+      "max_over_median_step": 1.241,
+      "max_frame_step_rad": 0.00827
+    },
+    "arm.tip_curl": {
+      "max_over_median_step": 1.094,
+      "max_frame_step_rad": 0.01385
+    },
+    "arm.lift": {
+      "max_over_median_step": 1.038,
+      "max_frame_step_rad": 0.00349
+    },
+    "arm.swing": {
+      "max_over_median_step": 1.019,
+      "max_frame_step_rad": 0.00157
+    },
+    "body.mantle_squeeze": {
+      "max_over_median_step": 1.0,
+      "max_frame_step_rad": 0.0
+    },
+    "body.mantle_pitch": {
+      "max_over_median_step": 1.0,
+      "max_frame_step_rad": 0.00175
+    },
+    "body.siphon_yaw": {
+      "max_over_median_step": 0.0,
+      "max_frame_step_rad": 0.00611
+    },
+    "body.siphon_pitch": {
+      "max_over_median_step": 0.0,
+      "max_frame_step_rad": 0.00393
+    },
+    "body.crown_spread": {
+      "max_over_median_step": 2.097,
+      "max_frame_step_rad": 0.00457
+    },
+    "body.body_pitch": {
+      "max_over_median_step": 1.0,
+      "max_frame_step_rad": 0.00785
+    }
+  },
+  "game_mesh": {
+    "vertices": 6108,
+    "triangles": 12200,
+    "joints": 142,
+    "max_influences": 4
+  },
+  "hero_mesh": {
+    "vertices": 67512,
+    "triangles": 132512,
+    "joints": 270,
+    "max_influences": 4
+  },
+  "deformation_random_full_range": {
+    "poses": 120,
+    "game_arm_triangle_area_ratio_min": 0.584615156278751,
+    "game_crown_triangle_area_ratio_min": 0.00326187216360504,
+    "game_crown_triangle_area_ratio_max": 22.027040035266,
+    "hero_arm_section_area_ratio_min": 0.9492867137509254,
+    "hero_arm_section_area_ratio_max": 1.0000000000042124,
+    "game_vs_hero_rig_max_deviation_m": 0.012326504603390503,
+    "inverted_triangles_worst_pose": 72,
+    "poses_with_inverted_triangles": 120,
+    "seconds": 2.7
+  },
+  "deformation_shown_poses": {
+    "poses": 30,
+    "game_arm_triangle_area_ratio_min": 0.8423471062187605,
+    "game_crown_triangle_area_ratio_min": 0.029469413637396677,
+    "inverted_triangles_max": 8
+  },
+  "seconds": 151.1,
+  "limits": "Random poses span every control's full range including edges; no self-collision, arm-arm or arm-body intersection, ground contact or volume preservation is checked or solved. Crown/body areas are measured on the GAME skin; the hero shares its weights' construction. Thresholds are prototype acceptance, not a production spec."
+}

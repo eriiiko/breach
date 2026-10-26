@@ -2,7 +2,7 @@
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Octopus · one arm feasibility proof</title>
+<title>Octopus Prototype</title>
 <style>
 :root {color-scheme:dark;font:17px/1.5 system-ui,sans-serif;background:#131d23;color:#e9e4dc}
 body {max-width:1120px;margin:36px auto;padding:0 24px}h1 {font-size:2.1rem;line-height:1.15;margin-bottom:12px}
@@ -13,7 +13,37 @@ button,a.button {font:inherit;padding:6px 12px;border:1px solid #76828a;border-r
 input {flex:1;min-width:160px}table {border-collapse:collapse}td,th {text-align:left;padding:8px 18px 8px 0;border-bottom:1px solid #34414b}
 code {font-size:.87em}details {margin:18px 0}footer {margin:40px 0;color:#b6bdc0}@media(max-width:700px){.grid{grid-template-columns:1fr}}
 </style>
-<h1>Octopus — one arm</h1>
+<h1>Octopus — whole animal (2026-10-27)</h1>
+<p>One body plus eight instances of the one-arm proof's arm, joined by a continuous crown and web. Each arm has six bounded controls of its own (<a href="CONTROLS.md">CONTROLS.md</a>), and the same pure pose function drives Blender and the real game. Render-only prototype; the size is one constant, still to be decided.</p>
+<div class="controls"><a class="button" href="prototype/octopus/octopus_hero.blend">Hero .blend (editable, suckers modelled)</a><a class="button" href="prototype/octopus/octopus_game.glb">Game GLB (12.2k tris, 142 joints)</a><a class="button" href="CONTROLS.md">Control layout</a><a class="button" href="README.md">Commands &amp; measurements</a></div>
+<h2>Views</h2>
+<div class="grid">
+<figure><img src="previews/octopus/top_down.png" alt="Top-down rest pose"><figcaption>Top-down, the game camera's view: eight arms, mirrored rest</figcaption></figure>
+<figure><img src="previews/octopus/hero_three_quarter.png" alt="Three-quarter hero view"><figcaption>Hero three-quarter</figcaption></figure>
+<figure><img src="previews/octopus/side_profile.png" alt="Side profile"><figcaption>Side profile</figcaption></figure>
+<figure><img src="previews/octopus/underside.png" alt="Underside"><figcaption>Underside: mouth, suckers on the crown</figcaption></figure>
+<figure><img src="previews/octopus/junction_closeup.png" alt="Junction close-up"><figcaption>Arm-to-body junction (dorsal)</figcaption></figure>
+<figure><img src="previews/octopus/junction_underside.png" alt="Junction underside"><figcaption>Junction, oral side</figcaption></figure>
+</div>
+<h2>Concept vs build</h2>
+<figure><img src="previews/octopus/concept_vs_build_top.jpg" alt="Concept vs build top"></figure>
+<figure><img src="previews/octopus/concept_vs_build_side.jpg" alt="Concept vs build side"></figure>
+<h2>Control layout in five poses</h2>
+<figure><img src="previews/octopus/poses_top_strip.jpg" alt="Five poses from above"><figcaption>rest · all curled · L1 reaching alone (independence) · jet swim (crown closed, mantle squeezed) · asymmetric walk</figcaption></figure>
+<div class="grid">
+<figure><img src="previews/octopus/pose_reach_3q.png" alt="Reach"><figcaption>One arm reaching, the other seven at rest</figcaption></figure>
+<figure><img src="previews/octopus/pose_walk_3q.png" alt="Walk"><figcaption>Asymmetric walk</figcaption></figure>
+<figure><img src="previews/octopus/pose_curled_3q.png" alt="Curled"><figcaption>All curled</figcaption></figure>
+<figure><img src="previews/octopus/pose_swim_3q.png" alt="Swim"><figcaption>Jet swim</figcaption></figure>
+</div>
+<h2>Swim cycle and the real game</h2>
+<div class="grid">
+<figure><img src="previews/octopus/swim_loop.gif" alt="Swim loop GIF"><figcaption>Swim cycle, 30 rendered frames / 2.4 s</figcaption></figure>
+<figure><img src="previews/octopus/game/game_0080.png" alt="Game crawl"><figcaption>Real game (main.py, playground), live posing: crawl</figcaption></figure>
+<figure><img src="previews/octopus/game/game_0170.png" alt="Game swim"><figcaption>Real game: swim stroke (crown closed)</figcaption></figure>
+</div>
+<hr>
+<h1>Earlier stage: one arm (2026-10-08)</h1>
 <p>A 1.2 m tapered specimen with two sucker rows, driven by a continuous mathematical curve and an ordinary bone skin. The arm is displayed oral-side up for inspection. This is a deformation feasibility proof; material and sucker detail remain much simpler than the concept.</p>
 <div class="controls"><a class="button" href="prototype/octopus_arm.blend">Editable Blender file</a><a class="button" href="prototype/octopus_arm.glb">Skinned GLB</a><a class="button" href="README.md">Run commands & measurements</a><a href="concepts/octopus_concept_v1.png">Original concept</a></div>
 <h2>Continuous motion</h2>

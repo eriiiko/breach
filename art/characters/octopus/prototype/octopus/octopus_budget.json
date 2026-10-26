@@ -1,0 +1,23 @@
+{
+  "scale": 1.0,
+  "arm_length_m": 1.2,
+  "hero": {
+    "vertices": 67512,
+    "triangles": 132512,
+    "joints": 270,
+    "cups": 624
+  },
+  "game": {
+    "vertices": 6108,
+    "triangles": 12200,
+    "joints": 142,
+    "texture": "2048x2048 albedo+gloss(alpha) and tangent normal, baked from hero"
+  },
+  "blender_hero_skin_parity_m": {
+    "rest": 1.4445282842976063e-06,
+    "curled": 1.0038323099006783e-06,
+    "reach": 1.4445282842976063e-06,
+    "swim": 1.0867938393685425e-06,
+    "walk": 1.2460305462161978e-06
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "root": "C:\\Users\\steen\\projects\\breach",
+  "root_revision": "cfcba40a2c817cdabf3c5fb9d1ccb6b31018483a",
+  "python": "3.11.7 | packaged by Anaconda, Inc. | (main, Dec 15 2023, 18:05:47) [MSC v.1916 64 bit (AMD64)]",
+  "platform": "Windows-10-10.0.19045-SP0",
+  "processor": "AMD64 Family 23 Model 113 Stepping 0, AuthenticAMD",
+  "model": "octopus_game.glb",
+  "model_meshes": 2,
+  "model_joints": 142,
+  "loaded_vertices": 8471,
+  "loaded_triangles": 12200,
+  "bind_vertex_max_error_m": 6.279801052649239e-08,
+  "raylib_vs_numpy_max_error_m": 5.69943926999781e-06,
+  "parity_poses": 36,
+  "samples_per_batch": 120,
+  "timings_octopi": {
+    "1": {
+      "controls_and_pose_octopus": {
+        "median_ms": 3.1414,
+        "p95_ms": 3.384025
+      },
+      "write_joint_transforms": {
+        "median_ms": 0.6896,
+        "p95_ms": 0.708525
+      },
+      "raylib_skin_and_upload": {
+        "median_ms": 0.1668,
+        "p95_ms": 0.18320999999999996
+      },
+      "total": {
+        "median_ms": 4.00725,
+        "p95_ms": 4.283200000000001
+      }
+    },
+    "4": {
+      "controls_and_pose_octopus": {
+        "median_ms": 12.318100000000001,
+        "p95_ms": 12.747519999999998
+      },
+      "write_joint_transforms": {
+        "median_ms": 2.7286,
+        "p95_ms": 2.870745
+      },
+      "raylib_skin_and_upload": {
+        "median_ms": 0.6565000000000001,
+        "p95_ms": 0.7165199999999999
+      },
+      "total": {
+        "median_ms": 15.729700000000001,
+        "p95_ms": 16.12368
+      }
+    }
+  },
+  "methodology": "perf_counter_ns wall time, 20 warmups; sequential independently phased whole-animal poses on one shared loaded model (the renderer's shared-model seam). Skin call includes driver buffer submission, not GPU completion. Excludes drawing, shading, shadows, simulation. CPU timings are not whole-game FPS."
+}
