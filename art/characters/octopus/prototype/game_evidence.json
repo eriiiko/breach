@@ -1,0 +1,9 @@
+{
+  "root": "C:\\Users\\steen\\projects\\breach",
+  "root_revision": "2c560cdfb0a9808c037b6d464c91140c25daa7cd",
+  "procedural_skin_calls": 2475,
+  "distinct_control_pairs": 198,
+  "pose_mode": "live",
+  "game_exit_code": 0,
+  "note": "Real main.py via root charkit preview + tools/e2e_drive.py. Only prototype pose arguments changed in process; existing UnitModelRenderer, lighting, shader, camera and shadow draw are used."
+}

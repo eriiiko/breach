@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Octopus · one arm feasibility proof</title>
+<style>
+:root {color-scheme:dark;font:17px/1.5 system-ui,sans-serif;background:#131d23;color:#e9e4dc}
+body {max-width:1120px;margin:36px auto;padding:0 24px}h1 {font-size:2.1rem;line-height:1.15;margin-bottom:12px}
+h2 {font-size:1.35rem;margin-top:32px}a {color:#efb380}p {max-width:850px}.muted {color:#b6bdc0}
+.grid {display:grid;grid-template-columns:1fr 1fr;gap:18px}figure {margin:0}img {width:100%;border-radius:8px;background:#26313b}
+figcaption {padding:8px 0}.player {max-width:850px}.controls {display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0}
+button,a.button {font:inherit;padding:6px 12px;border:1px solid #76828a;border-radius:5px;background:#26343d;color:#fff;cursor:pointer;text-decoration:none}
+input {flex:1;min-width:160px}table {border-collapse:collapse}td,th {text-align:left;padding:8px 18px 8px 0;border-bottom:1px solid #34414b}
+code {font-size:.87em}details {margin:18px 0}footer {margin:40px 0;color:#b6bdc0}@media(max-width:700px){.grid{grid-template-columns:1fr}}
+</style>
+<h1>Octopus — one arm</h1>
+<p>A 1.2 m tapered specimen with two sucker rows, driven by a continuous mathematical curve and an ordinary bone skin. The arm is displayed oral-side up for inspection. This is a deformation feasibility proof; material and sucker detail remain much simpler than the concept.</p>
+<div class="controls"><a class="button" href="prototype/octopus_arm.blend">Editable Blender file</a><a class="button" href="prototype/octopus_arm.glb">Skinned GLB</a><a class="button" href="README.md">Run commands & measurements</a><a href="concepts/octopus_concept_v1.png">Original concept</a></div>
+<h2>Continuous motion</h2>
+<div class="player"><img id="motion" src="previews/arm/frames/000.jpg" alt="Actual rendered arm changing from extended to curl to reach">
+<div class="controls"><button id="play">Pause</button><input id="time" aria-label="Animation frame" type="range" min="0" max="53" value="0"><span id="phase">Extended</span></div>
+<div class="controls"><button data-frame="0">Extended</button><button data-frame="18">Strong curl</button><button data-frame="36">Reach</button><a href="previews/arm/arm_loop.gif">Looping GIF</a></div></div>
+<p class="muted">Actual Blender mesh renders, 54 frames / 9 seconds. This review player shows rendered frames; the Python game client below evaluates and skins new poses every draw. The animated reach omits the fixed contact slab; the contact still shows the measured endpoint.</p>
+<div class="grid">
+<figure><a href="previews/arm/extended.png"><img src="previews/arm/extended.png" alt="Extended arm, oral side"></a><figcaption>Extended / bind pose · two rows of 40 cups</figcaption></figure>
+<figure><a href="previews/arm/curl.png"><img src="previews/arm/curl.png" alt="Strong three-dimensional curl"></a><figcaption>Strong curl · inspect concave surface and tip</figcaption></figure>
+<figure><a href="previews/arm/contact.png"><img src="previews/arm/contact.png" alt="Tip touching a teal plane"></a><figcaption>Scripted geometric contact at x = 1 m · no collision or adhesion</figcaption></figure>
+<figure><a href="previews/arm/dorsal.png"><img src="previews/arm/dorsal.png" alt="Reddish mottled dorsal surface"></a><figcaption>Dorsal material view · same mesh turned over</figcaption></figure>
+</div>
+<h2>Inside Breach</h2>
+<p>The tool launches the actual game through its existing E2E driver. It replaces only the prototype’s pose input to <code>UnitModelRenderer</code>; the game’s shader, light field, camera, skinning and projected shadows draw these frames.</p>
+<div class="grid">
+<figure><a href="previews/arm/game_0090.png"><img src="previews/arm/game_0090.png" alt="Procedural curled arms in Breach"></a><figcaption>Frame 90 · live curl</figcaption></figure>
+<figure><a href="previews/arm/game_0180.png"><img src="previews/arm/game_0180.png" alt="Procedural reaching arms in Breach"></a><figcaption>Frame 180 · live reach (no contact prop in game)</figcaption></figure>
+</div>
+<p class="muted">Prototype substitution applies to visible units for this process only. True model scale; camera zoomed for inspection. Source checkout: <code>2c560cd</code>. No gameplay activation.</p>
+<h2>Measured bounds</h2>
+<table><tr><th>Property</th><th>Observed</th></tr>
+<tr><td>Geometry / joints per arm</td><td>15,744 triangles / 33 joints</td></tr>
+<tr><td>Worst cross-section area retention</td><td>99.25% over 181 loop poses</td></tr>
+<tr><td>Conservative sucker-to-sucker clearance</td><td>2.75 mm minimum</td></tr>
+<tr><td>Raylib skin / shared reference disagreement</td><td>under 1.3 μm over 49 poses</td></tr>
+<tr><td>CPU curve + joint write + skin submission</td><td>0.83 ms / 6.71 ms median for 1 / 8 arms</td></tr>
+<tr><td>Contact surface penetration</td><td>0 m in the demonstrated endpoint pose</td></tr></table>
+<p><a href="prototype/property_report.json">Geometry properties</a> · <a href="prototype/runtime_report.json">1 / 8 arm timings and parity</a> · <a href="prototype/game_evidence.json">Game run record</a> · <a href="prototype/blender_skin_parity.json">Blender parity</a></p>
+<footer>The curve/controller and arm geometry are reusable eight times. Whole-animal placement, self-collision, adhesion, physical grasping, AI and deterministic gameplay are outside this proof.</footer>
+<script>
+let frame=0,playing=true,last=0;const motion=document.querySelector('#motion'),slider=document.querySelector('#time'),play=document.querySelector('#play'),phase=document.querySelector('#phase');
+function show(f){frame=Math.max(0,Math.min(53,f));motion.src=`previews/arm/frames/${String(frame).padStart(3,'0')}.jpg`;slider.value=frame;phase.textContent=frame<3?'Extended':frame<16?'Curling':frame<21?'Strong curl':frame<34?'Reaching':frame<39?'Reach':'Returning';}
+function toggle(){play.textContent=playing?'Pause':'Play';}
+play.onclick=()=>{playing=!playing;toggle();};slider.oninput=()=>{playing=false;toggle();show(Number(slider.value));};
+document.querySelectorAll('[data-frame]').forEach(b=>b.onclick=()=>{playing=false;toggle();show(Number(b.dataset.frame));});
+function tick(t){if(playing&&t-last>=9000/54){show((frame+1)%54);last=t;}requestAnimationFrame(tick);}requestAnimationFrame(tick);
+</script>
+</html>

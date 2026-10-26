@@ -1,0 +1,54 @@
+{
+  "root": "C:\\Users\\steen\\projects\\breach",
+  "root_revision": "2c560cdfb0a9808c037b6d464c91140c25daa7cd",
+  "python": "3.11.7 | packaged by Anaconda, Inc. | (main, Dec 15 2023, 18:05:47) [MSC v.1916 64 bit (AMD64)]",
+  "platform": "Windows-10-10.0.19045-SP0",
+  "processor": "AMD64 Family 23 Model 113 Stepping 0, AuthenticAMD",
+  "model_meshes": 1,
+  "model_joints": 33,
+  "loaded_vertices": 13010,
+  "loaded_triangles": 15744,
+  "bind_vertex_max_error_m": 5.973285941024168e-08,
+  "raylib_vs_numpy_max_error_m": 1.211833711529098e-06,
+  "parity_poses": 49,
+  "samples_per_batch": 120,
+  "timings": {
+    "1": {
+      "curve": {
+        "median_ms": 0.4478,
+        "p95_ms": 0.51244
+      },
+      "write_joint_transforms": {
+        "median_ms": 0.15715,
+        "p95_ms": 0.18430499999999997
+      },
+      "raylib_skin_and_upload": {
+        "median_ms": 0.20375,
+        "p95_ms": 0.25282
+      },
+      "total": {
+        "median_ms": 0.8269,
+        "p95_ms": 0.98847
+      }
+    },
+    "8": {
+      "curve": {
+        "median_ms": 3.6008499999999994,
+        "p95_ms": 3.78062
+      },
+      "write_joint_transforms": {
+        "median_ms": 1.3515000000000001,
+        "p95_ms": 1.407095
+      },
+      "raylib_skin_and_upload": {
+        "median_ms": 1.64015,
+        "p95_ms": 1.8247949999999997
+      },
+      "total": {
+        "median_ms": 6.70745,
+        "p95_ms": 7.18455
+      }
+    }
+  },
+  "methodology": "perf_counter_ns wall time, 20 warmups; sequential independent arm poses on one shared model, matching UnitModelRenderer's shared-model seam. Skin call includes driver buffer submission, not GPU completion. Excludes drawing, shading, shadows, game simulation. CPU timings are not whole-game FPS."
+}

@@ -1,0 +1,5 @@
+build_arm.log
+runtime_bench.log
+runtime_game.log
+prototype/*.blend1
+previews/arm/frames/*.png

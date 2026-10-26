@@ -130,19 +130,20 @@ def skin(vertices, joints, weights, points, frames):
 
 def quaternion(matrix):
     """Unit quaternion in raylib xyzw order (handles rotations over 180 deg)."""
-    m = matrix
-    t = np.trace(m)
+    m = matrix.tolist()
+    t = m[0][0] + m[1][1] + m[2][2]
     if t > 0:
         s = math.sqrt(t + 1) * 2
-        q = [(m[2, 1] - m[1, 2]) / s, (m[0, 2] - m[2, 0]) / s,
-             (m[1, 0] - m[0, 1]) / s, .25 * s]
+        q = [(m[2][1] - m[1][2]) / s, (m[0][2] - m[2][0]) / s,
+             (m[1][0] - m[0][1]) / s, .25 * s]
     else:
-        i = int(np.argmax(np.diag(m)))
+        i = max(range(3), key=lambda k: m[k][k])
         j, k = (i + 1) % 3, (i + 2) % 3
-        s = math.sqrt(1 + m[i, i] - m[j, j] - m[k, k]) * 2
-        q = [0., 0., 0., (m[k, j] - m[j, k]) / s]
-        q[i], q[j], q[k] = .25 * s, (m[j, i] + m[i, j]) / s, (m[k, i] + m[i, k]) / s
-    return np.array(q) / np.linalg.norm(q)
+        s = math.sqrt(1 + m[i][i] - m[j][j] - m[k][k]) * 2
+        q = [0., 0., 0., (m[k][j] - m[j][k]) / s]
+        q[i], q[j], q[k] = .25 * s, (m[j][i] + m[i][j]) / s, (m[k][i] + m[i][k]) / s
+    norm = math.sqrt(sum(x * x for x in q))
+    return tuple(x / norm for x in q)
 
 
 def geometry():

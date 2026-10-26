@@ -1,6 +1,6 @@
 """Blender 4.5: build editable one-arm proof, export GLB, render evidence.
 
-blender -b --factory-startup -P <this file> -- [--quick] [--animation]
+blender -b --factory-startup -P <this file> -- --root <checkout> [--animation]
 Ordinary mesh + linear armature modifier. No Blender constraints are exported.
 """
 from pathlib import Path
@@ -215,7 +215,7 @@ def studio():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", type=Path, required=True, help="Read-only checkout containing charkit.glbtex")
-    ap.add_argument("--quick", action="store_true")
+    ap.add_argument("--assets-only", action="store_true")
     ap.add_argument("--animation", action="store_true")
     args = ap.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else [])
     OUT.mkdir(parents=True, exist_ok=True)
@@ -229,6 +229,9 @@ def main():
     rig.select_set(True)
     bpy.context.view_layer.objects.active = rig
     bpy.ops.wm.save_as_mainfile(filepath=str(OUT / "octopus_arm.blend"))
+    if args.assets_only:
+        print("ARM_ASSETS_OK", OUT, flush=True)
+        return
     rig.animation_data_clear()
     parity = {}
     for name, curl, contact in [("extended", 0, 0), ("curl", 1, 0), ("contact", 0, 1), ("dorsal", 0, 0)]:
