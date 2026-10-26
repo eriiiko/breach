@@ -1,8 +1,10 @@
-﻿"""Split visor + helmet lamps out of the single-material AI mesh, restyle them, render.
+"""Split visor + helmet lamps out of the single-material AI mesh, restyle them, render.
 blender -b -P variants.py -- <in.glb> <out_dir>"""
 import bpy, bmesh, sys, math, os
 import numpy as np
 from mathutils import Vector
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import kessler_source as ks  # the visor / lamp selections and the visor cap live there (the game step uses them)
 
 argv = sys.argv[sys.argv.index("--") + 1:]
 src, out = argv[0], argv[1]
@@ -13,40 +15,15 @@ obj = next(o for o in bpy.data.objects if o.type == "MESH")
 me = obj.data
 base_mat = me.materials[0]
 
-def img_np(name):
-    im = bpy.data.images[name]
-    w, h = im.size
-    a = np.empty(w * h * 4, np.float32); im.pixels.foreach_get(a)
-    return a.reshape(h, w, 4)
-alb = img_np("Image_0"); mr = img_np("Image_1")
-H, W = alb.shape[:2]
-
-# per-face: world centroid, world normal, albedo + roughness sampled at UV centroid (mean of corners)
+fs = ks.face_samples(obj)
+cent, nrm, col, rough, lum = fs["cent"], fs["nrm"], fs["col"], fs["rough"], fs["lum"]
 nf = len(me.polygons)
-cent = np.empty(nf * 3, np.float32); me.polygons.foreach_get("center", cent); cent = cent.reshape(-1, 3)
-nrm = np.empty(nf * 3, np.float32); me.polygons.foreach_get("normal", nrm); nrm = nrm.reshape(-1, 3)
-mw = np.array(obj.matrix_world); cent = cent @ mw[:3, :3].T + mw[:3, 3]; nrm = nrm @ mw[:3, :3].T
-uv = np.empty(len(me.loops) * 2, np.float32); me.uv_layers.active.data.foreach_get("uv", uv); uv = uv.reshape(-1, 2)
-ls = np.empty(nf, np.int64); me.polygons.foreach_get("loop_start", ls)
-lt = np.empty(nf, np.int64); me.polygons.foreach_get("loop_total", lt)
-def sample(img, k):
-    # sample every corner and the centroid, return mean (faces are small)
-    cols = []
-    for j in range(3):
-        u = uv[ls + np.minimum(j, lt - 1)]
-        cols.append(img[np.clip((u[:, 1] * H).astype(int), 0, H - 1), np.clip((u[:, 0] * W).astype(int), 0, W - 1), :k])
-    return np.mean(cols, axis=0)
-col = sample(alb, 3); rough = sample(mr, 3)[:, 1]
-lum = col @ np.array([0.2126, 0.7152, 0.0722])
 
 P = dict(arg.split("=") for arg in argv[2:])
 f = lambda k, d: float(P.get(k, d))
-# visor window (Blender Z-up, front faces -Y)
-vz0, vz1, vx = f("vz0", 0.62), f("vz1", 0.78), f("vx", 0.11)
-visor = (np.abs(cent[:, 0]) < vx) & (cent[:, 2] > vz0) & (cent[:, 2] < vz1) & (nrm[:, 1] < -0.25) & (lum < f("vlum", 0.16)) & (rough < f("vrmax", 0.3)) & (cent[:, 1] < -0.05)
-# lamps: bright warm faces near the helmet
-ax = np.abs(cent[:, 0])
-lamp = (ax > 0.14) & (ax < 0.21) & (cent[:, 2] > 0.74) & (cent[:, 2] < 0.795) & (cent[:, 1] < -0.10) & (nrm[:, 1] < -0.5) & (lum > f("llum", 0.15))
+# visor window (Blender Z-up, front faces -Y) and the lamps: kessler_source's selections
+visor = ks.visor_mask(fs, vz0=f("vz0", 0.62), vz1=f("vz1", 0.78), vx=f("vx", 0.11), vlum=f("vlum", 0.16), vrmax=f("vrmax", 0.3))
+lamp = ks.lamp_mask(fs, llum=f("llum", 0.15))
 print("VISOR faces", visor.sum(), "LAMP faces", lamp.sum())
 for nm, m in (("visor", visor), ("lamp", lamp)):
     if m.any():
@@ -112,30 +89,9 @@ def smooth_visor(mask):
     bm.to_mesh(me); bm.free()
 
 def visor_cap(mask, mat, push):
-    """A new, mathematically smooth visor: a sphere fitted to the old visor faces, cut to the opening."""
-    X = cent[mask]
-    A = np.c_[2 * X, np.ones(len(X))]; sol = np.linalg.lstsq(A, (X ** 2).sum(1), rcond=None)[0]
-    c = sol[:3]; r = math.sqrt(sol[3] + c @ c) + push
-    print("cap sphere centre", c.round(3), "radius", round(r, 3))
-    # opening as an ellipse in x/z, a bit larger than the green patch so the helmet rim overlaps its edge
-    x0, z0 = 0.5 * (X[:, 0].min() + X[:, 0].max()), 0.5 * (X[:, 2].min() + X[:, 2].max())
-    ex, ez = f("capx", 0.11), f("capz", 0.075)
-    bm = bmesh.new(); n = 48
-    grid = {}
-    for i in range(n + 1):
-        for j in range(n + 1):
-            u, v = -1 + 2 * i / n, -1 + 2 * j / n
-            if u * u + v * v > 1.0001: continue
-            x, z = x0 + u * ex, z0 + v * ez
-            dy2 = r * r - (x - c[0]) ** 2 - (z - c[2]) ** 2
-            grid[i, j] = bm.verts.new((x, c[1] - math.sqrt(max(dy2, 0)), z))
-    for i in range(n):
-        for j in range(n):
-            q = [grid.get(k) for k in ((i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1))]
-            if all(q): bm.faces.new(q[::-1]).smooth = True
-    cm = bpy.data.meshes.new("visor_glass"); bm.to_mesh(cm); bm.free()
-    co = bpy.data.objects.new("visor_glass", cm); bpy.context.scene.collection.objects.link(co)
-    cm.materials.append(mat)
+    """A new, mathematically smooth visor (`kessler_source.visor_cap`)."""
+    co, fit = ks.visor_cap(cent[mask], mat, push=push, half_axes=(f("capx", 0.11), f("capz", 0.075)), name="visor_glass")
+    print("cap sphere centre", np.round(fit["centre"], 3), "radius", round(fit["radius"], 3))
     return co
 
 if mode == "debug":

@@ -1,0 +1,596 @@
+{
+ "character": "kessler",
+ "params": {
+  "tris_target": 10000,
+  "voxel_m": 0.006,
+  "close_voxels": 2,
+  "uv_angle_deg": 66.0,
+  "min_island_faces": 24,
+  "bake_samples": 128
+ },
+ "source": {
+  "objects": 30,
+  "joined_tris_after_thickening": 168132
+ },
+ "skin": {
+  "open_parts_thickened": 30,
+  "remeshed_tris": 533288,
+  "thin_walls_thickened": 0,
+  "inset_parts": 0,
+  "fine_shells": 0,
+  "fine_remeshed_tris": 0,
+  "fine_tris": 0,
+  "cavity_voxels_filled": 37010,
+  "filled_tris": 484100,
+  "pieces_kept": [
+   [
+    266608
+   ],
+   [
+    242050
+   ]
+  ],
+  "enclosed_or_tiny_pieces_dropped": [
+   [
+    6,
+    6,
+    6,
+    6,
+    6,
+    6
+   ],
+   []
+  ]
+ },
+ "mesh": {
+  "triangles": 10000,
+  "blender_vertices": 4982,
+  "vertices_after_uv_split": 8591,
+  "uv_islands": 686,
+  "boundary_edges": 0,
+  "non_manifold_edges": 0,
+  "uv_min": [
+   0.00586,
+   0.00586
+  ],
+  "uv_max": [
+   0.98499,
+   0.99376
+  ],
+  "uv_outside_0_1": 0,
+  "zero_area_uv_faces": 0,
+  "smart_uv_islands_before_merge": 1146,
+  "uv_charts_recut_for_folding": 32,
+  "uv_folded_charts_left": 1,
+  "hidden_area_fraction": 0.0072
+ },
+ "bake": {
+  "texture_px": 1024,
+  "cage_extrusion_m": 0.012,
+  "max_ray_distance_m": 0.04,
+  "uv_coverage": 0.2901,
+  "missed_texels": 6311,
+  "missed_fraction_of_covered": 0.02075,
+  "uv_overlap_texels": 0,
+  "source_faces_turned_outward": [],
+  "source_material_slots": 2,
+  "source_attributes": [
+   "UVMap",
+   "custom_normal",
+   "material_index",
+   "position"
+  ],
+  "mean_ao_on_covered": 0.744,
+  "gloss_mean": 0.0887,
+  "gloss_over_0_5": 0.0048,
+  "gloss_0_05_to_0_5": 0.7122,
+  "gloss_matte_under_0_05": 0.283
+ },
+ "silhouette_iou": {
+  "front": 0.9916,
+  "side": 0.9913,
+  "back": 0.9916
+ },
+ "export": {
+  "file": "kessler.glb",
+  "bytes": 3937648,
+  "offset_m": [
+   -0.0102,
+   0.1135,
+   -0.0005
+  ]
+ },
+ "timing_s": {
+  "build_s": 2.7,
+  "skin_s": 14.1,
+  "uv_s": 19.4,
+  "bake_normal_s": 1.6,
+  "bake_ao_s": 1.5,
+  "bake_emit_s": 1.2,
+  "bake_gloss_s": 1.1,
+  "bake_s": 18.3,
+  "measure_previews_s": 21.9,
+  "export_s": 0.3,
+  "total_s": 76.7
+ },
+ "rig": {
+  "method": "driver rig D (source re-proportioned, T-pose) -> fit pose -> target rig T; clips baked by world matrix",
+  "source_rig": "assets/models/marine/AnimationLibrary_Godot_Standard.gltf",
+  "bones": 53,
+  "clips": 46,
+  "fit_pose_joint_miss_mm": 0.0008,
+  "leg_length_ratio": 0.8769,
+  "stance_lift_mm": 9.3,
+  "foot_yaw_deg": 15.0,
+  "abduction_deg": 20.0,
+  "bone_scale": {
+   "DEF-hips": 1.103,
+   "DEF-spine.001": 1.13,
+   "DEF-thigh.L": 0.809,
+   "DEF-thigh.R": 0.809,
+   "DEF-spine.002": 1.138,
+   "DEF-shin.L": 0.94,
+   "DEF-shin.R": 0.94,
+   "DEF-spine.003": 1.138,
+   "DEF-foot.L": 0.98,
+   "DEF-foot.R": 0.98,
+   "DEF-neck": 1.057,
+   "DEF-shoulder.L": 1.246,
+   "DEF-shoulder.R": 1.246,
+   "DEF-toe.L": 0.631,
+   "DEF-toe.R": 0.631,
+   "DEF-head": 3.339,
+   "DEF-upper_arm.L": 1.309,
+   "DEF-upper_arm.R": 1.309,
+   "DEF-forearm.L": 1.017,
+   "DEF-forearm.R": 1.017,
+   "DEF-hand.L": 0.789,
+   "DEF-hand.R": 0.789,
+   "DEF-f_middle.01.L": 0.789,
+   "DEF-f_middle.01.R": 0.789
+  },
+  "clip_exactness_max_head_or_tail_mm": {
+   "worst_clip": "Swim_Fwd_Loop",
+   "worst": 0.006348,
+   "idle": 0.001542,
+   "walk": 0.003865,
+   "death": 0.004497,
+   "pistol_shoot": 0.001528
+  },
+  "clip_exactness_max_angle_rad": 0.0,
+  "weights": {
+   "heat_empty_vertices": 0,
+   "rigid_vertices": {
+    "DEF-foot.L": 37,
+    "DEF-foot.R": 42,
+    "DEF-forearm.L": 110,
+    "DEF-forearm.R": 106,
+    "DEF-hand.L": 116,
+    "DEF-hand.R": 117,
+    "DEF-head": 319,
+    "DEF-hips": 602,
+    "DEF-shin.L": 226,
+    "DEF-shin.R": 198,
+    "DEF-spine.003": 1104,
+    "DEF-toe.L": 39,
+    "DEF-toe.R": 35
+   },
+   "influences_max": 4,
+   "influences_mean": 1.76,
+   "vertices_over_4_before_limit": 613,
+   "unlabelled_vertices": 0
+  },
+  "test_poses": [
+   {
+    "clip": "Idle_Loop",
+    "frame": 0,
+    "min_z_m": -0.0005,
+    "height_m": 1.808
+   },
+   {
+    "clip": "Walk_Loop",
+    "frame": 0,
+    "min_z_m": -0.0078,
+    "height_m": 1.802
+   },
+   {
+    "clip": "Walk_Loop",
+    "frame": 16,
+    "min_z_m": -0.0019,
+    "height_m": 1.795
+   },
+   {
+    "clip": "Pistol_Shoot",
+    "frame": 5,
+    "min_z_m": -0.0006,
+    "height_m": 1.805
+   },
+   {
+    "clip": "Death01",
+    "frame": 57,
+    "min_z_m": -0.3026,
+    "height_m": 0.88
+   },
+   {
+    "clip": "Crouch_Idle_Loop",
+    "frame": 0,
+    "min_z_m": -0.0306,
+    "height_m": 1.383
+   }
+  ],
+  "floor_clamp": {
+   "max_correction_deg": 45.0,
+   "worst_penetration_left_mm": -134.8,
+   "per_clip": {
+    "A_TPose": {
+     "max_correction_deg": 0.0,
+     "penetration_left_mm": 0.0
+    },
+    "Crouch_Fwd_Loop": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -31.7
+    },
+    "Crouch_Idle_Loop": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -30.6
+    },
+    "Dance_Loop": {
+     "max_correction_deg": 41.5,
+     "penetration_left_mm": -12.0
+    },
+    "Death01": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -44.0
+    },
+    "Driving_Loop": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -31.3
+    },
+    "Fixing_Kneeling": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -25.4
+    },
+    "Hit_Chest": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -7.4
+    },
+    "Hit_Head": {
+     "max_correction_deg": 27.0,
+     "penetration_left_mm": -0.7
+    },
+    "Idle_Loop": {
+     "max_correction_deg": 31.5,
+     "penetration_left_mm": -0.7
+    },
+    "Idle_Talking_Loop": {
+     "max_correction_deg": 31.5,
+     "penetration_left_mm": -0.6
+    },
+    "Idle_Torch_Loop": {
+     "max_correction_deg": 31.5,
+     "penetration_left_mm": -0.7
+    },
+    "Interact": {
+     "max_correction_deg": 31.5,
+     "penetration_left_mm": -0.7
+    },
+    "Jog_Fwd_Loop": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -5.3
+    },
+    "Jump_Land": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -14.4
+    },
+    "Jump_Loop": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -19.5
+    },
+    "Jump_Start": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -134.8
+    },
+    "PickUp_Table": {
+     "max_correction_deg": 31.5,
+     "penetration_left_mm": -0.7
+    },
+    "Pistol_Aim_Down": {
+     "max_correction_deg": 27.0,
+     "penetration_left_mm": -0.6
+    },
+    "Pistol_Aim_Neutral": {
+     "max_correction_deg": 27.0,
+     "penetration_left_mm": -0.6
+    },
+    "Pistol_Aim_Up": {
+     "max_correction_deg": 27.0,
+     "penetration_left_mm": -0.6
+    },
+    "Pistol_Idle_Loop": {
+     "max_correction_deg": 27.0,
+     "penetration_left_mm": -0.6
+    },
+    "Pistol_Reload": {
+     "max_correction_deg": 27.5,
+     "penetration_left_mm": -0.6
+    },
+    "Pistol_Shoot": {
+     "max_correction_deg": 27.0,
+     "penetration_left_mm": -0.6
+    },
+    "Punch_Cross": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -21.5
+    },
+    "Punch_Enter": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -9.6
+    },
+    "Punch_Jab": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -9.9
+    },
+    "Push_Loop": {
+     "max_correction_deg": 0.0,
+     "penetration_left_mm": 0.0
+    },
+    "Roll": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -38.2
+    },
+    "Roll_RM": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -38.2
+    },
+    "Sitting_Enter": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -23.0
+    },
+    "Sitting_Exit": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -22.3
+    },
+    "Sitting_Idle_Loop": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -22.3
+    },
+    "Sitting_Talking_Loop": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -23.0
+    },
+    "Spell_Simple_Enter": {
+     "max_correction_deg": 27.0,
+     "penetration_left_mm": -1.1
+    },
+    "Spell_Simple_Exit": {
+     "max_correction_deg": 27.0,
+     "penetration_left_mm": -1.1
+    },
+    "Spell_Simple_Idle_Loop": {
+     "max_correction_deg": 31.5,
+     "penetration_left_mm": -1.9
+    },
+    "Spell_Simple_Shoot": {
+     "max_correction_deg": 22.5,
+     "penetration_left_mm": -1.4
+    },
+    "Sprint_Loop": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -15.0
+    },
+    "Swim_Fwd_Loop": {
+     "max_correction_deg": 0.0,
+     "penetration_left_mm": 0.0
+    },
+    "Swim_Idle_Loop": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -105.3
+    },
+    "Sword_Attack": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -13.4
+    },
+    "Sword_Attack_RM": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -13.4
+    },
+    "Sword_Idle": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -10.8
+    },
+    "Walk_Formal_Loop": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -5.8
+    },
+    "Walk_Loop": {
+     "max_correction_deg": 45.0,
+     "penetration_left_mm": -7.8
+    }
+   }
+  },
+  "offset_removed_m": [
+   -0.0102,
+   0.1135,
+   -0.0005
+  ],
+  "export": {
+   "file": "assets/models/kessler/kessler.glb",
+   "bytes": 6629036,
+   "meshes": 1,
+   "skins": 1,
+   "joints": 53,
+   "animations": 46,
+   "materials": 1,
+   "images": 2
+  },
+  "timing_s": {
+   "rigs_s": 1.6,
+   "clips_s": 3.3,
+   "verify_s": 2.4,
+   "label_s": 2.5,
+   "bind_s": 0.3,
+   "floor_clamp_s": 26.3,
+   "previews_s": 1.5,
+   "export_s": 18.4,
+   "total_s": 56.4
+  }
+ },
+ "evidence": {
+  "walk_loop_floor": {
+   "deepest_mm": -7.8,
+   "frame": 0,
+   "point_m": [
+    -0.213,
+    0.18,
+    -0.008
+   ],
+   "frames": 33,
+   "frames_below_minus_10mm": 0
+  },
+  "poses": [
+   {
+    "clip": "Idle_Loop",
+    "frame": 0,
+    "files": {
+     "q": "pose_Idle_Loop_0_q.jpg",
+     "top": "pose_Idle_Loop_0_top.jpg"
+    },
+    "min_z_mm": -0.5,
+    "height_m": 1.808
+   },
+   {
+    "clip": "Walk_Loop",
+    "frame": 0,
+    "files": {
+     "q": "pose_Walk_Loop_0_q.jpg",
+     "top": "pose_Walk_Loop_0_top.jpg"
+    },
+    "min_z_mm": -7.8,
+    "height_m": 1.802
+   },
+   {
+    "clip": "Walk_Loop",
+    "frame": 16,
+    "files": {
+     "q": "pose_Walk_Loop_16_q.jpg",
+     "top": "pose_Walk_Loop_16_top.jpg"
+    },
+    "min_z_mm": -1.9,
+    "height_m": 1.795
+   },
+   {
+    "clip": "Pistol_Shoot",
+    "frame": 5,
+    "files": {
+     "q": "pose_Pistol_Shoot_5_q.jpg",
+     "top": "pose_Pistol_Shoot_5_top.jpg"
+    },
+    "min_z_mm": -0.6,
+    "height_m": 1.805
+   },
+   {
+    "clip": "Death01",
+    "frame": 57,
+    "files": {
+     "q": "pose_Death01_57_q.jpg",
+     "top": "pose_Death01_57_top.jpg"
+    },
+    "min_z_mm": -302.6,
+    "height_m": 0.88
+   },
+   {
+    "clip": "Crouch_Idle_Loop",
+    "frame": 0,
+    "files": {
+     "q": "pose_Crouch_Idle_Loop_0_q.jpg",
+     "top": "pose_Crouch_Idle_Loop_0_top.jpg"
+    },
+    "min_z_mm": -30.6,
+    "height_m": 1.383
+   }
+  ],
+  "extremes": [
+   {
+    "clip": "Sword_Attack",
+    "frame": 14,
+    "files": {
+     "q": "extreme_Sword_Attack_14_q.jpg",
+     "top": "extreme_Sword_Attack_14_top.jpg"
+    },
+    "min_z_mm": -16.7,
+    "height_m": 1.715
+   },
+   {
+    "clip": "Fixing_Kneeling",
+    "frame": 40,
+    "files": {
+     "q": "extreme_Fixing_Kneeling_40_q.jpg",
+     "top": "extreme_Fixing_Kneeling_40_top.jpg"
+    },
+    "min_z_mm": -124.3,
+    "height_m": 1.461
+   },
+   {
+    "clip": "Sitting_Idle_Loop",
+    "frame": 0,
+    "files": {
+     "q": "extreme_Sitting_Idle_Loop_0_q.jpg",
+     "top": "extreme_Sitting_Idle_Loop_0_top.jpg"
+    },
+    "min_z_mm": -22.3,
+    "height_m": 1.524
+   },
+   {
+    "clip": "Jump_Loop",
+    "frame": 6,
+    "files": {
+     "q": "extreme_Jump_Loop_6_q.jpg",
+     "top": "extreme_Jump_Loop_6_top.jpg"
+    },
+    "min_z_mm": -18.4,
+    "height_m": 1.782
+   }
+  ],
+  "close_ups": [
+   {
+    "clip": "Idle_Loop",
+    "frame": 0,
+    "face": "face_Idle_Loop_0.jpg",
+    "hand": "hand_Idle_Loop_0.jpg"
+   },
+   {
+    "clip": "Death01",
+    "frame": 57,
+    "face": "face_Death01_57.jpg",
+    "hand": "hand_Death01_57.jpg"
+   },
+   {
+    "clip": "Sword_Attack",
+    "frame": 14,
+    "face": "face_Sword_Attack_14.jpg",
+    "hand": "hand_Sword_Attack_14.jpg"
+   },
+   {
+    "clip": "Crouch_Idle_Loop",
+    "frame": 0,
+    "face": "face_Crouch_Idle_Loop_0.jpg",
+    "hand": "hand_Crouch_Idle_Loop_0.jpg"
+   }
+  ],
+  "helmet": [
+   "helmet_rest_front.jpg",
+   "helmet_rest_side.jpg",
+   "helmet_rest_top.jpg",
+   "helmet_turn_left_front.jpg",
+   "helmet_turn_left_side.jpg",
+   "helmet_turn_left_top.jpg",
+   "helmet_turn_right_front.jpg",
+   "helmet_turn_right_side.jpg",
+   "helmet_turn_right_top.jpg",
+   "helmet_nod_front.jpg",
+   "helmet_nod_side.jpg",
+   "helmet_nod_top.jpg"
+  ],
+  "timing_s": 2.8
+ }
+}
