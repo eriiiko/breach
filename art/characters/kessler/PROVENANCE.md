@@ -23,3 +23,15 @@ A heavy EVA salvage marine. Named by Erik, 2026-10-26.
   Erik: "satisfied with the visor"; the colour can change later.
 - **The helmet lamps** (one on each side of the helmet) are selected by position and brightness (`lookdev.py`, `lamp`).
   Making them glow waits for the flashlight feature, which is not built yet. The selection is kept so that work starts from it.
+
+## Game-ready step (2026-10-26)
+
+- `scripts/game.py` runs the kit's stages unchanged (`charkit/gameready.py` 1-6, `charkit/rig.py` 7), with
+  `scripts/kessler_source.py` as the "build": the glb imported, scaled to **1.85 m** (`HEIGHT_M`, Erik may veto),
+  feet on z = 0, the green visor cap added, and the one mesh split into named regions (helmet, visor, lamps, pack,
+  chest, belt, plate, coil, shin plates, gauntlets, gloves, boots, toe caps; the rest "Suit") that the rig spec's
+  GEAR table maps to bones. The voxel-remesh route worked (the AI mesh welds into one near-closed surface).
+- The game visor's albedo is the tint x `VISOR_GAME_ALBEDO` (0.3): the approved glass is mirror-coated, and its
+  raw tint baked as a diffuse colour read pastel green. A look number for Erik to confirm.
+- Joints (`scripts/rig_spec.py`) are measured by ray probes and cross-sections of the scaled mesh.
+- Pictures: `previews/game/` (`scripts/evidence.py`); numbers: `game/stats.json`.

@@ -33,6 +33,11 @@ HEIGHT_M = 1.85
 # The visor: deep green glass (Erik, 2026-10-26: option 6 of previews/lookdev/visor_options.png).
 VISOR_TINT = (0.02, 0.22, 0.07)
 VISOR_ROUGHNESS = 0.04
+# The game's albedo is a DIFFUSE colour, but the approved glass is mirror-coated (metallic): it reads
+# far darker than its tint (the look-dev render's visor is ~sRGB (20, 60, 35), i.e. ~0.3 x the tint
+# in linear). Baked at the full tint the game visor came out flat pastel green, so the bake source's
+# glass carries the tint times this. 1.0 = the raw tint. The gloss (alpha ~1) is unaffected.
+VISOR_GAME_ALBEDO = 0.3
 VISOR_PUSH_M = 0.004  # the cap sits this far outside the fitted sphere (SOURCE frame)
 VISOR_HALF_AXES = (0.11, 0.075)  # x / z half-axes of the cap's elliptical cut (SOURCE frame)
 
@@ -259,7 +264,7 @@ def build(materials=None, path=SOURCE_GLB, log=None):
     ob = import_source(path)
     fs = face_samples(ob)
     vmask, lmask = visor_mask(fs), lamp_mask(fs)
-    cap, fit = visor_cap(fs["cent"][vmask], mat_visor_glass())
+    cap, fit = visor_cap(fs["cent"][vmask], mat_visor_glass(tint=tuple(VISOR_GAME_ALBEDO * t for t in VISOR_TINT)))
     M, s = game_frame_matrix(ob)
     for o in (ob, cap):
         o.data.transform(M)
