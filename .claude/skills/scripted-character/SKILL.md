@@ -225,6 +225,17 @@ What made the briefs work:
     (B1a-B2e). For the next hero character, look first for a base to start from (a free/licensed base body, face or
     hairstyle mesh) before building every surface from fields; a helmet instead of modelled hair is on the table.
 
+16. *2026-10-26, Kessler (the first EXTERNAL mesh through stage 3, an AI image-to-3D model from Krea):* the kit
+    took it with **no kit change**. The character's "build" imports the .glb, scales it and splits the one mesh
+    into NAMED region objects (Blender's separate keeps the UVs), so `rig.label_skin`/GEAR work by part name. The
+    voxel remesh welds the UV-seam soup into one surface (IoU 0.99), and the bakes read the glTF's linked image
+    sockets. A lumpy AI visor is replaced by a fitted sphere cap, and its faces must point outward or it bakes
+    black. A mirror-coated tint baked as diffuse reads pastel, so scale it down (×0.3). A T-pose source still
+    needs a toe region on `DEF-toe`, or `floor_clamp` crashes. What the route does not fix: the AI atlas packs
+    poorly (27 % UV use), the source's metallic sheen is lost in the diffuse albedo, AI gloves are mittens, and a
+    black suit is close to invisible in a dark level. One Opus agent, 25 min, 290k tokens, versus 45–50 min for a
+    scripted character.
+
 ## What this skill does not cover yet
 
 - Animations beyond the 46 clips of the shared skeleton (rifle holds, zombie gait, operating a
