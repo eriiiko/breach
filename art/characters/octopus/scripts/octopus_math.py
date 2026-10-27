@@ -59,7 +59,7 @@ GAME_SEGMENTS = arm.SEGMENTS // GAME_EVERY
 MARINE_HEIGHT_M = 1.885               # the space marine (assets/models/space_marine), every look's scale
 BODY_LENGTH_AUTHORED = (0.07 + 0.15) - (-0.215 - 0.275)   # 0.71: head front (HEAD_C+HEAD_R) .. mantle back
 ARM_BODY_RATIO = 1.8                  # Erik: "arms about 1.8 x the body" (option A had 1.777)
-FAMILY_STRETCH_MAX = 1.40             # free arm x1.40 -> whole arm x1.31: mid's 2.52 m arm reaches 3.30 m
+FAMILY_STRETCH_MAX = 1.40             # free arm x1.40 -> whole arm x1.31: mid's 2.52 m arm reaches 3.31 m
 
 
 @dataclass(frozen=True)

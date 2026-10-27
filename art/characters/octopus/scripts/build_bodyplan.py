@@ -11,7 +11,7 @@ straight above (the game camera) and three-quarter. Every row uses the SAME
 cameras, framed on the biggest row, so the pictures compare sizes directly; the
 marine stands just beyond each row's own rest arm tips (MARINE_GAP).
 Also renders the stretch strip (one arm at stretch 0 / 0.5 / 1, default row),
-framed from the pose so the stretched arm is never cut off.
+framed from the pose on the whole animal so no arm is cut off.
 Writes PNGs to previews/bodyplan/raw/ and bodyplan.json (the cameras' metres per
 pixel, for the labelled sheets made by package_bodyplan.py). Render-only.
 """
@@ -38,8 +38,8 @@ OPTIONS = ["small_preview", "mid", "big"]           # small, medium (default), b
 MARINE_GAP = 1.22                                   # marine at this x the row's rest arm tips' reach
 MARINE_Z = 0.15                                     # glTF metres (crown axis at the origin)
 TOP_RES = (1200, 1000)
-CAM34 = dict(loc=(5.4, 9.4, 9.4), target=(-1.3, 0.4, -0.15), lens=30, res=(1400, 1000))
-STRIP_RES = (900, 1100)
+CAM34 = dict(loc=(4.6, 7.6, 7.8), target=(-0.9, 0.3, 0.1), lens=42, res=(1400, 1000))
+STRIP_RES = (1100, 1000)
 LIGHT_SCALE = 3.0                                   # the build studio, sized for a ~3x scene (same look)
 FRAME_MARGIN = 0.12                                 # framing slack around the posed skeleton + arm girth
 
@@ -92,11 +92,9 @@ def top_frame(names):
 
 
 def strip_frame():
-    """The stretch strip's camera: body + arm L1 at full stretch, the same for all three values."""
-    a = om.arm_bone_offset(0)                                             # arm L1, the one that stretches
-    l1 = pose_points(strip_arms(1.0))[a:a + om.arm.SEGMENTS + 1][:, [0, 2]]
-    body = np.array([[-0.6, -0.7], [0.6, 0.7]]) * om.OCTOPUS_SCALE        # crown + head + mantle, authored box
-    lo, hi = np.minimum(l1.min(0), body[0]), np.maximum(l1.max(0), body[1])
+    """The stretch strip's camera: the WHOLE animal with arm L1 at every shown stretch, one camera."""
+    pts = np.vstack([pose_points(strip_arms(st))[:, [0, 2]] for st in (0.0, 0.5, 1.0)])
+    lo, hi = pts.min(0), pts.max(0)
     pad = FRAME_MARGIN * (hi - lo).max()
     lo, hi = lo - pad, hi + pad
     centre = np.array([(lo[0] + hi[0]) / 2, 0.0, (lo[1] + hi[1]) / 2])

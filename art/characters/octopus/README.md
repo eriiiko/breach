@@ -130,11 +130,20 @@ Size and proportions are now dials, one row of `SIZES` in
 `body_length_m`, `arm_body_ratio` (rest arm, crown root to tip, over the body
 length; the arm keeps the crown's girth) and `stretch_max`. `OCTOPUS_SCALE` is
 now derived (`body_length_m / 0.71`). Switch with `om.set_size(name)` or
-`OCTOPUS_SIZE=<row>` for any build or tool. Rows: `mid` (option B, the
-default), `mid_bulk` (A), `mid_heavy` (C), and `proof` (the pre-#106 animal at
-scale 1, kept rebuildable). Each mid row spans 2.0 marines straight at rest and
-2.5 fully stretched (3.77 / 4.71 m; 12 / 15 game tiles, since the renderer draws
-the 1.885 m marine 6 tiles tall; 11.3 / 14.2 tiles at a strict 0.333 m).
+`OCTOPUS_SIZE=<row>` for any build or tool.
+
+**Erik's ruling, 2026-10-28:** option A's proportion on bigger bodies. Every
+family row has `arm_body_ratio` = `ARM_BODY_RATIO` = 1.8 and `stretch_max` =
+`FAMILY_STRETCH_MAX` = 1.40 (free arm; whole arm x1.31), so the rows are one
+shape at three scales (`ARM_LAMBDA` 1.085 on all three). The fixed 2.0 / 2.5
+marine span is dropped. Rows: `mid` (the default, medium, body 1.4 m: arm
+2.52 m, stretched 3.31 m, span 5.34 / 6.91 m), `small_preview` (option A's
+1.0 m body: arm 1.80 / 2.36 m, span 3.82 / 4.93 m), `big` (option C's 1.885 m
+body, a preview of a later larger size: arm 3.39 / 4.45 m, span 7.19 / 9.30 m),
+and `proof` (the pre-#106 animal at scale 1, kept rebuildable). The #106
+options (`mid_bulk`, the 1.24-ratio `mid`, `mid_heavy`) are at 65df56a.
+`verify_octopus.check_sizes` gates the ratio, the shared stretch fraction and
+mid's 3.2-3.4 m reach.
 
 **Arm length law.** Per hero segment a length factor, exactly 1 for the five
 segments inside the crown and ramped in (smoothstep) over the three segments
@@ -163,7 +172,7 @@ parity 2.4 um incl. the stretched reach).
 
 ```powershell
 & $py "$o/scripts/verify_octopus.py"                                                  # also checks every SIZES row
-& $blender -b --factory-startup -P "$o/scripts/build_bodyplan.py" -- --root $breach   # ~4 min, the three options + strip
+& $blender -b --factory-startup -P "$o/scripts/build_bodyplan.py" -- --root $breach   # the three sizes + strip
 & $py "$o/scripts/package_bodyplan.py"                                                # labelled sheets
 & $py "$o/scripts/runtime_octopus.py" --root $breach --mix 0 --offset 14,-3 --pose stretch --shots "$o/previews/bodyplan/game/mix" --frames 60,105 --focus 30:24:17,43 -- --level playground
 ```
