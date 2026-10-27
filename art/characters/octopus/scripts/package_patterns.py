@@ -88,9 +88,9 @@ def main():
     rep = json.loads(rp.read_text()) if rp.exists() else {}
     rep["glb"] = report
     rp.write_text(json.dumps(rep, indent=2) + "\n")
-    lineup("{}_top.jpg", "lineup_top.jpg", (.17, .22, .83, .82), 420, 4)
-    lineup("{}_34.jpg", "lineup_34.jpg", (.02, .12, .98, .92), 460, 4)
-    lineup("game_{}_top.jpg", "game_lineup.jpg", (.17, .22, .83, .82), 360, 4)
+    lineup("{}_top.jpg", "lineup_top.jpg", (.06, .22, .94, .86), 420, 4)
+    lineup("{}_34.jpg", "lineup_34.jpg", (.02, .1, .98, .97), 460, 4)
+    lineup("game_{}_top.jpg", "game_lineup.jpg", (.06, .22, .94, .86), 360, 4)
     print("PACKAGE_PATTERNS_OK" if ok else "PACKAGE_PATTERNS_MESH_DIFFERS")
     sys.exit(0 if ok else 1)
 
