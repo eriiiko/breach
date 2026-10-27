@@ -118,6 +118,75 @@ The steps, in order:
 `--shots` needs an ABSOLUTE prefix: the tool changes into the root checkout
 before main.py runs.
 
+## Patterns (#113)
+
+Seven skins, one PATTERN TABLE (`scripts/pattern_math.py::PATTERNS`): the
+default plus six taken from real animals. A row holds the animal, its colours
+(sRGB 0-255) and sizes (metres on this 1.2 m-arm animal); its `builder` names a
+pattern function in `scripts/build_patterns.py`. The `default` row IS
+`build_octopus.skin_material` / `cup_material`, unchanged.
+
+| row | animal | look |
+|---|---|---|
+| `default` | common octopus (the build's own skin) | red-brown mottle |
+| `zebra` | mimic octopus, wunderpus | cream, dark bands ringing the arms and tightening toward the tips, warped chevrons on the mantle |
+| `reticulated` | honeycomb moray, giraffe | dark polygons in a thin pale net, shrinking along the arms |
+| `rosette` | leopard, jaguar | gold-ochre, broken dark rings round a darker centre, solid spots between them and down the arms |
+| `red_whitespot` | *Callistoctopus macropus* | brick red, scattered white spots of uneven size, oval on the arms |
+| `blue_ringed` | *Hapalochlaena lunulata* | ochre-yellow, brown blotches each carrying a black-edged electric-blue ring |
+| `ghost` | Casper octopus, dumbo octopuses | pale white with a pink blush and faint specks; subsurface in the hero only |
+
+**Coordinates.** Every pattern is drawn in rest-pose coordinates stored per
+vertex (`pattern_math.skin_coords`, written by `build_patterns.py` as point
+attributes on the hero mesh), so it rides on the skin and stretches with it:
+`pat_body` (rest position), `pat_arm` (the arm's length coordinate
+`U(x) = ∫dx / (r_ref (r/r_ref)^0.7)` and the angle around the arm, per arm: a
+feature shrinks with the radius toward the tip), `pat_w` (morphs the body field
+into the arm field over the proximal arm, s 0.156 to 0.246, so the junction has
+no seam) and `pat_s`. Countershading: the existing `pale` attribute mixes 85 %
+toward the row's oral colour; suckers take the row's rim/bowl colours. Geometry,
+rig, controls and the committed hero .blend are not touched.
+
+**Game.** Each variant's albedo is baked onto the SAME game mesh with the
+build's own bake (`build_octopus.bake_pass`), and the committed gloss alpha is
+kept: `prototype/octopus/variants/octopus_albedo_gloss_<name>.png` (committed,
+1.1 to 1.9 MB each). `package_patterns.py` makes
+`prototype/octopus/variants/octopus_game_<name>.glb` = the committed GLB with
+only the baseColor image swapped, and checks every other buffer view (333) is
+byte-identical. The GLBs are ~8 MB each and gitignored: rebuild them with the
+second command below.
+
+```powershell
+& $blender -b --factory-startup -P "$o/scripts/build_patterns.py"           # all rows, ~3 min; --only zebra,ghost
+& $py "$o/scripts/package_patterns.py" --root $breach                        # GLBs + lineups, seconds
+& $py "$o/scripts/runtime_octopus.py" --root $breach --model "$o/prototype/octopus/variants/octopus_game_zebra.glb" -- --level playground
+```
+
+`build_patterns.py --save-blend` also writes a per-variant hero .blend
+(gitignored). Pictures: `previews/patterns/` (`<name>_top.jpg`,
+`<name>_34.jpg`, `game_<name>_top.jpg`, `lineup_top.jpg`, `lineup_34.jpg`,
+`game_lineup.jpg`, `game/zebra_0080.png`, `game/blue_ringed_0080.png`).
+
+**Default unchanged** (`prototype/octopus/variants/patterns_report.json`): the
+default row re-baked through this path differs from the committed albedo by
+1/255 on 7 of 4.2 M texels, its re-baked gloss is identical, and a full
+`build_octopus.py --stage assets` after the `bake_pass` refactor gave the same
+GLB mesh/skin/animation/JSON digests, an identical geometry .npz and PNGs
+within 1/255 on 8 (albedo) and 5 (normal) texels (GPU bake noise).
+
+**Weak, per pattern.**
+- `rosette`: the weakest. It reads as spotted-cat but the rosettes are small
+  and sparse beside a real leopard's packed coat, and the gold base is flat.
+- `zebra`: the mantle chevrons are blotchier than a mimic's clean bands; the
+  arm bands are very regular.
+- `reticulated`: the net gets thick relative to the patches on the thin distal
+  arms.
+- `blue_ringed`: real rings are iridescent and flash; here they are flat
+  albedo, and in the game bake they read darker.
+- `ghost`: under the studio key the mantle top blows out to near-white; the
+  translucency is a hero-only subsurface, the game is a pale albedo.
+- `red_whitespot`: good; the spots are uniformly white with no pinkish rim.
+
 ## Weak, bluntly
 
 - **The arms read too thin and too straight next to the concept.** The sheet's
