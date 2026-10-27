@@ -1814,6 +1814,27 @@ gloss_shininess = 48.0  # the highlight's exponent at gloss 1 (higher = tighter)
 normal_map = true       # false = the mesh's own smooth normals
 normal_strength = 1.0   # 0 = no tilt .. 1 = the map as baked
 blob_shadow = true      # the round dark disc under each unit; false = none
+# Where the BODY's light comes from (#114). A unit is stamped opaque into the
+# light sweep (that casts its shadow on the floor), so the field holds light
+# only in the footprint row facing the lamp and the rest of the body reads 0.
+body_light = "unit"     # "unit" = the whole body lit from the unit's one
+                        # light read (the read its projected shadow takes:
+                        # renderer/unit_shadow.py read_unit_light), a lit side
+                        # and an evenly lit share for balanced light;
+                        # "field" = each fragment lit from the light-field
+                        # tile under it (before #114; the A/B)
+# How directional a unit's lighting reads (#114; Erik, 2026-10-27: "a little
+# more dramatic lighting on the side of the units, one side light, one side
+# dark"). Both read every frame -- Ctrl+R retunes them live.
+light_height = 0.20     # the light's height when its 2D direction is lifted to
+                        # 3D: lower = more grazing (the sweep's floor shadows
+                        # are light arriving nearly level). 0.35 = pre-#114;
+                        # 0.20 = Erik's play-test, 2026-10-28
+wrap = 0.01             # 1 = half-Lambert (soft: the side facing away from the
+                        # light still half lit; pre-#114) .. 0 = plain Lambert
+                        # (a hard dark side)
+                        # 0.01 = Erik's play-test, 2026-10-28 (no visible
+                        # difference from 0; same cost either way)
 
 [render.muzzle_flash]
 # A bullet's muzzle flash (#33): a short omni lamp on the first cell outside

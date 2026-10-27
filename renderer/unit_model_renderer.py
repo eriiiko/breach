@@ -50,10 +50,11 @@ from config import CFG
 from .lit3d import LightFieldCtx, bind_smoke_cover_map, make_camera
 from .marine_shader import (MARINE_NORMAL_MAP_FILENAME, UNIT_NORMAL_Y_SIGN,
                             load_marine_shader)
-from .unit_looks import (ROLES, LookAssigner, all_look_names, look_path,
-                         looks_table, unit_key, unit_shading)
-from .unit_shadow import (NO_SHADOW, ShadowCast, ShadowPainter, read_unit_light,
-                          shadow_cast, smooth_shadow, unit_shadow_settings)
+from .unit_looks import (BODY_LIGHT_UNIT, ROLES, LookAssigner, all_look_names,
+                         look_path, looks_table, unit_key, unit_shading)
+from .unit_shadow import (NO_SHADOW, ShadowCast, ShadowPainter, UnitLight,
+                          read_unit_light, shadow_cast, smooth_shadow,
+                          unit_shadow_settings)
 
 # ---------------------------------------------------------------------------
 # Asset + tunables
@@ -101,6 +102,8 @@ _SHADOW_COLOR = (0, 0, 0, 90)
 # shadow vector -- a turn of the light fades the shadow through faint rather
 # than snapping it across the unit. Render feel, not a setting.
 _SHADOW_SMOOTH_TAU_S = 0.12
+# #114: the read of a unit with no light view (lighting off): dark.
+_NO_LIGHT = UnitLight(0.0, 0.0, 0.0, 0.0)
 # Prune a unit's anim state once it has gone unseen this many seconds.
 _STALE_SECONDS = 1.0
 # _CAM_HEIGHT and LightFieldCtx moved to renderer/lit3d.py (P1 extraction,
@@ -513,6 +516,12 @@ class UnitModelRenderer:
         once more, flattened onto the floor away from the light, faded by how
         bright and how one-sided the light around it is. None = no shadows.
 
+        #114: with ``[render.unit_shading] body_light = "unit"`` the SAME
+        per-unit read also lights the unit's whole body (the lit shader's
+        per-unit uniforms, set just before its draw), instead of each
+        fragment reading the field tile under it -- one read per unit per
+        frame serves both. None = the body gets the ambient floor only.
+
         No-op (leaving the sprite path's world untouched) if the model failed
         to load — the toggle can be on with the asset missing and nothing breaks.
         """
@@ -563,6 +572,14 @@ class UnitModelRenderer:
             ms.set_gloss(shading.gloss_strength, shading.gloss_shininess)
             ms.set_use_normal(shading.normal_map)
             ms.set_normal_strength(shading.normal_strength)
+            ms.set_light_shape(shading.light_height, shading.wrap)   # #114
+        # #114: the body lit from the unit's own light read (or, "field",
+        # from the tile under each fragment, the A/B).
+        body_from_unit = (shading.body_light == BODY_LIGHT_UNIT
+                          and self._marine_shader is not None
+                          and light_ctx is not None)
+        if self._marine_shader is not None:
+            self._marine_shader.set_body_light(body_from_unit)
 
         if open_mode_3d:
             rl.begin_mode_3d(camera3d)
@@ -570,11 +587,16 @@ class UnitModelRenderer:
             # Phase 0 parity: dead units skipped (sprite path).
             for u, name in zip(alive, names):
                 cast = NO_SHADOW
-                if shadows_on:
+                # ONE light read per unit, for its shadow and its body.
+                light = _NO_LIGHT
+                if light_view is not None and (shadows_on or body_from_unit):
                     fp = int(getattr(u, "footprint", 3))
-                    cast = shadow_cast(
-                        read_unit_light(light_view, int(u.x), int(u.y), fp,
-                                        light_exposure), shadow_cfg)
+                    light = read_unit_light(light_view, int(u.x), int(u.y), fp,
+                                            light_exposure)
+                if shadows_on:
+                    cast = shadow_cast(light, shadow_cfg)
+                if body_from_unit:
+                    self._marine_shader.set_unit_light(light)
                 self._draw_one(u, self._resolve[name], wpt, dt, clock, scale,
                                shadow_r if shading.blob_shadow else 0.0,
                                base_tint, light_rgb_fn,
