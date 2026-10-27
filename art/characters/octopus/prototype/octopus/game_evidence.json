@@ -1,11 +1,14 @@
 {
   "root": "C:\\Users\\steen\\projects\\breach",
-  "root_revision": "cfcba40a2c817cdabf3c5fb9d1ccb6b31018483a",
-  "procedural_skin_calls": 1575,
-  "distinct_pose_times": 175,
-  "pose_mode": "live",
+  "root_revision": "dbc6b699f1f79e5e6be9efe09124e3d84a7fae41",
+  "procedural_skin_calls": 95,
+  "distinct_pose_times": 95,
+  "pose_mode": "reach",
   "game_exit_code": 0,
   "note": "Real main.py via root charkit preview + tools/e2e_drive.py; only this prototype's pose argument changes in process. UnitModelRenderer, lighting, shader, camera, shadows unchanged.",
   "model": "octopus_game.glb",
-  "mix": null
+  "mix": {
+    "octopus_player_index": 0,
+    "offset_tiles": "7,-6"
+  }
 }

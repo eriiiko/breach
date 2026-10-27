@@ -1,113 +1,113 @@
 {
   "root": "C:\\Users\\steen\\projects\\breach",
-  "root_revision": "cfcba40a2c817cdabf3c5fb9d1ccb6b31018483a",
+  "root_revision": "dbc6b699f1f79e5e6be9efe09124e3d84a7fae41",
   "python": "3.11.7 | packaged by Anaconda, Inc. | (main, Dec 15 2023, 18:05:47) [MSC v.1916 64 bit (AMD64)]",
   "platform": "Windows-10-10.0.19045-SP0",
   "processor": "AMD64 Family 23 Model 113 Stepping 0, AuthenticAMD",
   "model": "octopus_game.glb",
   "model_meshes": 2,
   "model_joints": 142,
-  "loaded_vertices": 8502,
+  "loaded_vertices": 8477,
   "loaded_triangles": 12200,
-  "bind_vertex_max_error_m": 8.067066584791766e-08,
+  "bind_vertex_max_error_m": 1.2659268524852288e-07,
   "raylib_vs_numpy_max_error_m": 1.135680361655252e-05,
   "parity_poses": 54,
   "samples_per_batch": 120,
   "timings_octopi": {
     "demo/1": {
       "controls_and_pose_octopus": {
-        "median_ms": 3.2104,
-        "p95_ms": 4.163354999999999
+        "median_ms": 3.1132,
+        "p95_ms": 3.44426
       },
       "write_joint_transforms": {
-        "median_ms": 0.73145,
-        "p95_ms": 0.93448
+        "median_ms": 0.70905,
+        "p95_ms": 0.7510999999999999
       },
       "raylib_skin_and_upload": {
-        "median_ms": 0.1701,
-        "p95_ms": 0.27351499999999995
+        "median_ms": 0.164,
+        "p95_ms": 0.18888
       },
       "total": {
-        "median_ms": 4.12075,
-        "p95_ms": 5.393744999999999
+        "median_ms": 3.9886,
+        "p95_ms": 4.3695450000000005
       }
     },
     "demo/4": {
       "controls_and_pose_octopus": {
-        "median_ms": 12.89685,
-        "p95_ms": 13.50418
+        "median_ms": 12.4905,
+        "p95_ms": 12.8356
       },
       "write_joint_transforms": {
-        "median_ms": 2.91775,
-        "p95_ms": 3.1426149999999997
+        "median_ms": 2.8297,
+        "p95_ms": 2.977845
       },
       "raylib_skin_and_upload": {
-        "median_ms": 0.68145,
-        "p95_ms": 0.766785
+        "median_ms": 0.65665,
+        "p95_ms": 0.72391
       },
       "total": {
-        "median_ms": 16.56295,
-        "p95_ms": 17.171625
+        "median_ms": 16.05015,
+        "p95_ms": 16.347465
       }
     },
     "demo_two_arms_stretching/1": {
       "controls_and_pose_octopus": {
-        "median_ms": 3.2168,
-        "p95_ms": 3.5801949999999985
+        "median_ms": 3.14625,
+        "p95_ms": 3.47469
       },
       "write_joint_transforms": {
-        "median_ms": 0.7775,
-        "p95_ms": 0.8828599999999999
+        "median_ms": 0.7583,
+        "p95_ms": 0.859695
       },
       "raylib_skin_and_upload": {
-        "median_ms": 0.169,
-        "p95_ms": 0.23137999999999997
+        "median_ms": 0.16485,
+        "p95_ms": 0.19654
       },
       "total": {
-        "median_ms": 4.1671,
-        "p95_ms": 4.545969999999998
+        "median_ms": 4.0748,
+        "p95_ms": 4.463794999999999
       }
     },
     "demo_two_arms_stretching/4": {
       "controls_and_pose_octopus": {
-        "median_ms": 13.00385,
-        "p95_ms": 15.203710000000001
+        "median_ms": 12.5684,
+        "p95_ms": 12.941790000000001
       },
       "write_joint_transforms": {
-        "median_ms": 3.12035,
-        "p95_ms": 3.5590749999999995
+        "median_ms": 3.0216499999999997,
+        "p95_ms": 3.204825
       },
       "raylib_skin_and_upload": {
-        "median_ms": 0.6832,
-        "p95_ms": 0.9714549999999997
+        "median_ms": 0.6589,
+        "p95_ms": 0.730355
       },
       "total": {
-        "median_ms": 16.847,
-        "p95_ms": 19.63664
+        "median_ms": 16.2676,
+        "p95_ms": 16.661215000000002
       }
     }
   },
   "size": {
     "size": "mid",
-    "note": "option B, the default: between the two readings; body 1.4 m long",
+    "note": "the default, medium size (option B's body, option A's proportion): body 1.4 m long",
     "scale": 1.971830985915493,
     "body_length_m": 1.4,
     "mantle_width_m": 0.9267605633802817,
     "mantle_length_m": 1.0845070422535212,
-    "arm_length_rest_m": 1.7318,
-    "arm_length_stretched_m": 2.204324677060442,
-    "arm_body_ratio": 1.237,
-    "arm_lambda": 0.64981768707483,
-    "stretch_max": 1.398,
+    "arm_length_rest_m": 2.52,
+    "arm_length_stretched_m": 3.3051967939323186,
+    "arm_body_ratio": 1.8,
+    "arm_lambda": 1.0848979591836736,
+    "stretch_max": 1.4,
     "arm_base_diameter_m": 0.2992516082747459,
-    "span_rest_m": 3.7691736040114847,
-    "span_stretched_m": 4.711634418510364,
-    "span_rest_marines": 1.9995615936400448,
-    "span_stretched_marines": 2.49954080557579,
-    "span_rest_game_tiles": 11.99736956184027,
-    "span_stretched_game_tiles": 14.99724483345474,
-    "span_rest_tiles_at_0333m": 11.31883965168614,
-    "span_stretched_tiles_at_0333m": 14.14905230783893
+    "span_rest_m": 5.341255761940761,
+    "span_stretched_m": 6.90734795961174,
+    "span_rest_marines": 2.833557433390324,
+    "span_stretched_marines": 3.6643755753908436,
+    "span_rest_game_tiles": 17.001344600341945,
+    "span_stretched_game_tiles": 21.98625345234506,
+    "span_rest_tiles_at_0333m": 16.039807092915197,
+    "span_stretched_tiles_at_0333m": 20.74278666550072
   },
   "methodology": "perf_counter_ns wall time, 20 warmups; sequential independently phased whole-animal poses on one shared loaded model (the renderer's shared-model seam). Skin call includes driver buffer submission, not GPU completion. Excludes drawing, shading, shadows, simulation. CPU timings are not whole-game FPS."
 }
