@@ -5,5 +5,7 @@
   "distinct_pose_times": 175,
   "pose_mode": "live",
   "game_exit_code": 0,
-  "note": "Real main.py via root charkit preview + tools/e2e_drive.py; only this prototype's pose argument changes in process. UnitModelRenderer, lighting, shader, camera, shadows unchanged."
+  "note": "Real main.py via root charkit preview + tools/e2e_drive.py; only this prototype's pose argument changes in process. UnitModelRenderer, lighting, shader, camera, shadows unchanged.",
+  "model": "octopus_game.glb",
+  "mix": null
 }

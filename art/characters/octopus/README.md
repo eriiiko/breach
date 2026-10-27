@@ -39,14 +39,14 @@ simulation file touched.
   ≈ 0.45, eye ≈ 0.9), spliced in by `charkit.glbtex.replace_image`, plus the
   normal map.
 
-## Numbers (prototype/octopus/*.json)
+## Numbers (prototype/octopus/*.json; default size `mid` since #106)
 
 | | hero (.blend) | game (.glb) |
 |---|---:|---:|
-| triangles | 132,512 | **12,200** |
-| vertices | 67,512 | 6,108 authored / 8,471 loaded |
+| triangles | 97,952 (132,512 at `proof` size) | **12,200** |
+| vertices | 49,656 | 6,108 authored / 8,502 loaded |
 | joints | 270 | **142** |
-| modelled suckers | 624 | 0 (baked) |
+| modelled suckers | 336 (624 at `proof` size) | 0 (baked) |
 
 Runtime, measured through the loaded GLB and raylib's native CPU skinning
 (`runtime_octopus.py --benchmark`, 120 samples, methodology as for the arm).
@@ -54,17 +54,22 @@ These are CPU timings, NOT whole-game FPS:
 
 | CPU per frame | 1 octopus median (p95) | 4 octopi median |
 |---|---:|---:|
-| controls + `pose_octopus` | 3.14 ms (3.38) | 12.3 ms |
-| write 142 joint transforms | 0.69 ms | 2.73 ms |
-| raylib skin + upload | 0.17 ms | 0.66 ms |
-| **total** | **4.01 ms (4.28)** | **15.7 ms** |
+| controls + `pose_octopus` | 3.21 ms (4.16) | 12.9 ms |
+| write 142 joint transforms | 0.73 ms | 2.92 ms |
+| raylib skin + upload | 0.17 ms | 0.68 ms |
+| **total** | **4.12 ms (5.39)** | **16.6 ms** |
+| total, two front arms stretching | 4.17 ms (4.55) | 16.9 ms |
+
+(Before #106: 4.01 ms (4.28) / 15.7 ms; the stretch adds the scale output and,
+for a stretched arm, the compensated translation and the scale write.)
 
 The skinning itself is cheap. The cost is the pure-Python pose and write; the
 first optimisation would be to batch the 8 arm recursions, since a scalar loop
 per arm is not needed.
 
-Loaded raylib skin vs the NumPy reference: ≤ 5.7 µm over 36 poses (10 µm
-gate). Blender's evaluated hero skin vs the reference: ≤ 1.4 µm.
+Loaded raylib skin vs the NumPy reference: ≤ 11.4 µm over 54 poses, 18 of them
+with stretched arms (gate 10 µm times the size's scale, 19.7 µm: float32 error grows
+with coordinate size; it was 5.7 µm at scale 1). Blender's evaluated hero skin vs the reference: ≤ 1.4 µm.
 
 Property checks (`verify_octopus.py`, report in
 `prototype/octopus/property_report.json`):
@@ -117,6 +122,76 @@ The steps, in order:
 
 `--shots` needs an ABSOLUTE prefix: the tool changes into the root checkout
 before main.py runs.
+
+## Body plan (#106): size, arm/body ratio, stretch
+
+Size and proportions are now dials, one row of `SIZES` in
+`scripts/octopus_math.py` (plain-language table in [CONTROLS.md](CONTROLS.md)):
+`body_length_m`, `arm_body_ratio` (rest arm, crown root to tip, over the body
+length; the arm keeps the crown's girth) and `stretch_max`. `OCTOPUS_SCALE` is
+now derived (`body_length_m / 0.71`). Switch with `om.set_size(name)` or
+`OCTOPUS_SIZE=<row>` for any build or tool. Rows: `mid` (option B, the
+default), `mid_bulk` (A), `mid_heavy` (C), and `proof` (the pre-#106 animal at
+scale 1, kept rebuildable). Each mid row spans 2.0 marines straight at rest and
+2.5 fully stretched (3.77 / 4.71 m; 12 / 15 game tiles, since the renderer draws
+the 1.885 m marine 6 tiles tall; 11.3 / 14.2 tiles at a strict 0.333 m).
+
+**Arm length law.** Per hero segment a length factor, exactly 1 for the five
+segments inside the crown and ramped in (smoothstep) over the three segments
+past the junction ring, so the junction never moves and the taper has no kink.
+The rest length (`ARM_LAMBDA`, solved from the row) is baked into the bind mesh
+(`bind_x`, piecewise linear with a knot at each hero joint, so the proof's
+two-joint weights stay exact); the hero keeps only the sucker stations whose
+rest spacing meets the proof's own spacing rule (option B: 97,952 hero
+triangles instead of 132,512; the game mesh is unchanged at 12,200).
+
+**Stretch** (7th arm control, 0..1). The same ramp carries the elongation
+`1 + stretch (stretch_max - 1)`; each joint gets a UNIFORM scale
+`1 / sqrt(elongation of its incoming segment)` (volume conserving: measured arm
+volume +0.9 % at 0.5, +1.7 % at 1). Joints 0..6 always stay at scale 1, so the
+crown is bit-identical under any stretch.
+
+**In the game.** raylib 5.5.0.4's CPU skin applies a frame pose's scale after
+rotation and translation, in model axes about the model origin (measured: a
+bone scaled to 0.5 threw its vertices 0.33 m). For a uniform scale that is
+still exact when the translation is pre-compensated, which
+`runtime_octopus.LiveOctopus.write_pose` does (`p / s + (s - 1) R b`). Loaded
+raylib skin vs the NumPy reference with stretched poses: <= 5.7 um; the same
+check without the compensation is off by 206 mm and without the scale by 9 mm,
+so the gate can fail. Blender honours the uniform bone scale natively (hero
+parity 2.4 um incl. the stretched reach).
+
+```powershell
+& $py "$o/scripts/verify_octopus.py"                                                  # also checks every SIZES row
+& $blender -b --factory-startup -P "$o/scripts/build_bodyplan.py" -- --root $breach   # ~4 min, the three options + strip
+& $py "$o/scripts/package_bodyplan.py"                                                # labelled sheets
+& $py "$o/scripts/runtime_octopus.py" --root $breach --mix 0 --offset 14,-3 --pose stretch --shots "$o/previews/bodyplan/game/mix" --frames 60,105 --focus 30:24:17,43 -- --level playground
+```
+
+(`--pose rest` / `--pose reach` give the two stills in `game/`.) `--mix N`
+draws only the Nth player as the octopus (the rest keep their own
+looks, the marines) and `--offset` moves where it is DRAWN, render-side only.
+Pictures: `previews/bodyplan/` (`options_top.jpg`, `options_34.jpg`,
+`<row>_top.jpg`, `<row>_34.jpg`, `stretch_strip.jpg`, `game/`). In the game
+the default octopus at rest measures about 11.7 tiles across with its curled
+rest arms (12 straight), beside marines drawn 6 tiles tall.
+
+**Found while doing this, not fixed (other systems):**
+- raylib 5.5.0.4's CPU skin gets the NORMALS of every posed limb wrong: a pure
+  bone translation of 1 m turns them by up to ~89 degrees and scales them 0.03x to 2x
+  (measured on `animNormals`), and `marine_shader` lights with them. It
+  predates #106 (an unstretched curl already deviates by up to 95 degrees on
+  that arm) and touches every skinned look; stretch makes the octopus's
+  worse. Not visible at the playground's light level in the shots taken.
+- `swing`'s sign was documented backwards: positive turns an arm toward the
+  BACK on both sides. The control is unchanged; CONTROLS.md now says so.
+- `verify_octopus.py` compared posed (scaled) areas against unscaled rest
+  areas; harmless at scale 1, wrong at any other. Fixed.
+
+**Changed expectations, on purpose:** the segment-length check is now
+"equals the length law" (it was "equals STEP"), the hero section-area check is
+measured against the thinning law's expectation, and the raylib parity gate
+scales with the size.
 
 ## Patterns (#113)
 
@@ -208,9 +283,8 @@ within 1/255 on 8 (albedo) and 5 (normal) texels (GPU bake noise).
   and through each other.
 - **The GLB is 8.3 MB.** The normal map is exported as a 16-bit PNG; making it
   8-bit would roughly halve that.
-- The game preview draws every unit as an octopus at the marine's scale, so
-  each is about 9 tiles wide; the size is Erik's call, set by
-  `OCTOPUS_SCALE`. The demo loop switches from walk to swim without a blend.
+- The game preview draws every unit as an octopus (use `--mix` for one
+  octopus among the marines). The size is now the SIZES row (#106). The demo loop switches from walk to swim without a blend.
 
 ## Systems
 
