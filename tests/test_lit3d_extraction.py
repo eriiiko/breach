@@ -37,6 +37,24 @@ def test_marine_shader_byte_identical_to_oracle():
     )
 
 
+def test_marine_shader_embeds_the_shared_blocks_verbatim():
+    """PROPERTY: the marine's fragment shader carries the shared lit-3D blocks
+    (``_COMMON_GLSL``, ``_FIELD_SAMPLE_GLSL``) VERBATIM, once each -- the same
+    text the props compile -- however its own ``main()`` changes (#114 lights
+    the body from the unit's read AFTER the shared block, never inside it).
+
+    BREAKS IF: a marine-only change is made by editing the shared block (the
+    props would silently change with it) or by pasting a modified copy of it
+    into the marine shader instead of the marker splice.
+    """
+    from renderer import lit3d
+    from renderer import marine_shader as ms
+
+    assert ms.MARINE_FS.count(lit3d._FIELD_SAMPLE_GLSL) == 1
+    assert ms.MARINE_FS.count(lit3d._COMMON_GLSL) == 1
+    assert "u_body_light" not in lit3d._FIELD_SAMPLE_GLSL
+
+
 def test_lit3d_exposes_shared_seam_members():
     from renderer import lit3d
 

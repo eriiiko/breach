@@ -130,7 +130,7 @@ def test_every_draw_call_of_a_frame_advances_the_animation_alike():
 
 
 _SHADING_KEYS = ("rim_albedo", "gloss_strength", "gloss_shininess",
-                 "normal_map", "normal_strength", "blob_shadow")
+                 "normal_map", "normal_strength", "blob_shadow", "body_light")
 
 
 def test_shipped_unit_shading_has_every_setting_and_zero_means_off():
@@ -149,7 +149,8 @@ def test_shipped_unit_shading_has_every_setting_and_zero_means_off():
     shipped = unit_shading(CFG)
     assert {k for k in _SHADING_KEYS} <= set(vars(shipped))
     off = {"rim_albedo": 0.0, "gloss_strength": 0.0, "gloss_shininess": 1.0,
-           "normal_map": False, "normal_strength": 0.0, "blob_shadow": False}
+           "normal_map": False, "normal_strength": 0.0, "blob_shadow": False,
+           "body_light": "field"}
     got = unit_shading(Namespace({"render": {"unit_shading": dict(off)}}))
     assert got.gloss_strength == 0.0 and got.normal_strength == 0.0
     assert got.normal_map is False and got.blob_shadow is False
@@ -168,7 +169,8 @@ def test_a_missing_or_mistyped_unit_shading_setting_fails_loudly():
     from renderer.unit_looks import unit_shading
 
     full = {"rim_albedo": 0.9, "gloss_strength": 2.0, "gloss_shininess": 48.0,
-            "normal_map": True, "normal_strength": 1.0, "blob_shadow": True}
+            "normal_map": True, "normal_strength": 1.0, "blob_shadow": True,
+            "body_light": "unit"}
     for key in _SHADING_KEYS:
         partial = {k: v for k, v in full.items() if k != key}
         with pytest.raises(ValueError, match=key):
@@ -176,3 +178,33 @@ def test_a_missing_or_mistyped_unit_shading_setting_fails_loudly():
     for key, bad in (("normal_map", 0), ("blob_shadow", 1), ("gloss_strength", "2.0")):
         with pytest.raises(ValueError, match=key):
             unit_shading(Namespace({"render": {"unit_shading": dict(full, **{key: bad})}}))
+
+
+def test_body_light_takes_exactly_its_two_modes():
+    """PROPERTY (#114): ``[render.unit_shading] body_light`` is required and
+    is exactly ``"unit"`` (the whole body lit from the unit's light read) or
+    ``"field"`` (each fragment from the tile under it); both reach the
+    renderer as written, and anything else -- missing, another word, another
+    case, a number, a bool -- is a ValueError naming ``body_light``. The
+    shipped value is ``"unit"``.
+
+    BREAKS IF: the door is dropped or loosened (a typo such as ``"Unit"`` or
+    ``"units"`` would silently draw one of the two modes, and Erik's A/B
+    would compare a mode with itself), or the shipped config stops being
+    ``"unit"``.
+    """
+    from config import CFG, Namespace
+    from renderer.unit_looks import BODY_LIGHT_MODES, unit_shading
+
+    full = {"rim_albedo": 0.9, "gloss_strength": 2.0, "gloss_shininess": 48.0,
+            "normal_map": True, "normal_strength": 1.0, "blob_shadow": True}
+    assert set(BODY_LIGHT_MODES) == {"unit", "field"}
+    for mode in ("unit", "field"):
+        got = unit_shading(Namespace({"render": {"unit_shading": dict(full, body_light=mode)}}))
+        assert got.body_light == mode
+    with pytest.raises(ValueError, match="body_light"):
+        unit_shading(Namespace({"render": {"unit_shading": dict(full)}}))
+    for bad in ("Unit", "units", "", "fragment", 1, True, 0.0):
+        with pytest.raises(ValueError, match="body_light"):
+            unit_shading(Namespace({"render": {"unit_shading": dict(full, body_light=bad)}}))
+    assert unit_shading(CFG).body_light == "unit"

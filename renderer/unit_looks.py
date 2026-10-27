@@ -88,11 +88,21 @@ class UnitShading:
     normal_map: bool         # each look's own baked normal map on/off
     normal_strength: float   # how far the map tilts the normal (0 .. 1)
     blob_shadow: bool        # the round shadow disc under each unit
+    body_light: str          # #114: "unit" = the whole body lit from the
+                             # unit's one light read (the read its projected
+                             # shadow takes); "field" = each fragment lit from
+                             # the light-field tile under it (the pre-#114 A/B)
 
+
+# The values ``body_light`` may take (#114).
+BODY_LIGHT_UNIT = "unit"
+BODY_LIGHT_FIELD = "field"
+BODY_LIGHT_MODES = (BODY_LIGHT_UNIT, BODY_LIGHT_FIELD)
 
 _SHADING_KEYS = {"rim_albedo": float, "gloss_strength": float,
                  "gloss_shininess": float, "normal_map": bool,
-                 "normal_strength": float, "blob_shadow": bool}
+                 "normal_strength": float, "blob_shadow": bool,
+                 "body_light": str}
 
 
 def unit_shading(cfg) -> UnitShading:
@@ -108,12 +118,19 @@ def unit_shading(cfg) -> UnitShading:
         if not hasattr(section, key):
             raise ValueError(f"[render.unit_shading] is missing {key!r}")
         v = getattr(section, key)
-        ok = isinstance(v, bool) if kind is bool else (
-            isinstance(v, (int, float)) and not isinstance(v, bool))
+        if kind is bool:
+            ok = isinstance(v, bool)
+        elif kind is str:
+            ok = isinstance(v, str)
+        else:
+            ok = isinstance(v, (int, float)) and not isinstance(v, bool)
         if not ok:
             raise ValueError(f"[render.unit_shading] {key} must be a "
                              f"{kind.__name__}, got {v!r}")
         values[key] = kind(v)
+    if values["body_light"] not in BODY_LIGHT_MODES:
+        raise ValueError(f"[render.unit_shading] body_light must be one of "
+                         f"{BODY_LIGHT_MODES}, got {values['body_light']!r}")
     if values["gloss_strength"] < 0.0 or values["gloss_shininess"] < 1.0:
         raise ValueError("[render.unit_shading] needs gloss_strength >= 0 and "
                          "gloss_shininess >= 1, got "
@@ -146,5 +163,6 @@ class LookAssigner:
 
 
 __all__ = ["LookAssigner", "look_path", "looks_table", "all_look_names",
-           "UnitShading", "unit_shading",
+           "UnitShading", "unit_shading", "BODY_LIGHT_MODES",
+           "BODY_LIGHT_UNIT", "BODY_LIGHT_FIELD",
            "role_of", "unit_key", "ROLES", "ROLE_PLAYER", "ROLE_ZOMBIE", "MODELS_DIR"]
