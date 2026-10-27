@@ -115,9 +115,11 @@ def skin_material():
     return m
 
 
-def cup_material():
+def cup_material(rim=None, bowl=None, name="Octopus_suckers"):
+    """Sucker material; rim/bowl (linear RGB) default to arm.PALETTE (a pattern row passes its own)."""
     P = arm.PALETTE
-    m = bpy.data.materials.new("Octopus_suckers")
+    rim, bowl = rim or P["rim"], bowl or P["bowl"]
+    m = bpy.data.materials.new(name)
     m.use_nodes = True
     t = m.node_tree
     bsdf = t.nodes["Principled BSDF"]
@@ -127,8 +129,8 @@ def cup_material():
     t.links.new(attr.outputs["Color"], sep.inputs["Color"])
     mix = t.nodes.new("ShaderNodeMix")
     mix.data_type = "RGBA"
-    mix.inputs[6].default_value = (*P["rim"], 1)
-    mix.inputs[7].default_value = (*P["bowl"], 1)
+    mix.inputs[6].default_value = (*rim, 1)
+    mix.inputs[7].default_value = (*bowl, 1)
     t.links.new(sep.outputs["Blue"], mix.inputs[0])
     t.links.new(mix.outputs[2], bsdf.inputs["Base Color"])
     bsdf.inputs["Roughness"].default_value = .36
@@ -307,6 +309,26 @@ def evaluated_vertices(obj):
 
 
 # --------------------------------------------------------------------------
+def bake_pass(hero_obj, obj, tree, image_node, btype):
+    """One selected-to-active bake hero -> game into `image_node`'s image (shared by the
+    pattern variants, build_patterns.py, so every albedo is baked the same way)."""
+    tree.nodes.active = image_node
+    for o in bpy.context.selected_objects:
+        o.select_set(False)
+    hero_obj.select_set(True)
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    kw = dict(type=btype, use_selected_to_active=True, cage_extrusion=.025, max_ray_distance=.06,
+              margin=8, margin_type="EXTEND", use_clear=True)
+    if btype == "DIFFUSE":
+        kw["pass_filter"] = {"COLOR"}
+    if btype == "NORMAL":
+        kw["normal_space"] = "TANGENT"
+    t0 = time.time()
+    bpy.ops.object.bake(**kw)
+    log("bake", btype, round(time.time() - t0, 1), "s")
+
+
 def build_game(hero_obj, hero_rig, root):
     data = om.assemble("game")
     mat = bpy.data.materials.new("Octopus_game")
@@ -341,21 +363,8 @@ def build_game(hero_obj, hero_rig, root):
         imgs[kind] = (img, n)
     for kind, btype in (("albedo", "DIFFUSE"), ("normal", "NORMAL"), ("rough", "ROUGHNESS")):
         img, n = imgs[kind]
-        t.nodes.active = n
-        for o in bpy.context.selected_objects:
-            o.select_set(False)
-        hero_obj.select_set(True)
-        obj.select_set(True)
-        bpy.context.view_layer.objects.active = obj
-        kw = dict(type=btype, use_selected_to_active=True, cage_extrusion=.025, max_ray_distance=.06,
-                  margin=8, margin_type="EXTEND", use_clear=True)
-        if btype == "DIFFUSE":
-            kw["pass_filter"] = {"COLOR"}
-        if btype == "NORMAL":
-            kw["normal_space"] = "TANGENT"
-        t0 = time.time()
-        bpy.ops.object.bake(**kw)
-        log("baked", kind, round(time.time() - t0, 1), "s")
+        bake_pass(hero_obj, obj, t, n, btype)
+        log("baked", kind)
     alb = np.array(imgs["albedo"][0].pixels[:]).reshape(TEX, TEX, 4)
     rough = np.array(imgs["rough"][0].pixels[:]).reshape(TEX, TEX, 4)[..., 0]
     gloss = np.clip(1 - rough / .65, 0, 1)

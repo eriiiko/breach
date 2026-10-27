@@ -1,0 +1,97 @@
+{
+  "coords": {
+    "r_ref_m": 0.07588165781252484,
+    "taper_gamma": 0.7,
+    "blend_s": 0.09,
+    "vertex_order_max_err_m": 5.9601738655601366e-08
+  },
+  "colour_note": "colours in pattern_math are sRGB 0..255, converted with pattern_math.linear",
+  "variants": {
+    "default": {
+      "animal": "the build's own skin (common octopus, Octopus vulgaris)",
+      "default_vs_committed": {
+        "albedo_rgb_max_diff_255": 1.0,
+        "albedo_rgb_mean_diff_255": 5.563099989558395e-07,
+        "albedo_texels_differing": 7,
+        "gloss_rebaked_max_diff_255": 0.0,
+        "gloss_texels_differing": 0
+      },
+      "bake_s": 5.7,
+      "seconds": 22.4
+    },
+    "zebra": {
+      "animal": "mimic octopus (Thaumoctopus mimicus), wunderpus (Wunderpus photogenicus)",
+      "bake_s": 2.9,
+      "seconds": 20.1
+    },
+    "reticulated": {
+      "animal": "honeycomb moray (Gymnothorax favagineus), reticulated giraffe",
+      "bake_s": 2.9,
+      "seconds": 19.9
+    },
+    "rosette": {
+      "animal": "leopard (Panthera pardus), jaguar (Panthera onca)",
+      "bake_s": 3.0,
+      "seconds": 20.2
+    },
+    "red_whitespot": {
+      "animal": "white-spotted octopus (Callistoctopus macropus)",
+      "bake_s": 2.9,
+      "seconds": 20.0
+    },
+    "blue_ringed": {
+      "animal": "greater blue-ringed octopus (Hapalochlaena lunulata)",
+      "bake_s": 2.9,
+      "seconds": 20.1
+    },
+    "ghost": {
+      "animal": "Casper octopus (an undescribed incirrate octopod, Hawaii 2016), dumbo octopuses (Grimpoteuthis)",
+      "bake_s": 2.9,
+      "seconds": 20.4
+    }
+  },
+  "glb": {
+    "default": {
+      "glb_bytes": 8348640,
+      "png_bytes": 1701888,
+      "non_albedo_views_identical": true,
+      "views_compared": 333
+    },
+    "zebra": {
+      "glb_bytes": 8214520,
+      "png_bytes": 1567768,
+      "non_albedo_views_identical": true,
+      "views_compared": 333
+    },
+    "reticulated": {
+      "glb_bytes": 8530376,
+      "png_bytes": 1883624,
+      "non_albedo_views_identical": true,
+      "views_compared": 333
+    },
+    "rosette": {
+      "glb_bytes": 8300572,
+      "png_bytes": 1653817,
+      "non_albedo_views_identical": true,
+      "views_compared": 333
+    },
+    "red_whitespot": {
+      "glb_bytes": 8324200,
+      "png_bytes": 1677446,
+      "non_albedo_views_identical": true,
+      "views_compared": 333
+    },
+    "blue_ringed": {
+      "glb_bytes": 8417812,
+      "png_bytes": 1771058,
+      "non_albedo_views_identical": true,
+      "views_compared": 333
+    },
+    "ghost": {
+      "glb_bytes": 7724864,
+      "png_bytes": 1078110,
+      "non_albedo_views_identical": true,
+      "views_compared": 333
+    }
+  }
+}

@@ -3,3 +3,7 @@ runtime_bench.log
 runtime_game.log
 prototype/*.blend1
 previews/arm/frames/*.png
+prototype/octopus/variants/*.glb
+prototype/octopus/variants/*.blend
+prototype/octopus/variants/*.blend1
+prototype/octopus/variants/octopus_albedo_gloss_default.png

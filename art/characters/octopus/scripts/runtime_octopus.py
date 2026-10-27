@@ -163,7 +163,10 @@ def main():
     ap.add_argument("--shots", default="")
     ap.add_argument("--frames", default="90,200")
     ap.add_argument("--focus", default="20:30:0")
+    ap.add_argument("--model", type=Path, default=MODEL, help="a game GLB, e.g. a skin variant (#113)")
+    ap.add_argument("--evidence", type=Path, default=REPORT / "game_evidence.json")
     args = ap.parse_args(own)
+    args.model, args.evidence = args.model.resolve(), args.evidence.resolve()
     args.root = args.root.resolve()
     sys.path[:0] = [str(args.root), str(args.root / "src"), str(args.root / "cpp" / "build" / "Release")]
     os.chdir(args.root)
@@ -201,7 +204,7 @@ def main():
 
     umr.UnitModelRenderer.draw_units = draw_counted
     helper = args.root / "art" / "characters" / "charkit" / "preview_in_game.py"
-    hargs = ["--root", str(args.root), "--model", str(MODEL)]
+    hargs = ["--root", str(args.root), "--model", str(args.model)]
     if args.shots:
         hargs += ["--shots", args.shots, "--frames", args.frames, "--focus", args.focus, "--mouse", "640,350"]
     sys.argv = [str(helper), *hargs, "--", *(passthrough or ["--level", "playground"])]
@@ -219,7 +222,8 @@ def main():
                    distinct_pose_times=len(state["poses"]), pose_mode=args.pose, game_exit_code=code,
                    note="Real main.py via root charkit preview + tools/e2e_drive.py; only this prototype's pose "
                         "argument changes in process. UnitModelRenderer, lighting, shader, camera, shadows unchanged.")
-        (REPORT / "game_evidence.json").write_text(json.dumps(rep, indent=2) + "\n")
+        rep["model"] = args.model.name
+        args.evidence.write_text(json.dumps(rep, indent=2) + "\n")
         print("OCTOPUS_GAME_EVIDENCE", json.dumps(rep))
         if args.shots and code == 0 and state["calls"] < 2:
             raise SystemExit("Game ran without live octopus posing")
