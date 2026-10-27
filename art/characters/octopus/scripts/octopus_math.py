@@ -49,11 +49,17 @@ GAME_SEGMENTS = arm.SEGMENTS // GAME_EVERY
 #                   is a longer, more slender arm, a lower one a shorter, stouter
 #   stretch_max     arm length factor at `stretch` = 1 (the free arm beyond the
 #                   crown elongates by this factor and thins as 1/sqrt of it)
-# The three "mid" rows are Erik's options for "the body is about a marine's size"
-# (2026-10-27); each spans 2.0 marines with straight rest arms and 2.5 marines
-# fully stretched (`span_m`). "mid" is the default; switching is one value.
+# Erik's ruling of 2026-10-28 (#106): option A's PROPORTION on bigger bodies --
+# every row of the family has arms ARM_BODY_RATIO (1.8) x its body length and
+# the same stretch fraction; the fixed 2.0 / 2.5-marine span of the first three
+# options is dropped (the ratio rules, the span follows). "mid" (option B's
+# 1.4 m body) is the default; "big" (option C's 1.885 m body, "the big baddie")
+# previews a later larger size; "small_preview" is option A's 1.0 m body. The
+# #106 option rows (mid_bulk / mid / mid_heavy) are in git at 65df56a.
 MARINE_HEIGHT_M = 1.885               # the space marine (assets/models/space_marine), every look's scale
 BODY_LENGTH_AUTHORED = (0.07 + 0.15) - (-0.215 - 0.275)   # 0.71: head front (HEAD_C+HEAD_R) .. mantle back
+ARM_BODY_RATIO = 1.8                  # Erik: "arms about 1.8 x the body" (option A had 1.777)
+FAMILY_STRETCH_MAX = 1.40             # free arm x1.40 -> whole arm x1.31: mid's 2.52 m arm reaches 3.30 m
 
 
 @dataclass(frozen=True)
@@ -65,12 +71,12 @@ class SizeRow:
 
 
 SIZES = {
-    "mid": SizeRow(1.40, 1.237, 1.398,
-                   "option B, the default: between the two readings; body 1.4 m long"),
-    "mid_bulk": SizeRow(1.00, 1.777, 1.343,
-                        "option A: body a marine's bulk (mantle 0.66 x 0.78 m), the proof's long arms"),
-    "mid_heavy": SizeRow(1.885, 0.890, 1.495,
-                         "option C: body as long as a marine is tall, short stout arms"),
+    "mid": SizeRow(1.40, ARM_BODY_RATIO, FAMILY_STRETCH_MAX,
+                   "the default, medium size (option B's body, option A's proportion): body 1.4 m long"),
+    "small_preview": SizeRow(1.00, ARM_BODY_RATIO, FAMILY_STRETCH_MAX,
+                             "option A's body (mantle 0.66 x 0.78 m) at the family proportion"),
+    "big": SizeRow(1.885, ARM_BODY_RATIO, FAMILY_STRETCH_MAX,
+                   "preview of a later larger size (option C's body, as long as a marine is tall)"),
     "proof": SizeRow(BODY_LENGTH_AUTHORED, arm.LENGTH / BODY_LENGTH_AUTHORED, 1.4,
                      "the pre-#106 animal: authored units at scale 1, the 1.2 m proof arm"),
 }

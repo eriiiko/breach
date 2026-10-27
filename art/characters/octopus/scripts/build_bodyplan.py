@@ -1,14 +1,17 @@
-"""Blender 4.5: the mid-size body-plan options beside the game's marine, at true scale (#106).
+"""Blender 4.5: the octopus size family beside the game's marine, at true scale (#106).
 
-blender -b --factory-startup -P build_bodyplan.py -- --root <checkout> [--only mid,mid_bulk] [--samples 48]
+blender -b --factory-startup -P build_bodyplan.py -- --root <checkout> [--only mid,big] [--samples 48]
 
-For each option row of octopus_math.SIZES (A mid_bulk, B mid = the default,
-C mid_heavy) the hero octopus is assembled at that row's dials, given the
-build's own materials and studio (build_octopus), and rendered at rest and
-reaching beside the space marine (assets/models/space_marine, the scale every
-game look shares), from straight above (the game camera) and three-quarter.
-Every option uses the SAME cameras, so the pictures compare sizes directly.
-Also renders the stretch strip (one arm at stretch 0 / 0.5 / 1, default row).
+For each family row of octopus_math.SIZES (small_preview, mid = the default,
+big; Erik's ruling of 2026-10-28: arms 1.8 x body on every row) the hero
+octopus is assembled at that row's dials, given the build's own materials and
+studio (build_octopus), and rendered at rest and reaching beside the space
+marine (assets/models/space_marine, the scale every game look shares), from
+straight above (the game camera) and three-quarter. Every row uses the SAME
+cameras, framed on the biggest row, so the pictures compare sizes directly; the
+marine stands just beyond each row's own rest arm tips (MARINE_GAP).
+Also renders the stretch strip (one arm at stretch 0 / 0.5 / 1, default row),
+framed from the pose so the stretched arm is never cut off.
 Writes PNGs to previews/bodyplan/raw/ and bodyplan.json (the cameras' metres per
 pixel, for the labelled sheets made by package_bodyplan.py). Render-only.
 """
@@ -30,14 +33,15 @@ import octopus_math as om
 
 OUT = bo.HOME / "previews" / "bodyplan"
 RAW = OUT / "raw"
-OPTIONS = ["mid_bulk", "mid", "mid_heavy"]          # A, B (default), C
+OPTIONS = ["small_preview", "mid", "big"]           # small, medium (default), big
 # The marine stands on the animal's right (-X), facing it; the reaching arms are R2 and R3.
-MARINE_AT = np.array([-2.85, 0.0, 0.15])            # glTF metres (crown axis at the origin)
-TOP_CENTRE = np.array([-0.45, 0.0, 0.0])
-TOP_ORTHO, TOP_RES = 7.6, (1200, 1000)
-CAM34 = dict(loc=(3.2, 5.6, 5.6), target=(-0.8, 0.35, -0.1), lens=30, res=(1400, 1000))
+MARINE_GAP = 1.22                                   # marine at this x the row's rest arm tips' reach
+MARINE_Z = 0.15                                     # glTF metres (crown axis at the origin)
+TOP_RES = (1200, 1000)
+CAM34 = dict(loc=(5.4, 9.4, 9.4), target=(-1.3, 0.4, -0.15), lens=30, res=(1400, 1000))
 STRIP_RES = (900, 1100)
-LIGHT_SCALE = 2.0                                   # the build studio, sized for a ~2x scene (same look)
+LIGHT_SCALE = 3.0                                   # the build studio, sized for a ~3x scene (same look)
+FRAME_MARGIN = 0.12                                 # framing slack around the posed skeleton + arm girth
 
 
 def reach_arms():
@@ -56,13 +60,57 @@ def strip_arms(stretch):
     return arms
 
 
+def pose_points(arms):
+    """World (glTF metres) bone heads of the hero skeleton in a pose: the framing's input."""
+    pts, _ = om.pose_octopus(om.BodyParams(), arms, "hero")
+    return np.asarray(pts, float)
+
+
+def marine_at(name):
+    """Where the marine stands for a row: just beyond its rest arm tips on the -X side."""
+    om.set_size(name)
+    reach = -pose_points(om.rest_arms())[:, 0].min()
+    return np.array([-MARINE_GAP * reach, 0.0, MARINE_Z])
+
+
+def top_frame(names):
+    """One top camera for every row: the union of rest + reach skeletons and the marines."""
+    lo, hi = np.full(2, 1e9), np.full(2, -1e9)
+    for name in names:
+        m = marine_at(name)
+        for arms in (om.rest_arms(), reach_arms()):
+            p = pose_points(arms)[:, [0, 2]]
+            lo, hi = np.minimum(lo, p.min(0)), np.maximum(hi, p.max(0))
+        lo = np.minimum(lo, m[[0, 2]] - 0.6)
+        hi = np.maximum(hi, m[[0, 2]] + 0.6)
+    pad = FRAME_MARGIN * (hi - lo).max()
+    lo, hi = lo - pad, hi + pad
+    centre = np.array([(lo[0] + hi[0]) / 2, 0.0, (lo[1] + hi[1]) / 2])
+    w, h = hi - lo
+    ortho = max(w, h * TOP_RES[0] / TOP_RES[1])
+    return centre, float(ortho)
+
+
+def strip_frame():
+    """The stretch strip's camera: body + arm L1 at full stretch, the same for all three values."""
+    a = om.arm_bone_offset(0)                                             # arm L1, the one that stretches
+    l1 = pose_points(strip_arms(1.0))[a:a + om.arm.SEGMENTS + 1][:, [0, 2]]
+    body = np.array([[-0.6, -0.7], [0.6, 0.7]]) * om.OCTOPUS_SCALE        # crown + head + mantle, authored box
+    lo, hi = np.minimum(l1.min(0), body[0]), np.maximum(l1.max(0), body[1])
+    pad = FRAME_MARGIN * (hi - lo).max()
+    lo, hi = lo - pad, hi + pad
+    centre = np.array([(lo[0] + hi[0]) / 2, 0.0, (lo[1] + hi[1]) / 2])
+    w, h = hi - lo
+    return centre, float(max(w, h * STRIP_RES[0] / STRIP_RES[1]))
+
+
 def clear():
     bpy.ops.wm.read_factory_settings(use_empty=True)
     bpy.context.scene.world = bpy.data.worlds.new("World")
     bo.gpu()
 
 
-def import_marine(root):
+def import_marine(root, at):
     path = root / "assets" / "models" / "space_marine" / "space_marine.glb"
     before = set(bpy.data.objects)
     bpy.ops.import_scene.gltf(filepath=str(path))
@@ -77,7 +125,7 @@ def import_marine(root):
     else:
         roots = [o for o in objs if o.parent is None]
     for o in roots:
-        o.location = Vector(bo.to_b(MARINE_AT))
+        o.location = Vector(bo.to_b(at))
         o.rotation_mode = "XYZ"
         o.rotation_euler = (o.rotation_euler[0], o.rotation_euler[1], math.radians(90))   # glTF +Z forward -> face +X (the octopus)
     bpy.context.scene.frame_set(10)
@@ -113,7 +161,7 @@ def build(name):
     return obj, rig
 
 
-def top(cam, path, centre=TOP_CENTRE, ortho=TOP_ORTHO, res=TOP_RES):
+def top(cam, path, centre, ortho, res=TOP_RES):
     c = np.asarray(centre, float)
     bo.shot(cam, path, bo.to_b(c + [0, 12, 0]), bo.to_b(c), ortho=ortho, res=res)
     # The camera's up is Blender +Y (glTF -Z, the animal's back); record the mapping.
@@ -134,24 +182,28 @@ def main():
     RAW.mkdir(parents=True, exist_ok=True)
     report_path = OUT / "bodyplan.json"
     report = json.loads(report_path.read_text()) if report_path.exists() else {}
-    report["marine_at_gltf_m"] = MARINE_AT.tolist()
+    report.pop("marine_at_gltf_m", None)
+    report["options"] = {k: v for k, v in report.get("options", {}).items() if k in OPTIONS}
     names = [n for n in OPTIONS if not args.only or n in args.only.split(",")]
+    top_centre, top_ortho = top_frame(OPTIONS)
+    report["top_camera"] = dict(centre_gltf=top_centre.tolist(), ortho_m=top_ortho)
     for name in names:
         clear()
+        at = marine_at(name)
         obj, rig = build(name)
         cam, floor = bo.studio(LIGHT_SCALE)
         bpy.context.scene.cycles.samples = args.samples
-        marine = import_marine(args.root.resolve())
+        marine = import_marine(args.root.resolve(), at)
         lo, hi = measure(marine)
-        rec = dict(size=om.size_report(name), marine_height_m=float(hi[2] - lo[2]),
+        rec = dict(size=om.size_report(name), marine_at_gltf_m=at.tolist(), marine_height_m=float(hi[2] - lo[2]),
                    marine_bbox_blender=[lo.tolist(), hi.tolist()])
         for pose, arms in (("rest", om.rest_arms()), ("reach", reach_arms())):
             bo.set_pose(rig, om.BodyParams(), arms, "hero")
-            rec[f"{pose}_top"] = top(cam, RAW / f"{name}_{pose}_top.png")
+            rec[f"{pose}_top"] = top(cam, RAW / f"{name}_{pose}_top.png", top_centre, top_ortho)
             three_quarter(cam, RAW / f"{name}_{pose}_34.png")
             # closest approach of the octopus skin to the marine's vertical axis (no intersection)
             v = bo.evaluated_vertices(obj)
-            d = np.hypot(v[:, 0] - MARINE_AT[0], v[:, 2] - MARINE_AT[2])
+            d = np.hypot(v[:, 0] - at[0], v[:, 2] - at[2])
             rec[f"{pose}_closest_to_marine_axis_m"] = float(d.min())
         report.setdefault("options", {})[name] = rec
         report_path.write_text(json.dumps(report, indent=2) + "\n")
@@ -162,13 +214,13 @@ def main():
         cam, floor = bo.studio(LIGHT_SCALE)
         bpy.context.scene.cycles.samples = args.samples
         strip = {}
+        s_centre, s_ortho = strip_frame()
         for st in (0.0, 0.5, 1.0):
             bo.set_pose(rig, om.BodyParams(), strip_arms(st), "hero")
             k = 0
             tip = om.pose_octopus(om.BodyParams(), strip_arms(st), "hero")[0][om.arm_bone_offset(k) + 32]
             # frame the body and arm L1 (front-left): same camera for the three values
-            strip[str(st)] = top(cam, RAW / f"strip_{st:.1f}.png", centre=(0.75, 0, 0.95), ortho=3.9,
-                                 res=STRIP_RES)
+            strip[str(st)] = top(cam, RAW / f"strip_{st:.1f}.png", s_centre, s_ortho, res=STRIP_RES)
             strip[str(st)]["arm_length_m"] = om.arm_length(st) * om.OCTOPUS_SCALE
             strip[str(st)]["base_to_tip_m"] = float(np.linalg.norm(tip - om.MOUNT_POINTS[k] * om.OCTOPUS_SCALE))
             strip[str(st)]["thinning"] = float(om.arm_joint_scales(st)[-1])

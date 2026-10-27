@@ -2,21 +2,21 @@
   "active_size": "mid",
   "controls": {
     "random_poses": 300,
-    "segment_length_max_error_vs_law_m": 6.522560269672795e-16,
+    "segment_length_max_error_vs_law_m": 1.1934897514720433e-15,
     "rotation_orthonormality_max_error": 4.884981308350689e-15
   },
   "independence": "60 random trials: changing arm j never moves arm i != j; mantle/siphon controls never move arms",
   "continuity": {
     "arm.curl": {
-      "max_over_median_step": 1.674,
+      "max_over_median_step": 1.656,
       "max_frame_step_rad": 0.01267
     },
     "arm.bend_dir": {
-      "max_over_median_step": 1.047,
+      "max_over_median_step": 1.048,
       "max_frame_step_rad": 0.03181
     },
     "arm.twist": {
-      "max_over_median_step": 1.46,
+      "max_over_median_step": 1.429,
       "max_frame_step_rad": 0.00841
     },
     "arm.tip_curl": {
@@ -24,11 +24,11 @@
       "max_frame_step_rad": 0.01385
     },
     "arm.lift": {
-      "max_over_median_step": 1.018,
+      "max_over_median_step": 1.007,
       "max_frame_step_rad": 0.00349
     },
     "arm.swing": {
-      "max_over_median_step": 1.005,
+      "max_over_median_step": 1.009,
       "max_frame_step_rad": 0.00157
     },
     "arm.stretch": {
@@ -67,8 +67,8 @@
     "max_influences": 4
   },
   "hero_mesh": {
-    "vertices": 49656,
-    "triangles": 97952,
+    "vertices": 67512,
+    "triangles": 132512,
     "joints": 270,
     "max_influences": 4
   },
@@ -77,16 +77,16 @@
     "game_arm_triangle_area_ratio_min": 0.5808493359446955,
     "game_crown_triangle_area_ratio_min": 0.016233281749827154,
     "game_crown_triangle_area_ratio_max": 16.44979370374101,
-    "hero_arm_section_area_ratio_min": 0.949286713750549,
-    "hero_arm_section_area_ratio_max": 1.000000000009345,
-    "game_vs_hero_rig_max_deviation_m": 0.016721479537903934,
+    "hero_arm_section_area_ratio_min": 0.9492867137509154,
+    "hero_arm_section_area_ratio_max": 1.0000000000133957,
+    "game_vs_hero_rig_max_deviation_m": 0.02611031045533834,
     "inverted_triangles_worst_pose": 74,
     "poses_with_inverted_triangles": 119,
-    "seconds": 2.9
+    "seconds": 3.5
   },
   "deformation_shown_poses": {
     "poses": 30,
-    "game_arm_triangle_area_ratio_min": 0.7627527350836024,
+    "game_arm_triangle_area_ratio_min": 0.852743750475343,
     "game_crown_triangle_area_ratio_min": 0.02946941363739146,
     "inverted_triangles_max": 8
   },
@@ -95,28 +95,28 @@
     "hero_trials": 8,
     "volume_straight_arm": {
       "0.0": {
-        "volume_m3": 0.0262253279452926,
-        "length_m": 1.3500692152917504
+        "volume_m3": 0.03762597250028635,
+        "length_m": 2.130226358148894
       },
       "0.5": {
-        "volume_m3": 0.026463821104770222,
-        "length_m": 1.5839410713270023,
-        "volume_ratio": 1.0090940010349967
+        "volume_m3": 0.037954544526752086,
+        "length_m": 2.518813688716662,
+        "volume_ratio": 1.008732585621893
       },
       "1.0": {
-        "volume_m3": 0.026682093469509286,
-        "length_m": 1.8178129273622552,
-        "volume_ratio": 1.0174169613882245
+        "volume_m3": 0.038251370087547,
+        "length_m": 2.9074010192844324,
+        "volume_ratio": 1.0166214331671
       }
     }
   },
-  "size_mid_bulk_game_mesh": {
+  "size_small_preview_game_mesh": {
     "vertices": 6108,
     "triangles": 12200,
     "joints": 142,
     "max_influences": 4
   },
-  "size_mid_heavy_game_mesh": {
+  "size_big_game_mesh": {
     "vertices": 6108,
     "triangles": 12200,
     "joints": 142,
@@ -131,69 +131,69 @@
   "sizes": {
     "mid": {
       "size": "mid",
-      "note": "option B, the default: between the two readings; body 1.4 m long",
+      "note": "the default, medium size (option B's body, option A's proportion): body 1.4 m long",
       "scale": 1.9718,
       "body_length_m": 1.4,
       "mantle_width_m": 0.9268,
       "mantle_length_m": 1.0845,
-      "arm_length_rest_m": 1.7318,
-      "arm_length_stretched_m": 2.2043,
-      "arm_body_ratio": 1.237,
-      "arm_lambda": 0.6498,
-      "stretch_max": 1.398,
+      "arm_length_rest_m": 2.52,
+      "arm_length_stretched_m": 3.3052,
+      "arm_body_ratio": 1.8,
+      "arm_lambda": 1.0849,
+      "stretch_max": 1.4,
       "arm_base_diameter_m": 0.2993,
-      "span_rest_m": 3.7692,
-      "span_stretched_m": 4.7116,
-      "span_rest_marines": 1.9996,
-      "span_stretched_marines": 2.4995,
-      "span_rest_game_tiles": 11.9974,
-      "span_stretched_game_tiles": 14.9972,
-      "span_rest_tiles_at_0333m": 11.3188,
-      "span_stretched_tiles_at_0333m": 14.1491
+      "span_rest_m": 5.3413,
+      "span_stretched_m": 6.9073,
+      "span_rest_marines": 2.8336,
+      "span_stretched_marines": 3.6644,
+      "span_rest_game_tiles": 17.0013,
+      "span_stretched_game_tiles": 21.9863,
+      "span_rest_tiles_at_0333m": 16.0398,
+      "span_stretched_tiles_at_0333m": 20.7428
     },
-    "mid_bulk": {
-      "size": "mid_bulk",
-      "note": "option A: body a marine's bulk (mantle 0.66 x 0.78 m), the proof's long arms",
+    "small_preview": {
+      "size": "small_preview",
+      "note": "option A's body (mantle 0.66 x 0.78 m) at the family proportion",
       "scale": 1.4085,
       "body_length_m": 1.0,
       "mantle_width_m": 0.662,
       "mantle_length_m": 0.7746,
-      "arm_length_rest_m": 1.777,
-      "arm_length_stretched_m": 2.2502,
-      "arm_body_ratio": 1.777,
-      "arm_lambda": 1.0671,
-      "stretch_max": 1.343,
+      "arm_length_rest_m": 1.8,
+      "arm_length_stretched_m": 2.3609,
+      "arm_body_ratio": 1.8,
+      "arm_lambda": 1.0849,
+      "stretch_max": 1.4,
       "arm_base_diameter_m": 0.2138,
-      "span_rest_m": 3.7693,
-      "span_stretched_m": 4.7131,
-      "span_rest_marines": 1.9996,
-      "span_stretched_marines": 2.5003,
-      "span_rest_game_tiles": 11.9978,
-      "span_stretched_game_tiles": 15.0018,
-      "span_rest_tiles_at_0333m": 11.3192,
-      "span_stretched_tiles_at_0333m": 14.1533
+      "span_rest_m": 3.8152,
+      "span_stretched_m": 4.9338,
+      "span_rest_marines": 2.024,
+      "span_stretched_marines": 2.6174,
+      "span_rest_game_tiles": 12.1438,
+      "span_stretched_game_tiles": 15.7045,
+      "span_rest_tiles_at_0333m": 11.457,
+      "span_stretched_tiles_at_0333m": 14.8163
     },
-    "mid_heavy": {
-      "size": "mid_heavy",
-      "note": "option C: body as long as a marine is tall, short stout arms",
+    "big": {
+      "size": "big",
+      "note": "preview of a later larger size (option C's body, as long as a marine is tall)",
       "scale": 2.6549,
       "body_length_m": 1.885,
       "mantle_width_m": 1.2478,
       "mantle_length_m": 1.4602,
-      "arm_length_rest_m": 1.6776,
-      "arm_length_stretched_m": 2.1503,
-      "arm_body_ratio": 0.89,
-      "arm_lambda": 0.3817,
-      "stretch_max": 1.495,
+      "arm_length_rest_m": 3.393,
+      "arm_length_stretched_m": 4.4502,
+      "arm_body_ratio": 1.8,
+      "arm_lambda": 1.0849,
+      "stretch_max": 1.4,
       "arm_base_diameter_m": 0.4029,
-      "span_rest_m": 3.7703,
-      "span_stretched_m": 4.713,
-      "span_rest_marines": 2.0002,
-      "span_stretched_marines": 2.5002,
-      "span_rest_game_tiles": 12.001,
-      "span_stretched_game_tiles": 15.0015,
-      "span_rest_tiles_at_0333m": 11.3223,
-      "span_stretched_tiles_at_0333m": 14.153
+      "span_rest_m": 7.1916,
+      "span_stretched_m": 9.3003,
+      "span_rest_marines": 3.8152,
+      "span_stretched_marines": 4.9338,
+      "span_rest_game_tiles": 22.8911,
+      "span_stretched_game_tiles": 29.6029,
+      "span_rest_tiles_at_0333m": 21.5965,
+      "span_stretched_tiles_at_0333m": 27.9287
     },
     "proof": {
       "size": "proof",
@@ -218,6 +218,6 @@
       "span_stretched_tiles_at_0333m": 9.8684
     }
   },
-  "seconds": 220.7,
+  "seconds": 258.9,
   "limits": "Random poses span every control's full range including edges; no self-collision, arm-arm or arm-body intersection or ground contact is checked or solved. Crown/body areas are measured on the GAME skin; the hero shares its weights' construction. Thresholds are prototype acceptance, not a production spec."
 }

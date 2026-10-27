@@ -2,10 +2,10 @@
 
     python package_bodyplan.py
 
-Writes previews/bodyplan/: per option <row>_top.jpg and <row>_34.jpg (rest | reach),
-options_top.jpg and options_34.jpg (A | B | C, rest over reach), stretch_strip.jpg.
+Writes previews/bodyplan/: per row <row>_top.jpg and <row>_34.jpg (rest | reach),
+options_top.jpg and options_34.jpg (small | mid | big, rest over reach), stretch_strip.jpg.
 Top views carry a scale bar of one marine (the game's space marine, 1.885 m) and
-the game's tiles (the renderer draws the marine 6 tiles tall).
+the game's tiles (0.333 m, the shipped tile size).
 """
 from pathlib import Path
 import json
@@ -17,8 +17,9 @@ import octopus_math as om
 HOME = Path(__file__).resolve().parent.parent
 OUT = HOME / "previews" / "bodyplan"
 RAW = OUT / "raw"
-LETTER = {"mid_bulk": "A", "mid": "B", "mid_heavy": "C"}
-ORDER = ["mid_bulk", "mid", "mid_heavy"]
+LABEL = {"small_preview": "small (preview)", "mid": "medium", "big": "big (preview)"}
+ORDER = ["small_preview", "mid", "big"]
+TILE_M = 0.333
 INK, PAPER, ACCENT = (24, 24, 26), (238, 236, 232), (178, 52, 30)
 
 
@@ -35,24 +36,28 @@ def scale_bar(img, m_per_px, y_from_bottom=46):
     """One-marine bar plus a game-tile ruler, bottom left."""
     d = ImageDraw.Draw(img)
     px = om.MARINE_HEIGHT_M / m_per_px
-    tile_px = px / 6.0
+    tile_px = TILE_M / m_per_px
     x0, y0 = 30, img.height - y_from_bottom
-    d.rectangle([x0 - 10, y0 - 34, x0 + px + 180, y0 + 26], fill=(255, 255, 255))
+    label = "1 marine = 1.885 m; ticks = game tiles (0.333 m)"
+    d.rectangle([x0 - 10, y0 - 34, x0 + max(px, d.textlength(label, font=font(17))) + 14, y0 + 26], fill=(255, 255, 255))
     d.rectangle([x0, y0, x0 + px, y0 + 7], fill=INK)
-    for i in range(7):
+    i = 0
+    while i * tile_px <= px + 0.5:
         x = x0 + i * tile_px
         d.line([x, y0 - 6, x, y0 + 7], fill=INK, width=2)
-    d.text((x0, y0 - 30), "1 marine = 1.885 m = 6 game tiles", fill=INK, font=font(17))
+        i += 1
+    d.text((x0, y0 - 30), label, fill=INK, font=font(17))
     d.text((x0 + px + 10, y0 - 6), "", fill=INK, font=font(17))
 
 
 def caption(name, rec):
     s = rec["size"]
     default = "  (default)" if name == "mid" else ""
-    return [f"{LETTER[name]}  {name}{default}",
+    return [f"{LABEL[name]}  {name}{default}",
             f"body {s['body_length_m']:.2f} m long, mantle {s['mantle_width_m']:.2f} x {s['mantle_length_m']:.2f} m",
-            f"arm {s['arm_length_rest_m']:.2f} m (x{s['arm_body_ratio']:.2f} body), base {s['arm_base_diameter_m']:.2f} m thick",
-            f"span {s['span_rest_m']:.2f} m = {s['span_rest_marines']:.2f} marines = {s['span_rest_game_tiles']:.1f} tiles;"
+            f"arm {s['arm_length_rest_m']:.2f} m (x{s['arm_body_ratio']:.2f} body), stretched {s['arm_length_stretched_m']:.2f} m;"
+            f" base {s['arm_base_diameter_m']:.2f} m thick",
+            f"span {s['span_rest_m']:.2f} m = {s['span_rest_marines']:.2f} marines = {s['span_rest_tiles_at_0333m']:.1f} tiles;"
             f" stretched {s['span_stretched_m']:.2f} m = {s['span_stretched_marines']:.2f} marines"]
 
 

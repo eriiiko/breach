@@ -358,27 +358,36 @@ def check_stretch(game, hero, report):
 
 
 def check_sizes(report):
-    """Every SIZES row builds a closed, bind-exact game mesh, and each 'mid' row
-    spans 2.0 marines straight at rest and 2.5 fully stretched (Erik's sentence,
-    #106). A row edited off those spans without re-solving its dials breaks it;
-    a baby/boss row adds its own targets here."""
-    targets = {"mid": (2.0, 2.5), "mid_bulk": (2.0, 2.5), "mid_heavy": (2.0, 2.5)}
+    """Every SIZES row builds a closed, bind-exact game mesh. The family rows
+    (Erik's ruling, 2026-10-28) keep the PROPORTION: rest arm == 1.8 x body
+    length, and one stretch fraction for all; the default `mid` stretched arm
+    reaches 3.2-3.4 m ("a little more than 2.5 m"). Editing a row's body length
+    keeps passing (the span is free now); editing its ratio or stretch_max off
+    the family, or a length law change that moves the reached length, breaks it.
+    A baby/boss row joins `family` or adds its own targets here."""
+    family = ("mid", "small_preview", "big")
     keep = om.SIZE
     out = {}
     try:
         for name in om.SIZES:
             om.set_size(name)
             r = om.size_report()
-            if name in targets:
-                lo, hi = targets[name]
-                assert abs(r["span_rest_marines"] - lo) < 0.02, f"{name}: rest span {r['span_rest_marines']:.3f} marines"
-                assert abs(r["span_stretched_marines"] - hi) < 0.02, f"{name}: stretched span {r['span_stretched_marines']:.3f}"
+            if name in family:
+                ratio = r["arm_length_rest_m"] / r["body_length_m"]
+                assert abs(ratio - om.ARM_BODY_RATIO) < 1e-9, f"{name}: arm/body {ratio:.4f}"
+                reach = r["arm_length_stretched_m"] / r["arm_length_rest_m"]
+                fracs = out.setdefault("_reach_factors", [])
+                assert not fracs or abs(reach - fracs[0]) < 1e-9, f"{name}: stretch fraction {reach:.4f} != {fracs[0]:.4f}"
+                fracs.append(reach)
+            if name == "mid":
+                assert 3.2 <= r["arm_length_stretched_m"] <= 3.4, f"mid: stretched arm {r['arm_length_stretched_m']:.3f} m"
             if name != keep:
                 d = om.assemble("game")
                 mesh_checks(d, f"size_{name}_game", report)
             out[name] = {k: (round(v, 4) if isinstance(v, float) else v) for k, v in r.items()}
     finally:
         om.set_size(keep)
+    out.pop("_reach_factors", None)
     report["sizes"] = out
 
 
