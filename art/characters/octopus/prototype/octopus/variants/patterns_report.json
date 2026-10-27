@@ -48,6 +48,26 @@
       "animal": "Casper octopus (an undescribed incirrate octopod, Hawaii 2016), dumbo octopuses (Grimpoteuthis)",
       "bake_s": 2.9,
       "seconds": 20.4
+    },
+    "jungle_yellow": {
+      "animal": "Erik's reference; green-and-black poison frog (Dendrobates auratus) palette",
+      "bake_s": 3.0,
+      "seconds": 20.0
+    },
+    "jungle_red": {
+      "animal": "red-eyed tree frog (Agalychnis callidryas), strawberry poison frog (Oophaga pumilio) red",
+      "bake_s": 2.9,
+      "seconds": 19.8
+    },
+    "azureus": {
+      "animal": "blue poison frog (Dendrobates tinctorius 'azureus')",
+      "bake_s": 3.0,
+      "seconds": 20.0
+    },
+    "bumblebee": {
+      "animal": "yellow-banded poison frog (Dendrobates leucomelas)",
+      "bake_s": 2.9,
+      "seconds": 19.8
     }
   },
   "glb": {
@@ -72,6 +92,30 @@
     "rosette": {
       "glb_bytes": 8300572,
       "png_bytes": 1653817,
+      "non_albedo_views_identical": true,
+      "views_compared": 333
+    },
+    "jungle_yellow": {
+      "glb_bytes": 8538744,
+      "png_bytes": 1891990,
+      "non_albedo_views_identical": true,
+      "views_compared": 333
+    },
+    "jungle_red": {
+      "glb_bytes": 8513468,
+      "png_bytes": 1866715,
+      "non_albedo_views_identical": true,
+      "views_compared": 333
+    },
+    "azureus": {
+      "glb_bytes": 8610232,
+      "png_bytes": 1963479,
+      "non_albedo_views_identical": true,
+      "views_compared": 333
+    },
+    "bumblebee": {
+      "glb_bytes": 8524672,
+      "png_bytes": 1877918,
       "non_albedo_views_identical": true,
       "views_compared": 333
     },

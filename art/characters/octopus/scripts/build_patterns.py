@@ -215,15 +215,15 @@ def rosette(g, sk, row):
     def rings(P, on_arm):
         Pw = g.warp(P, cell * .8, cell * .1)
         d, c = g.vor(Pw, cell, "F1", rand=.85)
-        R = g.m("ADD", g.m("MULTIPLY", g.rgb(c)[0], .06), .40)
+        R = g.m("ADD", g.m("MULTIPLY", g.rgb(c)[0], .06), row.get("ring_r", .40))
         at = lambda k: g.m("MULTIPLY", R, k)
         annulus = g.band(d, at(.5), at(.62), at(.92), at(1.05))
         db, _ = g.vor(Pw, cell * .34, "F1")              # the ring breaks into 4-6 arcs
-        ring = g.m("MULTIPLY", annulus, g.smooth(db, .62, .5))
+        ring = annulus if row.get("ring_whole", False) else g.m("MULTIPLY", annulus, g.smooth(db, .62, .5))
         centre = g.smooth(d, at(.62), at(.5))
         d2, _ = g.vor(P, cell * .4, "F1")                 # solid spots between the rosettes
         spot = g.m("MULTIPLY", g.smooth(d2, .24, .16), g.smooth(d, at(1.1), at(1.3)))
-        if on_arm:                                        # down the limb: rosettes close into solid spots
+        if on_arm and row.get("arm_solid", True):         # down the limb: rosettes close into solid spots
             solid = g.smooth(d, at(.95), at(.8))
             t = g.smooth(sk.s, .32, .58)
             ring = g.lerp(t, ring, solid)
