@@ -68,6 +68,13 @@ import numpy as np
 Q16 = 65536
 
 
+def _trace_real(q):
+    """A TRACE plane (scalar or array) -> real density, through the trace
+    currency's own helper (#88) -- never the Q16 literal above."""
+    from simulation import gas_fixed
+    return gas_fixed.dequantize_trace(q)
+
+
 def q16(x: float) -> int:
     return int(round(float(x) * Q16))
 
@@ -224,7 +231,8 @@ def spec_b3_breach_vent():
 
     def setup(eng, gmap):
         interior = (~gmap.solid) & (~gmap.is_vacuum)
-        gmap.gas[eng.gases.SMOKE][interior] = q16(0.85)
+        from simulation import gas_fixed
+        gmap.gas[eng.gases.SMOKE][interior] = gas_fixed.quantize_trace_scalar(0.85)
 
     def ev(eng, gmap, queue, rng):
         for y in range(55, 60):
@@ -234,7 +242,7 @@ def spec_b3_breach_vent():
         name="B3_breach_vacuum_vent", ticks=150, engines=("old", "new"), frame_stride=1,
         build=build, setup=setup, events={15: ev},
         trace={"P_room": lambda g: float(g.atmosphere[60, 45]) / Q16,
-               "smoke_room": lambda g: float(g.gas[1, 60, 45]) / Q16},
+               "smoke_room": lambda g: _trace_real(g.gas[1, 60, 45])},
         caption=("THE sink_hop-vs-native comparison: a smoky sealed room breached to true "
                   "vacuum. Old engine vents via the geometric sink_hop BFS hack; new engine "
                   "vents natively off -grad(P) toward N=0. Watch how the outflow shapes."),
@@ -282,14 +290,15 @@ def spec_b5_water_pushes_smoke():
 
     def setup(eng, gmap):
         interior = (~gmap.solid) & (~gmap.is_vacuum)
-        gmap.gas[eng.gases.SMOKE][interior] = q16(0.5)
+        from simulation import gas_fixed
+        gmap.gas[eng.gases.SMOKE][interior] = gas_fixed.quantize_trace_scalar(0.5)
         gmap.water_sources.append((43, 43, 1.8))
 
     return dict(
         name="B5_water_displaces_smoke", ticks=220, engines=("old", "new"), frame_stride=1,
         build=build, setup=setup, events={},
         trace={"water_far": lambda g: float(g.water_depth[60, 60]) / Q16,
-               "smoke_far": lambda g: float(g.gas[1, 60, 60]) / Q16},
+               "smoke_far": lambda g: _trace_real(g.gas[1, 60, 60])},
         caption=("A water source held in one corner floods the room; rising water "
                   "evacuates its cell's air into neighbours (new engine: the v2.1 "
                   "occupancy-transition rule, no field multiply) pushing smoke ahead "
@@ -418,7 +427,7 @@ def render_frame(gmap, crop, px, water_ref=0.5, smoke_ref=1.0) -> np.ndarray:
     water_frac = np.clip(water_depth.astype(np.float64) / Q16 / water_ref, 0.0, 1.0)
     rgb += (COLOR_WATER * water_frac[..., None].astype(np.float32)) * open_air[..., None]
 
-    smoke_frac = np.clip(smoke.astype(np.float64) / Q16 / smoke_ref, 0.0, 1.0)
+    smoke_frac = np.clip(_trace_real(smoke) / smoke_ref, 0.0, 1.0)
     rgb += (COLOR_SMOKE * smoke_frac[..., None].astype(np.float32)) * open_air[..., None]
 
     fire_i = fire.astype(np.float64) / Q16
@@ -672,8 +681,7 @@ def cmd_compose(args):
         ("k_push + knockdown thresholds", "[exchange] k_push=400.0", "unit shockwave impulse, vs the new transient grad(P) scale"),
         ("k_p (water head)", "[physics.water] k_p=0.5", "water pressure-head coefficient, recalibrated for integer P"),
         ("air conductivity", "[materials.air] conductivity", "small-but-nonzero: big enough the solid<->gas interface sink fires, small enough air doesn't become the heat-advecting field"),
-        ("combustion constants", "[physics.combustion]", "burn_rate=1.0, H_fuel=4.0, soot_yield=0.3, o2_thresh_burn=0.03, o2_thresh_breathe=0.08 (unwired)"),
-        ("cool_shift_vacuum", "[physics.thermal] COOL_SHIFT_VACUUM=3", "hull radiate-to-space rate under the real energy path"),
+        ("combustion constants", "[physics.combustion]", "burn_rate=1.0, H_FUEL_M=4.0, H_FUEL_SHIFT=0, soot_yield=0.3, o2_thresh_burn=0.03, o2_thresh_breathe=0.08 (unwired)"),
         ("CFL_ADV / N_SUB_MAX", "[physics.eos]", "CFL_ADV=0.5 (pinned constraint), N_SUB_MAX=8 (re-pinned from 16 at the P3 gate)"),
         ("dyn_wave_absorb / absorb_strength", "[physics.eos] absorb_strength=8.0", "unit/material shockwave absorption; now also locally damps smoke-carrying wind near units (named P5 feel item)"),
         ("trace_mass_scale / trace advection", "engine-owned, [physics] advection_rate now dead", "trace_mass_scale RETIRED at P-T0 (energy-books arc, design §2.6 — the 0% ruling; traces left the Dalton sum entirely, was 0.02 opacity-not-molar-density); wind_diffusion_scale disabled pending this P5 feel pass"),

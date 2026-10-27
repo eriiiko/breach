@@ -10,8 +10,11 @@ is headless-testable.
 One module, one job: map the dequantized game temperature ΔT (``gmap.temperature``
 in Q16.16 above ambient) to a *normalized chroma* (max channel = 1) plus a
 *separate HDR intensity* that carries the T⁴ brightness the chromaticity fits
-deliberately drop. The overlay and the fire light sources both read this ONE code
-path, so their colour agrees by construction.
+deliberately drop. The overlay and (offline, through tools/gen_light_table.py)
+the radiation sweep's checked-in L° table both read this ONE code path, so the
+glow the overlay paints and the light a fire casts agree by construction. (The
+render march's per-frame fire light sources, renderer/fire_lights.py, read it
+too until ray-engine-v2 P6c deleted them.)
 
 Two moves, from the research:
 
@@ -47,56 +50,72 @@ from simulation.fire_fixed import FP_ONE_F as TEMP_SCALE
 # "MUST match" comment): sourced from simulation.fire_fixed.FP_ONE_F, the
 # pure-numpy leaf module (no breach_physics, no pyray) that already proves
 # this exact value across the shared Q16.16 domain (fire/water/wave/
-# atmosphere/gas/heat all == 65536). cold_overlay.py / fire_lights.py /
-# hover_readout.py import this SAME name from the SAME place.
+# atmosphere/gas/heat all == 65536). cold_overlay.py / hover_readout.py
+# import this SAME name from the SAME place (fire_lights.py did too, until
+# ray-engine-v2 P6c deleted it).
 
 
-def aces_tonemap(x: np.ndarray) -> np.ndarray:
-    """ACES filmic tone-map (Narkowicz approximation), per-channel.
+# The pre-G0 heat overlay's brightness ceiling (8-bit alpha): the tone-mapped
+# emissive is added on screen at up to 220 / 255.
+LEGACY_HEAT_MAX_ALPHA = 220
 
-    Compresses HDR emissive (chroma * intensity, which runs past 1) toward
-    [0, 1] while staying punchy/saturated, instead of per-channel clipping that
-    would hue-shift a bright warm glow toward white. Same constants as
-    shaders/lighting.fs :func:`aces_tonemap`, so the CPU heat overlay and the
-    GPU-lit scene share one tone-map curve. Render-layer, determinism-exempt.
-    """
-    a, b, c, d, e = 2.51, 0.03, 2.43, 0.59, 0.14
-    x = np.asarray(x, dtype=np.float32)
+# The world resolve's ACES curve (shaders/world_resolve.fs, Narkowicz), CPU
+# twin -- here, beside its ONLY caller, the legacy heat layer below (this
+# module stays pyray-free and loadable in isolation). tests/test_one_tonemap.py
+# holds these constants to the shader and allows no other caller.
+ACES_ABCDE = (2.51, 0.03, 2.43, 0.59, 0.14)
+
+
+def aces_curve(x: np.ndarray) -> np.ndarray:
+    """Narkowicz ACES, the resolve's curve (CPU twin), clamped to [0, 1]."""
+    a, b, c, d, e = ACES_ABCDE
+    x = np.maximum(np.asarray(x, dtype=np.float32), 0.0)
     return np.clip((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0)
 
 
 def pack_emissive_rgba(ramp: "BlackbodyRamp", temperature: np.ndarray,
-                       max_alpha: int = 220,
+                       max_alpha: int = LEGACY_HEAT_MAX_ALPHA,
                        intensity_mod: "Optional[np.ndarray]" = None
                        ) -> np.ndarray:
-    """Q16.16 temperature field -> additive RGBA8 texture bytes (H, W, 4).
+    """Q16.16 temperature field -> additive DISPLAY-SPACE RGBA8 bytes (H, W, 4).
+
+    NAMED TEMPORARY EXCEPTION to the one-tone-map rule -- the LEGACY HEAT
+    LAYER, display space, until the G3 fire arc replaces it (graphics G0, #93
+    review). The black-body overlay's look (its hue, saturation, the falloff
+    of its halo and the soft knee of its core) was authored and tuned as a
+    DISPLAY colour added on screen, and Helland/Bartlett's chroma is itself a
+    display (sRGB) colour. Composited in the linear scene it lost all three:
+    a linear gain matched the brightness but not the knee, and even an exact
+    display->scene conversion adds far less over a lit floor in linear light
+    than it did on screen (orange floor 0.6 + heat 0.3 showed 0.9 before G0,
+    ~0.67 in linear), so the warm boost and its saturation faded. So this
+    layer keeps its pre-G0 packing byte for byte and is drawn AFTER the world
+    resolve, in display space (``GameRenderer.compose_world``):
+    ``ACES(emissive)`` (the resolve's curve, its CPU twin :func:`aces_curve`)
+    split into a peak-normalised hue (RGB) and a brightness weight (alpha,
+    ceiling ``max_alpha``), so the
+    RGB-only additive draw's ``rgb * alpha`` adds the tone-mapped emissive.
+    ``tests/test_one_tonemap.py`` allows exactly this caller of the CPU twin.
 
     The pure-numpy packing behind :class:`renderer.overlays.HeatFieldOverlay`,
-    factored out here (pyray-free) so it is headless-testable without a GL
-    context. Maps temperature through the black-body ramp, ACES tone-maps the
-    HDR emissive (``chroma * intensity``), then splits the tone-mapped colour
-    into a peak-normalized hue (RGB) and a brightness weight (alpha) so the
-    RGB-only additive draw's ``rgb * alpha`` reconstructs the tone-mapped
-    emissive. Cold tiles -> brightness ~0 -> alpha 0 -> invisible. RENDER-ONLY:
-    ``temperature`` is read, never written.
+    headless-testable. Cold tiles -> brightness 0 -> alpha 0 -> invisible.
+    RENDER-ONLY: ``temperature`` is read, never written.
 
     ``intensity_mod`` (Fire & Heat Beauty B2 P4, the dirty-Planck speckle seam):
     an optional (H, W) multiplicative field applied to the black-body INTENSITY
-    BEFORE the tone-map — the honest spot for a sooty flame (a dirtier flame
-    radiates less; ACES then compresses the mottle more in the white-hot core,
-    more visible at the cooler edges). ``None`` (the B1 default) is a strict
-    no-op: the pack is byte-for-byte identical to before. Because it scales the
-    intensity, a cold tile (intensity 0) stays invisible regardless of the mod.
-    See :mod:`renderer.speckle`.
+    BEFORE the curve (a dirtier flame radiates less). ``None`` (the B1 default)
+    is a strict no-op: the pack is byte-for-byte as before. Because it scales
+    the intensity, a cold tile (intensity 0) stays invisible regardless of the
+    mod. See :mod:`renderer.speckle`.
     """
     rgb, inten = ramp.chroma_intensity(temperature)
     if intensity_mod is not None:
         inten = inten * np.asarray(intensity_mod, dtype=inten.dtype)
     emissive = rgb * inten[..., None]              # HDR linear (can exceed 1)
-    tm = aces_tonemap(emissive)                    # (h,w,3) 0..1 — the add colour
-    bright = tm.max(axis=-1)                        # (h,w) 0..1 brightness
+    tm = aces_curve(emissive).astype(np.float32)   # (h,w,3) 0..1 display colour
+    bright = tm.max(axis=-1)                       # (h,w) 0..1 brightness
     denom = np.where(bright > 1e-6, bright, 1.0)
-    rgb_disp = tm / denom[..., None]                # hue at peak = 1
+    rgb_disp = tm / denom[..., None]               # hue at peak = 1
     h, w = bright.shape
     packed = np.empty((h, w, 4), dtype=np.uint8)
     packed[..., 0] = (rgb_disp[..., 0] * 255.0).astype(np.uint8)
@@ -112,7 +131,23 @@ def _tanner_helland_chroma(kelvin: np.ndarray) -> np.ndarray:
     Returns an (N, 3) float32 array; each row's max channel == 1 (pure chroma,
     brightness carried separately). The classic piecewise fit works on
     ``kelvin / 100`` and yields 0..255; we rescale to 0..1 then normalize.
-    Determinism-exempt (render-layer float / libm allowed here).
+    Determinism-exempt (render-layer float / libm allowed here). The float32
+    cast of :func:`_tanner_helland_chroma_f64` -- the SAME curve, byte for byte
+    what this function always returned (every step before the cast was float64).
+    """
+    return _tanner_helland_chroma_f64(kelvin).astype(np.float32)
+
+
+def _tanner_helland_chroma_f64(kelvin: np.ndarray) -> np.ndarray:
+    """The Helland / Bartlett chroma in FULL float64 -- the curve itself, before
+    the float32 cast the LUT stores. ONE implementation: the LUT and the sim's
+    offline light-table generator (tools/gen_light_table.py, ray-engine-v2 P6a)
+    both read it, the LUT through :func:`_tanner_helland_chroma`, the generator
+    through :meth:`BlackbodyRamp.emission_at_kelvin`. Float64 because the
+    generator scales it by 2^37: a float32 chroma would put its own rounding
+    (2^-24 relative) above one integer count, where float64 keeps a machine's
+    last-ULP libm difference below it (the regeneration test's one-count
+    tolerance rests on that).
     """
     t = np.asarray(kelvin, dtype=np.float64) / 100.0
 
@@ -148,7 +183,7 @@ def _tanner_helland_chroma(kelvin: np.ndarray) -> np.ndarray:
     # for kelvin > 0, but keep the divide safe).
     peak = np.max(rgb, axis=-1, keepdims=True)
     peak = np.where(peak > 1e-6, peak, 1.0)
-    return (rgb / peak).astype(np.float32)
+    return rgb / peak
 
 
 class BlackbodyRamp:
@@ -170,7 +205,7 @@ class BlackbodyRamp:
         kelvin_ceil: float = 10000.0,
         lut_size: int = 256,
         kelvin_ambient: float = 293.0,
-        k_temp_to_kelvin: float = 3.0,
+        k_temp_to_kelvin: float = 1.0,
         kelvin_glow_min: float = 800.0,
         kelvin_ref: float = 3000.0,
         intensity_exponent: float = 4.0,
@@ -217,6 +252,30 @@ class BlackbodyRamp:
         return np.clip(np.power(ratio, self.intensity_exponent),
                        0.0, self.intensity_max)
 
+    def emission_at_kelvin(self, kelvin):
+        """The ramp's map at ARBITRARY Kelvin, in full float64, WITHOUT the LUT's
+        sampling: ``(chroma (N, 3), intensity (N,))`` -- the SAME Helland/Bartlett
+        chroma (max channel 1) and Macklin intensity the LUT holds at
+        ``lut_size`` points, on the SAME domain: Kelvin is clamped to
+        ``[kelvin_floor, kelvin_ceil]`` exactly as :meth:`_index` clamps it, so
+        a tile hotter than ``kelvin_ceil`` is the ceiling's colour here as on
+        screen. What this adds over :meth:`chroma_intensity` is resolution, not
+        a different map.
+
+        This is how the sim reads the ONE colour map (ray-engine-v2 P6a):
+        ``tools/gen_light_table.py`` evaluates it OFFLINE at the emissive
+        table's 4000 bucket midpoints and checks the result in as the integer
+        light-emission table L°[T] (cpp/src/light_emission_table.inc). Nothing
+        in the sim path calls this -- a transcendental at load would be a
+        determinism hole (design v3 section 8.1) -- and render code keeps using
+        the LUT through :meth:`chroma_intensity` / :meth:`light_color`.
+        Render-layer float, determinism-exempt, like the rest of this module.
+        """
+        k = np.clip(np.asarray(kelvin, dtype=np.float64),
+                    self.kelvin_floor, self.kelvin_ceil)
+        return _tanner_helland_chroma_f64(k), np.asarray(
+            self._intensity_curve(k), dtype=np.float64)
+
     def _kelvin_from_tgame(self, t_game):
         """Dequantized game ΔT -> pseudo-Kelvin (the honest 'white for extremes'
         dial): ``kelvin = kelvin_ambient + k_temp_to_kelvin * T_game``."""
@@ -248,8 +307,10 @@ class BlackbodyRamp:
                                                   float]:
         """Scalar dequantized game ΔT -> ((r, g, b) chroma, intensity).
 
-        The per-source colour path for fire lights. Shares ``_index`` with the
-        vectorized overlay so a light and the overlay tile beneath it agree.
+        The per-source colour path the old fire lights used (their module was
+        deleted at ray-engine-v2 P6c; the ramp's tests still read it). Shares
+        ``_index`` with the vectorized overlay so a light and the overlay tile
+        beneath it agree.
         """
         idx = int(self._index(self._kelvin_from_tgame(float(t_game))))
         r, g, b = self._chroma_lut[idx]
@@ -264,8 +325,9 @@ class BlackbodyRamp:
         optional-section idiom, a level/config without the section still
         gets the design defaults) and the game-T -> Kelvin map itself from
         ``[physics.temperature_scale]`` (the ONE canonical table shared with
-        radiation + the tuning tools — design
-        docs/temperature_scale_unification_design_2026-08-13.md §2/§3d)."""
+        radiation + the tuning tools — G12, issue #12,
+        docs/fire_g12_one_map_patch_2026-08-31.md, superseding
+        temperature_scale_unification_design_2026-08-13 §2/§3d)."""
         render = getattr(cfg, "render", None)
         bb = getattr(render, "blackbody", None)
         g = lambda name, default: float(getattr(bb, name, default))
@@ -277,7 +339,7 @@ class BlackbodyRamp:
             kelvin_ceil=g("kelvin_ceil", 10000.0),
             lut_size=int(getattr(bb, "lut_size", 256)),
             kelvin_ambient=gt("kelvin_ambient", 293.0),
-            k_temp_to_kelvin=gt("k_temp_to_kelvin", 3.0),
+            k_temp_to_kelvin=gt("k_temp_to_kelvin", 1.0),
             kelvin_glow_min=g("kelvin_glow_min", 800.0),
             kelvin_ref=g("kelvin_ref", 3000.0),
             intensity_exponent=g("intensity_exponent", 4.0),

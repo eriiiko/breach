@@ -69,6 +69,8 @@ from simulation.gamemap import GameMap                          # noqa: E402
 from simulation.physics_runner import PhysicsRunner             # noqa: E402
 from simulation.materials import MAT_AIR, MAT_HULL, MAT_WOOD, MaterialTable  # noqa: E402
 from simulation import fire_fixed                                # noqa: E402
+from simulation import gas_fixed                                 # noqa: E402
+from simulation.gases import INERT_N2, N_TRACE_GASES, O2         # noqa: E402
 
 SEED_TICK_DT = 1.0 / 24.0
 _TBL = MaterialTable.from_config()
@@ -116,23 +118,41 @@ def _ignite(gmap, at, intensity=0.6, temp_mult=1.5):
     gmap.temperature[at] = int(IGN_WOOD_Q16 * temp_mult)
 
 
+def _total_bulk(gmap):
+    """Σ over the two BULK planes (O2 + inert_N2), Q16 counts, exact int64."""
+    return int(gmap.gas[O2].astype(np.int64).sum()
+               + gmap.gas[INERT_N2].astype(np.int64).sum())
+
+
 def _total_all_gas_planes(gmap):
-    """Σ over ALL gas planes (O2 + inert_N2 + every trace: steam / smoke /
-    poison / teargas / fuel_gas), raw Q16.16 counts, exact int64 sum."""
-    return int(gmap.gas.astype(np.int64).sum())
+    """Σ over ALL gas planes in ONE currency (#88): the bulk planes lifted into
+    the trace currency (``trace_from_bulk``, exact) plus every trace plane
+    (steam / smoke / poison / teargas / fuel_gas) as it is, exact int64. The two
+    currencies are never summed raw: at TRACE_FINE_BITS > 0 the soot mint takes
+    ``soot`` bulk counts from N2 and adds ``soot << k`` trace counts, so a raw
+    sum would rise by ``(2^k - 1) * soot`` with nothing minted (critique C1)."""
+    trace = int(gmap.gas[:N_TRACE_GASES].astype(np.int64).sum())
+    return int(gas_fixed.trace_from_bulk(_total_bulk(gmap))) + trace
 
 
 def test_ps1_roundtrip_all_gas_planes_never_exceed_start():
-    """The round-trip oracle: with a sealed-room fire alive, the total across
-    every gas plane must never rise above its starting value — nothing may
-    mint bulk mass from nothing (module docstring: bounded-above is the
-    correct claim once the pre-existing, unrelated, lossy-only trace-
-    transport truncation is accounted for; see there for why not bit-exact)."""
+    """The round-trip oracle: with a sealed-room fire alive, (a) the BULK
+    total never rises (combustion only moves bulk mass into soot, transport
+    is exact), and (b) the total across every gas plane, measured in ONE
+    currency, never rises above its starting value — nothing may mint mass
+    from nothing (module docstring: bounded-above is the correct claim once
+    the lossy-only trace truncation is accounted for). The exact trace books
+    closure (mint + deposit - losses) is V6's, #88 P2.
+
+    BREAKS IF: an ex-nihilo trace source returns (the pre-P-S1 fire scatter),
+    a bulk mint appears, or the soot mint is priced in the wrong currency
+    (soot entering the trace plane at other than trace_from_bulk(soot))."""
     gmap = _sealed_room(hh=9, wood_at=(4, 4))
     pr = _runner()
     _ignite(gmap, (4, 4), intensity=0.6, temp_mult=1.5)
 
     total0 = _total_all_gas_planes(gmap)
+    bulk0 = _total_bulk(gmap)
     assert total0 > 0, "test setup produced no gas mass — vacuous"
 
     fire_alive_ticks = 0
@@ -141,6 +161,10 @@ def test_ps1_roundtrip_all_gas_planes_never_exceed_start():
         _step_tick(pr, gmap)
         if float(gmap.fire[4, 4]) > 0.0:
             fire_alive_ticks += 1
+        bulk = _total_bulk(gmap)
+        assert bulk <= bulk0, (
+            f"tick {t}: the BULK total rose from {bulk0} to {bulk} "
+            f"({bulk - bulk0:+d} Q16 counts) -- a bulk mint")
         total = _total_all_gas_planes(gmap)
         drift = total - total0
         max_drift = max(max_drift, drift)

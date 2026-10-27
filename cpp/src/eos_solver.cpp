@@ -345,14 +345,18 @@ void EOSSolver::step(
     // is_ambient == nullptr and takes the byte-identical path (dormancy BY
     // BRANCH, spec §5; NO unconditional arithmetic change on the space path).
     const bool ambient_mode = (is_ambient != nullptr);
-    // The boundary_flux rail (spec §5): zero it each tick in ambient mode; the
-    // per-substep bulk reset accumulates into it. Empty on space maps.
-    if (ambient_mode) {
-        if ((int)boundary_flux_.size() != n_gases) boundary_flux_.assign(n_gases, 0);
-        else std::fill(boundary_flux_.begin(), boundary_flux_.end(), (int64_t)0);
-    } else if (!boundary_flux_.empty()) {
-        boundary_flux_.clear();
-    }
+    // The boundary_flux rail (spec §5): zero it each tick; the per-substep bulk
+    // reset accumulates into its bulk slots (ambient maps only). Smoke
+    // transport v2 (#12, design §3): sized n_gases on EVERY map now, because
+    // its trace slots carry the trace vent channel, which a space map's
+    // breaches feed too; the three sibling trace books reset with it.
+    ensure_trace_books(n_gases);
+    std::fill(boundary_flux_.begin(), boundary_flux_.end(), (int64_t)0);
+    std::fill(trace_wipe_sum_.begin(), trace_wipe_sum_.end(), (int64_t)0);
+    std::fill(trace_sink_sum_.begin(), trace_sink_sum_.end(), (int64_t)0);
+    std::fill(trace_decay_sum_.begin(), trace_decay_sum_.end(), (int64_t)0);
+    // #88 P2: trace_clip_sum_ / trace_mint_sum_ / trace_neg_hits_ are NOT
+    // reset here (reset_trace_sat_books, at the head of PhysicsRunner.step).
 
     // P-E0 (energy-books design §2.5): the law-independent bracket sum
     // S = Σ n_bulk·T over the step-4c skip-set complement (!solid, !ts,
@@ -421,6 +425,7 @@ void EOSSolver::step(
     if ((int)dqsum_s_.size()   != n) dqsum_s_.assign(n, 0);
     // arc #54 P-G1a (design §2.4/§2.5): the energy-pass scratch planes.
     if ((int)n_pre_.size()   != n) n_pre_.assign(n, 0);
+    if ((int)s_pre_.size()   != n) s_pre_.assign(n, 0);   // smoke transport v2
     if ((int)e0_.size()      != n) e0_.assign(n, 0);
     if ((int)pcur_.size()    != n) pcur_.assign(n, 0);
     if ((int)s_plane_.size() != n) s_plane_.assign(n, 0);
@@ -439,8 +444,10 @@ void EOSSolver::step(
     // (bindings.cpp:2134), so `solver.T_AMB_K = 0` was a reachable integer
     // divide-by-zero. Every other divide in this file is already floored; this
     // one was the exception. Same std::max idiom as dx_d below. The floor never
-    // binds at the shipped 290 -> behaviour-preserving. Mirrored in
-    // cuda_eos_step.cu (which also feeds the resident path's pre.t_amb_q).
+    // binds at the shipped 293 (G12, issue #12,
+    // docs/fire_g12_one_map_patch_2026-08-31.md; was 290 pre-G12) ->
+    // behaviour-preserving. Mirrored in cuda_eos_step.cu (which also feeds
+    // the resident path's pre.t_amb_q).
     const q16 t_amb_q    = std::max<q16>(1, quantize((double)T_AMB_K));
     // s_eos_q: fold of S_EOS (phi_exp*k_temp_to_kelvin, value-frozen to 1.0
     // exactly this arc — P-K3). At s_eos_q == 65536 the product below has zero
@@ -852,7 +859,18 @@ void EOSSolver::step(
                 dqsum_e_.data(), dqsum_s_.data(), ec,
                 ambient_mode ? is_ambient : nullptr,
                 ambient_mode ? n_amb : nullptr,
-                ambient_mode ? boundary_flux_.data() : nullptr);
+                // The bulk ring reset only writes this rail on ambient maps
+                // (it is branch-gated inside on is_ambient), so handing it on
+                // a space map changes nothing there; the trace stages need its
+                // trace slots on every map (smoke transport v2, #12).
+                boundary_flux_.data(),
+                // smoke transport v2 (#12) stages 3b/3c: the trace rides
+                // these very faces; vent into the rail, wipe beside it.
+                s_pre_.data(), boundary_flux_.data(), trace_wipe_sum_.data(),
+                // #88 P2: the counted saturation's books (ACCUMULATED; their
+                // per-tick reset is PhysicsRunner's, not this step's -- the
+                // W5/W3 sites write them before step() runs).
+                trace_clip_sum_.data(), trace_neg_hits_.data());
             e_ts_residual     += ec.e_ts_residual;
             e_wipe_sum        += ec.e_wipe_sum;
             e_floor_sum       += ec.e_floor_sum;

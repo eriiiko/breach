@@ -1,0 +1,249 @@
+---
+name: scripted-character
+description: Breach's procedure for making a 3D character from a reference sheet and getting it into the game — the stages (sheet, high-resolution build, review by eye and one correction round, game-ready step, Erik looks, merge), what goes in each agent brief, what each stage costs, and the lessons from the space marine and the two workers. Load before building a new character, adding a member to a character family (another marine, a female version of a male model, a colour variant), or taking a character game-ready.
+---
+
+# Making a scripted character
+
+*Status: PROVISIONAL. Written 2026-10-04 (#33) after three characters: the space marine and the
+two workers. It records how those runs went, and it is expected to change — see "Keeping this
+skill honest" at the end. For meshes that come from outside (Meshy, Mixamo, a marketplace) read
+`docs/reference/adding_character_models.md` instead.*
+
+A character here is a **script**, not a hand-made mesh: Python on the kit in
+`art/characters/charkit/`, fitted to a reference sheet, rebuilt by one command. The same script
+then goes through one more command that makes the game file. Nothing is modelled by hand, so
+every correction is a change to a number or a function and a rebuild.
+
+Steps marked **MUST** carry the incident that made them so. Everything else is the default that
+worked; a run may do it differently if its report says what it changed and why.
+
+## What you need before starting
+
+1. **A reference sheet** in `art/characters/`: one image with the character from the front, one
+   side and the back, at the same scale, standing with the arms a little out, on a plain
+   background. Erik supplies one per character.
+2. **What must be changeable.** Say it up front (skin colour, clothes colour, dirt, a team
+   colour): it decides what becomes a table entry instead of a fixed value.
+3. **What sets this character apart for the camera.** Today the camera looks straight down: it
+   sees hair or helmet, shoulders, the back and the overall colour, and a face is a few pixels.
+   Team members who must be told apart need their difference there. If the camera becomes
+   tilted, chests, faces and whatever is carried come into view; ask which camera the character
+   is for.
+4. **No props.** A bag, a tool or a weapon is its own asset, never part of the character
+   (Erik's rule, in the project CLAUDE.md).
+
+## New family or new member?
+
+- **A new member of an existing family** is a set of tables on that family's builder. The female
+  worker is tables only (`art/characters/worker_female/scripts/worker.py`: `PALETTE`, `DIRT`,
+  `VARIANTS`, `DIMS`, `HEAD`, `HAIR`); her `build.py` and `game.py` are a few lines each. Workers
+  are built by `charkit/workwear.py` + `workerbuild.py` + `workergame.py`.
+- **A male or female version of an existing character is a new member, not a new design.** The
+  body is the dimensions table: her rows were fitted to her own sheet (hips wider than shoulders,
+  a drawn-in waist, 1.68 m against his 1.80 m). What she needed beyond numbers was her hair and
+  her own pocket layout. Never stretch a finished mesh instead: details stretch with it. Broad
+  or padded shoulders undo a woman's build, so armour needs her own shoulder rows too.
+- **A new family** (a different outfit construction or body) starts as its own script on the
+  kit. The space marine is one (`art/characters/space_marine_claude/scripts/marine.py`). A
+  heavy-weapons or demolitions marine whose armour is built differently is a new family that
+  shares parts (helmet, gloves, boots) through `charkit/parts.py`.
+- **The second member pays for the builder.** When a second character of a family is wanted, the
+  first one's script is turned into a builder that reads tables, and both become tables. Do this
+  before building the second, never by copying the first script.
+
+## The stages
+
+Each stage is one implementation agent in the character branch's worktree, one at a time. The
+orchestrator writes the brief, reviews the pictures when the agent reports, and decides the next
+stage. Measured on the workers, each stage took one Opus agent 45–50 minutes and about 400,000
+tokens. *2026-10-05, the guard officer (an ornate uniform, a new family):* the build 56 minutes
+and 500,000 tokens, the reviewer 7 minutes and 150,000, the correction round 49 minutes and
+430,000.
+
+### 0. Branch and sheet
+Cut `<issue#>-<name>` off the integration line with its worktree under
+`.claude/worktrees/<branch>`. **MUST: commit the reference sheet there before spawning an
+agent** — an agent cannot see a file that is only in someone's working folder.
+
+### 1. High-resolution build
+The agent builds the character from the sheet and renders it.
+
+- Commands (from `art/characters/`): `bash charkit/run.sh <name> --draft --sheet` (about 15 s,
+  the working loop) and `bash charkit/run.sh <name> --sheet --turn --beauty all --save` (about
+  2.5 min, every picture).
+- Acceptance:
+  - the outline matches the sheet in all three views (overlap score ≥ 0.90; the workers reached
+    0.93–0.96);
+  - a feature checklist made from the sheet (every pocket, seam, strap) is complete, and nothing
+    is added that the sheet does not show;
+  - every colour lives in the palette table, each region has its own named material, and one
+    variant picture is produced by changing table values only;
+  - every part is a closed shape facing outward (`source/mesh_stats.json`);
+  - every other character still builds exactly as before.
+- Pictures land in `art/characters/<name>/previews/` with an `index.html`.
+
+### 2. Review by eye, then one correction round
+**MUST: someone who did not build it looks at the pictures, with the reference sheet beside
+them, before the report is believed.** By default that is the orchestrator. *Incident: the
+first worker's report had every number right and named the weak face, but not the oversized
+collar, the shoulder pads or the stain on the seat; all three were plain in the pictures.* The
+overlap score only measures the outline; it says nothing about a face, how cloth sits, or where
+the dirt is.
+
+Look at, in this order: `sheet_vs_reference.png` (outline and features), `hero.jpg` (overall
+feel), `head.jpg` and `head_side.jpg` (face, collar, hairline), `torso_back.jpg` (seams, dirt),
+`top.jpg` and `elevated.jpg` (what the game camera sees), and the variant picture.
+
+Then one correction round, written as a list of named defects: the picture that shows each one
+and what the sheet shows instead. Corrections go into the **shared builder**, shown on the first
+character, before the next member of the family is built, so the next one inherits them.
+
+### 3. Game-ready
+One command per character makes the game file:
+`blender -b --factory-startup -P art/characters/<name>/scripts/game.py` (about 3.5 min). It fuses
+the parts into one skin of 10,000 triangles, bakes one 1024-pixel texture, binds the skin to the
+game's one skeleton and converts all 46 animation clips. Output:
+`assets/models/<name>/<name>.glb` and a `LICENSE.txt`. The texture's alpha channel is a gloss
+mask baked from the materials' own roughness (a glossy visor near 1, cloth 0), which the game
+draws as the highlight -- so a material's roughness is part of its look in the game.
+
+- `-- --rig-only` redoes only the skeleton step; `-- --variant <name>` bakes another palette onto
+  the same mesh (about 45 s); `-- --evidence-only` redoes the pictures; `-- --retexture` re-bakes
+  only the texture (colour and gloss) onto the shipped file's own mesh and swaps it into the .glb,
+  leaving mesh, skeleton and clips byte for byte (about 45 s; the saved `.blend` files are
+  gitignored and usually absent).
+- Acceptance: the marine's budget (10,000 triangles, 53 bones, 46 clips); pictures of the rigged
+  model in idle, walk, pistol, death and crouch poses plus a few extreme ones, from the front
+  quarter and from straight above; close-ups of face and hands; the high-resolution and game
+  versions side by side; screenshots from the real game. They land in `previews/game/`.
+- See it in the real game without changing the game:
+  `python art/characters/charkit/preview_in_game.py --root <checkout> --model <file.glb> -- --level playground`
+  (every unit drawn with that file, at its true size beside the marine; without `--model` it
+  shows the game as configured).
+
+### 4. Review, record, Erik looks, merge
+The orchestrator looks at the game pictures, runs the preview command once, and checks that the
+models already in the game were not changed by kit edits. It then updates memory and posts a
+checkpoint on the issue. Erik looks at the pictures or plays the preview; the branch merges
+after that.
+
+Putting the model on units in the game is a separate, play-tested change to the game, never part
+of the character's branch: it is one name in a role's list in `config.toml`
+`[render.unit_looks]` (`player = [...]`, `zombie = [...]`; a name is
+`assets/models/<name>/<name>.glb`, dealt round-robin by unit id).
+
+## Writing the brief
+
+What made the briefs work:
+
+- State the worktree, the branch, that the agent is its only writer, to commit at each step with
+  explicit paths, and not to push.
+- A **read-first list** of the precedent: the previous character's scripts and its
+  `PROVENANCE.md`.
+- The rules: colours only in the palette, the material names, no props, closed parts, kit changes
+  only by adding (a new argument whose default reproduces today's output).
+- Acceptance as numbers and as named pictures, and the sentence "look at every picture yourself
+  and fix what plainly reads wrong before you report".
+- Open-ended art gets a **bound**: name the defects (three, for the faces) and allow two honest
+  attempts each. Without a bound an agent can spend its whole budget on a face.
+- The report is a technical record for the orchestrator, with a list of what still looks weak.
+  The summary for Erik is the orchestrator's job.
+- *2026-10-05, the guard officer:* **read the sheet from zoomed crops before writing the stage-1
+  brief**, and rule on every place where its views contradict each other or a garment is drawn
+  ambiguously. The orchestrator's first ruling on the slung over-jacket came from the whole sheet
+  at screen size and was too vague to build from; the first build made it a free-standing drum.
+- *Same run:* **say which wins when the outline score and the garment disagree** (the garment).
+  The drum matched the sheet's outline at 0.90 in every view; the corrected over-jacket, lying on
+  the body as drawn, scores 0.89 / 0.88 / 0.91, because the sheet's own outline is a few
+  centimetres fuller there.
+- *Same run:* tell every agent that the Read tool refuses images over 256 KB (most sheets and
+  every PNG render) and how to make viewing copies and zoomed crops; a sheet with a grid, labels
+  or callouts needs its figure mask solved once (`charkit/sheetmask.MaskedSheet`).
+
+## Lessons
+
+1. **A fresh pair of eyes on the pictures.** The agents' numbers were accurate every time; their
+   reports were soft on looks (stage 2's incident). *2026-10-04, Beatrice:* tested once — a
+   separate Opus reviewer, given the pictures, the references and the owner's decisions, found
+   everything the orchestrator found and more (it opened all twelve renders, the orchestrator
+   four); both lists are in `art/characters/Beatrice/previews/review_stage1.md`. So the default
+   for stage 2 is now: the reviewer writes the defect list first, the orchestrator checks the top
+   items against the pictures and adds what only it knows (the owner's steer, presentation). One
+   character is one data point; keep comparing for the next two.
+2. **Put the first of a family in the real game before building the rest.** Two things only
+   showed there: the navy coverall read light grey from above (the unit shader added an edge
+   glow on top of the colour), and every model was drawn at the same height whatever its size.
+3. **Fix the builder, not the character.** The four corrections made on the male worker cost the
+   female nothing.
+4. **A table-driven builder makes the next character cheap.** The female worker needed her own
+   tables and a bun; everything else was reuse.
+5. **Clothes need care in the game-ready step.** Thin cloth disappears when the parts are fused,
+   bare fingers merge into mittens, and a stiff toe cap digs into the floor. The worker step now
+   handles all three (`charkit/workergame.py`); a new kind of outfit should expect its own
+   surprises here.
+6. **Check a "nothing changed" claim on the data, not the file.** A rebuilt game file is never
+   byte-identical to the shipped one, because its textures are re-encoded (at most one colour
+   step in 255). Compare the mesh, skeleton and animation blocks inside the file.
+7. **Spend detail where the camera looks.** From above that is hair, helmet, shoulders and
+   overall colour; the faces came out doll-like and Erik accepted them. With a tilted camera the
+   front of the body counts for more.
+8. **Give absolute-path commands** to whoever will run them from another folder.
+9. **A garment that lies on the body is built from the body's surfaces.** *2026-10-05, the guard
+   officer:* the slung over-jacket as a loft of its own stood off the shoulder as a box; carried
+   onto a smooth union of the jacket's trunk and sleeve lofts (`art/characters/french-imperial-guard/scripts/assemble.py`,
+   `PelisseSurface`) it lies on them by construction. Lying close is also what the game-ready
+   step's 6 mm fusing wants.
+10. **Measure before calling a proportion wrong.** *Same run:* the orchestrator judged the build
+    "too stocky" by eye; the reviewer measured head, shoulders, arms and legs against the sheet
+    and they agreed to a few pixels — the impression came from one bulky garment and crumpled
+    cloth. The reviewer's brief should ask for those measurements, as this one did.
+11. *2026-10-08, Beatrice B1h–B1l:* **on a glossy surface, a field built from nodes shows.** Chains
+   of capsules (boot vamp, hand), a distance taken to the nearest of N sampled sections (the
+   sleeve, `kit.loft_sdf`), a C1 union, or a flat cliff where a field is clamped (the arm past its
+   root) all printed rings, blotches or folds in the reflections whatever the mesh resolution. The
+   cure each time: one continuous sweep, C2 unions (`bodysuit.smin3`), re-projection after
+   smoothing, normals from the field's gradient. **Diagnostic:** switch to the field's own normals
+   — a field fault gets WORSE, a mesh fault goes away. A zebra (reflection-line) render is the
+   proof picture for every surface fix.
+12. *Same run:* **one region per round, a vertex check against the saved previous `.blend`.** Each
+    round copied the last build's `.blend`, listed the objects allowed to move, and proved every
+    other one at max displacement 0; it caught a seam cord moved 0.019 mm and kept the pelvis
+    (waiting on Erik) frozen through five rounds of other work. Rounds cost 75–150 min and
+    390k–720k tokens each; a reviewer 7–20 min and 175k–260k.
+13. *Same run:* **a reviewer every round, and a whole-figure review once each part has had one.**
+    The whole-figure pass caught a regression the builder had called "much better" (a knot at
+    the back armpit) and ranked finish over anatomy as what was left.
+14. *2026-10-22, Beatrice B2e:* **anime hair's light is painted, not lit.** The drawings light her right side's outer hair
+    pale from the front and paint the same hair dark in profile and from behind; no lamp does both. A camera-space normal lobe
+    gated by side, world facing, view and a per-lock share (`toonlook.normal_lobe`) did, where a hair-only key light (light
+    linking) lit the profile too. Posing: hair rigid with the head bone to its tips goes into the body on any nod -- move it by
+    the trunk's height bands (`suitpose` attach `"trunk"`). Round cost: about 4.5 h, two full builds (8 min each) and the
+    picture set (15 min).
+15. *2026-10-22, Beatrice merged after B2e -- Erik's verdict:* the toon look (`charkit/toonlook.py`) is "great" and
+    stays; the modelled shapes are "too hard" -- not the quality hoped for after ~17 rounds of implicit-field modelling
+    (B1a-B2e). For the next hero character, look first for a base to start from (a free/licensed base body, face or
+    hairstyle mesh) before building every surface from fields; a helmet instead of modelled hair is on the table.
+
+## What this skill does not cover yet
+
+- Animations beyond the 46 clips of the shared skeleton (rifle holds, zombie gait, operating a
+  terminal).
+- Equipment as separate assets attached to a bone (weapons, bags).
+- Colours changed at run time instead of by re-baking a texture.
+
+## Keeping this skill honest
+
+This procedure is young. Modelling and animation are still being explored, and a skill that is
+followed to the letter while it is wrong costs more than no skill. The rule below holds for
+every project skill in this repo (project CLAUDE.md, Working style); it is repeated here so the
+skill carries its own upkeep.
+
+- **After every character, the orchestrator amends this file in the character's own branch**,
+  before the merge: a step that was skipped or done differently and worked, a step that failed,
+  a new lesson, a cost that moved. One dated line is enough.
+- **A step becomes MUST only with an incident** written next to it. A MUST whose incident no
+  longer applies is demoted or deleted the same way.
+- **Trying another route is allowed.** Say in the brief or the report which step is being done
+  differently and what would count as better; if it was better, it replaces the step here.
+- When three characters in a row needed no amendment, drop "PROVISIONAL" from the status line.

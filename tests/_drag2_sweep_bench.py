@@ -83,6 +83,12 @@ def build_scenario():
     g.seed_gas_temperature((slice(10, 16), slice(10, 16)),
                            g.temperature[10:16, 10:16] + q(5000.0))
     g.gas[O2, 11:14, 11:14] += q(4.0)
+    # Issue #4 finding, 2026-09-30: the bare bulk-`gas` write above left
+    # gas_energy at the pre-O2 N, so the mirror re-derived on the first
+    # tick divided that energy by 5x the N and read ~768 game, not 5000
+    # (the gate, tests/test_drag2_venting_gate.py, seeds the same cells the
+    # same way). reseed_gas_energy's own docstring names this case.
+    g.reseed_gas_energy((slice(11, 14), slice(11, 14)))
     g.seed_gas_temperature((slice(30, 36), slice(30, 36)),
                            g.temperature[30:36, 30:36] + q(15500.0))
     return g

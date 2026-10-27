@@ -428,16 +428,32 @@ def test_no_rail_hits(hot_run):
     catches it.
 
     New gate (both 2x measured headroom): t_max_phys_hits <= 8 AND ticks
-    with any cell's T > 15000 <= 14."""
+    with any cell's T > 15000 <= 14.
+
+    RE-STATED AT M3 (2026-09-23, report_m3.md §2; the brief's §3 row). The
+    14 was 2x a measurement taken when the 6x6 FURN block was 153.9 kg per
+    tile. M2 re-authored furniture as a thin row (thermal_mass 8 -> 0.25), and
+    this scenario applies `storm_probe.PF1B`, which PINS its own fuel-bed dial
+    (H_BED_M 18125, H_BED_SHIFT 4 = 290 000 per raw O2 count, 7 488x M3's
+    derived 38.73) -- so M3's config never reaches it: 32 at the tip, 32 after.
+    Measured at M3: t_max_phys_hits = 0 (the gas rail never engages); 32
+    ceiling ticks in TWO episodes, 15 and 17 ticks, starting at ticks 11 and
+    27 -- the thin furniture block itself at the solid rail under PF1B's
+    frozen deposit, then it starves (42 % of the room's O2 burned) and the
+    run ends near 2 644 game (mean of the last 1000 ticks' peak). Re-stated
+    by the same rule, 2x measured: 64. The load-bearing half is unchanged.
+    NOTE: at 64 the ceiling count alone no longer separates the old runaway's
+    19 sustained ticks from today's transient; the hits bound does (0 now,
+    2130 then), which is why the brief calls it the load-bearing half."""
     n_hits = hot_run["t_max_phys_hits"]
     n_ceiling_ticks = sum(1 for t in hot_run["tick_peak_T"] if t > 15000.0)
     assert n_hits <= 8, (
         f"T_MAX_PHYS engaged {n_hits} times — beyond the 2x-headroom "
-        "bounded-transient budget (measured 4 on the current hot run)")
-    assert n_ceiling_ticks <= 14, (
+        "bounded-transient budget (measured 4 on the pre-M2 hot run, 0 at M3)")
+    assert n_ceiling_ticks <= 64, (
         f"{n_ceiling_ticks} ticks had a cell above 15000 game-deg — beyond "
-        "the 2x-headroom bounded-transient budget (measured 7 on the "
-        "current hot run)")
+        "the 2x-headroom bounded-transient budget (measured 32 at M3: the "
+        "thin furniture block on PF1B's pinned H_bed, two episodes)")
 
 
 def test_hot_scenario_prefix_is_deterministic():

@@ -222,7 +222,334 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # DIGEST_SPEC_VERSION unchanged (v5, set at P-G0) -- values moved; no field
 # added/removed/retyped.
 # (was df1f5153c9ce60a4de8e9c2198ff8eab3eb8d8267cf8be43d3ede03650b236bd)
-GOLDEN_AGGREGATE = "f6daf44f4c2f563fc88bdb4465fb681a776141a9079d0e7c0f62f5c2b7fbb306"
+# G12 GOLDEN REBASE (2026-08-31, fire session #12 Phase 1,
+# docs/fire_g12_one_map_patch_2026-08-31.md -- the written rationale for this
+# re-baseline). Collapses the canonical game-T -> Kelvin map (K = 293 +
+# k_temp_to_kelvin*T_game) onto slope 1 everywhere, dissolving ruling 6's
+# eos_t_amb_k=290 EOS exception (now 293, equal to kelvin_ambient) and
+# re-deriving T_MIN/rad_scale/T_emit_gate to match (dial moves in the doc
+# §1). This IS a physics move, not a schema move (DIGEST_SPEC_VERSION
+# unchanged -- no field added/removed/retyped): the canonical A/B scenario
+# exercises the EOS every tick, and EOS pressure calibration C = 1/eos_t_amb_k
+# moved 1/290 -> 1/293 (~1%), the gas_energy ledger's N*T_abs offset moved
+# +290 -> +293, radiation net-T^4 exchange reshaped per the doc's E'/E table
+# (anchor-preserved at T=300 game via the re-anchored rad_scale), and the T
+# floor moved 3 units (T_MIN -289 -> -292) -- every pressure/thermal-coupled
+# field trajectory the scenario's fire+atmosphere exercise therefore moves.
+# Re-run twice, independently, confirmed stable before committing.
+# (was f6daf44f4c2f563fc88bdb4465fb681a776141a9079d0e7c0f62f5c2b7fbb306)
+# R4 GOLDEN REBASE (2026-09-12, fire session #12, Erik's ruling of 2026-09-06
+# and his re-baseline approval of 2026-09-12; written rationale =
+# docs/fire_3c_r4_tuning_and_radiation_2026-09-06.md §3.2 + §5).
+#
+# CAUSE, and it is a SINGLE one: ruling R4 -- "fire may not destroy
+# non-flammable tiles". The DESTROY decision was already flammable-gated; the
+# wall_hp DEPLETION was not, so fire sitting on a non-flammable tile chewed
+# that tile's hp every tick. The canonical scenario seeds its (ghost) fire at
+# (8,8)/(8,9), which ARE non-flammable, so those two tiles' wall_hp
+# trajectories -- and everything downstream of them -- moved the moment the
+# depletion was gated. Landed in both twins at `bdee4e9`.
+#
+# VERIFIED SOLE CAUSE, not assumed: re-running with the R4 code but the
+# PRE-TUNING config reproduced this exact hash, so none of the session's dial
+# moves (burn_rate 0.018, wall_damage 0.36, H_BED_SHIFT 7) contribute. A
+# pleasant consequence worth recording: the canonical golden is now
+# INDEPENDENT of the fire dials, so Phase-4 feel tuning can proceed without
+# touching it again.
+#
+# NOT A SCHEMA MOVE: DIGEST_SPEC_VERSION unchanged (v5) -- no field added,
+# removed or retyped; values only.
+#
+# WHY NOW: the value was deliberately left stale from 2026-09-06 to 2026-09-12
+# as the "not landed" marker while the R3 re-anchor was under review (Erik:
+# "way too early to produce new goldens"). R4 itself was blessed on the day it
+# landed; the dials it travelled with are now blessed too (Erik 2026-09-12:
+# H_BED_SHIFT 7 and wall_damage 0.36 stay), so the marker has done its job and
+# the branch is being brought green ahead of the ray-engine v2 arc, which
+# cannot be gated against a red suite
+# (docs/ray_engine_v2_survey_2026-09-12.md §10.1).
+# (was 54f21b36cad6d27856f5e1ebf415ff1c063feb6f06ab3a7f66bd684fda324b1d)
+# ===========================================================================
+# T5b RE-BASELINE (2026-09-20, issue #12, THE FLIP) -- the arc's ONE golden
+# move, and the ONLY one design v3 sanctions before P4.
+#
+# SCHEMA MOVE *AND* VALUE MOVE, together, by CLAUDE.md's same-commit rule:
+# DIGEST_SPEC_VERSION 5 -> 6 (+dyn_heat_atten_q, int32 -- design v3 row 28),
+# so every per-field hash moves on the spec string alone, AND the trajectory
+# itself moves for the ten reasons below. They land in one commit because the
+# spec bump would otherwise leave a window in which no golden is valid.
+#
+# EVERY CONTRIBUTING CHANGE, in the order it landed:
+#
+#  1. `c_v` 1.0 -> 0.0076849 (step 1, ledger item 4 / R13). Air stops being
+#     130.13x too heavy thermally. Moves every gas temperature and, through
+#     the EOS, every pressure and wind field downstream of it.
+#  2. `c_v` gets ONE integer representation engine-wide -- every deposit
+#     reciprocal is `1/quantize(c_v)`, not `make_recip(c_v)` (0.0724 % apart
+#     at this value). Moves the Pass-1 and combustion gas deposits.
+#  3. The material rows (step 2, T3 D6): emissivities hull/steel 1.0 -> 0.85,
+#     wood/door/door_closed 1.0 -> 0.90, foliage 0.0 -> 0.90 (R12);
+#     conductivities air 0.024 -> 0.0257, steel 45 -> 50, wood 0.15 -> 0.12,
+#     door/door_closed 0.30 -> 0.12, glass 1.0 -> 1.40.
+#  4. R10 (step 3): the CFL stability anchor is retired and every conduction
+#     face shift is derived -- solid|solid moves +16/+17 steps (steel 2 -> 18,
+#     wood 8 -> 24, glass 6 -> 22), air|air 11 -> 16, and the solid|gas faces
+#     stay at 10 through the new convection branch.
+#  5. The vacuum conduction mask (step 4): a non-thermal-solid cell with no gas
+#     owns no face, so a breached cell stops conducting at a floored capacity.
+#  6. R14's fuel half (step 5): `fuel_per_o2` becomes a derived per-material
+#     plane (wood/foliage 0.1449, furniture 0.0725, kindling 0.0193 against the
+#     retired global 0.7), so `wall_hp` depletes differently at every burn site.
+#  7. `H_BED_M` 18125 -> 19827 (step 5): the fuel-surface 25 % share of
+#     Huggett's 4.831 MJ per unit N_O2.
+#  8. THE FLIP (step 6): the temperature fold reads the SWEEP's
+#     `rad_net_sweep` instead of the old cast's `rad_net`, the Pass-1
+#     maximum-principle clamp goes live on both backends, and units absorb from
+#     `rad_flux_sweep`. This is the largest single contributor: the radiative
+#     source changes law, geometry and calibration at once.
+#  9. `heat_flux_to_temp` 8.0 -> 4701.2 (step 6): the unit burn band re-derived
+#     against the physical currency, anchored on 2.5 kW/m2.
+# 10. `cool_shift` DELETED (step 7, R1): Pass 3 and its CUDA twin are gone, so
+#     no solid relaxes toward ambient any more. Every solid temperature
+#     trajectory in the scenario moves.
+#
+# NOT YET SETTLED, AND IT WILL MOVE THIS VALUE AGAIN. report_t5b.md section 6.3:
+# the flip exposes that combustion's fuel-bed deposit is 65 536x the physical
+# heat of combustion, which the old cast's 2419x-too-strong emission had been
+# balancing. Eight tests are RED on that runaway and were deliberately not
+# bent. Erik's ruling on it is owed, and re-baselining afterwards is the
+# expected second move -- this one exists so the spec bump does not leave the
+# suite without a valid golden in the meantime.
+#
+# REPRODUCED: the harness was run twice on this build, identical both times.
+# (was 167b96bddfe37c0d256afed4d3b9271371fcaf3edd7557e02cf685a17208953f)
+# ===========================================================================
+# P5c RE-BASELINE (2026-09-24, issue #12, ray-engine-v2 P5 -- "smoke absorbs
+# heat", design v3 §6.3 / §11's P5 row; Erik approved P5 on 2026-09-24 and this
+# is its one golden move). A VALUE move, not a schema move: DIGEST_SPEC_VERSION
+# unchanged (v6) -- no field added, removed or retyped.
+#
+# CAUSE, and it is a single one: smoke's heat radiation goes LIVE. The canonical
+# A/B scenario seeds smoke at 0.6 over its whole interior and opens a hull
+# breach, and [gases.smoke] heat_absorb moves 0.0 -> 25.36 (derived in
+# config.toml: soot's IR mass-specific extinction, Widmann et al. 2003, through
+# the engine's own soot bookkeeping and tile geometry). With it the sweep's
+# smoke term absorbs and emits on those cells (P5a's mechanism) and the
+# temperature fold's new GAS branch lands the result in gas_energy (P5c). What
+# puts the smoke off ambient is the EOS answering the BREACH: at the fold of
+# tick 0 all 196 interior gas cells sit between -46 and +307 game, and 48 of
+# them book a non-zero rad_net (measured: without the breach no gas cell leaves
+# ambient before the fold; the (ghost) fire and the wave source change nothing
+# there). So the first fields to move are temperature and gas_energy at tick 0,
+# then atmosphere / wind / gas from tick 1 (the EOS answering the re-heated
+# gas: design §6.3's predicted second-order coupling), and wave_p and the
+# marine's position from tick 2 (the wind). No other field moves.
+#
+# VERIFIED SOLE CAUSE, not assumed: the P5c build with heat_absorb set back to
+# 0.0 on every row reproduces the PREVIOUS value, e369b616..., exactly -- so
+# the fold's gas branch, the clamp's drop counter, the bindings and the CUDA
+# twin move nothing on their own (the branch only acts where a_gas > 0).
+#
+# REPRODUCED: the harness was run twice on this build, identical both times.
+# (was e369b616bb251e19a2053ef744125e8568d933f9b8d4b6d0445b256676106d45)
+# ===========================================================================
+# P5d RE-BASELINE (2026-09-25, issue #12, ray-engine-v2 P5d -- "the clamp's
+# ceiling gets one bucket of headroom"; docs/ray_engine_v2_p5d_clamp_headroom_
+# brief_2026-09-24.md). A VALUE move, not a schema move: DIGEST_SPEC_VERSION
+# unchanged (v6) -- no field added, removed or retyped.
+#
+# CAUSE, and it is a single one: ERIK'S RULING OF 2026-09-24. The Pass-1
+# maximum-principle clamp's ceiling moves from E°⁻¹(Phi) -- the LOW edge of
+# Phi's own E° bucket, which pinned every undamped cell one bucket short of
+# its own staircase balance -- to e_ceiling_q(Phi), the TOP of the first bucket
+# whose E° exceeds Phi (emissive_table.h; both backends, both branches of the
+# fold). A radiatively held cell may now land up to one bucket (4 game) higher.
+# In the canonical scenario the clamp binds on the SMOKE the breach puts off
+# ambient: at the fold of tick 0 the old ceiling clipped 10 cells, the new one
+# 3, and the difference lands on accountable gas cells only (the thermal
+# solids' temperatures are unchanged that tick).
+#
+# FIELDS THAT MOVED, first tick: temperature and gas_energy at tick 0;
+# atmosphere, wind_x, wind_y, gas and the marine's position (__unit_pos__, so
+# __unit_state__) at tick 1 -- the EOS answering the re-heated gas; wave_p at
+# tick 2. Unmoved over all 30 ticks: fire, heat, wall_hp, water_depth,
+# flow_vx/vy, dyn_heat_atten_q, dem_acc, ignition_armed, wave_v, wave_source,
+# material, obstacles, is_vacuum and the unit's hp, facing, status and life
+# events.
+#
+# VERIFIED SOLE CAUSE, not assumed: the P5d sources with ONLY the two CPU clamp
+# lines routed back to e_inv_q reproduce the PREVIOUS value, 9d566491...,
+# exactly; the P5d build gives this one. The CUDA build agrees on its CPU path,
+# with every GPU backend on, and with the temperature twin alone on the GPU.
+#
+# MEASURED AND ACCEPTED (Erik, 2026-09-25, on P5d's §4 STOP): the headroom also
+# lets the sweep's per-ordinate emission floor land near ambient. That floor can
+# under-read a slightly warm cell's emission by more than a live bucket's ~7
+# counts, so a dark thin panel (radiation temperature E°⁻¹(Phi) = 0) could be
+# pinned at the top of bucket 1, ~8 game, for 235 consecutive ticks on the
+# playground at 180 s, where the old ceiling held it at T_before. That rounding
+# artifact is issue #78, fixed there -- not here, and not in this value.
+#
+# REPRODUCED: the harness was run twice on this build, identical both times.
+# (was 9d56649172e5b90b917cb7a6dd9447570e8f2a20a8b9196fd8802d22dcfa1dfa)
+# ===========================================================================
+# #78 RE-BASELINE (2026-09-25, issue #78 -- "the sweep's heat channel gets
+# fractional bits"; ERIK'S REQUEST OF 2026-09-24: "better to really try to fix
+# this before P7"; docs/sweep_fine_heat_currency_brief_78_2026-09-25.md). A VALUE
+# move, not a schema move: DIGEST_SPEC_VERSION unchanged (v6) -- no field added,
+# removed or retyped.
+#
+# CAUSE, and it is a single one: the radiation sweep's heat channel now works in
+# a currency 2^11 finer than one heat count (emissive_table.h E_FINE_BITS; the
+# engine's E° table is baked at rad_scale_derived * 2^11 and every reader of a
+# sweep plane converts once through fixedpoint::fine_heat_shr / the gas chain's
+# final narrow). Near-ambient radiative exchange is now RESOLVED: the sweep's
+# per-ordinate floors used to lose up to one whole count per term (~10 K of
+# emission-equivalent at E°[0] = 125), so cells a few kelvin off ambient read as
+# net absorbers or could not shed a small excess; they now exchange what their
+# temperatures say, to ~2^-11 of a count. In the canonical scenario the first
+# fields to move are temperature and gas_energy at tick 0 -- the first fold that
+# lands the sweep's rad_net -- and everything else that moves follows them.
+#
+# FIELDS THAT MOVED, first tick: temperature and gas_energy at tick 0;
+# atmosphere, wind_x, wind_y, gas and the marine's position (__unit_pos__, so
+# __unit_state__) at tick 1 -- the EOS answering the moved gas energy; wave_p at
+# tick 2. Unmoved over all 30 ticks: fire, heat, wall_hp, water_depth,
+# flow_vx/vy, dyn_heat_atten_q, dem_acc, ignition_armed, wave_v, wave_source,
+# material, obstacles, is_vacuum and the unit's hp, facing, status and life
+# events.
+#
+# VERIFIED SOLE CAUSE, not assumed: on the #78 build, the engine's table set to
+# the pre-#78 currency (EmissiveTable.fine_bits = 0 -- every conversion then IS
+# the pre-#78 expression, value for value) reproduces the PREVIOUS value,
+# e9cb8ca8..., exactly; fine_bits = E_FINE_BITS gives this one. Both on the CPU
+# build and on the CUDA build's CPU path.
+#
+# REPRODUCED: the capture was run on both builds, identical both times.
+# (was e9cb8ca8f08c2f8f2ee36428a8ac7f395dadcd01a3c81606223ee4ca0dbce785)
+#
+# k_drag2 LANDS (2026-10-04, issue #4 drag-law v2 P3 -- the HUMAN-TEST dial
+# turn): `[physics.eos] k_drag2` 0.0 -> 0.125, Erik's by-eye value from the
+# explosion studio (2026-10-02/03: "looks pretty nice"), inside the venting
+# band P2 measured (k2 ~ 0.10-0.15). The quadratic interior-drag term goes
+# live in the staged drag block of the kick loops and deposits the KE it
+# removes as heat through the derived k_ke, so every moving parcel of air
+# moves -- the canonical scenario's wind included.
+#
+# FIELDS THAT MOVED, first tick: wind_x, wind_y, gas, temperature and
+# gas_energy at tick 0 (the drag acts in the kick, its heat lands the same
+# tick); atmosphere and the marine's position (__unit_pos__, so
+# __unit_state__) at tick 1; wave_p at tick 2. Unmoved over all 30 ticks:
+# fire, heat, wall_hp, water_depth, flow_vx/vy, dyn_heat_atten_q, dem_acc,
+# ignition_armed, wave_v, wave_source, material, obstacles, is_vacuum and the
+# unit's hp, facing, status and life events.
+#
+# VERIFIED SOLE CAUSE, not assumed: the patch's only non-test diff is that
+# one config line; with it set back to 0.0 on the same build the capture
+# reproduces the PREVIOUS value, 2739f743..., exactly.
+#
+# REPRODUCED: captured twice, identical both times.
+# (was 2739f7431cebb7c7f8f73ce2cdc6bea625e72e4409713d75e471acfa6a6e6a86)
+#
+# SMOKE TRANSPORT v2 (2026-10-04, issue #12, patch P1 --
+# docs/smoke_transport_design_2026-10-04.md, approved by Erik with D1 ruled
+# (a)). A VALUE move, not a schema move: DIGEST_SPEC_VERSION unchanged -- no
+# field added, removed or retyped. One approved behavioural change: the five
+# TRACE gas planes stop moving by the semi-Lagrangian SmokeDynamics step (which
+# minted smoke wherever air expanded and destroyed it at high CFL) and RIDE
+# THE AIR instead: each EOS substep moves them on the bulk planes' applied face
+# dq priced at the donor's trace-per-air ratio, and once a tick a conservative
+# magnitude-truncated diffusion, stranded zeroing and ceil-rounded decay run;
+# the fire step's smoke clamp and the FieldEdit trace ceiling are gone (D1:
+# deposits are additive).
+#
+# FIELDS THAT MOVED, first tick: `gas` at tick 0 -- only its trace planes; the
+# bulk O2 / inert_N2 planes ride exactly as before. UNMOVED over all 30 ticks:
+# every other field, temperature, gas_energy, atmosphere, wind_x / wind_y and
+# wave_p included, and the unit's position, hp, facing, status and life events
+# -- the canonical scenario's air does not see its smoke (design V5).
+#
+# VERIFIED SOLE CAUSE, not assumed: the pre-patch tree (c4eb330, exported and
+# built clean beside this one) reproduces the PREVIOUS value, 6944a29a...,
+# exactly; this patch's build gives this one. The per-field diff of the two
+# captures is the FIELDS THAT MOVED paragraph above.
+#
+# REPRODUCED: both captures run twice, identical both times.
+# (was 6944a29a3a259fc0c05e5bd45879105c605401e394e26efd7744639cbe7718ee)
+#
+# DRAG DIALS RE-TUNED (2026-10-06, issue #4). Erik tuned the interior drag by
+# eye in smoke_light_studio (0.333 m tiles, sim_speed 1) on the smoke
+# transport v2 branch: `[physics.eos] k_drag` 0.5 -> 0.01 and `k_drag2`
+# 0.125 -> 0.225. A VALUE move, not a schema move: DIGEST_SPEC_VERSION
+# unchanged. One approved behavioural change: blast flow dies faster (the
+# quadratic term), gentle drift lingers (the linear term nearly off).
+#
+# FIELDS THAT MOVED, first tick: wind_x, wind_y, temperature and gas_energy at
+# tick 0 (the drag acts in the kick, its heat lands the same tick);
+# atmosphere, gas and the marine's position (__unit_pos__, so __unit_state__)
+# at tick 1; wave_p at tick 2. UNMOVED over all 30 ticks: fire, heat,
+# wall_hp, water_depth, flow_vx/vy, dyn_heat_atten_q, dem_acc,
+# ignition_armed, wave_v, wave_source, material, obstacles, is_vacuum and the
+# unit's hp, facing, status and life events.
+#
+# VERIFIED SOLE CAUSE, not assumed: the change's only non-test diff is those
+# two config lines; with them set back to 0.5 / 0.125 on the same build the
+# capture reproduces the PREVIOUS value, 34b6edbe..., exactly.
+#
+# REPRODUCED: captured twice, identical both times.
+# (was 34b6edbe5199eb454b371cb021cbb005e4dd2fdccc5b4396eab6ea665901c68e)
+#
+# SMOKE-UNIT RESCALE (2026-10-20, issue #88; design
+# docs/smoke_unit_rescale_design_2026-10-20.md §6.2). The branch's ONE golden
+# event. Two approved changes land together in P3, plus the spec bump they
+# force: (a) TRACE_FINE_BITS 0 -> 8 -- the five trace planes of `gas` hold
+# 2^24 counts per real unit instead of 2^16 (cpp/src/fixed_point.h and its
+# three Python / spec twins); (b) the trace decay rounds to NEAREST with a
+# floor of one count and the frac_q <= 0 guard inside the kit
+# (cpp/src/trace_decay.h::lost) instead of ceil; (c) DIGEST_SPEC_VERSION
+# 6 -> 7 (the currency is a bump trigger, C6) -- the version string is hashed
+# into every digest, so it moves the value by itself and is a THIRD, purely
+# nominal, contributor to the move below.
+#
+# THE THREE-STAGE SOLE-CAUSE PROOF, every stage captured twice, identical both
+# times, spec held at v6 for stages 1-3 so the version string is not a cause:
+#   1. k = 0, ceil   (P2 tree)  f6ba810ebe6083f9...6ff0d  = the previous golden
+#   2. k = 8, ceil              X = cfb2b8fbdbe193adb844a65b8211986f72bdb58e894fae7d97a0e11aba796e2c
+#      (not committed; it equals P1's dry-flip value, so P2 moved nothing)
+#   3. k = 8, nearest           Y6 = 7cbbd9c20cb4c237647dc315299683b34b825f4ad391f380c24f7e2798b7c13b
+#   committed: stage 3 + spec v7  = Y7 = the value below. The version bump
+#   alone (v6 -> v7 on the identical stage-3 tree) is the only difference
+#   between Y6 and Y7: reversible by setting DIGEST_SPEC_VERSION back to 6.
+# Both causes are one-line diffs, each reversible on the same tree: the
+# constant (stage 1 <-> 2) and the rounding (stage 2 <-> 3).
+#
+# FIELDS THAT MOVED, first tick: stage 1 -> 2 (the constant): `gas` at tick 0
+# only -- its trace planes (the canonical scenario seeds smoke 0.6, which
+# quantizes at 2^24 to 10066330 rather than 39322 * 256, then rides, diffuses
+# and decays at the finer scale); the bulk O2 / inert_N2 planes ride as
+# before. Stage 2 -> 3 (the rounding): `gas` at tick 0 only (ceil removes 14
+# counts of the seeded 0.6, nearest 13, design §16 B4). UNMOVED over all 30
+# ticks, at both steps: every other field -- temperature, gas_energy,
+# atmosphere, wind_x / wind_y, wave_p, fire, heat -- and the unit's position,
+# hp, facing, status and life events: the canonical scenario's air does not
+# see its smoke over the 30 ticks (design V5), measured, not assumed.
+#
+# REPRODUCED: every capture run twice, identical both times; the CUDA checks
+# that read GOLDEN_AGGREGATE are green at 8 bits on a fresh CUDA build.
+# (was f6ba810ebe6083f92bbce82979321cac284844589e77313293d1d29fbaf6ff0d)
+#
+# 2026-10-22 -- #12 FIRE + SMOKE SESSION (Erik at the screen): `[gases.smoke]
+# decay` 0.008 -> 0.0011 per s (Erik set 0.001; the per-tick Q16 frac_q rounds
+# both to 3 counts, so 0.0011 is what runs and the two give the same digest).
+# SOLE CAUSE, verified on the same build: the tree with decay back at 0.008
+# reproduces 2673bd33... exactly; 0.001 and 0.0011 both give the value below.
+# The session's other changes are render-side or undigested light ([render.
+# blackbody] anchor / exponent / cap and the regenerated light table, the smoke
+# relief dials, the fire studio level and its payload row) and moved nothing.
+# MOVED: the smoke trace plane of `gas` (the canonical scenario's seeded 0.6
+# smoke decays slower). Nothing else is expected to move with a decay rate.
+# (was 2673bd3381636e4b901b76e0d541a6172853145dc319752537a65137f0fdd84d)
+GOLDEN_AGGREGATE = "7b60c8006bd0dcefd38aba68559f5ce1c50d6ae844681414bcfe208faf972ffd"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs

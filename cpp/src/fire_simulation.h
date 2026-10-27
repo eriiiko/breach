@@ -22,21 +22,74 @@
 //                                                   back to the global scalar
 //                                                   `fire_T_ext` when absent.
 //                                                   T_span STAYS global)
-//   o2f   = clamp01((X - o2_frac_ext)/(o2_frac_full - o2_frac_ext)) (LINEAR; the
-//                                                   continuous-O2 law — Peatross &
-//                                                   Beyler 1997; REPLACES the old
+//   o2f   = clamp((X - o2_frac_ext)/(o2_frac_amb - o2_frac_ext), 0, o2f_cap)
+//                                                   (LINEAR; the continuous-O2
+//                                                   law — Peatross & Beyler
+//                                                   1997; REPLACES the old
 //                                                   smoothstep(P_min,P_full) on
-//                                                   ABSOLUTE n_o2 density. The
-//                                                   denominator's upper end is the
-//                                                   FULL-RESPONSE reference
-//                                                   o2_frac_full (pure O2), NOT
-//                                                   ambient — see below)
-//   avail = F * o2f
+//                                                   ABSOLUTE n_o2 density. R1
+//                                                   RENORMALIZATION (fire
+//                                                   session #12, docs/fire_3c_
+//                                                   design_2026-09-01.md): the
+//                                                   denominator's upper end is
+//                                                   the AMBIENT reference
+//                                                   o2_frac_amb (0.21), NOT
+//                                                   pure O2 — so ambient air
+//                                                   reads o2f == 1.0, not
+//                                                   0.092. The clamp's UPPER
+//                                                   edge is no longer 1 —
+//                                                   `o2f_cap` (5.0) is the
+//                                                   enrichment flare ceiling,
+//                                                   since a raw pure-O2 tile
+//                                                   would otherwise reach
+//                                                   10.875)
+//   hotf  = clamp((T - T_ext[i])/T_span, 0, hotf_cap)  (R3 "hot-burns-faster",
+//                                                   fire session #12, docs/
+//                                                   fire_3c_design_2026-09-01.md
+//                                                   "Ruling R3": the SAME ramp
+//                                                   as `hot` above, SAME T_ext/
+//                                                   T_span, but the ceiling is
+//                                                   `hotf_cap` (10.0) instead of
+//                                                   1 — `hot` itself STAYS
+//                                                   clamped at 1 and keeps
+//                                                   gating the I-ODE sustain
+//                                                   term below UNCHANGED. hotf
+//                                                   is read ONLY by the two
+//                                                   RATE sites it was built
+//                                                   for: combustion.cpp's
+//                                                   demand and the wall-burn
+//                                                   term below — a saturated
+//                                                   fire draws O2 and destroys
+//                                                   its fuel bed faster, not
+//                                                   just "burns" in the I-ODE
+//                                                   sense)
+//   g     = clamp01((p - p_ext) / (p_full - p_ext))  (issue #7, Erik's ruling
+//                                                   2026-09-23 — THE PRESSURE
+//                                                   FACTOR: p is the mean of the
+//                                                   materialized pressure
+//                                                   `atmosphere` over the SAME
+//                                                   open 4-neighbours X pools;
+//                                                   p_ext 0.1 atm, p_full 0.5
+//                                                   atm. PRESSURE, not density:
+//                                                   hot thin air at ambient
+//                                                   pressure keeps g == 1, a
+//                                                   vented room drops to 0.
+//                                                   The law lives once, FP_HD,
+//                                                   in o2_pressure_factor.h)
+//   avail = F * o2f * g                             (can now exceed 1 — O2
+//                                                   enrichment above ambient)
 //   gap   = avail*hot - I / I_cap_per_avail          (SIGNED — negative when the
 //                                                     fire sits ABOVE its own,
 //                                                     resource-sized capacity)
 //   grow  = k_grow * I * gap * (1 + k_wind_fan * W)
-//   die   = k_die * (1 - avail*hot) * I  +  k_wind_strip * W * (1-I) * I
+//   die   = k_die * max(0, 1 - avail*hot) * I  +  k_wind_strip * W * (1-I) * I
+//                                                   (R1 DIE-TERM SIGN FIX: avail*hot
+//                                                   can now exceed 1 under enrichment,
+//                                                   which would flip (1-avail*hot)
+//                                                   negative -- ANTI-DEATH. The max(0,.)
+//                                                   floors it: enrichment can only help
+//                                                   through grow/I_cap, never subtract
+//                                                   from die.)
 //   I    += dt * (grow - die);  clamp01;  snap to 0 below I_min
 //
 // THE CAPACITY LAW (P-R3, 2026-07-31 — docs/radiation_raycaster_extinction_
@@ -123,10 +176,10 @@ struct FireParams {
     // shape as `o2_frac_amb` above.
     float fuel_ref       = 60.0f;  // fallback wall_hp normaliser (no plane)
     // --- continuous O2 law (docs/continuous_o2_law_design_2026-07-24.md) -------
-    // The O2 factor is now LINEAR in the local O2 MOLE FRACTION X = Σn_o2/Σn_total
+    // The O2 factor is LINEAR in the local O2 MOLE FRACTION X = Σn_o2/Σn_total
     // over open neighbours (Peatross & Beyler 1997: compartment burning rate
     // declines ~linearly with O2 volume fraction), carrying an extinction limit:
-    //   o2f = clamp01((X - o2_frac_ext) / (o2_frac_full - o2_frac_ext))
+    //   o2f = clamp((X - o2_frac_ext) / (o2_frac_amb - o2_frac_ext), 0, o2f_cap)
     // This REPLACES the old smoothstep(P_min, P_full) on ABSOLUTE n_o2 density —
     // the fraction is invariant under thermal expansion, so hot thin gas at
     // ambient composition burns (closes the v2.4 "density trap" / hot-zone rescale
@@ -135,26 +188,69 @@ struct FireParams {
     // still set them do not hard-error; no longer read by step()).
     float o2_frac_ext    = 0.13f;  // X_ext: flame-extinction O2 mole fraction
                                    //  (~13% physical limit; 0 = pure proportional)
-    // FULL-RESPONSE REFERENCE SPLIT (2026-07-30). The span's upper end used to be
-    // o2_frac_amb — so ambient air always produced o2f == 1 and the clamp01 made
-    // AMBIENT the ceiling. Locally elevated O2 (reservoirs, leaks, wind delivery)
-    // was therefore invisible BY CONSTRUCTION: at X = 0.30 the raw ratio 2.125 was
-    // clamped straight back to 1.0. Splitting the two roles makes o2f a true
-    // physical fraction — "O2 above extinction, normalized to PURE oxygen" — the
-    // clamp effectively never binds, and headroom always exists. Ambient air now
-    // lands at (0.21 - 0.13)/(1 - 0.13) = 0.092.
-    float o2_frac_full   = 1.00f;  // X_full: the O2 mole fraction at which o2f
-                                   //  reaches 1 (pure O2). NOT the ambient
-                                   //  atmosphere and NOT map-overridden — a fixed
-                                   //  physical reference. Setting it to
-                                   //  o2_frac_amb reproduces the pre-split law.
+    // R1 O2f-RENORMALIZATION (fire session #12, 2026-09-01 — docs/fire_3c_
+    // design_2026-09-01.md "Ruling R1"). The SUSTAIN span's upper reference is now
+    // o2_frac_amb (ambient, 0.21) instead of the FULL-RESPONSE pure-O2 reference
+    // o2_frac_full below: ambient air always produced o2f == 0.092 under the old
+    // pure-O2 normalization (every OTHER dial — I_cap_per_avail, k_die — was
+    // secretly compensating for that near-zero baseline), so a mild local O2 dip
+    // (0.21 -> 0.165) halved an already-tiny o2f and collapsed heat deposit long
+    // before the physical o2_frac_ext=0.13 extinction limit engaged (measured
+    // X_death 0.176, rising — docs/fire_3c_prebench_2026-09-01.md). Renormalizing
+    // by ambient makes o2f == 1.0 AT ambient by construction, so a fire's heat
+    // deposit holds up near the true O2 floor instead of dying of cold well above
+    // it. o2f is NO LONGER clamped to [0,1] — see `o2f_cap` below, the new upper
+    // bound (enrichment above ambient can now register, e.g. O2 reservoirs/leaks).
+    // o2_frac_full is RETIRED from THIS law (tombstone — see below); the DEMAND
+    // side (combustion.cpp's o2f_j, "how fast it drinks") is UNCHANGED and still
+    // reads o2_frac_full: two roles, two shapes, by ruling.
+    // o2f_cap: the enrichment ceiling on the renormalized ratio. Ambient air now
+    // lands at (0.21-0.13)/(0.21-0.13) = 1.0 exactly; a raw pure-O2 tile would
+    // reach (1.0-0.13)/(0.21-0.13) = 10.875 -- capped at 5.0 (Erik's choice, the
+    // "enrichment flare" ceiling) so a locally O2-flooded tile can burn hotter
+    // than ambient without an unbounded runaway.
+    float o2f_cap         = 5.0f;  // NEW (R1): upper clamp on the renormalized o2f
+    // hotf_cap (R3, fire session #12, docs/fire_3c_design_2026-09-01.md "Ruling
+    // R3" — Erik's "hot-burns-faster" catch: `hot` clamps at 1, so above ~T_ext
+    // + T_span extra heat bought ZERO extra rate). `hotf` is the SAME (T-T_ext)/
+    // T_span ramp as `hot`, but its ceiling is THIS dial instead of 1, and it is
+    // read only at the two RATE sites (combustion.cpp's demand, and this file's
+    // wall-burn term below) — `hot` itself is UNTOUCHED and keeps gating the
+    // I-ODE sustain term at its usual [0,1]. WHY LINEAR, NOT ARRHENIUS (the
+    // load-bearing argument, R2's finding): losses are dominated by T^4
+    // radiation (~99.6% at the measured plateau), so a LINEAR hotf can never
+    // outrun them — an equilibrium always exists by construction, and Erik's O2
+    // cap (o2f_cap above) is a second, independent ceiling on an already-stable
+    // system. An exponential (Arrhenius) hotf eventually beats T^4, making
+    // stability depend on O2 running out first — fragile exactly where oxygen
+    // is generous (breach airflow, enriched rooms). 10.0 pairs with o2f_cap's
+    // 5.0 as the OTHER enrichment/overheat ceiling in the system.
+    float hotf_cap        = 10.0f; // NEW (R3): ceiling on the uncapped-at-1 hotf ramp
+    // o2_frac_full: RETIRED from the SUSTAIN law by R1 (was the FULL-RESPONSE
+    // REFERENCE SPLIT's pure-O2 upper reference, 2026-07-30). Kept, like
+    // o2_frac_amb was before it, ONLY because combustion.cpp's DEMAND-side o2f_j
+    // (unchanged by R1) still reads it, and old configs/bindings that still set
+    // it should not hard-error. Editing it moves the DEMAND (drink-rate) law, not
+    // the sustain law above (which now reads o2_frac_amb).
+    float o2_frac_full   = 1.00f;  // X_full: DEMAND-side (combustion.cpp) pure-O2
+                                   //  reference only — NOT read by step() below.
     float o2_frac_amb    = 0.21f;  // X_amb: what the ambient atmosphere IS (reads
                                    //  the level's authored [ambient] o2_frac; 0.21
                                    //  fallback — one source of truth with the BC).
-                                   //  NO LONGER read by step(): the availability
-                                   //  law normalizes by o2_frac_full above. Kept
-                                   //  because it is the per-map ambient record and
-                                   //  configs/levels/bindings still set it.
+                                   //  R1: NOW LIVE in step() below — the sustain
+                                   //  availability law's span upper reference.
+    // --- THE PRESSURE FACTOR (issue #7, Erik's ruling 2026-09-23) ------------
+    // g = clamp01((p - p_ext) / (p_full - p_ext)) multiplies o2f (see the header
+    // block and o2_pressure_factor.h). The two edges are Q16.16 ATM — the unit
+    // of the `atmosphere` field they are compared against — quantized ONCE at
+    // load by PhysicsRunner from [physics.fire] p_ext_atm / p_full_atm through
+    // atmosphere_fixed (door 2). The span reciprocal is baked per step with the
+    // kit's integer reciprocal_q16. DEFAULT 0 / 0 == DORMANT (g == FP_ONE for
+    // every pressure): a direct-binding caller that does not set them runs the
+    // pre-#7 law bit for bit. The combustion claim gate reads the SAME two
+    // values off CombustionSolver (bound from the same keys).
+    int32_t p_ext_q      = 0;      // extinction pressure, Q16.16 atm (0 = dormant)
+    int32_t p_full_q     = 0;      // full-effect pressure, Q16.16 atm (0 = dormant)
     float P_min          = 0.60f;  // RETIRED (see o2_frac_ext/amb above) — was the
                                    //  smoothstep low edge on absolute n_o2
     float P_full         = 1.00f;  // RETIRED — was the smoothstep full edge
@@ -189,8 +285,20 @@ struct FireParams {
     // (src/simulation/physics_runner.py) rather than silently doing
     // nothing, so nobody tunes a dial that no longer has a mechanism behind
     // it. See docs/smoke_single_source_asbuilt_2026-08-15.md.
+    // R3 (fire session #12, docs/fire_3c_design_2026-09-01.md "Ruling R3"):
+    // the destruction term is now `wall_damage*dt*I*hotf` (step() below), not
+    // `wall_damage*dt*I` — a saturated fire (hotf > 1) destroys its own fuel
+    // bed FASTER, not just draws O2 faster (combustion.cpp's demand-side
+    // twin). NEUTRAL-LANDING RE-SIZE (same ruling, both dials by the SAME
+    // factor f_ref = 2.0717, derived from the post-R1 open-control plateau
+    // T=452.9 game and furniture's fire_T_ext=80/fire_T_span=180 ->
+    // hotf(452.9) = (452.9-80)/180 = 2.0717): 0.03 -> 0.03/2.0717 = 0.01448,
+    // so destruction at the REFERENCE plateau is unchanged and only moves
+    // above/below it (config.toml carries the shipped value + full
+    // derivation).
     float wall_damage    = 0.4f;   // wall HP lost per second per unit intensity
                                    //  (burn-through IS the fuel-consumption brake)
+                                   //  TIMES hotf since R3 (see above)
 
     // Q16.16 scale of the `temperature` field (== HEAT_SCALE / TEMP_SCALE). Fixed
     // at construction; exposed so Python/config and C++ never disagree.
@@ -205,10 +313,12 @@ public:
     // Python must call destroy_wall() for each of these.
     //
     //   fire        : int32 (h, w) Q16.16 intensity in [0,1], mutated in place (S3b).
-    //   atmosphere  : int32 (h, w) Q16.16 (S2c) == P (EOS P3), READ-ONLY (the
-    //                 plume's own-tile saturation gate ONLY, since EOS P4 —
-    //                 see `n_o2` below for the O2 gate). The plume no longer
-    //                 writes it — see `temperature` below.
+    //   atmosphere  : int32 (h, w) Q16.16 atm (S2c) == P, the engine's one
+    //                 materialized pressure (EOS step 5), READ-ONLY. Since
+    //                 issue #7 it is the PRESSURE FACTOR's input: g reads the
+    //                 mean P over the same open 4-neighbours X pools
+    //                 (fixedpoint::mean_round). nullptr -> g == FP_ONE (the
+    //                 pre-#7 law). Nothing in this step writes it.
     //   n_o2        : int32 (h, w) Q16.16 (EOS refactor P4, design §6): the
     //                 REAL bulk O2 density plane (gmap.gas[O2]), READ-ONLY —
     //                 the neighbour-mean O2 gate's input, REPLACING the old
@@ -256,7 +366,8 @@ public:
     //                 passing no plane at all.
     std::vector<std::pair<int, int>> step(
         int32_t* fire,             // S3b: Q16.16 (was float)
-        const int32_t* atmosphere, // S2c: Q16.16 == P (EOS P3: READ-ONLY, plume only)
+        const int32_t* atmosphere, // Q16.16 atm == P, READ-ONLY: the #7 pressure
+                                   //  factor's input (open-neighbour mean)
         const int32_t* n_o2,       // EOS P4: Q16.16 real O2 density (mole-fraction numerator)
         const int32_t* n_total,    // continuous-O2 law: Q16.16 real N_total (Σ conservative
                                    //  bulk planes = O2+N2), READ-ONLY — the mole-fraction

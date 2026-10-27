@@ -3,15 +3,23 @@
 # of tests/field_digest.py's DIGEST_FIELDS. Two machines (Ampere / Ada / Turing)
 # only produce comparable digests if they agree on this exact spec.
 #
-# CHANGE PROCEDURE: if a field's dtype/shape/membership/order changes, bump
+# CHANGE PROCEDURE: if a field's dtype/shape/membership/order, or its integer
+# CURRENCY (`trace_fine_bits`, #88), changes, bump
 # `version`, update `fields` here AND DIGEST_FIELDS in field_digest.py to match,
 # and regenerate every committed golden/digest in the SAME commit (plan §7.6
 # gate-7 — CI must reject a stale digest tag).
 
-version = 5                    # v5 (2026-08-29, P-G0, arc #54): +gas_energy (int64)
+version = 7                    # v7 (2026-10-20, #88): trace currency 2^16 -> 2^24, trace_fine_bits = 8 (no field change)
+# v6 (2026-09-20, T5b step 9): +dyn_heat_atten_q (int32)
 hash = "blake2b-256"
 byte_order = "little"          # x86 + CUDA; big-endian dtypes are refused
 serialization = "per-field: ascii header 'name|dtype.str|shape' then C-order raw bytes"
+# The TRACE planes' integer currency (#88, docs/smoke_unit_rescale_design_
+# 2026-10-20.md §6.1): the five trace planes of `gas` hold 2^(16 +
+# trace_fine_bits) counts per real unit. A twin of cpp/src/fixed_point.h
+# TRACE_FINE_BITS, held equal by tests/test_trace_currency.py; two digests of
+# the same world at different currencies are not comparable.
+trace_fine_bits = 8
 
 # The integer/bool SYNCED fields hashed into the digest, IN THIS ORDER.
 # `gas` is the 3D (n_gas, h, w) multi-gas stack (smoke is a view into it).
@@ -57,14 +65,25 @@ fields = [
     # dtype, hence the version bump (not a reshape/retype of an existing
     # entry).
     { name = "gas_energy",     dtype = "int64" },
+    # v6 (2026-09-20, T5b step 9, ray-engine-v2 design v3 row 28): the per-tile
+    # DYNAMIC heat-extinction plane -- max(the material`s heat_atten_q, each
+    # living unit`s own heat_atten), stamped by stamp_units. It became SYNCED
+    # STATE at THE FLIP: the radiation sweep reads it, and the sweep now feeds
+    # the temperature fold, so a desync here forks the temperature stream.
+    # Its STATIC twin heat_atten_q is deliberately NOT here -- that one is a
+    # pure projection of `material`, which is already in the digest.
+    { name = "dyn_heat_atten_q", dtype = "int32" },
 ]
 
 # Float sim fields deliberately EXCLUDED from the cross-GPU integer digest
 # (render/lighting-bound or a known residual float boundary; still covered
 # same-machine by field_ab_harness.diff_trajectories). The synced UNIT state
 # (HP/life/event stream) is folded in separately via field_digest.tick_digest.
+# This list is documentation, never hashed: ray-engine-v2 P6c dropped
+# "dyn_light_atten" when the field itself was deleted -- membership, dtype and
+# order of `fields` above are unchanged, so `version` does not move.
 excluded_float_fields = [
-    "ripple", "ripple_v", "dyn_permeability", "dyn_wave_absorb", "dyn_light_atten",
+    "ripple", "ripple_v", "dyn_permeability", "dyn_wave_absorb",
 ]
 
 # A4 (ADDITIVE — docs/a4_digest_impl_note_2026-07-18.md): the __entity__ /

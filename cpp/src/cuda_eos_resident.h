@@ -20,7 +20,11 @@
 // maintained on this path (their only consumers drive the per-call path,
 // which is unchanged). dbg_last_n_sub / dbg_last_c_local_q ARE set (host
 // pre-stage), and boundary_flux_ + the five rail counters are maintained
-// exactly as the per-call entry maintains them.
+// exactly as the per-call entry maintains them. Smoke transport v2 (#12, P2b):
+// the trace planes ride stages 3b/3c on every substep here too, and the trace
+// books (boundary_flux_'s trace slots = vent, trace_wipe_sum_) are stored from
+// a second ~(16·n_gases) B D2H; the once-per-tick trace tail is
+// PhysicsEngine::run_trace_tail_resident, which adds vent / sink / decay.
 //
 // Plain C++ declaration header (no CUDA types) so physics_engine.cpp and
 // bindings.cpp can include it; cuda_eos_resident.cu provides the

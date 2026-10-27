@@ -133,9 +133,9 @@ def test_bulk_and_trace_mass_conserved_exactly_every_tick():
     sim = Simulation(_level(_tm(), ents), seed=1, breach_physics=None,
                      enable_recorder=False)
     ry, rx = sim._vents[0].aperture_y, sim._vents[0].aperture_x
-    sim.gmap.gas[SMOKE][ry, rx] = 30000
-    sim.gmap.gas[POISON][ry, rx] = 15000
-    sim.gmap.gas[STEAM][ry, rx] = 7000
+    sim.gmap.gas[SMOKE][ry, rx] = 30000  # raw trace counts: scale-free (#88)
+    sim.gmap.gas[POISON][ry, rx] = 15000  # raw trace counts: scale-free (#88)
+    sim.gmap.gas[STEAM][ry, rx] = 7000  # raw trace counts: scale-free (#88)
 
     total0 = _grid_total_all(sim.gmap)
     assert total0 > 0
@@ -180,8 +180,8 @@ def test_energy_conserved_exactly_with_trace_and_filtering_present():
     # and the pump primitives price their withdrawal off that field.
     sim.gmap.seed_gas_temperature(np.s_[:, :], 5000)
     sim.gmap.seed_gas_temperature((ry, rx), 20000)   # hot return tile
-    sim.gmap.gas[SMOKE][ry, rx] = 40000       # heavy smoke — scrubbed by hepa_basic
-    sim.gmap.gas[POISON][ry, rx] = 25000      # poison — passes hepa_basic untouched
+    sim.gmap.gas[SMOKE][ry, rx] = 40000       # heavy smoke — scrubbed by hepa_basic -- raw trace counts: scale-free (#88)
+    sim.gmap.gas[POISON][ry, rx] = 25000      # poison — passes hepa_basic untouched -- raw trace counts: scale-free (#88)
     e0 = _bulk_energy_total(sim.gmap)
     for _ in range(200):
         _step(sim)
@@ -195,6 +195,85 @@ def test_energy_conserved_exactly_with_trace_and_filtering_present():
         int(sim.gmap.gas[O2][sim._vents[1].aperture_y,
                              sim._vents[1].aperture_x]) > 0
     assert duct.sink[1] > 0, "smoke was never scrubbed — test is vacuous"  # SMOKE index 1
+
+
+_TRACE_SLOT = {STEAM: 0, SMOKE: 1, POISON: 2, TEARGAS: 3, FUEL_GAS: 4}
+
+
+def _instrumented_vent_sim(seed, smoke, filter_name):
+    """A duct + vent pair whose return aperture holds ``smoke`` (plus poison),
+    with the two gas-N primitives wrapped so every withdrawal and deposit the
+    sweep makes is recorded with the tile's pre-call holdings."""
+    ents = _duct_vent_pair((2, 5), (7, 5), q_circ=8.0, filter_name=filter_name)
+    sim = Simulation(_level(_tm(), ents), seed=seed, breach_physics=None,
+                     enable_recorder=False)
+    g = sim.gmap
+    ry, rx = sim._vents[0].aperture_y, sim._vents[0].aperture_x
+    g.gas[SMOKE][ry, rx] = smoke  # raw trace counts: scale-free (#88)
+    g.gas[POISON][ry, rx] = smoke // 3  # raw trace counts: scale-free (#88)
+    log = {"ext": [], "inj": []}
+    real_ext, real_inj = g.extract_gas_n_vec, g.inject_gas_n_vec
+
+    def ext(fy, fx, dn):
+        pre = [int(g.gas[k][fy, fx]) for k in range(N_GASES)]
+        vec = real_ext(fy, fx, dn)
+        log["ext"].append((int(dn), pre, list(vec)))
+        return vec
+
+    def inj(fy, fx, add_vec, *a):
+        log["inj"].append(list(add_vec))
+        return real_inj(fy, fx, add_vec, *a)
+
+    g.extract_gas_n_vec, g.inject_gas_n_vec = ext, inj
+    return sim, log
+
+
+@pytest.mark.parametrize("filter_name", ["derelict", "hepa_basic"])
+def test_v5_vent_plenum_books_exactly_the_trace_it_takes(filter_name):
+    """V5 (#88 P0, B8), property: per tick and per trace plane, the plenum's
+    ``trace_raw + sink`` grows by exactly the trace the return vents took
+    minus what the supply vents deposited; each take is the floor of the
+    aperture's air ratio ``want·S/N_bulk``; and the air taken equals the
+    vent's own quantum, as in clear air. Breaks if the priced-by-air trace
+    leaves the tile without landing in the plenum, or trace counts enter the
+    vent's air budget again."""
+    sim, log = _instrumented_vent_sim(11, 60_000, filter_name)
+    duct = sim._ducts[0]
+    took_trace = False
+    for _ in range(120):
+        before = [duct.trace_raw[i] + duct.sink[i] for i in range(5)]
+        log["ext"].clear()
+        log["inj"].clear()
+        _step(sim)
+        for gid, i in _TRACE_SLOT.items():
+            taken = sum(v[gid] for _, _, v in log["ext"])
+            given = sum(c[gid] for c in log["inj"])
+            assert duct.trace_raw[i] + duct.sink[i] - before[i] == taken - given
+            took_trace |= taken > 0
+        for dn, pre, vec in log["ext"]:
+            n_bulk = pre[O2] + pre[INERT_N2]
+            if n_bulk == 0:                 # the vent drained its aperture (A5)
+                assert vec == [0] * N_GASES
+                continue
+            want = min(dn, n_bulk)
+            assert vec[O2] + vec[INERT_N2] == want
+            for gid in _TRACE_SLOT:
+                take, s = vec[gid], pre[gid]
+                assert take * n_bulk <= want * s < (take + 1) * n_bulk
+    assert took_trace, "no trace was ever extracted -- the gate is vacuous"
+
+
+def test_v5_vent_takes_the_same_air_in_smoke_as_in_clear_air():
+    """V5 (#88 P0), property: the same vent on the same seed withdraws the
+    same air, call for call and slice for slice, whether its aperture holds
+    thick smoke (the k = 8 real-max count) or none. Breaks if the vent's
+    quantum is spent partly on trace counts again."""
+    runs = []
+    for smoke in (0, 4_870_000):
+        sim, log = _instrumented_vent_sim(12, smoke, "derelict")
+        _step(sim, 40)
+        runs.append([(dn, v[O2], v[INERT_N2]) for dn, _, v in log["ext"]])
+    assert runs[0] and runs[0] == runs[1]
 
 
 def test_multi_supply_bulk_split_never_goes_negative_adversarial_ratio():
@@ -314,8 +393,8 @@ def test_poison_recirculates_smoke_scrubbed_hepa_filter():
                      enable_recorder=False)
     ry, rx = sim._vents[0].aperture_y, sim._vents[0].aperture_x
     sy, sx = sim._vents[1].aperture_y, sim._vents[1].aperture_x
-    sim.gmap.gas[POISON][ry, rx] = 50000
-    sim.gmap.gas[SMOKE][ry, rx] = 50000
+    sim.gmap.gas[POISON][ry, rx] = 50000  # raw trace counts: scale-free (#88)
+    sim.gmap.gas[SMOKE][ry, rx] = 50000  # raw trace counts: scale-free (#88)
 
     for _ in range(300):
         _step(sim)

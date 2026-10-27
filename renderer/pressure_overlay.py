@@ -1,9 +1,12 @@
 """Pressure colormap overlay for the world RT.
 
 Shared by the main game (``GameRenderer``) and the lighting demo tool
-(``tools/lighting_demo.py``). Renders ``gmap.atmosphere + gmap.wave_p``
-as an RGBA colour map using the stops in
-``config.toml [rendering] pressure_stops``, masking out walls and vacuum.
+(``tools/lighting_demo.py``). Renders ``gmap.atmosphere`` ALONE (never
+``+ gmap.wave_p`` — issue #62: since EOS P3, ``wave_p`` is the previous
+tick's pressure buffer carrying its own ~1 atm DC offset, so summing it
+made a quiet 1 atm room read as ~2 atm) as an RGBA colour map using the
+stops in ``config.toml [rendering] pressure_stops``, masking out walls
+and vacuum.
 
 Drawn INTO the world RT (after smoke/fire, before units) so the camera
 transform applies. Uses BLEND_ALPHA_PREMULTIPLY for correct Porter-Duff
@@ -19,6 +22,54 @@ import pyray as rl
 
 from config import CFG
 from . import core
+
+
+def pack_pressure_rgba(atmosphere: np.ndarray, solid: np.ndarray,
+                        is_vacuum: np.ndarray, stops: np.ndarray,
+                        pressure_scale: float) -> np.ndarray:
+    """Pure: dequantized ``gmap.atmosphere`` -> premultiplied RGBA pressure map.
+
+    Reads ``atmosphere`` ALONE — never ``+ wave_p`` (issue #62). ``wave_p``
+    is the previous tick's pressure buffer with its own ~1 atm DC offset
+    (EOS P3); summing it made a quiet 1 atm room read as ~2 atm on this
+    overlay. No window/texture needed — testable on a bare ``GameMap``.
+    """
+    from simulation import atmosphere_fixed
+    total = atmosphere_fixed.dequantize_f32(atmosphere)
+    if pressure_scale > 0:
+        p = 1.0 + (total - 1.0) * (10.0 / pressure_scale)
+    else:
+        p = total.copy()
+
+    rgba = np.zeros((*p.shape, 4), dtype=np.uint8)
+    n = len(stops)
+    # Linear interp between adjacent stops.
+    for i in range(n - 1):
+        lo, hi = stops[i, 0], stops[i + 1, 0]
+        mask = (p >= lo) & (p < hi)
+        if not np.any(mask):
+            continue
+        t = np.clip((p[mask] - lo) / (hi - lo + 1e-9), 0.0, 1.0)
+        for ch in range(4):
+            rgba[mask, ch] = (
+                stops[i, ch + 1]
+                + t * (stops[i + 1, ch + 1] - stops[i, ch + 1])
+            ).astype(np.uint8)
+    # Anything above the last stop clamps to its colour.
+    mask_last = p >= stops[-1, 0]
+    if np.any(mask_last):
+        for ch in range(4):
+            rgba[mask_last, ch] = int(stops[-1, ch + 1])
+
+    # Pressure is only meaningful in air: hide on walls and vacuum.
+    rgba[solid | is_vacuum] = 0
+
+    # Pre-multiply alpha so the draw can use BLEND_ALPHA_PREMULTIPLY
+    # and not corrupt the destination alpha (same Porter-Duff fix as
+    # smoke — see renderer/overlays.py:FieldOverlay.update).
+    a = rgba[..., 3:4].astype(np.float32) / 255.0
+    rgba[..., 0:3] = (rgba[..., 0:3].astype(np.float32) * a).astype(np.uint8)
+    return rgba
 
 
 def _load_pressure_stops() -> np.ndarray:
@@ -50,61 +101,14 @@ class PressureOverlay:
         self.stops = _load_pressure_stops()
         self.pressure_scale = _default_pressure_scale()
         self.tex = core.create_dynamic_rgba_texture(grid_w, grid_h)
-        self._rgba = np.zeros((grid_h, grid_w, 4), dtype=np.uint8)
         # Point filter — colour map is per-tile, smoothing makes it look
         # like a soft blob rather than the pressure-cell texture it is.
         rl.set_texture_filter(self.tex, rl.TextureFilter.TEXTURE_FILTER_POINT)
 
     def update(self, gmap) -> None:
         """Compute and upload the pressure colour map for the current state."""
-        # S2a/S2c render FLOAT BRIDGE: gmap.wave_p (S2a) AND gmap.atmosphere (S2c)
-        # are now int32 Q16.16 — DEQUANTIZE BOTH to their PRE-MIGRATION real scale
-        # before summing, so the pressure colour map (the explosion viz) reads the
-        # original float pressure the colour stops were tuned against. Without this
-        # the raw int32 counts (~65536× too large) saturate the top colour stop and
-        # paint the whole frame opaque (the bug: wrong explosion colours AND smoke
-        # hidden under a saturated overlay). Render-only; the int fields are the
-        # synced source of truth.
-        from simulation import atmosphere_fixed, wave_fixed
-        total = (atmosphere_fixed.dequantize_f32(gmap.atmosphere)
-                 + wave_fixed.dequantize_f32(gmap.wave_p))
-        if self.pressure_scale > 0:
-            p = 1.0 + (total - 1.0) * (10.0 / self.pressure_scale)
-        else:
-            p = total.copy()
-
-        rgba = self._rgba
-        rgba.fill(0)
-        stops = self.stops
-        n = len(stops)
-        # Linear interp between adjacent stops.
-        for i in range(n - 1):
-            lo, hi = stops[i, 0], stops[i + 1, 0]
-            mask = (p >= lo) & (p < hi)
-            if not np.any(mask):
-                continue
-            t = np.clip((p[mask] - lo) / (hi - lo + 1e-9), 0.0, 1.0)
-            for ch in range(4):
-                rgba[mask, ch] = (
-                    stops[i, ch + 1]
-                    + t * (stops[i + 1, ch + 1] - stops[i, ch + 1])
-                ).astype(np.uint8)
-        # Anything above the last stop clamps to its colour.
-        mask_last = p >= stops[-1, 0]
-        if np.any(mask_last):
-            for ch in range(4):
-                rgba[mask_last, ch] = int(stops[-1, ch + 1])
-
-        # Pressure is only meaningful in air: hide on walls and vacuum.
-        solid = gmap.solid | gmap.is_vacuum
-        rgba[solid] = 0
-
-        # Pre-multiply alpha so the draw can use BLEND_ALPHA_PREMULTIPLY
-        # and not corrupt the destination alpha (same Porter-Duff fix as
-        # smoke — see renderer/overlays.py:FieldOverlay.update).
-        a = rgba[..., 3:4].astype(np.float32) / 255.0
-        rgba[..., 0:3] = (rgba[..., 0:3].astype(np.float32) * a).astype(np.uint8)
-
+        rgba = pack_pressure_rgba(gmap.atmosphere, gmap.solid, gmap.is_vacuum,
+                                   self.stops, self.pressure_scale)
         core.update_rgba_texture(self.tex, rgba)
 
     def draw_into_world_rt(self, world_px_w: int, world_px_h: int) -> None:
@@ -120,4 +124,4 @@ class PressureOverlay:
         rl.unload_texture(self.tex)
 
 
-__all__ = ["PressureOverlay"]
+__all__ = ["PressureOverlay", "pack_pressure_rgba"]

@@ -126,7 +126,7 @@ __device__ __forceinline__ FusedSample eos_backtrace_sample3_q_dev(
     if (n_steps > 0) {
         // floordiv toward -inf (the CPU lambda; C `/` truncates toward 0 —
         // for a NEGATIVE displacement they differ by 1 count: the #1
-        // determinism hinge, same as cuda_smoke.cu's port).
+        // determinism hinge, same as the deleted cuda_smoke.cu's port).
         const int b = n_steps;
         const int32_t sx_q = (bx_q >= 0) ? (bx_q / b)
                                          : -(int32_t)(((-(int64_t)bx_q) + b - 1) / b);

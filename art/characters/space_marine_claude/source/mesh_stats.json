@@ -1,0 +1,36 @@
+{
+ "Armor": {
+  "objects": 36,
+  "source_tris": 95838,
+  "evaluated_tris": 449060
+ },
+ "Boots": {
+  "objects": 13,
+  "source_tris": 139524,
+  "evaluated_tris": 346776
+ },
+ "Gloves": {
+  "objects": 10,
+  "source_tris": 30636,
+  "evaluated_tris": 73160
+ },
+ "Helmet": {
+  "objects": 15,
+  "source_tris": 88356,
+  "evaluated_tris": 182660
+ },
+ "Pack": {
+  "objects": 28,
+  "source_tris": 29480,
+  "evaluated_tris": 86384
+ },
+ "Suit": {
+  "objects": 3,
+  "source_tris": 302142,
+  "evaluated_tris": 499764
+ },
+ "TOTAL": {
+  "source_tris": 685976,
+  "evaluated_tris": 1637804
+ }
+}

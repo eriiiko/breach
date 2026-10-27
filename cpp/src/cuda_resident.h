@@ -67,43 +67,60 @@ void water_substeps_resident(
     int h, int w, int n_sub, float wdt, float tilt_x, float tilt_y,
     float g, float damping, float dx, float k_p, float v_max, float depth_eps);
 
-// ---- smoke (cuda_smoke.cu) --------------------------------------------------
-// One smoke/trace step, LAUNCH ONLY, in place on d_gas. Mirrors smoke_step's
-// K1..K4 sequence exactly (diffusion Laplacian -> diffuse apply -> D2D post-
-// diffusion snapshot -> SL advect -> clamp). Scratch (d_lap/d_src = h*w int32)
-// is caller-owned + persistent. No malloc/H2D/D2H/sync. d_amb nullable (space).
-void smoke_launch_resident(
+// ---- the trace tail (cuda_bulk_transport.cu) — smoke transport v2 P2b ------
+// (cuda_smoke.cu — smoke_launch_resident / trace_smoke_resident, the resident
+// path's old semi-Lagrangian law — is DELETED: the trace planes ride the bulk
+// face flux inside the EOS substeps, stages 3b/3c, on every path.)
+//
+// The once-per-tick TRACE TAIL's LAUNCH CORE (design §2.2-§2.4, §5
+// "Resident"): stranded zeroing (sink) -> Jacobi magnitude-truncated face
+// diffusion (vent onto vacuum / ring) -> ceil-rounded decay (its own kernel,
+// over the shared rule in trace_decay.h). The kernel-for-loop transcription of
+// trace_tail (bulk_transport.cpp — THE oracle). Born (N, h, w) with N = 1
+// today (RL-batch habits §A): launch only — no malloc, no transfer, no sync;
+// the core zeroes its own book block (its first kernel).
+//
+//   d_gas        : (N, n_gases, h, w) int32 Q16.16, in/out (only the planes
+//                  whose is_trace fold is set are touched)
+//   d_solid, d_is_vacuum : (N, h, w); d_is_ambient (N, h, w) NULLABLE (space)
+//   d_perm       : (N, h, w) float — dyn_permeability (the face quantize is the
+//                  CPU tail's, per face, on device)
+//   d_scal       : (N, n_gases, TRACE_TAIL_SCAL) int32 per-env, per-gas folds
+//                  [is_trace, dd_q, frac_q] (dt is a per-env scalar)
+//   d_s0         : (N, n_gases, h, w) int32 scratch (the Jacobi snapshot)
+//   d_cnt        : (N, n_gases, TRACE_TAIL_CNT_SLOTS) unsigned long long books
+//                  [vent, sink, decay], OVERWRITTEN (integer atomicAdd)
+// Returns the launch count.
+constexpr int TRACE_TAIL_SCAL      = 3;
+constexpr int TRACE_TAIL_CNT_SLOTS = 3;
+constexpr int TRACE_TAIL_VENT  = 0;
+constexpr int TRACE_TAIL_SINK  = 1;
+constexpr int TRACE_TAIL_DECAY = 2;
+int trace_tail_launch_resident(
+    int n_env, int h, int w, int n_gases,
     int32_t* d_gas,
-    const int32_t* d_wind_x, const int32_t* d_wind_y,
-    const bool* d_obstacles, const bool* d_is_wall, const bool* d_is_vacuum,
-    const float* d_perm, const bool* d_is_ambient,
-    int32_t* d_lap, int32_t* d_src,
-    int h, int w, float dt,
-    float d_smoke, float wind_diffusion_scale, float advection_rate);
+    const bool* d_solid, const bool* d_is_vacuum, const bool* d_is_ambient,
+    const float* d_perm,
+    const int32_t* d_scal,
+    int32_t* d_s0,
+    unsigned long long* d_cnt);
 
-// The whole per-tick TRACE-PLANE LOOP, device-resident (S8a Path B FLOOR item 3).
-// For each non-conservative gas plane: smoke_launch_resident (once per tick, on
-// the final corrected wind) + decay (a device kernel, bit-identical to the CPU
-// mul_q16 shrink). P-T0 (energy-books arc, design §2.6 — the trace 0% ruling):
-// the decay->inert_N2 credit this kernel used to pay is DELETED — decayed mass
-// simply VANISHES, same as the CPU twin (physics_engine.cpp's run_substeps
-// trace loop); `inert_n2_idx` stays a parameter for ABI/back-compat. Persistent
-// scratch owned here (lap/src, keyed by (h,w)); one cudaDeviceSynchronize at
-// the end; NO per-plane cudaMalloc/H2D/D2H. The all-zero-plane `.any()` skip is
-// DROPPED — smoke_step on an all-zero plane is an arithmetic no-op (the EOS
-// P6.5 device precedent), so processing every trace plane is bit-identical to
-// the CPU skip. gas_conservative / gas_diffusion / gas_decay are the small
-// (n_gases,) HOST columns (control-flow + the per-plane diffusion/decay
-// scalars, exactly as run_substeps reads them).
-void trace_smoke_resident(
+// The N == 1 driver PhysicsEngine::run_trace_tail_resident calls, with the
+// CPU tail's contract (trace_tail in bulk_transport.h): the per-gas host
+// folds through the SAME out-of-line functions the CPU tail calls
+// (trace_diffusion_dd_q, trace_decay::frac_q), one small H2D of the fold table,
+// the launch core on C++-owned persistent scratch keyed (N, h, w, n_gases),
+// ONE sync, ONE small D2H of the book block, ADDED into vent / sink / decay
+// ((n_gases,) host int64 books, ACCUMULATED — vent is boundary_flux_'s trace
+// slots). Throws std::invalid_argument if a fold breaks 4·dd_q <= ONE.
+void trace_tail_resident(
     int32_t* d_gas_base,
-    const int32_t* d_wind_x, const int32_t* d_wind_y,
-    const bool* d_solid, const bool* d_is_vacuum, const float* d_perm,
-    const bool* d_is_ambient,
-    int h, int w, int n_gases, int inert_n2_idx,
+    const bool* d_solid, const bool* d_is_vacuum, const bool* d_is_ambient,
+    const float* d_perm,
+    int h, int w, int n_gases,
     const bool* gas_conservative, const float* gas_diffusion,
-    const float* gas_decay,
-    float dt, float advection_rate, float wind_diffusion_scale);
+    const float* gas_decay, float dt,
+    int64_t* vent, int64_t* sink, int64_t* decay);
 
 // ---- kick + energy flux (cuda_kick_compression.cu) — S8a Path A ------------
 // The per-tick scalar folds the kick kernel (K1) consumes, factored to ONE
@@ -212,5 +229,147 @@ void energy_flux_launch_resident(
     const EnergyFluxScalarFolds& folds,
     int64_t* d_e0, int32_t* d_pcur, int32_t* d_s_plane,
     unsigned long long* d_cnt, int h, int w);
+
+// ---- the radiation sweep (cuda_radiation_sweep.cu) — ray-engine-v2 P4 -------
+// The sweep's LAUNCH CORE, born (N, h, w) with N = 1 today (RL-batch habits,
+// docs/rl_env_arc_proposal_2026-08-27.md §A): every plane is (N, h, w), every
+// per-env scalar is a device array of length N read by env index, and the
+// per-env counters live in an (N, RADIATION_SWEEP_CNT_SLOTS) block. Launch
+// only — no malloc, no transfer, no sync; the per-call radiation_sweep_step
+// (cuda_radiation_sweep.h) wraps it.
+//
+// An ingress violation is not thrown from here (a device cannot, and a host
+// check would be host-side gating, §A rule 4): the init and pre-pass kernels
+// COUNT it into the env's slots, and every later kernel skips an env whose
+// count is non-zero, so a rejected env's output planes are left exactly as the
+// caller had them — RadiationSweep::run's contract, held by a per-env mask.
+// The caller reads the slots after its sync (radiation_sweep_step throws).
+//
+// Slots, per env (int64, two's complement through the unsigned atomics):
+//   0 cells violating 0 <= a <= d <= ONE          (a count)
+//   1 cells whose ambient level is outside [0, E°[0]]   (a count)
+//   2 scalar violations, a bitmask: 1 = k_leak_q outside [0, ONE],
+//     2 = vac_level above E°[0] (only when the level is derived),
+//     4 = a heat_absorb_q16 outside [0, RadiationSweep::HEAT_ABSORB_Q_MAX]
+//         (P5a; the table is shared, so every env carries the bit)
+//   3 min_stream   4 max_stream   (RadiationSweep's telemetry, via 64-bit
+//                                   atomicMin / atomicMax — order-free)
+//   P6a, APPENDED (the light channels; zero unless the light group rode):
+//   5 cells violating 0 <= a_c <= d_c <= ONE on some light channel (a count)
+//   6..8   light emit (R, G, B)      9..11  light absorb
+//   12..14 light ring_in             15..17 light ring_out   (the light books,
+//          exact integer sums: emit + ring_in == absorb + ring_out per channel)
+//   18 light min_stream   19 light max_stream
+// The core INITIALISES the block itself (its first kernel); the caller never
+// zeroes it.
+constexpr int RADIATION_SWEEP_CNT_SLOTS = 20;
+constexpr int RS_SLOT_BAD_EXTINCTION = 0;
+constexpr int RS_SLOT_BAD_AMBIENT    = 1;
+constexpr int RS_SLOT_BAD_SCALARS    = 2;
+constexpr int RS_SLOT_MIN_STREAM     = 3;
+constexpr int RS_SLOT_MAX_STREAM     = 4;
+constexpr int RS_SLOT_BAD_LIGHT_EXTINCTION = 5;   // P6a
+constexpr int RS_SLOT_LIGHT_EMIT     = 6;         // P6a: + channel
+constexpr int RS_SLOT_LIGHT_ABSORB   = 9;
+constexpr int RS_SLOT_LIGHT_RING_IN  = 12;
+constexpr int RS_SLOT_LIGHT_RING_OUT = 15;
+constexpr int RS_SLOT_LIGHT_MIN_STREAM = 18;
+constexpr int RS_SLOT_LIGHT_MAX_STREAM = 19;
+constexpr int RS_BAD_K_LEAK      = 1;
+constexpr int RS_BAD_VAC_LEVEL   = 2;
+constexpr int RS_BAD_HEAT_ABSORB = 4;
+
+// P6a: THE LIGHT GROUP on the device (RadiationSweep's LightChannels, one
+// pointer per plane, (N, ...)-shaped like everything else here; a plain host
+// struct of device pointers, so the declaration stays free of CUDA types).
+// Shared by every env: the L° table and the two smoke columns (config, like
+// heat_absorb). The light transport is a host scalar. With it the wavefronts
+// become the step transport's ANTI-DIAGONALS for EVERY ordinate (h + w - 1
+// launches): topological for step and shear alike, so heat rides them with
+// its integers unchanged (the gather form). Without it (nullptr) the core is
+// the heat-only one, launch for launch.
+struct RadiationLightDev {
+    const int32_t* d_light_atten_q     = nullptr;  // (N, h, w, 3) Q16
+    const int32_t* d_dyn_light_atten_q = nullptr;  // (N, h, w, 3) Q16
+    const int64_t* d_l_table           = nullptr;  // (3, E_TABLE_SIZE), shared
+    const int32_t* d_light_absorb_q16  = nullptr;  // (n_gases, 3), shared, nullable
+    const int32_t* d_light_glow_q16    = nullptr;  // (n_gases, 3), shared, nullable
+    int transport = 0;                             // RadiationSweep::TRANSPORT_STEP
+    // P6b: THE SKY and THE CONE EMITTERS (radiation_sweep.h LightChannels),
+    // both nullable. The sky is the virtual ring's per-ordinate outflow, PER
+    // ENV; the cones arrive as the host-built per-cell injection
+    // (RadiationSweep::build_cone_injection -- the projection has one
+    // implementation): an index plane (-1 off an emitter) and the slots it
+    // points into, slots numbered across every env.
+    const int64_t* d_sky        = nullptr;         // (N, n_ordinates, 3), nullable
+    const int32_t* d_cone_index = nullptr;         // (N, h, w), nullable
+    const int64_t* d_cone_inj   = nullptr;         // (n_slots, n_ordinates, 3)
+    // scratch
+    int64_t* d_l_outflow = nullptr;                // (N, n_ordinates, h, w, 3)
+    int64_t* d_l_emit    = nullptr;                // (N, h, w, 3)
+    int32_t* d_l_d       = nullptr;                // (N, h, w, 3) the d_c the loop reads
+    int32_t* d_l_g       = nullptr;                // (N, h, w, 3) the glow coefficient
+    // outputs, OVERWRITTEN (zeroed by the core first)
+    int64_t* d_light_q      = nullptr;             // (N, h, w, 3)
+    int64_t* d_light_flux_q = nullptr;             // (N, h, w, 2)
+    int64_t* d_light_glow   = nullptr;             // (N, h, w, 3)
+};
+//
+//   d_temperature, d_heat_atten_q, d_dyn_heat_atten_q, d_heat_inv_shift,
+//   d_thermal_solid : (N, h, w) — RadiationSweep::run's inputs
+//   d_amb_level     : (N, h, w) int64, NULLABLE — run()'s ambient plane; null
+//                     derives it per cell from d_is_vacuum (nullable too: all
+//                     interior) and d_vac_level, derive_ambient's twin
+//   d_e_table       : (E_TABLE_SIZE,) int64 — shared by every env (a pure
+//                     function of the calibration dials, not per-env state)
+//   e_fine_bits     : THE TABLE'S CURRENCY (#78), a host scalar shared by every
+//                     env like the table: 2^e_fine_bits of its integers per heat
+//                     count, in [0, E_FINE_BITS]. The pre-pass's two Fleck arms
+//                     convert out of it; the planes come out in it
+//   d_vac_level, d_k_leak_q, d_t_amb_q : (N,) per-env scalars
+//   THE GAS EXTINCTION (P5a, design v3 §6.3) — all three pointers or none
+//   (none, with n_gases == 0: the pre-P5a sweep):
+//   d_gas           : (N, n_gases, h, w) int32 Q16.16 — the gas planes
+//   n_gases         : 0 <= n_gases <= RadiationSweep::N_GAS_PLANES_MAX (host)
+//   d_heat_absorb_q16 : (n_gases,) int32 Q16 — shared by every env (config)
+//   d_n_bulk        : (N, h, w) int32 Q16.16 — the bulk (O2 + N2) count
+//   n_floor_q, recip_cv : THE GAS CURRENCY (P5b), two host scalars shared by
+//                     every env (the temperature fold's config dials, like the
+//                     heat_absorb table), required > 0 with the gas group —
+//                     the Fleck pre-pass's gas arm prices every absorbing gas
+//                     cell in them (radiation_sweep.h fleck_L_gas_q)
+//   d_outflow       : (N, n_ordinates, h, w) int64 scratch (every cell is
+//                     written before it is read; never needs clearing)
+//   d_amb_m, d_ex_cell : (N, h, w) int64 scratch
+//   d_f_q24         : (N, h, w) int32 — the Fleck plane (observable)
+//   d_a_eff, d_d_eff : (N, h, w) int32 scratch — the extinction planes the
+//                     wavefronts READ (the smoke term folded in, P5a)
+//   d_rad_*         : (N, h, w) int64 — OVERWRITTEN (zeroed here first)
+//   d_cnt           : (N, RADIATION_SWEEP_CNT_SLOTS) int64
+// Throws std::invalid_argument on an unsupported (n_ordinates, transport),
+// an e_fine_bits outside [0, E_FINE_BITS] (#78),
+// an n_env above 65535 (the wavefront grid's blockIdx.z carries the env), a
+// partial gas group, an n_gases outside [0, N_GAS_PLANES_MAX] or a
+// non-positive gas currency with the group — host control flow, checked
+// before any launch. Returns the launch count.
+int radiation_sweep_launch_resident(
+    int n_env, int h, int w,
+    const int32_t* d_temperature,
+    const int32_t* d_heat_atten_q, const int32_t* d_dyn_heat_atten_q,
+    const int32_t* d_heat_inv_shift, const bool* d_thermal_solid,
+    const int64_t* d_amb_level, const bool* d_is_vacuum,
+    const int64_t* d_e_table, int e_fine_bits,
+    const int64_t* d_vac_level, const int32_t* d_k_leak_q,
+    const int32_t* d_t_amb_q,
+    const int32_t* d_gas, int n_gases,
+    const int32_t* d_heat_absorb_q16, const int32_t* d_n_bulk,
+    int32_t n_floor_q, int64_t recip_cv,
+    int transport, int n_ordinates, bool fleck_enabled,
+    int64_t* d_outflow, int64_t* d_amb_m, int64_t* d_ex_cell, int32_t* d_f_q24,
+    int32_t* d_a_eff, int32_t* d_d_eff,
+    int64_t* d_rad_net, int64_t* d_rad_flux, int64_t* d_rad_amb,
+    int64_t* d_rad_fluence,
+    int64_t* d_cnt,
+    const RadiationLightDev* light = nullptr);   // P6a: nullptr = heat only
 
 }  // namespace breach_cuda

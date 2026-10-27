@@ -13,33 +13,37 @@ continue on -1), bake the static noise textures ONCE, upload a per-frame
 dynamics texture, and bind everything by name INSIDE begin_shader_mode.
 
 Texture units bound (4; ``WaterPass`` proves 5 works here):
-  0 u_layer     - the P2 premultiplied RGBA8 layer (the draw texture; BILINEAR)
+  0 u_layer     - the P2 premultiplied RGBA16F layer (the draw texture; BILINEAR)
     u_dynamics  - per-frame RGBA16F: RG = wind tiles/tick, B = density solidity
     u_fbm       - baked tiling fBm (REPEAT+BILINEAR): R coverage, GB warp
-    u_jitter    - baked white noise (REPEAT+POINT): R phase jitter, G dither
+    u_jitter    - baked white noise (REPEAT+POINT): R phase jitter (G unused --
+                  the dither moved to the world resolve, graphics G0 P1)
 
-WIND UNITS — the critique's premise was EMPIRICALLY WRONG, corrected here.
-``gmap.wind_x`` / ``wind_y`` are int32 Q16.16 planes of raw ``-grad(P)``. The
-design said to scale them by ``advection_rate * dt`` (900/24) to get tiles/tick,
-on the theory that this reproduces the plume drift. MEASURED in a burning
-fire_studio (docs + probe): the raw ``-grad(P)`` is FIRE-SPIKED (plume-cell
-dequant p50 ~ 12, up to ~1000+), so ``dequant * rate * dt`` gives ~1e4 tiles/tick
-— five orders of magnitude past what the smoke actually does. The sim's
-semi-Lagrangian backtrace clamps to walls/bounds and the field is diffusion-
-dominated, so the SMOKE CENTROID only drifts ~0.1-0.3 tiles/tick and is quasi-
-STATIONARY (it wobbles in place, it does not translate across the map). So a
-literal velocity match is impossible; the raw wind is unusable as a velocity.
+WIND UNITS (issue #51, graphics G0 P2). ``gmap.wind_x`` / ``wind_y`` are the
+EOS solver's own velocity state u, int32 Q16.16 in METRES PER SECOND
+(cpp/src/eos_solver.h; per-cell capped at the local sound speed). They are
+NOT a raw ``-grad(P)`` to be scaled by the pre-EOS ``advection_rate`` (900):
+that legacy reading made the field look "five orders of magnitude past what
+the smoke does" and the taming below was first calibrated on it. The honest
+conversion is :func:`wind_tiles_per_tick`:
 
-Instead this pass TAMES the wind into a bounded visual velocity: smooth the
-spiky field (coherent flow direction), take the DIRECTION, and give it a small
-SATURATING speed ``v = v_ref * (1 - exp(-|w| / v_sens))`` tiles/tick (default
-v_ref ~ 0.08). The dominant "alive" motion is then the crossfade BOILING (which
-happens even at zero wind — the plume is nearly stationary anyway); the tamed
-wind is a gentle directional bias. ``adv_gain`` (config, the design's tuning
-dial) multiplies the drift in the shader, so Erik dials flow-vs-boil in the
-studio. This is a render-side CALIBRATION (P3's mandate), flagged for the
-human-test. See docs/fire_b2_smoke_honesty_design_2026-07-21.md §4 + the P3
-build notes.
+    tiles / tick = v [m/s] / tile_size_m / ticks_per_second
+
+with ``tile_size_m`` from the level (``gmap.tile_size_m``) and the tick rate
+from ``[clock] ticks_per_second`` -- no constant of this module knows either.
+
+On that honest scale the field is still a poor VISUAL velocity: blast and fire
+cells spike to the sound-speed cap while the plume as a whole barely moves.
+So this pass TAMES it into a bounded visual drift: smooth the spiky field
+(coherent flow direction), keep the DIRECTION, and give it a SATURATING speed
+``v = v_ref * (1 - exp(-|u| / v_sens))``, both dials in tiles/tick. The
+"alive" motion is then mostly the crossfade BOILING (which happens even at
+zero wind); the tamed wind is a directional drift calibrated against the
+plume's own measured centroid drift (``tools/wind_drift_probe.py``, numbers
+at :data:`_WIND_VREF`). ``adv_gain`` (config) multiplies the drift in the
+shader, so Erik dials flow-vs-boil in the studio. See
+docs/fire_b2_smoke_honesty_design_2026-07-21.md §4 and
+docs/graphics_direction_2026-10-18.md §10.
 
 The taming lives in the module-level :func:`tame_wind` — THE render-side wind
 seam, usable without a GL context and without this pass being enabled. Its
@@ -60,25 +64,31 @@ import pyray as rl
 
 from . import core
 from .advected_noise import bake_fbm_rgba, bake_jitter_rgba, advection_phase
-
-# Q16.16 scale for the wind dequantize (matches simulation.atmosphere_fixed —
-# the renderer-boundary dequantize; kept as a local constant so this render
-# module needs no sim import just for one number).
-_FP_ONE_F = float(1 << 16)
+from simulation import atmosphere_fixed   # THE wind's Q16 boundary module
 
 # Bake sizes (design §4): fBm ~256^2 tiling, jitter small + static.
 _FBM_SIZE = 256
 _JITTER_SIZE = 64
 _FBM_PERSISTENCE = 0.56           # Kolmogorov-flavoured roll-off (design §6)
-_DITHER_AMP = 1.5 / 255.0         # ~half an 8-bit step, breaks banding
 
-# Wind TAMING (see module header): the raw -grad(P) is fire-spiked + unusable as
-# a velocity, so we smooth it, take the direction, and give a small saturating
-# speed. Calibrated by eye against a real burning-studio wind snapshot so the
-# drift reads as gentle smoke flow (the plume itself is near-stationary). Erik
-# tunes flow-vs-boil live via adv_gain (config), which multiplies in the shader.
-_WIND_VREF = 0.08                 # saturating max drift speed, tiles/tick
-_WIND_VSENS = 0.5                 # dequant |wind| for ~63% of v_ref
+# Wind TAMING (see module header): the honest velocity (tiles/tick) is spiked
+# at blast/fire cells, so we smooth it, take the direction, and give it a
+# saturating speed. Both dials are in TILES PER TICK on the honest scale (#51).
+# Erik tunes flow-vs-boil live via adv_gain (config), which multiplies in the
+# shader. The values are the P2 RETUNE (tools/wind_drift_probe.py; the
+# measurement is written down in docs/graphics_direction_2026-10-18.md §10).
+# MEASURED (tools/wind_drift_probe.py + a dial sweep, 2026-10-19): on the
+# smoke-light studio (tick 0-168) and a fire_studio frag blast (tick 24-120)
+# the plume's tau-weighted centroid drifts 0.12-0.78 tiles/tick while a blast
+# is moving the air and ~0.01 once it settles; the plume-weighted mean of the
+# honest velocity is 0.5-4.6 tiles/tick in speed (blast) and 0.07-0.4 (settled
+# sloshing). The pre-#51 dials (0.08, and v_sens 0.5 "dequant" = 0.0625
+# tiles/tick) capped the visual drift at 0.08: ~10x too slow in a blast,
+# median |log(visual / centroid)| 0.81 over 215 source-free windows. These
+# dials minimise that error (median 0.25, mean 0.40; a broad valley along
+# v_ref / v_sens ~ 0.35-0.5, i.e. ~0.47 x the smoothed |u| until it saturates).
+_WIND_VREF = 1.4                  # saturating max drift speed, tiles/tick
+_WIND_VSENS = 3.0                 # |u| (tiles/tick) for ~63% of v_ref
 _WIND_SMOOTH_PASSES = 2           # 3x3 box passes -> coherent flow direction
 
 # PUBLIC aliases of the taming calibration. A second consumer of the tamed wind
@@ -104,30 +114,45 @@ def _box3(a: np.ndarray) -> np.ndarray:
     return (hz[:-2, :] + hz[1:-1, :] + hz[2:, :]) / 3.0  # (h, w)
 
 
+def wind_tiles_per_tick(wind_x: np.ndarray, wind_y: np.ndarray, *,
+                        tile_size_m: float, ticks_per_second: float):
+    """The HONEST wind conversion (#51): the EOS velocity planes (int32 Q16.16
+    metres per second, dequantized through ``simulation.atmosphere_fixed``)
+    -> ``(ux, uy)`` float64 in TILES PER SIM TICK:
+    ``v / tile_size_m / ticks_per_second``. Both scales come from the caller
+    (the level's ``tile_size_m``, ``[clock] ticks_per_second``) -- never a
+    constant here. RENDER-ONLY: reads the planes, writes nothing."""
+    k = 1.0 / (float(tile_size_m) * float(ticks_per_second))
+    return (atmosphere_fixed.dequantize(wind_x) * k,
+            atmosphere_fixed.dequantize(wind_y) * k)
+
+
 def tame_wind(wind_x: np.ndarray, wind_y: np.ndarray, *,
+              tile_size_m: float, ticks_per_second: float,
               v_ref: float = _WIND_VREF, v_sens: float = _WIND_VSENS,
               smooth_passes: int = _WIND_SMOOTH_PASSES) -> np.ndarray:
-    """Turn the Q16.16 raw ``-grad(P)`` planes into a USABLE visual velocity.
+    """Turn the Q16.16 m/s velocity planes into a USABLE visual velocity.
 
-    THE canonical wind-taming helper (module header): dequantize (÷2^16),
-    box-smooth (``smooth_passes`` 3x3 passes → a coherent flow DIRECTION out of
-    a fire-spiked gradient field), keep that direction, and give it a small
-    SATURATING speed ``v = v_ref * (1 - exp(-|w| / v_sens))``.
+    THE canonical wind-taming helper (module header): convert to tiles/tick
+    (:func:`wind_tiles_per_tick`, the honest scale), box-smooth
+    (``smooth_passes`` 3x3 passes → a coherent flow DIRECTION out of a field
+    spiked at blast/fire cells), keep that direction, and give it a
+    SATURATING speed ``v = v_ref * (1 - exp(-|u| / v_sens))``.
 
     Returns ``(h, w, 2)`` float32 in TILES/TICK, ``[..., 0] = x``,
     ``[..., 1] = y`` — bounded by ``v_ref`` everywhere, by construction.
 
     Every render consumer of "the wind" calls THIS (``pack_dynamics`` for the
     smoke detail pass; ``StaticPropRenderer`` for prop sway). A second smoothing
-    /limiting implementation elsewhere is the bug: the raw planes are not a
-    velocity and each ad-hoc taming would disagree about which way the air is
-    moving in the same room.
+    /limiting implementation elsewhere is the bug: the raw planes are spiked and
+    each ad-hoc taming would disagree about which way the air is moving in the
+    same room.
 
     RENDER-ONLY: reads sim planes, writes nothing (the dequantize-at-the-render-
     read convention — the float result never goes back into sim state).
     """
-    wx = wind_x.astype(np.float64) / _FP_ONE_F
-    wy = wind_y.astype(np.float64) / _FP_ONE_F
+    wx, wy = wind_tiles_per_tick(wind_x, wind_y, tile_size_m=tile_size_m,
+                                 ticks_per_second=ticks_per_second)
     for _ in range(int(smooth_passes)):
         wx = _box3(wx)
         wy = _box3(wy)
@@ -149,7 +174,7 @@ class GasDetailPass:
                  enabled: bool = True, noise_octaves: int = 4,
                  noise_wavelength_tiles: float = 3.0, adv_gain: float = 1.0,
                  cycle_seconds: float = 2.5, erode_strength: float = 0.6,
-                 warp_px: float = 3.0, dither_on: bool = True):
+                 warp_px: float = 3.0):
         self.h = grid_h
         self.w = grid_w
         # Live-tunable dials (plain attributes, mutated by the harness sliders —
@@ -162,7 +187,6 @@ class GasDetailPass:
         self.cycle_seconds = float(cycle_seconds)
         self.erode_strength = float(erode_strength)
         self.warp_px = float(warp_px)
-        self.dither_on = bool(dither_on)
         # Wind-taming calibration (not a config dial — the user dial is adv_gain,
         # which multiplies the drift in the shader). See the module header.
         self.wind_v_ref = _WIND_VREF
@@ -171,8 +195,6 @@ class GasDetailPass:
         # Domain-warp is authored in "screen px at the reference 24 px/tile"
         # (design), converted to tiles here so the shader stays resolution-clean.
         self._px_per_tile_ref = 24.0
-        # Dither granularity: a few cells per tile after the bicubic upscale.
-        self._dither_scale = float(max(grid_w, grid_h)) * 3.0
         # Phase-jitter sample wavelength (tiles): coarse -> spatially smooth, so
         # it desyncs the crossfade across the screen without adding shimmer.
         self._jitter_wl = 2.0
@@ -193,10 +215,7 @@ class GasDetailPass:
         self._loc_tau_ticks = self._lookup("u_tau_ticks")
         self._loc_erode     = self._lookup("u_erode")
         self._loc_warp      = self._lookup("u_warp_tiles")
-        self._loc_dither_on = self._lookup("u_dither_on")
-        self._loc_dither_amp = self._lookup("u_dither_amp")
         self._loc_jitter_wl = self._lookup("u_jitter_wl")
-        self._loc_dither_scale = self._lookup("u_dither_scale")
 
         # --- per-frame dynamics texture (RG wind tiles/tick, B density) ------
         self.dyn_packed = np.zeros((grid_h, grid_w, 4), dtype=np.float16)
@@ -231,7 +250,6 @@ class GasDetailPass:
             cycle_seconds=float(gi("cycle_seconds", 2.5)),
             erode_strength=float(gi("erode_strength", 0.6)),
             warp_px=float(gi("warp_px", 3.0)),
-            dither_on=bool(gi("dither_on", True)),
         )
 
     # ---- texture helpers ------------------------------------------------
@@ -282,21 +300,24 @@ class GasDetailPass:
     @classmethod
     def pack_dynamics(cls, wind_x: np.ndarray, wind_y: np.ndarray,
                       density_proxy: np.ndarray, *,
+                      tile_size_m: float, ticks_per_second: float,
                       v_ref: float = _WIND_VREF,
                       v_sens: float = _WIND_VSENS) -> np.ndarray:
-        """(pyray-free) pack the RGBA16F dynamics array from the Q16.16 wind
-        planes + the density solidity.
+        """(pyray-free) pack the RGBA16F dynamics array from the Q16.16 m/s
+        wind planes + the density solidity.
 
         R,G = the TAMED wind velocity in TILES/TICK — :func:`tame_wind`, the ONE
               taming helper (this method is a consumer of it, not a second copy
-              of the math). The raw field is fire-spiked and NOT a usable
-              velocity (module header), so taming bounds it to a gentle drift;
+              of the math). The honest field is spiked at blast/fire cells
+              (module header), so taming bounds it to the plume's drift;
               ``adv_gain`` in the shader scales it further.
         B   = density_proxy (saturate of the pre-curve optical depth), the
               erosion weight. A = 0.
         """
         h, w = density_proxy.shape
-        tamed = tame_wind(wind_x, wind_y, v_ref=v_ref, v_sens=v_sens)
+        tamed = tame_wind(wind_x, wind_y, tile_size_m=tile_size_m,
+                          ticks_per_second=ticks_per_second,
+                          v_ref=v_ref, v_sens=v_sens)
         out = np.empty((h, w, 4), dtype=np.float16)
         out[..., 0] = tamed[..., 0].astype(np.float16)       # tiles/tick
         out[..., 1] = tamed[..., 1].astype(np.float16)
@@ -305,12 +326,15 @@ class GasDetailPass:
         return out
 
     def update(self, density_proxy: np.ndarray, wind_x: np.ndarray,
-               wind_y: np.ndarray, *, sim_tick: int, sim_dt: float) -> None:
+               wind_y: np.ndarray, *, sim_tick: int, sim_dt: float,
+               tile_size_m: float) -> None:
         """Refresh the dynamics texture + the crossfade phase for this frame.
 
         ``sim_tick`` is the deterministic (monotonic) sim tick — the smoke clock
-        (never wall time), so replays render identical smoke. RENDER-ONLY: every
-        input is read, never written."""
+        (never wall time), so replays render identical smoke; ``sim_dt`` its
+        length and ``tile_size_m`` the level's tile, the two scales of the
+        honest wind conversion (#51). RENDER-ONLY: every input is read, never
+        written."""
         # Lazy rebake if the octaves dial moved (bake-time param; a few ms, only
         # on change — gives the harness live feel without per-frame cost).
         oct_now = int(round(self.noise_octaves))
@@ -322,7 +346,8 @@ class GasDetailPass:
             self._baked_octaves = oct_now
 
         self.dyn_packed = self.pack_dynamics(
-            wind_x, wind_y, density_proxy,
+            wind_x, wind_y, density_proxy, tile_size_m=tile_size_m,
+            ticks_per_second=(1.0 / float(sim_dt)) if sim_dt > 0 else 0.0,
             v_ref=self.wind_v_ref, v_sens=self.wind_v_sens)
         core.update_rgba16f_texture(self.dyn_tex, self.dyn_packed)
 
@@ -350,10 +375,7 @@ class GasDetailPass:
         self._set_f(self._loc_tau_ticks, self._tau_ticks)
         self._set_f(self._loc_erode, self.erode_strength)
         self._set_f(self._loc_warp, self.warp_px / self._px_per_tile_ref)
-        self._set_i(self._loc_dither_on, 1 if self.dither_on else 0)
-        self._set_f(self._loc_dither_amp, _DITHER_AMP)
         self._set_f(self._loc_jitter_wl, self._jitter_wl)
-        self._set_f(self._loc_dither_scale, self._dither_scale)
 
         rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
         rl.begin_shader_mode(self.shader)
@@ -376,5 +398,6 @@ class GasDetailPass:
         rl.unload_texture(self.jitter_tex)
 
 
-__all__ = ["GasDetailPass", "tame_wind", "WIND_V_REF", "WIND_V_SENS",
+__all__ = ["GasDetailPass", "tame_wind", "wind_tiles_per_tick",
+           "WIND_V_REF", "WIND_V_SENS",
            "WIND_SMOOTH_PASSES"]

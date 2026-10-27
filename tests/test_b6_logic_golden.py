@@ -101,8 +101,43 @@ from simulation.entities.registry import registry_content_hash  # noqa: E402
 # face-form wall divergence all move the atmosphere/pump trajectory this
 # golden pins. DIGEST_SPEC_VERSION unchanged. (was
 # 4fa67f37383c9c3abeedef73699f480e2d7f30d35d37397b34719ad653778769)
+# G12 GOLDEN REBASE (2026-08-31, fire session #12 Phase 1,
+# docs/fire_g12_one_map_patch_2026-08-31.md). This loop runs LIVE physics
+# (breach_physics) through the atmosphere/EOS solver every tick, so the
+# EOS pressure calibration move (C = 1/eos_t_amb_k, 1/290 -> 1/293) and the
+# T floor move (T_MIN -289 -> -292) move this trajectory too, same as the
+# GOLDEN_AGGREGATE cascade above. Re-run twice, independently: identical.
+# (was 38a47454a12b09b7815c9b95b672e815f9291bb0b3e42c30386fdb2577b3b6b3)
+# T5b RE-BASELINE (2026-09-20, issue #12, THE FLIP): the same ten changes
+# that move GOLDEN_AGGREGATE move this trajectory, and the v5 -> v6 spec
+# bump (+dyn_heat_atten_q) moves every per-field hash on its own. The full
+# enumeration lives beside GOLDEN_AGGREGATE in tests/_xarch_perfield_digest
+# .py -- one rationale, one commit, per CLAUDE.md's same-commit rule.
+# Re-run twice, independently: identical.
+# (was 9daac0a7658102e6d2ae1854fe382a43ba48c492ca7816bf776f8f0506c72d12)
+# k_drag2 LANDS (2026-10-04, issue #4): `[physics.eos] k_drag2` 0.0 -> 0.125
+# (Erik's by-eye value). This loop runs LIVE physics through the kick loops
+# every tick, so the quadratic drag moves its atmosphere/pump trajectory, as
+# it moves GOLDEN_AGGREGATE -- one rationale, beside GOLDEN_AGGREGATE in
+# tests/_xarch_perfield_digest.py, same commit. Sole cause: k_drag2 = 0.0 on
+# the same build reproduces the previous value.
+# (was 5de6f98b2d08bd8d1cbb54bec3e6ab343f3b412de7b7c979c469d56d47d8de17)
+# Drag dials re-tuned (2026-10-06, issue #4): `[physics.eos] k_drag` 0.5 ->
+# 0.01 and `k_drag2` 0.125 -> 0.225 (Erik, by eye). The loop's live physics
+# moves with them -- one rationale, beside GOLDEN_AGGREGATE in
+# tests/_xarch_perfield_digest.py, same commit. Sole cause: the old dials on
+# the same build reproduce the previous value. Captured twice: identical.
+# (was b0c89a70ed0e11091a1a088b5057e67170cd08cd3c9320f190d15e29b46c5343)
+# #88 RE-BASELINE (2026-10-20, smoke-unit rescale): a PURE SCHEMA move.
+# This loop runs live physics but holds no smoke, so neither the trace currency (2^16 -> 2^24) nor the decay
+# rounding reaches it; what moves the bytes is DIGEST_SPEC_VERSION 6 -> 7
+# alone (the currency is a bump trigger, C6): the version string is hashed
+# into every per-field digest. VERIFIED: with only DIGEST_SPEC_VERSION set
+# back to 6 on the same build (8 bits, nearest decay) this test reproduces
+# the previous value exactly. Full rationale beside GOLDEN_AGGREGATE in
+# tests/_xarch_perfield_digest.py, same commit. (was 412bcbf51a002cb8995c276fb15664b4a2438d3ef8e9a4adf0b2d0503d49e5b3)
 LOOP_GOLDEN_TRAJ_DIGEST = \
-    "38a47454a12b09b7815c9b95b672e815f9291bb0b3e42c30386fdb2577b3b6b3"
+    "10671f68656389ba23b0609b20154d1907a5cac45562870e80225b9dcf3c5967"
 LOOP_GOLDEN_STEPS = 30
 LOOP_GOLDEN_SEED = 1
 

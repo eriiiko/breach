@@ -124,7 +124,13 @@ import numpy as np
 import pyray as rl
 
 from .gas_detail import WIND_V_REF
-from .lit3d import _COMMON_GLSL, _FIELD_SAMPLE_GLSL, LightFieldCtx, make_camera
+
+# The tamed speed (tiles/tick) that counts as FULL sway, the shipped
+# [render.props] wind_ref. A sway choice of its own since #51 (it was the
+# taming ceiling, 0.08, before the wind moved to the honest m/s scale).
+SWAY_WIND_REF = 0.08
+from .lit3d import (_COMMON_GLSL, _FIELD_SAMPLE_GLSL, LightFieldCtx,
+                    bind_smoke_cover_map, make_camera)
 from .propgen import GENERATORS
 
 # ---------------------------------------------------------------------------
@@ -179,9 +185,13 @@ class SwaySettings:
       spaceship-stillness ruling, 2026-09-07)**: sway is a signal that the air
       is actually moving, never ambient decoration, so dead calm is dead still.
       The dial is kept for experiments (a planetside scene, a debug look).
-    * ``wind_ref`` — the tamed speed (tiles/tick) that counts as FULL sway;
-      defaults to gas_detail's own saturation ceiling, which is the largest
-      value ``tame_wind`` can ever return.
+    * ``wind_ref`` — the tamed speed (tiles/tick) that counts as FULL sway.
+      Default :data:`SWAY_WIND_REF` (0.08), the shipped ``[render.props]``
+      value. Until #51 (graphics G0 P2) it WAS ``tame_wind``'s saturation
+      ceiling; the tamed wind is now on the honest m/s scale with a 1.4
+      ceiling, so 0.08 is a sway choice of its own: full sway at ~1.4 m/s of
+      air, near the old curve's knee. It must stay at or below the ceiling
+      (else full sway is unreachable).
     * ``density_exponent`` / ``density_max`` — P4r2's MOMENTUM-FLUX law
       (Erik's vented-room ruling, 2026-09-07): the sampled wind is scaled by
       ``clamp(frac, 0, density_max) ** density_exponent`` before it becomes a
@@ -198,7 +208,7 @@ class SwaySettings:
     gust_depth: float = 0.38
     flutter_speed: float = 1.0
     idle_wind: float = 0.0
-    wind_ref: float = WIND_V_REF
+    wind_ref: float = SWAY_WIND_REF
     density_exponent: float = 1.0
     density_max: float = 2.0
 
@@ -217,7 +227,7 @@ class SwaySettings:
             gust_depth=g("gust_depth", 0.38),
             flutter_speed=g("flutter_speed", 1.0),
             idle_wind=g("idle_wind", 0.0),
-            wind_ref=g("wind_ref", WIND_V_REF),
+            wind_ref=g("wind_ref", SWAY_WIND_REF),
             density_exponent=g("density_exponent", 1.0),
             density_max=g("density_max", 2.0),
         )
@@ -359,8 +369,7 @@ void main() {
     float rim = pow(1.0 - max(0.0, dot(N, u_view_dir)), u_rim_power);
     lit += u_rim_strength * rim * (u_ambient + incoming_rgb * u_light_gain);
 
-    lit = aces_tonemap(lit);
-    if (u_srgb_decode == 1) lit = linear_to_srgb(lit);
+    // Linear HDR out (G0 P1): the world resolve tone-maps and encodes, once.
 
     // alpha = 1.0: the world RT is blitted premultiplied, and the vertex
     // alpha carries flutter DATA, not transparency.
@@ -764,9 +773,10 @@ class StaticPropRenderer:
              vacuum tile's wind is already zero by the time ``wind_ref``
              would otherwise have read a fast residual gust as "full sway";
           1. normalize the (now density-scaled) speed against ``wind_ref``
-             (which IS ``tame_wind``'s saturation ceiling, so the fraction is
-             0..1) and apply the ``idle_wind`` floor (0 by ruling — calm air,
-             no motion);
+             (the tamed speed that counts as full sway, at or below
+             ``tame_wind``'s ceiling; the fraction is clamped to 1.5) and
+             apply the ``idle_wind`` floor (0 by ruling — calm air, no
+             motion);
           2. scale by ``strength × the mesh's own height`` — so sway is a
              FRACTION OF THE PROP, and a shrub and a palm lean by the same
              visual proportion;
@@ -852,11 +862,15 @@ class StaticPropRenderer:
         # binds them every draw and never clobbers our texture units. Rebound
         # per frame because the LightingPass may swap its ping-pong targets.
         MM = rl.MaterialMapIndex
+        mats = []
         for entry in self._cache.values():
             for mi in range(entry.model.materialCount):
                 mat = entry.model.materials[mi]
                 mat.maps[MM.MATERIAL_MAP_METALNESS].texture = ctx.tex_a
                 mat.maps[MM.MATERIAL_MAP_NORMAL].texture = ctx.tex_b
+                mats.append(mat)
+        # Graphics G2: the smoke's cast shadow (lit3d's one GLSL copy).
+        bind_smoke_cover_map(self._shader, mats, ctx)
         self.set_frame_uniforms(ctx)
 
         # Sway uniforms that are the same for every prop this frame (the dials

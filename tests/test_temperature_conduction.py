@@ -42,6 +42,7 @@ Run:
 """
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -54,8 +55,9 @@ sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 
 import breach_physics as bp
 
+from config import CFG
 from simulation.materials import (
-    MAT_AIR, MAT_HULL, MAT_WOOD,
+    MAT_AIR, MAT_GLASS, MAT_HULL, MAT_WOOD,
     MaterialTable,
 )
 
@@ -101,8 +103,7 @@ def _solver():
     # (test_temperature_cooling.py).
     s = bp.TemperatureSolver()
     s.no_face = NO_FACE
-    s.cool_shift = 31
-    s.cool_shift_vacuum = 31
+    # T5b step 7 / R1: Pass 3 is deleted, so there is no cooling to disable.
     return s
 
 
@@ -139,7 +140,8 @@ def _run(temp, shift, face, solid, n_ticks, heat=None):
 # one's per-face ΔE array sums to exactly 0, constraint 1 holds.
 # ---------------------------------------------------------------------------
 FP_ONE = 65536
-CAP_SHIFT_MAX = 12      # conduction::CAP_SHIFT_MAX
+CAP_SHIFT_MAX = 12
+CAP_SHIFT_MIN = -16   # M1: temperature_solver.h conduction::CAP_SHIFT_MIN      # conduction::CAP_SHIFT_MAX
 LIM_SHIFT = 1           # conduction::LIM_SHIFT
 _OPP = (1, 0, 3, 2)     # N<->S, E<->W
 
@@ -153,15 +155,18 @@ def _capacities(ts, heat_inv_shift, n_raw, n_floor_heat=0.05, c_v=1.0):
     """conduction::cell_capacity_q, vectorized. Returns (cap_used, cap_real)."""
     n_floor_q = _quantize(n_floor_heat)
     c_v_q = _quantize(c_v)
-    his = np.maximum(heat_inv_shift.astype(np.int64), 0)
+    # M1: the floor is the REPRESENTATION floor (-16), not 0 -- a row lighter
+    # than one thermal_mass unit carries a negative exponent and the Q16.16
+    # capacity `1 << (s + 16)` holds it exactly (s = -2 is 16384 == 0.25).
+    his = np.maximum(heat_inv_shift.astype(np.int64), CAP_SHIFT_MIN)
     ceiling = np.int64(1) << (CAP_SHIFT_MAX + 16)
 
     used = np.zeros(ts.shape, dtype=np.int64)
     real = np.zeros(ts.shape, dtype=np.int64)
-    used[ts] = np.int64(1) << np.minimum(his[ts], CAP_SHIFT_MAX)
-    used[ts] <<= 16
-    real[ts] = np.int64(1) << np.minimum(his[ts], 30)
-    real[ts] <<= 16
+    # `s + 16` is non-negative by the floor, so the shift is built in ONE step
+    # rather than shifting a value that could not be represented on its own.
+    used[ts] = np.int64(1) << (np.minimum(his[ts], CAP_SHIFT_MAX) + 16)
+    real[ts] = np.int64(1) << (np.minimum(his[ts], 30) + 16)
 
     nr = np.maximum(n_raw.astype(np.int64), 0)
     nu = np.maximum(nr, np.int64(n_floor_q))
@@ -243,16 +248,181 @@ SHIFT_HULL = int(_TBL.face_shift_table[MAT_HULL, MAT_HULL])   # 2
 SHIFT_WOOD_HULL = int(_TBL.face_shift_table[MAT_WOOD, MAT_HULL])
 
 
-def test_face_table_anchor_values():
-    # Guard the load-time table STEP B is anchored to (engine/06 §2.4–§2.5).
-    assert SHIFT_HULL == 2, f"hull-hull face should be shift 2, got {SHIFT_HULL}"
-    assert SHIFT_WOOD == 8, f"wood-wood face should be shift 8, got {SHIFT_WOOD}"
+def test_face_table_is_the_material_s_own_diffusivity_not_a_stability_anchor():
+    """PROPERTY (thermal model v2 R10): every solid|solid face shift is the
+    material pair's REAL `alpha*dt/dx^2`, recomputed here from the row's own
+    `conductivity` and the `thermal_mass` currency -- never a CFL bucket.
+
+    This REPLACES `test_face_table_anchor_values`, which pinned `hull|hull == 2`
+    and `wood|wood == 8`. Those were the log bucket's own anchor (`SHIFT_AT_REF`
+    at `KAPPA_REF`), i.e. the test asserted the constant back to itself and
+    would have passed for any physics whatsoever.
+
+    M2: the recompute below carries each row's `fill_fraction` on BOTH sides,
+    because the law does. A tile holding a 5 mm panel has 67x less capacity AND
+    67x less cross-section for heat to travel along, so the fill cancels and
+    in-plane diffusivity stays a property of the MATTER; scaling only the
+    capacity would say heat spreads along a thin wooden wall 64x faster than
+    wood does.
+
+    BREAKS IF: a stability anchor returns, the harmonic mean is replaced by an
+    arithmetic one, the capacity drops out of the rate, the table stops being
+    symmetric, or the tile-averaging is applied to the capacity WITHOUT the
+    conductance.
+    """
+    from simulation.materials import THERMAL_MASS_UNIT
+    dx = float(getattr(CFG.physics.thermal, "tile_size_ref_m"))
+    dt = 1.0 / float(CFG.clock.ticks_per_second)
+
+    def predicted(a, b):
+        ka = float(_TBL.conductivity[a]) * float(_TBL.fill_fraction[a])
+        kb = float(_TBL.conductivity[b]) * float(_TBL.fill_fraction[b])
+        hm = 2.0 * ka * kb / (ka + kb)
+        rc = min(float(_TBL.thermal_mass[a]), float(_TBL.thermal_mass[b])) \
+            * THERMAL_MASS_UNIT
+        return int(round(-math.log2((hm * dt) / (rc * dx * dx))))
+
+    for a, b in ((MAT_HULL, MAT_HULL), (MAT_WOOD, MAT_WOOD),
+                 (MAT_WOOD, MAT_HULL), (MAT_GLASS, MAT_GLASS),
+                 (MAT_GLASS, MAT_HULL)):
+        assert int(_TBL.face_shift_table[a, b]) == predicted(a, b), (
+            f"face[{_TBL.names[a]}][{_TBL.names[b]}] = "
+            f"{int(_TBL.face_shift_table[a, b])}, physics says {predicted(a, b)}")
+
+    # The numbers that derivation produces, stated so a reader sees the scale
+    # R10 actually chose: steel 18 (a 3.0 h e-fold), glass 22, wood 24 (194 h).
+    assert SHIFT_HULL == 18 and SHIFT_WOOD == 24
     # Wood<->metal conducts at ~the WOOD (slow) rate, NOT the metal rate
     # (harmonic mean): its shift sits near wood, far from hull.
     assert SHIFT_WOOD_HULL >= SHIFT_WOOD - 1, "wood<->hull must be ~wood-slow"
     assert SHIFT_WOOD_HULL > SHIFT_HULL + 2, "wood<->hull must NOT be metal-fast"
     # Symmetric table -> symmetric flux.
     assert (_TBL.face_shift_table == _TBL.face_shift_table.T).all()
+
+
+def test_a_solid_gas_face_is_convection_and_did_not_move_under_r10():
+    """PROPERTY (T3 D3 / ledger 7a): a solid|gas face is governed by the
+    CONVECTION coefficient `h_conv`, not by conduction -- and at the derived
+    h = 6.0 that reproduces shift 10, which is what the retired anchor already
+    shipped.
+
+    This is R10's sharpest edge: applying pure conduction at a wall (what the
+    ruling says literally) would have taken those faces from accidentally
+    correct to 64x too weak. Every solid|gas pair is ONE shift, because `h`
+    describes the boundary layer and the solid's half-cell is not in series
+    with it.
+
+    BREAKS IF: someone "completes" R10 by putting kappa back at the wall, or
+    adds the solid half-cell resistance back into the series.
+    """
+    dx = float(getattr(CFG.physics.thermal, "tile_size_ref_m"))
+    dt = 1.0 / float(CFG.clock.ticks_per_second)
+    h = float(getattr(CFG.physics.thermal, "h_conv"))
+    from simulation.materials import THERMAL_MASS_UNIT
+    rc_gas = float(getattr(CFG.physics.thermal, "c_v")) * THERMAL_MASS_UNIT
+    expect = int(round(-math.log2((h * dt) / (rc_gas * dx))))
+    assert expect == 10, f"the derived solid|gas shift moved off 10: {expect}"
+    solids = [i for i in range(_TBL.n)
+              if _TBL.thermal_solid[i] and float(_TBL.conductivity[i]) > 0.0]
+    assert len(solids) >= 4
+    for i in solids:
+        assert int(_TBL.face_shift_table[MAT_AIR, i]) == expect, (
+            f"air|{_TBL.names[i]} is {int(_TBL.face_shift_table[MAT_AIR, i])}, "
+            f"not the derived convection shift {expect}")
+    # ...and it is NOT what pure conduction would have given: air|wood under
+    # the Fourier law is shift 16-17, i.e. 64-128x weaker.
+    ka, kb = float(_TBL.conductivity[MAT_AIR]), float(_TBL.conductivity[MAT_WOOD])
+    hm = 2.0 * ka * kb / (ka + kb)
+    fourier = int(round(-math.log2((hm * dt) / (rc_gas * dx * dx))))
+    assert fourier >= expect + 6, (
+        f"the two laws stopped differing (convection {expect}, Fourier "
+        f"{fourier}) -- this test's premise is gone")
+
+
+def test_a_vacuum_cell_owns_no_conduction_face():
+    """PROPERTY (thermal model v2 ledger 7b, report_t3.md D4): a NON-thermal-solid
+    cell with no gas in it conducts NOTHING -- it neither warms nor cools its
+    solid neighbour -- while the SAME scene with gas in that cell does exchange.
+
+    WHY THIS EXISTS. `kappa` is density-INDEPENDENT (kinetic theory: n and the
+    mean free path cancel) until the gas goes free-molecular, which for a
+    0.333 m tile is 0.0207 Pa. `n_floor_heat = 0.01` is 1013 Pa -- four and a
+    half orders above it -- so the capacity floor was inventing a conducting
+    medium in hard vacuum: T3 measured a vacuum cell heating at +0.78 K/tick,
+    exactly as fast as ambient air, with the wall paying 44.6 W per face for it.
+    Pass 0 wiped that every tick so it never accumulated, but it was the
+    temperature the sweep, the fold and the tile inspector saw WITHIN the tick.
+
+    There is no threshold here to pick and none should ever be added: the
+    Knudsen pressure is 0.013 of ONE Q16.16 LSB, so `N_raw == 0` is the only
+    representable free-molecular state.
+
+    BREAKS IF: the mask is dropped, applied from only one end (it must be per
+    CELL, so it cannot produce a one-sided face), or turned into a density
+    threshold.
+    """
+    # [ hull | air | hull ] -- the middle cell is the one we empty.
+    mats = np.array([[MAT_HULL, MAT_AIR, MAT_HULL]], dtype=np.int8)
+    shift, face, solid = _build_caches(mats)
+    HOT = 1 << 24
+
+    def run(n_middle_raw, vac_middle):
+        temp = np.zeros((1, 3), dtype=np.int32)
+        temp[0, 0] = HOT
+        is_vacuum = np.ascontiguousarray(
+            np.array([[False, bool(vac_middle), False]], dtype=bool))
+        atmosphere = np.ascontiguousarray(
+            np.array([[1 << 16, int(n_middle_raw), 1 << 16]], dtype=np.int32))
+        solver = _solver()
+        for _ in range(4):
+            solver.step(temp, _zero_heat(temp.shape), shift, face, solid,
+                        is_vacuum, atmosphere)
+        return temp.copy(), int(solver.e_cond_trunc_sum)
+
+    gas, _ = run(1 << 16, False)          # ambient air in the middle
+    hard, _ = run(0, True)                # a real breach: is_vacuum AND N == 0
+    empty, _ = run(0, False)              # a decompressed INTERIOR: N == 0 only
+
+    # Non-vacuity: with gas there, the face is live in both directions.
+    assert gas[0, 1] > 0, "the control scene did not conduct at all"
+    assert gas[0, 0] < HOT, "the hot wall did not lose anything to the air"
+
+    # The mask: neither term lets anything across, and the hot wall keeps
+    # EXACTLY what it had -- no 1-count-per-tick dribble either.
+    for label, got in (("is_vacuum", hard), ("cap_real == 0", empty)):
+        assert int(got[0, 1]) == 0, (
+            f"{label}: a cell with no gas in it took conduction heat "
+            f"({int(got[0, 1])} counts)")
+        assert int(got[0, 0]) == HOT, (
+            f"{label}: the hot wall lost {HOT - int(got[0, 0])} counts into a "
+            f"cell that is not a thermal medium")
+        assert int(got[0, 2]) == 0, f"{label}: heat crossed the empty cell"
+
+
+def test_an_intact_hull_tile_still_conducts_even_though_it_is_is_vacuum():
+    """PROPERTY: the `!ts[i]` term of the vacuum mask is LOAD-BEARING. An intact
+    hull tile is `is_vacuum && solid && thermal_solid` (Pass 0 says so) -- it is
+    a WALL, not a breach -- and it must keep conducting to its solid neighbours.
+
+    BREAKS IF: the mask is written as `is_vacuum[i] || cap_real_[i] == 0`
+    without the thermal-solid guard, which would silently sever every
+    space-facing bulkhead from the hull behind it.
+    """
+    mats = np.array([[MAT_HULL, MAT_HULL, MAT_HULL]], dtype=np.int8)
+    shift, face, solid = _build_caches(mats)
+    temp = np.zeros((1, 3), dtype=np.int32)
+    temp[0, 0] = 1 << 28
+    # Every tile marked vacuum-exposed, exactly as an outer hull row is.
+    is_vacuum = np.ascontiguousarray(np.ones((1, 3), dtype=bool))
+    atmosphere = np.ascontiguousarray(np.zeros((1, 3), dtype=np.int32))
+    solver = _solver()
+    before = int(temp[0, 1])
+    for _ in range(8):
+        solver.step(temp, _zero_heat(temp.shape), shift, face, solid,
+                    is_vacuum, atmosphere)
+    assert int(temp[0, 1]) > before, (
+        "an intact hull tile stopped conducting because it is is_vacuum -- the "
+        "mask's !thermal_solid guard is gone")
 
 
 def test_hot_tile_spreads_to_neighbours():
@@ -500,7 +670,6 @@ def test_conduction_energy_books_close():
     assert prev[0] < 0, "no truncation at all (vacuous gate)"
     # Pass 3 and the Pass-0 wipes are inert in this scenario (cooling disabled,
     # no vacuum, no ring), so their SIGNED channels must read exactly 0.
-    assert int(solver.e_cool_sum) == 0
     assert int(solver.e_vac_wipe_sum) == 0
     assert int(solver.e_ring_pin_sum) == 0
 

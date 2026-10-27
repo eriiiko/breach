@@ -262,7 +262,10 @@ def measure_supply(material_id, *, pin_I=OPERATING_POINT_I,
     measure O2 delivery at TODAY's configured draw radius. Thin wrapper
     around :func:`measure_supply_on_level` that builds the still-air
     reference arena (unchanged from P-F4a). Returns a metrics dict."""
-    level = build_level(interior_w, interior_h, crate_xy, tile_size_m)
+    # FURN explicitly: this baseline's numbers are quoted against the crate
+    # row, and M2 moved `build_level`'s default to kindling (design section 8).
+    level = build_level(interior_w, interior_h, crate_xy, tile_size_m,
+                        fuel_mat=FURN)
     cx, cy = crate_xy
     level.tilemap[cy, cx] = material_id
     m = measure_supply_on_level(

@@ -15,8 +15,9 @@ dtype drifts from the spec raises (loudly) rather than silently changing the has
 — if a field legitimately changes dtype/shape, BUMP the version and regenerate
 every golden in the same commit (the §7.6 gate-7 rule).
 
-SCOPE — int fields only. The five remaining float sim fields (``ripple``,
-``ripple_v``, ``dyn_permeability``, ``dyn_wave_absorb``, ``dyn_light_atten``) are
+SCOPE — int fields only. The four remaining float sim fields (``ripple``,
+``ripple_v``, ``dyn_permeability``, ``dyn_wave_absorb``; the fifth, the render
+march's ``dyn_light_atten``, was deleted with the march at ray-engine-v2 P6c) are
 EXCLUDED: they are render/lighting-bound or a known residual float boundary, NOT
 part of the cross-GPU integer bit-identity contract. The same-machine A/B harness
 still covers them. The synced UNIT state (HP/life/events) rides in via
@@ -38,7 +39,7 @@ import hashlib
 import numpy as np
 
 # Bump this (and regenerate every golden) whenever DIGEST_FIELDS changes shape,
-# order, dtype, or membership. The version is hashed into the digest so a stale
+# order, dtype, or membership, or a field's integer CURRENCY changes (v7). The version is hashed into the digest so a stale
 # golden compared against a new spec fails loudly instead of mismatching opaquely.
 # v2 (2026-07-24): +ignition_armed — the edge-triggered ignition arm bool
 # (combat.apply_temperature_ignition; Fable zombie-smolder ruling) is synced state.
@@ -68,7 +69,44 @@ import numpy as np
 # AND dtype both change (a NEW int64 field, not a reshape/retype of an
 # existing one), so this is a version bump per this file's own change
 # procedure.
-DIGEST_SPEC_VERSION = 5
+# v6 (2026-09-20, T5b step 9, ray-engine-v2's flip / design v3 row 28):
+# + dyn_heat_atten_q -- the per-tile DYNAMIC heat-extinction plane, int32 Q16,
+# `max(heat_atten_q[material], each living unit's own heat_atten)` stamped by
+# `stamp_units`. It became SYNCED STATE at the flip: the radiation sweep reads
+# it, the sweep now feeds the temperature fold, so a desync on this plane forks
+# the temperature stream and everything downstream of it. Before the flip the
+# sweep was in shadow and the plane moved nothing, which is exactly why it was
+# not in the digest. Membership changes (a NEW field), so this is a version
+# bump per this file's own change procedure, and every committed golden is
+# regenerated in the SAME commit.
+#
+# The STATIC twin `heat_atten_q` is deliberately NOT added: it is a pure
+# projection of `material` through the material table, and `material` is
+# already in the digest, so it carries no state of its own. `dyn_heat_atten_q`
+# does -- it carries where the UNITS are.
+# v7 (2026-10-20, #88, the smoke-unit rescale): NO field changes -- dtype,
+# shape, membership and order are as in v6. The five TRACE planes of `gas`
+# change their integer CURRENCY: 2^(16 + 8) counts per real unit instead of
+# 2^16 (cpp/src/fixed_point.h TRACE_FINE_BITS 0 -> 8). The same world's v6 and
+# v7 digests are not comparable, and the version exists to refuse exactly that
+# comparison (design docs/smoke_unit_rescale_design_2026-10-20.md sec 6.1, C6).
+# The spec's `trace_fine_bits` is held equal to gas_fixed.TRACE_FINE_BITS by the
+# assert below, at import: moving the currency without this spec fails loudly.
+DIGEST_SPEC_VERSION = 7
+DIGEST_TRACE_FINE_BITS = 8
+
+try:
+    from simulation import gas_fixed as _gas_fixed
+except ImportError:                              # standalone use: add src/
+    import sys as _sys
+    from pathlib import Path as _Path
+    _sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / "src"))
+    from simulation import gas_fixed as _gas_fixed
+assert DIGEST_TRACE_FINE_BITS == _gas_fixed.TRACE_FINE_BITS, (
+    f"digest spec v{DIGEST_SPEC_VERSION} names trace_fine_bits="
+    f"{DIGEST_TRACE_FINE_BITS} but gas_fixed.TRACE_FINE_BITS="
+    f"{_gas_fixed.TRACE_FINE_BITS}: a trace-currency change is a digest-spec "
+    f"bump (tests/field_digest_spec.toml CHANGE PROCEDURE)")
 
 # The frozen (name, dtype-string) contract — the integer/bool SYNCED fields, in a
 # fixed order. `gas` is the 3D (5,h,w) multi-gas stack (covers `smoke`, a view).
@@ -97,11 +135,15 @@ DIGEST_FIELDS = (
     ("ignition_armed", "bool"),
     ("dem_acc",        "int32"),
     ("gas_energy",     "int64"),
+    ("dyn_heat_atten_q", "int32"),   # v6 (T5b step 9)
 )
 
 # Float sim fields deliberately NOT in the cross-GPU integer digest (documented).
+# Not hashed (the digest reads DIGEST_FIELDS only), so editing this list moves no
+# digest and is no spec-version change: ray-engine-v2 P6c removed
+# "dyn_light_atten" because the field itself is gone (golden unmoved).
 EXCLUDED_FLOAT_FIELDS = (
-    "ripple", "ripple_v", "dyn_permeability", "dyn_wave_absorb", "dyn_light_atten",
+    "ripple", "ripple_v", "dyn_permeability", "dyn_wave_absorb",
 )
 
 

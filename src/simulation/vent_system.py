@@ -21,7 +21,8 @@ machine-identical — the serializer's own order, §3):
 
 1. Every RETURN vent extracts up to its own per-tick Bresenham-accrued flux
    quantum (``extract_gas_n_vec`` — zero-clamped by the aperture's actual
-   content). The MEASURED per-slice withdrawal vector credits the plenum:
+   content). The quantum is AIR (bulk O2+N2); the trace leaves with it at
+   the aperture's air ratio ``S/N_bulk`` (#88 P0). The MEASURED per-slice withdrawal vector credits the plenum:
    bulk (o2/n2) verbatim, trace species through the duct's filter (§4:
    scrubbed mass -> the counted sink). The ENERGY credit is BULK-ONLY —
    ``(removed[O2]+removed[INERT_N2]) * t_tile`` — per the engine's own P-T0
@@ -118,12 +119,15 @@ def _duct_filter_efficiency_q(duct_inst_fields, filters_cfg, duct_id):
             f"declared rows: {known}")
     eff_q = []
     for gname in _TRACE_NAMES:
-        q = _gas_fx.quantize_scalar(float(getattr(row, gname)))
-        if not (0 <= q <= _gas_fx.FP_ONE):
+        # A filter efficiency is a Q16 FRACTION of removed mass, never a trace
+        # density (#88 A12): it is validated against Q16_ONE, whatever the
+        # trace currency.
+        q = _gas_fx.quantize_q16_scalar(float(getattr(row, gname)))
+        if not (0 <= q <= _gas_fx.Q16_ONE):
             raise ValueError(
                 f"duct '{duct_id}': [filters.{name}].{gname} = "
                 f"{getattr(row, gname)!r} quantizes to {q} raw, outside "
-                f"[0, {_gas_fx.FP_ONE}] (a filter efficiency is a [0,1] "
+                f"[0, {_gas_fx.Q16_ONE}] (a filter efficiency is a [0,1] "
                 f"fraction of removed mass — vent design §4)")
         eff_q.append(q)
     return eff_q
@@ -319,7 +323,7 @@ def build_vents(sim):
         duct_rt = duct_by_id.get(e.fields["duct"]) or None
         q_circ = float(e.fields["q_circ"])
         rate_per_s = q_circ / ct if ct > 0 else q_circ
-        rate_raw_per_s = _gas_fx.quantize_scalar(rate_per_s)
+        rate_raw_per_s = _gas_fx.quantize_bulk_scalar(rate_per_s)    # a bulk N rate
         rt = VentRuntime(e, ay, ax, e.fields["role"], duct_rt,
                          rate_raw_per_s, tps)
         vents.append(rt)
@@ -368,7 +372,7 @@ def _t_rails_q():
             "agree with every other T writer's T_MAX_PHYS rail)")
     t_min = float(eos_cfg.T_MIN)
     t_max = float(thermal_cfg.T_MAX_PHYS)
-    return _gas_fx.quantize_scalar(t_min), _gas_fx.quantize_scalar(t_max)
+    return _gas_fx.quantize_q16_scalar(t_min), _gas_fx.quantize_q16_scalar(t_max)
 
 
 def _duct_sweep(gmap, duct, return_vents, supply_vents, t_min_q, t_max_phys_q):
@@ -387,6 +391,9 @@ def _duct_sweep(gmap, duct, return_vents, supply_vents, t_min_q, t_max_phys_q):
         if emit <= 0:
             continue
         t_tile = int(gmap.temperature[fy, fx])       # honest pre-edit read
+        # `emit` is an AIR budget: the bulk part of `removed` sums to
+        # min(emit, N_bulk) and the trace rides at the tile's S/N_bulk (#88
+        # P0), so all of it lands in the plenum (trace_raw + sink) below.
         removed = gmap.extract_gas_n_vec(fy, fx, emit)
         total_removed = sum(removed)
         if total_removed == 0:

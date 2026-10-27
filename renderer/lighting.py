@@ -1,15 +1,25 @@
-"""Lighting renderer: computes the RGB directional light field via the C++
-raycaster, packs it into two small RGBA16F textures (ch.05), and draws the
-diffuse ship lit by the lighting shader.
+"""Lighting renderer: packs the RGB directional light field into two small
+RGBA16F textures (ch.05) and draws the diffuse ship lit by the lighting shader.
 
 Texture A = light_rgb (RGB) + light_dir.x (A, signed).
-Texture B = smoke_glow (RGB, reserved/zero this slice) + light_dir.y (A, signed).
+Texture B = glow (RGB) + light_dir.y (A, signed).
+
+RAY-ENGINE-V2 P6b/P6c (design v3 §4.3, §7.1): LightingPass is a CONSUMER, and
+since P6c nothing else. It uploads the one accessor's field
+(``simulation.light_field.read_light`` -- the radiation sweep's light channels)
+into the two textures once per sim tick (:meth:`LightingPass.consume_light_view`,
+packed by the pure :func:`pack_light_view`); the shader, the 3D units
+(renderer/lit3d.py) and the water pass sample them per frame. It never calls a
+producer. (The old render march that used to fill the same textures -- the C++
+Raycaster behind P6b's F11 toggle -- was deleted at P6c.) The flat term is the
+small FLOOR dial (``[render.lighting] floor``; design §2.7: a separate dial,
+never a substitute for the sky).
 """
 from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional
 
 import numpy as np
 import pyray as rl
@@ -40,25 +50,82 @@ def art_src_and_uv_rect(art_align, grid_w: int, grid_h: int,
     return src, (src[0] / aw, src[1] / ah, src[2] / aw, src[3] / ah)
 
 
+def pack_light_view(view, gain: float, light_rgb: np.ndarray, light_dx: np.ndarray,
+                    light_dy: np.ndarray, light_map: np.ndarray,
+                    packed_a: np.ndarray, packed_b: np.ndarray,
+                    glow_rgb: Optional[np.ndarray] = None) -> None:
+    """THE NEW PATH'S PACK (P6b), pure numpy, headless-testable: the accessor's
+    :class:`simulation.light_field.LightView` -> the texture contract the ship
+    shader, the 3D units and the water pass already read.
+
+      light_rgb = view.rgb * gain          the calibrated field (render dial
+                                           ``[render.lighting] sweep_gain``;
+                                           light units -> the old march's scale)
+      light_dir = -view.flux_dir           toward the light, the contract's
+                                           convention (the sweep's flux points
+                                           the way light TRAVELS)
+      light_map = max over the channels    the scalar the sprite tint reads
+      packed_a  = (light_rgb, dir.x) ; packed_b = (glow * gain, dir.y)   16F
+
+    Every output is a MONOTONE non-decreasing function of the integer field
+    per channel (a positive scale, then float rounding, which is monotone) --
+    design §8.5, held by tests/test_light_field.py. A post-process that mixes
+    cells or channels here would break it."""
+    np.multiply(view.rgb, np.float32(gain), out=light_rgb)
+    np.negative(view.flux_dir[..., 0], out=light_dx)
+    np.negative(view.flux_dir[..., 1], out=light_dy)
+    np.max(light_rgb, axis=2, out=light_map)
+    packed_a[..., 0:3] = light_rgb
+    packed_a[..., 3] = light_dx
+    glow = view.glow * np.float32(gain)
+    packed_b[..., 0:3] = glow
+    packed_b[..., 3] = light_dy
+    if glow_rgb is not None:
+        glow_rgb[...] = glow
+
+
+def load_lighting_fs() -> str:
+    """``shaders/lighting.fs`` with the smoke cast shadow's GLSL
+    (``lit3d._SMOKE_SHADOW_GLSL``, the ONE copy every receiver runs; graphics
+    G2) spliced in at its ``// <SMOKE_SHADOW>`` marker. Pure text, no GL."""
+    from .lit3d import _SMOKE_SHADOW_GLSL
+    src = (SHADERS_DIR / "lighting.fs").read_text(encoding="utf-8")
+    if src.count("// <SMOKE_SHADOW>") != 1:
+        raise RuntimeError("shaders/lighting.fs lost its // <SMOKE_SHADOW> "
+                           "marker")
+    return src.replace("// <SMOKE_SHADOW>", _SMOKE_SHADOW_GLSL)
+
+
 class LightingPass:
     """Owns the lighting shader and the dynamic light-field texture."""
 
-    def __init__(self, raycaster, grid_h: int, grid_w: int):
-        self.raycaster = raycaster
+    def __init__(self, grid_h: int, grid_w: int):
         self.h = grid_h
         self.w = grid_w
+        _lcfg = getattr(getattr(CFG, "render", None), "lighting", None)
+        # [render.lighting] sweep_gain: light units -> the old march's field
+        # scale, a RENDER dial (dequantized at the render read, never written
+        # back). Measured 1:1 (report: lamp 0.996, flashlight 1.05, crate 0.83).
+        self.sweep_gain = float(getattr(_lcfg, "sweep_gain", 1.0))
+        # [render.lighting] floor: the small flat FLOOR (design §2.7) -- the
+        # only flat term since P6c (the old path's flat ambient is gone).
+        self.floor = tuple(float(v) for v in getattr(_lcfg, "floor", (0.03, 0.03, 0.04)))
+        # the calibrated glow (for the gas-medium pass), (h, w, 3)
+        self.glow_rgb = np.zeros((grid_h, grid_w, 3), dtype=np.float32)
+        # the last LightView consumed (None = no light read yet / lighting off)
+        self.light_view = None
 
-        # CPU-side scratch buffers for the raycaster
-        # RGB light accumulator (f32), shape (h, w, 3) — interleaved per ch.03.
+        # CPU-side scratch the pack writes (pack_light_view):
+        # RGB light field (f32), shape (h, w, 3) — interleaved per ch.03.
         self.light_rgb = np.zeros((grid_h, grid_w, 3), dtype=np.float32)
         self.light_dx  = np.zeros((grid_h, grid_w), dtype=np.float32)
         self.light_dy  = np.zeros((grid_h, grid_w), dtype=np.float32)
-        # Legacy scalar light field, derived from light_rgb (max over channels)
-        # for the render-side unit/smoke tinting consumers that still read it.
+        # The renderer's SCALAR light field, the brightest channel of light_rgb
+        # (i.e. of the accessor's view), for the sprite tint.
         self.light_map = np.zeros((grid_h, grid_w), dtype=np.float32)
         # Packed RGBA16F render textures (ch.05):
         #   Texture A = light_rgb (RGB) + light_dir.x (A, signed)
-        #   Texture B = smoke_glow (RGB, reserved/zero this slice) + light_dir.y (A, signed)
+        #   Texture B = glow (RGB) + light_dir.y (A, signed)
         self.packed_a = np.zeros((grid_h, grid_w, 4), dtype=np.float16)
         self.packed_b = np.zeros((grid_h, grid_w, 4), dtype=np.float16)
 
@@ -71,13 +138,25 @@ class LightingPass:
         self.vacuum_tex = core.create_dynamic_rgba_texture(grid_w, grid_h)
         rl.set_texture_filter(self.vacuum_tex,
                               rl.TextureFilter.TEXTURE_FILTER_POINT)
-        # Toggle bilinear vs nearest on the light texture
-        self.bilinear = True
+        # [render.lighting] bilinear: bilinear vs nearest on the light
+        # texture. Read ONCE here (#59: was a live B-key toggle, which
+        # collided with ORDER_EXPLOSIVE's B binding and confounded every look
+        # judgement during a session with explosives armed all the time --
+        # Erik's ruling 2026-09-29, fewer shortcut keys, a switch is a
+        # config.toml setting, edit + restart). Default True = today's
+        # shipped state (create_dynamic_rgba16f_texture already creates the
+        # two textures bilinear-filtered; only a False here needs to change
+        # anything).
+        self.bilinear = bool(getattr(_lcfg, "bilinear", True))
+        if not self.bilinear:
+            point = rl.TextureFilter.TEXTURE_FILTER_POINT
+            rl.set_texture_filter(self.light_tex_a, point)
+            rl.set_texture_filter(self.light_tex_b, point)
 
-        self.shader = core.load_shader_with_fallback(
-            str(SHADERS_DIR / "lighting.vs"),
-            str(SHADERS_DIR / "lighting.fs"),
-        )
+        # Graphics G2: the smoke cast shadow's GLSL is lit3d's ONE copy,
+        # spliced in at lighting.fs's marker (see load_lighting_fs).
+        self.shader = core.load_shader_from_source(
+            str(SHADERS_DIR / "lighting.vs"), load_lighting_fs())
         # Look up uniform locations once. Warn (but continue) on any -1.
         self._loc_normal_tex      = self._lookup("u_normal")
         self._loc_light_tex_a     = self._lookup("u_light_a")
@@ -91,6 +170,9 @@ class LightingPass:
         self._loc_light_z         = self._lookup("u_light_z")
         self._loc_light_gain      = self._lookup("u_light_gain")
         self._loc_art_uv_rect     = self._lookup("u_art_uv_rect")
+        self._loc_smoke_cover     = self._lookup("u_smoke_cover")
+        # G2: the cast product + its uniforms (set_smoke_shadow; None = none)
+        self.smoke_cover = None
 
         # Cached state (for HUD display + bound checks)
         self.light_z = 0.5            # default — overhead lamp feel
@@ -102,16 +184,15 @@ class LightingPass:
         self.art_align = None
 
         # Default uniforms
-        self.set_ambient((0.18, 0.18, 0.22))
+        self._push_flat_term()
         self.set_normal_strength(1.0)
         self.set_normal_y_sign(1.0)   # OpenGL convention; flip to -1 if needed
         self.set_srgb_decode(True)    # PNG diffuse art is sRGB
         self.set_light_z(self.light_z)
-        # Render exposure (engine/08 §Falloff is density). The pure-density march
-        # makes light_rgb a 1/r PHYSICAL field with intensity = total emitted
-        # power (N-independent), ~ray_count× dimmer than the old per-ray-dist_atten
-        # field. This gain maps physical power -> display brightness so sources are
-        # tuned by physics, exposure by one master dial. Default 1.0 (neutral);
+        # Render exposure: light_rgb is a PHYSICAL field (light units, the
+        # sweep's irradiance scaled by [render.lighting] sweep_gain). This gain
+        # maps physical power -> display brightness so sources are tuned by
+        # physics, exposure by one master dial. Default 1.0 (neutral);
         # game_renderer / the demo override from config.
         # Config-bound 2026-08-25 ([render.lighting] master_gain): the game ran
         # the neutral 1.0 while the demo harness tunes at ~10 — the "too dark
@@ -132,11 +213,19 @@ class LightingPass:
             print(f"[lighting] WARN: shader uniform '{name}' not found (loc=-1)")
         return loc
 
-    def set_ambient(self, rgb):
+    def set_floor(self, rgb):
+        """The small flat FLOOR (design §2.7) -- a render dial, never a
+        substitute for the sky: a sealed room reads exactly this."""
+        self.floor = (float(rgb[0]), float(rgb[1]), float(rgb[2]))
+        self._push_flat_term()
+
+    def _push_flat_term(self):
         # Cache as a Python tuple so non-shader consumers (e.g. unit sprite
-        # tinting in game_renderer._draw_units_world) can read the same
-        # ambient value the ship is lit by. Single source of truth.
-        self.ambient = (float(rgb[0]), float(rgb[1]), float(rgb[2]))
+        # tinting in game_renderer._draw_units_world, the water pass, the 3D
+        # units' LightFieldCtx) read the same flat term the ship is lit by.
+        # Single source of truth: `ambient` is the flat term (the floor) --
+        # the shader's u_ambient uniform keeps its name.
+        self.ambient = self.floor
         val = rl.ffi.new("float[3]", list(self.ambient))
         rl.set_shader_value(self.shader, self._loc_ambient, val,
                             rl.ShaderUniformDataType.SHADER_UNIFORM_VEC3)
@@ -159,7 +248,10 @@ class LightingPass:
 
     def set_srgb_decode(self, on: bool):
         """When True, treat the diffuse texture as sRGB-encoded and do lighting
-        math in linear space, re-encoding on output."""
+        math in linear space. The matching re-encode is no longer this
+        shader's: it runs once, at WorldComposite.resolve(), which reads
+        ``self.srgb_decode`` (graphics G0 P1 -- one tone-map, one encode)."""
+        self.srgb_decode = bool(on)
         val = rl.ffi.new("int[1]", [1 if on else 0])
         rl.set_shader_value(self.shader, self._loc_srgb_decode, val,
                             rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
@@ -185,9 +277,7 @@ class LightingPass:
 
     def set_light_gain(self, gain: float):
         """Render exposure: multiply the physical light field before tone-map.
-        The pure-density raycaster (engine/08) makes light_rgb ~ray_count× dimmer
-        than the legacy field (intensity is now total power, not summed per-ray),
-        so the default game exposure is >1. Physics tunes power; this tunes look."""
+        Physics tunes power; this tunes look ([render.lighting] master_gain)."""
         gain = max(0.0, float(gain))
         self.light_gain = gain
         val = rl.ffi.new("float[1]", [gain])
@@ -219,110 +309,49 @@ class LightingPass:
         rl.set_shader_value(self.shader, self._loc_art_uv_rect, val,
                             rl.ShaderUniformDataType.SHADER_UNIFORM_VEC4)
 
-    def toggle_bilinear(self):
-        self.bilinear = not self.bilinear
-        filt = (rl.TextureFilter.TEXTURE_FILTER_BILINEAR
-                if self.bilinear else rl.TextureFilter.TEXTURE_FILTER_POINT)
-        rl.set_texture_filter(self.light_tex_a, filt)
-        rl.set_texture_filter(self.light_tex_b, filt)
+    # ---- the light field: the one accessor's, uploaded ---------------------
 
-    # ---- light field computation ---------------------------------------
+    def consume_light_view(self, view) -> None:
+        """Upload the accessor's field (``light_field.read_light``) into
+        light_tex_a / light_tex_b, once per sim tick (the caller watches
+        Simulation.light_serial). Packed by :func:`pack_light_view`; the 3D
+        units and the water pass read the same two textures."""
+        pack_light_view(view, self.sweep_gain, self.light_rgb, self.light_dx,
+                        self.light_dy, self.light_map, self.packed_a,
+                        self.packed_b, glow_rgb=self.glow_rgb)
+        core.update_rgba16f_texture(self.light_tex_a, self.packed_a)
+        core.update_rgba16f_texture(self.light_tex_b, self.packed_b)
+        # The accessor's view itself, kept for the CPU-side readers that need
+        # more than the textures carry (#33: the units' projected shadows read
+        # its directionality). Read-only; replaced on the next upload.
+        self.light_view = view
 
-    def compute_light_field(self, sources: List, gas: np.ndarray,
-                            gas_absorption: np.ndarray, gas_scatter: np.ndarray,
-                            light_atten: np.ndarray,
-                            heat: Optional[np.ndarray] = None,
-                            smoke_glow: Optional[np.ndarray] = None,
-                            heat_atten: Optional[np.ndarray] = None) -> None:
-        """Cast all sources, accumulate intensity + direction, normalize, pack.
-
-        `gas` is the multi-gas density field, shape (n_gases, h, w) f32 — pass
-        `gmap.gas`. `gas_absorption` / `gas_scatter` are the per-gas per-channel
-        tables (n_gases, 3) f32 from `GasTable` (`gmap.gases.absorption` /
-        `.scatter_albedo`). The march sums the two decoupled optical budgets
-        (Beer-Lambert transmission + additive scatter/glow) density-weighted
-        across all gases (engine/05 §6.2), so coexisting gases mix automatically
-        and each gas tints the beam by its own colour.
-
-        `light_atten` is the per-channel attenuation field the march reads,
-        shape (h, w, 3) f32 — pass `gmap.dyn_light_atten` (the live dynamic
-        field = static material attenuation MAX'd with stamped-unit opacity,
-        rebuilt each tick in `stamp_units`). Occlusion is per-channel (ch.03
-        §the march): opaque tiles ([1,1,1]) kill the ray exactly like the old
-        wall hard-stop, glass transmits dimmed, an unequal triple tints the
-        surviving light. Units stamped into this field restore their shadows
-        (default opacity [1,1,1]); smoke remains the separate live input passed
-        as `smoke`. (Folding smoke/water into the dynamic field is a later
-        slice.)
-
-        `heat` (Q16.16 int32, (h,w)) and `smoke_glow` (f32 RGB, (h,w,3)) are the
-        Slice-4 march outputs — pass `gmap.heat` / `gmap.smoke_glow`. They are
-        accumulators: cleared here before the frame's sources, then written
-        IN-PLACE by the C++ march. `heat` is the sim-affecting deposit (nothing
-        reads it yet, ch.04); `smoke_glow` is the render-only god-ray glow that
-        supersedes the old surface-tint light_modulation. Both may be None
-        (the cast skips that deposit) — kept optional during the renderer-owns-
-        the-cast phase (the cast moves into the sim in S5).
-
-        `heat_atten` (f32 (h,w)) is the per-tile heat-ray attenuation field
-        (engine/06 §1), the heat analogue of `light_atten` — pass
-        `gmap.heat_atten`. It attenuates the march's independent heat channel
-        exactly as `light_atten` attenuates the RGB channels, so heat and light
-        occlusion diverge for materials transparent to one but not the other.
-        May be None (heat is not attenuated — the pre-S6 behaviour).
-        """
+    def clear_light(self) -> None:
+        """Lighting OFF (F4): zero every light buffer and upload the dark
+        textures, so no stale field lingers (the flat floor still lights the
+        ship)."""
+        self.light_view = None
         self.light_rgb.fill(0)
+        self.light_map.fill(0)
         self.light_dx.fill(0)
         self.light_dy.fill(0)
-        # Zero the per-frame render accumulator IN-PLACE (never reassign — a C++
-        # view of the buffer must stay valid). smoke_glow re-accumulates every
-        # frame from scratch.
-        #
-        # NOTE: `heat` is NOT cleared here. It is the sim-owned per-tick deposit
-        # and is now cleared at END OF TICK in PhysicsRunner.step (engine/06
-        # §1.3) — AFTER the heat -> temperature conversion has read it. Clearing
-        # it here (before the cast) used to wipe the deposit before any consumer
-        # existed; that clear has moved to the sim so conversion reads it first.
-        # The ray march below deposits into `heat` with a SATURATING add, so the
-        # sim's end-of-tick clear is what keeps it a per-tick (not cross-tick)
-        # buffer.
-        if smoke_glow is not None:
-            smoke_glow.fill(0)
-
-        for src in sources:
-            self.raycaster.cast_source_directional(
-                src, self.light_rgb, self.light_dx, self.light_dy,
-                gas, gas_absorption, gas_scatter, light_atten,
-                heat, smoke_glow, heat_atten,
-            )
-        # Normalize direction to unit vectors (vector-magnitude normalization).
-        # See expert review notes in docs/patch_level_pipeline_v1.md.
-        type(self.raycaster).normalize_directions(self.light_dx, self.light_dy)
-
-        # Legacy scalar field for render-side unit/smoke tinting: max over the
-        # RGB channels (a brightness proxy). Render-only; not in the sim.
-        self.light_map[:] = self.light_rgb.max(axis=2)
-
-        # Pack into two RGBA16F textures (ch.05). 16F stores HDR RGB and
-        # SIGNED light_dir directly (no 0.5-centered encode):
-        #   Texture A = light_rgb (RGB) + light_dir.x (A)
-        #   Texture B = smoke_glow (RGB) + light_dir.y (A)
-        # smoke_glow is the god-ray glow deposited by the march (ch.03 C16):
-        # the light the smoke absorbed, per channel. Drawn additively as the
-        # volumetric shaft (ch.05 §God-rays). When no smoke_glow buffer is
-        # passed it stays zero (no glow), matching the pre-slice behaviour.
-        self.packed_a[..., 0:3] = self.light_rgb
-        self.packed_a[..., 3]   = self.light_dx
-        if smoke_glow is not None:
-            self.packed_b[..., 0:3] = smoke_glow
-        else:
-            self.packed_b[..., 0:3] = 0.0
-        self.packed_b[..., 3]   = self.light_dy
-
+        self.packed_a.fill(0)
+        self.packed_b.fill(0)
+        self.glow_rgb.fill(0)
         core.update_rgba16f_texture(self.light_tex_a, self.packed_a)
         core.update_rgba16f_texture(self.light_tex_b, self.packed_b)
 
     # ---- drawing --------------------------------------------------------
+
+    def set_smoke_shadow(self, cover_tex, grid, cast, cast2) -> None:
+        """Graphics G2: the smoke's cast shadow on the floor -- the relief's
+        cast product (``GasReliefPass.product_texture``; None = no shadow)
+        and ``gas_relief.cast_uniforms``' two vec4s, set once per frame."""
+        from .lit3d import set_smoke_shadow_uniforms
+        self.smoke_cover = cover_tex
+        if cover_tex is None:
+            cast = (0.0, 0.0, 0.0, 0.0)
+        set_smoke_shadow_uniforms(self.shader, grid, cast, cast2)
 
     def draw_lit_world(self, diffuse: rl.Texture, normal: Optional[rl.Texture],
                        world_px_w: int, world_px_h: int) -> None:
@@ -356,14 +385,39 @@ class LightingPass:
         rl.begin_shader_mode(self.shader)
         if normal is not None:
             rl.set_shader_value_texture(self.shader, self._loc_normal_tex, normal)
+        else:
+            # No normal map for this level: never let the shader sample an
+            # UNBOUND u_normal. It reads whatever the texture unit holds -- in
+            # practice art -- as a normal, so a flat grey floor (0.55) decodes
+            # to a ~55-degree diagonal tilt and every lamp lights one side and
+            # "shadows" the other, and a near-black floor tilts below the
+            # horizon and takes no light at all (found in the smoke-light
+            # studio, 2026-10-04, #12). Re-asserted each draw: the F5 toggle
+            # sets the flag every frame before this.
+            self.set_use_normal(False)
         rl.set_shader_value_texture(self.shader, self._loc_light_tex_a, self.light_tex_a)
         rl.set_shader_value_texture(self.shader, self._loc_light_tex_b, self.light_tex_b)
         rl.set_shader_value_texture(self.shader, self._loc_vacuum_tex, self.vacuum_tex)
         self._set_art_uv_rect(uv_rect)
+        # G2: the cast product is the FIFTH sampler, and raylib's batch binds
+        # at most four (the G1 trap): bind it on its own unit through rlgl.
+        smoke_unit = 5
+        if self.smoke_cover is not None and self._loc_smoke_cover >= 0:
+            rl.rl_active_texture_slot(smoke_unit)
+            rl.rl_enable_texture(self.smoke_cover.id)
+            rl.set_shader_value(self.shader, self._loc_smoke_cover,
+                                rl.ffi.new("int[1]", [smoke_unit]),
+                                rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
+            rl.rl_active_texture_slot(0)
 
         dst = rl.Rectangle(0, 0, float(world_px_w), float(world_px_h))
         rl.draw_texture_pro(diffuse, src, dst, rl.Vector2(0, 0), 0.0, rl.WHITE)
         rl.end_shader_mode()
+        if self.smoke_cover is not None and self._loc_smoke_cover >= 0:
+            rl.rl_active_texture_slot(smoke_unit)
+            rl.rl_disable_texture()
+            rl.rl_active_texture_slot(0)
 
 
-__all__ = ["LightingPass", "art_src_and_uv_rect"]
+__all__ = ["LightingPass", "art_src_and_uv_rect", "pack_light_view",
+           "load_lighting_fs"]

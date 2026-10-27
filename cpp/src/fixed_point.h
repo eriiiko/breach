@@ -12,8 +12,8 @@
 // FORMAT: Q16.16 == int32 with an implicit scale of 2^16 == 65536. The integer
 // part is the top 16 bits, the fraction the bottom 16. One real unit == 65536
 // raw counts. Range: [-32768, +32768) with a resolution of 1/65536 ~= 1.526e-5.
-// (This matches raycaster.h's HEAT_SCALE/temperature domain exactly, so the
-// water + heat fixed-point worlds share one scale.)
+// (This matches HEAT_SCALE -- the heat/temperature domain, at the end of this
+// header -- exactly, so the water + heat fixed-point worlds share one scale.)
 //
 // ROUNDING CONVENTION (documented, load-bearing):
 //   * mul_q16 TRUNCATES toward -inf via an arithmetic right shift `>> 16`, the
@@ -24,7 +24,7 @@
 //     and -flux to its neighbour, the identical (truncated) int64 value cancels
 //     exactly, so no mass is created or destroyed at the >>16 narrow (S1 P2).
 //   * quantize() (float/double -> Q16.16) rounds to NEAREST (like
-//     raycaster.h::heat_quantize), because that is a one-time load/boundary cast
+//     heat_quantize, at the end of this header), because that is a one-time load/boundary cast
 //     where round-to-nearest minimises the quantization bias of a constant.
 //   * The arithmetic right shift on a NEGATIVE int rounds toward -inf in C++20
 //     (>> on signed is implementation-defined pre-C++20 but arithmetic on every
@@ -35,6 +35,7 @@
 // All helpers are header-only inline / constexpr so they fold into the /fp:strict
 // water TU with zero call overhead and no float (these are pure integer ops).
 
+#include <cassert>
 #include <cstdint>
 
 // ---- host/device portability (CUDA-S0) -------------------------------------
@@ -50,9 +51,7 @@
 // in .cu TUs and (b) device use ONLY on toolchains whose device pass has __int128
 // (clang/gcc-host nvcc) — it is currently UNUSED on device: CUDA kernels needing
 // this 128-bit reciprocal use the device-local mul128_shr_signed helper (see
-// cuda_water.cu recip_mul_dev). smoke_cliff_count stays HOST-ONLY for now:
-// its 128-bit path uses MSVC _umul128 host intrinsics and only the substep-count
-// cliff (a host-side derivation) needs it. Nothing FP_HD calls smoke_cliff_count.
+// cuda_water.cu recip_mul_dev).
 #if defined(__CUDACC__)
   #define FP_HD __host__ __device__
 #else
@@ -66,7 +65,7 @@ using q16 = int32_t;
 
 namespace fixedpoint {
 
-// The scale: one real unit == FP_ONE raw counts. Shares raycaster.h's HEAT_SCALE.
+// The scale: one real unit == FP_ONE raw counts. Shared by HEAT_SCALE (below).
 constexpr int32_t FP_SHIFT = 16;
 constexpr int32_t FP_ONE   = 1 << FP_SHIFT;   // 65536
 constexpr int64_t FP_ONE64 = (int64_t)1 << FP_SHIFT;
@@ -337,6 +336,47 @@ FP_HD inline int64_t deposit_dT_wide_q16(int32_t deposit_q, int32_t recip_n_q,
 }
 #endif
 
+// ---- the STAGED wide deposit chain, int64 first operand ----------------------
+// (ray-engine-v2 P1, design v3 §2.8; critique 3 §1c.) deposit_dT_wide_q16
+// above forms its first product `deposit * recip_n` as a PLAIN int64 — sound
+// for an int32 deposit (|a*b| < 2^62), unsound for a wide one: the radiative
+// excess E°[T] - E°[0] reaches 2^41.7 at the table top and its product with a
+// small-N reciprocal (2^22..2^30) overflows int64 (measured 2^64.4 .. 2^72.1).
+// This twin takes the wide deposit and narrows TWICE, each stage through the
+// FP_HD 128-bit primitive:
+//     mul128_shr( mul128_shr(deposit, recip_n_q, FP_SHIFT), recip_cv, RECIP_SHIFT )
+// ROUNDING (declared, load-bearing): each stage floors (an arithmetic shift of
+// the exact 128-bit product, i.e. round toward -inf; for the non-negative
+// operands of every caller that is plain truncation). Two floors instead of the
+// one-narrow chain's single floor at 48 bits — a DIFFERENT rounding, which
+// differs from deposit_dT_wide_q16 by AT MOST ONE LSB on every int32-range
+// deposit (gated by tests/test_fixed_point_i64_twins.py) and is finite, with no
+// intermediate overflow, at deposit = E°[3999]. This is the chain the P5
+// radiative gas deposit and the gas branch of the Fleck pre-pass convert
+// through (magnitude first, then sign, as the caller declares); it is NOT
+// swapped in for the live heat deposit, whose one-narrow rounding is pinned by
+// the goldens. Same primitive on both backends (mul128_shr is FP_HD).
+//
+// THE GAS CHAIN'S ONE CONVERSION POINT (#78). `deposit` may be in the radiation
+// sweep's FINE heat currency (emissive_table.h E_FINE_BITS: 2^fine_bits per heat
+// count); the chain then converts at its FINAL narrow, RECIP_SHIFT + fine_bits —
+// for the Fleck pre-pass's gas arm and the fold's gas branch alike, so the
+// damping and the landing stay one arithmetic. For the non-negative operand every
+// caller passes (magnitude first, the sign after) that IS the floor of the exact
+// chain divided by 2^fine_bits (nested floors of divisions compose), i.e. the
+// round-toward-zero of fine_heat_shr below, taken where it costs least: the fine
+// bits survive to the last narrow (the conversion loses under one temperature
+// LSB, plus recip_cv / 2^(32 + k) of one for stage 1's floor), and the stage-2
+// result stays the size it was at k = 0 — converting after an int64 narrow at 32
+// would overflow at the most extreme currency (sweep_ref_q_gates G11). The
+// transcription of sweep_ref_q.py::deposit_dT_wide_i64. fine_bits == 0 is the
+// pre-#78 chain, bit for bit.
+FP_HD inline int64_t deposit_dT_wide_i64(int64_t deposit, int32_t recip_n_q,
+                                          int64_t recip_cv, int fine_bits = 0) {
+    const int64_t stage1 = mul128_shr(deposit, (int64_t)recip_n_q, FP_SHIFT);
+    return mul128_shr(stage1, recip_cv, RECIP_SHIFT + fine_bits);
+}
+
 // ---- wide DRAG deposit divide: ΔE_cell*heat_frac/c_v, no premature narrow --
 // (P-E3, energy-books arc, design §2.8) — the SAME overflow-narrowing hazard
 // class deposit_dT_wide_q16 exists for (P-E2b), specialized to the interior-
@@ -390,7 +430,7 @@ FP_HD inline int64_t drag_dT_wide_q16(int64_t energy_q16, int32_t heat_frac_q,
 #endif
 
 // ---- signed saturating add (never wrap) ------------------------------------
-// eos-p3fix-thermal-ceiling: raycaster.h's `heat_saturating_add` only
+// eos-p3fix-thermal-ceiling: `heat_saturating_add` (end of this header) only
 // saturates the POSITIVE side (its accumulator is contractually non-negative
 // — heat/deposit domains). Q16.16 fields that can go negative (temperature,
 // which floors at T_MIN but is otherwise signed) need the SYMMETRIC form:
@@ -403,12 +443,201 @@ FP_HD inline int32_t sat_add_q16(int32_t a, int32_t b) {
     return a + b;
 }
 
+// The WIDE-DELTA twin (ray-engine-v2 P3a-1). Same function, same saturation
+// window [INT32_MIN, INT32_MAX] on a Q16.16 accumulator, but the DELTA is
+// int64 — which is what the Pass-1 radiation fold hands it once `rad_net` is
+// an int64 plane and `shr_round0_i64` is what shifts it. The sum cannot
+// overflow (int32 + int64 in int64 arithmetic is at most 2^63 - 2^31), so the
+// clamp is a plain compare rather than sat_add_q16's subtraction dance.
+//
+// On every int32-range `b` this returns exactly what sat_add_q16 returns —
+// gated by tests/test_fixed_point_i64_twins.py — which is what keeps the fold
+// byte-identical on the day its plane widens. Beyond that range it saturates
+// where the narrow form would have had to guess. ONE FP_HD definition here;
+// the CUDA fold never re-derives it.
+FP_HD inline int32_t sat_add_q16_i64(int32_t a, int64_t b) {
+    const int64_t s = (int64_t)a + b;
+    if (s > (int64_t)INT32_MAX) return INT32_MAX;
+    if (s < (int64_t)INT32_MIN) return INT32_MIN;
+    return (int32_t)s;
+}
+
+// ---- THE TRACE CURRENCY (#88) ---------------------------------------------
+// docs/smoke_unit_rescale_design_2026-10-20.md §4. The five TRACE planes of the
+// gas array (steam, smoke, poison, teargas, fuel_gas) are int32 in a currency
+// 2^TRACE_FINE_BITS finer than Q16: one real unit of trace density is
+// 2^TRACE_SHIFT counts. The BULK planes (O2, inert_N2) in the same array stay
+// Q16.16. Every C++ trace read or write converts through these and nothing else
+// -- no `<< TRACE_FINE_BITS`, `>> TRACE_SHIFT` or `>> FP_SHIFT` on a trace value
+// is written anywhere else. Twins: src/simulation/gas_fixed.py (a LITERAL,
+// serving engine-less GameMaps), sweep_ref_q.py, the digest spec; held equal by
+// tests/test_trace_currency.py on the CPU and the CUDA module.
+//
+// The gas COEFFICIENTS (heat_absorb_q16, light_absorb_q16, light_glow_q16,
+// beam_absorb_q16) stay Q16 per REAL unit; a density law over the trace planes
+// absorbs the extra bits in its one shift, trace_density_shr. Every term of such
+// a sum is >= 0, so the floor commutes with the power of two: the laws are
+// bit-identical on S_old * 2^k (design §15).
+constexpr int TRACE_FINE_BITS = 8;
+constexpr int TRACE_SHIFT     = FP_SHIFT + TRACE_FINE_BITS;
+// The int32 storage's representability limit: the counted saturation (§5.3).
+constexpr int32_t TRACE_CELL_MAX = INT32_MAX;
+static_assert(TRACE_FINE_BITS >= 0 && TRACE_FINE_BITS <= 14,
+              "trace currency: the density sum's int64 headroom (2^28 * 2^31 per "
+              "term) is argued with S an int32; TRACE_SHIFT must stay < 31");
+
+// A bulk-count (Q16) mass entering a trace plane -- the soot mint's `soot`,
+// which also leaves N2 and e_shed in bulk counts, so the Dalton split and the
+// energy books stay exact (G5). Written as a multiply, never a shift of a
+// signed value; the mass is non-negative by contract.
+FP_HD inline int64_t trace_from_bulk(int64_t q) {
+    return q * ((int64_t)1 << TRACE_FINE_BITS);
+}
+
+// Σ coef_q16 · max(0, S) over trace planes (S in trace counts) -> a Q16
+// fraction. The sum is non-negative by construction (every term clamps a
+// negative density to 0), so the arithmetic shift is an exact floor.
+FP_HD inline int64_t trace_density_shr(int64_t s) {
+    return s >> TRACE_SHIFT;
+}
+
+// THE COUNTED int32 SATURATION (#88 P2, design §5.3; critique A3/A4/B1/C7).
+// `t = s + add` exactly in int64. The int32 trace plane can hold at most
+// TRACE_CELL_MAX: an addition that cannot be represented stores TRACE_CELL_MAX
+// and adds the excess `t − TRACE_CELL_MAX` to `*clip` -- booked, never wrapped,
+// never raised. It saturates FROM ABOVE ONLY, so it never cuts trace already on
+// the cell (`min(s + add, MAX) >= s` for `s <= MAX`): D1's option (b) at the
+// representability limit, not a density ceiling.
+//
+// A NEGATIVE `t` is a contract violation, never clamped (clamping would mint
+// unbooked mass, A4): with `neg_hits` given it is COUNTED (the CUDA idiom, and
+// the CPU 3b mirrors it so the two backends book the same counter); without it
+// the host asserts. The stored value is then `t` itself, unclamped (narrowed at
+// INT32_MIN only to keep the conversion defined), so the violation stays
+// visible on the plane. Every site applies this ONCE per cell on its net
+// change (stage 3b: `s_own + ds`, never per face). Pure integer, FP_HD: the
+// same bits on CPU and device; each caller owns its cell, so it is order-free.
+// `clip` must be non-null (a site with no book passes a local).
+FP_HD inline int32_t trace_add_sat(int32_t s, int64_t add, int64_t* clip,
+                                   int64_t* neg_hits = nullptr) {
+    const int64_t t = (int64_t)s + add;
+    if (t > (int64_t)TRACE_CELL_MAX) {
+        *clip += t - (int64_t)TRACE_CELL_MAX;
+        return TRACE_CELL_MAX;
+    }
+    if (t < 0) {
+        if (neg_hits != nullptr) {
+            *neg_hits += 1;
+        } else {
+#if !defined(__CUDA_ARCH__)
+            assert(t >= 0 && "trace_add_sat: negative trace (contract violation)");
+#endif
+        }
+        return (t < (int64_t)INT32_MIN) ? INT32_MIN : (int32_t)t;
+    }
+    return (int32_t)t;
+}
+
+// A real trace density -> the trace currency, round-half-away-from-zero (the
+// `quantize` door-2 idiom), returned as INT64 and never narrowed (critique A3):
+// only the counted saturation may narrow to the int32 plane, so an amount that
+// cannot be represented is SEEN, never wrapped. The double -> int64 conversion
+// is range-checked (an out-of-range double -> int is UB): a value at or beyond
+// int64 saturates to the int64 limit. A NaN amount has no meaning and lands as
+// 0. Host only (the one float in this block).
+inline int64_t quantize_trace(double v) {
+    const double scaled = v * (double)((int64_t)1 << TRACE_SHIFT);
+    if (!(scaled == scaled)) return 0;                       // NaN
+    const double r = (scaled >= 0.0) ? (scaled + 0.5) : (scaled - 0.5);
+    const double LIM = 9223372036854775808.0;                // 2^63, exact
+    if (r >= LIM) return INT64_MAX;
+    if (r <= -LIM) return INT64_MIN;
+    return (int64_t)r;
+}
+
 // ---- symmetric round-toward-0 shift ---------------------------------------
 // `x >> s` rounds toward -inf for negative x. For a symmetric divide-by-2^s
 // (so +x and -x lose magnitude equally) use this (temperature_solver's cooling
 // idiom). Deterministic, identical cross-machine.
 FP_HD inline q16 shr_round0(q16 x, int s) {
     return (x < 0) ? -((-x) >> s) : (x >> s);
+}
+
+// The int64 twin (ray-engine-v2 P1, design v3 §3 / critique 3 §1b). The SAME
+// symmetric round-toward-0 shift on a 64-bit operand: +x and -x lose equal
+// magnitude. Needed because the radiation sweep's planes are int64 and the
+// Pass-1 fold's `shr_round0(rad_net, his)` operand is SIGNED, so a plain `>>`
+// (round toward -inf) is not the same function. On every int32-range input
+// this returns exactly what shr_round0() returns — gated by
+// tests/test_fixed_point_i64_twins.py — which is what keeps the fold
+// byte-identical on the day its plane widens (P3). One FP_HD definition
+// here; the CUDA twin never re-derives it.
+FP_HD inline int64_t shr_round0_i64(int64_t x, int s) {
+    return (x < 0) ? -((-x) >> s) : (x >> s);
+}
+
+// The SIGNED-EXPONENT twin (M1, docs/thin_material_rows_design_2026-09-20.md
+// section 5). Divides by 2^s where `s` MAY BE NEGATIVE.
+//
+// WHY A NEGATIVE EXPONENT EXISTS. `heat_inv_shift` is log2(thermal_mass), and
+// since M1 a material row may be LIGHTER than one thermal_mass unit (a 5 mm
+// wood panel is 2^-3 units). `heat_inv_shift` has always been int32_t —
+// signed — and `conduction::cell_capacity_q` has always built a Q16.16 capacity
+// `1 << (s + 16)` from it, which at s = -2 is exactly 0.25. What blocked it was
+// a GUARD, not the arithmetic. Lifting the guard makes every `>> heat_inv_shift`
+// in the engine a potential NEGATIVE shift, which is undefined behaviour — on
+// the determinism path. This is the one function that may hold that sign.
+//
+//   s >= 0 : shr_round0_i64(x, s), value for value. That identity is what keeps
+//            every shipped material row bit-identical across M1, which changes
+//            no row — and it is what the golden non-movement proves.
+//   s <  0 : x · 2^(-s). This branch is EXACT: a left shift loses nothing,
+//            where the right shift truncates. Computed as a MULTIPLY, not
+//            `x << (-s)`: left-shifting a negative int64 is implementation-
+//            defined before C++20 and the sim path may not carry that.
+//
+// SATURATING at the int64 rails rather than wrapping: signed overflow is UB,
+// and this is a determinism TU. In practice the product is far inside the range
+// (the capacity floor caps -s at 16 and every caller's operand is bounded by
+// the Q16.16 temperature/energy domain), so the rails are diagnostics, not a
+// law — no caller may depend on their value.
+FP_HD inline int64_t shr_round0_signed_i64(int64_t x, int s) {
+    if (s >= 0) return shr_round0_i64(x, s);
+    // `1 << k` is UB for k >= 64; 62 already saturates every nonzero operand,
+    // so clamping here costs nothing a caller could observe and removes the UB
+    // a direct-binding caller could otherwise reach.
+    const int k = (-s > 62) ? 62 : -s;
+    const int64_t m = (int64_t)1 << k;
+    const int64_t lim = INT64_MAX / m;          // m >= 2, so lim is exact enough
+    if (x >  lim) return INT64_MAX;
+    if (x < -lim) return INT64_MIN;
+    return x * m;
+}
+
+// ---- THE ONE CONVERSION OUT OF THE SWEEP'S FINE HEAT CURRENCY (#78) ----------
+// The radiation sweep's heat channel works in a currency 2^fine_bits finer than
+// one heat count (emissive_table.h E_FINE_BITS; a table records its own in
+// EmissiveTable::fine_bits): the E° table, Φ, the ambient level and the four
+// sweep planes are all in it. EVERY reader that turns such a value back into
+// heat-count terms converts ONCE, HERE — never an inline `>> 11`:
+//
+//     fine_heat_shr(x, s, k) == x / 2^(s + k), rounded toward zero, SYMMETRIC
+//
+//   s = heat_inv_shift  a thermal solid's temperature step: ONE shift, his + k
+//                       (the fold's solid branch, the Fleck pre-pass's solid arm)
+//   s = 0               whole heat counts (a unit's heat exposure, exchange.py)
+//   s = -FP_SHIFT       the Q16 heat currency every energy counter is in
+//                       (e_rad_boundary_export_sum, e_rad_floor_drop_sum):
+//                       x << (16 - k), EXACT while k <= 16
+//
+// It IS shr_round0_signed_i64 at the exponent s + k — +x and -x lose the same
+// magnitude, a negative exponent is an exact multiply — so on a COARSE table
+// (k == 0) it is every pre-#78 conversion, value for value. The gas chain's
+// conversion is deposit_dT_wide_i64's fine_bits (above): its final narrow. One
+// FP_HD definition; the CUDA twins never re-derive it. Its Python twins are
+// sweep_ref_q.fine_heat_shr (the spec) and simulation/optics_fixed.py's.
+FP_HD inline int64_t fine_heat_shr(int64_t x, int s, int fine_bits) {
+    return shr_round0_signed_i64(x, s + fine_bits);
 }
 
 // ---- per-cell integer reciprocal (Newton-Raphson, GPU-clean) --------------
@@ -578,141 +807,11 @@ FP_HD inline int32_t ceil_div(q16 a_q, q16 b_q) {
     return (int32_t)(((int64_t)a_q + b_q - 1) / b_q);
 }
 
-// ---- the SMOKE CFL substep-count cliff (Bedrock cliff-patch) ---------------
-//
-// n_smoke = ceil( 4 * sim_time * d_smoke_max * (1 + wind_diffusion_scale * |wind|^2_max) ),
-// the forward-Euler smoke-diffusion stability floor (physics_engine.cpp), made
-// INTEGER so the substep COUNT is bit-identical across machines/GPUs (the last
-// double on the determinism-critical substep-count path — completes Bedrock).
-//
-// Unlike ceil_div, the RESULT here is NOT a Q16.16 value — it is a plain COUNT
-// that can reach the thousands under a shockwave (the run measured ~3600 at a
-// strong blast). So we cannot stage it through a Q16.16 intermediate (which would
-// overflow the +/-32768 range). Instead we build one exact rational and take an
-// integer ceil:
-//
-//   R = 4*sim_time*d_smoke_max * (1 + wds*mws)
-//     = (c4st_q/2^16) * (dsmoke_q/2^16) * ( (2^48 + wds_q*mws_q32) / 2^48 )
-//     = base_q32 * wmult_q48 / 2^80,      base_q32 = c4st_q*dsmoke_q  (scale 2^32)
-//                                         wmult_q48 = 2^48 + wds_q*mws_q32 (scale 2^48)
-//   n_smoke = ceil(R) = (base_q32*wmult_q48 + 2^80 - 1) >> 80.
-//
-// INPUTS (all quantized at LOAD / once-per-tick boundaries — the LOCKED S1 idiom,
-// "a load-time double->quantize is free / correctly-rounded"; no per-cell float):
-//   c4st_q   = quantize(4*sim_time)          Q16.16   (sim_time is the tick length)
-//   dsmoke_q = quantize(d_smoke_max)         Q16.16   (per-tick MAX over the gas table)
-//   wds_q    = quantize(wind_diffusion_scale) Q16.16
-//   mws_q32  = the INTEGER Q.32 spatial-max of |wind|^2 over the grid (an int64
-//              order-free max reduction the engine already computes from the
-//              Q16.16 wind components via mul_wide — kept verbatim).
-//
-// OVERFLOW (why 128-bit). wds_q*mws_q32 overflows int64 even at modest wind
-// (peak |wind|~44 -> ~5.4e19 > 9.2e18 = int64 max), so wmult_q48 and the product
-// genuinely need 128 bits. At the format-max wind component (32767) the product
-// reaches ~112 bits — still inside UNSIGNED 128-bit (127 bits). Every quantity is
-// non-negative, so we use UNSIGNED 128-bit throughout (mirrors recip_mul's MSVC
-// _mul128 dual-path, but unsigned). The SAME two truncations (the >>80) on every
-// toolchain -> cross-toolchain bit-identity (S1 Lesson #4).
-//
-// SATURATION. A defensive cap (SMOKE_N_CAP) bounds an absurd-input n_smoke so the
-// substep loop can never be handed a runaway count (e.g. a corrupt/extreme wind):
-// it is DEAD in real play (the measured peak ~3600 << the cap) and matches the
-// honest shared-helper self-guard idiom (sqrt_q16/reciprocal_q16). The double
-// version had no cap, but the cap only changes behaviour at counts so large the
-// physics is already sub-stepped to a standstill either way.
-constexpr int32_t SMOKE_N_CAP = 1 << 20;   // 1,048,576: absurd-wind floor guard
-
-#if defined(__SIZEOF_INT128__)
-inline int32_t smoke_cliff_count(q16 c4st_q, q16 dsmoke_q, q16 wds_q,
-                                 int64_t mws_q32) {
-    if (c4st_q <= 0 || dsmoke_q <= 0) return 1;   // no diffusion / no tick -> 1 step
-    if (mws_q32 < 0) mws_q32 = 0;                  // |wind|^2 is non-negative
-    const unsigned __int128 base_q32 =
-        (unsigned __int128)(uint64_t)((int64_t)c4st_q * (int64_t)dsmoke_q);   // 2^32
-    const unsigned __int128 wmult_q48 =
-        ((unsigned __int128)1 << 48)
-        + (unsigned __int128)(uint64_t)((int64_t)wds_q * mws_q32);            // 2^48
-    const unsigned __int128 prod = base_q32 * wmult_q48;                       // 2^80
-    const unsigned __int128 one80 = (unsigned __int128)1 << 80;
-    unsigned __int128 n = (prod + (one80 - 1)) >> 80;                          // ceil
-    if (n < 1) n = 1;
-    if (n > (unsigned __int128)SMOKE_N_CAP) return SMOKE_N_CAP;
-    return (int32_t)n;
-}
-#elif defined(_MSC_VER)
-// (<intrin.h> is already included above for recip_mul's _mul128 path.)
-inline int32_t smoke_cliff_count(q16 c4st_q, q16 dsmoke_q, q16 wds_q,
-                                 int64_t mws_q32) {
-    if (c4st_q <= 0 || dsmoke_q <= 0) return 1;
-    if (mws_q32 < 0) mws_q32 = 0;
-    // base_q32 = c4st_q*dsmoke_q (< 2^36) and the wind term wds_q*mws_q32 each fit
-    // a 64-bit value? NO — wds_q*mws_q32 overflows 64 bits. Build wmult_q48 as a
-    // 128-bit {hi,lo} via _umul128, add 2^48 into the low word (carry into hi),
-    // then multiply by the 64-bit base_q32 (a 64x128 product) and >>80 the result.
-    const uint64_t base_q32 = (uint64_t)((int64_t)c4st_q * (int64_t)dsmoke_q); // < 2^36
-    // wind term = wds_q * mws_q32 as a 128-bit unsigned {wm_hi:wm_lo}.
-    uint64_t wm_hi;
-    uint64_t wm_lo = _umul128((uint64_t)(int64_t)wds_q,
-                              (uint64_t)mws_q32, &wm_hi);
-    // wmult_q48 = (wm_hi:wm_lo) + 2^48  (2^48 fits the low word; add with carry).
-    uint64_t wmult_lo = wm_lo + ((uint64_t)1 << 48);
-    uint64_t wmult_hi = wm_hi + (wmult_lo < wm_lo ? 1u : 0u);   // propagate carry
-    // prod = base_q32 * (wmult_hi:wmult_lo). base_q32 is < 2^36, so:
-    //   prod = base_q32*wmult_lo (128-bit) + (base_q32*wmult_hi << 64).
-    uint64_t p_hi;
-    uint64_t p_lo = _umul128(base_q32, wmult_lo, &p_hi);        // low 128 bits
-    p_hi += base_q32 * wmult_hi;                                // add the hi*2^64 part
-    // ceil(prod / 2^80): add (2^80 - 1) then >>80. 2^80 spans into the high word
-    // (bit 80 == bit 16 of p_hi). Add the rounding bias 2^80-1 = (low 80 bits all
-    // set): low 64 bits all set + bits 64..79 of the high word set.
-    //   bias_lo = 0xFFFFFFFFFFFFFFFF (2^64 - 1); bias_hi = 2^16 - 1 (bits 64..79).
-    const uint64_t add_lo = 0xFFFFFFFFFFFFFFFFULL;
-    const uint64_t add_hi = ((uint64_t)1 << 16) - 1;
-    uint64_t r_lo = p_lo + add_lo;
-    uint64_t carry = (r_lo < p_lo) ? 1u : 0u;
-    uint64_t r_hi = p_hi + add_hi + carry;
-    // >>80: drop the low 64 bits, then >>16 the high word.
-    uint64_t n = r_hi >> 16;
-    if (n < 1) n = 1;
-    if (n > (uint64_t)SMOKE_N_CAP) return SMOKE_N_CAP;
-    return (int32_t)n;
-}
-#else
-inline int32_t smoke_cliff_count(q16 c4st_q, q16 dsmoke_q, q16 wds_q,
-                                 int64_t mws_q32) {
-    // Portable INTEGER fallback (exotic toolchains with neither __int128 nor
-    // _umul128). 64-bit-only: split wmult_q48 = 2^48 + wds_q*mws_q32 into a
-    // staged product so no single multiply exceeds 64 bits. This loses the low
-    // bits of the wind term (a deterministic, monotone-up rounding) but stays
-    // integer + machine-reproducible; the __int128 / _umul128 paths above are the
-    // exact cross-machine contract on every real target.
-    if (c4st_q <= 0 || dsmoke_q <= 0) return 1;
-    if (mws_q32 < 0) mws_q32 = 0;
-    const uint64_t base_q32 = (uint64_t)((int64_t)c4st_q * (int64_t)dsmoke_q);
-    // n = ceil(base_q32 * wmult_q48 / 2^80). Compute base*one (the +1 part) and
-    // base*wind separately, each ceil'd up, then sum (an over-estimate by <=1,
-    // safe — more substeps is always CFL-stable):
-    //   part_const = ceil(base_q32 / 2^32)                       (the "1")
-    //   part_wind  = ceil(base_q32 * (wds_q>>shrink) * (mws_q32>>shrink2) / 2^80)
-    const uint64_t TWO32 = (uint64_t)1 << 32;
-    uint64_t part_const = (base_q32 + (TWO32 - 1)) >> 32;
-    // wind term scale 2^80: base_q32(2^32) * wds_q(2^16) * mws_q32(2^32) / 2^80.
-    // Reduce mws_q32 to Q.16 first (>>16, monotone-down) to keep products in 64b.
-    const uint64_t mws_q16 = (uint64_t)mws_q32 >> 16;            // scale 2^16
-    // base_q32 * wds_q  -> scale 2^48, may exceed 64b for huge base; base<2^36,
-    // wds_q<2^31 -> <2^67. Narrow base to 2^16 first (>>16): bd16 = base_q32>>16.
-    const uint64_t bd16 = base_q32 >> 16;                        // scale 2^16
-    // now bd16(2^16)*wds_q(2^16)*mws_q16(2^16) / 2^48 == wind term (scale 2^0).
-    // bd16<2^20, wds_q<2^31 -> <2^51; *mws_q16(<2^31) -> <2^82 — still overflow.
-    // Two-stage: m1 = ceil(bd16*wds_q / 2^16); then ceil(m1*mws_q16 / 2^32).
-    uint64_t m1 = (bd16 * (uint64_t)(int64_t)wds_q + ((uint64_t)1<<16) - 1) >> 16;
-    uint64_t part_wind = (m1 * mws_q16 + ((uint64_t)1<<32) - 1) >> 32;
-    uint64_t n = part_const + part_wind;
-    if (n < 1) n = 1;
-    if (n > (uint64_t)SMOKE_N_CAP) return SMOKE_N_CAP;
-    return (int32_t)n;
-}
-#endif
+// (---- the SMOKE CFL substep-count cliff, `smoke_cliff_count` / SMOKE_N_CAP:
+//  DELETED with the semi-Lagrangian smoke step it sized — smoke transport v2,
+//  #12, docs/smoke_transport_design_2026-10-04.md §5. The trace planes ride
+//  the bulk face flux now; their diffusion's stability is the integer door
+//  4·quantize(d·dt) <= ONE, not a substep count.)
 
 // ---- deterministic integer mean reduction (mean_wp, S2a) ------------------
 //
@@ -980,9 +1079,10 @@ FP_HD inline q16 sin_core_q30(int64_t a30u) {
 // INPUT RANGE: any int32 is DEFINED and deterministic (the `%` wrap is total).
 // The 9.0e-6 accuracy pin is stated for |a| <= 2*(2pi), i.e. |a| <= ~823550
 // counts (+-4pi rad) — one wrap each side, covering every caller today (unit
-// facing in (-pi, pi], raycaster ray angles in [0, 2pi+jitter), combat bullet
-// angles in (-pi-cone, pi+cone)). Beyond that the constant's 0.26-count-per-
-// wrap defect accumulates gracefully (~2.4e-10 rad per wrap — still ~1.3e-6 rad
+// facing in (-pi, pi], combat bullet angles in (-pi-cone, pi+cone); the render
+// march's ray angles in [0, 2pi+jitter) were one until P6c deleted it).
+// Beyond that the constant's 0.26-count-per-wrap defect accumulates
+// gracefully (~2.4e-10 rad per wrap — still ~1.3e-6 rad
 // at 5000 wraps), it just is not part of the pinned contract.
 // OUTPUT RANGE: [-FP_ONE, +FP_ONE] — verified over the full dense sweep; the
 // poly never overshoots past the narrow's half-count.
@@ -1060,3 +1160,48 @@ FP_HD inline q16 atan2_q16(q16 y, q16 x) {
 }
 
 } // namespace fixedpoint
+
+// ============================================================================
+// THE HEAT-DOMAIN KIT -- MOVED HERE from raycaster.h at ray-engine-v2 P6c
+// (design v3 §4.4, row "HEAT_SCALE, heat_quantize, heat_saturating_add":
+// "kit functions living in the wrong header"). Verbatim; global scope, so the
+// callers (temperature_solver.cpp, combustion.cpp) did not change a line.
+// The device twin is cuda_fixedpoint_device.cuh's heat_saturating_add_dev; the
+// Python mirrors are simulation/field_edit.py's HEAT_SCALE / heat_quantize and
+// simulation/exchange.py's HEAT_SCALE.
+// ============================================================================
+//
+// `heat` and `temperature` are Q16.16 int32: 16 integer bits, 16 fractional
+// bits. One "unit" of heat energy == HEAT_SCALE raw int counts (== FP_ONE,
+// the kit's own scale). A deposit is QUANTIZED into this domain
+// (round-to-nearest) and added with a SATURATING add (clamp at int32 max,
+// never wrap) so a firestorm depositing many sources into few cells can never
+// overflow past the ignition threshold (ch.04 review #6). Integer += is
+// order-independent -> deterministic / cross-machine-safe.
+static constexpr int32_t HEAT_SCALE = 65536;   // 2^16 (Q16.16)
+static_assert(HEAT_SCALE == fixedpoint::FP_ONE,
+              "the heat domain shares the kit's Q16.16 scale");
+
+// Saturating quantize: float energy -> Q16.16 int32, rounded, clamped.
+// (No C++ caller since P6c -- its last one was the deleted render march; kept as
+// the contract simulation/field_edit.py's heat_quantize mirrors.)
+inline int32_t heat_quantize(float energy) {
+    if (energy <= 0.0f) return 0;
+    double scaled = static_cast<double>(energy) * static_cast<double>(HEAT_SCALE);
+    double max_i32 = static_cast<double>(INT32_MAX);
+    if (scaled >= max_i32) return INT32_MAX;
+    return static_cast<int32_t>(scaled + 0.5);
+}
+
+// Saturating add into a Q16.16 accumulator: clamp at INT32_MAX, never wrap.
+// Positive side only (the accumulator is contractually non-negative); the
+// SYMMETRIC form for signed fields is fixedpoint::sat_add_q16 above.
+inline void heat_saturating_add(int32_t* cell, int32_t delta) {
+    if (delta <= 0) return;
+    // Overflow-safe: if adding delta would exceed INT32_MAX, clamp.
+    if (*cell > INT32_MAX - delta) {
+        *cell = INT32_MAX;
+    } else {
+        *cell += delta;
+    }
+}

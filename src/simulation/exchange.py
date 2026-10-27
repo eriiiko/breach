@@ -227,9 +227,9 @@ REDUCTIONS: dict[str, Callable] = {
 # Environmental (radiant heat) damage to units — engine/06 §4, proposal §4.2
 # — the `heat | max` coupling row. Moved VERBATIM from combat.py (P1).
 # ---------------------------------------------------------------------------
-# Q16.16 scale shared with the `heat`/`temperature` fields (cpp/src/raycaster.h
-# HEAT_SCALE). One unit of heat energy == HEAT_SCALE raw int counts in the
-# buffer; Phi divides back out to the energy-unit domain the [combat] consts and
+# Q16.16 scale shared with the `heat`/`temperature` fields (cpp/src/fixed_point.h
+# HEAT_SCALE, the heat-domain kit; raycaster.h until P6c). One unit of heat
+# energy == HEAT_SCALE raw int counts in the buffer; Phi divides back out to the energy-unit domain the [combat] consts and
 # the felt-temp model are authored in.
 HEAT_SCALE = 65536
 
@@ -296,9 +296,36 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
     # ``heat`` is still read alongside it (max of the two) so the OTHER
     # writers of that plane — weapons/payload deposits, combustion at a burn
     # site — keep burning units exactly as before.
+    #
+    # T5b step 6, THE FLIP: the sensor is now `rad_flux_sweep`, the radiation
+    # SWEEP's own body channel, not the retired cast's `rad_flux`. Three things
+    # change with it, and all three are improvements:
+    #   * it is a LEDGER EXIT, debited from the stream (the sweep's identity
+    #     `sum rad_net + sum rad_flux + sum rad_amb == 0` holds in int64), where
+    #     the old plane was an undebited incident ESTIMATE;
+    #   * it is the absorbed energy per tick in the FOLD'S OWN CURRENCY, the
+    #     same currency as `heat` -- so `max(heat, rad_flux)` below is now two
+    #     exposures in one unit rather than two different kinds of number;
+    #   * it is SIGNED (a body cooler than its surroundings books a negative
+    #     net), which the `max` handles for free: `heat` is non-negative.
+    # The body's share is `d - a` on `dyn_heat_atten_q` -- a unit MAX-stamps its
+    # own `heat_atten` (default 1.0, an opaque body), so a marine on an air tile
+    # absorbs the whole stream crossing its cell and re-emits ambient onward
+    # (design v3 §6.2, row 25).
+    #
+    # #78: THE SWEEP'S PLANES ARE IN ITS FINE HEAT CURRENCY (2^k per heat
+    # count, k = the engine table's `fine_bits`), `heat` in whole heat counts.
+    # The sensor is converted ONCE, through the kit's twin
+    # (optics_fixed.fine_heat_shr at s = 0: whole heat counts, symmetric), so
+    # `max(heat, rad_flux)` compares two exposures in ONE unit and a marine burns
+    # exactly as before in real units -- the fine bits refine the sweep's
+    # exchange, they are not heat (tests/test_sweep_fine_currency.py: the same
+    # HP per second within 1 %).
+    from simulation import optics_fixed as _optics_fx
     h, w = gmap.heat.shape
     heat = gmap.heat
-    rad_flux = getattr(gmap, "rad_flux", None)
+    rad_flux = getattr(gmap, "rad_flux_sweep", None)
+    rad_fine_bits = _optics_fx.sweep_fine_bits(gmap)
     cmb = CFG.combat
 
     absorption   = float(cmb.unit_absorption)
@@ -326,8 +353,10 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
                     # D3: the radiant sensor and the (non-radiative) heat
                     # writers are two independent exposures at the same tile —
                     # take the larger, exactly as the footprint loop takes the
-                    # hottest tile. Both are Q16.16 in the same domain.
-                    fv = int(rad_flux[ty, tx])
+                    # hottest tile. Both are Q16.16 in the same domain --
+                    # once the sensor leaves the sweep's fine currency (#78).
+                    fv = _optics_fx.fine_heat_shr(int(rad_flux[ty, tx]), 0,
+                                                  rad_fine_bits)
                     if fv > v:
                         v = fv
                 if v > peak_raw:
@@ -593,7 +622,9 @@ def apply_teargas_blind(units, gmap):
     if not bool(slice_.any()):
         return                              # dormant plane: no teargas anywhere
     cfg = CFG.exchange
-    thresh_q = gas_fixed.quantize_scalar(float(cfg.teargas_blind_density))
+    # The threshold is quantized at the TRACE currency (#88 A1): the gate is
+    # density >= the real-unit value, to within one fine count.
+    thresh_q = gas_fixed.quantize_trace_scalar(float(cfg.teargas_blind_density))
     duration = int(cfg.teargas_blind_ticks)
     for u in units:
         if not u.alive:
@@ -614,7 +645,7 @@ def apply_poison_dose(units, gmap, ticks_per_second, events=None):
     float64 chain on the door-1 field read and door-2 constants, quantized
     once at the HP boundary::
 
-        density = density_q / 65536                    # exact 2^-16 dequantize
+        density = dequantize_trace(density_q)          # exact 2^-TRACE_SHIFT
         amount  = poison_dps * density * (1 / tps)     # pure IEEE * (door 3)
         applied = dequantize(quantize(mitigated))      # apply_packet's
                                                        # quantize_hp_delta:
@@ -638,7 +669,7 @@ def apply_poison_dose(units, gmap, ticks_per_second, events=None):
     if not bool(slice_.any()):
         return                              # dormant plane: no poison anywhere
     cfg = CFG.exchange
-    thresh_q = gas_fixed.quantize_scalar(float(cfg.poison_min_density))
+    thresh_q = gas_fixed.quantize_trace_scalar(float(cfg.poison_min_density))   # #88 A1
     dps = float(cfg.poison_dps)
     dt_tick = 1.0 / float(ticks_per_second)
     for u in units:
@@ -649,7 +680,7 @@ def apply_poison_dose(units, gmap, ticks_per_second, events=None):
             continue
         if mitigation_for(u).resist_mult[POISON] == 0.0:
             continue                        # immune: no packet, no event (lazy)
-        amount = dps * (density_q / 65536.0) * dt_tick
+        amount = dps * float(gas_fixed.dequantize_trace(density_q)) * dt_tick
         apply_packet(u,
                      DamagePacket(amount=amount, dtype=POISON, source_id=None),
                      events, source="poison_gas")

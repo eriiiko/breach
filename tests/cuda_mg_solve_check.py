@@ -257,6 +257,11 @@ def part2_trajectory() -> bool:
     g.gas[O2, 22:28, 22:28] += q(4.0)
 
     runner = PhysicsRunner(bp)
+    # The scenario OWNS its drag dial (k_drag2 landing, #4, 2026-10-04):
+    # its hardness bar (peak p* >= 20 atm) was set at k_drag2 = 0, and the
+    # quadratic drag tames the blast to ~19 atm. This gate proves GPU == CPU
+    # bit for bit, which must not depend on a tuning dial.
+    runner.eos.k_drag2 = 0.0
     runner.eos.dx = float(g.tile_size_m)
     eos = runner.engine.eos
     inert_n2_idx = int(g.gases.name_to_id["inert_n2"])

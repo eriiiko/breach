@@ -23,10 +23,9 @@ plumbed through the three known nondeterminism sites:
 
 - :func:`simulation.combat.fire_burst` — bullet cone offsets
 - :func:`simulation.physics.add_explosion_smoke` — per-tile noise
-- (deferred) ``Raycaster.cast_source`` — fire jitter. For now fire
-  light sources default to ``jitter = 0.0`` (the natural smoke
-  advection creates the flicker we want); the C++ raycaster keeps its
-  internal seeding. Revisit when training begins.
+- (gone) the old render march's per-source ``jitter`` — pinned 0.0 for
+  every light and then deleted with the C++ Raycaster at ray-engine-v2 P6c;
+  the radiation sweep that lights the game draws no random numbers.
 
 The same seed gives the same trajectory for any sequence of
 ``apply_action / step`` calls — assuming the C++ physics is
@@ -98,6 +97,8 @@ from simulation.logic_nodes import (
 from simulation.sensor_system import build_sensors, sample_sensors
 from simulation.pump_system import build_pumps, sweep_pumps
 from simulation.vent_system import build_vents, sweep_vents
+from simulation.timed_charge_system import (build_timed_charges,
+                                            sweep_timed_charges)
 from simulation.entities.schema import INPUT_HELD
 from simulation.gamemap import GameMap, MAT_DOOR, MAT_DOOR_CLOSED
 from simulation.movement import FootprintSamples, default_speed
@@ -243,6 +244,11 @@ class Simulation:
         # simulation.ruleset.OnePhaseWEGO.ticks_per_round.
         self._onephase_ticks_per_round = CFG.clock.onephase_ticks_per_round
 
+        # ray-engine-v2 P6b: the renderer's light request and its two render-
+        # state inputs (cone emitters, sky), held HERE so a reset() -- which
+        # builds a fresh PhysicsRunner -- re-applies them (set_light).
+        self._light = (False, None, None)
+
         # Build the world & RNG.
         self._reset_internal(seed)
 
@@ -322,6 +328,12 @@ class Simulation:
         # executor and the hotbar; inert under every other ruleset.
         self.actions_table = rebuild_action_table(
             weapons_tables=self.weapons_tables)
+        # Timed charges (#31 P5): built AFTER the weapon tables because each
+        # charge's `payload` is validated against the PayloadTable here (an
+        # unknown row name is a load error). Replaces each timed_charge row in
+        # self.entities with its runtime (the countdown row serializes). A
+        # charge-free level builds an empty list (dormancy).
+        self._timed_charges = build_timed_charges(self)
 
         self.units: List = []
         self.projectiles: List = []
@@ -397,6 +409,7 @@ class Simulation:
             # path (the runner owns the engine). A bare GameMap with no engine
             # bound falls back to the Python reference path automatically.
             self.gmap.bind_physics_engine(self.physics_runner.engine)
+            self._apply_light()             # P6b: the renderer's light survives a reset
         else:
             self.physics_runner = None
 
@@ -1068,6 +1081,43 @@ class Simulation:
     def set_paused(self, value: bool) -> None:
         self.paused = bool(value)
 
+    # ------------------------------------------------------------------
+    # ray-engine-v2 P6b: THE RENDERER'S LIGHT (design v3 §7.1; the P6b brief
+    # §1.5). Light is REQUESTED by the game whenever it renders and never by a
+    # headless run, a bench or RL (P6a decision 2). The two inputs are RENDER
+    # STATE -- the cursor lamp, the selected unit's flashlight mode, the
+    # renderer's W6 effect queue -- so `light_q` is not sim-pure until P7
+    # separates them (CLAUDE.md); none of this touches a synced field.
+    # ------------------------------------------------------------------
+    def set_light(self, requested: bool, cones=None, sky=None) -> None:
+        """Request (or stop requesting) the light channels, and hand the
+        cone-emitter rows ((n, 7) int64, renderer/frame_lights.py) and the sky
+        ((16, 3) int64) the next light computation reads. No-op without a
+        physics runner."""
+        self._light = (bool(requested), cones, sky)
+        self._apply_light()
+
+    def _apply_light(self) -> None:
+        if self.physics_runner is None:
+            return
+        requested, cones, sky = self._light
+        self.physics_runner.engine.light_requested = requested
+        self.physics_runner.set_light_cones(cones)
+        self.physics_runner.set_light_sky(sky)
+
+    def relight(self) -> None:
+        """Recompute the light field on the current state WITHOUT a tick (the
+        paused renderer's path; PhysicsRunner.relight). Writes only the three
+        light planes. No-op without a runner or without a light request."""
+        if self.physics_runner is not None and self._light[0]:
+            self.physics_runner.relight(self.gmap)
+
+    @property
+    def light_serial(self) -> int:
+        """Bumped by every light-carrying tick and every relight: the renderer
+        re-uploads its light textures when this changes (once per tick)."""
+        return 0 if self.physics_runner is None else int(self.physics_runner.light_serial)
+
     def get_tick(self) -> int:
         return self.tick
 
@@ -1320,6 +1370,11 @@ class Simulation:
 
         # 1. Fresh event buffer.
         self.tick_events.clear()
+        # #88 P2 (design §5.1, critique B7): the Python trace books (FieldEdit
+        # deposits, the saturation's clips at the Python sites) are per tick,
+        # over the window this step brackets -- reset BEFORE the 6b flush that
+        # writes them. (The engine's twins reset at the head of physics.)
+        self.gmap.reset_trace_books()
 
         # Round-clock head (control-modularity P1, §3a): tick-0-only work
         # (DET_START_PHASE1, path-offset reset, initial unit stamp under
@@ -1559,6 +1614,13 @@ class Simulation:
             sweep_vents(self)               # (d) vent circulation edit — BEFORE doors
         if self._doors:
             sweep_doors(self)               # (d) door structural sweep
+        # Timed charges (#31 P5): wire-free like vents, so OUTSIDE the bus
+        # gate; AFTER the door sweep so a blast this tick meets this tick's
+        # door state, and its wall damage lands before the recorder snapshot.
+        # Its queued FieldEdits land at the next step's 6b flush (the door
+        # charge's slot-8 latency).
+        if self._timed_charges:
+            sweep_timed_charges(self)       # (d') timed-charge detonations
         if self._signal_bus is not None:
             self._signal_bus.swap_node_signals()   # (e) pub[node-slots] ← stg
 
@@ -1614,6 +1676,15 @@ class Simulation:
             # in this clear: it is PERSISTENT synced state whose whole job is
             # to carry a sub-count oxygen debt ACROSS ticks.)
             self.gmap.rad_flux.fill(0)
+            # Ray-engine-v2 P2a (design v3 row 38): the shadow sweep's FOUR
+            # planes are NOT wiped here. `RadiationSweep::run` zeroes them
+            # itself before its first ordinate (it accumulates over ordinates,
+            # so it had to clear them anyway), which means they still hold this
+            # tick's values at render time — the tile inspector's Φ, `f` and
+            # E°⁻¹(Φ) rows were reading a wiped zero while the wipe lived here.
+            # Nothing digested changes: none of the four is in DIGEST_FIELDS or
+            # SIM_FIELDS. The three LIVE planes above keep their conductor wipe
+            # because their writer (the old cast) does not clear them.
 
         # Expire visual shot tracers (legacy fade-out behaviour).
         if self.shots:

@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Beatrice — body, suit and head</title>
+<style>
+  :root { color-scheme: dark; --bg: #1c1e22; --panel: #26292f; --ink: #e6e3dc; --dim: #9aa0a8; --line: #3a3e46; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, "Segoe UI", sans-serif; }
+  main { max-width: 1500px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 36px 0 10px; padding-top: 14px; border-top: 1px solid var(--line); }
+  p { color: var(--dim); margin: 4px 0 12px; max-width: 80ch; }
+  figure { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  figure img { display: block; width: 100%; height: auto; }
+  figcaption { padding: 8px 12px; color: var(--dim); font-size: 13px; }
+  .pair { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  code { background: var(--panel); padding: 1px 5px; border-radius: 3px; font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Beatrice — body, suit, hands, boots, the head (B2a), the anime look (B2b), the hair (B2c), the face finish (B2d) and the hair's colour and the head's pose (B2e)</h1>
+  <p>Built from Python alone on the shared character kit (<code>charkit/bodysuit.py</code>, Blender 4.5, Cycles) from the tables in
+     <code>scripts/beatrice.py</code>, fitted to three drawings: front, side and back. The head is a bald placeholder for the
+     face-and-hair stage. Character only, no props. This round answers <code>review_stage2.md</code>: new hands, the shoulder and
+     arm as one surface, a sleek ankle boot, clean teardrop inserts and a dark-grey thigh panel, the S-curve of the back, a fine zip,
+     layered knee pads, thin cuffs, seams that end on other edges. See <code>PROVENANCE.md</code>.
+     <b>Stage 4</b> answers <code>review_stage3.md</code> for the pelvis only (waist, hips, seat, upper thighs); everything else is
+     unchanged, and the close-ups further down are stage 3's.</p>
+
+  <h2>The hair's colour, crown and silhouette, the nose, the head's pose (B2e)</h2>
+  <p>The hair painted as the close-ups and the concept paint it: dark brown, except the outer layer of her right side seen from
+     the front, which goes warm ash to a pale ash-beige (<code>toonlook.normal_lobe</code>: the light as PAINTED, not a lamp --
+     the side and back drawings are dark all over), with dark strand lines along the locks, a cool gloss broken along the
+     strands; rooted on a part 3 mm to her right of the midline, her right of it lit. The silhouette widens steadily from the
+     crown (the temples' pinch and rim gone: 101 % of the drawing at the brows, B2c 90 %), no waist or notch at the back, the
+     outer fringe to the lash line with uneven tips, flat chest locks, varied ends, the chin's "wires" gone, the hairline arcing
+     over the ear's round top. The nose a soft warm glow with a glint on the lit side of the tip, gone from the flank as the view
+     turns. In the concept framing the head tilted 9 deg and the chin down 10 deg, the eyes raised under the lids; the hair now
+     moves with the trunk below the jaw. Body and face unchanged (vertex check). See <code>PROVENANCE.md</code> (B2e).</p>
+  <figure><img src="hair_colour_b2e.jpg" alt="The hair's colours"><figcaption>The drawing's, B2e's and B2d's hair sampled in the same boxes (lit, pale edge, mid, shadows, strand lines, gloss); front crops: drawing, B2e, B2d, concept.jfif, B2e at 30 deg</figcaption></figure>
+  <figure><img src="hair_vs_art.jpg" alt="The hair against the close-ups"><figcaption>The close-ups' framing: drawing, the B2e hair, its outline over the drawing, B2c's hair in the B2e look and its outline (before)</figcaption></figure>
+  <figure><img src="hair_back.jpg" alt="The hair from behind"><figcaption>The A-pose back drawing, the B2e hair from behind and three-quarter behind (both sides), B2c's back (before)</figcaption></figure>
+  <figure><img src="posed_vs_concept.jpg" alt="The posed concept framing"><figcaption>concept.jfif, the render (B2e head pose), its outline over the concept, B2d's head pose (before)</figcaption></figure>
+
+  <h2>The face finish and the latex sheen (B2d)</h2>
+  <p>The face's drawn layer (<code>animehead.face_art</code>, a front-projected canvas traced on the front close-up): the upper lash
+     mass with feathered strokes and the clumped outer lashes, the double-lid crease, the lower lid's light rim, lash line and lower
+     lashes, the pink inner corner; the upper lid's shadow over the iris's top half and the sclera, a greyer white, the iris 10 %
+     larger with a darker rim and top; brows thicker, darker, shorter, the inner end lower, at the traced height; the nose a soft
+     teardrop highlight with a glint and two nostril strokes; a soft mouth line, the lower lip tinted with gloss; the blush wider
+     and stronger. The cheek's groove and the islands under the eyes smoothed in the field (the zebra below). The latex: a warm
+     charcoal base, a broad soft sheen (a camera-space reflection lobe) and the crisp white kept to round forms, so no blobs on the
+     upper chest; the knee pads' dome sheen. Body and hair unchanged (vertex check). See <code>PROVENANCE.md</code> (B2d).</p>
+  <figure><img src="eyes_b2d.jpg" alt="The eyes against the art"><figcaption>The art's eyes (front close-up; concept.jfif's three-quarter for 30 and 60 deg; the side close-up), B2c, B2d: front, 30, 60 deg, profile</figcaption></figure>
+  <figure><img src="face_zebra.jpg" alt="Reflection lines"><figcaption>Reflection lines on the skin, B2c above, B2d below: front, 30, 60 deg</figcaption></figure>
+  <figure><img src="latex_b2d.jpg" alt="The latex before and after"><figcaption>The latex, B2c | B2d: portrait framing, the posed concept framing, full figure, the knee</figcaption></figure>
+
+  <h2>The hair (B2c)</h2>
+  <p>The blockout replaced by layered, tapered clumps given lock by lock (<code>charkit/animehair.py</code>, <code>build_clumps</code>;
+     table <code>HAIR_B2C</code>): a fringe of nine clumps traced on the front close-up (the middle one to the lash line, the two
+     drawn gaps of forehead), side locks in front of the ears onto the bust's edge, temple and crown locks falling behind the ears,
+     a back to a V at mid-back, a darker under layer, loose strands; the hanging hair on an envelope traced at the drawn widths
+     (eye line 208 mm against the drawing's 222, chin 234 against 246; B2b's 151 and 152). In the toon look a highlight band per
+     lock, a crisp fringe shadow, lighter ash-brown lit hair. B2a's blockout builds as <code>--head hair_b2a</code> (the "before"
+     columns). The "ghost ear" of the hairless profile was the eye opening's cut dented into the back of the skull: fixed. The face,
+     turn, close-up, posed and standard pictures below are regenerated with the B2c hair. See <code>PROVENANCE.md</code> (B2c).</p>
+
+  <h2>The anime look, the face's form and the eyes (B2b)</h2>
+  <p>The owner's decisions of 2026-10-20: an anime / toon look for the whole character in her high-resolution pictures, and the
+     concept's head-to-body ratio (x 1.20) as the default head. The look is render-time only (<code>charkit/toonlook.py</code>,
+     EEVEE: Shader-to-RGB ramps per material, crisp streaks on the latex, the hair's highlight band, inverted-hull outlines sized in
+     pixels per shot); the face is shaded as a simple head and casts as one. The physically-lit look of B1a-B2a is kept as
+     <code>--look pbr</code>. The eyes were re-traced on the drawn opening (rounder, level, a short flick), the nose's root set
+     deeper. Every picture in this section and the turnaround, studio views and close-ups below are in the toon look unless
+     labelled pbr; the sheet's overlap pictures stay plain. See <code>PROVENANCE.md</code> (B2b).</p>
+  <figure><img src="look_compare.jpg" alt="The pbr and the toon look side by side"><figcaption>The same shots in the pbr look (B2a's) and the toon look: face front, 30 degrees, the posed concept framing, full figure</figcaption></figure>
+  <figure><img src="posed_vs_concept.jpg" alt="The concept beside the posed render, toon look"><figcaption>The concept, the posed render in the toon look at the same framing, and the render's outline over the concept</figcaption></figure>
+  <figure><img src="posed_full.jpg" alt="The pose, full figure, toon look"><figcaption>The pose, full figure, toon look: front, front three-quarter, side (her right), back three-quarter</figcaption></figure>
+  <figure><img src="posed_hotlight.jpg" alt="The concept framing in both looks"><figcaption>The concept framing: pbr under the studio rig, pbr under the optional "hot" setup, the toon look</figcaption></figure>
+  <figure><img src="face_vs_art.jpg" alt="The face against the close-ups, both looks"><figcaption>The close-ups and the model in their frames: toon with and without hair, and one pbr row; drawing, render, the render's outline (red) over the drawing</figcaption></figure>
+  <figure><img src="face_turn.jpg" alt="The head turning, toon look"><figcaption>The head at 0, 30, 60, 90, 135 and 180 degrees in the toon look, and a pbr row at 0, 30 and 90</figcaption></figure>
+  <figure><img src="face_closeup.jpg" alt="Eyes, nose and mouth close, toon look"><figcaption>Eyes, an eye in three-quarter, nose and mouth, the mouth from the side (toon), beside crops of the drawing; the pbr eyes below</figcaption></figure>
+  <figure><img src="face_zebra.jpg" alt="Reflection lines on the face"><figcaption>Reflection lines on the skin and ears (B2b's surface): front, three-quarter, side</figcaption></figure>
+  <figure><img src="head_size.jpg" alt="The head size"><figcaption>The default head (x 1.20, the concept's ratio) against B2a's A-pose size (<code>--head apose</code>), each framed on its own head (the body's size shows the ratio), front and 30 degrees, and the concept</figcaption></figure>
+
+  <h2>The head, round 1: the face test (B2a)</h2>
+  <p>Her real head replaces the bald placeholder: a stylised anime-style 3D face (<code>charkit/animehead.py</code>) at the A-pose
+     drawing's size (chin to crown 204 mm), its widths and eyes from the front close-up and its depths from the profile close-up;
+     the eyes are carved openings over the drawn almond with a painted eye surface behind and a swept lash band; the hair is a
+     blockout (<code>charkit/animehair.py</code>): a cap and smooth locks falling clear of the suit. A variant at the original
+     concept's head-to-body ratio (x 1.20) is in <code>head_size.jpg</code>. See <code>PROVENANCE.md</code> (B2a). B2a's face
+     pictures were regenerated by B2b (above); B2a's look survives as their pbr rows.</p>
+
+  <h2>The bust, and the profile (B1n)</h2>
+  <p>The owner: "the breasts could use some more work", and two side views in the concept's style, v2 the profile reference
+     (<code>concept-upper-body-side-v2.png</code>, "do not go larger"). Measured first: scaled to the model by the collar's base and
+     the front waist, v2's bust stands 131 mm in front of the body's centre with a round lower curve tucking into a fold at 1.24 m;
+     B1m's stood 151 mm out (20 mm more, a cone with no fold) on a chest that was one flat shelf. The bust is now a designed smooth
+     field: two breasts, each with a round lower curve, a fold and a long upper slope, in a soft valley at the zip (15 mm), on a chest
+     wall taken back between and above them; the side silhouette lies within 3.4 mm of v2's from 1.20 to 1.36 m. The seam under the
+     bust now lies in the fold. The seat (step 3): v2's arm hides its back outline, but its skin shows the seat is at least 8-17 mm
+     deeper than B1m's; it moved half way at its crown (+5.4 mm), width and leg gap unchanged. See <code>PROVENANCE.md</code>.</p>
+  <figure><img src="bust_profile.jpg" alt="The bust's side profile against v2"><figcaption>v2's front outline with B1m's (red) and B1n's (blue) side silhouettes mapped onto it (left) and in the model's frame (right)</figcaption></figure>
+  <figure><img src="bust_b1n.jpg" alt="The bust before and after"><figcaption>B1m above, B1n below: front, three-quarter, side, from below, the fold close, the concept's framing (posed), and reflection lines; at the bottom the concept beside both in its framing</figcaption></figure>
+  <figure><img src="seat_profile.jpg" alt="The seat against v2"><figcaption>The seat: v2 with the model's back outlines (unposed and posed); v2's skin edge (yellow) is a lower bound on its seat's depth</figcaption></figure>
+  <figure><img src="posed_vs_concept.jpg" alt="The concept beside the posed render"><figcaption>The concept, the posed render (now B2b's toon look) at the same framing, and the render's outline over the concept</figcaption></figure>
+  <figure><img src="posed_full.jpg" alt="The pose, full figure"><figcaption>The pose, full figure (now B2b's toon look): front, front three-quarter, side (her right), back three-quarter</figcaption></figure>
+  <figure><img src="posed_hotlight.jpg" alt="The pose under a hotter light"><figcaption>The concept framing in the pbr look under the studio rig and the optional "hot" setup, and the toon look (now B2b's)</figcaption></figure>
+
+  <h2>The wet gloss and the concept pose (B1m)</h2>
+  <p>The owner chose the glossier look: B1l's "wet" gloss is now the default (the satin of B1b&ndash;B1l is the variant "satin") and
+     every picture on this page below is re-rendered in it; the body's shape is unchanged. The body is also shown in the pose of the
+     original artwork, so the hips and the seat can be judged in a natural stance: the saved build posed on a copy with a skeleton of
+     our own and one smooth weight field (<code>scripts/posed.py</code>, <code>charkit/suitpose.py</code>): weight on her right leg,
+     the pelvis shifted and tilted over it, the shoulders tilted against it, the left leg free. The camera is matched to the concept
+     (chest height, 90 mm, the shoulder line and the crotch at the concept's heights). See <code>PROVENANCE.md</code>. (The posed
+     pictures are re-rendered with each round: they show B1n now, above.)</p>
+
+  <h2>The finishing round before the full body pass (B1l)</h2>
+  <p>Answers <code>review_stage10.md</code> items 1, 2, 5, 7, 8, 10 and prepares item 3 for the owner. The body's shape is unchanged.
+     <b>The back armpit:</b> the knot had three causes, each fixed where it arose: the arm's distance stopped dead at the sleeve loft's
+     root, whose plane comes out of the torso behind the armpit (a 2-4 mm cliff in the surface), the shoulder's own surface stopped on a
+     level line through the armpit's saddle, and every open edge was shaded with its solidify rim (a staircase of dark teeth along the
+     joins). One piped line now runs from the blade insert into the armpit and on down the back; the deltoid seam ends on it.
+     <b>Knee pads:</b> a crowned dome with a soft crest, about 8 mm proud in the side view, its highlight running round the rim; a
+     less mirror-like coat. <b>Smaller:</b> the elbow seam a plain line (no shelf), the thumb tapered with joints and resting nearer the
+     index, the raglan seam meeting the blade insert at an angle, the back V starting at the insert's tip, the knee frame's cord ending on
+     the pad's rim. <b>For the owner:</b> <code>gloss_compare.jpg</code> shows the default gloss beside a named variant "wet"; the
+     default is unchanged. See <code>PROVENANCE.md</code>.</p>
+  <figure><img src="armpit_b1l.jpg" alt="The back armpit, B1k and B1l"><figcaption>The back armpit: the drawing; B1k and B1l at hero distance (2x), close, three-quarter and straight back, the fold close; reflection lines; the back yoke and the elbow</figcaption></figure>
+  <figure><img src="pads_b1l.jpg" alt="The knee pads, B1k and B1l"><figcaption>The knee pads: the drawing; B1k and B1l in hero.jpg (2x) and legs.jpg framing, front, three-quarter, side, knee.jpg and reflection lines</figcaption></figure>
+  <figure><img src="gloss_compare.jpg" alt="Default gloss and the wet variant"><figcaption>The suit's gloss, for the owner's choice: the default (left) and the variant "wet" (right), the same build and light: hero, hero_back, legs</figcaption></figure>
+
+  <h2>The upper body's surface: shoulders, upper arms, collar, armpits, inserts (B1k)</h2>
+  <p>Answers <code>review_stage9.md</code> items 1-6. <b>Shoulder and upper arm:</b> the gloss ripples were in the shoulder patch's
+     field (an arm distance stepping every 0.9 mm); the shoulder and the whole upper arm down to the elbow seam are now one surface
+     from a continuous, C2 field, re-projected, its gradient as shading normals: the mottle on the deltoid and the streaks down the
+     back of the arm are gone. The mid-arm ring is gone; the seams as drawn: a V over the foot of the deltoid, lowest outside,
+     rising to the raglan seams at the armpit, and an elbow seam with a soft fold behind. The upper arm about 5 % fuller, the
+     deltoid a little rounder; shoulder width, arm length and hang unchanged. <b>Collar:</b> it flares into the shoulders with no
+     ledge and no shadow line and hugs the neck at the top with no lip; its height and the zip kept. <b>Armpits and piping:</b> the
+     raglan seams run higher over the shoulders, clear of the inserts, and then along the inserts' outer edges to their tips (one
+     piped line, no zigzag); the back armpit's tear was the body loft lifted into the armpit's back fold -- the shoulder's own
+     surface now covers the fold. <b>Mesh:</b> a fine dark net with warm skin through it. Hands, cuffs, legs, boots, knee pads,
+     head and the torso below the armpits unmoved (vertex check). See <code>PROVENANCE.md</code>.</p>
+  <figure><img src="shoulders_b1k.jpg" alt="Shoulder and upper arm, B1j and B1k"><figcaption>The shoulder and upper arm: the drawings; reflection lines and the render, B1j and B1k, from the front, side, back and three-quarter; the upper arm and elbow</figcaption></figure>
+  <figure><img src="collar_b1k.jpg" alt="The collar, B1j and B1k"><figcaption>The collar: the drawings; B1j and B1k from the front, three-quarter, side and back, rendered and in reflection lines</figcaption></figure>
+  <figure><img src="inserts_b1k.jpg" alt="The inserts, B1j and B1k"><figcaption>The mesh inserts and their piping: the drawings; B1j and B1k at a distance and close</figcaption></figure>
+  <div class="pair">
+    <figure><img src="shoulder.jpg" alt="Shoulder"><figcaption>shoulder.jpg</figcaption></figure>
+    <figure><img src="shoulder_back.jpg" alt="Shoulder from behind"><figcaption>shoulder_back.jpg</figcaption></figure>
+    <figure><img src="armpit_back.jpg" alt="The back armpit"><figcaption>armpit_back.jpg</figcaption></figure>
+  </div>
+
+  <h2>The hands, second pass, and the knee pads' finish (B1j)</h2>
+  <p>Answers <code>review_stage9.md</code> (its hand items and items 7-8). Nothing else moved: 60 of the 62 B1i objects are
+     vertex for vertex B1i's (the knee pads and rims among them: only their material changed); moved are the hand and the cuff,
+     and the nails are a new object. <b>Pose:</b> the fingers hang, close together in a small fan, curled 0.74-1.13 rad from the
+     index to the little finger (B1i 0.72-1.72: the ring and little fingers pointed sideways like a claw); the thumb in front.
+     <b>Form:</b> the back of the hand ends on the knuckles instead of overhanging the finger roots (the ledge), narrower
+     (about 52 mm across the knuckles, was 56) and rounder, with faint tendons; the fingers thinner, tapering to a half-elliptic
+     tip, a soft swell and a faint crease at each joint. <b>Nails:</b> small domed oval shells of their own on the fingers, a
+     natural light pink, glossier than the skin (B1i: a material painted on the hand's faces, a staircase outline). <b>Wrist and
+     cuff:</b> the wrist rounder and centred in the cuff (it sat 4-5 mm towards the palm), the cuff's lower edge rolled onto the
+     skin. <b>Knee pads:</b> suit-dark and glossy with a bright rim instead of a grey base. The fingers now touch past the
+     knuckles as drawn: the game-ready step's 6 mm fusing will need its own, wider finger pose. See <code>PROVENANCE.md</code>.</p>
+  <figure><img src="hands_b1j.jpg" alt="Hands, B1i and B1j"><figcaption>The hands: the drawings, B1i and B1j in front, side and back views at the drawings' scale; three-quarter and close-up; reflection lines; matte and the palm side; the cuff close; the nails</figcaption></figure>
+  <figure><img src="pads_b1j.jpg" alt="Knee pads, B1i and B1j"><figcaption>The knee pads: the drawing, B1i and B1j in the sheet, knee.jpg and legs.jpg</figcaption></figure>
+
+  <h2>The hands, the cuffs and a leg polish (B1i)</h2>
+  <p>Answers <code>review_stage7.md</code> B2 and <code>review_stage8.md</code> corrections 1 and 2. Nothing else moved: 56 of the
+     62 objects are vertex for vertex B1h's (the suit, sleeves, shoulders, collar, pelvis, legs, head); the six that moved are
+     the hand, the cuff, the knee pad and its rim, the boot upper and its top cord (0.02 mm). <b>The surface:</b> the ring-banding
+     was in the hand's field, not its mesh -- a chain of capsules with a rounded cap at every node, like B1g's boot vamp; the
+     hand is now smooth fields only (the palm one sweep, each finger and the thumb a sweep along its own bent centre line,
+     C2 unions, the field's gradient as normals). <b>Proportions:</b> the knuckles 13 mm nearer the wrist and the fingers longer
+     (about half the hand), the tip where it was, the palm tapering to a wrist 2-3 mm slimmer; the thumb's ball, knuckles,
+     finger pads and nails. <b>Pose:</b> relaxed as drawn, a curl cascade from the index to the little finger, the thumb in
+     front, the fingers apart past their first joints (7-16 mm, for the game-ready step's 6 mm fusing). <b>The cuff:</b> one
+     soft band whose underside runs in to the wrist (no gap, no second ring). <b>Knee pads:</b> 5 mm proud (was about 11), the
+     lower edge running into the shin, a lighter finish with a brighter rim. <b>Boot shaft:</b> ankle bones under the leather
+     and a shallow hollow above the heel cup. The upper-arm gloss ripples (B4) have a cause of the same family, found but not
+     fixed this round (<code>sleeve_ripples_cause.jpg</code>). See <code>PROVENANCE.md</code>.</p>
+  <figure><img src="hands_before_after.jpg" alt="Hands before and after"><figcaption>The hands: the drawings, B1h and B1i in front, side and back views at the drawings' scale; three-quarter and close-up; reflection lines; matte from her left; the palm side</figcaption></figure>
+  <div class="pair">
+    <figure><img src="hand.jpg" alt="The back of the left hand"><figcaption>hand.jpg: the back of her left hand</figcaption></figure>
+    <figure><img src="hand_palm.jpg" alt="The palm and thumb"><figcaption>hand_palm.jpg: palm and thumb, from behind and inside</figcaption></figure>
+    <figure><img src="wrist.jpg" alt="The wrist and cuff"><figcaption>wrist.jpg: the cuff on the wrist (re-aimed this round)</figcaption></figure>
+  </div>
+  <figure><img src="legs_polish_before_after.jpg" alt="Knee pads and boot shaft before and after"><figcaption>Knee pad (side and front) and boot shaft (front, back, side, reflection lines), B1h beside B1i</figcaption></figure>
+  <figure><img src="sleeve_ripples_cause.jpg" alt="The sleeve ripples' cause"><figcaption>B4, found not fixed: the upper-arm ripples live on the shoulder patch and grow with its field's own gradient: they are in the field</figcaption></figure>
+
+  <h2>The legs below the knee (B1h)</h2>
+  <p>Answers <code>review_stage7.md</code> B1, B5, B8; nothing above the knee pads moved (every vertex above 0.652 m within float
+     rounding of B1g's). <b>The boots:</b> the shaft is the leg plus 1.3 mm of leather (B1g stood 4-5 mm off a leg that bulged
+     behind the ankle), its top a piping cord where it dives under the suit (no rim, no V); the Achilles runs straight into a
+     heel cup; the foot one smooth sweep with a curved instep, an almond toe with a toe box and a toe-cap seam; the vamp's
+     blotches were the rings where B1g's chain of capsules met (see the reflection lines), now one clean surface; a slim welt
+     and the low block heel as one closed sole, no gap, nothing behind the heel. Shaft height, heel height, foot length and
+     stance kept. <b>The knee pads:</b> one domed shield at 0.56 of the knee's width (B1g 0.45), a piped rim, no dashed line,
+     the drawn frame below it; as bright as the suit around it, not as bright as drawn. <b>The calf:</b> the upper calf's
+     outer and inner swell fuller (back view -5..-7 % to +1..-4 % against the drawing). See <code>PROVENANCE.md</code>.</p>
+  <figure><img src="boots_before_after.jpg" alt="Boots before and after"><figcaption>Boots, B1g above, B1h below: front, side, back, three-quarter, the vamp, the shaft's top, and reflection lines on the vamp and the side</figcaption></figure>
+  <figure><img src="knees_before_after.jpg" alt="Knee pads before and after"><figcaption>Knee pads, B1g above, B1h below</figcaption></figure>
+  <div class="pair">
+    <figure><img src="boot.jpg" alt="Boots"><figcaption>boot.jpg</figcaption></figure>
+    <figure><img src="boot_side.jpg" alt="Boots from the side"><figcaption>boot_side.jpg</figcaption></figure>
+    <figure><img src="knee.jpg" alt="Knees"><figcaption>knee.jpg</figcaption></figure>
+    <figure><img src="legs.jpg" alt="Legs"><figcaption>legs.jpg</figcaption></figure>
+  </div>
+
+  <h2>The waist and the finish (B1g)</h2>
+  <p>Answers <code>review_stage6.md</code> (N1&ndash;N5, N7). <b>The waist:</b> the outlines from the hip to under the bust are
+     authored by their angle to the vertical, so the narrowest waist is one long turn (at most 3.9 deg/cm in front, B1f 11.3;
+     3.4 behind in the side view, B1f 6.7) and no line crosses it in matte; in the gloss B1f&rsquo;s crisp edge is a soft gradient. Its width (90 mm), height, depths and
+     the ribs' and chest's widths are B1f's. <b>The flare:</b> the hip one convex round from the widest point to the steepest
+     flank, the outer thigh tapering 3 mm toward the knee; widest and hip line unchanged. With the waist turning at most
+     4 deg/cm the hip can not gain as fast just under the waist as the owner's reference does (that is the corner N1 removes):
+     the 0.6 and 0.8 flare shares reach three quarters of the way to the full step, the 0.2 and 0.4 shares stay below B1f's.
+     <b>The crotch:</b> the seam V's dark comma gone (the cord dived into the suit), the inner thigh's hinge under the gap
+     replaced by one even taper, the 0.80 band gone; the thin bright contact line in the gloss is still there (cause found;
+     the fix tried drew stripes in the matte). <b>The zip:</b> its foot a flat plate. B1f is kept as the shape <code>b1f</code>.
+     See <code>PROVENANCE.md</code>.</p>
+  <figure><img src="waist.jpg" alt="The waist, B1f above and B1g below"><figcaption>The waist, B1f above, B1g below: the outlines' turning 1.00&ndash;1.30 m, matte crops contrast-stretched, the glossy torso and hero cropped</figcaption></figure>
+  <figure><img src="inner_thigh.jpg" alt="The inner thigh outline"><figcaption>The inner thigh under the gap, B1f beside B1g: green convex, red concave</figcaption></figure>
+
+  <h2>The pelvis, third round (B1f)</h2>
+  <p>Answers <code>review_stage5.md</code>. <b>The thighs meet:</b> no slot; the half-bodies touch the mid-plane tangentially and
+     overlap above, the union's reach broad where the thighs meet (no pinch, no bright line in gloss) but capped at the sections'
+     innermost depth, so light first shows 42 mm under the crotch landmark (0.851 m; B1e 0.880) in a near-tangent cusp, and the
+     gap opens as a convex lens into B1e's leg. <b>The side:</b> the seat 7 mm fuller and rounder, tucking under over 8 cm, its
+     two lobes and lower edge reading from behind; the front of the thigh one convex swell (+5 mm). <b>The front:</b> the early
+     flare half the remaining way to the owner's reference (the full step pinches the waist into a corner: kept as
+     <code>flare_full</code> for comparison), the outer thigh tapering a little, the shading bands on the thigh gone.
+     <b>The back seam:</b> the "zip tab" sticking out of the lower back was the centre-back seam's cord; it now lies on the
+     centre line. Stage 4, B1e and the full flare are kept as shapes. See <code>PROVENANCE.md</code>.</p>
+  <figure><img src="crotch.jpg" alt="The crotch close up"><figcaption>The crotch close up: matte front, back, three-quarter front, from 40&deg; below front and back; glossy front and three-quarter, with the seams</figcaption></figure>
+  <figure><img src="lens.jpg" alt="The leg gap beside the owner's reference"><figcaption>The leg gap from the front beside the owner's frontal reference, one scale, aligned at the first light</figcaption></figure>
+  <figure><img src="side_outlines.jpg" alt="Side outlines"><figcaption>Side outlines: stage 4, B1e, B1f, now and the side drawing, with a 2x zoom of the seat and thigh</figcaption></figure>
+  <figure><img src="shape_vs_silhouette.jpg" alt="Against the owner's frontal reference"><figcaption>The owner's frontal body reference beside stage 4, B1e, B1f and now, one scale</figcaption></figure>
+  <figure><img src="bands_contrast.jpg" alt="Shading bands, contrast raised"><figcaption>The matte three-quarter front, B1f against now, contrast stretched and high-passed: the horizontal bands across the thigh</figcaption></figure>
+
+  <h2>The pelvis, second round (B1e)</h2>
+  <p>Answers <code>review_stage4.md</code>, the pelvis only. <b>The gap between the legs:</b> the pelvis is now ONE surface across the
+     mid-plane, the smooth union of the half-body and its own mirror image (<code>charkit/bodysuit.py::MidUnion</code>), from under the
+     crotch to the waist, on the loft's own grid. The upper inner thighs are fuller (thigh / hip 0.479, the concept's 0.482; stage 4
+     0.446): a slot about 12 mm wide for the first 5&ndash;6 cm under the crotch that closes in a round arch, a smooth saddle from the
+     belly under to the seat's cleft, the surface crossing the mid-plane square (no crease line, no point). <b>The side:</b> a lumbar
+     curve flowing into one round seat, fullest at 0.94 m, its under-curve running over several centimetres into a slightly full back
+     of the thigh; a rounder lower belly, a soft groin, the front of the thigh swelling 3 mm into the knee. <b>The front:</b> the hip
+     rounds out sooner under the waist and eases off over the hip (half the way towards the owner's frontal reference,
+     <code>good-body-silhouette.jfif</code>), waist and widest point unchanged. Stage 4 is kept as the shape <code>stage4</code>.</p>
+
+  <h2>The hip pictures (now B1g; the text is stage 4&#39;s)</h2>
+  <p>The corner at the crotch came from the table: the leg rows held the outer edge upright up to the crotch row and the hand-set hip
+     rows ran it in a straight line to the waist, two straight pieces meeting in one row. From above the knee to under the waist the
+     trunk is now authored as its outlines (the front view's outer edge and the gap between the legs, the side view's front and back),
+     each a smooth curve of height, at the owner's "one step slimmer" size, the waist pinched (hip / waist 1.795, the concept's 1.794).
+     The weld at the centre line follows each section's true crossing and the V there is filleted, so no crease or stepped seam runs
+     down the front. Measured on the built mesh, the outline's worst direction change from 0.68 to 1.12 m is now 2.6 deg/cm in front
+     and behind (stage 3: 12.7 at the crotch), 3.2 / 4.4 at the side's front / back (6.6 / 7.7), 4.6 / 4.9 on the diagonals (8.6 / 8.2).</p>
+  <figure><img src="hips.jpg" alt="The pelvis in matte grey, five views"><figcaption>Pure form, matte grey, no seams, panels or arms: front, three-quarter front, side, three-quarter back, back</figcaption></figure>
+  <div class="grid">
+    <figure><img src="hips_vs_drawings.jpg" alt="The pelvis against the drawings"><figcaption>Against the drawings (orange), the concept beside the front</figcaption></figure>
+    <figure><img src="hips_before_after.jpg" alt="Outlines before and after"><figcaption>Stage 4, B1e and B1f above, now at the bottom with their outlines (blue, green, magenta)</figcaption></figure>
+  </div>
+
+  <h2>Hands (stage 3; superseded by B1i above)</h2>
+  <p>One closed surface per hand (<code>charkit/parts.py::bare_hand</code>): a palm narrow at the wrist and widest at the knuckles, a
+     rounded heel and a thumb pad, a two-segment thumb from the side of the palm's base, four fingers of different lengths in three
+     tapering phalanges with a slight knuckle and a rounded tip, relaxed curl and a little spread. The fingers grow out of the palm
+     through smooth fillets (webbing), no notch or step.</p>
+  <div class="pair">
+    <figure><img src="hand.jpg" alt="The back of the left hand"><figcaption>Back of the hand, from her left</figcaption></figure>
+    <figure><img src="hand_palm.jpg" alt="The palm and thumb"><figcaption>Palm and thumb, from behind and inside</figcaption></figure>
+  </div>
+
+  <h2>Shoulder and arm</h2>
+  <p>Torso and arm are one surface over the shoulder: the smooth union of the body and sleeve lofts, meshed on its own and bounded by
+     seam lines (in front the line from the collar to the armpit, behind a raglan seam outside the blade insert, a short seam under
+     the arm, and on the arm the drawn seam at the foot of the deltoid), so every join lies under a piping cord. No armhole ring.
+     The sleeve is refitted: a slim wrist, the forearm swelling under the elbow, a narrowing and a point at the elbow.</p>
+  <div class="grid">
+    <figure><img src="shoulder.jpg" alt="Shoulder from the front"><figcaption>Shoulder, front</figcaption></figure>
+    <figure><img src="shoulder_back.jpg" alt="Shoulder from behind"><figcaption>Shoulder, back</figcaption></figure>
+    <figure><img src="armpit_back.jpg" alt="Back of the armpit"><figcaption>Back of the armpit: the raglan seam beside the blade insert (still ragged here)</figcaption></figure>
+    <figure><img src="top_close.jpg" alt="Shoulders from above"><figcaption>From above, close: the shoulder line from neck to arm</figcaption></figure>
+  </div>
+
+  <h2>The three drawings vs the model</h2>
+  <p id="scores">Silhouette overlap (IoU), default build, per height band (above the waist / waist to knee / knees down):
+     front 0.947 / 0.852 / 0.908 (whole 0.895); side 0.918 / 0.920 / 0.856 (0.901); back 0.914 / 0.837 / 0.812 (0.855) (B1g; B1f 0.857 / 0.921 / 0.841 waist to knee).
+     Above the waist and knees down unchanged from stage 3; the waist-to-knee band fell (stage 3: 0.871 / 0.915 / 0.848) with the slimmer hips. The waist-to-knee band is narrower than the drawings on purpose (the owner's slimmer hips). Knees down: the front and
+     back drawings place the lower legs apart and draw a high heel; the build splits the difference and wears the low heel asked for.</p>
+  <div class="grid">
+    <figure><img src="sheet_vs_reference.png" alt="Front drawing above the model"><figcaption>Front: drawing above, model below</figcaption></figure>
+    <figure><img src="side_vs_reference.png" alt="Side drawing above the model"><figcaption>Side</figcaption></figure>
+    <figure><img src="back_vs_reference.png" alt="Back drawing above the model"><figcaption>Back</figcaption></figure>
+  </div>
+  <div class="grid">
+    <figure><img src="sheet_overlay.png" alt="Front overlay"><figcaption>Front overlay: grey both, red drawing only, blue model only</figcaption></figure>
+    <figure><img src="side_overlay.png" alt="Side overlay"><figcaption>Side overlay</figcaption></figure>
+    <figure><img src="back_overlay.png" alt="Back overlay"><figcaption>Back overlay</figcaption></figure>
+  </div>
+
+  <h2>Hip shapes, side by side (B1g)</h2>
+  <p>Three steps of the new pelvis built from table values only (<code>beatrice.pelvis(k)</code>: the hip and seat 7 % either side),
+     matte grey, front and side, waist to knee, the drawing's outline in orange.</p>
+  <figure><img src="shape_vs_concept.jpg" alt="Three hip shapes in matte grey, front and side, with the drawing outlines"><figcaption>one step slimmer · default (B1g) · one step fuller</figcaption></figure>
+
+  <h2>Turnaround</h2>
+  <figure><img src="turnaround.png" alt="Front, side, back, three-quarter"><figcaption>Orthographic front, side, back, three-quarter</figcaption></figure>
+
+  <h2>Studio views</h2>
+  <div class="grid">
+    <figure><img src="hero.jpg" alt="Three-quarter front"><figcaption>Three-quarter front</figcaption></figure>
+    <figure><img src="hero_back.jpg" alt="Three-quarter back"><figcaption>Three-quarter back</figcaption></figure>
+    <figure><img src="side.jpg" alt="Side"><figcaption>Side: the S-curve, the dark-grey thigh panel</figcaption></figure>
+    <figure><img src="torso.jpg" alt="Torso"><figcaption>Torso: piping, shoulder slits, teardrop inserts, fine zip</figcaption></figure>
+    <figure><img src="torso_back.jpg" alt="Torso, back"><figcaption>Torso, back: zip down the spine, blade and back inserts, raglan seams</figcaption></figure>
+    <figure><img src="legs.jpg" alt="Legs and boots"><figcaption>Legs and boots</figcaption></figure>
+    <figure><img src="head.jpg" alt="Placeholder head"><figcaption>Placeholder head (replaced in the next stage)</figcaption></figure>
+    <figure><img src="top.jpg" alt="From above"><figcaption>From above (the game camera)</figcaption></figure>
+    <figure><img src="elevated.jpg" alt="Elevated"><figcaption>Elevated</figcaption></figure>
+    <figure><img src="crimson_hero.jpg" alt="Crimson variant"><figcaption>Variant <code>crimson</code>: palette values only</figcaption></figure>
+  </div>
+
+  <h2>Close-ups</h2>
+  <div class="grid">
+    <figure><img src="boot.jpg" alt="Boots"><figcaption>Ankle boots: the shaft hugs the leg into a slim ankle, almond toe, 3 cm block heel</figcaption></figure>
+    <figure><img src="boot_side.jpg" alt="Boot from the side"><figcaption>Boot from the side: heel curve, instep, full-length sole</figcaption></figure>
+    <figure><img src="flank.jpg" alt="Flank"><figcaption>Flank: teardrop inserts edged with piping</figcaption></figure>
+    <figure><img src="flank_back.jpg" alt="Flank from behind"><figcaption>Flank from behind</figcaption></figure>
+    <figure><img src="knee.jpg" alt="Knees"><figcaption>Layered knee pads in front, shin seams running into the boots</figcaption></figure>
+  </div>
+</main>
+</body>
+</html>

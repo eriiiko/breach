@@ -1,0 +1,313 @@
+# Papers behind the ray engine v2 arc (archived 2026-09-13)
+
+Erik: *"the papers we base these things off, do we have access to them, can we
+download them and put them into docs/papers? I want to make sure we've read
+them in full."* All eight are here, verified complete, and text-extractable.
+
+**Reading PDFs on this machine:** `pdftoppm` is not installed, so the Read tool
+cannot render pages. `pdftotext` **is** available at `/mingw64/bin/pdftotext`,
+so the route in is:
+
+```
+pdftotext -q docs/papers/<name>.pdf <out>.txt
+```
+
+Every paper below extracts cleanly that way.
+
+---
+
+## Reading order, and why each one matters
+
+### 1. Osborne & Sannikov 2024 — read this one first
+`osborne_sannikov2024_radiance_cascades_nonLTE_bilinear_fix.pdf` · arXiv
+2408.14425 · 21 pp · RAS Techniques and Instruments
+
+**The most important paper for this arc, and it partly rewrites the design's
+framing.** Sannikov (who invented radiance cascades for Path of Exile 2) with an
+astrophysicist, presenting cascades not as a rendering trick but as a **formal
+solver for the radiative transfer equation**, validated against a solar
+prominence model.
+
+Why it matters to us, in their own words:
+
+- They name our exact situation: *"This global and recursive problem does not
+  occur uniquely in astrophysical radiative transfer but is also a core problem
+  of energetic neutron transport in reactor design, and the problem of global
+  illumination in computer graphics."* All three are the same problem. We had
+  been treating the graphics literature and the transport literature as separate
+  worlds; they are not.
+- **The ray effect is worst exactly where we live.** *"This method is known to
+  fail, producing so-called ray effects clearly visible in media without
+  scattering … but these effects are dramatically reduced in diffusive media."*
+  Erik ruled clear air transparent (R-L), so our medium is non-scattering — the
+  worst case for discrete ordinates, and the reason our 8-ray fan struck.
+- They put short characteristics + discrete ordinates head to head with cascades
+  on a scene of *"opaque emissive circles, two small opaque absorbing circles,
+  and a central square absorbing region … the remaining space is pure vacuum"*.
+  That is a ship deck with fires in it. Short characteristics *"exhibits very
+  strong ray effects that are not present in our radiance cascades solutions."*
+- **Cascades are offered as the cure for ray effects**: *"a credible route for
+  routinely performing multidimensional radiative transfer calculations free
+  from so-called ray effects."*
+
+**And the finding that decides our architecture** (§ around Fig. 7): the ringing
+artifact *"is due to parallax between the different probes of cascade i+1 and
+cascade i, leading to **non-conservation of energy** at locations where cascades
+overlap a light source."*
+
+So: **cascades do not conserve energy exactly, by the authors' own statement.**
+That is the justification for the design's two-solver split. Heat must close the
+arc-#54 ledger exactly and therefore cannot use cascades; light has no such
+constraint and should. The split was proposed on intuition and is now on record.
+
+Also carries the **bilinear fix** — the published remedy for the leak visible in
+our own prototype render (`docs/ray_engine_v2_scheme_study_2026-09-13/cascade_render.png`,
+where light appears in rooms that should be dark).
+
+### 2. Sannikov 2023 — the original
+`sannikov2023_radiance_cascades.pdf` · 59 MB slide deck from ExileCon ·
+[source](https://radiance.wiki/papers/sannikov-original)
+
+The primary source for radiance cascades: the penumbra hypothesis, the cascade
+hierarchy, the merge. A deck rather than a paper, so it is light on formalism
+and heavy on intuition and pictures. Text extracts fine.
+
+### 3. Yates et al. 2025 — Holographic Radiance Cascades
+`yates2025_holographic_radiance_cascades.pdf` · arXiv 2505.02041 · 9 pp
+
+The current refinement, and the source of the performance numbers the design
+quotes: **1.85 ms at 512×512, 7.67 ms at 1024×1024 on an RTX 3080 Laptop, with
+runtime constant for a given grid size regardless of scene complexity.** Fixes
+distant-light penumbras by aligning the high-resolution probe axis with the
+incoming light direction. Read for the cost model and the limitations list.
+
+### 4. Camminady et al. 2019 — ray effect via quadrature rotation
+`camminady2019_ray_effect_quadrature_rotation.pdf` · arXiv 1808.05846 · 24 pp
+
+The paper behind the design's per-tick rotation, and the claim that rotation
+buys equivalent quality at **under a third** of the quadrature points. Worth
+reading carefully against our own measurement, which found rotation *helps*
+apertures and *hurts* point-source isotropy in a grid scheme — the paper may
+explain the asymmetry we measured.
+
+### 5. Random Source Iteration, 2025 — the other ray-effect remedy
+`random_source_iteration_ray_effect_2025.pdf` · arXiv 2502.15454 · 25 pp
+
+A newer alternative to rotation. Likely incompatible with us as written, since
+it is stochastic and our ingress rules put randomness behind door 4, but worth
+knowing what it buys before ruling it out.
+
+### 6. Davis et al. 2012 — short characteristics in Athena
+`davis2012_short_characteristics_athena.pdf` · arXiv 1201.2222 · 20 pp
+
+A production short-characteristics solver, described concretely enough to
+implement. The sharp-transport candidate in our bake-off, and the place to look
+for how a real code handles the interpolation and stability choices Auer &
+Paletou flagged.
+
+### 7. PLUTO 2020 — radiation transport module
+`pluto2020_radiation_transport_module.pdf` · arXiv 2010.00457 · 19 pp
+
+Another production sweep implementation. Its discussion of shadow quality is
+directly relevant: it names *"the protrusion of the ionization front into the
+shadow"* as numerical diffusion, which is the artifact our room render shows as
+step differencing losing half the energy down a corridor.
+
+### 8. Osborne 2025 — a simple ray acceleration structure
+`osborne2025_ray_acceleration_structure_nonLTE.pdf` · arXiv 2511.08498 · 12 pp
+
+Follow-up to (1). Relevant if cascade tracing cost becomes the bottleneck.
+
+---
+
+## Already here from earlier arcs
+
+- `ADA492343.pdf` — see `README_radiation_2026-08.md`.
+- `continuous_o2_law_citations.md` — the combustion-law citations.
+
+## The rule this satisfies
+
+CLAUDE.md: *"Credit the source: any file implementing a published technique
+carries an author + paper citation in its header; archive the paper under
+`docs/papers/`."* When the sweep and the cascade passes get written, their
+headers cite (1), (2), (4) and (6) by name.
+
+## Read status (updated 2026-09-13)
+
+**Read in full:** (1) Osborne & Sannikov, (4) Camminady, (6) Davis, and (9)–(14)
+below. Between them they changed three design decisions — see
+`docs/ray_engine_v2_reach_and_papers_2026-09-13.md` §4 and the design doc's §0.
+
+The headline from each:
+
+- **(1)** supplied the bilinear fix, and the diagnosis that a light leak means the
+  penumbra criterion is violated — which our one-tile walls do by construction.
+  Its §3.1 inclined-ray treatment is also what let the out-of-plane leak be
+  derived rather than fitted.
+- **(4)** *retired* per-tick rotation for us. rSN interpolates a **carried**
+  angular flux, which is where its angular diffusion comes from; we carry none,
+  and the paper's own §7 says it "is not directly compatible with sweeping".
+- **(6)** named the sharp-versus-diffuse trade as fundamental and validated the
+  shear scheme's major-axis sweep ordering as the standard handling of shallow
+  rays.
+
+**Still only skimmed:** (2) Sannikov's deck, (3) Yates, (5) random source
+iteration, (7) PLUTO, (8) Osborne 2025. None of them gates anything currently
+designed; (3) and (8) become relevant only if cascades are ever built.
+
+---
+
+## Added 2026-09-13 (the stability and coupling pass)
+
+Downloaded, verified, and **read in full** before the design pass, at Erik's
+instruction. All extract cleanly with `pdftotext`.
+
+### 9. Wollaber 2016 — Four Decades of Implicit Monte Carlo
+`wollaber2016_four_decades_of_implicit_monte_carlo.pdf` · LA-UR-15-23553 · 54 pp
+
+**The authority for the stability scheme, and reading it in full changed the
+design.** Derives the Fleck factor from scratch (eqs. 17–21): time-average the
+emission across the step as a blend of its start- and end-of-step values, solve,
+and emission is simply scaled by `f = 1/(1 + α·β·σ·c·Δt)`, `β = 4aT³/c_v`.
+`α ≥ 0.5` is what buys unconditional stability; `α = 1` suppresses oscillation.
+
+Two sections that cost us a redesign and are worth re-reading before any change
+to the material update:
+
+- **§4.2.2 Maximum principle violations** — *"arguably the most serious
+  deficiency of the IMC equations"*. Damping the loss but not the gain moves
+  equilibrium, and it is why emission-only Fleck damping needed the clamp.
+- **§5.2 Teleportation error** — names our through-wall radiative transport:
+  absorption scored uniformly over a zone whose absorption depth is far smaller
+  than the zone, re-emitted next step from the far side. A histogram temperature
+  field like ours is documented as inadequate against it.
+
+### 10. Roth & Kasen 2015 — Monte Carlo Radiation Hydrodynamics with Implicit Methods
+`roth_kasen2015_monte_carlo_radhydro_implicit.pdf` · arXiv 1404.4652 · 22 pp
+
+The practical companion. Confirms the failure mode we measured (*"the code
+generates negative temperatures and crashes after the first step"*), states the
+α range, and reports that **heating tracks the analytic solution to 1e-4 while
+cooling is artificially slow** — the asymmetry our clamp exists to correct. Also:
+*"one should strive for the smallest value of α that still maintains stability"*,
+which our own measurement independently reproduced.
+
+### 11. He, Wibking & Krumholz 2024 — Asymptotically-Correct IMEX for RHD
+`skinner2024_asymptotically_correct_imex_radhydro.pdf` · arXiv 2404.08247 · 14 pp
+
+**The architectural sanction for the whole split.** *"the transport terms are
+handled explicitly, while the matter-radiation interacting part is treated
+implicitly and locally, eliminating the need for non-local implicit terms in
+iteration."* That is our design: one explicit sweep, and a per-cell implicit
+coupling with no iteration across cells. Read for the regime analysis when the
+gas-side coupling is built.
+
+### 12. Southworth et al. 2024 — One-sweep moment-based semi-implicit-explicit gray TRT
+`onesweep_moment_semi_implicit_gray_trt_2024.pdf` · arXiv 2401.04285 · 33 pp
+
+Deterministic S_N, and **one sweep per time step** for the first-order method —
+our exact budget, shown to be a respectable target rather than a corner cut.
+Their HOLO machinery is more than we need; the transferable result is that
+absorption–reemission can be treated explicitly *"and although stiff, is
+sufficiently damped"* when the coupling is handled per-cell.
+
+### 13 & 14. Combined conduction–radiation
+`koutsoheras2018_coupled_radiation_conduction_bilayer.pdf` · arXiv 1808.06597 ·
+`porous_polymer_thermal_conductivity_rosseland_2021.pdf` · arXiv 2108.02445
+
+The sanction for running conduction and radiation together and **adding** them.
+In optically thick media radiation becomes a diffusion with an effective
+conductivity `k_rad = 16σT³/(3β)`, summed with the molecular one:
+`k_total = k_cond + k_rad`. Erik's "radiation as the base neighbour transport,
+conductivity as a material-specific term on top" is this formulation.
+
+**Still not obtained:** Fleck & Cummings 1971 itself (JCP 8(3), paywalled). The
+Wollaber review rederives it in full, so nothing is missing.
+
+### 15. Fleck & Cummings 1971 — the original
+`fleck_cummings1971_implicit_monte_carlo.pdf` · J. Comput. Phys. **8**, 313–342 ·
+30 pp · *(obtained by Erik, 2026-09-13 — it is paywalled at Elsevier)*
+
+**Read in full, and it corrected the design twice over the review that rederives
+it.** Two things are in the original and not in Wollaber:
+
+- **The upper half of the α rule.** The review gives only `α ≥ 0.5`. Fleck gives
+  the other side (p. 317): *"for large values of βcΔtσ, α must be set equal to 1 or
+  else the coefficient of `u_r^n` … will be negative, tending to cause oscillations
+  in the solution from cycle to cycle."* Our group reaches 848 at `T_MAX_PHYS`, so
+  a fixed α = 0.5 admits that mode exactly where the scheme exists to survive.
+  Design v2 §2.8 now uses `α = max(0.5, 1 − 1/g)`.
+- **A measured verdict on the alternative we were weighing.** Of the "semi-implicit"
+  route — solve the local nonlinear material equation directly — he reports it
+  *"does not conserve energy, and energy checks in typical problems may run as high
+  as 20%"*, against effective scattering's *"double advantage of both exact energy
+  conservation and what appears to be unconditional stability."*
+
+Also worth keeping: his motivation for effective scattering is partly that photons
+are re-emitted *from where they were absorbed*, rather than uniformly over the cell
+— i.e. it is a cure for teleportation error as well as for stiffness. And his
+standard for energy conservation is machine precision (*"of the order of 1e-12. For
+larger values than this one should suspect programming errors"*), which our int64
+formulation beats by being exact.
+
+## Added 2026-09-24 (P4, the CUDA twin)
+
+### 16. Koch, Baker & Alcouffe 1992 — the KBA wavefront sweep
+K. R. Koch, R. S. Baker, R. E. Alcouffe, *"Solution of the first-order form of
+the 3-D discrete ordinates equation on a massively parallel processor"*,
+Trans. Am. Nucl. Soc. **65**, 198–199 (1992) · LANL report LA-UR-91-4157
+(CONF-920606-2), ANS annual meeting, Boston, June 1992 ·
+[OSTI record](https://www.osti.gov/biblio/10108750)
+
+**No PDF archived, honestly:** the Transactions item is a two-page meeting
+summary, and OSTI states it holds no digital full text of the LANL report. This
+entry is the placeholder the iron rule allows (the precedent is
+`README_radiation_2026-08.md`), not a fabricated archive.
+
+**Why it is cited.** `cpp/src/cuda_radiation_sweep.cu` parallelises the sweep
+on KBA's principle: a discrete-ordinates sweep is a dependency DAG per
+ordinate, and every cell of one *wavefront* — the anti-diagonal of the step
+transport (the design's "KBA skew"), a column or row of the shear — depends
+only on the previous wavefront, so a wavefront's cells run concurrently and
+the wavefronts in order, with the ordinates pipelined through the same
+wavefront steps. KBA applied this to a 3-D grid decomposed over processors
+(sweeping the undecomposed axis); the twin is the single-device 2-D case: one
+kernel per wavefront index, all 16 ordinates concurrent in it (design v3
+§8.2). The integer arithmetic is untouched by it: the gather form makes the
+order structural (§2.3), so the GPU's integers are the CPU's.
+
+## Added 2026-09-24 (P5c, smoke's heat radiation)
+
+### 17. Widmann, Yang, Smith, Manzello & Mulholland 2003 -- soot in the infrared
+J. F. Widmann, J. C. Yang, T. J. Smith, S. L. Manzello, G. W. Mulholland,
+*"Measurement of the optical extinction coefficients of post-flame soot in the
+infrared"*, Combust. Flame **134** (2003) 119-129 ·
+`widmann2003_post_flame_soot_ir_extinction_nist.pdf` (NIST, public domain;
+tsapps.nist.gov pub_id 911529) · 11 pp, text-extractable.
+
+**Why it is cited.** `config.toml [gases.smoke] heat_absorb` is DERIVED from it:
+the mass-specific extinction of post-flame soot measured by gravimetry and IR
+spectroscopy over 2.8-4.1 um, *"an important region of the electromagnetic
+spectrum for radiant heat transfer in fires"* ("radiative heat transfer within
+fires is dominated by radiation transport over the wavelength range from 2 to 5
+um"). Well-ventilated soot gives K_e = 8.0-9.0 (sigma_s = 1.4 m2/g at 3.5 um),
+roughly constant in lambda -- the Rayleigh 1/lambda law, whose Planck mean at the
+arc's 1263-game fire plateau (1556 K) is 1.894 m2/g. Scattering is negligible in
+the IR, so it is the ABSORPTION a grey, non-scattering engine gas should carry.
+
+### 18. Mulholland & Croarkin 2000 -- the visible cross-check (not archived)
+G. W. Mulholland, C. Croarkin, *"Specific extinction coefficient of flame
+generated smoke"*, Fire Mater. **24** (2000) 227-230,
+doi:10.1002/1099-1018(200009/10)24:5<227::AID-FAM742>3.0.CO;2-9 -- 8.7 +/- 1.1
+m2/g at 632.8 nm across seven studies and 29 fuels. A U.S. Government work, but
+Wiley serves the PDF behind a login (HTTP 403) and NIST's own record carries no
+download, so **no PDF is archived** -- the placeholder the iron rule allows.
+Carried to the same Planck mean by the same 1/lambda law it gives 2.28 m2/g,
+20 % above #17: the visible scattering albedo (~0.19, Mulholland & Choi) that
+#17's IR measurement does not carry, and which #17's own discussion reconciles.
+
+The other two inputs of the derivation are textbook values, cited in place in
+config.toml and not archived: wood's soot yield y_s = 0.015 g/g (red oak, well
+ventilated -- Tewarson, SFPE Handbook of Fire Protection Engineering) and the
+Planck mean of 1/lambda, 360 zeta(5)/pi^4 * T/C2 = 3.8322 T/C2 (Modest,
+*Radiative Heat Transfer*, ch. 11).

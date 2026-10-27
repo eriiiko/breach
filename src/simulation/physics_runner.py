@@ -25,6 +25,7 @@ import numpy as np
 
 import temperature_scale        # P-K2: canonical game-T -> Kelvin map accessor
 from config import CFG
+from simulation import atmosphere_fixed   # #7: the pressure field's Q16 door (atm)
 from simulation import water_fixed   # S1: water_depth Q16.16 quantize helpers
 
 
@@ -86,12 +87,34 @@ FIRE_FUEL_REF       = 60.0   # fallback wall_hp normaliser (superseded, see abov
 # Continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md): o2f is LINEAR
 # in the local O2 mole fraction X = Σn_o2/Σn_total, with an extinction limit.
 FIRE_O2_FRAC_EXT    = 0.13   # X_ext: flame-extinction O2 mole fraction (0 = pure proportional)
-# FULL-RESPONSE REFERENCE SPLIT (2026-07-30): the law's denominator used to be
-# X_amb, so ambient always gave o2f = 1 and the clamp made AMBIENT the ceiling —
-# local O2 enrichment could never register. X_full is the separate reference at
-# which o2f reaches 1 (pure O2); ambient air lands at (0.21-0.13)/(1-0.13)=0.092.
-FIRE_O2_FRAC_FULL   = 1.0    # X_full: full-response reference — NOT ambient, NOT per-map
-FIRE_O2_FRAC_AMB    = 0.21   # X_amb: what the ambient atmosphere IS (per-map: reads [ambient] o2_frac)
+# R1 O2f-RENORMALIZATION (fire session #12, 2026-09-01, docs/fire_3c_design_
+# 2026-09-01.md "Ruling R1"): the SUSTAIN law's span upper reference is now
+# o2_frac_amb (ambient), NOT o2_frac_full (pure O2, the 2026-07-30
+# FULL-RESPONSE REFERENCE SPLIT this superseded on the sustain side only) — so
+# ambient air reads o2f == 1.0 by construction, not the old 0.092. o2_frac_full
+# stays live only on the DEMAND side (combustion.cpp's o2f_j, unchanged).
+FIRE_O2_FRAC_FULL   = 1.0    # X_full: DEMAND-side (combustion.cpp) pure-O2 reference only
+FIRE_O2_FRAC_AMB    = 0.21   # X_amb: what the ambient atmosphere IS (per-map: reads [ambient] o2_frac). R1: NOW LIVE — the sustain law's span upper reference.
+FIRE_O2F_CAP        = 5.0    # NEW (R1): enrichment ceiling on the renormalized sustain o2f ratio
+# R3 hot-burns-faster (fire session #12, 2026-09-06, docs/fire_3c_design_2026-
+# 09-01.md "Ruling R3"): hotf = clamp((T-fire_T_ext)/fire_T_span, 0, hotf_cap)
+# — the SAME ramp as `hot` above, but its ceiling is hotf_cap (10.0) instead
+# of 1, and it is read only by the two RATE sites (combustion.cpp's demand,
+# fire_simulation.cpp's wall-burn) — `hot` itself stays capped at 1 for the
+# sustain gate. Pairs with FIRE_O2F_CAP as the system's other enrichment/
+# overheat ceiling; bound onto BOTH the fire logistic and the combustion
+# solver from this ONE [physics.fire] key (one source of truth, like
+# o2_frac_ext/o2_frac_full/o2_frac_amb above).
+FIRE_HOTF_CAP       = 10.0   # NEW (R3): ceiling on the uncapped-at-1 hotf ramp
+# THE PRESSURE FACTOR (issue #7, Erik's ruling 2026-09-23 — docs/fire_vacuum_
+# pressure_factor_brief_2026-09-23.md): the O2 fraction law is multiplied, at
+# BOTH of its reads, by g = clamp01((p - p_ext)/(p_full - p_ext)) of the
+# materialized pressure `atmosphere`. The two edges are authored in atm
+# ([physics.fire] p_ext_atm / p_full_atm, literature cited there) and quantized
+# ONCE here, at load, through the pressure field's own Q16 door
+# (atmosphere_fixed) onto BOTH solvers — one source of truth, like hotf_cap.
+FIRE_P_EXT_ATM      = 0.1    # no fire at or below this pressure (atm)
+FIRE_P_FULL_ATM     = 0.5    # no pressure effect at or above this pressure (atm)
 FIRE_P_MIN          = 0.60   # RETIRED (see o2_frac_ext/amb) — was the smoothstep low edge
 FIRE_P_FULL         = 1.00   # RETIRED — was the smoothstep full edge
 FIRE_I_MIN          = 0.02   # snap-to-zero extinguish floor
@@ -146,20 +169,13 @@ class PhysicsRunner:
         bp = breach_physics
         self.bp = bp
 
-        # CUDA-S2 LIVE: the fire->heat ray cast (cast_fire_heat) can run on the GPU
-        # when the raycaster backend flag is on (set via bp.set_raycaster_backend,
-        # flipped by tools/run_on_cuda). The flag only EXISTS on the CUDA build —
-        # the CPU build's bindings define no backend setters/getters — so cache a
-        # query that is a constant False on the CPU build. cast_fire_heat reads
-        # this per tick to pick the GPU `cuda_raycaster_cast` per-source path (heat
-        # bit-identical to the CPU cast) vs the default CPU cast_source_directional.
-        _get_ray_backend = getattr(bp, "get_raycaster_backend", None)
-        self._raycaster_on_cuda = (
-            _get_ray_backend if callable(_get_ray_backend) else (lambda: False))
+        # T6 (issue #12): `self._raycaster_on_cuda` — a cached
+        # `bp.get_raycaster_backend` query used only by `cast_fire_heat` to
+        # pick its CPU/GPU dispatch — is deleted with that method.
 
         # EOS P6.9b: the combustion pass can run on the GPU when the combustion
-        # backend flag is on (bp.set_combustion_backend). Same idiom as the
-        # raycaster flag — the setter/getter only EXIST on the CUDA build, so
+        # backend flag is on (bp.set_combustion_backend). Same idiom as every
+        # *_backend flag — the setter/getter only EXIST on the CUDA build, so
         # cache a query that is a constant False on the CPU build. Flag-off
         # (default) is the EXACT prior CPU CombustionSolver.step call.
         _get_comb_backend = getattr(bp, "get_combustion_backend", None)
@@ -189,14 +205,12 @@ class PhysicsRunner:
         self.atmos.absorb_strength = float(
             getattr(CFG.physics, 'wave_absorb_strength', 8.0))
 
-        # SmokeDynamics.
-        self.smoke = self.engine.smoke
-        self.smoke.d_smoke              = float(CFG.physics.d_smoke)
-        self.smoke.advection_rate       = float(CFG.physics.advection_rate)
-        self.smoke.wind_diffusion_scale = float(CFG.physics.wind_diffusion_scale)
-        # (vent_hops / sink_strength binds DELETED — EOS refactor P3,
-        # decisions.md #3: the BFS breach sink-pull is gone; venting is
-        # native to the compressible solver.)
+        # (SmokeDynamics and its three binds -- d_smoke / advection_rate /
+        # wind_diffusion_scale -- are DELETED, smoke transport v2, #12: the
+        # trace planes ride the bulk face flux inside the EOS, and their
+        # diffusion / decay read the [gases.*] table. The dt-bound stability
+        # check of that diffusion is `_check_trace_dt` below.)
+        self._trace_dt_checked = None
 
         # FireSimulation — signed-logistic intensity FEEDBACK (fire_design_proposal
         # §2/§3/§5). Cellular spread is gone: spread is radiation -> heat ->
@@ -243,17 +257,44 @@ class PhysicsRunner:
         self.fire.params.fire_T_ext     = _fp("fire_T_ext", FIRE_T_EXT)
         self.fire.params.fire_T_span    = _fp("fire_T_span", FIRE_T_SPAN)
         self.fire.params.fuel_ref       = _fp("fuel_ref", FIRE_FUEL_REF)
-        # Continuous-O2 law dials. o2_frac_full is the FULL-RESPONSE reference —
-        # the mole fraction at which o2f reaches 1 (pure O2) — and is deliberately
-        # NOT per-map: it is a physical reference, not an atmosphere. o2_frac_amb
-        # IS a per-MAP value (the level's authored [ambient] o2_frac); bound to the
-        # 0.21 fallback here and refreshed per-map in _ambient_args when an ambient
-        # config is present. Since the split, o2_frac_amb is no longer read by
-        # either O2 law (fire logistic / combustion) — it stays as the ambient
-        # record other systems and levels rely on.
+        # Continuous-O2 law dials. o2_frac_full is the DEMAND-side (combustion.py
+        # o2f_j) pure-O2 reference — and is deliberately NOT per-map: it is a
+        # physical reference, not an atmosphere. o2_frac_amb IS a per-MAP value
+        # (the level's authored [ambient] o2_frac); bound to the 0.21 fallback
+        # here and refreshed per-map in _ambient_args when an ambient config is
+        # present. R1 (fire session #12, docs/fire_3c_design_2026-09-01.md
+        # "Ruling R1"): o2_frac_amb is now LIVE on the SUSTAIN law (the fire
+        # logistic's span upper reference) — it is no longer merely the ambient
+        # record; o2f_cap is the NEW enrichment-ceiling dial that replaces the
+        # old [0,1] clamp on that renormalized sustain o2f.
         self.fire.params.o2_frac_ext    = _fp("o2_frac_ext", FIRE_O2_FRAC_EXT)
         self.fire.params.o2_frac_full   = _fp("o2_frac_full", FIRE_O2_FRAC_FULL)
         self.fire.params.o2_frac_amb    = _fp("o2_frac_amb", FIRE_O2_FRAC_AMB)
+        self.fire.params.o2f_cap        = _fp("o2f_cap", FIRE_O2F_CAP)
+        # R3 (docs/fire_3c_design_2026-09-01.md "Ruling R3"): the hotf ramp's
+        # ceiling — read by the wall-burn destruction term below and by
+        # combustion.py's demand (bound onto self.combustion further down,
+        # from this SAME [physics.fire] key).
+        self.fire.params.hotf_cap       = _fp("hotf_cap", FIRE_HOTF_CAP)
+        # THE PRESSURE FACTOR's edges (issue #7). Authored in atm, validated,
+        # then quantized ONCE through the pressure field's own Q16 door so they
+        # land in exactly the unit of the `atmosphere` plane they are compared
+        # against (door 2). Bound onto the fire logistic here and onto the
+        # combustion claim gate further down — the SAME two integers.
+        p_ext_atm = _fp("p_ext_atm", FIRE_P_EXT_ATM)
+        p_full_atm = _fp("p_full_atm", FIRE_P_FULL_ATM)
+        if not (0.0 <= p_ext_atm < p_full_atm):
+            raise ValueError(
+                f"[physics.fire] p_ext_atm = {p_ext_atm}, p_full_atm = "
+                f"{p_full_atm}: the O2 law's pressure factor needs "
+                f"0 <= p_ext_atm < p_full_atm (a fire cannot live at or below "
+                f"p_ext_atm and is unaffected at or above p_full_atm; an empty "
+                f"span would silently turn the linear ramp into a step). See "
+                f"docs/fire_vacuum_pressure_factor_brief_2026-09-23.md.")
+        self._p_ext_q = int(atmosphere_fixed.quantize_scalar(p_ext_atm))
+        self._p_full_q = int(atmosphere_fixed.quantize_scalar(p_full_atm))
+        self.fire.params.p_ext_q        = self._p_ext_q
+        self.fire.params.p_full_q       = self._p_full_q
         # P_min/P_full RETIRED from the sustain law (continuous-O2 law); left
         # wired so old configs/bindings that still set them do not hard-error.
         self.fire.params.P_min          = _fp("P_min", FIRE_P_MIN)
@@ -285,24 +326,10 @@ class PhysicsRunner:
         self.temperature = self.engine.temperature
         thermal = getattr(CFG.physics, "thermal", None)
         self.temperature.no_face = int(getattr(thermal, "NO_FACE", 63))
-        # Ambient cooling dials (§3.3): interior vs vacuum-exposed decay shifts
-        # and the atmosphere threshold below which a 4-neighbour counts as
-        # space-facing. Bound from config so the burn-out tuning lives in one
-        # place. Cooling relaxes ΔT toward 0 (T_ambient == 0): T -= T >> shift.
-        # COOL-SHIFT AXIS (2026-07-30): the decay shift itself is now a
-        # PER-MATERIAL column projected to `GameMap.cool_shift` and handed to
-        # step_tail below. These two globals keep two live jobs: `cool_shift`
-        # is the solver's fallback when no per-tile grid is supplied, and the
-        # PAIR defines the vacuum-exposure discount as an OFFSET
-        # (cool_shift - cool_shift_vacuum) applied to every material's own
-        # shift — so "space sheds 4x faster" stays one rule and each material
-        # keeps exactly ONE dial. `cool_shift_floor` clamps that subtraction;
-        # it is the SAME SHIFT_MIN the material loader validates the column
-        # against, bound from the one config key so the two can never disagree.
-        self.temperature.cool_shift = int(getattr(thermal, "COOL_SHIFT", 5))
-        self.temperature.cool_shift_vacuum = int(
-            getattr(thermal, "COOL_SHIFT_VACUUM", 3))
-        self.temperature.cool_shift_floor = int(getattr(thermal, "SHIFT_MIN", 2))
+        # T5b step 7 / thermal model v2 R1: the three `cool_shift*` binds
+        # stood here. Pass 3 is deleted on both backends -- the sweep
+        # computes the real radiative loss, so a hand-rolled Newtonian
+        # relaxation beside it counted the same physics twice.
         self.temperature.o2_vacuum_thresh = float(
             getattr(thermal, "o2_vacuum_thresh", 0.3))
         # EOS refactor P2 (docs/eos_refactor_design.md §4, §9): gas-T dials —
@@ -325,88 +352,134 @@ class PhysicsRunner:
         self._t_max_phys = float(getattr(thermal, "T_MAX_PHYS", 16000.0))
         self.temperature.T_MAX_PHYS = self._t_max_phys
 
-        # --- K2: sim-side fire heat ray source (proposal §1) ------------------
-        # Fire is a DETERMINISTIC heat source cast IN THE SIM (not the renderer).
-        # Each burning tile becomes a short-range heat `LightSource`; we cast the
-        # whole fire source list with the C++ raycaster into `gmap.heat` at the
-        # START of step(), BEFORE the TemperatureSolver, so this tick's fire heat
-        # converts to temperature this same tick. Heat-only: we pass scratch light
-        # buffers (the render glow is a separate later step) and `heat_atten` so
-        # the deposit is occluded per K1 (a wall blocks the fire's heat beyond it).
-        #
-        # Own Raycaster instance (headless — the renderer owns a separate one for
-        # the light pass; this one only ever fills `heat`). Determinism: fixed
-        # ray count, fixed angles (no jitter / RNG), fixed row-major source
-        # order, integer saturating-add. P-R1 (2026-07-31): the per-tile source
-        # build that used to run here in Python now lives in C++
-        # (Raycaster.cast_from_fire_plane / cuda_raycaster_cast_from_fire_plane,
-        # see cast_fire_heat below) — coarse_cluster died with the orphaned
-        # update_from_fire path it only ever fed (no production caller).
-        self.raycaster = self.engine.raycaster
+        # T6 (issue #12) deleted the fire-plane heat cast (proposal §1's K2);
+        # ray-engine-v2 P6c deleted the Raycaster itself (design v3 §4.4) with
+        # the render march that was its last user. Its three emission dials
+        # were only ever the E° table's, and the table has ONE owner now:
+        # `self.engine.emissive` (cpp/src/emissive_table.h), fed below.
         fire_cfg = getattr(CFG.physics, "fire", None)
         # k_fire_heat TOMBSTONE (P-R4, 2026-08-01 — ruling A1): the painter is
-        # dead. There is no per-tile one-way heat payload any more; a fire's
-        # radiant transport is the antisymmetric net-T⁴ exchange below, whose
-        # magnitude is set by `rad_scale` (the E° bake) and by the emitters'
-        # own temperatures. Nothing reads the config key; it survives only as a
-        # config comment so an old config does not hard-error.
+        # dead. Nothing reads the config key; it survives only as a config
+        # comment so an old config does not hard-error.
         #
-        # P-R4 dials (ruling A1.3 / A1.8), both LIVE on the raycaster:
-        #   rad_scale   — the E° bake's emission calibration (heat counts per
-        #                 K⁴, with σ / the 0.833 m² face / dt / the game↔Kelvin
-        #                 mapping folded in). Setting it re-bakes the table.
-        #   T_emit_gate — the temperature at which a NON-burning thermal solid
-        #                 also starts CASTING (i.e. can radiatively lose heat).
-        #                 Receivers are free: a cold crate is heated correctly
-        #                 on the flame's rays whatever this is.
-        self.raycaster.rad_scale = float(getattr(fire_cfg, "rad_scale", 1.0e-5))
         # P-K2: the canonical game-T -> Kelvin map (design §2/§3a), read via
         # the accessor rather than CFG directly so the phi_exp/eos_slope
         # load-time assert (temperature_scale._assert_invariants) always
         # runs on this path too. K(t) is baked from these below.
         _ts = temperature_scale.load(CFG)
-        self.raycaster.kelvin_ambient = float(_ts.kelvin_ambient)
-        self.raycaster.k_temp_to_kelvin = float(_ts.k_temp_to_kelvin)
-        self.raycaster.T_emit_gate = float(getattr(fire_cfg, "T_emit_gate", 180.0))
-        # P-F1a / v7 rule 4: RADIATION_RANGE — the emission ray's reach. A
-        # STABILITY-CLASS constant, not a feel dial: at or above the grid
-        # diagonal, reach-termination can never precede the world edge, so
-        # "genuinely escapes" == "left the world" and the corridor leak is
-        # structurally impossible. Below the floor the books stop closing, so
-        # this is a HARD ERROR rather than a clamp — a silently-corrected
-        # stability constant is exactly the kind of thing that gets shipped.
-        _rad_range = float(getattr(fire_cfg, "RADIATION_RANGE", 320.0))
-        _rad_floor = float(self.raycaster.RADIATION_RANGE_MIN)
-        if _rad_range < _rad_floor:
+        rad_cfg = getattr(CFG.physics, "radiation", None)
+        # Ray-engine-v2 P1 (design v3 §2.6): the E° table's owner, the engine's
+        # `emissive` — ONE bake implementation (cpp/src/emissive_table.cpp),
+        # and since P6c ONE owner (the Raycaster's vestigial second copy went
+        # with the class; tests/test_emissive_table.py holds this one to the
+        # integer reference's bake).
+        #
+        # P2b (design v3 §9) / T6 (issue #12): the two owners used to carry
+        # DIFFERENT scales on purpose — the old cast fed the live fold from
+        # the FITTED `[physics.fire] rad_scale` (so no golden moved while the
+        # sweep ran in shadow on the DERIVED `[physics.radiation]
+        # rad_scale_derived`); T5b's flip repointed the fold at the sweep, and
+        # T6 deletes the old cast and its config key with it — one key again.
+        #
+        # The derived value is σ·A_rad·Δt / J_per_count with the currency pinned
+        # on the furniture row's real heat capacity; the derivation, its two
+        # stated assumptions and their sensitivities are in the config comment
+        # and in docs/ray_engine_v2_scheme_study_2026-09-13/report_p2b.md.
+        _rad_scale_derived = float(getattr(rad_cfg, "rad_scale_derived",
+                                           2.125632e-08))
+        if not (_rad_scale_derived > 0.0):
             raise ValueError(
-                f"[physics.fire] RADIATION_RANGE = {_rad_range} is below the "
-                f"floor {_rad_floor} (the grid diagonal of the largest shipping "
-                f"level, 128x256 -> 286.22). An emission ray that expires before "
-                f"the world edge charges its residual to nobody, which reopens "
-                f"the corridor leak the v7 rule-4 range floor exists to close. "
-                f"Raise the key; it is not a feel dial.")
-        self.raycaster.radiation_range = _rad_range
-        self.raycaster.bake_emissive_table()
-        self.fire_ray_count = int(getattr(fire_cfg, "fire_ray_count", 8))
-        self.fire_range_base = float(getattr(fire_cfg, "range_base", 2.0))
-        self.fire_range_per_i = float(getattr(fire_cfg, "range_per_intensity", 3.0))
-        self.fire_intensity_base = float(getattr(fire_cfg, "intensity_base", 0.3))
-        self.fire_intensity_per_i = float(
-            getattr(fire_cfg, "intensity_per_intensity", 0.7))
-        col = getattr(fire_cfg, "color", [1.0, 0.45, 0.12])
-        self.fire_color = (float(col[0]), float(col[1]), float(col[2]))
-        # Throwaway light buffers for the heat-only cast. The march REQUIRES
-        # light_rgb / light_dx / light_dy (it writes the RGB/direction channels
-        # unconditionally), but fire's visual glow is a later step, so we discard
-        # them. Allocated lazily on first cast (we don't know the grid size here)
-        # and zeroed each pass so the discarded float accumulators can't grow
-        # unbounded over a long session. `smoke_glow` is passed as None (skip).
-        self._fire_scratch_rgb = None
-        self._fire_scratch_dx = None
-        self._fire_scratch_dy = None
-        # S2b: dequantized-gas float scratch for the fire-light heat cast (the
-        # raycaster's gas optics are float; gmap.gas is int32 Q16.16). Lazy alloc.
-        self._fire_gas_f = None
+                f"[physics.radiation] rad_scale_derived = {_rad_scale_derived} "
+                f"must be strictly positive: it is the SWEEP's E° bake scale, "
+                f"and a non-positive one bakes a table that is not increasing "
+                f"in T, which is the precondition E°⁻¹'s binary lifting needs "
+                f"(design v3 §2.6).")
+        self.engine.emissive.rad_scale = _rad_scale_derived
+        self.engine.emissive.kelvin_ambient = float(_ts.kelvin_ambient)
+        self.engine.emissive.k_temp_to_kelvin = float(_ts.k_temp_to_kelvin)
+        self.engine.emissive.bake()
+        # [physics.radiation] k_leak (design v3 §2.3, §2.7): the sweep's
+        # UNIFORM out-of-plane leak coefficient — LIVE at the derived 2.5 m
+        # deck value since T1 (thermal model v2 R2). Range-checked [0, 1] and
+        # quantized ONCE here, door 2, through the optics boundary module; the
+        # engine takes the Q16 value.
+        _k_leak = float(getattr(rad_cfg, "k_leak", 0.0))
+        if not (0.0 <= _k_leak <= 1.0):
+            raise ValueError(
+                f"[physics.radiation] k_leak = {_k_leak} is outside [0, 1]: it is "
+                f"the fraction of each ordinate's stream that leaves the plane "
+                f"per cell (design v3 section 2.3's `0 <= k <= ONE` invariant)")
+        from simulation import optics_fixed as _optics_fx
+        self.k_leak_q = int(_optics_fx.quantize_scalar(_k_leak))
+        # ray-engine-v2 P6b: the light channels' two render-state inputs (the
+        # cone emitters and the sky, set by the game's renderer -- never by a
+        # headless run) and a serial the renderer watches to know when the
+        # light planes hold a new field (a light-carrying tick or a relight).
+        self.light_cones = None
+        self.light_sky = None
+        self.light_serial = 0
+        # ray-engine-v2 P6d (design v3 §2.4; brief decision 1): the light
+        # channels' TRANSPORT, permanently a config setting. "shear for heat,
+        # step for light" was Erik's original per-channel choice, not a
+        # physical law -- the sweep already carries both as a parameter on
+        # light (gate 18), so trying shear is this one config edit + a
+        # restart, never a C++ rebuild or a key (decision 2: no key). Door 2
+        # -- exactly "step" or "shear" -- bound ONCE here onto
+        # PhysicsEngine.light_transport, which run_sweep_ reads at the one
+        # sweep invocation (step_tail and relight(), both backends). Heat's
+        # own transport is not this key; it stays TRANSPORT_SHEAR, unaffected.
+        light_cfg = getattr(CFG, "light", None)
+        _light_transport = str(getattr(light_cfg, "transport", "step"))
+        _LIGHT_TRANSPORTS = {"step": bp.RadiationSweep.STEP,
+                             "shear": bp.RadiationSweep.SHEAR}
+        if _light_transport not in _LIGHT_TRANSPORTS:
+            raise ValueError(
+                f"[light] transport = {_light_transport!r} is not a light "
+                f"transport: must be exactly \"step\" or \"shear\" "
+                f"(RadiationSweep.STEP / .SHEAR, design v3 section 2.4). "
+                f"Light is the only configurable transport here -- heat's "
+                f"stays TRANSPORT_SHEAR.")
+        self.engine.light_transport = _LIGHT_TRANSPORTS[_light_transport]
+        # [physics.radiation] vacuum_ambient_K (thermal model v2 R3): the
+        # temperature of SPACE, baked into the EMISSIVE LEVEL a vacuum cell
+        # radiates against. Door 2 — one load-time conversion, here, through
+        # the SAME exact chain emissive_table.cpp's bake uses (K⁴ by repeated
+        # integer multiplication, ONE rad_scale boundary multiply, round half
+        # up), so the default lands on e_table[0] integer for integer instead
+        # of near it. The engine does the per-cell select from `is_vacuum`;
+        # this is a global physical constant, not a per-tile authored field.
+        _vac_k = float(getattr(rad_cfg, "vacuum_ambient_K",
+                               float(self.engine.emissive.kelvin_ambient)
+                               + 2.0 * float(self.engine.emissive.k_temp_to_kelvin)))
+        if _vac_k < 0.0 or _vac_k != float(int(_vac_k)):
+            raise ValueError(
+                f"[physics.radiation] vacuum_ambient_K = {_vac_k} must be a "
+                f"non-negative WHOLE number of Kelvin: it is baked through the "
+                f"exact int64 E° chain, whose precondition is integer-valued "
+                f"Kelvin dials (emissive_table.cpp:42-48)")
+        _k_i = int(_vac_k)
+        # #78: the level is an E° value, so it is baked in the TABLE'S currency
+        # -- read from the engine's table every time it is asked for (the
+        # `rad_amb_vacuum_q` property below), never a copy of k, so the level
+        # and the table can never be in two currencies.
+        self._vac_k4 = _k_i * _k_i * _k_i * _k_i
+        self._vac_rad_scale = _rad_scale_derived
+        self._vac_level_cache = (None, 0)
+        _e0 = int(self.engine.emissive.table()[0])
+        if self.rad_amb_vacuum_q > _e0:
+            raise ValueError(
+                f"[physics.radiation] vacuum_ambient_K = {_vac_k} bakes to "
+                f"level {self.rad_amb_vacuum_q}, above E°[0] = {_e0}: the "
+                f"per-cell ambient invariant is 0 <= amb <= E°[0], which is "
+                f"what keeps every cell's emission excess non-negative "
+                f"(design v3 §2.8's excess form rests on it). A deck above at "
+                f"furnace temperature is a design §7.4 extension point, not a "
+                f"dial")
+        # T6 (issue #12): `fire_ray_count`/`fire_range_base`/`fire_range_per_i`/
+        # `fire_intensity_base`/`fire_intensity_per_i`/`fire_color` (the old
+        # cast's per-source dial bindings) and the `_fire_scratch_*`/
+        # `_fire_gas_f` throwaway-cast buffers are deleted with cast_fire_heat,
+        # their one consumer.
 
         # EOSSolver (EOS refactor P3, docs/eos_refactor_design.md §3): the
         # compressible Kwatra pressure-evolution solver. REPLACES the
@@ -451,9 +524,10 @@ class PhysicsRunner:
         self.eos.CFL_ADV        = _ep("CFL_ADV", self.eos.CFL_ADV)
         self.eos.N_FLOOR_SOLVER = _ep("N_FLOOR_SOLVER", self.eos.N_FLOOR_SOLVER)
         # P-K3: [physics.eos] no longer carries t_amb_k/C — both are read via
-        # the canonical accessor (_ts, loaded above for the raycaster's
-        # kelvin map). eos_t_amb_k stays 290 (ruling 6, a deliberate exception
-        # to kelvin_ambient); S_EOS is the phi_exp*k_temp_to_kelvin slope
+        # the canonical accessor (_ts, loaded above for the emissive table's
+        # kelvin map). G12 (issue #12, docs/fire_g12_one_map_patch_2026-08-31.md)
+        # dissolved ruling 6's exception: eos_t_amb_k now equals kelvin_ambient
+        # (293, was 290); S_EOS is the phi_exp*k_temp_to_kelvin slope
         # mechanism, value-frozen to 1.0 exactly this arc (byte-identical).
         self.eos.T_AMB_K        = float(_ts.eos_t_amb_k)
         self.eos.C              = float(_ts.C)
@@ -592,6 +666,22 @@ class PhysicsRunner:
             getattr(fire_cfg_c, "o2_frac_amb", FIRE_O2_FRAC_AMB))
         self.combustion.o2_thresh_burn = _cp(
             "o2_thresh_burn", self.combustion.o2_thresh_burn)
+        # R3 hot-burns-faster (fire session #12, docs/fire_3c_design_2026-09-
+        # 01.md "Ruling R3"): the demand-side hotf ramp's dials — the SAME
+        # [physics.fire] keys self.fire.params.fire_T_ext/fire_T_span/hotf_cap
+        # bind above (one source of truth, the o2_frac_ext/full/amb precedent
+        # just above this block).
+        self.combustion.fire_T_ext = float(
+            getattr(fire_cfg_c, "fire_T_ext", FIRE_T_EXT))
+        self.combustion.fire_T_span = float(
+            getattr(fire_cfg_c, "fire_T_span", FIRE_T_SPAN))
+        self.combustion.hotf_cap = float(
+            getattr(fire_cfg_c, "hotf_cap", FIRE_HOTF_CAP))
+        # THE PRESSURE FACTOR (issue #7): the claim gate's edges are the SAME two
+        # integers the fire logistic got above (validated + quantized once
+        # there) — one law, two reads, one source of truth.
+        self.combustion.p_ext_q = self._p_ext_q
+        self.combustion.p_full_q = self._p_full_q
         # --- o2_potency: THE SIZING RULING's preserved option ----------------
         # Erik's sizing ruling (2026-08-02) shipped PACKAGE A — draw_r = 2, NO
         # potency now — but ruled potency PRESERVED as an explicit option rather
@@ -616,7 +706,16 @@ class PhysicsRunner:
                 f"[physics.combustion] o2_potency = {self._o2_potency} must be "
                 f"> 0 (it multiplies the heat-per-O2 constants; zero or negative "
                 f"would mean a fire that consumes oxygen and yields no heat).")
-        self.combustion.H_fuel = _cp("H_fuel", self.combustion.H_fuel) * self._o2_potency
+        # T5a: H_fuel is a SPLIT constant now (H_FUEL_M * 2^H_FUEL_SHIFT), the
+        # same shape H_BED_M/H_BED_SHIFT has — its derived value (7.6e6) does
+        # not fit the Q16.16 mantissa a bare `H_fuel` was quantized into.
+        # o2_potency lands on the MANTISSA, exactly as it does for H_bed below
+        # (the shift is a pure power of two and stays put), so potency 1.0 is
+        # again an exact IEEE identity and bakes bit-identical constants.
+        self.combustion.H_FUEL_M = (
+            _cp("H_FUEL_M", self.combustion.H_FUEL_M) * self._o2_potency)
+        self.combustion.H_FUEL_SHIFT = int(
+            getattr(comb_cfg, "H_FUEL_SHIFT", self.combustion.H_FUEL_SHIFT))
         self.combustion.soot_yield = _cp("soot_yield", self.combustion.soot_yield)
         # v2.5 (P5.1 stoichiometric fuel consumption, design §5 v2.5 /
         # decisions #17): wall_hp consumed per unit N_O2 burned — THE
@@ -680,8 +779,9 @@ class PhysicsRunner:
         # outs and the tick is bit-identical to before water existed.
         self.water = self.engine.water
         self._bind_water_params()
-        # Previous-tick water-depth snapshot (lazy alloc, the _fire_scratch_*
-        # pattern). Semantics (plan W2 numerics-review fix): the depth at the
+        # Previous-tick water-depth snapshot (lazy alloc: None until the first
+        # tick that needs it, since the grid size isn't known here).
+        # Semantics (plan W2 numerics-review fix): the depth at the
         # END of the previous tick's water accounting — NOT a copy taken this
         # tick — so FieldEdit dumps (flushed before physics) and source holds
         # are each counted EXACTLY ONCE by the W3 displacement accounting.
@@ -748,6 +848,23 @@ class PhysicsRunner:
     # ------------------------------------------------------------------
     # Per-tick step
     # ------------------------------------------------------------------
+    def _check_trace_dt(self, gmap, sim_time):
+        """Refuse a tick whose dt makes the trace diffusion unstable.
+
+        Smoke transport v2 (#12, design §2.2): ``4 * quantize(d * dt) <= ONE``
+        per trace gas, the engine's own integer fold. The gases door checked
+        it at the configured tick rate; this is the re-check where dt is
+        actually bound (a different ``sim_time`` -- warp, a test's own dt --
+        could break it). Cached on (table, dt), so a steady clock pays once."""
+        key = (id(gmap.gases), float(sim_time))
+        if self._trace_dt_checked == key:
+            return
+        from simulation.gases import check_trace_diffusion_stable
+        check_trace_diffusion_stable(gmap.gases.names, gmap.gases.diffusion,
+                                     gmap.gases.conservative, float(sim_time),
+                                     "PhysicsRunner.step")
+        self._trace_dt_checked = key
+
     def step(self, gmap, sim_time, tick=0):
         """Advance all physics by ``sim_time`` seconds.
 
@@ -768,22 +885,24 @@ class PhysicsRunner:
         # MULTIPLIED transfer tax); EOS + combustion + the tail are bracketed
         # (one D2H/H2D each). With residency off this branch is never taken and
         # CuPy is never imported.
+        # Smoke transport v2 (#12, design §2.2): the trace diffusion's
+        # stability, re-checked on the integer at the dt this tick binds.
+        self._check_trace_dt(gmap, sim_time)
+        # #88 P2 (design §5.1, critique B7): the counted saturation's books and
+        # the trace mint book are PER TICK, reset HERE -- at the head of the
+        # physics step, before the W5 puff / W3 receiver add (_step_water) that
+        # write them, which run BEFORE EOSSolver.step (whose entry resets only
+        # vent / wipe / sink / decay). Both the normal and the resident tick
+        # pass through this line.
+        self.eos.reset_trace_sat_books(int(gmap.gas.shape[0]))
         if _RESIDENCY_ENABLED and getattr(self.bp, "HAS_CUDA", False):
             return self._step_resident(gmap, sim_time, tick=tick)
 
-        # K2: cast the fire heat pass FIRST — at the very START of the physics
-        # step, BEFORE the atmosphere/smoke loop and BEFORE the TemperatureSolver
-        # below. Each burning tile deposits HEAT into `gmap.heat` (Q16.16,
-        # saturating-add, occluded by `heat_atten`); the TemperatureSolver then
-        # converts THIS tick's fire heat to temperature, conducts and cools it,
-        # and the downstream consumers (ignition, unit damage in Simulation.step)
-        # read the resulting temperature/heat. Per-tick order becomes:
-        #   fire heat pass -> heat buffer -> temperature convert -> conduction
-        #   -> cooling -> {ignition, unit-damage} -> ... -> clear heat.
-        # ADDITIVE / de-risked: the render-side ray pass (cold sources -> ~0 heat)
-        # is untouched, so there is no double-count; the cellular fire spread
-        # (self.fire.step below) keeps running unchanged.
-        self.cast_fire_heat(gmap, tick=tick)
+        # T6 (issue #12): the K2 fire-heat cast (cast_fire_heat) that used to
+        # run here, FIRST, before the atmosphere/smoke loop and the
+        # TemperatureSolver, is deleted — since the flip (T5b step 6) fire's
+        # radiant heat is the radiation sweep, step 2b of step_tail (PhysicsEngine::
+        # step_tail / radiation_sweep.h), not a separate Python-side pass.
 
         # Water layer (engine/07 §2, water plan W2/W3): pour / flow / settle
         # the standing-water field ONCE per tick, before the atmosphere loop —
@@ -801,8 +920,9 @@ class PhysicsRunner:
         # internal advection-substep loop (self-advect u, advect T, donor-cell
         # O2/N2 flux every substep, substepped compression work), then the
         # Helmholtz solve ONCE per tick, then the velocity correction. The
-        # TRACE gas planes advect ONCE per tick afterward (on the solver's
-        # final wind), inside run_substeps itself. `gmap.wave_p` is now the
+        # TRACE gas planes ride the bulk face flux inside every substep and
+        # get their once-per-tick tail (diffusion, stranded zeroing, decay)
+        # inside run_substeps itself (smoke transport v2, #12). `gmap.wave_p` is now the
         # repurposed P_prev buffer (see eos_solver.h); the smoke breach-sink
         # BFS field is GONE (native venting replaces it — decisions.md #3).
         # dx lazy-binds from the level's tile size every tick (cheap; mirrors
@@ -908,13 +1028,7 @@ class PhysicsRunner:
             # (permeable but thermally solid) holds an object temperature
             # instead of gas the plume advects away.
             gmap.thermal_solid,
-            # COOL-SHIFT AXIS (2026-07-30): the per-tile ambient-decay shift
-            # (`T -= T >> cool_shift[i]`), the LOSS-side twin of the
-            # heat_inv_shift above. Per-material because the thermal-mass arc
-            # made furniture a thermal solid whose ONLY loss channel is this
-            # decay, and one global cannot be right for a hull plate and a
-            # wooden crate at once.
-            gmap.cool_shift,
+            # T5b step 7 / R1: `gmap.cool_shift` was passed here.
             # FUEL-FRACTION AXIS (2026-07-30): the per-tile reciprocal of each
             # tile's material's OWN full-health hp, which the fire logistic's
             # fuel term F = clamp01(wall_hp/hp_full) reads. Per-material because
@@ -932,15 +1046,54 @@ class PhysicsRunner:
             gmap.fire_T_ext_plane,
             gmap.gas, gmap.gases.conservative, self._o2_idx,
             sim_time,
+            # Ray-engine-v2 (design v3 §11): the radiation sweep — step 2b of
+            # the tail runs the directional sweep on the two Q16 extinction
+            # planes into the four int64 sweep planes. LIVE since T5b: the
+            # temperature pass's fold reads `rad_net_sweep` below, not the old
+            # cast's `rad_net` (T6 deletes the cast). Required, not defaulted,
+            # so the live engine can never silently skip the sweep.
+            heat_atten_q=gmap.heat_atten_q,
+            dyn_heat_atten_q=gmap.dyn_heat_atten_q,
+            rad_net_sweep=gmap.rad_net_sweep,
+            rad_flux_sweep=gmap.rad_flux_sweep,
+            rad_amb_sweep=gmap.rad_amb_sweep,
+            rad_fluence=gmap.rad_fluence,
+            # ray-engine-v2 P5a (design v3 §6.3): SMOKE ABSORBS HEAT — the
+            # per-gas heat_absorb column; the sweep reads the smoke term on
+            # every gas cell from gmap.gas and the bulk sum step_tail builds.
+            # Since P5c smoke absorbs (its derived [gases.smoke] value) and the
+            # temperature fold's gas branch lands what it absorbs; only the
+            # smoke plane is read (a zero coefficient's plane never is).
+            gas_heat_absorb_q16=gmap.gases.heat_absorb_q16,
+            # ray-engine-v2 P6a (design v3 §7): THE LIGHT CHANNELS' planes and
+            # the gas table's two light columns. Handed every tick, READ by the
+            # engine only while its light is requested (PhysicsEngine.
+            # light_requested, default False -- the live game and headless
+            # training compute no light, §7.1); the sweep then writes
+            # light_q / light_flux_q / light_glow on the same traversal.
+            light_atten_q=gmap.light_atten_q,
+            dyn_light_atten_q=gmap.dyn_light_atten_q,
+            light_q=gmap.light_q,
+            light_flux_q=gmap.light_flux_q,
+            light_glow=gmap.light_glow,
+            gas_light_absorb_q16=gmap.gases.light_absorb_q16,
+            gas_light_glow_q16=gmap.gases.light_glow_q16,
+            # P6b: the cone emitters and the sky (set_light_cones /
+            # set_light_sky; None = none / the dark ring), read only while
+            # light is requested.
+            light_cones=self.light_cones, light_sky=self.light_sky,
+            k_leak_q=self.k_leak_q,
+            # thermal v2 R3: the level a VACUUM cell radiates against; the
+            # engine selects it per cell from `is_vacuum` (derive_ambient).
+            rad_amb_vacuum_q=self.rad_amb_vacuum_q,
             # BC: the ambient ring is wiped to ΔT=0 in the temperature pre-pass
             # (the vacuum-breach idiom); None on space maps = byte-identical.
             is_ambient=amb[0],
-            # P-R4 (ruling A1.7): the SIGNED radiation accumulator the
-            # fire-plane cast filled at the TOP of this same tick. The
-            # temperature pass folds it FIRST in Pass 1 (before the heat
-            # deposit), through each tile's own heat_inv_shift — so a tile's
-            # radiative GAIN and its emitter's matching LOSS both convert this
-            # tick, on one scale, with no painter in sight.
+            # T6 (issue #12): the fire-plane cast that used to fill `rad_net`
+            # here is deleted, and the fold no longer reads this argument — it
+            # reads the sweep's own `rad_net_sweep` above instead. `rad_net`
+            # is passed on anyway (cpp/src/physics_engine.h defaults it to
+            # nullptr): a recorded dead argument, not a load-bearing one.
             rad_net=gmap.rad_net,
             # gas-energy conservation arc #54 P-G1b (design §2.7 row 3): the
             # CONSERVED energy field. With it supplied, the temperature pass's
@@ -971,6 +1124,8 @@ class PhysicsRunner:
         # wrote would vanish unbooked). `refresh_gas_energy` survives as the
         # level-load initialiser only.
 
+        if self.engine.light_requested:
+            self.light_serial += 1          # P6b: a new light field for the renderer
         return destroyed
 
     # ------------------------------------------------------------------
@@ -995,7 +1150,8 @@ class PhysicsRunner:
                 ignition_temp_q16,
                 sim_time, self.temperature.c_v, self.temperature.n_floor_heat,
                 self.combustion.burn_rate, self.combustion.o2_thresh_burn,
-                self.combustion.H_fuel, self.combustion.soot_yield,
+                self.combustion.H_FUEL_M, self.combustion.H_FUEL_SHIFT,
+                self.combustion.soot_yield,
                 self.combustion.fuel_per_o2,
                 self.combustion.o2_frac_ext, self.combustion.o2_frac_full,
                 self.combustion.T_MAX_PHYS,
@@ -1016,6 +1172,25 @@ class PhysicsRunner:
                 self._draw_r,
                 gmap.dyn_permeability,
                 int(gmap.dem_acc.shape[0]),
+                # R3 hot-burns-faster (docs/fire_3c_design_2026-09-01.md
+                # "Ruling R3"): the demand-side hotf ramp's dials + the SAME
+                # per-material T_ext plane the fire logistic reads.
+                self.combustion.fire_T_ext, self.combustion.fire_T_span,
+                self.combustion.hotf_cap,
+                gmap.fire_T_ext_plane,
+                # R14's fuel half (thermal model v2, T5b): the per-material
+                # fuel exchange rate, derived from each row's own combustible
+                # mass. The scalar `self.combustion.fuel_per_o2` above is now
+                # only the fallback for a caller with no plane.
+                gmap.fuel_per_o2_plane,
+                # THE PRESSURE FACTOR (issue #7): the materialized pressure the
+                # EOS just wrote (the same `atmosphere` the CPU branch reads) +
+                # the edges, passed explicitly to the free function.
+                atmosphere=gmap.atmosphere,
+                p_ext_q=self.combustion.p_ext_q,
+                p_full_q=self.combustion.p_full_q,
+                # #88 P2: the soot mint books into the EOS's trace books.
+                eos=self.eos,
             )
         else:
             self.combustion.step(
@@ -1076,6 +1251,24 @@ class PhysicsRunner:
                 gmap.gas_energy,
                 gmap.is_ambient,
                 self._eos_t_amb_raw(),
+                # R3 hot-burns-faster (docs/fire_3c_design_2026-09-01.md
+                # "Ruling R3"): the SAME per-material T_ext plane the fire
+                # logistic reads (self.combustion.fire_T_ext/fire_T_span/
+                # hotf_cap are already bound onto the solver instance at
+                # init, read internally by CombustionSolver::step).
+                gmap.fire_T_ext_plane,
+                # R14's fuel half (thermal model v2, T5b) — the CPU twin of the
+                # CUDA call above.
+                gmap.fuel_per_o2_plane,
+                # THE PRESSURE FACTOR (issue #7): the claim gate reads the
+                # materialized pressure P that the EOS wrote this tick (combustion
+                # runs after run_substeps, in both the normal and the resident
+                # tick — the resident path D2H's `atmosphere` first). The edges
+                # are the solver's own p_ext_q / p_full_q, bound at init.
+                gmap.atmosphere,
+                # #88 P2: the soot mint books into the EOS's trace books
+                # (attempted mint, saturation clip, negative hits).
+                eos=self.eos,
             )
 
     # ------------------------------------------------------------------
@@ -1103,7 +1296,7 @@ class PhysicsRunner:
         # recip_P_span). sim_time IS the tick dt. Same Q16 quantize (round-to-
         # nearest) the ring N-split uses. λ == 0 (τ ≫ one tick and tiny dt) → no-op.
         from simulation import gas_fixed
-        lambda_q = int(gas_fixed.quantize_scalar(float(sim_time) / tau))
+        lambda_q = int(gas_fixed.quantize_q16_scalar(float(sim_time) / tau))   # a Q16 fraction
         if lambda_q == 0:
             return
         # FIXED tick-order rebuild point (Erik's determinism caveat): the mask is
@@ -1145,8 +1338,9 @@ class PhysicsRunner:
         """One GPU-resident tick (S8a: Path B framework + Path A EOS residency).
         Bit-identical to the CPU/per-call tick: the water SUBSTEP loop, the
         whole EOS STAGE (advection substeps, on-device MG build + solve,
-        kick/compression — docs/cuda_s8a_path_a_impl_2026-07-21.md), and the
-        smoke TRACE loop all run resident on persistent device buffers — the
+        kick/compression — docs/cuda_s8a_path_a_impl_2026-07-21.md; the trace
+        planes ride its substeps, smoke transport v2), and the once-per-tick
+        TRACE TAIL all run resident on persistent device buffers — the
         Path-B EOS bracket is GONE (spec §3.3's zero mid-tick transfers, for
         real). Combustion + the tail stay BRACKETED on the mirror (S8c).
         The numpy fields are the authoritative mirror throughout — every EOS
@@ -1157,9 +1351,10 @@ class PhysicsRunner:
         if not gmap.residency_on():
             gmap.enable_residency()
 
-        # -- 1. host pre-physics (on the mirror): fire heat cast, water pre-step,
-        #       lazy binds, ambient args (identical to the normal step) ----------
-        self.cast_fire_heat(gmap, tick=tick)
+        # -- 1. host pre-physics (on the mirror): water pre-step, lazy binds,
+        #       ambient args (identical to the normal step) ---------------------
+        # T6 (issue #12): the fire heat cast (cast_fire_heat) this list used to
+        # open with is deleted — see the normal step's matching note.
         self.eos.dx = float(gmap.tile_size_m)
         if self._o2_idx is None:
             self._o2_idx = int(gmap.gases.name_to_id["o2"])
@@ -1173,7 +1368,7 @@ class PhysicsRunner:
         #       combustion, tail) read the numpy MIRROR directly, so the full
         #       synced set need not ride to the device this rung. `from_host()`'s
         #       DEFAULT is still the full §5b always-upload set (incl.
-        #       dyn_wave_absorb / dyn_light_atten / obstacles) — that is the
+        #       dyn_wave_absorb / obstacles) — that is the
         #       contract Path-A inherits when it makes the brackets resident; Rung 2
         #       must NOT narrow those masks (body-shielding depends on them). --------
         dev = gmap.device_ptrs()
@@ -1274,20 +1469,20 @@ class PhysicsRunner:
             d_gas_energy=dev["gas_energy"],
         )
 
-        # -- 5. TRACE smoke loop + decay RESIDENT (on device) --------------------
-        # Path A: NO from_host here — the device gas/wind are FRESHER than the
-        # mirror (the resident EOS just wrote them, bit-identically), and the
-        # masks/perm rode up in step 4's pre-upload.
-        # advection_rate = 1.0f / max(eos.dx, 1e-3f) — computed in float32 to match
-        # run_substeps' float expression exactly (bit-identity of the SL displacement).
-        adv_rate = np.float32(1.0) / max(np.float32(self.eos.dx), np.float32(1e-3))
-        self.bp.trace_smoke_resident(
-            dev["gas"], dev["wind_x"], dev["wind_y"],
-            dev["solid"], dev["is_vacuum"], dev["dyn_permeability"],
-            dev["is_ambient"] if amb[0] is not None else 0,
-            h, w, gmap.gas.shape[0], self._inert_n2_idx,
+        # -- 5. The TRACE TAIL, RESIDENT (smoke transport v2, #12 P2b) ------------
+        # The trace planes already rode the bulk face flux inside the resident
+        # EOS substeps (stages 3b/3c); what remains once per tick is the tail --
+        # stranded zeroing, Jacobi diffusion, nearest decay (#88) -- the device twin of
+        # the tail run_substeps runs on the host, booked into the SAME EOSSolver
+        # books. NO from_host: the device gas is fresher than the mirror (the
+        # resident EOS just wrote it), and the masks/perm rode up in step 4.
+        self.engine.run_trace_tail_resident(
             gmap.gases.conservative, gmap.gases.diffusion, gmap.gases.decay,
-            sim_time, float(adv_rate), 0.0,
+            h, w, sim_time,
+            d_gas=dev["gas"], d_solid=dev["solid"],
+            d_is_vacuum=dev["is_vacuum"],
+            d_is_ambient=dev["is_ambient"] if amb[0] is not None else 0,
+            d_dyn_permeability=dev["dyn_permeability"],
         )
 
         # -- 6. The once-per-tick synced-set D2H (the locked Q4 decision): the
@@ -1316,14 +1511,42 @@ class PhysicsRunner:
             gmap.is_vacuum, gmap.flammable,
             gmap.heat, gmap.heat_inv_shift, gmap.face_shift,
             gmap.thermal_solid,          # thermal-mass axis (host mirror)
-            gmap.cool_shift,             # cool-shift axis (host mirror)
+            # T5b step 7 / R1: gmap.cool_shift was passed here.
             gmap.fuel_recip,             # fuel-fraction axis (host mirror)
             gmap.fire_T_ext_plane,       # per-material T_ext (host mirror)
             gmap.gas, gmap.gases.conservative, self._o2_idx,
             sim_time,
+            # Ray-engine-v2: the sweep (LIVE since T5b) rides the SAME
+            # host-mirror bracket (design §8.2: no host-side tick logic — the
+            # sweep is inside step_tail); its planes are resident-allocated
+            # but no device kernel touches them until P4.
+            heat_atten_q=gmap.heat_atten_q,
+            dyn_heat_atten_q=gmap.dyn_heat_atten_q,
+            rad_net_sweep=gmap.rad_net_sweep,
+            rad_flux_sweep=gmap.rad_flux_sweep,
+            rad_amb_sweep=gmap.rad_amb_sweep,
+            rad_fluence=gmap.rad_fluence,
+            gas_heat_absorb_q16=gmap.gases.heat_absorb_q16,   # P5a; live smoke since P5c
+            # P6a: the light channels' planes, on the SAME host-mirror bracket;
+            # read only while the engine's light is requested (default off).
+            light_atten_q=gmap.light_atten_q,
+            dyn_light_atten_q=gmap.dyn_light_atten_q,
+            light_q=gmap.light_q,
+            light_flux_q=gmap.light_flux_q,
+            light_glow=gmap.light_glow,
+            gas_light_absorb_q16=gmap.gases.light_absorb_q16,
+            gas_light_glow_q16=gmap.gases.light_glow_q16,
+            # P6b: the cone emitters and the sky (set_light_cones /
+            # set_light_sky; None = none / the dark ring), read only while
+            # light is requested.
+            light_cones=self.light_cones, light_sky=self.light_sky,
+            k_leak_q=self.k_leak_q,
+            rad_amb_vacuum_q=self.rad_amb_vacuum_q,   # thermal v2 R3
             is_ambient=amb[0],
-            # P-R4: the radiation accumulator rides the SAME host mirror the
-            # rest of this bracket reads (the cast at step 1 filled it there).
+            # T6 (issue #12): the fire-plane cast that used to fill `rad_net`
+            # at step 1 is deleted; nothing fills it on this path either. Kept
+            # as a dead argument for the same reason the normal step keeps it
+            # (see PhysicsRunner.step's matching note / physics_engine.h).
             rad_net=gmap.rad_net,
             # gas-energy conservation arc #54 P-G1b (design §2.7 row 3): the
             # CONSERVED energy field. With it supplied, the temperature pass's
@@ -1348,7 +1571,59 @@ class PhysicsRunner:
         # wrote would vanish unbooked). `refresh_gas_energy` survives as the
         # level-load initialiser only.
 
+        if self.engine.light_requested:
+            self.light_serial += 1          # P6b: a new light field for the renderer
         return destroyed
+
+    # ------------------------------------------------------------------
+    # ray-engine-v2 P6b: THE LIGHT INPUTS and RELIGHT
+    # ------------------------------------------------------------------
+    def set_light_cones(self, rows):
+        """The CONE EMITTERS the next light computation reads: an int64 (n, 7)
+        array of rows (y, x, r, g, b, center_q, spread_q) -- the frame-lights
+        assembly's output row (renderer/frame_lights.py, the ONE assembly) --
+        or None / an empty array for none. Held as given (C-contiguous int64);
+        the sweep's own door refuses an illegal row. Render-state input: light
+        is not sim-pure until P7 separates these inputs (CLAUDE.md)."""
+        if rows is None or len(rows) == 0:
+            self.light_cones = None
+            return
+        a = np.ascontiguousarray(np.asarray(rows), dtype=np.int64)
+        if a.ndim != 2 or a.shape[1] != 7:
+            raise ValueError("set_light_cones: rows must be (n, 7) "
+                             "(y, x, r, g, b, center_q, spread_q)")
+        self.light_cones = a
+
+    def set_light_sky(self, sky):
+        """THE SKY -- the virtual ring's per-ordinate light outflow, int64
+        (16, 3) -- or None for the dark ring (space). Set once per level from
+        its boundary type (renderer/frame_lights.py sky_for_level)."""
+        if sky is None:
+            self.light_sky = None
+            return
+        a = np.ascontiguousarray(np.asarray(sky), dtype=np.int64)
+        if a.shape != (16, 3):
+            raise ValueError("set_light_sky: the sky is (16, 3) -- one RGB per ordinate")
+        self.light_sky = a
+
+    def relight(self, gmap):
+        """Recompute the light field on the CURRENT state without a tick
+        (PhysicsEngine.relight): the paused renderer's path, so the cursor lamp
+        and a planning flashlight follow the mouse while nothing ticks, and the
+        first frame after load is lit. The sweep's heat outputs land in the
+        engine's own scratch -- no GameMap array but the three light planes is
+        written (tests/test_light_field.py). Bumps light_serial."""
+        self.engine.relight(
+            gmap.temperature, gmap.heat_atten_q, gmap.dyn_heat_atten_q,
+            gmap.heat_inv_shift, gmap.thermal_solid, gmap.is_vacuum,
+            gmap.gas, gmap.gases.conservative, gmap.gases.heat_absorb_q16,
+            self.k_leak_q, self.rad_amb_vacuum_q, self._eos_t_amb_raw(),
+            gmap.light_atten_q, gmap.dyn_light_atten_q,
+            gmap.light_q, gmap.light_flux_q, gmap.light_glow,
+            gas_light_absorb_q16=gmap.gases.light_absorb_q16,
+            gas_light_glow_q16=gmap.gases.light_glow_q16,
+            light_cones=self.light_cones, light_sky=self.light_sky)
+        self.light_serial += 1
 
     # ------------------------------------------------------------------
     # BC: planetside AMBIENT ring args (boundary_conditions_spec_2026-07-19)
@@ -1388,12 +1663,14 @@ class PhysicsRunner:
         # X_amb is this map's authored ambient O2 fraction — one source of truth
         # with the BC. Refresh both solvers each tick; o2_frac is static per map,
         # so this is a cheap idempotent set.
-        # NOTE (full-response reference split, 2026-07-30): X_amb is NO LONGER the
-        # mole fraction at which o2f saturates — that is o2_frac_full (pure O2),
-        # which is deliberately NOT map-overridden. These two writes now only keep
-        # the solvers' record of "what the ambient atmosphere is" current; neither
-        # O2 law reads it. Enriching a map's [ambient] o2_frac therefore RAISES
-        # o2f (more O2 in the air) instead of silently rescaling the law.
+        # R1 UPDATE (fire session #12, 2026-09-01, docs/fire_3c_design_2026-09-01
+        # .md "Ruling R1"): fire.params.o2_frac_amb is NOW LIVE on the SUSTAIN
+        # law (the fire logistic's span upper reference — ambient air reads
+        # o2f == 1.0 by construction), so a map authoring a non-default
+        # [ambient] o2_frac genuinely rescales the sustain span, not merely a
+        # bookkeeping record. combustion.o2_frac_amb stays the OLD role — the
+        # DEMAND-side o2f_j is unchanged by R1 and still reads o2_frac_full
+        # (pure O2), so this write there is still just the ambient record.
         self.fire.params.o2_frac_amb = float(amb.o2_frac)
         self.combustion.o2_frac_amb = float(amb.o2_frac)
         n_gases = gmap.gas.shape[0]
@@ -1450,177 +1727,6 @@ class PhysicsRunner:
             gas_energy=gmap.gas_energy,
             t_amb_raw=self._eos_t_amb_raw(),
         ))
-
-    # ------------------------------------------------------------------
-    # K2: sim-side fire heat ray pass
-    # ------------------------------------------------------------------
-    def cast_fire_heat(self, gmap, tick=0):
-        """Deposit fire's radiant heat into ``gmap.heat`` (proposal §1).
-
-        Enumerate every burning tile (``fire > 0``) in fixed ROW-MAJOR order,
-        turn each into a short-range heat source, and cast the whole list with
-        the C++ raycaster into ``gmap.heat`` — Q16.16, saturating-add, occluded
-        per tile by ``gmap.heat_atten`` (K1). HEAT-ONLY: the render light
-        buffers are throwaway scratch (fire's visual glow is a separate later
-        step) and ``smoke_glow`` is skipped (None).
-
-        P-R1 (docs/radiation_raycaster_extinction_ruling_2026-07-31.md A4.1):
-        the source build — enumerating ``fire > 0`` and turning each tile into
-        a per-source ``(x, y, max_range, angle_center, intensity, heat)``
-        tuple — now runs INSIDE the C++ raycaster
-        (:meth:`Raycaster.cast_from_fire_plane` /
-        ``cuda_raycaster_cast_from_fire_plane``), ONE call per tick, instead of
-        a Python loop building one ``bp.LightSource()`` per burning tile
-        (~10 pybind attribute writes each, ~6000/tick at 600 fires). The
-        per-source parameters and the march itself are UNCHANGED — this is a
-        mechanical relocation, gated byte-identical on ``heat`` against the
-        pre-patch Python loop.
-
-        Determinism (must hold — ``heat`` is sim-affecting and feeds ignition /
-        unit damage downstream):
-
-        - **Fixed ray count, fixed angles, NO RNG.** Each source uses exactly
-          ``fire_ray_count`` (8) rays with ``jitter == 0``. The 8 rays are evenly
-          spaced over the full circle by the C++ march; a fixed per-source phase
-          (``angle_center``) derived from the tile coords rotates the fan so
-          neighbouring fires don't all fire the same 8 directions — but it is a
-          pure function of (row, col), never random. No ``sim.rng`` is touched.
-        - **Fixed source order.** Row-major enumeration of the burning tiles
-          (the C++ enumeration walks the fire plane in the same row-major order
-          ``np.nonzero`` used to yield).
-        - **Integer saturating-add deposit.** Order-independent -> bit-identical
-          across machines / runs (the property that lets ``heat`` be a CUDA
-          atomicAdd).
-
-        Called at the START of :meth:`step`, BEFORE the TemperatureSolver.
-        """
-        # S3a: gmap.fire is int32 Q16.16. The `> 0` burning mask is exact on the
-        # integer field (0 counts == unlit). The per-tile INTENSITY that feeds
-        # the heat-ray range/intensity params is now dequantized INSIDE the C++
-        # source build (P-R1) — this Python-side check only decides whether
-        # there is anything to cast at all.
-        fire = gmap.fire
-        # Fast out: no EMITTERS -> nothing to exchange (rad_net stays whatever
-        # it was; the sim clears it at end of tick). P-R4 (ruling A1.8) widened
-        # the emitter set from `burning` to `burning ∪ (thermal_solid && T >=
-        # T_emit_gate)`, so the dormancy test widens with it. The temperature
-        # leg is a plain MAX reduction (no temporaries, no mask allocation): it
-        # is a NECESSARY condition — if no tile anywhere is at the gate then no
-        # warm emitter exists — and the C++ builder applies the exact per-tile
-        # predicate. Dormant maps still cost two cheap reductions per tick.
-        t_emit_q = int(round(float(self.raycaster.T_emit_gate) * 65536.0))
-        if not bool((fire > 0).any()) and int(gmap.temperature.max()) < t_emit_q:
-            return
-
-        h, w = fire.shape
-        # P-F1a: THE THROWAWAY LIGHT BUFFERS ARE GONE FROM THIS CALL.
-        #
-        # Until now the fire cast wrote RGB + direction into scratch planes that
-        # this method then THREW AWAY — fire's visible glow is drawn by the
-        # renderer's own blackbody selector (renderer/fire_lights.py), which
-        # never read them. That was merely wasteful while light and radiation
-        # shared ONE march. It stopped being merely wasteful when v7 rule 4 split
-        # them: the EMISSION cast (long rays, pure-radiation fast path) and the
-        # VISIBLE-LIGHT cast (short rays, legacy machinery) are two separate
-        # marches now, and on CUDA two separate DEVICE ROUND-TRIPS — upload the
-        # plane set, launch, download, twice over. Measured on this box that
-        # second round-trip costs ~2.1 ms, which DWARFS the +0.095 ms the
-        # >= grid-diagonal rays themselves add.
-        #
-        # So the runner passes None and the light cast is skipped entirely, on
-        # both backends. BEHAVIOURALLY NEUTRAL — the buffers were discarded — and
-        # it is exactly why the C++/binding API keeps the light cast as an
-        # OPTION rather than deleting it: any caller that genuinely wants fire's
-        # light still gets bit-for-bit what it always got.
-        #
-        # `_fire_scratch_rgb`/`_dx`/`_dy` stay declared (and permanently None) so
-        # a stale external reference fails loudly rather than silently reading a
-        # buffer nothing writes any more.
-
-        # S2b: gmap.gas is int32 Q16.16. The C++ raycaster's gas optics are float,
-        # so DEQUANTIZE the (N,h,w) planes to a reused float32 scratch for this
-        # heat-only cast. Gases never attenuate the heat channel (only material
-        # heat_atten does), so the dequantized gas does not change the heat deposit
-        # — the only output that survives this cast — but the buffer must be float
-        # for the raycaster to read it correctly (render-irrelevant FLOAT BRIDGE).
-        from simulation import gas_fixed
-        if (self._fire_gas_f is None
-                or self._fire_gas_f.shape != gmap.gas.shape):
-            self._fire_gas_f = np.empty(gmap.gas.shape, dtype=np.float32)
-        np.multiply(gmap.gas, 1.0 / gas_fixed.FP_ONE_F,
-                    out=self._fire_gas_f, casting="unsafe")
-
-        bp = self.bp
-        # CUDA-S2 LIVE: pick the per-tick cast backend ONCE (a pure flag read;
-        # constant False on the CPU build). P-R1: BOTH entry points enumerate
-        # the SAME fire plane in the SAME C++ row-major order and build
-        # byte-identical per-source params (Raycaster::build_fire_sources'
-        # float-parity contract) — they differ only in which EXISTING march
-        # machinery consumes the resulting source list: the CPU cast runs
-        # cast_source_directional per source in place
-        # (Raycaster::cast_from_fire_plane), the CUDA cast concatenates every
-        # source's build_ray_list into ONE device march
-        # (cuda_raycaster_cast_from_fire_plane, S8c's batched path) — so `heat`
-        # is byte-for-byte the same either way (the S2/S8c gates proved the
-        # march + batching; P-R1 only relocated the source build). The
-        # light_rgb/dir buffers also round-trip to the host on the CUDA call
-        # (render-only / deterministic-exempt).
-        use_cuda_ray = bool(self._raycaster_on_cuda())
-        if use_cuda_ray:
-            bp.cuda_raycaster_cast_from_fire_plane(
-                self.raycaster,
-                fire,
-                self.fire_ray_count,
-                self.fire_range_base, self.fire_range_per_i,
-                self.fire_intensity_base, self.fire_intensity_per_i,
-                self.fire_color,
-                None,                 # light_rgb: discarded -> skip the light cast
-                None,                 # light_dx
-                None,                 # light_dy
-                self._fire_gas_f,
-                gmap.gases.absorption,
-                gmap.gases.scatter_albedo,
-                gmap.dyn_light_atten,
-                gmap.heat_atten,      # a_x: absorptivity == emissivity (Kirchhoff)
-                gmap.temperature,     # both ends' E° lookup
-                gmap.heat_inv_shift,  # the limiter's per-end budget
-                gmap.thermal_solid,   # the warm-emitter mask
-                gmap.rad_net,         # <- the SIGNED tile ledger
-                gmap.rad_amb,         # <- rule 4: the per-tile SKY ledger
-                gmap.rad_flux,        # <- D3: the damage SENSOR (not the ledger)
-                int(tick),            # <- D4: the fan's per-tick phase rotation
-                None,                 # smoke_glow: skipped (render-only, later)
-            )
-        else:
-            self.raycaster.cast_from_fire_plane(
-                fire,
-                self.fire_ray_count,
-                self.fire_range_base, self.fire_range_per_i,
-                self.fire_intensity_base, self.fire_intensity_per_i,
-                self.fire_color,
-                None,                 # light_rgb: discarded -> skip the light cast
-                None,                 # light_dx
-                None,                 # light_dy
-                # Multi-gas march (engine/05 §6.2): pass the full gas array +
-                # per-gas tables. Gases NEVER attenuate the heat channel (only
-                # material heat_atten does), so the radiation exchange — the
-                # only output that survives this cast (smoke_glow=None) — is
-                # bit-identical to the pre-multigas single-smoke call. S2b:
-                # dequantized float bridge.
-                self._fire_gas_f,
-                gmap.gases.absorption,
-                gmap.gases.scatter_albedo,
-                gmap.dyn_light_atten,
-                gmap.heat_atten,      # a_x: absorptivity == emissivity (Kirchhoff)
-                gmap.temperature,     # both ends' E° lookup
-                gmap.heat_inv_shift,  # the limiter's per-end budget
-                gmap.thermal_solid,   # the warm-emitter mask
-                gmap.rad_net,         # <- the SIGNED tile ledger
-                gmap.rad_amb,         # <- rule 4: the per-tile SKY ledger
-                gmap.rad_flux,        # <- D3: the damage SENSOR (not the ledger)
-                int(tick),            # <- D4: the fan's per-tick phase rotation
-                None,                 # smoke_glow: skipped (render-only, later)
-            )
 
     # ------------------------------------------------------------------
     # Water layer (engine/07 §2, water plan W2)
@@ -1735,11 +1841,37 @@ class PhysicsRunner:
         ``EOSSolver::step`` performs every tick (``std::max<q16>(1,
         quantize(T_AMB_K))``), and the SAME value
         :meth:`GameMap._gas_energy_t_amb_raw` derives. Read off the LIVE
-        ``self.eos.T_AMB_K`` (never a hardcoded 290) so a config or test
+        ``self.eos.T_AMB_K`` (never a hardcoded 293, or 290 pre-G12) so a config or test
         override reaches every consumer of the gas-energy seam together.
         """
         from simulation import gas_fixed as _gas_fx
-        return max(1, _gas_fx.quantize_scalar(float(self.eos.T_AMB_K)))
+        return max(1, _gas_fx.quantize_q16_scalar(float(self.eos.T_AMB_K)))
+
+    @property
+    def rad_amb_vacuum_q(self):
+        """The EMISSIVE LEVEL a vacuum cell radiates against (thermal model v2
+        R3; `[physics.radiation] vacuum_ambient_K`), in the ENGINE TABLE'S OWN
+        CURRENCY (#78): baked through the same exact chain emissive_table.cpp's
+        bake uses -- K^4 by integer multiplication, ONE boundary multiply by
+        rad_scale * 2^fine_bits (a power-of-two scaling: exact), round half up
+        -- with `fine_bits` read off the engine's table at the time of asking,
+        so the level can never be in another currency than the table the sweep
+        compares it with (the default 295 K lands on e_table[0] integer for
+        integer). Cached per currency; one int per tick otherwise."""
+        fb = int(self.engine.emissive.fine_bits)
+        cached_fb, level = self._vac_level_cache
+        if cached_fb != fb:
+            v = float(self._vac_k4) * (self._vac_rad_scale * float(1 << fb))
+            level = int(v + 0.5) if v > 0.0 else 0
+            self._vac_level_cache = (fb, level)
+        return level
+
+    @rad_amb_vacuum_q.setter
+    def rad_amb_vacuum_q(self, level):
+        """PIN a level in the table's CURRENT currency (a test's cold sky: 0,
+        which is 0 in every currency). A later change of the table's currency
+        drops the pin and re-derives the level from vacuum_ambient_K."""
+        self._vac_level_cache = (int(self.engine.emissive.fine_bits), int(level))
 
     # (_step_ripple() DELETED - audit Patch A / A9, 2026-08-04. The ripple
     # pass moved into C++ (PhysicsEngine::step_tail, which reproduces this

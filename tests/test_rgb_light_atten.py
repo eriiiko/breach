@@ -1,11 +1,27 @@
-"""Per-channel material attenuation in the directional ray march (Slice 2).
+"""Per-channel material extinction on the LIGHT SWEEP -- each channel reads its
+own coefficient, and a partial column dims (never lights) what lies behind it.
 
-Headless C++ tests on small synthetic gmaps. Verifies:
-  - opaque [1,1,1] tile fully blocks the ray downstream (== old is_wall stop),
-  - glass [0.1,0.1,0.1] transmits ~90% per channel,
-  - an asymmetric atten triple tints the surviving light per channel,
-  - aggregate (not per-channel) termination: a colour with a clear channel
-    keeps the ray alive for the other channels too (no per-channel early-out).
+Rewritten at ray-engine-v2 P6c (design v3 §11.2 row "test_rgb_light_atten.py:
+rewrite as gate-3 scenes on the light extinction planes (opaque blocks, glass
+~90 %, asymmetric tint); 'aggregate termination' dies (no rays)"). Until P6c
+these were scenes of one pencil ray of the old C++ render march:
+
+  * an opaque tile blocks everything beyond it -- held on the sweep by
+    tests/test_radiation_sweep_light.py::test_an_opaque_wall_leaves_the_far_side_exactly_dark
+    (P6a);
+  * glass dims and an asymmetric triple tints -- HERE, as properties of the
+    light extinction planes. (The march's "exactly 90 % behind one glass tile"
+    was a property of one straight ray; the sweep's STEP transport lets a
+    stream travel along a column, so a full-height glass column passes AT MOST
+    90 % -- the bound is the property, and the tint is exact channel
+    independence);
+  * "aggregate termination" (a ray kept alive by its surviving channels) has no
+    meaning for a sweep, which has no rays -- gone.
+
+Every test's docstring names its property and the change that breaks it.
+
+Run:
+    C:/Users/steen/anaconda3/python.exe -m pytest tests/test_rgb_light_atten.py -q
 """
 from __future__ import annotations
 
@@ -15,101 +31,77 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
+if str(ROOT / "tests") not in sys.path:
+    sys.path.insert(0, str(ROOT / "tests"))
 
-import breach_physics as bp
+from _radiation_sweep_harness import ONE, R, cpp_sweep, live_table  # noqa: E402
+
+Q = R.quant
+N = 11
+XW = 5          # the partial column
+GLASS = (Q(0.1),) * 3              # the shipped glass light row
+DARK = (Q(0.9),) * 3
+TINT = (Q(0.9), Q(0.9), Q(0.1))    # kills red and green, passes blue
 
 
-def _cast_along_x(light_atten, color=(1.0, 1.0, 1.0), h=1, w=20, sy=0, sx=0):
-    """Cast a single +x ray from (sx, sy) and return the RGB field.
+def _light(column):
+    """light_q (3, h, w) of an N x N transparent room lit by a hot opaque
+    column at x = 0, with a full-height column of per-channel extinction
+    `column` (a = d, Q16) at x = XW (None = clear air)."""
+    a = [[0] * N for _ in range(N)]
+    d = [[0] * N for _ in range(N)]
+    T = [[0] * N for _ in range(N)]
+    his = [[3] * N for _ in range(N)]
+    ts = [[0] * N for _ in range(N)]
+    la = [[[0] * N for _ in range(N)] for _ in range(3)]
+    ld = [[[0] * N for _ in range(N)] for _ in range(3)]
+    for y in range(N):
+        T[y][0] = 3000 << 16
+        ts[y][0] = 1
+        for c in range(3):
+            la[c][y][0] = ld[c][y][0] = ONE
+            if column is not None:
+                la[c][y][XW] = ld[c][y][XW] = column[c]
+    got = cpp_sweep(a, d, 0, T, his, ts, transport="shear", n_ord=16,
+                    table=live_table(), light=dict(la=la, ld=ld))
+    return np.asarray(got[6]["light_q"])
 
-    A 1-row grid forces a pure +x march so each downstream tile sees the ray
-    exactly once (deterministic, no diagonal aliasing).
+
+def test_each_channel_reads_only_its_own_extinction():
+    """PROPERTY (design §5 "per-material light_atten RGB", on the sweep): the
+    light channels are independent -- behind a (0.9, 0.9, 0.1) column the RED
+    and GREEN planes are EXACTLY what a (0.9, 0.9, 0.9) column gives and the
+    BLUE plane EXACTLY what a (0.1, 0.1, 0.1) glass column gives, everywhere;
+    so the tinted column passes blue and kills red and green.
+
+    BREAKS IF: a channel reads another channel's coefficient (or one scalar for
+    all three), or the channels' streams are coupled anywhere in the traversal.
     """
-    rc = bp.Raycaster()
-    rgb = np.zeros((h, w, 3), np.float32)
-    dx = np.zeros((h, w), np.float32)
-    dy = np.zeros((h, w), np.float32)
-    # Empty single-gas field (no smoke) — multi-gas march (engine/05 §6.2).
-    gas = np.zeros((1, h, w), np.float32)
-    gas_absorption = np.ones((1, 3), np.float32)
-    gas_scatter = np.ones((1, 3), np.float32)
-    s = bp.LightSource()
-    s.x, s.y = float(sx), float(sy)
-    s.max_range = float(w * 2)
-    s.intensity = 1.0
-    s.angle_center = 0.0          # +x
-    s.angle_spread = 0.05         # a thin pencil beam along +x
-    s.ray_count = 1
-    # Falloff defaults to UNIFORM (no per-angle attenuation) — good for a beam.
-    s.color = color
-    rc.cast_source_directional(s, rgb, dx, dy,
-                               gas, gas_absorption, gas_scatter, light_atten)
-    return rgb
+    tint, dark, glass = _light(TINT), _light(DARK), _light(GLASS)
+    assert np.array_equal(tint[0], dark[0]) and np.array_equal(tint[1], dark[1])
+    assert np.array_equal(tint[2], glass[2])
+    behind = (slice(2, N - 2), slice(XW + 1, None))
+    assert np.all(tint[2][behind] > 5 * tint[0][behind]), "the tint did not pass blue"
 
 
-def test_opaque_tile_blocks_like_old_wall():
-    # Air everywhere except an opaque [1,1,1] wall at x=5.
-    h, w = 1, 20
-    atten = np.zeros((h, w, 3), np.float32)
-    atten[0, 5] = [1.0, 1.0, 1.0]
-    rgb = _cast_along_x(atten, h=h, w=w)
+def test_a_denser_column_passes_less_and_never_more_than_one_crossing():
+    """PROPERTY (the absorb (stream·d) >> 16, on a light plane): every cell
+    behind a full-height column receives, per channel, at most (ONE - d)/ONE of
+    what it receives with the column clear (every path to it crosses the column
+    at least once; the step transport's paths along the column only take more),
+    and strictly less through the denser column; the column never lights the
+    cells in front of it (no reflection, and at ambient it emits nothing).
 
-    # Light reaches the wall tile (deposit happens before attenuation) ...
-    assert rgb[0, 5].sum() > 0.0
-    # ... but every tile BEYOND the opaque wall is dark (full block == old stop).
-    assert np.all(rgb[0, 6:] == 0.0), f"light leaked past opaque wall: {rgb[0, 6:]}"
-
-
-def test_glass_transmits_about_90_percent():
-    # Single glass [0.1,0.1,0.1] tile at x=5; compare survivor just after it to
-    # the same march with clear air in that tile.
-    h, w = 1, 20
-    glass = np.zeros((h, w, 3), np.float32)
-    glass[0, 5] = [0.1, 0.1, 0.1]
-    air = np.zeros((h, w, 3), np.float32)
-
-    rgb_glass = _cast_along_x(glass, h=h, w=w)
-    rgb_air = _cast_along_x(air, h=h, w=w)
-
-    # Tile right after the glass: glass survivor / air survivor ~= (1 - 0.1).
-    after = 6
-    ratio = rgb_glass[0, after, 0] / rgb_air[0, after, 0]
-    assert np.isclose(ratio, 0.9, atol=1e-3), f"glass transmission {ratio} != 0.9"
-    # Glass is not opaque: light continues well past it.
-    assert rgb_glass[0, 10].sum() > 0.0
-
-
-def test_asymmetric_atten_tints_surviving_light():
-    # Tinted window [0.9, 0.9, 0.1] at x=5 with white light: after it the blue
-    # channel survives ~9x more than red/green ( (1-0.1)=0.9 vs (1-0.9)=0.1 ).
-    h, w = 1, 20
-    atten = np.zeros((h, w, 3), np.float32)
-    atten[0, 5] = [0.9, 0.9, 0.1]
-    rgb = _cast_along_x(atten, color=(1.0, 1.0, 1.0), h=h, w=w)
-
-    after = 6
-    r, g, b = rgb[0, after]
-    assert b > r and b > g, f"blue channel should dominate after tint: {rgb[0, after]}"
-    # Red survivor / blue survivor == (1-0.9)/(1-0.1) = 0.1/0.9 ~= 0.1111.
-    assert np.isclose(r / b, 0.1 / 0.9, atol=1e-3)
-    assert np.isclose(g / b, 0.1 / 0.9, atol=1e-3)
-
-
-def test_aggregate_termination_no_per_channel_early_out():
-    # A red light hitting a tile that kills only red [1,0,0] must still let the
-    # (untouched) green/blue energy continue — but with a RED source those
-    # channels are zero, so use a white source through a red-killing tile and
-    # confirm the surviving (green/blue) light keeps marching past it. This
-    # proves termination is on aggregate energy, not the dead red channel.
-    h, w = 1, 20
-    atten = np.zeros((h, w, 3), np.float32)
-    atten[0, 5] = [1.0, 0.0, 0.0]   # kills red only
-    rgb = _cast_along_x(atten, color=(1.0, 1.0, 1.0), h=h, w=w)
-
-    after = 8
-    r, g, b = rgb[0, after]
-    assert r == 0.0, "red must be fully blocked"
-    assert g > 0.0 and b > 0.0, "green/blue must survive and keep marching"
+    BREAKS IF: the absorb takes less than (stream·d) >> 16 of a crossing
+    stream, the column emits or reflects at ambient, or a denser coefficient
+    passes more light.
+    """
+    clear, glass, dark = _light(None), _light(GLASS), _light(DARK)
+    behind = (slice(None), slice(2, N - 2), slice(XW + 1, None))
+    assert np.all(clear[behind] > 0), "the scene must light the cells behind the column"
+    for lit, col in ((glass, GLASS), (dark, DARK)):
+        ratio = lit[behind] / clear[behind]
+        assert np.all(ratio <= (ONE - col[0]) / ONE + 1e-4), (ratio.max(), col)
+        assert np.all(ratio > 0)
+        assert np.array_equal(lit[:, :, 1:XW], clear[:, :, 1:XW]), "the column lit its front"
+    assert np.all(dark[behind] < glass[behind])

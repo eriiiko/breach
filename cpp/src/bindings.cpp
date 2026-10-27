@@ -3,25 +3,22 @@
 #include <pybind11/stl.h>
 #include <array>
 #include "atmosphere_solver.h"
-#include "smoke_dynamics.h"
 #include "fire_simulation.h"
 #include "temperature_solver.h"
-#include "raycaster.h"
 #include "water_solver.h"
+#include "emissive_table.h"  // the E° table + L° (EmissiveTable, LightEmissionTable)
 #include "eos_solver.h"
 #include "combustion.h"
 #include "physics_engine.h"
 #include "bulk_transport.h"  // EOS refactor P1: expose bulk_flux_transport for direct unit test
 #include "sky_exchange.h"    // sky-exchange: planetside volumetric O2 replenishment (per-tick host pass)
-#include "fixed_point.h"   // Bedrock cliff-patch: expose smoke_cliff_count for unit test
+#include "fixed_point.h"   // the Q16.16 kit (quantize, make_recip, the trig kit, ...)
 #ifdef BREACH_HAS_CUDA
 #include "cuda_hello.h"        // CUDA-S0: hello-world map kernel + device info
 #include "cuda_spike.h"        // CUDA-S8a: residency spike (raw device pointer in)
-#include "cuda_resident.h"     // CUDA-S8a Path B: water/smoke resident launch cores
+#include "cuda_resident.h"     // CUDA-S8a Path B: water resident launch cores (+ the trace tail)
 #include "cuda_temperature.h"  // CUDA-S1: GPU temperature solver + backend flag
-#include "cuda_raycaster.h"    // CUDA-S2: GPU directional raycaster (heat bit-identical)
 #include "cuda_water.h"        // CUDA-S3: GPU water solver + backend flag
-#include "cuda_smoke.h"        // CUDA-S4a: GPU smoke solver + backend flag
 #include "cuda_fire.h"         // CUDA-S6: GPU fire solver + backend flag
 #include "cuda_sl_advection.h" // EOS P6.2: fused 3-field SL advection + backend flag
 #include "cuda_bulk_transport.h"  // EOS P6.1: GPU bulk donor-cell flux + backend flag
@@ -30,6 +27,7 @@
 #include "cuda_eos_step.h"     // EOS P6.5: chained full-eos.step dispatch predicate
 #include "cuda_eos_resident.h" // S8a Path A: resident EOS telemetry + build parity
 #include "cuda_combustion.h"   // EOS P6.9b: GPU two-gather combustion + backend flag
+#include "cuda_radiation_sweep.h"  // ray-engine-v2 P4: the sweep's CUDA twin + backend flag
 // CUDA-S5 cuda_wave.h / CUDA-S7 cuda_atmosphere.h RETIRED in EOS P6.0 — the
 // wave+diffuse solvers they mirrored were replaced by the compressible EOS
 // solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
@@ -37,17 +35,21 @@
 
 namespace py = pybind11;
 
-// Helper: extract raw pointer + dimensions from a 2D numpy array
-template<typename T>
-static std::tuple<T*, int, int> get_2d(py::array_t<T>& arr) {
+// Helper: extract raw pointer + dimensions from a 2D numpy array.
+// Templated on the array's ExtraFlags too (ray-engine-v2 P1): the default
+// py::array_t<T> is array_t<T, forcecast>, and the sweep's planes are declared
+// array_t<T, c_style> WITHOUT forcecast (a widened plane must not be silently
+// copied through a narrowing cast — critique 3 §6a), so one helper serves both.
+template<typename T, int Flags>
+static std::tuple<T*, int, int> get_2d(py::array_t<T, Flags>& arr) {
     auto a = arr.template mutable_unchecked<2>();
     return {a.mutable_data(0, 0),
             static_cast<int>(a.shape(0)),
             static_cast<int>(a.shape(1))};
 }
 
-template<typename T>
-static std::tuple<const T*, int, int> get_2d_const(const py::array_t<T>& arr) {
+template<typename T, int Flags>
+static std::tuple<const T*, int, int> get_2d_const(const py::array_t<T, Flags>& arr) {
     auto a = arr.template unchecked<2>();
     return {a.data(0, 0),
             static_cast<int>(a.shape(0)),
@@ -62,6 +64,224 @@ static std::tuple<T*, int, int> get_3d(py::array_t<T>& arr) {
     return {a.mutable_data(0, 0, 0),
             static_cast<int>(a.shape(0)),
             static_cast<int>(a.shape(1))};
+}
+
+// ray-engine-v2 P5a: the radiation sweep's optional GAS GROUP (the smoke term,
+// design v3 §6.3) — gas (n_gases, h, w), heat_absorb_q16 (n_gases,), n_bulk
+// (h, w), all int32 — extracted ONE way for both direct sweep entries
+// (RadiationSweep.run and cuda_radiation_sweep_run), so the gate's CPU and GPU
+// calls cannot read it differently. All None -> the pre-P5a sweep. A partial
+// group or a wrong shape raises ValueError; a dtype other than int32 raises
+// TypeError (dtype-CHECKED, never converted: a silently converted copy would
+// be a different input). The arrays are held here so the pointers outlive the
+// call; a non-contiguous input is read through a contiguous copy of the same
+// values (inputs only — nothing is written back).
+struct GasGroupArgs {
+    py::array_t<int32_t, py::array::c_style> gas_arr, hq_arr, nb_arr;
+    const int32_t* gas = nullptr;
+    const int32_t* hq = nullptr;
+    const int32_t* nb = nullptr;
+    int n = 0;
+};
+static GasGroupArgs gas_group_args(const char* who, const py::object& gas,
+                                   const py::object& hq, const py::object& n_bulk,
+                                   int h, int w) {
+    GasGroupArgs g;
+    if (gas.is_none() && hq.is_none() && n_bulk.is_none()) return g;
+    const std::string w_ = who;
+    if (gas.is_none() || hq.is_none() || n_bulk.is_none()) {
+        throw py::value_error(w_ + ": gas, heat_absorb_q16 and n_bulk are given "
+                              "together or not at all (the smoke term, design v3 §6.3)");
+    }
+    if (!py::isinstance<py::array_t<int32_t>>(gas) ||
+        !py::isinstance<py::array_t<int32_t>>(hq) ||
+        !py::isinstance<py::array_t<int32_t>>(n_bulk)) {
+        throw py::type_error(w_ + ": gas, heat_absorb_q16 and n_bulk must be int32 "
+                             "numpy arrays (dtype-checked, never converted)");
+    }
+    g.gas_arr = gas.cast<py::array_t<int32_t, py::array::c_style>>();
+    g.hq_arr  = hq.cast<py::array_t<int32_t, py::array::c_style>>();
+    g.nb_arr  = n_bulk.cast<py::array_t<int32_t, py::array::c_style>>();
+    if (g.gas_arr.ndim() != 3 || g.gas_arr.shape(1) != h || g.gas_arr.shape(2) != w ||
+        g.hq_arr.ndim() != 1 || g.hq_arr.shape(0) != g.gas_arr.shape(0) ||
+        g.nb_arr.ndim() != 2 || g.nb_arr.shape(0) != h || g.nb_arr.shape(1) != w) {
+        throw py::value_error(w_ + ": gas must be (n_gases, h, w), heat_absorb_q16 "
+                              "(n_gases,) and n_bulk (h, w)");
+    }
+    g.gas = g.gas_arr.data();
+    g.hq  = g.hq_arr.data();
+    g.nb  = g.nb_arr.data();
+    g.n   = static_cast<int>(g.gas_arr.shape(0));
+    return g;
+}
+
+// ray-engine-v2 P6a: THE LIGHT GROUP (radiation_sweep.h LightChannels) of the
+// sweep's direct entries -- RadiationSweep.run, cuda_radiation_sweep_run and
+// PhysicsEngine.step_tail's light planes -- extracted ONE way, so the gate's
+// CPU and GPU calls and the live tail cannot read it differently. Every array
+// is dtype-CHECKED, never converted (a converted copy of an INPUT is a
+// different input; of an OUTPUT it is a discarded one -- the forcecast trap,
+// critique 3 §6a), and an output must also be C-contiguous and writeable so the
+// cast is a view. The extinction planes and outputs are all-or-none (all None:
+// no light); the two smoke columns both-or-neither; a None table is the
+// checked-in L° (light_emission_table()).
+struct LightGroupArgs {
+    py::array_t<int32_t, py::array::c_style> la_arr, ld_arr, lab_arr, lgl_arr;
+    py::array_t<int64_t, py::array::c_style> lq_arr, lf_arr, lg_arr, tbl_arr;
+    py::array_t<int64_t, py::array::c_style> cones_arr, sky_arr;   // P6b
+    LightChannels lc;
+    bool on = false;
+};
+template <typename T>
+static py::array_t<T, py::array::c_style> light_arr(const std::string& who,
+                                                    const char* name,
+                                                    const py::object& obj,
+                                                    bool output,
+                                                    std::initializer_list<py::ssize_t> shape) {
+    if (!py::isinstance<py::array_t<T>>(obj)) {
+        throw py::type_error(who + ": " + name + " must be a numpy array of the exact "
+                             "dtype (int32 extinction / coefficients, int64 table and "
+                             "outputs) -- dtype-checked, never converted (P6a)");
+    }
+    py::array raw = obj.cast<py::array>();
+    if (output && (!(raw.flags() & py::array::c_style) || !raw.writeable())) {
+        throw py::value_error(who + ": " + name + " must be C-contiguous and writeable "
+                              "(it is written in place)");
+    }
+    auto arr = obj.cast<py::array_t<T, py::array::c_style>>();
+    if ((size_t)arr.ndim() != shape.size()) {
+        throw py::value_error(who + ": " + name + " has the wrong number of axes");
+    }
+    size_t k = 0;
+    for (py::ssize_t s : shape) {
+        if (arr.shape(k) != s) {
+            throw py::value_error(who + ": " + name + " has the wrong shape (the light "
+                                  "planes are (h, w, 3), the flux (h, w, 2), the smoke "
+                                  "columns (n_gases, 3), the table (3, E_TABLE_SIZE))");
+        }
+        ++k;
+    }
+    return arr;
+}
+static LightGroupArgs light_group_args(const char* who_c,
+                                       const py::object& light_atten_q,
+                                       const py::object& dyn_light_atten_q,
+                                       const py::object& light_q,
+                                       const py::object& light_flux_q,
+                                       const py::object& light_glow,
+                                       const py::object& light_absorb_q16,
+                                       const py::object& light_glow_q16,
+                                       const py::object& light_table,
+                                       int light_transport, int h, int w, int n_gases,
+                                       // P6b: the cone rows and the sky (optional)
+                                       const py::object& light_cones,
+                                       const py::object& light_sky,
+                                       int n_ordinates) {
+    LightGroupArgs g;
+    const std::string who = who_c;
+    const int n_given = (int)!light_atten_q.is_none() + (int)!dyn_light_atten_q.is_none() +
+                        (int)!light_q.is_none() + (int)!light_flux_q.is_none() +
+                        (int)!light_glow.is_none();
+    if (n_given == 0) {
+        if (!light_absorb_q16.is_none() || !light_glow_q16.is_none() || !light_table.is_none() ||
+            !light_cones.is_none() || !light_sky.is_none()) {
+            throw py::value_error(who + ": light smoke columns, a light table, cones or a sky "
+                                  "without the light planes (the light group is given as a whole)");
+        }
+        return g;
+    }
+    if (n_given != 5) {
+        throw py::value_error(who + ": light_atten_q, dyn_light_atten_q, light_q, "
+                              "light_flux_q and light_glow are given together or not at "
+                              "all (the light group, P6a)");
+    }
+    g.la_arr = light_arr<int32_t>(who, "light_atten_q", light_atten_q, false, {h, w, 3});
+    g.ld_arr = light_arr<int32_t>(who, "dyn_light_atten_q", dyn_light_atten_q, false, {h, w, 3});
+    g.lq_arr = light_arr<int64_t>(who, "light_q", light_q, true, {h, w, 3});
+    g.lf_arr = light_arr<int64_t>(who, "light_flux_q", light_flux_q, true, {h, w, 2});
+    g.lg_arr = light_arr<int64_t>(who, "light_glow", light_glow, true, {h, w, 3});
+    if (light_absorb_q16.is_none() != light_glow_q16.is_none()) {
+        throw py::value_error(who + ": light_absorb_q16 and light_glow_q16 are given "
+                              "together or not at all (the light smoke term)");
+    }
+    if (!light_absorb_q16.is_none()) {
+        g.lab_arr = light_arr<int32_t>(who, "light_absorb_q16", light_absorb_q16, false,
+                                       {n_gases, 3});
+        g.lgl_arr = light_arr<int32_t>(who, "light_glow_q16", light_glow_q16, false,
+                                       {n_gases, 3});
+        g.lc.light_absorb_q16 = g.lab_arr.data();
+        g.lc.light_glow_q16 = g.lgl_arr.data();
+    }
+    if (light_table.is_none()) {
+        g.lc.l_table = light_emission_table();
+    } else {
+        g.tbl_arr = light_arr<int64_t>(who, "light_table", light_table, false,
+                                       {L_CHANNELS, E_TABLE_SIZE});
+        g.lc.l_table = g.tbl_arr.data();
+    }
+    // P6b: the cone rows (n, CONE_ROW_WIDTH) and the sky (n_ordinates, 3), both
+    // int64, dtype-checked; the sweep's own door refuses an illegal value.
+    if (!light_cones.is_none()) {
+        if (!py::isinstance<py::array_t<int64_t>>(light_cones)) {
+            throw py::type_error(who + ": light_cones must be an int64 numpy array "
+                                 "(n, 7) -- dtype-checked, never converted (P6b)");
+        }
+        g.cones_arr = light_cones.cast<py::array_t<int64_t, py::array::c_style>>();
+        if (g.cones_arr.ndim() != 2 || g.cones_arr.shape(1) != CONE_ROW_WIDTH) {
+            throw py::value_error(who + ": light_cones must be (n, 7) rows (y, x, r, g, b, "
+                                  "center_q, spread_q) (P6b)");
+        }
+        g.lc.cones = g.cones_arr.data();
+        g.lc.n_cones = static_cast<int>(g.cones_arr.shape(0));
+    }
+    if (!light_sky.is_none()) {
+        g.sky_arr = light_arr<int64_t>(who, "light_sky", light_sky, false, {n_ordinates, 3});
+        g.lc.sky = g.sky_arr.data();
+    }
+    g.lc.light_atten_q = g.la_arr.data();
+    g.lc.dyn_light_atten_q = g.ld_arr.data();
+    g.lc.light_q = g.lq_arr.mutable_data();
+    g.lc.light_flux_q = g.lf_arr.mutable_data();
+    g.lc.light_glow = g.lg_arr.mutable_data();
+    g.lc.transport = light_transport;
+    g.on = true;
+    return g;
+}
+// The light books + light-stream telemetry of a sweep, as the one Python shape:
+// {"emit": (r, g, b), "absorb": (...), "ring_in": (...), "ring_out": (...),
+//  "min_stream": int, "max_stream": int}.
+static py::dict light_books_dict(const int64_t* books12, int64_t mn, int64_t mx) {
+    py::dict d;
+    d["emit"]     = py::make_tuple(books12[0], books12[1], books12[2]);
+    d["absorb"]   = py::make_tuple(books12[3], books12[4], books12[5]);
+    d["ring_in"]  = py::make_tuple(books12[6], books12[7], books12[8]);
+    d["ring_out"] = py::make_tuple(books12[9], books12[10], books12[11]);
+    d["min_stream"] = mn;
+    d["max_stream"] = mx;
+    return d;
+}
+
+// #78: THE CURRENCY OF A DIRECT CALLER'S rad_net (the Pass-1 fold's two direct
+// entries, TemperatureSolver.step and cuda_temperature_step, share this ONE
+// rule). A sweep plane is in the currency of the E° table the sweep booked it
+// from, so the table the caller hands (clamp on OR off -- the clamp is a switch,
+// the currency is a fact about the plane) carries it; an explicit
+// `rad_fine_bits` (>= 0) must AGREE with that table -- two currencies for one
+// plane is refused, never guessed between; with neither, the plane is in whole
+// heat counts (0: every pre-#78 direct caller's hand-made plane).
+static int rad_currency_arg(const char* who, const py::object& e_table_obj,
+                            int rad_fine_bits) {
+    if (!e_table_obj.is_none()) {
+        const int tb = e_table_obj.cast<const EmissiveTable&>().fine_bits;
+        if (rad_fine_bits >= 0 && rad_fine_bits != tb) {
+            throw py::value_error(std::string(who) + ": rad_fine_bits = " +
+                                  std::to_string(rad_fine_bits) + " disagrees with "
+                                  "the e_table's own currency (fine_bits = " +
+                                  std::to_string(tb) + ") -- one plane, one currency (#78)");
+        }
+        return tb;
+    }
+    return (rad_fine_bits >= 0) ? rad_fine_bits : 0;
 }
 
 // arc #54 §2.7 (gas-energy conservation): the W3 water-displacement
@@ -169,38 +389,9 @@ PYBIND11_MODULE(breach_physics, m) {
           "S8a Path B: water substep loop resident on device buffers (no per-substep "
           "transfer). Device pointers are CuPy .data.ptr uintptr_t.");
 
-    m.def("trace_smoke_resident",
-          [](std::uintptr_t d_gas_base, std::uintptr_t d_wx, std::uintptr_t d_wy,
-             std::uintptr_t d_solid, std::uintptr_t d_vac, std::uintptr_t d_perm,
-             std::uintptr_t d_amb,
-             int h, int w, int n_gases, int inert_n2_idx,
-             py::array_t<bool> gas_conservative,
-             py::array_t<float> gas_diffusion,
-             py::array_t<float> gas_decay,
-             float dt, float advection_rate, float wind_diffusion_scale) {
-              auto gc = gas_conservative.unchecked<1>();
-              auto gd = gas_diffusion.unchecked<1>();
-              auto gdc = gas_decay.unchecked<1>();
-              breach_cuda::trace_smoke_resident(
-                  reinterpret_cast<int32_t*>(d_gas_base),
-                  reinterpret_cast<const int32_t*>(d_wx),
-                  reinterpret_cast<const int32_t*>(d_wy),
-                  reinterpret_cast<const bool*>(d_solid),
-                  reinterpret_cast<const bool*>(d_vac),
-                  reinterpret_cast<const float*>(d_perm),
-                  reinterpret_cast<const bool*>(d_amb),
-                  h, w, n_gases, inert_n2_idx,
-                  gc.data(0), gd.data(0), gdc.data(0),
-                  dt, advection_rate, wind_diffusion_scale);
-          },
-          py::arg("d_gas_base"), py::arg("d_wx"), py::arg("d_wy"),
-          py::arg("d_solid"), py::arg("d_vac"), py::arg("d_perm"), py::arg("d_amb"),
-          py::arg("h"), py::arg("w"), py::arg("n_gases"), py::arg("inert_n2_idx"),
-          py::arg("gas_conservative"), py::arg("gas_diffusion"), py::arg("gas_decay"),
-          py::arg("dt"), py::arg("advection_rate"), py::arg("wind_diffusion_scale"),
-          "S8a Path B: per-tick trace-plane smoke loop + decay resident on device "
-          "(no per-plane transfer). gas_conservative/diffusion/decay are host (N,) "
-          "columns; field pointers are CuPy .data.ptr uintptr_t.");
+    // (`trace_smoke_resident` -- the resident path's old semi-Lagrangian trace
+    // loop -- is DELETED with cuda_smoke.cu, smoke transport v2 #12 P2b: the
+    // resident trace tail is PhysicsEngine.run_trace_tail_resident below.)
 
     // S8a Path A: resident-EOS telemetry (the gate's vacuousness guard) + the
     // TEST-ONLY device-MG-build parity probe (gate PART 1c).
@@ -269,16 +460,27 @@ PYBIND11_MODULE(breach_physics, m) {
              py::array_t<int32_t> heat_inv_shift, py::array_t<int32_t> face_shift,
              py::array_t<bool> solid, py::array_t<bool> is_vacuum,
              py::array_t<int32_t> atmosphere,
-             int no_face, int cool_shift, int cool_shift_vacuum,
+             int no_face,
              float o2_vacuum_thresh, float c_v, float n_floor_heat,
              float gas_advection_rate, float t_max_phys,
              py::object n_bulk_obj, py::object wind_x_obj, py::object wind_y_obj,
              float dt, py::object thermal_solid_obj,
-             py::object cool_shift_grid_obj, int cool_shift_floor,
              // arc #54 §2.7 row 3: the conserved gas energy field, OPTIONAL —
              // None -> nullptr -> the pre-#54 T-form law (the CPU `e_on` gate,
-             // same idiom as thermal_solid/cool_shift_grid above).
-             py::object gas_energy_obj, float t_amb_k) -> py::tuple {
+             // same idiom as thermal_solid above).
+             py::object gas_energy_obj, float t_amb_k,
+             // M1: the SIGNED radiation accumulator, OPTIONAL. Exposed so the
+             // CPU/GPU parity gate can drive Pass 1's radiation fold at a
+             // NEGATIVE `heat_inv_shift` — the fold was already int64 but it
+             // was not SIGNED, and "already wide" is not "already signed".
+             py::object rad_net_obj,
+             // P5c: the maximum-principle clamp's two planes (the sweep's Φ,
+             // int64 (h, w), and an EmissiveTable) and the ambient ring, all
+             // OPTIONAL — so the tol-0 gate can drive the fold's GAS branch
+             // WITH its clamp, and a ring cell, on this entry exactly as the
+             // CPU TemperatureSolver.step binding does.
+             py::object rad_fluence_obj, py::object e_table_obj,
+             py::object is_ambient_obj, int rad_fine_bits) -> py::tuple {
               auto [temp, h, w]    = get_2d(temperature);
               auto [hp, h2, w2]    = get_2d_const(heat);
               auto [shift, h3, w3] = get_2d_const(heat_inv_shift);
@@ -319,17 +521,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   auto [tsp, ht, wt] = get_2d_const(tsol_arr);
                   tsol = tsp;
               }
-              // COOL-SHIFT AXIS: the per-tile decay shift, OPTIONAL by the
-              // same idiom — None -> nullptr -> the kernel uses the
-              // `cool_shift` scalar for every tile (the pre-axis behaviour),
-              // so every existing direct caller keeps its exact meaning.
-              const int32_t* csg = nullptr;
-              py::array_t<int32_t> csg_arr;
-              if (!cool_shift_grid_obj.is_none()) {
-                  csg_arr = cool_shift_grid_obj.cast<py::array_t<int32_t>>();
-                  auto [csp, hc, wc] = get_2d_const(csg_arr);
-                  csg = csp;
-              }
+              // T5b step 7 / R1: the `cool_shift_grid` cast stood here.
               // arc #54 §2.7 row 3: gas_energy, OPTIONAL — None -> nullptr ->
               // the pre-#54 T-form law. Kept alive in this scope (mutable,
               // in/out — the same `get_2d` idiom the required arrays use).
@@ -340,7 +532,45 @@ PYBIND11_MODULE(breach_physics, m) {
                   auto [gep, hg, wg] = get_2d(ge_arr);
                   ge = gep;
               }
+              const int64_t* rnet = nullptr;
+              py::array_t<int64_t, py::array::c_style> rnet_arr;
+              if (!rad_net_obj.is_none()) {
+                  if (!py::isinstance<py::array_t<int64_t>>(rad_net_obj)) {
+                      throw std::runtime_error(
+                          "cuda_temperature_step: rad_net must be an int64 "
+                          "numpy array (the sweep's plane), not a narrower dtype");
+                  }
+                  rnet_arr = rad_net_obj.cast<py::array_t<int64_t, py::array::c_style>>();
+                  auto rn = rnet_arr.unchecked<2>();
+                  rnet = rn.data(0, 0);
+              }
+              // P5c: the clamp's planes, dtype-CHECKED like rad_net above.
+              const int64_t* rflu = nullptr;
+              const int64_t* etab = nullptr;
+              py::array_t<int64_t, py::array::c_style> rflu_arr;
+              if (!rad_fluence_obj.is_none() && !e_table_obj.is_none()) {
+                  if (!py::isinstance<py::array_t<int64_t>>(rad_fluence_obj)) {
+                      throw std::runtime_error(
+                          "cuda_temperature_step: rad_fluence must be an int64 "
+                          "numpy array (the sweep's Phi plane)");
+                  }
+                  rflu_arr = rad_fluence_obj.cast<py::array_t<int64_t, py::array::c_style>>();
+                  auto rf = rflu_arr.unchecked<2>();
+                  rflu = rf.data(0, 0);
+                  etab = e_table_obj.cast<const EmissiveTable&>().table();
+              }
+              const bool* amb = nullptr;
+              py::array_t<bool> amb_arr;
+              if (!is_ambient_obj.is_none()) {
+                  amb_arr = is_ambient_obj.cast<py::array_t<bool>>();
+                  auto [ap, ha, wa] = get_2d_const(amb_arr);
+                  amb = ap;
+              }
               const int32_t t_amb_q = fixedpoint::quantize((double)t_amb_k);
+              // #78: the currency rad_net is in -- the one rule every direct
+              // fold entry shares (rad_currency_arg).
+              const int rfb = rad_currency_arg("cuda_temperature_step",
+                                               e_table_obj, rad_fine_bits);
               // P-E2a/P-E2b/arc #54: the isolated GPU entry now returns
               // (t_max_phys_hits, e_cond_trunc_sum, e_cond_cap_sum,
               //  cond_limit_hits, e_cool_sum, e_vac_wipe_sum, e_ring_pin_sum,
@@ -349,383 +579,371 @@ PYBIND11_MODULE(breach_physics, m) {
               // (P-E2a), the Pass-1 attenuation drop (P-E2b) and the gas-
               // energy seam (arc #54 P-G2) must be gated on. Callers:
               // tests/cuda_conduction_check.py, tests/cuda_thermal_mass_check.py,
-              // tests/cuda_cool_shift_check.py and the arc #54 gas-energy
+              // and the arc #54 gas-energy
               // temperature check, which compare all ten against the CPU
               // solver's own fields.
               int64_t cnt[breach_cuda::TEMPERATURE_ENERGY_SLOTS] = {0};
               int64_t solid_books = 0;   // P-G5: snapshot out-param
               const int64_t hits = breach_cuda::temperature_step(
                   temp, hp, shift, fs, sol, vac, atm, nb, wx, wy,
-                  no_face, cool_shift, cool_shift_vacuum, o2_vacuum_thresh,
+                  no_face, o2_vacuum_thresh,
                   c_v, n_floor_heat, gas_advection_rate, t_max_phys, h, w, dt,
-                  nullptr, tsol, csg, cool_shift_floor, nullptr, nullptr, cnt,
-                  ge, t_amb_q, &solid_books);
+                  amb, tsol, nullptr, rnet, cnt,
+                  ge, t_amb_q, &solid_books,
+                  rflu, etab, (etab != nullptr) ? E_TABLE_SIZE : 0, rfb);
+              // T5b step 7: 13 counters -> 11 (C_COOL and C_THERMOSTAT are
+              // deleted with Pass 3 and the survivors renumbered).
+              // P5c: slot 12 (e_rad_clamp_drop_sum) is APPENDED after the
+              // solid-books snapshot, so every index a caller already reads
+              // keeps its meaning. P5c follow-up: slots 13
+              // (e_rad_boundary_export_sum) and 14 (e_rad_floor_drop_sum)
+              // APPENDED after it, the same way.
               return py::make_tuple(hits, cnt[0], cnt[1], cnt[2], cnt[3],
-                                    cnt[4], cnt[5], cnt[6], cnt[7], cnt[8], cnt[9],
-                                    cnt[10], cnt[11], cnt[12], solid_books);
+                                    cnt[4], cnt[5], cnt[6], cnt[7], cnt[8],
+                                    cnt[9], cnt[10], cnt[11], solid_books,
+                                    cnt[12], cnt[13], cnt[14]);
           },
           py::arg("temperature"), py::arg("heat"), py::arg("heat_inv_shift"),
           py::arg("face_shift"), py::arg("solid"), py::arg("is_vacuum"),
           py::arg("atmosphere"),
-          py::arg("no_face"), py::arg("cool_shift"), py::arg("cool_shift_vacuum"),
+          py::arg("no_face"),
           py::arg("o2_vacuum_thresh"), py::arg("c_v"), py::arg("n_floor_heat"),
           py::arg("gas_advection_rate"), py::arg("t_max_phys"),
           py::arg("n_bulk") = py::none(), py::arg("wind_x") = py::none(),
           py::arg("wind_y") = py::none(), py::arg("dt") = 0.0f,
           py::arg("thermal_solid") = py::none(),   // thermal-mass axis (optional)
-          py::arg("cool_shift_grid") = py::none(), // cool-shift axis (optional)
-          py::arg("cool_shift_floor") = 2,         // == config SHIFT_MIN
           py::arg("gas_energy") = py::none(),      // arc #54 §2.2 (optional)
           py::arg("t_amb_k") = 290.0f,
+          py::arg("rad_net") = py::none(),         // M1: int64, loud (optional)
+          py::arg("rad_fluence") = py::none(),     // P5c: the clamp's Phi (optional)
+          py::arg("e_table") = py::none(),         // P5c: an EmissiveTable (optional)
+          py::arg("is_ambient") = py::none(),      // P5c: the ambient ring (optional)
+          py::arg("rad_fine_bits") = -1,           // #78: rad_net's currency (-1: the table's, else 0)
           "P6.6/P-G2 isolated: run the GPU unified temperature solver in place "
           "on `temperature` (+ `gas_energy` when supplied — bit-identical to "
           "TemperatureSolver.step); returns (t_max_phys_hits, e_cond_trunc_sum, "
-          "e_cond_cap_sum, cond_limit_hits, e_cool_sum, e_vac_wipe_sum, "
+          "e_cond_cap_sum, cond_limit_hits, e_vac_wipe_sum, "
           "e_ring_pin_sum, e_deposit_drop_sum, e_gas_deposit_sum, "
           "e_gas_cond_sum, e_gas_rail_sum, e_solid_deposit_sum, "
-          "e_solid_cond_sum, e_thermostat_sum, solid_energy_books_sum) for "
-          "this call (P-E2a + P-E2b + arc #54 + P-G5; the last is a SNAPSHOT, "
-          "not a per-call delta).");
+          "e_solid_cond_sum, rad_clamp_hits, solid_energy_books_sum, "
+          "e_rad_clamp_drop_sum, e_rad_boundary_export_sum, "
+          "e_rad_floor_drop_sum) for this call (P-E2a + P-E2b + arc #54 + P-G5 "
+          "+ P5c; solid_energy_books_sum is a SNAPSHOT, not a per-call delta).");
 
-    // CUDA-S2: the GPU directional raycaster gate. Casts ONE LightSource on the
-    // GPU into the (pre-zeroed) output fields, replicating the CPU cast's per-ray
-    // loop via Raycaster::build_ray_list (the shared /fp:strict angle math) and
-    // dispatching to breach_cuda::raycaster_cast_directional. The HEAT output is
-    // bit-identical to Raycaster::cast_source_directional; the render channels
-    // (light_rgb/dir/smoke_glow) are deterministic-exempt. Mirrors the numpy
-    // field-unpacking of the CPU cast_source_directional binding exactly. Used by
-    // the S2 bit-identity gate — NOT a live game path (the live cast is the CPU
-    // method above; this isolated entry never touches it).
-    m.def("cuda_raycaster_cast",
-          [](const Raycaster& self,
-             const LightSource& src,
-             py::array_t<float> light_rgb,
-             py::array_t<float> light_dx,
-             py::array_t<float> light_dy,
-             py::array_t<float> gas,
-             py::array_t<float> gas_absorption,
-             py::array_t<float> gas_scatter,
-             py::array_t<float> light_atten,
-             py::object heat,
-             py::object smoke_glow,
-             py::object heat_atten) {
-              auto [lrgb, h, w]  = get_3d(light_rgb);
-              auto [ldx, h2, w2] = get_2d(light_dx);
-              auto [ldy, h3, w3] = get_2d(light_dy);
-              auto gv = gas.unchecked<3>();
-              const float* gas_field = gv.data(0, 0, 0);
-              const int n_gases = static_cast<int>(gv.shape(0));
-              auto ga = gas_absorption.unchecked<2>();
-              const float* gabs = ga.data(0, 0);
-              auto gs = gas_scatter.unchecked<2>();
-              const float* gsca = gs.data(0, 0);
-              auto a = light_atten.unchecked<3>();
-              const float* atten = a.data(0, 0, 0);
-              int32_t* heat_ptr = nullptr;
-              py::array_t<int32_t> heat_arr;
-              if (!heat.is_none()) {
-                  heat_arr = heat.cast<py::array_t<int32_t>>();
-                  auto ha = heat_arr.mutable_unchecked<2>();
-                  heat_ptr = ha.mutable_data(0, 0);
-              }
-              float* glow_ptr = nullptr;
-              py::array_t<float> glow_arr;
-              if (!smoke_glow.is_none()) {
-                  glow_arr = smoke_glow.cast<py::array_t<float>>();
-                  auto gga = glow_arr.mutable_unchecked<3>();
-                  glow_ptr = gga.mutable_data(0, 0, 0);
-              }
-              const float* hatten = nullptr;
-              py::array_t<float> heat_atten_arr;
-              if (!heat_atten.is_none()) {
-                  heat_atten_arr = heat_atten.cast<py::array_t<float>>();
-                  auto haa = heat_atten_arr.unchecked<2>();
-                  hatten = haa.data(0, 0);
-              }
-              // Build the ray list in the /fp:strict TU so the angle/energy/heat
-              // math (and dx=cos/dy=sin) is bit-identical to the CPU march.
-              std::vector<breach_cuda::RayHD> rays = self.build_ray_list(src);
-              breach_cuda::raycaster_cast_directional(
-                  rays.data(), static_cast<int>(rays.size()),
-                  lrgb, ldx, ldy, heat_ptr, glow_ptr,
-                  gas_field, gabs, gsca, n_gases,
-                  atten, hatten,
-                  self.smoke_absorb_scale, self.light_cull, self.heat_cull,
-                  h, w);
-          },
-          py::arg("raycaster"), py::arg("source"), py::arg("light_rgb"),
-          py::arg("light_dx"), py::arg("light_dy"),
-          py::arg("gas"), py::arg("gas_absorption"), py::arg("gas_scatter"),
-          py::arg("light_atten"),
-          py::arg("heat") = py::none(),
-          py::arg("smoke_glow") = py::none(),
-          py::arg("heat_atten") = py::none(),
-          "S2 isolated: cast one LightSource on the GPU into the pre-zeroed output "
-          "fields; `heat` is bit-identical to Raycaster.cast_source_directional.");
+    // P4 (issue #12): the CUDA-S2 raycaster entry points that stood here --
+    // cuda_raycaster_cast, cuda_raycaster_cast_batch and the vestigial
+    // set_raycaster_backend / get_raycaster_backend flag -- are DELETED with
+    // cuda_raycaster.{cu,h}. Their only live caller, PhysicsRunner.
+    // cast_fire_heat, died at T6; the render march never had a GPU path. The
+    // radiation backend below (set_radiation_backend) is the flag the CUDA
+    // check scripts and tools/run_on_cuda.py switch now.
 
-    // S8c item 1 (the fire-FPS fix): cast a SEQUENCE of LightSources in ONE
-    // device march. Field-for-field identical to cuda_raycaster_cast above,
-    // except it concatenates build_ray_list over every source (in this
-    // /fp:strict TU) and issues a SINGLE raycaster_cast_directional — one H2D of
-    // the inputs + running heat plane, one march, one D2H — instead of one
-    // round-trip PER source. That collapses the per-tick transfer tax that made
-    // hundreds of burning tiles run at ~3 fps (2026-07-20 B5 feel-test).
-    //
-    // `heat` is BYTE-IDENTICAL to the per-source cuda_raycaster_cast loop: heat
-    // deposits are saturating integer atomic adds of non-negative, per-ray-
-    // independent deltas (heat_atomic_sat_add, cuda_raycaster.cu:41) — order-free
-    // under the monotone INT32_MAX clamp, so batching every source's rays into one
-    // launch yields the identical per-cell min(base + Σdeltas, MAX). No march
-    // arithmetic changes; the (x*7+y*13)%ray_count phase is still set per source
-    // in Python. build_ray_list is a pure function of its source (its per-source
-    // mt19937 is drawn ONLY when jitter>0; cast_fire_heat sets jitter=0), so
-    // concatenation cannot perturb any ray's bits. Design +3-lens critique:
-    // docs/s8c_item1_fire_heat_batch_impl_2026-07-21.md.
-    //
-    // RENDER CHANNELS ARE NOT BYTE-STABLE HERE: light_rgb/dx/dy/smoke_glow use
-    // float atomics whose interleave order differs from the per-source launches.
-    // They are determinism-EXEMPT (render-only) AND cast_fire_heat discards them
-    // (smoke_glow=None, rgb/dir scratch thrown away). ONLY use this entry from a
-    // caller that discards the render channels.
-    m.def("cuda_raycaster_cast_batch",
-          [](const Raycaster& self,
-             const std::vector<LightSource>& sources,
-             py::array_t<float> light_rgb,
-             py::array_t<float> light_dx,
-             py::array_t<float> light_dy,
-             py::array_t<float> gas,
-             py::array_t<float> gas_absorption,
-             py::array_t<float> gas_scatter,
-             py::array_t<float> light_atten,
-             py::object heat,
-             py::object smoke_glow,
-             py::object heat_atten) {
-              auto [lrgb, h, w]  = get_3d(light_rgb);
-              auto [ldx, h2, w2] = get_2d(light_dx);
-              auto [ldy, h3, w3] = get_2d(light_dy);
-              auto gv = gas.unchecked<3>();
-              const float* gas_field = gv.data(0, 0, 0);
-              const int n_gases = static_cast<int>(gv.shape(0));
-              auto ga = gas_absorption.unchecked<2>();
-              const float* gabs = ga.data(0, 0);
-              auto gs = gas_scatter.unchecked<2>();
-              const float* gsca = gs.data(0, 0);
-              auto a = light_atten.unchecked<3>();
-              const float* atten = a.data(0, 0, 0);
-              int32_t* heat_ptr = nullptr;
-              py::array_t<int32_t> heat_arr;
-              if (!heat.is_none()) {
-                  heat_arr = heat.cast<py::array_t<int32_t>>();
-                  auto ha = heat_arr.mutable_unchecked<2>();
-                  heat_ptr = ha.mutable_data(0, 0);
-              }
-              float* glow_ptr = nullptr;
-              py::array_t<float> glow_arr;
-              if (!smoke_glow.is_none()) {
-                  glow_arr = smoke_glow.cast<py::array_t<float>>();
-                  auto gga = glow_arr.mutable_unchecked<3>();
-                  glow_ptr = gga.mutable_data(0, 0, 0);
-              }
-              const float* hatten = nullptr;
-              py::array_t<float> heat_atten_arr;
-              if (!heat_atten.is_none()) {
-                  heat_atten_arr = heat_atten.cast<py::array_t<float>>();
-                  auto haa = heat_atten_arr.unchecked<2>();
-                  hatten = haa.data(0, 0);
-              }
-              // Concatenate every source's rays IN SOURCE ORDER (row-major from
-              // Python). Order is irrelevant to `heat` (order-free atomics) but
-              // keeps the discarded render scratch aligned with the per-source
-              // path. Each build_ray_list call runs in this /fp:strict TU — the
-              // same place the per-source entry builds its one list.
-              std::vector<breach_cuda::RayHD> rays;
-              for (const auto& src : sources) {
-                  std::vector<breach_cuda::RayHD> r = self.build_ray_list(src);
-                  rays.insert(rays.end(), r.begin(), r.end());
-              }
-              // n_rays==0 guard (empty source list, or all sources fully
-              // angular-culled). Python also guards via burning.any(); this is
-              // defense in depth. rays.size() <= INT_MAX for any playable map
-              // (8 rays/tile; int overflows only near a 16384²-all-ablaze map).
-              if (rays.empty()) return;
-              breach_cuda::raycaster_cast_directional(
-                  rays.data(), static_cast<int>(rays.size()),
-                  lrgb, ldx, ldy, heat_ptr, glow_ptr,
-                  gas_field, gabs, gsca, n_gases,
-                  atten, hatten,
-                  self.smoke_absorb_scale, self.light_cull, self.heat_cull,
-                  h, w);
-          },
-          py::arg("raycaster"), py::arg("sources"), py::arg("light_rgb"),
-          py::arg("light_dx"), py::arg("light_dy"),
-          py::arg("gas"), py::arg("gas_absorption"), py::arg("gas_scatter"),
-          py::arg("light_atten"),
-          py::arg("heat") = py::none(),
-          py::arg("smoke_glow") = py::none(),
-          py::arg("heat_atten") = py::none(),
-          "S8c: cast a SEQUENCE of LightSources in ONE device march (the fire-FPS "
-          "fix). `heat` is bit-identical to a per-source cuda_raycaster_cast loop "
-          "(order-free saturating add). Render channels differ in float-atomic "
-          "order from the per-source path and are only valid for callers that "
-          "discard rgb/dir/glow (cast_fire_heat).");
-
-    // P-R1 (docs/radiation_raycaster_extinction_ruling_2026-07-31.md
-    // A4.1-A4.2): the CUDA twin of cast_from_fire_plane (the Raycaster class
-    // method above). Builds the SAME per-tile source list as the CPU entry
-    // point (Raycaster::build_fire_ray_list — build_fire_sources, the
-    // float-parity-critical shared enumerator, folded into RayHD via
-    // build_ray_list) and concatenates it — IDENTICAL to
-    // cuda_raycaster_cast_batch's concatenation above, except the source list
-    // is built FROM THE FIRE PLANE here instead of supplied by Python. `heat`
-    // is byte-identical to cast_from_fire_plane's CPU loop (same sources,
-    // same order-free saturating add) — mechanical relocation, no march/law
-    // change. RENDER CHANNELS ARE NOT BYTE-STABLE HERE for the same reason as
-    // cuda_raycaster_cast_batch (float-atomic interleave order) — only valid
-    // for callers that discard rgb/dir/glow (cast_fire_heat).
-    m.def("cuda_raycaster_cast_from_fire_plane",
-          [](const Raycaster& self,
-             py::array_t<int32_t> fire,
-             int fire_ray_count,
-             double range_base, double range_per_intensity,
-             double intensity_base, double intensity_per_intensity,
-             std::array<float, 3> color,
-             // P-F1a: the VISIBLE-LIGHT buffers are OPTIONAL (None -> the
-             // short second cast is skipped entirely). The live sim path
-             // discards them -- the renderer draws fire light from its own
-             // blackbody selector -- and skipping saves a WHOLE extra device
-             // round-trip (upload + kernel + download), which is the dominant
-             // cost of the split, not the long rays.
-             py::object light_rgb,
-             py::object light_dx,
-             py::object light_dy,
-             py::array_t<float> gas,
-             py::array_t<float> gas_absorption,
-             py::array_t<float> gas_scatter,
-             py::array_t<float> light_atten,
-             py::array_t<float> heat_atten,
-             py::array_t<int32_t> temperature,
-             py::array_t<int32_t> heat_inv_shift,
-             py::array_t<bool> thermal_solid,
-             py::array_t<int32_t> rad_net,
-             py::array_t<int32_t> rad_amb,
-             py::array_t<int32_t> rad_flux,
-             int tick,
-             py::object smoke_glow,
-             double jitter) {
-              auto [fp, h, w] = get_2d_const(fire);
-              float* lrgb = nullptr; float* ldx = nullptr; float* ldy = nullptr;
-              py::array_t<float> lrgb_a, ldx_a, ldy_a;
-              const bool want_light = !light_rgb.is_none();
-              if (want_light) {
-                  lrgb_a = light_rgb.cast<py::array_t<float>>();
-                  ldx_a  = light_dx.cast<py::array_t<float>>();
-                  ldy_a  = light_dy.cast<py::array_t<float>>();
-                  auto lr = lrgb_a.mutable_unchecked<3>();
-                  lrgb = lr.mutable_data(0, 0, 0);
-                  auto lx = ldx_a.mutable_unchecked<2>();
-                  ldx = lx.mutable_data(0, 0);
-                  auto ly = ldy_a.mutable_unchecked<2>();
-                  ldy = ly.mutable_data(0, 0);
-              }
-              auto gv = gas.unchecked<3>();
-              const float* gas_field = gv.data(0, 0, 0);
-              const int n_gases = static_cast<int>(gv.shape(0));
-              auto ga = gas_absorption.unchecked<2>();
-              const float* gabs = ga.data(0, 0);
-              auto gs = gas_scatter.unchecked<2>();
-              const float* gsca = gs.data(0, 0);
-              auto a = light_atten.unchecked<3>();
-              const float* atten = a.data(0, 0, 0);
-              float* glow_ptr = nullptr;
-              py::array_t<float> glow_arr;
-              if (!smoke_glow.is_none()) {
-                  glow_arr = smoke_glow.cast<py::array_t<float>>();
-                  auto gga = glow_arr.mutable_unchecked<3>();
-                  glow_ptr = gga.mutable_data(0, 0, 0);
-              }
-              auto [hatten, h5, w5] = get_2d_const(heat_atten);
-              auto [tmp, h6, w6]    = get_2d_const(temperature);
-              auto [his, h7, w7]    = get_2d_const(heat_inv_shift);
-              auto [tsol, h8, w8]   = get_2d_const(thermal_solid);
-              auto [rnet, h9, w9]   = get_2d(rad_net);
-              auto [ramb, h11, w11] = get_2d(rad_amb);
-              auto [rflux, h10, w10] = get_2d(rad_flux);
-              // P-F1a: TWO ray lists and TWO device casts, mirroring the CPU
-              // entry point's split. `rays` is the EMISSION set (RADIATION_RANGE,
-              // radiation payload) for the pure-radiation fast-path kernel;
-              // `light_rays` is the SHORT visible-light set (legacy range, no
-              // payload) for the UNCHANGED directional kernel. `emit_mask` is
-              // the once-per-tick emitter plane rule 2 keys on (v7.1 item 13),
-              // built by the same shared enumerator the CPU uses.
-              std::vector<uint8_t> emit_mask;
-              std::vector<breach_cuda::RayHD> light_rays;
-              std::vector<breach_cuda::RayHD> rays = self.build_fire_ray_list(
-                  fp, h, w, fire_ray_count,
-                  range_base, range_per_intensity,
-                  intensity_base, intensity_per_intensity,
-                  color.data(), tmp, hatten, his, tsol, tick, jitter,
-                  &emit_mask, want_light ? &light_rays : nullptr);
-              // n_rays==0 guard (no emitters, or all sources fully
-              // angular-culled) — defense in depth, mirrors
-              // cuda_raycaster_cast_batch (Python also guards before calling).
-              if (rays.empty()) return (int64_t)0;
-              const int64_t contact = breach_cuda::raycaster_cast_radiation(
-                  rays.data(), static_cast<int>(rays.size()),
-                  hatten, self.heat_cull, h, w,
-                  // The E° bake (host side, from THIS raycaster's rad_scale),
-                  // the three read planes, the emitter mask, and the two signed
-                  // ledgers + D3's positive-only damage sensor.
-                  self.emissive_table(), tmp, his, emit_mask.data(),
-                  rnet, ramb, rflux);
-              if (want_light && !light_rays.empty()) {
-                  breach_cuda::raycaster_cast_directional(
-                      light_rays.data(), static_cast<int>(light_rays.size()),
-                      lrgb, ldx, ldy, /*heat=*/nullptr, glow_ptr,
-                      gas_field, gabs, gsca, n_gases,
-                      atten, hatten,
-                      self.smoke_absorb_scale, self.light_cull, self.heat_cull,
-                      h, w);
-              }
-              return contact;
-          },
-          py::arg("raycaster"), py::arg("fire"),
-          py::arg("fire_ray_count"),
-          py::arg("range_base"), py::arg("range_per_intensity"),
-          py::arg("intensity_base"), py::arg("intensity_per_intensity"),
-          py::arg("color"),
-          py::arg("light_rgb"), py::arg("light_dx"), py::arg("light_dy"),
-          py::arg("gas"), py::arg("gas_absorption"), py::arg("gas_scatter"),
-          py::arg("light_atten"), py::arg("heat_atten"),
-          py::arg("temperature"), py::arg("heat_inv_shift"),
-          py::arg("thermal_solid"), py::arg("rad_net"),
-          py::arg("rad_amb"), py::arg("rad_flux"), py::arg("tick"),
-          py::arg("smoke_glow") = py::none(),
-          py::arg("jitter") = 0.0,
-          "P-F1a: CUDA twin of cast_from_fire_plane — builds the emitter list "
-          "from the fire/temperature planes in C++ and marches it in ONE "
-          "batched device cast. `rad_net` is bit-identical to the CPU loop "
-          "(plain signed atomicAdd == the CPU's plain signed add).");
-
-    // CUDA-S2 LIVE: the raycaster backend flag (mirrors set_temperature_backend).
-    // Unlike the 6 field solvers, the live fire->heat cast is NOT dispatched in
-    // PhysicsEngine::step — it runs in Python (PhysicsRunner.cast_fire_heat, the
-    // per-burning-tile source loop). So this flag is read THERE: when True, the
-    // runner casts each source with cuda_raycaster_cast (build_ray_list -> the GPU
-    // march) instead of Raycaster.cast_source_directional; both ACCUMULATE the
-    // per-source heat into the SAME gmap.heat buffer (saturating-add on the GPU
-    // side too) with the identical per-tick clear, so the synced `heat` output is
-    // byte-identical (the S2 gate already proved the GPU march's heat == CPU; this
-    // flag wires it into the live tick to make --cuda a full 7/7). The render
-    // channels (light_rgb/dir/smoke_glow) come back to the host each call for the
-    // renderer and are deterministic-exempt. CPU is the live default (flag off).
-    m.def("set_raycaster_backend",
-          [](bool use_cuda) { breach_cuda::set_raycaster_backend_cuda(use_cuda); },
+    // ---- ray-engine-v2 P4: the radiation sweep's CUDA twin -----------------
+    // The backend flag switches PhysicsEngine::step_tail's step 2b between
+    // RadiationSweep::run and breach_cuda::radiation_sweep_step (the live CPU
+    // fallback stays). cuda_radiation_sweep_run is the ISOLATED per-call
+    // entry for the tol-0 gate: RadiationSweep.run's arguments in
+    // RadiationSweep.run's order (so a gate can drive either with one call
+    // shape), plus the ambient's second door (is_vacuum + vac_level, the twin
+    // of derive_ambient) and an optional Fleck-plane out-array. Returns
+    // (min_stream, max_stream, launches). Planes are c_style WITHOUT forcecast
+    // and noconvert, as on RadiationSweep.run; the three py::object planes are
+    // dtype-CHECKED (noconvert cannot make a py::object loud).
+    m.def("set_radiation_backend",
+          [](bool use_cuda) { breach_cuda::set_radiation_backend_cuda(use_cuda); },
           py::arg("use_cuda"),
-          "Switch PhysicsRunner.cast_fire_heat's fire->heat ray cast to the GPU "
-          "(True) or CPU (False). HEAT is bit-identical; light is render-only.");
-    m.def("get_raycaster_backend",
-          []() { return breach_cuda::raycaster_backend_is_cuda(); },
-          "True if the live fire->heat ray cast currently runs on the GPU.");
+          "Switch PhysicsEngine's radiation sweep (step 2b of step_tail) to the "
+          "GPU twin (True) or RadiationSweep.run (False).");
+    m.def("get_radiation_backend",
+          []() { return breach_cuda::radiation_backend_is_cuda(); },
+          "True if the radiation sweep currently runs on the GPU.");
+    m.def("radiation_sweep_cuda_calls",
+          []() { return breach_cuda::radiation_sweep_cuda_calls(); },
+          "How many GPU sweeps (radiation_sweep_step) have completed in this "
+          "process — the P4 gate's dispatch-fired telemetry.");
+    // The launch core's per-env counter block layout (cuda_resident.h), so a
+    // caller of cuda_radiation_sweep_resident reads the slots by name from
+    // the ONE definition rather than re-typing indices.
+    m.attr("RADIATION_SWEEP_CNT_SLOTS") = breach_cuda::RADIATION_SWEEP_CNT_SLOTS;
+    m.attr("RS_SLOT_BAD_EXTINCTION")    = breach_cuda::RS_SLOT_BAD_EXTINCTION;
+    m.attr("RS_SLOT_BAD_AMBIENT")       = breach_cuda::RS_SLOT_BAD_AMBIENT;
+    m.attr("RS_SLOT_BAD_SCALARS")       = breach_cuda::RS_SLOT_BAD_SCALARS;
+    m.attr("RS_SLOT_MIN_STREAM")        = breach_cuda::RS_SLOT_MIN_STREAM;
+    m.attr("RS_SLOT_MAX_STREAM")        = breach_cuda::RS_SLOT_MAX_STREAM;
+    m.attr("RS_BAD_HEAT_ABSORB")        = breach_cuda::RS_BAD_HEAT_ABSORB;   // P5a
+    // P6a: the light slots of the counter block, by name (appended)
+    m.attr("RS_SLOT_BAD_LIGHT_EXTINCTION") = breach_cuda::RS_SLOT_BAD_LIGHT_EXTINCTION;
+    m.attr("RS_SLOT_LIGHT_EMIT")       = breach_cuda::RS_SLOT_LIGHT_EMIT;
+    m.attr("RS_SLOT_LIGHT_ABSORB")     = breach_cuda::RS_SLOT_LIGHT_ABSORB;
+    m.attr("RS_SLOT_LIGHT_RING_IN")    = breach_cuda::RS_SLOT_LIGHT_RING_IN;
+    m.attr("RS_SLOT_LIGHT_RING_OUT")   = breach_cuda::RS_SLOT_LIGHT_RING_OUT;
+    m.attr("RS_SLOT_LIGHT_MIN_STREAM") = breach_cuda::RS_SLOT_LIGHT_MIN_STREAM;
+    m.attr("RS_SLOT_LIGHT_MAX_STREAM") = breach_cuda::RS_SLOT_LIGHT_MAX_STREAM;
+    m.def("cuda_radiation_sweep_launch_count",
+          [](int transport, int n_ordinates, int h, int w, bool light) {
+              return breach_cuda::radiation_sweep_launch_count(
+                  transport, n_ordinates, h, w, light);
+          },
+          py::arg("transport"), py::arg("n_ordinates"), py::arg("h"), py::arg("w"),
+          py::arg("light") = false,
+          "Kernel launches one sweep of this shape issues (3 bookkeeping + one "
+          "per wavefront index; design v3 section 10; with light (P6a) the h + w "
+          "- 1 anti-diagonals + one glow launch). -1 if unsupported.");
+    m.def("cuda_radiation_sweep_run",
+          [](py::array_t<int32_t, py::array::c_style> temperature,
+             py::array_t<int32_t, py::array::c_style> heat_atten_q,
+             py::array_t<int32_t, py::array::c_style> dyn_heat_atten_q,
+             py::array_t<int32_t, py::array::c_style> heat_inv_shift,
+             py::array_t<bool,    py::array::c_style> thermal_solid,
+             const EmissiveTable& e_table,
+             py::object amb_level,
+             int32_t t_amb_q, int32_t k_leak_q,
+             int transport, int n_ordinates,
+             py::array_t<int64_t, py::array::c_style> rad_net,
+             py::array_t<int64_t, py::array::c_style> rad_flux,
+             py::array_t<int64_t, py::array::c_style> rad_amb,
+             py::array_t<int64_t, py::array::c_style> rad_fluence,
+             bool fleck_enabled,
+             py::object is_vacuum, int64_t vac_level,
+             py::object fleck_out,
+             py::object gas, py::object heat_absorb_q16,
+             py::object n_bulk,
+             int32_t n_floor_q, int64_t recip_cv,
+             py::object light_atten_q, py::object dyn_light_atten_q,
+             py::object light_q, py::object light_flux_q, py::object light_glow,
+             py::object light_absorb_q16, py::object light_glow_q16,
+             py::object light_table, int light_transport,
+             py::object light_cones, py::object light_sky) -> py::tuple {
+              auto [T, h, w]      = get_2d_const(temperature);
+              auto [aq, h2, w2]   = get_2d_const(heat_atten_q);
+              auto [dq, h3, w3]   = get_2d_const(dyn_heat_atten_q);
+              auto [his, h4, w4]  = get_2d_const(heat_inv_shift);
+              auto [ts, h5, w5]   = get_2d_const(thermal_solid);
+              auto [rn, h6, w6]   = get_2d(rad_net);
+              auto [rf, h7, w7]   = get_2d(rad_flux);
+              auto [ra, h8, w8]   = get_2d(rad_amb);
+              auto [rl, h9, w9]   = get_2d(rad_fluence);
+              if (h2 != h || w2 != w || h3 != h || w3 != w || h4 != h || w4 != w ||
+                  h5 != h || w5 != w || h6 != h || w6 != w || h7 != h || w7 != w ||
+                  h8 != h || w8 != w || h9 != h || w9 != w) {
+                  throw py::value_error(
+                      "cuda_radiation_sweep_run: every plane must be (h, w)");
+              }
+              // The three optional planes: dtype and shape CHECKED, never
+              // converted (a converted copy would be a silently different
+              // input, or a discarded output).
+              const int64_t* amb = nullptr;
+              py::array_t<int64_t, py::array::c_style> amb_arr;
+              if (!amb_level.is_none()) {
+                  if (!py::isinstance<py::array_t<int64_t>>(amb_level))
+                      throw py::type_error(
+                          "cuda_radiation_sweep_run: amb_level must be an int64 "
+                          "(h, w) array or None");
+                  amb_arr = amb_level.cast<py::array_t<int64_t, py::array::c_style>>();
+                  auto [ap, ha, wa] = get_2d_const(amb_arr);
+                  if (ha != h || wa != w)
+                      throw py::value_error(
+                          "cuda_radiation_sweep_run: amb_level must be (h, w)");
+                  amb = ap;
+              }
+              const bool* vac = nullptr;
+              py::array_t<bool, py::array::c_style> vac_arr;
+              if (!is_vacuum.is_none()) {
+                  if (!py::isinstance<py::array_t<bool>>(is_vacuum))
+                      throw py::type_error(
+                          "cuda_radiation_sweep_run: is_vacuum must be a bool "
+                          "(h, w) array or None");
+                  vac_arr = is_vacuum.cast<py::array_t<bool, py::array::c_style>>();
+                  auto [vp, hv, wv] = get_2d_const(vac_arr);
+                  if (hv != h || wv != w)
+                      throw py::value_error(
+                          "cuda_radiation_sweep_run: is_vacuum must be (h, w)");
+                  vac = vp;
+              }
+              int32_t* fo = nullptr;
+              py::array_t<int32_t, py::array::c_style> fo_arr;
+              if (!fleck_out.is_none()) {
+                  if (!py::isinstance<py::array_t<int32_t>>(fleck_out))
+                      throw py::type_error(
+                          "cuda_radiation_sweep_run: fleck_out must be an int32 "
+                          "(h, w) array or None");
+                  fo_arr = fleck_out.cast<py::array_t<int32_t, py::array::c_style>>();
+                  auto [fp, hf, wf] = get_2d(fo_arr);
+                  if (hf != h || wf != w)
+                      throw py::value_error(
+                          "cuda_radiation_sweep_run: fleck_out must be (h, w)");
+                  fo = fp;
+              }
+              // P5a: the smoke term's optional group — the SAME extraction
+              // RadiationSweep.run uses (gas_group_args), so the gate's two
+              // calls read one input one way.
+              GasGroupArgs gg = gas_group_args("cuda_radiation_sweep_run", gas,
+                                               heat_absorb_q16, n_bulk, h, w);
+              // P6a: the light group -- light_group_args, the SAME extraction
+              // RadiationSweep.run uses.
+              LightGroupArgs lg = light_group_args(
+                  "cuda_radiation_sweep_run", light_atten_q, dyn_light_atten_q,
+                  light_q, light_flux_q, light_glow, light_absorb_q16,
+                  light_glow_q16, light_table, light_transport, h, w, gg.n,
+                  light_cones, light_sky, n_ordinates);
+              int64_t s_min = 0, s_max = 0;
+              int64_t lbooks[12] = {0};
+              int64_t ls_min = 0, ls_max = 0;
+              const int launches = breach_cuda::radiation_sweep_step(
+                  T, aq, dq, his, ts, e_table.table(), e_table.fine_bits,
+                  amb, vac, vac_level,
+                  t_amb_q, k_leak_q, transport, n_ordinates, h, w,
+                  rn, rf, ra, rl, fleck_enabled, fo, &s_min, &s_max,
+                  gg.gas, gg.n, gg.hq, gg.nb, n_floor_q, recip_cv,
+                  lg.on ? &lg.lc : nullptr, lbooks, &ls_min, &ls_max);
+              if (!lg.on) return py::make_tuple(s_min, s_max, launches);
+              return py::make_tuple(s_min, s_max, launches,
+                                    light_books_dict(lbooks, ls_min, ls_max));
+          },
+          py::arg("temperature").noconvert(), py::arg("heat_atten_q").noconvert(),
+          py::arg("dyn_heat_atten_q").noconvert(), py::arg("heat_inv_shift").noconvert(),
+          py::arg("thermal_solid").noconvert(), py::arg("e_table"),
+          py::arg("amb_level"),
+          py::arg("t_amb_q"), py::arg("k_leak_q"),
+          py::arg("transport"), py::arg("n_ordinates"),
+          py::arg("rad_net").noconvert(), py::arg("rad_flux").noconvert(),
+          py::arg("rad_amb").noconvert(), py::arg("rad_fluence").noconvert(),
+          py::arg("fleck_enabled") = true,
+          py::arg("is_vacuum") = py::none(), py::arg("vac_level") = (int64_t)-1,
+          py::arg("fleck_out") = py::none(),
+          py::arg("gas") = py::none(), py::arg("heat_absorb_q16") = py::none(),
+          py::arg("n_bulk") = py::none(),
+          py::arg("n_floor_q") = 0, py::arg("recip_cv") = (int64_t)0,   // P5b
+          // P6a: THE LIGHT GROUP, RadiationSweep.run's arguments
+          py::arg("light_atten_q") = py::none(), py::arg("dyn_light_atten_q") = py::none(),
+          py::arg("light_q") = py::none(), py::arg("light_flux_q") = py::none(),
+          py::arg("light_glow") = py::none(),
+          py::arg("light_absorb_q16") = py::none(), py::arg("light_glow_q16") = py::none(),
+          py::arg("light_table") = py::none(),
+          py::arg("light_transport") = (int)RadiationSweep::TRANSPORT_STEP,
+          py::arg("light_cones") = py::none(), py::arg("light_sky") = py::none(),   // P6b
+          "P4 isolated: ONE radiation sweep on the GPU (the per-call path "
+          "PhysicsEngine.step_tail dispatches), bit-identical to "
+          "RadiationSweep.run on the same arguments. amb_level None + is_vacuum "
+          "None is the uniform E0 door; amb_level None + is_vacuum given DERIVES "
+          "the ambient on the device (derive_ambient's twin). gas / "
+          "heat_absorb_q16 / n_bulk (int32, all or none) are the smoke term (P5a); "
+          "only the gases with a non-zero coefficient cross the bus; with them "
+          "n_floor_q / recip_cv (both > 0) are the gas arm's currency (P5b). "
+          "Overwrites the four int64 planes (untouched on an ingress rejection, "
+          "which raises ValueError). Returns (min_stream, max_stream, launches).");
+    m.def("cuda_radiation_sweep_resident",
+          [](int n_env, int h, int w,
+             std::uintptr_t d_temperature, std::uintptr_t d_heat_atten_q,
+             std::uintptr_t d_dyn_heat_atten_q, std::uintptr_t d_heat_inv_shift,
+             std::uintptr_t d_thermal_solid,
+             std::uintptr_t d_amb_level, std::uintptr_t d_is_vacuum,
+             std::uintptr_t d_e_table, int e_fine_bits,
+             std::uintptr_t d_vac_level, std::uintptr_t d_k_leak_q,
+             std::uintptr_t d_t_amb_q,
+             std::uintptr_t d_gas, int n_gases,
+             std::uintptr_t d_heat_absorb_q16, std::uintptr_t d_n_bulk,
+             int32_t n_floor_q, int64_t recip_cv,
+             int transport, int n_ordinates, bool fleck_enabled,
+             std::uintptr_t d_outflow, std::uintptr_t d_amb_m,
+             std::uintptr_t d_ex_cell, std::uintptr_t d_f_q24,
+             std::uintptr_t d_a_eff, std::uintptr_t d_d_eff,
+             std::uintptr_t d_rad_net, std::uintptr_t d_rad_flux,
+             std::uintptr_t d_rad_amb, std::uintptr_t d_rad_fluence,
+             std::uintptr_t d_cnt, py::object light) {
+              // P6a: the optional light group, a dict of device pointers (0 ==
+              // nullptr) + "transport" -- breach_cuda::RadiationLightDev's
+              // fields by name.
+              breach_cuda::RadiationLightDev ld{};
+              const bool lon = !light.is_none();
+              if (lon) {
+                  py::dict d = light.cast<py::dict>();
+                  auto ptr = [&](const char* k) -> std::uintptr_t {
+                      return d.contains(k) ? d[k].cast<std::uintptr_t>() : 0;
+                  };
+                  ld.d_light_atten_q     = reinterpret_cast<const int32_t*>(ptr("d_light_atten_q"));
+                  ld.d_dyn_light_atten_q = reinterpret_cast<const int32_t*>(ptr("d_dyn_light_atten_q"));
+                  ld.d_l_table           = reinterpret_cast<const int64_t*>(ptr("d_l_table"));
+                  ld.d_light_absorb_q16  = reinterpret_cast<const int32_t*>(ptr("d_light_absorb_q16"));
+                  ld.d_light_glow_q16    = reinterpret_cast<const int32_t*>(ptr("d_light_glow_q16"));
+                  ld.transport = d.contains("transport") ? d["transport"].cast<int>()
+                                                         : (int)RadiationSweep::TRANSPORT_STEP;
+                  ld.d_l_outflow    = reinterpret_cast<int64_t*>(ptr("d_l_outflow"));
+                  ld.d_l_emit       = reinterpret_cast<int64_t*>(ptr("d_l_emit"));
+                  ld.d_l_d          = reinterpret_cast<int32_t*>(ptr("d_l_d"));
+                  ld.d_l_g          = reinterpret_cast<int32_t*>(ptr("d_l_g"));
+                  ld.d_light_q      = reinterpret_cast<int64_t*>(ptr("d_light_q"));
+                  ld.d_light_flux_q = reinterpret_cast<int64_t*>(ptr("d_light_flux_q"));
+                  ld.d_light_glow   = reinterpret_cast<int64_t*>(ptr("d_light_glow"));
+                  // P6b: the sky (N, n_ord, 3) and the cone injection (index
+                  // (N, h, w), slots (n_slots, n_ord, 3)) -- optional keys
+                  ld.d_sky        = reinterpret_cast<const int64_t*>(ptr("d_sky"));
+                  ld.d_cone_index = reinterpret_cast<const int32_t*>(ptr("d_cone_index"));
+                  ld.d_cone_inj   = reinterpret_cast<const int64_t*>(ptr("d_cone_inj"));
+              }
+              return breach_cuda::radiation_sweep_launch_resident(
+                  n_env, h, w,
+                  reinterpret_cast<const int32_t*>(d_temperature),
+                  reinterpret_cast<const int32_t*>(d_heat_atten_q),
+                  reinterpret_cast<const int32_t*>(d_dyn_heat_atten_q),
+                  reinterpret_cast<const int32_t*>(d_heat_inv_shift),
+                  reinterpret_cast<const bool*>(d_thermal_solid),
+                  reinterpret_cast<const int64_t*>(d_amb_level),
+                  reinterpret_cast<const bool*>(d_is_vacuum),
+                  reinterpret_cast<const int64_t*>(d_e_table), e_fine_bits,
+                  reinterpret_cast<const int64_t*>(d_vac_level),
+                  reinterpret_cast<const int32_t*>(d_k_leak_q),
+                  reinterpret_cast<const int32_t*>(d_t_amb_q),
+                  reinterpret_cast<const int32_t*>(d_gas), n_gases,
+                  reinterpret_cast<const int32_t*>(d_heat_absorb_q16),
+                  reinterpret_cast<const int32_t*>(d_n_bulk),
+                  n_floor_q, recip_cv,
+                  transport, n_ordinates, fleck_enabled,
+                  reinterpret_cast<int64_t*>(d_outflow),
+                  reinterpret_cast<int64_t*>(d_amb_m),
+                  reinterpret_cast<int64_t*>(d_ex_cell),
+                  reinterpret_cast<int32_t*>(d_f_q24),
+                  reinterpret_cast<int32_t*>(d_a_eff),
+                  reinterpret_cast<int32_t*>(d_d_eff),
+                  reinterpret_cast<int64_t*>(d_rad_net),
+                  reinterpret_cast<int64_t*>(d_rad_flux),
+                  reinterpret_cast<int64_t*>(d_rad_amb),
+                  reinterpret_cast<int64_t*>(d_rad_fluence),
+                  reinterpret_cast<int64_t*>(d_cnt),
+                  lon ? &ld : nullptr);
+          },
+          py::arg("n_env"), py::arg("h"), py::arg("w"),
+          py::arg("d_temperature"), py::arg("d_heat_atten_q"),
+          py::arg("d_dyn_heat_atten_q"), py::arg("d_heat_inv_shift"),
+          py::arg("d_thermal_solid"), py::arg("d_amb_level"), py::arg("d_is_vacuum"),
+          py::arg("d_e_table"), py::arg("e_fine_bits"),
+          py::arg("d_vac_level"), py::arg("d_k_leak_q"),
+          py::arg("d_t_amb_q"),
+          py::arg("d_gas"), py::arg("n_gases"),
+          py::arg("d_heat_absorb_q16"), py::arg("d_n_bulk"),
+          py::arg("n_floor_q"), py::arg("recip_cv"),
+          py::arg("transport"), py::arg("n_ordinates"), py::arg("fleck_enabled"),
+          py::arg("d_outflow"), py::arg("d_amb_m"), py::arg("d_ex_cell"),
+          py::arg("d_f_q24"), py::arg("d_a_eff"), py::arg("d_d_eff"),
+          py::arg("d_rad_net"), py::arg("d_rad_flux"), py::arg("d_rad_amb"),
+          py::arg("d_rad_fluence"), py::arg("d_cnt"),
+          py::arg("light") = py::none(),
+          "P4 (TEST/BENCH): the sweep's LAUNCH CORE on raw device pointers "
+          "(CuPy .data.ptr uintptr_t; 0 == nullptr for d_amb_level/d_is_vacuum), "
+          "(N, h, w)-shaped. #78: e_fine_bits is the device table's currency "
+          "(the EmissiveTable.fine_bits it was baked with; REQUIRED -- a table "
+          "on the device carries none of its own). "
+          "P5a: d_gas (N, n_gases, h, w) / d_heat_absorb_q16 "
+          "(n_gases,) / d_n_bulk (N, h, w) are the smoke term, all three or all 0 "
+          "(with n_gases 0); P5b: n_floor_q / recip_cv are the gas arm's "
+          "currency, two host scalars, both > 0 with the smoke term (0 without); "
+          "d_a_eff / d_d_eff are required (N, h, w) int32 scratch. Launch only: "
+          "no malloc, no transfer, no sync — the caller synchronizes and reads "
+          "the (N, RADIATION_SWEEP_CNT_SLOTS) counter block. Returns the launch "
+          "count. P6a: `light` is None or a dict of the light group's device "
+          "pointers by RadiationLightDev field name (d_light_atten_q ... "
+          "d_light_glow, (N, ...)-shaped; the table and the two smoke columns "
+          "shared) plus 'transport'.");
 
     // CUDA-S3: the GPU water solver. The backend flag switches PhysicsEngine::
     // step_water's per-substep call between the CPU and GPU pipe-model solver
@@ -785,53 +1003,11 @@ PYBIND11_MODULE(breach_physics, m) {
           "S3 isolated: run the GPU water solver in place on water_depth/flow_vx/"
           "flow_vy (bit-identical to WaterSolver.step).");
 
-    // CUDA-S4a: the GPU smoke solver. The backend flag switches PhysicsEngine::
-    // run_substeps's per-gas smoke transport between the CPU SmokeDynamics::step
-    // and the GPU smoke_step (the live CPU fallback stays). cuda_smoke_step runs
-    // the 4-pass solver IN PLACE on `smoke` (one gas plane) for the isolated
-    // GPU-vs-CPU bit-identity gate. The solver's scalar dials (d_smoke /
-    // wind_diffusion_scale / advection_rate) are passed explicitly since
-    // smoke_step is a free function — mirroring the live SmokeDynamics.step
-    // binding's array args plus those scalars.
-    // (The S4b sink_hop half of this banner went with the pass — A9, 2026-08-04.)
-    m.def("set_smoke_backend",
-          [](bool use_cuda) { breach_cuda::set_smoke_backend_cuda(use_cuda); },
-          py::arg("use_cuda"),
-          "Switch PhysicsEngine's smoke pass to the GPU (True) "
-          "or CPU (False).");
-    m.def("get_smoke_backend",
-          []() { return breach_cuda::smoke_backend_is_cuda(); },
-          "True if the smoke pass currently runs on the GPU.");
-    m.def("cuda_smoke_step",
-          [](py::array_t<int32_t> smoke,        // Q16.16 int32 (one gas plane)
-             py::array_t<int32_t> wind_x,       // Q16.16 int32
-             py::array_t<int32_t> wind_y,       // Q16.16 int32
-             py::array_t<bool>  obstacles,
-             py::array_t<bool>  is_wall,
-             py::array_t<bool>  is_vacuum,
-             py::array_t<float> permeability,
-             float dt, float d_smoke,
-             float wind_diffusion_scale, float advection_rate) {
-              auto [sm, h, w]    = get_2d(smoke);
-              auto [wx, h2, w2]  = get_2d_const(wind_x);
-              auto [wy, h3, w3]  = get_2d_const(wind_y);
-              auto [obs, h4, w4] = get_2d_const(obstacles);
-              auto [wl, h5, w5]  = get_2d_const(is_wall);
-              auto [vac, h6, w6] = get_2d_const(is_vacuum);
-              auto [perm, h7, w7] = get_2d_const(permeability);
-              breach_cuda::smoke_step(sm, wx, wy, obs, wl, vac, perm, h, w, dt,
-                                      d_smoke, wind_diffusion_scale, advection_rate);
-          },
-          py::arg("smoke"), py::arg("wind_x"), py::arg("wind_y"),
-          py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
-          py::arg("permeability"), py::arg("dt"), py::arg("d_smoke"),
-          py::arg("wind_diffusion_scale"), py::arg("advection_rate"),
-          "S4a isolated: run the GPU smoke solver in place on one gas plane "
-          "(bit-identical to SmokeDynamics.step).");
-    // (cuda_smoke_sink_hop DELETED — audit Patch A / A9, 2026-08-04. It
-    // exposed breach_cuda::smoke_sink_hop, an orphaned GPU port whose CPU
-    // twin SmokeDynamics::sink_hop went with EOS refactor P3. No Python
-    // caller existed; the kernel is deleted in cuda_smoke.cu.)
+    // (CUDA-S4a's set_smoke_backend / get_smoke_backend / cuda_smoke_step are
+    // DELETED -- smoke transport v2, #12 P2a: the trace planes ride the bulk face
+    // flux inside the EOS substeps, so there is no per-call GPU smoke step to
+    // switch to or test in isolation; the resident path's old SL loop,
+    // `trace_smoke_resident`, went at P2b.)
 
     // CUDA-S5 (set_wave_backend / get_wave_backend / cuda_wave_substep) RETIRED
     // in EOS P6.0: the wave_substep solver it mirrored was deleted in P3 (the
@@ -855,7 +1031,7 @@ PYBIND11_MODULE(breach_physics, m) {
           "True if the fire pass currently runs on the GPU.");
     m.def("cuda_fire_step",
           [](py::array_t<int32_t> fire,         // Q16.16 int32 (intensity)
-             py::array_t<int32_t> atmosphere,   // Q16.16 int32 (read-only, vestigial)
+             py::array_t<int32_t> atmosphere,   // Q16.16 atm (read-only, #7 pressure factor)
              py::array_t<int32_t> n_o2,         // Q16.16 int32 (read-only, O2 gate numerator)
              py::array_t<int32_t> n_total,      // Q16.16 int32 (read-only, O2 gate denominator)
              py::array_t<int32_t> smoke,        // Q16.16 int32 (emission scatter)
@@ -872,8 +1048,11 @@ PYBIND11_MODULE(breach_physics, m) {
              float fire_T_span, float fuel_ref, float o2_frac_ext, float o2_frac_full,
              float I_min, float k_wind_fan, float k_wind_strip,
              float wall_damage, float temp_scale, float I_cap_per_avail,
+             float o2_frac_amb, float o2f_cap,   // R1 (see cuda_fire.h)
+             float hotf_cap,                     // R3 (see cuda_fire.h)
              py::object fuel_recip,                  // FUEL-FRACTION AXIS
-             py::object fire_T_ext_plane) -> py::list {  // PER-MATERIAL T_ext
+             py::object fire_T_ext_plane,            // PER-MATERIAL T_ext
+             int32_t p_ext_q, int32_t p_full_q) -> py::list {  // #7 PRESSURE FACTOR
               auto [f, h, w]     = get_2d(fire);
               auto [atm, h2, w2] = get_2d_const(atmosphere);
               auto [o2, h2b, w2b] = get_2d_const(n_o2);
@@ -911,7 +1090,8 @@ PYBIND11_MODULE(breach_physics, m) {
                   k_grow, k_die, fire_T_ext, fire_T_span, fuel_ref, o2_frac_ext,
                   o2_frac_full, I_min, k_wind_fan, k_wind_strip,
                   wall_damage, temp_scale, I_cap_per_avail,
-                  fr, tep);
+                  o2_frac_amb, o2f_cap, hotf_cap,
+                  fr, tep, p_ext_q, p_full_q);
               py::list result;
               for (const auto& [dy, dx] : destroyed) {
                   result.append(py::make_tuple(dy, dx));
@@ -930,8 +1110,19 @@ PYBIND11_MODULE(breach_physics, m) {
           // CAPACITY LAW (P-R3, ruling A3): `c`. Defaulted to the FireParams
           // default so every existing direct caller keeps a valid law.
           py::arg("I_cap_per_avail") = 2.53f,
+          // R1 (docs/fire_3c_design_2026-09-01.md): sustain span upper
+          // reference + enrichment cap. Defaulted to the FireParams defaults.
+          py::arg("o2_frac_amb") = 0.21f,
+          py::arg("o2f_cap") = 5.0f,
+          // R3 (docs/fire_3c_design_2026-09-01.md "Ruling R3"): hotf's
+          // ceiling. Defaulted to the FireParams default.
+          py::arg("hotf_cap") = 10.0f,
           py::arg("fuel_recip") = py::none(),        // fuel-fraction axis (optional)
           py::arg("fire_T_ext_plane") = py::none(),  // per-material T_ext (optional)
+          // #7 THE PRESSURE FACTOR's edges, Q16.16 atm. Defaulted to the
+          // FireParams defaults (0 / 0 == dormant, g == FP_ONE).
+          py::arg("p_ext_q") = 0,
+          py::arg("p_full_q") = 0,
           "P6.8 isolated: run ONE GPU fire step (re-derived — continuous-O2 "
           "mole-fraction gate) in place on fire/smoke/wall_hp (bit-identical to "
           "FireSimulation.step) and return the destroyed-walls list of (y,x) "
@@ -969,7 +1160,9 @@ PYBIND11_MODULE(breach_physics, m) {
              py::array_t<bool> is_vacuum,
              py::array_t<int32_t> ignition_temp_q16,  // Q16.16, read-only
              float dt, float c_v, float n_floor_heat,
-             float burn_rate, float o2_thresh_burn, float H_fuel,
+             float burn_rate, float o2_thresh_burn,
+             // T5a: the gas-side yield, SPLIT (H_fuel = M * 2^SHIFT).
+             float H_FUEL_M, int H_FUEL_SHIFT,
              float soot_yield, float fuel_per_o2, float o2_frac_ext,
              float o2_frac_full, float T_MAX_PHYS,
              // THERMAL-MASS AXIS, P-EOS (ruling §2 site 3): the OBJECT-deposit
@@ -984,7 +1177,20 @@ PYBIND11_MODULE(breach_physics, m) {
              // P-O2b (design v5.2 "F-O2b"): the EXTENDED OXYGEN DRAW — radius,
              // the permeability plane the path weight rides, and the declared
              // dem_acc slot depth. draw_r == 1 is the shipped law bit for bit.
-             int draw_r, py::object dyn_permeability, int max_claimants) -> py::tuple {
+             int draw_r, py::object dyn_permeability, int max_claimants,
+             // R3 hot-burns-faster (docs/fire_3c_design_2026-09-01.md
+             // "Ruling R3"): the demand-side hotf ramp's dials + the SAME
+             // nullable per-material T_ext plane FireSimulation reads.
+             float fire_T_ext, float fire_T_span, float hotf_cap,
+             py::object fire_T_ext_plane,
+             py::object fuel_per_o2_plane,
+             // #7 THE PRESSURE FACTOR: the materialized pressure plane (None ->
+             // g == FP_ONE) + its two edges (Q16.16 atm; 0 / 0 == dormant).
+             py::object atmosphere,
+             int32_t p_ext_q, int32_t p_full_q,
+             // #88 P2: the EOSSolver whose per-gas trace books the soot mint
+             // writes (the CPU CombustionSolver.step's `eos=` twin). OPTIONAL.
+             py::object eos) -> py::tuple {
               auto gv = gas.mutable_unchecked<3>();
               int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
               const int n_gases = static_cast<int>(gv.shape(0));
@@ -1032,17 +1238,52 @@ PYBIND11_MODULE(breach_physics, m) {
                   auto pa = perm_arr.unchecked<2>();
                   perm_ptr = pa.data(0, 0);
               }
+              // R3: the same nullable-plane idiom as the pointers above.
+              const int32_t* tep = nullptr;
+              py::array_t<int32_t> tep_arr;
+              if (!fire_T_ext_plane.is_none()) {
+                  tep_arr = fire_T_ext_plane.cast<py::array_t<int32_t>>();
+                  auto tv = tep_arr.unchecked<2>();
+                  tep = tv.data(0, 0);
+              }
+              // R14 (T5b): the same nullable-plane idiom again.
+              const int32_t* fpo = nullptr;
+              py::array_t<int32_t> fpo_arr;
+              if (!fuel_per_o2_plane.is_none()) {
+                  fpo_arr = fuel_per_o2_plane.cast<py::array_t<int32_t>>();
+                  auto fv = fpo_arr.unchecked<2>();
+                  fpo = fv.data(0, 0);
+              }
+              // #7: the pressure factor's input plane, the same nullable idiom.
+              const int32_t* atm_ptr = nullptr;
+              py::array_t<int32_t> atm_arr;
+              if (!atmosphere.is_none()) {
+                  atm_arr = atmosphere.cast<py::array_t<int32_t>>();
+                  auto av = atm_arr.unchecked<2>();
+                  atm_ptr = av.data(0, 0);
+              }
               int64_t heat_floor_hits = 0, t_max_phys_hits = 0;
               int64_t e_deposit_drop_sum = 0;   // P-E2b
+              int64_t* t_mint = nullptr; int64_t* t_clip = nullptr; int64_t* t_neg = nullptr;
+              if (!eos.is_none() && black_smoke_idx >= 0 && black_smoke_idx < n_gases) {
+                  const EOSSolver& es = eos.cast<const EOSSolver&>();
+                  es.ensure_trace_books(n_gases);
+                  t_mint = &es.trace_mint_sum_[black_smoke_idx];
+                  t_clip = &es.trace_clip_sum_[black_smoke_idx];
+                  t_neg  = &es.trace_neg_hits_[black_smoke_idx];
+              }
               breach_cuda::combustion_step(
                   gas_ptr, n_gases, o2_idx, inert_n2_idx, black_smoke_idx,
                   temp, whp, f, fl, sol, vac, ign, h, w, dt, c_v, n_floor_heat,
-                  burn_rate, o2_thresh_burn, H_fuel, soot_yield, fuel_per_o2,
+                  burn_rate, o2_thresh_burn, H_FUEL_M, H_FUEL_SHIFT,
+                  soot_yield, fuel_per_o2,
                   o2_frac_ext, o2_frac_full,
                   T_MAX_PHYS, &heat_floor_hits, &t_max_phys_hits,
                   &e_deposit_drop_sum,
                   tsol, hshift, heat_ptr, H_BED_M, H_BED_SHIFT, dacc_ptr,
-                  draw_r, perm_ptr, max_claimants);
+                  draw_r, perm_ptr, max_claimants,
+                  fire_T_ext, fire_T_span, hotf_cap, tep, fpo,
+                  atm_ptr, p_ext_q, p_full_q, t_mint, t_clip, t_neg);
               return py::make_tuple(heat_floor_hits, t_max_phys_hits,
                                     e_deposit_drop_sum);
           },
@@ -1052,7 +1293,8 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("flammable"), py::arg("solid"), py::arg("is_vacuum"),
           py::arg("ignition_temp_q16"), py::arg("dt"), py::arg("c_v"),
           py::arg("n_floor_heat"), py::arg("burn_rate"), py::arg("o2_thresh_burn"),
-          py::arg("H_fuel"), py::arg("soot_yield"), py::arg("fuel_per_o2"),
+          py::arg("H_FUEL_M"), py::arg("H_FUEL_SHIFT"),
+          py::arg("soot_yield"), py::arg("fuel_per_o2"),
           py::arg("o2_frac_ext"), py::arg("o2_frac_full"),
           py::arg("T_MAX_PHYS"),
           py::arg("thermal_solid") = py::none(),
@@ -1064,6 +1306,19 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("draw_r") = 1,
           py::arg("dyn_permeability") = py::none(),
           py::arg("max_claimants") = 4,
+          // R3 (docs/fire_3c_design_2026-09-01.md "Ruling R3"): defaulted to
+          // the CombustionSolver/FireParams defaults.
+          py::arg("fire_T_ext") = 350.0f,
+          py::arg("fire_T_span") = 180.0f,
+          py::arg("hotf_cap") = 10.0f,
+          py::arg("fire_T_ext_plane") = py::none(),
+          py::arg("fuel_per_o2_plane") = py::none(),   // R14 per-material fuel
+          // #7 THE PRESSURE FACTOR: input plane + edges (None / 0 / 0 ==
+          // dormant, g == FP_ONE — the CombustionSolver defaults).
+          py::arg("atmosphere") = py::none(),
+          py::arg("p_ext_q") = 0,
+          py::arg("p_full_q") = 0,
+          py::arg("eos") = py::none(),   // #88 P2: the soot mint's trace books
           "P6.9b isolated: run ONE GPU combustion step (the two-gather "
           "reformulation, continuous-O2 proportional demand) in place on the "
           "three gas planes + temperature + wall_hp (bit-identical to "
@@ -1413,19 +1668,8 @@ PYBIND11_MODULE(breach_physics, m) {
     m.attr("WATER_FP_SHIFT") = 16;
     m.attr("WATER_FP_ONE") = 65536;
 
-    // Bedrock cliff-patch: expose the integer smoke-CFL substep-count helper so a
-    // unit test (tests/test_bedrock_cliff_counts.py) can verify the SHIPPED C++
-    // (the real 128-bit / _umul128 path) against the Python reference mirror — not
-    // just a re-implementation. Args are the quantized Q16.16 cliff constants +
-    // the Q.32 integer max|wind|^2 (exactly what run_substeps feeds the engine).
-    m.def("smoke_cliff_count",
-          [](int32_t c4st_q, int32_t dsmoke_q, int32_t wds_q, int64_t mws_q32) {
-              return fixedpoint::smoke_cliff_count(c4st_q, dsmoke_q, wds_q, mws_q32);
-          },
-          py::arg("c4st_q"), py::arg("dsmoke_q"), py::arg("wds_q"),
-          py::arg("mws_q32"),
-          "Bedrock: integer smoke-CFL substep count "
-          "n=ceil(4*sim_time*d_smoke_max*(1+wds*max_wind_sq)) from quantized inputs.");
+    // (smoke_cliff_count — the integer smoke-CFL substep-count helper — is
+    //  DELETED with the n_smoke kit, smoke transport v2, #12.)
 
     // EOS refactor P1 (docs/eos_refactor_design.md §2.2): expose
     // bulk_flux_transport directly (not just via PhysicsEngine::run_substeps)
@@ -1493,8 +1737,8 @@ PYBIND11_MODULE(breach_physics, m) {
 
     // Q2-LIFT: the deterministic trig kit (fixed_point.h). Pure integer q16 ->
     // q16 — the cross-machine-safe replacement for the libm transcendentals in
-    // the SYNCED unit state (facing atan2, combat bullet cos/sin) and the
-    // raycaster ray dirs. Python quantizes its float radians at the boundary,
+    // the SYNCED unit state (facing atan2, combat bullet cos/sin; the render
+    // march's ray dirs until P6c deleted it). Python quantizes its float radians at the boundary,
     // calls these, and dequantizes back (exact n/65536 doubles). Exposed in
     // BOTH the CPU and CUDA builds (plain defs, no #ifdef) so every backend's
     // Python layer computes the identical bits. Accuracy is gated by
@@ -1573,6 +1817,113 @@ PYBIND11_MODULE(breach_physics, m) {
           "overflow at low n_floor_heat. Both deposit sites (combustion.cpp, "
           "temperature_solver.cpp Pass 1) use this; exposed so it can be "
           "verified directly rather than re-derived.");
+    // Ray-engine-v2 P1 (design v3 §3, §2.8): the kit's int64 twins, exposed
+    // so tests/test_fixed_point_i64_twins.py can gate them against the q16
+    // originals (equality on every int32-range input; the staged wide chain
+    // within one LSB of the one-narrow chain and finite at E°[3999]) rather
+    // than trust a Python re-derivation.
+    m.def("fp_shr_round0",
+          [](int32_t x, int s) { return fixedpoint::shr_round0(x, s); },
+          py::arg("x"), py::arg("s"),
+          "fixed_point.h shr_round0: the q16 symmetric round-toward-0 shift.");
+    m.def("fp_shr_round0_i64",
+          [](int64_t x, int s) { return fixedpoint::shr_round0_i64(x, s); },
+          py::arg("x"), py::arg("s"),
+          "fixed_point.h shr_round0_i64: the int64 twin of shr_round0 (same "
+          "symmetric round-toward-0 shift, 64-bit operand).");
+    // M1 (docs/thin_material_rows_design_2026-09-20.md section 5): the
+    // SIGNED-EXPONENT twin and the capacity kit it serves, exposed so
+    // tests/test_m1_negative_thermal_mass_exponents.py can gate the exact
+    // integer identities rather than re-derive them in Python. `pow2_snap`
+    // returning a negative exponent is meaningless unless BOTH of these hold
+    // it, and they are the only two places a negative `heat_inv_shift` becomes
+    // a number.
+    m.def("fp_shr_round0_signed_i64",
+          [](int64_t x, int s) {
+              return fixedpoint::shr_round0_signed_i64(x, s);
+          },
+          py::arg("x"), py::arg("s"),
+          "fixed_point.h shr_round0_signed_i64: divide by 2^s for a SIGNED s. "
+          "s >= 0 is shr_round0_i64 exactly; s < 0 MULTIPLIES by 2^-s, which "
+          "is exact (a left shift loses nothing).");
+    // (rad_pair_budget_s -- the old cast's flux-limiter budget -- is deleted
+    //  with RAD_LIM_SHIFT at P4: its last caller was cuda_raycaster.cu.)
+    m.def("conduction_cell_capacity_q",
+          [](bool is_ts, int32_t heat_inv_shift, int32_t n_raw,
+             int32_t n_floor_q, int32_t c_v_q) {
+              int64_t cap_used = 0, cap_real = 0;
+              conduction::cell_capacity_q(is_ts, heat_inv_shift, n_raw,
+                                          n_floor_q, c_v_q,
+                                          &cap_used, &cap_real);
+              return py::make_tuple(cap_used, cap_real);
+          },
+          py::arg("is_ts"), py::arg("heat_inv_shift"), py::arg("n_raw"),
+          py::arg("n_floor_q"), py::arg("c_v_q"),
+          "temperature_solver.h conduction::cell_capacity_q -> "
+          "(cap_used, cap_real). THE one capacity law both backends call.");
+    m.attr("CAP_SHIFT_MIN") = conduction::CAP_SHIFT_MIN;
+    m.attr("CAP_SHIFT_MAX") = conduction::CAP_SHIFT_MAX;
+
+    m.def("fp_deposit_dT_wide_i64",
+          [](int64_t deposit, int32_t recip_n_q, int64_t recip_cv, int fine_bits) {
+              return fixedpoint::deposit_dT_wide_i64(deposit, recip_n_q,
+                                                      recip_cv, fine_bits);
+          },
+          py::arg("deposit"), py::arg("recip_n_q"), py::arg("recip_cv"),
+          py::arg("fine_bits") = 0,
+          "fixed_point.h deposit_dT_wide_i64: the STAGED wide chain "
+          "mul128_shr(mul128_shr(deposit, recip_n_q, 16), recip_cv, 32 + fine_bits) "
+          "— an int64 first operand, two floors; within one LSB of "
+          "deposit_dT_wide_q16 on int32-range deposits. #78: fine_bits is the "
+          "currency of a deposit in the sweep's fine heat currency, converted at "
+          "the chain's final narrow (0: whole heat counts).");
+    // #88: THE TRACE CURRENCY, its constant and its kit, exposed so the Python
+    // twins (gas_fixed.TRACE_FINE_BITS / quantize_trace / trace_from_bulk /
+    // trace_density_shr, sweep_ref_q's) are held to the engine's value for value
+    // (tests/test_trace_currency.py, on the CPU module and -- inside
+    // run_cuda_script -- the CUDA one, so a stale build_cuda fails it).
+    m.attr("TRACE_FINE_BITS") = fixedpoint::TRACE_FINE_BITS;
+    m.attr("TRACE_SHIFT") = fixedpoint::TRACE_SHIFT;
+    m.attr("TRACE_CELL_MAX") = fixedpoint::TRACE_CELL_MAX;
+    m.def("fp_trace_add_sat",
+          [](int32_t s, int64_t add) {
+              int64_t clip = 0, neg = 0;
+              const int32_t stored = fixedpoint::trace_add_sat(s, add, &clip, &neg);
+              return py::make_tuple(stored, clip, neg);
+          },
+          py::arg("s"), py::arg("add"),
+          "fixed_point.h trace_add_sat (#88 P2): the counted int32 saturation, "
+          "from above only. Returns (stored, clip, neg_hits): a sum above "
+          "TRACE_CELL_MAX stores it and returns the excess as clip; a negative "
+          "sum is COUNTED (neg_hits = 1) and stored unclamped.");
+    m.def("fp_quantize_trace",
+          [](double v) { return fixedpoint::quantize_trace(v); },
+          py::arg("v"),
+          "fixed_point.h quantize_trace (#88): a real trace density -> the trace "
+          "currency, round-half-away, INT64 (never narrowed), range-checked.");
+    m.def("fp_trace_from_bulk",
+          [](int64_t q) { return fixedpoint::trace_from_bulk(q); },
+          py::arg("q"),
+          "fixed_point.h trace_from_bulk (#88): a bulk-count mass entering a "
+          "trace plane, q * 2^TRACE_FINE_BITS.");
+    m.def("fp_trace_density_shr",
+          [](int64_t s) { return fixedpoint::trace_density_shr(s); },
+          py::arg("s"),
+          "fixed_point.h trace_density_shr (#88): a density sum over trace planes "
+          "(coefficients Q16 per real unit) -> a Q16 fraction, s >> TRACE_SHIFT.");
+    // #78: THE ONE CONVERSION out of the sweep's fine heat currency, exposed so
+    // its Python twins (sweep_ref_q.fine_heat_shr, optics_fixed.fine_heat_shr)
+    // are held to it value for value (tests/test_sweep_fine_currency.py).
+    m.def("fp_fine_heat_shr",
+          [](int64_t x, int s, int fine_bits) {
+              return fixedpoint::fine_heat_shr(x, s, fine_bits);
+          },
+          py::arg("x"), py::arg("s"), py::arg("fine_bits"),
+          "fixed_point.h fine_heat_shr (#78): x in a currency 2^fine_bits finer "
+          "than one heat count, divided by 2^(s + fine_bits), rounded toward zero, "
+          "SYMMETRIC (shr_round0_signed_i64 at s + fine_bits): s = heat_inv_shift "
+          "gives a thermal solid's temperature step, s = 0 whole heat counts, "
+          "s = -16 the Q16 heat currency the counters are in (exact).");
 
     // S2a: the explicit WAVE state (wave_p / wave_v / wave_source) is now int32
     // Q16.16 (same 2^16 scale as water/heat). Python (gamemap fields, field
@@ -1715,35 +2066,8 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
            py::arg("permeability"), py::arg("dt"));
 
-    // --- SmokeDynamics (uses precomputed wind from AtmosphereSolver) ---
-    py::class_<SmokeDynamics>(m, "SmokeDynamics")
-        .def(py::init<>())
-        .def_readwrite("d_smoke",               &SmokeDynamics::d_smoke)
-        .def_readwrite("advection_rate",         &SmokeDynamics::advection_rate)
-        .def_readwrite("wind_diffusion_scale",   &SmokeDynamics::wind_diffusion_scale)
-        // (sink_strength / vent_hops / sink_hop DELETED — EOS refactor P3,
-        // decisions.md #3: native venting replaces the BFS sink-pull.)
-        .def("step", [](const SmokeDynamics& self,
-                        py::array_t<int32_t> smoke,        // S2b: Q16.16 int32
-                        py::array_t<int32_t> wind_x,       // S2c: Q16.16 int32
-                        py::array_t<int32_t> wind_y,       // S2c: Q16.16 int32
-                        py::array_t<bool>  obstacles,
-                        py::array_t<bool>  is_wall,
-                        py::array_t<bool>  is_vacuum,
-                        py::array_t<float> permeability,
-                        float dt) {
-            auto [sm, h, w] = get_2d(smoke);
-            auto [wx, h2, w2] = get_2d_const(wind_x);
-            auto [wy, h3, w3] = get_2d_const(wind_y);
-            auto [obs, h4, w4] = get_2d_const(obstacles);
-            auto [wl, h5, w5] = get_2d_const(is_wall);
-            auto [vac, h6, w6] = get_2d_const(is_vacuum);
-            auto [perm, h7, w7] = get_2d_const(permeability);
-            self.step(sm, wx, wy, obs, wl, vac, perm, h, w, dt);
-        }, py::arg("smoke"), py::arg("wind_x"), py::arg("wind_y"),
-           py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
-           py::arg("permeability"),
-           py::arg("dt"));
+    // (--- SmokeDynamics binding DELETED — smoke transport v2, #12: the trace
+    //  planes ride the bulk face flux inside the EOS; no SL step remains.)
 
     // --- FireSimulation (signed-logistic feedback; fire_design_proposal §2/§3) ---
     py::class_<FireParams>(m, "FireParams")
@@ -1758,11 +2082,21 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("fire_T_span",    &FireParams::fire_T_span)
         .def_readwrite("fuel_ref",       &FireParams::fuel_ref)
         .def_readwrite("o2_frac_ext",    &FireParams::o2_frac_ext)
-        // FULL-RESPONSE REFERENCE SPLIT: o2_frac_full is the span's upper end
-        // (pure O2, 1.0, NOT map-overridden); o2_frac_amb is the ambient record
-        // and is no longer read by the availability law.
+        // R1 (fire session #12): o2_frac_amb is now LIVE — the sustain law's
+        // span upper reference. o2_frac_full is RETIRED from sustain (kept
+        // only for combustion.cpp's DEMAND-side o2f_j, unchanged).
         .def_readwrite("o2_frac_full",   &FireParams::o2_frac_full)
         .def_readwrite("o2_frac_amb",    &FireParams::o2_frac_amb)
+        .def_readwrite("o2f_cap",        &FireParams::o2f_cap)
+        // #7 THE PRESSURE FACTOR's edges — Q16.16 atm, quantized by
+        // PhysicsRunner from [physics.fire] p_ext_atm / p_full_atm. 0 / 0 (the
+        // default) == dormant, g == FP_ONE (see fire_simulation.h).
+        .def_readwrite("p_ext_q",        &FireParams::p_ext_q)
+        .def_readwrite("p_full_q",       &FireParams::p_full_q)
+        // R3 (fire session #12): hotf_cap — the ceiling on the UNCAPPED-AT-1
+        // hotf ramp read by the demand/destruction rate sites. `hot` itself
+        // (the sustain gate) is unaffected and stays capped at 1.
+        .def_readwrite("hotf_cap",       &FireParams::hotf_cap)
         .def_readwrite("P_min",          &FireParams::P_min)
         .def_readwrite("P_full",         &FireParams::P_full)
         .def_readwrite("I_min",          &FireParams::I_min)
@@ -1866,20 +2200,8 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_property("no_face",
             &TemperatureSolver::get_no_face,
             &TemperatureSolver::set_no_face)
-        // Ambient cooling dials (§3.3), bound from config [physics.thermal].
-        .def_property("cool_shift",
-            &TemperatureSolver::get_cool_shift,
-            &TemperatureSolver::set_cool_shift)
-        .def_property("cool_shift_vacuum",
-            &TemperatureSolver::get_cool_shift_vacuum,
-            &TemperatureSolver::set_cool_shift_vacuum)
-        // COOL-SHIFT AXIS (2026-07-30): the low clamp applied when the global
-        // vacuum offset (cool_shift - cool_shift_vacuum) is subtracted from a
-        // tile's per-material shift. Bound from config [physics.thermal]
-        // SHIFT_MIN — the same floor materials.py validates the column against.
-        .def_property("cool_shift_floor",
-            &TemperatureSolver::get_cool_shift_floor,
-            &TemperatureSolver::set_cool_shift_floor)
+        // T5b step 7 / R1: the three `cool_shift*` properties stood here.
+        // Pass 3 is deleted, so the dials do not exist.
         .def_property("o2_vacuum_thresh",
             &TemperatureSolver::get_o2_vacuum_thresh,
             &TemperatureSolver::set_o2_vacuum_thresh)
@@ -1910,7 +2232,7 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readonly("e_cond_trunc_sum",   &TemperatureSolver::e_cond_trunc_sum)
         .def_readonly("e_cond_cap_sum",     &TemperatureSolver::e_cond_cap_sum)
         .def_readonly("cond_limit_hits",    &TemperatureSolver::cond_limit_hits)
-        .def_readonly("e_cool_sum",         &TemperatureSolver::e_cool_sum)
+        // T5b step 7: `e_cool_sum` was bound here; Pass 3 is gone.
         .def_readonly("e_vac_wipe_sum",     &TemperatureSolver::e_vac_wipe_sum)
         .def_readonly("e_ring_pin_sum",     &TemperatureSolver::e_ring_pin_sum)
         // P-E2b (design §2.2/§2.5, L3-7): the Pass-1 attenuation-drop energy
@@ -1926,15 +2248,29 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readonly("e_gas_rail_sum",     &TemperatureSolver::e_gas_rail_sum)
         // --- arc #54 P-G5: the SOLID side's own closure identity -----------
         //   Δ solid_energy_books_sum == e_solid_deposit_sum + e_solid_cond_sum
-        //                              + e_thermostat_sum
         // (temperature_solver.h carries the full statement). Same
         // accumulate-across-step() idiom as the gas-side counters above;
         // `solid_energy_books_sum` alone is a SNAPSHOT (recomputed, not
         // accumulated, every step()).
         .def_readonly("e_solid_deposit_sum",     &TemperatureSolver::e_solid_deposit_sum)
         .def_readonly("e_solid_cond_sum",        &TemperatureSolver::e_solid_cond_sum)
-        .def_readonly("e_thermostat_sum",        &TemperatureSolver::e_thermostat_sum)
+        // T5b step 7: `e_thermostat_sum` was bound here; the thermostat is
+        // a TERM REMOVED from the identity, not a zeroed one.
         .def_readonly("solid_energy_books_sum",  &TemperatureSolver::solid_energy_books_sum)
+        // Ray-engine-v2 P1: the Pass-1 maximum-principle clamp's counter.
+        .def_readonly("rad_clamp_hits",          &TemperatureSolver::rad_clamp_hits)
+        // P5c (design v3 §2.8 / §8.4): the energy that clamp WITHHOLDS, on
+        // solids and gas, priced at the cell's real capacity (the heat
+        // currency e_solid_deposit_sum books landings in). Not a closure
+        // term: the books close on what landed.
+        .def_readonly("e_rad_clamp_drop_sum",    &TemperatureSolver::e_rad_clamp_drop_sum)
+        // P5c follow-up (§8.4): the sweep->fold boundary's other two exits,
+        // counted -- rad_net on a gas cell outside the accountable set
+        // (exported with the boundary), and the floored chain's unlanded
+        // remainder below n_floor_heat. Same heat currency, signed, not
+        // closure terms (neither touches gas_energy).
+        .def_readonly("e_rad_boundary_export_sum", &TemperatureSolver::e_rad_boundary_export_sum)
+        .def_readonly("e_rad_floor_drop_sum",      &TemperatureSolver::e_rad_floor_drop_sum)
         // P2: wind_x/wind_y/dt are OPTIONAL (default None/0.0) so the shipped
         // direct-binding call sites (tests/test_temperature_*.py,
         // tests/cuda_s1_check.py — all pre-P2, 7 positional args) keep working
@@ -1960,8 +2296,14 @@ PYBIND11_MODULE(breach_physics, m) {
                         float dt,
                         py::object n_bulk_obj,
                         py::object thermal_solid_obj,
-                        py::object cool_shift_grid_obj,
-                        py::object rad_net_obj) {
+                        py::object rad_net_obj,
+                        py::object rad_fluence_obj,
+                        py::object e_table_obj,
+                        bool clamp_enabled,
+                        py::object gas_energy_obj,
+                        int32_t t_amb_q,
+                        py::object is_ambient_obj,
+                        int rad_fine_bits) {
             auto [temp, h, w]     = get_2d(temperature);
             auto [hp, h2, w2]     = get_2d_const(heat);
             auto [shift, h3, w3]  = get_2d_const(heat_inv_shift);
@@ -2012,315 +2354,561 @@ PYBIND11_MODULE(breach_physics, m) {
                 auto [tsp, ht, wt] = get_2d_const(tsol_arr);
                 tsol = tsp;
             }
-            // COOL-SHIFT AXIS (2026-07-30): `cool_shift_grid` is OPTIONAL by the
-            // same idiom — None -> nullptr, and Pass 3 uses the solver's scalar
-            // `cool_shift` for every tile, i.e. the exact pre-axis single-global
-            // behaviour every shipped direct caller (tests/test_temperature_*)
-            // relies on. The engine's step_tail always passes GameMap.cool_shift.
-            const int32_t* csg = nullptr;
-            py::array_t<int32_t> csg_arr;
-            if (!cool_shift_grid_obj.is_none()) {
-                csg_arr = cool_shift_grid_obj.cast<py::array_t<int32_t>>();
-                auto [csp, hc, wc] = get_2d_const(csg_arr);
-                csg = csp;
-            }
+            // T5b step 7 / R1: the `cool_shift_grid` cast stood here.
             // P-R4 (ruling A1.7): `rad_net` is OPTIONAL by the SAME idiom —
             // None -> nullptr and Pass 1 does no radiation fold, i.e. exactly
             // the pre-P-R4 behaviour every shipped direct caller relies on.
-            const int32_t* rnet = nullptr;
-            py::array_t<int32_t> rnet_arr;
+            //
+            // P3a-1: the plane is int64, and THE DTYPE IS CHECKED, NOT
+            // CONVERTED. `.noconvert()` on this py::arg would be INERT: the
+            // argument is a `py::object` (it has to be, for the None idiom),
+            // so there is no overload pass to annotate and `.cast<>()` runs
+            // py::array_t's default forcecast directly. An int32 caller would
+            // get a silently widened temporary with no diagnostic at all --
+            // exactly the trap design row 26 names. The explicit isinstance +
+            // type_error below is the only loud form for this idiom, and it is
+            // the house pattern (`rad_fluence`, a few lines down, P1).
+            const int64_t* rnet = nullptr;
+            py::array_t<int64_t, py::array::c_style> rnet_arr;
             if (!rad_net_obj.is_none()) {
-                rnet_arr = rad_net_obj.cast<py::array_t<int32_t>>();
+                if (!py::isinstance<py::array_t<int64_t>>(rad_net_obj)) {
+                    throw py::type_error(
+                        "TemperatureSolver.step: rad_net must be an int64 numpy "
+                        "array (the radiation accumulator widened at P3a-1), "
+                        "not a narrower dtype");
+                }
+                rnet_arr = rad_net_obj.cast<py::array_t<int64_t, py::array::c_style>>();
                 auto [rnp, hr, wr] = get_2d_const(rnet_arr);
                 rnet = rnp;
             }
+            // Ray-engine-v2 P1 (design v3 §2.8, gate 5): the maximum-principle
+            // clamp, by the SAME py::none idiom — `rad_fluence` (the sweep's Φ
+            // plane, int64 (h, w)) and `e_table` (an EmissiveTable, the
+            // engine's owner) are both optional; with EITHER None, or with
+            // `clamp_enabled=False`, Pass 1 runs no clamp and the fold is
+            // byte-identical to today. `clamp_enabled` is a keyword on THIS
+            // binding, never a global a test flips (hidden state that forks a
+            // digest); it exists so gate 5 can reproduce the un-clamped
+            // runaway on the same scene. rad_fluence is a read-only INPUT
+            // here, but its dtype is still checked rather than converted, so
+            // a stale int32 caller fails loudly instead of being widened.
+            const int64_t* rflu = nullptr;
+            const int64_t* etab = nullptr;
+            py::array_t<int64_t, py::array::c_style> rflu_arr;
+            if (clamp_enabled && !rad_fluence_obj.is_none() && !e_table_obj.is_none()) {
+                if (!py::isinstance<py::array_t<int64_t>>(rad_fluence_obj)) {
+                    throw py::type_error(
+                        "TemperatureSolver.step: rad_fluence must be an int64 "
+                        "numpy array (the sweep's Φ plane), not a narrower dtype");
+                }
+                rflu_arr = rad_fluence_obj.cast<py::array_t<int64_t, py::array::c_style>>();
+                auto rf = rflu_arr.unchecked<2>();
+                rflu = rf.data(0, 0);
+                etab = e_table_obj.cast<const EmissiveTable&>().table();
+            }
+            // P5c: the ENERGY FORM on the direct binding, so the fold's gas
+            // branch — which exists only there (a gas cell's rad_net is folded
+            // through the gas-energy seam or not at all) — can be driven and
+            // held to sweep_ref_q.fold_pass1_gas bit for bit. `gas_energy` is
+            // the conserved field, (h, w) int64, MUTATED (in/out); its dtype is
+            // CHECKED, never converted — a converted copy would be a silently
+            // discarded temporary, the design-row-26 trap. `t_amb_q` is T_AMB_K
+            // raw (the engine passes 293 << 16), read only with gas_energy.
+            // None (the default) keeps the pre-#54 T-form law bit for bit.
+            int64_t* ge = nullptr;
+            py::array_t<int64_t, py::array::c_style> ge_arr;
+            if (!gas_energy_obj.is_none()) {
+                if (!py::isinstance<py::array_t<int64_t>>(gas_energy_obj)) {
+                    throw py::type_error(
+                        "TemperatureSolver.step: gas_energy must be an int64 numpy "
+                        "array (the conserved field, mutated in place)");
+                }
+                ge_arr = gas_energy_obj.cast<py::array_t<int64_t, py::array::c_style>>();
+                if (ge_arr.ptr() != gas_energy_obj.ptr()) {
+                    // a non-contiguous caller got a COPY: its writes would vanish
+                    throw py::type_error(
+                        "TemperatureSolver.step: gas_energy must be a C-contiguous "
+                        "int64 array (it is written in place)");
+                }
+                auto [gep, hg, wg] = get_2d(ge_arr);
+                if (hg != h || wg != w) {
+                    throw py::value_error("TemperatureSolver.step: gas_energy must be (h, w)");
+                }
+                ge = gep;
+            }
+            // P5c: the ambient ring, OPTIONAL by the same idiom — None ->
+            // nullptr (a space map). The ring is outside the accountable set,
+            // so a gate can show the gas branch leaves a ring cell alone.
+            const bool* amb = nullptr;
+            py::array_t<bool> amb_arr;
+            if (!is_ambient_obj.is_none()) {
+                amb_arr = is_ambient_obj.cast<py::array_t<bool>>();
+                auto [ap, ha, wa] = get_2d_const(amb_arr);
+                amb = ap;
+            }
+            // #78: rad_net's currency -- the table's when one is handed
+            // (clamp on OR off: the clamp is a switch, the currency is a fact
+            // about the plane), else whole heat counts; an explicit
+            // rad_fine_bits must agree with the table (rad_currency_arg).
+            const int rfb = rad_currency_arg("TemperatureSolver.step",
+                                             e_table_obj, rad_fine_bits);
             self.step(temp, hp, shift, fs, sol, vac, atm, nb, wx, wy, h, w, dt,
-                      nullptr, tsol, csg, rnet);
+                      amb, tsol, rnet, ge, t_amb_q, rflu, etab, rfb);
         }, py::arg("temperature"), py::arg("heat"),
            py::arg("heat_inv_shift"), py::arg("face_shift"),
            py::arg("solid"), py::arg("is_vacuum"), py::arg("atmosphere"),
            py::arg("wind_x") = py::none(), py::arg("wind_y") = py::none(),
            py::arg("dt") = 0.0f, py::arg("n_bulk") = py::none(),
            py::arg("thermal_solid") = py::none(),
-           py::arg("cool_shift_grid") = py::none(),
-           py::arg("rad_net") = py::none());
+           py::arg("rad_net") = py::none(),
+           py::arg("rad_fluence") = py::none(),     // ray-engine-v2 P1: the clamp's Φ
+           py::arg("e_table") = py::none(),         // ray-engine-v2 P1: an EmissiveTable
+           py::arg("clamp_enabled") = true,         // ray-engine-v2 P1: gate 5's switch
+           py::arg("gas_energy") = py::none(),      // P5c: the energy form (int64, in/out)
+           py::arg("t_amb_q") = 0,                  // P5c: T_AMB_K raw, with gas_energy
+           py::arg("is_ambient") = py::none(),      // P5c: the ambient ring (optional)
+           py::arg("rad_fine_bits") = -1);          // #78: rad_net's currency (-1: the table's, else 0)
 
-    // --- Raycaster ---
-    py::class_<LightSource>(m, "LightSource")
+    // --- EmissiveTable + RadiationSweep (ray-engine-v2 P1) --------------
+    // The E° table's ONLY owner (PhysicsEngine.emissive; the old Raycaster's
+    // vestigial copy went with the class at P6c) and the sweep
+    // (PhysicsEngine.radiation, step 2b of step_tail). Both are ALSO
+    // constructible standalone so the gates can drive them on arbitrary
+    // grids: tests/test_emissive_table.py, test_radiation_sweep_reference.py
+    // (gate 0, bit for bit against sweep_ref_q.py), test_radiation_sweep_gates.py.
+    py::class_<EmissiveTable>(m, "EmissiveTable")
         .def(py::init<>())
-        .def_readwrite("x", &LightSource::x)
-        .def_readwrite("y", &LightSource::y)
-        .def_readwrite("max_range", &LightSource::max_range)
-        .def_readwrite("ray_count", &LightSource::ray_count)
-        .def_readwrite("angle_center", &LightSource::angle_center)
-        .def_readwrite("angle_spread", &LightSource::angle_spread)
-        .def_readwrite("intensity", &LightSource::intensity)
-        .def_readwrite("heat", &LightSource::heat)
-        .def_readwrite("jitter", &LightSource::jitter)
-        // RGB tint exposed as a 3-tuple (r, g, b). Default white {1,1,1}.
-        .def_property("color",
-            [](const LightSource& s) {
-                return py::make_tuple(s.color[0], s.color[1], s.color[2]);
-            },
-            [](LightSource& s, const std::array<float, 3>& c) {
-                s.color[0] = c[0]; s.color[1] = c[1]; s.color[2] = c[2];
-            });
-
-    py::class_<Raycaster>(m, "Raycaster")
-        .def(py::init<>())
-        .def_readwrite("smoke_absorption", &Raycaster::smoke_absorption)
-        .def_readwrite("smoke_absorb_scale", &Raycaster::smoke_absorb_scale)
-        // Pure-density propagation cull floors (engine/08 §The march): per-channel
-        // survival thresholds. `light_cull` = ε_rgb (render), `heat_cull` = ε_heat
-        // (gameplay/damage, its own dial so heat-shield materials can diverge).
-        .def_readwrite("light_cull", &Raycaster::light_cull)
-        .def_readwrite("heat_cull", &Raycaster::heat_cull)
-        // P-R4 radiation dials (ruling A1). `rad_scale` is the E° bake's
-        // emission calibration (heat counts per K⁴); the table re-bakes lazily
-        // whenever it moves, so setting the dial is enough. `T_emit_gate` is the
-        // warm-emitter threshold in GAME temperature units.
-        .def_readwrite("rad_scale", &Raycaster::rad_scale)
-        // Canonical game-T -> Kelvin map (temperature_scale_unification design
-        // §2/§3a): kelvin_ambient + k_temp_to_kelvin owned by config
-        // [physics.temperature_scale], assigned here by physics_runner.
-        .def_readwrite("kelvin_ambient", &Raycaster::kelvin_ambient)
-        .def_readwrite("k_temp_to_kelvin", &Raycaster::k_temp_to_kelvin)
-        .def_readwrite("T_emit_gate", &Raycaster::T_emit_gate)
-        // P-F1a / v7 rule 4: RADIATION_RANGE — the emission ray's reach, in
-        // tiles. A STABILITY-CLASS CONSTANT, not a feel dial: it must be >= the
-        // grid diagonal of the largest shipping level (128x256 => 286.22, so the
-        // floor is 287) or "genuinely escapes" stops meaning "left the world"
-        // and the corridor leak reopens. `range_base`/`range_per_intensity` no
-        // longer bound an emission ray — they are render/legacy duty and D3's
-        // damage_range guard.
-        .def_readonly_static("RADIATION_RANGE_MIN", &Raycaster::RADIATION_RANGE_MIN)
-        .def_readwrite("radiation_range", &Raycaster::radiation_range)
-        .def("bake_emissive_table", &Raycaster::bake_emissive_table,
-             "P-R4: (re)bake the black-body E° table from the current "
-             "rad_scale. Idempotent; the cast entry points bake lazily too.")
-        .def("emissive_table", [](const Raycaster& self) {
-                const int64_t* t = self.emissive_table();
-                return py::array_t<int64_t>(E_TABLE_SIZE, t);
+        .def_readwrite("rad_scale",        &EmissiveTable::rad_scale)
+        .def_readwrite("kelvin_ambient",   &EmissiveTable::kelvin_ambient)
+        .def_readwrite("k_temp_to_kelvin", &EmissiveTable::k_temp_to_kelvin)
+        // #78: THE TABLE'S CURRENCY -- 2^fine_bits of its integers per heat
+        // count; E_FINE_BITS by default (the engine's), 0 bakes the pre-#78
+        // coarse table (the integer reference's resolving instrument). Every
+        // entry that hands this table to the C++ hands its currency with it.
+        .def_readwrite("fine_bits",        &EmissiveTable::fine_bits)
+        .def("bake", &EmissiveTable::bake,
+             "Bake (or re-bake) the E° table from the current dials -- in the "
+             "currency `fine_bits` (rad_scale * 2^fine_bits; [0, E_FINE_BITS], "
+             "ValueError outside it).")
+        .def("table", [](const EmissiveTable& self) {
+                 return py::array_t<int64_t>(E_TABLE_SIZE, self.table());
              },
-             "P-F1a: a COPY of the baked E° table (E_TABLE_SIZE INT64 entries, "
-             "4 game-units per bucket) — the oracle for the bake's tests. The "
-             "table widened from int32 at P-F1a (L2-B3): its old INT32_MAX "
-             "saturation above T_game ~ 1768 was a silent ceiling on the law.")
-        // Per-channel Beer-Lambert absorption (R,G,B) — exposed as a 3-tuple.
-        .def_property("smoke_absorption_rgb",
-            [](const Raycaster& r) {
-                return py::make_tuple(r.smoke_absorption_rgb[0],
-                                      r.smoke_absorption_rgb[1],
-                                      r.smoke_absorption_rgb[2]);
-            },
-            [](Raycaster& r, const std::array<float, 3>& c) {
-                r.smoke_absorption_rgb[0] = c[0];
-                r.smoke_absorption_rgb[1] = c[1];
-                r.smoke_absorption_rgb[2] = c[2];
-            })
-        // Per-channel additive scatter/glow albedo (R,G,B) — 3-tuple.
-        .def_property("smoke_scatter_albedo",
-            [](const Raycaster& r) {
-                return py::make_tuple(r.smoke_scatter_albedo[0],
-                                      r.smoke_scatter_albedo[1],
-                                      r.smoke_scatter_albedo[2]);
-            },
-            [](Raycaster& r, const std::array<float, 3>& c) {
-                r.smoke_scatter_albedo[0] = c[0];
-                r.smoke_scatter_albedo[1] = c[1];
-                r.smoke_scatter_albedo[2] = c[2];
-            })
-        // (P-R1, 2026-07-31: update_from_fire + coarse_cluster deleted here —
-        // no production caller; see raycaster.h's tombstone comment and
-        // docs/radiation_raycaster_extinction_ruling_2026-07-31.md A4.2.)
-        .def("cast_source_directional",
-             [](const Raycaster& self,
-                const LightSource& src,
-                py::array_t<float> light_rgb,
-                py::array_t<float> light_dx,
-                py::array_t<float> light_dy,
-                py::array_t<float> gas,
-                py::array_t<float> gas_absorption,
-                py::array_t<float> gas_scatter,
-                py::array_t<float> light_atten,
-                py::object heat,
-                py::object smoke_glow,
-                py::object heat_atten) {
-            auto [lrgb, h, w]  = get_3d(light_rgb);
-            auto [ldx, h2, w2] = get_2d(light_dx);
-            auto [ldy, h3, w3] = get_2d(light_dy);
-            // Multi-gas density fields (engine/05 §6.2): contiguous (n_gases,h,w).
-            // Each gas[g] is a (h,w) plane; the march sums them density-weighted
-            // with the per-gas absorption/scatter table rows below.
-            auto gv = gas.unchecked<3>();
-            const float* gas_field = gv.data(0, 0, 0);
-            const int n_gases = static_cast<int>(gv.shape(0));
-            // Per-gas per-channel tables, shape (n_gases, 3) contiguous.
-            auto ga = gas_absorption.unchecked<2>();
-            const float* gabs = ga.data(0, 0);
-            auto gs = gas_scatter.unchecked<2>();
-            const float* gsca = gs.data(0, 0);
-            // Per-tile static material attenuation, shape (h, w, 3) — same
-            // interleaved layout as light_rgb. Replaces the binary is_wall:
-            // occlusion is now per-channel (opaque [1,1,1] == old wall stop).
-            auto a = light_atten.unchecked<3>();
-            const float* atten = a.data(0, 0, 0);
-            // Slice-4 optional outputs. `heat` is Q16.16 int32 (h, w); the
-            // sim/headless owns it. `smoke_glow` is f32 RGB (h, w, 3) — the
-            // render-only god-ray buffer. Both default to None (skip the
-            // deposit) so render-only callers can pass only what they need.
-            // Hold the arrays alive for the duration of the cast.
-            int32_t* heat_ptr = nullptr;
-            py::array_t<int32_t> heat_arr;
-            if (!heat.is_none()) {
-                heat_arr = heat.cast<py::array_t<int32_t>>();
-                auto ha = heat_arr.mutable_unchecked<2>();
-                heat_ptr = ha.mutable_data(0, 0);
+             "A COPY of the baked E° table (E_TABLE_SIZE int64 entries); bakes "
+             "on first use and whenever a dial has moved.")
+        .def("e_bucket_of", [](const EmissiveTable&, int32_t T_q) {
+                 return e_bucket_of(T_q);
+             }, py::arg("T_q"),
+             "emissive_table.h e_bucket_of: Q16.16 temperature -> bucket index.")
+        .def("e_inv_q", [](const EmissiveTable& self, int64_t phi) {
+                 return e_inv_q(self.table(), phi);
+             }, py::arg("phi"),
+             "emissive_table.h e_inv_q: E°⁻¹(Φ) as a Q16.16 game temperature "
+             "(the bucket's LOW edge; 0 below E°[0]; saturates at 15996 game). "
+             "The radiation temperature -- not the clamp's ceiling (e_ceiling_q).")
+        // P5d (Erik's ruling of 2026-09-24): the Pass-1 clamp's CEILING, the
+        // SAME FP_HD function the CPU fold and its CUDA twin call.
+        .def("e_ceiling_q", [](const EmissiveTable& self, int64_t phi) {
+                 return e_ceiling_q(self.table(), phi);
+             }, py::arg("phi"),
+             "emissive_table.h e_ceiling_q: the maximum-principle clamp's ceiling "
+             "as a Q16.16 game temperature -- the TOP (last Q16 value) of the first "
+             "bucket whose E° exceeds Φ; 0 below E°[0]; saturates one LSB below "
+             "16000 game (E_CEILING_TOP_Q), below T_MAX_PHYS.");
+    m.attr("E_TABLE_SIZE") = E_TABLE_SIZE;
+    // #78: THE ONE CONSTANT, read by Python through here (never a copy of 11).
+    m.attr("E_FINE_BITS") = E_FINE_BITS;
+    m.attr("E_TABLE_TOP_MAX") = E_TABLE_TOP_MAX;   // #78: the bake's headroom door
+    m.attr("E_INV_TOP_GAME") = E_INV_TOP_GAME;
+    m.attr("E_CEILING_TOP_Q") = E_CEILING_TOP_Q;   // P5d
+
+    // ray-engine-v2 P6a: THE LIGHT EMISSION TABLE L° (checked in, emissive_
+    // table.h) and its currency -- read by Python through here, never a copy.
+    py::class_<LightEmissionTable>(m, "LightEmissionTable")
+        .def(py::init<>())
+        .def_property_readonly_static("fine_bits",
+            [](py::object) { return LightEmissionTable::fine_bits; },
+            "The table's CURRENCY: 2^fine_bits of its integers per light unit "
+            "(the ramp's intensity 1.0) -- L_FINE_BITS, the one constant.")
+        .def("table", [](const LightEmissionTable& self) {
+                 py::array_t<int64_t> out({(py::ssize_t)L_CHANNELS, (py::ssize_t)E_TABLE_SIZE});
+                 std::copy(self.table(), self.table() + L_CHANNELS * E_TABLE_SIZE,
+                           out.mutable_data());
+                 return out;
+             },
+             "A COPY of the checked-in L° as int64 (3, E_TABLE_SIZE), channel-major "
+             "(R, G, B) over E°'s buckets.");
+    m.attr("L_FINE_BITS") = L_FINE_BITS;
+    m.attr("L_CHANNELS") = L_CHANNELS;
+    m.attr("L_TABLE_TOP_MAX") = L_TABLE_TOP_MAX;
+
+    py::class_<RadiationSweep>(m, "RadiationSweep")
+        .def(py::init<>())
+        .def_readonly_static("STEP",  &RadiationSweep::TRANSPORT_STEP)
+        .def_readonly_static("SHEAR", &RadiationSweep::TRANSPORT_SHEAR)
+        .def_readonly_static("F_SHIFT", &RadiationSweep::F_SHIFT)
+        .def_readonly_static("F_ONE",   &RadiationSweep::F_ONE)
+        // P5a: the gas extinction's two ingress bounds (the gas door's, the
+        // reference's; tests/test_gas_heat_absorb.py holds all three equal)
+        .def_readonly_static("HEAT_ABSORB_Q_MAX", &RadiationSweep::HEAT_ABSORB_Q_MAX)
+        .def_readonly_static("N_GAS_PLANES_MAX",  &RadiationSweep::N_GAS_PLANES_MAX)
+        .def_readonly("min_stream", &RadiationSweep::min_stream)
+        .def_readonly("max_stream", &RadiationSweep::max_stream)
+        .def_static("ordinate_constants",
+             [](int n_ordinates, int transport) {
+                 const OrdinateConst* tbl =
+                     RadiationSweep::ordinate_table(n_ordinates, transport);
+                 if (tbl == nullptr) {
+                     throw py::value_error("unsupported (n_ordinates, transport)");
+                 }
+                 py::list out;
+                 for (int m_i = 0; m_i < n_ordinates; ++m_i) {
+                     out.append(py::make_tuple((int)tbl[m_i].sx, (int)tbl[m_i].sy,
+                                               (int)tbl[m_i].x_major, tbl[m_i].s_m));
+                 }
+                 return out;
+             }, py::arg("n_ordinates"), py::arg("transport"),
+             "The checked-in per-ordinate constants as (sx, sy, x_major, s_m) "
+             "tuples, for the recompute test.")
+        // P6a: the per-ordinate direction cosines (the light flux vector's)
+        .def_static("ordinate_dirs",
+             [](int n_ordinates) {
+                 const OrdinateDir* d = RadiationSweep::ordinate_dirs(n_ordinates);
+                 if (d == nullptr) throw py::value_error("unsupported n_ordinates");
+                 py::list out;
+                 for (int m_i = 0; m_i < n_ordinates; ++m_i)
+                     out.append(py::make_tuple(d[m_i].mu_q, d[m_i].eta_q));
+                 return out;
+             }, py::arg("n_ordinates"),
+             "P6a: the checked-in per-ordinate direction cosines as (mu_q, eta_q) "
+             "Q16 tuples, for the recompute test.")
+        // P6b: THE PROJECTION (one implementation: the sweep's own), for the
+        // Python door (the sun's per-ordinate sky) and the tests.
+        .def_static("cone_emission",
+             [](std::array<int64_t, 3> rgb, int64_t center_q, int64_t spread_q,
+                int n_ordinates) {
+                 if (n_ordinates != 16 && n_ordinates != 12)
+                     throw py::value_error("cone_emission: n_ordinates must be 16 or 12");
+                 if (center_q < 0 || center_q >= CONE_TURN || spread_q < 0 ||
+                     spread_q > CONE_TURN || rgb[0] < 0 || rgb[1] < 0 || rgb[2] < 0 ||
+                     rgb[0] > LIGHT_CONE_BUDGET || rgb[1] > LIGHT_CONE_BUDGET ||
+                     rgb[2] > LIGHT_CONE_BUDGET)
+                     throw py::value_error("cone_emission: outside the cone door "
+                                           "(center in [0, 65536), spread in [0, 65536], "
+                                           "0 <= rgb <= 2^44)");
+                 py::array_t<int64_t> out({(py::ssize_t)n_ordinates, (py::ssize_t)3});
+                 RadiationSweep::cone_emission(rgb.data(), center_q, spread_q, n_ordinates,
+                                               out.mutable_data());
+                 return out;
+             }, py::arg("rgb"), py::arg("center_q"), py::arg("spread_q"),
+             py::arg("n_ordinates") = 16,
+             "P6b: one cone's per-ordinate emission (n_ordinates, 3) int64 -- the "
+             "power projected onto the ordinates' angular bins by overlap "
+             "(sweep_ref_q.cone_emission). Angles in Q16 turns.")
+        .def_property_readonly_static("CONE_TURN",
+             [](py::object) { return CONE_TURN; })
+        .def_property_readonly_static("LIGHT_CONE_BUDGET",
+             [](py::object) { return LIGHT_CONE_BUDGET; })
+        .def_property_readonly_static("LIGHT_SKY_MAX",
+             [](py::object) { return LIGHT_SKY_MAX; })
+        // P6a: the light books of the last run that carried the light group
+        // (either backend), per channel, and its light-stream telemetry.
+        .def_property_readonly("light_books", [](const RadiationSweep& s) {
+                 int64_t b[12];
+                 for (int c = 0; c < 3; ++c) {
+                     b[c] = s.light_emit_sum[c];      b[3 + c] = s.light_absorb_sum[c];
+                     b[6 + c] = s.light_ring_in_sum[c]; b[9 + c] = s.light_ring_out_sum[c];
+                 }
+                 return light_books_dict(b, s.light_min_stream, s.light_max_stream);
+             },
+             "P6a: {'emit', 'absorb', 'ring_in', 'ring_out': (R, G, B), 'min_stream', "
+             "'max_stream'} of the last light-carrying run -- emit + ring_in == "
+             "absorb + ring_out per channel, exactly.")
+        .def("light_a_eff_plane", [](const RadiationSweep& self) {
+                 const auto& p = self.light_a_eff_plane();
+                 if (p.size() != (size_t)self.last_h() * (size_t)self.last_w() * 3)
+                     throw py::value_error("no light run on the last run's grid");
+                 py::array_t<int32_t> out({(py::ssize_t)self.last_h(), (py::ssize_t)self.last_w(),
+                                           (py::ssize_t)3});
+                 std::copy(p.begin(), p.end(), out.mutable_data());
+                 return out;
+             },
+             "P6a: a COPY of the light material share a_c (Q16, (h, w, 3)) the last "
+             "CPU light run READ -- the smoke term folded in on gas cells.")
+        .def("light_d_eff_plane", [](const RadiationSweep& self) {
+                 const auto& p = self.light_d_eff_plane();
+                 if (p.size() != (size_t)self.last_h() * (size_t)self.last_w() * 3)
+                     throw py::value_error("no light run on the last run's grid");
+                 py::array_t<int32_t> out({(py::ssize_t)self.last_h(), (py::ssize_t)self.last_w(),
+                                           (py::ssize_t)3});
+                 std::copy(p.begin(), p.end(), out.mutable_data());
+                 return out;
+             },
+             "P6a: a COPY of the stamped light total d_c (Q16, (h, w, 3)) the last "
+             "CPU light run READ.")
+        .def("light_gcoef_plane", [](const RadiationSweep& self) {
+                 const auto& p = self.light_gcoef_plane();
+                 if (p.size() != (size_t)self.last_h() * (size_t)self.last_w() * 3)
+                     throw py::value_error("no light run on the last run's grid");
+                 py::array_t<int32_t> out({(py::ssize_t)self.last_h(), (py::ssize_t)self.last_w(),
+                                           (py::ssize_t)3});
+                 std::copy(p.begin(), p.end(), out.mutable_data());
+                 return out;
+             },
+             "P6a: a COPY of the glow coefficient g_c (Q16, (h, w, 3)) of the last "
+             "CPU light run -- 0 off the gas cells.")
+        .def_static("fleck_f_solid_q24",
+             [](const EmissiveTable& tbl, int32_t T_q, int32_t a_q, int his,
+                int32_t t_amb_q) {
+                 const int64_t* e = tbl.table();
+                 int64_t ex = e[e_bucket_of(T_q)] - e[0];
+                 if (ex < 0) ex = 0;
+                 const int64_t L = fleck_L_solid_q(ex, a_q, his, tbl.fine_bits);
+                 int64_t T_abs = (int64_t)T_q + (int64_t)t_amb_q;
+                 if (T_abs < 1) T_abs = 1;
+                 return fleck_f_q24(T_abs, L);
+             }, py::arg("e_table"), py::arg("T_q"), py::arg("a_q"), py::arg("his"),
+                py::arg("t_amb_q"),
+             "The solid-branch Fleck factor (Q24) for one cell, exactly as the "
+             "sweep's pre-pass forms it — the tile inspector's `f` row.")
+        // P5b: the GAS arm's twin of the above, one cell, through the very
+        // FP_HD functions the pre-pass calls (fleck_L_gas_q, fleck_f_q24) — so
+        // gate 0 can hold the arm to sweep_ref_q.fleck_f_gas_q over the whole
+        // table, and a readout can show a gas cell's `f`.
+        .def_static("fleck_f_gas_q24",
+             [](const EmissiveTable& tbl, int32_t T_q, int32_t a_gas_q,
+                int32_t n_bulk, int32_t n_floor_q, int64_t recip_cv,
+                int32_t t_amb_q) {
+                 const int64_t* e = tbl.table();
+                 int64_t ex = e[e_bucket_of(T_q)] - e[0];
+                 if (ex < 0) ex = 0;
+                 const int64_t L = fleck_L_gas_q(ex, a_gas_q, n_bulk, n_floor_q,
+                                                 recip_cv, tbl.fine_bits);
+                 int64_t T_abs = (int64_t)T_q + (int64_t)t_amb_q;
+                 if (T_abs < 1) T_abs = 1;
+                 return fleck_f_q24(T_abs, L);
+             }, py::arg("e_table"), py::arg("T_q"), py::arg("a_gas_q"),
+                py::arg("n_bulk"), py::arg("n_floor_q"), py::arg("recip_cv"),
+                py::arg("t_amb_q"),
+             "The GAS-arm Fleck factor (Q24) for one gas cell whose smoke term "
+             "absorbs a_gas_q, exactly as the sweep's pre-pass forms it (P5b): "
+             "L priced in the temperature fold's gas currency (n_floor_q, "
+             "recip_cv — PhysicsEngine.gas_capacity_q()).")
+        // P5c: the smoke term's extinction for ONE cell, through the very
+        // FP_HD functions the pre-pass sums with (gas_density_term,
+        // gas_extinction_finish) — so the tile inspector shows a gas cell's
+        // a_gas without a second transcription of the density law.
+        .def_static("gas_extinction_q16",
+             [](py::array_t<int32_t, py::array::c_style> densities,
+                py::array_t<int32_t, py::array::c_style> heat_absorb_q16,
+                int32_t n_bulk) {
+                 auto dn = densities.unchecked<1>();
+                 auto hq = heat_absorb_q16.unchecked<1>();
+                 if (dn.shape(0) != hq.shape(0) ||
+                     hq.shape(0) > RadiationSweep::N_GAS_PLANES_MAX) {
+                     throw py::value_error(
+                         "gas_extinction_q16: one heat_absorb_q16 per density, at "
+                         "most N_GAS_PLANES_MAX of them");
+                 }
+                 int64_t sum = 0;
+                 for (py::ssize_t g = 0; g < hq.shape(0); ++g) {
+                     if (hq(g) < 0 || hq(g) > RadiationSweep::HEAT_ABSORB_Q_MAX) {
+                         throw py::value_error(
+                             "gas_extinction_q16: a heat_absorb_q16 outside [0, 2^28]");
+                     }
+                     sum += gas_density_term(hq(g), dn(g));
+                 }
+                 return gas_extinction_finish(sum, n_bulk);
+             }, py::arg("densities").noconvert(), py::arg("heat_absorb_q16").noconvert(),
+                py::arg("n_bulk"),
+             "a_gas (Q16) for ONE gas cell: min(ONE, sum_g heat_absorb_q16[g] * "
+             "max(0, N_g) >> 16), 0 below the N_EPS bulk floor — the smoke term "
+             "the sweep's pre-pass forms (P5a), for the tile inspector (P5c).")
+        .def("derive_ambient", [](const RadiationSweep& self,
+                                  py::array_t<bool, py::array::c_style> is_vacuum,
+                                  const EmissiveTable& e_table,
+                                  int64_t vac_level) {
+                 auto [iv, h, w] = get_2d_const(is_vacuum);
+                 const int64_t* p = self.derive_ambient(iv, e_table.table(),
+                                                        vac_level, h * w);
+                 py::array_t<int64_t> out({h, w});
+                 auto o = out.mutable_unchecked<2>();
+                 for (int y = 0; y < h; ++y)
+                     for (int x = 0; x < w; ++x) o(y, x) = p[(size_t)y * w + x];
+                 return out;
+             }, py::arg("is_vacuum").noconvert(), py::arg("e_table"),
+                py::arg("vac_level"),
+             "A COPY of the per-cell ambient LEVEL plane derived from "
+             "vacuum/interior state (thermal model v2 R3): a vacuum cell takes "
+             "vac_level, every other cell E°[0]. vac_level < 0 means E°[0] "
+             "(R4, the shipped uniform answer); above E°[0] raises.")
+        .def("fleck_plane", [](const RadiationSweep& self) {
+                 const auto& f = self.fleck_plane();
+                 py::array_t<int32_t> out({self.last_h(), self.last_w()});
+                 auto o = out.mutable_unchecked<2>();
+                 for (int y = 0; y < self.last_h(); ++y)
+                     for (int x = 0; x < self.last_w(); ++x)
+                         o(y, x) = f[(size_t)y * self.last_w() + x];
+                 return out;
+             },
+             "A COPY of the Fleck plane (Q24, (h, w)) the last run() computed.")
+        .def("a_eff_plane", [](const RadiationSweep& self) {
+                 const auto& p = self.a_eff_plane();
+                 py::array_t<int32_t> out({self.last_h(), self.last_w()});
+                 auto o = out.mutable_unchecked<2>();
+                 for (int y = 0; y < self.last_h(); ++y)
+                     for (int x = 0; x < self.last_w(); ++x)
+                         o(y, x) = p[(size_t)y * self.last_w() + x];
+                 return out;
+             },
+             "P5a: a COPY of the extinction plane (Q16, (h, w)) the last run() "
+             "READ — the material extinction with the smoke term on gas cells.")
+        .def("d_eff_plane", [](const RadiationSweep& self) {
+                 const auto& p = self.d_eff_plane();
+                 py::array_t<int32_t> out({self.last_h(), self.last_w()});
+                 auto o = out.mutable_unchecked<2>();
+                 for (int y = 0; y < self.last_h(); ++y)
+                     for (int x = 0; x < self.last_w(); ++x)
+                         o(y, x) = p[(size_t)y * self.last_w() + x];
+                 return out;
+             },
+             "P5a: a COPY of the stamped-total plane (Q16, (h, w)) the last run() "
+             "READ — max(dyn_heat_atten_q, the effective extinction).")
+        // run(): the four OUTPUT planes and the two extinction planes are
+        // c_style int64 / int32 WITHOUT forcecast AND marked noconvert — a
+        // stale caller handing an int32 plane where int64 is expected fails
+        // with a TypeError instead of silently writing into a widened
+        // temporary (critique 3 §6a). NOTE `noconvert` is what makes it
+        // loud: int32 -> int64 is a SAFE cast that pybind11's second
+        // (convert=true) overload pass would otherwise still perform.
+        .def("run", [](const RadiationSweep& self,
+                       py::array_t<int32_t, py::array::c_style> temperature,
+                       py::array_t<int32_t, py::array::c_style> heat_atten_q,
+                       py::array_t<int32_t, py::array::c_style> dyn_heat_atten_q,
+                       py::array_t<int32_t, py::array::c_style> heat_inv_shift,
+                       py::array_t<bool,    py::array::c_style> thermal_solid,
+                       const EmissiveTable& e_table,
+                       py::object amb_level,
+                       int32_t t_amb_q, int32_t k_leak_q,
+                       int transport, int n_ordinates,
+                       py::array_t<int64_t, py::array::c_style> rad_net,
+                       py::array_t<int64_t, py::array::c_style> rad_flux,
+                       py::array_t<int64_t, py::array::c_style> rad_amb,
+                       py::array_t<int64_t, py::array::c_style> rad_fluence,
+                       bool fleck_enabled,
+                       py::object gas, py::object heat_absorb_q16,
+                       py::object n_bulk,
+                       int32_t n_floor_q, int64_t recip_cv,
+                       py::object light_atten_q, py::object dyn_light_atten_q,
+                       py::object light_q, py::object light_flux_q,
+                       py::object light_glow,
+                       py::object light_absorb_q16, py::object light_glow_q16,
+                       py::object light_table, int light_transport,
+                       py::object light_cones, py::object light_sky) {
+            auto [T, h, w]      = get_2d_const(temperature);
+            auto [aq, h2, w2]   = get_2d_const(heat_atten_q);
+            auto [dq, h3, w3]   = get_2d_const(dyn_heat_atten_q);
+            auto [his, h4, w4]  = get_2d_const(heat_inv_shift);
+            auto [ts, h5, w5]   = get_2d_const(thermal_solid);
+            auto [rn, h6, w6]   = get_2d(rad_net);
+            auto [rf, h7, w7]   = get_2d(rad_flux);
+            auto [ra, h8, w8]   = get_2d(rad_amb);
+            auto [rl, h9, w9]   = get_2d(rad_fluence);
+            if (h2 != h || w2 != w || h3 != h || w3 != w || h4 != h || w4 != w ||
+                h5 != h || w5 != w || h6 != h || w6 != w || h7 != h || w7 != w ||
+                h8 != h || w8 != w || h9 != h || w9 != w) {
+                throw py::value_error("RadiationSweep.run: every plane must be (h, w)");
             }
-            float* glow_ptr = nullptr;
-            py::array_t<float> glow_arr;
-            if (!smoke_glow.is_none()) {
-                glow_arr = smoke_glow.cast<py::array_t<float>>();
-                auto ga = glow_arr.mutable_unchecked<3>();
-                glow_ptr = ga.mutable_data(0, 0, 0);
+            // amb_level: the per-cell ambient LEVEL plane (thermal v2 R3). None
+            // is the reference's `e_ref=None` door — E°[0] everywhere, the
+            // uniform R4 configuration — broadcast HERE, at the door, so the
+            // sweep below it reads a plane and nothing else. An int64 (h, w)
+            // array is taken as given; it must be int64 (noconvert), because a
+            // silently widened int32 copy is exactly the bug the four output
+            // planes already guard against (critique 3 §6a).
+            std::vector<int64_t> amb_uniform;
+            const int64_t* amb = nullptr;
+            if (amb_level.is_none()) {
+                amb_uniform.assign((size_t)h * (size_t)w, e_table.table()[0]);
+                amb = amb_uniform.data();
+            } else {
+                auto arr = amb_level.cast<py::array_t<int64_t, py::array::c_style>>();
+                auto [ap, ha, wa] = get_2d_const(arr);
+                if (ha != h || wa != w) {
+                    throw py::value_error(
+                        "RadiationSweep.run: amb_level must be (h, w)");
+                }
+                amb = ap;
             }
-            // Per-tile heat attenuation (h, w) f32 — the heat analogue of
-            // light_atten (engine/06 §1). Optional: None -> nullptr -> heat is
-            // NOT attenuated (heat survival stays 1.0 the whole march, the
-            // pre-S6 behaviour). The const pointer is held alive by heat_atten_arr.
-            const float* hatten = nullptr;
-            py::array_t<float> heat_atten_arr;
-            if (!heat_atten.is_none()) {
-                heat_atten_arr = heat_atten.cast<py::array_t<float>>();
-                auto haa = heat_atten_arr.unchecked<2>();
-                hatten = haa.data(0, 0);
-            }
-            self.cast_source_directional(src, lrgb, ldx, ldy,
-                                         heat_ptr, glow_ptr,
-                                         gas_field, gabs, gsca, n_gases,
-                                         atten, hatten, h, w);
-        }, py::arg("source"), py::arg("light_rgb"),
-           py::arg("light_dx"), py::arg("light_dy"),
-           py::arg("gas"), py::arg("gas_absorption"), py::arg("gas_scatter"),
-           py::arg("light_atten"),
-           py::arg("heat") = py::none(),
-           py::arg("smoke_glow") = py::none(),
-           py::arg("heat_atten") = py::none())
-        // P-R1 (docs/radiation_raycaster_extinction_ruling_2026-07-31.md
-        // A4.1-A4.2): the whole-fire-plane cast. Replaces the old Python
-        // per-tile bp.LightSource() loop in PhysicsRunner.cast_fire_heat
-        // (~10 pybind attribute writes PER BURNING TILE, PER TICK, ~6000/tick
-        // at 600 fires) with ONE call: enumerates fire>0 row-major in C++
-        // (Raycaster::build_fire_sources) and casts each source immediately,
-        // same as the old loop's cast_source_directional calls. `heat` is
-        // byte-identical to that old loop — mechanical relocation, no
-        // march/law change. Field-for-field identical march-input unpacking
-        // to cast_source_directional above; `fire` is the extra Q16.16 int32
-        // plane input, and the per-source params are dial SCALARS instead of
-        // one LightSource per call.
-        .def("cast_from_fire_plane",
-             [](const Raycaster& self,
-                py::array_t<int32_t> fire,
-                int fire_ray_count,
-                double range_base, double range_per_intensity,
-                double intensity_base, double intensity_per_intensity,
-                std::array<float, 3> color,
-                // P-F1a: OPTIONAL (None -> the short visible-light second cast
-                // is skipped entirely). See the CUDA twin above.
-                py::object light_rgb,
-                py::object light_dx,
-                py::object light_dy,
-                py::array_t<float> gas,
-                py::array_t<float> gas_absorption,
-                py::array_t<float> gas_scatter,
-                py::array_t<float> light_atten,
-                py::array_t<float> heat_atten,
-                py::array_t<int32_t> temperature,
-                py::array_t<int32_t> heat_inv_shift,
-                py::array_t<bool> thermal_solid,
-                py::array_t<int32_t> rad_net,
-                py::array_t<int32_t> rad_amb,
-                py::array_t<int32_t> rad_flux,
-                int tick,
-                py::object smoke_glow,
-                double jitter) {
-            auto [fp, h, w] = get_2d_const(fire);
-            float* lrgb = nullptr; float* ldx = nullptr; float* ldy = nullptr;
-            py::array_t<float> lrgb_a, ldx_a, ldy_a;
-            if (!light_rgb.is_none()) {
-                lrgb_a = light_rgb.cast<py::array_t<float>>();
-                ldx_a  = light_dx.cast<py::array_t<float>>();
-                ldy_a  = light_dy.cast<py::array_t<float>>();
-                auto lr = lrgb_a.mutable_unchecked<3>();
-                lrgb = lr.mutable_data(0, 0, 0);
-                auto lx = ldx_a.mutable_unchecked<2>();
-                ldx = lx.mutable_data(0, 0);
-                auto ly = ldy_a.mutable_unchecked<2>();
-                ldy = ly.mutable_data(0, 0);
-            }
-            auto gv = gas.unchecked<3>();
-            const float* gas_field = gv.data(0, 0, 0);
-            const int n_gases = static_cast<int>(gv.shape(0));
-            auto ga = gas_absorption.unchecked<2>();
-            const float* gabs = ga.data(0, 0);
-            auto gs = gas_scatter.unchecked<2>();
-            const float* gsca = gs.data(0, 0);
-            auto a = light_atten.unchecked<3>();
-            const float* atten = a.data(0, 0, 0);
-            float* glow_ptr = nullptr;
-            py::array_t<float> glow_arr;
-            if (!smoke_glow.is_none()) {
-                glow_arr = smoke_glow.cast<py::array_t<float>>();
-                auto gga = glow_arr.mutable_unchecked<3>();
-                glow_ptr = gga.mutable_data(0, 0, 0);
-            }
-            // P-R4: heat_atten is now REQUIRED (it IS a_x — the emissivity AND
-            // the absorptivity, Kirchhoff), as are the three radiation planes
-            // and the signed accumulator. `heat` is GONE from this entry point:
-            // the fire has no one-way deposit any more.
-            auto [hatten, h5, w5] = get_2d_const(heat_atten);
-            auto [tmp, h6, w6]    = get_2d_const(temperature);
-            auto [his, h7, w7]    = get_2d_const(heat_inv_shift);
-            auto [tsol, h8, w8]   = get_2d_const(thermal_solid);
-            auto [rnet, h9, w9]   = get_2d(rad_net);
-            auto [ramb, h11, w11] = get_2d(rad_amb);
-            auto [rflux, h10, w10] = get_2d(rad_flux);
-            return self.cast_from_fire_plane(fp, h, w,
-                                       fire_ray_count,
-                                       range_base, range_per_intensity,
-                                       intensity_base, intensity_per_intensity,
-                                       color.data(),
-                                       lrgb, ldx, ldy, glow_ptr,
-                                       gas_field, gabs, gsca, n_gases,
-                                       atten, hatten,
-                                       tmp, his, tsol, rnet, ramb, rflux, tick,
-                                       jitter);
-        }, py::arg("fire"),
-           py::arg("fire_ray_count"),
-           py::arg("range_base"), py::arg("range_per_intensity"),
-           py::arg("intensity_base"), py::arg("intensity_per_intensity"),
-           py::arg("color"),
-           py::arg("light_rgb"), py::arg("light_dx"), py::arg("light_dy"),
-           py::arg("gas"), py::arg("gas_absorption"), py::arg("gas_scatter"),
-           py::arg("light_atten"), py::arg("heat_atten"),
-           py::arg("temperature"), py::arg("heat_inv_shift"),
-           py::arg("thermal_solid"), py::arg("rad_net"),
-           py::arg("rad_amb"), py::arg("rad_flux"), py::arg("tick"),
-           py::arg("smoke_glow") = py::none(),
-           py::arg("jitter") = 0.0,
-           "P-F1a: enumerate the emitter set (burning tiles + thermal solids at "
-           "or above T_emit_gate) row-major, build the once-per-tick emitter "
-           "mask, and run the VERIFIED RADIATION BOOKS (v6.1 rules 1/3/4 as "
-           "amended by v7/v7.1) as a PURE-RADIATION cast at RADIATION_RANGE, "
-           "plus a second SHORT visible-light cast on the legacy range formula. "
-           "rad_net is the signed tile ledger, rad_amb the per-tile SKY ledger; "
-           "sum(rad_net) + sum(rad_amb) == 0 exactly, pre-fold.")
-        .def_static("normalize_directions",
-             [](py::array_t<float> light_dx, py::array_t<float> light_dy) {
-            auto [ldx, h, w]   = get_2d(light_dx);
-            auto [ldy, h2, w2] = get_2d(light_dy);
-            Raycaster::normalize_directions(ldx, ldy, h, w);
-        }, py::arg("light_dx"), py::arg("light_dy"));
+            // P5a: the smoke term's optional group (gas_group_args — the same
+            // extraction the GPU twin's direct entry uses).
+            GasGroupArgs gg = gas_group_args("RadiationSweep.run", gas,
+                                             heat_absorb_q16, n_bulk, h, w);
+            // P6a: the light group (light_group_args -- the same extraction the
+            // GPU twin's direct entry and step_tail use).
+            LightGroupArgs lg = light_group_args(
+                "RadiationSweep.run", light_atten_q, dyn_light_atten_q, light_q,
+                light_flux_q, light_glow, light_absorb_q16, light_glow_q16,
+                light_table, light_transport, h, w, gg.n,
+                light_cones, light_sky, n_ordinates);
+            self.run(T, aq, dq, his, ts, e_table.table(), e_table.fine_bits,
+                     amb, t_amb_q, k_leak_q,
+                     transport, n_ordinates, h, w, rn, rf, ra, rl, fleck_enabled,
+                     gg.gas, gg.n, gg.hq, gg.nb, n_floor_q, recip_cv,
+                     lg.on ? &lg.lc : nullptr);
+        }, py::arg("temperature").noconvert(), py::arg("heat_atten_q").noconvert(),
+           py::arg("dyn_heat_atten_q").noconvert(), py::arg("heat_inv_shift").noconvert(),
+           py::arg("thermal_solid").noconvert(), py::arg("e_table"),
+           py::arg("amb_level"),
+           py::arg("t_amb_q"), py::arg("k_leak_q"),
+           py::arg("transport"), py::arg("n_ordinates"),
+           py::arg("rad_net").noconvert(), py::arg("rad_flux").noconvert(),
+           py::arg("rad_amb").noconvert(), py::arg("rad_fluence").noconvert(),
+           py::arg("fleck_enabled") = true,
+           py::arg("gas") = py::none(), py::arg("heat_absorb_q16") = py::none(),
+           py::arg("n_bulk") = py::none(),
+           // P5b: the gas arm's currency (PhysicsEngine.gas_capacity_q()'s
+           // n_floor_q and recip_cv) — REQUIRED > 0 with the gas group: the
+           // default 0 is refused there, so a caller that forgets it is loud.
+           py::arg("n_floor_q") = 0, py::arg("recip_cv") = (int64_t)0,
+           // P6a: THE LIGHT GROUP (light_group_args); all None = heat only
+           py::arg("light_atten_q") = py::none(), py::arg("dyn_light_atten_q") = py::none(),
+           py::arg("light_q") = py::none(), py::arg("light_flux_q") = py::none(),
+           py::arg("light_glow") = py::none(),
+           py::arg("light_absorb_q16") = py::none(), py::arg("light_glow_q16") = py::none(),
+           py::arg("light_table") = py::none(),
+           py::arg("light_transport") = (int)RadiationSweep::TRANSPORT_STEP,
+           // P6b: the cone emitters and the sky (None = none / the dark ring)
+           py::arg("light_cones") = py::none(), py::arg("light_sky") = py::none(),
+           "One tick of the sweep over all ordinates. It OVERWRITES the four "
+           "int64 planes — zeroed here before the first ordinate, so they hold "
+           "the last run's values until the next run and the tile inspector can "
+           "read them at render time (design row 38); no caller wipe needed. "
+           "transport: RadiationSweep.STEP "
+           "or .SHEAR; n_ordinates: 16 or 12. fleck_enabled=False is the "
+           "reference's undamped (f_plane=None) configuration, for the gates. "
+           "amb_level is the PER-CELL ambient LEVEL plane (int64 (h, w), "
+           "0 <= amb <= e_table[0]) the sweep radiates against — None means "
+           "E°[0] everywhere, the uniform thermal-v2-R4 configuration. "
+           "gas (int32 (n_gases, h, w)), heat_absorb_q16 (int32 (n_gases,)) and "
+           "n_bulk (int32 (h, w)) — all or none — are the SMOKE TERM (P5a, design "
+           "v3 §6.3): a gas cell reads a = max(a, min(ONE, Σ hq·N >> 16)), 0 below "
+           "the N_EPS bulk floor, and d = max(d, a). None is the pre-P5a sweep. "
+           "With the group, n_floor_q and recip_cv (both > 0) are the temperature "
+           "fold's gas currency (PhysicsEngine.gas_capacity_q()), in which the "
+           "Fleck pre-pass's GAS ARM (P5b, design v3 §2.8) damps every absorbing "
+           "gas cell: L = deposit_dT_wide_i64((a_gas·ex) >> 16, "
+           "reciprocal_q16(max(N, n_floor_q)), recip_cv). "
+           "P6a THE LIGHT GROUP (all five planes or none): light_atten_q / "
+           "dyn_light_atten_q int32 (h, w, 3), light_q / light_glow int64 (h, w, 3) "
+           "and light_flux_q int64 (h, w, 2), OVERWRITTEN; light_absorb_q16 / "
+           "light_glow_q16 int32 (n_gases, 3) the smoke term (with the gas group); "
+           "light_table int64 (3, E_TABLE_SIZE) or None = the checked-in L°; "
+           "light_transport STEP (default) or SHEAR. The books land in "
+           "RadiationSweep.light_books. P6b: light_cones int64 (n, 7) rows (y, x, "
+           "r, g, b, center_q, spread_q) -- CONE EMITTERS, the power projected onto "
+           "the ordinates' bins by overlap and entering the cell's stream -- and "
+           "light_sky int64 (n_ordinates, 3), the virtual ring's per-ordinate "
+           "outflow (None: the dark ring).");
 
     // --- EOSSolver (EOS refactor P3 — the compressible Kwatra solver) --------
     // Tunables bound from [physics.eos] config (physics_runner.py); step() is
@@ -2430,6 +3018,57 @@ PYBIND11_MODULE(breach_physics, m) {
             for (int64_t v : s.boundary_flux()) out.append(v);
             return out;
         })
+        // Smoke transport v2 (#12, design §3): the per-gas TRACE books, READ
+        // ONLY. The vent channel is boundary_flux()'s trace slots; these are
+        // its three siblings. Per tick (reset at step() entry, the trace tail
+        // adds after it), int64, never digested. Tests check the identity
+        //   Σ S(after) − Σ S(before) == deposits − vent − wipe − sink − decay.
+        // CURRENCY (#88): every slot is in ITS OWN plane's currency -- a trace
+        // gas's in trace counts (2^TRACE_SHIFT per real unit), a bulk gas's in
+        // Q16. No consumer may sum these (or boundary_flux()) across gases.
+        .def("trace_wipe_sum", [](const EOSSolver& s) {
+            py::list out;
+            for (int64_t v : s.trace_wipe_sum_) out.append(v);
+            return out;
+        })
+        .def("trace_sink_sum", [](const EOSSolver& s) {
+            py::list out;
+            for (int64_t v : s.trace_sink_sum_) out.append(v);
+            return out;
+        })
+        .def("trace_decay_sum", [](const EOSSolver& s) {
+            py::list out;
+            for (int64_t v : s.trace_decay_sum_) out.append(v);
+            return out;
+        })
+        // #88 P2 (design §5.1/§5.3): the counted saturation's books and the
+        // mint book, per gas, int64, in each plane's own currency, all >= 0.
+        // Their per-tick window is PhysicsRunner.step's (reset by
+        // reset_trace_sat_books at its head; W5/W3 write them before
+        // EOSSolver.step runs), so with the four books above and
+        // GameMap.trace_deposit_books / trace_clip_books:
+        //   Σ S(after) − Σ S(before) == mint + deposit − vent − wipe − sink
+        //                               − decay − clip    (− G6, unbooked)
+        .def("trace_clip_sum", [](const EOSSolver& s) {
+            py::list out;
+            for (int64_t v : s.trace_clip_sum_) out.append(v);
+            return out;
+        })
+        .def("trace_mint_sum", [](const EOSSolver& s) {
+            py::list out;
+            for (int64_t v : s.trace_mint_sum_) out.append(v);
+            return out;
+        })
+        .def("trace_neg_hits", [](const EOSSolver& s) {
+            py::list out;
+            for (int64_t v : s.trace_neg_hits_) out.append(v);
+            return out;
+        })
+        .def("reset_trace_sat_books", [](const EOSSolver& s, int n_gases) {
+            s.reset_trace_sat_books(n_gases);
+        }, py::arg("n_gases"),
+           "#88 P2: zero trace_clip_sum / trace_mint_sum / trace_neg_hits "
+           "(sized n_gases) -- PhysicsRunner's per-tick reset.")
         .def_readonly("digest_advect",      &EOSSolver::digest_advect)
         .def_readonly("digest_bulk_flux",   &EOSSolver::digest_bulk_flux)
         .def_readonly("digest_pstar",       &EOSSolver::digest_pstar)
@@ -2759,9 +3398,23 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("o2_frac_full",      &CombustionSolver::o2_frac_full)
         .def_readwrite("o2_frac_amb",       &CombustionSolver::o2_frac_amb)
         .def_readwrite("o2_thresh_burn",    &CombustionSolver::o2_thresh_burn)
-        .def_readwrite("H_fuel",            &CombustionSolver::H_fuel)
+        // T5a: the GAS-side yield, SPLIT the same way H_BED_M is below
+        // (H_fuel = H_FUEL_M * 2^H_FUEL_SHIFT).
+        .def_readwrite("H_FUEL_M",          &CombustionSolver::H_FUEL_M)
+        .def_readwrite("H_FUEL_SHIFT",      &CombustionSolver::H_FUEL_SHIFT)
         .def_readwrite("soot_yield",        &CombustionSolver::soot_yield)
         .def_readwrite("fuel_per_o2",       &CombustionSolver::fuel_per_o2)   // v2.5 P5.1
+        // R3 hot-burns-faster (fire session #12, docs/fire_3c_design_2026-09-
+        // 01.md "Ruling R3"): the demand-side hotf ramp's dials — MIRROR
+        // FireParams' own fire_T_ext/fire_T_span/hotf_cap (physics_runner.py
+        // binds both solvers from the SAME [physics.fire] keys).
+        .def_readwrite("fire_T_ext",        &CombustionSolver::fire_T_ext)
+        .def_readwrite("fire_T_span",       &CombustionSolver::fire_T_span)
+        .def_readwrite("hotf_cap",          &CombustionSolver::hotf_cap)
+        // #7 THE PRESSURE FACTOR's edges — the SAME Q16.16 atm values as
+        // FireParams::p_ext_q / p_full_q (one law, two reads). 0 / 0 == dormant.
+        .def_readwrite("p_ext_q",           &CombustionSolver::p_ext_q)
+        .def_readwrite("p_full_q",          &CombustionSolver::p_full_q)
         // P-R4: the FUEL-BED deposit's split constant (H_bed = M * 2^SHIFT).
         .def_readwrite("H_BED_M",           &CombustionSolver::H_BED_M)
         .def_readwrite("H_BED_SHIFT",       &CombustionSolver::H_BED_SHIFT)
@@ -2838,7 +3491,26 @@ PYBIND11_MODULE(breach_physics, m) {
                         // (and the CUDA check harness) unmoved.
                         py::object gas_energy,
                         py::object is_ambient,
-                        int32_t t_amb_q) {
+                        int32_t t_amb_q,
+                        // R3 hot-burns-faster (docs/fire_3c_design_2026-09-01
+                        // .md "Ruling R3"): the SAME nullable per-material
+                        // T_ext plane FireSimulation.step reads. OPTIONAL —
+                        // None -> nullptr -> the scalar `fire_T_ext` fallback.
+                        py::object fire_T_ext_plane,
+                        // R14's fuel half (T5b): the SAME nullable-plane idiom
+                        // again -- GameMap.fuel_per_o2_plane. None -> nullptr
+                        // -> the scalar `fuel_per_o2` fallback.
+                        py::object fuel_per_o2_plane,
+                        // #7 THE PRESSURE FACTOR's input: the materialized
+                        // pressure plane `atmosphere` (Q16.16 atm). OPTIONAL —
+                        // None -> nullptr -> g == FP_ONE, the pre-#7 law (the
+                        // edges are the solver's own p_ext_q / p_full_q).
+                        py::object atmosphere,
+                        // #88 P2: the EOSSolver whose per-gas trace books the
+                        // soot mint writes (mint attempted, saturation clip,
+                        // negative hits, all at black_smoke_idx). OPTIONAL --
+                        // None -> unreported (the saturation still never wraps).
+                        py::object eos) {
             auto gv = gas.mutable_unchecked<3>();
             int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
             const int n_gases = static_cast<int>(gv.shape(0));
@@ -2902,11 +3574,43 @@ PYBIND11_MODULE(breach_physics, m) {
                 auto aa = amb_arr.unchecked<2>();
                 amb_ptr = aa.data(0, 0);
             }
+            // R3: the same nullable-plane idiom as the pointers above.
+            const int32_t* tep = nullptr;
+            py::array_t<int32_t> tep_arr;
+            if (!fire_T_ext_plane.is_none()) {
+                tep_arr = fire_T_ext_plane.cast<py::array_t<int32_t>>();
+                auto tv = tep_arr.unchecked<2>();
+                tep = tv.data(0, 0);
+            }
+            const int32_t* fpo = nullptr;
+            py::array_t<int32_t> fpo_arr;
+            if (!fuel_per_o2_plane.is_none()) {
+                fpo_arr = fuel_per_o2_plane.cast<py::array_t<int32_t>>();
+                auto fv = fpo_arr.unchecked<2>();
+                fpo = fv.data(0, 0);
+            }
+            // #7: the pressure factor's input, the same nullable-plane idiom.
+            const int32_t* atm_ptr = nullptr;
+            py::array_t<int32_t> atm_arr;
+            if (!atmosphere.is_none()) {
+                atm_arr = atmosphere.cast<py::array_t<int32_t>>();
+                auto av = atm_arr.unchecked<2>();
+                atm_ptr = av.data(0, 0);
+            }
+            int64_t* t_mint = nullptr; int64_t* t_clip = nullptr; int64_t* t_neg = nullptr;
+            if (!eos.is_none() && black_smoke_idx >= 0 && black_smoke_idx < n_gases) {
+                const EOSSolver& es = eos.cast<const EOSSolver&>();
+                es.ensure_trace_books(n_gases);
+                t_mint = &es.trace_mint_sum_[black_smoke_idx];
+                t_clip = &es.trace_clip_sum_[black_smoke_idx];
+                t_neg  = &es.trace_neg_hits_[black_smoke_idx];
+            }
             self.step(gas_ptr, n_gases, o2_idx, inert_n2_idx, black_smoke_idx,
                      temp, whp, f, fl, sol, vac, ign, h, w, dt, c_v, n_floor_heat,
                      tsol, hshift, heat_ptr, dacc_ptr,
                      draw_r, perm_ptr, max_claimants,
-                     gen_ptr, amb_ptr, t_amb_q);
+                     gen_ptr, amb_ptr, t_amb_q, tep, fpo, atm_ptr,
+                     t_mint, t_clip, t_neg);
         }, py::arg("gas"), py::arg("o2_idx"), py::arg("inert_n2_idx"),
            py::arg("black_smoke_idx"), py::arg("temperature"), py::arg("wall_hp"),
            py::arg("fire"), py::arg("flammable"), py::arg("solid"),
@@ -2921,7 +3625,11 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("max_claimants") = 4,
            py::arg("gas_energy") = py::none(),   // arc #54 (None = pre-#54)
            py::arg("is_ambient") = py::none(),   // arc #54 accountable set
-           py::arg("t_amb_q") = 0);              // arc #54 T_AMB_K raw
+           py::arg("t_amb_q") = 0,               // arc #54 T_AMB_K raw
+           py::arg("fire_T_ext_plane") = py::none(),   // R3 per-material T_ext
+           py::arg("fuel_per_o2_plane") = py::none(),  // R14 per-material fuel
+           py::arg("atmosphere") = py::none(),         // #7 pressure factor input
+           py::arg("eos") = py::none());               // #88 P2 trace mint books
 
     // --- WaterSolver (pipe model: damped velocity + donor-cell upwind flux;
     //     engine/07 §2, water_implementation_plan Step W1) ---
@@ -2953,7 +3661,7 @@ PYBIND11_MODULE(breach_physics, m) {
             auto [vx, h2, w2]  = get_2d(flow_vx);
             auto [vy, h3, w3]  = get_2d(flow_vy);
             auto [sol, h4, w4] = get_2d_const(solid);
-            // Nullable fields (cast_source_directional precedent): None ->
+            // Nullable fields: None ->
             // nullptr, else cast to an array kept alive in this scope.
             // floor_height None -> flat zero (Q16.16 int32); atmosphere None
             // -> no head term (and with k_p == 0 it is never read). EOS P3:
@@ -3031,20 +3739,26 @@ PYBIND11_MODULE(breach_physics, m) {
         // gas_energy Q32 currency, reset per step_water_tail call.
         .def_readonly("e_water_evac_export_sum",
                       &PhysicsEngine::e_water_evac_export_sum)
+        // ray-engine-v2 P5b (design v3 §2.8 / §6.3): the gas currency step_tail
+        // hands the sweep's gas Fleck arm — derived in physics_engine.cpp
+        // (/fp:strict) from this engine's own temperature solver dials.
+        .def("gas_capacity_q", [](const PhysicsEngine& e) {
+                 const PhysicsEngine::GasCapacityQ g = e.gas_capacity_q();
+                 return py::make_tuple(g.n_floor_q, g.c_v_q, g.recip_cv);
+             },
+             "(n_floor_q, c_v_q, recip_cv): THE GAS CURRENCY — quantize("
+             "temperature.n_floor_heat), quantize(temperature.c_v) and "
+             "make_recip(c_v_q / 65536), the integers the temperature fold's "
+             "gas deposit divides by and the sweep's gas Fleck arm prices a gas "
+             "cell in (P5b).")
         .def_property_readonly("atmos",
             [](PhysicsEngine& e) -> AtmosphereSolver& { return e.atmos; },
-            py::return_value_policy::reference_internal)
-        .def_property_readonly("smoke",
-            [](PhysicsEngine& e) -> SmokeDynamics& { return e.smoke; },
             py::return_value_policy::reference_internal)
         .def_property_readonly("fire",
             [](PhysicsEngine& e) -> FireSimulation& { return e.fire; },
             py::return_value_policy::reference_internal)
         .def_property_readonly("temperature",
             [](PhysicsEngine& e) -> TemperatureSolver& { return e.temperature; },
-            py::return_value_policy::reference_internal)
-        .def_property_readonly("raycaster",
-            [](PhysicsEngine& e) -> Raycaster& { return e.raycaster; },
             py::return_value_policy::reference_internal)
         .def_property_readonly("water",
             [](PhysicsEngine& e) -> WaterSolver& { return e.water; },
@@ -3055,6 +3769,31 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_property_readonly("combustion",
             [](PhysicsEngine& e) -> CombustionSolver& { return e.combustion; },
             py::return_value_policy::reference_internal)
+        // Ray-engine-v2 P1: the E° table's owner and the shadow sweep.
+        .def_property_readonly("emissive",
+            [](PhysicsEngine& e) -> EmissiveTable& { return e.emissive; },
+            py::return_value_policy::reference_internal)
+        .def_property_readonly("radiation",
+            [](PhysicsEngine& e) -> RadiationSweep& { return e.radiation; },
+            py::return_value_policy::reference_internal)
+        // Ray-engine-v2 P6a: the L° table's owner and THE REQUEST -- light is
+        // computed only while light_requested (default False; design v3 §7.1).
+        .def_property_readonly("light_emission",
+            [](PhysicsEngine& e) -> LightEmissionTable& { return e.light_emission; },
+            py::return_value_policy::reference_internal)
+        .def_readwrite("light_requested", &PhysicsEngine::light_requested,
+            "P6a: when True, step_tail's sweep carries the light channels into the "
+            "light planes it is handed (all five then required); False (the "
+            "default) computes no light and leaves those planes untouched.")
+        // Ray-engine-v2 P6d: the light channels' transport setting (design v3
+        // §2.4), bound ONCE by PhysicsRunner from [light] transport. Default
+        // RadiationSweep.STEP; heat's own transport is not exposed here -- it
+        // stays TRANSPORT_SHEAR, a run_sweep_ literal.
+        .def_readwrite("light_transport", &PhysicsEngine::light_transport,
+            "P6d: the light group's transport at the one sweep invocation "
+            "(run_sweep_, both step_tail and relight(), both backends) -- "
+            "RadiationSweep.STEP (default) or .SHEAR. Bound once from "
+            "[light] transport; heat's transport is unaffected.")
         // --- Patch 1 S4a: the per-tick TAIL ---------------------------------
         // step_tail moves the three trailing pure-solver-call steps of
         // PhysicsRunner.step (ripple, fire, temperature — after the IMEX substep
@@ -3091,16 +3830,12 @@ PYBIND11_MODULE(breach_physics, m) {
                              // nullable here, so a caller can never silently
                              // fall the engine back to the flow mask `solid`.
                              py::array_t<bool> thermal_solid,
-                             // COOL-SHIFT AXIS: the per-tile ambient-decay
-                             // shift (GameMap.cool_shift) — REQUIRED for the
-                             // same reason as thermal_solid above: the live
-                             // engine must never silently fall back to the
-                             // single global COOL_SHIFT.
-                             py::array_t<int32_t> cool_shift_grid,
+                             // T5b step 7 / R1: `cool_shift_grid` was a
+                             // REQUIRED argument here; Pass 3 is deleted.
                              // FUEL-FRACTION AXIS: the per-tile 1/hp plane
                              // (GameMap.fuel_recip) the fire logistic's fuel
                              // term reads — REQUIRED for the same reason
-                             // thermal_solid/cool_shift_grid are: the live
+                             // thermal_solid is: the live
                              // engine must never silently fall back to the
                              // single global [physics.fire] fuel_ref.
                              py::array_t<int64_t> fuel_recip,
@@ -3116,6 +3851,29 @@ PYBIND11_MODULE(breach_physics, m) {
                              py::array_t<bool> gas_conservative,
                              int o2_idx,                         // EOS P4
                              float sim_time,
+                             // Ray-engine-v2 P1 (design v3 §11 / row 35): the
+                             // shadow sweep's two Q16 extinction planes and
+                             // four int64 shadow planes + the leak dial.
+                             // REQUIRED (no default) and `noconvert` (below):
+                             // a stale caller that omits one, or hands an
+                             // int32 plane where int64 is expected, fails
+                             // loudly instead of writing into a discarded
+                             // temporary (critique 3 §6a).
+                             py::array_t<int32_t, py::array::c_style> heat_atten_q,
+                             py::array_t<int32_t, py::array::c_style> dyn_heat_atten_q,
+                             py::array_t<int64_t, py::array::c_style> rad_net_sweep,
+                             py::array_t<int64_t, py::array::c_style> rad_flux_sweep,
+                             py::array_t<int64_t, py::array::c_style> rad_amb_sweep,
+                             py::array_t<int64_t, py::array::c_style> rad_fluence,
+                             // ray-engine-v2 P5a (design v3 §6.3): the per-gas
+                             // [gases.*] heat_absorb in Q16 (GasTable.
+                             // heat_absorb_q16) — the smoke term's table.
+                             // REQUIRED and noconvert like the sweep planes:
+                             // a caller that forgets it must fail loudly, not
+                             // silently run a smoke-blind sweep once non-zero
+                             // values ship (P5c or later).
+                             py::array_t<int32_t, py::array::c_style> gas_heat_absorb_q16,
+                             int32_t k_leak_q, int64_t rad_amb_vacuum_q,
                              py::object is_ambient,                 // BC
                              py::object rad_net,                    // P-R4
                              // arc #54 P-G1b (design §2.7 row 3): the
@@ -3124,7 +3882,19 @@ PYBIND11_MODULE(breach_physics, m) {
                              // tail, bit-identical), the same nullable idiom
                              // is_ambient/rad_net use.
                              py::object gas_energy,
-                             int32_t t_amb_q) -> py::list {
+                             int32_t t_amb_q,
+                             // ray-engine-v2 P6a: the light channels' planes and
+                             // the two smoke columns -- optional (None), read by
+                             // the engine only while light_requested (it then
+                             // REQUIRES the five planes). Dtype-checked, never
+                             // converted: light_group_args, the one extraction.
+                             py::object light_atten_q, py::object dyn_light_atten_q,
+                             py::object light_q, py::object light_flux_q,
+                             py::object light_glow,
+                             py::object gas_light_absorb_q16,
+                             py::object gas_light_glow_q16,
+                             // P6b: the cone rows and the sky (optional)
+                             py::object light_cones, py::object light_sky) -> py::list {
             // ripple group
             auto [rip, h, w]    = get_2d(ripple);
             auto [ripv, h2, w2] = get_2d(ripple_v);
@@ -3153,7 +3923,6 @@ PYBIND11_MODULE(breach_physics, m) {
             // THERMAL-MASS AXIS: the per-medium thermal mask.
             auto [tsol, h17, w17] = get_2d_const(thermal_solid);
             // COOL-SHIFT AXIS: the per-tile ambient-decay shift.
-            auto [csg, h18, w18] = get_2d_const(cool_shift_grid);
             // FUEL-FRACTION AXIS: the per-tile 1/hp plane (int64 — a
             // RECIP_SHIFT=32 reciprocal does not fit int32).
             auto fr_v = fuel_recip.unchecked<2>();
@@ -3179,10 +3948,20 @@ PYBIND11_MODULE(breach_physics, m) {
 
             // P-R4: the nullable SIGNED radiation accumulator (None -> nullptr,
             // i.e. no fold — the same idiom as is_ambient above).
-            const int32_t* rnet = nullptr;
-            py::array_t<int32_t> rnet_arr;
+            //
+            // P3a-1: int64, dtype CHECKED not converted -- see the identical
+            // note on TemperatureSolver.step. `.noconvert()` cannot make a
+            // `py::object` argument loud; this can.
+            const int64_t* rnet = nullptr;
+            py::array_t<int64_t, py::array::c_style> rnet_arr;
             if (!rad_net.is_none()) {
-                rnet_arr = rad_net.cast<py::array_t<int32_t>>();
+                if (!py::isinstance<py::array_t<int64_t>>(rad_net)) {
+                    throw py::type_error(
+                        "PhysicsEngine.step_tail: rad_net must be an int64 numpy "
+                        "array (the radiation accumulator widened at P3a-1), "
+                        "not a narrower dtype");
+                }
+                rnet_arr = rad_net.cast<py::array_t<int64_t, py::array::c_style>>();
                 auto ra = rnet_arr.unchecked<2>();
                 rnet = ra.data(0, 0);
             }
@@ -3197,12 +3976,51 @@ PYBIND11_MODULE(breach_physics, m) {
                 gen = ga.mutable_data(0, 0);
             }
 
+            // Ray-engine-v2 P1: the shadow sweep's planes (all (h, w)).
+            auto [haq, h19, w19] = get_2d_const(heat_atten_q);
+            auto [dhq, h20, w20] = get_2d_const(dyn_heat_atten_q);
+            auto [rns, h21, w21] = get_2d(rad_net_sweep);
+            auto [rfs, h22, w22] = get_2d(rad_flux_sweep);
+            auto [ras, h23, w23] = get_2d(rad_amb_sweep);
+            auto [rfl, h24, w24] = get_2d(rad_fluence);
+            if (h19 != h || w19 != w || h20 != h || w20 != w || h21 != h || w21 != w ||
+                h22 != h || w22 != w || h23 != h || w23 != w || h24 != h || w24 != w) {
+                throw py::value_error(
+                    "PhysicsEngine.step_tail: the radiation planes must be (h, w)");
+            }
+            // P5a: one heat_absorb entry per gas plane.
+            if (gas_heat_absorb_q16.ndim() != 1 || gas_heat_absorb_q16.shape(0) != n_gases) {
+                throw py::value_error(
+                    "PhysicsEngine.step_tail: gas_heat_absorb_q16 must be (n_gases,) "
+                    "— one entry per gas plane");
+            }
+            const int32_t* ghq = gas_heat_absorb_q16.data();
+            // P6a: the light group, when handed (the engine decides by its
+            // light_requested whether to read it; a partial group is refused
+            // here, a missing one there).
+            LightGroupArgs lg = light_group_args(
+                "PhysicsEngine.step_tail", light_atten_q, dyn_light_atten_q, light_q,
+                light_flux_q, light_glow, gas_light_absorb_q16, gas_light_glow_q16,
+                py::none(), (int)RadiationSweep::TRANSPORT_STEP, h, w, n_gases,
+                light_cones, light_sky, 16);
+
             auto destroyed = self.step_tail(
                 rip, ripv, wd, wp, sol,
                 f, atm, sm, whp, temp, wx, wy, vac, fl,
-                temp, hp, shift, fs, tsol, csg, fr, tep,
+                temp, hp, shift, fs, tsol, fr, tep,
                 gas_ptr, gcons, n_gases, o2_idx,
-                h, w, sim_time, amb, rnet, gen, t_amb_q);
+                h, w, sim_time, amb, rnet, gen, t_amb_q,
+                haq, dhq, rns, rfs, ras, rfl, k_leak_q, rad_amb_vacuum_q, ghq,
+                lg.on ? lg.lc.light_atten_q : nullptr,
+                lg.on ? lg.lc.dyn_light_atten_q : nullptr,
+                lg.on ? lg.lc.light_q : nullptr,
+                lg.on ? lg.lc.light_flux_q : nullptr,
+                lg.on ? lg.lc.light_glow : nullptr,
+                lg.on ? lg.lc.light_absorb_q16 : nullptr,
+                lg.on ? lg.lc.light_glow_q16 : nullptr,
+                lg.on ? lg.lc.cones : nullptr,
+                lg.on ? lg.lc.n_cones : 0,
+                lg.on ? lg.lc.sky : nullptr);
             py::list result;
             for (const auto& [dy, dx] : destroyed) {
                 result.append(py::make_tuple(dy, dx));
@@ -3216,15 +4034,104 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("is_vacuum"), py::arg("flammable"),
            py::arg("heat"), py::arg("heat_inv_shift"), py::arg("face_shift"),
            py::arg("thermal_solid"),             // thermal-mass axis (required)
-           py::arg("cool_shift_grid"),           // cool-shift axis (required)
            py::arg("fuel_recip"),                // fuel-fraction axis (required)
            py::arg("fire_T_ext_plane"),          // per-material T_ext (required)
            py::arg("gas"), py::arg("gas_conservative"), py::arg("o2_idx"),
            py::arg("sim_time"),
+           // Ray-engine-v2 P1: required + noconvert (see the parameter block).
+           py::arg("heat_atten_q").noconvert(),
+           py::arg("dyn_heat_atten_q").noconvert(),
+           py::arg("rad_net_sweep").noconvert(),
+           py::arg("rad_flux_sweep").noconvert(),
+           py::arg("rad_amb_sweep").noconvert(),
+           py::arg("rad_fluence").noconvert(),
+           py::arg("gas_heat_absorb_q16").noconvert(),   // P5a (required)
+           py::arg("k_leak_q"), py::arg("rad_amb_vacuum_q") = (int64_t)-1,
            py::arg("is_ambient") = py::none(),   // BC (default None = space map)
            py::arg("rad_net") = py::none(),      // P-R4 (default None = no fold)
            py::arg("gas_energy") = py::none(),   // arc #54 (None = T-form tail)
-           py::arg("t_amb_q") = 0)               // arc #54 T_AMB_K raw
+           py::arg("t_amb_q") = 0,               // arc #54 T_AMB_K raw
+           // P6a: the light channels' planes (None = none handed)
+           py::arg("light_atten_q") = py::none(), py::arg("dyn_light_atten_q") = py::none(),
+           py::arg("light_q") = py::none(), py::arg("light_flux_q") = py::none(),
+           py::arg("light_glow") = py::none(),
+           py::arg("gas_light_absorb_q16") = py::none(),
+           py::arg("gas_light_glow_q16") = py::none(),
+           // P6b: the cone emitters and the sky (None = none / the dark ring)
+           py::arg("light_cones") = py::none(), py::arg("light_sky") = py::none())
+        // ---- ray-engine-v2 P6b: RELIGHT (physics_engine.h) -- the light field
+        // on the CURRENT state without a tick, the heat outputs into the
+        // engine's own scratch. The light group is REQUIRED here (it is the
+        // whole point); extracted by light_group_args like every other entry.
+        .def("relight", [](const PhysicsEngine& self,
+                           py::array_t<int32_t, py::array::c_style> temperature,
+                           py::array_t<int32_t, py::array::c_style> heat_atten_q,
+                           py::array_t<int32_t, py::array::c_style> dyn_heat_atten_q,
+                           py::array_t<int32_t, py::array::c_style> heat_inv_shift,
+                           py::array_t<bool, py::array::c_style> thermal_solid,
+                           py::array_t<bool, py::array::c_style> is_vacuum,
+                           py::array_t<int32_t, py::array::c_style> gas,
+                           py::array_t<bool, py::array::c_style> gas_conservative,
+                           py::array_t<int32_t, py::array::c_style> gas_heat_absorb_q16,
+                           int32_t k_leak_q, int64_t rad_amb_vacuum_q, int32_t t_amb_q,
+                           py::object light_atten_q, py::object dyn_light_atten_q,
+                           py::object light_q, py::object light_flux_q,
+                           py::object light_glow,
+                           py::object gas_light_absorb_q16,
+                           py::object gas_light_glow_q16,
+                           py::object light_cones, py::object light_sky) {
+            auto [T, h, w]      = get_2d_const(temperature);
+            auto [aq, h2, w2]   = get_2d_const(heat_atten_q);
+            auto [dq, h3, w3]   = get_2d_const(dyn_heat_atten_q);
+            auto [his, h4, w4]  = get_2d_const(heat_inv_shift);
+            auto [ts, h5, w5]   = get_2d_const(thermal_solid);
+            auto [vac, h6, w6]  = get_2d_const(is_vacuum);
+            if (h2 != h || w2 != w || h3 != h || w3 != w || h4 != h || w4 != w ||
+                h5 != h || w5 != w || h6 != h || w6 != w) {
+                throw py::value_error("PhysicsEngine.relight: every plane must be (h, w)");
+            }
+            auto gv = gas.unchecked<3>();
+            if (gv.shape(1) != h || gv.shape(2) != w) {
+                throw py::value_error("PhysicsEngine.relight: gas must be (n_gases, h, w)");
+            }
+            const int n_gases = static_cast<int>(gv.shape(0));
+            if (gas_conservative.ndim() != 1 || gas_conservative.shape(0) != n_gases ||
+                gas_heat_absorb_q16.ndim() != 1 || gas_heat_absorb_q16.shape(0) != n_gases) {
+                throw py::value_error("PhysicsEngine.relight: gas_conservative and "
+                                      "gas_heat_absorb_q16 must be (n_gases,)");
+            }
+            LightGroupArgs lg = light_group_args(
+                "PhysicsEngine.relight", light_atten_q, dyn_light_atten_q, light_q,
+                light_flux_q, light_glow, gas_light_absorb_q16, gas_light_glow_q16,
+                py::none(), (int)RadiationSweep::TRANSPORT_STEP, h, w, n_gases,
+                light_cones, light_sky, 16);
+            if (!lg.on) {
+                throw py::value_error("PhysicsEngine.relight: the light planes are "
+                                      "required (relight computes nothing else)");
+            }
+            self.relight(T, aq, dq, his, ts, vac,
+                         gv.data(0, 0, 0), gas_conservative.data(), n_gases, h, w,
+                         t_amb_q, k_leak_q, rad_amb_vacuum_q, gas_heat_absorb_q16.data(),
+                         lg.lc.light_atten_q, lg.lc.dyn_light_atten_q,
+                         lg.lc.light_q, lg.lc.light_flux_q, lg.lc.light_glow,
+                         lg.lc.light_absorb_q16, lg.lc.light_glow_q16,
+                         lg.lc.cones, lg.lc.n_cones, lg.lc.sky);
+        }, py::arg("temperature").noconvert(), py::arg("heat_atten_q").noconvert(),
+           py::arg("dyn_heat_atten_q").noconvert(), py::arg("heat_inv_shift").noconvert(),
+           py::arg("thermal_solid").noconvert(), py::arg("is_vacuum").noconvert(),
+           py::arg("gas").noconvert(), py::arg("gas_conservative").noconvert(),
+           py::arg("gas_heat_absorb_q16").noconvert(),
+           py::arg("k_leak_q"), py::arg("rad_amb_vacuum_q"), py::arg("t_amb_q"),
+           py::arg("light_atten_q"), py::arg("dyn_light_atten_q"),
+           py::arg("light_q"), py::arg("light_flux_q"), py::arg("light_glow"),
+           py::arg("gas_light_absorb_q16") = py::none(),
+           py::arg("gas_light_glow_q16") = py::none(),
+           py::arg("light_cones") = py::none(), py::arg("light_sky") = py::none(),
+           "P6b: recompute the light field on the CURRENT state without a tick "
+           "(the paused renderer's path): the one sweep invocation step_tail "
+           "uses, light always on, its heat outputs into the engine's own "
+           "scratch -- no plane a tick reads is written. Writes light_q / "
+           "light_flux_q / light_glow in place.")
         // --- Patch 1 S4b: the IMEX atmosphere/smoke substep loop ------------
         // run_substeps moves the per-tick IMEX substep block of PhysicsRunner.step
         // (between _step_water and step_tail) into C++. Pointer extraction mirrors
@@ -3473,6 +4380,39 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("d_thermal_solid") = 0,
            // arc #54 §2.2 (P-G2): the conserved gas energy field's device ptr.
            py::arg("d_gas_energy") = 0)
+        // Smoke transport v2 (#12, P2b): the resident trace TAIL (stranded
+        // zeroing -> Jacobi diffusion -> ceil decay) on the persistent device
+        // gas planes, booked into this engine's EOSSolver books exactly as the
+        // CPU tail in run_substeps books them. Host (n_gases,) columns +
+        // CuPy .data.ptr device pointers. Bound on every build — throws
+        // without CUDA.
+        .def("run_trace_tail_resident", [](PhysicsEngine& self,
+                                py::array_t<bool> gas_conservative,
+                                py::array_t<float> gas_diffusion,
+                                py::array_t<float> gas_decay,
+                                int h, int w, float sim_time,
+                                std::uintptr_t d_gas,
+                                std::uintptr_t d_solid,
+                                std::uintptr_t d_is_vacuum,
+                                std::uintptr_t d_is_ambient,
+                                std::uintptr_t d_dyn_permeability) {
+            auto gc = gas_conservative.unchecked<1>();
+            auto gd = gas_diffusion.unchecked<1>();
+            auto gdc = gas_decay.unchecked<1>();
+            const int n_gases = static_cast<int>(gc.shape(0));
+            if (gd.shape(0) != n_gases || gdc.shape(0) != n_gases)
+                throw std::invalid_argument(
+                    "run_trace_tail_resident: gas_conservative / gas_diffusion / "
+                    "gas_decay must all be (n_gases,)");
+            self.run_trace_tail_resident(
+                n_gases, gc.data(0), gd.data(0), gdc.data(0),
+                h, w, sim_time, d_gas, d_solid, d_is_vacuum,
+                d_is_ambient, d_dyn_permeability);
+        }, py::arg("gas_conservative"), py::arg("gas_diffusion"),
+           py::arg("gas_decay"), py::arg("h"), py::arg("w"),
+           py::arg("sim_time"), py::arg("d_gas"), py::arg("d_solid"),
+           py::arg("d_is_vacuum"), py::arg("d_is_ambient"),
+           py::arg("d_dyn_permeability"))
         // --- Patch 1 S4c: the water-layer array arithmetic ------------------
         // step_water moves the array-op body of PhysicsRunner._step_water into
         // C++ (substep loop + W5 flash-boil + W3 displacement/seal + the final
@@ -3619,37 +4559,41 @@ PYBIND11_MODULE(breach_physics, m) {
         // Moves the FIELD-REBUILD half of GameMap.stamp_units into C++ (the unit
         // iteration / occupied_tiles() / alive-filter / bounds-check / defaults
         // stay Python, flattened into per-row arrays). Static (h,w) grids
-        // permeability/wave_absorb + (h,w,3) light_atten are read; the dyn_*
-        // targets + the (h,w) bool obstacles are written IN-PLACE. The flat stamp
-        // arrays (ys/xs int32; perm/wabsorb/atten_{r,g,b} float32) carry one row
-        // per stamped footprint tile. PURE-STRUCTURE, 0-ULP (copies + compare +
+        // permeability/wave_absorb are read; the dyn_* targets + the (h,w) bool
+        // obstacles are written IN-PLACE. The flat stamp arrays (ys/xs int32;
+        // perm/wabsorb float32) carry one row per stamped footprint tile. (The
+        // float light plane and its atten_{r,g,b} rows went with the render
+        // march at P6c; the light stamp is the integer twin below.) PURE-STRUCTURE, 0-ULP (copies + compare +
         // min/max only). The atmosphere-refill bit stays Python (Q1, locked).
         .def("stamp_units", [](const PhysicsEngine& self,
                                py::array_t<float> permeability,
                                py::array_t<float> wave_absorb,
-                               py::array_t<float> light_atten,
                                py::array_t<float> dyn_permeability,
                                py::array_t<float> dyn_wave_absorb,
-                               py::array_t<float> dyn_light_atten,
                                py::array_t<bool>  obstacles,
                                py::array_t<int32_t> ys,
                                py::array_t<int32_t> xs,
                                py::array_t<float> perm,
                                py::array_t<float> wabsorb,
-                               py::array_t<float> atten_r,
-                               py::array_t<float> atten_g,
-                               py::array_t<float> atten_b) {
+                               // Ray-engine-v2 P1: the Q16 heat-extinction
+                               // plane (static in, dynamic out) + per-row value.
+                               py::array_t<int32_t, py::array::c_style> heat_atten_q,
+                               py::array_t<int32_t, py::array::c_style> dyn_heat_atten_q,
+                               py::array_t<int32_t, py::array::c_style> heat_q,
+                               // Ray-engine-v2 P6a: the Q16 light-extinction
+                               // twin (static in (h, w, 3), dynamic out (h, w,
+                               // 3)) + the per-row unit triple (n_stamp, 3).
+                               // REQUIRED and noconvert like the heat trio.
+                               py::array_t<int32_t, py::array::c_style> light_atten_q,
+                               py::array_t<int32_t, py::array::c_style> dyn_light_atten_q,
+                               py::array_t<int32_t, py::array::c_style> light_q_rows) {
             auto [pm, h, w]    = get_2d_const(permeability);
             auto [wa, h2, w2]  = get_2d_const(wave_absorb);
             auto [dpm, h3, w3] = get_2d(dyn_permeability);
             auto [dwa, h4, w4] = get_2d(dyn_wave_absorb);
             auto [obs, h5, w5] = get_2d(obstacles);
-            // light_atten / dyn_light_atten are (h, w, 3) f32 — pass the base
-            // pointer; the loop strides the trailing channel axis internally.
-            auto la_v  = light_atten.unchecked<3>();
-            const float* la = la_v.data(0, 0, 0);
-            auto dla_v = dyn_light_atten.mutable_unchecked<3>();
-            float* dla = dla_v.mutable_data(0, 0, 0);
+            auto [haq, h6, w6] = get_2d_const(heat_atten_q);
+            auto [dhq, h7, w7] = get_2d(dyn_heat_atten_q);
             // Flat per-row stamp arrays (1D). Empty arrays (no living units) are
             // valid — n_stamp == 0 -> the stamp loop is a no-op (reset only).
             auto ys_v = ys.unchecked<1>();
@@ -3659,20 +4603,36 @@ PYBIND11_MODULE(breach_physics, m) {
             const int32_t* xs_p = (n_stamp > 0) ? xs_v.data(0) : nullptr;
             auto perm_v = perm.unchecked<1>();
             auto wabs_v = wabsorb.unchecked<1>();
-            auto ar_v   = atten_r.unchecked<1>();
-            auto ag_v   = atten_g.unchecked<1>();
-            auto ab_v   = atten_b.unchecked<1>();
             const float* perm_p = (n_stamp > 0) ? perm_v.data(0) : nullptr;
             const float* wabs_p = (n_stamp > 0) ? wabs_v.data(0) : nullptr;
-            const float* ar_p   = (n_stamp > 0) ? ar_v.data(0) : nullptr;
-            const float* ag_p   = (n_stamp > 0) ? ag_v.data(0) : nullptr;
-            const float* ab_p   = (n_stamp > 0) ? ab_v.data(0) : nullptr;
-            self.stamp_units(pm, wa, la, dpm, dwa, dla, obs,
-                             ys_p, xs_p, perm_p, wabs_p, ar_p, ag_p, ab_p,
-                             n_stamp, h, w);
-        }, py::arg("permeability"), py::arg("wave_absorb"), py::arg("light_atten"),
+            auto hq_v = heat_q.unchecked<1>();
+            const int32_t* hq_p = (n_stamp > 0) ? hq_v.data(0) : nullptr;
+            // P6a: the integer light twin -- shapes checked, pointers passed.
+            if (light_atten_q.ndim() != 3 || light_atten_q.shape(0) != h ||
+                light_atten_q.shape(1) != w || light_atten_q.shape(2) != 3 ||
+                dyn_light_atten_q.ndim() != 3 || dyn_light_atten_q.shape(0) != h ||
+                dyn_light_atten_q.shape(1) != w || dyn_light_atten_q.shape(2) != 3 ||
+                light_q_rows.ndim() != 2 || light_q_rows.shape(0) != n_stamp ||
+                light_q_rows.shape(1) != 3) {
+                throw py::value_error(
+                    "PhysicsEngine.stamp_units: light_atten_q / dyn_light_atten_q must "
+                    "be (h, w, 3) and light_q_rows (n_stamp, 3), all int32 (P6a)");
+            }
+            const int32_t* lq_p = (n_stamp > 0) ? light_q_rows.data() : nullptr;
+            self.stamp_units(pm, wa, dpm, dwa, obs,
+                             ys_p, xs_p, perm_p, wabs_p,
+                             haq, dhq, hq_p,
+                             n_stamp, h, w,
+                             light_atten_q.data(), dyn_light_atten_q.mutable_data(),
+                             lq_p);
+        }, py::arg("permeability"), py::arg("wave_absorb"),
            py::arg("dyn_permeability"), py::arg("dyn_wave_absorb"),
-           py::arg("dyn_light_atten"), py::arg("obstacles"),
+           py::arg("obstacles"),
            py::arg("ys"), py::arg("xs"), py::arg("perm"), py::arg("wabsorb"),
-           py::arg("atten_r"), py::arg("atten_g"), py::arg("atten_b"));
+           py::arg("heat_atten_q").noconvert(),
+           py::arg("dyn_heat_atten_q").noconvert(),
+           py::arg("heat_q").noconvert(),
+           py::arg("light_atten_q").noconvert(),
+           py::arg("dyn_light_atten_q").noconvert(),
+           py::arg("light_q_rows").noconvert());
 }

@@ -29,10 +29,10 @@ Run:
     C:/Users/steen/anaconda3/python.exe main.py
     C:/Users/steen/anaconda3/python.exe main.py --level playground   # sandbox
     C:/Users/steen/anaconda3/python.exe main.py --control wego       # explicit default
+    C:/Users/steen/anaconda3/python.exe main.py --level smoke_light_studio --control gamepad --warp 4.5   # frozen frame
 """
 from __future__ import annotations
 
-import math
 import sys
 import time
 from pathlib import Path
@@ -60,16 +60,15 @@ sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
+import numpy as np
 import pyray as rl
 
 import breach_physics as bp
 from config import CFG
 from level_loader import load as load_level
-from level_lights import (light_source_params, monotonic_total_tick,
-                          partition_lights)
+from level_lights import monotonic_total_tick, partition_lights
 from renderer import GameRenderer
-from renderer.fire_lights import FireLightSelector
-from renderer.frame_lights import build_frame_light_sources, build_light_source
+from renderer import frame_lights
 from renderer.game_renderer import RenderConfig
 from renderer.static_props import placements_from_entities
 from simulation import Simulation
@@ -160,6 +159,28 @@ def _parse_control_flag() -> str:
     except IndexError:
         raise SystemExit("--control requires a name, e.g. --control wego")
     return name
+
+
+def _parse_warp_flag() -> float:
+    """``--warp SECONDS`` -- step the sim that far on the sim clock BEFORE the
+    first frame, then leave it PAUSED (#12 smoke-light studio, 2026-10-04).
+
+    The still picture comes from determinism, not a saved snapshot: the same
+    level stepped to the same tick is the same field on every launch, so a
+    render or light dial changed between launches is judged on the identical
+    scene. Under ``--control gamepad`` (no pause key) the frame then stays
+    frozen; under ``wego`` Space resumes as usual. Returns 0.0 when absent.
+    """
+    if "--warp" not in sys.argv:
+        return 0.0
+    i = sys.argv.index("--warp")
+    try:
+        s = float(sys.argv[i + 1])
+    except (IndexError, ValueError):
+        raise SystemExit("--warp requires seconds of sim time, e.g. --warp 4.5")
+    if not (s >= 0.0) or s == float("inf"):
+        raise SystemExit(f"--warp must be a finite number >= 0, got {s}")
+    return s
 
 
 def _parse_debug_flag() -> bool:
@@ -276,7 +297,7 @@ def _onephase_world_overlay(sim, control_source, hover_tile=None):
         selected = (sim.get_unit(control_source.selected_unit_id)
                     if control_source.selected_unit_id is not None else None)
         # NOTE: the flashlight cones are NOT drawn as sectors here. They are
-        # already real ray-traced light sources in the frame's source list, and
+        # already real light (cone emitters on the radiation sweep), and
         # drawing a translucent wedge on top of the light they cast doubled the
         # cone and read as a UI overlay rather than as a torch (Erik, 2nd play
         # session: "the half cones … flashlights already kind of show this, and
@@ -404,7 +425,7 @@ def main():
               f"WASD/arrows pan")
         if debug_mode:
             print(f"  --debug ON: the diagnostic keys are re-armed "
-                  f"(F1-F10, T/V/M/L/B/H/G, I/J/K/U/N/O/P, Ctrl+R, F8)")
+                  f"(F1-F10, T/V/M/B/H/G, I/J/K/U/N/O/P, Ctrl+R, F8)")
         else:
             print(f"  (no diagnostic keys in game mode — relaunch with "
                   f"--debug to re-arm them)")
@@ -433,19 +454,23 @@ def main():
     renderer = GameRenderer(level, bp, cfg,
                             initial_camera=initial_camera,
                             borderless=BORDERLESS)
-    renderer.lighting.set_ambient((0.10, 0.10, 0.13))
-
     # Level lights (P4): the [[light]] entities from level.toml (the old
     # hardcoded emergency lamps now live in the vessel/playground tomls).
-    # Static sources are compiled structs built ONCE here; beacons are
-    # rebuilt per frame from the SIM tick (they freeze with the sim —
-    # src/level_lights.py owns the math; this stays a thin setattr loop).
+    # Beacons turn with the SIM tick (they freeze with the sim —
+    # src/level_lights.py owns the math).
     sim_time_per_tick = 1.0 / float(CFG.clock.ticks_per_second)
+    # Playback speed (#4 tuning aid, 2026-10-04): 1.0 real time, 0.25 = quarter
+    # speed. Render pacing only; refused outside (0, 4].
+    sim_speed = float(getattr(CFG.display, "sim_speed", 1.0))
+    if not (0.0 < sim_speed <= 4.0):
+        raise SystemExit(f"[display] sim_speed must be in (0, 4], got {sim_speed}")
     ticks_per_round = int(CFG.clock.ticks_per_round)
 
-    # The LightSource setattr builder + the per-frame statics/beacons/fire
-    # assembly are extracted into renderer/frame_lights.py so main.py and
-    # tools/lighting_demo.py build the SAME list with no drift (B2 P1).
+    # ray-engine-v2 P6b: THE ONE ASSEMBLY (renderer/frame_lights.py). Every
+    # light is enumerated once as a spec, and the engine gets their
+    # CONE-EMITTER rows once per sim tick (the sweep lights the world). The
+    # flat term is the small [render.lighting] floor; the ambient light is the
+    # SKY below.
     lights_in, lights_off = partition_lights(level.lights,
                                              level.width, level.height)
     if lights_off:
@@ -454,21 +479,18 @@ def main():
         skipped = ", ".join(f"({l.x:g}, {l.y:g})" for l in lights_off)
         print(f"  WARNING: {len(lights_off)} [[light]] entries off-grid "
               f"for {level.width}x{level.height} — skipped: {skipped}")
-    static_lights = [
-        build_light_source(bp, light_source_params(e, 0, sim_time_per_tick))
-        for e in lights_in if e.kind != "beacon"
-    ]
-    beacon_lights = [e for e in lights_in if e.kind == "beacon"]
     if level.lights:
-        print(f"  Lights: {len(static_lights)} static + "
-              f"{len(beacon_lights)} beacon from level.toml")
-
-    # Fire light sources (Fire & Heat Beauty B1): the brightest-K hot tiles
-    # become omni ray-traced lights each frame, colour + intensity from the
-    # renderer's shared black-body ramp. RENDER-ONLY — they never write the
-    # synced heat channel (see renderer/fire_lights.py). Built once from
-    # [render.fire_lights]; queried per frame in the sources block below.
-    fire_light_selector = FireLightSelector.from_config(CFG)
+        n_beacon = sum(1 for e in lights_in if e.kind == "beacon")
+        print(f"  Lights: {len(lights_in) - n_beacon} static + "
+              f"{n_beacon} beacon from level.toml")
+    # P6b: THE SKY -- the light ring's per-ordinate RGB from the level's boundary
+    # type ([light.sky.<boundary>]): space is dark, a planetside ("ambient")
+    # boundary is open sky. None = the dark ring.
+    light_sky = frame_lights.sky_for_level(getattr(level, "boundary", "space"), CFG, bp)
+    light_fine_bits = int(bp.L_FINE_BITS)
+    print(f"  Light: sweep; sky "
+          f"{'dark' if light_sky is None else 'lit'} "
+          f"(boundary '{getattr(level, 'boundary', 'space')}')")
 
     # Entity registry (entity design §3b): apply the dev tuning overlay
     # (hard-errors on schema-in-TOML mistakes, like a bad config.toml), then
@@ -482,9 +504,62 @@ def main():
     except OSError as exc:
         print(f"  WARNING: entity_registry.json export failed: {exc}")
 
+    # ray-engine-v2 P6b: the per-tick light assembly -- every light as a spec,
+    # once (frame_lights.frame_light_specs). The render-sourced lights (the
+    # onephase flashlights at their lens, WEGO's cursor lamp, the W6 transient
+    # emitters) are the caller's tail, exactly as before P6b.
+    def _footprint_of(uid):
+        u = sim.get_unit(uid)
+        return int(getattr(u, "footprint", 3)) if u is not None else 3
+
+    def assemble_lights():
+        total = monotonic_total_tick(sim.turn_number, ticks_per_round, sim.tick)
+        extra = []
+        if onephase:
+            # §8 removes the CURSOR flashlight outright: marines carry them, and
+            # the light is the expression of their facing cone.
+            extra += frame_lights.flashlight_specs(
+                ui.flashlight_cones(
+                    sim, team=0, mode=control_source.flashlight_mode,
+                    selected_unit_id=control_source.selected_unit_id,
+                    cursor_tile=renderer.mouse_to_tile(),
+                    paused=sim.is_paused()),
+                _footprint_of)
+        else:
+            cursor = frame_lights.cursor_lamp_spec(renderer.mouse_to_tile_float())
+            if cursor is not None:
+                extra.append(cursor)
+        # W6 transient emitters: flame/miasma jets + plasma bolts + (#33) the
+        # bullets' muzzle flashes, from the renderer's own live effect queue —
+        # render-side only.
+        extra += frame_lights.transient_specs(
+            renderer.transient_light_specs(_footprint_of))
+        return frame_lights.frame_light_specs(
+            lights_in, total_tick=total, sim_time_per_tick=sim_time_per_tick,
+            extra=extra)
+
+    def cone_rows_now():
+        grid_h, grid_w = sim.gmap.solid.shape
+        return frame_lights.cone_rows(assemble_lights().specs, grid_w, grid_h,
+                                      light_fine_bits)
+
+    # --warp: step to the requested sim time before the first frame, then
+    # hold paused (the paused path relights on the frozen state).
+    warp_s = _parse_warp_flag()
+    if warp_s > 0.0:
+        n_warp = int(round(warp_s / sim_time_per_tick))
+        for _ in range(n_warp):
+            sim.set_paused(False)
+            sim.step()
+        sim.set_paused(True)
+        print(f"  --warp {warp_s:g} s: stepped {n_warp} ticks, paused")
+
     # 3. Main loop.
     last_time = time.perf_counter()
     tick_accum = 0.0
+    light_on = None          # P6b: is the sweep's light currently requested?
+    lit_rows = None          # the cone rows the current light field was computed from
+    last_relight = 0.0
 
     try:
         while not renderer.should_close():
@@ -505,102 +580,62 @@ def main():
             renderer.update_camera(dt)
             control_source.handle_frame(sim, renderer)
 
+            # ----- ray-engine-v2 P6b: the light -----
+            # The radiation sweep lights the world: the game REQUESTS light
+            # while the lighting pass shows (F4), and the cone rows ride each
+            # sim tick.
+            new_light = bool(renderer.show_lighting)
+            if new_light != light_on:
+                if not new_light:
+                    sim.set_light(False)
+                light_on, lit_rows = new_light, None
+
             # ----- Tick the simulation while not paused -----
+            stepped = False
             if not sim.is_paused():
-                tick_accum += dt
+                # [display] sim_speed: wall-clock pacing ONLY (slow motion for
+                # tuning) -- every tick is the same tick, so the sim and its
+                # determinism are untouched.
+                tick_accum += dt * sim_speed
                 # Cap the per-frame catch-up to avoid spirals if a
                 # background pause stalls the loop.
                 max_catch_up = 5
                 steps = 0
                 while tick_accum >= sim_time_per_tick and steps < max_catch_up:
+                    if new_light:
+                        # the ONE assembly, once per sim tick, for the engine
+                        lit_rows = cone_rows_now()
+                        sim.set_light(True, lit_rows, light_sky)
                     sim.step()
+                    stepped = True
                     tick_accum -= sim_time_per_tick
                     steps += 1
                     # Sim may auto-pause mid-batch (phase boundary).
                     if sim.is_paused():
                         break
+            # PAUSED (planning): nothing ticks, so the light is RELIT on the
+            # current state whenever its emitters moved (the cursor lamp, a
+            # planning flashlight aimed at the cursor) -- and at 4 Hz anyway, so
+            # a dev-key edit made while paused shows up. The relight writes only
+            # the three light planes (PhysicsRunner.relight).
+            if new_light and not stepped and sim.is_paused():
+                rows = cone_rows_now()
+                t_now = time.perf_counter()
+                if (lit_rows is None or not np.array_equal(rows, lit_rows)
+                        or t_now - last_relight > 0.25):
+                    sim.set_light(True, rows, light_sky)
+                    sim.relight()
+                    lit_rows, last_relight = rows, t_now
 
-            # ----- Lights: level statics + beacons + fire (shared assembly) --
-            # The statics/beacons/fire assembly lives in renderer/frame_lights.py
-            # so main.py and tools/lighting_demo.py build the SAME per-frame list
-            # with no drift (B2 P1). NOT an entity system — it only assembles
-            # LightSource params from today's suppliers (level [[light]] rows
-            # incl. the beacon, B1 fire tiles). total_tick = the MONOTONIC sim
-            # tick on the SIM clock: beacons freeze on pause + replay exactly
-            # (P4 §2.2), never the wall-clock frame dt. The mouse flashlight + W6
-            # transient emitters stay caller-side below (they differ per caller).
+            # total_tick = the MONOTONIC sim tick on the SIM clock: beacons
+            # freeze on pause + replay exactly (P4 §2.2), and it is the P3 smoke
+            # detail clock too (replays render identical smoke).
             total_tick = monotonic_total_tick(
                 sim.turn_number, ticks_per_round, sim.tick)
-            frame = build_frame_light_sources(
-                bp, static_lights, beacon_lights,
-                total_tick=total_tick, sim_time_per_tick=sim_time_per_tick,
-                fire_selector=fire_light_selector,
-                temperature_field=sim.gmap.temperature,
-                blackbody_ramp=renderer.blackbody_ramp,
-                show_fire_lights=renderer.show_fire_lights)
-            sources = frame.sources
-            renderer.set_fire_light_stats(frame.fire_count, frame.fire_peaks,
-                                          fire_light_selector.max_lights)
-            # Flashlights. §8 removes the CURSOR flashlight outright: marines
-            # carry them, and the light is the expression of their facing
-            # cone. Under any other ruleset the shipped cursor lamp is
-            # untouched.
-            if onephase:
-                for cone in ui.flashlight_cones(
-                        sim, team=0, mode=control_source.flashlight_mode,
-                        selected_unit_id=control_source.selected_unit_id,
-                        cursor_tile=renderer.mouse_to_tile(),
-                        paused=sim.is_paused()):
-                    src = bp.LightSource()
-                    src.x = float(cone.x)
-                    src.y = float(cone.y)
-                    src.max_range = int(cone.range_tiles)
-                    src.intensity = 2.5
-                    # A cone, not an omni lamp: the raylib-side spread is the
-                    # full angle, and the sim never sees any of this (§8 —
-                    # flashlights are render-only in v1).
-                    src.angle_spread = math.radians(cone.half_deg * 2.0)
-                    # Ray bearings are screen-convention (y down); Unit.facing
-                    # is y-up — the standard one negation.
-                    src.angle_center = -float(cone.facing)
-                    src.color = (1.0, 1.0, 0.95)
-                    src.jitter = 0.0
-                    sources.append(src)
-            else:
-                mouse_f = renderer.mouse_to_tile_float()
-                if mouse_f is not None:
-                    src = bp.LightSource()
-                    src.x = float(mouse_f[0])
-                    src.y = float(mouse_f[1])
-                    src.max_range = 25
-                    src.intensity = 2.5
-                    src.angle_spread = 6.283
-                    # Flashlight — cool white (profile: flashlight).
-                    src.color = (1.0, 1.0, 0.95)
-                    src.jitter = 0.0
-                    sources.append(src)
-
-            # W6 transient emitters: flame/miasma jets + plasma bolts. The
-            # renderer derives light specs from its own live effect queue
-            # (SprayJetEvent / ProjectileGlowEvent visuals) — render-side
-            # only, one frame behind the sim tick, never written back.
-            for spec in renderer.transient_light_specs():
-                src = bp.LightSource()
-                src.x = float(spec["x"])
-                src.y = float(spec["y"])
-                src.max_range = int(spec["max_range"])
-                src.intensity = float(spec["intensity"])
-                src.angle_spread = 6.283
-                src.color = spec["color"]
-                src.jitter = 0.0
-                sources.append(src)
 
             # ----- Upload + draw -----
-            # total_tick (the MONOTONIC sim clock computed above) is the P3 smoke
-            # detail clock too — the advected-noise crossfade rides the sim tick,
-            # not wall time, so replays/spectators render identical smoke.
-            renderer.upload_state(sim.gmap, light_sources=sources,
-                                  sim_tick=total_tick)
+            renderer.upload_state(sim.gmap, sim_tick=total_tick,
+                                  light_serial=sim.light_serial if new_light else None)
             renderer.begin_frame()
 
             # Fog of war (§8) is visibility GATING: an enemy the team cannot
