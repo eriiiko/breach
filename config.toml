@@ -1826,12 +1826,15 @@ body_light = "unit"     # "unit" = the whole body lit from the unit's one
 # How directional a unit's lighting reads (#114; Erik, 2026-10-27: "a little
 # more dramatic lighting on the side of the units, one side light, one side
 # dark"). Both read every frame -- Ctrl+R retunes them live.
-light_height = 0.35     # the light's height when its 2D direction is lifted to
+light_height = 0.20     # the light's height when its 2D direction is lifted to
                         # 3D: lower = more grazing (the sweep's floor shadows
-                        # are light arriving nearly level). 0.35 = pre-#114
-wrap = 1.0              # 1 = half-Lambert (soft: the side facing away from the
+                        # are light arriving nearly level). 0.35 = pre-#114;
+                        # 0.20 = Erik's play-test, 2026-10-28
+wrap = 0.01             # 1 = half-Lambert (soft: the side facing away from the
                         # light still half lit; pre-#114) .. 0 = plain Lambert
                         # (a hard dark side)
+                        # 0.01 = Erik's play-test, 2026-10-28 (no visible
+                        # difference from 0; same cost either way)
 
 [render.muzzle_flash]
 # A bullet's muzzle flash (#33): a short omni lamp on the first cell outside
