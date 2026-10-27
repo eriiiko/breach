@@ -1,0 +1,254 @@
+{
+  "marine_at_gltf_m": [
+    -2.85,
+    0.0,
+    0.15
+  ],
+  "options": {
+    "mid_bulk": {
+      "size": {
+        "size": "mid_bulk",
+        "note": "option A: body a marine's bulk (mantle 0.66 x 0.78 m), the proof's long arms",
+        "scale": 1.4084507042253522,
+        "body_length_m": 1.0,
+        "mantle_width_m": 0.6619718309859155,
+        "mantle_length_m": 0.7746478873239437,
+        "arm_length_rest_m": 1.7769999999999997,
+        "arm_length_stretched_m": 2.250168706379567,
+        "arm_body_ratio": 1.777,
+        "arm_lambda": 1.0671238095238094,
+        "stretch_max": 1.343,
+        "arm_base_diameter_m": 0.21375114876767565,
+        "span_rest_m": 3.769308683507071,
+        "span_stretched_m": 4.713054028584202,
+        "span_rest_marines": 1.999633253849905,
+        "span_stretched_marines": 2.500293914368277,
+        "span_rest_game_tiles": 11.997799523099431,
+        "span_stretched_game_tiles": 15.001763486209663,
+        "span_rest_tiles_at_0333m": 11.31924529581703,
+        "span_stretched_tiles_at_0333m": 14.15331540115376
+      },
+      "marine_height_m": 2.8441168069839478,
+      "marine_bbox_blender": [
+        [
+          -3.8499998450279236,
+          -1.10105787078238,
+          -1.0
+        ],
+        [
+          -1.8499999642372131,
+          0.8010578588614509,
+          1.8441168069839478
+        ]
+      ],
+      "rest_top": {
+        "centre_gltf": [
+          -0.45,
+          0.0,
+          0.0
+        ],
+        "ortho_m": 7.6,
+        "res": [
+          1200,
+          1000
+        ],
+        "m_per_px": 0.006333333333333333
+      },
+      "rest_closest_to_marine_axis_m": 1.2479789624973165,
+      "reach_top": {
+        "centre_gltf": [
+          -0.45,
+          0.0,
+          0.0
+        ],
+        "ortho_m": 7.6,
+        "res": [
+          1200,
+          1000
+        ],
+        "m_per_px": 0.006333333333333333
+      },
+      "reach_closest_to_marine_axis_m": 0.7044867526960382
+    },
+    "mid": {
+      "size": {
+        "size": "mid",
+        "note": "option B, the default: between the two readings; body 1.4 m long",
+        "scale": 1.971830985915493,
+        "body_length_m": 1.4,
+        "mantle_width_m": 0.9267605633802817,
+        "mantle_length_m": 1.0845070422535212,
+        "arm_length_rest_m": 1.7318,
+        "arm_length_stretched_m": 2.204324677060442,
+        "arm_body_ratio": 1.237,
+        "arm_lambda": 0.64981768707483,
+        "stretch_max": 1.398,
+        "arm_base_diameter_m": 0.2992516082747459,
+        "span_rest_m": 3.7691736040114847,
+        "span_stretched_m": 4.711634418510364,
+        "span_rest_marines": 1.9995615936400448,
+        "span_stretched_marines": 2.49954080557579,
+        "span_rest_game_tiles": 11.99736956184027,
+        "span_stretched_game_tiles": 14.99724483345474,
+        "span_rest_tiles_at_0333m": 11.31883965168614,
+        "span_stretched_tiles_at_0333m": 14.14905230783893
+      },
+      "marine_height_m": 2.8441168069839478,
+      "marine_bbox_blender": [
+        [
+          -3.8499998450279236,
+          -1.10105787078238,
+          -1.0
+        ],
+        [
+          -1.8499999642372131,
+          0.8010578588614509,
+          1.8441168069839478
+        ]
+      ],
+      "rest_top": {
+        "centre_gltf": [
+          -0.45,
+          0.0,
+          0.0
+        ],
+        "ortho_m": 7.6,
+        "res": [
+          1200,
+          1000
+        ],
+        "m_per_px": 0.006333333333333333
+      },
+      "rest_closest_to_marine_axis_m": 1.246578572861075,
+      "reach_top": {
+        "centre_gltf": [
+          -0.45,
+          0.0,
+          0.0
+        ],
+        "ortho_m": 7.6,
+        "res": [
+          1200,
+          1000
+        ],
+        "m_per_px": 0.006333333333333333
+      },
+      "reach_closest_to_marine_axis_m": 0.7330120646763176
+    },
+    "mid_heavy": {
+      "size": {
+        "size": "mid_heavy",
+        "note": "option C: body as long as a marine is tall, short stout arms",
+        "scale": 2.654929577464789,
+        "body_length_m": 1.885,
+        "mantle_width_m": 1.2478169014084508,
+        "mantle_length_m": 1.460211267605634,
+        "arm_length_rest_m": 1.6776499999999999,
+        "arm_length_stretched_m": 2.150269178755958,
+        "arm_body_ratio": 0.89,
+        "arm_lambda": 0.38165986394557827,
+        "stretch_max": 1.495,
+        "arm_base_diameter_m": 0.4029209154270686,
+        "span_rest_m": 3.7703162319645576,
+        "span_stretched_m": 4.712965532164285,
+        "span_rest_marines": 2.000167762315415,
+        "span_stretched_marines": 2.500246966665403,
+        "span_rest_game_tiles": 12.00100657389249,
+        "span_stretched_game_tiles": 15.001481799992419,
+        "span_rest_tiles_at_0333m": 11.322270966860533,
+        "span_stretched_tiles_at_0333m": 14.153049646138992
+      },
+      "marine_height_m": 2.8441168069839478,
+      "marine_bbox_blender": [
+        [
+          -3.8499998450279236,
+          -1.10105787078238,
+          -1.0
+        ],
+        [
+          -1.8499999642372131,
+          0.8010578588614509,
+          1.8441168069839478
+        ]
+      ],
+      "rest_top": {
+        "centre_gltf": [
+          -0.45,
+          0.0,
+          0.0
+        ],
+        "ortho_m": 7.6,
+        "res": [
+          1200,
+          1000
+        ],
+        "m_per_px": 0.006333333333333333
+      },
+      "rest_closest_to_marine_axis_m": 1.243634650491753,
+      "reach_top": {
+        "centre_gltf": [
+          -0.45,
+          0.0,
+          0.0
+        ],
+        "ortho_m": 7.6,
+        "res": [
+          1200,
+          1000
+        ],
+        "m_per_px": 0.006333333333333333
+      },
+      "reach_closest_to_marine_axis_m": 0.7715355232785929
+    }
+  },
+  "strip": {
+    "0.0": {
+      "centre_gltf": [
+        0.75,
+        0.0,
+        0.95
+      ],
+      "ortho_m": 3.9,
+      "res": [
+        900,
+        1100
+      ],
+      "m_per_px": 0.003545454545454545,
+      "arm_length_m": 1.7318,
+      "base_to_tip_m": 1.731699682618368,
+      "thinning": 1.0
+    },
+    "0.5": {
+      "centre_gltf": [
+        0.75,
+        0.0,
+        0.95
+      ],
+      "ortho_m": 3.9,
+      "res": [
+        900,
+        1100
+      ],
+      "m_per_px": 0.003545454545454545,
+      "arm_length_m": 1.968062338530221,
+      "base_to_tip_m": 1.9679591929395464,
+      "thinning": 0.9132515299544461
+    },
+    "1.0": {
+      "centre_gltf": [
+        0.75,
+        0.0,
+        0.95
+      ],
+      "ortho_m": 3.9,
+      "res": [
+        900,
+        1100
+      ],
+      "m_per_px": 0.003545454545454545,
+      "arm_length_m": 2.204324677060442,
+      "base_to_tip_m": 2.2042193095482836,
+      "thinning": 0.8457585839117284
+    }
+  }
+}
