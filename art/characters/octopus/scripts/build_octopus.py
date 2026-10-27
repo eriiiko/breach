@@ -27,6 +27,20 @@ OUT = HOME / "prototype" / "octopus"
 PREVIEW = HOME / "previews" / "octopus"
 B = np.array([[1., 0., 0.], [0., 0., -1.], [0., 1., 0.]])     # glTF Y-up -> Blender Z-up
 TEX = 2048
+# The default skin's noise runs on 'Generated' coordinates, i.e. normalised to the
+# mesh's bounding box. This is the pre-#106 hero's bbox in authored units (Blender
+# axes); `skin_mapping_scale` rescales the mapping so the mottle keeps its size on
+# the body whatever the size row's arm length (the look of the skin unchanged).
+SKIN_BBOX_REF = np.array([2.43157655, 2.20621058, 0.56422769])
+SKIN_MAPPING_REF = np.array([2.9, 2.9, 1.2])
+
+
+def skin_mapping_scale(vertices=None):
+    """Mapping scale for the 'Generated' skin noise; `vertices` = an assemble() mesh (authored units)."""
+    if vertices is None:
+        return tuple(SKIN_MAPPING_REF)
+    v = np.asarray(vertices) @ B.T
+    return tuple((SKIN_MAPPING_REF * (v.max(0) - v.min(0)) / SKIN_BBOX_REF).tolist())
 
 
 def log(*a):
@@ -59,15 +73,18 @@ def node(t, kind, **inputs):
     return n
 
 
-def skin_material():
+def skin_material(mapping=None):
+    """The default skin. `mapping` = skin_mapping_scale(...) of the mesh it goes on (None: the pre-#106 value).
+    Lengths in world units (bump distance, subsurface radius) follow OCTOPUS_SCALE."""
     P = arm.PALETTE
+    S = om.OCTOPUS_SCALE
     m = bpy.data.materials.new("Octopus_skin")
     m.use_nodes = True
     t = m.node_tree
     bsdf = t.nodes["Principled BSDF"]
     tc = t.nodes.new("ShaderNodeTexCoord")
     mp = t.nodes.new("ShaderNodeMapping")
-    mp.inputs["Scale"].default_value = (2.9, 2.9, 1.2)       # Generated is bbox-normalised
+    mp.inputs["Scale"].default_value = mapping or tuple(SKIN_MAPPING_REF)   # Generated is bbox-normalised
     t.links.new(tc.outputs["Generated"], mp.inputs["Vector"])
     big = node(t, "ShaderNodeTexNoise", Scale=9.0, Detail=5.0, Roughness=.62)
     t.links.new(mp.outputs["Vector"], big.inputs["Vector"])
@@ -105,10 +122,10 @@ def skin_material():
     bsdf.inputs["Roughness"].default_value = .44
     bsdf.inputs["Specular IOR Level"].default_value = .45
     bsdf.inputs["Subsurface Weight"].default_value = .06
-    bsdf.inputs["Subsurface Radius"].default_value = (.02, .008, .005)
+    bsdf.inputs["Subsurface Radius"].default_value = (.02 * S, .008 * S, .005 * S)
     bump = t.nodes.new("ShaderNodeBump")
     bump.inputs["Strength"].default_value = .08
-    bump.inputs["Distance"].default_value = .004
+    bump.inputs["Distance"].default_value = .004 * S
     t.links.new(spots.outputs["Distance"], bump.inputs["Height"])
     t.links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
     m["game_gloss_note"] = "moist satin: roughness .44 -> game gloss ~.32"
@@ -274,11 +291,12 @@ def build_rig(data, name, mesh_obj):
 
 def set_pose(rig, body, arms, lod, keyframe=None):
     names = om.bones(lod)
-    pts, rots = om.pose_octopus(body, arms, lod)
+    pts, rots, scl = om.pose_octopus(body, arms, lod, with_scale=True)
     target = {}
     for i, n in enumerate(names):
         bone = rig.data.bones[n]
-        rot = Matrix((B @ rots[i] @ B.T).tolist()) @ bone.matrix_local.to_3x3()
+        # uniform bone scale (the stretch thinning): Blender's armature deform honours it about the head
+        rot = Matrix((B @ (rots[i] * scl[i]) @ B.T).tolist()) @ bone.matrix_local.to_3x3()
         m = rot.to_4x4()
         m.translation = Vector(B @ pts[i])
         target[n] = m
@@ -295,6 +313,7 @@ def set_pose(rig, body, arms, lod, keyframe=None):
         if keyframe is not None:
             pb.keyframe_insert("location", frame=keyframe)
             pb.keyframe_insert("rotation_quaternion", frame=keyframe)
+            pb.keyframe_insert("scale", frame=keyframe)
     bpy.context.view_layer.update()
 
 
@@ -318,7 +337,8 @@ def bake_pass(hero_obj, obj, tree, image_node, btype):
     hero_obj.select_set(True)
     obj.select_set(True)
     bpy.context.view_layer.objects.active = obj
-    kw = dict(type=btype, use_selected_to_active=True, cage_extrusion=.025, max_ray_distance=.06,
+    S = om.OCTOPUS_SCALE                    # the cage and ray reach scale with the animal
+    kw = dict(type=btype, use_selected_to_active=True, cage_extrusion=.025 * S, max_ray_distance=.06 * S,
               margin=8, margin_type="EXTEND", use_clear=True)
     if btype == "DIFFUSE":
         kw["pass_filter"] = {"COLOR"}
@@ -421,7 +441,7 @@ def build_game(hero_obj, hero_rig, root):
     replace_image(OUT / "octopus_game.glb", "baseColor", (OUT / "octopus_albedo_gloss.png").read_bytes())
     rig.animation_data_clear()
     np.savez_compressed(OUT / "octopus_game_geometry.npz", vertices=data["vertices"], joints=data["joints"],
-                        weights=data["weights"], bind=data["bind"])
+                        weights=data["weights"], bind=data["bind"], scale=om.OCTOPUS_SCALE, size=om.SIZE)
     return obj, rig, data
 
 
@@ -430,7 +450,9 @@ def aim(obj, target):
     obj.rotation_euler = (Vector(target) - obj.location).to_track_quat("-Z", "Y").to_euler()
 
 
-def studio():
+def studio(scale=1.0):
+    """The neutral indoor studio. `scale` moves and sizes the lights with the subject
+    (power x scale^2), so a bigger animal is lit exactly as the scale-1 previews were."""
     scene = bpy.context.scene
     scene.render.engine = "CYCLES"
     scene.cycles.samples = 48
@@ -454,11 +476,11 @@ def studio():
         ("Under", (0., 0., -3.5), 0, 4.0, (1., 1., 1.)),
     ]:
         d = bpy.data.lights.new(name, "AREA")
-        d.energy, d.shape, d.size, d.color = power, "DISK", size, color
+        d.energy, d.shape, d.size, d.color = power * scale * scale, "DISK", size * scale, color
         o = bpy.data.objects.new(name, d)
         scene.collection.objects.link(o)
-        o.location = loc
-        aim(o, (0, 0, .1))
+        o.location = tuple(scale * c for c in loc)
+        aim(o, (0, 0, .1 * scale))
     cd = bpy.data.cameras.new("Cam")
     cam = bpy.data.objects.new("Cam", cd)
     scene.collection.objects.link(cam)
@@ -500,7 +522,7 @@ def renders(cam, floor, hero_obj, hero_rig, stage):
         shot(cam, PREVIEW / "pose_swim_3q.png", to_b((2.3 * S, 2.3 * S, 2.6 * S)), to_b((0, .15 * S, -.05 * S)), lens=50, res=(1200, 900))
         shot(cam, PREVIEW / "pose_swim_top.png", to_b((0, 6 * S, -.05 * S)), to_b(c), ortho=3.15 * S, res=(900, 900))
         floor.hide_render = False
-        bpy.data.lights["Under"].energy = 140
+        bpy.data.lights["Under"].energy = 140 * S * S
         floor.hide_render = True
         shot(cam, PREVIEW / "underside.png", to_b((0, -6 * S, 0)), to_b((0, 0, 0)), ortho=3.15 * S, res=(1400, 1400))
         bpy.data.lights["Under"].energy = 0
@@ -511,7 +533,7 @@ def renders(cam, floor, hero_obj, hero_rig, stage):
         shot(cam, PREVIEW / "hero_three_quarter.png", to_b((2.3 * S, 2.1 * S, 2.6 * S)), to_b((0, .12 * S, -.05 * S)), lens=50, res=(1600, 1100))
         shot(cam, PREVIEW / "side_profile.png", to_b((4 * S, .25 * S, -.05 * S)), to_b((0, .25 * S, -.05 * S)), ortho=1.25 * S, res=(1400, 900))
         floor.hide_render = True
-        bpy.data.lights["Under"].energy = 140
+        bpy.data.lights["Under"].energy = 140 * S * S
         shot(cam, PREVIEW / "underside.png", to_b((0, -6 * S, 0)), to_b((0, 0, 0)), ortho=3.15 * S, res=(1400, 1400))
         floor.hide_render = False
         shot(cam, PREVIEW / "junction_closeup.png", to_b((.75 * S, .55 * S, .75 * S)), to_b((.17 * S, .12 * S, .12 * S)), lens=60, res=(1400, 1000))
@@ -562,7 +584,8 @@ def main():
     t0 = time.time()
     hero = om.assemble("hero")
     log("hero assembled", round(time.time() - t0, 1), "s")
-    hero_obj = build_mesh(hero, "Octopus_hero_mesh", [skin_material(), cup_material(), eye_material()])
+    hero_obj = build_mesh(hero, "Octopus_hero_mesh",
+                          [skin_material(skin_mapping_scale(hero["vertices"])), cup_material(), eye_material()])
     hero_rig = build_rig(hero, "Octopus_hero_rig", hero_obj)
     hero_rig["prototype_note"] = ("Controller: scripts/octopus_math.py pose_octopus(body, arms). "
                                   "Keys on the timeline are samples of it, not the controller.")
@@ -571,8 +594,8 @@ def main():
     for name, (bp, apm) in list(om.named_poses().items())[:5]:
         set_pose(hero_rig, bp, apm, "hero")
         actual = evaluated_vertices(hero_obj)
-        pts, rots = om.pose_octopus(bp, apm, "hero")
-        expected = om.skin(hero["vertices"], hero["joints"], hero["weights"], hero["bind"], pts, rots)
+        pts, rots, scl = om.pose_octopus(bp, apm, "hero", with_scale=True)
+        expected = om.skin(hero["vertices"], hero["joints"], hero["weights"], hero["bind"], pts, rots, scl)
         parity[name] = float(np.linalg.norm(actual - expected, axis=1).max())
     log("blender parity", parity)
     game_obj, game_rig, game = build_game(hero_obj, hero_rig, args.root.resolve())
@@ -597,11 +620,11 @@ def main():
     bpy.context.scene.frame_start, bpy.context.scene.frame_end = 1, swim0 + 72
     for src in (HERE / "arm_math.py", HERE / "octopus_math.py", Path(__file__)):
         bpy.data.texts.load(str(src))
-    cam, floor = studio()
+    cam, floor = studio(om.OCTOPUS_SCALE)
     bpy.context.scene.frame_set(1)
     bpy.ops.wm.save_as_mainfile(filepath=str(blend))
     count = lambda d: sum(len(f) - 2 for f in d["faces"])
-    stats = dict(scale=om.OCTOPUS_SCALE, arm_length_m=arm.LENGTH * om.OCTOPUS_SCALE,
+    stats = dict(scale=om.OCTOPUS_SCALE, size=om.size_report(), arm_length_m=om.arm_length() * om.OCTOPUS_SCALE,
                  hero=dict(vertices=len(hero["vertices"]), triangles=count(hero), joints=len(hero["bones"]),
                            cups=int(8 * len(om.hero_arm()["cups"]))),
                  game=dict(vertices=len(game["vertices"]), triangles=count(game), joints=len(game["bones"]),

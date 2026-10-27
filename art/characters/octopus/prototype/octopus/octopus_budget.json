@@ -1,11 +1,33 @@
 {
-  "scale": 1.0,
-  "arm_length_m": 1.2,
+  "scale": 1.971830985915493,
+  "size": {
+    "size": "mid",
+    "note": "option B, the default: between the two readings; body 1.4 m long",
+    "scale": 1.971830985915493,
+    "body_length_m": 1.4,
+    "mantle_width_m": 0.9267605633802817,
+    "mantle_length_m": 1.0845070422535212,
+    "arm_length_rest_m": 1.7318,
+    "arm_length_stretched_m": 2.204324677060442,
+    "arm_body_ratio": 1.237,
+    "arm_lambda": 0.64981768707483,
+    "stretch_max": 1.398,
+    "arm_base_diameter_m": 0.2992516082747459,
+    "span_rest_m": 3.7691736040114847,
+    "span_stretched_m": 4.711634418510364,
+    "span_rest_marines": 1.9995615936400448,
+    "span_stretched_marines": 2.49954080557579,
+    "span_rest_game_tiles": 11.99736956184027,
+    "span_stretched_game_tiles": 14.99724483345474,
+    "span_rest_tiles_at_0333m": 11.31883965168614,
+    "span_stretched_tiles_at_0333m": 14.14905230783893
+  },
+  "arm_length_m": 1.7318,
   "hero": {
-    "vertices": 67512,
-    "triangles": 132512,
+    "vertices": 49656,
+    "triangles": 97952,
     "joints": 270,
-    "cups": 624
+    "cups": 336
   },
   "game": {
     "vertices": 6108,
@@ -14,10 +36,10 @@
     "texture": "2048x2048 albedo+gloss(alpha) and tangent normal, baked from hero"
   },
   "blender_hero_skin_parity_m": {
-    "rest": 1.4445282842976063e-06,
-    "curled": 1.0038323099006783e-06,
-    "reach": 1.4445282842976063e-06,
-    "swim": 1.0867938393685425e-06,
-    "walk": 1.2460305462161978e-06
+    "rest": 2.4273229689998194e-06,
+    "curled": 1.9810324166040866e-06,
+    "reach": 2.4273229689998194e-06,
+    "swim": 2.6653221243431753e-06,
+    "walk": 2.3794425686371177e-06
   }
 }

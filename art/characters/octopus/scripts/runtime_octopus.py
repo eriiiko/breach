@@ -8,6 +8,13 @@ then calls the real native raylib skinning. No production file is touched.
     python runtime_octopus.py --root <breach> -- --level playground          (play)
     python runtime_octopus.py --root <breach> --shots <prefix> --frames 90,200 -- --level playground
     python runtime_octopus.py --root <breach> --benchmark --samples 120
+    python runtime_octopus.py --root <breach> --mix 0 --offset 12,-2 --pose stretch --shots <prefix> -- --level playground
+
+--mix N draws ONLY the Nth player unit (ascending id) as the octopus and every
+other unit with the game's own [render.unit_looks] (the marines), so the
+octopus is seen at true scale beside them; --offset DX,DY (tiles) moves where
+that one octopus is DRAWN (a render-time proxy of the unit; the simulation is
+not touched), so its span does not overlap the squad.
 """
 from pathlib import Path
 import argparse
@@ -106,6 +113,37 @@ def stretch_demo(seconds):
     return body, arms
 
 
+OCTOPUS_LOOK = "octopus_prototype"
+
+
+def mix_looks(umr, args):
+    """--mix: the look table in THIS process only -- the Nth player is the octopus, the rest as configured."""
+    from renderer.unit_looks import look_path, looks_table, ROLE_PLAYER
+    from config import CFG
+    table = looks_table(CFG)
+    marines = table[ROLE_PLAYER]
+    table[ROLE_PLAYER] = [marines[i % len(marines)] for i in range(args.mix)] + [OCTOPUS_LOOK] + \
+        [marines[(args.mix + i) % len(marines)] for i in range(16)]
+    umr.UnitModelRenderer._table = staticmethod(lambda: table)
+    umr.UnitModelRenderer._path_of = staticmethod(lambda name: args.model if name == OCTOPUS_LOOK else look_path(name))
+    dx, dy = (float(v) for v in args.offset.split(","))
+    draw_one = umr.UnitModelRenderer._draw_one
+
+    class Moved:
+        def __init__(self, u):
+            self._u = u
+            self.x, self.y = float(u.x) + dx, float(u.y) + dy
+
+        def __getattr__(self, name):
+            return getattr(self._u, name)
+
+    def draw_one_moved(self, u, look, *a, **k):
+        return draw_one(self, Moved(u) if look.name == OCTOPUS_LOOK else u, look, *a, **k)
+
+    umr.UnitModelRenderer._draw_one = draw_one_moved
+    print("[octopus] --mix: player looks", table[ROLE_PLAYER][:6], "octopus drawn offset", (dx, dy), "tiles")
+
+
 def revision(root):
     return subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
 
@@ -144,8 +182,9 @@ def benchmark(rl, args):
             mesh = model.meshes[m]
             act = np.frombuffer(rl.ffi.buffer(mesh.animVertices, mesh.vertexCount * 12), dtype=np.float32).reshape(-1, 3)
             errors.append(float(np.linalg.norm(act - exp[idx], axis=1).max()))
-    assert bind_err < 2e-6, bind_err
-    assert max(errors) < 1e-5, max(errors)
+    # float32 skin error is relative to coordinate size: the gates scale with the animal (#106)
+    assert bind_err < 2e-6 * max(1.0, om.OCTOPUS_SCALE), bind_err
+    assert max(errors) < 1e-5 * max(1.0, om.OCTOPUS_SCALE), max(errors)
     for _ in range(20):
         drv.update(*om.demo_cycle(.3))
     batches = {}
@@ -198,7 +237,9 @@ def main():
     ap.add_argument("--root", required=True, type=Path)
     ap.add_argument("--benchmark", action="store_true")
     ap.add_argument("--samples", type=int, default=120)
-    ap.add_argument("--pose", default="live", choices=["live", *om.named_poses().keys()])
+    ap.add_argument("--pose", default="live", choices=["live", "stretch", *om.named_poses().keys()])
+    ap.add_argument("--mix", type=int, default=None, help="only this player unit (by id order) is the octopus")
+    ap.add_argument("--offset", default="0,0", help="render-time offset DX,DY in tiles of the --mix octopus")
     ap.add_argument("--shots", default="")
     ap.add_argument("--frames", default="90,200")
     ap.add_argument("--focus", default="20:30:0")
@@ -221,12 +262,16 @@ def main():
         def __getattr__(self, name):
             return getattr(real, name)
 
-        def update_model_animation(self, model, unused_clip, unused_frame):
+        def update_model_animation(self, model, clip, frame):
             key = int(real.ffi.cast("uintptr_t", model.bones))
             if key not in state["drivers"]:
-                state["drivers"][key] = LiveOctopus(real, model)
+                is_octopus = model.boneCount == len(om.bones("game"))
+                state["drivers"][key] = LiveOctopus(real, model) if is_octopus else None
+            if state["drivers"][key] is None:            # another look (--mix): the game's own clip
+                return real.update_model_animation(model, clip, frame)
             seconds = state["frame"] / 30 if args.shots else real.get_time()
-            controls = om.demo_cycle(seconds) if args.pose == "live" else om.named_poses()[args.pose]
+            controls = (om.demo_cycle(seconds) if args.pose == "live" else stretch_demo(seconds)
+                        if args.pose == "stretch" else om.named_poses()[args.pose])
             state["drivers"][key].update(*controls)
             state["calls"] += 1
             state["poses"].add(round(seconds, 3))
@@ -242,8 +287,11 @@ def main():
         return draw(self, units, *a, **k)
 
     umr.UnitModelRenderer.draw_units = draw_counted
-    helper = args.root / "art" / "characters" / "charkit" / "preview_in_game.py"
     hargs = ["--root", str(args.root), "--model", str(args.model)]
+    if args.mix is not None:
+        mix_looks(umr, args)
+        hargs = ["--root", str(args.root)]
+    helper = args.root / "art" / "characters" / "charkit" / "preview_in_game.py"
     if args.shots:
         hargs += ["--shots", args.shots, "--frames", args.frames, "--focus", args.focus, "--mouse", "640,350"]
     sys.argv = [str(helper), *hargs, "--", *(passthrough or ["--level", "playground"])]
@@ -262,6 +310,7 @@ def main():
                    note="Real main.py via root charkit preview + tools/e2e_drive.py; only this prototype's pose "
                         "argument changes in process. UnitModelRenderer, lighting, shader, camera, shadows unchanged.")
         rep["model"] = args.model.name
+        rep["mix"] = None if args.mix is None else dict(octopus_player_index=args.mix, offset_tiles=args.offset)
         args.evidence.write_text(json.dumps(rep, indent=2) + "\n")
         print("OCTOPUS_GAME_EVIDENCE", json.dumps(rep))
         if args.shots and code == 0 and state["calls"] < 2:

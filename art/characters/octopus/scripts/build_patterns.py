@@ -315,29 +315,33 @@ def pattern_skin_material(name, row, baking=False):
     bsdf.inputs["Specular IOR Level"].default_value = .45
     sss = row.get("subsurface", .06)
     bsdf.inputs["Subsurface Weight"].default_value = .06 if baking else sss
-    bsdf.inputs["Subsurface Radius"].default_value = (.02, .008, .005) if sss <= .06 else (1., .45, .35)
+    S = om.OCTOPUS_SCALE                      # world-unit lengths follow the size row (#106)
+    bsdf.inputs["Subsurface Radius"].default_value = (.02 * S, .008 * S, .005 * S) if sss <= .06 else (1., .45, .35)
     if sss > .06:
-        bsdf.inputs["Subsurface Scale"].default_value = .03
+        bsdf.inputs["Subsurface Scale"].default_value = .03 * S
     # the build's pore bump, on the same 'Generated' coordinates (skin_material)
     tc = t.nodes.new("ShaderNodeTexCoord")
     mp = t.nodes.new("ShaderNodeMapping")
-    mp.inputs["Scale"].default_value = (2.9, 2.9, 1.2)
+    mp.inputs["Scale"].default_value = MAPPING or bo.skin_mapping_scale()
     t.links.new(tc.outputs["Generated"], mp.inputs["Vector"])
     pores = bo.node(t, "ShaderNodeTexVoronoi", Scale=55.0, Randomness=.9)
     t.links.new(mp.outputs["Vector"], pores.inputs["Vector"])
     bump = t.nodes.new("ShaderNodeBump")
     bump.inputs["Strength"].default_value = .08
-    bump.inputs["Distance"].default_value = .004
+    bump.inputs["Distance"].default_value = .004 * S
     t.links.new(pores.outputs["Distance"], bump.inputs["Height"])
     t.links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
     m["pattern"] = name
     return m
 
 
+MAPPING = None      # the hero mesh's 'Generated' mapping scale (build_octopus.skin_mapping_scale), set in main
+
+
 def materials(name, baking=False):
     row = pm.PATTERNS[name]
     if row["builder"] == "default":
-        return bo.skin_material(), bo.cup_material()
+        return bo.skin_material(MAPPING), bo.cup_material()
     return (pattern_skin_material(name, row, baking),
             bo.cup_material(pm.linear(row["rim"]), pm.linear(row["bowl"]), f"Octopus_suckers_{name}"))
 
@@ -414,6 +418,8 @@ def main():
         r.hide_render = True
     t0 = time.time()
     data = om.assemble("hero")
+    global MAPPING
+    MAPPING = bo.skin_mapping_scale(data["vertices"])
     order_err = add_coords(hero_obj, data)
     bo.log("pattern coords", round(time.time() - t0, 1), "s, vertex-order check", order_err)
     committed = bpy.data.images.load(str(bo.OUT / "octopus_albedo_gloss.png"))

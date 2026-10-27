@@ -7,49 +7,107 @@
   "model": "octopus_game.glb",
   "model_meshes": 2,
   "model_joints": 142,
-  "loaded_vertices": 8471,
+  "loaded_vertices": 8502,
   "loaded_triangles": 12200,
-  "bind_vertex_max_error_m": 6.279801052649239e-08,
-  "raylib_vs_numpy_max_error_m": 5.69943926999781e-06,
-  "parity_poses": 36,
+  "bind_vertex_max_error_m": 8.067066584791766e-08,
+  "raylib_vs_numpy_max_error_m": 1.135680361655252e-05,
+  "parity_poses": 54,
   "samples_per_batch": 120,
   "timings_octopi": {
-    "1": {
+    "demo/1": {
       "controls_and_pose_octopus": {
-        "median_ms": 3.1414,
-        "p95_ms": 3.384025
+        "median_ms": 3.2104,
+        "p95_ms": 4.163354999999999
       },
       "write_joint_transforms": {
-        "median_ms": 0.6896,
-        "p95_ms": 0.708525
+        "median_ms": 0.73145,
+        "p95_ms": 0.93448
       },
       "raylib_skin_and_upload": {
-        "median_ms": 0.1668,
-        "p95_ms": 0.18320999999999996
+        "median_ms": 0.1701,
+        "p95_ms": 0.27351499999999995
       },
       "total": {
-        "median_ms": 4.00725,
-        "p95_ms": 4.283200000000001
+        "median_ms": 4.12075,
+        "p95_ms": 5.393744999999999
       }
     },
-    "4": {
+    "demo/4": {
       "controls_and_pose_octopus": {
-        "median_ms": 12.318100000000001,
-        "p95_ms": 12.747519999999998
+        "median_ms": 12.89685,
+        "p95_ms": 13.50418
       },
       "write_joint_transforms": {
-        "median_ms": 2.7286,
-        "p95_ms": 2.870745
+        "median_ms": 2.91775,
+        "p95_ms": 3.1426149999999997
       },
       "raylib_skin_and_upload": {
-        "median_ms": 0.6565000000000001,
-        "p95_ms": 0.7165199999999999
+        "median_ms": 0.68145,
+        "p95_ms": 0.766785
       },
       "total": {
-        "median_ms": 15.729700000000001,
-        "p95_ms": 16.12368
+        "median_ms": 16.56295,
+        "p95_ms": 17.171625
+      }
+    },
+    "demo_two_arms_stretching/1": {
+      "controls_and_pose_octopus": {
+        "median_ms": 3.2168,
+        "p95_ms": 3.5801949999999985
+      },
+      "write_joint_transforms": {
+        "median_ms": 0.7775,
+        "p95_ms": 0.8828599999999999
+      },
+      "raylib_skin_and_upload": {
+        "median_ms": 0.169,
+        "p95_ms": 0.23137999999999997
+      },
+      "total": {
+        "median_ms": 4.1671,
+        "p95_ms": 4.545969999999998
+      }
+    },
+    "demo_two_arms_stretching/4": {
+      "controls_and_pose_octopus": {
+        "median_ms": 13.00385,
+        "p95_ms": 15.203710000000001
+      },
+      "write_joint_transforms": {
+        "median_ms": 3.12035,
+        "p95_ms": 3.5590749999999995
+      },
+      "raylib_skin_and_upload": {
+        "median_ms": 0.6832,
+        "p95_ms": 0.9714549999999997
+      },
+      "total": {
+        "median_ms": 16.847,
+        "p95_ms": 19.63664
       }
     }
+  },
+  "size": {
+    "size": "mid",
+    "note": "option B, the default: between the two readings; body 1.4 m long",
+    "scale": 1.971830985915493,
+    "body_length_m": 1.4,
+    "mantle_width_m": 0.9267605633802817,
+    "mantle_length_m": 1.0845070422535212,
+    "arm_length_rest_m": 1.7318,
+    "arm_length_stretched_m": 2.204324677060442,
+    "arm_body_ratio": 1.237,
+    "arm_lambda": 0.64981768707483,
+    "stretch_max": 1.398,
+    "arm_base_diameter_m": 0.2992516082747459,
+    "span_rest_m": 3.7691736040114847,
+    "span_stretched_m": 4.711634418510364,
+    "span_rest_marines": 1.9995615936400448,
+    "span_stretched_marines": 2.49954080557579,
+    "span_rest_game_tiles": 11.99736956184027,
+    "span_stretched_game_tiles": 14.99724483345474,
+    "span_rest_tiles_at_0333m": 11.31883965168614,
+    "span_stretched_tiles_at_0333m": 14.14905230783893
   },
   "methodology": "perf_counter_ns wall time, 20 warmups; sequential independently phased whole-animal poses on one shared loaded model (the renderer's shared-model seam). Skin call includes driver buffer submission, not GPU completion. Excludes drawing, shading, shadows, simulation. CPU timings are not whole-game FPS."
 }
