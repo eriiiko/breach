@@ -26,6 +26,7 @@ uniform float u_rim_power;
 uniform float u_rim_albedo;    // #33: rim colour = mix(white, albedo, this)
 uniform float u_gloss_strength;  // #33: highlight strength (0 = no highlight)
 uniform float u_gloss_shininess; // #33: highlight exponent at gloss 1
+uniform float u_wrap;           // #114: 1 = half-Lambert (soft) .. 0 = Lambert (hard dark side)
 uniform int   u_srgb_decode;
 uniform int   u_use_normal_marine; // P2 guard: 0 = inert (N unchanged), 1 = on
 uniform float u_normal_strength;   // P2 perturbation strength (feel knob)
@@ -157,14 +158,16 @@ void main() {
         N = normalize(TBN * nmap);
     }
 
-    // Half-Lambert: softens the pre-normalized-direction instability that
-    // side normals get under near-overhead lamps AND reads better on a small
-    // top-down token (design v2 §Bugs).
-    float ndotl = dot(N, L) * 0.5 + 0.5;
-    // #114: the balanced share's weight -- the same half-Lambert averaged over
-    // every horizontal direction at the key's height (exact: it is linear in
-    // L), so a ring of equal lamps lights every side alike and the top most.
-    float ndotl_iso = 0.5 + 0.5 * N.y * u_light_z / sqrt(1.0 + u_light_z * u_light_z);
+    // Wrapped Lambert (#114): u_wrap 1 is the half-Lambert of design v2 §Bugs
+    // (soft, the side facing away still half lit), 0 plain Lambert (a hard
+    // dark side). [render.unit_shading] wrap, read every frame.
+    float ndotl = max(0.0, (dot(N, L) + u_wrap) / (1.0 + u_wrap));
+    // #114: the balanced share's weight -- the same wrapped term averaged over
+    // every horizontal direction at the key's height (exact at u_wrap 1, where
+    // it is linear in L; below 1 the clamp is taken after the average), so a
+    // ring of equal lamps lights every side alike and the top most.
+    float ndotl_iso = max(0.0, (N.y * u_light_z / sqrt(1.0 + u_light_z * u_light_z)
+                                + u_wrap) / (1.0 + u_wrap));
     vec3 light_rgb = light_dir_rgb + light_iso_rgb;   // all of it, x exposure
 
     vec4 albedo_gloss = texture(texture0, fragTexCoord);

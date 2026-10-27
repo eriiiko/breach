@@ -132,6 +132,7 @@ uniform float u_rim_power;
 uniform float u_rim_albedo;    // #33: rim colour = mix(white, albedo, this)
 uniform float u_gloss_strength;  // #33: highlight strength (0 = no highlight)
 uniform float u_gloss_shininess; // #33: highlight exponent at gloss 1
+uniform float u_wrap;           // #114: 1 = half-Lambert (soft) .. 0 = Lambert (hard dark side)
 uniform int   u_srgb_decode;
 uniform int   u_use_normal_marine; // P2 guard: 0 = inert (N unchanged), 1 = on
 uniform float u_normal_strength;   // P2 perturbation strength (feel knob)
@@ -202,14 +203,16 @@ void main() {
         N = normalize(TBN * nmap);
     }
 
-    // Half-Lambert: softens the pre-normalized-direction instability that
-    // side normals get under near-overhead lamps AND reads better on a small
-    // top-down token (design v2 §Bugs).
-    float ndotl = dot(N, L) * 0.5 + 0.5;
-    // #114: the balanced share's weight -- the same half-Lambert averaged over
-    // every horizontal direction at the key's height (exact: it is linear in
-    // L), so a ring of equal lamps lights every side alike and the top most.
-    float ndotl_iso = 0.5 + 0.5 * N.y * u_light_z / sqrt(1.0 + u_light_z * u_light_z);
+    // Wrapped Lambert (#114): u_wrap 1 is the half-Lambert of design v2 §Bugs
+    // (soft, the side facing away still half lit), 0 plain Lambert (a hard
+    // dark side). [render.unit_shading] wrap, read every frame.
+    float ndotl = max(0.0, (dot(N, L) + u_wrap) / (1.0 + u_wrap));
+    // #114: the balanced share's weight -- the same wrapped term averaged over
+    // every horizontal direction at the key's height (exact at u_wrap 1, where
+    // it is linear in L; below 1 the clamp is taken after the average), so a
+    // ring of equal lamps lights every side alike and the top most.
+    float ndotl_iso = max(0.0, (N.y * u_light_z / sqrt(1.0 + u_light_z * u_light_z)
+                                + u_wrap) / (1.0 + u_wrap));
     vec3 light_rgb = light_dir_rgb + light_iso_rgb;   // all of it, x exposure
 
     vec4 albedo_gloss = texture(texture0, fragTexCoord);
@@ -321,6 +324,16 @@ class MarineShader:
                             rl.ffi.new("float[1]", [float(strength)]),
                             rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
 
+    def set_light_shape(self, light_z: float, wrap: float) -> None:
+        """#114: the key's height (the 2D light direction lifted to 3D;
+        lower = more grazing) and the wrap (1 half-Lambert .. 0 Lambert),
+        from ``[render.unit_shading] light_height`` / ``wrap``."""
+        f1 = rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT
+        rl.set_shader_value(self.shader, self.locs["u_light_z"],
+                            rl.ffi.new("float[1]", [float(light_z)]), f1)
+        rl.set_shader_value(self.shader, self.locs["u_wrap"],
+                            rl.ffi.new("float[1]", [float(wrap)]), f1)
+
     def set_body_light(self, from_unit: bool) -> None:
         """#114: True = the body lit from each unit's read (set per unit by
         :meth:`set_unit_light`), False = from the field tile under each
@@ -364,7 +377,7 @@ def load_marine_shader(light_z: float = MARINE_LIGHT_Z,
              "u_srgb_decode", "u_use_normal_marine", "u_normal_strength",
              "u_rim_albedo", "u_gloss_strength", "u_gloss_shininess",
              "u_body_light", "u_body_dir_rgb", "u_body_iso_rgb",
-             "u_body_to_light"]
+             "u_body_to_light", "u_wrap"]
     locs = {n: rl.get_shader_location(shader, n) for n in names}
 
     # P2 normal map: bind the ROUGHNESS(3) material slot to the `texture3`
@@ -381,6 +394,9 @@ def load_marine_shader(light_z: float = MARINE_LIGHT_Z,
     # Constant-per-run uniforms, set once.
     rl.set_shader_value(shader, locs["u_light_z"],
                         rl.ffi.new("float[1]", [float(light_z)]),
+                        rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
+    rl.set_shader_value(shader, locs["u_wrap"],
+                        rl.ffi.new("float[1]", [1.0]),
                         rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
     rl.set_shader_value(shader, locs["u_rim_strength"],
                         rl.ffi.new("float[1]", [float(rim_strength)]),

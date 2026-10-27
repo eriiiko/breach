@@ -25,4 +25,7 @@ height); 2026-10-27 (#114 lit 3D units tier 1: with `[render.unit_shading] body_
 per-unit uniforms `u_body_light` / `u_body_dir_rgb` / `u_body_iso_rgb` / `u_body_to_light`, a
 balanced share weighted by the azimuth-averaged half-Lambert, the smoke cast shadow re-taken
 per fragment toward the read's light; the shared `_COMMON_GLSL` / `_FIELD_SAMPLE_GLSL` are
-unchanged and still embedded verbatim).
+unchanged and still embedded verbatim); 2026-10-27 (#114, the light's shape as settings: `u_wrap` --
+the diffuse term is the wrapped Lambert `max(0, (N.L + w)/(1 + w))`, w 1 = the old half-Lambert,
+and the balanced share's weight wraps alike -- with `u_light_z` now set per frame from
+`[render.unit_shading] light_height` / `wrap`).

@@ -1823,6 +1823,15 @@ body_light = "unit"     # "unit" = the whole body lit from the unit's one
                         # and an evenly lit share for balanced light;
                         # "field" = each fragment lit from the light-field
                         # tile under it (before #114; the A/B)
+# How directional a unit's lighting reads (#114; Erik, 2026-10-27: "a little
+# more dramatic lighting on the side of the units, one side light, one side
+# dark"). Both read every frame -- Ctrl+R retunes them live.
+light_height = 0.35     # the light's height when its 2D direction is lifted to
+                        # 3D: lower = more grazing (the sweep's floor shadows
+                        # are light arriving nearly level). 0.35 = pre-#114
+wrap = 1.0              # 1 = half-Lambert (soft: the side facing away from the
+                        # light still half lit; pre-#114) .. 0 = plain Lambert
+                        # (a hard dark side)
 
 [render.muzzle_flash]
 # A bullet's muzzle flash (#33): a short omni lamp on the first cell outside

@@ -130,7 +130,8 @@ def test_every_draw_call_of_a_frame_advances_the_animation_alike():
 
 
 _SHADING_KEYS = ("rim_albedo", "gloss_strength", "gloss_shininess",
-                 "normal_map", "normal_strength", "blob_shadow", "body_light")
+                 "normal_map", "normal_strength", "blob_shadow", "body_light",
+                 "light_height", "wrap")
 
 
 def test_shipped_unit_shading_has_every_setting_and_zero_means_off():
@@ -150,10 +151,11 @@ def test_shipped_unit_shading_has_every_setting_and_zero_means_off():
     assert {k for k in _SHADING_KEYS} <= set(vars(shipped))
     off = {"rim_albedo": 0.0, "gloss_strength": 0.0, "gloss_shininess": 1.0,
            "normal_map": False, "normal_strength": 0.0, "blob_shadow": False,
-           "body_light": "field"}
+           "body_light": "field", "light_height": 0.35, "wrap": 0.0}
     got = unit_shading(Namespace({"render": {"unit_shading": dict(off)}}))
     assert got.gloss_strength == 0.0 and got.normal_strength == 0.0
     assert got.normal_map is False and got.blob_shadow is False
+    assert got.wrap == 0.0
 
 
 def test_a_missing_or_mistyped_unit_shading_setting_fails_loudly():
@@ -170,12 +172,14 @@ def test_a_missing_or_mistyped_unit_shading_setting_fails_loudly():
 
     full = {"rim_albedo": 0.9, "gloss_strength": 2.0, "gloss_shininess": 48.0,
             "normal_map": True, "normal_strength": 1.0, "blob_shadow": True,
-            "body_light": "unit"}
+            "body_light": "unit", "light_height": 0.35, "wrap": 1.0}
     for key in _SHADING_KEYS:
         partial = {k: v for k, v in full.items() if k != key}
         with pytest.raises(ValueError, match=key):
             unit_shading(Namespace({"render": {"unit_shading": partial}}))
-    for key, bad in (("normal_map", 0), ("blob_shadow", 1), ("gloss_strength", "2.0")):
+    for key, bad in (("normal_map", 0), ("blob_shadow", 1), ("gloss_strength", "2.0"),
+                     ("light_height", 0.0), ("light_height", -0.2),
+                     ("wrap", -0.1), ("wrap", 1.5), ("wrap", "1")):
         with pytest.raises(ValueError, match=key):
             unit_shading(Namespace({"render": {"unit_shading": dict(full, **{key: bad})}}))
 
@@ -197,7 +201,8 @@ def test_body_light_takes_exactly_its_two_modes():
     from renderer.unit_looks import BODY_LIGHT_MODES, unit_shading
 
     full = {"rim_albedo": 0.9, "gloss_strength": 2.0, "gloss_shininess": 48.0,
-            "normal_map": True, "normal_strength": 1.0, "blob_shadow": True}
+            "normal_map": True, "normal_strength": 1.0, "blob_shadow": True,
+            "light_height": 0.35, "wrap": 1.0}
     assert set(BODY_LIGHT_MODES) == {"unit", "field"}
     for mode in ("unit", "field"):
         got = unit_shading(Namespace({"render": {"unit_shading": dict(full, body_light=mode)}}))

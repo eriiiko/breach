@@ -572,6 +572,7 @@ class UnitModelRenderer:
             ms.set_gloss(shading.gloss_strength, shading.gloss_shininess)
             ms.set_use_normal(shading.normal_map)
             ms.set_normal_strength(shading.normal_strength)
+            ms.set_light_shape(shading.light_height, shading.wrap)   # #114
         # #114: the body lit from the unit's own light read (or, "field",
         # from the tile under each fragment, the A/B).
         body_from_unit = (shading.body_light == BODY_LIGHT_UNIT

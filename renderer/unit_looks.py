@@ -92,6 +92,9 @@ class UnitShading:
                              # unit's one light read (the read its projected
                              # shadow takes); "field" = each fragment lit from
                              # the light-field tile under it (the pre-#114 A/B)
+    light_height: float      # #114: the light's height (its 2D direction lifted
+                             # to 3D; lower = more grazing, darker far side)
+    wrap: float              # #114: 1 = half-Lambert (soft) .. 0 = Lambert
 
 
 # The values ``body_light`` may take (#114).
@@ -102,7 +105,8 @@ BODY_LIGHT_MODES = (BODY_LIGHT_UNIT, BODY_LIGHT_FIELD)
 _SHADING_KEYS = {"rim_albedo": float, "gloss_strength": float,
                  "gloss_shininess": float, "normal_map": bool,
                  "normal_strength": float, "blob_shadow": bool,
-                 "body_light": str}
+                 "body_light": str, "light_height": float,
+                 "wrap": float}
 
 
 def unit_shading(cfg) -> UnitShading:
@@ -131,6 +135,12 @@ def unit_shading(cfg) -> UnitShading:
     if values["body_light"] not in BODY_LIGHT_MODES:
         raise ValueError(f"[render.unit_shading] body_light must be one of "
                          f"{BODY_LIGHT_MODES}, got {values['body_light']!r}")
+    if not values["light_height"] > 0.0:
+        raise ValueError("[render.unit_shading] light_height must be > 0, got "
+                         f"{values['light_height']!r}")
+    if not 0.0 <= values["wrap"] <= 1.0:
+        raise ValueError("[render.unit_shading] wrap must be in [0, 1], got "
+                         f"{values['wrap']!r}")
     if values["gloss_strength"] < 0.0 or values["gloss_shininess"] < 1.0:
         raise ValueError("[render.unit_shading] needs gloss_strength >= 0 and "
                          "gloss_shininess >= 1, got "
