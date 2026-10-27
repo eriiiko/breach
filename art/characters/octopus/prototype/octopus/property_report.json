@@ -82,7 +82,7 @@
     "game_vs_hero_rig_max_deviation_m": 0.016721479537903934,
     "inverted_triangles_worst_pose": 74,
     "poses_with_inverted_triangles": 119,
-    "seconds": 3.1
+    "seconds": 2.9
   },
   "deformation_shown_poses": {
     "poses": 30,
@@ -218,6 +218,6 @@
       "span_stretched_tiles_at_0333m": 9.8684
     }
   },
-  "seconds": 224.8,
-  "limits": "Random poses span every control's full range including edges; no self-collision, arm-arm or arm-body intersection, ground contact or volume preservation is checked or solved. Crown/body areas are measured on the GAME skin; the hero shares its weights' construction. Thresholds are prototype acceptance, not a production spec."
+  "seconds": 220.7,
+  "limits": "Random poses span every control's full range including edges; no self-collision, arm-arm or arm-body intersection or ground contact is checked or solved. Crown/body areas are measured on the GAME skin; the hero shares its weights' construction. Thresholds are prototype acceptance, not a production spec."
 }
