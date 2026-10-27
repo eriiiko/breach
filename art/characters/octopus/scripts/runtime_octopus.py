@@ -33,6 +33,15 @@ class LiveOctopus:
     """One-frame ModelAnimation over the loaded octopus skeleton (bones by name).
 
     The quaternion composition (pose delta x bind rotation) is runtime_arm.LiveArm's.
+
+    Bone SCALE (the arm stretch's thinning, #106). Measured on pyray 5.5.0.4:
+    raylib's CPU skin applies a frame pose's scale AFTER the bone's rotation and
+    translation, in model axes, i.e. v -> s * (R v + t) about the model origin,
+    not about the bone. For the UNIFORM scale the octopus uses that is still
+    exact if the translation is pre-compensated: writing translation
+    p/s + (s - 1) R_def b (b = the bone's bind head) gives s R_def (v - b) + p,
+    the reference skin. The benchmark's parity gate (stretched poses included)
+    fails if a raylib update changes this convention.
     """
 
     def __init__(self, rl, model):
@@ -49,16 +58,26 @@ class LiveOctopus:
                 break
         order = {n: i for i, n in enumerate(om.bones("game"))}
         self.map = []
+        self.bind_head = np.zeros((len(order), 3))
         for i in range(model.boneCount):
             name = rl.ffi.string(model.bones[i].name).decode()
             self.pose_array[i] = model.bindPose[i]
             q = model.bindPose[i].rotation
+            t = model.bindPose[i].translation
             self.map.append((i, order[name], (q.x, q.y, q.z, q.w)))
+            self.bind_head[order[name]] = (t.x, t.y, t.z)
         if sorted(j for _, j, _ in self.map) != list(range(len(order))):
             raise ValueError("loaded skeleton does not match octopus_math.bones('game')")
+        self.scaled = np.zeros(len(order), bool)       # bones whose written scale is not 1
 
-    def write_pose(self, points, rotations):
+    def write_pose(self, points, rotations, scales=None):
         pa = self.pose_array
+        if scales is not None and (scales != 1.0).any():
+            # raylib's model-axis scale about the origin, pre-compensated (class doc)
+            rb = np.einsum("nij,nj->ni", rotations, self.bind_head)
+            points = points / scales[:, None] + (scales - 1)[:, None] * rb
+        else:
+            scales = None
         for bone, j, (bx, by, bz, bw) in self.map:
             tr = pa[bone]
             p = points[j]
@@ -68,10 +87,23 @@ class LiveOctopus:
             tr.rotation.y = w * by - x * bz + y * bw + z * bx
             tr.rotation.z = w * bz + x * by - y * bx + z * bw
             tr.rotation.w = w * bw - x * bx - y * by - z * bz
+            s = 1.0 if scales is None else float(scales[j])
+            if s != 1.0 or self.scaled[j]:
+                tr.scale.x = tr.scale.y = tr.scale.z = s
+                self.scaled[j] = s != 1.0
 
     def update(self, body, arms):
-        self.write_pose(*om.pose_octopus(body, arms, "game"))
+        self.write_pose(*om.pose_octopus(body, arms, "game", with_scale=True))
         self.rl.update_model_animation(self.model, self.animation[0], 0)
+
+
+def stretch_demo(seconds):
+    """demo_cycle with the two front arms reaching out and back (stretch 0..1..0 over 3 s)."""
+    body, arms = om.demo_cycle(seconds)
+    st = 0.5 - 0.5 * np.cos(2 * np.pi * seconds / 3.0)
+    for k in (0, 4):
+        arms[k] = om.ArmParams(**{**vars(arms[k]), "stretch": float(st)})
+    return body, arms
 
 
 def revision(root):
@@ -84,6 +116,8 @@ def benchmark(rl, args):
     model = rl.load_model(str(MODEL))
     drv = LiveOctopus(rl, model)
     geo = np.load(REPORT / "octopus_game_geometry.npz")
+    if "scale" in geo.files and abs(float(geo["scale"]) - om.OCTOPUS_SCALE) > 1e-12:
+        raise SystemExit(f"the GLB was built at scale {float(geo['scale'])}; active size {om.SIZE} is {om.OCTOPUS_SCALE}")
     src = geo["vertices"] * om.OCTOPUS_SCALE
     lookup = {tuple(np.round(v, 5)): i for i, v in enumerate(src)}
     maps, bind_err = [], 0.
@@ -96,12 +130,16 @@ def benchmark(rl, args):
         bind_err = max(bind_err, float(np.linalg.norm(src[idx] - vv, axis=1).max()))
         maps.append(idx)
     errors = []
+    rng = np.random.default_rng(106)
     poses = [om.demo_cycle(t) for t in np.linspace(0, om.WALK_PERIOD + 2 * om.SWIM_PERIOD, 31)] + \
-        list(om.named_poses().values())
+        list(om.named_poses().values()) + [stretch_demo(t) for t in np.linspace(0, 3, 12)] + \
+        [(om.BodyParams(), [om.ArmParams(curl=float(rng.uniform(0, 1)), bend_dir=float(rng.uniform(-1, 1)),
+                                         lift=float(rng.uniform(-1, 1)), stretch=float(rng.uniform(0, 1)))
+                            for _ in range(8)]) for _ in range(6)]
     for body, arms in poses:
         drv.update(body, arms)
-        p, r = om.pose_octopus(body, arms, "game")
-        exp = om.skin(geo["vertices"], geo["joints"], geo["weights"], geo["bind"], p, r)
+        p, r, sc = om.pose_octopus(body, arms, "game", with_scale=True)
+        exp = om.skin(geo["vertices"], geo["joints"], geo["weights"], geo["bind"], p, r, sc)
         for m, idx in enumerate(maps):
             mesh = model.meshes[m]
             act = np.frombuffer(rl.ffi.buffer(mesh.animVertices, mesh.vertexCount * 12), dtype=np.float32).reshape(-1, 3)
@@ -111,17 +149,18 @@ def benchmark(rl, args):
     for _ in range(20):
         drv.update(*om.demo_cycle(.3))
     batches = {}
-    for count in (1, 4):
+    for source, count in [(src_, n_) for src_ in ("demo", "demo_two_arms_stretching") for n_ in (1, 4)]:
+        cycle = om.demo_cycle if source == "demo" else stretch_demo
         samples = []
         for s in range(args.samples):
             ev = wr = sk = 0.
             start = time.perf_counter_ns()
             for i in range(count):
                 t0 = time.perf_counter_ns()
-                body, arms = om.demo_cycle(s * .017 + i * .37)
-                p, r = om.pose_octopus(body, arms, "game")
+                body, arms = cycle(s * .017 + i * .37)
+                p, r, sc = om.pose_octopus(body, arms, "game", with_scale=True)
                 t1 = time.perf_counter_ns()
-                drv.write_pose(p, r)
+                drv.write_pose(p, r, sc)
                 t2 = time.perf_counter_ns()
                 rl.update_model_animation(model, drv.animation[0], 0)
                 t3 = time.perf_counter_ns()
@@ -130,7 +169,7 @@ def benchmark(rl, args):
                 sk += (t3 - t2) / 1e6
             samples.append([ev, wr, sk, (time.perf_counter_ns() - start) / 1e6])
         v = np.array(samples)
-        batches[str(count)] = {n: dict(median_ms=float(np.median(v[:, i])), p95_ms=float(np.percentile(v[:, i], 95)))
+        batches[f"{source}/{count}"] = {n: dict(median_ms=float(np.median(v[:, i])), p95_ms=float(np.percentile(v[:, i], 95)))
                                for i, n in enumerate(("controls_and_pose_octopus", "write_joint_transforms",
                                                       "raylib_skin_and_upload", "total"))}
     rep = dict(root=str(args.root), root_revision=revision(args.root), python=sys.version, platform=platform.platform(),
@@ -139,7 +178,7 @@ def benchmark(rl, args):
                loaded_vertices=sum(model.meshes[i].vertexCount for i in range(model.meshCount)),
                loaded_triangles=sum(model.meshes[i].triangleCount for i in range(model.meshCount)),
                bind_vertex_max_error_m=bind_err, raylib_vs_numpy_max_error_m=max(errors), parity_poses=len(poses),
-               samples_per_batch=args.samples, timings_octopi=batches,
+               samples_per_batch=args.samples, timings_octopi=batches, size=om.size_report(),
                methodology=("perf_counter_ns wall time, 20 warmups; sequential independently phased whole-animal "
                             "poses on one shared loaded model (the renderer's shared-model seam). Skin call includes "
                             "driver buffer submission, not GPU completion. Excludes drawing, shading, shadows, "

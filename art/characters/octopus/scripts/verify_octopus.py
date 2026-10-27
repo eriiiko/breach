@@ -45,9 +45,14 @@ def arm_slice(k, lod):
 
 def check_controls(report):
     """Out-of-range or non-finite controls are refused (a controller bug must
-    fail loudly, never extrapolate); determinism; frames are rotations; fixed
-    segment length; game joints ARE hero joints (same curve, subsampled)."""
-    for bad in (om.ArmParams(curl=1.2), om.ArmParams(bend_dir=-1.5), om.ArmParams(lift=float("nan"))):
+    fail loudly, never extrapolate); determinism; frames are rotations; every
+    segment has exactly the length law's length (rest length from the size row
+    x the stretch elongation, #106: a drifting rod, or a stretch leaking into
+    the crown segments, breaks it); the joint scales follow the thinning law
+    1/sqrt(elongation) and are exactly 1 up to joint 6 (the junction); game
+    joints ARE hero joints (same curve, subsampled)."""
+    for bad in (om.ArmParams(curl=1.2), om.ArmParams(bend_dir=-1.5), om.ArmParams(lift=float("nan")),
+                om.ArmParams(stretch=-0.1), om.ArmParams(stretch=1.01)):
         try:
             om.pose_octopus(om.BodyParams(), [bad] + [om.ArmParams()] * 7)
         except ValueError:
@@ -57,7 +62,7 @@ def check_controls(report):
     worst_len, worst_orth = 0., 0.
     for trial in range(300):
         body, arms = random_body(RNG, trial % 2 == 0), [random_arm(RNG, trial % 2 == 0) for _ in range(8)]
-        p, r = om.pose_octopus(body, arms, "hero")
+        p, r, sc = om.pose_octopus(body, arms, "hero", with_scale=True)
         p2, r2 = om.pose_octopus(body, arms, "hero")
         assert np.array_equal(p, p2) and np.array_equal(r, r2), "non-deterministic pose"
         assert np.isfinite(p).all() and np.isfinite(r).all()
@@ -67,12 +72,18 @@ def check_controls(report):
         pg, rg = om.pose_octopus(body, arms, "game")
         for k in range(8):
             seg = np.linalg.norm(np.diff(p[arm_slice(k, "hero")], axis=0), axis=1)
-            err = float(np.abs(seg - arm.STEP * om.OCTOPUS_SCALE).max())
+            err = float(np.abs(seg - om.arm_segment_lengths(arms[k].stretch) * om.OCTOPUS_SCALE).max())
             worst_len = max(worst_len, err)
-            assert err < 1e-12, "arm segment length changed"
+            assert err < 1e-12, "arm segment length differs from the length law"
+            n0 = om.JUNCTION_JOINT + 1
+            assert np.abs(seg[:n0] - arm.STEP * om.OCTOPUS_SCALE).max() < 1e-12, "a crown segment changed length"
+            ks = sc[arm_slice(k, "hero")]
+            e = 1 + (om.stretch_factor(arms[k].stretch) - 1) * om.RAMP
+            assert np.all(ks[:n0 + 1] == 1.0), "a joint at the junction scaled"
+            assert np.abs(ks[1:] * np.sqrt(e) - 1).max() < 1e-12, "joint scale off the 1/sqrt thinning law"
             assert np.array_equal(pg[arm_slice(k, "game")], p[arm_slice(k, "hero")][::om.GAME_EVERY])
             assert np.array_equal(rg[arm_slice(k, "game")], r[arm_slice(k, "hero")][::om.GAME_EVERY])
-    report["controls"] = dict(random_poses=300, segment_length_max_error_m=worst_len,
+    report["controls"] = dict(random_poses=300, segment_length_max_error_vs_law_m=worst_len,
                               rotation_orthonormality_max_error=worst_orth)
 
 
@@ -84,14 +95,15 @@ def check_independence(report):
     for trial in range(60):
         body = random_body(RNG)
         arms = [random_arm(RNG) for _ in range(8)]
-        p0, r0 = om.pose_octopus(body, arms)
+        p0, r0, s0 = om.pose_octopus(body, arms, with_scale=True)
         j = int(RNG.integers(8))
         moved = list(arms)
         moved[j] = random_arm(RNG, edge=True)
-        p1, r1 = om.pose_octopus(body, moved)
+        p1, r1, s1 = om.pose_octopus(body, moved, with_scale=True)
         for i in range(8):
             same = np.array_equal(p0[arm_slice(i, "hero")], p1[arm_slice(i, "hero")]) and \
-                np.array_equal(r0[arm_slice(i, "hero")], r1[arm_slice(i, "hero")])
+                np.array_equal(r0[arm_slice(i, "hero")], r1[arm_slice(i, "hero")]) and \
+                np.array_equal(s0[arm_slice(i, "hero")], s1[arm_slice(i, "hero")])
             assert same == (i != j) or (i == j and arms[j] == moved[j]), f"arm {i} moved when arm {j} changed"
         b2 = om.BodyParams(**{**vars(body), "mantle_squeeze": float(RNG.uniform(0, 1)),
                               "mantle_pitch": float(RNG.uniform(-1, 1)), "siphon_yaw": float(RNG.uniform(-1, 1)),
@@ -182,7 +194,7 @@ def check_deformation(game, hero, report):
     against the hero rig on the same surface points. Gross collapse or
     inflation must fail; the numbers themselves are recorded, not pinned."""
     tg = check_deformation.tg
-    rest_area = tri_area(game["vertices"], tg)
+    rest_area = tri_area(game["vertices"] * om.OCTOPUS_SCALE, tg)      # posed skins are in world scale
     region = np.zeros(len(tg), int)
     lo, hi = game["crown_range"]
     region[np.isin(tg, np.arange(lo, hi)).any(axis=1)] = 1      # crown, body, web and the seam faces
@@ -203,13 +215,23 @@ def check_deformation(game, hero, report):
         rr = v[a:a + rings * sectors].reshape(rings, sectors, 3)
         return np.linalg.norm(np.cross(rr, np.roll(rr, -1, axis=1)).sum(axis=1), axis=1) / 2
 
-    rest_sec = [section_areas(hv, k) for k in range(8)]
+    rest_sec = [section_areas(hv * om.OCTOPUS_SCALE, k) for k in range(8)]
+    # The stretch thinning law (#106) shrinks a section by the blended joint
+    # scale squared: sections are measured AGAINST that expectation, so a
+    # collapse beyond the law (or a missing thinning) still fails.
+    ring_f = (om.JUNCTION_RING + np.arange(rings)) / (om.HERO_RINGS - 1) * arm.LENGTH / arm.STEP
+    ring_a = np.minimum(ring_f.astype(int), arm.SEGMENTS - 1)
+    ring_t = ring_f - ring_a
+
+    def expected_sec(sh, k):
+        s = sh[arm_slice(k, "hero")]
+        return ((1 - ring_t) * s[ring_a] + ring_t * s[ring_a + 1]) ** 2
     # LOD error: skin the GAME's bind vertices with the hero rig (hero weights).
     gv = game["vertices"]
     hero_w = {}
     for k, (a, b) in enumerate(game["arm_ranges"]):
         x = ((gv[a:b] - om.MOUNT_POINTS[k]) @ om.MOUNT_FRAMES[k])[:, 0]
-        f = np.clip(x / arm.STEP, 0, arm.SEGMENTS)
+        f = om.arm_joint_coord(om.material_x(x), "hero")
         j0 = np.minimum(f.astype(int), arm.SEGMENTS - 1)
         t = f - j0
         o = om.arm_bone_offset(k, "hero")
@@ -222,8 +244,8 @@ def check_deformation(game, hero, report):
     for trial in range(samples):
         edge = trial % 3 == 0
         body, arms = random_body(RNG, edge), [random_arm(RNG, edge) for _ in range(8)]
-        p, r = om.pose_octopus(body, arms, "game")
-        v = om.skin(gv, game["joints"], game["weights"], game["bind"], p, r)
+        p, r, sc = om.pose_octopus(body, arms, "game", with_scale=True)
+        v = om.skin(gv, game["joints"], game["weights"], game["bind"], p, r, sc)
         ratio = tri_area(v, tg) / rest_area
         worst["arm"] = min(worst["arm"], float(ratio[region == 0].min()))
         worst["crown"] = min(worst["crown"], float(ratio[region == 1].min()))
@@ -231,15 +253,15 @@ def check_deformation(game, hero, report):
         nf = flips(v, r)
         worst["flips"] = max(worst["flips"], nf)
         worst["flip_poses"] += nf > 0
-        ph, rh = om.pose_octopus(body, arms, "hero")
+        ph, rh, sh = om.pose_octopus(body, arms, "hero", with_scale=True)
         if trial % 4 == 0:
-            vh = om.skin(hv, hero["joints"], hero["weights"], hero["bind"], ph, rh)
+            vh = om.skin(hv, hero["joints"], hero["weights"], hero["bind"], ph, rh, sh)
             for k in range(8):
-                s = section_areas(vh, k) / rest_sec[k]
+                s = section_areas(vh, k) / rest_sec[k] / expected_sec(sh, k)
                 worst["section_min"] = min(worst["section_min"], float(s.min()))
                 worst["section_max"] = max(worst["section_max"], float(s.max()))
         for k, (a, b, jj, ww) in hero_w.items():
-            vh = om.skin(gv[a:b], jj, ww, hero["bind"], ph, rh)
+            vh = om.skin(gv[a:b], jj, ww, hero["bind"], ph, rh, sh)
             worst["lod_err"] = max(worst["lod_err"], float(np.linalg.norm(vh - v[a:b], axis=1).max()))
     # Thresholds: gross collapse only. The crown/web minimum is a fold-prone
     # sliver at the arm-root top under full lift (measured 0.04); a regression
@@ -252,7 +274,8 @@ def check_deformation(game, hero, report):
         p, r = om.pose_octopus(om.BodyParams(), [om.ArmParams(lift=lift)] * 8, "game")
         ratio = tri_area(om.skin(gv, game["joints"], game["weights"], game["bind"], p, r), tg) / rest_area
         assert ratio[region == 1].min() > 0.02, "full lift folds the crown (rigid root pivot regression)"
-    assert worst["section_min"] > 0.85 and worst["section_max"] < 1.02, "arm cross-section collapse/inflation"
+    assert worst["section_min"] > 0.85 and worst["section_max"] < 1.02, \
+        f"arm cross-section collapse/inflation beyond the thinning law ({worst['section_min']:.3f}..{worst['section_max']:.3f})"
     assert worst["lod_err"] < 0.03 * om.OCTOPUS_SCALE, f"game rig far from hero ({worst['lod_err']:.4f} m)"
     report["deformation_random_full_range"] = dict(
         poses=samples, game_arm_triangle_area_ratio_min=worst["arm"],
@@ -265,11 +288,12 @@ def check_deformation(game, hero, report):
     shown = dict(arm=1., crown=1., flips=0)
     poses = list(om.named_poses().values()) + [om.swim_cycle(t) for t in np.linspace(0, om.SWIM_PERIOD, 25)]
     for body, arms in poses:
-        p, r = om.pose_octopus(body, arms, "game")
-        ratio = tri_area(om.skin(gv, game["joints"], game["weights"], game["bind"], p, r), tg) / rest_area
+        p, r, sc = om.pose_octopus(body, arms, "game", with_scale=True)
+        vs = om.skin(gv, game["joints"], game["weights"], game["bind"], p, r, sc)
+        ratio = tri_area(vs, tg) / rest_area
         shown["arm"] = min(shown["arm"], float(ratio[region == 0].min()))
         shown["crown"] = min(shown["crown"], float(ratio[region == 1].min()))
-        shown["flips"] = max(shown["flips"], flips(om.skin(gv, game["joints"], game["weights"], game["bind"], p, r), r))
+        shown["flips"] = max(shown["flips"], flips(vs, r))
     report["deformation_shown_poses"] = dict(poses=len(poses), game_arm_triangle_area_ratio_min=shown["arm"],
                                              game_crown_triangle_area_ratio_min=shown["crown"],
                                              inverted_triangles_max=shown["flips"])
@@ -286,9 +310,82 @@ def check_deformation(game, hero, report):
     assert np.abs(a - b).max() < 1e-5, "swim loop not continuous"
 
 
+def check_stretch(game, hero, report):
+    """The stretch control (#106) at the SKIN: changing arm k's stretch moves
+    only arm k's own tube and cup vertices -- every other arm, the crown, web,
+    junction rings, eyes and siphon stay bit-identical (a stretch that leaks
+    into a shared joint, the crown segments or a neighbour breaks it); and the
+    free arm keeps its volume within 3 % while it elongates (radius ~
+    1/sqrt(length factor); dropping the thinning, or thinning by 1/factor,
+    breaks it)."""
+    out = {}
+    for d, name, trials in ((game, "game", 40), (hero, "hero", 8)):
+        lod = d["lod"]
+        for trial in range(trials):
+            body, arms = random_body(RNG), [random_arm(RNG) for _ in range(8)]
+            k = int(RNG.integers(8))
+            moved = list(arms)
+            moved[k] = om.ArmParams(**{**vars(arms[k]), "stretch": float((arms[k].stretch + 0.3 + 0.6 * RNG.random()) % 1.0)})
+            v0 = om.skin(d["vertices"], d["joints"], d["weights"], d["bind"], *om.pose_octopus(body, arms, lod, with_scale=True))
+            v1 = om.skin(d["vertices"], d["joints"], d["weights"], d["bind"], *om.pose_octopus(body, moved, lod, with_scale=True))
+            changed = np.nonzero((v0 != v1).any(axis=1))[0]
+            a, b = d["arm_ranges"][k]
+            assert len(changed) > 0, "stretch moved nothing"
+            assert changed.min() >= a + d["sectors"] and changed.max() < b, \
+                f"{name}: arm {k}'s stretch moved a vertex outside its own free arm"
+        out[f"{name}_trials"] = trials
+    # volume while elongating, hero arm tube, straight arm
+    sectors = hero["sectors"]
+    rings = om.HERO_RINGS - 1 - om.JUNCTION_RING
+    a = hero["arm_ranges"][0][0]
+    vols = {}
+    for st in (0.0, 0.5, 1.0):
+        arms = [om.ArmParams(stretch=st)] + [om.ArmParams()] * 7
+        v = om.skin(hero["vertices"], hero["joints"], hero["weights"], hero["bind"],
+                    *om.pose_octopus(om.BodyParams(), arms, "hero", with_scale=True))
+        rr = v[a:a + rings * sectors].reshape(rings, sectors, 3)
+        area = np.linalg.norm(np.cross(rr, np.roll(rr, -1, axis=1)).sum(axis=1), axis=1) / 2
+        c = rr.mean(axis=1)
+        h = np.linalg.norm(np.diff(c, axis=0), axis=1)
+        vols[st] = dict(volume_m3=float((0.5 * (area[1:] + area[:-1]) * h).sum()),
+                        length_m=float(h.sum()), min_radius_ratio=None)
+    for st in (0.5, 1.0):
+        ratio = vols[st]["volume_m3"] / vols[0.0]["volume_m3"]
+        vols[st]["volume_ratio"] = ratio
+        assert abs(ratio - 1) < 0.03, f"stretch {st}: arm volume ratio {ratio:.3f}"
+    out["volume_straight_arm"] = {str(k): {kk: vv for kk, vv in v.items() if vv is not None} for k, v in vols.items()}
+    report["stretch"] = out
+
+
+def check_sizes(report):
+    """Every SIZES row builds a closed, bind-exact game mesh, and each 'mid' row
+    spans 2.0 marines straight at rest and 2.5 fully stretched (Erik's sentence,
+    #106). A row edited off those spans without re-solving its dials breaks it;
+    a baby/boss row adds its own targets here."""
+    targets = {"mid": (2.0, 2.5), "mid_bulk": (2.0, 2.5), "mid_heavy": (2.0, 2.5)}
+    keep = om.SIZE
+    out = {}
+    try:
+        for name in om.SIZES:
+            om.set_size(name)
+            r = om.size_report()
+            if name in targets:
+                lo, hi = targets[name]
+                assert abs(r["span_rest_marines"] - lo) < 0.02, f"{name}: rest span {r['span_rest_marines']:.3f} marines"
+                assert abs(r["span_stretched_marines"] - hi) < 0.02, f"{name}: stretched span {r['span_stretched_marines']:.3f}"
+            if name != keep:
+                d = om.assemble("game")
+                mesh_checks(d, f"size_{name}_game", report)
+            out[name] = {k: (round(v, 4) if isinstance(v, float) else v) for k, v in r.items()}
+    finally:
+        om.set_size(keep)
+    report["sizes"] = out
+
+
 def main():
     report = {}
     t0 = time.time()
+    report["active_size"] = om.SIZE
     check_controls(report)
     check_independence(report)
     check_continuity(report)
@@ -296,9 +393,11 @@ def main():
     check_deformation.tg = mesh_checks(game, "game", report)
     mesh_checks(hero, "hero", report)
     check_deformation(game, hero, report)
+    check_stretch(game, hero, report)
+    check_sizes(report)
     report["seconds"] = round(time.time() - t0, 1)
     report["limits"] = ("Random poses span every control's full range including edges; no self-collision, "
-                        "arm-arm or arm-body intersection, ground contact or volume preservation is checked "
+                        "arm-arm or arm-body intersection or ground contact is checked "
                         "or solved. Crown/body areas are measured on the GAME skin; the hero shares its weights' "
                         "construction. Thresholds are prototype acceptance, not a production spec.")
     OUT.mkdir(parents=True, exist_ok=True)

@@ -7,36 +7,159 @@ the runtime quaternion is `arm_math.quaternion`. `arm_math.pose` is untouched,
 so the one-arm proof still reproduces bit for bit.
 
 Model frame = glTF / raylib: Y up, +Z FORWARD (the game's model forward at yaw
-0), so the animal's LEFT is +X. Ground is y = 0. Everything is authored at
-scale 1 and multiplied by OCTOPUS_SCALE on output (one constant: the gameplay
-size is Erik's call).
+0), so the animal's LEFT is +X. Ground is y = 0. Everything is authored in
+"authored units" (the proof's metres: a 0.71 m body, a 1.2 m arm) and
+multiplied by OCTOPUS_SCALE on output. The size and the proportions are DIALS,
+one row of the SIZES table (issue #106): `set_size(name)` or the
+OCTOPUS_SIZE environment variable picks the row.
 
-Controls (see CONTROLS.md): per arm six floats, per body six floats, all
+Controls (see CONTROLS.md): per arm seven floats, per body six floats, all
 bounded. `pose_octopus(body, arms, lod)` returns one absolute head position and
 one deformation rotation (relative to the bind pose) per bone, in `bones(lod)`
-order. Arm k's bones depend ONLY on arm k's params and the shared body frame
-(`body_pitch`, `crown_spread`).
+order; `with_scale=True` adds the per-bone uniform scale the arm `stretch`
+control needs (its thinning). Arm k's bones depend ONLY on arm k's params and
+the shared body frame (`body_pitch`, `crown_spread`).
 """
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field, fields
 
 import numpy as np
 
 import arm_math as arm
 
-# --------------------------------------------------------------------------
-# The ONE scale constant (prototype value: the 1.2 m proof arm, unscaled).
-OCTOPUS_SCALE = 1.0
-
 # Arm instancing and the junction ring -------------------------------------
 HERO_RINGS = 129                      # arm_math.geometry(): linspace(0, 1, 129)
 JUNCTION_RING = 20                    # hero tube ring where the instanced arm starts
 S_J = JUNCTION_RING / (HERO_RINGS - 1)  # 0.15625
 X_J = S_J * arm.LENGTH                # 0.1875 m from the mount point
+JUNCTION_JOINT = 5                    # X_J == 5 * arm.STEP: the junction ring sits ON hero joint 5
 GAME_EVERY = 2                        # game LOD keeps every 2nd hero joint
 GAME_SEGMENTS = arm.SEGMENTS // GAME_EVERY
+
+# --------------------------------------------------------------------------
+# SIZE AND PROPORTION (#106). One row per size; baby and boss are later rows.
+#   body_length_m   world length of the body, front of the head to the back of
+#                   the mantle (the authored body is BODY_LENGTH_AUTHORED long)
+#   arm_body_ratio  rest arm length (mount point in the crown -> tip, straight)
+#                   divided by the body length; the arm GIRTH stays the body's
+#                   (the junction ring is part of the crown), so a higher ratio
+#                   is a longer, more slender arm, a lower one a shorter, stouter
+#   stretch_max     arm length factor at `stretch` = 1 (the free arm beyond the
+#                   crown elongates by this factor and thins as 1/sqrt of it)
+# The three "mid" rows are Erik's options for "the body is about a marine's size"
+# (2026-10-27); each spans 2.0 marines with straight rest arms and 2.5 marines
+# fully stretched (`span_m`). "mid" is the default; switching is one value.
+MARINE_HEIGHT_M = 1.885               # the space marine (assets/models/space_marine), every look's scale
+BODY_LENGTH_AUTHORED = (0.07 + 0.15) - (-0.215 - 0.275)   # 0.71: head front (HEAD_C+HEAD_R) .. mantle back
+
+
+@dataclass(frozen=True)
+class SizeRow:
+    body_length_m: float
+    arm_body_ratio: float
+    stretch_max: float
+    note: str = ""
+
+
+SIZES = {
+    "mid": SizeRow(1.40, 1.237, 1.398,
+                   "option B, the default: between the two readings; body 1.4 m long"),
+    "mid_bulk": SizeRow(1.00, 1.777, 1.343,
+                        "option A: body a marine's bulk (mantle 0.66 x 0.78 m), the proof's long arms"),
+    "mid_heavy": SizeRow(1.885, 0.890, 1.495,
+                         "option C: body as long as a marine is tall, short stout arms"),
+    "proof": SizeRow(BODY_LENGTH_AUTHORED, arm.LENGTH / BODY_LENGTH_AUTHORED, 1.4,
+                     "the pre-#106 animal: authored units at scale 1, the 1.2 m proof arm"),
+}
+SIZE = os.environ.get("OCTOPUS_SIZE", "mid")
+
+# Arm-length law: per hero segment a length factor, 1 inside the crown and
+# ramped in over RAMP_SEGMENTS segments past the junction ring (no kink in the
+# taper, no motion at the junction). The SAME ramp carries the rest length
+# (ARM_LAMBDA, from the size row: the bind mesh) and the stretch control (pose).
+RAMP_SEGMENTS = 3.0
+STRETCH_RANGE = (0.0, 1.0)
+
+
+def _ramp():
+    i = np.arange(arm.SEGMENTS, dtype=float)
+    x = np.clip((i - (JUNCTION_JOINT + 0.5)) / RAMP_SEGMENTS, 0, 1)
+    return x * x * (3 - 2 * x)
+
+
+RAMP = _ramp()                        # segments 0..5: 0; 6: .074, 7: .5, 8: .926, 9..31: 1
+
+
+def set_size(name):
+    """Make SIZES[name] the active row: rebinds OCTOPUS_SCALE, ARM_LAMBDA, STRETCH_MAX.
+
+    Everything that builds or poses reads these module values at call time, so
+    one process can build several sizes in turn (the body-plan renders do).
+    """
+    global SIZE, OCTOPUS_SCALE, ARM_LAMBDA, STRETCH_MAX, BIND_SEGMENTS, BIND_JOINT_X
+    row = SIZES[name]
+    SIZE = name
+    OCTOPUS_SCALE = row.body_length_m / BODY_LENGTH_AUTHORED
+    target = row.arm_body_ratio * BODY_LENGTH_AUTHORED          # rest arm length, authored units
+    ARM_LAMBDA = 1 + (target - arm.LENGTH) / (arm.STEP * RAMP.sum())
+    if abs(ARM_LAMBDA - 1) < 1e-12:
+        ARM_LAMBDA = 1.0                                         # the proof's arm, bit for bit
+    if not ARM_LAMBDA > 0.2:
+        raise ValueError(f"size {name}: arm_body_ratio {row.arm_body_ratio} too short for the crown")
+    STRETCH_MAX = row.stretch_max
+    BIND_SEGMENTS = arm.STEP * (1 + (ARM_LAMBDA - 1) * RAMP)     # (32,) rest segment lengths
+    BIND_JOINT_X = np.concatenate([[0.0], np.cumsum(BIND_SEGMENTS)])
+    return row
+
+
+set_size(SIZE)
+
+
+def bind_x(x_mat):
+    """Material arm coordinate (the proof's x, 0..1.2) -> rest distance along the arm.
+
+    Piecewise linear with a knot at every hero joint; identity inside the crown
+    (x <= 6 * STEP) and for x < 0, so the junction ring and the crown never move.
+    """
+    x_mat = np.asarray(x_mat, float)
+    knots = np.arange(arm.SEGMENTS + 1) * arm.STEP
+    return np.where(x_mat <= knots[JUNCTION_JOINT + 1], x_mat, np.interp(x_mat, knots, BIND_JOINT_X))
+
+
+def material_x(x_bind):
+    """Inverse of `bind_x`."""
+    x_bind = np.asarray(x_bind, float)
+    knots = np.arange(arm.SEGMENTS + 1) * arm.STEP
+    return np.where(x_bind <= knots[JUNCTION_JOINT + 1], x_bind, np.interp(x_bind, BIND_JOINT_X, knots))
+
+
+def arm_length(stretch=0.0):
+    """Arm length, mount point to tip, straight, in authored units."""
+    return float(arm_segment_lengths(stretch).sum())
+
+
+def stretch_factor(stretch):
+    """Free-arm length factor (relative to the rest arm) at a `stretch` control value."""
+    return 1 + stretch * (STRETCH_MAX - 1)
+
+
+def arm_segment_lengths(stretch=0.0):
+    """The 32 hero segment lengths (authored units) of an arm at `stretch`: rest x elongation."""
+    return BIND_SEGMENTS * (1 + (stretch_factor(stretch) - 1) * RAMP)
+
+
+def arm_joint_scales(stretch=0.0):
+    """Per hero joint uniform scale: 1/sqrt(elongation of the INCOMING segment).
+
+    Volume-conserving thinning (radius ~ 1/sqrt(length factor), the muscular
+    hydrostat). Joint 0..6 are exactly 1 (their incoming segments are not
+    stretched), so the junction ring and every crown vertex stay put.
+    """
+    e = 1 + (stretch_factor(stretch) - 1) * RAMP
+    return np.concatenate([[1.0], 1 / np.sqrt(e)])
 
 # Arm crown layout (mirrored). Order = octopus naming, L = animal's left (+X).
 ARM_NAMES = ["L1", "L2", "L3", "L4", "R1", "R2", "R3", "R4"]
@@ -75,9 +198,12 @@ class ArmParams:
     tip_curl: float = 0.0    # [-1, 1]  extra bend on the distal 45 %, same plane, signed
     lift: float = 0.0        # [-1, 1]  base pitch, +-40 deg (+ raises the arm)
     swing: float = 0.0       # [-1, 1]  base yaw in the crown, +-18 deg (+ toward the front)
+    stretch: float = 0.0     # [0, 1]   elongation of the free arm: 0 rest length, 1 = the size
+                             #          row's stretch_max; thins as 1/sqrt(length factor)
 
     RANGES = {"curl": (0.0, 1.0), "bend_dir": (-1.0, 1.0), "twist": (-1.0, 1.0),
-              "tip_curl": (-1.0, 1.0), "lift": (-1.0, 1.0), "swing": (-1.0, 1.0)}
+              "tip_curl": (-1.0, 1.0), "lift": (-1.0, 1.0), "swing": (-1.0, 1.0),
+              "stretch": STRETCH_RANGE}
 
 
 @dataclass
@@ -194,7 +320,9 @@ def arm_local_curve(p: ArmParams, k: int, root_extra_lift=0.0):
     """Arm k's 33 hero joint frames relative to its own bind root frame.
 
     Returns (points (33,3) in arm-local metres, frames (33,3,3) local->local).
-    Discrete Cosserat-style rod: every segment has length STEP exactly; joint i
+    Discrete Cosserat-style rod: segment i has length `arm_segment_lengths(
+    p.stretch)[i]` exactly (the rest length from the size row, times the
+    stretch elongation past the junction); joint i
     turns the material frame by the bend increment about a fixed material axis
     (from bend_dir) after the twist increment about the tangent. Root pitch
     (lift + crown spread) and yaw (swing) act at the mount point. No Frenet
@@ -226,7 +354,8 @@ def arm_local_curve(p: ArmParams, k: int, root_extra_lift=0.0):
         frames[i + 1] = frames[i] @ steps[i]
     # The terminal joint repeats the last segment frame (as in the proof).
     frames[-1] = frames[-2]
-    points = np.vstack([np.zeros(3), np.cumsum(frames[:-1, :, 0] * arm.STEP, axis=0)])
+    seg = arm_segment_lengths(p.stretch)
+    points = np.vstack([np.zeros(3), np.cumsum(frames[:-1, :, 0] * seg[:, None], axis=0)])
     return points, frames
 
 
@@ -237,10 +366,13 @@ def body_root(body: BodyParams):
     return R, t
 
 
-def pose_octopus(body: BodyParams = None, arms=None, lod="hero"):
+def pose_octopus(body: BodyParams = None, arms=None, lod="hero", with_scale=False):
     """All bone head positions and deformation rotations, in `bones(lod)` order.
 
-    Returns (points (n,3), rotations (n,3,3)), scaled by OCTOPUS_SCALE.
+    Returns (points (n,3), rotations (n,3,3)), scaled by OCTOPUS_SCALE; with
+    `with_scale` also scales (n,): each bone's UNIFORM scale about its head
+    (1 everywhere except a stretched arm past the crown: `arm_joint_scales`).
+    A skin that ignores the scales shows a stretched arm at its rest girth.
     Deterministic pure function of its arguments.
     """
     body = body or BodyParams()
@@ -270,6 +402,7 @@ def pose_octopus(body: BodyParams = None, arms=None, lod="hero"):
     pts[5], rots[5] = Rr @ SIPHON_BASE + tr, Rr @ Rs
     extra = _spread(body)
     every = 1 if lod == "hero" else GAME_EVERY
+    scales = np.ones(len(names)) if with_scale else None
     for k, p in enumerate(arms):
         lp, lf = arm_local_curve(p, k, extra)
         M = MOUNT_FRAMES[k]
@@ -278,6 +411,10 @@ def pose_octopus(body: BodyParams = None, arms=None, lod="hero"):
         idx = np.arange(0, arm.SEGMENTS + 1, every)
         pts[o:o + len(idx)] = (W @ lp[idx].T).T + Rr @ MOUNT_POINTS[k] + tr
         rots[o:o + len(idx)] = W @ lf[idx] @ M.T     # deformation relative to bind
+        if with_scale and p.stretch != 0.0:
+            scales[o:o + len(idx)] = arm_joint_scales(p.stretch)[idx]
+    if with_scale:
+        return pts * OCTOPUS_SCALE, rots, scales
     return pts * OCTOPUS_SCALE, rots
 
 
@@ -305,10 +442,46 @@ def bind_pose(lod="hero"):
 # --------------------------------------------------------------------------
 # Linear blend skinning (general, 4 influences), the one reference both the
 # Blender parity check and the raylib parity check compare against.
-def skin(vertices, joints, weights, bind_points, points, rotations):
+def skin(vertices, joints, weights, bind_points, points, rotations, scales=None):
+    """v' = sum_j w_j (s_j R_j (v - b_j) + p_j); `scales` None means all 1."""
     local = vertices[:, None, :] * OCTOPUS_SCALE - bind_points[joints] * OCTOPUS_SCALE
-    moved = np.einsum("nkij,nkj->nki", rotations[joints], local) + points[joints]
+    moved = np.einsum("nkij,nkj->nki", rotations[joints], local)
+    if scales is not None:
+        moved = moved * scales[joints][..., None]
+    moved = moved + points[joints]
     return (moved * weights[..., None]).sum(axis=1)
+
+
+def span_m(stretch=0.0):
+    """Largest tip-to-tip distance (world metres) with all eight arms straight at `stretch`."""
+    pts, _ = pose_octopus(BodyParams(), [ArmParams(stretch=stretch) for _ in range(8)], "hero")
+    tips = np.array([pts[arm_bone_offset(k) + arm.SEGMENTS] for k in range(8)])
+    return float(np.linalg.norm(tips[:, None] - tips[None], axis=-1).max())
+
+
+def size_report(name=None):
+    """The active (or named) size row in metres, marines and game tiles (0.333 m)."""
+    keep = SIZE
+    if name is not None:
+        set_size(name)
+    try:
+        row = SIZES[SIZE]
+        S = OCTOPUS_SCALE
+        rest, full = span_m(0.0), span_m(1.0)
+        marine_tiles = 6.0                    # the renderer draws the marine 6 tiles tall
+        tiles = lambda m: m / MARINE_HEIGHT_M * marine_tiles
+        out = dict(size=SIZE, note=row.note, scale=S, body_length_m=row.body_length_m,
+                   mantle_width_m=2 * MANTLE_R[0] * S, mantle_length_m=2 * MANTLE_R[2] * S,
+                   arm_length_rest_m=arm_length(0) * S, arm_length_stretched_m=arm_length(1) * S,
+                   arm_body_ratio=row.arm_body_ratio, arm_lambda=ARM_LAMBDA, stretch_max=STRETCH_MAX,
+                   arm_base_diameter_m=2 * float(arm.radius(S_J)) * S,
+                   span_rest_m=rest, span_stretched_m=full,
+                   span_rest_marines=rest / MARINE_HEIGHT_M, span_stretched_marines=full / MARINE_HEIGHT_M,
+                   span_rest_game_tiles=tiles(rest), span_stretched_game_tiles=tiles(full),
+                   span_rest_tiles_at_0333m=rest / 0.333, span_stretched_tiles_at_0333m=full / 0.333)
+    finally:
+        set_size(keep)
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -746,6 +919,18 @@ def game_tube(sectors, n_rings):
     return verts, faces, svals
 
 
+def arm_joint_coord(x_mat, lod="hero"):
+    """Fractional joint index (in `lod`'s arm chain) of material arm coordinate x_mat.
+
+    Interpolated in REST space between the lod's joints, so a vertex keeps its
+    fraction between its two joints whatever the rest segment lengths (hero:
+    exactly x_mat / STEP, the knots being the joints).
+    """
+    every = 1 if lod == "hero" else GAME_EVERY
+    jx = BIND_JOINT_X[::every]
+    return np.interp(bind_x(np.clip(x_mat, 0, arm.LENGTH)), jx, np.arange(len(jx), dtype=float))
+
+
 def hero_arm():
     """The proof's arm geometry (arm_math.geometry) cut at the junction ring.
 
@@ -753,6 +938,10 @@ def hero_arm():
     map, cups (start/stop ranges in the new numbering, s) and the 'kind' array
     (0 tube, 1 cup). Cups inward of the junction ride on the crown underside
     (moved onto it later); cups within 0.06 of the mouth are dropped.
+    Arm x is in MATERIAL coordinates here (the proof's); `assemble` maps it to
+    the rest length. A shorter-than-proof arm (ARM_LAMBDA < 1) keeps only the
+    cup stations whose rest spacing is at least the proof's own spacing rule,
+    so suckers never overlap.
     """
     d = arm.geometry()
     v = d["vertices"] - arm.BASE
@@ -760,6 +949,14 @@ def hero_arm():
     keep_tube = list(range(JUNCTION_RING * sectors, (HERO_RINGS - 1) * sectors)) + [d["tube_count"] - 2]
     keep = list(keep_tube)
     cups = [c for c in d["cups"] if c["s"] >= 0.06]
+    stations, last = set(), None
+    for s in sorted({c["s"] for c in cups}):
+        r = [c["radius"] for c in cups if c["s"] == s][0]
+        if last is None or s * arm.LENGTH < X_J + 0.01 or \
+                float(bind_x(s * arm.LENGTH) - bind_x(last[0] * arm.LENGTH)) >= 0.97 * max(.013 * arm.LENGTH, 2.60 * last[1]):
+            stations.add(s)
+            last = (s, r)
+    cups = [c for c in cups if c["s"] in stations]
     for c in cups:
         keep += list(range(c["start"], c["stop"]))
     remap = -np.ones(len(v), int)
@@ -821,8 +1018,11 @@ def assemble(lod="hero"):
             lv, lf = gt, gf
             attach = lv[:, 0]
             kd, bw = np.zeros(len(lv), int), np.zeros(len(lv))
-        mv = to_model(k, lv)
-        f = np.clip(attach / step, 0, arm_joint_count(lod) - 1)
+        # material -> rest arm length: the tube point by point, each cup rigidly by its station
+        lvb = np.array(lv, float)
+        lvb[:, 0] += bind_x(attach) - attach
+        mv = to_model(k, lvb)
+        f = arm_joint_coord(attach, lod)
         a = np.minimum(f.astype(int), arm_joint_count(lod) - 2)
         t = f - a
         o = arm_bone_offset(k, lod)
@@ -961,7 +1161,7 @@ def named_poses():
     rest = rest_arms()
     curled = [ArmParams(curl=0.85, bend_dir=0.0, twist=0.25, tip_curl=0.6, lift=0.35) for _ in ARM_NAMES]
     reach = [ArmParams(**vars(a)) for a in rest]
-    reach[0] = ArmParams(curl=0.05, bend_dir=0.5, twist=-0.3, tip_curl=-0.25, lift=0.55, swing=0.6)
+    reach[0] = ArmParams(curl=0.05, bend_dir=0.5, twist=-0.3, tip_curl=-0.25, lift=0.55, swing=0.6, stretch=0.8)
     swim_body = BodyParams(mantle_squeeze=0.9, mantle_pitch=-0.2, siphon_yaw=0.0, siphon_pitch=-0.6,
                            crown_spread=-0.85, body_pitch=0.0)
     swim = [ArmParams(curl=0.08, bend_dir=1.0, twist=0.0, tip_curl=0.25, lift=0.0) for _ in ARM_NAMES]

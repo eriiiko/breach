@@ -1,34 +1,39 @@
 {
+  "active_size": "mid",
   "controls": {
     "random_poses": 300,
-    "segment_length_max_error_m": 4.718447854656915e-16,
-    "rotation_orthonormality_max_error": 5.440092820663267e-15
+    "segment_length_max_error_vs_law_m": 6.522560269672795e-16,
+    "rotation_orthonormality_max_error": 4.884981308350689e-15
   },
   "independence": "60 random trials: changing arm j never moves arm i != j; mantle/siphon controls never move arms",
   "continuity": {
     "arm.curl": {
-      "max_over_median_step": 1.667,
-      "max_frame_step_rad": 0.01277
+      "max_over_median_step": 1.674,
+      "max_frame_step_rad": 0.01267
     },
     "arm.bend_dir": {
-      "max_over_median_step": 1.093,
-      "max_frame_step_rad": 0.03174
+      "max_over_median_step": 1.047,
+      "max_frame_step_rad": 0.03181
     },
     "arm.twist": {
-      "max_over_median_step": 1.241,
-      "max_frame_step_rad": 0.00827
+      "max_over_median_step": 1.46,
+      "max_frame_step_rad": 0.00841
     },
     "arm.tip_curl": {
-      "max_over_median_step": 1.094,
+      "max_over_median_step": 1.19,
       "max_frame_step_rad": 0.01385
     },
     "arm.lift": {
-      "max_over_median_step": 1.038,
+      "max_over_median_step": 1.018,
       "max_frame_step_rad": 0.00349
     },
     "arm.swing": {
-      "max_over_median_step": 1.019,
+      "max_over_median_step": 1.005,
       "max_frame_step_rad": 0.00157
+    },
+    "arm.stretch": {
+      "max_over_median_step": 1.0,
+      "max_frame_step_rad": 0.0
     },
     "body.mantle_squeeze": {
       "max_over_median_step": 1.0,
@@ -47,7 +52,7 @@
       "max_frame_step_rad": 0.00393
     },
     "body.crown_spread": {
-      "max_over_median_step": 2.097,
+      "max_over_median_step": 2.096,
       "max_frame_step_rad": 0.00457
     },
     "body.body_pitch": {
@@ -62,29 +67,157 @@
     "max_influences": 4
   },
   "hero_mesh": {
-    "vertices": 67512,
-    "triangles": 132512,
+    "vertices": 49656,
+    "triangles": 97952,
     "joints": 270,
     "max_influences": 4
   },
   "deformation_random_full_range": {
     "poses": 120,
-    "game_arm_triangle_area_ratio_min": 0.584615156278751,
-    "game_crown_triangle_area_ratio_min": 0.00326187216360504,
-    "game_crown_triangle_area_ratio_max": 22.027040035266,
-    "hero_arm_section_area_ratio_min": 0.9492867137509254,
-    "hero_arm_section_area_ratio_max": 1.0000000000042124,
-    "game_vs_hero_rig_max_deviation_m": 0.012326504603390503,
-    "inverted_triangles_worst_pose": 72,
-    "poses_with_inverted_triangles": 120,
-    "seconds": 2.7
+    "game_arm_triangle_area_ratio_min": 0.5808493359446955,
+    "game_crown_triangle_area_ratio_min": 0.016233281749827154,
+    "game_crown_triangle_area_ratio_max": 16.44979370374101,
+    "hero_arm_section_area_ratio_min": 0.949286713750549,
+    "hero_arm_section_area_ratio_max": 1.000000000009345,
+    "game_vs_hero_rig_max_deviation_m": 0.016721479537903934,
+    "inverted_triangles_worst_pose": 74,
+    "poses_with_inverted_triangles": 119,
+    "seconds": 3.1
   },
   "deformation_shown_poses": {
     "poses": 30,
-    "game_arm_triangle_area_ratio_min": 0.8423471062187605,
-    "game_crown_triangle_area_ratio_min": 0.029469413637396677,
+    "game_arm_triangle_area_ratio_min": 0.7627527350836024,
+    "game_crown_triangle_area_ratio_min": 0.02946941363739146,
     "inverted_triangles_max": 8
   },
-  "seconds": 151.1,
+  "stretch": {
+    "game_trials": 40,
+    "hero_trials": 8,
+    "volume_straight_arm": {
+      "0.0": {
+        "volume_m3": 0.0262253279452926,
+        "length_m": 1.3500692152917504
+      },
+      "0.5": {
+        "volume_m3": 0.026463821104770222,
+        "length_m": 1.5839410713270023,
+        "volume_ratio": 1.0090940010349967
+      },
+      "1.0": {
+        "volume_m3": 0.026682093469509286,
+        "length_m": 1.8178129273622552,
+        "volume_ratio": 1.0174169613882245
+      }
+    }
+  },
+  "size_mid_bulk_game_mesh": {
+    "vertices": 6108,
+    "triangles": 12200,
+    "joints": 142,
+    "max_influences": 4
+  },
+  "size_mid_heavy_game_mesh": {
+    "vertices": 6108,
+    "triangles": 12200,
+    "joints": 142,
+    "max_influences": 4
+  },
+  "size_proof_game_mesh": {
+    "vertices": 6108,
+    "triangles": 12200,
+    "joints": 142,
+    "max_influences": 4
+  },
+  "sizes": {
+    "mid": {
+      "size": "mid",
+      "note": "option B, the default: between the two readings; body 1.4 m long",
+      "scale": 1.9718,
+      "body_length_m": 1.4,
+      "mantle_width_m": 0.9268,
+      "mantle_length_m": 1.0845,
+      "arm_length_rest_m": 1.7318,
+      "arm_length_stretched_m": 2.2043,
+      "arm_body_ratio": 1.237,
+      "arm_lambda": 0.6498,
+      "stretch_max": 1.398,
+      "arm_base_diameter_m": 0.2993,
+      "span_rest_m": 3.7692,
+      "span_stretched_m": 4.7116,
+      "span_rest_marines": 1.9996,
+      "span_stretched_marines": 2.4995,
+      "span_rest_game_tiles": 11.9974,
+      "span_stretched_game_tiles": 14.9972,
+      "span_rest_tiles_at_0333m": 11.3188,
+      "span_stretched_tiles_at_0333m": 14.1491
+    },
+    "mid_bulk": {
+      "size": "mid_bulk",
+      "note": "option A: body a marine's bulk (mantle 0.66 x 0.78 m), the proof's long arms",
+      "scale": 1.4085,
+      "body_length_m": 1.0,
+      "mantle_width_m": 0.662,
+      "mantle_length_m": 0.7746,
+      "arm_length_rest_m": 1.777,
+      "arm_length_stretched_m": 2.2502,
+      "arm_body_ratio": 1.777,
+      "arm_lambda": 1.0671,
+      "stretch_max": 1.343,
+      "arm_base_diameter_m": 0.2138,
+      "span_rest_m": 3.7693,
+      "span_stretched_m": 4.7131,
+      "span_rest_marines": 1.9996,
+      "span_stretched_marines": 2.5003,
+      "span_rest_game_tiles": 11.9978,
+      "span_stretched_game_tiles": 15.0018,
+      "span_rest_tiles_at_0333m": 11.3192,
+      "span_stretched_tiles_at_0333m": 14.1533
+    },
+    "mid_heavy": {
+      "size": "mid_heavy",
+      "note": "option C: body as long as a marine is tall, short stout arms",
+      "scale": 2.6549,
+      "body_length_m": 1.885,
+      "mantle_width_m": 1.2478,
+      "mantle_length_m": 1.4602,
+      "arm_length_rest_m": 1.6776,
+      "arm_length_stretched_m": 2.1503,
+      "arm_body_ratio": 0.89,
+      "arm_lambda": 0.3817,
+      "stretch_max": 1.495,
+      "arm_base_diameter_m": 0.4029,
+      "span_rest_m": 3.7703,
+      "span_stretched_m": 4.713,
+      "span_rest_marines": 2.0002,
+      "span_stretched_marines": 2.5002,
+      "span_rest_game_tiles": 12.001,
+      "span_stretched_game_tiles": 15.0015,
+      "span_rest_tiles_at_0333m": 11.3223,
+      "span_stretched_tiles_at_0333m": 14.153
+    },
+    "proof": {
+      "size": "proof",
+      "note": "the pre-#106 animal: authored units at scale 1, the 1.2 m proof arm",
+      "scale": 1.0,
+      "body_length_m": 0.71,
+      "mantle_width_m": 0.47,
+      "mantle_length_m": 0.55,
+      "arm_length_rest_m": 1.2,
+      "arm_length_stretched_m": 1.5675,
+      "arm_body_ratio": 1.6901,
+      "arm_lambda": 1.0,
+      "stretch_max": 1.4,
+      "arm_base_diameter_m": 0.1518,
+      "span_rest_m": 2.5532,
+      "span_stretched_m": 3.2862,
+      "span_rest_marines": 1.3545,
+      "span_stretched_marines": 1.7433,
+      "span_rest_game_tiles": 8.1269,
+      "span_stretched_game_tiles": 10.46,
+      "span_rest_tiles_at_0333m": 7.6673,
+      "span_stretched_tiles_at_0333m": 9.8684
+    }
+  },
+  "seconds": 224.8,
   "limits": "Random poses span every control's full range including edges; no self-collision, arm-arm or arm-body intersection, ground contact or volume preservation is checked or solved. Crown/body areas are measured on the GAME skin; the hero shares its weights' construction. Thresholds are prototype acceptance, not a production spec."
 }

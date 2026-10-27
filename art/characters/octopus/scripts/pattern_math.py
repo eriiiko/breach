@@ -14,7 +14,7 @@ Every pattern is taken from a real animal and obeys the same three rules:
   rides on the skin and stretches with it when the arm bends (never a
   projection from outside).
 
-Skin coordinates (all in metres at OCTOPUS_SCALE 1):
+Skin coordinates (all in authored units, i.e. metres at OCTOPUS_SCALE 1):
 
 - `pat_body` = the vertex's rest position (body, crown, web, eyes, siphon and
   arms alike: one continuous field over the whole closed surface);
@@ -52,12 +52,20 @@ def linear(c):
 
 
 def arm_length_coordinate(x):
-    """U(x) = integral_0^x dx / (R_REF (r/R_REF)^TAPER_GAMMA), r floored at R_MIN; in arm radii (monotone)."""
+    """U(x) = integral_0^x dx / (R_REF (r/R_REF)^TAPER_GAMMA), r floored at R_MIN; in arm radii (monotone).
+
+    x is the REST distance along the arm (the size row's arm length, #106): the
+    integral runs over rest length with r taken at the matching material point,
+    so a feature keeps its size in metres on a longer or shorter arm (more or
+    fewer bands, never stretched ones). At the proof's arm length this is the
+    #113 coordinate unchanged.
+    """
     xs = np.linspace(0.0, arm.LENGTH, 4001)
+    xb = om.bind_x(xs)
     r = np.maximum(arm.radius(np.clip(xs / arm.LENGTH, 0, 1)), R_MIN)
     inv = 1.0 / (R_REF * (r / R_REF) ** TAPER_GAMMA)
-    cum = np.concatenate([[0.0], np.cumsum(0.5 * (inv[1:] + inv[:-1]) * np.diff(xs))])
-    return np.interp(np.clip(x, 0, arm.LENGTH), xs, cum)
+    cum = np.concatenate([[0.0], np.cumsum(0.5 * (inv[1:] + inv[:-1]) * np.diff(xb))])
+    return np.interp(np.clip(x, 0, xb[-1]), xb, cum)
 
 
 def skin_coords(data):
@@ -78,7 +86,7 @@ def skin_coords(data):
         pat_arm[a:b] = np.column_stack([R_REF * arm_length_coordinate(x),
                                         R_REF * np.cos(theta) + 3.0 * k,
                                         R_REF * np.sin(theta)])
-        s = np.clip(x / arm.LENGTH, 0, 1)
+        s = np.clip(om.material_x(x) / arm.LENGTH, 0, 1)
         t = np.clip((s - om.S_J) / BLEND_S, 0, 1)
         pat_w[a:b] = t * t * (3 - 2 * t)
         pat_s[a:b] = s
