@@ -2,32 +2,32 @@
   "scale": 1.971830985915493,
   "size": {
     "size": "mid",
-    "note": "option B, the default: between the two readings; body 1.4 m long",
+    "note": "the default, medium size (option B's body, option A's proportion): body 1.4 m long",
     "scale": 1.971830985915493,
     "body_length_m": 1.4,
     "mantle_width_m": 0.9267605633802817,
     "mantle_length_m": 1.0845070422535212,
-    "arm_length_rest_m": 1.7318,
-    "arm_length_stretched_m": 2.204324677060442,
-    "arm_body_ratio": 1.237,
-    "arm_lambda": 0.64981768707483,
-    "stretch_max": 1.398,
+    "arm_length_rest_m": 2.52,
+    "arm_length_stretched_m": 3.3051967939323186,
+    "arm_body_ratio": 1.8,
+    "arm_lambda": 1.0848979591836736,
+    "stretch_max": 1.4,
     "arm_base_diameter_m": 0.2992516082747459,
-    "span_rest_m": 3.7691736040114847,
-    "span_stretched_m": 4.711634418510364,
-    "span_rest_marines": 1.9995615936400448,
-    "span_stretched_marines": 2.49954080557579,
-    "span_rest_game_tiles": 11.99736956184027,
-    "span_stretched_game_tiles": 14.99724483345474,
-    "span_rest_tiles_at_0333m": 11.31883965168614,
-    "span_stretched_tiles_at_0333m": 14.14905230783893
+    "span_rest_m": 5.341255761940761,
+    "span_stretched_m": 6.90734795961174,
+    "span_rest_marines": 2.833557433390324,
+    "span_stretched_marines": 3.6643755753908436,
+    "span_rest_game_tiles": 17.001344600341945,
+    "span_stretched_game_tiles": 21.98625345234506,
+    "span_rest_tiles_at_0333m": 16.039807092915197,
+    "span_stretched_tiles_at_0333m": 20.74278666550072
   },
-  "arm_length_m": 1.7318,
+  "arm_length_m": 2.52,
   "hero": {
-    "vertices": 49656,
-    "triangles": 97952,
+    "vertices": 67512,
+    "triangles": 132512,
     "joints": 270,
-    "cups": 336
+    "cups": 624
   },
   "game": {
     "vertices": 6108,
@@ -36,10 +36,10 @@
     "texture": "2048x2048 albedo+gloss(alpha) and tangent normal, baked from hero"
   },
   "blender_hero_skin_parity_m": {
-    "rest": 2.4273229689998194e-06,
-    "curled": 1.9810324166040866e-06,
-    "reach": 2.4273229689998194e-06,
-    "swim": 2.6653221243431753e-06,
-    "walk": 2.3794425686371177e-06
+    "rest": 3.6222642860307366e-06,
+    "curled": 1.968189761365967e-06,
+    "reach": 3.6222642860307366e-06,
+    "swim": 4.240630974044397e-06,
+    "walk": 4.529988712286529e-06
   }
 }
