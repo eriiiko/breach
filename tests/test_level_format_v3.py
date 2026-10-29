@@ -231,3 +231,24 @@ def test_id_past_the_int8_plane_is_refused(monkeypatch):
     with pytest.raises(ValueError, match="int8"):
         materials_from_tilemap(np.zeros((2, 2), dtype=np.int32),
                                LEVEL_FORMAT_VERSION)
+
+
+# ---------------------------------------------------------------------------
+# Editors: key 9 still paints SPACE, and no key selects two entries
+# ---------------------------------------------------------------------------
+
+def test_palette_keys_are_unique_and_nine_is_space():
+    """Property: in both editors' palettes (material ids + SPACE) each digit
+    key selects at most ONE entry, and key 9 selects SPACE — which paints
+    SPACE_CODE, not the id 9 (foliage). Breaks if a key is derived from the
+    CSV code again (foliage and SPACE would both claim key 9, as they did
+    under v2, the last one in the palette order silently winning)."""
+    from level_edit_common import SPACE_KEY, palette_key
+    keys = {}
+    for pid in sorted(MATERIAL_NAMES) + [SPACE_CODE]:
+        k = palette_key(pid)
+        if k is not None:
+            assert k not in keys, (k, keys[k], pid)
+            keys[k] = pid
+    assert SPACE_KEY == 9 and keys[SPACE_KEY] == SPACE_CODE
+    assert palette_key(MAT_FOLIAGE) is None    # id 9: eyedropper-only

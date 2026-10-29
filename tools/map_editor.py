@@ -57,7 +57,8 @@ Controls (the tool rail + inspector show the active mode's line):
                            Arc C6)
     0-8, 9               - select material (palette GENERATED from
                            MATERIAL_NAMES at launch — key = material id;
-                           9 = SPACE; ids past 8 are eyedropper-only)
+                           key 9 = SPACE (CSV code -1); ids from 9 up are
+                           eyedropper-only)
     V                    - toggle baked preview <-> material-colour view
     N                    - baked view: toggle diffuse <-> normal map
     G                    - toggle grid lines

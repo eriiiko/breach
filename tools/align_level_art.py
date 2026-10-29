@@ -59,7 +59,7 @@ Controls — two modes, TAB toggles (HUD shows the active one):
     Right click/drag     - erase (paint AIR)
     0 1 2 3 4 5 6        - select AIR / HULL / WOOD / DOOR / STEEL / GLASS /
                            FURNITURE
-    9                    - select SPACE (code 9)
+    9                    - select SPACE (key 9; CSV code SPACE_CODE = -1)
     I                    - eyedropper (select the id under the cursor)
     [ / ]                - brush size 1..9 (square; shown in HUD)
     WASD + arrow keys    - pan (SPACE paints via 9 only)
