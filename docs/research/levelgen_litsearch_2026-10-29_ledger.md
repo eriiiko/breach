@@ -89,3 +89,11 @@ Erik to fetch through Lund) · NF = not found. **Archived** = PDF in
 | D14 | FTL wiki, Door system; Subset Games forum threads | ABS | https://ftl.fandom.com/wiki/Door_System | — |
 | D15 | Objects in Space interior rules; Starsector | NF / not applicable (no walkable interiors) | — | — |
 | D16 | IMO SOLAS consolidated edition (chapters II-1, II-2, full official text) | PAY | IMO publishing | — |
+
+## Totals (unique sources; duplicates B3 = A9, B4 = A4, B9 = A10/A17 not counted)
+
+- **FULL** (full text read, or the whole web article): 38
+- **ABS** (abstract, summary, excerpt or secondary account only): 14
+- **PAY** (paywalled; listed in the digest's Lund fetch list, together with the ABS items that are paywalled or were unreachable): 6
+- **NF** (not found / not applicable): 3
+- **Archived PDFs** in `docs/papers/levelgen/`: 19

@@ -1041,3 +1041,185 @@ it a view (D11), galley and machinery on separate ventilation (D2), airlocks
 and cargo on the hull (D4, D6: nodes and berthing ports are where things
 dock). And keep `vent` and `crawlway` as two words (D9): at one tile a vent
 is already a large real duct and correctly too small for a marine.
+
+---
+
+## What this means for the design session
+
+The four strands converge on one shape for the generator, and none of it
+reopens a locked decision.
+
+1. **v0.1 L2 is the literature's own advice for ships.** The PCG textbook
+   names space ships among the settings where you build the space and derive
+   the mission from it (A3, strategy 3); the cost it warns about — space
+   without "mission potential" — is what L6 phase 2 (tactical patterns) and
+   L8 (validators) are for. Author *cycle types* and *injection rules*, not a
+   mission tier (A4, A9).
+2. **Stage 2 for ships is subdivision, not search.** Everything that fills a
+   rigid envelope with no voids is a floor-plan method (B6); the search-based
+   layouters (Ma, Edgar, Gungeon) leave voids and stop scaling around 30 rooms
+   and a few cycles (B1–B3). The grammar's SECTOR → ZONE → room hierarchy is
+   the cut tree, the v1 generator's mirrored BSP is already the base case, and
+   repair (Merrell's wall slides, B6) plus wall-graph corridors (Mirahmadi,
+   B6) plus reroll (L8) handle the misses. Search-based chain layout is the
+   right tool for the *other* archetype — station fragments.
+3. **One small rule buys the embedding guarantee.** Forbid 3-cycles of door
+   edges (B7): the L4 moves keep the graph triangle-free if edge→cycle
+   *replaces* A—B, and a triangle-free planar graph always has a rectangular
+   layout. Existence is then free; *area* is the only failure mode, and
+   reroll covers it.
+4. **The pressure cell is the master boundary.** Real ships align fire zones
+   with watertight bulkheads and keep every duct inside its zone (D1, D2);
+   the ISS gives every module a supply and a return with isolation valves on
+   both (D6, D7). So: one cell = one duct system = one alarm zone = one
+   readiness group, every room with a supply and a return (or an always-open
+   door to one), cross-cell ducts only as an archetype choice with a damper.
+   This answers most of #134 and #137 and supplies L5's "vent leak path"
+   policy default: *forbidden unless the archetype opts in*.
+5. **Vents are not routed today.** In the engine a duct is an abstract plenum
+   entity and a vent a wall-mounted entity (`gen_ship._build_vents`). The L4
+   vent leash and the L9 `routed-freely` class only bite if ducts become
+   tiles; until then the leash can simply be "same cell, wall site exists"
+   (strand b, step 9). At 0.333 m tiles a one-tile vent is a large real duct
+   and correctly marine-proof (D9); a crawlable passage is a corridor-class
+   room, a separate word.
+6. **The RL track needs a white-box level spec and seed banks.** Breach's
+   dynamics are deterministic, so every bit of closed-loop pressure comes from
+   the episode context (C11). Expose named factors (C10), split level and
+   episode seeds (C4), ship difficulty profiles at the distribution level
+   (C2, C3), and publish train / test-iid / test-ood / probe banks (C2, C4).
+   The grammar makes ACCEL-style "one more edit" curricula cheap and
+   invariant-safe (C9).
+7. **Authoring hygiene is the long-term cost.** Grammars are brittle (A6);
+   ~5,000 rules for Unexplored's floorplans (A4). Provenance per node and an
+   invariant check after every rule application make LLM-authored rules (L7)
+   debuggable rather than merely rejectable.
+
+---
+
+## Ten questions for the design session, with recommended answers
+
+1. **Hull as input or as output (v0.1 §5)?** *Input*: a small library of
+   rectilinear silhouettes (rectangle first — v1 has it — then notched and
+   stepped-bow variants), decomposed into a few top-level rectangles that
+   become the first cuts. Art control and a guaranteed airtight shell, at the
+   price of an occasional area failure that reroll absorbs (B6, B7; v1).
+2. **Which stage-2 layout algorithm, and what happens on failure?** For
+   ships, a grammar-driven slicing subdivision (treemap by L9 area hints,
+   children ordered along chains) with mandatory/prefab rooms placed first;
+   then a bounded Merrell repair (slide a cut, swap two leaves, mirrored);
+   then a wall-graph corridor for `may-become-corridor` misses; then reroll
+   the seed — never re-enter the grammar (B6, B1, B3, L8). For station
+   fragments, Ma/Edgar chain layout with configuration spaces (B1, B2).
+3. **Corridors: rooms or edges?** Rooms. They hold gas, chokepoints, sensors
+   and spawn tags; L4 move 1 makes them; embedder-carved corridors appear as
+   corridor nodes in the as-built graph (v0.1 §3 step 6). Nepožitek's cost
+   argument applies to search embedders only (B2).
+4. **How is mirror symmetry expressed?** The grammar runs on the quotient
+   graph (wing rooms + axis rooms) and applies each wing rule to the twin by
+   construction; the embedder lays out the wing and the axis band and
+   reflects, as v1 does. Archetypes that should not be symmetric (station
+   fragments, perhaps the bomb map) opt out by profile (B6 table; v1).
+5. **What is a rule, and what is a recipe?** A rule: LHS/RHS with numbered
+   nodes, typed edges including *relationship* edges (`pair`, `serves`,
+   `guards`) that are not adjacencies, a declared phase (L6) and a
+   precondition. A recipe: an ordered list of (phase, rule, count-range),
+   with variable-size structures written as initialise → grow → clean-up
+   (A2, A3, A4, A6). The executor records provenance per node/edge and checks
+   the archetype's invariants after every application (A6).
+6. **Do we add a no-triangle rule to the vocabulary (#27)?** Yes: no rule may
+   create a 3-cycle of door edges; edge→cycle replaces A—B. Three rooms
+   meeting at a corner, if wanted, is a prefab. This keeps a rectangular
+   layout always possible (B7).
+7. **What does a prefab declare (#133)?** Footprint (fixed or a size range),
+   ports (wall side + offset interval + port kind: door / airlock door /
+   window / vent site), the graph degree it can serve (Spelunky's typing by
+   exits, Edgar's dead-end advice), probabilistic tiles, and its internal
+   invariants (an airlock: exactly two door ports, a sealable chamber, an
+   equalisation valve per door, a pressure readout, a window) (B2, B5, D5,
+   L5).
+8. **What are the vent and cell rules (#134, #137)?** One duct system per
+   pressure cell; every room has a supply and a return, the return being its
+   own vent or an always-open doorway into a room with one; the corridor spine
+   gets its own duct; cross-cell ducts are archetype-opt-in only and carry a
+   damper entity; the "nearby" leash is "same cell, wall site exists" while
+   ducts are abstract; `vent` and `crawlway` are distinct words (D2, D6, D7,
+   D8, D9, D12; Erik's rule).
+9. **Do door edges carry a readiness class?** Yes — X / Y / Z (always shut /
+   shut on alert / shut at battle stations) as a static grammar-authored
+   annotation, with a ship-wide condition that closes classes in order;
+   cell-boundary doors are Z at least. It gives the rule AI and RL agents a
+   physically meaningful lever and the grammar something to emit in phase 4
+   (D3, D4, D12 firelocks).
+10. **What does the generator expose to the RL track (#76 on)?** A white-box
+    `LevelSpec = (archetype, recipe_hash, size_band, params, level_seed)` with
+    named cardinal and ordinal factors; a level seed separate from the episode
+    seed (both derived from the match seed); distribution-level difficulty
+    profiles; published seed banks `train` (start at 1,000 per profile),
+    `test-iid`, `test-ood` (held-out silhouette / recipe / loop count) and
+    `probe`; per-factor reporting; and a `mutate(spec, rule)` hook for
+    PLR/ACCEL curricula (C2, C4, C8, C9, C10, C11).
+
+---
+
+## Reading list
+
+**Read first (in this order) — the embedding session needs these four:**
+1. Ma, Vining, Lefebvre & Sheffer 2014, *Game level layout from design
+   specification*, CGF 33(2). DOI 10.1111/cgf.12314 — archived
+   (`ma2014_...`). §2 is the best map of the field.
+2. Mirahmadi & Shami 2012, *A novel algorithm for real-time procedural
+   generation of building floor plans*, arXiv 1211.5842 — archived. The
+   treemap + wall-graph corridor pipeline in four pages.
+3. Boris the Brave 2021, *Dungeon generation in Unexplored* —
+   https://www.boristhebrave.com/2021/04/10/dungeon-generation-in-unexplored/
+4. Togelius, Shaker & Dormans, *Grammars and L-systems …*, PCG book ch. 5,
+   §5.5 — http://pcgbook.com/chapter05.pdf
+
+**Grammars and authoring:** Dormans 2010 (DOI 10.1145/1814256.1814257,
+archived); Dormans 2011 *Level design as model transformation* (archived);
+van Rozen & Heijn 2018 (DOI 10.1145/3235765.3235821, archived); Boris the
+Brave, *Dungeon generation in Enter the Gungeon* —
+https://www.boristhebrave.com/2019/07/28/dungeon-generation-in-enter-the-gungeon/;
+Metazelda — https://github.com/tcoxon/metazelda; Benard 2017, Dead Cells —
+https://www.gamedeveloper.com/design/building-the-level-design-of-a-procedurally-generated-metroidvania-a-hybrid-approach-
+
+**Embedding:** Nepožitek & Gemrot (archived) + Edgar —
+https://github.com/ondrejnepozitek/edgar-dotnet; Merrell, Schkufza & Koltun
+2010 — https://www.cs.princeton.edu/courses/archive/spring11/cos598A/pdfs/Merrell10a.pdf;
+Buchsbaum et al., *Rectangular layouts and contact graphs*, arXiv cs/0611107
+(archived); Nelson & Smith, PCG book ch. 8 — http://pcgbook.com/chapter08.pdf;
+Karth & Smith 2017 (DOI 10.1145/3102071.3110566, archived); Kazemi's Spelunky
+lessons — https://tinysubversions.com/spelunkyGen/
+
+**RL generalisation:** Cobbe et al. 2020 Procgen, arXiv 1912.01588
+(archived); Juliani et al. 2019 Obstacle Tower, arXiv 1902.01378 (archived);
+Kirk et al. 2023, JAIR 76, arXiv 2111.09794; Jiang et al. 2021 PLR, arXiv
+2010.03934; Parker-Holder et al. 2022 ACCEL, arXiv 2203.01302; Ellis et al.
+2023 SMACv2, arXiv 2212.07489; Justesen et al. 2018, arXiv 1806.10729
+(archived); Cobbe et al. 2019 CoinRun, arXiv 1812.02341; Dennis et al. 2020
+PAIRED, arXiv 2012.02096 (archived); Wang et al. 2019 POET, arXiv 1901.01753
+(archived); Khalifa et al. 2020 PCGRL, arXiv 2001.09212 (archived).
+
+**Real interiors:** SOLAS II-2 reg. 9 (archived, UK MCA text); Laurini et
+al. 1999, ESA Bulletin 98, MPLM ECLSS (archived); NASA NTRS 20070018272,
+Node 1 THC/IMV (archived); NASA OCHMO-TB-028 *Vehicle hatches* (archived);
+Klote 1991, NISTIR 4551 —
+https://nvlpubs.nist.gov/nistpubs/Legacy/IR/nistir4551.pdf; NAVEDTRA 14057
+material conditions —
+https://engineeringtraining.tpub.com/14057/Material-Conditions-Of-Readiness-61.html;
+Paradise Station mapping requirements —
+https://devdocs.paradisestation.org/mapping/requirements/
+
+**For Erik to fetch through Lund (paywalled or unreachable here):**
+- Dormans & Bakkes 2011, IEEE TCIAIG 3(3):216–228, DOI 10.1109/TCIAIG.2011.2149523
+- Smith & Mateas 2011, *Answer set programming for PCG: a design space approach*, IEEE TCIAIG 3(3):187–200, DOI 10.1109/TCIAIG.2011.2158545
+- Smith, Whitehead & Mateas 2011, *Tanagra*, IEEE TCIAIG 3(3):201–215, DOI 10.1109/TCIAIG.2011.2159716
+- van der Linden, Lopes & Bidarra 2014, *Procedural generation of dungeons*, IEEE TCIAIG 6(1):78–89, DOI 10.1109/TCIAIG.2013.2290371 (author copy usually at graphics.tudelft.nl; server down today)
+- Smith, Padget & Vidler 2018, *Graph-based generation of action-adventure dungeon levels using ASP*, FDG 2018, DOI 10.1145/3235765.3235817
+- Karavolos, Bouwer & Bidarra 2015, *Mixed-initiative design of game levels: integrating mission and space into level generation*, FDG 2015
+- Lopes, Tutenel, Smelik, de Kraker & Bidarra 2010, *A constrained growth method for procedural floor plan generation*, GAME-ON 2010 (TU Delft; retry before Lund)
+- Klote & Milke, *Design of smoke management systems for buildings* (ASHRAE)
+- Watson, *Practical ship design* (Elsevier) — general arrangement / adjacency
+- IMO, SOLAS consolidated edition (chapters II-1 and II-2)
+- NFPA 92 and NFPA 101 (smoke control; smoke compartments)
