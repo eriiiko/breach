@@ -491,7 +491,12 @@ p_expand_ref      = 1.30   # self-limiting plume saturation ceiling (atm + therm
 # The fuel-vs-T-gate RACE needs the H_bed x8 deposit (H_BED_SHIFT 7): weaker
 # deposits heat-collapse with 20-50% char before hp can reach 0 (I_cap ∝ F, so
 # the drain fades with the fuel — measured across x1/x2/x4).
-wall_damage       = 0.36   # wall HP lost per second per unit intensity, TIMES hotf since R3 (the burn-out brake -> now the DURATION dial). History: 0.4 -> 0.03 (P-F1b) -> 0.01448 (R3, bad anchor) -> 0.36 (Erik's 3-min fuel-out ruling 2026-09-06, derivation above)
+# #129 (2026-10-29, fire_smoke_studio, tools/fire_smoke_probe.py): since M3
+# (H_bed 38.73, derived) 0.36 no longer burns to the end -- the fire snaps out
+# (I_min) with 3-9 % char left. Duration scales ~1/wall_damage; the char left
+# crosses 0 at 0.54 for the vented row. H_bed x0.5..x8 moves duration <= 30 %
+# and char ~1 pt: not the lever any more.
+wall_damage       = 0.54   # wall HP lost per second per unit intensity, TIMES hotf since R3 (the burn-out brake -> now the DURATION dial). History: 0.4 -> 0.03 (P-F1b) -> 0.01448 (R3, bad anchor) -> 0.36 (Erik's 3-min fuel-out ruling 2026-09-06, derivation above) -> 0.54 (#129 bonfire sweep 2026-10-29: the smallest value at which the vented studio row burns its fuel to 0 -- visible 110 s, fuel out 132 s, out 140 s; docs/bonfire_tuning_2026-10-29/report.md. 0.36 -> 0.54 (Erik's bonfire ruling pending, #129))
 
 # --- K2: fire as a sim-side heat ray source (proposal §1, fire_design_notes) --
 # TOMBSTONE (T6, issue #12, 2026-09-23): the whole per-tile fire-plane heat
