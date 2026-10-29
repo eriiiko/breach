@@ -114,6 +114,7 @@ build so both answers fit (§5).
 
 ## 8. Run log
 
+- 2026-10-29 — #119 P2 built (branch `119-match-p2-runner`): match.toml + `[[spawn_room]]` through `level_lib`, `MatchRules`, the match controller registry (`idle`), `tools/run_match.py`. Learned: with idle controllers nothing draws from `sim.rng`, so two seeds give ONE digest on the playground; the seed gate needs shots (a test controller through the registry) — the bots (#121) make the seed live in real matches. A playground tick is ~12 ms on the Home Desktop, so the playground match runs 60 s of sim (1440 ticks, ~18 s wall), not the 300 s default.
 - 2026-10-29 — zombie conversion ruled IN by Erik (Claude's OFF proposal vetoed); #116 then #73 started as agent patches, sequentially per the one-implementation-agent rule.
 - 2026-10-29 — skill created in the #76 scoping session; scope doc written;
   issues cut; Roadmap's RL-ready section reordered.

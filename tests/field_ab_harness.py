@@ -303,18 +303,27 @@ def capture_trajectory(make_sim=default_scenario_sim, n_steps=30, fields=SIM_FIE
     for _ in range(n_steps):
         sim.set_paused(False)
         sim.step()
-        snap = _snapshot(sim.gmap, fields)
-        if capture_units:
-            snap[UNIT_DIGEST_KEY] = _capture_unit_state(sim)
-        ents = _sim_entities(sim)
-        # __signals__ (B6): () for any sim with no SignalBus (dormancy holds);
-        # the live bus rows for a wired sim — the ONLY case that folds signals.
-        digest_signals = getattr(sim, "_digest_signals", None)
-        signals = digest_signals() if callable(digest_signals) else ()
-        snap[ENTITY_DIGEST_KEY] = entity_carrier(ents, signals=signals)
-        require_entity_carrier(ents, snap)   # the A4 strict presence rule
-        traj.append(snap)
+        traj.append(capture_snapshot(sim, fields, capture_units=capture_units))
     return traj
+
+
+def capture_snapshot(sim, fields=SIM_FIELDS, capture_units=True):
+    """ONE tick's snapshot of ``sim`` as it stands — the gmap fields, the
+    synced unit state (UNIT_DIGEST_KEY) and the strict entity presence
+    carrier (ENTITY_DIGEST_KEY): what :func:`capture_trajectory` records per
+    tick and what ``tick_digest`` hashes. Public so a caller that owns its own
+    loop (``tools/run_match.py``, #119 P2) digests the same snapshot."""
+    snap = _snapshot(sim.gmap, fields)
+    if capture_units:
+        snap[UNIT_DIGEST_KEY] = _capture_unit_state(sim)
+    ents = _sim_entities(sim)
+    # __signals__ (B6): () for any sim with no SignalBus (dormancy holds);
+    # the live bus rows for a wired sim — the ONLY case that folds signals.
+    digest_signals = getattr(sim, "_digest_signals", None)
+    signals = digest_signals() if callable(digest_signals) else ()
+    snap[ENTITY_DIGEST_KEY] = entity_carrier(ents, signals=signals)
+    require_entity_carrier(ents, snap)   # the A4 strict presence rule
+    return snap
 
 
 def _diff_unit_state(t, ua, ub):
