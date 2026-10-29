@@ -544,7 +544,8 @@ class Simulation:
         game path, byte-identical to before #122), or, in a match, the zombie
         controller's requested ids (filtering preserves ``self.units`` order,
         so a controller naming the whole horde reproduces the conductor's
-        call exactly). The bite's hit/kill events ride ``tick_events``."""
+        call exactly). A bite's hit / kill events ride ``tick_events``
+        with source ``"melee"`` (#122), like a bullet's."""
         reqs = self._zombie_requests
         if reqs is None:
             units = self.units
@@ -554,7 +555,8 @@ class Simulation:
             units = [u for u in self.units
                      if not u.is_zombie or u.id in reqs]
             reqs.clear()
-        update_zombies_tick(self.gmap, units, self.tick)
+        update_zombies_tick(self.gmap, units, self.tick,
+                            events=self.tick_events)
 
     def controlled_units(self) -> list:
         """The living units of :attr:`player_team` — the human's squad."""

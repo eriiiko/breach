@@ -409,9 +409,12 @@ def test_e2e_baton_chain_stun_suppresses_the_zombie_bite():
 def test_zombie_bite_keeps_its_shipped_path():
     """An activated zombie against an order-less marine: bites land on the
     shipped center-distance rule + attack_cooldown cadence for the exact
-    CFG.zombie.melee_damage, emit NO events (the site never had a list),
-    convert on kill (killed_by_zombie — the ONLY converting death), and
-    draw nothing. W5 must not have rerouted any of it."""
+    CFG.zombie.melee_damage, emit their hit (and the kill) on the tick's
+    events with source "melee" (#122: credited zombie kills — before #122
+    the site emitted nothing), convert on kill (killed_by_zombie — the ONLY
+    converting death), and draw nothing. W5 must not have rerouted any of
+    it; breaks if the bite leaves the event list again or the kill stops
+    being credited to melee."""
     sim = Simulation(_level(), seed=SEED, breach_physics=bp,
                      enable_recorder=False)
     m = Unit("M", x=5, y=9, team=0)
@@ -424,12 +427,16 @@ def test_zombie_bite_keeps_its_shipped_path():
     bite = CFG.zombie.melee_damage
     _step(sim, 1)                                 # bite lands tick 0
     assert m.current_hp == hp0 - bite
-    assert not any(isinstance(e, UnitHitEvent) for e in sim.tick_events)
+    hits = [e for e in sim.tick_events if isinstance(e, UnitHitEvent)]
+    assert [(e.unit_id, e.source) for e in hits] == [(m.id, "melee")]
     cooldown = CFG.zombie.attack_cooldown_ticks
     _step(sim, cooldown)                          # exactly one more bite
     assert m.current_hp == hp0 - 2 * bite
     assert not m.alive                            # 2 x 60 >= 100
     assert m.killed_by_zombie                     # the converting death
+    from simulation.events import UnitKilledEvent
+    kills = [e for e in sim.tick_events if isinstance(e, UnitKilledEvent)]
+    assert [(e.unit_id, e.killed_by) for e in kills] == [(m.id, "melee")]
     assert sim.rng.bit_generator.state == state0  # the bite draws nothing
 
 
