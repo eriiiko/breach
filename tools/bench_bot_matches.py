@@ -111,7 +111,7 @@ def main(argv=None) -> int:
               f"living {o.living} turned {o.converted_alive} "
               f"marine deaths {dict(log.marine)} zombie deaths "
               f"{dict(log.zombie)} shots {log.shots} frags {log.throws} "
-              f"wall {wall:6.1f} s")
+              f"wall {wall:6.1f} s digest {o.tick_digest[:12]}", flush=True)
     n = len(ticks)
     print(f"outcomes: {dict(outcomes)}")
     print(f"mean ticks to result: {sum(ticks) / n:.0f} "
