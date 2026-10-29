@@ -1781,10 +1781,11 @@ cool_rate = 0.9             # 1/s, T_vfx relaxes toward the local gas T (never u
 r_eps = 1e-6                # R below this has no defined temperature
 r_cut = 1e-3                # R below this is cleared to exactly 0 (no stale flame)
 # --- drawing (§3.5, §13.4; F3) -- shaders/fire_glow.fs ---
-emission = "mask"           # the A/B (Erik judges at HUMAN-TEST 1; F3 cycles it
-                            # live: mask -> thickness -> off): "mask" = A, glow
-                            # by temperature only; "thickness" = B, temperature
-                            # and how much flame stands in the column
+emission = "mask"           # A -- Erik's choice at HUMAN-TEST 2026-10-29 ("Flame
+                            # A"). The A/B stays live (F3 cycles mask ->
+                            # thickness -> off): "mask" = A, glow by temperature
+                            # only; "thickness" = B, temperature and how much
+                            # flame stands in the column
 kappa = 2.5                 # B: E = 1 - exp(-kappa R)
 r0 = 0.10                   # A: E = smoothstep(r0, r1, R)
 r1 = 0.60
@@ -1809,7 +1810,7 @@ seed = 1234                 # curl-noise modes and puffing phases
 # wall / vacuum. Drawn additive, linear HDR, after the flame and under the
 # units (shaders/particle_sprite.*). Re-read every frame (Ctrl+R live);
 # Shift+F3 toggles them. Render-only: no sim state, no digest, no golden.
-enabled = true
+enabled = true              # on by default: Erik at HUMAN-TEST 2026-10-29
 rate = 4.0                  # embers per second per source tile at I = 1: sparse
                             # (the studio's 5-tile row at I ~ 0.5 makes ~12 a second)
 cap = 256                   # never more alive at once (a fair subset spawns)

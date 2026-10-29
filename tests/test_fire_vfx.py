@@ -371,6 +371,33 @@ def test_settings_from_config_carry_the_config_values(cfg):
                                else getattr(fx.FireVFXSettings(), k)), k
 
 
+def test_the_game_starts_with_flame_a_and_embers_on(cfg):
+    """Property (Erik's ruling at HUMAN-TEST 2026-10-29: "Flame A", embers
+    on): the game starts with the flame drawn by law A ("mask", glow by
+    temperature only) and the embers on -- the shipped config, and the start
+    state of the live keys (no override yet) -- while the A/B stays an A/B:
+    F3 still cycles A -> B -> off -> A and Shift+F3 still toggles the
+    embers off and on. Breaks if the config, a schema fallback or a startup
+    override moves either ruling, or the cycle loses a step."""
+    from renderer import particles as pa
+    s = fx.settings_from_config(cfg)
+    assert s.emission == "mask" == fx.FireVFXSettings().emission
+
+    class _Pass:                       # the pass's own key logic, without GL
+        emission = fx.FireVFXPass.emission
+        cycle_emission = fx.FireVFXPass.cycle_emission
+
+    p = _Pass()
+    p.settings, p.emission_override = s, None        # __init__'s start state
+    assert p.emission == "mask"
+    assert [p.cycle_emission() for _ in range(3)] == ["thickness", "off", "mask"]
+    es = pa.settings_from_config(cfg)
+    assert es.enabled and pa.EmberSettings().enabled
+    em = pa.EmberSystem(es, t_amb_k=293.0, glow_min_k=800.0)
+    assert em.enabled
+    assert em.toggle() is False and em.toggle() is True
+
+
 def test_every_stage_shader_composes_with_the_common_glsl():
     """Property: every pass shader carries the shared GLSL (texel convention,
     cover rule, puffing) through the one include, so no stage re-derives
