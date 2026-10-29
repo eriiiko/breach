@@ -908,3 +908,73 @@ above turned out wrong or was decided by a measurement.*
   (6 tiles), 0.23 ms (200), 0.62 ms (1000). CPU sweep (relight, 56×56): 2.11
   vs 2.11 ms (noise); GPU per-call sweep 3.21 → 3.29 ms (+ the plane's
   build and one int32 upload).
+
+## 17. Adjustment round, as built (2026-10-29) — after HUMAN-TEST 2
+
+*Erik's rulings at HUMAN-TEST 2026-10-29: the fire must light the room "much
+more brightly ... a little more I think would be great"; Flame A; embers on.
+Code and the commit messages are the source of truth.*
+
+- **The dial: the fire's light GAIN, through F4b's one door.** `[render.
+  fire_light] gain` (live, Ctrl+R) multiplies each BURNING tile's thermal
+  light emission in the sweep, composed into the emission-multiplier rows:
+  `mult = gain · m_flicker` with the flicker on, the gain alone with it off
+  (Alt+F3), no rows at gain 1 with the flicker off (the pre-F4b sweep).
+  Rejected: `[render.blackbody]` (it also moves the heat layer's and the
+  flame's glow, and the light table's top already sits at 2^43 of its 2^44
+  door), `[render.lighting] sweep_gain` / `master_gain` (they scale lamps
+  and the sky too). A tile leaves the burning set by cooling below the glow
+  floor, where its light emission is already 0 (the probe: the lone studio
+  tile passes 800 K at I ≈ 0.12, long before its fire dies), so the gain
+  never switches a visible light. Gap: without the flame VFX (`[render.
+  fire_vfx] enabled = false`) there is no burning-tile list and no gain.
+- **The door: 2 ONE → 16 ONE.** The int64 argument at the doors' own
+  bounds (L° < 2^44, w_m ≤ ONE/12): one ordinate's unscaled source
+  < 2^40.42; the scaling product < 2^60.4; a stream < sky + cones + 16 ·
+  source = 2^40 + 2^44 + 2^44.42 = 2^45.26; the widest plain product, the
+  flux vector's three-channel stream · mu_q, 3 · 2^45.26 · 2^16 = 2^62.85
+  < 2^63 — the binding term (32 ONE: 2^63.5). With the live table (top
+  2^43) the same product is 2^62.4 at 16 ONE. The settings door refuses a
+  gain whose flicker peak `gain · (1 + amplitude)` passes 16, so the
+  flicker is never clipped and stays mean-preserving around the gain (at
+  amplitude 0.3: gain ≤ 12.3). Gated over-driven on CPU (engine ==
+  reference, streams under the bound) and GPU == CPU (CUDA check PART M5).
+- **Measured, `fire_smoke_studio`** (look-shot children with the gain set
+  in the live CFG; 8-bit Rec. 709 luma). The lone burning tile at 5 s,
+  floor only, the tile ring at 1 / 2 / 3 tiles, over the floor without the
+  fire's light (16.2 / 16.3 / 16.3):
+
+  | gain | 1 tile | 2 tiles | 3 tiles |
+  |---|---|---|---|
+  | 1 (F4b) | +3.8 | +1.8 | +1.1 |
+  | 2 | +7.3 | +3.5 | +2.1 |
+  | 4 | +13.6 | +6.7 | +4.2 |
+  | **6 (shipped)** | **+19.4** | **+9.7** | **+6.1** |
+  | 8 | +24.8 | +12.6 | +7.9 |
+  | 12 | +34.4 | +17.9 | +11.4 |
+
+  No pixel clips at any gain. At 2 s (the fire's early peak) the floor 4–7
+  tiles north of the row, where the squad stands, reads 21 / 33 / 40 / 47 /
+  58 at gains 1 / 4 / 6 / 8 / 12; the squad's projected shadows appear from
+  ~4 (at 1 the floor is too dark and `unit_shadow`'s `min_brightness` fades
+  them out). Above ~8 the flame begins to lose contrast against its own
+  lit floor, and the sweep's 16-ordinate ray streaks (dark wedges between
+  the ordinates, ≳ 8 tiles out; present with the smoke hidden) start to
+  show. **Shipped: 6.**
+- **The flicker is visible at 6.** Floor beside the lone tile, 10 s from
+  5 s, high-passed (2 s), flicker on: ~7.3 levels peak to peak at 1 tile
+  (RMS 1.5), ~3.1 at 2 tiles, ~1.5 at 3 — against 0.3 / 0.2 / 0.1 with it
+  off at the same gain and 1.5 / 0.6 / 0.3 at gain 1; the mean is unchanged
+  (27.9 vs 28.0).
+- **Flame A and embers on** were already the shipped start state (config,
+  schema fallbacks, no startup override); the config now carries the
+  ruling and `tests/test_fire_vfx.py` gates it (the A/B/off cycle and the
+  embers' toggle kept).
+- **One hash.** `fire_vfx_ref._hash01` (the puffing's phase and jitter) and
+  its scalar twin `fire_vfx._hash01` (the noise offsets, the shimmer) are the
+  full splitmix64 finalizer, bit for bit the flicker's former `_mix01`, which
+  is deleted. Measured honestly: the old half finalizer was not detectably
+  weak on pair statistics or avalanche (bias 0.012 vs 0.013; 572/574 was a
+  ~1-in-800 chance); the gain is one hash with full mixing instead of two
+  formulas. The new gate (400 equal fires: uniform phases and uniform
+  neighbour phase distances) fails a bare Weyl step.
