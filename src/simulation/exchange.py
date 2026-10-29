@@ -549,7 +549,16 @@ def apply_wave_push(units, gmap, ticks_per_second):
         if not u.alive:
             continue
         tiles = u.occupied_tiles()
-        gx, gy = reduce_grad(p_field, tiles)
+        # #121: a walk-through door tile is solid to gas (it stores
+        # atmosphere 0) but legal to stand on (the wall clamp below says so);
+        # its 0 is no pressure, so the gradient reads only the gas tiles of
+        # the footprint. Without this a footprint whose edge is on a legacy
+        # MAT_DOOR is shoved back off it every tick -- no unit under MOVE_DIR
+        # could cross a door. A real pressure difference across the door
+        # (the two rooms' gas tiles) still pushes, unchanged.
+        gas_tiles = [(tx, ty) for (tx, ty) in tiles
+                     if not (0 <= ty < h and 0 <= tx < w and solid[ty, tx])]
+        gx, gy = reduce_grad(p_field, gas_tiles)
         if -grad_floor_q <= gx <= grad_floor_q:
             gx = 0      # #116: under the noise floor -> no push on this axis
         if -grad_floor_q <= gy <= grad_floor_q:
