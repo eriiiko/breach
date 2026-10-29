@@ -1864,11 +1864,27 @@ seed = 2718                 # the flow map's per-cycle offsets and boil directio
 # emission-multiplier rows, the door frame_lights.emit_mult_rows). LIGHT ONLY:
 # no heat, no digest, no golden; lamps, the sky and a hot wall that does not
 # burn are not scaled, nor is the heat layer's glow or the flame. Needs the
-# flame VFX (its burning-tile list). Re-read every frame (Ctrl+R / F5 live).
+# flame VFX (its burning-tile list). Re-read every frame (Ctrl+R reloads it live).
 # gain x (1 + [render.flicker] amplitude) must be <= 16 (the sweep's int64
-# headroom, cpp/src/radiation_sweep.h). Before: 1.0, where a burning tile added
-# ~1 of 255 levels to the floor around it and the flicker could not be seen.
-gain = 1.0
+# headroom, cpp/src/radiation_sweep.h), so at the shipped amplitude 0.3 the
+# dial goes up to 12.3; 0 switches the fire's room light off.
+# MEASURED (fire_smoke_studio, the lone burning tile at 5 s, floor only, mean
+# 8-bit luma of the tile ring at 1 / 2 / 3 tiles; gain 0 reads 16.2 / 16.3 /
+# 16.3, so the "+" is what the fire adds):
+#   gain  1: +3.8 / +1.8 / +1.1   (the F4b look: the fire lit almost nothing)
+#   gain  2: +7.3 / +3.5 / +2.1
+#   gain  4: +13.6 / +6.7 / +4.2
+#   gain  6: +19.4 / +9.7 / +6.1  <- shipped
+#   gain  8: +24.8 / +12.6 / +7.9
+#   gain 12: +34.4 / +17.9 / +11.4
+# No pixel clips at any of them; the early fire (2 s) lights the squad's floor
+# 4-7 tiles away at 21 (gain 1) / 40 (6) / 58 (12), and the squad's shadows
+# appear from ~4 (at 1 the unit shadow is faded out on the dark floor). Above
+# ~8 the flame starts to lose contrast against its own lit floor, and the
+# sweep's 16-ordinate ray streaks show far from the fire. With the flicker on
+# at 6 the floor next to the lone tile swings ~7 levels peak to peak (1 tile)
+# and ~3 (2 tiles) -- visible breathing; at 1 it was ~1.5 / 0.6.
+gain = 6.0
 
 [render.flicker]
 # Graphics G3 F4b -- the FIRE'S ROOM-LIGHT FLICKER (renderer/fire_flicker.py;
