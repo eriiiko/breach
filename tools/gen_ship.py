@@ -745,7 +745,7 @@ class ShipPlan:
 
     def match_spec(self) -> MatchSpec:
         team = MatchTeam(n=min(4, self.max_per_team), loadout="rifleman",
-                         env_profile="default", controller="idle")
+                         env_profile="default", controller="bots")
         return MatchSpec(teams=(team, team), seed=self.seed,
                          zombies=self.zombies, time_limit_s=TIME_LIMIT_S,
                          objective="eliminate")
