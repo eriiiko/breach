@@ -53,7 +53,10 @@ MAT_KINDLING = 8
 # ONE material row — "fully walkable, no wind/vision/movement interaction,
 # flammable, fuel ~= 2x furniture". APPENDED (ids are positional and
 # contiguous — this must always be the LAST id, or every level
-# re-materializes).
+# re-materializes). Id 9 is an ordinary id: it was also level format v2's
+# SPACE tilemap code, until format v3 (#27, 2026-10-29) moved SPACE outside
+# the id range (``level_loader.SPACE_CODE`` = -1). Ids are rows, unbounded
+# up to the int8 material plane's 127 (``level_loader.MATERIAL_ID_MAX``).
 MAT_FOLIAGE = 9
 
 # Config-key <-> id mapping. The key is the ``[materials.<name>]`` table name.

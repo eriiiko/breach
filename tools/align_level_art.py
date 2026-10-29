@@ -80,7 +80,7 @@ sys.path.insert(0, str(ROOT / "src"))
 import numpy as np
 import pyray as rl
 
-from level_loader import (SPACE_CODE, load as load_level,
+from level_loader import (LEVEL_FORMAT_VERSION, SPACE_CODE, load as load_level,
                           materials_from_tilemap, tile_to_art_px)
 from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_FURNITURE, MAT_GLASS,
                                   MAT_HULL, MAT_STEEL, MAT_WOOD,
@@ -88,7 +88,7 @@ from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_FURNITURE, MAT_GLASS,
 # The pure paint plumbing is shared with tools/map_editor.py (engine/15 §0).
 # Re-exported here so tests/test_level_editor_tool.py (and any older caller)
 # keeps importing them from this module unchanged.
-from level_edit_common import (BRUSH_MAX, BRUSH_MIN, UNDO_CAPACITY,  # noqa: F401
+from level_edit_common import (BRUSH_MAX, BRUSH_MIN, SPACE_KEY, UNDO_CAPACITY,  # noqa: F401
                                UndoRing, art_px_to_tile, brush_rect,
                                build_palette, line_tiles, paint_tiles,
                                save_tilemap_csv)
@@ -253,7 +253,7 @@ def main() -> None:
 
     # PAINT needs the v2 vocabulary (codes ARE material ids); a v1 CSV speaks
     # the retired generator vocabulary and must not be painted with canon ids.
-    paintable = (lvl.version == "2")
+    paintable = (lvl.version == LEVEL_FORMAT_VERSION)
     if paintable:
         materials_from_tilemap(grid, lvl.version)   # validates codes (raises)
         overlay_codes = grid     # alias: paint edits show in the overlay live
@@ -620,7 +620,7 @@ def main() -> None:
             x = 8
             for pid in PALETTE_ORDER:
                 pname, c = PALETTE[pid]
-                label = (f"9 {pname}" if pid == SPACE_CODE
+                label = (f"{SPACE_KEY} {pname}" if pid == SPACE_CODE
                          else f"{pid} {pname}")
                 chip = (rl.Color(c[0], c[1], c[2], 255) if c is not None
                         else rl.Color(70, 70, 76, 255))

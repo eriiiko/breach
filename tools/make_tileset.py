@@ -10,7 +10,7 @@ The material set is DERIVED from ``src/simulation/materials.py``
 (``MATERIAL_NAMES``) at runtime — this tool carries no material vocabulary
 of its own (engine/15 §1 rule). A brand-new material (one config row) gets a
 readable fallback wall automatically. The one non-material tilemap code,
-SPACE (``level_loader.SPACE_CODE`` = 9), bakes fully transparent and is
+SPACE (``level_loader.SPACE_CODE`` = -1), bakes fully transparent and is
 declared in the manifest's ``[special.space]`` table.
 
 Piece-index convention — "edge16" autotiling

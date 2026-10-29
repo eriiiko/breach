@@ -278,7 +278,8 @@ from level_lib import (WATER_FILENAME, color_255, format_light_lines,  # noqa: F
                        format_spawn_lines, format_water_lines, write_lights,
                        write_spawns, write_water)
 from simulation.factions import ZOMBIE_TEAM
-from level_loader import (SPACE_CODE, ZONE_CLASSES, BOUNDARY_MODES,
+from level_loader import (LEVEL_FORMAT_VERSION, SPACE_CODE, ZONE_CLASSES,
+                          BOUNDARY_MODES,
                           EntityInstance, SpawnEntry)
 from level_lights import beacon_angle
 from simulation import water_fixed
@@ -288,7 +289,7 @@ from bake_level_art import (BIT_E, BIT_N, BIT_S, BIT_W, DEFAULT_PX_PER_TILE,
                             DEFAULT_TILESET, bake_full, bake_level,
                             bake_region, compute_bake_replacements,
                             edge16_mask, load_tileset)
-from level_edit_common import (BRUSH_MAX, BRUSH_MIN,
+from level_edit_common import (BRUSH_MAX, BRUSH_MIN, SPACE_KEY, palette_key,
                                art_px_to_tile, brush_rect, build_palette,
                                enclosure_fill_region, line_tiles, paint_tiles,
                                region_touches_border, same_code_region,
@@ -488,7 +489,7 @@ def create_level(level_dir, width: int, height: int, *, name=None,
                  px_per_tile: int = DEFAULT_PX_PER_TILE,
                  seed: int = 0) -> dict:
     """Create a level folder from scratch (engine/15 §5 NEW): scaffold
-    tilemap.csv + a minimal v2 level.toml, then run a full bake — the baker
+    tilemap.csv + a minimal v3 level.toml, then run a full bake — the baker
     writes the [art.bare]/[art.align]/[bake] blocks and the PNGs, so the
     fresh folder is immediately loadable by level_loader (which requires
     art) and re-bakeable as recorded. Refuses to clobber an existing
@@ -500,16 +501,15 @@ def create_level(level_dir, width: int, height: int, *, name=None,
             f"of 'new'")
     grid = scaffold_grid(width, height)
     level_dir.mkdir(parents=True, exist_ok=True)
-    csv = "\n".join(",".join(str(int(v)) for v in row)
-                    for row in grid.tolist()) + "\n"
-    (level_dir / "tilemap.csv").write_bytes(csv.encode("ascii"))
+    level_lib.write_tilemap_csv(level_dir, grid, csv_bak=False)
     display = str(name) if name else level_dir.name
     toml = (
         "# created by tools/map_editor.py (engine/15 §5 NEW)\n"
-        'version = "2"\n'
+        f'version = "{LEVEL_FORMAT_VERSION}"\n'
         f'name = "{display}"\n'
         "\n"
-        "# v2 codes ARE canon material ids (src/simulation/materials.py)\n"
+        f"# v{LEVEL_FORMAT_VERSION} codes ARE canon material ids "
+        f"(src/simulation/materials.py); {SPACE_CODE} = SPACE\n"
         'tilemap = "tilemap.csv"\n'
         "\n"
         "tile_size_m = 0.333\n")
@@ -792,7 +792,7 @@ def water_solid_codes(cfg=None) -> frozenset:
     boundary). NEVER the tileset manifest's ``wall_family_codes`` — that is
     art-connectivity data, equal today by coincidence; a future
     opaque-but-permeable grill would silently diverge the fill boundary
-    from the solver's. SPACE_CODE (9) is NOT a material id and is never in
+    from the solver's. SPACE_CODE (-1) is NOT a material id and is never in
     this set — callers handle it explicitly (see :func:`water_open_mask`)
     before any fancy-indexing of the table."""
     tbl = MaterialTable.from_config(cfg)
@@ -989,10 +989,10 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                seed_override=None, auto: bool = False) -> None:
     handle = level_lib.open_level(str(level_name))
     lvl = handle.data
-    if lvl.version != "2":
+    if lvl.version != LEVEL_FORMAT_VERSION:
         raise SystemExit(
-            f"map_editor speaks level format v2 only; {level_name} is "
-            f"v{lvl.version} (migrate first)")
+            f"map_editor speaks level format v{LEVEL_FORMAT_VERSION} only; "
+            f"{level_name} is v{lvl.version} (migrate first)")
     bake_tbl = lvl.raw_toml.get("bake")
     if not isinstance(bake_tbl, dict) or not bake_tbl:
         raise SystemExit(
@@ -1367,12 +1367,12 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             show_all_wires = not show_all_wires
 
         # Material palette keys — GENERATED from the material table: the
-        # number key IS the material id (SPACE on 9). Ids past 8 have no key
-        # (eyedropper reaches them).
+        # number key IS the material id (SPACE on SPACE_KEY, 9). Ids from 9
+        # up have no key (eyedropper reaches them).
         if not typing:
             for pid in palette_order:
-                digit = 9 if pid == SPACE_CODE else int(pid)
-                if 0 <= digit <= 9 and (
+                digit = palette_key(pid)
+                if digit is not None and (
                         rl.is_key_pressed(K.KEY_ZERO + digit)
                         or rl.is_key_pressed(K.KEY_KP_0 + digit)):
                     selected_id = pid
@@ -3328,7 +3328,7 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                 if pid == selected_id:
                     rl.draw_rectangle_lines_ex(
                         rl.Rectangle(pal.x + 8, py - 2, 18, 18), 2.0, rl.WHITE)
-                label = f"{9 if pid == SPACE_CODE else pid} {pname}"
+                label = f"{SPACE_KEY if pid == SPACE_CODE else pid} {pname}"
                 rl.draw_text(label, pal.x + 32, py, 14,
                              rl.WHITE if pid == selected_id
                              else rl.Color(*COL_TEXT_DIM))

@@ -281,11 +281,11 @@ def migrate_level(level_dir, *, dry_run: bool = False,
     # hard-errors the [[light]]+entity-light mix, naming this tool) --------
     handle = level_lib.open_level(str(level_dir))
     lvl = handle.data
-    if str(lvl.version) != "2":
+    if str(lvl.version) != level_loader.LEVEL_FORMAT_VERSION:
         raise ValueError(
             f"{level_dir}: level format version {lvl.version!r} — the "
-            f"painted-door rewrite is v2 CSV vocabulary; run "
-            f"tools/migrate_tilemap_v2.py first")
+            f"painted-door rewrite is v{level_loader.LEVEL_FORMAT_VERSION} CSV "
+            f"vocabulary; migrate the level first")
 
     raw_lights = lvl.raw_toml.get("light", [])
     runs = door_runs(lvl.tilemap)

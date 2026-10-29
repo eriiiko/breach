@@ -2,7 +2,9 @@
 
 Level format v2 (level_editor_and_format_v2_proposal §1.1): CSV codes ARE the
 canon material ids from ``src/simulation/materials.py``, plus the one reserved
-non-material code SPACE_CODE (9) = outer space (air + vacuum). This script
+non-material code SPACE (9; ``level_loader.V2_SPACE_CODE``) = outer space
+(air + vacuum) -- format v3 later moved it to -1 (tools/migrate_tilemap_v3.py,
+run after this one). This script
 retires the generator's room-type vocabulary in place:
 
     v1 code                          -> v2 code
@@ -38,7 +40,7 @@ for _p in (ROOT, ROOT / "src"):
 
 import numpy as np
 
-from level_loader import SPACE_CODE
+from level_loader import V2_SPACE_CODE as SPACE_CODE  # v2's SPACE (9)
 from simulation.materials import MAT_AIR, MAT_DOOR, MAT_HULL
 
 # v1 generator vocabulary -> v2 canon codes. Code 2 was the generator's

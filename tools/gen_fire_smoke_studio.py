@@ -147,8 +147,7 @@ HEADER_COMMENTS = (
     "fire; no lamps (the fire is the light); one HEPA vent loop (supply W,",
     "return E, in the side walls) draws a current over the fire.",
     "",
-    "v2 codes ARE canon material ids (src/simulation/materials.py):",
-    "  0=air 1=hull 6=furniture 9=SPACE",
+    *studio.CODE_LEGEND,
 )
 
 

@@ -27,7 +27,7 @@ Companion to docs/fire_tuning_plan_2026-07-22.md §2 (the model) + §5.2 (the
 first-principles single-crate numbers this bench confirms against).
 
 SCENARIO (isolates fire from O2 starvation, per Erik):
-  * PLANETSIDE boundary (boundary="ambient"): a SPACE(9) ring border becomes the
+  * PLANETSIDE boundary (boundary="ambient"): a SPACE (SPACE_CODE) ring border becomes the
     open-sky reservoir (GameMap.is_ambient), so the interior air stays oxygenated.
     Normal air: O2 = 0.21 (the Earth-normal ambient default; NOT enriched).
   * SKY-EXCHANGE AWARE (docs/sky_exchange_design_2026-07-24.md): the bench's
@@ -90,7 +90,9 @@ for _p in (ROOT, ROOT / "src",
 
 import breach_physics as bp                       # noqa: E402
 from config import CFG                            # noqa: E402
-from level_loader import LevelData                # noqa: E402
+from level_loader import (                        # noqa: E402
+    LEVEL_FORMAT_VERSION, SPACE_CODE, LevelData,
+)
 from simulation import Simulation                 # noqa: E402
 from simulation import fire_fixed                 # noqa: E402
 from simulation.gases import SMOKE, O2, INERT_N2  # noqa: E402
@@ -99,7 +101,8 @@ from simulation import gas_fixed                  # noqa: E402  (#88: the trace 
 FP_ONE = 1 << 16
 
 # Canon material ids == CSV codes (tools/gen_fire_studio.py, simulation.materials).
-AIR, HULL, WOOD, DOOR, STEEL, GLASS, FURN, SPACE = 0, 1, 2, 3, 4, 5, 6, 9
+AIR, HULL, WOOD, DOOR, STEEL, GLASS, FURN = 0, 1, 2, 3, 4, 5, 6
+SPACE = SPACE_CODE   # level format v3 (#27): outside the material ids
 # P-F4a: the CAMPFIRE REFERENCE OBJECT (docs/fire_realism_design_2026-08-01.md
 # v5.2's task order item 2) -- [materials.kindling], id 8 (simulation.materials
 # MAT_KINDLING). Bench-registered only; no shipped level paints it.
@@ -262,7 +265,7 @@ def build_level(interior_w, interior_h, crate_xy, tile_size_m,
     ambient = derive_ambient(sky_tau_s=float(sky_tau_s),
                              sponge_width=int(sponge_width))
     return LevelData(
-        name="fire_bench", version="2", path=Path("."),
+        name="fire_bench", version=LEVEL_FORMAT_VERSION, path=Path("."),
         tilemap=tm, tile_size_m=float(tile_size_m), diffuse_path=Path("."),
         boundary="ambient",   # planetside: SPACE ring -> ambient O2=0.21 reservoir
         ambient=ambient,      # EXPLICIT: turns the sky-exchange pass ON (tau>0)
