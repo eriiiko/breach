@@ -353,9 +353,10 @@ def main():
     # starts running. Byte-identical to the pre-P3 default under `wego`.
     debug_mode = _parse_debug_flag()
     control_source = create_control_source(_parse_control_flag(),
-                                           debug=debug_mode)
+                                           debug=debug_mode, level=level)
 
-    sim = Simulation(level, seed=42, breach_physics=bp,
+    sim = Simulation(level, seed=control_source.initial_seed(42),
+                     breach_physics=bp,
                      enable_recorder=True,
                      ruleset=control_source.initial_ruleset())
     sim.set_paused(control_source.starts_paused())
@@ -373,13 +374,16 @@ def main():
     # ----- Spawn units from level.toml [[spawn]] entries. Zero spawns is
     # legal: a unit-free physics-tuning sandbox (camera starts at 0,0;
     # marines()/zombies() handle empty rosters).
-    if not level.spawns:
+    # (`--control match` spawns its match.toml instead, #121.)
+    if control_source.spawn_units(sim, level):
+        pass
+    elif not level.spawns:
         print(f"  NOTE: level '{level.name}' has no [[spawn]] entries — "
               f"running as a unit-free physics sandbox")
-    for s in level.spawns:
-        sim.add_unit(Unit(s.name, x=s.x, y=s.y, team=s.team,
-                          footprint=s.footprint))
-    if level.spawns:
+    else:
+        for s in level.spawns:
+            sim.add_unit(Unit(s.name, x=s.x, y=s.y, team=s.team,
+                              footprint=s.footprint))
         print(f"  Spawned {len(level.spawns)} units from level.toml")
 
     # 2. Render config — borderless windowed at monitor resolution.
@@ -551,6 +555,7 @@ def main():
         n_warp = int(round(warp_s / sim_time_per_tick))
         for _ in range(n_warp):
             sim.set_paused(False)
+            control_source.on_tick(sim)
             sim.step()
         sim.set_paused(True)
         print(f"  --warp {warp_s:g} s: stepped {n_warp} ticks, paused")
@@ -607,6 +612,7 @@ def main():
                         # the ONE assembly, once per sim tick, for the engine
                         lit_rows = cone_rows_now()
                         sim.set_light(True, lit_rows, light_sky)
+                    control_source.on_tick(sim)
                     sim.step()
                     stepped = True
                     tick_accum -= sim_time_per_tick
