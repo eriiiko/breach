@@ -104,6 +104,24 @@ class ControlSource:
         direct control runs immediately (``False``)."""
         return True
 
+    def initial_seed(self, default: int) -> int:
+        """The sim seed main.py builds with (#121): ``default`` for every
+        human scheme; ``MatchObserver`` returns the match's seed."""
+        return default
+
+    def spawn_units(self, sim, level) -> bool:
+        """Spawn this scheme's units into the fresh ``sim`` and return True,
+        or return False to let main.py spawn the level's ``[[spawn]]``
+        entries (every human scheme). ``MatchObserver`` spawns the match."""
+        return False
+
+    def on_tick(self, sim) -> None:
+        """Called by main.py right before EVERY ``sim.step()`` (#121) — the
+        per-tick hook a scheme that drives units by the tick (the match
+        observer's controllers) uses, so the window plays the same ticks as
+        the headless runner. A no-op for every per-frame human scheme."""
+        return None
+
     @property
     def wants_renderer_toggles(self) -> bool:
         """May the RENDERER keep its own diagnostic key bindings (F1-F10, T,
@@ -139,8 +157,17 @@ class IdleControl(ControlSource):
 # from `_KNOWN_CONTROLS` below, which names the HUMAN schemes main.py's
 # --control flag picks between.
 # ---------------------------------------------------------------------------
+def _bots(team: int) -> "ControlSource":
+    """The rule-based bot team (#121, ``control_bots.BotTeam``, settings
+    ``config.toml [bots]``). Deferred import: control_bots pulls in the sim's
+    tables and the pathfinder, which importing this module must not."""
+    from control_bots import BotTeam
+    return BotTeam(team)
+
+
 _MATCH_CONTROLLERS: dict = {
     "idle": IdleControl,
+    "bots": _bots,
 }
 
 
@@ -174,10 +201,11 @@ def create_controller(name: str, team: int) -> "ControlSource":
 # point (AgentPolicy) is driven differently — it has no per-frame poll loop —
 # so it is not expected to route through this same factory; see the design doc
 # §3b.
-_KNOWN_CONTROLS = ("wego", "gamepad", "onephase")
+_KNOWN_CONTROLS = ("wego", "gamepad", "onephase", "match")
 
 
-def create_control_source(name: str, debug: bool = False) -> "ControlSource":
+def create_control_source(name: str, debug: bool = False,
+                          level=None) -> "ControlSource":
     """Factory for the ``--control`` launch flag (§3b).
 
     ``name`` must be one of :data:`_KNOWN_CONTROLS`: ``"wego"`` (today's
@@ -204,6 +232,13 @@ def create_control_source(name: str, debug: bool = False) -> "ControlSource":
         # Erik's kickoff ruling 2).
         from control_onephase import OnePhaseWEGOInput
         return OnePhaseWEGOInput(debug=debug)
+    if name == "match":
+        # #121: watch the level's match.toml — its controllers drive every
+        # team, once per sim tick (control_match.MatchObserver).
+        from control_match import MatchObserver
+        if level is None:
+            raise SystemExit("--control match needs the loaded level")
+        return MatchObserver(level)
     raise SystemExit(
         f"--control must be one of {_KNOWN_CONTROLS!r}, got {name!r}")
 
