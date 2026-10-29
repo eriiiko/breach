@@ -3,9 +3,9 @@
 # Regenerate rather than hand-edit:
 #   C:/Users/steen/anaconda3/python.exe tools/gen_ship.py --seed 1 --size medium --max-per-team 6 --zombies 4 --vents
 #
-# v2 codes ARE canon material ids (src/simulation/materials.py):
-#   0=air 1=hull 2=wood 3=door 4=steel 5=glass 6=furniture 9=SPACE
-version = "2"
+# v3 codes ARE canon material ids (src/simulation/materials.py):
+#   0=air 1=hull 2=wood 3=door 4=steel 5=glass 6=furniture -1=SPACE
+version = "3"
 name = "ship_s1_medium"
 
 tilemap = "tilemap.csv"

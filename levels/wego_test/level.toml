@@ -15,7 +15,7 @@
 # Launch:
 #   python main.py --level wego_test --control onephase
 #   python main.py --level wego_test --control onephase --debug   # dev keys
-version = "2"
+version = "3"
 name = "wego_test"
 
 tilemap = "tilemap.csv"

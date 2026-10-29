@@ -31,7 +31,7 @@
 # Launch:  conda run -n data python main.py --level airlock_demo
 # Keys:    O toggle door under cursor | J gas | U water | I ignite | F6 HUD
 
-version = "2"
+version = "3"
 name = "airlock_demo"
 
 tilemap = "tilemap.csv"

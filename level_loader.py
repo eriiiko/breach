@@ -66,11 +66,26 @@ from simulation.match import (  # noqa: E402
 MATCH_FILENAME = "match.toml"
 
 
-SUPPORTED_VERSIONS = {"1", "2"}
+#: The level format this loader reads (level format v3, 2026-10-29, Erik's
+#: ruling "rows suffice; design for 127 materials"). Every writer stamps it.
+LEVEL_FORMAT_VERSION = "3"
+SUPPORTED_VERSIONS = {LEVEL_FORMAT_VERSION}
+#: Older formats :func:`load` REFUSES, naming the tool that migrates each one
+#: (``materials_from_tilemap`` still decodes them, for the migration tools).
+LEGACY_VERSIONS = {
+    "1": "tools/migrate_tilemap_v2.py, then tools/migrate_tilemap_v3.py",
+    "2": "tools/migrate_tilemap_v3.py",
+}
 
-# v2 CSV vocabulary (level format v2 §1.1): codes ARE canon material ids from
-# ``simulation.materials``, plus exactly ONE reserved non-material code:
-SPACE_CODE = 9   # SPACE — MAT_AIR + is_vacuum (the one thing that isn't a material)
+# v3 CSV vocabulary: codes ARE canon material ids from ``simulation.materials``
+# (rows, unbounded up to the int8 material plane's MATERIAL_ID_MAX), plus
+# exactly ONE reserved non-material code OUTSIDE the id range:
+SPACE_CODE = -1  # SPACE — MAT_AIR + is_vacuum (the one thing that isn't a material)
+#: v2's space code — it sat INSIDE the id range (== MAT_FOLIAGE), which is why
+#: v3 exists. Read only by the v2 branch of :func:`materials_from_tilemap`.
+V2_SPACE_CODE = 9
+#: The largest material id the int8 ``gmap.material`` plane can hold.
+MATERIAL_ID_MAX = int(np.iinfo(np.int8).max)
 
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
@@ -1083,6 +1098,13 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
         raw = tomllib.load(f)
 
     version = str(raw.get("version", "")).strip()
+    if version in LEGACY_VERSIONS:
+        raise ValueError(
+            f"{toml_path}: level format v{version} is no longer read (the "
+            f"tilemap CSV vocabulary changed in v{LEVEL_FORMAT_VERSION}: SPACE "
+            f"is {SPACE_CODE}, no longer {V2_SPACE_CODE}). Migrate it with "
+            f"{LEGACY_VERSIONS[version]}"
+        )
     if version not in SUPPORTED_VERSIONS:
         raise ValueError(
             f"Unsupported level.toml version '{version}'. "
@@ -1368,15 +1390,22 @@ def _parse_match_file(base: Path, spawn_rooms: list):
 def materials_from_tilemap(tilemap: np.ndarray, version: str):
     """Translate CSV tile values into material grid + vacuum mask.
 
-    Returns (material, is_vacuum) — both (H, W) numpy arrays. ``version`` is
-    the level.toml format version (``LevelData.version``); the CSV *vocabulary*
-    depends on it, so callers must thread it through.
+    Returns (material, is_vacuum) — both (H, W) numpy arrays, material int8.
+    ``version`` is the level.toml format version (``LevelData.version``); the
+    CSV *vocabulary* depends on it, so callers must thread it through.
 
-    **version "2" (canon, level format v2 §1.1): codes ARE material ids** from
-    :mod:`simulation.materials` — read literally, no translation — plus exactly
-    one reserved non-material code, :data:`SPACE_CODE` (9) = outer space
-    (MAT_AIR + ``is_vacuum``). Any other value is a hard ValueError: a v2 CSV
-    never carries silent garbage.
+    **version "3" (canon, 2026-10-29): codes ARE material ids** from
+    :mod:`simulation.materials` — read literally, no translation, any id up to
+    :data:`MATERIAL_ID_MAX` (the int8 plane) — plus exactly one reserved
+    non-material code OUTSIDE the id range, :data:`SPACE_CODE` (-1) = outer
+    space (MAT_AIR + ``is_vacuum``; -1 is never written into the material
+    plane). Any other value is a hard ValueError: a CSV never carries silent
+    garbage.
+
+    **version "2" (legacy; read only by** ``tools/migrate_tilemap_v3.py`` **and
+    hand-built in-memory LevelData)** — the same, except SPACE is
+    :data:`V2_SPACE_CODE` (9), which collides with ``MAT_FOLIAGE``.
+    :func:`load` refuses a v2 level on disk.
 
     **version "1" (legacy generator vocabulary)** — kept bit-exact for old
     levels; codes are distinct from material ids:
@@ -1391,7 +1420,8 @@ def materials_from_tilemap(tilemap: np.ndarray, version: str):
 
     ``tools/migrate_tilemap_v2.py`` converts a v1 level in place (0->9, 1->1,
     3->3, 2/4..8->0 — code 2 was the generator's *floor*, retired as the
-    "generator floor vs MAT_WOOD wall" landmine).
+    "generator floor vs MAT_WOOD wall" landmine); ``tools/migrate_tilemap_v3.py``
+    then converts v2 -> v3 (9 -> -1).
     """
     from simulation.materials import (
         MAT_AIR, MAT_HULL, MAT_WOOD, MAT_DOOR, MATERIAL_NAMES,
@@ -1404,21 +1434,27 @@ def materials_from_tilemap(tilemap: np.ndarray, version: str):
         material[tilemap == 3] = MAT_DOOR
         is_vacuum = (tilemap == 0)
         return material, is_vacuum
-    if version == "2":
-        allowed = set(MATERIAL_NAMES) | {SPACE_CODE}
+    if version in ("2", "3"):
+        space = V2_SPACE_CODE if version == "2" else SPACE_CODE
+        ids = {int(m) for m in MATERIAL_NAMES}
+        over = sorted(m for m in ids if not 0 <= m <= MATERIAL_ID_MAX)
+        if over:
+            raise ValueError(
+                f"material ids {over} do not fit the int8 material plane "
+                f"(0..{MATERIAL_ID_MAX})")
+        allowed = ids | {space}
         bad = sorted(int(c) for c in np.unique(tilemap) if int(c) not in allowed)
         if bad:
             raise ValueError(
-                f"v2 tilemap contains unknown codes {bad}; valid codes are "
-                f"material ids {sorted(MATERIAL_NAMES)} + {SPACE_CODE} (SPACE)"
+                f"v{version} tilemap contains unknown codes {bad}; valid codes "
+                f"are material ids {sorted(ids)} + {space} (SPACE)"
             )
-        is_vacuum = (tilemap == SPACE_CODE)
-        material = tilemap.astype(np.int8, copy=True)
-        material[is_vacuum] = MAT_AIR
+        is_vacuum = (tilemap == space)
+        material = np.where(is_vacuum, MAT_AIR, tilemap).astype(np.int8)
         return material, is_vacuum
     raise ValueError(
         f"materials_from_tilemap: unsupported tilemap version {version!r}; "
-        f"supported: {sorted(SUPPORTED_VERSIONS)}"
+        f"supported: {sorted(SUPPORTED_VERSIONS | set(LEGACY_VERSIONS))}"
     )
 
 

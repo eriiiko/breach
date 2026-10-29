@@ -638,6 +638,81 @@ def write_boundary_field(toml_path, boundary: str, *,
     return bak
 
 
+_VERSION_LINE_RE = re.compile(r'^\s*version\s*=\s*"([^"]*)"\s*(#.*)?$')
+
+
+def write_version_field(toml_path, version: str, *, write_bak: bool = False):
+    """Set the top-level ``version`` scalar of an EXISTING level.toml — the
+    format-migration tools' version bump (``tools/migrate_tilemap_v3.py``).
+
+    Like :func:`write_boundary_field` (a bare top-level key, not a managed
+    table): exactly ONE ``version = "..."`` line must exist and is replaced in
+    place, keeping any trailing comment; every other byte is untouched, the
+    same atomic temp + ``os.replace`` write. ``version`` must be a format the
+    loader knows (:data:`level_loader.SUPPORTED_VERSIONS` or a legacy one).
+    Returns the ``.bak`` path, or ``None``."""
+    version = str(version)
+    known = (set(level_loader.SUPPORTED_VERSIONS)
+             | set(level_loader.LEGACY_VERSIONS))
+    if version not in known:
+        raise ValueError(f"version must be one of {sorted(known)}, "
+                         f"got {version!r}")
+    toml_path = Path(toml_path)
+    original = toml_path.read_bytes()
+    text = original.decode("utf-8")
+    out = text.splitlines(keepends=True)
+    # Top level only: the lines before the first table header.
+    top = next((i for i, line in enumerate(out)
+                if _TABLE_HEADER_RE.match(line)), len(out))
+    hits = [i for i, line in enumerate(out[:top])
+            if _VERSION_LINE_RE.match(line)]
+    if len(hits) != 1:
+        raise ValueError(f"{toml_path}: expected exactly one top-level "
+                         f"'version = \"...\"' line, found {len(hits)}")
+    i = hits[0]
+    line = out[i]
+    body = line.rstrip("\r\n")
+    ending = line[len(body):]
+    m = _VERSION_LINE_RE.match(body)
+    out[i] = body[:m.start(1)] + version + body[m.end(1):] + ending
+    bak = None
+    if write_bak:
+        bak = Path(str(toml_path) + ".bak")
+        bak.write_bytes(original)
+    _atomic_write_bytes(toml_path, "".join(out).encode("utf-8"))
+    return bak
+
+
+def rewrite_header_comments(toml_path, fix, *, write_bak: bool = False):
+    """Apply ``fix(str) -> str`` to every COMMENT line (``#`` first) above
+    level.toml's first table header — the format migrations' legend update
+    (a v2 file's "9=SPACE" legend must not survive into v3). Nothing else is
+    touched: non-comment lines, everything from the first table on, newline
+    style. Same atomic write. Returns the number of lines changed (no write
+    when 0) and the ``.bak`` path or ``None``."""
+    toml_path = Path(toml_path)
+    original = toml_path.read_bytes()
+    out = original.decode("utf-8").splitlines(keepends=True)
+    changed = 0
+    for i, line in enumerate(out):
+        if _TABLE_HEADER_RE.match(line):
+            break
+        if not line.lstrip().startswith("#"):
+            continue
+        body = line.rstrip("\r\n")
+        new = fix(body)
+        if new != body:
+            out[i] = new + line[len(body):]
+            changed += 1
+    bak = None
+    if changed:
+        if write_bak:
+            bak = Path(str(toml_path) + ".bak")
+            bak.write_bytes(original)
+        _atomic_write_bytes(toml_path, "".join(out).encode("utf-8"))
+    return changed, bak
+
+
 def write_level_header(level_dir, *, name: str, tile_size_m: float,
                        tilemap_rel: str = "tilemap.csv",
                        diffuse_rel: str = "diffuse.png",
@@ -662,7 +737,7 @@ def write_level_header(level_dir, *, name: str, tile_size_m: float,
                          f"only scaffolds a NEW level")
     lines = [f"# {c}".rstrip() + "\n" for c in comment_lines]
     lines += [
-        'version = "2"\n',
+        f'version = "{level_loader.LEVEL_FORMAT_VERSION}"\n',
         f"name = {_fmt_value(str(name))}\n",
         "\n",
         f"tilemap = {_fmt_value(str(tilemap_rel))}\n",
