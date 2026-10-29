@@ -295,7 +295,281 @@ see strand (b) for how that combines with the rigid hull.
 
 ## (b) Embedding a planar room graph into a tile ship
 
-*(in progress)*
+The problem, stated in Breach's terms: given the grammar's graph (nodes with
+L9 footprint hints and shape classes; edges with adjacency strength
+`must-share-wall` | `may-become-corridor` | `routed-freely`), produce
+axis-aligned room rectangles inside a **rigid hull** such that every door
+edge is a shared wall at least `DOOR_W` (+ clearance) long, the result is
+left-right mirrored, and the v1 gates (`validate`: airtight, A*, reach,
+symmetry) pass. The literature splits into three families: **layout by
+search over room shapes** (Ma, Nepožitek/Edgar, Gungeon), **subdivision of a
+given envelope** (floor-plan literature, BSP/treemaps), and **constraint
+solving** (ASP, WFC). Breach's rigid hull puts it in the second family; the
+first is right for station fragments.
+
+### Sources
+
+**B1. Ma, Vining, Lefebvre & Sheffer 2014, "Game level layout from design
+specification"** (Computer Graphics Forum 33(2):95–104, Eurographics 2014,
+DOI 10.1111/cgf.12314). FULL, archived (author preprint).
+Input: a planar connectivity graph + a set of polygonal building blocks.
+Output: many layouts where blocks don't intersect and every graph edge is a
+shared boundary segment "long enough to place a doorway through". Two tools:
+(1) **configuration spaces** — for a fixed block and a moving one, the set
+of positions where they touch along a parallel edge and don't overlap is a
+union of line segments, precomputed per block pair; the configuration space
+w.r.t. several placed neighbours is the intersection. (2) **chain
+decomposition** — chains (nodes with ≤ 2 neighbours) are easy; decompose
+the graph via a planar embedding into faces, lay out *the smallest face
+first*, then neighbouring faces, then trees breadth-first; each chain is
+added by simulated annealing that emits *several* extended layouts and
+**backtracks** to a stored partial layout when an extension fails. The
+paper's related-work section is the useful map for Breach: graph drawing
+"scale the drawing until blocks no longer touch" is easy but **the contact
+requirement is what makes it hard**; architectural floor-plan methods work
+"for predefined envelopes, rooms are composed of axis-aligned walls, and no
+unoccupied voids are allowed between rooms" — Ma deliberately leaves that
+setting, and the general rectangles-in-a-rectangle version is PSPACE-complete
+(Hopcroft, Schwartz & Sharir 1984).
+*Matters to Breach:* this is the canonical answer for *loose* archetypes
+(station fragments, wrecks) where voids are vacuum and there is no hull to
+fill. It does not fill a hull.
+
+**B2. Nepožitek & Gemrot, "Fast configurable tile-based dungeon level
+generator"** (Charles University; open-source as Edgar). FULL, archived.
+Ma on an integer grid with rectilinear polygons: ">100×" faster, layouts in
+< 1 s. Adds what Breach needs from Ma: **explicit door positions per room
+template** (the configuration-space generator works from declared door
+positions — a *port* list), **hard and soft custom constraints** ("make sure
+that the whole layout does not exceed some defined boundaries" = a hull
+bound), and **short corridors as a second configuration space** (rooms a
+fixed distance apart, corridors greedily inserted) instead of corridor
+nodes, because corridor nodes "almost twice as many nodes ... slows the
+generation down". Edgar's docs: "not suitable for large levels — we
+recommend less than 30 rooms"; "Cycles are very hard to lay out so make sure
+that there are not too many of them"; give dead-end-only templates only to
+degree-1 nodes.
+*Matters to Breach:* the port declaration and the hull-bound constraint are
+the two features to copy whatever embedder is chosen; the < 30 rooms and
+few-cycles limits are a warning against using search-based layout for ships.
+
+**B3. Enter the Gungeon** (via A9). FULL (web).
+Pre-authored rooms with **exits** (ports); split the flow graph into **loop
+composites** (repeatedly cut out the smallest loop) and **tree
+composites**; trees placed depth-first by aligning an exit pair, preferring
+exits far from used ones; loops grown alternately from both ends, preferring
+opposite walls early and pairs that close the gap later; a loop is closed by
+a small rectangular room or, failing that, a **pathfound corridor** (4–30
+units); tree failures backtrack up to 3 times. "Generate the parts of the map
+that are hardest / most important first."
+*Matters to Breach:* the industrial version of B1/B2 — and the source of
+the three rules any Breach embedder should adopt: cycles before trees,
+hardest/mandatory first, corridor as the loop-closing escape valve (= L9
+`may-become-corridor`).
+
+**B4. Unexplored's grid embedding** (A4). FULL (web).
+Topology on a fixed grid graph; embed by doubling the grid (connector cells
+between nodes), scaling 5× and shaping each block (rectangle with boundary
+wall, CA for caves, door shrunk to one tile). Embedding cannot fail because
+the topology was never allowed off the grid.
+*Matters to Breach:* the strongest guarantee available, at the cost of a
+uniform cell size. A ship can recover non-uniform room sizes by letting one
+graph node own *several* grid cells (a 2×1 cargo bay), which is exactly what
+a slicing tree produces (B6).
+
+**B5. Spelunky** (Kazemi's interactive write-up of Derek Yu's generator,
+parts 1–2). FULL (web).
+A 4×4 grid of rooms; a random-walk **solution path** that assigns each room
+a *type by its guaranteed exits* (0: none; 1: L/R; 2: L/R/bottom; 3: L/R/top);
+each type has 8–16 **10×8 tile templates** with probabilistic tiles and 5×3
+obstacle chunks; rooms randomly mirrored. Solvability comes from the path,
+not from search.
+*Matters to Breach:* rooms typed by their port set, templates per type,
+re-rollable probabilistic tiles — the minimal prefab system (#133). The
+"type by guaranteed exits" idea is how a prefab declares which graph degree
+it can serve (B2's dead-end advice in another form).
+
+**B6. Floor-plan subdivision of a fixed envelope.**
+- **Mirahmadi & Shami 2012, "A novel algorithm for real-time procedural
+  generation of building floor plans"** (arXiv 1211.5842). FULL, archived.
+  Rectangular outline; rooms arranged in a **hierarchy tree** by function
+  (outside → living → kitchen …; social / service / private areas); the
+  outline is divided by a **squarified treemap** with room areas drawn from
+  per-function distributions ("divide a region of space into several smaller
+  regions with predefined area without any unused space"); then the
+  required connections that are not contacts get a **corridor routed along
+  the room walls**: build a graph of the walls of the rooms needing
+  connection (outer walls excluded), prune degree-1 edges, take the shortest
+  path through it, carve it from the rooms. Corridor area is "wasted area"
+  and is minimised.
+- **Marson & Musse 2010, "Automatic real-time generation of floor plans
+  based on squarified treemaps algorithm"** (Int. J. Computer Games
+  Technology, DOI 10.1155/2010/624817). ABS (open access, but the PDF did
+  not download here). The treemap method B6a extends.
+- **Merrell, Schkufza & Koltun 2010, "Computer-generated residential
+  building layouts"** (ACM TOG 29(6), SIGGRAPH Asia; DOI
+  10.1145/1882261.1866203, from memory — verify). FULL (Princeton course copy, 9 MB, linked).
+  A Bayesian network (trained on 120 real programs) expands requirements
+  into an *architectural program* (rooms, areas, aspect ratios, which pairs
+  connect); a Metropolis optimiser realises it from "a canonical high-cost
+  configuration, in which equally-sized rectangular rooms are packed on a
+  grid", with two **proposal moves: slide a wall segment** (split + move,
+  snap to nearby walls) **and swap two rooms' identities**; cost terms:
+  *accessibility* (each required connection must share a sufficient wall),
+  area/aspect against the program's distributions, near-convex shapes,
+  floor-to-floor compatibility. ~35 s per house.
+- **Lopes, Tutenel, Smelik, de Kraker & Bidarra 2010, "A constrained growth
+  method for procedural floor plan generation"** (GAME-ON 2010). ABS (TU
+  Delft server unreachable today; listed for retry). Rooms *grown* from
+  seeds on a grid inside a given outline, with functional constraints, to
+  guarantee reachability and connectivity — the hull-as-input growth
+  variant the v0.1 doc lists as "incremental growth".
+*Matters to Breach:* this family is the one that fills a rigid hull with
+no voids — v0.1 §5's "hull as input". Breach v1's `plan_graph` is already a
+member (BSP of the wing, then a spanning tree over shared walls). The grammar
+version keeps the subdivision and **drives the cut tree from the grammar's
+nonterminal hierarchy** (SECTOR → ZONE → rooms), as Mirahmadi drives the
+treemap from the room hierarchy; Merrell's wall-slide/swap moves are the
+repair step; Mirahmadi's wall-graph corridor is the `may-become-corridor`
+realiser.
+
+**B7. Rectangular layouts and duals — the theory under B6.**
+**Buchsbaum, Gansner, Procopiuc & Venkatasubramanian 2008, "Rectangular
+layouts and contact graphs"** (ACM Trans. Algorithms; arXiv cs/0611107).
+FULL, archived.
+A *rectangular dual* tiles a rectangle with no gaps so that contacts are
+exactly the graph's edges; a *rectangular layout* allows gaps. Results that
+bound what any rectangle embedder can promise: a planar triangulation has a
+rectangular dual only if it has no separating triangles (Koźmiński &
+Kinnen); "the proscription of gaps ... severely limits the class of graphs
+that admit rectangular duals"; a planar graph admits a rectangular layout
+(gaps allowed) iff it has an embedding with **no filled triangles**
+(a 3-cycle with a vertex inside), checkable and constructible in O(n);
+minimum-area layout is NP-hard.
+*Matters to Breach:* three consequences. (i) Breach does **not** need a
+dual: a door edge must be a contact, but a contact need not be a door (two
+rooms may share a blank wall), and gaps are allowed (steel, service space,
+duct chases). So the requirement is the weaker one. (ii) The L4 moves keep
+the graph **triangle-free** provided edge→cycle *replaces* A—B rather than
+keeping it alongside A—C—B (subdivision and cycle insertion create cycles of
+length ≥ 4; leaf attachment creates none) — and a triangle-free planar graph
+has no filled triangle, so a rectangular layout always exists. That is a
+one-line rule for the vocabulary (#27) worth writing down: *no rule may
+create a 3-cycle of door edges*, or, if one is wanted (three rooms meeting
+at a corner), it must be realised as a prefab. (iii) Area is the hard part,
+not existence: a hull of fixed size can always fail to fit; the reroll
+policy (L8) is the honest answer.
+
+**B8. Constraint solving: ASP and WFC.**
+- **Nelson & Smith, "ASP with applications to mazes and levels"**, PCG
+  book ch. 8 (DOI 10.1007/978-3-319-42716-4_8). FULL (linked). The
+  method: *choice rules* define a design space, *integrity constraints* cut
+  it, recursive rules express reachability (the perfect-maze example
+  enforces "the root is reachable from every tile"). Solvers return valid
+  maps or prove none exist.
+- **Smith & Mateas 2011, "Answer set programming for procedural content
+  generation: a design space approach"** (IEEE TCIAIG 3(3):187–200, DOI
+  10.1109/TCIAIG.2011.2158545). ABS (the author copy online is a 4-page
+  excerpt). PAY for the full text.
+- **Smith, Padget & Vidler 2018, "Graph-based generation of action-adventure
+  dungeon levels using answer set programming"** (FDG 2018, DOI
+  10.1145/3235765.3235817). ABS (Bath repository 403 today). Acyclic dungeon
+  graphs with lock-and-key constraints solved in ASP, with expressive-range
+  analysis.
+- **Karth & Smith 2017, "WaveFunctionCollapse is constraint solving in the
+  wild"** (FDG 2017, DOI 10.1145/3102071.3110566). FULL, archived. WFC is a
+  greedy, non-backtracking CSP search with a minimum-remaining-values
+  ("lowest entropy") heuristic and global restart on contradiction; adding a
+  *global* constraint makes restart-only WFC fail where a backtracking ASP
+  solver succeeds; reachability is the global constraint level designers
+  will want, and practice (Caves of Qud) "uses a multi-pass approach that
+  adds doorways and connections after WFC runs to ensure connectivity".
+*Matters to Breach:* ASP is the right tool for a *small* combinatorial
+sub-problem with hard constraints — e.g. placing the furniture and fuel
+clusters of one room so they don't block a door and a 3×3 unit can still
+cross it — not for the whole ship (solver time is unpredictable; and L7's
+"(ruleset hash, seed) → map" would also have to pin the solver version).
+WFC belongs **inside** a room (decoration, wrecked sections, the CA/WFC
+shape classes of L9), never across room boundaries, because it cannot hold
+the graph's global constraints.
+
+**B9. Dead Cells** (A10) — concept graph + hand-made rooms by
+try-until-match on entrances; and **Tanagra** (A17, PAY) — constraint
+solver for geometry under a reactive planner, mixed-initiative. Both
+confirm the split "graph by rules, geometry by a solver or a template
+pool"; neither handles a hull.
+
+### How the families handle Breach's three hard requirements
+
+| | mandatory room set | rigid hull | mirror symmetry |
+|---|---|---|---|
+| Ma / Edgar (B1, B2) | yes (graph is input) | only as a bound constraint; leaves voids | not supported |
+| Gungeon (B3) | yes (flow is input) | no | no |
+| Unexplored grid (B4) | yes | grid = hull | trivial on a symmetric grid |
+| Treemap / BSP (B6) | yes (leaves are assigned) | **yes, fills it** | **yes: subdivide one half, reflect** (gen_ship v1) |
+| Merrell (B6) | yes (program) | yes (footprint) | not addressed |
+| ASP (B8) | yes (constraint) | yes (constraint) | yes (constraint) — at solver cost |
+
+### Recommendation for Breach (strand b): the stage-2 pipeline
+
+Ships: **hull as input, subdivision as the layout algorithm, search only as
+repair.** Concretely, for the embedding session:
+
+1. **Hull.** A rectilinear hull polygon from a small silhouette library
+   (rectangle first — v1 already has one — then rectangle-with-notches,
+   tapered bow as steps). Decompose it into a few rectangles (the bow, the
+   midbody, the stern) which become the top level of the cut tree. Hull
+   silhouettes are art-directed data; the gates already check airtightness.
+   (B6; v0.1 §5 "hull as input"; Merrell's footprint.)
+2. **Embed half, reflect.** Lay out the port wing and the axis band only,
+   reflect (gen_ship v1 does this; no other method in the literature offers
+   symmetry as cheaply). The grammar should therefore run on the **quotient
+   graph** — wing rooms + axis rooms — and every rule applied to a wing
+   node is applied to its twin by construction.
+3. **Cut tree from the grammar.** The nonterminal hierarchy (L4 / §4.1:
+   SECTOR → ZONE → rooms) *is* the slicing tree: each SECTOR gets a hull
+   rectangle by area (treemap with the L9 footprint hints as weights), each
+   ZONE a sub-rectangle, each room a leaf. Children are laid out along the
+   cut in the order of the graph's chains (B1: chains are easy) so
+   consecutive siblings share a wall. Adjacency constraints from strand (d)
+   (bridge forward, engineering aft, airlock on the hull) pin which side of
+   a cut a child goes. (B6 Mirahmadi/Marson; B1 chains.)
+4. **Rooms are axis-aligned rectangles; an L-shape is two leaves of one
+   node.** One-tile steel walls between leaves, as in v1. Mandatory and
+   prefab rooms are placed **first**, at their fixed footprint, and the
+   treemap fills around them. (B2, B3 "hardest first".)
+5. **Doors on shared walls.** A `must-share-wall` edge is realised on the
+   shared wall segment, at an offset inside both rooms' *port ranges* (a
+   prefab declares its ports — side + offset interval, B2/B5; a parametric
+   room's port range is its whole wall minus corner clearance). An airlock
+   pair (L5) is a prefab with exactly two ports.
+6. **Repair before reroll.** If a `must-share-wall` edge is not a contact
+   (or too short for `DOOR_W`), run a few **Merrell moves** (slide a cut,
+   swap two leaf identities — mirrored) with cost = missing contacts +
+   footprint deviation (B6 Merrell). If it still fails and the edge is
+   `may-become-corridor`, carve a corridor from the cheaper neighbour along
+   the **wall graph** (B6 Mirahmadi) and record it as a corridor node in the
+   as-built graph (v0.1 §3 step 6). Otherwise reroll the seed (L8; v1's
+   `MAX_ATTEMPTS`; Metazelda's `RetryException`, A8).
+7. **Corridors are rooms (nodes), not edges.** They carry gas volume,
+   chokepoints, sensors and spawn tags; the grammar's edge subdivision makes
+   them (L4 move 1). Nepožitek's objection (corridor nodes slow the search,
+   B2) applies to search embedders, not to a subdivision embedder. The
+   as-built graph then contains only rooms (incl. corridors) and openings.
+8. **Interiors by shape class.** Inside each leaf: prefab (template with
+   probabilistic tiles, B5), parametric, CA for wrecks, WFC for decoration —
+   all confined to the leaf so they cannot break the graph (B8).
+9. **Vents are not routed today.** In the current engine a duct is an
+   abstract plenum entity and a vent is a wall-mounted entity (`gen_ship`
+   `_build_vents`); there is no duct tile to route. L4's vent leash and the
+   L9 `routed-freely` class matter only if ducts become tiles; until then the
+   embedder's only vent duty is to find a wall site (as v1 does). This is a
+   finding for #134, not a literature result.
+10. **Station fragments use the other family.** No hull to fill, voids are
+    vacuum, `torn` edges dangle: Ma/Edgar chain layout with configuration
+    spaces and backtracking (B1, B2) — with Edgar's < 30 rooms and
+    few-cycles limits respected.
+
 
 ---
 
