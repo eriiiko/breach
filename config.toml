@@ -3299,6 +3299,22 @@ grenades = 2
 explosives = 2
 
 # ---------------------------------------------------------------------------
+# Bot team (#121) — the rule-based match controller `bots`
+# (src/control_bots.py). Distances are in TILES (squared-integer compares on
+# centre tiles; at the 0.333 m tiles of ship_demo / the playground a marine's
+# footprint is 3 tiles); every key is required (bot_settings refuses a
+# missing or mistyped one). Read once when a BotTeam is built.
+# ---------------------------------------------------------------------------
+[bots]
+replan_ticks = 24            # A* replan cadence while advancing (1 s @ 24 tps); also on arrival / a new goal
+group_radius = 6             # enemies within this of each other are a grenade group (formation pitch is 5)
+danger_radius = 8            # no frag if self or a teammate is this close to the group centre (blast radius 2 + margin)
+grenade_cooldown_s = 4.0     # per bot, between two throws
+fallback_hp_frac = 0.5       # below this fraction of vitality ...
+fallback_r = 15              # ... with no living teammate within this many tiles -> fall back home
+friendly_line_tiles = 12     # hold fire if a teammate stands on the line of fire within this many tiles
+
+# ---------------------------------------------------------------------------
 # Environment profiles (#119) — suits, one row per profile, over the
 # EnvironmentProfile dataclass (src/simulation/environment.py): a row names
 # any subset of its fields and an absent field takes the dataclass default;

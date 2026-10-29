@@ -854,15 +854,19 @@ class Simulation:
         self._possessed_ids.add(unit_id)
 
     def throw_grenade_intent(self, unit_id: int, dx_q: int, dy_q: int,
-                             fuse_seconds: float) -> None:
+                             fuse_seconds: float,
+                             reach_q: int | None = None) -> None:
         """THROW: latch a grenade lob along a Q16.16 unit vector (§3c). Consumed
         (and cleared) at the next tick; ignored if the unit is out of
-        grenades then."""
+        grenades then. ``reach_q`` (#121) is the lob distance in Q16.16
+        tiles, clamped to the hand grenade's ``max_throw_range`` at
+        consumption; ``None`` keeps the fixed v0.1 reach (the gamepad)."""
         u = self.get_unit(unit_id)
         if u is None:
             return
-        u.pending_throw = _intents.ThrowIntent(int(dx_q), int(dy_q),
-                                              float(fuse_seconds))
+        u.pending_throw = _intents.ThrowIntent(
+            int(dx_q), int(dy_q), float(fuse_seconds),
+            None if reach_q is None else int(reach_q))
         self._possessed_ids.add(unit_id)
 
     def use_intent(self, unit_id: int) -> None:
@@ -943,8 +947,16 @@ class Simulation:
         dirx = _intents.dequantize(throw.dx_q)
         diry = _intents.dequantize(throw.dy_q)
         # v0.1 throw reach: a fixed tile distance along the aim (feel dial for
-        # Erik; the grenade's own fuse/blast are the shipped numbers).
-        reach = 6.0  # tiles
+        # Erik; the grenade's own fuse/blast are the shipped numbers). A
+        # controller throwing at a point (#121, the bots) names its reach in
+        # Q16.16 tiles, clamped to [0, the hand grenade's max_throw_range].
+        if throw.reach_q is None:
+            reach = 6.0  # tiles
+        else:
+            max_q = int(self.weapons_tables.weapons.by_name[
+                "hand_grenade"].max_throw_range) << _intents.FP_SHIFT
+            reach = _intents.dequantize(min(max(0, int(throw.reach_q)),
+                                            max_q))
         tgt_fx = cx + dirx * reach
         tgt_fy = cy + diry * reach
         proj = Projectile(
