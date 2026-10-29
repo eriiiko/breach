@@ -43,7 +43,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools"))
 
 import level_loader  # noqa: E402
-from level_loader import (SPACE_CODE, SpawnEntry,  # noqa: E402
+from level_loader import (LEVEL_FORMAT_VERSION, SPACE_CODE, SpawnEntry,  # noqa: E402
                           materials_from_tilemap)
 from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_DOOR_CLOSED,  # noqa: E402
                                   MAT_FOLIAGE, MAT_FURNITURE, MAT_GLASS,
@@ -89,16 +89,9 @@ def ts16(tileset16_dir):
 def test_build_palette_matches_material_table():
     pal = build_palette()
     assert set(pal) == set(MATERIAL_NAMES) | {SPACE_CODE}
+    # Level format v3 (#27): SPACE_CODE is outside the id range, so EVERY
+    # material id -- foliage's 9 included -- has its own palette entry.
     for mid, name in MATERIAL_NAMES.items():
-        if mid == SPACE_CODE:
-            # Props & vegetation arc #60 P3: MAT_FOLIAGE (id 9) shares its
-            # numeric slot with SPACE_CODE (see test_level_format_v2.py's
-            # test_version_gate_and_space_code) -- a materials-table/CSV-
-            # vocabulary coincidence, not a bug. SPACE always wins the paint
-            # palette's slot 9 (asserted right below): foliage is
-            # deliberately unpaintable via CSV -- it is placed only via the
-            # entity stamp (props_and_vegetation.md §4.2 F6).
-            continue
         assert pal[mid][0] == name.upper()
     assert pal[SPACE_CODE][0] == "SPACE"
     # AIR is the absence of an overlay; everything else has an RGB fill.
@@ -111,13 +104,10 @@ def test_build_palette_matches_material_table():
 def test_build_palette_picks_up_new_materials(monkeypatch):
     """A material added to MATERIAL_NAMES (one config row) appears in the
     palette on the next call — no tool change (engine/15 §1)."""
-    # P-F4a: material ids are now dense through 8 (kindling), so a bare
-    # `max + 1` probe lands ON SPACE_CODE (9) — walk past any taken id
-    # (including the reserved SPACE_CODE) to find a genuinely free one.
+    # Level format v3 (#27): SPACE_CODE is outside the id range, so the next
+    # free id is simply `max + 1` (10 today, past the old ten-row budget).
     free_id = max(MATERIAL_NAMES) + 1
-    while free_id in MATERIAL_NAMES or free_id == SPACE_CODE:
-        free_id += 1
-    assert free_id != SPACE_CODE                    # 9 stays reserved
+    assert free_id not in MATERIAL_NAMES and free_id != SPACE_CODE
     monkeypatch.setitem(MATERIAL_NAMES, free_id, "carpet")
     pal = build_palette()
     assert set(pal) == set(MATERIAL_NAMES) | {SPACE_CODE}
@@ -151,9 +141,9 @@ def test_scaffold_grid_geometry():
     # ...MAT_HULL ring inside it...
     assert (g[1, 1:-1] == MAT_HULL).all() and (g[-2, 1:-1] == MAT_HULL).all()
     assert (g[1:-1, 1] == MAT_HULL).all() and (g[1:-1, -2] == MAT_HULL).all()
-    # ...AIR interior; the whole grid speaks canon v2 codes.
+    # ...AIR interior; the whole grid speaks canon v3 codes.
     assert (g[2:-2, 2:-2] == MAT_AIR).all()
-    materials_from_tilemap(g, "2")
+    materials_from_tilemap(g, LEVEL_FORMAT_VERSION)
     with pytest.raises(ValueError):
         scaffold_grid(SCAFFOLD_MIN - 1, 8)
 
@@ -166,7 +156,7 @@ def test_create_level_scaffold_loads_and_bakes(tileset16_dir, ts16,
     assert summary["size_tiles"] == (12, 9)
     # Loadable: level_loader requires art — create_level bakes immediately.
     lvl = level_loader.load(str(d))
-    assert lvl.version == "2" and lvl.name == "Fresh"
+    assert lvl.version == "3" and lvl.name == "Fresh"
     assert np.array_equal(lvl.tilemap, scaffold_grid(12, 9))
     materials_from_tilemap(lvl.tilemap, lvl.version)
     assert lvl.diffuse_path.is_file() and lvl.normal_path.is_file()
@@ -432,7 +422,7 @@ def test_spawn_hit_test_and_auto_names():
 
 def test_write_spawns_managed_block_preserves_other_bytes(tmp_path):
     prefix = ("# hand comment stays\n"
-              'version = "2"\nname = "T"\ntilemap = "tilemap.csv"\n'
+              'version = "3"\nname = "T"\ntilemap = "tilemap.csv"\n'
               "tile_size_m = 0.333\n\n")
     suffix = ('[art.bare]\n# baked by the P2 baker\n'
               'diffuse = "baked_diffuse.png"\n\n'
@@ -462,7 +452,7 @@ def test_write_spawns_managed_block_preserves_other_bytes(tmp_path):
 
 
 def test_write_spawns_appends_when_file_has_none_and_deletes_all(tmp_path):
-    body = 'version = "2"\nname = "T"\ntilemap = "t.csv"\n'
+    body = 'version = "3"\nname = "T"\ntilemap = "t.csv"\n'
     toml = tmp_path / "level.toml"
     toml.write_text(body, encoding="utf-8", newline="\n")
     write_spawns(toml, [SpawnEntry("A", 0, 1.0, 2.0)], write_bak=False)
@@ -477,7 +467,7 @@ def test_write_spawns_appends_when_file_has_none_and_deletes_all(tmp_path):
 
 def test_write_spawns_preserves_crlf(tmp_path):
     toml = tmp_path / "level.toml"
-    toml.write_bytes(b'version = "2"\r\nname = "T"\r\n')
+    toml.write_bytes(b'version = "3"\r\nname = "T"\r\n')
     write_spawns(toml, [SpawnEntry("A", 0, 1.0, 2.0)], write_bak=False)
     data = toml.read_bytes()
     assert data.count(b"\n") == data.count(b"\r\n")

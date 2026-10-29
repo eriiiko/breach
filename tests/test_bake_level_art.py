@@ -104,7 +104,7 @@ def _write_min_level(level_dir: Path, tilemap: np.ndarray) -> Path:
                     for row in tilemap.tolist()) + "\n"
     (level_dir / "tilemap.csv").write_text(csv, encoding="ascii", newline="\n")
     (level_dir / "level.toml").write_text(
-        '# tmp fixture level\nversion = "2"\nname = "Tmp"\n'
+        '# tmp fixture level\nversion = "3"\nname = "Tmp"\n'
         'tilemap = "tilemap.csv"\ntile_size_m = 0.333\n',
         encoding="utf-8", newline="\n")
     return level_dir
@@ -383,7 +383,7 @@ def test_golden_bake_pinned(ts16):
 
 def test_writeback_appends_blocks_and_writes_bak(tmp_path):
     toml = tmp_path / "level.toml"
-    body = ('# hand comment stays\nversion = "2"\nname = "T"\n'
+    body = ('# hand comment stays\nversion = "3"\nname = "T"\n'
             'tilemap = "tilemap.csv"\ntile_size_m = 0.333\n\n'
             '[[spawn]]\nname = "Alpha"\nteam = 0\nx = 3\ny = 4\n')
     toml.write_text(body, encoding="utf-8", newline="\n")
@@ -415,7 +415,7 @@ def test_writeback_replaces_existing_blocks_only_the_changed_value_diffs(
     original hand-rolled upsert would have for a block this clean."""
     toml = tmp_path / "level.toml"
     toml.write_text(
-        'version = "2"\nname = "T"\ntilemap = "tilemap.csv"\n\n'
+        'version = "3"\nname = "T"\ntilemap = "tilemap.csv"\n\n'
         f'[art.bare]\ndiffuse = "{DIFFUSE_FILENAME}"\n'
         f'normal = "{NORMAL_FILENAME}"\n\n'
         "[art.align]\noffset_px = [0.0, 0.0]\n"
@@ -445,7 +445,7 @@ def test_writeback_does_not_preserve_a_stray_comment_inside_a_managed_block(
     coverage of the change."""
     toml = tmp_path / "level.toml"
     toml.write_text(
-        'version = "2"\nname = "T"\ntilemap = "tilemap.csv"\n\n'
+        'version = "3"\nname = "T"\ntilemap = "tilemap.csv"\n\n'
         "[art.bare]\n# baked by the P2 baker\ndiffuse = \"old.png\"\n"
         'normal = "old_n.png"\n\n[bake]\ntileset = "art/tilesets/greybox"\n'
         "px_per_tile = 64\nseed = 1\n",
@@ -530,7 +530,7 @@ def test_bake_replacements_compose_atomically_with_another_family(
 
 def test_writeback_preserves_crlf(tmp_path):
     toml = tmp_path / "level.toml"
-    toml.write_bytes(b'version = "2"\r\nname = "T"\r\ntilemap = "t.csv"\r\n')
+    toml.write_bytes(b'version = "3"\r\nname = "T"\r\ntilemap = "t.csv"\r\n')
     write_bake_blocks(toml, tileset_rel="x", px_per_tile=32, seed=0)
     data = toml.read_bytes()
     assert data.count(b"\n") == data.count(b"\r\n")   # every newline is CRLF
@@ -563,7 +563,7 @@ def test_bake_demo_loader_round_trip():
     tileset) loads through level_loader without error — the ordinary-v2 gate:
     loader and renderer never know the art was baked."""
     lvl = level_loader.load("bake_demo")
-    assert lvl.version == "2"
+    assert lvl.version == "3"
     materials_from_tilemap(lvl.tilemap, lvl.version)       # validates codes
     assert lvl.diffuse_path.name == DIFFUSE_FILENAME
     assert lvl.normal_path is not None

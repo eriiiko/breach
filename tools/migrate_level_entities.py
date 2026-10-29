@@ -285,7 +285,8 @@ def migrate_level(level_dir, *, dry_run: bool = False,
         raise ValueError(
             f"{level_dir}: level format version {lvl.version!r} — the "
             f"painted-door rewrite is v{level_loader.LEVEL_FORMAT_VERSION} CSV "
-            f"vocabulary; migrate the level first")
+            f"vocabulary; migrate the level first (v1: "
+            f"tools/migrate_tilemap_v2.py, then tools/migrate_tilemap_v3.py)")
 
     raw_lights = lvl.raw_toml.get("light", [])
     runs = door_runs(lvl.tilemap)

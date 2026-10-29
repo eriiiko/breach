@@ -80,7 +80,7 @@ def _write_png(path: Path, w: int = 8, h: int = 6) -> None:
                      + chunk(b"IEND", b""))
 
 
-BASE_TOML = ('version = "2"\nname = "Lit"\ntilemap = "tilemap.csv"\n'
+BASE_TOML = ('version = "3"\nname = "Lit"\ntilemap = "tilemap.csv"\n'
              'tile_size_m = 0.333\ndiffuse = "diffuse.png"\n\n')
 
 
@@ -370,7 +370,7 @@ def test_color_helpers_round_trip_presets():
 
 def test_write_lights_managed_block_preserves_other_bytes(tmp_path):
     prefix = ("# hand comment stays\n"
-              'version = "2"\nname = "T"\ntilemap = "tilemap.csv"\n'
+              'version = "3"\nname = "T"\ntilemap = "tilemap.csv"\n'
               "tile_size_m = 0.333\n\n")
     spawn_tbl = '[[spawn]]\nname = "Alpha"\nteam = 0\nx = 3\ny = 4\n\n'
     suffix = ('[bake]\ntileset = "x"\npx_per_tile = 8\nseed = 0\n')
@@ -409,7 +409,7 @@ def test_write_lights_managed_block_preserves_other_bytes(tmp_path):
 
 def test_write_lights_appends_deletes_and_keeps_crlf(tmp_path):
     toml = tmp_path / "level.toml"
-    toml.write_bytes(b'version = "2"\r\nname = "T"\r\n')
+    toml.write_bytes(b'version = "3"\r\nname = "T"\r\n')
     write_lights(toml, [LightEntry(x=1.5, y=2.5, color=(1.0, 0.0, 0.0))],
                  write_bak=False)
     data = toml.read_bytes()

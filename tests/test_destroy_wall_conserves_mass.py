@@ -57,7 +57,7 @@ from simulation.materials import MAT_AIR, MAT_FURNITURE  # noqa: E402
 
 SEED = 20260818
 FIXTURE = "bench_two_room"          # the tool's fixture — same scene, asserted
-SPACE_CODE = 9                      # v2 tilemap: outer space (MAT_AIR + vacuum)
+SPACE_CODE = level_loader.SPACE_CODE  # outer space (MAT_AIR + vacuum), format v3
 HULL_CODE = 1
 
 
@@ -117,7 +117,8 @@ def _hull_box_level(h=14, w=14, edits=(), name="pm3_box"):
     tm[2:h - 2, 2:w - 2] = MAT_AIR
     for (y, x, code) in edits:
         tm[y, x] = code
-    return LevelData(name=name, version="2", path=Path("."), tilemap=tm,
+    return LevelData(name=name, version=level_loader.LEVEL_FORMAT_VERSION,
+                     path=Path("."), tilemap=tm,
                      tile_size_m=1.0, diffuse_path=Path("."))
 
 

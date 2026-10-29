@@ -69,11 +69,13 @@ MATCH_FILENAME = "match.toml"
 #: The level format this loader reads (level format v3, 2026-10-29, Erik's
 #: ruling "rows suffice; design for 127 materials"). Every writer stamps it.
 LEVEL_FORMAT_VERSION = "3"
-SUPPORTED_VERSIONS = {LEVEL_FORMAT_VERSION}
-#: Older formats :func:`load` REFUSES, naming the tool that migrates each one
-#: (``materials_from_tilemap`` still decodes them, for the migration tools).
+#: Formats :func:`load` reads. "1" (the legacy generator vocabulary, 0 = space)
+#: is unambiguous and still decodes bit-exactly; no shipped level uses it.
+SUPPORTED_VERSIONS = {"1", LEVEL_FORMAT_VERSION}
+#: Formats :func:`load` REFUSES, naming the tool that migrates each one
+#: (``materials_from_tilemap`` still decodes them, for the migration tools):
+#: v2's SPACE code 9 is a material id in v3, so a v2 file is never guessed at.
 LEGACY_VERSIONS = {
-    "1": "tools/migrate_tilemap_v2.py, then tools/migrate_tilemap_v3.py",
     "2": "tools/migrate_tilemap_v3.py",
 }
 

@@ -56,7 +56,7 @@ def _write_png(path: Path, w: int = 8, h: int = 6) -> None:
                      + chunk(b"IEND", b""))
 
 
-PREFIX = ('version = "2"\nname = "T"\ntilemap = "tilemap.csv"\n'
+PREFIX = ('version = "3"\nname = "T"\ntilemap = "tilemap.csv"\n'
           'tile_size_m = 0.333\ndiffuse = "diffuse.png"\n\n')
 SUFFIX = ('[art.bare]\ndiffuse = "diffuse.png"\n\n'
           '[bake]\ntileset = "x"\npx_per_tile = 8\nseed = 0\n')

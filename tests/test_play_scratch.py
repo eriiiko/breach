@@ -83,7 +83,7 @@ def _write_src_level(tmp_path: Path, tileset_dir: Path, *, name: str = "src",
     d.mkdir()
     np.savetxt(d / "tilemap.csv", tilemap, fmt="%d", delimiter=",")
     (d / "level.toml").write_text(
-        f'version = "2"\nname = "{name}"\ntilemap = "tilemap.csv"\n'
+        f'version = "3"\nname = "{name}"\ntilemap = "tilemap.csv"\n'
         f'tile_size_m = {TILE_SIZE_M}\n', encoding="utf-8")
     bake_level(d, tileset=str(tileset_dir), px_per_tile=TEST_PX, seed=0,
               write_bak=False)

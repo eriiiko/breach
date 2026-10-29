@@ -318,7 +318,7 @@ def main(out_dir=OUT_DIR) -> None:
     toml_path.write_bytes(LEVEL_TOML.encode("utf-8"))
 
     codes = sorted(np.unique(tm).tolist())
-    print(f"wrote {csv_path}  ({W}x{H} tiles, codes {codes})")
+    print(f"wrote {out_dir / 'tilemap.csv'}  ({W}x{H} tiles, codes {codes})")
     print(f"wrote {water_path}  (pool {POOL_X0}..{POOL_X1} x {POOL_Y0}..{POOL_Y1}"
           f" @ {POOL_DEPTH_M} m)")
     print(f"wrote {png_path}  ({W * PX}x{H * PX} px, {PX} px/tile)")

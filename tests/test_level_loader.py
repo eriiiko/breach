@@ -26,7 +26,7 @@ def assert_eq(actual, expected, name=""):
 def test_load_unhcr_vessel():
     lvl = load("unhcr_vessel")
     assert_eq(lvl.name, "UNHCR Vessel", "name")
-    assert_eq(lvl.version, "2", "version")
+    assert_eq(lvl.version, "3", "version")
     assert lvl.tilemap.shape == (120, 50), f"shape={lvl.tilemap.shape}"
     assert lvl.diffuse_path.exists()
     assert lvl.normal_path is not None and lvl.normal_path.exists()

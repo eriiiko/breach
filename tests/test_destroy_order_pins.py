@@ -82,7 +82,9 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
         sys.path.insert(0, str(_p))
 
 import breach_physics as bp                                    # noqa: E402
-from level_loader import EntityInstance, LevelData             # noqa: E402
+from level_loader import (                                     # noqa: E402
+    LEVEL_FORMAT_VERSION, SPACE_CODE, EntityInstance, LevelData,
+)
 from simulation import Simulation                              # noqa: E402
 from simulation import atmosphere_fixed as afx                 # noqa: E402
 from simulation.door_system import sweep_doors                 # noqa: E402
@@ -96,7 +98,6 @@ from simulation.gases import O2, INERT_N2                      # noqa: E402
 from simulation.physics import apply_explosion                 # noqa: E402
 
 SEED = 20260818
-SPACE_CODE = 9          # v2 tilemap: outer space (MAT_AIR + vacuum)
 HULL_CODE = 1
 
 
@@ -129,10 +130,10 @@ def col_major(tiles):
 # Level fixtures
 # ---------------------------------------------------------------------------
 def _v2_sealed_box(h=12, w=12, name="pins_box") -> LevelData:
-    """v2 vocabulary, NO vacuum anywhere: hull ring, interior air."""
+    """v3 vocabulary, NO vacuum anywhere: hull ring, interior air."""
     tm = np.full((h, w), HULL_CODE, dtype=np.int32)
     tm[1:h - 1, 1:w - 1] = MAT_AIR
-    return LevelData(name=name, version="2", path=Path("."), tilemap=tm,
+    return LevelData(name=name, version=LEVEL_FORMAT_VERSION, path=Path("."), tilemap=tm,
                      tile_size_m=1.0, diffuse_path=Path("."))
 
 
@@ -144,7 +145,7 @@ def _v2_hull_box(h=14, w=14, edits=(), name="pins_hull_box") -> LevelData:
     tm[2:h - 2, 2:w - 2] = MAT_AIR
     for (y, x, code) in edits:
         tm[y, x] = code
-    return LevelData(name=name, version="2", path=Path("."), tilemap=tm,
+    return LevelData(name=name, version=LEVEL_FORMAT_VERSION, path=Path("."), tilemap=tm,
                      tile_size_m=1.0, diffuse_path=Path("."))
 
 

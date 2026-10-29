@@ -92,7 +92,7 @@ _EXPECTED_DOORS = [
 ]
 
 _TOML = '''# hand comment survives migration
-version = "2"
+version = "3"
 name = "migfix"
 tilemap = "tilemap.csv"
 tile_size_m = 0.333
@@ -320,7 +320,7 @@ def test_dry_run_plans_everything_writes_nothing(tmp_path):
 def test_v1_level_is_refused(tmp_path):
     d = _make_fixture(tmp_path, name="v1fix")
     toml = (d / "level.toml").read_text(encoding="utf-8")
-    (d / "level.toml").write_text(toml.replace('version = "2"',
+    (d / "level.toml").write_text(toml.replace('version = "3"',
                                                'version = "1"'),
                                   encoding="utf-8", newline="\n")
     with pytest.raises(ValueError, match="migrate_tilemap_v2"):
