@@ -27,7 +27,7 @@ wins and a nicer version is a follow-up issue.
 | Explosions | The heat-only proxy payload row (#31 open; numbers will move) | #31's design |
 | Suits | A per-unit environment-profile row chosen by the match config: suited, unsuited or mixed teams | — |
 | Respawn / friendly fire | None / ON | — |
-| Opponents | Rule-based team AI (a control source) and zombies (`ai_zombie.py`, a levelgen count) | Trained agents |
+| Opponents | Rule-based team AI (a control source) and zombies (`ai_zombie.py`, a levelgen count); **killed marines convert to zombies** (Erik's ruling 2026-10-29: the legacy conversion stays in) | Trained agents |
 | Wildlife | Spawn points only, flag off | Octopus (milestone 8), swarm (#63) |
 | Time model | `ContinuousRealtime`, the plain tick loop | — |
 | Rendering | Headless: no window, no light requested | Replay viewing (its own milestone) |
@@ -117,8 +117,6 @@ v1 plays on the proxy explosion, knowing its numbers will move.
 ## 6. Open items for Erik (not blocking)
 
 - Map size at 0.333 m tiles once item 7 has numbers.
-- Whether zombies also convert killed marines in the match (the legacy
-  conversion exists) — I propose OFF in v1.
 - Whether the time limit is wall ticks or sim seconds — I propose sim
   seconds, in the match config.
 
