@@ -383,6 +383,15 @@ class Simulation:
         # path stays dormant — the dormancy guarantee for the digest gate.
         self._possessed_ids: set = set()
 
+        # Who drives the horde (#122, rl-ready §5 item 1): ``None`` = the
+        # conductor's zombie slot runs the shipped law over every zombie (every
+        # game path: TwoPhaseWEGO / OnePhase / gamepad); a set = a MATCH whose
+        # zombie controller owns the horde (:meth:`hand_zombies_to_controller`)
+        # — the slot then runs the SAME law for exactly the zombie ids that
+        # controller requested this tick (:meth:`drive_zombies`), so no unit is
+        # ever driven twice, and an idle zombie controller leaves it standing.
+        self._zombie_requests: set | None = None
+
         # Target marking (onephase_wego design §11): ``{team: {unit_id, ...}}``
         # — a TEAM fact, not a unit's, consulted by every targeting function
         # (overwatch priority, idle return-fire preference). v1 is a single
@@ -504,6 +513,50 @@ class Simulation:
         if spec is None:
             raise ValueError(f"level {self.level.name!r} has no match.toml")
         return spawn_match(self, spec)
+
+    def hand_zombies_to_controller(self) -> None:
+        """Give the horde to a match's zombie controller (#122): from now on
+        the conductor's zombie slot no longer runs the law on its own; it
+        runs it only for the zombies a controller names through
+        :meth:`drive_zombies`, once per tick. Called by the match runners
+        (``tools/run_match.py``, ``control_match.MatchObserver``) when they
+        build the match's controllers; never on a game path. Idempotent."""
+        if self._zombie_requests is None:
+            self._zombie_requests = set()
+
+    def drive_zombies(self, unit_ids) -> None:
+        """ZOMBIE intent (#122): the zombie law (``ai_zombie.
+        update_zombies_tick`` — trigger, chain activation, nearest prey,
+        melee, A*) drives these units at this tick's zombie slot. Requests in
+        one tick UNION (a unit named twice is still driven once); the request
+        is consumed by the slot. Refused unless the horde was handed to a
+        controller (:meth:`hand_zombies_to_controller`) — on a game path the
+        conductor drives every zombie already, and a second driver is the bug."""
+        if self._zombie_requests is None:
+            raise RuntimeError("drive_zombies: the horde is driven by the "
+                               "conductor (no zombie controller attached; "
+                               "see hand_zombies_to_controller)")
+        self._zombie_requests.update(int(i) for i in unit_ids)
+
+    def _run_zombie_slot(self) -> None:
+        """Tick slot 5: the zombie law, run ONCE per tick by its one driver —
+        the conductor over every zombie (``_zombie_requests is None``, every
+        game path, byte-identical to before #122), or, in a match, the zombie
+        controller's requested ids (filtering preserves ``self.units`` order,
+        so a controller naming the whole horde reproduces the conductor's
+        call exactly). A bite's hit / kill events ride ``tick_events``
+        with source ``"melee"`` (#122), like a bullet's."""
+        reqs = self._zombie_requests
+        if reqs is None:
+            units = self.units
+        else:
+            if not reqs:
+                return
+            units = [u for u in self.units
+                     if not u.is_zombie or u.id in reqs]
+            reqs.clear()
+        update_zombies_tick(self.gmap, units, self.tick,
+                            events=self.tick_events)
 
     def controlled_units(self) -> list:
         """The living units of :attr:`player_team` — the human's squad."""
@@ -1504,8 +1557,9 @@ class Simulation:
         process_sprays(self.gmap, self.units, self.edit_queue,
                        events=self.tick_events)
 
-        # 5. Zombie AI.
-        update_zombies_tick(self.gmap, self.units, self.tick)
+        # 5. Zombie AI — its ONE driver: the conductor, or a match's zombie
+        # controller through the ZOMBIE intent (#122, :meth:`drive_zombies`).
+        self._run_zombie_slot()
 
         # 6. Re-stamp obstacles.
         self.gmap.stamp_units(self.units)

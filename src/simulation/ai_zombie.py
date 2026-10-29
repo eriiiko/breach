@@ -38,7 +38,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Per-tick AI step
 # ---------------------------------------------------------------------------
-def update_zombies_tick(gmap, units, tick):
+def update_zombies_tick(gmap, units, tick, events=None):
     """Run one tick of zombie AI for every active zombie on the map.
 
     Three sequential passes:
@@ -51,7 +51,11 @@ def update_zombies_tick(gmap, units, tick):
          melee if adjacent (with cooldown), otherwise A* toward target
          at ``z.speed_ticks_per_tile`` cadence. Repath every 5 steps.
 
-    Mutates unit HP / alive / killed_by_zombie / zombie_* fields.
+    Mutates unit HP / alive / killed_by_zombie / zombie_* fields. ``events``
+    (the sim's ``tick_events``; #122) receives each bite's
+    :class:`UnitHitEvent` and, on a kill, :class:`UnitKilledEvent`, both with
+    source ``"melee"`` -- credited kills, like a bullet's. ``None`` emits
+    nothing (the pre-#122 shape, kept for direct callers).
     """
     # Prey = every living non-zombie, whatever its team (#119); the horde is
     # is_zombie — never a team literal.
@@ -135,15 +139,16 @@ def update_zombies_tick(gmap, units, tick):
                 # KINETIC packet through the pipeline (mechanics/06 §2):
                 # neutral mitigation passes the int melee_damage through
                 # exactly, then the same Q2-lift quantize -> hp chain as
-                # before. This site has NO events list (update_zombies_tick
-                # never had one) so nothing is emitted — and the kill keeps
-                # melee's unique conversion semantics (killed_by_zombie=True;
-                # the ONLY converting death, mechanics/06 §6).
+                # before. The hit and the kill ride the tick's events with
+                # source "melee" (#122: credited zombie kills; events change
+                # no sim state) — and the kill keeps melee's unique
+                # conversion semantics (killed_by_zombie=True; the ONLY
+                # converting death, mechanics/06 §6).
                 apply_packet(nearest,
                              DamagePacket(amount=CFG.zombie.melee_damage,
                                           dtype=KINETIC,
                                           source_id=getattr(z, "id", -1)),
-                             events=None, source="melee",
+                             events=events, source="melee",
                              mark_killed_by_zombie=True)
             continue
 

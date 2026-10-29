@@ -10,9 +10,10 @@ deaths by cause and the wall time.
         --level ship_demo --seeds 1-10
 
 Death causes come from the tick events: a ``UnitKilledEvent``'s ``killed_by``
-("bullet", "explosion" = a frag, "heat", ...). A zombie's bite emits no event
-(``ai_zombie`` applies it with ``events=None``), so a marine that dies or
-turns without a kill event is counted as "zombie". Marine deaths and zombie
+("bullet", "explosion" = a frag, "heat", "melee" = a zombie's bite, credited
+since #122). A marine that dies or turns WITHOUT a kill event is counted as
+"zombie" (the pre-#122 bucket; it should now stay empty -- an entry there is
+an uncredited death for the credited-events audit). Marine deaths and zombie
 deaths are counted apart. Measurement only: it reads the sim, never writes.
 """
 from __future__ import annotations

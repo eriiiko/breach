@@ -231,7 +231,8 @@ def apply_packet(unit, packet: DamagePacket, events=None, *,
     3. ``unit.current_hp -= applied``;
     4. ``events``: :class:`UnitHitEvent` with the applied damage + ``source``
        (the renderer vocabulary: "heat" / "explosion" / "bullet" / "melee");
-       ``events=None`` emits nothing (the melee site's shipped shape);
+       ``events=None`` emits nothing (since #122 the melee site passes the
+       tick's events too);
     5. life transition: ``hp <= 0`` → ``alive = False``; then
        ``mark_killed_by_zombie`` sets the conversion flag (melee kills ONLY —
        heat / blast / bullet deaths never convert); then

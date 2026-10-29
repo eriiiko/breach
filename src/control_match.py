@@ -4,7 +4,8 @@
 plays the level's ``match.toml`` with the normal renderer: the match's
 ruleset (:class:`~simulation.ruleset.MatchRules`), its seed, its units
 spawned into the level's spawn rooms (``Simulation.spawn_match``), and every
-team driven by its REGISTERED controller (``control_source.create_controller``),
+team (and the horde) driven by its REGISTERED controller
+(``control_source.create_match_controllers``),
 called once per SIM TICK (:meth:`on_tick`, right before each ``sim.step()``)
 exactly as the headless runner (``tools/run_match.py``) calls it, so the
 window shows the same match the runner plays. The human only observes: no
@@ -13,7 +14,7 @@ the result is printed.
 """
 from __future__ import annotations
 
-from control_source import ControlSource, create_controller
+from control_source import ControlSource, create_match_controllers
 from simulation.orders import ORDER_MOVE_ATTACK
 from simulation.ruleset import MatchRules
 
@@ -28,8 +29,8 @@ class MatchObserver(ControlSource):
                              f"match.toml (level {level.name!r} has none)")
         self.spec = spec
         self.rules = MatchRules.from_spec(spec)
-        self.controllers = [create_controller(row.controller, team)
-                            for team, row in enumerate(spec.teams)]
+        # Built at spawn: they need the sim (the horde is handed over there).
+        self.controllers = []
         # UI-state attributes main.py reads off every ControlSource.
         self.selected_unit_id = None
         self.planning_phase = 0
@@ -48,6 +49,7 @@ class MatchObserver(ControlSource):
 
     def spawn_units(self, sim, level) -> bool:
         sim.spawn_match(self.spec)
+        self.controllers = create_match_controllers(sim, self.spec)
         print(f"  match: seed {self.spec.seed}, teams "
               f"{[(t.n, t.controller) for t in self.spec.teams]}, zombies "
               f"{self.spec.zombies}, limit {self.spec.time_limit_s:g} s")

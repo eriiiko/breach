@@ -139,7 +139,8 @@ class ControlSource:
 class IdleControl(ControlSource):
     """A match controller that emits NOTHING (#119 P2): its team stands where
     it spawned. The first registered match controller; the bots (#121) and
-    zombies-through-the-seam (#122) register beside it."""
+    the horde (#122, ``zombies``) register beside it. As a match's
+    ``zombie_controller`` it leaves the horde standing."""
 
     def __init__(self, team: int | None = None):
         self.team = team
@@ -165,9 +166,17 @@ def _bots(team: int) -> "ControlSource":
     return BotTeam(team)
 
 
+def _zombies(team: int) -> "ControlSource":
+    """The horde (#122, ``control_zombies.ZombieControl``): the shipped
+    zombie law, run through the ZOMBIE intent for every living zombie."""
+    from control_zombies import ZombieControl
+    return ZombieControl(team)
+
+
 _MATCH_CONTROLLERS: dict = {
     "idle": IdleControl,
     "bots": _bots,
+    "zombies": _zombies,
 }
 
 
@@ -195,6 +204,26 @@ def create_controller(name: str, team: int) -> "ControlSource":
         raise ValueError(f"controller {name!r} is not registered (known: "
                          f"{list(registered_controllers())})") from None
     return factory(team)
+
+
+def create_match_controllers(sim, spec) -> list:
+    """THE one way a match's controllers are built (#122): one per
+    ``[[team]]`` row (team i -> its ``controller``), then the horde's
+    (``spec.zombie_controller`` for ``ZOMBIE_TEAM``) -- after handing the
+    horde to it (``sim.hand_zombies_to_controller``), so the conductor no
+    longer drives the zombies itself: every unit of a match has exactly one
+    driver, and it is a ControlSource. Call once per match, after
+    ``sim.spawn_match``; then ``handle_frame(sim, None)`` on each, every
+    tick, before ``sim.step()``."""
+    from simulation.factions import ZOMBIE_TEAM
+    from simulation.match import DEFAULT_ZOMBIE_CONTROLLER
+    controllers = [create_controller(row.controller, team)
+                   for team, row in enumerate(spec.teams)]
+    sim.hand_zombies_to_controller()
+    controllers.append(create_controller(
+        getattr(spec, "zombie_controller", DEFAULT_ZOMBIE_CONTROLLER),
+        ZOMBIE_TEAM))
+    return controllers
 
 
 # Launch-flag name -> factory. P3 adds "gamepad" (GamepadDirect); the ML entry
@@ -246,5 +275,5 @@ def create_control_source(name: str, debug: bool = False,
 __all__ = [
     "ControlSource", "create_control_source", "quantize_stick_direction",
     "IdleControl", "register_controller", "registered_controllers",
-    "create_controller",
+    "create_controller", "create_match_controllers",
 ]
