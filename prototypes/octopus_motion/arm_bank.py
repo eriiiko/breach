@@ -90,6 +90,8 @@ class ArmBank:
         self.mu_k = 0.0
         self.g_normal = 0.0                             # m/s^2 of net weight pressing on the floor
         self.alive = np.ones(A, dtype=bool)             # a dead arm (#118): passive, never recruited
+        # rigid attachments beyond the roots: (arm, node, Body2D, local point) -- a grab on a prop
+        self.grabs: list[tuple[int, int, Body2D, np.ndarray]] = []
         # the P3 control: LINEAR drag matched to the quadratic law at v_ref (None = the real, quadratic law)
         self.linear_drag_v_ref: float | None = None
         self.time = 0.0
@@ -139,25 +141,36 @@ class ArmBank:
         v[self.anchored] = 0.0
         p_prev = p.copy()
         p += dt * v
-        if body is not None:
-            body_prev = (body.x.copy(), body.theta)
-            v_body = np.linalg.norm(body.v) if self.linear_drag_v_ref is None else self.linear_drag_v_ref
-            body.v *= 1.0 / (1.0 + dt * 0.5 * self.geom.rho_water * body.c_drag * body.frontal_area * v_body * body.w)
-            body.omega *= 1.0 / (1.0 + dt * body.rot_damp * body.w_rot)
-            body.x += dt * body.v
-            body.theta += dt * body.omega
+        bodies = ([body] if body is not None else []) + list({id(g[2]): g[2] for g in self.grabs}.values())
+        prev = {}
+        for b in bodies:
+            prev[id(b)] = (b.x.copy(), b.theta)
+            self._body_predict(b, dt)
         for _ in range(prm.n_pass):
             self._project_distance(dt)
             self._project_bend(dt, p_prev)
             self._project_anchors(dt)
             if body is not None:
                 self._project_body(dt, body, root_local)
+            for a, k, b, local in self.grabs:
+                self._attach(a, k, b, local)
         v[:] = (p - p_prev) / dt
         v[self.anchored] = 0.0
-        if body is not None:
-            body.v = (body.x - body_prev[0]) / dt
-            body.omega = (body.theta - body_prev[1]) / dt
+        for b in bodies:
+            x0, th0 = prev[id(b)]
+            b.v = (b.x - x0) / dt
+            b.omega = (b.theta - th0) / dt
         self.time += dt
+
+    def _body_predict(self, b: Body2D, dt: float) -> None:
+        v_body = np.linalg.norm(b.v) if self.linear_drag_v_ref is None else self.linear_drag_v_ref
+        b.v *= 1.0 / (1.0 + dt * 0.5 * self.geom.rho_water * b.c_drag * b.frontal_area * v_body * b.w)
+        if self.mu_k > 0.0 and self.g_normal > 0.0:
+            sp = np.linalg.norm(b.v)
+            b.v *= max(0.0, 1.0 - dt * self.mu_k * self.g_normal / max(sp, 1e-12))
+        b.omega *= 1.0 / (1.0 + dt * b.rot_damp * b.w_rot)
+        b.x += dt * b.v
+        b.theta += dt * b.omega
 
     def _project_distance(self, dt: float) -> None:
         p, w = self.p, self.w
@@ -218,23 +231,25 @@ class ArmBank:
         """Nodes 0 and 1 of every arm ride on the body: rigid attachment
         constraints, projected one after another (PBD rigid-point attachment).
         root_local: (A, 2, 2) the two root points in the body frame."""
-        p, w = self.p, self.w
         for a in range(self.A):
             for k in (0, 1):
-                R = body.rot()
-                r = root_local[a, k] @ R.T
-                target = body.x + r
-                C = p[a, k] - target
-                c = np.sqrt(C @ C)
-                if c < 1e-12:
-                    continue
-                n = C / c
-                rxn = r[0] * n[1] - r[1] * n[0]
-                w_b = body.w + body.w_rot * rxn * rxn
-                dlam = -c / (w[a, k] + w_b)
-                p[a, k] += w[a, k] * dlam * n
-                body.x -= body.w * dlam * n
-                body.theta -= body.w_rot * rxn * dlam
+                self._attach(a, k, body, root_local[a, k])
+
+    def _attach(self, a: int, k: int, body: Body2D, local: np.ndarray) -> None:
+        p, w = self.p, self.w
+        R = body.rot()
+        r = local @ R.T
+        C = p[a, k] - (body.x + r)
+        c = np.sqrt(C @ C)
+        if c < 1e-12:
+            return
+        n = C / c
+        rxn = r[0] * n[1] - r[1] * n[0]
+        w_b = body.w + body.w_rot * rxn * rxn
+        dlam = -c / (w[a, k] + w_b)
+        p[a, k] += w[a, k] * dlam * n
+        body.x -= body.w * dlam * n
+        body.theta -= body.w_rot * rxn * dlam
 
     def tick(self, body: Body2D | None = None, root_local: np.ndarray | None = None,
              before_substep=None) -> None:

@@ -35,7 +35,7 @@ ARM_NAMES = ["L1", "L2", "L3", "L4", "R4", "R3", "R2", "R1"]   # around the crow
 # angle of each arm's root around the crown, from the heading (+x), counter-clockwise
 ARM_ANGLES = np.radians([22.5, 67.5, 112.5, 157.5, -157.5, -112.5, -67.5, -22.5])
 
-READY, STANCE, RECOVER = 0, 1, 2
+READY, STANCE, RECOVER, HOLDING = 0, 1, 2, 3   # HOLDING: driven by another primitive (P4), out of the lottery
 
 
 @dataclass(frozen=True)

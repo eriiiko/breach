@@ -103,3 +103,30 @@ paddle) and the jet (a body impulse of 0.8 m/s over 0.3 s, arms bundled).
   crawl; the umbrella alone is 0.7× (slow in the animal too: the cruise);
   umbrella + half-jets 2.4× because the open umbrella brakes. Gameplay
   speeds remain Erik's dial.
+
+## P4 — reach, grab, hold, carry a prop (2026-10-29): 3/3 gates
+
+`grab_sim.py` on the crawl animal: the prop is a 0.1 kg disc (a marine is
+~0.3 of the octopus) placed out of reach at 50°; REACH = aim the root in the
+body frame + the P1 stiffening wave + stretch to 1.4×, stopping on contact;
+GRAB = rigid attachments (the bank's `grabs`, the same PBD attachment the
+roots use) between the touching mid-arm nodes and the prop; the WRAP sets
+curvature targets distal of the first seal, toward the prop, sealing what
+touches; HOLD pulls the proximal segments in to 0.7× at full stiffness;
+CARRY = the P2 crawl with the holding arm in a HOLDING state the lottery
+never sees, then three jets in the plane. `grab_gates.py`, `out/report_p4.md`,
+`fig9_grab.png`, `grab.gif`.
+
+- Contact 0.29 s after the reach begins, at s = 0.47–0.53 L; after the wrap
+  5 nodes sealed at 0.41–0.65 L. Mid-arm, never the tip.
+- Attached throughout: 5 sealed, 0 pops, through 15 s of loaded crawl and
+  three 0.5 m/s jets. The hold is LOOSE — the prop swings −7..+47 % of its
+  87 mm distance during the crawl and −16..+49 % through the jets (reported,
+  not gated: tuning for P6/P7, not a drop).
+- The others re-plan: L1 never pushes after the grab; the loaded crawl runs
+  at 110 % of the unloaded speed (seed-to-seed noise), 1° off wanted.
+- "Lift" is out of this plane; here the pull-in stands for it. The z of the
+  chain is the brief's open question 2.
+- Side effect on P2: `_body_predict` now applies the deck friction to the
+  body too (needed for the prop); the P2 numbers in `report_p2.md` predate
+  it (in water the body's friction is ~2 % of its weight; negligible).
