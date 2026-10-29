@@ -69,8 +69,10 @@ from config import CFG
 from simulation import atmosphere_fixed as _atm_fx
 from simulation import gas_fixed
 from simulation.damage import (
-    BLAST, HEAT, POISON, DamagePacket, apply_packet, mitigation_for,
+    BLAST, CREDIT_HEAT, HEAT, POISON, DamagePacket, apply_packet,
+    mitigation_for, tick_credit,
 )
+from simulation.events import NO_ATTACKER
 # Gas SLICE ids (engine/05 §6.2) — aliased so they can't be confused with the
 # damage-type constants above (gases.POISON = slice 2; damage.POISON = dtype 4).
 from simulation.gases import POISON as GAS_POISON, TEARGAS as GAS_TEARGAS
@@ -347,9 +349,15 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
         # exposure that matters; shadowed tiles read ~0, max picks the burning
         # side). In-bounds guard for safety against off-grid footprints.
         peak_raw = 0
+        # #123 credit: the hottest footprint tile and whether its exposure
+        # is the `heat` deposit buffer (a claimable deposit: a jet, a splash,
+        # an igniter's heat) or the radiation sensor (fire light: nobody's).
+        peak_tile = None
+        peak_from_heat = False
         for (tx, ty) in u.occupied_tiles():
             if 0 <= ty < h and 0 <= tx < w:
                 v = int(heat[ty, tx])
+                from_heat = True
                 if rad_flux is not None:
                     # D3: the radiant sensor and the (non-radiative) heat
                     # writers are two independent exposures at the same tile —
@@ -360,8 +368,11 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
                                                   rad_fine_bits)
                     if fv > v:
                         v = fv
+                        from_heat = False
                 if v > peak_raw:
                     peak_raw = v
+                    peak_tile = (ty, tx)
+                    peak_from_heat = from_heat
         if peak_raw <= 0:
             continue  # cold tile: no radiant flux, no heat damage
 
@@ -388,7 +399,17 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
         # IEEE-exact no-op), then Q2-lift quantize -> hp -> the same
         # hit/kill events as before (source "heat"; heat deaths never set
         # killed_by_zombie — only melee converts).
-        apply_packet(u, DamagePacket(amount=dmg, dtype=HEAT, source_id=None),
+        #
+        # CREDIT (#123): the claimant of the hurting tile's THIS-TICK heat
+        # deposit (damage.TickCredit — the sprayer, a payload's owner), only
+        # when the exposure there is the `heat` buffer; radiation, a burning
+        # tile's own heat and an unclaimed deposit are the environment's.
+        attacker = NO_ATTACKER
+        if peak_from_heat and peak_tile is not None:
+            attacker = tick_credit(gmap).attacker_at(CREDIT_HEAT, *peak_tile)
+        apply_packet(u, DamagePacket(amount=dmg, dtype=HEAT,
+                                     attacker_id=attacker,
+                                     indirect=True),
                      events, source="heat")
 
 
@@ -396,8 +417,14 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
 # Blast damage to units — the `wave_p` blast coupling row. Moved VERBATIM
 # from combat.py (P1).
 # ---------------------------------------------------------------------------
-def apply_blast_damage(units, fx, fy, radius, max_damage, events=None):
+def apply_blast_damage(units, fx, fy, radius, max_damage, events=None,
+                       attacker_id=NO_ATTACKER):
     """Damage every unit within ``radius`` of (fx, fy), with linear falloff.
+
+    ``attacker_id`` (#123) is the unit credited with the blast — the payload
+    executor passes its owner (thrower, firer, planter); -1 = nobody (a
+    timed charge, a scripted blast). A self-blast is credited to the
+    thrower too (``attacker_id == unit_id``).
 
     Units below ``CFG.combat.blast_damage_threshold`` damage take none
     (prevents chip damage at the edge of distant blasts). Marks the
@@ -426,7 +453,8 @@ def apply_blast_damage(units, fx, fy, radius, max_damage, events=None):
                 # deaths never set killed_by_zombie — only melee converts).
                 apply_packet(u,
                              DamagePacket(amount=damage, dtype=BLAST,
-                                          source_id=None),
+                                          attacker_id=attacker_id,
+                                          indirect=True),
                              events, source="explosion")
 
 
@@ -694,14 +722,27 @@ def apply_poison_dose(units, gmap, ticks_per_second, events=None):
     for u in units:
         if not u.alive:
             continue
-        density_q = reduce_max(slice_, u.occupied_tiles())
+        tiles = u.occupied_tiles()
+        density_q = reduce_max(slice_, tiles)
         if density_q < thresh_q:
             continue
         if mitigation_for(u).resist_mult[POISON] == 0.0:
             continue                        # immune: no packet, no event (lazy)
         amount = dps * float(gas_fixed.dequantize_trace(density_q)) * dt_tick
+        # CREDIT (#123): the claimant of THIS tick's poison deposit on the
+        # densest footprint tile (the first one, in footprint order — the
+        # tile reduce_max read): a miasma jet's sprayer, a gas payload's
+        # owner. A cloud that only lingers is the environment's.
+        attacker = NO_ATTACKER
+        sh, sw = slice_.shape
+        for (tx, ty) in tiles:
+            if (0 <= ty < sh and 0 <= tx < sw
+                    and int(slice_[ty, tx]) == density_q):
+                attacker = tick_credit(gmap).attacker_at(GAS_POISON, ty, tx)
+                break
         apply_packet(u,
-                     DamagePacket(amount=amount, dtype=POISON, source_id=None),
+                     DamagePacket(amount=amount, dtype=POISON,
+                                  attacker_id=attacker, indirect=True),
                      events, source="poison_gas")
 
 

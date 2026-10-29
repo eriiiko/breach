@@ -153,6 +153,13 @@ STATUS_REGISTRY: tuple[StatusKindDef, ...] = (
 assert all(row.kind == i for i, row in enumerate(STATUS_REGISTRY)), \
     "STATUS_REGISTRY must be indexed by kind (table order)"
 
+# #123: a DoT/HoT row's name IS the cause its packets carry, so every
+# emitting row must be a row of the closed cause vocabulary (events.Cause).
+from simulation.events import CAUSE_NAMES as _CAUSE_NAMES  # noqa: E402
+assert all(row.name in _CAUSE_NAMES for row in STATUS_REGISTRY
+           if row.dtype is not None), \
+    "every emitting status row's name must be a simulation.events.Cause"
+
 
 # ---------------------------------------------------------------------------
 # The per-unit status instance
@@ -317,7 +324,7 @@ def tick_statuses(units, events=None) -> None:
                 apply_packet(
                     u,
                     DamagePacket(amount=amount, dtype=row.dtype,
-                                 source_id=st.source_id),
+                                 attacker_id=st.source_id),
                     events, source=row.name)
             st.remaining_ticks -= 1
 
