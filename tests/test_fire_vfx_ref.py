@@ -458,3 +458,103 @@ def test_real_studio_fires_are_under_their_own_flame(scales):
         assert (src.cover[hot] == fv.COVER_FULL).all()
         assert np.array_equal(src.t_src_k[hot], tk[hot])
         assert not src.cover[d["solid"]].any()
+
+
+# ---------------------------------------------------------------------------
+# THE FLAME'S HASH (G3 adjustment round, 2026-10-29)
+# ---------------------------------------------------------------------------
+def _equal_fires(n_side=20, stride=3):
+    """n_side x n_side EQUAL lone burning tiles (each its own cluster: same
+    size, so the same base puffing frequency), ``stride`` tiles apart."""
+    w = h = n_side * stride
+    burn = np.zeros((h, w), bool)
+    burn[1::stride, 1::stride] = True
+    fire = np.where(burn, 0.5, 0.0)
+    tk = np.where(burn, 1200.0, 300.0)
+    z = np.zeros((h, w), bool)
+    src = fv.flame_sources(fire, tk, z, burn, z, t_amb_k=293.0, glow_min_k=800.0,
+                           tile_size_m=0.333)
+    ys, xs = np.nonzero(burn)
+    return ys, xs, src.burn_phase[ys, xs] / (2.0 * np.pi), src.burn_hz[ys, xs], w
+
+
+def _decorrelated(u, ys, xs):
+    """The gate: the puffing phases (as turns) of equal fires are uniform on
+    [0, 1), AND the circular phase distance between NEIGHBOURING fires (the
+    next one along the row and down the column) is uniform on [0, 1/2] --
+    the distribution independent phases give. Kolmogorov-Smirnov distances
+    against those laws, under the 0.1 % critical value."""
+    def ks(sample, cdf):
+        x = np.sort(sample)
+        n = len(x)
+        F = cdf(x)
+        return max(np.max(np.arange(1, n + 1) / n - F), np.max(F - np.arange(n) / n))
+    pos = {(int(y), int(x)): k for k, (y, x) in enumerate(zip(ys, xs))}
+    step = int(np.diff(np.unique(xs))[0])
+    d = []
+    for (y, x), k in pos.items():
+        for (yy, xx) in ((y, x + step), (y + step, x)):
+            if (yy, xx) in pos:
+                a = abs(u[k] - u[pos[(yy, xx)]])
+                d.append(min(a, 1.0 - a))
+    d = np.asarray(d)
+    crit = lambda n: 1.95 / np.sqrt(n)                      # noqa: E731
+    return (ks(u, lambda v: v) < crit(len(u))
+            and ks(d, lambda v: 2.0 * v) < crit(len(d)))
+
+
+def test_equal_fires_at_different_tiles_puff_out_of_step():
+    """PROPERTY (G3 adjustment round; design 13.2 "each fire cluster at its
+    own phase", 6.3 no-sync): 400 EQUAL lone fires on a grid -- the same size,
+    so the same base puffing frequency -- draw their puffing phases from
+    their map keys so that the phases are uniform, neighbouring fires'
+    phase distances are uniform (no two nearby fires lock in step more often
+    than chance), and their frequency jitters differ. Non-vacuous: a hash
+    without the finalizer (the bare Weyl step key * phi + salt * c) fails
+    the same gate, because equally spaced keys then step their phases by a
+    constant.
+
+    BREAKS IF: the puffing phase stops depending on the cluster's key (a
+    shared phase), or the hash loses its mixing so that nearby keys give
+    related phases.
+    """
+    ys, xs, u, hz, _w = _equal_fires()
+    assert len(u) == 400
+    assert _decorrelated(u, ys, xs)
+    assert len(np.unique(np.round(hz, 9))) > 300
+
+    def weyl01(key, salt):
+        with np.errstate(over="ignore"):
+            k = (np.asarray(key, dtype=np.uint64) * np.uint64(0x9E3779B97F4A7C15)
+                 + np.uint64(salt) * np.uint64(0xD1B54A32D192ED03))
+        return (k >> np.uint64(11)).astype(np.float64) / float(1 << 53)
+    orig = fv._hash01
+    try:
+        fv._hash01 = weyl01
+        ys2, xs2, u2, _hz, _ = _equal_fires()
+    finally:
+        fv._hash01 = orig
+    assert not _decorrelated(u2, ys2, xs2)
+
+
+def test_the_scalar_hash_is_the_twins_bit_for_bit():
+    """PROPERTY (twin <-> draw parity): the draw's scalar hash
+    (``fire_vfx._hash01``: the flame noise's grain offsets, the shimmer's
+    angles) returns exactly the twin's vectorised ``fire_vfx_ref._hash01``
+    for every key and salt the game forms (cluster keys, cycle indices
+    masked to 31 bits, seeds plus small offsets), and both span [0, 1).
+
+    BREAKS IF: one of the two copies changes its constants or rounds without
+    the other (the GL draw would then decorrelate from the twin it is gated
+    against).
+    """
+    from renderer import fire_vfx as gl
+    rng = np.random.default_rng(2026)
+    keys = np.concatenate([np.arange(0, 2000), rng.integers(0, 1 << 31, 3000),
+                           [0x7FFFFFFF, 572, 574]]).astype(np.int64)
+    for salt in (0, 7, 1234, 1234 + 7, 1311, 8086 + 101 * 7 + 53, 1 << 40):
+        vec = fv._hash01(keys, salt)
+        sca = np.asarray([gl._hash01(int(k), salt) for k in keys])
+        assert np.array_equal(vec, sca), salt
+        assert vec.min() >= 0.0 and vec.max() < 1.0
+

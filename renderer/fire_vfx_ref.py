@@ -240,14 +240,26 @@ class FlameSources:
 
 
 def _hash01(key: np.ndarray, salt: int) -> np.ndarray:
-    """Deterministic integer hash -> [0, 1) (render-only; no RNG state)."""
+    """Deterministic integer hash -> [0, 1) (render-only; no RNG state): THE
+    flame's hash -- the puffing's phase and frequency jitter here, the flame
+    noise's grain offsets and the shimmer's angles through its scalar twin
+    ``fire_vfx._hash01`` (bit for bit), the light flicker's oscillators.
+
+    The FULL splitmix64 finalizer (Steele, Lea & Flood, "Fast splittable
+    pseudorandom number generators", OOPSLA 2014; the mix constants are
+    Stafford's variant 13) on the Weyl step ``key * phi + salt * c``. G3's
+    adjustment round (2026-10-29) replaced F0b's half finalizer here, which
+    skipped the first multiply-xorshift round (F4b met map keys 572 / 574 at
+    phases 0.3282 / 0.3276), and folded the flicker's own copy of the full
+    one into it: one hash, no parallel copy."""
     with np.errstate(over="ignore"):         # wrap-around IS the hash
-        x = (np.asarray(key, dtype=np.uint64) * np.uint64(0x9E3779B97F4A7C15)
-             + np.uint64(salt) * np.uint64(0xBF58476D1CE4E5B9))
-        x ^= x >> np.uint64(31)
-        x *= np.uint64(0x94D049BB133111EB)
-        x ^= x >> np.uint64(29)
-    return (x >> np.uint64(11)).astype(np.float64) / float(1 << 53)
+        z = (np.asarray(key, dtype=np.uint64) * np.uint64(0x9E3779B97F4A7C15)
+             + np.uint64(int(salt) & 0xFFFFFFFFFFFFFFFF)
+             * np.uint64(0xD1B54A32D192ED03))
+        z = (z ^ (z >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
+        z = (z ^ (z >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
+        z ^= z >> np.uint64(31)
+    return (z >> np.uint64(11)).astype(np.float64) / float(1 << 53)
 
 
 def _clusters(burning: np.ndarray) -> np.ndarray:

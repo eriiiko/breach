@@ -77,8 +77,10 @@ def test_fires_and_tiles_three_apart_do_not_flicker_in_sync():
 
     BREAKS IF: the flicker runs on a shared clock or phase (one sinusoid for
     every tile, a per-cluster-only multiplier, a puff_share near 1), or the
-    per-tile hash maps nearby tiles to the same frequencies (the weak
-    fire_vfx_ref._hash01 did: tiles 572 / 574 drew 0.3282 / 0.3276).
+    per-tile hash maps nearby tiles to the same frequencies (F4b met F0b's
+    half finalizer drawing 0.3282 / 0.3276 for tiles 572 / 574; the flame's
+    one hash, fire_vfx_ref._hash01, is the full splitmix64 since the G3
+    adjustment round).
     """
     ys, xs, M = _series(_studio_like_layout(), 30.0)
     C = np.corrcoef(M.T)

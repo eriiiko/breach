@@ -732,15 +732,15 @@ _M64 = (1 << 64) - 1
 
 
 def _hash01(key: int, salt: int) -> float:
-    """A scalar integer hash -> [0, 1): the same splitmix finaliser as the
-    twin's vectorised ``fire_vfx_ref._hash01`` (bit for bit), in plain
-    Python ints -- the draw calls it every frame, where numpy's per-call
-    overhead cost ~25 us each."""
-    x = (key * 0x9E3779B97F4A7C15 + salt * 0xBF58476D1CE4E5B9) & _M64
-    x ^= x >> 31
-    x = (x * 0x94D049BB133111EB) & _M64
-    x ^= x >> 29
-    return (x >> 11) / float(1 << 53)
+    """A scalar integer hash -> [0, 1): the twin's vectorised
+    ``fire_vfx_ref._hash01`` (the full splitmix64 finalizer, bit for bit), in
+    plain Python ints -- the draw calls it every frame, where numpy's
+    per-call overhead cost ~25 us each."""
+    z = (key * 0x9E3779B97F4A7C15 + (salt & _M64) * 0xD1B54A32D192ED03) & _M64
+    z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & _M64
+    z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & _M64
+    z ^= z >> 31
+    return (z >> 11) / float(1 << 53)
 
 
 def clip_rects(rects: Sequence[Box], view) -> List[Box]:

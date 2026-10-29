@@ -46,8 +46,9 @@ above the ramp's glow floor, not vacuum), one float multiplier
     band_hi_hz]`` (one per ``1/N_OSC`` of the band, so every tile spans it),
     with hashed phases and a gently pink weighting (amplitude ~ f^-1/4: a
     little more slow breathing than fast flutter), normalised to unit
-    variance. Keyed by the tile's MAP index through a full splitmix64 mix
-    (:func:`_mix01`), so it is a fixed function of (tile, time): neighbours
+    variance. Keyed by the tile's MAP index through the flame's full
+    splitmix64 hash (``fire_vfx_ref._hash01``), so it is a fixed function of
+    (tile, time): neighbours
     decorrelate by construction, and nothing is shared but the clock.
 
     WHY EIGHT, AND ONLY A LITTLE PINK (F4b's measurement): two independent
@@ -193,22 +194,6 @@ def burning_tiles(sources, window) -> Tuple[np.ndarray, np.ndarray,
         (bx + int(window[0])).astype(np.int64), hz, ph
 
 
-def _mix01(keys, salt: int) -> np.ndarray:
-    """Deterministic hash -> [0, 1): the FULL splitmix64 finalizer (Steele,
-    Lea & Flood 2014) on ``key * phi + salt * c``. Not ``fire_vfx_ref.
-    _hash01``: that one skips the first xor-shift, and nearby keys come out
-    nearly equal (F4b measured tiles 572 / 574 at 0.3282 / 0.3276) -- which
-    here would hand two tiles one frequency."""
-    with np.errstate(over="ignore"):         # wrap-around IS the hash
-        z = (np.asarray(keys, dtype=np.uint64) * np.uint64(0x9E3779B97F4A7C15)
-             + np.uint64(int(salt) & 0xFFFFFFFFFFFFFFFF)
-             * np.uint64(0xD1B54A32D192ED03))
-        z = (z ^ (z >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
-        z = (z ^ (z >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
-        z ^= z >> np.uint64(31)
-    return (z >> np.uint64(11)).astype(np.float64) / float(1 << 53)
-
-
 _OSC_CACHE: dict = {}
 
 
@@ -229,10 +214,10 @@ def _tile_oscillators(keys: np.ndarray, s: FlickerSettings):
 def _tile_oscillators_uncached(keys: np.ndarray, s: FlickerSettings):
     lo, hi = float(s.band_lo_hz), float(s.band_hi_hz)
     j = np.arange(N_OSC, dtype=np.float64)
-    u = np.stack([_mix01(keys, s.seed + 101 * k) for k in range(N_OSC)], axis=-1)
+    u = np.stack([ref._hash01(keys, s.seed + 101 * k) for k in range(N_OSC)], axis=-1)
     f = lo * (hi / lo) ** ((j + u) / N_OSC)
     ph = 2.0 * np.pi * np.stack(
-        [_mix01(keys, s.seed + 101 * k + 53) for k in range(N_OSC)], axis=-1)
+        [ref._hash01(keys, s.seed + 101 * k + 53) for k in range(N_OSC)], axis=-1)
     a = (lo / f) ** PINK_EXP
     return f, ph, a
 
