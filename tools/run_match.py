@@ -74,10 +74,14 @@ def _living(sim, spec) -> tuple[dict, int]:
 
 
 def run_match(level, spec=None, *, seed: int | None = None,
-              report_every: int = 0, out=None) -> MatchOutcome:
+              report_every: int = 0, out=None, on_tick=None) -> MatchOutcome:
     """Run ``spec`` (default ``level.match``) on ``level`` to its result.
     ``seed`` overrides the config's seed; ``report_every`` > 0 prints the
-    living slots every that many ticks through ``out`` (default print)."""
+    living slots every that many ticks through ``out`` (default print).
+    ``on_tick(sim)`` (#121), if given, is called after every ``step()`` --
+    while that tick's ``tick_events`` are still on the sim -- so a bench or a
+    test can watch the match without a second match loop; it must not write
+    sim state."""
     spec = level.match if spec is None else spec
     if spec is None:
         raise ValueError(f"level {level.name!r} has no match.toml")
@@ -94,6 +98,8 @@ def run_match(level, spec=None, *, seed: int | None = None,
         for c in controllers:
             c.handle_frame(sim, None)
         sim.step()
+        if on_tick is not None:
+            on_tick(sim)
         if report_every and sim.tick % report_every == 0:
             living, converted = _living(sim, spec)
             out(f"tick {sim.tick}: living {living} converted {converted}")
