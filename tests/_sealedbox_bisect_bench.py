@@ -896,7 +896,9 @@ def run_variant(name, overrides, wall_thick=1, ignite=True, no_conduction=False,
             # Pass 3: T5b step 7 deleted it, and the identity closes with the
             # term REMOVED, not zeroed — report_t5b.md §7.3.)
             int(tsolver.e_solid_deposit_sum) + int(tsolver.e_solid_cond_sum)
-            + int(comb.e_comb_solid_heat_sum),
+            + int(comb.e_comb_solid_heat_sum)
+            # #73: the low rail's lift + the topology seams' retire/born
+            + int(tsolver.e_solid_low_rail_sum) + int(tsolver.e_solid_seam_sum),
         )
 
     def _solid_books():

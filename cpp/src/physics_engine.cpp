@@ -438,6 +438,10 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // P5c follow-up: the boundary's other two exits, APPENDED (13, 14).
         this->temperature.e_rad_boundary_export_sum += cond_counters[13];
         this->temperature.e_rad_floor_drop_sum      += cond_counters[14];
+        // #73: the low rail's lift (a solid term) and the heat deposit's
+        // floor share (a counter), APPENDED (15, 16).
+        this->temperature.e_solid_low_rail_sum      += cond_counters[15];
+        this->temperature.e_dep_floor_drop_sum      += cond_counters[16];
     } else
 #endif
     {

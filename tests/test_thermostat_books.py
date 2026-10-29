@@ -99,7 +99,9 @@ def _terms(g, eos, tsolver, comb, engine):
         # object-site fuel deposit that bypasses TemperatureSolver's Pass 1
         # entirely (combustion.cpp writes `temperature[s]` directly).
         int(tsolver.e_solid_deposit_sum) + int(tsolver.e_solid_cond_sum)
-        + int(comb.e_comb_solid_heat_sum),   # T5b: no thermostat term
+        + int(comb.e_comb_solid_heat_sum)
+        # #73: the low rail's lift + the topology seams' retire/born
+        + int(tsolver.e_solid_low_rail_sum) + int(tsolver.e_solid_seam_sum),   # T5b: no thermostat term
     )
 
 

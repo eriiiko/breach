@@ -2179,6 +2179,10 @@ class FoldCounters:
     t_low_rail_hits: int = 0
     rad_clamp_hits: int = 0
     e_solid_deposit_sum: int = 0
+    # #73 item 1: the ENERGY the low rail adds, (0 - T) * cap -- the engine's
+    # TemperatureSolver.e_solid_low_rail_sum. e_solid_deposit_sum stops at the
+    # rail; the two sum to the post-rail landing exactly.
+    e_solid_low_rail_sum: int = 0
     clamp_drop_sum: int = 0       # Q16.16 temperature removed by the clamp
     # P5c (design v3 2.8 / 8.4): the ENERGY the clamp withholds, on both media,
     # priced at the cell's real capacity (cap_real_q) -- the engine's
@@ -2213,7 +2217,8 @@ def fold_pass1_solid(T, rad_net, rad_fluence, his, ts, counters: FoldCounters, *
         T[i]     = sat_add_q16(T[i], dTr)                      # T_after
         T[i]     = min(T_after, max(t_before, e_ceiling_q(Phi)))  # the clamp (row 21, P5d)
         rails: T_MAX_PHYS, then the low rail at 0
-        books the ACTUAL applied dT x cap_real into e_solid_deposit_sum
+        books the applied dT x cap_real into e_solid_deposit_sum, up to the
+        low rail; the low rail's lift into e_solid_low_rail_sum (#73)
 
     `clamp_enabled=False` models P1's `clamp_enabled` binding keyword (gate 5's
     non-vacuity). `rails_enabled=False` and `int32_sat=False` exist only to
@@ -2276,15 +2281,18 @@ def fold_pass1_solid(T, rad_net, rad_fluence, his, ts, counters: FoldCounters, *
                     counters.clamp_drop_sum += t_new - ceiling
                     counters.e_rad_clamp_drop_sum += (t_new - ceiling) * cap
                     t_new = ceiling
+            t_pre_low = t_new
             if rails_enabled:
                 if t_new > T_MAX_PHYS_Q:
                     t_new = T_MAX_PHYS_Q
                     counters.t_max_phys_hits += 1
+                t_pre_low = t_new
                 if t_new < 0:
                     t_new = 0
                     counters.t_low_rail_hits += 1
+                    counters.e_solid_low_rail_sum += (0 - t_pre_low) * cap
             T[y][x] = t_new
-            counters.e_solid_deposit_sum += (t_new - t_before) * cap
+            counters.e_solid_deposit_sum += (t_pre_low - t_before) * cap
 
 
 # --------------------------------------------------------------------------- #
