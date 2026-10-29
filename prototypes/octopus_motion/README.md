@@ -53,3 +53,53 @@ What it showed (Yekutieli's 240 mm arm, a_ca 0.6, t_act 0.9 s):
 
 Not in P1 (by design): the base rotating during the reach (why real paths
 curve), elongation (`stretch`), 3D, contact, suckers. Those are P2–P4.
+
+## P2 — the crawl (2026-10-29): 5/6 gates, the sixth a narrow miss
+
+`arm_bank.py` — the P1 chain batched over A arms (bit-identical for one arm,
+gate 0), plus sucker anchors with a grip limit, floor friction, rest-length
+scaling (elongation), the linear-drag control and a rigid `Body2D` the arm
+roots attach to (PBD rigid attachment: the body gets ONLY the arms'
+reactions and its own drag). `crawl_sim.py` — eight arms on a deck seen from
+above, Levy 2015's PUSH_STEP (mid-arm sucker patch anchors, the proximal
+segments elongate to 1.6× over 0.5–1 s, release on saturation) and the hub's
+seeded lottery (no clock; alignment × hind-arm bias × neighbour bonus; ≤ 3
+in stance; steering = aiming the lottery at wanted + (wanted − recent
+travel)). `crawl_gates.py`, `out/report_p2.md`, `fig6`, `fig7`, `crawl.gif`.
+
+- Travels within 2–3° of any wanted direction, 0, 70, 135, −90° off the
+  heading, at 0.05 m/s mean / 0.1 m/s peaks (Levy: ~0.1 m/s peaks), 1–3 arms
+  pushing (mean ~1), never more.
+- **No rhythm, and the test can fail:** the whitened speed spectrum's
+  highest line is 6× its neighbours (chance level for 76 bins); the same
+  animal on a clock (no jitter, recruit the instant an arm is ready) shows a
+  41× line at 1.45 Hz.
+- 7 arms: 72 % of the 8-arm distance, 2° off; 6 arms: 90 %, 8° off. No
+  special case for a dead arm: it is simply never READY.
+- Heading wanders ±25° over 25 s and never turns to face the travel
+  direction (the real animal: ~25° SD per 2.8 s).
+- **The miss:** Levy's per-push statistic, circular r between the pushing
+  arms' summed direction and the body's displacement during that push, is
+  0.88–0.94 against the brief's 0.9 (per-push error 15–19°). The body
+  coasts between pushes (momentum from the last push colours the next) and
+  the steering alternates sides; without steering the per-tick cosine was
+  0.93–0.95 but the 7-arm animal veered 24°. Left as a FAIL in the report;
+  the eye (P8) and the port (P6) decide whether 0.88 is a defect.
+
+## P3 — swimming (2026-10-29): 3/3 gates
+
+`swim_sim.py` — side view, two bank arms (the up / down groups of four,
+mass and drag ×4, the web as a ×3 broadside drag factor), the umbrella
+(root angle commanded on the body, 20–80°, open 1.0 s / close 0.4 s, stiff
+paddle) and the jet (a body impulse of 0.8 m/s over 0.3 s, arms bundled).
+`swim_gates.py`, `out/report_p3.md`, `fig8_swim.png`, `swim.gif`.
+
+- **Travel from drag alone, and only from its nonlinearity:** 0.036 m/s
+  steady (51 mm per stroke) with the real quadratic anisotropic drag; the
+  control with linear isotropic drag on arms and body nets 5 % of that (it
+  oscillates in place).
+- A jet carries 5.8 mantle lengths and decays to 10 % in 2.9 s.
+- A jet train (one per second, arms bundled) does 0.28 m/s = 5.6× the
+  crawl; the umbrella alone is 0.7× (slow in the animal too: the cruise);
+  umbrella + half-jets 2.4× because the open umbrella brakes. Gameplay
+  speeds remain Erik's dial.
