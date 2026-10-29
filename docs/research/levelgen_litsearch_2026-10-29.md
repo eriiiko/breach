@@ -778,4 +778,266 @@ analogue) so a result can be tied to the factors that produced it.
 
 ## (d) Real ship, submarine and station interiors; how games encode "a ship"
 
-*(in progress)*
+The design session needs this strand for #136 (adjacency), #137 (pressure
+cells), #134 (vent rules) and the L5 airlock recipe. What it can give is the
+*logic* behind real subdivision — why bulkheads, zones and ducts are where
+they are — so Breach's rules read as "a ship" for reasons, not by imitation.
+
+### Sources
+
+**D1. SOLAS II-1 subdivision, via "Compartment (ship)"** (Wikipedia,
+read 2026-10-29). FULL (web; a secondary summary — the IMO text itself is
+PAY, see ledger).
+Watertight subdivision "limits loss of buoyancy and freeboard in the event
+of damage"; ships are rated by how many adjacent compartments may flood (a
+*two-compartment* ship survives any two). Three door classes: **watertight**
+(rated like the bulkhead, "must, of course, be kept closed to effectively
+contain flooding"), **weathertight**, and **joiner** doors (privacy only).
+*For Breach:* the door classes map one to one onto the vocabulary's edge
+types — bulkhead/airlock (pressure-rated), door (gas-tight when closed),
+and a non-sealing opening (curtain, grating) — and the *n-compartment
+standard* is a ready-made validator metric: "how many adjacent cells can
+be breached before the spawn rooms are in vacuum".
+
+**D2. SOLAS II-2 regulation 9, "Containment of fire"** (consolidated text
+as published by the UK Maritime & Coastguard Agency). FULL, archived.
+The fire analogue of watertight subdivision. Passenger ships are cut into
+**main vertical zones** by A-60 divisions, extendable "to a maximum of
+48 m" if the zone stays within 1,600 m² per deck (the normal 40 m figure is
+in SOLAS's definitions, not read here), their boundaries "as far as practicable ... in line
+with watertight subdivision bulkheads" — **fire zones and flood zones
+coincide**. Spaces are classed by fire risk (control stations, stairways,
+corridors, accommodation, service spaces, machinery spaces of category A,
+galleys …) and the class pair fixes the division between two adjacent
+spaces. Ventilation rules: "the ventilation fans shall be so disposed that
+the **ducts reaching the various spaces remain within the main vertical
+zone**"; machinery, galley, vehicle and cargo spaces have ventilation
+systems "separated from each other and from the ventilation systems serving
+other spaces"; "**stairway enclosures shall be ventilated and served by an
+independent fan and duct system**"; a duct through an A-class division
+over 0.075 m² free area gets a fire damper "capable of being closed manually
+from both sides"; duct steel gauges are specified for widths "up to and
+including 300 mm" and "760 mm and over"; galley exhausts have shut-offs
+"close to the entrance to the galley".
+*For Breach:* (i) **one duct system per cell** is the real rule — the L5
+"vent leak path across a cell boundary" is exactly what SOLAS forbids, so a
+cross-cell duct is a deliberate archetype choice (a sabotage map), never a
+default; (ii) **escape routes get their own ventilation** (the stair rule)
+— a corridor spine with its own duct is both realistic and tactically
+interesting; (iii) **dampers** are the realistic version of a vent that can
+be shut: a damper entity on a duct at a cell boundary is the natural L5
+"leak path" control; (iv) the class-pair table is a template for the
+vocabulary's adjacency matrix (which room types may share a plain door,
+which need a bulkhead).
+
+**D3. US Navy material conditions of readiness** (NAVEDTRA 14057,
+*Damage Controlman*, via tpub; and secondary summaries). FULL (the tpub
+page) / ABS (the rest).
+Every closure (door, hatch, valve, vent) carries a class mark: **X-RAY**
+(closed at all times except in use), **YOKE** (also closed at sea in
+peacetime), **ZEBRA** (also closed at general quarters — "set immediately,
+without further orders, when manning general quarters stations"; "used to
+isolate and control fires and flooding"); circle-X / circle-Y fittings may
+be opened briefly under authority. Compartment check-off lists enumerate
+each space's fittings.
+*For Breach:* a ready-made **door-state policy**: every door edge gets a
+readiness class in the annotation schema, and a ship-wide condition
+(peace / alert / battle) closes the classes in order. This gives the rule
+AI and RL agents a structured, physically meaningful lever (set ZEBRA →
+cells seal → fire and decompression stay local), and the grammar a reason to
+emit it (the L4 "interactive/logic layer").
+
+**D4. Submarine escape trunks and watertight hatches** (Wikipedia "Escape
+trunk"; secondary sources). ABS.
+An escape trunk "operates on a principle similar to an airlock": sealed
+from the boat, flooded and pressurised to sea pressure before the outer
+hatch opens, drained and equalised before the inner. The forward trunk is
+also the boat's normal entry point for people and equipment and the docking
+point for a rescue vehicle. Watertight hatches are dogged from one side;
+internal doors normally stand open and are closed when conditions require.
+*For Breach:* the airlock recipe (L5: two doors + a (de)pressurisable room)
+is exactly the escape-trunk sequence; and the "normally open, closed on
+alarm" behaviour is D3's readiness logic in a submarine.
+
+**D5. ISS hatches — NASA-STD-3001 Technical Brief OCHMO-TB-028 "Vehicle
+hatches"** (NASA OCHMO, Rev B, 2023). FULL, archived.
+A hatch = hatchway + cover that isolates environments; a *pressure* hatch
+has different atmospheres on its two sides. Requirements: operable by one
+crewmember "in no more than 60 seconds, from both sides of the hatch";
+**"Each side of each hatch shall have manual pressure equalization
+capability with its opposite side"** (the MPEV, a valve that "allows air
+from either side of the hatch to mix"); pressure indication and visibility
+across the hatch; "The vestibule must be pressurized prior to crew members
+opening the hatches." US modules connect through Common Berthing Mechanism
+hatches (50 × 50 in, ≈ 1.27 m square, per the NASA human-factors material
+and Wikipedia's CBM page — ABS for that number).
+*For Breach:* an airlock prefab should carry, as data, an **equalisation
+valve on each door** (a slow controlled flow — the realistic "bleed" lever),
+a **pressure readout on both sides**, and a window; and a door between two
+cells at different pressure should be *hard to open* (the force rule) —
+which the gas solver already provides if the door's opening is gated on
+|Δp|.
+
+**D6. ISS Node 1 temperature and humidity control and intermodule
+ventilation (IMV)** (Boeing/NASA, NTRS 20070018272). FULL, archived.
+"The purpose of the Node 1 IMV is to provide air exchange between Node 1 and
+the adjacent elements. It allows for **centralized atmosphere revitalization**
+and oxygen partial pressure control." Node 1 carries IMV fans, **supply and
+return valves for each adjacent element**, and **IMV isolation valves** "used
+to isolate the Node 1 IMV from the adjacent pressurized elements during an
+emergency event". Return paths are explicit and sometimes the hatch itself:
+"Return atmosphere from the Cupola will be through the open hatch"; "Return
+atmosphere from the MPLM will be through the open hatch." Flow rates are of
+order 140 cfm (≈ 4 m³/min) per IMV fan.
+
+**D7. Laurini et al. 1999, "Environmental control and life support for the
+Multi-Purpose Logistics Module"** (ESA Bulletin 98). FULL, archived.
+The cleanest statement of Erik's supply-and-return rule: air enters through
+the IMV supply port, is distributed through the cabin and "returns it to the
+ISS for revitalisation"; "Normally, air flows back to the Station through the
+open hatch. **If the hatch is closed, the air travels through the separate
+dedicated IMV return duct.** To isolate the module from the Station, a
+motorised valve in each of the IMV supply and return ducts closes off the
+airflow." A restrictor keeps the return at lower pressure "so air continues
+to be sucked from the Station". Fire response escalates: portable
+extinguisher → closed hatch → **the Cabin Depressurisation Assembly "can vent
+the cabin air to space in less than 10 minutes as an integral element of
+the ... fire suppression scheme"**; a Duct Smoke Detector sits in the cabin
+return duct.
+*For Breach (D6 + D7):* (i) **every module has a supply and a return, and the
+return may be the open doorway** — so a vent rule (#134) can be "each room
+has a supply; its return is either its own return vent or an always-open
+doorway into a room that has one"; (ii) **isolation valves on both** = the
+damper entity of D2; (iii) **venting to space is a sanctioned fire
+response** — Breach's decompression-clears-smoke mechanic is not a game
+liberty, it is the MPLM's last line, and a generator can place a
+depressurisation valve on rooms whose archetype wants that play; (iv) the
+smoke detector belongs in the return duct, which says where a sensor entity
+goes.
+
+**D8. Klote 1991, *Design manual for smoke control systems*** (NISTIR 4551;
+superseded by Klote & Milke, *Design of smoke management systems for
+buildings*, ASHRAE — PAY). FULL (selected chapters; 26 MB, linked).
+Smoke management works by compartmentation, dilution, airflow,
+pressurisation and buoyancy; barriers are only as good as their leakage
+paths. **Zoned smoke control**: the building is divided into smoke zones; "in
+the event of a fire, pressure differences produced by mechanical fans are
+used to limit the smoke spread to the zone in which the fire initiated";
+the fire zone is vented/exhausted and the neighbours pressurised — the
+**"pressure sandwich"**; venting the smoke zone matters because it "prevents
+significant over-pressures due to thermal expansion". **Pressurised
+stairwells** keep escape routes clear; tall stairs are themselves
+compartmented with normally-closed doors and an air injection point per
+section.
+*For Breach:* this is the gameplay of a vent network with fans, stated as
+engineering: exhaust the burning cell, pressurise its neighbours. A
+generator that gives each cell its own duct system (D2) and a pressurised
+spine (the stair rule) makes this playable by construction.
+
+**D9. Ducts versus crawlability.** SOLAS reg 9 (D2) for real duct sizes;
+MythBusters episode 54 (mythresults.com) and HVAC-trade commentary — ABS.
+Ship ventilation ducts are specified in bands "up to and including 300 mm"
+and "760 mm and over"; the damper threshold is 0.075 m² (≈ 27 cm square).
+The ISS's IMV flows (D6) are a few m³/min. MythBusters' "crawling through air
+ducts" was **busted on noise** (magnets and suction cups held the weight but
+were too loud; breaking the grate was too loud); trade sources add that bends
+carry turning vanes and dampers, and that light-gauge or flexible duct does
+not carry a person. The human-sized exceptions are large trunks.
+*For Breach:* at 0.333 m tiles a **one-tile duct is ≈ 0.11 m²** — already
+above SOLAS's damper threshold, a large real duct, and far below a marine's
+3×3-tile (≈ 1 m) footprint or a 1.27 m CBM hatch. So "vents too small for
+marines but open to smoke and small creatures" is *physically right* at one
+tile; a crawlable two-to-three-tile **maintenance trunk** is a different
+object (a narrow corridor room in the graph, SS13's "maintenance"), not a
+vent. Recommend the vocabulary keep the two words apart: `vent`/`duct`
+(gas + small creatures, never marines) and `crawlway` (a corridor-class
+room, marines prone, if ever wanted).
+
+**D10. Nuclear propulsion layout** (NASA NTP mission & system analysis
+2006, NTRS 20240013888; Maddock et al. IAC 2021). ABS.
+Crewed nuclear-thermal vehicles put the reactor at the far end of a truss
+and the habitat inside the reactor's **shadow shield** cone; distance buys
+shield mass.
+*For Breach:* the one physical reason a *space*ship has "engineering aft":
+thrust line plus radiation shielding, not a propeller shaft. It argues for
+a *gradient* (crew spaces as far from the reactor as the hull allows, with
+stores/tanks between as shielding), not just "engine at one end".
+
+**D11. Ship general arrangement practice** (TU Delft OCW MTP101 lecture 4;
+SNU ISOD notes; Marine Insight) — ABS.
+Arrangement is compartments + equipment + structure; deckhouse ends and
+sides line up with hull bulkheads; machinery placement follows propulsion;
+the bridge is placed for the SOLAS view requirements; there is "no specific
+procedure with rules stated for general arrangement, since almost every
+ship is unique". Not found: an open source on sick-bay or galley adjacency —
+those conventions are owner standards (Watson, *Practical Ship Design*, PAY).
+
+**How games encode "a ship"**
+
+**D12. Space Station 13 mapping requirements** (Paradise Station devdocs,
+"Mapping requirements"; Paradise and Unitystation mapping guides). FULL
+(web).
+Per-room requirements as data: "Each room needs **at least one air vent and
+one scrubber**" (supply and return, colour-coded blue supply loop / red
+scrubber loop), at least one fire alarm, intercom, camera, light switch;
+"Each station area should contain only **one APC and one air alarm**";
+**firelocks "at area boundaries over doors"**, may break up long hallways,
+never doubled, never on maintenance doors; maintenance hallways need no
+vent pump; external/depressurised areas use airless turf. Department areas
+and access levels structure the map; maintenance tunnels are a separate
+network behind the rooms.
+*For Breach:* SS13's rules are the closest existing "ship vocabulary" with
+per-room mandatory fittings — and they are the same as Erik's rule
+(supply + return per room) and D2 (a fire boundary at every area boundary
+door). Copy the *form*: a room type's `requires` list in the vocabulary
+(#27) — e.g. `{vent_supply: 1, vent_return_or_open_door: 1, lamp: 1,
+sensor: 1}` — checked by the validator.
+
+**D13. Barotrauma submarine editor** (official manual excerpts; community
+guides). ABS (wiki 403).
+Rooms are **hull** objects (volume for water and oxygen); **gaps** connect
+neighbouring hulls; doors and hatches create gaps automatically; anything
+not inside a hull is ocean; AI **waypoints are generated from the hulls,
+gaps, doors and ladders**; bots prefer hulls named "airlock" to enter and
+leave. Oxygen generators feed rooms through vents.
+*For Breach:* the same split v0.1 §3 step 6 calls for — the *as-built*
+graph (hulls + gaps) derived from geometry, and navigation derived from it
+— and a precedent for naming conventions as data that the AI reads.
+
+**D14. FTL: Faster Than Light** (FTL wiki "Door system"; player forums).
+ABS.
+Rooms hold oxygen; open doors equalise; **airlock doors vent rooms to space,
+and venting is the standard way to put out fires**; plain doors do not stop
+fire spread, upgraded blast doors do; an oxygen system replenishes. Ships
+are a few dozen rooms grouped by system, each system in one or two rooms.
+*For Breach:* FTL taught a generation of players to read "airlock = fire
+extinguisher, door = fire barrier you can upgrade" — Breach's physics gives
+the same reading for free, which is a reason to keep vent-to-space rooms
+(airlocks off hull rooms) common in ship archetypes.
+
+**D15. Objects in Space; Starsector.** NF / not applicable: no usable source
+on Objects in Space's interior rules was found; Starsector ships have no
+walkable interiors (hull mods are stat modifiers), so it says nothing about
+adjacency.
+
+### Recommendation for Breach (strand d)
+
+Make the **pressure cell the unit that every other subdivision lines up
+with**, as SOLAS makes fire zones line up with watertight bulkheads (D1, D2):
+one cell = one duct system (no duct crosses a cell boundary by default, D2)
+= one alarm zone (one air alarm per area, D12) = one readiness group (D3).
+Cell boundaries are bulkheads or airlock pairs (L5); every door on a cell
+boundary carries a damper-like closure class (ZEBRA, D3). Inside a cell,
+**every room has a supply vent and a return** — its own return vent or an
+always-open doorway into a room that has one (D6, D7, D12; Erik's rule).
+Give the **corridor spine its own duct** (the pressurised-stair rule, D2, D8)
+so it can be held clear while a side cell burns — the "pressure sandwich"
+as a map feature. Airlocks are prefabs carrying both-side equalisation
+valves, pressure readouts and a window (D5), and the hull rooms of
+archetypes that want it get a depressurisation valve (D7). For adjacency
+(#136), use *reasons* as rules: reactor/engineering at one end with
+stores/tanks between it and quarters (D10), the bridge where the hull gives
+it a view (D11), galley and machinery on separate ventilation (D2), airlocks
+and cargo on the hull (D4, D6: nodes and berthing ports are where things
+dock). And keep `vent` and `crawlway` as two words (D9): at one tile a vent
+is already a large real duct and correctly too small for a marine.

@@ -63,3 +63,29 @@ Erik to fetch through Lund) · NF = not found. **Archived** = PDF in
 | C9 | Parker-Holder, Jiang, Dennis, Samvelyan, Foerster, Grefenstette, Rocktäschel 2022, Evolving curricula with regret-based environment design (ACCEL), ICML. arXiv 2203.01302 | FULL (method sections) | https://arxiv.org/abs/2203.01302 | no (6.7 MB) |
 | C10 | Kirk, Zhang, Grefenstette, Rocktäschel 2023, A survey of zero-shot generalisation in deep reinforcement learning, JAIR 76:201–264. arXiv 2111.09794 | FULL (formalism + benchmark sections) | https://arxiv.org/abs/2111.09794 | no (6.6 MB) |
 | C11 | Ellis et al. 2023, SMACv2: an improved benchmark for cooperative multi-agent reinforcement learning, NeurIPS D&B. arXiv 2212.07489 | FULL (sections 1–5) | https://arxiv.org/abs/2212.07489 | no (12 MB) |
+
+## (d) Real ship, submarine and station interiors; games
+
+| Id | Source | Status | Where | Archived |
+|---|---|---|---|---|
+| D1 | Compartment (ship), Wikipedia (SOLAS II-1 subdivision summary) | FULL (secondary) | https://en.wikipedia.org/wiki/Compartment_(ship) | web |
+| D2 | SOLAS chapter II-2 regulation 9, Containment of fire (consolidated text, UK MCA publication) | FULL (zones, space categories, §7 ventilation) | https://assets.publishing.service.gov.uk/media/5a7f48cae5274a2e8ab4b3e4/Regulation_9_-_Containment_of_Fire.pdf | `solas_ii2_reg9_containment_of_fire_uk_mca.pdf` |
+| D3 | NAVEDTRA 14057 Damage Controlman, Material conditions of readiness (via tpub) + secondary summaries | FULL (the tpub page) / ABS | https://engineeringtraining.tpub.com/14057/Material-Conditions-Of-Readiness-61.html | web |
+| D4 | Escape trunk, Wikipedia; submarine hatch practice (forums) | ABS | https://en.wikipedia.org/wiki/Escape_trunk | — |
+| D5 | NASA OCHMO-TB-028 Rev B 2023, Vehicle hatches (NASA-STD-3001 technical brief) | FULL | https://www.nasa.gov/wp-content/uploads/2023/12/ochmo-tb-028-vehicle-hatches.pdf | `nasa_ochmo_tb028_vehicle_hatches_2023.pdf` |
+| D5b | Common Berthing Mechanism, Wikipedia; Oberg 2006 (hatch size 50 × 50 in) | ABS | https://en.wikipedia.org/wiki/Common_Berthing_Mechanism | — |
+| D6 | Boeing/NASA, ISS Node 1 THC subsystem / IMV verification, NTRS 20070018272 | FULL | https://ntrs.nasa.gov/citations/20070018272 | `nasa_iss_node1_thc_imv_ntrs20070018272.pdf` |
+| D6b | ISS Node 2 IMV reconfiguration for IDA/commercial crew, NTRS 20150009509 | ABS (PDF damaged on download; search summary only) | https://ntrs.nasa.gov/citations/20150009509 | — |
+| D7 | Laurini et al. 1999, Environmental control and life support for the Multi-Purpose Logistics Module, ESA Bulletin 98 | FULL | https://www.esa.int/esapub/bulletin/bullet98/LAURINI.pdf | `laurini1999_esa_bulletin98_mplm_eclss_ventilation.pdf` |
+| D8 | Klote 1991, Design manual for smoke control systems, NISTIR 4551 | FULL (ch. 4, 7, 9 skimmed) | https://nvlpubs.nist.gov/nistpubs/Legacy/IR/nistir4551.pdf | no (26 MB) |
+| D8b | Klote & Milke, Design of smoke management systems for buildings / Principles of smoke management (ASHRAE) | PAY | — | — |
+| D8c | NFPA 92 (smoke control systems), NFPA 101 (life safety code: smoke compartments) | PAY | — | — |
+| D9 | MythBusters ep. 54 results (crawling through air ducts); HVAC trade blogs (Parker & Sons, RAS Mechanical) | ABS | https://mythresults.com/episode54 | web |
+| D10 | NASA NTP Mission & System Analysis Phase 2 final report 2006 (NTRS 20240013888); Maddock et al. IAC 2021 | ABS (search summaries) | https://ntrs.nasa.gov/citations/20240013888 | — |
+| D11 | TU Delft OCW MTP101 lecture 4 (general arrangement); SNU ISOD general arrangement notes; Marine Insight GA article | ABS (TU Delft slides grepped; SNU PDF did not download) | https://ocw.tudelft.nl/wp-content/uploads/Project_Maritieme_industrie_lecture4-algemeen_plan.pdf | — |
+| D11b | Watson, Practical Ship Design (Elsevier) — the GA/adjacency textbook | PAY | — | — |
+| D12 | Paradise Station (SS13) devdocs, Mapping requirements; Paradise/Unitystation mapping guides | FULL (devdocs) / ABS (guides) | https://devdocs.paradisestation.org/mapping/requirements/ | web |
+| D13 | Barotrauma submarine editor manual + community guides | ABS (official wiki returned 403) | https://regalis11.github.io/BaroModDoc/Editors/SubmarineEditor.html | — |
+| D14 | FTL wiki, Door system; Subset Games forum threads | ABS | https://ftl.fandom.com/wiki/Door_System | — |
+| D15 | Objects in Space interior rules; Starsector | NF / not applicable (no walkable interiors) | — | — |
+| D16 | IMO SOLAS consolidated edition (chapters II-1, II-2, full official text) | PAY | IMO publishing | — |
