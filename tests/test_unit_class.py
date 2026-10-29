@@ -28,6 +28,7 @@ sys.path.insert(0, str(ROOT / "src"))
 import numpy as np
 import pytest
 
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation.generation import predefined_unit_attributes
 from simulation.species import HUMAN, get_species, GENERATED_STAT_NAMES, N_GENERATED_STATS
 from simulation.stats import (
@@ -364,9 +365,9 @@ def test_alive_setter_restore():
 def test_faction_id_matches_team():
     """faction_id should equal the team argument at construction."""
     marine = Unit("M", 5, 5, team=0)
-    zombie = Unit("Z", 5, 5, team=1)
+    zombie = Unit("Z", 5, 5, team=ZOMBIE_TEAM)
     assert marine.faction_id == 0
-    assert zombie.faction_id == 1
+    assert zombie.faction_id == ZOMBIE_TEAM
 
 
 # ---------------------------------------------------------------------------
@@ -385,7 +386,7 @@ def test_inventory_stub_present():
 def test_has_grenade_and_explosive_intact():
     """Legacy has_grenade / has_explosive booleans still exist on Unit."""
     marine = Unit("M", 5, 5, team=0)
-    zombie = Unit("Z", 5, 5, team=1)
+    zombie = Unit("Z", 5, 5, team=ZOMBIE_TEAM)
     # Marines get starting loadout; zombies start with none.
     assert marine.has_grenade >= 0
     assert marine.has_explosive >= 0

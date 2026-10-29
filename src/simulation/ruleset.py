@@ -139,7 +139,7 @@ class TwoPhaseWEGO(Ruleset):
     def on_round_start(self, sim) -> None:
         # Lifted verbatim from Simulation.step()'s tick-0 block (pre-P1
         # ~1092-1101): fires DET_START_PHASE1 once, resets path offsets for
-        # team-0 units, and stamps initial unit positions.
+        # order-driven (non-zombie) units, and stamps initial unit positions.
         if sim.tick == 0 and not sim._fired_start_p1:
             process_door_explosives(
                 sim.gmap, sim.edit_queue, sim.units, DET_START_PHASE1,
@@ -148,7 +148,7 @@ class TwoPhaseWEGO(Ruleset):
             sim._fired_start_p1 = True
             # Initialise per-unit path offsets for this round.
             for u in sim.units:
-                if u.team == 0:
+                if not u.is_zombie:
                     u.path_tick_offset = 0
             # Stamp initial unit positions (legacy: done in _start_execution).
             sim.gmap.stamp_units(sim.units)
@@ -207,8 +207,8 @@ class TwoPhaseWEGO(Ruleset):
         # Lifted verbatim from Simulation.is_terminal (pre-P1).
         if sim.tick >= sim._ticks_per_round:
             return True
-        any_marine = any(u.team == 0 and u.alive for u in sim.units)
-        any_zombie = any(u.team == 1 and u.alive for u in sim.units)
+        any_marine = any(not u.is_zombie and u.alive for u in sim.units)
+        any_zombie = any(u.is_zombie and u.alive for u in sim.units)
         # If we have neither, the simulation is degenerate; treat as terminal.
         if not any_marine and not any_zombie:
             return True
@@ -287,8 +287,8 @@ class ContinuousRealtime(Ruleset):
         pass
 
     def is_terminal(self, sim) -> bool:
-        any_marine = any(u.team == 0 and u.alive for u in sim.units)
-        any_zombie = any(u.team == 1 and u.alive for u in sim.units)
+        any_marine = any(not u.is_zombie and u.alive for u in sim.units)
+        any_zombie = any(u.is_zombie and u.alive for u in sim.units)
         # Terminal iff one side is gone (or the world is empty).
         return not (any_marine and any_zombie)
 
@@ -469,8 +469,8 @@ class OnePhaseWEGO(Ruleset):
         The WEGO cadence is a natural RL action interface (design §1), so the
         episode boundary that matters to training is the fight ending.
         """
-        any_marine = any(u.team == 0 and u.alive for u in sim.units)
-        any_zombie = any(u.team == 1 and u.alive for u in sim.units)
+        any_marine = any(not u.is_zombie and u.alive for u in sim.units)
+        any_zombie = any(u.is_zombie and u.alive for u in sim.units)
         return not (any_marine and any_zombie)
 
 

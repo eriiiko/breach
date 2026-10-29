@@ -202,7 +202,7 @@ def mitigation_for(unit) -> MitigationProfile:
     decision, species.py) — so the zombie profile is selected by state at
     damage time, on exactly the predicate the dissolved ``fire_damage_
     multiplier`` special case used (``u.is_zombie``): construction with
-    ``team=1``, end-of-round conversion, and direct flag flips all resolve
+    ``team=ZOMBIE_TEAM``, conversion, and direct flag flips all resolve
     identically to the old inline branch. When zombification becomes a
     status (mechanics/06 §4) this collapses into status multiplier
     composition. Non-zombies read the species profile pointer stamped on

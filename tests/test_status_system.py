@@ -33,6 +33,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 
 from config import CFG  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import unit_fixed  # noqa: E402
 from simulation.damage import ASPHYX, HEAL, HEAT, POISON  # noqa: E402
 from simulation.events import UnitHitEvent, UnitKilledEvent  # noqa: E402
@@ -50,7 +51,7 @@ def _marine(name="M", x=2, y=2):
 
 
 def _zombie(name="Z", x=6, y=6):
-    return Unit(name, x=x, y=y, team=1)
+    return Unit(name, x=x, y=y, team=ZOMBIE_TEAM)
 
 
 # ---------------------------------------------------------------------------
@@ -449,7 +450,7 @@ def test_e2e_can_act_suppression_blocks_marine_fire_order():
     def build():
         sim = _tiny_sim()
         m = Unit("M1", x=2, y=6, team=0)
-        z = Unit("Z1", x=10, y=6, team=1)
+        z = Unit("Z1", x=10, y=6, team=ZOMBIE_TEAM)
         sim.add_unit(m)
         sim.add_unit(z)
         ok = sim.apply_action(m.id, Order(ORDER_FIRE, z.tile_x, z.tile_y,
@@ -477,7 +478,7 @@ def test_e2e_can_act_suppression_blocks_zombie_melee():
     def build():
         sim = _tiny_sim()
         m = Unit("M1", x=5, y=5, team=0)
-        z = Unit("Z1", x=7, y=5, team=1)    # centers 2 apart -> adjacent
+        z = Unit("Z1", x=7, y=5, team=ZOMBIE_TEAM)    # centers 2 apart -> adjacent
         sim.add_unit(m)
         sim.add_unit(z)
         return sim, m, z
@@ -499,7 +500,7 @@ def test_e2e_can_move_suppression_freezes_zombie_walk():
     def build(immobilize):
         sim = _tiny_sim()
         m = Unit("M1", x=2, y=5, team=0)
-        z = Unit("Z1", x=11, y=5, team=1)   # far, but LOS + trigger radius
+        z = Unit("Z1", x=11, y=5, team=ZOMBIE_TEAM)   # far, but LOS + trigger radius
         sim.add_unit(m)
         sim.add_unit(z)
         if immobilize:

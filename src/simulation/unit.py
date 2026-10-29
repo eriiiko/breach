@@ -53,6 +53,7 @@ from simulation.inventory import Inventory
 from simulation.orders import (
     ORDER_MOVE_ATTACK, ORDER_FIRE, MOVE_ORDER_TYPES,
 )
+from simulation.factions import ZOMBIE_TEAM
 from simulation.species import get_species
 
 
@@ -100,20 +101,44 @@ class Unit:
     integer tile indices for matrix access come from ``tile_x`` /
     ``tile_y`` properties (which simply floor the float).
 
-    ``team`` semantics: 0 = marine (player), 1 = zombie (enemy). The
-    ``is_zombie`` flag mirrors this and is the source-of-truth check for
-    "should AI take over this unit". Conversion (marine killed by
-    zombie -> zombified at round end) flips both fields.
+    ``team`` semantics (#119): any int; hostility = a different team. Marine
+    teams count from 0 (the human controls ``Simulation.player_team``);
+    zombies live on :data:`ZOMBIE_TEAM`. ``is_zombie`` is set from it here and
+    is the ONLY zombie check anywhere — never a team literal. Conversion
+    (marine killed by zombie) moves the unit to ``ZOMBIE_TEAM`` and sets
+    ``is_zombie``, so it turns on its old squad. (A level file's legacy
+    ``team = 1`` is mapped to ``ZOMBIE_TEAM`` by the level loader, the one
+    door.)
+
+    ``slot`` is the unit's fixed index within the team it was spawned into,
+    assigned by ``Simulation.add_unit`` in spawn order, never reused and kept
+    at death and conversion (``Simulation.roster``). -1 = not yet added.
+
+    ``loadout_name`` names a ``[loadouts.*]`` row (``None`` = ``[marine]
+    loadout``); ``env_profile`` an ``[env_profiles.*]`` row (``None`` = the
+    species baseline). Zombies carry no loadout.
 
     Facing convention: float radians, 0=East, CCW positive.
     Default spawn: π/2 (North).
     """
 
     def __init__(self, name: str, x: float, y: float, team: int = 0,
-                 footprint: int = 3, species_id: str = "human"):
+                 footprint: int = 3, species_id: str = "human", *,
+                 loadout_name: str | None = None,
+                 env_profile: str | None = None):
+        # Deferred import: loadouts -> weapons -> config only, but keep the
+        # table build lazy (it validates the whole weapon table).
+        from simulation.loadouts import get_tables as _loadout_tables
+
         self.name = name
-        self.team = team
-        self.is_zombie = (team == 1)
+        self.team = int(team)
+        self.is_zombie = (self.team == ZOMBIE_TEAM)
+        # Roster slot within the spawn team (Simulation.add_unit assigns it).
+        self.slot = -1
+        self.loadout_name = None if self.is_zombie else (
+            loadout_name if loadout_name is not None
+            else _loadout_tables().default_loadout)
+        self.env_profile_name = env_profile
 
         # Stable integer id, assigned by Simulation.add_unit. -1 means the
         # unit has not yet been added (constructor usage / tests).
@@ -157,11 +182,10 @@ class Unit:
         # Life state — authoritative. ``alive`` is a @property derived from it.
         self.life_state = LifeState.ALIVE
 
-        # Faction id — alias for team in this pass (spec §10.1).
-        self.faction_id: int = int(team)
-
-        # Environment profile pointer (species baseline; modifiers deferred).
-        self.environment = species.environment
+        # Environment profile pointer: the named [env_profiles.*] row (a
+        # suit, #119), else the species baseline (modifiers deferred).
+        self.environment = (species.environment if env_profile is None
+                            else _loadout_tables().env_profile(env_profile))
 
         # Mitigation tables pointer (mechanics/06 §3 — species baseline;
         # equipment/status composition deferred). Zombie-state units resolve
@@ -208,20 +232,24 @@ class Unit:
         self.ap = [CFG.clock.ap_per_phase, CFG.clock.ap_per_phase]
 
         # Inventory booleans — BASE fields. Wiring into self.inventory deferred.
-        self.has_grenade   = 0 if self.is_zombie else CFG.marine.grenades
-        self.has_explosive = 0 if self.is_zombie else CFG.marine.explosives
+        # A non-zombie is armed by its [loadouts.*] row (#119; the default
+        # row carries the pre-#119 [marine] numbers, byte-identical).
+        _kit = None if self.is_zombie else _loadout_tables().loadout(
+            self.loadout_name)
+        self.has_grenade   = 0 if _kit is None else _kit.grenades
+        self.has_explosive = 0 if _kit is None else _kit.explosives
 
         # Weapon binding (mechanics/03 §4, W1; data-driven W4): which
-        # [weapons.*] row this unit fires. The marine default comes from
-        # config `[marine] weapon` (W4 — Erik's feel-check dial: set it to
-        # "dragon_7", RESTART the game, hose a room; construction-bound like
-        # the weapon tables, Ctrl+R alone does not re-arm existing units).
+        # [weapons.*] row this unit fires — its loadout row's `weapon` (#119;
+        # the marine default is `[marine] loadout`'s row — Erik's feel-check
+        # dial: set that row's weapon to "dragon_7", RESTART the game, hose a
+        # room; construction-bound like the weapon tables, Ctrl+R alone does
+        # not re-arm existing units).
         # Zombie melee stays on its ai_zombie path (NPC weapons migrate onto
         # rows later, mechanics/03 §7). Config-static, so deliberately NOT
         # in the synced digest (field_ab_harness.SYNCED_UNIT_FIELDS) — it
         # joins when loadouts can change at runtime.
-        self.weapon_id = "" if self.is_zombie else str(
-            getattr(CFG.marine, "weapon", "k5_carbine"))
+        self.weapon_id = "" if _kit is None else str(_kit.weapon)
 
         # Combat state (used by marines mainly; harmless on zombies).
         self.last_fire_tick = -999
@@ -314,6 +342,12 @@ class Unit:
         # makes "recent" mean something without threading a clock through
         # every damage call site.
         self.recent_attackers: dict = {}
+
+    # Faction id — alias for team (spec §10.1). A property so it can never go
+    # stale when conversion moves the unit to ZOMBIE_TEAM (#119).
+    @property
+    def faction_id(self) -> int:
+        return int(self.team)
 
     # ------------------------------------------------------------------
     # Life state

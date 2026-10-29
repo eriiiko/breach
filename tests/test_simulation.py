@@ -25,6 +25,7 @@ import numpy as np
 
 import breach_physics as bp
 from level_loader import load as load_level
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import Simulation
 from simulation.orders import Order, ORDER_MOVE_ATTACK
 from simulation.unit import Unit
@@ -44,7 +45,7 @@ def _spawn_demo_units(sim: Simulation) -> tuple:
     The 50-tile vertical gap keeps them outside zombie trigger radius (24).
     """
     marine = Unit("M1", x=14, y=50, team=0)
-    zombie = Unit("Z1", x=14, y=100, team=1)
+    zombie = Unit("Z1", x=14, y=100, team=ZOMBIE_TEAM)
     m_id = sim.add_unit(marine)
     z_id = sim.add_unit(zombie)
     return m_id, z_id
@@ -151,9 +152,9 @@ def test_full_round_runs():
     m1 = sim.add_unit(Unit("M1", x=12, y=6, team=0))
     sim.add_unit(Unit("M2", x=24, y=6, team=0))
     sim.add_unit(Unit("M3", x=36, y=12, team=0))
-    sim.add_unit(Unit("Z1", x=30, y=60, team=1))
-    sim.add_unit(Unit("Z2", x=18, y=72, team=1))
-    sim.add_unit(Unit("Z3", x=42, y=84, team=1))
+    sim.add_unit(Unit("Z1", x=30, y=60, team=ZOMBIE_TEAM))
+    sim.add_unit(Unit("Z2", x=18, y=72, team=ZOMBIE_TEAM))
+    sim.add_unit(Unit("Z3", x=42, y=84, team=ZOMBIE_TEAM))
 
     # One marine fires at a zombie tile (no LOS likely, but no exception).
     sim.apply_action(m1, Order(ORDER_FIRE,

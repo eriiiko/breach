@@ -50,7 +50,8 @@ _TRIGGER_ON = 0.0
 
 
 class GamepadDirect(ControlSource):
-    """Possess the first team-0 marine and drive it with a controller (§3b)."""
+    """Possess the first marine of the player's team (``sim.player_team``)
+    and drive it with a controller (§3b)."""
 
     def __init__(self):
         # The possessed unit id — bound lazily on the first frame a unit
@@ -85,7 +86,8 @@ class GamepadDirect(ControlSource):
 
     # ------------------------------------------------------------------
     def _bind_possessed(self, sim) -> None:
-        """Lazily pick the possessed unit: the first living team-0 unit
+        """Lazily pick the possessed unit: the first living unit of
+        ``sim.player_team``
         (default per §3b — the editor's first SPAWN T). Re-binds if the current
         possessed unit is gone (dead/removed)."""
         cur = sim.get_unit(self.possessed_id) if self.possessed_id is not None \
@@ -93,7 +95,7 @@ class GamepadDirect(ControlSource):
         if cur is not None and cur.alive:
             return
         for u in sim.units:
-            if u.team == 0 and u.alive:
+            if u.team == sim.player_team and u.alive:
                 self.possessed_id = u.id
                 return
         self.possessed_id = None

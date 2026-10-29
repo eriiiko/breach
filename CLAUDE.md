@@ -144,8 +144,9 @@ One line per system built for reuse. Long form + entry points:
 
 | System | Where | Rule |
 |---|---|---|
-| Unit | `src/simulation/unit.py` | One class; `is_zombie` is a state; subclassing is an anti-goal |
+| Unit | `src/simulation/unit.py` | One class; `is_zombie` is a state; subclassing is an anti-goal. **`team` is any int and hostility is a different team; zombies live on `factions.ZOMBIE_TEAM` (255) and `is_zombie` is the ONLY zombie check — never a team literal; "the human's squad" is `Simulation.player_team` / `controlled_units()`. A level file's legacy `team = 1` becomes `ZOMBIE_TEAM` at the loader (`factions.team_from_level`), the one door. `unit.slot` is the fixed index within its spawn team (`Simulation.add_unit`, never reused, kept at death and conversion; `Simulation.roster(team, n_slots)`), derived from spawn order and so not digested (#119)** |
 | Weapons | `weapons.py` tables + `combat.py` archetypes + `attack_resolver.py` + `damage.py` + `status.py` | A weapon is a data row; every hit is a DamagePacket; nothing writes `current_hp` directly; temporary truths are status rows |
+| Loadouts / suits | `src/simulation/loadouts.py` over `config.toml` `[loadouts.*]` / `[env_profiles.*]` | What a unit carries is a `[loadouts.*]` row (`weapon` a `[weapons.*]` id, `grenades`, `explosives`), the default `[marine] loadout`; what it survives is an `[env_profiles.*]` row over `EnvironmentProfile` (`default` = the baseline; no profile = the species baseline). `Unit(loadout_name=, env_profile=)`; the door refuses an unknown weapon, profile, field or count — never a per-unit literal (#119) |
 | Control seams | `ruleset.py`, `control_source.py`, `orders.py`/`intents.py`, `action_registry.py`, `timeline.py` | Phase decisions via Ruleset; schemes are ControlSource subclasses; verbs are registry rows; durations live in Timeline only |
 | Vision / engagements / cover | `vision.py`, `engagement.py`, `cover_system.py` | One sight oracle; engagements share one shape; bullet fate is geometry |
 | A* | `pathfinding.py::astar` | The only pathfinder |

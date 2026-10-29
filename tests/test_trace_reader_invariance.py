@@ -46,6 +46,7 @@ import _trace_currency_lint as lint  # noqa: E402
 from _radiation_sweep_harness import ONE, R, cpp_sweep, live_table  # noqa: E402
 from config import CFG  # noqa: E402
 from level_loader import LevelData, load as load_level  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import gas_fixed, unit_fixed  # noqa: E402
 from simulation.gases import (  # noqa: E402
     GAS_NAMES, INERT_N2, N_GASES, N_TRACE_GASES, O2, POISON, SMOKE, STEAM,
@@ -208,7 +209,7 @@ def reader_fire_beam():
         for gid, so in olds.items():
             g.gas[gid, 9, 6] = trace_lift(so)
         shooter = Unit("S", x=2, y=8, team=0)
-        z = Unit("Z", x=10, y=8, team=1)
+        z = Unit("Z", x=10, y=8, team=ZOMBIE_TEAM)
         z.current_hp = 1e9
         shooter.id, z.id = 1, 2
         events = []

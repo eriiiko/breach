@@ -376,7 +376,7 @@ class BulletInFlight:
         # row), so it hits like a slug AND detonates at its stop below.
         if hit_unit is not None and int(self.ammo.damage) > 0:
             actual_dmg = int(self.ammo.damage)
-            if hit_unit.team == 1:  # zombie
+            if hit_unit.is_zombie:
                 # SITE-SIDE pre-mitigation amount rule, deliberately NOT a
                 # resistance: the int() truncation (and its position before
                 # the packet) is part of the shipped numbers; the zombie's
@@ -729,7 +729,7 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
     tables = weapon_tables()
 
     for u in units:
-        if u.team != 0 or not u.alive:
+        if u.is_zombie or not u.alive:
             continue
 
         # Status gate (mechanics/06 §4): a unit whose composed can_act is
@@ -1649,7 +1649,7 @@ def process_door_explosives(gmap, queue, units, slot, rng, events=None):
     """
     tables = weapon_tables()
     for u in units:
-        if u.team != 0:
+        if u.is_zombie:
             continue
         for o in u.orders:
             if o.order_type == ORDER_EXPLOSIVE and o.det_slot == slot:

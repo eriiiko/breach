@@ -26,6 +26,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 
 from config import CFG  # noqa: E402
 from level_loader import LevelData  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import orders as O  # noqa: E402
 from simulation import vision as V  # noqa: E402
 from simulation.cover_system import (  # noqa: E402
@@ -76,7 +77,7 @@ def _marine(sim, x, y, name="m"):
 
 
 def _zombie(sim, x, y, name="z", hp=10_000):
-    u = Unit(name, x=x, y=y, team=1)
+    u = Unit(name, x=x, y=y, team=ZOMBIE_TEAM)
     sim.add_unit(u)
     u.current_hp = hp
     return u
