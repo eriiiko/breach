@@ -37,6 +37,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 
 import breach_physics as bp  # noqa: E402
 from level_loader import LevelData  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import Simulation  # noqa: E402
 from simulation import gas_fixed, unit_fixed, wall_fixed  # noqa: E402
 from simulation.combat import BEAM_MIN_ENERGY_Q16, fire_beam  # noqa: E402
@@ -69,7 +70,7 @@ def _room(h=20, w=30, edits=()):
 
 
 def _zombie(x, y, name="Z"):
-    u = Unit(name, x=x, y=y, team=1)
+    u = Unit(name, x=x, y=y, team=ZOMBIE_TEAM)
     u.current_hp = 1e9
     return u
 
@@ -222,7 +223,7 @@ def test_laser_dormant_when_nobody_carries_one():
     sim = Simulation(_level(), seed=SEED, breach_physics=bp,
                      enable_recorder=False)
     m = Unit("M", x=2, y=8, team=0)
-    z = Unit("Z", x=14, y=8, team=1)
+    z = Unit("Z", x=14, y=8, team=ZOMBIE_TEAM)
     m_id = sim.add_unit(m)
     sim.add_unit(z)
     assert m.weapon_id == "k5_carbine"                # ...but nobody fires it
@@ -244,7 +245,7 @@ def test_lance3_fires_through_the_order_flow():
     sim = Simulation(_level(), seed=SEED, breach_physics=bp,
                      enable_recorder=False)
     m = Unit("M", x=2, y=8, team=0)
-    z = Unit("Z", x=14, y=8, team=1)
+    z = Unit("Z", x=14, y=8, team=ZOMBIE_TEAM)
     m_id = sim.add_unit(m)
     sim.add_unit(z)
     m.weapon_id = "lance_3"

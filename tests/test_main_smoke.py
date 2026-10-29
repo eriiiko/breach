@@ -35,6 +35,7 @@ from level_loader import load as load_level
 from renderer import GameRenderer
 from renderer.camera import Camera2D
 from renderer.game_renderer import RenderConfig
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import Simulation
 from simulation.unit import Unit
 
@@ -48,7 +49,7 @@ def main():
     # Coords are physics-tile positions inside the ship interior.
     sim.add_unit(Unit("Alpha", x=22, y=50, team=0))
     sim.add_unit(Unit("Bravo", x=28, y=50, team=0))
-    sim.add_unit(Unit("Zomb1", x=22, y=70, team=1))
+    sim.add_unit(Unit("Zomb1", x=22, y=70, team=ZOMBIE_TEAM))
 
     cfg = RenderConfig(
         map_px_w=400, map_px_h=960, panel_px_w=280,

@@ -3265,15 +3265,11 @@ attack_cooldown_seconds = 1.0      # 1.0 s -> 12 ticks @ 12 tps
 
 [marine]
 hp = 100
-grenades = 2
-explosives = 2
-# weapon — the marine's default [weapons.*] row (W4: data-driven, replaces
-# W1's code literal; consumed at Unit construction). ERIK'S FEEL-CHECK LOOP:
-# set to "dragon_7" (or "miasma_vent"), RESTART the game (units + weapon
-# tables are construction-bound — Ctrl+R alone re-reads config but re-arms
-# nothing, engine/12 §5), launch `main.py --level playground`, issue fire
-# orders, watch rooms burn.
-weapon = "k5_carbine"
+# loadout — the [loadouts.*] row a marine is armed with when nothing names
+# one (#119; the row replaced this table's old weapon / grenades / explosives
+# keys with the same values). A match config names a row per team (#119 P2).
+loadout = "rifleman"
+# weapon (the PRIMARY) now lives on the loadout row — see [loadouts.*] below.
 # OnePhaseWEGO loadout (onephase_wego design §15): primary + secondary, swapped
 # freely for 0 cost except the 0.75 s swap CD — "the design intent is *lots* of
 # weapon changes, choosing the tool for the task". `weapon` above is the
@@ -3286,6 +3282,47 @@ secondary = "p12_whisper"
 # one system wearing two skins — so entries name LOBBED/PLACED weapon rows,
 # which is what the registry generates its `use_*` item actions from.
 belt = ["hand_grenade", "breach_charge"]
+
+# ---------------------------------------------------------------------------
+# Loadouts (#119) — what a unit carries, one row per kit. `weapon` names a
+# [weapons.*] row (refused at load if it names none), `grenades` / `explosives`
+# are non-negative integer counts. Read by simulation/loadouts.py at Unit
+# construction (construction-bound like the weapon tables: RESTART to re-arm).
+# ERIK'S FEEL-CHECK LOOP: set rifleman's weapon to "dragon_7" (or
+# "miasma_vent"), RESTART the game (Ctrl+R alone re-reads config but re-arms
+# nothing, engine/12 §5), launch `main.py --level playground`, issue fire
+# orders, watch rooms burn. Zombies carry no loadout.
+# ---------------------------------------------------------------------------
+[loadouts.rifleman]      # the v1 loadout (rl-ready scope §3): K5 + 2 frags
+weapon = "k5_carbine"
+grenades = 2
+explosives = 2
+
+# ---------------------------------------------------------------------------
+# Environment profiles (#119) — suits, one row per profile, over the
+# EnvironmentProfile dataclass (src/simulation/environment.py): a row names
+# any subset of its fields and an absent field takes the dataclass default;
+# an unknown field or submersion rule is refused at load. A unit given no
+# profile keeps its species baseline. `default` IS the human baseline (every
+# field at the dataclass default, listed so the row reads as the reference).
+# Values are placeholders until Erik's suit design session.
+# ---------------------------------------------------------------------------
+[env_profiles.default]
+breathes = true
+can_breathe_air = true
+can_breathe_water = false
+o2_reserve_max = 60.0
+pressure_min = 0.4
+pressure_max = 2.5
+o2_level_min = 0.15
+o2_level_max = 1.0
+temperature_min = -20.0
+temperature_max = 60.0
+stability = 1.0
+front_arc_deg = 120.0
+behind_arc_deg = 90.0
+submersion = "drowns"
+environmental_damage_rate = 1.0
 
 [rendering]
 # Resolution of the world composite RT in pixels per tile — the sharpness

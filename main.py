@@ -308,16 +308,16 @@ def _onephase_world_overlay(sim, control_source, hover_tile=None):
         ui_draw.draw_cover(sim, world_px_per_tile)
         # An overwatch cone is not a "view" indicator, it is the player's own
         # target-control dial (§9), so it stays.
-        for u in sim.marines():
+        for u in sim.controlled_units():
             ui_draw.draw_overwatch_cone(u, world_px_per_tile)
-        ui_draw.draw_marks(sim, 0, world_px_per_tile)
+        ui_draw.draw_marks(sim, sim.player_team, world_px_per_tile)
         ui_draw.draw_selected_marker(selected, world_px_per_tile)
 
         # EVERY marine's plan stays on screen (Erik: "i'd like everything to
         # stay on screen"), the unselected ones muted. Drawn first so the
         # selected marine's plan lands on top at full strength — you can read
         # the whole assault at once without losing which one you are steering.
-        for u in sim.marines():
+        for u in sim.controlled_units():
             if selected is not None and u.id == selected.id:
                 continue
             ui_draw.draw_plan_overlay(ui.plan_overlay(sim, u),
@@ -520,7 +520,8 @@ def main():
             # the light is the expression of their facing cone.
             extra += frame_lights.flashlight_specs(
                 ui.flashlight_cones(
-                    sim, team=0, mode=control_source.flashlight_mode,
+                    sim, team=sim.player_team,
+                    mode=control_source.flashlight_mode,
                     selected_unit_id=control_source.selected_unit_id,
                     cursor_tile=renderer.mouse_to_tile(),
                     paused=sim.is_paused()),
@@ -640,7 +641,7 @@ def main():
 
             # Fog of war (§8) is visibility GATING: an enemy the team cannot
             # see is simply not drawn. The sim keeps simulating it in full.
-            zombies = (ui.drawable_enemies(sim, 0) if onephase
+            zombies = (ui.drawable_enemies(sim, sim.player_team) if onephase
                        else sim.zombies())
             renderer.compose_world(
                 units_marines=sim.marines(),

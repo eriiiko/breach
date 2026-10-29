@@ -33,6 +33,7 @@ sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 import breach_physics as bp  # noqa: E402
 from config import CFG  # noqa: E402
 from level_loader import SPACE_CODE, load, materials_from_tilemap  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import Simulation  # noqa: E402
 from simulation.materials import (  # noqa: E402
     MAT_DOOR_CLOSED, MAT_FURNITURE, MAT_GLASS, MAT_HULL, MAT_STEEL, MAT_WOOD,
@@ -92,7 +93,7 @@ def test_playground_loads_with_all_showcase_materials():
 def test_playground_spawns_stand_on_open_floor():
     lvl = load("playground")
     marines = [s for s in lvl.spawns if s.team == 0]
-    zombies = [s for s in lvl.spawns if s.team == 1]
+    zombies = [s for s in lvl.spawns if s.team == ZOMBIE_TEAM]
     assert len(marines) >= 4, "a squad to play with"
     assert len(zombies) >= 4, "a horde to release"
     mat, vac = materials_from_tilemap(lvl.tilemap, lvl.version)
@@ -112,7 +113,7 @@ def test_playground_zombies_outside_trigger_radius():
     lvl = load("playground")
     trig = float(CFG.zombie.trigger_radius)
     marines = [s for s in lvl.spawns if s.team == 0]
-    zombies = [s for s in lvl.spawns if s.team == 1]
+    zombies = [s for s in lvl.spawns if s.team == ZOMBIE_TEAM]
     for z in zombies:
         zc = (z.x + z.footprint / 2.0, z.y + z.footprint / 2.0)
         for m in marines:

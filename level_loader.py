@@ -51,6 +51,10 @@ from simulation.entities import (  # noqa: E402
     REGISTRY as ENTITY_REGISTRY, all_signals, effective_defaults,
     field_value_error,
 )
+# Team ints (#119): the legacy zombie code in level data and its one mapping.
+from simulation.factions import (  # noqa: E402,F401
+    LEGACY_ZOMBIE_TEAM, ZOMBIE_TEAM, team_from_level,
+)
 
 
 SUPPORTED_VERSIONS = {"1", "2"}
@@ -101,7 +105,7 @@ def tile_to_art_px(tile_x: float, tile_y: float,
 class SpawnEntry:
     """One unit spawn declared in level.toml. Fed to Simulation.add_unit."""
     name: str
-    team: int           # 0 = marine, 1 = zombie
+    team: int           # RUNTIME team: 0.. marine teams, ZOMBIE_TEAM zombies
     x: float            # physics-tile x (top-left of footprint)
     y: float            # physics-tile y
     footprint: int = 3  # side length of unit's square footprint in tiles
@@ -1201,7 +1205,14 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
         try:
             spawns.append(SpawnEntry(
                 name=str(entry["name"]),
-                team=int(entry["team"]),
+                # THE legacy-team door (#119): level files written before
+                # teams were ints say `team = 1` for a zombie; it loads as
+                # ZOMBIE_TEAM (factions.team_from_level), so no level file is
+                # edited. The writer (level_lib) writes the runtime int back,
+                # so a re-saved file says ZOMBIE_TEAM (255), which loads the
+                # same. Consequence: a [[spawn]] cannot place a marine on team
+                # 1 -- marine teams come from the match config (#119 P2).
+                team=team_from_level(entry["team"]),
                 x=float(entry["x"]),
                 y=float(entry["y"]),
                 footprint=int(entry.get("footprint", 3)),

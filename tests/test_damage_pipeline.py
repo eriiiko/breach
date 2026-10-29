@@ -34,6 +34,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 
 from config import CFG  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import damage, unit_fixed  # noqa: E402
 from simulation.damage import (  # noqa: E402
     KINETIC, BLAST, HEAT, ENERGY, POISON, ASPHYX, HEAL, ELECTRIC, PSY,
@@ -294,11 +295,11 @@ def test_species_carry_mitigation_tables_and_units_point_at_them():
 
 def test_zombie_state_resolves_to_zombie_table():
     """mitigation_for keys on unit.is_zombie AT DAMAGE TIME — the exact
-    predicate the dissolved branch used: construction with team=1, AND a
+    predicate the dissolved branch used: construction with team=ZOMBIE_TEAM, AND a
     later flag flip (end-of-round conversion), both resolve to the zombie
     table."""
     from simulation.species import ZOMBIE_MITIGATION
-    z = Unit("Z1", x=5, y=5, team=1)
+    z = Unit("Z1", x=5, y=5, team=ZOMBIE_TEAM)
     assert mitigation_for(z) is ZOMBIE_MITIGATION
     # Conversion shape: a marine flipped to zombie state mid-life.
     m = Unit("M1", x=5, y=5, team=0)
@@ -312,7 +313,7 @@ def test_zombie_heat_times_four_matches_old_formula_bitwise():
     ``dmg *= CFG.zombie.fire_damage_multiplier`` to the BIT across the sweep
     (×4.0 is an exact binary scale at the same pre-quantize position), and
     identical again after the quantize boundary."""
-    z = Unit("Z1", x=5, y=5, team=1)
+    z = Unit("Z1", x=5, y=5, team=ZOMBIE_TEAM)
     prof = mitigation_for(z)
     old_mult = float(CFG.zombie.fire_damage_multiplier)   # the retired read
     assert old_mult == 4.0   # the config key is now ONLY the tests' constant
@@ -327,7 +328,7 @@ def test_zombie_heat_times_four_matches_old_formula_bitwise():
 def test_zombie_non_heat_types_stay_neutral_bitwise():
     """A zombie's KINETIC/BLAST mitigation is a bitwise no-op — the bullet
     and blast sites must not move when routed through the pipeline."""
-    z = Unit("Z1", x=5, y=5, team=1)
+    z = Unit("Z1", x=5, y=5, team=ZOMBIE_TEAM)
     prof = mitigation_for(z)
     for dtype in (KINETIC, BLAST):
         for x in AMOUNT_SWEEP:
@@ -349,7 +350,7 @@ def test_heat_site_end_to_end_bit_identity_marine_and_zombie():
     for phi in (12.0, 50.0, 73.25, 200.0):
         stub = _HeatStub(40, 40)
         m = Unit("M1", x=10, y=10, team=0)
-        z = Unit("Z1", x=20, y=20, team=1)
+        z = Unit("Z1", x=20, y=20, team=ZOMBIE_TEAM)
         m.current_hp = z.current_hp = 1e9
         raw_counts = int(round(phi * HEAT_SCALE))
         for u in (m, z):
@@ -437,7 +438,7 @@ def test_bullet_site_end_to_end_bit_identity():
 
     gmap = _GmapStub(40, 40)
     shooter = Unit("M1", x=5, y=10, team=0)
-    target = Unit("Z1", x=12, y=9, team=1)     # dead ahead, inside range
+    target = Unit("Z1", x=12, y=9, team=ZOMBIE_TEAM)     # dead ahead, inside range
     shooter.id, target.id = 1, 2
     target.current_hp = 1e9
     shots, events = [], []
@@ -484,7 +485,7 @@ def test_melee_site_end_to_end_bit_identity_and_conversion():
 
     # Non-lethal hit: exact delta, flag untouched.
     marine = Unit("M1", x=10, y=10, team=0)
-    zombie = Unit("Z1", x=13, y=10, team=1)    # adjacent (footprint + 1)
+    zombie = Unit("Z1", x=13, y=10, team=ZOMBIE_TEAM)    # adjacent (footprint + 1)
     marine.current_hp = 1e9
     update_zombies_tick(gmap, [marine, zombie], tick=100)
     assert _bits(1e9 - marine.current_hp) == \
@@ -493,7 +494,7 @@ def test_melee_site_end_to_end_bit_identity_and_conversion():
 
     # Lethal hit: alive False + killed_by_zombie True (the converting death).
     marine2 = Unit("M2", x=10, y=10, team=0)
-    zombie2 = Unit("Z2", x=13, y=10, team=1)
+    zombie2 = Unit("Z2", x=13, y=10, team=ZOMBIE_TEAM)
     marine2.current_hp = 1.0
     update_zombies_tick(gmap, [marine2, zombie2], tick=100)
     assert not marine2.alive

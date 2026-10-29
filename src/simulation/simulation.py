@@ -140,6 +140,7 @@ from simulation.weapons import (
 # The action registry (onephase_wego design §5) — OnePhaseWEGO's verb table,
 # rebuilt beside the weapon tables at every construction/reset.
 from simulation.action_registry import rebuild_table as rebuild_action_table
+from simulation.loadouts import rebuild_tables as rebuild_loadout_tables
 
 try:
     from pathfinding import astar
@@ -232,6 +233,11 @@ class Simulation:
         self._enable_recorder = enable_recorder
         self._bp = breach_physics
         self.ruleset = ruleset if ruleset is not None else TwoPhaseWEGO()
+        # The team the HUMAN controls (#119): what the HUD, selection, the
+        # flashlights and the possession default mean by "the squad". Control
+        # / UI state, never synced, never digested; the sim itself treats
+        # every team alike.
+        self.player_team: int = 0
 
         # Constants (cached so reset() doesn't re-read CFG every time)
         self._ticks_per_phase = CFG.clock.ticks_per_phase
@@ -321,6 +327,9 @@ class Simulation:
         # playground's 0.333 m/tile derives 3x the tiles for the same reach.
         self.weapons_tables = rebuild_weapon_tables(
             tile_size_m=self.gmap.tile_size_m)
+        # Loadouts + env profiles (#119): validated against the weapon table
+        # just built (an unknown weapon / profile is a load error here).
+        self.loadout_tables = rebuild_loadout_tables()
         # The ACTION REGISTRY (onephase_wego design §5) — the same
         # construction-bound, config-static contract as the weapon tables
         # above, and built AFTER them because its item rows are generated from
@@ -425,6 +434,10 @@ class Simulation:
 
         # Next id to assign in add_unit.
         self._next_unit_id = 0
+        # Roster slots (#119, rl-ready §5.2): per SPAWN team, the units in
+        # slot order. A slot is assigned once and kept at death and
+        # conversion, so a team's size is a mask over a fixed layout.
+        self._rosters: dict[int, list] = {}
 
     # ------------------------------------------------------------------
     # Unit management
@@ -458,8 +471,34 @@ class Simulation:
 
         unit.id = self._next_unit_id
         self._next_unit_id += 1
+        # Roster slot: the next index in the unit's spawn team, never reused.
+        # Derived from the (deterministic) spawn order, so it is not separately
+        # digested: the unit list is hashed in id order already.
+        roster = self._rosters.setdefault(int(unit.team), [])
+        unit.slot = len(roster)
+        roster.append(unit)
         self.units.append(unit)
         return unit.id
+
+    def roster(self, team: int, n_slots: int | None = None) -> list:
+        """``team``'s units indexed by roster slot (#119): every unit ever
+        spawned into ``team``, dead and converted ones included (a slot is
+        never reused), padded with ``None`` up to ``n_slots`` (a level's
+        ``max_per_team``). The living mask is ``u is not None and u.alive and
+        u.team == team`` — a converted marine keeps its slot here but has left
+        the team."""
+        out = list(self._rosters.get(int(team), ()))
+        if n_slots is not None:
+            if n_slots < len(out):
+                raise ValueError(f"roster({team}): {len(out)} slots used, "
+                                 f"n_slots={n_slots} is too small")
+            out.extend([None] * (n_slots - len(out)))
+        return out
+
+    def controlled_units(self) -> list:
+        """The living units of :attr:`player_team` — the human's squad."""
+        return [u for u in self.units
+                if u.team == self.player_team and u.alive]
 
     def get_unit(self, unit_id: int):
         """Linear lookup by id. ``None`` if not found."""
@@ -469,12 +508,12 @@ class Simulation:
         return None
 
     def marines(self):
-        """All living marines (team 0)."""
-        return [u for u in self.units if u.team == 0 and u.alive]
+        """All living non-zombies, every team (the renderer's marine look)."""
+        return [u for u in self.units if not u.is_zombie and u.alive]
 
     def zombies(self):
-        """All living zombies (team 1)."""
-        return [u for u in self.units if u.team == 1 and u.alive]
+        """All living zombies."""
+        return [u for u in self.units if u.is_zombie and u.alive]
 
     # ------------------------------------------------------------------
     # Order placement
@@ -845,7 +884,7 @@ class Simulation:
         if not self._possessed_ids:
             return
         for u in self.units:
-            if u.id not in self._possessed_ids or not u.alive or u.team != 0:
+            if u.id not in self._possessed_ids or not u.alive or u.is_zombie:
                 # A now-invalid possessor (dead / unpossessed / wrong team)
                 # releases a held trigger, so a later rebind starts clean.
                 if getattr(u, "live_trigger", False):
@@ -1009,7 +1048,7 @@ class Simulation:
         gmap = self.gmap
 
         for u in self.units:
-            if u.team != 0 or not u.alive:
+            if u.is_zombie or not u.alive:
                 continue
             u.move_path = []
             u.path_tick_offset = 0
@@ -1143,7 +1182,7 @@ class Simulation:
     def round_index(self) -> int:
         return self.ruleset.round_index(self)
 
-    def visible_enemy_ids(self, team: int = 0) -> tuple:
+    def visible_enemy_ids(self, team: int | None = None) -> tuple:
         """Enemies ``team`` can currently see — TEAM VISION, the union of its
         members' cones (onephase_wego design §8).
 
@@ -1153,6 +1192,8 @@ class Simulation:
         model and show everything, exactly as they always have.
         """
         from simulation import vision
+        if team is None:                    # the human's squad (#119)
+            team = self.player_team
         return vision.visible_enemy_ids(self, team)
 
     def round_start_tick(self) -> int:
@@ -1292,7 +1333,7 @@ class Simulation:
         """
         out = {}
         for u in self.units:
-            if u.team != 0 or not u.alive:
+            if u.is_zombie or not u.alive:
                 continue
             start = (u.tile_x, u.tile_y) if phase == 0 else \
                     u.get_planned_pos_after_phase(phase - 1)
@@ -1762,7 +1803,7 @@ class Simulation:
         pre-P3 behavior.
         """
         for u in self.units:
-            if not u.alive or u.team != 0:
+            if not u.alive or u.is_zombie:
                 continue
 
             # Direct-control branch (control-modularity P3, §3c): a unit with a
@@ -1921,7 +1962,7 @@ class Simulation:
         """
         tpp = self._ticks_per_phase
         for u in self.units:
-            if u.team != 0:
+            if u.is_zombie:
                 continue
             for o in u.orders:
                 if o.order_type == ORDER_GRENADE:

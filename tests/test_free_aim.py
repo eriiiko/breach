@@ -31,6 +31,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
         sys.path.insert(0, str(_p))
 
 from level_loader import LevelData  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import unit_fixed  # noqa: E402
 from simulation.combat import fire_beam, fire_burst  # noqa: E402
 from simulation.events import UnitHitEvent  # noqa: E402
@@ -93,7 +94,7 @@ def _fire(resolver, weapon, aim_angle):
     at (8,8); return the sorted (unit_id, amount) hit tuples."""
     gmap = _room()
     shooter = Unit("S", x=2, y=8, team=0)
-    enemy = Unit("E", x=8, y=8, team=1)
+    enemy = Unit("E", x=8, y=8, team=ZOMBIE_TEAM)
     units = [shooter, enemy]
     t = get_tables()
     ammo = t.ammo_for_weapon(weapon)

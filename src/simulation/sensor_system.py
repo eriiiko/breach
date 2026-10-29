@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from simulation.entities import REGISTRY
 from simulation.entities.door import quantize_span_tiles
+from simulation.factions import team_from_level
 from simulation.sensor_accessor import (
     Channel, EntityFieldAccessor, build_site_index,
 )
@@ -206,7 +207,9 @@ def build_sensors(sim) -> list:
                 if float(radius_m) > 0.0 else 0)
             sensors.append(_MotionSensorRuntime(
                 e, value_slot, sy, sx, r_tiles * r_tiles,
-                bool(e.fields["needs_los"]), int(e.fields["faction_filter"]),
+                bool(e.fields["needs_los"]),
+                # level data: the legacy zombie code maps like [[spawn]] team
+                team_from_level(e.fields["faction_filter"]),
                 int(e.fields["min_footprint"])))
         else:                             # pragma: no cover - registry drift
             raise ValueError(

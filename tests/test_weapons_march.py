@@ -44,6 +44,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 import breach_physics as bp  # noqa: E402
 from config import CFG  # noqa: E402
 from level_loader import LevelData  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import Simulation  # noqa: E402
 from simulation import unit_fixed, wall_fixed  # noqa: E402
 from simulation import weapons as weapons_mod  # noqa: E402
@@ -268,7 +269,7 @@ def test_fire_order_aims_and_move_attack_snaps():
     sim2 = Simulation(_level(), seed=SEED, breach_physics=bp,
                       enable_recorder=False)
     shooter2 = Unit("S", x=2, y=8, team=0)
-    zombie = Unit("Z", x=14, y=8, team=1)
+    zombie = Unit("Z", x=14, y=8, team=ZOMBIE_TEAM)
     s2_id = sim2.add_unit(shooter2)
     sim2.add_unit(zombie)
     sim2.weapons_tables.weapons.by_name[w.name] = w
@@ -421,7 +422,7 @@ def test_lazy_draws_k5_bit_identical_to_prew2_firefight():
     draws (the lazy-roll rule made structural)."""
     gmap = _room()
     shooter = _marine(2, 8, "S")
-    zombie = Unit("Z", x=14, y=8, team=1)
+    zombie = Unit("Z", x=14, y=8, team=ZOMBIE_TEAM)
     zombie.current_hp = 1e9
     shooter.id, zombie.id = 1, 2
     units = [shooter, zombie]

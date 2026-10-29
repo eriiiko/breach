@@ -41,6 +41,7 @@ sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 import breach_physics as bp  # noqa: E402
 from config import CFG  # noqa: E402
 from level_loader import load as load_level  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import Simulation  # noqa: E402
 from simulation import unit_fixed  # noqa: E402
 from simulation.combat import apply_environmental_damage, HEAT_SCALE  # noqa: E402
@@ -187,7 +188,7 @@ def test_zombie_takes_fire_multiplier_more():
     """A zombie takes exactly zombie.fire_damage_multiplier x a marine's hit."""
     stub = _HeatStub(40, 40)
     m = _place(Unit("M1", x=10, y=10, team=0), 10, 10)
-    z = _place(Unit("Z1", x=20, y=20, team=1), 20, 20)
+    z = _place(Unit("Z1", x=20, y=20, team=ZOMBIE_TEAM), 20, 20)
     base_hp = 1000.0
     m.current_hp = z.current_hp = base_hp  # avoid death, isolate the per-tick amount
     phi = 50.0

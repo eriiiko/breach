@@ -277,6 +277,7 @@ import level_loader
 from level_lib import (WATER_FILENAME, color_255, format_light_lines,  # noqa: F401
                        format_spawn_lines, format_water_lines, write_lights,
                        write_spawns, write_water)
+from simulation.factions import ZOMBIE_TEAM
 from level_loader import (SPACE_CODE, ZONE_CLASSES, BOUNDARY_MODES,
                           EntityInstance, SpawnEntry)
 from level_lights import beacon_angle
@@ -356,7 +357,9 @@ CORRIDOR_MIN, CORRIDOR_MAX = 1, 9
 SCAFFOLD_MIN = 5                 # SPACE border + hull ring + 1 interior tile
 DEFAULT_FOOTPRINT = 3            # SpawnEntry default (level_loader)
 
-TEAM_MARINE, TEAM_ZOMBIE = 0, 1  # SpawnEntry.team: 0 = marine, 1 = zombie
+# SpawnEntry.team is the RUNTIME team (#119): the loader maps a file's legacy
+# `team = 1` to ZOMBIE_TEAM, and a saved zombie is written as ZOMBIE_TEAM.
+TEAM_MARINE, TEAM_ZOMBIE = 0, ZOMBIE_TEAM
 TEAM_NAMES = {TEAM_MARINE: "marine", TEAM_ZOMBIE: "zombie"}
 TEAM_COLORS = {TEAM_MARINE: (90, 190, 255), TEAM_ZOMBIE: (225, 70, 60)}
 

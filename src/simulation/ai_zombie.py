@@ -24,6 +24,7 @@ import math
 
 from config import CFG
 from simulation.damage import KINETIC, DamagePacket, apply_packet
+from simulation.factions import ZOMBIE_TEAM
 from simulation.movement import FootprintSamples, default_speed
 from simulation.status import composed_flags
 
@@ -52,11 +53,13 @@ def update_zombies_tick(gmap, units, tick):
 
     Mutates unit HP / alive / killed_by_zombie / zombie_* fields.
     """
-    players = [u for u in units if u.team == 0 and u.alive]
+    # Prey = every living non-zombie, whatever its team (#119); the horde is
+    # is_zombie — never a team literal.
+    players = [u for u in units if not u.is_zombie and u.alive]
     if not players:
         return
 
-    zombies = [u for u in units if u.team == 1 and u.alive]
+    zombies = [u for u in units if u.is_zombie and u.alive]
 
     # ---- 1. Trigger detection (LOS + radius) ----
     for z in zombies:
@@ -206,8 +209,10 @@ def convert_marines_to_zombies(units):
     Resets the per-unit conversion flag after.
     """
     for u in units:
-        if u.team == 0 and not u.alive and u.killed_by_zombie:
-            u.team = 1
+        if not u.is_zombie and not u.alive and u.killed_by_zombie:
+            # Joins the horde's team, so it turns on its old squad (#119);
+            # its roster slot stays in the old team's roster.
+            u.team = ZOMBIE_TEAM
             u.is_zombie = True
             u.alive = True
             u.current_hp = float(CFG.zombie.hp)

@@ -314,10 +314,13 @@ def position_at(unit, tick: int):
     return (float(pos[0]), float(pos[1]))
 
 
-def enemy_at(sim, tile, team: int = 0):
-    """The living enemy whose footprint covers ``tile``, or ``None``."""
+def enemy_at(sim, tile, team: int | None = None):
+    """The living enemy whose footprint covers ``tile``, or ``None``.
+    ``team`` defaults to the human's (``sim.player_team``, #119)."""
     if tile is None:
         return None
+    if team is None:
+        team = sim.player_team
     fx, fy = int(tile[0]), int(tile[1])
     for u in sim.units:
         if (u.alive and u.team != team
@@ -556,13 +559,15 @@ def planning_clock(sim, elapsed_seconds: float) -> PlanningClock:
 # ---------------------------------------------------------------------------
 # Fog of war (§8) — gating, nothing more
 # ---------------------------------------------------------------------------
-def drawable_enemies(sim, team: int = 0) -> list:
+def drawable_enemies(sim, team: int | None = None) -> list:
     """Enemies the renderer may draw.
 
     Fog in v1 is visibility gating ONLY: no fog layer, no last-known-position
     ghosts — unseen is simply gone. A ruleset without a vision model
     (``fog_of_war`` False) returns everything, exactly as it always drew.
     """
+    if team is None:                    # the human's squad (#119)
+        team = sim.player_team
     enemies = [u for u in sim.units if u.team != team and u.alive]
     if not getattr(sim.ruleset, "fog_of_war", False):
         return enemies
@@ -583,7 +588,7 @@ class FlashlightCone:
     range_tiles: float
 
 
-def flashlight_cones(sim, team: int = 0, mode: str = "team",
+def flashlight_cones(sim, team: int | None = None, mode: str = "team",
                      selected_unit_id=None, cursor_tile=None,
                      paused: bool = False) -> list:
     """Marine-carried flashlights, as the expression of the facing cone (§8).
@@ -598,6 +603,8 @@ def flashlight_cones(sim, team: int = 0, mode: str = "team",
     areas) they cross into a stealth system, which is a deliberate decision
     for another session and not drift to be smuggled in here.
     """
+    if team is None:                    # the human's squad (#119)
+        team = sim.player_team
     half = float(CFG.onephase.vision_cone_half_deg)
     out = []
     for u in sim.units:

@@ -30,6 +30,7 @@ import pytest
 
 import breach_physics as bp
 from level_loader import LevelData
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import Simulation
 from simulation.ruleset import ContinuousRealtime, TwoPhaseWEGO
 from simulation.unit import Unit
@@ -142,7 +143,7 @@ def test_continuous_no_phases_no_ap_no_autopause():
     auto-pauses, and never spends AP."""
     sim = _continuous_sim(_open_arena())
     uid = sim.add_unit(Unit("M1", x=6, y=6, team=0))
-    z = sim.add_unit(Unit("Z1", x=9, y=9, team=1))   # keep it non-terminal
+    z = sim.add_unit(Unit("Z1", x=9, y=9, team=ZOMBIE_TEAM))   # keep it non-terminal
     u = sim.get_unit(uid)
     ap0 = list(u.ap)
     tpr = sim._ticks_per_round
@@ -161,7 +162,7 @@ def test_continuous_death_triggered_zombie_conversion():
     play (death-triggered), not batched at an end-of-round that never comes."""
     sim = _continuous_sim(_open_arena())
     uid = sim.add_unit(Unit("M1", x=6, y=6, team=0))
-    sim.add_unit(Unit("Z1", x=9, y=9, team=1))
+    sim.add_unit(Unit("Z1", x=9, y=9, team=ZOMBIE_TEAM))
     u = sim.get_unit(uid)
 
     # Simulate a zombie kill this tick.
@@ -169,7 +170,7 @@ def test_continuous_death_triggered_zombie_conversion():
     u.killed_by_zombie = True
     sim.step()
 
-    assert u.team == 1
+    assert u.team == ZOMBIE_TEAM
     assert u.is_zombie is True
     assert u.alive is True           # risen as a zombie, immediately
 
@@ -180,7 +181,7 @@ def test_wego_defers_conversion_past_the_tick():
     sim = Simulation(_open_arena(), seed=SEED, breach_physics=bp,
                      enable_recorder=False, ruleset=TwoPhaseWEGO())
     uid = sim.add_unit(Unit("M1", x=6, y=6, team=0))
-    sim.add_unit(Unit("Z1", x=9, y=9, team=1))
+    sim.add_unit(Unit("Z1", x=9, y=9, team=ZOMBIE_TEAM))
     u = sim.get_unit(uid)
     sim.set_paused(False)
     u.alive = False
@@ -228,7 +229,7 @@ def test_continuous_is_terminal_one_team_eliminated():
     """is_terminal fires when one side is gone (no round to complete)."""
     sim = _continuous_sim(_open_arena())
     m = sim.add_unit(Unit("M1", x=6, y=6, team=0))
-    sim.add_unit(Unit("Z1", x=9, y=9, team=1))
+    sim.add_unit(Unit("Z1", x=9, y=9, team=ZOMBIE_TEAM))
     assert sim.is_terminal() is False        # both sides present
     sim.get_unit(m).alive = False            # marines wiped
     assert sim.is_terminal() is True
@@ -283,7 +284,7 @@ def _scripted_trajectory():
     intent script; return the per-tick (x, y, facing, n_proj) trace."""
     sim = _continuous_sim(_open_arena(20, 20))
     uid = sim.add_unit(Unit("M1", x=8, y=8, team=0))
-    sim.add_unit(Unit("Z1", x=15, y=15, team=1))   # keep non-terminal
+    sim.add_unit(Unit("Z1", x=15, y=15, team=ZOMBIE_TEAM))   # keep non-terminal
     trace = []
     for t in range(60):
         # A rotating stick input, quantized at the seam exactly like the pad.
