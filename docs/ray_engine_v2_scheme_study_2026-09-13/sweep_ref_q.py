@@ -1628,10 +1628,17 @@ def validate_sky(sky, n_ord: int):
 # Nothing else reads it: heat never does (light moves no heat), a cone in the
 # same cell is not scaled, and the books close on the scaled emission. A cell
 # without a row keeps ONE -- the identity integer for integer. THE DOOR: every
-# row inside the grid, 0 <= mult_q <= LIGHT_EMIT_MULT_MAX (2 ONE: at most
-# double the thermal emission, one bit of the headroom), one row per cell.
+# row inside the grid, 0 <= mult_q <= LIGHT_EMIT_MULT_MAX, one row per cell.
+# 16 ONE since the G3 adjustment round (2026-10-29: the rows carry the fire's
+# light GAIN times its flicker; F4b's 2 ONE held the flicker alone). The int64
+# argument at the doors' bounds (L° < 2^44, w_m <= ONE // 12): one ordinate's
+# unscaled source < 2^40.42, so the scaling product < 2^60.4; a stream < sky +
+# cones + mult * source = 2^40 + 2^44 + 16 * 2^40.42 = 2^45.26; and the widest
+# plain product, the flux vector's (three channels' streams) * mu_q, is
+# 3 * 2^45.26 * 2^16 = 2^62.85 < 2^63 -- the binding term (32 ONE would reach
+# 2^63.5). radiation_sweep.h carries the same argument.
 # ---------------------------------------------------------------------------
-LIGHT_EMIT_MULT_MAX = 2 * ONE
+LIGHT_EMIT_MULT_MAX = 16 * ONE
 
 
 def validate_emit_mult(rows, h: int, w: int):

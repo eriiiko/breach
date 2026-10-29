@@ -794,7 +794,7 @@ class RadiationSweep:
     F_SHIFT: typing.ClassVar[int] = 24
     HEAT_ABSORB_Q_MAX: typing.ClassVar[int] = 268435456
     LIGHT_CONE_BUDGET: typing.ClassVar[int] = 17592186044416
-    LIGHT_EMIT_MULT_MAX: typing.ClassVar[int] = 131072
+    LIGHT_EMIT_MULT_MAX: typing.ClassVar[int] = 1048576
     LIGHT_SKY_MAX: typing.ClassVar[int] = 1099511627776
     N_GAS_PLANES_MAX: typing.ClassVar[int] = 16
     SHEAR: typing.ClassVar[int] = 1

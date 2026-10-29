@@ -81,7 +81,8 @@ CONE_TURN = 65536            # one turn in Q16 turns == RadiationSweep.CONE_TURN
 OMNI_EPS = 0.01              # spread >= 2*pi - eps is omni (the old march's cone test, kept)
 LIGHT_CONE_BUDGET = 1 << 44  # == RadiationSweep.LIGHT_CONE_BUDGET (the sweep's door)
 LIGHT_SKY_MAX = 1 << 40      # == RadiationSweep.LIGHT_SKY_MAX
-LIGHT_EMIT_MULT_MAX = 2 << 16  # == RadiationSweep.LIGHT_EMIT_MULT_MAX (2 ONE, Q16)
+LIGHT_EMIT_MULT_MAX = 16 << 16  # == RadiationSweep.LIGHT_EMIT_MULT_MAX (16 ONE, Q16: the fire's
+#   light gain x its flicker; the int64 headroom argument is radiation_sweep.h's)
 
 # The shipped flashlight / cursor-lamp numbers (moved verbatim from main.py).
 FLASHLIGHT_INTENSITY = 2.5

@@ -23,6 +23,10 @@ second scatter (the host builder RadiationSweep::build_emit_mult is the one).
   PART M2 ingress: an illegal row is refused by both, planes untouched.
   PART M3 the launch core at N = 3: per-env multiplier planes, each env equal
           to its own CPU run.
+  PART M5 HEADROOM, over-driven at the door's maximum (G3 adjustment round:
+          16 ONE, the fire's light gain x its flicker): every cell at the table
+          top emitting at 16 ONE, the sky at its maximum, the whole cone budget
+          in one ordinate -- GPU == CPU tol 0 (a wrap on either side parts them).
   PART M4 the live conductor, light REQUESTED with flicker rows set on the
           runner, only the radiation backend flipping: every GameMap array and
           the light books tol 0 per tick, and the flicker moving light_q but no
@@ -268,7 +272,9 @@ def part4_live():
         hot_cells = np.argwhere(np.asarray(g.fire) > 0)
         if len(hot_cells) == 0:
             hot_cells = np.argwhere(np.asarray(g.temperature) == np.asarray(g.temperature).max())
-        rows = np.asarray([[int(y), int(x), rng.randrange(Q(0.6), Q(1.4))]
+        # the game's factors: the fire's light gain x its flicker, up to the
+        # door's maximum (G3 adjustment round)
+        rows = np.asarray([[int(y), int(x), rng.randrange(Q(0.6), MAX + 1)]
                            for (y, x) in hot_cells[:64]], dtype=np.int64)
         for s in (s_cpu, s_gpu):
             s.physics_runner.set_light_emit_mult(rows)
@@ -315,8 +321,38 @@ def part4_live():
           f"the flicker moved light_q on {moved} ticks and no other array; fire at {pick}")
 
 
+def part5_headroom():
+    print("PART M5 — headroom, over-driven at the door's maximum (16 ONE), GPU vs CPU")
+    table = live_table()
+    top = R.T_TABLE_TOP_GAME
+    n, half, budget = 9, ONE // 2, R.LIGHT_CONE_BUDGET
+    a = [[0] * n for _ in range(n)]
+    sc = (a, [r[:] for r in a], [[top << 16] * n for _ in range(n)],
+          [[3] * n for _ in range(n)], [[0] * n for _ in range(n)])
+    la = [[[half] * n for _ in range(n)] for _ in range(3)]
+    k = 0
+    for n_ord in (16, 12):
+        for ltr in ("step", "shear"):
+            light = dict(la=la, ld=[[r[:] for r in p] for p in la], transport=ltr,
+                         emit_mult=[(y, x, MAX) for y in range(n) for x in range(n)],
+                         sky=[[R.LIGHT_SKY_MAX] * 3 for _ in range(n_ord)],
+                         cones=[(n // 2, 0, (budget, budget, budget), 0, 0)])
+            tag = f"M5 S{n_ord} {ltr}"
+            c = L.run("cpu", sc, table, transport="shear", n_ord=n_ord, k_q=0,
+                      light=light)
+            g = L.run("gpu", sc, table, transport="shear", n_ord=n_ord, k_q=0,
+                      light=light, garbage=True)
+            L.same(tag, c, g, L.ALL)
+            if int(c["books"]["max_stream"]) <= budget:
+                _fail(f"{tag}: the scene did not reach the cone budget -- vacuous")
+            k += 1
+    print(f"  {k} over-driven configurations: every plane, the books and the "
+          f"telemetry tol 0")
+
+
 def main() -> int:
-    for part in (part1_matrix, part2_ingress, part3_batch, part4_live):
+    for part in (part1_matrix, part2_ingress, part3_batch, part4_live,
+                 part5_headroom):
         try:
             part()
         except Exception as exc:                        # noqa: BLE001

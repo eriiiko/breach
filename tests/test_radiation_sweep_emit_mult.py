@@ -241,7 +241,7 @@ def test_the_emit_mult_door_refuses_illegal_rows():
     int64 headroom argument; a duplicate would make "which row wins" depend on
     the renderer's emission order) or the homes drift apart.
     """
-    assert int(bp.RadiationSweep.LIGHT_EMIT_MULT_MAX) == R.LIGHT_EMIT_MULT_MAX == 2 * ONE
+    assert int(bp.RadiationSweep.LIGHT_EMIT_MULT_MAX) == R.LIGHT_EMIT_MULT_MAX == 16 * ONE
     rng = random.Random(5)
     h, w = 6, 7
     (a, d, T, his, ts), _hot = hot_scene(rng, h, w)
@@ -258,29 +258,53 @@ def test_the_emit_mult_door_refuses_illegal_rows():
 
 
 def test_headroom_holds_at_the_door_maximum_over_driven():
-    """PROPERTY (the int64 argument): every cell at the table top, light-opaque,
-    every cell's emission at the door's maximum 2 ONE -- the engine still equals
-    the reference bit for bit (an int64 wrap in C++ would part them; the
-    reference computes in unbounded ints) and light_q stays below 2^47 (one bit
-    above P6a's 2^46 over-driven bound).
+    """PROPERTY (the int64 argument, radiation_sweep.h; door 16 ONE since the
+    G3 adjustment round): the harshest scene the doors admit with the live L°
+    table -- every cell at the table top, every channel's material share
+    a = d = ONE/2 (so a cell both emits and carries the stream on), every
+    cell's emission at the door's maximum 16 ONE, the sky at LIGHT_SKY_MAX in
+    every ordinate and the WHOLE cone budget into ONE ordinate of one cell --
+    the engine equals the reference bit for bit (an int64 wrap in C++ would
+    part them; the reference computes in unbounded ints), every light stream
+    stays under the argument's bound (sky + cones + 16 x the table top's
+    per-ordinate source, plus a rounding count per cell), and the widest plain
+    product the light loop forms -- the flux vector's three-channel stream x
+    mu_q -- stays under 2^63. Non-vacuous: the largest stream carries the cone
+    budget AND more than the unscaled thermal source could.
 
-    BREAKS IF: LIGHT_EMIT_MULT_MAX grows past the headroom, or the scaling is
-    formed in a way that overflows before the shift.
+    BREAKS IF: LIGHT_EMIT_MULT_MAX grows past the headroom (with this live
+    table 64 ONE wraps the flux product, 2^63.5; at the doors' own table
+    bound, 2^44, already 32 ONE does -- which the door test's pinned 16 ONE
+    guards), or the scaling is formed in a way that overflows before the
+    shift.
     """
     top = R.T_TABLE_TOP_GAME
     n = 9
+    half = ONE // 2
     a = [[0] * n for _ in range(n)]
     T = [[top << 16] * n for _ in range(n)]
     his = [[3] * n for _ in range(n)]
     ts = [[0] * n for _ in range(n)]
-    la = [[[ONE] * n for _ in range(n)] for _ in range(3)]
-    light = dict(la=la, ld=[[r[:] for r in p] for p in la],
-                 emit_mult=[(y, x, MAX) for y in range(n) for x in range(n)])
+    la = [[[half] * n for _ in range(n)] for _ in range(3)]
+    budget = R.LIGHT_CONE_BUDGET
+    l_top = max(ch[-1] for ch in R.L_LIVE)
     for n_ord in (16, 12):
-        got = cpp_sweep(a, [r[:] for r in a], 0, T, his, ts, n_ord=n_ord,
-                        table=live_table(), light=light)
-        exp = ref_sweep(a, [r[:] for r in a], 0, T, his, n_ord=n_ord, ts=ts,
-                        table=R.E_LIVE, light=light)
-        assert np.array_equal(got[6]["light_q"], exp[6]["light_q"])
-        assert np.array_equal(got[6]["light_flux"], exp[6]["light_flux"])
-        assert int(got[6]["light_q"].max()) < 2 ** 47
+        for ltr in ("step", "shear"):
+            light = dict(la=la, ld=[[r[:] for r in p] for p in la], transport=ltr,
+                         emit_mult=[(y, x, MAX) for y in range(n) for x in range(n)],
+                         sky=[[R.LIGHT_SKY_MAX] * 3 for _ in range(n_ord)],
+                         cones=[(n // 2, 0, (budget, budget, budget), 0, 0)])
+            got = cpp_sweep(a, [r[:] for r in a], 0, T, his, ts, n_ord=n_ord,
+                            table=live_table(), light=light)
+            exp = ref_sweep(a, [r[:] for r in a], 0, T, his, n_ord=n_ord, ts=ts,
+                            table=R.E_LIVE, light=light)
+            m = (n_ord, ltr)
+            for k in ("light_q", "light_flux", "light_glow"):
+                assert np.array_equal(got[6][k], exp[6][k]), (m, k)
+            assert dict(got[6]["books"]) == dict(exp[6]["books"]), m
+            res = exp[5]
+            src_top = (l_top * (ONE // n_ord)) >> 16
+            bound = R.LIGHT_SKY_MAX + budget + (MAX * src_top >> 16) + n * n
+            assert budget + src_top < res.max_light_stream <= bound, m
+            assert res.max_light_plain_product < 2 ** 63, m
+            assert 3 * res.max_light_stream * ONE < 2 ** 63, m

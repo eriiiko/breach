@@ -134,15 +134,31 @@ struct OrdinateDir {
 // STATE (the renderer's per-tick flicker of its burning tiles,
 // renderer/fire_flicker.py), never sim state, never digested -- the cones'
 // standing. THE DOOR: every row inside the grid, 0 <= mult_q <=
-// LIGHT_EMIT_MULT_MAX, at most one row per cell. The max is 2·ONE: at most
-// DOUBLE the thermal emission, so the over-driven headroom argument (a stream
-// below 2^44.3) gains one bit and every plain product stays below 2^62.
+// LIGHT_EMIT_MULT_MAX, at most one row per cell.
+//
+// The max is 16·ONE (G3 adjustment round, 2026-10-29: the rows now carry the
+// fire's light GAIN times its flicker, renderer/fire_flicker.py; F4b's 2·ONE
+// held the flicker alone). THE HEADROOM ARGUMENT, at the doors' own bounds
+// (not the shipped table's): L° < L_TABLE_TOP_MAX = 2^44, w_m <= ONE/12 = 5461
+// (S12), so one ordinate's unscaled thermal source src = (L°·w_m) >> 16 <
+// 2^40.42, and
+//   * the scaling product ((src·a) >> 16) · mult_q < 2^40.42 · 2^20 = 2^60.4;
+//   * a stream is at most the sky + every cone + the largest thermal outflow
+//     (Kirchhoff keeps a cell's outflow below max(stream, mult·src) + 1 when
+//     d >= a), so stream < 2^40 + 2^44 + 16·2^40.42 = 2^45.26 (P6b's 2^44.3
+//     at mult = ONE);
+//   * the widest plain product is the flux vector's I_m · mu_q, I_m the sum of
+//     three channels' streams: 3 · 2^45.26 · 2^16 = 2^62.85 < 2^63 -- the
+//     binding term, ~10 % to spare; stream · d and lout · s_m stay < 2^61.3.
+// So 16·ONE is the largest power of two the int64 argument admits (32·ONE
+// would put I_m · mu_q at 2^63.5). The grid-wide book SUMS were never part of
+// this argument (they scale with the cell count) and are not now.
 static constexpr int     CONE_ROW_WIDTH    = 7;
 static constexpr int64_t CONE_TURN         = 65536;             // one turn, Q16
 static constexpr int64_t LIGHT_CONE_BUDGET = (int64_t)1 << 44;  // Σ_cones rgb, per channel
 static constexpr int64_t LIGHT_SKY_MAX     = (int64_t)1 << 40;  // one ordinate's sky
 static constexpr int     EMIT_MULT_ROW_WIDTH = 3;                         // (y, x, mult_q)
-static constexpr int64_t LIGHT_EMIT_MULT_MAX = (int64_t)2 << 16;          // 2·ONE, Q16
+static constexpr int64_t LIGHT_EMIT_MULT_MAX = (int64_t)16 << 16;         // 16·ONE, Q16 (the headroom above)
 struct LightChannels {
     // ---- inputs
     const int32_t* light_atten_q     = nullptr;  // (h, w, 3) Q16 -- a_c, the MATERIAL

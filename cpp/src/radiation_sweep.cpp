@@ -436,7 +436,7 @@ void RadiationSweep::validate_light_group(const LightChannels& light, int n_ordi
         if (row[2] < 0 || row[2] > LIGHT_EMIT_MULT_MAX) {
             throw std::invalid_argument(
                 "RadiationSweep: an emission multiplier outside [0, "
-                "LIGHT_EMIT_MULT_MAX = 2 ONE] (G3 F4b emit_mult door: the headroom)");
+                "LIGHT_EMIT_MULT_MAX = 16 ONE] (G3 F4b emit_mult door: the headroom)");
         }
     }
 }
