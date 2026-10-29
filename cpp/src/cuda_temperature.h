@@ -117,6 +117,11 @@ int64_t temperature_step(
     //  14 e_rad_floor_drop_sum (P5c follow-up: the floored chain's unlanded
     //                          remainder below n_floor_heat; signed) — both
     //                          APPENDED, no pinned index moved
+    //  15 e_solid_low_rail_sum (#73: the Pass-1 low rail's lift on thermal
+    //                          solids, >= 0 -- a solid closure term)
+    //  16 e_dep_floor_drop_sum (#73: the heat deposit's unlanded floor share
+    //                          below n_floor_heat -- a counter, not a term) —
+    //                          both APPENDED, no pinned index moved
     // T5b step 7: slots 3 (e_cool_sum) and 12 (e_thermostat_sum) are
     // DELETED with Pass 3, and every survivor below them RENUMBERED. The
     // indices are pinned positional and physics_engine.cpp folds them by
@@ -176,7 +181,9 @@ int64_t temperature_step(
 // every pinned index keeps its meaning (the rule: append, never renumber).
 // P5c follow-up: 13 -> 15 -- slots 13 (`e_rad_boundary_export_sum`) and 14
 // (`e_rad_floor_drop_sum`), APPENDED the same way.
-constexpr int TEMPERATURE_ENERGY_SLOTS = 15;
+// #73: 15 -> 17 -- slots 15 (`e_solid_low_rail_sum`) and 16
+// (`e_dep_floor_drop_sum`), APPENDED the same way.
+constexpr int TEMPERATURE_ENERGY_SLOTS = 17;
 
 // Backend selection (S1 gate + integration). When true, PhysicsEngine::step_tail
 // runs temperature on the GPU instead of the CPU solver. Defaults false so the

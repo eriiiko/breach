@@ -876,6 +876,10 @@ class SmokeDynamics:
 class TemperatureSolver:
     def __init__(self) -> None:
         ...
+    def book_solid_seam(self, delta: typing.SupportsInt | typing.SupportsIndex) -> None:
+        """
+        #73 item 2: book a topology seam's MEASURED change to the solid books (int64, cap_real*T units) -- adds it to e_solid_seam_sum AND to the solid_energy_books_sum snapshot, so the snapshot stays the live sum when the seam fires after this tick's step(). Called by GameMap._solid_energy_book only.
+        """
     def step(self, temperature: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], heat: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], heat_inv_shift: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], face_shift: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], is_vacuum: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], atmosphere: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wind_x: typing.Any = None, wind_y: typing.Any = None, dt: typing.SupportsFloat | typing.SupportsIndex = 0.0, n_bulk: typing.Any = None, thermal_solid: typing.Any = None, rad_net: typing.Any = None, rad_fluence: typing.Any = None, e_table: typing.Any = None, clamp_enabled: bool = True, gas_energy: typing.Any = None, t_amb_q: typing.SupportsInt | typing.SupportsIndex = 0, is_ambient: typing.Any = None, rad_fine_bits: typing.SupportsInt | typing.SupportsIndex = -1) -> None:
         ...
     @property
@@ -915,6 +919,9 @@ class TemperatureSolver:
     def e_cond_trunc_sum(self) -> int:
         ...
     @property
+    def e_dep_floor_drop_sum(self) -> int:
+        ...
+    @property
     def e_deposit_drop_sum(self) -> int:
         ...
     @property
@@ -943,6 +950,12 @@ class TemperatureSolver:
         ...
     @property
     def e_solid_deposit_sum(self) -> int:
+        ...
+    @property
+    def e_solid_low_rail_sum(self) -> int:
+        ...
+    @property
+    def e_solid_seam_sum(self) -> int:
         ...
     @property
     def e_vac_wipe_sum(self) -> int:
@@ -1140,7 +1153,7 @@ def cuda_spike_add1(dev_ptr: typing.SupportsInt | typing.SupportsIndex, n: typin
     """
 def cuda_temperature_step(temperature: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], heat: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], heat_inv_shift: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], face_shift: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], is_vacuum: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], atmosphere: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], no_face: typing.SupportsInt | typing.SupportsIndex, o2_vacuum_thresh: typing.SupportsFloat | typing.SupportsIndex, c_v: typing.SupportsFloat | typing.SupportsIndex, n_floor_heat: typing.SupportsFloat | typing.SupportsIndex, gas_advection_rate: typing.SupportsFloat | typing.SupportsIndex, t_max_phys: typing.SupportsFloat | typing.SupportsIndex, n_bulk: typing.Any = None, wind_x: typing.Any = None, wind_y: typing.Any = None, dt: typing.SupportsFloat | typing.SupportsIndex = 0.0, thermal_solid: typing.Any = None, gas_energy: typing.Any = None, t_amb_k: typing.SupportsFloat | typing.SupportsIndex = 290.0, rad_net: typing.Any = None, rad_fluence: typing.Any = None, e_table: typing.Any = None, is_ambient: typing.Any = None, rad_fine_bits: typing.SupportsInt | typing.SupportsIndex = -1) -> tuple:
     """
-    P6.6/P-G2 isolated: run the GPU unified temperature solver in place on `temperature` (+ `gas_energy` when supplied — bit-identical to TemperatureSolver.step); returns (t_max_phys_hits, e_cond_trunc_sum, e_cond_cap_sum, cond_limit_hits, e_vac_wipe_sum, e_ring_pin_sum, e_deposit_drop_sum, e_gas_deposit_sum, e_gas_cond_sum, e_gas_rail_sum, e_solid_deposit_sum, e_solid_cond_sum, rad_clamp_hits, solid_energy_books_sum, e_rad_clamp_drop_sum, e_rad_boundary_export_sum, e_rad_floor_drop_sum) for this call (P-E2a + P-E2b + arc #54 + P-G5 + P5c; solid_energy_books_sum is a SNAPSHOT, not a per-call delta).
+    P6.6/P-G2 isolated: run the GPU unified temperature solver in place on `temperature` (+ `gas_energy` when supplied — bit-identical to TemperatureSolver.step); returns (t_max_phys_hits, e_cond_trunc_sum, e_cond_cap_sum, cond_limit_hits, e_vac_wipe_sum, e_ring_pin_sum, e_deposit_drop_sum, e_gas_deposit_sum, e_gas_cond_sum, e_gas_rail_sum, e_solid_deposit_sum, e_solid_cond_sum, rad_clamp_hits, solid_energy_books_sum, e_rad_clamp_drop_sum, e_rad_boundary_export_sum, e_rad_floor_drop_sum, e_solid_low_rail_sum, e_dep_floor_drop_sum) for this call (P-E2a + P-E2b + arc #54 + P-G5 + P5c + #73; solid_energy_books_sum is a SNAPSHOT, not a per-call delta).
     """
 def cuda_water_step(water_depth: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], flow_vx: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], flow_vy: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], floor_height: typing.Any = None, atmosphere: typing.Any = None, solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], dt: typing.SupportsFloat | typing.SupportsIndex, tilt_x: typing.SupportsFloat | typing.SupportsIndex, tilt_y: typing.SupportsFloat | typing.SupportsIndex, g: typing.SupportsFloat | typing.SupportsIndex, damping: typing.SupportsFloat | typing.SupportsIndex, dx: typing.SupportsFloat | typing.SupportsIndex, k_p: typing.SupportsFloat | typing.SupportsIndex, v_max: typing.SupportsFloat | typing.SupportsIndex, depth_eps: typing.SupportsFloat | typing.SupportsIndex) -> None:
     """

@@ -469,6 +469,17 @@ public:
     // paid). The radiative twin of Pass 2's own capacity-floor term,
     // e_cond_cap_sum. CUDA slot C_RAD_FLOOR_DROP (14), appended.
     mutable int64_t e_rad_floor_drop_sum = 0;
+    // #73 item 3: e_dep_floor_drop_sum -- the Pass-1 HEAT DEPOSIT's twin of
+    // e_rad_floor_drop_sum. On an ACCOUNTABLE gas cell whose bulk N is below
+    // n_floor_heat the deposit divides by the floor and lands only ~N/n_floor
+    // of what the cell absorbed (e_abs); `e_deposit_drop_sum` (below) counts
+    // the thin-gas attenuation deposit - e_abs and never counted this floor
+    // share. Booked here, on exactly those cells, as the whole unlanded
+    // remainder e_abs*FP_ONE - dT*cap_real (pre-rail; the T_MAX_PHYS rail is
+    // e_gas_rail_sum's), in e_rad_floor_drop_sum's heat currency. >= 0 up to
+    // the chain's rounding. A COUNTER ONLY, NOT a closure term: it never
+    // entered gas_energy. CUDA slot C_DEP_FLOOR_DROP (16), appended.
+    mutable int64_t e_dep_floor_drop_sum = 0;
 
     // --- P-E2a ENERGY BOOKS (design §2.3, §5, §7) --------------------------
     // Every counter here is an int64 sum in RAW ENERGY counts (Q16.16 capacity
@@ -575,6 +586,9 @@ public:
     //
     //     Δ solid_energy_books_sum  ==  e_solid_deposit_sum
     //                                 + e_solid_cond_sum
+    //                                 + e_solid_low_rail_sum   (#73 item 1)
+    //                                 + e_solid_seam_sum       (#73 item 2)
+    //                                 + CombustionSolver.e_comb_solid_heat_sum
     //
     // T5b step 7: the `+ e_thermostat_sum` term is REMOVED, not zeroed.
     // Pass 3 is deleted (R1), so a solid has no relax-to-ambient channel at
@@ -594,9 +608,9 @@ public:
     // each priced as the cell's OWN actual ΔT (post every rail/clamp that
     // pass applies) × its real capacity (`cap_real_`). Booking the ACTUAL
     // applied ΔT (rather than re-deriving a pre-rail quantity) means a
-    // T_MAX_PHYS/low-rail engagement on a thermal solid is counted here
-    // automatically — there is no separate solid-rail counter because this
-    // one already prices whatever the rail actually did.
+    // T_MAX_PHYS engagement on a thermal solid is counted here automatically.
+    // #73 item 1: the LOW rail is the exception -- its lift is priced by name
+    // in e_solid_low_rail_sum (below), and this counter stops at the rail.
     mutable int64_t e_solid_deposit_sum = 0;
     // `e_solid_cond_sum` — Pass 2's landing on THERMAL SOLID cells: the exact
     // T-form ΔT × cap_real_ for every ts[i] cell taking the endpoint-divide
@@ -617,6 +631,36 @@ public:
     // they diff `Σ_accountable gas_energy`. Recomputed fresh every step() —
     // NOT a running total — because it is capacity-weighted STATE, not flow.
     mutable int64_t solid_energy_books_sum = 0;
+    // #73 item 1: `e_solid_low_rail_sum` -- the ENERGY the Pass-1 LOW rail
+    // adds to a thermal solid the radiation fold would leave below ambient
+    // (conduction's floordiv leaves hull cells a few raw counts below 0; the
+    // rail lifts them back when the sweep touches them -- #73's measurement:
+    // 515-770 cell-ticks per 10 s in a burning room). Priced (0 - T)*cap_real,
+    // >= 0. Until #73 this energy sat inside e_solid_deposit_sum, unnamed;
+    // e_solid_deposit_sum is now priced up to the rail, and this is the rest,
+    // so the two sum to the old landing exactly. A TERM of the solid closure
+    // identity:
+    //     Δ solid_energy_books_sum == e_solid_deposit_sum + e_solid_cond_sum
+    //                               + e_solid_low_rail_sum + e_solid_seam_sum
+    //                               + CombustionSolver.e_comb_solid_heat_sum
+    // CUDA slot C_SOLID_LOW_RAIL (15), appended.
+    mutable int64_t e_solid_low_rail_sum = 0;
+    // #73 item 2: `e_solid_seam_sum` -- what the Python TOPOLOGY seams did to
+    // the solid books: a thermal solid RETIRED (destroy_wall, unseal_tiles:
+    // its cap_real*T leaves with it) or BORN (seal_tiles: a door panel joins
+    // at its close-T), each the MEASURED change of that tile's
+    // cap_real*T contribution (GameMap._solid_energy_book, named per channel
+    // in GameMap.solid_energy_books). A TERM of the solid closure identity
+    // (the solid twin of GameMap.gas_energy_seam_net()). book_solid_seam()
+    // also moves the SNAPSHOT by the same amount, so solid_energy_books_sum
+    // stays the live Σ when a seam fires AFTER this tick's step() (slot 9's
+    // burn-through and burst valve): the next step's fresh recompute then
+    // agrees with it, and the identity closes on every tick, not across two.
+    mutable int64_t e_solid_seam_sum = 0;
+    void book_solid_seam(int64_t delta) const {
+        e_solid_seam_sum += delta;
+        solid_energy_books_sum += delta;
+    }
 
     void  set_gas_advection_rate(float v) { gas_advection_rate = v; }
     float get_gas_advection_rate() const { return gas_advection_rate; }
