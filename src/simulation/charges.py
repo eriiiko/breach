@@ -79,7 +79,7 @@ def fire(sim, charge) -> None:
     payload = sim.weapons_tables.payload_for_ammo(charge.ammo_name)
     execute_payload(sim.gmap, sim.edit_queue, sim.units, charge.y, charge.x,
                     payload, sim.rng, events=sim.tick_events,
-                    kind="door_explosive")
+                    kind="door_explosive", owner_id=charge.owner_id)
 
 
 def detonate_owned(sim, unit) -> int:

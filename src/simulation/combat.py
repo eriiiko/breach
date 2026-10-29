@@ -47,7 +47,8 @@ from simulation import wall_fixed
 # march stops on. cover_system imports only the entities package + wall_fixed,
 # so this adds no weight and no cycle.
 from simulation.cover_system import cover_at
-from simulation.damage import KINETIC, DamagePacket, apply_packet
+from simulation.damage import (KINETIC, CREDIT_HEAT, DamagePacket, apply_packet,
+                               tick_credit)
 from simulation.events import (
     LaserFiredEvent, ProjectileGlowEvent, ShotFiredEvent, SprayJetEvent,
 )
@@ -95,8 +96,12 @@ class Projectile:
     ``update_position()`` arithmetic is unchanged for all of them)."""
 
     def __init__(self, proj_type, start_fx, start_fy, target_fx, target_fy,
-                 fuse_seconds, thrown_tick, ammo_name="grenade_frag"):
+                 fuse_seconds, thrown_tick, ammo_name="grenade_frag",
+                 owner_id=-1):
         self.proj_type = proj_type
+        # The thrower (#123): the detonation's blast, heat and gas are
+        # credited to it. -1 = nobody (a scripted / test lob).
+        self.owner_id = -1 if owner_id is None else int(owner_id)
         self.fx = float(start_fx)
         self.fy = float(start_fy)
         self.start_fx = float(start_fx)
@@ -412,7 +417,7 @@ class BulletInFlight:
             apply_packet(hit_unit,
                          DamagePacket(amount=actual_dmg,
                                       dtype=self.ammo.dtype_id,
-                                      source_id=self.shooter_id,
+                                      attacker_id=self.shooter_id,
                                       ap=self.ammo.ap),
                          events, source="bullet")
 
@@ -457,7 +462,8 @@ class BulletInFlight:
             if not (0 <= det_y < h and 0 <= det_x < w):
                 det_y, det_x = self.prev_iy, self.prev_ix
             execute_payload(gmap, queue, units, det_y, det_x, self.payload,
-                            rng, events=events, kind="shell")
+                            rng, events=events, kind="shell",
+                            owner_id=self.shooter_id)
 
         return still_flying
 
@@ -1201,7 +1207,7 @@ def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
                         apply_packet(
                             e,
                             DamagePacket(amount=amount, dtype=ammo.dtype_id,
-                                         source_id=shooter_id, ap=ammo.ap),
+                                         attacker_id=shooter_id, ap=ammo.ap),
                             events, source="laser")
 
         shots.append(Shot(fx1, fy1, rx, ry, real_time))
@@ -1356,7 +1362,15 @@ def deposit_spray_cone(gmap, queue, shooter, weapon, ammo,
     NO RNG, no unit reads, no unit writes. The queue flush (step 6b)
     applies everything before the physics solvers run, so this tick's
     flame heat converts to temperature THIS tick.
+
+    CREDIT (#123): the cone's tiles are claimed for the sprayer in the
+    map's :class:`simulation.damage.TickCredit` (heat and/or the gas slice),
+    so a unit the jet's own deposit hurts THIS tick is credited to the
+    sprayer; a fire the jet lit, or the cloud left after it, is the
+    environment's (the accepted gap — no per-tile provenance).
     """
+    credit = tick_credit(gmap)
+    owner = getattr(shooter, "id", -1)
     heat = float(ammo.heat_deposit)
     gas_amount = float(ammo.gas_amount)
     gas_id = None
@@ -1373,7 +1387,9 @@ def deposit_spray_cone(gmap, queue, shooter, weapon, ammo,
                 amount=heat / div, mode=EditMode.ADD,
                 source_id=_SRC_SPRAY_HEAT,
             ))
+            credit.claim(CREDIT_HEAT, ((y, x),), owner)
         if gas_id is not None and gas_amount > 0.0:
+            credit.claim(gas_id, ((y, x),), owner)
             queue.enqueue(FieldEdit(
                 field="gas", region=Region.TILE, coords=(y, x),
                 amount=gas_amount / div, mode=EditMode.ADD,
@@ -1617,7 +1633,7 @@ def melee_strike(units, attacker, target_fx, target_fy, rng, events, weapon):
 
     apply_packet(target,
                  DamagePacket(amount=amount, dtype=weapon.melee_dtype_id,
-                              source_id=getattr(attacker, "id", -1)),
+                              attacker_id=getattr(attacker, "id", -1)),
                  events, source="melee")
 
     if weapon.status_kind_id is not None and target.alive:
@@ -1657,4 +1673,5 @@ def process_door_explosives(gmap, queue, units, slot, rng, events=None):
                 payload = tables.payload_for_ammo(
                     getattr(o, "ammo_name", None) or "demo_breach")
                 execute_payload(gmap, queue, units, fy, fx, payload, rng,
-                                events=events, kind="door_explosive")
+                                events=events, kind="door_explosive",
+                                owner_id=getattr(u, "id", -1))

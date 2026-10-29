@@ -102,8 +102,14 @@ _PRE_122_SHIP_DEMO = dict(
     outcome="win", team=0, ticks=1528,
     field_digest="bdc5ad3e6e6a7f797199a2783efc1327"
                  "6f6f515df8e72ce0a50ae9e16d06a898",
-    tick_digest="c69925fa68e8ba10fbb724eaedbcb53d"
-                "56058f3b4efaf91a2601d1366be0f170",
+    # #123 re-pin (credited events): the last tick holds the winning bullet's
+    # UnitHit + UnitKilled, whose hashed record gained `attacker_id` (2, the
+    # shooter). SOLE CAUSE, verified on the same build: hashing the record
+    # without that key reproduces c69925fa... exactly; outcome, ticks,
+    # field_digest and the per-tick unit stream are unchanged.
+    # (was c69925fa68e8ba10fbb724eaedbcb53d56058f3b4efaf91a2601d1366be0f170)
+    tick_digest="4d32170a7a7ff465ba410f935c8912ae"
+                "594999c903169aa66582ae2e7bcb2ab8",
     unit_stream="a5ddf313af731dd1b7e983e68ebe448d"
                 "ffbe59a9fcf238eadcf262576c97f47a")
 

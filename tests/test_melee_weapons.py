@@ -16,8 +16,8 @@ What is locked here:
     on melee (that is the BULLET site rule);
   - BATON -> STUNNED 1.5 s AT THE DELIVERY SITE: 36 ticks, refresh-stacked,
     can_act/can_aim suppressed — while the DamagePacket type stays
-    damage-only (field-set pinned: amount/dtype/source_id/ap, no status
-    smuggling) and a killing blow stuns no corpse;
+    damage-only (no status-shaped packet field,
+    no status smuggling) and a killing blow stuns no corpse;
   - ZOMBIE MELEE PATH UNTOUCHED (regression): the ai_zombie bite keeps its
     shipped numbers, cadence, event silence, conversion semantics, and
     zero RNG draws;
@@ -246,11 +246,17 @@ def test_strike_snaps_attacker_facing_to_the_bearing():
 # ---------------------------------------------------------------------------
 def test_damage_packet_type_is_damage_only():
     """The mechanics/06 §1 discipline, structurally: DamagePacket carries
-    amount/dtype/source_id/ap and NOTHING else — no status field exists to
-    smuggle CC through the pipeline. Statuses ride apply_status at the
-    delivery site (the W3 teargas->BLINDED pattern)."""
-    assert {f.name for f in dataclasses.fields(DamagePacket)} == {
-        "amount", "dtype", "source_id", "ap"}
+    damage and its credit (amount/dtype/ap, and since #123 attacker_id /
+    indirect) — no status field exists to smuggle CC through the pipeline.
+    Statuses ride apply_status at the delivery site (the W3 teargas->BLINDED
+    pattern). Breaks if a status-shaped field (a kind, a duration, a
+    magnitude, a status) is added to the packet."""
+    names = {f.name for f in dataclasses.fields(DamagePacket)}
+    assert {"amount", "dtype"} <= names
+    smuggled = [n for n in names
+                if any(w in n for w in ("status", "kind", "duration",
+                                        "magnitude", "tick"))]
+    assert smuggled == [], smuggled
 
 
 def test_baton_applies_stunned_36_ticks_at_the_site():

@@ -868,6 +868,7 @@ def throw_grenade(sim, unit, step) -> None:
                       else 2.0),
         thrown_tick=sim.tick,
         ammo_name=(getattr(order, "ammo_name", None) or "grenade_frag"),
+        owner_id=getattr(unit, "id", -1),
     )
     sim.projectiles.append(proj)
 

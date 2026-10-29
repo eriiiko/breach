@@ -147,7 +147,7 @@ def update_zombies_tick(gmap, units, tick, events=None):
                 apply_packet(nearest,
                              DamagePacket(amount=CFG.zombie.melee_damage,
                                           dtype=KINETIC,
-                                          source_id=getattr(z, "id", -1)),
+                                          attacker_id=getattr(z, "id", -1)),
                              events=events, source="melee",
                              mark_killed_by_zombie=True)
             continue

@@ -216,10 +216,11 @@ def _unit_record(u):
 
 def _event_record(ev):
     """Canonical tuple for one synced tick event. We key off the class name +
-    its public scalar fields (unit_id, damage, source / killed_by). Only the
-    SYNCED combat events (UnitHitEvent / UnitKilledEvent) carry HP-relevant
-    state, but any event with a ``unit_id`` is recorded in emission order so a
-    divergent kill/hit stream is caught."""
+    its public scalar fields (unit_id, damage, source / killed_by, and since
+    #123 attacker_id). Only the SYNCED combat events (UnitHitEvent /
+    UnitKilledEvent) carry HP-relevant state, but any event with a
+    ``unit_id`` is recorded in emission order so a divergent kill/hit stream
+    is caught."""
     kind = type(ev).__name__
     return {
         "kind":      kind,
@@ -227,12 +228,22 @@ def _event_record(ev):
         "damage":    getattr(ev, "damage", None),
         "source":    getattr(ev, "source", None),
         "killed_by": getattr(ev, "killed_by", None),
+        "attacker_id": getattr(ev, "attacker_id", None),
     }
 
 
 # Only events that touch synced unit life/HP belong in the determinism digest.
 # (ShotFiredEvent / ExplosionEvent / Door|WallDestroyed are render/topology
 # signals; the topology ones already show up in the gmap fields.)
+#
+# #123 CREDITED EVENTS: both types carry ``attacker_id`` (the unit credited
+# with the hit / kill, -1 = the environment) and it IS HASHED, as the cause
+# string is. Deliberately not an unhashed sibling: the credit is what reward
+# design will read per unit, so a desync in WHO is credited is a desync of
+# the training signal and must fail the lockstep like a desync in hp. The
+# record's new key moves the unit hash of exactly the ticks that carry a hit
+# or a kill and nothing else; the canonical golden scenario has none in its
+# 30 ticks, so GOLDEN_AGGREGATE did not move (1ff07369..., verified).
 _SYNCED_EVENT_TYPES = ("UnitHitEvent", "UnitKilledEvent")
 
 

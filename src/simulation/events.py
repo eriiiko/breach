@@ -32,7 +32,85 @@ belongs in the renderer.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Optional
+
+
+# ---------------------------------------------------------------------------
+# Credited events (#123) — the closed CAUSE vocabulary + the attacker id.
+# ---------------------------------------------------------------------------
+class Cause(str, Enum):
+    """What hurt a unit — the closed vocabulary of ``UnitHitEvent.source`` and
+    ``UnitKilledEvent.killed_by`` (#123, rl-ready scope §3 item 4).
+
+    The VALUES are the strings the producers emitted before #123, unchanged,
+    so every consumer comparing against a literal (``ev.source == "heat"``)
+    and the per-tick unit digest's hashing of the string stay byte-identical;
+    the events themselves carry the plain string value (:func:`cause_value`),
+    never the member, so a ``repr`` of an event record is what it was.
+
+    One row per PRODUCER that exists today (derived from every
+    ``apply_packet`` site, 2026-10-29):
+
+    ==============  ==========================================================
+    ``bullet``      a kinetic round's hit (``BulletInFlight`` — rifles, the
+                    slow rounds)
+    ``laser``       a hitscan beam (``fire_beam``)
+    ``melee``       a melee strike (``resolve_melee``) and a zombie's bite
+    ``explosion``   a payload's blast (``exchange.apply_blast_damage`` —
+                    grenades, shells, placed and timed charges)
+    ``heat``        the ``heat | max`` coupling row: fire, a flame jet, a
+                    plasma splash (``exchange.apply_environmental_damage``)
+    ``poison_gas``  the ``gas[poison]`` coupling row (``apply_poison_dose``)
+    ``burning`` / ``poisoned`` / ``suffocating`` / ``regen``
+                    the DoT/HoT status rows (``status.STATUS_REGISTRY``'s
+                    names; ``status.py`` asserts every emitting row is here)
+    ==============  ==========================================================
+
+    NOT here because no damage path exists yet (``environment.py``: pressure,
+    O2 and submersion damage are deferred): vacuum, pressure, o2, water,
+    fall. A new damage source adds its row here in the same patch that adds
+    the producer — an unknown string is refused at the packet door
+    (``damage.apply_packet``) and by the events' own constructors.
+    """
+    BULLET      = "bullet"
+    LASER       = "laser"
+    MELEE       = "melee"
+    EXPLOSION   = "explosion"
+    HEAT        = "heat"
+    POISON_GAS  = "poison_gas"
+    BURNING     = "burning"
+    POISONED    = "poisoned"
+    SUFFOCATING = "suffocating"
+    REGEN       = "regen"
+
+
+#: Every cause string, in declaration order.
+CAUSE_NAMES = tuple(c.value for c in Cause)
+
+#: ``attacker_id`` of a hit nobody is credited with: the environment.
+NO_ATTACKER = -1
+
+
+def cause_value(cause) -> str:
+    """The plain string of a cause (a :class:`Cause` member or its string),
+    or ``ValueError`` for anything outside the closed vocabulary."""
+    try:
+        return Cause(cause).value
+    except ValueError:
+        raise ValueError(
+            f"unknown damage cause {cause!r}: the closed vocabulary is "
+            f"{CAUSE_NAMES} (simulation.events.Cause) -- a new damage "
+            f"source adds its row there") from None
+
+
+def attacker_value(attacker_id) -> int:
+    """Normalize an attacker id: ``None`` and negatives are the environment
+    (:data:`NO_ATTACKER`), anything else the unit id as a plain int."""
+    if attacker_id is None:
+        return NO_ATTACKER
+    a = int(attacker_id)
+    return a if a >= 0 else NO_ATTACKER
 
 
 @dataclass
@@ -93,23 +171,41 @@ class ExplosionEvent:
 
 @dataclass
 class UnitHitEvent:
-    """A unit took damage this tick.
+    """A unit took damage this tick — a CREDITED event (#123).
 
-    For blood-splatter sprites, damage numbers, screen flash on player hit.
-    ``source`` is a short string identifying what hit them: "bullet",
-    "explosion", "fire", "melee" — keep stable; the renderer may key
-    effects off it.
+    For blood-splatter sprites, damage numbers, screen flash on player hit,
+    and (later) reward. ``source`` is the cause, a :class:`Cause` value (the
+    plain string — "bullet", "explosion", "heat", "melee", ...); an unknown
+    string is refused here. ``attacker_id`` is the unit credited with the
+    hit, :data:`NO_ATTACKER` (-1) for the environment — see
+    ``damage.apply_packet`` for who is credited with what.
+
+    SYNCED: hashed into the per-tick unit digest with all four fields
+    (``tests/field_ab_harness._SYNCED_EVENT_TYPES``).
     """
     unit_id: int
     damage: int
     source: str
+    attacker_id: int = NO_ATTACKER
+
+    def __post_init__(self):
+        self.source = cause_value(self.source)
+        self.attacker_id = attacker_value(self.attacker_id)
 
 
 @dataclass
 class UnitKilledEvent:
-    """A unit died this tick. Renderer plays death animation."""
+    """A unit died this tick — a CREDITED event (#123). Renderer plays the
+    death animation. ``killed_by`` is the killing hit's cause (a
+    :class:`Cause` value), ``attacker_id`` the unit credited with the kill,
+    :data:`NO_ATTACKER` (-1) for the environment. SYNCED, like the hit."""
     unit_id: int
-    killed_by: str                  # "bullet" / "explosion" / "fire" / "melee" / ...
+    killed_by: str
+    attacker_id: int = NO_ATTACKER
+
+    def __post_init__(self):
+        self.killed_by = cause_value(self.killed_by)
+        self.attacker_id = attacker_value(self.attacker_id)
 
 
 @dataclass
@@ -167,6 +263,11 @@ class WallDestroyedEvent:
 
 
 __all__ = [
+    "Cause",
+    "CAUSE_NAMES",
+    "NO_ATTACKER",
+    "cause_value",
+    "attacker_value",
     "ShotFiredEvent",
     "LaserFiredEvent",
     "SprayJetEvent",

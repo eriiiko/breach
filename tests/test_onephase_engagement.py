@@ -428,12 +428,12 @@ def test_being_shot_records_the_shooter():
 
 
 def test_environmental_damage_is_not_an_attacker():
-    """A source_id of -1 (heat, an unattributed blast) must not become
+    """An attacker_id of -1 (heat, an unattributed blast) must not become
     somebody to return fire at."""
     from simulation.damage import DamagePacket, KINETIC, apply_packet
     sim = _sim()
     m = _marine(sim, 20.0, 24.0)
-    apply_packet(m, DamagePacket(amount=1, dtype=KINETIC, source_id=-1),
+    apply_packet(m, DamagePacket(amount=1, dtype=KINETIC, attacker_id=-1),
                  None, source="heat")
     assert m.recent_attackers == {}
 

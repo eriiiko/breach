@@ -131,6 +131,7 @@ from simulation.physics_runner import PhysicsRunner
 from simulation.field_edit import EditQueue, FieldEdit
 from simulation.recorder import PhysicsRecorder
 from simulation.status import composed_flags, tick_statuses
+from simulation.damage import tick_credit
 # Weapon/ammo/payload data tables (mechanics/03 §4, W1): the facade owns a
 # bundle, rebuilt fresh at every construction/reset (the GameMap material/gas
 # table pattern) so it always reflects the current CFG.
@@ -1019,6 +1020,7 @@ class Simulation:
             fuse_seconds=throw.fuse_seconds,
             thrown_tick=self.tick,
             ammo_name="grenade_frag",
+            owner_id=getattr(u, "id", -1),
         )
         self.projectiles.append(proj)
         u.has_grenade -= 1
@@ -1803,6 +1805,15 @@ class Simulation:
             # SIM_FIELDS. The three LIVE planes above keep their conductor wipe
             # because their writer (the old cast) does not clear them.
 
+        # #123: the per-tick deposit credit (damage.TickCredit) shares the
+        # `heat` buffer's lifetime -- it names who put THIS tick's heat / gas
+        # deposit on a tile, read by 9c / 9c3 above. Cleared here, after both
+        # readers and before the round-clock tail, so a door charge fired in
+        # on_tick_end (its edits flush at the next 6b) keeps its claim into
+        # the next tick's readers. Outside the physics gate: claims are made
+        # with or without a runner.
+        tick_credit(self.gmap).clear()
+
         # Expire visual shot tracers (legacy fade-out behaviour).
         if self.shots:
             self.shots = [s for s in self.shots if
@@ -1849,7 +1860,7 @@ class Simulation:
                     execute_payload(
                         self.gmap, self.edit_queue, self.units, fy, fx,
                         payload, self.rng, events=self.tick_events,
-                        kind="grenade")
+                        kind="grenade", owner_id=proj.owner_id)
 
         # W2: advance in-flight kinetic rounds (the unified march). Each
         # marches this tick's integer step budget; hits/chew/exposure resolve
@@ -2057,6 +2068,7 @@ class Simulation:
                         # poison grenades name theirs; loadout UI = W6).
                         ammo_name=(getattr(o, "ammo_name", None)
                                    or "grenade_frag"),
+                        owner_id=getattr(u, "id", -1),
                     )
                     self.projectiles.append(proj)
 
