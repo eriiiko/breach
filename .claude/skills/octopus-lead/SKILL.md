@@ -52,6 +52,7 @@ the lead so you decide all these things." Concretely:
 | 2026-10-29 | **Capability tiers confirmed.** T1 (the study): swim stroke that really travels; separate crawl gait; every arm independent and purposeful; reach → grab → hold → lift a marine and carry it while moving; idle "alive" (arms exploring, tip curls, mantle breathing). T2 (#107/#108): doors, pulling over obstacles, several marines, fighting (strike, throw, pin), berserk flush. T3: consoles/levers/doors as reach+grab plus a "use" verb; eating/killing a held marine. |
 | 2026-10-29 | **Game-state split accepted.** Sim owns, in Q16, per octopus: body position/heading, mantle state, per arm a COARSE chain (root, 2–3 waypoints, tip) + goal + grab (unit, arm). Render owns the 17-joint curve, stretch thinning, breathing, sucker roll. Grab, blocking, reach range and hits are decided on the coarse chain; the float rig passes through its waypoints so the picture never lies. Governing rule (egregore, 2026-07-20): no float (IK/ragdoll/neural) ever becomes synced state. |
 | 2026-10-29 | T1's held marine is a carried marine-shaped PROP for the study; the real unit coupling (wading, struggling, shootable while held) is the end goal and is #107's. |
+| 2026-10-29 | **P1 PASSED (7/7)** *(lead)*: an 18-node XPBD chain + Yekutieli's stiffening wave + anisotropic quadratic drag reproduces the real reach (`prototypes/octopus_motion/`, `out/report.md`). The recommendation stands: option 2, the chain. Findings that bind P6: straightness behind the bend is set by SOLVER RESOLUTION, not muscle force (8 x 1 fails at any k_bend; 16 substeps x 2 passes passes; 32 x 1 whips the tip); drag is load-bearing (no drag = 300 deg tip overshoot); the weighted op count is ~0.6 M per octopus-tick, 3x over the 0.2 ms ceiling at 1 ns/op -- P6 measures before anything is promised. |
 
 ## 4. Research rules (Erik, 2026-10-29)
 
@@ -121,3 +122,20 @@ the lead so you decide all these things." Concretely:
   (request, score). Next: P0 footage sheet, then P1 the one-arm float
   prototype (the make-or-break: does a chain + stiffness wave reproduce
   Yekutieli's reach?). #118 (per-arm HP) filed. Cost: one session.
+- 2026-10-29 (session 2) — P0 + P1 done by the lead inline (no agent: a
+  ~600-line pure-numpy prototype is cheaper to write than to brief). P0:
+  `docs/octopus_footage_sheet_2026-10-29.md` (watch-list, scoring sheet;
+  nothing watched yet — Erik or a later session fills timestamps). P1: 7/7
+  gates on the first honest run after two fixes found by LOOKING at the
+  figures before tuning: (1) the Rayleigh damping was parametrised as a
+  fraction of k and killed all motion (now a damping time, Yekutieli's muscle
+  has ~7e-5 s); (2) the start pose must be the paper's (one bend near the
+  base, distal arm lying back) -- a tip-weighted curl gives no travelling
+  bend. Three gates failed at 8 x 1 and were NOT bent to pass: the sensitivity
+  scan (k_bend x4, substeps, passes, c_tan, passive, damping) showed solver
+  resolution was the cause; two gate DEFINITIONS were corrected with the
+  reason written in the report (a3 measures the END overshoot, the paper's
+  meaning, and reports the mid-reach S-flex beside it; a4 gates the natural
+  t_act range 0.6-1.2 s the paper names). Lesson: run the sensitivity scan
+  before touching a gate. Cost: one session, ~2 min per gate run. Next: P2
+  crawl (eight chains + body + floor + anchors + lottery).
