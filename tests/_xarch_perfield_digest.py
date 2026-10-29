@@ -549,7 +549,19 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # MOVED: the smoke trace plane of `gas` (the canonical scenario's seeded 0.6
 # smoke decays slower). Nothing else is expected to move with a decay rate.
 # (was 2673bd3381636e4b901b76e0d541a6172853145dc319752537a65137f0fdd84d)
-GOLDEN_AGGREGATE = "7b60c8006bd0dcefd38aba68559f5ce1c50d6ae844681414bcfe208faf972ffd"
+#
+# 2026-10-29 -- #116 STANDING-UNIT DRIFT: `[exchange] push_grad_floor_atm =
+# 0.001` (new) -- apply_wave_push reads a per-axis footprint pressure gradient
+# at or under 65 Q16 counts as 0 (the quiet field's few-count jitter, which
+# walked standing units just below their integer so int() stamped them one
+# tile north-west of their picture). SOLE CAUSE, verified on the same build:
+# the tree with the floor set to 0.0 reproduces 7b60c800... exactly.
+# MOVED: `__unit_state__` only, first at tick 1 -- the canonical marine's
+# float position (after 30 ticks (6.98748, 7.00063) -> (6.98949, 7.00041): the
+# wave pulse's sub-floor tail no longer nudges it). UNMOVED over all 30 ticks:
+# every gmap field (the marine stays on the same tiles, so no stamp moves).
+# (was 7b60c8006bd0dcefd38aba68559f5ce1c50d6ae844681414bcfe208faf972ffd)
+GOLDEN_AGGREGATE = "1ff073694cb413601456b5462b4852a24d60eeb3617e1e8a407df1df167676a9"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs
