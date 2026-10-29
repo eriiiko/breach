@@ -140,3 +140,22 @@ the lead so you decide all these things." Concretely:
   t_act range 0.6-1.2 s the paper names). Lesson: run the sensitivity scan
   before touching a gate. Cost: one session, ~2 min per gate run. Next: P2
   crawl (eight chains + body + floor + anchors + lottery).
+- 2026-10-29 (session 2, continued; Erik: "go ahead as far as you can
+  manage") — P2, P3, P4, P5 built and gated the same day, all inline, on a
+  batched arm bank (`arm_bank.py`, bit-identical to the P1 chain, the
+  SIMD-over-arms the port will use). Results: P2 5/6 (Levy's per-push r
+  0.88-0.94 vs 0.9, left as the miss), P3 3/3, P4 3/3, P5 5/5 measurable
+  rows. What was learned: (1) a background Bash with `&` dies with the tool
+  call -- use the tool's own run_in_background; (2) Python's default file
+  encoding on Windows is cp1252: write prototype files with
+  encoding="utf-8" or a `§` breaks the interpreter; (3) every gate that
+  failed first was understood before anything moved: the rhythm test
+  needed a CLOCKED CONTROL to be able to fail, the crawl needed closed-loop
+  steering to survive a dead arm, the idle needed the seated arms ANCHORED
+  (a reach's reaction moved the whole body), the swim's control needed
+  linear AND isotropic drag on arms and body; (4) a gate definition is
+  corrected only with its reason in the report (a3, a4, P2 gate 1, P4 gate
+  2, P5 rows 1 and 7 -- each one named). Cost: ~1 min of wall per 25 s of
+  eight-arm sim at 16 x 2; a full gate run 2-8 min. Next: P6 is the port
+  into the shared sim -- a design gate with Erik first (cost risk 3x, z in
+  the chain, the OctopusDef row), then P7 render, P8 clips.

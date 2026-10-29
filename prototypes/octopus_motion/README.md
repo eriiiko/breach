@@ -130,3 +130,32 @@ never sees, then three jets in the plane. `grab_gates.py`, `out/report_p4.md`,
 - Side effect on P2: `_body_predict` now applies the deck friction to the
   body too (needed for the prop); the P2 numbers in `report_p2.md` predate
   it (in water the body's friction is ~2 % of its weight; negligible).
+
+## P5 — idle (2026-10-29): 5/5 measurable checklist rows
+
+`idle_sim.py`: the seated animal (every still arm's mid-arm patch sealed to
+the deck); with no travel goal the hub lets at most two arms EXPLORE at a
+time: a decide hold (0.4–1.6 s of stillness), a reach (the P1 wave, aim
+±45° in the body frame, stretch 1.15–1.35), a touch (0.3–1.1 s), then LIMP
+(activation off, the arm relaxes under drag) and it sticks down again where
+it lies. Seeded, no clock, front pairs favoured. `idle_gates.py`,
+`out/report_p5.md`, `fig10_idle.png`, `idle.gif`. Breathing and tip curls
+are render controls (CONTROLS.md), not scored here.
+
+- Row 1 few actors: at most 2 arms' distal halves move at once (the
+  proximal segments of seated arms jiggle at ~3 cm/s when a reach turns the
+  body: secondary motion, counted out on purpose).
+- Row 3 willed motion from the base: in 95 % of gestures the time of peak
+  speed increases monotonically with node index (Spearman median 1.00).
+- Row 7 holds: still 38 % of the time, longest hold 2.7 s; onset gaps
+  2.5 ± 1.7 s (CV 0.68). The P2 spectral-line test is reported but does not
+  bind here: 24 events and gestures ~4 s long give a broad bump at 0.2 Hz
+  that the whitening window cannot flatten.
+- Row 8 de-synchrony and roles: 2 of 24 gestures start within 0.3 s of
+  another arm's; L1 7 gestures, the back pair 1 each; every arm moved.
+- Row 13 stable: still arms' segments at rest length to 0.0 %, body drift
+  0 mm in 60 s (the anchors hold it; before they were added a reach's
+  reaction moved the body 36 mm and every arm with it).
+
+The rows judged by eye (2 eyes lead, 4–6 passive/anticipation/settle, 9–12,
+14) wait for P7's render and P8's clips.
