@@ -10,10 +10,10 @@ zombies = 4
 n = 4
 loadout = "rifleman"
 env_profile = "default"
-controller = "idle"
+controller = "bots"
 
 [[team]]
 n = 4
 loadout = "rifleman"
 env_profile = "default"
-controller = "idle"
+controller = "bots"
