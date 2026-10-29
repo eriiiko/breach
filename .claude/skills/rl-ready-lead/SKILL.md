@@ -48,7 +48,7 @@ quickly." Concretely:
 | 2026-10-29 | **Objective v1: eliminate the other team**, time limit, draw at the limit. Bomb-site is v1.1 (it is what makes breach charges and decompression matter). |
 | 2026-10-29 | **Loadout v1: everyone the same**: the K5 carbine + 2 frag grenades. One flamethrower per team is a roster VARIANT behind the match config (after #20). |
 | 2026-10-29 | **Team size is a variable** of the match config, within the level's `max_per_team`. Slots are fixed per team (§5). |
-| 2026-10-29 | **Wildlife behind a flag, off in v1.** The octopus (milestone 8) and the swarm (#63, a third done) are not on this path; levelgen leaves them spawn points. **Zombies ARE in v1** (Erik: "I'd really really like that"): `ai_zombie.py` attack-nearest, a levelgen count. |
+| 2026-10-29 | **Wildlife behind a flag, off in v1.** The octopus (milestone 8) and the swarm (#63, a third done) are not on this path; levelgen leaves them spawn points. **Zombies ARE in v1** (Erik: "I'd really really like that"): `ai_zombie.py` attack-nearest, a levelgen count, and **killed marines convert to zombies** (Erik, 2026-10-29: "please, let's not remove this" — Claude had proposed OFF; the ruling is IN). |
 | 2026-10-29 | **Suits are a per-unit environment-profile row chosen by the match config**: a team can be suited, unsuited or mixed. Unsuited marines die of vacuum, fire and gas, which Erik finds more interesting. |
 | 2026-10-29 | **No respawn. Friendly fire ON.** |
 | 2026-10-29 | **Rule-based team AI is built** (a control source): walk toward the enemy, shoot on sight, throw a grenade at a group. The first opponent and the baseline. |
@@ -114,5 +114,6 @@ build so both answers fit (§5).
 
 ## 8. Run log
 
+- 2026-10-29 — zombie conversion ruled IN by Erik (Claude's OFF proposal vetoed); #116 then #73 started as agent patches, sequentially per the one-implementation-agent rule.
 - 2026-10-29 — skill created in the #76 scoping session; scope doc written;
   issues cut; Roadmap's RL-ready section reordered.
