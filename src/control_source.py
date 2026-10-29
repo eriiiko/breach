@@ -78,7 +78,10 @@ class ControlSource:
         ``sim`` is the :class:`simulation.Simulation` facade; ``renderer``
         is the :class:`renderer.GameRenderer` (used for screen<->tile
         conversion and any renderer-owned bindings this source still
-        needs, e.g. ``mouse_to_tile()``).
+        needs, e.g. ``mouse_to_tile()``) — or ``None`` in a headless match
+        (#119 P2: ``tools/run_match.py`` calls each team's controller once
+        per tick with no renderer). A controller registered for matches
+        (:func:`register_controller`) must work with ``renderer=None``.
         """
         raise NotImplementedError
 
@@ -113,6 +116,58 @@ class ControlSource:
         arms them.
         """
         return True
+
+
+class IdleControl(ControlSource):
+    """A match controller that emits NOTHING (#119 P2): its team stands where
+    it spawned. The first registered match controller; the bots (#121) and
+    zombies-through-the-seam (#122) register beside it."""
+
+    def __init__(self, team: int | None = None):
+        self.team = team
+
+    def handle_frame(self, sim, renderer=None) -> None:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# The MATCH controller registry (#119 P2) — name -> factory(team) building the
+# ControlSource that drives one team of a headless match. match.toml's
+# `controller` names a row here (validated at the level door); the headless
+# runner builds one per team and calls handle_frame(sim, None) each tick. A
+# new controller is a registry entry, never a second control path. Separate
+# from `_KNOWN_CONTROLS` below, which names the HUMAN schemes main.py's
+# --control flag picks between.
+# ---------------------------------------------------------------------------
+_MATCH_CONTROLLERS: dict = {
+    "idle": IdleControl,
+}
+
+
+def register_controller(name: str, factory) -> None:
+    """Register ``factory`` (``team -> ControlSource``) under ``name``;
+    refuses a name already taken (never a silent override)."""
+    if not isinstance(name, str) or not name:
+        raise ValueError(f"controller name must be a non-empty str "
+                         f"(got {name!r})")
+    if name in _MATCH_CONTROLLERS:
+        raise ValueError(f"controller {name!r} is already registered")
+    _MATCH_CONTROLLERS[name] = factory
+
+
+def registered_controllers() -> tuple:
+    """The registered match-controller names, sorted."""
+    return tuple(sorted(_MATCH_CONTROLLERS))
+
+
+def create_controller(name: str, team: int) -> "ControlSource":
+    """Build the registered controller ``name`` for ``team``."""
+    try:
+        factory = _MATCH_CONTROLLERS[name]
+    except KeyError:
+        raise ValueError(f"controller {name!r} is not registered (known: "
+                         f"{list(registered_controllers())})") from None
+    return factory(team)
 
 
 # Launch-flag name -> factory. P3 adds "gamepad" (GamepadDirect); the ML entry
@@ -155,4 +210,6 @@ def create_control_source(name: str, debug: bool = False) -> "ControlSource":
 
 __all__ = [
     "ControlSource", "create_control_source", "quantize_stick_direction",
+    "IdleControl", "register_controller", "registered_controllers",
+    "create_controller",
 ]

@@ -244,3 +244,30 @@ px_per_tile = [64.00, 64.00]
 tileset = "art/tilesets/greybox"
 px_per_tile = 64
 seed = 0
+
+[[spawn_room]]
+team = 0
+x = 4
+y = 40
+w = 14
+h = 13
+max_per_team = 9
+placement = "formation"
+
+[[spawn_room]]
+team = 1
+x = 4
+y = 4
+w = 14
+h = 13
+max_per_team = 9
+placement = "formation"
+
+[[spawn_room]]
+team = 255
+x = 83
+y = 49
+w = 13
+h = 17
+max_per_team = 9
+placement = "formation"

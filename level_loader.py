@@ -55,6 +55,15 @@ from simulation.entities import (  # noqa: E402
 from simulation.factions import (  # noqa: E402,F401
     LEGACY_ZOMBIE_TEAM, ZOMBIE_TEAM, team_from_level,
 )
+# Spawn rooms + the match config (#119 P2): import-light (stdlib + factions);
+# the match door's table checks import their tables lazily.
+from simulation.match import (  # noqa: E402
+    FORMATION_FOOTPRINT, MatchSpec, SpawnRoom, parse_match, parse_spawn_rooms,
+    placement_cells,
+)
+
+#: The match config's file, beside level.toml (#119 P2).
+MATCH_FILENAME = "match.toml"
 
 
 SUPPORTED_VERSIONS = {"1", "2"}
@@ -1040,6 +1049,15 @@ class LevelData:
     # base resolution and replicate their tile sets by res_factor.
     res_factor: int = 1
     tile_size_m_base: Optional[float] = None
+    # ---- match foundation (#119 P2) --------------------------------------
+    # `spawn_rooms`: the level's [[spawn_room]] entries (one per team, ZOMBIE_
+    # TEAM included) — WHERE a match's teams stand (the level's decision).
+    # `match`: levels/<name>/match.toml parsed and validated against them,
+    # or None when the folder carries no match file. Neither is read by the
+    # game's own spawn path ([[spawn]]); `main.py --res` does not scale them
+    # (only the headless runner reads them, at base resolution).
+    spawn_rooms: list = field(default_factory=list)  # list[SpawnRoom]
+    match: Optional[MatchSpec] = None
 
     @property
     def height(self) -> int:
@@ -1223,6 +1241,10 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
                 f"Required fields: name (str), team (int), x (float), y (float)."
             )
 
+    # ---- [[spawn_room]] + match.toml (#119 P2) ----------------------------
+    spawn_rooms = _parse_spawn_rooms(raw, toml_path, tilemap, version)
+    match = _parse_match_file(base, spawn_rooms)
+
     # ---- [[light]] entities (engine/15 §2.2, P4) -------------------------
     lights_raw = raw.get("light", [])
     if not isinstance(lights_raw, list):
@@ -1298,7 +1320,49 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
         air_init_q=air_init_q,
         boundary=boundary,
         ambient=ambient,
+        spawn_rooms=spawn_rooms,
+        match=match,
     )
+
+
+def _parse_spawn_rooms(raw: dict, toml_path, tilemap: np.ndarray,
+                       version: str) -> list:
+    """``[[spawn_room]]`` -> validated rooms (#119 P2): the schema checks
+    (``simulation.match.spawn_room_from_dict``) plus the grid's — the room
+    inside the map, and every footprint of its ``max_per_team`` placement
+    cells on open interior floor (air, not vacuum), so a match can never
+    spawn a unit into a wall."""
+    rooms = parse_spawn_rooms(raw.get("spawn_room"), str(toml_path))
+    if not rooms:
+        return rooms
+    h, w = tilemap.shape
+    mat, vac = materials_from_tilemap(tilemap, version)
+    for r in rooms:
+        where = f"[[spawn_room]] team {r.team} in {toml_path}"
+        if r.x + r.w > w or r.y + r.h > h:
+            raise ValueError(f"{where}: room ({r.x},{r.y}) {r.w}x{r.h} "
+                             f"leaves the {w}x{h} map")
+        for cx, cy in placement_cells(r, r.max_per_team):
+            fp = FORMATION_FOOTPRINT
+            foot = (slice(cy, cy + fp), slice(cx, cx + fp))
+            if (mat[foot] != 0).any() or vac[foot].any():
+                raise ValueError(f"{where}: placement cell ({cx},{cy}) is "
+                                 f"not open interior floor")
+    return rooms
+
+
+def _parse_match_file(base: Path, spawn_rooms: list):
+    """``levels/<name>/match.toml`` -> a validated :class:`MatchSpec`, or
+    None when the level has no match file (#119 P2)."""
+    path = base / MATCH_FILENAME
+    if not path.is_file():
+        return None
+    try:
+        with open(path, "rb") as f:
+            raw = tomllib.load(f)
+    except tomllib.TOMLDecodeError as e:
+        raise ValueError(f"{path}: {e}") from None
+    return parse_match(raw, spawn_rooms, str(path))
 
 
 def materials_from_tilemap(tilemap: np.ndarray, version: str):

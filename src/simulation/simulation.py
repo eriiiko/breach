@@ -495,6 +495,16 @@ class Simulation:
             out.extend([None] * (n_slots - len(out)))
         return out
 
+    def spawn_match(self, spec=None) -> list:
+        """Spawn a match's units (#119 P2) — THE one entry: ``spec`` (default
+        ``self.level.match``, the level's match.toml) placed by the level's
+        spawn rooms (``simulation.match.spawn_match``). Needs a fresh sim."""
+        from simulation.match import spawn_match
+        spec = self.level.match if spec is None else spec
+        if spec is None:
+            raise ValueError(f"level {self.level.name!r} has no match.toml")
+        return spawn_match(self, spec)
+
     def controlled_units(self) -> list:
         """The living units of :attr:`player_team` — the human's squad."""
         return [u for u in self.units
