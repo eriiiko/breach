@@ -430,7 +430,7 @@ painted. An id 10 would not collide with 9 at all; the block is the CLAUDE.md
 rule "an 11th material needs Erik's SPACE_CODE-migration ruling FIRST",
 written so the clash is cleaned up before the table grows past it. **Erik has
 now given that ruling** ("we can't be limited to 10 materials … no big deal"),
-so the migration is a patch:
+so the migration is a patch — BUILT the same night on branch `27-space-code-migration` (five commits off main `de1f461`; suite 3908 passed, no golden moved, bake goldens unchanged; awaiting Erik's look and the lead session's merge):
 
 - SPACE moves to a code outside the id range. `255` does not fit the int8
   plane; use `-1`, cast explicitly at the loader (finding 15).
