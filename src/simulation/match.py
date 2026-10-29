@@ -9,6 +9,7 @@ argv scans, never per-test dicts::
     seed = 1                     # -> Simulation(seed=...); nothing else draws
     time_limit_s = 300.0         # sim seconds (default 300.0); draw at the limit
     zombies = 5                  # placed in the ZOMBIE_TEAM spawn room
+    zombie_controller = "zombies"  # the horde's controller (default; #122)
 
     [[team]]                     # row i IS team i (0, 1, 2, ...)
     n = 4
@@ -53,7 +54,12 @@ FORMATION_GAP = 2
 FORMATION_PITCH = FORMATION_FOOTPRINT + FORMATION_GAP
 
 _ROOM_KEYS = ("team", "x", "y", "w", "h", "max_per_team", "placement")
-_MATCH_KEYS = ("objective", "seed", "time_limit_s", "zombies", "team")
+_MATCH_KEYS = ("objective", "seed", "time_limit_s", "zombies",
+               "zombie_controller", "team")
+#: The horde's controller when match.toml names none (#122): the shipped
+#: zombie law through the control seam. The writer omits the key at this
+#: value, so a match file that never named one stays byte-identical.
+DEFAULT_ZOMBIE_CONTROLLER = "zombies"
 _TEAM_KEYS = ("n", "loadout", "env_profile", "controller")
 
 
@@ -87,6 +93,9 @@ class MatchSpec:
     zombies: int = 0
     time_limit_s: float = DEFAULT_TIME_LIMIT_S
     objective: str = "eliminate"
+    #: the registered controller that drives ZOMBIE_TEAM (#122) — the spawned
+    #: horde and every converted marine.
+    zombie_controller: str = DEFAULT_ZOMBIE_CONTROLLER
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +213,8 @@ def parse_match(raw: dict, spawn_rooms, where: str) -> MatchSpec:
     against the level's ``spawn_rooms`` and the live tables: a known
     objective, >= 2 team rows, each ``n`` within its room's
     ``max_per_team``, loadout / env_profile names rows of their tables, a
-    registered controller; zombies need a ``ZOMBIE_TEAM`` room."""
+    registered controller (per team, and ``zombie_controller`` for the
+    horde, default ``"zombies"``); zombies need a ``ZOMBIE_TEAM`` room."""
     unknown = sorted(set(raw) - set(_MATCH_KEYS))
     if unknown:
         raise ValueError(f"{where}: unknown key(s) {unknown} "
@@ -271,6 +281,11 @@ def parse_match(raw: dict, spawn_rooms, where: str) -> MatchSpec:
                              f"controller (known: {sorted(controllers)})")
         teams.append(MatchTeam(n=n, loadout=loadout, env_profile=profile,
                                controller=ctrl))
+    zctrl = raw.get("zombie_controller", DEFAULT_ZOMBIE_CONTROLLER)
+    if not isinstance(zctrl, str) or zctrl not in controllers:
+        raise ValueError(f"{where}.zombie_controller {zctrl!r} is not a "
+                         f"registered controller (known: "
+                         f"{sorted(controllers)})")
     if zombies:
         zroom = rooms.get(ZOMBIE_TEAM)
         if zroom is None:
@@ -281,7 +296,8 @@ def parse_match(raw: dict, spawn_rooms, where: str) -> MatchSpec:
             raise ValueError(f"{where}: zombies = {zombies} exceeds the zombie "
                              f"room's max_per_team = {zroom.max_per_team}")
     return MatchSpec(teams=tuple(teams), seed=seed, zombies=zombies,
-                     time_limit_s=float(tl), objective=objective)
+                     time_limit_s=float(tl), objective=objective,
+                     zombie_controller=zctrl)
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +344,7 @@ def spawn_match(sim, spec: MatchSpec) -> list:
 
 __all__ = [
     "PLACEMENT_RULES", "OBJECTIVES", "DEFAULT_TIME_LIMIT_S",
+    "DEFAULT_ZOMBIE_CONTROLLER",
     "FORMATION_FOOTPRINT", "FORMATION_GAP", "FORMATION_PITCH",
     "SpawnRoom", "MatchTeam", "MatchSpec",
     "formation_capacity", "formation_cells", "placement_cells",

@@ -428,6 +428,12 @@ def format_match_text(spec) -> str:
         f"time_limit_s = {_fmt_coord(spec.time_limit_s)}\n",
         f"zombies = {int(spec.zombies)}\n",
     ]
+    # #122: written only when it is not the default, so every match file that
+    # never named a zombie controller keeps its bytes.
+    from simulation.match import DEFAULT_ZOMBIE_CONTROLLER
+    zctrl = getattr(spec, "zombie_controller", DEFAULT_ZOMBIE_CONTROLLER)
+    if zctrl != DEFAULT_ZOMBIE_CONTROLLER:
+        lines.append(f"zombie_controller = {_fmt_value(zctrl)}\n")
     for t in spec.teams:
         lines += [
             "\n", "[[team]]\n",

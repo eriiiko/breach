@@ -5,8 +5,8 @@ Runs one match to its result with no window: the level and its match.toml
 the match seed under :class:`~simulation.ruleset.MatchRules`, the units
 spawned from the config into the level's spawn rooms
 (``Simulation.spawn_match``), then ``step()`` until terminal, each team's
-registered controller (``control_source.create_controller``) called once per
-tick with ``renderer=None``. No light is requested, no recorder allocated,
+registered controller (``control_source.create_match_controllers``, the
+horde's included) called once per tick with ``renderer=None``. No light is requested, no recorder allocated,
 nothing imports the renderer. Tests and benches call :func:`run_match`;
 never a second match loop.
 
@@ -20,8 +20,9 @@ integer fields, ``tests/field_digest.py``) and ``tick_digest`` (those folded
 with the synced unit state and the entity section -- the one a determinism
 gate compares). Exit 0 on a finished match.
 
-The zombie AI still runs inside ``Simulation.step`` as it always has; zombies
-through the control seam are #122, the bot team AI #121.
+Every unit has ONE driver and it is a controller (#122): the teams' rows and
+the horde's ``zombie_controller`` (default ``zombies``: the shipped zombie law
+through the ZOMBIE intent), built by ``control_source.create_match_controllers``.
 """
 from __future__ import annotations
 
@@ -39,7 +40,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release",
 import breach_physics as bp  # noqa: E402
 
 import level_loader  # noqa: E402
-from control_source import create_controller  # noqa: E402
+from control_source import create_match_controllers  # noqa: E402
 from field_ab_harness import capture_snapshot  # noqa: E402
 from field_digest import field_digest, tick_digest  # noqa: E402
 from simulation import Simulation  # noqa: E402
@@ -92,8 +93,7 @@ def run_match(level, spec=None, *, seed: int | None = None,
                      enable_recorder=False, ruleset=rules)
     sim.set_paused(False)
     sim.spawn_match(spec)
-    controllers = [create_controller(row.controller, team)
-                   for team, row in enumerate(spec.teams)]
+    controllers = create_match_controllers(sim, spec)
     while not rules.is_terminal(sim):
         for c in controllers:
             c.handle_frame(sim, None)
