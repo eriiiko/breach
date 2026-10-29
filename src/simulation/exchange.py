@@ -66,6 +66,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
 from config import CFG
+from simulation import atmosphere_fixed as _atm_fx
 from simulation import gas_fixed
 from simulation.damage import (
     BLAST, HEAT, POISON, DamagePacket, apply_packet, mitigation_for,
@@ -527,6 +528,11 @@ def apply_wave_push(units, gmap, ticks_per_second):
     threshold = float(cfg.knockdown_dv_threshold)
     getup_ticks = int(cfg.knockdown_getup_ticks)
     dt_tick = 1.0 / float(ticks_per_second)
+    # #116: the field's integer noise floor, quantized once per pass (door 2).
+    # A footprint gradient at or under it is the quiet field's few-count
+    # jitter, not a wave: it is read as 0 per axis, so a standing unit nobody
+    # pushes stays exactly on its integer (floor() stamps it where it is drawn).
+    grad_floor_q = _atm_fx.quantize_scalar(float(cfg.push_grad_floor_atm))
 
     # EOS refactor P3 (design §6 "apply_wave_push" row): reads grad(P) — the
     # derived pressure field (`gmap.atmosphere`, the design's P-alias) —
@@ -544,6 +550,10 @@ def apply_wave_push(units, gmap, ticks_per_second):
             continue
         tiles = u.occupied_tiles()
         gx, gy = reduce_grad(p_field, tiles)
+        if -grad_floor_q <= gx <= grad_floor_q:
+            gx = 0      # #116: under the noise floor -> no push on this axis
+        if -grad_floor_q <= gy <= grad_floor_q:
+            gy = 0
         if gx == 0 and gy == 0:
             continue    # integer-exact no-op: quiet field or clipped footprint
 

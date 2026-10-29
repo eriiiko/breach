@@ -3424,6 +3424,14 @@ k_push = 400.0                   # impulse gain: dv = k_push * grad / mass (tile
 # gradient can produce. Interesting range 0.1 (stiff) .. 1.0 (teleporty at
 # point blank); above ~1 a hop can visually skip a tile.
 push_max_tile_per_tick = 0.5     # sanity cap on the per-tick displacement (tiles)
+# push_grad_floor_atm — the pressure field's noise floor for the push (#116).
+# A footprint gradient (edge-line mean difference, per axis) at or under it is
+# read as 0: a quiet playground's EOS jitters 1-7 Q16 counts (<= 1.1e-4 atm)
+# across a standing marine, which nudged it 3e-6 tile/tick and walked it just
+# below its integer, so floor() stamped it one tile north-west of its picture.
+# 0.001 atm (65 counts) is ~9x the measured quiet maximum and ~1/1200 of the
+# knockdown gradient (~79k counts at mass 80) — no blast feel moves. 0 = off.
+push_grad_floor_atm = 0.001      # |grad| (atm across the footprint) read as no push
 # knockdown_dv_threshold — the topple gate at stability 1.0. Feel: LOWER =
 # blasts floor people farther out (at 6.0 a grenade's knockdown ring is
 # ~9-10 tiles, ~2x its damage ring). Interesting range ~3 (twitchy — any
