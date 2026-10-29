@@ -47,3 +47,19 @@ Erik to fetch through Lund) · NF = not found. **Archived** = PDF in
 | B8c | Smith, Padget, Vidler 2018, Graph-based generation of action-adventure dungeon levels using answer set programming, FDG 2018. DOI 10.1145/3235765.3235817 | ABS (Bath repository returned 403) | https://researchportal.bath.ac.uk/en/publications/graph-based-generation-of-action-adventure-dungeon-levels-using-a/ | — |
 | B8d | Karth & Smith 2017, WaveFunctionCollapse is constraint solving in the wild, FDG 2017. DOI 10.1145/3102071.3110566 | FULL | https://escholarship.org/uc/item/1f29235t | `karth_smith2017_wfc_constraint_solving_in_the_wild.pdf` |
 | B9 | Dead Cells (= A10); Tanagra (= A17) | see A10 / A17 | — | — |
+
+## (c) PCG for RL generalisation
+
+| Id | Source | Status | Where | Archived |
+|---|---|---|---|---|
+| C1 | Cobbe, Klimov, Hesse, Kim, Schulman 2019, Quantifying generalization in reinforcement learning, ICML. arXiv 1812.02341 | FULL | https://arxiv.org/abs/1812.02341 | no (7 MB) |
+| C2 | Cobbe, Hesse, Hilton, Schulman 2020, Leveraging procedural generation to benchmark reinforcement learning (Procgen), ICML. arXiv 1912.01588 | FULL | https://arxiv.org/abs/1912.01588 | `cobbe2020_procgen_benchmark_arxiv1912.01588.pdf` |
+| C3 | Justesen, Torrado, Bontrager, Khalifa, Togelius, Risi 2018, Illuminating generalization in deep RL through procedural level generation. arXiv 1806.10729 | FULL | https://arxiv.org/abs/1806.10729 | `justesen2018_illuminating_generalization_pcg_arxiv1806.10729.pdf` |
+| C4 | Juliani, Khalifa, Berges et al. 2019, Obstacle Tower: a generalization challenge in vision, control, and planning, IJCAI. arXiv 1902.01378 | FULL | https://arxiv.org/abs/1902.01378 | `juliani2019_obstacle_tower_arxiv1902.01378.pdf` |
+| C5 | Khalifa, Bontrager, Earle, Togelius 2020, PCGRL: procedural content generation via reinforcement learning, AIIDE. arXiv 2001.09212 | FULL | https://arxiv.org/abs/2001.09212 | `khalifa2020_pcgrl_arxiv2001.09212.pdf` |
+| C6 | Wang, Lehman, Clune, Stanley 2019, Paired open-ended trailblazer (POET). arXiv 1901.01753 | FULL (method sections) | https://arxiv.org/abs/1901.01753 | `wang2019_poet_arxiv1901.01753.pdf` |
+| C7 | Dennis, Jaques, Vinitsky, Bayen, Russell, Critch, Levine 2020, Emergent complexity and zero-shot transfer via unsupervised environment design (PAIRED), NeurIPS. arXiv 2012.02096 | FULL (method sections) | https://arxiv.org/abs/2012.02096 | `dennis2020_paired_ued_arxiv2012.02096.pdf` |
+| C8 | Jiang, Grefenstette, Rocktäschel 2021, Prioritized level replay, ICML. arXiv 2010.03934 | FULL | https://arxiv.org/abs/2010.03934 | no (11 MB) |
+| C9 | Parker-Holder, Jiang, Dennis, Samvelyan, Foerster, Grefenstette, Rocktäschel 2022, Evolving curricula with regret-based environment design (ACCEL), ICML. arXiv 2203.01302 | FULL (method sections) | https://arxiv.org/abs/2203.01302 | no (6.7 MB) |
+| C10 | Kirk, Zhang, Grefenstette, Rocktäschel 2023, A survey of zero-shot generalisation in deep reinforcement learning, JAIR 76:201–264. arXiv 2111.09794 | FULL (formalism + benchmark sections) | https://arxiv.org/abs/2111.09794 | no (6.6 MB) |
+| C11 | Ellis et al. 2023, SMACv2: an improved benchmark for cooperative multi-agent reinforcement learning, NeurIPS D&B. arXiv 2212.07489 | FULL (sections 1–5) | https://arxiv.org/abs/2212.07489 | no (12 MB) |
