@@ -863,7 +863,14 @@ def check_flame_draw():
     mean_rgb = float(np.maximum(out["mask"][0], out["thickness"][0])
                      .sum(axis=-1)[shown].mean())
     rel = md / max(mean_rgb, 1e-9)
-    assert rel > 0.05, (f"A and B look alike on a burning row (mean |dRGB| "
+    # A != B protects the TOGGLE: the F3 switch must reach the shader's
+    # emission law. A law uniform the shader ignores draws two identical
+    # pictures (rel == 0). How MUCH B differs is the look, which Erik judged
+    # on screen (he chose A, 2026-10-29) -- not this gate's business. The
+    # chaotic flame puts a single frame's rel anywhere in ~3.5..6.7 %
+    # (frames 48..96, either puff hash), so a 5 % bar flaked; 2 % keeps the
+    # margin on both sides.
+    assert rel > 0.02, (f"A and B look alike on a burning row (mean |dRGB| "
                         f"{md:.3f} = {100 * rel:.1f} % of the flame's RGB)")
     rl.unload_render_texture(rt)
     vfx.unload()
