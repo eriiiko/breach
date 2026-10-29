@@ -4,16 +4,19 @@ Pins the two CSV vocabularies side by side:
 
   v1 (generator): 0=space, 1=hull, 2=wood wall, 3=door, 4..8=interior air —
      the EXACT legacy mapping, frozen (old levels must decode bit-identically);
-  v2 (canon): codes ARE material ids (simulation.materials) + the single
-     reserved non-material code SPACE_CODE 9 = MAT_AIR + is_vacuum; anything
-     else is a hard ValueError (no silent garbage).
+  v2 (legacy since level format v3, #27): codes ARE material ids
+     (simulation.materials) + the single reserved non-material code
+     V2_SPACE_CODE 9 = MAT_AIR + is_vacuum; anything else is a hard
+     ValueError (no silent garbage). ``materials_from_tilemap`` still decodes
+     it for tools/migrate_tilemap_v3.py; v3 itself is
+     tests/test_level_format_v3.py.
 
 Plus the v1->v2 migrator (tools/migrate_tilemap_v2.py) as an importable
 function: code translation (incl. the code-2 landmine: generator *floor* ->
 air, NOT wood), sim-equivalence of a migrated grid, file round-trip with .bak
 safety + comment-preserving version bump, double-migration refusal — and the
-shipped (already-migrated) unhcr_vessel still loading v2 and being airtight
-through the real GameMap flood-fill.
+shipped (already-migrated) unhcr_vessel loading in the current format and being
+airtight through the real GameMap flood-fill.
 
 Run:
     C:/Users/steen/anaconda3/python.exe -m pytest tests/test_level_format_v2.py -q
@@ -33,7 +36,8 @@ sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 sys.path.insert(0, str(ROOT / "tools"))
 
 from level_loader import (  # noqa: E402
-    SPACE_CODE, SUPPORTED_VERSIONS, load as load_level, materials_from_tilemap,
+    LEVEL_FORMAT_VERSION, SPACE_CODE, V2_SPACE_CODE, load as load_level,
+    materials_from_tilemap,
 )
 from simulation.materials import (  # noqa: E402
     MAT_AIR, MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_STEEL, MAT_GLASS, MAT_FURNITURE,
@@ -46,22 +50,14 @@ from migrate_tilemap_v2 import V1_TO_V2, migrate_grid, migrate_level  # noqa: E4
 # Loader: version gate + the two vocabularies
 # ---------------------------------------------------------------------------
 
-def test_version_gate_and_space_code():
-    assert SUPPORTED_VERSIONS == {"1", "2"}
-    assert SPACE_CODE == 9                      # Erik, 2026-06-10
-    # Props & vegetation arc #60 P3: material ids are append-only/contiguous,
-    # and MAT_FOLIAGE is the table's 10th row -- id 9, the SAME integer as
-    # SPACE_CODE. Pure LABEL coincidence, never a behavior change:
-    # materials_from_tilemap intercepts SPACE_CODE as vacuum+air BEFORE any
-    # material lookup (see test_v2_literal_mapping_and_space below), so a v2
-    # CSV painting "9" is unconditionally space either way -- a foliage prop
-    # is placed only via the entity stamp, never via CSV
-    # (props_and_vegetation.md §4.2 F6), so it never reaches this code path.
-    # The old "SPACE_CODE reserved OUT of MATERIAL_NAMES" invariant held only
-    # because the table had not yet grown to fill its last legal slot; that
-    # headroom is now used up -- a hypothetical 11th material would need a
-    # SPACE_CODE migration (out of scope for #60; flagged to Erik).
-    assert MATERIAL_NAMES[SPACE_CODE] == "foliage"
+def test_v2_space_code_is_the_legacy_nine():
+    """Property: the v2 decode (kept for the v3 migration tool) reads 9 as
+    SPACE -- v2 files on disk carry it (Erik, 2026-06-10). Breaks if
+    V2_SPACE_CODE is changed, which would make tools/migrate_tilemap_v3.py
+    misread every v2 level. That 9 is also MAT_FOLIAGE's id is the clash
+    level format v3 (#27) removed: SPACE_CODE is no longer that integer."""
+    assert V2_SPACE_CODE == 9
+    assert SPACE_CODE != V2_SPACE_CODE
 
 
 def test_v1_mapping_unchanged():
@@ -125,7 +121,7 @@ def test_v2_unknown_code_raises(bad):
 def test_unknown_version_raises():
     tm = np.zeros((2, 2), dtype=np.int32)
     with pytest.raises(ValueError, match="unsupported tilemap version"):
-        materials_from_tilemap(tm, "3")
+        materials_from_tilemap(tm, "99")
 
 
 # ---------------------------------------------------------------------------
@@ -221,9 +217,9 @@ def test_migrate_level_round_trip(tmp_path):
 # The real, shipped level: v2 + airtight through the real GameMap
 # ---------------------------------------------------------------------------
 
-def test_real_level_is_v2_and_airtight():
+def test_real_level_is_current_format_and_airtight():
     lvl = load_level("unhcr_vessel")
-    assert lvl.version == "2"
+    assert lvl.version == LEVEL_FORMAT_VERSION
     codes = set(int(c) for c in np.unique(lvl.tilemap))
     assert codes <= set(MATERIAL_NAMES) | {SPACE_CODE}, f"non-canon codes: {codes}"
 
