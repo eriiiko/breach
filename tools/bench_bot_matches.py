@@ -28,10 +28,33 @@ marine (zombies carry no weapons). Every death lands in
 exactly one cause bucket and one attacker bucket, so the two tables of a
 victim group have the same total. Measurement only: it reads the sim, never
 writes.
+
+TIMING (#125, ``--timing``): the wall time of every tick, split into the
+controllers' share (every ``handle_frame`` of the tick plus the runner's
+``is_terminal`` check: the bots' A* and vision, the horde's law) and
+``sim.step()`` (physics + gameplay), as mean / p50 / p95 / max, ticks/s and the
+real-time ratio (sim seconds per wall second). The split needs one more
+timestamp than ``on_tick`` gives, so the watcher wraps the match's own
+``sim.step`` bound method on its first call (a timer around the same call, no
+sim state touched); tick 1 -- the first ``step()``, with its warm-up -- is
+therefore not in the sample, and the watchers' own time is excluded.
+``--controller`` puts every marine team on ``bots`` (the default) or ``idle``;
+``--zombies-idle`` leaves the horde standing too (the physics-only baseline);
+``--sim-seconds`` replaces the match's time limit (a match that ends sooner
+is reported with the ticks it ran); ``--repeat`` runs each seed again;
+``--cuda`` runs on the GPU build (``--cuda-build DIR``, default
+``cpp/build_cuda``; every live backend on, ``tools/run_on_cuda.py``'s list)
+and ``--resident`` adds field residency. Each timed run also prints one
+``TIMING_JSON`` line for a report to collect. The #125 tick budget:
+
+    C:/Users/steen/anaconda3/python.exe tools/bench_bot_matches.py \\
+        --level ship_s1_medium --levels-dir <scratch>/levels --seeds 1 \\
+        --timing --sim-seconds 60 --repeat 2
 """
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from collections import Counter
@@ -45,7 +68,6 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release",
         sys.path.insert(0, str(_p))
 
 import level_loader  # noqa: E402
-from run_match import run_match  # noqa: E402
 from simulation.events import (  # noqa: E402
     NO_ATTACKER, ShotFiredEvent, UnitKilledEvent)
 
@@ -119,6 +141,88 @@ class DeathLog:
         self._prev = now
 
 
+class TickTimer:
+    """``on_tick`` watcher (#125): per-tick wall time, split into the
+    controllers' share and ``sim.step()``. ``inner`` (another watcher) is
+    called first; its time is kept out of both shares."""
+
+    def __init__(self, inner=None):
+        self.inner = inner
+        self.step_s = []   # sim.step() per tick
+        self.ctrl_s = []   # controllers + is_terminal per tick
+        self._mark = None  # end of the previous on_tick
+        self._t0 = self._t1 = None
+
+    def _wrap(self, sim):
+        orig = sim.step
+
+        def timed_step(*a, **k):
+            self._t0 = time.perf_counter()
+            r = orig(*a, **k)
+            self._t1 = time.perf_counter()
+            return r
+        sim.step = timed_step
+
+    def __call__(self, sim):
+        if self.inner is not None:
+            self.inner(sim)
+        if self._mark is None:
+            self._wrap(sim)
+        elif self._t0 is not None:
+            self.ctrl_s.append(self._t0 - self._mark)
+            self.step_s.append(self._t1 - self._t0)
+        self._mark = time.perf_counter()
+
+    @staticmethod
+    def stats(xs) -> dict:
+        import numpy as np
+        a = np.asarray(xs, dtype=np.float64) * 1e3
+        if a.size == 0:
+            return {"mean": 0.0, "p50": 0.0, "p95": 0.0, "max": 0.0}
+        return {"mean": float(a.mean()), "p50": float(np.percentile(a, 50)),
+                "p95": float(np.percentile(a, 95)), "max": float(a.max())}
+
+    def summary(self, tps: float) -> dict:
+        """ms statistics of total / step / ctrl, ticks/s, real-time ratio."""
+        tot = [c + s for c, s in zip(self.ctrl_s, self.step_s)]
+        mean_s = sum(tot) / max(1, len(tot))
+        rate = 1.0 / mean_s if mean_s else 0.0
+        return {"n": len(tot), "total": self.stats(tot),
+                "step": self.stats(self.step_s),
+                "ctrl": self.stats(self.ctrl_s),
+                "ticks_per_s": rate, "realtime": rate / tps}
+
+
+def _fmt(name, st) -> str:
+    return (f"{name} mean {st['mean']:7.2f} p50 {st['p50']:7.2f} "
+            f"p95 {st['p95']:7.2f} max {st['max']:8.2f} ms")
+
+
+def setup_cuda(build_dir: Path, resident: bool) -> None:
+    """Import ``breach_physics`` from the CUDA build in ``build_dir`` (before
+    anything imports the CPU build) and turn every live backend on -- the
+    same list and checks as ``tools/run_on_cuda.py``."""
+    import os
+    from cuda_harness import cuda_dll_dir
+    from run_on_cuda import enable_all_backends
+    if not list(Path(build_dir).glob("breach_physics*.pyd")):
+        raise SystemExit(f"no CUDA build in {build_dir}")
+    dll = cuda_dll_dir()
+    if dll is None:
+        raise SystemExit("CUDA runtime DLLs (cudart64_*.dll) not found")
+    os.add_dll_directory(str(dll))
+    sys.path.insert(0, str(build_dir))
+    import breach_physics as bp
+    if Path(bp.__file__).resolve().parent != Path(build_dir).resolve():
+        raise SystemExit(f"breach_physics resolved to {bp.__file__}, "
+                         f"not the CUDA build")
+    enable_all_backends(bp)
+    if resident:
+        from simulation import physics_runner
+        physics_runner.set_residency(True)
+        print("[bench] GPU field residency ON")
+
+
 def _seeds(text: str) -> list:
     if "-" in text:
         a, b = text.split("-")
@@ -131,21 +235,54 @@ def main(argv=None) -> int:
     ap.add_argument("--level", required=True)
     ap.add_argument("--seeds", default="1-10", help="'1-10' or '1,4,7'")
     ap.add_argument("--levels-dir", default="levels")
+    ap.add_argument("--timing", action="store_true",
+                    help="per-tick wall time, controllers vs sim.step (#125)")
+    ap.add_argument("--controller", default="bots",
+                    help="controller for every marine team (bots / idle)")
+    ap.add_argument("--zombies-idle", action="store_true",
+                    help="the horde on 'idle' too (physics-only baseline)")
+    ap.add_argument("--sim-seconds", type=float, default=None,
+                    help="replace the match's time limit")
+    ap.add_argument("--repeat", type=int, default=1,
+                    help="run every seed this many times")
+    ap.add_argument("--cuda", action="store_true",
+                    help="run on the CUDA build, every live backend on")
+    ap.add_argument("--cuda-build", default=str(ROOT / "cpp" / "build_cuda"))
+    ap.add_argument("--resident", action="store_true",
+                    help="with --cuda: GPU field residency on")
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
+    if args.cuda:
+        setup_cuda(Path(args.cuda_build), args.resident)
+    from run_match import run_match
+    import breach_physics as bp
+    from config import CFG
+    tps = float(CFG.clock.ticks_per_second)
     level = level_loader.load(args.level, args.levels_dir)
     spec = level.match
-    spec = replace(spec, teams=tuple(replace(t, controller="bots")
+    spec = replace(spec, teams=tuple(replace(t, controller=args.controller)
                                      for t in spec.teams))
+    if args.zombies_idle:
+        spec = replace(spec, zombie_controller="idle")
+    if args.sim_seconds is not None:
+        spec = replace(spec, time_limit_s=float(args.sim_seconds))
+    backend = "cpu"
+    if args.cuda:
+        backend = "cuda+resident" if args.resident else "cuda"
     print(f"level={args.level} teams n={[t.n for t in spec.teams]} "
-          f"zombies={spec.zombies} time_limit_s={spec.time_limit_s}")
+          f"controller={args.controller} zombies={spec.zombies} "
+          f"zombie_controller={spec.zombie_controller} "
+          f"time_limit_s={spec.time_limit_s} tps={tps:g} backend={backend} "
+          f"module={Path(bp.__file__).parent}")
     outcomes = Counter()
     ticks, walls = [], []
     marine, zombie = Counter(), Counter()
     marine_by, zombie_by = Counter(), Counter()
-    for seed in _seeds(args.seeds):
+    for seed in [s for s in _seeds(args.seeds) for _ in range(args.repeat)]:
         log = DeathLog()
+        timer = TickTimer(log) if args.timing else None
         t0 = time.perf_counter()
-        o = run_match(level, spec, seed=seed, on_tick=log)
+        o = run_match(level, spec, seed=seed,
+                      on_tick=log if timer is None else timer)
         wall = time.perf_counter() - t0
         r = o.result
         key = f"team {r.team} wins" if r.outcome == "win" else "draw"
@@ -162,10 +299,21 @@ def main(argv=None) -> int:
               f"zombie deaths {dict(log.zombie)} by {dict(log.zombie_by)} "
               f"shots {log.shots} frags {log.throws} "
               f"wall {wall:6.1f} s digest {o.tick_digest[:12]}", flush=True)
+        if timer is not None:
+            t = timer.summary(tps)
+            print(f"  timing: {t['n']} ticks timed, {t['ticks_per_s']:.1f} "
+                  f"ticks/s, real-time x{t['realtime']:.2f}")
+            for name in ("total", "step", "ctrl"):
+                print("    " + _fmt(f"{name:5s}", t[name]))
+            print("  TIMING_JSON " + json.dumps(
+                {"level": args.level, "seed": seed,
+                 "controller": args.controller,
+                 "zombies_idle": args.zombies_idle, "backend": backend,
+                 "ticks": r.ticks, "result": key, **t}), flush=True)
     n = len(ticks)
     print(f"outcomes: {dict(outcomes)}")
     print(f"mean ticks to result: {sum(ticks) / n:.0f} "
-          f"({sum(ticks) / n / 24.0:.1f} s sim)")
+          f"({sum(ticks) / n / tps:.1f} s sim)")
     print(f"marine deaths by cause: {dict(marine)}")
     print(f"zombie deaths by cause: {dict(zombie)}")
     print(f"marine deaths by attacker team: {dict(marine_by)}")
