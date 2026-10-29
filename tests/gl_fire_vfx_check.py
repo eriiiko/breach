@@ -85,6 +85,14 @@ Each check names the PROPERTY it protects and the change that must break it:
       changes pixels only within its 2x2 bilinear footprint (+ the offset),
       and does change some there. Breaks if the shimmer leaks to cold areas,
       shifts the whole screen, or a zero offset stops being the plain fetch.
+  smoke_draws_with_fire_layers_on -- (G3 bug fix 2026-10-29, Erik: "I can't
+      see any smoke") the real renderer on fire_smoke_studio at 20 s, paused,
+      with the flame, embers, shimmer and the room-light flicker all ON (the
+      flicker through F4b's paused relight): the ceiling soot is packed and
+      darkens the downwind box past the fire row to < 85 % of the same frame
+      with the smoke off (F2). Breaks if any fire layer draws over, hides or
+      stops the smoke relief (draw order, a cover or compensation pass
+      writing over the soot, a key swallowing F2).
 
 Run alone:
     C:/Users/steen/anaconda3/envs/data/python.exe tests/gl_fire_vfx_check.py
@@ -1127,6 +1135,81 @@ def check_one_wind_and_digest():
     return (f"{n_ticks} ticks, tame_wind {min(counts)}..{max(counts)}/frame, "
             f"{passes} VFX passes, {embers} embers max, digests equal")
 
+
+
+@check("smoke_draws_with_fire_layers_on")
+def check_smoke_draws_with_fire_layers():
+    import breach_physics as bp
+    from config import CFG
+    from level_loader import load as load_level
+    from renderer import core, frame_lights
+    from renderer.game_renderer import GameRenderer, RenderConfig
+    from simulation import Simulation
+
+    level = load_level("fire_smoke_studio")
+    ppt = 8.0
+    cfg = RenderConfig(map_px_w=448, map_px_h=448, panel_px_w=0,
+                       grid_w=level.width, grid_h=level.height,
+                       world_px_per_tile=ppt)
+    renderer = GameRenderer(level, bp, cfg)
+    for sec in ("fire_vfx", "embers", "shimmer", "flicker"):
+        getattr(CFG.render, sec).enabled = True
+    sky = frame_lights.sky_for_level(getattr(level, "boundary", "space"),
+                                     CFG, bp)
+    # The downwind soot box (fire_smoke_studio: the fire row burns at
+    # y 22, x 20-25 and the flow carries its smoke east towards the vent;
+    # tools/fire_smoke_probe.py) -- past the burning tiles, where the flame
+    # does not draw. At 20 s it measures ~67 % of the smoke-off luminance.
+    bx0, bx1, by0, by1 = 27, 33, 20, 25
+    n_ticks = 480                       # 20 s: a plume, fires still burning
+    try:
+        sim = Simulation(level, seed=42, breach_physics=bp,
+                         enable_recorder=False)
+        sim.set_light(True, None, sky, None)
+        for tick in range(n_ticks):
+            if sim.is_paused():
+                sim.set_paused(False)
+            sim.step()
+        sim.set_paused(True)
+
+        def frame(i, smoke_on):
+            renderer.show_smoke = smoke_on
+            rows = renderer.fire_light_flicker_rows(level.width, level.height)
+            sim.set_light(True, None, sky, rows)          # F4b's paused path
+            sim.relight()
+            renderer.upload_state(sim.gmap, sim_tick=n_ticks,
+                                  light_serial=sim.light_serial,
+                                  alpha=0.0, paused=True)
+            renderer.begin_frame()
+            renderer.compose_world()
+            renderer.end_frame()
+            img = core.read_texture_rgba32f(renderer.world.rt.texture)
+            y0 = img.shape[0] - int(by1 * ppt)       # GL row 0 = bottom
+            y1 = img.shape[0] - int(by0 * ppt)
+            box = img[y0:y1, int(bx0 * ppt):int(bx1 * ppt), :3]
+            return float(np.median(box.mean(axis=-1)))
+
+        for i in range(30):               # the flame, embers and shimmer run
+            frame(i, True)
+        lum_on = frame(30, True)
+        has = dict(renderer.gas_relief._has)
+        lum_off = frame(31, False)
+        flame = renderer.fire_vfx.passes_last_frame
+        embers = renderer.embers.p.n
+        flick = renderer.fire_flicker.last_n
+    finally:
+        CFG.reload()
+        renderer.shutdown()
+    assert flame > 0 and embers > 0 and flick > 0, (
+        f"a fire layer did not run (passes {flame}, embers {embers}, "
+        f"flickering tiles {flick})")
+    assert has.get("ceiling"), "the relief packed no ceiling soot"
+    assert lum_on < 0.85 * lum_off, (
+        f"the soot does not show downwind: median luminance {lum_on:.4f} "
+        f"with the smoke vs {lum_off:.4f} without (needs < 85 %)")
+    return (f"downwind luminance {lum_on:.4f} with smoke vs {lum_off:.4f} "
+            f"without ({lum_on / max(lum_off, 1e-9):.0%}); passes {flame}, "
+            f"embers {embers}, flickering tiles {flick}")
 
 
 def main() -> int:

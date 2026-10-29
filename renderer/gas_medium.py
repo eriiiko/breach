@@ -117,6 +117,35 @@ def tau_curve(tau: np.ndarray, a: float, b: float) -> np.ndarray:
     return float(a) * np.power(tau, float(b))
 
 
+def species_sum(weights: np.ndarray, gas_density: np.ndarray) -> np.ndarray:
+    """THE per-frame species contraction ``Σ_s weights[s] · ρ[s]``, float64.
+
+    ``weights`` is ``(S,)`` -> ``(H, W)``, or ``(S, C)`` (e.g. per R/G/B) ->
+    ``(C, H, W)``; ``gas_density`` is ``(S, H, W)``. A plain loop over the
+    handful of species -- deliberately NOT ``np.tensordot`` / ``@`` /
+    ``np.dot``: those hand a (3 x 5) . (5 x H*W) product to the BLAS
+    library, whose THREAD POOL (MKL here) turns 0.03 ms into 150-1000 ms
+    whenever another process keeps the cores busy (spin-waiting worker
+    threads; G3 bug fix 2026-10-29: the HUD's "Upload: > 1000 ms" on
+    fire_smoke_studio while a second job ran on the PC). Per-frame render
+    code never calls BLAS -- ``tests/test_no_blas_in_frame_path.py``."""
+    w = np.asarray(weights, dtype=np.float64)
+    rho = np.asarray(gas_density, dtype=np.float64)
+    if w.shape[0] != rho.shape[0]:
+        raise ValueError(f"species_sum: {w.shape[0]} weights for "
+                         f"{rho.shape[0]} species")
+    if w.ndim == 1:
+        out = np.zeros(rho.shape[1:], dtype=np.float64)
+        for s in range(w.shape[0]):
+            out += w[s] * rho[s]
+        return out
+    out = np.zeros((w.shape[1],) + rho.shape[1:], dtype=np.float64)
+    for s in range(w.shape[0]):
+        for c in range(w.shape[1]):
+            out[c] += w[s, c] * rho[s]
+    return out
+
+
 def gas_optical_depth(
     gas_density: np.ndarray,
     k_s: np.ndarray,
@@ -133,9 +162,7 @@ def gas_optical_depth(
     read ONE definition of "how much smoke is here" (byte-identical to the old
     inline computation; done in float64 for the thin-limit linearisation)."""
     k_s = np.asarray(k_s, dtype=np.float32)
-    weighted = np.tensordot(k_s.astype(np.float64),
-                            np.asarray(gas_density, dtype=np.float64),
-                            axes=([0], [0]))
+    weighted = species_sum(k_s.astype(np.float64), gas_density)
     tau = (float(base_absorb_scale) * float(plume_k_scale)) * weighted
     return np.maximum(tau, 0.0)
 

@@ -768,10 +768,18 @@ def curl_noise_at(x: np.ndarray, y: np.ndarray, t: float,
     (graphics G3 F4a: the embers ride it -- ``renderer/particles.py``).
     ``curl_noise`` at cell centres equals this at those centres."""
     kx, ky, _, _, amp = modes
-    xy = np.column_stack((np.ravel(x), np.ravel(y))).astype(np.float64)
-    c = np.cos(xy @ np.array([kx, ky], dtype=np.float64)
+    kx = np.asarray(kx, dtype=np.float64)
+    ky = np.asarray(ky, dtype=np.float64)
+    # Outer products and row sums, never ``@``: this runs per frame for the
+    # embers, and a matmul goes to the BLAS thread pool, which is slow by
+    # 10^3-10^4 whenever another process keeps the cores busy (G3 bug fix
+    # 2026-10-29; gas_medium.species_sum says why).
+    px = np.ravel(x).astype(np.float64)
+    py = np.ravel(y).astype(np.float64)
+    c = np.cos(np.multiply.outer(px, kx) + np.multiply.outer(py, ky)
                + curl_mode_phases(modes, t)) * amp
-    return c @ np.array([ky, np.negative(kx)], dtype=np.float64).T
+    return np.column_stack(((c * ky).sum(axis=1),
+                            -(c * kx).sum(axis=1)))
 
 
 def confine(u: np.ndarray, i_local: np.ndarray, solid: np.ndarray, t: float,
