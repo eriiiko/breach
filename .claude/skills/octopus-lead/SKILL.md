@@ -82,7 +82,10 @@ the lead so you decide all these things." Concretely:
   distilled version).
 - Prior art in-repo: `docs/procedural_animation_brainstorm.md` (2026-07-17),
   `docs/research/ml_animation_litsearch_2026-07-20.md` (humanoid, not arms).
-- Study doc (to be written): `docs/octopus_animation_study_2026-10-29.md`.
+- Study brief v1: `docs/octopus_animation_study_2026-10-29.md` (synthesis of
+  the four digests + nine full texts, the four-layer architecture, the
+  prototype plan P0–P8). Reading notes: `docs/research/octopus_papers_
+  reading_notes_2026-10-29.md`; PDFs `docs/papers/octopus/` (README index).
 
 ## 6. Procedure for a session
 
@@ -108,5 +111,13 @@ the lead so you decide all these things." Concretely:
 
 ## 8. Run log
 
-- 2026-10-29 — skill created in session 1 of #105; strand (a) research agent
-  launched (Opus, high).
+- 2026-10-29 — skill created in session 1 of #105. Four research strands run
+  SEQUENTIALLY (Opus, high; ~250–325k tokens, ~18–20 min each), digests
+  committed as they landed; Erik fetched nine papers the same day; the lead
+  read all nine in full and wrote the study brief v1. Decided *(lead)*:
+  XPBD 18-node chain per arm in sim (not a Cosserat rod, not kinematic
+  cycles); crawl recruitment by seeded integer lottery, no oscillator; swim
+  on one phase clock; per-arm brain interface = fixed integer observation →
+  (request, score). Next: P0 footage sheet, then P1 the one-arm float
+  prototype (the make-or-break: does a chain + stiffness wave reproduce
+  Yekutieli's reach?). #118 (per-arm HP) filed. Cost: one session.
