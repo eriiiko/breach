@@ -318,11 +318,15 @@ class GameRenderer:
         # (renderer/fire_flicker.py; design 6.3, RULED D): a per-tick,
         # per-burning-tile multiplier on the sweep's thermal LIGHT emission,
         # from the flame's own puffing and a per-tile turbulence on the VFX
-        # clock. Read by the game's per-tick light assembly
-        # (fire_light_flicker_rows); [render.flicker] re-read every frame,
-        # Alt+F3 toggles it. Render state: no heat, no digest.
+        # clock -- times the fire's light GAIN (G3 adjustment round, design
+        # 17: [render.fire_light] gain, applied with the flicker on or off).
+        # Read by the game's per-tick light assembly (fire_light_rows);
+        # [render.flicker] / [render.fire_light] re-read every frame, Alt+F3
+        # toggles the flicker. Render state: no heat, no digest.
         from . import fire_flicker as _flicker
-        self.fire_flicker = _flicker.FireFlicker(_flicker.settings_from_config(CFG))
+        _fs = _flicker.settings_from_config(CFG)
+        self.fire_flicker = _flicker.FireFlicker(
+            _fs, _flicker.fire_light_from_config(CFG, _fs))
         # Fire & Heat Beauty B2 P4 — dirty-Planck speckle (renderer/speckle.py).
         # A CPU-side, pyray-free field that mottles the black-body overlay's
         # intensity at PACK TIME (the intensity_mod seam) so the flame reads as
@@ -657,10 +661,13 @@ class GameRenderer:
                         if pack is not None else (0, 0)),
                 s0=d.s0, strip_frac=d.strip_frac, wind_fn=frame_tamed_wind,
                 tps=tps, blocked=self._ember_blocked(gmap))
-        # Graphics G3 F4b -- the room-light flicker's dials (its rows are
-        # computed per sim tick by fire_light_flicker_rows, not per frame).
+        # Graphics G3 F4b -- the room-light flicker's dials and the fire's
+        # light gain (their rows are computed per sim tick by
+        # fire_light_rows, not per frame).
         from . import fire_flicker as _flicker
-        self.fire_flicker.refresh_settings(_flicker.settings_from_config(CFG))
+        _fs = _flicker.settings_from_config(CFG)
+        self.fire_flicker.refresh_settings(
+            _fs, _flicker.fire_light_from_config(CFG, _fs))
         # ... and the heat shimmer's per-tile hot-gas strength + the wind it
         # is advected by (re-packed only when the temperature changed).
         from . import heat_shimmer as _shimmer
@@ -1551,16 +1558,18 @@ class GameRenderer:
                 rl.draw_circle(int(cx), int(cy), max(3.0, 0.55 * wpt), halo)
                 rl.draw_circle(int(cx), int(cy), max(1.5, 0.22 * wpt), core)
 
-    def fire_light_flicker_rows(self, grid_w: int, grid_h: int):
-        """Graphics G3 F4b: THE FIRE'S LIGHT FLICKER for the sweep's next
-        light computation -- (n, 3) int64 emission-multiplier rows ``(y, x,
-        mult_q)`` (renderer/fire_flicker.py through the door
+    def fire_light_rows(self, grid_w: int, grid_h: int):
+        """Graphics G3 F4b + the adjustment round: THE FIRE'S ROOM LIGHT --
+        its gain times its flicker -- for the sweep's next light computation:
+        (n, 3) int64 emission-multiplier rows ``(y, x, mult_q)``
+        (renderer/fire_flicker.py through the door
         ``frame_lights.emit_mult_rows``), for ``Simulation.set_light(...,
-        emit_mult=)`` -- or None (flicker off, the flame VFX off, or nothing
-        burning: the sweep then runs exactly as before F4b). Pure read of the
-        flame pass's CPU state: its last per-tick burning tiles and cluster
-        puffing (never a GPU readback) at its VFX clock ``t_noise``. Render
-        state: it scales light only; heat never reads it, nothing digests it."""
+        emit_mult=)`` -- or None (the flicker off at gain 1, the flame VFX
+        off, or nothing burning: the sweep then runs exactly as before F4b).
+        Pure read of the flame pass's CPU state: its last per-tick burning
+        tiles and cluster puffing (never a GPU readback) at its VFX clock
+        ``t_noise``. Render state: it scales light only; heat never reads it,
+        nothing digests it."""
         fx = self.fire_vfx
         if not fx.enabled:
             # no VFX clock and a stale pack: the flicker rides the flame
@@ -1883,7 +1892,8 @@ class GameRenderer:
              self.shimmer.enabled),
             (f"Alt+F3 light flicker: "
              f"{'on' if self.fire_flicker.enabled else 'off'}"
-             f" ({self.fire_flicker.last_n} tiles, "
+             f" (fire light x{self.fire_flicker.gain:g}, "
+             f"{self.fire_flicker.last_n} tiles, "
              f"{self.fire_flicker.last_ms:.2f} ms)",
              self.fire_flicker.enabled),
             ("F4 light",       self.show_lighting),

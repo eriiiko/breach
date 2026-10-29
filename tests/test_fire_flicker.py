@@ -157,8 +157,8 @@ def test_the_flicker_is_bounded_and_never_strobes():
 
 def test_the_settings_door_refuses_a_strobe_band_and_a_negative_light():
     """PROPERTY (the config door): [render.flicker] refuses, by name, an
-    amplitude outside [0, 1] (above 1 the light would go negative, and 1 + a
-    is the sweep door's 2 ONE), a puff_share outside [0, 1], and a band that
+    amplitude outside [0, 1] (above 1 the light would go negative), a
+    puff_share outside [0, 1], and a band that
     is empty or reaches past 10 Hz (toward the 24 Hz tick's 12 Hz Nyquist
     rate); a missing section is the schema defaults.
 
@@ -191,7 +191,7 @@ def test_rows_name_only_burning_tiles_and_cross_the_door_in_q16():
     renderer hands the sweep name exactly the flame's BURNING tiles (in map
     coordinates, a cropped window included) -- a hot tile below the flame
     floor, a cold tile, a wall get no row, i.e. the sweep's identity ONE --
-    with mult_q = round(m * 2^16) inside the sweep door [0, 2 ONE], one row
+    with mult_q = round(m * 2^16) inside the sweep door [0, 16 ONE], one row
     per tile; disabled, or with no pack, there are no rows at all.
 
     BREAKS IF: the rows come from a temperature threshold instead of the
@@ -220,7 +220,7 @@ def test_rows_name_only_burning_tiles_and_cross_the_door_in_q16():
     m = ff.multipliers(ys, xs, hz, ph, 12.3, S, DIALS, W)
     assert np.array_equal(rows[:, 2], np.rint(m * 65536).astype(np.int64))
     assert fl.LIGHT_EMIT_MULT_MAX == int(bp.RadiationSweep.LIGHT_EMIT_MULT_MAX)
-    q = fl.emit_mult_rows([0, 0, 1, 99], [0, 0, 1, 1], [5.0, 0.5, -1.0, 1.0], W, H)
+    q = fl.emit_mult_rows([0, 0, 1, 99], [0, 0, 1, 1], [40.0, 0.5, -1.0, 1.0], W, H)
     assert q.tolist() == [[0, 0, fl.LIGHT_EMIT_MULT_MAX], [1, 1, 0]]
     flick.toggle()
     assert not flick.enabled and flick.rows(_Pack(src, win), 12.3, DIALS, W, H) is None
@@ -228,12 +228,84 @@ def test_rows_name_only_burning_tiles_and_cross_the_door_in_q16():
     assert flick.rows(None, 12.3, DIALS, W, H) is None
 
 
+def test_the_gain_scales_the_fires_rows_with_the_flicker_on_or_off():
+    """PROPERTY (G3 adjustment round, design 17; Erik 2026-10-29 "light the
+    room much more brightly"): the rows carry the fire's light GAIN times the
+    flicker -- with the flicker on, mult_q = round(gain * m_flicker * 2^16) on
+    exactly the burning tiles, so their mean over time is the gain (the
+    flicker stays mean-preserving AROUND it, never clipped by the door); with
+    the flicker OFF (Alt+F3) the same tiles carry the gain alone; and only at
+    gain 1 with the flicker off are there no rows (the pre-F4b sweep).
+
+    BREAKS IF: the gain is applied only while the flicker runs (Alt+F3 would
+    drop the fire's light back to the physics' level), is multiplied in after
+    the door's quantization or clamp, or the flicker's peaks are clipped at
+    the door so the mean drifts below the gain.
+    """
+    m = np.zeros((20, MAP_W), bool)
+    m[8, 10:15] = True
+    m[14, 40] = True
+    src = _sources(m)
+    win = (0, 0, MAP_W, 20)
+    gain = 6.0
+    flick = ff.FireFlicker(S, ff.FireLightSettings(gain=gain))
+    ys, xs, hz, ph = ff.burning_tiles(src, win)
+    ts = 11.0 + np.arange(int(20 * TPS)) / TPS
+    Q = []
+    for t in ts:
+        rows = flick.rows(_Pack(src, win), t, DIALS, MAP_W, 20)
+        mf = ff.multipliers(ys, xs, hz, ph, t, S, DIALS, MAP_W)
+        assert np.array_equal(rows[:, 2], np.rint(gain * mf * 65536).astype(np.int64))
+        Q.append(rows[:, 2] / 65536.0)
+    Q = np.asarray(Q)
+    assert Q.max() <= gain * (1 + S.amplitude) + 1.0 / 65536 <= ff.GAIN_MAX
+    assert np.all(np.abs(Q.mean(axis=0) / gain - 1.0) < 0.05), Q.mean(axis=0)
+    flick.toggle()                                         # Alt+F3: flicker off
+    rows = flick.rows(_Pack(src, win), 12.0, DIALS, MAP_W, 20)
+    assert sorted(map(tuple, rows[:, :2])) == sorted(zip(ys.tolist(), xs.tolist()))
+    assert np.all(rows[:, 2] == int(round(gain * 65536)))
+    flick.refresh_settings(S, ff.FireLightSettings(gain=1.0))
+    assert not flick.enabled
+    assert flick.rows(_Pack(src, win), 12.0, DIALS, MAP_W, 20) is None
+
+
+def test_the_gain_door_keeps_the_flicker_peak_inside_the_sweep_door():
+    """PROPERTY (the config door of [render.fire_light]): a missing section
+    or key is gain 1 (the physics' light); a negative or non-finite gain, or
+    one whose flicker peak gain x (1 + [render.flicker] amplitude) passes the
+    sweep's emission-multiplier door (GAIN_MAX = LIGHT_EMIT_MULT_MAX / ONE,
+    the engine's own number) is refused by name; the peak exactly at the door
+    is accepted; and the shipped config passes the door.
+
+    BREAKS IF: a gain past the int64 headroom reaches the rows (the door's
+    clamp would then cut the flicker's peaks and the fire's mean light would
+    drift), or GAIN_MAX drifts from the engine's door.
+    """
+    def cfg(**kw):
+        return SimpleNamespace(render=SimpleNamespace(fire_light=SimpleNamespace(**kw)))
+    assert ff.GAIN_MAX == int(bp.RadiationSweep.LIGHT_EMIT_MULT_MAX) / 65536.0
+    assert ff.fire_light_from_config(SimpleNamespace(), S).gain == 1.0
+    assert ff.fire_light_from_config(cfg(), S).gain == 1.0
+    edge = ff.GAIN_MAX / (1.0 + S.amplitude)
+    assert ff.fire_light_from_config(cfg(gain=edge), S).gain == edge
+    for bad in (-0.5, float("nan"), float("inf"), edge * 1.01):
+        with pytest.raises(ValueError, match=r"\[render.fire_light\] gain"):
+            ff.fire_light_from_config(cfg(gain=bad), S)
+    loud = ff.FlickerSettings(amplitude=1.0)
+    with pytest.raises(ValueError, match=r"amplitude"):
+        ff.fire_light_from_config(cfg(gain=ff.GAIN_MAX / 1.5), loud)
+    from config import CFG
+    live = ff.fire_light_from_config(CFG, ff.settings_from_config(CFG))
+    assert live.gain * (1.0 + ff.settings_from_config(CFG).amplitude) <= ff.GAIN_MAX
+
+
 # ---------------------------------------------------------------------------
 # 4. THE GAME: LIGHT ONLY, NEVER HEAT; DISABLED IS THE PRE-F4b LIGHT
 # ---------------------------------------------------------------------------
-def _flicker_rows_for(sim, t):
+def _flicker_rows_for(sim, t, flick=None):
     """The game's rows for this tick: the flame's burning tiles of the CURRENT
-    sim state (the renderer's pack, built headless) at VFX time t."""
+    sim state (the renderer's pack, built headless) at VFX time t, through
+    ``flick`` (default: the flicker on at gain 1)."""
     from simulation import fire_fixed
     from temperature_scale import load as load_tscale
     from renderer.blackbody import TEMP_SCALE, BlackbodyRamp
@@ -246,14 +318,14 @@ def _flicker_rows_for(sim, t):
                             glow_min_k=scales.glow_min_k, tile_size_m=g.tile_size_m,
                             dials=DIALS)
     h, w = g.solid.shape
-    return ff.FireFlicker(S).rows(_Pack(src, (0, 0, w, h)), t, DIALS, w, h)
+    return (flick or ff.FireFlicker(S)).rows(_Pack(src, (0, 0, w, h)), t, DIALS, w, h)
 
 
 def test_heat_and_the_golden_are_untouched_by_the_flicker():
     """PROPERTY (design 6.3 "no heat, no digest, no golden"): the canonical
     golden scenario with the game's light requested AND emission-multiplier
     rows handed through Simulation.set_light every tick -- on EVERY interior
-    cell, factors spread over the whole door [0, 2 ONE] and changing per tick
+    cell, factors spread over the whole door [0, 16 ONE] and changing per tick
     (a harsher flicker than the game's, which names only burning tiles) --
     produces the committed GOLDEN_AGGREGATE. Non-vacuous: the engine held the
     rows on every tick. (The scenario's small fire never reaches the visible
@@ -277,7 +349,7 @@ def test_heat_and_the_golden_are_untouched_by_the_flicker():
         step = sim.step
 
         def step_with_flicker():
-            m = rng.uniform(0.0, 2.0, len(cells))
+            m = rng.uniform(0.0, fl.LIGHT_EMIT_MULT_MAX / 65536.0, len(cells))
             h, w = g.solid.shape
             rows = fl.emit_mult_rows(cells[:, 0], cells[:, 1], m, w, h)
             sim.set_light(True, None, sky, rows)
@@ -290,6 +362,57 @@ def test_heat_and_the_golden_are_untouched_by_the_flicker():
     traj = capture_trajectory(make_sim=make_sim, n_steps=N_STEPS)
     assert trajectory_digest(traj) == GOLDEN_AGGREGATE
     assert all(held) and len(held) == N_STEPS
+
+
+def test_the_gain_brightens_the_fires_light_and_moves_nothing_else():
+    """PROPERTY (G3 adjustment round, design 17): on a lit burning playground
+    with the flicker OFF, ticking with the gain rows (gain 4: every burning
+    tile's light emission x 4) vs at gain 1 (no rows): light_q is never lower
+    anywhere and higher around the fire -- the fire lights the room more --
+    while every non-light GameMap array (temperature, gas_energy, fire, every
+    heat plane) stays bit-identical.
+
+    BREAKS IF: the gain reaches heat (the emission multiplier read by the
+    heat channel), the rows dim some cell (a sign or currency slip in the
+    scaling), or the gain never reaches the sweep (vacuous light).
+    """
+    from simulation import Simulation, fire_fixed
+    from simulation.materials import MAT_WOOD
+    from level_loader import load as load_level
+    level = load_level("playground")
+
+    def mk():
+        sim = Simulation(level, seed=5, breach_physics=bp, enable_recorder=False)
+        g = sim.gmap
+        ys, xs = np.where((g.material == MAT_WOOD) & g.thermal_solid)
+        for k in range(min(6, len(ys))):
+            g.temperature[ys[k], xs[k]] = 1263 << 16
+            g.fire[ys[k], xs[k]] = fire_fixed.quantize_scalar(0.8)
+        return sim
+
+    bright, base = mk(), mk()
+    sky = np.full((16, 3), 3 << 28, dtype=np.int64)
+    flick = ff.FireFlicker(S, ff.FireLightSettings(gain=4.0))
+    flick.toggle()                                         # flicker off: gain alone
+    n_rows = 0
+    for t in range(6):
+        rows = _flicker_rows_for(bright, 5.0 + t / TPS, flick)
+        if rows is not None:
+            assert np.all(rows[:, 2] == 4 * 65536)
+            n_rows += len(rows)
+        bright.set_light(True, None, sky, rows)
+        base.set_light(True, None, sky, None)
+        for s in (bright, base):
+            s.set_paused(False)
+            s.step()
+    assert n_rows > 0, "nothing burned visibly: vacuous"
+    light = {"light_q", "light_flux_q", "light_glow"}
+    for k, v in vars(base.gmap).items():
+        if isinstance(v, np.ndarray) and k not in light:
+            assert np.array_equal(v, getattr(bright.gmap, k), equal_nan=True), k
+    lb, l0 = bright.gmap.light_q, base.gmap.light_q
+    assert np.all(lb >= l0)
+    assert int((lb - l0).sum()) > 0
 
 
 def test_disabled_flicker_is_the_pre_f4b_light_and_heat_is_identical_on_off():

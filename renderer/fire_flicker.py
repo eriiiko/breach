@@ -1,9 +1,30 @@
-"""The fire's ROOM-LIGHT FLICKER -- graphics arc G3 "Fire", patch F4b.
+"""The fire's ROOM LIGHT: its GAIN and its FLICKER -- graphics arc G3 "Fire",
+patch F4b and the adjustment round of 2026-10-29.
 
-Design: ``docs/g3_fire_design_2026-10-23.md`` §1 item 6 and §6.3 (RULED D,
-Erik 2026-10-23): the fire's own room light flickers through a LIGHT-ONLY
-multiplier on the sweep's thermal emission of each burning cell. No heat, no
-digest, no golden; lamps are untouched.
+Design: ``docs/g3_fire_design_2026-10-23.md`` §1 item 6, §6.3 (RULED D,
+Erik 2026-10-23) and §17: the fire's own room light is scaled through a
+LIGHT-ONLY multiplier on the sweep's thermal emission of each burning cell,
+
+    mult = gain * m_flicker
+
+No heat, no digest, no golden; lamps are untouched.
+
+THE GAIN (``[render.fire_light] gain``; Erik at HUMAN-TEST 2026-10-29: the
+fire must light the room "much more brightly"). A constant factor on the
+burning tiles' light emission, applied whether or not the flicker is on (with
+the flicker off the rows carry the gain alone; at gain 1 with the flicker off
+there are no rows: the sweep runs as before F4b). It is the fire's own dial:
+lamps, the sky, a hot wall that does not burn and the heat layer's glow are
+not scaled, and the shared light table (``[render.blackbody]``, whose top
+already sits at 2^43 of its 2^44 door) is not touched. A tile stops "burning"
+for the flame's source law when it cools below the glow floor, where its light
+emission is already zero, so the gain never switches a visible light on or off
+(the probe: the lone studio tile drops below 800 K at I ~ 0.12, long before
+its fire dies). ``gain * (1 + amplitude)`` must fit the sweep's door, 16 ONE
+(:data:`GAIN_MAX`), so the flicker's peaks are never clipped and the multiplier
+stays mean-preserving around the gain. Without the flame VFX (``[render.
+fire_vfx] enabled = false``) there is no burning-tile list, so no gain either:
+the fire's light falls back to the physics' light (an accepted gap).
 
 WHAT IT COMPUTES. Per tick, per BURNING tile (the flame's own source law,
 ``fire_vfx_ref.flame_sources``'s ``burning`` -- I above the flame floor, at or
@@ -87,6 +108,9 @@ CLIP_SIGMA = 2.0
 N_OSC = 8
 #: their weighting: amplitude ~ (band_lo / f) ** PINK_EXP (0 = flat, 0.5 = pink)
 PINK_EXP = 0.25
+#: the largest multiplier the sweep's door admits, as a float (16.0): the
+#: gain's peak with the flicker on, ``gain * (1 + amplitude)``, must fit it
+GAIN_MAX = frame_lights.LIGHT_EMIT_MULT_MAX / float(1 << 16)
 
 
 @dataclass(frozen=True)
@@ -105,7 +129,8 @@ def settings_from_config(cfg) -> FlickerSettings:
     """``[render.flicker]`` -> settings (schema types kept; a missing key
     falls back to the schema default). Raises ValueError naming the key for
     a value outside its range: an amplitude in [0, 1] (above 1 the light
-    would go negative -- and 1 + a is the sweep door's 2 ONE), a share in
+    would go negative; ``[render.fire_light] gain * (1 + a)`` must also fit
+    the sweep's door, :func:`fire_light_from_config`), a share in
     [0, 1], and 0 < band_lo_hz < band_hi_hz <= 10 (the 24 Hz tick's Nyquist
     rate is 12 Hz: a higher band would alias into a strobe)."""
     sec = getattr(getattr(cfg, "render", None), "flicker", None)
@@ -127,6 +152,32 @@ def settings_from_config(cfg) -> FlickerSettings:
                          f"band_hi_hz <= 10, got {s.band_lo_hz!r}, "
                          f"{s.band_hi_hz!r}")
     return s
+
+
+@dataclass(frozen=True)
+class FireLightSettings:
+    """``[render.fire_light]`` -- the schema and its default (config.toml holds
+    the live value; re-read every frame)."""
+    gain: float = 1.0             # x the burning tiles' light emission (1 = physics)
+
+
+def fire_light_from_config(cfg, flicker: FlickerSettings) -> FireLightSettings:
+    """``[render.fire_light]`` -> settings (a missing key falls back to the
+    schema default). Raises ValueError naming the key when the gain is not
+    finite, is negative, or its flicker peak ``gain * (1 + [render.flicker]
+    amplitude)`` passes :data:`GAIN_MAX` (the sweep's door, 16 ONE: the
+    int64 headroom, ``cpp/src/radiation_sweep.h``)."""
+    sec = getattr(getattr(cfg, "render", None), "fire_light", None)
+    base = FireLightSettings()
+    gain = (base.gain if sec is None or not hasattr(sec, "gain")
+            else float(getattr(sec, "gain")))
+    peak = gain * (1.0 + float(flicker.amplitude))
+    if not (np.isfinite(gain) and gain >= 0.0 and peak <= GAIN_MAX):
+        raise ValueError(f"[render.fire_light] gain must be >= 0 with gain x (1 + "
+                         f"[render.flicker] amplitude) <= {GAIN_MAX:g} (the sweep's "
+                         f"emission-multiplier door), got gain {gain!r}, "
+                         f"amplitude {flicker.amplitude!r}")
+    return FireLightSettings(gain=gain)
 
 
 def burning_tiles(sources, window) -> Tuple[np.ndarray, np.ndarray,
@@ -222,12 +273,15 @@ def multipliers(ys, xs, hz, phase, t: float, s: FlickerSettings, dials,
 
 
 class FireFlicker:
-    """The renderer's flicker state: the settings, the live key's override
-    (Alt+F3, HUMAN-TEST 2) and the last computation's cost. :meth:`rows` is
-    what the game's per-tick light assembly reads."""
+    """The renderer's fire-light state: the flicker's settings, the fire's
+    light gain, the flicker's live key override (Alt+F3, HUMAN-TEST 2) and
+    the last computation's cost. :meth:`rows` is what the game's per-tick
+    light assembly reads."""
 
-    def __init__(self, settings: FlickerSettings = FlickerSettings()):
+    def __init__(self, settings: FlickerSettings = FlickerSettings(),
+                 light: FireLightSettings = FireLightSettings()):
         self.settings = settings
+        self.light = light
         self.enabled_override: Optional[bool] = None
         self.last_ms = 0.0
         self.last_n = 0
@@ -242,25 +296,36 @@ class FireFlicker:
         self.enabled_override = not self.enabled
         return self.enabled
 
-    def refresh_settings(self, settings: FlickerSettings) -> None:
+    def refresh_settings(self, settings: FlickerSettings,
+                         light: Optional[FireLightSettings] = None) -> None:
         self.settings = settings
+        if light is not None:
+            self.light = light
+
+    @property
+    def gain(self) -> float:
+        return float(self.light.gain)
 
     def rows(self, pack, t: float, dials, grid_w: int,
              grid_h: int) -> Optional[np.ndarray]:
         """The sweep's emission-multiplier rows for this tick -- (n, 3) int64
-        ``(y, x, mult_q)`` through THE DOOR (``frame_lights.emit_mult_rows``)
-        -- or None: disabled, no flame pack, or nothing burning (the sweep then
-        runs exactly as before F4b)."""
+        ``(y, x, mult_q)``, ``mult = gain * m_flicker`` (``m_flicker`` = 1
+        with the flicker off), through THE DOOR (``frame_lights.
+        emit_mult_rows``) -- or None: no flame pack, nothing burning, or the
+        flicker off at gain 1 (the sweep then runs exactly as before F4b)."""
         t0 = time.perf_counter()
         out = None
         n = 0
-        if self.enabled and pack is not None and pack.sources is not None \
+        gain = self.gain
+        live = self.enabled or gain != 1.0
+        if live and pack is not None and pack.sources is not None \
                 and pack.sources.burn_hz is not None:
             ys, xs, hz, ph = burning_tiles(pack.sources, pack.window)
             n = int(ys.size)
             if n:
-                m = multipliers(ys, xs, hz, ph, t, self.settings, dials, grid_w)
-                out = frame_lights.emit_mult_rows(ys, xs, m, grid_w, grid_h)
+                m = (multipliers(ys, xs, hz, ph, t, self.settings, dials, grid_w)
+                     if self.enabled else np.ones(n, dtype=np.float64))
+                out = frame_lights.emit_mult_rows(ys, xs, gain * m, grid_w, grid_h)
         self.last_n = n
         self.last_ms = (time.perf_counter() - t0) * 1000.0
         return out
@@ -270,8 +335,11 @@ __all__ = [
     "CLIP_SIGMA",
     "N_OSC",
     "PINK_EXP",
+    "GAIN_MAX",
     "FlickerSettings",
     "settings_from_config",
+    "FireLightSettings",
+    "fire_light_from_config",
     "burning_tiles",
     "tile_term",
     "puff_term",

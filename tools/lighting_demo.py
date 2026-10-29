@@ -1916,10 +1916,10 @@ def main() -> None:
         return demo_light_rows(lights_in, total, sim_time_per_tick, grid_w,
                                grid_h, state=state, mouse_f=mouse_f)
 
-    # graphics G3 F4b: the fire's light flicker rows (main.py's rule: handed
-    # with the cone rows each tick; None = none)
+    # graphics G3 F4b: the fire's room-light rows -- its gain x its flicker
+    # (main.py's rule: handed with the cone rows each tick; None = none)
     def _flicker_now():
-        return renderer.fire_light_flicker_rows(grid_w, grid_h)
+        return renderer.fire_light_rows(grid_w, grid_h)
 
     try:
         while not renderer.should_close():

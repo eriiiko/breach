@@ -543,13 +543,14 @@ def main():
         return frame_lights.cone_rows(assemble_lights().specs, grid_w, grid_h,
                                       light_fine_bits)
 
-    # Graphics G3 F4b: THE FIRE'S LIGHT FLICKER -- the renderer's per-burning-
-    # tile multiplier on the sweep's thermal light emission, as (n, 3) int64
-    # rows through the door (frame_lights.emit_mult_rows), or None. Render
-    # state handed with the cone rows; it scales light only, never heat.
+    # Graphics G3 F4b: THE FIRE'S ROOM LIGHT -- the renderer's per-burning-
+    # tile multiplier on the sweep's thermal light emission (the fire's light
+    # gain x its flicker, G3 adjustment round), as (n, 3) int64 rows through
+    # the door (frame_lights.emit_mult_rows), or None. Render state handed
+    # with the cone rows; it scales light only, never heat.
     def flicker_rows_now():
         grid_h, grid_w = sim.gmap.solid.shape
-        return renderer.fire_light_flicker_rows(grid_w, grid_h)
+        return renderer.fire_light_rows(grid_w, grid_h)
 
     def _same_rows(a, b):
         if a is None or b is None:

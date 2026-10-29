@@ -1174,7 +1174,7 @@ def check_smoke_draws_with_fire_layers():
 
         def frame(i, smoke_on):
             renderer.show_smoke = smoke_on
-            rows = renderer.fire_light_flicker_rows(level.width, level.height)
+            rows = renderer.fire_light_rows(level.width, level.height)
             sim.set_light(True, None, sky, rows)          # F4b's paused path
             sim.relight()
             renderer.upload_state(sim.gmap, sim_tick=n_ticks,
