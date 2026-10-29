@@ -140,3 +140,11 @@ incident beside it. PROVISIONAL until three runs in a row needed no amendment.
 - 2026-10-22: written from the #12 fire + smoke session (Erik at the screen,
   ~3 h). Most of the time went into finding out WHICH layer a complaint
   belonged to; the probe exists for that.
+- 2026-10-29 (#129, headless half, no Erik at the screen): the duration dial is
+  `wall_damage` alone (duration ~1/it); since M3 H_bed x0.5..x8 moves duration
+  <= 30 % and the char ~1 pt. The "fades WITH fuel left" of §2 is the `I_min`
+  snap of the capacity law (char ~ I_min/(c·o2f·hot), tile still 520–625 K),
+  not #68 cooling; the char reaches 0 only when the drain outruns the fire.
+  Read the probe's fuel column for NEGATIVE values: furniture (non-solid) is
+  never destroyed at hp 0 and burns on past it. A sweep is ~26 s/run headless;
+  a sweep script must restore config.toml with its own line endings.
