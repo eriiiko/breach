@@ -131,9 +131,12 @@ jam a door, sense heat or gas, or count for melee adjacency** — see 4.2.
 `occupied_tiles()` is the FOOTPRINT seam (stamps, doors, exchange rows,
 melee adjacency, `occupies()`) and stays the body rectangle. A new
 `Unit.hit_tiles()` defaults to `occupied_tiles()` and, for a creature unit,
-returns the body tiles plus every tile an arm node lies in (rebuilt once per
-tick after slot 5b from the synced chain; sorted; stored on the body, not
-digested — it is derived). ONLY the bullet march's footprint test and the
+returns the body tiles plus every tile an arm SEGMENT crosses (segments are
+rasterised, not just node tiles: at 0.147 m segments on 0.333 m tiles there
+are ~2.3 nodes per tile, but a segment can still clip a tile corner between
+two nodes; rebuilt once per tick after slot 5b from the synced chain; sorted;
+stored on the body, not digested — it is derived). Erik's observation of
+2026-10-30: more than one node per tile is expected and harmless. ONLY the bullet march's footprint test and the
 laser skewer read `hit_tiles()`. Melee and every exchange row keep
 `occupied_tiles()`, by explicit choice: a bite lands on the body, heat is
 felt by the body (an arm in a fire is #118's row). Gates: humans are
@@ -160,12 +163,20 @@ damage sources (crush, strike) add an `events.Cause` row in their patch.
   (dragging, wading, struggling) is #107's seam. The P4 "carry" is therefore
   demonstrated on a creature-owned prop body until #107.
 
+**Arms vs marines is UNDESIGNED by Erik's ruling (2026-10-30)**: neither
+tile-blocking (wrong) nor a design decided tonight. v1 ships NO arm–marine
+interaction (arms pass through marines, a NAMED ACCEPTED GAP), and the
+coordinate-based collision Erik wants ("calculated from their coordinates",
+capsule-vs-capsule between arm segments and a marine's body) is its own
+design session after P6, with #107's coupling. P6c therefore collides nodes
+with the static topology only; the unit-footprint pushout of v2's first
+draft is withdrawn.
+
 ### 4.4 Collisions
 Nodes collide with the STATIC topology (`material` + door state), never with
 `gmap.obstacles` (which holds every unit's last stamp, the octopus's own
 crown included). Wall face chosen toward the open neighbour with a fixed
-integer tie-break. Nodes also push out of living units' footprints (4.3:
-one-way). The BODY collides too: disc vs blocked tiles and vs other units'
+integer tie-break. Nodes do NOT interact with units in v1 (4.3). The BODY collides too: disc vs blocked tiles and vs other units'
 footprints, projected in the solver before the pose is written, so the stamp
 never overlaps a solid.
 
@@ -185,7 +196,9 @@ an octopus on its own team keeps a match open while it lives. Options:
 the match count — the match ends on marines alone, the octopus a hazard;
 (b) a match-config choice per creature row (`counts_for_victory`); (c) a
 regular team member. Lead's recommendation: (a) for v1 with (b)'s key
-added when a mode needs it.
+added when a mode needs it. Not blocking (Erik: "it's a shame to block"):
+P6 proceeds on (a) as the stated default; Erik vetoes at any point before
+P6d1 merges.
 
 ## 5. Synced state, digest, recorder
 
@@ -329,7 +342,7 @@ no section.
 | P5z | float game-scale 3-D prototype step (z, floor, Bishop frame, scaling law → row values, traces) | P1–P5 gates at the mid size in 3-D |
 | P6a | row + door (`creatures.py`, `creature_fixed.py`, headroom check), species join, `can_become_zombie` honoured, `armed = false` path | door refusals incl. an over-headroom size; ingress lint; conversion gate |
 | P6b | integer reference + kit twins + activation table + gates | P1 seven on ints; dead arm sinks; no slide; float-vs-int tolerance; twin test |
-| P6c | `ArmChainSolver` C++ (stateless, buffer contract, contacts, body collision) | tol 0 vs reference over 10 s reach / crawl / fall inputs; ratchet unchanged |
+| P6c | `ArmChainSolver` C++ (stateless, buffer contract, static-topology contacts, body collision; no arm–unit contact) | tol 0 vs reference over 10 s reach / crawl / fall inputs; ratchet unchanged |
 | P6d1 | `CreatureBody` + slot 5b + `[[creature]]` spawn + `__creature__` section + recorder ring + writer routing (4.3) + body collision | a LIMP octopus (dead-arm signature) first; A/B harness finds a planted divergence; digest identity CPU / `--cuda` / `--resident`; WEGO round boundary; pickle round trip; golden untouched |
 | P6d2 | primitives: reach, crawl, swim, grab (prop body), idle; the `creature` controller row | P2–P5 gates through `Simulation` on a flooded room, dequantized units; P2 rhythm after the 2-tick comb |
 | P6d3 | `hit_tiles()` seam + the two march sites | humans byte-identical (golden + ship_demo pin); arm hit / crown-side miss; stamps unchanged |
