@@ -13,6 +13,7 @@
 #include "bulk_transport.h"  // EOS refactor P1: expose bulk_flux_transport for direct unit test
 #include "sky_exchange.h"    // sky-exchange: planetside volumetric O2 replenishment (per-tick host pass)
 #include "fixed_point.h"   // the Q16.16 kit (quantize, make_recip, the trig kit, ...)
+#include "arm_chain_solver.h"  // #106 P6c: the arm chain solver (stateless, buffer contract)
 #ifdef BREACH_HAS_CUDA
 #include "cuda_hello.h"        // CUDA-S0: hello-world map kernel + device info
 #include "cuda_spike.h"        // CUDA-S8a: residency spike (raw device pointer in)
@@ -348,6 +349,200 @@ static int rad_currency_arg(const char* who, const py::object& e_table_obj,
         auto aa_ = amb_arr_.unchecked<2>();                                   \
         amb = aa_.data(0, 0);                                                 \
     }
+
+// ============================================================================
+// #106 P6c: the ARM CHAIN SOLVER's binding -- the buffer contract of
+// arm_chain_solver.h, every array dtype- and shape-CHECKED (noconvert: a
+// converted copy would be a silently discarded output) before any is written.
+// ============================================================================
+namespace {
+template <typename T>
+using CArr = py::array_t<T, py::array::c_style>;
+
+template <typename T>
+void ac_check(const CArr<T>& a, const char* name, std::initializer_list<py::ssize_t> shape) {
+    if ((size_t)a.ndim() != shape.size()) {
+        throw py::value_error(std::string("arm_chain_tick: ") + name + " has the wrong number of dimensions");
+    }
+    int d = 0;
+    for (py::ssize_t s : shape) {
+        if (a.shape(d) != s) {
+            throw py::value_error(std::string("arm_chain_tick: ") + name + " has the wrong shape");
+        }
+        ++d;
+    }
+}
+
+void arm_chain_tick_py(CArr<int64_t> row, CArr<int64_t> row_node, CArr<int64_t> world,
+                       CArr<uint8_t> blocked, CArr<uint8_t> medium, CArr<int32_t> unit_rects,
+                       CArr<int32_t> p, CArr<int32_t> v, CArr<int64_t> arm_cfg, CArr<uint8_t> pinned,
+                       CArr<int32_t> root_local, CArr<int32_t> act, CArr<int32_t> rest_scale,
+                       CArr<int32_t> bend_target, CArr<int64_t> wave_clock, CArr<uint8_t> anchored,
+                       CArr<int32_t> anchor_pos, CArr<uint8_t> contact, CArr<uint8_t> popped,
+                       CArr<int64_t> anchor_force, CArr<int32_t> body, CArr<int64_t> body_cfg,
+                       CArr<uint8_t> body_contact, CArr<int64_t> grabs, CArr<int64_t> grab_force) {
+    using namespace arm_chain;
+    ac_check(row, "row", {ROW_N});
+    const int64_t* rw = row.data();
+    const int64_t n = rw[ROW_N_NODES];
+    if (n < 3) throw py::value_error("arm_chain_tick: nodes per arm must be >= 3");
+    if (rw[ROW_N_SUB] < 1 || rw[ROW_N_PASS] < 1 || rw[ROW_INV_DT] < 1 || rw[ROW_INV_DT2] < 1) {
+        throw py::value_error("arm_chain_tick: substeps, passes, 1/dt and 1/dt^2 must be >= 1");
+    }
+    if (rw[ROW_ATAN2_SHIFT] < 0 || rw[ROW_ATAN2_SHIFT] > 62) {
+        throw py::value_error("arm_chain_tick: atan2_shift out of [0, 62]");
+    }
+    if (rw[ROW_PLANE_MIN_Q32] < 1) {
+        throw py::value_error("arm_chain_tick: the bend's in-plane guard must be >= 1");
+    }
+    ac_check(row_node, "row_node", {n, RN_N});
+    if (p.ndim() != 4) throw py::value_error("arm_chain_tick: p must be (N, A, n, 3)");
+    const py::ssize_t N = p.shape(0), A = p.shape(1);
+    ac_check(p, "p", {N, A, n, 3});
+    ac_check(v, "v", {N, A, n, 3});
+    ac_check(world, "world", {N, WD_N});
+    if (blocked.ndim() != 3) throw py::value_error("arm_chain_tick: blocked must be (N, h, w)");
+    const py::ssize_t h = blocked.shape(1), w = blocked.shape(2);
+    ac_check(blocked, "blocked", {N, h, w});
+    ac_check(medium, "medium", {N, h, w});
+    if (unit_rects.ndim() != 3) throw py::value_error("arm_chain_tick: unit_rects must be (N, U, 4)");
+    const py::ssize_t U = unit_rects.shape(1);
+    ac_check(unit_rects, "unit_rects", {N, U, 4});
+    ac_check(arm_cfg, "arm_cfg", {N, A, AC_N});
+    ac_check(pinned, "pinned", {N, A, n});
+    ac_check(root_local, "root_local", {N, A, 2, 3});
+    ac_check(act, "act", {N, A, n - 2});
+    ac_check(rest_scale, "rest_scale", {N, A, n - 1});
+    ac_check(bend_target, "bend_target", {N, A, n - 2, 2});
+    ac_check(wave_clock, "wave_clock", {N, A});
+    ac_check(anchored, "anchored", {N, A, n});
+    ac_check(anchor_pos, "anchor_pos", {N, A, n, 3});
+    ac_check(contact, "contact", {N, A, n});
+    ac_check(popped, "popped", {N, A, n});
+    ac_check(anchor_force, "anchor_force", {N, A, n});
+    if (body.ndim() != 3) throw py::value_error("arm_chain_tick: body must be (N, B, 8)");
+    const py::ssize_t B = body.shape(1);
+    ac_check(body, "body", {N, B, BS_N});
+    ac_check(body_cfg, "body_cfg", {N, B, BC_N});
+    ac_check(body_contact, "body_contact", {N, B});
+    if (grabs.ndim() != 3) throw py::value_error("arm_chain_tick: grabs must be (N, G, 6)");
+    const py::ssize_t G = grabs.shape(1);
+    ac_check(grabs, "grabs", {N, G, GR_N});
+    ac_check(grab_force, "grab_force", {N, G});
+    // the indices the solver dereferences
+    const int64_t* ac = arm_cfg.data();
+    for (py::ssize_t k = 0; k < N * A; ++k) {
+        const int64_t* c = ac + k * AC_N;
+        if (c[AC_BODY] < -1 || c[AC_BODY] >= B) throw py::value_error("arm_chain_tick: an arm's body index is out of range");
+        if (c[AC_DRAG_MODE] < DRAG_QUADRATIC || c[AC_DRAG_MODE] > DRAG_UNIFORM) {
+            throw py::value_error("arm_chain_tick: unknown drag mode");
+        }
+        if (c[AC_WAVE_ON] && (c[AC_WAVE_TACT_SUB] < 1 || c[AC_WAVE_W_Q24] < 1)) {
+            throw py::value_error("arm_chain_tick: a wave needs t_act >= 1 substep and a front width > 0");
+        }
+    }
+    const int64_t* bc = body_cfg.data();
+    for (py::ssize_t k = 0; k < N * B; ++k) {
+        const int64_t* c = bc + k * BC_N;
+        if (c[BC_DRAG_MODE] < DRAG_QUADRATIC || c[BC_DRAG_MODE] > DRAG_UNIFORM) {
+            throw py::value_error("arm_chain_tick: unknown body drag mode");
+        }
+        if (c[BC_W_Q32] < 1) throw py::value_error("arm_chain_tick: a body's inverse mass must be > 0");
+    }
+    const int64_t* gr = grabs.data();
+    for (py::ssize_t k = 0; k < N * G; ++k) {
+        const int64_t* g = gr + k * GR_N;
+        if (g[GR_ARM] < 0) continue;
+        if (g[GR_ARM] >= A || g[GR_NODE] < 0 || g[GR_NODE] >= n || g[GR_BODY] < 0 || g[GR_BODY] >= B) {
+            throw py::value_error("arm_chain_tick: a grab's arm, node or body index is out of range");
+        }
+    }
+    // the bend targets' contract (the door's bend_dlam_fit assumes |target| <= pi)
+    const int32_t* bt = bend_target.data();
+    for (py::ssize_t k = 0; k < N * A * (n - 2) * 2; ++k) {
+        if (bt[k] > 205887 || bt[k] < -205887) {
+            throw py::value_error("arm_chain_tick: a bend target is outside +-pi");
+        }
+    }
+    const int64_t* wd = world.data();
+    for (py::ssize_t k = 0; k < N; ++k) {
+        if (wd[k * WD_N + WD_HAS_TOPO] && wd[k * WD_N + WD_TILE_Q24] < 1) {
+            throw py::value_error("arm_chain_tick: the topology's tile must be >= 1 count");
+        }
+    }
+    ArmChainView vw;
+    vw.N = (int)N; vw.A = (int)A; vw.n = (int)n; vw.B = (int)B; vw.G = (int)G; vw.U = (int)U;
+    vw.h = (int)h; vw.w = (int)w;
+    vw.row = rw; vw.row_node = row_node.data(); vw.world = wd;
+    vw.blocked = blocked.data(); vw.medium = medium.data(); vw.unit_rects = unit_rects.data();
+    vw.p = p.mutable_data(); vw.v = v.mutable_data(); vw.arm_cfg = ac; vw.pinned = pinned.data();
+    vw.root_local = root_local.data(); vw.act = act.mutable_data(); vw.rest_scale = rest_scale.data();
+    vw.bend_target = bend_target.data(); vw.wave_clock = wave_clock.mutable_data();
+    vw.anchored = anchored.mutable_data(); vw.anchor_pos = anchor_pos.data();
+    vw.contact = contact.mutable_data(); vw.popped = popped.mutable_data();
+    vw.anchor_force = anchor_force.mutable_data(); vw.body = body.mutable_data(); vw.body_cfg = bc;
+    vw.body_contact = body_contact.mutable_data(); vw.grabs = gr; vw.grab_force = grab_force.mutable_data();
+    {
+        py::gil_scoped_release release;
+        arm_chain::tick(vw);
+    }
+}
+}  // namespace
+
+static void bind_arm_chain(py::module_& m) {
+    using namespace arm_chain;
+    m.def("arm_chain_tick", &arm_chain_tick_py,
+          py::arg("row").noconvert(), py::arg("row_node").noconvert(), py::arg("world").noconvert(),
+          py::arg("blocked").noconvert(), py::arg("medium").noconvert(), py::arg("unit_rects").noconvert(),
+          py::arg("p").noconvert(), py::arg("v").noconvert(), py::arg("arm_cfg").noconvert(),
+          py::arg("pinned").noconvert(), py::arg("root_local").noconvert(), py::arg("act").noconvert(),
+          py::arg("rest_scale").noconvert(), py::arg("bend_target").noconvert(),
+          py::arg("wave_clock").noconvert(), py::arg("anchored").noconvert(),
+          py::arg("anchor_pos").noconvert(), py::arg("contact").noconvert(), py::arg("popped").noconvert(),
+          py::arg("anchor_force").noconvert(), py::arg("body").noconvert(), py::arg("body_cfg").noconvert(),
+          py::arg("body_contact").noconvert(), py::arg("grabs").noconvert(), py::arg("grab_force").noconvert(),
+          "#106 P6c: ONE tick of the arm chain solver (arm_chain_solver.h: the buffer "
+          "contract) for every environment, in place. Stateless; integer; held at tol 0 "
+          "to docs/octopus_integer_reference/chain_ref_q.py World.tick.");
+    m.def("arm_chain_activation_s_q16", [](int64_t x) { return arm_chain::activation_s_q16(x); },
+          py::arg("x_q16"),
+          "#106 P6c: S(x) through the COMPILED activation table (the reference's activation_s_q16).");
+    py::dict lay;
+    lay["ROW_N"] = (int)ROW_N; lay["ROW_N_NODES"] = (int)ROW_N_NODES; lay["ROW_N_SUB"] = (int)ROW_N_SUB;
+    lay["ROW_N_PASS"] = (int)ROW_N_PASS; lay["ROW_INV_DT"] = (int)ROW_INV_DT; lay["ROW_INV_DT2"] = (int)ROW_INV_DT2;
+    lay["ROW_L_Q24"] = (int)ROW_L_Q24; lay["ROW_K_DIST_Q16"] = (int)ROW_K_DIST_Q16;
+    lay["ROW_GAMMA_Q16"] = (int)ROW_GAMMA_Q16; lay["ROW_ONEPG_Q16"] = (int)ROW_ONEPG_Q16;
+    lay["ROW_ATAN2_SHIFT"] = (int)ROW_ATAN2_SHIFT; lay["ROW_G_DV_Q24"] = (int)ROW_G_DV_Q24;
+    lay["ROW_PLANE_MIN_Q32"] = (int)ROW_PLANE_MIN_Q32;
+    lay["RN_N"] = (int)RN_N; lay["RN_S_NODE_Q24"] = (int)RN_S_NODE_Q24; lay["RN_W_Q32"] = (int)RN_W_Q32;
+    lay["RN_K_PER_Q16"] = (int)RN_K_PER_Q16; lay["RN_K_TAN_Q16"] = (int)RN_K_TAN_Q16;
+    lay["RN_REST0_Q24"] = (int)RN_REST0_Q24; lay["RN_K_ACT_Q16"] = (int)RN_K_ACT_Q16;
+    lay["RN_K_PAS_Q16"] = (int)RN_K_PAS_Q16;
+    lay["WD_N"] = (int)WD_N; lay["WD_FLOOR_ON"] = (int)WD_FLOOR_ON; lay["WD_HAS_TOPO"] = (int)WD_HAS_TOPO;
+    lay["WD_TILE_Q24"] = (int)WD_TILE_Q24; lay["WD_ORIGIN_X_Q24"] = (int)WD_ORIGIN_X_Q24;
+    lay["WD_ORIGIN_Y_Q24"] = (int)WD_ORIGIN_Y_Q24;
+    lay["AC_N"] = (int)AC_N; lay["AC_DRAG_MODE"] = (int)AC_DRAG_MODE; lay["AC_VREF_Q24"] = (int)AC_VREF_Q24;
+    lay["AC_U_Q30"] = (int)AC_U_Q30; lay["AC_MU_Q16"] = (int)AC_MU_Q16;
+    lay["AC_ROOT_REF_X_Q30"] = (int)AC_ROOT_REF_X_Q30; lay["AC_ROOT_REF_Y_Q30"] = (int)AC_ROOT_REF_Y_Q30;
+    lay["AC_ROOT_REF_Z_Q30"] = (int)AC_ROOT_REF_Z_Q30; lay["AC_BODY"] = (int)AC_BODY;
+    lay["AC_GRIP_Q8"] = (int)AC_GRIP_Q8; lay["AC_WAVE_ON"] = (int)AC_WAVE_ON;
+    lay["AC_WAVE_A_CA_Q16"] = (int)AC_WAVE_A_CA_Q16; lay["AC_WAVE_TACT_SUB"] = (int)AC_WAVE_TACT_SUB;
+    lay["AC_WAVE_W_Q24"] = (int)AC_WAVE_W_Q24; lay["AC_WAVE_HOLD"] = (int)AC_WAVE_HOLD;
+    lay["BC_N"] = (int)BC_N; lay["BC_W_Q32"] = (int)BC_W_Q32; lay["BC_WINVI_Q32"] = (int)BC_WINVI_Q32;
+    lay["BC_CB_Q32"] = (int)BC_CB_Q32; lay["BC_DRAG_MODE"] = (int)BC_DRAG_MODE; lay["BC_VREF_Q24"] = (int)BC_VREF_Q24;
+    lay["BC_U_Q30"] = (int)BC_U_Q30; lay["BC_Y_Q30"] = (int)BC_Y_Q30; lay["BC_MU_Q16"] = (int)BC_MU_Q16;
+    lay["BC_GRAVITY"] = (int)BC_GRAVITY; lay["BC_FLOOR"] = (int)BC_FLOOR; lay["BC_COLL_R_Q24"] = (int)BC_COLL_R_Q24;
+    lay["BS_N"] = (int)BS_N; lay["BS_X"] = (int)BS_X; lay["BS_Y"] = (int)BS_Y; lay["BS_Z"] = (int)BS_Z;
+    lay["BS_VX"] = (int)BS_VX; lay["BS_VY"] = (int)BS_VY; lay["BS_VZ"] = (int)BS_VZ;
+    lay["BS_TH"] = (int)BS_TH; lay["BS_OM"] = (int)BS_OM;
+    lay["GR_N"] = (int)GR_N; lay["GR_ARM"] = (int)GR_ARM; lay["GR_NODE"] = (int)GR_NODE;
+    lay["GR_BODY"] = (int)GR_BODY; lay["GR_LX"] = (int)GR_LX; lay["GR_LY"] = (int)GR_LY;
+    lay["GR_LZ"] = (int)GR_LZ;
+    lay["DRAG_QUADRATIC"] = DRAG_QUADRATIC; lay["DRAG_LINEAR"] = DRAG_LINEAR; lay["DRAG_UNIFORM"] = DRAG_UNIFORM;
+    lay["CONTACT_FLOOR"] = CONTACT_FLOOR; lay["CONTACT_WALL"] = CONTACT_WALL; lay["CONTACT_UNIT"] = CONTACT_UNIT;
+    lay["ACT_TABLE_SAMPLES"] = arm_chain::activation_table_samples();
+    m.attr("ARM_CHAIN_LAYOUT") = lay;
+}
 
 PYBIND11_MODULE(breach_physics, m) {
     m.doc() = "Breach physics engine -- C++ accelerated simulation";
@@ -1987,6 +2182,31 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("sum"), py::arg("count"),
           "fixed_point.h mean_round: sum / count, round half away from zero "
           "(count > 0; 0 otherwise), cast to q16.");
+    // #106 P6c: the CHAIN's round-half-away kit + its currency, exposed so the
+    // Python twins the arm chain's integer reference computes with are held
+    // to the C++ value for value (tests/test_fixedpoint_twins.py).
+    m.def("fp_shr_round_away",
+          [](int64_t x, int s) { return fixedpoint::shr_round_away(x, s); },
+          py::arg("x"), py::arg("s"),
+          "fixed_point.h shr_round_away: x / 2^s rounded half away from zero.");
+    m.def("fp_div_round_away",
+          [](int64_t n, int64_t d) {
+              if (d <= 0) throw py::value_error("fp_div_round_away: d must be > 0");
+              return fixedpoint::div_round_away(n, d);
+          },
+          py::arg("n"), py::arg("d"),
+          "fixed_point.h div_round_away: n / d rounded half away from zero (d > 0).");
+    m.def("fp_mul_shr_away",
+          [](int64_t a, int64_t b, int s) {
+              if (s < 1) throw py::value_error("fp_mul_shr_away: s must be >= 1");
+              return fixedpoint::mul_shr_away(a, b, s);
+          },
+          py::arg("a"), py::arg("b"), py::arg("s"),
+          "fixed_point.h mul_shr_away: (a b) / 2^s on the exact 128-bit product, "
+          "rounded half away from zero (s >= 1).");
+    m.attr("CHAIN_FINE_BITS") = fixedpoint::CHAIN_FINE_BITS;
+    m.attr("CHAIN_SHIFT") = fixedpoint::CHAIN_SHIFT;
+    bind_arm_chain(m);   // #106 P6c: arm_chain_tick + ARM_CHAIN_LAYOUT
 
     // S2a: the explicit WAVE state (wave_p / wave_v / wave_source) is now int32
     // Q16.16 (same 2^16 scale as water/heat). Python (gamemap fields, field
