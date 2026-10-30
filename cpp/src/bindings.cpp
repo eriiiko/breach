@@ -1951,6 +1951,42 @@ PYBIND11_MODULE(breach_physics, m) {
           "SYMMETRIC (shr_round0_signed_i64 at s + fine_bits): s = heat_inv_shift "
           "gives a thermal solid's temperature step, s = 0 whole heat counts, "
           "s = -16 the Q16 heat currency the counters are in (exact).");
+    // #106 P6b: the rest of the kit the ARM CHAIN's integer reference uses,
+    // exposed so its bit-exact Python twins (src/simulation/fixedpoint_twins.py)
+    // are held to the C++ value for value (tests/test_fixedpoint_twins.py).
+    // Module-level functions only; nothing here is called by the engine.
+    m.def("fp_mul_wide",
+          [](int32_t a, int32_t b) { return fixedpoint::mul_wide(a, b); },
+          py::arg("a"), py::arg("b"),
+          "fixed_point.h mul_wide: the exact int64 product of two int32.");
+    m.def("fp_mul128_shr",
+          [](int64_t a, int64_t b, int shift) {
+              return fixedpoint::mul128_shr(a, b, shift);
+          },
+          py::arg("a"), py::arg("b"), py::arg("shift"),
+          "fixed_point.h mul128_shr: the full 128-bit signed product, "
+          "arithmetic-shifted (floor), cast to int64.");
+    m.def("fp_floordiv_q",
+          [](int64_t n, int64_t d) { return fixedpoint::floordiv_q(n, d); },
+          py::arg("n"), py::arg("d"),
+          "fixed_point.h floordiv_q: floor division toward -inf (d != 0).");
+    m.def("fp_sqrt_q16",
+          [](int64_t x_q32) { return fixedpoint::sqrt_q16(x_q32); },
+          py::arg("x_q32"),
+          "fixed_point.h sqrt_q16: floor(sqrt(x)) by the fixed 32-trip digit "
+          "recurrence, 0 for x <= 0, clamped to INT32_MAX.");
+    m.def("fp_narrow_round_signed",
+          [](int64_t wide) { return fixedpoint::narrow_round_signed(wide); },
+          py::arg("wide"),
+          "fixed_point.h narrow_round_signed: wide >> 16, round half away "
+          "from zero, cast to q16.");
+    m.def("fp_mean_round",
+          [](int64_t sum, int64_t count) {
+              return fixedpoint::mean_round(sum, count);
+          },
+          py::arg("sum"), py::arg("count"),
+          "fixed_point.h mean_round: sum / count, round half away from zero "
+          "(count > 0; 0 otherwise), cast to q16.");
 
     // S2a: the explicit WAVE state (wave_p / wave_v / wave_source) is now int32
     // Q16.16 (same 2^16 scale as water/heat). Python (gamemap fields, field
