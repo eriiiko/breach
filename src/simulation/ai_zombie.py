@@ -26,6 +26,7 @@ from config import CFG
 from simulation.damage import KINETIC, DamagePacket, apply_packet
 from simulation.factions import ZOMBIE_TEAM
 from simulation.movement import FootprintSamples, default_speed
+from simulation.species import get_species
 from simulation.status import composed_flags
 
 try:
@@ -212,9 +213,16 @@ def convert_marines_to_zombies(units):
     it cook off later through emergent fire interaction.
 
     Resets the per-unit conversion flag after.
+
+    Only a species whose data says ``can_become_zombie`` converts (#106: an
+    octopus killed by a bite stays dead; its ``killed_by_zombie`` flag is left
+    as the record of how it died). Every shipped human row says True, so the
+    human path is unchanged.
     """
     for u in units:
-        if not u.is_zombie and not u.alive and u.killed_by_zombie:
+        if (not u.is_zombie and not u.alive and u.killed_by_zombie
+                and get_species(getattr(u, "species_id", "human")
+                                ).can_become_zombie):
             # Joins the horde's team, so it turns on its old squad (#119);
             # its roster slot stays in the old team's roster.
             u.team = ZOMBIE_TEAM

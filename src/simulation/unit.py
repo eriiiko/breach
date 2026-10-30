@@ -135,7 +135,11 @@ class Unit:
         self.is_zombie = (self.team == ZOMBIE_TEAM)
         # Roster slot within the spawn team (Simulation.add_unit assigns it).
         self.slot = -1
-        self.loadout_name = None if self.is_zombie else (
+        # Armed = carries a [loadouts.*] kit: never a zombie, never a species
+        # whose data says `armed = false` (a creature, #106) -- both take the
+        # zombie's no-kit path below (weapon_id "", slot 4 skips it).
+        _armed = (not self.is_zombie) and get_species(species_id).armed
+        self.loadout_name = None if not _armed else (
             loadout_name if loadout_name is not None
             else _loadout_tables().default_loadout)
         self.env_profile_name = env_profile
@@ -234,7 +238,7 @@ class Unit:
         # Inventory booleans — BASE fields. Wiring into self.inventory deferred.
         # A non-zombie is armed by its [loadouts.*] row (#119; the default
         # row carries the pre-#119 [marine] numbers, byte-identical).
-        _kit = None if self.is_zombie else _loadout_tables().loadout(
+        _kit = None if not _armed else _loadout_tables().loadout(
             self.loadout_name)
         self.has_grenade   = 0 if _kit is None else _kit.grenades
         self.has_explosive = 0 if _kit is None else _kit.explosives
@@ -318,7 +322,7 @@ class Unit:
         # action-registry item rows, and belt slots are hotbar slots (§15 — "one
         # system wearing two skins"), which is why nothing here is a separate
         # item type.
-        if self.is_zombie:
+        if not _armed:
             self.loadout = []
             self.belt = []
         else:
