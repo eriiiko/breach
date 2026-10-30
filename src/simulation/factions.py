@@ -22,6 +22,17 @@ FactionId = int
 #: The zombies' team. Not 1: marine teams are 0, 1, 2, ... (#119).
 ZOMBIE_TEAM: FactionId = 255
 
+#: The creatures' team (#106, Erik's ruling of 2026-10-30, design
+#: docs/octopus_p6_sim_port_design_2026-10-30.md section 4.6): an octopus is
+#: its OWN team, beside -- never on -- :data:`ZOMBIE_TEAM`. Under today's rule
+#: ("hostility is a different team") it is hostile to every marine team AND to
+#: the zombies (they are enemies unless an octopus turns zombie, which it
+#: cannot in v1). It is a HAZARD, not a side: ``MatchRules.living_teams`` does
+#: not count it, so a match ends on marines alone (a ``counts_for_victory``
+#: match key is added when a mode needs one). Recorded idea, not built: several
+#: creature teams and a hostility MATRIX between teams (a factions design item).
+CREATURE_TEAM: FactionId = 254
+
 #: The zombie code in LEVEL DATA written before #119 (``[[spawn]] team = 1``,
 #: a motion sensor's ``faction_filter = 1``). Level data only — the loader
 #: maps it to :data:`ZOMBIE_TEAM`; no runtime code reads it.
@@ -46,5 +57,5 @@ class Stance(Enum):
     HOSTILE  = "hostile"
 
 
-__all__ = ["FactionId", "Stance", "ZOMBIE_TEAM", "LEGACY_ZOMBIE_TEAM",
-           "team_from_level"]
+__all__ = ["FactionId", "Stance", "ZOMBIE_TEAM", "CREATURE_TEAM",
+           "LEGACY_ZOMBIE_TEAM", "team_from_level"]

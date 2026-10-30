@@ -27,6 +27,7 @@ from dataclasses import dataclass
 
 from simulation.ai_zombie import convert_marines_to_zombies
 from simulation.combat import process_door_explosives
+from simulation.factions import CREATURE_TEAM
 from simulation.orders import DET_START_PHASE1, DET_BETWEEN_PHASES, DET_END_PHASE2
 
 
@@ -333,9 +334,12 @@ class MatchRules(ContinuousRealtime):
 
     @staticmethod
     def living_teams(sim) -> list:
-        """The marine teams with at least one living unit, sorted."""
+        """The marine teams with at least one living unit, sorted. Zombies
+        and creatures (``CREATURE_TEAM``, #106: a hazard, not a side) are not
+        counted."""
         return sorted({int(u.team) for u in sim.units
-                       if u.alive and not u.is_zombie})
+                       if u.alive and not u.is_zombie
+                       and int(u.team) != CREATURE_TEAM})
 
     def is_terminal(self, sim) -> bool:
         return (len(self.living_teams(sim)) < 2
