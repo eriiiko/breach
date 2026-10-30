@@ -1844,10 +1844,16 @@ seed = 4321                 # the spawn RNG and the drift's modes
 # upsampled bilinearly: cold gas (all four nearest tiles at or below t0_k)
 # gets exactly no offset. Re-read every frame; Ctrl+F3 toggles it.
 enabled = true
-t0_k = 380.0                # gas at or below this (K) does not shimmer at all
-t1_k = 700.0                # full strength from this gas temperature (the studio's
-                            # hottest gas beside a fire runs 457-761 K)
-amp_tiles = 0.03            # the largest offset, tiles (~1.4 world px): subtle
+t0_k = 320.0                # gas at or below this (K) does not shimmer at all
+t1_k = 520.0                # full strength from this gas temperature
+                            # Erik 2026-10-30: "I would like to see heat travelling
+                            # from a warm fire, with the wind" -- 380/700 K cut the
+                            # plume ~10 tiles downwind and showed it faint. The studio
+                            # at 30 s (fire_smoke_probe --dump), row 22 eastward of
+                            # the fire: 495 496 456 392 340 318 300 K every 3 tiles,
+                            # so 320 K lets the warm trail shimmer ~15 tiles out
+amp_tiles = 0.10            # the largest offset, tiles (~4.6 world px); was 0.03
+                            # (~1.4 px), which Erik could not see on/off
 grain_tiles = 0.6           # tiles per repeat of the noise grain
 cycle_s = 0.45              # the flow map's phase cycle, s (VFX clock)
 boil_tiles_s = 0.8          # the grain's own drift, tiles/s (the hot air's boil)

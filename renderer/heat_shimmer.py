@@ -64,9 +64,9 @@ _GL_TEXTURE_2D = 0x0DE1
 class ShimmerSettings:
     """Every ``[render.shimmer]`` dial (the config is the live value)."""
     enabled: bool = True
-    t0_k: float = 380.0          # gas at or below this does not shimmer at all
-    t1_k: float = 700.0          # full strength from this gas temperature up
-    amp_tiles: float = 0.03      # the largest offset, tiles (x px_per_tile)
+    t0_k: float = 320.0          # gas at or below this does not shimmer at all
+    t1_k: float = 520.0          # full strength from this gas temperature up
+    amp_tiles: float = 0.10      # the largest offset, tiles (x px_per_tile)
     grain_tiles: float = 0.6     # tiles per repeat of the noise grain
     cycle_s: float = 0.45        # the flow map's phase cycle, s (VFX clock)
     boil_tiles_s: float = 0.8    # the grain's own drift, tiles/s (hot air rising)
