@@ -65,7 +65,7 @@ DRAG_QUADRATIC, DRAG_LINEAR, DRAG_UNIFORM = 0, 1, 2
 # ------------------------------------------------------------ the activation table
 # S(x) = (1 + tanh x) / 2 sampled at x_i = -8 + i / 64, i = 0..1024 (1025 samples, 1024 intervals).
 # The step is a power of two so the port's index is a shift of the Q16 argument; outside [-8, 8]
-# the value is clamped (S(-8) = 1.1e-7, S(8) = 1 - 1.1e-7). Linear interpolation error <= 6e-6.
+# the value is clamped (S(-8) = 1.1e-7, S(8) = 1 - 1.1e-7). Linear interpolation error <= 1.2e-5 (measured).
 ACT_X_MAX = 8.0
 ACT_INTERVALS = 1024
 ACT_STEP = 2.0 * ACT_X_MAX / ACT_INTERVALS            # 1/64
