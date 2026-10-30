@@ -1,10 +1,13 @@
-"""P6b GATES for the arm chain's integer reference (`chain_ref_q.py`), #106.
+"""GATES for the arm chain's integer reference (`chain_ref_q.py`), #106 P6b + P6c.
 
     C:/Users/steen/anaconda3/python.exe docs/octopus_integer_reference/chain_ref_q_gates.py [--fast] [gate ...]
 
-Seven gates (the P6b row of docs/octopus_p6_sim_port_design_2026-10-30.md
-section 8), each printing its MEASURED numbers and PASS / FAIL; exit 1 on any
-FAIL; the full run writes `report_p6b.md` beside this file.
+Eight gates (the P6b row of docs/octopus_p6_sim_port_design_2026-10-30.md
+section 8, plus P6c's static-topology contacts), each printing its MEASURED
+numbers and PASS / FAIL; exit 1 on any FAIL; the full run writes
+`report_p6c_gates.md` beside this file (`report_p6b.md` is P6b's run, kept as is).
+Since P6c, G3 and G4 run WITH an open topology (contacts enabled, nothing
+touched): the walls must be inert where there are none.
 
   G1 P1's seven on ints  the mid row's reach batch through the reference,
                          dequantized, measured by the SAME code as the P5z
@@ -24,8 +27,16 @@ FAIL; the full run writes `report_p6b.md` beside this file.
   G7 cost                kit calls per arm-substep, weighted as P1's gate d --
                          REPORTED, not gated (cost is not a design input, Erik's
                          ruling 1; P5z's float d said the same; P6e measures)
+  G8 walls (P6c)         the static-topology contacts: inert on an open map
+                         (state bytes identical with and without); an arm
+                         thrown at a wall stops at the face, never penetrates
+                         and never slides along it with no tangential velocity;
+                         an oblique throw (gravity, floor, friction) and a
+                         corner throw never end a tick inside a blocked tile; a
+                         body pushed into a wall or another unit's footprint
+                         stays out; the new int64 sites in CHECK mode
 
-`--fast` runs G1's reach (a1-a3), G5 and G6 on short runs -- what
+`--fast` runs G1's reach (a1-a3), G5, G6 and G8 on short runs -- what
 tests/test_octopus_chain_reference.py runs. G3 and G4 need the P5z traces
 (`prototypes/octopus_motion/gates3d.py` writes out/traces_p5z.npz, gitignored).
 """
@@ -60,6 +71,7 @@ SIZES = (1.80, 2.52, 3.39)          # the art table's arms (CONTROLS.md, #112)
 T_ACTS = (0.5, 0.7, 0.9, 1.2, 1.5)  # P1's a4 sweep
 A_CAS = (0.05, 0.1, 0.2, 0.3, 0.45, 0.6, 0.8, 1.0)   # P1's b sweep
 REACH_RMS_TOL_M = 0.01              # G4: 1 cm node RMS over the reach
+TILE_M = 1.0 / 3.0                  # the game's tile (Erik's ruling: tune at 0.333 m)
 
 
 # ====================================================================== scenario helpers
@@ -86,6 +98,215 @@ def hooked3d(cdef, z: float):
     from arm_chain import hooked_pose
     from arm_chain3d import planar_to_3d
     return planar_to_3d(hooked_pose(geometry(cdef)), origin=(0.0, 0.0, z))
+
+
+def open_topology(half_m: float = 48.0):
+    """An ALL-OPEN tile grid covering +-half_m around the origin: the contacts
+    are enabled and nothing is ever touched (P6c's inertness condition)."""
+    n = int(round(2.0 * half_m / TILE_M))
+    return R.topology(np.zeros((n, n), dtype=bool), TILE_M, origin_m=(-half_m, -half_m))
+
+
+#: The walls scenarios' room: 30 x 30 tiles (10 m) at the game's tile; tile
+#: columns 20.. blocked (a flat wall at x = 20 tiles = 6.67 m), a 2 x 2 pillar at
+#: tiles (8..9, 20..21); outside the grid is blocked too.
+WALL_X_TILE = 20
+PILLAR = ((8, 20), (9, 20), (8, 21), (9, 21))
+FOOTPRINT = (12, 3, 15, 6)            # another unit's 3 x 3 footprint (tiles, half-open)
+
+
+def wall_grid() -> np.ndarray:
+    g = np.zeros((30, 30), dtype=bool)
+    g[:, WALL_X_TILE:] = True
+    for ix, iy in PILLAR:
+        g[iy, ix] = True
+    return g
+
+
+def wall_topology(unit_rects=(FOOTPRINT,)):
+    return R.topology(wall_grid(), TILE_M, unit_rects=unit_rects)
+
+
+def inside_blocked(w, P_counts) -> bool:
+    t = w.topo
+    return t.blocked(t.tile(P_counts[0], 0), t.tile(P_counts[1], 1))
+
+
+class Scenario:
+    """A World plus its per-tick INPUTS (what a hub would write before each
+    tick): `inputs(world, t)` or None. The tol-0 test drives the C++ solver
+    with exactly these (tests/test_octopus_arm_chain_solver.py)."""
+
+    def __init__(self, world, inputs=None, ticks=24, name=""):
+        self.world, self.inputs, self.ticks, self.name = world, inputs, ticks, name
+
+    def step(self, t: int) -> None:
+        if self.inputs is not None:
+            self.inputs(self.world, t)
+        self.world.tick()
+
+
+def scenario_reach(cdef, ticks=None, topo=None) -> Scenario:
+    """P1's reach: pinned 0, 1; the hooked pose 1.5 L / 2.52 m up; the wave."""
+    row = R.chain_row(cdef)
+    w = R.World(row, topo=topo)
+    w.add_arm(hooked3d(cdef, 1.5 * cdef.body.arm_length_m / 2.52), pinned=(0, 1))
+    w.set_wave(0, 0.6, 0.9)
+    return Scenario(w, None, ticks or int(round(1.6 / DT)), "reach")
+
+
+def scenario_dead(cdef, ticks=None, topo=None) -> Scenario:
+    """G2's dead arm: the hooked pose 0.2 m above the deck, no pins, the row's
+    friction, real drag and g_eff -- it falls, lands, unfurls and slides."""
+    row = R.chain_row(cdef)
+    w = R.World(row, topo=topo)
+    w.add_arm(hooked3d(cdef, 0.2), mu=cdef.tissue.mu_floor)
+    return Scenario(w, None, ticks or int(round(6.0 / DT)), "dead")
+
+
+def _straight(cdef, x0, y0, z0, ang):
+    L = cdef.body.arm_length_m
+    n = cdef.body.nodes_per_arm
+    seg = R.CF.chain_to_m(R.CF.chain_from_m(L / (n - 1)))
+    return np.array([[x0 + i * seg * np.cos(ang), y0 + i * seg * np.sin(ang), z0] for i in range(n)])
+
+
+def scenario_wall_thrown(cdef, ticks=None) -> Scenario:
+    """A straight arm laid along y, parallel to the wall, thrown at it at
+    1 m/s: no gravity, no floor, no drag, mu 0 -- nothing acts along the wall."""
+    from dataclasses import replace
+    row = replace(R.chain_row(cdef), g_q24=0, g_dv_q24=0)
+    w = R.World(row, floor_on=False, topo=wall_topology(()))
+    P0 = _straight(cdef, 6.0, 2.0, 0.5, np.pi / 2)
+    w.add_arm(P0, v0=[[1.0, 0.0, 0.0]] * len(P0), drag_mode=R.DRAG_UNIFORM, tau=1e9)
+    w.arms[0].u_q30 = 0
+    return Scenario(w, None, ticks or int(round(1.5 / DT)), "wall_thrown")
+
+
+def scenario_wall_oblique(cdef, ticks=None) -> Scenario:
+    """The hooked arm thrown obliquely at the wall (2.0, 0.5, 0) m/s from
+    0.3 m up: gravity, the floor, the row's friction, real drag."""
+    row = R.chain_row(cdef)
+    w = R.World(row, topo=wall_topology(()))
+    P0 = hooked3d(cdef, 0.3) + np.array([5.8, 3.0, 0.0])
+    w.add_arm(P0, v0=[[2.0, 0.5, 0.0]] * len(P0), mu=cdef.tissue.mu_floor)
+    return Scenario(w, None, ticks or int(round(3.0 / DT)), "wall_oblique")
+
+
+def scenario_wall_corner(cdef, ticks=None) -> Scenario:
+    """A straight arm thrown tip-first along its own axis (45 deg, 1.5 m/s) at
+    the pillar's corner (no gravity, no floor, mu 0.3 on the faces): the -x /
+    -y faces and their tie-break."""
+    from dataclasses import replace
+    row = replace(R.chain_row(cdef), g_q24=0, g_dv_q24=0)
+    w = R.World(row, floor_on=False, topo=wall_topology(()))
+    L = cdef.body.arm_length_m
+    ang = np.pi / 4
+    tip = np.array([PILLAR[0][0] * TILE_M - 0.3, PILLAR[0][1] * TILE_M - 0.3])
+    base = tip - L * np.array([np.cos(ang), np.sin(ang)])
+    P0 = _straight(cdef, base[0], base[1], 0.5, ang)
+    v = 1.5 / np.sqrt(2.0)
+    w.add_arm(P0, v0=[[v, v, 0.0]] * len(P0), mu=0.3)
+    return Scenario(w, None, ticks or int(round(2.5 / DT)), "wall_corner")
+
+
+def _body_kw(cdef):
+    b = cdef.body
+    return dict(mass=b.body_mass_kg, radius=b.body_radius_m, c_drag=b.body_c_drag,
+                area=b.body_crawl_area_m2, rot_damp=b.body_rot_damp, mu=cdef.tissue.mu_floor,
+                coll_radius=b.body_radius_m)
+
+
+def scenario_body_wall(cdef, ticks=None) -> Scenario:
+    """The crown alone (the row's body, its collision disc) pushed into the
+    wall at 2 m/s and, beside it, a second crown pushed into another unit's
+    footprint at 2 m/s (-y): gravity, floor, real drag."""
+    row = R.chain_row(cdef)
+    w = R.World(row, topo=wall_topology())
+    w.add_body((5.9, 5.0, 0.0), **_body_kw(cdef))
+    w.bodies[0].v = R._q24v((2.0, 0.0, 0.0))
+    w.add_body((4.5, 2.9, 0.0), **_body_kw(cdef))
+    w.bodies[1].v = R._q24v((0.0, -2.0, 0.0))
+    return Scenario(w, None, ticks or int(round(2.0 / DT)), "body_wall")
+
+
+def animal_room(cdef):
+    """The animal's room, sized by the row: an open floor ringed by one tile of
+    wall, the wall a quarter metre beyond a resting arm's tip (a stretched or
+    swinging arm reaches it), the crown centred; another unit's 3 x 3 footprint
+    overlapping the crown's disc by 2 cm on its -y side. Returns (topology,
+    crown centre in metres)."""
+    import math
+    b = cdef.body
+    reach = 0.6 * b.body_radius_m + b.arm_length_m + 0.25
+    n = int(math.ceil(2.0 * reach / TILE_M)) + 2
+    g = np.zeros((n, n), dtype=bool)
+    g[0, :] = g[-1, :] = g[:, 0] = g[:, -1] = True
+    c_tile = n // 2
+    cx = c_tile * TILE_M
+    fy1 = c_tile - int(math.ceil(b.body_radius_m / TILE_M))          # the footprint's top edge, tiles
+    cy = fy1 * TILE_M + b.body_radius_m - 0.02
+    rect = (c_tile - 1, fy1 - 3, c_tile + 2, fy1)
+    return R.topology(g, TILE_M, unit_rects=(rect,)), (cx, cy)
+
+
+def scenario_animal(cdef, ticks=None, topo="room") -> Scenario:
+    """A synthetic crawl-like animal exercising every path at once: the crown
+    (its disc, the row's drag, rot damping, friction) with eight arms attached
+    at their roots, lying straight 0.25 m above the floor, hub-like inputs every
+    tick (activation, rest scale, bend targets), two stiffening waves (one
+    released behind its front), anchors set, released and re-set (grip limits
+    on two arms: pops), a 50 kg prop grabbed by arm 2's tip, the room's walls
+    and another unit's footprint touching the crown (`animal_room`)."""
+    import math
+    b = cdef.body
+    row = R.chain_row(cdef)
+    room, (cx, cy) = animal_room(cdef)
+    w = R.World(row, topo=room if topo == "room" else topo)
+    z0 = 0.25
+    w.add_body((cx, cy, z0), **_body_kw(cdef))
+    n = b.nodes_per_arm
+    seg = R.CF.chain_to_m(R.CF.chain_from_m(b.arm_length_m / (n - 1)))
+    r0 = 0.6 * b.body_radius_m
+    tips = []
+    for a, deg in enumerate(b.arm_angles_deg):
+        phi = math.radians(deg)
+        c, s_ = math.cos(phi), math.sin(phi)
+        P0 = np.array([[cx + (r0 + i * seg) * c, cy + (r0 + i * seg) * s_, z0] for i in range(n)])
+        local = [[(r0 + k * seg) * c, (r0 + k * seg) * s_, 0.0] for k in (0, 1)]
+        grip = 150.0 if a in (0, 4) else None
+        w.add_arm(P0, mu=cdef.tissue.mu_floor, body=0, root_local=local, grip=grip)
+        tips.append(P0[-1])
+    gl = (0.3, 0.0, 0.0)
+    w.add_body(tuple(tips[2] - np.array(gl)), mass=50.0, radius=0.3, c_drag=1.0, area=0.18,
+               rot_damp=2.0, mu=0.3, coll_radius=0.3)
+    w.grabs = [(2, n - 1, 1, R._q24v(gl))]
+    w.set_wave(5, 0.6, 0.9, t_start_s=0.1)
+    w.set_wave(6, 0.5, 0.7, t_start_s=0.4, hold=False)
+    wave_arms = (5, 6)
+
+    def inputs(world, t):
+        for a in range(len(world.arms)):
+            if a not in wave_arms:
+                world.set_activation(a, [max(0.0, min(1.0, 0.3 + 0.3 * math.sin(0.2 * t + a + 0.1 * j)))
+                                         for j in range(n - 2)])
+            world.set_rest_scale(a, [1.0 + 0.08 * math.sin(0.15 * t + a) for _ in range(n - 1)])
+            world.set_bend_target(a, [(0.05 * math.sin(0.1 * t + a + 0.2 * j),
+                                       0.02 * math.cos(0.13 * t + a + 0.3 * j)) for j in range(n - 2)])
+        if t == 6:
+            for a in (0, 1, 3, 4):
+                world.anchor(a, range(12, 17))
+        if t == 30:
+            world.release(1)
+        if t == 40:
+            world.anchor(1, range(10, 15))
+
+    return Scenario(w, inputs, ticks or int(round(10.0 / DT)), "animal")
+
+
+SCENARIOS = {"reach": scenario_reach, "dead": scenario_dead, "wall_thrown": scenario_wall_thrown,
+             "wall_oblique": scenario_wall_oblique, "wall_corner": scenario_wall_corner,
+             "body_wall": scenario_body_wall, "animal": scenario_animal}
 
 
 def run_p1_arm(spec) -> dict:
@@ -157,7 +378,8 @@ def _free_animal(seconds: float) -> dict:
         C.append(_com(row, w))
         bx.append([c / CF.CHAIN_ONE for c in w.bodies[0].x])
 
-    out = R.replay(row, tr, ticks=int(round(seconds / DT)), record_every=1 << 30, on_tick=on_tick)
+    out = R.replay(row, tr, ticks=int(round(seconds / DT)), record_every=1 << 30, on_tick=on_tick,
+                   topo=open_topology())
     w = out["world"]
     C0 = _com_initial(row, tr)
     return dict(C=np.array(C), C0=C0, BX=np.array(bx), params=R.check_trace_params(row, cdef, tr),
@@ -177,7 +399,7 @@ def run_replay(name: str) -> dict:
     cdef = creature()
     row = R.chain_row(cdef)
     tr = R.load_traces()[name]
-    out = R.replay(row, tr)
+    out = R.replay(row, tr, topo=open_topology())
     P, F = out["P"], tr["p"]
     if F.ndim == 3:
         P = P[:, 0]
@@ -372,7 +594,8 @@ def g3_no_slide(fast: bool = False, results=None):
     db = np.linalg.norm(biased["C"][:, :2] - biased["C0"][:2], axis=1)
     swing = float(np.linalg.norm(honest["BX"][:, :2] - honest["BX"][0, :2], axis=1).max())
     ok = dh.max() <= 1e-3 and db.max() > 10 * max(dh[:len(db)].max(), 1e-6)
-    lines = [f"  free animal (P5z N2's idle inputs, uniform drag tau 1 s, mu 0, no anchors), {seconds:.0f} s: "
+    lines = [f"  free animal (P5z N2's idle inputs, uniform drag tau 1 s, mu 0, no anchors; an open topology: "
+             f"contacts on, nothing touched), {seconds:.0f} s: "
              f"horizontal COM moved max {dh.max() * 1e3:.4f} mm (end {dh[-1] * 1e3:.4f} mm; limit 1 mm; "
              f"float 2.5e-10 mm) while the body swung up to {swing * 1e3:.1f} mm",
              f"  PAIR (must slide): the same run on FLOOR rounding (>> and //, every symmetric round "
@@ -393,7 +616,8 @@ def g4_float_vs_int(fast: bool = False, results=None):
     R_ = {r["name"]: r for r in res}
     r = R_["reach"]
     ok = r["rms"] <= REACH_RMS_TOL_M
-    lines = [f"  reach (1 arm, {r['ticks']} ticks, gated): node deviation max {r['max'] * 1e3:.3f} mm, RMS "
+    lines = ["  every replay runs WITH an open topology (P6c: contacts on, nothing touched)",
+             f"  reach (1 arm, {r['ticks']} ticks, gated): node deviation max {r['max'] * 1e3:.3f} mm, RMS "
              f"{r['rms'] * 1e3:.3f} mm (tolerance {REACH_RMS_TOL_M * 1e3:.0f} mm = 0.4 % of L: the P1 gates' "
              f"finest length scale is a3's 5 % L, and P5z's table-vs-tanh was 1e-5 m); of it, the clock's "
              f"quantization of t_act (0.9 s -> {r['arith']['tact_sub']} substeps) is nearly all: against the float "
@@ -450,6 +674,24 @@ def g6_headroom(fast: bool = False):
         tight = min(r["bits"], key=lambda x: x[2] - x[1])
         lines.append(f"  {L:.2f} m reach (a_ca 1.0, t_act 0.5 s: the fastest, stiffest P1 wave), {n} ticks: "
                      f"{len(r['bits'])} sites, tightest {tight[0]} {tight[1]} / {tight[2]} bits")
+    R.CHECK = True
+    try:
+        for L in ((3.39,) if fast else SIZES):
+            sc = scenario_animal(creature(L), ticks=6 if fast else 48)
+            for t in range(sc.ticks):
+                sc.step(t)
+            for site, bits, lim in R.bits_report():
+                if site not in worst or lim - bits < worst[site][1] - worst[site][0]:
+                    worst[site] = (bits, lim, L)
+            lines.append(f"  {L:.2f} m synthetic animal (8 arms, the crown's disc, waves, anchors + pops, a grab, "
+                         f"walls + a footprint), {sc.ticks} ticks: no overflow")
+            R.reset_bits()
+    except OverflowError as e:
+        ok = False
+        lines.append(f"  animal: OVERFLOW {e}")
+    finally:
+        R.CHECK = False
+        R.reset_bits()
     if not fast:
         R.CHECK = True
         try:
@@ -518,6 +760,111 @@ def g7_cost(fast: bool = False):
     return ok, lines, per
 
 
+# ====================================================================== G8: walls (P6c)
+
+def g8_walls(fast: bool = False):
+    import hashlib
+    cdef = creature()
+    lines, oks = [], []
+
+    def gate(name, ok, note):
+        oks.append(bool(ok))
+        lines.append(f"  [{'PASS' if ok else 'FAIL'}] {name}: {note}")
+
+    # (a) inert on an open map: identical state bytes with and without
+    n_r = 12 if fast else int(round(1.6 / DT))
+    n_d = 24 if fast else int(round(4.0 / DT))
+    same = []
+    for mk, n in ((scenario_reach, n_r), (scenario_dead, n_d)):
+        bs = []
+        for topo in (None, open_topology()):
+            sc = mk(cdef, ticks=n, topo=topo)
+            for t in range(n):
+                sc.step(t)
+            bs.append(sc.world.state_bytes())
+        same.append((sc.name, n, bs[0] == bs[1], hashlib.sha256(bs[0]).hexdigest()[:12]))
+    gate("a inert where there are no walls", all(x[2] for x in same),
+         "; ".join(f"{nm} {n} ticks: {'IDENTICAL' if eq else 'DIFFER'} (sha256 {h}...)" for nm, n, eq, h in same))
+
+    # (b) thrown flat at a flat wall: stops at the face, never in, never slides
+    sc = scenario_wall_thrown(cdef, ticks=24 if fast else None)
+    w = sc.world
+    p0 = [list(q) for q in w.arms[0].p]
+    face = w.topo.origin[0] + WALL_X_TILE * w.topo.tile_q24 - 1
+    worst_in, slide = 0, 0
+    for t in range(sc.ticks):
+        sc.step(t)
+        for q, q0 in zip(w.arms[0].p, p0):
+            worst_in = max(worst_in, q[0] - face)
+            slide = max(slide, abs(q[1] - q0[1]), abs(q[2] - q0[2]))
+    last = w.arms[0]
+    gap = max(face - q[0] for q in last.p)
+    vx = max(abs(v[0]) for v in last.v)
+    walled = all(c & R.CONTACT_WALL for c in last.contact) if not fast else True
+    ok_b = worst_in <= 0 and slide == 0 and (fast or (gap <= 2 and vx <= 384 and walled))
+    gate("b an arm thrown flat at a wall stops at the face, never in, never slides", ok_b,
+         f"{sc.ticks} ticks at 1 m/s: deepest past the face {worst_in} counts (limit 0); along the wall "
+         f"y / z moved at most {slide} counts (limit 0: no tangential velocity, no slide); at the end every node "
+         f"within {gap} counts of the face, |v_x| <= {vx} counts ({vx / R.CF.CHAIN_ONE * 1e3:.4f} mm/s), "
+         f"wall contact on every node: {walled}")
+
+    # (c) oblique + (d) corner: never end a tick inside a blocked tile
+    for label, mk in (("c an oblique throw (gravity, floor, friction)", scenario_wall_oblique),
+                      ("d a tip-first throw at the pillar's corner", scenario_wall_corner)):
+        sc = mk(cdef, ticks=36 if fast else None)
+        w = sc.world
+        bad, touched = 0, 0
+        for t in range(sc.ticks):
+            sc.step(t)
+            bad += sum(inside_blocked(w, q) for q in w.arms[0].p)
+            touched = max(touched, sum(1 for c in w.arms[0].contact if c & R.CONTACT_WALL))
+        ok_c = bad == 0 and touched > 0
+        gate(label + " never ends a tick inside a blocked tile", ok_c,
+             f"{sc.ticks} ticks: node-ticks inside a blocked tile {bad} (limit 0); most nodes on a wall in one "
+             f"tick {touched}")
+
+    # (e) bodies: a crown into the wall, a crown into another unit's footprint
+    sc = scenario_body_wall(cdef, ticks=24 if fast else None)
+    w = sc.world
+    T = w.topo.tile_q24
+    wall_x = WALL_X_TILE * T
+    fy1 = FOOTPRINT[3] * T
+    pen_w = pen_u = -(1 << 40)
+    cont = [0, 0]
+    for t in range(sc.ticks):
+        sc.step(t)
+        b0, b1 = w.bodies
+        pen_w = max(pen_w, b0.x[0] + b0.coll_r_q24 - wall_x)
+        pen_u = max(pen_u, fy1 + b1.coll_r_q24 - b1.x[1])
+        cont[0] |= b0.contact & R.CONTACT_WALL
+        cont[1] |= b1.contact & R.CONTACT_UNIT
+    ok_e = pen_w <= 16 and pen_u <= 16 and all(cont)
+    gate("e a crown pushed into a wall / another unit's footprint stays out", ok_e,
+         f"{sc.ticks} ticks at 2 m/s: deepest disc overlap with the wall {pen_w} counts, with the footprint "
+         f"{pen_u} counts (limit 16 = 1 um; the push is fine, the rebuild takes it); contact reported "
+         f"(wall, unit): {bool(cont[0])}, {bool(cont[1])}")
+
+    # (f) the new sites in CHECK mode at the largest art size
+    R.CHECK = True
+    R.reset_bits()
+    try:
+        big = creature(3.39)
+        for mk in (scenario_wall_oblique, scenario_wall_corner, scenario_body_wall):
+            sc = mk(big, ticks=12 if fast else 48)
+            for t in range(sc.ticks):
+                sc.step(t)
+        sites = [x for x in R.bits_report() if x[0].split(".")[0] in ("wall", "disc", "friction", "anchor",
+                                                                     "grab", "attach", "arm")]
+        gate("f the contacts' int64 sites in CHECK mode (3.39 m)", True,
+             "; ".join(f"{s_} {b}/{lim}" for s_, b, lim in sites) or "no site reached")
+    except OverflowError as e:
+        gate("f the contacts' int64 sites in CHECK mode (3.39 m)", False, f"OVERFLOW {e}")
+    finally:
+        R.CHECK = False
+        R.reset_bits()
+    return all(oks), lines, None
+
+
 # ====================================================================== main
 
 GATES = [
@@ -528,6 +875,7 @@ GATES = [
     ("G5 determinism", g5_determinism),
     ("G6 headroom at the three art sizes", g6_headroom),
     ("G7 cost per arm-substep", g7_cost),
+    ("G8 static-topology contacts (P6c)", g8_walls),
 ]
 
 
@@ -549,7 +897,7 @@ def main(argv) -> int:
     sel = [i for i, (name, _) in enumerate(GATES)
            if not only or any(name.lower().startswith(o.lower()) for o in only)]
     if fast:
-        sel = [i for i in sel if GATES[i][0][:2] in ("G1", "G5", "G6")]
+        sel = [i for i in sel if GATES[i][0][:2] in ("G1", "G5", "G6", "G8")]
     t0 = time.perf_counter()
     workers = max(1, (os.cpu_count() or 4) - 2)
     leaf = {"G3": (run_free_animal, g3_specs, g3_no_slide), "G4": (run_replay, g4_specs, g4_float_vs_int)}
@@ -590,7 +938,7 @@ def main(argv) -> int:
 
 
 def _write_report(results, wall) -> None:
-    out = ["# P6b gate report -- the arm chain's integer reference\n",
+    out = ["# P6c gate report -- the arm chain's integer reference (P6b's seven + the walls)\n",
            f"Generated by `chain_ref_q_gates.py`, {time.strftime('%Y-%m-%d %H:%M')}, {wall:.0f} s. "
            "Reference: `chain_ref_q.py`; row: `[creatures.octopus]` (config.toml) through the P6a door; "
            "float baseline: P5z (`prototypes/octopus_motion/out/traces_p5z.npz`).\n",
@@ -599,8 +947,8 @@ def _write_report(results, wall) -> None:
     for name, ok, lines, _ in results:
         body = "<br>".join(ln.strip().replace("|", "/") for ln in lines)
         out.append(f"| {name} | {'PASS' if ok else 'FAIL'} | {body} |")
-    (HERE / "report_p6b.md").write_text("\n".join(out) + "\n", encoding="utf-8")
-    print(f"report: {HERE / 'report_p6b.md'}")
+    (HERE / "report_p6c_gates.md").write_text("\n".join(out) + "\n", encoding="utf-8")
+    print(f"report: {HERE / 'report_p6c_gates.md'}")
 
 
 if __name__ == "__main__":

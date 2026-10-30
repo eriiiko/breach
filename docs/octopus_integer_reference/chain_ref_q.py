@@ -72,14 +72,63 @@ ORDER OF ONE SUBSTEP (World.substep; dt = 1/(tps n_sub) = 1/384 s):
                   e. root attachments (per body: arm 0 node 0, arm 0 node 1, ...)
                   f. grabs (sorted by arm, node)
                   g. floor (arms), floor (bodies)
+                  h. static topology (#106 P6c, only with a Topology):
+                     walls (arms), then the bodies' discs out of blocked
+                     tiles and other units' footprints
   8. velocity     v = [384 (p - p_prev) + sra(384 r, 8)] (on the floor its z
-                  part max(., 0)) + (v - 384 disp): the PBD rebuild of the
+                  part max(., 0); at a wall face its normal part clamped the
+                  same way) + (v - 384 disp): the PBD rebuild of the
                   displacement INCLUDING the corrections' fine remainder r,
                   PLUS the predict's rounding remainder, so no sub-count
                   velocity is ever erased (`_rebuild`); pinned / anchored
                   v = 0; bodies likewise; heading wrapped into (-pi, pi].
+                  The per-node contact report (floor / wall) is POSITIONAL,
+                  read here at the end of every substep and OR-ed over the
+                  tick.
 The order is arm_chain3d.Chain3D.substep's with the bank's hooks
 (arm_bank3d.Bank3D) -- the float P5z validated.
+
+STATIC-TOPOLOGY CONTACTS (#106 P6c, design 4.4; no float twin -- P5z had no
+walls). The topology is the map's STATIC blocked view (`GameMap.solid`:
+material + door state, never `gmap.obstacles`), a tile grid of `tile_q24`
+counts per tile with tile (0, 0)'s corner at `origin`; a tile outside the
+grid is blocked. Tile of a coordinate: floor((x - origin) / tile)
+(`Topology.tile`, the kit's floordiv_q). Walls are infinitely tall (the map
+is 2-D).
+  * A NODE (not pinned) inside a blocked tile is pushed out through ONE face
+    whose neighbour tile is open: the face with the smallest penetration,
+    ties broken in the fixed order -x, +x, -y, +y. The low face puts the node
+    at `tile_low - 1` (one count inside the open neighbour), the high face at
+    `tile_high` (the neighbour's first count). Its fine remainder on that axis
+    is zeroed and the fine penetration feeds position-based Coulomb friction
+    on the two TANGENTIAL axes (`_friction` on (the other horizontal, z)),
+    the floor's law with the arm's own mu. No open neighbour: the node's x, y
+    return to the substep's start (and the contact is reported).
+  * At the rebuild a node AT a face (one count further toward it is in a
+    blocked tile) has that velocity component clamped like the floor's
+    v_z >= 0: never into the wall.
+  * A BODY with a collision radius (`coll_r_q24 > 0`) is a disc in x, y: for
+    every blocked tile under its bounding box (row-major, the box taken once
+    per pass), then for every other unit's footprint rectangle (half-open
+    tile rect, in the order given), a disc overlapping the closed rectangle
+    is pushed out along (centre - closest point) by (r - d), fine, through
+    the body's remainder; a centre inside the rectangle leaves through the
+    nearest face (-x, +x, -y, +y on ties) by (that depth + r). No friction,
+    no velocity clamp (the PBD rebuild takes the push).
+  * Nodes never collide with units (Erik, 2026-10-30: arms vs marines is
+    undesigned; arms pass through marines in v1). The report's unit bit
+    exists for the bodies' footprint contacts only.
+With no Topology every one of these is skipped: P6b's arithmetic, bit for bit.
+
+OUTPUTS per tick (reset at the tick's start, never state): `Arm.contact` per
+node (CONTACT_FLOOR | CONTACT_WALL), `Body.contact` (CONTACT_FLOOR |
+CONTACT_WALL | CONTACT_UNIT), `Arm.popped`, `Arm.anchor_force` per node (the
+largest anchor force seen, Q8 N: `((dist 1/dt^2) << 16) // w`, the very
+comparison the grip makes; 0 on a pinned node), `World.grab_force` per grab
+(the largest attachment force seen, Q8 N: each component of J / dt^2 narrowed
+`sra(J 1/dt^2, ATTACH_J_SHIFT - 8)` and saturated at +-FORCE_SAT_Q8 before
+the floor isqrt). `World.sub_count` is the chain clock; the C++ keeps it per
+arm as the elapsed-substep clock `sub_count - t0_sub`.
 """
 from __future__ import annotations
 
@@ -138,8 +187,9 @@ G_PRE = G_SHIFT + 32 - CHAIN_SHIFT    # 24
 #: correction resolved (design 6.2). At the mid row's last interior node
 #: (k_passive 0.23 N m/rad, r ~ 1.5e5) an error E of 1e-3 rad gives dlam =
 #: 1.5e-9 kg m^2 = 1700 counts (10.7 bits); the node's correction is then ~9
-#: chain counts. 8 is the most the numerator allows: k E < 2^49 at |E| < 3 pi.
-DLAM_PRE = 8
+#: chain counts. 8 is the most the numerator allows: k E < 2^49 at |E| < 3 pi
+#: on the mid row; the door's `bend_dlam_fit` holds it per size (#106 P6c).
+DLAM_PRE = CF.BEND_DLAM_PRE
 DLAM_SHIFT = 32 + DLAM_PRE            # 40
 #: |D| (the bend's Rayleigh damping term, rad) is CLAMPED to pi: the bound that
 #: keeps k (C + D) << DLAM_PRE inside int64 (|C| <= 2 pi). The float never
@@ -163,6 +213,11 @@ DRAG_QUADRATIC, DRAG_LINEAR, DRAG_UNIFORM = 0, 1, 2
 WAVE_CLOCK_SPAN = 4
 #: The fade of a released wave (hold = False) trails the front by 2/5 L.
 FADE_BACK_NUM, FADE_BACK_DEN = 2, 5
+#: The per-tick contact report's bits (#106 P6c).
+CONTACT_FLOOR, CONTACT_WALL, CONTACT_UNIT = 1, 2, 4
+#: The grab force's components are saturated here (Q8 N, 4.2 MN) before they
+#: are squared, so the floor isqrt's radicand stays below 3 x 2^60.
+FORCE_SAT_Q8 = 1 << 30
 
 # ---------------------------------------------------------------------------
 # Headroom checks (CHECK = True): each site's largest |value| in bits
@@ -250,6 +305,7 @@ class ChainRow:
     gamma_q16: int
     onepg_q16: int              # 1 + gamma
     atan2_shift: int
+    plane_min_q32: int          # the bend's in-plane guard, Q32 m^2 (#106 P6c)
     K_per_q16: tuple            # (n_nodes,) kg/m
     K_tan_q16: tuple
     g_q24: int                  # g_eff, Q24 m/s^2
@@ -287,7 +343,7 @@ def chain_row(cdef, ticks_per_second: int = 24) -> ChainRow:
         s_node_q24=s_node, m_q16=tuple(ch.node_mass_q16), w_q32=tuple(ch.node_inv_mass_q32),
         k_dist_q16=ch.k_dist_q16, k_act_q16=k_act, k_pas_q16=k_pas,
         gamma_q16=ch.bend_gamma_q16, onepg_q16=Q16_ONE + ch.bend_gamma_q16,
-        atan2_shift=ch.atan2_shift, K_per_q16=kp, K_tan_q16=kt, g_q24=g_q24,
+        atan2_shift=ch.atan2_shift, plane_min_q32=ch.bend_plane_min_q32, K_per_q16=kp, K_tan_q16=kt, g_q24=g_q24,
         g_dv_q24=dra(g_q24, inv_dt), rho_water_q16=CF.q16_from_scalar(b.water_density),
         front_w_q24=CF.chain_from_m(cdef.reach.front_width_m))
 
@@ -295,6 +351,36 @@ def chain_row(cdef, ticks_per_second: int = 24) -> ChainRow:
 # ---------------------------------------------------------------------------
 # State
 # ---------------------------------------------------------------------------
+@dataclass
+class Topology:
+    """The map's STATIC topology as the chain sees it (#106 P6c): a blocked
+    grid (h rows of w bools; `GameMap.solid` = material + door state), the
+    tile size and the grid origin in chain counts, and the OTHER units'
+    footprint rectangles (half-open tile rects (tx0, ty0, tx1, ty1); the
+    bodies collide with them, the nodes never)."""
+    grid: list
+    tile_q24: int
+    origin: tuple = (0, 0)
+    unit_rects: tuple = ()
+
+    def blocked(self, ix: int, iy: int) -> bool:
+        if ix < 0 or iy < 0 or iy >= len(self.grid) or ix >= len(self.grid[0]):
+            return True
+        return bool(self.grid[iy][ix])
+
+    def tile(self, x: int, axis: int) -> int:
+        """The tile index of a chain coordinate: floor((x - origin) / tile)."""
+        return (x - self.origin[axis]) // self.tile_q24
+
+
+def topology(blocked, tile_size_m: float, origin_m=(0.0, 0.0), unit_rects=()) -> Topology:
+    """A Topology from a (h, w) bool array (the door: metres converted once)."""
+    grid = [[bool(c) for c in row] for row in blocked]
+    return Topology(grid=grid, tile_q24=CF.chain_from_m(tile_size_m),
+                    origin=(CF.chain_from_m(origin_m[0]), CF.chain_from_m(origin_m[1])),
+                    unit_rects=tuple(tuple(int(c) for c in r) for r in unit_rects))
+
+
 @dataclass
 class Wave:
     """A reach's stiffening wave (arm_chain.ReachCommand): amplitude Q16, the
@@ -323,6 +409,7 @@ class Arm:
     root_ref: tuple = (0, 0, U_ONE)
     act: list = field(default_factory=list)       # Q16 per interior node
     rest: list = field(default_factory=list)      # Q24 per segment (rest0 x scale)
+    rest_scale: list = field(default_factory=list)  # Q16 per segment (the INPUT rest is derived from)
     target: list = field(default_factory=list)    # per interior node [A, B] Q16 rad
     anchored: list = field(default_factory=list)  # bool per node
     anchor_pos: list = field(default_factory=list)
@@ -333,6 +420,8 @@ class Arm:
     root_local: list = field(default_factory=list)  # 2 x [x, y, z] Q24, body frame
     k_sub: list = field(default_factory=list)       # Q16 per interior node, this substep
     res: list = field(default_factory=list)         # n x 3 fine remainders, this substep
+    contact: list = field(default_factory=list)     # OUT: CONTACT_* bits per node, this tick
+    anchor_force: list = field(default_factory=list)  # OUT: Q8 N per node, this tick's largest
 
 
 @dataclass
@@ -352,8 +441,10 @@ class Body:
     mu_q16: int = 0
     gravity: bool = True
     floor: bool = True
+    coll_r_q24: int = 0          # the collision disc's radius (0: no topology collision)
     res: list = field(default_factory=lambda: [0, 0, 0])   # fine remainders, this substep
     res_th: int = 0
+    contact: int = 0             # OUT: CONTACT_* bits, this tick
 
 
 def _q16(x: float) -> int:
@@ -376,19 +467,22 @@ class World:
     together (arm_bank3d.World's bank). Batching never changes a result: arms
     of different bodies never interact inside a substep."""
 
-    def __init__(self, row: ChainRow, act_table=None, floor_on: bool = True):
+    def __init__(self, row: ChainRow, act_table=None, floor_on: bool = True,
+                 topo: Topology | None = None):
         self.row = row
         self.tab = load_activation_table() if act_table is None else act_table
         self.arms: list[Arm] = []
         self.bodies: list[Body] = []
         self.grabs: list[tuple] = []      # (arm, node, body, local Q24 [3])
+        self.grab_force: list[int] = []   # OUT: Q8 N per grab, this tick's largest
         self.floor_on = floor_on
+        self.topo = topo                  # None: no static-topology contact (P6b)
         self.sub_count = 0                # the chain clock, in substeps
 
     # -- set-up (the door: floats converted ONCE) --------------------------------
     def add_body(self, x, theta=0.0, mass=1.0, radius=0.1, c_drag=1.0, area=0.0, rot_damp=0.0,
                  mu=0.0, inertia=None, gravity=True, floor=True, drag_mode=DRAG_QUADRATIC,
-                 tau=1.0, vref=0.0) -> int:
+                 tau=1.0, vref=0.0, coll_radius=None) -> int:
         row = self.row
         m_q16 = CF.q16_from_kg(mass)
         I = 0.5 * mass * radius ** 2 if inertia is None else inertia
@@ -398,7 +492,8 @@ class World:
         b = Body(x=_q24v(x), v=[0, 0, 0], th=CF.chain_from_m(theta), om=0, w_q32=w,
                  winvI_q32=winvI, cb_q32=dra(kb_q16 * w, row.inv_dt << 16), drag_mode=int(drag_mode),
                  vref_q24=CF.chain_from_m(vref), mu_q16=_q16(mu), gravity=bool(gravity),
-                 floor=bool(floor))
+                 floor=bool(floor),
+                 coll_r_q24=0 if coll_radius is None else CF.chain_from_m(coll_radius))
         tau_q16 = _q16(tau)
         b.u_q30 = dra(1 << 46, row.inv_dt * tau_q16) if tau_q16 > 0 else 0
         if b.drag_mode == DRAG_UNIFORM:
@@ -418,6 +513,9 @@ class World:
                   for i in range(row.n_seg)]
         c_per = [dra(row.K_per_q16[i] * w[i], row.inv_dt << 16) for i in range(n)]
         c_tan = [dra(row.K_tan_q16[i] * w[i], row.inv_dt << 16) for i in range(n)]
+        if CHECK:
+            for i in range(n):
+                _chk("arm.K_w", max(row.K_per_q16[i], row.K_tan_q16[i]) * w[i])
         tau_q16 = _q16(tau)
         a = Arm(p=[_q24v(q) for q in p0],
                 v=[_q24v(q) for q in v0] if v0 is not None else [[0, 0, 0] for _ in range(n)],
@@ -425,10 +523,11 @@ class World:
                 vref_q24=CF.chain_from_m(vref),
                 u_q30=dra(1 << 46, row.inv_dt * tau_q16) if tau_q16 > 0 else 0,
                 mu_q16=_q16(mu), root_ref=_unit_q30(root_ref),
-                act=[0] * row.n_bend, rest=list(row.rest0_q24),
+                act=[0] * row.n_bend, rest=list(row.rest0_q24), rest_scale=[Q16_ONE] * row.n_seg,
                 target=[[0, 0] for _ in range(row.n_bend)], anchored=[False] * n,
                 anchor_pos=[[0, 0, 0] for _ in range(n)], popped=[False] * n,
-                grip_q8=None, body=int(body), k_sub=list(row.k_pas_q16))
+                grip_q8=None, body=int(body), k_sub=list(row.k_pas_q16),
+                contact=[0] * n, anchor_force=[0] * n)
         if root_local is not None:
             a.root_local = [_q24v(q) for q in root_local]
         self.set_grip(a, grip)
@@ -459,7 +558,9 @@ class World:
 
     def set_rest_scale(self, ai: int, scale) -> None:
         r0 = self.row.rest0_q24
-        self.arms[ai].rest = [sra(r0[i] * _q16(s), 16) for i, s in enumerate(scale)]
+        a = self.arms[ai]
+        a.rest_scale = [_q16(s) for s in scale]
+        a.rest = [sra(r0[i] * q, 16) for i, q in enumerate(a.rest_scale)]
 
     def set_bend_target(self, ai: int, target) -> None:
         self.arms[ai].target = [[_q16(t[0]), _q16(t[1])] for t in target]
@@ -512,23 +613,37 @@ class World:
                 for ai, a in enumerate(self.arms):
                     self._project_floor(a, p_prev[ai])
                 self._floor_bodies(b_prev)
+            if self.topo is not None:
+                for ai, a in enumerate(self.arms):
+                    self._project_walls(a, p_prev[ai])
+                self._collide_bodies()
         inv_dt = row.inv_dt
+        topo = self.topo
         for ai, a in enumerate(self.arms):
             pp, dd = p_prev[ai], disp[ai]
             for i in range(row.n_nodes):
+                q = a.p[i]
+                on_floor = self.floor_on and q[2] <= 0
+                touch = _wall_touch(topo, q) if topo is not None else _NO_TOUCH
+                if on_floor:
+                    a.contact[i] |= CONTACT_FLOOR
+                if touch[4]:
+                    a.contact[i] |= CONTACT_WALL
                 if a.pinned[i] or a.anchored[i]:
                     a.v[i] = [0, 0, 0]
                     continue
-                v, q, qp, di, rr = a.v[i], a.p[i], pp[i], dd[i], a.res[i]
-                for c in range(3):
-                    v[c] = _rebuild(v[c], q[c] - qp[c], rr[c], di[c], inv_dt,
-                                    c == 2 and self.floor_on and q[2] <= 0)
+                v, qp, di, rr = a.v[i], pp[i], dd[i], a.res[i]
+                v[0] = _rebuild(v[0], q[0] - qp[0], rr[0], di[0], inv_dt, touch[0], touch[1])
+                v[1] = _rebuild(v[1], q[1] - qp[1], rr[1], di[1], inv_dt, touch[2], touch[3])
+                v[2] = _rebuild(v[2], q[2] - qp[2], rr[2], di[2], inv_dt, on_floor)
                 if CHECK:
                     for c in range(3):
                         _chk("state.p", q[c], 31)
                         _chk("state.v", v[c], 31)
         for bi, b in enumerate(self.bodies):
             xp, (dx, dth) = b_prev[bi], b_disp[bi]
+            if self.floor_on and b.floor and b.x[2] <= 0:
+                b.contact |= CONTACT_FLOOR
             for c in range(3):
                 b.v[c] = _rebuild(b.v[c], b.x[c] - xp[0][c], b.res[c], dx[c], inv_dt,
                                   c == 2 and self.floor_on and b.floor and b.x[2] <= 0)
@@ -546,7 +661,13 @@ class World:
 
     def tick(self) -> None:
         for a in self.arms:
-            a.popped = [False] * len(a.popped)
+            n = len(a.popped)
+            a.popped = [False] * n
+            a.contact = [0] * n
+            a.anchor_force = [0] * n
+        for b in self.bodies:
+            b.contact = 0
+        self.grab_force = [0] * len(self.grabs)
         for _ in range(self.row.n_sub):
             self.substep()
 
@@ -733,6 +854,7 @@ class World:
         gam = row.gamma_q16
         onepg = row.onepg_q16
         inv_dt2 = row.inv_dt2
+        pmin = row.plane_min_q32
         for j in range(row.n_bend):
             w0, w1, w2 = w[j], w[j + 1], w[j + 2]
             if w0 == 0 and w1 == 0 and w2 == 0:
@@ -748,7 +870,12 @@ class World:
                 a2x, a2y = _ip(d2, e1), _ip(d2, eX)
                 n1 = sra(a1x * a1x + a1y * a1y, 16)          # |a1|^2, Q32
                 n2 = sra(a2x * a2x + a2y * a2y, 16)
-                if n1 == 0 or n2 == 0:
+                # the in-plane guard (#106 P6c): a plane in which either
+                # segment's projection is shorter than the door's l_min is
+                # skipped -- the angle there is ill-conditioned and W ~ 1/|a|^2
+                # would leave the bound the door checked (CHECK: 63 bits at
+                # 3.39 m on a tip folded against a corner)
+                if n1 < pmin or n2 < pmin:
                     continue
                 cross = a1x * a2y - a1y * a2x                 # Q48
                 dot = a1x * a2x + a1y * a2y
@@ -819,11 +946,17 @@ class World:
                 A, P = a.anchor_pos[i], a.p[i]
                 dx, dy, dz = A[0] - P[0], A[1] - P[1], A[2] - P[2]
                 dist = isqrt(dx * dx + dy * dy + dz * dz)
+                force_q8 = 0
+                if a.w[i]:
+                    if CHECK:
+                        _chk("anchor.force_num", (dist * row.inv_dt2) << 16)
+                    force_q8 = ((dist * row.inv_dt2) << 16) // a.w[i]   # Q8 N, >= 0
+                    if force_q8 > a.anchor_force[i]:
+                        a.anchor_force[i] = force_q8
                 if a.grip_q8 is not None:
                     if a.w[i] == 0:
                         pop = dist > 0
                     else:
-                        force_q8 = ((dist * row.inv_dt2) << 16) // a.w[i]   # Q8 N, >= 0
                         pop = force_q8 > a.grip_q8
                     if pop:
                         a.anchored[i] = False
@@ -837,8 +970,12 @@ class World:
                     continue
                 for k in (0, 1):
                     self._attach(a, k, b, a.root_local[k])
-        for ai, k, bi, local in self.grabs:
-            self._attach(self.arms[ai], k, self.bodies[bi], local)
+        for gi, (ai, k, bi, local) in enumerate(self.grabs):
+            J = self._attach(self.arms[ai], k, self.bodies[bi], local)
+            if J is not None:
+                f = _force_q8(J, row.inv_dt2)
+                if f > self.grab_force[gi]:
+                    self.grab_force[gi] = f
 
     def _attach(self, a: Arm, k: int, b: Body, L) -> None:
         """Rigid attachment of node k to the body point L (body frame, Q24):
@@ -854,7 +991,7 @@ class World:
         Cx, Cy, Cz = P[0] - (b.x[0] + rx), P[1] - (b.x[1] + ry), P[2] - (b.x[2] + rz)
         cn = isqrt(Cx * Cx + Cy * Cy + Cz * Cz)
         if cn == 0:
-            return
+            return None
         nx, ny = dra(Cx << U_SHIFT, cn), dra(Cy << U_SHIFT, cn)
         rxn = sra(rx * ny - ry * nx, U_SHIFT)                 # Q24 m
         wn = a.w[k]
@@ -871,12 +1008,15 @@ class World:
         wb = b.w_q32
         _move(b.x, b.res, msa(wb, jx, js), msa(wb, jy, js), msa(wb, jz, js))
         tq = rx * jy - ry * jx                              # (r x J)_z, Q54 kg m^2
+        if CHECK:
+            _chk("attach.tq", tq)
         if tq:
             # Q54 x Q32 >> 54 -> Q32 rad: the yaw step, fine
             t = b.res_th + msa(tq, b.winvI_q32, CHAIN_SHIFT + ATTACH_J_SHIFT)
             i = sra(t, FINE_BITS)
             b.th += i
             b.res_th = t - (i << FINE_BITS)
+        return jx, jy, jz
 
     # -- 7g. floor ----------------------------------------------------------------------------------
     def _project_floor(self, a: Arm, pp) -> None:
@@ -902,6 +1042,68 @@ class World:
             if b.mu_q16 > 0:
                 _friction(b.x, b.res, b_prev[bi][0], b.mu_q16, pen)
 
+    # -- 7h. static topology (#106 P6c) ----------------------------------------------------------------
+    def _project_walls(self, a: Arm, pp) -> None:
+        """Every unpinned node inside a blocked tile leaves through the face
+        of least penetration whose neighbour is open (-x, +x, -y, +y on ties);
+        position-based friction on the two tangential axes."""
+        t = self.topo
+        T = t.tile_q24
+        ox, oy = t.origin
+        mu = a.mu_q16
+        for i in range(self.row.n_nodes):
+            if a.pinned[i]:
+                continue
+            P = a.p[i]
+            ix, iy = t.tile(P[0], 0), t.tile(P[1], 1)
+            if not t.blocked(ix, iy):
+                continue
+            best_d, best_ax, best_face = 0, -1, 0
+            for ax, nx, ny, face in ((0, ix - 1, iy, ox + ix * T - 1), (0, ix + 1, iy, ox + (ix + 1) * T),
+                                     (1, ix, iy - 1, oy + iy * T - 1), (1, ix, iy + 1, oy + (iy + 1) * T)):
+                if t.blocked(nx, ny):
+                    continue
+                d = P[ax] - face if face < P[ax] else face - P[ax]
+                if best_ax < 0 or d < best_d:
+                    best_d, best_ax, best_face = d, ax, face
+            R = a.res[i]
+            if best_ax < 0:
+                P[0], P[1] = pp[i][0], pp[i][1]
+                R[0] = R[1] = 0
+                continue
+            pen = (best_face << FINE_BITS) - ((P[best_ax] << FINE_BITS) + R[best_ax])
+            if pen < 0:
+                pen = -pen
+            if CHECK:
+                _chk("wall.pen", pen)
+            P[best_ax] = best_face
+            R[best_ax] = 0
+            if mu > 0:
+                _friction(P, R, pp[i], mu, pen, (1 - best_ax, 2))
+
+    def _collide_bodies(self) -> None:
+        """Each body's disc out of the blocked tiles under its bounding box
+        (row-major), then out of the other units' footprints (in order)."""
+        t = self.topo
+        T = t.tile_q24
+        ox, oy = t.origin
+        for b in self.bodies:
+            r = b.coll_r_q24
+            if r <= 0:
+                continue
+            x0, x1 = t.tile(b.x[0] - r, 0), t.tile(b.x[0] + r, 0)
+            y0, y1 = t.tile(b.x[1] - r, 1), t.tile(b.x[1] + r, 1)
+            for iy in range(y0, y1 + 1):
+                for ix in range(x0, x1 + 1):
+                    if t.blocked(ix, iy) and _push_disc(b, r, ox + ix * T, oy + iy * T,
+                                                        ox + (ix + 1) * T, oy + (iy + 1) * T):
+                        b.contact |= CONTACT_WALL
+            for tx0, ty0, tx1, ty1 in t.unit_rects:
+                if tx1 <= tx0 or ty1 <= ty0:
+                    continue
+                if _push_disc(b, r, ox + tx0 * T, oy + ty0 * T, ox + tx1 * T, oy + ty1 * T):
+                    b.contact |= CONTACT_UNIT
+
     # -- snapshots ------------------------------------------------------------------------------------
     def state_ints(self) -> list[int]:
         """Every synced integer of the world, in a fixed order."""
@@ -922,8 +1124,23 @@ class World:
         v = self.state_ints()
         return struct.pack(f"<{len(v)}q", *v)
 
+    def output_ints(self) -> list[int]:
+        """This tick's outputs (#106 P6c), in a fixed order: per arm the
+        contact bits, pops and anchor forces per node; per body its contact
+        bits; per grab its force."""
+        out = []
+        for a in self.arms:
+            out += a.contact
+            out += [int(x) for x in a.popped]
+            out += a.anchor_force
+        for b in self.bodies:
+            out.append(b.contact)
+        out += self.grab_force
+        return out
 
-def _rebuild(v_pred: int, dp: int, res: int, disp: int, inv_dt: int, on_floor: bool) -> int:
+
+def _rebuild(v_pred: int, dp: int, res: int, disp: int, inv_dt: int, on_floor: bool,
+             at_high_wall: bool = False) -> int:
     """The velocity after a substep, one component: the PBD rebuild
     ``inv_dt (p - p_prev)`` of the displacement INCLUDING the corrections' fine
     remainder ``res`` (``inv_dt dp + sra(inv_dt res, FINE_BITS)``) -- clamped
@@ -934,11 +1151,76 @@ def _rebuild(v_pred: int, dp: int, res: int, disp: int, inv_dt: int, on_floor: b
     to whole counts per substep^2, the quadratic drag goes dead below
     ~1 cm/s, a compliant bend's and a heavy body's sub-count corrections
     vanish); with them the integer chain integrates what the float
-    integrates, and with nothing acting ``v`` is returned unchanged."""
+    integrates, and with nothing acting ``v`` is returned unchanged.
+    ``on_floor`` clamps the rebuilt part at 0 from BELOW (the floor, or a wall
+    on the low side of this axis, #106 P6c), ``at_high_wall`` from ABOVE (a
+    wall on the high side)."""
     pbd = inv_dt * dp + sra(inv_dt * res, FINE_BITS)
     if on_floor and pbd < 0:
         pbd = 0
+    if at_high_wall and pbd > 0:
+        pbd = 0
     return pbd + (v_pred - inv_dt * disp)
+
+
+_NO_TOUCH = (False, False, False, False, False)
+
+
+def _wall_touch(t: Topology, q) -> tuple:
+    """(low-x, high-x, low-y, high-y, any) for a node at q: a side is TOUCHED
+    when one count further toward it lies in a blocked tile (the node sits at
+    that face); `any` also when the node itself is in a blocked tile."""
+    ix, iy = t.tile(q[0], 0), t.tile(q[1], 1)
+    inside = t.blocked(ix, iy)
+    lx = t.blocked(t.tile(q[0] - 1, 0), iy)
+    hx = t.blocked(t.tile(q[0] + 1, 0), iy)
+    ly = t.blocked(ix, t.tile(q[1] - 1, 1))
+    hy = t.blocked(ix, t.tile(q[1] + 1, 1))
+    return (lx, hx, ly, hy, inside or lx or hx or ly or hy)
+
+
+def _push_disc(b, r: int, X0: int, Y0: int, X1: int, Y1: int) -> bool:
+    """Push a body's disc (radius r, Q24) out of the closed rectangle
+    [X0, X1] x [Y0, Y1]; True when it overlapped. Fine, through `_move`."""
+    cx, cy = b.x[0], b.x[1]
+    qx = X0 if cx < X0 else (X1 if cx > X1 else cx)
+    qy = Y0 if cy < Y0 else (Y1 if cy > Y1 else cy)
+    dx, dy = cx - qx, cy - qy
+    d2 = dx * dx + dy * dy
+    if d2 >= r * r:
+        return False
+    if d2 > 0:
+        d = isqrt(d2)
+        push = r - d
+        if CHECK:
+            _chk("disc.push", (max(abs(dx), abs(dy)) * push) << FINE_BITS)
+        fx, fy = dra((dx * push) << FINE_BITS, d), dra((dy * push) << FINE_BITS, d)
+    else:
+        best_d, best_s, best_ax = cx - X0, -1, 0
+        for dd, sg, ax in ((X1 - cx, 1, 0), (cy - Y0, -1, 1), (Y1 - cy, 1, 1)):
+            if dd < best_d:
+                best_d, best_s, best_ax = dd, sg, ax
+        mag = best_s * ((best_d + r) << FINE_BITS)
+        fx, fy = (mag, 0) if best_ax == 0 else (0, mag)
+    _move(b.x, b.res, fx, fy, 0)
+    return True
+
+
+def _force_q8(J, inv_dt2: int) -> int:
+    """|J| / dt^2 in Q8 N for an attachment impulse J (Q30 kg m): each
+    component narrowed to Q8 and saturated at +-FORCE_SAT_Q8, then the floor
+    isqrt of the sum of squares."""
+    s = 0
+    for j in J:
+        if CHECK:
+            _chk("grab.force_c", j * inv_dt2)
+        f = sra(j * inv_dt2, ATTACH_J_SHIFT - 8)
+        if f > FORCE_SAT_Q8:
+            f = FORCE_SAT_Q8
+        elif f < -FORCE_SAT_Q8:
+            f = -FORCE_SAT_Q8
+        s += f * f
+    return isqrt(s)
 
 
 def _move(P, R, fx: int, fy: int, fz: int) -> None:
@@ -976,12 +1258,18 @@ def _cross_q30(a, b) -> tuple:
             sra(a[0] * b[1] - a[1] * b[0], U_SHIFT))
 
 
-def _friction(P, R, Pp, mu_q16: int, pen_f: int) -> None:
+def _friction(P, R, Pp, mu_q16: int, pen_f: int, ax=(0, 1)) -> None:
     """Coulomb friction on the substep's tangential displacement (position
     based): |dx_t| <- max(0, |dx_t| - mu pen), the FINE displacement (whole
-    counts + remainder, Q32) scaled by keep in [0, 1] Q30. pen_f is fine."""
-    dx = ((P[0] - Pp[0]) << FINE_BITS) + R[0]
-    dy = ((P[1] - Pp[1]) << FINE_BITS) + R[1]
+    counts + remainder, Q32) scaled by keep in [0, 1] Q30. pen_f is fine.
+    ``ax`` are the two tangential axes: (x, y) on the floor; (the other
+    horizontal, z) on a wall (#106 P6c)."""
+    a0, a1 = ax
+    dx = ((P[a0] - Pp[a0]) << FINE_BITS) + R[a0]
+    dy = ((P[a1] - Pp[a1]) << FINE_BITS) + R[a1]
+    if CHECK:
+        _chk("friction.s_sq", dx * dx + dy * dy)
+        _chk("friction.mu_pen", (mu_q16 * pen_f) << 14)
     s = isqrt(dx * dx + dy * dy)
     if s == 0:
         return
@@ -991,7 +1279,7 @@ def _friction(P, R, Pp, mu_q16: int, pen_f: int) -> None:
         return
     if keep < 0:
         keep = 0
-    for c, d in ((0, dx), (1, dy)):
+    for c, d in ((a0, dx), (a1, dy)):
         t = msa(d, keep, U_SHIFT) if keep else 0
         i = sra(t, FINE_BITS)
         P[c] = Pp[c] + i
@@ -1051,7 +1339,7 @@ def check_trace_params(row: ChainRow, cdef, tr: dict) -> list[str]:
 
 
 def replay(row: ChainRow, tr: dict, ticks: int | None = None, record_every: int = 1,
-           on_tick=None) -> dict:
+           on_tick=None, topo: Topology | None = None) -> dict:
     """Run the reference from a P5z trace: its initial state, its solver
     params (checked by `check_trace_params` beforehand), and -- for the bank
     scenarios -- its per-tick solver INPUTS (activation, rest scale, bend
@@ -1062,56 +1350,15 @@ def replay(row: ChainRow, tr: dict, ticks: int | None = None, record_every: int 
     replayed: the gated scenarios (reach, dead arm, crawl, free animal) have
     none. Returns {"P": (ticks, A, n, 3) m, "BX": (ticks, B, 3), "BTH": (ticks, B)}."""
     import numpy as np
-    w = World(row)
+    w = build_replay_world(row, tr, topo)
     bank = "in_activation" in tr
-    if bank:
-        n_ticks = tr["in_activation"].shape[0]
-        nb = tr["body_x0"].shape[0]
-        for bi in range(nb):
-            w.add_body(tr["body_x0"][bi], float(tr["body_th0"][bi]), mass=float(tr["body_mass"][bi]),
-                       radius=float(tr["body_radius"][bi]), c_drag=float(tr["body_c_drag"][bi]),
-                       area=float(tr["body_area"][bi]), rot_damp=float(tr["body_rot_damp"][bi]),
-                       mu=float(tr["body_mu"][bi]), inertia=float(tr["body_inertia"][bi]),
-                       drag_mode=int(tr["body_drag_mode"][bi]), tau=float(tr["body_tau"][bi]))
-        A = tr["p0"].shape[0]
-        for a in range(A):
-            w.add_arm(tr["p0"][a], mu=float(tr["mu"][a]), drag_mode=int(tr["drag_mode"][a]),
-                      tau=float(tr["drag_tau"][a]), vref=float(tr["drag_vref"][a]),
-                      root_ref=tuple(tr["root_ref"]), body=0, root_local=tr["in_root_local"][0][a],
-                      grip=float(tr["in_grip"][0][a]))
-    else:
-        n_ticks = tr["p"].shape[0]
-        p0 = tr["p0"]
-        w.add_arm(p0, pinned=tuple(int(k) for k in tr["pinned"]), mu=float(tr["mu"]),
-                  root_ref=tuple(tr["root_ref"]))
-        if "wave_a" in tr:
-            w.set_wave(0, float(tr["wave_a"]), float(tr["wave_tact"]), float(tr["wave_t0"]),
-                       float(tr["wave_w"]), bool(tr["wave_hold"]))
-        w.floor_on = bool(tr["floor"])
+    n_ticks = tr["in_activation"].shape[0] if bank else tr["p"].shape[0]
     n_ticks = n_ticks if ticks is None else min(ticks, n_ticks)
     P, BX, BTH = [], [], []
     prev_anch = None
     for t in range(n_ticks):
         if bank:
-            anch = tr["in_anchored"][t]
-            for a in range(len(w.arms)):
-                arm = w.arms[a]
-                w.set_activation(a, tr["in_activation"][t][a])
-                w.set_rest_scale(a, tr["in_rest_scale"][t][a])
-                w.set_bend_target(a, tr["in_bend_target"][t][a])
-                arm.root_local = [_q24v(q) for q in tr["in_root_local"][t][a]]
-                w.set_grip(arm, float(tr["in_grip"][t][a]))
-                for i in range(row.n_nodes):
-                    was = arm.anchored[i] if prev_anch is not None else False
-                    if anch[a][i] and not was:
-                        arm.anchored[i] = True
-                        arm.anchor_pos[i] = list(arm.p[i])
-                    elif not anch[a][i]:
-                        arm.anchored[i] = False
-            gb, gl = tr["in_grab_body"][t], tr["in_grab_local"][t]
-            w.grabs = [(a, k, int(gb[a][k]), _q24v(gl[a][k]))
-                       for a in range(len(w.arms)) for k in range(row.n_nodes) if gb[a][k] >= 0]
-            prev_anch = anch
+            prev_anch = apply_trace_inputs(w, tr, t, prev_anch)
         w.tick()
         if on_tick is not None:
             on_tick(w, t)
@@ -1122,11 +1369,65 @@ def replay(row: ChainRow, tr: dict, ticks: int | None = None, record_every: int 
     return dict(P=np.array(P), BX=np.array(BX), BTH=np.array(BTH), world=w)
 
 
+def build_replay_world(row: ChainRow, tr: dict, topo: Topology | None = None) -> World:
+    """The World `replay` runs: a P5z trace's initial state and solver params
+    (its per-tick inputs are `apply_trace_inputs`)."""
+    w = World(row, topo=topo)
+    if "in_activation" in tr:
+        for bi in range(tr["body_x0"].shape[0]):
+            w.add_body(tr["body_x0"][bi], float(tr["body_th0"][bi]), mass=float(tr["body_mass"][bi]),
+                       radius=float(tr["body_radius"][bi]), c_drag=float(tr["body_c_drag"][bi]),
+                       area=float(tr["body_area"][bi]), rot_damp=float(tr["body_rot_damp"][bi]),
+                       mu=float(tr["body_mu"][bi]), inertia=float(tr["body_inertia"][bi]),
+                       drag_mode=int(tr["body_drag_mode"][bi]), tau=float(tr["body_tau"][bi]))
+        for a in range(tr["p0"].shape[0]):
+            w.add_arm(tr["p0"][a], mu=float(tr["mu"][a]), drag_mode=int(tr["drag_mode"][a]),
+                      tau=float(tr["drag_tau"][a]), vref=float(tr["drag_vref"][a]),
+                      root_ref=tuple(tr["root_ref"]), body=0, root_local=tr["in_root_local"][0][a],
+                      grip=float(tr["in_grip"][0][a]))
+    else:
+        w.add_arm(tr["p0"], pinned=tuple(int(k) for k in tr["pinned"]), mu=float(tr["mu"]),
+                  root_ref=tuple(tr["root_ref"]))
+        if "wave_a" in tr:
+            w.set_wave(0, float(tr["wave_a"]), float(tr["wave_tact"]), float(tr["wave_t0"]),
+                       float(tr["wave_w"]), bool(tr["wave_hold"]))
+        w.floor_on = bool(tr["floor"])
+    return w
+
+
+def apply_trace_inputs(w: World, tr: dict, t: int, prev_anch):
+    """Write a bank trace's tick-t solver INPUTS into the World (what the hubs
+    wrote before the step); a newly anchored node is anchored where the INT
+    node is. Returns this tick's anchor mask (pass it back as `prev_anch`)."""
+    row = w.row
+    anch = tr["in_anchored"][t]
+    for a in range(len(w.arms)):
+        arm = w.arms[a]
+        w.set_activation(a, tr["in_activation"][t][a])
+        w.set_rest_scale(a, tr["in_rest_scale"][t][a])
+        w.set_bend_target(a, tr["in_bend_target"][t][a])
+        arm.root_local = [_q24v(q) for q in tr["in_root_local"][t][a]]
+        w.set_grip(arm, float(tr["in_grip"][t][a]))
+        for i in range(row.n_nodes):
+            was = arm.anchored[i] if prev_anch is not None else False
+            if anch[a][i] and not was:
+                arm.anchored[i] = True
+                arm.anchor_pos[i] = list(arm.p[i])
+            elif not anch[a][i]:
+                arm.anchored[i] = False
+    gb, gl = tr["in_grab_body"][t], tr["in_grab_local"][t]
+    w.grabs = [(a, k, int(gb[a][k]), _q24v(gl[a][k]))
+               for a in range(len(w.arms)) for k in range(row.n_nodes) if gb[a][k] >= 0]
+    return anch
+
+
 __all__ = [
     "CHAIN_SHIFT", "U_SHIFT", "U_ONE", "DIST_J_SHIFT", "ATTACH_PRE", "KW_PRE_SHIFT", "G_SHIFT", "G_PRE",
     "DLAM_PRE", "DLAM_SHIFT", "D_MAX_Q16", "OPC_FLOOR", "N0_MIN", "ALT_X_LIMIT", "PI_Q24",
     "TWO_PI_Q24", "DRAG_QUADRATIC", "DRAG_LINEAR", "DRAG_UNIFORM", "WAVE_CLOCK_SPAN",
+    "CONTACT_FLOOR", "CONTACT_WALL", "CONTACT_UNIT", "FORCE_SAT_Q8",
     "CHECK", "BITS", "reset_bits", "bits_report", "load_activation_table", "activation_s_q16",
-    "ChainRow", "chain_row", "Wave", "Arm", "Body", "World", "positions_m", "velocities_m",
-    "load_traces", "check_trace_params", "replay",
+    "ChainRow", "chain_row", "Topology", "topology", "Wave", "Arm", "Body", "World",
+    "positions_m", "velocities_m",
+    "load_traces", "check_trace_params", "replay", "build_replay_world", "apply_trace_inputs",
 ]
