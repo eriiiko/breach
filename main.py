@@ -247,6 +247,11 @@ def _upscale_level(level, factor: int):
         replace(l, x=l.x * factor, y=l.y * factor, range=l.range * factor)
         for l in level.lights
     ]
+    # [[creature]] rows (#106 P6d1) land in the same place like spawns. Their
+    # footprint is the creature ROW's, in tiles, and does not scale (a
+    # recorded gap: the body is metres-sized, its stamp is not, at --res).
+    level.creatures = [replace(c, x=c.x * factor, y=c.y * factor)
+                       for c in level.creatures]
     # [water] initial state scales like the tilemap (P5): the loader pinned
     # depth_map.shape == tilemap.shape, so the seed MUST follow the grid or
     # GameMap's masked seed write would shape-mismatch. Replicating the
@@ -375,7 +380,8 @@ def main():
     # legal: a unit-free physics-tuning sandbox (camera starts at 0,0;
     # marines()/zombies() handle empty rosters).
     # (`--control match` spawns its match.toml instead, #121.)
-    if control_source.spawn_units(sim, level):
+    scheme_spawned = control_source.spawn_units(sim, level)
+    if scheme_spawned:
         pass
     elif not level.spawns:
         print(f"  NOTE: level '{level.name}' has no [[spawn]] entries — "
@@ -385,6 +391,11 @@ def main():
             sim.add_unit(Unit(s.name, x=s.x, y=s.y, team=s.team,
                               footprint=s.footprint))
         print(f"  Spawned {len(level.spawns)} units from level.toml")
+    if level.creatures and not scheme_spawned:
+        # Creatures (#106 P6d1): the level's [[creature]] rows, through the
+        # ONE creature spawn (a match spawns its match.toml's list instead).
+        sim.spawn_creatures(level.creatures)
+        print(f"  Spawned {len(level.creatures)} creature(s) from level.toml")
 
     # 2. Render config — borderless windowed at monitor resolution.
     from renderer.camera import Camera2D

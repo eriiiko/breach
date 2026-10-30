@@ -315,6 +315,12 @@ class GameMap:
         # (a set of coordinates), so a headless run that never drains it holds
         # at most H*W entries.
         self.render_dirty = set()
+        # #106 P6d1: a counter bumped by `on_tile_changed` -- how a SIM reader
+        # of the static topology (the creature bodies' copy of `solid`, the
+        # arm chain's walls) learns the map changed, since `render_dirty` is
+        # the renderer's to drain. Not synced state (a derived change marker:
+        # the topology it marks is digested itself), never digested.
+        self.topology_serial = 0
         self.flammable    = np.zeros((h, w), dtype=bool)
         # S2c: the atmosphere (bulk pressure) is int32 Q16.16 (scale 2^16, shared
         # with water/heat/wave/gas) — the CLOSER of the S2 group: with atmosphere
@@ -1825,6 +1831,9 @@ class GameMap:
         # here, so writers that finish the edit after this seam (destroy_wall's
         # vacuum join) are seen as they end the tick.
         self.render_dirty.add((int(fy), int(fx)))
+        # #106 P6d1: the sim-side twin of that mark (creature bodies re-read
+        # `solid` for their arm chains' walls when it moves).
+        self.topology_serial += 1
 
         # --- arc #54 P-G1b: THE MEMBERSHIP DIFF (design §2.7 last row) ------
         # Every structural edit funnels through this seam (seal, unseal,

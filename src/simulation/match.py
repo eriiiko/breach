@@ -39,7 +39,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from simulation.factions import ZOMBIE_TEAM
+from simulation.factions import CREATURE_TEAM, ZOMBIE_TEAM
 
 #: The placement rules a spawn room may name (v1: one).
 PLACEMENT_RULES = ("formation",)
@@ -55,7 +55,11 @@ FORMATION_PITCH = FORMATION_FOOTPRINT + FORMATION_GAP
 
 _ROOM_KEYS = ("team", "x", "y", "w", "h", "max_per_team", "placement")
 _MATCH_KEYS = ("objective", "seed", "time_limit_s", "zombies",
-               "zombie_controller", "team")
+               "zombie_controller", "team", "creature")
+#: A ``[[creature]]`` row's keys (#106 P6d1): ``species``, ``x``, ``y``
+#: required; ``team`` (default CREATURE_TEAM) and ``heading`` (degrees,
+#: default 0) optional. The writer writes all five.
+_CREATURE_KEYS = ("species", "x", "y", "team", "heading")
 #: The horde's controller when match.toml names none (#122): the shipped
 #: zombie law through the control seam. The writer omits the key at this
 #: value, so a match file that never named one stays byte-identical.
@@ -96,6 +100,27 @@ class MatchSpec:
     #: the registered controller that drives ZOMBIE_TEAM (#122) — the spawned
     #: horde and every converted marine.
     zombie_controller: str = DEFAULT_ZOMBIE_CONTROLLER
+    #: the match's creatures (#106 P6d1): ``[[creature]]`` rows, spawned by
+    #: ``Simulation.spawn_creatures`` after the teams and the horde. Empty by
+    #: default, and the writer writes none then (byte-stable match files).
+    creatures: tuple = ()
+
+
+@dataclass(frozen=True)
+class CreatureSpawn:
+    """One ``[[creature]]`` row (#106 P6d1) — in level.toml (written by
+    ``level_lib.write_creatures``) or in match.toml (``level_lib.
+    write_match``): a creature unit's ``species`` (a species whose
+    ``creature`` is not None), its footprint's TOP-LEFT anchor ``x, y`` in
+    tiles (the ``Unit.x/y`` convention), its ``team`` (default
+    ``CREATURE_TEAM``, design 4.6) and its ``heading`` in DEGREES (0 = East,
+    counter-clockwise on screen, the ``Unit.facing`` convention), in
+    [-180, 180]."""
+    species: str
+    x: float
+    y: float
+    team: int = CREATURE_TEAM
+    heading: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +230,73 @@ def parse_spawn_rooms(raw_list, where: str) -> list:
 
 
 # ---------------------------------------------------------------------------
+# The door — [[creature]] rows (#106 P6d1)
+# ---------------------------------------------------------------------------
+
+def _number(value, where: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{where} must be a number (got {value!r})")
+    v = float(value)
+    if v != v or v in (float("inf"), float("-inf")):
+        raise ValueError(f"{where} must be finite (got {value!r})")
+    return v
+
+
+def creature_spawn_from_dict(entry: dict, where: str) -> CreatureSpawn:
+    """One raw ``[[creature]]`` table -> a validated :class:`CreatureSpawn`
+    (schema-local checks: keys, types, a known species WITH a creature row,
+    a team >= 0, a heading in [-180, 180]). The grid checks (the footprint
+    inside the map and on open floor, the rest pose's arms clear of walls)
+    need the tilemap and stay the loader's
+    (``creature_system.check_creature_spawn``)."""
+    if not isinstance(entry, dict):
+        raise ValueError(f"{where} must be a table")
+    unknown = sorted(set(entry) - set(_CREATURE_KEYS))
+    if unknown:
+        raise ValueError(f"{where}: unknown key(s) {unknown} "
+                         f"(a creature row carries {list(_CREATURE_KEYS)})")
+    for k in ("species", "x", "y"):
+        if k not in entry:
+            raise ValueError(f"{where}: missing key '{k}'")
+    species = entry["species"]
+    if not isinstance(species, str):
+        raise ValueError(f"{where}.species must be a string (got {species!r})")
+    # Lazy: the species registry builds the creature table from CFG.
+    from simulation.species import SPECIES_REGISTRY
+    sdef = SPECIES_REGISTRY.get(species)
+    if sdef is None:
+        raise ValueError(f"{where}.species {species!r} is not a species "
+                         f"(known: {sorted(SPECIES_REGISTRY)})")
+    if sdef.creature is None:
+        raise ValueError(f"{where}.species {species!r} has no creature row "
+                         f"(a [[creature]] needs a species whose body is a "
+                         f"[creatures.*] row)")
+    heading = _number(entry.get("heading", 0.0), f"{where}.heading")
+    if not -180.0 <= heading <= 180.0:
+        raise ValueError(f"{where}.heading must be in [-180, 180] degrees "
+                         f"(got {heading})")
+    return CreatureSpawn(
+        species=species,
+        x=_number(entry["x"], f"{where}.x"),
+        y=_number(entry["y"], f"{where}.y"),
+        team=_int(entry.get("team", CREATURE_TEAM), f"{where}.team",
+                  minimum=0),
+        heading=heading)
+
+
+def parse_creature_spawns(raw_list, where: str) -> list:
+    """The ``[[creature]]`` array -> a list of :class:`CreatureSpawn`
+    (schema checks only; the loader adds the grid checks)."""
+    if raw_list is None:
+        return []
+    if not isinstance(raw_list, list):
+        raise ValueError(f"[[creature]] in {where} must be an array of "
+                         f"tables — spell it [[creature]]")
+    return [creature_spawn_from_dict(e, f"[[creature]] #{i} in {where}")
+            for i, e in enumerate(raw_list)]
+
+
+# ---------------------------------------------------------------------------
 # The door — match.toml
 # ---------------------------------------------------------------------------
 
@@ -295,9 +387,10 @@ def parse_match(raw: dict, spawn_rooms, where: str) -> MatchSpec:
         if zombies > zroom.max_per_team:
             raise ValueError(f"{where}: zombies = {zombies} exceeds the zombie "
                              f"room's max_per_team = {zroom.max_per_team}")
+    creatures = tuple(parse_creature_spawns(raw.get("creature"), where))
     return MatchSpec(teams=tuple(teams), seed=seed, zombies=zombies,
                      time_limit_s=float(tl), objective=objective,
-                     zombie_controller=zctrl)
+                     zombie_controller=zctrl, creatures=creatures)
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +432,8 @@ def spawn_match(sim, spec: MatchSpec) -> list:
               env_profile=row.env_profile)
     if spec.zombies:
         place(ZOMBIE_TEAM, spec.zombies)
+    if spec.creatures:
+        spawned += sim.spawn_creatures(spec.creatures)
     return spawned
 
 
@@ -346,8 +441,9 @@ __all__ = [
     "PLACEMENT_RULES", "OBJECTIVES", "DEFAULT_TIME_LIMIT_S",
     "DEFAULT_ZOMBIE_CONTROLLER",
     "FORMATION_FOOTPRINT", "FORMATION_GAP", "FORMATION_PITCH",
-    "SpawnRoom", "MatchTeam", "MatchSpec",
+    "SpawnRoom", "MatchTeam", "MatchSpec", "CreatureSpawn",
     "formation_capacity", "formation_cells", "placement_cells",
     "spawn_room_from_dict", "parse_spawn_rooms", "parse_match",
+    "creature_spawn_from_dict", "parse_creature_spawns",
     "unit_name", "spawn_match",
 ]

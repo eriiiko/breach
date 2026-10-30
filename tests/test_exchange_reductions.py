@@ -257,22 +257,43 @@ def test_no_reduction_raises_on_wild_footprints():
 # impulse-push row; weapons W3 grew it again with the gas[teargas] and
 # gas[poison] rows (the table GROWING is the design's point).
 # ---------------------------------------------------------------------------
+def _row(table, response):
+    """The row whose response is ``response`` (the table GROWS: rows are
+    found by what they do, never by position or count)."""
+    hits = [r for r in table if r.response is response]
+    assert len(hits) == 1, f"{response.__name__}: {len(hits)} rows"
+    return hits[0]
+
+
 def test_coupling_table_registers_the_shipped_rows_in_order():
-    """Registration: heat, blast, push, teargas, poison (the chapter's row
-    order — the P0 'couplings in table order' execution order once the named
-    READ slot lands). Rows are plain frozen data."""
-    from simulation.exchange import COUPLING_TABLE
-    assert isinstance(COUPLING_TABLE, tuple)
-    assert [row.field for row in COUPLING_TABLE] == [
+    """Registration: heat, blast, push, teargas, poison keep the chapter's
+    RELATIVE row order (the P0 'couplings in table order' execution order once
+    the named READ slot lands); rows are plain frozen data. Property, not a
+    pinned list: the table is designed to grow (#106 P6d1 added the creature
+    push row after the unit push), so a new row between or after them must
+    not break this -- only a reordering of the shipped rows or a lost one."""
+    from simulation import exchange
+    T = exchange.COUPLING_TABLE
+    assert isinstance(T, tuple)
+    assert all(isinstance(row, CouplingRow) for row in T)
+    shipped = [exchange.apply_environmental_damage, exchange.apply_blast_damage,
+               exchange.apply_wave_push, exchange.apply_teargas_blind,
+               exchange.apply_poison_dose]
+    idx = [T.index(_row(T, f)) for f in shipped]
+    assert idx == sorted(idx), idx
+    assert [T[i].field for i in idx] == [
         "heat", "wave_p", "wave_p", "gas[teargas]", "gas[poison]"]
-    assert all(isinstance(row, CouplingRow) for row in COUPLING_TABLE)
 
 
 def test_coupling_table_reductions_name_the_vocabulary():
     """A row's reduction is a vocabulary name (or None for a shipped response
     that predates the field read — the blast row's documented state)."""
-    from simulation.exchange import COUPLING_TABLE
-    heat_row, blast_row, push_row, tear_row, poison_row = COUPLING_TABLE
+    from simulation import exchange
+    T = exchange.COUPLING_TABLE
+    heat_row, blast_row, push_row, tear_row, poison_row = (
+        _row(T, f) for f in (exchange.apply_environmental_damage,
+                             exchange.apply_blast_damage, exchange.apply_wave_push,
+                             exchange.apply_teargas_blind, exchange.apply_poison_dose))
     assert heat_row.reduction == "max" and heat_row.reduction in REDUCTIONS
     assert blast_row.reduction is None
     assert blast_row.note      # the predates-the-field-read status is written
@@ -288,7 +309,11 @@ def test_coupling_table_responses_are_the_shipped_implementations():
     callables ARE the shipped functions, and the combat.py compatibility
     re-exports resolve to the very same objects (legacy imports unchanged)."""
     from simulation import combat, exchange
-    heat_row, blast_row, push_row, tear_row, poison_row = exchange.COUPLING_TABLE
+    T = exchange.COUPLING_TABLE
+    heat_row, blast_row, push_row, tear_row, poison_row = (
+        _row(T, f) for f in (exchange.apply_environmental_damage,
+                             exchange.apply_blast_damage, exchange.apply_wave_push,
+                             exchange.apply_teargas_blind, exchange.apply_poison_dose))
     assert heat_row.response is exchange.apply_environmental_damage
     assert blast_row.response is exchange.apply_blast_damage
     assert push_row.response is exchange.apply_wave_push

@@ -77,6 +77,7 @@ from simulation.events import NO_ATTACKER
 # damage-type constants above (gases.POISON = slice 2; damage.POISON = dtype 4).
 from simulation.gases import POISON as GAS_POISON, TEARGAS as GAS_TEARGAS
 from simulation.species import ZOMBIE_STABILITY
+from simulation.creature_system import is_creature
 from simulation.status import BLINDED, KNOCKED_DOWN, apply_status
 
 
@@ -478,6 +479,36 @@ def _stability_for(unit) -> float:
     return float(getattr(env, "stability", 1.0))
 
 
+def _wave_push_dv(u, tiles, gmap, k_push: float, grad_floor_q: int):
+    """The push's velocity change on one unit, tiles/s, from the pressure
+    gradient over the GAS tiles of its footprint ``tiles`` -- or None when
+    the field is quiet there (both axes under the noise floor). Shared by the
+    unit row (:func:`apply_wave_push`) and the creature row
+    (:func:`apply_creature_wave_impulse`), one arithmetic for both."""
+    solid = gmap.solid
+    h, w = solid.shape
+    # #121: a walk-through door tile is solid to gas (it stores
+    # atmosphere 0) but legal to stand on (the wall clamp below says so);
+    # its 0 is no pressure, so the gradient reads only the gas tiles of
+    # the footprint. Without this a footprint whose edge is on a legacy
+    # MAT_DOOR is shoved back off it every tick -- no unit under MOVE_DIR
+    # could cross a door. A real pressure difference across the door
+    # (the two rooms' gas tiles) still pushes, unchanged.
+    gas_tiles = [(tx, ty) for (tx, ty) in tiles
+                 if not (0 <= ty < h and 0 <= tx < w and solid[ty, tx])]
+    gx, gy = reduce_grad(gmap.atmosphere, gas_tiles)
+    if -grad_floor_q <= gx <= grad_floor_q:
+        gx = 0      # #116: under the noise floor -> no push on this axis
+    if -grad_floor_q <= gy <= grad_floor_q:
+        gy = 0
+    if gx == 0 and gy == 0:
+        return None
+    mass = float(u.mass)
+    dvx = k_push * (-gx / 65536.0) / mass    # tiles/s (door 3)
+    dvy = k_push * (-gy / 65536.0) / mass
+    return dvx, dvy
+
+
 def apply_wave_push(units, gmap, ticks_per_second):
     """The wave_p impulse-push row, BOTH outputs (mechanics/05 §1): the
     per-tick displacement nudge AND the KNOCKED_DOWN trigger (mechanics/06
@@ -569,34 +600,22 @@ def apply_wave_push(units, gmap, ticks_per_second):
     # distinction survives as the field's own time evolution); the zero-mean
     # fast path is unaffected: grad(P) is baseline-independent regardless of
     # P's steady-state level (uniform P -> grad == 0, integer-exact).
-    p_field = gmap.atmosphere
     solid = gmap.solid
     h, w = solid.shape
 
     for u in units:
         if not u.alive:
             continue
+        # #106 P6d1: a creature unit is never displaced here -- its anchor is
+        # its body pose's; the push reaches it as a body impulse through the
+        # creature row below (apply_creature_wave_impulse).
+        if is_creature(u):
+            continue
         tiles = u.occupied_tiles()
-        # #121: a walk-through door tile is solid to gas (it stores
-        # atmosphere 0) but legal to stand on (the wall clamp below says so);
-        # its 0 is no pressure, so the gradient reads only the gas tiles of
-        # the footprint. Without this a footprint whose edge is on a legacy
-        # MAT_DOOR is shoved back off it every tick -- no unit under MOVE_DIR
-        # could cross a door. A real pressure difference across the door
-        # (the two rooms' gas tiles) still pushes, unchanged.
-        gas_tiles = [(tx, ty) for (tx, ty) in tiles
-                     if not (0 <= ty < h and 0 <= tx < w and solid[ty, tx])]
-        gx, gy = reduce_grad(p_field, gas_tiles)
-        if -grad_floor_q <= gx <= grad_floor_q:
-            gx = 0      # #116: under the noise floor -> no push on this axis
-        if -grad_floor_q <= gy <= grad_floor_q:
-            gy = 0
-        if gx == 0 and gy == 0:
+        dv = _wave_push_dv(u, tiles, gmap, k_push, grad_floor_q)
+        if dv is None:
             continue    # integer-exact no-op: quiet field or clipped footprint
-
-        mass = float(u.mass)
-        dvx = k_push * (-gx / 65536.0) / mass    # tiles/s (door 3)
-        dvy = k_push * (-gy / 65536.0) / mass
+        dvx, dvy = dv
 
         # Output 2 first in text order, but independent of the nudge: the
         # KNOCKED_DOWN trigger on the raw physical dv (squares — no sqrt).
@@ -637,6 +656,37 @@ def apply_wave_push(units, gmap, ticks_per_second):
         ny = u.y + dy
         if dy != 0.0 and _free(u.x, ny):
             u.y = ny
+
+
+def apply_creature_wave_impulse(units, gmap, ticks_per_second, creatures):
+    """The CREATURE row of the wave push (#106 P6d1, design 4.3): the same
+    footprint gradient as :func:`apply_wave_push` (``_wave_push_dv``, the
+    body's footprint, the unit's mass), applied as an IMPULSE on the crown's
+    velocity instead of a displacement -- the next slot 5b integrates it
+    (drag, the floor, the walls), so the animal feels the blast rather than
+    being teleported. The per-tick cap is the push's own
+    (``push_max_tile_per_tick`` x tps, as a speed). No KNOCKED_DOWN (an
+    octopus has no feet; recorded, not designed). VETOABLE (Erik): deleting
+    its call at ``Simulation.step`` 9c2 leaves a creature unpushed, an
+    accepted gap. Dormant (one dict check) with no creature body."""
+    if not creatures.bodies:
+        return
+    cfg = CFG.exchange
+    k_push = float(cfg.k_push)
+    vcap = float(cfg.push_max_tile_per_tick) * float(ticks_per_second)
+    grad_floor_q = _atm_fx.quantize_scalar(float(cfg.push_grad_floor_atm))
+    tile_m = float(gmap.tile_size_m)
+    by_id = {u.id: u for u in units}
+    for body in creatures.ordered_bodies():
+        u = by_id.get(body.unit_id)
+        if u is None or not u.alive:
+            continue
+        dv = _wave_push_dv(u, u.occupied_tiles(), gmap, k_push, grad_floor_q)
+        if dv is None:
+            continue
+        dvx = max(-vcap, min(vcap, dv[0]))
+        dvy = max(-vcap, min(vcap, dv[1]))
+        body.add_velocity_m_s(dvx * tile_m, dvy * tile_m)   # tiles/s -> m/s
 
 
 # ---------------------------------------------------------------------------
@@ -822,6 +872,19 @@ COUPLING_TABLE: tuple[CouplingRow, ...] = (
         ),
     ),
     CouplingRow(
+        field="wave_p",
+        reduction="grad",
+        response=apply_creature_wave_impulse,
+        note=(
+            "Impulse push on a CREATURE (#106 P6d1, design 4.3): the push "
+            "row's footprint gradient -> dv = k_push*(-grad)/mass, capped, "
+            "added to the creature body's crown velocity (the arms move the "
+            "animal, so its anchor is never displaced). Runs at "
+            "Simulation.step 9c2 directly after the unit push row. VETOABLE: "
+            "remove the call and a creature ignores the push (accepted gap)."
+        ),
+    ),
+    CouplingRow(
         field="gas[teargas]",
         reduction="max",
         response=apply_teargas_blind,
@@ -856,5 +919,6 @@ __all__ = [
     "reduce_center", "reduce_grad", "reduce_max", "reduce_mean", "reduce_sum",
     "CouplingRow", "COUPLING_TABLE",
     "apply_blast_damage", "apply_environmental_damage", "apply_wave_push",
+    "apply_creature_wave_impulse",
     "apply_teargas_blind", "apply_poison_dose",
 ]

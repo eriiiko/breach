@@ -223,6 +223,53 @@ def facing_to_heading_rad(facing: float) -> float:
     return float(facing)
 
 
+# The chain solver's body yaw ``th`` (``arm_chain`` ``BS_TH``) is measured in
+# the GRID's axes -- it rotates a body-frame point by (c x - s y, s x + c y)
+# with y SOUTH, i.e. clockwise as seen on screen. The pose heading (and
+# ``Unit.facing``) turns counter-clockwise on screen, so the two differ by
+# their sign (#106 P6d1; pinned by tests/test_creature_body.py). Both are
+# Q24 radians (``CHAIN_SHIFT``: the P6b finding -- a Q16 heading is 118 chain
+# counts at the crown rim).
+#: pi in Q24 rad, round(pi * 2^24): the solver's heading wrap into (-pi, pi]
+#: (the integer reference's ``PI_Q24``, held equal by tests/test_creature_body.py).
+PI_Q24 = 52707179
+TWO_PI_Q24 = 2 * PI_Q24
+
+
+def wrap_heading_q24(h: int) -> int:
+    """A Q24 angle wrapped into (-pi, pi] (the solver's own wrap)."""
+    h = int(h)
+    while h > PI_Q24:
+        h -= TWO_PI_Q24
+    while h <= -PI_Q24:
+        h += TWO_PI_Q24
+    return h
+
+
+def body_th_to_heading_q24(th_q24: int) -> int:
+    """The solver's body yaw (Q24 rad, grid axes) -> the pose heading (Q24
+    rad, 0 = East, counter-clockwise on screen)."""
+    return -int(th_q24)
+
+
+def heading_q24_to_body_th(heading_q24: int) -> int:
+    """The pose heading (Q24 rad) -> the solver's body yaw (the inverse of
+    :func:`body_th_to_heading_q24`)."""
+    return -int(heading_q24)
+
+
+def heading_q24_from_deg(deg: float) -> int:
+    """A heading in degrees (a level row) -> Q24 radians, round half away
+    (door 3: one multiply by the constant pi/180)."""
+    return _round_half_away(float(deg) * (math.pi / 180.0) * _CHAIN_ONE_F)
+
+
+def heading_q24_to_rad(heading_q24: int) -> float:
+    """A Q24 heading -> float radians (exact /2^24): the render-side
+    ``Unit.facing`` bridge, never written back."""
+    return float(heading_q24) / _CHAIN_ONE_F
+
+
 # ---------------------------------------------------------------------------
 # Node masses (load-time geometry, door 2/3: + - * / and the constant pi)
 # ---------------------------------------------------------------------------
@@ -520,7 +567,9 @@ __all__ = [
     "chain_from_m", "chain_from_m_array", "chain_to_m", "chain_to_f32",
     "q16_from_kg", "q16_from_stiffness", "q16_from_scalar", "inv_mass_q32",
     "pose_to_unit_anchor", "unit_anchor_to_pose", "heading_rad_to_facing",
-    "facing_to_heading_rad", "node_radii_m", "node_masses_kg",
+    "facing_to_heading_rad", "PI_Q24", "TWO_PI_Q24", "wrap_heading_q24",
+    "body_th_to_heading_q24", "heading_q24_to_body_th",
+    "heading_q24_from_deg", "heading_q24_to_rad", "node_radii_m", "node_masses_kg",
     "node_bend_stiffness_q16", "node_drag_k_q16",
     "HeadroomBound", "ChainHeadroom", "chain_headroom",
 ]
