@@ -159,3 +159,126 @@ are render controls (CONTROLS.md), not scored here.
 
 The rows judged by eye (2 eyes lead, 4–6 passive/anticipation/settle, 9–12,
 14) wait for P7's render and P8's clips.
+
+## P5z — the chain at GAME scale, in 3-D (2026-10-30): 33/35 gates
+
+The float step the P6 design (section 6.8) puts before the integer reference:
+the P1-P5 gates re-run on the MID octopus in 3-D, with z, a floor and a
+Bishop frame, and the row values by a stated law. Nothing here is engine code.
+
+    <breach-py> prototypes/octopus_motion/gates3d.py     # ~4.5 min on 16 cores (25 scenarios in parallel), writes out/
+
+Files: `arm_chain3d.py` (the 3-D chain: drag, g_eff, distance, Bishop frame,
+two signed bends per node, floor, the tabulated activation), `arm_bank3d.py`
+(batched bank + bodies with z + anchors + grabs; `BankView` / `BodyView` give
+the 2-D hubs their interface, `World` steps several animals at once),
+`crawl_sim3d.py` / `swim_sim3d.py` / `grab_sim3d.py` / `idle_sim3d.py` (the
+2-D hubs INHERITED, not copied), `game_scale.py` (`mid_row()` writes
+`out/row_mid.toml`, the hand-off to P6a), `scenarios3d.py` (every run as a
+parallel job, with replay traces), `gates3d.py`. Out: `report_p5z.md`,
+`row_mid.toml`, `fig11_*.png`, `{reach,crawl,swim,grab,idle}3d.gif`,
+`traces_p5z.npz` (10 MB: reach, dead arm, free animal, crawl, jet, grab, idle
+-- node positions per tick + the solver's per-tick inputs; layout in its
+`README` key). Two 2-D files got behaviour-neutral seams:
+`CrawlParams.steer_min_dist` (was a 0.02 literal) and `Swimmer.tick` split
+into `_command` / `_log`.
+
+**The law** (same-duration similarity, S = 2.52 / 0.24 = 10.5): lengths S,
+masses S^3, k_dist S^3, k_bend S^5, grip limits S^4, torque damping S^5,
+c_per / c_tan unchanged (the areas are recomputed from the scaled radii),
+durations 1, speeds S (jet_dv 0.8 -> 8.4 m/s, the carry jets 0.5 -> 5.25 m/s),
+g_eff NOT scaled (0.188 m/s^2). **No dial was tuned**; the solver stays
+16 x 2 at 24 Hz (no gate forced a change).
+
+**Where the row leaves the law** (each flagged in the TOML): body mass 510 kg
+from the SIZES mantle (a 0.93 x 0.93 x 1.08 m ellipsoid at 1042 kg/m^3; the
+law: 347 kg); crown radius 0.465 m = half the mantle width (law 0.525 m); the
+body's drag areas from that radius. The arm RADII follow the law (base
+0.079 m) although SIZES draws the mid arm 0.30 m thick at the root (radius
+0.15 m: ~1.9x thicker, ~3.6x the arm mass) -- a ruling for Erik / P6a; the
+prototype keeps the law so the scale test stays clean. The prop is 116 kg by
+the law (the game's marine is 90 kg). g_eff unscaled means gravity AND the
+deck friction (mu g) are 10.5x weaker relative to the animal's own
+accelerations than at 0.24 m. New dials (not in 2-D): `lift_pitch_deg` 30,
+`lift_s` 1.0.
+
+What it showed:
+
+- **The law holds exactly where gravity does not enter.** The 3-D chain equals
+  the 2-D P1 chain in a plane to 1.8e-14 m (gate 0); the same reach in a tilted
+  plane, rotated back, to 8e-14 m (gate 0b: the Bishop frame is right). P1's
+  gates at mid scale reproduce the 2-D numbers digit for digit (peak/wave
+  1.03-1.28, gate-b RMS 0.098-0.041, the drag-free control overshoots by
+  257 deg): the dimensionless system IS the same. With g_eff on and the base
+  1.5 m up, the arm sags 1 cm during a reach.
+- **The tabulated activation** (1025 samples of S(x) = (1 + tanh x)/2 on
+  [-8, 8], step 1/64, linear interpolation, max error 1.2e-5) gives the same
+  P1 gates to the printed digit as tanh.
+- **The crawl at 0.6 m/s** (2-D x S = 0.53), within 1-3 deg of every wanted
+  direction, 1-3 arms pushing, no rhythm (lottery 8.6x vs clocked 77.5x),
+  98 % / 100 % of the distance with 7 / 6 arms, never off the deck. FAIL 1 is
+  the known 2-D near miss (Levy's per-push r 0.87-0.94; not bent). **FAIL 5 is
+  new**: heading drift over 25 s +9 / -1 / +25 / +59 deg (limit 30). A
+  sensitivity sweep showed seed-dominated wander (dir -90, seeds 1/2/3:
+  +59 / -1 / -20 deg; dir 135: +25 / -46 / +34) that none of three candidate
+  dials removes: mu x S (the 2-D's relative friction back) +47; the law's body
+  (347 kg, 0.525 m) +47; yaw damping x10 +23 / -2 / -12 at -90 but +34 at 135.
+  Nothing adopted. The body wanders more at game scale (weaker relative
+  friction, heavier body) but never turns to FACE the travel direction (+59
+  while travelling -90 is away from it). Whether 30 deg per 25 s is the right
+  bound at game scale (the real animal: ~25 deg SD per 2.8 s) is P8's eye.
+  Side observation: travel 0 and travel -90 on the same seed are exact
+  rotated copies of each other (the hub is symmetric under that rotation).
+- **Swimming in the real 3-D chain** (eight arms in a cone, the umbrella a
+  root angle about the swim axis): umbrella 0.41 m/s from drag nonlinearity
+  alone (the linear isotropic control 7 %), a jet carries 7.8 mantle lengths
+  and decays in 3.8 s, the jet train 3.95 m/s = 6.5x the crawl. The body sinks
+  ~0.07 m/s under g_eff while it swims (reported; holding depth is a future dial).
+- **Grab + LIFT**: contact mid-arm (0.53 L) 0.29 s into the reach, 5 sealed
+  at 0.41-0.65 L, 0 pops through 15 s of loaded crawl and three 5.25 m/s jets;
+  the holding arm's root pitched up 30 deg over 1 s lifts the 116 kg prop to
+  0.20-0.35 m and it never touches the deck again. The hold is loose
+  (-51..+64 % swing, reported as in P4).
+- **Idle**: rows 1/3/7/8/13 pass with the 2-D's numbers (body drift 0.6 mm in 60 s).
+- **N1**: a dead arm released 0.2 m above the deck touches it at 1.7 s, lies
+  flat by 2.4 s and is motionless over the last 5 s of 20 s. Reported beside
+  it: the curled dead arm UNFURLS on its passive stiffness and its centroid
+  travels 2.5 m over the deck before friction stops it -- passive
+  straightening (1 % of k_bend toward a straight target) is strong against
+  mu g at game scale. A dead arm probably wants its own pose as the passive
+  target (#118's question).
+- **N2**: the free animal (no anchors, mu 0, idle waves on, the "symmetric"
+  uniform-rate drag v <- v/(1 + dt/tau) on every node and the body, under which
+  the centre of mass cannot move in exact arithmetic): COM 2.5e-13 m in 60 s
+  while the body swings 4 cm. That is the float baseline the integer port's
+  rounding must match. With the REAL quadratic drag the same idle animal's COM
+  travels 3.8 m in 60 s -- drag-nonlinearity thrust, P3's physics, not slide:
+  the integer no-slide gate must use the symmetric drag or it measures swimming.
+
+Lessons for the integer port (P6b):
+
+- The frame transport needs no trig: nA' = nA - ((nA . t') / (1 + t . t')) (t + t'),
+  one division per segment (shared by both normals), then Gram-Schmidt against
+  t' and a normalise (one sqrt); nB = nA x t. Straight is the EASY case (the
+  correction is exactly 0); the only singular case is a 180-degree fold
+  between two segments (1 + c = 0), floored at 1e-9 here -- the port should
+  floor 1 + c at a few counts. Frames are rebuilt from the root every pass and
+  never carried across ticks, so rounding cannot accumulate along time.
+- Magnitudes at mid scale (dt = 1/384 s): node mass 1.42 kg at the base,
+  13 g at the tip (18.3 kg per arm); at the tip the passive bend has
+  alpha = 1/(k dt^2) ~ 6.4e5 against W ~ 7.8e3, so its dlam is ~1 % of C:
+  the stiffness-form numerator k C must be pre-shifted enough that the
+  passive tip does not round to zero; at the base the active bend has
+  alpha ~ 23 against W ~ 1.2e2 (W dominates).
+- Plane A of a deck-lying arm is an exact no-op in float (the out-of-plane
+  coordinates are exactly 0); in integers they will be +-1 count, so plane A
+  sees ~1e-7 rad of noise per node -- harmless if rounded symmetrically, and
+  the no-slide gate is what will notice a bias.
+- The free-animal COM is 1e-13 m in float: integer drift above a few counts
+  per substep is rounding bias (design 6.3), never physics, provided the
+  symmetric drag is used.
+- The activation table: index = (x + 8) * 64 is a shift of a Q16 argument;
+  clamp before indexing; its 1.2e-5 error is below one Q16 count (1.5e-5).
+- Solver resolution: 16 x 2 is still right at mid scale (exact similarity:
+  every dimensionless solver number -- k dt^2 / m, drag dt K v / m -- is the
+  0.24 m animal's), so P1's 8 x 1 / 32 x 1 findings carry over unchanged.

@@ -2,7 +2,7 @@
 `game_scale.mid_row()`) in 3-D, plus the two no-slide gates of the P6 design
 (section 6.3). Pure numpy + matplotlib.
 
-    <breach-py> prototypes/octopus_motion/gates3d.py      (~4 min on 16 cores, writes out/)
+    <breach-py> prototypes/octopus_motion/gates3d.py      (~4.5 min on 16 cores, writes out/)
 
 Every scenario (`scenarios3d.JOBS`) runs in its own process; the gates read
 their data. Prints PASS/FAIL per gate with its measurement, exits 1 on any
