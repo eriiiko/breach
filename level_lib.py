@@ -100,6 +100,8 @@ MANAGED_FAMILIES = {
     # The `spawn` header regex needs `]]` right after the name, so it never
     # matches `[[spawn_room]]` (and vice versa).
     "spawn_room": ManagedFamily("spawn_room", array=True),
+    # #106 P6d1: the level's creatures (one table per creature unit).
+    "creature": ManagedFamily("creature", array=True),
 }
 
 
@@ -154,6 +156,32 @@ def format_spawn_room_lines(rooms, nl: str = "\n") -> list:
         if i:
             lines.append(nl)
         lines.append(f"[[spawn_room]]{nl}")
+        for k, v in row.items():
+            lines.append(f"{k} = {_fmt_value(v)}{nl}")
+    return lines
+
+
+def _creature_row(c) -> dict:
+    """A ``CreatureSpawn`` -> its toml row (all five keys written)."""
+    return {"species": str(c.species), "x": float(c.x), "y": float(c.y),
+            "team": int(c.team), "heading": float(c.heading)}
+
+
+def format_creature_lines(creatures, nl: str = "\n") -> list:
+    """The managed ``[[creature]]`` block (#106 P6d1) — one table per creature
+    (species/x/y/team/heading, all written), blank line between. Each row is
+    re-parsed through the loader's own schema door first
+    (``simulation.match.creature_spawn_from_dict``), so the writer can never
+    write a row its loader refuses on schema grounds (the grid checks need
+    the tilemap and stay the loader's)."""
+    from simulation.match import creature_spawn_from_dict
+    lines = []
+    for i, c in enumerate(creatures):
+        row = _creature_row(c)
+        creature_spawn_from_dict(row, f"creature #{i} (writer)")
+        if i:
+            lines.append(nl)
+        lines.append(f"[[creature]]{nl}")
         for k, v in row.items():
             lines.append(f"{k} = {_fmt_value(v)}{nl}")
     return lines
@@ -412,6 +440,16 @@ def write_spawn_rooms(toml_path, rooms, write_bak: bool = False):
         write_bak=write_bak)
 
 
+def write_creatures(toml_path, creatures, write_bak: bool = False):
+    """Rewrite the ``[[creature]]`` array-of-tables as ONE managed block
+    (#106 P6d1) — THE creature writer, the :func:`write_managed_blocks`
+    contract (every other byte preserved). Returns the .bak path, or None."""
+    return write_managed_blocks(
+        toml_path,
+        {"creature": lambda nl: format_creature_lines(creatures, nl)},
+        write_bak=write_bak)
+
+
 MATCH_HEADER = (
     "# Match config (#119 P2) -- written by level_lib.write_match; never",
     "# hand-edit. [[team]] row i is team i; units spawn in the level's",
@@ -442,6 +480,11 @@ def format_match_text(spec) -> str:
             f"env_profile = {_fmt_value(t.env_profile)}\n",
             f"controller = {_fmt_value(t.controller)}\n",
         ]
+    # #106 P6d1: the match's creatures, written only when there are some (a
+    # creature-free match file keeps its bytes).
+    for c in getattr(spec, "creatures", ()):
+        lines += ["\n", "[[creature]]\n"]
+        lines += [f"{k} = {_fmt_value(v)}\n" for k, v in _creature_row(c).items()]
     return "".join(lines)
 
 

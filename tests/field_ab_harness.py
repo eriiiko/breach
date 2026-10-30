@@ -47,6 +47,10 @@ from simulation.entities.serialize import (  # A4: entity presence carrier
     ENTITY_DIGEST_KEY, entity_carrier, require_entity_carrier,
 )
 from simulation.status import serialize_statuses  # P3: __unit_status__ payload
+from simulation.creature_system import (  # #106 P6d1: creature presence carrier
+    CREATURE_DIGEST_KEY, creature_carrier, diff_creature_records,
+    require_creature_carrier,
+)
 from simulation.unit import Unit
 
 SEED = 20260615
@@ -334,6 +338,11 @@ def capture_snapshot(sim, fields=SIM_FIELDS, capture_units=True):
     signals = digest_signals() if callable(digest_signals) else ()
     snap[ENTITY_DIGEST_KEY] = entity_carrier(ents, signals=signals)
     require_entity_carrier(ents, snap)   # the A4 strict presence rule
+    # #106 P6d1: the creature carrier -- ALWAYS written (n_creatures == 0 for
+    # a creature-free sim, so tick_digest's fold stays gated off).
+    creatures = getattr(sim, "_creature_system", None)
+    snap[CREATURE_DIGEST_KEY] = creature_carrier(creatures)
+    require_creature_carrier(creatures, snap)
     return snap
 
 
@@ -408,6 +417,27 @@ def _diff_entity_state(t, ea, eb):
     return out
 
 
+def _diff_creature_state(t, ca, cb):
+    """Locate a divergence between two creature carriers (#106 P6d1): per
+    creature (unit id), per field, the first (arm, node, axis) -- decoded by
+    ``creature_system.decode_record``, the serializer's twin. Returns
+    human-readable mismatch lines (empty == match)."""
+    if ca == cb:
+        return []
+    out = []
+    if ca["n_creatures"] != cb["n_creatures"]:
+        out.append(f"tick {t}: __creature__ n_creatures "
+                   f"{ca['n_creatures']} != {cb['n_creatures']}")
+    for ra, rb in zip(ca["records"], cb["records"]):
+        uid = int.from_bytes(ra[:8], "little", signed=True)
+        for line in diff_creature_records(ra, rb):
+            out.append(f"tick {t}: __creature__ unit {uid}: {line}")
+    if not out:
+        out.append(f"tick {t}: __creature__ carriers differ but no record "
+                   f"located -- serialization drift?")
+    return out
+
+
 def diff_trajectories(a, b, tol=0.0):
     """Per-field per-cell mismatches between two trajectories (empty list == match).
 
@@ -429,6 +459,9 @@ def diff_trajectories(a, b, tol=0.0):
                 continue
             if k == ENTITY_DIGEST_KEY:
                 diffs.extend(_diff_entity_state(t, sa[k], sb[k]))
+                continue
+            if k == CREATURE_DIGEST_KEY:
+                diffs.extend(_diff_creature_state(t, sa[k], sb[k]))
                 continue
             fa, fb = sa[k], sb[k]
             if fa.shape != fb.shape:
@@ -481,7 +514,8 @@ if __name__ == "__main__":
     b = capture_trajectory()
     assert_trajectories_match(a, b, tol=0.0)
     nfields = len(a[-1]) - sum(
-        k in a[-1] for k in (UNIT_DIGEST_KEY, ENTITY_DIGEST_KEY))
+        k in a[-1] for k in (UNIT_DIGEST_KEY, ENTITY_DIGEST_KEY,
+                             CREATURE_DIGEST_KEY))
     # S2a — make the integer WAVE determinism explicit: wave_p/wave_v/wave_source
     # are now int32 Q16.16 (the synced wave state). Assert the dtype + bit-identity
     # run-to-run (np.array_equal is exact on int32). This is the S2a P1 gate.

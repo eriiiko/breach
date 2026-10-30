@@ -427,8 +427,13 @@ def test_push_row_registered_in_coupling_table():
     rows = [(r.field, r.reduction, r.response) for r in COUPLING_TABLE]
     assert ("wave_p", "grad", apply_wave_push) in rows
     # table order: heat, blast, push, then the W3 gas rows (the chapter's
-    # row order — P0; the table GROWS, that is the point)
-    assert rows[2][2] is apply_wave_push
+    # row order — P0; the table GROWS, that is the point -- so the push row is
+    # located by what it does and checked to follow heat and blast, never
+    # pinned to an index: #106 P6d1 grew the table after it)
+    responses = [r[2] for r in rows]
+    from simulation.exchange import apply_environmental_damage
+    assert (responses.index(apply_wave_push) > responses.index(apply_blast_damage)
+            > responses.index(apply_environmental_damage))
 
 
 if __name__ == "__main__":

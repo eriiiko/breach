@@ -137,6 +137,12 @@ class PhysicsRecorder:
         # signal key and the .npz is byte-identical to pre-Arc-B.
         self.signal_snapshots = [None] * capacity
 
+        # #106 P6d1: per-tick serialized __creature__ section bytes
+        # (CREATURE_SECT_V1, the digest's own serializer), ring buffer style.
+        # Stays all-None for a creature-free sim, so dump() emits no creature
+        # key and the .npz is byte-identical to before P6d1.
+        self.creature_snapshots = [None] * capacity
+
         print(f"[recorder] Ring buffer: {capacity} slots, fields={self.fields}, "
               f"~{self._mem_mb():.0f} MB")
 
@@ -147,7 +153,8 @@ class PhysicsRecorder:
         total += self.tick_ids.nbytes + self.tick_times.nbytes
         return total / (1024 * 1024)
 
-    def record(self, gmap, tick, real_time, units, entities=None, signals=()):
+    def record(self, gmap, tick, real_time, units, entities=None, signals=(),
+               creatures=None):
         """Snapshot current state into ring buffer.
 
         ``entities`` (A4, additive): the sim's runtime entity list — Arc A
@@ -163,6 +170,11 @@ class PhysicsRecorder:
         ``serialize_entity_state`` is NOT extended to fold signals (that would
         change every door level's recorded bytes) — signals ride their own
         additive key.
+
+        ``creatures`` (#106 P6d1, additive): the sim's ``CreatureSystem``.
+        Presence-gated: with creature bodies, the tick's ``__creature__``
+        section bytes (``creature_system.serialize_record``, the ONE
+        serializer the digest hashes) are recorded; without, nothing.
         """
         i = self.index % self.capacity
         for name in self.fields:
@@ -222,6 +234,12 @@ class PhysicsRecorder:
             self.signal_snapshots[i] = serialize_signal_state(signals)
         else:
             self.signal_snapshots[i] = None
+
+        # #106 P6d1: __creature__ bytes -- additive + presence-gated.
+        if creatures is not None and creatures.bodies:
+            self.creature_snapshots[i] = creatures.section_bytes()
+        else:
+            self.creature_snapshots[i] = None
 
         self.index += 1
         self.count += 1
@@ -305,6 +323,17 @@ class PhysicsRecorder:
         if any(s is not None for s in sig_snaps):
             data['signal_state'] = np.array(
                 [s if s is not None else b"" for s in sig_snaps],
+                dtype=np.bytes_)
+
+        # #106 P6d1: __creature__ payload -- ADDITIVE + presence-gated, so a
+        # creature-free sim's dump carries exactly the pre-P6d1 key set. Every
+        # record ends in a newline byte (creature_system.RECORD_TERMINATOR), so the
+        # S-dtype's trailing-NUL stripping can never truncate a section.
+        cr_snaps = [self.creature_snapshots[i]
+                    for i in (range(n) if isinstance(slc, slice) else slc)]
+        if any(s is not None for s in cr_snaps):
+            data['creature_state'] = np.array(
+                [s if s is not None else b"" for s in cr_snaps],
                 dtype=np.bytes_)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

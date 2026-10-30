@@ -80,9 +80,13 @@ from simulation.combat import (
 # Execution positions are UNCHANGED (heat at step 9c, blast at the grenade
 # fuse-out below); the consolidated named EXCHANGE-READ slot is a later patch.
 from simulation.exchange import (  # noqa: F401 (apply_blast_damage: legacy re-export — the executor calls it now)
-    apply_blast_damage, apply_environmental_damage, apply_poison_dose,
-    apply_teargas_blind, apply_wave_push,
+    apply_blast_damage, apply_creature_wave_impulse, apply_environmental_damage,
+    apply_poison_dose, apply_teargas_blind, apply_wave_push,
 )
+# Creature bodies (#106 P6d1): the slot-5b runtime. `is_creature` is the ONE
+# creature key (species.creature is not None) for the position-writer routing.
+from simulation.creature_system import (CreatureSystem, is_creature,
+                                        spawn_creature_units)
 from simulation.events import (  # noqa: F401 (ExplosionEvent: legacy re-export — emitted by the executor now)
     DoorDestroyedEvent, ExplosionEvent, WallDestroyedEvent,
 )
@@ -346,6 +350,11 @@ class Simulation:
         # charge-free level builds an empty list (dormancy).
         self._timed_charges = build_timed_charges(self)
 
+        # Creature bodies (#106 P6d1): one CreatureBody per creature unit,
+        # built by spawn_creatures; empty (and slot 5b a dict check) on every
+        # creature-free sim -- no solver call, no __creature__ section.
+        self._creature_system = CreatureSystem()
+
         self.units: List = []
         self.projectiles: List = []
         # In-flight kinetic rounds (W2 unified march, mechanics/03 §2):
@@ -515,6 +524,17 @@ class Simulation:
         if spec is None:
             raise ValueError(f"level {self.level.name!r} has no match.toml")
         return spawn_match(self, spec)
+
+    def spawn_creatures(self, rows) -> list:
+        """Spawn creature units (#106 P6d1) -- THE one creature spawn:
+        ``rows`` are ``simulation.match.CreatureSpawn`` (a level's
+        ``[[creature]]`` rows, ``LevelData.creatures``, or a match's). Each
+        becomes a Unit named ``C-<slot>`` on its row's team (default
+        ``CREATURE_TEAM``) with the creature row's footprint, and its
+        ``CreatureBody`` (the limp rest pose at the row's heading). Refused
+        without the compiled arm chain solver, and for a row whose footprint
+        or rest pose is not on open tiles. Returns the units."""
+        return spawn_creature_units(self, rows)
 
     def hand_zombies_to_controller(self) -> None:
         """Give the horde to a match's zombie controller (#122): from now on
@@ -963,7 +983,10 @@ class Simulation:
             # AIM -> facing (synced state via the deterministic atan2 kit; a
             # zero vector leaves facing untouched).
             aim = getattr(u, "live_aim", None)
-            if aim is not None and (aim.dx_q != 0 or aim.dy_q != 0):
+            # #106: a creature's AIM is its hub's goal (slot 5b), never a
+            # facing write -- its facing is the body pose's.
+            if (aim is not None and (aim.dx_q != 0 or aim.dy_q != 0)
+                    and not is_creature(u)):
                 dx = _intents.dequantize(aim.dx_q)
                 dy = _intents.dequantize(aim.dy_q)
                 # World Y increases downward; facing is math-style (Y-up), so
@@ -1483,6 +1506,7 @@ class Simulation:
           3. Update player movement (read precomputed path)
           4. Process shooting (auto-fire on move, fire orders)
           5. Zombie AI
+         5b. Creature bodies (the arm chains; the pose -> the unit's anchor)
           6. Re-stamp obstacles (so physics sees the new unit positions)
           7. Physics step (atmosphere, smoke, fire)
           8. Door explosives at phase boundary or end of round
@@ -1568,6 +1592,12 @@ class Simulation:
         # 5. Zombie AI — its ONE driver: the conductor, or a match's zombie
         # controller through the ZOMBIE intent (#122, :meth:`drive_zombies`).
         self._run_zombie_slot()
+
+        # 5b. Creature bodies (#106 P6d1) — after every unit decision and the
+        # zombie law (a bite this tick is felt next tick), before the re-stamp
+        # so the stamp and the physics see the pose the arms moved the crown to.
+        # The ONE per-tick writer of a creature unit's anchor and facing.
+        self._creature_system.tick(self)
 
         # 6. Re-stamp obstacles.
         self.gmap.stamp_units(self.units)
@@ -1656,10 +1686,15 @@ class Simulation:
         # suppressing next tick (the step-2b P3 trigger-position semantics).
         if self.physics_runner is not None:
             apply_wave_push(self.units, self.gmap, self._tps)
+            # #106 P6d1, the creature row of the push (vetoable: deleting this
+            # line leaves a creature unpushed — an accepted gap): the same
+            # footprint gradient as a BODY impulse, integrated by the next 5b.
+            apply_creature_wave_impulse(self.units, self.gmap, self._tps,
+                                        self._creature_system)
 
         # 9c3. Gas coupling rows (mechanics/05 §1 gas[teargas] / gas[poison]
-        # — exchange.COUPLING_TABLE[3..4], W3). Read the post-physics gas
-        # planes at each living unit's footprint: teargas above threshold
+        # — exchange.COUPLING_TABLE[4..5], W3; [3] is the creature push row).
+        # Read the post-physics gas planes at each living unit's footprint: teargas above threshold
         # applies BLINDED (snap-cone fire from next tick — the step-2b
         # trigger-position semantics); poison above threshold emits one
         # POISON packet per tick through the mechanics/06 pipeline (zombies
@@ -1768,7 +1803,8 @@ class Simulation:
         if self.recorder is not None:
             self.recorder.record(self.gmap, self.tick, self.real_time,
                                  self.units, entities=self.entities,
-                                 signals=self._digest_signals())
+                                 signals=self._digest_signals(),
+                                 creatures=self._creature_system)
 
         # Clear the per-tick `heat` deposit — END OF TICK, AFTER every heat
         # consumer (engine/06 §1.3/§6 step 7). `heat` is a per-tick deposit
@@ -1898,6 +1934,8 @@ class Simulation:
         for u in self.units:
             if not u.alive or u.is_zombie:
                 continue
+            if is_creature(u):
+                continue    # #106: its arms move it (slot 5b), never a path
 
             # Direct-control branch (control-modularity P3, §3c): a unit with a
             # live MOVE_DIR intent this tick moves by velocity, footprint-
@@ -2000,9 +2038,11 @@ class Simulation:
         convert_marines_to_zombies(self.units)
 
         for u in self.units:
-            # Snap float position to nearest integer tile boundary.
-            u.x = float(round(u.x))
-            u.y = float(round(u.y))
+            # Snap float position to nearest integer tile boundary -- never a
+            # creature's (#106): its anchor is the body pose's, written by 5b.
+            if not is_creature(u):
+                u.x = float(round(u.x))
+                u.y = float(round(u.y))
             u.clear_orders()
             u.move_path = []
             u.last_fire_tick = -999

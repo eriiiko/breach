@@ -58,7 +58,8 @@ from simulation.factions import (  # noqa: E402,F401
 # Spawn rooms + the match config (#119 P2): import-light (stdlib + factions);
 # the match door's table checks import their tables lazily.
 from simulation.match import (  # noqa: E402
-    FORMATION_FOOTPRINT, MatchSpec, SpawnRoom, parse_match, parse_spawn_rooms,
+    FORMATION_FOOTPRINT, MatchSpec, SpawnRoom, parse_creature_spawns,
+    parse_match, parse_spawn_rooms,
     placement_cells,
 )
 
@@ -1058,6 +1059,13 @@ class LevelData:
     # (only the headless runner reads them, at base resolution).
     spawn_rooms: list = field(default_factory=list)  # list[SpawnRoom]
     match: Optional[MatchSpec] = None
+    # ---- creatures (#106 P6d1) ---------------------------------------------
+    # The level's [[creature]] rows (simulation.match.CreatureSpawn), written
+    # by level_lib.write_creatures, validated here (schema + the grid: the
+    # footprint on open floor inside the map, the limp rest pose's arms on
+    # open floor). Spawned by Simulation.spawn_creatures on the game's level
+    # path (main.py); a match spawns its match.toml's list instead.
+    creatures: list = field(default_factory=list)  # list[CreatureSpawn]
 
     @property
     def height(self) -> int:
@@ -1244,6 +1252,13 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
     # ---- [[spawn_room]] + match.toml (#119 P2) ----------------------------
     spawn_rooms = _parse_spawn_rooms(raw, toml_path, tilemap, version)
     match = _parse_match_file(base, spawn_rooms)
+    # ---- [[creature]] (#106 P6d1) -----------------------------------------
+    creatures = parse_creature_spawns(raw.get("creature"), str(toml_path))
+    _check_creature_cells(creatures, tilemap, version, tile_size_m,
+                          f"{toml_path}")
+    if match is not None:
+        _check_creature_cells(match.creatures, tilemap, version, tile_size_m,
+                              f"{base / MATCH_FILENAME}")
 
     # ---- [[light]] entities (engine/15 §2.2, P4) -------------------------
     lights_raw = raw.get("light", [])
@@ -1322,7 +1337,25 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
         ambient=ambient,
         spawn_rooms=spawn_rooms,
         match=match,
+        creatures=creatures,
     )
+
+
+def _check_creature_cells(rows, tilemap: np.ndarray, version: str,
+                          tile_size_m: float, where: str) -> None:
+    """The grid door of ``[[creature]]`` rows (#106 P6d1): each footprint
+    inside the map on open interior floor (air, not vacuum), and the limp
+    rest pose's every arm node on open floor too
+    (``creature_system.check_creature_spawn``) -- so a level can never spawn
+    a creature into a wall."""
+    if not rows:
+        return
+    from simulation.creature_system import check_creature_spawn  # lazy
+    mat, vac = materials_from_tilemap(tilemap, version)
+    open_floor = (mat == 0) & ~vac
+    for i, r in enumerate(rows):
+        check_creature_spawn(r, open_floor, float(tile_size_m),
+                             f"[[creature]] #{i} ({r.species}) in {where}")
 
 
 def _parse_spawn_rooms(raw: dict, toml_path, tilemap: np.ndarray,

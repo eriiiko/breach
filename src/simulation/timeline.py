@@ -481,8 +481,11 @@ def drive_units(sim) -> None:
     # it, which is what makes the breach opening read right.
     charges.tick(sim)
 
+    # #106 P6d1: a creature unit is driven by its arms (Simulation slot 5b),
+    # never by a compiled timeline -- both passes skip it.
+    from simulation.creature_system import is_creature
     for u in sim.units:
-        if not u.is_zombie and u.alive:
+        if not u.is_zombie and u.alive and not is_creature(u):
             _advance_movement(sim, u)
     # Ambush barriers are evaluated ONCE, between the passes: every member's
     # readiness is read from the same post-movement world, so a group whose
@@ -490,7 +493,7 @@ def drive_units(sim) -> None:
     # and not in an order that depends on where a unit sits in the roster.
     engagement.update_ambush(sim)
     for u in sim.units:
-        if not u.is_zombie and u.alive:
+        if not u.is_zombie and u.alive and not is_creature(u):
             _resolve_action(sim, u)
 
 

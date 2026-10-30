@@ -27,6 +27,11 @@ the ``__entity__``/``__signals__`` sections the same way — absence-transparent
 (folded ONLY when entities are present, via the snapshot's ``__entity__``
 presence carrier), section-local versioned (ENTITY_SECT_V1 / SIGNAL_SECT_V1),
 serialized by the ONE canonical ``simulation.entities.serialize`` module.
+#106 P6d1 adds the ``__creature__`` section the same way, after them: its own
+ALWAYS-WRITTEN carrier (``n_creatures``; a creature is not a level entity, so
+it cannot ride the entity carrier), folded only when ``n_creatures > 0``,
+section-local versioned (CREATURE_SECT_V1), serialized by the ONE
+``simulation.creature_system.serialize_record``.
 
 Endianness: x86 and CUDA are both little-endian, so the raw int bytes compare
 directly. A big-endian dtype is REFUSED so a silent byteorder mismatch can never
@@ -193,6 +198,15 @@ def tick_digest(snapshot: dict) -> str:
     DIGEST_SPEC_VERSION (they carry their own version in the hashed
     ENTITY_SECT_V1 preamble); the field-plane spec bumps it independently
     (v2 added ``ignition_armed``).
+
+    #106 P6d1: the ``__creature__`` section folds AFTER the entity and signal
+    sections, under the same absence rule -- only when the snapshot's creature
+    carrier (``creature_system.CREATURE_DIGEST_KEY``, ALWAYS written by capture
+    paths) says ``n_creatures > 0``. A creature-free snapshot hashes exactly
+    the bytes it did before P6d1 (golden and pins unmoved); the strict
+    presence rule is ``creature_system.require_creature_carrier``. The section
+    carries its own version (``CREATURE_SECT_V1``) and does not move
+    DIGEST_SPEC_VERSION.
     """
     from field_ab_harness import UNIT_DIGEST_KEY  # local: avoid import cycle
     from simulation.entities.serialize import (   # local: path set by ^
@@ -215,6 +229,13 @@ def tick_digest(snapshot: dict) -> str:
         h.update(eh.encode("ascii"))
         h.update(b"|__signals__|")
         h.update(sh.encode("ascii"))
+    from simulation.creature_system import CREATURE_DIGEST_KEY, section_bytes
+    creatures = snapshot.get(CREATURE_DIGEST_KEY)
+    if creatures is not None and creatures["n_creatures"] > 0:
+        ch = hashlib.blake2b(section_bytes(creatures),
+                             digest_size=32).hexdigest()
+        h.update(b"|__creature__|")
+        h.update(ch.encode("ascii"))
     return h.hexdigest()
 
 
