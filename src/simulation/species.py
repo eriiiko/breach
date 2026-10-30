@@ -80,6 +80,13 @@ class SpeciesDef:
     mitigation:          MitigationProfile  = field(default_factory=lambda: NEUTRAL_MITIGATION)
     can_become_zombie:   bool = True
     nn_intelligence_tier: int = 0           # data-only; NN tier logic deferred
+    # The [creatures.*] row this species' body runs on (#106): None for a
+    # plain unit (a human), a row name for a creature. Every creature branch
+    # in code keys on `species.creature is not None` -- data, never a name.
+    creature:            str | None = None
+    # Whether Unit.__init__ binds a [loadouts.*] row (#106). False = no kit
+    # at all (weapon_id "", no grenades), the zombie path: slot 4 skips it.
+    armed:               bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -234,8 +241,60 @@ ZOMBIE_MITIGATION = build_mitigation(resist_mult={
 ZOMBIE_STABILITY = unit_fixed.dequantize_scalar(unit_fixed.quantize_scalar(
     float(getattr(CFG.zombie, "stability", 0.9))))
 
+# ---------------------------------------------------------------------------
+# Creature species (#106 P6a): a species joined to a [creatures.*] row
+# ---------------------------------------------------------------------------
+def _creature_stat_distribution(body_mass_kg: float) -> StatDistribution:
+    """The human distribution's SHAPE (means, spreads, correlations) with the
+    creature row's body mass as the mass mean and a tight spread (1 %, clamps
+    +/-10 %). The row's ``body.body_mass_kg`` is THE one mass (design section
+    3); the stat vector's mass only mirrors it. Every other stat is the
+    human placeholder until a creature stats session."""
+    h = _human_stat_distribution()
+    i = GENERATED_STAT_NAMES.index("mass")
+    mean, stddev = h.mean.copy(), h.stddev.copy()
+    lo, hi = h.clamp_min.copy(), h.clamp_max.copy()
+    mean[i] = body_mass_kg
+    stddev[i] = 0.01 * body_mass_kg
+    lo[i] = 0.9 * body_mass_kg
+    hi[i] = 1.1 * body_mass_kg
+    return StatDistribution(mean=mean, stddev=stddev,
+                            correlation=h.correlation.copy(),
+                            clamp_min=lo, clamp_max=hi)
+
+
+def _square_offsets(footprint: int) -> tuple:
+    """A square footprint of side ``footprint`` tiles, anchored top-left."""
+    return tuple((dx, dy) for dy in range(footprint) for dx in range(footprint))
+
+
+def _creature_species(species_id: SpeciesId, name: str,
+                      creature: str) -> SpeciesDef:
+    """A species whose body is the ``[creatures.<creature>]`` row: its mass,
+    footprint and rules (``can_become_zombie``, ``armed``) are READ from the
+    row, never restated here."""
+    from simulation.creatures import get_creature
+    row = get_creature(creature)
+    return SpeciesDef(
+        id=species_id,
+        name=name,
+        stat_dist=_creature_stat_distribution(row.body.body_mass_kg),
+        default_offsets=_square_offsets(row.body.footprint),
+        # TODO(#107): water breathing / the dry-corridor question is not
+        # modelled yet -- the human baseline stands in.
+        environment=HUMAN_ENVIRONMENT,
+        mitigation=NEUTRAL_MITIGATION,
+        can_become_zombie=row.rules.can_become_zombie,
+        creature=creature,
+        armed=row.rules.armed,
+    )
+
+
+OCTOPUS = _creature_species("octopus", "Octopus", creature="octopus")
+
 # Registry: all known species indexed by SpeciesId string.
-SPECIES_REGISTRY: dict[str, SpeciesDef] = {HUMAN.id: HUMAN}
+SPECIES_REGISTRY: dict[str, SpeciesDef] = {HUMAN.id: HUMAN,
+                                           OCTOPUS.id: OCTOPUS}
 
 
 def get_species(species_id: SpeciesId) -> SpeciesDef:
@@ -246,6 +305,6 @@ def get_species(species_id: SpeciesId) -> SpeciesDef:
 __all__ = [
     "SpeciesId", "N_GENERATED_STATS", "GENERATED_STAT_NAMES",
     "StatDistribution", "SpeciesDef",
-    "HUMAN", "ZOMBIE_MITIGATION", "ZOMBIE_STABILITY",
+    "HUMAN", "OCTOPUS", "ZOMBIE_MITIGATION", "ZOMBIE_STABILITY",
     "SPECIES_REGISTRY", "get_species",
 ]
