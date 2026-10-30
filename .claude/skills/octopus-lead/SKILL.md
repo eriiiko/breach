@@ -186,3 +186,22 @@ the lead so you decide all these things." Concretely:
   is 10x weaker relatively) -- #118 should give dead arms their own pose as
   the passive target; (4) SIZES draws the arm ~1.9x thicker than the scaled
   real arm and the body 510 vs 347 kg -- Erik's ruling before P6a.
+- 2026-10-30 (P6a, worktree agent, Opus) -- the creature row and its door:
+  `[creatures.octopus]` in config.toml (row_mid.toml's values, provenance
+  condensed; `footprint = 3` added, `solver.ticks_per_second` dropped -- the
+  clock has one owner), `creatures.py` (CreatureDef, the schema IS the
+  dataclasses' field metadata, so an unknown key is refused for free),
+  `creature_fixed.py` (Q24 chain currency, Q16 mass, Q32 inverse mass, Q16
+  stiffness, Q0 rate -- 1/dt^2 = 147456 exact -- and ten named headroom
+  bounds), the octopus species reading mass / footprint / rules from the row,
+  `armed` and `can_become_zombie` honoured, `CREATURE_TEAM = 254`. 56 property
+  tests; full suite 4083 passed / 33 skipped / 5 xfailed in 5 min 52 s,
+  golden untouched. Learned: (1) under the law k W is SIZE-INVARIANT (k_dist
+  L^3 x w L^-3, k_bend L^5 x W L^-5), so the stiffness bounds refuse typos,
+  not sizes; sizes are bound by the tip mass (L^3), the bend's W (L^-5), the
+  body's inverse-mass precision (L^-3) and the +/-128 m range -- the accepted
+  window is arms 0.36-12.7 m, and the REAL 0.24 m animal is refused (W_fit;
+  its tip is 0.75 Q16 counts); (2) the wave travel times want SUBSTEP
+  quantization beside ticks (the activation clock runs in substeps); (3)
+  `bend_damp_s` is a 1 ms time constant -- quantizing it to ticks would make it
+  41 ms; it enters as gamma in Q16. Nothing failed that needed a second run.
