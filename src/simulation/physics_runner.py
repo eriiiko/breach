@@ -417,6 +417,9 @@ class PhysicsRunner:
         # light planes hold a new field (a light-carrying tick or a relight).
         self.light_cones = None
         self.light_sky = None
+        # graphics G3 F4b: the THIRD render-state input -- the fire's light
+        # flicker, (n, 3) int64 emission-multiplier rows (set_light_emit_mult)
+        self.light_emit_mult = None
         self.light_serial = 0
         # ray-engine-v2 P6d (design v3 §2.4; brief decision 1): the light
         # channels' TRANSPORT, permanently a config setting. "shear for heat,
@@ -895,6 +898,11 @@ class PhysicsRunner:
         # vent / wipe / sink / decay). Both the normal and the resident tick
         # pass through this line.
         self.eos.reset_trace_sat_books(int(gmap.gas.shape[0]))
+        # #73 item 2: wire the map's topology seams (destroy_wall / seal /
+        # unseal) to the solid books they move -- TemperatureSolver's
+        # e_solid_seam_sum term + its snapshot. Every tick, both paths: the
+        # map can be rebuilt (F5) under a living runner.
+        gmap._solid_books_sink = self.engine.temperature.book_solid_seam
         if _RESIDENCY_ENABLED and getattr(self.bp, "HAS_CUDA", False):
             return self._step_resident(gmap, sim_time, tick=tick)
 
@@ -1082,6 +1090,9 @@ class PhysicsRunner:
             # set_light_sky; None = none / the dark ring), read only while
             # light is requested.
             light_cones=self.light_cones, light_sky=self.light_sky,
+            # G3 F4b: the fire's light flicker (set_light_emit_mult; None =
+            # none), read only while light is requested -- light only, no heat.
+            light_emit_mult=self.light_emit_mult,
             k_leak_q=self.k_leak_q,
             # thermal v2 R3: the level a VACUUM cell radiates against; the
             # engine selects it per cell from `is_vacuum` (derive_ambient).
@@ -1540,6 +1551,9 @@ class PhysicsRunner:
             # set_light_sky; None = none / the dark ring), read only while
             # light is requested.
             light_cones=self.light_cones, light_sky=self.light_sky,
+            # G3 F4b: the fire's light flicker (set_light_emit_mult; None =
+            # none), read only while light is requested -- light only, no heat.
+            light_emit_mult=self.light_emit_mult,
             k_leak_q=self.k_leak_q,
             rad_amb_vacuum_q=self.rad_amb_vacuum_q,   # thermal v2 R3
             is_ambient=amb[0],
@@ -1606,6 +1620,22 @@ class PhysicsRunner:
             raise ValueError("set_light_sky: the sky is (16, 3) -- one RGB per ordinate")
         self.light_sky = a
 
+    def set_light_emit_mult(self, rows):
+        """graphics G3 F4b: THE FIRE'S LIGHT FLICKER the next light computation
+        reads -- an int64 (n, 3) array of rows (y, x, mult_q), a Q16 factor on
+        that cell's THERMAL light emission (renderer/frame_lights.py
+        emit_mult_rows, the door) -- or None / an empty array for none (the
+        pre-F4b sweep exactly). Held as given; the sweep's own door refuses an
+        illegal row. Render-state input like the cones: heat never reads it and
+        no digest sees it (light_q is not digested)."""
+        if rows is None or len(rows) == 0:
+            self.light_emit_mult = None
+            return
+        a = np.ascontiguousarray(np.asarray(rows), dtype=np.int64)
+        if a.ndim != 2 or a.shape[1] != 3:
+            raise ValueError("set_light_emit_mult: rows must be (n, 3) (y, x, mult_q)")
+        self.light_emit_mult = a
+
     def relight(self, gmap):
         """Recompute the light field on the CURRENT state without a tick
         (PhysicsEngine.relight): the paused renderer's path, so the cursor lamp
@@ -1622,7 +1652,8 @@ class PhysicsRunner:
             gmap.light_q, gmap.light_flux_q, gmap.light_glow,
             gas_light_absorb_q16=gmap.gases.light_absorb_q16,
             gas_light_glow_q16=gmap.gases.light_glow_q16,
-            light_cones=self.light_cones, light_sky=self.light_sky)
+            light_cones=self.light_cones, light_sky=self.light_sky,
+            light_emit_mult=self.light_emit_mult)        # G3 F4b
         self.light_serial += 1
 
     # ------------------------------------------------------------------

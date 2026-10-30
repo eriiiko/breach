@@ -19,6 +19,15 @@ Run:
     C:/Users/steen/anaconda3/python.exe tools/fire_smoke_probe.py
     C:/Users/steen/anaconda3/python.exe tools/fire_smoke_probe.py --seconds 120 --no-vents
     C:/Users/steen/anaconda3/python.exe tools/fire_smoke_probe.py --tile 25,22 --row 22
+    C:/Users/steen/anaconda3/python.exe tools/fire_smoke_probe.py --seconds 12 --dump tests/data/fire_smoke_studio_flame_inputs.npz --dump-at 4,8,12
+
+``--dump`` (graphics arc G3 F0b, docs/g3_fire_design_2026-10-23.md §13.2)
+also saves, at the ``--dump-at`` seconds, exactly what the flame VFX reads per
+tick: fire intensity I, the game temperature (dequantized ΔT), the TAMED wind
+(``renderer.gas_detail.tame_wind`` with the relief's dials -- the one wind
+product, tiles/tick) and the solid / thermal_solid / flammable / vacuum /
+ambient masks, cropped to the level's non-space box, into one compressed .npz.
+The flame's numpy spec twin (``renderer/fire_vfx_ref.py``) is driven by it.
 """
 from __future__ import annotations
 
@@ -59,6 +68,10 @@ def main() -> None:
                     help="drop every duct/vent entity (isolate the burn)")
     ap.add_argument("--units", action="store_true",
                     help="spawn the level's squad and report its HP")
+    ap.add_argument("--dump", default=None,
+                    help="save the flame VFX's per-tick inputs to this .npz")
+    ap.add_argument("--dump-at", default="4,8,12",
+                    help="seconds at which --dump captures (comma list)")
     a = ap.parse_args()
 
     tx, ty = (int(v) for v in a.tile.split(","))
@@ -87,7 +100,12 @@ def main() -> None:
           ("  squad HP" if a.units else ""))
     n_ticks = int(a.seconds * tps)
     step = max(1, int(a.every * tps))
+    dump_ticks = ({int(round(float(v) * tps)) for v in a.dump_at.split(",")}
+                  if a.dump else set())
+    dumps = []
     for t in range(n_ticks + 1):
+        if t in dump_ticks:
+            dumps.append((t, _flame_inputs(g, tps)))
         if t % step == 0:
             T = np.asarray(g.temperature)
             gas_win = np.asarray(g.material)[y0:y1, x0:x1] == MAT_AIR
@@ -112,6 +130,48 @@ def main() -> None:
     print("  x     " + " ".join(f"{x:6d}" for x in xs))
     print("  smoke " + " ".join(f"{sm[row, x]:6.4f}" for x in xs))
     print("  wind  " + " ".join(f"{float(wx[row, x]):6.2f}" for x in xs) + "  (m/s, +east)")
+    if a.dump:
+        _save_dump(a.dump, a.level, tps, g, dumps)
+
+
+def _flame_inputs(g, tps: int) -> dict:
+    """One tick of what the flame VFX reads, dequantized at the read (the
+    render convention; nothing is written back)."""
+    from renderer.gas_detail import tame_wind, WIND_V_REF, WIND_V_SENS
+    tamed = tame_wind(g.wind_x, g.wind_y, tile_size_m=g.tile_size_m,
+                      ticks_per_second=float(tps),
+                      v_ref=WIND_V_REF, v_sens=WIND_V_SENS)
+    return {
+        "fire": np.asarray(dequantize_fire(np.asarray(g.fire)), np.float32),
+        "t_game": np.asarray(dequantize_q16(np.asarray(g.temperature)),
+                             np.float32),
+        "wind_tamed": np.asarray(tamed, np.float32),
+    }
+
+
+def _save_dump(path: str, level: str, tps: int, g, dumps: list) -> None:
+    """Crop to the box of non-space tiles (the hull and what it holds) and
+    save compressed. Masks are static in this level (nothing breaks)."""
+    vac = np.asarray(g.is_vacuum, bool)
+    ys, xs = np.nonzero(~vac)
+    y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
+    crop = (slice(y0, y1), slice(x0, x1))
+    out = {
+        "level": np.array(level), "tps": np.array(tps),
+        "tile_size_m": np.array(float(g.tile_size_m)),
+        "origin_xy": np.array([x0, y0]),
+        "ticks": np.array([t for t, _ in dumps]),
+        "solid": np.asarray(g.solid, bool)[crop],
+        "thermal_solid": np.asarray(g.thermal_solid, bool)[crop],
+        "flammable": np.asarray(g.flammable, bool)[crop],
+        "is_vacuum": vac[crop],
+        "is_ambient": np.asarray(g.is_ambient, bool)[crop],
+    }
+    for key in ("fire", "t_game", "wind_tamed"):
+        out[key] = np.stack([d[key][crop] for _, d in dumps])
+    np.savez_compressed(path, **out)
+    print(f"\nflame inputs at ticks {list(out['ticks'])} -> {path} "
+          f"(crop x {x0}:{x1}, y {y0}:{y1})")
 
 
 if __name__ == "__main__":

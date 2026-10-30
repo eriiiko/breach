@@ -24,6 +24,7 @@ import math
 
 from config import CFG
 from simulation.damage import KINETIC, DamagePacket, apply_packet
+from simulation.factions import ZOMBIE_TEAM
 from simulation.movement import FootprintSamples, default_speed
 from simulation.status import composed_flags
 
@@ -37,7 +38,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Per-tick AI step
 # ---------------------------------------------------------------------------
-def update_zombies_tick(gmap, units, tick):
+def update_zombies_tick(gmap, units, tick, events=None):
     """Run one tick of zombie AI for every active zombie on the map.
 
     Three sequential passes:
@@ -50,13 +51,19 @@ def update_zombies_tick(gmap, units, tick):
          melee if adjacent (with cooldown), otherwise A* toward target
          at ``z.speed_ticks_per_tile`` cadence. Repath every 5 steps.
 
-    Mutates unit HP / alive / killed_by_zombie / zombie_* fields.
+    Mutates unit HP / alive / killed_by_zombie / zombie_* fields. ``events``
+    (the sim's ``tick_events``; #122) receives each bite's
+    :class:`UnitHitEvent` and, on a kill, :class:`UnitKilledEvent`, both with
+    source ``"melee"`` -- credited kills, like a bullet's. ``None`` emits
+    nothing (the pre-#122 shape, kept for direct callers).
     """
-    players = [u for u in units if u.team == 0 and u.alive]
+    # Prey = every living non-zombie, whatever its team (#119); the horde is
+    # is_zombie — never a team literal.
+    players = [u for u in units if not u.is_zombie and u.alive]
     if not players:
         return
 
-    zombies = [u for u in units if u.team == 1 and u.alive]
+    zombies = [u for u in units if u.is_zombie and u.alive]
 
     # ---- 1. Trigger detection (LOS + radius) ----
     for z in zombies:
@@ -132,15 +139,16 @@ def update_zombies_tick(gmap, units, tick):
                 # KINETIC packet through the pipeline (mechanics/06 §2):
                 # neutral mitigation passes the int melee_damage through
                 # exactly, then the same Q2-lift quantize -> hp chain as
-                # before. This site has NO events list (update_zombies_tick
-                # never had one) so nothing is emitted — and the kill keeps
-                # melee's unique conversion semantics (killed_by_zombie=True;
-                # the ONLY converting death, mechanics/06 §6).
+                # before. The hit and the kill ride the tick's events with
+                # source "melee" (#122: credited zombie kills; events change
+                # no sim state) — and the kill keeps melee's unique
+                # conversion semantics (killed_by_zombie=True; the ONLY
+                # converting death, mechanics/06 §6).
                 apply_packet(nearest,
                              DamagePacket(amount=CFG.zombie.melee_damage,
                                           dtype=KINETIC,
-                                          source_id=getattr(z, "id", -1)),
-                             events=None, source="melee",
+                                          attacker_id=getattr(z, "id", -1)),
+                             events=events, source="melee",
                              mark_killed_by_zombie=True)
             continue
 
@@ -206,8 +214,10 @@ def convert_marines_to_zombies(units):
     Resets the per-unit conversion flag after.
     """
     for u in units:
-        if u.team == 0 and not u.alive and u.killed_by_zombie:
-            u.team = 1
+        if not u.is_zombie and not u.alive and u.killed_by_zombie:
+            # Joins the horde's team, so it turns on its old squad (#119);
+            # its roster slot stays in the old team's roster.
+            u.team = ZOMBIE_TEAM
             u.is_zombie = True
             u.alive = True
             u.current_hp = float(CFG.zombie.hp)

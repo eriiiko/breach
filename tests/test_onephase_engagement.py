@@ -19,6 +19,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 
 from config import CFG  # noqa: E402
 from level_loader import LevelData  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import engagement as E  # noqa: E402
 from simulation import orders as O  # noqa: E402
 from simulation.ruleset import OnePhaseWEGO  # noqa: E402
@@ -56,7 +57,7 @@ def _marine(sim, x, y, name="m", facing=EAST):
 
 
 def _zombie(sim, x, y, name="z", hp=10_000):
-    u = Unit(name, x=x, y=y, team=1)
+    u = Unit(name, x=x, y=y, team=ZOMBIE_TEAM)
     sim.add_unit(u)
     u.current_hp = hp
     u.zombie_activated = False
@@ -427,12 +428,12 @@ def test_being_shot_records_the_shooter():
 
 
 def test_environmental_damage_is_not_an_attacker():
-    """A source_id of -1 (heat, an unattributed blast) must not become
+    """An attacker_id of -1 (heat, an unattributed blast) must not become
     somebody to return fire at."""
     from simulation.damage import DamagePacket, KINETIC, apply_packet
     sim = _sim()
     m = _marine(sim, 20.0, 24.0)
-    apply_packet(m, DamagePacket(amount=1, dtype=KINETIC, source_id=-1),
+    apply_packet(m, DamagePacket(amount=1, dtype=KINETIC, attacker_id=-1),
                  None, source="heat")
     assert m.recent_attackers == {}
 

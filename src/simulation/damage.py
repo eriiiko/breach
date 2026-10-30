@@ -4,7 +4,7 @@ Every damage source — coupling responses (heat, blast), bullets, melee, and
 the future DoT statuses — emits :class:`DamagePacket`\\ s; ONE pipeline owns
 everything after::
 
-    DamagePacket(amount, dtype, source_id)
+    DamagePacket(amount, dtype, attacker_id)      + its cause (#123)
        │
        ▼ mitigation   amount' = max(0, amount − max(0, armor[dtype] − ap))
        │                        × resist_mult[dtype]
@@ -39,7 +39,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 from simulation import unit_fixed
-from simulation.events import UnitHitEvent, UnitKilledEvent
+from simulation.events import (UnitHitEvent, UnitKilledEvent, NO_ATTACKER,
+                               attacker_value, cause_value)
 
 
 # ---------------------------------------------------------------------------
@@ -142,18 +143,96 @@ class DamagePacket:
                     door-3 chains use (int amounts pass through exactly; the
                     integer ``amount_q16`` form is a later patch).
     ``dtype``     — damage type (KINETIC … PSY above).
-    ``source_id`` — causing entity's unit id (shooter, melee attacker), or
-                    ``None`` for environmental sources (heat, blast field).
-                    Carried for future attribution (kill credit, AI blame);
-                    the renderer-facing event ``source`` STRING is a separate
-                    vocabulary passed to :func:`apply_packet`.
+    ``attacker_id`` — the unit CREDITED with the hit (#123): the shooter,
+                    the striker, the biting zombie, the thrower / firer /
+                    planter of a payload, the sprayer whose jet was on the
+                    tile this tick, a status's applier — or ``NO_ATTACKER``
+                    (-1, also ``None``) for the environment. It rides the
+                    hit / kill events; the CAUSE (``events.Cause``) is passed
+                    to :func:`apply_packet` as ``source``.
     ``ap``        — armor penetration, subtracted from flat armor before
                     mitigation (mechanics/06 §3). 0 for every shipped source.
+    ``indirect``  — True when the credit came THROUGH THE WORLD (a payload's
+                    blast, a jet's or a splash's heat or gas this tick —
+                    :class:`TickCredit`), not a strike aimed at this unit.
+                    Credit only: the events carry the attacker either way;
+                    the idle stance's ``recent_attackers`` list ignores an
+                    indirect hit, exactly as it ignored those (then
+                    unattributed) packets before #123 — no behaviour moved.
     """
-    amount:    float
-    dtype:     int
-    source_id: Optional[int] = None
-    ap:        float = 0
+    amount:      float
+    dtype:       int
+    attacker_id: Optional[int] = NO_ATTACKER
+    ap:          float = 0
+    indirect:    bool = False
+
+
+# ---------------------------------------------------------------------------
+# Indirect credit (#123): who put THIS TICK's heat / gas deposit on a tile.
+# ---------------------------------------------------------------------------
+#: Channel key of the ``heat`` ingress buffer in a :class:`TickCredit`; a gas
+#: deposit is keyed by its ``gmap.gas`` slice id (an int).
+CREDIT_HEAT = "heat"
+
+
+class TickCredit:
+    """The owners of the per-tick world deposits a unit can be hurt by (#123).
+
+    The MINIMAL honest mechanism for environmental credit: a deposit site
+    that knows its owner (a flame jet's sprayer, a payload's thrower / firer
+    / planter) CLAIMS the tiles its ``heat`` or gas edit covers, and the
+    exchange rows (``apply_environmental_damage``, ``apply_poison_dose``)
+    credit a hit to the claimant of the footprint tile that hurt the unit —
+    only where the hurt came from that deposit's own plane (the ``heat``
+    buffer, not the radiation sensor).
+
+    It is NOT a provenance plane: no per-tile owner survives the tick. The
+    store is cleared once per tick together with the ``heat`` buffer it
+    describes (``Simulation.step``'s end-of-tick clear), so a fire the jet
+    lit, a lingering gas cloud, or a hot room after the splash is credited
+    to the ENVIRONMENT — the accepted gap (#123), since the fire / gas
+    planes carry no per-tile provenance and one is not added for this.
+
+    A plain dict, never digested (the ``gmap.render_dirty`` precedent); its
+    effect is — the credited ``attacker_id`` rides the hashed hit events.
+    Deterministic: claims arrive in the sim's fixed order and the FIRST
+    claimant of a (channel, tile) keeps it this tick.
+    """
+
+    __slots__ = ("_owner",)
+
+    def __init__(self):
+        self._owner = {}
+
+    def claim(self, channel, tiles, attacker_id) -> None:
+        """Claim ``tiles`` (``(y, x)`` pairs) on ``channel`` for
+        ``attacker_id``; a no-op for the environment (-1 / None)."""
+        a = attacker_value(attacker_id)
+        if a == NO_ATTACKER:
+            return
+        own = self._owner
+        for (y, x) in tiles:
+            own.setdefault((channel, int(y), int(x)), a)
+
+    def attacker_at(self, channel, y, x) -> int:
+        """The claimant of ``(y, x)`` on ``channel`` this tick, else -1."""
+        return self._owner.get((channel, int(y), int(x)), NO_ATTACKER)
+
+    def clear(self) -> None:
+        self._owner.clear()
+
+    def __len__(self) -> int:
+        return len(self._owner)
+
+
+def tick_credit(gmap) -> TickCredit:
+    """``gmap``'s :class:`TickCredit` (created on first use, so a stand-in
+    map in a test needs nothing)."""
+    tc = getattr(gmap, "damage_credit", None)
+    if tc is None:
+        tc = TickCredit()
+        gmap.damage_credit = tc
+    return tc
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +281,7 @@ def mitigation_for(unit) -> MitigationProfile:
     decision, species.py) — so the zombie profile is selected by state at
     damage time, on exactly the predicate the dissolved ``fire_damage_
     multiplier`` special case used (``u.is_zombie``): construction with
-    ``team=1``, end-of-round conversion, and direct flag flips all resolve
+    ``team=ZOMBIE_TEAM``, conversion, and direct flag flips all resolve
     identically to the old inline branch. When zombification becomes a
     status (mechanics/06 §4) this collapses into status multiplier
     composition. Non-zombies read the species profile pointer stamped on
@@ -229,17 +308,23 @@ def apply_packet(unit, packet: DamagePacket, events=None, *,
        (pre-quantize, inside the float64 chain);
     2. ``unit_fixed.quantize_hp_delta`` — the Q2-lift snap; the APPLIED value;
     3. ``unit.current_hp -= applied``;
-    4. ``events``: :class:`UnitHitEvent` with the applied damage + ``source``
-       (the renderer vocabulary: "heat" / "explosion" / "bullet" / "melee");
-       ``events=None`` emits nothing (the melee site's shipped shape);
+    4. ``events``: :class:`UnitHitEvent` with the applied damage, the cause
+       ``source`` and the packet's ``attacker_id``; ``events=None`` emits
+       nothing (since #122 the melee site passes the tick's events too);
     5. life transition: ``hp <= 0`` → ``alive = False``; then
        ``mark_killed_by_zombie`` sets the conversion flag (melee kills ONLY —
        heat / blast / bullet deaths never convert); then
-       :class:`UnitKilledEvent` (``killed_by = source``).
+       :class:`UnitKilledEvent` (``killed_by = source``, the same attacker).
+
+    THE PACKET DOOR for credit (#123): ``source`` must be a
+    :class:`simulation.events.Cause` (member or its string) — anything else
+    raises ``ValueError`` BEFORE the unit is touched.
 
     Callers gate on ``unit.alive`` before applying, exactly as the shipped
     sites do. Returns the applied (post-quantize) delta.
     """
+    source = cause_value(source)                  # the door: refuse first
+    attacker = attacker_value(getattr(packet, "attacker_id", NO_ATTACKER))
     amount = mitigate(packet.amount, packet.dtype, mitigation_for(unit),
                       ap=packet.ap)
     dmg = unit_fixed.quantize_hp_delta(amount)
@@ -249,30 +334,31 @@ def apply_packet(unit, packet: DamagePacket, events=None, *,
     # but does not free-fire at everything it sees", so it needs to know who
     # attacked it and when. Recorded here because this is the ONE place every
     # damage source converges. Attribution only — no behaviour, no events, no
-    # digest surface — so the shipped rulesets are unaffected; a source_id of
+    # digest surface — so the shipped rulesets are unaffected; an attacker of
     # -1 (environment: heat, blast with no shooter) is not an attacker.
     # Deliberately UNAGED: the list is cleared at the round boundary, so it
     # means "who has shot at me this round" — which is the right window for a
     # 4 s round and needs no clock threaded through every damage call site.
-    # ``source_id`` is None on an unattributed packet (the field's own default)
-    # and -1 where a site had no shooter to name; neither is an attacker.
-    src = getattr(packet, "source_id", None)
-    if src is not None:
-        src_id = int(src)
+    # An INDIRECT credit (#123: a blast, a jet's heat or gas, credited through
+    # the world) is not "shooting at me": those packets were unattributed
+    # before #123 and stay out of this list, so the stance is unchanged.
+    if attacker != NO_ATTACKER and not getattr(packet, "indirect", False):
         recent = getattr(unit, "recent_attackers", None)
-        if (recent is not None and src_id >= 0
-                and src_id != int(getattr(unit, "id", -1))):
-            recent[src_id] = recent.get(src_id, 0) + 1
+        if (recent is not None
+                and attacker != int(getattr(unit, "id", -1))):
+            recent[attacker] = recent.get(attacker, 0) + 1
     if events is not None:
         uid = getattr(unit, "id", -1)
-        events.append(UnitHitEvent(unit_id=uid, damage=dmg, source=source))
+        events.append(UnitHitEvent(unit_id=uid, damage=dmg, source=source,
+                                   attacker_id=attacker))
     if unit.current_hp <= 0:
         unit.alive = False
         if mark_killed_by_zombie:
             unit.killed_by_zombie = True
         if events is not None:
             uid = getattr(unit, "id", -1)
-            events.append(UnitKilledEvent(unit_id=uid, killed_by=source))
+            events.append(UnitKilledEvent(unit_id=uid, killed_by=source,
+                                          attacker_id=attacker))
     return dmg
 
 
@@ -281,4 +367,5 @@ __all__ = [
     "ELECTRIC", "PSY", "N_DAMAGE_TYPES", "DAMAGE_TYPE_NAMES",
     "MitigationProfile", "build_mitigation", "NEUTRAL_MITIGATION",
     "DamagePacket", "mitigate", "mitigation_for", "apply_packet",
+    "CREDIT_HEAT", "TickCredit", "tick_credit",
 ]

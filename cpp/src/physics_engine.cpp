@@ -107,7 +107,8 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         const int32_t* gas_light_glow_q16,
         // P6b: the cone emitters and the sky (see header)
         const int64_t* light_cones, int n_light_cones,
-        const int64_t* light_sky) const {
+        const int64_t* light_sky,
+        const int64_t* light_emit_mult, int n_light_emit_mult) const {
 
     using namespace fixedpoint;
 
@@ -277,7 +278,8 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
                          light_atten_q, dyn_light_atten_q,
                          light_q, light_flux_q, light_glow,
                          gas_light_absorb_q16, gas_light_glow_q16,
-                         light_cones, n_light_cones, light_sky);
+                         light_cones, n_light_cones, light_sky,
+                         light_emit_mult, n_light_emit_mult);
     }
 
     // --- 3. Temperature pass (PhysicsRunner: self.temperature.step) ------
@@ -438,6 +440,10 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // P5c follow-up: the boundary's other two exits, APPENDED (13, 14).
         this->temperature.e_rad_boundary_export_sum += cond_counters[13];
         this->temperature.e_rad_floor_drop_sum      += cond_counters[14];
+        // #73: the low rail's lift (a solid term) and the heat deposit's
+        // floor share (a counter), APPENDED (15, 16).
+        this->temperature.e_solid_low_rail_sum      += cond_counters[15];
+        this->temperature.e_dep_floor_drop_sum      += cond_counters[16];
     } else
 #endif
     {
@@ -508,7 +514,8 @@ void PhysicsEngine::run_sweep_(
         int64_t* light_q, int64_t* light_flux_q, int64_t* light_glow,
         const int32_t* gas_light_absorb_q16, const int32_t* gas_light_glow_q16,
         const int64_t* light_cones, int n_light_cones,
-        const int64_t* light_sky) const {
+        const int64_t* light_sky,
+        const int64_t* light_emit_mult, int n_light_emit_mult) const {
     {
         const int64_t* e_tbl = this->emissive.table();   // lazy re-bake on a dial change
         // #78: the table's CURRENCY -- every integer the sweep books is 2^k of
@@ -561,6 +568,10 @@ void PhysicsEngine::run_sweep_(
             lc.cones             = light_cones;
             lc.n_cones           = (light_cones != nullptr) ? n_light_cones : 0;
             lc.sky               = light_sky;
+            // G3 F4b: the fire's light flicker (optional; the sweep's own
+            // door refuses an illegal row)
+            lc.emit_mult         = light_emit_mult;
+            lc.n_emit_mult       = (light_emit_mult != nullptr) ? n_light_emit_mult : 0;
             lcp = &lc;
         }
 #ifdef BREACH_HAS_CUDA
@@ -635,7 +646,8 @@ void PhysicsEngine::relight(
         int64_t* light_q, int64_t* light_flux_q, int64_t* light_glow,
         const int32_t* gas_light_absorb_q16, const int32_t* gas_light_glow_q16,
         const int64_t* light_cones, int n_light_cones,
-        const int64_t* light_sky) const {
+        const int64_t* light_sky,
+        const int64_t* light_emit_mult, int n_light_emit_mult) const {
     const size_t n = (size_t)h * (size_t)w;
     // the bulk sum, built the way step_tail builds n_bulk_ (its own scratch:
     // a relight between two ticks never touches the tick's)
@@ -657,7 +669,8 @@ void PhysicsEngine::relight(
                      light_atten_q, dyn_light_atten_q,
                      light_q, light_flux_q, light_glow,
                      gas_light_absorb_q16, gas_light_glow_q16,
-                     light_cones, n_light_cones, light_sky);
+                     light_cones, n_light_cones, light_sky,
+                         light_emit_mult, n_light_emit_mult);
 }
 
 // EOS refactor P3 (docs/eos_refactor_design.md §3, §8 patch P3) — the

@@ -23,6 +23,8 @@ here.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from simulation.ai_zombie import convert_marines_to_zombies
 from simulation.combat import process_door_explosives
 from simulation.orders import DET_START_PHASE1, DET_BETWEEN_PHASES, DET_END_PHASE2
@@ -139,7 +141,7 @@ class TwoPhaseWEGO(Ruleset):
     def on_round_start(self, sim) -> None:
         # Lifted verbatim from Simulation.step()'s tick-0 block (pre-P1
         # ~1092-1101): fires DET_START_PHASE1 once, resets path offsets for
-        # team-0 units, and stamps initial unit positions.
+        # order-driven (non-zombie) units, and stamps initial unit positions.
         if sim.tick == 0 and not sim._fired_start_p1:
             process_door_explosives(
                 sim.gmap, sim.edit_queue, sim.units, DET_START_PHASE1,
@@ -148,7 +150,7 @@ class TwoPhaseWEGO(Ruleset):
             sim._fired_start_p1 = True
             # Initialise per-unit path offsets for this round.
             for u in sim.units:
-                if u.team == 0:
+                if not u.is_zombie:
                     u.path_tick_offset = 0
             # Stamp initial unit positions (legacy: done in _start_execution).
             sim.gmap.stamp_units(sim.units)
@@ -207,8 +209,8 @@ class TwoPhaseWEGO(Ruleset):
         # Lifted verbatim from Simulation.is_terminal (pre-P1).
         if sim.tick >= sim._ticks_per_round:
             return True
-        any_marine = any(u.team == 0 and u.alive for u in sim.units)
-        any_zombie = any(u.team == 1 and u.alive for u in sim.units)
+        any_marine = any(not u.is_zombie and u.alive for u in sim.units)
+        any_zombie = any(u.is_zombie and u.alive for u in sim.units)
         # If we have neither, the simulation is degenerate; treat as terminal.
         if not any_marine and not any_zombie:
             return True
@@ -287,10 +289,67 @@ class ContinuousRealtime(Ruleset):
         pass
 
     def is_terminal(self, sim) -> bool:
-        any_marine = any(u.team == 0 and u.alive for u in sim.units)
-        any_zombie = any(u.team == 1 and u.alive for u in sim.units)
+        any_marine = any(not u.is_zombie and u.alive for u in sim.units)
+        any_zombie = any(u.is_zombie and u.alive for u in sim.units)
         # Terminal iff one side is gone (or the world is empty).
         return not (any_marine and any_zombie)
+
+
+@dataclass(frozen=True)
+class MatchResult:
+    """How a match ended (#119 P2): ``outcome`` is ``"win"`` (``team`` the
+    one marine team left with a living unit) or ``"draw"`` (``team`` None:
+    the time limit with two or more teams standing, or no team left), at
+    ``ticks`` sim ticks."""
+    outcome: str
+    team: int | None
+    ticks: int
+
+
+class MatchRules(ContinuousRealtime):
+    """The match's episode boundary (#119 P2) over :class:`ContinuousRealtime`
+    — everything per tick (no phases, no AP, death-triggered zombie
+    conversion) is the parent's; only the end differs.
+
+    Terminal when fewer than two MARINE teams have a living unit (zombies are
+    not a team: a converted marine has left its team), or the time limit is
+    reached (``round(time_limit_s * ticks_per_second)`` ticks, the one float
+    -> tick conversion, done once). ``ContinuousRealtime.is_terminal`` ("a
+    marine and a zombie alive") is untouched; this overrides it.
+    """
+
+    def __init__(self, time_limit_s: float):
+        if not time_limit_s > 0:
+            raise ValueError(f"time_limit_s must be positive "
+                             f"(got {time_limit_s!r})")
+        self.time_limit_s = float(time_limit_s)
+
+    @classmethod
+    def from_spec(cls, spec) -> "MatchRules":
+        return cls(spec.time_limit_s)
+
+    def limit_ticks(self, sim) -> int:
+        return max(1, int(round(self.time_limit_s * sim._tps)))
+
+    @staticmethod
+    def living_teams(sim) -> list:
+        """The marine teams with at least one living unit, sorted."""
+        return sorted({int(u.team) for u in sim.units
+                       if u.alive and not u.is_zombie})
+
+    def is_terminal(self, sim) -> bool:
+        return (len(self.living_teams(sim)) < 2
+                or sim.tick >= self.limit_ticks(sim))
+
+    def result(self, sim) -> MatchResult | None:
+        """The match's result once terminal, else None. A last team standing
+        wins even on the limit tick; otherwise it is a draw."""
+        if not self.is_terminal(sim):
+            return None
+        teams = self.living_teams(sim)
+        if len(teams) == 1:
+            return MatchResult("win", teams[0], int(sim.tick))
+        return MatchResult("draw", None, int(sim.tick))
 
 
 class OnePhaseWEGO(Ruleset):
@@ -469,9 +528,10 @@ class OnePhaseWEGO(Ruleset):
         The WEGO cadence is a natural RL action interface (design §1), so the
         episode boundary that matters to training is the fight ending.
         """
-        any_marine = any(u.team == 0 and u.alive for u in sim.units)
-        any_zombie = any(u.team == 1 and u.alive for u in sim.units)
+        any_marine = any(not u.is_zombie and u.alive for u in sim.units)
+        any_zombie = any(u.is_zombie and u.alive for u in sim.units)
         return not (any_marine and any_zombie)
 
 
-__all__ = ["Ruleset", "TwoPhaseWEGO", "ContinuousRealtime", "OnePhaseWEGO"]
+__all__ = ["Ruleset", "TwoPhaseWEGO", "ContinuousRealtime", "MatchRules",
+           "MatchResult", "OnePhaseWEGO"]

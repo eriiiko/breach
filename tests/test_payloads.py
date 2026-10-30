@@ -41,6 +41,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 
 import breach_physics as bp  # noqa: E402
 from level_loader import LevelData  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import Simulation  # noqa: E402
 from simulation import gas_fixed, fire_fixed, wall_fixed  # noqa: E402
 from simulation.events import ExplosionEvent, UnitHitEvent  # noqa: E402
@@ -123,7 +124,7 @@ def _twin(edits=()):
     gmap = _room(edits=edits)
     queue = EditQueue()
     m = Unit("M", x=8, y=8, team=0)
-    z = Unit("Z", x=13, y=11, team=1)
+    z = Unit("Z", x=13, y=11, team=ZOMBIE_TEAM)
     m.id, z.id = 1, 2
     m.current_hp = z.current_hp = 1e9
     rng = np.random.default_rng(SEED)

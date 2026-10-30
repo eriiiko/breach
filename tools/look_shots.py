@@ -33,8 +33,14 @@ LEVELS_DIR = ROOT / "levels"
 
 _NAME_RE = re.compile(r"^[a-z0-9_]+$")
 # Layers a shot may switch off to isolate the rest (the renderer's own
-# toggles: show_temperature / show_smoke / show_water).
-HIDEABLE_LAYERS = frozenset(("heat", "smoke", "water"))
+# toggles: show_temperature / show_smoke / show_water, and since graphics G3
+# F3 the flame, fire_vfx's "off" law; since F4a the embers and the heat
+# shimmer, their own on/off toggles).
+HIDEABLE_LAYERS = frozenset(("heat", "smoke", "water", "flame", "embers",
+                             "shimmer"))
+# renderer/fire_vfx.py DEBUG_VIEWS: 1 sources, 2 flame R, 3 flame T_vfx,
+# 4 velocity u, 5 pressure p (kept literal: this module is pyray-free)
+FIRE_DEBUG_MAX = 5
 
 
 @dataclass(frozen=True)
@@ -65,6 +71,8 @@ class LookShot:
     # None = studio default, a number, or "game" = [render.lighting] master_gain
     light_gain: Union[float, Literal["game"], None] = None
     hide: tuple = ()                  # layers switched off (HIDEABLE_LAYERS)
+    fire_debug: int = 0               # the flame VFX debug view (G3 F2; 0 = off,
+                                      # renderer.fire_vfx.DEBUG_VIEWS index)
     note: str = ""
 
 
@@ -137,6 +145,9 @@ def parse_shot(d: dict) -> LookShot:
     gas_amount = float(d.get("gas_amount", 1.0))
     if not 0.0 < gas_amount <= 1.0:
         raise ValueError(f"shot {name}: gas_amount must be in (0, 1]")
+    fire_debug = int(d.get("fire_debug", 0))
+    if not 0 <= fire_debug <= FIRE_DEBUG_MAX:
+        raise ValueError(f"shot {name}: fire_debug must be 0..{FIRE_DEBUG_MAX}")
     raw_gain = d.get("light_gain")
     gain: Union[float, Literal["game"], None]
     if raw_gain is None or raw_gain == "game":
@@ -156,6 +167,7 @@ def parse_shot(d: dict) -> LookShot:
         detonate=detonate,
         light_gain=gain,
         hide=hide,
+        fire_debug=fire_debug,
         note=str(d.get("note", "")))
 
 
@@ -201,3 +213,38 @@ def shot_path(out_dir: Path, name: str, tag: str) -> Path:
 __all__ = ["Flashlight", "LookShot", "ShotTable", "SHOTS_TOML",
            "DEFAULT_OUT_DIR", "parse_shot", "load_shots", "level_exists",
            "git_tag", "shot_path"]
+
+
+# ---------------------------------------------------------------------------
+# Shot META (graphics G3 F3): what a metric over the PNG needs
+# ---------------------------------------------------------------------------
+
+def meta_path(png_path) -> Path:
+    """The META file beside a shot's PNG: ``<png>.meta.npz``."""
+    p = Path(png_path)
+    return p.with_name(p.name + ".meta.npz")
+
+
+def write_shot_meta(png_path, camera, gmap, ramp) -> Path:
+    """Write the shot's META beside its PNG: the camera (tile position of the
+    viewport's top-left, px per tile, viewport size) and, per tile, the
+    temperature in Kelvin through THE map (``ramp``'s ``_kelvin_from_tgame``
+    = ``[physics.temperature_scale]``), the dequantized fire intensity and
+    the glow floor -- so a metric (``tools/fire_look_gate.py``) can project
+    the burning / glowing tiles through the shot's own camera. Read-only on
+    ``gmap``. The sim is deterministic per shot (seed 42, one tick per
+    frame), so the META of one run masks any other run of the same shot."""
+    import numpy as np
+    from simulation import fire_fixed           # the Q16 boundary module
+    t_game = (np.asarray(gmap.temperature, dtype=np.float64)
+              / fire_fixed.FP_ONE_F)
+    kelvin = ramp._kelvin_from_tgame(t_game)
+    fire = fire_fixed.dequantize_f32(gmap.fire)
+    out = meta_path(png_path)
+    np.savez_compressed(
+        out, kelvin=kelvin.astype(np.float32), fire=fire.astype(np.float32),
+        glow_min_k=float(ramp.kelvin_glow_min),
+        cam=np.array([camera.pos_tile_x, camera.pos_tile_y,
+                      camera.zoom_px_per_tile, camera.viewport_px_w,
+                      camera.viewport_px_h], dtype=np.float64))
+    return out

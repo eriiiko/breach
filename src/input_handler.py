@@ -205,7 +205,7 @@ class WEGOPlanningInput(ControlSource):
 
         # Try to select a marine first.
         for u in sim.units:
-            if (u.alive and u.team == 0 and
+            if (u.alive and u.team == sim.player_team and
                     u.tile_x <= fx < u.tile_x + u.footprint
                     and u.tile_y <= fy < u.tile_y + u.footprint):
                 self.selected_unit_id = u.id

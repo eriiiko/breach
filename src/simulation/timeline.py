@@ -482,7 +482,7 @@ def drive_units(sim) -> None:
     charges.tick(sim)
 
     for u in sim.units:
-        if u.team == 0 and u.alive:
+        if not u.is_zombie and u.alive:
             _advance_movement(sim, u)
     # Ambush barriers are evaluated ONCE, between the passes: every member's
     # readiness is read from the same post-movement world, so a group whose
@@ -490,7 +490,7 @@ def drive_units(sim) -> None:
     # and not in an order that depends on where a unit sits in the roster.
     engagement.update_ambush(sim)
     for u in sim.units:
-        if u.team == 0 and u.alive:
+        if not u.is_zombie and u.alive:
             _resolve_action(sim, u)
 
 
@@ -631,7 +631,7 @@ def _ambush_tick(sim, unit, step) -> None:
     """
     if not engagement.ambush_may_fire(sim, unit, step):
         return
-    target = _shot_target(sim, step)
+    target = _shot_target(sim, unit, step)
     if target is not None and _fire_at(sim, unit, target):
         step.fired_ticks += 1
 
@@ -707,7 +707,7 @@ def _shoot_tick(sim, unit, step) -> None:
     and archetype dispatch are the shipped combat path verbatim; the only
     OnePhaseWEGO-specific input is the situational spread (§7).
     """
-    target = _shot_target(sim, step)
+    target = _shot_target(sim, unit, step)
     if target is None:
         return
     if _fire_at(sim, unit, target, order_type=step.order_type,
@@ -767,12 +767,13 @@ def _fire_at(sim, unit, target, *, order_type=ORDER_SHOOT, reversing=False,
     return True
 
 
-def _shot_target(sim, step):
+def _shot_target(sim, unit, step):
     tid = getattr(step.order, "target_unit_id", None)
     if tid is None:
         return None
     target = sim.get_unit(tid)
-    if target is None or not target.alive or target.team == 0:
+    # An enemy of the SHOOTER (#119): any other team, not "not team 0".
+    if target is None or not target.alive or target.team == unit.team:
         return None
     return target
 
@@ -867,6 +868,7 @@ def throw_grenade(sim, unit, step) -> None:
                       else 2.0),
         thrown_tick=sim.tick,
         ammo_name=(getattr(order, "ammo_name", None) or "grenade_frag"),
+        owner_id=getattr(unit, "id", -1),
     )
     sim.projectiles.append(proj)
 

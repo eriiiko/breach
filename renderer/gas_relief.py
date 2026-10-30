@@ -58,7 +58,8 @@ from typing import Dict, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .gas_medium import (TraceGasOptics, gas_optical_depth, tau_curve)
+from .gas_medium import (TraceGasOptics, gas_optical_depth, species_sum,
+                         tau_curve)
 
 SHADERS_DIR = Path(__file__).resolve().parent.parent / "shaders"
 
@@ -284,8 +285,8 @@ def relief_group_layers(gas_density: np.ndarray, optics: TraceGasOptics,
                             plume_k_scale=1.0)
     tau_p = tau_curve(tau, tau_curve_a, tau_curve_b)
 
-    s_all = np.tensordot(k_scat.T, rho, axes=([1], [0]))          # (3, H, W)
-    s_grp = np.tensordot((k_scat * m[:, None]).T, rho, axes=([1], [0]))
+    s_all = species_sum(k_scat, rho)                              # (3, H, W)
+    s_grp = species_sum(k_scat * m[:, None], rho)
     share = np.where(s_all > 0.0, s_grp / np.maximum(s_all, 1e-30), 0.0)
     g = np.asarray(glow, dtype=np.float64) * float(glow_gain)
     glow_grp = g * np.moveaxis(share, 0, -1)
@@ -299,9 +300,7 @@ def relief_group_layers(gas_density: np.ndarray, optics: TraceGasOptics,
              + k_scat.mean(axis=1)) * m                            # (S,)
     ext_s = k_ext[:, None, None] * rho                             # (S, H, W)
     tau_ext = ext_s.sum(axis=0)
-    alb_w = np.tensordot(np.asarray(optics.scatter_albedo,
-                                    dtype=np.float64).T, ext_s,
-                         axes=([1], [0]))                          # (3, H, W)
+    alb_w = species_sum(optics.scatter_albedo, ext_s)              # (3, H, W)
     albedo = np.where(tau_ext > 0.0, alb_w / np.maximum(tau_ext, 1e-30), 0.0)
     albedo = bulk_reflectance(albedo)
 

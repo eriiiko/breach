@@ -48,6 +48,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 import breach_physics as bp  # noqa: E402
 from config import CFG  # noqa: E402
 from level_loader import LevelData  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import Simulation  # noqa: E402
 from simulation import gas_fixed  # noqa: E402
 from simulation.combat import (  # noqa: E402
@@ -418,7 +419,7 @@ def test_zombie_in_the_miasma_cloud_takes_zero():
     sim = Simulation(_level(), seed=SEED, breach_physics=bp,
                      enable_recorder=False)
     s = _shooter("miasma_vent")
-    z = Unit("Z", x=10, y=9, team=1)                  # centre (11, 10), dist 5
+    z = Unit("Z", x=10, y=9, team=ZOMBIE_TEAM)                  # centre (11, 10), dist 5
     sid = sim.add_unit(s)
     sim.add_unit(z)
     hp_z = z.current_hp
@@ -485,7 +486,7 @@ def test_auto_fire_skips_spray_weapons_and_draws_nothing():
     sim = Simulation(_level(), seed=SEED, breach_physics=None,
                      enable_recorder=False)
     s = _shooter("dragon_7")
-    z = Unit("Z", x=9, y=9, team=1)                   # centre dist 4, in range
+    z = Unit("Z", x=9, y=9, team=ZOMBIE_TEAM)                   # centre dist 4, in range
     sid = sim.add_unit(s)
     sim.add_unit(z)
     assert sim.apply_action(sid, Order(
@@ -561,7 +562,7 @@ def test_dormancy_no_spray_weapon_is_bit_identical_to_prew4():
         sim = Simulation(_level(edits=[(10, 14, 2)]), seed=SEED,
                          breach_physics=bp, enable_recorder=False)
         m = Unit("M", x=3, y=9, team=0)               # k5 from config default
-        z = Unit("Z", x=16, y=9, team=1)
+        z = Unit("Z", x=16, y=9, team=ZOMBIE_TEAM)
         mid = sim.add_unit(m)
         sim.add_unit(z)
         assert m.weapon_id == "k5_carbine"            # the [marine] weapon key

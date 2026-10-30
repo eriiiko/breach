@@ -44,6 +44,24 @@ def _layer_shader_sources():
     from renderer import marine_shader, static_props
     out.append(("marine_shader.MARINE_FS", _code(marine_shader.MARINE_FS)))
     out.append(("static_props.PROP_FS", _code(static_props.PROP_FS)))
+    # graphics G3: the flame VFX passes as COMPOSED in Python (each stage
+    # .fs with shaders/fire_vfx_common.glsl spliced in -- the .glsl part is
+    # not a *.[fv]s file, so the composed source is what must be clean)
+    from renderer import fire_vfx
+    for st in fire_vfx.STAGES + ("debug",):
+        out.append((f"fire_vfx.{st} (composed)",
+                    _code(fire_vfx.compose_shader_source(st))))
+    # graphics G3 F3 (design §13.14 minor 6): THE fire's draw -- the flame,
+    # its compensation under the ceiling soot -- as COMPOSED (fire_glow.fs
+    # with the smoke cast product's shared GLSL spliced in)
+    out.append(("fire_vfx.fire_glow (composed)",
+                _code(fire_vfx.compose_glow_source())))
+    # graphics G3 F4a: THE particle primitive's sprite (the embers), its
+    # fragment as COMPOSED with the smoke cast product's shared GLSL
+    from renderer import particles
+    vs, fs = particles.sprite_shader_sources()
+    out.append(("particles.sprite.vs", _code(vs)))
+    out.append(("particles.sprite.fs (composed)", _code(fs)))
     return out
 
 
@@ -71,13 +89,17 @@ def test_the_resolve_is_the_one_place_that_does_all_three():
 
 # The ONE named exception (graphics G0 review): the LEGACY HEAT LAYER keeps
 # its pre-G0 display-space look -- ACES-shaped display colour, added on screen
-# AFTER the resolve -- until the G3 fire arc replaces it, because its hue,
-# saturation and halo were tuned as a display colour and no linear-scene
-# conversion keeps them (blackbody.pack_emissive_rgba explains). It shapes
-# its colour with the resolve's own curve, through a CPU twin that lives in
-# that one module.
-CPU_TWIN_HOME = {"blackbody.py": "legacy heat layer, display space, "
-                                 "until G3 fire"}
+# AFTER the resolve -- because its hue, saturation and halo were tuned as a
+# display colour and no linear-scene conversion keeps them
+# (blackbody.pack_emissive_rgba explains). G3 F3 RE-JUSTIFIED it (design
+# §13.14 minor 6): the hue gate (tools/fire_look_gate.py) measured the move
+# into the linear scene failing, so the exception stays until its own
+# retirement patch; the same module's glow_share uses the curve as the
+# relief's 0-1 own-light share (not a drawn colour). It shapes its colour
+# with the resolve's own curve, through a CPU twin that lives in that one
+# module.
+CPU_TWIN_HOME = {"blackbody.py": "legacy heat layer, display space (kept "
+                                 "by G3 F3's hue gate) + glow_share"}
 
 
 def test_no_cpu_side_tone_map_in_the_renderer():

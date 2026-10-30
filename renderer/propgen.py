@@ -122,7 +122,7 @@ def _perp_basis(axis: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 def _rotate(v: np.ndarray, axis: np.ndarray, ang: float) -> np.ndarray:
     """Rodrigues rotation of *v* about the unit *axis* by *ang* radians."""
     c, s = math.cos(ang), math.sin(ang)
-    return v * c + _cross3(axis, v) * s + axis * np.dot(axis, v) * (1 - c)
+    return v * c + _cross3(axis, v) * s + axis * np.dot(axis, v) * (1 - c)  # blas-exempt: load-time mesh build, 3-vectors (no thread pool)
 
 
 def _rand_unit(rng: np.random.Generator) -> np.ndarray:

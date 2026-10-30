@@ -72,7 +72,10 @@ GPU_TUPLE = ("t_max_phys_hits", "e_cond_trunc_sum", "e_cond_cap_sum", "cond_limi
              "e_solid_deposit_sum", "e_solid_cond_sum", "rad_clamp_hits",
              "solid_energy_books_sum", "e_rad_clamp_drop_sum",
              # P5c follow-up (slots 13, 14, appended)
-             "e_rad_boundary_export_sum", "e_rad_floor_drop_sum")
+             "e_rad_boundary_export_sum", "e_rad_floor_drop_sum",
+             # #73 (slots 15, 16, appended): the low rail's lift, the heat
+             # deposit's floor share
+             "e_solid_low_rail_sum", "e_dep_floor_drop_sum")
 # The boundary counters sum rn << 16 over the cells they read (outside the
 # books; below n_floor): capped there at 2^34, a 16x margin over the physical
 # bound E[3999] ~ 2^30 on the live table (test_temperature_gas_radiation.

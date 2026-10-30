@@ -52,6 +52,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "tests", ROOT / "cpp" / "build" / "Release
 import breach_physics as bp  # noqa: E402
 from config import CFG, ticks_from_seconds  # noqa: E402
 from level_loader import LevelData  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import Simulation  # noqa: E402
 from simulation.combat import fire_burst  # noqa: E402
 from simulation.events import (  # noqa: E402
@@ -462,7 +463,7 @@ def test_weapon_cycle_walks_every_triggerable_row_through_the_facade():
     assert m.spray_ticks_left == 0
 
     # Zombies refuse (no weapon rows — the ai_zombie path).
-    z = Unit("Z", x=15, y=15, team=1)
+    z = Unit("Z", x=15, y=15, team=ZOMBIE_TEAM)
     zid = sim.add_unit(z)
     assert sim.debug_cycle_weapon(zid) is None
 

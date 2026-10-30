@@ -308,16 +308,16 @@ def _onephase_world_overlay(sim, control_source, hover_tile=None):
         ui_draw.draw_cover(sim, world_px_per_tile)
         # An overwatch cone is not a "view" indicator, it is the player's own
         # target-control dial (§9), so it stays.
-        for u in sim.marines():
+        for u in sim.controlled_units():
             ui_draw.draw_overwatch_cone(u, world_px_per_tile)
-        ui_draw.draw_marks(sim, 0, world_px_per_tile)
+        ui_draw.draw_marks(sim, sim.player_team, world_px_per_tile)
         ui_draw.draw_selected_marker(selected, world_px_per_tile)
 
         # EVERY marine's plan stays on screen (Erik: "i'd like everything to
         # stay on screen"), the unselected ones muted. Drawn first so the
         # selected marine's plan lands on top at full strength — you can read
         # the whole assault at once without losing which one you are steering.
-        for u in sim.marines():
+        for u in sim.controlled_units():
             if selected is not None and u.id == selected.id:
                 continue
             ui_draw.draw_plan_overlay(ui.plan_overlay(sim, u),
@@ -353,9 +353,10 @@ def main():
     # starts running. Byte-identical to the pre-P3 default under `wego`.
     debug_mode = _parse_debug_flag()
     control_source = create_control_source(_parse_control_flag(),
-                                           debug=debug_mode)
+                                           debug=debug_mode, level=level)
 
-    sim = Simulation(level, seed=42, breach_physics=bp,
+    sim = Simulation(level, seed=control_source.initial_seed(42),
+                     breach_physics=bp,
                      enable_recorder=True,
                      ruleset=control_source.initial_ruleset())
     sim.set_paused(control_source.starts_paused())
@@ -373,13 +374,16 @@ def main():
     # ----- Spawn units from level.toml [[spawn]] entries. Zero spawns is
     # legal: a unit-free physics-tuning sandbox (camera starts at 0,0;
     # marines()/zombies() handle empty rosters).
-    if not level.spawns:
+    # (`--control match` spawns its match.toml instead, #121.)
+    if control_source.spawn_units(sim, level):
+        pass
+    elif not level.spawns:
         print(f"  NOTE: level '{level.name}' has no [[spawn]] entries — "
               f"running as a unit-free physics sandbox")
-    for s in level.spawns:
-        sim.add_unit(Unit(s.name, x=s.x, y=s.y, team=s.team,
-                          footprint=s.footprint))
-    if level.spawns:
+    else:
+        for s in level.spawns:
+            sim.add_unit(Unit(s.name, x=s.x, y=s.y, team=s.team,
+                              footprint=s.footprint))
         print(f"  Spawned {len(level.spawns)} units from level.toml")
 
     # 2. Render config — borderless windowed at monitor resolution.
@@ -520,7 +524,8 @@ def main():
             # the light is the expression of their facing cone.
             extra += frame_lights.flashlight_specs(
                 ui.flashlight_cones(
-                    sim, team=0, mode=control_source.flashlight_mode,
+                    sim, team=sim.player_team,
+                    mode=control_source.flashlight_mode,
                     selected_unit_id=control_source.selected_unit_id,
                     cursor_tile=renderer.mouse_to_tile(),
                     paused=sim.is_paused()),
@@ -543,6 +548,20 @@ def main():
         return frame_lights.cone_rows(assemble_lights().specs, grid_w, grid_h,
                                       light_fine_bits)
 
+    # Graphics G3 F4b: THE FIRE'S ROOM LIGHT -- the renderer's per-burning-
+    # tile multiplier on the sweep's thermal light emission (the fire's light
+    # gain x its flicker, G3 adjustment round), as (n, 3) int64 rows through
+    # the door (frame_lights.emit_mult_rows), or None. Render state handed
+    # with the cone rows; it scales light only, never heat.
+    def flicker_rows_now():
+        grid_h, grid_w = sim.gmap.solid.shape
+        return renderer.fire_light_rows(grid_w, grid_h)
+
+    def _same_rows(a, b):
+        if a is None or b is None:
+            return a is None and b is None
+        return np.array_equal(a, b)
+
     # --warp: step to the requested sim time before the first frame, then
     # hold paused (the paused path relights on the frozen state).
     warp_s = _parse_warp_flag()
@@ -550,6 +569,7 @@ def main():
         n_warp = int(round(warp_s / sim_time_per_tick))
         for _ in range(n_warp):
             sim.set_paused(False)
+            control_source.on_tick(sim)
             sim.step()
         sim.set_paused(True)
         print(f"  --warp {warp_s:g} s: stepped {n_warp} ticks, paused")
@@ -559,6 +579,7 @@ def main():
     tick_accum = 0.0
     light_on = None          # P6b: is the sweep's light currently requested?
     lit_rows = None          # the cone rows the current light field was computed from
+    lit_flicker = None       # G3 F4b: the flicker rows it was computed from
     last_relight = 0.0
 
     try:
@@ -604,8 +625,11 @@ def main():
                 while tick_accum >= sim_time_per_tick and steps < max_catch_up:
                     if new_light:
                         # the ONE assembly, once per sim tick, for the engine
+                        # (G3 F4b: + the fire's light flicker rows)
                         lit_rows = cone_rows_now()
-                        sim.set_light(True, lit_rows, light_sky)
+                        lit_flicker = flicker_rows_now()
+                        sim.set_light(True, lit_rows, light_sky, lit_flicker)
+                    control_source.on_tick(sim)
                     sim.step()
                     stepped = True
                     tick_accum -= sim_time_per_tick
@@ -618,14 +642,22 @@ def main():
             # planning flashlight aimed at the cursor) -- and at 4 Hz anyway, so
             # a dev-key edit made while paused shows up. The relight writes only
             # the three light planes (PhysicsRunner.relight).
+            # G3 F4b: a paused fire whose flame IDLES ([render.fire_vfx]
+            # idle_when_paused) keeps flickering -- relit at the TICK rate
+            # whenever its flicker rows moved (a 4 Hz relight would step the
+            # flicker visibly; the cost is a running tick's sweep). With the
+            # idle off the rows stop changing and the 4 Hz cadence is back.
             if new_light and not stepped and sim.is_paused():
                 rows = cone_rows_now()
+                flick = flicker_rows_now()
                 t_now = time.perf_counter()
+                flicker_due = (not _same_rows(flick, lit_flicker)
+                               and t_now - last_relight >= sim_time_per_tick)
                 if (lit_rows is None or not np.array_equal(rows, lit_rows)
-                        or t_now - last_relight > 0.25):
-                    sim.set_light(True, rows, light_sky)
+                        or flicker_due or t_now - last_relight > 0.25):
+                    sim.set_light(True, rows, light_sky, flick)
                     sim.relight()
-                    lit_rows, last_relight = rows, t_now
+                    lit_rows, lit_flicker, last_relight = rows, flick, t_now
 
             # total_tick = the MONOTONIC sim tick on the SIM clock: beacons
             # freeze on pause + replay exactly (P4 §2.2), and it is the P3 smoke
@@ -634,13 +666,19 @@ def main():
                 sim.turn_number, ticks_per_round, sim.tick)
 
             # ----- Upload + draw -----
+            # alpha = the sub-tick fraction of the accumulator (graphics G3
+            # §13.3): the flame VFX runs on (tick + alpha) / tps. A pure read
+            # of this loop's own pacing state; the renderer clamps it to
+            # [0, 1). paused = the sim clock stopped (the flame may idle).
             renderer.upload_state(sim.gmap, sim_tick=total_tick,
-                                  light_serial=sim.light_serial if new_light else None)
+                                  light_serial=sim.light_serial if new_light else None,
+                                  alpha=tick_accum / sim_time_per_tick,
+                                  paused=sim.is_paused())
             renderer.begin_frame()
 
             # Fog of war (§8) is visibility GATING: an enemy the team cannot
             # see is simply not drawn. The sim keeps simulating it in full.
-            zombies = (ui.drawable_enemies(sim, 0) if onephase
+            zombies = (ui.drawable_enemies(sim, sim.player_team) if onephase
                        else sim.zombies())
             renderer.compose_world(
                 units_marines=sim.marines(),

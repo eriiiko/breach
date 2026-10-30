@@ -276,7 +276,80 @@ def bake_billow_3d(size: int = 64, *, seed: int = BILLOW_SEED,
                                octaves=octaves, warp=warp))
 
 
+# ---------------------------------------------------------------------------
+# The FLAME noise (graphics G3 F3, design §3.5): the flame's edge shape
+# ---------------------------------------------------------------------------
+
+FLAME_SEED = 0xF1A3E                 # "flame"
+
+
+def flame_noise_field(coords: np.ndarray, *, seed: int = FLAME_SEED,
+                      base_period: int = 8, octaves: int = 2,
+                      streak: int = 1) -> np.ndarray:
+    """The GRAIN of the flame's edge noise at ``coords`` (..., 2) in texture
+    units: ridged periodic Perlin fBm (``(1 - |n|)^2``), a network of thin
+    bright filaments. ``streak`` > 1 makes its lattice that many times finer
+    across y than along x (filaments pre-stretched along +x; the draw uses
+    1).
+
+    It is not the smoke's billow (a convex lump with a hard rim): the flame
+    draw (``shaders/fire_glow.fs``) STRETCHES this grain into STREAKS ALONG
+    THE FLAME VELOCITY -- a short line integral of it along ``u_vfx`` on a
+    two-phase flow map on the VFX clock -- so the edge is torn into tongues
+    drawn out along the flow, wherever that flow points (a baked orientation
+    could not follow the expansion's radial flow without a per-pixel
+    rotation, which shears with distance). Exactly periodic with period 1
+    on both axes (integer lattice periods), so it tiles. Range [0, 1]."""
+    rng = np.random.default_rng(int(seed))
+    c = np.asarray(coords, dtype=np.float64)
+    acc = np.zeros(c.shape[:-1], dtype=np.float64)
+    amp, amp_sum = 1.0, 0.0
+    for o in range(int(octaves)):
+        px = base_period * (2 ** o)
+        grads = _unit_gradients(rng, (px * int(streak), px))   # (y, x)
+        acc += amp * _perlin_aniso(c, px, px * int(streak), grads)
+        amp_sum += amp
+        amp *= 0.5
+    n = acc / max(amp_sum, 1e-12)
+    ridge = 1.0 - np.abs(n) / 0.7
+    return np.clip(ridge, 0.0, 1.0) ** 2
+
+
+def _perlin_aniso(coords: np.ndarray, period_x: int, period_y: int,
+                  grads: np.ndarray) -> np.ndarray:
+    """Periodic 2D gradient noise with ``period_x`` cells along x and
+    ``period_y`` along y (one unit each), gradients ``grads[(y, x)]``."""
+    p = coords * np.array([period_x, period_y], dtype=np.float64)
+    i0 = np.floor(p).astype(np.int64)
+    f = p - i0
+    w = _fade(f)
+    out = np.zeros(coords.shape[:-1], dtype=np.float64)
+    for ox in (0, 1):
+        for oy in (0, 1):
+            g = grads[(i0[..., 1] + oy) % period_y, (i0[..., 0] + ox) % period_x]
+            d = f - np.array([ox, oy], dtype=np.float64)
+            dot = g[..., 0] * d[..., 0] + g[..., 1] * d[..., 1]
+            wt = ((w[..., 0] if ox else 1.0 - w[..., 0])
+                  * (w[..., 1] if oy else 1.0 - w[..., 1]))
+            out += wt * dot
+    return out
+
+
+def bake_flame_noise_rgba(size: int = 128, *, seed: int = FLAME_SEED
+                          ) -> np.ndarray:
+    """Bake the flame noise -> (size, size, 4) uint8, row = y. R and G =
+    two decorrelated :func:`flame_noise_field` grains (the draw's two
+    flow-map phases), B = 0, A = 255. Upload REPEAT + BILINEAR."""
+    xy = _grid_coords_2d(int(size))
+    out = np.zeros((size, size, 4), dtype=np.uint8)
+    out[..., 0] = _to_u8(flame_noise_field(xy, seed=seed))
+    out[..., 1] = _to_u8(flame_noise_field(xy, seed=int(seed) + 1))
+    out[..., 3] = 255
+    return out
+
+
 __all__ = [
     "BASE_CELLS", "BILLOW_SEED", "perlin", "perlin_fbm", "worley_f1",
     "worley_domes", "billow_field", "bake_billow_rgba", "bake_billow_3d",
+    "FLAME_SEED", "flame_noise_field", "bake_flame_noise_rgba",
 ]

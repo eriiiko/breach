@@ -30,7 +30,10 @@
 #   light_gain                 override the studio's exposure: a number, or
 #                              "game" = [render.lighting] master_gain
 #   hide = ["heat", ...]       switch layers off to isolate the rest
-#                              (heat / smoke / water)
+#                              (heat / smoke / water / flame; G3 F3;
+#                              embers / shimmer; G3 F4a)
+#   fire_debug = N             open the flame VFX debug view N (G3 F2:
+#                              1 sources, 2 flame R, 3 T_vfx, 4 u, 5 p)
 #
 # Shots the §7 list asks for that this set does NOT have yet: none missing as
 # a scene, but "steam in a flashlight beam" is composed from studio actions
@@ -132,7 +135,7 @@ zoom = 48.0
 lamps = true
 beacon = true
 light_gain = "game"
-hide = ["heat"]
+hide = ["heat", "flame"]
 note = "fire_plume without the heat layer: the crates' own soot against the hall lamps -- the relief's silhouette, lit side and crevices."
 
 [[shot]]
@@ -157,7 +160,7 @@ zoom = 32.0
 lamps = true
 beacon = false
 detonate = [24, 16, 24]
-hide = ["heat"]
+hide = ["heat", "flame"]
 note = "explosion_t40 without the heat layer: the blast's hanging soot and the marines it should cover (ceiling layer above the units)."
 
 [[shot]]
@@ -325,6 +328,207 @@ beacon = true
 light_gain = "game"
 hide = ["heat"]
 note = "the smoke-light studio, most of the map (both doorways, where the west hall's plumes pour east), at tick 96: one frame of a plume TRAVELLING (the t48..t96 rows are the sequence). G2 judges the synthetic low band (§2.5 A) and, for Erik, whether §2.5 B's trigger fires: does the plume lose its silhouette while it travels?"
+
+# --- graphics G3 "Fire" (docs/g3_fire_design_2026-10-23.md §3.6, §7 F1):
+# the FIRE + SMOKE studio, where fire burns from the start (one timed charge
+# per fuel tile at 0.5 s; a five-tile furniture row at y 22, x 23..27, a lone
+# tile at (37, 27); a HEPA vent loop supply W (4, 22) -> return E (51, 22)
+# draws a current over the row). The flame arc's own judging set: F1 added
+# the rows only (today's heat-layer look), F3 draws the flame into them.
+[[shot]]
+name = "fss_overview"
+level = "fire_smoke_studio"
+frames = 120
+lamps = false
+beacon = false
+light_gain = "game"
+note = "the whole studio 5 s in (fires lit at 0.5 s): the row and the lone tile burning, their smoke drawn east by the vent current. G3's overview: flame shape against the room light it makes."
+
+[[shot]]
+name = "fss_close"
+level = "fire_smoke_studio"
+frames = 120
+center = [25.5, 22.5]
+zoom = 96.0
+lamps = false
+beacon = false
+light_gain = "game"
+note = "close on the five-tile row: the tongues, their lean in the vent current, and (F3) the A/B of glow by temperature vs temperature + thickness (design §8 'A != B' is measured here)."
+
+[[shot]]
+name = "fss_lone"
+level = "fire_smoke_studio"
+frames = 120
+center = [37.5, 27.5]
+zoom = 128.0
+lamps = false
+beacon = false
+light_gain = "game"
+note = "close on the lone burning tile: the smallest fire the flame must still read on (M_u = 8 is chosen so one tile is not an orange blob, M12)."
+
+[[shot]]
+name = "fss_windy"
+level = "fire_smoke_studio"
+frames = 120
+center = [40.0, 24.0]
+zoom = 40.0
+lamps = false
+beacon = false
+light_gain = "game"
+note = "downstream of the row toward the return vent (51, 22): the row's east end, the lone tile and the current carrying smoke to the vent. Flames should lean east here."
+
+[[shot]]
+name = "fss_close_flame_r"
+level = "fire_smoke_studio"
+frames = 120
+center = [25.5, 22.5]
+zoom = 96.0
+lamps = false
+beacon = false
+light_gain = "game"
+fire_debug = 2
+note = "G3 F2's loop, seen before F3 draws it: the flame density R over the five-tile row (debug view 2, white = R). Tongues must leave the fuel, curl, and lean with the vent current."
+
+[[shot]]
+name = "fss_close_flame_t"
+level = "fire_smoke_studio"
+frames = 120
+center = [25.5, 22.5]
+zoom = 96.0
+lamps = false
+beacon = false
+light_gain = "game"
+fire_debug = 3
+note = "the same row's flame temperature T_vfx through the blackbody LUT (debug view 3): hottest at the fuel, cooling along each tongue, never above the tile."
+
+[[shot]]
+name = "fss_windy_flame_t"
+level = "fire_smoke_studio"
+frames = 120
+center = [33.0, 24.0]
+zoom = 56.0
+lamps = false
+beacon = false
+light_gain = "game"
+fire_debug = 3
+note = "the row's east end and the lone tile, T_vfx (debug view 3), in the vent current toward the return vent. That current is only ~0.35 tiles/s at the fires: F2 measured their mean lean ~0 +- 0.1 tile in GL and in the twin alike -- a real lean needs the jet's ~2 tiles/s (the F0b c/f strips)."
+
+
+# --- graphics G3 F3: the hue gate's HALO TWINS (tools/fire_look_gate.py,
+# design §13.8): each gated fire shot without the fire's own light (the heat
+# layer and the flame). fire_plume's twin is smoke_plume_noheat, explosion_t40's
+# is explosion_t40_noheat (both above; since F3 they hide the flame too: the
+# crates in fire_plume burn, and "no heat" means none of the fire's own light).
+
+[[shot]]
+name = "fss_overview_noheat"
+level = "fire_smoke_studio"
+frames = 120
+lamps = false
+beacon = false
+light_gain = "game"
+note = "fss_overview without the fire's own glow (heat layer + flame): the G3 F3 hue gate's halo twin (tools/fire_look_gate.py)."
+hide = ["heat", "flame"]
+
+[[shot]]
+name = "fss_close_noheat"
+level = "fire_smoke_studio"
+frames = 120
+center = [25.5, 22.5]
+zoom = 96.0
+lamps = false
+beacon = false
+light_gain = "game"
+note = "fss_close without the fire's own glow (heat layer + flame): the G3 F3 hue gate's halo twin (tools/fire_look_gate.py)."
+hide = ["heat", "flame"]
+
+[[shot]]
+name = "fss_lone_noheat"
+level = "fire_smoke_studio"
+frames = 120
+center = [37.5, 27.5]
+zoom = 128.0
+lamps = false
+beacon = false
+light_gain = "game"
+note = "fss_lone without the fire's own glow (heat layer + flame): the G3 F3 hue gate's halo twin (tools/fire_look_gate.py)."
+hide = ["heat", "flame"]
+
+[[shot]]
+name = "fss_windy_noheat"
+level = "fire_smoke_studio"
+frames = 120
+center = [40.0, 24.0]
+zoom = 40.0
+lamps = false
+beacon = false
+light_gain = "game"
+note = "fss_windy without the fire's own glow (heat layer + flame): the G3 F3 hue gate's halo twin (tools/fire_look_gate.py)."
+hide = ["heat", "flame"]
+
+[[shot]]
+name = "fire_thin_smoke_noheat"
+level = "smoke_light_studio"
+frames = 72
+center = [14.5, 28.0]
+zoom = 48.0
+lamps = true
+beacon = true
+light_gain = "game"
+smoke = [[10, 25], [19, 25], [10, 30], [19, 30]]
+gas_amount = 0.02
+note = "fire_thin_smoke without the fire's own glow (heat layer + flame): the G3 F3 hue gate's halo twin (tools/fire_look_gate.py)."
+hide = ["heat", "flame"]
+
+[[shot]]
+name = "fire_thick_smoke_noheat"
+level = "smoke_light_studio"
+frames = 72
+center = [14.5, 28.0]
+zoom = 48.0
+lamps = true
+beacon = true
+light_gain = "game"
+smoke = [[10, 25], [19, 25], [10, 30], [19, 30]]
+note = "fire_thick_smoke without the fire's own glow (heat layer + flame): the G3 F3 hue gate's halo twin (tools/fire_look_gate.py)."
+hide = ["heat", "flame"]
+
+[[shot]]
+name = "explosion_t04_noheat"
+level = "fire_studio"
+frames = 28
+center = [24.0, 16.0]
+zoom = 32.0
+lamps = true
+beacon = false
+detonate = [24, 16, 24]
+note = "explosion_t04 without the fire's own glow (heat layer + flame): the G3 F3 hue gate's halo twin (tools/fire_look_gate.py)."
+hide = ["heat", "flame"]
+
+[[shot]]
+name = "explosion_t12_noheat"
+level = "fire_studio"
+frames = 36
+center = [24.0, 16.0]
+zoom = 32.0
+lamps = true
+beacon = false
+detonate = [24, 16, 24]
+note = "explosion_t12 without the fire's own glow (heat layer + flame): the G3 F3 hue gate's halo twin (tools/fire_look_gate.py)."
+hide = ["heat", "flame"]
+
+# --- G3 F4a: embers + heat shimmer ------------------------------------------
+[[shot]]
+name = "fss_lone_plain"
+level = "fire_smoke_studio"
+frames = 120
+center = [37.5, 27.5]
+zoom = 128.0
+lamps = false
+beacon = false
+light_gain = "game"
+note = "fss_lone without the F4a extras (embers, heat shimmer): their A/B twin -- the sparks and the wobble of the floor beside the flame are the difference."
+hide = ["embers", "shimmer"]
 
 # --- #114: lit 3D units, tier 1 -------------------------------------------
 # The playground's marine Bravo (footprint x 13..15, y 42..44; Alpha stands

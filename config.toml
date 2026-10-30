@@ -491,7 +491,12 @@ p_expand_ref      = 1.30   # self-limiting plume saturation ceiling (atm + therm
 # The fuel-vs-T-gate RACE needs the H_bed x8 deposit (H_BED_SHIFT 7): weaker
 # deposits heat-collapse with 20-50% char before hp can reach 0 (I_cap ∝ F, so
 # the drain fades with the fuel — measured across x1/x2/x4).
-wall_damage       = 0.36   # wall HP lost per second per unit intensity, TIMES hotf since R3 (the burn-out brake -> now the DURATION dial). History: 0.4 -> 0.03 (P-F1b) -> 0.01448 (R3, bad anchor) -> 0.36 (Erik's 3-min fuel-out ruling 2026-09-06, derivation above)
+# #129 (2026-10-29, fire_smoke_studio, tools/fire_smoke_probe.py): since M3
+# (H_bed 38.73, derived) 0.36 no longer burns to the end -- the fire snaps out
+# (I_min) with 3-9 % char left. Duration scales ~1/wall_damage; the char left
+# crosses 0 at 0.54 for the vented row. H_bed x0.5..x8 moves duration <= 30 %
+# and char ~1 pt: not the lever any more.
+wall_damage       = 0.54   # wall HP lost per second per unit intensity, TIMES hotf since R3 (the burn-out brake -> now the DURATION dial). History: 0.4 -> 0.03 (P-F1b) -> 0.01448 (R3, bad anchor) -> 0.36 (Erik's 3-min fuel-out ruling 2026-09-06, derivation above) -> 0.54 (#129 bonfire sweep 2026-10-29: the smallest value at which the vented studio row burns its fuel to 0 -- visible 110 s, fuel out 132 s, out 140 s; docs/bonfire_tuning_2026-10-29/report.md. 0.36 -> 0.54 (Erik's bonfire ruling 2026-10-29, #129: ratified on the headless numbers))
 
 # --- K2: fire as a sim-side heat ray source (proposal §1, fire_design_notes) --
 # TOMBSTONE (T6, issue #12, 2026-09-23): the whole per-tile fire-plane heat
@@ -1442,12 +1447,12 @@ height_floor = 0.3
 [render]
 # Default overlay visibility (the shipped look; each stays a live in-game
 # toggle). Fire & Heat Beauty B1 (Erik feel-check 2026-07-21): the physical
-# black-body emissive overlay (T) ships ON — it IS the fire/heat view; the
-# legacy flat-orange FireOverlay (F3) stays OFF (superseded); the pressure
+# black-body emissive overlay (T) ships ON — it IS the fire/heat view (the
+# legacy flat-orange FireOverlay and its fire_overlay_on key are deleted at
+# graphics G3 F3: the flame VFX is the fire's look, F3 its A/B); the pressure
 # colormap (F7) now ships OFF by default (it washed the scene out — Erik's
 # call) but is one keypress away when you want to see shockwaves.
 blackbody_overlay_on = true
-fire_overlay_on = false
 pressure_overlay_on = false
 cold_overlay_on = false    # P-W2 blue cold tier — the #8 cold-blast instrument.
                            # OFF in normal play (Erik 2026-08-25: cold reads
@@ -1722,6 +1727,201 @@ low_band_tau1 = 1.0         # ... full at the coverage edge's depth and inside
 debug_view = 0              # 0 off; 1 coverage, 2 height, 3 N.L, 4 self-shadow,
                             # 5 AO, 6 boil, 7 the cast shadow on the floor
                             # (dev only)
+
+[render.fire_vfx]
+# Graphics G3 "Fire" -- the FLAME VFX (renderer/fire_vfx.py, its numpy spec
+# twin renderer/fire_vfx_ref.py; docs/g3_fire_design_2026-10-23.md). A
+# render-only 2D fluid per tile column fed by `fire`, the burning tile's own
+# temperature and the tamed wind. Re-read EVERY FRAME (Ctrl+R live); m / m_u
+# reallocate the fields. THIS SECTION IS THE SINGLE SOURCE of every dial: the
+# FireVFXDials / FireVFXSettings dataclass defaults are only the schema and a
+# missing-key fallback (tests/test_fire_vfx.py: every dial must be named here).
+# Render-only: no sim state, no digest, no golden.
+#
+# F1 + F2 built the substrate and the loop; F3 DRAWS the flame (and the heat
+# layer, linear) in the scene through shaders/fire_glow.fs. enabled = false
+# turns the flame off (the heat layer still draws); no fire costs zero passes
+# and zero flame draws.
+# Budget (F2, RTX 3070, fire_smoke_studio at 60 fps): ~0.6 ms GPU, ~1.1 ms
+# CPU per frame for 2 substeps x (5 + n_jacobi) direct-GL passes.
+enabled = true
+m = 8                       # flame cells per tile (M); reallocates on change
+m_u = 8                     # velocity / pressure cells per tile: MUST equal m
+                            # in G3 (one grid; laptop tier m = m_u = 4)
+margin_tiles = 3            # active region = burning tiles dilated by this
+                            # (F0b: the flame R spreads ~3 tiles)
+idle_when_paused = true     # a paused game keeps the flame moving on its frozen
+                            # sources, on wall time (never the sim clock);
+                            # HUMAN-TEST 1 judges it (design §3.4, §13.3)
+debug_view = 0              # 0 off; 1 sources, 2 flame R, 3 flame T_vfx,
+                            # 4 velocity u, 5 pressure p -- each with the
+                            # active boxes (F11 cycles it live; dev only)
+dt_s = 0.008333333333333333 # fixed substep, s (1/120: a 24 tps tick = 5 substeps;
+                            # F2 measured max|u| ~15 tiles/s = CFL ~1 cell per
+                            # substep at m = 8 -- do not raise it)
+# --- sources (design §3.3, §13.2, §13.4) ---
+s0 = 8.0                    # flame density injected per second at I = 1
+q0 = 8.0                    # LOOK DIAL, 1/s: expansion per unit I*(T_src/T_amb-1),
+                            # ~100x the physical in-plane expansion (too weak for tongues)
+i_min = 0.01                # fire intensity below which a tile makes no flame
+strip_frac = 0.375          # solid fuel's flame strip depth into the open tile
+puff_amp = 0.45             # pool-fire puffing depth on s and q (0..1)
+puff_wobble = 1.6           # rad: slow phase wobble, equal fires never lock in step
+puff_freq_jitter = 0.15     # +- fraction of the puffing frequency per cluster
+puff_c = 1.5                # f = puff_c / sqrt(D [m]) Hz (Cetegen & Ahmed 1993)
+# --- velocity (§3.4 steps 1-3, §13.1, §13.2) ---
+k_follow = 2.0              # 1/s, relaxation of u toward the tamed wind
+vort_eps = 2.0              # vorticity confinement strength (Fedkiw 2001)
+curl_amp = 200.0            # tiles/s^2 of curl-noise forcing at local I = 1
+curl_wavelength_tiles = 0.6 # dominant curl-noise wavelength
+curl_rate_hz = 1.2          # how fast the noise pattern changes
+curl_modes = 32             # Fourier modes of the stream function (uniforms)
+i_local_sigma_tiles = 1.25  # reach of "local I" around a burning tile
+n_jacobi = 20               # pressure sweeps per substep, warm-started
+screen_len_tiles = 3.0      # l of the screened pressure solve (§13.1)
+# --- flame scalars (§3.4 steps 4-5, §13.5) ---
+maccormack = true           # false = plain semi-Lagrangian (the fallback)
+lifetime_s = 0.3            # e-fold time of the flame density R
+cool_rate = 0.9             # 1/s, T_vfx relaxes toward the local gas T (never up)
+r_eps = 1e-6                # R below this has no defined temperature
+r_cut = 1e-3                # R below this is cleared to exactly 0 (no stale flame)
+# --- drawing (§3.5, §13.4; F3) -- shaders/fire_glow.fs ---
+emission = "mask"           # A -- Erik's choice at HUMAN-TEST 2026-10-29 ("Flame
+                            # A"). The A/B stays live (F3 cycles mask ->
+                            # thickness -> off): "mask" = A, glow by temperature
+                            # only; "thickness" = B, temperature and how much
+                            # flame stands in the column
+kappa = 2.5                 # B: E = 1 - exp(-kappa R)
+r0 = 0.10                   # A: E = smoothstep(r0, r1, R)
+r1 = 0.60
+e_min = 0.08                # emission threshold: E below it draws nothing (faint
+                            # R fills the active boxes; B's tail never reaches 0)
+edge_noise_amp = 0.8        # how deep the flame noise tears the edge (0 = none)
+edge_noise_tiles = 4.0      # tiles per repeat of the noise grain (filaments ~1/8)
+edge_streak_s = 0.30        # streak length: how far the flow carries the grain in this time
+edge_noise_cycle_s = 0.6    # the flow map's phase cycle, s (VFX clock)
+edge_speed_cap = 3.0        # tiles/s: the noise drift / streak speed cap
+edge_contrast = 1.8         # restores the grain's contrast after the line integral
+seed = 1234                 # curl-noise modes and puffing phases
+
+[render.embers]
+# Graphics G3 F4a -- EMBERS, the first consumer of THE particle primitive
+# (renderer/particles.py; docs/g3_fire_design_2026-10-23.md §6.1). Spawned on
+# the CPU from the flame VFX's per-tick source tiles (THE source law; never a
+# GPU readback), on the flame's VFX clock (sim time + alpha; idle while paused
+# with the flame). They ride the frame's one tamed wind (x tps, tiles/s) plus
+# curl noise, cool down the ONE blackbody ramp (Newton, closed form: never
+# re-heat), fade, and die past their lifetime, below the glow floor, or in a
+# wall / vacuum. Drawn additive, linear HDR, after the flame and under the
+# units (shaders/particle_sprite.*). Re-read every frame (Ctrl+R live);
+# Shift+F3 toggles them. Render-only: no sim state, no digest, no golden.
+enabled = true              # on by default: Erik at HUMAN-TEST 2026-10-29
+rate = 4.0                  # embers per second per source tile at I = 1: sparse
+                            # (the studio's 5-tile row at I ~ 0.5 makes ~12 a second)
+cap = 256                   # never more alive at once (a fair subset spawns)
+lifetime_s = 3.0            # the longest an ember lives; each draws 60-100 % of it
+cool_s = 5.0                # e-fold of (T - T_amb), Newton: a 1250 K spark is ~1070 K
+                            # after 1 s, ~930 K after 2 s, dark at the 800 K glow floor
+                            # by ~3 s (faster and they died inside their own flame)
+t_birth_jitter = 0.08       # born at T_src x (1 - U(0, this)): never hotter than its fuel
+kick_speed = 3.5            # tiles/s it leaves the fuel with (x U(0.4, 1); wood:
+                            # away from the wall): thrown clear of the flame
+drag = 1.0                  # 1/s: how fast it takes up the air's velocity (the wind)
+curl = 1.4                  # tiles/s of curl-noise drift (the wandering)
+curl_wavelength_tiles = 2.0 # the drift's swirl size
+curl_rate_hz = 0.7          # how fast the swirls change
+curl_modes = 8              # Fourier modes of the drift's stream function
+size_tiles = 0.05           # sprite radius (a tile is 48 world px: ~2.4 px)
+min_screen_px = 1.0         # zoomed out, the radius never drops below this many
+                            # SCREEN px (the same light spread: no popping)
+streak_s = 0.06             # motion stretch: the trail is |v| x this long
+brightness = 10.0           # x the ramp's Le(T): a spark is a point, far brighter
+                            # per pixel than the surface it came from
+seed = 4321                 # the spawn RNG and the drift's modes
+
+[render.shimmer]
+# Graphics G3 F4a -- HEAT SHIMMER, the first term of the resolve's DISTORTION
+# BLOCK (renderer/heat_shimmer.py, shaders/world_resolve.fs distortion_px;
+# design §6.2, §13.12): the floor seen through hot gas wobbles. A UV offset
+# inside the one resolve -- never a second pass; the HUD / UI are never
+# distorted. offset = advected fBm x smoothstep(S) x amp, S = the gas
+# temperature's strength per tile (0 at t0_k, 1 at t1_k, gas tiles only),
+# upsampled bilinearly: cold gas (all four nearest tiles at or below t0_k)
+# gets exactly no offset. Re-read every frame; Ctrl+F3 toggles it.
+enabled = true
+t0_k = 320.0                # gas at or below this (K) does not shimmer at all
+t1_k = 520.0                # full strength from this gas temperature
+                            # Erik 2026-10-30: "I would like to see heat travelling
+                            # from a warm fire, with the wind" -- 380/700 K cut the
+                            # plume ~10 tiles downwind and showed it faint. The studio
+                            # at 30 s (fire_smoke_probe --dump), row 22 eastward of
+                            # the fire: 495 496 456 392 340 318 300 K every 3 tiles,
+                            # so 320 K lets the warm trail shimmer ~15 tiles out
+amp_tiles = 0.10            # the largest offset, tiles (~4.6 world px); was 0.03
+                            # (~1.4 px), which Erik could not see on/off
+grain_tiles = 0.6           # tiles per repeat of the noise grain
+cycle_s = 0.45              # the flow map's phase cycle, s (VFX clock)
+boil_tiles_s = 0.8          # the grain's own drift, tiles/s (the hot air's boil)
+zoom_zero = 14.0            # screen px per tile at and below which it is off
+                            # (zoomed out, a sub-pixel wobble only swims)
+zoom_full = 32.0            # ... full strength from here up
+seed = 2718                 # the flow map's per-cycle offsets and boil directions
+
+[render.fire_light]
+# Graphics G3 adjustment round (docs/g3_fire_design_2026-10-23.md §17; Erik at
+# HUMAN-TEST 2026-10-29: the fire must light the room "much more brightly ... a
+# little more I think would be great"). The FIRE'S LIGHT GAIN: each burning
+# tile's LIGHT emission in the radiation sweep is multiplied by this, times the
+# flicker below when that is on (renderer/fire_flicker.py; the sweep's
+# emission-multiplier rows, the door frame_lights.emit_mult_rows). LIGHT ONLY:
+# no heat, no digest, no golden; lamps, the sky and a hot wall that does not
+# burn are not scaled, nor is the heat layer's glow or the flame. Needs the
+# flame VFX (its burning-tile list). Re-read every frame (Ctrl+R reloads it live).
+# gain x (1 + [render.flicker] amplitude) must be <= 16 (the sweep's int64
+# headroom, cpp/src/radiation_sweep.h), so at the shipped amplitude 0.3 the
+# dial goes up to 12.3; 0 switches the fire's room light off.
+# MEASURED (fire_smoke_studio, the lone burning tile at 5 s, floor only, mean
+# 8-bit luma of the tile ring at 1 / 2 / 3 tiles; gain 0 reads 16.2 / 16.3 /
+# 16.3, so the "+" is what the fire adds):
+#   gain  1: +3.8 / +1.8 / +1.1   (the F4b look: the fire lit almost nothing)
+#   gain  2: +7.3 / +3.5 / +2.1
+#   gain  4: +13.6 / +6.7 / +4.2
+#   gain  6: +19.4 / +9.7 / +6.1  <- shipped
+#   gain  8: +24.8 / +12.6 / +7.9
+#   gain 12: +34.4 / +17.9 / +11.4
+# No pixel clips at any of them; the early fire (2 s) lights the squad's floor
+# 4-7 tiles away at 21 (gain 1) / 40 (6) / 58 (12), and the squad's shadows
+# appear from ~4 (at 1 the unit shadow is faded out on the dark floor). Above
+# ~8 the flame starts to lose contrast against its own lit floor, and the
+# sweep's 16-ordinate ray streaks show far from the fire. With the flicker on
+# at 6 the floor next to the lone tile swings ~7 levels peak to peak (1 tile)
+# and ~3 (2 tiles) -- visible breathing; at 1 it was ~1.5 / 0.6.
+gain = 6.0
+
+[render.flicker]
+# Graphics G3 F4b -- the FIRE'S ROOM-LIGHT FLICKER (renderer/fire_flicker.py;
+# design 6.3, RULED D, Erik 2026-10-23): each burning tile's LIGHT emission in
+# the sweep is multiplied per tick by m = 1 + amplitude * clip(z / 2, -1, 1),
+# z = sqrt(puff_share) * (the flame's own cluster puffing) + sqrt(1 -
+# puff_share) * (the tile's own turbulence: 8 sinusoids hashed from the band).
+# Mean-preserving (the average room light stays the physics' light), per tile
+# (fires never flicker in sync: two tiles of one fire correlate at about
+# puff_share, separate fires not at all), isotropic (one factor per tile, every
+# direction). LIGHT ONLY: the heat, the digest and the golden never see it;
+# lamps never flicker. Rides the flame's VFX clock (needs [render.fire_vfx]
+# enabled); while paused it idles with the flame. Re-read every frame (Ctrl+R);
+# Alt+F3 toggles it. Render-only: no sim state, no digest, no golden.
+enabled = true
+amplitude = 0.3             # the most a tile's light leaves 1: m in [0.7, 1.3];
+                            # RMS swing ~ amplitude / 2. In [0, 1]
+puff_share = 0.1            # share of the swing's variance that is the fire's own
+                            # puffing (pulses WITH the flame; shared by the fire's
+                            # tiles). Above ~0.25 one fire's tiles begin to move
+                            # together (the no-sync gate is |rho| < 0.3)
+band_lo_hz = 0.8            # the tile's own flicker band, Hz: slow breathing ...
+band_hi_hz = 5.0            # ... to fast flutter (<= 10: the 24 Hz tick's Nyquist
+                            # is 12 Hz, and a higher band would alias to a strobe)
+seed = 8086                 # the per-tile frequencies and phases
 
 [render.props]
 # 3D props & vegetation — WIND SWAY (arc #60 P4, design §4.3 "Sway (P4)").
@@ -3260,15 +3460,11 @@ attack_cooldown_seconds = 1.0      # 1.0 s -> 12 ticks @ 12 tps
 
 [marine]
 hp = 100
-grenades = 2
-explosives = 2
-# weapon — the marine's default [weapons.*] row (W4: data-driven, replaces
-# W1's code literal; consumed at Unit construction). ERIK'S FEEL-CHECK LOOP:
-# set to "dragon_7" (or "miasma_vent"), RESTART the game (units + weapon
-# tables are construction-bound — Ctrl+R alone re-reads config but re-arms
-# nothing, engine/12 §5), launch `main.py --level playground`, issue fire
-# orders, watch rooms burn.
-weapon = "k5_carbine"
+# loadout — the [loadouts.*] row a marine is armed with when nothing names
+# one (#119; the row replaced this table's old weapon / grenades / explosives
+# keys with the same values). A match config names a row per team (#119 P2).
+loadout = "rifleman"
+# weapon (the PRIMARY) now lives on the loadout row — see [loadouts.*] below.
 # OnePhaseWEGO loadout (onephase_wego design §15): primary + secondary, swapped
 # freely for 0 cost except the 0.75 s swap CD — "the design intent is *lots* of
 # weapon changes, choosing the tool for the task". `weapon` above is the
@@ -3281,6 +3477,63 @@ secondary = "p12_whisper"
 # one system wearing two skins — so entries name LOBBED/PLACED weapon rows,
 # which is what the registry generates its `use_*` item actions from.
 belt = ["hand_grenade", "breach_charge"]
+
+# ---------------------------------------------------------------------------
+# Loadouts (#119) — what a unit carries, one row per kit. `weapon` names a
+# [weapons.*] row (refused at load if it names none), `grenades` / `explosives`
+# are non-negative integer counts. Read by simulation/loadouts.py at Unit
+# construction (construction-bound like the weapon tables: RESTART to re-arm).
+# ERIK'S FEEL-CHECK LOOP: set rifleman's weapon to "dragon_7" (or
+# "miasma_vent"), RESTART the game (Ctrl+R alone re-reads config but re-arms
+# nothing, engine/12 §5), launch `main.py --level playground`, issue fire
+# orders, watch rooms burn. Zombies carry no loadout.
+# ---------------------------------------------------------------------------
+[loadouts.rifleman]      # the v1 loadout (rl-ready scope §3): K5 + 2 frags
+weapon = "k5_carbine"
+grenades = 2
+explosives = 2
+
+# ---------------------------------------------------------------------------
+# Bot team (#121) — the rule-based match controller `bots`
+# (src/control_bots.py). Distances are in TILES (squared-integer compares on
+# centre tiles; at the 0.333 m tiles of ship_demo / the playground a marine's
+# footprint is 3 tiles); every key is required (bot_settings refuses a
+# missing or mistyped one). Read once when a BotTeam is built.
+# ---------------------------------------------------------------------------
+[bots]
+replan_ticks = 24            # A* replan cadence while advancing (1 s @ 24 tps); also on arrival / a new goal
+group_radius = 6             # enemies within this of each other are a grenade group (formation pitch is 5)
+danger_radius = 8            # no frag if self or a teammate is this close to the group centre (blast radius 2 + margin)
+grenade_cooldown_s = 4.0     # per bot, between two throws
+fallback_hp_frac = 0.5       # below this fraction of vitality ...
+fallback_r = 15              # ... with no living teammate within this many tiles -> fall back home
+friendly_line_tiles = 12     # hold fire if a teammate stands on the line of fire within this many tiles
+
+# ---------------------------------------------------------------------------
+# Environment profiles (#119) — suits, one row per profile, over the
+# EnvironmentProfile dataclass (src/simulation/environment.py): a row names
+# any subset of its fields and an absent field takes the dataclass default;
+# an unknown field or submersion rule is refused at load. A unit given no
+# profile keeps its species baseline. `default` IS the human baseline (every
+# field at the dataclass default, listed so the row reads as the reference).
+# Values are placeholders until Erik's suit design session.
+# ---------------------------------------------------------------------------
+[env_profiles.default]
+breathes = true
+can_breathe_air = true
+can_breathe_water = false
+o2_reserve_max = 60.0
+pressure_min = 0.4
+pressure_max = 2.5
+o2_level_min = 0.15
+o2_level_max = 1.0
+temperature_min = -20.0
+temperature_max = 60.0
+stability = 1.0
+front_arc_deg = 120.0
+behind_arc_deg = 90.0
+submersion = "drowns"
+environmental_damage_rate = 1.0
 
 [rendering]
 # Resolution of the world composite RT in pixels per tile — the sharpness
@@ -3424,6 +3677,14 @@ k_push = 400.0                   # impulse gain: dv = k_push * grad / mass (tile
 # gradient can produce. Interesting range 0.1 (stiff) .. 1.0 (teleporty at
 # point blank); above ~1 a hop can visually skip a tile.
 push_max_tile_per_tick = 0.5     # sanity cap on the per-tick displacement (tiles)
+# push_grad_floor_atm — the pressure field's noise floor for the push (#116).
+# A footprint gradient (edge-line mean difference, per axis) at or under it is
+# read as 0: a quiet playground's EOS jitters 1-7 Q16 counts (<= 1.1e-4 atm)
+# across a standing marine, which nudged it 3e-6 tile/tick and walked it just
+# below its integer, so floor() stamped it one tile north-west of its picture.
+# 0.001 atm (65 counts) is ~9x the measured quiet maximum and ~1/1200 of the
+# knockdown gradient (~79k counts at mass 80) — no blast feel moves. 0 = off.
+push_grad_floor_atm = 0.001      # |grad| (atm across the footprint) read as no push
 # knockdown_dv_threshold — the topple gate at stability 1.0. Feel: LOWER =
 # blasts floor people farther out (at 6.0 a grenade's knockdown ring is
 # ~9-10 tiles, ~2x its damage ring). Interesting range ~3 (twitchy — any

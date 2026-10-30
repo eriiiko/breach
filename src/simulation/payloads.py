@@ -41,9 +41,11 @@ untouched.
 """
 from __future__ import annotations
 
-from simulation.events import ExplosionEvent
+from simulation.damage import CREDIT_HEAT, tick_credit
+from simulation.events import NO_ATTACKER, ExplosionEvent
 from simulation.exchange import apply_blast_damage
-from simulation.field_edit import FieldEdit, EditMode, Region, Falloff
+from simulation.field_edit import (FieldEdit, EditMode, Region, Falloff,
+                                   _iter_region)
 from simulation.physics import apply_explosion, add_explosion_smoke
 
 # source_id namespace for payload-issued edits (engine/13 stable-sort key).
@@ -56,7 +58,22 @@ _SRC_PAYLOAD_IGNITE = 4
 _SRC_PAYLOAD_HEAT = 7
 
 
-def emit_gas(gmap, queue, fy, fx, gas_species, gas_amount, gas_radius):
+def _claim_disc(gmap, channel, fy, fx, radius, owner_id):
+    """#123: claim a deposit disc's tiles for ``owner_id`` this tick
+    (damage.TickCredit) — the same DISC membership the edit's flush walks.
+    No-op for the environment (-1)."""
+    if owner_id is None or int(owner_id) < 0:
+        return
+    tick_credit(gmap).claim(
+        channel,
+        ((r, c) for r, c, _ in _iter_region(
+            Region.DISC, (fy, fx, float(radius)), Falloff.FLAT,
+            gmap.material.shape)),
+        owner_id)
+
+
+def emit_gas(gmap, queue, fy, fx, gas_species, gas_amount, gas_radius,
+             owner_id=NO_ATTACKER):
     """Enqueue a gas-cloud deposit into the ``gmap.gas`` slice for
     ``gas_species`` (mechanics/03 §4 gas payload columns; engine/05 §6.2).
 
@@ -81,6 +98,7 @@ def emit_gas(gmap, queue, fy, fx, gas_species, gas_amount, gas_radius):
     the belt-and-suspenders for hand-built defs.
     """
     gas_id = int(gmap.gases.name_to_id[gas_species])
+    _claim_disc(gmap, gas_id, fy, fx, gas_radius, owner_id)
     queue.enqueue(FieldEdit(
         field="gas", region=Region.DISC, coords=(fy, fx, float(gas_radius)),
         amount=float(gas_amount), mode=EditMode.ADD, falloff=Falloff.LINEAR,
@@ -107,7 +125,7 @@ IGNITE_HEAT = 2840.0
 
 
 def ignite_ring(gmap, queue, fy, fx, ignite_radius, ignite_intensity,
-                ignite_heat=IGNITE_HEAT):
+                ignite_heat=IGNITE_HEAT, owner_id=NO_ATTACKER):
     """Enqueue an incendiary ignition disc: ``fire = max(fire, seed)`` over
     the ring, **plus the heat that lighting implies** (mechanics/03 §4 ignite
     columns; heat added 2026-09-12, issue #65).
@@ -157,6 +175,7 @@ def ignite_ring(gmap, queue, fy, fx, ignite_radius, ignite_intensity,
         source_id=_SRC_PAYLOAD_IGNITE,
     ))
     if ignite_heat > 0.0:
+        _claim_disc(gmap, CREDIT_HEAT, fy, fx, ignite_radius, owner_id)
         queue.enqueue(FieldEdit(
             field="heat", region=Region.DISC,
             coords=(fy, fx, float(ignite_radius)),
@@ -166,7 +185,8 @@ def ignite_ring(gmap, queue, fy, fx, ignite_radius, ignite_intensity,
         ))
 
 
-def deposit_heat(gmap, queue, fy, fx, heat_amount, heat_radius):
+def deposit_heat(gmap, queue, fy, fx, heat_amount, heat_radius,
+                 owner_id=NO_ATTACKER):
     """Enqueue a one-shot heat splash into the engine/06 ``heat`` ingress
     buffer (mechanics/03 §4 heat payload columns — W6, the plasma splash).
 
@@ -179,6 +199,7 @@ def deposit_heat(gmap, queue, fy, fx, heat_amount, heat_radius):
     the SAME tick (the flush runs before physics), so ignition and the
     heat|max unit-damage row both come free — the SPRAY two-terminals
     discipline (zero new damage code) applied to a detonation."""
+    _claim_disc(gmap, CREDIT_HEAT, fy, fx, heat_radius, owner_id)
     queue.enqueue(FieldEdit(
         field="heat", region=Region.DISC, coords=(fy, fx, float(heat_radius)),
         amount=float(heat_amount), mode=EditMode.ADD, falloff=Falloff.LINEAR,
@@ -220,7 +241,7 @@ def blast_smoke_peak(gmap, fy, fx, radius, soot_g, noise=None):
 
 
 def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
-                    kind="explosion"):
+                    kind="explosion", owner_id=NO_ATTACKER):
     """Execute one ``[payloads.*]`` row at tile (fy, fx) — the single owner
     of the payload → world-effects sequence (mechanics/03 §4, W3).
 
@@ -249,6 +270,14 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
 
     ``rng`` is the sim generator — carried for signature symmetry with the
     detonation sites; the executor itself never draws (module docstring).
+
+    ``owner_id`` (#123) is the unit the detonation is credited to — the
+    grenade's thrower, the payload round's firer, the charge's planter; -1
+    for nobody (a timed charge, a tool). It credits the blast directly and
+    claims the payload's heat (``ignite_ring``'s, ``deposit_heat``'s) and gas
+    discs for THIS tick (damage.TickCredit): a unit hurt by that deposit
+    while it is fresh is credited to the owner; the fire it lit and the
+    cloud it leaves are the environment's (the accepted gap).
     Returns None; all field writes ride ``queue`` (engine/13) except
     ``apply_explosion``'s structural wall damage (the documented carve-out).
     """
@@ -257,7 +286,8 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
                         payload.pressure, payload.wall_damage)
     if payload.unit_damage > 0:
         apply_blast_damage(units, fx, fy, payload.radius,
-                           payload.unit_damage, events=events)
+                           payload.unit_damage, events=events,
+                           attacker_id=owner_id)
     if payload.emit_blast_smoke:
         peak = blast_smoke_peak(gmap, fy, fx, payload.radius,
                                 getattr(payload, "blast_soot_g", 0.0))
@@ -266,13 +296,13 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
                                 amount=peak)
     if payload.gas_species:
         emit_gas(gmap, queue, fy, fx, payload.gas_species,
-                 payload.gas_amount, payload.gas_radius)
+                 payload.gas_amount, payload.gas_radius, owner_id=owner_id)
     if payload.ignite_radius > 0:
         ignite_ring(gmap, queue, fy, fx, payload.ignite_radius,
-                    payload.ignite_intensity)
+                    payload.ignite_intensity, owner_id=owner_id)
     if getattr(payload, "heat_amount", 0.0) > 0:
         deposit_heat(gmap, queue, fy, fx, payload.heat_amount,
-                     payload.heat_radius)
+                     payload.heat_radius, owner_id=owner_id)
     if events is not None:
         events.append(ExplosionEvent(pos=(fx, fy), radius=payload.radius,
                                      kind=kind))

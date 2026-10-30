@@ -120,10 +120,45 @@ struct OrdinateDir {
 // every cone's rgb <= LIGHT_CONE_BUDGET; every sky value in [0, LIGHT_SKY_MAX]
 // -- the int64 argument (a stream stays below 2^44.3, every plain product
 // below 2^62: gate 19 (f), over-driven).
+//
+// ---- G3 F4b: THE FIRE'S LIGHT FLICKER (docs/g3_fire_design_2026-10-23.md
+// §6.3, RULED D; the spec is sweep_ref_q.py's LightGroup.emit_mult) ---------
+// An EMISSION MULTIPLIER row is EMIT_MULT_ROW_WIDTH int64s (y, x, mult_q): a
+// cell and a Q16 factor on that cell's THERMAL light emission only --
+//   emitted' = (emitted * mult_q) >> 16        (every ordinate, every channel)
+// i.e. isotropic per cell. It scales the light channels' emission and nothing
+// else: heat never reads it (light moves no heat), a cone in the same cell is
+// not scaled, and the books close on the scaled emission. A cell without a
+// row keeps mult = ONE, which is the identity integer for integer (emitted >= 0,
+// (e * 2^16) >> 16 == e), so no rows is the pre-F4b sweep exactly. RENDER
+// STATE (the renderer's per-tick flicker of its burning tiles,
+// renderer/fire_flicker.py), never sim state, never digested -- the cones'
+// standing. THE DOOR: every row inside the grid, 0 <= mult_q <=
+// LIGHT_EMIT_MULT_MAX, at most one row per cell.
+//
+// The max is 16·ONE (G3 adjustment round, 2026-10-29: the rows now carry the
+// fire's light GAIN times its flicker, renderer/fire_flicker.py; F4b's 2·ONE
+// held the flicker alone). THE HEADROOM ARGUMENT, at the doors' own bounds
+// (not the shipped table's): L° < L_TABLE_TOP_MAX = 2^44, w_m <= ONE/12 = 5461
+// (S12), so one ordinate's unscaled thermal source src = (L°·w_m) >> 16 <
+// 2^40.42, and
+//   * the scaling product ((src·a) >> 16) · mult_q < 2^40.42 · 2^20 = 2^60.4;
+//   * a stream is at most the sky + every cone + the largest thermal outflow
+//     (Kirchhoff keeps a cell's outflow below max(stream, mult·src) + 1 when
+//     d >= a), so stream < 2^40 + 2^44 + 16·2^40.42 = 2^45.26 (P6b's 2^44.3
+//     at mult = ONE);
+//   * the widest plain product is the flux vector's I_m · mu_q, I_m the sum of
+//     three channels' streams: 3 · 2^45.26 · 2^16 = 2^62.85 < 2^63 -- the
+//     binding term, ~10 % to spare; stream · d and lout · s_m stay < 2^61.3.
+// So 16·ONE is the largest power of two the int64 argument admits (32·ONE
+// would put I_m · mu_q at 2^63.5). The grid-wide book SUMS were never part of
+// this argument (they scale with the cell count) and are not now.
 static constexpr int     CONE_ROW_WIDTH    = 7;
 static constexpr int64_t CONE_TURN         = 65536;             // one turn, Q16
 static constexpr int64_t LIGHT_CONE_BUDGET = (int64_t)1 << 44;  // Σ_cones rgb, per channel
 static constexpr int64_t LIGHT_SKY_MAX     = (int64_t)1 << 40;  // one ordinate's sky
+static constexpr int     EMIT_MULT_ROW_WIDTH = 3;                         // (y, x, mult_q)
+static constexpr int64_t LIGHT_EMIT_MULT_MAX = (int64_t)16 << 16;         // 16·ONE, Q16 (the headroom above)
 struct LightChannels {
     // ---- inputs
     const int32_t* light_atten_q     = nullptr;  // (h, w, 3) Q16 -- a_c, the MATERIAL
@@ -139,6 +174,9 @@ struct LightChannels {
     const int64_t* cones = nullptr;              // (n_cones, CONE_ROW_WIDTH) rows
     int n_cones = 0;
     const int64_t* sky = nullptr;                // (n_ordinates, 3); nullptr: the dark ring
+    // ---- G3 F4b input, optional (see above): the fire's light flicker
+    const int64_t* emit_mult = nullptr;          // (n_emit_mult, EMIT_MULT_ROW_WIDTH) rows
+    int n_emit_mult = 0;
     // ---- outputs, OVERWRITTEN (run() zeroes them itself, design row 38)
     int64_t* light_q      = nullptr;             // (h, w, 3) the irradiance, Σ_m stream
     int64_t* light_flux_q = nullptr;             // (h, w, 2) Σ_m I_m (mu, eta), x then y
@@ -446,6 +484,14 @@ public:
     // (validate_light_group) has passed.
     static void build_cone_injection(const int64_t* cones, int n_cones, int n_ordinates,
                                      int h, int w, ConeInjection& out);
+    // G3 F4b: the emission-multiplier rows as a per-cell Q16 plane (h * w,
+    // ONE where no row names the cell), the shape both backends' pre-pass
+    // reads. Assumes the door (validate_light_group) has passed; throws
+    // std::invalid_argument on a second row for one cell (the door's last
+    // clause, which needs the plane to see). Host-side on both backends, so
+    // the scatter has one implementation.
+    static void build_emit_mult(const int64_t* rows, int n_rows, int h, int w,
+                                std::vector<int32_t>& out);
 
     // The effective extinction planes the last CPU run() READ (Q16, (h, w)):
     // the material/stamped planes with the smoke term folded in (P5a).
@@ -549,4 +595,5 @@ private:
     mutable std::vector<int32_t> l_g_;       // (h, w, 3): the glow coefficient
     mutable int lh_ = 0, lw_ = 0, ln_ord_ = 0;
     mutable ConeInjection cones_;            // P6b: the last light run's cone injection
+    mutable std::vector<int32_t> emit_mult_; // G3 F4b: the last light run's multiplier plane
 };

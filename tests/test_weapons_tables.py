@@ -40,6 +40,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from config import CFG, ticks_from_seconds  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation.weapons import (  # noqa: E402
     WEAPON_ARCHETYPES, WeaponsTables, get_tables,
 )
@@ -230,7 +231,7 @@ def test_missing_required_columns_are_loud():
 # ---------------------------------------------------------------------------
 def test_unit_weapon_id():
     marine = Unit("M1", x=5, y=5, team=0)
-    zombie = Unit("Z1", x=8, y=8, team=1)
+    zombie = Unit("Z1", x=8, y=8, team=ZOMBIE_TEAM)
     assert marine.weapon_id == "k5_carbine"
     assert zombie.weapon_id == ""
 

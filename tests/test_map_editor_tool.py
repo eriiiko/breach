@@ -53,7 +53,7 @@ from make_tileset import build_tileset  # noqa: E402
 from bake_level_art import (bake_full, bake_region,  # noqa: E402
                             load_tileset)
 from level_edit_common import UndoRing, build_palette  # noqa: E402
-from map_editor import (REBAKE_MARGIN, SCAFFOLD_MIN,  # noqa: E402
+from map_editor import (REBAKE_MARGIN, SCAFFOLD_MIN, TEAM_ZOMBIE,  # noqa: E402
                         apply_corridor, apply_room, choose_preview_ppt,
                         corridor_cells, create_level, diff_rect, door_check,
                         expand_dirty_rect, normalize_rect, parse_size,
@@ -421,13 +421,13 @@ def test_wall_family_codes_from_manifest(ts16):
 
 def test_spawn_hit_test_and_auto_names():
     spawns = [SpawnEntry("marine_1", 0, 2.0, 3.0),          # x 2..5, y 3..6
-              SpawnEntry("zombie_1", 1, 4.0, 4.0)]
+              SpawnEntry("zombie_1", TEAM_ZOMBIE, 4.0, 4.0)]
     assert spawn_at(spawns, 2.5, 3.5) == 0
     assert spawn_at(spawns, 4.5, 4.5) == 1     # overlap -> topmost (last)
     assert spawn_at(spawns, 0.5, 0.5) is None
     assert unique_spawn_name(spawns, 0) == "marine_2"
-    assert unique_spawn_name(spawns, 1) == "zombie_2"
-    assert unique_spawn_name([], 1) == "zombie_1"
+    assert unique_spawn_name(spawns, TEAM_ZOMBIE) == "zombie_2"
+    assert unique_spawn_name([], TEAM_ZOMBIE) == "zombie_1"
 
 
 def test_write_spawns_managed_block_preserves_other_bytes(tmp_path):
@@ -494,7 +494,7 @@ def test_spawn_round_trip_through_the_loader(tileset16_dir, tmp_path):
     pre = (d / "level.toml").read_bytes()
 
     spawns = [SpawnEntry("marine_1", 0, 2.0, 3.0),
-              SpawnEntry("zombie_1", 1, 6.0, 4.0, footprint=5)]
+              SpawnEntry("zombie_1", TEAM_ZOMBIE, 6.0, 4.0, footprint=5)]
     write_spawns(d / "level.toml", spawns)               # first save: .bak
     lvl2 = level_loader.load(str(d))
     assert lvl2.spawns == spawns
