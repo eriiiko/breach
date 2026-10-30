@@ -57,6 +57,7 @@ class CrawlParams:
     stance_activation: float = 0.3               # proximal stiffening while pushing (keeps the pushed segment straight)
     steer_gain: float = 1.0                      # the hub aims at wanted + gain x (wanted - recent travel direction)
     steer_window_s: float = 2.0
+    steer_min_dist: float = 0.02                  # m: below this recent travel the hub steers on the wanted direction alone
     seed: int = 1
 
 
@@ -162,7 +163,7 @@ class Octopus:
             return self.travel
         recent = self.log_x[-1] - self.log_x[-1 - n]
         dist = np.linalg.norm(recent)
-        if dist < 0.02:
+        if dist < c.steer_min_dist:
             return self.travel
         err = self.travel - recent / dist
         t = self.travel + c.steer_gain * err

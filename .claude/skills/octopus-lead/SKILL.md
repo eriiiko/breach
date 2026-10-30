@@ -163,3 +163,26 @@ the lead so you decide all these things." Concretely:
   eight-arm sim at 16 x 2; a full gate run 2-8 min. Next: P6 is the port
   into the shared sim -- a design gate with Erik first (cost risk 3x, z in
   the chain, the OctopusDef row), then P7 render, P8 clips.
+- 2026-10-30 (P5z, worktree agent, Opus) -- the float game-scale 3-D step:
+  `arm_chain3d.py` (Bishop frame transported without trig, two signed bends
+  per node = the P1 constraint in each frame plane, floor with position-based
+  Coulomb, g_eff, a 1025-sample activation table), `arm_bank3d.py` (bodies with
+  z, views that let the 2-D hubs run INHERITED), the four 3-D sims, `game_scale.
+  mid_row()` -> `out/row_mid.toml`, `gates3d.py`. 33/35: P1 at mid scale
+  reproduces the 2-D numbers digit for digit (the law is exact similarity
+  where gravity does not enter; 3-D == 2-D in a plane to 1e-14, tilted plane
+  to 1e-13), table == tanh, lift works (116 kg prop at 0.2-0.35 m, 0 pops),
+  dead arm sinks and rests, free-animal COM 2.5e-13 m. Failed: P2 r (the known
+  0.87-0.94 miss) and NEW P2 heading drift (+59 deg on one seed; a 3-dial
+  sweep -- mu x S, the law's body, yaw damping x10 -- showed seed-dominated
+  wander, nothing adopted). No dial tuned, 16 x 2 kept. Learned: (1) the
+  gates' wall was the risk (3-D ~2x the 2-D per tick): each scenario its own
+  process (25 jobs, 14 workers) took the run to ~4.5 min -- batch independent
+  arms in one bank where a run has many (P1's 100 arms in one), parallelise
+  scenarios otherwise; (2) a "symmetric drag" for the no-slide gate must be
+  uniform-RATE (mass-proportional): with the real quadratic drag an idle
+  animal swims 3.8 m/min by drag nonlinearity; (3) the dead curled arm
+  unfurls 2.5 m across the deck on its passive stiffness at game scale (mu g
+  is 10x weaker relatively) -- #118 should give dead arms their own pose as
+  the passive target; (4) SIZES draws the arm ~1.9x thicker than the scaled
+  real arm and the body 510 vs 347 kg -- Erik's ruling before P6a.
