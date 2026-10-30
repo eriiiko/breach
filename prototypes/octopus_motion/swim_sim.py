@@ -105,6 +105,12 @@ class Swimmer:
 
     # -- one tick --------------------------------------------------------------
     def tick(self) -> None:
+        self._command()
+        self.bank.tick(self.body, self.root_local)
+        self._log()
+
+    def _command(self) -> None:
+        """The umbrella / jet state machine: this tick's root angle and jet impulse (P5z reuses it in 3-D)."""
         sw, dt = self.swim, self.chain.dt_tick
         self.t_mode += dt
         o, c = np.radians(sw.open_deg), np.radians(sw.closed_deg)
@@ -130,8 +136,9 @@ class Swimmer:
         if self.jet_force:
             h = np.array([np.cos(self.body.theta), np.sin(self.body.theta)])
             self.body.v += dt * self.jet_force * self.body.w * h
-        self.bank.tick(self.body, self.root_local)
-        self.time += dt
+
+    def _log(self) -> None:
+        self.time += self.chain.dt_tick
         self.log_t.append(self.time)
         self.log_x.append(self.body.x.copy())
         self.log_phi.append(self.phi)
