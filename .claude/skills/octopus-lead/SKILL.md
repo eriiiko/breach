@@ -262,3 +262,41 @@ the lead so you decide all these things." Concretely:
   tick (never its state) catches a 1-count dial change at tick 0. Cost: one
   session; full gates 7 min, long tol-0 ~2.5 min x 4 processes; the C++ is
   ~2 ms per octopus-tick (P6e measures properly).
+- 2026-10-31 (P6d1, worktree agent, Opus) -- the LIMP octopus in the shared
+  sim: `src/simulation/creature_system.py` (`CreatureBody` owns the solver's
+  buffers + the hub's integer state, own xorshift, elapsed-tick counters;
+  `CreatureSystem.tick` = slot 5b, ONE solver call per living creature in
+  unit-id order, the pose written back through `creature_fixed`; the ONE
+  serializer `serialize_record` / `decode_record` of the `__creature__`
+  section and the recorder ring), `[[creature]]` rows (`level_lib.
+  write_creatures`, the loader's door incl. a rest-pose-arms-on-open-floor
+  check, `Simulation.spawn_creatures`, match.toml), writer routing (slot 3,
+  OnePhaseWEGO, the AIM facing write and the round-end snap skip a creature;
+  the wave push is a body impulse through the coupling row
+  `apply_creature_wave_impulse`, vetoable), `GameMap.topology_serial` (the
+  sim-side twin of `render_dirty`, so a body re-reads its walls). Gates
+  (`tests/test_creature_body.py`, 18; `test_cuda_creature.py`): released
+  0.2 m up, every node on the deck at 2.21 s, never below it, last-second
+  motion 0.34 mm/s, free-node velocity 0.58 mm/s; CPU / `--cuda` /
+  `--resident` identical 48 ticks (field + tick digest + section); a planted
+  one-count flip located at its arm / node / axis; WEGO round boundary ==
+  continuous; pickle round trip; humans byte-identical with the octopus in
+  the room; golden + ship_demo pin unmoved. What failed first: (1) the
+  "speed < 1 mm/s" bound on STORED velocity fails forever on the two root
+  nodes -- they carry a standing ~5 mm/s velocity the attachment cancels
+  every substep (their motion is 0.3 mm/s): the reference's attachment +
+  rebuild behaviour, held at tol 0 by P6c, so the gate now bounds MOTION (all
+  nodes) and stored velocity (free nodes) and reports the root ghost --
+  worth a look in P6e or before P6d2's anchors read root velocities; (2)
+  `obstacles` does not carry unit stamps (a unit is permeability 0.5), so
+  "only the crown's stamp differs" is asserted on `dyn_permeability` /
+  `dyn_heat_atten_q` / `dyn_wave_absorb`; (3) the worktree's copied
+  `cpp/build` and `cpp/build_cuda` caches pointed at other checkouts and
+  predated P6c: rebuild both first (`build_cpu_home.bat` uses --fresh; move
+  the CUDA dir aside). Skipped: the Simulation as a whole does not pickle
+  today (its module handle and the C++ PhysicsEngine), so the pickle gate
+  round-trips the creature system mid-run; the `creature` controller (P6d2);
+  `hit_tiles` (P6d3). Learned: two pre-existing tests pinned the coupling
+  table's exact rows / index -- a table designed to grow; rewritten to the
+  property. Cost: one session; ~2.1 ms per solver call, ~3.7 ms per tick on
+  a 30 x 30 flooded room vs 1.1 ms without the octopus (rough, P6e measures).

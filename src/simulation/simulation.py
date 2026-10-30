@@ -1693,8 +1693,8 @@ class Simulation:
                                         self._creature_system)
 
         # 9c3. Gas coupling rows (mechanics/05 §1 gas[teargas] / gas[poison]
-        # — exchange.COUPLING_TABLE[4..5], W3; [3] is the creature push row). Read the post-physics gas
-        # planes at each living unit's footprint: teargas above threshold
+        # — exchange.COUPLING_TABLE[4..5], W3; [3] is the creature push row).
+        # Read the post-physics gas planes at each living unit's footprint: teargas above threshold
         # applies BLINDED (snap-cone fire from next tick — the step-2b
         # trigger-position semantics); poison above threshold emits one
         # POISON packet per tick through the mechanics/06 pipeline (zombies
