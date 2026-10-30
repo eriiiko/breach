@@ -252,6 +252,49 @@ def node_masses_kg(nodes: int, arm_length_m: float, radius_base_m: float,
     return m
 
 
+def node_bend_stiffness_q16(nodes: int, radius_base_m: float, radius_tip_m: float,
+                            k_bend: float, k_passive_frac: float
+                            ) -> tuple[tuple, tuple]:
+    """The bend stiffness at each INTERIOR node (1 .. n-2), Q16 N m/rad, quantized
+    once (round half away): ``(k_active, k_passive)`` with
+    ``k_active_j = k_bend (r_j / r_base)^3`` (torque ~ area x lever) and
+    ``k_passive_j = k_passive_frac k_bend (r_j / r_base)^3`` -- the prototype's
+    ``Chain3D.k_active`` / ``k_passive`` exactly. The solver forms
+    ``k_j = k_passive_j + activation_j k_active_j`` per substep in integers
+    (#106 P6b; the integer reference and P6c both read these)."""
+    r = node_radii_m(nodes, radius_base_m, radius_tip_m)
+    act, pas = [], []
+    for j in range(1, int(nodes) - 1):
+        ratio = r[j] / radius_base_m
+        c = ratio * ratio * ratio
+        act.append(q16_from_stiffness(k_bend * c))
+        pas.append(q16_from_stiffness(k_passive_frac * k_bend * c))
+    return tuple(act), tuple(pas)
+
+
+def node_drag_k_q16(nodes: int, arm_length_m: float, radius_base_m: float,
+                    radius_tip_m: float, water_density: float, c_per: float,
+                    c_tan: float) -> tuple[tuple, tuple]:
+    """Each node's quadratic drag coefficients ``(K_per, K_tan)`` in Q16 kg/m,
+    quantized once (round half away): the node owns half of each adjacent
+    segment, ``l_i``; ``K_per = rho/2 (2 r_i l_i) c_per`` (the projected area)
+    and ``K_tan = rho/2 (2 pi r_i l_i) c_tan`` (the wetted area) -- the
+    prototype's ``Chain3D._K_per0`` / ``_K_tan0`` (Yekutieli I's measured
+    coefficients). The drag RATE the solver uses is ``K w / (tps substeps)``,
+    formed in integers from these and the node's ``w`` (#106 P6b)."""
+    n = int(nodes)
+    r = node_radii_m(n, radius_base_m, radius_tip_m)
+    seg = arm_length_m / (n - 1)
+    kp, kt = [], []
+    for i in range(n):
+        l_node = (0.5 * seg if i > 0 else 0.0) + (0.5 * seg if i < n - 1 else 0.0)
+        kp.append(_round_half_away(0.5 * water_density * (2.0 * r[i] * l_node)
+                                   * c_per * _Q16_ONE_F))
+        kt.append(_round_half_away(0.5 * water_density * (2.0 * math.pi * r[i] * l_node)
+                                   * c_tan * _Q16_ONE_F))
+    return tuple(kp), tuple(kt)
+
+
 # ---------------------------------------------------------------------------
 # The headroom check
 # ---------------------------------------------------------------------------
@@ -468,5 +511,6 @@ __all__ = [
     "q16_from_kg", "q16_from_stiffness", "q16_from_scalar", "inv_mass_q32",
     "pose_to_unit_anchor", "unit_anchor_to_pose", "heading_rad_to_facing",
     "facing_to_heading_rad", "node_radii_m", "node_masses_kg",
+    "node_bend_stiffness_q16", "node_drag_k_q16",
     "HeadroomBound", "ChainHeadroom", "chain_headroom",
 ]

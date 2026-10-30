@@ -553,7 +553,42 @@ def get_creature(name: str) -> CreatureDef:
     return creature_table().get(name)
 
 
+def scale_row_by_law(row: dict, arm_length_m: float) -> dict:
+    """A RAW ``[creatures.*]`` row (the toml dict) rescaled to another arm
+    length by P5z's same-duration similarity law (prototypes/octopus_motion/
+    README.md P5z): lengths S, masses S^3, k_dist S^3, k_bend S^5, grips S^4,
+    torque damping S^5, areas S^2, speeds S; durations, ratios, angles and
+    probabilities unchanged. Returns a deep copy; the door still judges it.
+    The one place the law is written in code (the P6a door test and the P6b
+    integer reference's headroom gate both call it, #106)."""
+    import copy
+    r = copy.deepcopy(row)
+    S = float(arm_length_m) / float(r["body"]["arm_length_m"])
+    b = r["body"]
+    for k in ("arm_length_m", "radius_base_m", "radius_tip_m",
+              "body_radius_m", "mantle_long_m"):
+        b[k] *= S
+    b["body_mass_kg"] *= S ** 3
+    b["body_crawl_area_m2"] *= S ** 2
+    b["body_rot_damp"] *= S ** 5
+    r["tissue"]["k_dist"] *= S ** 3
+    r["tissue"]["k_bend"] *= S ** 5
+    r["reach"]["front_width_m"] *= S
+    r["crawl"]["grip_limit"] *= S ** 4
+    r["crawl"]["steer_min_dist"] *= S
+    r["swim"]["jet_dv"] *= S
+    r["swim"]["body_area_m2"] *= S ** 2
+    g = r["grab"]
+    g["prop_mass"] *= S ** 3
+    for k in ("prop_radius", "sucker_reach", "carry_jet_dv"):
+        g[k] *= S
+    g["prop_at_m"] = [v * S for v in g["prop_at_m"]]
+    g["grip_limit"] *= S ** 4
+    return r
+
+
 __all__ = [
+    "scale_row_by_law",
     "BodyDef", "TissueDef", "SolverDef", "ReachDef", "CrawlDef", "SwimDef",
     "GrabDef", "IdleDef", "RulesDef", "CreatureDef", "CreatureTable",
     "build_creature", "creature_table", "rebuild_creature_table",
