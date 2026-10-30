@@ -70,7 +70,10 @@ EMITTER_INPUTS = {
                              "faded on the wall clock) -- the jets, the plasma bolts "
                              "and (#33) the bullets' muzzle flashes"),
     "fire":       ("sim",    "temperature -- the sweep's own thermal emission "
-                             "a_c * L°[T], never a row"),
+                             "a_c * L°[T], never a row; its LIGHT (never its heat) "
+                             "is scaled per burning tile by the render-state "
+                             "flicker (graphics G3 F4b: renderer/fire_flicker.py "
+                             "through emit_mult_rows)"),
     "sky":        ("sim",    "the level's boundary type + [light.sky] config (the ring)"),
 }
 
@@ -78,6 +81,8 @@ CONE_TURN = 65536            # one turn in Q16 turns == RadiationSweep.CONE_TURN
 OMNI_EPS = 0.01              # spread >= 2*pi - eps is omni (the old march's cone test, kept)
 LIGHT_CONE_BUDGET = 1 << 44  # == RadiationSweep.LIGHT_CONE_BUDGET (the sweep's door)
 LIGHT_SKY_MAX = 1 << 40      # == RadiationSweep.LIGHT_SKY_MAX
+LIGHT_EMIT_MULT_MAX = 16 << 16  # == RadiationSweep.LIGHT_EMIT_MULT_MAX (16 ONE, Q16: the fire's
+#   light gain x its flicker; the int64 headroom argument is radiation_sweep.h's)
 
 # The shipped flashlight / cursor-lamp numbers (moved verbatim from main.py).
 FLASHLIGHT_INTENSITY = 2.5
@@ -289,6 +294,32 @@ def cone_rows(specs: Sequence, grid_w: int, grid_h: int, fine_bits: int) -> np.n
     return np.ascontiguousarray(a)
 
 
+def emit_mult_rows(ys, xs, mult, grid_w: int, grid_h: int) -> np.ndarray:
+    """THE FIRE'S LIGHT FLICKER's door (graphics G3 F4b; design §6.3, RULED
+    D): per-tile float multipliers -> the sweep's EMISSION-MULTIPLIER rows
+    ``(y, x, mult_q)``, (n, 3) int64 for ``Simulation.set_light(...,
+    emit_mult=)``. The render-side quantization, once: mult_q = round(mult x
+    2^16), clamped to the sweep's door [0, LIGHT_EMIT_MULT_MAX] (a non-finite
+    value is ONE: no flicker rather than a refusal mid-tick). Off-grid tiles
+    are skipped (the ``partition_lights`` rule) and a tile named twice keeps
+    its FIRST row (the door refuses duplicates by name, so the assembly never
+    hands it one). Render state like the cone rows: it scales the cell's
+    THERMAL light emission only -- heat never reads it, nothing digests it."""
+    ys = np.asarray(ys, dtype=np.int64).ravel()
+    xs = np.asarray(xs, dtype=np.int64).ravel()
+    m = np.asarray(mult, dtype=np.float64).ravel()
+    if not (ys.size == xs.size == m.size):
+        raise ValueError("emit_mult_rows: ys, xs and mult must have one entry per tile")
+    ok = (ys >= 0) & (ys < int(grid_h)) & (xs >= 0) & (xs < int(grid_w))
+    ys, xs, m = ys[ok], xs[ok], m[ok]
+    m = np.where(np.isfinite(m), m, 1.0)
+    q = np.clip(np.rint(m * float(1 << 16)), 0, LIGHT_EMIT_MULT_MAX).astype(np.int64)
+    _, first = np.unique(ys * int(grid_w) + xs, return_index=True)
+    first.sort()
+    rows = np.stack([ys[first], xs[first], q[first]], axis=1) if first.size         else np.zeros((0, 3), dtype=np.int64)
+    return np.ascontiguousarray(rows.astype(np.int64))
+
+
 def sky_for_level(boundary: str, cfg, bp, n_ordinates: int = 16):
     """THE SKY's door (P6b brief §1.4; design §2.7): the light ring's per-
     ordinate RGB, (n_ordinates, 3) int64 in L°'s currency, from the level's
@@ -350,6 +381,8 @@ __all__ = [
     "MUZZLE_FLASH_MAX_TOTAL",
     "spec_cone_row",
     "cone_rows",
+    "LIGHT_EMIT_MULT_MAX",
+    "emit_mult_rows",
     "sky_for_level",
     "monotonic_total_tick",
     "partition_lights",

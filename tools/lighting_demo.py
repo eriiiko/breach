@@ -91,6 +91,19 @@ Headless flags (no human at the keyboard):
                      develop, then measure N (default 300) rendered frames of
                      the NEW gas-medium path and again with legacy_smoke_on,
                      printing mean/95th-percentile ms/frame for both.
+    --fire-vfx-perf [N]  graphics G3 F1/F2: the FLAME VFX loop's CPU ms
+                     (update; pass submission) and GPU ms (GL_TIME_ELAPSED,
+                     tools/gl_timer.py; starved and queued) measured
+                     SEPARATELY over N (600) frames at the 60 fps game
+                     cadence of the current --level after a 5 s warm-up, plus
+                     the VRAM of its fields, and (G3 F3) the fire DRAW's
+                     CPU / GPU ms per stage-call sum (shaders/fire_glow.fs)
+                     and the loop + draw totals, and (G3 F4a) the EMBERS
+                     (CPU update + draw, GPU draw) and the heat SHIMMER (CPU
+                     pack; GPU = the resolve with it on minus off, forced to
+                     full strength). fire_smoke_studio lights itself;
+                     elsewhere add --perf-ignite "X,Y;X,Y" (the heat-only
+                     [payloads.studio_ignite] at each tile).
     --shots [A,B]   graphics G0 P3: render the named LOOK SHOTS of
                      tools/look_shots.toml (all, or the comma-separated
                      subset) to scratchpad/look/<name>_<git-sha>.png, one
@@ -766,10 +779,13 @@ def _look_camera(shot, level, map_px_w: int, map_px_h: int) -> Camera2D:
     return cam
 
 
-def _capture_map_viewport(renderer, out_path: str) -> None:
+def _capture_map_viewport(renderer, out_path: str, gmap=None) -> None:
     """Read the back buffer right after the world blit (no HUD, no panel)
     and save the map viewport alone. ``take_screenshot`` would drop the
-    directory (raylib writes to its own base path) and include the panel."""
+    directory (raylib writes to its own base path) and include the panel.
+    With ``gmap``, also writes the shot's META beside it
+    (``tools.look_shots.write_shot_meta``: the camera and the hot / burning
+    tiles -- what a metric over the PNG needs to project a tile mask)."""
     cam = renderer.camera
     img = rl.load_image_from_screen()
     try:
@@ -781,6 +797,9 @@ def _capture_map_viewport(renderer, out_path: str) -> None:
         rl.export_image(img, str(Path(out_path).resolve()))
     finally:
         rl.unload_image(img)
+    if gmap is not None:
+        from tools.look_shots import write_shot_meta
+        write_shot_meta(out_path, cam, gmap, renderer.blackbody_ramp)
 
 
 # ---------------------------------------------------------------------------
@@ -1117,8 +1136,10 @@ def _run_perf_bench(renderer, sim, lights_in, light_sky,
 
             total_tick = monotonic_total_tick(sim.turn_number, ticks_per_round,
                                               sim.tick)
+            # --perf steps one tick per frame (alpha = 0, never paused).
             renderer.upload_state(sim.gmap, sim_tick=total_tick,
-                                  light_serial=sim.light_serial)
+                                  light_serial=sim.light_serial,
+                                  alpha=0.0, paused=False)
             renderer.begin_frame()
             renderer.compose_world(units_marines=sim.marines(),
                                    units_zombies=sim.zombies(),
@@ -1157,6 +1178,294 @@ def _run_perf_bench(renderer, sim, lights_in, light_sky,
     renderer.legacy_smoke_on = False   # leave the renderer at the shipped default
 
     print("OK — perf pass complete (--perf)")
+
+
+# ---------------------------------------------------------------------------
+# Graphics G3 F1/F2 -- the FLAME VFX perf pass (design §4, §13.10): CPU and
+# GPU time of the flame pass chain measured SEPARATELY, plus the VRAM of its
+# fields, on the current --level, AT THE GAME'S CADENCE: frames at 60 fps of
+# virtual time, the sim stepping at its tps through main.py's accumulator
+# (alpha passed), so a frame runs the substeps a 60 fps game frame runs
+# (~2.5 at dt 1/120) and the per-tick repack lands on ~40 % of frames.
+# ---------------------------------------------------------------------------
+
+FIRE_VFX_PERF_WARMUP_TICKS = 120   # fire_smoke_studio lights itself at 0.5 s
+FIRE_VFX_PERF_FPS = 60.0
+
+_BUSY_FS = """#version 330
+out vec4 finalColor;
+void main() {
+    vec2 p = gl_FragCoord.xy;
+    float a = 0.0;
+    for (int i = 0; i < 8; ++i) a += sin(p.x * 0.01 + float(i)) * cos(p.y * 0.01);
+    finalColor = vec4(a);
+}
+"""
+
+
+def _parse_fire_vfx_perf() -> Optional[int]:
+    """``--fire-vfx-perf [N]`` -- measure N frames (default 600)."""
+    if "--fire-vfx-perf" not in sys.argv:
+        return None
+    v = _argv_value("--fire-vfx-perf")
+    try:
+        return max(1, int(v)) if v and not v.startswith("--") else 600
+    except ValueError:
+        return 600
+
+
+def _parse_perf_ignite() -> list:
+    """``--perf-ignite "X,Y;X,Y"`` -- tiles lit before the warm-up with the
+    canonical heat-only igniter ``[payloads.studio_ignite]`` (CLAUDE.md
+    "Starting a fire"; a fire the sim makes hot, so the flame source law --
+    which needs the tile above the glow floor -- sees it)."""
+    v = _argv_value("--perf-ignite")
+    if not v:
+        return []
+    return [tuple(int(c) for c in p.split(",")) for p in v.split(";") if p]
+
+
+def _run_fire_vfx_perf(renderer, sim, lights_in, light_sky,
+                       sim_time_per_tick: float, ticks_per_round: int,
+                       frames: int, ignite: list) -> None:
+    from gl_timer import GLTimer
+    rl.set_target_fps(0)
+    vfx = renderer.fire_vfx
+    grid_h, grid_w = sim.gmap.solid.shape
+    if ignite:
+        payload = sim.weapons_tables.payloads.by_name["studio_ignite"]
+        for (x, y) in ignite:
+            execute_payload(sim.gmap, sim.edit_queue, sim.units, y, x,
+                            payload, sim.rng, events=[], kind="charge")
+
+    def _lit_step():
+        total = monotonic_total_tick(sim.turn_number, ticks_per_round, sim.tick)
+        sim.set_light(True, demo_light_rows(lights_in, total, sim_time_per_tick,
+                                            grid_w, grid_h), light_sky)
+        _step_keep_running(sim)
+
+    for _ in range(FIRE_VFX_PERF_WARMUP_TICKS):
+        _lit_step()
+
+    timer = GLTimer()
+    sim_fn = vfx.simulate
+    # GL_TIME_ELAPSED spans GPU time between the two query points -- if the
+    # GPU drains the chain faster than Python submits it, the span includes
+    # the GPU WAITING for the next pass ("starved", what a frame costs the
+    # GPU timeline as the game runs it). The "queued" measurement first gives
+    # the GPU a few ms of dummy fill work, so the whole chain is submitted
+    # before the GPU reaches it and the span is pure execution (shaders + FBO
+    # switches). Both are reported.
+    busy = rcore.PingPong(2048, 2048, fp32=True)
+    busy_sh = rcore.load_pass_shader(_BUSY_FS)
+    gl = rcore.GLDirect.get()
+    mode = {"queued": False}
+
+    def _busy_gpu():
+        with rcore.DirectPasses() as gp:
+            gp.use(busy_sh)
+            gl.Uniform4fv(rl.get_shader_location(busy_sh, "u_boxes"), 4,
+                          gl.floats([0, 0, 2048, 2048] * 4))
+            gl.Uniform2f(rl.get_shader_location(busy_sh, "u_target"),
+                         2048.0, 2048.0)
+            for _ in range(3):
+                busy.direct_pass(gp, 4)
+
+    def timed_simulate():
+        if mode["queued"]:
+            _busy_gpu()
+        timer.begin()
+        n = sim_fn()
+        timer.end()
+        return n
+
+    vfx.simulate = timed_simulate
+    # G3 F3: THE fire draw (shaders/fire_glow.fs, FireVFXPass.draw_glow) --
+    # each stage call timed on the CPU in the starved half (no GPU query:
+    # its two ctypes calls cost ~35 us a stage) and on the GPU, with its own
+    # query, in the queued half (one raylib batch flush per stage, so the
+    # stage's GPU work is inside; the busy fill keeps the GPU behind)
+    draw_fn = vfx.draw_glow
+    draw_timers = {}
+    draw_frame = {"cpu": 0.0, "stages": []}
+
+    def timed_draw(stage, rects, **kw):
+        if not mode["queued"]:
+            t0 = time.perf_counter()
+            n = draw_fn(stage, rects, **kw)
+            draw_frame["cpu"] += (time.perf_counter() - t0) * 1000.0
+            draw_frame["stages"].append(stage)
+            return n
+        t = draw_timers.setdefault(stage, GLTimer())
+        t.begin()
+        n = draw_fn(stage, rects, **kw)
+        t.end()
+        draw_frame["stages"].append(stage)
+        return n
+
+    vfx.draw_glow = timed_draw
+    # G3 F4a: the EMBERS (CPU update from the embers' own clock; the draw,
+    # both stages, CPU in the starved half, GPU in the queued half) and the
+    # heat SHIMMER (its CPU pack; its GPU cost = the resolve's GPU time with
+    # the shimmer on minus off, alternated frame by frame in the queued
+    # half). The shimmer is forced to full strength at any zoom for the
+    # measurement (the perf camera may sit below [render.shimmer]
+    # zoom_full), and restored after.
+    sh_cfg = CFG.render.shimmer
+    sh_saved = (sh_cfg.zoom_zero, sh_cfg.zoom_full)
+    sh_cfg.zoom_zero, sh_cfg.zoom_full = 0.0, 1e-3
+    emb_fn = renderer._draw_embers
+    emb_timer = GLTimer()
+    emb_frame = {"cpu": 0.0, "gpu": 0.0}
+
+    def timed_embers(*a, **kw):
+        if not mode["queued"]:
+            t0 = time.perf_counter()
+            n = emb_fn(*a, **kw)
+            emb_frame["cpu"] += (time.perf_counter() - t0) * 1000.0
+            return n
+        emb_timer.begin()
+        n = emb_fn(*a, **kw)
+        emb_timer.end()
+        emb_frame["gpu"] += emb_timer.result_ms()
+        return n
+
+    renderer._draw_embers = timed_embers
+    res_fn = renderer.world.resolve
+    res_timer = GLTimer()
+    res_frame = {"gpu": 0.0, "shimmer": 0.0, "active": 0.0}
+
+    def timed_resolve(*a, **kw):
+        if not mode["queued"]:
+            return res_fn(*a, **kw)
+        on = (len(rows) % 2) == 0
+        if not on:
+            kw["shimmer"] = None
+        res_frame["shimmer"] = float(on)
+        res_frame["active"] = float(renderer.shimmer.active(
+            renderer.world.world_px_per_tile))
+        res_timer.begin()
+        out = res_fn(*a, **kw)
+        res_timer.end()
+        res_frame["gpu"] = res_timer.result_ms()
+        return out
+
+    renderer.world.resolve = timed_resolve
+    spt = 1.0 / float(CFG.clock.ticks_per_second)
+    accum = 0.0
+    rows = []
+    try:
+        for i in range(PERF_WARMUP_FRAMES + 2 * frames):
+            mode["queued"] = i >= PERF_WARMUP_FRAMES + frames
+            accum += 1.0 / FIRE_VFX_PERF_FPS
+            while accum >= spt:
+                accum -= spt
+                _lit_step()
+            total_tick = monotonic_total_tick(sim.turn_number, ticks_per_round,
+                                              sim.tick)
+            renderer.upload_state(sim.gmap, sim_tick=total_tick,
+                                  light_serial=sim.light_serial,
+                                  alpha=accum / spt, paused=False)
+            draw_frame["cpu"], draw_frame["stages"] = 0.0, []
+            emb_frame["cpu"] = emb_frame["gpu"] = 0.0
+            res_frame["gpu"] = 0.0
+            renderer.begin_frame()
+            renderer.compose_world(units_marines=sim.marines(),
+                                   units_zombies=sim.zombies(),
+                                   projectiles=sim.projectiles)
+            renderer.draw_background_to_screen()
+            renderer.blit_world_to_screen()
+            renderer.end_frame()
+            g = timer.result_ms()
+            g_draw = (sum(draw_timers[st].result_ms()
+                          for st in draw_frame["stages"])
+                      if mode["queued"] else 0.0)
+            if i >= PERF_WARMUP_FRAMES:
+                cells = sum((x1 - x0) * (y1 - y0)
+                            for x0, y0, x1, y1 in vfx.region.boxes)
+                rows.append((vfx.last_update_ms, vfx.last_simulate_ms, g,
+                             vfx.passes_last_frame, vfx.substeps_last_frame,
+                             cells, float(mode["queued"]), draw_frame["cpu"],
+                             g_draw, len(draw_frame["stages"]),
+                             renderer.embers.last_update_ms, emb_frame["cpu"],
+                             emb_frame["gpu"], float(renderer.embers.p.n),
+                             renderer.shimmer.last_update_ms,
+                             res_frame["gpu"], res_frame["shimmer"],
+                             res_frame["active"]))
+    finally:
+        vfx.simulate = sim_fn
+        vfx.draw_glow = draw_fn
+        renderer._draw_embers = emb_fn
+        renderer.world.resolve = res_fn
+        sh_cfg.zoom_zero, sh_cfg.zoom_full = sh_saved
+        emb_timer.delete()
+        res_timer.delete()
+        for t in draw_timers.values():
+            t.delete()
+        timer.delete()
+        busy.unload()
+        rl.unload_shader(busy_sh)
+    a_all = np.asarray(rows, dtype=np.float64)
+    a = a_all[a_all[:, 6] == 0]          # starved: the game's own timeline
+    q = a_all[a_all[:, 6] == 1]          # queued: pure GPU execution
+
+    def stat(arr, col):
+        return (f"mean {arr[:, col].mean():6.3f}  p95 "
+                f"{np.percentile(arr[:, col], 95):6.3f}")
+
+    burning = int(vfx._pack.burning.sum()) if vfx._pack is not None else 0
+    cpu = a[:, 0] + a[:, 1]
+    print(f"[fire_vfx perf] level {grid_w}x{grid_h} tiles, {frames} frames x2 "
+          f"at {FIRE_VFX_PERF_FPS:.0f} fps game cadence (+{PERF_WARMUP_FRAMES} "
+          f"warm-up, +{FIRE_VFX_PERF_WARMUP_TICKS} ticks)")
+    print(f"[fire_vfx perf] burning tiles {burning}, boxes {vfx.region.boxes}, "
+          f"active tiles mean {a[:, 5].mean():.0f}, m={vfx.settings.m}, "
+          f"n_jacobi={vfx.settings.dials.n_jacobi}, dt_s="
+          f"{vfx.settings.dials.dt_s:.5f}, fields fp32={vfx.flame.fp32}")
+    print(f"[fire_vfx perf] passes/frame {a[:, 3].mean():.1f}, "
+          f"substeps/frame {a[:, 4].mean():.2f}")
+    print(f"[fire_vfx perf] CPU update (clock+pack+region+upload) ms  {stat(a, 0)}")
+    print(f"[fire_vfx perf] CPU simulate (pass submission) ms        {stat(a, 1)}")
+    print(f"[fire_vfx perf] CPU total ms                             mean "
+          f"{cpu.mean():6.3f}  p95 {np.percentile(cpu, 95):6.3f}")
+    print(f"[fire_vfx perf] GPU simulate, starved (GL_TIME_ELAPSED) ms {stat(a, 2)}")
+    print(f"[fire_vfx perf] GPU simulate, queued (pure) ms           {stat(q, 2)}")
+    sub = max(a[:, 4].mean(), 1e-9)
+    print(f"[fire_vfx perf] DRAW (F3, fire_glow.fs, {a[:, 9].mean():.1f} "
+          f"stages/frame) CPU ms {stat(a, 7)}")
+    print(f"[fire_vfx perf] DRAW GPU ms (queued: pure, the GPU still behind "
+          f"the busy fill) {stat(q, 8)}")
+    tot_cpu = cpu + a[:, 7]
+    print(f"[fire_vfx perf] TOTAL loop + draw: CPU ms mean {tot_cpu.mean():6.3f}"
+          f"  p95 {np.percentile(tot_cpu, 95):6.3f} ; GPU (queued sim + "
+          f"draw) ms mean {(q[:, 2] + q[:, 8]).mean():6.3f}")
+    # G3 F4a: the embers and the shimmer
+    emb_cpu = a[:, 10] + a[:, 11]
+    print(f"[fire_vfx perf] EMBERS alive mean {a[:, 13].mean():.1f} (max "
+          f"{a[:, 13].max():.0f}); CPU update ms {stat(a, 10)}; CPU draw ms "
+          f"{stat(a, 11)}")
+    print(f"[fire_vfx perf] EMBERS GPU draw ms (queued) {stat(q, 12)}")
+    tot_emb = tot_cpu + emb_cpu
+    print(f"[fire_vfx perf] TOTAL fire VFX incl. embers: CPU ms mean "
+          f"{tot_emb.mean():6.3f}  p95 {np.percentile(tot_emb, 95):6.3f} ; "
+          f"GPU flame + embers ms mean "
+          f"{(q[:, 2] + q[:, 8] + q[:, 12]).mean():6.3f}")
+    on, off = q[q[:, 16] == 1], q[q[:, 16] == 0]
+    print(f"[fire_vfx perf] SHIMMER CPU pack ms {stat(a, 14)} ; active in "
+          f"{100 * on[:, 17].mean():.0f} % of its frames")
+    print(f"[fire_vfx perf] RESOLVE GPU ms: shimmer on {stat(on, 15)} ; off "
+          f"{stat(off, 15)} ; SHIMMER GPU = on - off = "
+          f"{on[:, 15].mean() - off[:, 15].mean():6.3f} ms "
+          f"(world RT {renderer.world.world_px_w}x"
+          f"{renderer.world.world_px_h})")
+    print(f"[fire_vfx perf] per substep: CPU submit {a[:, 1].mean() / sub:.3f} ms, "
+          f"GPU starved {a[:, 2].mean() / sub:.4f} ms, GPU queued "
+          f"{q[:, 2].mean() / max(q[:, 4].mean(), 1e-9):.4f} ms")
+    print(f"[fire_vfx perf] VRAM: fields {(vfx.vel.vram_bytes + vfx.flame.vram_bytes) / 2**20:.1f} MiB "
+          f"(vel {vfx.vel.width}x{vfx.vel.height}, flame "
+          f"{vfx.flame.width}x{vfx.flame.height}, x2 buffers), "
+          f"total {vfx.vram_bytes / 2**20:.1f} MiB")
+    print("OK — fire VFX perf pass complete (--fire-vfx-perf)")
 
 
 # ---------------------------------------------------------------------------
@@ -1275,6 +1584,15 @@ def main() -> None:
         finally:
             renderer.shutdown()
         return
+    fire_perf_frames = _parse_fire_vfx_perf()
+    if fire_perf_frames is not None:
+        try:
+            _run_fire_vfx_perf(renderer, sim, lights_in, light_sky,
+                               sim_time_per_tick, ticks_per_round,
+                               fire_perf_frames, _parse_perf_ignite())
+        finally:
+            renderer.shutdown()
+        return
 
     # FINAL keybindings (B2 P5, design §8 human-test readiness) — the FULL
     # map, also drawn on the panel (see the on-screen block in _draw_panel).
@@ -1294,8 +1612,10 @@ def main() -> None:
           "P/Shift+P=tilt ship +/-2 deg")
     print("[lighting_demo] KEYS -- shared render toggles (poll_toggles, "
           "same in the main game):")
-    print("[lighting_demo]   F1=grid  F2=smoke  F3=fire(legacy overlay)  "
+    print("[lighting_demo]   F1=grid  F2=smoke  F3=flame A/B (mask/thickness/off)  "
           "F4=lighting  F5=normal-map  F6=debug coords  F7=pressure")
+    print("[lighting_demo]   Shift+F3=embers on/off  Ctrl+F3=heat shimmer "
+          "on/off (G3 F4a)")
     print("[lighting_demo]   F9=legacy smoke A/B  F10=speckle A/B "
           "(off/noise/soot)  T=temperature")
     print("[lighting_demo]   V=water optics  M=3D units  B=bilinear  "
@@ -1375,6 +1695,19 @@ def main() -> None:
         renderer.show_temperature &= "heat" not in look_shot.hide
         renderer.show_smoke &= "smoke" not in look_shot.hide
         renderer.show_water &= "water" not in look_shot.hide
+        # graphics G3 F3: the flame is its own layer (the heat layer is
+        # "heat"); a shot may hide it
+        if "flame" in look_shot.hide:
+            renderer.fire_vfx.emission_override = "off"
+        # graphics G3 F4a: the embers and the heat shimmer (Shift+F3 /
+        # Ctrl+F3's toggles), each hideable on its own
+        if "embers" in look_shot.hide:
+            renderer.embers.enabled_override = False
+        if "shimmer" in look_shot.hide:
+            renderer.shimmer.enabled_override = False
+        # graphics G3 F2: a shot may open a flame VFX debug view (F11's cycle)
+        if look_shot.fire_debug:
+            renderer.fire_vfx.debug_override = look_shot.fire_debug
 
     # The flat FLOOR opens where [render.lighting] floor sits (the config
     # mirrors below win over a saved preset's stale copy, same rule): a saved
@@ -1583,6 +1916,11 @@ def main() -> None:
         return demo_light_rows(lights_in, total, sim_time_per_tick, grid_w,
                                grid_h, state=state, mouse_f=mouse_f)
 
+    # graphics G3 F4b: the fire's room-light rows -- its gain x its flicker
+    # (main.py's rule: handed with the cone rows each tick; None = none)
+    def _flicker_now():
+        return renderer.fire_light_rows(grid_w, grid_h)
+
     try:
         while not renderer.should_close():
             now = time.perf_counter()
@@ -1713,7 +2051,7 @@ def main() -> None:
                     # future headless look-check). The --perf pass already
                     # steps this way for the same reason.
                     lit_rows = _light_rows_now(mouse_f)
-                    sim.set_light(True, lit_rows, light_sky)
+                    sim.set_light(True, lit_rows, light_sky, _flicker_now())
                     sim.step()
                     stepped = True
                 else:
@@ -1721,7 +2059,7 @@ def main() -> None:
                     steps = 0
                     while tick_accum >= sim_dt and steps < max_catch_up:
                         lit_rows = _light_rows_now(mouse_f)
-                        sim.set_light(True, lit_rows, light_sky)
+                        sim.set_light(True, lit_rows, light_sky, _flicker_now())
                         sim.step()
                         stepped = True
                         tick_accum -= sim_dt
@@ -1730,7 +2068,7 @@ def main() -> None:
                 rows = _light_rows_now(mouse_f)
                 if (lit_rows is None or not np.array_equal(rows, lit_rows)
                         or now - last_relight > 0.25):
-                    sim.set_light(True, rows, light_sky)
+                    sim.set_light(True, rows, light_sky, _flicker_now())
                     sim.relight()
                     lit_rows, last_relight = rows, now
 
@@ -1869,8 +2207,14 @@ def main() -> None:
             # ---- Upload physics state ----
             # total_tick (the MONOTONIC sim clock above) drives the P3 gas-detail
             # crossfade too — sim tick, never wall time (replay-identical smoke).
+            # alpha (graphics G3 §13.3): headless shots step exactly one
+            # tick per frame, so alpha = 0 and every frame runs the same 5
+            # flame substeps as a 24 tps game; interactive = the accumulator's
+            # sub-tick fraction. A paused demo idles the flame on wall time.
             renderer.upload_state(sim.gmap, sim_tick=total_tick,
-                                  light_serial=sim.light_serial)
+                                  light_serial=sim.light_serial,
+                                  alpha=0.0 if auto else tick_accum / sim_dt,
+                                  paused=bool(state.paused))
             renderer.consume_events(sim.tick_events)
             renderer._advance_effects(dt)
 
@@ -1905,7 +2249,7 @@ def main() -> None:
             # Look shot (G0 P3): capture the LAST frame's map viewport now,
             # after the world blit and before the HUD / panel draw over it.
             if look is not None and frames + 1 >= AUTO_FRAMES:
-                _capture_map_viewport(renderer, look[2])
+                _capture_map_viewport(renderer, look[2], sim.gmap)
 
             # ---- HUD ----
             _draw_hud(renderer, sim.gmap, state, now, cursor=auto_cursor)

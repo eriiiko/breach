@@ -251,10 +251,11 @@ class Simulation:
         # simulation.ruleset.OnePhaseWEGO.ticks_per_round.
         self._onephase_ticks_per_round = CFG.clock.onephase_ticks_per_round
 
-        # ray-engine-v2 P6b: the renderer's light request and its two render-
-        # state inputs (cone emitters, sky), held HERE so a reset() -- which
-        # builds a fresh PhysicsRunner -- re-applies them (set_light).
-        self._light = (False, None, None)
+        # ray-engine-v2 P6b: the renderer's light request and its render-
+        # state inputs (cone emitters, sky; G3 F4b: the fire flicker), held
+        # HERE so a reset() -- which builds a fresh PhysicsRunner -- re-applies
+        # them (set_light).
+        self._light = (False, None, None, None)
 
         # Build the world & RNG.
         self._reset_internal(seed)
@@ -1205,21 +1206,26 @@ class Simulation:
     # renderer's W6 effect queue -- so `light_q` is not sim-pure until P7
     # separates them (CLAUDE.md); none of this touches a synced field.
     # ------------------------------------------------------------------
-    def set_light(self, requested: bool, cones=None, sky=None) -> None:
+    def set_light(self, requested: bool, cones=None, sky=None,
+                  emit_mult=None) -> None:
         """Request (or stop requesting) the light channels, and hand the
-        cone-emitter rows ((n, 7) int64, renderer/frame_lights.py) and the sky
-        ((16, 3) int64) the next light computation reads. No-op without a
-        physics runner."""
-        self._light = (bool(requested), cones, sky)
+        cone-emitter rows ((n, 7) int64, renderer/frame_lights.py), the sky
+        ((16, 3) int64) and (graphics G3 F4b) the fire's light-flicker rows
+        ((n, 3) int64 (y, x, mult_q), frame_lights.emit_mult_rows; None = no
+        flicker) the next light computation reads. All three are RENDER STATE:
+        none touches a synced field, and the flicker scales light only. No-op
+        without a physics runner."""
+        self._light = (bool(requested), cones, sky, emit_mult)
         self._apply_light()
 
     def _apply_light(self) -> None:
         if self.physics_runner is None:
             return
-        requested, cones, sky = self._light
+        requested, cones, sky, emit_mult = self._light
         self.physics_runner.engine.light_requested = requested
         self.physics_runner.set_light_cones(cones)
         self.physics_runner.set_light_sky(sky)
+        self.physics_runner.set_light_emit_mult(emit_mult)
 
     def relight(self) -> None:
         """Recompute the light field on the current state WITHOUT a tick (the

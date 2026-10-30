@@ -89,6 +89,16 @@ table is DERIVED from these three, so after any change:
 `intensity_max · 2^L_FINE_BITS` must stay under 2^44. Today 64 · 2^37 = 2^43,
 the limit, so a bigger cap means fewer bits; `tests/test_light_table.py` says so.
 
+**How much the fire lights the ROOM**, `[render.fire_light] gain` = 6 (live,
+Ctrl+R; G3 adjustment round 2026-10-29). Light only, burning tiles only: it
+moves neither the tile's own glow, the flame, lamps nor heat, and needs no
+table regeneration or rebuild. At 1 a burning tile added ~1 of 255 levels to
+the floor 2–3 tiles out; the config comment holds the per-gain table (floor
++3.8 at 1 tile at gain 1, +19.4 at 6, +34.4 at 12). Ceiling 16 / (1 +
+`[render.flicker] amplitude`): 12.3 today. Reach for this first when "the fire
+doesn't light the room"; `[render.blackbody]` is for how the fire itself
+glows.
+
 **Fire through its own smoke**, `[render.gas_relief]` (live with Ctrl+R):
 - `glow_through_ceiling` = 0.2: how much soot hides the glow under it. At 1.0
   the fire's own smoke closed over it and it went dark.
@@ -140,6 +150,12 @@ incident beside it. PROVISIONAL until three runs in a row needed no amendment.
 - 2026-10-22: written from the #12 fire + smoke session (Erik at the screen,
   ~3 h). Most of the time went into finding out WHICH layer a complaint
   belonged to; the probe exists for that.
+- 2026-10-29 (G3 adjustment round, no Erik at the screen): "the fire must
+  light the room more" got its own dial, `[render.fire_light] gain`, instead of
+  a `[render.blackbody]` move (that also brightens the glow and is at the
+  table's door). Measured by look-shot children with the dial set in the live
+  CFG (never the file) -- 5 s a shot; the probe answered "does the gain switch
+  off a visible light at extinction" (no: the tile passes 800 K first).
 - 2026-10-29 (#129, headless half, no Erik at the screen): the duration dial is
   `wall_damage` alone (duration ~1/it); since M3 H_bed x0.5..x8 moves duration
   <= 30 % and the char ~1 pt. The "fades WITH fuel left" of §2 is the `I_min`

@@ -321,6 +321,10 @@ def light_arrays(light, h, w):
         kw["light_cones"] = cone_rows(light["cones"])
     if light.get("sky") is not None:
         kw["light_sky"] = np.ascontiguousarray(np.asarray(light["sky"], dtype=np.int64))
+    # G3 F4b: the fire's light flicker rows (y, x, mult_q) -> (n, 3) int64
+    if light.get("emit_mult"):
+        kw["light_emit_mult"] = np.ascontiguousarray(np.asarray(
+            light["emit_mult"], dtype=np.int64).reshape(len(light["emit_mult"]), 3))
     return kw
 
 
@@ -427,7 +431,8 @@ def ref_sweep(a, d, k_q, T, his, *, transport="shear", n_ord=16, amb=None,
                           transport=light.get("transport", "step"),
                           light_absorb_q=light.get("light_absorb_q"),
                           light_glow_q=light.get("light_glow_q"),
-                          cones=light.get("cones"), sky=light.get("sky"))
+                          cones=light.get("cones"), sky=light.get("sky"),
+                          emit_mult=light.get("emit_mult"))
     res = R.sweep_q(a, d, k, T, n_ord=n_ord, transport=transport, f_plane=f,
                     e_ref=amb, table=tbl, ts=ts, light=lg, **gas_kw)
     to64 = lambda p: np.asarray(p, dtype=np.int64)   # noqa: E731

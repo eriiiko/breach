@@ -79,9 +79,10 @@ def pack_emissive_rgba(ramp: "BlackbodyRamp", temperature: np.ndarray,
                        ) -> np.ndarray:
     """Q16.16 temperature field -> additive DISPLAY-SPACE RGBA8 bytes (H, W, 4).
 
-    NAMED TEMPORARY EXCEPTION to the one-tone-map rule -- the LEGACY HEAT
-    LAYER, display space, until the G3 fire arc replaces it (graphics G0, #93
-    review). The black-body overlay's look (its hue, saturation, the falloff
+    NAMED EXCEPTION to the one-tone-map rule -- the LEGACY HEAT LAYER,
+    display space (graphics G0, #93 review). G3 F3 measured its move into the
+    linear scene failing the hue gate (design §13.8, tools/fire_look_gate.py)
+    and kept it; its retirement is its own patch. The black-body overlay's look (its hue, saturation, the falloff
     of its halo and the soft knee of its core) was authored and tuned as a
     DISPLAY colour added on screen, and Helland/Bartlett's chroma is itself a
     display (sRGB) colour. Composited in the linear scene it lost all three:
@@ -90,7 +91,8 @@ def pack_emissive_rgba(ramp: "BlackbodyRamp", temperature: np.ndarray,
     than it did on screen (orange floor 0.6 + heat 0.3 showed 0.9 before G0,
     ~0.67 in linear), so the warm boost and its saturation faded. So this
     layer keeps its pre-G0 packing byte for byte and is drawn AFTER the world
-    resolve, in display space (``GameRenderer.compose_world``):
+    resolve, in display space (``GameRenderer.compose_world``, through
+    ``shaders/fire_glow.fs``'s "heat" stage, under the flame's cover):
     ``ACES(emissive)`` (the resolve's curve, its CPU twin :func:`aces_curve`)
     split into a peak-normalised hue (RGB) and a brightness weight (alpha,
     ceiling ``max_alpha``), so the
@@ -123,6 +125,24 @@ def pack_emissive_rgba(ramp: "BlackbodyRamp", temperature: np.ndarray,
     packed[..., 2] = (rgb_disp[..., 2] * 255.0).astype(np.uint8)
     packed[..., 3] = (bright * float(max_alpha)).astype(np.uint8)
     return packed
+
+
+def glow_share(ramp: "BlackbodyRamp", temperature: np.ndarray) -> np.ndarray:
+    """(H, W) float32 in [0, 1]: how strongly each tile glows, as a SHARE --
+    the brightness the smoke relief's own-light cut has always used
+    (graphics G2, ``gas_relief.glow_below_fraction`` / ``below_glow_field``),
+    a named function since G3 F3 (design §13.14 round-2 M3).
+
+    It is the ramp's emission ``chroma * intensity`` through the resolve's
+    ACES knee (:func:`aces_curve`), its brightest channel: 0 for a cold
+    tile, rising with T and saturating at 1 -- a dimensionless 0-1 share,
+    never a drawn colour. It is what the display-space heat pack's alpha
+    carries (:func:`pack_emissive_rgba`, ``max_c ACES`` over its ceiling,
+    without the pack's 8-bit rounding), so the relief's cut keeps its
+    tuning. RENDER-ONLY; ``temperature`` (Q16.16 ΔT) is read, never
+    written."""
+    rgb, inten = ramp.chroma_intensity(temperature)
+    return aces_curve(rgb * inten[..., None]).max(axis=-1).astype(np.float32)
 
 
 def _tanner_helland_chroma(kelvin: np.ndarray) -> np.ndarray:
@@ -275,6 +295,24 @@ class BlackbodyRamp:
                     self.kelvin_floor, self.kelvin_ceil)
         return _tanner_helland_chroma_f64(k), np.asarray(
             self._intensity_curve(k), dtype=np.float64)
+
+    def cover_weight(self, kelvin):
+        """How much an emitter at ``kelvin`` COVERS what lies under it
+        (graphics G3, design §13.4: the cover is tied to the emission): the
+        ramp's own intensity, saturating at 1 -- 0 at or below
+        ``kelvin_glow_min``, 1 at and above ``kelvin_ref`` (the exposure
+        reference, intensity 1), ``((K - glow_min) / (ref - glow_min))^p``
+        between. An emitter too cool to glow hides nothing, and a dim one
+        hides little: a flame tongue cooling toward the glow floor fades
+        out instead of laying a dark tip over a lit floor (F3 measured the
+        design's first ramp -- full cover 100 K above the floor -- darken a
+        lit floor by up to 42 %). The flame's draw (``shaders/fire_glow.fs``:
+        ``min(1, LUT intensity)``) and its spec twin
+        (``fire_vfx_ref.flame_emission``) use it; on the ramp's own domain,
+        clamped like the LUT."""
+        k = np.clip(np.asarray(kelvin, dtype=np.float64),
+                    self.kelvin_floor, self.kelvin_ceil)
+        return np.minimum(self._intensity_curve(k), 1.0)
 
     def _kelvin_from_tgame(self, t_game):
         """Dequantized game ΔT -> pseudo-Kelvin (the honest 'white for extremes'

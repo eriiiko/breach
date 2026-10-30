@@ -298,7 +298,15 @@ public:
         //                   outflow (nullptr: the dark ring)
         const int64_t* light_cones = nullptr,
         int n_light_cones = 0,
-        const int64_t* light_sky = nullptr) const;
+        const int64_t* light_sky = nullptr,
+        // ---- graphics G3 F4b: THE FIRE'S LIGHT FLICKER (radiation_sweep.h
+        // LightChannels.emit_mult), read only while light is requested;
+        // optional: (n_light_emit_mult, EMIT_MULT_ROW_WIDTH) int64 rows (y, x,
+        // mult_q) -- a Q16 factor on that cell's THERMAL light emission
+        // (renderer/fire_flicker.py via renderer/frame_lights.py). Render
+        // state: heat never reads it, nothing digests it.
+        const int64_t* light_emit_mult = nullptr,
+        int n_light_emit_mult = 0) const;
 
     // --- ray-engine-v2 P6b: RELIGHT -------------------------------------
     // The light field recomputed on the CURRENT state WITHOUT a tick: the
@@ -327,7 +335,8 @@ public:
         int64_t* light_q, int64_t* light_flux_q, int64_t* light_glow,
         const int32_t* gas_light_absorb_q16, const int32_t* gas_light_glow_q16,
         const int64_t* light_cones, int n_light_cones,
-        const int64_t* light_sky) const;
+        const int64_t* light_sky,
+        const int64_t* light_emit_mult = nullptr, int n_light_emit_mult = 0) const;
 
 private:
     // P6b: THE ONE SWEEP INVOCATION (step 2b's body, moved verbatim): step_tail
@@ -347,7 +356,8 @@ private:
         int64_t* light_q, int64_t* light_flux_q, int64_t* light_glow,
         const int32_t* gas_light_absorb_q16, const int32_t* gas_light_glow_q16,
         const int64_t* light_cones, int n_light_cones,
-        const int64_t* light_sky) const;
+        const int64_t* light_sky,
+        const int64_t* light_emit_mult = nullptr, int n_light_emit_mult = 0) const;
     // relight()'s own scratch: the bulk sum and the four heat outputs it
     // discards (never a tick's plane)
     mutable std::vector<int32_t> relight_n_bulk_;

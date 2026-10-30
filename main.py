@@ -548,6 +548,20 @@ def main():
         return frame_lights.cone_rows(assemble_lights().specs, grid_w, grid_h,
                                       light_fine_bits)
 
+    # Graphics G3 F4b: THE FIRE'S ROOM LIGHT -- the renderer's per-burning-
+    # tile multiplier on the sweep's thermal light emission (the fire's light
+    # gain x its flicker, G3 adjustment round), as (n, 3) int64 rows through
+    # the door (frame_lights.emit_mult_rows), or None. Render state handed
+    # with the cone rows; it scales light only, never heat.
+    def flicker_rows_now():
+        grid_h, grid_w = sim.gmap.solid.shape
+        return renderer.fire_light_rows(grid_w, grid_h)
+
+    def _same_rows(a, b):
+        if a is None or b is None:
+            return a is None and b is None
+        return np.array_equal(a, b)
+
     # --warp: step to the requested sim time before the first frame, then
     # hold paused (the paused path relights on the frozen state).
     warp_s = _parse_warp_flag()
@@ -565,6 +579,7 @@ def main():
     tick_accum = 0.0
     light_on = None          # P6b: is the sweep's light currently requested?
     lit_rows = None          # the cone rows the current light field was computed from
+    lit_flicker = None       # G3 F4b: the flicker rows it was computed from
     last_relight = 0.0
 
     try:
@@ -610,8 +625,10 @@ def main():
                 while tick_accum >= sim_time_per_tick and steps < max_catch_up:
                     if new_light:
                         # the ONE assembly, once per sim tick, for the engine
+                        # (G3 F4b: + the fire's light flicker rows)
                         lit_rows = cone_rows_now()
-                        sim.set_light(True, lit_rows, light_sky)
+                        lit_flicker = flicker_rows_now()
+                        sim.set_light(True, lit_rows, light_sky, lit_flicker)
                     control_source.on_tick(sim)
                     sim.step()
                     stepped = True
@@ -625,14 +642,22 @@ def main():
             # planning flashlight aimed at the cursor) -- and at 4 Hz anyway, so
             # a dev-key edit made while paused shows up. The relight writes only
             # the three light planes (PhysicsRunner.relight).
+            # G3 F4b: a paused fire whose flame IDLES ([render.fire_vfx]
+            # idle_when_paused) keeps flickering -- relit at the TICK rate
+            # whenever its flicker rows moved (a 4 Hz relight would step the
+            # flicker visibly; the cost is a running tick's sweep). With the
+            # idle off the rows stop changing and the 4 Hz cadence is back.
             if new_light and not stepped and sim.is_paused():
                 rows = cone_rows_now()
+                flick = flicker_rows_now()
                 t_now = time.perf_counter()
+                flicker_due = (not _same_rows(flick, lit_flicker)
+                               and t_now - last_relight >= sim_time_per_tick)
                 if (lit_rows is None or not np.array_equal(rows, lit_rows)
-                        or t_now - last_relight > 0.25):
-                    sim.set_light(True, rows, light_sky)
+                        or flicker_due or t_now - last_relight > 0.25):
+                    sim.set_light(True, rows, light_sky, flick)
                     sim.relight()
-                    lit_rows, last_relight = rows, t_now
+                    lit_rows, lit_flicker, last_relight = rows, flick, t_now
 
             # total_tick = the MONOTONIC sim tick on the SIM clock: beacons
             # freeze on pause + replay exactly (P4 §2.2), and it is the P3 smoke
@@ -641,8 +666,14 @@ def main():
                 sim.turn_number, ticks_per_round, sim.tick)
 
             # ----- Upload + draw -----
+            # alpha = the sub-tick fraction of the accumulator (graphics G3
+            # §13.3): the flame VFX runs on (tick + alpha) / tps. A pure read
+            # of this loop's own pacing state; the renderer clamps it to
+            # [0, 1). paused = the sim clock stopped (the flame may idle).
             renderer.upload_state(sim.gmap, sim_tick=total_tick,
-                                  light_serial=sim.light_serial if new_light else None)
+                                  light_serial=sim.light_serial if new_light else None,
+                                  alpha=tick_accum / sim_time_per_tick,
+                                  paused=sim.is_paused())
             renderer.begin_frame()
 
             # Fog of war (§8) is visibility GATING: an enemy the team cannot

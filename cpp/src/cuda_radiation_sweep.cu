@@ -144,6 +144,8 @@ struct LightKArgs {
     const int64_t* sky;
     const int32_t* cone_index;
     const int64_t* cone_inj;
+    // G3 F4b: the per-cell emission multiplier (N, h, w) Q16, nullable
+    const int32_t* emit_mult;
 };
 
 // One book entry, the tree's int64 atomic idiom (design §8.2;
@@ -294,6 +296,9 @@ __global__ void rs_prepass(int n_env, int plane,
         // emission book is n_ordinates x that integer, booked per cell.
         const int b = e_bucket_of(temperature[gi]);
         const bool gas_cell = (lk.lab != nullptr && n_gases > 0 && !thermal_solid[gi]);
+        // G3 F4b: the fire's light flicker, run()'s own factor (ONE: identity)
+        const int64_t mult = (lk.emit_mult != nullptr) ? (int64_t)lk.emit_mult[gi]
+                                                       : (int64_t)FP_ONE;
         const size_t cell = (size_t)(gi - (int64_t)env * (int64_t)plane);
         const int32_t* genv = (n_gases > 0)
             ? gas + (size_t)env * (size_t)n_gases * (size_t)plane : nullptr;
@@ -320,7 +325,7 @@ __global__ void rs_prepass(int n_env, int plane,
             lk.l_d[ic] = ld_c;
             lk.l_g[ic] = g_c;
             const int64_t src = (lk.l_table[(size_t)ch * E_TABLE_SIZE + (size_t)b] * w_m) >> FP_SHIFT;
-            const int64_t em = (src * (int64_t)la_c) >> FP_SHIFT;
+            const int64_t em = (((src * (int64_t)la_c) >> FP_SHIFT) * mult) >> FP_SHIFT;
             lk.l_emit[ic] = em;
             if (em != 0)
                 atomicAdd((unsigned long long*)&c[RS_SLOT_LIGHT_EMIT + ch],
@@ -756,6 +761,7 @@ int radiation_sweep_launch_resident(
         lk.sky = light->d_sky;
         lk.cone_index = light->d_cone_index;
         lk.cone_inj = light->d_cone_inj;
+        lk.emit_mult = light->d_emit_mult;        // G3 F4b
     }
     // P5a: the gas group's host-side shape checks (the table's VALUES are
     // counted on the device by rs_init_env, per env, the core's contract).
@@ -939,6 +945,14 @@ int radiation_sweep_step(
                                              h, w, cinj);
     }
     const bool l_sky = light_on && light->sky != nullptr;
+    // G3 F4b: the emission multipliers scattered per cell ON THE HOST, by the
+    // CPU sweep's own builder (its one-row-per-cell clause throws here, before
+    // anything crosses the bus); the device reads the plane.
+    std::vector<int32_t> emult;
+    const bool l_emult = light_on && light->n_emit_mult > 0 && h > 0 && w > 0;
+    if (l_emult) {
+        RadiationSweep::build_emit_mult(light->emit_mult, light->n_emit_mult, h, w, emult);
+    }
     const bool lsmoke = light_on && (light->light_absorb_q16 != nullptr);
     // The ACTIVE gases: a zero coefficient adds exactly 0 to a density sum, so
     // its plane never crosses the bus. Heat's are the gases with a non-zero
@@ -1032,6 +1046,7 @@ int radiation_sweep_step(
     const size_t o_lsky  = l_sky ? ar.carve((size_t)n_ordinates * 3 * sizeof(int64_t)) : 0;
     const size_t o_cidx  = l_cones ? ar.carve(n32) : 0;
     const size_t o_cinj  = l_cones ? ar.carve(cinj.inj.size() * sizeof(int64_t)) : 0;
+    const size_t o_emult = l_emult ? ar.carve(n32) : 0;      // G3 F4b
     cuda_check(cudaMalloc((void**)&ar.base, ar.size), "malloc arena");
 
     // ---- H2D: the inputs and the three per-env scalars (N = 1) ----
@@ -1121,6 +1136,12 @@ int radiation_sweep_step(
                                   cudaMemcpyHostToDevice), "H2D cone_inj");
             ldev.d_cone_index = ar.at<int32_t>(o_cidx);
             ldev.d_cone_inj   = ar.at<int64_t>(o_cinj);
+        }
+        // G3 F4b: the host-built emission-multiplier plane
+        if (l_emult) {
+            cuda_check(cudaMemcpy(ar.at<int32_t>(o_emult), emult.data(), n32,
+                                  cudaMemcpyHostToDevice), "H2D emit_mult");
+            ldev.d_emit_mult = ar.at<int32_t>(o_emult);
         }
     }
 
