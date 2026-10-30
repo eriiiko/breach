@@ -5,7 +5,7 @@
 Eight gates (the P6b row of docs/octopus_p6_sim_port_design_2026-10-30.md
 section 8, plus P6c's static-topology contacts), each printing its MEASURED
 numbers and PASS / FAIL; exit 1 on any FAIL; the full run writes
-`report_p6c_gates.md` beside this file (`report_p6b.md` is P6b's run, kept as is).
+`report_p6c.md` beside this file (`report_p6b.md` is P6b's run, kept as is).
 Since P6c, G3 and G4 run WITH an open topology (contacts enabled, nothing
 touched): the walls must be inert where there are none.
 
@@ -947,8 +947,8 @@ def _write_report(results, wall) -> None:
     for name, ok, lines, _ in results:
         body = "<br>".join(ln.strip().replace("|", "/") for ln in lines)
         out.append(f"| {name} | {'PASS' if ok else 'FAIL'} | {body} |")
-    (HERE / "report_p6c_gates.md").write_text("\n".join(out) + "\n", encoding="utf-8")
-    print(f"report: {HERE / 'report_p6c_gates.md'}")
+    (HERE / "report_p6c.md").write_text("\n".join(out) + "\n", encoding="utf-8")
+    print(f"report: {HERE / 'report_p6c.md'}")
 
 
 if __name__ == "__main__":

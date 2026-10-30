@@ -235,3 +235,30 @@ the lead so you decide all these things." Concretely:
   exact arithmetic (mirror symmetry, ballistic identity) catches a biased
   rounding in one tick where the 60 s no-slide gate needs minutes; Python
   ints run ~2.4 ms per arm-substep, so parallelise scenarios.
+- 2026-10-31 (P6c, worktree agent, Opus) -- the C++ `ArmChainSolver`
+  (`cpp/src/arm_chain_solver.*`, `breach_physics.arm_chain_tick`, Python side
+  `src/simulation/arm_chain.py`): stateless over caller-owned buffers born
+  (N, A, n, 3), pure integer, 0/0/0 on the ratchet, held at TOL 0 to
+  `chain_ref_q` after every tick -- reach / dead arm / four wall scenarios /
+  a synthetic 8-arm animal at 1.80, 2.52, 3.39 m (10 s each behind the long
+  flag) plus P5z's four traces replayed: all equal; it passed on the first
+  build, because the reference had already fixed every rounding. Reference
+  FIRST: static-topology contacts (nodes vs `GameMap.solid`, face of least
+  penetration toward an open neighbour, tangential friction, normal velocity
+  clamped at a face; the crown's disc vs blocked tiles and footprints),
+  per-tick outputs (contacts, anchor / grab force), G8 (inert on an open map:
+  bytes identical; flat throw: 0 counts in, 0 counts of slide). What failed
+  first: (1) CHECK at 3.39 m on a tip folded into a corner put `bend.W` at
+  63 bits -- an in-plane projection near 0; the bend now skips a plane below
+  the door's l_min (the assumption W_fit always made); G3's COM moved 0.041
+  -> 0.024 mm from it, nothing else; (2) the honest `dist_impulse_fit`
+  bound (k C, L^4) caps arms at ~4.2 m (the P6a window said 12.7 m: it was
+  bounding a factor no code forms) -- a pre-shift can widen it if #112 wants
+  bigger; (3) scenario set-ups that start nodes inside walls explode -- size
+  rooms by the row. Skipped: no CUDA twin (recorded debt); report writing
+  by a subagent's Write is refused by the harness, so `report_p6c.md` is the
+  generated gate table and the tol-0 table lives in the test's docstring.
+  Learned: a lockstep harness that packs the reference World's INPUTS each
+  tick (never its state) catches a 1-count dial change at tick 0. Cost: one
+  session; full gates 7 min, long tol-0 ~2.5 min x 4 processes; the C++ is
+  ~2 ms per octopus-tick (P6e measures properly).

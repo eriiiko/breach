@@ -22,6 +22,12 @@ exactly as the reference's door does; its layout constants are the C++ enums'; t
 compiled activation table is the reference's lookup; the binding refuses a malformed
 buffer before writing anything.
 
+Last long run (2026-10-31, P6c): every scenario x 1.80 / 2.52 / 3.39 m x 240 ticks
+(21 tests) and the four P5z traces (reach, dead_arm, crawl, free_animal; 240 ticks,
+open topology) -- all equal at tol 0, every tick; short slices in CI: reach 12 ticks
+at the three sizes, dead 48, wall_thrown 24, wall_oblique 36, wall_corner 36,
+body_wall 24, animal 16. The harness fails on a one-count change of gamma at tick 0.
+
 Run:
     C:/Users/steen/anaconda3/python.exe -m pytest tests/test_octopus_arm_chain_solver.py -q
 """
