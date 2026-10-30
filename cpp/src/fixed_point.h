@@ -852,6 +852,53 @@ FP_HD inline q16 mean_round(int64_t sum, int64_t count) {
     return (q16)m;
 }
 
+// ---- THE CHAIN CURRENCY + its round-half-away kit (#106 P6c) ---------------
+// docs/octopus_p6_sim_port_design_2026-10-30.md sections 6.1 and 6.3. The arm
+// chain's positions and velocities are int32 in a currency 2^CHAIN_FINE_BITS
+// finer than Q16 (Q24 metres, m/s; 60 nm per count, +/-128 m) -- the
+// TRACE_FINE_BITS precedent. Python twin: simulation/creature_fixed.py
+// CHAIN_FINE_BITS, held equal by tests/test_fixedpoint_twins.py.
+//
+// The chain's "no slide" rule (design 6.3): every SIGNED correction and every
+// signed narrow rounds half AWAY from zero, so +x and -x lose the same
+// magnitude and no rounding has a direction. The three general forms below are
+// transcribed from their bit-exact Python twins
+// (simulation/fixedpoint_twins.py shr_round_away / div_round_away /
+// mul_shr_away -- each docstring states this recipe), which the arm chain's
+// integer reference (docs/octopus_integer_reference/chain_ref_q.py) computes
+// with; they generalise narrow_round_signed (s = 16), q30_to_q16_round
+// (s = 14) and mean_round (without its q16 cast).
+constexpr int CHAIN_FINE_BITS = 8;
+constexpr int CHAIN_SHIFT     = FP_SHIFT + CHAIN_FINE_BITS;   // Q24
+static_assert(CHAIN_SHIFT == 24, "the chain currency is Q24 (design 6.1)");
+
+// x / 2^s rounded half away from zero; s == 0 is the identity. The caller
+// bounds |x| + 2^(s-1) below 2^63 (and x != INT64_MIN).
+FP_HD inline int64_t shr_round_away(int64_t x, int s) {
+    if (s == 0) return x;
+    const int64_t h = (int64_t)1 << (s - 1);
+    return (x >= 0) ? ((x + h) >> s) : -(((-x) + h) >> s);
+}
+
+// n / d rounded half away from zero, d > 0 (the caller's contract; the Python
+// twin raises on d <= 0). C++ `/` on the non-negative magnitude is the floor.
+FP_HD inline int64_t div_round_away(int64_t n, int64_t d) {
+    const int64_t h = d / 2;
+    return (n >= 0) ? ((n + h) / d) : -(((-n) + h) / d);
+}
+
+// (a * b) / 2^s on the EXACT 128-bit product, rounded half away from zero,
+// s >= 1, with no 128-bit add: q = floor(|a| |b| / 2^(s-1)) through
+// mul128_shr, then (q + 1) >> 1 == floor((|a| |b| + 2^(s-1)) / 2^s); the sign
+// of the product re-applied. The caller bounds the result inside int64.
+FP_HD inline int64_t mul_shr_away(int64_t a, int64_t b, int s) {
+    const int64_t ua = (a < 0) ? -a : a;
+    const int64_t ub = (b < 0) ? -b : b;
+    const int64_t q = mul128_shr(ua, ub, s - 1);
+    const int64_t r = (q + 1) >> 1;
+    return ((a < 0) != (b < 0)) ? -r : r;
+}
+
 // ---- deterministic integer sqrt (the first per-cell transcendental, S3b) ---
 //
 // sqrt_q16(x_q32) == floor( sqrt(x_real) ) in Q16.16, where x_q32 is an int64

@@ -64,6 +64,7 @@ SIM_TUS = (
     "physics_engine.cpp",
     "radiation_sweep.cpp",
     "emissive_table.cpp",
+    "arm_chain_solver.cpp",
 )
 
 # Whole-word ``float`` / ``double`` (so "floating" / "doubled" in prose don't
@@ -381,6 +382,11 @@ _FP_FAST_RE = re.compile(r"fp:fast")
 # those dials happens in bulk_transport.cpp (/fp:strict, trace_diffusion_dd_q /
 # trace_decay::frac_q), shared by both backends. The CUDA-S4a precedent above.
 # Net over the arc: the deleted SL dispatch's lines (53 -> 51 at P1) and these.
+# #106 P6c (2026-10-31): arm_chain_solver.cpp, the arm chain solver -- a
+# transcription of the integer reference (docs/octopus_integer_reference/
+# chain_ref_q.py), PURE INTEGER and pinned at 0/0/0 from birth like
+# radiation_sweep.cpp (the two type names appear nowhere in it, comments
+# included).
 BASELINE = {
     "atmosphere_solver.cpp":  {"float": 32, "double": 32, "fp:fast": 1},
     "fire_simulation.cpp":    {"float": 5,  "double": 18, "fp:fast": 0},
@@ -389,6 +395,7 @@ BASELINE = {
     "physics_engine.cpp":     {"float": 54, "double": 20, "fp:fast": 1},
     "radiation_sweep.cpp":    {"float": 0,  "double": 0,  "fp:fast": 0},
     "emissive_table.cpp":     {"float": 0,  "double": 8,  "fp:fast": 0},
+    "arm_chain_solver.cpp":   {"float": 0,  "double": 0,  "fp:fast": 0},
 }
 
 # The TUs that have been MIGRATED to integer end-to-end (S3c). For these, the

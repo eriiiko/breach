@@ -9,8 +9,9 @@ sys.path insertion is the only way to import from a docs folder and is confined
 here.
 
 Fast (always): G1's reach (P1 a1-a3), G5 determinism, G6 headroom on short runs,
-the reference's wiring to the kit twins and the currencies, and two exact
-properties of the arithmetic (mirror symmetry, the ballistic identity).
+G8 the static-topology contacts (#106 P6c), the reference's wiring to the kit
+twins and the currencies, and two exact properties of the arithmetic (mirror
+symmetry, the ballistic identity).
 
 Long (opt-in, ``BREACH_OCTOPUS_LONG_GATES=1``, ~10 min): G2 the dead arm (20 s),
 G3 no slide (60 s, plus its floor-rounding pair) and G4 float vs int -- G3 and
@@ -92,6 +93,16 @@ def test_g6_no_int64_or_int32_site_overflows_at_the_three_art_sizes():
     and the int32 state below 2^31. Breaks if a currency or pre-shift change
     pushes a product past the width the C++ will carry it in."""
     print(_run(G.g6_headroom))
+
+
+def test_g8_the_static_topology_contacts_hold():
+    """G8 (fast, #106 P6c): the wall contacts are inert on an open map (state
+    bytes identical with and without a topology), an arm thrown flat at a wall
+    stops at its face without penetrating or sliding along it, oblique and
+    corner throws never end a tick inside a blocked tile, crowns pushed into a
+    wall or a footprint stay out, and the new int64 sites fit at 3.39 m.
+    Breaks if a contact leaks, slides, or perturbs a run that touches nothing."""
+    print(_run(G.g8_walls))
 
 
 def _reach_world(mirror: bool, ticks: int):

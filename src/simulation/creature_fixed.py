@@ -4,12 +4,12 @@ creature row must satisfy, and the ONE pose <-> Unit-anchor conversion.
 
 Design: docs/octopus_p6_sim_port_design_2026-10-30.md sections 3, 4.1, 6.1,
 6.2, 6.6. Every number entering a creature's synced state converts ONCE
-through this module (or the C++ kit's twin, once ``CHAIN_FINE_BITS`` lands in
-``cpp/src/fixed_point.h`` with P6b/P6c) -- never an inline shift, never a
-hardcoded ``1 << 24``. The integer reference (P6b,
-``docs/octopus_chain_ref_q.py``) imports its currencies and headroom
-constants from HERE, so the door that accepts a row and the arithmetic that
-runs it can never disagree about what fits.
+through this module (or the C++ kit's twin ``fixed_point.h``
+``CHAIN_FINE_BITS``, #106 P6c, held equal by tests/test_fixedpoint_twins.py)
+-- never an inline shift, never a hardcoded ``1 << 24``. The integer
+reference (P6b, ``docs/octopus_integer_reference/chain_ref_q.py``) imports its
+currencies and headroom constants from HERE, so the door that accepts a row
+and the arithmetic that runs it can never disagree about what fits.
 
 Currencies
 ----------
@@ -81,15 +81,18 @@ MASS_MIN_COUNTS = 1
 #: (i) the heaviest mass (a node or the body) keeps this many counts of its
 #: Q32 inverse: w >= 2^16 counts <=> m <= 65536 kg.
 INV_MASS_MIN_COUNTS = 1 << 16
-#: (ii) the distance factor ``f = k w / r`` is a Q30 fraction formed as
-#: ``floordiv((k w)_q0 << F_SHIFT, r_q0)``.
-F_SHIFT = 30
 #: (ii) ``(k w)_q0`` of the HEAVIEST arm node must resolve: >= 2^8 counts
-#: (<= 0.4 % rounding), or its distance constraint quietly goes slack.
+#: (<= 0.4 % rounding), or its distance constraint's rate r quietly loses it.
 DIST_KW_MIN_COUNTS = 1 << 8
-#: (ii) the bend factor's numerator ``k w |grad C|`` is formed in Q24 m/s^2
-#: (its quotient by r_q0 is then a Q24 length).
-BEND_NUM_SHIFT = CHAIN_SHIFT
+#: (ii) the bend's dlam = -k E / r is formed as ``((k_q16 E_q16) << BEND_DLAM_PRE)
+#: / r_q0`` (Q40): the pre-shift that keeps the passive tip's correction
+#: resolved (the integer reference's DLAM_PRE, imported from here). ``|E| <=
+#: 3 pi``: |C| <= 2 pi with a bend target within +-pi, the damping term |D|
+#: clamped to pi.
+BEND_DLAM_PRE = 8
+#: The int64 a product that feeds a division directly (no carry) may fill:
+#: the distance impulse's and the bend dlam's numerators (#106 P6c).
+INT64_PRODUCT_BITS = 63
 #: Segment-length slack: the bounds assume a live segment stays within
 #: [rest * stretch_min / SEGMENT_SLACK, rest * stretch_max * SEGMENT_SLACK]
 #: (the distance constraint is ~rigid: kW >> 1/dt^2 on the mid row). The
@@ -339,6 +342,10 @@ class ChainHeadroom:
     stretch_max: float
     atan2_shift: int
     bounds: tuple
+    #: The bend's in-plane guard (#106 P6c): a plane whose in-plane segment
+    #: length squared (Q32, the reference's ``n1`` / ``n2``) is below
+    #: ``l_min^2`` is skipped -- the W and rate bounds below assume |a| >= l_min.
+    bend_plane_min_q32: int = 1
 
     def bound(self, name: str) -> HeadroomBound:
         return next(b for b in self.bounds if b.name == name)
@@ -378,13 +385,18 @@ def chain_headroom(*, where: str, nodes_per_arm: int, arm_length_m: float,
          128-bit ``k_q16 * W_q32`` narrowed by ``KW_PRE_SHIFT`` (48). k W is
          SIZE-INVARIANT under the law (k_dist L^3 x w L^-3; k_bend L^5 x
          W L^-5): it refuses a stiffness typo, not a size.
-         dist_factor_fit: ``(k_dist w_max)_q0 << F_SHIFT < 2^62``, the
-         distance factor ``f = k w / r`` (Q30) numerator -- size-invariant.
          dist_resolution: ``(k_dist w_min)_q0 >= 2^8`` over the arm nodes --
          the heaviest node's constraint still resolves (size-invariant).
-         bend_factor_fit: ``max k_j w_i |grad| (Q24 m/s^2) < 2^62`` with
-         ``|grad| <= 2 / l_min`` -- the bend factor's numerator (its quotient
-         by r_q0 is a Q24 length). Scales L^1.
+         dist_impulse_fit: ``k_dist_q16 l_max_q24 < 2^63`` -- the distance
+         impulse's numerator ``k C d/|d|`` (Q40; |C d/|d|| <= |C| <= l_max),
+         the reference's site ``dist.k_Cd`` (#106 P6c; it replaces P6a's
+         per-node factor bounds, which no code forms). Scales L^4: refuses
+         BIG animals (~4.2 m arms on the shipped row).
+         bend_dlam_fit: ``max k_j (Q16) 3 pi (Q16) << BEND_DLAM_PRE < 2^63``
+         -- the bend's dlam numerator, the reference's ``bend.kE_pre``.
+         Scales L^5.
+         The bend's W and rate bounds hold because the solver SKIPS a plane
+         whose in-plane length is below l_min (``bend_plane_min_q32``).
     (iii) atan2_int32: ``l_max`` in Q24 < 2^31 (a segment vector is int32);
          the shift ``s = max(0, bitlen(l_max_q24^2) - 30)`` is DERIVED here
          and stored (``atan2_shift``): the angle is scale-free, so one shift
@@ -448,18 +460,16 @@ def chain_headroom(*, where: str, nodes_per_arm: int, arm_length_m: float,
         rate, float(1 << INT64_HEADROOM_BITS)))
     arm_w = w[1:]   # node 0 is the root (pinned to the crown)
     bounds.append(HeadroomBound(
-        "dist_factor_fit", "(k_dist w_max)_q0 << F_SHIFT < 2^62",
-        k_dist * max(arm_w) * float(1 << F_SHIFT),
-        float(1 << INT64_HEADROOM_BITS)))
-    bounds.append(HeadroomBound(
         "dist_resolution", "(k_dist w_min)_q0 >= DIST_KW_MIN_COUNTS",
         k_dist * min(arm_w), float(DIST_KW_MIN_COUNTS), floor=True))
-    bend_num = max(k_j[j] * max(w[j - 1], w[j], w[j + 1]) * 2.0 / l_min
-                   for j in range(1, n - 1))
     bounds.append(HeadroomBound(
-        "bend_factor_fit", "max k_j w_i |grad| (Q24 m/s^2) < 2^62",
-        bend_num * float(1 << BEND_NUM_SHIFT),
-        float(1 << INT64_HEADROOM_BITS)))
+        "dist_impulse_fit", "k_dist_q16 * l_max_q24 < 2^63 (dist.k_Cd)",
+        k_dist * _Q16_ONE_F * l_max * _CHAIN_ONE_F,
+        float(1 << INT64_PRODUCT_BITS)))
+    bounds.append(HeadroomBound(
+        "bend_dlam_fit", "max k_j (Q16) * 3 pi (Q16) << BEND_DLAM_PRE < 2^63 (bend.kE_pre)",
+        max(k_j[1:n - 1]) * _Q16_ONE_F * 3.0 * math.pi * _Q16_ONE_F * float(1 << BEND_DLAM_PRE),
+        float(1 << INT64_PRODUCT_BITS)))
 
     # (iii) atan2 ----------------------------------------------------------
     l_max_q = int(l_max * _CHAIN_ONE_F) + 1
@@ -491,7 +501,7 @@ def chain_headroom(*, where: str, nodes_per_arm: int, arm_length_m: float,
         k_bend_q16=q16_from_stiffness(k_bend), inv_dt2=inv_dt2,
         bend_gamma_q16=gamma_q16, stretch_min=float(stretch_min),
         stretch_max=float(stretch_max), atan2_shift=shift,
-        bounds=tuple(bounds))
+        bounds=tuple(bounds), bend_plane_min_q32=max(1, (l_min_q * l_min_q) >> 16))
 
 
 def _refuse(where: str, arm_length_m: float, failing) -> None:
@@ -504,7 +514,7 @@ def _refuse(where: str, arm_length_m: float, failing) -> None:
 __all__ = [
     "CHAIN_FINE_BITS", "CHAIN_SHIFT", "CHAIN_ONE", "CHAIN_RANGE_M",
     "MASS_SHIFT", "STIFF_SHIFT", "INV_MASS_SHIFT", "W_SHIFT", "RATE_SHIFT",
-    "KW_PRE_SHIFT", "F_SHIFT", "BEND_NUM_SHIFT", "INT64_HEADROOM_BITS",
+    "KW_PRE_SHIFT", "BEND_DLAM_PRE", "INT64_HEADROOM_BITS", "INT64_PRODUCT_BITS",
     "MASS_MIN_COUNTS", "INV_MASS_MIN_COUNTS", "DIST_KW_MIN_COUNTS",
     "SEGMENT_SLACK", "ATAN2_IN_BITS", "ATAN2_MIN_BITS",
     "chain_from_m", "chain_from_m_array", "chain_to_m", "chain_to_f32",

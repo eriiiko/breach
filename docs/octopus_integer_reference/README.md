@@ -1,14 +1,15 @@
-# The arm chain's integer reference (#106 P6b)
+# The arm chain's integer reference (#106 P6b, contacts P6c)
 
 `chain_ref_q.py` is the octopus arm chain in integers: the executable
-specification the C++ `ArmChainSolver` (P6c) is held to at tol 0. It transcribes
+specification the C++ `ArmChainSolver` (`cpp/src/arm_chain_solver.*`, P6c) is
+held to at tol 0 (`tests/test_octopus_arm_chain_solver.py`). It transcribes
 the float 3-D chain P5z validated (`prototypes/octopus_motion/arm_chain3d.py` +
 `arm_bank3d.py`) in the currencies of `src/simulation/creature_fixed.py`, by
 design section 6 of `docs/octopus_p6_sim_port_design_2026-10-30.md`. Pure Python
 ints; nothing in `src/` or `cpp/` imports it. A change to the chain's arithmetic
 lands HERE first, then the gates, then the C++.
 
-    C:/Users/steen/anaconda3/python.exe docs/octopus_integer_reference/chain_ref_q_gates.py          # ~10 min, writes report_p6b.md
+    C:/Users/steen/anaconda3/python.exe docs/octopus_integer_reference/chain_ref_q_gates.py          # ~10 min, writes report_p6c.md
     C:/Users/steen/anaconda3/python.exe docs/octopus_integer_reference/chain_ref_q_gates.py --fast   # seconds (what CI runs)
 
 G3 and G4 replay P5z's float traces: regenerate them first with
@@ -18,7 +19,8 @@ G3 and G4 replay P5z's float traces: regenerate them first with
 |---|---|
 | `chain_ref_q.py` | `ChainRow` (the row in integers, from a `CreatureDef`), `World` (arms, bodies, grabs; `tick()`), `replay(trace)`; `CHECK = True` measures every int64 site |
 | `chain_ref_q_gates.py` | the seven gates (P1's seven on ints, dead arm, no slide + its floor-rounding pair, float vs int, determinism, headroom, cost) |
-| `report_p6b.md` | the last full run's measurements |
+| `report_p6b.md` | P6b's full run (kept as is) |
+| `report_p6c.md` | P6c's full gate run (the eight gates, generated); the tol-0 table is in tests/test_octopus_arm_chain_solver.py's docstring and the P6c run log |
 | `src/simulation/fixedpoint_twins.py` | the kit's bit-exact Python twins + the chain's round-half-away kit (`tests/test_fixedpoint_twins.py`) |
 | `cpp/src/activation_table.inc` | S(x) = (1 + tanh x)/2, 1025 Q16 samples (`tools/gen_activation_table.py`) |
 
@@ -71,3 +73,21 @@ is a named module-level literal. The decisions that are easy to get wrong:
    is 7 um at the crown's rim, 118 chain counts.
 10. **Activation**: `x = dra((L n_e - s_j tact) << 16, w tact)` at the per-arm
     elapsed-substep clock (saturating at +-4 t_act), then the table lookup.
+11. **Static-topology contacts (P6c)** -- `Topology` (`GameMap.solid` as a grid,
+    the tile, the origin, other units' footprint rects). A node in a blocked
+    tile leaves through the open-neighbour face of least penetration (-x, +x,
+    -y, +y on ties) to `tile_low - 1` / `tile_high`, its fine remainder zeroed on
+    that axis, friction on the two tangential axes (`_friction(..., ax)`); at the
+    rebuild a node AT a face has that velocity component clamped (`_wall_touch`,
+    `_rebuild(..., at_high_wall)`). A body with `coll_r_q24 > 0` is a disc pushed
+    out of the blocked tiles under its bounding box (row-major) and then the
+    footprint rects (`_push_disc`). The contact report is positional, read at
+    the end of every substep. Nothing touches units from the nodes.
+12. **The bend's in-plane guard (P6c)** -- a plane whose in-plane segment
+    length squared is below `ChainRow.plane_min_q32` (the door's l_min^2) is
+    skipped: W ~ 1/|a|^2 reached 63 bits on a tip folded against a corner.
+13. **Outputs (P6c)** -- `Arm.contact`, `Arm.popped`, `Arm.anchor_force`
+    (`((dist 1/dt^2) << 16) // w`, Q8 N, always), `Body.contact`,
+    `World.grab_force` (`_force_q8`: components narrowed by 22, saturated at
+    2^30, floor isqrt); all reset at the tick's start. The C++ keeps the wave
+    clock per arm as `sub_count - t0_sub`.

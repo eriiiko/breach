@@ -196,3 +196,92 @@ def test_the_chain_rounding_kit_is_the_kits_rounding_generalised():
     assert T.shr_round_away(3, 1) == 2 and T.shr_round_away(-3, 1) == -2
     assert T.div_round_away(5, 2) == 3 and T.div_round_away(-5, 2) == -3
     assert T.mul_shr_away(3, 1, 1) == 2 and T.mul_shr_away(-3, 1, 1) == -2
+
+
+# ---------------------------------------------------------------------------
+# #106 P6c: the chain's round-half-away kit is IN fixed_point.h now
+# ---------------------------------------------------------------------------
+#: Magnitudes the arm chain reaches (the reference's CHECK mode measures every
+#: site <= 60 bits at the 3.39 m row) plus the int64 extremes each recipe's
+#: own bound admits.
+_CHAIN_EDGES = sorted({0, 1, -1, 2, -2, 3, -3, 127, -127, 128, -128, 129, -129, 255, 256, -256,
+                       (1 << 30) - 1, 1 << 30, -(1 << 30), (1 << 31) - 1, -(1 << 31),
+                       (1 << 40) + (1 << 7), -(1 << 40) - (1 << 7), (1 << 59) + 12345,
+                       -(1 << 59) - 12345, (1 << 61), -(1 << 61), (1 << 62) - 1, -(1 << 62) + 1})
+
+
+def _chain_sample(n, seed):
+    r = _rng(seed)
+    out = list(_CHAIN_EDGES)
+    for _ in range(n):
+        k = r.randrange(63)
+        v = r.randrange(1 << k) if k else 0
+        out.append(-v if r.random() < 0.5 else v)
+    return out
+
+
+def test_shr_round_away_is_the_cpp_kit():
+    """Property: shr_round_away twin == fixed_point.h shr_round_away for every
+    shift the chain uses (and 0..40), negative values, exact halves and the
+    int64 range the recipe admits (|x| + 2^(s-1) < 2^63). Breaks if either side
+    rounds a half toward +inf / -inf / zero, or loses odd symmetry."""
+    for x in _chain_sample(3000, 21):
+        for s in (0, 1, 8, 10, 14, 16, 24, 26, 30, 32, 40):
+            if abs(x) + (1 << max(s - 1, 0)) >= T.INT64_MAX:
+                continue
+            assert T.shr_round_away(x, s) == bp.fp_shr_round_away(x, s), (x, s)
+    for s in (1, 8, 16):
+        h = 1 << (s - 1)
+        for k in (-5, -1, 0, 1, 5):
+            x = (k << s) + h            # an exact half
+            assert bp.fp_shr_round_away(x, s) == T.shr_round_away(x, s)
+            assert bp.fp_shr_round_away(-x, s) == -bp.fp_shr_round_away(x, s)
+
+
+def test_div_round_away_is_the_cpp_kit():
+    """Property: div_round_away twin == the C++ for negative and positive
+    numerators, exact halves, divisors 1..3, the chain's divisors (rates
+    ~2^17, Q30 units, W up to 2^51) and int64-range numerators; a divisor
+    <= 0 is refused by both. Breaks if the C++ truncates toward zero on a
+    negative numerator or rounds a half toward +inf."""
+    r = _rng(22)
+    ds = [1, 2, 3, 4, 7, 384, 147456, (1 << 30), (1 << 30) + 1, (1 << 51) + 3, T.INT64_MAX // 2]
+    for _ in range(200):
+        ds.append(r.randrange(1, 1 << r.randrange(1, 62)))
+    for n in _chain_sample(400, 23):
+        for d in ds[::3]:
+            if abs(n) + d // 2 >= T.INT64_MAX:
+                continue
+            assert T.div_round_away(n, d) == bp.fp_div_round_away(n, d), (n, d)
+    assert bp.fp_div_round_away(5, 2) == 3 and bp.fp_div_round_away(-5, 2) == -3
+    assert bp.fp_div_round_away(-7, 2) == -T.div_round_away(7, 2)
+    with pytest.raises(ValueError):
+        bp.fp_div_round_away(1, 0)
+
+
+def test_mul_shr_away_is_the_cpp_kit():
+    """Property: mul_shr_away twin == the C++ (the 128-bit product through
+    mul128_shr, no 128-bit add) at every shift the chain uses, both signs,
+    products far past 2^63 (w Q32 x g^2, the drag's c |v|) whose rounded
+    result fits int64. Breaks if the C++ floors the magnitude differently or
+    forms the product in 64 bits."""
+    xs = _chain_sample(600, 24)
+    for i, a in enumerate(xs):
+        for b in xs[i % 5::17]:
+            for s in (1, 16, 24, 30, 32, 40, 48, 54):
+                want = T.mul_shr_away(a, b, s)
+                if not (T.INT64_MIN < want < T.INT64_MAX) or (abs(a * b) >> (s - 1)) >= T.INT64_MAX:
+                    continue
+                assert want == bp.fp_mul_shr_away(a, b, s), (a, b, s)
+    assert bp.fp_mul_shr_away(3, 1, 1) == 2 and bp.fp_mul_shr_away(-3, 1, 1) == -2
+    with pytest.raises(ValueError):
+        bp.fp_mul_shr_away(1, 1, 0)
+
+
+def test_the_chain_currency_is_one_number_on_both_sides():
+    """Property: fixed_point.h's CHAIN_FINE_BITS / CHAIN_SHIFT equal
+    creature_fixed's (the Python twin every chain conversion goes through).
+    Breaks if either side changes the chain currency alone."""
+    from simulation import creature_fixed as CF
+    assert bp.CHAIN_FINE_BITS == CF.CHAIN_FINE_BITS == 8
+    assert bp.CHAIN_SHIFT == CF.CHAIN_SHIFT == 24

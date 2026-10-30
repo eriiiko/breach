@@ -101,14 +101,24 @@ def test_an_over_headroom_size_is_refused_by_the_bound_that_binds(
     assert f"{arm_length_m:.6g} m" in str(exc.value)
 
 
-def test_a_stiffness_typo_is_refused_by_a_size_invariant_bound():
-    """Property: k_dist x w is size-invariant under the law, so its bound
-    refuses a stiffness typo (x1e6), not a size. Breaks if the distance
-    factor's numerator bound is dropped."""
+def test_a_stiffness_typo_is_refused_by_the_distance_impulse_bound():
+    """Property: a stiffness typo (k_dist x1e6) is refused by the bound on the
+    distance impulse's numerator k C d/|d| (the integer reference's dist.k_Cd
+    site, #106 P6c), by name. Breaks if that bound is dropped or stops
+    reading k_dist."""
     r = _row()
     r["tissue"]["k_dist"] *= 1e6
-    with pytest.raises(ValueError, match="dist_factor_fit"):
+    with pytest.raises(ValueError, match="dist_impulse_fit"):
         _build(r)
+
+
+def test_the_distance_impulse_bound_refuses_a_big_animal():
+    """Property: dist_impulse_fit scales L^4 under the law (k_dist L^3 x the
+    longest segment L), so it refuses BIG sizes: the three art sizes pass,
+    a 5 m arm is refused by it, by name (#106 P6c). Breaks if the bound stops
+    scaling with the segment length or the stiffness."""
+    with pytest.raises(ValueError, match="dist_impulse_fit"):
+        _build(_scaled_row(5.0))
 
 
 # ---------------------------------------------------------------------------
