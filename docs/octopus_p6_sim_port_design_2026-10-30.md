@@ -189,7 +189,17 @@ every unit has one driver: a `creature` controller row in the match
 registry (`register_controller`) drives creature units through intents;
 default `idle`-equivalent is the hub's own idle primitive (no intent = idle).
 
-### 4.6 Team, faction, match end — ERIK'S CALL
+### 4.6 Team, faction, match end — RULED (Erik, 2026-10-30)
+The octopus is its OWN team: a `CREATURE_TEAM` constant beside `ZOMBIE_TEAM`
+in `factions.py`, hostile to every other team under today's rule
+("hostility is a different team"), NEVER the zombie team — zombies and the
+octopus are enemies unless an octopus turns zombie (it cannot, v1). Not
+counted by `MatchRules.living_teams` (a hazard, like the zombies; a
+`counts_for_victory` key is added when a mode needs it). Erik's floated idea,
+recorded not ordered: several creature teams and a hostility MATRIX between
+teams (animals hostile to some teams and not others; the octopus
+distinguishes kinds) — a factions design item for later, not P6.
+Options considered in v1:
 `MatchRules.living_teams` counts every non-zombie team as a marine team, so
 an octopus on its own team keeps a match open while it lives. Options:
 (a) its own `CREATURE_TEAM` (like `ZOMBIE_TEAM`), hostile to all, no team in
