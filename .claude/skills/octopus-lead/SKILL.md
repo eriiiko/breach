@@ -205,3 +205,33 @@ the lead so you decide all these things." Concretely:
   quantization beside ticks (the activation clock runs in substeps); (3)
   `bend_damp_s` is a 1 ms time constant -- quantizing it to ticks would make it
   41 ms; it enters as gamma in Q16. Nothing failed that needed a second run.
+- 2026-10-30 (P6b, worktree agent, Opus) -- the integer reference:
+  `docs/octopus_integer_reference/chain_ref_q.py` (+ gates, README,
+  report_p6b.md), the kit's Python twins `src/simulation/fixedpoint_twins.py`
+  (+ six `fp_*` bindings, held to the C++ by `tests/test_fixedpoint_twins.py`),
+  the checked-in `cpp/src/activation_table.inc` (`tools/
+  gen_activation_table.py`). All seven gates pass: P1's a1-c on ints with the
+  float's numbers (a2 2.45 deg, a4 1.03-1.28), dead arm rests at 0.02 mm/s,
+  free-animal COM 0.04 mm / 60 s (its floor-rounding pair slides 6 mm in 10 s),
+  reach RMS 0.57 mm vs P5z (0.01 mm once t_act sits on the substep grid),
+  bytes deterministic, no int64 site past 59 bits at 1.80-3.39 m; cost
+  REPORTED (~28 k weighted / arm-substep, +12 % over the float's bound). What
+  failed first and what P6c must therefore copy exactly: (1) a PBD rebuild
+  v = 384 (p - p_prev) on Q24 positions erased every sub-count correction --
+  the passive tip, a 510 kg body's share of an attachment -- and the dead
+  arm's slide ended 77 mm off the float: the reference carries the predict's
+  rounding remainder AND a Q32 fine remainder of every correction into the
+  velocity (`_rebuild`, `_move`; scratch, not state) -> 15 mm; (2) P6a's
+  per-node distance factor f = k w / r rounds each node's share separately
+  (1e-7) and slid the free animal 1.1 mm / 60 s: two-body corrections move
+  each participant by w x ONE shared impulse -> 0.04 mm; (3) a body
+  remainder never reset re-injected itself every substep (crawl body 215 mm
+  off -> 5 mm): reset EVERY scratch remainder at the predict; (4) heading in
+  Q16 rad is 118 chain counts at the crown rim: the reference carries Q24 rad
+  (a design-5 state change P6d1 adopts); (5) the 3 mm reach deviation is the
+  t_act quantization to whole substeps (346 for 0.9 s), not arithmetic.
+  Lessons: measure a deviation against the float re-run at the int's
+  quantized INPUTS before hunting arithmetic; a gate that is a property of
+  exact arithmetic (mirror symmetry, ballistic identity) catches a biased
+  rounding in one tick where the 60 s no-slide gate needs minutes; Python
+  ints run ~2.4 ms per arm-substep, so parallelise scenarios.
