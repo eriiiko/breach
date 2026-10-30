@@ -107,6 +107,21 @@ commit, tagged `octopus-v<N>`; the digest spec bumps with it (§5).
   stepping. Its position is WRITTEN by the creature body each tick from the
   solver's rigid body (the P2 `Body2D`, now with z): the arms move the
   animal, nothing else does. The unit's `facing` is the body heading.
+- **Hitbox: the arms can be shot** (Erik, 2026-10-30: "it would be
+  disappointing if we couldn't"). Today a bullet's march stops at the first
+  tile inside a unit's footprint rectangle (`combat.py`, the march and the
+  laser's skewer) and melee walks `occupied_tiles()`. The octopus's
+  `occupied_tiles()` becomes its body tiles PLUS the tiles its arm nodes
+  lie in (8 x 18 nodes -> a tile set, rebuilt from the synced chain once per
+  tick after slot 5b, so it is deterministic and costs nothing), and the two
+  march sites test occupancy through that one seam instead of the rectangle
+  (a human's set is still its rectangle: no behaviour change, golden
+  untouched). HIT tiles and BLOCKING tiles are different sets: an arm can be
+  shot but walked over. The hit event records WHICH node was struck (the
+  packet's existing position); v1 damage goes to the unit's one HP pool;
+  per-arm damage (a shot-off or dead arm feeding the chain's `alive`, the
+  P1 dead-arm signature) is #118's row on the same record, not a new seam.
+  Bullet fate stays geometry (the Vision / engagements / cover rule).
 - Orders: the hub consumes the same intents a unit gets (MOVE_DIR → travel
   direction, a target → reach/grab); v1 ships the intent-to-goal map for
   travel, grab, swim, idle; a bot or the brain (#108) issues the intents.
@@ -208,7 +223,7 @@ call, no record (the charges' pattern).
 | P6a | the creature row + door (`creatures.py`, `creature_fixed.py`), the `"octopus"` species row with `creature=` | door tests (refusals, quantization once), `test_ingress_lint` |
 | P6b | the integer reference `octopus_chain_ref_q.py` at game scale + its gates (P1's seven on ints; z + floor + wall gates) | the gates pass; `tests/test_octopus_chain_reference.py` guards the file |
 | P6c | `ArmChainSolver` C++ + binding; bit-identity to the reference | tol 0 over 10 s of reach / crawl inputs; float ratchet unchanged |
-| P6d | `creature_system.py`: hub + primitives ported (crawl, swim, grab, idle, reach) over the solver; `CreatureBody`; slot 5b; `CREATURE_SECT_V1`; recorder block | P2–P5 gates re-run through `Simulation` on a flooded test room (property gates, dequantized units); absence-transparency (octopus-free digest unchanged, golden untouched); determinism (two runs, one digest) |
+| P6d | `creature_system.py`: hub + primitives ported (crawl, swim, grab, idle, reach) over the solver; `CreatureBody`; slot 5b; `CREATURE_SECT_V1`; recorder block; `occupied_tiles()` with the arm tiles and the two march sites reading occupancy through it | P2–P5 gates re-run through `Simulation` on a flooded test room (property gates, dequantized units); absence-transparency (octopus-free digest unchanged, golden untouched); determinism (two runs, one digest); a shot across an outstretched arm hits the octopus, across its empty crown-side tiles misses |
 | P6e | cost measured (`tools/bench_octopus.py`: ms / octopus / tick, CPU, by part: hub, chain, contacts) and REPORTED; no optimisation | a number in the report, no threshold |
 
 Each patch one worktree agent, one writer; design-gated patches: P6c and
