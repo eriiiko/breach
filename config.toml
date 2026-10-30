@@ -3535,6 +3535,146 @@ behind_arc_deg = 90.0
 submersion = "drowns"
 environmental_damage_rate = 1.0
 
+# ---------------------------------------------------------------------------
+# Creatures (#106 P6a) -- one row per creature body plan, read by
+# src/simulation/creatures.py into a frozen CreatureDef through ONE door
+# (docs/octopus_p6_sim_port_design_2026-10-30.md section 3). SI units and
+# seconds, nothing pre-quantized: the door converts every duration ONCE with
+# ticks_from_seconds and every chain number ONCE through creature_fixed.py,
+# and refuses a missing, unknown, mistyped or out-of-range key, and a size the
+# integer chain cannot hold (the headroom check). Construction-bound: an F5
+# reload never retunes a live creature. A species joins a row by
+# SpeciesDef.creature (species.py).
+#
+# [creatures.octopus] is the MID octopus, the P5z hand-off
+# (prototypes/octopus_motion/out/row_mid.toml, game_scale.mid_row()).
+# Provenance per value: measured (literature / P1-P5, scale-free) | scaled L^n
+# (the law below) | SIZES (art/characters/octopus/CONTROLS.md, row mid) |
+# choice (a P1-P5 or lead decision) | new (a P5z dial).
+# The law: same-duration similarity from the 0.24 m animal, S = 10.5: lengths
+# S, masses S^3, k_dist S^3, k_bend S^5, grips S^4, torque damping S^5,
+# durations / ratios / angles / probabilities 1, g_eff unscaled (physics).
+# [solver] ticks_per_second is NOT a key: the clock has one owner, [clock].
+# ---------------------------------------------------------------------------
+[creatures.octopus]
+version = 1                    # hashed into every creature record (design section 5); bump on a row-SHAPE change
+
+[creatures.octopus.body]
+arms = 8
+nodes_per_arm = 18             # one per game bone + the tip
+arm_length_m = 2.52            # scaled L^1 (= SIZES mid arm at rest)
+radius_base_m = 0.07875        # scaled L^1 -- the law's value; SIZES draws 0.15 m (lead: kept, data Erik may change)
+radius_tip_m = 0.00525         # scaled L^1
+tissue_density = 1042.0        # measured (Yekutieli I), kg/m^3
+water_density = 1022.0         # sea water, kg/m^3
+body_mass_kg = 509.631         # SIZES: mantle 0.93 x 1.08 m, prolate ellipsoid at 1042 kg/m^3 (the law: 347 kg). THE one mass: sets the species' mass mean
+body_radius_m = 0.465          # SIZES: half the mantle width (the law: 0.525 m)
+body_c_drag = 1.0              # choice (2-D), dimensionless
+body_crawl_area_m2 = 0.43245   # SIZES radius, the 2-D form (2 r) x r
+body_rot_damp = 25.5256        # scaled L^5, N m s
+mantle_long_m = 1.08           # SIZES (the gates' "mantle length")
+footprint = 3                  # choice (P6a): tiles per side; the 0.93 m mantle on 0.333 m tiles = 2.8 -> 3, a marine's footprint
+arm_angles_deg = [22.5, 67.5, 112.5, 157.5, -157.5, -112.5, -67.5, -22.5]   # P2 layout, from the heading, CCW
+front_pairs = [0, 7]           # L1, R1 (P5's front bias)
+back_pairs = [3, 4]            # L4, R4
+
+[creatures.octopus.tissue]
+k_bend = 12762.8               # scaled L^5, N m/rad (fully active, at the base; x (R/R_base)^3 along the arm)
+k_passive_frac = 0.01          # choice (P1), fraction of k_bend
+k_dist = 2315250.0             # scaled L^3, N/m
+bend_damp_s = 0.001            # choice (P1): a damping TIME CONSTANT (XPBD gamma = bend_damp_s / dt_sub), never quantized to ticks
+c_drag_perp = 1.013            # measured (Yekutieli I); areas scale L^2 from the radii
+c_drag_tan = 0.0256            # measured (Yekutieli I)
+g_eff = 0.188292               # physics, NOT scaled: 9.81 (1 - 1022/1042), m/s^2
+mu_floor = 0.1                 # choice (P2); g_eff unscaled makes friction 10.5x weaker relative to the crawl
+
+[creatures.octopus.solver]
+substeps = 16                  # P1 finding (16 x 2), unchanged at mid
+passes = 2                     # P1 finding
+activation_table_samples = 1025   # new (P5z): S(x) on x in [-8, 8], step 1/64, linear interpolation
+
+[creatures.octopus.reach]
+a_ca = 0.6                     # measured (P1, Yekutieli's natural reach), activation 0..1
+t_act_s = 0.9                  # P1, wave travel time
+front_width_m = 0.148235       # one segment, L/17: scaled L^1
+
+# [crawl] / [swim] / [grab] / [idle]: durations, ratios, probabilities and
+# angles are the P2-P5 numbers, unchanged by the law, unless marked.
+[creatures.octopus.crawl]
+anchor_nodes = [5, 6, 7]       # P2
+e_max = 1.6                    # P2, proximal elongation at release (Levy: 1.5-1.8)
+push_s = 0.5                   # P2
+push_jitter = 0.5              # P2, seconds: + U(0, jitter)
+recover_s = 0.8                # P2
+recover_jitter = 2.5           # P2, seconds
+decision_s = 0.1               # P2, the decision comb (0.1 s -> 2 ticks)
+p_recruit = 0.3                # P2, per decision tick
+max_stance = 3                 # P2
+s_min = 0.2                    # P2, a cosine
+back_bias = 0.5                # P2
+neighbour_bonus = 0.3          # P2
+grip_limit = 6077.53           # scaled L^4, N per anchored node
+stance_activation = 0.3        # P2
+steer_gain = 1.0               # P2
+steer_window_s = 2.0           # P2
+steer_min_dist = 0.21          # scaled L^1, m
+
+[creatures.octopus.swim]
+open_deg = 80.0                # P3
+closed_deg = 20.0              # P3
+bundled_deg = 5.0              # P3
+open_s = 1.0                   # P3
+close_s = 0.4                  # P3
+activation = 0.8               # P3
+web_factor = 3.0               # P3
+jet_dv = 8.4                   # scaled L^1 (a SPEED, m/s: same durations => x L)
+jet_s = 0.3                    # P3
+body_c_drag = 0.5              # choice (2-D), mantle first
+body_area_m2 = 0.679291        # SIZES radius, pi r^2
+
+[creatures.octopus.grab]
+arm = 0                        # P4, the grabbing arm's index
+prop_mass = 115.763            # scaled L^3, kg (a marine is 90 kg)
+prop_radius = 0.42             # scaled L^1, m
+prop_at_m = [1.61982, 1.93043] # scaled L^1, m (the P4 demo prop's place)
+reach_wave_s = 0.8             # P4
+reach_stretch = 1.4            # P4
+reach_activation = 0.6         # P4
+grab_nodes = [3, 11]           # P4, node index range
+sucker_reach = 0.126           # scaled L^1, m
+wrap_activation = 0.6          # P4
+hold_activation = 1.0          # P4
+pull_in_scale = 0.7            # P4
+pull_in_s = 1.0                # P4
+grip_limit = 18232.6           # scaled L^4, N per sealed node
+hold_s = 1.5                   # P4
+aim_max_deg = 60.0             # P4
+lift_pitch_deg = 30.0          # new (P5z): the holding arm's root pitched up
+lift_s = 1.0                   # new (P5z)
+carry_jet_dv = 5.25            # scaled L^1, m/s
+
+[creatures.octopus.idle]
+max_active = 2                 # P5
+p_start = 0.15                 # P5, per decision tick
+hold_s = 0.4                   # P5
+hold_jitter = 1.2              # P5, seconds
+wave_s = 0.7                   # P5
+wave_jitter = 0.6              # P5, seconds
+stretch = 1.15                 # P5, rest-scale factor
+stretch_jitter = 0.2           # P5, rest-scale factor (NOT seconds)
+activation = 0.5               # P5
+touch_s = 0.3                  # P5
+touch_jitter = 0.8             # P5, seconds
+limp_s = 1.0                   # P5
+limp_jitter = 1.5              # P5, seconds
+aim_deg = 45.0                 # P5
+front_bias = 1.0               # P5
+
+[creatures.octopus.rules]
+can_become_zombie = false      # design section 3: a zombie bite never converts it
+armed = false                  # design section 3: no loadout row is bound; slot 4 never fires for it
+blocks = "body"                # design section 4.1: the body footprint blocks and stamps; arms never do
+
 [rendering]
 # Resolution of the world composite RT in pixels per tile — the sharpness
 # CEILING for everything (art, lights, overlays): art above this is
