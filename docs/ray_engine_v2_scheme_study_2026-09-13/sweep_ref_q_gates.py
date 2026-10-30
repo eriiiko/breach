@@ -2056,7 +2056,10 @@ def gate15_gas_fold(fast=False):
     Ts0 = [r[:] for r in Ts]
     cs = R.FoldCounters()
     R.fold_pass1_solid(Ts, rs, ps, hs, R.plane(1, n_s, 1), cs, table=live)
-    solid_books = cs.e_solid_deposit_sum + cs.e_rad_clamp_drop_sum
+    # #73 item 1: the low rail's lift is its own counter now, so the landing
+    # the rails allowed is e_solid_deposit_sum + e_solid_low_rail_sum
+    solid_books = (cs.e_solid_deposit_sum + cs.e_solid_low_rail_sum
+                   + cs.e_rad_clamp_drop_sum)
     solid_want = 0
     for i in range(n_s):
         cap = 1 << (hs[0][i] + 16)

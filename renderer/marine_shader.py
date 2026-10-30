@@ -132,9 +132,17 @@ uniform float u_rim_power;
 uniform float u_rim_albedo;    // #33: rim colour = mix(white, albedo, this)
 uniform float u_gloss_strength;  // #33: highlight strength (0 = no highlight)
 uniform float u_gloss_shininess; // #33: highlight exponent at gloss 1
+uniform float u_wrap;           // #114: 1 = half-Lambert (soft) .. 0 = Lambert (hard dark side)
 uniform int   u_srgb_decode;
 uniform int   u_use_normal_marine; // P2 guard: 0 = inert (N unchanged), 1 = on
 uniform float u_normal_strength;   // P2 perturbation strength (feel knob)
+// #114 body light: 1 = the whole body lit from the unit's ONE light read
+// (renderer/unit_shadow.py read_unit_light, set per unit before its draw);
+// 0 = each fragment from the field tile under it (the pre-#114 A/B).
+uniform int   u_body_light;
+uniform vec3  u_body_dir_rgb;      // one-sided irradiance (x exposure)
+uniform vec3  u_body_iso_rgb;      // balanced irradiance (x exposure)
+uniform vec2  u_body_to_light;     // toward the light, unit; (0,0) = none
 
 out vec4 finalColor;
 
@@ -164,6 +172,23 @@ mat3 cotangent_frame(vec3 N, vec3 p, vec2 uv) {
 void main() {
 // <FIELD_SAMPLE>
 
+    // #114 body light. The unit is stamped opaque into the light sweep (its
+    // floor shadow), so the field under the body holds light only in the
+    // footprint row facing the lamp. In "unit" mode the body's light is the
+    // unit's own read instead -- the same read its projected shadow takes --
+    // so the whole body is lit and its lit side agrees with the shadow. The
+    // smoke's cast shadow stays PER FRAGMENT, toward the read's light.
+    // Both parts are already in exposure units (x u_light_gain).
+    vec3 light_dir_rgb = incoming_rgb * u_light_gain;
+    vec3 light_iso_rgb = vec3(0.0);
+    if (u_body_light == 1) {
+        float smoke_k = smokeShadow(world_uv, u_body_to_light,
+                                    fragWorldPos.y * u_smoke_grid.x / u_world_px.x);
+        light_dir_rgb = u_body_dir_rgb * smoke_k;
+        light_iso_rgb = u_body_iso_rgb * smoke_k;
+        L = normalize(vec3(u_body_to_light.x, u_light_z, u_body_to_light.y));
+    }
+
     // P2 normal map (guarded — zero cost when off). Reconstruct a tangent frame
     // from screen-space derivatives, sample the map as LINEAR data (never sRGB-
     // decode a normal map — its RGB are directions), unpack, apply the marine's
@@ -178,10 +203,17 @@ void main() {
         N = normalize(TBN * nmap);
     }
 
-    // Half-Lambert: softens the pre-normalized-direction instability that
-    // side normals get under near-overhead lamps AND reads better on a small
-    // top-down token (design v2 §Bugs).
-    float ndotl = dot(N, L) * 0.5 + 0.5;
+    // Wrapped Lambert (#114): u_wrap 1 is the half-Lambert of design v2 §Bugs
+    // (soft, the side facing away still half lit), 0 plain Lambert (a hard
+    // dark side). [render.unit_shading] wrap, read every frame.
+    float ndotl = max(0.0, (dot(N, L) + u_wrap) / (1.0 + u_wrap));
+    // #114: the balanced share's weight -- the same wrapped term averaged over
+    // every horizontal direction at the key's height (exact at u_wrap 1, where
+    // it is linear in L; below 1 the clamp is taken after the average), so a
+    // ring of equal lamps lights every side alike and the top most.
+    float ndotl_iso = max(0.0, (N.y * u_light_z / sqrt(1.0 + u_light_z * u_light_z)
+                                + u_wrap) / (1.0 + u_wrap));
+    vec3 light_rgb = light_dir_rgb + light_iso_rgb;   // all of it, x exposure
 
     vec4 albedo_gloss = texture(texture0, fragTexCoord);
     vec3 albedo = albedo_gloss.rgb;
@@ -189,7 +221,8 @@ void main() {
     if (u_srgb_decode == 1) albedo = srgb_to_linear(albedo);  // else double-dark
     albedo *= colDiffuse.rgb;                                  // draw colour
 
-    vec3 lit = albedo * (u_ambient + incoming_rgb * u_light_gain * ndotl);
+    vec3 lit = albedo * (u_ambient + light_dir_rgb * ndotl
+                         + light_iso_rgb * ndotl_iso);
 
     // #33 highlight (Blinn-Phong): the LOCAL light's own colour, never the
     // ambient (a dark room puts no shine on a visor), scaled AND tightened by
@@ -201,7 +234,7 @@ void main() {
     float spec = u_gloss_strength * gloss
                * pow(max(dot(N, H), 0.0), shininess)
                * clamp(dot(N, L) * 4.0, 0.0, 1.0);
-    lit += spec * incoming_rgb * u_light_gain;
+    lit += spec * light_rgb;
 
     // Rim: Fresnel-ish silhouette term, tinted by the LOCAL light so it never
     // brightens a marine the room around it can't (dark room -> faint ambient
@@ -209,7 +242,7 @@ void main() {
     // cloth keeps a dark edge instead of reading light grey from above.
     float rim = pow(1.0 - max(0.0, dot(N, u_view_dir)), u_rim_power);
     vec3 rim_col = mix(vec3(1.0), albedo, u_rim_albedo);
-    lit += u_rim_strength * rim * rim_col * (u_ambient + incoming_rgb * u_light_gain);
+    lit += u_rim_strength * rim * rim_col * (u_ambient + light_rgb);
 
     // Linear HDR out (G0 P1): the world resolve tone-maps and encodes, once.
 
@@ -291,6 +324,38 @@ class MarineShader:
                             rl.ffi.new("float[1]", [float(strength)]),
                             rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
 
+    def set_light_shape(self, light_z: float, wrap: float) -> None:
+        """#114: the key's height (the 2D light direction lifted to 3D;
+        lower = more grazing) and the wrap (1 half-Lambert .. 0 Lambert),
+        from ``[render.unit_shading] light_height`` / ``wrap``."""
+        f1 = rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT
+        rl.set_shader_value(self.shader, self.locs["u_light_z"],
+                            rl.ffi.new("float[1]", [float(light_z)]), f1)
+        rl.set_shader_value(self.shader, self.locs["u_wrap"],
+                            rl.ffi.new("float[1]", [float(wrap)]), f1)
+
+    def set_body_light(self, from_unit: bool) -> None:
+        """#114: True = the body lit from each unit's read (set per unit by
+        :meth:`set_unit_light`), False = from the field tile under each
+        fragment. Safe to call anytime."""
+        rl.set_shader_value(self.shader, self.locs["u_body_light"],
+                            rl.ffi.new("int[1]", [1 if from_unit else 0]),
+                            rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
+
+    def set_unit_light(self, light) -> None:
+        """#114: one unit's light read (``unit_shadow.UnitLight``), pushed
+        just before that unit's draw. The read's direction is the way the
+        light TRAVELS; the shader wants the way TOWARD it."""
+        s, L, f3 = self.shader, self.locs, rl.ShaderUniformDataType.SHADER_UNIFORM_VEC3
+        rl.set_shader_value(s, L["u_body_dir_rgb"],
+                            rl.ffi.new("float[3]", [float(c) for c in light.dir_rgb]), f3)
+        rl.set_shader_value(s, L["u_body_iso_rgb"],
+                            rl.ffi.new("float[3]", [float(c) for c in light.iso_rgb]), f3)
+        rl.set_shader_value(s, L["u_body_to_light"],
+                            rl.ffi.new("float[2]", [-float(light.dir_x),
+                                                    -float(light.dir_y)]),
+                            rl.ShaderUniformDataType.SHADER_UNIFORM_VEC2)
+
 
 def load_marine_shader(light_z: float = MARINE_LIGHT_Z,
                        rim_strength: float = MARINE_RIM_STRENGTH,
@@ -310,7 +375,9 @@ def load_marine_shader(light_z: float = MARINE_LIGHT_Z,
     names = ["u_ambient", "u_light_gain", "u_light_z", "u_normal_y_sign",
              "u_world_px", "u_view_dir", "u_rim_strength", "u_rim_power",
              "u_srgb_decode", "u_use_normal_marine", "u_normal_strength",
-             "u_rim_albedo", "u_gloss_strength", "u_gloss_shininess"]
+             "u_rim_albedo", "u_gloss_strength", "u_gloss_shininess",
+             "u_body_light", "u_body_dir_rgb", "u_body_iso_rgb",
+             "u_body_to_light", "u_wrap"]
     locs = {n: rl.get_shader_location(shader, n) for n in names}
 
     # P2 normal map: bind the ROUGHNESS(3) material slot to the `texture3`
@@ -327,6 +394,9 @@ def load_marine_shader(light_z: float = MARINE_LIGHT_Z,
     # Constant-per-run uniforms, set once.
     rl.set_shader_value(shader, locs["u_light_z"],
                         rl.ffi.new("float[1]", [float(light_z)]),
+                        rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
+    rl.set_shader_value(shader, locs["u_wrap"],
+                        rl.ffi.new("float[1]", [1.0]),
                         rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
     rl.set_shader_value(shader, locs["u_rim_strength"],
                         rl.ffi.new("float[1]", [float(rim_strength)]),

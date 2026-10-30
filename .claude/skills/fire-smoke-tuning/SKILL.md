@@ -156,3 +156,11 @@ incident beside it. PROVISIONAL until three runs in a row needed no amendment.
   table's door). Measured by look-shot children with the dial set in the live
   CFG (never the file) -- 5 s a shot; the probe answered "does the gain switch
   off a visible light at extinction" (no: the tile passes 800 K first).
+- 2026-10-29 (#129, headless half, no Erik at the screen): the duration dial is
+  `wall_damage` alone (duration ~1/it); since M3 H_bed x0.5..x8 moves duration
+  <= 30 % and the char ~1 pt. The "fades WITH fuel left" of §2 is the `I_min`
+  snap of the capacity law (char ~ I_min/(c·o2f·hot), tile still 520–625 K),
+  not #68 cooling; the char reaches 0 only when the drain outruns the fire.
+  Read the probe's fuel column for NEGATIVE values: furniture (non-solid) is
+  never destroyed at hp 0 and burns on past it. A sweep is ~26 s/run headless;
+  a sweep script must restore config.toml with its own line endings.

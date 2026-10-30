@@ -40,6 +40,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 
 from config import CFG  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation.environment import EnvironmentProfile  # noqa: E402
 from simulation.exchange import (  # noqa: E402
     COUPLING_TABLE, apply_blast_damage, apply_wave_push, reduce_grad,
@@ -85,7 +86,7 @@ def _marine(x=6.0, y=6.0):
 
 
 def _zombie(x=6.0, y=6.0):
-    u = Unit("Z", x=x, y=y, team=1)
+    u = Unit("Z", x=x, y=y, team=ZOMBIE_TEAM)
     u.id = 2
     return u
 

@@ -529,3 +529,77 @@ beacon = false
 light_gain = "game"
 note = "fss_lone without the F4a extras (embers, heat shimmer): their A/B twin -- the sparks and the wobble of the floor beside the flame are the difference."
 hide = ["embers", "shimmer"]
+
+# --- #114: lit 3D units, tier 1 -------------------------------------------
+# The playground's marine Bravo (footprint x 13..15, y 42..44; Alpha stands
+# west of him, Delta south) under ONE omni flashlight, one tile of floor
+# between the lamp and his footprint, to the N, S, E, W and NE. The level's
+# lamps and beacon are off so the flashlight is the only light. Judges whether
+# the WHOLE body is lit from the unit's one light read
+# ([render.unit_shading] body_light = "unit") and whether a lamp N, S, E or W
+# lights him alike (docs/lit_3d_units_tier1_2026-10-27.md §3, §4).
+# frames = 2: from tick 3 on, a standing unit's float position drifts just
+# below its integer (Bravo 13.0 -> 12.99997 by tick 29), so its stamp in the
+# sweep (floor of the position) moves one tile N and W of where its body is
+# drawn and the five lamps would no longer stand symmetrically around the
+# block that casts and receives the light (#114 §4 finding). Tick 2 is
+# before the drift: the stamp and the drawn body coincide.
+[[shot]]
+name = "unit_lamp_n"
+level = "playground"
+frames = 2
+center = [14.5, 43.5]
+zoom = 64.0
+lamps = false
+beacon = false
+flashlight = { pos = [14.5, 40.5], intensity = 2.5, spread = 6.283 }
+light_gain = "game"
+note = "#114: marine Bravo, omni lamp NORTH of his footprint (one tile gap)."
+
+[[shot]]
+name = "unit_lamp_s"
+level = "playground"
+frames = 2
+center = [14.5, 43.5]
+zoom = 64.0
+lamps = false
+beacon = false
+flashlight = { pos = [14.5, 46.5], intensity = 2.5, spread = 6.283 }
+light_gain = "game"
+note = "#114: marine Bravo, omni lamp SOUTH of his footprint (one tile gap)."
+
+[[shot]]
+name = "unit_lamp_e"
+level = "playground"
+frames = 2
+center = [14.5, 43.5]
+zoom = 64.0
+lamps = false
+beacon = false
+flashlight = { pos = [17.5, 43.5], intensity = 2.5, spread = 6.283 }
+light_gain = "game"
+note = "#114: marine Bravo, omni lamp EAST of his footprint (one tile gap)."
+
+[[shot]]
+name = "unit_lamp_w"
+level = "playground"
+frames = 2
+center = [14.5, 43.5]
+zoom = 64.0
+lamps = false
+beacon = false
+flashlight = { pos = [11.5, 43.5], intensity = 2.5, spread = 6.283 }
+light_gain = "game"
+note = "#114: marine Bravo, omni lamp WEST of his footprint (one tile gap; Alpha's footprint is just west of the lamp)."
+
+[[shot]]
+name = "unit_lamp_ne"
+level = "playground"
+frames = 2
+center = [14.5, 43.5]
+zoom = 64.0
+lamps = false
+beacon = false
+flashlight = { pos = [17.5, 40.5], intensity = 2.5, spread = 6.283 }
+light_gain = "game"
+note = "#114: marine Bravo, omni lamp NORTH-EAST of his footprint (diagonal, one tile gap on both axes)."

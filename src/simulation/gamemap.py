@@ -654,6 +654,20 @@ class GameMap:
         # exist yet reads 0 (`.get`), so a new seam is one `_gas_energy_book`
         # call and nothing else.
         self.gas_energy_books = {}
+        # #73 item 2: THE SOLID BOOKS' TOPOLOGY SEAM. The solid side's ledger
+        # is TemperatureSolver's (`solid_energy_books_sum`, a snapshot of
+        # Σ cap_real·T over thermal solids, and its counters); a tile that
+        # STOPS being a thermal solid (destroy_wall, unseal_tiles) or STARTS
+        # being one (seal_tiles) moves that snapshot outside every solver
+        # channel. Each such seam measures its tile's contribution before and
+        # after and books the difference here, by channel (telemetry, like
+        # gas_energy_books), and through `_solid_books_sink` into
+        # `TemperatureSolver.book_solid_seam` — the term the solid closure
+        # identity sums (`e_solid_seam_sum`). PhysicsRunner.step wires the
+        # sink every tick; before the first tick there is no solver and no
+        # snapshot, and the dict books alone. Not synced, not digested.
+        self.solid_energy_books = {}
+        self._solid_books_sink = None
         # #88 P2 (docs/smoke_unit_rescale_design_2026-10-20.md §5.1/§5.3): THE
         # PYTHON-SIDE TRACE BOOKS, per gas id, Python ints, each in its plane's
         # own currency (no consumer sums across gases), all >= 0:
@@ -1004,6 +1018,37 @@ class GameMap:
         if delta:
             self.gas_energy_books[channel] = (
                 self.gas_energy_books.get(channel, 0) + int(delta))
+
+    def _solid_books_cell(self, fy, fx):
+        """#73 item 2: this tile's contribution to the solid books
+        (`TemperatureSolver.solid_energy_books_sum`): cap_real·T when it is a
+        thermal solid, else 0. The capacity is the engine's own law
+        (`conduction_cell_capacity_q`, the kit both backends price the
+        snapshot with) — never re-derived here."""
+        if not self.thermal_solid[fy, fx]:
+            return 0
+        import breach_physics as _bp
+        _cap_used, cap_real = _bp.conduction_cell_capacity_q(
+            True, int(self.heat_inv_shift[fy, fx]), 0, 0, 0)
+        return int(cap_real) * int(self.temperature[fy, fx])
+
+    def _solid_energy_book(self, channel, delta):
+        """#73 item 2: book a topology seam's MEASURED change to the solid
+        books into a named channel and, when a solver is wired, into its
+        `e_solid_seam_sum` term (which also moves the snapshot, so the
+        identity closes on the tick the seam fired)."""
+        if delta:
+            self.solid_energy_books[channel] = (
+                self.solid_energy_books.get(channel, 0) + int(delta))
+            if self._solid_books_sink is not None:
+                self._solid_books_sink(int(delta))
+
+    def solid_energy_seam_net(self):
+        """The net change every topology seam made to the solid books since
+        the map was built (the solid twin of :meth:`gas_energy_seam_net`).
+        The closure identity's term is the solver's `e_solid_seam_sum`; this
+        equals it when every seam fired after the first physics step."""
+        return sum(self.solid_energy_books.values())
 
     def reset_trace_books(self):
         """#88 P2: zero the per-tick Python trace books (deposit, clip).
@@ -2394,6 +2439,10 @@ class GameMap:
             # call sites without enclosing solver behaviour, and it makes the
             # channel correct by construction wherever a caller fires.
             _n_before = self._bulk_n_sum()
+            # #73 item 2: the solid-books bracket, the same measured idiom —
+            # a destroyed THERMAL SOLID retires its cap_real·T from the solid
+            # books (the tile joins the gas side at T = 0, born at ambient).
+            _solid_before = self._solid_books_cell(fy, fx)
             self.material[fy, fx] = MAT_AIR
             # (sink-field staleness mark DELETED — EOS P3: no BFS sink field.)
             # Patch ALL table-derived caches for this tile through the single
@@ -2580,6 +2629,8 @@ class GameMap:
             # room DELETES ~4 cell-equivalents, and evacuating a breached
             # furniture tile is negative too.
             self.n_destruction_seed_sum += self._bulk_n_sum() - _n_before
+            self._solid_energy_book(
+                "destroy_wall", self._solid_books_cell(fy, fx) - _solid_before)
 
     # ------------------------------------------------------------------
     # EOS evacuation rule — seal / unseal (A5)
@@ -2815,6 +2866,10 @@ class GameMap:
             # so the per-receiver bulk share is accumulated separately from
             # the all-slices redistribution below.
             t_abs_seal = self.gas_t_abs_at(fy, fx)
+            # #73 item 2: the solid-books bracket (closed after the close-T
+            # write below) — a sealed tile whose material is a thermal solid
+            # is BORN into the solid books at its close-T.
+            solid_before = self._solid_books_cell(fy, fx)
             bulk_share = {r: 0 for r in rs}
             for g in range(N_GASES):
                 n = int(self.gas[g][fy, fx])
@@ -2859,6 +2914,8 @@ class GameMap:
             # Close-T write (computed pre-mutation above — design §4a).
             if t in close_t:
                 self.temperature[fy, fx] = close_t[t]
+            self._solid_energy_book(
+                "seal", self._solid_books_cell(fy, fx) - solid_before)
 
     def unseal_tiles(self, tiles):
         """Open a span of solid tiles to ``MAT_AIR``, seeding each from its
@@ -2903,8 +2960,14 @@ class GameMap:
         # as seal_tiles (design §3.2 pin).
         for t in span:
             fy, fx = t
+            # #73 item 2: an opened thermal solid RETIRES its cap_real·T from
+            # the solid books (measured; air is never a thermal solid, so the
+            # tile's later writes cannot move it back in).
+            solid_before = self._solid_books_cell(fy, fx)
             self.material[fy, fx] = MAT_AIR
             self.on_tile_changed(fy, fx)
+            self._solid_energy_book(
+                "unseal", self._solid_books_cell(fy, fx) - solid_before)
 
             # Boundary join (destroy_wall's exposes predicate, minus its
             # unconditional mint): LIVE solid mask — chains down-span. BC

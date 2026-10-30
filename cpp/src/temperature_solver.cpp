@@ -372,13 +372,25 @@ void TemperatureSolver::step(
                     //
                     // 0 is the ambient floor every solid starts at (temperature
                     // is ΔT above the 20 °C reference, not an absolute).
+                    //
+                    // #73 item 1: the rail's ENERGY is booked by name. The
+                    // fold's landing (e_solid_deposit_sum) is priced up to
+                    // the rail; what the rail ADDS on top, (0 - T)*cap_real
+                    // (>= 0), is e_solid_low_rail_sum -- a term of the solid
+                    // closure identity. The two sum to exactly the old
+                    // post-rail landing: the books' total did not move, only
+                    // the channel the lift is named in.
+                    const int32_t t_pre_low_rail = temperature[i];
                     if (temperature[i] < 0) {
                         temperature[i] = 0; ++t_low_rail_hits;
+                        e_solid_low_rail_sum +=
+                            (0 - (int64_t)t_pre_low_rail) * cap_real_[i];
                     }
-                    // arc #54 P-G5: the radiation fold's ACTUAL landing on
-                    // this thermal solid, post both rails.
+                    // arc #54 P-G5: the radiation fold's landing on this
+                    // thermal solid, post the clamp and the T_MAX_PHYS rail
+                    // (the low rail's lift is its own term since #73).
                     e_solid_deposit_sum +=
-                        ((int64_t)temperature[i] - t_before_rad) * cap_real_[i];
+                        ((int64_t)t_pre_low_rail - t_before_rad) * cap_real_[i];
                 }
             }
             // ---- P5c: THE GAS BRANCH OF THE RADIATION FOLD ----------------
@@ -587,6 +599,23 @@ void TemperatureSolver::step(
                 // (a mirror-only clamp would be undone by the next refresh).
                 if (e_on && acct(i)) {
                     const int64_t nb = n_books(i);
+                    // #73 item 3: THE FLOOR'S SHARE, counted -- the heat
+                    // deposit's twin of e_rad_floor_drop_sum (P5c). Below
+                    // n_floor_heat the divide is by the floor, so only
+                    // ~N/n_floor of the ABSORBED e_abs lands; e_deposit_drop_sum
+                    // above counts the thin-gas attenuation (deposit - e_abs)
+                    // only. The whole unlanded remainder of e_abs, in the heat
+                    // currency the landing is priced in (Q16 heat x FP_ONE,
+                    // e_rad_floor_drop_sum's), is booked here on exactly the
+                    // floored cells: e_abs*FP_ONE - dT*cap_real. Pre-rail, as
+                    // the radiative twin is (the T_MAX_PHYS rail books itself
+                    // in e_gas_rail_sum). A COUNTER ONLY, not a closure term:
+                    // it never entered gas_energy.
+                    if (N_raw < n_floor_q) {
+                        e_dep_floor_drop_sum +=
+                            (int64_t)e_abs * (int64_t)FP_ONE
+                            - (int64_t)dT * cap_real_[i];
+                    }
                     gas_energy::deposit_railed(
                         gas_energy, temperature, i, nb * (int64_t)dT, nb,
                         t_amb_q, t_max_phys_q, &e_gas_rail_sum,

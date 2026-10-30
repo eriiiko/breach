@@ -131,6 +131,7 @@ from simulation.physics_runner import PhysicsRunner
 from simulation.field_edit import EditQueue, FieldEdit
 from simulation.recorder import PhysicsRecorder
 from simulation.status import composed_flags, tick_statuses
+from simulation.damage import tick_credit
 # Weapon/ammo/payload data tables (mechanics/03 §4, W1): the facade owns a
 # bundle, rebuilt fresh at every construction/reset (the GameMap material/gas
 # table pattern) so it always reflects the current CFG.
@@ -140,6 +141,7 @@ from simulation.weapons import (
 # The action registry (onephase_wego design §5) — OnePhaseWEGO's verb table,
 # rebuilt beside the weapon tables at every construction/reset.
 from simulation.action_registry import rebuild_table as rebuild_action_table
+from simulation.loadouts import rebuild_tables as rebuild_loadout_tables
 
 try:
     from pathfinding import astar
@@ -232,6 +234,11 @@ class Simulation:
         self._enable_recorder = enable_recorder
         self._bp = breach_physics
         self.ruleset = ruleset if ruleset is not None else TwoPhaseWEGO()
+        # The team the HUMAN controls (#119): what the HUD, selection, the
+        # flashlights and the possession default mean by "the squad". Control
+        # / UI state, never synced, never digested; the sim itself treats
+        # every team alike.
+        self.player_team: int = 0
 
         # Constants (cached so reset() doesn't re-read CFG every time)
         self._ticks_per_phase = CFG.clock.ticks_per_phase
@@ -322,6 +329,9 @@ class Simulation:
         # playground's 0.333 m/tile derives 3x the tiles for the same reach.
         self.weapons_tables = rebuild_weapon_tables(
             tile_size_m=self.gmap.tile_size_m)
+        # Loadouts + env profiles (#119): validated against the weapon table
+        # just built (an unknown weapon / profile is a load error here).
+        self.loadout_tables = rebuild_loadout_tables()
         # The ACTION REGISTRY (onephase_wego design §5) — the same
         # construction-bound, config-static contract as the weapon tables
         # above, and built AFTER them because its item rows are generated from
@@ -375,6 +385,15 @@ class Simulation:
         # path stays dormant — the dormancy guarantee for the digest gate.
         self._possessed_ids: set = set()
 
+        # Who drives the horde (#122, rl-ready §5 item 1): ``None`` = the
+        # conductor's zombie slot runs the shipped law over every zombie (every
+        # game path: TwoPhaseWEGO / OnePhase / gamepad); a set = a MATCH whose
+        # zombie controller owns the horde (:meth:`hand_zombies_to_controller`)
+        # — the slot then runs the SAME law for exactly the zombie ids that
+        # controller requested this tick (:meth:`drive_zombies`), so no unit is
+        # ever driven twice, and an idle zombie controller leaves it standing.
+        self._zombie_requests: set | None = None
+
         # Target marking (onephase_wego design §11): ``{team: {unit_id, ...}}``
         # — a TEAM fact, not a unit's, consulted by every targeting function
         # (overwatch priority, idle return-fire preference). v1 is a single
@@ -426,6 +445,10 @@ class Simulation:
 
         # Next id to assign in add_unit.
         self._next_unit_id = 0
+        # Roster slots (#119, rl-ready §5.2): per SPAWN team, the units in
+        # slot order. A slot is assigned once and kept at death and
+        # conversion, so a team's size is a mask over a fixed layout.
+        self._rosters: dict[int, list] = {}
 
     # ------------------------------------------------------------------
     # Unit management
@@ -459,8 +482,88 @@ class Simulation:
 
         unit.id = self._next_unit_id
         self._next_unit_id += 1
+        # Roster slot: the next index in the unit's spawn team, never reused.
+        # Derived from the (deterministic) spawn order, so it is not separately
+        # digested: the unit list is hashed in id order already.
+        roster = self._rosters.setdefault(int(unit.team), [])
+        unit.slot = len(roster)
+        roster.append(unit)
         self.units.append(unit)
         return unit.id
+
+    def roster(self, team: int, n_slots: int | None = None) -> list:
+        """``team``'s units indexed by roster slot (#119): every unit ever
+        spawned into ``team``, dead and converted ones included (a slot is
+        never reused), padded with ``None`` up to ``n_slots`` (a level's
+        ``max_per_team``). The living mask is ``u is not None and u.alive and
+        u.team == team`` — a converted marine keeps its slot here but has left
+        the team."""
+        out = list(self._rosters.get(int(team), ()))
+        if n_slots is not None:
+            if n_slots < len(out):
+                raise ValueError(f"roster({team}): {len(out)} slots used, "
+                                 f"n_slots={n_slots} is too small")
+            out.extend([None] * (n_slots - len(out)))
+        return out
+
+    def spawn_match(self, spec=None) -> list:
+        """Spawn a match's units (#119 P2) — THE one entry: ``spec`` (default
+        ``self.level.match``, the level's match.toml) placed by the level's
+        spawn rooms (``simulation.match.spawn_match``). Needs a fresh sim."""
+        from simulation.match import spawn_match
+        spec = self.level.match if spec is None else spec
+        if spec is None:
+            raise ValueError(f"level {self.level.name!r} has no match.toml")
+        return spawn_match(self, spec)
+
+    def hand_zombies_to_controller(self) -> None:
+        """Give the horde to a match's zombie controller (#122): from now on
+        the conductor's zombie slot no longer runs the law on its own; it
+        runs it only for the zombies a controller names through
+        :meth:`drive_zombies`, once per tick. Called by the match runners
+        (``tools/run_match.py``, ``control_match.MatchObserver``) when they
+        build the match's controllers; never on a game path. Idempotent."""
+        if self._zombie_requests is None:
+            self._zombie_requests = set()
+
+    def drive_zombies(self, unit_ids) -> None:
+        """ZOMBIE intent (#122): the zombie law (``ai_zombie.
+        update_zombies_tick`` — trigger, chain activation, nearest prey,
+        melee, A*) drives these units at this tick's zombie slot. Requests in
+        one tick UNION (a unit named twice is still driven once); the request
+        is consumed by the slot. Refused unless the horde was handed to a
+        controller (:meth:`hand_zombies_to_controller`) — on a game path the
+        conductor drives every zombie already, and a second driver is the bug."""
+        if self._zombie_requests is None:
+            raise RuntimeError("drive_zombies: the horde is driven by the "
+                               "conductor (no zombie controller attached; "
+                               "see hand_zombies_to_controller)")
+        self._zombie_requests.update(int(i) for i in unit_ids)
+
+    def _run_zombie_slot(self) -> None:
+        """Tick slot 5: the zombie law, run ONCE per tick by its one driver —
+        the conductor over every zombie (``_zombie_requests is None``, every
+        game path, byte-identical to before #122), or, in a match, the zombie
+        controller's requested ids (filtering preserves ``self.units`` order,
+        so a controller naming the whole horde reproduces the conductor's
+        call exactly). A bite's hit / kill events ride ``tick_events``
+        with source ``"melee"`` (#122), like a bullet's."""
+        reqs = self._zombie_requests
+        if reqs is None:
+            units = self.units
+        else:
+            if not reqs:
+                return
+            units = [u for u in self.units
+                     if not u.is_zombie or u.id in reqs]
+            reqs.clear()
+        update_zombies_tick(self.gmap, units, self.tick,
+                            events=self.tick_events)
+
+    def controlled_units(self) -> list:
+        """The living units of :attr:`player_team` — the human's squad."""
+        return [u for u in self.units
+                if u.team == self.player_team and u.alive]
 
     def get_unit(self, unit_id: int):
         """Linear lookup by id. ``None`` if not found."""
@@ -470,12 +573,12 @@ class Simulation:
         return None
 
     def marines(self):
-        """All living marines (team 0)."""
-        return [u for u in self.units if u.team == 0 and u.alive]
+        """All living non-zombies, every team (the renderer's marine look)."""
+        return [u for u in self.units if not u.is_zombie and u.alive]
 
     def zombies(self):
-        """All living zombies (team 1)."""
-        return [u for u in self.units if u.team == 1 and u.alive]
+        """All living zombies."""
+        return [u for u in self.units if u.is_zombie and u.alive]
 
     # ------------------------------------------------------------------
     # Order placement
@@ -806,15 +909,19 @@ class Simulation:
         self._possessed_ids.add(unit_id)
 
     def throw_grenade_intent(self, unit_id: int, dx_q: int, dy_q: int,
-                             fuse_seconds: float) -> None:
+                             fuse_seconds: float,
+                             reach_q: int | None = None) -> None:
         """THROW: latch a grenade lob along a Q16.16 unit vector (§3c). Consumed
         (and cleared) at the next tick; ignored if the unit is out of
-        grenades then."""
+        grenades then. ``reach_q`` (#121) is the lob distance in Q16.16
+        tiles, clamped to the hand grenade's ``max_throw_range`` at
+        consumption; ``None`` keeps the fixed v0.1 reach (the gamepad)."""
         u = self.get_unit(unit_id)
         if u is None:
             return
-        u.pending_throw = _intents.ThrowIntent(int(dx_q), int(dy_q),
-                                              float(fuse_seconds))
+        u.pending_throw = _intents.ThrowIntent(
+            int(dx_q), int(dy_q), float(fuse_seconds),
+            None if reach_q is None else int(reach_q))
         self._possessed_ids.add(unit_id)
 
     def use_intent(self, unit_id: int) -> None:
@@ -846,7 +953,7 @@ class Simulation:
         if not self._possessed_ids:
             return
         for u in self.units:
-            if u.id not in self._possessed_ids or not u.alive or u.team != 0:
+            if u.id not in self._possessed_ids or not u.alive or u.is_zombie:
                 # A now-invalid possessor (dead / unpossessed / wrong team)
                 # releases a held trigger, so a later rebind starts clean.
                 if getattr(u, "live_trigger", False):
@@ -895,8 +1002,16 @@ class Simulation:
         dirx = _intents.dequantize(throw.dx_q)
         diry = _intents.dequantize(throw.dy_q)
         # v0.1 throw reach: a fixed tile distance along the aim (feel dial for
-        # Erik; the grenade's own fuse/blast are the shipped numbers).
-        reach = 6.0  # tiles
+        # Erik; the grenade's own fuse/blast are the shipped numbers). A
+        # controller throwing at a point (#121, the bots) names its reach in
+        # Q16.16 tiles, clamped to [0, the hand grenade's max_throw_range].
+        if throw.reach_q is None:
+            reach = 6.0  # tiles
+        else:
+            max_q = int(self.weapons_tables.weapons.by_name[
+                "hand_grenade"].max_throw_range) << _intents.FP_SHIFT
+            reach = _intents.dequantize(min(max(0, int(throw.reach_q)),
+                                            max_q))
         tgt_fx = cx + dirx * reach
         tgt_fy = cy + diry * reach
         proj = Projectile(
@@ -906,6 +1021,7 @@ class Simulation:
             fuse_seconds=throw.fuse_seconds,
             thrown_tick=self.tick,
             ammo_name="grenade_frag",
+            owner_id=getattr(u, "id", -1),
         )
         self.projectiles.append(proj)
         u.has_grenade -= 1
@@ -1010,7 +1126,7 @@ class Simulation:
         gmap = self.gmap
 
         for u in self.units:
-            if u.team != 0 or not u.alive:
+            if u.is_zombie or not u.alive:
                 continue
             u.move_path = []
             u.path_tick_offset = 0
@@ -1149,7 +1265,7 @@ class Simulation:
     def round_index(self) -> int:
         return self.ruleset.round_index(self)
 
-    def visible_enemy_ids(self, team: int = 0) -> tuple:
+    def visible_enemy_ids(self, team: int | None = None) -> tuple:
         """Enemies ``team`` can currently see — TEAM VISION, the union of its
         members' cones (onephase_wego design §8).
 
@@ -1159,6 +1275,8 @@ class Simulation:
         model and show everything, exactly as they always have.
         """
         from simulation import vision
+        if team is None:                    # the human's squad (#119)
+            team = self.player_team
         return vision.visible_enemy_ids(self, team)
 
     def round_start_tick(self) -> int:
@@ -1298,7 +1416,7 @@ class Simulation:
         """
         out = {}
         for u in self.units:
-            if u.team != 0 or not u.alive:
+            if u.is_zombie or not u.alive:
                 continue
             start = (u.tile_x, u.tile_y) if phase == 0 else \
                     u.get_planned_pos_after_phase(phase - 1)
@@ -1447,8 +1565,9 @@ class Simulation:
         process_sprays(self.gmap, self.units, self.edit_queue,
                        events=self.tick_events)
 
-        # 5. Zombie AI.
-        update_zombies_tick(self.gmap, self.units, self.tick)
+        # 5. Zombie AI — its ONE driver: the conductor, or a match's zombie
+        # controller through the ZOMBIE intent (#122, :meth:`drive_zombies`).
+        self._run_zombie_slot()
 
         # 6. Re-stamp obstacles.
         self.gmap.stamp_units(self.units)
@@ -1692,6 +1811,15 @@ class Simulation:
             # SIM_FIELDS. The three LIVE planes above keep their conductor wipe
             # because their writer (the old cast) does not clear them.
 
+        # #123: the per-tick deposit credit (damage.TickCredit) shares the
+        # `heat` buffer's lifetime -- it names who put THIS tick's heat / gas
+        # deposit on a tile, read by 9c / 9c3 above. Cleared here, after both
+        # readers and before the round-clock tail, so a door charge fired in
+        # on_tick_end (its edits flush at the next 6b) keeps its claim into
+        # the next tick's readers. Outside the physics gate: claims are made
+        # with or without a runner.
+        tick_credit(self.gmap).clear()
+
         # Expire visual shot tracers (legacy fade-out behaviour).
         if self.shots:
             self.shots = [s for s in self.shots if
@@ -1738,7 +1866,7 @@ class Simulation:
                     execute_payload(
                         self.gmap, self.edit_queue, self.units, fy, fx,
                         payload, self.rng, events=self.tick_events,
-                        kind="grenade")
+                        kind="grenade", owner_id=proj.owner_id)
 
         # W2: advance in-flight kinetic rounds (the unified march). Each
         # marches this tick's integer step budget; hits/chew/exposure resolve
@@ -1768,7 +1896,7 @@ class Simulation:
         pre-P3 behavior.
         """
         for u in self.units:
-            if not u.alive or u.team != 0:
+            if not u.alive or u.is_zombie:
                 continue
 
             # Direct-control branch (control-modularity P3, §3c): a unit with a
@@ -1927,7 +2055,7 @@ class Simulation:
         """
         tpp = self._ticks_per_phase
         for u in self.units:
-            if u.team != 0:
+            if u.is_zombie:
                 continue
             for o in u.orders:
                 if o.order_type == ORDER_GRENADE:
@@ -1946,6 +2074,7 @@ class Simulation:
                         # poison grenades name theirs; loadout UI = W6).
                         ammo_name=(getattr(o, "ammo_name", None)
                                    or "grenade_frag"),
+                        owner_id=getattr(u, "id", -1),
                     )
                     self.projectiles.append(proj)
 

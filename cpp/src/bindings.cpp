@@ -620,7 +620,9 @@ PYBIND11_MODULE(breach_physics, m) {
               return py::make_tuple(hits, cnt[0], cnt[1], cnt[2], cnt[3],
                                     cnt[4], cnt[5], cnt[6], cnt[7], cnt[8],
                                     cnt[9], cnt[10], cnt[11], solid_books,
-                                    cnt[12], cnt[13], cnt[14]);
+                                    cnt[12], cnt[13], cnt[14],
+                                    // #73: slots 15, 16 APPENDED
+                                    cnt[15], cnt[16]);
           },
           py::arg("temperature"), py::arg("heat"), py::arg("heat_inv_shift"),
           py::arg("face_shift"), py::arg("solid"), py::arg("is_vacuum"),
@@ -646,8 +648,9 @@ PYBIND11_MODULE(breach_physics, m) {
           "e_gas_cond_sum, e_gas_rail_sum, e_solid_deposit_sum, "
           "e_solid_cond_sum, rad_clamp_hits, solid_energy_books_sum, "
           "e_rad_clamp_drop_sum, e_rad_boundary_export_sum, "
-          "e_rad_floor_drop_sum) for this call (P-E2a + P-E2b + arc #54 + P-G5 "
-          "+ P5c; solid_energy_books_sum is a SNAPSHOT, not a per-call delta).");
+          "e_rad_floor_drop_sum, e_solid_low_rail_sum, e_dep_floor_drop_sum) "
+          "for this call (P-E2a + P-E2b + arc #54 + P-G5 + P5c + #73; "
+          "solid_energy_books_sum is a SNAPSHOT, not a per-call delta).");
 
     // P4 (issue #12): the CUDA-S2 raycaster entry points that stood here --
     // cuda_raycaster_cast, cuda_raycaster_cast_batch and the vestigial
@@ -2295,6 +2298,22 @@ PYBIND11_MODULE(breach_physics, m) {
         // closure terms (neither touches gas_energy).
         .def_readonly("e_rad_boundary_export_sum", &TemperatureSolver::e_rad_boundary_export_sum)
         .def_readonly("e_rad_floor_drop_sum",      &TemperatureSolver::e_rad_floor_drop_sum)
+        // #73 item 3: the Pass-1 heat deposit's unlanded floor share below
+        // n_floor_heat (accountable gas cells), the same heat currency --
+        // a counter, NOT a closure term (it never entered gas_energy).
+        .def_readonly("e_dep_floor_drop_sum",      &TemperatureSolver::e_dep_floor_drop_sum)
+        // #73 items 1 + 2: two TERMS of the solid closure identity -- the
+        // low rail's lift, and what the Python topology seams (destroy_wall,
+        // unseal_tiles retire; seal_tiles born) did to the solid books.
+        .def_readonly("e_solid_low_rail_sum",      &TemperatureSolver::e_solid_low_rail_sum)
+        .def_readonly("e_solid_seam_sum",          &TemperatureSolver::e_solid_seam_sum)
+        .def("book_solid_seam", &TemperatureSolver::book_solid_seam,
+             py::arg("delta"),
+             "#73 item 2: book a topology seam's MEASURED change to the solid "
+             "books (int64, cap_real*T units) -- adds it to e_solid_seam_sum AND "
+             "to the solid_energy_books_sum snapshot, so the snapshot stays the "
+             "live sum when the seam fires after this tick's step(). Called by "
+             "GameMap._solid_energy_book only.")
         // P2: wind_x/wind_y/dt are OPTIONAL (default None/0.0) so the shipped
         // direct-binding call sites (tests/test_temperature_*.py,
         // tests/cuda_s1_check.py — all pre-P2, 7 positional args) keep working

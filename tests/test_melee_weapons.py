@@ -16,8 +16,8 @@ What is locked here:
     on melee (that is the BULLET site rule);
   - BATON -> STUNNED 1.5 s AT THE DELIVERY SITE: 36 ticks, refresh-stacked,
     can_act/can_aim suppressed — while the DamagePacket type stays
-    damage-only (field-set pinned: amount/dtype/source_id/ap, no status
-    smuggling) and a killing blow stuns no corpse;
+    damage-only (no status-shaped packet field,
+    no status smuggling) and a killing blow stuns no corpse;
   - ZOMBIE MELEE PATH UNTOUCHED (regression): the ai_zombie bite keeps its
     shipped numbers, cadence, event silence, conversion semantics, and
     zero RNG draws;
@@ -49,6 +49,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 import breach_physics as bp  # noqa: E402
 from config import CFG, ticks_from_seconds  # noqa: E402
 from level_loader import LevelData  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import Simulation  # noqa: E402
 from simulation.combat import (  # noqa: E402
     melee_adjacent, melee_strike, process_shooting,
@@ -108,11 +109,11 @@ def test_adjacency_predicate_pinned_footprint_contact():
     axis (dx 4) is not; overlap trivially is. Symmetric both ways."""
     a = _unit("A", 4, 4, team=0, uid=1)
 
-    edge = _unit("E", 7, 4, team=1, uid=2)        # tiles touch edge-to-edge
-    diag = _unit("D", 7, 7, team=1, uid=3)        # corners touch diagonally
-    gap = _unit("G", 8, 4, team=1, uid=4)         # one empty column between
-    gap_d = _unit("GD", 8, 8, team=1, uid=5)      # one empty ring diagonally
-    over = _unit("O", 5, 5, team=1, uid=6)        # footprints overlap
+    edge = _unit("E", 7, 4, team=ZOMBIE_TEAM, uid=2)        # tiles touch edge-to-edge
+    diag = _unit("D", 7, 7, team=ZOMBIE_TEAM, uid=3)        # corners touch diagonally
+    gap = _unit("G", 8, 4, team=ZOMBIE_TEAM, uid=4)         # one empty column between
+    gap_d = _unit("GD", 8, 8, team=ZOMBIE_TEAM, uid=5)      # one empty ring diagonally
+    over = _unit("O", 5, 5, team=ZOMBIE_TEAM, uid=6)        # footprints overlap
 
     assert melee_adjacent(a, edge)
     assert melee_adjacent(a, diag)                # THE DIAGONAL CASE: counts
@@ -129,9 +130,9 @@ def test_adjacency_predicate_multi_size_footprints():
     sizes get exact answers — a 1x1 diagonally off the 3x3's corner is
     adjacent, two tiles off is not."""
     big = _unit("B", 4, 4, team=0, uid=1)         # tiles x,y in [4, 6]
-    corner = _unit("c", 7, 7, team=1, uid=2, footprint=1)
-    away = _unit("d", 8, 8, team=1, uid=3, footprint=1)
-    beside = _unit("e", 3, 5, team=1, uid=4, footprint=1)
+    corner = _unit("c", 7, 7, team=ZOMBIE_TEAM, uid=2, footprint=1)
+    away = _unit("d", 8, 8, team=ZOMBIE_TEAM, uid=3, footprint=1)
+    beside = _unit("e", 3, 5, team=ZOMBIE_TEAM, uid=4, footprint=1)
     assert melee_adjacent(big, corner)            # (7,7) touches (6,6)
     assert not melee_adjacent(big, away)          # Chebyshev 2 from (6,6)
     assert melee_adjacent(big, beside)            # (3,5) touches (4,5)
@@ -157,7 +158,7 @@ def test_baton_always_connects_and_draws_nothing():
     state0 = rng.bit_generator.state
     for i in range(25):
         a = _unit("A", 4, 4, team=0, uid=1)
-        z = _unit("Z", 7, 4, team=1, uid=2)
+        z = _unit("Z", 7, 4, team=ZOMBIE_TEAM, uid=2)
         hp0 = z.current_hp
         assert melee_strike([a, z], a, 8.0, 5.0, rng, None, baton)
         assert z.current_hp == hp0 - 10           # 10 ENERGY, exact
@@ -173,7 +174,7 @@ def test_whiff_semantics_no_target_or_not_adjacent():
     state0 = rng.bit_generator.state
     a = _unit("A", 4, 4, team=0, uid=1)
     friend = _unit("F", 7, 4, team=0, uid=2)
-    far = _unit("Z", 12, 4, team=1, uid=3)
+    far = _unit("Z", 12, 4, team=ZOMBIE_TEAM, uid=3)
     facing0 = a.facing
     assert not melee_strike([a, friend, far], a, 8.0, 5.0, rng, None, knife)
     assert not melee_strike([a, friend, far], a, 13.0, 5.0, rng, None, knife)
@@ -185,7 +186,7 @@ def test_whiff_semantics_no_target_or_not_adjacent():
 # ---------------------------------------------------------------------------
 # 3. The knife's crit-vs-facing — pinned, seeded, deterministic
 # ---------------------------------------------------------------------------
-def _strike_from(dx_anchor, dy_anchor, seed, target_team=1):
+def _strike_from(dx_anchor, dy_anchor, seed, target_team=ZOMBIE_TEAM):
     """One knife strike on a zombie at anchor (4,4) whose facing is EAST
     (0.0), from an attacker offset by the given anchor delta. Returns
     (damage_applied, n_draws)."""
@@ -234,7 +235,7 @@ def test_strike_snaps_attacker_facing_to_the_bearing():
     EAST sets facing 0 (kit atan2, y-up convention); a whiff does not."""
     baton = _weapon("arc_baton")
     a = _unit("A", 4, 4, team=0, uid=1)
-    z = _unit("Z", 7, 4, team=1, uid=2)
+    z = _unit("Z", 7, 4, team=ZOMBIE_TEAM, uid=2)
     rng = np.random.default_rng(SEED)
     assert melee_strike([a, z], a, 8.0, 5.0, rng, None, baton)
     assert a.facing == 0.0
@@ -245,17 +246,23 @@ def test_strike_snaps_attacker_facing_to_the_bearing():
 # ---------------------------------------------------------------------------
 def test_damage_packet_type_is_damage_only():
     """The mechanics/06 §1 discipline, structurally: DamagePacket carries
-    amount/dtype/source_id/ap and NOTHING else — no status field exists to
-    smuggle CC through the pipeline. Statuses ride apply_status at the
-    delivery site (the W3 teargas->BLINDED pattern)."""
-    assert {f.name for f in dataclasses.fields(DamagePacket)} == {
-        "amount", "dtype", "source_id", "ap"}
+    damage and its credit (amount/dtype/ap, and since #123 attacker_id /
+    indirect) — no status field exists to smuggle CC through the pipeline.
+    Statuses ride apply_status at the delivery site (the W3 teargas->BLINDED
+    pattern). Breaks if a status-shaped field (a kind, a duration, a
+    magnitude, a status) is added to the packet."""
+    names = {f.name for f in dataclasses.fields(DamagePacket)}
+    assert {"amount", "dtype"} <= names
+    smuggled = [n for n in names
+                if any(w in n for w in ("status", "kind", "duration",
+                                        "magnitude", "tick"))]
+    assert smuggled == [], smuggled
 
 
 def test_baton_applies_stunned_36_ticks_at_the_site():
     baton = _weapon("arc_baton")
     a = _unit("A", 4, 4, team=0, uid=7)
-    z = _unit("Z", 7, 4, team=1, uid=2)
+    z = _unit("Z", 7, 4, team=ZOMBIE_TEAM, uid=2)
     events = []
     rng = np.random.default_rng(SEED)
     assert melee_strike([a, z], a, 8.0, 5.0, rng, events, baton)
@@ -284,7 +291,7 @@ def test_knife_applies_no_status_and_corpses_take_none():
     knife = _weapon("combat_knife")
     baton = _weapon("arc_baton")
     a = _unit("A", 4, 4, team=0, uid=1)
-    z = _unit("Z", 7, 4, team=1, uid=2)
+    z = _unit("Z", 7, 4, team=ZOMBIE_TEAM, uid=2)
     rng = np.random.default_rng(5)                # 0.8050: no crit anywhere
     assert melee_strike([a, z], a, 8.0, 5.0, rng, None, knife)
     assert not z.statuses
@@ -320,7 +327,7 @@ def test_cooldown_gates_the_strike_train_exact_ticks():
     # Baton cadence.
     a = _unit("A", 4, 9, team=0, uid=1)
     a.weapon_id = "arc_baton"
-    z = _unit("Z", 7, 9, team=1, uid=2)
+    z = _unit("Z", 7, 9, team=ZOMBIE_TEAM, uid=2)
     a.orders = [Order(ORDER_FIRE, target_fx=8, target_fy=10, phase=0)]
     rng = np.random.default_rng(SEED)
     state0 = rng.bit_generator.state
@@ -337,7 +344,7 @@ def test_cooldown_gates_the_strike_train_exact_ticks():
     # Knife cadence + kill stop (seed 13 — pinned no-crit prefix).
     a2 = _unit("A2", 4, 9, team=0, uid=3)
     a2.weapon_id = "combat_knife"
-    z2 = _unit("Z2", 7, 9, team=1, uid=4)
+    z2 = _unit("Z2", 7, 9, team=ZOMBIE_TEAM, uid=4)
     a2.orders = [Order(ORDER_FIRE, target_fx=8, target_fy=10, phase=0)]
     rng = np.random.default_rng(13)
     hits, kills = [], []
@@ -358,7 +365,7 @@ def test_whiff_charges_no_cadence():
     gmap = _room()
     a = _unit("A", 4, 9, team=0, uid=1)
     a.weapon_id = "arc_baton"
-    z = _unit("Z", 12, 9, team=1, uid=2)          # far from the order tile
+    z = _unit("Z", 12, 9, team=ZOMBIE_TEAM, uid=2)          # far from the order tile
     a.orders = [Order(ORDER_FIRE, target_fx=8, target_fy=10, phase=0)]
     rng = np.random.default_rng(SEED)
     for t in range(10):
@@ -386,7 +393,7 @@ def test_e2e_baton_chain_stun_suppresses_the_zombie_bite():
                      enable_recorder=False)
     m = Unit("M", x=5, y=9, team=0)
     m.weapon_id = "arc_baton"
-    z = Unit("Z", x=8, y=9, team=1)
+    z = Unit("Z", x=8, y=9, team=ZOMBIE_TEAM)
     mid = sim.add_unit(m)
     sim.add_unit(z)
     z.zombie_activated = True
@@ -408,13 +415,16 @@ def test_e2e_baton_chain_stun_suppresses_the_zombie_bite():
 def test_zombie_bite_keeps_its_shipped_path():
     """An activated zombie against an order-less marine: bites land on the
     shipped center-distance rule + attack_cooldown cadence for the exact
-    CFG.zombie.melee_damage, emit NO events (the site never had a list),
-    convert on kill (killed_by_zombie — the ONLY converting death), and
-    draw nothing. W5 must not have rerouted any of it."""
+    CFG.zombie.melee_damage, emit their hit (and the kill) on the tick's
+    events with source "melee" (#122: credited zombie kills — before #122
+    the site emitted nothing), convert on kill (killed_by_zombie — the ONLY
+    converting death), and draw nothing. W5 must not have rerouted any of
+    it; breaks if the bite leaves the event list again or the kill stops
+    being credited to melee."""
     sim = Simulation(_level(), seed=SEED, breach_physics=bp,
                      enable_recorder=False)
     m = Unit("M", x=5, y=9, team=0)
-    z = Unit("Z", x=8, y=9, team=1)
+    z = Unit("Z", x=8, y=9, team=ZOMBIE_TEAM)
     sim.add_unit(m)
     sim.add_unit(z)
     z.zombie_activated = True
@@ -423,12 +433,16 @@ def test_zombie_bite_keeps_its_shipped_path():
     bite = CFG.zombie.melee_damage
     _step(sim, 1)                                 # bite lands tick 0
     assert m.current_hp == hp0 - bite
-    assert not any(isinstance(e, UnitHitEvent) for e in sim.tick_events)
+    hits = [e for e in sim.tick_events if isinstance(e, UnitHitEvent)]
+    assert [(e.unit_id, e.source) for e in hits] == [(m.id, "melee")]
     cooldown = CFG.zombie.attack_cooldown_ticks
     _step(sim, cooldown)                          # exactly one more bite
     assert m.current_hp == hp0 - 2 * bite
     assert not m.alive                            # 2 x 60 >= 100
     assert m.killed_by_zombie                     # the converting death
+    from simulation.events import UnitKilledEvent
+    kills = [e for e in sim.tick_events if isinstance(e, UnitKilledEvent)]
+    assert [(e.unit_id, e.killed_by) for e in kills] == [(m.id, "melee")]
     assert sim.rng.bit_generator.state == state0  # the bite draws nothing
 
 
@@ -453,8 +467,8 @@ def test_dormancy_no_melee_weapon_is_bit_identical_to_prew5():
         sim = Simulation(_level(edits=[(10, 14, 2)]), seed=SEED,
                          breach_physics=bp, enable_recorder=False)
         m = Unit("M", x=3, y=9, team=0)           # k5 from config default
-        z = Unit("Z", x=16, y=9, team=1)
-        zb = Unit("ZB", x=6, y=9, team=1)         # biter in the marine's face
+        z = Unit("Z", x=16, y=9, team=ZOMBIE_TEAM)
+        zb = Unit("ZB", x=6, y=9, team=ZOMBIE_TEAM)         # biter in the marine's face
         mid = sim.add_unit(m)
         sim.add_unit(z)
         sim.add_unit(zb)

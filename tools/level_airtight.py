@@ -23,10 +23,15 @@ from level_loader import load as load_level
 from simulation.gamemap import GameMap
 
 
-def check(level_name: str, levels_dir: str = "levels") -> bool:
-    g = GameMap(load_level(level_name, levels_dir=levels_dir))
-    solid = np.asarray(g.solid, dtype=bool)
-    is_vac = np.asarray(g.is_vacuum, dtype=bool)
+def find_leaks(solid: np.ndarray, is_vac: np.ndarray):
+    """The lint's flood fill on bare masks: from every interior cell
+    (non-solid, non-vacuum) through every non-solid cell. Returns
+    ``(reached, vac_leak, edge_leak)`` -- the visited mask and the sets of
+    ``(y, x)`` cells where the interior reaches vacuum / the grid edge. The
+    ONE airtight rule; :func:`check` runs it on a loaded GameMap, generators
+    (``tools/gen_ship.py``) on a plan's masks before writing."""
+    solid = np.asarray(solid, dtype=bool)
+    is_vac = np.asarray(is_vac, dtype=bool)
     h, w = solid.shape
     interior = (~solid) & (~is_vac)          # air / floor the crew breathes
 
@@ -49,6 +54,14 @@ def check(level_name: str, levels_dir: str = "levels") -> bool:
             if 0 <= ny < h and 0 <= nx < w and not visited[ny, nx] and not solid[ny, nx]:
                 visited[ny, nx] = True
                 q.append((ny, nx))
+    return visited, vac_leak, edge_leak
+
+
+def check(level_name: str, levels_dir: str = "levels") -> bool:
+    g = GameMap(load_level(level_name, levels_dir=levels_dir))
+    solid = np.asarray(g.solid, dtype=bool)
+    h, w = solid.shape
+    visited, vac_leak, edge_leak = find_leaks(solid, g.is_vacuum)
 
     print(f"Level '{level_name}': grid {h}x{w}, interior reaches {int(visited.sum())} cells")
     print(f"  vacuum-connected leaks : {len(vac_leak)}")

@@ -37,6 +37,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 import breach_physics as bp  # noqa: E402
 from config import CFG  # noqa: E402
 from level_loader import LevelData  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import Simulation  # noqa: E402
 from simulation import gas_fixed, unit_fixed  # noqa: E402
 from simulation.combat import process_shooting  # noqa: E402
@@ -330,7 +331,7 @@ def test_zombie_poison_immunity_zero_damage_no_events():
     emission — no 0-damage event spam on a horde standing in gas)."""
     tps = int(CFG.clock.ticks_per_second)
     gmap = _room()
-    z = Unit("Z", x=8, y=8, team=1)
+    z = Unit("Z", x=8, y=8, team=ZOMBIE_TEAM)
     z.id = 7
     z.current_hp = 400.0
     _fill_footprint(gmap.gas[GAS_POISON], z, 1.0)
@@ -352,7 +353,7 @@ def test_poison_drains_a_marine_through_the_simulation():
     sim = Simulation(_level(), seed=SEED, breach_physics=bp,
                      enable_recorder=False)
     m = Unit("M", x=8, y=8, team=0)
-    z = Unit("Z", x=14, y=14, team=1)
+    z = Unit("Z", x=14, y=14, team=ZOMBIE_TEAM)
     sim.add_unit(m)
     sim.add_unit(z)
     hp_m, hp_z = m.current_hp, z.current_hp

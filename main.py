@@ -308,16 +308,16 @@ def _onephase_world_overlay(sim, control_source, hover_tile=None):
         ui_draw.draw_cover(sim, world_px_per_tile)
         # An overwatch cone is not a "view" indicator, it is the player's own
         # target-control dial (§9), so it stays.
-        for u in sim.marines():
+        for u in sim.controlled_units():
             ui_draw.draw_overwatch_cone(u, world_px_per_tile)
-        ui_draw.draw_marks(sim, 0, world_px_per_tile)
+        ui_draw.draw_marks(sim, sim.player_team, world_px_per_tile)
         ui_draw.draw_selected_marker(selected, world_px_per_tile)
 
         # EVERY marine's plan stays on screen (Erik: "i'd like everything to
         # stay on screen"), the unselected ones muted. Drawn first so the
         # selected marine's plan lands on top at full strength — you can read
         # the whole assault at once without losing which one you are steering.
-        for u in sim.marines():
+        for u in sim.controlled_units():
             if selected is not None and u.id == selected.id:
                 continue
             ui_draw.draw_plan_overlay(ui.plan_overlay(sim, u),
@@ -353,9 +353,10 @@ def main():
     # starts running. Byte-identical to the pre-P3 default under `wego`.
     debug_mode = _parse_debug_flag()
     control_source = create_control_source(_parse_control_flag(),
-                                           debug=debug_mode)
+                                           debug=debug_mode, level=level)
 
-    sim = Simulation(level, seed=42, breach_physics=bp,
+    sim = Simulation(level, seed=control_source.initial_seed(42),
+                     breach_physics=bp,
                      enable_recorder=True,
                      ruleset=control_source.initial_ruleset())
     sim.set_paused(control_source.starts_paused())
@@ -373,13 +374,16 @@ def main():
     # ----- Spawn units from level.toml [[spawn]] entries. Zero spawns is
     # legal: a unit-free physics-tuning sandbox (camera starts at 0,0;
     # marines()/zombies() handle empty rosters).
-    if not level.spawns:
+    # (`--control match` spawns its match.toml instead, #121.)
+    if control_source.spawn_units(sim, level):
+        pass
+    elif not level.spawns:
         print(f"  NOTE: level '{level.name}' has no [[spawn]] entries — "
               f"running as a unit-free physics sandbox")
-    for s in level.spawns:
-        sim.add_unit(Unit(s.name, x=s.x, y=s.y, team=s.team,
-                          footprint=s.footprint))
-    if level.spawns:
+    else:
+        for s in level.spawns:
+            sim.add_unit(Unit(s.name, x=s.x, y=s.y, team=s.team,
+                              footprint=s.footprint))
         print(f"  Spawned {len(level.spawns)} units from level.toml")
 
     # 2. Render config — borderless windowed at monitor resolution.
@@ -520,7 +524,8 @@ def main():
             # the light is the expression of their facing cone.
             extra += frame_lights.flashlight_specs(
                 ui.flashlight_cones(
-                    sim, team=0, mode=control_source.flashlight_mode,
+                    sim, team=sim.player_team,
+                    mode=control_source.flashlight_mode,
                     selected_unit_id=control_source.selected_unit_id,
                     cursor_tile=renderer.mouse_to_tile(),
                     paused=sim.is_paused()),
@@ -564,6 +569,7 @@ def main():
         n_warp = int(round(warp_s / sim_time_per_tick))
         for _ in range(n_warp):
             sim.set_paused(False)
+            control_source.on_tick(sim)
             sim.step()
         sim.set_paused(True)
         print(f"  --warp {warp_s:g} s: stepped {n_warp} ticks, paused")
@@ -623,6 +629,7 @@ def main():
                         lit_rows = cone_rows_now()
                         lit_flicker = flicker_rows_now()
                         sim.set_light(True, lit_rows, light_sky, lit_flicker)
+                    control_source.on_tick(sim)
                     sim.step()
                     stepped = True
                     tick_accum -= sim_time_per_tick
@@ -671,7 +678,7 @@ def main():
 
             # Fog of war (§8) is visibility GATING: an enemy the team cannot
             # see is simply not drawn. The sim keeps simulating it in full.
-            zombies = (ui.drawable_enemies(sim, 0) if onephase
+            zombies = (ui.drawable_enemies(sim, sim.player_team) if onephase
                        else sim.zombies())
             renderer.compose_world(
                 units_marines=sim.marines(),

@@ -78,7 +78,10 @@ class ControlSource:
         ``sim`` is the :class:`simulation.Simulation` facade; ``renderer``
         is the :class:`renderer.GameRenderer` (used for screen<->tile
         conversion and any renderer-owned bindings this source still
-        needs, e.g. ``mouse_to_tile()``).
+        needs, e.g. ``mouse_to_tile()``) — or ``None`` in a headless match
+        (#119 P2: ``tools/run_match.py`` calls each team's controller once
+        per tick with no renderer). A controller registered for matches
+        (:func:`register_controller`) must work with ``renderer=None``.
         """
         raise NotImplementedError
 
@@ -101,6 +104,24 @@ class ControlSource:
         direct control runs immediately (``False``)."""
         return True
 
+    def initial_seed(self, default: int) -> int:
+        """The sim seed main.py builds with (#121): ``default`` for every
+        human scheme; ``MatchObserver`` returns the match's seed."""
+        return default
+
+    def spawn_units(self, sim, level) -> bool:
+        """Spawn this scheme's units into the fresh ``sim`` and return True,
+        or return False to let main.py spawn the level's ``[[spawn]]``
+        entries (every human scheme). ``MatchObserver`` spawns the match."""
+        return False
+
+    def on_tick(self, sim) -> None:
+        """Called by main.py right before EVERY ``sim.step()`` (#121) — the
+        per-tick hook a scheme that drives units by the tick (the match
+        observer's controllers) uses, so the window plays the same ticks as
+        the headless runner. A no-op for every per-frame human scheme."""
+        return None
+
     @property
     def wants_renderer_toggles(self) -> bool:
         """May the RENDERER keep its own diagnostic key bindings (F1-F10, T,
@@ -115,14 +136,105 @@ class ControlSource:
         return True
 
 
+class IdleControl(ControlSource):
+    """A match controller that emits NOTHING (#119 P2): its team stands where
+    it spawned. The first registered match controller; the bots (#121) and
+    the horde (#122, ``zombies``) register beside it. As a match's
+    ``zombie_controller`` it leaves the horde standing."""
+
+    def __init__(self, team: int | None = None):
+        self.team = team
+
+    def handle_frame(self, sim, renderer=None) -> None:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# The MATCH controller registry (#119 P2) — name -> factory(team) building the
+# ControlSource that drives one team of a headless match. match.toml's
+# `controller` names a row here (validated at the level door); the headless
+# runner builds one per team and calls handle_frame(sim, None) each tick. A
+# new controller is a registry entry, never a second control path. Separate
+# from `_KNOWN_CONTROLS` below, which names the HUMAN schemes main.py's
+# --control flag picks between.
+# ---------------------------------------------------------------------------
+def _bots(team: int) -> "ControlSource":
+    """The rule-based bot team (#121, ``control_bots.BotTeam``, settings
+    ``config.toml [bots]``). Deferred import: control_bots pulls in the sim's
+    tables and the pathfinder, which importing this module must not."""
+    from control_bots import BotTeam
+    return BotTeam(team)
+
+
+def _zombies(team: int) -> "ControlSource":
+    """The horde (#122, ``control_zombies.ZombieControl``): the shipped
+    zombie law, run through the ZOMBIE intent for every living zombie."""
+    from control_zombies import ZombieControl
+    return ZombieControl(team)
+
+
+_MATCH_CONTROLLERS: dict = {
+    "idle": IdleControl,
+    "bots": _bots,
+    "zombies": _zombies,
+}
+
+
+def register_controller(name: str, factory) -> None:
+    """Register ``factory`` (``team -> ControlSource``) under ``name``;
+    refuses a name already taken (never a silent override)."""
+    if not isinstance(name, str) or not name:
+        raise ValueError(f"controller name must be a non-empty str "
+                         f"(got {name!r})")
+    if name in _MATCH_CONTROLLERS:
+        raise ValueError(f"controller {name!r} is already registered")
+    _MATCH_CONTROLLERS[name] = factory
+
+
+def registered_controllers() -> tuple:
+    """The registered match-controller names, sorted."""
+    return tuple(sorted(_MATCH_CONTROLLERS))
+
+
+def create_controller(name: str, team: int) -> "ControlSource":
+    """Build the registered controller ``name`` for ``team``."""
+    try:
+        factory = _MATCH_CONTROLLERS[name]
+    except KeyError:
+        raise ValueError(f"controller {name!r} is not registered (known: "
+                         f"{list(registered_controllers())})") from None
+    return factory(team)
+
+
+def create_match_controllers(sim, spec) -> list:
+    """THE one way a match's controllers are built (#122): one per
+    ``[[team]]`` row (team i -> its ``controller``), then the horde's
+    (``spec.zombie_controller`` for ``ZOMBIE_TEAM``) -- after handing the
+    horde to it (``sim.hand_zombies_to_controller``), so the conductor no
+    longer drives the zombies itself: every unit of a match has exactly one
+    driver, and it is a ControlSource. Call once per match, after
+    ``sim.spawn_match``; then ``handle_frame(sim, None)`` on each, every
+    tick, before ``sim.step()``."""
+    from simulation.factions import ZOMBIE_TEAM
+    from simulation.match import DEFAULT_ZOMBIE_CONTROLLER
+    controllers = [create_controller(row.controller, team)
+                   for team, row in enumerate(spec.teams)]
+    sim.hand_zombies_to_controller()
+    controllers.append(create_controller(
+        getattr(spec, "zombie_controller", DEFAULT_ZOMBIE_CONTROLLER),
+        ZOMBIE_TEAM))
+    return controllers
+
+
 # Launch-flag name -> factory. P3 adds "gamepad" (GamepadDirect); the ML entry
 # point (AgentPolicy) is driven differently — it has no per-frame poll loop —
 # so it is not expected to route through this same factory; see the design doc
 # §3b.
-_KNOWN_CONTROLS = ("wego", "gamepad", "onephase")
+_KNOWN_CONTROLS = ("wego", "gamepad", "onephase", "match")
 
 
-def create_control_source(name: str, debug: bool = False) -> "ControlSource":
+def create_control_source(name: str, debug: bool = False,
+                          level=None) -> "ControlSource":
     """Factory for the ``--control`` launch flag (§3b).
 
     ``name`` must be one of :data:`_KNOWN_CONTROLS`: ``"wego"`` (today's
@@ -149,10 +261,19 @@ def create_control_source(name: str, debug: bool = False) -> "ControlSource":
         # Erik's kickoff ruling 2).
         from control_onephase import OnePhaseWEGOInput
         return OnePhaseWEGOInput(debug=debug)
+    if name == "match":
+        # #121: watch the level's match.toml — its controllers drive every
+        # team, once per sim tick (control_match.MatchObserver).
+        from control_match import MatchObserver
+        if level is None:
+            raise SystemExit("--control match needs the loaded level")
+        return MatchObserver(level)
     raise SystemExit(
         f"--control must be one of {_KNOWN_CONTROLS!r}, got {name!r}")
 
 
 __all__ = [
     "ControlSource", "create_control_source", "quantize_stick_direction",
+    "IdleControl", "register_controller", "registered_controllers",
+    "create_controller", "create_match_controllers",
 ]

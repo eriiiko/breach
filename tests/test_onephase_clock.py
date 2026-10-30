@@ -29,6 +29,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 
 from config import CFG  # noqa: E402
 from level_loader import LevelData
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation.combat import Projectile
 from simulation.orders import (  # noqa: E402
     ORDER_GRENADE, ORDER_MOVE, ORDER_MOVE_ATTACK, ORDER_MOVE_COVER,
@@ -274,7 +275,7 @@ def test_orders_are_accepted_with_zero_ap():
 def test_is_terminal_is_one_side_eliminated_not_round_complete():
     sim = _sim()
     _marine(sim)
-    z = Unit("z", x=12.0, y=12.0, team=1)
+    z = Unit("z", x=12.0, y=12.0, team=ZOMBIE_TEAM)
     sim.add_unit(z)
     _run(sim, sim.ticks_per_round + 1)
     assert not sim.is_terminal(), "a completed round is not an episode end"

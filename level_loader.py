@@ -51,6 +51,19 @@ from simulation.entities import (  # noqa: E402
     REGISTRY as ENTITY_REGISTRY, all_signals, effective_defaults,
     field_value_error,
 )
+# Team ints (#119): the legacy zombie code in level data and its one mapping.
+from simulation.factions import (  # noqa: E402,F401
+    LEGACY_ZOMBIE_TEAM, ZOMBIE_TEAM, team_from_level,
+)
+# Spawn rooms + the match config (#119 P2): import-light (stdlib + factions);
+# the match door's table checks import their tables lazily.
+from simulation.match import (  # noqa: E402
+    FORMATION_FOOTPRINT, MatchSpec, SpawnRoom, parse_match, parse_spawn_rooms,
+    placement_cells,
+)
+
+#: The match config's file, beside level.toml (#119 P2).
+MATCH_FILENAME = "match.toml"
 
 
 SUPPORTED_VERSIONS = {"1", "2"}
@@ -101,7 +114,7 @@ def tile_to_art_px(tile_x: float, tile_y: float,
 class SpawnEntry:
     """One unit spawn declared in level.toml. Fed to Simulation.add_unit."""
     name: str
-    team: int           # 0 = marine, 1 = zombie
+    team: int           # RUNTIME team: 0.. marine teams, ZOMBIE_TEAM zombies
     x: float            # physics-tile x (top-left of footprint)
     y: float            # physics-tile y
     footprint: int = 3  # side length of unit's square footprint in tiles
@@ -1036,6 +1049,15 @@ class LevelData:
     # base resolution and replicate their tile sets by res_factor.
     res_factor: int = 1
     tile_size_m_base: Optional[float] = None
+    # ---- match foundation (#119 P2) --------------------------------------
+    # `spawn_rooms`: the level's [[spawn_room]] entries (one per team, ZOMBIE_
+    # TEAM included) — WHERE a match's teams stand (the level's decision).
+    # `match`: levels/<name>/match.toml parsed and validated against them,
+    # or None when the folder carries no match file. Neither is read by the
+    # game's own spawn path ([[spawn]]); `main.py --res` does not scale them
+    # (only the headless runner reads them, at base resolution).
+    spawn_rooms: list = field(default_factory=list)  # list[SpawnRoom]
+    match: Optional[MatchSpec] = None
 
     @property
     def height(self) -> int:
@@ -1201,7 +1223,14 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
         try:
             spawns.append(SpawnEntry(
                 name=str(entry["name"]),
-                team=int(entry["team"]),
+                # THE legacy-team door (#119): level files written before
+                # teams were ints say `team = 1` for a zombie; it loads as
+                # ZOMBIE_TEAM (factions.team_from_level), so no level file is
+                # edited. The writer (level_lib) writes the runtime int back,
+                # so a re-saved file says ZOMBIE_TEAM (255), which loads the
+                # same. Consequence: a [[spawn]] cannot place a marine on team
+                # 1 -- marine teams come from the match config (#119 P2).
+                team=team_from_level(entry["team"]),
                 x=float(entry["x"]),
                 y=float(entry["y"]),
                 footprint=int(entry.get("footprint", 3)),
@@ -1211,6 +1240,10 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
                 f"Invalid [[spawn]] entry #{i} in {toml_path}: {e}. "
                 f"Required fields: name (str), team (int), x (float), y (float)."
             )
+
+    # ---- [[spawn_room]] + match.toml (#119 P2) ----------------------------
+    spawn_rooms = _parse_spawn_rooms(raw, toml_path, tilemap, version)
+    match = _parse_match_file(base, spawn_rooms)
 
     # ---- [[light]] entities (engine/15 §2.2, P4) -------------------------
     lights_raw = raw.get("light", [])
@@ -1287,7 +1320,49 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
         air_init_q=air_init_q,
         boundary=boundary,
         ambient=ambient,
+        spawn_rooms=spawn_rooms,
+        match=match,
     )
+
+
+def _parse_spawn_rooms(raw: dict, toml_path, tilemap: np.ndarray,
+                       version: str) -> list:
+    """``[[spawn_room]]`` -> validated rooms (#119 P2): the schema checks
+    (``simulation.match.spawn_room_from_dict``) plus the grid's — the room
+    inside the map, and every footprint of its ``max_per_team`` placement
+    cells on open interior floor (air, not vacuum), so a match can never
+    spawn a unit into a wall."""
+    rooms = parse_spawn_rooms(raw.get("spawn_room"), str(toml_path))
+    if not rooms:
+        return rooms
+    h, w = tilemap.shape
+    mat, vac = materials_from_tilemap(tilemap, version)
+    for r in rooms:
+        where = f"[[spawn_room]] team {r.team} in {toml_path}"
+        if r.x + r.w > w or r.y + r.h > h:
+            raise ValueError(f"{where}: room ({r.x},{r.y}) {r.w}x{r.h} "
+                             f"leaves the {w}x{h} map")
+        for cx, cy in placement_cells(r, r.max_per_team):
+            fp = FORMATION_FOOTPRINT
+            foot = (slice(cy, cy + fp), slice(cx, cx + fp))
+            if (mat[foot] != 0).any() or vac[foot].any():
+                raise ValueError(f"{where}: placement cell ({cx},{cy}) is "
+                                 f"not open interior floor")
+    return rooms
+
+
+def _parse_match_file(base: Path, spawn_rooms: list):
+    """``levels/<name>/match.toml`` -> a validated :class:`MatchSpec`, or
+    None when the level has no match file (#119 P2)."""
+    path = base / MATCH_FILENAME
+    if not path.is_file():
+        return None
+    try:
+        with open(path, "rb") as f:
+            raw = tomllib.load(f)
+    except tomllib.TOMLDecodeError as e:
+        raise ValueError(f"{path}: {e}") from None
+    return parse_match(raw, spawn_rooms, str(path))
 
 
 def materials_from_tilemap(tilemap: np.ndarray, version: str):

@@ -123,6 +123,9 @@ enum : int {
     C_RAD_CLAMP_DROP = 12, // e_rad_clamp_drop_sum (P5c, the clamp's withheld energy)
     C_RAD_BND_EXPORT = 13, // e_rad_boundary_export_sum (rad_net off the books, exported)
     C_RAD_FLOOR_DROP = 14, // e_rad_floor_drop_sum (the floored chain's remainder)
+    // #73: APPENDED, never renumbered (TEMPERATURE_ENERGY_SLOTS 15 -> 17).
+    C_SOLID_LOW_RAIL = 15, // e_solid_low_rail_sum (the low rail's lift, a solid term)
+    C_DEP_FLOOR_DROP = 16, // e_dep_floor_drop_sum (the heat deposit's floor share)
 };
 
 __device__ __forceinline__ void cadd(unsigned long long* c, int slot, int64_t v) {
@@ -272,12 +275,20 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
                 // radiation fold is the only SIGNED path into `temperature`;
                 // 0 is the ambient floor. Counted, and required INERT in every
                 // gate scenario (the budget argument, see the CPU comment).
-                if (tr < 0) { tr = 0; atomicAdd(low_hits, 1ULL); }
+                // #73 item 1: the rail's lift is booked by name
+                // (C_SOLID_LOW_RAIL) and the landing stops at the rail -- the
+                // CPU twin's split, line for line.
+                const int32_t t_pre_low_rail = tr;
+                if (tr < 0) {
+                    tr = 0; atomicAdd(low_hits, 1ULL);
+                    cadd(cnt, C_SOLID_LOW_RAIL,
+                         (0 - (int64_t)t_pre_low_rail) * cap_real[i]);
+                }
                 temperature[i] = tr;
-                // P-G5: the radiation fold's ACTUAL landing, post both rails
-                // — the CPU twin's e_solid_deposit_sum fold.
+                // P-G5: the radiation fold's landing, post the clamp and the
+                // T_MAX_PHYS rail — the CPU twin's e_solid_deposit_sum fold.
                 cadd(cnt, C_SOLID_DEPOSIT,
-                     ((int64_t)tr - t_before_rad) * cap_real[i]);
+                     ((int64_t)t_pre_low_rail - t_before_rad) * cap_real[i]);
             }
         }
         // ---- P5c: THE GAS BRANCH OF THE RADIATION FOLD — the CPU block
@@ -397,6 +408,13 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
             if (gas_energy != nullptr && acct_i) {
                 const int64_t nb = (int64_t)n_src[i] > 0 ? (int64_t)n_src[i] : 0;
                 const int64_t de = nb * (int64_t)dT;
+                // #73 item 3: the floor's unlanded share -- the CPU twin's
+                // e_dep_floor_drop_sum fold (counter only, not a term).
+                if (N_raw < n_floor_q) {
+                    cadd(cnt, C_DEP_FLOOR_DROP,
+                         (int64_t)e_abs * (int64_t)FP_ONE
+                         - (int64_t)dT * cap_real[i]);
+                }
                 const int64_t e_before = gas_energy[i];
                 int64_t e_rail_local = 0;
                 int64_t hits_local = 0;

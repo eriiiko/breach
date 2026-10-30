@@ -192,7 +192,7 @@ HUMAN = SpeciesDef(
 # foundation decision above), so this is the STATE'S profile overlay rather
 # than a species field: damage.mitigation_for selects it on ``unit.is_zombie``
 # at damage time — exactly the predicate the dissolved special case used, so
-# construction with team=1, end-of-round conversion, and direct flag flips
+# construction with team=ZOMBIE_TEAM, conversion, and direct flag flips
 # all behave as before. resist_mult[HEAT] REPLACES the old
 # ``if u.is_zombie: dmg *= CFG.zombie.fire_damage_multiplier`` branch in the
 # heat response (a vulnerability is just a resistance above 1); the shipped

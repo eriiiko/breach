@@ -80,6 +80,11 @@ class ThrowIntent:
     dx_q: int
     dy_q: int
     fuse_seconds: float
+    #: How far to lob, Q16.16 tiles (#121: a controller aiming at a POINT,
+    #: the bots' group centre). ``None`` = the v0.1 fixed reach (the gamepad's
+    #: throw, unchanged). The consumer clamps it to the hand grenade row's
+    #: ``max_throw_range``.
+    reach_q: int | None = None
 
 
 __all__ = [

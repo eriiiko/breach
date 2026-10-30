@@ -44,7 +44,7 @@ from level_lib import (LevelHandle, MANAGED_FAMILIES,  # noqa: E402
                        WATER_FILENAME, format_light_lines,
                        format_spawn_lines, open_level, water_block_format,
                        write_managed_blocks, write_water_npy)
-from level_loader import LightEntry, SpawnEntry  # noqa: E402
+from level_loader import LightEntry, SpawnEntry, ZOMBIE_TEAM  # noqa: E402
 
 ALL_LEVELS = sorted(p.parent.name
                     for p in (ROOT / "levels").glob("*/level.toml"))
@@ -204,7 +204,7 @@ def test_editor_save_shape_round_trips_through_loader(tmp_path):
     assert handle.data.spawns == [] and handle.data.lights == []
 
     spawns = [SpawnEntry("marine_1", 0, 2.0, 3.0),
-              SpawnEntry("zombie_1", 1, 6.0, 4.0, footprint=5)]
+              SpawnEntry("zombie_1", ZOMBIE_TEAM, 6.0, 4.0, footprint=5)]
     lights = [LightEntry(x=3.5, y=2.5, color=(1.0, 0.0, 0.0),
                          kind="beacon", period_s=1.5, phase=0.5)]
     depth = np.zeros((6, 8), np.int32)

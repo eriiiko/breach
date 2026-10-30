@@ -898,6 +898,11 @@ class PhysicsRunner:
         # vent / wipe / sink / decay). Both the normal and the resident tick
         # pass through this line.
         self.eos.reset_trace_sat_books(int(gmap.gas.shape[0]))
+        # #73 item 2: wire the map's topology seams (destroy_wall / seal /
+        # unseal) to the solid books they move -- TemperatureSolver's
+        # e_solid_seam_sum term + its snapshot. Every tick, both paths: the
+        # map can be rebuilt (F5) under a living runner.
+        gmap._solid_books_sink = self.engine.temperature.book_solid_seam
         if _RESIDENCY_ENABLED and getattr(self.bp, "HAS_CUDA", False):
             return self._step_resident(gmap, sim_time, tick=tick)
 

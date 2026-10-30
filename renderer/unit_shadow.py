@@ -14,7 +14,11 @@ simulation):
   * :func:`read_unit_light` -- the light around one unit, from the light
     accessor's :class:`simulation.light_field.LightView` (the renderer's ONE
     light read): brightness, the net direction the light travels, and how
-    one-sided it is (``LightView.directionality``).
+    one-sided it is (``LightView.directionality``) -- and, from the SAME
+    sums, the body's irradiance (#114): a directional and a balanced part
+    per RGB channel, which the unit's lit shader shades the whole body with
+    (``renderer/marine_shader.py``), so the lit side of the body always
+    agrees with the shadow on the floor.
   * :func:`shadow_cast` -- PURE: that light + the settings -> how dark the
     shadow is and which way / how far it is slid. The fade rules live here.
   * :func:`smooth_shadow` -- PURE: the per-unit low-pass on the shadow vector,
@@ -34,7 +38,7 @@ import ctypes
 import ctypes.util
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional, Tuple
 
 import numpy as np
@@ -96,14 +100,25 @@ def unit_shadow_settings(cfg) -> UnitShadowSettings:
 # ---------------------------------------------------------------------------
 
 
+_RGB0 = (0.0, 0.0, 0.0)
+
+
 @dataclass(frozen=True)
 class UnitLight:
-    """The light around one unit, as the shadow reads it."""
+    """The light around one unit: the first four fields are what the shadow
+    reads; ``dir_rgb`` / ``iso_rgb`` are the BODY's irradiance (#114), read
+    from the same sums."""
     brightness: float        # brightest channel, mean over the patch, in the
                              # ship shader's units (incoming x exposure)
     directionality: float    # |net flux| / irradiance over the patch, 0 .. 1
     dir_x: float             # the way the light TRAVELS, unit vector
     dir_y: float             # (+y = increasing row); (0, 0) when no net flux
+    # #114 -- the body's irradiance per RGB channel, in the same units as
+    # ``brightness`` (light units x exposure): the light that would fall on
+    # the floor where the body stands, split into the one-sided part arriving
+    # along -(dir_x, dir_y) and the balanced part arriving from all sides.
+    dir_rgb: Tuple[float, float, float] = _RGB0
+    iso_rgb: Tuple[float, float, float] = _RGB0
 
 
 _DARK = UnitLight(0.0, 0.0, 0.0, 0.0)
@@ -119,7 +134,14 @@ def read_unit_light(view, x0: int, y0: int, footprint: int,
     his shadow forward into his own beam. The net flux is summed over the patch in light units
     (``flux_dir * directionality * Σ_c rgb`` per cell) and divided by the
     patch's summed irradiance, so a lamp on one side reads one-sided and two
-    equal lamps on opposite sides cancel. Pure numpy; reads, never writes."""
+    equal lamps on opposite sides cancel. Pure numpy; reads, never writes.
+
+    The BODY's irradiance (#114, :func:`body_irradiance`) comes from the same
+    five sums: the unit is stamped opaque, so its footprint holds only the
+    light ARRIVING at it (in the cells it enters, before they absorb it) and
+    the dark interior reads 0. Dividing that by the footprint's area (the
+    ``brightness`` above) dilutes it by the interior; dividing by the width
+    the footprint presents to the light does not."""
     if view is None:
         return _DARK
     planes = _shadow_planes(view)
@@ -135,8 +157,41 @@ def read_unit_light(view, x0: int, y0: int, footprint: int,
     norm = math.hypot(fx, fy)
     brightness = max(r, g, b) / float((yb - ya) * (xb - xa)) * float(exposure)
     if norm <= 0.0:
-        return UnitLight(brightness, 0.0, 0.0, 0.0)
-    return UnitLight(brightness, min(1.0, norm / total), fx / norm, fy / norm)
+        light = UnitLight(brightness, 0.0, 0.0, 0.0)
+    else:
+        light = UnitLight(brightness, min(1.0, norm / total), fx / norm, fy / norm)
+    dir_rgb, iso_rgb = body_irradiance((r, g, b), light.directionality,
+                                       light.dir_x, light.dir_y,
+                                       xb - xa, yb - ya, exposure)
+    return replace(light, dir_rgb=dir_rgb, iso_rgb=iso_rgb)
+
+
+def body_irradiance(rgb_sum, directionality: float, dir_x: float, dir_y: float,
+                    width: int, height: int, exposure: float):
+    """PURE (#114): a unit's footprint sums -> the irradiance on its body,
+    ``(dir_rgb, iso_rgb)`` per channel, times ``exposure``.
+
+    The light arriving at an opaque ``width`` x ``height`` block is counted
+    in the cells it enters, once each. A beam travelling along (dx, dy)
+    enters ``W_dir = width*|dy| + height*|dx|`` cells' worth of the block --
+    the width it presents to the beam (3 for a 3x3 block lit along an axis)
+    -- so the beam's own irradiance is the one-sided share of the sum over
+    ``W_dir``. Light from all sides alike enters, on average over the
+    directions, ``W_iso = 2 (width + height) / pi`` (the block's mean
+    projected width; a 3x3 block in a uniform sweep sky measures 3.90 against
+    this 3.82), so the balanced share over ``W_iso`` is the irradiance of the
+    light around it. Both are what the floor would hold where the unit
+    stands, at the body's own distance from each lamp."""
+    d = min(1.0, max(0.0, float(directionality)))
+    w_dir = float(width) * abs(dir_y) + float(height) * abs(dir_x)
+    w_iso = 2.0 * float(width + height) / math.pi
+    k = float(exposure)
+    if d > 0.0 and w_dir > 0.0:
+        dir_rgb = tuple(float(c) * d / w_dir * k for c in rgb_sum)
+    else:
+        dir_rgb, d = _RGB0, 0.0
+    iso_rgb = tuple(float(c) * (1.0 - d) / w_iso * k for c in rgb_sum)
+    return dir_rgb, iso_rgb
 
 
 _planes_cache: list = [None, None]     # [the LightView, its planes]
@@ -380,6 +435,6 @@ class ShadowPainter:
 
 
 __all__ = ["UnitShadowSettings", "unit_shadow_settings", "UnitLight",
-           "read_unit_light", "ShadowCast", "NO_SHADOW", "shadow_cast",
+           "read_unit_light", "body_irradiance", "ShadowCast", "NO_SHADOW", "shadow_cast",
            "smooth_shadow", "projection_matrix", "project_point",
            "ShadowPainter", "SHADOW_DEPTH"]

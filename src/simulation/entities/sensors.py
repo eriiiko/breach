@@ -221,8 +221,9 @@ class sensor_motion(Entity):
                   "sensor (Bresenham origin = the sensor; a shut door blocks "
                   "sight — intended)"),
         Field("faction_filter", KIND_INT, default=-1,
-              doc="team int to count (0 = marine, 1 = zombie), or -1 = any "
-                  "team"),
+              doc="team int to count (0 = the player's marines; 1 = zombies, "
+                  "the legacy code the loader maps to ZOMBIE_TEAM, like "
+                  "[[spawn]] team), or -1 = any team"),
         Field("min_footprint", KIND_INT, default=0, minimum=0,
               doc="ignore units whose footprint side is below this (0 = count "
                   "all)"),

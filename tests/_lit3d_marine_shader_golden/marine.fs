@@ -26,9 +26,17 @@ uniform float u_rim_power;
 uniform float u_rim_albedo;    // #33: rim colour = mix(white, albedo, this)
 uniform float u_gloss_strength;  // #33: highlight strength (0 = no highlight)
 uniform float u_gloss_shininess; // #33: highlight exponent at gloss 1
+uniform float u_wrap;           // #114: 1 = half-Lambert (soft) .. 0 = Lambert (hard dark side)
 uniform int   u_srgb_decode;
 uniform int   u_use_normal_marine; // P2 guard: 0 = inert (N unchanged), 1 = on
 uniform float u_normal_strength;   // P2 perturbation strength (feel knob)
+// #114 body light: 1 = the whole body lit from the unit's ONE light read
+// (renderer/unit_shadow.py read_unit_light, set per unit before its draw);
+// 0 = each fragment from the field tile under it (the pre-#114 A/B).
+uniform int   u_body_light;
+uniform vec3  u_body_dir_rgb;      // one-sided irradiance (x exposure)
+uniform vec3  u_body_iso_rgb;      // balanced irradiance (x exposure)
+uniform vec2  u_body_to_light;     // toward the light, unit; (0,0) = none
 
 out vec4 finalColor;
 
@@ -119,6 +127,23 @@ void main() {
     incoming_rgb *= smokeShadow(world_uv, light_dir_2d,
                                 fragWorldPos.y * u_smoke_grid.x / u_world_px.x);
 
+    // #114 body light. The unit is stamped opaque into the light sweep (its
+    // floor shadow), so the field under the body holds light only in the
+    // footprint row facing the lamp. In "unit" mode the body's light is the
+    // unit's own read instead -- the same read its projected shadow takes --
+    // so the whole body is lit and its lit side agrees with the shadow. The
+    // smoke's cast shadow stays PER FRAGMENT, toward the read's light.
+    // Both parts are already in exposure units (x u_light_gain).
+    vec3 light_dir_rgb = incoming_rgb * u_light_gain;
+    vec3 light_iso_rgb = vec3(0.0);
+    if (u_body_light == 1) {
+        float smoke_k = smokeShadow(world_uv, u_body_to_light,
+                                    fragWorldPos.y * u_smoke_grid.x / u_world_px.x);
+        light_dir_rgb = u_body_dir_rgb * smoke_k;
+        light_iso_rgb = u_body_iso_rgb * smoke_k;
+        L = normalize(vec3(u_body_to_light.x, u_light_z, u_body_to_light.y));
+    }
+
     // P2 normal map (guarded — zero cost when off). Reconstruct a tangent frame
     // from screen-space derivatives, sample the map as LINEAR data (never sRGB-
     // decode a normal map — its RGB are directions), unpack, apply the marine's
@@ -133,10 +158,17 @@ void main() {
         N = normalize(TBN * nmap);
     }
 
-    // Half-Lambert: softens the pre-normalized-direction instability that
-    // side normals get under near-overhead lamps AND reads better on a small
-    // top-down token (design v2 §Bugs).
-    float ndotl = dot(N, L) * 0.5 + 0.5;
+    // Wrapped Lambert (#114): u_wrap 1 is the half-Lambert of design v2 §Bugs
+    // (soft, the side facing away still half lit), 0 plain Lambert (a hard
+    // dark side). [render.unit_shading] wrap, read every frame.
+    float ndotl = max(0.0, (dot(N, L) + u_wrap) / (1.0 + u_wrap));
+    // #114: the balanced share's weight -- the same wrapped term averaged over
+    // every horizontal direction at the key's height (exact at u_wrap 1, where
+    // it is linear in L; below 1 the clamp is taken after the average), so a
+    // ring of equal lamps lights every side alike and the top most.
+    float ndotl_iso = max(0.0, (N.y * u_light_z / sqrt(1.0 + u_light_z * u_light_z)
+                                + u_wrap) / (1.0 + u_wrap));
+    vec3 light_rgb = light_dir_rgb + light_iso_rgb;   // all of it, x exposure
 
     vec4 albedo_gloss = texture(texture0, fragTexCoord);
     vec3 albedo = albedo_gloss.rgb;
@@ -144,7 +176,8 @@ void main() {
     if (u_srgb_decode == 1) albedo = srgb_to_linear(albedo);  // else double-dark
     albedo *= colDiffuse.rgb;                                  // draw colour
 
-    vec3 lit = albedo * (u_ambient + incoming_rgb * u_light_gain * ndotl);
+    vec3 lit = albedo * (u_ambient + light_dir_rgb * ndotl
+                         + light_iso_rgb * ndotl_iso);
 
     // #33 highlight (Blinn-Phong): the LOCAL light's own colour, never the
     // ambient (a dark room puts no shine on a visor), scaled AND tightened by
@@ -156,7 +189,7 @@ void main() {
     float spec = u_gloss_strength * gloss
                * pow(max(dot(N, H), 0.0), shininess)
                * clamp(dot(N, L) * 4.0, 0.0, 1.0);
-    lit += spec * incoming_rgb * u_light_gain;
+    lit += spec * light_rgb;
 
     // Rim: Fresnel-ish silhouette term, tinted by the LOCAL light so it never
     // brightens a marine the room around it can't (dark room -> faint ambient
@@ -164,7 +197,7 @@ void main() {
     // cloth keeps a dark edge instead of reading light grey from above.
     float rim = pow(1.0 - max(0.0, dot(N, u_view_dir)), u_rim_power);
     vec3 rim_col = mix(vec3(1.0), albedo, u_rim_albedo);
-    lit += u_rim_strength * rim * rim_col * (u_ambient + incoming_rgb * u_light_gain);
+    lit += u_rim_strength * rim * rim_col * (u_ambient + light_rgb);
 
     // Linear HDR out (G0 P1): the world resolve tone-maps and encodes, once.
 

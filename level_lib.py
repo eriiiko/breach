@@ -96,6 +96,10 @@ MANAGED_FAMILIES = {
     "art.bare": ManagedFamily("art.bare", array=False),
     "art.align": ManagedFamily("art.align", array=False),
     "bake": ManagedFamily("bake", array=False),
+    # #119 P2: a match's spawn rooms (one per team, the level's decision).
+    # The `spawn` header regex needs `]]` right after the name, so it never
+    # matches `[[spawn_room]]` (and vice versa).
+    "spawn_room": ManagedFamily("spawn_room", array=True),
 }
 
 
@@ -132,6 +136,26 @@ def format_spawn_lines(spawns, nl: str = "\n") -> list:
         lines.append(f"x = {_fmt_coord(s.x)}{nl}")
         lines.append(f"y = {_fmt_coord(s.y)}{nl}")
         lines.append(f"footprint = {int(s.footprint)}{nl}")
+    return lines
+
+
+def format_spawn_room_lines(rooms, nl: str = "\n") -> list:
+    """The managed [[spawn_room]] block (#119 P2) — one table per room
+    (team/x/y/w/h/max_per_team/placement, all written), blank line between.
+    Each room is checked by the loader's own schema door first, so the
+    writer can never write a room its loader refuses on schema grounds (the
+    grid checks need the tilemap and stay the loader's)."""
+    from simulation.match import spawn_room_from_dict
+    lines = []
+    for i, r in enumerate(rooms):
+        row = {"team": r.team, "x": r.x, "y": r.y, "w": r.w, "h": r.h,
+               "max_per_team": r.max_per_team, "placement": r.placement}
+        spawn_room_from_dict(row, f"spawn room #{i} (writer)")
+        if i:
+            lines.append(nl)
+        lines.append(f"[[spawn_room]]{nl}")
+        for k, v in row.items():
+            lines.append(f"{k} = {_fmt_value(v)}{nl}")
     return lines
 
 
@@ -376,6 +400,70 @@ def write_spawns(toml_path, spawns, write_bak: bool = True):
     return write_managed_blocks(
         toml_path, {"spawn": lambda nl: format_spawn_lines(spawns, nl)},
         write_bak=write_bak)
+
+
+def write_spawn_rooms(toml_path, rooms, write_bak: bool = False):
+    """Rewrite the ``[[spawn_room]]`` array-of-tables as ONE managed block
+    (#119 P2) — the :func:`write_managed_blocks` contract (every other byte
+    preserved). Returns the .bak path, or None."""
+    return write_managed_blocks(
+        toml_path,
+        {"spawn_room": lambda nl: format_spawn_room_lines(rooms, nl)},
+        write_bak=write_bak)
+
+
+MATCH_HEADER = (
+    "# Match config (#119 P2) -- written by level_lib.write_match; never",
+    "# hand-edit. [[team]] row i is team i; units spawn in the level's",
+    "# [[spawn_room]] for their team (level.toml).",
+)
+
+
+def format_match_text(spec) -> str:
+    """A :class:`simulation.match.MatchSpec` -> match.toml text (LF)."""
+    lines = [f"{c}\n" for c in MATCH_HEADER]
+    lines += [
+        f"objective = {_fmt_value(spec.objective)}\n",
+        f"seed = {int(spec.seed)}\n",
+        f"time_limit_s = {_fmt_coord(spec.time_limit_s)}\n",
+        f"zombies = {int(spec.zombies)}\n",
+    ]
+    # #122: written only when it is not the default, so every match file that
+    # never named a zombie controller keeps its bytes.
+    from simulation.match import DEFAULT_ZOMBIE_CONTROLLER
+    zctrl = getattr(spec, "zombie_controller", DEFAULT_ZOMBIE_CONTROLLER)
+    if zctrl != DEFAULT_ZOMBIE_CONTROLLER:
+        lines.append(f"zombie_controller = {_fmt_value(zctrl)}\n")
+    for t in spec.teams:
+        lines += [
+            "\n", "[[team]]\n",
+            f"n = {int(t.n)}\n",
+            f"loadout = {_fmt_value(t.loadout)}\n",
+            f"env_profile = {_fmt_value(t.env_profile)}\n",
+            f"controller = {_fmt_value(t.controller)}\n",
+        ]
+    return "".join(lines)
+
+
+def write_match(level_dir, spec) -> Path:
+    """Write ``levels/<level>/match.toml`` (#119 P2) — the ONE match writer.
+    The text is parsed back through the loader's own door
+    (``simulation.match.parse_match``) against the level's ``[[spawn_room]]``
+    entries BEFORE anything touches disk, so the writer refuses exactly what
+    the loader would (unknown objective / loadout / profile / controller, n
+    over a room's max_per_team, ...). Atomic write; returns the path."""
+    import tomllib
+    from simulation.match import parse_match, parse_spawn_rooms
+    level_dir = Path(level_dir)
+    toml_path = level_dir / "level.toml"
+    with open(toml_path, "rb") as f:
+        rooms = parse_spawn_rooms(tomllib.load(f).get("spawn_room"),
+                                  str(toml_path))
+    text = format_match_text(spec)
+    path = level_dir / level_loader.MATCH_FILENAME
+    parse_match(tomllib.loads(text), rooms, f"{path} (writer)")
+    _atomic_write_bytes(path, text.encode("utf-8"))
+    return path
 
 
 def write_lights(toml_path, lights, write_bak: bool = True):

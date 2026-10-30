@@ -216,10 +216,11 @@ def _unit_record(u):
 
 def _event_record(ev):
     """Canonical tuple for one synced tick event. We key off the class name +
-    its public scalar fields (unit_id, damage, source / killed_by). Only the
-    SYNCED combat events (UnitHitEvent / UnitKilledEvent) carry HP-relevant
-    state, but any event with a ``unit_id`` is recorded in emission order so a
-    divergent kill/hit stream is caught."""
+    its public scalar fields (unit_id, damage, source / killed_by, and since
+    #123 attacker_id). Only the SYNCED combat events (UnitHitEvent /
+    UnitKilledEvent) carry HP-relevant state, but any event with a
+    ``unit_id`` is recorded in emission order so a divergent kill/hit stream
+    is caught."""
     kind = type(ev).__name__
     return {
         "kind":      kind,
@@ -227,12 +228,22 @@ def _event_record(ev):
         "damage":    getattr(ev, "damage", None),
         "source":    getattr(ev, "source", None),
         "killed_by": getattr(ev, "killed_by", None),
+        "attacker_id": getattr(ev, "attacker_id", None),
     }
 
 
 # Only events that touch synced unit life/HP belong in the determinism digest.
 # (ShotFiredEvent / ExplosionEvent / Door|WallDestroyed are render/topology
 # signals; the topology ones already show up in the gmap fields.)
+#
+# #123 CREDITED EVENTS: both types carry ``attacker_id`` (the unit credited
+# with the hit / kill, -1 = the environment) and it IS HASHED, as the cause
+# string is. Deliberately not an unhashed sibling: the credit is what reward
+# design will read per unit, so a desync in WHO is credited is a desync of
+# the training signal and must fail the lockstep like a desync in hp. The
+# record's new key moves the unit hash of exactly the ticks that carry a hit
+# or a kill and nothing else; the canonical golden scenario has none in its
+# 30 ticks, so GOLDEN_AGGREGATE did not move (1ff07369..., verified).
 _SYNCED_EVENT_TYPES = ("UnitHitEvent", "UnitKilledEvent")
 
 
@@ -303,18 +314,27 @@ def capture_trajectory(make_sim=default_scenario_sim, n_steps=30, fields=SIM_FIE
     for _ in range(n_steps):
         sim.set_paused(False)
         sim.step()
-        snap = _snapshot(sim.gmap, fields)
-        if capture_units:
-            snap[UNIT_DIGEST_KEY] = _capture_unit_state(sim)
-        ents = _sim_entities(sim)
-        # __signals__ (B6): () for any sim with no SignalBus (dormancy holds);
-        # the live bus rows for a wired sim — the ONLY case that folds signals.
-        digest_signals = getattr(sim, "_digest_signals", None)
-        signals = digest_signals() if callable(digest_signals) else ()
-        snap[ENTITY_DIGEST_KEY] = entity_carrier(ents, signals=signals)
-        require_entity_carrier(ents, snap)   # the A4 strict presence rule
-        traj.append(snap)
+        traj.append(capture_snapshot(sim, fields, capture_units=capture_units))
     return traj
+
+
+def capture_snapshot(sim, fields=SIM_FIELDS, capture_units=True):
+    """ONE tick's snapshot of ``sim`` as it stands — the gmap fields, the
+    synced unit state (UNIT_DIGEST_KEY) and the strict entity presence
+    carrier (ENTITY_DIGEST_KEY): what :func:`capture_trajectory` records per
+    tick and what ``tick_digest`` hashes. Public so a caller that owns its own
+    loop (``tools/run_match.py``, #119 P2) digests the same snapshot."""
+    snap = _snapshot(sim.gmap, fields)
+    if capture_units:
+        snap[UNIT_DIGEST_KEY] = _capture_unit_state(sim)
+    ents = _sim_entities(sim)
+    # __signals__ (B6): () for any sim with no SignalBus (dormancy holds);
+    # the live bus rows for a wired sim — the ONLY case that folds signals.
+    digest_signals = getattr(sim, "_digest_signals", None)
+    signals = digest_signals() if callable(digest_signals) else ()
+    snap[ENTITY_DIGEST_KEY] = entity_carrier(ents, signals=signals)
+    require_entity_carrier(ents, snap)   # the A4 strict presence rule
+    return snap
 
 
 def _diff_unit_state(t, ua, ub):

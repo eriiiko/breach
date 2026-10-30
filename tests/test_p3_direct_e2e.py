@@ -68,12 +68,13 @@ def _sim(level) -> Simulation:
 
 
 def _dummy_enemy(sim, x, y):
-    """A stationary team-1 target (is_zombie flipped off so the zombie AI never
-    moves it), so a geometry assertion holds still."""
+    """A stationary enemy: a team-1 marine with no orders, so neither the
+    zombie AI nor any order moves it (or fires it), and a geometry assertion
+    holds still. (#119: team 1 is a marine team now; before, this was a
+    zombie-team unit with is_zombie flipped off, and the bullet path's old
+    ``team == 1`` literal still applied the zombie damage multiplier to it.)"""
     eid = sim.add_unit(Unit("E", x=x, y=y, team=1))
-    e = sim.get_unit(eid)
-    e.is_zombie = False
-    return e
+    return sim.get_unit(eid)
 
 
 def _aim_east(sim, uid):
@@ -123,7 +124,10 @@ def _scripted_run():
     sim = _sim(_open_arena(20, 20))
     uid = sim.add_unit(Unit("M1", x=8, y=8, team=0))
     _dummy_enemy(sim, x=13, y=8)
-    trace = []
+    # The pre-run state first, so "the stream dealt damage" compares against
+    # the spawn HP, not against the state after the first tick's shots (#119:
+    # at full, non-zombie damage the whole effect lands on tick 0).
+    trace = [_digest(sim)]
     from simulation.orders import ORDER_MOVE_ATTACK
     for t in range(50):
         ax, ay = np.cos(t * 0.25), np.sin(t * 0.25)
