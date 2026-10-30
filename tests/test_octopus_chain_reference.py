@@ -61,7 +61,7 @@ def test_the_reference_computes_with_the_kit_twins_and_the_doors_currencies():
     assert R.K is K
     assert R.sra is K.shr_round_away and R.dra is K.div_round_away
     assert R.msa is K.mul_shr_away and R.isqrt is K.sqrt_q16
-    assert R.CHAIN_SHIFT == CF.CHAIN_SHIFT and R.F_SHIFT == CF.F_SHIFT
+    assert R.CHAIN_SHIFT == CF.CHAIN_SHIFT
     assert R.KW_PRE_SHIFT == CF.KW_PRE_SHIFT
     row = R.chain_row(G.creature())
     cdef = G.creature()

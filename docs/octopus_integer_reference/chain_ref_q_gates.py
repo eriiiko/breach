@@ -21,7 +21,9 @@ FAIL; the full run writes `report_p6b.md` beside this file.
   G5 determinism         two runs, identical bytes; CHECK on == CHECK off
   G6 headroom            CHECK mode at the 1.80 / 2.52 / 3.39 m arms: every
                          int64 site below 2^63, int32 state below 2^31
-  G7 cost                kit calls per arm-substep, weighted as P1's gate d
+  G7 cost                kit calls per arm-substep, weighted as P1's gate d --
+                         REPORTED, not gated (cost is not a design input, Erik's
+                         ruling 1; P5z's float d said the same; P6e measures)
 
 `--fast` runs G1's reach (a1-a3), G5 and G6 on short runs -- what
 tests/test_octopus_chain_reference.py runs. G3 and G4 need the P5z traces
@@ -332,7 +334,7 @@ def g1_p1(fast: bool = False):
          f"peak {vv.max() if len(vv) else 0:.2f} m/s, then {'monotone' if mono else 'NOT monotone'} over "
          f"{len(after)} ticks; final mean angle {mean_local_angle_deg(trd.p[-1]):.1f} deg")
     ok_d, note_d, _ = g7_cost(fast=True)
-    gate("d operation count per arm-substep", ok_d, note_d[0].strip())
+    lines.append("  [REPORTED] d operation count per arm-substep: " + note_d[0].strip())
     return all(oks), lines, data
 
 
@@ -507,8 +509,10 @@ def g7_cost(fast: bool = False):
              + npass * ((nodes - 1) * _PLAIN["dist"] + (nodes - 2) * (_PLAIN["frame"] + 2 * _PLAIN["bend"])))
     weighted = plain + sum(per[k] * _W[k] for k in per)
     per_oct = weighted * nsub * 8
-    ok = weighted <= 25_000
-    lines = [f"  ~{weighted:.0f} weighted ops per arm-substep (limit 25000, P1 gate d): kit calls "
+    ok = True       # REPORTED: cost is not a design input (Erik's ruling 1); P6e measures
+    over = f"{weighted / 25_000 - 1:+.0%} against" if weighted > 25_000 else "under"
+    lines = [f"  REPORTED: ~{weighted:.0f} weighted ops per arm-substep ({over} the float's 25000 bound; "
+             f"the integer chain pays for its 128-bit products, symmetric roundings and fine remainders): kit calls "
              + ", ".join(f"{k} {per[k]:.0f}" for k in per) + f" + ~{plain} plain +, -, * ; x {nsub} x 8 arms = "
              f"~{per_oct / 1e6:.2f} M per octopus-tick (the P5z float tally: ~18200 weighted, ~2.33 M)"]
     return ok, lines, per

@@ -37,7 +37,8 @@ CURRENCIES (int; Q<n> = 2^n counts per SI unit)
   bend W = sum w |g|^2       Q32 1/(kg m^2)
   constraint rate r          Q0 1/s^2  (r = k W (1 + gamma) + 1/dt^2, 1/dt^2 = 147456)
   bend dlam                  Q40 kg m^2 (DLAM_SHIFT; numerator pre-shift 8)
-  distance factor f          Q30 (creature_fixed.F_SHIFT)
+  distance impulse J         Q40 kg m (J = k C d/|d| / r; DIST_J_SHIFT)
+  attachment impulse J       Q30 kg m (J = C / W; ATTACH_PRE)
   drag rate c = K w dt       Q32 s/m;  the dimensionless x = c |v| in Q30
   anchor force               Q8 N
 
@@ -47,8 +48,13 @@ so +x and -x lose the same magnitude and no rounding has a direction: the "no
 slide" rule (design 6.3). The only floors are `sqrt_q16` (floor of a square
 root, a magnitude) and the anchor-force floor division (a non-negative
 comparison). A two-node correction's shared quantity is computed ONCE (the
-distance constraint's C d/|d|, the bend's dlam, the attachment's C and its
-ratios) and applied with opposite signs.
+distance constraint's and the attachment's IMPULSE J, the bend's dlam) and each
+participant moves by its own inverse mass times it, so momentum is conserved
+to the 1e-10 of m w = 1. Every constraint correction is
+formed FINE (Q32, FINE_BITS = 8 below a position count) and applied through
+`_move`: the node moves by the rounded whole counts, the remainder (at most half
+a count, per node, per substep -- scratch, not state) is carried into the
+velocity rebuild.
 
 ORDER OF ONE SUBSTEP (World.substep; dt = 1/(tps n_sub) = 1/384 s):
   1. activation   wave arms: a = a_ca S(x) from the checked-in table at the
@@ -66,11 +72,12 @@ ORDER OF ONE SUBSTEP (World.substep; dt = 1/(tps n_sub) = 1/384 s):
                   e. root attachments (per body: arm 0 node 0, arm 0 node 1, ...)
                   f. grabs (sorted by arm, node)
                   g. floor (arms), floor (bodies)
-  8. velocity     v = 384 (p - p_prev) [on the floor: its z part max(., 0)]
-                  + (v - 384 disp): the PBD rebuild (p - p_prev)/dt PLUS the
-                  predict's rounding remainder, so no sub-count velocity is
-                  ever erased (`_rebuild`); pinned / anchored v = 0; bodies
-                  likewise; heading wrapped into (-pi, pi].
+  8. velocity     v = [384 (p - p_prev) + sra(384 r, 8)] (on the floor its z
+                  part max(., 0)) + (v - 384 disp): the PBD rebuild of the
+                  displacement INCLUDING the corrections' fine remainder r,
+                  PLUS the predict's rounding remainder, so no sub-count
+                  velocity is ever erased (`_rebuild`); pinned / anchored
+                  v = 0; bodies likewise; heading wrapped into (-pi, pi].
 The order is arm_chain3d.Chain3D.substep's with the bank's hooks
 (arm_bank3d.Bank3D) -- the float P5z validated.
 """
@@ -110,7 +117,18 @@ FINE_BITS = 8
 FINE_SHIFT = CHAIN_SHIFT + FINE_BITS  # 32
 U_ONE = 1 << U_SHIFT
 Q16_ONE = 1 << 16
-F_SHIFT = CF.F_SHIFT                  # 30: the distance factor f = k w / r
+#: The distance constraint's IMPULSE J = k (C d/|d|) / r is formed in Q40 kg m
+#: (k_q16 x Q24 = Q40, divided by r in Q0) and each node moves by w J: the
+#: shared quantity is a MOMENTUM, so sum m dp = (m_a w_a - m_b w_b) J = 0 to
+#: the 1e-10 of m w = 1 (P6a's per-node factor f = k w / r rounded each
+#: node's share separately -- 1e-7 relative -- and measurably slid the free
+#: animal: 1.1 mm in 60 s).
+DIST_J_SHIFT = 40
+#: The attachment's impulse J = C / W (kg m) is (C_q24 << ATTACH_PRE) / W_q32,
+#: i.e. Q30; the node moves by -w_n J, the body by +w_b J and turns by
+#: (r x J)_z / I -- momentum exact the same way. Requires |C| < 2^24 (1 m).
+ATTACH_PRE = 38
+ATTACH_J_SHIFT = CHAIN_SHIFT + ATTACH_PRE - 32      # 30
 KW_PRE_SHIFT = CF.KW_PRE_SHIFT        # 48: (k_q16 w_q32) >> 48 -> Q0
 G_SHIFT = 16                          # bend gradients, Q16 1/m
 #: g = perp(a) / |a|^2 is formed as (perp(a)_q24 << G_PRE) / |a|^2_q32 -> Q16.
@@ -295,7 +313,7 @@ class Arm:
     v: list                      # n x [vx, vy, vz] Q24
     pinned: tuple                # n bools
     w: list                      # Q32, 0 on a pinned node
-    f_dist: list                 # per segment (f_a, f_b) Q30
+    r_dist: list                 # per segment r = k (w_a + w_b) + 1/dt^2, Q0
     c_per: list                  # Q32 s/m drag rates
     c_tan: list
     drag_mode: int = DRAG_QUADRATIC
@@ -353,17 +371,6 @@ def _unit_q30(v) -> tuple:
     return tuple(CF._round_half_away(float(c) / n * U_ONE) for c in v)
 
 
-def _ratio_q30(num: int, den: int) -> int:
-    """num / den in Q30 for 0 <= num <= den, den > 0, without a 128-bit divide:
-    both shifted right (rounded) until den fits 32 bits, then one rounded
-    divide. Exact to ~2^-31."""
-    s = den.bit_length() - 32
-    if s > 0:
-        num = sra(num, s)
-        den = sra(den, s)
-    return dra(num << U_SHIFT, den)
-
-
 class World:
     """The arms of every animal in a scenario, their bodies and grabs, stepped
     together (arm_bank3d.World's bank). Batching never changes a result: arms
@@ -407,18 +414,14 @@ class World:
         n = row.n_nodes
         pin = tuple(i in set(int(k) for k in pinned) for i in range(n))
         w = [0 if pin[i] else row.w_q32[i] for i in range(n)]
-        f_dist = []
-        for i in range(row.n_seg):
-            kwa = msa(row.k_dist_q16, w[i], KW_PRE_SHIFT)
-            kwb = msa(row.k_dist_q16, w[i + 1], KW_PRE_SHIFT)
-            r = msa(row.k_dist_q16, w[i] + w[i + 1], KW_PRE_SHIFT) + row.inv_dt2
-            f_dist.append((dra(kwa << F_SHIFT, r), dra(kwb << F_SHIFT, r)))
+        r_dist = [msa(row.k_dist_q16, w[i] + w[i + 1], KW_PRE_SHIFT) + row.inv_dt2
+                  for i in range(row.n_seg)]
         c_per = [dra(row.K_per_q16[i] * w[i], row.inv_dt << 16) for i in range(n)]
         c_tan = [dra(row.K_tan_q16[i] * w[i], row.inv_dt << 16) for i in range(n)]
         tau_q16 = _q16(tau)
         a = Arm(p=[_q24v(q) for q in p0],
                 v=[_q24v(q) for q in v0] if v0 is not None else [[0, 0, 0] for _ in range(n)],
-                pinned=pin, w=w, f_dist=f_dist, c_per=c_per, c_tan=c_tan, drag_mode=int(drag_mode),
+                pinned=pin, w=w, r_dist=r_dist, c_per=c_per, c_tan=c_tan, drag_mode=int(drag_mode),
                 vref_q24=CF.chain_from_m(vref),
                 u_q30=dra(1 << 46, row.inv_dt * tau_q16) if tau_q16 > 0 else 0,
                 mu_q16=_q16(mu), root_ref=_unit_q30(root_ref),
@@ -622,6 +625,8 @@ class World:
         prev, disp = [], []
         for b in self.bodies:
             prev.append((list(b.x), b.th))
+            b.res = [0, 0, 0]
+            b.res_th = 0
             v = b.v
             if b.drag_mode == DRAG_UNIFORM:
                 x = b.u_q30
@@ -648,8 +653,9 @@ class World:
 
     # -- 7a. distance -----------------------------------------------------------------------
     def _project_distance(self, a: Arm) -> None:
-        p, rest, f, res = a.p, a.rest, a.f_dist, a.res
-        fs = F_SHIFT - FINE_BITS
+        p, rest, rd, res, w = a.p, a.rest, a.r_dist, a.res, a.w
+        k = self.row.k_dist_q16
+        js = DIST_J_SHIFT                  # Q32 x Q40 >> 40 -> Q32 fine
         for i in range(self.row.n_seg):
             P, Q = p[i], p[i + 1]
             dx, dy, dz = Q[0] - P[0], Q[1] - P[1], Q[2] - P[2]
@@ -659,16 +665,20 @@ class World:
             C = ln - rest[i]
             if C == 0:
                 continue
-            # the shared correction C d / |d| (Q24), computed ONCE, applied +- f
+            # the shared IMPULSE J = k C (d/|d|) / r (Q40 kg m), computed ONCE,
+            # each node moving by its w J (+ at the base end, - at the tip end)
             cx, cy, cz = dra(C * dx, ln), dra(C * dy, ln), dra(C * dz, ln)
+            r = rd[i]
+            jx, jy, jz = dra(k * cx, r), dra(k * cy, r), dra(k * cz, r)
             if CHECK:
                 _chk("dist.len_sq", dx * dx + dy * dy + dz * dz)
                 _chk("dist.C_d", C * (dx if abs(dx) >= abs(dy) else dy))
-            fa, fb = f[i]
-            if fa:
-                _move(P, res[i], msa(fa, cx, fs), msa(fa, cy, fs), msa(fa, cz, fs))
-            if fb:
-                _move(Q, res[i + 1], -msa(fb, cx, fs), -msa(fb, cy, fs), -msa(fb, cz, fs))
+                _chk("dist.k_Cd", k * max(abs(cx), abs(cy), abs(cz)))
+            wa, wb = w[i], w[i + 1]
+            if wa:
+                _move(P, res[i], msa(wa, jx, js), msa(wa, jy, js), msa(wa, jz, js))
+            if wb:
+                _move(Q, res[i + 1], -msa(wb, jx, js), -msa(wb, jy, js), -msa(wb, jz, js))
 
     # -- 7b. the Bishop frame ------------------------------------------------------------------
     def _frames(self, a: Arm):
@@ -833,7 +843,8 @@ class World:
     def _attach(self, a: Arm, k: int, b: Body, L) -> None:
         """Rigid attachment of node k to the body point L (body frame, Q24):
         zero compliance, yaw-only rotation (arm_bank3d.Bank3D._attach). The
-        shared error C is split by the ratios of the three inverse masses."""
+        shared IMPULSE J = C / W (Q30 kg m) is computed once: the node moves by
+        -w_n J, the body by +w_b J and turns by (r x J)_z / I."""
         th16 = sra(b.th, CHAIN_SHIFT - 16)
         c, s = K.cos_q16(th16), K.sin_q16(th16)
         rx = sra(c * L[0] - s * L[1], 16)
@@ -852,16 +863,17 @@ class World:
         if CHECK:
             _chk("attach.C_sq", Cx * Cx + Cy * Cy + Cz * Cz)
             _chk("attach.W", W)
-        fs = U_SHIFT - FINE_BITS
+            _chk("attach.C_pre", max(abs(Cx), abs(Cy), abs(Cz)) << ATTACH_PRE)
+        jx, jy, jz = dra(Cx << ATTACH_PRE, W), dra(Cy << ATTACH_PRE, W), dra(Cz << ATTACH_PRE, W)
+        js = ATTACH_J_SHIFT                                 # Q32 x Q30 >> 30 -> Q32 fine
         if wn:
-            an = _ratio_q30(wn, W)
-            _move(P, a.res[k], -msa(an, Cx, fs), -msa(an, Cy, fs), -msa(an, Cz, fs))
-        ab = _ratio_q30(b.w_q32, W)
-        _move(b.x, b.res, msa(ab, Cx, fs), msa(ab, Cy, fs), msa(ab, Cz, fs))
-        if rxn:
-            ar = _ratio_q30(wrot, W)
-            mag = dra(msa(ar, cn, U_SHIFT) << FINE_SHIFT, rxn if rxn > 0 else -rxn)  # Q32 rad
-            t = b.res_th + (mag if rxn > 0 else -mag)
+            _move(P, a.res[k], -msa(wn, jx, js), -msa(wn, jy, js), -msa(wn, jz, js))
+        wb = b.w_q32
+        _move(b.x, b.res, msa(wb, jx, js), msa(wb, jy, js), msa(wb, jz, js))
+        tq = rx * jy - ry * jx                              # (r x J)_z, Q54 kg m^2
+        if tq:
+            # Q54 x Q32 >> 54 -> Q32 rad: the yaw step, fine
+            t = b.res_th + msa(tq, b.winvI_q32, CHAIN_SHIFT + ATTACH_J_SHIFT)
             i = sra(t, FINE_BITS)
             b.th += i
             b.res_th = t - (i << FINE_BITS)
@@ -1111,7 +1123,7 @@ def replay(row: ChainRow, tr: dict, ticks: int | None = None, record_every: int 
 
 
 __all__ = [
-    "CHAIN_SHIFT", "U_SHIFT", "U_ONE", "F_SHIFT", "KW_PRE_SHIFT", "G_SHIFT", "G_PRE",
+    "CHAIN_SHIFT", "U_SHIFT", "U_ONE", "DIST_J_SHIFT", "ATTACH_PRE", "KW_PRE_SHIFT", "G_SHIFT", "G_PRE",
     "DLAM_PRE", "DLAM_SHIFT", "D_MAX_Q16", "OPC_FLOOR", "N0_MIN", "ALT_X_LIMIT", "PI_Q24",
     "TWO_PI_Q24", "DRAG_QUADRATIC", "DRAG_LINEAR", "DRAG_UNIFORM", "WAVE_CLOCK_SPAN",
     "CHECK", "BITS", "reset_bits", "bits_report", "load_activation_table", "activation_s_q16",
