@@ -3662,10 +3662,11 @@ steer_min_dist = 0.21          # scaled L^1, m
 # suckers anchor distal to the bend, the proximal part stiffens straight, the
 # bend opens: the push against the anchor rotates the body through the root
 # attachment. Levy's scale: body rotation SD ~25 deg per 2.8 s.
-turn_dead_band_deg = 20.0      # choice (P6g): no turn is recruited while the facing error is within this
+turn_dead_band_deg = 25.0      # choice (P6g; fix round 25, was 20: the crawl's own heading wander, +-33 deg in 12 s, kept crossing 20 and an aligned facing turned 19 % of ticks; at 25: 6 %, full speed): no turn is recruited while the facing error is within this
 turn_bend_deg = 90.0           # choice (P6g): the lateral bend at the base (the root swung sideways) formed before the anchor; its opening is the turn (measured: 60 deg turned a 90-deg error in 7.7-9.3 s idle, 90 deg in 4.8-5.0 s)
 turn_full_deg = 45.0           # choice (P6g fix, 2026-10-31): the bend is SCALED by the error -- turn_bend x |error| / turn_full_deg, at most turn_bend (a turn of 90 deg whatever the error overshot an aligned facing)
 turn_refractory_s = 1.0        # choice (P6g fix): after a turn ends, no turn is recruited for this long
+turn_pull_in = 0.7             # choice (P6g fix): while the bend opens, the turning arm's proximal part SHORTENS to this rest scale -- the turning arm sits ahead of the travel (fix 2) and, held at length, its grip braked the crawl (measured: 0.29 vs 0.45 m/s; with its grip disabled 0.48): shortening, it pulls the body toward the grip instead (Levy SI's alternative ending: the proximal part straightens while the grip peels)
 turn_free_side_bonus = 1.0     # choice (P6g fix): the turning arm is drawn from the arms whose push OPPOSES the travel (weight max(0, -p.d); idle: any), never a pushing arm; an arm whose neighbour on its swing side is free (not pushing, not turning) weighs x (1 + this) -- arms pass through each other, so a swing across a busy neighbour reads as tangled
 turn_bend_s = 0.3              # choice (P6g): the bend forms, unanchored
 turn_open_s = 1.0              # choice (P6g; Levy's ~1 s active phase): the anchored bend opens to straight

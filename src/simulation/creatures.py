@@ -165,6 +165,7 @@ class CrawlDef:
     turn_full_deg: float = _k(ANGLE)
     turn_refractory_s: float = _k(DUR)
     turn_free_side_bonus: float = _k(NONNEG)
+    turn_pull_in: float = _k(POS)
     turn_open_s: float = _k(DUR)
     turn_activation: float = _k(FRAC)
     p_turn: float = _k(FRAC)

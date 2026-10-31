@@ -247,6 +247,7 @@ class PrimDials:
             raise ValueError("creature_primitives: crawl.turn_full_deg must be > 0")
         self.turn_refractory = int(c.turn_refractory_ticks)
         self.turn_free_bonus = _q16(c.turn_free_side_bonus)
+        self.turn_pull = _q16(c.turn_pull_in)
         self.turn_act = _q16(c.turn_activation)
         self.p_turn = _q16(c.p_turn)
         # swim (P3)
@@ -1105,6 +1106,10 @@ def _drive_arm(body, a: int, act, rest, bend) -> None:
                 _anchor(body, a, nodes)
         else:
             body.arm_aim[a] = _lerp(int(body.turn_q16), 0, t - tb, d.turn_open_ticks)
+            # the proximal part shortens while the bend opens (fix 2): the
+            # turning arm is ahead of the travel, and a grip held at length
+            # brakes the crawl; shortening it pulls the body toward the grip
+            rest[a, :kb] = _lerp(ONE, d.turn_pull, t - tb, d.turn_open_ticks)
             if t >= L or not body.bufs.anchored[0, a].any():
                 _turn_done(body, a)
     elif s == ARM_SWIM:
