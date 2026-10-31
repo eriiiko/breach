@@ -101,7 +101,7 @@ from simulation.timed_charge_system import (build_timed_charges,
                                             sweep_timed_charges)
 from simulation.entities.schema import INPUT_HELD
 from simulation.gamemap import GameMap, MAT_DOOR, MAT_DOOR_CLOSED
-from simulation.movement import FootprintSamples, default_speed
+from simulation.movement import default_speed, footprint_samples
 from simulation.orders import (
     ORDER_GRENADE, ORDER_EXPLOSIVE, ORDER_FIRE, ORDER_MOVE_ATTACK,
     ORDER_MOVE_COVER, ORDER_SPRINT, MOVE_ORDER_TYPES,
@@ -1213,8 +1213,10 @@ class Simulation:
                             # into the ticks this tile-step actually costs (a
                             # furniture tile is 2.5x slower). A* is speed-blind;
                             # this composes the multiplier at execution only.
-                            samples = FootprintSamples(
-                                mobility=gmap.footprint_mobility(tile_y, tile_x, fp))
+                            # #140: the builder adds the wind's cadence
+                            # scale, sampled here at ORDER time (WEGO's
+                            # plan-time precompute -- an accepted gap).
+                            samples = footprint_samples(gmap, tile_y, tile_x, fp)
                             step_ticks = default_speed(samples, speed)
                             for st in range(step_ticks):
                                 frac = (st + 1) / step_ticks
@@ -2010,8 +2012,7 @@ class Simulation:
         """
         base_ticks = _ticks_per_tile(move_dir.speed_mode)
         fp = u.footprint
-        samples = FootprintSamples(
-            mobility=self.gmap.footprint_mobility(u.tile_y, u.tile_x, fp))
+        samples = footprint_samples(self.gmap, u.tile_y, u.tile_x, fp)
         tick_cost = default_speed(samples, base_ticks)   # ticks per tile
         tiles_per_tick = 1.0 / tick_cost
         dx = _intents.dequantize(move_dir.dx_q)

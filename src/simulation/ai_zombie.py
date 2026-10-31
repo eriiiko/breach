@@ -25,7 +25,7 @@ import math
 from config import CFG
 from simulation.damage import KINETIC, DamagePacket, apply_packet
 from simulation.factions import ZOMBIE_TEAM
-from simulation.movement import FootprintSamples, default_speed
+from simulation.movement import default_speed, footprint_samples
 from simulation.status import composed_flags
 
 try:
@@ -162,8 +162,7 @@ def update_zombies_tick(gmap, units, tick, events=None):
         # over the zombie's CURRENT footprint scales its base cadence into the
         # ticks this step costs — a zombie clambering through furniture is 2.5x
         # slower. A* stays speed-blind; the multiplier composes here only.
-        samples = FootprintSamples(
-            mobility=gmap.footprint_mobility(z.tile_y, z.tile_x, z.footprint))
+        samples = footprint_samples(gmap, z.tile_y, z.tile_x, z.footprint)
         step_ticks = default_speed(samples, z.speed_ticks_per_tile)
         z.zombie_move_accumulator += 1
         if z.zombie_move_accumulator >= step_ticks:
