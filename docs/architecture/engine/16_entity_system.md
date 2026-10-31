@@ -254,6 +254,27 @@ blockers; the resolution ledger is §0b there). B1–B7 merged 2026-07-22, Erik 
   so REPRESSURIZE genuinely refills. Fixture `levels/airlock_demo` (5-tall corridor so a
   3×3 marine has room — the fixed HUMAN-TEST bug). Manual open buttons = future "airlock v2",
   gated on the control-scheme decision (`button`/terminal still inert).
+- **Interior airlock mode (2026-10-31, #133; Erik's ruling, `level-design-lead` §3).** An
+  airlock between two PRESSURISED cells only sequences its doors and equalises the
+  vestibule to the side being opened; only a HULL airlock (one side is space) evacuates.
+  `airlock_controller.mode` (`"hull"` default = the cycle above, unchanged; `"interior"`):
+  the same state graph, but each leg ends when the chamber reads within `equalize_band`
+  (Q16 atm, default 0.05) of the side about to open — three wired `pressure` readings
+  (`chamber_p`, `inner_side_p`, `outer_side_p`; refused at load if unwired) replace the two
+  deciders — and drives that side's own pump toward it (EQUALIZE `pump_*`, REPRESSURIZE the
+  new `near_pump_*`). The pumps are `pump.feed = "transfer"` (default `"external"` = mint /
+  destroy, as before): inject moves air `source → port`, extract `port → source`
+  (`source_dx`/`source_dy`, refused if it is the port), through `GameMap.transfer_gas_n` —
+  the pump's own withdrawal split (`_air_withdrawal`, shared with `extract_gas_n_vec`),
+  the parcel landing whole, its energy MOVED through `gas_energy_move` at the donor's
+  `T_abs` (seam net 0), trace priced by air and carried. No gas leaves the ship.
+  `levels/airlock_demo` names neither field and is bit-identical in every gas field and in
+  its state trace over 500 ticks (its `__entity__` / `__signals__` bytes gain the new
+  zero / default rows). gen_ship derives the mode per airlock edge (`airlock_mode`: hull
+  iff a tile beyond the outer door is space) and emits the interior recipe (two transfer
+  pumps, three probes, no deciders). Accepted gap, as in hull mode: a unit can only START a
+  cycle from the near side (the plate is in the chamber; the far door is held shut).
+  Gates: `tests/test_airlock_interior_mode.py`.
 - **Digest/dormancy:** `__signals__` (SIGNAL_SECT_V1) populated from the bus; node/pump/
   airlock runtime state joins `__entity__` via `runtime_digest_rows` (the door's rows
   UNCHANGED — `is_open` rides `__signals__` only). A logic-free level is **byte-identical**
