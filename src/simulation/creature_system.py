@@ -62,6 +62,14 @@ integer pose through the ``creature_fixed`` converters (render-side floats).
 
 Arms never block, stamp, jam a door, sense heat or gas, or count for melee
 adjacency: the body's footprint is the unit's footprint, and only it stamps.
+They CAN be shot (P6d3, the hit seam): each time the pose is written to the
+unit (``write_unit``: spawn and slot 5b) the body rebuilds its ``HitShape`` --
+the footprint plus every tile an arm segment crosses, rasterised from the
+integer chain (``creature_fixed.segment_tiles``, top-down: z ignored) -- and
+hands it to the unit (``Unit.hit_shape``), which the bullet march and the
+laser skewer read through ``Unit.in_hit_tiles``; a connecting hit writes the
+struck (arm, node) to ``last_hit`` through ``Unit.note_hit``. Derived, never
+digested; a dead creature is not ticked, so its shape freezes with its pose.
 Arms pass through marines (Erik's ruling of 2026-10-30, a NAMED ACCEPTED GAP);
 only the crown collides, inside the solver.
 
@@ -87,7 +95,8 @@ creature-owned bodies to V1's layout, and reads a grab's id as a BODY index:
                int32 stance count; int32 ticks since the last decision; uint8
                travel goal (``GOAL_*``); int32 goal x, y (Q16 direction);
                int32 steering samples held; int32 last hit arm, int32 last
-               hit node (-1, -1: none)
+               hit node (-1, -1: none yet, or the last connecting hit
+               struck the crown's footprint; P6d3 writes it)
   hub (V2)     uint8 gait, uint8 swim phase, uint8 grab request, int8 grab
                wrap side; int32 swim ticks, swim root angle (Q16 rad), swim
                rig (Q16: 0 = the rest roots, ONE = the swimming ring); int32
@@ -278,6 +287,67 @@ def check_creature_spawn(spawn, open_mask, tile_size_m: float, where: str):
 # ---------------------------------------------------------------------------
 # One creature
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# The hit seam's shape (P6d3)
+# ---------------------------------------------------------------------------
+class HitShape:
+    """What a bullet or a beam can strike on one creature unit this tick
+    (design 4.2): ``tiles`` -- sorted ``(tx, ty)`` -- is the body's footprint
+    plus every in-map tile an arm segment crosses; ``node_at`` maps each arm
+    tile to the (arm, node) a hit there strikes. DERIVED from the integer
+    chain by :func:`build_hit_shape`, never digested; holds its body so a hit
+    can write ``last_hit`` (the one hashed trace of a hit's place)."""
+
+    __slots__ = ("body", "tiles", "tile_set", "body_tiles", "node_at")
+
+    def __init__(self, body, body_tiles, node_at):
+        self.body = body
+        self.body_tiles = frozenset(body_tiles)
+        self.node_at = node_at
+        self.tile_set = frozenset(self.body_tiles | node_at.keys())
+        self.tiles = tuple(sorted(self.tile_set))
+
+    def struck(self, ix: int, iy: int) -> tuple[int, int]:
+        """The (arm, node) a hit on tile ``(ix, iy)`` strikes: (-1, -1) on the
+        crown's footprint (the body wins a tile it shares with an arm)."""
+        t = (int(ix), int(iy))
+        if t in self.body_tiles:
+            return (-1, -1)
+        return self.node_at.get(t, (-1, -1))
+
+    def note_hit(self, ix: int, iy: int) -> None:
+        self.body.last_hit = self.struck(ix, iy)
+
+
+def build_hit_shape(body, body_tiles, h: int, w: int) -> HitShape:
+    """``body``'s hit shape from its synced chain (``bufs.p``, Q24 m) and the
+    unit's footprint ``body_tiles``: each arm's segments node k -> k+1 are
+    rasterised by ``creature_fixed.segment_tiles`` in the solver's tile law
+    (the topology's quantized tile side and origin, ``WD_TILE_Q24``), z
+    ignored. A tile is struck at the FIRST (arm, node) to claim it in (arm,
+    node) order, where node k claims its own tile and the tiles its segment
+    to k + 1 clips before reaching node k + 1's. Tiles off the (h, w) map
+    are dropped."""
+    b = body.bufs
+    T = int(b.world[0, AC.WD_TILE_Q24])
+    ox = int(b.world[0, AC.WD_ORIGIN_X_Q24])
+    oy = int(b.world[0, AC.WD_ORIGIN_Y_Q24])
+    p = b.p[0, :, :, :2].tolist()             # (A, n, 2) Q24 m, python ints
+    node_at: dict = {}
+    for a, arm in enumerate(p):
+        n = len(arm)
+        for k in range(n):
+            x0, y0 = arm[k][0] - ox, arm[k][1] - oy
+            node_at.setdefault((x0 // T, y0 // T), (a, k))
+            if k + 1 < n:
+                seg = CF.segment_tiles(x0, y0, arm[k + 1][0] - ox, arm[k + 1][1] - oy, T)
+                for t in seg[1:-1]:
+                    node_at.setdefault(t, (a, k))
+    node_at = {t: an for t, an in node_at.items()
+               if 0 <= t[0] < w and 0 <= t[1] < h}
+    return HitShape(body, body_tiles, node_at)
+
+
 class CreatureBody:
     """One creature unit's articulated body: the solver's buffers (owned
     here; the solver is stateless) and the hub's integer state. Holds the
@@ -425,13 +495,18 @@ class CreatureBody:
 
     def write_unit(self, unit) -> None:
         """``Unit.x/y/facing`` FROM the integer pose (the converters; floats
-        are render-side, never read back)."""
+        are render-side, never read back), and the unit's hit shape from the
+        integer chain (P6d3: ``build_hit_shape``, derived)."""
         bd = self.bufs.body[0, 0]
         x, y = CF.pose_to_unit_anchor(float(CF.chain_to_m(int(bd[AC.BS_X]))),
                                       float(CF.chain_to_m(int(bd[AC.BS_Y]))),
                                       self.footprint, self.tile_size_m)
         unit.x, unit.y = x, y
         unit.facing = CF.heading_rad_to_facing(CF.heading_q24_to_rad(self.heading_q24))
+        # the hit seam (P6d3): rebuilt from the chain with every pose write
+        h, w = self.bufs.blocked.shape[1:]
+        self.hit_shape = build_hit_shape(self, unit.occupied_tiles(), h, w)
+        unit.hit_shape = self.hit_shape
 
     # -- intents -> the hub's goal ----------------------------------------------
     def route_intents(self, unit) -> None:
@@ -737,7 +812,8 @@ __all__ = [
     "CREATURE_DIGEST_KEY", "CREATURE_SECT_PREAMBLE", "ARM_LIMP",
     "GOAL_NONE", "GOAL_MOVE_DIR", "BODY_FIELDS",
     "is_creature", "require_engine", "seed_xorshift", "xorshift64",
-    "rest_pose", "check_creature_spawn", "CreatureBody", "CreatureSystem",
+    "rest_pose", "check_creature_spawn", "HitShape", "build_hit_shape",
+    "CreatureBody", "CreatureSystem",
     "serialize_record", "decode_record", "section_bytes", "creature_carrier",
     "require_creature_carrier", "diff_creature_records", "spawn_creature_units",
 ]

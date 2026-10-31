@@ -39,6 +39,10 @@ Unit class foundation additions (2026-05-21):
   ``effective_vitality(unit)`` from simulation.stats instead.
 - ``occupied_tiles()`` / ``occupies()`` — spec §6 interface for collision,
   LOS, hit-detection, stamp_units.
+- ``hit_tiles()`` / ``in_hit_tiles()`` / ``note_hit()`` (#106 P6d3) — THE
+  hit seam: what a bullet or a beam can strike. Equal to the footprint for
+  every unit but a creature, whose arms add the tiles their segments cross
+  (``hit_shape``, derived by ``creature_system``, never digested).
 """
 from __future__ import annotations
 
@@ -255,6 +259,12 @@ class Unit:
         # joins when loadouts can change at runtime.
         self.weapon_id = "" if _kit is None else str(_kit.weapon)
 
+        # The hit seam's derived shape (#106 P6d3): None for every unit but a
+        # creature, whose CreatureBody hands it a ``creature_system.HitShape``
+        # each time it writes the pose to the unit (slot 5b). DERIVED from the
+        # synced chain, never digested, never written by anything else.
+        self.hit_shape = None
+
         # Combat state (used by marines mainly; harmless on zombies).
         self.last_fire_tick = -999
         self.fire_target = None
@@ -396,6 +406,40 @@ class Unit:
             if ax + dx == tx and ay + dy == ty:
                 return True
         return False
+
+    # ------------------------------------------------------------------
+    # Hit seam (#106 P6d3; design docs/octopus_p6_sim_port_design_2026-10-30.md
+    # section 4.2). ONLY the bullet march and the laser skewer read it; melee,
+    # every exchange row, the stamps, doors and occupies() keep the footprint.
+    # ------------------------------------------------------------------
+
+    def hit_tiles(self) -> list[tuple[int, int]]:
+        """Tiles a bullet or a beam can strike this unit on, sorted for a
+        creature: ``occupied_tiles()`` for every other unit; for a creature
+        the body's footprint plus every tile an arm segment crosses (rebuilt
+        once per tick at slot 5b, top-down: z is ignored)."""
+        shape = getattr(self, "hit_shape", None)
+        if shape is None:
+            return self.occupied_tiles()
+        return list(shape.tiles)
+
+    def in_hit_tiles(self, ix: int, iy: int) -> bool:
+        """``(ix, iy) in hit_tiles()``, without building the list: the march's
+        own footprint rectangle (the shipped test, verbatim) for every unit
+        but a creature, the shape's set for a creature."""
+        shape = getattr(self, "hit_shape", None)
+        if shape is None:
+            return (self.tile_x <= ix < self.tile_x + self.footprint
+                    and self.tile_y <= iy < self.tile_y + self.footprint)
+        return (ix, iy) in shape.tile_set
+
+    def note_hit(self, ix: int, iy: int) -> None:
+        """A round or a beam connected on tile ``(ix, iy)`` of this unit:
+        a creature records the struck node on its body (``last_hit``,
+        hashed); every other unit has nothing to record."""
+        shape = getattr(self, "hit_shape", None)
+        if shape is not None:
+            shape.note_hit(ix, iy)
 
     # ------------------------------------------------------------------
     # Facing helpers
