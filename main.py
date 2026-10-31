@@ -246,6 +246,25 @@ def _draw_replay_hud(rows, map_px_w: int) -> None:
                      colours[kind])
 
 
+def _draw_seek_overlay(tick: int, target: int, screen_w: int,
+                       screen_h: int) -> None:
+    """#128: one frame of "seeking tick N / M" while a replay fast-forwards
+    undrawn, so the window is pumped (and does not look frozen). The world
+    is not drawn: the seek's sim is mid-flight."""
+    rl.begin_drawing()
+    rl.clear_background(rl.Color(0, 0, 0, 255))
+    text = f"seeking tick {int(tick)} / {int(target)}"
+    size = 28
+    w = rl.measure_text(text, size)
+    rl.draw_text(text, max(0, (screen_w - w) // 2), screen_h // 2 - size // 2,
+                 size, rl.Color(220, 220, 220, 255))
+    rl.end_drawing()
+
+
+#: A replay's seek pumps the window every this many sim ticks (#128).
+SEEK_DRAW_EVERY_TICKS = 12
+
+
 def _parse_debug_flag() -> bool:
     """``--debug`` — re-arm the diagnostic keys (onephase_wego design §17 +
     Erik's kickoff ruling 2).
@@ -548,7 +567,8 @@ def main():
         print(f"  REPLAY: Space pause/resume | Backspace restart"
               f"{f' at tick {replay.seek_tick}' if replay.seek_tick else ''}"
               f" (re-simulated) | [display] sim_speed sets the pace | "
-              f"WASD/arrows pan | Q/E or wheel zoom")
+              f"WASD/arrows pan | Q/E or wheel zoom | C cycle camera "
+              f"(action -> units -> free)")
     else:
         print(f"  WASD/arrows pan | Q/E or wheel zoom | "
               f"Space resume | Tab phase | Bksp undo | Ctrl+R reload")
@@ -574,6 +594,24 @@ def main():
     renderer = GameRenderer(level, bp, cfg,
                             initial_camera=initial_camera,
                             borderless=BORDERLESS)
+    # #128: the follow camera of a watched match (--replay / --control
+    # match): renderer/follow_camera.py decides, this loop only feeds it the
+    # tick's events, the C key and the player's pans.
+    from control_match import MatchObserver
+    follow = None
+    if isinstance(control_source, MatchObserver):
+        from renderer.follow_camera import FollowCamera, follow_settings
+        try:
+            follow = FollowCamera(follow_settings(CFG))
+        except ValueError as e:
+            raise SystemExit(f"config.toml: {e}")
+        print(f"  camera: {follow.target} (C cycles action -> units -> "
+              f"free; a pan frees it)")
+    if replay is not None:
+        replay.on_seek_tick = (
+            lambda s, target: _draw_seek_overlay(s.tick, target,
+                                                 screen_w, screen_h)
+            if s.tick % SEEK_DRAW_EVERY_TICKS == 0 else None)
     # Level lights (P4): the [[light]] entities from level.toml (the old
     # hardcoded emergency lamps now live in the vessel/playground tomls).
     # Beacons turn with the SIM tick (they freeze with the sim —
@@ -718,7 +756,13 @@ def main():
                 renderer.poll_toggles()
             else:
                 renderer.poll_camera_zoom(allow_qe=False)
-            renderer.update_camera(dt)
+            panned = renderer.update_camera(dt)
+            if follow is not None:
+                if panned:
+                    follow.manual_pan()
+                if rl.is_key_pressed(rl.KeyboardKey.KEY_C):
+                    follow.cycle(sim.units)
+                    print(f"  camera: {follow.label(sim.units)}")
             control_source.handle_frame(sim, renderer)
             # #127: a replay seek / restart. A rebuilt sim is handed to the
             # renderer (the tiles the old one changed repatch through the
@@ -729,6 +773,8 @@ def main():
                     replay.sim.gmap.render_dirty.update(
                         changed_between(sim.gmap, replay.sim.gmap))
                     sim = replay.sim
+                if follow is not None:
+                    follow.reset()
                 light_on, lit_rows, lit_flicker = None, None, None
                 # the seek's wall time is not playback time
                 tick_accum = 0.0
@@ -764,6 +810,8 @@ def main():
                         sim.set_light(True, lit_rows, light_sky, lit_flicker)
                     control_source.on_tick(sim)
                     sim.step()
+                    if follow is not None:
+                        follow.observe(sim.tick_events, sim_time_per_tick)
                     stepped = True
                     tick_accum -= sim_time_per_tick
                     steps += 1
@@ -797,6 +845,10 @@ def main():
             # detail clock too (replays render identical smoke).
             total_tick = monotonic_total_tick(
                 sim.turn_number, ticks_per_round, sim.tick)
+
+            # #128: the follow camera moves after the ticks, before the draw.
+            if follow is not None:
+                follow.apply(renderer.camera, sim.units, dt)
 
             # ----- Upload + draw -----
             # alpha = the sub-tick fraction of the accumulator (graphics G3
@@ -871,10 +923,18 @@ def main():
                     ui_draw.draw_ds3_menu(
                         ui.ds3_menu(sim, selected, control_source.menu_page),
                         screen_w, screen_h)
-            if replay is not None:
-                _draw_replay_hud(replay.hud_lines(sim), map_px_w)
+            if follow is not None:
+                _draw_replay_hud(control_source.hud_lines(
+                    sim, cam=follow.hud_line(sim.units)), map_px_w)
             renderer.end_frame()
     finally:
+        if follow is not None:
+            cam = renderer.camera
+            w, h = cam.visible_tiles()
+            # the E2E reads this line (tests/test_follow_camera.py)
+            print(f"  camera at centre ({cam.pos_tile_x + 0.5 * w:.2f}, "
+                  f"{cam.pos_tile_y + 0.5 * h:.2f}) pos ({cam.pos_tile_x:.2f}, "
+                  f"{cam.pos_tile_y:.2f}) {follow.hud_line(sim.units)}")
         renderer.shutdown()
 
 
