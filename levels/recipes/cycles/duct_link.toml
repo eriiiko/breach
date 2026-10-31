@@ -1,0 +1,12 @@
+# Cycle type (scale 2): the DUCT LINK -- rev 2 §1.3 / §2 (the spec's example, verbatim).
+# No wall edge; one duct carrying both rooms, each with supply + return: a
+# shared, well-mixed plenum (no direction, no leash).
+[cycle]
+name = "duct_link"
+move = "duct"
+phase = [4]
+tactic = "A grenade in one room comes out of the grille in the other, and some of it comes back."
+
+[[duct]]
+roles = ["supply", "return"]    # each room carries both (the sealed-room rule); one shared plenum
+filter = "derelict"             # a [filters.*] row by name

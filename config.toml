@@ -3428,6 +3428,72 @@ explosive_kg = 0.5    # PLACEHOLDER
 heat_amount = 8520.0                  # PLACEHOLDER: 3 * IGNITE_HEAT -> >= IGNITE_HEAT out to 2 tiles
 heat_radius = 3.0                     # PLACEHOLDER
 
+# --- Levelgen presets (#136, docs/levelgen_cycle_types_and_recipes_2026-10-31.md §3.4) ---
+# A recipe NEVER carries a physics number (§3): a department or a fixture
+# NAMES one of these rows, and the RESOLVER (tools/levelgen_recipes.py,
+# `resolve_department`) is the one door from those names to gen_ship's
+# ROOM_TAGS values; a name with no row here is refused at load. EVERY VALUE
+# BELOW IS A PLACEHOLDER FOR ERIK TO TUNE.
+#
+# [heat_sources.*]: a fixture's always-hot thing (a heat_source entity,
+# CLAUDE.md "Heat source"), fields exactly the entity's: heat_per_s (the
+# `heat` plane's real unit per second, > 0), radius (tiles beyond its own,
+# integer >= 0), max_temp (game degrees above ambient at which it pauses its
+# deposit, 0 = no cap), death_payload (a [payloads.*] row run once when a
+# blast kills it, "" = none).
+[heat_sources.stove]                  # the galley stove (§3.3 fixture `galley`): ON from tick 0, Erik 2026-10-31
+heat_per_s = 2.0                      # PLACEHOLDER (tests/test_heat_source.py's engine runs 5.0)
+radius = 1                            # PLACEHOLDER: the hob and its neighbours
+max_temp = 320.0                      # PLACEHOLDER. The galley is a FUSE (Erik's ruling, §4): ABOVE kindling's ignition_temp (280), so every rolled galley lights itself; the loader refuses a value at or below it
+death_payload = ""                    # PLACEHOLDER: a stove that goes up is a later ruling
+
+# [hazards.*]: a fixture's stored hazard -- one heat-triggered timed_charge
+# (gen_ship's `hazard` room tag): payload (a [payloads.*] row), trigger_temp
+# (game degrees above ambient at its tile, > 0), fuse_s (seconds >= 0).
+[hazards.o2_store_rupture]            # B.3's O2 store
+payload = "o2_store_rupture"
+trigger_temp = 150.0                  # PLACEHOLDER
+fuse_s = 2.0                          # PLACEHOLDER
+
+[hazards.magazine_cookoff]            # B.5's magazine
+payload = "magazine_cookoff"
+trigger_temp = 200.0                  # PLACEHOLDER
+fuse_s = 4.0                          # PLACEHOLDER
+
+# [temps.*]: a department's `[physics] temp` preset -- its rooms' floor AIR
+# starts `above_ambient` game degrees warm (gen_ship's `temp` room tag ->
+# temp_init.npy). Never sub-ambient (the parked cold-rooms ruling). "ambient"
+# needs no row. No shipped recipe names one yet.
+[temps.hot_engineering]               # B.2's hot engine room, for the axis-department session
+above_ambient = 40.0                  # PLACEHOLDER
+
+# [levelgen.lights.*]: a room's lamp by name (gen_ship's `light` tag,
+# ((r, g, b), level)); render light only. `lit` is gen_ship's default lamp.
+[levelgen.lights.lit]
+rgb = [1.0, 0.84, 0.67]               # == gen_ship.LAMP_RGB
+level = 1.2                           # == gen_ship.LAMP_INTENSITY
+[levelgen.lights.dim]
+rgb = [1.0, 0.78, 0.55]               # PLACEHOLDER: warmer
+level = 0.5                           # PLACEHOLDER
+[levelgen.lights.dark]
+rgb = [1.0, 0.84, 0.67]
+level = 0.0                           # no lamp light at all
+[levelgen.lights.harsh]
+rgb = [0.85, 0.92, 1.0]               # PLACEHOLDER: cold white
+level = 2.0                           # PLACEHOLDER
+
+# [levelgen.fuel.*]: a fuel class -- the [materials.*] rows its clusters are
+# drawn from (a mix of fractions summing to 1) and how many clusters a room
+# gets (an inclusive range). `furniture` is exactly what gen_ship stamps today
+# (its 60/40 furniture/wood draw); any other mix waits for the `fuel` tag's
+# material extension (§5.2) and is refused at stamp time, named.
+[levelgen.fuel.furniture]
+clusters = [1, 2]                     # gen_ship v1's draw
+mix = { furniture = 0.6, wood = 0.4 } # gen_ship._place_fuel's draw
+[levelgen.fuel.kindling]
+clusters = [1, 2]                     # PLACEHOLDER
+mix = { kindling = 1.0 }
+
 # --- Bulk-gas payloads (#133 E.2, levelgen vocabulary Part E) ----------------
 # `bulk_gas` = "o2" | "inert_n2" injects ONE conservative bulk gas through the
 # gas pump primitive (GameMap.inject_gas_n_vec) -- never gas_species, whose

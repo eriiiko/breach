@@ -617,3 +617,78 @@ CLAUDE.md only when the code exists):
 - **Fixture** -- `A room with its own physics signature reused across
   departments is a row in fixtures.toml; a department's room pulls it in by
   name and may override a field.`
+
+## As built (2026-10-31, branch `136-recipe-loader`): the loader and the resolver
+
+Built against revision 2: `tools/levelgen_recipes.py` (loader + resolver),
+the recipe files under `levels/recipes/` (`cycles/` x6,
+`departments/crew_quarters.toml` = §3.1 verbatim, `fixtures.toml` = §3.3
+verbatim), the §3.4 preset tables in config.toml (`[heat_sources.stove]`,
+`[hazards.o2_store_rupture]`, `[hazards.magazine_cookoff]`,
+`[temps.hot_engineering]`, `[levelgen.lights.{lit,dim,dark,harsh}]`,
+`[levelgen.fuel.{furniture,kindling}]`; every value a PLACEHOLDER), and
+`tests/test_levelgen_recipes.py`. `gen_ship` is untouched; `ship_demo` is
+byte-identical.
+
+- **Home**: `tools/`, beside `gen_ship.py`, its one consumer (a stage-1
+  input of the offline generator; the door's vocabulary, `EDGE_KINDS` and
+  `ROOM_TAGS`, is gen_ship's). Import-light: stdlib at import, gen_ship and
+  config imported lazily by the door.
+- **The resolver** is `resolve_room` / `resolve_department`: recipe room ->
+  `ROOM_TAGS` values (`dept`, `role` = the recipe id, `cell` (`main` = 0,
+  `own` = the number the grammar passes), `light`, `fuel` (a cluster count
+  drawn from the class's range by the caller's generator), `vent`,
+  `heat_source`, `hazard`, `temp`), each passing gen_ship's own check, plus
+  a sha256 `digest` over the recipe files AND the resolved values. It
+  resolves per RECIPE room: expanding into instances (phase 1, §5.3) and
+  the layout (stage 1.5, §5.1) are not built.
+- **Pending, never dropped**: a key whose §5.2 mechanism is unbuilt is
+  resolved and kept in `ResolvedRoom.pending` with the extension it waits
+  for; `stamp_tags()` refuses it by name. Today that is the galley's
+  kindling (the fuel tag has no material), a vent list, a disabled heat
+  source, a pressure preset, water. So crew quarters resolves fully except
+  the galley's fuel.
+- **Refusals by name** (file + field): unknown fields; a number where a
+  preset name belongs; a missing preset / config row (filters, lights, fuel
+  classes and their materials, heat sources and their death payload,
+  hazards and their payload, temps, pressures); an edge kind outside
+  `EDGE_KINDS`; width class; narrow only as one room and never with fuel;
+  room size floors (rooms >= 6; a corridor's `across` within its class);
+  exactly one of required / count / p, their ranges (count 1..12); unknown
+  cycle types, fixtures, rooms; a department `[[cycle]]` whose type lacks
+  phase 1; the `face` move (unused, §0.1); an odd ring; a non-walk leg that
+  cannot pass gas (the message says how each kind passes); `vent_only`
+  across a cell (#49); `crosses_cell` without airlock walk legs; a 3-cycle
+  of contacts; the sealed-room rule per duct; a fixture's `edges_out`; the
+  §3.1 feasibility bound; the galley FUSE (a heat source capped at or below
+  its fuel's lowest `ignition_temp`); an `own` cell resolved without the
+  grammar's number.
+
+Deviations and amendments (dated 2026-10-31, as built):
+
+- `wish_near` / `wish_far` may name one of the eight departments vocabulary
+  Part B blessed before its recipe exists (`BLESSED_DEPARTMENTS`), not only
+  library departments: §3.1's crew quarters wishes for the medbay and
+  engineering, neither written yet, so the §3.2 rule as stated would refuse
+  the worked example. The pool / aquarium hall is `pool_hall` there.
+- The retreat loop's file (§2 says "the same file with two wide legs of
+  1-2 rooms each") has `edges = ["door", "open"]` on both legs, from §1.3.
+- `[levelgen.fuel.*]` is `clusters = [lo, hi]` + `mix = {material =
+  fraction}`; the resolver writes today's `fuel = n` only for the mix
+  gen_ship stamps (60/40 furniture / wood, `TODAYS_FUEL_MIX`), anything
+  else is pending. `[temps.*]` is `above_ambient`, `[pressures.*]` `atm`
+  (no row shipped), `[levelgen.lights.*]` `rgb` + `level` (`lit` ==
+  gen_ship's lamp).
+- `[heat_sources.stove].max_temp` = 320 (above kindling's 280: the fuse).
+- The feasibility bound is checked for EVERY room against its own edges
+  (the entry less one 6-tile run), at each neighbour's maximum count and
+  least floor side + 1, as §3.1 computes it for the stub; the secret annex
+  is not counted (its size is the archetype's).
+- `cell = "own"`'s L5 rule has nothing to check at load (a recipe has no
+  boundary edges; the entry's join is the grammar's).
+- The hazard / water fixtures load and resolve; no shipped department uses
+  them.
+
+Not touched (§5): the archetype recipe, the layout stage (§5.1), every §5.2
+stage-2 extension, the phase-1 expansion into room instances, dead-end
+contents (#135), nested departments.

@@ -1,0 +1,21 @@
+# Cycle type (scale 2): the RETREAT LOOP -- docs/levelgen_cycle_types_and_recipes_2026-10-31.md
+# rev 2 §1.3 / §2 ("the same file [as the flank pair] with two wide legs of
+# 1-2 rooms each"). edge_to_cycle REPLACES A-B by A-C-B and A-D-B: a 4-cycle,
+# never a triangle.
+[cycle]
+name = "retreat_loop"
+move = "edge_to_cycle"
+phase = [2]
+tactic = "A hub with two ways back toward your own end: you can always fall back without being cornered."
+
+[[leg]]
+walk = true
+rooms = [1, 2]
+width = "wide"
+edges = ["door", "open"]
+
+[[leg]]
+walk = true
+rooms = [1, 2]
+width = "wide"
+edges = ["door", "open"]

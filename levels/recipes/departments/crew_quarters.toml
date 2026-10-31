@@ -1,0 +1,95 @@
+# Department (scale 3): CREW QUARTERS -- vocabulary B.1; the worked example of
+# docs/levelgen_cycle_types_and_recipes_2026-10-31.md rev 2 §3.1, VERBATIM (the
+# doc is the spec: a change here is a dated amendment there). Loaded, refused
+# by name and resolved by tools/levelgen_recipes.py.
+[department]
+name = "crew_quarters"
+placement = "wing"              # wing = a mirror pair, one per wing | axis = one, on the mirror line
+cell = "main"                   # main = the accommodation cell (both wings + the spine band, v1's one big cell) | own = its own cell (L5 on every boundary edge)
+entry = "stub"                  # the room that joins the ship's spine
+toward = "spawn"                # spawn | axis: the gradient it wants (vocabulary §0.3)
+wish_near = ["medbay"]
+wish_far = ["engineering"]
+
+[[room]]
+id = "stub"
+shape = "corridor"              # room | corridor | vestibule
+required = true
+width = "wide"
+size = { across = [6, 8], along = [20, 24] }   # corridors: (across, along); the layout stage rotates
+vent = { duct = "quarters", roles = ["return"] }
+
+[[room]]
+id = "bunk"
+shape = "room"
+count = [2, 3]                  # instances; a required room has count [1, 1]
+size = { w = [6, 8], h = [6, 8] }             # rooms: (x, y) extents in tiles
+fuel = "furniture"              # a fuel class (§3.4)
+light = "dim"
+vent = { duct = "quarters", roles = ["supply"] }
+
+[[room]]
+id = "heads"
+required = true
+size = { w = [6, 6], h = [6, 8] }
+vent = { duct = "quarters", roles = ["return", "supply"] }   # a sealed box carries both
+
+[[room]]
+id = "mess"
+required = true
+size = { w = [9, 12], h = [9, 12] }
+fuel = "furniture"
+
+[[room]]
+id = "galley"                   # the kitchen
+p = 0.7                         # optional room, probability of presence
+size = { w = [6, 9], h = [6, 9] }
+fixture = "galley"              # §3.3: a stove on from tick 0 (Erik's ruling), kindling
+vent = { duct = "galley", roles = ["supply", "return"] }
+
+[[room]]
+id = "laundry"
+p = 0.3
+size = { w = [6, 6], h = [6, 8] }
+
+[[edge]]
+a = "stub"
+b = "bunk"
+kind = "open"                   # every bunk instance; the quarters breathe as one compartment
+
+[[edge]]
+a = "stub"
+b = "mess"
+kind = "open"
+
+[[edge]]
+a = "stub"
+b = "heads"
+kind = "door"
+
+[[edge]]
+a = "mess"
+b = "galley"
+kind = "door"
+
+[[edge]]
+a = "stub"
+b = "laundry"
+kind = "door"
+
+[[duct]]
+name = "quarters"
+filter = "derelict"             # passes teargas: the heads' air comes out over the sleepers
+
+[[duct]]
+name = "galley"
+filter = "derelict"             # its shut-off is #49
+
+[secret]
+kind = "breakable"
+host = "bunk"
+weight = 1                      # a weight in the SHIP's secret draw (the archetype's budget), not a probability
+
+[physics]
+temp = "ambient"                # a [temps.*] preset or "ambient"; resolves to the temp tag (temp_init.npy EXISTS)
+pressure = "ambient"            # a [pressures.*] preset or "ambient"; resolves per room into air_init.npy (EXISTS: pressure only)
