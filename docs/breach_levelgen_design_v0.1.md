@@ -173,3 +173,36 @@ No implementation before the whole system is designed.
 - Fan/ventilator placement: grammar-emitted or embedder/decoration-stage?
 - How much logic (sensors/buttons) should phase 4 emit in v1 vs later
 - Target counts: rooms per map per archetype (affects budgets in L6)
+
+---
+
+## 9. Grammar session, 2026-10-31 (dated amendment; lead: `level-design-lead`)
+
+**Method decided: family B.** The grammar is a FIXED MOVE LIBRARY in code --
+the four L4 moves, each with a precondition, a declared phase (L6) and
+provenance (rule id + application index on every node and edge it makes) --
+driven by DATA: department recipes (vocabulary doc Part B), named **cycle
+types** (retreat loop, flank pair, airlock bypass, maintenance ring, ...; the
+authored object of L4 move 2) and an archetype **recipe**, an ordered list of
+(phase, move, count-range). The grammar runs on the quotient graph (one wing +
+the axis band) and applies every wing move to the twin by construction, so
+the embedder's mirror holds without a check. Invariants (no 3-cycle of door
+edges, L5 cell boundaries, the sealed-room vent rule) are evaluated after
+every application; a failing application names its rule. Rejected for v1: a
+general LHS/RHS rewriting engine (family A: flexible, brittle, a matcher to
+write) and constraint solving (slow, hard to art-direct).
+
+**L7 amended.** Moves live in code; recipes and departments are data the LLM
+authors offline. The LLM does not author moves. Reproducibility stays
+(recipe hash, seed). Family A is milestone 12, an experiment bolted on once
+the family-B grammar plays.
+
+**Archetype order.** Ship (the freighter recipe) -> caverns (#145: chain
+layout + CA realizer, no hull) -> station fragments.
+
+**Airlock pairs (L5 realisation).** An interior pair between two pressurised
+cells sequences its doors and equalises the vestibule to the side being
+opened; only a hull airlock evacuates. The generator chooses the mode.
+
+**Floor height** (#144) is a level-format layer over the existing
+`GameMap.floor_height`; not v1.
