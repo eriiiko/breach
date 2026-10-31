@@ -113,6 +113,7 @@ engine stays small.
 
 ## 7. Run log
 
+- 2026-10-31 (evening) -- #136 cycle types rev 2: the parallel chat's rev 1 (merged by it, `76f3987`) was critiqued (Opus, 20 findings: 3 blockers -- no loop in the worked example, no-triangle on the wrong graph, L5 broken silently) and folded here; L5 amended by Erik (breakable wall as third crossing); the LAYOUT stage (1.5) named as the largest unbuilt piece; `role` -> `fixture`; the duct link lost its direction. Learned: the other chat's 136 worktree stays its own (one writer), so the revision ran on `136-cycle-types-rev2` off main; a doc written with Erik at the screen needs the critique BEFORE its worked example is trusted (rev 1's example was infeasible at its own ranges). Open for Erik: the galley stove vs kindling call.
 - 2026-10-31 -- grammar session (this skill created). Decided family B,
   L7 amended, milestone 12 created for family A, #144 floor height and #145
   caverns filed, the interior-airlock ruling posted on #133. Learned: the
