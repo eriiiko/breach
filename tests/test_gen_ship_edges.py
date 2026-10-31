@@ -28,15 +28,23 @@ RNG = lambda: np.random.Generator(np.random.PCG64(0))  # noqa: E731
 
 
 def _graph(kind: str, annex_tags: dict | None = None, *,
-           mid_tags: dict | None = None) -> G.ShipGraph:
+           mid_tags: dict | None = None, cell: int | None = None
+           ) -> G.ShipGraph:
     """Spawn 0 | zombie section | spawn 1 joined by doors, and an ANNEX room
     below the section joined to it by one ``kind`` edge (the annex shares a
-    wall with the section only)."""
+    wall with the section only). A ``vent_only`` edge's two rooms ride one
+    duct with both roles each (its air path IS the duct; #133 patch 2)."""
+    duct = ({"vent": {"duct": "aux", "roles": ["supply", "return"]}}
+            if kind == "vent_only" else {})
     rooms = [G.Room(0, 4, 4, 10, 10, "spawn", {"spawn_team": 0}),
              G.Room(1, 15, 4, 10, 10, "section",
-                    {"zombie": True, "fuel": 1, **(mid_tags or {})}),
+                    {"zombie": True, "fuel": 1, **duct, **(mid_tags or {})}),
              G.Room(2, 26, 4, 10, 10, "spawn", {"spawn_team": 1}),
-             G.Room(3, 15, 15, 10, 6, "room", dict(annex_tags or {}))]
+             G.Room(3, 15, 15, 10, 6, "room",
+                    {**duct, **(annex_tags or {})})]
+    if cell is not None:                  # one pressure cell for every room
+        for rm in rooms:
+            rm.tags["cell"] = cell
     edges = [G.Edge(0, 1, "door"), G.Edge(1, 2, "door", at=6),
              G.Edge(1, 3, kind)]
     return G.ShipGraph(width=40, height=25, hull=(3, 3, 36, 21),
@@ -126,15 +134,18 @@ def test_unknown_kinds_and_tags_are_refused_by_name():
         _graph("door", {"secret": "yes"})
 
 
-@pytest.mark.parametrize("kind", ["entity_door", "airlock", "locked"])
-def test_pending_kinds_are_accepted_then_refused_by_embed(kind):
-    """PROPERTY: the kinds the next patch stamps are part of the schema (a
-    graph carrying one builds) but stage 2 refuses them naming that patch,
-    rather than stamping a guess. BREAKS IF embed silently stamps something
-    for a pending kind, or the schema refuses it."""
-    g = _graph(kind)
-    with pytest.raises(NotImplementedError, match="next #133 patch"):
-        G.embed(g, RNG())
+def test_pending_kinds_are_accepted_then_refused_by_embed():
+    """PROPERTY: a kind stage 2 cannot stamp yet (``locked``, blocked on
+    #135's terminal) is part of the schema (a graph carrying one builds) but
+    stage 2 refuses it naming what it waits for, rather than stamping a
+    guess. BREAKS IF embed silently stamps something for a pending kind, or
+    the schema refuses it."""
+    pending = [k for k, spec in G.EDGE_KINDS.items() if spec.pending]
+    assert "locked" in pending
+    for kind in pending:
+        g = _graph(kind)
+        with pytest.raises(NotImplementedError, match="#135"):
+            G.embed(g, RNG())
 
 
 def test_a_light_tag_sets_its_rooms_lamp():
@@ -142,8 +153,8 @@ def test_a_light_tag_sets_its_rooms_lamp():
     row's colour and intensity; untagged rooms keep the default lamp; the
     annotation tags ride Embedding.room_tags with the room's compartment.
     BREAKS IF embed ignores the tag or the annotations are dropped."""
-    g = _graph("open", {"dept": "medbay", "role": "ward", "cell": 2},
-               mid_tags={"light": ((0.2, 0.4, 1.0), 2.5)})
+    g = _graph("open", {"dept": "medbay", "role": "ward"},
+               mid_tags={"light": ((0.2, 0.4, 1.0), 2.5)}, cell=2)
     emb, reasons = _run(g)
     assert reasons == []
     assert tuple(emb.lights[1].color) == (0.2, 0.4, 1.0)
