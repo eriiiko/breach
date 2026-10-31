@@ -90,8 +90,10 @@ def _limp_setup(sim, u):
 
 
 def _crawl_each(sim, u):
-    # MOVE_DIR toward 30 deg (screen CCW: North = -y), Q16 unit vector
-    sim.set_move_dir(u.id, 56756, -32768, 0)
+    # MOVE_DIR toward 30 deg (screen CCW: North = -y), Q16 unit vector, at the
+    # crawl's band top (#106 P6f: the analog speed that asks for the P2 crawl)
+    b = sim._creature_system.bodies[u.id]
+    sim.set_move_dir(u.id, 56756, -32768, 0, speed_q=b.dials.crawl_until)
 
 
 def _lockstep(level, n_ticks, setup=None, each=None):

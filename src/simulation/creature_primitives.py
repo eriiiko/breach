@@ -35,23 +35,48 @@ The rules every primitive keeps
 
 The goal table (what the intents ask for -> which primitive runs)
 ----------------------------------------------------------------
+A MOVE_DIR carries a direction AND an analog speed ``s = speed_q`` (Q16, 0 ..
+ONE of the row's ``locomotion.v_max``; #106 P6f, Erik's ruling of 2026-10-31:
+"assume we can control the speed from 0 to its max speed, as if we had an
+Xbox controller"). The HUB picks the gait from the speed -- THE SPEED LAW,
+over the row's ``[locomotion]`` band tops ``c = crawl_until`` and ``w =
+swim_until`` (``speed_band``); ``speed_mode`` is the marines' law and is
+never read here:
+
 ==========================================  ==============================
-intent on the creature unit                 primitive
+intent on the creature unit                 primitive (its tempo)
 ==========================================  ==============================
-none                                        idle (seated; explore, touch, limp)
-MOVE_DIR (any speed mode but the two below) crawl toward the direction
-MOVE_DIR at ``ORDER_MOVE_COVER``            swim: the umbrella (the cruise)
-MOVE_DIR at ``ORDER_SPRINT``                swim: the jet train (the escape)
+none, or MOVE_DIR at s = 0                  idle (seated; explore, touch, limp)
+MOVE_DIR at 0 < s <= c                      crawl toward the direction;
+                                            ``p_recruit`` x s / c
+MOVE_DIR at c < s <= w                      swim: the umbrella (the cruise);
+                                            stroke period / (s / w)
+MOVE_DIR at s > w                           swim: the jet train (the escape);
+                                            ``jet_dv`` x s
 AIM (with or without a MOVE_DIR)            reach: the best-placed arm
 USE (latched; needs a creature-owned prop)  grab the prop: reach, wrap,
                                             hold, lift, then carry it
 ==========================================  ==============================
 
-While the grab arm holds the prop the other arms crawl (any MOVE_DIR) and
-the escape becomes the CARRY JETS (``carry_jet_dv`` impulses on the escape
-cycle) instead of a swim: the carry of P4. A swim does not steer in v1: the
-jet pushes along the heading (mantle first), the umbrella's thrust is along
-it. A creature in the LIMP gait (``CreatureBody.set_limp``) runs no primitive.
+Each band's TOP is the P6d2 gait exactly (s = c: the P2 crawl, s = w: the P3
+umbrella, s = ONE: the P3 jet train), so a tempo factor of ONE leaves the
+gait's integers untouched. The crawl's speed lever is the recruitment
+PROBABILITY (a thinned Bernoulli lottery on the same comb: still
+memoryless, so Levy's no-rhythm property holds; the push itself -- its
+duration, ``e_max`` -- is unchanged). A change of travel gait waits for the
+new band to be asked ``locomotion.gait_hold_ticks`` ticks in a row (an
+ELAPSED counter, hashed: ``goal_pending`` / ``goal_pending_ticks``) --
+starting from idle and stopping (s = 0, no MOVE_DIR) are immediate. The
+speed is first multiplied by a MEDIUM FACTOR (``speed_law``'s
+``medium_factor_q16``, ONE today: dry deck / shallow / deep / submerged
+speeds are Erik's #104 wishlist, not built).
+
+While the grab arm holds the prop the other arms crawl (any travel band, at
+the full crawl tempo above ``c``) and the escape becomes the CARRY JETS
+(``carry_jet_dv`` x s impulses on the escape cycle) instead of a swim: the
+carry of P4. A swim does not steer in v1: the jet pushes along the heading
+(mantle first), the umbrella's thrust is along it. A creature in the LIMP
+gait (``CreatureBody.set_limp``) runs no primitive.
 """
 from __future__ import annotations
 
@@ -60,7 +85,6 @@ import numpy as np
 from simulation import arm_chain as AC
 from simulation import creature_fixed as CF
 from simulation import fixedpoint_twins as K
-from simulation.orders import ORDER_MOVE_COVER, ORDER_SPRINT
 
 ONE = 1 << 16
 PI = K.PI_Q16
@@ -88,10 +112,10 @@ IDLE_GESTURE = (ARM_DECIDE, ARM_EXPLORE, ARM_TOUCH, ARM_RELAX)
 GAIT_LIMP, GAIT_IDLE, GAIT_CRAWL, GAIT_SWIM = range(4)
 GAIT_NAMES = ("limp", "idle", "crawl", "swim")
 
-#: The travel goal (``goal_kind``, from MOVE_DIR's speed mode).
-GOAL_NONE, GOAL_MOVE_DIR, GOAL_CRUISE, GOAL_ESCAPE = range(4)
-#: MOVE_DIR's speed mode -> the travel goal; every other mode crawls.
-SPEED_MODE_GOAL = {ORDER_MOVE_COVER: GOAL_CRUISE, ORDER_SPRINT: GOAL_ESCAPE}
+#: The travel goal (``goal_kind``, from MOVE_DIR's analog speed: the speed
+#: law, ``speed_band``).
+GOAL_NONE, GOAL_CRAWL, GOAL_CRUISE, GOAL_ESCAPE = range(4)
+GOAL_NAMES = ("none", "crawl", "cruise", "escape")
 
 #: The swim's phase clock (one per body): the umbrella OPEN (slow) / CLOSE
 #: (fast), the JET and its COAST.
@@ -184,6 +208,13 @@ class PrimDials:
                              "(the escape fires one jet per opening time)")
         self.jet_relax = min(ONE, K.div_round_away(4 * ONE, self.jet_ticks))
         self.ring_q24 = CF.chain_from_m(sw.root_ring_frac * b.body_radius_m)
+        # the speed law (P6f): the band tops, Q16 fractions of v_max
+        lo = cdef.locomotion
+        self.crawl_until, self.swim_until = _q16(lo.crawl_until), _q16(lo.swim_until)
+        if not 0 < self.crawl_until < self.swim_until <= ONE:
+            raise ValueError("creature_primitives: locomotion needs 0 < crawl_until < "
+                             "swim_until <= 1 after quantization")
+        self.gait_hold = int(lo.gait_hold_ticks)
         # the roots move between the deck pose and the swimming ring in one
         # CLOSING time (the fast stroke): no new dial, and independent of the
         # escape's period (one jet per opening time)
@@ -335,23 +366,98 @@ def _scale(body, a: int) -> int:
 
 
 # ---------------------------------------------------------------------------
+# The speed law (P6f): speed -> the travel band and each gait's tempo
+# ---------------------------------------------------------------------------
+def speed_law(speed_q16: int, medium_factor_q16: int = ONE) -> int:
+    """The effective analog speed, Q16 in [0, ONE]: the asked speed times the
+    MEDIUM FACTOR -- the named hook for medium-dependent speed (dry deck
+    slowest, shallow faster, swimming deeper, submerged fastest: Erik's #104
+    wishlist, NOT built; every caller passes ONE today, which is exact)."""
+    s = int(speed_q16)
+    if int(medium_factor_q16) != ONE:
+        s = K.mul_shr_away(s, int(medium_factor_q16), 16)
+    return max(0, min(ONE, s))
+
+
+def speed_band(speed_q16: int, d) -> int:
+    """The travel goal a speed asks for (the goal table): 0 -> none, up to
+    ``crawl_until`` -> the crawl, up to ``swim_until`` -> the umbrella,
+    above -> the jet train (band tops inclusive)."""
+    s = int(speed_q16)
+    if s <= 0:
+        return GOAL_NONE
+    if s <= d.crawl_until:
+        return GOAL_CRAWL
+    if s <= d.swim_until:
+        return GOAL_CRUISE
+    return GOAL_ESCAPE
+
+
+def crawl_tempo(body) -> int:
+    """The crawl's tempo, Q16: ``s / crawl_until`` clamped to ONE (a faster
+    ask -- pending hysteresis, the carry -- crawls at the full P2 tempo)."""
+    d = body.dials
+    return min(ONE, K.div_round_away(int(body.goal_speed) << 16, d.crawl_until))
+
+
+def stroke_tempo(body) -> int:
+    """The umbrella's tempo, Q16: ``s / swim_until`` clamped to ONE, at least
+    one count (the stroke period is divided by it)."""
+    d = body.dials
+    return max(1, min(ONE, K.div_round_away(int(body.goal_speed) << 16, d.swim_until)))
+
+
+def _stroke_ticks(body) -> tuple[int, int]:
+    """The umbrella's (open, close) ticks at the current tempo: the P3
+    periods at ONE, exactly; longer below."""
+    d = body.dials
+    tau = stroke_tempo(body)
+    if tau >= ONE:
+        return d.open_ticks, d.close_ticks
+    return (max(1, K.div_round_away(d.open_ticks << 16, tau)),
+            max(1, K.div_round_away(d.close_ticks << 16, tau)))
+
+
+def _jet_scale(body, dv_q24: int) -> int:
+    """A jet's dv at the asked speed: ``dv x s`` (the full dv at ONE)."""
+    s = int(body.goal_speed)
+    return dv_q24 if s >= ONE else K.mul_shr_away(dv_q24, s, 16)
+
+
+# ---------------------------------------------------------------------------
 # Intents -> the goal (CreatureBody.route_intents calls this)
 # ---------------------------------------------------------------------------
-def route_intents(body, unit) -> None:
+def route_intents(body, unit, medium_factor_q16: int = ONE) -> None:
     """The intents of ``unit`` -> the body's goal: the travel goal from
-    MOVE_DIR (its speed mode through ``SPEED_MODE_GOAL``), the reach goal from
-    AIM, the grab request from a USE latch (consumed here: the conductor's
-    USE slot skips a creature). A change of travel goal restarts the swim
-    clock."""
+    MOVE_DIR's analog speed through the speed law (``speed_band``, with the
+    gait hysteresis), the reach goal from AIM, the grab request from a USE
+    latch (consumed here: the conductor's USE slot skips a creature). A
+    change of travel goal restarts the swim clock."""
+    d = body.dials
     mv = getattr(unit, "live_move_dir", None)
     aim = getattr(unit, "live_aim", None)
     old = body.goal_kind
-    if mv is not None and (mv.dx_q or mv.dy_q):
-        g = _unit_q16(mv.dx_q, mv.dy_q)
-        body.goal_kind = SPEED_MODE_GOAL.get(int(mv.speed_mode), GOAL_MOVE_DIR)
-        body.goal_q16 = g
+    s = speed_law(getattr(mv, "speed_q", ONE), medium_factor_q16) if mv is not None else 0
+    g = _unit_q16(mv.dx_q, mv.dy_q) if (mv is not None and (mv.dx_q or mv.dy_q)) else None
+    want = speed_band(s, d) if g is not None else GOAL_NONE
+    if want == GOAL_NONE:
+        body.goal_kind, body.goal_q16, body.goal_speed = GOAL_NONE, (0, 0), 0
+        body.goal_pending, body.goal_pending_ticks = GOAL_NONE, 0
     else:
-        body.goal_kind, body.goal_q16 = GOAL_NONE, (0, 0)
+        body.goal_q16, body.goal_speed = g, s
+        if old == GOAL_NONE or want == old:
+            body.goal_kind = want
+            body.goal_pending, body.goal_pending_ticks = GOAL_NONE, 0
+        else:
+            # the hysteresis: a new travel band must be asked gait_hold
+            # ticks in a row (an elapsed counter; a different ask restarts it)
+            if body.goal_pending == want:
+                body.goal_pending_ticks += 1
+            else:
+                body.goal_pending, body.goal_pending_ticks = want, 1
+            if body.goal_pending_ticks >= d.gait_hold:
+                body.goal_kind = want
+                body.goal_pending, body.goal_pending_ticks = GOAL_NONE, 0
     if body.goal_kind != old:
         body.swim_ticks = 0
     if aim is not None and (aim.dx_q or aim.dy_q):
@@ -375,7 +481,7 @@ def _wanted_gait(body) -> int:
     g = body.goal_kind
     if g == GOAL_NONE:
         return GAIT_IDLE
-    if g == GOAL_MOVE_DIR or _carrying(body):
+    if g == GOAL_CRAWL or _carrying(body):
         return GAIT_CRAWL
     return GAIT_SWIM
 
@@ -487,7 +593,11 @@ def _crawl_decide(body, target) -> None:
     st = body.arm_state
     if int((st == ARM_STANCE).sum()) >= d.max_stance:
         return
-    if not _chance(body, d.p_recruit):
+    # the speed lever (P6f): the recruitment probability x the crawl tempo
+    # (exactly p_recruit at the band top)
+    tau = crawl_tempo(body)
+    p = d.p_recruit if tau >= ONE else K.mul_shr_away(d.p_recruit, tau, 16)
+    if not _chance(body, p):
         return
     th16 = _th16(body)
     tx, ty = target
@@ -789,10 +899,12 @@ def _heading_dv(body, dv_q24: int) -> None:
 
 def _drive_swim(body) -> None:
     """swim_sim.Swimmer._command on integers: the umbrella's root angle on one
-    phase clock (open slowly, close fast: open_s / close_s), or the jet
-    train (arms bundled toward bundled_deg, jet_dv spread evenly over
+    phase clock (open slowly, close fast: open_s / close_s, both divided by
+    the stroke tempo -- the speed law), or the jet train (arms bundled
+    toward bundled_deg, jet_dv x the asked speed spread evenly over
     jet_ticks along the heading, one jet per opening time)."""
     d = body.dials
+    op_t, cl_t = _stroke_ticks(body)
     ph, t = int(body.swim_phase), int(body.swim_ticks)
     escape = body.goal_kind == GOAL_ESCAPE
     if escape and ph in (SWIM_OPEN, SWIM_CLOSE):
@@ -801,13 +913,13 @@ def _drive_swim(body) -> None:
         ph, t = SWIM_OPEN, 1
     if ph == SWIM_OPEN:
         body.swim_phi = d.closed_rad + K.mul_shr_away(d.open_rad - d.closed_rad,
-                                                      _ease(t, d.open_ticks), 16)
-        if t >= d.open_ticks:
+                                                      _ease(t, op_t), 16)
+        if t >= op_t:
             ph, t = SWIM_CLOSE, 0
     elif ph == SWIM_CLOSE:
         body.swim_phi = d.open_rad + K.mul_shr_away(d.closed_rad - d.open_rad,
-                                                    _ease(t, d.close_ticks), 16)
-        if t >= d.close_ticks:
+                                                    _ease(t, cl_t), 16)
+        if t >= cl_t:
             ph, t = SWIM_OPEN, 0
     else:
         # the escape: a jet per opening time -- JET for jet_ticks (the arms
@@ -818,19 +930,21 @@ def _drive_swim(body) -> None:
             phi = int(body.swim_phi)
             body.swim_phi = phi + K.mul_shr_away(d.bundled_rad - phi, d.jet_relax, 16)
             if 1 <= t <= d.jet_ticks:
-                _heading_dv(body, K.div_round_away(d.jet_dv_q24, d.jet_ticks))
+                _heading_dv(body, K.div_round_away(_jet_scale(body, d.jet_dv_q24),
+                                                   d.jet_ticks))
             if t >= d.jet_ticks:
                 ph = SWIM_COAST
     body.swim_phase, body.swim_ticks = ph, t
 
 
 def _drive_carry_jets(body) -> None:
-    """The carry's escape (P4's jets): one carry_jet_dv impulse along the
-    heading per opening time while the escape is asked for."""
+    """The carry's escape (P4's jets): one carry_jet_dv x the asked speed
+    impulse along the heading per opening time while the escape is asked
+    for."""
     d = body.dials
     t = int(body.swim_ticks)
     if t == 1:
-        _heading_dv(body, d.carry_dv_q24)
+        _heading_dv(body, _jet_scale(body, d.carry_dv_q24))
     if t >= d.open_ticks:
         body.swim_ticks = 0
 
@@ -962,7 +1076,8 @@ __all__ = [
     "ARM_EXPLORE", "ARM_TOUCH", "ARM_RELAX", "ARM_REACH", "ARM_SWIM", "ARM_GRAB_REACH",
     "ARM_GRAB_WRAP", "ARM_GRAB_HOLD", "ARM_CARRY", "ARM_STATE_NAMES", "GRAB_STATES",
     "GAIT_LIMP", "GAIT_IDLE", "GAIT_CRAWL", "GAIT_SWIM", "GAIT_NAMES",
-    "GOAL_NONE", "GOAL_MOVE_DIR", "GOAL_CRUISE", "GOAL_ESCAPE", "SPEED_MODE_GOAL",
+    "GOAL_NONE", "GOAL_CRAWL", "GOAL_CRUISE", "GOAL_ESCAPE", "GOAL_NAMES",
+    "speed_law", "speed_band", "crawl_tempo", "stroke_tempo",
     "SWIM_OPEN", "SWIM_CLOSE", "SWIM_JET", "SWIM_COAST",
     "PrimDials", "route_intents", "hub_step", "after_solver",
 ]

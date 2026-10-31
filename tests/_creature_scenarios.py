@@ -161,13 +161,25 @@ class Scenario:
         b.bufs.body[0, 0, AC.BS_Z] += dz
 
     # -- intents ----------------------------------------------------------------
-    def move(self, deg: float, speed_mode: int = 0) -> None:
+    def speed_of(self, kind: str) -> int:
+        """The analog speed (Q16) that asks for a P6d2 gait EXACTLY (#106 P6f:
+        each band's top is that gait at tempo ONE): ``crawl`` = the row's
+        ``crawl_until``, ``cruise`` = ``swim_until`` (the umbrella), ``escape``
+        = ONE (the jet train)."""
+        return gait_speed_q16(self.body, kind)
+
+    def move(self, deg: float, speed=None) -> None:
         """MOVE_DIR toward ``deg`` (screen CCW from East, the facing
-        convention: North = -y) at ``speed_mode``."""
+        convention: North = -y) at ``speed``: a gait name (``crawl`` /
+        ``cruise`` / ``escape``, :meth:`speed_of`) or a Q16 analog speed;
+        None = the crawl (the P2 gait at its full tempo)."""
         from control_source import quantize_stick_direction
         r = np.radians(deg)
         dx, dy, _ = quantize_stick_direction(float(np.cos(r)), float(-np.sin(r)), deadzone=0.0)
-        self.sim.set_move_dir(self.unit.id, dx, dy, int(speed_mode))
+        if speed is None:
+            speed = "crawl"
+        sq = self.speed_of(speed) if isinstance(speed, str) else int(speed)
+        self.sim.set_move_dir(self.unit.id, dx, dy, 0, speed_q=sq)
 
     def stop(self) -> None:
         self.sim.clear_move_dir(self.unit.id)
@@ -210,6 +222,13 @@ class Scenario:
         return r
 
 
+def gait_speed_q16(body, kind: str) -> int:
+    """The Q16 analog speed at the TOP of a gait's band (#106 P6f), from the
+    body's quantized dials: what the P6d2 drivers' speed modes became."""
+    d = body.dials
+    return {"crawl": d.crawl_until, "cruise": d.swim_until, "escape": 1 << 16}[kind]
+
+
 # ---------------------------------------------------------------------------
 # The scenarios (scenarios3d's, through the Simulation)
 # ---------------------------------------------------------------------------
@@ -230,8 +249,8 @@ def crawl(direction_deg: float, seconds: float, *, seed: int = 7, size: int = 11
 def swim(kind: str, seconds: float, *, z0: float = 8.0, w: int = 150, h: int = 40,
          seed: int = 7, linear_v_ref: float | None = None, name: str | None = None,
          before=()) -> Run:
-    """P3: the umbrella (``cruise``: MOVE_DIR at ORDER_MOVE_COVER) or the jet
-    train (``escape``: ORDER_SPRINT) along the heading (East), from mid water
+    """P3: the umbrella (``cruise``: MOVE_DIR at the speed ``swim_until``) or
+    the jet train (``escape``: speed ONE) along the heading (East), from mid water
     (P5z's z0 = 8 m; the swim does not hold depth -- reported), starting near
     the west wall of a long room. ``linear_v_ref`` (m/s): P3's CONTROL -- the
     linear isotropic drag on every arm and on the crown, under which the
@@ -239,8 +258,6 @@ def swim(kind: str, seconds: float, *, z0: float = 8.0, w: int = 150, h: int = 4
     first (``meta["t_main"]`` is when the main phase starts)."""
     from simulation import arm_chain as AC
     from simulation import creature_fixed as CF
-    from simulation.orders import ORDER_MOVE_COVER, ORDER_SPRINT
-    mode = {"cruise": ORDER_MOVE_COVER, "escape": ORDER_SPRINT}[kind]
     sc = Scenario(name or f"swim_{kind}", w=w, h=h, at=(12.0, h / 2.0 - 1.5), seed=seed)
     if linear_v_ref is not None:
         b = sc.body
@@ -251,10 +268,9 @@ def swim(kind: str, seconds: float, *, z0: float = 8.0, w: int = 150, h: int = 4
             cfg[AC.BC_VREF_Q24] = CF.chain_from_m(linear_v_ref)
     sc.lift(z0)
     for k, sec in before:
-        m = {"cruise": ORDER_MOVE_COVER, "escape": ORDER_SPRINT}[k]
-        sc.seconds(sec, each=lambda s, m=m: s.move(0.0, m))
+        sc.seconds(sec, each=lambda s, k=k: s.move(0.0, k))
     t_main = len(sc.run.records) * DT
-    sc.seconds(seconds, each=lambda s: s.move(0.0, mode))
+    sc.seconds(seconds, each=lambda s: s.move(0.0, kind))
     r = sc.finish()
     r.meta.update(kind=kind, z0=z0, t_main=t_main)
     return r
@@ -265,7 +281,6 @@ def grab(*, crawl_s: float = 15.0, escape_s: float = 6.0, seed: int = 3, size: i
     lift), keep crawling until the arm carries, carry ``crawl_s`` s, then
     the escape (the carry jets) for ``escape_s`` s -- scenarios3d.p4_grab."""
     from simulation import creature_primitives as P
-    from simulation.orders import ORDER_SPRINT
     sc = Scenario("grab", size=size, seed=seed)
     sc.body.add_prop()
     sc.seconds(0.5, each=lambda s: s.move(0.0))
@@ -278,7 +293,7 @@ def grab(*, crawl_s: float = 15.0, escape_s: float = 6.0, seed: int = 3, size: i
     t_carry = len(sc.run.records) * DT
     sc.seconds(crawl_s, each=lambda s: s.move(0.0))
     t_jets = len(sc.run.records) * DT
-    sc.seconds(escape_s, each=lambda s: s.move(0.0, ORDER_SPRINT))
+    sc.seconds(escape_s, each=lambda s: s.move(0.0, "escape"))
     r = sc.finish()
     r.meta.update(t_carry=t_carry, t_jets=t_jets, arm=a, grab_pops=sc.body.grab_pops)
     return r
@@ -301,4 +316,4 @@ def reach(aim_deg: float, seconds: float, *, seed: int = 7, size: int = 60) -> R
 
 
 __all__ = ["TILE_M", "TPS", "DT", "write_room", "row_override", "Run", "Scenario",
-           "crawl", "swim", "grab", "idle", "reach"]
+           "gait_speed_q16", "crawl", "swim", "grab", "idle", "reach"]

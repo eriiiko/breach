@@ -13,11 +13,13 @@ v1 behaviour -- a simple, honest hazard (the brain is #108):
 * a living NON-creature unit the creature can SEE (``vision.can_see``, the one
   sight oracle: walls block, the facing cone at any range plus the
   awareness radius around it) -> MOVE_DIR toward the NEAREST such unit (ties
-  by unit id): the creature crawls at it;
+  by unit id) at the row's analog speed ``locomotion.hunt_speed`` (#106 P6f;
+  the shipped row hunts at ``crawl_until``: the creature crawls at it at its
+  full crawl, as P6d2's controller did -- a swim does not steer in v1);
 * nobody seen -> no intent: the creature idles (its hub's default).
 
-It never swims, reaches or grabs (those verbs exist -- ORDER_MOVE_COVER /
-ORDER_SPRINT, AIM, USE -- for a later brain). It draws no randomness and
+It never reaches or grabs (those verbs exist -- a faster speed swims, AIM,
+USE -- for a later brain). It draws no randomness and
 reads only synced state (unit positions, the map), so a match plays the same
 bit for bit on every run. ``creature_controller = "idle"`` in match.toml
 leaves the creatures to their own idle (``IdleControl`` emits nothing).
@@ -29,6 +31,16 @@ import math
 from control_source import ControlSource, quantize_stick_direction
 from simulation.factions import CREATURE_TEAM
 from simulation.orders import ORDER_MOVE_ATTACK
+
+
+def hunt_speed_q16(unit) -> int:
+    """The row's ``locomotion.hunt_speed`` for ``unit``'s species, Q16 (the
+    one quantizer, ``creature_fixed.q16_from_scalar``)."""
+    from simulation import creature_fixed as CF
+    from simulation.creatures import get_creature
+    from simulation.species import get_species
+    row = get_creature(get_species(unit.species_id).creature)
+    return CF.q16_from_scalar(row.locomotion.hunt_speed)
 
 
 class CreatureControl(ControlSource):
@@ -55,7 +67,7 @@ class CreatureControl(ControlSource):
                 sim.clear_move_dir(u.id)
                 continue
             qx, qy, _ = quantize_stick_direction(dx / n, dy / n, deadzone=0.0)
-            sim.set_move_dir(u.id, qx, qy, ORDER_MOVE_ATTACK)
+            sim.set_move_dir(u.id, qx, qy, ORDER_MOVE_ATTACK, speed_q=hunt_speed_q16(u))
 
     @staticmethod
     def _nearest_seen(sim, u, vision, is_creature):
@@ -73,4 +85,4 @@ class CreatureControl(ControlSource):
         return best
 
 
-__all__ = ["CreatureControl"]
+__all__ = ["CreatureControl", "hunt_speed_q16"]

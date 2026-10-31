@@ -24,6 +24,17 @@ before quantizing), so a common scale factor never leaks a speed dependency
 into direction. ``speed_mode`` is one of the movement order-type ids
 (``ORDER_MOVE_ATTACK`` / ``ORDER_MOVE_COVER`` / ``ORDER_SPRINT``) so the
 continuous move branch reuses the exact same per-order base cadence WEGO uses.
+
+Two speeds, two laws (#106 P6f, Erik's ruling of 2026-10-31: "assume we can
+control the speed from 0 to its max speed, as if we had an Xbox controller"):
+
+* ``MoveDirIntent.speed_q`` is the ANALOG speed: Q16.16, ``0 .. FP_ONE`` = the
+  fraction of the unit's own maximum speed (a stick's deflection past its
+  deadzone, a bot's choice). Default ``FP_ONE``. A CREATURE's hub reads it
+  and chooses its gait from it (``creature_primitives``' speed law); 0 idles.
+* ``MoveDirIntent.speed_mode`` is the MARINES' order law (the WEGO cadence
+  above). A marine's movement never reads ``speed_q`` -- its law is byte for
+  byte what it was; a creature never reads ``speed_mode``.
 """
 from __future__ import annotations
 
@@ -51,12 +62,17 @@ class MoveDirIntent:
     ``dx_q``/``dy_q`` — Q16.16 unit-vector direction (normalized at the control
     seam). ``speed_mode`` — a movement order-type id whose base ticks-per-tile
     cadence the continuous branch scales by the footprint's area-average
-    mobility, exactly as the WEGO A* replay does.
+    mobility, exactly as the WEGO A* replay does (the marines' law).
+    ``speed_q`` — the ANALOG speed (#106 P6f), Q16.16 in ``[0, FP_ONE]``:
+    the fraction of the unit's maximum speed. Default ``FP_ONE`` (every
+    caller that predates it is unchanged). Read by a creature's hub (its
+    gait and tempo), never by the marines' law.
     """
 
     dx_q: int
     dy_q: int
     speed_mode: int
+    speed_q: int = FP_ONE
 
 
 @dataclass

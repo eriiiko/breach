@@ -307,7 +307,9 @@ def test_intents_are_the_goal_never_a_move(room):
         traj = []
         for t in range(12):
             if with_intents:
-                sim.set_move_dir(u.id, 65536, 0, 0)
+                # at the crawl's band top (#106 P6f: the analog speed)
+                sim.set_move_dir(u.id, 65536, 0, 0,
+                                 speed_q=body_of(sim, u).dials.crawl_until)
                 sim.set_aim(u.id, 0, -65536)
             sim.set_paused(False)
             sim.step()
@@ -321,7 +323,7 @@ def test_intents_are_the_goal_never_a_move(room):
 
     a, _, ua = go(False)
     b, body_b, ub = go(True)
-    assert body_b.goal_kind == CS.GOAL_MOVE_DIR and body_b.goal_q16 == (65536, 0)
+    assert body_b.goal_kind == CS.GOAL_CRAWL and body_b.goal_q16 == (65536, 0)
     assert (ua.x, ua.y, ua.facing) == (ub.x, ub.y, ub.facing)
     for da, db in zip(a, b):
         assert np.array_equal(da["p"], db["p"]) and np.array_equal(da["body"], db["body"])

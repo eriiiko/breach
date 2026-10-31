@@ -18,6 +18,8 @@ path (``creatures.<name>.<group>.<key>``):
   duration, a fraction outside [0, 1], a cosine outside [-1, 1],
   ``nodes_per_arm < 3``, ``arms < 1``, ``substeps < 1``, ``passes < 1``, a
   tip radius above the base radius;
+* speed bands out of order (``locomotion``: 0 < crawl_until < swim_until
+  <= 1, #106 P6f);
 * an index outside its range: ``anchor_nodes`` / ``grab_nodes`` outside
   ``[0, nodes_per_arm)``, ``front_pairs`` / ``back_pairs`` / ``grab.arm``
   outside ``[0, arms)``, ``arm_angles_deg`` not ``arms`` long,
@@ -246,6 +248,20 @@ class IdleDef:
 
 
 @dataclass(frozen=True)
+class LocomotionDef:
+    """The analog-speed law's dials (#106 P6f; ``creature_primitives``' speed
+    law): ``v_max`` the declared top speed (m/s), the band tops
+    ``crawl_until`` < ``swim_until`` <= 1 (fractions of v_max), the gait
+    hysteresis ``gait_hold_s``, the creature controller's ``hunt_speed``."""
+    v_max: float = _k(POS)
+    crawl_until: float = _k(FRAC)
+    swim_until: float = _k(FRAC)
+    gait_hold_s: float = _k(DUR)
+    hunt_speed: float = _k(FRAC)
+    gait_hold_ticks: int = _derived()
+
+
+@dataclass(frozen=True)
 class RulesDef:
     can_become_zombie: bool = _k(BOOL)
     armed: bool = _k(BOOL)
@@ -265,6 +281,7 @@ class CreatureDef:
     swim: SwimDef
     grab: GrabDef
     idle: IdleDef
+    locomotion: LocomotionDef
     rules: RulesDef
     chain: creature_fixed.ChainHeadroom
     #: sha256 of the row's canonical JSON (keys sorted): what a creature
@@ -274,7 +291,8 @@ class CreatureDef:
 
 _GROUPS = (("body", BodyDef), ("tissue", TissueDef), ("solver", SolverDef),
            ("reach", ReachDef), ("crawl", CrawlDef), ("swim", SwimDef),
-           ("grab", GrabDef), ("idle", IdleDef), ("rules", RulesDef))
+           ("grab", GrabDef), ("idle", IdleDef), ("locomotion", LocomotionDef),
+           ("rules", RulesDef))
 _ROW_KEYS = ("version",) + tuple(g for g, _ in _GROUPS)
 
 
@@ -500,6 +518,11 @@ def _cross_checks(where: str, g: dict) -> None:
         if any(b <= a for a, b in zip(lst, lst[1:])):
             raise ValueError(f"{where}.{path} must be strictly ascending "
                              f"(got {list(lst)})")
+    loco = g["locomotion"]
+    if not 0.0 < loco.crawl_until < loco.swim_until <= 1.0:
+        raise ValueError(f"{where}.locomotion: the speed bands need 0 < crawl_until "
+                         f"< swim_until <= 1 (got crawl_until {loco.crawl_until}, "
+                         f"swim_until {loco.swim_until})")
     for path, n in (("crawl.max_stance", g["crawl"].max_stance),
                     ("idle.max_active", g["idle"].max_active)):
         if n > arms:
@@ -582,6 +605,8 @@ def scale_row_by_law(row: dict, arm_length_m: float) -> dict:
     r["crawl"]["grip_limit"] *= S ** 4
     r["crawl"]["steer_min_dist"] *= S
     r["swim"]["jet_dv"] *= S
+    if "locomotion" in r:
+        r["locomotion"]["v_max"] *= S
     r["swim"]["body_area_m2"] *= S ** 2
     g = r["grab"]
     g["prop_mass"] *= S ** 3
@@ -596,7 +621,7 @@ def scale_row_by_law(row: dict, arm_length_m: float) -> dict:
 __all__ = [
     "scale_row_by_law",
     "BodyDef", "TissueDef", "SolverDef", "ReachDef", "CrawlDef", "SwimDef",
-    "GrabDef", "IdleDef", "RulesDef", "CreatureDef", "CreatureTable",
+    "GrabDef", "IdleDef", "LocomotionDef", "RulesDef", "CreatureDef", "CreatureTable",
     "build_creature", "creature_table", "rebuild_creature_table",
     "get_creature",
 ]

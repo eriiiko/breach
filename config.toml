@@ -3583,7 +3583,7 @@ environmental_damage_rate = 1.0
 # [solver] ticks_per_second is NOT a key: the clock has one owner, [clock].
 # ---------------------------------------------------------------------------
 [creatures.octopus]
-version = 1                    # hashed into every creature record (design section 5); bump on a row-SHAPE change
+version = 2                    # hashed into every creature record (design section 5); bump on a row-SHAPE change (2: P6f's [locomotion])
 
 [creatures.octopus.body]
 arms = 8
@@ -3699,6 +3699,23 @@ limp_s = 1.0                   # P5
 limp_jitter = 1.5              # P5, seconds
 aim_deg = 45.0                 # P5
 front_bias = 1.0               # P5
+
+# [locomotion] (#106 P6f): ANALOG SPEED (Erik's ruling of 2026-10-31: "assume
+# we can control the speed from 0 to its max speed, as if we had an Xbox
+# controller"). A MOVE_DIR carries speed_q, 0..1 of v_max; the hub picks the
+# gait from it: speed <= crawl_until crawls (its tempo, p_recruit x speed /
+# crawl_until), <= swim_until the umbrella (its stroke period / (speed /
+# swim_until)), above it the jet train (jet_dv x speed); 0 idles. A change of
+# travel gait needs the new band asked for gait_hold_s in a row (hysteresis).
+# The band TOPS are the P6d2 gaits exactly: crawl_until = the P2 crawl,
+# swim_until = the P3 umbrella, 1.0 = the P3 jet train. Medium-dependent speed
+# (Erik's #104 wishlist) is NOT here: the law takes a medium factor, 1 today.
+[creatures.octopus.locomotion]
+v_max = 4.0                    # scaled L^1, m/s: the declared top speed = the jet train at speed 1 (P6d2 measured 4.0 m/s, P5z 3.95); declared and gated, the jet's dv is the actuator
+crawl_until = 0.15             # choice (P6f): 0.15 x 4.0 = 0.6 m/s, the P2/P5z crawl's own top speed (0.58-0.61 m/s)
+swim_until = 0.3               # choice (P6f): the umbrella band's top (its P3 stroke); NOTE the P3 umbrella makes ~0.41 m/s, SLOWER than the crawl's top -- P8 tunes
+gait_hold_s = 0.25             # choice (P6f): a new travel gait must be asked for this long in a row (6 ticks at 24 Hz)
+hunt_speed = 0.15              # choice (P6f): the `creature` match controller's speed (= crawl_until: it hunts at the full crawl, as P6d2's controller did; a swim does not steer in v1)
 
 [creatures.octopus.rules]
 can_become_zombie = false      # design section 3: a zombie bite never converts it

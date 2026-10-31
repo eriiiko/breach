@@ -75,10 +75,11 @@ only the crown collides, inside the solver.
 
 The ``__creature__`` section (design section 5)
 -----------------------------------------------
-``CREATURE_SECT_V2\\n`` then one record per creature body in unit-id order,
+``CREATURE_SECT_V3\\n`` then one record per creature body in unit-id order,
 little-endian, each ending in ``\\n`` (so a recorder ``np.bytes_`` ring can
 never strip a trailing NUL). V2 (P6d2) adds the primitives' hub state and the
-creature-owned bodies to V1's layout, and reads a grab's id as a BODY index:
+creature-owned bodies to V1's layout, and reads a grab's id as a BODY index;
+V3 (P6f) adds the speed law's state (the asked speed, the pending gait):
 
   header      int64 unit_id, int64 row version, 32 B row_hash (sha256 raw),
                int32 arms A, int32 nodes n
@@ -104,6 +105,9 @@ creature-owned bodies to V1's layout, and reads a grab's id as a BODY index:
                per-arm root aim (Q16 rad); int32 (A) per-arm stretch (Q16);
                int32 K, then int32 (K, 2) the steering ring (Q24 m crown
                positions, oldest first)
+  hub (V3)     int32 asked speed (Q16, 0 .. ONE of v_max, after the medium
+               factor); uint8 pending travel goal (``GOAL_*``); int32 ticks
+               it has been asked in a row (the gait hysteresis)
   bodies (V2)  int32 B, then for each creature-owned body 1 .. B-1 its pose
                in the body pose's 8-int encoding
   rng          uint64 xorshift state
@@ -133,13 +137,13 @@ from simulation.species import get_species
 
 #: Snapshot key of the creature presence carrier (the ``__entity__`` twin).
 CREATURE_DIGEST_KEY = "__creature__"
-CREATURE_SECT_PREAMBLE = b"CREATURE_SECT_V2\n"
+CREATURE_SECT_PREAMBLE = b"CREATURE_SECT_V3\n"
 RECORD_TERMINATOR = b"\n"
 
 #: The hub's per-arm states and goals live with the state machines
 #: (``creature_primitives``); the two P6d1 names are re-exported.
 ARM_LIMP = P.ARM_LIMP
-GOAL_NONE, GOAL_MOVE_DIR = P.GOAL_NONE, P.GOAL_MOVE_DIR
+GOAL_NONE, GOAL_CRAWL = P.GOAL_NONE, P.GOAL_CRAWL
 
 _U64 = (1 << 64) - 1
 
@@ -455,6 +459,9 @@ class CreatureBody:
         self.decision_ticks = 0                      # since the last decision
         self.goal_kind = GOAL_NONE                   # the travel goal (P.GOAL_*)
         self.goal_q16 = (0, 0)                       # Q16 direction
+        self.goal_speed = 0                          # the asked speed, Q16 of v_max (P6f)
+        self.goal_pending = GOAL_NONE                # a travel goal asked, not yet held
+        self.goal_pending_ticks = 0                  # ... for this many ticks in a row
         self.reach_q16 = (0, 0)                      # the reach goal, Q16 direction
         self.grab_req = 0                            # a USE latched the grab
         self.grab_side = 1                           # the wrap's side (+-1)
@@ -545,7 +552,7 @@ class CreatureBody:
     # -- intents -> the hub's goal ----------------------------------------------
     def route_intents(self, unit) -> None:
         """The unit's intents -> the hub's goal (``creature_primitives.
-        route_intents``: the travel goal from MOVE_DIR and its speed mode,
+        route_intents``: the travel goal from MOVE_DIR's analog speed (P6f),
         the reach goal from AIM, the grab request from a USE latch)."""
         P.route_intents(self, unit)
 
@@ -622,6 +629,7 @@ def serialize_record(body: CreatureBody) -> bytes:
             np.ascontiguousarray(body.arm_stretch, _I32).tobytes(),
             struct.pack("<i", body.steer_ring.shape[0]),
             np.ascontiguousarray(body.steer_ring, _I32).tobytes(),
+            struct.pack("<iBi", body.goal_speed, body.goal_pending, body.goal_pending_ticks),
             struct.pack("<i", b.body.shape[1])]
     for bi in range(1, b.body.shape[1]):
         pb = b.body[0, bi]
@@ -678,6 +686,7 @@ def decode_record(rec: bytes) -> dict:
     d["arm_stretch"] = arr(_I32, (A,))
     (k,) = take("<i")
     d["steer_ring"] = arr(_I32, (k, 2))
+    d["goal_speed"], d["goal_pending"], d["goal_pending_ticks"] = take("<iBi")
     (nb,) = take("<i")
     d["bodies"] = [np.array(take("<8i"), np.int64) for _ in range(nb - 1)]
     (d["rng"],) = take("<Q")
@@ -750,7 +759,8 @@ def diff_creature_records(ra: bytes, rb: bytes) -> list[str]:
         out.append("a creature-owned body (prop) differs")
     for key in ("grabs", "stance", "decision_ticks", "goal_kind", "goal_q16",
                 "steer_ticks", "last_hit", "gait", "swim_phase", "grab_req", "grab_side",
-                "swim_ticks", "swim_phi", "swim_rig", "reach_q16", "grab_pops", "rng"):
+                "swim_ticks", "swim_phi", "swim_rig", "reach_q16", "grab_pops",
+                "goal_speed", "goal_pending", "goal_pending_ticks", "rng"):
         if da[key] != db[key]:
             out.append(f"{key} {da[key]!r} != {db[key]!r}")
     if not out:
@@ -959,7 +969,7 @@ def read_chains(system, units=()) -> dict:
 
 __all__ = [
     "CREATURE_DIGEST_KEY", "CREATURE_SECT_PREAMBLE", "ARM_LIMP",
-    "GOAL_NONE", "GOAL_MOVE_DIR", "BODY_FIELDS",
+    "GOAL_NONE", "GOAL_CRAWL", "BODY_FIELDS",
     "is_creature", "require_engine", "seed_xorshift", "xorshift64",
     "rest_pose", "check_creature_spawn", "HitShape", "build_hit_shape",
     "CreatureBody", "CreatureSystem",
