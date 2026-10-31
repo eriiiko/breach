@@ -999,8 +999,10 @@ class Simulation:
                 u.pending_throw = None
                 self._spawn_direct_grenade(u, throw)
 
-            # USE -> toggle an adjacent door latch (edge; latched).
-            if getattr(u, "pending_use", False):
+            # USE -> toggle an adjacent door latch (edge; latched). #106 P6d2:
+            # a creature's USE is its hub's grab request -- left latched for
+            # slot 5b (creature_primitives.route_intents consumes it).
+            if getattr(u, "pending_use", False) and not is_creature(u):
                 u.pending_use = False
                 self._direct_use(u)
 

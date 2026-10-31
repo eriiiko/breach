@@ -300,3 +300,63 @@ the lead so you decide all these things." Concretely:
   table's exact rows / index -- a table designed to grow; rewritten to the
   property. Cost: one session; ~2.1 ms per solver call, ~3.7 ms per tick on
   a 30 x 30 flooded room vs 1.1 ms without the octopus (rough, P6e measures).
+- 2026-10-31 (P6d2, worktree agent, Opus) -- the PRIMITIVES in the shared
+  sim: `src/simulation/creature_primitives.py` (the ONE module owning the
+  state machines: idle -- now the default --, crawl, swim, reach, grab;
+  `PrimDials` quantizes the row once; `hub_step` before the one solver call,
+  `after_solver` after it), the goal table (none -> idle, MOVE_DIR -> crawl,
+  at move-with-cover -> umbrella, at sprint -> jet train, AIM -> reach, USE
+  -> grab a creature-owned PROP, solver body 1), `CREATURE_SECT_V2` (gait,
+  swim clock / angle / rig, reach goal, per-arm aim + stretch, the steering
+  ring, the props), `CreatureBody.set_limp` (the limp gate now asks for it),
+  the `creature` match controller (crawl at the nearest unit seen, else
+  idle; match.toml `creature_controller`), `tests/_creature_scenarios.py` +
+  `tests/test_creature_primitives.py` (17; the full P2-P5 runs behind
+  BREACH_OCTOPUS_LONG_GATES=1, ~4 min), the CUDA lockstep gained a 96-tick
+  crawl (identical), `tools/octopus_clips.py` -> `out/sim_*.gif`. Sim vs
+  P5z: crawl 0.55-0.60 m/s (0.58-0.61), 3-9 deg off (1-3), Levy r 0.79-0.87
+  (0.87-0.94, the known miss, lower), heading drift -27/-25/+25/-69 deg
+  (P5z +9/-1/+25/+59, both "fail" 30 -- reported); umbrella 0.63 m per
+  stroke (0.57), linear control 4 % (7 %); one jet 7.6 mantle lengths, 4.0 s
+  decay (7.8, 3.8); jet train 4.01 m/s = 7.3x the crawl (3.95, 6.5x); grab
+  contact 0.42 s at 0.59 L (0.29 s, 0.53 L), 4 sealed 0.47-0.65 L (5), 0
+  let go, prop lifted 0.21-0.51 m (0.20-0.35), loaded crawl 110 % of free
+  (112 %); idle rows 1/3/7/13 pass on two seeds. What failed first, each
+  understood before anything moved: (1) the umbrella swam 60 deg sideways --
+  the deck-to-cone blend mapped the arms' places around the swimming axis
+  asymmetrically (psi_a = phi_a), a net yaw torque; psi_a = phi_a - pi/2 is
+  the same eight places, mirror-symmetric; (2) idle row 3 at 68 % -- the
+  wave started in the same tick as the root's aim swing, stiffening the arm
+  before it bent: the prototype started the wave a tick later; ported
+  faithfully, 86-87 %; (3) the clocked rhythm control showed NO line --
+  the 40 s crawl hit the room's wall; the prototypes crawled on an endless
+  deck: size rooms so no run reaches a wall (rhythm in a 50 m room); (4) the
+  single jet carried 3 mantle lengths -- it fired while the arms were still
+  blending in from the deck pose; measured from the swimming pose, 7.6. Gate
+  DEFINITIONS changed, reasons in the test docstrings: the rhythm gate is
+  the median of three seeds (seed 7 12.2x at 0.85 Hz, one 0.2x over; seeds
+  1/3 7.0/5.6x; the clocked control 24.2x, P5z 77.5x), idle row 8's counted
+  parts over two seeds (one seed left R3 unused, p ~ 0.07; close starts 1/23
+  and 3/25 vs P5z 2/24). Finding: the 2-tick comb (the design's 0.1 s) is
+  1.5x the float prototype's effective comb (it decided every 3 ticks, its
+  float accumulator overshooting 0.1 s), so p_recruit / p_start per decision
+  land 1.5x more often per second -- the rhythm and de-synchrony spread is
+  partly that; the dials are the row's and were NOT re-tuned (P8's eye).
+  Choices (vetoable): swim by speed mode (no new intent), no swim steering
+  (along the heading), a sucker grips only a node the contact report put on
+  the FLOOR (a crawl never anchors to water; idle seats an arm when it
+  lands), a seal lets go above `grab.grip_limit` (the prototype never
+  popped grabs), RECOVER relaxes from the elongation at release (the
+  prototype jumped to e_max after an early pop), the deck<->swim root blend
+  over one closing time. New row dials (each a literal in the prototype):
+  `swim.root_ring_frac`, `grab.wrap_s`, `grab.prop_c_drag`,
+  `grab.prop_area_m2`. Root-velocity ghost: no primitive reads node
+  velocities; measured, the root nodes' stored velocity is within 2-7 mm/s
+  of the crown's rigid velocity while it idles / crawls at up to 0.55 m/s
+  (0.02 mm/s limp) -- harmless, left to P6e. The GIFs show: a seated
+  octopus with one or two arms reaching out and settling (idle), a
+  crawl with one to three red arms pushing toward 70 deg, three umbrella
+  strokes in a cone then a bundled jet train from mid water (side view),
+  the reach / wrap / lift of a 116 kg prop held at the crown while the other
+  arms crawl. Cost: one session; the sim runs ~3 ms per tick on a 30 x 30
+  flooded room, ~10 ms on 150 x 40 (mostly the room's physics; P6e measures).

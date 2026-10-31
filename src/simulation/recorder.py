@@ -138,7 +138,7 @@ class PhysicsRecorder:
         self.signal_snapshots = [None] * capacity
 
         # #106 P6d1: per-tick serialized __creature__ section bytes
-        # (CREATURE_SECT_V1, the digest's own serializer), ring buffer style.
+        # (CREATURE_SECT_V<n>, the digest's own serializer), ring buffer style.
         # Stays all-None for a creature-free sim, so dump() emits no creature
         # key and the .npz is byte-identical to before P6d1.
         self.creature_snapshots = [None] * capacity

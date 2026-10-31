@@ -3631,6 +3631,7 @@ jet_dv = 8.4                   # scaled L^1 (a SPEED, m/s: same durations => x L
 jet_s = 0.3                    # P3
 body_c_drag = 0.5              # choice (2-D), mantle first
 body_area_m2 = 0.679291        # SIZES radius, pi r^2
+root_ring_frac = 0.3           # P5z (new in P6d2: a literal in swim_sim3d.py), the arm roots' ring at the back of the head while swimming, a fraction of the crown radius
 
 [creatures.octopus.grab]
 arm = 0                        # P4, the grabbing arm's index
@@ -3652,6 +3653,9 @@ aim_max_deg = 60.0             # P4
 lift_pitch_deg = 30.0          # new (P5z): the holding arm's root pitched up
 lift_s = 1.0                   # new (P5z)
 carry_jet_dv = 5.25            # scaled L^1, m/s
+wrap_s = 0.6                   # P4 (new in P6d2: a literal in grab_sim.py), the wrap's duration before the hold
+prop_c_drag = 1.0              # P4 (new in P6d2: a literal in grab_sim3d.py), the prop disc's drag coefficient
+prop_area_m2 = 0.441           # P5z (new in P6d2: a formula in grab_sim3d.py, 2 r x 0.05 x r / 0.04 = 2.5 r^2 at the scaled radius), m^2: scaled L^2
 
 [creatures.octopus.idle]
 max_active = 2                 # P5

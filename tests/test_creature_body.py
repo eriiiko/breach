@@ -7,7 +7,8 @@ Properties protected (each test names the change that must break it):
   its recorder dump carries no creature key. Breaks if the fold or the ring
   stops being presence-gated.
 * THE LIMP GATE (the reference's G2 dead-arm signature, through Simulation on
-  a flooded room): released 0.2 m above the deck, every node reaches z = 0
+  a flooded room, in the LIMP gait -- P6d2 made idle the default, so the
+  gate asks for limp with ``set_limp``): released 0.2 m above the deck, every node reaches z = 0
   within ~2 s, never goes below it, and the animal is at rest (< 1 mm/s)
   after 10 s; the crown stays in the map and off blocked tiles; the unit's
   anchor and facing ARE the pose through the converters. Breaks on a wrong
@@ -15,8 +16,10 @@ Properties protected (each test names the change that must break it):
 * HANDEDNESS -- the pose heading turns counter-clockwise on screen like
   ``Unit.facing``; the solver's yaw is its negative; arm 0 lies at its row
   angle from the heading. Breaks if a sign flips.
-* WRITER ROUTING -- MOVE_DIR / AIM never move or turn a creature (they are the
-  hub's goal); the wave push never displaces it (the creature row turns it
+* WRITER ROUTING -- MOVE_DIR / AIM never move or turn a creature directly
+  (they are the hub's goal, P6d2's primitives act on it through the solver:
+  the unit's anchor and facing stay the pose's, tick for tick, under
+  intents); the wave push never displaces it (the creature row turns it
   into a body impulse); the round-end snap skips it. Breaks if any second
   writer touches its position.
 * HUMANS UNCHANGED -- humans in the same room are byte-identical with and
@@ -170,6 +173,9 @@ def limp(room):
     sim = make_sim(room)
     (u,) = sim.spawn_creatures(room.creatures)
     b = body_of(sim, u)
+    # P6d2: a creature idles by default; the dead-arm signature is the LIMP
+    # gait's (no primitive), asked for explicitly.
+    b.set_limp(True)
     lift = CF.chain_from_m(LIFT_M)
     b.bufs.p[0, ..., 2] += lift
     b.bufs.body[0, 0, AC.BS_Z] += lift
@@ -287,12 +293,17 @@ def test_heading_handedness_and_the_rest_pose():
 # ---------------------------------------------------------------------------
 def test_intents_are_the_goal_never_a_move(room):
     """MOVE_DIR and AIM on a creature are recorded as the hub's goal and move
-    or turn nothing: the run with intents equals the run without in every
-    node and pose count. Breaks if slot 3 or the AIM facing write touches a
+    or turn nothing directly: in the LIMP gait (no primitive acts on the
+    goal) the run with intents equals the run without in every node and
+    pose count; with the primitives on (P6d2) the intents DO move the animal
+    -- through the solver -- and the unit's anchor and facing stay the
+    pose's every tick. Breaks if slot 3 or the AIM facing write touches a
     creature."""
-    def go(with_intents):
+    def go(with_intents, limp=True):
         sim = make_sim(room, ruleset=ContinuousRealtime())
         (u,) = sim.spawn_creatures(room.creatures)
+        if limp:
+            body_of(sim, u).set_limp(True)
         traj = []
         for t in range(12):
             if with_intents:
@@ -300,8 +311,12 @@ def test_intents_are_the_goal_never_a_move(room):
                 sim.set_aim(u.id, 0, -65536)
             sim.set_paused(False)
             sim.step()
-            traj.append(CS.decode_record(
-                capture_snapshot(sim)[CS.CREATURE_DIGEST_KEY]["records"][0]))
+            d = CS.decode_record(capture_snapshot(sim)[CS.CREATURE_DIGEST_KEY]["records"][0])
+            F = u.footprint
+            ax, ay = CF.pose_to_unit_anchor(float(CF.chain_to_m(int(d["body"][0]))),
+                                            float(CF.chain_to_m(int(d["body"][1]))), F, TILE_M)
+            assert (u.x, u.y, u.facing) == (ax, ay, CF.heading_q24_to_rad(int(d["body"][3])))
+            traj.append(d)
         return traj, body_of(sim, u), u
 
     a, _, ua = go(False)
@@ -310,6 +325,8 @@ def test_intents_are_the_goal_never_a_move(room):
     assert (ua.x, ua.y, ua.facing) == (ub.x, ub.y, ub.facing)
     for da, db in zip(a, b):
         assert np.array_equal(da["p"], db["p"]) and np.array_equal(da["body"], db["body"])
+    c, _, _ = go(True, limp=False)
+    assert not np.array_equal(c[-1]["p"], a[-1]["p"]), "the primitives ignored the goal"
 
 
 def test_the_wave_push_is_a_body_impulse_never_a_displacement(room):
@@ -446,7 +463,7 @@ def test_the_record_decodes_to_the_body(room):
     assert np.array_equal(d["p"], b.bufs.p[0]) and np.array_equal(d["v"], b.bufs.v[0])
     assert d["body"][3] == -int(b.bufs.body[0, 0, AC.BS_TH]) == b.heading_q24
     assert np.array_equal(d["wave_clock"], b.bufs.wave_clock[0])
-    assert d["rng"] == b.rng and d["arm_ticks"].tolist() == [3] * cdef.body.arms
+    assert d["rng"] == b.rng and np.array_equal(d["arm_ticks"], b.arm_ticks)
     sect = CS.creature_carrier(sim._creature_system)
     assert CS.section_bytes(sect).startswith(CS.CREATURE_SECT_PREAMBLE)
 

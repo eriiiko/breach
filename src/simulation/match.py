@@ -55,7 +55,7 @@ FORMATION_PITCH = FORMATION_FOOTPRINT + FORMATION_GAP
 
 _ROOM_KEYS = ("team", "x", "y", "w", "h", "max_per_team", "placement")
 _MATCH_KEYS = ("objective", "seed", "time_limit_s", "zombies",
-               "zombie_controller", "team", "creature")
+               "zombie_controller", "creature_controller", "team", "creature")
 #: A ``[[creature]]`` row's keys (#106 P6d1): ``species``, ``x``, ``y``
 #: required; ``team`` (default CREATURE_TEAM) and ``heading`` (degrees,
 #: default 0) optional. The writer writes all five.
@@ -64,6 +64,10 @@ _CREATURE_KEYS = ("species", "x", "y", "team", "heading")
 #: zombie law through the control seam. The writer omits the key at this
 #: value, so a match file that never named one stays byte-identical.
 DEFAULT_ZOMBIE_CONTROLLER = "zombies"
+#: The creatures' controller when match.toml names none (#106 P6d2): the
+#: ``creature`` row (crawl at the nearest unit seen, else idle). Written only
+#: when not the default, so a match file that never named one keeps its bytes.
+DEFAULT_CREATURE_CONTROLLER = "creature"
 _TEAM_KEYS = ("n", "loadout", "env_profile", "controller")
 
 
@@ -100,6 +104,9 @@ class MatchSpec:
     #: the registered controller that drives ZOMBIE_TEAM (#122) — the spawned
     #: horde and every converted marine.
     zombie_controller: str = DEFAULT_ZOMBIE_CONTROLLER
+    #: the registered controller that drives the match's creatures (#106
+    #: P6d2), one instance per creature team.
+    creature_controller: str = DEFAULT_CREATURE_CONTROLLER
     #: the match's creatures (#106 P6d1): ``[[creature]]`` rows, spawned by
     #: ``Simulation.spawn_creatures`` after the teams and the horde. Empty by
     #: default, and the writer writes none then (byte-stable match files).
@@ -387,10 +394,16 @@ def parse_match(raw: dict, spawn_rooms, where: str) -> MatchSpec:
         if zombies > zroom.max_per_team:
             raise ValueError(f"{where}: zombies = {zombies} exceeds the zombie "
                              f"room's max_per_team = {zroom.max_per_team}")
+    cctrl = raw.get("creature_controller", DEFAULT_CREATURE_CONTROLLER)
+    if not isinstance(cctrl, str) or cctrl not in controllers:
+        raise ValueError(f"{where}.creature_controller {cctrl!r} is not a "
+                         f"registered controller (known: "
+                         f"{sorted(controllers)})")
     creatures = tuple(parse_creature_spawns(raw.get("creature"), where))
     return MatchSpec(teams=tuple(teams), seed=seed, zombies=zombies,
                      time_limit_s=float(tl), objective=objective,
-                     zombie_controller=zctrl, creatures=creatures)
+                     zombie_controller=zctrl, creature_controller=cctrl,
+                     creatures=creatures)
 
 
 # ---------------------------------------------------------------------------
@@ -439,7 +452,7 @@ def spawn_match(sim, spec: MatchSpec) -> list:
 
 __all__ = [
     "PLACEMENT_RULES", "OBJECTIVES", "DEFAULT_TIME_LIMIT_S",
-    "DEFAULT_ZOMBIE_CONTROLLER",
+    "DEFAULT_ZOMBIE_CONTROLLER", "DEFAULT_CREATURE_CONTROLLER",
     "FORMATION_FOOTPRINT", "FORMATION_GAP", "FORMATION_PITCH",
     "SpawnRoom", "MatchTeam", "MatchSpec", "CreatureSpawn",
     "formation_capacity", "formation_cells", "placement_cells",

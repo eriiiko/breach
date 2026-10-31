@@ -472,6 +472,11 @@ def format_match_text(spec) -> str:
     zctrl = getattr(spec, "zombie_controller", DEFAULT_ZOMBIE_CONTROLLER)
     if zctrl != DEFAULT_ZOMBIE_CONTROLLER:
         lines.append(f"zombie_controller = {_fmt_value(zctrl)}\n")
+    # #106 P6d2: likewise the creatures' controller.
+    from simulation.match import DEFAULT_CREATURE_CONTROLLER
+    cctrl = getattr(spec, "creature_controller", DEFAULT_CREATURE_CONTROLLER)
+    if cctrl != DEFAULT_CREATURE_CONTROLLER:
+        lines.append(f"creature_controller = {_fmt_value(cctrl)}\n")
     for t in spec.teams:
         lines += [
             "\n", "[[team]]\n",

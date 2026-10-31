@@ -4,12 +4,15 @@ slot 5b (``CreatureSystem.tick``), the ONE serializer of the ``__creature__``
 digest section (``serialize_record`` / ``decode_record``) and the spawn check.
 
 Design: docs/octopus_p6_sim_port_design_2026-10-30.md sections 2, 4, 5, 7.
-P6d1 ships a LIMP animal: every arm in one hub state (``ARM_LIMP``), activation
-0, rest scale 1, no bend targets, no anchors, no grabs -- the chain solver
-(``arm_chain.tick``, the C++ ``ArmChainSolver``) integrates gravity, drag, the
-floor, the walls and the crown's collision with other units' footprints.
-P6d2 adds the primitives (reach, crawl, swim, grab, idle) as state machines
-HERE, over the row's dials, writing the same solver inputs.
+P6d1 shipped a LIMP animal; P6d2 (``creature_primitives``, the ONE module
+owning the state machines) drives it: the hub turns the unit's intents into a
+goal, the goal into a primitive per arm -- idle (the default: no intent),
+crawl, swim, reach, grab -- and the primitives into the solver's per-tick
+inputs (the goal table is in that module's docstring). The chain solver
+(``arm_chain.tick``, the C++ ``ArmChainSolver``) integrates everything
+else: gravity, drag, the floor, the walls, anchors, grabs, the crown's
+collision with other units' footprints. ``CreatureBody.set_limp`` puts a body
+in the LIMP gait (no primitive: P6d1's animal).
 
 The creature key is DATA: a unit is a creature iff its species row says so
 (``species.creature is not None``, :func:`is_creature`) -- nothing here or in
@@ -31,6 +34,8 @@ slot 5b, ``CreatureSystem.tick``       THE per-tick writer: anchor + facing
 slot 3 / ``OnePhaseWEGO.drive_units``  SKIP it (MOVE_DIR / AIM are recorded as
                                        the hub's goal instead, slot 5b)
 slot 1b AIM (``live_aim``)             skips its facing write
+slot 1b USE (``pending_use``)          skips it: a creature's USE is the hub's
+                                       grab request (consumed at slot 5b)
 slot 9c2 wave push                     never displaces it: the coupling row
                                        ``apply_creature_wave_impulse`` adds the
                                        push to the BODY's velocity instead
@@ -48,8 +53,9 @@ hub's fields. Every timer is an ELAPSED-tick counter, never compared to
 ``sim.tick`` (TwoPhaseWEGO rewinds it each round). The hub's randomness is a
 per-creature xorshift64 seeded from the sim seed and the unit id (never
 ``sim.rng``, whose draw count would couple an arm to the shots fired that tick);
-P6d1 draws nothing from it, but its state is hashed. Bodies tick in unit-id
-order; the other units' footprints are handed to the solver in unit-id order.
+its state is hashed. Bodies tick in unit-id order; the other units' footprints
+are handed to the solver in unit-id order. A body may own a PROP (``add_prop``:
+the grab's demo body, solver body 1, not a Unit -- a grabbed UNIT is #107's).
 
 ``Unit.x/y/facing`` stay the existing float fields, written ONLY from the
 integer pose through the ``creature_fixed`` converters (render-side floats).
@@ -61,28 +67,42 @@ only the crown collides, inside the solver.
 
 The ``__creature__`` section (design section 5)
 -----------------------------------------------
-``CREATURE_SECT_V1\\n`` then one record per creature body in unit-id order,
+``CREATURE_SECT_V2\\n`` then one record per creature body in unit-id order,
 little-endian, each ending in ``\\n`` (so a recorder ``np.bytes_`` ring can
-never strip a trailing NUL):
+never strip a trailing NUL). V2 (P6d2) adds the primitives' hub state and the
+creature-owned bodies to V1's layout, and reads a grab's id as a BODY index:
 
-  header       int64 unit_id, int64 row version, 32 B row_hash (sha256 raw),
+  header      int64 unit_id, int64 row version, 32 B row_hash (sha256 raw),
                int32 arms A, int32 nodes n
   nodes        int32 (A, n, 3) positions, Q24 m; int32 (A, n, 3) velocities
   body pose    int32 x, y, z (Q24 m), heading (Q24 rad, the pose's: 0 = East,
                CCW on screen), vx, vy, vz (Q24 m/s), yaw rate (Q24 rad/s)
   anchors      uint8 (A, n) mask; int32 (A, n, 3) positions
   grabs        int32 count, then per grab sorted by (arm, node): int32 arm,
-               int32 node, int64 unit_id, int32 local x, y, z (Q24)
-  hub          uint8 (A) per-arm state; int32 (A) elapsed ticks in state;
-               int32 (A) drawn lengths (ticks); int32 stance count; int32
-               ticks since the last decision; uint8 goal kind; int32 goal
-               x, y (Q16 direction); int32 steering-window ticks; int32 last
-               hit arm, int32 last hit node (-1, -1: none)
+               int32 node, int64 the grabbed BODY's index in the creature's
+               body array (1 = its prop; v1 grabs no unit -- #107), int32
+               local x, y, z (Q24, the grabbed body's frame)
+  hub          uint8 (A) per-arm state (``creature_primitives.ARM_*``); int32
+               (A) elapsed ticks in state; int32 (A) drawn lengths (ticks);
+               int32 stance count; int32 ticks since the last decision; uint8
+               travel goal (``GOAL_*``); int32 goal x, y (Q16 direction);
+               int32 steering samples held; int32 last hit arm, int32 last
+               hit node (-1, -1: none)
+  hub (V2)     uint8 gait, uint8 swim phase, uint8 grab request, int8 grab
+               wrap side; int32 swim ticks, swim root angle (Q16 rad), swim
+               rig (Q16: 0 = the rest roots, ONE = the swimming ring); int32
+               reach goal x, y (Q16 direction); int32 grab pops; int32 (A)
+               per-arm root aim (Q16 rad); int32 (A) per-arm stretch (Q16);
+               int32 K, then int32 (K, 2) the steering ring (Q24 m crown
+               positions, oldest first)
+  bodies (V2)  int32 B, then for each creature-owned body 1 .. B-1 its pose
+               in the body pose's 8-int encoding
   rng          uint64 xorshift state
   clock        int64 (A) per-arm elapsed activation substeps
   terminator   ``\\n``
 
-Derived, NOT stored: activation, rest scale, bend targets, root frames,
+Derived, NOT stored: activation, rest scale, bend targets, root frames, the
+roots' body-frame places (from the aims, the lift and the swim rig),
 ``hit_tiles`` (P6d3). ``CREATURE_SECT_V<n>`` bumps only when the ENCODING
 changes. The carrier ``CREATURE_DIGEST_KEY`` is ALWAYS written by capture
 paths (``n_creatures == 0`` for a creature-free sim); ``tick_digest`` folds the
@@ -97,21 +117,19 @@ import numpy as np
 
 from simulation import arm_chain as AC
 from simulation import creature_fixed as CF
+from simulation import creature_primitives as P
 from simulation import fixedpoint_twins as K
 from simulation.species import get_species
 
 #: Snapshot key of the creature presence carrier (the ``__entity__`` twin).
 CREATURE_DIGEST_KEY = "__creature__"
-CREATURE_SECT_PREAMBLE = b"CREATURE_SECT_V1\n"
+CREATURE_SECT_PREAMBLE = b"CREATURE_SECT_V2\n"
 RECORD_TERMINATOR = b"\n"
 
-#: The hub's per-arm states. v1: one -- the arm is limp (no primitive drives
-#: it). P6d2 adds the primitives' states here.
-ARM_LIMP = 0
-
-#: The hub's goal kinds (what the last intents asked for; P6d1 records, drives
-#: nothing).
-GOAL_NONE, GOAL_MOVE_DIR, GOAL_AIM = 0, 1, 2
+#: The hub's per-arm states and goals live with the state machines
+#: (``creature_primitives``); the two P6d1 names are re-exported.
+ARM_LIMP = P.ARM_LIMP
+GOAL_NONE, GOAL_MOVE_DIR = P.GOAL_NONE, P.GOAL_MOVE_DIR
 
 _U64 = (1 << 64) - 1
 
@@ -280,15 +298,38 @@ class CreatureBody:
         self.row, self.row_node = AC.row_arrays(cdef, ticks_per_second)
         inv_dt = int(ticks_per_second) * int(cdef.solver.substeps)
 
+        self.inv_dt = inv_dt
+        self.dials = P.PrimDials(cdef)
+        # The swim's arms carry the web: the row's broadside drag x web_factor
+        # (swim_sim3d), a second row_node quantized once here and handed to
+        # the solver while the body swims (one call drives all eight arms).
+        self.row_node_swim = self.row_node.copy()
+        self.row_node_swim[:, AC.RN_K_PER_Q16] = [
+            CF._round_half_away(float(k) * float(cdef.swim.web_factor))
+            for k in self.row_node[:, AC.RN_K_PER_Q16]]
+        self.solver_row_node = self.row_node
+
         bufs = AC.allocate(1, A, n, bodies=1, grabs=0, unit_slots=0, h=h, w=w)
         for a in range(A):
-            bufs.arm_cfg[0, a] = AC.arm_cfg_row(inv_dt=inv_dt, mu=t.mu_floor, body=0)
-        bufs.body_cfg[0, 0] = AC.body_cfg_row(
+            # The anchors' grip limit is the crawl's (P2; the idle's seated
+            # patches are the same suckers); a grab's grip is the hub's
+            # release threshold on the grab force (creature_primitives).
+            bufs.arm_cfg[0, a] = AC.arm_cfg_row(inv_dt=inv_dt, mu=t.mu_floor, body=0,
+                                                grip_n=cdef.crawl.grip_limit)
+        self.body_cfg_crawl = AC.body_cfg_row(
             inv_dt=inv_dt, water_density=b.water_density, mass_kg=b.body_mass_kg,
             radius_m=b.body_radius_m, c_drag=b.body_c_drag, area_m2=b.body_crawl_area_m2,
             rot_damp=b.body_rot_damp, mu=t.mu_floor, coll_radius_m=b.body_radius_m)
+        # mantle first (swim_sim3d): the swim's drag on the crown
+        self.body_cfg_swim = AC.body_cfg_row(
+            inv_dt=inv_dt, water_density=b.water_density, mass_kg=b.body_mass_kg,
+            radius_m=b.body_radius_m, c_drag=cdef.swim.body_c_drag,
+            area_m2=cdef.swim.body_area_m2, rot_damp=b.body_rot_damp, mu=t.mu_floor,
+            coll_radius_m=b.body_radius_m)
+        bufs.body_cfg[0, 0] = self.body_cfg_crawl
         AC.set_topology(bufs, 0, solid, tile_size_m)
         self.topology_serial = int(topology_serial)
+        self._cdef = cdef
 
         # The spawn pose from the unit's anchor (the one load-time writer),
         # quantized once; the unit is then re-anchored FROM it.
@@ -300,19 +341,82 @@ class CreatureBody:
         bufs.body[0, 0, AC.BS_X], bufs.body[0, 0, AC.BS_Y] = centre
         bufs.body[0, 0, AC.BS_TH] = th
         self.bufs = bufs
+        self.rest_root = root.copy()                 # the roots' rest places (derived)
 
-        # The hub (P6d2 drives these; P6d1 keeps every arm LIMP).
-        self.arm_state = np.full(A, ARM_LIMP, np.uint8)
+        # The hub (creature_primitives drives it; every field is hashed).
+        self.arm_state = np.full(A, P.ARM_STILL, np.uint8)
         self.arm_ticks = np.zeros(A, np.int32)       # elapsed ticks in state
         self.arm_drawn = np.zeros(A, np.int32)       # drawn durations, ticks
+        self.arm_aim = np.zeros(A, np.int32)         # root yaw in the body frame, Q16 rad
+        self.arm_stretch = np.full(A, P.ONE, np.int32)   # a drawn / released scale, Q16
         self.stance = 0
         self.decision_ticks = 0                      # since the last decision
-        self.goal_kind = GOAL_NONE
+        self.goal_kind = GOAL_NONE                   # the travel goal (P.GOAL_*)
         self.goal_q16 = (0, 0)                       # Q16 direction
-        self.steer_ticks = 0
+        self.reach_q16 = (0, 0)                      # the reach goal, Q16 direction
+        self.grab_req = 0                            # a USE latched the grab
+        self.grab_side = 1                           # the wrap's side (+-1)
+        self.grab_pops = 0                           # seals let go on the grab force
+        self.gait = P.GAIT_IDLE
+        self.swim_phase = P.SWIM_OPEN
+        self.swim_ticks = 0
+        self.swim_phi = self.dials.open_rad          # Q16 rad from the trailing axis
+        self.swim_rig = 0                            # Q16: rest roots .. swimming ring
+        self.steer_ring = np.zeros((self.dials.steer_k, 2), np.int32)
+        self.steer_ticks = 0                         # ring samples held
         self.last_hit = (-1, -1)                     # (arm, node): P6d3 writes
         self.rng = seed_xorshift(sim_seed, self.unit_id)
+        # idle is the default: every arm seated (its mid-arm patch on the deck)
+        for a in range(A):
+            P._anchor(self, a, self.dials.anchor_nodes)
         self.write_unit(unit)
+
+    # -- set-up: the limp gait and the prop -------------------------------------
+    def set_limp(self, limp: bool = True) -> None:
+        """The LIMP gait (no primitive: P6d1's animal -- activation 0, rest
+        1, no anchors, no grabs) on ``True``; back to the hub's goal routing
+        (idle first) on ``False``. For tests, tools and a future stun (#118)."""
+        if limp:
+            P._enter_gait(self, P.GAIT_LIMP)
+        elif self.gait == P.GAIT_LIMP:
+            P._enter_gait(self, P.GAIT_IDLE)
+
+    @property
+    def has_prop(self) -> bool:
+        return self.bufs.body.shape[1] > 1
+
+    def add_prop(self, at_body_m=None) -> None:
+        """Give the creature its grab's demo PROP (P4/P5z): solver body 1, a
+        disc of the row's ``prop_mass`` / ``prop_radius`` resting on the deck
+        at ``at_body_m`` (body frame, metres, x along the heading, y to its
+        LEFT on screen; default the row's ``prop_at_m``), with one grab slot
+        per node of the row's ``grab_nodes`` range. Not a Unit: a grabbed
+        unit is #107's. Set-up only (load time / a scenario)."""
+        if self.has_prop:
+            raise ValueError(f"creature {self.unit_id} already has a prop")
+        cdef, d = self._cdef, self.dials
+        g = cdef.grab
+        px, py = d.prop_at_q24 if at_body_m is None else (
+            CF.chain_from_m(at_body_m[0]), CF.chain_from_m(at_body_m[1]))
+        b = self.bufs
+        bd = b.body[0, 0]
+        # left on screen is -y in the y-down body frame (rest_pose's rule)
+        rx, ry = _rot(int(bd[AC.BS_TH]), px, -py)
+        pose = np.zeros((1, 1, AC.BS_N), np.int32)
+        pose[0, 0, AC.BS_X] = int(bd[AC.BS_X]) + rx
+        pose[0, 0, AC.BS_Y] = int(bd[AC.BS_Y]) + ry
+        cfg = AC.body_cfg_row(
+            inv_dt=self.inv_dt, water_density=cdef.body.water_density, mass_kg=g.prop_mass,
+            radius_m=g.prop_radius, c_drag=g.prop_c_drag, area_m2=g.prop_area_m2,
+            rot_damp=cdef.body.body_rot_damp, mu=cdef.tissue.mu_floor,
+            coll_radius_m=g.prop_radius)
+        b.body = np.ascontiguousarray(np.concatenate([b.body, pose], axis=1))
+        b.body_cfg = np.ascontiguousarray(np.concatenate([b.body_cfg, cfg[None, None]], axis=1))
+        b.body_contact = np.zeros((1, 2), np.uint8)
+        G = d.grab_k1 - d.grab_k0 + 1
+        b.grabs = np.zeros((1, G, AC.GR_N), np.int64)
+        b.grabs[..., AC.GR_ARM] = -1
+        b.grab_force = np.zeros((1, G), np.int64)
 
     # -- the pose -> the unit ---------------------------------------------------
     @property
@@ -331,48 +435,37 @@ class CreatureBody:
 
     # -- intents -> the hub's goal ----------------------------------------------
     def route_intents(self, unit) -> None:
-        """v1: the intents are ACCEPTED and recorded as the goal; nothing is
-        driven by them (P6d2's primitives read it)."""
-        mv = getattr(unit, "live_move_dir", None)
-        aim = getattr(unit, "live_aim", None)
-        if mv is not None and (mv.dx_q or mv.dy_q):
-            self.goal_kind, self.goal_q16 = GOAL_MOVE_DIR, (int(mv.dx_q), int(mv.dy_q))
-        elif aim is not None and (aim.dx_q or aim.dy_q):
-            self.goal_kind, self.goal_q16 = GOAL_AIM, (int(aim.dx_q), int(aim.dy_q))
-        else:
-            self.goal_kind, self.goal_q16 = GOAL_NONE, (0, 0)
+        """The unit's intents -> the hub's goal (``creature_primitives.
+        route_intents``: the travel goal from MOVE_DIR and its speed mode,
+        the reach goal from AIM, the grab request from a USE latch)."""
+        P.route_intents(self, unit)
 
-    # -- the hub -> the solver's inputs -----------------------------------------
+    # -- the per-tick world inputs ----------------------------------------------
     def write_inputs(self, gmap, unit_rects) -> None:
-        """The per-tick solver inputs. LIMP: activation 0 on every node, rest
-        scale ONE, bend targets 0, no anchors, no grabs (P6d2's primitives
-        write these per arm instead); the other units' footprints; the static
-        topology again whenever ``on_tile_changed`` fired."""
+        """The world's per-tick solver inputs: the other units' footprints,
+        and the static topology again whenever ``on_tile_changed`` fired.
+        (Each arm's inputs are the primitives', ``creature_primitives.
+        hub_step``.)"""
         b = self.bufs
-        b.act[...] = 0
-        b.rest_scale[...] = AC.Q16_ONE
-        b.bend_target[...] = 0
-        b.anchored[...] = 0
         b.unit_rects = np.asarray(unit_rects, dtype=np.int32).reshape(1, -1, 4)
         serial = int(gmap.topology_serial)
         if serial != self.topology_serial:
             AC.set_topology(b, 0, gmap.solid, self.tile_size_m)
             self.topology_serial = serial
 
-    def advance_hub(self) -> None:
-        """The elapsed-tick counters (never ``sim.tick``)."""
-        self.arm_ticks += 1
-        self.decision_ticks += 1
+    def add_velocity_q24(self, dvx_q24: int, dvy_q24: int) -> None:
+        """Add a Q24 m/s velocity to the crown (the swim jet, the carry
+        jets), saturated to the int32 chain range. Never a position."""
+        bd = self.bufs.body[0, 0]
+        lim = CF.CHAIN_INT32_MAX
+        for k, dv in ((AC.BS_VX, int(dvx_q24)), (AC.BS_VY, int(dvy_q24))):
+            bd[k] = max(-lim, min(lim, int(bd[k]) + dv))
 
     def add_velocity_m_s(self, dvx: float, dvy: float) -> None:
         """A body impulse (the wave-push coupling row, ``exchange.py``): add
         ``(dvx, dvy)`` m/s to the crown's velocity, quantized once, saturated
         to the int32 chain range."""
-        bd = self.bufs.body[0, 0]
-        lim = CF.CHAIN_INT32_MAX
-        for k, dv in ((AC.BS_VX, dvx), (AC.BS_VY, dvy)):
-            q = int(bd[k]) + CF.chain_from_m(dv)
-            bd[k] = max(-lim, min(lim, q))
+        self.add_velocity_q24(CF.chain_from_m(dvx), CF.chain_from_m(dvy))
 
     # -- the record -------------------------------------------------------------
     def contact_report(self):
@@ -413,7 +506,21 @@ def serialize_record(body: CreatureBody) -> bytes:
             struct.pack("<iiBiiiii", body.stance, body.decision_ticks, body.goal_kind,
                         body.goal_q16[0], body.goal_q16[1], body.steer_ticks,
                         body.last_hit[0], body.last_hit[1]),
-            struct.pack("<Q", body.rng & _U64),
+            struct.pack("<BBBbiiiiii", body.gait, body.swim_phase, body.grab_req,
+                        body.grab_side, body.swim_ticks, body.swim_phi, body.swim_rig,
+                        body.reach_q16[0], body.reach_q16[1], body.grab_pops),
+            np.ascontiguousarray(body.arm_aim, _I32).tobytes(),
+            np.ascontiguousarray(body.arm_stretch, _I32).tobytes(),
+            struct.pack("<i", body.steer_ring.shape[0]),
+            np.ascontiguousarray(body.steer_ring, _I32).tobytes(),
+            struct.pack("<i", b.body.shape[1])]
+    for bi in range(1, b.body.shape[1]):
+        pb = b.body[0, bi]
+        out.append(struct.pack("<8i", int(pb[AC.BS_X]), int(pb[AC.BS_Y]), int(pb[AC.BS_Z]),
+                               CF.body_th_to_heading_q24(int(pb[AC.BS_TH])),
+                               int(pb[AC.BS_VX]), int(pb[AC.BS_VY]), int(pb[AC.BS_VZ]),
+                               CF.body_th_to_heading_q24(int(pb[AC.BS_OM]))))
+    out += [struct.pack("<Q", body.rng & _U64),
             np.ascontiguousarray(b.wave_clock[0], _I64).tobytes(),
             RECORD_TERMINATOR]
     return b"".join(out)
@@ -455,6 +562,15 @@ def decode_record(rec: bytes) -> dict:
     (d["stance"], d["decision_ticks"], d["goal_kind"], gx, gy, d["steer_ticks"],
      ha, hn) = take("<iiBiiiii")
     d["goal_q16"], d["last_hit"] = (gx, gy), (ha, hn)
+    (d["gait"], d["swim_phase"], d["grab_req"], d["grab_side"], d["swim_ticks"],
+     d["swim_phi"], d["swim_rig"], rx, ry, d["grab_pops"]) = take("<BBBbiiiiii")
+    d["reach_q16"] = (rx, ry)
+    d["arm_aim"] = arr(_I32, (A,))
+    d["arm_stretch"] = arr(_I32, (A,))
+    (k,) = take("<i")
+    d["steer_ring"] = arr(_I32, (k, 2))
+    (nb,) = take("<i")
+    d["bodies"] = [np.array(take("<8i"), np.int64) for _ in range(nb - 1)]
     (d["rng"],) = take("<Q")
     d["wave_clock"] = arr(_I64, (A,))
     if rec[pos:] != RECORD_TERMINATOR:
@@ -514,12 +630,18 @@ def diff_creature_records(ra: bytes, rb: bytes) -> list[str]:
     for i, name in enumerate(BODY_FIELDS):
         if da["body"][i] != db["body"][i]:
             out.append(f"body {name} {int(da['body'][i])} != {int(db['body'][i])}")
-    for key in ("arm_state", "arm_ticks", "arm_drawn", "wave_clock"):
+    for key in ("arm_state", "arm_ticks", "arm_drawn", "arm_aim", "arm_stretch", "wave_clock"):
         if not np.array_equal(da[key], db[key]):
             a = int(np.argwhere(da[key] != db[key])[0][0])
             out.append(f"{key} differs at arm {a} ({int(da[key][a])} != {int(db[key][a])})")
+    if not np.array_equal(da["steer_ring"], db["steer_ring"]):
+        out.append("steer_ring differs")
+    if len(da["bodies"]) != len(db["bodies"]) or any(
+            not np.array_equal(x, y) for x, y in zip(da["bodies"], db["bodies"])):
+        out.append("a creature-owned body (prop) differs")
     for key in ("grabs", "stance", "decision_ticks", "goal_kind", "goal_q16",
-                "steer_ticks", "last_hit", "rng"):
+                "steer_ticks", "last_hit", "gait", "swim_phase", "grab_req", "grab_side",
+                "swim_ticks", "swim_phi", "swim_rig", "reach_q16", "grab_pops", "rng"):
         if da[key] != db[key]:
             out.append(f"{key} {da[key]!r} != {db[key]!r}")
     if not out:
@@ -557,8 +679,10 @@ class CreatureSystem:
 
     def tick(self, sim) -> None:
         """Slot 5b: for every LIVING creature unit in unit-id order -- route
-        its intents, write the solver's inputs, ONE solver call, write the
-        pose back to the unit (anchor + facing)."""
+        its intents into the hub's goal, write the world's inputs, the hub's
+        tick (the primitives write every arm's inputs), ONE solver call, the
+        hub reads the solver's report, write the pose back to the unit
+        (anchor + facing). A dead creature is skipped: frozen."""
         if not self.bodies:
             return
         engine = require_engine(sim._bp)
@@ -572,8 +696,9 @@ class CreatureSystem:
                 continue
             body.route_intents(u)
             body.write_inputs(gmap, [r for uid, r in rects if uid != body.unit_id])
-            AC.tick(body.row, body.row_node, body.bufs, engine)
-            body.advance_hub()
+            P.hub_step(body)
+            AC.tick(body.row, body.solver_row_node, body.bufs, engine)
+            P.after_solver(body)
             body.write_unit(u)
 
     def section_bytes(self) -> bytes:
@@ -610,7 +735,7 @@ def spawn_creature_units(sim, rows) -> list:
 
 __all__ = [
     "CREATURE_DIGEST_KEY", "CREATURE_SECT_PREAMBLE", "ARM_LIMP",
-    "GOAL_NONE", "GOAL_MOVE_DIR", "GOAL_AIM", "BODY_FIELDS",
+    "GOAL_NONE", "GOAL_MOVE_DIR", "BODY_FIELDS",
     "is_creature", "require_engine", "seed_xorshift", "xorshift64",
     "rest_pose", "check_creature_spawn", "CreatureBody", "CreatureSystem",
     "serialize_record", "decode_record", "section_bytes", "creature_carrier",
