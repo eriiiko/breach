@@ -334,6 +334,8 @@ def run_room(kind: str, *, ticks: int, warmup: int, n_octopi: int = 1,
     from simulation.ruleset import ContinuousRealtime
     tps = int(CFG.clock.ticks_per_second)
     # a fresh folder per run (repeats and baselines reuse the level name)
+    if tmp is not None:
+        Path(tmp).mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix="room_", dir=None if tmp is None else str(tmp)))
     if kind == "octopi":
         w, h = PACK_W, PACK_H
