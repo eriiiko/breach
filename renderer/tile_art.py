@@ -162,3 +162,21 @@ class TileArtSeam:
                                int(gmap.material[fy, fx]), self.radius)
             out.append(TilePatch(tile=(fy, fx), vacuum=vac, donor=donor))
         return out
+
+
+def changed_between(old_gmap, new_gmap) -> list:
+    """The tiles whose material or vacuum / sky state differs between two
+    maps of the same level: what the picture must repatch when the renderer
+    is handed a REBUILT sim (#127: a replay seeking backward re-simulates
+    from tick 0, so walls the old sim destroyed stand again). Marking them
+    in ``new_gmap.render_dirty`` sends them down this seam like any other
+    topology change. A one-off grid diff at a rebuild, never per frame."""
+    diff = np.asarray(old_gmap.material) != np.asarray(new_gmap.material)
+    diff |= (np.asarray(old_gmap.is_vacuum, dtype=bool)
+             != np.asarray(new_gmap.is_vacuum, dtype=bool))
+    a = getattr(old_gmap, "is_ambient", None)
+    b = getattr(new_gmap, "is_ambient", None)
+    if a is not None and b is not None:
+        diff |= np.asarray(a, dtype=bool) != np.asarray(b, dtype=bool)
+    ys, xs = np.nonzero(diff)
+    return [(int(y), int(x)) for y, x in zip(ys, xs)]
