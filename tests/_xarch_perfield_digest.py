@@ -586,7 +586,8 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # __unit_life_events__, dem_acc, fire, flow_vx, flow_vy, heat,
 # ignition_armed, is_vacuum, material, obstacles, wall_hp, water_depth,
 # wave_source, wave_v. vs (a): only __unit_status__ / __unit_state__ move.
-# REPRODUCED: captured twice, byte-identical.
+# REPRODUCED: captured twice, byte-identical; the ten cuda_*_check.py readers
+# of GOLDEN_AGGREGATE are green on a fresh CUDA build (cpp/build_cuda.bat).
 GOLDEN_AGGREGATE = "46750ce2685ea8a11ce1c0cb2037b3d20865a4aa035f3533c2a9d3dbf47179b8"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
