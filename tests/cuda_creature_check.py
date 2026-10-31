@@ -1,23 +1,31 @@
-"""#106 P6d1 -- a limp octopus is backend-blind (in the CUDA subprocess).
+"""#106 P6d1 / P6d2 -- the octopus is backend-blind (in the CUDA subprocess).
 
 A flooded room (written through level_lib, like tests/test_creature_body.py)
-with one limp octopus, run 48 ticks THREE ways in lockstep in this one
-process (the CUDA build is the cached ``breach_physics``):
+with one octopus, run THREE ways in lockstep in this one process (the CUDA
+build is the cached ``breach_physics``):
 
   cpu       every GPU backend OFF, residency OFF (the CPU solvers)
   cuda      every GPU backend ON, residency OFF   (== ``main.py --cuda``)
   resident  every GPU backend ON, residency ON    (== ``--resident``)
 
+Two scenarios:
+
+  limp      (P6d1) the LIMP gait, released 0.2 m above the deck, 48 ticks
+  crawl     (P6d2) the primitives on: from the seated idle start, MOVE_DIR
+            toward 30 deg every tick for 96 ticks -- the lottery, the
+            push-step's anchors and pops, the steering ring, the xorshift
+
 Per tick it asserts, at tol 0, that the FIELD digest (the frozen integer
 planes), the full TICK digest (fields + units + the ``__creature__`` section)
 and the ``__creature__`` section bytes are identical across the three. The
-arm chain itself runs on the CPU in every mode (no CUDA twin yet, recorded
-debt), so what this proves is that the creature's inputs (the map, the other
-units) and its outputs (the stamp, the pose) cross the GPU paths untouched.
+arm chain and the hub run on the CPU in every mode (no CUDA twin yet,
+recorded debt), so what this proves is that the creature's inputs (the map,
+the other units) and its outputs (the stamp, the pose) cross the GPU paths
+untouched.
 
-Vacuity guards: the GPU EOS dispatch fired every tick on the cuda run, the
-resident world entered residency mode, and the octopus actually moved (its
-section changed over the run).
+Vacuity guards: the GPU EOS dispatch fired every tick on the cuda runs, the
+resident world entered residency mode, the octopus actually moved (its
+section changed over the run), and the crawl recruited at least one arm.
 
 Prints ``CREATURE_RESULT: PASS`` / ``FAIL`` (or ``SKIP <reason>`` when the
 CUDA build predates the arm chain solver) and exits 0 / 1.
@@ -31,8 +39,6 @@ from pathlib import Path
 import numpy as np
 
 import breach_physics as bp   # the CUDA build (cuda_harness put it first)
-
-N_TICKS = 48
 
 _BACKENDS = (
     "set_temperature_backend", "set_water_backend",
@@ -73,48 +79,61 @@ def _room():
     return level_loader.load("flood", str(root))
 
 
-def main() -> int:
-    if not hasattr(bp, "arm_chain_tick"):
-        print("CREATURE_RESULT: SKIP the CUDA build predates the arm chain solver "
-              "(#106 P6c): rebuild cpp/build_cuda")
-        return 0
-    if not getattr(bp, "HAS_CUDA", False) or not bp.cuda_available():
-        print("CREATURE_RESULT: FAIL (no CUDA build / device)")
-        return 1
+def _limp_setup(sim, u):
+    from simulation import arm_chain as AC, creature_fixed as CF
+    b = sim._creature_system.bodies[u.id]
+    b.set_limp(True)
+    # released 0.2 m above the deck, so the arms fall (the limp gate's set-up)
+    lift = CF.chain_from_m(0.2)
+    b.bufs.p[0, ..., 2] += lift
+    b.bufs.body[0, 0, AC.BS_Z] += lift
+
+
+def _crawl_each(sim, u):
+    # MOVE_DIR toward 30 deg (screen CCW: North = -y), Q16 unit vector
+    sim.set_move_dir(u.id, 56756, -32768, 0)
+
+
+def _lockstep(level, n_ticks, setup=None, each=None):
+    """Run cpu / cuda / resident in lockstep; returns (divergences, fired,
+    resident calls, residency on, moved, recruited)."""
     from field_ab_harness import capture_snapshot
     from field_digest import field_digest, tick_digest
-    from simulation import Simulation, arm_chain as AC, creature_fixed as CF
+    from simulation import Simulation
+    from simulation import creature_primitives as P
     from simulation.creature_system import CREATURE_DIGEST_KEY, section_bytes
     from simulation.ruleset import ContinuousRealtime
 
-    level = _room()
     modes = {"cpu": (False, False), "cuda": (True, False), "resident": (True, True)}
-    sims = {}
+    sims, units = {}, {}
     for name in modes:
         s = Simulation(level, seed=7, breach_physics=bp, enable_recorder=False,
                        ruleset=ContinuousRealtime())
         (u,) = s.spawn_creatures(level.creatures)
-        # released 0.2 m above the deck, so the arms fall (the limp gate's set-up)
-        b = s._creature_system.bodies[u.id]
-        lift = CF.chain_from_m(0.2)
-        b.bufs.p[0, ..., 2] += lift
-        b.bufs.body[0, 0, AC.BS_Z] += lift
-        sims[name] = s
+        if setup is not None:
+            setup(s, u)
+        sims[name], units[name] = s, u
 
     calls0 = bp.eos_step_cuda_calls()
     res0 = bp.eos_resident_calls()
     first_sect = None
     bad = 0
-    for t in range(N_TICKS):
+    recruited = False
+    out = {}
+    for t in range(n_ticks):
         out = {}
         for name, (backends, resident) in modes.items():
             _mode(backends, resident)
+            if each is not None:
+                each(sims[name], units[name])
             sims[name].set_paused(False)
             sims[name].step()
             _mode(False, False)
             snap = capture_snapshot(sims[name])
             out[name] = (field_digest(snap), tick_digest(snap),
                          section_bytes(snap[CREATURE_DIGEST_KEY]))
+        body = sims["cpu"]._creature_system.bodies[units["cpu"].id]
+        recruited |= bool((body.arm_state == P.ARM_STANCE).any())
         if first_sect is None:
             first_sect = out["cpu"][2]
         for name in ("cuda", "resident"):
@@ -125,25 +144,45 @@ def main() -> int:
         if bad >= 10:
             print("  aborting after 10 divergences")
             break
+    return (bad, bp.eos_step_cuda_calls() - calls0, bp.eos_resident_calls() - res0,
+            bool(sims["resident"].gmap.residency_on()), out["cpu"][2] != first_sect, recruited)
 
-    ok = bad == 0
-    fired = bp.eos_step_cuda_calls() - calls0
-    if fired < N_TICKS:
-        ok = False
-        print(f"  the GPU EOS dispatch fired {fired}/{N_TICKS} ticks (a silently-CPU run "
-              f"cannot pass)")
-    res = bp.eos_resident_calls() - res0
-    if res < N_TICKS:
-        ok = False
-        print(f"  the resident EOS fired {res}/{N_TICKS} ticks -- VACUOUS")
-    if not bool(sims["resident"].gmap.residency_on()):
-        ok = False
-        print("  the resident world never entered residency mode -- VACUOUS")
-    if out["cpu"][2] == first_sect:
-        ok = False
-        print("  the octopus never moved -- VACUOUS")
-    print(f"  {N_TICKS} ticks x cpu / cuda / resident: {'identical' if bad == 0 else f'{bad} divergence(s)'}"
-          f"; GPU EOS calls {fired}, resident EOS calls {res}")
+
+def main() -> int:
+    if not hasattr(bp, "arm_chain_tick"):
+        print("CREATURE_RESULT: SKIP the CUDA build predates the arm chain solver "
+              "(#106 P6c): rebuild cpp/build_cuda")
+        return 0
+    if not getattr(bp, "HAS_CUDA", False) or not bp.cuda_available():
+        print("CREATURE_RESULT: FAIL (no CUDA build / device)")
+        return 1
+
+    level = _room()
+    ok = True
+    for label, n, setup, each in (("limp", 48, _limp_setup, None),
+                                  ("crawl", 96, None, _crawl_each)):
+        bad, fired, res, res_on, moved, recruited = _lockstep(level, n, setup, each)
+        if bad:
+            ok = False
+        if fired < n:
+            ok = False
+            print(f"  {label}: the GPU EOS dispatch fired {fired}/{n} ticks (a silently-CPU "
+                  f"run cannot pass)")
+        if res < n:
+            ok = False
+            print(f"  {label}: the resident EOS fired {res}/{n} ticks -- VACUOUS")
+        if not res_on:
+            ok = False
+            print(f"  {label}: the resident world never entered residency mode -- VACUOUS")
+        if not moved:
+            ok = False
+            print(f"  {label}: the octopus never moved -- VACUOUS")
+        if label == "crawl" and not recruited:
+            ok = False
+            print("  crawl: no arm was ever recruited -- VACUOUS")
+        print(f"  {label}: {n} ticks x cpu / cuda / resident: "
+              f"{'identical' if bad == 0 else f'{bad} divergence(s)'}; GPU EOS calls {fired}, "
+              f"resident EOS calls {res}")
     print(f"CREATURE_RESULT: {'PASS' if ok else 'FAIL'}")
     return 0 if ok else 1
 

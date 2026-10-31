@@ -173,10 +173,19 @@ def _zombies(team: int) -> "ControlSource":
     return ZombieControl(team)
 
 
+def _creatures(team: int) -> "ControlSource":
+    """The creatures (#106 P6d2, ``control_creature.CreatureControl``): every
+    living creature unit of the team crawls at the nearest unit it sees, or
+    idles. Deferred import, like the others."""
+    from control_creature import CreatureControl
+    return CreatureControl(team)
+
+
 _MATCH_CONTROLLERS: dict = {
     "idle": IdleControl,
     "bots": _bots,
     "zombies": _zombies,
+    "creature": _creatures,
 }
 
 
@@ -212,17 +221,24 @@ def create_match_controllers(sim, spec) -> list:
     (``spec.zombie_controller`` for ``ZOMBIE_TEAM``) -- after handing the
     horde to it (``sim.hand_zombies_to_controller``), so the conductor no
     longer drives the zombies itself: every unit of a match has exactly one
-    driver, and it is a ControlSource. Call once per match, after
+    driver, and it is a ControlSource. Then, when the match has creatures
+    (#106 P6d2), one controller per creature team -- ``spec.
+    creature_controller`` (default ``creature``; ``idle`` leaves them to
+    their own idle), in team order. Call once per match, after
     ``sim.spawn_match``; then ``handle_frame(sim, None)`` on each, every
     tick, before ``sim.step()``."""
     from simulation.factions import ZOMBIE_TEAM
-    from simulation.match import DEFAULT_ZOMBIE_CONTROLLER
+    from simulation.match import (DEFAULT_CREATURE_CONTROLLER,
+                                  DEFAULT_ZOMBIE_CONTROLLER)
     controllers = [create_controller(row.controller, team)
                    for team, row in enumerate(spec.teams)]
     sim.hand_zombies_to_controller()
     controllers.append(create_controller(
         getattr(spec, "zombie_controller", DEFAULT_ZOMBIE_CONTROLLER),
         ZOMBIE_TEAM))
+    creature_teams = sorted({int(c.team) for c in getattr(spec, "creatures", ())})
+    cname = getattr(spec, "creature_controller", DEFAULT_CREATURE_CONTROLLER)
+    controllers += [create_controller(cname, team) for team in creature_teams]
     return controllers
 
 

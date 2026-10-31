@@ -1,10 +1,11 @@
-"""#106 P6d1 -- a limp octopus is backend-blind (pytest wrapper).
+"""#106 P6d1 / P6d2 -- the octopus is backend-blind (pytest wrapper).
 
 SKIPS cleanly without a CUDA build / device, or when the CUDA build predates
 the arm chain solver (stale: rebuild cpp/build_cuda). Otherwise runs
 tests/cuda_creature_check.py in an isolated CUDA subprocess (cuda_harness --
-never the CUDA .pyd in this process): a flooded room with one limp octopus,
-48 ticks on the CPU, ``--cuda`` and ``--resident`` paths in lockstep, the field
+never the CUDA .pyd in this process): a flooded room with one octopus -- limp
+(48 ticks) and crawling under MOVE_DIR with its primitives on (96 ticks) --
+on the CPU, ``--cuda`` and ``--resident`` paths in lockstep, the field
 digest, the tick digest and the ``__creature__`` section identical at tol 0
 every tick. Breaks if a GPU path changes anything the creature reads or writes.
 """
@@ -20,7 +21,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_limp_octopus_is_identical_on_cpu_cuda_and_resident():
+def test_the_octopus_is_identical_on_cpu_cuda_and_resident():
     proc = cuda_harness.run_cuda_script(
         "import cuda_creature_check, sys; sys.exit(cuda_creature_check.main())",
         timeout=900,

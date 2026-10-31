@@ -180,6 +180,7 @@ class SwimDef:
     jet_s: float = _k(DUR)
     body_c_drag: float = _k(NONNEG)
     body_area_m2: float = _k(NONNEG)
+    root_ring_frac: float = _k(FRAC)        # P6d2: the roots' ring while swimming
     open_ticks: int = _derived()
     close_ticks: int = _derived()
     jet_ticks: int = _derived()
@@ -206,11 +207,15 @@ class GrabDef:
     lift_pitch_deg: float = _k(ANGLE)
     lift_s: float = _k(DUR)
     carry_jet_dv: float = _k(NONNEG)
+    wrap_s: float = _k(DUR)                 # P6d2: the wrap's duration
+    prop_c_drag: float = _k(NONNEG)         # P6d2: the demo prop's drag
+    prop_area_m2: float = _k(NONNEG)        # P6d2: ... and its area
     reach_wave_ticks: int = _derived()
     reach_wave_substeps: int = _derived()
     pull_in_ticks: int = _derived()
     hold_ticks: int = _derived()
     lift_ticks: int = _derived()
+    wrap_ticks: int = _derived()
 
 
 @dataclass(frozen=True)
@@ -583,6 +588,7 @@ def scale_row_by_law(row: dict, arm_length_m: float) -> dict:
     for k in ("prop_radius", "sucker_reach", "carry_jet_dv"):
         g[k] *= S
     g["prop_at_m"] = [v * S for v in g["prop_at_m"]]
+    g["prop_area_m2"] *= S ** 2
     g["grip_limit"] *= S ** 4
     return r
 
