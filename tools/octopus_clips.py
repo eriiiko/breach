@@ -39,7 +39,7 @@ STATE_COLOURS = {
     "limp": "#9a9a9a", "ready": "#5a3b8a", "stance": "#d1495b", "recover": "#edae49",
     "still": "#5a3b8a", "decide": "#7d6bb0", "explore": "#00798c", "touch": "#30a0b0",
     "relax": "#a3c4bc", "reach": "#00798c", "swim": "#2e86ab", "grab_reach": "#00798c",
-    "grab_wrap": "#e36414", "grab_hold": "#c03221", "carry": "#c03221",
+    "grab_wrap": "#e36414", "grab_hold": "#6a040f", "carry": "#6a040f",
 }
 
 
@@ -132,7 +132,8 @@ def write_gif(path, frames, *, title: str, crown_r: float, prop_r: float | None 
             c.center = (f["crown"][i], f["crown"][j])
             if follow is not None:
                 cx = f["crown"][i]
-                cy = f["crown"][j] if j != 2 else follow * 0.5
+                # the side view keeps the deck in sight for an animal on it
+                cy = f["crown"][j] if j != 2 else max(f["crown"][2], follow * 0.4)
                 ax.set_xlim(cx - follow, cx + follow)
                 ax.set_ylim(cy - follow * 0.8, cy + follow * 0.8)
             else:
@@ -180,7 +181,7 @@ def make_clip(which: str, out_dir: Path = OUT) -> str:
         frames = clip_frames(run, every=2, label="reach, grab, lift, carry, jets")
         return write_gif(out_dir / "sim_grab.gif", frames, crown_r=crown_r,
                          prop_r=row.grab.prop_radius, side=True, follow=4.5,
-                         title="SIM grab (P6d2): USE -> reach, wrap (orange), hold + LIFT (red),\n"
+                         title="SIM grab (P6d2): USE -> reach, wrap (orange), hold + LIFT (dark red),\n"
                                "carry while crawling, then the carry jets -- top-down | side")
     if which == "idle":
         run = SC.idle(24.0, seed=5)

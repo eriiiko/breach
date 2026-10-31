@@ -30,7 +30,7 @@ serialized by the ONE canonical ``simulation.entities.serialize`` module.
 #106 P6d1 adds the ``__creature__`` section the same way, after them: its own
 ALWAYS-WRITTEN carrier (``n_creatures``; a creature is not a level entity, so
 it cannot ride the entity carrier), folded only when ``n_creatures > 0``,
-section-local versioned (CREATURE_SECT_V1), serialized by the ONE
+section-local versioned (CREATURE_SECT_V<n>: V2 since P6d2), serialized by the ONE
 ``simulation.creature_system.serialize_record``.
 
 Endianness: x86 and CUDA are both little-endian, so the raw int bytes compare
@@ -205,7 +205,7 @@ def tick_digest(snapshot: dict) -> str:
     paths) says ``n_creatures > 0``. A creature-free snapshot hashes exactly
     the bytes it did before P6d1 (golden and pins unmoved); the strict
     presence rule is ``creature_system.require_creature_carrier``. The section
-    carries its own version (``CREATURE_SECT_V1``) and does not move
+    carries its own version (``CREATURE_SECT_V<n>``, V2 since P6d2) and does not move
     DIGEST_SPEC_VERSION.
     """
     from field_ab_harness import UNIT_DIGEST_KEY  # local: avoid import cycle

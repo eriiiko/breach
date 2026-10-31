@@ -23,6 +23,9 @@ The rules every primitive keeps
   ``grab_force``) and the node positions, never re-deriving a contact the
   solver reports. (The grab's touch of the PROP is a distance test here: the
   solver reports node contacts with the floor and the walls only.)
+* A sucker grips the DECK only: a crawl recruits, and a seat anchors, only
+  anchor-patch nodes the solver's contact report put on the floor last tick
+  (an arm in mid water can neither push nor sit; it is seated when it lands).
 * All state is integer; every timer an ELAPSED-tick counter (``arm_ticks``,
   ``decision_ticks``, ``swim_ticks``), never ``sim.tick``; every random draw
   through the body's own xorshift64 (never ``sim.rng``), arms in index order.
