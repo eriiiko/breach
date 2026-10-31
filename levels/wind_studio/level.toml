@@ -1,0 +1,72 @@
+# WIND STUDIO -- the HUMAN-TEST level for wind on units (#140). GENERATED
+# by tools/gen_wind_studio.py through level_lib -- edit the constants there
+# and re-run. Room A (west) is sealed at 1.44 atm by door_a, room B (east)
+# at 1.03 atm by door_b (air_init.npy). Alpha stands in room A's doorway,
+# Bravo/Charlie flank it, Delta behind; Echo at room B's door.
+# Launch: C:/Users/steen/anaconda3/python.exe main.py --level wind_studio
+# (the WEGO default: --control gamepad polls no dev keys, so O is dead
+# there). Keys: O toggles the door under the cursor (the 9e sweep applies
+# it on the next unpaused tick) | Space unpause | F6 tile inspector (q/W).
+#
+# v3 codes ARE canon material ids (src/simulation/materials.py):
+#   0=air 1=hull 6=furniture -1=SPACE
+version = "3"
+name = "Wind Studio"
+
+tilemap = "tilemap.csv"
+tile_size_m = 0.333
+diffuse = "diffuse.png"
+boundary = "space"
+
+[[spawn]]
+name = "Alpha"
+team = 0
+x = 18.0
+y = 14.0
+footprint = 3
+
+[[spawn]]
+name = "Bravo"
+team = 0
+x = 19.0
+y = 11.0
+footprint = 3
+
+[[spawn]]
+name = "Charlie"
+team = 0
+x = 19.0
+y = 17.0
+footprint = 3
+
+[[spawn]]
+name = "Delta"
+team = 0
+x = 22.0
+y = 14.0
+footprint = 3
+
+[[spawn]]
+name = "Echo"
+team = 0
+x = 59.0
+y = 16.0
+footprint = 3
+
+[[entity]]
+id = "door_a"
+class = "door"
+x = 17
+y = 14
+orientation = "v"
+length_m = 1.0
+initial_state = "closed"
+
+[[entity]]
+id = "door_b"
+class = "door"
+x = 62
+y = 16
+orientation = "v"
+length_m = 1.0
+initial_state = "closed"
