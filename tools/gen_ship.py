@@ -34,7 +34,9 @@ until #135), per-room tags from :data:`ROOM_TAGS`,
 fuel clusters (furniture / wood) against the walls of tagged rooms clear of
 doors (placed in one room of a mirror pair and reflected into its twin),
 the ducts (one per duct name the ``vent`` tags use, a filter each) and their
-vents on inner walls of their tagged rooms, one static lamp per room
+vents on inner walls of their tagged rooms, one heat-triggered
+``timed_charge`` per ``hazard``-tagged room (the magazine's cook-off, the
+hazmat store; vocabulary E.2 row 1), one static lamp per room
 (render light only), the spawn rooms from the tags. It reads only the graph (and one seeded generator for the clusters).
 
 GATES (:func:`validate`), before anything is written: airtight
@@ -276,6 +278,15 @@ def _check_vent(v) -> bool:
             and all(r in VENT_ROLES for r in roles))
 
 
+def _check_hazard(v) -> bool:
+    """``{"payload": row, "trigger_temp": T > 0, "fuse_s": s >= 0}``."""
+    return (isinstance(v, dict)
+            and set(v) == {"payload", "trigger_temp", "fuse_s"}
+            and isinstance(v["payload"], str) and v["payload"] != ""
+            and _is_num(v["trigger_temp"]) and v["trigger_temp"] > 0
+            and _is_num(v["fuse_s"]) and v["fuse_s"] >= 0)
+
+
 def vent_spec(tag):
     """A ``vent`` tag as ``(duct, roles, shorthand)``: roles in
     :data:`VENT_ROLES` order; ``shorthand`` True for v1's string form (on
@@ -288,7 +299,7 @@ def vent_spec(tag):
 
 # THE per-room tag schema (all keys optional): key -> (what it is, check).
 # A department writes these; stage 2 reads ``spawn_team``, ``zombie``,
-# ``fuel``, ``vent`` and ``light``, and carries ``dept``, ``role``,
+# ``fuel``, ``vent``, ``hazard`` and ``light``, and carries ``dept``, ``role``,
 # ``cell`` and ``secret`` into ``Embedding.room_tags`` for the vent builder
 # and the grammar. Generator-side data: none of them is a level field.
 ROOM_TAGS = {
@@ -309,6 +320,10 @@ ROOM_TAGS = {
                    "/ LAMP_INTENSITY", _check_light),
     "secret":     ("bool: a hidden room, reachable through a breakable or "
                    "vent_only edge", lambda v: isinstance(v, bool)),
+    "hazard":     ('{"payload": [payloads.*] row, "trigger_temp": game '
+                   'degrees > 0, "fuse_s": seconds >= 0}: one heat-triggered '
+                   "timed_charge on a floor tile clear of doors and fuel "
+                   "(the magazine's cook-off)", _check_hazard),
 }
 # The tags carried into Embedding.room_tags (the rest are stage 2's inputs).
 ANNOTATION_TAGS = ("dept", "role", "cell", "secret", "light")
@@ -888,7 +903,7 @@ class Embedding:
     """Stage 2's product."""
     tilemap: np.ndarray               # (h, w) int32 v3 codes
     spawn_rooms: list                 # list[SpawnRoom]: team 0, team 1, zombies
-    entities: list                    # duct + vents ([] without vents)
+    entities: list                    # ducts + vents, doors, hazard charges
     lights: list                      # one ceiling lamp per room (LightEntry)
     doors: int
     windows: int
@@ -974,6 +989,60 @@ def _vent_site(tm, room: Room, axis2: int, reserved=None):
 
 
 _VENT_KEYS = ("x", "y", "mount", "facing", "role", "duct", "q_circ")
+_HAZARD_KEYS = ("x", "y", "payload", "trigger", "trigger_temp", "first_at_s")
+
+
+def _hazard_site(tm, room: Room, axis2: int, passage, reserved):
+    """A floor tile of ``room`` for its hazard charge: air, no fuel in its
+    3x3, no passage within :data:`FUEL_DOOR_CLEAR` (Chebyshev), no reserved
+    tile (entity doors, airlock equipment, vents) in its 3x3; closest to
+    the room's centre (Manhattan), then topmost, then closest to the axis
+    -- a key the mirror maps onto itself, so twins get twin sites.
+    ``(x, y)`` or None."""
+    x0, y0, x1, y1 = room.box
+    c = FUEL_DOOR_CLEAR
+    best = None
+    for y in range(y0, y1 + 1):
+        for x in range(x0, x1 + 1):
+            if tm[y, x] != MAT_AIR:
+                continue
+            if np.isin(tm[y - 1:y + 2, x - 1:x + 2],
+                       (MAT_FURNITURE, MAT_WOOD)).any():
+                continue
+            if passage[max(0, y - c):y + c + 1, max(0, x - c):x + c + 1].any():
+                continue
+            if reserved[y - 1:y + 2, x - 1:x + 2].any():
+                continue
+            key = (abs(2 * x - (x0 + x1)) + abs(2 * y - (y0 + y1)), y,
+                   abs(2 * x - axis2))
+            if best is None or key < best[0]:
+                best = (key, (x, y))
+    return None if best is None else best[1]
+
+
+def _build_hazards(tm, graph: ShipGraph, passage, reserved) -> list:
+    """One heat-triggered ``timed_charge`` per ``hazard``-tagged room, by
+    room id: id ``hazard_<room>``, its tag's payload, ``trigger = "heat"``,
+    ``trigger_temp`` and ``fuse_s`` as ``first_at_s`` (the fuse). The
+    payload name is validated when the level loads (the charge's door)."""
+    ents = []
+    for rm in graph.rooms:
+        if "hazard" not in rm.tags:
+            continue
+        hz = rm.tags["hazard"]
+        site = _hazard_site(tm, rm, graph.width - 1, passage, reserved)
+        if site is None:
+            raise _Reject(f"hazard: no clear floor tile in room {rm.id}")
+        x, y = site
+        ents.append(EntityInstance(
+            id=f"hazard_{rm.id}", class_name="timed_charge",
+            ordinal=len(ents),
+            fields={"x": int(x), "y": int(y), "payload": hz["payload"],
+                    "trigger": "heat",
+                    "trigger_temp": float(hz["trigger_temp"]),
+                    "first_at_s": float(hz["fuse_s"])},
+            authored_keys=_HAZARD_KEYS))
+    return ents
 
 
 def _build_vents(tm, graph: ShipGraph, reserved=None) -> list:
@@ -1161,7 +1230,12 @@ def embed(graph: ShipGraph, rng) -> Embedding:
             _place_fuel(rng, tm, rm, graph, passage)
     ents = _build_vents(tm, graph, reserved if reserved.any() else None)
     door_ents, wires = _build_doors(graph)
-    ents = ents + door_ents
+    vent_res = np.zeros((H, W), dtype=bool)
+    for ent in ents:
+        if ent.class_name == "vent":
+            vent_res[ent.fields["y"], ent.fields["x"]] = True
+    ents = ents + door_ents + _build_hazards(tm, graph, passage,
+                                             reserved | vent_res)
     for k, ent in enumerate(ents):
         ent.ordinal = k                            # file order (A3 §3a)
     by_team = {rm.tags["spawn_team"]: rm for rm in graph.rooms
