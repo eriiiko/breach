@@ -1,26 +1,17 @@
-# Cycle type (scale 2): the MAINTENANCE RING -- §1.3 (written in the §2 format).
-# Face insertion: a ring of 3-6 small rooms around a hub, each joined to the
-# hub by a door (a spoke) and to its ring neighbours by doors. The ring's own
-# duct loops every ring room, each carrying a supply AND a return (every ring
-# room is a sealed box behind doors: the sealed-room rule, vocabulary §0.4).
-# Wide here; a department naming the ring may want it narrow (a later field).
+# Cycle type (scale 2): the MAINTENANCE RING -- rev 2 §1.3 / §2 (the spec's example, verbatim).
+# `ring`: an EVEN ring of 4-8 rooms around a hub, ring neighbours joined, the
+# hub joined to the odd-numbered ring rooms only (never a triangle).
 [cycle]
 name = "maintenance_ring"
-move = "face"
+move = "ring"
 phase = [2]
-rooms_per_leg = [3, 6]          # the ring's rooms (a face has one ring leg)
-tactic = "Service closets around the engine room: a fire in one smokes the whole ring, and the ring is a flank around the hub."
+rooms = [4, 8]                  # even; an axis hub puts its fore and aft ring rooms ON the axis
+tactic = "Service closets around the engine room: one fire smokes the ring, and the ring flanks the hub."
 
-[[leg]]                         # the ring: each room to its two ring neighbours
+[[leg]]                         # ring neighbour to ring neighbour
 walk = true
-width = "wide"
-edges = ["door"]
+edges = ["door", "open"]        # one kind per application
 
-[[leg]]                         # the spokes: each ring room to the hub
+[[leg]]                         # hub to the odd-numbered ring rooms
 walk = true
-width = "wide"
 edges = ["door"]
-
-[[duct]]                        # the ring's own duct (amendment 2026-10-31: `roles` = every room of the shape carries these)
-roles = ["supply", "return"]
-filter = "derelict"

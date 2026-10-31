@@ -1,18 +1,19 @@
-# Cycle type (scale 2): the AIRLOCK BYPASS -- §1.3 / §2 (the spec's example, verbatim).
-# ONE walk leg (an airlock pair, L5); the other leg is not walkable: a
-# vent_only link or a breakable wall that joins the two cells for gas.
+# Cycle type (scale 2): the AIRLOCK BYPASS -- rev 2 §1.3 / §2 (the spec's example, verbatim).
+# `parallel`: A and B share ONE wall carrying two openings, the airlock pair
+# and a breakable segment (L5 as amended, Erik 2026-10-31). No new room.
 [cycle]
 name = "airlock_bypass"
-move = "edge_to_cycle"
+move = "parallel"
 phase = [2]
-rooms_per_leg = [1, 1]
-crosses_cell = true             # the ONLY type allowed to; its walk leg must be an airlock pair (L5)
-tactic = "You cannot walk around the airlock; smoke and teargas can."
+crosses_cell = true             # the ONLY type allowed to; its walk opening must be an airlock pair (L5)
+tactic = "You cannot walk around the airlock; a charge on the wall makes a second door."
 
 [[leg]]
 walk = true
+rooms = [0, 0]
 edges = ["airlock"]
 
 [[leg]]
 walk = false
-edges = ["vent_only", "breakable"]   # the grammar picks one per application
+rooms = [0, 0]
+edges = ["breakable"]           # vent_only accepted by the schema, refused by the loader until #49 (damper) lands

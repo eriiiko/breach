@@ -1,0 +1,18 @@
+# Fixtures (scale 1.5): a room with its own physics signature, reused across
+# departments -- docs/levelgen_cycle_types_and_recipes_2026-10-31.md rev 2 §3.3,
+# VERBATIM. Every value NAMES a preset ([heat_sources.*], [hazards.*],
+# [levelgen.fuel.*]); a fixture never carries a physics number.
+[galley]
+heat_source = "stove"           # a [heat_sources.*] preset: heat_per_s, radius, max_temp, death_payload
+heat_source_enabled = true      # Erik 2026-10-31: on from tick 0; "perhaps we'll look over this later"
+fuel = "kindling"
+
+[o2_store]
+hazard = "o2_store_rupture"     # a [hazards.*] preset: payload, trigger_temp, fuse_s
+
+[aquarium]
+water = "full"
+edges_out = ["window"]          # it meets the ship only through glass
+
+[magazine]
+hazard = "magazine_cookoff"
