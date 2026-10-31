@@ -468,8 +468,8 @@ A department's `room.fixture` pulls the fixture's fields in; a field set on
 the room overrides the fixture's. **The galley's stove and its kindling
 (critique 19)**: a stove on from tick 0 beside kindling lights every galley
 at a seed-independent time unless `[heat_sources.stove].max_temp` is below
-kindling's `ignition_temp`. Which is wanted is Erik's call (§4); the loader
-checks whichever he rules and refuses the other.
+kindling's `ignition_temp`. Erik ruled FUSE (§4): the loader refuses a stove preset whose `max_temp`
+is below kindling's `ignition_temp`.
 
 ### 3.4 The resolver and its presets (critique 10, 12, 16)
 
@@ -502,10 +502,9 @@ changes the hash, as it changes the ship.
 | The galley's stove is ON from tick 0; every rolled galley starts warm. "A little strange if every kitchen is always warm", to be looked over once ships play. | the `galley` fixture (§3.3) |
 | Spawn-room exits: 1-3, default 2, an archetype parameter. | archetype recipe (next session) |
 | **L5 amended: a breakable wall is a legal third kind of cell-boundary crossing**, a deliberate weak point beside the airlock pair / bulkhead and the per-archetype vent leak path. "I accept it absolutely." | L5 (v0.1 §9 carries the dated line); the airlock bypass (§1.3) |
+| **The galley is a FUSE** (Erik, 2026-10-31: "the fuse is all right for now, we can always change it later"): `[heat_sources.stove].max_temp` sits ABOVE kindling's `ignition_temp`, so every rolled galley lights itself a fixed time after the start; the loader refuses a stove preset that could not. | the `galley` fixture (§3.3) |
 
-**Open for Erik (one question):** the galley stove beside kindling, every
-kitchen a fuse (stove `max_temp` above kindling's ignition) or a warm room
-that never lights itself (below)?
+
 
 Claude's calls, vetoable: recipes under `levels/recipes/`; recipes name
 presets and config rows and never carry a physics number; the word
@@ -572,7 +571,6 @@ allowed set; the application is single).
 - Dead-end contents (#135): what makes a pocket worth entering.
 - Whether a department recipe may contain another department (a two-level
   nonterminal) or stays flat. Draft: flat for v1.
-- Erik's galley call (§4).
 
 ## Systems
 
