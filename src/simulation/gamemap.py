@@ -2282,6 +2282,47 @@ class GameMap:
         block = self.material[y0:y1, x0:x1]
         return self.materials.mobility[block].reshape(-1).tolist()
 
+    def footprint_wind_load(self, fy, fx, footprint: int = 3) -> int:
+        """The wind LOAD on a footprint at (fy, fx) -- #140, THE field read of
+        what the air does to a body (docs/wind_on_units_design_2026-10-31.md
+        §2): the dynamic pressure ``q = 1/2 rho v^2`` as the int
+
+            W_i = N_raw[i] * ((wind_x[i]^2 + wind_y[i]^2) >> FP_SHIFT)
+            W   = max over the footprint's GAS tiles of W_i
+
+        ``N_raw`` is the tile's bulk N (:meth:`gas_bulk_n_at`, BULK_ONE = one
+        ambient density) and the wind the EOS velocity in m/s Q16, so
+        ``W = (N / N_amb) * v^2 * 2^32`` and ``q [Pa] = rho_ref * W / 2^33``.
+        A solid tile -- a walk-through door tile stores atmosphere 0 -- is
+        excluded (#121); a footprint with no in-bounds gas tile reads 0.
+
+        Every product is a Python int (unbounded): the planes are int32 and a
+        square in int32 wraps above 0.707 m/s. Pure read; the coupling layer
+        (``exchange.wind_scale_q16`` / ``apply_wind_knockdown``) owns the law.
+        """
+        from simulation.atmosphere_fixed import FP_SHIFT
+        y0 = max(0, fy)
+        x0 = max(0, fx)
+        y1 = min(self._h, fy + footprint)
+        x1 = min(self._w, fx + footprint)
+        if y1 <= y0 or x1 <= x0:
+            return 0
+        solid = self.solid[y0:y1, x0:x1].tolist()
+        vx = self.wind_x[y0:y1, x0:x1].tolist()
+        vy = self.wind_y[y0:y1, x0:x1].tolist()
+        n_o2 = self.gas[O2][y0:y1, x0:x1].tolist()
+        n_n2 = self.gas[INERT_N2][y0:y1, x0:x1].tolist()
+        best = 0
+        for r in range(y1 - y0):
+            for c in range(x1 - x0):
+                if solid[r][c]:
+                    continue
+                v2 = (vx[r][c] * vx[r][c] + vy[r][c] * vy[r][c]) >> FP_SHIFT
+                w_i = (n_o2[r][c] + n_n2[r][c]) * v2
+                if w_i > best:
+                    best = w_i
+        return best
+
     def has_los(self, fy1, fx1, fy2, fx2):
         """Bresenham line-of-sight check. Stops on ``solid``."""
         h, w = self._h, self._w
@@ -2646,8 +2687,9 @@ class GameMap:
             # install one at the burst end, same code path, same tick. Three
             # further same-tick readers of a stale 0 confirm it is not
             # display-only: the MG warm start (p_prev := atmosphere),
-            # apply_wave_push (a ~1 atm phantom grad-P that can fire
-            # KNOCKED_DOWN beside a burnt-through wall), and the PRESSURE sensor
+            # the retired apply_wave_push (a ~1 atm phantom grad-P that could
+            # fire KNOCKED_DOWN beside a burnt-through wall; #140 replaced it
+            # with a wind read that never sees atmosphere), and the PRESSURE sensor
             # channel (an RL observation).
             #
             # The value is the map's effective PIN, not n_total_q: p*(N_amb, 0)
@@ -3107,7 +3149,7 @@ class GameMap:
             # It is read the SAME tick by the MG warm start (p_prev :=
             # atmosphere), by find_burst_walls' spread scan — where a stale 0
             # in a freshly-opened tile manufactures a phantom differential that
-            # pops its neighbours — by apply_wave_push, and by the PRESSURE
+            # pops its neighbours — (once) by apply_wave_push, and by the PRESSURE
             # sensor channel. Leaving it unwritten trades a mass artefact for a
             # burst artefact. It remains OUTSIDE the conservation ledger (the
             # solver rematerializes P from N next tick); the divisor stays k

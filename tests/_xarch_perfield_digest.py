@@ -561,7 +561,34 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # wave pulse's sub-floor tail no longer nudges it). UNMOVED over all 30 ticks:
 # every gmap field (the marine stays on the same tiles, so no stamp moves).
 # (was 7b60c8006bd0dcefd38aba68559f5ce1c50d6ae844681414bcfe208faf972ffd)
-GOLDEN_AGGREGATE = "1ff073694cb413601456b5462b4852a24d60eeb3617e1e8a407df1df167676a9"
+# (was 1ff073694cb413601456b5462b4852a24d60eeb3617e1e8a407df1df167676a9)
+#
+# 2026-10-31 -- #140 WIND ON UNITS (docs/wind_on_units_design_2026-10-31.md
+# §6.2): the wave_p|grad impulse push is RETIRED (k_push,
+# push_max_tile_per_tick, push_grad_floor_atm, knockdown_dv_threshold) and the
+# 9c2 row is the wind law (exchange.apply_wind_knockdown: q = 1/2 rho v^2 at
+# the footprint; KNOCKED_DOWN at wind_q_fall_pa = 245 Pa; no displacement).
+# SOLE CAUSE, verified on the same build: (a) the P1a tree (78d3d78, the
+# digest-neutral seam, old golden reproduced) with k_push = 0 and
+# knockdown_dv_threshold = 1e30 gives 1cddfca5...; (b) THIS tree with
+# wind_q_slow_pa / wind_q_fall_pa = 1e15 / 2e15 gives 1cddfca5... too,
+# per-field file byte-identical to (a) -- so removing the push is all of the
+# field change, and the wind law's own effect is the rest: in the canonical
+# scenario its pulse reaches q = 882 Pa at the marine's footprint on tick 1
+# (>= 245), laying it KNOCKED_DOWN (refresh window 36 ticks; it gets up
+# after the scenario's 30).
+# MOVED vs the old golden, first tick: __unit_pos__ (tick 0: the marine stays
+# at (7.0, 7.0), tile 7, where the push had it at x 6.98949, tile 6),
+# __unit_status__ (tick 0: the knockdown), so __unit_state__; atmosphere,
+# wind_x, wind_y, gas, temperature, gas_energy, dyn_heat_atten_q (tick 1 --
+# the body's stamp stays on tile column 7 and the gas answers it); wave_p
+# (tick 2). UNMOVED over all 30 ticks: __unit_hp__, __unit_facing__,
+# __unit_life_events__, dem_acc, fire, flow_vx, flow_vy, heat,
+# ignition_armed, is_vacuum, material, obstacles, wall_hp, water_depth,
+# wave_source, wave_v. vs (a): only __unit_status__ / __unit_state__ move.
+# REPRODUCED: captured twice, byte-identical; the ten cuda_*_check.py readers
+# of GOLDEN_AGGREGATE are green on a fresh CUDA build (cpp/build_cuda.bat).
+GOLDEN_AGGREGATE = "46750ce2685ea8a11ce1c0cb2037b3d20865a4aa035f3533c2a9d3dbf47179b8"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs

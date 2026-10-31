@@ -3,18 +3,18 @@ stamped footprint lies under the body the renderer draws.
 
 THE BUG (found by #114's GPU check, 2026-10-27). On a quiet playground the
 pressure field jitters a few Q16 counts across a standing marine's 3x3
-footprint; ``exchange.apply_wave_push`` turned each count into a ~3e-6
-tile/tick nudge, so from tick 3 the float position crept just below its
-integer (13.0 -> 12.99997). ``tile_x = int(x)`` then stamped the footprint
--- obstacles, permeability, wave absorb, heat and light extinction -- one
-tile north-west of the drawn body. The fix is the push's noise floor
-(``[exchange] push_grad_floor_atm``).
+footprint; the (since retired) ``exchange.apply_wave_push`` turned each
+count into a ~3e-6 tile/tick nudge, so from tick 3 the float position crept
+just below its integer (13.0 -> 12.99997). ``tile_x = int(x)`` then stamped
+the footprint -- obstacles, permeability, wave absorb, heat and light
+extinction -- one tile north-west of the drawn body. The first fix was a
+noise floor on the push; since #140 the wind law writes no position at all.
 
 PROPERTIES PROTECTED
   1. A unit with no orders, on a field nobody perturbs, keeps its EXACT float
-     position and its tile over a whole round's worth of ticks. Breaks if the
-     noise floor is removed (or set to 0), or if any other per-tick push on a
-     standing unit appears.
+     position and its tile over a whole round's worth of ticks. Breaks if any
+     per-tick displacement of a standing unit appears (a wind or pressure
+     row that writes positions).
   2. The tiles the sim stamps for a unit are exactly the tiles whose centres
      lie inside the square the renderer draws it on. The draw rule is
      ``renderer/unit_model_renderer.py::_draw_one``: centre

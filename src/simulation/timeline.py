@@ -50,7 +50,7 @@ from config import CFG
 from simulation import charges, engagement
 from simulation.action_registry import ActionDef
 from simulation.combat import Projectile, mag_gate, mag_spend, _dispatch_trigger
-from simulation.movement import FootprintSamples, default_speed
+from simulation.movement import default_speed, footprint_samples
 from simulation.orders import (
     ORDER_AMBUSH, ORDER_DETONATE, ORDER_EXPLOSIVE, ORDER_GRENADE, ORDER_HOLD,
     ORDER_MARK, ORDER_MOVE, ORDER_MOVE_SHOOT, ORDER_OVERWATCH, ORDER_SHOOT,
@@ -152,8 +152,7 @@ def tile_cadence(gmap, unit, fy, fx, order_type, reversing) -> int:
     the weapon table's meter->tile derivation.
     """
     base = base_ticks_per_tile(gmap)
-    samples = FootprintSamples(
-        mobility=gmap.footprint_mobility(fy, fx, unit.footprint))
+    samples = footprint_samples(gmap, fy, fx, unit.footprint)
     terrain = default_speed(samples, base)
     pct = speed_pct(order_type, reversing)
     if pct >= 1.0:
