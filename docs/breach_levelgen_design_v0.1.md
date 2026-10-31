@@ -206,3 +206,19 @@ opened; only a hull airlock evacuates. The generator chooses the mode.
 
 **Floor height** (#144) is a level-format layer over the existing
 `GameMap.floor_height`; not v1.
+
+**L5 amended (Erik, 2026-10-31, "I accept it absolutely").** A breakable
+wall is a legal THIRD kind of pressure-cell boundary crossing, beside the
+airlock pair / sealed bulkhead and the per-archetype vent leak path: a
+deliberate weak point, gas-tight until destroyed, then open for gas and
+units. First use: the airlock-bypass cycle type
+(`docs/levelgen_cycle_types_and_recipes_2026-10-31.md` §1.3). The code
+change is one row in `gen_ship.CELL_CROSSING_KINDS`.
+
+**Move library, honestly counted (critique of the cycle-types doc, 2026-10-31).**
+v1 has six moves: L4's subdivision, edge-to-cycle (A-B REMOVED, so no
+triangle) and leaf attachment, plus `ring` (an even ring around a hub, the
+hub joined to alternate ring rooms), `parallel` (a second opening of another
+kind on the same shared wall) and `duct` (the vent exception). L4's face
+insertion is UNUSED in v1: the grammar keeps no combinatorial embedding. The
+no-triangle rule runs on the CONTACT graph over every edge kind.
