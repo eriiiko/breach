@@ -265,3 +265,53 @@ def test_no_gait_writes_the_yaw():
         if re.search(r"BS_(TH|OM)\b", line):
             assert not re.search(r"\]\s*[+\-]?=", line) or "BS_TH]" not in line.split("=")[0], line
             assert "BS_OM" not in line, line
+
+
+# ---------------------------------------------------------------------------
+# Law 2: the umbrella steers by per-side stroke amplitude
+# ---------------------------------------------------------------------------
+def _umbrella(ask, secs=12.0, seed=7):
+    sc = SC.Scenario("umb", w=120, h=120, seed=seed, heading=0.0)
+    sc.seconds(secs, each=lambda s: s.move(ask, "cruise"))
+    return sc.finish()
+
+
+def test_the_umbrella_turns_toward_its_travel_and_mirrors():
+    """Gates (b) and (h): from the deck facing East, the umbrella asked
+    North (and, mirrored, South) turns toward the ask -- the heading error
+    shrinks by at least 20 deg in 12 s and the travel bends toward it --
+    and the two runs are MIRRORED tick for tick (headings opposite within
+    0.5 deg). Breaks if the per-side amplitude's sign flips (it turns away:
+    measured), if steering acts on one side only, or if the law is not
+    mirror-symmetric. (P6g measured 90 -> 59 deg in 12 s at umbrella_steer
+    0.5, ~2.6 deg/s, intra-stroke yaw up to 75 deg/s; the brief's 2 s is
+    far off: reported for P8.)"""
+    north, south = _umbrella(90.0), _umbrella(-90.0)
+    e_n = _angd(north.TH - np.radians(90.0))
+    assert abs(e_n[-1]) < abs(e_n[0]) - 20.0, (e_n[0], e_n[-1])
+    d = north.X[-1, :2] - north.X[-2 * TPS, :2]
+    assert np.degrees(np.arctan2(-d[1], d[0])) > 10.0             # bending North
+    assert np.allclose(np.degrees(north.TH), -np.degrees(south.TH), atol=0.5)
+    print(f"P6g umbrella: error {e_n[0]:.0f} -> {e_n[-1]:.0f} deg in 12 s")
+
+
+def test_the_umbrella_does_not_steer_within_the_dead_band():
+    """A swim asked along its own heading has no steering (0 within the dead
+    band): umbrella_steer_q16 is 0 for an error inside steer_dead_band_deg
+    and signed outside it, saturating at the row's umbrella_steer. Breaks
+    if the law acts on a straight swim or loses its proportional shape."""
+    sc = SC.Scenario("umbq", size=60, seed=7)
+    b = sc.body
+    d = b.dials
+    b.gait, b.goal_kind = P.GAIT_SWIM, P.GOAL_CRUISE
+    for deg, want in ((0.0, 0), (5.0, 0), (-5.0, 0)):
+        r = np.radians(deg)
+        b.goal_q16 = (int(round(np.cos(r) * ONE)), int(round(np.sin(r) * ONE)))
+        assert P.umbrella_steer_q16(b) == want
+    for deg in (30.0, 60.0, 120.0):
+        r = np.radians(deg)
+        b.goal_q16 = (int(round(np.cos(r) * ONE)), int(round(np.sin(r) * ONE)))
+        s = P.umbrella_steer_q16(b)
+        b.goal_q16 = (b.goal_q16[0], -b.goal_q16[1])
+        assert 0 < s <= d.umb_steer and P.umbrella_steer_q16(b) == -s
+    assert s == d.umb_steer

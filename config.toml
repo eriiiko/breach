@@ -3681,6 +3681,9 @@ jet_dv = 8.4                   # scaled L^1 (a SPEED, m/s: same durations => x L
 jet_s = 0.3                    # P3
 body_c_drag = 0.5              # choice (2-D), mantle first
 body_area_m2 = 0.679291        # SIZES radius, pi r^2
+steer_dead_band_deg = 10.0     # choice (P6g, 2026-10-31): a swim faces its TRAVEL direction; no steering while the heading error is within this
+umbrella_steer = 0.5           # choice (P6g; the lead's start): the UMBRELLA steers by per-side stroke amplitude (Huffard 2006; Sfakiotakis 2015: "two groups, steering by per-arm amplitude") -- the arms on the side to turn toward stroke with amplitude x (1 - steer), the others x (1 + steer), at full error
+umbrella_full_deg = 90.0       # choice (P6g): the heading error at which the umbrella steers fully (proportional below, outside the dead band)
 root_ring_frac = 0.3           # P5z (new in P6d2: a literal in swim_sim3d.py), the arm roots' ring at the back of the head while swimming, a fraction of the crown radius
 
 [creatures.octopus.grab]

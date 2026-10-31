@@ -192,6 +192,10 @@ class SwimDef:
     body_c_drag: float = _k(NONNEG)
     body_area_m2: float = _k(NONNEG)
     root_ring_frac: float = _k(FRAC)        # P6d2: the roots' ring while swimming
+    # P6g: a swim faces its TRAVEL direction
+    steer_dead_band_deg: float = _k(ANGLE)  # no steering within this heading error
+    umbrella_steer: float = _k(FRAC)        # the per-side amplitude asymmetry at full error
+    umbrella_full_deg: float = _k(ANGLE)    # the heading error that steers fully
     open_ticks: int = _derived()
     close_ticks: int = _derived()
     jet_ticks: int = _derived()

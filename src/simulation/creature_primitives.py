@@ -91,12 +91,17 @@ laws, one per gait:
   one turning arm at a time; an idle animal's seated arms let go of the
   deck while the bend opens. Levy's scale: body rotation SD ~25 deg per
   2.8 s.
+* UMBRELLA -- per-side stroke amplitude (Huffard 2006, J Exp Biol 209:3697;
+  Sfakiotakis et al. 2015, Bioinspir Biomim 10:035005 -- "two groups,
+  steering by per-arm amplitude"; the study section 2.1): a swim faces its
+  TRAVEL direction; outside ``swim.steer_dead_band`` the arms on the side to
+  turn toward close less than the others (``umbrella_steer_q16``), and the
+  drag asymmetry yaws the body through the root attachments.
 
 While the grab arm holds the prop the other arms crawl (any travel band, at
 the full crawl tempo above ``c``) and the escape becomes the CARRY JETS
 (``carry_jet_dv`` x s^2 impulses on the escape cycle) instead of a swim: the
-carry of P4. A swim does not steer in v1: the jet pushes along the heading
-(mantle first), the umbrella's thrust is along it. A creature in the LIMP
+carry of P4. A creature in the LIMP
 gait (``CreatureBody.set_limp``) runs no primitive.
 """
 from __future__ import annotations
@@ -241,6 +246,17 @@ class PrimDials:
                              "(the escape fires one jet per opening time)")
         self.jet_relax = min(ONE, K.div_round_away(4 * ONE, self.jet_ticks))
         self.ring_q24 = CF.chain_from_m(sw.root_ring_frac * b.body_radius_m)
+        # a swim's facing (P6g): the dead band, the umbrella's per-side
+        # amplitude law, and each arm's side (+1: the body frame's +y side,
+        # the side a +th turn turns toward; sin(phi_a), 0 for an axial arm)
+        self.swim_band = _rad_q16(sw.steer_dead_band_deg)
+        self.umb_steer = _q16(sw.umbrella_steer)
+        self.umb_full = _rad_q16(sw.umbrella_full_deg)
+        if self.umb_full <= self.swim_band:
+            raise ValueError("creature_primitives: swim.umbrella_full_deg must exceed "
+                             "swim.steer_dead_band_deg")
+        self.side = [(1 if K.sin_q16(p) > 0 else -1 if K.sin_q16(p) < 0 else 0)
+                     for p in self.phi]
         # the speed law (P6f): the band tops, Q16 fractions of v_max
         lo = cdef.locomotion
         self.crawl_until, self.swim_until = _q16(lo.crawl_until), _q16(lo.swim_until)
@@ -694,6 +710,38 @@ def facing_error_q16(body) -> int:
     return _wrap(K.atan2_q16(int(fy), int(fx)) - _th16(body))
 
 
+def travel_error_q16(body) -> int:
+    """A swim's facing error: ``wrap(atan2(travel) - th)`` in Q16 rad, the
+    solver's body-th sign; 0 without a travel direction."""
+    gx, gy = body.goal_q16
+    if not (gx or gy):
+        return 0
+    return _wrap(K.atan2_q16(int(gy), int(gx)) - _th16(body))
+
+
+def umbrella_steer_q16(body) -> int:
+    """The UMBRELLA's steering (P6g), Q16 in [-umbrella_steer, +umbrella_steer]:
+    0 within the dead band, then proportional to the travel error up to
+    ``umbrella_full`` (signed, the body-th sense). Huffard 2006 / Sfakiotakis
+    2015: the umbrella steers by per-arm stroke amplitude; ``_write_roots``
+    scales each arm's CLOSING excursion (below the common open angle) by
+    ``ONE - side_a x steer``. The sign: the side that closes LESS is the side
+    the body turns toward -- the power stroke's surplus thrust on the other
+    side, off the axis (the lead's ruling). MEASURED, both ways, because the
+    first form tried (scaling the whole excursion above the closed cone)
+    wobbled to no net turn, and the opposite sign turns away steadily."""
+    d = body.dials
+    if not (body.gait == GAIT_SWIM and body.goal_kind == GOAL_CRUISE):
+        return 0
+    err = travel_error_q16(body)
+    mag = abs(err)
+    if mag <= d.swim_band:
+        return 0
+    f = min(ONE, K.div_round_away((mag - d.swim_band) << 16, d.umb_full - d.swim_band))
+    s = K.mul_shr_away(d.umb_steer, f, 16)
+    return s if err > 0 else -s
+
+
 def _turn_opening(body) -> bool:
     """A TURN arm is in its OPEN phase (derived from hashed state: the arm
     states and their elapsed ticks). While it is, an idle animal's seated
@@ -1094,6 +1142,7 @@ def _write_roots(body) -> None:
     pitch_arm, pitch = d.grab_arm, _lift_pitch(body)
     rig = int(body.swim_rig)
     seg = d.seg_q24
+    steer = umbrella_steer_q16(body) if rig > 0 else 0
     for a in range(d.A):
         aim = int(body.arm_aim[a])
         p = pitch if a == pitch_arm else 0
@@ -1118,6 +1167,13 @@ def _write_roots(body) -> None:
             psi = d.phi[a] - (PI >> 1)
             cpsi, spsi = K.cos_q16(psi), K.sin_q16(psi)
             phi = int(body.swim_phi)
+            if steer and d.side[a]:
+                # the umbrella's per-side amplitude (P6g): the stroke's
+                # excursion below the open angle, scaled by 1 - side x steer
+                # (the cone opens to the same angle on both sides; the side
+                # to turn toward closes less -- umbrella_steer_q16)
+                amp = K.mul_shr_away(d.open_rad - phi, ONE - d.side[a] * steer, 16)
+                phi = d.open_rad - amp
             cph, sph = K.cos_q16(phi), K.sin_q16(phi)
             s0 = [-d.rim_q24, K.mul_shr_away(d.ring_q24, cpsi, 16), K.mul_shr_away(d.ring_q24, spsi, 16)]
             s1 = [s0[0] - K.mul_shr_away(seg, cph, 16),
@@ -1215,7 +1271,8 @@ __all__ = [
     "ARM_GRAB_WRAP", "ARM_GRAB_HOLD", "ARM_CARRY", "ARM_STATE_NAMES", "GRAB_STATES",
     "GAIT_LIMP", "GAIT_IDLE", "GAIT_CRAWL", "GAIT_SWIM", "GAIT_NAMES",
     "GOAL_NONE", "GOAL_CRAWL", "GOAL_CRUISE", "GOAL_ESCAPE", "GOAL_NAMES",
-    "speed_law", "speed_band", "facing_error_q16", "ARM_TURN", "crawl_tempo", "crawl_p_recruit", "stroke_tempo",
+    "speed_law", "speed_band", "facing_error_q16", "ARM_TURN", "travel_error_q16",
+    "umbrella_steer_q16", "crawl_tempo", "crawl_p_recruit", "stroke_tempo",
     "SWIM_OPEN", "SWIM_CLOSE", "SWIM_JET", "SWIM_COAST",
     "PrimDials", "route_intents", "hub_step", "after_solver",
 ]
