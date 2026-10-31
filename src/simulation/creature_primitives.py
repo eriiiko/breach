@@ -246,6 +246,7 @@ class PrimDials:
         if self.turn_full <= 0:
             raise ValueError("creature_primitives: crawl.turn_full_deg must be > 0")
         self.turn_refractory = int(c.turn_refractory_ticks)
+        self.turn_free_bonus = _q16(c.turn_free_side_bonus)
         self.turn_act = _q16(c.turn_activation)
         self.p_turn = _q16(c.p_turn)
         # swim (P3)
@@ -786,15 +787,44 @@ def _turn_decide(body) -> None:
     st = body.arm_state
     if (st == ARM_TURN).any() or not _chance(body, d.p_turn):
         return
-    free = ARM_READY if body.gait == GAIT_CRAWL else ARM_STILL
-    cands = [a for a in range(d.A) if int(st[a]) == free and _on_deck(body, a)]
-    if not cands:
-        return
-    a = cands[_below(body, len(cands))]
-    _release(body, a)
     # the bend SCALED by the error (the body turns by ~the bend: a full bend
     # for a small error overshoots and the other side turns back)
     bend = min(d.turn_bend, K.div_round_away(d.turn_bend * abs(err), d.turn_full))
+    # WHICH arm (P6g fix 2): Levy's turning arm is not a pushing arm. Crawling,
+    # the candidates are READY arms weighted by how much their push OPPOSES
+    # the travel, max(0, -p_a . d) -- the crawl lottery's complement, so the
+    # pushing pool keeps its arms; idle, any seated arm (weight ONE). An arm
+    # whose neighbour on its swing side is free weighs x (1 + bonus): a
+    # positive (body-th) swing moves the root toward the arm one index DOWN
+    # (arm_angles_deg ascend counter-clockwise; +th is clockwise on screen).
+    crawl = body.gait == GAIT_CRAWL
+    free = ARM_READY if crawl else ARM_STILL
+    th16 = _th16(body)
+    gx, gy = body.goal_q16
+    weights = [0] * d.A
+    for a in range(d.A):
+        if int(st[a]) != free or not _on_deck(body, a):
+            continue
+        if crawl:
+            px, py = _push_dir(body, a, th16)
+            w = -K.shr_round_away(px * gx + py * gy, 16)
+        else:
+            w = ONE
+        if w <= 0:
+            continue
+        nb = (a - 1) % d.A if err > 0 else (a + 1) % d.A
+        if int(st[nb]) not in (ARM_STANCE, ARM_TURN):
+            w = K.mul_shr_away(w, ONE + d.turn_free_bonus, 16)
+        weights[a] = w
+    total = sum(weights)
+    if total <= 0:
+        return
+    r = _below(body, total)
+    a = 0
+    while r >= weights[a]:
+        r -= weights[a]
+        a += 1
+    _release(body, a)
     body.turn_q16 = bend if err > 0 else -bend
     _set_state(body, a, ARM_TURN, d.turn_bend_ticks + d.turn_open_ticks)
 

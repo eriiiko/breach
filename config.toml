@@ -3666,6 +3666,7 @@ turn_dead_band_deg = 20.0      # choice (P6g): no turn is recruited while the fa
 turn_bend_deg = 90.0           # choice (P6g): the lateral bend at the base (the root swung sideways) formed before the anchor; its opening is the turn (measured: 60 deg turned a 90-deg error in 7.7-9.3 s idle, 90 deg in 4.8-5.0 s)
 turn_full_deg = 45.0           # choice (P6g fix, 2026-10-31): the bend is SCALED by the error -- turn_bend x |error| / turn_full_deg, at most turn_bend (a turn of 90 deg whatever the error overshot an aligned facing)
 turn_refractory_s = 1.0        # choice (P6g fix): after a turn ends, no turn is recruited for this long
+turn_free_side_bonus = 1.0     # choice (P6g fix): the turning arm is drawn from the arms whose push OPPOSES the travel (weight max(0, -p.d); idle: any), never a pushing arm; an arm whose neighbour on its swing side is free (not pushing, not turning) weighs x (1 + this) -- arms pass through each other, so a swing across a busy neighbour reads as tangled
 turn_bend_s = 0.3              # choice (P6g): the bend forms, unanchored
 turn_open_s = 1.0              # choice (P6g; Levy's ~1 s active phase): the anchored bend opens to straight
 turn_activation = 0.6          # choice (P6g): the turning arm's proximal stiffness (root to the anchor patch, held straight)
