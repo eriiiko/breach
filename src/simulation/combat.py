@@ -335,11 +335,13 @@ class BulletInFlight:
                     stopped = True
                     break
 
+            # THE HIT SEAM (#106 P6d3): a round strikes a unit's hit_tiles()
+            # -- the footprint for every unit but a creature, whose arms add
+            # the tiles their segments cross (Unit.in_hit_tiles).
             for e in units:
                 if e is self.shooter or not e.alive:
                     continue
-                if (e.tile_x <= ix < e.tile_x + e.footprint
-                        and e.tile_y <= iy < e.tile_y + e.footprint):
+                if e.in_hit_tiles(ix, iy):
                     hit_unit = e
                     break
             if hit_unit:
@@ -368,6 +370,10 @@ class BulletInFlight:
                         self.rx, self.ry = px, py
                         hit_unit = None
                         stopped = True
+                if hit_unit is not None:
+                    # the round connected: a creature records the struck node
+                    # (its hashed last_hit; never the hashed UnitHitEvent)
+                    hit_unit.note_hit(ix, iy)
                 break
             self.prev_ix, self.prev_iy = ix, iy
 
@@ -1192,16 +1198,18 @@ def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
                     hit_cover.chew(ammo.wall_damage)
                     break
 
-            # 3. Skewer: every living unit whose footprint holds this tile
-            #    takes the CURRENT energy; the beam marches on undiminished.
+            # 3. Skewer: every living unit whose hit_tiles() hold this tile
+            #    (THE HIT SEAM, #106 P6d3: the footprint, plus a creature's
+            #    arms) takes the CURRENT energy; the beam marches on
+            #    undiminished.
             for e in units:
                 if e is shooter or not e.alive:
                     continue
                 if any(e is s for s in skewered):
                     continue
-                if (e.tile_x <= ix < e.tile_x + e.footprint
-                        and e.tile_y <= iy < e.tile_y + e.footprint):
+                if e.in_hit_tiles(ix, iy):
                     skewered.append(e)
+                    e.note_hit(ix, iy)
                     amount = (energy_q + (one >> 1)) >> unit_fixed.FP_SHIFT
                     if amount > 0:
                         apply_packet(

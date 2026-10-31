@@ -271,6 +271,66 @@ def heading_q24_to_rad(heading_q24: int) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Chain -> tiles (#106 P6d3, the hit seam: ``Unit.hit_tiles``)
+# ---------------------------------------------------------------------------
+# A chain coordinate's tile is the SOLVER's law (``arm_chain_solver.cpp``
+# ``Topology::tile_x``): ``floordiv(q - origin, T)`` with ``T`` the tile side
+# the topology door quantized once (``arm_chain.set_topology``,
+# ``WD_TILE_Q24``). Pure integer: the tile set feeds the march's hit
+# decision, which is synced state, so it is never derived from the float view.
+def chain_tile(q: int, origin_q24: int, tile_q24: int) -> int:
+    """The tile index holding the Q24 chain coordinate ``q`` (floor division,
+    the solver's law)."""
+    return (int(q) - int(origin_q24)) // int(tile_q24)
+
+
+def segment_tiles(x0: int, y0: int, x1: int, y1: int, tile_q24: int) -> list:
+    """Every tile ``(tx, ty)`` the straight segment (x0, y0) -> (x1, y1)
+    crosses, in walk order from the start point's tile to the end point's
+    (both included): an exact-integer supercover walk (Amanatides-Woo with
+    the crossing parameters compared by cross-multiplication, never a
+    division). Coordinates are integers relative to tile (0, 0)'s corner in
+    the same currency as ``tile_q24`` (> 0). A segment passing EXACTLY
+    through a tile corner steps diagonally: the two side tiles it touches
+    only at that point are not crossed. Pure, no clipping to any grid."""
+    T = int(tile_q24)
+    if T <= 0:
+        raise ValueError(f"segment_tiles: tile side must be > 0 (got {T})")
+    x0, y0, x1, y1 = int(x0), int(y0), int(x1), int(y1)
+    tx, ty = x0 // T, y0 // T
+    ex, ey = x1 // T, y1 // T
+    out = [(tx, ty)]
+    dx, dy = x1 - x0, y1 - y0
+    sx = (dx > 0) - (dx < 0)
+    sy = (dy > 0) - (dy < 0)
+    adx, ady = abs(dx), abs(dy)
+    for _ in range(abs(ex - tx) + abs(ey - ty)):
+        if tx == ex and ty == ey:
+            break
+        # An axis already at the end tile never steps again (an end point
+        # exactly on a boundary would otherwise tie and overshoot). Else the
+        # distance along each axis to its next boundary, times |d| of the
+        # other axis: t_x = nx / adx vs t_y = ny / ady, compared exactly.
+        if tx == ex:
+            ty += sy
+        elif ty == ey:
+            tx += sx
+        else:
+            nx = ((tx + 1) * T - x0) if sx > 0 else (x0 - tx * T)
+            ny = ((ty + 1) * T - y0) if sy > 0 else (y0 - ty * T)
+            lhs, rhs = nx * ady, ny * adx
+            if lhs < rhs:
+                tx += sx
+            elif rhs < lhs:
+                ty += sy
+            else:
+                tx += sx
+                ty += sy
+        out.append((tx, ty))
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Node masses (load-time geometry, door 2/3: + - * / and the constant pi)
 # ---------------------------------------------------------------------------
 def node_radii_m(nodes: int, radius_base_m: float,
@@ -569,7 +629,8 @@ __all__ = [
     "pose_to_unit_anchor", "unit_anchor_to_pose", "heading_rad_to_facing",
     "facing_to_heading_rad", "PI_Q24", "TWO_PI_Q24", "wrap_heading_q24",
     "body_th_to_heading_q24", "heading_q24_to_body_th",
-    "heading_q24_from_deg", "heading_q24_to_rad", "node_radii_m", "node_masses_kg",
+    "heading_q24_from_deg", "heading_q24_to_rad", "chain_tile", "segment_tiles",
+    "node_radii_m", "node_masses_kg",
     "node_bend_stiffness_q16", "node_drag_k_q16",
     "HeadroomBound", "ChainHeadroom", "chain_headroom",
 ]
