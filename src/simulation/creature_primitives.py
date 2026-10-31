@@ -72,6 +72,26 @@ speed is first multiplied by a MEDIUM FACTOR (``speed_law``'s
 ``medium_factor_q16``, ONE today: dry deck / shallow / deep / submerged
 speeds are Erik's #104 wishlist, not built).
 
+The FACING (P6g; Erik, 2026-10-31: "it has to be able to both strafe and
+turn" -- two channels, as on a twin-stick game): TRAVEL is the MOVE_DIR
+above (the crawl strafes: its direction is independent of the heading, as
+Levy 2015 measured, r ~ 0.12); FACING is the AIM (``face_q16``; the arms
+reach along it only while the aim's ``reach`` flag is set). No gait writes
+the heading or the yaw rate: every turn is a force the animal applies,
+through the solver's own body dynamics (the lead's ruling, 2026-10-31). The
+laws, one per gait:
+
+* CRAWL and IDLE -- the TURN (Levy, Flash & Hochner 2015, Curr Biol 25:1195,
+  Supplemental "Turn"; docs/octopus_animation_study_2026-10-29.md section
+  2.1): one arm makes a lateral bend at its base, the suckers distal to the
+  bend anchor, the proximal part stiffens straight, the bend opens -- the
+  anchor's reaction through the root attachment rotates the body by the
+  bend's sign (``_drive_arm``'s ARM_TURN derives it). Recruited by the
+  seeded lottery while the facing error is outside ``crawl.turn_dead_band``,
+  one turning arm at a time; an idle animal's seated arms let go of the
+  deck while the bend opens. Levy's scale: body rotation SD ~25 deg per
+  2.8 s.
+
 While the grab arm holds the prop the other arms crawl (any travel band, at
 the full crawl tempo above ``c``) and the escape becomes the CARRY JETS
 (``carry_jet_dv`` x s^2 impulses on the escape cycle) instead of a swim: the
@@ -101,10 +121,10 @@ TWO_PI = 2 * PI
 #: CARRY.
 (ARM_LIMP, ARM_READY, ARM_STANCE, ARM_RECOVER, ARM_STILL, ARM_DECIDE, ARM_EXPLORE,
  ARM_TOUCH, ARM_RELAX, ARM_REACH, ARM_SWIM, ARM_GRAB_REACH, ARM_GRAB_WRAP, ARM_GRAB_HOLD,
- ARM_CARRY) = range(15)
+ ARM_CARRY, ARM_TURN) = range(16)
 ARM_STATE_NAMES = ("limp", "ready", "stance", "recover", "still", "decide", "explore",
                    "touch", "relax", "reach", "swim", "grab_reach", "grab_wrap",
-                   "grab_hold", "carry")
+                   "grab_hold", "carry", "turn")
 GRAB_STATES = (ARM_GRAB_REACH, ARM_GRAB_WRAP, ARM_GRAB_HOLD, ARM_CARRY)
 SEALED_STATES = (ARM_GRAB_WRAP, ARM_GRAB_HOLD, ARM_CARRY)
 IDLE_GESTURE = (ARM_DECIDE, ARM_EXPLORE, ARM_TOUCH, ARM_RELAX)
@@ -197,6 +217,18 @@ class PrimDials:
         self.steer_min = _q16(c.steer_min_dist)            # Q16 m
         self.steer_k = -(-int(c.steer_window_ticks) // self.comb)   # ring samples
         self.grip_q8 = AC.grip_q8(c.grip_limit)
+        # the TURN (P6g): the proximal bends stiffened straight while the
+        # bend opens -- every bend from the root's up to the anchor patch's
+        # first node (bend index = node - 1)
+        self.turn_kb = self.anchor_nodes[0] - 1
+        if self.turn_kb < 2:
+            raise ValueError("creature_primitives: the TURN needs the anchor patch to start "
+                             "at node 3 or beyond (a straight proximal part to stiffen)")
+        self.turn_band = _rad_q16(c.turn_dead_band_deg)
+        self.turn_bend = _rad_q16(c.turn_bend_deg)
+        self.turn_bend_ticks, self.turn_open_ticks = int(c.turn_bend_ticks), int(c.turn_open_ticks)
+        self.turn_act = _q16(c.turn_activation)
+        self.p_turn = _q16(c.p_turn)
         # swim (P3)
         self.open_rad, self.closed_rad = _rad_q16(sw.open_deg), _rad_q16(sw.closed_deg)
         self.bundled_rad = _rad_q16(sw.bundled_deg)
@@ -556,14 +588,14 @@ def _enter_gait(body, gait: int) -> None:
             if s in (ARM_READY, ARM_LIMP):
                 _set_state(body, a, ARM_STILL)
                 _seat(body, a)
-            elif s in (ARM_STANCE, ARM_RECOVER, ARM_SWIM, ARM_REACH):
+            elif s in (ARM_STANCE, ARM_RECOVER, ARM_SWIM, ARM_REACH, ARM_TURN):
                 _settle(body, a, GAIT_IDLE)
         elif gait == GAIT_CRAWL:
             if s in (ARM_STILL, ARM_DECIDE, ARM_LIMP, ARM_SWIM):
                 _wave_off(body, a)
                 _release(body, a)
                 _set_state(body, a, ARM_READY)
-            elif s in (ARM_EXPLORE, ARM_TOUCH, ARM_RELAX, ARM_REACH):
+            elif s in (ARM_EXPLORE, ARM_TOUCH, ARM_RELAX, ARM_REACH, ARM_TURN):
                 _settle(body, a, GAIT_CRAWL)
     if gait == GAIT_LIMP:
         _drop_all_grabs(body)
@@ -651,6 +683,50 @@ def _crawl_decide(body, target) -> None:
         a += 1
     _set_state(body, a, ARM_STANCE, _jitter(body, d.push_ticks, d.push_jit))
     _anchor(body, a, _on_deck(body, a))
+
+
+def facing_error_q16(body) -> int:
+    """The FACING error: ``wrap(atan2(face) - th)`` in Q16 rad, the solver's
+    body-th sign (grid axes); 0 when no facing is asked."""
+    fx, fy = body.face_q16
+    if not (fx or fy):
+        return 0
+    return _wrap(K.atan2_q16(int(fy), int(fx)) - _th16(body))
+
+
+def _turn_opening(body) -> bool:
+    """A TURN arm is in its OPEN phase (derived from hashed state: the arm
+    states and their elapsed ticks). While it is, an idle animal's seated
+    arms let go of the deck -- seated, they hold the crown against the turn
+    (measured: no rotation at all) -- and re-seat where they lie after."""
+    tb = body.dials.turn_bend_ticks
+    return any(int(body.arm_state[a]) == ARM_TURN and int(body.arm_ticks[a]) > tb
+               for a in range(body.dials.A))
+
+
+def _turn_decide(body) -> None:
+    """The TURN's recruitment (P6g): while a facing is asked and its error
+    is outside ``turn_dead_band``, with no arm already turning, with
+    probability ``p_turn`` per decision tick, recruit ONE free arm on the
+    deck (crawl: READY; idle: STILL) by a uniform seeded lottery. Its bend's
+    SIGN is the error's (``_drive_arm``'s TURN derivation): any arm turns the
+    body the same way, so the lottery needs no geometry weight. No draw at
+    all without an asked facing (a no-ask run's records are P6f's)."""
+    d = body.dials
+    err = facing_error_q16(body)
+    if abs(err) <= d.turn_band:
+        return
+    st = body.arm_state
+    if (st == ARM_TURN).any() or not _chance(body, d.p_turn):
+        return
+    free = ARM_READY if body.gait == GAIT_CRAWL else ARM_STILL
+    cands = [a for a in range(d.A) if int(st[a]) == free and _on_deck(body, a)]
+    if not cands:
+        return
+    a = cands[_below(body, len(cands))]
+    _release(body, a)
+    body.turn_q16 = d.turn_bend if err > 0 else -d.turn_bend
+    _set_state(body, a, ARM_TURN, d.turn_bend_ticks + d.turn_open_ticks)
 
 
 def _idle_decide(body) -> None:
@@ -826,7 +902,9 @@ def _drive_arm(body, a: int, act, rest, bend) -> None:
     s, t, L = int(body.arm_state[a]), int(body.arm_ticks[a]), int(body.arm_drawn[a])
     na = d.n_anc
     if s == ARM_STILL:
-        if not body.bufs.anchored[0, a].any():
+        if _turn_opening(body):
+            _release(body, a)       # P6g: the seated arms let the TURN rotate the body
+        elif not body.bufs.anchored[0, a].any():
             _seat(body, a)                              # landed, or a seat popped
     elif s == ARM_STANCE:
         scale = _lerp(ONE, d.e_max, t, max(L, 1))
@@ -878,6 +956,36 @@ def _drive_arm(body, a: int, act, rest, bend) -> None:
         gx, gy = body.reach_q16
         arm_ang = _th16(body) + d.phi[a] + int(body.arm_aim[a])
         bend[a, 0, 1] = _wrap(K.atan2_q16(gy, gx) - arm_ang)
+    elif s == ARM_TURN:
+        # Levy 2015 SI's TURN, the lateral bend AT THE BASE (the root's aim,
+        # the same body-frame swing idle and the grab use). BEND
+        # (turn_bend_ticks, unanchored): the root swings sideways by
+        # turn_q16, the arm following it on the deck. Then the patch ANCHORS
+        # (the suckers distal to the bend), the proximal part between the
+        # root and the patch stiffens straight (activation, bend target 0),
+        # and the bend OPENS: the root's aim returns to radial over
+        # turn_open_ticks. The sign, derived: the root's direction in the
+        # world is th + phi_a + aim; the stiff anchored arm holds that line,
+        # so bringing aim from b to 0 forces th + phi_a to it -- the body
+        # turns by +b in the body-th sense, WHICHEVER arm turns (no arm
+        # geometry in the sign). The rotation comes only from the anchor's
+        # reaction through the root attachment (gate g: anchors off, no turn).
+        kb, tb = d.turn_kb, d.turn_bend_ticks
+        act[a, :kb] = d.turn_act
+        if t <= tb:
+            body.arm_aim[a] = _lerp(0, int(body.turn_q16), t, tb)
+            if t == tb:
+                nodes = _on_deck(body, a)
+                if not nodes:
+                    body.arm_aim[a] = 0
+                    _settle(body, a, body.gait)     # nothing to push on
+                    return
+                _anchor(body, a, nodes)
+        else:
+            body.arm_aim[a] = _lerp(int(body.turn_q16), 0, t - tb, d.turn_open_ticks)
+            if t >= L or not body.bufs.anchored[0, a].any():
+                body.arm_aim[a] = 0
+                _settle(body, a, body.gait)
     elif s == ARM_SWIM:
         act[a, :] = d.swim_act
     elif s == ARM_GRAB_REACH:
@@ -1045,6 +1153,8 @@ def hub_step(body) -> None:
             _crawl_decide(body, target)
         elif body.gait == GAIT_IDLE:
             _idle_decide(body)
+        if body.gait in (GAIT_CRAWL, GAIT_IDLE):
+            _turn_decide(body)              # the facing (P6g)
     body.arm_ticks += 1
     act = np.zeros((d.A, d.n - 2), np.int32)
     rest = np.full((d.A, d.n - 1), ONE, np.int32)
@@ -1105,7 +1215,7 @@ __all__ = [
     "ARM_GRAB_WRAP", "ARM_GRAB_HOLD", "ARM_CARRY", "ARM_STATE_NAMES", "GRAB_STATES",
     "GAIT_LIMP", "GAIT_IDLE", "GAIT_CRAWL", "GAIT_SWIM", "GAIT_NAMES",
     "GOAL_NONE", "GOAL_CRAWL", "GOAL_CRUISE", "GOAL_ESCAPE", "GOAL_NAMES",
-    "speed_law", "speed_band", "crawl_tempo", "crawl_p_recruit", "stroke_tempo",
+    "speed_law", "speed_band", "facing_error_q16", "ARM_TURN", "crawl_tempo", "crawl_p_recruit", "stroke_tempo",
     "SWIM_OPEN", "SWIM_CLOSE", "SWIM_JET", "SWIM_COAST",
     "PrimDials", "route_intents", "hub_step", "after_solver",
 ]

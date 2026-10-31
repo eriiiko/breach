@@ -3596,7 +3596,7 @@ environmental_damage_rate = 1.0
 # [solver] ticks_per_second is NOT a key: the clock has one owner, [clock].
 # ---------------------------------------------------------------------------
 [creatures.octopus]
-version = 2                    # hashed into every creature record (design section 5); bump on a row-SHAPE change (2: P6f's [locomotion])
+version = 3                    # hashed into every creature record (design section 5); bump on a row-SHAPE change (2: P6f's [locomotion]; 3: P6g's steering dials)
 
 [creatures.octopus.body]
 arms = 8
@@ -3657,6 +3657,17 @@ stance_activation = 0.3        # P2
 steer_gain = 1.0               # P2
 steer_window_s = 2.0           # P2. P6g (2026-10-31) measured the 90-deg response (crawl East 4 s, then asked North; first 0.5 s window of travel within 30 deg of North, seeds 1/3/5/7/9): 2.0 s -> median 0.54 s (0.54-0.83), 0.75 s -> median 0.71 s (0.54-1.96): kept 2.0
 steer_min_dist = 0.21          # scaled L^1, m
+# the TURN (#106 P6g, 2026-10-31; Levy 2015 SI, docs/octopus_animation_study_2026-10-29.md
+# "Turn"): the crawl's and the idle's FACING law -- one arm bends laterally, its
+# suckers anchor distal to the bend, the proximal part stiffens straight, the
+# bend opens: the push against the anchor rotates the body through the root
+# attachment. Levy's scale: body rotation SD ~25 deg per 2.8 s.
+turn_dead_band_deg = 20.0      # choice (P6g): no turn is recruited while the facing error is within this
+turn_bend_deg = 90.0           # choice (P6g): the lateral bend at the base (the root swung sideways) formed before the anchor; its opening is the turn (measured: 60 deg turned a 90-deg error in 7.7-9.3 s idle, 90 deg in 4.8-5.0 s)
+turn_bend_s = 0.3              # choice (P6g): the bend forms, unanchored
+turn_open_s = 1.0              # choice (P6g; Levy's ~1 s active phase): the anchored bend opens to straight
+turn_activation = 0.6          # choice (P6g): the turning arm's proximal stiffness (root to the anchor patch, held straight)
+p_turn = 0.3                   # choice (P6g): per decision tick while the error is outside the dead band (one turning arm at a time)
 
 [creatures.octopus.swim]
 open_deg = 80.0                # P3

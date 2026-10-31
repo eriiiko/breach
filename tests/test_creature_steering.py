@@ -54,7 +54,7 @@ TPS = SC.TPS
 
 #: P6f's records (captured at 9c34824 before P6g changed anything), hashed
 #: without the row header's version + row hash (bytes 8:48) and without the
-#: V4 facing field (the 8 bytes before the terminator).
+#: V4 facing + turn fields (the 12 bytes before the terminator).
 P6F_HASHES = {
     "idle": "42b31746d03b716dcbc072144ac50e9db8e79c9cf5a25ec41e3c230d978b0b5b",
     "crawl": "a6f062336fe8b3eb4b2058079a118f561d01cef9c2d567d9cba207bdc928dc7a",
@@ -65,8 +65,8 @@ P6F_HASHES = {
 def _p6f_hash(raw) -> str:
     m = hashlib.sha256()
     for r in raw:
-        assert r[-9:-1] == b"\0" * 8          # no facing asked
-        m.update(r[:8] + r[48:-9] + r[-1:])
+        assert r[-13:-1] == b"\0" * 12        # no facing asked, no turn
+        m.update(r[:8] + r[48:-13] + r[-1:])
     return m.hexdigest()
 
 
@@ -176,3 +176,92 @@ def test_the_crawls_90_degree_response_is_reported():
             break
     print(f"P6g crawl 90-deg response: {t} s")
     assert t is not None and t < 4.0
+
+
+# ---------------------------------------------------------------------------
+# Law 1: the TURN (Levy 2015 SI) -- the crawl's and the idle's facing
+# ---------------------------------------------------------------------------
+def _angd(a):
+    return (np.degrees(a) + 180.0) % 360.0 - 180.0
+
+
+def _facing_run(heading, face, move=None, secs=10.0, seed=1, anchors=True):
+    sc = SC.Scenario("turn", size=110, seed=seed, heading=heading)
+    orig = P._anchor
+    if not anchors:
+        P._anchor = lambda body, a, nodes: None
+    try:
+        sc.seconds(secs, each=lambda s: (s.face(face),
+                                         s.move(move, "crawl") if move is not None else None))
+    finally:
+        P._anchor = orig
+    r = sc.finish()
+    err = np.abs(_angd(r.TH - np.radians(face)))
+    hit = np.nonzero(err < 15.0)[0]
+    return r, (float(r.t[hit[0]]) if len(hit) else None)
+
+
+def test_an_idle_octopus_turns_to_face_the_aim_both_ways():
+    """Seated, facing East, asked to face North (and, mirrored, South): the
+    heading comes within 15 deg of the asked facing in under 8 s on two
+    seeds, each turn the right way from its first second on. Breaks if the
+    TURN's sign is wrong (it would turn away), if seated arms hold the body
+    against it, or if a turn stops rotating the body. (P6g measured 4.8-6.5
+    s for 90 deg -- Levy's scale is ~25 deg per 2.8 s.)"""
+    times = []
+    for face, sign in ((90.0, 1.0), (-90.0, -1.0)):
+        for seed in (1, 7):
+            r, t = _facing_run(0.0, face, secs=8.0, seed=seed)
+            times.append(t)
+            assert t is not None and t < 8.0, (face, seed, t)
+            assert sign * np.degrees(r.TH[int(2.0 * TPS)]) > 0.0      # turned toward it
+    print("P6g idle 90-deg turn times (s):", times)
+
+
+def test_a_crawl_turns_while_it_strafes():
+    """Gate (c), at the TURN's measured rate: crawling North (full crawl)
+    while facing East -- and mirrored, West -- the heading comes within 15
+    deg of the facing within 10 s, and the travel stays North: its direction
+    over 1-10 s within 30 deg of North (the median of three seeds), above
+    0.08 m/s on every seed. Breaks if the facing steals the travel (no
+    strafe) or the crawl cannot turn. (The brief's 2 s is not reached by
+    Levy's turn: P6g measured 3.5-7.4 s facing East; and turning COSTS
+    travel -- 0.25-0.42 m/s facing East, 0.11-0.21 facing West, against
+    0.36-0.53 with no facing: reported for P8.)"""
+    for face in (0.0, 180.0):
+        dirs, times = [], []
+        for seed in (1, 3, 7):
+            r, t = _facing_run(90.0, face, move=90.0, seed=seed)
+            d = r.X[-1, :2] - r.X[TPS, :2]
+            dirs.append(float(np.degrees(np.arctan2(-d[1], d[0]))))
+            times.append(t)
+            assert np.hypot(*d) / 9.0 > 0.08, (face, seed)
+        print(f"P6g crawl N facing {face}: times {times}, travel {np.round(dirs, 1)}")
+        assert sum(t is not None and t < 10.0 for t in times) >= 2, times
+        assert abs(np.median(dirs) - 90.0) < 30.0, dirs
+
+
+def test_the_turn_rotates_the_body_only_through_its_anchors():
+    """Gate (g): the same idle facing ask with every anchor disabled (the
+    sucker grip never takes) turns the body by under a quarter of what the
+    anchored animal turns in 6 s. Breaks if a turn rotates the body by
+    anything but the anchor's reaction through the root (a yaw written by
+    a gait, a torque from nowhere)."""
+    r1, _ = _facing_run(0.0, 90.0, secs=6.0, seed=7)
+    r0, _ = _facing_run(0.0, 90.0, secs=6.0, seed=7, anchors=False)
+    with_anchors = abs(_angd(r1.TH[-1] - r1.TH[0]))
+    without = abs(_angd(r0.TH[-1] - r0.TH[0]))
+    print(f"P6g turn: {with_anchors:.1f} deg anchored, {without:.1f} deg without anchors")
+    assert with_anchors > 20.0 and without < 0.25 * with_anchors
+
+
+def test_no_gait_writes_the_yaw():
+    """Gate (j): nothing in the primitives module writes the crown's heading
+    or yaw rate (``BS_TH`` / ``BS_OM``) -- every turn is a force through
+    the solver. Breaks on a yaw actuator in a gait."""
+    import re
+    src = (ROOT / "src" / "simulation" / "creature_primitives.py").read_text(encoding="utf-8")
+    for line in src.splitlines():
+        if re.search(r"BS_(TH|OM)\b", line):
+            assert not re.search(r"\]\s*[+\-]?=", line) or "BS_TH]" not in line.split("=")[0], line
+            assert "BS_OM" not in line, line

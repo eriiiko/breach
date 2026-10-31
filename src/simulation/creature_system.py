@@ -115,7 +115,8 @@ terminator:
   rng          uint64 xorshift state
   clock        int64 (A) per-arm elapsed activation substeps
   facing (V4)  int32 x, y: the asked facing (Q16 direction, (0, 0) = none;
-               the AIM, which the yaw actuator turns the crown toward)
+               the AIM while crawling / idle); int32 the TURN's signed
+               lateral bend (Q16 rad; one turning arm at a time)
   terminator   ``\\n``
 
 Derived, NOT stored: activation, rest scale, bend targets, root frames, the
@@ -480,6 +481,7 @@ class CreatureBody:
         self.goal_pending_ticks = 0                  # ... for this many ticks in a row
         self.reach_q16 = (0, 0)                      # the reach goal, Q16 direction
         self.face_q16 = (0, 0)                       # the asked facing (P6g), Q16 direction
+        self.turn_q16 = 0                            # the TURN's signed bend (P6g), Q16 rad
         self.grab_req = 0                            # a USE latched the grab
         self.grab_side = 1                           # the wrap's side (+-1)
         self.grab_pops = 0                           # seals let go on the grab force
@@ -656,7 +658,7 @@ def serialize_record(body: CreatureBody) -> bytes:
                                CF.body_th_to_heading_q24(int(pb[AC.BS_OM]))))
     out += [struct.pack("<Q", body.rng & _U64),
             np.ascontiguousarray(b.wave_clock[0], _I64).tobytes(),
-            struct.pack("<ii", body.face_q16[0], body.face_q16[1]),
+            struct.pack("<iii", body.face_q16[0], body.face_q16[1], body.turn_q16),
             RECORD_TERMINATOR]
     return b"".join(out)
 
@@ -709,7 +711,8 @@ def decode_record(rec: bytes) -> dict:
     d["bodies"] = [np.array(take("<8i"), np.int64) for _ in range(nb - 1)]
     (d["rng"],) = take("<Q")
     d["wave_clock"] = arr(_I64, (A,))
-    d["face_q16"] = take("<ii")
+    fx, fy, d["turn_q16"] = take("<iii")
+    d["face_q16"] = (fx, fy)
     if rec[pos:] != RECORD_TERMINATOR:
         raise ValueError(f"decode_record: {len(rec) - pos} trailing byte(s) after "
                          f"the layout (expected the terminator only)")
@@ -779,7 +782,7 @@ def diff_creature_records(ra: bytes, rb: bytes) -> list[str]:
     for key in ("grabs", "stance", "decision_ticks", "goal_kind", "goal_q16",
                 "steer_ticks", "last_hit", "gait", "swim_phase", "grab_req", "grab_side",
                 "swim_ticks", "swim_phi", "swim_rig", "reach_q16", "grab_pops",
-                "goal_speed", "goal_pending", "goal_pending_ticks", "rng", "face_q16"):
+                "goal_speed", "goal_pending", "goal_pending_ticks", "rng", "face_q16", "turn_q16"):
         if da[key] != db[key]:
             out.append(f"{key} {da[key]!r} != {db[key]!r}")
     if not out:
