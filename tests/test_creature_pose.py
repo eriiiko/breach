@@ -499,3 +499,35 @@ def test_each_chain_arm_is_drawn_by_the_art_arm_beside_it():
                                             axis=1))) for a in range(8)]
     assert nearest == RIG.arm_map.tolist()
     assert sorted(nearest) == list(range(8))
+
+
+def test_a_hit_marks_the_struck_node_for_the_dialled_frames(monkeypatch):
+    """PROPERTY: a hit on a creature (``note_creature_hit``) marks the node
+    its ``last_hit`` names -- a sphere drawn AT that node (the crown for a
+    body hit), lifted like the drawn arm -- for exactly ``hit_flash_frames``
+    frames, then nothing; render state only.
+
+    BREAKS IF: the mark is drawn at the wrong node (the arm order, the
+    world -> px mapping), never expires, or ignores the dial."""
+    import renderer.unit_model_renderer as umr
+    calls = []
+    monkeypatch.setattr(umr.rl, "draw_sphere", lambda c, r, col: calls.append((c.x, c.y, c.z)))
+    r = umr.UnitModelRenderer()
+    n = CP.creature_render_settings(CFG).hit_flash_frames
+    assert n > 0
+    v = _chain(np.random.default_rng(31))
+    view = SimpleNamespace(unit_id=7, nodes=v.nodes, crown=v.crown, last_hit=(2, 9))
+    r.note_creature_hit(7)
+    dials = CP.creature_render_settings(CFG)
+    ppm = 100.0
+    for _ in range(n + 3):
+        r._draw_hit_mark(view, RIG, dials, ppm)
+    assert len(calls) == n
+    x, y, z = v.nodes[2, 9]
+    z += dials.arm_lift * RIG.node_radius[9]
+    assert np.allclose(calls[0], (x * ppm, z * ppm, y * ppm))
+    calls.clear()
+    view.last_hit = (-1, -1)
+    r.note_creature_hit(7)
+    r._draw_hit_mark(view, RIG, dials, ppm)
+    assert np.allclose(calls[0][0], v.crown[0] * ppm) and np.allclose(calls[0][2], v.crown[1] * ppm)

@@ -408,3 +408,30 @@ the lead so you decide all these things." Concretely:
   shape (-0.3 ms), substeps (a modelling call, gates re-run), threads over
   animals or arms. Cost: one session, ~1 h of machine time for the three
   backends.
+- 2026-10-31 (P7, worktree agent, Opus) -- the render: `creature_system.
+  read_chain` (THE chain accessor, float32, facing convention, dead
+  creatures included) + `Simulation.creature_chains`; `renderer/
+  creature_pose.py` (pure numpy) poses the game GLB's 142 bones from the
+  chain on `octopus_math`'s rig, imported BY FILE from the art scripts (one
+  copy; moving its functions would have split the SIZES module state, so
+  nothing moved); `creature_model.CreatureSkin` = LiveOctopus vectorised;
+  `UnitModelRenderer.draw_creatures` in the units' pass (one lit shader, the
+  unit light read, projected + smoke shadows), true size; `levels/
+  octopus_tank`. Size door: mid matches the row's 2.52 m exactly; bind door:
+  the GLB is 0.001 mm from the rig. Cost: the pose ~0.8 ms isolated, ~1.0 ms
+  in game with the wiggle on (two chord walks: the secant correction is
+  half of it), skin write + raylib CPU skin ~0.39 ms. What was learned: (1)
+  the art arm starts at a mount 0.16 m from the crown axis, the sim arm at
+  the crown RIM (0.465 m), both 2.52 m long -- so the chain from the
+  junction out is ~1.17x the art's free arm and the drawn arms are always
+  part-stretched (stretch 0.40-0.48 at rest, ~7 % thinner); an exploring or
+  crawling arm saturates `stretch_max` and its drawn tip falls up to ~0.4 m
+  short of the chain's tip. A row-side ruling (rim vs mount) is Erik's.
+  (2) the back arms' azimuths differ (sim 157.5 deg, art 143 deg): their
+  first track leg turns ~15 deg at the junction. (3) chords cut corners:
+  segment lengths that sum to the track's arc overshoot its tip by 1-5 cm;
+  one secant re-walk lands it within ~1 mm. (4) a test of the arm map must
+  check geometry, not the map (a swapped map passed the station test).
+  Skipped: body pitch / crown spread from the root lift (v1 pitch 0), the
+  colour-debug mode, sucker / contact cues, GPU skinning. Pictures:
+  `docs/octopus_p7_shots_2026-10-31/`.

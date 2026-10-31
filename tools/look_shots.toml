@@ -603,3 +603,23 @@ beacon = false
 flashlight = { pos = [17.5, 40.5], intensity = 2.5, spread = 6.283 }
 light_gain = "game"
 note = "#114: marine Bravo, omni lamp NORTH-EAST of his footprint (diagonal, one tile gap on both axes)."
+
+# --- #106 P7: the simulated octopus, posed from its chain -------------------
+# levels/octopus_tank (tools/gen_octopus_tank.py): the octopus at rest in the
+# middle of the flooded room, facing the squad (west), its arms straight and
+# radial (the limp spawn pose, then the idle's seated arms), the lamps on.
+# The water is hidden so the animal reads in its own colours (the units
+# layer isolated: no heat, smoke, flame, embers, shimmer in this level
+# anyway). Judges the arm roots at the crown, the junction, the arm
+# thickness and taper, and the true scale (crown 1.4 m body, 2.52 m arms).
+[[shot]]
+name = "octopus_tank_rest"
+level = "octopus_tank"
+frames = 12
+center = [42.5, 21.0]
+zoom = 40.0
+lamps = true
+beacon = false
+light_gain = "game"
+hide = ["water", "heat", "smoke", "flame", "embers", "shimmer"]
+note = "#106 P7: the octopus at rest in its tank, posed from the sim's chain (renderer/creature_pose.py); water hidden."
