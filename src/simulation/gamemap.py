@@ -3256,7 +3256,8 @@ class GameMap:
             self.gas_energy_refresh_cell(fy, fx)
         return remove
 
-    def inject_gas_n_vec(self, fy, fx, add_vec, t_dep, t_min_q, t_max_phys_q):
+    def inject_gas_n_vec(self, fy, fx, add_vec, t_dep, t_min_q, t_max_phys_q,
+                         channel="pump_inject_vec", rail_channel="pump_rail"):
         """§3/§4 extension (docs/vent_system_design_2026-08-23.md): inject an
         ARBITRARY per-slice composition ``add_vec`` (length ``N_GASES``,
         non-negative Q16.16 ints — bulk AND trace slices alike, unlike
@@ -3286,6 +3287,14 @@ class GameMap:
         aperture guards (docs §4: never call this on a solid, thermal_solid,
         vacuum, ambient, or flooded tile) — this primitive trusts its caller,
         exactly like :meth:`inject_gas_n` trusts the pump port resolve.
+
+        ``channel`` / ``rail_channel`` name the :attr:`gas_energy_books`
+        channels the deposit and its rail clamp book into. The defaults are
+        the vent sweep's (``pump_inject_vec`` / ``pump_rail``); the bulk-gas
+        payload effect (``payloads.inject_bulk_gas``, #133 E.2) books its own
+        (``payload_bulk_gas`` / ``payload_bulk_gas_rail``) so a books reader
+        can tell an O2-store rupture from a duct. Both are ordinary seam
+        channels -- counted by :meth:`gas_energy_seam_net`, never a new group.
         """
         h, w = self._h, self._w
         if not (0 <= fy < h and 0 <= fx < w):
@@ -3323,7 +3332,7 @@ class GameMap:
             t_amb = self.gas_t_amb_raw()
             de = delta_n_bulk * (int(t_dep) + t_amb)
             self.gas_energy[fy, fx] = int(self.gas_energy[fy, fx]) + de
-            self._gas_energy_book("pump_inject_vec", de)
+            self._gas_energy_book(channel, de)
             t_new = (int(self.gas_energy[fy, fx]) // n_new) - t_amb
             rail_hit = 0
             if t_new < t_min_q:
@@ -3334,7 +3343,7 @@ class GameMap:
                 rail_hit = 1
             if rail_hit:
                 e_new = n_new * (t_new + t_amb)
-                self._gas_energy_book("pump_rail",
+                self._gas_energy_book(rail_channel,
                                       e_new - int(self.gas_energy[fy, fx]))
                 self.gas_energy[fy, fx] = e_new
             self.temperature[fy, fx] = t_new

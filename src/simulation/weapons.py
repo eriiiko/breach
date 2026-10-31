@@ -252,7 +252,9 @@ class PayloadDef:
                  unit_damage=0, gas_species="", gas_amount=0.0, gas_radius=0,
                  ignite_radius=0.0, ignite_intensity=0.0, clear_smoke=False,
                  emit_blast_smoke=False, heat_amount=0.0, heat_radius=0.0,
-                 explosive="", explosive_kg=0.0, blast_soot_g=0.0):
+                 explosive="", explosive_kg=0.0, blast_soot_g=0.0,
+                 bulk_gas="", bulk_amount=0.0, bulk_radius=0.0, bulk_temp=0.0,
+                 bulk_amount_q=0, bulk_temp_q=0):
         self.name = name
         self.radius = radius                    # blast radius (tiles)
         self.pressure = pressure                # wave source magnitude
@@ -281,6 +283,24 @@ class PayloadDef:
         # two-terminals discipline applied to a detonation. 0 = none.
         self.heat_amount = heat_amount
         self.heat_radius = heat_radius
+        # Bulk-gas effect (#133 E.2, levelgen vocabulary Part E): a one-shot
+        # injection of ONE conservative bulk gas (``"o2"`` / ``"inert_n2"``)
+        # through the gas pump primitive ``GameMap.inject_gas_n_vec``
+        # (payloads.inject_bulk_gas) -- the only honest path to O2/N2, since
+        # the FieldEdit ``gas`` policy refuses a conservative slice.
+        # ``bulk_amount`` is bulk N per tile in the pump's real unit (1.0 =
+        # one tile's whole bulk N at 1 atm ambient, so ambient air holds 0.21
+        # O2 + 0.79 N2), FLAT over every open tile of the ``bulk_radius``
+        # disc; ``bulk_temp`` is the deposit's temperature in game degrees
+        # above ambient (0 = born at ambient). The ``*_q`` twins are those two
+        # quantized ONCE at the table door (gas_fixed); the executor reads
+        # only them. "" = no bulk gas.
+        self.bulk_gas = bulk_gas
+        self.bulk_amount = bulk_amount
+        self.bulk_radius = bulk_radius
+        self.bulk_temp = bulk_temp
+        self.bulk_amount_q = int(bulk_amount_q)
+        self.bulk_temp_q = int(bulk_temp_q)
 
     def __repr__(self):
         return (f"PayloadDef({self.name!r}, radius={self.radius!r}, "
@@ -520,6 +540,61 @@ class AmmoTable:
         self.names = list(self.by_name)
 
 
+def _bulk_gas_columns(name, col, gas_species, bulk_gases, trace_gases):
+    """The ``[payloads.*]`` bulk-gas door (#133 E.2): read and validate the
+    ``bulk_gas`` / ``bulk_amount`` / ``bulk_radius`` / ``bulk_temp`` columns
+    and quantize the amount and temperature ONCE. Returns the PayloadDef
+    keyword arguments. One path per gas: a bulk gas is never a
+    ``gas_species`` (the FieldEdit ``gas`` policy refuses a conservative
+    slice -- it would fail at the flush, mid-match), and a trace gas is never
+    a ``bulk_gas`` (that is ``emit_gas``'s business)."""
+    import math
+    from simulation import gas_fixed as _gas_fx
+    if gas_species in bulk_gases:
+        raise ValueError(
+            f"payloads.{name}.gas_species {gas_species!r} is a conservative "
+            f"BULK gas: FieldEdit refuses it -- use bulk_gas = "
+            f"{gas_species!r} with bulk_amount / bulk_radius instead")
+    bulk_gas = str(col("bulk_gas", ""))
+    bulk_amount = float(col("bulk_amount", 0.0))
+    bulk_radius = float(col("bulk_radius", 0.0))
+    bulk_temp = float(col("bulk_temp", 0.0))
+    if not bulk_gas:
+        if bulk_amount or bulk_radius or bulk_temp:
+            raise ValueError(
+                f"payloads.{name} sets bulk_amount / bulk_radius / bulk_temp "
+                f"without bulk_gas -- name the gas ({sorted(bulk_gases)})")
+        return {}
+    if bulk_gas in trace_gases:
+        raise ValueError(
+            f"payloads.{name}.bulk_gas {bulk_gas!r} is a TRACE gas -- trace "
+            f"gas is emitted with gas_species (emit_gas); bulk_gas takes "
+            f"only {sorted(bulk_gases)}")
+    if bulk_gas not in bulk_gases:
+        raise ValueError(
+            f"payloads.{name}.bulk_gas {bulk_gas!r} is not a bulk gas "
+            f"({sorted(bulk_gases)})")
+    if not (math.isfinite(bulk_amount) and bulk_amount > 0.0):
+        raise ValueError(
+            f"payloads.{name}.bulk_amount {bulk_amount!r} must be > 0 (bulk N "
+            f"per tile; 1.0 = a whole tile of ambient air)")
+    if not (math.isfinite(bulk_radius) and bulk_radius > 0.0):
+        raise ValueError(
+            f"payloads.{name}.bulk_radius {bulk_radius!r} must be > 0 (tiles)")
+    if not math.isfinite(bulk_temp):
+        raise ValueError(
+            f"payloads.{name}.bulk_temp {bulk_temp!r} is not finite")
+    amount_q = _gas_fx.quantize_bulk_scalar(bulk_amount)
+    if amount_q <= 0:
+        raise ValueError(
+            f"payloads.{name}.bulk_amount {bulk_amount!r} quantizes to 0 bulk "
+            f"counts -- below one LSB of the bulk currency")
+    return dict(bulk_gas=bulk_gas, bulk_amount=bulk_amount,
+                bulk_radius=bulk_radius, bulk_temp=bulk_temp,
+                bulk_amount_q=amount_q,
+                bulk_temp_q=_gas_fx.quantize_q16_scalar(bulk_temp))
+
+
 class PayloadTable:
     """``[payloads.*]`` rows keyed by name. Every column defaults (a payload
     row lists only what it does — 'rest zero/empty'). A nonempty
@@ -529,8 +604,12 @@ class PayloadTable:
 
     def __init__(self, payloads_cfg, explosives_cfg=None):
         # Lazy import (module constants only, mirrors AmmoTable's unit_fixed).
-        from simulation.gases import GAS_NAMES
+        from simulation.gases import GAS_NAMES, N_GASES, N_TRACE_GASES
         valid_gases = set(GAS_NAMES.values())
+        # The conservative bulk pair are exactly the ids >= N_TRACE_GASES
+        # (GasTable's own layout check) -- the bulk-gas effect's vocabulary.
+        bulk_gases = {GAS_NAMES[g] for g in range(N_TRACE_GASES, N_GASES)}
+        trace_gases = valid_gases - bulk_gases
         # #12 handle 3: [explosives.<name>] soot_yield (g soot / g explosive).
         # None reads CFG.explosives (the GasTable / CFG.smoke idiom).
         if explosives_cfg is None:
@@ -554,6 +633,8 @@ class PayloadTable:
                 raise ValueError(
                     f"payloads.{name}.gas_species {gas_species!r} is not a "
                     f"known gas (engine/05 §6.2): {sorted(valid_gases)}")
+            bulk = _bulk_gas_columns(name, col, gas_species, bulk_gases,
+                                     trace_gases)
             emit_blast_smoke = bool(col("emit_blast_smoke", False))
             explosive = str(col("explosive", ""))
             explosive_kg = float(col("explosive_kg", 0.0))
@@ -589,6 +670,7 @@ class PayloadTable:
                 explosive=explosive,
                 explosive_kg=explosive_kg,
                 blast_soot_g=blast_soot_g,
+                **bulk,
             )
         self.names = list(self.by_name)
 
