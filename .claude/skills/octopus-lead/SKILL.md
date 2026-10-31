@@ -384,3 +384,27 @@ the lead so you decide all these things." Concretely:
   (4 tiles from the crown), found by a deterministic search. The melee gate
   cannot see a target-only regression (adjacency is a second footprint
   test). Cost: ~0.3 ms per creature per tick in Python (P6e measures).
+- 2026-10-31 (P6e, worktree agent, Opus) -- the COST BENCH:
+  `tools/bench_octopus.py` (+ `--chain-micro`), the report
+  `docs/octopus_cost_2026-10-31.md`. Slot 5b got a part timer,
+  `creature_system.set_tick_laps`, module-level and OFF by default; with
+  the timer on and off the digests were identical in 10/10 scenarios on all
+  three backends. Numbers, reported, no gate: one octopus = 2.5-2.7 ms per
+  tick on every backend (6 % of 41.7 ms). The chain is 2.0 ms (80 %; 0.55
+  ns per weighted op against P6c's 3.6 M, i.e. half the "1 ns/op" of the
+  suspended 0.2 ms ceiling), the hit shape 0.34 ms (13 %, Python, rebuilt
+  every tick), the hub 0.13-0.24 ms. The cost is exactly linear in animals
+  (8 = 19.9 ms). Batching animals into one call gains 0-1 %; the chain is
+  linear in substeps (12 = 0.75x, 8 = 0.5x). Learned: (1) a CUDA process
+  slows from run to run (#125's repeat slowdown: per-call 10.7 -> 17.1 ms
+  by the third run), so GPU A/B timings need separate processes
+  (`--no-baseline` / `--baseline-only`); the first same-process layout
+  charged up to +7 ms of drift to the octopus. (2) On CUDA, long host work
+  slows the device share of the step (+1.3-2 ms per-call with one octopus,
+  +9 ms resident with eight). (3) The v1 horde bites an octopus that shares
+  its room dead by tick 43, and a bot shoots it at tick 590; the ship bench
+  runs a standing horde. (4) gen_ship seed 1 medium fits the rest pose in
+  one room only. Levers for Erik, none recommended: a lazy or C++ hit
+  shape (-0.3 ms), substeps (a modelling call, gates re-run), threads over
+  animals or arms. Cost: one session, ~1 h of machine time for the three
+  backends.

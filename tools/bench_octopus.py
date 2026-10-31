@@ -29,9 +29,12 @@ Scenarios (``--scenarios``, default all):
   octopus): on its own controller it bites the octopus dead by tick 43 (it
   shares their room), and #125 measured the horde at ~0 ms on these ships.
 
-Every scenario also runs once WITHOUT its octopus (the baseline: same room,
-same match, no ``[[creature]]``), so the rest of ``sim.step`` is measured on
-the same map.
+Every scenario also runs WITHOUT its octopus (the baseline: same room, same
+match, no ``[[creature]]``), each baseline right before its octopus run, so
+the rest of ``sim.step`` is measured on the same map. On CUDA a process slows
+from run to run (#125's repeat slowdown), so GPU numbers are taken with the
+octopus run and its baseline in SEPARATE processes: ``--no-baseline`` and
+``--baseline-only``, one scenario each.
 
 Method: ``creature_system.set_tick_laps`` attaches a part timer to slot 5b
 (OFF by default: a no-op method call per part, no clock read, no state;
@@ -576,6 +579,9 @@ def main(argv=None) -> int:
     ap.add_argument("--repeat", type=int, default=1, help="runs per scenario (pooled)")
     ap.add_argument("--no-baseline", action="store_true",
                     help="skip the runs without the octopus")
+    ap.add_argument("--baseline-only", action="store_true",
+                    help="run only the baselines (no octopus): on CUDA, take the "
+                         "octopus run and its baseline in separate processes")
     ap.add_argument("--verify-inert", action="store_true",
                     help="re-run each scenario with the timer detached; the "
                          "final tick_digest must be identical")
@@ -613,14 +619,28 @@ def main(argv=None) -> int:
     reports, inert = [], []
 
     def one(label, n, make_run, make_base):
-        runs = []
+        # baseline and octopus runs INTERLEAVED in pairs (baseline first): a
+        # CUDA process slows from run to run (#125's repeat slowdown; here up
+        # to +50 % on the resident step by a process's fourth run), so a
+        # baseline taken after every octopus run would charge the drift to
+        # the octopus. For GPU numbers run one scenario per process.
+        runs, base = [], []
+        if args.baseline_only:
+            base = [make_base() for _ in range(args.repeat)]
+            rep = summarize(base, tps=tps, arms=arms, substeps=substeps)
+            rep["scenario"], rep["meta"], rep["baseline_only"] = label, base[0].meta, True
+            reports.append(rep)
+            print(f"  {label} N={n} baseline: step mean "
+                  f"{rep['cols']['step']['mean']:.2f} ms", flush=True)
+            return
         for _ in range(args.repeat):
+            if not args.no_baseline:
+                base.append(make_base())
             t0 = time.perf_counter()
             runs.append(make_run(True))
             print(f"  {label} N={n}: {len(runs[-1].ticks)} ticks in "
                   f"{time.perf_counter() - t0:.1f} s, digest {runs[-1].digest[:12]} "
                   f"{runs[-1].meta}", flush=True)
-        base = [] if args.no_baseline else [make_base() for _ in range(args.repeat)]
         if args.verify_inert:
             off = make_run(False)
             ok = off.digest == runs[0].digest
