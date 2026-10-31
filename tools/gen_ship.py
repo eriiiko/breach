@@ -27,11 +27,14 @@ tiles. Hull, steel everywhere inside, each room's rectangle air, each edge
 cut into its shared wall as its row of the EDGE-TYPE TABLE (:data:`EDGE_KINDS`,
 the vocabulary doc's §0.4: door = ``MAT_DOOR``, window = ``MAT_GLASS``, open
 = ``MAT_AIR``, breakable = ``MAT_WOOD``, bulkhead / vent_only = nothing cut;
-entity_door / airlock / locked are accepted by the schema and refused here
-until the next patch), per-room tags from :data:`ROOM_TAGS`,
+entity_door = an A6 ``door`` entity in the opening; airlock = the L5 recipe,
+a vestibule carved on room ``a``'s side with two doors and levels/airlock_demo's
+controller and wiring; locked is accepted by the schema and refused here
+until #135), per-room tags from :data:`ROOM_TAGS`,
 fuel clusters (furniture / wood) against the walls of tagged rooms clear of
 doors (placed in one room of a mirror pair and reflected into its twin),
-the vents on inner walls of their tagged rooms, one static lamp per room
+the ducts (one per duct name the ``vent`` tags use, a filter each) and their
+vents on inner walls of their tagged rooms, one static lamp per room
 (render light only), the spawn rooms from the tags. It reads only the graph (and one seeded generator for the clusters).
 
 GATES (:func:`validate`), before anything is written: airtight
@@ -84,9 +87,12 @@ from simulation.match import (  # noqa: E402
     FORMATION_FOOTPRINT, FORMATION_GAP, FORMATION_PITCH, MatchSpec,
     MatchTeam, SpawnRoom, formation_capacity, placement_cells,
 )
+from simulation.entities.door import (  # noqa: E402
+    quantize_span_tiles, tiles_per_m,
+)
 from simulation.materials import (  # noqa: E402
-    MAT_AIR, MAT_DOOR, MAT_FURNITURE, MAT_GLASS, MAT_HULL, MAT_STEEL,
-    MAT_WOOD,
+    MAT_AIR, MAT_DOOR, MAT_DOOR_CLOSED, MAT_FURNITURE, MAT_GLASS, MAT_HULL,
+    MAT_STEEL, MAT_WOOD,
 )
 
 TILE_SIZE_M = 0.333          # the reference tile (the playground's scale)
@@ -104,6 +110,32 @@ FILTER = "hepa_basic"        # a [filters.*] row (config.toml)
 TIME_LIMIT_S = 300.0
 LAMP_RGB = (1.0, 0.84, 0.67)  # the explosion studio's warm static lamp
 LAMP_INTENSITY = 1.2
+
+# Entity doors (A6). The bots (control_bots) never USE a door and a closed
+# entity door stamps MAT_DOOR_CLOSED (mobility 0), which no unit crosses --
+# so stage 2 emits every entity door OPEN (MAT_AIR in the CSV, the loader's
+# own stamp) until a door-opening rule exists (#142). Still a compartment
+# boundary in the gates: it can close.
+ENTITY_DOOR_INITIAL = "open"
+
+# Airlock pairs (L5): a VESTIBULE carved out of room ``a``'s side of the
+# shared wall (the wall itself is one tile: there is nothing to carve
+# there), AIRLOCK_W tiles along the wall by VESTIBULE_D deep, its inner wall
+# one tile; the doors span the vestibule's full width (levels/airlock_demo's
+# shape: a 3x3 unit needs a 5-wide passage for three anchor rows). The
+# equipment and its wiring are levels/airlock_demo's exactly
+# (docs/arc_b_impl_2026-07-21.md §7): inner door open, outer door closed,
+# a pump + a pressure probe in the vestibule's side wall, a presence plate
+# at its centre (3 tiles, the demo's radius in tiles), two deciders, the
+# controller evacuating toward the far side and repressurising after.
+AIRLOCK_W = 5
+VESTIBULE_D = 5
+AIRLOCK_PUMP = {"rate": 8.0, "target_atm": 0, "hysteresis_band": 13107}
+AIRLOCK_PLATE_TILES = 3
+AIRLOCK_DEC_FAR = ("le", 6554)       # chamber <= 0.1 atm
+AIRLOCK_DEC_NEAR = ("ge", 58982)     # chamber >= 0.9 atm
+AIRLOCK_CTRL = {"far_door": "outer", "target_far_atm": 0,
+                "target_near_atm": 65536}
 
 
 @dataclass(frozen=True)
@@ -149,19 +181,20 @@ L9_MAY_BECOME_CORRIDOR = "may-become-corridor"
 L9_ROUTED_FREELY = "routed-freely"
 L9_STRENGTHS = (L9_MUST_SHARE_WALL, L9_MAY_BECOME_CORRIDOR, L9_ROUTED_FREELY)
 
-NEXT_PATCH = "the next #133 patch (entity doors and airlock pairs)"
-
-
 @dataclass(frozen=True)
 class EdgeKind:
     """One row of the vocabulary's edge-type table (§0.4). ``stamps``: the
-    material stage 2 cuts into the shared wall (None: nothing is cut, the
-    wall stays steel); ``width``: tiles along the wall; ``bounds``: the edge
-    bounds a compartment (False: its two rooms are ONE compartment);
+    material stage 2 puts in the shared wall's opening (None: nothing is
+    cut, the wall stays steel; for an entity kind, what its door's initial
+    state stamps there, so the CSV and the loader's door stamp agree);
+    ``width``: tiles along the wall; ``bounds``: the edge bounds a
+    compartment (False: its two rooms are ONE compartment);
     ``secret_path``: a ``secret`` room reached only through this edge counts
     as reachable (cut the wall / open the duct); ``keep_clear``: a unit
     passes here, so fuel keeps ``FUEL_DOOR_CLEAR`` off it; ``l9``: the L9
-    adjacency strength (docs/breach_levelgen_design_v0.1.md); ``pending``:
+    adjacency strength (docs/breach_levelgen_design_v0.1.md); ``entity``:
+    what stage 2 emits besides tiles (``"door"``: one A6 door entity in the
+    opening; ``"airlock"``: the L5 recipe, :func:`_airlock`); ``pending``:
     None when stage 2 stamps it, else what will (the schema accepts the
     kind, :func:`embed` refuses it naming that)."""
     stamps: int | None
@@ -171,31 +204,39 @@ class EdgeKind:
     keep_clear: bool
     l9: str
     pending: str | None = None
+    entity: str | None = None
 
+
+_DOOR_STAMP = {"open": MAT_AIR, "closed": MAT_DOOR_CLOSED}
 
 # THE table: a new way two rooms join is a new row here, never an inline
 # stamp. Same rows, same order as the vocabulary's §0.4.
 EDGE_KINDS = {
     "door":        EdgeKind(MAT_DOOR, DOOR_W, True, False, True,
                             L9_MUST_SHARE_WALL),
-    "entity_door": EdgeKind(None, DOOR_W, True, False, True,
-                            L9_MUST_SHARE_WALL, pending=NEXT_PATCH),
+    "entity_door": EdgeKind(_DOOR_STAMP[ENTITY_DOOR_INITIAL], DOOR_W, True,
+                            False, True, L9_MUST_SHARE_WALL, entity="door"),
     "open":        EdgeKind(MAT_AIR, DOOR_W, False, False, True,
                             L9_MUST_SHARE_WALL),
     "window":      EdgeKind(MAT_GLASS, GLASS_W, True, False, False,
                             L9_MUST_SHARE_WALL),
     "bulkhead":    EdgeKind(None, 0, True, False, False,
                             L9_MUST_SHARE_WALL),
-    "airlock":     EdgeKind(None, DOOR_W, True, False, True,
-                            L9_MUST_SHARE_WALL, pending=NEXT_PATCH),
+    # The opening is the OUTER door (closed); the inner door and the
+    # vestibule are carved on room a's side (_airlock).
+    "airlock":     EdgeKind(_DOOR_STAMP["closed"], AIRLOCK_W, True, False,
+                            True, L9_MUST_SHARE_WALL, entity="airlock"),
     "vent_only":   EdgeKind(None, 0, True, True, False,
                             L9_MUST_SHARE_WALL),
     "breakable":   EdgeKind(MAT_WOOD, DOOR_W, True, True, True,
                             L9_MUST_SHARE_WALL),
     "locked":      EdgeKind(None, DOOR_W, True, False, True,
                             L9_MUST_SHARE_WALL,
-                            pending=NEXT_PATCH + " and #135 (terminals)"),
+                            pending="#135 (terminals: a locked door is an "
+                                    "entity door + a terminal)"),
 }
+# Kinds that may cross a cell boundary (L5): everything else is refused.
+CELL_CROSSING_KINDS = ("airlock", "bulkhead")
 
 
 def _is_int(v) -> bool:
@@ -216,6 +257,35 @@ def _check_light(v) -> bool:
             and _is_num(level) and level >= 0)
 
 
+VENT_ROLES = ("supply", "return")
+MAIN_DUCT = "main"
+
+
+def _check_vent(v) -> bool:
+    """v1's shorthand ``"supply"`` / ``"return"``, or ``{"duct": name,
+    "roles": [...]}`` with 1-2 distinct roles and a plain id-safe name."""
+    if v in VENT_ROLES:
+        return True
+    if not (isinstance(v, dict) and set(v) == {"duct", "roles"}):
+        return False
+    name, roles = v["duct"], v["roles"]
+    return (isinstance(name, str) and name != ""
+            and all(c.isalnum() or c == "_" for c in name)
+            and isinstance(roles, (list, tuple)) and 1 <= len(roles) <= 2
+            and len(set(roles)) == len(roles)
+            and all(r in VENT_ROLES for r in roles))
+
+
+def vent_spec(tag):
+    """A ``vent`` tag as ``(duct, roles, shorthand)``: roles in
+    :data:`VENT_ROLES` order; ``shorthand`` True for v1's string form (on
+    the ``main`` duct, keeping v1's vent ids)."""
+    if isinstance(tag, str):
+        return MAIN_DUCT, (tag,), True
+    return tag["duct"], tuple(r for r in VENT_ROLES if r in tag["roles"]), \
+        False
+
+
 # THE per-room tag schema (all keys optional): key -> (what it is, check).
 # A department writes these; stage 2 reads ``spawn_team``, ``zombie``,
 # ``fuel``, ``vent`` and ``light``, and carries ``dept``, ``role``,
@@ -227,8 +297,9 @@ ROOM_TAGS = {
                    lambda v: isinstance(v, bool)),
     "fuel":       ("int >= 0: fuel clusters against the walls",
                    lambda v: _is_int(v) and v >= 0),
-    "vent":       ('"supply" | "return": a wall vent on the duct',
-                   lambda v: v in ("supply", "return")),
+    "vent":       ('"supply" | "return" (a vent on the main duct) or '
+                   '{"duct": name, "roles": ["supply"] | ["return"] | '
+                   '["supply", "return"]}', _check_vent),
     "dept":       ("str: the department this room belongs to",
                    lambda v: isinstance(v, str)),
     "role":       ("str: the room's role in its department",
@@ -297,13 +368,20 @@ class ShipGraph:
     mirror_x: bool = False        # left-right mirrored about the grid centre
     max_per_team: int = 6
     zombies: int = 0
+    # Per duct name: {"filter": a [filters.*] row}. A duct not named here
+    # takes FILTER (hepa_basic), which is v1's main duct.
+    ducts: dict = field(default_factory=dict)
 
     def __post_init__(self):
         self.check()
 
+    def duct_filter(self, name: str) -> str:
+        return self.ducts.get(name, {}).get("filter", FILTER)
+
     def check(self) -> None:
         """Refuse an unknown edge kind, an unknown room tag key, a tag of
-        the wrong shape, or a secret room that seats a team, naming it."""
+        the wrong shape, a secret room that seats a team, and the duct /
+        cell rules (:meth:`_check_ducts_and_cells`), naming the offender."""
         for i, rm in enumerate(self.rooms):
             if rm.id != i:
                 raise GraphSchemaError(f"room {i} has id {rm.id} (rooms[i].id "
@@ -331,6 +409,78 @@ class ShipGraph:
             if not (0 <= e.a < n and 0 <= e.b < n) or e.a == e.b:
                 raise GraphSchemaError(
                     f"edge {e.a}-{e.b}: not two distinct rooms of {n}")
+        self._check_ducts_and_cells()
+
+    def _check_ducts_and_cells(self) -> None:
+        """The vocabulary's §0.5 and L5 rules on the graph:
+
+        - the ``ducts`` annotation names a known ``[filters.*]`` row;
+        - a duct's rooms lie in ONE pressure cell (``cell`` tag; rooms
+          without one share an implicit cell): a duct never crosses a cell
+          boundary;
+        - a SEALED room (every edge it has bounds a compartment) carrying a
+          ``vent`` tag carries BOTH roles (the vents have no pressure
+          feedback: a lone supply pumps it up, a lone return drains it).
+          v1's string shorthand is exempt: v1's ``--vents`` pair is exactly
+          such a lone supply / lone return (critique finding 2), and
+          levels/ship_demo is pinned byte-identical;
+        - a ``vent_only`` edge joins two rooms ON ONE DUCT (the air path is
+          the duct; nothing is cut in the wall);
+        - an edge whose rooms lie in different cells is an airlock or a
+          bulkhead, never a plain door (L5)."""
+        from config import CFG
+        filters = getattr(CFG, "filters", None)
+        for name, ann in self.ducts.items():
+            if not (isinstance(ann, dict) and set(ann) <= {"filter"}
+                    and isinstance(ann.get("filter", FILTER), str)):
+                raise GraphSchemaError(
+                    f"duct {name!r}: annotation {ann!r} is not "
+                    f"{{'filter': <a [filters.*] row>}}")
+            fname = self.duct_filter(name)
+            if getattr(filters, fname, None) is None:
+                raise GraphSchemaError(
+                    f"duct {name!r}: filter {fname!r} has no [filters."
+                    f"{fname}] row in config.toml")
+        specs = {rm.id: vent_spec(rm.tags["vent"]) for rm in self.rooms
+                 if "vent" in rm.tags}
+        cells: dict = {}
+        for rid, (duct, _roles, _sh) in specs.items():
+            cells.setdefault(duct, {}).setdefault(
+                self.rooms[rid].tags.get("cell"), []).append(rid)
+        for duct, by_cell in sorted(cells.items()):
+            if len(by_cell) > 1:
+                desc = ", ".join(f"cell {c}: rooms {ids}" for c, ids in
+                                 sorted(by_cell.items(), key=repr))
+                raise GraphSchemaError(
+                    f"duct {duct!r} spans {len(by_cell)} cells ({desc}): a "
+                    f"duct never crosses a cell boundary (vocabulary §0.5)")
+        for rid, (duct, roles, shorthand) in sorted(specs.items()):
+            if shorthand or len(roles) == 2:
+                continue
+            mine = [e for e in self.edges if rid in (e.a, e.b)]
+            if all(e.spec.bounds for e in mine):
+                raise GraphSchemaError(
+                    f"room {rid} is sealed (every edge bounds a compartment) "
+                    f"and carries only a {roles[0]!r} vent on duct {duct!r}: "
+                    f"a sealed room carries both a supply and a return or "
+                    f"neither (vocabulary §0.4 / §0.5)")
+        for e in self.edges:
+            if e.kind == "vent_only":
+                da = specs.get(e.a, (None,))[0]
+                db = specs.get(e.b, (None,))[0]
+                if da is None or da != db:
+                    raise GraphSchemaError(
+                        f"edge {e.a}-{e.b} (vent_only): rooms {e.a} and "
+                        f"{e.b} are not on one duct (room {e.a}: {da!r}, "
+                        f"room {e.b}: {db!r}) -- a vent_only edge's air "
+                        f"path IS the duct")
+            ca = self.rooms[e.a].tags.get("cell")
+            cb = self.rooms[e.b].tags.get("cell")
+            if ca != cb and e.kind not in CELL_CROSSING_KINDS:
+                raise GraphSchemaError(
+                    f"edge {e.a}-{e.b}: kind {e.kind!r} crosses cells {ca} "
+                    f"-> {cb}; an edge crossing a cell boundary is an "
+                    f"airlock or a bulkhead, never a plain door (L5)")
 
     def compartment_of(self) -> list:
         """Room id -> compartment index: rooms joined by an edge that does
@@ -382,6 +532,102 @@ def _opening_tiles(graph: ShipGraph, e: Edge) -> list:
     if orient == "v":
         return [(y, line) for y in range(at, at + n)]
     return [(line, x) for x in range(at, at + n)]
+
+
+@dataclass(frozen=True)
+class Airlock:
+    """The L5 recipe of one ``airlock`` edge, as geometry (a pure function
+    of the graph, so stage 2 and the gates derive the same one). ``wall``:
+    the shared wall's orientation (``"v"``/``"h"``), which is also both
+    doors' span orientation; ``outer``: the outer door's tiles (the edge's
+    opening, in the shared wall, row-major); ``inner``: the inner door's
+    tiles (the vestibule's wall facing room ``a``); ``chamber``: the
+    vestibule's air box ``(x0, y0, x1, y1)``; ``walls``: the new wall tiles
+    stage 2 sets to steel inside room ``a``; ``carve``: every tile of room
+    ``a``'s box the vestibule takes (chamber + walls + inner door);
+    ``pump`` / ``probe``: ``(x, y, dx, dy)`` mount tile in the vestibule's
+    side wall and the offset of the chamber tile it acts on; ``plate``: the
+    presence plate's tile ``(x, y)``, the chamber's centre."""
+    wall: str
+    outer: tuple
+    inner: tuple
+    chamber: tuple
+    walls: tuple
+    carve: tuple
+    pump: tuple
+    probe: tuple
+    plate: tuple
+
+
+def _airlock(graph: ShipGraph, e: Edge) -> Airlock:
+    """The vestibule of an ``airlock`` edge, carved on room ``e.a``'s side
+    of the shared wall: ``AIRLOCK_W`` along the wall (the outer door's
+    span) by ``VESTIBULE_D`` deep, closed by a one-tile inner wall holding
+    the inner door (the same span, so the passage is straight) and two
+    side walls. Room ``a`` keeps at least a unit's footprint of floor in
+    front of the inner door, or the plan is rejected."""
+    outer = _opening_tiles(graph, e)
+    a = graph.rooms[e.a]
+    ax0, ay0, ax1, ay1 = a.box
+    orient, line, _lo, _hi = shared_wall(a, graph.rooms[e.b])
+    D, fp = VESTIBULE_D, FORMATION_FOOTPRINT
+    if orient == "v":
+        depth = a.w
+        y0, y1 = outer[0][0], outer[-1][0]
+        if ax1 + 1 == line:                         # a is left of the wall
+            cx0, cx1, iw = line - D, line - 1, line - D - 1
+        else:
+            cx0, cx1, iw = line + 1, line + D, line + D + 1
+        chamber = (cx0, y0, cx1, y1)
+        inner = tuple((y, iw) for y in range(y0, y1 + 1))
+        wx0, wx1 = min(cx0, iw), max(cx1, iw)
+        walls = [(y0 - 1, x) for x in range(wx0, wx1 + 1)] + \
+                [(y1 + 1, x) for x in range(wx0, wx1 + 1)] + \
+                [(y0 - 1, iw), (y1 + 1, iw)]
+        mid = (cx0 + cx1) // 2
+        pump, probe = (mid, y0 - 1, 0, 1), (mid + 1, y0 - 1, 0, 1)
+        plate = (mid, (y0 + y1) // 2)
+    else:
+        depth = a.h
+        x0, x1 = outer[0][1], outer[-1][1]
+        if ay1 + 1 == line:                         # a is above the wall
+            cy0, cy1, iw = line - D, line - 1, line - D - 1
+        else:
+            cy0, cy1, iw = line + 1, line + D, line + D + 1
+        chamber = (x0, cy0, x1, cy1)
+        inner = tuple((iw, x) for x in range(x0, x1 + 1))
+        wy0, wy1 = min(cy0, iw), max(cy1, iw)
+        walls = [(y, x0 - 1) for y in range(wy0, wy1 + 1)] + \
+                [(y, x1 + 1) for y in range(wy0, wy1 + 1)]
+        mid = (cy0 + cy1) // 2
+        pump, probe = (x0 - 1, mid, 1, 0), (x0 - 1, mid + 1, 1, 0)
+        plate = ((x0 + x1) // 2, mid)
+    if depth < D + 1 + fp:
+        raise _Reject(f"airlock {e.a}-{e.b}: room {e.a} ({depth} tiles deep) "
+                      f"cannot hold a {D}-deep vestibule and a unit's "
+                      f"footprint in front of it")
+    walls = tuple(sorted({(y, x) for (y, x) in walls
+                          if ax0 <= x <= ax1 and ay0 <= y <= ay1}))
+    cx0, cy0, cx1, cy1 = chamber
+    cells = {(y, x) for y in range(cy0, cy1 + 1) for x in range(cx0, cx1 + 1)}
+    carve = tuple(sorted(cells | set(walls) | set(inner)))
+    return Airlock(wall=orient, outer=tuple(outer), inner=inner,
+                   chamber=chamber, walls=walls, carve=carve, pump=pump,
+                   probe=probe, plate=plate)
+
+
+def _airlocks(graph: ShipGraph) -> list:
+    """``[(edge index, Airlock)]`` for every airlock edge, in edge order."""
+    return [(i, _airlock(graph, e)) for i, e in enumerate(graph.edges)
+            if e.spec.entity == "airlock"]
+
+
+def _carved(graph: ShipGraph) -> dict:
+    """Room id -> the set of its box tiles vestibules take."""
+    out: dict = {}
+    for i, al in _airlocks(graph):
+        out.setdefault(graph.edges[i].a, set()).update(al.carve)
+    return out
 
 
 # ===========================================================================
@@ -652,6 +898,7 @@ class Embedding:
     # generator-side table the vent builder and the grammar read.
     room_tags: dict = field(default_factory=dict)
     edges_by_kind: dict = field(default_factory=dict)   # kind -> count
+    wires: list = field(default_factory=list)   # (from, to): the airlocks'
 
 
 def _reflect(box, w):
@@ -695,10 +942,13 @@ def _place_fuel(rng, tm, room: Room, graph: ShipGraph, door) -> None:
             break
 
 
-def _vent_site(tm, room: Room, axis2: int):
+def _vent_site(tm, room: Room, axis2: int, reserved=None):
     """A steel tile on the room's boundary, the room's air in front, no
     door / glass within one tile, closest to the axis (then topmost):
-    ``(x, y, facing)`` or None. ``axis2`` is twice the axis coordinate."""
+    ``(x, y, facing)`` or None. ``axis2`` is twice the axis coordinate.
+    ``reserved`` (bool mask, optional): tiles neither the site nor its
+    aperture may take (entity door spans, airlock equipment and vestibules,
+    vents already placed)."""
     x0, y0, x1, y1 = room.box
     cands = [(x, y0 - 1, "s") for x in range(x0, x1 + 1)] + \
             [(x, y1 + 1, "n") for x in range(x0, x1 + 1)] + \
@@ -711,7 +961,11 @@ def _vent_site(tm, room: Room, axis2: int):
         dy, dx = {"n": (-1, 0), "s": (1, 0), "e": (0, 1), "w": (0, -1)}[facing]
         if tm[y + dy, x + dx] != MAT_AIR:
             continue
-        if np.isin(tm[y - 1:y + 2, x - 1:x + 2], (MAT_DOOR, MAT_GLASS)).any():
+        if np.isin(tm[y - 1:y + 2, x - 1:x + 2],
+                   (MAT_DOOR, MAT_GLASS, MAT_DOOR_CLOSED)).any():
+            continue
+        if reserved is not None and (reserved[y - 1:y + 2, x - 1:x + 2].any()
+                                     or reserved[y + dy, x + dx]):
             continue
         key = (abs(2 * x - axis2), y, x)
         if best is None or key < best[0]:
@@ -719,29 +973,149 @@ def _vent_site(tm, room: Room, axis2: int):
     return None if best is None else best[1]
 
 
-def _build_vents(tm, graph: ShipGraph) -> list:
-    """One HEPA duct; a wall vent in each room tagged ``vent``."""
-    tagged = sorted((rm for rm in graph.rooms if "vent" in rm.tags),
-                    key=lambda rm: (rm.tags["vent"] != "supply", rm.id))
+_VENT_KEYS = ("x", "y", "mount", "facing", "role", "duct", "q_circ")
+
+
+def _build_vents(tm, graph: ShipGraph, reserved=None) -> list:
+    """One duct entity per duct name the rooms' ``vent`` tags use (id
+    ``duct_<name>``, its filter :meth:`ShipGraph.duct_filter`), then that
+    duct's wall vents, one per (room, role): supply rooms first, then by
+    room id. Ducts in name order. A vent's id is ``vent_<duct>_<room>_<role>``;
+    v1's string shorthand keeps v1's ``vent_<role>`` (so v1 ships write the
+    same file), and a collision of those is refused by name. A room with
+    both roles gets two sites, the second clear of the first."""
+    tagged = {}
+    for rm in graph.rooms:
+        if "vent" in rm.tags:
+            duct, roles, shorthand = vent_spec(rm.tags["vent"])
+            for role in roles:
+                tagged.setdefault(duct, []).append((role, rm, shorthand))
     if not tagged:
         return []
-    did = "duct_main"
-    ents = [EntityInstance(id=did, class_name="duct", ordinal=0,
-                           fields={"filter": FILTER}, authored_keys=("filter",))]
-    keys = ("x", "y", "mount", "facing", "role", "duct", "q_circ")
-    for i, rm in enumerate(tagged, start=1):
-        site = _vent_site(tm, rm, graph.width - 1)
-        if site is None:
-            raise _Reject(f"vents: no wall site in room {rm.id}")
-        x, y, facing = site
-        role = rm.tags["vent"]
+    taken = (np.zeros(tm.shape, dtype=bool) if reserved is None
+             else reserved.copy())
+    ents, ids = [], set()
+    for duct in sorted(tagged):
+        did = f"duct_{duct}"
         ents.append(EntityInstance(
-            id=f"vent_{role}", class_name="vent", ordinal=i,
-            fields={"x": int(x), "y": int(y), "mount": "wall",
-                    "facing": facing, "role": role, "duct": did,
-                    "q_circ": Q_CIRC},
-            authored_keys=keys))
+            id=did, class_name="duct", ordinal=len(ents),
+            fields={"filter": graph.duct_filter(duct)},
+            authored_keys=("filter",)))
+        for role, rm, shorthand in sorted(
+                tagged[duct], key=lambda t: (t[0] != "supply", t[1].id)):
+            site = _vent_site(tm, rm, graph.width - 1, taken)
+            if site is None:
+                raise _Reject(f"vents: no wall site in room {rm.id}")
+            x, y, facing = site
+            taken[y - 1:y + 2, x - 1:x + 2] = True
+            vid = (f"vent_{role}" if shorthand
+                   else f"vent_{duct}_{rm.id}_{role}")
+            if vid in ids:
+                raise GraphSchemaError(
+                    f"room {rm.id}: vent id {vid!r} is taken -- v1's string "
+                    f"shorthand allows one supply and one return; use "
+                    f'{{"duct": ..., "roles": [...]}}')
+            ids.add(vid)
+            ents.append(EntityInstance(
+                id=vid, class_name="vent", ordinal=len(ents),
+                fields={"x": int(x), "y": int(y), "mount": "wall",
+                        "facing": facing, "role": role, "duct": did,
+                        "q_circ": Q_CIRC},
+                authored_keys=_VENT_KEYS))
     return ents
+
+
+def _door_length_m(n: int) -> float:
+    """A ``length_m`` the canonical door quantization (A6 §3) maps to
+    exactly ``n`` tiles at ``TILE_SIZE_M``."""
+    for digits in (3, 4, 6):
+        m = round(n / tiles_per_m(TILE_SIZE_M), digits)
+        if quantize_span_tiles(m, TILE_SIZE_M) == n:
+            return m
+    raise ValueError(f"no length_m quantizes to {n} tiles at {TILE_SIZE_M}")
+
+
+_DOOR_KEYS = ("x", "y", "orientation", "length_m", "initial_state")
+
+
+def _door_entity(eid: str, tiles, orient: str, state: str) -> EntityInstance:
+    """An A6 ``door`` entity spanning ``tiles`` (row-major, in a wall of
+    orientation ``orient``: a ``"v"`` wall's door runs along +y)."""
+    y, x = tiles[0]
+    return EntityInstance(
+        id=eid, class_name="door", ordinal=0,
+        fields={"x": int(x), "y": int(y), "orientation": orient,
+                "length_m": _door_length_m(len(tiles)),
+                "initial_state": state},
+        authored_keys=_DOOR_KEYS)
+
+
+def _build_doors(graph: ShipGraph) -> tuple[list, list]:
+    """The entity half of the edges, ``(entities, wires)``: one ``door``
+    entity per ``entity_door`` edge (id ``door_e<edge index>``, initial
+    state ``ENTITY_DOOR_INITIAL``), and per ``airlock`` edge the
+    levels/airlock_demo recipe -- inner door (open), outer door (closed),
+    pump, presence plate, pressure probe, two deciders, the controller --
+    under ids ``airlock_e<edge index>_<part>``, wired exactly as the demo
+    (15 wires). Ordinals are assigned by the caller (file order)."""
+    ents, wires = [], []
+    for i, e in enumerate(graph.edges):
+        if e.spec.entity != "door":
+            continue
+        orient = shared_wall(graph.rooms[e.a], graph.rooms[e.b])[0]
+        ents.append(_door_entity(f"door_e{i}", _opening_tiles(graph, e),
+                                 orient, ENTITY_DOOR_INITIAL))
+    for i, al in _airlocks(graph):
+        p = f"airlock_e{i}"
+        ids = {k: f"{p}_{k}" for k in ("inner", "outer", "pump", "plate",
+                                       "probe", "dec_far", "dec_near",
+                                       "ctrl")}
+        ents.append(_door_entity(ids["inner"], al.inner, al.wall, "open"))
+        ents.append(_door_entity(ids["outer"], al.outer, al.wall, "closed"))
+        px, py, pdx, pdy = al.pump
+        ents.append(EntityInstance(
+            id=ids["pump"], class_name="pump", ordinal=0,
+            fields={"x": px, "y": py, "port_dx": pdx, "port_dy": pdy,
+                    **AIRLOCK_PUMP},
+            authored_keys=("x", "y", "port_dx", "port_dy", *AIRLOCK_PUMP)))
+        ents.append(EntityInstance(
+            id=ids["plate"], class_name="sensor_motion", ordinal=0,
+            fields={"x": al.plate[0], "y": al.plate[1],
+                    "radius": _door_length_m(AIRLOCK_PLATE_TILES)},
+            authored_keys=("x", "y", "radius")))
+        sx, sy, sdx, sdy = al.probe
+        ents.append(EntityInstance(
+            id=ids["probe"], class_name="pressure", ordinal=0,
+            fields={"x": sx, "y": sy, "sample_dx": sdx, "sample_dy": sdy},
+            authored_keys=("x", "y", "sample_dx", "sample_dy")))
+        for k, (cmp_, thr) in (("dec_far", AIRLOCK_DEC_FAR),
+                               ("dec_near", AIRLOCK_DEC_NEAR)):
+            ents.append(EntityInstance(
+                id=ids[k], class_name="decider", ordinal=0,
+                fields={"comparator": cmp_, "threshold": thr},
+                authored_keys=("comparator", "threshold")))
+        ents.append(EntityInstance(
+            id=ids["ctrl"], class_name="airlock_controller", ordinal=0,
+            fields=dict(AIRLOCK_CTRL), authored_keys=tuple(AIRLOCK_CTRL)))
+        c = ids["ctrl"]
+        wires += [
+            (f"{ids['plate']}.value", f"{c}.presence"),
+            (f"{ids['inner']}.is_open", f"{c}.inner_open"),
+            (f"{ids['outer']}.is_open", f"{c}.outer_open"),
+            (f"{ids['inner']}.alive", f"{c}.inner_alive"),
+            (f"{ids['outer']}.alive", f"{c}.outer_alive"),
+            (f"{ids['probe']}.value", f"{ids['dec_far']}.in"),
+            (f"{ids['probe']}.value", f"{ids['dec_near']}.in"),
+            (f"{ids['dec_far']}.out", f"{c}.at_far"),
+            (f"{ids['dec_near']}.out", f"{c}.at_near"),
+            (f"{c}.inner_close", f"{ids['inner']}.close"),
+            (f"{c}.inner_open_cmd", f"{ids['inner']}.open"),
+            (f"{c}.outer_close", f"{ids['outer']}.close"),
+            (f"{c}.outer_open_cmd", f"{ids['outer']}.open"),
+            (f"{c}.pump_inject", f"{ids['pump']}.inject"),
+            (f"{c}.pump_extract", f"{ids['pump']}.extract"),
+        ]
+    return ents, wires
 
 
 def embed(graph: ShipGraph, rng) -> Embedding:
@@ -765,19 +1139,31 @@ def embed(graph: ShipGraph, rng) -> Embedding:
             raise _Reject(f"room {rm.id} leaves the hull")
         tm[y0:y1 + 1, x0:x1 + 1] = MAT_AIR
     passage = np.zeros((H, W), dtype=bool)        # fuel keeps clear of these
+    reserved = np.zeros((H, W), dtype=bool)       # vents keep clear of these
     by_kind = {}
     for e in graph.edges:
         spec = e.spec
         for (y, x) in _opening_tiles(graph, e):
             tm[y, x] = spec.stamps
             passage[y, x] |= spec.keep_clear
+            reserved[y, x] |= spec.entity is not None
         by_kind[e.kind] = by_kind.get(e.kind, 0) + 1
+    for _i, al in _airlocks(graph):
+        _carve_airlock(tm, al)
+        for (y, x) in al.carve:
+            passage[y, x] = reserved[y, x] = True
+        for (mx, my, _dx, _dy) in (al.pump, al.probe):
+            reserved[my, mx] = True
     doors, windows = by_kind.get("door", 0), by_kind.get("window", 0)
     for rm in graph.rooms:
         if rm.tags.get("fuel") and (rm.mirror is None or rm.mirror >= rm.id
                                     or not graph.mirror_x):
             _place_fuel(rng, tm, rm, graph, passage)
-    ents = _build_vents(tm, graph)
+    ents = _build_vents(tm, graph, reserved if reserved.any() else None)
+    door_ents, wires = _build_doors(graph)
+    ents = ents + door_ents
+    for k, ent in enumerate(ents):
+        ent.ordinal = k                            # file order (A3 §3a)
     by_team = {rm.tags["spawn_team"]: rm for rm in graph.rooms
                if "spawn_team" in rm.tags}
     rooms = [SpawnRoom(team=t, x=by_team[t].x, y=by_team[t].y, w=by_team[t].w,
@@ -805,7 +1191,30 @@ def embed(graph: ShipGraph, rng) -> Embedding:
     return Embedding(tilemap=tm, spawn_rooms=rooms, entities=ents,
                      lights=lights, doors=doors, windows=windows,
                      fuel_tiles=fuel, room_tags=room_tags,
-                     edges_by_kind=by_kind)
+                     edges_by_kind=by_kind, wires=wires)
+
+
+def _carve_airlock(tm, al: Airlock) -> None:
+    """Stamp a vestibule into room ``a``'s air: its new walls steel, the
+    inner door's span air (the door spawns open), and refuse a vestibule
+    whose enclosure another edge has cut, or whose equipment has no solid
+    mount."""
+    for (y, x) in al.walls:
+        tm[y, x] = MAT_STEEL
+    for (y, x) in al.inner:
+        tm[y, x] = _DOOR_STAMP["open"]
+    x0, y0, x1, y1 = al.chamber
+    doors = set(al.inner) | set(al.outer)
+    ring = [(y, x) for y in range(y0 - 1, y1 + 2) for x in range(x0 - 1, x1 + 2)
+            if not (y0 <= y <= y1 and x0 <= x <= x1)
+            and (y0 <= y <= y1 or x0 <= x <= x1)]       # 4-neighbours only
+    for (y, x) in ring:
+        if (y, x) not in doors and tm[y, x] not in (MAT_STEEL, MAT_HULL):
+            raise _Reject(f"airlock: the vestibule's wall at ({x},{y}) is "
+                          f"cut ({int(tm[y, x])})")
+    for (mx, my, _dx, _dy) in (al.pump, al.probe):
+        if tm[my, mx] not in (MAT_STEEL, MAT_HULL):
+            raise _Reject(f"airlock: no solid mount at ({mx},{my})")
 
 
 # ===========================================================================
@@ -843,7 +1252,10 @@ def compartments(tm: np.ndarray, graph: ShipGraph | None = None):
     the STRUCTURE MASK also takes the graph's edge kinds: the opening tiles
     of every edge that bounds a compartment are structure whatever they are
     made of (a ``breakable`` edge's wood segment is a wall, not a crate),
-    while an ``open`` edge's air gap joins its rooms as the table says."""
+    while an ``open`` edge's air gap joins its rooms as the table says. An
+    entity door's span is structure even while it stands open (it can
+    close), and so is an airlock's inner door: each vestibule is its own
+    compartment."""
     from scipy import ndimage
     contents = np.isin(tm, (MAT_AIR, MAT_FURNITURE, MAT_WOOD))
     if graph is not None:
@@ -851,41 +1263,67 @@ def compartments(tm: np.ndarray, graph: ShipGraph | None = None):
             if e.spec.bounds and e.spec.pending is None:
                 for (y, x) in _opening_tiles(graph, e):
                     contents[y, x] = False
+        for _i, al in _airlocks(graph):
+            for (y, x) in al.inner:
+                contents[y, x] = False
     return ndimage.label(contents)
 
 
-def _room_label(clab: np.ndarray, rm: Room) -> int:
+def _room_label(clab: np.ndarray, rm: Room, carved=None) -> int:
     """The compartment label of a room: its rectangle's top-left tile (air
-    or a crate, always contents)."""
-    return int(clab[rm.y, rm.x])
+    or a crate, always contents) -- or, when a vestibule was carved out of
+    it (``carved``: room id -> tiles), its first row-major tile outside the
+    carve."""
+    skip = (carved or {}).get(rm.id)
+    if not skip:
+        return int(clab[rm.y, rm.x])
+    x0, y0, x1, y1 = rm.box
+    for y in range(y0, y1 + 1):
+        for x in range(x0, x1 + 1):
+            if (y, x) not in skip and clab[y, x] > 0:
+                return int(clab[y, x])
+    return 0
 
 
 def _graph_compartment_reasons(clab, cn, graph: ShipGraph) -> list:
     """The tiles realise the graph's compartments exactly: one tile
     compartment per graph compartment, rooms an ``open`` edge joins share
-    it, rooms an edge bounds do not."""
+    it, rooms an edge bounds do not; plus one compartment per airlock
+    vestibule, shared with nothing."""
     comp = graph.compartment_of()
-    k = max(comp) + 1 if comp else 0
+    airlocks = _airlocks(graph)
+    carved = _carved(graph)
+    k = (max(comp) + 1 if comp else 0) + len(airlocks)
     reasons = []
     if cn != k:
         reasons.append(f"rooms: {cn} compartments for {k} graph compartments "
-                       f"({len(graph.rooms)} rooms)")
+                       f"({len(graph.rooms)} rooms, {len(airlocks)} "
+                       f"vestibules)")
     labels = {}                                   # graph compartment -> labels
     for rm in graph.rooms:
-        labels.setdefault(comp[rm.id], set()).add(_room_label(clab, rm))
-    for c, ls in sorted(labels.items()):
+        labels.setdefault(comp[rm.id], set()).add(
+            _room_label(clab, rm, carved))
+    for i, al in airlocks:
+        x0, y0, _x1, _y1 = al.chamber
+        labels[("vestibule", i)] = {int(clab[y0, x0])}
+    for c, ls in sorted(labels.items(), key=_comp_key):
         if len(ls) > 1:
             ids = [rm.id for rm in graph.rooms if comp[rm.id] == c]
             reasons.append(f"rooms: rooms {ids} are one graph compartment but "
                            f"{len(ls)} in the tiles")
     owner = {}
-    for c, ls in sorted(labels.items()):
+    for c, ls in sorted(labels.items(), key=_comp_key):
         for lab in ls:
             if lab in owner and owner[lab] != c:
                 reasons.append(f"rooms: graph compartments {owner[lab]} and "
                                f"{c} share one compartment in the tiles")
             owner.setdefault(lab, c)
     return reasons
+
+
+def _comp_key(kv):
+    """Graph compartments (ints) first, in order, then the vestibules."""
+    return (isinstance(kv[0], tuple), kv[0])
 
 
 def _excused_secrets(clab, covered: set, graph: ShipGraph) -> set:
@@ -895,10 +1333,11 @@ def _excused_secrets(clab, covered: set, graph: ShipGraph) -> set:
     ``secret_path`` (breakable, vent_only) -- reachable in principle, by
     cutting the wall or opening the duct."""
     comp = graph.compartment_of()
+    carved = _carved(graph)
     lab = {}
     secret = {}
     for rm in graph.rooms:
-        lab[comp[rm.id]] = _room_label(clab, rm)
+        lab[comp[rm.id]] = _room_label(clab, rm, carved)
         secret[comp[rm.id]] = secret.get(comp[rm.id], True) and \
             bool(rm.tags.get("secret"))
     reached = {c for c, l in lab.items() if l in covered}
@@ -953,7 +1392,16 @@ def validate(tm: np.ndarray, rooms: list, *, n_rooms: int | None = None,
             if (mat[foot] != MAT_AIR).any() or vac[foot].any():
                 reasons.append(f"floor: team {r.team} cell ({cx},{cy})")
                 break
-    # 3x3 footprint passability (GameMap.is_passable_block's rule).
+    # 3x3 footprint passability (GameMap.is_passable_block's rule). An
+    # airlock's outer door spawns closed (mobility 0) but its controller
+    # opens it for ANY unit standing in the vestibule (the presence plate
+    # counts every team), so the gate walks through it; an entity door
+    # stands open in the tiles, exactly as the sim stamps it.
+    if graph is not None:
+        walk = walk.copy()
+        for _i, al in _airlocks(graph):
+            for (y, x) in al.outer:
+                walk[y, x] = True
     ok = sliding_window_view(walk & ~vac, (fp, fp)).all(axis=(2, 3))
 
     def blocked(x, y):
@@ -1083,6 +1531,7 @@ PALETTE = {
     MAT_GLASS:     (110, 170, 200),
     MAT_WOOD:      (120, 84, 46),
     MAT_FURNITURE: (96, 71, 41),
+    MAT_DOOR_CLOSED: (170, 110, 50),
 }
 AIR_ALT = (30, 32, 38)
 ROOM_TINT = {0: (30, 40, 62), 1: (62, 34, 34), ZOMBIE_TEAM: (34, 56, 36)}
@@ -1145,7 +1594,8 @@ def write(plan: ShipPlan, out_dir) -> Path:
         "Regenerate rather than hand-edit:",
         f"  C:/Users/steen/anaconda3/python.exe tools/gen_ship.py --seed "
         f"{plan.seed} --size {plan.size} --max-per-team {plan.max_per_team} "
-        f"--zombies {plan.zombies}" + (" --vents" if plan.entities else ""),
+        f"--zombies {plan.zombies}" + (" --vents" if any(
+            e.class_name == "duct" for e in plan.entities) else ""),
         "",
         f"v{LEVEL_FORMAT_VERSION} codes ARE canon material ids "
         "(src/simulation/materials.py):",
@@ -1166,6 +1616,9 @@ def write(plan: ShipPlan, out_dir) -> Path:
     if plan.entities:
         ents = plan.entities
         blocks["entity"] = lambda nl: level_lib.format_entity_lines(ents, nl)
+    if plan.embedding.wires:
+        wires = plan.embedding.wires
+        blocks["wire"] = lambda nl: level_lib.format_wire_lines(wires, nl)
     level_lib.write_managed_blocks(toml_path, blocks, write_bak=False)
     level_lib.write_match(out_dir, plan.match_spec())
     return out_dir
@@ -1193,10 +1646,11 @@ def main(argv=None) -> int:
     write(plan, out)
     h, w = plan.tilemap.shape
     e = plan.embedding
+    vents = any(x.class_name == "duct" for x in plan.entities)
     print(f"wrote {out}  ({w}x{h} @ {TILE_SIZE_M} m, attempt {plan.attempt}, "
           f"{len(plan.graph.rooms)} rooms, {e.doors} doors, {e.windows} "
           f"windows, {e.fuel_tiles} fuel tiles, "
-          f"vents {'yes' if plan.entities else 'no'})")
+          f"vents {'yes' if vents else 'no'})")
     for r in plan.spawn_rooms:
         print(f"  spawn room team {r.team}: ({r.x},{r.y}) {r.w}x{r.h} "
               f"max {r.max_per_team}")

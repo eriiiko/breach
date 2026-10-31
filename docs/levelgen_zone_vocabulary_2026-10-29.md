@@ -486,6 +486,11 @@ Status (2026-10-31, #133 patch 1, branch `133-stage2-edges`):
 - **Entity doors and airlock pairs**: not in this patch (next).
 - **Per-room annotations**: DONE 01537e9 in part, `gen_ship.ROOM_TAGS` (spawn_team, zombie, fuel, vent, dept, role, cell, light, secret; unknown keys refused); `light` replaces the fixed lamp, dept / role / cell / secret / light ride `Embedding.room_tags`. Material overrides, water group and props list not yet.
 
+Status (2026-10-31, #133 patch 2, branch `133-stage2-vents-doors`):
+
+- **Multi-duct vent builder**: DONE b81237f, `gen_ship._build_vents` (one `duct_<name>` per duct the `vent` tags `{"duct", "roles"}` name, filter from `ShipGraph.ducts`, default `hepa_basic`; ids `vent_<duct>_<room>_<role>`, v1's string shorthand keeps `duct_main` / `vent_<role>`); `ShipGraph._check_ducts_and_cells` refuses a duct across cells, a sealed room with one role (dict form; v1's shorthand pair is exempt, it is the finding-2 lone supply / lone return) and a `vent_only` edge off one duct (`tests/test_gen_ship_vents_doors.py`, 64100ad, incl. the B.8 smoke-arrival test).
+- **Entity doors and airlock pairs**: DONE b81237f, `EDGE_KINDS` `entity_door` (an A6 `door` entity, emitted OPEN: the bots never open a door, #142) and `airlock` (`gen_ship._airlock`: a 5x5 vestibule carved on room `a`'s side, levels/airlock_demo's two doors, pump, plate, probe, deciders, controller and 15 wires); the gates count each vestibule as its own compartment and walk through the airlock's outer door (its controller opens it for any unit inside); an edge across cells must be an airlock or a bulkhead (L5). `locked` still waits on #135.
+
 ### E.2 New mechanisms (patches on existing canonical systems; none is a parallel system)
 
 | Mechanism | Extends | Used by | Note |
