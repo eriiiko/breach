@@ -59,6 +59,70 @@ def quantize_stick_direction(ax: float, ay: float, deadzone: float = 0.15):
     return (quantize_scalar(ux), quantize_scalar(uy), quantize_scalar(mag_c))
 
 
+def analog_speed_q(ax: float, ay: float, deadzone: float = 0.15) -> int:
+    """Pure stick -> ANALOG SPEED quantization (#106 P6f): the stick's
+    deflection past its deadzone, rescaled to the full range -- ``(min(1,
+    |a|) - deadzone) / (1 - deadzone)`` -- as Q16.16 in ``[0, ONE]``
+    (``MoveDirIntent.speed_q``: the fraction of the unit's maximum speed).
+    0 inside the deadzone, ONE at full deflection (a corner reading > 1 is
+    clamped). Deterministic for the same reason as
+    :func:`quantize_stick_direction` (IEEE sqrt / divide, the round-half-away
+    quantizer); testable with synthetic floats and no hardware."""
+    mag = math.sqrt(ax * ax + ay * ay)
+    if mag <= deadzone:
+        return 0
+    mag = 1.0 if mag > 1.0 else mag
+    span = 1.0 - deadzone
+    frac = 1.0 if span <= 0.0 else (mag - deadzone) / span
+    return max(0, min(1 << 16, quantize_scalar(frac)))
+
+
+def first_controlled_unit(sim, current_id=None):
+    """The unit a one-unit direct scheme drives (GamepadDirect,
+    KeyboardDirect): ``current_id`` while it lives, else the first living
+    unit of ``sim.player_team`` (unit order), else None. Under ``--play
+    creature`` the player team is ``CREATURE_TEAM``, so this is the
+    creature (one octopus in the tank)."""
+    cur = sim.get_unit(current_id) if current_id is not None else None
+    if cur is not None and cur.alive:
+        return cur.id
+    for u in sim.units:
+        if u.team == sim.player_team and u.alive:
+            return u.id
+    return None
+
+
+#: ``--play NAME`` -> the team the human's direct scheme drives (#106 P6f).
+#: Absent = the squad (``player_team`` 0, unchanged).
+_PLAYABLE = ("creature",)
+
+
+def play_team(name: str) -> int:
+    """The team ``--play NAME`` hands the human (``creature`` ->
+    ``factions.CREATURE_TEAM``); an unknown name is a launch error."""
+    from simulation.factions import CREATURE_TEAM
+    if name == "creature":
+        return CREATURE_TEAM
+    raise SystemExit(f"--play must be one of {_PLAYABLE!r}, got {name!r}")
+
+
+def select_play(sim, source, name) -> None:
+    """Apply ``--play NAME`` to a built sim: the session's controlled team
+    (``sim.player_team``) becomes the named one, so the direct scheme's
+    selected unit is that team's first living unit (the creature). Only a
+    DIRECT scheme (``source.drives_one_unit``: gamepad, keyboard) can play
+    a creature -- a WEGO plan never reaches a creature's hub -- so any
+    other scheme is refused. ``None`` changes nothing. The squad is then
+    driven by nothing: it stands."""
+    if name is None:
+        return
+    team = play_team(name)
+    if not getattr(source, "drives_one_unit", False):
+        raise SystemExit(f"--play {name} needs a direct control scheme "
+                         f"(--control gamepad or --control keyboard)")
+    sim.player_team = team
+
+
 class ControlSource:
     """Strategy interface ``main.py`` selects at startup via ``--control``.
 
@@ -121,6 +185,14 @@ class ControlSource:
         observer's controllers) uses, so the window plays the same ticks as
         the headless runner. A no-op for every per-frame human scheme."""
         return None
+
+    #: True for a scheme that drives ONE unit by per-tick intents (the
+    #: gamepad, the keyboard): the only schemes ``--play`` accepts (#106 P6f).
+    drives_one_unit = False
+
+    #: May the renderer pan the camera with WASD? False for a scheme that
+    #: steers a unit with them (KeyboardDirect); the arrows always pan.
+    pans_camera_with_wasd = True
 
     @property
     def wants_renderer_toggles(self) -> bool:
@@ -246,7 +318,7 @@ def create_match_controllers(sim, spec) -> list:
 # point (AgentPolicy) is driven differently — it has no per-frame poll loop —
 # so it is not expected to route through this same factory; see the design doc
 # §3b.
-_KNOWN_CONTROLS = ("wego", "gamepad", "onephase", "match")
+_KNOWN_CONTROLS = ("wego", "gamepad", "keyboard", "onephase", "match")
 
 
 def create_control_source(name: str, debug: bool = False,
@@ -271,6 +343,12 @@ def create_control_source(name: str, debug: bool = False,
         # requires pyray.
         from control_gamepad import GamepadDirect
         return GamepadDirect()
+    if name == "keyboard":
+        # #106 P6f: one unit by keyboard + mouse per-tick intents (WASD at
+        # full speed, Shift / Ctrl for the slow / mid speeds), the keyboard
+        # twin of GamepadDirect. Deferred import (pyray).
+        from control_keyboard import KeyboardDirect
+        return KeyboardDirect()
     if name == "onephase":
         # The turn-formula redesign (onephase_wego design). Picks OnePhaseWEGO
         # as its ruleset; ``debug`` re-arms the evicted diagnostic keys (§17 +
@@ -290,6 +368,7 @@ def create_control_source(name: str, debug: bool = False,
 
 __all__ = [
     "ControlSource", "create_control_source", "quantize_stick_direction",
+    "analog_speed_q", "first_controlled_unit", "play_team", "select_play",
     "IdleControl", "register_controller", "registered_controllers",
     "create_controller", "create_match_controllers",
 ]

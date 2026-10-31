@@ -171,13 +171,12 @@ def make_clip(which: str, out_dir: Path = OUT) -> str:
     if which == "swim":
         sc = SC.Scenario("clip_swim", w=150, h=40, at=(12.0, 18.5))
         sc.lift(8.0)
-        from simulation.orders import ORDER_MOVE_COVER, ORDER_SPRINT
-        sc.seconds(4.3, each=lambda s: s.move(0.0, ORDER_MOVE_COVER))
-        sc.seconds(3.0, each=lambda s: s.move(0.0, ORDER_SPRINT))
+        sc.seconds(4.3, each=lambda s: s.move(0.0, "cruise"))
+        sc.seconds(3.0, each=lambda s: s.move(0.0, "escape"))
         frames = clip_frames(sc.finish(), every=2, label="umbrella, then the jet train")
         return write_gif(out_dir / "sim_swim.gif", frames, crown_r=crown_r, side=True, follow=4.5,
                          title="SIM swim (P6d2) from mid water: 3 umbrella strokes (MOVE_DIR at "
-                               "move-with-cover),\nthen the jet train (sprint) -- top-down | side")
+                               "speed swim_until),\nthen the jet train (speed 1) -- top-down | side")
     if which == "grab":
         run = SC.grab(crawl_s=6.0, escape_s=3.0, size=110, seed=3)
         frames = clip_frames(run, every=2, label="reach, grab, lift, carry, jets")

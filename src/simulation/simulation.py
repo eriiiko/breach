@@ -900,15 +900,18 @@ class Simulation:
     # possessed, which arms ``_consume_direct_intents`` (dormant while empty).
 
     def set_move_dir(self, unit_id: int, dx_q: int, dy_q: int,
-                     speed_mode: int) -> None:
+                     speed_mode: int, speed_q: int = _intents.FP_ONE) -> None:
         """MOVE_DIR: hold a Q16.16 unit-vector move direction + speed mode for
         ``unit_id`` (§3c). Overwrites each call; :meth:`clear_move_dir` (stick
-        inside the deadzone) stops the unit."""
+        inside the deadzone) stops the unit. ``speed_q`` (#106 P6f) is the
+        ANALOG speed, Q16.16 in ``[0, FP_ONE]`` (clamped here): a creature's
+        hub chooses its gait from it; the marines' law never reads it."""
         u = self.get_unit(unit_id)
         if u is None:
             return
+        sq = max(0, min(_intents.FP_ONE, int(speed_q)))
         u.live_move_dir = _intents.MoveDirIntent(int(dx_q), int(dy_q),
-                                                 int(speed_mode))
+                                                 int(speed_mode), sq)
         self._possessed_ids.add(unit_id)
 
     def clear_move_dir(self, unit_id: int) -> None:
@@ -927,6 +930,13 @@ class Simulation:
             return
         u.live_aim = _intents.AimIntent(int(dx_q), int(dy_q))
         self._possessed_ids.add(unit_id)
+
+    def clear_aim(self, unit_id: int) -> None:
+        """Drop ``unit_id``'s live AIM (#106 P6f: a creature's reach goal ends
+        when the aim is released). Facing already written stays."""
+        u = self.get_unit(unit_id)
+        if u is not None:
+            u.live_aim = None
 
     def set_trigger(self, unit_id: int, held: bool) -> None:
         """TRIGGER: hold/release ``unit_id``'s weapon trigger (§3c). While held,

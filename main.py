@@ -73,7 +73,7 @@ from renderer.game_renderer import RenderConfig
 from renderer.static_props import placements_from_entities
 from simulation import Simulation
 from simulation.unit import Unit
-from control_source import create_control_source
+from control_source import create_control_source, select_play
 # The OnePhaseWEGO interface (onephase_wego design §16). Imported
 # unconditionally — ui.model is pure/headless and ui.draw only needs the pyray
 # already loaded above — and used only when that ruleset is running.
@@ -158,6 +158,29 @@ def _parse_control_flag() -> str:
         name = sys.argv[i + 1]
     except IndexError:
         raise SystemExit("--control requires a name, e.g. --control wego")
+    return name
+
+
+def _parse_play_flag():
+    """``--play NAME`` -- which team the human's DIRECT scheme drives (#106
+    P6f). ``creature``: the session's controlled team becomes
+    ``CREATURE_TEAM``, so ``--control gamepad`` / ``--control keyboard``
+    drive the creature (the tank's one octopus) -- the left stick / WASD its
+    direction and analog speed -- and the squad, driven by nothing, stands.
+    Absent (the default): None, nothing changes. Refused with a non-direct
+    scheme or an unknown name (``control_source.select_play``):
+
+        main.py --level octopus_tank --play creature --control gamepad
+    """
+    if "--play" not in sys.argv:
+        return None
+    i = sys.argv.index("--play")
+    try:
+        name = sys.argv[i + 1]
+    except IndexError:
+        raise SystemExit("--play requires a name, e.g. --play creature")
+    if name.startswith("--"):
+        raise SystemExit(f"--play requires a name, got {name!r}")
     return name
 
 
@@ -365,6 +388,8 @@ def main():
                      enable_recorder=True,
                      ruleset=control_source.initial_ruleset())
     sim.set_paused(control_source.starts_paused())
+    # --play creature (#106 P6f): the direct scheme drives the creature team
+    select_play(sim, control_source, _parse_play_flag())
     # Is the turn-formula redesign driving? The renderer/HUD branches below key
     # off the RULESET rather than the flag name, so the two halves of the
     # loadable game stay chosen together (control_modularity §3a/§3b).
@@ -609,7 +634,8 @@ def main():
                 renderer.poll_toggles()
             else:
                 renderer.poll_camera_zoom(allow_qe=False)
-            renderer.update_camera(dt)
+            renderer.update_camera(
+                dt, wasd=control_source.pans_camera_with_wasd)
             control_source.handle_frame(sim, renderer)
 
             # ----- ray-engine-v2 P6b: the light -----

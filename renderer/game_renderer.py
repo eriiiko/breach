@@ -2119,13 +2119,17 @@ class GameRenderer:
         if wheel != 0:
             self.camera.set_zoom(self.camera.zoom_px_per_tile + wheel * zoom_step)
 
-    def update_camera(self, dt: float, pan_speed_tiles_per_s: float = 30.0) -> None:
+    def update_camera(self, dt: float, pan_speed_tiles_per_s: float = 30.0,
+                      wasd: bool = True) -> None:
+        """Pan with the arrows, and with WASD unless the control scheme steers
+        a unit with them (``wasd=False``: ``ControlSource.pans_camera_with_wasd``,
+        #106 P6f)."""
         K = rl.KeyboardKey
         dx = dy = 0.0
-        if rl.is_key_down(K.KEY_A) or rl.is_key_down(K.KEY_LEFT):  dx -= 1
-        if rl.is_key_down(K.KEY_D) or rl.is_key_down(K.KEY_RIGHT): dx += 1
-        if rl.is_key_down(K.KEY_W) or rl.is_key_down(K.KEY_UP):    dy -= 1
-        if rl.is_key_down(K.KEY_S) or rl.is_key_down(K.KEY_DOWN):  dy += 1
+        if (wasd and rl.is_key_down(K.KEY_A)) or rl.is_key_down(K.KEY_LEFT):  dx -= 1
+        if (wasd and rl.is_key_down(K.KEY_D)) or rl.is_key_down(K.KEY_RIGHT): dx += 1
+        if (wasd and rl.is_key_down(K.KEY_W)) or rl.is_key_down(K.KEY_UP):    dy -= 1
+        if (wasd and rl.is_key_down(K.KEY_S)) or rl.is_key_down(K.KEY_DOWN):  dy += 1
         if dx == 0 and dy == 0:
             return
         speed = pan_speed_tiles_per_s

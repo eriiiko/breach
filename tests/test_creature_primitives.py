@@ -35,10 +35,14 @@ Properties protected (each test names the change that must break it):
 * DETERMINISM: two runs of the same scenario are byte-identical record for
   record; the CPU == --cuda == --resident gate lives in
   ``tests/cuda_creature_check.py`` (a crawl beside the limp animal).
-* THE GOAL TABLE: MOVE_DIR -> crawl, at ORDER_MOVE_COVER -> the umbrella, at
-  ORDER_SPRINT -> the jet train, AIM -> reach, USE -> grab (only with a
-  prop; the USE never reaches a door), none -> idle; a dead creature is
-  frozen; the LIMP gait drives nothing.
+* THE GOAL TABLE (P6f: the speed law): MOVE_DIR at 0 < speed <= crawl_until
+  -> crawl, up to swim_until -> the umbrella, above -> the jet train, speed
+  0 -> idle; AIM -> reach, USE -> grab (only with a prop; the USE never
+  reaches a door), none -> idle; a dead creature is frozen; the LIMP gait
+  drives nothing. The scenario drivers send each band's TOP speed
+  (``_creature_scenarios.gait_speed_q16``: crawl = crawl_until, cruise =
+  swim_until, escape = ONE), which is the P6d2 gait exactly. The speed law's
+  own gates are ``tests/test_creature_speed.py``.
 
 CI runs short slices (seconds); the full P2-P5 runs are behind
 ``BREACH_OCTOPUS_LONG_GATES=1`` (~3 min).
@@ -575,20 +579,21 @@ def test_an_aimed_arm_reaches_toward_the_aim():
 # The goal table, the limp gait, the dead creature, USE
 # ---------------------------------------------------------------------------
 def test_the_goal_table_routes_each_intent_to_its_primitive():
-    """MOVE_DIR -> the crawl gait (GOAL_MOVE_DIR); at ORDER_MOVE_COVER -> swim
-    (the umbrella, GOAL_CRUISE); at ORDER_SPRINT -> swim (the jet train,
-    GOAL_ESCAPE); nothing -> idle; AIM sets the reach goal. Breaks if the
-    table is changed without this test."""
-    from simulation.orders import ORDER_MOVE_ATTACK, ORDER_MOVE_COVER, ORDER_SPRINT
+    """MOVE_DIR's analog speed -> the travel band (P6f): up to crawl_until the
+    crawl gait (GOAL_CRAWL), up to swim_until swim (the umbrella,
+    GOAL_CRUISE), above it swim (the jet train, GOAL_ESCAPE) -- each switch
+    after the gait hysteresis; nothing -> idle; AIM sets the reach goal.
+    Breaks if the table is changed without this test."""
     sc = SC.Scenario("goals", size=40)
     b = sc.body
     sc.step(1)
     assert b.gait == P.GAIT_IDLE and b.goal_kind == P.GOAL_NONE
-    for mode, goal, gait in ((ORDER_MOVE_ATTACK, P.GOAL_MOVE_DIR, P.GAIT_CRAWL),
-                             (ORDER_MOVE_COVER, P.GOAL_CRUISE, P.GAIT_SWIM),
-                             (ORDER_SPRINT, P.GOAL_ESCAPE, P.GAIT_SWIM)):
-        sc.step(1, each=lambda s: s.move(30.0, mode))
-        assert (b.goal_kind, b.gait) == (goal, gait), (mode, b.goal_kind, b.gait)
+    hold = b.dials.gait_hold
+    for kind, goal, gait in (("crawl", P.GOAL_CRAWL, P.GAIT_CRAWL),
+                             ("cruise", P.GOAL_CRUISE, P.GAIT_SWIM),
+                             ("escape", P.GOAL_ESCAPE, P.GAIT_SWIM)):
+        sc.step(hold, each=lambda s: s.move(30.0, kind))
+        assert (b.goal_kind, b.gait) == (goal, gait), (kind, b.goal_kind, b.gait)
     sc.step(1, each=lambda s: (s.stop(), s.aim(45.0)))
     assert b.gait == P.GAIT_IDLE and b.reach_q16 != (0, 0)
 
@@ -644,18 +649,21 @@ def test_two_runs_are_byte_identical():
     assert a[0] != a[-1]
 
 
-def test_the_v2_record_carries_the_hub_and_the_prop():
-    """The V2 record decodes to the body's hub fields and the prop's pose;
-    the section preamble says V2. Breaks if the serializer and its decoder
-    drift apart or the layout changes without a version bump."""
+def test_the_record_carries_the_hub_and_the_prop():
+    """The record (V3 since P6f) decodes to the body's hub fields -- the
+    speed law's asked speed and pending gait included -- and the prop's
+    pose; the section preamble says V3. Breaks if the serializer and its
+    decoder drift apart or the layout changes without a version bump."""
     from simulation import arm_chain as AC
     sc = SC.Scenario("rec", size=40)
     b = sc.body
     b.add_prop()
     sc.step(5, each=lambda s: s.move(0.0))
     d = CS.decode_record(CS.serialize_record(b))
-    assert CS.CREATURE_SECT_PREAMBLE == b"CREATURE_SECT_V2\n"
+    assert CS.CREATURE_SECT_PREAMBLE == b"CREATURE_SECT_V3\n"
     assert d["gait"] == b.gait and d["goal_kind"] == b.goal_kind
+    assert d["goal_speed"] == b.goal_speed == b.dials.crawl_until
+    assert (d["goal_pending"], d["goal_pending_ticks"]) == (b.goal_pending, b.goal_pending_ticks)
     assert np.array_equal(d["arm_state"], b.arm_state) and np.array_equal(d["arm_ticks"], b.arm_ticks)
     assert np.array_equal(d["arm_aim"], b.arm_aim) and np.array_equal(d["steer_ring"], b.steer_ring)
     assert len(d["bodies"]) == 1

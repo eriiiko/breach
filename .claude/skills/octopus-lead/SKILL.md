@@ -435,3 +435,36 @@ the lead so you decide all these things." Concretely:
   Skipped: body pitch / crown spread from the root lift (v1 pitch 0), the
   colour-debug mode, sucker / contact cues, GPU skinning. Pictures:
   `docs/octopus_p7_shots_2026-10-31/`.
+- 2026-10-31 (P6f, worktree agent, Opus) -- ANALOG SPEED + driving the
+  octopus. Erik's ruling: "I'd rather we assume we can control the speed
+  from 0 to its max speed, as if we had an Xbox controller; we have good
+  control over the actual speed. If we build this, we can always reduce
+  later. I think this is a good principle even for future models /
+  animations." `MoveDirIntent.speed_q` (Q16, default ONE; marines never read
+  it) + the hub's speed law over `[creatures.octopus.locomotion]` (v_max 4.0,
+  crawl_until 0.15, swim_until 0.3, gait_hold_s 0.25 = 6 ticks, hunt_speed
+  0.15; row version 2, `CREATURE_SECT_V3`) replaced P6d2's speed-mode
+  stopgap. Band TOPS are the P6d2 gaits exactly, so the drivers send
+  `gait_speed_q16` (crawl_until / swim_until / ONE) and every P6d2 gate
+  stayed green. `--play creature` + `--control keyboard` (new) or `gamepad`
+  drive the tank's octopus. What was learned: (1) the CRAWL GLIDES -- a lone
+  push carries the crown ~0.7 m in the water, so its speed saturates with
+  the push rate: p_recruit x tempo kept 0.37 m/s at tempo 0.25 (full 0.43),
+  the arms' recovery as the lever 0.23; shipped p_recruit x tempo^2 (0.20
+  m/s at 0.25, 0.07 at 0.1; the lottery only thinned, so no rhythm). (2)
+  the JET TRAIN goes as ~dv^0.45 (0.73 / 0.90 of top at dv x 0.5 / 0.8):
+  shipped dv x s^2, which makes it near-honest (asked 0.5 / 0.8 / 1.0 ->
+  2.13 / 3.27 / 4.01 m/s). (3) 20 s from the deck: crawl top 0.43, umbrella
+  0.45-0.53, jet 1.40 just above swim_until -- monotone, with a JUMP at the
+  umbrella/jet edge (0.53 -> 1.40 m/s); the umbrella's tempo (period /
+  (s/w)) barely moves its speed. (4) A SWIM DOES NOT STEER (v1): asked East
+  at full speed the octopus jets WEST along its heading (the E2E shot shows
+  it) -- the first thing Erik will notice on the stick. (5) the tank has no
+  creature prop, so USE (gamepad X, keyboard F) grabs nothing there.
+  Skipped: medium-dependent speed (`speed_law`'s `medium_factor_q16`, ONE
+  today, the #104 wishlist); CPU == CUDA (no CUDA build in the worktree;
+  `cuda_creature_check.py` updated to send the crawl's speed). Long P2-P5
+  gates green at the band tops (crawl 0.55-0.60 m/s, umbrella 0.63 m per
+  stroke, one jet 7.8 ML, train 4.01 m/s = 7.3x the crawl). Cost: one
+  session; the new gates add ~50 s to the suite. Pictures:
+  `docs/octopus_p6f_shots_2026-10-31/`.

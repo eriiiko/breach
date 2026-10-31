@@ -15,7 +15,7 @@ Scenarios (``--scenarios``, default all):
   30 x 30 room (the P6d2 gate room, built by ``tests/_creature_scenarios.
   write_room``) driven by its unit's intents the way the gates drive it:
   nothing (idle); MOVE_DIR round a square, 3 s per side (crawl); the
-  umbrella swim (MOVE_DIR at ORDER_MOVE_COVER) round the same square from
+  umbrella swim (MOVE_DIR at the speed ``swim_until``, P6f) round the same square from
   8 m up (swim); the demo prop, 0.5 s of crawl, USE, then the square (grab).
 * ``hunt`` -- the ``creature`` match controller hunting two idle marines in
   the same room, through ``run_match`` (the one headless match path).
@@ -261,11 +261,15 @@ def _square_deg(k: int, tps: int) -> float:
     return 90.0 * ((k // int(round(SQUARE_SIDE_S * tps))) % 4)
 
 
-def _move(sim, unit, deg: float, mode: int = 0) -> None:
+def _move(sim, unit, deg: float, kind: str = "crawl") -> None:
+    """MOVE_DIR toward ``deg`` at the analog speed that asks for the P6d2
+    gait ``kind`` exactly (#106 P6f: ``_creature_scenarios.gait_speed_q16``)."""
+    import _creature_scenarios as SC
     from control_source import quantize_stick_direction
     r = math.radians(deg)
     dx, dy, _ = quantize_stick_direction(math.cos(r), -math.sin(r), deadzone=0.0)
-    sim.set_move_dir(unit.id, dx, dy, int(mode))
+    body = sim._creature_system.bodies[unit.id]
+    sim.set_move_dir(unit.id, dx, dy, 0, speed_q=SC.gait_speed_q16(body, kind))
 
 
 def _lift(body, z_m: float) -> None:
@@ -330,7 +334,6 @@ def run_room(kind: str, *, ticks: int, warmup: int, n_octopi: int = 1,
     from simulation import Simulation
     from simulation import creature_system as CS
     from simulation.match import CreatureSpawn
-    from simulation.orders import ORDER_MOVE_COVER
     from simulation.ruleset import ContinuousRealtime
     tps = int(CFG.clock.ticks_per_second)
     # a fresh folder per run (repeats and baselines reuse the level name)
@@ -368,7 +371,7 @@ def run_room(kind: str, *, ticks: int, warmup: int, n_octopi: int = 1,
                 if kind in ("crawl", "octopi", "grab"):
                     _move(sim, u, _square_deg(k, tps))
                 elif kind == "swim":
-                    _move(sim, u, _square_deg(k, tps), ORDER_MOVE_COVER)
+                    _move(sim, u, _square_deg(k, tps), "cruise")
             sim.set_paused(False)
             row = _timed_step(sim, laps, bodies)
             if k >= warmup:
