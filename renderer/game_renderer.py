@@ -446,6 +446,8 @@ class GameRenderer:
         # Per-unit animation state lives inside UnitModelRenderer (keyed by
         # unit.id) — never on Unit.
         self.unit_models = UnitModelRenderer()
+        # #106 P7: the last frame's creature chains (unit id -> ChainView)
+        self._creature_views = {}
         # Props & vegetation arc #60 P3 (design §4.3 F2): the top-down
         # Camera3D is built UNCONDITIONALLY now — it is the ONE camera every
         # 3D-in-world-RT consumer shares (units, and props whenever a level
@@ -776,7 +778,8 @@ class GameRenderer:
                       current_phase: int = 0,
                       doors: Sequence = (),
                       props: Sequence = (),
-                      overlay_fn=None) -> None:
+                      overlay_fn=None,
+                      creatures=None) -> None:
         """Draw every world-space layer into the world render targets.
 
         Two stages (graphics arc G0 P1, renderer/world_composite.py):
@@ -825,6 +828,11 @@ class GameRenderer:
         ``renderer.static_props.placements_from_entities(sim.entities, ...)``.
         Drawn in the SAME shared 3D pass as the units (one batch flush, one
         depth buffer); zero cost when empty.
+
+        ``creatures`` (#106 P7) is ``{unit id: ChainView}`` from THE chain
+        accessor (``Simulation.creature_chains()``): every creature, living
+        or dead, is drawn from its chain in the same 3D pass (its unit is
+        taken out of the marine / zombie draws). None draws none.
 
         ``overlay_fn(world_px_per_tile)`` draws in the DISPLAY stage: it is
         for UI in authored colours. Lit 3D geometry goes in through
@@ -926,8 +934,15 @@ class GameRenderer:
         self._draw_embers(view)
         # 5. 3D units + props (+ projected shadows): the shared 3D pass --
         # ABOVE the flame.
+        # #106 P7: a creature unit is drawn from its chain, never as a unit
+        self._creature_views = creatures or {}
+        if self._creature_views:
+            units_marines = [u for u in units_marines
+                             if getattr(u, "id", None) not in self._creature_views]
+            units_zombies = [u for u in units_zombies
+                             if getattr(u, "id", None) not in self._creature_views]
         drew_units_3d = self._draw_units_3d_world(units_marines, units_zombies,
-                                                  props)
+                                                  props, self._creature_views)
         # 6. G1: the CEILING species layer (hot soot) -- ABOVE the units and
         # props (Erik's ruling 2, 2026-10-18), still in the linear scene.
         if relief_on:
@@ -1231,7 +1246,7 @@ class GameRenderer:
                 cam.pos_tile_x + vw + m, cam.pos_tile_y + vh + m)
 
     def _draw_units_3d_world(self, marines: Sequence, zombies: Sequence,
-                             props: Sequence = ()) -> bool:
+                             props: Sequence = (), creatures=None) -> bool:
         """The SCENE-stage unit/prop draw: the shared 3D pass (lit 3D units,
         props, projected shadows), linear HDR into the scene RT. Returns True
         when the 3D units were drawn -- False means the caller draws the 2D
@@ -1331,6 +1346,13 @@ class GameRenderer:
                         light_ctx=light_ctx, open_mode_3d=False,
                         light_view=self.lighting.light_view,
                         light_exposure=shadow_exposure)
+                    # #106 P7: the creatures, posed from their chains, in
+                    # the same pass with the same shader, light and shadows
+                    if creatures:
+                        self.unit_models.draw_creatures(
+                            creatures, wpt, clock, light_ctx=light_ctx,
+                            light_view=self.lighting.light_view,
+                            light_exposure=shadow_exposure)
                 if draw_props_3d:
                     # P4: sway on the SIM clock + the tamed wind sampled per
                     # prop inside draw_props (one lookup each, no sim cost).
@@ -1714,7 +1736,10 @@ class GameRenderer:
                 # main.py looks up the unit and passes its pos when
                 # converting; for now skip drawing UnitHit unless we
                 # extend the event. Kept here to acknowledge the contract.
-                pass
+                # #106 P7: a hit on a CREATURE marks its struck node (the
+                # hit seam's last_hit, read from the next frame's chain).
+                if ev.unit_id in getattr(self, "_creature_views", {}):
+                    self.unit_models.note_creature_hit(ev.unit_id)
 
     def _advance_effects(self, dt: float) -> None:
         """Tick effect lifetimes; drop expired entries.

@@ -123,3 +123,29 @@ def test_every_shipped_look_carries_a_gloss_mask_and_the_flagship_shows_both():
     glossy = float((flagship >= 0.5).mean())
     assert matte > 0.0 and glossy > 0.0, (
         f"{_MODEL_PATH.name}: gloss mask is uniform (matte {matte:.4f}, glossy {glossy:.4f})")
+
+
+def test_every_creature_look_is_shipped_skinned_on_its_species_rig():
+    """PROPERTY (#106 P7): every model named in ``[render.creature_looks]``
+    is in the repo with a skin whose joint names are exactly the rig's
+    (``octopus_math.bones("game")`` through ``renderer/creature_pose``),
+    carries a clip (raylib's loader needs one) and a LICENSE next to it.
+
+    BREAKS IF: the GLB is re-exported with renamed or missing bones (the
+    renderer would refuse it and draw no creature), or the look table names
+    a model that is not packaged."""
+    from renderer import creature_pose as CP
+    from renderer.unit_looks import creature_looks_table
+    from simulation.creatures import get_creature
+    from simulation.species import get_species
+    for species, names in creature_looks_table(CFG).items():
+        rig = CP.build_rig(get_creature(get_species(species).creature))
+        for name in names:
+            path = look_path(name)
+            assert path.is_file(), f"creature look missing: {path}"
+            assert (path.parent / "LICENSE.txt").is_file(), f"{name} has no LICENSE.txt"
+            doc = _gltf_json(path)
+            assert doc.get("animations"), f"{name} has no clip"
+            (skin,) = doc["skins"]
+            joints = {doc["nodes"][j]["name"] for j in skin["joints"]}
+            assert joints == set(rig.bone_names), f"{name}: skeleton != the rig's"

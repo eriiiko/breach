@@ -51,7 +51,8 @@ from .lit3d import LightFieldCtx, bind_smoke_cover_map, make_camera
 from .marine_shader import (MARINE_NORMAL_MAP_FILENAME, UNIT_NORMAL_Y_SIGN,
                             load_marine_shader)
 from .unit_looks import (BODY_LIGHT_UNIT, ROLES, LookAssigner, all_look_names,
-                         look_path, looks_table, unit_key, unit_shading)
+                         creature_looks_table, look_path, looks_table, unit_key,
+                         unit_shading)
 from .unit_shadow import (NO_SHADOW, ShadowCast, ShadowPainter, UnitLight,
                           read_unit_light, shadow_cast, smooth_shadow,
                           unit_shadow_settings)
@@ -139,6 +140,15 @@ class _UnitAnimState:
     shadow: Optional[ShadowCast] = None   # projected shadow, low-passed (#33)
 
 
+@dataclass(frozen=True)
+class _CreatureKey:
+    """What the look assigner reads of a creature (#106 P7): its id and its
+    species (a ``ChainView`` is not a unit)."""
+    id: int
+    species_id: Optional[str]
+    is_zombie: bool = False
+
+
 @dataclass
 class _Look:
     """One loaded unit look: a skinned model, its clips, its own clip-name ->
@@ -176,6 +186,16 @@ class UnitModelRenderer:
         self._marine_shader = None       # MarineShader wrapper (locs + setters)
         # #33 projected shadows: the flat shader + single-darkening draw.
         self._shadow_painter: Optional[ShadowPainter] = None
+        # #106 P7: creatures -- [render.creature_looks] (species -> looks),
+        # one rig per creature row (creature_pose.build_rig, the size door),
+        # one skin per loaded creature look (creature_model.CreatureSkin),
+        # the hit marks (unit id -> frames left) and the pose timing.
+        self._creature_table: Dict[str, list] = {}
+        self._rigs: Dict[str, object] = {}
+        self._skins: Dict[str, object] = {}
+        self._creature_refused: Dict[str, str] = {}
+        self._hit_marks: Dict[int, int] = {}
+        self._pose_ms: list = []
 
     @property
     def model(self):
@@ -231,7 +251,27 @@ class UnitModelRenderer:
                 print(f"[unit_model] WARN: look {name!r} did not load; its "
                       f"units are drawn as {first.name!r}")
             self._resolve[name] = self._looks.get(name, first)
-        self._assigner = LookAssigner(table)
+        # #106 P7: the creature looks, loaded AFTER the unit looks (never a
+        # marine's fallback). A creature look that does not load is not drawn
+        # -- never drawn as a marine.
+        self._creature_table = {}
+        if _MODEL_OVERRIDE is None:
+            try:
+                self._creature_table = creature_looks_table(CFG)
+            except ValueError as exc:
+                print(f"[unit_model] WARN: {exc}; creatures not drawn")
+        for names_c in self._creature_table.values():
+            for name in names_c:
+                if name in self._looks:
+                    continue
+                look = self._load_look(name, look_path(name))
+                if look is not None:
+                    self._looks[name] = look
+                    self._resolve[name] = look
+                else:
+                    print(f"[unit_model] WARN: creature look {name!r} did not load; "
+                          f"its creatures are not drawn")
+        self._assigner = LookAssigner(table, self._creature_table)
         self._scale_height = self._reference_height(first)
         self._loaded = True
         self._setup_marine_shader()
@@ -419,6 +459,12 @@ class UnitModelRenderer:
         """Free every look (model + clips + normal map) and the shared shader,
         once (raylib's UnloadModel frees only material maps, never a shader or
         texture a material points at -- so sharing the shader is safe)."""
+        n, pose_ms, skin_ms = self.creature_pose_timing()
+        if n:
+            print(f"[unit_model] creature pose: {pose_ms:.3f} ms, skin write + CPU "
+                  f"skin: {skin_ms:.3f} ms per creature-frame (mean of {n})")
+        self._skins.clear()
+        self._rigs.clear()
         for look in self._looks.values():
             if look.anims is not None and look.n_anims:
                 rl.unload_model_animations(look.anims, look.n_anims)
@@ -534,6 +580,41 @@ class UnitModelRenderer:
         shadow_r = _SHADOW_RADIUS_FRAC * (3.0 * wpt)  # footprint side ~3 tiles
         alive = [u for u in units if getattr(u, "alive", True)]
         names = self._assigner.looks_for(alive)
+        shading, shadow_cfg, shadows_on, body_from_unit = self._frame_setup(
+            light_ctx, light_view)
+
+        if open_mode_3d:
+            rl.begin_mode_3d(camera3d)
+        try:
+            # Phase 0 parity: dead units skipped (sprite path).
+            for u, name in zip(alive, names):
+                cast = NO_SHADOW
+                # ONE light read per unit, for its shadow and its body.
+                light = _NO_LIGHT
+                if light_view is not None and (shadows_on or body_from_unit):
+                    fp = int(getattr(u, "footprint", 3))
+                    light = read_unit_light(light_view, int(u.x), int(u.y), fp,
+                                            light_exposure)
+                if shadows_on:
+                    cast = shadow_cast(light, shadow_cfg)
+                if body_from_unit:
+                    self._marine_shader.set_unit_light(light)
+                self._draw_one(u, self._resolve[name], wpt, dt, clock, scale,
+                               shadow_r if shading.blob_shadow else 0.0,
+                               base_tint, light_rgb_fn,
+                               cast if shadows_on else None)
+        finally:
+            if open_mode_3d:
+                rl.end_mode_3d()
+
+        self._prune(clock)
+
+    def _frame_setup(self, light_ctx: Optional[LightFieldCtx], light_view):
+        """The per-frame lit-shader set-up every 3D unit draw shares (units
+        and creatures alike, #106 P7): the live [render.unit_shading] and
+        [render.unit_shadow] reads, the light field + smoke cast shadow bound
+        into every look's materials, the frame uniforms. Returns (shading,
+        shadow settings, shadows on, body lit from the unit's own read)."""
         # #33: [render.unit_shading], read live (Ctrl+R retunes it); a missing
         # or mistyped key raises here rather than drawing a silent default.
         shading = unit_shading(CFG)
@@ -580,32 +661,157 @@ class UnitModelRenderer:
                           and light_ctx is not None)
         if self._marine_shader is not None:
             self._marine_shader.set_body_light(body_from_unit)
+        return shading, shadow_cfg, shadows_on, body_from_unit
 
-        if open_mode_3d:
-            rl.begin_mode_3d(camera3d)
+    # ------------------------------------------------------------------
+    # Creatures (#106 P7): the chain -> the model, in the SAME lit 3D pass
+    # ------------------------------------------------------------------
+
+    def _creature_rig(self, creature: str):
+        """The rig of creature row ``creature`` (``creature_pose.build_rig``:
+        the size door), built once; None (said once) when refused."""
+        if creature in self._rigs:
+            return self._rigs[creature]
+        rig = None
         try:
-            # Phase 0 parity: dead units skipped (sprite path).
-            for u, name in zip(alive, names):
-                cast = NO_SHADOW
-                # ONE light read per unit, for its shadow and its body.
-                light = _NO_LIGHT
-                if light_view is not None and (shadows_on or body_from_unit):
-                    fp = int(getattr(u, "footprint", 3))
-                    light = read_unit_light(light_view, int(u.x), int(u.y), fp,
-                                            light_exposure)
-                if shadows_on:
-                    cast = shadow_cast(light, shadow_cfg)
-                if body_from_unit:
-                    self._marine_shader.set_unit_light(light)
-                self._draw_one(u, self._resolve[name], wpt, dt, clock, scale,
-                               shadow_r if shading.blob_shadow else 0.0,
-                               base_tint, light_rgb_fn,
-                               cast if shadows_on else None)
-        finally:
-            if open_mode_3d:
-                rl.end_mode_3d()
+            from simulation.creatures import get_creature
+            from .creature_pose import build_rig
+            rig = build_rig(get_creature(creature))
+            print(f"[unit_model] creature {creature!r}: rig at art size {rig.size!r} "
+                  f"(arm map {rig.arm_map.tolist()}, track from node {rig.track_k0})")
+        except Exception as exc:
+            print(f"[unit_model] WARN: creature {creature!r} not drawn: {exc}")
+        self._rigs[creature] = rig
+        return rig
 
+    def _creature_skin(self, look: _Look, rig):
+        """The one-frame skin of a creature look on ``rig`` (the bind door),
+        built once; None (said once) when refused."""
+        key = look.name
+        if key in self._skins:
+            return self._skins[key]
+        skin = None
+        try:
+            from .creature_model import CreatureSkin, check_bind_pose
+            skin = CreatureSkin(rl, look.model, rig.bone_names)
+            gap = check_bind_pose(skin.bind_head, rig.bind_heads, f"look {look.name!r}")
+            print(f"[unit_model] creature look {look.name!r}: bind pose within "
+                  f"{gap * 1000:.3f} mm of the rig at {rig.size!r}")
+        except Exception as exc:
+            print(f"[unit_model] WARN: creature look {look.name!r} not drawn: {exc}")
+            skin = None
+        self._skins[key] = skin
+        return skin
+
+    def note_creature_hit(self, unit_id: int) -> None:
+        """A UnitHitEvent named a creature (``GameRenderer.consume_events``):
+        mark the node its ``last_hit`` names for ``[render.creature]
+        hit_flash_frames`` frames. Render state only."""
+        from .creature_pose import creature_render_settings
+        n = creature_render_settings(CFG).hit_flash_frames
+        if n > 0:
+            self._hit_marks[int(unit_id)] = n
+
+    def draw_creatures(self, views, wpt: float, clock: float,
+                       light_ctx: Optional[LightFieldCtx] = None,
+                       light_view=None, light_exposure: float = 1.0) -> None:
+        """Draw every creature (#106 P7) from its chain: ``views`` is
+        ``{unit id: ChainView}`` (``Simulation.creature_chains``, THE chain
+        accessor). Inside the units' open 3D pass, with the SAME lit shader,
+        per-unit light read, projected shadow and smoke cast shadow as the
+        marines. Each creature: its look ([render.creature_looks], dealt like
+        the units'), the bone pose from its chain (``creature_pose.
+        pose_from_chain``) written into the look's one-frame animation and
+        CPU-skinned, the model at the crown with yaw = the heading, at TRUE
+        size (px per metre = wpt / tile size: the chain's own metres, where
+        the marines share the space marine's 6-tile scale). A dead creature
+        is drawn frozen at its last pose. A struck node is marked for a few
+        frames after a hit (``note_creature_hit``). Must run inside an open
+        ``begin_mode_3d``."""
+        if not self._loaded or not views or self._assigner is None:
+            return
+        import time as _time
+        from simulation.creature_fixed import pose_to_unit_anchor
+        from .creature_pose import creature_render_settings, pose_from_chain
+        dt = self._frame_dt(clock)
+        dials = creature_render_settings(CFG)
+        keys = [_CreatureKey(uid, v.species_id) for uid, v in views.items()]
+        names = self._assigner.looks_for(keys)
+        shading, shadow_cfg, shadows_on, body_from_unit = self._frame_setup(
+            light_ctx, light_view)
+        for key, name in zip(keys, names):
+            v = views[key.id]
+            look = self._resolve.get(name)
+            rig = self._creature_rig(v.creature) if look is not None else None
+            skin = self._creature_skin(look, rig) if rig is not None else None
+            if skin is None:
+                continue
+            t0 = _time.perf_counter()
+            pose = pose_from_chain(v, rig, dials, clock)
+            t1 = _time.perf_counter()
+            skin.write(pose)
+            t2 = _time.perf_counter()
+            self._pose_ms.append(((t1 - t0) * 1e3, (t2 - t1) * 1e3))
+            ppm = wpt / float(v.tile_size_m)              # world px per metre
+            cx, cy, cz = (float(c) * ppm for c in v.crown)
+            yaw = _YAW_SIGN * math.degrees(float(v.heading)) + _YAW_OFFSET_DEG
+            st = self._anim.get(key.id)
+            if st is None:
+                st = _UnitAnimState(last_x=cx, last_y=cy)
+                self._anim[key.id] = st
+            st.last_seen = clock
+            light = _NO_LIGHT
+            if light_view is not None and (shadows_on or body_from_unit):
+                ax, ay = pose_to_unit_anchor(float(v.crown[0]), float(v.crown[1]),
+                                             int(v.footprint), float(v.tile_size_m))
+                light = read_unit_light(light_view, int(ax), int(ay), int(v.footprint),
+                                        light_exposure)
+            if shadows_on:
+                st.shadow = smooth_shadow(st.shadow, shadow_cast(light, shadow_cfg), dt,
+                                          _SHADOW_SMOOTH_TAU_S)
+                if st.shadow.alpha > 0.0:
+                    self._shadow_painter.draw(
+                        look.model, self._live_materials(look.model), st.shadow,
+                        rl.Vector3(cx, cz, cy), yaw, ppm)
+            else:
+                st.shadow = None
+            if body_from_unit:
+                self._marine_shader.set_unit_light(light)
+            rl.draw_model_ex(look.model, rl.Vector3(cx, cz, cy),
+                             rl.Vector3(0.0, 1.0, 0.0), yaw,
+                             rl.Vector3(ppm, ppm, ppm), rl.WHITE)
+            self._draw_hit_mark(v, rig, dials, ppm)
+        for uid in [u for u in self._hit_marks if u not in views]:
+            del self._hit_marks[uid]
         self._prune(clock)
+
+    def _draw_hit_mark(self, v, rig, dials, ppm: float) -> None:
+        """The hit cue: a small bright sphere on the struck node (the crown
+        for a body hit), shrinking over ``hit_flash_frames`` frames."""
+        left = self._hit_marks.get(int(v.unit_id), 0)
+        if left <= 0:
+            return
+        self._hit_marks[int(v.unit_id)] = left - 1
+        arm, node = v.last_hit
+        if 0 <= arm < v.nodes.shape[0] and 0 <= node < v.nodes.shape[1]:
+            x, y, z = (float(c) for c in v.nodes[arm, node])
+            z += dials.arm_lift * float(rig.node_radius[node])
+            r = max(0.06, 1.5 * float(rig.node_radius[node]))
+        else:
+            x, y, z = (float(c) for c in v.crown)
+            z += 0.6
+            r = 0.25
+        frac = left / max(1, dials.hit_flash_frames)
+        rl.draw_sphere(rl.Vector3(x * ppm, z * ppm, y * ppm), r * ppm * (0.5 + 0.5 * frac),
+                       rl.Color(255, 90, 40, 255))
+
+    def creature_pose_timing(self):
+        """(n, mean pose ms, mean skin-write ms) over every creature frame
+        drawn so far (the P7 report's number; render-side wall time)."""
+        if not self._pose_ms:
+            return (0, 0.0, 0.0)
+        a = self._pose_ms
+        return (len(a), sum(x for x, _ in a) / len(a), sum(y for _, y in a) / len(a))
 
     def _frame_dt(self, clock: float) -> float:
         """The wall-clock step the animation advances by in the frame drawn

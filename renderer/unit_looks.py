@@ -71,9 +71,48 @@ def unit_key(unit) -> int:
     return int(getattr(unit, "id", id(unit)))
 
 
-def role_of(unit) -> str:
-    """A unit's role as the look table names it, read from ``is_zombie``."""
+#: A creature's role key in a ``LookAssigner`` table: the prefix + its species
+#: (#106 P7; the species is DATA, ``[render.creature_looks]``'s keys).
+CREATURE_ROLE_PREFIX = "creature:"
+
+
+def role_of(unit, creature_species=()) -> str:
+    """A unit's role as the look table names it: a species listed in
+    ``creature_species`` (``[render.creature_looks]``'s keys) is that
+    creature's role, every other unit's is read from ``is_zombie``."""
+    species = getattr(unit, "species_id", None)
+    if species is not None and species in creature_species:
+        return CREATURE_ROLE_PREFIX + str(species)
     return ROLE_ZOMBIE if getattr(unit, "is_zombie", False) else ROLE_PLAYER
+
+
+def creature_looks_table(cfg) -> Dict[str, List[str]]:
+    """The ``[render.creature_looks]`` table (#106 P7) from a loaded config:
+    ``{species: [name, ...]}``. Raises ValueError naming the key when the
+    section is missing, a list is empty or not names, or a key is not a
+    creature species (``species.creature is not None``) -- a creature look
+    for a species that has no chain could never be posed."""
+    section = getattr(getattr(cfg, "render", None), "creature_looks", None)
+    if section is None:
+        raise ValueError("config.toml has no [render.creature_looks] section")
+    raw = dict(vars(section)) if hasattr(section, "__dict__") else dict(section)
+    from simulation.species import get_species
+    table: Dict[str, List[str]] = {}
+    for species, names in raw.items():
+        if not names or not isinstance(names, (list, tuple)) or not all(
+                isinstance(n, str) and n for n in names):
+            raise ValueError(f"[render.creature_looks] {species} must be a non-empty "
+                             f"list of model names, got {names!r}")
+        try:
+            sdef = get_species(species)
+        except (KeyError, ValueError) as exc:
+            raise ValueError(f"[render.creature_looks] {species}: not a species "
+                             f"({exc})") from None
+        if sdef.creature is None:
+            raise ValueError(f"[render.creature_looks] {species} is not a creature "
+                             f"species (its row names no [creatures.*] row)")
+        table[species] = list(names)
+    return table
 
 
 @dataclass(frozen=True)
@@ -151,20 +190,26 @@ def unit_shading(cfg) -> UnitShading:
 class LookAssigner:
     """Deals look names to units, once per unit id, and remembers them."""
 
-    def __init__(self, table: Mapping[str, Sequence[str]]) -> None:
+    def __init__(self, table: Mapping[str, Sequence[str]],
+                 creature_table: Mapping[str, Sequence[str]] = None) -> None:
         self._table = {role: list(names) for role, names in table.items()}
+        # #106 P7: a creature unit's look comes from its species' list
+        self._creature_species = frozenset(creature_table or {})
+        for species, names in (creature_table or {}).items():
+            self._table[CREATURE_ROLE_PREFIX + species] = list(names)
         self._look: Dict[int, str] = {}
         self._dealt: Dict[str, int] = {role: 0 for role in self._table}
 
     def looks_for(self, units: Iterable) -> List[str]:
         """The look name of each unit, in the order given. Units never seen
         before are dealt first, in ascending id, each taking its role's next
-        entry round-robin; a unit seen before keeps the name it was given."""
+        entry round-robin (a creature's role: its species' list); a unit seen
+        before keeps the name it was given."""
         units = list(units)
         fresh = sorted({unit_key(u): u for u in units
                         if unit_key(u) not in self._look}.items())
         for uid, u in fresh:
-            role = role_of(u)
+            role = role_of(u, self._creature_species)
             names = self._table[role]
             k = self._dealt[role]
             self._look[uid] = names[k % len(names)]
@@ -173,6 +218,7 @@ class LookAssigner:
 
 
 __all__ = ["LookAssigner", "look_path", "looks_table", "all_look_names",
+           "creature_looks_table", "CREATURE_ROLE_PREFIX",
            "UnitShading", "unit_shading", "BODY_LIGHT_MODES",
            "BODY_LIGHT_UNIT", "BODY_LIGHT_FIELD",
            "role_of", "unit_key", "ROLES", "ROLE_PLAYER", "ROLE_ZOMBIE", "MODELS_DIR"]

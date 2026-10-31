@@ -213,3 +213,52 @@ def test_body_light_takes_exactly_its_two_modes():
         with pytest.raises(ValueError, match="body_light"):
             unit_shading(Namespace({"render": {"unit_shading": dict(full, body_light=bad)}}))
     assert unit_shading(CFG).body_light == "unit"
+
+
+# ---------------------------------------------------------------------------
+# #106 P7: creature looks ([render.creature_looks], species -> looks)
+# ---------------------------------------------------------------------------
+class _FakeCreature(_FakeUnit):
+    def __init__(self, uid: int, species: str) -> None:
+        super().__init__(uid, is_zombie=False)
+        self.species_id = species
+
+
+def test_a_creature_is_dealt_its_species_list_and_players_are_untouched():
+    """PROPERTY: a unit whose species is a key of the creature table gets
+    its species' looks round-robin by id; every other unit keeps the role
+    dealing, unshifted by the creatures between them.
+
+    BREAKS IF: a creature falls into the player role (drawn as a marine), or
+    the creature dealing advances the players' round-robin."""
+    looks = LookAssigner(_TABLE, {"squid": ["s_a", "s_b"]})
+    units = [_FakeUnit(1, False), _FakeCreature(2, "squid"), _FakeUnit(3, False),
+             _FakeCreature(4, "squid"), _FakeCreature(5, "squid")]
+    assert looks.looks_for(units) == ["p_a", "s_a", "p_b", "s_b", "s_a"]
+    assert LookAssigner(_TABLE).looks_for([_FakeCreature(9, "squid")]) == ["p_a"]
+
+
+def test_the_creature_look_table_is_refused_for_a_non_creature_species():
+    """PROPERTY: ``creature_looks_table`` reads the shipped table (every key a
+    creature species, every list non-empty) and refuses a human key, an
+    unknown species and an empty list, naming them.
+
+    BREAKS IF: a look is bound to a species that has no chain to pose it
+    by, or a typo silently draws nothing."""
+    from types import SimpleNamespace
+    from config import CFG
+    from renderer.unit_looks import creature_looks_table
+    table = creature_looks_table(CFG)
+    assert table and all(table.values())
+
+    def cfg(**kw):
+        return SimpleNamespace(render=SimpleNamespace(creature_looks=SimpleNamespace(**kw)))
+
+    with pytest.raises(ValueError, match="not a creature species"):
+        creature_looks_table(cfg(human=["space_marine"]))
+    with pytest.raises(ValueError, match="not a species"):
+        creature_looks_table(cfg(kraken=["octopus"]))
+    with pytest.raises(ValueError, match="non-empty"):
+        creature_looks_table(cfg(octopus=[]))
+    with pytest.raises(ValueError, match="no \[render.creature_looks\]"):
+        creature_looks_table(SimpleNamespace(render=SimpleNamespace()))

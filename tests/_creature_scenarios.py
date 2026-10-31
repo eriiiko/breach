@@ -97,6 +97,7 @@ def row_override(**groups):
 class Run:
     name: str
     records: list = field(default_factory=list)      # decoded per tick
+    views: list = field(default_factory=list)        # creature_system.read_chain per tick (P7)
     raw: list = field(default_factory=list)          # the record bytes per tick
     t: np.ndarray = None                             # s, after each tick
     X: np.ndarray = None                             # (T, 3) crown, m
@@ -197,6 +198,8 @@ class Scenario:
             d = CS.decode_record(rec)
             d["popped"] = int(self.body.bufs.popped.sum())
             self.run.records.append(d)
+            # THE chain accessor's view of the same tick (#106 P7)
+            self.run.views.append(CS.read_chain(self.body, self.unit))
 
     def seconds(self, s: float, each=None) -> None:
         self.step(int(round(s * TPS)), each)

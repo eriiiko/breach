@@ -121,6 +121,7 @@ byte-identical to before P6d1.
 from __future__ import annotations
 
 import struct
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -849,6 +850,113 @@ def spawn_creature_units(sim, rows) -> list:
     return out
 
 
+# ---------------------------------------------------------------------------
+# The chain accessor (#106 P7): THE read of a creature's chain
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class ChainView:
+    """One creature's chain as the renderer, tools and rules read it: float
+    copies DEQUANTIZED ONCE at the read (``creature_fixed.chain_to_f32`` /
+    ``heading_q24_to_rad``), never written back. Positions are world metres
+    in the GRID's axes (x East, y SOUTH -- the tile grid is y-down -- z up,
+    the deck at z = 0), tile (0, 0)'s corner at the origin (the solver's
+    topology origin, added back if one is set). Angles are radians in the
+    GAME's facing convention (``Unit.facing``: 0 = East, counter-clockwise
+    on screen), converted through ``creature_fixed`` -- never the solver's
+    yaw sign.
+
+    Arm ``a`` is the creature row's arm ``a`` (``body.arm_angles_deg[a]``
+    from the heading, CCW); node 0 is its root on the crown rim."""
+    unit_id: int
+    creature: str                 # the [creatures.*] row name
+    species_id: str | None        # the unit's species (None without a unit)
+    alive: bool
+    tile_size_m: float
+    footprint: int                # the body footprint, tiles per side
+    nodes: np.ndarray             # float32 (A, n, 3) m
+    velocities: np.ndarray        # float32 (A, n, 3) m/s
+    crown: np.ndarray             # float32 (3,) the crown centre, m
+    crown_velocity: np.ndarray    # float32 (3,) m/s
+    heading: float                # rad, the facing convention
+    yaw_rate: float               # rad/s, the facing convention (CCW +)
+    arm_state: np.ndarray         # uint8 (A,) ``creature_primitives.ARM_*``
+    rest_length: np.ndarray       # float32 (A,) m, the row's arm length (root -> tip)
+    length: np.ndarray            # float32 (A,) m, the polyline's current length
+    anchored: np.ndarray          # bool (A, n) suckers holding the deck
+    prop: np.ndarray | None       # float32 (4,) x, y, z (m), heading (rad), or None
+    last_hit: tuple               # (arm, node) of the last connecting hit; (-1, -1)
+    hit_tiles: tuple              # sorted (tx, ty) the hit seam tests, this tick
+
+    @property
+    def arms(self) -> int:
+        return int(self.nodes.shape[0])
+
+    @property
+    def nodes_per_arm(self) -> int:
+        return int(self.nodes.shape[1])
+
+
+def read_chain(body: "CreatureBody", unit=None) -> ChainView:
+    """THE read of a creature's chain (#106 P7; design section 9): the body's
+    synced integer buffers dequantized ONCE into a :class:`ChainView`. Pure
+    read -- nothing on the body, its buffers or the unit is touched (the
+    digest cannot see a reader). ``unit`` (optional) adds what only the unit
+    knows: ``alive`` and its species."""
+    b = body.bufs
+    ox = int(b.world[0, AC.WD_ORIGIN_X_Q24])
+    oy = int(b.world[0, AC.WD_ORIGIN_Y_Q24])
+    p = b.p[0].astype(np.int64)
+    p[..., 0] -= ox
+    p[..., 1] -= oy
+    nodes = CF.chain_to_f32(p)
+    seg = np.diff(CF.chain_to_m(p), axis=1)
+    length = np.sqrt((seg * seg).sum(-1)).sum(-1).astype(np.float32)
+    bd = b.body[0, 0]
+    crown = CF.chain_to_f32(np.array([int(bd[AC.BS_X]) - ox, int(bd[AC.BS_Y]) - oy,
+                                      int(bd[AC.BS_Z])], np.int64))
+    prop = None
+    if body.has_prop:
+        pb = b.body[0, 1]
+        xyz = CF.chain_to_m(np.array([int(pb[AC.BS_X]) - ox, int(pb[AC.BS_Y]) - oy,
+                                      int(pb[AC.BS_Z])], np.int64))
+        h = CF.heading_rad_to_facing(CF.heading_q24_to_rad(
+            CF.body_th_to_heading_q24(int(pb[AC.BS_TH]))))
+        prop = np.array([xyz[0], xyz[1], xyz[2], h], np.float32)
+    shape = getattr(body, "hit_shape", None)
+    arm_len = float(body._cdef.body.arm_length_m)
+    return ChainView(
+        unit_id=body.unit_id, creature=body.creature,
+        species_id=None if unit is None else getattr(unit, "species_id", None),
+        alive=True if unit is None else bool(getattr(unit, "alive", True)),
+        tile_size_m=body.tile_size_m, footprint=body.footprint,
+        nodes=nodes, velocities=CF.chain_to_f32(b.v[0]),
+        crown=crown,
+        crown_velocity=CF.chain_to_f32(np.array([int(bd[AC.BS_VX]), int(bd[AC.BS_VY]),
+                                                 int(bd[AC.BS_VZ])], np.int64)),
+        heading=CF.heading_rad_to_facing(CF.heading_q24_to_rad(body.heading_q24)),
+        yaw_rate=CF.heading_rad_to_facing(CF.heading_q24_to_rad(
+            CF.body_th_to_heading_q24(int(bd[AC.BS_OM])))),
+        arm_state=body.arm_state.copy(),
+        rest_length=np.full(body.arms, arm_len, np.float32),
+        length=length,
+        anchored=b.anchored[0].astype(bool),
+        prop=prop,
+        last_hit=(int(body.last_hit[0]), int(body.last_hit[1])),
+        hit_tiles=tuple(shape.tiles) if shape is not None else (),
+    )
+
+
+def read_chains(system, units=()) -> dict:
+    """Every creature of ``system`` read through :func:`read_chain`, keyed by
+    unit id, in unit-id order; ``units`` (the sim's unit list) supplies each
+    body's unit. Dead creatures are included (``alive`` False): a dead body
+    is frozen, and the renderer still draws it."""
+    if system is None or not system.bodies:
+        return {}
+    by_id = {int(u.id): u for u in units}
+    return {b.unit_id: read_chain(b, by_id.get(b.unit_id)) for b in system.ordered_bodies()}
+
+
 __all__ = [
     "CREATURE_DIGEST_KEY", "CREATURE_SECT_PREAMBLE", "ARM_LIMP",
     "GOAL_NONE", "GOAL_MOVE_DIR", "BODY_FIELDS",
@@ -857,5 +965,5 @@ __all__ = [
     "CreatureBody", "CreatureSystem",
     "serialize_record", "decode_record", "section_bytes", "creature_carrier",
     "require_creature_carrier", "diff_creature_records", "spawn_creature_units",
-    "set_tick_laps",
+    "set_tick_laps", "ChainView", "read_chain", "read_chains",
 ]
