@@ -216,9 +216,11 @@ units. First use: the airlock-bypass cycle type
 change is one row in `gen_ship.CELL_CROSSING_KINDS`.
 
 **Move library, honestly counted (critique of the cycle-types doc, 2026-10-31).**
-v1 has six moves: L4's subdivision, edge-to-cycle (A-B REMOVED, so no
+v1 has seven moves: L4's subdivision, edge-to-cycle (A-B REMOVED, so no
 triangle) and leaf attachment, plus `ring` (an even ring around a hub, the
 hub joined to alternate ring rooms), `parallel` (a second opening of another
-kind on the same shared wall) and `duct` (the vent exception). L4's face
+kind on the same shared wall), `duct` (the vent exception) and `second_leg`
+(add A-D-B, D new, beside an existing path A-C-B; the archetype session's
+critique, 2026-10-31). L4's face
 insertion is UNUSED in v1: the grammar keeps no combinatorial embedding. The
 no-triangle rule runs on the CONTACT graph over every edge kind.

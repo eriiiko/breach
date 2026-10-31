@@ -50,7 +50,8 @@ means writing data at scales 1.5-4, never code.
 
 ### 0.1 The move library (critique 13, 14)
 
-v0.1 §9 said "the four L4 moves". Honestly counted, v1 has **six**, and one
+v0.1 §9 said "the four L4 moves". Honestly counted, v1 has **seven**
+(*[archetype rev 2]*: `second_leg` joined the six of revision 2), and one
 of L4's four is unused:
 
 | Move | L4 | What it does to the graph | Planarity |
@@ -61,6 +62,7 @@ of L4's four is unused:
 | `ring` | new (critique 13) | a hub H gets an EVEN ring of n rooms r_1..r_n around it, ring neighbours joined, H joined to the odd-numbered ring rooms only (so H-r_i-r_(i+1) is never a triangle) | safe: a wheel minus alternate spokes |
 | `parallel` | new (critique 17) | a second opening of another kind on the SAME shared wall of A and B (a multi-edge; no new room) | safe: nothing crosses |
 | `duct` | the L4 vent exception | joins two rooms of one cell on one duct; no wall edge | not a wall edge |
+| `second_leg` | new *[archetype rev 2]* | precondition: a path A-C-B exists (an axiom path, e.g. slab-passageway-lobby, or passageway-entry-END); effect: add A-D-B with D ONE new room; the existing leg is not redrawn. What `edge_to_cycle` becomes when one leg is already there | safe: the same 4-cycle as edge_to_cycle |
 | ~~`face`~~ | move 4 | insertion into an enclosed empty face | **unused in v1**: the grammar keeps no combinatorial embedding; the ring covers the one wanted case |
 
 Every move records provenance (rule id + application index) on what it
@@ -200,26 +202,20 @@ chain of rooms (possibly none) between the two anchors A and B; a leg's
 ```toml
 [cycle]
 name = "flank_pair"
-move = "edge_to_cycle"          # subdivide | edge_to_cycle | leaf | ring | parallel | duct
+move = "second_leg"             # subdivide | edge_to_cycle | leaf | ring | parallel | duct | second_leg
 phase = [2]                     # phases an archetype recipe may apply it in; one ENTRY applies it in one phase
 tactic = "Two ways between the same hubs; the slow team takes the dark way round."
 
-[[leg]]
+[[leg]]                         # [archetype rev 2]: ONE leg -- the existing path (slab-passageway-lobby) is the other
 walk = true
-rooms = [1, 3]                  # inclusive range of rooms on this leg
-width = "wide"                  # wide (floor >= 6) | narrow (floor 3; one room; entered from its long sides)
-light = "lit"
-edges = ["door", "open"]        # edge kinds this leg's openings may use
-
-[[leg]]
-walk = true
-rooms = [1, 1]
-width = "narrow"
+rooms = [1, 1]                  # inclusive range of rooms on this leg
+width = "narrow"                # wide (floor >= 6) | narrow (floor 3; one room; entered from its long sides)
 light = "dim"
-edges = ["door"]
+edges = ["door"]                # edge kinds this leg's openings may use
 ```
 
-The retreat loop is the same file with two `wide` legs of 1-2 rooms each.
+The retreat loop is the same file with one `wide` leg of one room (the
+second stub; the existing path is passageway-entry-END). *[archetype rev 2]*
 
 The airlock bypass (no rooms; two openings on one wall):
 
@@ -314,7 +310,9 @@ recipe cannot smuggle a value in. The RESOLVER (§3.4) turns names into the
 Revision 1 claimed an internal retreat loop; the edge list was a star around
 the stub, a tree. The quarters are a tree on purpose (one entry, bunks and
 mess open onto the stub), so the claim is gone. A retreat loop is a
-SHIP-level type the archetype recipe applies between departments' entries.
+SHIP-level type the archetype recipe applies to ONE department's entry edge
+(`second_leg`: a second stub beside the first, both into the end room;
+*[archetype rev 2]*).
 
 ```toml
 [department]
@@ -627,10 +625,10 @@ CLAUDE.md only when the code exists):
 - **Three graphs** -- `The grammar keeps the contact, walk and air graphs;
   the no-triangle rule runs on the contact graph over every edge kind, L5
   on contacts crossing a cell, the vent rules on the air graph.`
-- **Move library** -- `Six moves in code (subdivide, edge_to_cycle, leaf,
-  ring, parallel, duct), each with precondition, phases and provenance; a
-  new shape is a cycle file on these moves, never a seventh move without a
-  design line.`
+- **Move library** -- `Seven moves in code (subdivide, edge_to_cycle, leaf,
+  ring, parallel, duct, second_leg), each with precondition, phases and
+  provenance; a new shape is a cycle file on these moves, never an eighth
+  move without a design line.`
 - **Fixture** -- `A room with its own physics signature reused across
   departments is a row in fixtures.toml; a department's room pulls it in by
   name and may override a field.`

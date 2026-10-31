@@ -69,8 +69,6 @@ engine stays small.
   physics session: cold storage, the morgue), dust as a gas row (Erik: later,
   after the first departments play), the high-O2 demo (now runnable:
   `[payloads.o2_store_rupture]` on a heat-triggered charge).
-- The recipe file format (toml under `levels/recipes/` or beside the
-  departments) and the LevelSpec the RL track reads (digest strand c, Q10).
 - Station fragments (archetype four): the other embedding family, no hull.
 
 ## 5. Procedure for a session
@@ -113,6 +111,7 @@ engine stays small.
 
 ## 7. Run log
 
+- 2026-10-31 (night, Erik on a break) -- the two remaining family-B design docs, each written, critiqued by one Opus critic (20 and 18 findings) and folded to rev 2 on branch `136-layout-stage`: the LAYOUT STAGE (`levelgen_layout_stage_2026-10-31.md`: skeleton = slab / passageway / LOBBY / sections as code, seven guillotine primitives, bounded steel voids, axis parity, two rng streams, worked numbers: medium = 2 departments per wing, large = 4, small not a recipe ship) and the ARCHETYPE RECIPE (`levelgen_archetype_recipe_2026-10-31.md`: executor pseudo-code with a grammar attempt loop, quotient counts, named profile operators, `[validation]`, LevelSpec with every input + generator version, the level's own seed with match.toml's `seed` unchanged, banks, mutate). Seventh move `second_leg` added to the recipe doc and v0.1 §9; the scope doc's seed line amended. Neither rev 2 was re-critiqued (budget: one critic per doc). Learned: a doc written at the screen with Erik needs the critique before its worked example is trusted (twice now); 'two rng streams' has the consequence that an unrealisable grammar draw kills the seed unless the grammar has its own attempt loop; the research digest's seed-split sentence was wrong and was copied before being checked. Next: Erik's veto pass on the three docs' feel lists (layout §10, archetype §7), then cut the implementation issues (ship_grammar.py, ship_layout.py, the data files) once the loader branch lands.
 - 2026-10-31 (evening) -- #136 cycle types rev 2: the parallel chat's rev 1 (merged by it, `76f3987`) was critiqued (Opus, 20 findings: 3 blockers -- no loop in the worked example, no-triangle on the wrong graph, L5 broken silently) and folded here; L5 amended by Erik (breakable wall as third crossing); the LAYOUT stage (1.5) named as the largest unbuilt piece; `role` -> `fixture`; the duct link lost its direction. Learned: the other chat's 136 worktree stays its own (one writer), so the revision ran on `136-cycle-types-rev2` off main; a doc written with Erik at the screen needs the critique BEFORE its worked example is trusted (rev 1's example was infeasible at its own ranges). Open for Erik: the galley stove vs kindling call.
 - 2026-10-31 -- grammar session (this skill created). Decided family B,
   L7 amended, milestone 12 created for family A, #144 floor height and #145

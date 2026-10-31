@@ -81,7 +81,11 @@ symmetry gate can all reject, and a rejection rerolls (L8).
 
 ## 2. The skeleton IS the axiom (L3)
 
-The freighter archetype's axiom (archetype doc §1) declares these quotient
+The freighter SKELETON is code in the layout stage; the archetype file
+NAMES it (`skeleton = "freighter"`) and lists its axiom DEPARTMENTS; the
+skeleton's own rooms and edges below come with it (*[archetype rev 2]*,
+critique 17; a new skeleton is layout code first, a new ship kind on an
+existing skeleton is a file). The skeleton supplies these quotient
 rooms with fixed roles; the layout maps each role to a primitive and fails
 loudly on an unknown role:
 
