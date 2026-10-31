@@ -930,10 +930,56 @@ class GameMap:
 
         # Gas energy seed (design §2.2/§5, P-G0): mirrors the level's t=0
         # (N, T) state now that every seed above (water/air_init) has run.
-        # `temperature` is all-ambient (0) at this point on every level (no
-        # per-level temperature seed exists yet), so this only matters where
-        # `air_init_q` set N != the P1 calibration default.
+        # `temperature` is all-ambient (0) at this point on every level; the
+        # temp_init seed below re-derives its own gas cells afterwards.
         self.refresh_gas_energy()
+
+        # --- temp_init.npy initial-temperature seed (vocabulary E.2 row 4) -
+        self._seed_temp_init(getattr(level_data, "temp_init_q", None),
+                             getattr(level_data, "name", "?"))
+
+    def _seed_temp_init(self, temp_seed_q, level_name):
+        """Apply a level's ``temp_init.npy`` (Q16.16 game degrees above
+        ambient, already door-checked by the loader) at load, once, AFTER the
+        air seed and the level-load ``refresh_gas_energy``.
+
+        GAS cells (the accountable set) go through
+        :meth:`seed_gas_temperature` -- the one sanctioned way to give a gas
+        cell a temperature: the mirror and ``gas_energy`` written together,
+        restricted to the seeded cells, so E == N·(T + T_amb) exactly and the
+        once-per-tick recovery reads the seed back. THERMAL SOLIDS are their
+        own truth (the temperature solver owns them; no gas_energy there), so
+        a load-time write of their ``temperature`` is the whole seed; the
+        solver's ``solid_energy_books_sum`` is a snapshot recomputed at the
+        end of every step, so the solid ledger simply starts from the seeded
+        state -- nothing is booked, since nothing has run yet.
+
+        Refused (ValueError) when a non-zero value lands anywhere else -- a
+        wall without thermal mass has no temperature to hold, and the vacuum
+        / ambient ring are boundary conditions, not state -- naming the
+        offending tile count and a first tile. ``None`` or all-zero is a no-op
+        (dormancy: 0 is ambient, what every plane already holds)."""
+        if temp_seed_q is None:
+            return
+        seed = np.asarray(temp_seed_q)
+        if not seed.any():
+            return
+        gas = self._gas_energy_accountable()
+        solid = self.thermal_solid & ~gas
+        bad = (seed != 0) & ~(gas | solid)
+        if bad.any():
+            ys, xs = np.nonzero(bad)
+            raise ValueError(
+                f"temp_init.npy for level '{level_name}': {int(bad.sum())} "
+                f"tile(s) seeded on a wall without thermal mass, vacuum or "
+                f"the ambient ring (first at y={int(ys[0])}, x={int(xs[0])}) "
+                f"-- only gas cells and thermal solids hold a temperature")
+        gas_sel = gas & (seed != 0)
+        sol_sel = solid & (seed != 0)
+        if sol_sel.any():
+            self.temperature[sol_sel] = seed[sol_sel]
+        if gas_sel.any():
+            self.seed_gas_temperature(gas_sel, seed[gas_sel])
 
     # ------------------------------------------------------------------
     # Gas energy field (gas-energy conservation arc #54, design §2.2/§2.7)

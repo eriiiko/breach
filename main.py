@@ -277,6 +277,11 @@ def _upscale_level(level, factor: int):
     if level.air_init_q is not None:
         level.air_init_q = np.repeat(
             np.repeat(level.air_init_q, factor, axis=0), factor, axis=1)
+    # temp_init.npy (vocabulary E.2 row 4): temperature is intensive too, so
+    # nearest-neighbour replication keeps every seeded tile's temperature.
+    if getattr(level, "temp_init_q", None) is not None:
+        level.temp_init_q = np.repeat(
+            np.repeat(level.temp_init_q, factor, axis=0), factor, axis=1)
     # Drop any explicit art-align px_per_tile so the renderer recomputes it
     # from the new (denser) grid shape — otherwise the art would stretch.
     level.art_px_per_tile = None

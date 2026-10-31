@@ -38,7 +38,8 @@ vents on inner walls of their tagged rooms, one heat-triggered
 ``timed_charge`` per ``hazard``-tagged room (the magazine's cook-off, the
 hazmat store; vocabulary E.2 row 1), one ``heat_source`` per
 ``heat_source``-tagged room (the engine, the galley stove; E.2 row 3), both
-on the one floor-site rule, one static lamp per room
+on the one floor-site rule, the ``temp``-tagged rooms' floor air seeded hot
+in ``temp_init.npy`` (hot engineering; E.2 row 4), one static lamp per room
 (render light only), the spawn rooms from the tags. It reads only the graph (and one seeded generator for the clusters).
 
 GATES (:func:`validate`), before anything is written: airtight
@@ -87,6 +88,7 @@ from level_loader import (  # noqa: E402
 )
 from pathfinding import astar  # noqa: E402
 from simulation.factions import ZOMBIE_TEAM  # noqa: E402
+from simulation.gas_fixed import quantize_q16_scalar  # noqa: E402
 from simulation.match import (  # noqa: E402
     FORMATION_FOOTPRINT, FORMATION_GAP, FORMATION_PITCH, MatchSpec,
     MatchTeam, SpawnRoom, formation_capacity, placement_cells,
@@ -313,7 +315,7 @@ def vent_spec(tag):
 
 # THE per-room tag schema (all keys optional): key -> (what it is, check).
 # A department writes these; stage 2 reads ``spawn_team``, ``zombie``,
-# ``fuel``, ``vent``, ``hazard``, ``heat_source`` and ``light``, and carries ``dept``, ``role``,
+# ``fuel``, ``vent``, ``hazard``, ``heat_source``, ``temp`` and ``light``, and carries ``dept``, ``role``,
 # ``cell`` and ``secret`` into ``Embedding.room_tags`` for the vent builder
 # and the grammar. Generator-side data: none of them is a level field.
 ROOM_TAGS = {
@@ -343,6 +345,9 @@ ROOM_TAGS = {
                     '[payloads.*] row or ""}: one heat_source entity on a '
                     "floor tile clear of doors, fuel and other entities "
                     "(the engine, the galley stove)", _check_heat_source),
+    "temp":       ("float > 0: the room's floor AIR starts this many game "
+                   "degrees above ambient (temp_init.npy; hot engineering)",
+                   lambda v: _is_num(v) and v > 0),
 }
 # The tags carried into Embedding.room_tags (the rest are stage 2's inputs).
 ANNOTATION_TAGS = ("dept", "role", "cell", "secret", "light")
@@ -933,6 +938,9 @@ class Embedding:
     room_tags: dict = field(default_factory=dict)
     edges_by_kind: dict = field(default_factory=dict)   # kind -> count
     wires: list = field(default_factory=list)   # (from, to): the airlocks'
+    # temp_init.npy's grid (int32 Q16.16 game degrees above ambient) from the
+    # ``temp`` tags, or None when no room is tagged (no file is written).
+    temp_init: np.ndarray | None = None
 
 
 def _reflect(box, w):
@@ -1316,7 +1324,33 @@ def embed(graph: ShipGraph, rng) -> Embedding:
     return Embedding(tilemap=tm, spawn_rooms=rooms, entities=ents,
                      lights=lights, doors=doors, windows=windows,
                      fuel_tiles=fuel, room_tags=room_tags,
-                     edges_by_kind=by_kind, wires=wires)
+                     edges_by_kind=by_kind, wires=wires,
+                     temp_init=_build_temp_init(tm, graph))
+
+
+def _build_temp_init(tm, graph: ShipGraph):
+    """The ``temp`` tags as ``temp_init.npy``'s grid: every tagged room's
+    FLOOR AIR (its rectangle's ``MAT_AIR`` tiles, minus any airlock vestibule
+    carved into it -- the vestibule is its own compartment) at the tag's
+    value, quantized once through the Q16 kit; 0 everywhere else. Gas only:
+    a hot WALL is a different thing (a thermal solid holding heat, not a hot
+    room), and fuel clusters stay ambient so a hot room does not start its
+    own kindling burning. None when no room is tagged -- no file at all."""
+    tagged = [rm for rm in graph.rooms if "temp" in rm.tags]
+    if not tagged:
+        return None
+    vest = np.zeros(tm.shape, dtype=bool)
+    for _i, al in _airlocks(graph):
+        for (y, x) in al.carve:
+            vest[y, x] = True
+    out = np.zeros(tm.shape, dtype=np.int32)
+    for rm in tagged:
+        x0, y0, x1, y1 = rm.box
+        sub = (tm[y0:y1 + 1, x0:x1 + 1] == MAT_AIR) & ~vest[y0:y1 + 1,
+                                                             x0:x1 + 1]
+        out[y0:y1 + 1, x0:x1 + 1][sub] = quantize_q16_scalar(
+            float(rm.tags["temp"]))
+    return out
 
 
 def _carve_airlock(tm, al: Airlock) -> None:
@@ -1699,7 +1733,8 @@ def _authored_spawns(plan: ShipPlan) -> list:
     return out
 
 
-DATA_FILES = ("level.toml", "tilemap.csv", "diffuse.png", "match.toml")
+DATA_FILES = ("level.toml", "tilemap.csv", "diffuse.png", "match.toml",
+              level_lib.TEMP_INIT_FILENAME)
 
 
 def write(plan: ShipPlan, out_dir) -> Path:
@@ -1746,6 +1781,9 @@ def write(plan: ShipPlan, out_dir) -> Path:
         blocks["wire"] = lambda nl: level_lib.format_wire_lines(wires, nl)
     level_lib.write_managed_blocks(toml_path, blocks, write_bak=False)
     level_lib.write_match(out_dir, plan.match_spec())
+    if plan.embedding.temp_init is not None:
+        level_lib.write_temp_init_npy(out_dir, plan.embedding.temp_init,
+                                      npy_bak=False)
     return out_dir
 
 
