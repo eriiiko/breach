@@ -9,7 +9,12 @@
 > Design only: no code. Follows the grammar session
 > (`docs/breach_levelgen_design_v0.1.md` §9, family B) and the vocabulary doc
 > (`docs/levelgen_zone_vocabulary_2026-10-29.md`, Parts 0 and B). The file
-> keeps its name so links hold.
+> keeps its name so links hold. **Revision 2.1 (2026-10-31 night)**: dated
+> amendments from the layout-stage design (`levelgen_layout_stage_2026-10-31.md`
+> rev 2), each marked *[layout rev 2]*: the contact graph is the DECLARED edges;
+> the flank pair's hubs are the slab and the lobby; the retreat loop doubles a
+> department's entry stub; room keys `attach` and `exit`; the quarters' stub
+> `along = [14, 24]`; §5.1 is the constructive skeleton, no swap move.
 >
 > **What revision 2 changed, in one paragraph.** The no-triangle rule now
 > runs on the CONTACT graph over every edge kind, and the retreat loop and
@@ -45,7 +50,8 @@ means writing data at scales 1.5-4, never code.
 
 ### 0.1 The move library (critique 13, 14)
 
-v0.1 §9 said "the four L4 moves". Honestly counted, v1 has **six**, and one
+v0.1 §9 said "the four L4 moves". Honestly counted, v1 has **seven**
+(*[archetype rev 2]*: `second_leg` joined the six of revision 2), and one
 of L4's four is unused:
 
 | Move | L4 | What it does to the graph | Planarity |
@@ -56,6 +62,7 @@ of L4's four is unused:
 | `ring` | new (critique 13) | a hub H gets an EVEN ring of n rooms r_1..r_n around it, ring neighbours joined, H joined to the odd-numbered ring rooms only (so H-r_i-r_(i+1) is never a triangle) | safe: a wheel minus alternate spokes |
 | `parallel` | new (critique 17) | a second opening of another kind on the SAME shared wall of A and B (a multi-edge; no new room) | safe: nothing crosses |
 | `duct` | the L4 vent exception | joins two rooms of one cell on one duct; no wall edge | not a wall edge |
+| `second_leg` | new *[archetype rev 2]* | precondition: a path A-C-B exists (an axiom path, e.g. slab-passageway-lobby, or passageway-entry-END); effect: add A-D-B with D ONE new room; the existing leg is not redrawn. What `edge_to_cycle` becomes when one leg is already there | safe: the same 4-cycle as edge_to_cycle |
 | ~~`face`~~ | move 4 | insertion into an enclosed empty face | **unused in v1**: the grammar keeps no combinatorial embedding; the ring covers the one wanted case |
 
 Every move records provenance (rule id + application index) on what it
@@ -67,9 +74,12 @@ makes, and the invariants of §1.5 run after every application.
 
 A ship has three graphs over the same rooms:
 
-- the **contact graph**: rooms that share a wall. EVERY row of `EDGE_KINDS`
-  is a contact (all are `must-share-wall`, and stage 2 refuses an edge whose
-  rooms share no wall). The rectangular-layout guarantee lives here.
+- the **contact graph**: the DECLARED edges, every one of which must be a
+  shared wall (all `EDGE_KINDS` rows are `must-share-wall`, and stage 2
+  refuses an edge whose rooms share no wall). *[layout rev 2]* It is NOT
+  every physical touch: two bunks side by side share a wall with no edge,
+  and that is fine and inevitable. The rectangular-layout guarantee lives
+  here.
 - the **walk graph**: contacts a unit can pass (door, open arch, entity
   door; a breakable wall after it is broken; an airlock pair in sequence).
 - the **air graph**: anything gas can pass: open arches always; doors,
@@ -116,8 +126,8 @@ so the grammar reads one format (§2).
 
 | Type | Move | Shape | Air | Phase | Tactic |
 |---|---|---|---|---|---|
-| **Retreat loop** | `edge_to_cycle` | A-B is REPLACED by A-C-B and A-D-B: a 4-cycle, all legs walkable, plain doors or arches, `wide` | follows the walk graph through arches only; doors are gas-tight | 2 | A hub with two ways back toward your own end (the grammar reads the department's `toward` gradient): you can always fall back without being cornered. |
-| **Flank pair** | `edge_to_cycle` | two corridors between the same hubs: one `wide`, `light = "lit"`, 1-3 rooms; one `narrow`, `light = "dim"`, exactly ONE room entered from its long sides | each leg may carry its own duct | 2 | The slow team takes the dark way round, single file. |
+| **Retreat loop** | `edge_to_cycle` on a department's ENTRY edge *[layout rev 2]* | passageway-stub is REPLACED by passageway-stub_1-END and passageway-stub_2-END (stub_2 a new twin corridor, END the department's `attach = "end"` room; a department without one cannot take the loop): a 4-cycle, all legs walkable, plain doors or arches, `wide` | follows the walk graph through arches only; doors are gas-tight | 2 | A hub with two ways back toward your own end (the grammar reads the department's `toward` gradient): you can always fall back without being cornered. |
+| **Flank pair** | `edge_to_cycle` on slab-lobby *[layout rev 2]* | two corridors between the same two hubs, the spawn slab and the wing lobby: one `wide`, `light = "lit"` (the passageway, one room); one `narrow`, `light = "dim"`, exactly ONE room (a hull strip) entered from its long side by a door down into each hub | each leg may carry its own duct | 2 | The slow team takes the dark way round, single file. |
 | **Airlock bypass** | `parallel` across a cell boundary | A and B share ONE wall carrying two openings: the airlock pair (its vestibule carved on A's side, as `_airlock` does today) and a `breakable` segment. No new room. | the breakable leg joins the two cells for gas and units once demolished; until then the boundary holds | 2 | You cannot walk around the airlock; a charge on the wall makes a second door, and the cells breathe together. |
 | **Maintenance ring** | `ring` | an even ring of 4, 6 or 8 small rooms around a hub; ring neighbours joined by doors or arches (one kind per application); the hub joined to the odd-numbered ring rooms by doors; all `wide` | the ring's own duct (supply + return per ring room) or, with arches, one compartment | 2 | Service closets around the engine room: a fire in one smokes the whole ring, and the ring is a flank around the hub. |
 | **Duct link** | `duct` | NO wall edge: the two rooms need not touch; precondition: both in one cell | one duct carrying both rooms, each with supply + return (the sealed-room rule): a shared, well-mixed plenum | 4 | A grenade in one room comes out of the grille in the other, and some of it comes back. What a poison grenade exploits. |
@@ -177,7 +187,7 @@ Evaluated after every move application; a failure names the rule.
 
 | Invariant | Graph | Source |
 |---|---|---|
-| **No 3-cycle of contacts** (any edge kinds). A wanted three-room corner is a prefab (#133). | contact | research pass B7, Q6: triangle-free planar => a rectangular layout exists |
+| **No 3-cycle of DECLARED edges** (any edge kinds). A wanted three-room corner is a prefab (#133). Sufficient, not necessary: the theorem forbids only FILLED triangles, and the layout's own primitives never make one it cannot realise (layout doc §3). | contact (declared) | research pass B7, Q6: triangle-free planar => a rectangular layout exists |
 | Every cell-boundary crossing is an airlock pair, a bulkhead or a breakable wall (L5 as amended, §4); never a door, arch or window | contact | L5 |
 | A duct never crosses a cell; a room whose every contact is gas-tight carries both a supply and a return on each of its ducts, or none | air | vocabulary §0.4-0.5 |
 | Mirror: every wing room and edge has its twin; axis rooms are self-twins | all | vocabulary §0.3 |
@@ -192,26 +202,20 @@ chain of rooms (possibly none) between the two anchors A and B; a leg's
 ```toml
 [cycle]
 name = "flank_pair"
-move = "edge_to_cycle"          # subdivide | edge_to_cycle | leaf | ring | parallel | duct
+move = "second_leg"             # subdivide | edge_to_cycle | leaf | ring | parallel | duct | second_leg
 phase = [2]                     # phases an archetype recipe may apply it in; one ENTRY applies it in one phase
 tactic = "Two ways between the same hubs; the slow team takes the dark way round."
 
-[[leg]]
+[[leg]]                         # [archetype rev 2]: ONE leg -- the existing path (slab-passageway-lobby) is the other
 walk = true
-rooms = [1, 3]                  # inclusive range of rooms on this leg
-width = "wide"                  # wide (floor >= 6) | narrow (floor 3; one room; entered from its long sides)
-light = "lit"
-edges = ["door", "open"]        # edge kinds this leg's openings may use
-
-[[leg]]
-walk = true
-rooms = [1, 1]
-width = "narrow"
+rooms = [1, 1]                  # inclusive range of rooms on this leg
+width = "narrow"                # wide (floor >= 6) | narrow (floor 3; one room; entered from its long sides)
 light = "dim"
-edges = ["door"]
+edges = ["door"]                # edge kinds this leg's openings may use
 ```
 
-The retreat loop is the same file with two `wide` legs of 1-2 rooms each.
+The retreat loop is the same file with one `wide` leg of one room (the
+second stub; the existing path is passageway-entry-END). *[archetype rev 2]*
 
 The airlock bypass (no rooms; two openings on one wall):
 
@@ -306,7 +310,9 @@ recipe cannot smuggle a value in. The RESOLVER (§3.4) turns names into the
 Revision 1 claimed an internal retreat loop; the edge list was a star around
 the stub, a tree. The quarters are a tree on purpose (one entry, bunks and
 mess open onto the stub), so the claim is gone. A retreat loop is a
-SHIP-level type the archetype recipe applies between departments' entries.
+SHIP-level type the archetype recipe applies to ONE department's entry edge
+(`second_leg`: a second stub beside the first, both into the end room;
+*[archetype rev 2]*).
 
 ```toml
 [department]
@@ -323,7 +329,7 @@ id = "stub"
 shape = "corridor"              # room | corridor | vestibule
 required = true
 width = "wide"
-size = { across = [6, 8], along = [20, 24] }   # corridors: (across, along); the layout stage rotates
+size = { across = [6, 8], along = [14, 24] }   # corridors: (across, along); the layout stage rotates. [layout rev 2]: 14 so the department fits a medium row
 vent = { duct = "quarters", roles = ["return"] }
 
 [[room]]
@@ -338,12 +344,14 @@ vent = { duct = "quarters", roles = ["supply"] }
 [[room]]
 id = "heads"
 required = true
+exit = true                     # [layout rev 2] may carry a spawn exit when this department is first in its row
 size = { w = [6, 6], h = [6, 8] }
 vent = { duct = "quarters", roles = ["return", "supply"] }   # a sealed box carries both
 
 [[room]]
 id = "mess"
 required = true
+attach = "end"                  # [layout rev 2] the room at the stub's far end (default attach = "side")
 size = { w = [9, 12], h = [9, 12] }
 fuel = "furniture"
 
@@ -352,6 +360,7 @@ id = "galley"                   # the kitchen
 p = 0.7                         # optional room, probability of presence
 size = { w = [6, 9], h = [6, 9] }
 fixture = "galley"              # §3.3: a stove on from tick 0 (Erik's ruling), kindling
+attach = "behind:mess"          # [layout rev 2] split off the mess's far side
 vent = { duct = "galley", roles = ["supply", "return"] }
 
 [[room]]
@@ -423,6 +432,8 @@ area failure does. Revision 1's ranges (stub `along` down to 12, count up to
 | `[[cycle]]` (optional) | `{ type, a, b }`: a cycle type applied INSIDE the department between two of its rooms, in phase 1 (critique 1, reading b) | type exists, `a`/`b` room ids exist, the type's phases include 1 |
 | `room.id`, `shape`, `required` / `count` / `p` | identity, shape hint, multiplicity | exactly one of `required`, `count`, `p` |
 | `room.width` | `wide` / `narrow`, corridors only | `narrow` only on a corridor, never with `fuel` |
+| `room.attach` *[layout rev 2]* | `side` (default: packed along the stub) / `end` (the stub's far end, at most one) / `behind:<room>` (split off that room's far side) | at most one `end`; the behind parent exists; the loader runs the layout's packing at the recipe's minima |
+| `room.exit` *[layout rev 2]* | `true` on at most one side room: it may carry a spawn exit when the department is first in its row | at most one; a side room |
 | `room.size` | rooms `{ w, h }` (x, y extents); corridors `{ across, along }` (the layout stage rotates) | each min >= 6 for a room; a corridor's `across` within its width class |
 | `room.fixture` | a fixture (§3.3) | fixture exists |
 | `room.fuel` | a fuel class (§3.4) | class exists |
@@ -527,10 +538,14 @@ BSP, then edges chosen FROM the geometry). A recipe yields the reverse: a
 topology with size ranges and contact edges. Turning that into rectangles
 where every contact is at least `DOOR_W` long is the open layout problem the
 research pass answered for ships: **a slicing subdivision on the quotient
-half (one wing + the axis band) with the recipe's size hints as weights and
-chains laid along cuts so consecutive rooms share a wall; mandatory and
-prefab rooms placed first; a bounded Merrell repair (slide a cut, swap two
-leaves, mirrored); then reroll the seed (L8), never re-enter the grammar.**
+half (one wing + the axis band) with chains laid along cuts so consecutive
+rooms share a wall; a bounded Merrell repair; then reroll the seed (L8),
+never re-enter the grammar.** *[layout rev 2]*: designed in
+`levelgen_layout_stage_2026-10-31.md` as a CONSTRUCTIVE skeleton (the
+archetype's axiom rooms fixed, departments as side streets off one
+passageway, guillotine primitives, bounded steel voids for the slack)
+rather than a weighted treemap, and with the wall-slide repair only (no
+swap move: identities carry the gradient order and the exit pin).
 This is **stage 1.5, "layout"**, between the grammar (stage 1) and `embed`
 (stage 2). It is its own design session (v0.1 §5, the embedding session)
 and its own issue; nothing in this document is buildable without it.
@@ -610,10 +625,10 @@ CLAUDE.md only when the code exists):
 - **Three graphs** -- `The grammar keeps the contact, walk and air graphs;
   the no-triangle rule runs on the contact graph over every edge kind, L5
   on contacts crossing a cell, the vent rules on the air graph.`
-- **Move library** -- `Six moves in code (subdivide, edge_to_cycle, leaf,
-  ring, parallel, duct), each with precondition, phases and provenance; a
-  new shape is a cycle file on these moves, never a seventh move without a
-  design line.`
+- **Move library** -- `Seven moves in code (subdivide, edge_to_cycle, leaf,
+  ring, parallel, duct, second_leg), each with precondition, phases and
+  provenance; a new shape is a cycle file on these moves, never an eighth
+  move without a design line.`
 - **Fixture** -- `A room with its own physics signature reused across
   departments is a row in fixtures.toml; a department's room pulls it in by
   name and may override a field.`
