@@ -321,7 +321,7 @@ def test_wire_round_trip_byte_stable(tmp_path):
             'from = "sensor_1.pressure"\n'
             'to = "tag:blast_doors.close"\n')
     toml = tmp_path / "level.toml"
-    header = ('version = "2"\nname = "T"\ntilemap = "t.csv"\n'
+    header = ('version = "3"\nname = "T"\ntilemap = "t.csv"\n'
               'tile_size_m = 0.333\ndiffuse = "d.png"\n\n')
     before = (header + body).encode("utf-8")
     toml.write_bytes(before)

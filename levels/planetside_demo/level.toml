@@ -18,7 +18,7 @@
 #          rushes in. `I` ignites near the ring to watch fire breathe on ambient
 #          O2; F6/pressure overlay makes the rush-in visible.
 
-version = "2"
+version = "3"
 name = "Planetside Demo"
 
 tilemap = "tilemap.csv"

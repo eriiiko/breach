@@ -69,7 +69,9 @@ for _p in (ROOT, ROOT / "src", ROOT / "tools", ROOT / "cpp" / "build" / "Release
         sys.path.insert(0, str(_p))
 
 import level_lib  # noqa: E402
-from level_loader import EntityInstance, LightEntry, SpawnEntry  # noqa: E402
+from level_loader import (  # noqa: E402
+    LEVEL_FORMAT_VERSION, SPACE_CODE, EntityInstance, LightEntry, SpawnEntry,
+)
 from pathfinding import astar  # noqa: E402
 from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation.match import (  # noqa: E402
@@ -81,7 +83,6 @@ from simulation.materials import (  # noqa: E402
     MAT_WOOD,
 )
 
-SPACE_CODE = 9
 TILE_SIZE_M = 0.333          # the reference tile (the playground's scale)
 PX = 16                      # diffuse px per tile
 BAND = 3                     # vacuum band outside the hull (tiles)
@@ -466,7 +467,7 @@ def plan_graph(rng, size: str, max_per_team: int, zombies: int,
 @dataclass
 class Embedding:
     """Stage 2's product."""
-    tilemap: np.ndarray               # (h, w) int32 v2 codes
+    tilemap: np.ndarray               # (h, w) int32 v3 codes
     spawn_rooms: list                 # list[SpawnRoom]: team 0, team 1, zombies
     entities: list                    # duct + vents ([] without vents)
     lights: list                      # one ceiling lamp per room (LightEntry)
@@ -628,7 +629,7 @@ def _masks(tm: np.ndarray):
     with what the sim reads (solid = permeability 0, walkable = mobility >
     0, the GameMap rules)."""
     from level_loader import materials_from_tilemap
-    mat, vac = materials_from_tilemap(tm, "2")
+    mat, vac = materials_from_tilemap(tm, LEVEL_FORMAT_VERSION)
     tbl = _table()
     solid = np.asarray(tbl.permeability)[mat] <= 0.0
     walk = np.asarray(tbl.mobility)[mat] > 0
@@ -858,8 +859,10 @@ def write(plan: ShipPlan, out_dir) -> Path:
         f"{plan.seed} --size {plan.size} --max-per-team {plan.max_per_team} "
         f"--zombies {plan.zombies}" + (" --vents" if plan.entities else ""),
         "",
-        "v2 codes ARE canon material ids (src/simulation/materials.py):",
-        "  0=air 1=hull 2=wood 3=door 4=steel 5=glass 6=furniture 9=SPACE",
+        f"v{LEVEL_FORMAT_VERSION} codes ARE canon material ids "
+        "(src/simulation/materials.py):",
+        "  0=air 1=hull 2=wood 3=door 4=steel 5=glass 6=furniture "
+        f"{SPACE_CODE}=SPACE",
     )
     toml_path = level_lib.write_level_header(
         out_dir, name=plan.name, tile_size_m=TILE_SIZE_M,

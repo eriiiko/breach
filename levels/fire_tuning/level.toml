@@ -3,12 +3,12 @@
 # [[entity]] below ARE level_lib-managed and will be overwritten).
 # docs/fire_phase2_hud_and_level_2026-09-01.md SS B. Deterministic,
 # no RNG.
-version = "2"
+version = "3"
 name = "Fire Tuning"
 
-# v2 codes ARE canon material ids (src/simulation/materials.py):
+# v3 codes ARE canon material ids (src/simulation/materials.py):
 #   0=air 1=hull 2=wood 3=door 4=steel 5=glass 6=furniture
-#   7=door_closed 8=kindling 9=SPACE
+#   7=door_closed 8=kindling -1=SPACE
 tilemap = "tilemap.csv"
 tile_size_m = 0.333
 

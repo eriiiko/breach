@@ -75,7 +75,7 @@ def test_playground_loads_with_all_showcase_materials():
     The showcase still needs a "door" — now it is MAT_DOOR_CLOSED in the
     tilemap plus at least one door entity, never painted MAT_DOOR."""
     lvl = load("playground")
-    assert lvl.version == "2"
+    assert lvl.version == "3"
     assert lvl.tilemap.shape == (70, 100), f"shape={lvl.tilemap.shape}"
     assert lvl.diffuse_path.exists()
     mat, vac = materials_from_tilemap(lvl.tilemap, lvl.version)

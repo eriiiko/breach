@@ -82,10 +82,13 @@ def q16(x: float) -> int:
 # ---------------------------------------------------------------------------
 # Map-building helpers (engine-agnostic — plain numpy tilemap arrays).
 # Materials (simulation/materials.py, unchanged across the refactor):
-#   0 air, 1 hull, 2 wood, 3 door, 4 steel, 5 glass, 6 furniture, 9 = SPACE
+#   0 air, 1 hull, 2 wood, 3 door, 4 steel, 5 glass, 6 furniture, 9 = SPACE (v2)
 # ---------------------------------------------------------------------------
 GRID = 160
 MAT_AIR, MAT_HULL, MAT_WOOD, MAT_DOOR = 0, 1, 2, 3
+# Level format v2's SPACE code, deliberately NOT level_loader.SPACE_CODE (-1,
+# format v3, #27): this harness drives OLD engine checkouts (--engine-root),
+# whose loaders read only v2 -- so its in-memory maps stay v2 (version="2").
 SPACE_CODE = 9
 
 

@@ -11,11 +11,11 @@
 # Launch:  python tools/lighting_demo.py --level fire_studio
 #   (or set [display] level = "fire_studio" in config.toml)
 
-version = "2"
+version = "3"
 name = "Fire Studio"
 
-# v2 codes ARE canon material ids (src/simulation/materials.py):
-#   0=air 1=hull 2=wood 3=door 4=steel 5=glass 6=furniture 9=SPACE
+# v3 codes ARE canon material ids (src/simulation/materials.py):
+#   0=air 1=hull 2=wood 3=door 4=steel 5=glass 6=furniture -1=SPACE
 tilemap = "tilemap.csv"
 tile_size_m = 0.333
 

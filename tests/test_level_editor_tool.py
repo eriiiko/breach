@@ -3,7 +3,7 @@
 
 Pins the pure module-level helpers the interactive tool is built from:
 
-  - PALETTE speaks exactly the canon v2 CSV vocabulary (material ids +
+  - PALETTE speaks exactly the canon v3 CSV vocabulary (material ids +
     SPACE_CODE) with canon names.
   - paint_tiles: square brush footprints (odd/even sides), edge clipping,
     out-of-grid no-op, changed-cell counting, id values written.
@@ -47,20 +47,13 @@ from align_level_art import (PALETTE, UndoRing, art_px_to_tile, brush_rect,  # n
 # Palette — canon vocabulary only
 # ---------------------------------------------------------------------------
 
-def test_palette_is_canon_v2_vocabulary():
-    """The paintable ids are exactly the v2 CSV codes: every canon material
+def test_palette_is_canon_csv_vocabulary():
+    """The paintable ids are exactly the v3 CSV codes: every canon material
     id + SPACE_CODE, nothing else; names come from MATERIAL_NAMES."""
     assert set(PALETTE) == set(MATERIAL_NAMES) | {SPACE_CODE}
+    # Level format v3 (#27): SPACE_CODE is outside the id range, so every
+    # material id -- foliage's 9 included -- has its own palette entry.
     for mid, name in MATERIAL_NAMES.items():
-        if mid == SPACE_CODE:
-            # Props & vegetation arc #60 P3: MAT_FOLIAGE (id 9) shares its
-            # numeric slot with SPACE_CODE -- a materials-table/CSV-vocabulary
-            # coincidence (test_level_format_v2.py's
-            # test_version_gate_and_space_code), not a bug. SPACE always wins
-            # the palette's slot 9 (asserted right below): foliage is placed
-            # only via the entity stamp, never paintable via CSV
-            # (props_and_vegetation.md §4.2 F6).
-            continue
         assert PALETTE[mid][0] == name.upper()
     assert PALETTE[SPACE_CODE][0] == "SPACE"
     # AIR is the absence of an overlay; everything else has an RGB fill.

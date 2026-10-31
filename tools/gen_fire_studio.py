@@ -24,18 +24,26 @@ Launch (the studio session):
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parent.parent
+for _p in (ROOT, ROOT / "src"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
+import level_lib  # noqa: E402
+from level_loader import LEVEL_FORMAT_VERSION, SPACE_CODE  # noqa: E402
 OUT_DIR = ROOT / "levels" / "fire_studio"
 
 # ---------------------------------------------------------------------------
-# v2 CSV codes ARE canon material ids (simulation.materials) + SPACE.
+# v3 CSV codes ARE canon material ids (simulation.materials) + SPACE.
 # ---------------------------------------------------------------------------
-AIR, HULL, WOOD, DOOR, STEEL, GLASS, FURN, SPACE = 0, 1, 2, 3, 4, 5, 6, 9
+AIR, HULL, WOOD, DOOR, STEEL, GLASS, FURN = 0, 1, 2, 3, 4, 5, 6
+SPACE = SPACE_CODE
 
 W, H = 48, 32           # tiles (x right, y down); tilemap shape = (H, W)
 PX = 16                 # diffuse px per tile -> 768x512 png
@@ -187,11 +195,11 @@ LEVEL_TOML = f"""# FIRE STUDIO — the B2 "dark room" fire/smoke showcase (desig
 # Launch:  python tools/lighting_demo.py --level fire_studio
 #   (or set [display] level = "fire_studio" in config.toml)
 
-version = "2"
+version = "{LEVEL_FORMAT_VERSION}"
 name = "Fire Studio"
 
-# v2 codes ARE canon material ids (src/simulation/materials.py):
-#   0=air 1=hull 2=wood 3=door 4=steel 5=glass 6=furniture 9=SPACE
+# v{LEVEL_FORMAT_VERSION} codes ARE canon material ids (src/simulation/materials.py):
+#   0=air 1=hull 2=wood 3=door 4=steel 5=glass 6=furniture {SPACE_CODE}=SPACE
 tilemap = "tilemap.csv"
 tile_size_m = {TILE_SIZE_M}
 
@@ -291,18 +299,10 @@ def main(out_dir=OUT_DIR) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     tm = build_tilemap()
 
-    csv_path = out_dir / "tilemap.csv"
-    # newline="\n" explicitly (P0b, 2026-09-15): np.savetxt opens in TEXT mode, so
-    # on Windows this emitted CRLF while the committed tilemap is LF in the index.
-    # It passed only while the checkout was ALSO CRLF (core.autocrlf), and the
-    # .gitattributes added in the same patch makes the checkout LF -- at which
-    # point a generator whose bytes depend on the host OS is not byte-deterministic
-    # at all, which is exactly what this level's test is named for.
-    # NOTE (finding, not fixed here): this tool hand-rolls its tilemap write instead
-    # of calling level_lib.write_tilemap_csv, which CLAUDE.md's "Level data layer"
-    # row makes the one writer ever; make_fire_tuning_level.py does it that way.
-    with open(csv_path, "w", newline="\n") as fh:
-        np.savetxt(fh, tm, fmt="%d", delimiter=",")
+    # Through THE writer (level_lib; #27 v3): LF bytes, host-independent --
+    # the byte-determinism this level's test is named for (P0b, 2026-09-15).
+    (out_dir / "tilemap.csv").unlink(missing_ok=True)
+    level_lib.write_tilemap_csv(out_dir, tm, csv_bak=False)
 
     water_path = out_dir / "water_init.npy"
     np.save(water_path, build_water())
@@ -318,7 +318,7 @@ def main(out_dir=OUT_DIR) -> None:
     toml_path.write_bytes(LEVEL_TOML.encode("utf-8"))
 
     codes = sorted(np.unique(tm).tolist())
-    print(f"wrote {csv_path}  ({W}x{H} tiles, codes {codes})")
+    print(f"wrote {out_dir / 'tilemap.csv'}  ({W}x{H} tiles, codes {codes})")
     print(f"wrote {water_path}  (pool {POOL_X0}..{POOL_X1} x {POOL_Y0}..{POOL_Y1}"
           f" @ {POOL_DEPTH_M} m)")
     print(f"wrote {png_path}  ({W * PX}x{H * PX} px, {PX} px/tile)")
