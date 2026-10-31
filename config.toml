@@ -3407,6 +3407,27 @@ gas_species = "fuel_gas"              # the flammable trace row: it finds a flam
 gas_amount = 1.5                      # PLACEHOLDER (smoke_screen's saturating core)
 gas_radius = 4                        # PLACEHOLDER
 
+# --- Heat-source deaths (levelgen vocabulary E.2 row 3, #133) ---------------
+# Executed once by a [[entity]] heat_source (heat_source_system) when a blast
+# takes its hp to 0 -- the engine that goes up and starts the engine-room
+# fire. The fire is started by DELIVERING HEAT (CLAUDE.md "Starting a fire"):
+# heat_amount over heat_radius 3 with the deposit's LINEAR falloff puts at
+# least IGNITE_HEAT (2840, payloads.py) on every tile within 2 of the engine
+# (8520 * (1 - 2/3) = 2840), and apply_temperature_ignition lights the fuel
+# it brings past ignition_temp. EVERY VALUE IS A PLACEHOLDER FOR ERIK TO TUNE
+# (the engineering session).
+[payloads.engine_death]               # B.2: the engine goes up -- a mid blast + the heat that lights the room
+radius = 3                            # PLACEHOLDER (breach_focus 3, studio_medium 5)
+pressure = 5.0                        # PLACEHOLDER (breach_focus 5)
+wall_damage = 300                     # PLACEHOLDER (breach_focus 500, studio_* 200)
+unit_damage = 80                      # PLACEHOLDER (frag 60, demolition_c4 150)
+clear_smoke = true
+emit_blast_smoke = true
+explosive = "comp_b"  # PLACEHOLDER: what an engine's stored energy goes up as
+explosive_kg = 0.5    # PLACEHOLDER
+heat_amount = 8520.0                  # PLACEHOLDER: 3 * IGNITE_HEAT -> >= IGNITE_HEAT out to 2 tiles
+heat_radius = 3.0                     # PLACEHOLDER
+
 # --- Bulk-gas payloads (#133 E.2, levelgen vocabulary Part E) ----------------
 # `bulk_gas` = "o2" | "inert_n2" injects ONE conservative bulk gas through the
 # gas pump primitive (GameMap.inject_gas_n_vec) -- never gas_species, whose

@@ -118,3 +118,13 @@ engine stays small.
   caverns filed, the interior-airlock ruling posted on #133. Learned: the
   worktree inventory (`git worktree list`) carries ~30 finished worktrees;
   the §7 audit of `git-workflow` is owed before the next patch run.
+- 2026-10-31 -- heat-source entity patch (#133 E.2 row 3, branch
+  `133-heat-source`, one implementation agent). Followed §5 steps 3-4 as
+  written; design came from the vocabulary row, no new doc section (a
+  mechanism patch, not a grammar change). Learned: entities have no hp path,
+  so the death hook is `GameMap.blast_log` fed by `execute_payload` (reuse it
+  for the next blast-sensitive entity); a fresh worktree needs
+  `cpp/build_cpu_home.bat` (~3 min) before any sim test; and a `pressure > 0`
+  blast beside a thermal solid breaks the energy closure on its own (base
+  8da03d6) -- closure tests that blow things up near fuel will fail for that
+  reason, not theirs.

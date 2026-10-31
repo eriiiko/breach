@@ -315,6 +315,17 @@ class GameMap:
         # (a set of coordinates), so a headless run that never drains it holds
         # at most H*W entries.
         self.render_dirty = set()
+        # The BLAST LOG (levelgen vocabulary E.2 row 3, the heat-source
+        # entity's death hook): every explosion disc ``execute_payload``
+        # executes this tick, as ``(fy, fx, radius, wall_damage)`` in call
+        # order. Appended ONLY by ``payloads.execute_payload`` (step 1, when
+        # ``radius > 0``) and DRAINED once per tick at slot 9e -- by
+        # ``heat_source_system.sweep_heat_sources`` when the level has
+        # sources, else cleared there unread -- so it is empty at every tick
+        # boundary. The seam a slot-9e entity runtime reads to learn that a
+        # blast covered it (entities have no hp path in the damage system).
+        # Plain Python list: never digested, never recorded, never a field.
+        self.blast_log = []
         self.flammable    = np.zeros((h, w), dtype=bool)
         # S2c: the atmosphere (bulk pressure) is int32 Q16.16 (scale 2^16, shared
         # with water/heat/wave/gas) — the CLOSER of the S2 group: with atmosphere

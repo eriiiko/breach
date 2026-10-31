@@ -319,7 +319,9 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
     1. ``apply_explosion``     — when ``radius > 0`` (structural wall damage
        immediate; wave/atmosphere/smoke-clear/ignite edits enqueued;
        ``clear_smoke`` is data-of-record: the inner-radius clear lives inside
-       ``apply_explosion`` in v1).
+       ``apply_explosion`` in v1). The disc is also appended to
+       ``gmap.blast_log`` -- the one seam slot-9e entity runtimes read to
+       take blast damage (the heat source, vocabulary E.2 row 3).
     2. ``apply_blast_damage``  — when ``unit_damage > 0`` (the wave_p blast
        coupling row at its detonation-site position; emits UnitHit/UnitKilled
        into ``events``). A row authoring ``unit_damage > 0`` with
@@ -355,6 +357,13 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
     if payload.radius > 0:
         apply_explosion(gmap, queue, fy, fx, payload.radius,
                         payload.pressure, payload.wall_damage)
+        # The blast log (GameMap.blast_log): the disc slot-9e entity
+        # runtimes read (the heat source's death hook). A GameMap double
+        # without one (test stubs) records nothing.
+        log = getattr(gmap, "blast_log", None)
+        if log is not None:
+            log.append((int(fy), int(fx), int(payload.radius),
+                        float(payload.wall_damage)))
     if payload.unit_damage > 0:
         apply_blast_damage(units, fx, fy, payload.radius,
                            payload.unit_damage, events=events,
