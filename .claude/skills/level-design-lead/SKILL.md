@@ -176,3 +176,15 @@ engine stays small.
   word ("galley") cost a round trip -- gloss ship vocabulary the first time
   it appears. Next: critique pass on the doc, then the archetype recipe.
   Implementation handed to another chat; this worktree left in place for it.
+- 2026-10-31 -- recipe loader + resolver (#136, branch `136-recipe-loader`,
+  one implementation agent). Re-scoped mid-run: the brief was written
+  against revision 1 and included a stopgap placement (`plan_graph_v2`) and a
+  generated level; revision 2 landed on main during the run, the lead
+  dropped placement and the level (the layout stage, §5.1, is undesigned),
+  and the agent merged main and reworked. Built: the loader, the resolver
+  (pending-never-dropped for unbuilt §5.2 mechanisms), the recipe files, the
+  §3.4 presets, property tests; gen_ship untouched. Learned: brief the agent
+  AFTER the critique folds, not before -- the first draft of the loader
+  coded revision 1's `roles.toml`, leash and direction; and the §3.2 "wishes
+  name library departments" rule refuses the worked example until those
+  departments exist (amended: blessed names allowed).
