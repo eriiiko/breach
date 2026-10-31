@@ -24,7 +24,11 @@ mirror pairing. v1's stage 1 is a mirrored binary split:
 
 STAGE 2 -- the EMBEDDING (:func:`embed` -> :class:`Embedding`): graph ->
 tiles. Hull, steel everywhere inside, each room's rectangle air, each edge
-cut into its shared wall (door = ``MAT_DOOR``, window = ``MAT_GLASS``),
+cut into its shared wall as its row of the EDGE-TYPE TABLE (:data:`EDGE_KINDS`,
+the vocabulary doc's §0.4: door = ``MAT_DOOR``, window = ``MAT_GLASS``, open
+= ``MAT_AIR``, breakable = ``MAT_WOOD``, bulkhead / vent_only = nothing cut;
+entity_door / airlock / locked are accepted by the schema and refused here
+until the next patch), per-room tags from :data:`ROOM_TAGS`,
 fuel clusters (furniture / wood) against the walls of tagged rooms clear of
 doors (placed in one room of a mirror pair and reflected into its twin),
 the vents on inner walls of their tagged rooms, one static lamp per room
@@ -33,7 +37,9 @@ the vents on inner walls of their tagged rooms, one static lamp per room
 GATES (:func:`validate`), before anything is written: airtight
 (``level_airtight.find_leaks``), A* (``pathfinding.astar``) between the
 spawn rooms and from each to the zombie room, every compartment reachable
-by a 3x3 unit and exactly the graph's rooms realised, every formation cell
+by a 3x3 unit (a ``secret`` room: through a breakable or vent_only edge) and
+exactly the graph's COMPARTMENTS realised (rooms an ``open`` edge joins are
+one; the structure mask takes the graph's edge kinds), every formation cell
 open floor, the grid mirror-symmetric (when the graph is mirrored). A plan
 failing a gate is REJECTED and the next sub-seed is tried (attempt + 1, up
 to ``MAX_ATTEMPTS``, then :class:`ShipGenError`). Every draw of attempt
@@ -128,17 +134,127 @@ class _Reject(Exception):
     """A stage could not realise this draw; the attempt is rejected."""
 
 
+class GraphSchemaError(ValueError):
+    """A ShipGraph that breaks the schema (an unknown edge kind or room tag,
+    a tag of the wrong shape). A programming error in stage 1, never a
+    draw to retry: :func:`generate` lets it through."""
+
+
+# ===========================================================================
+# The edge-type table -- docs/levelgen_zone_vocabulary_2026-10-29.md §0.4
+# ===========================================================================
+
+L9_MUST_SHARE_WALL = "must-share-wall"
+L9_MAY_BECOME_CORRIDOR = "may-become-corridor"
+L9_ROUTED_FREELY = "routed-freely"
+L9_STRENGTHS = (L9_MUST_SHARE_WALL, L9_MAY_BECOME_CORRIDOR, L9_ROUTED_FREELY)
+
+NEXT_PATCH = "the next #133 patch (entity doors and airlock pairs)"
+
+
+@dataclass(frozen=True)
+class EdgeKind:
+    """One row of the vocabulary's edge-type table (§0.4). ``stamps``: the
+    material stage 2 cuts into the shared wall (None: nothing is cut, the
+    wall stays steel); ``width``: tiles along the wall; ``bounds``: the edge
+    bounds a compartment (False: its two rooms are ONE compartment);
+    ``secret_path``: a ``secret`` room reached only through this edge counts
+    as reachable (cut the wall / open the duct); ``keep_clear``: a unit
+    passes here, so fuel keeps ``FUEL_DOOR_CLEAR`` off it; ``l9``: the L9
+    adjacency strength (docs/breach_levelgen_design_v0.1.md); ``pending``:
+    None when stage 2 stamps it, else what will (the schema accepts the
+    kind, :func:`embed` refuses it naming that)."""
+    stamps: int | None
+    width: int
+    bounds: bool
+    secret_path: bool
+    keep_clear: bool
+    l9: str
+    pending: str | None = None
+
+
+# THE table: a new way two rooms join is a new row here, never an inline
+# stamp. Same rows, same order as the vocabulary's §0.4.
+EDGE_KINDS = {
+    "door":        EdgeKind(MAT_DOOR, DOOR_W, True, False, True,
+                            L9_MUST_SHARE_WALL),
+    "entity_door": EdgeKind(None, DOOR_W, True, False, True,
+                            L9_MUST_SHARE_WALL, pending=NEXT_PATCH),
+    "open":        EdgeKind(MAT_AIR, DOOR_W, False, False, True,
+                            L9_MUST_SHARE_WALL),
+    "window":      EdgeKind(MAT_GLASS, GLASS_W, True, False, False,
+                            L9_MUST_SHARE_WALL),
+    "bulkhead":    EdgeKind(None, 0, True, False, False,
+                            L9_MUST_SHARE_WALL),
+    "airlock":     EdgeKind(None, DOOR_W, True, False, True,
+                            L9_MUST_SHARE_WALL, pending=NEXT_PATCH),
+    "vent_only":   EdgeKind(None, 0, True, True, False,
+                            L9_MUST_SHARE_WALL),
+    "breakable":   EdgeKind(MAT_WOOD, DOOR_W, True, True, True,
+                            L9_MUST_SHARE_WALL),
+    "locked":      EdgeKind(None, DOOR_W, True, False, True,
+                            L9_MUST_SHARE_WALL,
+                            pending=NEXT_PATCH + " and #135 (terminals)"),
+}
+
+
+def _is_int(v) -> bool:
+    return isinstance(v, (int, np.integer)) and not isinstance(v, bool)
+
+
+def _is_num(v) -> bool:
+    return isinstance(v, (int, float, np.integer, np.floating)) \
+        and not isinstance(v, bool)
+
+
+def _check_light(v) -> bool:
+    if not (isinstance(v, (tuple, list)) and len(v) == 2):
+        return False
+    rgb, level = v
+    return (isinstance(rgb, (tuple, list)) and len(rgb) == 3
+            and all(_is_num(c) and c >= 0 for c in rgb)
+            and _is_num(level) and level >= 0)
+
+
+# THE per-room tag schema (all keys optional): key -> (what it is, check).
+# A department writes these; stage 2 reads ``spawn_team``, ``zombie``,
+# ``fuel``, ``vent`` and ``light``, and carries ``dept``, ``role``,
+# ``cell`` and ``secret`` into ``Embedding.room_tags`` for the vent builder
+# and the grammar. Generator-side data: none of them is a level field.
+ROOM_TAGS = {
+    "spawn_team": ("int: the team seated here (a spawn room)", _is_int),
+    "zombie":     ("bool: the zombies' spawn room",
+                   lambda v: isinstance(v, bool)),
+    "fuel":       ("int >= 0: fuel clusters against the walls",
+                   lambda v: _is_int(v) and v >= 0),
+    "vent":       ('"supply" | "return": a wall vent on the duct',
+                   lambda v: v in ("supply", "return")),
+    "dept":       ("str: the department this room belongs to",
+                   lambda v: isinstance(v, str)),
+    "role":       ("str: the room's role in its department",
+                   lambda v: isinstance(v, str)),
+    "cell":       ("int: the pressure cell (L5)", _is_int),
+    "light":      ("((r, g, b), level): the room's lamp, replacing LAMP_RGB "
+                   "/ LAMP_INTENSITY", _check_light),
+    "secret":     ("bool: a hidden room, reachable through a breakable or "
+                   "vent_only edge", lambda v: isinstance(v, bool)),
+}
+# The tags carried into Embedding.room_tags (the rest are stage 2's inputs).
+ANNOTATION_TAGS = ("dept", "role", "cell", "secret", "light")
+
+
 # ===========================================================================
 # The room graph -- stage 1's product, stage 2's only input
 # ===========================================================================
 
 @dataclass
 class Room:
-    """A graph node: one compartment. ``x, y, w, h`` is its AIR rectangle
-    (the geometry annotation stage 2 embeds); ``kind`` names its role;
-    ``tags`` carries ``spawn_team`` (int), ``zombie`` (True), ``fuel``
-    (number of clusters), ``vent`` ("supply" / "return"); ``mirror`` is its
-    twin's id under the graph's mirror (itself on the axis, None if none)."""
+    """A graph node. ``x, y, w, h`` is its AIR rectangle (the geometry
+    annotation stage 2 embeds); ``kind`` names its role; ``tags`` holds the
+    optional keys of :data:`ROOM_TAGS` (any other key is refused when the
+    graph is built); ``mirror`` is its twin's id under the graph's mirror
+    (itself on the axis, None if none). Rooms joined by ``open`` edges
+    form ONE compartment."""
     id: int
     x: int
     y: int
@@ -156,17 +272,23 @@ class Room:
 @dataclass
 class Edge:
     """A graph edge between rooms ``a`` and ``b`` (which share a wall):
-    ``kind`` "door" or "window"; ``at`` is the opening's first tile along
-    the shared wall (None: stage 2 centres it)."""
+    ``kind`` a key of :data:`EDGE_KINDS`; ``at`` is the opening's first
+    tile along the shared wall (None: stage 2 centres it)."""
     a: int
     b: int
     kind: str = "door"
     at: int | None = None
 
+    @property
+    def spec(self) -> EdgeKind:
+        return EDGE_KINDS[self.kind]
+
 
 @dataclass
 class ShipGraph:
-    """Stage 1's product: the ship as rooms + edges + annotations."""
+    """Stage 1's product: the ship as rooms + edges + annotations. Checked
+    against the schema when built (:meth:`check`), and again by
+    :func:`embed`."""
     width: int
     height: int
     hull: tuple                   # (x0, y0, x1, y1) outer hull faces, inclusive
@@ -175,6 +297,53 @@ class ShipGraph:
     mirror_x: bool = False        # left-right mirrored about the grid centre
     max_per_team: int = 6
     zombies: int = 0
+
+    def __post_init__(self):
+        self.check()
+
+    def check(self) -> None:
+        """Refuse an unknown edge kind, an unknown room tag key, a tag of
+        the wrong shape, or a secret room that seats a team, naming it."""
+        for i, rm in enumerate(self.rooms):
+            if rm.id != i:
+                raise GraphSchemaError(f"room {i} has id {rm.id} (rooms[i].id "
+                                       f"must be i)")
+            unknown = sorted(set(rm.tags) - set(ROOM_TAGS))
+            if unknown:
+                raise GraphSchemaError(
+                    f"room {rm.id}: unknown tag key(s) {unknown} (known: "
+                    f"{sorted(ROOM_TAGS)})")
+            for k, v in rm.tags.items():
+                what, ok = ROOM_TAGS[k]
+                if not ok(v):
+                    raise GraphSchemaError(
+                        f"room {rm.id}: tag {k!r} = {v!r} is not {what}")
+            if rm.tags.get("secret") and ("spawn_team" in rm.tags
+                                          or rm.tags.get("zombie")):
+                raise GraphSchemaError(
+                    f"room {rm.id}: a secret room cannot be a spawn room")
+        n = len(self.rooms)
+        for e in self.edges:
+            if e.kind not in EDGE_KINDS:
+                raise GraphSchemaError(
+                    f"edge {e.a}-{e.b}: unknown kind {e.kind!r} (known: "
+                    f"{list(EDGE_KINDS)})")
+            if not (0 <= e.a < n and 0 <= e.b < n) or e.a == e.b:
+                raise GraphSchemaError(
+                    f"edge {e.a}-{e.b}: not two distinct rooms of {n}")
+
+    def compartment_of(self) -> list:
+        """Room id -> compartment index: rooms joined by an edge that does
+        not bound a compartment (``open``) are one; indices run 0..k-1 in
+        the order of each compartment's lowest room id."""
+        uf = _Union(len(self.rooms))
+        for e in self.edges:
+            if not e.spec.bounds:
+                uf.union(e.a, e.b)
+        idx, out = {}, []
+        for i in range(len(self.rooms)):
+            out.append(idx.setdefault(uf.find(i), len(idx)))
+        return out
 
 
 def shared_wall(a: Room, b: Room):
@@ -197,12 +366,16 @@ def shared_wall(a: Room, b: Room):
 
 
 def _opening_tiles(graph: ShipGraph, e: Edge) -> list:
-    """The (y, x) tiles an edge opens in its shared wall."""
+    """The (y, x) tiles an edge opens in its shared wall (none for a kind
+    that cuts nothing; the rooms must still share a wall: every kind in the
+    table is ``must-share-wall``)."""
     wall = shared_wall(graph.rooms[e.a], graph.rooms[e.b])
     if wall is None:
         raise _Reject(f"edge {e.a}-{e.b}: the rooms share no wall")
     orient, line, lo, hi = wall
-    n = DOOR_W if e.kind == "door" else GLASS_W
+    n = e.spec.width
+    if e.spec.stamps is None:
+        return []
     at = lo + (hi - lo + 1 - n) // 2 if e.at is None else e.at
     if at < lo or at + n - 1 > hi:
         raise _Reject(f"edge {e.a}-{e.b}: opening {at}+{n} leaves {lo}..{hi}")
@@ -474,6 +647,11 @@ class Embedding:
     doors: int
     windows: int
     fuel_tiles: int
+    # Per room id: its compartment index (ShipGraph.compartment_of) plus the
+    # annotation tags it carries (dept, role, cell, secret, light) -- the
+    # generator-side table the vent builder and the grammar read.
+    room_tags: dict = field(default_factory=dict)
+    edges_by_kind: dict = field(default_factory=dict)   # kind -> count
 
 
 def _reflect(box, w):
@@ -481,15 +659,15 @@ def _reflect(box, w):
     return (w - 1 - x1, y0, w - 1 - x0, y1)
 
 
-def _place_fuel(rng, tm, room: Room, graph: ShipGraph) -> None:
-    """``room.tags['fuel']`` clusters against its walls, clear of doors; in
-    a mirrored graph placed once per pair (an axis room: its left half) and
-    reflected into the twin."""
+def _place_fuel(rng, tm, room: Room, graph: ShipGraph, door) -> None:
+    """``room.tags['fuel']`` clusters against its walls, clear of the
+    passages in ``door`` (the opening tiles of every ``keep_clear`` edge);
+    in a mirrored graph placed once per pair (an axis room: its left half)
+    and reflected into the twin."""
     W = graph.width
     x0, y0, x1, y1 = room.box
     if graph.mirror_x and room.mirror == room.id:
         x1 = min(x1, W // 2 - 1)
-    door = tm == MAT_DOOR
     for _ in range(int(room.tags.get("fuel", 0))):
         mat = MAT_FURNITURE if rng.random() < 0.6 else MAT_WOOD
         for _try in range(8):
@@ -567,7 +745,15 @@ def _build_vents(tm, graph: ShipGraph) -> list:
 
 
 def embed(graph: ShipGraph, rng) -> Embedding:
-    """Stage 2: the graph as tiles (+ spawn rooms and vent entities)."""
+    """Stage 2: the graph as tiles (+ spawn rooms and vent entities). Each
+    edge stamps what its :data:`EDGE_KINDS` row says; a kind the table marks
+    ``pending`` raises NotImplementedError naming the patch that will."""
+    graph.check()
+    for e in graph.edges:
+        if e.spec.pending:
+            raise NotImplementedError(
+                f"edge {e.a}-{e.b}: kind {e.kind!r} is accepted by the schema "
+                f"but not yet stamped by stage 2 -- {e.spec.pending}")
     W, H = graph.width, graph.height
     tm = np.full((H, W), SPACE_CODE, dtype=np.int32)
     hx0, hy0, hx1, hy1 = graph.hull
@@ -578,17 +764,19 @@ def embed(graph: ShipGraph, rng) -> Embedding:
         if x0 <= hx0 or y0 <= hy0 or x1 >= hx1 or y1 >= hy1:
             raise _Reject(f"room {rm.id} leaves the hull")
         tm[y0:y1 + 1, x0:x1 + 1] = MAT_AIR
-    doors = windows = 0
+    passage = np.zeros((H, W), dtype=bool)        # fuel keeps clear of these
+    by_kind = {}
     for e in graph.edges:
-        mat = MAT_DOOR if e.kind == "door" else MAT_GLASS
+        spec = e.spec
         for (y, x) in _opening_tiles(graph, e):
-            tm[y, x] = mat
-        doors += e.kind == "door"
-        windows += e.kind == "window"
+            tm[y, x] = spec.stamps
+            passage[y, x] |= spec.keep_clear
+        by_kind[e.kind] = by_kind.get(e.kind, 0) + 1
+    doors, windows = by_kind.get("door", 0), by_kind.get("window", 0)
     for rm in graph.rooms:
         if rm.tags.get("fuel") and (rm.mirror is None or rm.mirror >= rm.id
                                     or not graph.mirror_x):
-            _place_fuel(rng, tm, rm, graph)
+            _place_fuel(rng, tm, rm, graph, passage)
     ents = _build_vents(tm, graph)
     by_team = {rm.tags["spawn_team"]: rm for rm in graph.rooms
                if "spawn_team" in rm.tags}
@@ -600,12 +788,24 @@ def embed(graph: ShipGraph, rng) -> Embedding:
         rooms.append(SpawnRoom(team=ZOMBIE_TEAM, x=z.x, y=z.y, w=z.w, h=z.h,
                                max_per_team=graph.zombies))
     fuel = int(np.isin(tm, (MAT_FURNITURE, MAT_WOOD)).sum())
-    lights = [LightEntry(x=rm.x + rm.w / 2.0, y=rm.y + rm.h / 2.0,
-                         color=LAMP_RGB, intensity=LAMP_INTENSITY,
-                         range=16.0, kind="static") for rm in graph.rooms]
+    lights = []
+    for rm in graph.rooms:
+        rgb, level = LAMP_RGB, LAMP_INTENSITY
+        if "light" in rm.tags:
+            rgb = tuple(float(c) for c in rm.tags["light"][0])
+            level = float(rm.tags["light"][1])
+        lights.append(LightEntry(x=rm.x + rm.w / 2.0, y=rm.y + rm.h / 2.0,
+                                 color=rgb, intensity=level, range=16.0,
+                                 kind="static"))
+    comp = graph.compartment_of()
+    room_tags = {rm.id: {"compartment": comp[rm.id],
+                         **{k: rm.tags[k] for k in ANNOTATION_TAGS
+                            if k in rm.tags}}
+                 for rm in graph.rooms}
     return Embedding(tilemap=tm, spawn_rooms=rooms, entities=ents,
                      lights=lights, doors=doors, windows=windows,
-                     fuel_tiles=fuel)
+                     fuel_tiles=fuel, room_tags=room_tags,
+                     edges_by_kind=by_kind)
 
 
 # ===========================================================================
@@ -636,12 +836,86 @@ def _masks(tm: np.ndarray):
     return mat, np.asarray(vac, dtype=bool), solid, walk
 
 
-def compartments(tm: np.ndarray):
+def compartments(tm: np.ndarray, graph: ShipGraph | None = None):
     """``(labels, n)`` of the ship's compartments: the regions bounded by
     the structure (hull, steel, doors, glass) -- fuel is a room's contents,
-    so a pocket of air behind a crate belongs to its room."""
+    so a pocket of air behind a crate belongs to its room. With ``graph``
+    the STRUCTURE MASK also takes the graph's edge kinds: the opening tiles
+    of every edge that bounds a compartment are structure whatever they are
+    made of (a ``breakable`` edge's wood segment is a wall, not a crate),
+    while an ``open`` edge's air gap joins its rooms as the table says."""
     from scipy import ndimage
-    return ndimage.label(np.isin(tm, (MAT_AIR, MAT_FURNITURE, MAT_WOOD)))
+    contents = np.isin(tm, (MAT_AIR, MAT_FURNITURE, MAT_WOOD))
+    if graph is not None:
+        for e in graph.edges:
+            if e.spec.bounds and e.spec.pending is None:
+                for (y, x) in _opening_tiles(graph, e):
+                    contents[y, x] = False
+    return ndimage.label(contents)
+
+
+def _room_label(clab: np.ndarray, rm: Room) -> int:
+    """The compartment label of a room: its rectangle's top-left tile (air
+    or a crate, always contents)."""
+    return int(clab[rm.y, rm.x])
+
+
+def _graph_compartment_reasons(clab, cn, graph: ShipGraph) -> list:
+    """The tiles realise the graph's compartments exactly: one tile
+    compartment per graph compartment, rooms an ``open`` edge joins share
+    it, rooms an edge bounds do not."""
+    comp = graph.compartment_of()
+    k = max(comp) + 1 if comp else 0
+    reasons = []
+    if cn != k:
+        reasons.append(f"rooms: {cn} compartments for {k} graph compartments "
+                       f"({len(graph.rooms)} rooms)")
+    labels = {}                                   # graph compartment -> labels
+    for rm in graph.rooms:
+        labels.setdefault(comp[rm.id], set()).add(_room_label(clab, rm))
+    for c, ls in sorted(labels.items()):
+        if len(ls) > 1:
+            ids = [rm.id for rm in graph.rooms if comp[rm.id] == c]
+            reasons.append(f"rooms: rooms {ids} are one graph compartment but "
+                           f"{len(ls)} in the tiles")
+    owner = {}
+    for c, ls in sorted(labels.items()):
+        for lab in ls:
+            if lab in owner and owner[lab] != c:
+                reasons.append(f"rooms: graph compartments {owner[lab]} and "
+                               f"{c} share one compartment in the tiles")
+            owner.setdefault(lab, c)
+    return reasons
+
+
+def _excused_secrets(clab, covered: set, graph: ShipGraph) -> set:
+    """The tile labels of compartments a unit does not reach but which are
+    SECRET: every room in them tagged ``secret``, and joined to a reached
+    (or already excused) compartment by an edge whose kind is a
+    ``secret_path`` (breakable, vent_only) -- reachable in principle, by
+    cutting the wall or opening the duct."""
+    comp = graph.compartment_of()
+    lab = {}
+    secret = {}
+    for rm in graph.rooms:
+        lab[comp[rm.id]] = _room_label(clab, rm)
+        secret[comp[rm.id]] = secret.get(comp[rm.id], True) and \
+            bool(rm.tags.get("secret"))
+    reached = {c for c, l in lab.items() if l in covered}
+    excused = set()
+    grew = True
+    while grew:
+        grew = False
+        for e in graph.edges:
+            if not e.spec.secret_path:
+                continue
+            ca, cb = comp[e.a], comp[e.b]
+            for src, dst in ((ca, cb), (cb, ca)):
+                if src in reached and dst not in reached and secret[dst]:
+                    reached.add(dst)
+                    excused.add(lab[dst])
+                    grew = True
+    return excused
 
 
 def _centre(room: SpawnRoom) -> tuple[int, int]:
@@ -651,10 +925,15 @@ def _centre(room: SpawnRoom) -> tuple[int, int]:
 
 
 def validate(tm: np.ndarray, rooms: list, *, n_rooms: int | None = None,
-             mirrored: bool = True) -> list:
+             mirrored: bool = True, graph: ShipGraph | None = None) -> list:
     """The gates; returns the failure reasons (empty = pass). ``rooms``:
-    the spawn rooms (team 0, team 1[, zombies]); ``n_rooms``: the graph's
-    node count, which the tiles must realise exactly."""
+    the spawn rooms (team 0, team 1[, zombies]). With ``graph`` (what
+    :func:`generate` passes): the compartments are labelled with the
+    graph's structure mask and must realise the graph's compartments
+    exactly, and a ``secret`` compartment reachable only through a
+    breakable / vent_only edge passes the reachability gate. Without it
+    (``n_rooms``: a bare node count to match): the tile structure alone,
+    every compartment reachable."""
     from level_airtight import find_leaks
     from numpy.lib.stride_tricks import sliding_window_view
     from scipy import ndimage
@@ -688,8 +967,10 @@ def validate(tm: np.ndarray, rooms: list, *, n_rooms: int | None = None,
             reasons.append(f"reach: no A* path team {a.team} -> {b.team}")
     # Every compartment reachable by a unit: flood the footprint grid from
     # team 0's centre; every compartment must hold a covered tile.
-    clab, cn = compartments(tm)
-    if n_rooms is not None and cn != n_rooms:
+    clab, cn = compartments(tm, graph)
+    if graph is not None:
+        reasons += _graph_compartment_reasons(clab, cn, graph)
+    elif n_rooms is not None and cn != n_rooms:
         reasons.append(f"rooms: {cn} compartments for {n_rooms} graph rooms")
     flab, _ = ndimage.label(ok)
     ax, ay = _centre(rooms[0])
@@ -700,9 +981,16 @@ def validate(tm: np.ndarray, rooms: list, *, n_rooms: int | None = None,
         for dy in range(fp):
             for dx in range(fp):
                 cover[dy:dy + rh, dx:dx + rw] |= reach
-        missing = cn - len(np.unique(clab[cover & (clab > 0)]))
+        covered = {int(v) for v in np.unique(clab[cover & (clab > 0)])}
+        excused = (_excused_secrets(clab, covered, graph)
+                   if graph is not None else set())
+        missing = cn - len(covered) - len(excused - covered)
         if missing:
-            reasons.append(f"compartments: {missing} not reachable by a unit")
+            reasons.append(f"compartments: {missing} not reachable by a unit"
+                           + (" (a secret room needs a breakable or vent_only "
+                              "edge to a reached one)" if graph is not None
+                              and any(rm.tags.get("secret")
+                                      for rm in graph.rooms) else ""))
     return reasons
 
 
@@ -773,7 +1061,7 @@ def generate(seed: int, size: str = "medium", *, max_per_team: int = 6,
             rejected.append((attempt, [str(e)]))
             continue
         reasons = validate(emb.tilemap, emb.spawn_rooms,
-                           n_rooms=len(graph.rooms), mirrored=graph.mirror_x)
+                           mirrored=graph.mirror_x, graph=graph)
         if not reasons:
             return ShipPlan(seed=int(seed), size=size, attempt=attempt,
                             graph=graph, embedding=emb, rejected=rejected)
