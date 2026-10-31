@@ -99,6 +99,8 @@ from simulation.pump_system import build_pumps, sweep_pumps
 from simulation.vent_system import build_vents, sweep_vents
 from simulation.timed_charge_system import (build_timed_charges,
                                             sweep_timed_charges)
+from simulation.heat_source_system import (build_heat_sources,
+                                           sweep_heat_sources)
 from simulation.entities.schema import INPUT_HELD
 from simulation.gamemap import GameMap, MAT_DOOR, MAT_DOOR_CLOSED
 from simulation.movement import FootprintSamples, default_speed
@@ -345,6 +347,11 @@ class Simulation:
         # self.entities with its runtime (the countdown row serializes). A
         # charge-free level builds an empty list (dormancy).
         self._timed_charges = build_timed_charges(self)
+        # Heat sources (levelgen vocabulary E.2 row 3): built after the
+        # weapon tables for the same reason (death_payload is validated
+        # here). Replaces each heat_source row with its runtime (the `hp`
+        # row serializes). A source-free level builds an empty list.
+        self._heat_sources = build_heat_sources(self)
 
         self.units: List = []
         self.projectiles: List = []
@@ -1792,6 +1799,16 @@ class Simulation:
         # charge's slot-8 latency).
         if self._timed_charges:
             sweep_timed_charges(self)       # (d') timed-charge detonations
+        # Heat sources (vocabulary E.2 row 3): LAST of the actuator
+        # sub-slot, after the timed charges, so every blast of this tick
+        # (slots 2, 8 and the charges just above) is in gmap.blast_log when
+        # the sources read it for damage; then each living source enqueues
+        # its per-tick heat (lands at the next 6b flush). A source-free level
+        # only clears the log, which is empty at every tick boundary.
+        if self._heat_sources:
+            sweep_heat_sources(self)        # (d'') heat-source blasts + deposits
+        elif self.gmap.blast_log:
+            self.gmap.blast_log.clear()
         if self._signal_bus is not None:
             self._signal_bus.swap_node_signals()   # (e) pub[node-slots] ← stg
 

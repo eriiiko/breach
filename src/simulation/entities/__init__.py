@@ -45,3 +45,4 @@ from simulation.entities import cover as _cover  # noqa: F401  (registers the co
 from simulation.entities import vents as _vents  # noqa: F401  (registers duct/vent, vent-system patch 1, issue #48)
 from simulation.entities import prop as _prop    # noqa: F401  (registers the prop class, props & vegetation arc #60 P3)
 from simulation.entities import charge as _charge  # noqa: F401  (registers timed_charge, the explosion studio #31)
+from simulation.entities import heat_source as _heat_source  # noqa: F401  (registers heat_source, levelgen vocabulary E.2 row 3)
