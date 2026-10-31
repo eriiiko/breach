@@ -519,3 +519,27 @@ the lead so you decide all these things." Concretely:
   turns a lever into the wrong sign; measure the sign before trusting a
   derivation. Pictures: `docs/octopus_p6g_shots_2026-10-31/` (the keyboard
   E2E: A then D, the animal visibly reverses), `out/sim_steer.gif`.
+- 2026-10-31 (P6g fix round, same agent) -- INCIDENT: Erik played P6g, "I
+  can't seem to crawl forward anymore" and "sometimes the tentacles get
+  entangled"; his target: "turning plus the old strafing movement together".
+  An ALIGNED facing still recruited turns (a TURN arm on 52 % of ticks,
+  0.34 vs 0.45 m/s): a full 90-deg bend answered any error past the dead
+  band, overshot, and the other side turned back; and the crawl's own
+  heading wander (+-33 deg in 12 s) kept crossing a 20-deg band. RULE
+  LEARNED: a turn primitive needs a STOP condition and a REFRACTORY, not
+  only a dead band -- and the dead band must sit outside the gait's own
+  wander. Fixes: the bend scaled by the error (full at turn_full_deg 45),
+  the arm lets go when the error crosses zero or is within half the band, a
+  1 s hashed refractory, band 25; the turning arm is drawn from the arms
+  whose push OPPOSES the travel (never a pusher; a free swing-side
+  neighbour preferred, x2) -- and, MEASURED, an arm gripping ahead of the
+  travel BRAKES it (grip disabled: full speed), so its proximal part now
+  shortens to turn_pull_in 0.7 while the bend opens (pulls instead).
+  turn_bend_deg stays 90 (Erik's ruling: no 45 cap). Now (seeds 1/3/7):
+  aligned crawl 101 % of the free speed, 6 % turn ticks, no late turns;
+  crawl North facing East 81-85 %, band in 4.3-6.9 s; idle 90 deg 6.6-9.4
+  s; umbrella and jet unchanged. Still open: facing WEST while crawling
+  North reaches the band on 1 seed of 3 (fights the crawl's clockwise
+  wander); and the steer clip still shows arms CROSSING -- a 90-deg base
+  swing crosses the 45-deg neighbour, and crawl frames show pinwheel curls
+  (arms pass through each other: no arm-arm contact).
