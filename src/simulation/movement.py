@@ -80,10 +80,19 @@ def footprint_samples(gmap, fy, fx, fp) -> FootprintSamples:
     order path -- is slowed by the same law (``tests/test_footprint_samples_
     builder.py`` greps for a caller that builds its own). Lives in the unit
     layer, not on GameMap: the field store must not import the coupling layer.
+
+    The wind scale is ``exchange.wind_scale_q16`` over
+    ``gmap.footprint_wind_load`` -- the field at the moment of the call, so
+    MOVE_DIR and the zombie walk see the wind at execution, the WEGO order
+    path and the onephase cadence when their path is compiled (design §2.2,
+    an accepted gap).
     """
+    from simulation import exchange
+    settings = exchange.gmap_wind_settings(gmap)
+    w = gmap.footprint_wind_load(fy, fx, fp)
     return FootprintSamples(
         mobility=gmap.footprint_mobility(fy, fx, fp),
-        wind_scale_q16=SCALE_ONE)
+        wind_scale_q16=exchange.wind_scale_q16(w, settings))
 
 
 def half_up(num: int, den: int) -> int:

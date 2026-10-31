@@ -1,11 +1,13 @@
-"""#121 — the pressure push must let a unit walk through a legacy door.
+"""#121 — a unit walks through a legacy door at the calm cadence.
 
 A legacy ``MAT_DOOR`` tile is walkable but solid to gas: it stores
-atmosphere 0. ``exchange.apply_wave_push`` once read that 0 as a pressure in
-the footprint gradient and shoved any unit whose footprint edge stood on the
-door back off it, 0.2 tile a tick against a walk of 0.056 -- no unit under
-MOVE_DIR could cross a door (found by the bot team on ship_demo). Written
-through ``level_lib``; driven through the per-tick intent facade.
+atmosphere 0 and no gas. The retired pressure push once read that 0 as a
+pressure in the footprint gradient and shoved any unit whose footprint edge
+stood on the door back off it -- no unit under MOVE_DIR could cross a door
+(found by the bot team on ship_demo). Since #140 the wind law reads only the
+footprint's GAS tiles (``GameMap.footprint_wind_load``), so a footprint half
+on a door tile is judged by the air beside it. Written through
+``level_lib``; driven through the per-tick intent facade.
 """
 from __future__ import annotations
 
@@ -49,10 +51,10 @@ def _level(tmp_path):
 
 def test_a_walking_unit_crosses_a_legacy_door_on_a_quiet_map(tmp_path):
     """Property: on a quiet map (both sides at the same pressure), a unit
-    holding MOVE_DIR east walks clean through a legacy MAT_DOOR tile and
-    ends well past it. Breaks if the push's footprint gradient reads the
-    door tile's stored atmosphere (0) as a pressure again -- the unit then
-    stalls with its footprint edge on the door."""
+    holding MOVE_DIR east walks through a legacy MAT_DOOR tile at the calm
+    cadence and ends well past it. Breaks if any wind / pressure row reads
+    the door tile's stored zeros as a force again, or slows a footprint half
+    on a door on a quiet map -- the unit then stalls on the door."""
     lvl = _level(tmp_path)
     sim = Simulation(lvl, seed=1, breach_physics=bp, enable_recorder=False,
                      ruleset=ContinuousRealtime())

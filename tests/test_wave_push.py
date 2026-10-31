@@ -1,26 +1,16 @@
-"""The atmosphere impulse-push row + KNOCKED_DOWN trigger (P4) — the gate.
+"""The wind row at Simulation.step 9c2 (#140) -- the gate.
 
-Covers mechanics/05 §1 (the ``atmosphere | grad`` coupling row, both outputs) and
-mechanics/06 §4 (the knockdown trigger + stability):
+The retired ``wave_p | grad`` impulse push lived here; since #140 the 9c2 row
+is ``exchange.apply_wind_knockdown``, the ``wind | max`` row of the
+momentum-flux threshold law (docs/wind_on_units_design_2026-10-31.md §7):
+the dynamic pressure ``q = 1/2 rho v^2`` at the footprint as the int
+``W = N_raw * (v^2 >> 16)``; below ``wind_q_slow_pa`` nothing, a cadence
+scale down to ``wind_slow_min_scale`` at ``wind_q_fall_pa``, KNOCKED_DOWN at
+``W_fall * stability^2``. Nothing in the law writes a position.
 
-  - the nudge: a synthetic atmosphere gradient displaces a unit by the EXACT
-    door-3 amount (k_push * (-grad/65536) / mass * dt), and the quiet-field
-    path is a bit-identical no-op (dormancy — wave-free trajectories keep
-    their digest);
-  - mass is Newtonian: 2x mass -> exactly half the nudge (bitwise — binary
-    scale through a correctly-rounded divide);
-  - the sanity cap (push_max_tile_per_tick) clamps a violent gradient;
-  - the wall clamp: a unit against a wall never enters it and SLIDES along
-    it (per-axis x-then-y), and stays put in a dead-end corner;
-  - the knockdown trigger: fires above threshold*stability, not below;
-    compares SQUARES (behaviour asserted at the threshold edge); uses the
-    UNCAPPED dv; re-knocks REFRESH the get-up timer (P3 stacking); zombies
-    (stability 0.9 overlay) and high-stability profiles scale the edge;
-  - determinism: the same grenade-blast scenario run twice is bitwise
-    identical in positions and statuses;
-  - THE RING REGRESSION (mechanics/06 §4's signature property): one blast's
-    knockdown radius is measurably WIDER than its meaningful-damage radius
-    ("the outer blast zone knocks marines sprawling without killing them").
+Each test names the property it protects and the change that breaks it.
+(The cadence callers -- test 6 -- live in test_footprint_samples_builder.py;
+the #140 doorway reproduction in test_wind_doorway_e2e.py.)
 
 Run:
     C:/Users/steen/anaconda3/python.exe -m pytest tests/test_wave_push.py -q
@@ -35,48 +25,32 @@ import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
+for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 from config import CFG  # noqa: E402
-from simulation.factions import ZOMBIE_TEAM  # noqa: E402
+from simulation import exchange  # noqa: E402
+from simulation.atmosphere_fixed import FP_ONE  # noqa: E402
 from simulation.environment import EnvironmentProfile  # noqa: E402
 from simulation.exchange import (  # noqa: E402
-    COUPLING_TABLE, apply_blast_damage, apply_wave_push, reduce_grad,
+    COUPLING_TABLE, WIND_ONE, apply_wind_knockdown, wind_knocks_down,
+    wind_scale_q16, wind_settings,
 )
-from simulation.species import ZOMBIE_STABILITY  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
+from simulation.gamemap import GameMap  # noqa: E402
+from simulation.gas_fixed import BULK_ONE  # noqa: E402
+from simulation.gases import INERT_N2, O2  # noqa: E402
+from simulation.materials import MAT_AIR, MAT_HULL  # noqa: E402
 from simulation.status import KNOCKED_DOWN, composed_flags, tick_statuses  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
-from simulation.weapons import get_tables as weapon_tables  # noqa: E402
+from simulation import unit_fixed  # noqa: E402
 
-Q16 = 65536
-TPS = float(CFG.clock.ticks_per_second)
-DT = 1.0 / TPS
-K_PUSH = float(CFG.exchange.k_push)
-CAP = float(CFG.exchange.push_max_tile_per_tick)
-THRESHOLD = float(CFG.exchange.knockdown_dv_threshold)
-GETUP = int(CFG.exchange.knockdown_getup_ticks)
+RHO_AIR = 1.2047          # only to build stub maps; the law reads the table
 
 
-# ---------------------------------------------------------------------------
-# Direct-function fixtures: a stub gmap (atmosphere + solid) and helper fields
-# ---------------------------------------------------------------------------
-def _gmap(h=16, w=16):
-    """Minimal exchange-facing gmap stub: an int32 Q16.16 atmosphere plane and a
-    solid mask with a hull border (like every shipped level)."""
-    solid = np.zeros((h, w), dtype=bool)
-    solid[0, :] = solid[-1, :] = solid[:, 0] = solid[:, -1] = True
-    return SimpleNamespace(atmosphere=np.zeros((h, w), dtype=np.int32),
-                           solid=solid)
-
-
-def _linear_x_field(gmap, slope_counts: int):
-    """atmosphere[y, x] = slope_counts * x — a uniform +x gradient: reduce_grad
-    over any full 3x3 footprint is exactly (2 * slope_counts, 0)."""
-    h, w = gmap.atmosphere.shape
-    xs = np.arange(w, dtype=np.int64) * int(slope_counts)
-    gmap.atmosphere[:] = np.broadcast_to(xs, (h, w)).astype(np.int32)
+def _settings():
+    return wind_settings(CFG.exchange, RHO_AIR)
 
 
 def _marine(x=6.0, y=6.0):
@@ -85,350 +59,343 @@ def _marine(x=6.0, y=6.0):
     return u
 
 
-def _zombie(x=6.0, y=6.0):
+def _zombie(x=6.0, y=9.0):
     u = Unit("Z", x=x, y=y, team=ZOMBIE_TEAM)
     u.id = 2
     return u
 
 
-def _expected_dv(grad_counts: int, mass: float) -> float:
-    """The row's exact door-3 chain for one axis (mirrors apply_wave_push)."""
-    return K_PUSH * (-grad_counts / 65536.0) / mass
+def _stub_map(w_load):
+    """A gmap whose footprint wind load is ``w_load`` everywhere (a callable
+    of (fy, fx) or an int): the law's input, set exactly."""
+    f = w_load if callable(w_load) else (lambda fy, fx: w_load)
+    return SimpleNamespace(
+        materials=SimpleNamespace(density=np.array([RHO_AIR])),
+        footprint_wind_load=lambda fy, fx, fp=3: f(fy, fx))
+
+
+def _room_map(h=16, w=16):
+    from level_loader import LevelData
+    tm = np.full((h, w), MAT_AIR, dtype=np.int32)
+    tm[0, :] = tm[-1, :] = tm[:, 0] = tm[:, -1] = MAT_HULL
+    return GameMap(LevelData(name="wind_room", version="3", path=Path("."),
+                             tilemap=tm, tile_size_m=1.0,
+                             diffuse_path=Path(".")))
+
+
+def _set_air(g, n_raw, vx_raw, vy_raw=0):
+    """Fixture write of the bulk N and the wind planes over the whole open
+    room -- a pure-read test of the law; nothing is stepped afterwards."""
+    open_ = ~g.solid
+    g.gas[O2][open_] = n_raw // 5
+    g.gas[INERT_N2][open_] = n_raw - n_raw // 5
+    g.wind_x[open_] = vx_raw
+    g.wind_y[open_] = vy_raw
 
 
 # ---------------------------------------------------------------------------
-# The nudge — exactness, dormancy, mass, cap
+# 2. Position is never written
 # ---------------------------------------------------------------------------
-def test_gradient_pushes_exact_amount():
-    g = _gmap()
-    slope = 30000                       # gx = 60000 counts -> dv ~ -4.58 t/s
-    _linear_x_field(g, slope)
-    u = _marine(x=6.0, y=6.0)
-    apply_wave_push([u], g, TPS)
-
-    gx, gy = 2 * slope, 0
-    dvx = _expected_dv(gx, float(u.mass))
-    assert abs(dvx) < THRESHOLD        # this test is about the nudge only
-    assert u.x == 6.0 + dvx * DT       # EXACT: same pure +-*/ chain
-    assert u.y == 6.0                  # no y gradient -> no y motion
-    assert u.statuses == []            # below threshold: no knockdown
-
-
-def test_quiet_field_is_bitwise_noop():
-    """Dormancy: zero atmosphere leaves position bitwise untouched and applies
-    nothing — wave-free trajectories keep their digest (the P4 wiring
-    contract for every existing non-wave test/scenario)."""
-    g = _gmap()
+def test_a_unit_in_a_gale_keeps_its_position():
+    """Property: a unit in a wind far above q_fall is knocked down and its
+    x, y are untouched -- on a real GameMap through the real read. Breaks
+    if a displacement term returns to the wind row."""
+    g = _room_map()
+    _set_air(g, BULK_ONE, 60 * FP_ONE, -20 * FP_ONE)
     u = _marine(x=5.25, y=7.75)
-    x0, y0 = u.x, u.y
-    apply_wave_push([u], g, TPS)
-    assert (u.x, u.y) == (x0, y0)
+    apply_wind_knockdown([u], g)
+    assert (u.x, u.y) == (5.25, 7.75)
+    assert [s.kind for s in u.statuses] == [KNOCKED_DOWN]
+    assert composed_flags(u).is_prone and not composed_flags(u).can_move
+
+
+def test_dead_units_are_untouched():
+    """A corpse in a gale gets no status (the heat row killed it first)."""
+    u = _marine()
+    u.alive = False
+    apply_wind_knockdown([u], _stub_map(10 ** 15))
     assert u.statuses == []
 
 
-def test_dead_units_are_not_pushed():
-    g = _gmap()
-    _linear_x_field(g, 30000)
-    u = _marine()
-    u.alive = False
-    x0 = u.x
-    apply_wave_push([u], g, TPS)
-    assert u.x == x0 and u.statuses == []
+# ---------------------------------------------------------------------------
+# 3. q, not v
+# ---------------------------------------------------------------------------
+def test_density_is_in_the_law():
+    """Property: at the same wind, halving the tile's N halves W exactly,
+    and a wind just under the calm edge at ambient density is in the slowed
+    band at twice it. Breaks if density leaves the law (a speed threshold)."""
+    g = _room_map()
+    _set_air(g, 2 * BULK_ONE, 12 * FP_ONE)
+    w2 = g.footprint_wind_load(5, 5, 3)
+    _set_air(g, BULK_ONE, 12 * FP_ONE)
+    w1 = g.footprint_wind_load(5, 5, 3)
+    assert w2 == 2 * w1 > 0
 
-
-def test_mass_dependence_exact_halving():
-    """Newtonian response: 2x mass -> exactly half the nudge. Bitwise exact:
-    the divide-by-mass is correctly rounded and 160 = 2 * 80 is a binary
-    scale, so round(a/160) == round(a/80)/2 on every IEEE-754 machine."""
-    g = _gmap()
-    _linear_x_field(g, 30000)
-    light = _marine(x=6.0, y=6.0)
-    heavy = _marine(x=6.0, y=10.0)
-    light.mass = 80.0
-    heavy.mass = 160.0
-    apply_wave_push([light, heavy], g, TPS)
-    light_dx = light.x - 6.0
-    heavy_dx = heavy.x - 6.0
-    assert light_dx != 0.0
-    assert heavy_dx == light_dx / 2.0   # exact halving, not approx
-
-
-def test_push_cap_clamps_violent_gradient():
-    g = _gmap()
-    _linear_x_field(g, -600000)         # gx = -1.2e6 counts -> dv +91.6 t/s
-    u = _marine(x=6.0, y=6.0)
-    apply_wave_push([u], g, TPS)
-    gx = 2 * -600000
-    assert abs(_expected_dv(gx, float(u.mass)) * DT) > CAP  # cap engaged
-    assert u.x == 6.0 + CAP             # clamped EXACTLY to the cap
-    # a violent gradient is far past the knockdown edge too
-    assert [s.kind for s in u.statuses] == [KNOCKED_DOWN]
+    st = _settings()
+    # the largest raw speed whose ambient-density load is still calm
+    v = 1
+    while BULK_ONE * (((2 * v) ** 2) >> 16) < st.w_slow:
+        v *= 2
+    lo, hi = v, 2 * v
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if BULK_ONE * ((mid * mid) >> 16) < st.w_slow:
+            lo = mid
+        else:
+            hi = mid
+    _set_air(g, BULK_ONE, lo)
+    assert wind_scale_q16(g.footprint_wind_load(5, 5, 3), st) == WIND_ONE
+    _set_air(g, 2 * BULK_ONE, lo)
+    assert wind_scale_q16(g.footprint_wind_load(5, 5, 3), st) < WIND_ONE
 
 
 # ---------------------------------------------------------------------------
-# Wall clamp — never into solid, slide along, corner pin
+# 4. Band edges, against the float law
 # ---------------------------------------------------------------------------
-def test_wall_clamp_blocks_axis_and_slides_along():
-    """Unit anchored at x=11 (footprint 11..13) against the x=15... border of
-    a 16-wide map (border col 15 solid): a diagonal +x/+y push must drop the
-    x axis (footprint 12..14 would still be free; 13..15 hits the wall) and
-    keep the y slide. Use a cap-exceeding gradient so the attempted x move
-    crosses into the border column."""
-    g = _gmap(h=16, w=16)
-    h, w = g.atmosphere.shape
-    # atmosphere = big * (x + y): gradient pushes toward -x/-y; use negative slope
-    # to push +x/+y instead.
-    xs = np.arange(w, dtype=np.int64)
-    ys = np.arange(h, dtype=np.int64)
-    plane = -(xs[None, :] + ys[:, None]) * 600000
-    g.atmosphere[:] = plane.astype(np.int32)
-
-    u = _marine(x=11.6, y=6.0)          # footprint x 11..13; wall col at 15
-    apply_wave_push([u], g, TPS)
-    # x: 11.6 + 0.5 (cap) = 12.1 -> anchor 12, footprint 12..14: FREE, moves.
-    assert u.x == 11.6 + CAP
-    assert u.y == 6.0 + CAP             # y slides too (row 6.5+3 < border 15)
-
-    # Second shove: x 12.1 + 0.5 = 12.6 -> anchor 12: free. Third: 13.1 ->
-    # anchor 13, footprint 13..15 hits the border column -> x PINNED; y still
-    # slides (until its own border).
-    apply_wave_push([u], g, TPS)
-    assert u.x == 12.1 + CAP
-    x_pinned = u.x
-    apply_wave_push([u], g, TPS)
-    assert u.x == x_pinned              # never enters the wall
-    assert u.y == 6.0 + 3 * CAP         # the free axis keeps sliding
-
-
-def test_corner_pin_blocks_both_axes():
-    """Sub-tile motion inside the current free tiles is legal (the clamp is
-    tile-resolution, like the fields); pinning bites at the tile crossing:
-    from x=12.6 a +0.5 push would land anchor 13 -> footprint 13..15 -> the
-    border column/row -> BOTH axes drop, the unit stays put."""
-    g = _gmap(h=16, w=16)
-    xs = np.arange(16, dtype=np.int64)
-    plane = -(xs[None, :] + xs[:, None]) * 600000
-    g.atmosphere[:] = plane.astype(np.int32)
-    u = _marine(x=12.6, y=12.6)         # next +cap crosses into anchor 13
-    apply_wave_push([u], g, TPS)
-    assert (u.x, u.y) == (12.6, 12.6)   # pinned in the corner: nothing moves
-    # ... but the knockdown STILL fired: dv is physical, walls don't shield
-    assert [s.kind for s in u.statuses] == [KNOCKED_DOWN]
+def test_band_edges_and_linearity_in_q():
+    """Property: ONE just below and AT W_slow, s_min at W_fall and above,
+    the interior within one LSB of the FLOAT law s = 1 - (1 - s_min) *
+    (q - q_slow) / (q_fall - q_slow) (the integer law floors once, so its
+    error is below one LSB), and monotone non-increasing across a sweep.
+    Breaks if the law is not linear in q or a clamp goes."""
+    st = _settings()
+    assert wind_scale_q16(st.w_slow - 1, st) == WIND_ONE
+    assert wind_scale_q16(st.w_slow, st) == WIND_ONE
+    assert wind_scale_q16(st.w_fall, st) == st.s_min_q16
+    assert wind_scale_q16(10 * st.w_fall, st) == st.s_min_q16
+    s_min = st.s_min_q16 / WIND_ONE
+    prev = WIND_ONE
+    for k in range(0, 101):
+        w = st.w_slow + (st.w_fall - st.w_slow) * k // 100
+        got = wind_scale_q16(w, st)
+        q = st.rho_ref * w / float(2 ** 33)
+        q_lo = st.rho_ref * st.w_slow / float(2 ** 33)
+        q_hi = st.rho_ref * st.w_fall / float(2 ** 33)
+        want = (1.0 - (1.0 - s_min) * (q - q_lo) / (q_hi - q_lo)) * WIND_ONE
+        assert abs(got - want) <= 1.0, (k, got, want)
+        assert got <= prev
+        prev = got
 
 
 # ---------------------------------------------------------------------------
-# Knockdown trigger — threshold edge, stability, refresh
+# 5. Knockdown edge and stability
 # ---------------------------------------------------------------------------
-def _slope_for_dv(dv_target: float, mass: float = 80.0) -> int:
-    """Integer x-slope (counts/tile) whose 3x3 gradient produces ~dv_target
-    tiles/s on `mass` (sign: positive dv pushes -x for a positive slope)."""
-    #   dv = K_PUSH * (2*slope/65536) / mass
-    return int(round(dv_target * mass * 65536.0 / (2.0 * K_PUSH)))
+def _edge(stab_q16, st):
+    """The smallest W the pinned integer compare knocks down."""
+    num = st.w_fall * stab_q16 * stab_q16
+    den = WIND_ONE * WIND_ONE
+    return -(-num // den)
 
 
-def test_knockdown_triggers_above_threshold_not_below():
-    for factor, expect_down in ((0.9, False), (1.1, True)):
-        g = _gmap()
-        _linear_x_field(g, _slope_for_dv(THRESHOLD * factor))
+def test_knockdown_at_the_pinned_edge_not_one_count_below():
+    """Property: a marine goes down at W_fall exactly and stands at
+    W_fall - 1; a 0.9 zombie at the QUANTIZED edge, 58982^2 / 2^32 of W_fall
+    (about 0.80999, not 0.81). Breaks if stability stops scaling the wind
+    SPEED or the compare form moves."""
+    st = _settings()
+    m_edge = _edge(WIND_ONE, st)
+    assert m_edge == st.w_fall
+    for w, down in ((m_edge - 1, False), (m_edge, True)):
         u = _marine()
-        apply_wave_push([u], g, TPS)
-        kinds = [s.kind for s in u.statuses]
-        assert (KNOCKED_DOWN in kinds) == expect_down, \
-            f"dv = {factor} x threshold should give knocked={expect_down}"
-        if expect_down:
-            st = u.statuses[0]
-            assert st.remaining_ticks == GETUP
-            assert st.magnitude_q16 == 0
-            assert st.source_id is None
-            assert composed_flags(u).is_prone
-            assert not composed_flags(u).can_move
+        apply_wind_knockdown([u], _stub_map(w))
+        assert (KNOCKED_DOWN in [s.kind for s in u.statuses]) == down, w
+
+    stab_z = unit_fixed.quantize_scalar(float(CFG.zombie.stability))
+    z_edge = _edge(stab_z, st)
+    ratio = z_edge / st.w_fall
+    assert abs(ratio - stab_z * stab_z / 2 ** 32) < 1e-9
+    if float(CFG.zombie.stability) == 0.9:
+        assert stab_z == 58982 and 0.80998 < ratio < 0.81
+    for w, down in ((z_edge - 1, False), (z_edge, True)):
+        z = _zombie()
+        apply_wind_knockdown([z], _stub_map(w))
+        assert (KNOCKED_DOWN in [s.kind for s in z.statuses]) == down, w
+    # a braced profile stands through the marine's edge
+    braced = _marine()
+    braced.environment = EnvironmentProfile(stability=1.5)
+    apply_wind_knockdown([braced], _stub_map(m_edge * 2))
+    assert braced.statuses == []
+    assert wind_knocks_down(m_edge * 3, unit_fixed.quantize_scalar(1.5), st)
 
 
-def test_knockdown_uses_uncapped_dv():
-    """The displacement cap is a motion sanity rail, NOT part of the physics:
-    a dv far past the cap still knocks down (already exercised by the corner
-    test; here with the displacement visibly capped)."""
-    g = _gmap()
-    _linear_x_field(g, _slope_for_dv(THRESHOLD * 20.0))
-    u = _marine(x=6.0, y=6.0)
-    apply_wave_push([u], g, TPS)
-    assert u.x == 6.0 - CAP             # motion capped...
-    assert [s.kind for s in u.statuses] == [KNOCKED_DOWN]   # ...trigger not
-
-
-def test_stability_scales_the_edge():
-    """threshold * stability is the edge: a dv between the zombie's edge
-    (x0.9) and the marine's (x1.0) fells only the zombie; a high-stability
-    profile (1.5) stands through a dv that fells a marine."""
-    dv_mid = THRESHOLD * 0.95           # between 0.9 and 1.0 x threshold
-    g = _gmap()
-    _linear_x_field(g, _slope_for_dv(dv_mid))
-    m, z = _marine(x=4.0, y=4.0), _zombie(x=4.0, y=9.0)
-    assert ZOMBIE_STABILITY < 0.95 < 1.0
-    apply_wave_push([m, z], g, TPS)
-    assert m.statuses == []                                # marine stands
-    assert [s.kind for s in z.statuses] == [KNOCKED_DOWN]  # shambler topples
-
-    g2 = _gmap()
-    _linear_x_field(g2, _slope_for_dv(THRESHOLD * 1.2))
-    braced = _marine(x=4.0, y=4.0)
-    braced.environment = EnvironmentProfile(stability=1.5)  # door-2 profile
-    normal = _marine(x=4.0, y=9.0)
-    apply_wave_push([braced, normal], g2, TPS)
-    assert braced.statuses == []                            # 1.2 < 1.5 edge
-    assert [s.kind for s in normal.statuses] == [KNOCKED_DOWN]
-
-
-def test_reknock_refreshes_getup_timer():
-    """P3 refresh stacking through the trigger: a second blast while prone
-    resets the timer on the SAME instance (no second entry)."""
-    g = _gmap()
-    _linear_x_field(g, _slope_for_dv(THRESHOLD * 1.5))
+# ---------------------------------------------------------------------------
+# 10. Re-knock refreshes
+# ---------------------------------------------------------------------------
+def test_sustained_wind_keeps_a_unit_down_past_one_getup():
+    """Property: while W stays at or above W_fall the unit stays down past
+    one get-up time -- each tick refreshes the SAME status (P3 stacking),
+    and it gets up once the wind drops. Breaks if the row stops refreshing
+    or stacks a second instance."""
+    st = _settings()
     u = _marine()
-    apply_wave_push([u], g, TPS)
-    assert len(u.statuses) == 1 and u.statuses[0].remaining_ticks == GETUP
-    for _ in range(5):                  # time passes while prone
+    gale = _stub_map(st.w_fall)
+    for _ in range(st.getup_ticks + 5):
         tick_statuses([u])
-    assert u.statuses[0].remaining_ticks == GETUP - 5
-    apply_wave_push([u], g, TPS)        # re-knocked by a second wave
-    assert len(u.statuses) == 1         # refresh, not stack
-    assert u.statuses[0].remaining_ticks == GETUP
+        apply_wind_knockdown([u], gale)
+        assert len(u.statuses) == 1
+        assert u.statuses[0].remaining_ticks == st.getup_ticks
+    calm = _stub_map(0)
+    for _ in range(st.getup_ticks + 1):
+        tick_statuses([u])
+        apply_wind_knockdown([u], calm)
+    assert u.statuses == []
 
 
 # ---------------------------------------------------------------------------
-# Full-sim: determinism + THE RING regression
+# 8. The config door
 # ---------------------------------------------------------------------------
-def _blast_room(h=48, w=48):
-    from level_loader import LevelData
-    tm = np.ones((h, w), dtype=np.int32)    # hull border
-    tm[1:h - 1, 1:w - 1] = 4                # interior air
-    return LevelData(name="push_ring", version="1", path=Path("."),
-                     tilemap=tm, tile_size_m=1.0, diffuse_path=Path("."))
+def _cfg(**over):
+    base = dict(wind_q_slow_pa=39.0, wind_q_fall_pa=245.0,
+                wind_slow_min_scale=0.5, knockdown_getup_ticks=36)
+    base.update(over)
+    return SimpleNamespace(**{k: v for k, v in base.items() if v is not None})
 
 
-def _grenade_sim(unit_center_dist: int, n_ticks: int = 40, seed: int = 777):
-    """A grenade-equivalent detonation at (24, 12) with one marine whose
-    footprint CENTER sits `unit_center_dist` tiles along +x. Returns the sim
-    + unit after `n_ticks` (the wave deposit fires on tick 1, exactly like a
-    fuse-out); records whether the unit was ever knocked down."""
+@pytest.mark.parametrize("over, name", [
+    (dict(wind_q_fall_pa=None), "wind_q_fall_pa"),
+    (dict(wind_q_slow_pa="39"), "wind_q_slow_pa"),
+    (dict(wind_slow_min_scale=True), "wind_slow_min_scale"),
+    (dict(wind_q_fall_pa=39.0), "wind_q_slow_pa"),
+    (dict(wind_q_fall_pa=20.0), "wind_q_slow_pa"),
+    (dict(wind_slow_min_scale=0.0), "wind_slow_min_scale"),
+    (dict(wind_slow_min_scale=1.5), "wind_slow_min_scale"),
+    (dict(wind_q_fall_pa=39.0 + 1e-12), "quantize"),
+])
+def test_the_door_refuses_by_name(over, name):
+    """Property: a missing or mistyped key, q_fall <= q_slow, a scale
+    outside (0, 1] and two thresholds quantizing to one load are refused,
+    naming what is wrong. Breaks if a bad dial reaches the band's divide."""
+    with pytest.raises((KeyError, TypeError, ValueError), match=name):
+        wind_settings(_cfg(**over), RHO_AIR)
+
+
+def test_the_door_refuses_a_non_positive_air_density():
+    for rho in (0.0, -1.2):
+        with pytest.raises(ValueError, match="rho_ref"):
+            wind_settings(_cfg(), rho)
+
+
+def test_the_density_is_the_materials_air_row():
+    """The law's rho is the map's [materials.air] density (one owner): a
+    map with a denser air row gets a proportionally lower W threshold."""
+    st = exchange.gmap_wind_settings(_room_map())
+    assert st.rho_ref == float(_room_map().materials.density[MAT_AIR])
+    thin = wind_settings(CFG.exchange, st.rho_ref / 2)
+    assert abs(thin.w_fall / st.w_fall - 2.0) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# 1. Dormancy on a real quiet level; 9. determinism through a blast
+# ---------------------------------------------------------------------------
+def _quiet_ship_trace(monkeypatch, astronomical):
     import breach_physics as bp
+    from control_source import quantize_stick_direction
+    from level_loader import load as load_level
+    from simulation import Simulation
+    from simulation.orders import ORDER_MOVE_ATTACK
+    from simulation.ruleset import ContinuousRealtime
+    if astronomical:
+        monkeypatch.setattr(CFG.exchange, "wind_q_slow_pa", 1e15)
+        monkeypatch.setattr(CFG.exchange, "wind_q_fall_pa", 2e15)
+    sim = Simulation(load_level("ship_demo", levels_dir=str(ROOT / "levels")),
+                     seed=1, breach_physics=bp, enable_recorder=False,
+                     ruleset=ContinuousRealtime())
+    standing = [Unit("s1", x=5.0, y=17.0, team=0),
+                Unit("s2", x=88.0, y=20.0, team=1)]
+    walker = Unit("w", x=5.0, y=22.0, team=0)
+    zombie = Unit("z", x=45.0, y=22.0, team=ZOMBIE_TEAM)
+    for u in standing + [walker, zombie]:
+        sim.add_unit(u)
+    sim.set_paused(False)
+    dx, dy, _ = quantize_stick_direction(1.0, 0.0, 0.0)
+    trace = []
+    for _ in range(96):
+        sim.set_move_dir(walker.id, dx, dy, ORDER_MOVE_ATTACK)
+        sim.set_paused(False)
+        sim.step()
+        trace.append(tuple((u.x, u.y, tuple((s.kind, s.remaining_ticks)
+                                            for s in u.statuses))
+                           for u in sim.units))
+    return trace
+
+
+def test_a_quiet_real_level_runs_as_if_the_law_never_fired(monkeypatch):
+    """Property (dormancy): ship_demo with its doors shut -- its EOS jitters
+    a few counts (#116) -- runs bit-identically against the same run with
+    the thresholds astronomically high: standing units, a MOVE_DIR walker
+    and a zombie, positions and statuses every tick. Breaks if the law
+    touches a quiet unit (the calm band no longer returns exactly ONE)."""
+    a = _quiet_ship_trace(monkeypatch, astronomical=False)
+    b = _quiet_ship_trace(monkeypatch, astronomical=True)
+    assert a == b
+    assert a[0] != a[-1]          # non-vacuous: the walker and zombie moved
+
+
+def _grenade_trace(d=6, n_ticks=30):
+    import breach_physics as bp
+    from level_loader import LevelData
     from simulation import Simulation
     from simulation.physics import apply_explosion
-
-    sim = Simulation(_blast_room(), seed=seed, breach_physics=bp,
-                     enable_recorder=False)
-    cy, cx = 24, 12
-    u = Unit("P", x=cx + unit_center_dist - 1, y=cy - 1, team=0)
+    tm = np.full((48, 48), MAT_AIR, dtype=np.int32)
+    tm[0, :] = tm[-1, :] = tm[:, 0] = tm[:, -1] = MAT_HULL
+    lvl = LevelData(name="wind_ring", version="3", path=Path("."),
+                    tilemap=tm, tile_size_m=1.0, diffuse_path=Path("."))
+    sim = Simulation(lvl, seed=777, breach_physics=bp, enable_recorder=False)
+    u = Unit("P", x=12 + d - 1, y=23, team=0)
     sim.add_unit(u)
-    sim.set_paused(False)
-    ever_down = False
     trace = []
     for t in range(n_ticks):
         if t == 1:
-            # W1 re-home: the grenade blast numbers live on the frag_standard
-            # payload row (same 5 / 10.0 / 200 literals as the old
-            # CFG.weapons.grenade.* keys).
-            frag = weapon_tables().payload_for_ammo("grenade_frag")
-            apply_explosion(sim.gmap, sim.edit_queue, cy, cx,
-                            frag.radius,
-                            frag.pressure,
-                            frag.wall_damage)
+            apply_explosion(sim.gmap, sim.edit_queue, 24, 12, 5, 10.0, 200)
         sim.set_paused(False)
         sim.step()
-        ever_down = ever_down or any(
-            s.kind == KNOCKED_DOWN for s in u.statuses)
         trace.append((u.x, u.y, tuple((s.kind, s.remaining_ticks)
                                       for s in u.statuses)))
-    return u, ever_down, trace
+    return trace
 
 
-def test_full_sim_determinism_run_twice_identical():
-    """The whole push+knockdown pipeline through a real blast, twice — every
-    per-tick position and status bitwise identical. EOS P3: the `down_a`
-    knockdown precondition is DROPPED — it asserted the old wave_p-scale
-    calibration (k_push recalibration is P5's feel pass; deltas reported in
-    docs/eos_p3_gate_measurements.md). The determinism property itself is
-    unchanged and still asserted bitwise."""
-    _, down_a, trace_a = _grenade_sim(6, n_ticks=24)
-    _, down_b, trace_b = _grenade_sim(6, n_ticks=24)
-    assert down_a == down_b             # whatever the calibration says, identically
-    assert trace_a == trace_b           # bitwise: floats compare exactly
-
-
-import pytest
-
-
-@pytest.mark.skip(reason=(
-    "EOS P3: apply_wave_push now reads grad(P) of the merged pressure field; "
-    "the transient scale differs from the retired wave_p anomaly and the "
-    "shipped k_push no longer reaches the old buffet/knockdown radii "
-    "(measured: no knockdown at d=7 with k_push unchanged). k_push/threshold "
-    "recalibration is the P5 feel pass — per the P3 gate instruction the "
-    "delta is REPORTED (docs/eos_p3_gate_measurements.md), not silently "
-    "retuned. Re-enable at P5 with the recalibrated constants."))
-def test_blast_visibly_shoves_the_unit():
-    """The nudge is not cosmetic: over the wave passage the unit's position
-    measurably moves (the buffet), and it never enters a wall."""
-    u, _down, trace = _grenade_sim(6, n_ticks=24)
-    xs = [x for (x, y, s) in trace]
-    excursion = max(abs(x - xs[0]) for x in xs)
-    assert excursion > 0.1              # visible at 48 px/tile (~5+ px)
-
-
-@pytest.mark.skip(reason=(
-    "EOS P3: knockdown-ring calibration pending the P5 k_push recalibration "
-    "(see test_blast_visibly_shoves_the_unit's attribution)."))
-def test_knockdown_ring_wider_than_damage_ring():
-    """mechanics/06 §4, the signature property, as a regression test:
-
-        knockdown_radius  >  meaningful-damage_radius
-
-    Damage half (geometric — apply_blast_damage IS the shipped damage row):
-    scan center distances for the farthest unit taking any damage (the row's
-    own blast_damage_threshold already defines 'meaningful'). Knockdown half
-    (field physics): a marine at d=7 — OUTSIDE the whole damage disc — is
-    still bowled over by the wave; one at d=16 stands (the ring is finite).
-    Margins at the calibrated values: dv(7) ~ 8.0 vs threshold 6.0 (+33%),
-    dv(16) ~ 3.3 (-45%) — robust to tuning drift, loud on regression."""
-    # --- damage radius: geometric, no sim needed --------------------------
-    frag = weapon_tables().payload_for_ammo("grenade_frag")
-    radius = frag.radius
-    max_damage = frag.unit_damage
-    fy = fx = 100.0                     # abstract plane, no walls involved
-    probes = []
-    for d in range(1, 2 * radius + 1):
-        p = Unit(f"D{d}", x=fx + d - 1, y=fy - 1, team=0)
-        p.id = 10 + d
-        probes.append((d, p, p.current_hp))
-    apply_blast_damage([p for (_d, p, _h) in probes], fx, fy,
-                       radius, max_damage)
-    damage_radius = max(
-        (d for (d, p, hp0) in probes if p.current_hp < hp0), default=0)
-    assert damage_radius > 0            # the blast does damage SOMEWHERE
-
-    # --- knockdown radius: the wave does the work -------------------------
-    _, down_at_7, _ = _grenade_sim(7)
-    _, down_at_16, _ = _grenade_sim(16)
-    assert down_at_7, "a marine 7 tiles out (outside the damage disc) " \
-                      "must be knocked sprawling"
-    assert not down_at_16, "the knockdown ring must be finite"
-    knockdown_radius = 7                # the asserted-lower-bound radius
-
-    print(f"\n[ring] meaningful-damage radius = {damage_radius} tiles; "
-          f"knockdown radius >= {knockdown_radius} tiles "
-          f"(calibrated edge ~9-10; d=16 stands)")
-    assert knockdown_radius > damage_radius
+def test_a_blast_runs_identically_twice():
+    """Property (determinism): the calibration grenade (radius 5, pressure
+    10.0) beside a marine, twice -- every per-tick position and status
+    identical. Breaks if the row draws randomness or reads unordered state."""
+    a = _grenade_trace()
+    assert a == _grenade_trace()
+    x0, y0 = a[0][0], a[0][1]
+    assert all((x, y) == (x0, y0) for (x, y, _s) in a)   # never displaced
 
 
 # ---------------------------------------------------------------------------
-# Table registration
+# The tile inspector shows the law's number
 # ---------------------------------------------------------------------------
-def test_push_row_registered_in_coupling_table():
-    rows = [(r.field, r.reduction, r.response) for r in COUPLING_TABLE]
-    assert ("wave_p", "grad", apply_wave_push) in rows
-    # table order: heat, blast, push, then the W3 gas rows (the chapter's
-    # row order — P0; the table GROWS, that is the point)
-    assert rows[2][2] is apply_wave_push
+def test_the_tile_inspector_shows_q_through_the_one_read():
+    """Property: the hover readout's wind row is the tile's W through
+    GameMap.footprint_wind_load (footprint 1), q = rho_ref W / 2^33 in Pa,
+    and the law's own cadence scale (1 calm, s_min in a gale). Breaks if the
+    inspector re-derives the law or reads another density."""
+    from renderer.hover_readout import pack_hover_readout
+    g = _room_map()
+    st = exchange.gmap_wind_settings(g)
+    _set_air(g, BULK_ONE, 0)
+    calm = pack_hover_readout(g, 5, 5, lambda t: t)
+    assert calm.wind_w == 0 and calm.wind_scale == 1.0
+    _set_air(g, BULK_ONE, 30 * FP_ONE)
+    r = pack_hover_readout(g, 5, 5, lambda t: t)
+    assert r.wind_w == g.footprint_wind_load(5, 5, 1)
+    assert r.wind_q_pa == st.rho_ref * r.wind_w / float(2 ** 33)
+    assert 500.0 < r.wind_q_pa < 560.0          # 1/2 * 1.2047 * 30^2 = 542 Pa
+    assert r.wind_scale == st.s_min_q16 / WIND_ONE
+    assert any(line.startswith("wind q:") for line in r.lines)
+
+
+# ---------------------------------------------------------------------------
+# The table
+# ---------------------------------------------------------------------------
+def test_the_wind_row_is_registered_and_the_push_row_is_gone():
+    """The 9c2 row is the table's ``wind | max`` row; no row reads a
+    pressure gradient any more. (Its position in the table is not pinned.)"""
+    rows = {(r.field, r.reduction): r.response for r in COUPLING_TABLE}
+    assert rows[("wind", "max")] is apply_wind_knockdown
+    assert all(r.reduction != "grad" for r in COUPLING_TABLE)
 
 
 if __name__ == "__main__":

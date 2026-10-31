@@ -2630,8 +2630,9 @@ class GameMap:
             # install one at the burst end, same code path, same tick. Three
             # further same-tick readers of a stale 0 confirm it is not
             # display-only: the MG warm start (p_prev := atmosphere),
-            # apply_wave_push (a ~1 atm phantom grad-P that can fire
-            # KNOCKED_DOWN beside a burnt-through wall), and the PRESSURE sensor
+            # the retired apply_wave_push (a ~1 atm phantom grad-P that could
+            # fire KNOCKED_DOWN beside a burnt-through wall; #140 replaced it
+            # with a wind read that never sees atmosphere), and the PRESSURE sensor
             # channel (an RL observation).
             #
             # The value is the map's effective PIN, not n_total_q: p*(N_amb, 0)
@@ -3091,7 +3092,7 @@ class GameMap:
             # It is read the SAME tick by the MG warm start (p_prev :=
             # atmosphere), by find_burst_walls' spread scan — where a stale 0
             # in a freshly-opened tile manufactures a phantom differential that
-            # pops its neighbours — by apply_wave_push, and by the PRESSURE
+            # pops its neighbours — (once) by apply_wave_push, and by the PRESSURE
             # sensor channel. Leaving it unwritten trades a mass artefact for a
             # burst artefact. It remains OUTSIDE the conservation ledger (the
             # solver rematerializes P from N next tick); the divisor stays k

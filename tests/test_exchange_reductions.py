@@ -254,17 +254,30 @@ def test_no_reduction_raises_on_wild_footprints():
 # ---------------------------------------------------------------------------
 # The coupling table — the shipped rows, registered (mechanics/05 §1).
 # P1 registered heat + blast; P4 grew the table with the wave_p|grad
-# impulse-push row; weapons W3 grew it again with the gas[teargas] and
-# gas[poison] rows (the table GROWING is the design's point).
+# impulse-push row (retired by #140 for the wind|max row); weapons W3 grew it
+# again with the gas[teargas] and gas[poison] rows (the table GROWING is the
+# design's point -- so these tests look rows up by field, never by count or
+# position).
 # ---------------------------------------------------------------------------
-def test_coupling_table_registers_the_shipped_rows_in_order():
-    """Registration: heat, blast, push, teargas, poison (the chapter's row
-    order — the P0 'couplings in table order' execution order once the named
-    READ slot lands). Rows are plain frozen data."""
+def _row(table, field, reduction="*"):
+    """The one row reading ``field`` (and ``reduction``, unless "*")."""
+    hits = [r for r in table
+            if r.field == field and (reduction == "*" or r.reduction == reduction)]
+    assert len(hits) == 1, f"expected one {field!r} row, got {len(hits)}"
+    return hits[0]
+
+
+def test_coupling_table_registers_the_shipped_rows():
+    """Registration: the heat, blast, wind, teargas and poison rows are
+    present, heat first (the documented within-tick order starts with it).
+    Rows are plain frozen data. Breaks if a shipped row is dropped -- never
+    on a new row being added."""
     from simulation.exchange import COUPLING_TABLE
     assert isinstance(COUPLING_TABLE, tuple)
-    assert [row.field for row in COUPLING_TABLE] == [
-        "heat", "wave_p", "wave_p", "gas[teargas]", "gas[poison]"]
+    fields = [row.field for row in COUPLING_TABLE]
+    for f in ("heat", "wave_p", "wind", "gas[teargas]", "gas[poison]"):
+        assert f in fields, f
+    assert fields[0] == "heat"
     assert all(isinstance(row, CouplingRow) for row in COUPLING_TABLE)
 
 
@@ -272,11 +285,18 @@ def test_coupling_table_reductions_name_the_vocabulary():
     """A row's reduction is a vocabulary name (or None for a shipped response
     that predates the field read — the blast row's documented state)."""
     from simulation.exchange import COUPLING_TABLE
-    heat_row, blast_row, push_row, tear_row, poison_row = COUPLING_TABLE
+    heat_row = _row(COUPLING_TABLE, "heat")
+    blast_row = _row(COUPLING_TABLE, "wave_p")
+    wind_row = _row(COUPLING_TABLE, "wind")
+    tear_row = _row(COUPLING_TABLE, "gas[teargas]")
+    poison_row = _row(COUPLING_TABLE, "gas[poison]")
     assert heat_row.reduction == "max" and heat_row.reduction in REDUCTIONS
     assert blast_row.reduction is None
     assert blast_row.note      # the predates-the-field-read status is written
-    assert push_row.reduction == "grad" and push_row.reduction in REDUCTIONS
+    # #140: the wind row's max is over the DERIVED per-tile W (its note says
+    # so), but it still names the vocabulary's max.
+    assert wind_row.reduction == "max" and wind_row.reduction in REDUCTIONS
+    assert "DERIVED" in wind_row.note
     # The W3 gas rows read like the heat row: footprint max (the densest gas
     # tile on the body is the exposure that matters).
     assert tear_row.reduction == "max" and tear_row.reduction in REDUCTIONS
@@ -288,12 +308,12 @@ def test_coupling_table_responses_are_the_shipped_implementations():
     callables ARE the shipped functions, and the combat.py compatibility
     re-exports resolve to the very same objects (legacy imports unchanged)."""
     from simulation import combat, exchange
-    heat_row, blast_row, push_row, tear_row, poison_row = exchange.COUPLING_TABLE
-    assert heat_row.response is exchange.apply_environmental_damage
-    assert blast_row.response is exchange.apply_blast_damage
-    assert push_row.response is exchange.apply_wave_push
-    assert tear_row.response is exchange.apply_teargas_blind
-    assert poison_row.response is exchange.apply_poison_dose
+    table = exchange.COUPLING_TABLE
+    assert _row(table, "heat").response is exchange.apply_environmental_damage
+    assert _row(table, "wave_p").response is exchange.apply_blast_damage
+    assert _row(table, "wind").response is exchange.apply_wind_knockdown
+    assert _row(table, "gas[teargas]").response is exchange.apply_teargas_blind
+    assert _row(table, "gas[poison]").response is exchange.apply_poison_dose
     assert combat.apply_environmental_damage is exchange.apply_environmental_damage
     assert combat.apply_blast_damage is exchange.apply_blast_damage
     assert combat.HEAT_SCALE == exchange.HEAT_SCALE == 65536

@@ -94,9 +94,6 @@ def _scene():
     return sim, squad, walker
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "#140: on main the pressure-gradient push shoves the squad; the wind law "
-    "(P1b) flips this"))
 def test_a_squad_at_a_venting_door_is_not_moved_and_a_walker_keeps_cadence():
     from control_source import quantize_stick_direction
     from config import CFG

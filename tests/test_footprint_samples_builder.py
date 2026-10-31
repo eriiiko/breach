@@ -13,6 +13,9 @@ PROPERTIES PROTECTED
   2. The scale composes after the mobility cost as
      ``half_up(cost * ONE, scale)`` and ONE is exactly the old cost. Breaks
      if the compose changes or the calm path stops being bit-identical.
+  4. Every cadence caller -- MOVE_DIR, the onephase cadence, the zombie
+     walk -- takes ``half_up(calm * ONE, s_min_q16)`` in an s_min wind.
+     Breaks if one of them builds samples without the wind.
   3. The wind load is the Python-int formula even where an int32 square
      would wrap (50 m/s, twice ambient density), max over GAS tiles only.
      Breaks if an int32 square returns or a solid tile is read.
@@ -25,9 +28,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-for _p in (ROOT, ROOT / "src"):
+for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
@@ -154,3 +158,111 @@ def test_wind_load_skips_solid_tiles_and_reads_zero_off_grid():
     g.solid[2, 2] = False
     assert GameMap.footprint_wind_load(g, 1, 1, 3) > 0
     assert GameMap.footprint_wind_load(g, 10, 10, 3) == 0
+
+
+# ---------------------------------------------------------------------------
+# Every cadence caller takes the wind's scale (design §7 test 6)
+# ---------------------------------------------------------------------------
+def _gale_room(h=24, w=24, gale=True):
+    """A real GameMap: an open hull box at ambient bulk N, its wind planes
+    set (a fixture write; nothing is stepped) to a gale far above q_fall, so
+    the builder's scale is exactly s_min everywhere."""
+    from level_loader import LevelData
+    from simulation.materials import MAT_AIR, MAT_HULL
+    tm = np.full((h, w), MAT_AIR, dtype=np.int32)
+    tm[0, :] = tm[-1, :] = tm[:, 0] = tm[:, -1] = MAT_HULL
+    lvl = LevelData(name="gale", version="3", path=Path("."), tilemap=tm,
+                    tile_size_m=1.0, diffuse_path=Path("."))
+    return lvl
+
+
+def _blow(g, on=True):
+    open_ = ~g.solid
+    g.wind_x[open_] = 40 * FP_ONE if on else 0
+    g.wind_y[open_] = 0
+
+
+def _s_min_q16(g):
+    from simulation.exchange import gmap_wind_settings
+    return gmap_wind_settings(g).s_min_q16
+
+
+def test_move_dir_walks_at_the_slowed_cadence_in_a_gale():
+    """Property: a MOVE_DIR step in an s_min wind advances
+    1 / half_up(calm * ONE, s_min_q16) tiles, against the field at
+    execution. Breaks if MOVE_DIR builds samples without the wind."""
+    bp = pytest.importorskip("breach_physics")
+    from config import CFG
+    from simulation import Simulation
+    from simulation.orders import ORDER_MOVE_ATTACK
+    from simulation.unit import Unit
+    sim = Simulation(_gale_room(), seed=1, breach_physics=bp,
+                     enable_recorder=False)
+    u = Unit("w", x=6.0, y=10.0, team=0)
+    sim.add_unit(u)
+    md = SimpleNamespace(speed_mode=ORDER_MOVE_ATTACK, dx_q=FP_ONE, dy_q=0)
+    calm = int(CFG.movement.marine_attack_ticks_per_tile)
+    _blow(sim.gmap, on=False)
+    x0 = u.x
+    sim._step_move_dir(u, md)
+    assert u.x == x0 + 1.0 / calm
+    _blow(sim.gmap, on=True)
+    x0 = u.x
+    sim._step_move_dir(u, md)
+    slowed = half_up(calm * SCALE_ONE, _s_min_q16(sim.gmap))
+    assert slowed > calm
+    assert u.x == x0 + 1.0 / slowed
+
+
+def test_the_onephase_cadence_takes_the_slowed_scale():
+    """Property: ``timeline.tile_cadence`` over a footprint in an s_min wind
+    is the terrain cost composed with the scale, then the aim-relative
+    fraction -- against the field when the plan is compiled. Breaks if the
+    onephase cadence builds samples without the wind."""
+    from simulation.orders import ORDER_MOVE_ATTACK
+    from simulation.timeline import base_ticks_per_tile, speed_pct, tile_cadence
+    from simulation.unit import Unit
+    g = GameMap(_gale_room())
+    u = Unit("o", x=6.0, y=10.0, team=0)
+    base = base_ticks_per_tile(g)
+    pct = speed_pct(ORDER_MOVE_ATTACK, False)
+
+    def with_pct(terrain):
+        return terrain if pct >= 1.0 else max(1, int(terrain / pct + 0.5))
+
+    _blow(g, on=False)
+    assert tile_cadence(g, u, 10, 7, ORDER_MOVE_ATTACK, False) == with_pct(base)
+    _blow(g, on=True)
+    slowed = half_up(base * SCALE_ONE, _s_min_q16(g))
+    assert tile_cadence(g, u, 10, 7, ORDER_MOVE_ATTACK, False) == with_pct(slowed)
+
+
+def _ticks_to_first_zombie_step(g):
+    from simulation.ai_zombie import update_zombies_tick
+    from simulation.factions import ZOMBIE_TEAM
+    from simulation.unit import Unit
+    z = Unit("z", x=4.0, y=10.0, team=ZOMBIE_TEAM)
+    prey = Unit("m", x=18.0, y=10.0, team=0)
+    z.id, prey.id = 1, 2
+    z.zombie_activated = True
+    start = (z.x, z.y)
+    for t in range(1, 200):
+        update_zombies_tick(g, [z, prey], t)
+        if (z.x, z.y) != start:
+            return t, z
+    raise AssertionError("the zombie never stepped")
+
+
+def test_the_zombie_walk_takes_the_slowed_scale():
+    """Property: a zombie in an s_min wind takes its first step after
+    half_up(calm * ONE, s_min_q16) ticks, calm after its own cadence --
+    zombies lean in the wind like marines. Breaks if the zombie walk builds
+    samples without the wind."""
+    g = GameMap(_gale_room())
+    _blow(g, on=False)
+    t_calm, z = _ticks_to_first_zombie_step(g)
+    assert t_calm == z.speed_ticks_per_tile
+    _blow(g, on=True)
+    t_gale, z = _ticks_to_first_zombie_step(g)
+    assert t_gale == half_up(z.speed_ticks_per_tile * SCALE_ONE, _s_min_q16(g))
+    assert t_gale > t_calm

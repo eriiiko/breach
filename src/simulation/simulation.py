@@ -81,7 +81,7 @@ from simulation.combat import (
 # fuse-out below); the consolidated named EXCHANGE-READ slot is a later patch.
 from simulation.exchange import (  # noqa: F401 (apply_blast_damage: legacy re-export — the executor calls it now)
     apply_blast_damage, apply_environmental_damage, apply_poison_dose,
-    apply_teargas_blind, apply_wave_push,
+    apply_teargas_blind, apply_wind_knockdown,
 )
 from simulation.events import (  # noqa: F401 (ExplosionEvent: legacy re-export — emitted by the executor now)
     DoorDestroyedEvent, ExplosionEvent, WallDestroyedEvent,
@@ -1688,22 +1688,18 @@ class Simulation:
                 events=self.tick_events,
             )
 
-        # 9c2. Wave impulse push + KNOCKED_DOWN (mechanics/05 §1 wave_p|grad
-        # row; mechanics/06 §4 trigger — exchange.COUPLING_TABLE[2]). The
-        # first coupling row born INTO the table (P4). Reads the post-physics
-        # wave_p at each living unit's footprint: dv = k_push*(-grad)/mass —
-        # the nudge displaces unit.x/y (wall-clamped) and dv above
-        # threshold*stability lays the unit KNOCKED_DOWN (prone, no move/act,
-        # refresh-stacked get-up timer). WITHIN-TICK EXCHANGE ORDER
-        # (documented contract): heat damage (9c) FIRST, then the push — a
-        # unit the heat row kills this tick is a corpse and is not displaced.
-        # Runs BEFORE the recorder snapshot (it captures post-push positions)
-        # and before the end-of-tick heat clear (irrelevant to wave_p, kept
-        # for the fixed order). The moved position reaches the physics next
-        # tick through the step-6 re-stamp. A status applied here starts
+        # 9c2. Wind on units (#140; the `wind | max` row, mechanics/05 §1 --
+        # exchange.apply_wind_knockdown): the dynamic pressure q = 1/2 rho v^2
+        # at each living unit's footprint (GameMap.footprint_wind_load) lays
+        # it KNOCKED_DOWN at or above wind_q_fall_pa * stability^2 (prone,
+        # refresh-stacked get-up timer). It writes NO position; the slowed
+        # band below it is the cadence scale movement.footprint_samples
+        # hands every walker. WITHIN-TICK EXCHANGE ORDER (documented
+        # contract): heat damage (9c) FIRST, then wind -- a unit the heat row
+        # kills this tick is a corpse. A status applied here starts
         # suppressing next tick (the step-2b P3 trigger-position semantics).
         if self.physics_runner is not None:
-            apply_wave_push(self.units, self.gmap, self._tps)
+            apply_wind_knockdown(self.units, self.gmap)
 
         # 9c3. Gas coupling rows (mechanics/05 §1 gas[teargas] / gas[poison]
         # — exchange.COUPLING_TABLE[3..4], W3). Read the post-physics gas
@@ -1712,7 +1708,7 @@ class Simulation:
         # trigger-position semantics); poison above threshold emits one
         # POISON packet per tick through the mechanics/06 pipeline (zombies
         # immune). WITHIN-TICK EXCHANGE ORDER (documented contract): heat
-        # (9c), push (9c2), teargas, poison. Lazy: an all-zero plane is one
+        # (9c), wind (9c2), teargas, poison. Lazy: an all-zero plane is one
         # integer .any() and out — every gas-free trajectory (the canonical
         # golden included) is bit-identical to pre-W3. No RNG.
         if self.physics_runner is not None:

@@ -4,7 +4,7 @@ Erik's founding principle (mechanics/05, verbatim): "there simply shouldn't
 be any barrier between gameplay and the physics" — operationally, **the unit
 must be able to read every field**. This module is that principle's ONE home:
 every physics→unit coupling — shockwave damage, heat damage, water slowing,
-gas poisoning, O2, pushes — is a **row in a table**::
+gas poisoning, O2, wind — is a **row in a table**::
 
     (field, reduction over footprint, response(sample, unit.profile) -> outputs)
 
@@ -33,10 +33,16 @@ named EXCHANGE-READ slot that iterates this table in table order (mechanics/05
 §4, pipeline phase 2) is a later patch; nothing here reorders or merges the
 shipped call sites.
 
-P4 (2026-07-05) adds the first NEW row — :func:`apply_wave_push`, the
-``wave_p | grad`` impulse push + KNOCKED_DOWN trigger — invoked post-physics
-at ``Simulation.step`` 9c2, directly after the heat row (the documented
-within-tick exchange order: heat damage, then push).
+P4 (2026-07-05) added the first NEW row — ``apply_wave_push``, the
+``wave_p | grad`` impulse push + KNOCKED_DOWN trigger at ``Simulation.step``
+9c2. **#140 (2026-10-31) RETIRED it** (history in git and mechanics/05 §1):
+the 9c2 row is now :func:`apply_wind_knockdown`, the ``wind | max`` row of
+the momentum-flux threshold law (docs/wind_on_units_design_2026-10-31.md) --
+the dynamic pressure ``q = 1/2 rho v^2`` at the footprint, nothing below
+``wind_q_slow_pa``, a cadence scale (:func:`wind_scale_q16`, composed by
+``movement.default_speed``) up to ``wind_q_fall_pa``, KNOCKED_DOWN at or
+above it. Nothing in the law writes a position. Still directly after the
+heat row (the documented within-tick exchange order: heat, then wind).
 
 P2 note (also behaviour-preserving, 2026-07-05): both responses now hand
 their pre-mitigation amounts to the mechanics/06 DamagePacket pipeline
@@ -68,6 +74,7 @@ from typing import Callable, Optional, Sequence
 from config import CFG
 from simulation import atmosphere_fixed as _atm_fx
 from simulation import gas_fixed
+from simulation import unit_fixed
 from simulation.damage import (
     BLAST, CREDIT_HEAT, HEAT, POISON, DamagePacket, apply_packet,
     mitigation_for, tick_credit,
@@ -179,8 +186,8 @@ def reduce_grad(field, tiles: Sequence[tuple[int, int]]) -> tuple[int, int]:
         gy = mean(field on tiles with ty == y_hi) - mean(... ty == y_lo)
 
     (each mean = one :func:`_mean_round` divide). Positive toward increasing
-    tx / ty (y-down), i.e. it points UPHILL like ∇p — the future impulse-push
-    row (mechanics/05 §1) consumes ``-grad``. The result is the raw field
+    tx / ty (y-down), i.e. it points UPHILL like ∇p. No row uses it since
+    #140 retired the impulse push (it stays in the vocabulary). The result is the raw field
     difference ACROSS the footprint extremes (span ``x_hi - x_lo`` tiles),
     deliberately NOT normalised per tile — v1 keeps the divides to one per
     axis and lets the consuming response own its scale constant.
@@ -459,8 +466,10 @@ def apply_blast_damage(units, fx, fy, radius, max_damage, events=None,
 
 
 # ---------------------------------------------------------------------------
-# Wave impulse push + KNOCKED_DOWN trigger — the `wave_p | grad` coupling row
-# (mechanics/05 §1; the knockdown spec is mechanics/06 §4). NEW in P4.
+# Wind on units -- the `wind | max` coupling row (#140; mechanics/05 §1, the
+# knockdown spec mechanics/06 §4). Replaces the retired `wave_p | grad` push.
+# docs/wind_on_units_design_2026-10-31.md; research basis
+# docs/research/wind_on_a_person_2026-10-31.md.
 # ---------------------------------------------------------------------------
 def _stability_for(unit) -> float:
     """Resolve the unit's knockdown ``stability`` (mechanics/06 §4).
@@ -470,7 +479,8 @@ def _stability_for(unit) -> float:
     exact ``mitigation_for`` pattern. Everyone else reads the species
     :class:`EnvironmentProfile` pointer stamped on the unit at construction
     (``unit.environment.stability``, default 1.0); bare stub units fall back
-    to the human baseline 1.0.
+    to the human baseline 1.0. Since #140 it scales the knockdown WIND SPEED
+    (the compare is against ``W_fall * stability^2``).
     """
     if getattr(unit, "is_zombie", False):
         return ZOMBIE_STABILITY
@@ -478,165 +488,133 @@ def _stability_for(unit) -> float:
     return float(getattr(env, "stability", 1.0))
 
 
-def apply_wave_push(units, gmap, ticks_per_second):
-    """The wave_p impulse-push row, BOTH outputs (mechanics/05 §1): the
-    per-tick displacement nudge AND the KNOCKED_DOWN trigger (mechanics/06
-    §4). Runs post-physics at ``Simulation.step`` 9c2, immediately AFTER the
-    heat row (the documented within-tick exchange order: heat damage first,
-    then push — a unit the heat row kills this tick is a corpse and is not
-    displaced).
+#: The Q16 one the wind law's scale and stability are written in (the
+#: cadence compose's one -- never ``movement.MOBILITY_ONE``).
+WIND_ONE = _atm_fx.FP_ONE
+#: ``W = (N / N_amb) * v^2 * 2^32``, so ``q = 1/2 rho_ref W / 2^32`` and a
+#: threshold ``W_thr = q_thr * 2^33 / rho_ref``; 2^33 = 2 * BULK_ONE * FP_ONE.
+_W_PER_Q_RHO = float(2 * gas_fixed.BULK_ONE * _atm_fx.FP_ONE)
 
-    Per LIVING unit, in stored order (deterministic; each unit's response
-    reads only the field + its own state, so the result is order-free — the
-    serial loop mirrors :func:`apply_environmental_damage`):
 
-        (gx, gy) = reduce_grad(wave_p, occupied_tiles)     # Q16.16, uphill
-        dvx = k_push * (-gx / 65536) / mass                # tiles/s
-        dvy = k_push * (-gy / 65536) / mass
-        KNOCKED_DOWN if dvx^2 + dvy^2 >= (threshold * stability)^2
-        dx = clamp(dvx * dt, +-push_max_tile_per_tick)     # dt = 1/tps
-        dy = clamp(dvy * dt, +-push_max_tile_per_tick)
-        unit.x += dx ; unit.y += dy                        # wall-clamped
+@dataclass(frozen=True)
+class WindSettings:
+    """The wind law's dials, refused at the door and quantized ONCE per pass
+    (door 2): ``w_slow`` / ``w_fall`` are the int wind loads at ``q_slow_pa``
+    / ``q_fall_pa``; ``s_min_q16`` is the cadence scale at ``q_fall``."""
+    q_slow_pa: float
+    q_fall_pa: float
+    slow_min_scale: float
+    rho_ref: float
+    getup_ticks: int
+    w_slow: int
+    w_fall: int
+    s_min_q16: int
 
-    Design notes (the P4 decisions, in one place):
 
-    - **Reduction = the vocabulary's ``reduce_grad``** (footprint edge-line
-      mean difference), NOT an inline per-tile Σ∇p. Why: it samples ONLY the
-      unit's own footprint tiles, so a unit hugging a wall picks up no
-      spurious force from solid cells (wave_p is 0 inside walls — an
-      out-of-body stencil would fabricate wall-ward suction); and it is the
-      shipped, integer-exact vocabulary entry the chapter row names. With
-      the one shipped footprint (3x3, every unit) the chapter's
-      area-scaling Σ form differs from this by a constant that ``k_push``
-      absorbs; when footprint sizes diversify, the big-light-units-fly
-      area scaling returns as an explicit footprint-area factor here.
-    - **v1 is stateless**: no persistent velocity on the unit — an
-      instantaneous per-tick nudge while the wave overlaps the footprint.
-      Measured consequence (calibration 2026-07-05, config.toml [exchange]):
-      a passing acoustic pulse pushes on its front and pulls on its tail
-      (linear acoustics — the net impulse at a fixed point largely
-      cancels), so the visible motion is a sharp BUFFET (peak hop 0.3-0.5
-      tile, partial spring-back, net drift +-0.2 tile), not a sustained
-      1-tile carry. The knockdown is the star output; a sustained blast-wind
-      throw would read the atmosphere dome — a separate row, Erik's call.
-    - **Knockdown compares SQUARES** — ``dvx*dvx + dvy*dvy`` against
-      ``(threshold*stability)**2`` computed as a product — no sqrt needed
-      (cheaper, and one fewer op to audit; the chain stays pure ``+ - x /``
-      door 3 on door-2 constants and the door-1 integer gradient).
-    - **Knockdown uses the UNCAPPED, UNCLAMPED dv** — the physical velocity
-      change. The displacement cap and the wall clamp are motion sanity
-      rails; a unit slammed against a wall by a blast still goes down.
-    - **Trigger timing** (status.py P3 semantics): 9c2 sits AFTER this
-      tick's status pass (step 2b), so a knockdown applied here starts
-      suppressing movement/actions NEXT tick and lasts the full
-      ``knockdown_getup_ticks`` from there — the wave visibly bowls the
-      unit over on the spot, and re-knocks REFRESH the timer (P3 stacking).
-    - **Wall clamp, per axis, x then y (fixed order → slide along walls)**:
-      each axis's move is accepted only if the DESTINATION footprint stays
-      in-bounds and enters no solid tile it does not already stand on (the
-      already-standing carve-out covers walk-through door tiles, which are
-      solid to gas but legally occupied). A blocked axis drops its
-      displacement (the unit pins against the wall); the other axis still
-      slides. The y test runs at the already-accepted x, so the final
-      combined footprint is always explicitly checked. Units do NOT block
-      each other (v1: bodies are not walls — overlap is already possible
-      via pathfinding; ``gmap.solid`` is the only barrier).
-    - **Determinism**: gradient is door-1 integer; ``/65536`` is an exact
-      power-of-two scale; k_push / mass / dt / threshold / stability are
-      door-2 constants; the chain is pure ``+ - x /`` float64 (door 3) into
-      today's float positions (the Q16.16 position migration is a later
-      arc). ``gx == gy == 0`` (quiet field / off-grid footprint) is an
-      integer-exact early-out: the pass is a bit-identical no-op when no
-      wave is up — which keeps every wave-free trajectory's digest
-      untouched.
+def _number(cfg, key):
+    if not hasattr(cfg, key):
+        raise KeyError(f"[exchange] {key} is missing (wind on units, #140)")
+    v = getattr(cfg, key)
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        raise TypeError(f"[exchange] {key} must be a number, got {v!r}")
+    return float(v)
+
+
+def wind_settings(cfg, rho_ref) -> WindSettings:
+    """THE door of the wind law (#140, design §5). ``cfg`` is
+    ``CFG.exchange``; ``rho_ref`` is the ``[materials.air]`` density
+    (``gmap.materials.density[MAT_AIR]`` -- the one owner; there is no
+    density dial here, :func:`gmap_wind_settings` passes it). Refuses, by
+    name, a missing or mistyped key, ``q_slow >= q_fall``, two thresholds
+    that quantize to the same load, ``wind_slow_min_scale`` outside (0, 1]
+    and ``rho_ref <= 0``. Called every pass, so a Ctrl+R lands live."""
+    q_slow = _number(cfg, "wind_q_slow_pa")
+    q_fall = _number(cfg, "wind_q_fall_pa")
+    s_min = _number(cfg, "wind_slow_min_scale")
+    getup = int(_number(cfg, "knockdown_getup_ticks"))
+    rho = float(rho_ref)
+    if not rho > 0.0:
+        raise ValueError(f"wind law: rho_ref (the [materials.air] density) "
+                         f"must be > 0, got {rho_ref!r}")
+    if not 0.0 <= q_slow < q_fall:
+        raise ValueError(f"[exchange] wind_q_slow_pa ({q_slow}) must be >= 0 "
+                         f"and below wind_q_fall_pa ({q_fall})")
+    if not 0.0 < s_min <= 1.0:
+        raise ValueError(f"[exchange] wind_slow_min_scale must be in (0, 1], "
+                         f"got {s_min}")
+    w_slow = int(q_slow * _W_PER_Q_RHO / rho + 0.5)
+    w_fall = int(q_fall * _W_PER_Q_RHO / rho + 0.5)
+    if w_slow >= w_fall:
+        raise ValueError(f"[exchange] wind_q_slow_pa ({q_slow}) and "
+                         f"wind_q_fall_pa ({q_fall}) quantize to the same "
+                         f"wind load ({w_slow})")
+    s_min_q16 = unit_fixed.quantize_scalar(s_min)
+    return WindSettings(q_slow, q_fall, s_min, rho, getup,
+                        w_slow, w_fall, s_min_q16)
+
+
+def gmap_wind_settings(gmap) -> WindSettings:
+    """:func:`wind_settings` for ``gmap``: the live ``[exchange]`` dials and
+    the map's own ``[materials.air]`` density row."""
+    from simulation.materials import MAT_AIR
+    return wind_settings(CFG.exchange, gmap.materials.density[MAT_AIR])
+
+
+def wind_scale_q16(w: int, settings: WindSettings) -> int:
+    """The slowed band (design §2.1): the cadence scale (Q16, ``WIND_ONE`` =
+    no slowdown) at wind load ``w``. Exactly ``WIND_ONE`` below ``w_slow``
+    (the calm band is the dormancy guarantee, not ``w == 0``); linear in q
+    (q is proportional to the drag force) down to ``s_min_q16`` at
+    ``w_fall``; clamped there above. Pure int; ``w`` is clamped BEFORE the
+    product so the slope term stays bounded."""
+    w = int(w)
+    lo, hi, s_min = settings.w_slow, settings.w_fall, settings.s_min_q16
+    if w < lo:
+        return WIND_ONE
+    w_c = w if w < hi else hi
+    scale = WIND_ONE - ((WIND_ONE - s_min) * (w_c - lo)) // (hi - lo)
+    return scale if scale > s_min else s_min
+
+
+def wind_knocks_down(w: int, stability_q16: int,
+                     settings: WindSettings) -> bool:
+    """The topple edge, THE pinned integer form (design §2.1):
+    ``W * ONE^2 >= W_fall * stab_q16^2`` -- stability scales the knockdown
+    wind SPEED (q goes as v^2)."""
+    return (int(w) * WIND_ONE * WIND_ONE
+            >= settings.w_fall * int(stability_q16) * int(stability_q16))
+
+
+def apply_wind_knockdown(units, gmap):
+    """The ``wind | max`` row's 9c2 output (#140, design §2.3): per LIVING
+    unit, ``W = gmap.footprint_wind_load(...)`` (the max over the
+    footprint's gas tiles of ``N_raw * (v^2 >> 16)``); at or above
+    ``W_fall * stability^2`` the unit is laid KNOCKED_DOWN for
+    ``knockdown_getup_ticks``, refresh-stacked while the wind holds (P3).
+    It writes NO position -- nothing in the wind law displaces a unit; the
+    slowed band's effect is the cadence scale the movement builder reads
+    (``movement.footprint_samples``).
+
+    Runs post-physics at ``Simulation.step`` 9c2, after the heat row (a unit
+    the heat row killed this tick is a corpse). It reads the end-of-tick
+    wind, which is the field MOVE_DIR and the zombie walk sample next tick,
+    so a unit is either prone or slowed against the same field, never both.
+    A status applied here starts suppressing NEXT tick (step-2b semantics).
+
+    Determinism: every input is int (door 1) or a door-2 constant quantized
+    once per pass; the compare is the pinned integer form. No RNG.
     """
-    cfg = CFG.exchange
-    k_push = float(cfg.k_push)
-    cap = float(cfg.push_max_tile_per_tick)
-    threshold = float(cfg.knockdown_dv_threshold)
-    getup_ticks = int(cfg.knockdown_getup_ticks)
-    dt_tick = 1.0 / float(ticks_per_second)
-    # #116: the field's integer noise floor, quantized once per pass (door 2).
-    # A footprint gradient at or under it is the quiet field's few-count
-    # jitter, not a wave: it is read as 0 per axis, so a standing unit nobody
-    # pushes stays exactly on its integer (floor() stamps it where it is drawn).
-    grad_floor_q = _atm_fx.quantize_scalar(float(cfg.push_grad_floor_atm))
-
-    # EOS refactor P3 (design §6 "apply_wave_push" row): reads grad(P) — the
-    # derived pressure field (`gmap.atmosphere`, the design's P-alias) —
-    # instead of the retired `wave_p` acoustic anomaly. P now carries BOTH the
-    # acoustic transient and the bulk dome in one field (§3.1's buffet-vs-dome
-    # distinction survives as the field's own time evolution); the zero-mean
-    # fast path is unaffected: grad(P) is baseline-independent regardless of
-    # P's steady-state level (uniform P -> grad == 0, integer-exact).
-    p_field = gmap.atmosphere
-    solid = gmap.solid
-    h, w = solid.shape
-
+    settings = gmap_wind_settings(gmap)
     for u in units:
         if not u.alive:
             continue
-        tiles = u.occupied_tiles()
-        # #121: a walk-through door tile is solid to gas (it stores
-        # atmosphere 0) but legal to stand on (the wall clamp below says so);
-        # its 0 is no pressure, so the gradient reads only the gas tiles of
-        # the footprint. Without this a footprint whose edge is on a legacy
-        # MAT_DOOR is shoved back off it every tick -- no unit under MOVE_DIR
-        # could cross a door. A real pressure difference across the door
-        # (the two rooms' gas tiles) still pushes, unchanged.
-        gas_tiles = [(tx, ty) for (tx, ty) in tiles
-                     if not (0 <= ty < h and 0 <= tx < w and solid[ty, tx])]
-        gx, gy = reduce_grad(p_field, gas_tiles)
-        if -grad_floor_q <= gx <= grad_floor_q:
-            gx = 0      # #116: under the noise floor -> no push on this axis
-        if -grad_floor_q <= gy <= grad_floor_q:
-            gy = 0
-        if gx == 0 and gy == 0:
-            continue    # integer-exact no-op: quiet field or clipped footprint
-
-        mass = float(u.mass)
-        dvx = k_push * (-gx / 65536.0) / mass    # tiles/s (door 3)
-        dvy = k_push * (-gy / 65536.0) / mass
-
-        # Output 2 first in text order, but independent of the nudge: the
-        # KNOCKED_DOWN trigger on the raw physical dv (squares — no sqrt).
-        dv2 = dvx * dvx + dvy * dvy
-        thr = threshold * _stability_for(u)
-        if dv2 >= thr * thr:
+        w = gmap.footprint_wind_load(u.tile_y, u.tile_x, u.footprint)
+        if w <= 0:
+            continue
+        stab_q16 = unit_fixed.quantize_scalar(_stability_for(u))
+        if wind_knocks_down(w, stab_q16, settings):
             apply_status(u, KNOCKED_DOWN, magnitude=0,
-                         duration_ticks=getup_ticks, source_id=None)
-
-        # Output 1: the displacement nudge — capped, then wall-clamped.
-        dx = dvx * dt_tick
-        dy = dvy * dt_tick
-        if dx > cap:
-            dx = cap
-        elif dx < -cap:
-            dx = -cap
-        if dy > cap:
-            dy = cap
-        elif dy < -cap:
-            dy = -cap
-
-        cur = set(tiles)
-
-        def _free(nx: float, ny: float) -> bool:
-            ax, ay = int(nx), int(ny)
-            for (dxo, dyo) in u.offsets:
-                tx, ty = ax + dxo, ay + dyo
-                if not (0 <= tx < w and 0 <= ty < h):
-                    return False
-                if solid[ty, tx] and (tx, ty) not in cur:
-                    return False
-            return True
-
-        # x first, then y at the accepted x — fixed order, slides along walls.
-        nx = u.x + dx
-        if dx != 0.0 and _free(nx, u.y):
-            u.x = nx
-        ny = u.y + dy
-        if dy != 0.0 and _free(u.x, ny):
-            u.y = ny
+                         duration_ticks=settings.getup_ticks, source_id=None)
 
 
 # ---------------------------------------------------------------------------
@@ -658,7 +636,7 @@ def apply_teargas_blind(units, gmap):
     REFRESH-stacked: every qualifying tick re-ups the timer, so the blind
     outlasts leaving the cloud by the configured duration.
 
-    Runs post-physics at ``Simulation.step`` 9c3 (after heat + push — the
+    Runs post-physics at ``Simulation.step`` 9c3 (after heat + wind — the
     documented within-tick exchange order), per LIVING unit in stored order
     (order-free anyway: each response reads only the field + its own state).
     Pure door-1 integer reduction + compare on a door-2 threshold; no RNG.
@@ -776,7 +754,7 @@ class CouplingRow:
 
 
 #: THE COUPLING TABLE (mechanics/05 §1) — ordered; it GROWS, one row per new
-#: coupling (impulse push, water, gas, O2, fire, ... — see the chapter).
+#: coupling (wind, water, gas, O2, fire, ... — see the chapter).
 #: Table order is the chapter's row order and becomes the P0 execution order
 #: ("couplings in table order") once the named EXCHANGE-READ slot lands
 #: (P4-era); in P1 the registered rows still run at their legacy tick
@@ -804,21 +782,24 @@ COUPLING_TABLE: tuple[CouplingRow, ...] = (
             "falloff from the detonation point) instead of sampling wave_p, "
             "and runs at DETONATION SITES (grenade fuse-out in "
             "Simulation._update_projectiles; combat.process_door_explosives), "
-            "not at a fixed tick slot. The impulse-push row below is the "
-            "chapter's first true wave_p footprint read."
+            "not at a fixed tick slot."
         ),
     ),
     CouplingRow(
-        field="wave_p",
-        reduction="grad",
-        response=apply_wave_push,
+        field="wind",
+        reduction="max",
+        response=apply_wind_knockdown,
         note=(
-            "Impulse push + KNOCKED_DOWN trigger (mechanics/05 §1 / 06 §4) — "
-            "the first row born INTO the table (P4): dv = k_push*(-grad)/mass "
-            "per tick, displacement wall-clamped, knockdown on dv^2 vs "
-            "(threshold*stability)^2. Runs post-physics at Simulation.step "
-            "9c2, directly after the heat row (documented within-tick order: "
-            "heat damage, then push)."
+            "Wind on units (#140; mechanics/05 §1 / 06 §4): the dynamic "
+            "pressure q = 1/2 rho v^2 at the footprint as the int W = N_raw * "
+            "(v^2 >> 16). The max is over the DERIVED per-tile W "
+            "(GameMap.footprint_wind_load), not REDUCTIONS['max'] over a "
+            "plane. Below wind_q_slow_pa nothing; up to wind_q_fall_pa a "
+            "cadence scale (wind_scale_q16, composed in movement.default_"
+            "speed through movement.footprint_samples); at W_fall * "
+            "stability^2 KNOCKED_DOWN. Never a displacement. Replaces the "
+            "retired wave_p|grad push row. Runs post-physics at "
+            "Simulation.step 9c2, directly after the heat row."
         ),
     ),
     CouplingRow(
@@ -829,8 +810,8 @@ COUPLING_TABLE: tuple[CouplingRow, ...] = (
             "Teargas -> BLINDED (mechanics/05 §1, W3): footprint-max density "
             "vs the Q16.16 teargas_blind_density threshold -> refresh-stacked "
             "BLINDED (can_aim off -> snap-cone fire, the owed P3 consumer). "
-            "Runs post-physics at Simulation.step 9c3, after the push row "
-            "(within-tick exchange order: heat, push, teargas, poison). "
+            "Runs post-physics at Simulation.step 9c3, after the wind row "
+            "(within-tick exchange order: heat, wind, teargas, poison). "
             "Lazy: all-zero plane early-outs; no RNG."
         ),
     ),
@@ -855,6 +836,8 @@ __all__ = [
     "REDUCTIONS",
     "reduce_center", "reduce_grad", "reduce_max", "reduce_mean", "reduce_sum",
     "CouplingRow", "COUPLING_TABLE",
-    "apply_blast_damage", "apply_environmental_damage", "apply_wave_push",
+    "apply_blast_damage", "apply_environmental_damage",
+    "WindSettings", "wind_settings", "gmap_wind_settings", "wind_scale_q16",
+    "wind_knocks_down", "apply_wind_knockdown",
     "apply_teargas_blind", "apply_poison_dose",
 ]

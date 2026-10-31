@@ -99,19 +99,31 @@ _PRE_122_BOX = dict(
     unit_stream="6dab6957a82fdd55786f7ec375e39761"
                 "bdced4c61aa69a4cc6eb66a8cffb580a")
 _PRE_122_SHIP_DEMO = dict(
-    outcome="win", team=0, ticks=1528,
-    field_digest="bdc5ad3e6e6a7f797199a2783efc1327"
-                 "6f6f515df8e72ce0a50ae9e16d06a898",
+    # #140 re-pin (2026-10-31, the wind law retires the pressure-gradient
+    # push). SOLE CAUSE, verified on the same build: the #140 P1a tree
+    # (78d3d78, which still reproduces the old pin: win 0 at 1528, bdc5ad3e /
+    # 4d32170a / a5ddf313) with k_push = 0 and knockdown_dv_threshold = 1e30
+    # gives exactly the values below, and so does the P1b tree with the wind
+    # thresholds at 1e15 / 2e15 Pa -- the push WAS the whole change, the
+    # wind law never fires in this match. The match is now won by team 1 at
+    # tick 706 (no squad is shoved around a doorway any more).
+    # (was win 0 at 1528; field bdc5ad3e6e6a7f797199a2783efc13276f6f515df8e7
+    #  2ce0a50ae9e16d06a898; tick 4d32170a7a7ff465ba410f935c8912ae594999c903
+    #  169aa66582ae2e7bcb2ab8; units a5ddf313af731dd1b7e983e68ebe448dffbe59a9
+    #  fcf238eadcf262576c97f47a)
+    outcome="win", team=1, ticks=706,
+    field_digest="b38c2d29ffeb91d3ea5fb772fa24d597"
+                 "86a53bc1c90004f7321bffbf442d3ca4",
     # #123 re-pin (credited events): the last tick holds the winning bullet's
     # UnitHit + UnitKilled, whose hashed record gained `attacker_id` (2, the
     # shooter). SOLE CAUSE, verified on the same build: hashing the record
     # without that key reproduces c69925fa... exactly; outcome, ticks,
     # field_digest and the per-tick unit stream are unchanged.
     # (was c69925fa68e8ba10fbb724eaedbcb53d56058f3b4efaf91a2601d1366be0f170)
-    tick_digest="4d32170a7a7ff465ba410f935c8912ae"
-                "594999c903169aa66582ae2e7bcb2ab8",
-    unit_stream="a5ddf313af731dd1b7e983e68ebe448d"
-                "ffbe59a9fcf238eadcf262576c97f47a")
+    tick_digest="ce979185366be487732e587a851ab6e3"
+                "589d0b0ea8671ab06ef7c5f41ba25c37",
+    unit_stream="b55cc54e4e12bd7002a70cecd01d1377"
+                "03964eb73fa63c15da59f0b415cedb4e")
 
 
 def test_the_wrapped_law_plays_the_pre_122_match_on_a_small_box(tmp_path):
@@ -129,9 +141,9 @@ def test_the_wrapped_law_plays_the_pre_122_match_on_a_small_box(tmp_path):
 
 def test_the_wrapped_law_plays_the_pre_122_ship_demo_match():
     """Property: ship_demo seed 1 (bots vs bots + 4 zombies) ends exactly as
-    before #122 -- win team 0 at tick 1528 with the same tick_digest (its
-    last tick holds no bite, so the melee events do not enter it). Breaks
-    like the box test, on the real level."""
+    the conductor-driven law plays it (re-pinned at #140: win team 1 at tick
+    706) with the same tick_digest. Breaks like the box test, on the real
+    level."""
     level = level_loader.load("ship_demo", str(ROOT / "levels"))
     stream = _UnitStream()
     o = run_match(level, on_tick=stream)
