@@ -3386,6 +3386,27 @@ emit_blast_smoke = true
 explosive = "c4"      # #12 handle 3: what the charge is made of ([explosives.*])
 explosive_kg = 2.27   # four M112 blocks (5 lb), PROVISIONAL
 
+# --- Department hazards (levelgen vocabulary B.4 / B.5, #133) ---------------
+# Fired by a heat-triggered [[entity]] timed_charge (trigger = "heat"): the
+# stored hazard goes off when its own tile reaches trigger_temp. EVERY VALUE
+# BELOW IS A PLACEHOLDER FOR ERIK TO TUNE (the armory / cargo sessions).
+[payloads.magazine_cookoff]           # B.5: the magazine cooks off -- studio_large's shape (comp_b + heat), bigger
+radius = 7                            # PLACEHOLDER (studio_large 6, demolition_c4 8)
+pressure = 15.0                       # PLACEHOLDER (studio_large 10, demolition_c4 25)
+wall_damage = 400                     # PLACEHOLDER (studio_large 200, demolition_c4 800)
+unit_damage = 120                     # PLACEHOLDER (studio_large 60, demolition_c4 150)
+clear_smoke = true
+emit_blast_smoke = true
+explosive = "comp_b"  # shell fills (the M67's Composition B), PLACEHOLDER
+explosive_kg = 1.5    # PLACEHOLDER: a few crates' worth of fills
+heat_amount = 16000.0                 # PLACEHOLDER: burning propellant (studio_large 12800)
+heat_radius = 6.0                     # PLACEHOLDER
+
+[payloads.hazmat_release]             # B.4: the solvent store ruptures -- poison_cloud's shape on fuel_gas
+gas_species = "fuel_gas"              # the flammable trace row: it finds a flame later
+gas_amount = 1.5                      # PLACEHOLDER (smoke_screen's saturating core)
+gas_radius = 4                        # PLACEHOLDER
+
 # --- W6 plasma splashes ------------------------------------------------------
 # Small-radius HEAT/IGNITE + modest wall damage (the launch-note spec). The
 # bolt's DIRECT HIT carries the unit damage (ammo damage 40/70 HEAT);
