@@ -4,7 +4,7 @@
 > Claude alone; Erik on a break). The FORMAT is the lead's call; the CONTENT
 > of the first recipe (which departments a freighter carries, at what odds)
 > is game design and is written here as Erik's to veto, §6. Critique pass
-> pending. Serves #136 inside milestone 11 (#131); the RL contract part
+> pending; aligned with the layout doc rev 2 (lobby, `on` classes, sizes). Serves #136 inside milestone 11 (#131); the RL contract part
 > serves #76. Design only: no code.
 >
 > This is the last of the three data formats of family B
@@ -33,8 +33,9 @@ count range; no geometry, no physics number. A ship is a pure function of
 [archetype]
 name = "freighter"
 skeleton = "freighter"          # a skeleton the layout stage implements (v1: this one)
-sizes = ["small", "medium", "large"]   # gen_ship.SIZES presets this recipe fits (the loader checks §5)
+sizes = ["medium", "large"]     # gen_ship.SIZES presets this recipe fits (the loader checks §5); small stays plan_graph's arena (layout doc §9)
 passageway = { across = [6, 8] }       # the wing passageway's width range (the skeleton's one corridor)
+lobby = { x = [8, 10] }                # the wing lobby's x-extent (layout doc §2)
 band = { sections = [3, 5] }           # axis-band sections along y (within the preset's range)
 spawn = { exits = [1, 3], default = 2 }   # Erik's ruling: 1-3, default 2
 zombies = "axis_section"        # where the horde spawns: the axis section nearest the centre (as today)
@@ -44,6 +45,9 @@ secrets = { budget = 1 }        # mirrored pairs per ship, drawn by department w
 own = ["engineering"]           # departments that are their own pressure cell (L5); everything else rides "main"
 
 # ---- the axiom: present in every ship of this kind, before any draw ----
+# The skeleton's own rooms (slab, passageway, lobby, sections) and their edges
+# (slab-passageway, passageway-lobby, lobby-main section, lobby-engine room
+# airlock pair) are axiom nodes implied by `skeleton` (layout doc §2).
 [[axiom]]
 department = "engineering"
 placement = "axis"
@@ -56,58 +60,58 @@ placement = "wing"              # a mirror pair
 [[apply]]
 phase = 1
 department = "cargo_hold"
-count = { small = [1, 1], medium = [1, 1], large = [1, 2] }   # per wing (mirrored)
+count = { medium = [1, 1], large = [1, 2] }   # per wing (mirrored)
 
 [[apply]]
 phase = 1
 department = "medbay"
-count = { small = [0, 1], medium = [1, 1], large = [1, 1] }
+count = { medium = [1, 1], large = [1, 1] }
 
 [[apply]]
 phase = 1
 department = "armory"
-count = { small = [0, 1], medium = [0, 1], large = [1, 1] }
+count = { medium = [0, 1], large = [1, 1] }
 
 [[apply]]
 phase = 1
 department = "garden_dome"
-count = { small = [0, 0], medium = [0, 1], large = [0, 1] }
+count = { medium = [0, 1], large = [0, 1] }
 
 [[apply]]
 phase = 1
 department = "pool_hall"
-count = { small = [0, 0], medium = [0, 1], large = [0, 1] }
+count = { medium = [0, 1], large = [0, 1] }
 
 # ---- phase 2: tactical patterns (ship-level cycle types) ----
 [[apply]]
 phase = 2
 cycle = "retreat_loop"
-on = "passageway-department"    # the edge class the move rewrites (layout doc §4.1)
-count = { small = [0, 1], medium = [0, 1], large = [1, 2] }
+on = "department-entry"         # the edge class the move rewrites (layout doc §4.1); needs an attach = "end" room
+count = { medium = [0, 1], large = [1, 2] }
 
 [[apply]]
 phase = 2
 cycle = "flank_pair"
-on = "slab-band"                # the wide leg is the passageway; the narrow leg a hull strip (layout doc §4.2)
-count = { small = [0, 0], medium = [0, 1], large = [0, 1] }
+on = "slab-lobby"               # the wide leg is the passageway; the narrow leg a hull strip (layout doc §4.2)
+count = { medium = [0, 1], large = [0, 1] }
 
 [[apply]]
 phase = 2
 cycle = "airlock_bypass"
-on = "passageway-engineering"   # the cell boundary (layout doc §4.3)
-count = { small = [0, 1], medium = [0, 1], large = [0, 1] }
+on = "lobby-engineering"        # the cell boundary: the lobby's airlock wall (layout doc §4.3)
+count = { medium = [0, 1], large = [0, 1] }
 
 [[apply]]
 phase = 2
-cycle = "maintenance_ring"
+cycle = "maintenance_ring"      # large only: needs band width >= 20 (layout doc §4.4); the loader refuses it on medium
 on = "engineering.engine_room"  # the hub (layout doc §4.4)
-count = { small = [0, 0], medium = [0, 1], large = [0, 1] }
+count = { medium = [0, 1], large = [0, 1] }
 
 [[apply]]
 phase = 2
 cycle = "pocket"
 on = "any-room"
-count = { small = [0, 1], medium = [0, 2], large = [1, 3] }
+count = { medium = [0, 2], large = [1, 3] }
 
 # ---- phase 3: terminalise (fixtures resolve; the secret draw) -- no entries: the budget above drives it ----
 
@@ -116,7 +120,7 @@ count = { small = [0, 1], medium = [0, 2], large = [1, 3] }
 phase = 4
 cycle = "duct_link"
 on = "same-cell-rooms"
-count = { small = [0, 1], medium = [0, 1], large = [1, 2] }
+count = { medium = [0, 1], large = [1, 2] }
 
 # ---- difficulty profiles: shifts applied to every count range (strand c) ----
 [profiles.easy]
@@ -138,7 +142,7 @@ zombies = 1.5
 |---|---|---|
 | `archetype.skeleton` | the layout skeleton | one the layout stage implements |
 | `archetype.sizes` | presets this recipe is allowed on | each in `SIZES`; the feasibility check (§5) passes on each |
-| `archetype.passageway`, `band` | the skeleton's own ranges | within the preset's range; `passageway.across >= 13` is FORCED when `airlock_bypass` may be applied on it (layout doc §4.3) |
+| `archetype.passageway`, `lobby`, `band` | the skeleton's own ranges | within the preset's range; the engineering hub section's height >= 13 when `airlock_bypass` may be applied (layout doc §4.3); `wm >= 20` when the ring may (large only) |
 | `archetype.spawn` | exits range + default | within 1-3 |
 | `archetype.zombies` | `axis_section` (v1's only value) | known value |
 | `archetype.secrets.budget` | mirrored pairs per ship | int >= 0 |
@@ -170,9 +174,9 @@ classes a cycle type can name; the layout realises each (its §4):
 
 | `on` | Candidates | Realised as |
 |---|---|---|
-| `passageway-department` | the entry edge of a wing department | two-stub (retreat loop) |
-| `slab-band` | the wing's slab-to-band route | passageway + hull strip (flank pair) |
-| `passageway-engineering` | the passageway's end wall onto an `own`-cell section | airlock + breakable on one wall (bypass) |
+| `department-entry` | the entry edge of a wing department with an `attach = "end"` room | two-stub (retreat loop) |
+| `slab-lobby` | the wing's two hubs | passageway + hull strip (flank pair) |
+| `lobby-engineering` | the lobby's airlock wall onto the engine room | airlock + breakable on one wall (bypass) |
 | `<department>.<room>` | that room as a hub | ring |
 | `any-room` | any room with a free side | satellite (pocket) |
 | `same-cell-rooms` | two rooms of one cell, different departments | duct link |
@@ -212,8 +216,9 @@ The archetype loader, per allowed size:
    preset's smallest wing length (the layout doc §6);
 2. sums the MAXIMUM demand against the largest wing and WARNS (not refuses)
    when it exceeds it: the draw will reroll often;
-3. checks the band's width range affords a ring if `maintenance_ring` may
-   be applied, and the passageway's `across` the bypass's 13.
+3. checks the band's width range affords a ring (`wm >= 20`) if
+   `maintenance_ring` may be applied on that size, and the hub section's
+   height the bypass's 13.
 
 A recipe failing (1) or (3) on a size it lists is refused at load, by name
 and size.
@@ -224,8 +229,8 @@ Each is a statement to veto, none is settled:
 
 - Crew quarters and engineering are the AXIOM (every freighter has both);
   cargo is near-certain; medbay, armory, garden, pool are odds by size.
-- The small preset carries no flank pair, ring, garden or pool: it is the
-  arena for fast matches.
+- Recipe ships are MEDIUM (two departments per wing) and LARGE (four);
+  the small preset stays the v1 BSP arena (layout doc §9).
 - The hard profile makes the armory its own cell (an airlock fight for the
   guns).
 - Secrets: one mirrored pair per ship on every profile but easy.

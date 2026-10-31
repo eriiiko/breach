@@ -9,7 +9,12 @@
 > Design only: no code. Follows the grammar session
 > (`docs/breach_levelgen_design_v0.1.md` §9, family B) and the vocabulary doc
 > (`docs/levelgen_zone_vocabulary_2026-10-29.md`, Parts 0 and B). The file
-> keeps its name so links hold.
+> keeps its name so links hold. **Revision 2.1 (2026-10-31 night)**: dated
+> amendments from the layout-stage design (`levelgen_layout_stage_2026-10-31.md`
+> rev 2), each marked *[layout rev 2]*: the contact graph is the DECLARED edges;
+> the flank pair's hubs are the slab and the lobby; the retreat loop doubles a
+> department's entry stub; room keys `attach` and `exit`; the quarters' stub
+> `along = [14, 24]`; §5.1 is the constructive skeleton, no swap move.
 >
 > **What revision 2 changed, in one paragraph.** The no-triangle rule now
 > runs on the CONTACT graph over every edge kind, and the retreat loop and
@@ -67,9 +72,12 @@ makes, and the invariants of §1.5 run after every application.
 
 A ship has three graphs over the same rooms:
 
-- the **contact graph**: rooms that share a wall. EVERY row of `EDGE_KINDS`
-  is a contact (all are `must-share-wall`, and stage 2 refuses an edge whose
-  rooms share no wall). The rectangular-layout guarantee lives here.
+- the **contact graph**: the DECLARED edges, every one of which must be a
+  shared wall (all `EDGE_KINDS` rows are `must-share-wall`, and stage 2
+  refuses an edge whose rooms share no wall). *[layout rev 2]* It is NOT
+  every physical touch: two bunks side by side share a wall with no edge,
+  and that is fine and inevitable. The rectangular-layout guarantee lives
+  here.
 - the **walk graph**: contacts a unit can pass (door, open arch, entity
   door; a breakable wall after it is broken; an airlock pair in sequence).
 - the **air graph**: anything gas can pass: open arches always; doors,
@@ -116,8 +124,8 @@ so the grammar reads one format (§2).
 
 | Type | Move | Shape | Air | Phase | Tactic |
 |---|---|---|---|---|---|
-| **Retreat loop** | `edge_to_cycle` | A-B is REPLACED by A-C-B and A-D-B: a 4-cycle, all legs walkable, plain doors or arches, `wide` | follows the walk graph through arches only; doors are gas-tight | 2 | A hub with two ways back toward your own end (the grammar reads the department's `toward` gradient): you can always fall back without being cornered. |
-| **Flank pair** | `edge_to_cycle` | two corridors between the same hubs: one `wide`, `light = "lit"`, 1-3 rooms; one `narrow`, `light = "dim"`, exactly ONE room entered from its long sides | each leg may carry its own duct | 2 | The slow team takes the dark way round, single file. |
+| **Retreat loop** | `edge_to_cycle` on a department's ENTRY edge *[layout rev 2]* | passageway-stub is REPLACED by passageway-stub_1-END and passageway-stub_2-END (stub_2 a new twin corridor, END the department's `attach = "end"` room; a department without one cannot take the loop): a 4-cycle, all legs walkable, plain doors or arches, `wide` | follows the walk graph through arches only; doors are gas-tight | 2 | A hub with two ways back toward your own end (the grammar reads the department's `toward` gradient): you can always fall back without being cornered. |
+| **Flank pair** | `edge_to_cycle` on slab-lobby *[layout rev 2]* | two corridors between the same two hubs, the spawn slab and the wing lobby: one `wide`, `light = "lit"` (the passageway, one room); one `narrow`, `light = "dim"`, exactly ONE room (a hull strip) entered from its long side by a door down into each hub | each leg may carry its own duct | 2 | The slow team takes the dark way round, single file. |
 | **Airlock bypass** | `parallel` across a cell boundary | A and B share ONE wall carrying two openings: the airlock pair (its vestibule carved on A's side, as `_airlock` does today) and a `breakable` segment. No new room. | the breakable leg joins the two cells for gas and units once demolished; until then the boundary holds | 2 | You cannot walk around the airlock; a charge on the wall makes a second door, and the cells breathe together. |
 | **Maintenance ring** | `ring` | an even ring of 4, 6 or 8 small rooms around a hub; ring neighbours joined by doors or arches (one kind per application); the hub joined to the odd-numbered ring rooms by doors; all `wide` | the ring's own duct (supply + return per ring room) or, with arches, one compartment | 2 | Service closets around the engine room: a fire in one smokes the whole ring, and the ring is a flank around the hub. |
 | **Duct link** | `duct` | NO wall edge: the two rooms need not touch; precondition: both in one cell | one duct carrying both rooms, each with supply + return (the sealed-room rule): a shared, well-mixed plenum | 4 | A grenade in one room comes out of the grille in the other, and some of it comes back. What a poison grenade exploits. |
@@ -177,7 +185,7 @@ Evaluated after every move application; a failure names the rule.
 
 | Invariant | Graph | Source |
 |---|---|---|
-| **No 3-cycle of contacts** (any edge kinds). A wanted three-room corner is a prefab (#133). | contact | research pass B7, Q6: triangle-free planar => a rectangular layout exists |
+| **No 3-cycle of DECLARED edges** (any edge kinds). A wanted three-room corner is a prefab (#133). Sufficient, not necessary: the theorem forbids only FILLED triangles, and the layout's own primitives never make one it cannot realise (layout doc §3). | contact (declared) | research pass B7, Q6: triangle-free planar => a rectangular layout exists |
 | Every cell-boundary crossing is an airlock pair, a bulkhead or a breakable wall (L5 as amended, §4); never a door, arch or window | contact | L5 |
 | A duct never crosses a cell; a room whose every contact is gas-tight carries both a supply and a return on each of its ducts, or none | air | vocabulary §0.4-0.5 |
 | Mirror: every wing room and edge has its twin; axis rooms are self-twins | all | vocabulary §0.3 |
@@ -323,7 +331,7 @@ id = "stub"
 shape = "corridor"              # room | corridor | vestibule
 required = true
 width = "wide"
-size = { across = [6, 8], along = [20, 24] }   # corridors: (across, along); the layout stage rotates
+size = { across = [6, 8], along = [14, 24] }   # corridors: (across, along); the layout stage rotates. [layout rev 2]: 14 so the department fits a medium row
 vent = { duct = "quarters", roles = ["return"] }
 
 [[room]]
@@ -338,12 +346,14 @@ vent = { duct = "quarters", roles = ["supply"] }
 [[room]]
 id = "heads"
 required = true
+exit = true                     # [layout rev 2] may carry a spawn exit when this department is first in its row
 size = { w = [6, 6], h = [6, 8] }
 vent = { duct = "quarters", roles = ["return", "supply"] }   # a sealed box carries both
 
 [[room]]
 id = "mess"
 required = true
+attach = "end"                  # [layout rev 2] the room at the stub's far end (default attach = "side")
 size = { w = [9, 12], h = [9, 12] }
 fuel = "furniture"
 
@@ -352,6 +362,7 @@ id = "galley"                   # the kitchen
 p = 0.7                         # optional room, probability of presence
 size = { w = [6, 9], h = [6, 9] }
 fixture = "galley"              # §3.3: a stove on from tick 0 (Erik's ruling), kindling
+attach = "behind:mess"          # [layout rev 2] split off the mess's far side
 vent = { duct = "galley", roles = ["supply", "return"] }
 
 [[room]]
@@ -423,6 +434,8 @@ area failure does. Revision 1's ranges (stub `along` down to 12, count up to
 | `[[cycle]]` (optional) | `{ type, a, b }`: a cycle type applied INSIDE the department between two of its rooms, in phase 1 (critique 1, reading b) | type exists, `a`/`b` room ids exist, the type's phases include 1 |
 | `room.id`, `shape`, `required` / `count` / `p` | identity, shape hint, multiplicity | exactly one of `required`, `count`, `p` |
 | `room.width` | `wide` / `narrow`, corridors only | `narrow` only on a corridor, never with `fuel` |
+| `room.attach` *[layout rev 2]* | `side` (default: packed along the stub) / `end` (the stub's far end, at most one) / `behind:<room>` (split off that room's far side) | at most one `end`; the behind parent exists; the loader runs the layout's packing at the recipe's minima |
+| `room.exit` *[layout rev 2]* | `true` on at most one side room: it may carry a spawn exit when the department is first in its row | at most one; a side room |
 | `room.size` | rooms `{ w, h }` (x, y extents); corridors `{ across, along }` (the layout stage rotates) | each min >= 6 for a room; a corridor's `across` within its width class |
 | `room.fixture` | a fixture (§3.3) | fixture exists |
 | `room.fuel` | a fuel class (§3.4) | class exists |
@@ -527,10 +540,14 @@ BSP, then edges chosen FROM the geometry). A recipe yields the reverse: a
 topology with size ranges and contact edges. Turning that into rectangles
 where every contact is at least `DOOR_W` long is the open layout problem the
 research pass answered for ships: **a slicing subdivision on the quotient
-half (one wing + the axis band) with the recipe's size hints as weights and
-chains laid along cuts so consecutive rooms share a wall; mandatory and
-prefab rooms placed first; a bounded Merrell repair (slide a cut, swap two
-leaves, mirrored); then reroll the seed (L8), never re-enter the grammar.**
+half (one wing + the axis band) with chains laid along cuts so consecutive
+rooms share a wall; a bounded Merrell repair; then reroll the seed (L8),
+never re-enter the grammar.** *[layout rev 2]*: designed in
+`levelgen_layout_stage_2026-10-31.md` as a CONSTRUCTIVE skeleton (the
+archetype's axiom rooms fixed, departments as side streets off one
+passageway, guillotine primitives, bounded steel voids for the slack)
+rather than a weighted treemap, and with the wall-slide repair only (no
+swap move: identities carry the gradient order and the exit pin).
 This is **stage 1.5, "layout"**, between the grammar (stage 1) and `embed`
 (stage 2). It is its own design session (v0.1 §5, the embedding session)
 and its own issue; nothing in this document is buildable without it.
