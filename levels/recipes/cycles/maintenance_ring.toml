@@ -1,0 +1,26 @@
+# Cycle type (scale 2): the MAINTENANCE RING -- §1.3 (written in the §2 format).
+# Face insertion: a ring of 3-6 small rooms around a hub, each joined to the
+# hub by a door (a spoke) and to its ring neighbours by doors. The ring's own
+# duct loops every ring room, each carrying a supply AND a return (every ring
+# room is a sealed box behind doors: the sealed-room rule, vocabulary §0.4).
+# Wide here; a department naming the ring may want it narrow (a later field).
+[cycle]
+name = "maintenance_ring"
+move = "face"
+phase = [2]
+rooms_per_leg = [3, 6]          # the ring's rooms (a face has one ring leg)
+tactic = "Service closets around the engine room: a fire in one smokes the whole ring, and the ring is a flank around the hub."
+
+[[leg]]                         # the ring: each room to its two ring neighbours
+walk = true
+width = "wide"
+edges = ["door"]
+
+[[leg]]                         # the spokes: each ring room to the hub
+walk = true
+width = "wide"
+edges = ["door"]
+
+[[duct]]                        # the ring's own duct (amendment 2026-10-31: `roles` = every room of the shape carries these)
+roles = ["supply", "return"]
+filter = "derelict"

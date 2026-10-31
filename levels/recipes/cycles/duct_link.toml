@@ -1,0 +1,15 @@
+# Cycle type (scale 2): the DUCT LINK -- §1.3 / §2 (the spec's example, verbatim).
+# No walk edge; one duct whose return is in room A and supply in room B. Each
+# room is a sealed box unless an arch joins it to a compartment, so each also
+# carries the small reverse role (the pressure safety valve, §1.3 notes).
+[cycle]
+name = "duct_link"
+move = "duct"
+phase = [4]
+tactic = "A grenade in the first room comes out of the grille in the second."
+
+[[duct]]
+from_role = "return"            # the room the air is drawn from
+to_role = "supply"              # the room it lands in
+leash = 12                      # max tiles between the two rooms (L4 vent exception; the embedder must route it)
+filter = "derelict"             # a [filters.*] row by name

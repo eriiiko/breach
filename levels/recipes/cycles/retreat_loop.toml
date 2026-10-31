@@ -1,0 +1,19 @@
+# Cycle type (scale 2): the RETREAT LOOP -- docs/levelgen_cycle_types_and_recipes_2026-10-31.md §1.3.
+# Walk shape A-B and A-C-B, every leg walkable, plain doors or arches, wide.
+# Its air shape follows the walk graph (one compartment when arches).
+[cycle]
+name = "retreat_loop"
+move = "edge_to_cycle"
+phase = [2]
+rooms_per_leg = [0, 1]          # rooms ON a leg between A and B: the direct leg 0, the leg through C 1
+tactic = "A room with two doors back toward your own end: you can always fall back without being cornered."
+
+[[leg]]                         # A-B, the direct way
+walk = true
+width = "wide"
+edges = ["door", "open"]
+
+[[leg]]                         # A-C-B, the way round
+walk = true
+width = "wide"
+edges = ["door", "open"]

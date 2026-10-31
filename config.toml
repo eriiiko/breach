@@ -3428,6 +3428,30 @@ explosive_kg = 0.5    # PLACEHOLDER
 heat_amount = 8520.0                  # PLACEHOLDER: 3 * IGNITE_HEAT -> >= IGNITE_HEAT out to 2 tiles
 heat_radius = 3.0                     # PLACEHOLDER
 
+# --- Levelgen presets (#136, docs/levelgen_cycle_types_and_recipes_2026-10-31.md §3) ---
+# A recipe NEVER carries a physics number (§3): a room role or a department
+# NAMES one of these rows, and tools/levelgen_recipes.py refuses a name with
+# no row here. EVERY VALUE BELOW IS A PLACEHOLDER FOR ERIK TO TUNE.
+#
+# [heat_sources.*]: a room's always-hot thing (a heat_source entity,
+# CLAUDE.md "Heat source"), fields exactly the entity's: heat_per_s (the
+# `heat` plane's real unit per second, > 0), radius (tiles beyond its own,
+# integer >= 0), max_temp (game degrees above ambient at which it pauses its
+# deposit, 0 = no cap), death_payload (a [payloads.*] row run once when a
+# blast kills it, "" = none).
+[heat_sources.stove]                  # the galley stove (§3.3 role `galley`): ON from tick 0, Erik 2026-10-31
+heat_per_s = 2.0                      # PLACEHOLDER (tests/test_heat_source.py's engine runs 5.0)
+radius = 1                            # PLACEHOLDER: the hob and its neighbours
+max_temp = 60.0                       # PLACEHOLDER: a warm kitchen, not a furnace
+death_payload = ""                    # PLACEHOLDER: a stove that goes up is a later ruling
+
+# [temps.*]: a department's `[physics] temp` preset -- its rooms' floor AIR
+# starts `above_ambient` game degrees warm (gen_ship's `temp` room tag ->
+# temp_init.npy). Never sub-ambient (the parked cold-rooms ruling). "ambient"
+# needs no row. No shipped recipe names one yet.
+[temps.hot_engineering]               # B.2's hot engine room, for the axis-department session
+above_ambient = 40.0                  # PLACEHOLDER
+
 # --- Bulk-gas payloads (#133 E.2, levelgen vocabulary Part E) ----------------
 # `bulk_gas` = "o2" | "inert_n2" injects ONE conservative bulk gas through the
 # gas pump primitive (GameMap.inject_gas_n_vec) -- never gas_species, whose
