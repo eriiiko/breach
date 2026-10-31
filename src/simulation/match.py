@@ -239,9 +239,9 @@ def parse_match(raw: dict, spawn_rooms, where: str) -> MatchSpec:
     rooms = {r.team: r for r in spawn_rooms}
     # Lazy: the tables need CFG + the weapon table; only a match file pays.
     from simulation.loadouts import get_tables
-    from control_source import registered_controllers
+    from control_source import match_file_controllers
     tables = get_tables()
-    controllers = registered_controllers()
+    controllers = match_file_controllers()
 
     teams = []
     for i, row in enumerate(team_rows):

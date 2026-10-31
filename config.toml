@@ -3510,6 +3510,18 @@ fallback_r = 15              # ... with no living teammate within this many tile
 friendly_line_tiles = 12     # hold fire if a teammate stands on the line of fire within this many tiles
 
 # ---------------------------------------------------------------------------
+# Match recording (#126) — replay by RE-SIMULATION (src/match_replay.py): a
+# recording is the level + match spec + seed + every intent per tick, plus a
+# (field_digest, tick_digest) checkpoint every this many ticks (and at tick 0
+# and the last tick). Read by `tools/run_match.py --record`; the interval is
+# written into the recording's header, so a replay checks the recording's own
+# interval, never this one. Required (replay_settings refuses a missing or
+# mistyped key). A checkpoint costs ~5 ms on ship_demo.
+# ---------------------------------------------------------------------------
+[replay]
+checkpoint_every_ticks = 60  # 2.5 s of sim at 24 tps
+
+# ---------------------------------------------------------------------------
 # Environment profiles (#119) — suits, one row per profile, over the
 # EnvironmentProfile dataclass (src/simulation/environment.py): a row names
 # any subset of its fields and an absent field takes the dataclass default;
