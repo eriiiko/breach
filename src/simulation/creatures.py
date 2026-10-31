@@ -196,6 +196,9 @@ class SwimDef:
     steer_dead_band_deg: float = _k(ANGLE)  # no steering within this heading error
     umbrella_steer: float = _k(FRAC)        # the per-side amplitude asymmetry at full error
     umbrella_full_deg: float = _k(ANGLE)    # the heading error that steers fully
+    funnel_at_m: float = _k(NONNEG)         # the jet's funnel point, ahead of the crown centre
+    funnel_cone_deg: float = _k(ANGLE)      # the funnel's aim cone (half angle)
+    funnel_full_deg: float = _k(ANGLE)      # the heading error that aims it fully
     open_ticks: int = _derived()
     close_ticks: int = _derived()
     jet_ticks: int = _derived()
@@ -618,6 +621,8 @@ def scale_row_by_law(row: dict, arm_length_m: float) -> dict:
     r["crawl"]["grip_limit"] *= S ** 4
     r["crawl"]["steer_min_dist"] *= S
     r["swim"]["jet_dv"] *= S
+    if "funnel_at_m" in r["swim"]:
+        r["swim"]["funnel_at_m"] *= S
     if "locomotion" in r:
         r["locomotion"]["v_max"] *= S
     r["swim"]["body_area_m2"] *= S ** 2

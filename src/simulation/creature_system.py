@@ -596,6 +596,31 @@ class CreatureBody:
         for k, dv in ((AC.BS_VX, int(dvx_q24)), (AC.BS_VY, int(dvy_q24))):
             bd[k] = max(-lim, min(lim, int(bd[k]) + dv))
 
+    def add_impulse_at_q24(self, at_body_q24, j_body_q24) -> None:
+        """A velocity-unit impulse ``j_body_q24`` (Q24 m/s, the BODY frame:
+        x along the heading, y the solver's body y) applied at the body-frame
+        point ``at_body_q24`` (Q24 m from the crown centre) -- the jet's
+        FUNNEL (#106 P6g). Two state adds, the solver's own rigid-body law:
+        the crown's velocity gains J rotated into the world exactly as
+        :meth:`add_velocity_q24`'s callers rotate it (``_rot``), and its yaw
+        rate gains ``(r x J) m / I`` (J is m dv, so the angular impulse over
+        the inertia is the cross product times ``winv_i / w`` -- the
+        body_cfg row's own ``BC_WINVI_Q32`` / ``BC_W_Q32``), in the solver's
+        body-th sign (the body frame's cross product). On the axis (``r`` and
+        ``J`` parallel) the yaw add is exactly 0."""
+        bd = self.bufs.body[0, 0]
+        px, py = (int(v) for v in at_body_q24)
+        jx, jy = (int(v) for v in j_body_q24)
+        wx, wy = _rot(int(bd[AC.BS_TH]), jx, jy)
+        self.add_velocity_q24(wx, wy)
+        cross = px * jy - py * jx                            # Q48 m^2/s
+        if cross:
+            cfg = self.bufs.body_cfg[0, 0]
+            ratio = K.div_round_away(int(cfg[AC.BC_WINVI_Q32]) << 16, int(cfg[AC.BC_W_Q32]))
+            d_om = K.mul_shr_away(K.shr_round_away(cross, CF.CHAIN_SHIFT), ratio, 16)
+            lim = CF.CHAIN_INT32_MAX
+            bd[AC.BS_OM] = max(-lim, min(lim, int(bd[AC.BS_OM]) + d_om))
+
     def add_velocity_m_s(self, dvx: float, dvy: float) -> None:
         """A body impulse (the wave-push coupling row, ``exchange.py``): add
         ``(dvx, dvy)`` m/s to the crown's velocity, quantized once, saturated

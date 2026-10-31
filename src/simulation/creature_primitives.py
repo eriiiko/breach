@@ -97,6 +97,16 @@ laws, one per gait:
   TRAVEL direction; outside ``swim.steer_dead_band`` the arms on the side to
   turn toward close less than the others (``umbrella_steer_q16``), and the
   drag asymmetry yaws the body through the root attachments.
+* JET -- the FUNNEL (Huffard 2006, J Exp Biol 209:3697, Methods: the funnel
+  aimed fore / aft chooses backward jetting or forward swimming; aiming it
+  laterally to steer is attested only in secondary sources, but mechanically
+  forced -- thrust is along the funnel): every jet impulse (the escape's and
+  the carry's) is applied AT the funnel point ``swim.funnel_at_m`` ahead of
+  the crown centre, ALONG the funnel axis, aimed within ``funnel_cone``
+  toward the travel (``funnel_angle_q16``; ``CreatureBody.
+  add_impulse_at_q24``: dv = J, d_om = (r x J) m / I). The trailing,
+  bundled arms' drag is the rudder that straightens it (no added damping).
+  On the axis it is P6f's jet exactly.
 
 While the grab arm holds the prop the other arms crawl (any travel band, at
 the full crawl tempo above ``c``) and the escape becomes the CARRY JETS
@@ -255,6 +265,11 @@ class PrimDials:
         if self.umb_full <= self.swim_band:
             raise ValueError("creature_primitives: swim.umbrella_full_deg must exceed "
                              "swim.steer_dead_band_deg")
+        self.funnel_q24 = CF.chain_from_m(sw.funnel_at_m)
+        self.funnel_cone = _rad_q16(sw.funnel_cone_deg)
+        self.funnel_full = _rad_q16(sw.funnel_full_deg)
+        if self.funnel_full <= 0:
+            raise ValueError("creature_primitives: swim.funnel_full_deg must be > 0")
         self.side = [(1 if K.sin_q16(p) > 0 else -1 if K.sin_q16(p) < 0 else 0)
                      for p in self.phi]
         # the speed law (P6f): the band tops, Q16 fractions of v_max
@@ -1075,10 +1090,31 @@ def _drive_arm(body, a: int, act, rest, bend) -> None:
 # ---------------------------------------------------------------------------
 # The swim (P3): the phase clock, the root angle, the jet
 # ---------------------------------------------------------------------------
-def _heading_dv(body, dv_q24: int) -> None:
-    th16 = _th16(body)
-    body.add_velocity_q24(K.mul_shr_away(dv_q24, K.cos_q16(th16), 16),
-                          K.mul_shr_away(dv_q24, K.sin_q16(th16), 16))
+def funnel_angle_q16(body) -> int:
+    """The JET's funnel aim (P6g), Q16 rad in the body-th sense: 0 within
+    ``swim.steer_dead_band``, then ``funnel_cone x (|err| - band) /
+    funnel_full`` toward the travel error, saturating at the cone."""
+    d = body.dials
+    err = travel_error_q16(body)
+    mag = abs(err)
+    if mag <= d.swim_band:
+        return 0
+    a = min(d.funnel_cone, K.div_round_away(d.funnel_cone * (mag - d.swim_band), d.funnel_full))
+    return a if err > 0 else -a
+
+
+def _funnel_dv(body, dv_q24: int) -> None:
+    """A jet of ``dv_q24`` through the FUNNEL (P6g): the impulse along the
+    funnel axis (the heading turned by ``funnel_angle_q16``), applied at the
+    funnel point ``swim.funnel_at_m`` ahead of the crown centre
+    (``CreatureBody.add_impulse_at_q24``). The sign, derived: a thrust at a
+    point AHEAD of the centre, aimed alpha off the heading, has the torque
+    ``L |J| sin(alpha)`` -- it turns the body toward alpha, i.e. toward the
+    travel. On the axis it is P6f's jet exactly (no yaw, the same dv)."""
+    al = funnel_angle_q16(body)
+    jb = (dv_q24, 0) if al == 0 else (K.mul_shr_away(dv_q24, K.cos_q16(al), 16),
+                                      K.mul_shr_away(dv_q24, K.sin_q16(al), 16))
+    body.add_impulse_at_q24((body.dials.funnel_q24, 0), jb)
 
 
 def _drive_swim(body) -> None:
@@ -1114,8 +1150,8 @@ def _drive_swim(body) -> None:
             phi = int(body.swim_phi)
             body.swim_phi = phi + K.mul_shr_away(d.bundled_rad - phi, d.jet_relax, 16)
             if 1 <= t <= d.jet_ticks:
-                _heading_dv(body, K.div_round_away(_jet_scale(body, d.jet_dv_q24),
-                                                   d.jet_ticks))
+                _funnel_dv(body, K.div_round_away(_jet_scale(body, d.jet_dv_q24),
+                                                  d.jet_ticks))
             if t >= d.jet_ticks:
                 ph = SWIM_COAST
     body.swim_phase, body.swim_ticks = ph, t
@@ -1128,7 +1164,7 @@ def _drive_carry_jets(body) -> None:
     d = body.dials
     t = int(body.swim_ticks)
     if t == 1:
-        _heading_dv(body, _jet_scale(body, d.carry_dv_q24))
+        _funnel_dv(body, _jet_scale(body, d.carry_dv_q24))
     if t >= d.open_ticks:
         body.swim_ticks = 0
 
@@ -1272,7 +1308,7 @@ __all__ = [
     "GAIT_LIMP", "GAIT_IDLE", "GAIT_CRAWL", "GAIT_SWIM", "GAIT_NAMES",
     "GOAL_NONE", "GOAL_CRAWL", "GOAL_CRUISE", "GOAL_ESCAPE", "GOAL_NAMES",
     "speed_law", "speed_band", "facing_error_q16", "ARM_TURN", "travel_error_q16",
-    "umbrella_steer_q16", "crawl_tempo", "crawl_p_recruit", "stroke_tempo",
+    "umbrella_steer_q16", "funnel_angle_q16", "crawl_tempo", "crawl_p_recruit", "stroke_tempo",
     "SWIM_OPEN", "SWIM_CLOSE", "SWIM_JET", "SWIM_COAST",
     "PrimDials", "route_intents", "hub_step", "after_solver",
 ]
