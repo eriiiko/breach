@@ -468,3 +468,54 @@ the lead so you decide all these things." Concretely:
   stroke, one jet 7.8 ML, train 4.01 m/s = 7.3x the crawl). Cost: one
   session; the new gates add ~50 s to the suite. Pictures:
   `docs/octopus_p6f_shots_2026-10-31/`.
+- 2026-10-31 (P6g, worktree agent, Fable) -- STEERING. Erik's finding on
+  P6f ("WASD only ever moves it straight forward, I can't turn it"; the
+  crawl "kind of turns") and his ruling, mid-patch: the crawl STRAFES and he
+  likes it, "but it has to be able to both strafe and turn" -- TWO CHANNELS,
+  as on a twin-stick game: TRAVEL (MOVE_DIR + speed_q) and FACING (the AIM;
+  `AimIntent.reach`, default True, says whether the arms also reach). The
+  lead's ruling, also mid-patch, REPLACED the first design (a yaw-rate
+  actuator on BS_OM, built, measured -- a commanded 120 deg/s left ~82 deg/s
+  after the solver's damping -- and deleted unmerged): no gait writes the
+  heading or the yaw rate; every turn is a force the animal applies, one law
+  per gait, each with its citation in the primitives' docstring. FACING =
+  the aim while crawling / idle, the travel direction while swimming. (1)
+  CRAWL / IDLE: Levy 2015 SI's TURN, ARM_TURN. First built as a bend at the
+  anchor patch: the crown turned OPPOSITE to the bend by a few deg (the
+  proximal arm acts as a lever and the compliant root bends); then the bend
+  one node proximal of the anchor: the distal segment pivoted on the single
+  anchor point. What works: the lateral bend AT THE BASE (the root's aim,
+  `arm_aim`), anchor, stiffen the proximal part, open the aim back to radial:
+  the anchored line holds, so the body turns by the bend's sign, whichever
+  arm turns (derived, gated). Seated idle arms held the body completely (0
+  deg): they let go of the deck while a turn opens. Measured: idle 90 deg in
+  4.7-6.5 s (Levy: SD ~25 deg per 2.8 s -- the right scale), crawl North
+  facing East 3.5-7.4 s, facing West 7.7-9.3 s, travel stays North but
+  SLOWS (0.11-0.42 vs 0.36-0.53 m/s; the turning arm leaves the push pool);
+  anchors off: 10 vs 78 deg. (2) UMBRELLA: per-side closing amplitude
+  (Huffard 2006, Sfakiotakis 2015). Scaling the whole stroke above the
+  closed cone wobbled to no net turn; the closing excursion below the common
+  open angle, the turn-side closing LESS (the lead's sign; the opposite sign
+  turned away steadily, measured): 90 -> 59 deg in 12 s at umbrella_steer
+  0.5 (~2.6 deg/s; 1.0 gives 90 -> 41), mirrored within 0.5 deg. Slow --
+  P8's eye. (3) JET: the impulse AT the funnel point along the funnel axis
+  (`add_impulse_at_q24`: dv = J, d_om = (r x J) m / I from the body_cfg
+  row; two hub adds, no C++), cone 60 deg, full at 30 deg past the 10-deg
+  dead band: West -> East reversal at full speed, heading within 15 deg at
+  2.17 s (the brief's 2 s just missed: one jet per opening time, two jets
+  needed), velocity within 30 deg at 2.0 s, NO overshoot (the bundled arms'
+  drag is the rudder; no damping added); 90 deg in 1.17 s; on the axis the
+  records are P6f's bit for bit. The keyboard cursor (always the creature's
+  facing; RMB = reach) and gamepad right stick (facing; LT = reach) map is
+  PROVISIONAL -- Erik's sequence: "first what the octopus can do, then how
+  it maps onto controllers". Crawl `steer_window_s`: 2.0 kept (90-deg travel
+  response median 0.54 s vs 0.71 s at 0.75). The tank's octopus has its
+  prop (`[[creature]] prop = true`). Gate (d): no-ask records bit-identical
+  to P6f's (hashes captured before any change, row header and the V4 tail
+  stripped). Skipped: tick-for-tick mirroring of the crawl turn (the lottery
+  picks arms by index, not mirrored; signs are gated instead); CPU == CUDA
+  (no CUDA build here; no C++ touched). Learned: a turning force needs a
+  held point AND a stiff line to it from the body -- a compliant root
+  turns a lever into the wrong sign; measure the sign before trusting a
+  derivation. Pictures: `docs/octopus_p6g_shots_2026-10-31/` (the keyboard
+  E2E: A then D, the animal visibly reverses), `out/sim_steer.gif`.

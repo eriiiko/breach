@@ -6,8 +6,9 @@ before P7's render.
 
     <breach-py> tools/octopus_clips.py                    # all four
     <breach-py> tools/octopus_clips.py --which grab idle  # some
+    <breach-py> tools/octopus_clips.py --which steer      # P6g's steering
 
-writes ``prototypes/octopus_motion/out/sim_{crawl,swim,grab,idle}.gif``.
+writes ``prototypes/octopus_motion/out/sim_{crawl,swim,grab,idle,steer}.gif``.
 
 Pure half / thin shell (the map-editor pattern): :func:`clip_frames` turns a
 run (``tests/_creature_scenarios.Run``: per tick the chain accessor's view,
@@ -41,6 +42,7 @@ STATE_COLOURS = {
     "still": "#5a3b8a", "decide": "#7d6bb0", "explore": "#00798c", "touch": "#30a0b0",
     "relax": "#a3c4bc", "reach": "#00798c", "swim": "#2e86ab", "grab_reach": "#00798c",
     "grab_wrap": "#e36414", "grab_hold": "#6a040f", "carry": "#6a040f",
+    "turn": "#3fa34d",
 }
 
 
@@ -190,6 +192,18 @@ def make_clip(which: str, out_dir: Path = OUT) -> str:
         return write_gif(out_dir / "sim_idle.gif", frames, crown_r=crown_r, follow=4.0,
                          title="SIM idle (P6d2): no intent -- seated (purple), at most two arms\n"
                                "explore (teal), relax (pale), stick down")
+    if which == "steer":
+        # P6g: the facing turn while seated, a crawl that strafes North while
+        # turning to face East, then the jet reversing West -> East
+        sc = SC.Scenario("clip_steer", w=150, h=120, at=(100.0, 58.5), heading=0.0)
+        sc.seconds(6.0, each=lambda s: s.face(90.0))
+        sc.seconds(8.0, each=lambda s: (s.face(0.0), s.move(90.0, "crawl")))
+        sc.seconds(4.0, each=lambda s: (s.face(None), s.move(180.0, "escape")))
+        sc.seconds(4.0, each=lambda s: s.move(0.0, "escape"))
+        frames = clip_frames(sc.finish(), every=2, label="steer")
+        return write_gif(out_dir / "sim_steer.gif", frames, crown_r=crown_r, follow=5.0,
+                         title="SIM steer (P6g): seated turn to face North (green = the TURN arm),\n"
+                               "crawl North facing East, jet West, then the funnel reverses it East")
     raise ValueError(f"unknown clip {which!r}")
 
 
