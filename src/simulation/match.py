@@ -342,6 +342,43 @@ def spawn_match(sim, spec: MatchSpec) -> list:
     return spawned
 
 
+# ---------------------------------------------------------------------------
+# Reporting a finished match (one wording: the headless runner and the
+# window's match observers print these lines, #127)
+# ---------------------------------------------------------------------------
+
+def living_slots(sim, spec: MatchSpec) -> tuple:
+    """``(living, converted)``: ``living`` maps each team of ``spec`` (and
+    ``ZOMBIE_TEAM`` when it has zombies) to the roster slots still alive ON
+    that team; ``converted`` counts living zombies spawned as marines."""
+    teams = list(range(len(spec.teams)))
+    if spec.zombies:
+        teams.append(ZOMBIE_TEAM)
+    living = {t: [u.slot for u in sim.roster(t)
+                  if u.alive and u.team == t] for t in teams}
+    spawned_zombies = {id(u) for u in sim.roster(ZOMBIE_TEAM)}
+    converted = sum(1 for u in sim.units if u.alive and u.is_zombie
+                    and id(u) not in spawned_zombies)
+    return living, converted
+
+
+def outcome_lines(result, living: dict, converted: int, field_digest: str,
+                  tick_digest: str) -> list:
+    """The lines a finished match is reported with (``tools/run_match.py``'s
+    stdout): result, ticks, the living slots per team, the converted zombies
+    and the final digests."""
+    lines = [f"result: {result.outcome}"
+             + (f" team {result.team}" if result.team is not None else ""),
+             f"ticks: {result.ticks}"]
+    for team, slots in living.items():
+        label = "zombies" if team == ZOMBIE_TEAM else f"team {team}"
+        lines.append(f"living {label}: {slots}")
+    lines += [f"converted zombies alive: {converted}",
+              f"field_digest: {field_digest}",
+              f"tick_digest: {tick_digest}"]
+    return lines
+
+
 __all__ = [
     "PLACEMENT_RULES", "OBJECTIVES", "DEFAULT_TIME_LIMIT_S",
     "DEFAULT_ZOMBIE_CONTROLLER",
@@ -349,5 +386,5 @@ __all__ = [
     "SpawnRoom", "MatchTeam", "MatchSpec",
     "formation_capacity", "formation_cells", "placement_cells",
     "spawn_room_from_dict", "parse_spawn_rooms", "parse_match",
-    "unit_name", "spawn_match",
+    "unit_name", "spawn_match", "living_slots", "outcome_lines",
 ]

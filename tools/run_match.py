@@ -59,7 +59,7 @@ import match_replay  # noqa: E402
 from config import CFG  # noqa: E402
 from control_source import create_match_controllers  # noqa: E402
 from simulation import Simulation  # noqa: E402
-from simulation.factions import ZOMBIE_TEAM  # noqa: E402
+from simulation.match import living_slots, outcome_lines  # noqa: E402
 from simulation.ruleset import MatchResult, MatchRules  # noqa: E402
 
 
@@ -79,18 +79,6 @@ class MatchOutcome:
     recording: "match_replay.Recording | None" = None
     #: the checkpoints a replay verified (``replay=...``, #126), else 0.
     checkpoints_verified: int = 0
-
-
-def _living(sim, spec) -> tuple[dict, int]:
-    teams = list(range(len(spec.teams)))
-    if spec.zombies:
-        teams.append(ZOMBIE_TEAM)
-    living = {t: [u.slot for u in sim.roster(t)
-                  if u.alive and u.team == t] for t in teams}
-    spawned_zombies = {id(u) for u in sim.roster(ZOMBIE_TEAM)}
-    converted = sum(1 for u in sim.units if u.alive and u.is_zombie
-                    and id(u) not in spawned_zombies)
-    return living, converted
 
 
 def run_match(level, spec=None, *, seed: int | None = None,
@@ -146,7 +134,7 @@ def run_match(level, spec=None, *, seed: int | None = None,
         if on_tick is not None:
             on_tick(sim)
         if report_every and sim.tick % report_every == 0:
-            living, converted = _living(sim, spec)
+            living, converted = living_slots(sim, spec)
             out(f"tick {sim.tick}: living {living} converted {converted}")
     result = rules.result(sim)
     recording = recorder.finish(sim, result) if recorder is not None else None
@@ -154,7 +142,7 @@ def run_match(level, spec=None, *, seed: int | None = None,
     if replay is not None:
         controllers[0].finish(sim)
         verified = controllers[0].checkpoints_verified
-    living, converted = _living(sim, spec)
+    living, converted = living_slots(sim, spec)
     fd, td = match_replay.match_digests(sim)
     return MatchOutcome(result=result, seed=seed, living=living,
                         converted_alive=converted,
@@ -219,16 +207,9 @@ def main(argv=None) -> int:
     except match_replay.ReplayDivergence as e:
         print(f"replay: DIVERGED -- {e}")
         return 1
-    r = o.result
-    print(f"result: {r.outcome}" + (f" team {r.team}" if r.team is not None
-                                    else ""))
-    print(f"ticks: {r.ticks}")
-    for team, slots in o.living.items():
-        label = "zombies" if team == ZOMBIE_TEAM else f"team {team}"
-        print(f"living {label}: {slots}")
-    print(f"converted zombies alive: {o.converted_alive}")
-    print(f"field_digest: {o.field_digest}")
-    print(f"tick_digest: {o.tick_digest}")
+    for line in outcome_lines(o.result, o.living, o.converted_alive,
+                              o.field_digest, o.tick_digest):
+        print(line)
     if o.recording is not None:
         n = match_replay.write_recording(o.recording, args.record)
         ticks = max(1, o.recording.end_tick)
