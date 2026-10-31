@@ -39,7 +39,9 @@ vents on inner walls of their tagged rooms, one heat-triggered
 hazmat store; vocabulary E.2 row 1), one ``heat_source`` per
 ``heat_source``-tagged room (the engine, the galley stove; E.2 row 3), both
 on the one floor-site rule, the ``temp``-tagged rooms' floor air seeded hot
-in ``temp_init.npy`` (hot engineering; E.2 row 4), one static lamp per room
+in ``temp_init.npy`` (hot engineering; E.2 row 4), a ``hull_door``-tagged
+room's A6 door entity cut into its hull wall, CLOSED (the cargo hold's valve
+to space, B.4; E.2 row 5), one static lamp per room
 (render light only), the spawn rooms from the tags. It reads only the graph (and one seeded generator for the clusters).
 
 GATES (:func:`validate`), before anything is written: airtight
@@ -123,6 +125,20 @@ LAMP_INTENSITY = 1.2
 # own stamp) until a door-opening rule exists (#142). Still a compartment
 # boundary in the gates: it can close.
 ENTITY_DOOR_INITIAL = "open"
+
+# The CARGO DOOR IN THE HULL (vocabulary B.4 / E.2 row 5): a room's
+# ``hull_door`` tag is an A6 ``door`` entity cut into the room's HULL wall
+# (the wall whose far side is space), centred on its longest hull run. It is
+# emitted CLOSED by default -- the opposite of ENTITY_DOOR_INITIAL, on
+# purpose: an interior entity door is a PATH (and no bot opens doors, so it
+# must stand open to be one), while a door to space is a VALVE the level or
+# a wire opens (the hold's depressurisation valve, D7) -- closed it is a
+# wall, open it is a breach. ``state = "open"`` is REFUSED in v1: a hull door
+# standing open is a room open to space, the future breach archetype, which
+# no gate accepts yet (the airtight gate would reject every such plan).
+HULL_DOOR_W = 3                      # a 3x3 unit fits through
+HULL_DOOR_STATES = ("closed", "open")
+HULL_DOOR_DEFAULT = {"width": HULL_DOOR_W, "state": "closed"}
 
 # Airlock pairs (L5): a VESTIBULE carved out of room ``a``'s side of the
 # shared wall (the wall itself is one tile: there is nothing to carve
@@ -232,6 +248,9 @@ _DOOR_STAMP = {"open": MAT_AIR, "closed": MAT_DOOR_CLOSED}
 
 # THE table: a new way two rooms join is a new row here, never an inline
 # stamp. Same rows, same order as the vocabulary's §0.4.
+# A door to SPACE is not a row (it joins a room to the void, not two
+# rooms): it is the ``hull_door`` room tag, emitted CLOSED where an
+# entity_door is emitted open -- see HULL_DOOR_DEFAULT for why.
 EDGE_KINDS = {
     "door":        EdgeKind(MAT_DOOR, DOOR_W, True, False, True,
                             L9_MUST_SHARE_WALL),
@@ -328,9 +347,24 @@ def vent_spec(tag):
         False
 
 
+def _check_hull_door(v) -> bool:
+    """``{}`` or a subset of ``{"width": int >= 1, "state": "closed" |
+    "open"}`` (defaults :data:`HULL_DOOR_DEFAULT`). The shape only: an
+    ``"open"`` state is refused by name in :meth:`ShipGraph.check`."""
+    return (isinstance(v, dict) and set(v) <= set(HULL_DOOR_DEFAULT)
+            and (_is_int(v.get("width", 1)) and v.get("width", 1) >= 1)
+            and v.get("state", "closed") in HULL_DOOR_STATES)
+
+
+def hull_door_spec(tag) -> tuple:
+    """A ``hull_door`` tag as ``(width, state)`` with the defaults."""
+    full = {**HULL_DOOR_DEFAULT, **tag}
+    return int(full["width"]), full["state"]
+
+
 # THE per-room tag schema (all keys optional): key -> (what it is, check).
 # A department writes these; stage 2 reads ``spawn_team``, ``zombie``,
-# ``fuel``, ``vent``, ``hazard``, ``heat_source``, ``temp`` and ``light``, and carries ``dept``, ``role``,
+# ``fuel``, ``vent``, ``hazard``, ``heat_source``, ``temp``, ``hull_door`` and ``light``, and carries ``dept``, ``role``,
 # ``cell`` and ``secret`` into ``Embedding.room_tags`` for the vent builder
 # and the grammar. Generator-side data: none of them is a level field.
 ROOM_TAGS = {
@@ -363,6 +397,11 @@ ROOM_TAGS = {
     "temp":       ("float > 0: the room's floor AIR starts this many game "
                    "degrees above ambient (temp_init.npy; hot engineering)",
                    lambda v: _is_num(v) and v > 0),
+    "hull_door":  ('{"width": tiles >= 1 (default 3), "state": "closed" '
+                   '(default; "open" is refused in v1)}: an A6 door entity '
+                   "cut into the room's HULL wall, centred on its longest "
+                   "hull run -- the cargo hold's door to space, a valve the "
+                   "level or a wire opens (B.4)", _check_hull_door),
 }
 # The tags carried into Embedding.room_tags (the rest are stage 2's inputs).
 ANNOTATION_TAGS = ("dept", "role", "cell", "secret", "light")
@@ -454,6 +493,8 @@ class ShipGraph:
                                           or rm.tags.get("zombie")):
                 raise GraphSchemaError(
                     f"room {rm.id}: a secret room cannot be a spawn room")
+            if "hull_door" in rm.tags:
+                self._check_hull_door(rm)
         n = len(self.rooms)
         for e in self.edges:
             if e.kind not in EDGE_KINDS:
@@ -464,6 +505,20 @@ class ShipGraph:
                 raise GraphSchemaError(
                     f"edge {e.a}-{e.b}: not two distinct rooms of {n}")
         self._check_ducts_and_cells()
+
+    def _check_hull_door(self, rm: Room) -> None:
+        """A ``hull_door`` tag: refuse ``state = "open"`` (v1: the breach
+        archetype is not a thing the gates accept yet) and a room the door
+        cannot be cut into (:func:`hull_door_site` names why)."""
+        _n, state = hull_door_spec(rm.tags["hull_door"])
+        if state == "open":
+            raise GraphSchemaError(
+                f"room {rm.id}: hull_door state 'open' is refused in v1 -- a "
+                f"hull door standing open is a room open to space, the future "
+                f"BREACH archetype (a room whose air path to vacuum is "
+                f"designed, not a leak), which no gate accepts yet; emit it "
+                f"'closed' and open it in play (a wire, the level)")
+        hull_door_site(self, rm)
 
     def _check_ducts_and_cells(self) -> None:
         """The vocabulary's §0.5 and L5 rules on the graph:
@@ -586,6 +641,104 @@ def _opening_tiles(graph: ShipGraph, e: Edge) -> list:
     if orient == "v":
         return [(y, line) for y in range(at, at + n)]
     return [(line, x) for x in range(at, at + n)]
+
+
+def _hull_runs(graph: ShipGraph, rm: Room) -> list:
+    """The room's sides that lie against the hull ring, as ``(orient, line,
+    lo, hi, s)`` in the order top, bottom, left, right: ``orient`` the
+    wall's (and its door's) orientation, ``line`` the hull row / column,
+    ``lo..hi`` the run along it, ``s`` the step from the hull tile to the
+    space beyond (-1 / +1)."""
+    hx0, hy0, hx1, hy1 = graph.hull
+    x0, y0, x1, y1 = rm.box
+    runs = []
+    if y0 - 1 == hy0:
+        runs.append(("h", hy0, x0, x1, -1))
+    if y1 + 1 == hy1:
+        runs.append(("h", hy1, x0, x1, 1))
+    if x0 - 1 == hx0:
+        runs.append(("v", hx0, y0, y1, -1))
+    if x1 + 1 == hx1:
+        runs.append(("v", hx1, y0, y1, 1))
+    return runs
+
+
+def hull_door_site(graph: ShipGraph, rm: Room) -> tuple:
+    """Where a room's ``hull_door`` goes: ``(orient, tiles, beyond)`` --
+    the door's orientation, its span in the hull wall (row-major) and the
+    space tiles one step past it. Centred on the room's LONGEST hull run
+    (ties: top, bottom, left, right -- an order the mirror maps onto
+    itself). In a mirrored graph a wing room whose lower-id twin carries the
+    same tag takes the REFLECTION of the twin's site (the fuel clusters'
+    convention), so a pair is symmetric whatever the parity; an AXIS room
+    uses only its top / bottom hull runs (each mirrors onto itself) and must
+    centre its door exactly on the axis. Refuses, by name, a room with no
+    hull wall, a door wider than the run, and an axis door that cannot be
+    centred (GraphSchemaError: the geometry is the graph's)."""
+    n, _state = hull_door_spec(rm.tags["hull_door"])
+    W, twin = graph.width, rm.mirror
+    if (graph.mirror_x and twin is not None and twin != rm.id and twin < rm.id
+            and graph.rooms[twin].tags.get("hull_door")
+            == rm.tags["hull_door"]):
+        orient, tiles, beyond = hull_door_site(graph, graph.rooms[twin])
+
+        def refl(ts):
+            return tuple(sorted((y, W - 1 - x) for (y, x) in ts))
+        return orient, refl(tiles), refl(beyond)
+    axis = graph.mirror_x and twin == rm.id
+    runs = [r for r in _hull_runs(graph, rm) if not (axis and r[0] == "v")]
+    if not runs:
+        raise GraphSchemaError(
+            f"room {rm.id}: tag 'hull_door' but the room has no hull wall "
+            f"(no side of its box {rm.box} lies against the hull "
+            f"{graph.hull})"
+            + ("; an axis room's hull door goes in its top or bottom hull "
+               "wall, the ones that mirror onto themselves" if axis else ""))
+    orient, line, lo, hi, s = max(runs, key=lambda r: r[3] - r[2])
+    length = hi - lo + 1
+    if n > length:
+        raise GraphSchemaError(
+            f"room {rm.id}: a {n}-wide hull_door does not fit its longest "
+            f"hull run ({length} tiles)")
+    if axis and (length - n) % 2:
+        raise GraphSchemaError(
+            f"room {rm.id} (on the mirror axis): a {n}-wide hull_door cannot "
+            f"be centred on its {length}-tile hull run symmetrically -- the "
+            f"door's and the run's widths must share a parity")
+    at = lo + (length - n) // 2
+    if orient == "h":
+        tiles = tuple((line, x) for x in range(at, at + n))
+        beyond = tuple((line + s, x) for x in range(at, at + n))
+    else:
+        tiles = tuple((y, line) for y in range(at, at + n))
+        beyond = tuple((y, line + s) for y in range(at, at + n))
+    return orient, tiles, beyond
+
+
+def _hull_doors(graph: ShipGraph) -> list:
+    """``[(room, orient, tiles, beyond, state)]`` for every ``hull_door``
+    room, in room order."""
+    out = []
+    for rm in graph.rooms:
+        if "hull_door" in rm.tags:
+            orient, tiles, beyond = hull_door_site(graph, rm)
+            out.append((rm, orient, tiles, beyond,
+                        hull_door_spec(rm.tags["hull_door"])[1]))
+    return out
+
+
+def _cut_hull_door(tm, rm: Room, tiles, beyond, state: str) -> None:
+    """Stamp a hull door's span with its initial state's material, refusing
+    a span that is not hull with space beyond and the room's floor air
+    within (a vestibule carved over it, a hull that is not one tile)."""
+    for (y, x), (by, bx) in zip(tiles, beyond):
+        iy, ix = 2 * y - by, 2 * x - bx           # the tile on the room's side
+        if (int(tm[y, x]) != MAT_HULL or int(tm[by, bx]) != SPACE_CODE
+                or int(tm[iy, ix]) != MAT_AIR):
+            raise _Reject(f"room {rm.id}: hull door at ({x},{y}) is not a "
+                          f"hull tile between the room's air and space")
+    for (y, x) in tiles:
+        tm[y, x] = _DOOR_STAMP[state]
 
 
 @dataclass(frozen=True)
@@ -1250,7 +1403,9 @@ def _build_doors(graph: ShipGraph, modes: dict | None = None
                  ) -> tuple[list, list]:
     """The entity half of the edges, ``(entities, wires)``: one ``door``
     entity per ``entity_door`` edge (id ``door_e<edge index>``, initial
-    state ``ENTITY_DOOR_INITIAL``), and per ``airlock`` edge its mode's
+    state ``ENTITY_DOOR_INITIAL``), one per ``hull_door`` room (id
+    ``hull_door_r<room id>``, the tag's state, closed by default), and per
+    ``airlock`` edge its mode's
     recipe (:func:`airlock_entities`; ``modes``: edge index -> mode, from
     :func:`airlock_mode`, absent = hull) under ids
     ``airlock_e<edge index>_<part>``. Ordinals are assigned by the caller
@@ -1262,6 +1417,9 @@ def _build_doors(graph: ShipGraph, modes: dict | None = None
         orient = shared_wall(graph.rooms[e.a], graph.rooms[e.b])[0]
         ents.append(_door_entity(f"door_e{i}", _opening_tiles(graph, e),
                                  orient, ENTITY_DOOR_INITIAL))
+    for rm, orient, tiles, _beyond, state in _hull_doors(graph):
+        ents.append(_door_entity(f"hull_door_r{rm.id}", tiles, orient,
+                                 state))
     for i, al in _airlocks(graph):
         a_ents, a_wires = airlock_entities(
             f"airlock_e{i}", al, (modes or {}).get(i, "hull"))
@@ -1408,6 +1566,10 @@ def embed(graph: ShipGraph, rng) -> Embedding:
             passage[y, x] = reserved[y, x] = True
         for (my, mx), _acted in _airlock_mounts(al, modes[i]):
             reserved[my, mx] = True
+    for rm, _o, tiles, beyond, state in _hull_doors(graph):
+        _cut_hull_door(tm, rm, tiles, beyond, state)
+        for (y, x) in tiles:
+            passage[y, x] = reserved[y, x] = True
     doors, windows = by_kind.get("door", 0), by_kind.get("window", 0)
     for rm in graph.rooms:
         if rm.tags.get("fuel") and (rm.mirror is None or rm.mirror >= rm.id

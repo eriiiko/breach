@@ -150,3 +150,14 @@ engine stays small.
   golden, so nothing re-baselined), and the per-TILE pump quantum (1/3 atm at
   rate 8) is too coarse a tolerance for "equal pressure" -- test against the
   controller's band.
+- 2026-10-31 -- cargo door in the hull (#133 E.2 row 5, branch
+  `133-hull-door`, one implementation agent). Followed §5 steps 3-4; the
+  vocabulary row was the design. Chose C(i) (a `hull_door` room tag; the hull
+  airlock stays unreached: an airlock edge onto space needs a far-room-less
+  airlock, more than a tag). Learned: a door to space is a ROOM TAG, not an
+  edge kind (it joins a room to the void); `find_leaks` needed nothing --
+  `door_closed`'s derived permeability 0 makes it solid; an opened span next
+  to vacuum JOINS vacuum (`unseal_tiles`), so decompression is free and the
+  re-closed room conserves N to the LSB; mirror twins must REFLECT the lower
+  id's site (floor-centring a 3-wide door on a 10-tile run lands the twins a
+  tile apart).
