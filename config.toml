@@ -3583,6 +3583,16 @@ friendly_line_tiles = 12     # hold fire if a teammate stands on the line of fir
 # ---------------------------------------------------------------------------
 [replay]
 checkpoint_every_ticks = 60  # 2.5 s of sim at 24 tps
+# The follow camera (#128, renderer/follow_camera.py) of a watched match
+# (main.py --replay / --control match). C cycles the target: action -> each
+# living unit (team, slot) -> free -> action; any WASD/arrow pan drops to
+# free. Zoom stays the player's. All refused when missing or mistyped.
+camera = "action"            # "action" | "free": the target a window starts on
+time_constant_s = 0.6        # e-fold of the camera's approach, seconds
+dead_zone_tiles = 1.5        # the camera holds still while the target is this close
+action_memory_s = 3.0        # a fight's heat e-folds over this much sim time
+action_event_weight = 6.0    # one recent hit/kill weighs like this many units of crowd
+action_radius_tiles = 10.0   # a unit's crowd = living units within this radius
 
 # ---------------------------------------------------------------------------
 # Environment profiles (#119) — suits, one row per profile, over the

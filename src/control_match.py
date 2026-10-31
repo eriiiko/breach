@@ -52,6 +52,10 @@ class MatchObserver(ControlSource):
         self.planning_phase = 0
         self.current_mode = ORDER_MOVE_ATTACK
         self._reported = False
+        #: the sim this observer watches (set at spawn) -- the follow
+        #: camera (#128) reads its units through main.py.
+        self.sim = None
+        self.match_result = None
 
     # Sim-construction hooks.
     def initial_ruleset(self):
@@ -64,6 +68,7 @@ class MatchObserver(ControlSource):
         return int(self.spec.seed)
 
     def spawn_units(self, sim, level) -> bool:
+        self.sim = sim
         sim.spawn_match(self.spec)
         self.controllers = self._build_controllers(sim)
         print(f"  match: seed {self.initial_seed(0)}, teams "
@@ -93,12 +98,29 @@ class MatchObserver(ControlSource):
 
     def _on_end(self, sim) -> None:
         r = self.rules.result(sim)
+        self.match_result = r
         print(f"  match over: {r.outcome}"
               + (f" team {r.team}" if r.team is not None else "")
               + f" after {r.ticks} ticks")
 
     def handle_frame(self, sim, renderer) -> None:
         return None        # the human observes; nothing is polled
+
+    def hud_lines(self, sim, cam=None) -> list:
+        """The watched match's HUD (#128), ``(text, kind)`` rows as
+        :meth:`ReplayObserver.hud_lines`: the seed, the tick, the result
+        once over, and ``cam`` (the follow camera's ``cam: ...`` line)."""
+        rows = [(f"MATCH  seed {self.initial_seed(0)}", "title"),
+                (f"tick {int(sim.tick)}", "info")]
+        r = self.match_result
+        if r is not None:
+            rows.append((f"match over: {r.outcome}"
+                         + (f" team {r.team}" if r.team is not None else "")
+                         + f" after {r.ticks} ticks", "ok"))
+        if cam is not None:
+            rows.append((cam, "info"))
+            rows.append(("C cycle camera", "info"))
+        return rows
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +169,9 @@ class ReplayObserver(MatchObserver):
         self.make_sim = make_sim
         self.seek_tick = int(seek_tick)
         self.sim = None
+        #: ``on_seek_tick(sim, target)``, called after every tick a seek
+        #: steps (main.py draws its "seeking" overlay from it, #128).
+        self.on_seek_tick = None
         #: bumped on every rebuild / seek: main.py re-requests light then.
         self.generation = 0
         self._reset_state()
@@ -267,6 +292,8 @@ class ReplayObserver(MatchObserver):
             if sim.is_paused():
                 break
             sim.step()
+            if self.on_seek_tick is not None:
+                self.on_seek_tick(sim, target)
             if progress is not None and sim.tick % 240 == 0:
                 progress(f"  replay: ... tick {sim.tick}")
         if self.rules.is_terminal(sim):
@@ -293,9 +320,10 @@ class ReplayObserver(MatchObserver):
             self.restart()
             self.seek(self.seek_tick)
 
-    def hud_lines(self, sim) -> list:
+    def hud_lines(self, sim, cam=None) -> list:
         """The replay HUD as ``(text, kind)`` rows, ``kind`` one of
-        ``"title"``, ``"info"``, ``"ok"``, ``"bad"`` (main.py colours them)."""
+        ``"title"``, ``"info"``, ``"ok"``, ``"bad"`` (main.py colours them).
+        ``cam`` is the follow camera's ``cam: ...`` line (#128), if any."""
         rec = self.recording
         rows = [(f"REPLAY  {rec.level}  seed {rec.seed}", "title"),
                 (f"tick {int(sim.tick)} / {self.end_tick}"
@@ -312,9 +340,12 @@ class ReplayObserver(MatchObserver):
             rows.append((f"match over: {r.outcome}"
                          + (f" team {r.team}" if r.team is not None else "")
                          + f" after {r.ticks} ticks", "ok"))
+        if cam is not None:
+            rows.append((cam, "info"))
         rows.append(("Space pause  Backspace restart"
                      + (f" at tick {self.seek_tick}" if self.seek_tick
-                        else ""), "info"))
+                        else "")
+                     + ("  C camera" if cam is not None else ""), "info"))
         return rows
 
 

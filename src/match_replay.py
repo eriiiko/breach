@@ -113,20 +113,33 @@ class ReplayDivergence(RuntimeError):
 # ---------------------------------------------------------------------------
 # Settings
 # ---------------------------------------------------------------------------
+def replay_key(cfg, key: str, accept, wants: str):
+    """THE refusing door for one ``[replay]`` key of a loaded config
+    (``CFG``): returns its value when ``accept(value)`` holds, else raises
+    ValueError naming the key and ``wants`` (what it must be). A missing
+    section or key is refused too -- a silent default would hide a typo.
+    ``replay_settings`` and the follow camera's settings
+    (``renderer/follow_camera.py::follow_settings``, #128) both read
+    through it."""
+    section = getattr(cfg, "replay", None)
+    if section is None:
+        raise ValueError("config.toml has no [replay] section")
+    if not hasattr(section, key):
+        raise ValueError(f"[replay] is missing {key!r}")
+    v = getattr(section, key)
+    if not accept(v):
+        raise ValueError(f"[replay] {key} must be {wants}, got {v!r}")
+    return v
+
+
 def replay_settings(cfg) -> int:
     """``[replay] checkpoint_every_ticks`` of a loaded config (``CFG``): an
     int >= 1. Raises ValueError naming the key when the section or key is
     missing or mistyped -- a silent default would hide a typo."""
-    section = getattr(cfg, "replay", None)
-    if section is None:
-        raise ValueError("config.toml has no [replay] section")
-    if not hasattr(section, "checkpoint_every_ticks"):
-        raise ValueError("[replay] is missing 'checkpoint_every_ticks'")
-    v = section.checkpoint_every_ticks
-    if isinstance(v, bool) or not isinstance(v, int) or v < 1:
-        raise ValueError(f"[replay] checkpoint_every_ticks must be an int "
-                         f">= 1, got {v!r}")
-    return v
+    return replay_key(cfg, "checkpoint_every_ticks",
+                      lambda v: (not isinstance(v, bool)
+                                 and isinstance(v, int) and v >= 1),
+                      "an int >= 1")
 
 
 # ---------------------------------------------------------------------------
@@ -501,7 +514,7 @@ class ReplayControl(ControlSource):
 __all__ = [
     "FORMAT_NAME", "FORMAT_VERSION", "INTENT_KINDS", "REFUSED_KINDS",
     "RecordingRefused", "ReplayRefused", "ReplayDivergence",
-    "replay_settings", "match_digests", "level_id", "build_id",
+    "replay_key", "replay_settings", "match_digests", "level_id", "build_id",
     "Recording", "IntentLog",
     "MatchRecorder", "encode_recording", "decode_recording",
     "write_recording", "read_recording", "check_header", "ReplayControl",

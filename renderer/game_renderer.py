@@ -2094,7 +2094,9 @@ class GameRenderer:
         if wheel != 0:
             self.camera.set_zoom(self.camera.zoom_px_per_tile + wheel * zoom_step)
 
-    def update_camera(self, dt: float, pan_speed_tiles_per_s: float = 30.0) -> None:
+    def update_camera(self, dt: float, pan_speed_tiles_per_s: float = 30.0) -> bool:
+        """WASD / arrows pan (Shift x3). Returns True when the player panned
+        this frame -- the follow camera (#128) then drops to free."""
         K = rl.KeyboardKey
         dx = dy = 0.0
         if rl.is_key_down(K.KEY_A) or rl.is_key_down(K.KEY_LEFT):  dx -= 1
@@ -2102,11 +2104,12 @@ class GameRenderer:
         if rl.is_key_down(K.KEY_W) or rl.is_key_down(K.KEY_UP):    dy -= 1
         if rl.is_key_down(K.KEY_S) or rl.is_key_down(K.KEY_DOWN):  dy += 1
         if dx == 0 and dy == 0:
-            return
+            return False
         speed = pan_speed_tiles_per_s
         if rl.is_key_down(K.KEY_LEFT_SHIFT) or rl.is_key_down(K.KEY_RIGHT_SHIFT):
             speed *= 3
         self.camera.pan(dx * speed * dt, dy * speed * dt)
+        return True
 
     # ---- coordinate conversions -----------------------------------------
 
