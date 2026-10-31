@@ -301,6 +301,12 @@ def to_model(points, crown, heading: float) -> np.ndarray:
     return out
 
 
+def _mm(a, b) -> np.ndarray:
+    """Batched 3x3 products as an elementwise einsum -- never ``@``: the
+    frame path hands no contraction to BLAS (tests/test_no_blas_in_frame_path)."""
+    return np.einsum("...ij,...jk->...ik", a, b)
+
+
 def min_rotation(a, b) -> np.ndarray:
     """The minimal rotations (..., 3, 3) taking unit vectors ``a`` onto ``b``
     (Rodrigues about a x b); an antiparallel pair turns pi about an axis
@@ -318,7 +324,7 @@ def min_rotation(a, b) -> np.ndarray:
     den = 1.0 + c
     flip = den < 1e-9
     f = np.where(flip, 0.0, 1.0 / np.where(flip, 1.0, den))
-    R = np.eye(3) + K + (K @ K) * f[..., None, None]
+    R = np.eye(3) + K + _mm(K, K) * f[..., None, None]
     if flip.any():
         ax = np.cross(a[flip], [0.0, 1.0, 0.0])
         bad = np.linalg.norm(ax, axis=-1) < 1e-6
@@ -476,7 +482,7 @@ def pose_from_chain(view, rig: OctopusRig, dials: CreatureRenderSettings = NO_WI
     R = min_rotation(rig.bind_dir, tdir[:, 0])
     rots[:, J] = R
     for g in range(steps.shape[1]):
-        R = steps[:, g] @ R
+        R = _mm(steps[:, g], R)
         rots[:, J + 1 + g] = R
     rots[:, nj - 1] = rots[:, nj - 2]                                    # the tip repeats
     if dials.twist:
@@ -484,7 +490,7 @@ def pose_from_chain(view, rig: OctopusRig, dials: CreatureRenderSettings = NO_WI
         tang = np.concatenate([np.zeros((8, J, 3)), tdir, tdir[:, -1:]], axis=1)
         tang[:, :J] = rig.bind_dir[:, None]
         ang = (-rig.side[:, None]) * dials.twist * rig.twist_max * frac[None, :]
-        rots = axis_rotation(tang, ang) @ rots
+        rots = _mm(axis_rotation(tang, ang), rots)
     sc = 1.0 / np.sqrt(1.0 + st[:, None] * rig.scale_c[None, :])           # (8, nj)
 
     nb = len(rig.bone_names)
