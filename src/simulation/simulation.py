@@ -394,6 +394,15 @@ class Simulation:
         # ever driven twice, and an idle zombie controller leaves it standing.
         self._zombie_requests: set | None = None
 
+        # The intent tap (#126, replay by re-simulation): ``None`` = dormant
+        # (every path but a recorded match; each intent entry point pays one
+        # ``is None`` check). Attached by :meth:`attach_intent_log`, it is
+        # handed EVERY call of the eight intent entry points, with the tick it
+        # was issued at, BEFORE the call acts -- the one recording seam; no
+        # controller logs anything itself. Never synced, never digested;
+        # dropped by reset().
+        self._intent_log = None
+
         # Target marking (onephase_wego design §11): ``{team: {unit_id, ...}}``
         # — a TEAM fact, not a unit's, consulted by every targeting function
         # (overwatch priority, idle return-fire preference). v1 is a single
@@ -526,6 +535,17 @@ class Simulation:
         if self._zombie_requests is None:
             self._zombie_requests = set()
 
+    def attach_intent_log(self, log) -> None:
+        """Attach the intent tap's sink (#126): from now on every call of
+        ``set_move_dir`` / ``clear_move_dir`` / ``set_aim`` / ``set_trigger``
+        / ``throw_grenade_intent`` / ``use_intent`` / ``drive_zombies`` /
+        ``apply_action`` is handed to ``log.record(tick, kind, args)`` (``kind``
+        the method name, ``args`` its arguments normalised exactly as the
+        method itself normalises them) before it acts. ``None`` detaches.
+        The sink may refuse a call by raising (``match_replay`` refuses
+        ``apply_action`` orders). Changes no sim behaviour."""
+        self._intent_log = log
+
     def drive_zombies(self, unit_ids) -> None:
         """ZOMBIE intent (#122): the zombie law (``ai_zombie.
         update_zombies_tick`` — trigger, chain activation, nearest prey,
@@ -538,7 +558,10 @@ class Simulation:
             raise RuntimeError("drive_zombies: the horde is driven by the "
                                "conductor (no zombie controller attached; "
                                "see hand_zombies_to_controller)")
-        self._zombie_requests.update(int(i) for i in unit_ids)
+        ids = [int(i) for i in unit_ids]
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "drive_zombies", (ids,))
+        self._zombie_requests.update(ids)
 
     def _run_zombie_slot(self) -> None:
         """Tick slot 5: the zombie law, run ONCE per tick by its one driver —
@@ -595,6 +618,9 @@ class Simulation:
         :meth:`_compute_player_paths` recompute for the affected unit so
         the planning overlay and execution can both read the same path.
         """
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "apply_action",
+                                    (int(unit_id), order))
         u = self.get_unit(unit_id)
         if u is None or not u.alive:
             return False
@@ -875,6 +901,10 @@ class Simulation:
         """MOVE_DIR: hold a Q16.16 unit-vector move direction + speed mode for
         ``unit_id`` (§3c). Overwrites each call; :meth:`clear_move_dir` (stick
         inside the deadzone) stops the unit."""
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "set_move_dir",
+                                    (int(unit_id), int(dx_q), int(dy_q),
+                                     int(speed_mode)))
         u = self.get_unit(unit_id)
         if u is None:
             return
@@ -885,6 +915,9 @@ class Simulation:
     def clear_move_dir(self, unit_id: int) -> None:
         """Drop ``unit_id``'s live MOVE_DIR (stick centered) — it holds position
         and replays no WEGO path (direct control owns it)."""
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "clear_move_dir",
+                                    (int(unit_id),))
         u = self.get_unit(unit_id)
         if u is not None:
             u.live_move_dir = None
@@ -893,6 +926,9 @@ class Simulation:
         """AIM: hold a Q16.16 unit-vector facing for ``unit_id`` (§3c). The
         sim turns it into ``Unit.facing`` via the deterministic integer atan2
         kit at the next tick."""
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "set_aim",
+                                    (int(unit_id), int(dx_q), int(dy_q)))
         u = self.get_unit(unit_id)
         if u is None:
             return
@@ -902,6 +938,9 @@ class Simulation:
     def set_trigger(self, unit_id: int, held: bool) -> None:
         """TRIGGER: hold/release ``unit_id``'s weapon trigger (§3c). While held,
         the unit auto-fires along its facing at its weapon cadence."""
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "set_trigger",
+                                    (int(unit_id), bool(held)))
         u = self.get_unit(unit_id)
         if u is None:
             return
@@ -916,6 +955,11 @@ class Simulation:
         grenades then. ``reach_q`` (#121) is the lob distance in Q16.16
         tiles, clamped to the hand grenade's ``max_throw_range`` at
         consumption; ``None`` keeps the fixed v0.1 reach (the gamepad)."""
+        if self._intent_log is not None:
+            self._intent_log.record(
+                self.tick, "throw_grenade_intent",
+                (int(unit_id), int(dx_q), int(dy_q), float(fuse_seconds),
+                 None if reach_q is None else int(reach_q)))
         u = self.get_unit(unit_id)
         if u is None:
             return
@@ -927,6 +971,8 @@ class Simulation:
     def use_intent(self, unit_id: int) -> None:
         """USE: latch a context interaction (toggle an adjacent door's latch,
         §3c). Consumed (and cleared) at the next tick."""
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "use_intent", (int(unit_id),))
         u = self.get_unit(unit_id)
         if u is None:
             return

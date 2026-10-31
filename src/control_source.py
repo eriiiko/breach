@@ -173,22 +173,42 @@ def _zombies(team: int) -> "ControlSource":
     return ZombieControl(team)
 
 
+def _replay(team, recording=None) -> "ControlSource":
+    """The replay controller (#126, ``match_replay.ReplayControl``): feeds a
+    recorded match's intents back. Built only from a recording, by
+    ``create_match_controllers(sim, spec, recording=...)``; a match file
+    cannot name it (registered with ``nameable=False``)."""
+    if recording is None:
+        raise ValueError("controller 'replay' is built from a recording: "
+                         "create_match_controllers(sim, spec, recording=...) "
+                         "(tools/run_match.py --replay)")
+    from match_replay import ReplayControl
+    return ReplayControl(recording, team)
+
+
 _MATCH_CONTROLLERS: dict = {
     "idle": IdleControl,
     "bots": _bots,
     "zombies": _zombies,
+    "replay": _replay,
 }
+#: Registered controllers a match.toml may NOT name (they need more than a
+#: team to be built): the match door reads :func:`match_file_controllers`.
+_NOT_NAMEABLE: set = {"replay"}
 
 
-def register_controller(name: str, factory) -> None:
+def register_controller(name: str, factory, *, nameable: bool = True) -> None:
     """Register ``factory`` (``team -> ControlSource``) under ``name``;
-    refuses a name already taken (never a silent override)."""
+    refuses a name already taken (never a silent override). ``nameable=False``
+    keeps it out of match files (built by code only, like ``replay``)."""
     if not isinstance(name, str) or not name:
         raise ValueError(f"controller name must be a non-empty str "
                          f"(got {name!r})")
     if name in _MATCH_CONTROLLERS:
         raise ValueError(f"controller {name!r} is already registered")
     _MATCH_CONTROLLERS[name] = factory
+    if not nameable:
+        _NOT_NAMEABLE.add(name)
 
 
 def registered_controllers() -> tuple:
@@ -196,17 +216,23 @@ def registered_controllers() -> tuple:
     return tuple(sorted(_MATCH_CONTROLLERS))
 
 
-def create_controller(name: str, team: int) -> "ControlSource":
-    """Build the registered controller ``name`` for ``team``."""
+def match_file_controllers() -> tuple:
+    """The registered controllers a match.toml may name, sorted."""
+    return tuple(sorted(set(_MATCH_CONTROLLERS) - _NOT_NAMEABLE))
+
+
+def create_controller(name: str, team: int, **options) -> "ControlSource":
+    """Build the registered controller ``name`` for ``team``; ``options``
+    go to its factory (only ``replay`` takes one, ``recording``)."""
     try:
         factory = _MATCH_CONTROLLERS[name]
     except KeyError:
         raise ValueError(f"controller {name!r} is not registered (known: "
                          f"{list(registered_controllers())})") from None
-    return factory(team)
+    return factory(team, **options)
 
 
-def create_match_controllers(sim, spec) -> list:
+def create_match_controllers(sim, spec, *, recording=None) -> list:
     """THE one way a match's controllers are built (#122): one per
     ``[[team]]`` row (team i -> its ``controller``), then the horde's
     (``spec.zombie_controller`` for ``ZOMBIE_TEAM``) -- after handing the
@@ -214,9 +240,17 @@ def create_match_controllers(sim, spec) -> list:
     longer drives the zombies itself: every unit of a match has exactly one
     driver, and it is a ControlSource. Call once per match, after
     ``sim.spawn_match``; then ``handle_frame(sim, None)`` on each, every
-    tick, before ``sim.step()``."""
+    tick, before ``sim.step()``.
+
+    ``recording`` (#126, a ``match_replay.Recording``): replay it instead --
+    the horde is handed over the same way, and ONE ``replay`` controller
+    re-issues every recorded intent of every team and the horde, in the
+    order they were issued."""
     from simulation.factions import ZOMBIE_TEAM
     from simulation.match import DEFAULT_ZOMBIE_CONTROLLER
+    if recording is not None:
+        sim.hand_zombies_to_controller()
+        return [create_controller("replay", None, recording=recording)]
     controllers = [create_controller(row.controller, team)
                    for team, row in enumerate(spec.teams)]
     sim.hand_zombies_to_controller()
@@ -275,5 +309,5 @@ def create_control_source(name: str, debug: bool = False,
 __all__ = [
     "ControlSource", "create_control_source", "quantize_stick_direction",
     "IdleControl", "register_controller", "registered_controllers",
-    "create_controller", "create_match_controllers",
+    "create_controller", "create_match_controllers", "match_file_controllers",
 ]
