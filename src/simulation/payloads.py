@@ -28,6 +28,7 @@ loses its smoke.
 Then the NEW W3 effects:
 
     gas emission     when gas_species is nonempty   (:func:`emit_gas`)
+    bulk gas         when bulk_gas is nonempty      (:func:`inject_bulk_gas`, #133)
     ignition ring    when ignite_radius > 0         (:func:`ignite_ring`)
 
 Determinism (engine/14): the executor DRAWS NO RANDOMNESS. The explosion
@@ -207,6 +208,73 @@ def deposit_heat(gmap, queue, fy, fx, heat_amount, heat_radius,
     ))
 
 
+# The bulk-gas effect's books channels (#133 E.2): ordinary named seam
+# channels in GameMap.gas_energy_books (counted by gas_energy_seam_net -- the
+# "seams" group of the closure identity, never a fifth group), named apart
+# from the vent sweep's pump_inject_vec / pump_rail so a books reader can tell
+# a payload's gas from a duct's.
+BULK_GAS_BOOKS = "payload_bulk_gas"
+BULK_GAS_RAIL_BOOKS = "payload_bulk_gas_rail"
+
+
+def bulk_gas_tiles(gmap, fy, fx, radius):
+    """The tiles a bulk-gas deposit lands on: the FieldEdit DISC membership
+    (``field_edit._iter_region``, strict ``dist < radius``, row-major -- the
+    same disc ``emit_gas`` walks), minus every tile the vent sweep's runtime
+    aperture guard refuses (solid / thermal_solid / vacuum / ambient ring /
+    flooded: ``vent_system._aperture_blocked``, the one rule for where the
+    gas pump primitives may deposit)."""
+    from simulation.vent_system import _aperture_blocked
+    return [(r, c) for r, c, _w in _iter_region(
+                Region.DISC, (fy, fx, float(radius)), Falloff.FLAT,
+                gmap.material.shape)
+            if not _aperture_blocked(gmap, r, c)]
+
+
+def inject_bulk_gas(gmap, fy, fx, payload):
+    """Inject the payload's BULK gas -- pure O2 or pure inert N2 -- around
+    (fy, fx), NOW (#133 E.2, levelgen vocabulary Part E; the medbay O2 store,
+    the halon dump).
+
+    Per open tile of the ``bulk_radius`` disc (:func:`bulk_gas_tiles`), FLAT:
+    one call of THE gas pump primitive :meth:`GameMap.inject_gas_n_vec` with a
+    vector that is zero except the named bulk slice (``bulk_amount_q`` bulk
+    counts), deposited at ``bulk_temp_q`` (relative Q16, 0 = ambient) and
+    railed to ``[T_MIN, T_MAX_PHYS]`` -- the SAME rails the vent sweep passes
+    (``vent_system._t_rails_q``, one source). The primitive credits the
+    cell's ``gas_energy`` with ``ΔN·(t_dep + T_AMB)`` through the gas energy
+    seam and books it in :data:`BULK_GAS_BOOKS` (a rail clamp in
+    :data:`BULK_GAS_RAIL_BOOKS`), so the across-tick closure identity sees it
+    as one more seam. No FieldEdit (the ``gas`` policy refuses a conservative
+    slice), no direct ``gas[...]`` or ``temperature[...]`` write.
+
+    Like ``apply_explosion``'s structural wall damage this write is IMMEDIATE
+    rather than queued -- the pump primitives are immediate by contract (the
+    vent / pump sweeps call them in slot 9e); the deposit carries its own
+    rails because nothing after slot 9e re-rails it this tick (the vent
+    sweep's own reasoning). Returns the number of tiles that received gas.
+    No RNG.
+    """
+    from simulation.gases import N_GASES
+    from simulation.vent_system import _t_rails_q
+    g = int(gmap.gases.name_to_id[payload.bulk_gas])
+    if not bool(gmap.gases.conservative[g]):        # belt-and-suspenders:
+        raise ValueError(                          # the door refuses this
+            f"inject_bulk_gas: {payload.bulk_gas!r} is not a bulk gas")
+    add_vec = [0] * N_GASES
+    add_vec[g] = int(payload.bulk_amount_q)
+    if add_vec[g] <= 0:
+        return 0
+    t_min_q, t_max_phys_q = _t_rails_q()
+    tiles = bulk_gas_tiles(gmap, fy, fx, payload.bulk_radius)
+    for r, c in tiles:
+        gmap.inject_gas_n_vec(r, c, add_vec, int(payload.bulk_temp_q),
+                              t_min_q, t_max_phys_q,
+                              channel=BULK_GAS_BOOKS,
+                              rail_channel=BULK_GAS_RAIL_BOOKS)
+    return len(tiles)
+
+
 def blast_smoke_peak(gmap, fy, fx, radius, soot_g, noise=None):
     """The peak density of the blast-smoke disc that deposits ``soot_g`` grams
     of soot (#12 handle 3, 2026-10-04): the disc keeps its shape -- LINEAR
@@ -260,6 +328,9 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
     3. ``add_explosion_smoke`` — when ``emit_blast_smoke`` (the noisy cloud;
        its per-tile noise is drawn at the queue flush, not here).
     4. ``emit_gas``            — when ``gas_species`` is nonempty (W3).
+    4b. ``inject_bulk_gas``    — when ``bulk_gas`` is nonempty (#133 E.2:
+        pure O2 / inert N2 through the gas pump primitive, IMMEDIATE, booked
+        through the gas energy seam in ``payload_bulk_gas``).
     5. ``ignite_ring``         — when ``ignite_radius > 0`` (W3).
     5b. ``deposit_heat``       — when ``heat_amount > 0`` (W6, the plasma
         splash: a one-shot DISC heat deposit; converts to temperature the
@@ -297,6 +368,8 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
     if payload.gas_species:
         emit_gas(gmap, queue, fy, fx, payload.gas_species,
                  payload.gas_amount, payload.gas_radius, owner_id=owner_id)
+    if getattr(payload, "bulk_gas", ""):
+        inject_bulk_gas(gmap, fy, fx, payload)
     if payload.ignite_radius > 0:
         ignite_ring(gmap, queue, fy, fx, payload.ignite_radius,
                     payload.ignite_intensity, owner_id=owner_id)
@@ -309,4 +382,5 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
 
 
 __all__ = ["execute_payload", "emit_gas", "ignite_ring", "deposit_heat",
-           "blast_smoke_peak"]
+           "inject_bulk_gas", "bulk_gas_tiles", "blast_smoke_peak",
+           "BULK_GAS_BOOKS", "BULK_GAS_RAIL_BOOKS"]

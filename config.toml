@@ -3407,6 +3407,26 @@ gas_species = "fuel_gas"              # the flammable trace row: it finds a flam
 gas_amount = 1.5                      # PLACEHOLDER (smoke_screen's saturating core)
 gas_radius = 4                        # PLACEHOLDER
 
+# --- Bulk-gas payloads (#133 E.2, levelgen vocabulary Part E) ----------------
+# `bulk_gas` = "o2" | "inert_n2" injects ONE conservative bulk gas through the
+# gas pump primitive (GameMap.inject_gas_n_vec) -- never gas_species, whose
+# FieldEdit path refuses a bulk slice. `bulk_amount` is bulk N PER TILE in the
+# pump's real unit: 1.0 = one tile's whole bulk N at 1 atm ambient (ambient
+# air is 0.21 O2 + 0.79 N2 of it, independent of the tile's size), quantized
+# once at the door; FLAT over every open tile of the `bulk_radius` disc
+# (walls, thermal solids, vacuum, the ambient ring and flooded tiles skipped,
+# the vent sweep's own guard). `bulk_temp` = game degrees above ambient
+# (default 0: born at ambient). Energy books: `payload_bulk_gas`.
+[payloads.o2_store_rupture]           # B.3: the medbay O2 store ruptures -- pure O2, a fire next door roars
+bulk_gas = "o2"
+bulk_amount = 0.21                    # PLACEHOLDER: one ambient tile's O2 again -> DOUBLES the O2 on every disc tile (X 0.21 -> 0.42/1.21 = 0.35, o2f ~2.6 of its 5.0 cap) and adds 0.21 atm
+bulk_radius = 3.0                     # PLACEHOLDER (tiles)
+
+[payloads.halon_dump]                 # A.6: the server farm's suppression dumps inert gas -- the fire dies, and so does whoever is inside
+bulk_gas = "inert_n2"
+bulk_amount = 1.5                     # PLACEHOLDER. The O2 law ([physics.fire]): o2f = clamp((X - o2_frac_ext)/(o2_frac_amb - o2_frac_ext), 0, cap), X the O2 mole fraction, o2_frac_ext = 0.13 (the logistic death wall sits at X ~ 0.131). Adding a of N2 to an ambient tile gives X = 0.21/(1 + a): 0.13 needs a > 0.615. 1.5 gives X = 0.084 on the disc (o2f = 0), and after the room mixes X = 0.21*A/(A + 1.5*D) for a room of A open tiles and a disc of D -- below 0.13 while A < 2.44*D, i.e. ~110 open tiles for this radius-4 disc (D = 45, strict dist < 4). The pressure gate (p_ext_atm / p_full_atm) is no help: the dump RAISES pressure (to ~2.5 atm on the disc).
+bulk_radius = 4.0                     # PLACEHOLDER (tiles)
+
 # --- W6 plasma splashes ------------------------------------------------------
 # Small-radius HEAT/IGNITE + modest wall damage (the launch-note spec). The
 # bolt's DIRECT HIT carries the unit damage (ammo damage 40/70 HEAT);

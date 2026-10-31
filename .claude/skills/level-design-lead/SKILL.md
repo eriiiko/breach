@@ -58,14 +58,17 @@ engine stays small.
 | 2026-10-31 | **Family A is milestone 12** ("LLM-authored grammar rules (family A)"): a general rewriting engine bolted onto the family-B grammar as an EXPERIMENT once that grammar plays. Erik: "the one thing that harnesses the power of LLMs in a special way"; not started, he does not want to widen current work. |
 | 2026-10-31 | **Caverns are archetype three** (#145, parked, milestone 11): after the ship, before station fragments; chain layout + a CA realizer inside regions, same engine, different axiom / move subset / profile. Erik: "must not be forgotten." |
 | 2026-10-31 | **Airlock behaviour**: an interior airlock pair (two pressurised cells) only sequences its doors and equalises the vestibule to the side being opened; only a HULL airlock (one side is space) evacuates. The generator picks the mode at generation time (on #133). |
+| 2026-10-31 | **Part F rulings** (Erik, the vocabulary chat, morning): the word is `department` (`zone` stays the painted entity); departments as mirror pairs + axis departments, engineering the first axis department; secrets have their OWN budget (one mirrored pair per ship), separate from #135's; the garden dome gets LAMPS ("it's in space, no sun guaranteed"), a corridor-side window wall, not hull glass; cold rooms WAIT for a physics session; dust LATER; new slot-9e tick logic ACCEPTED for the heat trigger and the heat-source entity. |
+| 2026-10-31 | **Stage-2 extensions landed** (#133 P1 `a0367ce`, P2 `9e5e69f`; E.2 heat trigger `e0d3832`, bulk-gas payload this merge): `EDGE_KINDS`, `ROOM_TAGS`, compartments from the graph, secret reachability, multi-duct vents, `vent_only` secrets (gated headless), entity doors (emitted OPEN: no bot opens doors, #142), airlock pairs (the demo recipe whole -- the interior-airlock ruling above is a FOLLOW-UP patch: today every generated airlock evacuates), `trigger = "heat"` charges, `hazard` room tag, bulk-gas payloads. Debts in the CLAUDE.md Level generators row. |
 | 2026-10-31 | **Floor height** is level-format work, not v1 (#144): `GameMap.floor_height` and tilt already exist and the water solver reads them; no writer sets them. Not touched until Erik pulls it forward. |
 
 ## 4. Deliberately open (the session list)
 
 - The first cycle types to name and their tactical meaning (next session item).
-- The vocabulary doc's Part F agenda, unanswered: the word (`department` vs
-  `zone`), mirror policy confirmation, sub-ambient temperature (physics
-  session), the secrets budget, the dome, dust, the high-O2 demo.
+- From the vocabulary doc's Part F, still open: sub-ambient temperature (a
+  physics session: cold storage, the morgue), dust as a gas row (Erik: later,
+  after the first departments play), the high-O2 demo (now runnable:
+  `[payloads.o2_store_rupture]` on a heat-triggered charge).
 - The recipe file format (toml under `levels/recipes/` or beside the
   departments) and the LevelSpec the RL track reads (digest strand c, Q10).
 - Station fragments (archetype four): the other embedding family, no hull.
