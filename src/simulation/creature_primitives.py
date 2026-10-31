@@ -242,6 +242,10 @@ class PrimDials:
         self.turn_band = _rad_q16(c.turn_dead_band_deg)
         self.turn_bend = _rad_q16(c.turn_bend_deg)
         self.turn_bend_ticks, self.turn_open_ticks = int(c.turn_bend_ticks), int(c.turn_open_ticks)
+        self.turn_full = _rad_q16(c.turn_full_deg)
+        if self.turn_full <= 0:
+            raise ValueError("creature_primitives: crawl.turn_full_deg must be > 0")
+        self.turn_refractory = int(c.turn_refractory_ticks)
         self.turn_act = _q16(c.turn_activation)
         self.p_turn = _q16(c.p_turn)
         # swim (P3)
@@ -777,7 +781,7 @@ def _turn_decide(body) -> None:
     all without an asked facing (a no-ask run's records are P6f's)."""
     d = body.dials
     err = facing_error_q16(body)
-    if abs(err) <= d.turn_band:
+    if abs(err) <= d.turn_band or body.turn_rest > 0:
         return
     st = body.arm_state
     if (st == ARM_TURN).any() or not _chance(body, d.p_turn):
@@ -788,8 +792,29 @@ def _turn_decide(body) -> None:
         return
     a = cands[_below(body, len(cands))]
     _release(body, a)
-    body.turn_q16 = d.turn_bend if err > 0 else -d.turn_bend
+    # the bend SCALED by the error (the body turns by ~the bend: a full bend
+    # for a small error overshoots and the other side turns back)
+    bend = min(d.turn_bend, K.div_round_away(d.turn_bend * abs(err), d.turn_full))
+    body.turn_q16 = bend if err > 0 else -bend
     _set_state(body, a, ARM_TURN, d.turn_bend_ticks + d.turn_open_ticks)
+
+
+def _turn_done(body, a: int) -> None:
+    """The turning arm ends its TURN (the bend opened, nothing to grip, a
+    lost grip, or the STOP condition): its root back to radial, the arm
+    into the gait, and the REFRACTORY starts (``turn_rest``, a hashed
+    countdown: no turn is recruited until it is spent)."""
+    body.arm_aim[a] = 0
+    body.turn_rest = body.dials.turn_refractory
+    _settle(body, a, body.gait)
+
+
+def _turn_reached(body) -> bool:
+    """The TURN's STOP condition (P6g fix): the facing error has crossed
+    zero (its sign is no longer the turn's) or is within half the dead
+    band -- the turning arm lets go at once, whatever its phase."""
+    err = facing_error_q16(body)
+    return (err > 0) != (int(body.turn_q16) > 0) or abs(err) < (body.dials.turn_band >> 1)
 
 
 def _idle_decide(body) -> None:
@@ -1033,22 +1058,25 @@ def _drive_arm(body, a: int, act, rest, bend) -> None:
         # turns by +b in the body-th sense, WHICHEVER arm turns (no arm
         # geometry in the sign). The rotation comes only from the anchor's
         # reaction through the root attachment (gate g: anchors off, no turn).
+        # The STOP (P6g fix): the moment the facing error crosses zero or
+        # is within half the dead band, the arm lets go (_turn_reached).
         kb, tb = d.turn_kb, d.turn_bend_ticks
+        if _turn_reached(body):
+            _turn_done(body, a)
+            return
         act[a, :kb] = d.turn_act
         if t <= tb:
             body.arm_aim[a] = _lerp(0, int(body.turn_q16), t, tb)
             if t == tb:
                 nodes = _on_deck(body, a)
                 if not nodes:
-                    body.arm_aim[a] = 0
-                    _settle(body, a, body.gait)     # nothing to push on
+                    _turn_done(body, a)             # nothing to push on
                     return
                 _anchor(body, a, nodes)
         else:
             body.arm_aim[a] = _lerp(int(body.turn_q16), 0, t - tb, d.turn_open_ticks)
             if t >= L or not body.bufs.anchored[0, a].any():
-                body.arm_aim[a] = 0
-                _settle(body, a, body.gait)
+                _turn_done(body, a)
     elif s == ARM_SWIM:
         act[a, :] = d.swim_act
     elif s == ARM_GRAB_REACH:
@@ -1248,6 +1276,8 @@ def hub_step(body) -> None:
         if body.gait in (GAIT_CRAWL, GAIT_IDLE):
             _turn_decide(body)              # the facing (P6g)
     body.arm_ticks += 1
+    if body.turn_rest > 0:
+        body.turn_rest -= 1                 # the TURN's refractory (P6g fix)
     act = np.zeros((d.A, d.n - 2), np.int32)
     rest = np.full((d.A, d.n - 1), ONE, np.int32)
     bend = np.zeros((d.A, d.n - 2, 2), np.int32)

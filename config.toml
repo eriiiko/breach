@@ -3664,6 +3664,8 @@ steer_min_dist = 0.21          # scaled L^1, m
 # attachment. Levy's scale: body rotation SD ~25 deg per 2.8 s.
 turn_dead_band_deg = 20.0      # choice (P6g): no turn is recruited while the facing error is within this
 turn_bend_deg = 90.0           # choice (P6g): the lateral bend at the base (the root swung sideways) formed before the anchor; its opening is the turn (measured: 60 deg turned a 90-deg error in 7.7-9.3 s idle, 90 deg in 4.8-5.0 s)
+turn_full_deg = 45.0           # choice (P6g fix, 2026-10-31): the bend is SCALED by the error -- turn_bend x |error| / turn_full_deg, at most turn_bend (a turn of 90 deg whatever the error overshot an aligned facing)
+turn_refractory_s = 1.0        # choice (P6g fix): after a turn ends, no turn is recruited for this long
 turn_bend_s = 0.3              # choice (P6g): the bend forms, unanchored
 turn_open_s = 1.0              # choice (P6g; Levy's ~1 s active phase): the anchored bend opens to straight
 turn_activation = 0.6          # choice (P6g): the turning arm's proximal stiffness (root to the anchor patch, held straight)

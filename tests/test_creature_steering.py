@@ -54,7 +54,7 @@ TPS = SC.TPS
 
 #: P6f's records (captured at 9c34824 before P6g changed anything), hashed
 #: without the row header's version + row hash (bytes 8:48) and without the
-#: V4 facing + turn fields (the 12 bytes before the terminator).
+#: V4 facing + turn fields (the 16 bytes before the terminator).
 P6F_HASHES = {
     "idle": "42b31746d03b716dcbc072144ac50e9db8e79c9cf5a25ec41e3c230d978b0b5b",
     "crawl": "a6f062336fe8b3eb4b2058079a118f561d01cef9c2d567d9cba207bdc928dc7a",
@@ -65,8 +65,8 @@ P6F_HASHES = {
 def _p6f_hash(raw) -> str:
     m = hashlib.sha256()
     for r in raw:
-        assert r[-13:-1] == b"\0" * 12        # no facing asked, no turn
-        m.update(r[:8] + r[48:-13] + r[-1:])
+        assert r[-17:-1] == b"\0" * 16        # no facing asked, no turn
+        m.update(r[:8] + r[48:-17] + r[-1:])
     return m.hexdigest()
 
 
@@ -203,17 +203,18 @@ def _facing_run(heading, face, move=None, secs=10.0, seed=1, anchors=True):
 
 def test_an_idle_octopus_turns_to_face_the_aim_both_ways():
     """Seated, facing East, asked to face North (and, mirrored, South): the
-    heading comes within 15 deg of the asked facing in under 8 s on two
+    heading comes within 15 deg of the asked facing in under 12.5 s on two
     seeds, each turn the right way from its first second on. Breaks if the
     TURN's sign is wrong (it would turn away), if seated arms hold the body
     against it, or if a turn stops rotating the body. (P6g measured 4.8-6.5
-    s for 90 deg -- Levy's scale is ~25 deg per 2.8 s.)"""
+    s for 90 deg with a full bend every turn; the fix round's scaled bend,
+    stop and refractory: 6.8-11.9 s -- Levy's scale is ~25 deg per 2.8 s.)"""
     times = []
     for face, sign in ((90.0, 1.0), (-90.0, -1.0)):
         for seed in (1, 7):
-            r, t = _facing_run(0.0, face, secs=8.0, seed=seed)
+            r, t = _facing_run(0.0, face, secs=12.5, seed=seed)
             times.append(t)
-            assert t is not None and t < 8.0, (face, seed, t)
+            assert t is not None and t < 12.5, (face, seed, t)
             assert sign * np.degrees(r.TH[int(2.0 * TPS)]) > 0.0      # turned toward it
     print("P6g idle 90-deg turn times (s):", times)
 
@@ -243,8 +244,9 @@ def test_a_crawl_turns_while_it_strafes():
 
 def test_the_turn_rotates_the_body_only_through_its_anchors():
     """Gate (g): the same idle facing ask with every anchor disabled (the
-    sucker grip never takes) turns the body by under a quarter of what the
-    anchored animal turns in 6 s. Breaks if a turn rotates the body by
+    sucker grip never takes) turns the body by under 30 % of what the
+    anchored animal turns in 6 s (a third: the swing's reaction alone turns
+    the body a little -- measured 9 vs 37 deg after the fix round). Breaks if a turn rotates the body by
     anything but the anchor's reaction through the root (a yaw written by
     a gait, a torque from nowhere)."""
     r1, _ = _facing_run(0.0, 90.0, secs=6.0, seed=7)
@@ -252,7 +254,7 @@ def test_the_turn_rotates_the_body_only_through_its_anchors():
     with_anchors = abs(_angd(r1.TH[-1] - r1.TH[0]))
     without = abs(_angd(r0.TH[-1] - r0.TH[0]))
     print(f"P6g turn: {with_anchors:.1f} deg anchored, {without:.1f} deg without anchors")
-    assert with_anchors > 20.0 and without < 0.25 * with_anchors
+    assert with_anchors > 20.0 and without < 0.3 * with_anchors
 
 
 def test_no_gait_writes_the_yaw():
@@ -401,3 +403,50 @@ def test_the_point_impulse_is_the_rigid_body_law():
     assert abs(got - want) < 1e-4 * max(1.0, abs(want)) and got > 0
     dv = bd[[AC.BS_VX, AC.BS_VY]].astype(np.int64) - v0
     assert abs(np.hypot(*dv) / CF.CHAIN_ONE - np.hypot(0.5, 0.5)) < 1e-5
+
+
+# ---------------------------------------------------------------------------
+# P6g fix round (Erik played it: "I can't seem to crawl forward anymore")
+# ---------------------------------------------------------------------------
+def test_the_turn_is_scaled_stops_and_rests():
+    """Fix 1: the TURN's bend is SCALED by the facing error (turn_bend x
+    |err| / turn_full, at most turn_bend: a small error gets a small bend);
+    the turning arm lets go the moment the error crosses zero or is within
+    half the dead band (``_turn_reached``); and after a turn the refractory
+    countdown ``turn_rest`` blocks the next recruit. Breaks if a turn of
+    full size answers a small error (the overshoot that made an ALIGNED
+    facing recruit turn after turn), if a turn runs past its target, or if
+    the refractory is lost."""
+    sc = SC.Scenario("tstop", size=60, seed=7)
+    b = sc.body
+    d = b.dials
+    for deg, want in ((25.0, None), (45.0, d.turn_bend), (120.0, d.turn_bend)):
+        r = np.radians(deg)
+        b.face_q16 = (int(round(np.cos(r) * ONE)), -int(round(np.sin(r) * ONE)))
+        err = P.facing_error_q16(b)
+        bend = min(d.turn_bend, (d.turn_bend * abs(err) + d.turn_full // 2) // d.turn_full)
+        if want is not None:
+            assert bend == want
+        else:
+            assert 0 < bend < d.turn_bend // 2 + d.turn_bend // 8
+    # the stop: a turn whose sign the error no longer has, or a tiny error
+    b.face_q16 = (ONE, 0)                      # facing the heading: err ~ 0
+    b.turn_q16 = d.turn_bend
+    assert P._turn_reached(b)
+    r = np.radians(40.0)
+    b.face_q16 = (int(round(np.cos(r) * ONE)), -int(round(np.sin(r) * ONE)))
+    b.turn_q16 = -d.turn_bend if P.facing_error_q16(b) > 0 else d.turn_bend
+    assert P._turn_reached(b)                  # the error's sign is not the turn's
+    b.turn_q16 = -b.turn_q16
+    assert not P._turn_reached(b)
+    # the refractory: a turn that ends rests turn_refractory ticks
+    sc2 = SC.Scenario("trest", size=60, seed=7)
+    rests, turning = [], []
+    for _ in range(6 * TPS):
+        sc2.step(1, lambda s: s.face(90.0))
+        rests.append(sc2.body.turn_rest)
+        turning.append(bool((sc2.body.arm_state == P.ARM_TURN).any()))
+    assert max(rests) == d.turn_refractory
+    for k in range(1, len(rests)):
+        if rests[k] > 0:
+            assert not turning[k] or rests[k] == d.turn_refractory
