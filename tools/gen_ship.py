@@ -1733,15 +1733,17 @@ def _authored_spawns(plan: ShipPlan) -> list:
     return out
 
 
-DATA_FILES = ("level.toml", "tilemap.csv", "diffuse.png", "match.toml",
-              level_lib.TEMP_INIT_FILENAME)
+DATA_FILES = ("level.toml", "tilemap.csv", "diffuse.png", "match.toml")
+# Written only when the plan needs them (``temp_init.npy``: a ``temp`` tag);
+# cleared on every regenerate like DATA_FILES, so a stale one never survives.
+OPTIONAL_DATA_FILES = (level_lib.TEMP_INIT_FILENAME,)
 
 
 def write(plan: ShipPlan, out_dir) -> Path:
     """Write ``plan`` as a level folder through ``level_lib``; returns the
     folder. Regenerates the data files (anything else there stays)."""
     out_dir = Path(out_dir)
-    for name in DATA_FILES:
+    for name in DATA_FILES + OPTIONAL_DATA_FILES:
         p = out_dir / name
         if p.exists():
             p.unlink()
