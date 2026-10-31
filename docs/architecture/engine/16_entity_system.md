@@ -194,6 +194,20 @@ The first real entity: class `door` (`entities/door.py` schema + span math,
   Validators: painted id ↔ exactly one instance; zero-tile zones warn; duplicate
   `zone_id` errors. `_upscale_level` replicates the grid like water.
 - **`air_init.npy`** — authored initial-atmosphere seeding at load.
+- **`temp_init.npy`** (levelgen vocabulary E.2 row 4, 2026-10-31) — authored
+  initial-TEMPERATURE seeding at load, beside `air_init.npy` and on its pattern
+  (discovered by presence, no toml key; additive to format v3, no version bump):
+  int32 Q16.16 game degrees above ambient (T_game, the solver's own unit), shape
+  == tilemap, `[0, T_MAX_PHYS]` — the loader refuses dtype, shape, sub-ambient
+  (Part F item 3, a parked physics ruling) and above the rail by name. 0 is
+  ambient, so an all-zero grid and no file are the same level, and the one
+  writer `level_lib.write_temp_init_npy` deletes the file on an all-zero grid.
+  `GameMap.__init__` seeds it after the air seed and the level-load
+  `refresh_gas_energy`: gas cells through `seed_gas_temperature` (mirror and
+  `gas_energy` together), thermal solids on their own `temperature`; a non-zero
+  value anywhere else (vacuum, the ambient ring, a wall without thermal mass)
+  is refused. `--res` replicates it like air_init. `tools/gen_ship.py`'s `temp`
+  room tag writes it (floor air only).
 - **`boundary`** level field (`"space" | "ambient"`) — format + loader only; the
   semantics belong to the boundary-conditions physics project (ledger stack #1).
 

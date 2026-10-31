@@ -128,3 +128,12 @@ engine stays small.
   blast beside a thermal solid breaks the energy closure on its own (base
   8da03d6) -- closure tests that blow things up near fuel will fail for that
   reason, not theirs.
+- 2026-10-31 -- initial-temperature level field (#133 E.2 row 4, branch
+  `133-initial-temp`, one implementation agent). Followed §5 steps 3-4 as
+  written; a format patch on the air_init.npy pattern, no new doc section.
+  Learned: GameMap.__init__'s `refresh_gas_energy` + `seed_gas_temperature`
+  on the seeded cells IS the sanctioned non-ambient start for gas (no new
+  path needed); every shipped wall material is a thermal solid today; and a
+  hot thermal solid seeded in AMBIENT air drives its neighbours sub-ambient
+  on tick 1 and walls into the low rail -- seed a hot room whole (gen_ship's
+  `temp` tag seeds floor air only).

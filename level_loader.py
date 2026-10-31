@@ -8,6 +8,9 @@ A "level" lives at levels/<name>/ and contains:
   - emissive_mask.png  : pixels that glow (optional)
   - emissive_bloom.png : blurred halos (optional)
   - wall_mask.png   : overrides CSV-derived walls (optional)
+  - air_init.npy    : initial atmosphere, int32 Q16.16 atm (optional)
+  - temp_init.npy   : initial temperature, int32 Q16.16 game degrees above
+                      ambient (optional; additive to format v3, no bump)
 
 The CSV is the source of truth for physics. Art assets are for rendering only.
 
@@ -779,6 +782,83 @@ def _parse_air_init_grid(base: Path, tilemap: np.ndarray):
     return air_q
 
 
+# ---- temp_init.npy (levelgen vocabulary E.2 row 4) -------------------------
+# The optional initial-TEMPERATURE grid, beside level.toml, discovered by
+# PRESENCE like air_init.npy (the file IS the field; no toml key): int32
+# Q16.16 GAME DEGREES ABOVE AMBIENT -- T_game, the unit of the solver's own
+# `temperature` plane (src/temperature_scale.py: 0 == ambient). Additive to
+# level format v3: an optional file read by presence needs no version bump
+# (zones.npy and air_init.npy joined the format the same way).
+TEMP_INIT_FILENAME = "temp_init.npy"
+
+
+def _temp_init_max_q() -> int:
+    """The largest seed the door accepts: ``[physics.thermal] T_MAX_PHYS``
+    (the solvers' physical-maximum rail, bound in PhysicsRunner from the
+    same key), quantized once through the Q16 kit. A seed above it would
+    rail on tick 1 -- a counted rail hit authored into the level."""
+    from simulation.gas_fixed import quantize_q16_scalar
+    t_max = 16000.0
+    try:
+        from config import CFG
+        thermal = getattr(getattr(CFG, "physics", None), "thermal", None)
+        if thermal is not None:
+            t_max = float(getattr(thermal, "T_MAX_PHYS", t_max))
+    except Exception:                     # config optional at load time
+        pass
+    return int(quantize_q16_scalar(t_max))
+
+
+def _parse_temp_init_grid(base: Path, tilemap: np.ndarray):
+    """Load the optional ``temp_init.npy`` initial-temperature seed.
+
+    Returns the int32 Q16.16 grid (game degrees above ambient, shape ==
+    tilemap), or None when the file is absent. Unlike air_init, an all-zero
+    grid MEANS "nothing here" (0 is ambient, which is what an absent file
+    seeds), so the two are the same level: dormancy by value as well as by
+    absence.
+
+    Refused (ValueError, path-bearing) when: unreadable, dtype is not int32,
+    shape != tilemap, any value < 0, any value > T_MAX_PHYS. Sub-ambient is
+    refused because it is a PARKED PHYSICS RULING (levelgen vocabulary Part F
+    item 3): solids carry a low rail at ambient and the emission table starts
+    there, so a cold room needs Erik's ruling before the format may carry it.
+    The tile-class rule (non-zero only on accountable gas cells and thermal
+    solids) needs the final stamped material grid and is GameMap's door.
+    """
+    t_path = base / TEMP_INIT_FILENAME
+    if not t_path.is_file():
+        return None                   # no temp_init.npy -- dormancy
+    try:
+        t_q = np.load(t_path, allow_pickle=False)
+    except (OSError, ValueError) as e:
+        raise ValueError(
+            f"temp_init.npy is not a readable .npy array: {t_path}: {e}")
+    if t_q.dtype != np.int32:
+        raise ValueError(
+            f"temp_init.npy must be dtype int32 (Q16.16 game degrees above "
+            f"ambient), got {t_q.dtype}: {t_path}")
+    if t_q.shape != tilemap.shape:
+        raise ValueError(
+            f"temp_init.npy shape {t_q.shape} != tilemap shape "
+            f"{tilemap.shape}: {t_path}")
+    lo = int(t_q.min(initial=0))
+    if lo < 0:
+        raise ValueError(
+            f"temp_init.npy contains sub-ambient temperatures (min = {lo} raw "
+            f"Q16.16): sub-ambient is not in the level format -- solids rail "
+            f"at ambient and the emission table starts there, a physics "
+            f"ruling parked for Erik's session (levelgen vocabulary Part F "
+            f"item 3): {t_path}")
+    hi, t_max_q = int(t_q.max(initial=0)), _temp_init_max_q()
+    if hi > t_max_q:
+        raise ValueError(
+            f"temp_init.npy contains {hi} raw Q16.16, above the solvers' "
+            f"physical maximum [physics.thermal] T_MAX_PHYS ({t_max_q} raw): "
+            f"{t_path}")
+    return t_q
+
+
 def _parse_boundary(raw: dict, toml_path) -> str:
     """Parse the top-level ``boundary`` field.
 
@@ -1041,6 +1121,13 @@ class LevelData:
     # open-air tiles; values on solid or SPACE tiles are IGNORED (the
     # pinned solid-tile rule — see the seed block's docstring/comment).
     air_init_q: Optional[np.ndarray] = None
+    # ---- temp_init.npy initial-temperature seed (vocabulary E.2 row 4) ---
+    # int32 Q16.16 game degrees above ambient, shape == tilemap, values in
+    # [0, T_MAX_PHYS] -- or None when the folder carries no temp_init.npy.
+    # GameMap.__init__ seeds it AFTER the air seed: gas cells through
+    # seed_gas_temperature (mirror + energy together), thermal solids on
+    # their own `temperature` truth; non-zero anywhere else is refused.
+    temp_init_q: Optional[np.ndarray] = None
     # ---- boundary mode (A9 hook; BC build gives it semantics) ------------
     # "space" (default — the vacuum ring) | "ambient" (planetside). A
     # top-level scalar key, so level_lib's managed-block writer round-trips
@@ -1306,6 +1393,7 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
 
     # ---- air_init.npy + boundary + ambient dials (A9 + BC build) ---------
     air_init_q = _parse_air_init_grid(base, tilemap)
+    temp_init_q = _parse_temp_init_grid(base, tilemap)
     boundary = _parse_boundary(raw, toml_path)
     ambient = _parse_ambient(raw, toml_path, boundary, tilemap)
 
@@ -1342,6 +1430,7 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
         wire_specs=wire_specs,
         zone_grid=zone_grid,
         air_init_q=air_init_q,
+        temp_init_q=temp_init_q,
         boundary=boundary,
         ambient=ambient,
         spawn_rooms=spawn_rooms,

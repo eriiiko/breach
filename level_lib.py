@@ -48,6 +48,7 @@ import level_loader
 WATER_FILENAME = "water_init.npy"
 ZONES_FILENAME = level_loader.ZONES_FILENAME    # "zones.npy" — one source
 AIR_INIT_FILENAME = level_loader.AIR_INIT_FILENAME  # "air_init.npy" (A9)
+TEMP_INIT_FILENAME = level_loader.TEMP_INIT_FILENAME  # "temp_init.npy" (E.2)
 
 _TABLE_HEADER_RE = re.compile(r"^\s*\[")          # any table / array-of-tables
 
@@ -584,6 +585,55 @@ def write_air_init_npy(level_dir, air_q, *, npy_bak: bool = True):
         nbak.write_bytes(npy_path.read_bytes())
     np.save(npy_path, a)
     return nbak, True
+
+
+def write_temp_init_npy(level_dir, temp_q, *, npy_bak: bool = True):
+    """Write (or, on ``None``/empty/all-zero, delete) ``temp_init.npy`` --
+    int32 Q16.16 game degrees above ambient, the file IS the field
+    (levelgen vocabulary E.2 row 4; the air_init.npy presence pattern, no
+    toml key). THE ONE WRITER of the file.
+
+    THE DELETE RULE follows zones/water, not air: 0 MEANS ambient, which is
+    exactly what an absent file seeds, so an all-zero grid deletes the file
+    (a level never carries a dormant temp_init.npy). The .npy carries its
+    OWN once-per-session pre-session .bak (``npy_bak`` True on the session's
+    first save), mirroring :func:`write_air_init_npy`. Returns
+    ``(npy_bak_path | None, has_temp)``.
+
+    The caller may pass any integer-dtype grid; values are range-checked
+    against the loader's own door (non-negative -- sub-ambient is a parked
+    physics ruling -- and at most ``[physics.thermal] T_MAX_PHYS``) and
+    stored as int32, so this writer never writes a file its loader refuses.
+    """
+    level_dir = Path(level_dir)
+    npy_path = level_dir / TEMP_INIT_FILENAME
+    t = None if temp_q is None else np.asarray(temp_q)
+    has_temp = t is not None and t.size > 0 and bool(t.any())
+    if has_temp:
+        if not np.issubdtype(t.dtype, np.integer):
+            raise ValueError(
+                f"temperature grid must be integer Q16.16 game degrees above "
+                f"ambient (stored int32), got dtype {t.dtype}")
+        if int(t.min()) < 0:
+            raise ValueError(
+                f"temperature grid contains sub-ambient values (min = "
+                f"{int(t.min())} raw Q16.16) -- the loader refuses them "
+                f"(a parked physics ruling, vocabulary Part F item 3)")
+        t_max_q = level_loader._temp_init_max_q()
+        if int(t.max()) > t_max_q:
+            raise ValueError(
+                f"temperature grid max {int(t.max())} raw Q16.16 is above "
+                f"[physics.thermal] T_MAX_PHYS ({t_max_q} raw)")
+        t = np.ascontiguousarray(t.astype(np.int32))
+    nbak = None
+    if npy_bak and npy_path.is_file():
+        nbak = Path(str(npy_path) + ".bak")
+        nbak.write_bytes(npy_path.read_bytes())
+    if has_temp:
+        np.save(npy_path, t)
+    elif npy_path.is_file():
+        npy_path.unlink()
+    return nbak, has_temp
 
 
 _BOUNDARY_LINE_RE = re.compile(
