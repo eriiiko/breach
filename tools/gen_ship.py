@@ -142,6 +142,21 @@ AIRLOCK_DEC_FAR = ("le", 6554)       # chamber <= 0.1 atm
 AIRLOCK_DEC_NEAR = ("ge", 58982)     # chamber >= 0.9 atm
 AIRLOCK_CTRL = {"far_door": "outer", "target_far_atm": 0,
                 "target_near_atm": 65536}
+# The INTERIOR airlock (#133, Erik's ruling 2026-10-31,
+# .claude/skills/level-design-lead/SKILL.md §3): between two pressurised
+# cells the airlock only sequences its doors and equalises the vestibule to
+# the side being opened -- only a HULL airlock (the far side is space)
+# evacuates. :func:`airlock_mode` derives which from the tiles beyond the
+# outer door. An interior airlock carries two TRANSFER pumps (one per side,
+# mounted in the wall beside each door, moving air between the chamber and
+# that side) and three pressure probes (chamber, near side, far side) instead
+# of the external pump and the two deciders; the rest is the demo's recipe.
+AIRLOCK_MODES = ("hull", "interior")
+AIRLOCK_TRANSFER_PUMP = {"rate": 8.0, "target_atm": 65536,
+                         "hysteresis_band": 13107, "feed": "transfer"}
+AIRLOCK_EQUALIZE_BAND = 3277         # |side - chamber| <= 0.05 atm ends a leg
+AIRLOCK_CTRL_INTERIOR = {"far_door": "outer", "mode": "interior",
+                         "equalize_band": AIRLOCK_EQUALIZE_BAND}
 
 
 @dataclass(frozen=True)
@@ -586,7 +601,15 @@ class Airlock:
     ``a``'s box the vestibule takes (chamber + walls + inner door);
     ``pump`` / ``probe``: ``(x, y, dx, dy)`` mount tile in the vestibule's
     side wall and the offset of the chamber tile it acts on; ``plate``: the
-    presence plate's tile ``(x, y)``, the chamber's centre."""
+    presence plate's tile ``(x, y)``, the chamber's centre.
+
+    The interior recipe's equipment (#133): ``beyond``: the tiles one step
+    past the outer door on room ``b``'s side (what :func:`airlock_mode`
+    reads); ``far_pump`` / ``near_pump``: ``(x, y, port_dx, port_dy,
+    source_dx, source_dy)`` -- a transfer pump in the wall beside the outer /
+    inner door, its port in the chamber and its source in front of that
+    door; ``far_probe`` / ``near_probe``: ``(x, y, dx, dy)``, a pressure
+    probe beside the other end of the same door sampling that side."""
     wall: str
     outer: tuple
     inner: tuple
@@ -596,6 +619,11 @@ class Airlock:
     pump: tuple
     probe: tuple
     plate: tuple
+    beyond: tuple = ()
+    far_pump: tuple = ()
+    near_pump: tuple = ()
+    far_probe: tuple = ()
+    near_probe: tuple = ()
 
 
 def _airlock(graph: ShipGraph, e: Edge) -> Airlock:
@@ -615,8 +643,10 @@ def _airlock(graph: ShipGraph, e: Edge) -> Airlock:
         y0, y1 = outer[0][0], outer[-1][0]
         if ax1 + 1 == line:                         # a is left of the wall
             cx0, cx1, iw = line - D, line - 1, line - D - 1
+            s = 1                                   # b lies toward +x
         else:
             cx0, cx1, iw = line + 1, line + D, line + D + 1
+            s = -1
         chamber = (cx0, y0, cx1, y1)
         inner = tuple((y, iw) for y in range(y0, y1 + 1))
         wx0, wx1 = min(cx0, iw), max(cx1, iw)
@@ -626,13 +656,20 @@ def _airlock(graph: ShipGraph, e: Edge) -> Airlock:
         mid = (cx0 + cx1) // 2
         pump, probe = (mid, y0 - 1, 0, 1), (mid + 1, y0 - 1, 0, 1)
         plate = (mid, (y0 + y1) // 2)
+        beyond = tuple((y, line + s) for y in range(y0, y1 + 1))
+        far_pump = (line, y0 - 1, -s, 1, s, 1)
+        near_pump = (iw, y0 - 1, s, 1, -s, 1)
+        far_probe = (line, y1 + 1, s, -1)
+        near_probe = (iw, y1 + 1, -s, -1)
     else:
         depth = a.h
         x0, x1 = outer[0][1], outer[-1][1]
         if ay1 + 1 == line:                         # a is above the wall
             cy0, cy1, iw = line - D, line - 1, line - D - 1
+            s = 1                                   # b lies toward +y
         else:
             cy0, cy1, iw = line + 1, line + D, line + D + 1
+            s = -1
         chamber = (x0, cy0, x1, cy1)
         inner = tuple((iw, x) for x in range(x0, x1 + 1))
         wy0, wy1 = min(cy0, iw), max(cy1, iw)
@@ -641,6 +678,11 @@ def _airlock(graph: ShipGraph, e: Edge) -> Airlock:
         mid = (cy0 + cy1) // 2
         pump, probe = (x0 - 1, mid, 1, 0), (x0 - 1, mid + 1, 1, 0)
         plate = ((x0 + x1) // 2, mid)
+        beyond = tuple((line + s, x) for x in range(x0, x1 + 1))
+        far_pump = (x0 - 1, line, 1, -s, 1, s)
+        near_pump = (x0 - 1, iw, 1, s, 1, -s)
+        far_probe = (x1 + 1, line, -1, s)
+        near_probe = (x1 + 1, iw, -1, -s)
     if depth < D + 1 + fp:
         raise _Reject(f"airlock {e.a}-{e.b}: room {e.a} ({depth} tiles deep) "
                       f"cannot hold a {D}-deep vestibule and a unit's "
@@ -652,7 +694,36 @@ def _airlock(graph: ShipGraph, e: Edge) -> Airlock:
     carve = tuple(sorted(cells | set(walls) | set(inner)))
     return Airlock(wall=orient, outer=tuple(outer), inner=inner,
                    chamber=chamber, walls=walls, carve=carve, pump=pump,
-                   probe=probe, plate=plate)
+                   probe=probe, plate=plate, beyond=beyond,
+                   far_pump=far_pump, near_pump=near_pump,
+                   far_probe=far_probe, near_probe=near_probe)
+
+
+def airlock_mode(tm, al: Airlock) -> str:
+    """``"hull"`` when the outer door opens onto SPACE (a tile beyond it is
+    the vacuum code), else ``"interior"`` -- the airlock between two
+    pressurised cells (#133, Erik's ruling 2026-10-31). Read off the tiles,
+    so it is decided once, at generation time, from what stage 2 stamped.
+    v1's graphs join rooms only, so every airlock they emit is interior;
+    the hull branch waits for an edge that opens onto space."""
+    return "hull" if any(int(tm[y, x]) == SPACE_CODE
+                         for (y, x) in al.beyond) else "interior"
+
+
+def _airlock_mounts(al: Airlock, mode: str) -> tuple:
+    """``((mount (y, x), (acted-on (y, x), ...)), ...)`` for a mode's
+    equipment: what stage 2 reserves and :func:`_carve_airlock` checks.
+    Hull: the external pump and the chamber probe. Interior: the chamber
+    probe, two transfer pumps (port + source) and two side probes."""
+    def acts(m):
+        x, y = m[0], m[1]
+        out = [(y + m[3], x + m[2])]
+        if len(m) == 6:
+            out.append((y + m[5], x + m[4]))
+        return tuple(out)
+    eq = ((al.pump, al.probe) if mode == "hull" else
+          (al.probe, al.far_pump, al.near_pump, al.far_probe, al.near_probe))
+    return tuple(((m[1], m[0]), acts(m)) for m in eq)
 
 
 def _airlocks(graph: ShipGraph) -> list:
@@ -1175,14 +1246,15 @@ def _door_entity(eid: str, tiles, orient: str, state: str) -> EntityInstance:
         authored_keys=_DOOR_KEYS)
 
 
-def _build_doors(graph: ShipGraph) -> tuple[list, list]:
+def _build_doors(graph: ShipGraph, modes: dict | None = None
+                 ) -> tuple[list, list]:
     """The entity half of the edges, ``(entities, wires)``: one ``door``
     entity per ``entity_door`` edge (id ``door_e<edge index>``, initial
-    state ``ENTITY_DOOR_INITIAL``), and per ``airlock`` edge the
-    levels/airlock_demo recipe -- inner door (open), outer door (closed),
-    pump, presence plate, pressure probe, two deciders, the controller --
-    under ids ``airlock_e<edge index>_<part>``, wired exactly as the demo
-    (15 wires). Ordinals are assigned by the caller (file order)."""
+    state ``ENTITY_DOOR_INITIAL``), and per ``airlock`` edge its mode's
+    recipe (:func:`airlock_entities`; ``modes``: edge index -> mode, from
+    :func:`airlock_mode`, absent = hull) under ids
+    ``airlock_e<edge index>_<part>``. Ordinals are assigned by the caller
+    (file order)."""
     ents, wires = [], []
     for i, e in enumerate(graph.edges):
         if e.spec.entity != "door":
@@ -1191,55 +1263,110 @@ def _build_doors(graph: ShipGraph) -> tuple[list, list]:
         ents.append(_door_entity(f"door_e{i}", _opening_tiles(graph, e),
                                  orient, ENTITY_DOOR_INITIAL))
     for i, al in _airlocks(graph):
-        p = f"airlock_e{i}"
-        ids = {k: f"{p}_{k}" for k in ("inner", "outer", "pump", "plate",
-                                       "probe", "dec_far", "dec_near",
-                                       "ctrl")}
-        ents.append(_door_entity(ids["inner"], al.inner, al.wall, "open"))
-        ents.append(_door_entity(ids["outer"], al.outer, al.wall, "closed"))
-        px, py, pdx, pdy = al.pump
+        a_ents, a_wires = airlock_entities(
+            f"airlock_e{i}", al, (modes or {}).get(i, "hull"))
+        ents += a_ents
+        wires += a_wires
+    return ents, wires
+
+
+def airlock_entities(p: str, al: Airlock, mode: str) -> tuple[list, list]:
+    """One airlock's ``(entities, wires)`` under ids ``<p>_<part>``.
+
+    ``"hull"``: the levels/airlock_demo recipe -- inner door (open), outer
+    door (closed), an external pump, presence plate, chamber probe, two
+    deciders, the controller evacuating toward the far side and refilling
+    (15 wires). ``"interior"`` (#133): the same doors, plate and chamber
+    probe, plus a transfer pump and a pressure probe per side and the
+    controller in ``mode = "interior"`` -- no deciders, no external pump,
+    no gas leaves the ship (16 wires)."""
+    if mode not in AIRLOCK_MODES:
+        raise ValueError(f"airlock {p}: mode {mode!r} is not one of "
+                         f"{AIRLOCK_MODES}")
+    parts = (("inner", "outer", "pump", "plate", "probe", "dec_far",
+              "dec_near", "ctrl") if mode == "hull" else
+             ("inner", "outer", "pump_far", "pump_near", "plate", "probe",
+              "probe_far", "probe_near", "ctrl"))
+    ids = {k: f"{p}_{k}" for k in parts}
+    ents = [_door_entity(ids["inner"], al.inner, al.wall, "open"),
+            _door_entity(ids["outer"], al.outer, al.wall, "closed")]
+
+    def pump(eid, m, extra):
+        f = {"x": m[0], "y": m[1], "port_dx": m[2], "port_dy": m[3], **extra}
+        if len(m) == 6:
+            f.update(source_dx=m[4], source_dy=m[5])
+        ents.append(EntityInstance(id=eid, class_name="pump", ordinal=0,
+                                   fields=f, authored_keys=tuple(f)))
+
+    def probe(eid, m):
         ents.append(EntityInstance(
-            id=ids["pump"], class_name="pump", ordinal=0,
-            fields={"x": px, "y": py, "port_dx": pdx, "port_dy": pdy,
-                    **AIRLOCK_PUMP},
-            authored_keys=("x", "y", "port_dx", "port_dy", *AIRLOCK_PUMP)))
-        ents.append(EntityInstance(
-            id=ids["plate"], class_name="sensor_motion", ordinal=0,
-            fields={"x": al.plate[0], "y": al.plate[1],
-                    "radius": _door_length_m(AIRLOCK_PLATE_TILES)},
-            authored_keys=("x", "y", "radius")))
-        sx, sy, sdx, sdy = al.probe
-        ents.append(EntityInstance(
-            id=ids["probe"], class_name="pressure", ordinal=0,
-            fields={"x": sx, "y": sy, "sample_dx": sdx, "sample_dy": sdy},
+            id=eid, class_name="pressure", ordinal=0,
+            fields={"x": m[0], "y": m[1], "sample_dx": m[2],
+                    "sample_dy": m[3]},
             authored_keys=("x", "y", "sample_dx", "sample_dy")))
+
+    if mode == "hull":
+        pump(ids["pump"], al.pump, AIRLOCK_PUMP)
+    else:
+        pump(ids["pump_far"], al.far_pump, AIRLOCK_TRANSFER_PUMP)
+        pump(ids["pump_near"], al.near_pump, AIRLOCK_TRANSFER_PUMP)
+    ents.append(EntityInstance(
+        id=ids["plate"], class_name="sensor_motion", ordinal=0,
+        fields={"x": al.plate[0], "y": al.plate[1],
+                "radius": _door_length_m(AIRLOCK_PLATE_TILES)},
+        authored_keys=("x", "y", "radius")))
+    probe(ids["probe"], al.probe)
+    if mode == "hull":
         for k, (cmp_, thr) in (("dec_far", AIRLOCK_DEC_FAR),
                                ("dec_near", AIRLOCK_DEC_NEAR)):
             ents.append(EntityInstance(
                 id=ids[k], class_name="decider", ordinal=0,
                 fields={"comparator": cmp_, "threshold": thr},
                 authored_keys=("comparator", "threshold")))
-        ents.append(EntityInstance(
-            id=ids["ctrl"], class_name="airlock_controller", ordinal=0,
-            fields=dict(AIRLOCK_CTRL), authored_keys=tuple(AIRLOCK_CTRL)))
-        c = ids["ctrl"]
+        ctrl = AIRLOCK_CTRL
+    else:
+        probe(ids["probe_far"], al.far_probe)
+        probe(ids["probe_near"], al.near_probe)
+        ctrl = AIRLOCK_CTRL_INTERIOR
+    ents.append(EntityInstance(
+        id=ids["ctrl"], class_name="airlock_controller", ordinal=0,
+        fields=dict(ctrl), authored_keys=tuple(ctrl)))
+    c = ids["ctrl"]
+    wires = [
+        (f"{ids['plate']}.value", f"{c}.presence"),
+        (f"{ids['inner']}.is_open", f"{c}.inner_open"),
+        (f"{ids['outer']}.is_open", f"{c}.outer_open"),
+        (f"{ids['inner']}.alive", f"{c}.inner_alive"),
+        (f"{ids['outer']}.alive", f"{c}.outer_alive"),
+    ]
+    if mode == "hull":
         wires += [
-            (f"{ids['plate']}.value", f"{c}.presence"),
-            (f"{ids['inner']}.is_open", f"{c}.inner_open"),
-            (f"{ids['outer']}.is_open", f"{c}.outer_open"),
-            (f"{ids['inner']}.alive", f"{c}.inner_alive"),
-            (f"{ids['outer']}.alive", f"{c}.outer_alive"),
             (f"{ids['probe']}.value", f"{ids['dec_far']}.in"),
             (f"{ids['probe']}.value", f"{ids['dec_near']}.in"),
             (f"{ids['dec_far']}.out", f"{c}.at_far"),
             (f"{ids['dec_near']}.out", f"{c}.at_near"),
-            (f"{c}.inner_close", f"{ids['inner']}.close"),
-            (f"{c}.inner_open_cmd", f"{ids['inner']}.open"),
-            (f"{c}.outer_close", f"{ids['outer']}.close"),
-            (f"{c}.outer_open_cmd", f"{ids['outer']}.open"),
-            (f"{c}.pump_inject", f"{ids['pump']}.inject"),
-            (f"{c}.pump_extract", f"{ids['pump']}.extract"),
         ]
+    else:
+        # far_door = "outer": the outer door's side is the far side.
+        wires += [
+            (f"{ids['probe']}.value", f"{c}.chamber_p"),
+            (f"{ids['probe_near']}.value", f"{c}.inner_side_p"),
+            (f"{ids['probe_far']}.value", f"{c}.outer_side_p"),
+        ]
+    wires += [
+        (f"{c}.inner_close", f"{ids['inner']}.close"),
+        (f"{c}.inner_open_cmd", f"{ids['inner']}.open"),
+        (f"{c}.outer_close", f"{ids['outer']}.close"),
+        (f"{c}.outer_open_cmd", f"{ids['outer']}.open"),
+    ]
+    if mode == "hull":
+        wires += [(f"{c}.pump_inject", f"{ids['pump']}.inject"),
+                  (f"{c}.pump_extract", f"{ids['pump']}.extract")]
+    else:
+        wires += [(f"{c}.pump_inject", f"{ids['pump_far']}.inject"),
+                  (f"{c}.pump_extract", f"{ids['pump_far']}.extract"),
+                  (f"{c}.near_pump_inject", f"{ids['pump_near']}.inject"),
+                  (f"{c}.near_pump_extract", f"{ids['pump_near']}.extract")]
     return ents, wires
 
 
@@ -1273,11 +1400,13 @@ def embed(graph: ShipGraph, rng) -> Embedding:
             passage[y, x] |= spec.keep_clear
             reserved[y, x] |= spec.entity is not None
         by_kind[e.kind] = by_kind.get(e.kind, 0) + 1
-    for _i, al in _airlocks(graph):
-        _carve_airlock(tm, al)
+    modes = {}
+    for i, al in _airlocks(graph):
+        modes[i] = airlock_mode(tm, al)       # read BEFORE the carve
+        _carve_airlock(tm, al, modes[i])
         for (y, x) in al.carve:
             passage[y, x] = reserved[y, x] = True
-        for (mx, my, _dx, _dy) in (al.pump, al.probe):
+        for (my, mx), _acted in _airlock_mounts(al, modes[i]):
             reserved[my, mx] = True
     doors, windows = by_kind.get("door", 0), by_kind.get("window", 0)
     for rm in graph.rooms:
@@ -1285,7 +1414,7 @@ def embed(graph: ShipGraph, rng) -> Embedding:
                                     or not graph.mirror_x):
             _place_fuel(rng, tm, rm, graph, passage)
     ents = _build_vents(tm, graph, reserved if reserved.any() else None)
-    door_ents, wires = _build_doors(graph)
+    door_ents, wires = _build_doors(graph, modes)
     vent_res = np.zeros((H, W), dtype=bool)
     for ent in ents:
         if ent.class_name == "vent":
@@ -1353,7 +1482,7 @@ def _build_temp_init(tm, graph: ShipGraph):
     return out
 
 
-def _carve_airlock(tm, al: Airlock) -> None:
+def _carve_airlock(tm, al: Airlock, mode: str = "hull") -> None:
     """Stamp a vestibule into room ``a``'s air: its new walls steel, the
     inner door's span air (the door spawns open), and refuse a vestibule
     whose enclosure another edge has cut, or whose equipment has no solid
@@ -1371,9 +1500,14 @@ def _carve_airlock(tm, al: Airlock) -> None:
         if (y, x) not in doors and tm[y, x] not in (MAT_STEEL, MAT_HULL):
             raise _Reject(f"airlock: the vestibule's wall at ({x},{y}) is "
                           f"cut ({int(tm[y, x])})")
-    for (mx, my, _dx, _dy) in (al.pump, al.probe):
+    for (my, mx), acted in _airlock_mounts(al, mode):
         if tm[my, mx] not in (MAT_STEEL, MAT_HULL):
             raise _Reject(f"airlock: no solid mount at ({mx},{my})")
+        for (y, x) in acted:                # a port / source / sample tile
+            if tm[y, x] != MAT_AIR:
+                raise _Reject(f"airlock: the {mode} equipment at "
+                              f"({mx},{my}) acts on a non-air tile "
+                              f"({x},{y})")
 
 
 # ===========================================================================

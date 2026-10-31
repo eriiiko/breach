@@ -56,6 +56,19 @@ per phase (EQUALIZE injects toward a higher far target / extracts toward a lower
 one; REPRESSURIZE drives the opposite). The STATE GRAPH, the breach-abort, the
 occupancy stall and ``busy`` are all deterministic here; the pressure feel is
 Erik's HUMAN-TEST.
+
+**Interior mode (#133, Erik's ruling 2026-10-31):** ``mode = "interior"`` is
+the airlock between two PRESSURISED cells. The state graph is the same, but
+neither leg evacuates: EQUALIZE equalises the chamber to the FAR side's
+pressure and REPRESSURIZE equalises it to the NEAR side's, each through its
+own ``feed = "transfer"`` pump (``pump_*`` drives the far side's,
+``near_pump_*`` the near side's), which MOVES air between the chamber and that
+side -- no gas leaves the ship. The loop is closed by three wired pressure
+readings (``chamber_p``, ``inner_side_p``, ``outer_side_p``) instead of the
+two deciders: a leg is done when the chamber reads within ``equalize_band``
+of the side about to open, and the pump runs toward that side's reading.
+``mode = "hull"`` (the default -- every level without the field) is the
+evacuate-then-refill cycle above, unchanged.
 """
 from __future__ import annotations
 
@@ -81,6 +94,10 @@ AIRLOCK_STATE_NAMES = (
     "IDLE", "CLOSING", "EQUALIZE", "OPEN_FAR", "RESEAL", "REPRESSURIZE",
     "FAULT",
 )
+
+# The controller's modes (#133): "hull" evacuates toward space and refills
+# (the pre-#133 cycle, the default); "interior" only sequences and equalises.
+AIRLOCK_MODES = ("hull", "interior")
 
 
 @register
@@ -116,6 +133,18 @@ class airlock_controller(Entity):
         Field("target_near_atm", KIND_Q16, default=65536,
               doc="near-side (cabin) pressure target (Q16.16 atm). "
                   "REPRESSURIZE drives the pump toward it."),
+        Field("mode", KIND_ENUM, default="hull", choices=AIRLOCK_MODES,
+              doc="\"hull\" (default): one side is space -- EQUALIZE "
+                  "evacuates toward target_far_atm, REPRESSURIZE refills, "
+                  "gated by at_far / at_near. \"interior\" (#133): both "
+                  "sides pressurised -- each leg EQUALISES the chamber to "
+                  "the side about to open through that side's transfer "
+                  "pump, gated by the chamber_p / *_side_p readings; no gas "
+                  "leaves the ship"),
+        Field("equalize_band", KIND_Q16, default=3277, minimum=1,
+              doc="interior mode only: a leg is done when |side - chamber| "
+                  "<= this (Q16.16 atm; 3277 == 0.05 atm). Must exceed the "
+                  "probe's tick-to-tick ripple or the leg never ends"),
     )
     # The command signals (prev-read/next-write node outputs, §2c): one pair
     # per door + one pair for the pump + busy. Wired to the actuators' inputs.
@@ -126,6 +155,12 @@ class airlock_controller(Entity):
         Signal("outer_open_cmd", "hold the OUTER door open (→ outer_door.open)"),
         Signal("pump_inject", "hold the pump injecting (→ pump.inject)"),
         Signal("pump_extract", "hold the pump extracting (→ pump.extract)"),
+        Signal("near_pump_inject",
+               "interior mode: hold the NEAR side's transfer pump injecting "
+               "(→ near pump.inject); 0 in hull mode"),
+        Signal("near_pump_extract",
+               "interior mode: hold the NEAR side's transfer pump extracting "
+               "(→ near pump.extract); 0 in hull mode"),
         Signal("busy", "1 while a cycle is in progress (not IDLE / FAULT)"),
     )
     # All inputs are SINGLE — one wire each (the §1b arity check enforces it).
@@ -148,6 +183,15 @@ class airlock_controller(Entity):
                   "chamber pressure REACHED the near/pressurized target — the "
                   "loop close for REPRESSURIZE (← a `pressure` sensor → "
                   "`decider` `ge target_near`). B7 / Erik's Option 2."),
+        InputDecl("chamber_p", INPUT_SINGLE,
+                  "interior mode: the chamber's pressure (← a `pressure` "
+                  "sensor in the chamber .value)"),
+        InputDecl("inner_side_p", INPUT_SINGLE,
+                  "interior mode: the pressure beyond the INNER door (← a "
+                  "`pressure` sensor .value)"),
+        InputDecl("outer_side_p", INPUT_SINGLE,
+                  "interior mode: the pressure beyond the OUTER door (← a "
+                  "`pressure` sensor .value)"),
     )
 
     @classmethod

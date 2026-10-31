@@ -137,3 +137,16 @@ engine stays small.
   hot thermal solid seeded in AMBIENT air drives its neighbours sub-ambient
   on tick 1 and walls into the low rail -- seed a hot room whole (gen_ship's
   `temp` tag seeds floor air only).
+- 2026-10-31 -- interior airlock mode (#133, Erik's ruling §3, branch
+  `133-airlock-mode`, one implementation agent). Followed §5 steps 3-4; the
+  ruling was the design (a dated section in the entity-system canon chapter
+  §8, no new doc). Learned: the honest place for the mode is the controller
+  (its legs already gate on sensed inputs), but an interior leg also needs a
+  pump that MOVES air -- the pump grew a `feed = "transfer"` row and GameMap a
+  conservative `transfer_gas_n`, one per side; v1's graphs only join rooms,
+  so no generated airlock is hull yet (the hull branch waits for an edge onto
+  space, the cargo-door row); adding a synced enum to an entity class moves
+  every level's `__entity__` bytes that carries it (airlock_demo is in no
+  golden, so nothing re-baselined), and the per-TILE pump quantum (1/3 atm at
+  rate 8) is too coarse a tolerance for "equal pressure" -- test against the
+  controller's band.

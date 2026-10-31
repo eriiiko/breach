@@ -3252,6 +3252,73 @@ class GameMap:
         remove = self.extract_gas_n_vec(fy, fx, delta_n)
         return int(remove[O2]) + int(remove[INERT_N2])
 
+    def _air_withdrawal(self, fy, fx, delta_n):
+        """THE pump withdrawal split (#88 P0), shared by
+        :meth:`extract_gas_n_vec` and :meth:`transfer_gas_n` -- one rule,
+        never a second copy. Returns ``(remove, want)``: ``want =
+        min(delta_n, N_bulk)`` of AIR split over the two bulk planes by
+        :meth:`gas_proportional_split`, each trace plane priced by air
+        (``floor(want * S_t / N_bulk)``). Pure: mutates nothing. All zeros
+        (``want == 0``) for ``delta_n <= 0`` or a tile with no air (A5)."""
+        dn = int(delta_n)
+        remove = [0] * N_GASES
+        if dn <= 0:
+            return remove, 0
+        o2 = int(self.gas[O2][fy, fx])
+        n2 = int(self.gas[INERT_N2][fy, fx])
+        n_bulk = (o2 if o2 > 0 else 0) + (n2 if n2 > 0 else 0)
+        if n_bulk < 1:                      # N_EPS_RAW -- no air to price by (A5)
+            return remove, 0
+        want = dn if dn < n_bulk else n_bulk            # aggregate zero-clamp
+        remove[O2], remove[INERT_N2] = self.gas_proportional_split(
+            [o2 if o2 > 0 else 0, n2 if n2 > 0 else 0], want)
+        for g in range(N_GASES):
+            if g == O2 or g == INERT_N2:
+                continue
+            s_t = int(self.gas[g][fy, fx])
+            if s_t > 0:
+                remove[g] = (want * s_t) // n_bulk      # priced by air
+        return remove, want
+
+    def transfer_gas_n(self, sy, sx, dy, dx, delta_n,
+                       channel="pump_transfer"):
+        """MOVE up to ``delta_n`` of AIR from tile ``(sy, sx)`` to tile
+        ``(dy, dx)`` -- the CONSERVATIVE pump feed (#133, the interior
+        airlock: a transfer pump moves gas between its vestibule and a
+        side, never in from or out to nowhere). Returns the bulk total moved.
+
+        The withdrawal is the pump's own (:meth:`_air_withdrawal`: bulk
+        budget, trace priced by air, nothing from an airless tile); the
+        parcel lands whole at the destination through the shared mutation
+        core (bulk loud on int32 overflow, trace through the counted
+        saturation, a clip booked), and its energy is MOVED through the seam
+        (:meth:`gas_energy_move`) at the donor's absolute temperature read
+        BEFORE the donor drained -- so ``Σ N`` is conserved exactly over the
+        two cells, ``Σ_accountable gas_energy`` changes by nothing when both
+        are accountable, and the destination's mirror is the exact energy
+        mix (no rail can bind: the mix lies between two railed cells).
+        Bounds STRICT, like the other pump primitives.
+        """
+        h, w = self._h, self._w
+        for (y, x) in ((sy, sx), (dy, dx)):
+            if not (0 <= y < h and 0 <= x < w):
+                raise ValueError(f"transfer_gas_n: tile ({y}, {x}) out of "
+                                 f"bounds")
+        if (sy, sx) == (dy, dx):
+            return 0
+        remove, want = self._air_withdrawal(sy, sx, delta_n)
+        if not want:
+            return 0
+        t_abs = self.gas_t_abs_at(sy, sx)               # BEFORE the drain
+        for g in range(N_GASES):
+            if remove[g]:
+                self.gas[g][sy, sx] = int(self.gas[g][sy, sx]) - remove[g]
+        self._inject_gas_n_core(dy, dx, remove)
+        self.gas_energy_move((sy, sx), (dy, dx), want, channel, t_abs)
+        self.gas_energy_refresh_cell(sy, sx)
+        self.gas_energy_refresh_cell(dy, dx)
+        return want
+
     def extract_gas_n_vec(self, fy, fx, delta_n):
         """§3 extension (docs/vent_system_design_2026-08-23.md), re-priced by
         #88 P0 (docs/smoke_unit_rescale_design_2026-10-20.md §2.2): withdraw
@@ -3281,24 +3348,9 @@ class GameMap:
         h, w = self._h, self._w
         if not (0 <= fy < h and 0 <= fx < w):
             raise ValueError(f"extract_gas_n_vec: tile ({fy}, {fx}) out of bounds")
-        dn = int(delta_n)
-        remove = [0] * N_GASES
-        if dn <= 0:
+        remove, want = self._air_withdrawal(fy, fx, delta_n)
+        if not want:
             return remove
-        o2 = int(self.gas[O2][fy, fx])
-        n2 = int(self.gas[INERT_N2][fy, fx])
-        n_bulk = (o2 if o2 > 0 else 0) + (n2 if n2 > 0 else 0)
-        if n_bulk < 1:                      # N_EPS_RAW -- no air to price by (A5)
-            return remove
-        want = dn if dn < n_bulk else n_bulk            # aggregate zero-clamp
-        remove[O2], remove[INERT_N2] = self.gas_proportional_split(
-            [o2 if o2 > 0 else 0, n2 if n2 > 0 else 0], want)
-        for g in range(N_GASES):
-            if g == O2 or g == INERT_N2:
-                continue
-            s_t = int(self.gas[g][fy, fx])
-            if s_t > 0:
-                remove[g] = (want * s_t) // n_bulk      # priced by air
         # arc #54 P-G1b (design §2.7 pump row): the withdrawn mass takes
         # `ΔN · T_abs(cell)` with it -- read BEFORE the slices move, and
         # counted over the CONSERVATIVE bulk slices only (the books' N).

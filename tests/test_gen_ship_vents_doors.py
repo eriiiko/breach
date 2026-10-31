@@ -282,8 +282,9 @@ def test_an_airlock_edge_is_a_vestibule_two_doors_and_one_controller():
     """PROPERTY: an ``airlock`` edge yields a vestibule that is its own,
     airtight compartment (rooms + 1), two door entities (inner open, outer
     closed, their spans the vestibule's two faces), exactly one
-    ``airlock_controller``, and the levels/airlock_demo wiring: 15 wires,
-    every endpoint an emitted entity. The plan passes every gate. BREAKS
+    ``airlock_controller`` in the mode its edge calls for (two interior
+    rooms: ``interior``, #133), every controller input that mode reads
+    wired exactly once, every endpoint an emitted entity. The plan passes every gate. BREAKS
     IF the vestibule leaks into its host, a door misses its face, the
     controller is duplicated or unwired, or the vestibule count is dropped
     from the compartment gate."""
@@ -301,7 +302,13 @@ def test_an_airlock_edge_is_a_vestibule_two_doors_and_one_controller():
     assert base_span(doors["open"].fields, G.TILE_SIZE_M) == list(al.inner)
     assert base_span(doors["closed"].fields, G.TILE_SIZE_M) == list(al.outer)
     ids = {e.id for e in emb.entities}
-    assert len(emb.wires) == 15
+    ctrl, = by_class["airlock_controller"]
+    assert ctrl.fields["mode"] == "interior"
+    needs = ("presence", "inner_open", "outer_open", "inner_alive",
+             "outer_alive", "chamber_p", "inner_side_p", "outer_side_p")
+    into = [dst.split(".")[1] for _src, dst in emb.wires
+            if dst.split(".")[0] == ctrl.id]
+    assert sorted(into) == sorted(needs)
     for src, dst in emb.wires:
         assert src.split(".")[0] in ids and dst.split(".")[0] in ids
     clab, cn = G.compartments(emb.tilemap, g)
@@ -366,16 +373,16 @@ print('RESULT', idle, ticks, len(lv.wires), bad)
 def test_an_airlock_level_loads_runs_headless_and_cycles_for_a_unit(
         tmp_path):
     """PROPERTY: a written level with an airlock loads through the loader
-    door (its 15 wires resolve), passes the GameMap airtight check, idles
+    door (every wire resolves), passes the GameMap airtight check, idles
     while its vestibule is empty, and -- when a unit stands in the vestibule
-    -- seals, evacuates and OPENS THE OUTER DOOR, all without importing the
+    -- seals, equalises (an interior pair, #133) and OPENS THE OUTER DOOR, all without importing the
     renderer. That is what the reachability gate's "the outer door is
     passable" rests on. BREAKS IF the recipe stops matching the airlock
     runtime (a wire, a mount tile, the plate off the chamber, the probe
     sampling a wall), or the gate's assumption stops being true."""
     import subprocess
     g = _airlock_graph()
-    _write_load(g, tmp_path)
+    plan, _lv = _write_load(g, tmp_path)
     (_i, al), = G._airlocks(g)
     x0, y0, _x1, _y1 = al.chamber
     proc = subprocess.run(
@@ -388,5 +395,5 @@ def test_an_airlock_level_loads_runs_headless_and_cycles_for_a_unit(
     _r, idle, ticks, n_wires, bad = line[0].split(" ", 4)
     assert idle == "IDLE"
     assert ticks != "None", "the outer door never opened for a unit inside"
-    assert n_wires == "15"
+    assert n_wires == str(len(plan.embedding.wires))
     assert bad == "[]"
