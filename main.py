@@ -30,6 +30,7 @@ Run:
     C:/Users/steen/anaconda3/python.exe main.py --level playground   # sandbox
     C:/Users/steen/anaconda3/python.exe main.py --control wego       # explicit default
     C:/Users/steen/anaconda3/python.exe main.py --level smoke_light_studio --control gamepad --warp 4.5   # frozen frame
+    C:/Users/steen/anaconda3/python.exe main.py --replay m.replay.gz --seek 600   # watch a recorded match (#127)
 """
 from __future__ import annotations
 
@@ -74,6 +75,7 @@ from renderer.static_props import placements_from_entities
 from simulation import Simulation
 from simulation.unit import Unit
 from control_source import create_control_source
+from renderer.tile_art import changed_between
 # The OnePhaseWEGO interface (onephase_wego design §16). Imported
 # unconditionally — ui.model is pure/headless and ui.draw only needs the pyray
 # already loaded above — and used only when that ruleset is running.
@@ -181,6 +183,67 @@ def _parse_warp_flag() -> float:
     if not (s >= 0.0) or s == float("inf"):
         raise SystemExit(f"--warp must be a finite number >= 0, got {s}")
     return s
+
+
+def _parse_replay_flag():
+    """``--replay PATH [--seek TICK]`` -- play a RECORDED match in the window
+    by re-simulation (#127; the recording is ``tools/run_match.py --record``'s,
+    #126). THE only playback path. The level, the match spec and the seed
+    come from the recording's header: ``--level`` is not needed (it is
+    refused if it names another level), and ``--control`` / ``--warp`` /
+    ``--res`` are REFUSED (the replay is the match's one controller,
+    ``--seek`` is its warp, and a resampled grid is another match).
+    ``--seek TICK`` fast-forwards to that tick before the first frame
+    (without drawing) and is where Backspace rewinds to; it is clamped to
+    the recording's end. Returns ``(path, seek_tick)``, or None when
+    ``--replay`` is absent (``--seek`` alone is refused)."""
+    seek = 0
+    if "--seek" in sys.argv:
+        i = sys.argv.index("--seek")
+        try:
+            seek = int(sys.argv[i + 1])
+        except (IndexError, ValueError):
+            raise SystemExit("--seek requires a tick, e.g. --seek 600")
+        if seek < 0:
+            raise SystemExit(f"--seek must be a tick >= 0, got {seek}")
+    if "--replay" not in sys.argv:
+        if "--seek" in sys.argv:
+            raise SystemExit("--seek only goes with --replay PATH")
+        return None
+    i = sys.argv.index("--replay")
+    try:
+        path = Path(sys.argv[i + 1])
+    except IndexError:
+        raise SystemExit("--replay requires a recording, e.g. "
+                         "--replay m.replay.gz")
+    if str(path).startswith("--") or not path.is_file():
+        raise SystemExit(f"--replay: no recording at {str(path)!r}")
+    for flag, why in (("--control", "the replay is the match's one "
+                                    "controller"),
+                      ("--warp", "use --seek TICK"),
+                      ("--res", "a resampled grid is another match")):
+        if flag in sys.argv:
+            raise SystemExit(f"--replay refuses {flag}: {why}")
+    return path, seek
+
+
+def _draw_replay_hud(rows, map_px_w: int) -> None:
+    """The replay HUD (#127): ``ReplayObserver.hud_lines`` rows, top right
+    of the map, on a dark plate. Display-space UI after the resolve."""
+    colours = {"title": rl.Color(255, 255, 255, 255),
+               "info": rl.Color(200, 200, 200, 255),
+               "ok": rl.Color(110, 220, 120, 255),
+               "bad": rl.Color(255, 70, 60, 255)}
+    size, pad, gap = 20, 10, 4
+    width = max(rl.measure_text(t, size) for t, _ in rows) + 2 * pad
+    height = len(rows) * (size + gap) - gap + 2 * pad
+    # Top right of the map: the tile inspector owns the top left.
+    x0 = max(0, map_px_w - width - 8)
+    y0 = 8
+    rl.draw_rectangle(x0, y0, width, height, rl.Color(0, 0, 0, 170))
+    for n, (text, kind) in enumerate(rows):
+        rl.draw_text(text, x0 + pad, y0 + pad + n * (size + gap), size,
+                     colours[kind])
 
 
 def _parse_debug_flag() -> bool:
@@ -333,8 +396,31 @@ def _onephase_world_overlay(sim, control_source, hover_tile=None):
 def main():
     # 1. Load level + build the simulation. --level overrides config for
     # one launch (playground / test maps); default = [display] level.
-    level_name = (_parse_level_override()
-                  or getattr(CFG.display, "level", "playground"))
+    # --replay (#127): the level comes from the recording's header.
+    replay_args = _parse_replay_flag()
+    recording = None
+    if replay_args is not None:
+        # match_replay's checkpoint digest is the determinism gates' one
+        # snapshot, which lives in tests/ (field_ab_harness): put it on the
+        # path as tools/run_match.py does -- never a second digest.
+        if str(ROOT / "tests") not in sys.path:
+            sys.path.append(str(ROOT / "tests"))
+        import match_replay
+        from control_match import replay_level_name
+        replay_path, seek_tick = replay_args
+        try:
+            recording = match_replay.read_recording(replay_path)
+            level_name = replay_level_name(recording,
+                                           _parse_level_override())
+        except match_replay.ReplayRefused as e:
+            raise SystemExit(f"--replay: {e}")
+        print(f"Replaying {replay_path}: level {recording.level}, seed "
+              f"{recording.seed}, {recording.end_tick} ticks, "
+              f"{len(recording.checkpoints)} checkpoints, recorded on "
+              f"{recording.build}")
+    else:
+        level_name = (_parse_level_override()
+                      or getattr(CFG.display, "level", "playground"))
     print(f"Loading level: {level_name}")
     level = load_level(level_name)
     res_factor = _parse_res_factor()
@@ -352,13 +438,33 @@ def main():
     # starts paused (plan first); `--control gamepad` -> ContinuousRealtime,
     # starts running. Byte-identical to the pre-P3 default under `wego`.
     debug_mode = _parse_debug_flag()
-    control_source = create_control_source(_parse_control_flag(),
-                                           debug=debug_mode, level=level)
 
-    sim = Simulation(level, seed=control_source.initial_seed(42),
-                     breach_physics=bp,
-                     enable_recorder=True,
-                     ruleset=control_source.initial_ruleset())
+    def _new_sim(lvl, seed, ruleset):
+        # THE one constructor; a replay's backward seek rebuilds through it.
+        # A replay allocates no field recorder (its ~650 MB ring would be
+        # held twice across a rebuild; the recording re-simulates anything
+        # the ring could dump, and the dump key is not polled in a replay).
+        return Simulation(lvl, seed=seed, breach_physics=bp,
+                          enable_recorder=recording is None,
+                          ruleset=ruleset)
+
+    replay = None
+    if recording is not None:
+        from control_match import ReplayObserver
+        try:
+            replay = ReplayObserver(
+                level, recording, seek_tick=seek_tick,
+                make_sim=lambda seed, rules: _new_sim(
+                    load_level(level_name), seed, rules))
+        except match_replay.ReplayRefused as e:
+            raise SystemExit(f"--replay: {e}")
+        control_source = replay
+    else:
+        control_source = create_control_source(_parse_control_flag(),
+                                               debug=debug_mode, level=level)
+
+    sim = _new_sim(level, control_source.initial_seed(42),
+                   control_source.initial_ruleset())
     sim.set_paused(control_source.starts_paused())
     # Is the turn-formula redesign driving? The renderer/HUD branches below key
     # off the RULESET rather than the flag name, so the two halves of the
@@ -433,6 +539,11 @@ def main():
         else:
             print(f"  (no diagnostic keys in game mode — relaunch with "
                   f"--debug to re-arm them)")
+    elif replay is not None:
+        print(f"  REPLAY: Space pause/resume | Backspace restart"
+              f"{f' at tick {replay.seek_tick}' if replay.seek_tick else ''}"
+              f" (re-simulated) | [display] sim_speed sets the pace | "
+              f"WASD/arrows pan | Q/E or wheel zoom")
     else:
         print(f"  WASD/arrows pan | Q/E or wheel zoom | "
               f"Space resume | Tab phase | Bksp undo | Ctrl+R reload")
@@ -573,6 +684,10 @@ def main():
             sim.step()
         sim.set_paused(True)
         print(f"  --warp {warp_s:g} s: stepped {n_warp} ticks, paused")
+    # --seek (#127): fast-forward the replay before the first frame.
+    if replay is not None and replay.seek_tick > 0:
+        sim = replay.seek(replay.seek_tick)
+    replay_gen = replay.generation if replay is not None else None
 
     # 3. Main loop.
     last_time = time.perf_counter()
@@ -600,6 +715,19 @@ def main():
                 renderer.poll_camera_zoom(allow_qe=False)
             renderer.update_camera(dt)
             control_source.handle_frame(sim, renderer)
+            # #127: a replay seek / restart. A rebuilt sim is handed to the
+            # renderer (the tiles the old one changed repatch through the
+            # wall seam), and the light is re-requested on it.
+            if replay is not None and replay.generation != replay_gen:
+                replay_gen = replay.generation
+                if replay.sim is not sim:
+                    replay.sim.gmap.render_dirty.update(
+                        changed_between(sim.gmap, replay.sim.gmap))
+                    sim = replay.sim
+                light_on, lit_rows, lit_flicker = None, None, None
+                # the seek's wall time is not playback time
+                tick_accum = 0.0
+                last_time = time.perf_counter()
 
             # ----- ray-engine-v2 P6b: the light -----
             # The radiation sweep lights the world: the game REQUESTS light
@@ -738,6 +866,8 @@ def main():
                     ui_draw.draw_ds3_menu(
                         ui.ds3_menu(sim, selected, control_source.menu_page),
                         screen_w, screen_h)
+            if replay is not None:
+                _draw_replay_hud(replay.hud_lines(sim), map_px_w)
             renderer.end_frame()
     finally:
         renderer.shutdown()

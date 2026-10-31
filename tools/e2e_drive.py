@@ -130,6 +130,11 @@ def main(argv=None) -> int:
     orig_end_drawing = rl.end_drawing
 
     def _end_drawing():
+        if shots.get(frame[0]):
+            # Flush raylib's pending batch first: the panel, the HUD and any
+            # other batched 2D draw is only drawn at end_drawing, so a
+            # read-back before it showed the world without them (#127).
+            rl.rl_draw_render_batch_active()
         for path in shots.get(frame[0], ()):
             img = rl.load_image_from_screen()
             rl.export_image(img, str(Path(path).resolve()))
