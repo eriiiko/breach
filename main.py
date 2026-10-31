@@ -709,6 +709,9 @@ def main():
                 overlay_fn=(_onephase_world_overlay(
                     sim, control_source, renderer.mouse_to_tile())
                     if onephase else None),
+                # #106 P7: every creature drawn from its chain, through THE
+                # chain accessor (a pure read; empty without creatures)
+                creatures=sim.creature_chains(),
             )
             renderer.draw_background_to_screen()
             renderer.blit_world_to_screen()

@@ -1143,7 +1143,8 @@ def _run_perf_bench(renderer, sim, lights_in, light_sky,
             renderer.begin_frame()
             renderer.compose_world(units_marines=sim.marines(),
                                    units_zombies=sim.zombies(),
-                                   projectiles=sim.projectiles)
+                                   projectiles=sim.projectiles,
+                                   creatures=sim.creature_chains())
             renderer.draw_background_to_screen()
             renderer.blit_world_to_screen()
             t_cpu = time.perf_counter()
@@ -1372,7 +1373,8 @@ def _run_fire_vfx_perf(renderer, sim, lights_in, light_sky,
             renderer.begin_frame()
             renderer.compose_world(units_marines=sim.marines(),
                                    units_zombies=sim.zombies(),
-                                   projectiles=sim.projectiles)
+                                   projectiles=sim.projectiles,
+                                   creatures=sim.creature_chains())
             renderer.draw_background_to_screen()
             renderer.blit_world_to_screen()
             renderer.end_frame()
@@ -1498,6 +1500,10 @@ def main() -> None:
         sim.add_unit(Unit(s.name, x=s.x, y=s.y, team=s.team,
                           footprint=s.footprint))
     print(f"[lighting_demo] Spawned {len(level.spawns)} units")
+    if level.creatures:
+        # #106 P7: the level's [[creature]] rows (main.py's single-player path)
+        sim.spawn_creatures(level.creatures)
+        print(f"[lighting_demo] Spawned {len(level.creatures)} creature(s)")
 
     # --flood: pre-fill the ship interior with standing water at startup so the
     # water look/heightmap dials can be tuned without pouring tile-by-tile (U).
@@ -2242,6 +2248,7 @@ def main() -> None:
                 projectiles=sim.projectiles,
                 props=(demo_garden if (state.props_on
                                        and prop_renderer.ready) else ()),
+                creatures=sim.creature_chains(),
             )
 
             renderer.draw_background_to_screen()

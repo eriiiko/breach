@@ -536,6 +536,15 @@ class Simulation:
         or rest pose is not on open tiles. Returns the units."""
         return spawn_creature_units(self, rows)
 
+    def creature_chains(self) -> dict:
+        """Every creature's chain, read through THE chain accessor
+        (``creature_system.read_chain``, #106 P7): ``{unit id: ChainView}``,
+        float32 views dequantized once, dead creatures included (frozen).
+        A pure read for the renderer, tools and rules -- never the buffers.
+        Empty without creatures."""
+        from simulation.creature_system import read_chains
+        return read_chains(self._creature_system, self.units)
+
     def hand_zombies_to_controller(self) -> None:
         """Give the horde to a match's zombie controller (#122): from now on
         the conductor's zombie slot no longer runs the law on its own; it

@@ -10,13 +10,14 @@ before P7's render.
 writes ``prototypes/octopus_motion/out/sim_{crawl,swim,grab,idle}.gif``.
 
 Pure half / thin shell (the map-editor pattern): :func:`clip_frames` turns a
-run (``tests/_creature_scenarios.Run``: the decoded record per tick) into
-plain per-frame drawing data -- the crown, the eight arm polylines and the
-colour of each arm's primitive state, the prop, a caption -- with no
-matplotlib; :func:`write_gif` draws them, top-down (screen frame: North up)
-and, for the swim and the grab, a side view (x, z). Everything float here is
-the render side of the record (dequantized once by the harness); nothing is
-written back.
+run (``tests/_creature_scenarios.Run``: per tick the chain accessor's view,
+``creature_system.read_chain`` -- THE read of a creature's chain since #106
+P7 -- and the decoded record for the hub's gait and seals) into plain
+per-frame drawing data -- the crown, the eight arm polylines and the colour
+of each arm's primitive state, the prop, a caption -- with no matplotlib;
+:func:`write_gif` draws them, top-down (screen frame: North up) and, for the
+swim and the grab, a side view (x, z). Everything float here is the
+accessor's (dequantized once at the read); nothing is written back.
 """
 from __future__ import annotations
 
@@ -55,14 +56,15 @@ def clip_frames(run, every: int = 1, label: str = "") -> list[dict]:
     out = []
     for f in range(0, len(run.records), max(1, int(every))):
         rec = run.records[f]
-        Pn = run.P[f].copy()
+        view = run.views[f]                    # THE chain accessor (#106 P7)
+        Pn = view.nodes.astype(float)
         Pn[..., 1] = -Pn[..., 1]
-        X = run.X[f].copy()
+        X = view.crown.astype(float)
         X[1] = -X[1]
-        names = [P.ARM_STATE_NAMES[int(s)] for s in rec["arm_state"]]
+        names = [P.ARM_STATE_NAMES[int(s)] for s in view.arm_state]
         prop = None
-        if run.PR is not None:
-            prop = run.PR[f].copy()
+        if view.prop is not None:
+            prop = view.prop[:3].astype(float)
             prop[1] = -prop[1]
         counts = {}
         for n in names:
