@@ -64,7 +64,7 @@ engine stays small.
 
 ## 4. Deliberately open (the session list)
 
-- The first cycle types to name and their tactical meaning (next session item).
+- ~~The first cycle types~~ DONE 2026-10-31 (the cycle-types doc). Next session: the archetype recipe (phases, budgets, spawn exits, secret budget).
 - From the vocabulary doc's Part F, still open: sub-ambient temperature (a
   physics session: cold storage, the morgue), dust as a gas row (Erik: later,
   after the first departments play), the high-O2 demo (now runnable:
@@ -161,3 +161,17 @@ engine stays small.
   re-closed room conserves N to the LSB; mirror twins must REFLECT the lower
   id's site (floor-centring a 3-wide door on a 10-tile run lands the twins a
   tile apart).
+- 2026-10-31 -- cycle types + recipe format session (afternoon, design only,
+  branch `136-cycle-types-recipes`): `docs/levelgen_cycle_types_and_recipes_2026-10-31.md`.
+  Erik's rulings: walk and air loops are different and both are named; every
+  walkable path >= 6 tiles, the flank pair's service leg may be 3; all six
+  first types in (retreat loop, flank pair, airlock bypass, maintenance ring,
+  duct link, pocket); the galley stove is ON from tick 0 (to be looked over
+  once ships play); spawn exits 1-3 default 2 as an archetype parameter.
+  Followed §5 steps 1-3 (no code). Learned: opening with "where we are" in
+  four scales of lego pieces (edge kind / room role / cycle type /
+  department / archetype) is what let Erik follow a fast-moving track --
+  reuse that framing at the start of every levelgen session; one English
+  word ("galley") cost a round trip -- gloss ship vocabulary the first time
+  it appears. Next: critique pass on the doc, then the archetype recipe.
+  Implementation handed to another chat; this worktree left in place for it.
