@@ -144,6 +144,37 @@ _U64 = (1 << 64) - 1
 
 
 # ---------------------------------------------------------------------------
+# The cost bench's part timer (#106 P6e) -- OFF by default
+# ---------------------------------------------------------------------------
+class _NoLaps:
+    """The default part timer: ``lap`` does nothing. Slot 5b calls it between
+    its parts; with no bench attached that is one empty method call per part,
+    no clock read, no state."""
+    __slots__ = ()
+
+    def lap(self, part: str) -> None:
+        pass
+
+
+_NO_LAPS = _NoLaps()
+#: Slot 5b's part timer (``tools/bench_octopus.py``): ``lap(part)`` charges
+#: the wall time since the previous lap to ``part`` ("enter" opens a tick).
+#: Module state, never on a sim, a system or a body -- so nothing pickles,
+#: hashes or records it, and timing on or off cannot move a digest.
+_laps = _NO_LAPS
+
+
+def set_tick_laps(laps=None):
+    """Attach the bench's part timer (an object with ``lap(part)``), or detach
+    it with ``None``. Returns the timer that was attached (None if none).
+    Measurement only: it never changes what slot 5b calls or in what order."""
+    global _laps
+    prev = _laps
+    _laps = _NO_LAPS if laps is None else laps
+    return None if prev is _NO_LAPS else prev
+
+
+# ---------------------------------------------------------------------------
 # The creature key and the engine
 # ---------------------------------------------------------------------------
 def is_creature(unit) -> bool:
@@ -503,10 +534,12 @@ class CreatureBody:
                                       self.footprint, self.tile_size_m)
         unit.x, unit.y = x, y
         unit.facing = CF.heading_rad_to_facing(CF.heading_q24_to_rad(self.heading_q24))
+        _laps.lap("unit")
         # the hit seam (P6d3): rebuilt from the chain with every pose write
         h, w = self.bufs.blocked.shape[1:]
         self.hit_shape = build_hit_shape(self, unit.occupied_tiles(), h, w)
         unit.hit_shape = self.hit_shape
+        _laps.lap("hit_shape")
 
     # -- intents -> the hub's goal ----------------------------------------------
     def route_intents(self, unit) -> None:
@@ -760,21 +793,29 @@ class CreatureSystem:
         (anchor + facing). A dead creature is skipped: frozen."""
         if not self.bodies:
             return
+        laps = _laps        # the bench's part timer; a no-op unless attached (P6e)
+        laps.lap("enter")
         engine = require_engine(sim._bp)
         by_id = {u.id: u for u in sim.units}
         rects = [(u.id, _footprint_rect(u)) for u in sorted(sim.units, key=lambda u: u.id)
                  if u.alive]
         gmap = sim.gmap
+        laps.lap("setup")
         for body in self.ordered_bodies():
             u = by_id.get(body.unit_id)
             if u is None or not u.alive:
                 continue
             body.route_intents(u)
+            laps.lap("hub")
             body.write_inputs(gmap, [r for uid, r in rects if uid != body.unit_id])
+            laps.lap("inputs")
             P.hub_step(body)
+            laps.lap("hub")
             AC.tick(body.row, body.solver_row_node, body.bufs, engine)
+            laps.lap("chain")
             P.after_solver(body)
-            body.write_unit(u)
+            laps.lap("hub")
+            body.write_unit(u)          # laps "unit" and "hit_shape" inside
 
     def section_bytes(self) -> bytes:
         """The ``__creature__`` section of the current state."""
@@ -816,4 +857,5 @@ __all__ = [
     "CreatureBody", "CreatureSystem",
     "serialize_record", "decode_record", "section_bytes", "creature_carrier",
     "require_creature_carrier", "diff_creature_records", "spawn_creature_units",
+    "set_tick_laps",
 ]
