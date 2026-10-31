@@ -476,6 +476,16 @@ what needs a SESSION with Erik (physics or art).
 | **Entity doors and airlock pairs** | stage 2 emits `door` entities (and an `airlock_controller` + two doors + a vestibule for an L5 edge) where the edge kind says so; today it stamps only `MAT_DOOR` | — |
 | **Per-room annotations** (finding 16) | the tag schema a department writes per room: `dept`, `role`, `cell`, `light` (rgb, level), `fuel` density, material overrides (glass wall), water group, props list; how departments coexist with the spawn rooms and the zombie section `validate` A*-checks | — |
 
+Status (2026-10-31, #133 patch 1, branch `133-stage2-edges`):
+
+- **Edge kinds**: DONE 01537e9, `gen_ship.EDGE_KINDS` (this §0.4 table as code: stamps, width, bounds, secret path, L9, pending); door / window / open / bulkhead / vent_only / breakable stamped, entity_door / airlock / locked accepted and refused by `embed` until the next patch.
+- **Open-doorway compartments**: DONE 01537e9, `ShipGraph.compartment_of` + `validate(graph=)` (`_graph_compartment_reasons`: count and room-to-compartment match against the graph's compartments).
+- **Structure mask from the graph**: DONE 01537e9, `gen_ship.compartments(tm, graph)` (a bounding edge's opening tiles are structure, so a breakable's wood is a wall).
+- **Secret reachability**: DONE 01537e9, `gen_ship._excused_secrets` (an all-`secret` compartment joined to a reached one by a breakable / vent_only edge); airtight gate untouched (`tests/test_gen_ship_edges.py`, 1838ce8).
+- **Multi-duct vent builder**: not in this patch (next).
+- **Entity doors and airlock pairs**: not in this patch (next).
+- **Per-room annotations**: DONE 01537e9 in part, `gen_ship.ROOM_TAGS` (spawn_team, zombie, fuel, vent, dept, role, cell, light, secret; unknown keys refused); `light` replaces the fixed lamp, dept / role / cell / secret / light ride `Embedding.room_tags`. Material overrides, water group and props list not yet.
+
 ### E.2 New mechanisms (patches on existing canonical systems; none is a parallel system)
 
 | Mechanism | Extends | Used by | Note |
