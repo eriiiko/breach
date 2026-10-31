@@ -3726,7 +3726,7 @@ front_bias = 1.0               # P5
 [creatures.octopus.locomotion]
 v_max = 4.0                    # scaled L^1, m/s: the declared top speed = the jet train at speed 1 (P6d2 measured 4.0 m/s, P5z 3.95); declared and gated, the jet's dv is the actuator
 crawl_until = 0.15             # choice (P6f): 0.15 x 4.0 = 0.6 m/s, the P2/P5z crawl's own top speed (0.58-0.61 m/s)
-swim_until = 0.3               # choice (P6f): the umbrella band's top (its P3 stroke); NOTE the P3 umbrella makes ~0.41 m/s, SLOWER than the crawl's top -- P8 tunes
+swim_until = 0.3               # choice (P6f): the umbrella band's top (its P3 stroke). P6f measured (20 s from the deck): crawl top 0.43 m/s, umbrella 0.45-0.53 m/s, jet 1.40 m/s just above this band -- monotone, but the asked m/s is honest only for the jet; P8 tunes
 gait_hold_s = 0.25             # choice (P6f): a new travel gait must be asked for this long in a row (6 ticks at 24 Hz)
 hunt_speed = 0.15              # choice (P6f): the `creature` match controller's speed (= crawl_until: it hunts at the full crawl, as P6d2's controller did; a swim does not steer in v1)
 
