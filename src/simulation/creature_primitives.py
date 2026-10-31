@@ -48,11 +48,11 @@ intent on the creature unit                 primitive (its tempo)
 ==========================================  ==============================
 none, or MOVE_DIR at s = 0                  idle (seated; explore, touch, limp)
 MOVE_DIR at 0 < s <= c                      crawl toward the direction;
-                                            ``p_recruit`` x s / c
+                                            ``p_recruit`` x (s / c)^2
 MOVE_DIR at c < s <= w                      swim: the umbrella (the cruise);
                                             stroke period / (s / w)
 MOVE_DIR at s > w                           swim: the jet train (the escape);
-                                            ``jet_dv`` x s
+                                            ``jet_dv`` x s^2
 AIM (with or without a MOVE_DIR)            reach: the best-placed arm
 USE (latched; needs a creature-owned prop)  grab the prop: reach, wrap,
                                             hold, lift, then carry it
@@ -61,9 +61,10 @@ USE (latched; needs a creature-owned prop)  grab the prop: reach, wrap,
 Each band's TOP is the P6d2 gait exactly (s = c: the P2 crawl, s = w: the P3
 umbrella, s = ONE: the P3 jet train), so a tempo factor of ONE leaves the
 gait's integers untouched. The crawl's speed lever is the recruitment
-PROBABILITY (a thinned Bernoulli lottery on the same comb: still
-memoryless, so Levy's no-rhythm property holds; the push itself -- its
-duration, ``e_max`` -- is unchanged). A change of travel gait waits for the
+PROBABILITY, squared in the tempo (``crawl_p_recruit``): a thinned
+Bernoulli lottery on the same comb is still memoryless, so Levy's
+no-rhythm property holds; the push itself -- its duration, ``e_max`` -- is
+unchanged. A change of travel gait waits for the
 new band to be asked ``locomotion.gait_hold_ticks`` ticks in a row (an
 ELAPSED counter, hashed: ``goal_pending`` / ``goal_pending_ticks``) --
 starting from idle and stopping (s = 0, no MOVE_DIR) are immediate. The
@@ -73,7 +74,7 @@ speeds are Erik's #104 wishlist, not built).
 
 While the grab arm holds the prop the other arms crawl (any travel band, at
 the full crawl tempo above ``c``) and the escape becomes the CARRY JETS
-(``carry_jet_dv`` x s impulses on the escape cycle) instead of a swim: the
+(``carry_jet_dv`` x s^2 impulses on the escape cycle) instead of a swim: the
 carry of P4. A swim does not steer in v1: the jet pushes along the heading
 (mantle first), the umbrella's thrust is along it. A creature in the LIMP
 gait (``CreatureBody.set_limp``) runs no primitive.
@@ -407,6 +408,24 @@ def stroke_tempo(body) -> int:
     return max(1, min(ONE, K.div_round_away(int(body.goal_speed) << 16, d.swim_until)))
 
 
+def crawl_p_recruit(body) -> int:
+    """The crawl's recruitment probability at the asked speed, Q16:
+    ``p_recruit x tempo^2`` (exactly ``p_recruit`` at the band top). THE
+    crawl's speed lever (P6f): the lottery on the same comb, only thinned,
+    stays memoryless -- Levy's no-rhythm property holds -- and the push
+    itself (duration, ``e_max``) is unchanged. The SQUARE because the
+    crown glides: a lone push carries it ~0.7 m in the water, so the speed
+    saturates with the push rate (p x tempo alone kept 0.37 of the full
+    crawl's ~0.4 m/s at tempo 0.25; the arms' recovery as the lever, 0.23
+    m/s; P6f run log)."""
+    d = body.dials
+    tau = crawl_tempo(body)
+    if tau >= ONE:
+        return d.p_recruit
+    return K.mul_shr_away(K.mul_shr_away(d.p_recruit, tau, 16), tau, 16)
+
+
+
 def _stroke_ticks(body) -> tuple[int, int]:
     """The umbrella's (open, close) ticks at the current tempo: the P3
     periods at ONE, exactly; longer below."""
@@ -419,9 +438,15 @@ def _stroke_ticks(body) -> tuple[int, int]:
 
 
 def _jet_scale(body, dv_q24: int) -> int:
-    """A jet's dv at the asked speed: ``dv x s`` (the full dv at ONE)."""
+    """A jet's dv at the asked speed: ``dv x s^2`` (the full dv at ONE). The
+    SQUARE because the train's mean speed goes as ~dv^0.45 under the
+    crown's quadratic drag (P6f measured 0.73 / 0.90 of the top speed at
+    dv x 0.5 / 0.8): dv x s^2 makes the delivered speed ~proportional to
+    the asked one -- Erik's "good control over the actual speed"."""
     s = int(body.goal_speed)
-    return dv_q24 if s >= ONE else K.mul_shr_away(dv_q24, s, 16)
+    if s >= ONE:
+        return dv_q24
+    return K.mul_shr_away(K.mul_shr_away(dv_q24, s, 16), s, 16)
 
 
 # ---------------------------------------------------------------------------
@@ -593,11 +618,9 @@ def _crawl_decide(body, target) -> None:
     st = body.arm_state
     if int((st == ARM_STANCE).sum()) >= d.max_stance:
         return
-    # the speed lever (P6f): the recruitment probability x the crawl tempo
-    # (exactly p_recruit at the band top)
-    tau = crawl_tempo(body)
-    p = d.p_recruit if tau >= ONE else K.mul_shr_away(d.p_recruit, tau, 16)
-    if not _chance(body, p):
+    # the crawl's speed lever (P6f): the recruitment probability x tempo^2
+    # (exactly p_recruit at the band top; see crawl_p_recruit)
+    if not _chance(body, crawl_p_recruit(body)):
         return
     th16 = _th16(body)
     tx, ty = target
@@ -901,7 +924,7 @@ def _drive_swim(body) -> None:
     """swim_sim.Swimmer._command on integers: the umbrella's root angle on one
     phase clock (open slowly, close fast: open_s / close_s, both divided by
     the stroke tempo -- the speed law), or the jet train (arms bundled
-    toward bundled_deg, jet_dv x the asked speed spread evenly over
+    toward bundled_deg, jet_dv x the asked speed squared spread evenly over
     jet_ticks along the heading, one jet per opening time)."""
     d = body.dials
     op_t, cl_t = _stroke_ticks(body)
@@ -939,7 +962,7 @@ def _drive_swim(body) -> None:
 
 def _drive_carry_jets(body) -> None:
     """The carry's escape (P4's jets): one carry_jet_dv x the asked speed
-    impulse along the heading per opening time while the escape is asked
+    squared impulse along the heading per opening time while the escape is asked
     for."""
     d = body.dials
     t = int(body.swim_ticks)
@@ -1077,7 +1100,7 @@ __all__ = [
     "ARM_GRAB_WRAP", "ARM_GRAB_HOLD", "ARM_CARRY", "ARM_STATE_NAMES", "GRAB_STATES",
     "GAIT_LIMP", "GAIT_IDLE", "GAIT_CRAWL", "GAIT_SWIM", "GAIT_NAMES",
     "GOAL_NONE", "GOAL_CRAWL", "GOAL_CRUISE", "GOAL_ESCAPE", "GOAL_NAMES",
-    "speed_law", "speed_band", "crawl_tempo", "stroke_tempo",
+    "speed_law", "speed_band", "crawl_tempo", "crawl_p_recruit", "stroke_tempo",
     "SWIM_OPEN", "SWIM_CLOSE", "SWIM_JET", "SWIM_COAST",
     "PrimDials", "route_intents", "hub_step", "after_solver",
 ]

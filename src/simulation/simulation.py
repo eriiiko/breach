@@ -931,6 +931,13 @@ class Simulation:
         u.live_aim = _intents.AimIntent(int(dx_q), int(dy_q))
         self._possessed_ids.add(unit_id)
 
+    def clear_aim(self, unit_id: int) -> None:
+        """Drop ``unit_id``'s live AIM (#106 P6f: a creature's reach goal ends
+        when the aim is released). Facing already written stays."""
+        u = self.get_unit(unit_id)
+        if u is not None:
+            u.live_aim = None
+
     def set_trigger(self, unit_id: int, held: bool) -> None:
         """TRIGGER: hold/release ``unit_id``'s weapon trigger (§3c). While held,
         the unit auto-fires along its facing at its weapon cadence."""

@@ -17,11 +17,15 @@ enter the sim (the determinism iron rule).
 
 Button / stick map (Xbox-style names; the raylib enum is layout-agnostic):
 
-    Left stick     -> MOVE_DIR (walk; hold LB for SPRINT)
-    Right stick    -> AIM (facing; holds last facing when centered)
+    Left stick     -> MOVE_DIR: the direction, and the ANALOG SPEED from the
+                      deflection past the deadzone (``speed_q``, #106 P6f:
+                      a creature picks its gait from it); hold LB for SPRINT
+                      (the marines' speed mode)
+    Right stick    -> AIM (facing; holds last facing when centered; a creature
+                      reaches along it, and stops when it is centered)
     Right trigger  -> TRIGGER held/released (auto-fire at weapon cadence)
     A (south)      -> THROW grenade along aim/facing
-    X (west)       -> USE (toggle an adjacent door)
+    X (west)       -> USE (toggle an adjacent door; a creature grabs its prop)
 
 The actual controller FEEL is Erik's HUMAN-TEST — this module is not driven in
 the headless test suite (it needs a live pad). The one piece the tests DO pin
@@ -34,7 +38,8 @@ from __future__ import annotations
 
 import pyray as rl
 
-from control_source import ControlSource, quantize_stick_direction
+from control_source import (ControlSource, analog_speed_q, first_controlled_unit,
+                            quantize_stick_direction)
 from simulation.orders import ORDER_MOVE_ATTACK, ORDER_SPRINT
 from simulation.ruleset import ContinuousRealtime
 from simulation.weapons import get_tables as weapon_tables
@@ -51,7 +56,11 @@ _TRIGGER_ON = 0.0
 
 class GamepadDirect(ControlSource):
     """Possess the first marine of the player's team (``sim.player_team``)
-    and drive it with a controller (§3b)."""
+    and drive it with a controller (§3b). Under ``--play creature`` the
+    player's team is ``CREATURE_TEAM``: the possessed unit is the creature
+    (#106 P6f)."""
+
+    drives_one_unit = True
 
     def __init__(self):
         # The possessed unit id — bound lazily on the first frame a unit
@@ -90,15 +99,7 @@ class GamepadDirect(ControlSource):
         ``sim.player_team``
         (default per §3b — the editor's first SPAWN T). Re-binds if the current
         possessed unit is gone (dead/removed)."""
-        cur = sim.get_unit(self.possessed_id) if self.possessed_id is not None \
-            else None
-        if cur is not None and cur.alive:
-            return
-        for u in sim.units:
-            if u.team == sim.player_team and u.alive:
-                self.possessed_id = u.id
-                return
-        self.possessed_id = None
+        self.possessed_id = first_controlled_unit(sim, self.possessed_id)
 
     def _axis(self, axis) -> float:
         """Read one gamepad axis, defaulting to 0.0 if the enum is missing on
@@ -151,7 +152,8 @@ class GamepadDirect(ControlSource):
             sprint = rl.is_gamepad_button_down(
                 _PAD, GB.GAMEPAD_BUTTON_LEFT_TRIGGER_1)  # LB
             speed_mode = ORDER_SPRINT if sprint else ORDER_MOVE_ATTACK
-            sim.set_move_dir(uid, mdx, mdy, speed_mode)
+            sim.set_move_dir(uid, mdx, mdy, speed_mode,
+                             speed_q=analog_speed_q(lx, ly, _MOVE_DEADZONE))
 
         # ---- Right stick -> AIM (facing) ----
         rx = self._axis(GA.GAMEPAD_AXIS_RIGHT_X)
@@ -159,6 +161,10 @@ class GamepadDirect(ControlSource):
         adx, ady, amag = quantize_stick_direction(rx, ry, _AIM_DEADZONE)
         if amag != 0:
             sim.set_aim(uid, adx, ady)
+        elif self._is_creature(sim, uid):
+            # a creature's reach ends when the stick is released (#106 P6f);
+            # a marine keeps its last facing aim, as before
+            sim.clear_aim(uid)
 
         # ---- Right trigger -> TRIGGER held/released (auto-fire) ----
         rt = self._axis(GA.GAMEPAD_AXIS_RIGHT_TRIGGER)
@@ -182,6 +188,12 @@ class GamepadDirect(ControlSource):
         if use_down and not self._prev_use:
             sim.use_intent(uid)
         self._prev_use = use_down
+
+    @staticmethod
+    def _is_creature(sim, uid) -> bool:
+        from simulation.creature_system import is_creature
+        u = sim.get_unit(uid)
+        return u is not None and is_creature(u)
 
     def _facing_dir(self, sim, uid):
         """Q16.16 unit vector along the possessed unit's current facing — the

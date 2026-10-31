@@ -15,6 +15,9 @@ Flags (this tool's own):
     --press KEY@F     report KEY as pressed on frame F (repeatable; KEY is a
                       raylib KeyboardKey name without the ``KEY_`` prefix:
                       M, F11, SPACE, I, ...)
+    --hold KEY@F0..F1 report KEY as HELD DOWN (``is_key_down``) from frame F0
+                      through F1 inclusive (``KEY@F0..`` = to the last frame;
+                      repeatable) -- driving a unit with WASD (#106 P6f)
     --shot PATH@F     save the frame-F picture to PATH (.png; repeatable),
                       read back just before that frame's end_drawing
     --level NAME      the level (passed through to main.py)
@@ -91,9 +94,30 @@ def parse_args(argv):
     return frames, presses, shots, passthrough
 
 
+def parse_holds(argv):
+    """Split the ``--hold KEY@F0..F1`` specs out of argv: ``({key: [(f0, f1),
+    ...]}, the rest)``; ``f1`` None = to the last frame. Pure."""
+    holds, rest = {}, []
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--hold":
+            spec = argv[i + 1]
+            key, _, span = spec.partition("@")
+            a, sep, b = span.partition("..")
+            if not key or not a or not sep:
+                raise SystemExit(f"--hold wants KEY@F0..F1 or KEY@F0.., got {spec!r}")
+            holds.setdefault(key.upper(), []).append((int(a), int(b) if b else None))
+            i += 2
+            continue
+        rest.append(argv[i])
+        i += 1
+    return holds, rest
+
+
 def main(argv=None) -> int:
     faulthandler.enable()
-    frames, presses, shots, passthrough = parse_args(list(sys.argv[1:] if argv is None else argv))
+    holds, argv = parse_holds(list(sys.argv[1:] if argv is None else argv))
+    frames, presses, shots, passthrough = parse_args(argv)
 
     os.chdir(ROOT)
     import pyray as rl
@@ -110,9 +134,19 @@ def main(argv=None) -> int:
                                  f"KeyboardKey name without KEY_, e.g. M, F11)")
             scripted.setdefault(at, set()).add(code)
 
+    held = {}
+    for name, spans in holds.items():
+        try:
+            code = int(getattr(rl.KeyboardKey, f"KEY_{name}"))
+        except AttributeError:
+            raise SystemExit(f"--hold: unknown key {name!r} (a raylib "
+                             f"KeyboardKey name without KEY_, e.g. W, LEFT_SHIFT)")
+        held.setdefault(code, []).extend(spans)
+
     frame = [0]
     orig_close = rl.window_should_close
     orig_pressed = rl.is_key_pressed
+    orig_down = rl.is_key_down
 
     def _should_close():
         frame[0] += 1
@@ -127,6 +161,12 @@ def main(argv=None) -> int:
             return True
         return orig_pressed(key)
 
+    def _is_key_down(key):
+        for f0, f1 in held.get(int(key), ()):
+            if f0 <= frame[0] and (f1 is None or frame[0] <= f1):
+                return True
+        return orig_down(key)
+
     orig_end_drawing = rl.end_drawing
 
     def _end_drawing():
@@ -139,11 +179,12 @@ def main(argv=None) -> int:
 
     rl.window_should_close = _should_close
     rl.is_key_pressed = _is_key_pressed
+    rl.is_key_down = _is_key_down
     rl.end_drawing = _end_drawing
 
     sys.argv = ["main.py"] + passthrough
     print(f"[e2e_drive] main.py {' '.join(passthrough)} -- {frames} frames, "
-          f"presses {dict(sorted(presses.items()))}", flush=True)
+          f"presses {dict(sorted(presses.items()))}, holds {holds}", flush=True)
     try:
         runpy.run_path(str(ROOT / "main.py"), run_name="__main__")
     except SystemExit as exc:
