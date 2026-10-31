@@ -360,3 +360,27 @@ the lead so you decide all these things." Concretely:
   the reach / wrap / lift of a 116 kg prop held at the crown while the other
   arms crawl. Cost: one session; the sim runs ~3 ms per tick on a 30 x 30
   flooded room, ~10 ms on 150 x 40 (mostly the room's physics; P6e measures).
+- 2026-10-31 (P6d3, worktree agent, Opus) -- the HIT SEAM: `Unit.hit_tiles()`
+  (+ `in_hit_tiles`, `note_hit`), the footprint for every unit but a
+  creature, whose `CreatureBody.write_unit` rebuilds a derived `HitShape`
+  (footprint + every in-map tile an arm segment crosses, sorted, not
+  digested) at spawn and every slot-5b pose write. The rasteriser is
+  `creature_fixed.segment_tiles`: an exact-integer supercover walk over the
+  Q24 chain in the solver's own tile law, crossings compared by
+  cross-multiplication, a corner pass stepping diagonally. Wired into
+  exactly the bullet march and the laser skewer; a connecting hit writes
+  the struck (arm, node) to the hashed `last_hit` ((-1, -1) on the crown).
+  Sites classified and LEFT on the footprint: melee target + adjacency, the
+  zombie bite (centre distance), every exchange row incl. the blast
+  (centre distance), stamps, doors, the spray's nozzle exclusion, the
+  solver's unit rects, vision's silhouette, the UI's click-picking. Choices
+  (vetoable): z ignored (an arm mid-water is hittable from the deck), a
+  crown hit writes (-1, -1) so a renderer pairing `UnitHitEvent` with
+  `last_hit` never shows a stale node, node k owns its tile and its
+  segment's corner clips (first claim in (arm, node) order). Found: in the
+  idle pose the eight seated arms ring the crown so tightly that no march
+  path passes within 3 tiles of the footprint without crossing an arm --
+  the "crown-side miss" gate is a near miss beside an arm inside the reach
+  (4 tiles from the crown), found by a deterministic search. The melee gate
+  cannot see a target-only regression (adjacency is a second footprint
+  test). Cost: ~0.3 ms per creature per tick in Python (P6e measures).
