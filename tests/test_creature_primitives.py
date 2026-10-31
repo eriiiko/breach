@@ -652,7 +652,7 @@ def test_two_runs_are_byte_identical():
 def test_the_record_carries_the_hub_and_the_prop():
     """The record (V3 since P6f) decodes to the body's hub fields -- the
     speed law's asked speed and pending gait included -- and the prop's
-    pose; the section preamble says V3. Breaks if the serializer and its
+    pose; the section preamble says V4. Breaks if the serializer and its
     decoder drift apart or the layout changes without a version bump."""
     from simulation import arm_chain as AC
     sc = SC.Scenario("rec", size=40)
@@ -660,7 +660,7 @@ def test_the_record_carries_the_hub_and_the_prop():
     b.add_prop()
     sc.step(5, each=lambda s: s.move(0.0))
     d = CS.decode_record(CS.serialize_record(b))
-    assert CS.CREATURE_SECT_PREAMBLE == b"CREATURE_SECT_V3\n"
+    assert CS.CREATURE_SECT_PREAMBLE == b"CREATURE_SECT_V4\n"
     assert d["gait"] == b.gait and d["goal_kind"] == b.goal_kind
     assert d["goal_speed"] == b.goal_speed == b.dials.crawl_until
     assert (d["goal_pending"], d["goal_pending_ticks"]) == (b.goal_pending, b.goal_pending_ticks)

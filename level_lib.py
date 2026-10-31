@@ -162,9 +162,13 @@ def format_spawn_room_lines(rooms, nl: str = "\n") -> list:
 
 
 def _creature_row(c) -> dict:
-    """A ``CreatureSpawn`` -> its toml row (all five keys written)."""
-    return {"species": str(c.species), "x": float(c.x), "y": float(c.y),
-            "team": int(c.team), "heading": float(c.heading)}
+    """A ``CreatureSpawn`` -> its toml row (all five keys written; ``prop``
+    only when true, #106 P6g, so a prop-less row keeps its bytes)."""
+    row = {"species": str(c.species), "x": float(c.x), "y": float(c.y),
+           "team": int(c.team), "heading": float(c.heading)}
+    if getattr(c, "prop", False):
+        row["prop"] = True
+    return row
 
 
 def format_creature_lines(creatures, nl: str = "\n") -> list:

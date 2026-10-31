@@ -3655,7 +3655,7 @@ neighbour_bonus = 0.3          # P2
 grip_limit = 6077.53           # scaled L^4, N per anchored node
 stance_activation = 0.3        # P2
 steer_gain = 1.0               # P2
-steer_window_s = 2.0           # P2
+steer_window_s = 2.0           # P2. P6g (2026-10-31) measured the 90-deg response (crawl East 4 s, then asked North; first 0.5 s window of travel within 30 deg of North, seeds 1/3/5/7/9): 2.0 s -> median 0.54 s (0.54-0.83), 0.75 s -> median 0.71 s (0.54-1.96): kept 2.0
 steer_min_dist = 0.21          # scaled L^1, m
 
 [creatures.octopus.swim]

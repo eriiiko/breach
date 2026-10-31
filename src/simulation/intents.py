@@ -80,10 +80,18 @@ class AimIntent:
     """Continuous facing (§3c). ``dx_q``/``dy_q`` — Q16.16 unit-vector aim
     direction. The sim turns it into ``Unit.facing`` through the deterministic
     integer ``atan2`` kit (``unit_fixed.atan2_rad``), never ``math.atan2`` —
-    facing is synced state hashed by the lockstep digest."""
+    facing is synced state hashed by the lockstep digest.
+
+    ``reach`` (#106 P6g) -- read by a CREATURE's hub only: the aim is always
+    the creature's FACING (its body turns toward it while it crawls or
+    idles: the second channel of Erik's "strafe AND turn"), and its arms
+    REACH along it only while ``reach`` is set. Default True: every caller
+    that predates it (bots, tests, the controllers) keeps its meaning.
+    Marines never read it."""
 
     dx_q: int
     dy_q: int
+    reach: bool = True
 
 
 @dataclass

@@ -21,8 +21,11 @@ Button / stick map (Xbox-style names; the raylib enum is layout-agnostic):
                       deflection past the deadzone (``speed_q``, #106 P6f:
                       a creature picks its gait from it); hold LB for SPRINT
                       (the marines' speed mode)
-    Right stick    -> AIM (facing; holds last facing when centered; a creature
-                      reaches along it, and stops when it is centered)
+    Right stick    -> AIM (facing; holds last facing when centered). A
+                      CREATURE (#106 P6g, "strafe AND turn"): the stick is
+                      its FACING (its body turns toward it while it crawls
+                      or idles; centered = no facing asked), and it REACHES
+                      along it only while LT is held
     Right trigger  -> TRIGGER held/released (auto-fire at weapon cadence)
     A (south)      -> THROW grenade along aim/facing
     X (west)       -> USE (toggle an adjacent door; a creature grabs its prop)
@@ -159,9 +162,14 @@ class GamepadDirect(ControlSource):
         rx = self._axis(GA.GAMEPAD_AXIS_RIGHT_X)
         ry = self._axis(GA.GAMEPAD_AXIS_RIGHT_Y)
         adx, ady, amag = quantize_stick_direction(rx, ry, _AIM_DEADZONE)
+        creature = self._is_creature(sim, uid)
         if amag != 0:
-            sim.set_aim(uid, adx, ady)
-        elif self._is_creature(sim, uid):
+            if creature:
+                lt = self._axis(GA.GAMEPAD_AXIS_LEFT_TRIGGER)
+                sim.set_aim(uid, adx, ady, reach=lt > _TRIGGER_ON)
+            else:
+                sim.set_aim(uid, adx, ady)
+        elif creature:
             # a creature's reach ends when the stick is released (#106 P6f);
             # a marine keeps its last facing aim, as before
             sim.clear_aim(uid)

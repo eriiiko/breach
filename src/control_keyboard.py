@@ -16,8 +16,12 @@ Key map:
                      its full crawl)
     + Left Ctrl   -> ... at ``[control.keyboard] mid_speed`` (the octopus:
                      its umbrella cruise)
-    RMB held      -> AIM toward the mouse cursor (a creature reaches; released,
-                     the aim is cleared)
+    mouse cursor  -> a CREATURE's FACING, always (#106 P6g, Erik's "strafe AND
+                     turn": an AIM toward the cursor without a reach; its
+                     body turns toward it while it crawls or idles)
+    RMB held      -> AIM toward the mouse cursor (a marine faces it; a
+                     creature REACHES along it); released, a marine's aim is
+                     cleared (a creature keeps facing the cursor)
     LMB held      -> TRIGGER (a marine fires; a creature is unarmed)
     F             -> USE (a creature grabs its prop; a marine toggles a door)
 
@@ -80,6 +84,22 @@ def keyboard_move(up: bool, down: bool, left: bool, right: bool, slow: bool, mid
     return qx, qy, max(0, min(ONE, quantize_scalar(frac)))
 
 
+def cursor_aim(ax: float, ay: float, rmb: bool, creature: bool):
+    """The pure cursor -> AIM map: ``(ax, ay)`` is the cursor's offset from
+    the driven unit's centre in tiles (screen axes, None when there is no
+    cursor -- headless). Returns ``(dx_q, dy_q, reach)`` to aim, or None to
+    clear the aim. A marine aims only while RMB is held (reach is moot); a
+    creature always FACES the cursor and reaches only while RMB is held
+    (#106 P6g). A cursor on the centre (no direction) clears."""
+    if (not creature and not rmb) or ax is None or ay is None:
+        return None
+    n = math.sqrt(ax * ax + ay * ay)
+    if n <= 0.0:
+        return None
+    qx, qy, _ = quantize_stick_direction(ax / n, ay / n, deadzone=0.0)
+    return qx, qy, bool(rmb)
+
+
 def _rl_key(name):
     import pyray as rl
     return getattr(rl.KeyboardKey, f"KEY_{name}")
@@ -130,23 +150,25 @@ class KeyboardDirect(ControlSource):
             sim.clear_move_dir(uid)
         else:
             sim.set_move_dir(uid, mv[0], mv[1], ORDER_MOVE_ATTACK, speed_q=mv[2])
-        # RMB -> AIM toward the cursor (needs the renderer's tile mapping);
-        # released -> no aim (a creature's reach ends)
-        if not self._mouse("RIGHT"):
+        # the cursor -> AIM (needs the renderer's tile mapping): a marine
+        # while RMB is held; a creature always (its FACING), reaching only
+        # while RMB is held (cursor_aim)
+        from simulation.creature_system import is_creature
+        u = sim.get_unit(uid)
+        ax = ay = None
+        at = renderer.mouse_to_tile_float() if renderer is not None else None
+        if u is not None and at is not None:
+            ax = float(at[0]) - (u.x + u.footprint / 2.0)
+            ay = float(at[1]) - (u.y + u.footprint / 2.0)
+        aim = cursor_aim(ax, ay, bool(self._mouse("RIGHT")),
+                         u is not None and is_creature(u))
+        if aim is None:
             sim.clear_aim(uid)
-        elif renderer is not None:
-            u = sim.get_unit(uid)
-            at = renderer.mouse_to_tile_float()
-            if u is not None and at is not None:
-                ax = float(at[0]) - (u.x + u.footprint / 2.0)
-                ay = float(at[1]) - (u.y + u.footprint / 2.0)
-                n = math.sqrt(ax * ax + ay * ay)
-                if n > 0.0:
-                    qx, qy, _ = quantize_stick_direction(ax / n, ay / n, deadzone=0.0)
-                    sim.set_aim(uid, qx, qy)
+        else:
+            sim.set_aim(uid, aim[0], aim[1], reach=aim[2])
         sim.set_trigger(uid, bool(self._mouse("LEFT")))
         if self._pressed("F"):
             sim.use_intent(uid)
 
 
-__all__ = ["KeyboardDirect", "keyboard_move", "keyboard_settings"]
+__all__ = ["KeyboardDirect", "keyboard_move", "keyboard_settings", "cursor_aim"]

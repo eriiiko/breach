@@ -8,6 +8,7 @@ WATCH the simulated octopus in (#106 P7, the render patch's HUMAN-TEST level).
   * ONE octopus (``[[creature]]``) at rest in the middle of the room, facing
     the squad (West): its rest pose -- every arm straight and radial, 2.99 m
     from the crown centre -- lies on open floor (the loader's grid door);
+    with its grab PROP (#106 P6g, ``prop = true``), so USE grabs something;
   * the squad: three marines (``[[spawn]]``) at the west end, under the human
     control scheme -- the authored single-player path. Without a controller
     the octopus IDLES there (its hub's default: seated arms, two exploring);
@@ -51,8 +52,10 @@ W, H = 66, 42                     # tiles, hull included
 FLOOD_M = 2.0                     # water depth on every floor tile
 PX = 16                           # diffuse px per tile
 
-# The octopus: footprint top-left (3x3), facing West (180 deg) toward the squad.
-OCTOPUS = CreatureSpawn("octopus", 41.0, 19.5, heading=180.0)
+# The octopus: footprint top-left (3x3), facing West (180 deg) toward the squad,
+# with its grab PROP beside it (#106 P6g: USE -- keyboard F, gamepad X --
+# grabs it; the row's prop_at_m, ahead and to its left).
+OCTOPUS = CreatureSpawn("octopus", 41.0, 19.5, heading=180.0, prop=True)
 # The squad (single player): 3x3 footprints at the west end.
 SQUAD = (("Alpha", 6, 14), ("Bravo", 6, 19), ("Cobra", 6, 24))
 LAMPS = ((14.5, 10.5), (33.5, 10.5), (52.5, 10.5),

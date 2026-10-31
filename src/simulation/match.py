@@ -58,8 +58,10 @@ _MATCH_KEYS = ("objective", "seed", "time_limit_s", "zombies",
                "zombie_controller", "creature_controller", "team", "creature")
 #: A ``[[creature]]`` row's keys (#106 P6d1): ``species``, ``x``, ``y``
 #: required; ``team`` (default CREATURE_TEAM) and ``heading`` (degrees,
-#: default 0) optional. The writer writes all five.
-_CREATURE_KEYS = ("species", "x", "y", "team", "heading")
+#: default 0) optional. The writer writes all five, and ``prop`` (#106 P6g:
+#: the creature's grab PROP at spawn, ``CreatureBody.add_prop``; default
+#: false) only when true -- every level without one keeps its bytes.
+_CREATURE_KEYS = ("species", "x", "y", "team", "heading", "prop")
 #: The horde's controller when match.toml names none (#122): the shipped
 #: zombie law through the control seam. The writer omits the key at this
 #: value, so a match file that never named one stays byte-identical.
@@ -128,6 +130,9 @@ class CreatureSpawn:
     y: float
     team: int = CREATURE_TEAM
     heading: float = 0.0
+    #: #106 P6g: spawn the creature with its grab PROP (the row's demo prop
+    #: at ``grab.prop_at_m`` in the body frame), so USE has something to grab.
+    prop: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +283,9 @@ def creature_spawn_from_dict(entry: dict, where: str) -> CreatureSpawn:
         raise ValueError(f"{where}.species {species!r} has no creature row "
                          f"(a [[creature]] needs a species whose body is a "
                          f"[creatures.*] row)")
+    prop = entry.get("prop", False)
+    if not isinstance(prop, bool):
+        raise ValueError(f"{where}.prop must be a bool (got {prop!r})")
     heading = _number(entry.get("heading", 0.0), f"{where}.heading")
     if not -180.0 <= heading <= 180.0:
         raise ValueError(f"{where}.heading must be in [-180, 180] degrees "
@@ -288,7 +296,7 @@ def creature_spawn_from_dict(entry: dict, where: str) -> CreatureSpawn:
         y=_number(entry["y"], f"{where}.y"),
         team=_int(entry.get("team", CREATURE_TEAM), f"{where}.team",
                   minimum=0),
-        heading=heading)
+        heading=heading, prop=prop)
 
 
 def parse_creature_spawns(raw_list, where: str) -> list:

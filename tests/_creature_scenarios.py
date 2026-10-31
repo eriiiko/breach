@@ -193,6 +193,19 @@ class Scenario:
         dx, dy, _ = quantize_stick_direction(float(np.cos(r)), float(-np.sin(r)), deadzone=0.0)
         self.sim.set_aim(self.unit.id, dx, dy)
 
+    def face(self, deg: float | None) -> None:
+        """The FACING channel (#106 P6g): an AIM toward ``deg`` (screen CCW
+        from East) WITHOUT a reach -- the keyboard cursor's / the right
+        stick's aim; the body turns toward it while it crawls or idles.
+        None drops the aim."""
+        from control_source import quantize_stick_direction
+        if deg is None:
+            self.unit.live_aim = None
+            return
+        r = np.radians(deg)
+        dx, dy, _ = quantize_stick_direction(float(np.cos(r)), float(-np.sin(r)), deadzone=0.0)
+        self.sim.set_aim(self.unit.id, dx, dy, reach=False)
+
     def use(self) -> None:
         self.sim.use_intent(self.unit.id)
 

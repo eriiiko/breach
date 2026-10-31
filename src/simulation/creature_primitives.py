@@ -485,9 +485,14 @@ def route_intents(body, unit, medium_factor_q16: int = ONE) -> None:
                 body.goal_pending, body.goal_pending_ticks = GOAL_NONE, 0
     if body.goal_kind != old:
         body.swim_ticks = 0
+    # the aim is the FACING (P6g: "strafe AND turn", two channels); the arms
+    # reach along it only while the aim's ``reach`` flag is set
     if aim is not None and (aim.dx_q or aim.dy_q):
-        body.reach_q16 = _unit_q16(aim.dx_q, aim.dy_q)
+        u = _unit_q16(aim.dx_q, aim.dy_q)
+        body.face_q16 = u
+        body.reach_q16 = u if getattr(aim, "reach", True) else (0, 0)
     else:
+        body.face_q16 = (0, 0)
         body.reach_q16 = (0, 0)
     if getattr(unit, "pending_use", False):
         unit.pending_use = False

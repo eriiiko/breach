@@ -75,11 +75,13 @@ only the crown collides, inside the solver.
 
 The ``__creature__`` section (design section 5)
 -----------------------------------------------
-``CREATURE_SECT_V3\\n`` then one record per creature body in unit-id order,
+``CREATURE_SECT_V4\\n`` then one record per creature body in unit-id order,
 little-endian, each ending in ``\\n`` (so a recorder ``np.bytes_`` ring can
 never strip a trailing NUL). V2 (P6d2) adds the primitives' hub state and the
 creature-owned bodies to V1's layout, and reads a grab's id as a BODY index;
-V3 (P6f) adds the speed law's state (the asked speed, the pending gait):
+V3 (P6f) adds the speed law's state (the asked speed, the pending gait);
+V4 (P6g) appends the asked FACING (the aim's direction) before the
+terminator:
 
   header      int64 unit_id, int64 row version, 32 B row_hash (sha256 raw),
                int32 arms A, int32 nodes n
@@ -112,6 +114,8 @@ V3 (P6f) adds the speed law's state (the asked speed, the pending gait):
                in the body pose's 8-int encoding
   rng          uint64 xorshift state
   clock        int64 (A) per-arm elapsed activation substeps
+  facing (V4)  int32 x, y: the asked facing (Q16 direction, (0, 0) = none;
+               the AIM, which the yaw actuator turns the crown toward)
   terminator   ``\\n``
 
 Derived, NOT stored: activation, rest scale, bend targets, root frames, the
@@ -137,7 +141,7 @@ from simulation.species import get_species
 
 #: Snapshot key of the creature presence carrier (the ``__entity__`` twin).
 CREATURE_DIGEST_KEY = "__creature__"
-CREATURE_SECT_PREAMBLE = b"CREATURE_SECT_V3\n"
+CREATURE_SECT_PREAMBLE = b"CREATURE_SECT_V4\n"
 RECORD_TERMINATOR = b"\n"
 
 #: The hub's per-arm states and goals live with the state machines
@@ -317,6 +321,18 @@ def check_creature_spawn(spawn, open_mask, tile_size_m: float, where: str):
             f"off-map tile ({int(tx[a, i])}, {int(ty[a, i])}) -- a creature "
             f"needs open floor {cdef.body.body_radius_m + cdef.body.arm_length_m:.2f} m "
             f"around its centre")
+    if getattr(spawn, "prop", False):
+        # the grab prop (#106 P6g): its disc's bounding tiles open, in the map
+        g = cdef.grab
+        th = CF.heading_q24_to_body_th(CF.heading_q24_from_deg(spawn.heading))
+        rx, ry = _rot(th, CF.chain_from_m(g.prop_at_m[0]), -CF.chain_from_m(g.prop_at_m[1]))
+        px, py = CF.chain_from_m(cx) + rx, CF.chain_from_m(cy) + ry
+        r = CF.chain_from_m(g.prop_radius)
+        x0, x1 = (px - r) // tile_q, (px + r) // tile_q
+        y0, y1 = (py - r) // tile_q, (py + r) // tile_q
+        if x0 < 0 or y0 < 0 or x1 >= w or y1 >= h or not om[y0:y1 + 1, x0:x1 + 1].all():
+            raise ValueError(f"{where}: its prop (at {tuple(g.prop_at_m)} m in the body "
+                             f"frame, radius {g.prop_radius} m) is not on open floor")
     return cdef
 
 
@@ -463,6 +479,7 @@ class CreatureBody:
         self.goal_pending = GOAL_NONE                # a travel goal asked, not yet held
         self.goal_pending_ticks = 0                  # ... for this many ticks in a row
         self.reach_q16 = (0, 0)                      # the reach goal, Q16 direction
+        self.face_q16 = (0, 0)                       # the asked facing (P6g), Q16 direction
         self.grab_req = 0                            # a USE latched the grab
         self.grab_side = 1                           # the wrap's side (+-1)
         self.grab_pops = 0                           # seals let go on the grab force
@@ -639,6 +656,7 @@ def serialize_record(body: CreatureBody) -> bytes:
                                CF.body_th_to_heading_q24(int(pb[AC.BS_OM]))))
     out += [struct.pack("<Q", body.rng & _U64),
             np.ascontiguousarray(b.wave_clock[0], _I64).tobytes(),
+            struct.pack("<ii", body.face_q16[0], body.face_q16[1]),
             RECORD_TERMINATOR]
     return b"".join(out)
 
@@ -691,6 +709,7 @@ def decode_record(rec: bytes) -> dict:
     d["bodies"] = [np.array(take("<8i"), np.int64) for _ in range(nb - 1)]
     (d["rng"],) = take("<Q")
     d["wave_clock"] = arr(_I64, (A,))
+    d["face_q16"] = take("<ii")
     if rec[pos:] != RECORD_TERMINATOR:
         raise ValueError(f"decode_record: {len(rec) - pos} trailing byte(s) after "
                          f"the layout (expected the terminator only)")
@@ -760,7 +779,7 @@ def diff_creature_records(ra: bytes, rb: bytes) -> list[str]:
     for key in ("grabs", "stance", "decision_ticks", "goal_kind", "goal_q16",
                 "steer_ticks", "last_hit", "gait", "swim_phase", "grab_req", "grab_side",
                 "swim_ticks", "swim_phi", "swim_rig", "reach_q16", "grab_pops",
-                "goal_speed", "goal_pending", "goal_pending_ticks", "rng"):
+                "goal_speed", "goal_pending", "goal_pending_ticks", "rng", "face_q16"):
         if da[key] != db[key]:
             out.append(f"{key} {da[key]!r} != {db[key]!r}")
     if not out:
@@ -856,6 +875,8 @@ def spawn_creature_units(sim, rows) -> list:
             u, cdef, ticks_per_second=tps, tile_size_m=gmap.tile_size_m, solid=gmap.solid,
             topology_serial=gmap.topology_serial, sim_seed=sim._seed,
             heading_q24=CF.heading_q24_from_deg(row.heading)))
+        if getattr(row, "prop", False):
+            sim._creature_system.bodies[u.id].add_prop()   # #106 P6g: the tank's prop
         out.append(u)
     return out
 

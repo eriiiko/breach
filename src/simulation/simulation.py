@@ -921,14 +921,16 @@ class Simulation:
         if u is not None:
             u.live_move_dir = None
 
-    def set_aim(self, unit_id: int, dx_q: int, dy_q: int) -> None:
+    def set_aim(self, unit_id: int, dx_q: int, dy_q: int, reach: bool = True) -> None:
         """AIM: hold a Q16.16 unit-vector facing for ``unit_id`` (§3c). The
         sim turns it into ``Unit.facing`` via the deterministic integer atan2
-        kit at the next tick."""
+        kit at the next tick. ``reach`` (#106 P6g) is a creature's only: its
+        body faces every aim, its arms reach along an aim with ``reach``
+        set (``AimIntent``); a marine ignores it."""
         u = self.get_unit(unit_id)
         if u is None:
             return
-        u.live_aim = _intents.AimIntent(int(dx_q), int(dy_q))
+        u.live_aim = _intents.AimIntent(int(dx_q), int(dy_q), bool(reach))
         self._possessed_ids.add(unit_id)
 
     def clear_aim(self, unit_id: int) -> None:
