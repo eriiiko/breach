@@ -53,6 +53,10 @@ match pays it once at the end). ``step`` is the whole ``sim.step()``,
 ``bench_bot_matches.TickTimer`` split: tick 1 dropped, watcher time
 excluded). The first ``--warmup`` ticks are dropped too.
 
+``--chain-micro`` also times the solver call ALONE on a copy of a crawling
+octopus's buffers: at substeps 16 / 12 / 8 (the count overridden for TIMING
+only) and one call over N stacked animals against N single calls.
+
 Also reported: the chain's ns per weighted op against P6c's G7 tally (28098
 weighted ops per arm-substep x arms x substeps = ~3.6 M per octopus-tick),
 and the solver's ms per arm-substep -- the P1 ceiling's "1 ns/op" assumption
@@ -326,7 +330,8 @@ def run_room(kind: str, *, ticks: int, warmup: int, n_octopi: int = 1,
     from simulation.orders import ORDER_MOVE_COVER
     from simulation.ruleset import ContinuousRealtime
     tps = int(CFG.clock.ticks_per_second)
-    tmp = Path(tempfile.mkdtemp(prefix="bench_octopus_")) if tmp is None else Path(tmp)
+    # a fresh folder per run (repeats and baselines reuse the level name)
+    tmp = Path(tempfile.mkdtemp(prefix="room_", dir=None if tmp is None else str(tmp)))
     if kind == "octopi":
         w, h = PACK_W, PACK_H
         rows = _pack_spawns(n_octopi)
@@ -367,6 +372,90 @@ def run_room(kind: str, *, ticks: int, warmup: int, n_octopi: int = 1,
         CS.set_tick_laps(prev)
     run.digest = _final_digest(sim)
     return run
+
+
+def chain_micro(*, settle_ticks: int = 72, calls: int = 200, batch=(1, 2, 4, 8),
+                substeps=(16, 12, 8), tmp: Path | None = None) -> dict:
+    """The solver call OUT of the sim, on a COPY of a crawling octopus's
+    buffers (``settle_ticks`` of the crawl scenario first): ms per call at the
+    row's substeps and with the row's substep count overridden (TIMING ONLY --
+    the other row constants keep the shipped substeps' dt, so the motion is
+    not a valid 12- or 8-substep animal; the cost scales with the count, which
+    is what this measures), and one call over N stacked copies of the buffers
+    against N single calls (the batching lever). Never touches a sim's state."""
+    import numpy as np
+    from dataclasses import fields as dc_fields
+    import breach_physics as bp
+    from simulation import arm_chain as AC
+    tmp = Path(tempfile.mkdtemp(prefix="micro_")) if tmp is None else Path(tmp)
+    _sim, bodies = _crawl_bodies(settle_ticks, tmp)
+    body = bodies[0]
+    row, row_node = body.row.copy(), body.solver_row_node.copy()
+
+    def per_call_ms(r, bufs_list) -> float:
+        work = [b.copy() for b in bufs_list]
+        for b in work:                     # one untimed call: caches warm
+            AC.tick(r, row_node, b, bp)
+        work = [b.copy() for b in bufs_list]
+        t0 = time.perf_counter_ns()
+        for _ in range(calls):
+            for b in work:
+                AC.tick(r, row_node, b, bp)
+        return (time.perf_counter_ns() - t0) / 1e6 / calls
+
+    out = {"settle_ticks": settle_ticks, "calls": calls, "substeps": {}, "batch": {}}
+    for s in substeps:
+        r = row.copy()
+        r[AC.ROW_N_SUB] = int(s)
+        out["substeps"][int(s)] = per_call_ms(r, [body.bufs])
+    for n in batch:
+        stacked = AC.ArmChainBuffers(**{
+            f.name: np.ascontiguousarray(np.concatenate([getattr(body.bufs, f.name)] * n))
+            for f in dc_fields(AC.ArmChainBuffers)})
+        one_call = per_call_ms(row, [stacked])
+        n_calls = per_call_ms(row, [body.bufs] * n)
+        out["batch"][int(n)] = {"one_call_ms": one_call, "n_calls_ms": n_calls}
+    return out
+
+
+def _crawl_bodies(ticks: int, tmp: Path):
+    """A crawling octopus in the gate room after ``ticks`` ticks (the micro's
+    state)."""
+    import breach_physics as bp
+    import _creature_scenarios as SC
+    from config import CFG
+    from simulation import Simulation
+    from simulation.match import CreatureSpawn
+    from simulation.ruleset import ContinuousRealtime
+    tps = int(CFG.clock.ticks_per_second)
+    level = SC.write_room(Path(tempfile.mkdtemp(prefix="room_", dir=str(tmp))), "micro",
+                          w=GATE_ROOM, h=GATE_ROOM,
+                          creatures=(CreatureSpawn("octopus", GATE_ROOM / 2.0 - 1.5,
+                                                   GATE_ROOM / 2.0 - 1.5),))
+    sim = Simulation(level, seed=7, breach_physics=bp, enable_recorder=False,
+                     ruleset=ContinuousRealtime())
+    units = sim.spawn_creatures(level.creatures)
+    for k in range(int(ticks)):
+        for u in units:
+            _move(sim, u, _square_deg(k, tps))
+        sim.set_paused(False)
+        sim.step()
+    return sim, [sim._creature_system.bodies[u.id] for u in units]
+
+
+def micro_markdown(m: dict) -> str:
+    s16 = m["substeps"].get(16)
+    L = ["The solver call alone (a copy of a crawling octopus's buffers, "
+         f"{m['calls']} calls each):", "",
+         "| substeps | ms per call | vs 16 |", "|---|---|---|"]
+    for s, ms in sorted(m["substeps"].items(), reverse=True):
+        L.append(f"| {s} | {ms:.3f} | {ms / s16:.2f} |" if s16 else f"| {s} | {ms:.3f} | - |")
+    L += ["", "| N animals | one (N, 8, n, 3) call, ms | N single calls, ms | per animal, batched "
+          "| batched / single |", "|---|---|---|---|---|"]
+    for n, b in sorted(m["batch"].items()):
+        L.append(f"| {n} | {b['one_call_ms']:.3f} | {b['n_calls_ms']:.3f} | "
+                 f"{b['one_call_ms'] / n:.3f} | {b['one_call_ms'] / b['n_calls_ms']:.3f} |")
+    return "\n".join(L) + "\n"
 
 
 class _MatchWatch:
@@ -490,6 +579,9 @@ def main(argv=None) -> int:
     ap.add_argument("--verify-inert", action="store_true",
                     help="re-run each scenario with the timer detached; the "
                          "final tick_digest must be identical")
+    ap.add_argument("--chain-micro", action="store_true",
+                    help="also time the solver call alone: substeps 16/12/8 "
+                         "(timing only) and N batched animals vs N calls")
     ap.add_argument("--json", default=None, help="write the reports here")
     ap.add_argument("--cuda", action="store_true",
                     help="run on the CUDA build, every live backend on")
@@ -565,8 +657,13 @@ def main(argv=None) -> int:
                 lambda lv0=lv0, s=s: run_match_scenario(
                     lv0, lv0.match, ticks=ticks, warmup=args.warmup, tps=tps,
                     timing=True, scenario=s + "_base"))
+    micro = None
+    if args.chain_micro:
+        micro = chain_micro(tmp=tmp)
     print()
     print(markdown(reports, backend))
+    if micro is not None:
+        print(micro_markdown(micro))
     if inert:
         bad = [x for x in inert if not x[2]]
         print(f"timer inert: {len(inert) - len(bad)}/{len(inert)} digests identical"
@@ -575,7 +672,8 @@ def main(argv=None) -> int:
         Path(args.json).write_text(json.dumps(
             {"backend": backend, "machine": machine, "tps": tps, "arms": arms,
              "substeps": substeps, "ticks": ticks, "warmup": args.warmup,
-             "repeat": args.repeat, "inert": inert, "reports": reports},
+             "repeat": args.repeat, "inert": inert, "reports": reports,
+             "chain_micro": micro},
             indent=1), encoding="utf-8")
         print(f"wrote {args.json}")
     return 1 if any(not x[2] for x in inert) else 0
