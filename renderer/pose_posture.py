@@ -184,7 +184,7 @@ def parse_rule(raw, where: str) -> PostureRule:
                                  f"[thigh, shin, foot] bone names, got {legs!r}")
     up = _vec3(d["up"], f"{where}.up")
     fwd = _vec3(d["forward"], f"{where}.forward")
-    if abs(float(np.dot(up, fwd))) > 1e-3:
+    if abs(float((np.asarray(up) * np.asarray(fwd)).sum())) > 1e-3:
         raise PostureConfigError(f"{where}: up and forward must be perpendicular")
     return PostureRule(up=up, forward=fwd, rotations=rotations,
                        twitch=_entries(d["twitch"], f"{where}.twitch"),
@@ -372,14 +372,14 @@ def resolve(rule: PostureRule, sk: Skeleton, where: str) -> ResolvedPosture:
         # the lateral axis at the hip (measured on the rest pose)
         knee_rel = g_t[sh] - g_t[th]
         swing = np.cross(lateral, knee_rel)
-        sign = 1.0 if float(np.dot(swing, fwd)) >= 0.0 else -1.0
+        sign = 1.0 if float((swing * fwd).sum()) >= 0.0 else -1.0
         ax = [np.einsum("ji,j->i", par_r[j], lateral) for j in (th, sh, ft)]
         laxis.append(np.stack([sign * ax[0], -sign * ax[1], sign * ax[2]]))
         legs.append((th, sh, ft))
         la.append(float(np.linalg.norm(g_t[sh] - g_t[th])))
         lb.append(float(np.linalg.norm(g_t[ft] - g_t[sh])))
     # no leg chains: the hips' rest height stands in for the leg
-    leg_len = float(np.mean(np.add(la, lb))) if legs else abs(float(g_t[hips] @ up))
+    leg_len = float(np.mean(np.add(la, lb))) if legs else abs(float((g_t[hips] * up).sum()))
     return ResolvedPosture(
         pre=pre.astype(np.float32), post=post.astype(np.float32),
         twitch_pre=tw_pre.astype(np.float32), twitch_post=tw_post.astype(np.float32),
