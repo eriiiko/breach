@@ -8,7 +8,8 @@ Pure numpy, render-only, pyray-free. Sources in, bone matrices out:
       -> override layers selected per bone by the MASK table (a partition)
       -> additive layer (local delta against the clip's own reference frame)
       -> FK as 4x4 products, one per depth level (never a per-bone loop)
-      -> procedural modifiers, post-FK (interface only; none built yet)
+      -> procedural modifiers, post-FK (#163: the aim-vs-travel twist,
+         renderer/pose_modifiers.py)
       -> global TRS (N, J, 10) and skin matrices (N, J, 4, 4)
 
 A skinner (``renderer/pose_skinner.py``) takes a unit's global-TRS row to the
@@ -540,7 +541,8 @@ class LookRig:
 class PoseLayer:
     """Owns every look's :class:`LookRig`, drives :class:`PoseState`s from the
     state table, composes them in batches, and keeps each unit's event queue
-    (stored only in #162; read by later slices)."""
+    (#163: drained once per frame into the reactions -- :meth:`fire`,
+    :meth:`hit` -- beside the travel steer, :meth:`steer`)."""
 
     def __init__(self, settings: PoseSettings) -> None:
         from .pose_modifiers import AimTravelTwist
@@ -862,7 +864,7 @@ class PoseLayer:
         return PoseBatch(global_trs=global_trs(g), skin=_mat4_mul(g, sk.bind_inverse.astype(np.float32)),
                          local_t=lt, local_r=lr)
 
-    # --- events (stored only in #162) ------------------------------------
+    # --- events (#162 queue; #163 drains it) ------------------------------
     def queue_event(self, uid: int, event, now: float) -> None:
         q = self._events.get(uid)
         if q is None:
@@ -969,6 +971,7 @@ def global_trs(g: np.ndarray) -> np.ndarray:
 
 __all__ = [
     "PoseConfigError", "PoseSettings", "MaskRule", "MaskTable", "PoseState",
+    "TwistRule", "FireSettings", "HitSettings", "AimTravelSettings",
     "PoseBatch", "PoseModifier", "LookRig", "PoseLayer", "pose_settings",
     "masks_for", "sample_bank", "forward_kinematics", "global_trs",
     "GLOBAL_TRS_WIDTH", "NO_CLIP",

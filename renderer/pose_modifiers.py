@@ -46,8 +46,9 @@ _UP_AXIS = 1
 @dataclass(frozen=True)
 class _ResolvedTwist:
     lower: int                                   # the lower bone's index
-    lower_sub: np.ndarray                        # bone indices it carries
-    counter: Tuple[Tuple[int, np.ndarray, float], ...]   # (bone, subtree, share)
+    bones: np.ndarray                            # every bone the twist moves (lower's subtree)
+    region: np.ndarray                           # per moved bone: 0 = lower only, k = inside counter k
+    counter: Tuple[Tuple[int, float], ...]       # (bone, share), the chain root-most first
 
 
 def _yaw_about(angle: np.ndarray, pivot: np.ndarray) -> np.ndarray:
@@ -69,10 +70,10 @@ def _yaw_about(angle: np.ndarray, pivot: np.ndarray) -> np.ndarray:
     return m
 
 
-def _move_subtree(g: np.ndarray, m: np.ndarray, bones: np.ndarray) -> None:
-    """``g[:, bones] = m @ g[:, bones]`` per unit, without BLAS (the frame-
-    path rule: plain einsum, no optimizer)."""
-    g[:, bones] = np.einsum("nij,nbjk->nbik", m, g[:, bones])
+def _mat4(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Batched 4x4 products without BLAS (the frame-path rule: plain
+    einsum, no optimizer)."""
+    return np.einsum("...ij,...jk->...ik", a, b)
 
 
 class AimTravelTwist:
@@ -103,24 +104,30 @@ class AimTravelTwist:
 
         lower = bone(rule.lower)
         lower_sub = sk.subtree(lower)
-        counter: List[Tuple[int, np.ndarray, float]] = []
+        region = np.where(lower_sub, 0, -1)
+        counter: List[Tuple[int, float]] = []
         inside = lower_sub
-        for name, share in zip(rule.counter, rule.shares):
+        for k, (name, share) in enumerate(zip(rule.counter, rule.shares), start=1):
             c = bone(name)
             if c == lower or not inside[c]:
                 raise PoseConfigError(
                     f"{where}: counter bone {name!r} is not below "
                     f"{rule.lower if not counter else rule.counter[len(counter) - 1]!r} "
                     "(the counter bones must be one chain inside the lower bone's subtree)")
-            sub = sk.subtree(c)
-            counter.append((c, np.flatnonzero(sub), float(share)))
-            inside = sub
-        self._rigs[rig.name] = _ResolvedTwist(lower=lower,
-                                              lower_sub=np.flatnonzero(lower_sub),
-                                              counter=tuple(counter))
+            inside = sk.subtree(c)
+            region[inside] = k
+            counter.append((c, float(share)))
+        bones = np.flatnonzero(lower_sub)
+        self._rigs[rig.name] = _ResolvedTwist(lower=lower, bones=bones,
+                                              region=region[bones], counter=tuple(counter))
         rig.twist_layer = int(rig.owner_layer[lower])
 
     def apply(self, rig: LookRig, states: Sequence[PoseState], g: np.ndarray) -> None:
+        """Per twisted unit, the rigid motion of each region (the lower
+        bone's yaw about its own vertical, then each counter bone's share
+        back about ITS vertical, as the earlier motions left it) is composed
+        first -- a few 4x4 products -- and every moved bone is then
+        multiplied by its region's motion in ONE batched product."""
         twist = np.array([ps.twist for ps in states], dtype=np.float64)
         rows = np.flatnonzero(twist != 0.0)
         if rows.size == 0:
@@ -128,9 +135,25 @@ class AimTravelTwist:
         r = self._rigs[rig.name]
         d = twist[rows]
         gs = g[rows]
-        _move_subtree(gs, _yaw_about(d, gs[:, r.lower, :3, 3]), r.lower_sub)
-        for c, sub, share in r.counter:          # the chain, root-most first
-            _move_subtree(gs, _yaw_about(-share * d, gs[:, c, :3, 3]), sub)
+        motions = [_yaw_about(d, gs[:, r.lower, :3, 3])]
+        for c, share in r.counter:               # the chain, root-most first
+            m = motions[-1]
+            p = np.einsum("nij,nj->ni", m[:, :3, :3], gs[:, c, :3, 3]) + m[:, :3, 3]
+            motions.append(_mat4(_yaw_about(-share * d, p), m))
+        motion = np.stack(motions, axis=1)[:, r.region]    # (n, moved bones, 4, 4)
+        # Every motion is a yaw about the vertical: [[c,0,s,tx],[0,1,0,0],
+        # [-s,0,c,tz],[0,0,0,1]] (compositions keep that form), so it only
+        # recombines rows 0 and 2 of each bone matrix -- elementwise, no
+        # generic 4x4 product.
+        c = motion[:, :, 0, 0, None]
+        s = motion[:, :, 0, 2, None]
+        moved = gs[:, r.bones]
+        row0, row2 = moved[:, :, 0].copy(), moved[:, :, 2]
+        moved[:, :, 0] = c * row0 + s * row2
+        moved[:, :, 2] = c * row2 - s * row0
+        moved[:, :, 0, 3] += motion[:, :, 0, 3]
+        moved[:, :, 2, 3] += motion[:, :, 2, 3]
+        gs[:, r.bones] = moved
         g[rows] = gs
 
 

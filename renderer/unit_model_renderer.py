@@ -34,7 +34,12 @@ each unit's pose is composed by ``renderer/pose_layer.py`` (sub-frame clips,
 legs / upper / head layers over bone masks, crossfades) in ONE batch per look
 per ``draw_units`` call, and ``pose_skinner.CpuInjectSkinner`` puts it on the
 mesh. With it off nothing of it is built or imported, and ``_draw_one``
-plays the look's own clip at an integer frame exactly as before.
+plays the look's own clip at an integer frame exactly as before. #163: the
+sim's events reach the layer per unit (``queue_events``, each acted on
+once): a launched shot holds the aim overlay and retriggers the recoil, a
+hit plays the flinch additive; and each unit's travel relative to its
+facing (the position delta) steers the aim-vs-travel twist, so the legs
+walk along the travel while the torso keeps the facing.
 
 Coordinate mapping: the top-down camera + world-px mapping now live in
 ``renderer/lit3d.py`` (the shared lit-3D-in-world-RT seam, extracted 2026-09

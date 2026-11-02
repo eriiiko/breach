@@ -86,6 +86,20 @@ def _yaw_between(m_a, m_b):
     return (ang + np.pi) % (2 * np.pi) - np.pi
 
 
+def _detached(pl, look, plain_trs, twisted_trs):
+    """Largest distance (model units) by which a bone of the twisted pose
+    sits off the point its twisted parent's matrix carries its un-twisted
+    offset to -- 0 for a skeleton that stays connected."""
+    sk = pl.rig(look).bank.skeleton
+    kids = np.flatnonzero(sk.parents >= 0)
+    par = sk.parents[kids]
+    gp, gt = _mats(plain_trs.astype(np.float64)), _mats(twisted_trs.astype(np.float64))
+    offset = np.einsum("bij,bj->bi", np.linalg.inv(gp[par]),
+                       np.concatenate([plain_trs[kids, :3], np.ones((len(kids), 1))], 1))
+    carried = np.einsum("bij,bj->bi", gt[par], offset)[:, :3]
+    return float(np.abs(carried - twisted_trs[kids, :3]).max())
+
+
 def _walk(pl, look=LOOK, t=0.4):
     ps = pl.new_state(look, "walk")
     pl.drive(ps, "walk", t)
@@ -137,7 +151,9 @@ def test_torso_and_head_keep_the_facing_while_the_legs_turn(layer, deg):
 
     BREAKS IF: the spine counter-twist is dropped or its shares do not sum
     to the twist, the twist turns the wrong subtree, or the counter turns
-    about the wrong axis.
+    about the wrong axis. And the skeleton stays CONNECTED (each bone at the
+    point its twisted parent carries it to) -- which breaks if a counter
+    bone turns about any vertical but its own joint's.
     """
     assert abs(math.radians(deg)) < AT.theta
     rule = _twist_rule(layer)
@@ -152,6 +168,7 @@ def test_torso_and_head_keep_the_facing_while_the_legs_turn(layer, deg):
     lower = _bones(layer, LOOK, [rule.lower])
     yaw = _yaw_between(_mats(plain[lower]), _mats(out[lower]))
     assert abs(float(yaw[0]) - ps.twist) < 1e-3
+    assert _detached(layer, LOOK, plain, out) < 1e-4
     # and the legs really moved (else this is vacuous)
     legs = _subtree(layer, LOOK, rule.lower) & ~_subtree(layer, LOOK, rule.counter[0])
     assert np.abs(out[legs, :3] - plain[legs, :3]).max() > 0.02
@@ -742,7 +759,7 @@ def test_the_twist_and_reactions_run_on_a_foreign_skeleton(tmp_path):
     ps = pl.new_state("critter", "walk")
     pl.fire(ps)
     pl.hit(ps, 5, "bullet")
-    for _ in range(60):
+    for _ in range(45):                       # 0.75 s into the 1 s trot: far off the origin
         pl.steer(ps, math.radians(60.0), True, DT)
         pl.drive(ps, "walk", DT)
     assert ps.twist > math.radians(45.0)
@@ -752,3 +769,7 @@ def test_the_twist_and_reactions_run_on_a_foreign_skeleton(tmp_path):
     aim = rig.bank.skeleton.subtree(rig.bank.skeleton.index(rule.counter[-1]))
     assert _qangle(out[aim, 3:7], plain[aim, 3:7]).max() < 1e-3
     assert _qangle(out[~aim, 3:7], plain[~aim, 3:7]).max() > 0.5
+    # the trot carries the creature far off its origin: a counter turned
+    # about the wrong vertical would tear the skeleton apart here
+    assert np.abs(plain[rig.bank.skeleton.roots][:, [0, 2]]).max() > 0.2
+    assert _detached(pl, "critter", plain, out) < 1e-4

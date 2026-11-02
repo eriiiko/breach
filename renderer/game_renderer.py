@@ -1658,7 +1658,7 @@ class GameRenderer:
             ShotFiredEvent, LaserFiredEvent, ExplosionEvent, UnitHitEvent,
             SprayJetEvent, ProjectileGlowEvent,
         )
-        # #162: the pose layer's per-unit event queues (stored only; a
+        # #162/#163: the pose layer's per-unit event queues (fire, flinch; a
         # no-op with [render.pose] off).
         self.unit_models.queue_events(events)
         for ev in events:
