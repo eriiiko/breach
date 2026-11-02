@@ -365,21 +365,25 @@ the zombie look), then E2/E3 together, then E5, E6.
 - Role if it works: **offline authoring** of locomotion variants and the beast gait
   (D7). It is not a runtime component, and never touches determinism.
 
-## 9. Open questions for Erik (ask one at a time; each is vetoable)
+## 9. Settled, and parked for the sim / game-design session
 
-1. Milestone names and the 13 / 14 / 15 split — **AGREED 2026-11-02**.
-2. Does a **shoulder bag exist in the game**? — **ANSWERED 2026-11-02: yes**, a real item
-   (heavier tools, mission-critical items, bombs, money, weapons). Its sim state is a
-   design / research item.
-3. Is **infection a gradual game mechanic** (sim state) or only a visual of conversion?
-   *(own research session — parked)*
-4. **door bashing** and **rising from the floor** — **ANSWERED 2026-11-02:** door bashing
-   yes (needs a sim rule); rising = the generic fall / prone / rise set, conversion's
-   lying period real but its timing decided later (§5.4).
-5. Reference for the motion brief — **ANSWERED 2026-11-02: option A**, I draft from words,
-   Erik corrects line by line: `zombie_motion_brief_2026-11-02.md`. Awaiting his veto.
-6. Is the knock-over goal a **gameplay mechanic** (bodies hurt / topple others) or
-   primarily spectacle? *(decides whether M15 phase 4 is a sim feature)*
+This doc is about animation. Game-mechanic questions are **not asked here**; they are
+listed so the sim / game-design session can pick them up.
+
+**Settled (2026-11-02):** milestone names and the 13 / 14 / 15 split · the shoulder bag
+exists as a game item (heavier tools, mission-critical items, bombs, money, weapons) ·
+door bashing is wanted · rising from the floor is the generic fall / prone / rise set
+(§5.4) · the zombie reference is drafted from words and corrected line by line
+(`zombie_motion_brief_2026-11-02.md`).
+
+**Parked for the sim / game-design session** (animation work proceeds without them; each
+only decides *when* a finished animation is triggered):
+- Carried-item state: what a unit carrying a bag is, in the sim.
+- Infection as a gradual sim state (the amount `a` in the brief §2).
+- A zombie-attacks-door rule (door hit points, the event the renderer reads).
+- The conversion's lying period (§5.4).
+- Zombie and marine speeds; when a zombie uses its fast gait.
+- Bodies knocking each other over (M15 phase 4, §6.3).
 
 ## 10. Systems
 
