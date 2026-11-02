@@ -111,6 +111,11 @@ Rules that follow (all provisional):
 | D6 | Zombie = same skeleton, posture parameters + own clip set | PROVISIONAL | Medium | E3/E4 say the humanoid rig can't carry the four-point run |
 | D7 | Kimodo is an authoring tool (offline), never in the render loop | PROVISIONAL | Zero | E2 |
 | D8 | Infection stage shown continuously from a sim-provided amount | PROVISIONAL, **needs the sim research session** | — | the sim session |
+| D9 | One generic fall / prone / rise set serves marines and zombies (and later conversion) | PROVISIONAL | Low | the sim session fixes how conversion lies down |
+
+Companion docs (2026-11-02): `zombie_motion_brief_2026-11-02.md` (the brief, for Erik's
+veto) and `kimodo_spike_workflow_2026-11-02.md` (handoff for the work-desktop Claude,
+experiments E2/E3).
 
 ## 3. Milestone map
 
@@ -183,12 +188,12 @@ W13.0.** A clip with no existing trigger is not built until its trigger is decid
 | Weapon | grenade throw | **new** | `throw_grenade_intent` | intent exists; render hook U |
 | Weapon | plant charge / place | `Fixing_Kneeling` base | placement action | U |
 | Reaction | hit flinch ×4 directions | Hit_Chest/Head have | UnitHitEvent (direction?) | U |
-| Reaction | knockdown fall / prone loop / get-up | **new** (#149) | KNOCKED_DOWN status | yes |
+| Reaction | knockdown fall / prone loop / get-up — **one generic set for marines AND zombies** (zombie variant = beast-like fall and lurching rise; later also used by conversion) | **new** (#149) | KNOCKED_DOWN status | yes |
 | Reaction | burning panic, choking/coughing, suffocating, stunned | **new** | burning / poisoned / suffocating / stunned status | yes |
 | Reaction | death: shot, blast, burned | Death01 have; rest **new** | UnitKilledEvent cause | cause exists (#123) |
 | Environment | brace against wind | **new** | wind load W (`exchange.wind_scale_q16` seam) | seam exists |
 | Interact | open door / panel, hack | Interact have | use_intent | intent exists |
-| Carry | bag: idle, walk, run, set down, pick up, drop-on-hit | **new** | **no carry concept in the sim** | **no** — game-design call |
+| Carry | bag: idle, walk, run, set down, pick up, drop-on-hit; variants by weight / contents | **new** | carried-item state — **the bag EXISTS as a game item** (Erik, 2026-11-02: heavier tools, mission-critical items, bombs, money, weapons) | **no** — the sim's carried-item state is a design / research item; animation waits on it |
 
 The bag is its own asset attached to a bone (Erik's rule: character models carry no
 props); the *carrying* animation is a pose-layer layer plus an attach point. Whether a
@@ -272,10 +277,23 @@ alert telegraph · hit stagger · burning flail · deaths (collapse, crumple, bu
 legless crawl · **turning** (the spasm when a marine converts) · **door bash** · **rise
 from the floor**.
 
-Door bashing and rising from the floor each need a **sim event that may not exist**
-(a zombie attacking a door entity; a zombie spawning or playing prone). They are
-game-design calls for Erik before they are animation work. `[bots]`/zombie control and
-the door entity (A6) are the places to look.
+**Door bashing (Erik: yes, wanted).** It needs a sim rule that does not exist today: a
+zombie attacking a door entity (door hit points, the attack, an event the renderer can
+read). `DoorDestroyedEvent` exists; a zombie-attacks-door behaviour does not. The bash
+clip waits on that rule; the rule is a game-design / sim item. `[bots]` / zombie control
+and the door entity (A6) are the places to look.
+
+**Rising from the floor = the fall / prone / rise set (Erik, 2026-11-02).** Zombies can
+also be knocked down and must rise, so the set is generic and shared (see §4.3); the
+conversion is one more consumer of it and **how and when conversion uses it is decided
+later**. Verified: conversion is **instant today** — only melee kills convert
+(`ai_zombie.convert_marines_to_zombies`, run every tick from `ruleset.on_tick_end`: hp
+reset, `alive`, team `ZOMBIE_TEAM`) and there is no lying interval in the sim; dead
+units are not drawn. Erik: the lying period **should be real** (a sim window, the
+converting body inactive for a time) but it barely affects the animation work. Idea for
+the sim session (not decided): reuse the status machinery with a `KNOCKED_DOWN`-like
+"converting" status. A corpse that lies visibly also needs dead units to be drawn and, in
+M15, a ragdolled corpse pose that the rise blends out of.
 
 ## 6. Milestone 15 — Bodies in motion
 
@@ -349,14 +367,17 @@ the zombie look), then E2/E3 together, then E5, E6.
 
 ## 9. Open questions for Erik (ask one at a time; each is vetoable)
 
-1. Milestone names and the 13 / 14 / 15 split — **taken as agreed 2026-11-02**.
-2. Does a **shoulder bag exist in the game** (an item a unit carries, a placeable
-   charge) — the animation work waits on this? *(game design — Erik)*
+1. Milestone names and the 13 / 14 / 15 split — **AGREED 2026-11-02**.
+2. Does a **shoulder bag exist in the game**? — **ANSWERED 2026-11-02: yes**, a real item
+   (heavier tools, mission-critical items, bombs, money, weapons). Its sim state is a
+   design / research item.
 3. Is **infection a gradual game mechanic** (sim state) or only a visual of conversion?
-   *(own research session)*
-4. Do **door bashing** and **rising from the floor** correspond to planned zombie
-   behaviours (door-attack rule, prone/ambush spawn)? *(game design — Erik)*
-5. Which creatures and moments are the **reference stills/clips** for the motion brief?
+   *(own research session — parked)*
+4. **door bashing** and **rising from the floor** — **ANSWERED 2026-11-02:** door bashing
+   yes (needs a sim rule); rising = the generic fall / prone / rise set, conversion's
+   lying period real but its timing decided later (§5.4).
+5. Reference for the motion brief — **ANSWERED 2026-11-02: option A**, I draft from words,
+   Erik corrects line by line: `zombie_motion_brief_2026-11-02.md`. Awaiting his veto.
 6. Is the knock-over goal a **gameplay mechanic** (bodies hurt / topple others) or
    primarily spectacle? *(decides whether M15 phase 4 is a sim feature)*
 
