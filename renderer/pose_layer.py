@@ -528,7 +528,7 @@ class PoseLayer:
         g = forward_kinematics(sk, lt, lr, ls)
         for mod in modifiers:
             mod.apply(rig, states, g)
-        return PoseBatch(global_trs=global_trs(g), skin=g @ sk.bind_inverse.astype(np.float32),
+        return PoseBatch(global_trs=global_trs(g), skin=_mat4_mul(g, sk.bind_inverse.astype(np.float32)),
                          local_t=lt, local_r=lr)
 
     # --- events (stored only in #162) ------------------------------------
@@ -592,6 +592,12 @@ def sample_bank(bank: ClipBank, clips: np.ndarray, times: np.ndarray
     return out_t.astype(np.float32), out_r, out_s
 
 
+def _mat4_mul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Batched 4x4 products WITHOUT BLAS (the frame-path rule: MKL's thread
+    pool stalls ``@`` under CPU contention; plain einsum, no optimizer)."""
+    return np.einsum("...ij,...jk->...ik", a, b)
+
+
 def forward_kinematics(sk: Skeleton, t: np.ndarray, r: np.ndarray,
                        s: Optional[np.ndarray]) -> np.ndarray:
     """Global (model-space) bone matrices ``(N, J, 4, 4)`` from local TRS,
@@ -603,7 +609,7 @@ def forward_kinematics(sk: Skeleton, t: np.ndarray, r: np.ndarray,
         if par[0] < 0:                    # depth 0: the roots
             g[:, lvl] = local[:, lvl]
         else:
-            g[:, lvl] = g[:, par] @ local[:, lvl]
+            g[:, lvl] = _mat4_mul(g[:, par], local[:, lvl])
     return g
 
 
