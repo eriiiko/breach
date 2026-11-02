@@ -299,6 +299,22 @@ def test_masks_refuse_unknown_bones_overlap_and_gaps(critter, rules, needle):
         MaskTable.from_rules(pl.rig("critter").bank.skeleton, rules)
 
 
+def test_a_mask_that_drives_no_layer_is_refused_at_load(critter):
+    """PROPERTY (3): when the masks partition the skeleton but one of them
+    is not a configured layer, its bones would have no clip -- the look is
+    refused at load, naming the mask.
+
+    BREAKS IF: such bones silently take some other layer's (or no) pose.
+    """
+    _, path = critter
+    d = critter_settings()
+    masks = d["render"]["pose"]["skeletons"]["critter"]["masks"]
+    masks["hind"] = {"subtree": ["pelvis_x"], "minus": ["back_x", "hindleg_l"]}
+    masks["kicker"] = {"subtree": ["hindleg_l"]}
+    with pytest.raises(PoseConfigError, match="kicker"):
+        PoseLayer(pose_settings(d)).add_look("critter", path)
+
+
 # ---------------------------------------------------------------------------
 # (4) layer independence, (5) inheritance
 # ---------------------------------------------------------------------------

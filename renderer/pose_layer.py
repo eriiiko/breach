@@ -327,6 +327,7 @@ class LookRig:
     masks: MaskTable
     skeleton_table: str
     layer_masks: np.ndarray                       # (L,) mask index per layer
+    owner_layer: np.ndarray                       # (J,) the layer driving each bone
     state_clips: Dict[str, np.ndarray] = field(default_factory=dict)
 
 
@@ -357,8 +358,15 @@ class PoseLayer:
             bank = build_clip_bank(glb_path, s.clips)
         sk_name, masks = masks_for(bank.skeleton, s)
         layer_masks = np.array([masks.index(l) for l in s.layers], dtype=np.int64)
+        layer_of_mask = np.full(len(masks.names), -1, dtype=np.int64)
+        layer_of_mask[layer_masks] = np.arange(len(s.layers))
+        owner_layer = layer_of_mask[masks.owner]
+        if (owner_layer < 0).any():
+            orphans = sorted({masks.names[m] for m in masks.owner[owner_layer < 0]})
+            raise PoseConfigError(f"{name}: masks {orphans} own bones but are no "
+                                  f"layer of [render.pose] layers {list(s.layers)}")
         rig = LookRig(name=name, bank=bank, masks=masks, skeleton_table=sk_name,
-                      layer_masks=layer_masks)
+                      layer_masks=layer_masks, owner_layer=owner_layer)
         fb = s.states[s.fallback_state]
         for layer in s.layers:
             if not bank.has(fb[layer]):
@@ -494,11 +502,7 @@ class PoseLayer:
             if s is not None:
                 s[fl, fn] = pscale + (s[fl, fn] - pscale) * w
         # each bone from the layer whose mask owns it
-        layer_of_mask = np.full(len(rig.masks.names), -1, dtype=np.int64)
-        layer_of_mask[rig.layer_masks] = np.arange(L)
-        owner_layer = layer_of_mask[rig.masks.owner]
-        if (owner_layer < 0).any():
-            raise PoseConfigError(f"{look}: bones owned by a mask that is no layer")
+        owner_layer = rig.owner_layer
         jj = np.arange(J)
         lt = t[owner_layer, :, jj].transpose(1, 0, 2)               # (N, J, 3)
         lr = r[owner_layer, :, jj].transpose(1, 0, 2)
