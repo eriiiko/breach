@@ -251,11 +251,17 @@ folded into this section and into #162–#164; this section is the spec #162 is 
 `mesh.boneMatrices` (the shadow draw then follows automatically).
 
 **Corrections to §4.1:**
-1. **Time base — the biggest feel risk.** raylib 5.5 bakes clips on a 17 ms grid and snaps
-   each frame to the floor key (no interpolation); `_draw_one` advances `_ANIM_FPS = 30`
-   grid frames/s, so **every clip plays at ≈0.51× speed and steps at ≈12 distinct poses/s**
-   (Walk_Loop's 1.33 s cycle takes 2.6 s). A correct sub-frame sampler at 1× doubles every
-   speed. **Playback `rate` is data; its default reproduces today's 0.51.**
+1. **Time base — the biggest feel risk.** raylib 5.5 bakes clips on a 17 ms grid;
+   `_draw_one` advances `_ANIM_FPS = 30` grid frames/s, so **every clip plays at ≈0.51×
+   speed** (Walk_Loop's 1.33 s cycle takes 2.6 s). A correct sub-frame sampler at 1×
+   doubles every speed. **Playback `rate` is data; its default reproduces today's 0.51.**
+   *Amended by the #162 implementer (verified against raylib's loader):* the reviewer's
+   "snaps to the floor key, no interpolation" holds only for some bones. raylib 5.5 stores
+   ONE interpolation type per bone (overwritten by that bone's last channel) and applies it
+   to all three channels, so bones whose last channel is STEP hold the floor key while the
+   others are slerped. Of the 44 non-stripped clips, 19 are all-step (incl. Walk_Loop) and 25
+   mixed (incl. Idle_Loop). The pose layer samples each channel by its own interpolant, so
+   mixed clips will look smoother than today's player even at rate 0.51 — a HUMAN-TEST item.
 2. **Batching is mandatory.** Per-unit numpy costs 0.5–1.9 ms/unit (fails at 20 units);
    batched over all units with matrix FK by depth level: 1.7 ms at 20 units, 7.4 ms at 100.
    One `compose` per `draw_units` call, grouped by look (`draw_units` runs twice per frame:
