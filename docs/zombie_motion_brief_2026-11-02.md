@@ -87,20 +87,7 @@ Nothing is produced (no clip, no Kimodo prompt) until this brief is approved. Nu
 Four-point is a pose on the humanoid skeleton with long-arm proportions on the skin
 (experiment E5 decides whether the one skeleton can carry it).
 
-## 4. Questions I need Erik to rule on (vetoable statements; one at a time later)
-
-- **Speed:** my assumption is the stalk is slower than a marine's walk and the charge
-  about a marine's jog; the four-point sprint matches or beats a marine's sprint.
-  *(this is a gameplay speed → Erik's)*
-- **Four-point:** assumed a **special mode** (long-distance charge) rather than the
-  default, so most zombies read as hunched bipeds and the four-point run is the
-  alarming moment.
-- **Vocalising:** a roar telegraph is in the brief; whether zombies make sound is audio
-  and a separate call.
-- **Pack roles:** Scourge Beasts sometimes read as a pack with a leader. Assumed: no
-  special leader animation set in v1.
-
-## 5. After approval
+## 4. After approval
 
 1. Posture-only test on the existing walk / idle / run as additive offsets — **before any
    new clip** (experiment E4): does the top-down view already read as a beast?
