@@ -87,17 +87,18 @@ it; (b) the **pose-layer interface** — everything plugs into it; (c) any anima
 that reaches the sim (digest).
 
 Rules that follow (all provisional):
-1. **The Quaternius 53-bone skeleton is the interchange skeleton, provisional — and
-   replaceable (Erik, 2026-11-02): if Kimodo is far superior and easy to work with, its
-   output becomes the animation source and what we have is thrown away.** Until that is
-   known, every clip source (Quaternius, Kimodo, Mixamo, hand-keyed, procedural) is
-   *retargeted into it*; none is adopted as a second skeleton. A genuinely new body plan
-   (octopus, spider) is a new skeleton by the existing topology test, as today.
-   Consequence for the build: **the pose layer is skeleton-agnostic** (bone names, masks
-   and layer tables are data, nothing hard-codes the 53 bones), so a switch is a data
-   change. The real cost of a switch is **re-binding the characters** (space marine,
-   workers, Kessler …) through the game-ready step, not the clips; E2 measures the
-   other direction (Kimodo → ours), and the decision compares the two.
+1. **SOMA (Kimodo's skeleton) is the interchange skeleton — LOCKED by Erik 2026-11-03,
+   replacing Quaternius.** Kimodo outputs SOMA natively, so its clips need no retarget;
+   NVIDIA's motion family (ARDY, MotionBricks) speaks it; its hierarchy is the common
+   mocap layout, so other sources convert into it easily; and the switch is cheapest
+   before the pose layer exists (§12). The 46 Quaternius clips are **not ported**: new
+   clips are made, only the ones wanted. Every clip source (Kimodo, Mixamo, hand-keyed,
+   procedural) is *retargeted into SOMA*; none is adopted as a second skeleton. A
+   genuinely new body plan (octopus, spider) is a new skeleton by the existing topology
+   test, as today. Consequence for the build: **the pose layer is skeleton-agnostic**
+   (bone names, masks and layer tables are data, nothing hard-codes a bone list). The
+   cost of the switch is **re-binding the characters** (space marine, workers, Kessler …)
+   onto SOMA, not the clips.
 2. **The pose layer is designed as the one interface** (§4.1): sources in, bone matrices
    out. Replacing the skinner (CPU → GPU) or a clip source touches nothing else.
 3. **Animation never writes sim state.** Anything that changes where a unit is, who it
@@ -110,7 +111,7 @@ Rules that follow (all provisional):
 
 | # | Decision | Status | Reversal cost | Revisit when |
 |---|---|---|---|---|
-| D1 | Quaternius 53-bone skeleton is the humanoid interchange skeleton — **replaceable by Kimodo's if it proves far better and easy to transfer** (Erik) | PROVISIONAL | High (every character re-bound; clips are the cheap part) | E3 quality verdict + E2 transfer cost; or a needed pose is impossible on it (twist, long-arm, tail) — E5 |
+| D1 | **Kimodo's SOMA skeleton is the humanoid interchange skeleton** (77 joints; the 30-joint SOMA variant for runtime skinning). Quaternius retired; its clips not ported | **LOCKED** (Erik, 2026-11-03) | High (every character re-bound) | a needed pose is impossible on it (twist, long-arm, tail) — E5 |
 | D2 | Animation is render-only; no anim state on `Unit` | LOCKED (iron rule, digest) | — | never, without a sim ruling |
 | D3 | Pose = base + masked layers + additive + physics override, composed by us | PROVISIONAL | Medium | E1 shows the engine path can't hold it |
 | D4 | GPU skinning with our own bone-matrix upload | PROVISIONAL | Low (swap seam) | E1 perf at 100 units |
@@ -119,6 +120,8 @@ Rules that follow (all provisional):
 | D7 | Kimodo is an authoring tool (offline), never in the render loop — and, if good enough, THE clip source | PROVISIONAL | Zero | E3 |
 | D8 | Infection stage shown continuously from a sim-provided amount | PROVISIONAL, **needs the sim research session** | — | the sim session |
 | D9 | One generic fall / prone / rise set serves marines and zombies (and later conversion) | PROVISIONAL | Low | the sim session fixes how conversion lies down |
+| D10 | Generated characters (TRELLIS meshes, e.g. Beatrice #154) are bound to SOMA by the same step as scripted ones: rig scaled to the mesh, arms set to its A-pose, automatic weights | PROVISIONAL | Low (per character) | weights fail on a character (props near the hands already stretch, §12) |
+| D11 | Hair is a separate mesh; it sways on a few extra head-child bones driven by a render-side spring | PROVISIONAL, **touches D1** — Erik decides whether extra bones may sit on the interchange skeleton | Low | the pose layer (W13.1) exists |
 
 Companion docs (2026-11-02): `zombie_motion_brief_2026-11-02.md` (the brief, for Erik's
 veto) and `kimodo_spike_workflow_2026-11-02.md` (handoff for the work-desktop Claude,
@@ -360,8 +363,8 @@ the zombie look), then E2/E3 together, then E5, E6.
   multi-prompt sequences) plus constraints (full-body keyframes, end-effector position
   / rotation, 2D root path, waypoints). Interactive timeline demo + CLI.
 - **Output:** custom NPZ (positions, rotation matrices, foot contacts, root) on the SOMA
-  **77-joint** skeleton; also G1 (robot) and SMPL-X variants. The README mentions **no
-  BVH / FBX / Blender path** — we would write SOMA → 53-bone retarget (E2).
+  **77-joint** skeleton; also G1 (robot) and SMPL-X variants. **BVH export exists**
+  (`--bvh`, optionally with a standard T-pose rest) — verified 2026-11-02, see §12.
 - **Hardware:** ~17 GB VRAM all on GPU; **under 3 GB with `TEXT_ENCODER_DEVICE=cpu`**
   (slower, text encoding only). Tested on RTX 3090 / 4090 / A100. Developed on Linux;
   Windows "should work, especially with Docker". Home PC: 8 GB — expected to run with
@@ -369,9 +372,11 @@ the zombie look), then E2/E3 together, then E5, E6.
   breach env. Renting a 24 GB cloud GPU is the fallback; animations will come in
   batches, so occasional rental fits.
 - **License:** code Apache-2.0; SOMA / G1 checkpoints under the **NVIDIA Open Model
-  License**; SMPL-X under an NVIDIA R&D licence. **Read the Open Model License's
-  commercial-use and output-ownership terms before any generated clip ships** (an
-  explicit step of E3, not an assumption).
+  License**; SMPL-X under an NVIDIA R&D licence (non-commercial: not for Breach).
+  **Read 2026-11-03:** the Open Model License allows commercial use, NVIDIA claims no
+  ownership of outputs and does not restrict their commercial use, worldwide; a notice
+  file is only required when the *model* is redistributed (Breach does not). Generated
+  clips may ship. (A summary, not legal advice.)
 - **Unknowns that decide its value:** whether the training data contains crawling /
   bent-over / creature-like locomotion; how well keyframe constraints hold a held-object
   pose; SOMA proportions vs ours. The spike answers the first two.
@@ -412,7 +417,9 @@ only decides *when* a finished animation is triggered):
 - **Status flags** (`status.py::composed_flags`, status kinds): reactions are driven from
   composed flags and status kinds, never from new unit fields.
 - **Game-ready step + character kit** (`charkit/gameready.py`, `rig.py`): clips reach a
-  character only through it; no hand export, no second skeleton.
+  character only through it; no hand export, no second skeleton. It binds to Quaternius
+  today and must move to SOMA (D1); the generated-character binding in local-models
+  (`blender/retarget_soma.py`, §12) is the working prototype for that move.
 - **Wind load seam** (`exchange.wind_scale_q16`, `GameMap.footprint_wind_load`) and the
   **tamed wind** (render side): wind-response animation reads these, never the planes.
 - **Lit-3D seam / one tone-map / projected unit shadow**: the skinned pose feeds all
@@ -445,3 +452,35 @@ checked against footage.
 
 Next: Erik's veto pass on this doc → W13.0 (verify the U's) and E7 / E1 → cut the
 work-item issues under milestones 13–15 → HUMAN-TEST gates as marked.
+
+## 12. Kimodo on the work desktop — results 2026-11-02/03 (local-models session)
+
+Run by the work-desktop session that also built the generated-asset pipeline
+(local-models repo, skill `game-asset-pipeline`; Beatrice #154, carbine #160). It covers
+most of `kimodo_spike_workflow_2026-11-02.md` Phases 0, 1 and 3; the beast prompts
+(B1–B8) and the zombie questions are **not yet run**.
+
+**Setup (Windows, no Docker/WSL):** repo `C:\Users\steen\motion\kimodo`, conda env
+`kimodo` (Python 3.10, torch cu128). The text encoder is LLM2Vec on the **gated**
+Meta-Llama-3-8B-Instruct (Erik's Hugging Face access granted 2026-11-02). The 12 GB card
+cannot hold it: it runs on the CPU in bf16 (`TEXT_ENCODER_DEVICE=cpu`, ~16 GB through RAM
++ swap). 8-bit on the GPU fails (LLM2Vec merges a LoRA into the base on load, which
+bitsandbytes refuses). Loaded once per batch, generation then takes **~50 s per clip**
+(2 samples, 100 steps). Model: Kimodo-SOMA-RP-v1.2.
+
+**Clips made (SOMA, 2 samples each):** walk, run, rifle carry walk, rifle aim walk, rifle
+shoot, wind-hunched walk, hit reactions (head front, chest front, back, left, right).
+Stick-figure review: hit reactions read clearly (double over, sideways recoil, lurch);
+the wind walk is hunched with an arm shielding the face; rifle clips have plausible arm
+poses. The rifle-shoot clip lowers and raises the gun mid-clip.
+
+**On a character:** Beatrice (a TRELLIS mesh in A-pose) was bound to SOMA and played the
+clips, with the carbine parented to `RightHand` (grip in the palm, barrel toward the
+support hand). Lessons: SOMA's `Root` and `*End` bones must not deform (bone heat gave
+`Root` 1 228 vertices, which stayed behind as streaks); vertices left unweighted take
+their nearest weighted neighbour's; a holster near the A-pose hand gets hand weights and
+stretches — weights need a body-part rule for such props.
+
+**Answers to the spike questions so far:** 6 (cost) — above; 7 (retarget onto 53 bones)
+— moot, D1 is SOMA; 8 (licence) — §8, generated clips may ship. 1–5 wait for the beast
+prompts.
