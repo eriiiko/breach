@@ -87,10 +87,17 @@ it; (b) the **pose-layer interface** — everything plugs into it; (c) any anima
 that reaches the sim (digest).
 
 Rules that follow (all provisional):
-1. **The Quaternius 53-bone skeleton is the interchange skeleton, provisional.** Every
-   clip source (Quaternius, Kimodo, Mixamo, hand-keyed, procedural) is *retargeted into
-   it*; none is adopted as a second skeleton. A genuinely new body plan (octopus,
-   spider) is a new skeleton by the existing topology test, as today.
+1. **The Quaternius 53-bone skeleton is the interchange skeleton, provisional — and
+   replaceable (Erik, 2026-11-02): if Kimodo is far superior and easy to work with, its
+   output becomes the animation source and what we have is thrown away.** Until that is
+   known, every clip source (Quaternius, Kimodo, Mixamo, hand-keyed, procedural) is
+   *retargeted into it*; none is adopted as a second skeleton. A genuinely new body plan
+   (octopus, spider) is a new skeleton by the existing topology test, as today.
+   Consequence for the build: **the pose layer is skeleton-agnostic** (bone names, masks
+   and layer tables are data, nothing hard-codes the 53 bones), so a switch is a data
+   change. The real cost of a switch is **re-binding the characters** (space marine,
+   workers, Kessler …) through the game-ready step, not the clips; E2 measures the
+   other direction (Kimodo → ours), and the decision compares the two.
 2. **The pose layer is designed as the one interface** (§4.1): sources in, bone matrices
    out. Replacing the skinner (CPU → GPU) or a clip source touches nothing else.
 3. **Animation never writes sim state.** Anything that changes where a unit is, who it
@@ -103,13 +110,13 @@ Rules that follow (all provisional):
 
 | # | Decision | Status | Reversal cost | Revisit when |
 |---|---|---|---|---|
-| D1 | Quaternius 53-bone skeleton is the humanoid interchange skeleton | PROVISIONAL | High (every character re-baked) | A needed pose is impossible on it (twist, long-arm, tail) — E2/E5 will tell |
+| D1 | Quaternius 53-bone skeleton is the humanoid interchange skeleton — **replaceable by Kimodo's if it proves far better and easy to transfer** (Erik) | PROVISIONAL | High (every character re-bound; clips are the cheap part) | E3 quality verdict + E2 transfer cost; or a needed pose is impossible on it (twist, long-arm, tail) — E5 |
 | D2 | Animation is render-only; no anim state on `Unit` | LOCKED (iron rule, digest) | — | never, without a sim ruling |
 | D3 | Pose = base + masked layers + additive + physics override, composed by us | PROVISIONAL | Medium | E1 shows the engine path can't hold it |
 | D4 | GPU skinning with our own bone-matrix upload | PROVISIONAL | Low (swap seam) | E1 perf at 100 units |
 | D5 | Per-weapon-family clip sets, not per-weapon | PROVISIONAL | Low | A weapon needs unique handling |
 | D6 | Zombie = same skeleton, posture parameters + own clip set | PROVISIONAL | Medium | E3/E4 say the humanoid rig can't carry the four-point run |
-| D7 | Kimodo is an authoring tool (offline), never in the render loop | PROVISIONAL | Zero | E2 |
+| D7 | Kimodo is an authoring tool (offline), never in the render loop — and, if good enough, THE clip source | PROVISIONAL | Zero | E3 |
 | D8 | Infection stage shown continuously from a sim-provided amount | PROVISIONAL, **needs the sim research session** | — | the sim session |
 | D9 | One generic fall / prone / rise set serves marines and zombies (and later conversion) | PROVISIONAL | Low | the sim session fixes how conversion lies down |
 
@@ -121,7 +128,7 @@ experiments E2/E3).
 
 | M | Name | Contents | Depends on |
 |---|---|---|---|
-| 13 | **Pose layer** | pose compositor, GPU skinning, legs/upper-body layering, state→clip table, weapon families + a melee each, knockdown set (#149), grenade + plant, shoulder bag (carry / set down / pick up), retarget path for a foreign clip | nothing new in the sim |
+| 13 | **Pose layer** | pose compositor, GPU skinning, legs / upper-body / head layering, door bash (all humans), state→clip table, weapon families + a melee each, knockdown set (#149), grenade + plant, shoulder bag (carry / set down / pick up), retarget path for a foreign clip | nothing new in the sim |
 | 14 | **Zombie motion** | reference brief, posture parameter set, infection levels, Scourge/Genestealer clips, door bash, rise from floor, turning | 13's pose layer; **sim infection signal** (research session) |
 | 15 | **Bodies in motion** | render-side shockwave response, visual-body offset spring, additive flinch, ragdoll-lite, wall bounce, get-up blend; **end goal: bodies knocking each other over, with momentum / angular momentum** | 13; the end goal needs the **sim research session** |
 
@@ -137,8 +144,9 @@ technique). To avoid confusion the knock-over goal is called **M15 phase 3**, no
  (glTF clips,   │      ┌──────────── pose layer (renderer/, render-only) ───────────┐
   retargeted)   ├────► │ per-unit state → layers:                                   │
  procedural     │      │   L0 base (legs / locomotion)      mask: hips + legs        │ ──► bone matrices ──► skinner
- offsets        │      │   L1 upper body (aim/fire/carry)   mask: spine + arms + head│       (CPU now,
- physics (M15)  ┘      │   L2 additive (flinch, breathing, posture offsets)          │        GPU later)
+ offsets        │      │   L1 upper body (aim/fire/carry)   mask: spine + arms      │       (CPU now,
+ physics (M15)  ┘      │   L1h head (look / aim target)     mask: neck + head        │        GPU later)
+                       │   L2 additive (flinch, breathing, posture offsets)          │
                        │   L3 override (ragdoll-lite blend weight w ∈ [0,1])         │
                        └────────────────────────────────────────────────────────────┘
         inputs read from the sim: facing, inferred velocity, status flags, events
@@ -148,7 +156,9 @@ technique). To avoid confusion the knock-over goal is called **M15 phase 3**, no
   not integer frames), compose per-bone local TRS under masks, output skinning matrices.
   Crossfade = a weight ramp on a layer, not a special case.
 - **Bone masks** are data: named groups (`legs`, `torso`, `arms`, `head`, `fingers`) over
-  the 53 bones.
+  the skeleton's bones. **Legs, upper body and head are three independent layers**
+  (Erik, 2026-11-02: head "preferably" layered) — the head can look at a target or snap
+  toward a sound while the torso aims and the legs walk.
 - **Strafe / aim-vs-travel:** aim is `unit.facing`; travel direction is the inferred
   position delta. The lower body picks a locomotion clip by *travel angle relative to
   facing* (fwd / back / left / right, blended), the upper body follows facing. **Open
@@ -277,10 +287,13 @@ alert telegraph · hit stagger · burning flail · deaths (collapse, crumple, bu
 legless crawl · **turning** (the spasm when a marine converts) · **door bash** · **rise
 from the floor**.
 
-**Door bashing (Erik: yes, wanted).** It needs a sim rule that does not exist today: a
-zombie attacking a door entity (door hit points, the attack, an event the renderer can
-read). `DoorDestroyedEvent` exists; a zombie-attacks-door behaviour does not. The bash
-clip waits on that rule; the rule is a game-design / sim item. `[bots]` / zombie control
+**Door bashing (Erik: yes, for zombies AND ordinary humans).** One shared bash clip set
+on the interchange skeleton (a marine shouldering a door and a zombie ramming it are two
+variants of the same action, so it is built once in the pose layer's clip tables, with a
+zombie posture on top). It needs a sim rule that does not exist today: a unit attacking a
+door entity (door hit points, the attack, an event the renderer can read).
+`DoorDestroyedEvent` exists; a unit-attacks-door behaviour does not. The bash clip waits
+on that rule; the rule is a game-design / sim item. `[bots]` / zombie control
 and the door entity (A6) are the places to look.
 
 **Rising from the floor = the fall / prone / rise set (Erik, 2026-11-02).** Zombies can
