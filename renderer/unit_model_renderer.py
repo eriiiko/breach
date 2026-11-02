@@ -18,14 +18,23 @@ shader. See each ``assets/models/<name>/LICENSE.txt``. The library's own mannequ
 (``assets/models/marine/``) is no longer drawn: it is the skeleton and clip
 SOURCE the game-ready step reads.
 
-Skinning: CPU (``update_model_animation``) — the pyray bindings in use (a raylib
-6.1-dev build where this was written, 5.5.0.4 on the home desktop) expose no
-``UpdateModelAnimationBoneMatrices`` GPU helper, and they name a clip's frame
-count differently (read through :func:`anim_frame_count`, #80). The shared model is
-re-skinned to each unit's pose immediately before its ``DrawModelEx``; soft
-ceiling ~20 animated units in CPython. The GPU-skinning upgrade (compute bone
-matrices + a skinning vertex shader) is a self-contained change INSIDE this
-module — ``_draw_one`` is the swap seam — so nothing outside changes.
+Skinning: CPU (``update_model_animation``). The shared model is re-skinned to
+each unit's pose immediately before its ``DrawModelEx``; soft ceiling ~20
+animated units in CPython. The bindings in use (a raylib 6.x build where this
+was written, 5.5.0.4 on the home desktop) name a clip's frame count and frame
+poses differently (read through :func:`anim_frame_count`, #80, and
+``pose_skinner.anim_pose_fields``). GPU skinning IS available on 5.5 (each
+mesh carries ``boneMatrices``, uploaded by ``DrawMesh`` to a shader that
+declares them; measured in the design's §4.5), but nothing here uses it yet:
+that is W13.2, a second ``pose_skinner.Skinner`` behind ``_draw_one``'s seam,
+and it needs the lit and shadow vertex shaders to skin.
+
+Pose layer (M13, #162; ``[render.pose] enabled``, default OFF): with it on,
+each unit's pose is composed by ``renderer/pose_layer.py`` (sub-frame clips,
+legs / upper / head layers over bone masks, crossfades) in ONE batch per look
+per ``draw_units`` call, and ``pose_skinner.CpuInjectSkinner`` puts it on the
+mesh. With it off nothing of it is built or imported, and ``_draw_one``
+plays the look's own clip at an integer frame exactly as before.
 
 Coordinate mapping: the top-down camera + world-px mapping now live in
 ``renderer/lit3d.py`` (the shared lit-3D-in-world-RT seam, extracted 2026-09
@@ -127,6 +136,21 @@ def anim_frame_count(anim) -> int:
     raise AttributeError(f"ModelAnimation carries none of {_FRAME_COUNT_FIELDS}")
 
 
+def pose_layer_enabled(cfg) -> bool:
+    """``[render.pose] enabled`` -- the ONE switch of the pose layer (#162),
+    read when the renderer loads. Raises ValueError when the section or the
+    key is missing or not a bool (a typo must not silently pick a path).
+    Everything else of the table is read by ``pose_layer.pose_settings``,
+    only when this is true."""
+    section = getattr(getattr(cfg, "render", None), "pose", None)
+    if section is None:
+        raise ValueError("config.toml has no [render.pose] section")
+    value = getattr(section, "enabled", None)
+    if not isinstance(value, bool):
+        raise ValueError(f"[render.pose] enabled must be a bool, got {value!r}")
+    return value
+
+
 @dataclass
 class _UnitAnimState:
     """Renderer-side per-unit animation state (NEVER on Unit)."""
@@ -137,6 +161,7 @@ class _UnitAnimState:
     last_seen: float = 0.0       # wall-clock of last draw (for pruning)
     initialised: bool = False
     shadow: Optional[ShadowCast] = None   # projected shadow, low-passed (#33)
+    pose: Optional[object] = None         # pose_layer.PoseState (#162; pose layer on)
 
 
 @dataclass
@@ -176,6 +201,10 @@ class UnitModelRenderer:
         self._marine_shader = None       # MarineShader wrapper (locs + setters)
         # #33 projected shadows: the flat shader + single-darkening draw.
         self._shadow_painter: Optional[ShadowPainter] = None
+        # #162 pose layer + its skinner: built in load() only when
+        # [render.pose] enabled; None = the clip player as before.
+        self._pose = None
+        self._skinner = None
 
     @property
     def model(self):
@@ -236,6 +265,45 @@ class UnitModelRenderer:
         self._loaded = True
         self._setup_marine_shader()
         self._shadow_painter = ShadowPainter(rl)
+        self._setup_pose()
+
+    def _setup_pose(self, skinner=None) -> None:
+        """#162: build the pose layer over every loaded look -- only when
+        ``[render.pose] enabled``; otherwise nothing of it is imported or
+        built and the draw path is the clip player as before. A refused
+        setting, a look whose skeleton no mask table fits, or a look whose
+        raylib bone table differs from the pose layer's raises: the layer
+        was asked for, so it never silently falls back. ``skinner`` defaults
+        to the CPU-inject skinner (tests pass their own)."""
+        if not pose_layer_enabled(CFG):
+            return
+        from .pose_layer import PoseLayer, pose_settings
+        from .pose_skinner import CpuInjectSkinner
+        pose = PoseLayer(pose_settings(CFG))
+        skinner = skinner if skinner is not None else CpuInjectSkinner(rl)
+        for look in self._looks.values():
+            rig = pose.add_look(look.name, look.path)
+            skinner.prepare(look.name, look.model, look.anims[0],
+                            rig.bank.skeleton.names)
+            print(f"[unit_model] pose layer: {look.name} {rig.bank.n_clips} clips, "
+                  f"{rig.bank.skeleton.n_bones} bones, masks "
+                  f"[render.pose.skeletons.{rig.skeleton_table}]")
+        for warning in pose.warnings:
+            print(f"[unit_model] WARN: pose layer: {warning}")
+        self._pose = pose
+        self._skinner = skinner
+
+    def queue_events(self, events: Sequence) -> None:
+        """#162: hand the frame's sim events to the pose layer, one queue per
+        unit (``event.unit_id``). Stored only -- nothing reads them yet (the
+        fire / hit slices will). A no-op with the pose layer off."""
+        if self._pose is None:
+            return
+        now = self._last_clock if self._last_clock is not None else 0.0
+        for ev in events:
+            uid = getattr(ev, "unit_id", None)
+            if uid is not None:
+                self._pose.queue_event(int(uid), ev, now)
 
     def _load_look(self, name: str, path: Path) -> Optional[_Look]:
         """Load one look; None (with one warning) if missing, unloadable or
@@ -430,6 +498,10 @@ class UnitModelRenderer:
         if self._shadow_painter is not None:
             self._shadow_painter.unload()
             self._shadow_painter = None
+        if self._skinner is not None:
+            self._skinner.release()
+        self._pose = None
+        self._skinner = None
         self._looks.clear()
         self._resolve.clear()
         self._assigner = None
@@ -581,11 +653,16 @@ class UnitModelRenderer:
         if self._marine_shader is not None:
             self._marine_shader.set_body_light(body_from_unit)
 
+        # #162: with the pose layer on, every unit's pose is composed first,
+        # one batch per look; None = the clip player inside _draw_one.
+        pose_rows = (self._pose_prepass(alive, names, dt, clock)
+                     if self._pose is not None else None)
+
         if open_mode_3d:
             rl.begin_mode_3d(camera3d)
         try:
             # Phase 0 parity: dead units skipped (sprite path).
-            for u, name in zip(alive, names):
+            for i, (u, name) in enumerate(zip(alive, names)):
                 cast = NO_SHADOW
                 # ONE light read per unit, for its shadow and its body.
                 light = _NO_LIGHT
@@ -600,12 +677,55 @@ class UnitModelRenderer:
                 self._draw_one(u, self._resolve[name], wpt, dt, clock, scale,
                                shadow_r if shading.blob_shadow else 0.0,
                                base_tint, light_rgb_fn,
-                               cast if shadows_on else None)
+                               cast if shadows_on else None,
+                               pose_row=None if pose_rows is None else pose_rows[i])
         finally:
             if open_mode_3d:
                 rl.end_mode_3d()
 
         self._prune(clock)
+
+    def _pose_prepass(self, alive: Sequence, names: Sequence[str], dt: float,
+                      clock: float) -> list:
+        """#162: per unit (read-only): infer motion, pick the state, drive its
+        PoseState; then ONE batched compose per look. Returns each unit's
+        global-TRS row, in ``alive`` order."""
+        groups: Dict[str, list] = {}
+        for i, (u, name) in enumerate(zip(alive, names)):
+            look = self._resolve[name]
+            st = self._state_for(u)
+            moving = self._infer_motion(u, st, clock)
+            state = self.select_clip(u, moving)
+            if st.pose is None or st.pose.look != look.name:
+                st.pose = self._pose.new_state(look.name, state)
+            self._pose.drive(st.pose, state, dt)
+            groups.setdefault(look.name, []).append((i, st.pose))
+        rows = [None] * len(alive)
+        for look_name, members in groups.items():
+            batch = self._pose.compose(look_name, [ps for _, ps in members])
+            for j, (i, _) in enumerate(members):
+                rows[i] = batch.global_trs[j]
+        return rows
+
+    def _state_for(self, u) -> _UnitAnimState:
+        """The unit's renderer-side anim state, created on first sight."""
+        uid = unit_key(u)
+        st = self._anim.get(uid)
+        if st is None:
+            st = _UnitAnimState(last_x=float(u.x), last_y=float(u.y))
+            self._anim[uid] = st
+        return st
+
+    @staticmethod
+    def _infer_motion(u, st: _UnitAnimState, clock: float) -> bool:
+        """Motion inference (no velocity field on Unit): moved since the last
+        draw, or a non-empty move_path. Updates the remembered position."""
+        moved = (abs(float(u.x) - st.last_x) + abs(float(u.y) - st.last_y)
+                 > _MOVE_EPS_TILES)
+        has_path = bool(getattr(u, "move_path", None))
+        st.last_x, st.last_y = float(u.x), float(u.y)
+        st.last_seen = clock
+        return moved or has_path
 
     def _frame_dt(self, clock: float) -> float:
         """The wall-clock step the animation advances by in the frame drawn
@@ -622,38 +742,34 @@ class UnitModelRenderer:
 
     def _draw_one(self, u, look: _Look, wpt: float, dt: float, clock: float,
                   scale: float, shadow_r: float, base_tint,
-                  light_rgb_fn, shadow: Optional[ShadowCast] = None) -> None:
+                  light_rgb_fn, shadow: Optional[ShadowCast] = None,
+                  pose_row=None) -> None:
         """Draw a single unit with its look. THE SWAP SEAM: a future GPU-
-        skinning path replaces the update_model_animation + DrawModelEx pair
-        here without touching anything else. ``shadow`` (#33) is this frame's
+        skinning path replaces the skinning call + DrawModelEx pair here
+        without touching anything else. ``shadow`` (#33) is this frame's
         projected-shadow target (None = projected shadows off); it is low-
-        passed per unit and drawn from the SAME skinned pose as the body."""
-        uid = unit_key(u)
-        st = self._anim.get(uid)
-        if st is None:
-            st = _UnitAnimState(last_x=float(u.x), last_y=float(u.y))
-            self._anim[uid] = st
+        passed per unit and drawn from the SAME skinned pose as the body.
+        ``pose_row`` (#162) is the unit's composed global pose (pose layer
+        on, motion already inferred by ``_pose_prepass``); None = the clip
+        player below, exactly as before the pose layer."""
+        st = self._state_for(u)
 
-        # --- motion inference (no velocity field on Unit) ---------------
-        moved = (abs(float(u.x) - st.last_x) + abs(float(u.y) - st.last_y)
-                 > _MOVE_EPS_TILES)
-        has_path = bool(getattr(u, "move_path", None))
-        moving = moved or has_path
-        st.last_x, st.last_y = float(u.x), float(u.y)
-        st.last_seen = clock
-
-        # --- clip selection + wall-clock advance ------------------------
-        clip = self.select_clip(u, moving)
-        if clip != st.clip:
-            st.clip = clip
-            st.phase = 0.0
-        anim_idx = look.clip_index.get(CLIP_MAP.get(clip, ""),
-                                       look.clip_index.get(CLIP_MAP["idle"], 0))
-        anim = look.anims[anim_idx]
-        n_keys = max(1, anim_frame_count(anim))
-        st.phase += dt * _ANIM_FPS
-        frame = int(st.phase) % n_keys
-        rl.update_model_animation(look.model, anim, frame)  # CPU skin (swap seam)
+        if pose_row is not None:
+            self._skinner.apply(look.name, look.model, pose_row)   # #162
+        else:
+            moving = self._infer_motion(u, st, clock)
+            # --- clip selection + wall-clock advance --------------------
+            clip = self.select_clip(u, moving)
+            if clip != st.clip:
+                st.clip = clip
+                st.phase = 0.0
+            anim_idx = look.clip_index.get(CLIP_MAP.get(clip, ""),
+                                           look.clip_index.get(CLIP_MAP["idle"], 0))
+            anim = look.anims[anim_idx]
+            n_keys = max(1, anim_frame_count(anim))
+            st.phase += dt * _ANIM_FPS
+            frame = int(st.phase) % n_keys
+            rl.update_model_animation(look.model, anim, frame)  # CPU skin (swap seam)
 
         # --- transform: world-px centre, yaw = facing, matched scale ----
         fp = float(getattr(u, "footprint", 3))
@@ -705,6 +821,9 @@ class UnitModelRenderer:
                  if clock - st.last_seen > _STALE_SECONDS]
         for uid in stale:
             del self._anim[uid]
+        if self._pose is not None:
+            self._pose.prune_events(self._anim, clock, _STALE_SECONDS)
 
 
-__all__ = ["UnitModelRenderer", "CLIP_MAP", "anim_frame_count"]
+__all__ = ["UnitModelRenderer", "CLIP_MAP", "anim_frame_count",
+           "pose_layer_enabled"]

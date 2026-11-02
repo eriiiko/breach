@@ -2075,6 +2075,54 @@ min_directionality = 0.2  # |net flux| / irradiance (0 = light evenly from
                           # all sides, 1 = one beam): balanced light casts
                           # nothing, so the direction never flickers
 
+[render.pose]
+# THE pose layer (M13, #162; renderer/pose_layer.py; design
+# docs/animation_milestones_design_2026-11-02.md §4.5): the 3D units' bone
+# pose composed by us -- clips sampled between keys, legs / upper body / head
+# as independent layers over bone masks, crossfades, an additive layer --
+# instead of raylib's integer-frame clip player. Render-only, never on Unit,
+# no digest. Read once when the renderer loads (restart to change). Every key
+# is required; a missing, unknown or mistyped one raises, naming it.
+enabled = false         # false = the clip player exactly as before (the pose
+                        # modules are never built). HUMAN-TEST before true.
+rate = 0.51             # clip seconds per wall second. 0.51 = the speed every
+                        # clip has always played at: raylib 5.5 bakes clips on
+                        # a 17 ms grid and the player stepped 30 grid frames/s
+                        # (30 x 0.017). 1.0 = the clips' authored speed.
+crossfade_s = 0.15      # a clip change ramps over this long (0 = snap, as before)
+layers = ["legs", "upper", "head"]   # override layers, each a mask below
+fallback_state = "idle" # the state whose clips stand in for a missing one
+event_queue = 16        # sim events kept per unit for the pose layer (stored
+                        # only in #162; the fire / hit slices read them)
+
+# Body regions per skeleton: subtree = every bone under these, minus = without
+# every bone under those. Each skeleton's masks must cover every bone exactly
+# once; the first table whose bones all exist in a look's skeleton is used.
+# A different skeleton is a new table here, never code.
+[render.pose.skeletons.quaternius_ual.masks]   # Universal Animation Library rig
+legs  = { subtree = ["root"], minus = ["DEF-spine.001"] }      # root, hips, legs
+upper = { subtree = ["DEF-spine.001"], minus = ["DEF-neck"] }  # spine, arms, hands
+head  = { subtree = ["DEF-neck"] }                             # neck, head
+
+# State -> clip per layer. The renderer's state names (select_clip): today
+# idle and walk; fire and dead are dormant, as in CLIP_MAP. One clip on all
+# three layers = the whole body plays it, as before.
+[render.pose.states]
+idle = { legs = "Idle_Loop",    upper = "Idle_Loop",    head = "Idle_Loop" }
+walk = { legs = "Walk_Loop",    upper = "Walk_Loop",    head = "Walk_Loop" }
+fire = { legs = "Pistol_Shoot", upper = "Pistol_Shoot", head = "Pistol_Shoot" }
+dead = { legs = "Death01",      upper = "Death01",      head = "Death01" }
+
+# Per-clip playback rows; a clip without a row loops at the global rate with
+# its root motion kept. loop, rate (x the global rate), root_motion ("keep" |
+# "strip": the root's horizontal travel removed, so the body stays on its sim
+# position), additive_ref (the key an additive use of the clip is measured
+# against; 0 = its first key, never the bind pose).
+[render.pose.clips]
+Death01 = { loop = false }
+Roll_RM = { root_motion = "strip" }
+Sword_Attack_RM = { root_motion = "strip" }
+
 [render.speckle]
 mode = "soot"              # "off" | "noise" | "soot"  (A/B in studio)
 amp = 0.25
